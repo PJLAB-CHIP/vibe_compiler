@@ -2,7 +2,6 @@
 
 #include "Wafer/Planning/Baseline/CardBaselineEdgeCarriers.h"
 
-#include "Wafer/Analysis/Structured/StructuredOperationTileFootprint.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -22,54 +21,12 @@ uint64_t saturatingMultiply(uint64_t lhs, uint64_t rhs) {
 
 mlir::FailureOr<llvm::SmallVector<analysis::StaticRectangularIndexSet, 8>>
 getRectangles(const analysis::ExactIndexSet &set) {
-  if (set.getForm() == analysis::ExactIndexSetForm::BoxUnion)
-    return llvm::SmallVector<analysis::StaticRectangularIndexSet, 8>(
-        set.getBoxes().begin(), set.getBoxes().end());
-  analysis::IndexSetResult exact{
-      analysis::IndexRelationStatus::Exact, set.getPresburgerSet(), {}};
-  analysis::StaticRectangularIndexSetPiecesResult pieces =
-      exact.getExactStaticRectangularDisjuncts();
-  if (!pieces.isExact()) {
-    analysis::StaticRectangularIndexSetResult rectangle =
-        exact.getExactStaticRectangularDomain();
-    if (!rectangle.isExact())
-      return mlir::failure();
-    pieces.domains.push_back(std::move(*rectangle.domain));
-  }
-  return std::move(pieces.domains);
-}
-
-llvm::SmallVector<analysis::StaticRectangularIndexSet, 8>
-splitAtWaveBoundaries(const analysis::StaticRectangularIndexSet &box,
-                      llvm::ArrayRef<int64_t> waveSizes) {
-  llvm::SmallVector<analysis::StaticRectangularIndexSet, 8> fragments{box};
-  if (box.offsets.size() != waveSizes.size() ||
-      box.sizes.size() != waveSizes.size())
-    return {};
-  for (size_t dimension = 0; dimension < waveSizes.size(); ++dimension) {
-    const int64_t wave = waveSizes[dimension];
-    if (wave <= 0)
-      return {};
-    llvm::SmallVector<analysis::StaticRectangularIndexSet, 8> next;
-    for (const analysis::StaticRectangularIndexSet &fragment : fragments) {
-      int64_t remaining = fragment.sizes[dimension];
-      int64_t offset = fragment.offsets[dimension];
-      while (remaining > 0) {
-        analysis::StaticRectangularIndexSet part = fragment;
-        const int64_t withinWave = offset % wave;
-        const int64_t size = std::min(remaining, wave - withinWave);
-        part.offsets[dimension] = offset;
-        part.sizes[dimension] = size;
-        next.push_back(std::move(part));
-        if (next.size() > 100000)
-          return {};
-        offset += size;
-        remaining -= size;
-      }
-    }
-    fragments = std::move(next);
-  }
-  return fragments;
+  mlir::FailureOr<analysis::ExactIndexSet> normalized =
+      analysis::normalizeFiniteExactIndexSet(set);
+  if (mlir::failed(normalized))
+    return mlir::failure();
+  return llvm::SmallVector<analysis::StaticRectangularIndexSet, 8>(
+      normalized->getBoxes().begin(), normalized->getBoxes().end());
 }
 
 const analysis::SourceDemand *
@@ -141,19 +98,6 @@ mlir::LogicalResult appendCarrier(
       producerType.getElementType().getIntOrFloatBitWidth();
   if (elementBits == 0 || elementBits % 8 != 0)
     return mlir::failure();
-  auto temporal = llvm::find_if(mapping.operationTemporalTiles,
-                                [&](const StructuredOpTemporalTile &tile) {
-                                  return tile.operation == producer.operation;
-                                });
-  std::optional<llvm::SmallVector<int64_t, 4>> waveSizes =
-      temporal != mapping.operationTemporalTiles.end()
-          ? getStructuredResultTileShape(producer.operation,
-                                         edge.producerResult,
-                                         temporal->iteratorTileSizes)
-          : std::nullopt;
-  if (!waveSizes)
-    return mlir::failure();
-
   int64_t payloadSlice = 0;
   for (const analysis::DestinationDemand &destination :
        dependency.perDestination) {
@@ -195,28 +139,21 @@ mlir::LogicalResult appendCarrier(
       if (mlir::failed(ownedPieces))
         return mlir::failure();
       for (const analysis::StaticRectangularIndexSet &piece : *ownedPieces) {
-        llvm::SmallVector<analysis::StaticRectangularIndexSet, 8> fragments =
-            splitAtWaveBoundaries(piece, *waveSizes);
-        if (fragments.empty())
+        const bool resident =
+            intersection.tile == destination.destinationTile;
+        uint64_t elements = 1;
+        for (int64_t size : piece.sizes)
+          elements = saturatingMultiply(elements, size);
+        const uint64_t bytes =
+            resident ? 0 : saturatingMultiply(elements, elementBits / 8);
+        if (!resident &&
+            (bytes == 0 || bytes > std::numeric_limits<uint32_t>::max()))
           return mlir::failure();
-        for (analysis::StaticRectangularIndexSet &fragment : fragments) {
-          const bool resident =
-              intersection.tile == destination.destinationTile;
-          uint64_t elements = 1;
-          for (int64_t size : fragment.sizes)
-            elements = saturatingMultiply(elements, size);
-          const uint64_t bytes =
-              resident ? 0 : saturatingMultiply(elements, elementBits / 8);
-          if (!resident &&
-              (bytes == 0 || bytes > std::numeric_limits<uint32_t>::max()))
-            return mlir::failure();
-          strategy.fragments.push_back(SpatialEdgeFragment{
-              resident ? SpatialEdgeFragmentKind::Resident
-                       : SpatialEdgeFragmentKind::Peer,
-              std::move(fragment.offsets), std::move(fragment.sizes),
-              intersection.tile, bytes, resident ? 0 : edge.id,
-              resident ? 0 : payloadSlice++});
-        }
+        strategy.fragments.push_back(SpatialEdgeFragment{
+            resident ? SpatialEdgeFragmentKind::Resident
+                     : SpatialEdgeFragmentKind::Peer,
+            piece.offsets, piece.sizes, intersection.tile, bytes,
+            resident ? 0 : edge.id, resident ? 0 : payloadSlice++});
       }
     }
     if (strategy.fragments.empty())
@@ -226,19 +163,21 @@ mlir::LogicalResult appendCarrier(
           return owner.root == consumerRoot && owner.result == 0 &&
                  owner.shard && *owner.shard == destination.destinationShard;
         });
-    if (consumerOwner != proof.finalOwners.end() &&
-        consumerOwner->domain.getForm() ==
-            analysis::ExactIndexSetForm::BoxUnion &&
-        consumerOwner->domain.getBoxes().size() == 1) {
-      strategy.consumerOffsets =
-          consumerOwner->domain.getBoxes().front().offsets;
-      strategy.consumerSizes = consumerOwner->domain.getBoxes().front().sizes;
-    } else {
+    if (consumerOwner == proof.finalOwners.end()) {
+      if (failureReason)
+        *failureReason = "baseline consumer result has no final owner";
+      return mlir::failure();
+    }
+    mlir::FailureOr<llvm::SmallVector<analysis::StaticRectangularIndexSet, 8>>
+        consumerPieces = getRectangles(consumerOwner->domain);
+    if (mlir::failed(consumerPieces) || consumerPieces->size() != 1) {
       if (failureReason)
         *failureReason =
             "baseline consumer result has no finite final-owner rectangle";
       return mlir::failure();
     }
+    strategy.consumerOffsets = consumerPieces->front().offsets;
+    strategy.consumerSizes = consumerPieces->front().sizes;
     mapping.edgeStrategies.push_back(std::move(strategy));
   }
   return mlir::success();

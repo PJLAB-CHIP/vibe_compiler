@@ -6,7 +6,6 @@
 #include "Wafer/Analysis/PhysicalDataflow/StructuredDemandAnalysis.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalAttentionWorkProjection.h"
-#include "Wafer/Planning/PhysicalDataflow/CanonicalFeasibilityProof.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalMovementPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalRepresentationPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSchedulePlan.h"
@@ -27,7 +26,11 @@
 
 #include "gtest/gtest.h"
 
+#include <functional>
+#include <limits>
 #include <memory>
+#include <numeric>
+#include <set>
 #include <string>
 
 namespace {
@@ -38,7 +41,6 @@ using namespace wafer::compiler::detail;
 
 struct SelectedInputs {
   CanonicalAttentionWorkCoordinate attention;
-  FullFeasibilityProof proof;
 };
 
 class SelectedAttentionDecompositionTest : public ::testing::Test {
@@ -121,14 +123,7 @@ protected:
         getCanonicalAttentionWorkCoordinate(attentionOutcome);
     if (!attention)
       return mlir::failure();
-    CanonicalFeasibilityOutcome feasibility = buildCanonicalFeasibilityProof(
-        *storage, *movements, *schedule, *attention,
-        wafer::getTargetMemoryPolicy());
-    const CanonicalFeasibilityCoordinate *proof =
-        getCanonicalFeasibilityCoordinate(feasibility);
-    if (!proof)
-      return mlir::failure();
-    return SelectedInputs{*attention, proof->proof};
+    return SelectedInputs{*attention};
   }
 
   static wafer::LinalgExtAttentionOp attention(mlir::ModuleOp module) {
@@ -146,12 +141,99 @@ protected:
     return result;
   }
 
+  static bool
+  setKeyValueResidentTiles(AttentionWorkDescription &description,
+                           const wafer::AttentionIterationRoles &roles,
+                           int64_t maximumTile) {
+    if (maximumTile <= 0 || roles.keyValueReduction.empty())
+      return false;
+    for (AttentionOperandDescription &operand : description.operands) {
+      if (operand.exactDomain.getForm() != ExactIndexSetForm::BoxUnion ||
+          operand.exactDomain.getBoxes().size() != 1 ||
+          operand.indexingMap.getNumResults() !=
+              operand.exactDomain.getBoxes().front().sizes.size())
+        return false;
+      StaticRectangularIndexSet box = operand.exactDomain.getBoxes().front();
+      for (auto [dimension, expression] :
+           llvm::enumerate(operand.indexingMap.getResults())) {
+        auto iterator = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+        if (!iterator)
+          return false;
+        if (!llvm::is_contained(roles.keyValueReduction,
+                                iterator.getPosition()))
+          continue;
+        const int64_t exact = box.sizes[dimension];
+        box.sizes[dimension] =
+            std::min(maximumTile, std::max<int64_t>(1, exact / 2));
+      }
+      IndexSetResult set =
+          IndexRelation::staticRectangularDomain(box.offsets, box.sizes);
+      if (!set.isExact())
+        return false;
+      operand.residentDomain = ExactIndexSet(
+          std::move(*set.set), ExactIndexSetForm::BoxUnion, {std::move(box)});
+    }
+    for (AttentionValueDescription &value : description.values) {
+      if (value.exactDomain.getForm() != ExactIndexSetForm::BoxUnion ||
+          value.exactDomain.getBoxes().size() != 1 ||
+          value.indexingMap.getNumResults() !=
+              value.exactDomain.getBoxes().front().sizes.size())
+        return false;
+      StaticRectangularIndexSet box = value.exactDomain.getBoxes().front();
+      for (auto [dimension, expression] :
+           llvm::enumerate(value.indexingMap.getResults())) {
+        auto iterator = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+        if (!iterator)
+          return false;
+        if (!llvm::is_contained(roles.keyValueReduction,
+                                iterator.getPosition()))
+          continue;
+        const int64_t exact = box.sizes[dimension];
+        box.sizes[dimension] =
+            std::min(maximumTile, std::max<int64_t>(1, exact / 2));
+      }
+      IndexSetResult set =
+          IndexRelation::staticRectangularDomain(box.offsets, box.sizes);
+      if (!set.isExact())
+        return false;
+      value.residentDomain = ExactIndexSet(
+          std::move(*set.set), ExactIndexSetForm::BoxUnion, {std::move(box)});
+    }
+    for (AttentionScratchDescription &scratch : description.scratch) {
+      if (scratch.exactDomain.getForm() != ExactIndexSetForm::BoxUnion ||
+          scratch.exactDomain.getBoxes().size() != 1 ||
+          scratch.indexingMap.getNumResults() !=
+              scratch.exactDomain.getBoxes().front().sizes.size())
+        return false;
+      StaticRectangularIndexSet box = scratch.exactDomain.getBoxes().front();
+      for (auto [dimension, expression] :
+           llvm::enumerate(scratch.indexingMap.getResults())) {
+        auto iterator = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+        if (!iterator)
+          return false;
+        if (!llvm::is_contained(roles.keyValueReduction,
+                                iterator.getPosition()))
+          continue;
+        const int64_t exact = box.sizes[dimension];
+        box.sizes[dimension] =
+            std::min(maximumTile, std::max<int64_t>(1, exact / 2));
+      }
+      IndexSetResult set =
+          IndexRelation::staticRectangularDomain(box.offsets, box.sizes);
+      if (!set.isExact())
+        return false;
+      scratch.residentDomain = ExactIndexSet(
+          std::move(*set.set), ExactIndexSetForm::BoxUnion, {std::move(box)});
+    }
+    return true;
+  }
+
   mlir::DialectRegistry registry;
   std::unique_ptr<mlir::MLIRContext> context;
 };
 
 TEST_F(SelectedAttentionDecompositionTest,
-       PrepareRequiresExactFullProofActionCoverage) {
+       PrepareValidatesTheSelectedWorkDescriptionWithoutResourcePrediction) {
   auto module = parse(wafer::test::buildFlashAttentionPlanningFixture(
       /*queryExtent=*/1024, /*keyValueExtent=*/1024, /*withMask=*/false));
   ASSERT_TRUE(module);
@@ -161,18 +243,51 @@ TEST_F(SelectedAttentionDecompositionTest,
   auto inputs = buildInputs(*dag, &failureReason);
   ASSERT_TRUE(mlir::succeeded(inputs)) << failureReason;
   PreparedAttentionDecompositionOutcome prepared =
-      prepareSelectedAttentionDecomposition(inputs->attention, inputs->proof);
+      prepareSelectedAttentionDecomposition(inputs->attention);
   EXPECT_TRUE(std::holds_alternative<PreparedAttentionDecomposition>(prepared));
 
-  FullFeasibilityProof missing = inputs->proof;
-  ASSERT_FALSE(missing.dependencyKey.attentionActions.empty());
-  missing.dependencyKey.attentionActions.pop_back();
-  PreparedAttentionDecompositionOutcome rejected =
-      prepareSelectedAttentionDecomposition(inputs->attention, missing);
-  const auto *failure = std::get_if<BrokenPreparedAttention>(&rejected);
-  ASSERT_NE(failure, nullptr);
-  EXPECT_EQ(failure->reason,
-            BrokenPreparedAttentionReason::ActionCoverageMismatch);
+  CanonicalAttentionWorkCoordinate nonResident = inputs->attention;
+  ASSERT_FALSE(nonResident.roots.front().values.empty());
+  AttentionValueDescription &value = nonResident.roots.front().values.front();
+  ASSERT_EQ(value.exactDomain.getBoxes().size(), 1u);
+  StaticRectangularIndexSet outside = value.exactDomain.getBoxes().front();
+  ASSERT_FALSE(outside.offsets.empty());
+  outside.offsets.back() += outside.sizes.back();
+  IndexSetResult outsideSet =
+      IndexRelation::staticRectangularDomain(outside.offsets, outside.sizes);
+  ASSERT_TRUE(outsideSet.isExact());
+  value.residentDomain =
+      ExactIndexSet(std::move(*outsideSet.set), ExactIndexSetForm::BoxUnion,
+                    {std::move(outside)});
+  PreparedAttentionDecompositionOutcome invalidResident =
+      prepareSelectedAttentionDecomposition(nonResident);
+  const auto *invalid = std::get_if<BrokenPreparedAttention>(&invalidResident);
+  ASSERT_NE(invalid, nullptr);
+  EXPECT_EQ(invalid->reason,
+            BrokenPreparedAttentionReason::InvalidWorkDescription);
+
+  CanonicalAttentionWorkCoordinate nonResidentOperand = inputs->attention;
+  ASSERT_FALSE(nonResidentOperand.roots.front().operands.empty());
+  AttentionOperandDescription &operand =
+      nonResidentOperand.roots.front().operands.front();
+  ASSERT_EQ(operand.exactDomain.getBoxes().size(), 1u);
+  StaticRectangularIndexSet outsideOperand =
+      operand.exactDomain.getBoxes().front();
+  ASSERT_FALSE(outsideOperand.offsets.empty());
+  outsideOperand.offsets.back() += outsideOperand.sizes.back();
+  IndexSetResult outsideOperandSet = IndexRelation::staticRectangularDomain(
+      outsideOperand.offsets, outsideOperand.sizes);
+  ASSERT_TRUE(outsideOperandSet.isExact());
+  operand.residentDomain =
+      ExactIndexSet(std::move(*outsideOperandSet.set),
+                    ExactIndexSetForm::BoxUnion, {std::move(outsideOperand)});
+  PreparedAttentionDecompositionOutcome invalidOperandResident =
+      prepareSelectedAttentionDecomposition(nonResidentOperand);
+  const auto *invalidOperand =
+      std::get_if<BrokenPreparedAttention>(&invalidOperandResident);
+  ASSERT_NE(invalidOperand, nullptr);
+  EXPECT_EQ(invalidOperand->reason,
+            BrokenPreparedAttentionReason::InvalidWorkDescription);
 }
 
 TEST_F(SelectedAttentionDecompositionTest,
@@ -209,15 +324,29 @@ TEST_F(SelectedAttentionDecompositionTest,
               inputs->attention.roots.front().actions.size());
     EXPECT_EQ(materialized->values.size(),
               inputs->attention.roots.front().values.size());
-    for (const AttentionActionMaterialization &action : materialized->actions)
+    std::set<mlir::Operation *> actionStructuredOperations;
+    for (const AttentionActionMaterialization &action : materialized->actions) {
       EXPECT_FALSE(action.operations.empty());
+      for (mlir::Operation *operation : action.structuredOperations)
+        EXPECT_TRUE(actionStructuredOperations.insert(operation).second);
+    }
+    std::set<mlir::Operation *> scopeStructuredOperations;
+    for (const AttentionScopeOperationMaterialization &scope :
+         materialized->scopes)
+      for (mlir::Operation *operation : scope.operations)
+        EXPECT_TRUE(scopeStructuredOperations.insert(operation).second);
+    EXPECT_EQ(actionStructuredOperations, scopeStructuredOperations);
     for (const AttentionValueMaterialization &value : materialized->values) {
-      auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.value.getType());
-      ASSERT_TRUE(type);
-      if (value.id.kind == AttentionValueKind::ScoreBlock)
-        EXPECT_LT(type.getNumElements(), static_cast<int64_t>(2) *
-                                             testCase.queryExtent *
-                                             testCase.keyValueExtent);
+      ASSERT_FALSE(value.occurrences.empty());
+      for (mlir::Value occurrence : value.occurrences) {
+        auto type =
+            mlir::dyn_cast<mlir::RankedTensorType>(occurrence.getType());
+        ASSERT_TRUE(type);
+        if (value.id.kind == AttentionValueKind::ScoreBlock)
+          EXPECT_LT(type.getNumElements(), static_cast<int64_t>(2) *
+                                               testCase.queryExtent *
+                                               testCase.keyValueExtent);
+      }
     }
     EXPECT_EQ(print(module->getOperation()), before);
   }
@@ -265,6 +394,104 @@ TEST_F(SelectedAttentionDecompositionTest,
 }
 
 TEST_F(SelectedAttentionDecompositionTest,
+       TemporalK2BlocksCarryOnlineStateAcrossAlignedAndRaggedFAFD) {
+  struct Case {
+    bool decoding;
+    int64_t queryExtent;
+    int64_t keyValueExtent;
+  };
+  for (const Case testCase : {Case{false, 1024, 1024}, Case{false, 1025, 1031},
+                              Case{true, 1024, 1024}, Case{true, 1025, 1031}}) {
+    SCOPED_TRACE(testCase.decoding);
+    SCOPED_TRACE(testCase.keyValueExtent);
+    auto module = parse(
+        testCase.decoding ? wafer::test::buildFlashDecodingPlanningFixture(
+                                testCase.queryExtent, testCase.keyValueExtent)
+                          : wafer::test::buildFlashAttentionPlanningFixture(
+                                testCase.queryExtent, testCase.keyValueExtent,
+                                /*withMask=*/testCase.keyValueExtent == 1031));
+    ASSERT_TRUE(module);
+    std::string failureReason;
+    auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);
+    ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+    auto inputs = buildInputs(*dag, &failureReason);
+    ASSERT_TRUE(mlir::succeeded(inputs)) << failureReason;
+    ASSERT_EQ(inputs->attention.roots.size(), 1u);
+    auto sourceAttention = attention(*module);
+    auto roles = sourceAttention.getIterationRoles();
+    ASSERT_TRUE(mlir::succeeded(roles));
+    AttentionWorkDescription description = inputs->attention.roots.front();
+    ASSERT_TRUE(setKeyValueResidentTiles(description, *roles,
+                                         /*maximumTile=*/512));
+
+    mlir::OwningOpRef<mlir::ModuleOp> selected = module->clone();
+    mlir::IRRewriter rewriter(context.get());
+    auto materialized = emitSelectedAttentionDecomposition(
+        rewriter, attention(*selected), description, &failureReason);
+    ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*selected)));
+    EXPECT_EQ(count<wafer::LinalgExtAttentionOp>(*selected), 0u);
+    unsigned stateUpdates = 0;
+    for (const AttentionActionMaterialization &action : materialized->actions)
+      if (action.id.kind == AttentionActionKind::StateUpdate) {
+        ++stateUpdates;
+        EXPECT_GT(action.operations.size(), 3u);
+      }
+    EXPECT_GT(stateUpdates, 0u);
+
+    unsigned scoreValueIds = 0;
+    size_t expectedCompletionCount = 0;
+    for (const AttentionValueMaterialization &materializedValue :
+         materialized->values) {
+      if (materializedValue.id.kind != AttentionValueKind::ScoreBlock)
+        continue;
+      ++scoreValueIds;
+      auto expected = llvm::find_if(
+          description.values, [&](const AttentionValueDescription &value) {
+            return value.id == materializedValue.id;
+          });
+      ASSERT_NE(expected, description.values.end());
+      ASSERT_EQ(expected->exactDomain.getBoxes().size(), 1u);
+      ASSERT_EQ(expected->residentDomain.getBoxes().size(), 1u);
+      const auto &exact = expected->exactDomain.getBoxes().front();
+      const auto &resident = expected->residentDomain.getBoxes().front();
+      ASSERT_EQ(exact.sizes.size(), expected->indexingMap.getNumResults());
+      ASSERT_EQ(resident.sizes.size(), expected->indexingMap.getNumResults());
+      unsigned keyValueDimension = std::numeric_limits<unsigned>::max();
+      for (auto [dimension, expression] :
+           llvm::enumerate(expected->indexingMap.getResults())) {
+        auto iterator = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+        ASSERT_TRUE(iterator);
+        if (llvm::is_contained(roles->keyValueReduction,
+                               iterator.getPosition()))
+          keyValueDimension = dimension;
+      }
+      ASSERT_NE(keyValueDimension, std::numeric_limits<unsigned>::max());
+      const int64_t exactExtent = exact.sizes[keyValueDimension];
+      const int64_t residentExtent = resident.sizes[keyValueDimension];
+      ASSERT_LT(residentExtent, exactExtent);
+      const size_t expectedBlocks =
+          (exactExtent + residentExtent - 1) / residentExtent;
+      expectedCompletionCount += expectedBlocks;
+      EXPECT_EQ(materializedValue.occurrences.size(), expectedBlocks);
+      for (mlir::Value occurrence : materializedValue.occurrences) {
+        auto type =
+            mlir::dyn_cast<mlir::RankedTensorType>(occurrence.getType());
+        ASSERT_TRUE(type);
+        EXPECT_LE(type.getDimSize(keyValueDimension), residentExtent);
+        EXPECT_LT(type.getNumElements(),
+                  std::accumulate(exact.sizes.begin(), exact.sizes.end(),
+                                  int64_t{1}, std::multiplies<int64_t>()));
+      }
+    }
+    EXPECT_GT(scoreValueIds, 0u);
+    EXPECT_EQ(materialized->scratch.size(), description.scratch.size());
+    EXPECT_EQ(count<wafer::TensorCompletionOp>(*selected),
+              expectedCompletionCount);
+  }
+}
+
+TEST_F(SelectedAttentionDecompositionTest,
        MultiKeyValueAxesEmitCartesianScoreBlocks) {
   auto module = parse(wafer::test::buildMultiK2FlashDecodingPlanningFixture());
   ASSERT_TRUE(module);
@@ -285,12 +512,119 @@ TEST_F(SelectedAttentionDecompositionTest,
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*selected)));
   unsigned rankFourScores = 0;
   for (const AttentionValueMaterialization &value : materialized->values) {
-    auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.value.getType());
-    ASSERT_TRUE(type);
+    ASSERT_FALSE(value.occurrences.empty());
     rankFourScores +=
-        value.id.kind == AttentionValueKind::ScoreBlock && type.getRank() == 4;
+        value.id.kind == AttentionValueKind::ScoreBlock &&
+        llvm::any_of(value.occurrences, [](mlir::Value occurrence) {
+          auto type =
+              mlir::dyn_cast<mlir::RankedTensorType>(occurrence.getType());
+          return type && type.getRank() == 4;
+        });
   }
   EXPECT_EQ(rankFourScores, 16u);
+}
+
+TEST_F(SelectedAttentionDecompositionTest,
+       MultiKeyValueAxesCarryStateThroughCartesianTailBlocks) {
+  auto module = parse(wafer::test::buildMultiK2FlashDecodingPlanningFixture());
+  ASSERT_TRUE(module);
+  std::string failureReason;
+  auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+  auto inputs = buildInputs(*dag, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(inputs)) << failureReason;
+  ASSERT_EQ(inputs->attention.roots.size(), 1u);
+  auto roles = attention(*module).getIterationRoles();
+  ASSERT_TRUE(mlir::succeeded(roles));
+  ASSERT_EQ(roles->keyValueReduction.size(), 2u);
+  AttentionWorkDescription description = inputs->attention.roots.front();
+  ASSERT_TRUE(
+      setKeyValueResidentTiles(description, *roles, /*maximumTile=*/16));
+
+  mlir::OwningOpRef<mlir::ModuleOp> selected = module->clone();
+  mlir::IRRewriter rewriter(context.get());
+  auto materialized = emitSelectedAttentionDecomposition(
+      rewriter, attention(*selected), description, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*selected)));
+  unsigned multiAxisScores = 0;
+  for (const AttentionValueMaterialization &materializedValue :
+       materialized->values) {
+    if (materializedValue.id.kind != AttentionValueKind::ScoreBlock)
+      continue;
+    auto expected = llvm::find_if(description.values,
+                                  [&](const AttentionValueDescription &value) {
+                                    return value.id == materializedValue.id;
+                                  });
+    ASSERT_NE(expected, description.values.end());
+    const auto &resident = expected->residentDomain.getBoxes().front();
+    for (mlir::Value occurrence : materializedValue.occurrences) {
+      auto type = mlir::dyn_cast<mlir::RankedTensorType>(occurrence.getType());
+      ASSERT_TRUE(type);
+      for (auto [dimension, expression] :
+           llvm::enumerate(expected->indexingMap.getResults())) {
+        auto iterator = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+        ASSERT_TRUE(iterator);
+        if (!llvm::is_contained(roles->keyValueReduction,
+                                iterator.getPosition()))
+          continue;
+        EXPECT_LE(type.getDimSize(dimension), resident.sizes[dimension]);
+        ++multiAxisScores;
+      }
+    }
+  }
+  EXPECT_GT(multiAxisScores, 0u);
+}
+
+TEST_F(SelectedAttentionDecompositionTest,
+       AdjacentOperandPiecesAssembleOneDenseSelectedOperand) {
+  auto module = parse(wafer::test::buildFlashDecodingPlanningFixture(
+      /*queryExtent=*/1025, /*keyValueExtent=*/1031));
+  ASSERT_TRUE(module);
+  std::string failureReason;
+  auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+  auto inputs = buildInputs(*dag, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(inputs)) << failureReason;
+  AttentionWorkDescription &description = inputs->attention.roots.front();
+  auto operand = llvm::find_if(
+      description.operands, [](const AttentionOperandDescription &candidate) {
+        return candidate.role == AttentionOperandRole::Key &&
+               candidate.exactDomain.getForm() == ExactIndexSetForm::BoxUnion &&
+               candidate.exactDomain.getBoxes().size() == 1;
+      });
+  ASSERT_NE(operand, description.operands.end());
+  StaticRectangularIndexSet original = operand->exactDomain.getBoxes().front();
+  auto splitDimension =
+      llvm::find_if(original.sizes, [](int64_t extent) { return extent > 1; });
+  ASSERT_NE(splitDimension, original.sizes.end());
+  unsigned dimension = splitDimension - original.sizes.begin();
+  int64_t firstExtent = original.sizes[dimension] / 2;
+  llvm::SmallVector<int64_t, 4> firstSizes(original.sizes);
+  llvm::SmallVector<int64_t, 4> secondOffsets(original.offsets);
+  llvm::SmallVector<int64_t, 4> secondSizes(original.sizes);
+  firstSizes[dimension] = firstExtent;
+  secondOffsets[dimension] += firstExtent;
+  secondSizes[dimension] -= firstExtent;
+  IndexSetResult first =
+      IndexRelation::staticRectangularDomain(original.offsets, firstSizes);
+  IndexSetResult second =
+      IndexRelation::staticRectangularDomain(secondOffsets, secondSizes);
+  ASSERT_TRUE(first.isExact() && second.isExact());
+  mlir::presburger::PresburgerSet combined = std::move(*first.set);
+  combined.unionInPlace(*second.set);
+  operand->exactDomain =
+      ExactIndexSet(std::move(combined), ExactIndexSetForm::BoxUnion,
+                    {StaticRectangularIndexSet{original.offsets, firstSizes},
+                     StaticRectangularIndexSet{secondOffsets, secondSizes}});
+
+  mlir::OwningOpRef<mlir::ModuleOp> selected = module->clone();
+  mlir::IRRewriter rewriter(context.get());
+  auto materialized = emitSelectedAttentionDecomposition(
+      rewriter, attention(*selected), description, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*selected)));
+  EXPECT_GT(count<mlir::tensor::InsertSliceOp>(*selected), 0u);
 }
 
 TEST_F(SelectedAttentionDecompositionTest,
@@ -304,7 +638,7 @@ TEST_F(SelectedAttentionDecompositionTest,
   auto inputs = buildInputs(*dag, &failureReason);
   ASSERT_TRUE(mlir::succeeded(inputs)) << failureReason;
   PreparedAttentionDecompositionOutcome preparedOutcome =
-      prepareSelectedAttentionDecomposition(inputs->attention, inputs->proof);
+      prepareSelectedAttentionDecomposition(inputs->attention);
   const auto *prepared =
       std::get_if<PreparedAttentionDecomposition>(&preparedOutcome);
   ASSERT_NE(prepared, nullptr);
@@ -364,7 +698,7 @@ TEST_F(SelectedAttentionDecompositionTest,
   ASSERT_TRUE(mlir::succeeded(inputs)) << failureReason;
   AttentionWorkDescription malformed = inputs->attention.roots.front();
   ASSERT_FALSE(malformed.operands.empty());
-  AttentionOperandProjection &last = malformed.operands.back();
+  AttentionOperandDescription &last = malformed.operands.back();
   last.exactDomain = ExactIndexSet(last.exactDomain.getPresburgerSet(),
                                    ExactIndexSetForm::GeneralPresburger);
 

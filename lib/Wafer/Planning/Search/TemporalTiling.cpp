@@ -2,13 +2,9 @@
 
 #include "Wafer/Planning/Search/TemporalTiling.h"
 
-#include "Wafer/Analysis/Structured/StructuredOperationTileFootprint.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalTileShape.h"
 
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/Twine.h"
-#include "llvm/Support/raw_ostream.h"
-
 #include <algorithm>
 
 namespace wafer::compiler::detail {
@@ -36,43 +32,11 @@ TemporalNodeDomain::create(const StructuredDAGNode &node,
       node.operation, placement.iteratorPartitionFactors, failureReason);
   if (mlir::failed(extents))
     return mlir::failure();
-  return TemporalNodeDomain(node.id, node.operation, std::move(*extents));
+  return TemporalNodeDomain(node.id, std::move(*extents));
 }
 
 TemporalNodeAssignment TemporalNodeDomain::getFirstAssignment() const {
   return TemporalNodeAssignment{node, localExtents, {}};
-}
-
-mlir::FailureOr<TemporalNodeAssignment>
-TemporalNodeDomain::getCapacityGuidedAssignment(
-    const TargetMemoryPolicy &memory, std::string *failureReason) const {
-  auto sizes = deriveStructuredOperationTemporalTileShape(operation,
-                                                          localExtents, memory);
-  if (mlir::failed(sizes)) {
-    if (failureReason)
-      *failureReason = (llvm::Twine("node ") + llvm::Twine(node) +
-                        " has no capacity-guided temporal shape")
-                           .str();
-    return mlir::failure();
-  }
-  TemporalNodeAssignment result{node, *sizes,
-                                getActiveIterators(localExtents, *sizes)};
-  if (!contains(result)) {
-    if (failureReason) {
-      llvm::raw_string_ostream stream(*failureReason);
-      stream << "node " << node
-             << " produced an out-of-domain capacity-guided temporal shape; "
-                "local_extents=[";
-      llvm::interleaveComma(localExtents, stream);
-      stream << "], tile_sizes=[";
-      llvm::interleaveComma(*sizes, stream);
-      stream << "], wave_order=[";
-      llvm::interleaveComma(result.waveLoopOrder, stream);
-      stream << ']';
-    }
-    return mlir::failure();
-  }
-  return result;
 }
 
 bool TemporalNodeDomain::contains(
@@ -139,19 +103,6 @@ CardTemporalAssignment CardTemporalDomain::getFirstAssignment() const {
   CardTemporalAssignment result;
   for (const TemporalNodeDomain &domain : domains)
     result.nodes.push_back(domain.getFirstAssignment());
-  return result;
-}
-
-mlir::FailureOr<CardTemporalAssignment>
-CardTemporalDomain::getCapacityGuidedAssignment(
-    const TargetMemoryPolicy &memory, std::string *failureReason) const {
-  CardTemporalAssignment result;
-  for (const TemporalNodeDomain &domain : domains) {
-    auto node = domain.getCapacityGuidedAssignment(memory, failureReason);
-    if (mlir::failed(node))
-      return mlir::failure();
-    result.nodes.push_back(std::move(*node));
-  }
   return result;
 }
 

@@ -19,6 +19,8 @@
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Verifier.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 
 namespace wafer::compiler::detail {
 namespace {
@@ -68,11 +70,39 @@ TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
   failure.spmLargestDemandType = spmFailure.largestDemandType;
   failure.spmLargestDemandBytes = spmFailure.largestDemandBytes;
   failure.spmDemandCount = spmFailure.demandCount;
+  StorageRootMemo storageRoots;
+  struct OwnersByStorageRoot {
+    llvm::DenseMap<mlir::Value, llvm::SmallVector<uint32_t, 2>> resultNodes;
+    llvm::DenseMap<mlir::Value, llvm::SmallVector<uint32_t, 2>> operandNodes;
+    llvm::DenseMap<mlir::Value, llvm::SmallVector<uint32_t, 2>> scratchNodes;
+    llvm::DenseMap<mlir::Value, llvm::SmallVector<unsigned, 2>> outputs;
+  } owners;
+  auto appendUnique = [](auto &values, auto value) {
+    if (!llvm::is_contained(values, value))
+      values.push_back(value);
+  };
+  auto indexNodeRelation = [&](const StructuredOperationBufferRelation &entry,
+                               auto &index) {
+    for (mlir::Value root : storageRoots.getStorageRoots(entry.buffer))
+      appendUnique(index[root], entry.structuredNodeId);
+  };
+  for (const auto &relation : relations.operationResultBuffers)
+    indexNodeRelation(relation, owners.resultNodes);
+  for (const auto &relation : relations.operandBuffers)
+    indexNodeRelation(relation, owners.operandNodes);
+  for (const auto &relation : relations.scratchBuffers)
+    indexNodeRelation(relation, owners.scratchNodes);
+  for (const SpatialOutputBufferRelation &relation : relations.outputBuffers)
+    for (mlir::Value root : storageRoots.getStorageRoots(relation.buffer))
+      appendUnique(owners.outputs[root], relation.outputIndex);
+
   auto convertEvidence = [&](const auto &demand) {
     TileMemoryPlanningFailure::SPMDemandEvidence evidence{
         demand.location, demand.type, demand.bytes, {}};
     evidence.userLocations.append(demand.userLocations.begin(),
                                   demand.userLocations.end());
+    evidence.userOperationNames.append(demand.userOperationNames.begin(),
+                                       demand.userOperationNames.end());
     // A staged DDR wave is written by the producer's seal store and read by
     // the consumer's reload; neither endpoint aliases the wave buffer
     // through SSA views, so a direct storage-root match misses both. The
@@ -115,28 +145,42 @@ TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
         } else if (auto dataMove = mlir::dyn_cast<InstrTDMADataMoveOp>(user)) {
           witnesses.push_back(dataMove.getSource());
           witnesses.push_back(dataMove.getDest());
+        } else if (mlir::isa<WaferInstructionOpInterface>(user)) {
+          // Lowering-created compute temporaries may be connected to their
+          // structured owner only through the actual instruction dataflow:
+          // movement fills an input, then GEMM/reduce/elementwise consumes it
+          // and writes a result buffer that already has a typed relation.
+          // Follow only explicit memref SSA operands/results. Operation names,
+          // locations and shapes remain diagnostic facts and never select an
+          // owner.
+          for (mlir::Value operand : user->getOperands())
+            if (mlir::isa<mlir::BaseMemRefType>(operand.getType()))
+              witnesses.push_back(operand);
+          for (mlir::Value result : user->getResults())
+            if (mlir::isa<mlir::BaseMemRefType>(result.getType()))
+              witnesses.push_back(result);
         }
       }
     }
-    auto sharesStorageWithWitness = [&](mlir::Value buffer) {
-      return llvm::any_of(witnesses, [&](mlir::Value witness) {
-        return shareStructuredBufferStorage(witness, buffer);
-      });
+    auto appendIndexed = [&](auto &destination, const auto &index,
+                             mlir::Value root) {
+      auto found = index.find(root);
+      if (found == index.end())
+        return;
+      for (auto value : found->second)
+        appendUnique(destination, value);
     };
-    auto appendNode = [&](auto &nodes, uint32_t node) {
-      if (!llvm::is_contained(nodes, node))
-        nodes.push_back(node);
-    };
-    for (const auto &relation : relations.operationResultBuffers)
-      if (sharesStorageWithWitness(relation.buffer))
-        appendNode(evidence.operationResultNodes, relation.structuredNodeId);
-    for (const auto &relation : relations.operandBuffers)
-      if (sharesStorageWithWitness(relation.buffer))
-        appendNode(evidence.operandDemandNodes, relation.structuredNodeId);
-    for (const auto &relation : relations.outputBuffers)
-      if (sharesStorageWithWitness(relation.buffer) &&
-          !llvm::is_contained(evidence.outputIndices, relation.outputIndex))
-        evidence.outputIndices.push_back(relation.outputIndex);
+    for (mlir::Value witness : witnesses)
+      for (mlir::Value root : storageRoots.getStorageRoots(witness)) {
+        appendIndexed(evidence.operationResultNodes, owners.resultNodes, root);
+        appendIndexed(evidence.operandDemandNodes, owners.operandNodes, root);
+        appendIndexed(evidence.scratchNodes, owners.scratchNodes, root);
+        appendIndexed(evidence.outputIndices, owners.outputs, root);
+      }
+    llvm::sort(evidence.operationResultNodes);
+    llvm::sort(evidence.operandDemandNodes);
+    llvm::sort(evidence.scratchNodes);
+    llvm::sort(evidence.outputIndices);
     return evidence;
   };
   failure.spmLargestDemands.reserve(spmFailure.largestDemands.size());
@@ -160,7 +204,8 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
                StructuredMaterializationRelations *materializationRelations,
                unsigned *materializedSlotAllocationCount,
                SelectedBufferMaterializationFailure *selectedBufferFailure,
-               bool applySelectedInstructionSchedule) {
+               bool applySelectedInstructionSchedule,
+               bool emitSPMCapacityDiagnostics) {
   if (failure)
     *failure = {};
   if (materializedSlotAllocationCount)
@@ -213,6 +258,14 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
   }
   if (mlir::failed(requireCurrentBufferRelations("memory-planning input"))) {
     recordFailure(TileMemoryPlanningFailureKind::Contract);
+    return mlir::failure();
+  }
+  if (materializationRelations &&
+      mlir::failed(rebaseStructuredBufferRelationsToStorageRoots(
+          *materializationRelations))) {
+    recordFailure(TileMemoryPlanningFailureKind::Contract);
+    module->emitError(
+        "structured buffer relation has no unique current storage root");
     return mlir::failure();
   }
 
@@ -314,6 +367,7 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
   spmOptions.spmBase = memory.spmBase;
   spmOptions.spmLimit = memory.spmLimit;
   spmOptions.spmAlignment = memory.spmAlignment;
+  spmOptions.emitCapacityDiagnostics = emitSPMCapacityDiagnostics;
   mlir::LogicalResult spmResult = runPassPipeline(
       *module, "tile-spm-planning", [&](mlir::OpPassManager &manager) {
         manager.addPass(

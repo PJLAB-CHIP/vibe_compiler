@@ -1209,17 +1209,43 @@
 
 ## 大shape会暴露construction proof丢失和ordered lowering的IR规模问题
 
-- 现象：rank-3 `2x1024x128` scalar reduction在host unit中持续100秒以上；个位数/32x32 case一直把它掩盖成普通慢测试。
-- 根因：ordered reduction为每个source tuple建立constant affine map，`PhysicalAccessRelation`没有识别非零in-bounds constant map的
-  total/bounded construction fact，因而每个tuple都调用Presburger `isEqual -> subtract -> simplex`；消除该重复证明后，rank-zero
-  result仍会按tuple生成实际gather/elementwise指令，而current native reduce verifier要求rank>2 source和destination均为NCx，不能合法
-  接受scalar destination。
-- 修复模式：`IndexRelation::fromAffineMap`对all-constant且逐维in-bounds的map记录total-bounded construction proof，越界常量仍走
-  fail-closed验证；scalar ordered route在4096 tuples前设置compiler work limit，超过时在创建IR前失败。代表性positive使用rank-3、
-  主维1024且2048 tuples的case；其它ragged vertical继续使用`2x1025x8192`，不通过缩小全部workload规避问题。
-- 防复发：IR/analysis/lowering正例必须含1024级整除/非整除shape，并记录wall/work；构造时已知的domain/coverage不得再交给generic
-  Presburger equality。未来支持更大scalar reduction必须新增compact loop或typed target route并直接测试，不得解除work limit后恢复
-  逐元素IR，也不得把该限制扩写成numeric policy或reassociation合同。
+- 现象：rank-3/4的1024/1025/1031 attention或ordered reduction在host端生成成千上万份constant affine map、movement descriptor和
+  gather/elementwise op；个位数case一直把它掩盖成普通慢测试。无界缓存会进一步钉住只出现一次的insert-slice plan，使RSS提前上涨。
+- 根因：ordered reduction先逐tuple建立`IndexRelation`再压缩输出IR；`PhysicalAccessRelation`又在只需要point/span query时提前组合
+  Presburger物理关系。其它repeated layout/elementwise query没有request-local semantic cache，或把所有unique key都长期保留。
+- 修复模式：非零in-bounds projected constant map记录total/bounded construction proof；physical bit/ordinal relation只在真正做等价查询时
+  lazy组合。有序reduction直接消费encoding提供的exact physical piece bounds和tile period，每个run只规划首点、相邻点和末点，使用
+  常量有界`scf.for`、loop-carried accumulator及`wafer.instr.gather_scatter` SSA byte offset表达原tuple顺序。target stage用ValueBounds
+  证明dynamic offset全域在actual buffer内。request-local cache以完整type/map/engine key校验，并只在第三次观察到相同hash后保留成功
+  plan；失败和低复用plan不缓存。rank-zero超大ordered route仍保留4096-tuple compiler work limit，不能伪装成workload legality。
+- 防复发：1024 aligned与1025/1031 ragged正例检查physical block/tail run数、loop-carried state、dynamic offset target lowering和actual
+  MiniMalloc；negative覆盖无界/越界offset和静态/SSA双表示。显式work-count证明四次相同exact query只实际规划三次。不得恢复逐tuple
+  affine-map枚举、eager physical composition、全收缓存，也不得把该编译表示问题扩写成numeric policy或reassociation合同。
+
+## Sequential loop backedge不能复用alternative-branch merge
+
+- 现象：一个常量多trip `scf.for`内只有worker0的无条件fill/elementwise序列，completion却在每次迭代尾插入join；函数return前反而没有
+  独立join。conditional issue case看似正常，导致同一算法在unconditional stream上静默串行化。
+- 根因：fixed-point把loop entry state与第一轮body state送进用于`scf.if`的alternative merge。该helper看到entry尚无worker、body已有
+  worker，便把issue标成path-optional；但guaranteed loop backedge是顺序组合，不是二选一控制流。
+- 修复模式：第一轮`bodyState`已经等于entry后执行一次body；下一轮直接以该state重新处理body直到固定点。只有body内部真实branch merge
+  产生path ambiguity，才在backedge完成对应worker。unconditional same-worker stream保持busytable顺序，并在loop外observable return处join。
+- 防复发：分别覆盖cross-worker backedge、unconditional same-worker、conditional same-worker和dynamic potentially-empty loop；检查join
+  的participant与内外位置，不只检查“存在某个join”。
+
+## Current buffer relation引用不能指向可扩容容器元素
+
+- 现象：TileRegion emission记录result/operand/output/scratch relation后继续追加同类relation，早先保存的vector元素指针失效；后续
+  Tile-to-Instr replacement listener随机把allocation归到错误owner，或者把actual SPM demand报告成无owner。
+- 根因：把`SmallVector`/`std::vector`元素地址当作跨rewrite回调的稳定identity；容器扩容、erase和conversion replacement都会使该地址
+  失效。operation/value地址只能在当前IR epoch做局部lookup，也不能替代relation identity。
+- 修复模式：listener只保存`{relation kind, index, result number}`等typed reference，每次访问由caller-owned
+  `StructuredMaterializationRelations`解析current元素。Tile emission、selected DDR stage、output insert和Tile-to-Instr scratch都由父
+  transaction追加relation；BodyEmitter/lowering只报告实际buffer事实，不拥有全局关系表。full conversion后清除已经失效的source
+  operation emission，保留已重接到current storage roots的relation。
+- 防复发：测试在多次append和多跳replacement后核对每个relation仍指向current IR；support copy→typed store、output source、scratch及
+  missing/duplicate/unknown semantic root group分别有正负例。每个actual SPM allocation没有typed owner时必须compiler-contract failure，
+  不能按shape、唯一root、Location或buffer名补猜。
 
 ## Exact set的normal form不能代替物理可表示性证明
 

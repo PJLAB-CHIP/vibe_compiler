@@ -43,6 +43,8 @@ StructuredNodeUseIndex::StructuredNodeUseIndex(
     index(relation);
   for (const auto &relation : relations.operandBuffers)
     index(relation);
+  for (const auto &relation : relations.scratchBuffers)
+    index(relation);
   for (auto &entry : nodesByRoot) {
     llvm::sort(entry.second);
     entry.second.erase(std::unique(entry.second.begin(), entry.second.end()),

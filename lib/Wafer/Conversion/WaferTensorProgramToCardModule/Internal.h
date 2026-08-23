@@ -46,6 +46,7 @@ struct TileMaterializationSourcePreparation {
   llvm::SmallVector<TileId, 16> availableTiles;
   llvm::SmallVector<llvm::SmallVector<int64_t, 4>, 4> outputDomains;
   llvm::SmallVector<StructuredOperationNodeMapping, 16> operationNodes;
+  llvm::SmallVector<StructuredNodeRootGroup, 16> operationRootGroups;
 };
 
 /// Mapping-local input consumed by final CardModule construction.
@@ -58,6 +59,7 @@ struct TileMaterializationPreparation {
   llvm::SmallVector<const OutputTileMapping *, 4> outputMappings;
   llvm::SmallVector<StructuredOpTemporalTile, 16> operationTemporalTiles;
   llvm::SmallVector<StructuredOperationNodeMapping, 16> operationNodes;
+  llvm::SmallVector<StructuredNodeRootGroup, 16> operationRootGroups;
   llvm::SmallVector<SpatialEdgeStrategy, 16> edgeStrategies;
   llvm::SmallVector<SpatialEdgeMaterializationFacts, 16> edgeFacts;
   std::vector<analysis::DependencyDemand> consumerInputDemands;
@@ -91,6 +93,7 @@ mlir::FailureOr<TileMaterializationSourcePreparation>
 prepareTileMaterializationSource(
     mlir::ModuleOp sourceModule, CardId cardId,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
+    llvm::ArrayRef<StructuredNodeRootGroup> operationRootGroups,
     std::string *failureReason);
 mlir::FailureOr<TileMaterializationPreparation>
 prepareTileMaterialization(const TileMaterializationSourcePreparation &source,

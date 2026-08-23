@@ -31,8 +31,8 @@ bool isOneFullTemporalWaveForResultDemand(
     llvm::ArrayRef<int64_t> resultSizes,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles);
 
-mlir::LogicalResult splitIndependentPeerFragmentsAtTemporalWaves(
-    llvm::MutableArrayRef<SpatialEdgeStrategy> edgeStrategies,
+mlir::FailureOr<llvm::SmallVector<int64_t, 4>> getResultTemporalTileSizes(
+    mlir::Operation *operation, unsigned resultNumber,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
     std::string *failureReason);
 

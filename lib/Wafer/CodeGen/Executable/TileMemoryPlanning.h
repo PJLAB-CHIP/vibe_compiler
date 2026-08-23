@@ -44,8 +44,11 @@ struct TileMemoryPlanningFailure {
     mlir::Type type;
     uint64_t bytes = 0;
     llvm::SmallVector<mlir::LocationAttr, 4> userLocations;
+    /// Diagnostic-only; semantic attribution uses the typed relations below.
+    llvm::SmallVector<mlir::OperationName, 4> userOperationNames;
     llvm::SmallVector<uint32_t, 2> operationResultNodes;
     llvm::SmallVector<uint32_t, 2> operandDemandNodes;
+    llvm::SmallVector<uint32_t, 2> scratchNodes;
     llvm::SmallVector<unsigned, 2> outputIndices;
   };
   llvm::SmallVector<SPMDemandEvidence, 4> spmLargestDemands;
@@ -72,6 +75,9 @@ TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
 /// materialize requested rotating buffers, assign SPM offsets and verify the
 /// resulting Tile module.
 /// Tile-to-Instr conversion belongs to the caller and must already be complete.
+/// Whole-Card candidate evaluation may suppress only the redundant per-Tile
+/// diagnostic for a typed capacity rejection; all other failures still emit
+/// their ordinary diagnostics and remain typed failures.
 /// Performance-cost availability is not a memory-planning requirement.
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> planTileMemory(
     mlir::OwningOpRef<mlir::ModuleOp> module,
@@ -80,7 +86,8 @@ mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> planTileMemory(
     StructuredMaterializationRelations *materializationRelations = nullptr,
     unsigned *materializedSlotAllocationCount = nullptr,
     SelectedBufferMaterializationFailure *selectedBufferFailure = nullptr,
-    bool applySelectedInstructionSchedule = false);
+    bool applySelectedInstructionSchedule = false,
+    bool emitSPMCapacityDiagnostics = true);
 
 } // namespace wafer::compiler::detail
 

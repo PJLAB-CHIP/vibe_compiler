@@ -463,6 +463,33 @@ IndexRelationResult IndexRelation::fromAffineMap(
       result.relation->totalBoundedAffineMapByConstruction = totalAndBounded;
     }
   }
+  // A projected slice may pin one or more source dimensions to non-zero
+  // constants. MLIR's projected-permutation predicate intentionally accepts
+  // only constant zero, but arbitrary in-bounds constants have the same
+  // closed-form totality proof. Record only total-and-bounded here: the
+  // rectangle image helpers encode constant-zero offsets and must not receive
+  // a stronger pattern for a non-zero slice.
+  if (!result.relation->totalBoundedAffineMapByConstruction) {
+    bool totalAndBounded = true;
+    for (auto [expression, sourceExtent] :
+         llvm::zip_equal(map.getResults(), sourceShape)) {
+      if (auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression)) {
+        if (dimension.getPosition() >= destinationShape.size() ||
+            destinationShape[dimension.getPosition()] > sourceExtent) {
+          totalAndBounded = false;
+          break;
+        }
+        continue;
+      }
+      auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
+      if (!constant || constant.getValue() < 0 ||
+          constant.getValue() >= sourceExtent) {
+        totalAndBounded = false;
+        break;
+      }
+    }
+    result.relation->totalBoundedAffineMapByConstruction = totalAndBounded;
+  }
   return result;
 }
 

@@ -178,44 +178,27 @@ permuteProblem(const StaticPackingProblem &problem,
   return permuted;
 }
 
-TEST(MiniMallocPackingTest, DefaultPolicySolvesFirstFitCounterexampleFirst) {
+TEST(MiniMallocPackingTest, MiniMallocSolvesTheFourDemandCounterexample) {
   StaticPackingProblem problem = makeFourDemandFirstFitCounterexample();
-  ASSERT_EQ(packFirstFit(problem).status, PackingStatus::HeuristicNoFit);
 
   PackingResult result = packStaticMemory(problem);
   ASSERT_EQ(result.status, PackingStatus::Feasible);
-  EXPECT_EQ(result.backend, PackingBackend::MiniMalloc);
-  EXPECT_FALSE(result.fallbackAttempted);
   EXPECT_GT(result.searchNodes, 0u);
   EXPECT_FALSE(validatePlacements(problem, result.placements));
 }
 
-TEST(MiniMallocPackingTest, ExhaustionFallsBackWhenFirstFitSucceeds) {
+TEST(MiniMallocPackingTest, ZeroBudgetReturnsResourceExhausted) {
   StaticPackingProblem problem;
   problem.arena = ArenaRange{0, 8};
   problem.demands = {makeDemand(4, 4, 0), makeDemand(4, 4, 1)};
 
   PackingResult result = packStaticMemory(problem, /*searchNodeBudget=*/0);
-  ASSERT_EQ(result.status, PackingStatus::Feasible);
-  EXPECT_EQ(result.backend, PackingBackend::FirstFitFallback);
-  EXPECT_TRUE(result.fallbackAttempted);
-  EXPECT_EQ(result.searchNodes, 0u);
-  EXPECT_FALSE(validatePlacements(problem, result.placements));
-}
-
-TEST(MiniMallocPackingTest,
-     ExhaustionRemainsExhaustionWhenFirstFitAlsoHasNoFit) {
-  StaticPackingProblem problem = makeFourDemandFirstFitCounterexample();
-  PackingResult result = packStaticMemory(problem, /*searchNodeBudget=*/0);
-
-  EXPECT_EQ(result.status, PackingStatus::ResourceExhausted);
-  EXPECT_EQ(result.backend, PackingBackend::MiniMalloc);
-  EXPECT_TRUE(result.fallbackAttempted);
+  ASSERT_EQ(result.status, PackingStatus::ResourceExhausted);
   EXPECT_EQ(result.searchNodes, 0u);
   EXPECT_TRUE(result.placements.empty());
 }
 
-TEST(MiniMallocPackingTest, ProvenInfeasibleDoesNotInvokeFallback) {
+TEST(MiniMallocPackingTest, ProvenInfeasibleCarriesExactCliqueEvidence) {
   StaticPackingProblem problem;
   problem.arena = ArenaRange{0, 5};
   problem.demands = {makeDemand(3, 1, 0), makeDemand(3, 1, 1)};
@@ -223,8 +206,6 @@ TEST(MiniMallocPackingTest, ProvenInfeasibleDoesNotInvokeFallback) {
 
   PackingResult result = packStaticMemory(problem);
   EXPECT_EQ(result.status, PackingStatus::ProvenInfeasible);
-  EXPECT_EQ(result.backend, PackingBackend::MiniMalloc);
-  EXPECT_FALSE(result.fallbackAttempted);
   EXPECT_TRUE(result.placements.empty());
   ASSERT_EQ(result.capacityConflictDemandIndices.size(), 2u);
   EXPECT_EQ(result.capacityConflictDemandIndices[0], 0u);
@@ -244,9 +225,7 @@ TEST(MiniMallocPackingTest,
 
   PackingResult result = solveWithMiniMalloc(problem, /*searchNodeBudget=*/0);
   EXPECT_EQ(result.status, PackingStatus::ProvenInfeasible);
-  EXPECT_EQ(result.backend, PackingBackend::MiniMalloc);
   EXPECT_EQ(result.searchNodes, 0u);
-  EXPECT_FALSE(result.fallbackAttempted);
   EXPECT_TRUE(result.placements.empty());
   ASSERT_EQ(result.capacityConflictDemandIndices.size(), 4u);
   EXPECT_TRUE(result.individuallyOversizedDemandIndices.empty());
@@ -300,8 +279,6 @@ TEST(MiniMallocPackingTest, RepeatedSolveHasDeterministicPlacementAndWork) {
   EXPECT_EQ(offsetsByStableOrdinal(problem, first),
             offsetsByStableOrdinal(problem, second));
   EXPECT_EQ(first.searchNodes, second.searchNodes);
-  EXPECT_EQ(first.backend, second.backend);
-  EXPECT_EQ(first.fallbackAttempted, second.fallbackAttempted);
 }
 
 TEST(MiniMallocPackingTest, StableOrdinalMakesInputPermutationCanonical) {
@@ -375,7 +352,6 @@ TEST(MiniMallocPackingTest, ExactConflictGraphSupportsMultiSegmentRelations) {
   PackingResult result = packStaticMemory(problem);
 
   ASSERT_EQ(result.status, PackingStatus::Feasible);
-  ASSERT_EQ(result.backend, PackingBackend::MiniMalloc);
   ASSERT_FALSE(validatePlacements(problem, result.placements));
   std::map<unsigned, int64_t> offsets = offsetsByStableOrdinal(problem, result);
   ASSERT_EQ(offsets.size(), 4u);
@@ -410,7 +386,6 @@ TEST(MiniMallocPackingTest,
   zeroOnly.demands = {makeDemand(0, 2, 0)};
   PackingResult result = packStaticMemory(zeroOnly);
   EXPECT_EQ(result.status, PackingStatus::ProvenInfeasible);
-  EXPECT_FALSE(result.fallbackAttempted);
   EXPECT_TRUE(result.placements.empty());
 
   StaticPackingProblem exhausted;
@@ -419,7 +394,6 @@ TEST(MiniMallocPackingTest,
   exhausted.demands = {makeDemand(1, 4, 0)};
   result = packStaticMemory(exhausted, /*searchNodeBudget=*/0);
   EXPECT_EQ(result.status, PackingStatus::ResourceExhausted);
-  EXPECT_TRUE(result.fallbackAttempted);
   EXPECT_EQ(result.searchNodes, 0u);
   EXPECT_TRUE(result.placements.empty());
 }

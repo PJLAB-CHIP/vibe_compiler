@@ -82,12 +82,25 @@ rebuildRequiredNCCJoinsForIsolatedTileRegion(TileRegionOp tileRegion);
 /// instruction lowering.
 bool containsTileDataflowOperations(mlir::Operation *root);
 
+/// Caller-owned sink for actual SPM allocations created while lowering one
+/// source Tile operation. Implementations must derive ownership from current
+/// typed relations of `sourceOperation`; operation names, locations, shapes
+/// and insertion order are never ownership evidence.
+class TileRegionToInstrBufferRecorder {
+public:
+  virtual ~TileRegionToInstrBufferRecorder() = default;
+  virtual void recordScratchAllocation(mlir::Operation *sourceOperation,
+                                       mlir::Value allocation) = 0;
+};
+
 /// Immutable, request-scoped lowering infrastructure for one MLIRContext.
 /// Frozen patterns and conversion legality may be shared by concurrent
 /// conversions; the session owns no IR and records no per-conversion state.
 class TileRegionToInstrLoweringSession {
 public:
-  explicit TileRegionToInstrLoweringSession(mlir::MLIRContext &context);
+  explicit TileRegionToInstrLoweringSession(
+      mlir::MLIRContext &context,
+      TileRegionToInstrBufferRecorder *bufferRecorder = nullptr);
   ~TileRegionToInstrLoweringSession();
 
   TileRegionToInstrLoweringSession(const TileRegionToInstrLoweringSession &) =

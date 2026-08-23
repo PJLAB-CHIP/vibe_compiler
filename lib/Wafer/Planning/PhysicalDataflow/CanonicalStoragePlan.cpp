@@ -2,9 +2,14 @@
 
 #include "Wafer/Planning/PhysicalDataflow/CanonicalStoragePlan.h"
 
+#include "Wafer/Planning/PhysicalDataflow/TemporalTileShape.h"
+
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
 #include <map>
@@ -180,6 +185,117 @@ struct CoordinateBuilder {
       object.uses.insert(std::move(site));
   }
 };
+
+std::optional<llvm::SmallVector<int64_t, 4>>
+projectedShape(mlir::AffineMap map, llvm::ArrayRef<int64_t> iteratorTileSizes) {
+  if (!map || map.getNumDims() != iteratorTileSizes.size())
+    return std::nullopt;
+  llvm::SmallVector<int64_t, 4> shape;
+  for (mlir::AffineExpr result : map.getResults()) {
+    if (auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(result)) {
+      if (dimension.getPosition() >= iteratorTileSizes.size() ||
+          iteratorTileSizes[dimension.getPosition()] <= 0)
+        return std::nullopt;
+      shape.push_back(iteratorTileSizes[dimension.getPosition()]);
+      continue;
+    }
+    auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(result);
+    if (!constant)
+      return std::nullopt;
+    shape.push_back(1);
+  }
+  return shape;
+}
+
+mlir::FailureOr<analysis::ExactIndexSet>
+capDomain(const analysis::ExactIndexSet &domain,
+          llvm::ArrayRef<int64_t> maximumShape) {
+  if (domain.getForm() != analysis::ExactIndexSetForm::BoxUnion ||
+      domain.getBoxes().empty())
+    return mlir::failure();
+  std::optional<mlir::presburger::PresburgerSet> combined;
+  llvm::SmallVector<analysis::StaticRectangularIndexSet, 4> boxes;
+  for (const analysis::StaticRectangularIndexSet &box : domain.getBoxes()) {
+    if (box.sizes.size() != maximumShape.size())
+      return mlir::failure();
+    analysis::StaticRectangularIndexSet resident = box;
+    for (unsigned dimension = 0; dimension < maximumShape.size(); ++dimension) {
+      if (maximumShape[dimension] <= 0)
+        return mlir::failure();
+      resident.sizes[dimension] =
+          std::min(resident.sizes[dimension], maximumShape[dimension]);
+    }
+    analysis::IndexSetResult set =
+        analysis::IndexRelation::staticRectangularDomain(resident.offsets,
+                                                         resident.sizes);
+    if (!set.isExact())
+      return mlir::failure();
+    if (!combined)
+      combined = *set.set;
+    else
+      combined->unionInPlace(*set.set);
+    boxes.push_back(std::move(resident));
+  }
+  if (!combined)
+    return mlir::failure();
+  return analysis::ExactIndexSet(std::move(*combined),
+                                 analysis::ExactIndexSetForm::BoxUnion, boxes);
+}
+
+std::optional<int64_t> elementCount(llvm::ArrayRef<int64_t> shape) {
+  int64_t result = 1;
+  for (int64_t size : shape)
+    if (size <= 0 || llvm::MulOverflow(result, size, result))
+      return std::nullopt;
+  return result;
+}
+
+mlir::FailureOr<analysis::ExactIndexSet>
+capDomainElements(const analysis::ExactIndexSet &domain,
+                  int64_t maximumElements) {
+  if (domain.getForm() != analysis::ExactIndexSetForm::BoxUnion ||
+      domain.getBoxes().empty() || maximumElements <= 0)
+    return mlir::failure();
+  std::optional<mlir::presburger::PresburgerSet> combined;
+  llvm::SmallVector<analysis::StaticRectangularIndexSet, 4> boxes;
+  int64_t remaining = maximumElements;
+  for (const analysis::StaticRectangularIndexSet &box : domain.getBoxes()) {
+    if (remaining <= 0)
+      break;
+    std::optional<int64_t> boxElements = elementCount(box.sizes);
+    if (!boxElements)
+      return mlir::failure();
+    analysis::StaticRectangularIndexSet resident = box;
+    if (*boxElements > remaining) {
+      int64_t needed = remaining;
+      for (size_t reverse = resident.sizes.size(); reverse > 0; --reverse) {
+        const size_t dimension = reverse - 1;
+        const int64_t selected = std::min(resident.sizes[dimension], needed);
+        resident.sizes[dimension] = std::max<int64_t>(1, selected);
+        needed = (needed + resident.sizes[dimension] - 1) /
+                 resident.sizes[dimension];
+      }
+      boxElements = elementCount(resident.sizes);
+      if (!boxElements)
+        return mlir::failure();
+    }
+    analysis::IndexSetResult set =
+        analysis::IndexRelation::staticRectangularDomain(resident.offsets,
+                                                         resident.sizes);
+    if (!set.isExact())
+      return mlir::failure();
+    if (!combined)
+      combined = *set.set;
+    else
+      combined->unionInPlace(*set.set);
+    boxes.push_back(std::move(resident));
+    remaining -= *boxElements;
+  }
+  if (!combined || boxes.empty())
+    return mlir::failure();
+  return analysis::ExactIndexSet(std::move(*combined),
+                                 analysis::ExactIndexSetForm::BoxUnion, boxes);
+}
 
 } // namespace
 
@@ -576,6 +692,192 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
                return lhs.object < rhs.object;
              });
   return std::move(builder.coordinate);
+}
+
+CanonicalStoragePlanOutcome recloseCanonicalStorageForTemporal(
+    const CanonicalStorageCoordinate &storage, const TemporalPlan &temporal,
+    llvm::ArrayRef<analysis::RootRegionWork> rootWorks) {
+  std::map<ExecutionInstanceId, const TemporalScopePlan *> scopes;
+  for (const TemporalScopePlan &scope : temporal.scopes)
+    if (!scopes.try_emplace(scope.execution, &scope).second)
+      return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                    "temporal residency has duplicate execution scope");
+  std::map<analysis::RootRegionWorkId, const analysis::RootRegionWork *> works;
+  for (const analysis::RootRegionWork &work : rootWorks)
+    if (!works.try_emplace(work.id, &work).second)
+      return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                    "temporal residency has duplicate root work");
+
+  auto shapeForVersion = [&](const PhysicalVersionId &version)
+      -> std::optional<llvm::SmallVector<int64_t, 4>> {
+    return std::visit(
+        [&](const auto &logical)
+            -> std::optional<llvm::SmallVector<int64_t, 4>> {
+          using T = std::decay_t<decltype(logical)>;
+          ExecutionInstanceId execution;
+          std::optional<unsigned> operand;
+          std::optional<unsigned> result;
+          std::optional<CoupledReductionComponentKind> component;
+          analysis::RootRegionWorkId workId;
+          if constexpr (std::is_same_v<T, BoundaryRegionValueId>) {
+            workId = logical.work;
+            execution = {RequiredRootExecution{
+                logical.work, logical.fragment.use.destinationShard}};
+            operand = logical.fragment.use.operand;
+          } else if constexpr (std::is_same_v<T, SupportRegionValueId>) {
+            workId = logical.work;
+            auto work = works.find(workId);
+            if (work == works.end() || !work->second->rootOperation)
+              return std::nullopt;
+            auto support = llvm::find_if(
+                work->second->supportValues,
+                [&](const analysis::RootSupportValueWork &candidate) {
+                  return candidate.id == logical.support;
+                });
+            if (support == work->second->supportValues.end())
+              return std::nullopt;
+            std::optional<llvm::SmallVector<int64_t, 4>> maximum;
+            for (const analysis::RootUseId &use : support->consumerUses) {
+              ExecutionInstanceId consumer{
+                  RequiredRootExecution{logical.work, use.destinationShard}};
+              auto scope = scopes.find(consumer);
+              if (scope == scopes.end())
+                continue;
+              std::optional<llvm::SmallVector<int64_t, 4>> candidate;
+              mlir::Operation *operation = work->second->rootOperation;
+              if (mlir::isa<mlir::linalg::LinalgOp>(operation))
+                candidate = getStructuredOperandTileShape(
+                    operation, use.operand, scope->second->iteratorTileSizes);
+              else if (auto attention =
+                           mlir::dyn_cast<LinalgExtAttentionOp>(operation)) {
+                llvm::SmallVector<mlir::AffineMap, 6> maps =
+                    attention.getIndexingMapsArray();
+                if (use.operand < maps.size())
+                  candidate = projectedShape(maps[use.operand],
+                                             scope->second->iteratorTileSizes);
+              }
+              if (!candidate)
+                continue;
+              if (!maximum)
+                maximum = *candidate;
+              else if (maximum->size() == candidate->size())
+                for (auto [current, next] :
+                     llvm::zip_equal(*maximum, *candidate))
+                  current = std::max(current, next);
+            }
+            return maximum;
+          } else if constexpr (std::is_same_v<T, ExecutionResultValueId>) {
+            execution = logical.execution;
+            workId = workOf(logical.execution);
+            result = logical.result;
+          } else if constexpr (std::is_same_v<T, ReductionPartialValueId>) {
+            execution = logical.execution;
+            workId = workOf(logical.execution);
+            result = logical.result;
+          } else {
+            execution = logical.execution;
+            workId = workOf(logical.execution);
+            component = logical.component;
+          }
+          auto scope = scopes.find(execution);
+          if (scope == scopes.end())
+            return std::nullopt;
+          auto work = works.find(workId);
+          if (work == works.end() || !work->second->rootOperation)
+            return std::nullopt;
+          mlir::Operation *operation = work->second->rootOperation;
+          if (operand) {
+            if (auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(operation))
+              return getStructuredOperandTileShape(
+                  operation, *operand, scope->second->iteratorTileSizes);
+            if (auto attention =
+                    mlir::dyn_cast<LinalgExtAttentionOp>(operation)) {
+              llvm::SmallVector<mlir::AffineMap, 6> maps =
+                  attention.getIndexingMapsArray();
+              if (*operand >= maps.size())
+                return std::nullopt;
+              return projectedShape(maps[*operand],
+                                    scope->second->iteratorTileSizes);
+            }
+            return std::nullopt;
+          }
+          if (component) {
+            auto attention = mlir::dyn_cast<LinalgExtAttentionOp>(operation);
+            if (!attention)
+              return std::nullopt;
+            CoupledReductionDescription description =
+                attention.getCoupledReductionDescription();
+            auto found =
+                llvm::find_if(description.components,
+                              [&](const CoupledReductionComponent &candidate) {
+                                return candidate.kind == *component;
+                              });
+            return found == description.components.end()
+                       ? std::nullopt
+                       : projectedShape(found->indexingMap,
+                                        scope->second->iteratorTileSizes);
+          }
+          if (result) {
+            if (mlir::isa<mlir::linalg::LinalgOp>(operation))
+              return getStructuredResultTileShape(
+                  operation, *result, scope->second->iteratorTileSizes);
+            if (auto attention =
+                    mlir::dyn_cast<LinalgExtAttentionOp>(operation))
+              return projectedShape(attention.getOutputMap(),
+                                    scope->second->iteratorTileSizes);
+          }
+          return std::nullopt;
+        },
+        version.logicalValue);
+  };
+
+  CanonicalStorageCoordinate result = storage;
+  std::map<PhysicalVersionId, analysis::ExactIndexSet> residentByVersion;
+  for (StorageResourceDescription &resource : result.resources) {
+    const auto *version =
+        std::get_if<PhysicalVersionId>(&resource.object.origin);
+    if (!version)
+      continue;
+    std::optional<llvm::SmallVector<int64_t, 4>> shape =
+        shapeForVersion(*version);
+    if (shape) {
+      mlir::FailureOr<analysis::ExactIndexSet> resident = mlir::failure();
+      if (shape->size() == resource.exactDomain.getRank()) {
+        resident = capDomain(resource.exactDomain, *shape);
+      } else if (std::optional<int64_t> elements = elementCount(*shape)) {
+        resident = capDomainElements(resource.exactDomain, *elements);
+      }
+      if (mlir::failed(resident))
+        return broken(
+            BrokenStoragePlanReason::ResourceMismatch,
+            (llvm::Twine("temporal resident domain is not representable: ") +
+             objectDescription(resource.object) +
+             ", domain-rank=" + llvm::Twine(resource.exactDomain.getRank()) +
+             ", shape-rank=" + llvm::Twine(shape->size()) +
+             ", shape-elements=" +
+             llvm::Twine(elementCount(*shape).value_or(-1)))
+                .str(),
+            resource.object);
+      resource.residentDomain = std::move(*resident);
+    }
+    residentByVersion.emplace(*version, resource.residentDomain);
+  }
+  for (StorageResourceDescription &resource : result.resources) {
+    const auto *staging =
+        std::get_if<ReductionGatherStagingId>(&resource.object.origin);
+    if (!staging)
+      continue;
+    PhysicalVersionId source = std::visit(
+        [](const auto &logical) { return PhysicalVersionId{logical}; },
+        staging->gather.value);
+    auto resident = residentByVersion.find(source);
+    if (resident == residentByVersion.end())
+      return broken(BrokenStoragePlanReason::MissingPhysicalVersion,
+                    "gather staging has no source resident domain",
+                    resource.object);
+    resource.residentDomain = resident->second;
+  }
+  return result;
 }
 
 } // namespace wafer::compiler::detail

@@ -1,8 +1,8 @@
 # Physical Dataflow Planning 与 Selected Execution 实施计划
 
-状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界和Q50.A production exact-demand boundary是已闭合前置；当前唯一
-`doing`项是Q49.P deterministic baseline，以per-candidate actual SPM planning、完整buffer relations和typed feedback完成合法化。
-Q51.Core、Q50.S attention vertical、Q50.B–K、Q51、Q52与Q53的search部分全部重新进入审计和施工状态。此前关于
+状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary和Q49.P
+deterministic baseline已经闭合；当前下一项是`spatial-domain`。Q51.Core、Q50.S attention vertical、Q50.B–K、Q51、Q52与Q53的
+search部分仍按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
 算法、IR和长期pipeline contract仍只由
@@ -476,6 +476,26 @@ search proposal order。controller沿不截断的有限canonical successor逐个
 carrier coverage后只构造一次actual CardModule交给Q50.0，actual SPM rejection才允许生成下一candidate。它不计算score、
 不维护incumbent/candidate family，也不保留用于质量比较的备选方案。
 
+### TileRegion-to-Instr有序reduction的结构化表示
+
+Q49.P的actual gate不得因host端逐tuple展开而使Instr IR、编译时间和RSS随reduction extent产生无意义膨胀。TileRegion-to-Instr按
+current `MemRefType`和physical encoding的exact piece bounds/period划分tuple domain；每个run用首点、相邻点和末点的exact
+`IndexRelation`证明descriptor数量、byte count、inner bytes、stride、iteration、destination字段不变且source byte offset符合checked
+affine序列，然后把原顺序编码成常量有界`scf.for`。循环携带两个实际accumulator buffer并逐次交换，body仍是同一gather/scatter后接
+同一elementwise accumulation；不能改变tuple lexicographic order、reduce kind、init、dtype或target instruction。不能从encoding
+合同证明该run时fail closed；多reduction轴的有界路径保持逐点静态表示并由独立oracle核对，不作为capacity或numeric选择。
+
+动态byte offset作为`wafer.instr.gather_scatter`的SSA offset输入，static descriptor字段继续由同一个exact planner产生；op-local
+verifier只检查表示自身，function/target stage使用常量循环范围和ValueBounds证明offset全域非负且每次descriptor均在actual source
+buffer物理范围内。它不创建allocation、不参与SPM admission、不作为candidate选择或numeric policy；SPM lifetime、completion、
+schedule cost和target lowering直接消费该`scf.for`。request-local descriptor cache只复用total、bounded、projected的相同typed query，
+不保存Operation/Value、失败结果或跨IR epoch状态。
+
+本项覆盖矩阵：rank-3/rank-4 FP16/BF16 reduction及attention actual路径使用主要维度`1024`和`1025/1031`；覆盖Cx/NCx block内、block边界、
+tail、单轴可压缩和多轴/非仿射保留静态序列；正例断言loop-carried accumulator、exact descriptor序列、fresh completion、actual
+MiniMalloc和target LLVM均可消费，负例断言越界dynamic offset、动态/不闭合循环范围和不等价descriptor不能通过stage verifier。
+小shape只用于逐tuple静态序列与loop展开oracle对照，不能代替上述真实规模纵向。
+
 participant group按root定义，只包含该root的非空执行Tile；accepted full CardModule仍必须拥有target要求的all-and-only完整
 Tile domain。未参与某个root的Tile只在最终完整CardModule中按IR合同存在；baseline不为局部结论创建额外no-work
 Tile/Func wrapper。
@@ -527,6 +547,38 @@ alignment/lifetime真实占用而溢出、经过多个合法breakpoint后fit并�
 原「最小合法tile超限」反例既未进入该合法coordinate，也不能作为
 capacity terminal的当前证明；typed capacity/unsupported terminal仍保留为fail-closed防御出口。测试同时断言每次trial重新计算
 workset/lifetime、没有beam/cap/budget截断fallback，且这些trial不进入candidate统计。
+
+### Q49.P闭合结果
+
+`deterministic-baseline-closure`已经按上述合同闭合。`none`从normal TensorProgram建立一个deterministic coordinate，完整candidate
+各自只物化一次CardModule并调用一次Q50.0；actual SPM capacity rejection只有在每个allocation/conflict demand都能沿current
+result、operand、scratch、movement或output relation回到typed structured owner时才推进下一temporal coordinate。rejected owner立即
+销毁，accepted CardExecutable直接保留并进入target/package；baseline调用闭包不构造search state、candidate family、score、winner或
+plan-side capacity/footprint结果。SPM只使用MiniMalloc，没有allocator fallback。
+
+TileRegion emission现在由caller-owned recorder收集完整buffer relation；selected DDR stage、output insert、Tile-to-Instr scratch和
+support copy都保留current typed owner。跨Tile独立carrier使用常量有界`scf.for`表达实际prologue/steady/tail movement，不在host端生成
+fragment Cartesian product。attention temporal operand按block绝对坐标从原operand取得resident slice，512→256等refinement因此实际缩小
+SPM allocation，不重建完整operand window。Structured relation只为actual structured payload可达的support results建立事实。
+
+Tile-to-Instr有序reduction按encoding提供的exact physical piece bounds和tile periods构造descriptor runs；每个run只验证首点、相邻点和
+末点，使用SSA byte offset与loop-carried accumulator保持原tuple顺序。dynamic offset由function/target stage用constant bounds证明全域
+在实际buffer范围内。request-local descriptor/traversal cache只有相同typed semantic key第三次出现后才保留plan，失败不缓存；1025级
+work-count证明四次相同exact layout query只执行三次descriptor planning，唯一/低复用relation随pattern销毁。
+
+本轮fresh覆盖如下：
+
+| 覆盖 | 输入与结果 |
+| --- | --- |
+| rank-4 aligned | FP16，`batch=2, head=2, Q=1024, KV=1024, Dq=128, Dv=64`；actual SPM rejection→refinement→16-Tile accepted，fresh通过 |
+| rank-4 ragged | FP16，`batch=1, head=2, Q=1025, KV=1031, Dq=64, Dv=128`并带mask；覆盖remainder/tail和actual MiniMalloc，fresh通过 |
+| FA/FD纵向 | direct aligned/ragged prefill与functional decode均从selected decomposition走完整CardExecutable gate；decode cache output不形成whole-tensor SPM residency |
+| ordinary relation矩阵 | broadcast、reduction、affine window、strided、multi-piece、multi-producer、scalar/zero-rank、wave-bounded carrier及finite temporal traversal均通过complete gate |
+| lowering/allocator | custom/generic Tensor completion roundtrip与negative verifier、dynamic gather offset正负例、fresh NCC completion、current owner relation、MiniMalloc/packing和target lowering通过 |
+| production | fresh FP16 LLaMA 2 7B block以public `optimization-none`生成完整package并通过no-card；16 Tiles all-and-only，未进入search |
+
+完整增量构建和全部configured lit通过；lit中本项相关case均实际执行。Tensor层scheduled attention recurrence仍由后续
+`region-execution-domain`/`temporal-domain`统一设计，Q49.P不提前建立第二套region recurrence或dynamic-slice exact-demand合同。
 
 ### 已完成输入：Exact-Demand Boundary
 

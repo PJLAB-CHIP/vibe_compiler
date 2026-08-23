@@ -59,7 +59,8 @@ bool relationsBelongTo(mlir::Operation *root,
     });
   };
   return allLive(relations.operationResultBuffers) &&
-         allLive(relations.operandBuffers) && allLive(relations.outputBuffers);
+         allLive(relations.operandBuffers) &&
+         allLive(relations.scratchBuffers) && allLive(relations.outputBuffers);
 }
 
 mlir::FailureOr<mlir::func::FuncOp>
@@ -237,6 +238,7 @@ mlir::LogicalResult removeTileOutputDestinations(
     };
     retarget(relations.operationResultBuffers);
     retarget(relations.operandBuffers);
+    retarget(relations.scratchBuffers);
     retarget(relations.outputBuffers);
     destination.replaceAllUsesWith(empty.getResult());
     eraseArguments.set(outputBase + index);

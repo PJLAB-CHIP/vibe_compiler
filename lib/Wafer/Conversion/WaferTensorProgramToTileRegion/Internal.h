@@ -142,6 +142,14 @@ struct CandidatePeerEndpoint {
   /// Query-local identity of the selected exact fragment.  It is used only in
   /// C++ planning/diagnostics; the relation is never encoded in IR.
   const SpatialEdgeFragment *selectedFragment = nullptr;
+  /// Independent-DDR baseline endpoints stream this exact persistent carrier
+  /// domain through compact SCF wave loops. `carrierBuffer` is then the DDR
+  /// stage; offsets/sizes describe the fragment in that stage and tile sizes
+  /// bound each actual SPM allocation. Empty tile sizes select the ordinary
+  /// single-buffer endpoint path.
+  llvm::SmallVector<int64_t, 4> streamOffsets;
+  llvm::SmallVector<int64_t, 4> streamSizes;
+  llvm::SmallVector<int64_t, 4> streamTileSizes;
 };
 
 /// Query-local relation between one selected DDR stage and the tensor-level
@@ -161,6 +169,30 @@ struct MaterializedSelectedDDRStage {
 struct TileRegionEmissionRelations {
   llvm::SmallVector<MaterializedSelectedDDRStage, 8> selectedDDRStages;
   StructuredMaterializationRelations materializedBuffers;
+};
+
+/// Caller-owned sink for one TileRegion conversion. The body emitter reports
+/// concrete emission facts through this narrow API; ownership, deduplication
+/// and the aggregate relation contract remain outside the emitter.
+class TileRegionEmissionRecorder {
+public:
+  explicit TileRegionEmissionRecorder(TileRegionEmissionRelations &output)
+      : output(output) {}
+
+  void recordSelectedDDRStage(mlir::memref::AllocOp allocation,
+                              uint32_t producerNode);
+  void recordOperationResultBuffer(uint32_t structuredNodeId,
+                                   mlir::Value buffer);
+  void recordStructuredComputeOperation(
+      llvm::ArrayRef<uint32_t> structuredNodeIds,
+      mlir::Operation *operation);
+  void recordOperandBuffer(uint32_t structuredNodeId, mlir::Value buffer);
+  void recordScratchBuffer(llvm::ArrayRef<uint32_t> structuredNodeIds,
+                           mlir::Value buffer);
+  void recordOutputBuffer(unsigned outputIndex, mlir::Value buffer);
+
+private:
+  TileRegionEmissionRelations &output;
 };
 
 struct SelectedCollectivePartitionGroup {
@@ -314,12 +346,10 @@ public:
       std::string *failureReason, int64_t currentLogicalPartition,
       llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints = {},
       llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages = {},
-      TileRegionEmissionRelations *emissionRelations = nullptr,
+      TileRegionEmissionRecorder *relationRecorder = nullptr,
       llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
-      llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations =
-          {},
-      llvm::ArrayRef<StructuredNodeComputeImplementation> implementations =
-          {});
+      llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations = {},
+      llvm::ArrayRef<StructuredNodeComputeImplementation> implementations = {});
 
   mlir::FailureOr<TileRegionOp> emit(TensorProgramScope scope,
                                      mlir::RewriterBase &rewriter);
@@ -336,7 +366,7 @@ private:
   int64_t currentLogicalPartition = -1;
   llvm::SmallVector<CandidatePeerEndpoint, 8> peerEndpoints;
   llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages;
-  TileRegionEmissionRelations *emissionRelations = nullptr;
+  TileRegionEmissionRecorder *relationRecorder = nullptr;
   llvm::DenseMap<mlir::Operation *, llvm::SmallVector<uint32_t, 2>>
       structuredNodeIds;
   llvm::DenseMap<uint32_t, SelectedNodeRepresentation> selectedRepresentations;
@@ -347,6 +377,9 @@ private:
   StructuredComputeImplementation activeImplementation =
       StructuredComputeImplementation::Natural;
   llvm::SmallVector<uint32_t, 2> activeStructuredNodes;
+  llvm::DenseSet<uint32_t> currentStageNodes;
+  llvm::DenseSet<mlir::Operation *> convertedStructuredOperations;
+  llvm::DenseSet<mlir::Operation *> convertingStructuredOperations;
   llvm::DenseMap<mlir::Value, BufferVersions> buffers;
   llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
   llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
@@ -429,11 +462,8 @@ private:
   mlir::FailureOr<mlir::Value>
   getOrMaterializeStructuredInput(mlir::Value original, MemLayout targetLayout,
                                   mlir::OpBuilder &builder);
-  void recordOperationResultBuffer(uint32_t structuredNodeId,
-                                   mlir::Value buffer);
   void recordStructuredComputeOperation(mlir::Operation *operation);
-  void recordOperandBuffer(uint32_t structuredNodeId, mlir::Value buffer);
-  void recordOutputBuffer(unsigned outputIndex, mlir::Value buffer);
+  void recordScratchAllocation(mlir::memref::AllocOp allocation);
 
   mlir::FailureOr<SelectedCollectivePartitionGroup>
   getCollectivePartitionGroup(mlir::DenseI64ArrayAttr partitionGroup,
@@ -480,6 +510,13 @@ private:
   mlir::LogicalResult convertSupportOp(mlir::Operation *op,
                                        mlir::OpBuilder &builder);
 
+  /// Binds a complete, unobserved tensor.insert_slice assembly rooted at
+  /// tensor.empty to the matching caller-owned DDR result. Incomplete,
+  /// overlapping, dynamic, or otherwise observed assemblies remain on the
+  /// ordinary materialization path.
+  mlir::LogicalResult
+  bindCompleteInsertSliceOutputsToDDR(TensorProgramScope scope);
+
   mlir::LogicalResult convertNestedOp(mlir::Operation *op,
                                       mlir::OpBuilder &builder);
 
@@ -504,6 +541,19 @@ private:
                                        mlir::OpBuilder &builder);
 
   bool allStatic(llvm::ArrayRef<int64_t> values) const;
+
+  bool isFullTensorInsertSlice(mlir::tensor::InsertSliceOp insertSlice) const;
+
+  bool isDeferredStaticInsertSliceAssembly(mlir::Value value) const;
+
+  bool onlyFeedsStaticExtractSlicesThroughInsertDestinations(
+      mlir::Value value, llvm::DenseSet<mlir::Value> &visited) const;
+
+  mlir::FailureOr<mlir::Value>
+  materializeStaticTensorWindow(mlir::Value tensor,
+                                llvm::ArrayRef<int64_t> offsets,
+                                llvm::ArrayRef<int64_t> sizes,
+                                mlir::Location loc, mlir::OpBuilder &builder);
 
   mlir::FailureOr<mlir::Value> materializeMemRefSubview(
       mlir::Location loc, mlir::Value sourceMemRef,

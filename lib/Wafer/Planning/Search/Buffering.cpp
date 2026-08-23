@@ -2,9 +2,6 @@
 
 #include "Wafer/Planning/Search/Buffering.h"
 
-#include "Wafer/Analysis/PhysicalDataflow/PhysicalLayoutRelation.h"
-#include "Wafer/Analysis/Structured/StructuredOperationTileFootprint.h"
-
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
@@ -71,90 +68,6 @@ findMovement(const CardDataMovementAssignment &assignment,
   return found == assignment.edges.end() ? nullptr : &*found;
 }
 
-std::optional<MemLayout>
-findLayout(const CardPhysicalRepresentationAssignment &assignment, TileId tile,
-           StructuredDAGNodeID node, PhysicalValueRole role, unsigned index) {
-  auto found = llvm::find_if(assignment.values, [&](const auto &choice) {
-    return choice.tile == tile && choice.node == node && choice.role == role &&
-           choice.index == index;
-  });
-  return found == assignment.values.end()
-             ? std::nullopt
-             : std::optional<MemLayout>(found->layout);
-}
-
-std::optional<llvm::SmallVector<int64_t, 4>>
-getLeafSizes(const StructuredDemandView &view,
-             const CardTemporalAssignment &temporalAssignment,
-             StructuredDAGNodeID node, TileId tile) {
-  const TemporalNodeAssignment *temporal =
-      findTemporal(temporalAssignment, node);
-  std::optional<analysis::StaticRectangularIndexSet> shard =
-      findShard(view.getShard(node, tile));
-  if (!temporal || !shard ||
-      shard->sizes.size() != temporal->iteratorTileSizes.size())
-    return std::nullopt;
-  llvm::SmallVector<int64_t, 4> result;
-  for (auto [extent, size] :
-       llvm::zip_equal(shard->sizes, temporal->iteratorTileSizes)) {
-    if (extent <= 0 || size <= 0)
-      return std::nullopt;
-    result.push_back(std::min(extent, size));
-  }
-  return result;
-}
-
-std::optional<uint64_t> getSingleSlotPhysicalLowerBound(
-    const CardProgramAnalysis &program,
-    const StructuredDemandView &view,
-    const CardTemporalAssignment &temporalAssignment,
-    const CardPhysicalRepresentationAssignment &representationAssignment,
-    const StructuredDAGEdge &edge, TileId tile) {
-  const StructuredDAGNode *producer = program.dag.getNode(edge.producer);
-  const StructuredDAGNode *consumer = program.dag.getNode(edge.consumer);
-  auto producerLeaf =
-      getLeafSizes(view, temporalAssignment, edge.producer, tile);
-  auto consumerLeaf =
-      getLeafSizes(view, temporalAssignment, edge.consumer, tile);
-  std::optional<MemLayout> producerLayout =
-      findLayout(representationAssignment, tile, edge.producer,
-                 PhysicalValueRole::Result, edge.producerResult);
-  std::optional<MemLayout> consumerLayout =
-      findLayout(representationAssignment, tile, edge.consumer,
-                 PhysicalValueRole::Operand, edge.consumerOperand);
-  if (!producer || !producer->operation || !consumer || !consumer->operation ||
-      !producerLeaf || !consumerLeaf || !producerLayout || !consumerLayout)
-    return std::nullopt;
-  auto producerShape = getStructuredResultTileShape(
-      producer->operation, edge.producerResult, *producerLeaf);
-  auto consumerShape = getStructuredOperandTileShape(
-      consumer->operation, edge.consumerOperand, *consumerLeaf);
-  auto producerTensor = mlir::dyn_cast<mlir::RankedTensorType>(
-      producer->operation->getResult(edge.producerResult).getType());
-  auto consumerTensor = mlir::dyn_cast<mlir::RankedTensorType>(
-      consumer->operation->getOperand(edge.consumerOperand).getType());
-  if (!producerShape || !consumerShape || !producerTensor || !consumerTensor)
-    return std::nullopt;
-  auto getBytes = [](mlir::RankedTensorType tensor,
-                     llvm::ArrayRef<int64_t> shape,
-                     MemLayout layout) -> std::optional<uint64_t> {
-    auto type = mlir::MemRefType::get(
-        shape, tensor.getElementType(), mlir::MemRefLayoutAttrInterface{},
-        MemoryAttr::get(tensor.getContext(), MemorySpace::SPM, layout));
-    auto physical = analysis::PhysicalLayoutRelation::create(type);
-    if (mlir::failed(physical) || physical->getPhysicalFootprintBytes() <= 0)
-      return std::nullopt;
-    return static_cast<uint64_t>(physical->getPhysicalFootprintBytes());
-  };
-  std::optional<uint64_t> producerBytes =
-      getBytes(producerTensor, *producerShape, *producerLayout);
-  std::optional<uint64_t> consumerBytes =
-      getBytes(consumerTensor, *consumerShape, *consumerLayout);
-  if (!producerBytes || !consumerBytes)
-    return std::nullopt;
-  return std::max(*producerBytes, *consumerBytes);
-}
-
 } // namespace
 
 mlir::FailureOr<CardBufferingDomain> CardBufferingDomain::create(
@@ -169,7 +82,7 @@ mlir::FailureOr<CardBufferingDomain> CardBufferingDomain::create(
     const CardPhysicalRepresentationAssignment &representationAssignment,
     const CardDataMovementDomain &movementDomain,
     const CardDataMovementAssignment &movementAssignment,
-    const TargetMemoryPolicy &memory, std::string *failureReason) {
+    std::string *failureReason) {
   auto fail =
       [&](llvm::StringRef message) -> mlir::FailureOr<CardBufferingDomain> {
     if (failureReason)
@@ -181,13 +94,9 @@ mlir::FailureOr<CardBufferingDomain> CardBufferingDomain::create(
   if (mlir::failed(view) || !coupledDomain.contains(coupledAssignment) ||
       !temporalDomain.contains(temporalAssignment) ||
       !representationDomain.contains(representationAssignment) ||
-      !movementDomain.contains(movementAssignment) || memory.spmBase < 0 ||
-      memory.spmLimit <= memory.spmBase)
-    return fail("buffering received a stale assignment or invalid memory "
-                "capacity");
+      !movementDomain.contains(movementAssignment))
+    return fail("buffering received a stale dependent assignment");
 
-  const uint64_t capacity =
-      static_cast<uint64_t>(memory.spmLimit - memory.spmBase);
   llvm::SmallVector<GroupDomain, 16> groups;
   groups.reserve(coupledAssignment.groups.size());
   for (const CoupledRegionGroup &selected : coupledAssignment.groups) {
@@ -204,13 +113,7 @@ mlir::FailureOr<CardBufferingDomain> CardBufferingDomain::create(
           findMovement(movementAssignment, edge.id, selected.tile);
       if (!movement || movement->kind != DataMovementKind::Retained)
         continue;
-      std::optional<uint64_t> singleSlotBytes = getSingleSlotPhysicalLowerBound(
-          program, *view, temporalAssignment, representationAssignment, edge,
-          selected.tile);
-      if (!singleSlotBytes || *singleSlotBytes == 0)
-        return fail("retained buffering edge has no physical leaf payload");
-      const uint64_t capacitySlots = capacity / *singleSlotBytes;
-      const uint64_t maximum = std::min(steadyTripCount, capacitySlots);
+      const uint64_t maximum = steadyTripCount;
       if (maximum < 2)
         continue;
       group.edges.push_back(EdgeDomain{

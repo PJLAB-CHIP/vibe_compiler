@@ -41,6 +41,18 @@ std::string buildFlashAttentionPlanningFixture(int64_t queryExtent,
                                                int64_t keyValueExtent,
                                                bool withMask);
 
+/// Builds a tensor-rank-4 attention fixture with independent batch and head
+/// axes. Unlike the legacy rank-3 fixture, no leading BH flattening is used.
+std::string buildRank4FlashAttentionPlanningFixture(
+    int64_t batchExtent, int64_t headExtent, int64_t queryExtent,
+    int64_t keyValueExtent, int64_t queryKeyExtent, int64_t valueExtent,
+    bool withMask);
+
+std::string buildRank4FlashDecodingPlanningFixture(
+    int64_t batchExtent, int64_t headExtent, int64_t queryExtent,
+    int64_t keyValueExtent, int64_t queryKeyExtent, int64_t valueExtent,
+    bool withMask);
+
 /// Builds a rank-6 flash-decoding fixture with a 33x31 K2 Cartesian domain
 /// and a separate 1025 query dimension.
 std::string buildMultiK2FlashDecodingPlanningFixture();

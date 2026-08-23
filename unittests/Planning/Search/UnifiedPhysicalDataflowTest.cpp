@@ -33,13 +33,10 @@ TEST(UnifiedPhysicalDataflowTest,
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::ProgramDataHandoff programData;
-  auto baseline =
-      compileCardBaseline(*parsed.module, dependentProgramMetadata(),
-                          executionConfig(), diagnostics, programData, nullptr);
-  ASSERT_TRUE(mlir::succeeded(baseline)) << diagnosticsText;
-  TargetMemoryPolicy memory;
-  auto domain = UnifiedPhysicalDataflowDomain::create(
-      *baseline->programAnalysis, CardId(0), memory);
+  auto analysis = analyzeCardProgram(*parsed.module, dependentProgramMetadata(),
+                                     executionConfig(), diagnostics);
+  ASSERT_TRUE(mlir::succeeded(analysis)) << diagnosticsText;
+  auto domain = UnifiedPhysicalDataflowDomain::create(**analysis, CardId(0));
   ASSERT_TRUE(mlir::succeeded(domain));
   std::string failureReason;
   auto first = domain->getFirstAssignment(&failureReason);
@@ -56,15 +53,14 @@ TEST(UnifiedPhysicalDataflowTest,
   EXPECT_EQ(countOps<TileRegionOp>(materialized->module->getOperation()), 2u);
   auto scopes = domain->buildBufferingScopes(*first, &failureReason);
   ASSERT_TRUE(mlir::succeeded(scopes)) << failureReason;
-  ASSERT_EQ(scopes->size(), baseline->programAnalysis->availableTileIds.size());
+  ASSERT_EQ(scopes->size(), (*analysis)->availableTileIds.size());
   EXPECT_TRUE(
       llvm::all_of(*scopes, [](const auto &tile) { return tile.empty(); }));
 
   auto compiled = compileCardModuleToExecutable(
-      std::move(materialized->module), CardId(0),
-      baseline->programAnalysis->availableTileIds, *scopes,
-      materialized->relations, dependentProgramMetadata(), executionConfig(),
-      diagnostics, programData, /*statistics=*/nullptr,
+      std::move(materialized->module), CardId(0), (*analysis)->availableTileIds,
+      *scopes, materialized->relations, dependentProgramMetadata(),
+      executionConfig(), diagnostics, programData, /*statistics=*/nullptr,
       /*tilePipelineParallelism=*/0, /*captureTileIRTrace=*/false,
       /*applySelectedInstructionSchedule=*/true);
   diagnostics.flush();

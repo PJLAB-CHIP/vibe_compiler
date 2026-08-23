@@ -31,10 +31,11 @@ mlir::FailureOr<std::unique_ptr<TileMaterializationSourceSession>>
 TileMaterializationSourceSession::create(
     mlir::ModuleOp sourceModule, CardId cardId,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
+    llvm::ArrayRef<StructuredNodeRootGroup> operationRootGroups,
     std::string *failureReason) {
   mlir::FailureOr<TileMaterializationSourcePreparation> preparation =
       prepareTileMaterializationSource(sourceModule, cardId, operationNodes,
-                                       failureReason);
+                                       operationRootGroups, failureReason);
   if (mlir::failed(preparation))
     return mlir::failure();
   auto state = std::make_unique<Impl>();
@@ -79,7 +80,9 @@ TileMaterializationSession::create(
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes) {
   mlir::FailureOr<std::unique_ptr<TileMaterializationSourceSession>> source =
       TileMaterializationSourceSession::create(sourceModule, cardId,
-                                               operationNodes, failureReason);
+                                               operationNodes,
+                                               /*operationRootGroups=*/{},
+                                               failureReason);
   if (mlir::failed(source))
     return mlir::failure();
   return create(**source, mapping, failureReason);

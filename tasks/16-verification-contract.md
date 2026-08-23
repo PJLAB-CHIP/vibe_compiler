@@ -349,7 +349,8 @@ current target容量、target-model能力或host预算不足，必须按stage报
    不使用footprint、workset、bytes比例或capacity公式。multi-axis/tail/minimum-granularity受测，最小合法candidate仍被actual planner拒绝才
    返回typed capacity failure，MiniMalloc resource exhaustion、timeout与indeterminate保持原分类。fresh有界图oracle、relation totality、
    overfull-to-fit、轻量source-to-package/no-card及一轮FP16 LLaMA必须重新证明`candidate materializations == Q50.0 invocations`、
-   accepted owner无重建及package/oracle；旧181.70秒LLaMA只作旧功能证据。Q49.P重新完成前不运行LLaMA search；
+   accepted owner无重建及package/oracle；历史LLaMA结果不能代签。Q49.P已按本合同取得fresh completion证据，具体矩阵由
+   `tasks/plans/physical-dataflow-synthesis.md`记录；
    完成后不再建立独立baseline板端任务，Q53只把current accepted baseline作为matched A/B一侧。
 2. Q50.0：baseline与search共用无策略complete-candidate CardExecutable compile/verification/admission boundary；每个candidate调用一次，
    任何lowering或allocator都不隐式repair。

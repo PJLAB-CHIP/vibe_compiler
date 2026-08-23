@@ -63,6 +63,7 @@ def Wafer_InstrWDMAOp : Wafer_InstrDMAOp<"instr.wdma", [
 }
 
 def Wafer_InstrGatherScatterOp : Wafer_InstrDMAOp<"instr.gather_scatter", [
+    AttrSizedOperandSegments,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_MovementResource>]>
@@ -71,11 +72,15 @@ def Wafer_InstrGatherScatterOp : Wafer_InstrDMAOp<"instr.gather_scatter", [
   let description = [{
     `src_offset` and `dst_offset` are byte offsets within the source and
     destination operand buffers. They do not assign physical SPM base addresses;
-    SPM memory planning still owns the final buffer base/range.
+    SPM memory planning still owns the final buffer base/range. A dynamic
+    offset operand is the SSA form of the corresponding static attribute;
+    exactly one form may be present for an endpoint.
   }];
   let arguments = (ins
     Arg<AnyMemRef, "", [MemRead]>:$source,
     Arg<AnyMemRef, "", [MemWrite]>:$dest,
+    Optional<Index>:$src_offset_value,
+    Optional<Index>:$dst_offset_value,
     I64Attr:$byte_count,
     I64Attr:$inner_bytes,
     OptionalAttr<I64Attr>:$src_offset,
@@ -88,7 +93,10 @@ def Wafer_InstrGatherScatterOp : Wafer_InstrDMAOp<"instr.gather_scatter", [
                       "::wafer::NCCWorker::Worker0">:$worker
   );
   let assemblyFormat =
-      "$source `to` $dest attr-dict `:` type($source) `to` type($dest)";
+      "$source `to` $dest "
+      "(`src_offset_value` `(` $src_offset_value^ `)`)? "
+      "(`dst_offset_value` `(` $dst_offset_value^ `)`)? "
+      "attr-dict `:` type($source) `to` type($dest)";
 }
 
 def Wafer_InstrFillOp : Wafer_NCCInstrOp<"instr.fill", [

@@ -3,13 +3,14 @@
 #ifndef WAFER_COMPILER_CARDEXECUTABLESEARCH_H
 #define WAFER_COMPILER_CARDEXECUTABLESEARCH_H
 
-#include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/CodeGen/Executable/CardExecutableLowering.h"
-#include "Wafer/Planning/Search/SearchControl.h"
-#include "Wafer/Target/Core/TargetMemory.h"
+#include "Wafer/Planning/Search/SearchWork.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
+
+#include <string>
+#include <vector>
 
 namespace wafer::compiler::detail {
 
@@ -23,23 +24,32 @@ struct CardExecutableSearchSummary {
   SearchWorkCounts work;
   CardExecutableSearchCoverage coverage =
       CardExecutableSearchCoverage::BudgetedFeasible;
+  uint64_t winnerUpdates = 0;
   std::string proposalDetail;
   std::string lastDetail;
 };
 
-/// Evaluates complete original-root physical assignments through the shared
-/// CardModule-to-executable exact gate. The accepted baseline is an incumbent
-/// only. The explicit budget controls complete candidate evaluations; no
-/// partial state is lowered or cloned. Semantic graph alternatives join this
-/// same candidate closure.
-mlir::FailureOr<CardExecutableLoweringResult> runCardExecutableSearch(
-    mlir::ModuleOp tensorProgram, const CardProgramAnalysis &programAnalysis,
-    CardExecutableLoweringResult baseline,
+/// One search-owned accepted result. Diagnostic IR snapshots are present only
+/// when explicitly requested and always move with the executable selected from
+/// the same candidate compilation.
+struct CardExecutableSearchResult {
+  CardExecutableLoweringResult executable;
+  std::vector<std::string> tileDataflowIRTrace;
+};
+
+/// Independently analyzes the immutable TensorProgram and evaluates complete
+/// physical assignments through the shared CardModule-to-executable exact
+/// gate. This entry does not invoke, receive or return the deterministic
+/// baseline. The explicit budget controls complete search-candidate
+/// evaluations; no partial state is lowered or cloned. Semantic graph
+/// alternatives join this same search-owned candidate closure.
+mlir::FailureOr<CardExecutableSearchResult> runCardExecutableSearch(
+    mlir::ModuleOp tensorProgram,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     ProgramDataHandoff &programData, SearchWorkBudget budget,
-    const TargetMemoryPolicy &memory,
-    CardExecutableSearchSummary *summary = nullptr);
+    CardExecutableSearchSummary *summary = nullptr,
+    bool captureTileDataflowIRTrace = false);
 
 } // namespace wafer::compiler::detail
 

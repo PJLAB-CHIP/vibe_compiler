@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-08-22
+更新时间：2026-08-23
 
 本文件是任务调度入口，只记录任务状态、前置关系、当前工作、完成门禁和设计/证据owner。具体设计、
 pipeline contract、实验结论、测试数字、失败修复过程和历史复盘不在这里重复；分别进入编号设计文档、
@@ -30,8 +30,8 @@ Q63和Q64等前置已满足，不在当前队列中重复展开。
 
 | 顺序 | Work item | 状态 | 设计owner | 直接输入 | 完成输出 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | `deterministic-baseline-closure` | `doing` | Q49.P | canonical-plan-coverage-closure、Q59 | actual candidate materialization→SPM planning→typed feedback闭环及fresh `none`纵向 |
-| 2 | `spatial-domain` | `queued` | Q50.B | spatial-plan-schema、attention-spatial-integration、attention-demand-integration、exact-demand-boundary、Q64 | complete spatial successors、reference enumerator及proposal |
+| 1 | `deterministic-baseline-closure` | `done` | Q49.P | canonical-plan-coverage-closure、Q59 | actual candidate materialization→SPM planning→typed feedback闭环及fresh `none`纵向 |
+| 2 | `spatial-domain` | `next` | Q50.B | spatial-plan-schema、attention-spatial-integration、attention-demand-integration、exact-demand-boundary、Q64 | complete spatial successors、reference enumerator及proposal |
 | 3 | `search-control-foundation` | `queued` | Q51.Core | spatial-domain、exact-demand-boundary、attention-demand-integration | SpatialState frontier/continuation及public `search` routing；missing axis typed incomplete |
 | 4 | `root-work-domain` | `queued` | Q50.C | search-control-foundation、canonical-root-work | full root/merge work domain、Core consumer及complete-candidate emitter |
 | 5 | `region-execution-domain` | `queued` | Q50.D | root-work-domain、canonical-region-plan | region/execution/use-binding domain及Core consumer |

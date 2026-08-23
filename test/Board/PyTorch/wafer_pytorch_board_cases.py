@@ -6,7 +6,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import pathlib
-import shutil
 import sys
 from collections.abc import Callable
 
@@ -70,29 +69,33 @@ class SourceNoCardWorkload:
     package_count: int = 1
 
 
-SOURCE_NO_CARD_WORKLOADS = (
+PRODUCTION_SOURCE_CASES = (
+    "conv-mixed-dag",
+    "attention-prefill",
+    "attention-decode-kv-cache",
+    "llama-2-7b-block",
+)
+PRODUCTION_SOURCE_DTYPES = (
+    ("float16", "fp16"),
+    ("bfloat16", "bf16"),
+)
+SOURCE_NO_CARD_WORKLOADS = tuple(
     SourceNoCardWorkload(
-        "wafer-runtime-pytorch-attention-prefill-fp16-optimization-none-no-card",
-        "attention-prefill",
-        "float16",
-        1,
-        "none",
-    ),
-    SourceNoCardWorkload(
-        "wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-none-no-card",
-        "attention-decode-kv-cache",
-        "float16",
-        1,
-        "none",
-        package_count=2,
-    ),
-    SourceNoCardWorkload(
-        "wafer-runtime-pytorch-llama-2-7b-block-fp16-optimization-none-no-card",
-        "llama-2-7b-block",
-        "float16",
-        1,
-        "none",
-    ),
+        ctest_name=(
+            f"wafer-runtime-pytorch-{case_name}-{dtype_label}-"
+            f"optimization-{optimization_policy}-no-card"
+        ),
+        case_name=case_name,
+        dtype_name=dtype_name,
+        num_partitions=1,
+        optimization_policy=optimization_policy,
+        package_count=(
+            2 if case_name == "attention-decode-kv-cache" else 1
+        ),
+    )
+    for case_name in PRODUCTION_SOURCE_CASES
+    for dtype_name, dtype_label in PRODUCTION_SOURCE_DTYPES
+    for optimization_policy in OPTIMIZATION_POLICIES
 )
 
 
@@ -179,10 +182,7 @@ def _save_exported_program(
             exported,
             options=options,
         )
-    if program_dir.exists():
-        shutil.rmtree(program_dir)
-    program_dir.parent.mkdir(parents=True, exist_ok=True)
-    program.save(str(program_dir))
+    capture._save_program(program, program_dir, options)
     # Some StableHLO serializer versions omit non-parameter ExportedProgram
     # state (for example BF16 rotary and causal-mask buffers) while still
     # emitting parameter metadata for it.  The source program must be

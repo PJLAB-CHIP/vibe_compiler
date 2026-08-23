@@ -16,6 +16,12 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
     const CanonicalMovementCoordinate &movements,
     const SerializedExecutionPlan &serialized);
 
+/// Recomputes the maximum resident slice for each canonical object from a
+/// fixed temporal plan while retaining the complete logical exactDomain.
+CanonicalStoragePlanOutcome recloseCanonicalStorageForTemporal(
+    const CanonicalStorageCoordinate &storage, const TemporalPlan &temporal,
+    llvm::ArrayRef<analysis::RootRegionWork> rootWorks);
+
 } // namespace wafer::compiler::detail
 
 #endif // WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_CANONICALSTORAGEPLAN_H

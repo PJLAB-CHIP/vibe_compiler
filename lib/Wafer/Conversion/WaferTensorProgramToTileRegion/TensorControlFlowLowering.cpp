@@ -18,25 +18,27 @@ using namespace wafer;
 
 namespace wafer::tensor_program_to_tile_region {
 
-// One external-to-external insert copy owns only a bounded share of the SPM
-// window. The remaining shares cover concurrent source/consumer working sets
-// and a second independent stream. This is a conservative lowering model, not
-// an execution-time or bandwidth claim; exact lifetime packing remains the
-// final legality owner.
-static constexpr uint64_t kExternalTensorCopyWorkingSetSlots = 4;
-
-/// Ends one compiler-owned SPM value after its final tensor-level observation.
-/// The deallocation is an explicit residency release: Tile-to-Instr completion
-/// reconstruction must complete any pending NCC access before it, and exact
-/// SPM planning may then reuse the released range.  Caller-owned DDR values
-/// and tensor values with another semantic use are never released here.
-static void releasePrivateSPMValueAfterLastUse(mlir::Value tensorValue,
-                                               mlir::Value buffer,
-                                               mlir::Location loc,
-                                               mlir::OpBuilder &builder) {
-  if (!tensorValue.hasOneUse() || !isWaferSPMMemRefType(buffer.getType()))
-    return;
-  builder.create<mlir::memref::DeallocOp>(loc, buffer);
+static std::optional<mlir::TypedAttr>
+getConstantTensorExtractValue(mlir::tensor::ExtractOp extract) {
+  auto constant = extract.getTensor().getDefiningOp<mlir::arith::ConstantOp>();
+  auto elements = constant
+                      ? mlir::dyn_cast<mlir::ElementsAttr>(constant.getValue())
+                      : mlir::ElementsAttr{};
+  auto shaped = elements ? mlir::dyn_cast<mlir::ShapedType>(elements.getType())
+                         : mlir::ShapedType{};
+  if (!shaped || !shaped.hasRank() ||
+      shaped.getRank() != extract.getIndices().size())
+    return std::nullopt;
+  llvm::SmallVector<uint64_t, 4> constantIndices;
+  for (auto [index, extent] :
+       llvm::zip_equal(extract.getIndices(), shaped.getShape())) {
+    std::optional<int64_t> constantIndex = mlir::getConstantIntValue(index);
+    if (!constantIndex || *constantIndex < 0 || extent <= *constantIndex)
+      return std::nullopt;
+    constantIndices.push_back(static_cast<uint64_t>(*constantIndex));
+  }
+  return mlir::dyn_cast<mlir::TypedAttr>(
+      elements.getValues<mlir::Attribute>()[constantIndices]);
 }
 
 mlir::FailureOr<mlir::Type>
@@ -75,6 +77,27 @@ TileRegionBodyEmitter::materializeControlFlowValue(mlir::Value original,
 mlir::LogicalResult
 TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
                                         mlir::OpBuilder &builder) {
+  if (auto completion =
+          mlir::dyn_cast<TensorCompletionOp>(op)) {
+    if (completion.getStates().size() != completion.getResults().size())
+      return fail("attention block completion state/result count differs");
+    llvm::SmallVector<mlir::Value, 3> stateBuffers;
+    stateBuffers.reserve(completion.getStates().size());
+    for (mlir::Value state : completion.getStates()) {
+      mlir::FailureOr<mlir::Value> buffer =
+          getOrMaterialize(state, MemLayout::Tensor, builder);
+      if (mlir::failed(buffer))
+        return mlir::failure();
+      stateBuffers.push_back(*buffer);
+    }
+    builder.create<SyncNCCJoinOp>(completion.getLoc(),
+                                  completion.getParticipants(),
+                                  builder.getUnitAttr());
+    for (auto [result, buffer] :
+         llvm::zip_equal(completion.getResults(), stateBuffers))
+      record(result, MemLayout::Tensor, buffer);
+    return mlir::success();
+  }
   if (auto allocation = mlir::dyn_cast<mlir::memref::AllocOp>(op)) {
     if ((!isWaferDDRMemRefType(allocation.getType()) &&
          !isWaferSPMMemRefType(allocation.getType())) ||
@@ -97,11 +120,10 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
     // recognizing this allocation here cannot infer or select a baseline mode.
     if (selected != selectedDDRStages.end()) {
       selectedDDRStageExternalBuffers.insert(cloned->getResult(0));
-      if (emissionRelations)
-        emissionRelations->selectedDDRStages.push_back(
-            MaterializedSelectedDDRStage{
-                mlir::cast<mlir::memref::AllocOp>(cloned),
-                selected->producerNode});
+      if (relationRecorder)
+        relationRecorder->recordSelectedDDRStage(
+            mlir::cast<mlir::memref::AllocOp>(cloned),
+            selected->producerNode);
     }
     return mlir::success();
   }
@@ -201,6 +223,7 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
         /*read_only=*/true);
     auto destination = builder.create<mlir::memref::AllocOp>(
         constant.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor));
+    recordScratchAllocation(destination);
     builder.create<StorageLoadOp>(constant.getLoc(), ddr.getMemref(),
                                   destination.getResult());
     record(originalResult, MemLayout::Tensor, destination.getResult());
@@ -225,6 +248,16 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
   }
 
   if (auto empty = mlir::dyn_cast<mlir::tensor::EmptyOp>(op)) {
+    // A complete insert-slice output assembly may already own the matching
+    // caller-provided DDR destination. The empty tensor carries no contents,
+    // so no SPM allocation is needed before the ordered slice stores.
+    if (externalBuffers.contains(empty.getResult()))
+      return mlir::success();
+    // A static extract_slice consumer can read an exact window directly
+    // through a tensor.insert_slice assembly. Keep the functional assembly in
+    // source IR and materialize only those demanded windows below.
+    if (isDeferredStaticInsertSliceAssembly(empty.getResult()))
+      return mlir::success();
     if (onlyFeedsUnreadDpsInit(empty.getResult()))
       return mlir::success();
     bool onlyFeedsSlices = !empty.getResult().use_empty();
@@ -246,6 +279,7 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
       return fail("tensor.empty result is not a ranked tensor");
     auto alloc = builder.create<mlir::memref::AllocOp>(
         empty.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor));
+    recordScratchAllocation(alloc);
     record(empty.getResult(), MemLayout::Tensor, alloc.getResult());
     return mlir::success();
   }
@@ -557,9 +591,21 @@ TileRegionBodyEmitter::convertScfFor(mlir::scf::ForOp forOp,
 mlir::LogicalResult
 TileRegionBodyEmitter::convertTensorExtract(mlir::tensor::ExtractOp extract,
                                             mlir::OpBuilder &builder) {
+  if (std::optional<mlir::TypedAttr> value =
+          getConstantTensorExtractValue(extract)) {
+    scalarValues[extract.getResult()] =
+        builder.create<mlir::arith::ConstantOp>(extract.getLoc(), *value);
+    return mlir::success();
+  }
   auto bufferIt = externalBuffers.find(extract.getTensor());
-  if (bufferIt == externalBuffers.end())
-    return fail("tensor.extract from tile-local tensor is not representable");
+  if (bufferIt == externalBuffers.end()) {
+    mlir::Operation *definition = extract.getTensor().getDefiningOp();
+    return fail((llvm::Twine("tensor.extract from tile-local tensor is not "
+                             "representable: source=") +
+                 (definition ? definition->getName().getStringRef()
+                             : llvm::StringRef("block-argument")))
+                    .str());
+  }
 
   llvm::SmallVector<mlir::Value, 4> indices;
   for (mlir::Value index : extract.getIndices()) {
@@ -642,6 +688,8 @@ TileRegionBodyEmitter::convertTensorPad(mlir::tensor::PadOp pad,
       makeSPMMemRefType(resultType, MemLayout::Tensor);
   mlir::Value destination =
       builder.create<mlir::memref::AllocOp>(pad.getLoc(), resultBufferType);
+  recordScratchAllocation(
+      destination.getDefiningOp<mlir::memref::AllocOp>());
   auto fill = builder.create<ComputeFillOp>(pad.getLoc(), destination, *scalar,
                                             /*fill_domain=*/FillDomainAttr{});
   recordStructuredComputeOperation(fill);
@@ -658,6 +706,202 @@ bool TileRegionBodyEmitter::allStatic(llvm::ArrayRef<int64_t> values) const {
   return llvm::all_of(values, [](int64_t value) {
     return value != mlir::ShapedType::kDynamic;
   });
+}
+
+bool TileRegionBodyEmitter::isFullTensorInsertSlice(
+    mlir::tensor::InsertSliceOp insertSlice) const {
+  auto sourceType =
+      mlir::dyn_cast<mlir::RankedTensorType>(insertSlice.getSourceType());
+  auto destType =
+      mlir::dyn_cast<mlir::RankedTensorType>(insertSlice.getDestType());
+  if (!sourceType || !destType || !destType.hasStaticShape() ||
+      sourceType != destType || !allStatic(insertSlice.getStaticOffsets()) ||
+      !allStatic(insertSlice.getStaticSizes()) ||
+      !allStatic(insertSlice.getStaticStrides()))
+    return false;
+  return llvm::all_of(insertSlice.getStaticOffsets(),
+                      [](int64_t offset) { return offset == 0; }) &&
+         llvm::equal(insertSlice.getStaticSizes(), destType.getShape()) &&
+         llvm::all_of(insertSlice.getStaticStrides(),
+                      [](int64_t stride) { return stride == 1; });
+}
+
+bool TileRegionBodyEmitter::
+    onlyFeedsStaticExtractSlicesThroughInsertDestinations(
+        mlir::Value value, llvm::DenseSet<mlir::Value> &visited) const {
+  if (!visited.insert(value).second)
+    return true;
+  if (value.use_empty())
+    return false;
+  bool reachesExtract = false;
+  for (mlir::OpOperand &use : value.getUses()) {
+    if (auto insert =
+            mlir::dyn_cast<mlir::tensor::InsertSliceOp>(use.getOwner())) {
+      if (&use != &insert->getOpOperand(/*dest=*/1))
+        return false;
+      auto sourceType =
+          mlir::dyn_cast<mlir::RankedTensorType>(insert.getSourceType());
+      auto destType =
+          mlir::dyn_cast<mlir::RankedTensorType>(insert.getDestType());
+      if (!sourceType || !destType ||
+          sourceType.getRank() != destType.getRank() ||
+          !allStatic(insert.getStaticOffsets()) ||
+          !allStatic(insert.getStaticSizes()) ||
+          !allStatic(insert.getStaticStrides()) ||
+          !llvm::all_of(insert.getStaticStrides(),
+                        [](int64_t stride) { return stride == 1; }) ||
+          !onlyFeedsStaticExtractSlicesThroughInsertDestinations(
+              insert.getResult(), visited))
+        return false;
+      reachesExtract = true;
+      continue;
+    }
+    auto extract = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(use.getOwner());
+    auto resultType = extract ? mlir::dyn_cast<mlir::RankedTensorType>(
+                                    extract.getResult().getType())
+                              : mlir::RankedTensorType{};
+    auto sourceType = extract ? mlir::dyn_cast<mlir::RankedTensorType>(
+                                    extract.getSource().getType())
+                              : mlir::RankedTensorType{};
+    if (!extract || extract.getSource() != value || !resultType ||
+        !sourceType || resultType.getRank() != sourceType.getRank() ||
+        !allStatic(extract.getStaticOffsets()) ||
+        !allStatic(extract.getStaticSizes()) ||
+        !allStatic(extract.getStaticStrides()) ||
+        !llvm::all_of(extract.getStaticStrides(),
+                      [](int64_t stride) { return stride == 1; }))
+      return false;
+    reachesExtract = true;
+  }
+  return reachesExtract;
+}
+
+bool TileRegionBodyEmitter::isDeferredStaticInsertSliceAssembly(
+    mlir::Value value) const {
+  mlir::Value base = value;
+  while (auto insert = base.getDefiningOp<mlir::tensor::InsertSliceOp>())
+    base = insert.getDest();
+  if (!base.getDefiningOp<mlir::tensor::EmptyOp>())
+    return false;
+  llvm::DenseSet<mlir::Value> visited;
+  return onlyFeedsStaticExtractSlicesThroughInsertDestinations(base, visited);
+}
+
+mlir::FailureOr<mlir::Value>
+TileRegionBodyEmitter::materializeStaticTensorWindow(
+    mlir::Value tensor, llvm::ArrayRef<int64_t> offsets,
+    llvm::ArrayRef<int64_t> sizes, mlir::Location loc,
+    mlir::OpBuilder &builder) {
+  auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(tensor.getType());
+  if (!tensorType || !tensorType.hasStaticShape() ||
+      offsets.size() != static_cast<size_t>(tensorType.getRank()) ||
+      sizes.size() != static_cast<size_t>(tensorType.getRank()))
+    return failValue("static tensor window rank is inconsistent");
+  for (auto [offset, size, bound] :
+       llvm::zip_equal(offsets, sizes, tensorType.getShape()))
+    if (offset < 0 || size <= 0 || size > bound || offset > bound - size)
+      return failValue("static tensor window is outside tensor bounds");
+  auto windowType =
+      mlir::RankedTensorType::get(sizes, tensorType.getElementType());
+
+  if (auto insert = tensor.getDefiningOp<mlir::tensor::InsertSliceOp>()) {
+    auto sourceType =
+        mlir::dyn_cast<mlir::RankedTensorType>(insert.getSourceType());
+    if (!sourceType || sourceType.getRank() != tensorType.getRank() ||
+        !allStatic(insert.getStaticOffsets()) ||
+        !allStatic(insert.getStaticSizes()) ||
+        !allStatic(insert.getStaticStrides()) ||
+        !llvm::all_of(insert.getStaticStrides(),
+                      [](int64_t stride) { return stride == 1; }))
+      return failValue(
+          "deferred tensor.insert_slice window requires static unit strides");
+
+    llvm::SmallVector<int64_t, 4> sourceOffsets(offsets.size());
+    llvm::SmallVector<int64_t, 4> intersectionSizes(offsets.size());
+    llvm::SmallVector<int64_t, 4> windowOffsets(offsets.size());
+    bool disjoint = false;
+    bool fullyCovered = true;
+    for (size_t dimension = 0; dimension < offsets.size(); ++dimension) {
+      const int64_t insertBegin = insert.getStaticOffsets()[dimension];
+      const int64_t insertEnd =
+          insertBegin + insert.getStaticSizes()[dimension];
+      const int64_t windowBegin = offsets[dimension];
+      const int64_t windowEnd = windowBegin + sizes[dimension];
+      const int64_t begin = std::max(insertBegin, windowBegin);
+      const int64_t end = std::min(insertEnd, windowEnd);
+      if (end <= begin) {
+        disjoint = true;
+        break;
+      }
+      sourceOffsets[dimension] = begin - insertBegin;
+      intersectionSizes[dimension] = end - begin;
+      windowOffsets[dimension] = begin - windowBegin;
+      fullyCovered &= begin == windowBegin && end == windowEnd;
+    }
+    if (disjoint)
+      return materializeStaticTensorWindow(insert.getDest(), offsets, sizes,
+                                           loc, builder);
+    if (fullyCovered)
+      return materializeStaticTensorWindow(insert.getSource(), sourceOffsets,
+                                           intersectionSizes, loc, builder);
+
+    mlir::FailureOr<mlir::Value> destination = materializeStaticTensorWindow(
+        insert.getDest(), offsets, sizes, loc, builder);
+    mlir::FailureOr<mlir::Value> source = materializeStaticTensorWindow(
+        insert.getSource(), sourceOffsets, intersectionSizes, loc, builder);
+    if (mlir::failed(destination) || mlir::failed(source))
+      return mlir::failure();
+    llvm::SmallVector<int64_t, 4> unitStrides(offsets.size(), 1);
+    builder.create<MoveInsertSliceOp>(
+        loc, *source, *destination,
+        mlir::DenseI64ArrayAttr::get(builder.getContext(), windowOffsets),
+        mlir::DenseI64ArrayAttr::get(builder.getContext(), intersectionSizes),
+        mlir::DenseI64ArrayAttr::get(builder.getContext(), unitStrides));
+    return *destination;
+  }
+
+  if (tensor.getDefiningOp<mlir::tensor::EmptyOp>()) {
+    auto allocation = builder.create<mlir::memref::AllocOp>(
+        loc, makeSPMMemRefType(windowType, MemLayout::Tensor));
+    recordScratchAllocation(allocation);
+    return allocation.getResult();
+  }
+
+  if (auto external = externalBuffers.find(tensor);
+      external != externalBuffers.end()) {
+    llvm::SmallVector<mlir::OpFoldResult, 4> mixedOffsets;
+    mixedOffsets.reserve(offsets.size());
+    for (int64_t offset : offsets)
+      mixedOffsets.push_back(builder.getIndexAttr(offset));
+    llvm::SmallVector<int64_t, 4> unitStrides(offsets.size(), 1);
+    mlir::Value externalBuffer = external->second;
+    mlir::FailureOr<mlir::Value> view =
+        materializeMemRefSubview(loc, externalBuffer, windowType, mixedOffsets,
+                                 sizes, unitStrides, builder);
+    if (mlir::failed(view))
+      return mlir::failure();
+    auto allocation = builder.create<mlir::memref::AllocOp>(
+        loc, makeSPMMemRefType(windowType, MemLayout::Tensor));
+    recordScratchAllocation(allocation);
+    builder.create<StorageLoadOp>(loc, *view, allocation.getResult());
+    return allocation.getResult();
+  }
+
+  mlir::FailureOr<mlir::Value> source =
+      getOrMaterialize(tensor, MemLayout::Tensor, builder);
+  if (mlir::failed(source))
+    return mlir::failure();
+  if (llvm::all_of(offsets, [](int64_t offset) { return offset == 0; }) &&
+      llvm::equal(sizes, tensorType.getShape()))
+    return *source;
+  llvm::SmallVector<int64_t, 4> unitStrides(offsets.size(), 1);
+  return builder
+      .create<MoveExtractSliceOp>(
+          loc, makeSPMMemRefType(windowType, MemLayout::Tensor), *source,
+          mlir::DenseI64ArrayAttr::get(builder.getContext(), offsets),
+          mlir::DenseI64ArrayAttr::get(builder.getContext(), sizes),
+          mlir::DenseI64ArrayAttr::get(builder.getContext(), unitStrides))
+      .getResult();
 }
 
 mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::materializeMemRefSubview(
@@ -856,6 +1100,17 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorExtractSlice(
   if (onlyFeedsUnreadDpsInit(extractSlice.getResult()))
     return mlir::success();
 
+  if (extractSlice.getSource().getDefiningOp<mlir::tensor::InsertSliceOp>() &&
+      isDeferredStaticInsertSliceAssembly(extractSlice.getSource())) {
+    mlir::FailureOr<mlir::Value> window = materializeStaticTensorWindow(
+        extractSlice.getSource(), extractSlice.getStaticOffsets(),
+        extractSlice.getStaticSizes(), extractSlice.getLoc(), builder);
+    if (mlir::failed(window))
+      return mlir::failure();
+    record(extractSlice.getResult(), MemLayout::Tensor, *window);
+    return mlir::success();
+  }
+
   // A slice of tensor.empty is itself an undefined tile.  Allocate only that
   // tile in SPM; compact traversal offsets may be dynamic even though the tile
   // shape is static.
@@ -863,6 +1118,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorExtractSlice(
     auto alloc = builder.create<mlir::memref::AllocOp>(
         extractSlice.getLoc(),
         makeSPMMemRefType(resultTensorType, MemLayout::Tensor));
+    recordScratchAllocation(alloc);
     record(extractSlice.getResult(), MemLayout::Tensor, alloc.getResult());
     return mlir::success();
   }
@@ -963,6 +1219,12 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
   if (!sourceTensorType)
     return fail("tensor.insert_slice source is not a ranked tensor");
 
+  // The assembly remains functional source IR until each exact static window
+  // is requested by convertTensorExtractSlice. Converting the intermediate
+  // inserts here would eagerly allocate the full destination in SPM.
+  if (isDeferredStaticInsertSliceAssembly(insertSlice.getResult()))
+    return mlir::success();
+
   auto externalIt = externalBuffers.find(insertSlice.getDest());
   std::optional<unsigned> outputIndex;
   if (auto outputIndexIt = externalOutputIndices.find(insertSlice.getDest());
@@ -1037,6 +1299,17 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
       }
       return value;
     };
+    // A complete output assembly bound to its caller-owned DDR destination is
+    // already materialized when the private scheduling wrapper inserts that
+    // same tensor back into the same full output buffer. Preserve the explicit
+    // functional result relation without manufacturing a DDR-to-SPM-to-DDR
+    // self-copy.
+    if (sourceExternalIt != externalBuffers.end() &&
+        sourceExternalIt->second == externalBuffer &&
+        isFullTensorInsertSlice(insertSlice)) {
+      recordExternalResult();
+      return mlir::success();
+    }
     bool canStreamExternalCopy =
         sourceExternalIt != externalBuffers.end() &&
         sourceTensorType.hasStaticShape() &&
@@ -1053,41 +1326,12 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
       if (elementBitWidth == 0 || elementBitWidth % 8 != 0)
         return fail(
             "external tensor copy element width is not byte-addressable");
-      const uint64_t elementBytes = elementBitWidth / 8;
-      const TargetMemoryPolicy targetMemory = getTargetMemoryPolicy();
-      const uint64_t spmWindowBytes =
-          static_cast<uint64_t>(targetMemory.spmLimit - targetMemory.spmBase);
-      const uint64_t spmTileBudgetBytes =
-          spmWindowBytes / kExternalTensorCopyWorkingSetSlots;
-      if (spmTileBudgetBytes == 0)
-        return fail("target SPM is too small for external tensor copy");
-      llvm::SmallVector<int64_t, 4> tileShape;
-      tileShape.reserve(sourceTensorType.getRank());
-      for (int64_t extent : sourceTensorType.getShape())
-        tileShape.push_back(extent);
-
-      auto getTileBytes = [&]() -> std::optional<uint64_t> {
-        uint64_t elements = 1;
-        for (int64_t extent : tileShape) {
-          if (extent <= 0 ||
-              static_cast<uint64_t>(extent) >
-                  std::numeric_limits<uint64_t>::max() / elements)
-            return std::nullopt;
-          elements *= static_cast<uint64_t>(extent);
-        }
-        if (elementBytes > std::numeric_limits<uint64_t>::max() / elements)
-          return std::nullopt;
-        return elements * elementBytes;
-      };
-      while (true) {
-        std::optional<uint64_t> bytes = getTileBytes();
-        if (bytes && *bytes <= spmTileBudgetBytes)
-          break;
-        auto largest = llvm::max_element(tileShape);
-        if (largest == tileShape.end() || *largest <= 1)
-          return fail("external tensor copy tile does not fit target SPM");
-        *largest = (*largest + 1) / 2;
-      }
+      // The generic correctness path uses the unique minimal static copy
+      // tile. It does not inspect SPM capacity or predict a fit. Wider copy
+      // tiles belong to an explicit movement candidate; the actual SPM planner
+      // validates this concrete allocation like every other candidate buffer.
+      llvm::SmallVector<int64_t, 4> tileShape(
+          static_cast<size_t>(sourceTensorType.getRank()), 1);
 
       llvm::SmallVector<mlir::OpFoldResult, 4> baseOffsets;
       baseOffsets.reserve(insertSlice.getMixedOffsets().size());
@@ -1188,10 +1432,19 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
           auto tile = nestedBuilder.create<mlir::memref::AllocOp>(
               insertSlice.getLoc(),
               makeSPMMemRefType(tileType, MemLayout::Tensor));
+          recordScratchAllocation(tile);
+          if (outputIndex && relationRecorder)
+            relationRecorder->recordOutputBuffer(*outputIndex,
+                                                 tile.getResult());
           nestedBuilder.create<StorageLoadOp>(insertSlice.getLoc(), *sourceView,
                                               tile.getResult());
           nestedBuilder.create<StorageStoreOp>(
               insertSlice.getLoc(), tile.getResult(), *destinationView);
+          nestedBuilder.create<SyncNCCJoinOp>(
+              insertSlice.getLoc(),
+              llvm::ArrayRef<int64_t>{
+                  static_cast<int64_t>(NCCWorker::Worker0)},
+              nestedBuilder.getUnitAttr());
           nestedBuilder.create<mlir::memref::DeallocOp>(insertSlice.getLoc(),
                                                         tile.getResult());
           return mlir::success();
@@ -1247,6 +1500,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
         getOrMaterialize(insertSlice.getSource(), MemLayout::Tensor, builder);
     if (mlir::failed(source))
       return mlir::failure();
+    if (outputIndex && relationRecorder)
+      relationRecorder->recordOutputBuffer(*outputIndex, *source);
 
     mlir::FailureOr<mlir::Value> tileView = materializeMemRefSubview(
         insertSlice.getLoc(), externalBuffer, sourceTensorType,
@@ -1256,8 +1511,6 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
       return mlir::failure();
 
     builder.create<StorageStoreOp>(insertSlice.getLoc(), *source, *tileView);
-    releasePrivateSPMValueAfterLastUse(insertSlice.getSource(), *source,
-                                       insertSlice.getLoc(), builder);
     recordExternalResult();
     return mlir::success();
   }
@@ -1296,8 +1549,6 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
     if (mlir::failed(destView))
       return mlir::failure();
     builder.create<MoveCopyIntoOp>(insertSlice.getLoc(), *source, *destView);
-    releasePrivateSPMValueAfterLastUse(insertSlice.getSource(), *source,
-                                       insertSlice.getLoc(), builder);
     record(insertSlice.getResult(), MemLayout::Tensor, *dest);
     return mlir::success();
   }
@@ -1325,8 +1576,6 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
       mlir::DenseI64ArrayAttr::get(context, insertSlice.getStaticStrides());
   builder.create<MoveInsertSliceOp>(insertSlice.getLoc(), *source, *dest,
                                     offsets, sizes, strides);
-  releasePrivateSPMValueAfterLastUse(insertSlice.getSource(), *source,
-                                     insertSlice.getLoc(), builder);
   record(insertSlice.getResult(), MemLayout::Tensor, *dest);
   return mlir::success();
 }
@@ -1338,6 +1587,10 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorReshape(
       mlir::dyn_cast<mlir::RankedTensorType>(resultValue.getType());
   if (!resultTensorType)
     return fail("tensor reshape result is not a ranked tensor");
+  MemLayout existingLayout = MemLayout::Tensor;
+  if (externalBuffers.contains(resultValue) ||
+      lookupAny(resultValue, existingLayout))
+    return mlir::success();
 
   const bool hasFillInit = fillInitAttrs.contains(sourceValue) ||
                            fillInitScalars.contains(sourceValue);
@@ -1442,6 +1695,16 @@ TileRegionBodyEmitter::getScalarValue(mlir::Value original,
   // regionless scalar SSA expression in the current region. Tensor producers
   // remain owned by root/edge materialization and are never cloned here.
   mlir::Operation *definition = original.getDefiningOp();
+  if (auto extract =
+          mlir::dyn_cast_or_null<mlir::tensor::ExtractOp>(definition))
+    if (std::optional<mlir::TypedAttr> value =
+            getConstantTensorExtractValue(extract)) {
+      mlir::Value converted =
+          builder.create<mlir::arith::ConstantOp>(extract.getLoc(), *value);
+      scalarValues[original] = converted;
+      scalarAttrs[original] = *value;
+      return converted;
+    }
   if (!definition || definition->getNumRegions() != 0 ||
       definition->getNumSuccessors() != 0 ||
       !mlir::isMemoryEffectFree(definition) ||

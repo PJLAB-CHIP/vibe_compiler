@@ -216,6 +216,31 @@ TEST_F(TileMemoryPlanningTest, ReportsSPMFailureForOwnedTileModule) {
   EXPECT_NE(diagnostics.find("individually_oversized_demands=1"),
             std::string::npos)
       << diagnostics;
+
+  diagnostics.clear();
+  mlir::OwningOpRef<mlir::ModuleOp> quietModule =
+      candidateWithSPMElements(/*elements=*/2'000'000);
+  ASSERT_TRUE(quietModule);
+  ASSERT_TRUE(
+      mlir::succeeded(wafer::convertTileRegionToInstrModule(*quietModule)));
+  wafer::compiler::detail::TileMemoryPlanningFailure quietFailure;
+  auto quiet = wafer::compiler::detail::planTileMemory(
+      std::move(quietModule), &quietFailure,
+      /*selectedBufferingScopes=*/{}, /*materializationRelations=*/nullptr,
+      /*materializedSlotAllocationCount=*/nullptr,
+      /*selectedBufferFailure=*/nullptr,
+      /*applySelectedInstructionSchedule=*/false,
+      /*emitSPMCapacityDiagnostics=*/false);
+  EXPECT_TRUE(mlir::failed(quiet));
+  EXPECT_EQ(
+      quietFailure.kind,
+      wafer::compiler::detail::TileMemoryPlanningFailureKind::SPMAllocation);
+  EXPECT_TRUE(quietFailure.spmCapacityOverflow);
+  EXPECT_EQ(quietFailure.spmPlanningFailureKind,
+            wafer::SPMMemoryPlanningFailureKind::CapacityOverflow);
+  EXPECT_EQ(quietFailure.spmLargestDemandBytes, 4'000'000u);
+  EXPECT_EQ(diagnostics.find("capacity_overflow"), std::string::npos)
+      << diagnostics;
 }
 
 TEST_F(TileMemoryPlanningTest, RejectsCardPlacementBeforeTileMemoryPlanning) {

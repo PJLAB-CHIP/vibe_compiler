@@ -5,6 +5,7 @@
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
 
 #include "mlir/IR/Verifier.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
@@ -133,42 +134,71 @@ mlir::FailureOr<mlir::func::FuncOp> lowerTileEntry(
 static mlir::LogicalResult verifyOneStructuredRootPerRegion(
     mlir::func::FuncOp entry, TileId tileId,
     const StructuredMaterializationRelations &tileRelations,
+    llvm::ArrayRef<StructuredNodeRootGroup> operationRootGroups,
     std::string *failureReason) {
+  llvm::DenseMap<uint32_t, uint32_t> rootGroupByNode;
+  for (const StructuredNodeRootGroup &relation : operationRootGroups)
+    if (!rootGroupByNode
+             .try_emplace(relation.structuredNodeId, relation.rootGroupId)
+             .second)
+      return failCardModule(
+          failureReason,
+          "card structured node/root-group relation is duplicated");
   bool contractViolated = false;
+  bool missingRootGroup = false;
   unsigned violatingRegion = 0;
   unsigned regionOrdinal = 0;
-  llvm::SmallVector<uint32_t, 4> violatingRoots;
-  llvm::SmallVector<uint32_t, 4> roots;
+  llvm::SmallVector<uint32_t, 4> violatingNodes;
+  llvm::SmallVector<uint32_t, 4> violatingRootGroups;
+  llvm::SmallVector<uint32_t, 4> nodes;
+  llvm::SmallVector<uint32_t, 4> rootGroups;
   entry.walk([&](TileRegionOp region) {
-    if (contractViolated || region->getParentOfType<TileRegionOp>())
+    if (contractViolated || missingRootGroup ||
+        region->getParentOfType<TileRegionOp>())
       return;
     const unsigned currentRegion = regionOrdinal++;
-    roots.clear();
+    nodes.clear();
+    rootGroups.clear();
     for (const StructuredOperationEmissionRelation &relation :
          tileRelations.operationEmissions) {
       mlir::Operation *operation = relation.operation;
       if (operation && operation->getParentOfType<TileRegionOp>() == region &&
-          !llvm::is_contained(roots, relation.structuredNodeId))
-        roots.push_back(relation.structuredNodeId);
+          !llvm::is_contained(nodes, relation.structuredNodeId)) {
+        nodes.push_back(relation.structuredNodeId);
+        auto root = rootGroupByNode.find(relation.structuredNodeId);
+        if (root == rootGroupByNode.end()) {
+          missingRootGroup = true;
+          return;
+        }
+        if (!llvm::is_contained(rootGroups, root->second))
+          rootGroups.push_back(root->second);
+      }
     }
-    if (roots.empty())
+    if (nodes.empty())
       return;
-    if (roots.size() != 1) {
+    if (rootGroups.size() != 1) {
       contractViolated = true;
       violatingRegion = currentRegion;
-      violatingRoots = roots;
+      violatingNodes = nodes;
+      violatingRootGroups = rootGroups;
     }
   });
+  if (missingRootGroup)
+    return failCardModule(
+        failureReason,
+        "materialized structured operation has no current root group");
   if (contractViolated) {
     std::string detail;
     llvm::raw_string_ostream diagnostic(detail);
     diagnostic << "carrier-boundary materialization on Tile "
                << tileId.getValue() << " produced compute region "
-               << violatingRegion << " with " << violatingRoots.size()
-               << " structured roots";
-    if (!violatingRoots.empty()) {
-      diagnostic << " [";
-      llvm::interleaveComma(violatingRoots, diagnostic);
+               << violatingRegion << " with "
+               << violatingRootGroups.size() << " semantic roots";
+    if (!violatingNodes.empty()) {
+      diagnostic << "; structured_nodes=[";
+      llvm::interleaveComma(violatingNodes, diagnostic);
+      diagnostic << "]; root_groups=[";
+      llvm::interleaveComma(violatingRootGroups, diagnostic);
       diagnostic << ']';
     }
     diagnostic << "; exactly one is required; entry carries "
@@ -193,7 +223,8 @@ lowerBaselineTileEntry(const TileMaterializationPreparation &preparation,
   if (mlir::failed(entry))
     return entry;
   if (mlir::failed(verifyOneStructuredRootPerRegion(
-          *entry, tileId, tileRelations, failureReason)))
+          *entry, tileId, tileRelations, preparation.operationRootGroups,
+          failureReason)))
     return mlir::failure();
   return entry;
 }

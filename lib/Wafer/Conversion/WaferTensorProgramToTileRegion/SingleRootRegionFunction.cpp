@@ -650,6 +650,20 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
        emissionRelations.materializedBuffers.operationResultBuffers)
     if (relation.buffer)
       emittedNodes.insert(relation.structuredNodeId);
+  // A pure passthrough can be canonicalized to its selected output buffer and
+  // therefore emit neither a target compute op nor a private result buffer.
+  // The root function's typed result keys plus a current output-buffer
+  // relation are the exact witness in that case; this is not an inference from
+  // shape, name, or region cardinality.
+  const bool hasTypedPassthroughResult =
+      !result.results.empty() &&
+      !emissionRelations.materializedBuffers.outputBuffers.empty() &&
+      llvm::all_of(result.results, [&](const RootValueKey &key) {
+        return key.kind == RootValueKind::StructuredResult &&
+               key.owner == shard.structuredNodeId;
+      });
+  if (emittedNodes.empty() && hasTypedPassthroughResult)
+    emittedNodes.insert(shard.structuredNodeId);
   if (emittedNodes.size() != 1 ||
       !emittedNodes.contains(shard.structuredNodeId)) {
     std::string detail;

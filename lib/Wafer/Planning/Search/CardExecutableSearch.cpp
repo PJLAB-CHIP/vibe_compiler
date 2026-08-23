@@ -2,30 +2,46 @@
 
 #include "Wafer/Planning/Search/CardExecutableSearch.h"
 
+#include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/CodeGen/Executable/CardExecutableCompilation.h"
 #include "Wafer/Planning/Search/TensorProgramAlternative.h"
 #include "Wafer/Planning/Search/UnifiedPhysicalDataflow.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include <array>
+#include <optional>
 
 namespace wafer::compiler::detail {
 
-mlir::FailureOr<CardExecutableLoweringResult> runCardExecutableSearch(
-    mlir::ModuleOp tensorProgram, const CardProgramAnalysis &programAnalysis,
-    CardExecutableLoweringResult baseline,
+mlir::FailureOr<CardExecutableSearchResult> runCardExecutableSearch(
+    mlir::ModuleOp tensorProgram,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     ProgramDataHandoff &programData, SearchWorkBudget budget,
-    const TargetMemoryPolicy &memory, CardExecutableSearchSummary *summary) {
+    CardExecutableSearchSummary *summary,
+    bool captureTileDataflowIRTrace) {
+  wafer::support::ScopedCompileTimingSpan totalTiming(
+      "stage", "tensor-program-to-executable", "card-search-compilation");
   if (summary)
     *summary = {};
+  mlir::FailureOr<std::unique_ptr<CardProgramAnalysis>> programAnalysis =
+      [&]() {
+        wafer::support::ScopedCompileTimingSpan timing(
+            "query", "physical-search", "analyze-card-program");
+        return analyzeCardProgram(tensorProgram, program, executionConfig,
+                                  diagnostics);
+      }();
+  if (mlir::failed(programAnalysis))
+    return mlir::failure();
   mlir::FailureOr<TensorProgramAlternativeDomain> alternatives =
       getTensorProgramAlternativeDomain(tensorProgram);
   if (mlir::failed(alternatives))
     return mlir::failure();
   SearchWorkCounts work;
   bool exhausted = false;
-  bool allAcceptedCostsComparable = false;
+  bool traceCaptureFailed = false;
+  bool allAcceptedCostsComparable = true;
+  std::optional<CardExecutableSearchResult> winner;
   auto values = [](const analysis::CardInstructionProgramCost &cost)
       -> std::optional<std::array<uint64_t, 6>> {
     const std::array<const analysis::ScheduleCostMetric *, 6> metrics{
@@ -42,22 +58,19 @@ mlir::FailureOr<CardExecutableLoweringResult> runCardExecutableSearch(
                                    metrics[2]->value, metrics[3]->value,
                                    metrics[4]->value, metrics[5]->value};
   };
-  allAcceptedCostsComparable = values(baseline.resourceCost).has_value();
   auto isBetter = [&](const CardExecutableLoweringResult &candidate,
-                      const CardExecutableLoweringResult &incumbent) {
+                      const CardExecutableLoweringResult &currentWinner) {
     auto candidateValues = values(candidate.resourceCost);
-    auto incumbentValues = values(incumbent.resourceCost);
-    if (!candidateValues || !incumbentValues)
+    auto winnerValues = values(currentWinner.resourceCost);
+    if (!candidateValues || !winnerValues)
       allAcceptedCostsComparable = false;
-    return candidateValues && incumbentValues &&
-           *candidateValues < *incumbentValues;
+    return candidateValues && winnerValues && *candidateValues < *winnerValues;
   };
 
   std::string failureReason;
   auto evaluateRoot = [&](mlir::ModuleOp root,
                           const CardProgramAnalysis &analysis) {
-    auto domain =
-        UnifiedPhysicalDataflowDomain::create(analysis, CardId(0), memory);
+    auto domain = UnifiedPhysicalDataflowDomain::create(analysis, CardId(0));
     if (mlir::failed(domain)) {
       ++work.indeterminate;
       if (summary)
@@ -81,13 +94,28 @@ mlir::FailureOr<CardExecutableLoweringResult> runCardExecutableSearch(
                 analysis.availableTileIds, *scopes, materialized->relations,
                 program, executionConfig, diagnostics, programData,
                 /*statistics=*/nullptr, /*tilePipelineParallelism=*/0,
-                /*captureTileIRTrace=*/false,
+                captureTileDataflowIRTrace,
                 /*applySelectedInstructionSchedule=*/true);
         if (compiled.isAccepted()) {
           ++work.accepted;
           CardExecutableLoweringResult candidate = compiled.takeExecutable();
-          if (isBetter(candidate, baseline))
-            baseline = std::move(candidate);
+          if (captureTileDataflowIRTrace &&
+              compiled.tileDataflowIRTrace.size() != candidate.tiles.size()) {
+            traceCaptureFailed = true;
+            if (summary)
+              summary->lastDetail =
+                  "accepted candidate IR trace does not cover its Tile domain";
+            return;
+          }
+          if (!values(candidate.resourceCost))
+            allAcceptedCostsComparable = false;
+          CardExecutableSearchResult accepted{
+              std::move(candidate), std::move(compiled.tileDataflowIRTrace)};
+          if (!winner || isBetter(accepted.executable, winner->executable)) {
+            winner = std::move(accepted);
+            if (summary)
+              ++summary->winnerUpdates;
+          }
         } else if (compiled.isProvenExactRejection()) {
           ++work.exactRejected;
           if (summary) {
@@ -132,8 +160,7 @@ mlir::FailureOr<CardExecutableLoweringResult> runCardExecutableSearch(
     if (mlir::failed(proposal) && summary)
       summary->proposalDetail = failureReason;
     if (mlir::succeeded(proposal)) {
-      if (budget.maximumEvaluations &&
-          work.evaluated >= *budget.maximumEvaluations)
+      if (work.evaluated >= budget.maximumEvaluations)
         return false;
       evaluateAssignment(*proposal);
     }
@@ -146,8 +173,7 @@ mlir::FailureOr<CardExecutableLoweringResult> runCardExecutableSearch(
     }
     if (mlir::succeeded(fusionProposal) &&
         (mlir::failed(proposal) || !(*fusionProposal == *proposal))) {
-      if (budget.maximumEvaluations &&
-          work.evaluated >= *budget.maximumEvaluations)
+      if (work.evaluated >= budget.maximumEvaluations)
         return false;
       evaluateAssignment(*fusionProposal);
     }
@@ -164,8 +190,7 @@ mlir::FailureOr<CardExecutableLoweringResult> runCardExecutableSearch(
           (mlir::succeeded(proposal) && *current == *proposal) ||
           (mlir::succeeded(fusionProposal) && *current == *fusionProposal);
       if (!alreadyEvaluated) {
-        if (budget.maximumEvaluations &&
-            work.evaluated >= *budget.maximumEvaluations)
+        if (work.evaluated >= budget.maximumEvaluations)
           return false;
         evaluateAssignment(*current);
       }
@@ -187,7 +212,7 @@ mlir::FailureOr<CardExecutableLoweringResult> runCardExecutableSearch(
   while (true) {
     bool rootExhausted = false;
     if (alternative.kind == TensorProgramAlternativeKind::Original) {
-      rootExhausted = evaluateRoot(tensorProgram, programAnalysis);
+      rootExhausted = evaluateRoot(tensorProgram, **programAnalysis);
     } else {
       TensorProgramAlternativeMaterialization materialized =
           materializeTensorProgramAlternative(tensorProgram, alternative);
@@ -226,7 +251,9 @@ mlir::FailureOr<CardExecutableLoweringResult> runCardExecutableSearch(
             ? CardExecutableSearchCoverage::OptimalCertified
             : CardExecutableSearchCoverage::BudgetedFeasible;
   }
-  return baseline;
+  if (traceCaptureFailed || !winner)
+    return mlir::failure();
+  return std::move(*winner);
 }
 
 } // namespace wafer::compiler::detail

@@ -22,10 +22,10 @@ void printHelp() {
                   "[--optimization-policy <search|none>] "
                   "[--search-max-candidate-evaluations <count>] "
                   "[--compile-timing] "
+                  "[--dump-compiler-ir <dir>] "
                   "[--profile]\n";
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
   llvm::outs() << "test-only internal entry also accepts: "
-                  "[--dump-compiler-ir <dir>] "
                   "[--target-model "
                   "--model-input <index>=<npy> "
                   "--model-expected <index>=<npy> "
@@ -201,13 +201,13 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
       options.profile = true;
       continue;
     }
-#ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
     if (arg == "--dump-compiler-ir" || arg.starts_with("--dump-compiler-ir=")) {
       if (parseValueOption(argc, argv, index, arg, "--dump-compiler-ir",
                            options.compilerIRDumpDirectory))
         return false;
       continue;
     }
+#ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
     if (arg == "--target-model") {
       if (options.targetModel) {
         llvm::errs() << "wafer-compile: duplicate option: --target-model\n";

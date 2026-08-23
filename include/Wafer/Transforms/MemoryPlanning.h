@@ -34,6 +34,9 @@ struct SPMMemoryPlanningFailure {
     mlir::Type type;
     uint64_t bytes = 0;
     llvm::SmallVector<mlir::LocationAttr, 4> userLocations;
+    /// Diagnostic-only operation names captured before the candidate IR is
+    /// destroyed. They must never participate in attribution or control flow.
+    llvm::SmallVector<mlir::OperationName, 4> userOperationNames;
   };
 
   llvm::SmallVector<DemandEvidence, 4> largestDemands;

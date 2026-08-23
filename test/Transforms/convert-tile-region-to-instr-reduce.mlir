@@ -22,16 +22,12 @@ func.func @ordered_sum() {
 // CHECK: %[[SLICE:.*]] = memref.alloc() : memref<2xf32, #wafer.memory<spm, tensor>>
 // CHECK: %[[DEST:.*]] = memref.alloc() : memref<2xf32, #wafer.memory<spm, cx>>
 // CHECK: wafer.instr.fill %[[A]], %[[INIT]]
-// CHECK: wafer.instr.gather_scatter %{{.+}} to %[[SLICE]]
-// CHECK-NOT: src_offset
-// CHECK-NEXT: wafer.instr.elementwise <add> %[[A]], %[[SLICE]] into %[[B]]
-// CHECK: wafer.instr.gather_scatter %{{.+}} to %[[SLICE]]
-// CHECK-SAME: src_offset = 16
-// CHECK-NEXT: wafer.instr.elementwise <add> %[[B]], %[[SLICE]] into %[[A]]
-// CHECK: wafer.instr.gather_scatter %{{.+}} to %[[SLICE]]
-// CHECK-SAME: src_offset = 32
-// CHECK-NEXT: wafer.instr.elementwise <add> %[[A]], %[[SLICE]] into %[[B]]
-// CHECK: wafer.instr.gather_scatter %[[B]] to %[[DEST]]
+// CHECK: %[[LOOP:.*]]:2 = scf.for
+// CHECK-SAME: iter_args(%[[CURRENT:.*]] = %[[A]], %[[NEXT:.*]] = %[[B]])
+// CHECK: wafer.instr.gather_scatter %{{.+}} to %[[SLICE]] src_offset_value(%{{.+}})
+// CHECK-NEXT: wafer.instr.elementwise <add> %[[CURRENT]], %[[SLICE]] into %[[NEXT]]
+// CHECK: scf.yield %[[NEXT]], %[[CURRENT]]
+// CHECK: wafer.instr.gather_scatter %[[LOOP]]#0 to %[[DEST]]
 // CHECK: wafer.instr.ncc_join [0]
 // CHECK-NOT: wafer.instr.reduce
 // CHECK: return
@@ -130,8 +126,9 @@ func.func @ordered_max() {
 // CHECK-LABEL: func.func @ordered_max
 // CHECK-NOT: wafer.instr.reduce
 // CHECK: wafer.instr.fill
+// CHECK: scf.for
 // CHECK: wafer.instr.elementwise <max>
-// CHECK: wafer.instr.elementwise <max>
+// CHECK: scf.yield
 // CHECK: return
 
 func.func @ordered_min() {
@@ -151,6 +148,7 @@ func.func @ordered_min() {
 // CHECK-LABEL: func.func @ordered_min
 // CHECK-NOT: wafer.instr.reduce
 // CHECK: wafer.instr.fill
+// CHECK: scf.for
 // CHECK: wafer.instr.elementwise <min>
-// CHECK: wafer.instr.elementwise <min>
+// CHECK: scf.yield
 // CHECK: return

@@ -868,19 +868,17 @@ domain/query/apply、actual-IR witness和下游Q50.0定向准入，同时删除�
 
 ## 13. 当前差距与任务闭环
 
-Q50.0、Q54与Q59已经闭合无策略complete-candidate actual compilation/admission、MLIR scope/pipeline和compiler transaction。Q50.A旧API已有
-immutable borrow、typed relation/role及部分reduction/broadcast/window/multi-piece witness，但本轮重审已因execution/ownership重复、
-partial-result owner、node-wide merge及manual epoch等问题重新打开。A的终态输入`SpatialAssignment`由Q50.B representation foundation先
-定义、关闭并由baseline canonical producer实际产生；A不能临时保留旧trial作为输入。动态状态只看`tasks/progress.md`。
+Q50.0、Q54与Q59已经闭合无策略complete-candidate actual compilation/admission、MLIR scope/pipeline和compiler transaction。Q50.A已经以
+immutable borrow、typed relation/role以及reduction/broadcast/window/multi-piece/attention witness闭合exact-demand boundary；其终态输入
+`SpatialAssignment`由Q50.B representation foundation定义并由baseline canonical producer实际产生。动态状态只看
+`tasks/progress.md`。
 
-Q49.P已经保留consumer-operand exact demand、structured-producer截断、single-root final construction、typed carrier和search-policy
-隔离等能力。每个closed temporal candidate运行一次CardModule/Q50.0是current正确方向；本轮重新打开是因为旧路径仍存在relation缺口、
-owner猜测、footprint/plan-side capacity分支、allocator fallback和同candidate重复构造。current局部probe、post-hoc support rebuild和default
-statistics不恢复；Q49.P直接消费完整actual result并保留Accepted owner。它不等待完整search domains。
+Q49.P已经闭合consumer-operand exact demand、structured-producer截断、single-root construction、typed carrier和search-policy隔离。
+每个closed temporal candidate只运行一次CardModule/Q50.0；capacity只来自actual SPM/MiniMalloc且每个demand有current typed owner，
+rejected candidate销毁、Accepted owner直接保留。局部probe、post-hoc support rebuild、plan-side footprint、allocator fallback和default
+statistics均不在baseline调用闭包；Q49.P不等待也不进入完整search domains。
 主线仍有下列设计差距：
 
-- baseline actual loop必须保证每个candidate只有一份IR、每个allocation都有current typed owner、只有actual SPM capacity rejection推进
-  temporal successor，且Accepted owner不重建；
 - `spatial-plan-schema`只定义schema、structural close与validator；`attention-normalization`先产生normalized semantic roots和fixed FA/FD fact，
   `attention-spatial-integration`关闭K1/K2与spatial constraints后`canonical-spatial-assignment`才签发assignment；
   `exact-demand-boundary`与`attention-demand-integration`随后关闭demand/final owner/

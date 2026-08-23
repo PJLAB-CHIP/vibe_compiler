@@ -5,6 +5,7 @@
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/WaferDialect.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
@@ -15,6 +16,7 @@
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -238,6 +240,8 @@ private:
     if (auto minimum = value.getDefiningOp<mlir::arith::MinSIOp>())
       return evaluateSignedExtremum(minimum.getLhs(), minimum.getRhs(),
                                     /*takeMaximum=*/false);
+    if (auto apply = value.getDefiningOp<mlir::affine::AffineApplyOp>())
+      return evaluateAffineApply(apply);
     // Keep the hand-written arithmetic cases above for precise failure
     // classification, then accept any other current-IR index expression whose
     // registered ValueBounds model proves a finite closed interval. This
@@ -397,10 +401,90 @@ private:
     auto combine = [takeMaximum](int64_t lhs, int64_t rhs) {
       return takeMaximum ? std::max(lhs, rhs) : std::min(lhs, rhs);
     };
-    return Result{StaticIndexRange{
-        combine(operands->first.min, operands->second.min),
-        combine(operands->first.max, operands->second.max),
-        /*empty=*/false}};
+    return Result{
+        StaticIndexRange{combine(operands->first.min, operands->second.min),
+                         combine(operands->first.max, operands->second.max),
+                         /*empty=*/false}};
+  }
+
+  Result evaluateAffineApply(mlir::affine::AffineApplyOp apply) {
+    mlir::AffineMap map = apply.getAffineMap();
+    if (map.getNumResults() != 1)
+      return evaluateInterfaceBounds(apply.getResult());
+    bool supported = true;
+    map.getResult(0).walk([&](mlir::AffineExpr expr) {
+      switch (expr.getKind()) {
+      case mlir::AffineExprKind::Add:
+      case mlir::AffineExprKind::Mul:
+      case mlir::AffineExprKind::Constant:
+      case mlir::AffineExprKind::DimId:
+      case mlir::AffineExprKind::SymbolId:
+        return;
+      case mlir::AffineExprKind::Mod:
+      case mlir::AffineExprKind::FloorDiv:
+      case mlir::AffineExprKind::CeilDiv:
+        supported = false;
+        return;
+      }
+      llvm_unreachable("unhandled affine expression kind");
+    });
+    if (!supported)
+      return evaluateInterfaceBounds(apply.getResult());
+
+    mlir::OperandRange operands = apply.getMapOperands();
+    std::function<Result(mlir::AffineExpr)> evaluateExpr =
+        [&](mlir::AffineExpr expr) -> Result {
+      if (auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expr)) {
+        int64_t value = constant.getValue();
+        return Result{StaticIndexRange{value, value, /*empty=*/false}};
+      }
+      unsigned operand = 0;
+      if (auto dim = mlir::dyn_cast<mlir::AffineDimExpr>(expr)) {
+        operand = dim.getPosition();
+      } else if (auto symbol = mlir::dyn_cast<mlir::AffineSymbolExpr>(expr)) {
+        operand = map.getNumDims() + symbol.getPosition();
+      } else {
+        auto binary = mlir::dyn_cast<mlir::AffineBinaryOpExpr>(expr);
+        if (!binary)
+          return failed(Failure::UnsupportedExpression);
+        Result lhs = evaluateExpr(binary.getLHS());
+        Result rhs = evaluateExpr(binary.getRHS());
+        if (!lhs.succeeded())
+          return lhs;
+        if (!rhs.succeeded())
+          return rhs;
+        if (lhs.range.empty || rhs.range.empty)
+          return Result{StaticIndexRange{/*min=*/0, /*max=*/0, /*empty=*/true}};
+        if (expr.getKind() == mlir::AffineExprKind::Add) {
+          int64_t minimum = 0;
+          int64_t maximum = 0;
+          if (llvm::AddOverflow(lhs.range.min, rhs.range.min, minimum) ||
+              llvm::AddOverflow(lhs.range.max, rhs.range.max, maximum))
+            return failed(Failure::ArithmeticOverflow);
+          return Result{StaticIndexRange{minimum, maximum, /*empty=*/false}};
+        }
+        assert(expr.getKind() == mlir::AffineExprKind::Mul &&
+               "unsupported affine binary expression passed validation");
+        const bool lhsSingleton = lhs.range.min == lhs.range.max;
+        const bool rhsSingleton = rhs.range.min == rhs.range.max;
+        if (!lhsSingleton && !rhsSingleton)
+          return failed(Failure::NonSingletonMultiplication);
+        const int64_t factor = lhsSingleton ? lhs.range.min : rhs.range.min;
+        const StaticIndexRange varying = lhsSingleton ? rhs.range : lhs.range;
+        int64_t first = 0;
+        int64_t second = 0;
+        if (llvm::MulOverflow(varying.min, factor, first) ||
+            llvm::MulOverflow(varying.max, factor, second))
+          return failed(Failure::ArithmeticOverflow);
+        return Result{StaticIndexRange{std::min(first, second),
+                                       std::max(first, second),
+                                       /*empty=*/false}};
+      }
+      if (operand >= operands.size())
+        return failed(Failure::UnsupportedExpression);
+      return evaluate(operands[operand]);
+    };
+    return evaluateExpr(map.getResult(0));
   }
 
   llvm::DenseMap<mlir::Value, Result> cache;

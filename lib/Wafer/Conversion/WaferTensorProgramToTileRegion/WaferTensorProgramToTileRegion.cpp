@@ -95,9 +95,13 @@ static mlir::LogicalResult rewriteTensorProgramFunctionInPlace(
   mlir::func::ReturnOp oldReturn = scope.getReturn();
   mlir::IRRewriter rewriter(function.getContext());
   rewriter.setInsertionPoint(oldReturn);
+  std::optional<TileRegionEmissionRecorder> relationRecorder;
+  if (emissionRelations)
+    relationRecorder.emplace(*emissionRelations);
   TileRegionBodyEmitter emitter(failureReason, currentLogicalPartition,
                                 peerEndpoints, selectedDDRStages,
-                                emissionRelations, normalizedOperationNodes,
+                                relationRecorder ? &*relationRecorder : nullptr,
+                                normalizedOperationNodes,
                                 representations, implementations);
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "conversion-phase", "rewriteTensorProgramInPlace",
@@ -245,7 +249,8 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
           failureReason, suppressDiagnostics,
           /*verifyResult=*/false, populateFallbackFailureReason, peerEndpoints,
           selectedDDRStages, emissionRelations, operationNodes,
-          requireOneStructuredRootPerRegion, representations, implementations)))
+          requireOneStructuredRootPerRegion, representations,
+          implementations)))
     return mlir::failure();
 
   if (verifyResult) {

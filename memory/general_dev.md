@@ -481,6 +481,32 @@ source program
 - 每个complete assignment必须独立actualize并运行Q50.0。actual SPM rejection默认只关闭该complete point；owner relation可用于
   baseline选择下一temporal axis，但不能缓存成node级“最大可放下tile”或跨layout/movement/buffer sibling复用。
 
+## Actual SPM feedback与buffer relation owner（stable，2026-08-23）
+
+- SPM admission只接收完整current Card/Tile/Instr candidate，运行fresh completion、lifetime和MiniMalloc。shape、logical element数、
+  buffer count、footprint公式、synthetic demand或前一candidate结果均不能签发capacity结论或驱动refinement。
+- `StructuredMaterializationRelations`由candidate父transaction唯一拥有；TileRegion/Instr emitter只报告实际result、operand、output、
+  selected DDR stage、movement和scratch buffer。relation引用使用kind/index等typed位置，不保存可扩容vector元素指针。
+- 一个logical output可以同时关联caller-visible DDR destination和实际写入它的一个或多个SPM tile/source buffer；`outputIndex`是归因键，
+  不是“每个output只能有一条relation”的唯一性约束。complete streamed insert和incomplete whole-output assembly分别断言各自精确cardinality。
+- capacity rejection返回actual allocation/conflict witness，并通过current storage root索引到all-and-only typed owners；无owner、多个不相容
+  owner或relation已离开current IR都是compiler-contract failure。baseline只有在完整归因后推进确定性temporal successor。
+- rejected candidate连同IR/relation销毁；Accepted owner原样进入target/package，不重新materialize。quiet candidate evaluation只抑制
+  重复capacity diagnostic文本，不抑制typed certificate或其它错误。
+
+## Tile-to-Instr descriptor规划与结构化压缩（stable，2026-08-23）
+
+- `PhysicalAccessRelation`的point/span query直接使用已验证logical projection与encoding；physical bit/ordinal Presburger composition只在
+  mapping/traversal equivalence query时lazy创建。in-bounds非零constant projected slice拥有独立total/bounded construction proof。
+- ordered reduction按`WaferPhysicalLayoutPiece`的half-open bounds和declared period构造exact runs，不逐tuple建立AffineMap。run使用
+  `scf.for`携带两个accumulator并按原顺序交换；gather/scatter的SSA byte offset由target function-level verifier结合constant loop bounds
+  证明全域range，op verifier只检查局部mixed static/SSA表示合同。
+- request-local descriptor cache key包含source/destination `MemRefType`、iteration shape、两张projected affine map和engine，只缓存
+  total/bounded exact success。低复用query不保留plan；identity physical traversal按type pair复用。work statistics记录实际descriptor
+  planning次数，不能用无条件debug stderr观察cache。
+- completion fixed point区分alternative branch merge与sequential loop backedge：后者从上一轮完整body state继续，conditional ambiguity
+  才在body backedge join；unconditional same-worker流在observable exit完成。
+
 ## Physical planning、actual candidate与唯一发布
 
 - query若消费某个plan component，必须先交付该component的policy-free representation foundation、structural validation和至少一个真实

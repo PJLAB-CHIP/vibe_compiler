@@ -40,6 +40,15 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
     llvm::ArrayRef<analysis::DependencyDemand> operandDemands,
     std::string *failureReason) {
   SelectedEdgeProgramMapping result;
+  llvm::DenseMap<mlir::Operation *, uint64_t> sourcePositions;
+  uint64_t sourcePosition = 0;
+  for (mlir::Operation &operation : sourceBody.without_terminator())
+    sourcePositions.try_emplace(&operation, sourcePosition++);
+  llvm::DenseSet<uint32_t> distinctNodeIds;
+  bool hasSharedNodeIdentity = false;
+  for (const StructuredOperationNodeMapping &node : operationNodes)
+    hasSharedNodeIdentity |=
+        !distinctNodeIds.insert(node.structuredNodeId).second;
   llvm::DenseSet<mlir::Operation *> seenTemporalOperations;
   for (const StructuredOpTemporalTile &tile : operationTemporalTiles) {
     if (!tile.operation ||
@@ -57,15 +66,13 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
   }
 
   llvm::DenseSet<mlir::Operation *> seenNodeOperations;
-  llvm::DenseSet<uint32_t> seenNodeIds;
   result.operationNodes.reserve(operationNodes.size());
   for (const StructuredOperationNodeMapping &node : operationNodes) {
-    if (!node.operation || !seenNodeOperations.insert(node.operation).second ||
-        !seenNodeIds.insert(node.structuredNodeId).second)
+    if (!node.operation || !seenNodeOperations.insert(node.operation).second)
       return failResult(
           failureReason,
           "structured operation-node mapping contains a null or duplicate "
-          "entry");
+          "operation");
     mlir::Operation *mapped = cloneMapping.lookupOrNull(node.operation);
     if (!mapped)
       return failResult(failureReason,
@@ -120,10 +127,6 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
       SpatialDataflowMaterializationMode::IndependentDDRStages;
   llvm::SmallVector<SpatialEdgeStrategy, 16> normalizedEdgeStrategies(
       edgeStrategies.begin(), edgeStrategies.end());
-  if (result.independentDDRStages &&
-      mlir::failed(splitIndependentPeerFragmentsAtTemporalWaves(
-          normalizedEdgeStrategies, operationTemporalTiles, failureReason)))
-    return mlir::failure();
 
   llvm::SmallVector<SpatialEdgeMaterializationFacts, 16> effectiveEdgeFacts;
   if (edgeFacts.empty()) {
@@ -155,6 +158,18 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
     mapped.consumer = cloneMapping.lookupOrNull(strategy.consumer);
     mapped.consumerScheduleOrdinal =
         effectiveEdgeFacts[strategyIndex].consumerScheduleOrdinal;
+    if (hasSharedNodeIdentity &&
+        strategy.action == SpatialEdgeAction::PeerFragments) {
+      auto producerPosition = sourcePositions.find(strategy.producer);
+      if (producerPosition == sourcePositions.end())
+        return failResult(failureReason,
+                          "shared-root peer producer is outside source order");
+      // A selected semantic root may contain several structured action ops.
+      // Order its cross-root messages by producer readiness; consumer-first
+      // order can otherwise place a downstream send before the receive that
+      // makes its producer executable and create an artificial event cycle.
+      mapped.consumerScheduleOrdinal = producerPosition->second;
+    }
     mapped.strategy.producer = mapped.producer;
     mapped.strategy.consumer = mapped.consumer;
     if (mlir::failed(validateEdge(mapped.producer, strategy.producerResult,

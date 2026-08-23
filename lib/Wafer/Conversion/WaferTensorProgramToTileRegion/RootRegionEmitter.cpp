@@ -247,45 +247,49 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
   movementClosures.reserve(peerEndpoints.size());
   for (auto [endpointIndex, endpoint] : llvm::enumerate(peerEndpoints)) {
     llvm::DenseSet<mlir::Operation *> closure;
-    std::function<mlir::LogicalResult(mlir::Operation *)> addDependencies;
-    addDependencies = [&](mlir::Operation *operation) -> mlir::LogicalResult {
-      mlir::Operation *topLevel = getTopLevelOperation(operation);
-      if (!topLevel || selectedStageAllocations.contains(topLevel) ||
-          closure.contains(topLevel))
-        return mlir::success();
-      if (!operationNodes.lookup(topLevel).empty())
-        return mlir::success();
-      closure.insert(topLevel);
-      for (mlir::Value operand : topLevel->getOperands())
-        if (mlir::Operation *definition = operand.getDefiningOp())
-          if (mlir::failed(addDependencies(definition)))
-            return mlir::failure();
-      return mlir::success();
-    };
-    mlir::Operation *definition = endpoint.value.getDefiningOp();
-    if (!definition || mlir::failed(addDependencies(definition)))
-      return failAndReturn(
-          "selected peer endpoint has no root-independent value closure");
-
-    // A receive movement region also owns the exact rootless store chain that
-    // persists the fragment into its selected DDR stage. The consumer root
-    // itself is an explicit stop boundary.
-    if (endpoint.kind == CandidatePeerEndpointKind::Receive) {
-      llvm::SmallVector<mlir::Operation *, 8> worklist;
-      for (mlir::Operation *operation : closure)
-        worklist.push_back(operation);
-      while (!worklist.empty()) {
-        mlir::Operation *operation = worklist.pop_back_val();
-        for (mlir::Value result : operation->getResults()) {
-          for (mlir::OpOperand &use : result.getUses()) {
-            mlir::Operation *user = getTopLevelOperation(use.getOwner());
-            if (!user || mlir::isa<mlir::func::ReturnOp>(user) ||
-                selectedStageAllocations.contains(user) ||
-                closure.contains(user) || !operationNodes.lookup(user).empty())
-              continue;
-            if (mlir::failed(addDependencies(user)))
+    if (endpoint.streamTileSizes.empty()) {
+      std::function<mlir::LogicalResult(mlir::Operation *)> addDependencies;
+      addDependencies =
+          [&](mlir::Operation *operation) -> mlir::LogicalResult {
+        mlir::Operation *topLevel = getTopLevelOperation(operation);
+        if (!topLevel || selectedStageAllocations.contains(topLevel) ||
+            closure.contains(topLevel))
+          return mlir::success();
+        if (!operationNodes.lookup(topLevel).empty())
+          return mlir::success();
+        closure.insert(topLevel);
+        for (mlir::Value operand : topLevel->getOperands())
+          if (mlir::Operation *definition = operand.getDefiningOp())
+            if (mlir::failed(addDependencies(definition)))
               return mlir::failure();
-            worklist.push_back(user);
+        return mlir::success();
+      };
+      mlir::Operation *definition = endpoint.value.getDefiningOp();
+      if (!definition || mlir::failed(addDependencies(definition)))
+        return failAndReturn(
+            "selected peer endpoint has no root-independent value closure");
+
+      // A receive movement region also owns the exact rootless store chain
+      // that persists the fragment into its selected DDR stage. The consumer
+      // root itself is an explicit stop boundary.
+      if (endpoint.kind == CandidatePeerEndpointKind::Receive) {
+        llvm::SmallVector<mlir::Operation *, 8> worklist;
+        for (mlir::Operation *operation : closure)
+          worklist.push_back(operation);
+        while (!worklist.empty()) {
+          mlir::Operation *operation = worklist.pop_back_val();
+          for (mlir::Value result : operation->getResults()) {
+            for (mlir::OpOperand &use : result.getUses()) {
+              mlir::Operation *user = getTopLevelOperation(use.getOwner());
+              if (!user || mlir::isa<mlir::func::ReturnOp>(user) ||
+                  selectedStageAllocations.contains(user) ||
+                  closure.contains(user) ||
+                  !operationNodes.lookup(user).empty())
+                continue;
+              if (mlir::failed(addDependencies(user)))
+                return mlir::failure();
+              worklist.push_back(user);
+            }
           }
         }
       }
@@ -296,7 +300,7 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
     for (mlir::Operation *operation : sourceOperations)
       if (closure.contains(operation))
         movement.operations.push_back(operation);
-    if (movement.operations.empty())
+    if (movement.operations.empty() && endpoint.streamTileSizes.empty())
       return failAndReturn(
           "selected peer endpoint has an empty movement closure");
     movementClosures.push_back(std::move(movement));
@@ -321,8 +325,11 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
     successors[source].push_back(destination);
     ++predecessorCounts[destination];
   };
-  for (unsigned rootIndex = 1; rootIndex < rootCount; ++rootIndex)
-    addEventEdge(rootIndex - 1, rootIndex);
+  // Root closures already follow source semantic order, which is also the
+  // deterministic ready-event tie-break below. Do not encode that total order
+  // as dependency edges: a peer receive must precede its consumer while the
+  // matching send follows its producer, and an unconditional root chain can
+  // turn those valid constraints into an artificial cycle.
 
   llvm::SmallVector<unsigned, 8> endpointOrder;
   for (unsigned endpointIndex = 0; endpointIndex < peerEndpoints.size();
@@ -364,9 +371,48 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
         ready = event;
         break;
       }
-    if (!ready)
-      return failAndReturn("structured roots and ordered peer movements form a "
-                           "dependency cycle");
+    if (!ready) {
+      std::string detail;
+      llvm::raw_string_ostream diagnostic(detail);
+      diagnostic
+          << "structured roots and ordered peer movements form a dependency "
+             "cycle; remaining=[";
+      for (unsigned blocked = 0; blocked < eventCount; ++blocked) {
+        if (emittedEvents.test(blocked))
+          continue;
+        diagnostic << "{event=" << blocked
+                   << ",pred=" << predecessorCounts[blocked];
+        if (blocked < rootCount) {
+          diagnostic << ",root_nodes=[";
+          llvm::interleaveComma(rootClosures[blocked].nodes, diagnostic);
+          diagnostic << ']';
+        } else {
+          const CandidatePeerEndpoint &endpoint =
+              peerEndpoints[movementClosures[blocked - rootCount].endpoint];
+          diagnostic << ",endpoint=(communication=" << endpoint.communicationId
+                     << ",slice=" << endpoint.payloadSlice << ",kind="
+                     << (endpoint.kind == CandidatePeerEndpointKind::Send
+                             ? "send"
+                             : "receive")
+                     << ",root=" << endpoint.structuredNodeId << ')';
+        }
+        diagnostic << ",incoming=[";
+        bool first = true;
+        for (uint64_t edge : eventEdges) {
+          const unsigned source = static_cast<unsigned>(edge >> 32);
+          const unsigned destination = static_cast<unsigned>(edge);
+          if (destination != blocked || emittedEvents.test(source))
+            continue;
+          if (!first)
+            diagnostic << ',';
+          diagnostic << source;
+          first = false;
+        }
+        diagnostic << "]},";
+      }
+      diagnostic << ']';
+      return failAndReturn(diagnostic.str());
+    }
     emittedEvents.set(*ready);
     eventOrder.push_back(*ready);
     for (unsigned successor : successors[*ready])
@@ -406,9 +452,9 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
     auto allocation =
         rewriter.create<mlir::memref::AllocOp>(stage.buffer.getLoc(), type);
     stageBuffers.push_back(allocation.getResult());
-    if (emissionRelations)
-      emissionRelations->selectedDDRStages.push_back(
-          MaterializedSelectedDDRStage{allocation, stage.producerNode});
+    if (relationRecorder)
+      relationRecorder->recordSelectedDDRStage(allocation,
+                                               stage.producerNode);
   }
 
   llvm::BitVector claimedEndpoints(peerEndpoints.size());
@@ -433,7 +479,12 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
     fillInitScalars.clear();
     fillInitAttrs.clear();
     activeStructuredNodes.clear();
-
+    currentStageNodes.clear();
+    convertedStructuredOperations.clear();
+    convertingStructuredOperations.clear();
+    if (isRoot)
+      for (uint32_t node : rootClosures[event].nodes)
+        currentStageNodes.insert(node);
     llvm::SmallVector<mlir::Value, 16> regionInputs(sourceInputs.begin(),
                                                     sourceInputs.end());
     regionInputs.append(currentOutputs.begin(), currentOutputs.end());
@@ -511,9 +562,13 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
       while (nextEndpoint < localEndpoints.size()) {
         const CandidatePeerEndpoint *endpoint = localEndpoints[nextEndpoint];
         MemLayout layout = MemLayout::Tensor;
-        if (!lookupAny(endpoint->value, layout) &&
-            !externalBuffers.contains(endpoint->value) &&
-            !tensorAttrs.contains(endpoint->value))
+        const bool ready = !endpoint->streamTileSizes.empty()
+                               ? compilerOwnedBuffers.contains(
+                                     endpoint->carrierBuffer)
+                               : lookupAny(endpoint->value, layout) ||
+                                     externalBuffers.contains(endpoint->value) ||
+                                     tensorAttrs.contains(endpoint->value);
+        if (!ready)
           break;
         if (mlir::failed(emitPeerEndpoint(*endpoint, rewriter)))
           return mlir::failure();
@@ -526,8 +581,9 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
     for (mlir::Operation *operation : operations) {
       if (selectedStageAllocations.contains(operation))
         continue;
-      if (mlir::failed(convertOp(operation, rewriter)) ||
-          mlir::failed(emitReadyEndpoints()))
+      if (mlir::failed(convertOp(operation, rewriter)))
+        return mlir::failure();
+      if (mlir::failed(emitReadyEndpoints()))
         return mlir::failure();
     }
     if (nextEndpoint != localEndpoints.size())

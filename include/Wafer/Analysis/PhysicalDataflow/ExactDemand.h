@@ -59,6 +59,12 @@ private:
   llvm::SmallVector<StaticRectangularIndexSet, 8> boxes;
 };
 
+/// Recovers a finite disjoint rectangular normal form without changing the
+/// represented integer set. Fails when the current exact Presburger set is not
+/// representable as a finite box union.
+mlir::FailureOr<ExactIndexSet>
+normalizeFiniteExactIndexSet(const ExactIndexSet &set);
+
 enum class DemandOperandKind : uint8_t {
   DataInput,
   InitInput,

@@ -119,6 +119,9 @@ mlir::LogicalResult lowerPreparedTensorProgramToCardModule(
     resultRelations.operandBuffers.append(
         materialized.relations.operandBuffers.begin(),
         materialized.relations.operandBuffers.end());
+    resultRelations.scratchBuffers.append(
+        materialized.relations.scratchBuffers.begin(),
+        materialized.relations.scratchBuffers.end());
     resultRelations.outputBuffers.append(
         materialized.relations.outputBuffers.begin(),
         materialized.relations.outputBuffers.end());

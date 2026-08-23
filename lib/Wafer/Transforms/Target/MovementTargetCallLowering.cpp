@@ -114,9 +114,31 @@ FunctionLowering::lowerGatherScatter(InstrGatherScatterOp op) {
   if (mlir::failed(source) || mlir::failed(dest))
     return mlir::failure();
 
+  auto addDynamicOffset =
+      [&](mlir::Value address,
+          mlir::Value offset) -> mlir::FailureOr<mlir::Value> {
+    if (!offset)
+      return address;
+    auto converted = convertedValues.find(offset);
+    if (converted == convertedValues.end() ||
+        !converted->second.getType().isInteger(64))
+      return op.emitError()
+             << "target_llvm_lowering_failure: dynamic gather/scatter byte "
+                "offset did not lower to i64";
+    return builder
+        .create<mlir::LLVM::AddOp>(op.getLoc(), address, converted->second)
+        .getResult();
+  };
+  mlir::FailureOr<mlir::Value> sourceAddress = addDynamicOffset(
+      materializeAddress(op.getLoc(), *source), op.getSrcOffsetValue());
+  mlir::FailureOr<mlir::Value> destAddress = addDynamicOffset(
+      materializeAddress(op.getLoc(), *dest), op.getDstOffsetValue());
+  if (mlir::failed(sourceAddress) || mlir::failed(destAddress))
+    return mlir::failure();
+
   llvm::SmallVector<mlir::Value, 20> args;
-  args.push_back(materializeAddress(op.getLoc(), *source));
-  args.push_back(materializeAddress(op.getLoc(), *dest));
+  args.push_back(*sourceAddress);
+  args.push_back(*destAddress);
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getByteCountAttr()));
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getInnerBytesAttr()));
   appendArrayI32(op.getLoc(), args, op.getSrcStrides());

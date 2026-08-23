@@ -16,7 +16,8 @@ CanonicalAttentionWorkProjectionOutcome buildCanonicalAttentionWorkProjection(
     const CanonicalRepresentationCoordinate &representations,
     const CanonicalMovementCoordinate &movements,
     const CanonicalStorageCoordinate &storage,
-    const CanonicalScheduleCoordinate &schedule);
+    const CanonicalScheduleCoordinate &schedule,
+    const TemporalPlan *temporal = nullptr);
 
 } // namespace wafer::compiler::detail
 

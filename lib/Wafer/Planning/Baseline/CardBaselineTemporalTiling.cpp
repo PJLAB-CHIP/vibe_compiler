@@ -2,23 +2,12 @@
 
 #include "Wafer/Planning/Baseline/CardBaselineTemporalTiling.h"
 
-#include "Wafer/Analysis/Structured/StructuredOperationTileFootprint.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalTileShape.h"
-
-#include "Wafer/Target/Core/TargetMemory.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "llvm/ADT/STLExtras.h"
 
 namespace wafer::compiler::detail {
-namespace {
-
-uint64_t ceilDivide(uint64_t numerator, uint64_t denominator) {
-  return numerator / denominator + (numerator % denominator != 0);
-}
-
-} // namespace
-
 mlir::LogicalResult
 setCardBaselineTemporalTiles(CardBaselineAssignment &assignment,
                              const CardProgramAnalysis &program,
@@ -26,7 +15,6 @@ setCardBaselineTemporalTiles(CardBaselineAssignment &assignment,
   assignment.mapping.operationTemporalTiles.clear();
   llvm::SmallVector<llvm::SmallVector<int64_t, 4>, 16> nodeTemporalTiles;
   nodeTemporalTiles.resize(program.dag.getNodes().size());
-  const TargetMemoryPolicy memory = getTargetMemoryPolicy();
   for (const StructuredDAGNode &node : program.dag.getNodes()) {
     if (node.id >= assignment.nodePlacements.size()) {
       if (failureReason)
@@ -43,18 +31,9 @@ setCardBaselineTemporalTiles(CardBaselineAssignment &assignment,
         *failureReason = "structured node has no static local iterator box";
       return mlir::failure();
     }
-    mlir::FailureOr<llvm::SmallVector<int64_t, 4>> temporal =
-        deriveStructuredOperationTemporalTileShape(node.operation, *ranges,
-                                                   memory);
-    if (mlir::failed(temporal)) {
-      if (failureReason)
-        *failureReason =
-            "structured node has no proven lowering SPM wave bound";
-      return mlir::failure();
-    }
-    nodeTemporalTiles[node.id] = *temporal;
+    nodeTemporalTiles[node.id] = *ranges;
     assignment.mapping.operationTemporalTiles.push_back(
-        StructuredOpTemporalTile{node.operation, std::move(*temporal)});
+        StructuredOpTemporalTile{node.operation, std::move(*ranges)});
   }
 
   auto returnOp = mlir::dyn_cast<mlir::func::ReturnOp>(

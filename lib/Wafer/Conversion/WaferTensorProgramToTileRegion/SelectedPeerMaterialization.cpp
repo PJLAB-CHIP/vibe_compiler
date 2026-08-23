@@ -42,6 +42,41 @@ std::optional<uint64_t> getDomainElements(llvm::ArrayRef<int64_t> sizes) {
   return result;
 }
 
+mlir::FailureOr<llvm::SmallVector<int64_t, 4>> getFragmentStreamTileSizes(
+    mlir::Operation *producer, unsigned result,
+    llvm::ArrayRef<StructuredOpTemporalTile> temporalTiles,
+    const SpatialEdgeFragment &fragment, std::string *failureReason) {
+  mlir::FailureOr<llvm::SmallVector<int64_t, 4>> selected =
+      getResultTemporalTileSizes(producer, result, temporalTiles,
+                                 failureReason);
+  if (mlir::failed(selected) ||
+      selected->size() != fragment.sizes.size())
+    return mlir::failure();
+  for (auto [tile, size] : llvm::zip_equal(*selected, fragment.sizes)) {
+    if (tile <= 0 || size <= 0)
+      return mlir::failure();
+    tile = std::min(tile, size);
+  }
+  return selected;
+}
+
+mlir::Value getDDRStageBuffer(mlir::Value tensor) {
+  llvm::DenseSet<mlir::Value> visited;
+  while (tensor && visited.insert(tensor).second) {
+    if (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+      tensor = slice.getSource();
+      continue;
+    }
+    if (auto toTensor =
+            tensor.getDefiningOp<mlir::bufferization::ToTensorOp>())
+      return isWaferDDRMemRefType(toTensor.getMemref().getType())
+                 ? toTensor.getMemref()
+                 : mlir::Value{};
+    return {};
+  }
+  return {};
+}
+
 } // namespace
 
 bool selectedValueReachesDDRStage(SelectedEdgeLoweringState &state,
@@ -176,7 +211,14 @@ materializeSelectedPeerReceives(SelectedEdgeLoweringState &state) {
         mlir::Location assemblyLoc = mapped.consumer->getLoc();
         mlir::Value assembled;
         mlir::memref::AllocOp independentAssemblyAllocation;
-        if (independentDDRStages) {
+        std::optional<uint32_t> producerNode =
+            findStructuredNodeId(mapped.producer, mappedOperationNodes);
+        std::optional<uint32_t> consumerNode =
+            findStructuredNodeId(mapped.consumer, mappedOperationNodes);
+        const bool sameStructuredRoot =
+            producerNode && consumerNode && *producerNode == *consumerNode;
+        const bool assembleInDDR = independentDDRStages && !sameStructuredRoot;
+        if (assembleInDDR) {
           // The logical full-domain assembly may be much larger than SPM.  The
           // baseline stages each exact peer fragment into compiler-owned DDR;
           // downstream temporal waves then load only their demanded windows.
@@ -190,8 +232,6 @@ materializeSelectedPeerReceives(SelectedEdgeLoweringState &state) {
           auto allocation =
               builder.create<mlir::memref::AllocOp>(assemblyLoc, ddrType);
           independentAssemblyAllocation = allocation;
-          std::optional<uint32_t> producerNode =
-              findStructuredNodeId(mapped.producer, mappedOperationNodes);
           if (!producerNode)
             return reportSelectedEdgeFailure(
                 failureReason,
@@ -212,6 +252,7 @@ materializeSelectedPeerReceives(SelectedEdgeLoweringState &state) {
           assembled = fullEmpty.getResult();
         }
         llvm::SmallVector<const SpatialEdgeFragment *, 4> ordered;
+        llvm::SmallVector<size_t, 4> streamedReceiveEndpoints;
         for (const SpatialEdgeFragment &fragment : strategy.fragments)
           ordered.push_back(&fragment);
         llvm::sort(ordered, [](const auto *lhs, const auto *rhs) {
@@ -227,7 +268,7 @@ materializeSelectedPeerReceives(SelectedEdgeLoweringState &state) {
         for (const SpatialEdgeFragment *fragment : ordered) {
           mlir::Value value;
           if (fragment->kind == SpatialEdgeFragmentKind::Resident) {
-            if (independentDDRStages) {
+            if (assembleInDDR) {
               // Keep the resident contribution as a current-SSA window.  The
               // producer is independently materialized later in topological
               // order, and its external fanout rewrite then retargets this
@@ -246,6 +287,32 @@ materializeSelectedPeerReceives(SelectedEdgeLoweringState &state) {
               value = *local;
             }
           } else {
+            std::optional<uint32_t> consumerNode =
+                findStructuredNodeId(mapped.consumer, mappedOperationNodes);
+            if (!consumerNode)
+              return reportSelectedEdgeFailure(
+                  failureReason,
+                  "selected peer receive has no structured consumer identity");
+            if (assembleInDDR) {
+              mlir::FailureOr<llvm::SmallVector<int64_t, 4>> streamTiles =
+                  getFragmentStreamTileSizes(
+                      mapped.producer, strategy.producerResult,
+                      mappedTemporalTiles, *fragment, failureReason);
+              if (mlir::failed(streamTiles))
+                return mlir::failure();
+              endpoints.push_back(CandidatePeerEndpoint{
+                  /*value=*/{}, independentAssemblyAllocation.getResult(),
+                  CandidatePeerEndpointKind::Receive, fragment->sourceTile,
+                  fragment->bytes, fragment->communicationId,
+                  fragment->payloadSlice, mapped.consumerScheduleOrdinal,
+                  strategy.consumerOperand, *consumerNode, fragment});
+              CandidatePeerEndpoint &endpoint = endpoints.back();
+              endpoint.streamOffsets = fragment->offsets;
+              endpoint.streamSizes = fragment->sizes;
+              endpoint.streamTileSizes = std::move(*streamTiles);
+              streamedReceiveEndpoints.push_back(endpoints.size() - 1);
+              continue;
+            }
             mlir::Location receiveLoc = mapped.consumer->getLoc();
             auto receiveType = mlir::MemRefType::get(
                 fragment->sizes, producerType.getElementType(),
@@ -260,12 +327,6 @@ materializeSelectedPeerReceives(SelectedEdgeLoweringState &state) {
             preserved.insert(allocation.getOperation());
             preserved.insert(received.getOperation());
             value = received.getResult();
-            std::optional<uint32_t> consumerNode =
-                findStructuredNodeId(mapped.consumer, mappedOperationNodes);
-            if (!consumerNode)
-              return reportSelectedEdgeFailure(
-                  failureReason,
-                  "selected peer receive has no structured consumer identity");
             endpoints.push_back(CandidatePeerEndpoint{
                 value, allocation.getResult(),
                 CandidatePeerEndpointKind::Receive, fragment->sourceTile,
@@ -276,7 +337,7 @@ materializeSelectedPeerReceives(SelectedEdgeLoweringState &state) {
           mlir::Value inserted =
               insertExactSlice(builder, assemblyLoc, value, assembled,
                                fragment->offsets, fragment->sizes);
-          if (independentDDRStages) {
+          if (assembleInDDR) {
             // Every exact fragment writes a disjoint slice of the same
             // compiler-owned writable DDR allocation. Do not thread those
             // stores through one functional tensor.insert_slice chain: that
@@ -289,7 +350,7 @@ materializeSelectedPeerReceives(SelectedEdgeLoweringState &state) {
             assembled = inserted;
           }
         }
-        if (independentDDRStages) {
+        if (assembleInDDR) {
           // Reopen the complete exact allocation as a read-only tensor
           // boundary so consumer waves load only their demanded windows and
           // cannot clone fragment stores into those waves.
@@ -298,6 +359,8 @@ materializeSelectedPeerReceives(SelectedEdgeLoweringState &state) {
               /*restrict=*/false, /*writable=*/false);
           preserved.insert(sealed.getOperation());
           assembled = sealed.getResult();
+          for (size_t endpoint : streamedReceiveEndpoints)
+            endpoints[endpoint].value = assembled;
         } else {
           // PeerFragments is an explicit physical edge action.  Seal its exact
           // SPM assembly so downstream tiling cannot recompute the producer.
@@ -415,6 +478,7 @@ materializeSelectedPeerSends(SelectedEdgeLoweringState &state) {
   auto &mappedTemporalTiles = state.mapping.operationTemporalTiles;
   auto &mappedOperationNodes = state.mapping.operationNodes;
   auto &mappedStrategies = state.mapping.strategies;
+  const bool independentDDRStages = state.mapping.independentDDRStages;
   auto &endpoints = state.endpoints;
   auto &materialized = state.materializedSources;
   auto &preserved = state.preservedOperations;
@@ -433,14 +497,54 @@ materializeSelectedPeerSends(SelectedEdgeLoweringState &state) {
           failureReason, &mappedOperationNodes);
       if (mlir::failed(value))
         return mlir::failure();
+      auto compactType =
+          mlir::dyn_cast<mlir::RankedTensorType>(value->getType());
+      if (!compactType || !compactType.hasStaticShape() ||
+          !llvm::equal(compactType.getShape(), fragment.sizes))
+        return reportSelectedEdgeFailure(
+            failureReason,
+            "selected peer send value differs from its exact fragment");
+      mlir::Operation *definition = value->getDefiningOp();
+      if (!definition || definition->getBlock() != &scope.getBody())
+        return reportSelectedEdgeFailure(
+            failureReason, "selected peer send value is not scope-local");
+      mlir::OpBuilder builder(definition);
+      builder.setInsertionPointAfter(definition);
       std::optional<uint32_t> producerNode =
           findStructuredNodeId(mapped.producer, mappedOperationNodes);
       if (!producerNode)
         return reportSelectedEdgeFailure(
             failureReason, "selected peer send has no structured producer "
                            "identity");
+      if (independentDDRStages) {
+        mlir::Value stageBuffer = getDDRStageBuffer(*value);
+        mlir::FailureOr<llvm::SmallVector<int64_t, 4>> streamTiles =
+            getFragmentStreamTileSizes(
+                mapped.producer, strategy.producerResult, mappedTemporalTiles,
+                fragment, failureReason);
+        if (!stageBuffer || mlir::failed(streamTiles))
+          return reportSelectedEdgeFailure(
+              failureReason,
+              "selected peer send has no exact DDR stage or temporal tile");
+        endpoints.push_back(CandidatePeerEndpoint{
+            *value, stageBuffer, CandidatePeerEndpointKind::Send,
+            strategy.destinationTile, fragment.bytes,
+            fragment.communicationId, fragment.payloadSlice,
+            mapped.consumerScheduleOrdinal, strategy.consumerOperand,
+            *producerNode, &fragment});
+        CandidatePeerEndpoint &endpoint = endpoints.back();
+        endpoint.streamOffsets = fragment.offsets;
+        endpoint.streamSizes = fragment.sizes;
+        endpoint.streamTileSizes = std::move(*streamTiles);
+        continue;
+      }
+      llvm::SmallVector<int64_t, 4> zeroOffsets(fragment.sizes.size(), 0);
+      mlir::Value endpointValue =
+          createExactSlice(builder, mapped.producer->getLoc(), *value,
+                           zeroOffsets, fragment.sizes);
+      preserved.insert(endpointValue.getDefiningOp());
       endpoints.push_back(CandidatePeerEndpoint{
-          *value, /*carrierBuffer=*/{}, CandidatePeerEndpointKind::Send,
+          endpointValue, /*carrierBuffer=*/{}, CandidatePeerEndpointKind::Send,
           strategy.destinationTile, fragment.bytes, fragment.communicationId,
           fragment.payloadSlice, mapped.consumerScheduleOrdinal,
           strategy.consumerOperand, *producerNode, &fragment});

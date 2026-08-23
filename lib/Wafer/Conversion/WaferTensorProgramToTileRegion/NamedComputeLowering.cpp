@@ -382,6 +382,7 @@ TileRegionBodyEmitter::convertFill(mlir::linalg::FillOp fill,
     return fail("linalg.fill result is not a ranked tensor");
   auto result = builder.create<mlir::memref::AllocOp>(
       fill.getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::Tensor));
+  recordScratchAllocation(result);
   auto compute =
       builder.create<ComputeFillOp>(fill.getLoc(), result.getResult(), *value,
                                     /*fill_domain=*/FillDomainAttr{});
@@ -1007,7 +1008,12 @@ TileRegionBodyEmitter::convertReduceGeneric(mlir::linalg::GenericOp generic,
                                             mlir::OpBuilder &builder) {
   if (generic.getNumDpsInputs() != 1 || generic.getNumDpsInits() != 1 ||
       generic->getNumResults() != 1)
-    return fail("unsupported reduction generic arity");
+    return fail((llvm::Twine("unsupported reduction generic arity: inputs=") +
+                 llvm::Twine(generic.getNumDpsInputs()) +
+                 ", inits=" + llvm::Twine(generic.getNumDpsInits()) +
+                 ", results=" + llvm::Twine(generic->getNumResults()) +
+                 ", loops=" + llvm::Twine(generic.getNumLoops()))
+                    .str());
 
   std::optional<ComputeReduceKind> kind = inferReduceKind(generic);
   if (!kind)

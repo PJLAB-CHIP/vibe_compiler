@@ -82,6 +82,10 @@ struct StructuredMaterializationRelations {
   llvm::SmallVector<StructuredOperationBufferRelation, 16>
       operationResultBuffers;
   llvm::SmallVector<StructuredOperationBufferRelation, 16> operandBuffers;
+  /// Compiler-created buffers internal to one structured emission. They are
+  /// neither source operands nor semantic results, but must retain the same
+  /// node owner for actual resource rejection attribution.
+  llvm::SmallVector<StructuredOperationBufferRelation, 16> scratchBuffers;
   llvm::SmallVector<SpatialOutputBufferRelation, 4> outputBuffers;
   llvm::SmallVector<PartialReductionContributionBufferRelation, 8>
       partialReductionContributions;
@@ -92,6 +96,7 @@ struct StructuredMaterializationRelations {
     operationEmissions.clear();
     operationResultBuffers.clear();
     operandBuffers.clear();
+    scratchBuffers.clear();
     outputBuffers.clear();
     partialReductionContributions.clear();
     partialReductionMergeInputs.clear();

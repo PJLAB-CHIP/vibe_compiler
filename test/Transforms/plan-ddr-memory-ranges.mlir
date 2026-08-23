@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-plan-ddr-memory='ddr-capacity-bytes=1024 ddr-largest-contiguous-bytes=1024' %s | FileCheck %s
+// RUN: wafer-opt --wafer-plan-ddr-memory='ddr-capacity-bytes=2048 ddr-largest-contiguous-bytes=2048' %s | FileCheck %s
 
 func.func @plan_compiler_managed_ddr_range() {
   %ddr = memref.alloc()
@@ -88,6 +88,38 @@ func.func @plan_affine_apply_loop_ddr_view() {
 // CHECK-LABEL: func.func @plan_affine_apply_loop_ddr_view
 // CHECK: memref.alloc() {wafer.ddr.offset = #wafer.ddr_offset<0>} : memref<8xf16, #wafer.memory<ddr, tensor>>
 // CHECK: affine.apply
+// CHECK: wafer.instr.rdma
+
+func.func @plan_affine_shifted_block_loop_ddr_view(
+    %ddr: memref<1024xf16, #wafer.memory<ddr, tensor>>) {
+  %c0 = arith.constant 0 : index
+  %c64 = arith.constant 64 : index
+  %c512 = arith.constant 512 : index
+  %spm = memref.alloc()
+      {wafer.spm.offset = #wafer.spm_offset<65536>}
+      : memref<64xf16, #wafer.memory<spm, tensor>>
+  scf.for %iv = %c0 to %c512 step %c64 {
+    %offset = affine.apply affine_map<()[s0] -> (s0 + 512)> ()[%iv]
+    %tile = memref.subview %ddr[%offset] [64] [1]
+        : memref<1024xf16, #wafer.memory<ddr, tensor>>
+       to memref<64xf16, strided<[1], offset: ?>,
+                 #wafer.memory<ddr, tensor>>
+    wafer.instr.rdma %tile to %spm
+        {byte_count = 128 : i64, inner_bytes = 128 : i64,
+         src_iterations = array<i64: 1, 1, 1>,
+         src_strides = array<i64: 0, 0, 0>}
+        : memref<64xf16, strided<[1], offset: ?>,
+                 #wafer.memory<ddr, tensor>>
+       to memref<64xf16, #wafer.memory<spm, tensor>>
+  }
+  wafer.instr.ncc_join [0]
+  return
+}
+
+// CHECK-LABEL: func.func @plan_affine_shifted_block_loop_ddr_view
+// CHECK: scf.for
+// CHECK: affine.apply
+// CHECK: memref.subview
 // CHECK: wafer.instr.rdma
 
 func.func @plan_branch_refined_loop_ddr_view(

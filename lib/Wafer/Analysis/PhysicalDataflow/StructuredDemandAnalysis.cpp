@@ -771,11 +771,13 @@ DemandResult<ExactIndexSet>
 imageInsertDestination(const SupportTransferFact &transfer,
                        const ExactIndexSet &demand,
                        const IndexRelationLimits &limits) {
-  if (demand.getForm() != ExactIndexSetForm::BoxUnion)
+  mlir::FailureOr<ExactIndexSet> normalized =
+      normalizeFiniteExactIndexSet(demand);
+  if (mlir::failed(normalized))
     return asResult<ExactIndexSet>(unsupported(
         UnsupportedDemandReason::MissingTensorTransfer,
         RelationOperationKind::Image,
-        "insert_slice destination demand requires finite box form"));
+        "insert_slice destination demand is not a finite box union"));
   auto source = llvm::find_if(transfer.operands, [](const auto &operand) {
     return operand.role == wafer::TensorIndexingOperandRole::Source;
   });
@@ -795,7 +797,7 @@ imageInsertDestination(const SupportTransferFact &transfer,
                "insert_slice source description is not static"));
 
   llvm::SmallVector<StaticRectangularIndexSet, 8> pieces;
-  for (const StaticRectangularIndexSet &rectangle : demand.getBoxes()) {
+  for (const StaticRectangularIndexSet &rectangle : normalized->getBoxes()) {
     StaticRectangularIndexSet overlap;
     bool hasOverlap = true;
     for (auto [demandOffset, demandSize, pieceOffset, pieceSize] :
@@ -835,7 +837,7 @@ imageInsertDestination(const SupportTransferFact &transfer,
       }
     }
   }
-  return makeBoxUnion(demand.getRank(), pieces, limits,
+  return makeBoxUnion(normalized->getRank(), pieces, limits,
                       RelationOperationKind::Image);
 }
 
@@ -1332,23 +1334,54 @@ StructuredRelationFacts::create(const StructuredDAGAnalysis &dag,
     operations.push_back(std::move(*getValue(fact)));
   }
 
+  llvm::SmallVector<mlir::Value, 32> worklist;
+  for (const StructuredOperationFact &operation : operations)
+    for (const StructuredOperandFact &operand : operation.operands)
+      worklist.push_back(operation.operation->getOperand(operand.operand));
+
+  llvm::DenseMap<mlir::Value, unsigned> discoveredIndices;
+  std::vector<ResultRelationFact> discovered;
+  while (!worklist.empty()) {
+    mlir::Value value = worklist.pop_back_val();
+    auto result = mlir::dyn_cast<mlir::OpResult>(value);
+    if (!result || discoveredIndices.contains(result))
+      continue;
+    discoveredIndices.try_emplace(result,
+                                  static_cast<unsigned>(discovered.size()));
+    discovered.emplace_back(result);
+    ResultRelationFact &relation = discovered.back();
+    mlir::Operation *operation = result.getOwner();
+    if (roots->find(operation) ||
+        operation->hasTrait<mlir::OpTrait::ConstantLike>() ||
+        mlir::isa<mlir::tensor::EmptyOp>(operation))
+      continue;
+    DemandResult<SupportTransferFact> transfer =
+        deriveSupportTransfer(result, limits);
+    if (getValue(transfer)) {
+      relation.transfer.emplace(std::move(*getValue(transfer)));
+      for (const SupportOperandFact &operand : relation.transfer->operands)
+        worklist.push_back(operation->getOperand(operand.operand));
+    } else {
+      relation.failure.emplace(getFailure(std::move(transfer)));
+    }
+  }
+
   std::vector<ResultRelationFact> reverseResults;
+  reverseResults.reserve(discovered.size());
   mlir::Block &body = dag.getFunction().getBody().front();
   for (mlir::Operation &operation : llvm::reverse(body.without_terminator())) {
     for (mlir::OpResult result : operation.getResults()) {
-      ResultRelationFact relation(result);
-      if (!roots->find(&operation) &&
-          !operation.hasTrait<mlir::OpTrait::ConstantLike>() &&
-          !mlir::isa<mlir::tensor::EmptyOp>(&operation)) {
-        DemandResult<SupportTransferFact> transfer =
-            deriveSupportTransfer(result, limits);
-        if (getValue(transfer))
-          relation.transfer.emplace(std::move(*getValue(transfer)));
-        else
-          relation.failure.emplace(getFailure(std::move(transfer)));
-      }
-      reverseResults.push_back(std::move(relation));
+      auto found = discoveredIndices.find(result);
+      if (found != discoveredIndices.end())
+        reverseResults.push_back(std::move(discovered[found->second]));
     }
+  }
+  if (reverseResults.size() != discovered.size()) {
+    if (failureReason)
+      *failureReason =
+          "structured operand demand reaches a result outside the source "
+          "function body";
+    return mlir::failure();
   }
   return StructuredRelationFacts(
       std::make_unique<Impl>(dag, std::move(*roots), std::move(operations),

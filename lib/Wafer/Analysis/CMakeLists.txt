@@ -43,5 +43,4 @@ set(WAFER_COMPILATION_ANALYSIS_SOURCES
   Analysis/Structured/CardProgramAnalysis.cpp
   Analysis/Structured/StructuredBufferRelations.cpp
   Analysis/Structured/StructuredNodeUseIndex.cpp
-  Analysis/Structured/StructuredOperationTileFootprint.cpp
   PARENT_SCOPE)

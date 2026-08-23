@@ -4,6 +4,7 @@
 #define WAFER_COMPILER_STRUCTUREDBUFFERRELATIONS_H
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
+#include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
@@ -32,11 +33,13 @@ struct StructuredRelationRemapIssue {
   llvm::SmallVector<StructuredOperationBufferRelation, 4> unmappedResultBuffers;
   llvm::SmallVector<StructuredOperationBufferRelation, 4>
       unmappedOperandBuffers;
+  llvm::SmallVector<StructuredOperationBufferRelation, 4>
+      unmappedScratchBuffers;
   llvm::SmallVector<SpatialOutputBufferRelation, 4> unmappedOutputBuffers;
 
   bool empty() const {
     return unmappedResultBuffers.empty() && unmappedOperandBuffers.empty() &&
-           unmappedOutputBuffers.empty();
+           unmappedScratchBuffers.empty() && unmappedOutputBuffers.empty();
   }
 };
 
@@ -63,7 +66,8 @@ StructuredMaterializationRelations scopeStructuredBufferRelations(
 /// retargets the current-IR buffer relations in place. It owns no IR and
 /// must not outlive either the relations or the rewrite invocation.
 class StructuredBufferReplacementListener final
-    : public mlir::RewriterBase::Listener {
+    : public mlir::RewriterBase::Listener,
+      public TileRegionToInstrBufferRecorder {
 public:
   explicit StructuredBufferReplacementListener(
       StructuredMaterializationRelations &relations);
@@ -72,11 +76,16 @@ public:
   void notifyOperationReplaced(mlir::Operation *operation,
                                mlir::ValueRange replacements) final;
   void notifyOperationErased(mlir::Operation *operation) final;
+  void recordScratchAllocation(mlir::Operation *sourceOperation,
+                               mlir::Value allocation) final;
 
   /// Completes one rewrite epoch. Relations to explicitly erased dead private
   /// allocations are discarded because those buffers no longer contribute
-  /// executable work; every other untracked erasure remains a failure.
+  /// executable work; every other untracked erasure remains a failure. Source
+  /// Tile operation-emission pointers are dropped after full conversion;
+  /// current Instr attribution continues through the buffer relations.
   bool finalizeAfterRewrite();
+  llvm::StringRef getFailureReason() const;
 
 private:
   struct Impl;
@@ -88,6 +97,12 @@ private:
 /// and therefore never dereferences a stale relation while reporting failure.
 mlir::LogicalResult checkStructuredBufferRelationsCurrent(
     mlir::Operation *root, const StructuredMaterializationRelations &relations);
+
+/// Rebinds attribution-only buffer relations to their unique current-IR
+/// storage root before a pass pipeline may fold intermediate views. A value
+/// with zero or multiple typed roots fails closed.
+mlir::LogicalResult rebaseStructuredBufferRelationsToStorageRoots(
+    StructuredMaterializationRelations &relations);
 
 /// Query-local memo of per-value storage roots. Values are only valid within
 /// one unchanged IR epoch; a caller constructs one memo per validation root

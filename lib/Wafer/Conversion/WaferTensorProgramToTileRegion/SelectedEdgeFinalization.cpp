@@ -26,6 +26,14 @@ mlir::LogicalResult rebindSelectedReceiveEndpoints(
     if (endpoint.kind != CandidatePeerEndpointKind::Receive ||
         !endpoint.selectedFragment)
       continue;
+    if (!endpoint.streamTileSizes.empty()) {
+      if (!endpoint.value || endpoint.value.use_empty() ||
+          !isWaferDDRMemRefType(endpoint.carrierBuffer.getType()))
+        return reportSelectedEdgeFailure(
+            failureReason,
+            "streamed peer receive lost its current DDR stage or consumer");
+      continue;
+    }
     llvm::SmallVector<mlir::bufferization::ToTensorOp, 2> matches;
     if (endpoint.carrierBuffer)
       for (mlir::Operation *user : endpoint.carrierBuffer.getUsers())

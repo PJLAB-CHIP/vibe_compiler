@@ -104,6 +104,8 @@ mlir::LogicalResult runCompilationTransaction(
                 << work.tileMemoryPlanningInvocations
                 << " tile_to_instr_lowerings="
                 << work.tileToInstructionLowerings
+                << " relation_descriptor_plannings="
+                << work.relationDescriptorPlannings
                 << " spm_planning_invocations=" << work.spmPlanningInvocations
                 << " ddr_planning_invocations=" << work.ddrPlanningInvocations
                 << " target_abi_module_clones=" << work.targetABIModuleClones

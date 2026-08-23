@@ -71,6 +71,7 @@ createTileModule(mlir::ModuleOp sourceModule, CardModuleOp cardModule,
     retain(sourceRelations->operationResultBuffers,
            tileRelations.operationResultBuffers);
     retain(sourceRelations->operandBuffers, tileRelations.operandBuffers);
+    retain(sourceRelations->scratchBuffers, tileRelations.scratchBuffers);
     retain(sourceRelations->outputBuffers, tileRelations.outputBuffers);
   }
 

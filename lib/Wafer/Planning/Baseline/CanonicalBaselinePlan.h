@@ -1,11 +1,10 @@
-//===- CanonicalBaselinePlan.h - Resolved deterministic plan -*- C++ -*-===//
+//===- CanonicalBaselinePlan.h - Deterministic candidate plan -*- C++ -*-===//
 
 #ifndef WAFER_COMPILER_PLANNING_BASELINE_CANONICALBASELINEPLAN_H
 #define WAFER_COMPILER_PLANNING_BASELINE_CANONICALBASELINEPLAN_H
 
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalAttentionWorkProjection.h"
-#include "Wafer/Planning/PhysicalDataflow/CanonicalFeasibilityProof.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalMovementPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalRepresentationPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSchedulePlan.h"
@@ -15,9 +14,9 @@
 
 namespace wafer::compiler::detail {
 
-/// Complete resolved canonical coordinate. It is query-local, borrows current
-/// root Operation handles through RootRegionWork, and must be consumed before
-/// the first source mutation. No field is a search candidate or actual IR.
+/// One complete deterministic candidate before materialization. This object
+/// contains semantic choices only; it never claims SPM legality. SPM legality
+/// is established after materialization by the actual Instr memory planner.
 struct CanonicalBaselinePlan {
   SpatialAssignment spatial;
   analysis::ExactDemandProof demand;
@@ -30,15 +29,19 @@ struct CanonicalBaselinePlan {
   CanonicalStorageCoordinate storage;
   CanonicalScheduleCoordinate schedule;
   CanonicalAttentionWorkCoordinate attention;
-  CanonicalResourceProblem resourceProblem;
-  FullFeasibilityProof feasibility;
   PreparedAttentionDecomposition preparedAttention;
 };
 
 mlir::FailureOr<CanonicalBaselinePlan>
 buildCanonicalBaselinePlan(const CardProgramAnalysis &program,
-                           const TargetMemoryPolicy &memory,
                            std::string *failureReason = nullptr);
+
+/// Rebuilds every temporal-dependent semantic component after the outer
+/// controller changes `plan.temporal` in response to an actual SPM rejection.
+/// This function performs no resource prediction and creates no IR.
+mlir::LogicalResult
+recloseCanonicalBaselinePlan(CanonicalBaselinePlan &plan,
+                             std::string *failureReason = nullptr);
 
 } // namespace wafer::compiler::detail
 

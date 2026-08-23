@@ -4,7 +4,6 @@
 #include "Wafer/Analysis/PhysicalDataflow/StructuredDemandAnalysis.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalAttentionWorkProjection.h"
-#include "Wafer/Planning/PhysicalDataflow/CanonicalFeasibilityProof.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalMovementPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalRepresentationPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSchedulePlan.h"
@@ -50,7 +49,6 @@ struct CanonicalPlanningChain {
   CanonicalStorageCoordinate storage;
   CanonicalScheduleCoordinate schedule;
   CanonicalAttentionWorkCoordinate attention;
-  CanonicalFeasibilityCoordinate feasibility;
 };
 
 class CanonicalPlanningCoverageTest : public ::testing::Test {
@@ -158,20 +156,9 @@ protected:
       return mlir::failure();
     }
 
-    CanonicalFeasibilityOutcome feasibilityOutcome =
-        buildCanonicalFeasibilityProof(*storage, *movements, *schedule,
-                                       *attention,
-                                       wafer::getTargetMemoryPolicy());
-    const CanonicalFeasibilityCoordinate *feasibility =
-        getCanonicalFeasibilityCoordinate(feasibilityOutcome);
-    if (!feasibility) {
-      setStageFailure(failureReason, "canonical feasibility");
-      return mlir::failure();
-    }
-
     return CanonicalPlanningChain{
         std::move(*prefix), *representations, *movements, *serialized,
-        *storage,           *schedule,        *attention, *feasibility};
+        *storage,           *schedule,        *attention};
   }
 
   static std::set<MovementActionId>
@@ -273,51 +260,10 @@ protected:
       EXPECT_EQ(plannedObjects.count(dependency.object), 1u);
     }
 
-    std::set<FeasibilityResourceId> feasibilityResources;
-    for (const TileSPMResourceProblem &problem :
-         chain.feasibility.problem.tileSPM)
-      for (const FeasibilityResourceDemand &demand : problem.demands)
-        EXPECT_TRUE(feasibilityResources.insert(demand.id).second);
-    const std::set<FeasibilityResourceId> dependencyResources(
-        chain.feasibility.proof.dependencyKey.resources.begin(),
-        chain.feasibility.proof.dependencyKey.resources.end());
-    EXPECT_EQ(feasibilityResources, dependencyResources);
-    for (const StorageObjectId &object : plannedObjects)
-      EXPECT_EQ(feasibilityResources.count(FeasibilityResourceId{object}), 1u);
-
-    std::set<MovementActionId> feasibilityMovements;
-    for (const DDRPayloadProblem &payload :
-         chain.feasibility.problem.ddrPayloads)
-      EXPECT_TRUE(feasibilityMovements.insert(payload.action).second);
-    EXPECT_EQ(feasibilityMovements, movementActions);
-    EXPECT_EQ(std::set<MovementActionId>(
-                  chain.feasibility.proof.dependencyKey.movements.begin(),
-                  chain.feasibility.proof.dependencyKey.movements.end()),
-              movementActions);
-    EXPECT_EQ(std::set<ScheduleNodeId>(
-                  chain.feasibility.problem.scheduleNodes.begin(),
-                  chain.feasibility.problem.scheduleNodes.end()),
-              scheduleNodes);
-    EXPECT_EQ(std::set<ScheduleNodeId>(
-                  chain.feasibility.proof.dependencyKey.scheduleNodes.begin(),
-                  chain.feasibility.proof.dependencyKey.scheduleNodes.end()),
-              scheduleNodes);
-
     std::set<AttentionActionId> attentionActions;
     for (const AttentionWorkDescription &root : chain.attention.roots)
       for (const AttentionActionDescription &action : root.actions)
         EXPECT_TRUE(attentionActions.insert(action.id).second);
-    EXPECT_EQ(std::set<AttentionActionId>(
-                  chain.feasibility.problem.attentionActions.begin(),
-                  chain.feasibility.problem.attentionActions.end()),
-              attentionActions);
-    EXPECT_EQ(
-        std::set<AttentionActionId>(
-            chain.feasibility.proof.dependencyKey.attentionActions.begin(),
-            chain.feasibility.proof.dependencyKey.attentionActions.end()),
-        attentionActions);
-    EXPECT_EQ(chain.feasibility.proof.coverage,
-              FullFeasibilityCoverage::EveryPlannedResourceClosed);
   }
 
   static std::string diamondSource(int64_t extent) {
@@ -549,7 +495,6 @@ TEST_F(CanonicalPlanningCoverageTest,
     EXPECT_EQ(chain->prefix.rootWorks.size(), 64u);
     EXPECT_EQ(chain->serialized.executions.size(), 64u);
     EXPECT_TRUE(chain->attention.roots.empty());
-    EXPECT_TRUE(chain->feasibility.problem.attentionActions.empty());
     expectClosedIdentityChain(*chain);
     EXPECT_EQ(print(module->getOperation()), before);
   }
@@ -699,8 +644,7 @@ TEST_F(CanonicalPlanningCoverageTest,
     expectClosedIdentityChain(*chain);
 
     PreparedAttentionDecompositionOutcome preparedOutcome =
-        prepareSelectedAttentionDecomposition(chain->attention,
-                                              chain->feasibility.proof);
+        prepareSelectedAttentionDecomposition(chain->attention);
     const auto *prepared =
         std::get_if<PreparedAttentionDecomposition>(&preparedOutcome);
     ASSERT_NE(prepared, nullptr);
@@ -746,10 +690,13 @@ TEST_F(CanonicalPlanningCoverageTest,
         if (value.id.kind != AttentionValueKind::ScoreBlock)
           continue;
         ++scoreBlocks;
-        auto type =
-            mlir::dyn_cast<mlir::RankedTensorType>(value.value.getType());
-        ASSERT_TRUE(type);
-        EXPECT_LT(type.getNumElements(), testCase.globalScoreElements);
+        ASSERT_FALSE(value.occurrences.empty());
+        for (mlir::Value occurrence : value.occurrences) {
+          auto type =
+              mlir::dyn_cast<mlir::RankedTensorType>(occurrence.getType());
+          ASSERT_TRUE(type);
+          EXPECT_LT(type.getNumElements(), testCase.globalScoreElements);
+        }
       }
       EXPECT_EQ(materializedValues, describedValues);
       EXPECT_GT(scoreBlocks, 0u);
@@ -768,7 +715,7 @@ TEST_F(CanonicalPlanningCoverageTest,
 }
 
 TEST_F(CanonicalPlanningCoverageTest,
-       BrokenProofDoesNotMutateOrPoisonAValidRaggedChain) {
+       BrokenAttentionWorkDoesNotMutateOrPoisonAValidRaggedChain) {
   auto module = parse(wafer::test::buildFlashDecodingPlanningFixture(
       /*queryExtent=*/1025, /*keyValueExtent=*/1031));
   ASSERT_TRUE(module);
@@ -779,20 +726,20 @@ TEST_F(CanonicalPlanningCoverageTest,
   auto chain = buildChain(*dag, &failureReason);
   ASSERT_TRUE(mlir::succeeded(chain)) << failureReason;
 
-  FullFeasibilityProof missingAction = chain->feasibility.proof;
-  ASSERT_FALSE(missingAction.dependencyKey.attentionActions.empty());
-  missingAction.dependencyKey.attentionActions.pop_back();
+  CanonicalAttentionWorkCoordinate duplicated = chain->attention;
+  ASSERT_FALSE(duplicated.roots.empty());
+  ASSERT_FALSE(duplicated.roots.front().actions.empty());
+  duplicated.roots.front().actions.push_back(
+      duplicated.roots.front().actions.front());
   PreparedAttentionDecompositionOutcome rejected =
-      prepareSelectedAttentionDecomposition(chain->attention, missingAction);
+      prepareSelectedAttentionDecomposition(duplicated);
   const auto *failure = std::get_if<BrokenPreparedAttention>(&rejected);
   ASSERT_NE(failure, nullptr);
-  EXPECT_EQ(failure->reason,
-            BrokenPreparedAttentionReason::ActionCoverageMismatch);
+  EXPECT_EQ(failure->reason, BrokenPreparedAttentionReason::DuplicateIdentity);
   EXPECT_EQ(print(module->getOperation()), before);
 
   PreparedAttentionDecompositionOutcome retried =
-      prepareSelectedAttentionDecomposition(chain->attention,
-                                            chain->feasibility.proof);
+      prepareSelectedAttentionDecomposition(chain->attention);
   EXPECT_TRUE(std::holds_alternative<PreparedAttentionDecomposition>(retried));
   EXPECT_EQ(print(module->getOperation()), before);
 }

@@ -41,7 +41,6 @@ class UnifiedPhysicalDataflowDomain {
 public:
   static mlir::FailureOr<UnifiedPhysicalDataflowDomain>
   create(const CardProgramAnalysis &program, CardId cardId,
-         const TargetMemoryPolicy &memory,
          std::string *failureReason = nullptr);
 
   mlir::FailureOr<UnifiedPhysicalDataflowAssignment>
@@ -72,11 +71,11 @@ public:
 
 private:
   UnifiedPhysicalDataflowDomain(const CardProgramAnalysis &program,
-                                CardId cardId, TargetMemoryPolicy memory,
+                                CardId cardId,
                                 CardSpatialPlacementDomain spatial,
                                 CardComputeImplementationDomain implementation)
-      : program(program), cardId(cardId), memory(memory),
-        spatial(std::move(spatial)), implementation(std::move(implementation)) {
+      : program(program), cardId(cardId), spatial(std::move(spatial)),
+        implementation(std::move(implementation)) {
   }
 
   mlir::FailureOr<ClosedSpatialDemand>
@@ -85,12 +84,10 @@ private:
   mlir::FailureOr<UnifiedPhysicalDataflowAssignment>
   getFirstForSpatial(const CardSpatialPlacementAssignment &assignment,
                      std::string *failureReason,
-                     bool capacityGuidedTemporal = false,
                      bool fusionOriented = false) const;
 
   const CardProgramAnalysis &program;
   CardId cardId{0};
-  TargetMemoryPolicy memory;
   CardSpatialPlacementDomain spatial;
   CardComputeImplementationDomain implementation;
 };

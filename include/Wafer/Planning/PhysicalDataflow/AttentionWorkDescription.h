@@ -72,6 +72,22 @@ enum class AttentionValueKind : uint8_t {
   FinalOutput,
 };
 
+/// Target-abstract storage required by the selected Linalg decomposition but
+/// not observable as an attention algorithm value. These roles are part of
+/// the immutable work description so feasibility accounts for every buffer
+/// that deterministic lowering must materialize; TileRegion lowering does not
+/// discover or choose them from SPM pressure.
+enum class AttentionScratchKind : uint8_t {
+  ConvertedScoreBlock,
+  ScaleBlock,
+  ScaledScoreBlock,
+  BroadcastMaskBlock,
+  ConvertedMaskBlock,
+  BroadcastMaximumBlock,
+  ShiftedScoreBlock,
+  WideProbabilityBlock,
+};
+
 struct AttentionValueId {
   AttentionWorkScopeId scope;
   AttentionValueKind kind = AttentionValueKind::ScoreBlock;
@@ -88,25 +104,66 @@ struct AttentionValueId {
   }
 };
 
+struct AttentionScratchId {
+  AttentionWorkScopeId scope;
+  AttentionScratchKind kind = AttentionScratchKind::ConvertedScoreBlock;
+
+  friend bool operator==(const AttentionScratchId &lhs,
+                         const AttentionScratchId &rhs) {
+    return lhs.scope == rhs.scope && lhs.kind == rhs.kind;
+  }
+  friend bool operator<(const AttentionScratchId &lhs,
+                        const AttentionScratchId &rhs) {
+    if (!(lhs.scope == rhs.scope))
+      return lhs.scope < rhs.scope;
+    return lhs.kind < rhs.kind;
+  }
+};
+
 enum class AttentionOperandRole : uint8_t { Query, Key, Value, Mask };
 
-struct AttentionOperandProjection {
-  AttentionWorkScopeId scope;
-  AttentionOperandRole role = AttentionOperandRole::Query;
+struct AttentionOperandFragmentProjection {
   PhysicalVersionId version;
   StorageObjectId storage;
   analysis::ExactIndexSet exactDomain;
   mlir::Type elementType;
+};
+
+struct AttentionOperandDescription {
+  AttentionWorkScopeId scope;
+  AttentionOperandRole role = AttentionOperandRole::Query;
+  /// Exact demand in the normalized attention operand's own coordinates.
+  analysis::ExactIndexSet exactDomain;
+  /// Maximum operand window resident for one selected temporal wave. This is
+  /// projected from the same current attention iteration domain as
+  /// `exactDomain`; it is not an SPM estimate or allocation decision.
+  analysis::ExactIndexSet residentDomain;
+  mlir::Type elementType;
   mlir::AffineMap indexingMap;
+  /// Physical leaf projections that reconstruct this logical operand demand.
+  /// Their ranks may differ from the final operand because support transforms
+  /// remain explicit in the source SSA graph.
+  std::vector<AttentionOperandFragmentProjection> fragments;
 };
 
 struct AttentionValueDescription {
   AttentionValueId id;
   analysis::ExactIndexSet exactDomain;
+  analysis::ExactIndexSet residentDomain;
   mlir::Type elementType;
   mlir::AffineMap indexingMap;
   std::optional<PhysicalVersionId> physicalVersion;
   std::optional<StorageObjectId> storage;
+};
+
+struct AttentionScratchDescription {
+  AttentionScratchId id;
+  analysis::ExactIndexSet exactDomain;
+  analysis::ExactIndexSet residentDomain;
+  mlir::Type elementType;
+  mlir::AffineMap indexingMap;
+  AttentionActionId definition;
+  std::vector<AttentionActionId> uses;
 };
 
 struct AttentionActionDescription {
@@ -132,7 +189,8 @@ struct AttentionWorkDescription {
   AttentionAlgorithm algorithm = AttentionAlgorithm::FlashAttention;
   std::vector<AttentionActionDescription> actions;
   std::vector<AttentionValueDescription> values;
-  std::vector<AttentionOperandProjection> operands;
+  std::vector<AttentionScratchDescription> scratch;
+  std::vector<AttentionOperandDescription> operands;
   std::vector<AttentionGatherProjection> gathers;
   std::vector<AttentionSimultaneousValueGroup> simultaneousValues;
 };

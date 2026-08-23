@@ -5,7 +5,7 @@
 #include "Wafer/Analysis/PhysicalDataflow/PhysicalLayoutRelation.h"
 
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Support/MathExtras.h"
+#include "llvm/ADT/Twine.h"
 
 #include <algorithm>
 #include <map>
@@ -33,67 +33,6 @@ std::optional<mlir::Type> getElementType(mlir::Type type) {
   return shaped.getElementType();
 }
 
-bool boxesOverlap(const analysis::StaticRectangularIndexSet &lhs,
-                  const analysis::StaticRectangularIndexSet &rhs) {
-  if (lhs.offsets.size() != rhs.offsets.size())
-    return true;
-  for (auto [lhsOffset, lhsSize, rhsOffset, rhsSize] :
-       llvm::zip_equal(lhs.offsets, lhs.sizes, rhs.offsets, rhs.sizes)) {
-    int64_t lhsEnd = 0;
-    int64_t rhsEnd = 0;
-    if (llvm::AddOverflow(lhsOffset, lhsSize, lhsEnd) ||
-        llvm::AddOverflow(rhsOffset, rhsSize, rhsEnd))
-      return true;
-    if (lhsEnd <= rhsOffset || rhsEnd <= lhsOffset)
-      return false;
-  }
-  return true;
-}
-
-mlir::FailureOr<analysis::ExactIndexSet>
-normalizeFiniteDomain(const analysis::ExactIndexSet &domain) {
-  if (domain.getForm() == analysis::ExactIndexSetForm::BoxUnion &&
-      !domain.getBoxes().empty())
-    return domain;
-
-  analysis::IndexSetResult exact{
-      analysis::IndexRelationStatus::Exact, domain.getPresburgerSet(), {}};
-  analysis::StaticRectangularIndexSetPiecesResult pieces =
-      exact.getExactStaticRectangularDisjuncts();
-  if (pieces.isExact() && !pieces.domains.empty()) {
-    llvm::sort(pieces.domains,
-               [](const analysis::StaticRectangularIndexSet &lhs,
-                  const analysis::StaticRectangularIndexSet &rhs) {
-                 if (lhs.offsets != rhs.offsets)
-                   return std::lexicographical_compare(
-                       lhs.offsets.begin(), lhs.offsets.end(),
-                       rhs.offsets.begin(), rhs.offsets.end());
-                 return std::lexicographical_compare(
-                     lhs.sizes.begin(), lhs.sizes.end(), rhs.sizes.begin(),
-                     rhs.sizes.end());
-               });
-    bool disjoint = true;
-    for (size_t lhs = 0; lhs < pieces.domains.size() && disjoint; ++lhs)
-      for (size_t rhs = lhs + 1; rhs < pieces.domains.size(); ++rhs)
-        if (boxesOverlap(pieces.domains[lhs], pieces.domains[rhs])) {
-          disjoint = false;
-          break;
-        }
-    if (disjoint)
-      return analysis::ExactIndexSet(domain.getPresburgerSet(),
-                                     analysis::ExactIndexSetForm::BoxUnion,
-                                     pieces.domains);
-  }
-
-  analysis::StaticRectangularIndexSetResult rectangle =
-      exact.getExactStaticRectangularDomain();
-  if (!rectangle.isExact())
-    return mlir::failure();
-  return analysis::ExactIndexSet(domain.getPresburgerSet(),
-                                 analysis::ExactIndexSetForm::BoxUnion,
-                                 {*rectangle.domain});
-}
-
 struct CoordinateBuilder {
   CanonicalRepresentationCoordinate coordinate;
   std::set<PhysicalVersionId> versions;
@@ -113,11 +52,19 @@ struct CoordinateBuilder {
       return;
     }
     mlir::FailureOr<analysis::ExactIndexSet> normalized =
-        normalizeFiniteDomain(domain);
+        analysis::normalizeFiniteExactIndexSet(domain);
     if (mlir::failed(normalized)) {
       failure = unsupported(
           UnsupportedRepresentationFeature::TensorEncoding,
-          "Tensor encoding requires a finite disjoint rectangle union",
+          (llvm::Twine(
+               "Tensor encoding requires a finite disjoint rectangle union: "
+               "logical-kind=") +
+           llvm::Twine(logicalValue.index()) +
+           ", rank=" + llvm::Twine(domain.getRank()) +
+           ", form=" + llvm::Twine(static_cast<unsigned>(domain.getForm())) +
+           ", disjuncts=" +
+           llvm::Twine(domain.getPresburgerSet().getNumDisjuncts()))
+              .str(),
           std::move(work));
       return;
     }

@@ -22,11 +22,6 @@ mlir::FailureOr<T> fail(std::string *failureReason, llvm::StringRef detail) {
   return mlir::failure();
 }
 
-struct PendingPath {
-  mlir::Value value;
-  SemanticRootKey key;
-};
-
 bool updateIfLess(llvm::DenseMap<mlir::Value, SemanticRootKey> &paths,
                   mlir::Value value, const SemanticRootKey &candidate) {
   auto existing = paths.find(value);
@@ -72,7 +67,6 @@ SemanticRootAnalysis::create(const StructuredDAGAnalysis &dag,
 
   llvm::DenseMap<mlir::Value, SemanticRootKey> bestValuePaths;
   llvm::DenseMap<mlir::Operation *, SemanticRootKey> bestRootPaths;
-  llvm::SmallVector<PendingPath, 32> worklist;
 
   auto enqueue = [&](mlir::Value value, uint64_t consumerOperand,
                      const SemanticRootKey &suffix) -> mlir::LogicalResult {
@@ -86,8 +80,7 @@ SemanticRootAnalysis::create(const StructuredDAGAnalysis &dag,
     candidate.path.push_back({SemanticRootPathRelation::SSAUseDef,
                               static_cast<uint32_t>(result.getResultNumber()),
                               static_cast<uint32_t>(consumerOperand)});
-    if (updateIfLess(bestValuePaths, value, candidate))
-      worklist.push_back({value, std::move(candidate)});
+    updateIfLess(bestValuePaths, value, candidate);
     return mlir::success();
   };
 
@@ -100,24 +93,31 @@ SemanticRootAnalysis::create(const StructuredDAGAnalysis &dag,
           failureReason, "semantic root path index is not representable");
   }
 
-  while (!worklist.empty()) {
-    PendingPath pending = std::move(worklist.pop_back_val());
-    auto current = bestValuePaths.find(pending.value);
-    if (current == bestValuePaths.end() || current->second != pending.key)
-      continue;
-    auto result = mlir::cast<mlir::OpResult>(pending.value);
-    mlir::Operation *owner = result.getOwner();
-    if (!owner || owner->getParentOfType<mlir::func::FuncOp>() != function)
-      return fail<SemanticRootAnalysis>(
-          failureReason, "semantic root path leaves the current function");
-    if (structuredOperations.contains(owner))
-      updateIfLess(bestRootPaths, owner, pending.key);
-
-    for (mlir::OpOperand &operand : owner->getOpOperands()) {
-      if (mlir::failed(
-              enqueue(operand.get(), operand.getOperandNumber(), pending.key)))
+  // The admitted function has one SSA block. Every result is defined before
+  // all of its users, so a single reverse operation traversal observes the
+  // final lexicographically-smallest path of every result before propagating
+  // it to that operation's operands. This avoids repeatedly copying growing
+  // observable paths through a worklist while preserving the exact key.
+  mlir::Block &body = function.getBody().front();
+  for (mlir::Operation &owner : llvm::reverse(body.without_terminator())) {
+    for (mlir::OpResult result : owner.getResults()) {
+      auto current = bestValuePaths.find(result);
+      if (current == bestValuePaths.end())
+        continue;
+      SemanticRootKey currentKey = current->second;
+      if (owner.getParentOfType<mlir::func::FuncOp>() != function)
         return fail<SemanticRootAnalysis>(
-            failureReason, "semantic root path index is not representable");
+            failureReason, "semantic root path leaves the current function");
+      if (structuredOperations.contains(&owner))
+        updateIfLess(bestRootPaths, &owner, currentKey);
+
+      for (mlir::OpOperand &operand : owner.getOpOperands()) {
+        if (mlir::failed(enqueue(operand.get(), operand.getOperandNumber(),
+                                 currentKey)))
+          return fail<SemanticRootAnalysis>(
+              failureReason,
+              "semantic root path index is not representable");
+      }
     }
   }
 

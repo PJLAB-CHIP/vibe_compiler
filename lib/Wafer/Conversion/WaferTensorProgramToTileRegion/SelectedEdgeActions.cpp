@@ -132,6 +132,13 @@ materializeSelectedSourceStages(SelectedEdgeLoweringState &state) {
   auto &preserved = state.preservedOperations;
   std::string *failureReason = state.failureReason;
   if (independentDDRStages) {
+    auto sharesStructuredRoot = [&](const MappedStrategy &mapped) {
+      std::optional<uint32_t> producer =
+          findStructuredNodeId(mapped.producer, mappedOperationNodes);
+      std::optional<uint32_t> consumer =
+          findStructuredNodeId(mapped.consumer, mappedOperationNodes);
+      return producer && consumer && *producer == *consumer;
+    };
     struct SourceOnlyDomain {
       mlir::Operation *operation = nullptr;
       llvm::SmallVector<int64_t, 4> offsets;
@@ -154,10 +161,13 @@ materializeSelectedSourceStages(SelectedEdgeLoweringState &state) {
             operation, llvm::to_vector(offsets), llvm::to_vector(sizes)});
     };
     for (MappedStrategy &mapped : mappedStrategies) {
+      if (sharesStructuredRoot(mapped))
+        continue;
       const bool hasLocalIncoming =
           llvm::any_of(mappedStrategies, [&](const MappedStrategy &incoming) {
             return incoming.consumer == mapped.producer &&
-                   incoming.strategy.destinationTile == currentTile;
+                   incoming.strategy.destinationTile == currentTile &&
+                   !sharesStructuredRoot(incoming);
           });
       if (hasLocalIncoming)
         continue;
@@ -202,6 +212,14 @@ materializeSelectedSourceStages(SelectedEdgeLoweringState &state) {
           /*restrict=*/true, /*writable=*/true);
       preserved.insert(allocation.getOperation());
       preserved.insert(destination.getOperation());
+      std::optional<uint32_t> sourceNode =
+          findStructuredNodeId(operation, mappedOperationNodes);
+      if (!sourceNode)
+        return reportSelectedEdgeFailure(
+            failureReason,
+            "independent source stage has no structured node identity");
+      selectedDDRStages.push_back(
+          CandidateSelectedDDRStage{allocation.getResult(), *sourceNode});
       mlir::Value stored = destination.getResult();
       for (size_t index = groupBegin; index < groupEnd; ++index) {
         SourceOnlyDomain &domain = sourceOnlyDomains[index];
@@ -281,6 +299,13 @@ materializeSelectedConsumerStages(SelectedEdgeLoweringState &state) {
   auto &preserved = state.preservedOperations;
   std::string *failureReason = state.failureReason;
   if (independentDDRStages) {
+    auto sharesStructuredRoot = [&](const MappedStrategy &mapped) {
+      std::optional<uint32_t> producer =
+          findStructuredNodeId(mapped.producer, mappedOperationNodes);
+      std::optional<uint32_t> consumer =
+          findStructuredNodeId(mapped.consumer, mappedOperationNodes);
+      return producer && consumer && *producer == *consumer;
+    };
     // Every selected baseline consumer is an independent op-wave, including
     // consumers in an observable output closure. Materializing only internal
     // consumers would leave the final output traversal free to fuse and
@@ -306,6 +331,14 @@ materializeSelectedConsumerStages(SelectedEdgeLoweringState &state) {
     for (MappedStrategy *mappedPointer : consumerOrder) {
       MappedStrategy &mapped = *mappedPointer;
       SpatialEdgeStrategy &strategy = mapped.strategy;
+      const bool hasCrossRootInput =
+          llvm::any_of(mappedStrategies, [&](const MappedStrategy &incoming) {
+            return incoming.consumer == mapped.consumer &&
+                   incoming.strategy.destinationTile == currentTile &&
+                   !sharesStructuredRoot(incoming);
+          });
+      if (!hasCrossRootInput && sharesStructuredRoot(mapped))
+        continue;
       if (llvm::any_of(independentConsumers,
                        [&](const MaterializedSource &existing) {
                          return existing.producer == mapped.consumer &&
@@ -378,6 +411,14 @@ materializeSelectedConsumerStages(SelectedEdgeLoweringState &state) {
       auto destination = builder.create<mlir::bufferization::ToTensorOp>(
           mapped.consumer->getLoc(), allocation.getResult(),
           /*restrict=*/true, /*writable=*/true);
+      std::optional<uint32_t> consumerNode =
+          findStructuredNodeId(mapped.consumer, mappedOperationNodes);
+      if (!consumerNode)
+        return reportSelectedEdgeFailure(
+            failureReason,
+            "independent consumer stage has no structured node identity");
+      selectedDDRStages.push_back(
+          CandidateSelectedDDRStage{allocation.getResult(), *consumerNode});
       mlir::FailureOr<mlir::Value> stored =
           materializeCandidateRootTileIntoDestination(
               scope, mapped.consumer, strategy.consumerOffsets,

@@ -170,6 +170,7 @@ TileRegionBodyEmitter::createElementwiseFillExprValue(
       resultTensorType.getShape(), scalar.getType());
   auto alloc = builder.create<mlir::memref::AllocOp>(
       loc, makeSPMMemRefType(splatTensorType, MemLayout::Tensor));
+  recordScratchAllocation(alloc);
   auto fill = builder.create<ComputeFillOp>(loc, alloc.getResult(), scalar,
                                             /*fill_domain=*/FillDomainAttr{});
   recordStructuredComputeOperation(fill);
@@ -475,12 +476,26 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseGenericExpression(
   mlir::Block &body = *generic.getBody();
   unsigned bodyArgIndex = 0;
   for (mlir::Value input : generic.getDpsInputs()) {
-    mlir::FailureOr<mlir::Value> buffer =
-        getOrMaterializeStructuredInput(input, MemLayout::Tensor, builder);
-    if (mlir::failed(buffer))
-      return mlir::failure();
-    values[body.getArgument(bodyArgIndex)] =
-        ElementwiseExprValue{*buffer, indexingMaps[bodyArgIndex]};
+    if (isScalarType(input.getType())) {
+      if (indexingMaps[bodyArgIndex].getNumResults() != 0)
+        return fail("elementwise scalar input requires a scalar indexing map");
+      mlir::FailureOr<mlir::Value> scalar = getScalarValue(input, builder);
+      if (mlir::failed(scalar))
+        return mlir::failure();
+      mlir::FailureOr<ElementwiseExprValue> splat =
+          createElementwiseFillExprValue(generic.getLoc(), *scalar,
+                                         expressionTensorType, builder);
+      if (mlir::failed(splat))
+        return mlir::failure();
+      values[body.getArgument(bodyArgIndex)] = *splat;
+    } else {
+      mlir::FailureOr<mlir::Value> buffer =
+          getOrMaterializeStructuredInput(input, MemLayout::Tensor, builder);
+      if (mlir::failed(buffer))
+        return mlir::failure();
+      values[body.getArgument(bodyArgIndex)] =
+          ElementwiseExprValue{*buffer, indexingMaps[bodyArgIndex]};
+    }
     ++bodyArgIndex;
   }
   for (mlir::Value init : generic.getDpsInits()) {
@@ -542,15 +557,38 @@ mlir::LogicalResult TileRegionBodyEmitter::convertPassthroughGeneric(
   if (!inputTensorType || !resultTensorType)
     return fail("passthrough generic operands/results must be ranked tensors");
 
-  mlir::FailureOr<mlir::Value> source =
-      getOrMaterializeStructuredInput(inputValue, MemLayout::Tensor, builder);
-  if (mlir::failed(source))
-    return mlir::failure();
-
   mlir::AffineMap inputMap = indexingMaps[*inputIndex];
   mlir::AffineMap resultMap = indexingMaps.back();
   if (!isIdentityMap(resultMap, resultTensorType.getRank()))
     return fail("passthrough generic result map must be identity");
+
+  // Preserve an exact external identity as an SSA buffer relation. This is
+  // especially important for the temporary output anchor wrapped around a
+  // tensor.insert_slice assembly: the assembly may already have written the
+  // complete result to DDR, so loading it into SPM merely to copy it back
+  // would contradict the selected residency proof.
+  if (inputTensorType == resultTensorType &&
+      isIdentityMap(inputMap, resultTensorType.getRank())) {
+    if (auto external = externalBuffers.find(inputValue);
+        external != externalBuffers.end()) {
+      mlir::Value result = generic->getResult(0);
+      mlir::Value externalBuffer = external->second;
+      externalBuffers[result] = externalBuffer;
+      if (writableExternalBuffers.contains(inputValue))
+        writableExternalBuffers.insert(result);
+      if (auto output = externalOutputIndices.find(inputValue);
+          output != externalOutputIndices.end())
+        externalOutputIndices[result] = output->second;
+      if (mlir::Value base = directYieldBuffers.lookup(inputValue))
+        directYieldBuffers[result] = base;
+      return mlir::success();
+    }
+  }
+
+  mlir::FailureOr<mlir::Value> source =
+      getOrMaterializeStructuredInput(inputValue, MemLayout::Tensor, builder);
+  if (mlir::failed(source))
+    return mlir::failure();
 
   mlir::MemRefType resultType =
       makeSPMMemRefType(resultTensorType, MemLayout::Tensor);
@@ -785,6 +823,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTwoWayConcatGeneric(
       makeSPMMemRefType(resultTensorType, MemLayout::Tensor);
   auto seed =
       builder.create<mlir::memref::AllocOp>(generic.getLoc(), resultType);
+  recordScratchAllocation(seed);
   mlir::Value zero = createZeroScalar(
       generic.getLoc(), resultTensorType.getElementType(), builder);
   if (!zero)
@@ -1069,6 +1108,7 @@ mlir::FailureOr<bool> TileRegionBodyEmitter::tryConvertTiledTwoWayConcatGeneric(
         mixedStrides);
     auto tile =
         branchBuilder.create<mlir::memref::AllocOp>(generic.getLoc(), tileType);
+    recordScratchAllocation(tile);
     branchBuilder.create<StorageLoadOp>(generic.getLoc(), view.getResult(),
                                         tile.getResult());
     branchBuilder.create<mlir::scf::YieldOp>(generic.getLoc(),

@@ -1363,6 +1363,7 @@ static mlir::FailureOr<mlir::scf::ForOp> materializeSlotsAndRotation(
     };
     retarget(materializationRelations->operationResultBuffers);
     retarget(materializationRelations->operandBuffers);
+    retarget(materializationRelations->scratchBuffers);
     retarget(materializationRelations->outputBuffers);
   }
 

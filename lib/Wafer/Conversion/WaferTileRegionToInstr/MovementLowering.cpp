@@ -18,6 +18,14 @@ namespace {
 constexpr int64_t kNchw2NhwcPermutation[] = {0, 2, 3, 1};
 constexpr int64_t kNhwc2NchwPermutation[] = {0, 3, 1, 2};
 
+class ScratchRecorderHolder {
+protected:
+  explicit ScratchRecorderHolder(
+      TileRegionToInstrBufferRecorder *bufferRecorder)
+      : bufferRecorder(bufferRecorder) {}
+  TileRegionToInstrBufferRecorder *bufferRecorder = nullptr;
+};
+
 class TileLoadLowering : public mlir::OpRewritePattern<StorageLoadOp> {
 public:
   TileLoadLowering(mlir::MLIRContext *context)
@@ -108,10 +116,15 @@ public:
 };
 
 class LayoutMaterializeLowering
-    : public mlir::OpRewritePattern<LayoutMaterializeOp> {
+    : public mlir::OpRewritePattern<LayoutMaterializeOp>,
+      private ScratchRecorderHolder {
 public:
-  LayoutMaterializeLowering(mlir::MLIRContext *context)
-      : mlir::OpRewritePattern<LayoutMaterializeOp>(context) {}
+  LayoutMaterializeLowering(mlir::MLIRContext *context,
+                            TileRegionToInstrBufferRecorder *bufferRecorder,
+                            MovementDescriptorCache *descriptorCache)
+      : mlir::OpRewritePattern<LayoutMaterializeOp>(context),
+        ScratchRecorderHolder(bufferRecorder),
+        descriptorCache(descriptorCache) {}
 
   mlir::LogicalResult
   matchAndRewrite(LayoutMaterializeOp op,
@@ -132,30 +145,36 @@ public:
           rewriter, op,
           "layout materialization gather/scatter is not exactly realizable");
 
-    mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
-        getRelationMovementDescriptors(
+    mlir::FailureOr<SharedMovementDescriptorPlan> descriptors =
+        descriptorCache->getOrCreate(
             rewriter, op, sourceType, resultType, resultType.getShape(),
             *relation.get(), *relation.get(), MovementEngine::GatherScatter,
             "layout materialize lowering");
     if (mlir::failed(descriptors))
       return mlir::failure();
 
-    mlir::FailureOr<mlir::Value> dest =
-        createDestAlloc(op.getLoc(), op.getResult().getType(), rewriter, op);
+    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, bufferRecorder);
     if (mlir::failed(dest))
       return mlir::failure();
 
     createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(), *dest,
-                                   *descriptors);
+                                   **descriptors);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
+
+private:
+  MovementDescriptorCache *descriptorCache = nullptr;
 };
 
-class TileCopyLowering : public mlir::OpRewritePattern<MoveCopyOp> {
+class TileCopyLowering : public mlir::OpRewritePattern<MoveCopyOp>,
+                         private ScratchRecorderHolder {
 public:
-  TileCopyLowering(mlir::MLIRContext *context)
-      : mlir::OpRewritePattern<MoveCopyOp>(context) {}
+  TileCopyLowering(mlir::MLIRContext *context,
+                   TileRegionToInstrBufferRecorder *bufferRecorder)
+      : mlir::OpRewritePattern<MoveCopyOp>(context),
+        ScratchRecorderHolder(bufferRecorder) {}
 
   mlir::LogicalResult
   matchAndRewrite(MoveCopyOp op, mlir::PatternRewriter &rewriter) const final {
@@ -180,8 +199,8 @@ public:
     if (mlir::failed(descriptors))
       return mlir::failure();
 
-    mlir::FailureOr<mlir::Value> dest =
-        createDestAlloc(op.getLoc(), op.getResult().getType(), rewriter, op);
+    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, bufferRecorder);
     if (mlir::failed(dest))
       return mlir::failure();
 
@@ -228,10 +247,13 @@ public:
 };
 
 class MoveExtractSliceLowering
-    : public mlir::OpRewritePattern<MoveExtractSliceOp> {
+    : public mlir::OpRewritePattern<MoveExtractSliceOp>,
+      private ScratchRecorderHolder {
 public:
-  MoveExtractSliceLowering(mlir::MLIRContext *context)
-      : mlir::OpRewritePattern<MoveExtractSliceOp>(context) {}
+  MoveExtractSliceLowering(mlir::MLIRContext *context,
+                           TileRegionToInstrBufferRecorder *bufferRecorder)
+      : mlir::OpRewritePattern<MoveExtractSliceOp>(context),
+        ScratchRecorderHolder(bufferRecorder) {}
 
   mlir::LogicalResult
   matchAndRewrite(MoveExtractSliceOp op,
@@ -286,8 +308,8 @@ public:
     if (mlir::failed(descriptors))
       return mlir::failure();
 
-    mlir::FailureOr<mlir::Value> dest =
-        createDestAlloc(op.getLoc(), op.getResult().getType(), rewriter, op);
+    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, bufferRecorder);
     if (mlir::failed(dest))
       return mlir::failure();
 
@@ -301,8 +323,10 @@ public:
 class MoveInsertSliceLowering
     : public mlir::OpRewritePattern<MoveInsertSliceOp> {
 public:
-  MoveInsertSliceLowering(mlir::MLIRContext *context)
-      : mlir::OpRewritePattern<MoveInsertSliceOp>(context) {}
+  MoveInsertSliceLowering(mlir::MLIRContext *context,
+                          MovementDescriptorCache *descriptorCache)
+      : mlir::OpRewritePattern<MoveInsertSliceOp>(context),
+        descriptorCache(descriptorCache) {}
 
   mlir::LogicalResult
   matchAndRewrite(MoveInsertSliceOp op,
@@ -347,8 +371,8 @@ public:
     if (!sourceRelation.isExact() || !destRelation.isExact())
       return failPattern(rewriter, op,
                          "tile.insert_slice relation is not exact");
-    mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>>
-        insertDescriptors = getRelationMovementDescriptors(
+    mlir::FailureOr<SharedMovementDescriptorPlan> insertDescriptors =
+        descriptorCache->getOrCreate(
             rewriter, op, sourceType, destType, sourceShape,
             *sourceRelation.get(), *destRelation.get(),
             MovementEngine::GatherScatter, "tile.insert_slice lowering");
@@ -356,16 +380,22 @@ public:
       return mlir::failure();
 
     createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
-                                   op.getDest(), *insertDescriptors);
+                                   op.getDest(), **insertDescriptors);
     rewriter.eraseOp(op);
     return mlir::success();
   }
+
+private:
+  MovementDescriptorCache *descriptorCache = nullptr;
 };
 
-class MoveTransposeLowering : public mlir::OpRewritePattern<MoveTransposeOp> {
+class MoveTransposeLowering : public mlir::OpRewritePattern<MoveTransposeOp>,
+                              private ScratchRecorderHolder {
 public:
-  MoveTransposeLowering(mlir::MLIRContext *context)
-      : mlir::OpRewritePattern<MoveTransposeOp>(context) {}
+  MoveTransposeLowering(mlir::MLIRContext *context,
+                        TileRegionToInstrBufferRecorder *bufferRecorder)
+      : mlir::OpRewritePattern<MoveTransposeOp>(context),
+        ScratchRecorderHolder(bufferRecorder) {}
 
   mlir::LogicalResult
   matchAndRewrite(MoveTransposeOp op,
@@ -412,8 +442,8 @@ public:
     if (mlir::failed(descriptors))
       return mlir::failure();
 
-    mlir::FailureOr<mlir::Value> dest =
-        createDestAlloc(op.getLoc(), op.getResult().getType(), rewriter, op);
+    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, bufferRecorder);
     if (mlir::failed(dest))
       return mlir::failure();
 
@@ -615,10 +645,13 @@ private:
   }
 };
 
-class MoveBroadcastLowering : public mlir::OpRewritePattern<MoveBroadcastOp> {
+class MoveBroadcastLowering : public mlir::OpRewritePattern<MoveBroadcastOp>,
+                              private ScratchRecorderHolder {
 public:
-  MoveBroadcastLowering(mlir::MLIRContext *context)
-      : mlir::OpRewritePattern<MoveBroadcastOp>(context) {}
+  MoveBroadcastLowering(mlir::MLIRContext *context,
+                        TileRegionToInstrBufferRecorder *bufferRecorder)
+      : mlir::OpRewritePattern<MoveBroadcastOp>(context),
+        ScratchRecorderHolder(bufferRecorder) {}
 
   mlir::LogicalResult
   matchAndRewrite(MoveBroadcastOp op,
@@ -687,8 +720,8 @@ public:
     if (mlir::failed(descriptors))
       return mlir::failure();
 
-    mlir::FailureOr<mlir::Value> dest =
-        createDestAlloc(op.getLoc(), op.getResult().getType(), rewriter, op);
+    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, bufferRecorder);
     if (mlir::failed(dest))
       return mlir::failure();
 
@@ -760,10 +793,13 @@ public:
   }
 };
 
-class MoveReshapeLowering : public mlir::OpRewritePattern<MoveReshapeOp> {
+class MoveReshapeLowering : public mlir::OpRewritePattern<MoveReshapeOp>,
+                            private ScratchRecorderHolder {
 public:
-  MoveReshapeLowering(mlir::MLIRContext *context)
-      : mlir::OpRewritePattern<MoveReshapeOp>(context) {}
+  MoveReshapeLowering(mlir::MLIRContext *context,
+                      TileRegionToInstrBufferRecorder *bufferRecorder)
+      : mlir::OpRewritePattern<MoveReshapeOp>(context),
+        ScratchRecorderHolder(bufferRecorder) {}
 
   mlir::LogicalResult
   matchAndRewrite(MoveReshapeOp op,
@@ -796,8 +832,8 @@ public:
     if (mlir::failed(descriptors))
       return mlir::failure();
 
-    mlir::FailureOr<mlir::Value> dest =
-        createDestAlloc(op.getLoc(), op.getResult().getType(), rewriter, op);
+    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, bufferRecorder);
     if (mlir::failed(dest))
       return mlir::failure();
     createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(), *dest,
@@ -810,13 +846,18 @@ public:
 } // namespace
 
 void wafer::tile_region_to_instr::populateMovementLoweringPatterns(
-    mlir::RewritePatternSet &patterns) {
+    mlir::RewritePatternSet &patterns,
+    TileRegionToInstrBufferRecorder *bufferRecorder,
+    MovementDescriptorCache *descriptorCache) {
   mlir::MLIRContext *context = patterns.getContext();
-  patterns
-      .add<TileLoadLowering, TileStoreLowering, LayoutMaterializeLowering,
-           TileCopyLowering, TileCopyIntoLowering, MoveExtractSliceLowering,
-           MoveInsertSliceLowering, MoveReshapeLowering, MoveTransposeLowering,
-           InstrTDMADataMoveLowering, MoveBroadcastLowering>(context);
+  patterns.add<TileLoadLowering, TileStoreLowering, TileCopyIntoLowering,
+               InstrTDMADataMoveLowering>(context);
+  patterns.add<MoveInsertSliceLowering>(context, descriptorCache);
+  patterns.add<TileCopyLowering, MoveExtractSliceLowering, MoveReshapeLowering,
+               MoveTransposeLowering, MoveBroadcastLowering>(context,
+                                                             bufferRecorder);
+  patterns.add<LayoutMaterializeLowering>(context, bufferRecorder,
+                                          descriptorCache);
 }
 
 void wafer::tile_region_to_instr::populateViewReshapeLoweringPattern(

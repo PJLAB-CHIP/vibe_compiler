@@ -10,11 +10,15 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/PatternMatch.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -47,7 +51,46 @@ struct MovementDescriptorPair {
   MovementDescriptor dest;
 };
 
+using MovementDescriptorPlan = llvm::SmallVector<MovementDescriptorPair>;
+using SharedMovementDescriptorPlan =
+    std::shared_ptr<const MovementDescriptorPlan>;
+
 enum class MovementEngine { RDMA, WDMA, GatherScatter };
+
+/// Request-local cache of exact descriptor plans. Entries contain only typed
+/// endpoint geometry and total projected IndexRelations; they own no
+/// Operation/Value handles and die with the TileRegion-to-Instr lowering
+/// session. Failed/unsupported queries are never cached.
+class MovementDescriptorCache {
+public:
+  bool hasOrProveIdentityPhysicalTraversal(mlir::MemRefType sourceType,
+                                           mlir::MemRefType destType);
+
+  mlir::FailureOr<SharedMovementDescriptorPlan>
+  getOrCreate(mlir::PatternRewriter &rewriter, mlir::Operation *op,
+              mlir::MemRefType sourceType, mlir::MemRefType destType,
+              llvm::ArrayRef<int64_t> iterationShape,
+              const analysis::IndexRelation &iterationToSource,
+              const analysis::IndexRelation &iterationToDest,
+              MovementEngine engine, llvm::StringRef opLabel);
+
+private:
+  struct Entry {
+    mlir::MemRefType sourceType;
+    mlir::MemRefType destType;
+    llvm::SmallVector<int64_t, 4> iterationShape;
+    mlir::AffineMap iterationToSource;
+    mlir::AffineMap iterationToDest;
+    MovementEngine engine;
+    SharedMovementDescriptorPlan plan;
+  };
+
+  llvm::SmallVector<Entry, 16> entries;
+  llvm::DenseMap<size_t, llvm::SmallVector<unsigned, 2>> entriesByHash;
+  llvm::DenseMap<size_t, uint8_t> cacheAdmissionCounts;
+  llvm::DenseSet<std::pair<mlir::Type, mlir::Type>>
+      provenIdentityPhysicalTraversals;
+};
 
 using CanonicalReshapeMovementRelations = analysis::CanonicalReshapeRelations;
 
@@ -79,10 +122,10 @@ mlir::FailureOr<T> failFailureOr(mlir::PatternRewriter &rewriter,
 
 std::optional<mlir::RankedTensorType>
 getLogicalTensorTypeFromMemRef(mlir::Type type);
-mlir::FailureOr<mlir::Value> createDestAlloc(mlir::Location loc,
-                                             mlir::Type type,
-                                             mlir::PatternRewriter &rewriter,
-                                             mlir::Operation *op);
+mlir::FailureOr<mlir::Value>
+createDestAlloc(mlir::Location loc, mlir::Type type,
+                mlir::PatternRewriter &rewriter, mlir::Operation *op,
+                TileRegionToInstrBufferRecorder *bufferRecorder);
 
 mlir::FailureOr<MovementDescriptor>
 getContiguousDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
@@ -100,7 +143,9 @@ void createWDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
 void createGatherScatter(mlir::PatternRewriter &rewriter, mlir::Location loc,
                          mlir::Value source, mlir::Value dest,
                          const MovementDescriptor &sourceDescriptor,
-                         const MovementDescriptor &destDescriptor);
+                         const MovementDescriptor &destDescriptor,
+                         mlir::Value dynamicSourceOffset = {},
+                         mlir::Value dynamicDestOffset = {});
 mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>>
 getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
                                mlir::Operation *op, mlir::MemRefType sourceType,
@@ -144,9 +189,15 @@ mlir::FailureOr<InstrElementwiseKindAttr> getAccumulationElementwiseKind(
     mlir::PatternRewriter &rewriter, mlir::Operation *op,
     ComputeReduceKindAttr reduceKind, llvm::StringRef opLabel);
 
-void populateMovementLoweringPatterns(mlir::RewritePatternSet &patterns);
+void populateMovementLoweringPatterns(
+    mlir::RewritePatternSet &patterns,
+    TileRegionToInstrBufferRecorder *bufferRecorder,
+    MovementDescriptorCache *descriptorCache);
 void populateViewReshapeLoweringPattern(mlir::RewritePatternSet &patterns);
-void populateComputeLoweringPatterns(mlir::RewritePatternSet &patterns);
+void populateComputeLoweringPatterns(
+    mlir::RewritePatternSet &patterns,
+    TileRegionToInstrBufferRecorder *bufferRecorder,
+    MovementDescriptorCache *descriptorCache);
 void populateFillLoweringPattern(mlir::RewritePatternSet &patterns);
 void populatePeerLoweringPatterns(mlir::RewritePatternSet &patterns);
 

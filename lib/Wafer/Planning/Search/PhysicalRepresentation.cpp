@@ -3,7 +3,7 @@
 #include "Wafer/Planning/Search/PhysicalRepresentation.h"
 
 #include "Wafer/Analysis/PhysicalDataflow/PhysicalLayoutRelation.h"
-#include "Wafer/Analysis/Structured/StructuredOperationTileFootprint.h"
+#include "Wafer/Planning/PhysicalDataflow/TemporalTileShape.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 

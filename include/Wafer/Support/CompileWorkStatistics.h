@@ -17,6 +17,7 @@ namespace wafer::support {
 enum class CompileWorkKind : size_t {
   TileMemoryPlanning,
   TileToInstructionLowering,
+  RelationDescriptorPlanning,
   SPMPlanning,
   DDRPlanning,
   TargetABIModuleClone,
@@ -28,6 +29,7 @@ enum class CompileWorkKind : size_t {
 struct CompileWorkStatistics {
   uint64_t tileMemoryPlanningInvocations = 0;
   uint64_t tileToInstructionLowerings = 0;
+  uint64_t relationDescriptorPlannings = 0;
   uint64_t spmPlanningInvocations = 0;
   uint64_t ddrPlanningInvocations = 0;
   uint64_t targetABIModuleClones = 0;
@@ -53,6 +55,7 @@ public:
     return {
         read(CompileWorkKind::TileMemoryPlanning),
         read(CompileWorkKind::TileToInstructionLowering),
+        read(CompileWorkKind::RelationDescriptorPlanning),
         read(CompileWorkKind::SPMPlanning),
         read(CompileWorkKind::DDRPlanning),
         read(CompileWorkKind::TargetABIModuleClone),

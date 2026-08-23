@@ -468,6 +468,27 @@ int main(int argc, char **argv) {
   }
 #endif
 
+  if (options.compilerIRDumpDirectory) {
+    llvm::Expected<wafer::compiler::CompiledProgram> compiledProgram =
+        wafer::compiler::compileProgramWithTargetLLVMModules(
+            std::move(*request), *options.outputDirectory,
+            toolFacts->spmdPartitionerHelper, *targetToolchain,
+            compilationOptions, llvm::errs());
+    if (!compiledProgram)
+      return reportCompilationFailure(compiledProgram.takeError());
+    if (!dumpCompilerIR(*options.compilerIRDumpDirectory, *compiledProgram,
+                        llvm::errs()))
+      return 1;
+    llvm::outs() << "wafer-compile: dumped compiler IR: "
+                 << *options.compilerIRDumpDirectory << "\n";
+    llvm::outs() << "wafer-compile: wrote verified package with "
+                    "num-partitions="
+                 << numPartitions << " tiles="
+                 << wafer::compiler::ExecutionConfig::kSingleCardTileCount
+                 << ": " << *options.outputDirectory << "\n";
+    return 0;
+  }
+
   llvm::Expected<wafer::compiler::CompilationResult> result =
       wafer::compiler::compileProgram(
           std::move(*request), *options.outputDirectory,

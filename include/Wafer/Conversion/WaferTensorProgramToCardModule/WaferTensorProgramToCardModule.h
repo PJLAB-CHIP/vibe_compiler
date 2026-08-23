@@ -39,6 +39,17 @@ struct OutputTileMapping {
   llvm::SmallVector<int64_t, 4> temporalTileSizes;
 };
 
+/// Query-local equivalence between a materialized structured DAG node and its
+/// source semantic root.  Ordinary source DAGs use one group per node;
+/// selected decompositions assign every emitted operation derived from the
+/// same semantic root to one group.  The relation belongs to one immutable
+/// source/materialization transaction and is never serialized or recovered
+/// from operation names, locations, or buffer shapes.
+struct StructuredNodeRootGroup {
+  uint32_t structuredNodeId = 0;
+  uint32_t rootGroupId = 0;
+};
+
 /// Complete physical placement consumed atomically by CardModule
 /// materialization.  Every function result appears exactly once.  Different
 /// results may use different dimensions and disjoint Tile sets; Tiles not
@@ -161,6 +172,7 @@ public:
   static mlir::FailureOr<std::unique_ptr<TileMaterializationSourceSession>>
   create(mlir::ModuleOp sourceModule, CardId cardId,
          llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
+         llvm::ArrayRef<StructuredNodeRootGroup> operationRootGroups = {},
          std::string *failureReason = nullptr);
 
   ~TileMaterializationSourceSession();

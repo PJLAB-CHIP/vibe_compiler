@@ -56,8 +56,9 @@ lowerTileRegionsToInstructionIR(mlir::ModuleOp module,
 
   llvm::SmallVector<TileRegionOp, 4> regions;
   module.walk([&](TileRegionOp region) { regions.push_back(region); });
-  TileRegionToInstrLoweringSession loweringSession(*module.getContext());
   StructuredBufferReplacementListener replacementListener(relations);
+  TileRegionToInstrLoweringSession loweringSession(*module.getContext(),
+                                                    &replacementListener);
   for (TileRegionOp region : regions)
     if (mlir::failed(convertTileRegionToInstr(region, loweringSession,
                                               &replacementListener))) {
@@ -68,8 +69,10 @@ lowerTileRegionsToInstructionIR(mlir::ModuleOp module,
   if (!replacementListener.finalizeAfterRewrite() ||
       mlir::failed(checkStructuredBufferRelationsCurrent(module.getOperation(),
                                                          relations))) {
-    detail = "TileRegion-to-Instr lowering did not preserve every structured "
-             "buffer relation in the current Tile IR";
+    detail = replacementListener.getFailureReason().empty()
+                 ? "TileRegion-to-Instr lowering did not preserve every "
+                   "structured buffer relation in the current Tile IR"
+                 : replacementListener.getFailureReason().str();
     return mlir::failure();
   }
 
@@ -226,7 +229,8 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
                        bufferingScopes, &result.materializationRelations,
                        &result.rotatingSlotAllocationCount,
                        &result.selectedBuffer,
-                       applySelectedInstructionSchedule);
+                       applySelectedInstructionSchedule,
+                       /*emitSPMCapacityDiagnostics=*/false);
     if (mlir::failed(memoryPlanned)) {
       result.memoryPlanningFailed = true;
       result.detail = result.selectedBuffer.detail;

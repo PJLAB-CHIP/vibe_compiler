@@ -30,7 +30,10 @@ def PlanSPMMemoryPass
     Option<"spmLimit", "spm-limit", "int64_t", /*default=*/"3080192",
            "Exclusive byte limit for ordinary tile-local SPM planning">,
     Option<"spmAlignment", "spm-alignment", "int64_t", /*default=*/"256",
-           "Preferred byte alignment for ordinary tile-local SPM planning">
+           "Preferred byte alignment for ordinary tile-local SPM planning">,
+    Option<"emitCapacityDiagnostics", "emit-capacity-diagnostics", "bool",
+           /*default=*/"true",
+           "Emit an error diagnostic for a proven capacity rejection">
   ];
   let statistics = [
     Statistic<"numTimelineScopes", "timeline-scopes",

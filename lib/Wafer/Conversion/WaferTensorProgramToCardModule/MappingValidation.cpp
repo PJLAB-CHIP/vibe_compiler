@@ -3,8 +3,9 @@
 #include "Internal.h"
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
+#include "Wafer/Support/CompileTiming.h"
 
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Interfaces/TilingInterface.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
@@ -17,6 +18,8 @@ mlir::FailureOr<TileMaterializationPreparation>
 prepareTileMaterialization(const TileMaterializationSourcePreparation &source,
                            const TileMapping &mapping,
                            std::string *failureReason) {
+  wafer::support::ScopedCompileTimingSpan totalTiming(
+      "query", "tensor-program-to-card-module", "validate-mapping");
   TileMaterializationPreparation preparation;
   mlir::func::FuncOp sourceProgram = source.sourceProgram;
   preparation.sourceModule = source.sourceModule;
@@ -39,6 +42,7 @@ prepareTileMaterialization(const TileMaterializationSourcePreparation &source,
           "program");
     preparation.operationNodes.push_back(node);
   }
+  preparation.operationRootGroups = source.operationRootGroups;
 
   preparation.consumerInputDemands.reserve(mapping.operandDemands.size());
   for (const analysis::DependencyDemand &demand : mapping.operandDemands) {
@@ -95,17 +99,21 @@ prepareTileMaterialization(const TileMaterializationSourcePreparation &source,
           "card structured temporal tile does not match its iteration "
           "domain");
     llvm::SmallVector<int64_t, 4> ranges;
-    if (auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(tile.operation)) {
-      ranges = linalg.getStaticLoopRanges();
-    } else if (tile.operation->getNumResults() == 1) {
-      auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
-          tile.operation->getResult(0).getType());
-      if (resultType && resultType.hasStaticShape() &&
-          resultType.getRank() ==
-              static_cast<int64_t>(tile.iteratorTileSizes.size()))
-        ranges.assign(resultType.getShape().begin(),
-                      resultType.getShape().end());
-    }
+    mlir::OpBuilder builder(tile.operation);
+    llvm::SmallVector<mlir::Range> iterationDomain =
+        tiling.getIterationDomain(builder);
+    if (iterationDomain.size() == tile.iteratorTileSizes.size())
+      for (const mlir::Range &range : iterationDomain) {
+        std::optional<int64_t> offset = mlir::getConstantIntValue(range.offset);
+        std::optional<int64_t> size = mlir::getConstantIntValue(range.size);
+        std::optional<int64_t> stride = mlir::getConstantIntValue(range.stride);
+        if (!offset || !size || !stride || *offset != 0 || *size <= 0 ||
+            *stride != 1) {
+          ranges.clear();
+          break;
+        }
+        ranges.push_back(*size);
+      }
     if (ranges.size() != tile.iteratorTileSizes.size() ||
         llvm::any_of(llvm::zip_equal(ranges, tile.iteratorTileSizes),
                      [](auto values) {
@@ -159,9 +167,14 @@ prepareTileMaterialization(const TileMaterializationSourcePreparation &source,
   llvm::DenseSet<std::pair<mlir::Operation *, unsigned>>
       coveredStructuredInputs;
   mlir::FailureOr<llvm::SmallVector<SpatialEdgeMaterializationFacts, 16>>
-      edgeFacts = deriveSpatialEdgeMaterializationFacts(
-          preparation.sourceProgram.getBody().front(), mapping.edgeStrategies,
-          mapping.operandDemands, failureReason);
+      edgeFacts = [&]() {
+        wafer::support::ScopedCompileTimingSpan timing(
+            "query", "tensor-program-to-card-module",
+            "derive-edge-materialization-facts");
+        return deriveSpatialEdgeMaterializationFacts(
+            preparation.sourceProgram.getBody().front(),
+            mapping.edgeStrategies, mapping.operandDemands, failureReason);
+      }();
   if (mlir::failed(edgeFacts))
     return mlir::failure();
   preparation.edgeFacts = std::move(*edgeFacts);

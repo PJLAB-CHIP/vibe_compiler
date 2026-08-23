@@ -183,6 +183,90 @@ module {
   return source;
 }
 
+namespace {
+
+std::string buildRank4AttentionPlanningFixture(
+    int64_t batchExtent, int64_t headExtent, int64_t queryExtent,
+    int64_t keyValueExtent, int64_t queryKeyExtent, int64_t valueExtent,
+    bool withMask, bool decoding) {
+  std::string source;
+  llvm::raw_string_ostream stream(source);
+  stream << R"mlir(
+#q = affine_map<(b, h, m, k1, k2, n) -> (b, h, m, k1)>
+#k = affine_map<(b, h, m, k1, k2, n) -> (b, h, k2, k1)>
+#v = affine_map<(b, h, m, k1, k2, n) -> (b, h, k2, n)>
+#s = affine_map<(b, h, m, k1, k2, n) -> ()>
+#mask = affine_map<(b, h, m, k1, k2, n) -> (b, h, m, k2)>
+#o = affine_map<(b, h, m, k1, k2, n) -> (b, h, m, n)>
+module {
+  func.func @)mlir"
+         << (decoding ? "decode" : "prefill") << "(\n"
+         << "      %query: tensor<" << batchExtent << "x" << headExtent << "x"
+         << queryExtent << "x" << queryKeyExtent << "xf16>,\n"
+         << "      %key: tensor<" << batchExtent << "x" << headExtent << "x"
+         << keyValueExtent << "x" << queryKeyExtent << "xf16>,\n"
+         << "      %value: tensor<" << batchExtent << "x" << headExtent << "x"
+         << keyValueExtent << "x" << valueExtent
+         << "xf16>, %scale: f32";
+  if (withMask)
+    stream << ",\n      %mask: tensor<" << batchExtent << "x" << headExtent
+           << "x" << queryExtent << "x" << keyValueExtent << "xf16>";
+  stream << ") -> tensor<" << batchExtent << "x" << headExtent << "x"
+         << queryExtent << "x" << valueExtent << "xf16> {\n"
+         << "    %out = tensor.empty() : tensor<" << batchExtent << "x"
+         << headExtent << "x" << queryExtent << "x" << valueExtent
+         << "xf16>\n"
+         << "    %result = wafer.linalg_ext.attention\n"
+         << "        ins(%query, %key, %value, %scale";
+  if (withMask)
+    stream << ", %mask";
+  stream << " :\n            tensor<" << batchExtent << "x" << headExtent << "x"
+         << queryExtent << "x" << queryKeyExtent << "xf16>, tensor<"
+         << batchExtent << "x" << headExtent << "x" << keyValueExtent << "x"
+         << queryKeyExtent << "xf16>,\n            tensor<" << batchExtent << "x"
+         << headExtent << "x" << keyValueExtent << "x" << valueExtent
+         << "xf16>, f32";
+  if (withMask)
+    stream << ", tensor<" << batchExtent << "x" << headExtent << "x"
+           << queryExtent << "x" << keyValueExtent << "xf16>";
+  stream << ")\n"
+         << "        outs(%out : tensor<" << batchExtent << "x" << headExtent
+         << "x" << queryExtent << "x" << valueExtent << "xf16>)\n"
+         << "        algorithm(<"
+         << (decoding ? "flash_decoding" : "flash_attention") << ">)\n"
+         << "        indexing_maps = [#q, #k, #v, #s";
+  if (withMask)
+    stream << ", #mask";
+  stream << ", #o]\n"
+         << "        -> tensor<" << batchExtent << "x" << headExtent << "x"
+         << queryExtent << "x" << valueExtent << "xf16>\n"
+         << "    return %result : tensor<" << batchExtent << "x" << headExtent
+         << "x" << queryExtent << "x" << valueExtent << "xf16>\n"
+         << "  }\n"
+         << "}\n";
+  return source;
+}
+
+} // namespace
+
+std::string buildRank4FlashAttentionPlanningFixture(
+    int64_t batchExtent, int64_t headExtent, int64_t queryExtent,
+    int64_t keyValueExtent, int64_t queryKeyExtent, int64_t valueExtent,
+    bool withMask) {
+  return buildRank4AttentionPlanningFixture(
+      batchExtent, headExtent, queryExtent, keyValueExtent, queryKeyExtent,
+      valueExtent, withMask, /*decoding=*/false);
+}
+
+std::string buildRank4FlashDecodingPlanningFixture(
+    int64_t batchExtent, int64_t headExtent, int64_t queryExtent,
+    int64_t keyValueExtent, int64_t queryKeyExtent, int64_t valueExtent,
+    bool withMask) {
+  return buildRank4AttentionPlanningFixture(
+      batchExtent, headExtent, queryExtent, keyValueExtent, queryKeyExtent,
+      valueExtent, withMask, /*decoding=*/true);
+}
+
 std::string buildMultiK2FlashDecodingPlanningFixture() {
   return R"mlir(
 #q = affine_map<(b, m, k1, k20, k21, n) -> (b, m, k1)>

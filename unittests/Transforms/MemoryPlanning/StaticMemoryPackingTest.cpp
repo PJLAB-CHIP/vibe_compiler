@@ -1,5 +1,7 @@
 #include "MemoryPlanning/StaticMemoryPacking.h"
 
+#include "llvm/ADT/STLExtras.h"
+
 #include "gtest/gtest.h"
 
 #include <cstdint>
@@ -184,35 +186,6 @@ TEST(StaticMemoryPackingTest, DefaultBudgetUsesWideDeterministicFormula) {
   EXPECT_GT(defaultPackingSearchNodeBudget(problem), uint64_t{1000000});
   EXPECT_LE(defaultPackingSearchNodeBudget(problem),
             kMaxDefaultPackingSearchNodes);
-}
-
-TEST(StaticMemoryPackingTest, FirstFitUsesAbsoluteAlignmentForNonzeroBase) {
-  StaticPackingProblem problem;
-  problem.arena = ArenaRange{3, 32};
-  problem.demands = {makeDemand(7, 8, 0)};
-
-  PackingResult result = packFirstFit(problem);
-  ASSERT_EQ(result.status, PackingStatus::Feasible);
-  ASSERT_EQ(result.backend, PackingBackend::FirstFitFallback);
-  ASSERT_EQ(result.placements.size(), 1u);
-  EXPECT_EQ(result.placements.front().offsetBytes, 8);
-  EXPECT_EQ(result.placements.front().endBytes, 15);
-  EXPECT_FALSE(validatePlacements(problem, result.placements));
-}
-
-TEST(StaticMemoryPackingTest, FirstFitCanRejectAFeasibleFourDemandProblem) {
-  StaticPackingProblem problem = makeFourDemandFirstFitCounterexample();
-  PackingResult result = packFirstFit(problem);
-
-  EXPECT_EQ(result.status, PackingStatus::HeuristicNoFit);
-  EXPECT_EQ(result.backend, PackingBackend::FirstFitFallback);
-  EXPECT_FALSE(result.succeeded());
-  EXPECT_TRUE(result.placements.empty());
-
-  llvm::SmallVector<Placement, 4> witness = {
-      Placement{0, 0, 1}, Placement{1, 3, 4}, Placement{2, 0, 3},
-      Placement{3, 1, 4}};
-  EXPECT_FALSE(validatePlacements(problem, witness));
 }
 
 } // namespace

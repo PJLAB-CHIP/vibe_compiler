@@ -82,7 +82,7 @@ Q54的审计与完成门禁覆盖全部active compiler source，而不是只覆�
 | Frontend | parse schema、metadata、typed compile result和IR验证边界分离 | 外部字符串只允许停在解析边界 |
 | StableHLO/Linalg | normalization、legalization、bounded simplification保持语义stage与bounded work | 核对普通pass caller是否会继续使用失败IR；若不会，删除root snapshot；若API明确承诺保留输入，则将transaction放在该API边界而不是机械套在每个pass上 |
 | SPMD/Sharding | TableGen声明、全量validation、module级mesh/signature边界和feature-off gate闭合 | 外部 XLA helper保持其原生 pass/status 边界 |
-| Card/Tile materialization | semantic Location和synthetic wrapper移除；同次selected局部构造以`IRMapping`维护关系；Tile body在Card→Tile fan-out中直接move | Q49.P保留single-root/direct witness能力，但须完成plan-only legalization；不保留region/function/per-coordinate capacity IR |
+| Card/Tile materialization | semantic Location和synthetic wrapper移除；同次selected局部构造以`IRMapping`维护关系；Tile body在Card→Tile fan-out中直接move | Q49.P已完成single-root/direct witness与plan-only legalization；不保留region/function/per-coordinate capacity IR |
 | TileRegion→Instr | region-anchored conversion、frozen patterns、marker fail-closed legality、DRR和function NCC join pipeline闭合 | function outstanding access保持 Func scope |
 | Memory planning | SPM/DDR plan-then-apply、timeline/call analysis与preservation闭合 | shared arena与DDR仍是 function/module 合同 |
 | Search/scheduling | assignment/query/transition/selected apply拆分，current-IR relation替代pointer/print identity，enumeration名称说明真实动作 | Q50/Q51拥有plan域和选择语义，不由Q54另建selector |

@@ -68,14 +68,16 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   });
 }
 
-static void
-populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns) {
+static void populateTileRegionToInstrPatterns(
+    mlir::RewritePatternSet &patterns,
+    TileRegionToInstrBufferRecorder *bufferRecorder,
+    MovementDescriptorCache *descriptorCache) {
   // Match failures stay inside the PatternRewriter transaction. The public
   // compiler adapter reports a deterministic stage-level failure after the
   // conversion driver returns; it does not expose the last attempted pattern
   // through rollback-external mutable state.
-  populateMovementLoweringPatterns(patterns);
-  populateComputeLoweringPatterns(patterns);
+  populateMovementLoweringPatterns(patterns, bufferRecorder, descriptorCache);
+  populateComputeLoweringPatterns(patterns, bufferRecorder, descriptorCache);
   populateViewReshapeLoweringPattern(patterns);
   populateFillLoweringPattern(patterns);
   populatePeerLoweringPatterns(patterns);
@@ -121,6 +123,7 @@ static void eraseDeadPrivateFills(mlir::Operation *root,
 
 struct NCCOutstandingAccessSummary {
   uint32_t workers = 0;
+  uint32_t pathAmbiguousWorkers = 0;
   llvm::DenseMap<mlir::Value, uint32_t> readers;
   llvm::DenseMap<mlir::Value, uint32_t> writers;
   std::array<mlir::Operation *, kNCCWorkerCount> latestIssues{};
@@ -148,6 +151,7 @@ static void clearMask(llvm::DenseMap<mlir::Value, uint32_t> &masks,
 static void clearSynchronizedWorkers(NCCOutstandingAccessSummary &state,
                                      uint32_t completed) {
   state.workers &= ~completed;
+  state.pathAmbiguousWorkers &= ~completed;
   clearMask(state.readers, completed);
   clearMask(state.writers, completed);
   for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker)
@@ -159,6 +163,7 @@ static void
 mergeOutstandingAccessSummaries(NCCOutstandingAccessSummary &destination,
                                 const NCCOutstandingAccessSummary &source) {
   uint32_t destinationWorkers = destination.workers;
+  destination.pathAmbiguousWorkers |= source.pathAmbiguousWorkers;
   for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker) {
     uint32_t mask = uint32_t{1} << worker;
     bool destinationHasWorker = (destinationWorkers & mask) != 0;
@@ -169,11 +174,14 @@ mergeOutstandingAccessSummaries(NCCOutstandingAccessSummary &destination,
       // would falsely make that issue an unconditional same-worker successor
       // on a surrounding loop backedge.
       destination.latestIssues[worker] = nullptr;
+      destination.pathAmbiguousWorkers |= mask;
       continue;
     }
     if (destinationHasWorker && sourceHasWorker &&
-        destination.latestIssues[worker] != source.latestIssues[worker])
+        destination.latestIssues[worker] != source.latestIssues[worker]) {
       destination.latestIssues[worker] = nullptr;
+      destination.pathAmbiguousWorkers |= mask;
+    }
   }
   destination.workers |= source.workers;
   for (const auto &entry : source.readers)
@@ -196,6 +204,7 @@ static bool
 haveEqualOutstandingAccessSummaries(const NCCOutstandingAccessSummary &lhs,
                                     const NCCOutstandingAccessSummary &rhs) {
   return lhs.workers == rhs.workers &&
+         lhs.pathAmbiguousWorkers == rhs.pathAmbiguousWorkers &&
          haveEqualMasks(lhs.readers, rhs.readers) &&
          haveEqualMasks(lhs.writers, rhs.writers) &&
          lhs.latestIssues == rhs.latestIssues;
@@ -478,7 +487,8 @@ static void insertNCCJoinBefore(mlir::Operation *operation, uint32_t mask,
   if (mask == 0)
     return;
   mlir::OpBuilder builder(operation);
-  builder.create<SyncNCCJoinOp>(operation->getLoc(), getParticipants(mask));
+  builder.create<SyncNCCJoinOp>(operation->getLoc(), getParticipants(mask),
+                                mlir::UnitAttr{});
   clearSynchronizedWorkers(state, mask);
 }
 
@@ -489,7 +499,8 @@ static void insertNCCJoinAfter(mlir::Operation *operation, uint32_t mask,
     return;
   mlir::OpBuilder builder(operation);
   builder.setInsertionPointAfter(operation);
-  builder.create<SyncNCCJoinOp>(operation->getLoc(), getParticipants(mask));
+  builder.create<SyncNCCJoinOp>(operation->getLoc(), getParticipants(mask),
+                                mlir::UnitAttr{});
   clearSynchronizedWorkers(state, mask);
 }
 
@@ -723,11 +734,24 @@ private:
         return mlir::failure();
       bool guaranteedToExecute =
           lower && upper && step && *step > 0 && *lower < *upper;
-      if (!guaranteedToExecute && (bodyState.workers & ~state.workers) != 0)
-        return forOp.emitError()
-               << "required_ncc_join_failure: dynamic or optional loop "
-                  "would require a potentially empty NCC terminal join";
       if (!guaranteedToExecute) {
+        // A potentially empty loop may contain a branch-conditional issue on
+        // a worker that was already pending before the loop.  Presence in the
+        // worker mask alone cannot distinguish that new issue, but the branch
+        // merge deliberately clears latestIssues for exactly such ambiguous
+        // paths.  Complete those workers at the body backedge.  On a zero-trip
+        // path neither the issue nor this join executes; merging the original
+        // state below therefore preserves any incoming pending access.
+        uint32_t ambiguousBackedgeWorkers =
+            bodyState.pathAmbiguousWorkers & bodyState.workers;
+        for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker) {
+          const uint32_t mask = uint32_t{1} << worker;
+          if ((bodyState.workers & mask) != 0 &&
+              bodyState.latestIssues[worker] == nullptr)
+            ambiguousBackedgeWorkers |= mask;
+        }
+        insertNCCJoinBefore(forOp.getBody()->getTerminator(),
+                            ambiguousBackedgeWorkers, bodyState);
         mergeOutstandingAccessSummaries(state, bodyState);
         return mlir::success();
       }
@@ -753,8 +777,14 @@ private:
           1;
       bool converged = false;
       for (unsigned iteration = 0; iteration < convergenceLimit; ++iteration) {
-        NCCOutstandingAccessSummary nextState = state;
-        mergeOutstandingAccessSummaries(nextState, bodyState);
+        // This is a sequential backedge, not an alternative control-flow
+        // merge. `bodyState` already contains the entry state followed by one
+        // complete iteration; feed that exact pending state into the next
+        // iteration. Using the branch merge helper here would mark every
+        // first-iteration issue as path-optional merely because it was absent
+        // before the loop, forcing an unnecessary join on an unconditional
+        // same-worker stream.
+        NCCOutstandingAccessSummary nextState = bodyState;
         if (mlir::failed(processBlock(*forOp.getBody(), nextState)))
           return mlir::failure();
         if (haveEqualOutstandingAccessSummaries(nextState, bodyState)) {
@@ -774,6 +804,8 @@ private:
       // path.  Complete only those ambiguous workers at the current
       // backedge; unconditional homogeneous streams remain join-free.
       uint32_t ambiguousBackedgeWorkers = 0;
+      ambiguousBackedgeWorkers |=
+          bodyState.pathAmbiguousWorkers & bodyState.workers;
       for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker) {
         const uint32_t mask = uint32_t{1} << worker;
         if ((bodyState.workers & mask) != 0 &&
@@ -793,8 +825,7 @@ private:
     if (mlir::isa<TileYieldOp, mlir::scf::YieldOp>(operation))
       return mlir::success();
 
-    NCCOperationCompletion contract =
-        getNCCOperationCompletion(operation);
+    NCCOperationCompletion contract = getNCCOperationCompletion(operation);
     if (contract.issueWorker) {
       uint32_t worker = static_cast<uint32_t>(*contract.issueWorker);
       if (worker >= kNCCWorkerCount)
@@ -845,8 +876,7 @@ private:
       clearSynchronizedWorkers(state, contract.participantMask);
       return mlir::success();
     }
-    if (contract.kind ==
-        NCCCompletionKind::OrderedAsynchronousIssue)
+    if (contract.kind == NCCCompletionKind::OrderedAsynchronousIssue)
       return mlir::success();
 
     // A Direct DTE wait observes only its own typed event. It neither consumes
@@ -889,7 +919,10 @@ private:
 
 static void eraseDerivedNCCJoins(mlir::Operation *root) {
   llvm::SmallVector<SyncNCCJoinOp, 16> joins;
-  root->walk([&](SyncNCCJoinOp join) { joins.push_back(join); });
+  root->walk([&](SyncNCCJoinOp join) {
+    if (!join.getScheduleBoundary())
+      joins.push_back(join);
+  });
   for (SyncNCCJoinOp join : llvm::reverse(joins))
     join.erase();
 }
@@ -977,21 +1010,25 @@ struct RebuildRequiredNCCJoinsPass
 } // namespace
 
 struct wafer::TileRegionToInstrLoweringSession::Impl {
-  explicit Impl(mlir::MLIRContext &context) : target(context) {
+  explicit Impl(mlir::MLIRContext &context,
+                TileRegionToInstrBufferRecorder *bufferRecorder)
+      : target(context) {
     configureTileRegionToInstrTarget(target);
 
     mlir::RewritePatternSet lowering(&context);
-    populateTileRegionToInstrPatterns(lowering);
+    populateTileRegionToInstrPatterns(lowering, bufferRecorder,
+                                      &descriptorCache);
     loweringPatterns = mlir::FrozenRewritePatternSet(std::move(lowering));
   }
 
+  MovementDescriptorCache descriptorCache;
   mlir::ConversionTarget target;
   mlir::FrozenRewritePatternSet loweringPatterns;
 };
 
 wafer::TileRegionToInstrLoweringSession::TileRegionToInstrLoweringSession(
-    mlir::MLIRContext &context)
-    : impl(std::make_unique<Impl>(context)) {}
+    mlir::MLIRContext &context, TileRegionToInstrBufferRecorder *bufferRecorder)
+    : impl(std::make_unique<Impl>(context, bufferRecorder)) {}
 
 wafer::TileRegionToInstrLoweringSession::~TileRegionToInstrLoweringSession() =
     default;

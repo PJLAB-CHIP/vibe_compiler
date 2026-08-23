@@ -1,19 +1,24 @@
 # REQUIRES: stablehlo, shardy, xla-spmd-helper
 
-# Public search evaluates a bounded complete Q50 physical assignment through
-# the shared executable gate while retaining the accepted baseline incumbent.
-# This stays a small source-to-package/no-card routing gate; model-scale policy
-# and performance profiling belong to Q52.
+# Public search independently analyzes the TensorProgram and evaluates a
+# bounded complete physical assignment through the shared executable gate. It
+# neither invokes nor returns the deterministic baseline. This stays a small
+# source-to-package/no-card routing gate; model-scale policy and performance
+# profiling use separate explicit invocations.
 
-# RUN: rm -rf %t.source %t.package
+# RUN: rm -rf %t.source %t.package %t.timed-package
 # RUN: mkdir -p %t.source/functions
 # RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<8x8xf16>, %%rhs: tensor<8x8xf16>) -> tensor<8x8xf16> {\n    %%result = stablehlo.add %%lhs, %%rhs : tensor<8x8xf16>\n    return %%result : tensor<8x8xf16>\n  }\n}\n' > %t.source/functions/forward.mlir
 # RUN: %stablehlo_translate --serialize --target=1.7.1 %t.source/functions/forward.mlir -o %t.source/functions/forward.stablehlo.bc && rm %t.source/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[8,8],"dtype":"float16","dynamic_dims":[]},{"shape":[8,8],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[8,8],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.source/functions/forward.meta
 # RUN: wafer-compile --input-program-dir %t.source --output-dir %t.package --num-partitions=1 --optimization-policy=search 2>&1 | FileCheck %s --check-prefix=SEARCH --implicit-check-not=card-executable-selection --implicit-check-not=compile-stats --implicit-check-not=compile-work
+# RUN: wafer-compile --input-program-dir %t.source --output-dir %t.timed-package --num-partitions=1 --optimization-policy=search --compile-timing 2>&1 | FileCheck %s --check-prefix=SEARCH-TIMED --implicit-check-not=deterministic-card-executable-baseline --implicit-check-not=card-baseline-compilation
 # RUN: wafer-run --package-dir %t.package --no-card | FileCheck %s --check-prefix=NO-CARD
 
 # SEARCH: wafer-compile: card-executable-compilation outcome=accepted physical_tiles=16
 # SEARCH: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
+# SEARCH-TIMED: wafer-compile: compile-stats stage=physical-search evaluation_budget=1 generated=1 evaluated=1 accepted=1 exact_rejected=0 indeterminate=0 winner_updates=1
+# SEARCH-TIMED: wafer-compile: compile-work tile_memory_planning_invocations=16
+# SEARCH-TIMED: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
 # NO-CARD: package: id=0 cards=1 tiles=16
 # NO-CARD: board_execution: false

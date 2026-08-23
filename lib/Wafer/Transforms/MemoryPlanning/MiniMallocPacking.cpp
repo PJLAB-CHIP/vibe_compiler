@@ -22,7 +22,6 @@ namespace mm = wafer_third_party::minimalloc;
 PackingResult makeFailure(PackingStatus status, uint64_t searchNodes = 0) {
   PackingResult result;
   result.status = status;
-  result.backend = PackingBackend::MiniMalloc;
   result.searchNodes = searchNodes;
   return result;
 }
@@ -43,7 +42,6 @@ PackingResult solveWithMiniMalloc(const StaticPackingProblem &problem,
                                   uint64_t searchNodeBudget) {
   PackingResult result;
   result.status = PackingStatus::Feasible;
-  result.backend = PackingBackend::MiniMalloc;
   if (std::optional<PackingValidationFailure> failure =
           validatePackingProblem(problem)) {
     result.status = PackingStatus::InvalidProblem;

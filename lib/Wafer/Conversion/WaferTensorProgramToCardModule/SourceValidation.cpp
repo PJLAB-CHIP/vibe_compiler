@@ -1,10 +1,12 @@
 //===- SourceValidation.cpp - CardModule source validation ----------===//
 
 #include "Internal.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Verifier.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
 
 namespace wafer::tensor_program_to_card_module {
 
@@ -12,7 +14,10 @@ mlir::FailureOr<TileMaterializationSourcePreparation>
 prepareTileMaterializationSource(
     mlir::ModuleOp sourceModule, CardId cardId,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
+    llvm::ArrayRef<StructuredNodeRootGroup> operationRootGroups,
     std::string *failureReason) {
+  wafer::support::ScopedCompileTimingSpan timing(
+      "query", "tensor-program-to-card-module", "validate-source");
   TileMaterializationSourcePreparation preparation;
   if (failureReason)
     failureReason->clear();
@@ -69,14 +74,42 @@ prepareTileMaterializationSource(
   preparation.operationNodes.reserve(operationNodes.size());
   for (const StructuredOperationNodeMapping &node : operationNodes) {
     if (!node.operation || !nodeOperations.insert(node.operation).second ||
-        !nodeIds.insert(node.structuredNodeId).second ||
         node.operation->getParentOfType<mlir::ModuleOp>() != sourceModule)
       return failCardModuleValue<TileMaterializationSourcePreparation>(
           failureReason,
-          "card structured operation-node mapping is null, duplicated or "
-          "outside the tensor program");
+          "card structured operation-node mapping has a null or duplicated "
+          "operation, or is outside the tensor program");
+    nodeIds.insert(node.structuredNodeId);
     preparation.operationNodes.push_back(node);
   }
+  preparation.operationRootGroups.reserve(nodeIds.size());
+  if (operationRootGroups.empty()) {
+    llvm::DenseSet<uint32_t> groupedNodes;
+    for (const StructuredOperationNodeMapping &node : operationNodes)
+      if (groupedNodes.insert(node.structuredNodeId).second)
+        preparation.operationRootGroups.push_back(
+            {node.structuredNodeId, node.structuredNodeId});
+  } else {
+    llvm::DenseSet<uint32_t> groupedNodes;
+    for (const StructuredNodeRootGroup &relation : operationRootGroups) {
+      if (!nodeIds.contains(relation.structuredNodeId) ||
+          !groupedNodes.insert(relation.structuredNodeId).second)
+        return failCardModuleValue<TileMaterializationSourcePreparation>(
+            failureReason,
+            "card structured node/root-group relation is unknown or "
+            "duplicated");
+      preparation.operationRootGroups.push_back(relation);
+    }
+    if (groupedNodes.size() != nodeIds.size())
+      return failCardModuleValue<TileMaterializationSourcePreparation>(
+          failureReason,
+          "card structured node/root-group relation is incomplete");
+  }
+  llvm::sort(preparation.operationRootGroups,
+             [](const StructuredNodeRootGroup &lhs,
+                const StructuredNodeRootGroup &rhs) {
+               return lhs.structuredNodeId < rhs.structuredNodeId;
+             });
   return preparation;
 }
 

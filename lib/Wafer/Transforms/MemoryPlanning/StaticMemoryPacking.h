@@ -1,4 +1,4 @@
-//===- StaticMemoryPacking.h - Static arena packing contract ----*- C++ -*-===//
+//===- StaticMemoryPacking.h - Static MiniMalloc contract -*- C++ -*-===//
 
 #ifndef WAFER_TRANSFORMS_MEMORYPLANNING_STATICMEMORYPACKING_H
 #define WAFER_TRANSFORMS_MEMORYPLANNING_STATICMEMORYPACKING_H
@@ -31,9 +31,9 @@ struct PackingConflict {
   unsigned rhsDemandIndex = 0;
 };
 
-/// A pure, owner-independent packing problem. Demand indices match the input
-/// LifetimeDemand order, while stableOrdinal provides permutation-independent
-/// canonical ordering.
+/// Exact static packing input derived from actual allocation lifetimes.
+/// Demand indices match the LifetimeDemand order; stableOrdinal provides a
+/// permutation-independent deterministic key.
 struct StaticPackingProblem {
   ArenaRange arena;
   llvm::SmallVector<StaticPackingDemand, 8> demands;
@@ -50,33 +50,20 @@ enum class PackingStatus {
   Feasible,
   ProvenInfeasible,
   ResourceExhausted,
-  HeuristicNoFit,
   InvalidProblem,
   ArithmeticOverflow,
   InvalidSolverResult,
 };
 
-enum class PackingBackend {
-  MiniMalloc,
-  FirstFitFallback,
-};
-
 struct PackingResult {
   PackingStatus status = PackingStatus::InvalidProblem;
-  PackingBackend backend = PackingBackend::MiniMalloc;
   llvm::SmallVector<Placement, 8> placements;
   uint64_t searchNodes = 0;
-  bool fallbackAttempted = false;
   std::optional<unsigned> demandIndex;
-  /// Deterministic exact capacity certificate.  Every listed demand is a
-  /// member of one conflict-graph clique and their byte sum is strictly
-  /// larger than the usable arena.  It is populated only when that proof is
-  /// available; arbitrary solver failures must leave it empty.
+  /// Deterministic exact capacity certificate. Every listed demand belongs to
+  /// one conflict-graph clique whose byte sum exceeds the usable arena.
   llvm::SmallVector<unsigned, 8> capacityConflictDemandIndices;
-  /// Every actual demand whose size alone is larger than the usable arena.
-  /// These demands need not conflict with one another, but each is an
-  /// independent necessary rejection certificate and therefore all must be
-  /// addressed before the fixed problem can become legal.
+  /// Actual demands that individually exceed the usable arena.
   llvm::SmallVector<unsigned, 8> individuallyOversizedDemandIndices;
 
   bool succeeded() const { return status == PackingStatus::Feasible; }
@@ -101,9 +88,6 @@ struct PackingValidationFailure {
   std::optional<unsigned> demandIndex;
 };
 
-/// The default is deliberately generous: the fixed base budget is over 13x
-/// the largest official MiniMalloc challenging-case node count measured for
-/// the pinned source, then grows modestly with problem size up to a stable cap.
 constexpr uint64_t kBasePackingSearchNodes = uint64_t{1} << 21;
 constexpr uint64_t kMaxDefaultPackingSearchNodes = uint64_t{1} << 24;
 
@@ -120,10 +104,8 @@ std::optional<PackingValidationFailure>
 validatePlacements(const StaticPackingProblem &problem,
                    llvm::ArrayRef<Placement> placements);
 
-/// Normal-call policy: MiniMalloc is always attempted first. Deterministic
-/// first-fit is consulted only after MiniMalloc reports ResourceExhausted.
-/// Passing an explicit budget is an internal/offline and test control; normal
-/// callers use the computed generous default.
+/// Runs MiniMalloc on one exact problem. Resource exhaustion is returned as
+/// indeterminate and never invokes another allocator or heuristic fallback.
 PackingResult
 packStaticMemory(const StaticPackingProblem &problem,
                  std::optional<uint64_t> searchNodeBudget = std::nullopt);
@@ -131,10 +113,6 @@ packStaticMemory(const StaticPackingProblem &problem,
 PackingResult
 packStaticMemory(llvm::ArrayRef<LifetimeDemand> demands, ArenaRange arena,
                  std::optional<uint64_t> searchNodeBudget = std::nullopt);
-
-/// Retained safety fallback and test oracle. A NoFit-like result from this
-/// heuristic is not a proof that the fixed-capacity problem is infeasible.
-PackingResult packFirstFit(const StaticPackingProblem &problem);
 
 } // namespace wafer::memory_planning::detail
 

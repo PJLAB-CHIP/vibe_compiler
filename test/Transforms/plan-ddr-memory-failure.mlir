@@ -113,6 +113,35 @@ func.func @affine_apply_subview_exceeds_root(
 
 // -----
 
+func.func @affine_shifted_block_loop_exceeds_root(
+    %input: memref<1024xf16, #wafer.memory<ddr, tensor>>) {
+  %c0 = arith.constant 0 : index
+  %c64 = arith.constant 64 : index
+  %c513 = arith.constant 513 : index
+  %spm = memref.alloc()
+      {wafer.spm.offset = #wafer.spm_offset<65536>}
+      : memref<64xf16, #wafer.memory<spm, tensor>>
+  scf.for %iv = %c0 to %c513 step %c64 {
+    %offset = affine.apply affine_map<()[s0] -> (s0 + 512)> ()[%iv]
+    %tile = memref.subview %input[%offset] [64] [1]
+        : memref<1024xf16, #wafer.memory<ddr, tensor>>
+       to memref<64xf16, strided<[1], offset: ?>,
+                 #wafer.memory<ddr, tensor>>
+    // expected-error @below {{source access end 2176 exceeds DDR root byte size 2048}}
+    wafer.instr.rdma %tile to %spm
+        {byte_count = 128 : i64, inner_bytes = 128 : i64,
+         src_iterations = array<i64: 1, 1, 1>,
+         src_strides = array<i64: 0, 0, 0>}
+        : memref<64xf16, strided<[1], offset: ?>,
+                 #wafer.memory<ddr, tensor>>
+       to memref<64xf16, #wafer.memory<spm, tensor>>
+  }
+  wafer.instr.ncc_join [0]
+  return
+}
+
+// -----
+
 func.func @loop_carried_backedge_view_exceeds_root() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index

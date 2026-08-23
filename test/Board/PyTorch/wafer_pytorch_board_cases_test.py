@@ -343,9 +343,10 @@ class PyTorchBoardCasesTest(unittest.TestCase):
 
     def test_source_no_card_matrix_is_callable_and_not_deferred(self) -> None:
         expected = {
-            ("attention-prefill", "float16", 1, "none"),
-            ("attention-decode-kv-cache", "float16", 1, "none"),
-            ("llama-2-7b-block", "float16", 1, "none"),
+            (case_name, dtype_name, 1, optimization_policy)
+            for case_name in cases.PRODUCTION_SOURCE_CASES
+            for dtype_name, _ in cases.PRODUCTION_SOURCE_DTYPES
+            for optimization_policy in cases.OPTIMIZATION_POLICIES
         }
         actual = {
             (
@@ -373,14 +374,22 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 for entry in cases.SOURCE_NO_CARD_WORKLOADS
                 if entry.case_name == "attention-decode-kv-cache"
             },
-            {("attention-decode-kv-cache", "float16", "none"): 2},
+            {
+                (
+                    "attention-decode-kv-cache",
+                    dtype_name,
+                    optimization_policy,
+                ): 2
+                for dtype_name, _ in cases.PRODUCTION_SOURCE_DTYPES
+                for optimization_policy in cases.OPTIMIZATION_POLICIES
+            },
         )
         self.assertEqual(
             sum(
                 entry.package_count
                 for entry in cases.SOURCE_NO_CARD_WORKLOADS
             ),
-            4,
+            20,
         )
 
         cmake = (
@@ -389,8 +398,10 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             / "CMakeLists.txt"
         ).read_text(encoding="utf-8")
         registered_source_no_card = re.findall(
-            r"add_test\(NAME "
-            r"(wafer-runtime-pytorch-[^\s()]+-no-card)\s",
+            r"wafer_add_pytorch_source_no_card_test\(\s*"
+            r"(wafer-runtime-pytorch-[^\s()]+-no-card)\s+"
+            r"([^\s()]+)\s+([^\s()]+)\s+([^\s()]+)\s+"
+            r"(search|none)\s*\)",
             cmake,
         )
         catalog_names = [
@@ -400,23 +411,43 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             len(registered_source_no_card),
             len(set(registered_source_no_card)),
         )
-        self.assertCountEqual(registered_source_no_card, catalog_names)
+        self.assertCountEqual(
+            [entry[0] for entry in registered_source_no_card], catalog_names
+        )
+        registered_by_name = {
+            test_name: (case_name, dtype_name, optimization_policy)
+            for (
+                test_name,
+                case_name,
+                dtype_name,
+                _dtype_label,
+                optimization_policy,
+            ) in registered_source_no_card
+        }
         for entry in cases.SOURCE_NO_CARD_WORKLOADS:
-            match = re.search(
-                rf"add_test\(NAME {re.escape(entry.ctest_name)}\n"
-                r"(?P<body>.*?)\n\s*\)",
-                cmake,
-                re.DOTALL,
+            self.assertEqual(
+                registered_by_name.get(entry.ctest_name),
+                (
+                    entry.case_name,
+                    entry.dtype_name,
+                    entry.optimization_policy,
+                ),
             )
-            self.assertIsNotNone(match, entry.ctest_name)
-            body = match.group("body")
-            self.assertIn(f"--case {entry.case_name}", body)
-            self.assertIn(f"--dtype {entry.dtype_name}", body)
-            self.assertIn(
-                f"--optimization-policy {entry.optimization_policy}",
-                body,
-            )
-            self.assertIn("--no-card", body)
+
+        helper = re.search(
+            r"function\(wafer_add_pytorch_source_no_card_test"
+            r"(?P<body>.*?)endfunction\(\)",
+            cmake,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(helper)
+        self.assertIn("--case ${case_name}", helper.group("body"))
+        self.assertIn("--dtype ${dtype_name}", helper.group("body"))
+        self.assertIn(
+            "--optimization-policy ${optimization_policy}",
+            helper.group("body"),
+        )
+        self.assertIn("--no-card", helper.group("body"))
 
         runner_source = inspect.getsource(board_runner.main)
         self.assertNotIn("torch_eager_reference=deferred", runner_source)
@@ -433,7 +464,6 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             / "test"
             / "CMakeLists.txt"
         ).read_text(encoding="utf-8")
-        self.assertNotIn("--optimization-policy search", cmake)
         baseline_tests = {
             "wafer-board-pytorch-attention-prefill-optimization-none":
                 "attention-prefill",

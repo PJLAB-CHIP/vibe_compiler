@@ -4,12 +4,7 @@
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
 
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
-
-#include <functional>
-#include <limits>
-#include <optional>
 
 using namespace wafer;
 
@@ -18,12 +13,6 @@ namespace {
 
 template <typename T>
 mlir::FailureOr<T> fail(std::string *failureReason, llvm::StringRef message) {
-  setFailureReason(failureReason, message);
-  return mlir::failure();
-}
-
-mlir::LogicalResult failResult(std::string *failureReason,
-                               llvm::StringRef message) {
   setFailureReason(failureReason, message);
   return mlir::failure();
 }
@@ -212,117 +201,6 @@ mlir::FailureOr<llvm::SmallVector<int64_t, 4>> getResultTemporalTileSizes(
     resultTiles.push_back(std::min(tile, extent));
   }
   return resultTiles;
-}
-
-mlir::LogicalResult splitIndependentPeerFragmentsAtTemporalWaves(
-    llvm::MutableArrayRef<SpatialEdgeStrategy> edgeStrategies,
-    llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    std::string *failureReason) {
-  llvm::DenseMap<int64_t, int64_t> nextPayloadSlice;
-  for (SpatialEdgeStrategy &strategy : edgeStrategies) {
-    if (strategy.action != SpatialEdgeAction::PeerFragments)
-      continue;
-    mlir::FailureOr<llvm::SmallVector<int64_t, 4>> temporalTiles =
-        getResultTemporalTileSizes(strategy.producer, strategy.producerResult,
-                                   operationTemporalTiles, failureReason);
-    if (mlir::failed(temporalTiles))
-      return mlir::failure();
-    auto producerType = mlir::dyn_cast<mlir::RankedTensorType>(
-        strategy.producer->getResult(strategy.producerResult).getType());
-    const unsigned elementBits =
-        producerType.getElementType().isIntOrFloat()
-            ? producerType.getElementType().getIntOrFloatBitWidth()
-            : 0;
-    if (elementBits == 0 || elementBits % 8 != 0)
-      return failResult(
-          failureReason,
-          "peer fragment temporal projection requires a byte-addressable "
-          "element type");
-
-    llvm::SmallVector<SpatialEdgeFragment, 16> splitFragments;
-    for (const SpatialEdgeFragment &fragment : strategy.fragments) {
-      if (fragment.offsets.size() != temporalTiles->size() ||
-          fragment.sizes.size() != temporalTiles->size())
-        return failResult(
-            failureReason,
-            "peer fragment temporal projection has an inconsistent rank");
-      if (!isContained(fragment.offsets, fragment.sizes,
-                       strategy.producerOffsets, strategy.producerSizes))
-        return failResult(
-            failureReason,
-            "dependent fragment extends outside its consumer demand");
-      std::optional<size_t> splitDimension;
-      for (size_t dimension = 0; dimension < temporalTiles->size(); ++dimension)
-        if ((*temporalTiles)[dimension] < fragment.sizes[dimension]) {
-          splitDimension = dimension;
-          break;
-        }
-      llvm::SmallVector<llvm::SmallVector<std::pair<int64_t, int64_t>, 4>, 4>
-          dimensionSegments(temporalTiles->size());
-      for (size_t dimension = 0; dimension < temporalTiles->size();
-           ++dimension) {
-        const int64_t begin = fragment.offsets[dimension];
-        const int64_t size = fragment.sizes[dimension];
-        const int64_t tile =
-            splitDimension == dimension ? (*temporalTiles)[dimension] : size;
-        if (begin < 0 || size <= 0 || tile <= 0)
-          return failResult(
-              failureReason,
-              "peer fragment temporal projection has an invalid domain");
-        if (begin > std::numeric_limits<int64_t>::max() - size)
-          return failResult(
-              failureReason,
-              "dependent fragment extends outside its consumer demand");
-        const int64_t end = begin + size;
-        for (int64_t offset = begin; offset < end;) {
-          const int64_t nextGrid = ((offset / tile) + 1) * tile;
-          const int64_t next = std::min(end, nextGrid);
-          dimensionSegments[dimension].push_back({offset, next - offset});
-          offset = next;
-        }
-      }
-
-      llvm::SmallVector<int64_t, 4> offsets(temporalTiles->size());
-      llvm::SmallVector<int64_t, 4> sizes(temporalTiles->size());
-      std::function<mlir::LogicalResult(size_t)> appendDimension =
-          [&](size_t dimension) -> mlir::LogicalResult {
-        if (dimension != dimensionSegments.size()) {
-          for (auto [offset, size] : dimensionSegments[dimension]) {
-            offsets[dimension] = offset;
-            sizes[dimension] = size;
-            if (mlir::failed(appendDimension(dimension + 1)))
-              return mlir::failure();
-          }
-          return mlir::success();
-        }
-        uint64_t elements = 1;
-        for (int64_t size : sizes) {
-          if (elements > std::numeric_limits<uint64_t>::max() /
-                             static_cast<uint64_t>(size))
-            return failResult(failureReason,
-                              "peer temporal fragment byte count overflows");
-          elements *= static_cast<uint64_t>(size);
-        }
-        const uint64_t bytes = elements * (elementBits / 8);
-        if (bytes == 0 || bytes > std::numeric_limits<uint32_t>::max())
-          return failResult(
-              failureReason,
-              "peer temporal fragment exceeds the target payload range");
-        SpatialEdgeFragment split = fragment;
-        split.offsets = offsets;
-        split.sizes = sizes;
-        split.bytes = split.kind == SpatialEdgeFragmentKind::Peer ? bytes : 0;
-        if (split.kind == SpatialEdgeFragmentKind::Peer)
-          split.payloadSlice = nextPayloadSlice[split.communicationId]++;
-        splitFragments.push_back(std::move(split));
-        return mlir::success();
-      };
-      if (mlir::failed(appendDimension(0)))
-        return mlir::failure();
-    }
-    strategy.fragments = std::move(splitFragments);
-  }
-  return mlir::success();
 }
 
 } // namespace wafer::tensor_program_to_tile_region

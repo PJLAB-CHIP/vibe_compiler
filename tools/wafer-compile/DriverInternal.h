@@ -87,13 +87,13 @@ std::optional<uint64_t>
 parsePositiveCount(const std::optional<std::string> &value,
                    llvm::StringRef option);
 
-#ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
 /// Writes the accepted instruction modules and their exact Target LLVM
 /// translations for compiler inspection. The destination must not exist.
 bool dumpCompilerIR(llvm::StringRef destination,
                     const wafer::compiler::CompiledProgram &compiledProgram,
                     llvm::raw_ostream &diagnostics);
 
+#ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 bool runTargetModelGate(
     const CommandLineOptions &options,

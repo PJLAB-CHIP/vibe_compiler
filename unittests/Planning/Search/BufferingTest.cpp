@@ -180,14 +180,13 @@ mlir::FailureOr<Prepared> prepare(mlir::ModuleOp module, int64_t extent,
                   std::move(movementAssignment)};
 }
 
-CardBufferingDomain makeDomain(const Prepared &prepared,
-                               const TargetMemoryPolicy &memory) {
+CardBufferingDomain makeDomain(const Prepared &prepared) {
   auto domain = CardBufferingDomain::create(
       *prepared.program, prepared.spatial, prepared.demand,
       prepared.coupledDomain, prepared.coupledAssignment, prepared.temporalDomain,
       prepared.temporalAssignment, prepared.representationDomain,
       prepared.representationAssignment, prepared.movementDomain,
-      prepared.movementAssignment, memory);
+      prepared.movementAssignment);
   EXPECT_TRUE(mlir::succeeded(domain));
   return std::move(*domain);
 }
@@ -219,8 +218,7 @@ TEST(BufferingTest, EnumeratesEveryWaveBoundedSlotCountAndBuildsExactScope) {
   std::string failureReason;
   auto prepared = prepare(*module, 12, &failureReason);
   ASSERT_TRUE(mlir::succeeded(prepared)) << failureReason;
-  TargetMemoryPolicy memory;
-  CardBufferingDomain domain = makeDomain(*prepared, memory);
+  CardBufferingDomain domain = makeDomain(*prepared);
   std::optional<CardBufferingAssignment> fourSlot;
   EXPECT_EQ(enumerateSlotCounts(domain, &fourSlot),
             (std::set<uint32_t>{1, 2, 3, 4, 5}));
@@ -241,25 +239,21 @@ TEST(BufferingTest, EnumeratesEveryWaveBoundedSlotCountAndBuildsExactScope) {
   EXPECT_TRUE(request.requireLocalDataflow);
 }
 
-TEST(BufferingTest, CapacityAndTemporalTailDeriveFiniteUpperBounds) {
+TEST(BufferingTest, TemporalStructureAloneDefinesTheFiniteSlotDomain) {
   auto context = createContext();
   std::string failureReason;
   auto fullModule = parseChain(*context, 12);
   ASSERT_TRUE(fullModule);
   auto full = prepare(*fullModule, 12, &failureReason);
   ASSERT_TRUE(mlir::succeeded(full)) << failureReason;
-  TargetMemoryPolicy tight;
-  tight.spmBase = 0;
-  tight.spmLimit = 12;
-  EXPECT_EQ(enumerateSlotCounts(makeDomain(*full, tight)),
-            (std::set<uint32_t>{1, 2, 3}));
+  EXPECT_EQ(enumerateSlotCounts(makeDomain(*full)),
+            (std::set<uint32_t>{1, 2, 3, 4, 5}));
 
   auto tailModule = parseChain(*context, 11);
   ASSERT_TRUE(tailModule);
   auto tail = prepare(*tailModule, 11, &failureReason);
   ASSERT_TRUE(mlir::succeeded(tail)) << failureReason;
-  TargetMemoryPolicy ample;
-  EXPECT_EQ(enumerateSlotCounts(makeDomain(*tail, ample)),
+  EXPECT_EQ(enumerateSlotCounts(makeDomain(*tail)),
             (std::set<uint32_t>{1, 2, 3, 4}));
 }
 

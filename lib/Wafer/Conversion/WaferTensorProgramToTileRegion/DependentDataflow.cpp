@@ -8,9 +8,14 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/IRMapping.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <iterator>
+#include <limits>
+#include <map>
+#include <numeric>
 #include <utility>
 
 using namespace wafer;
@@ -18,16 +23,49 @@ using namespace wafer::tensor_program_to_tile_region;
 
 namespace {
 
-mlir::FailureOr<mlir::presburger::PresburgerSet>
-getRectangleSet(llvm::ArrayRef<int64_t> offsets, llvm::ArrayRef<int64_t> sizes,
-                std::string *failureReason) {
-  analysis::IndexSetResult rectangle =
-      analysis::IndexRelation::staticRectangularDomain(offsets, sizes);
-  if (!rectangle.isExact()) {
-    setFailureReason(failureReason, rectangle.reason);
-    return mlir::failure();
+struct StaticBoxRef {
+  llvm::ArrayRef<int64_t> offsets;
+  llvm::ArrayRef<int64_t> sizes;
+};
+
+std::optional<uint64_t> getBoxVolume(const StaticBoxRef &box) {
+  if (box.offsets.size() != box.sizes.size())
+    return std::nullopt;
+  uint64_t result = 1;
+  for (auto [offset, size] : llvm::zip_equal(box.offsets, box.sizes)) {
+    int64_t end = 0;
+    if (offset < 0 || size <= 0 || llvm::AddOverflow(offset, size, end) ||
+        static_cast<uint64_t>(size) >
+            std::numeric_limits<uint64_t>::max() / result)
+      return std::nullopt;
+    result *= static_cast<uint64_t>(size);
   }
-  return std::move(*rectangle.set);
+  return result;
+}
+
+std::optional<uint64_t> getIntersectionVolume(const StaticBoxRef &lhs,
+                                              const StaticBoxRef &rhs) {
+  if (lhs.offsets.size() != rhs.offsets.size() ||
+      lhs.sizes.size() != rhs.sizes.size())
+    return std::nullopt;
+  uint64_t result = 1;
+  for (auto [lhsOffset, lhsSize, rhsOffset, rhsSize] : llvm::zip_equal(
+           lhs.offsets, lhs.sizes, rhs.offsets, rhs.sizes)) {
+    int64_t lhsEnd = 0;
+    int64_t rhsEnd = 0;
+    if (llvm::AddOverflow(lhsOffset, lhsSize, lhsEnd) ||
+        llvm::AddOverflow(rhsOffset, rhsSize, rhsEnd))
+      return std::nullopt;
+    const int64_t begin = std::max(lhsOffset, rhsOffset);
+    const int64_t end = std::min(lhsEnd, rhsEnd);
+    if (begin >= end)
+      return uint64_t{0};
+    const uint64_t size = static_cast<uint64_t>(end - begin);
+    if (size > std::numeric_limits<uint64_t>::max() / result)
+      return std::nullopt;
+    result *= size;
+  }
+  return result;
 }
 
 mlir::LogicalResult
@@ -35,50 +73,19 @@ validateStrategyDemand(const SpatialEdgeStrategy &strategy,
                        const analysis::ExactIndexSet &requiredDomain,
                        std::string *failureReason) {
   const analysis::IndexRelationLimits limits;
-  const auto &required = requiredDomain.getPresburgerSet();
-  if (required.getNumDisjuncts() > limits.maxDisjuncts) {
+  mlir::FailureOr<analysis::ExactIndexSet> normalizedRequired =
+      analysis::normalizeFiniteExactIndexSet(requiredDomain);
+  if (mlir::failed(normalizedRequired)) {
+    setFailureReason(failureReason,
+                     "selected carrier demand is not a finite box union");
+    return mlir::failure();
+  }
+  if (normalizedRequired->getBoxes().size() > limits.maxRectangularPieces) {
     setFailureReason(failureReason,
                      "selected carrier demand exceeds comparison work limit");
     return mlir::failure();
   }
-
-  std::optional<mlir::presburger::PresburgerSet> covered;
-  auto addPiece = [&](llvm::ArrayRef<int64_t> offsets,
-                      llvm::ArrayRef<int64_t> sizes,
-                      bool peerFragment) -> mlir::LogicalResult {
-    mlir::FailureOr<mlir::presburger::PresburgerSet> piece =
-        getRectangleSet(offsets, sizes, failureReason);
-    if (mlir::failed(piece)) {
-      if (peerFragment)
-        setFailureReason(
-            failureReason,
-            "dependent fragment extends outside its consumer demand");
-      return mlir::failure();
-    }
-    if (piece->getNumDisjuncts() + required.getNumDisjuncts() >
-        limits.maxDisjuncts) {
-      setFailureReason(failureReason,
-                       "selected carrier demand exceeds comparison work limit");
-      return mlir::failure();
-    }
-    if (peerFragment && !piece->intersect(required).isEqual(*piece)) {
-      setFailureReason(
-          failureReason,
-          "dependent fragment extends outside its consumer demand");
-      return mlir::failure();
-    }
-    if (covered && !covered->intersect(*piece).isIntegerEmpty()) {
-      setFailureReason(failureReason,
-                       peerFragment
-                           ? "dependent fragments overlap within one consumer "
-                             "demand"
-                           : "selected producer domain overlaps itself");
-      return mlir::failure();
-    }
-    covered = covered ? covered->unionSet(*piece) : std::move(*piece);
-    return mlir::success();
-  };
-
+  llvm::SmallVector<StaticBoxRef, 16> pieces;
   if (strategy.action == SpatialEdgeAction::PeerFragments) {
     if (strategy.fragments.size() > limits.maxRectangularPieces) {
       setFailureReason(failureReason,
@@ -86,25 +93,115 @@ validateStrategyDemand(const SpatialEdgeStrategy &strategy,
       return mlir::failure();
     }
     for (const SpatialEdgeFragment &fragment : strategy.fragments)
-      if (mlir::failed(addPiece(fragment.offsets, fragment.sizes,
-                                /*peerFragment=*/true)))
-        return mlir::failure();
-  } else if (mlir::failed(addPiece(strategy.producerOffsets,
-                                   strategy.producerSizes,
-                                   /*peerFragment=*/false))) {
-    return mlir::failure();
+      pieces.push_back({fragment.offsets, fragment.sizes});
+  } else {
+    pieces.push_back({strategy.producerOffsets, strategy.producerSizes});
   }
-  if (!covered) {
+  if (pieces.empty()) {
     setFailureReason(failureReason,
                      "selected physical carrier has no demand domain");
     return mlir::failure();
   }
-  if (!covered->isEqual(required)) {
-    setFailureReason(
-        failureReason,
-        strategy.action == SpatialEdgeAction::PeerFragments
-            ? "dependent fragments do not exactly cover the consumer demand"
-            : "selected producer domain differs from the exact relation image");
+
+  uint64_t requiredVolume = 0;
+  for (const analysis::StaticRectangularIndexSet &box :
+       normalizedRequired->getBoxes()) {
+    std::optional<uint64_t> volume = getBoxVolume({box.offsets, box.sizes});
+    if (!volume || requiredVolume >
+                       std::numeric_limits<uint64_t>::max() - *volume)
+      return mlir::failure();
+    requiredVolume += *volume;
+  }
+  uint64_t coveredVolume = 0;
+  for (const StaticBoxRef &piece : pieces) {
+    std::optional<uint64_t> pieceVolume = getBoxVolume(piece);
+    if (!pieceVolume) {
+      setFailureReason(failureReason,
+                       "dependent fragment extends outside its consumer demand");
+      return mlir::failure();
+    }
+    uint64_t insideVolume = 0;
+    for (const analysis::StaticRectangularIndexSet &required :
+         normalizedRequired->getBoxes()) {
+      std::optional<uint64_t> overlap = getIntersectionVolume(
+          piece, {required.offsets, required.sizes});
+      if (!overlap) {
+        setFailureReason(
+            failureReason,
+            "dependent fragment extends outside its consumer demand");
+        return mlir::failure();
+      }
+      if (insideVolume > std::numeric_limits<uint64_t>::max() - *overlap)
+        return mlir::failure();
+      insideVolume += *overlap;
+    }
+    if (insideVolume != *pieceVolume) {
+      setFailureReason(failureReason,
+                       "dependent fragment extends outside its consumer demand");
+      return mlir::failure();
+    }
+    if (coveredVolume > std::numeric_limits<uint64_t>::max() - *pieceVolume)
+      return mlir::failure();
+    coveredVolume += *pieceVolume;
+  }
+
+  if (pieces.front().offsets.empty()) {
+    if (pieces.size() != 1) {
+      setFailureReason(failureReason,
+                       "zero-rank carrier domain is duplicated");
+      return mlir::failure();
+    }
+  } else {
+    unsigned sweepDimension = 0;
+    for (unsigned dimension = 1; dimension < pieces.front().offsets.size();
+         ++dimension) {
+      llvm::SmallDenseSet<int64_t, 16> currentOffsets;
+      llvm::SmallDenseSet<int64_t, 16> bestOffsets;
+      for (const StaticBoxRef &piece : pieces) {
+        currentOffsets.insert(piece.offsets[dimension]);
+        bestOffsets.insert(piece.offsets[sweepDimension]);
+      }
+      if (currentOffsets.size() > bestOffsets.size())
+        sweepDimension = dimension;
+    }
+    llvm::SmallVector<unsigned, 16> order(pieces.size());
+    std::iota(order.begin(), order.end(), 0);
+    llvm::sort(order, [&](unsigned lhs, unsigned rhs) {
+      if (pieces[lhs].offsets[sweepDimension] !=
+          pieces[rhs].offsets[sweepDimension])
+        return pieces[lhs].offsets[sweepDimension] <
+               pieces[rhs].offsets[sweepDimension];
+      return lhs < rhs;
+    });
+    for (size_t left = 0; left < order.size(); ++left) {
+      const StaticBoxRef lhs = pieces[order[left]];
+      const int64_t lhsEnd =
+          lhs.offsets[sweepDimension] + lhs.sizes[sweepDimension];
+      for (size_t right = left + 1; right < order.size(); ++right) {
+        const StaticBoxRef rhs = pieces[order[right]];
+        if (rhs.offsets[sweepDimension] >= lhsEnd)
+          break;
+        std::optional<uint64_t> overlap = getIntersectionVolume(lhs, rhs);
+        if (!overlap)
+          return mlir::failure();
+        if (*overlap != 0) {
+          setFailureReason(
+              failureReason,
+              strategy.action == SpatialEdgeAction::PeerFragments
+                  ? "dependent fragments overlap within one consumer demand"
+                  : "selected producer domain overlaps itself");
+          return mlir::failure();
+        }
+      }
+    }
+  }
+  if (coveredVolume != requiredVolume) {
+    setFailureReason(failureReason,
+                     strategy.action == SpatialEdgeAction::PeerFragments
+                         ? "dependent fragments do not exactly cover the "
+                           "consumer demand"
+                         : "selected producer domain differs from the exact "
+                           "relation image");
     return mlir::failure();
   }
   return mlir::success();
@@ -138,32 +235,44 @@ wafer::deriveSpatialEdgeMaterializationFacts(
     std::string *failureReason) {
   llvm::SmallVector<SpatialEdgeMaterializationFacts, 16> facts;
   facts.reserve(edgeStrategies.size());
+  llvm::DenseMap<mlir::Operation *, uint64_t> scheduleOrdinals;
+  uint64_t ordinal = 0;
+  for (mlir::Operation &operation : sourceBody)
+    scheduleOrdinals.try_emplace(&operation, ordinal++);
+  std::map<std::pair<mlir::Operation *, uint32_t>,
+           const analysis::DependencyDemand *>
+      dependencies;
+  for (const analysis::DependencyDemand &demand : operandDemands)
+    if (!dependencies
+             .try_emplace(
+                 std::make_pair(demand.consumerOperation,
+                                demand.consumerOperand),
+                 &demand)
+             .second) {
+      setFailureReason(failureReason,
+                       "grouped exact-demand dependency is duplicated");
+      return mlir::failure();
+    }
   for (const SpatialEdgeStrategy &strategy : edgeStrategies) {
-    auto consumerPosition =
-        llvm::find_if(sourceBody, [&](mlir::Operation &operation) {
-          return &operation == strategy.consumer;
-        });
-    if (consumerPosition == sourceBody.end()) {
+    auto consumerPosition = scheduleOrdinals.find(strategy.consumer);
+    if (consumerPosition == scheduleOrdinals.end()) {
       setFailureReason(failureReason,
                        "selected edge consumer is outside source body");
       return mlir::failure();
     }
-    auto dependency = llvm::find_if(
-        operandDemands, [&](const analysis::DependencyDemand &candidate) {
-          return candidate.consumerOperation == strategy.consumer &&
-                 candidate.consumerOperand == strategy.consumerOperand;
-        });
-    if (dependency == operandDemands.end()) {
+    auto dependency = dependencies.find(
+        std::make_pair(strategy.consumer, strategy.consumerOperand));
+    if (dependency == dependencies.end()) {
       setFailureReason(failureReason,
                        "selected edge has no grouped exact-demand dependency");
       return mlir::failure();
     }
     auto destination = llvm::find_if(
-        dependency->perDestination,
+        dependency->second->perDestination,
         [&](const analysis::DestinationDemand &candidate) {
           return candidate.destinationTile == strategy.destinationTile;
         });
-    if (destination == dependency->perDestination.end()) {
+    if (destination == dependency->second->perDestination.end()) {
       setFailureReason(failureReason,
                        "selected edge has no destination demand recipe");
       return mlir::failure();
@@ -189,8 +298,7 @@ wafer::deriveSpatialEdgeMaterializationFacts(
         /*requiresConsumerInputReconstruction=*/
         !destination->reconstruction.steps.empty(),
         /*consumerScheduleOrdinal=*/
-        static_cast<uint64_t>(
-            std::distance(sourceBody.begin(), consumerPosition))});
+        consumerPosition->second});
   }
   return facts;
 }

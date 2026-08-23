@@ -2,6 +2,7 @@
 
 #include "Wafer/Planning/Baseline/CanonicalBaselinePlan.h"
 
+#include "TestSupport/CodeGen/CardExecutableTestSupport.h"
 #include "TestSupport/Planning/CanonicalPlanningTestSupport.h"
 #include "Wafer/InitWaferDialects.h"
 
@@ -122,8 +123,7 @@ TEST_F(CanonicalBaselinePlanTest, OrdinaryAlignedAndRaggedPlansCloseWithoutIR) {
     std::string failureReason;
     auto program = analyze(*module, &failureReason);
     ASSERT_TRUE(mlir::succeeded(program)) << failureReason;
-    auto plan = buildCanonicalBaselinePlan(**program, getTargetMemoryPolicy(),
-                                           &failureReason);
+    auto plan = buildCanonicalBaselinePlan(**program, &failureReason);
     ASSERT_TRUE(mlir::succeeded(plan)) << failureReason;
     EXPECT_FALSE(plan->spatial.nodes.empty());
     EXPECT_FALSE(plan->regions.groups.empty());
@@ -132,8 +132,6 @@ TEST_F(CanonicalBaselinePlanTest, OrdinaryAlignedAndRaggedPlansCloseWithoutIR) {
     EXPECT_FALSE(plan->schedule.plan.order.empty());
     EXPECT_TRUE(plan->attention.roots.empty());
     EXPECT_TRUE(plan->preparedAttention.work.roots.empty());
-    EXPECT_EQ(plan->feasibility.coverage,
-              FullFeasibilityCoverage::EveryPlannedResourceClosed);
     EXPECT_EQ(print(module->getOperation()), before);
   }
 }
@@ -160,15 +158,66 @@ TEST_F(CanonicalBaselinePlanTest,
     std::string failureReason;
     auto program = analyze(*module, &failureReason);
     ASSERT_TRUE(mlir::succeeded(program)) << failureReason;
-    auto plan = buildCanonicalBaselinePlan(**program, getTargetMemoryPolicy(),
-                                           &failureReason);
+    auto plan = buildCanonicalBaselinePlan(**program, &failureReason);
     ASSERT_TRUE(mlir::succeeded(plan)) << failureReason;
     ASSERT_EQ(plan->attention.roots.size(), 1u);
     EXPECT_EQ(plan->attention.roots.front().algorithm, testCase.algorithm);
     EXPECT_EQ(plan->preparedAttention.work.roots.size(), 1u);
-    EXPECT_FALSE(plan->feasibility.dependencyKey.attentionActions.empty());
+    for (const TemporalScopePlan &scope : plan->temporal.scopes) {
+      const auto *root =
+          std::get_if<RequiredRootExecution>(&scope.execution.source);
+      ASSERT_NE(root, nullptr);
+      auto work = llvm::find_if(
+          plan->rootWorks, [&](const analysis::RootRegionWork &candidate) {
+            return candidate.id == root->work;
+          });
+      ASSERT_NE(work, plan->rootWorks.end());
+      auto execution = llvm::find_if(
+          work->execution, [&](const analysis::RootExecutionWork &candidate) {
+            return candidate.shard == root->shard;
+          });
+      ASSERT_NE(execution, work->execution.end());
+      for (auto [tile, interval] :
+           llvm::zip_equal(scope.iteratorTileSizes,
+                           execution->iterationDomain))
+        EXPECT_EQ(tile, interval.size);
+    }
     EXPECT_EQ(print(module->getOperation()), before);
   }
+}
+
+TEST_F(CanonicalBaselinePlanTest,
+       LargeRaggedTemporalWorkloadStartsWithoutCapacityPrediction) {
+  wafer::compiler::testing::ParsedProgram parsed =
+      wafer::compiler::testing::parseLargeTemporalProgram();
+  ASSERT_TRUE(parsed.module);
+  const std::string before = print(parsed.module->getOperation());
+  std::string failureReason;
+  auto program = analyze(*parsed.module, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(program)) << failureReason;
+  auto plan = buildCanonicalBaselinePlan(**program, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(plan)) << failureReason;
+  for (const TemporalScopePlan &scope : plan->temporal.scopes) {
+    const auto *root =
+        std::get_if<RequiredRootExecution>(&scope.execution.source);
+    ASSERT_NE(root, nullptr);
+    auto work = llvm::find_if(plan->rootWorks,
+                              [&](const analysis::RootRegionWork &candidate) {
+                                return candidate.id == root->work;
+                              });
+    ASSERT_NE(work, plan->rootWorks.end());
+    auto execution = llvm::find_if(
+        work->execution, [&](const analysis::RootExecutionWork &candidate) {
+          return candidate.shard == root->shard;
+        });
+    ASSERT_NE(execution, work->execution.end());
+    ASSERT_EQ(scope.iteratorTileSizes.size(),
+              execution->iterationDomain.size());
+    for (auto [tile, interval] :
+         llvm::zip_equal(scope.iteratorTileSizes, execution->iterationDomain))
+      EXPECT_EQ(tile, interval.size);
+  }
+  EXPECT_EQ(print(parsed.module->getOperation()), before);
 }
 
 } // namespace

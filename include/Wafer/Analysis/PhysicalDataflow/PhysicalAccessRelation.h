@@ -11,13 +11,17 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace wafer::analysis {
 
 /// Invocation-local composition of an iteration-to-logical IndexRelation and
 /// one endpoint's physical encoding.  IndexRelation deliberately remains a
 /// layout-independent logical object; this analysis is the boundary that owns
-/// logical-index -> physical-bit-span composition.
+/// logical-index -> physical-bit-span composition.  Point/span queries use the
+/// verified logical projection and encoding directly.  The heavier composed
+/// Presburger relations are created lazily only for relation-equivalence
+/// queries.
 ///
 /// The object owns no Operation or Value handles and is invalidated with the
 /// IR epoch that supplied its MemRefType.  It is suitable for legality, cost,
@@ -50,13 +54,6 @@ public:
   const PhysicalLayoutRelation &getPhysicalLayoutRelation() const {
     return physicalLayout;
   }
-  const IndexRelation &getPhysicalBitOffsetRelation() const {
-    return iterationToPhysicalBitOffset;
-  }
-  const IndexRelation &getPhysicalElementOrdinalRelation() const {
-    return iterationToPhysicalElementOrdinal;
-  }
-
   /// Prove that two endpoints map the same iteration domain to the same
   /// physical element spans relative to their respective view bases.
   IndexRelationQueryResult
@@ -76,8 +73,6 @@ private:
       mlir::MemRefType endpointType,
       llvm::SmallVector<int64_t, 4> iterationShape,
       IndexRelation iterationToLogical, PhysicalLayoutRelation physicalLayout,
-      IndexRelation iterationToPhysicalBitOffset,
-      IndexRelation iterationToPhysicalElementOrdinal,
       std::optional<WaferStaticPhysicalOffsetCalculator> offsetCalculator,
       mlir::AffineMap projectedAffineMap, bool canonicalLinearOrder,
       int64_t physicalFootprintBytes, int64_t minimumAlignmentBytes,
@@ -85,9 +80,6 @@ private:
       : endpointType(endpointType), iterationShape(std::move(iterationShape)),
         iterationToLogical(std::move(iterationToLogical)),
         physicalLayout(std::move(physicalLayout)),
-        iterationToPhysicalBitOffset(std::move(iterationToPhysicalBitOffset)),
-        iterationToPhysicalElementOrdinal(
-            std::move(iterationToPhysicalElementOrdinal)),
         offsetCalculator(std::move(offsetCalculator)),
         projectedAffineMap(projectedAffineMap),
         canonicalLinearOrder(canonicalLinearOrder),
@@ -96,12 +88,18 @@ private:
         validElementCount(validElementCount),
         paddingElementCount(paddingElementCount) {}
 
+  IndexRelationQueryResult materializePhysicalRelations() const;
+
   mlir::MemRefType endpointType;
   llvm::SmallVector<int64_t, 4> iterationShape;
   IndexRelation iterationToLogical;
   PhysicalLayoutRelation physicalLayout;
-  IndexRelation iterationToPhysicalBitOffset;
-  IndexRelation iterationToPhysicalElementOrdinal;
+  mutable bool physicalRelationsAttempted = false;
+  mutable IndexRelationStatus physicalRelationsStatus =
+      IndexRelationStatus::Invalid;
+  mutable std::string physicalRelationsFailureReason;
+  mutable std::optional<IndexRelation> iterationToPhysicalBitOffset;
+  mutable std::optional<IndexRelation> iterationToPhysicalElementOrdinal;
   std::optional<WaferStaticPhysicalOffsetCalculator> offsetCalculator;
   mlir::AffineMap projectedAffineMap;
   bool canonicalLinearOrder = false;

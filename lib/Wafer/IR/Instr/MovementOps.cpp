@@ -440,6 +440,11 @@ mlir::LogicalResult InstrGatherScatterOp::verify() {
       mlir::failed(
           verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
+  if ((getSrcOffsetAttr() && getSrcOffsetValue()) ||
+      (getDstOffsetAttr() && getDstOffsetValue()))
+    return emitOpError(
+        "each endpoint byte offset must use either its static attribute or "
+        "its SSA value, not both");
   if (mlir::failed(verifyNonNegativeOptionalI64Attr(
           getOperation(), getSrcOffsetAttr(), "src_offset")) ||
       mlir::failed(verifyNonNegativeOptionalI64Attr(

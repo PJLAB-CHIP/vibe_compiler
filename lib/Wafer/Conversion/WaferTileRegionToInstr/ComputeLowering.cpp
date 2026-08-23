@@ -7,6 +7,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
 #include <limits>
@@ -17,6 +18,37 @@ using namespace wafer;
 using namespace wafer::tile_region_to_instr;
 
 namespace {
+
+class ScratchRecorderHolder {
+protected:
+  explicit ScratchRecorderHolder(
+      TileRegionToInstrBufferRecorder *bufferRecorder)
+      : bufferRecorder(bufferRecorder) {}
+  TileRegionToInstrBufferRecorder *bufferRecorder = nullptr;
+};
+
+static bool haveEqualMovementDescriptorStructure(const MovementDescriptor &lhs,
+                                                 const MovementDescriptor &rhs,
+                                                 bool compareByteOffset) {
+  return lhs.byteCount == rhs.byteCount && lhs.innerBytes == rhs.innerBytes &&
+         (!compareByteOffset || lhs.byteOffset == rhs.byteOffset) &&
+         lhs.strides == rhs.strides && lhs.iterations == rhs.iterations;
+}
+
+static bool
+haveEqualSliceDescriptorStructure(llvm::ArrayRef<MovementDescriptorPair> lhs,
+                                  llvm::ArrayRef<MovementDescriptorPair> rhs) {
+  return lhs.size() == rhs.size() &&
+         llvm::all_of(llvm::zip_equal(lhs, rhs), [](auto descriptors) {
+           const auto &[lhsDescriptor, rhsDescriptor] = descriptors;
+           return haveEqualMovementDescriptorStructure(
+                      lhsDescriptor.source, rhsDescriptor.source,
+                      /*compareByteOffset=*/false) &&
+                  haveEqualMovementDescriptorStructure(
+                      lhsDescriptor.dest, rhsDescriptor.dest,
+                      /*compareByteOffset=*/true);
+         });
+}
 
 static mlir::FailureOr<int64_t>
 getStaticDim(mlir::PatternRewriter &rewriter, mlir::Operation *op,
@@ -86,20 +118,15 @@ getInstrElementwiseKindAttr(mlir::PatternRewriter &rewriter,
                             mlir::Operation *op,
                             ComputeElementwiseKindAttr computeKind);
 
-static mlir::LogicalResult
-proveIdentityPhysicalTraversal(mlir::PatternRewriter &rewriter,
-                               mlir::Operation *op, mlir::MemRefType sourceType,
-                               mlir::MemRefType destType,
-                               llvm::StringRef subject) {
+static mlir::LogicalResult proveIdentityPhysicalTraversal(
+    mlir::PatternRewriter &rewriter, mlir::Operation *op,
+    mlir::MemRefType sourceType, mlir::MemRefType destType,
+    MovementDescriptorCache *descriptorCache, llvm::StringRef subject) {
   if (sourceType.getShape() != destType.getShape())
     return failPattern(rewriter, op,
                        (subject + " requires equal logical shapes").str());
-  analysis::IndexRelationResult identity =
-      analysis::IndexRelation::identity(destType.getShape());
-  if (!identity.isExact() ||
-      mlir::failed(analysis::TransferRealizability::provePhysicalTraversal(
-          sourceType, destType, destType.getShape(), *identity.get(),
-          *identity.get())))
+  if (!descriptorCache || !descriptorCache->hasOrProveIdentityPhysicalTraversal(
+                              sourceType, destType))
     return failPattern(
         rewriter, op,
         (subject + " has incompatible physical element traversal").str());
@@ -122,10 +149,15 @@ resolveInstrConvertKind(mlir::Type sourceType, mlir::Type resultType) {
   return std::nullopt;
 }
 
-class ConvertLowering : public mlir::OpRewritePattern<ComputeConvertOp> {
+class ConvertLowering : public mlir::OpRewritePattern<ComputeConvertOp>,
+                        private ScratchRecorderHolder {
 public:
-  ConvertLowering(mlir::MLIRContext *context)
-      : mlir::OpRewritePattern<ComputeConvertOp>(context) {}
+  ConvertLowering(mlir::MLIRContext *context,
+                  TileRegionToInstrBufferRecorder *bufferRecorder,
+                  MovementDescriptorCache *descriptorCache)
+      : mlir::OpRewritePattern<ComputeConvertOp>(context),
+        ScratchRecorderHolder(bufferRecorder),
+        descriptorCache(descriptorCache) {}
 
   mlir::LogicalResult
   matchAndRewrite(ComputeConvertOp op,
@@ -138,8 +170,9 @@ public:
     if (!sourceType || !resultType)
       return failPattern(rewriter, op,
                          "tile.compute.convert requires memref storage");
-    if (mlir::failed(proveIdentityPhysicalTraversal(
-            rewriter, op, sourceType, resultType, "tile.compute.convert")))
+    if (mlir::failed(proveIdentityPhysicalTraversal(rewriter, op, sourceType,
+                                                    resultType, descriptorCache,
+                                                    "tile.compute.convert")))
       return mlir::failure();
     std::optional<InstrConvertKind> kind = resolveInstrConvertKind(
         sourceType.getElementType(), resultType.getElementType());
@@ -164,16 +197,20 @@ public:
                          "requires zero_point");
     }
 
-    mlir::Value dest =
-        rewriter.create<mlir::memref::AllocOp>(op.getLoc(), resultType)
-            .getResult();
+    mlir::FailureOr<mlir::Value> dest =
+        createDestAlloc(op.getLoc(), resultType, rewriter, op, bufferRecorder);
+    if (mlir::failed(dest))
+      return mlir::failure();
     rewriter.create<InstrConvertOp>(
         op.getLoc(), InstrConvertKindAttr::get(rewriter.getContext(), *kind),
-        op.getSource(), dest, zeroPoint, roundingMode,
+        op.getSource(), *dest, zeroPoint, roundingMode,
         getDefaultNCCWorkerAttr(rewriter));
-    rewriter.replaceOp(op, dest);
+    rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
+
+private:
+  MovementDescriptorCache *descriptorCache = nullptr;
 };
 
 struct ConstantPredicateSelectPlan {
@@ -274,8 +311,8 @@ getConstantPredicateSelectPlan(ComputeElementwiseOp op) {
                                      loweredPredicateFill, constant, selected};
 }
 
-class ElementwiseLowering
-    : public mlir::OpRewritePattern<ComputeElementwiseOp> {
+class ElementwiseLowering : public mlir::OpRewritePattern<ComputeElementwiseOp>,
+                            private ScratchRecorderHolder {
 public:
   struct InputMovementPlan {
     mlir::Value source;
@@ -283,8 +320,12 @@ public:
     llvm::SmallVector<MovementDescriptorPair> descriptors;
   };
 
-  ElementwiseLowering(mlir::MLIRContext *context)
-      : mlir::OpRewritePattern<ComputeElementwiseOp>(context) {}
+  ElementwiseLowering(mlir::MLIRContext *context,
+                      TileRegionToInstrBufferRecorder *bufferRecorder,
+                      MovementDescriptorCache *descriptorCache)
+      : mlir::OpRewritePattern<ComputeElementwiseOp>(context),
+        ScratchRecorderHolder(bufferRecorder),
+        descriptorCache(descriptorCache) {}
 
   mlir::LogicalResult
   matchAndRewrite(ComputeElementwiseOp op,
@@ -319,21 +360,22 @@ public:
                            "constant select copy relation is not exact");
       auto selectedType =
           mlir::cast<mlir::MemRefType>(constantSelect->selectedInput.getType());
-      mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
-          getRelationMovementDescriptors(
+      mlir::FailureOr<SharedMovementDescriptorPlan> descriptors =
+          descriptorCache->getOrCreate(
               rewriter, op, selectedType, resultType, resultType.getShape(),
               *relation.get(), *relation.get(), MovementEngine::GatherScatter,
               "constant select copy");
       if (mlir::failed(descriptors))
         return mlir::failure();
 
-      mlir::Value dest =
-          rewriter.create<mlir::memref::AllocOp>(op.getLoc(), resultType)
-              .getResult();
+      mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+          op.getLoc(), resultType, rewriter, op, bufferRecorder);
+      if (mlir::failed(dest))
+        return mlir::failure();
       createGatherScatterDescriptors(rewriter, op.getLoc(),
-                                     constantSelect->selectedInput, dest,
-                                     *descriptors);
-      rewriter.replaceOp(op, dest);
+                                     constantSelect->selectedInput, *dest,
+                                     **descriptors);
+      rewriter.replaceOp(op, *dest);
       // In rollback-enabled dialect conversion, a source fill and its legal
       // replacement can temporarily coexist. Erase the replacement and let
       // the conversion driver retire its already-scheduled source root. If the
@@ -381,7 +423,7 @@ public:
                            "tile.elementwise requires memref inputs");
       if (!indexingMaps) {
         if (mlir::failed(proveIdentityPhysicalTraversal(
-                rewriter, op, sourceType, resultType,
+                rewriter, op, sourceType, resultType, descriptorCache,
                 "map-free tile.elementwise")))
           return mlir::failure();
         movementPlans.push_back(std::move(plan));
@@ -411,10 +453,8 @@ public:
         analysis::IndexRelationResult identity =
             analysis::IndexRelation::identity(resultType.getShape());
         if (identity.isExact() &&
-            mlir::succeeded(
-                analysis::TransferRealizability::provePhysicalTraversal(
-                    sourceType, resultType, resultType.getShape(),
-                    *identity.get(), *identity.get()))) {
+            descriptorCache->hasOrProveIdentityPhysicalTraversal(sourceType,
+                                                                 resultType)) {
           movementPlans.push_back(std::move(plan));
           continue;
         }
@@ -431,17 +471,17 @@ public:
       if (!sourceRelation.isExact() || !destRelation.isExact())
         return failPattern(rewriter, op,
                            "tile.elementwise indexing relation is not exact");
-      mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
-          getRelationMovementDescriptors(
+      mlir::FailureOr<SharedMovementDescriptorPlan> descriptors =
+          descriptorCache->getOrCreate(
               rewriter, op, sourceType, plan.materializedType,
               resultType.getShape(), *sourceRelation.get(), *destRelation.get(),
               MovementEngine::GatherScatter,
               "tile.elementwise indexing map materialization");
       if (mlir::failed(descriptors))
         return mlir::failure();
-      plan.descriptors = std::move(*descriptors);
+      plan.descriptors.assign((*descriptors)->begin(), (*descriptors)->end());
       if (mlir::failed(proveIdentityPhysicalTraversal(
-              rewriter, op, plan.materializedType, resultType,
+              rewriter, op, plan.materializedType, resultType, descriptorCache,
               "materialized tile.elementwise operand")))
         return mlir::failure();
       movementPlans.push_back(std::move(plan));
@@ -469,14 +509,15 @@ public:
       if (!falseMemRef || !relation.isExact())
         return failPattern(rewriter, op,
                            "target select copy relation is not exact");
-      mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
-          getRelationMovementDescriptors(
+      mlir::FailureOr<SharedMovementDescriptorPlan> descriptors =
+          descriptorCache->getOrCreate(
               rewriter, op, falseMemRef, resultType, resultType.getShape(),
               *relation.get(), *relation.get(), MovementEngine::GatherScatter,
               "target select false-value copy");
       if (mlir::failed(descriptors))
         return mlir::failure();
-      selectCopyDescriptors = std::move(*descriptors);
+      selectCopyDescriptors.assign((*descriptors)->begin(),
+                                   (*descriptors)->end());
     }
 
     llvm::SmallVector<mlir::Value, 3> inputs;
@@ -487,36 +528,41 @@ public:
         inputs.push_back(plan.source);
         continue;
       }
-      mlir::Value materialized =
-          rewriter
-              .create<mlir::memref::AllocOp>(op.getLoc(), plan.materializedType)
-              .getResult();
+      mlir::FailureOr<mlir::Value> materialized = createDestAlloc(
+          op.getLoc(), plan.materializedType, rewriter, op, bufferRecorder);
+      if (mlir::failed(materialized))
+        return mlir::failure();
       createGatherScatterDescriptors(rewriter, op.getLoc(), plan.source,
-                                     materialized, plan.descriptors);
-      inputs.push_back(materialized);
+                                     *materialized, plan.descriptors);
+      inputs.push_back(*materialized);
       materializedMappedInput = true;
     }
-    mlir::Value dest =
-        rewriter.create<mlir::memref::AllocOp>(op.getLoc(), resultType)
-            .getResult();
+    mlir::FailureOr<mlir::Value> dest =
+        createDestAlloc(op.getLoc(), resultType, rewriter, op, bufferRecorder);
+    if (mlir::failed(dest))
+      return mlir::failure();
 
     if (op.getKind() == ComputeElementwiseKind::Select) {
-      createGatherScatterDescriptors(rewriter, op.getLoc(), inputs[2], dest,
+      createGatherScatterDescriptors(rewriter, op.getLoc(), inputs[2], *dest,
                                      selectCopyDescriptors);
-      mlir::Value mask =
-          rewriter.create<mlir::memref::AllocOp>(op.getLoc(), resultType)
-              .getResult();
-      rewriter.create<InstrBit2FpOp>(op.getLoc(), inputs[0], mask);
-      rewriter.create<InstrMaskMoveOp>(op.getLoc(), inputs[1], mask, dest);
-      rewriter.replaceOp(op, dest);
+      mlir::FailureOr<mlir::Value> mask = createDestAlloc(
+          op.getLoc(), resultType, rewriter, op, bufferRecorder);
+      if (mlir::failed(mask))
+        return mlir::failure();
+      rewriter.create<InstrBit2FpOp>(op.getLoc(), inputs[0], *mask);
+      rewriter.create<InstrMaskMoveOp>(op.getLoc(), inputs[1], *mask, *dest);
+      rewriter.replaceOp(op, *dest);
       return mlir::success();
     }
 
-    rewriter.create<InstrElementwiseOp>(op.getLoc(), instrKind, inputs, dest,
+    rewriter.create<InstrElementwiseOp>(op.getLoc(), instrKind, inputs, *dest,
                                         getDefaultNCCWorkerAttr(rewriter));
-    rewriter.replaceOp(op, dest);
+    rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
+
+private:
+  MovementDescriptorCache *descriptorCache = nullptr;
 };
 
 class ElementwiseIntoLowering
@@ -541,15 +587,24 @@ public:
   }
 };
 
-class ReduceLowering : public mlir::OpRewritePattern<ComputeReduceOp> {
+class ReduceLowering : public mlir::OpRewritePattern<ComputeReduceOp>,
+                       private ScratchRecorderHolder {
 public:
-  ReduceLowering(mlir::MLIRContext *context)
-      : mlir::OpRewritePattern<ComputeReduceOp>(context) {}
+  ReduceLowering(mlir::MLIRContext *context,
+                 TileRegionToInstrBufferRecorder *bufferRecorder,
+                 MovementDescriptorCache *descriptorCache)
+      : mlir::OpRewritePattern<ComputeReduceOp>(context),
+        ScratchRecorderHolder(bufferRecorder),
+        descriptorCache(descriptorCache) {}
 
   mlir::LogicalResult
   matchAndRewrite(ComputeReduceOp op,
                   mlir::PatternRewriter &rewriter) const final {
     ScopedLoweringPatternTiming timing(op.getOperation());
+    if (!descriptorCache)
+      return failPattern(
+          rewriter, op,
+          "tile.reduce lowering requires a request-local descriptor cache");
     auto inputType = mlir::dyn_cast<mlir::MemRefType>(op.getInput().getType());
     auto resultType =
         mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
@@ -786,8 +841,8 @@ public:
           targetAllowsNativeReduce && inputMemory &&
           inputMemory.getLayout() == expectedInputLayout && resultMemory &&
           resultMemory.getLayout() == expectedResultLayout) {
-        mlir::FailureOr<mlir::Value> dest =
-            createDestAlloc(op.getLoc(), resultType, rewriter, op);
+        mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+            op.getLoc(), resultType, rewriter, op, bufferRecorder);
         if (mlir::failed(dest))
           return mlir::failure();
         auto kind =
@@ -812,19 +867,15 @@ public:
         MemoryAttr::get(rewriter.getContext(), MemorySpace::SPM,
                         MemLayout::Tensor));
 
-    struct SlicePlan {
-      llvm::SmallVector<MovementDescriptorPair> descriptors;
-    };
-    llvm::SmallVector<SlicePlan, 8> slicePlans;
-    slicePlans.reserve(static_cast<size_t>(*reductionTupleCount));
-    for (int64_t linearTuple = 0; linearTuple < *reductionTupleCount;
-         ++linearTuple) {
-      mlir::FailureOr<llvm::SmallVector<int64_t>> tuple =
-          delinearizeIndex(rewriter, op, reductionShape, linearTuple,
-                           "tile.reduce ordered tuple");
-      if (mlir::failed(tuple))
+    analysis::IndexRelationResult sliceDestRelation =
+        analysis::IndexRelation::identity(resultType.getShape());
+    if (!sliceDestRelation.isExact())
+      return failPattern(rewriter, op,
+                         "tile.reduce destination relation is not exact");
+    auto buildSlicePlan = [&](llvm::ArrayRef<int64_t> tuple)
+        -> mlir::FailureOr<SharedMovementDescriptorPlan> {
+      if (tuple.size() != reducedDims.size())
         return mlir::failure();
-      SlicePlan plan;
       llvm::SmallVector<mlir::AffineExpr, 4> sourceResults;
       sourceResults.reserve(inputType.getRank());
       size_t reducedIndex = 0;
@@ -832,7 +883,7 @@ public:
       for (int64_t inputDim = 0; inputDim < inputType.getRank(); ++inputDim) {
         if (llvm::is_contained(reducedDims, inputDim)) {
           sourceResults.push_back(mlir::getAffineConstantExpr(
-              (*tuple)[reducedIndex++], rewriter.getContext()));
+              tuple[reducedIndex++], rewriter.getContext()));
         } else {
           sourceResults.push_back(
               mlir::getAffineDimExpr(resultIndex++, rewriter.getContext()));
@@ -843,21 +894,190 @@ public:
               mlir::AffineMap::get(resultType.getRank(), 0, sourceResults,
                                    rewriter.getContext()),
               resultType.getShape(), inputType.getShape());
-      analysis::IndexRelationResult destRelation =
-          analysis::IndexRelation::identity(resultType.getShape());
-      if (!sourceRelation.isExact() || !destRelation.isExact())
-        return failPattern(rewriter, op,
-                           "tile.reduce slice relation is not exact");
-      mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>>
-          relationDescriptors = getRelationMovementDescriptors(
-              rewriter, op, inputType, tensorType, resultType.getShape(),
-              *sourceRelation.get(), *destRelation.get(),
-              MovementEngine::GatherScatter,
-              "tile.reduce ordered slice movement");
-      if (mlir::failed(relationDescriptors))
+      if (!sourceRelation.isExact())
         return mlir::failure();
-      plan.descriptors = std::move(*relationDescriptors);
-      slicePlans.push_back(std::move(plan));
+      return descriptorCache->getOrCreate(
+          rewriter, op, inputType, tensorType, resultType.getShape(),
+          *sourceRelation.get(), *sliceDestRelation.get(),
+          MovementEngine::GatherScatter, "tile.reduce ordered slice movement");
+    };
+
+    struct SliceRun {
+      int64_t begin = 0;
+      int64_t end = 0;
+      SharedMovementDescriptorPlan descriptors;
+      llvm::SmallVector<int64_t, 2> sourceOffsetSteps;
+
+      int64_t size() const { return end - begin; }
+    };
+    llvm::SmallVector<SliceRun, 8> sliceRuns;
+
+    auto initializeAffineRun =
+        [&](int64_t begin, int64_t end, SharedMovementDescriptorPlan first,
+            SharedMovementDescriptorPlan second) -> mlir::FailureOr<SliceRun> {
+      if (begin < 0 || end <= begin || !first)
+        return mlir::failure();
+      SliceRun run{begin, end, std::move(first), {}};
+      if (run.size() == 1)
+        return run;
+      if (!second ||
+          !haveEqualSliceDescriptorStructure(*run.descriptors, *second))
+        return mlir::failure();
+      run.sourceOffsetSteps.reserve(run.descriptors->size());
+      for (auto [base, next] : llvm::zip_equal(*run.descriptors, *second)) {
+        int64_t step = 0;
+        if (llvm::SubOverflow(next.source.byteOffset, base.source.byteOffset,
+                              step))
+          return mlir::failure();
+        run.sourceOffsetSteps.push_back(step);
+      }
+      return run;
+    };
+
+    auto followsAffineRun = [&](const SliceRun &run,
+                                const MovementDescriptorPlan &plan,
+                                int64_t linearTuple) {
+      if (!haveEqualSliceDescriptorStructure(*run.descriptors, plan) ||
+          linearTuple < run.begin)
+        return false;
+      const int64_t relative = linearTuple - run.begin;
+      for (auto [descriptorIndex, descriptor] : llvm::enumerate(plan)) {
+        int64_t delta = 0;
+        int64_t expected = 0;
+        if (llvm::MulOverflow(run.sourceOffsetSteps[descriptorIndex], relative,
+                              delta) ||
+            llvm::AddOverflow(
+                (*run.descriptors)[descriptorIndex].source.byteOffset, delta,
+                expected) ||
+            expected != descriptor.source.byteOffset)
+          return false;
+      }
+      return true;
+    };
+
+    if (reducedDims.size() == 1) {
+      MemoryAttr inputMemory = getWaferMemoryAttr(inputType);
+      if (!inputMemory)
+        return failPattern(
+            rewriter, op, "tile.reduce source has no physical memory encoding");
+      mlir::FailureOr<llvm::SmallVector<WaferPhysicalLayoutPiece, 2>>
+          physicalPieces = inputMemory.getPhysicalLayoutPieces(inputType);
+      if (mlir::failed(physicalPieces))
+        return failPattern(
+            rewriter, op,
+            "tile.reduce cannot derive the source physical layout pieces");
+
+      const int64_t extent = reductionShape.front();
+      llvm::SmallVector<int64_t, 16> boundaries{0, extent};
+      for (const WaferPhysicalLayoutPiece &piece : *physicalPieces) {
+        if (piece.logicalLowerBounds.size() !=
+                static_cast<size_t>(inputType.getRank()) ||
+            piece.logicalUpperBounds.size() !=
+                static_cast<size_t>(inputType.getRank()) ||
+            piece.logicalTilePeriods.size() !=
+                static_cast<size_t>(inputType.getRank()))
+          return failPattern(
+              rewriter, op,
+              "tile.reduce physical layout piece rank is inconsistent");
+        const int64_t reducedDim = reducedDims.front();
+        const int64_t lower = piece.logicalLowerBounds[reducedDim];
+        const int64_t upper = piece.logicalUpperBounds[reducedDim];
+        const int64_t period = piece.logicalTilePeriods[reducedDim];
+        if (lower > 0 && lower < extent)
+          boundaries.push_back(lower);
+        if (upper > 0 && upper < extent)
+          boundaries.push_back(upper);
+        if (period > 0) {
+          for (int64_t boundary = period; boundary < extent;) {
+            boundaries.push_back(boundary);
+            int64_t next = 0;
+            if (llvm::AddOverflow(boundary, period, next) || next <= boundary)
+              return failPattern(
+                  rewriter, op,
+                  "tile.reduce physical layout period overflows int64");
+            boundary = next;
+          }
+        }
+      }
+      llvm::sort(boundaries);
+      boundaries.erase(std::unique(boundaries.begin(), boundaries.end()),
+                       boundaries.end());
+      for (size_t index = 1; index < boundaries.size(); ++index) {
+        const int64_t begin = boundaries[index - 1];
+        const int64_t end = boundaries[index];
+        if (begin >= end)
+          continue;
+        mlir::FailureOr<SharedMovementDescriptorPlan> first =
+            buildSlicePlan(llvm::ArrayRef<int64_t>(begin));
+        if (mlir::failed(first))
+          return mlir::failure();
+        mlir::FailureOr<SharedMovementDescriptorPlan> second = *first;
+        if (end - begin > 1)
+          second = buildSlicePlan(llvm::ArrayRef<int64_t>(begin + 1));
+        if (mlir::failed(second))
+          return mlir::failure();
+        mlir::FailureOr<SliceRun> run =
+            initializeAffineRun(begin, end, *first, *second);
+        if (mlir::failed(run))
+          return failPattern(
+              rewriter, op,
+              "tile.reduce physical layout period does not preserve the "
+              "slice descriptor structure");
+        if (run->size() > 2) {
+          mlir::FailureOr<SharedMovementDescriptorPlan> last =
+              buildSlicePlan(llvm::ArrayRef<int64_t>(end - 1));
+          if (mlir::failed(last) || !followsAffineRun(*run, **last, end - 1))
+            return failPattern(
+                rewriter, op,
+                "tile.reduce physical layout period does not produce an "
+                "exact affine descriptor run");
+        }
+        sliceRuns.push_back(std::move(*run));
+      }
+    } else {
+      llvm::SmallVector<SharedMovementDescriptorPlan, 8> slicePlans;
+      slicePlans.reserve(static_cast<size_t>(*reductionTupleCount));
+      for (int64_t linearTuple = 0; linearTuple < *reductionTupleCount;
+           ++linearTuple) {
+        mlir::FailureOr<llvm::SmallVector<int64_t>> tuple =
+            delinearizeIndex(rewriter, op, reductionShape, linearTuple,
+                             "tile.reduce ordered tuple");
+        if (mlir::failed(tuple))
+          return mlir::failure();
+        mlir::FailureOr<SharedMovementDescriptorPlan> plan =
+            buildSlicePlan(*tuple);
+        if (mlir::failed(plan))
+          return mlir::failure();
+        slicePlans.push_back(*plan);
+      }
+      for (int64_t begin = 0; begin < *reductionTupleCount;) {
+        int64_t end = begin + 1;
+        mlir::FailureOr<SliceRun> run = initializeAffineRun(
+            begin, end, slicePlans[begin], slicePlans[begin]);
+        if (begin + 1 < *reductionTupleCount &&
+            haveEqualSliceDescriptorStructure(*slicePlans[begin],
+                                              *slicePlans[begin + 1])) {
+          run = initializeAffineRun(begin, begin + 2, slicePlans[begin],
+                                    slicePlans[begin + 1]);
+          if (mlir::succeeded(run)) {
+            end = begin + 2;
+            while (end < *reductionTupleCount &&
+                   followsAffineRun(*run, *slicePlans[end], end))
+              ++end;
+            run->end = end;
+          }
+        }
+        if (mlir::failed(run))
+          return mlir::failure();
+        if (run->size() < 3) {
+          run = initializeAffineRun(begin, begin + 1, slicePlans[begin],
+                                    slicePlans[begin]);
+          if (mlir::failed(run))
+            return mlir::failure();
+        }
+        sliceRuns.push_back(std::move(*run));
+        begin = sliceRuns.back().end;
+      }
     }
 
     analysis::IndexRelationResult finalRelation =
@@ -865,14 +1085,15 @@ public:
     if (!finalRelation.isExact())
       return failPattern(rewriter, op,
                          "tile.reduce final relation is not exact");
-    mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>>
-        finalDescriptors = getRelationMovementDescriptors(
-            rewriter, op, tensorType, resultType, resultType.getShape(),
-            *finalRelation.get(), *finalRelation.get(),
-            MovementEngine::GatherScatter,
-            "tile.reduce final logical movement");
+    mlir::FailureOr<SharedMovementDescriptorPlan> finalDescriptors =
+        descriptorCache->getOrCreate(rewriter, op, tensorType, resultType,
+                                     resultType.getShape(),
+                                     *finalRelation.get(), *finalRelation.get(),
+                                     MovementEngine::GatherScatter,
+                                     "tile.reduce final logical movement");
     if (mlir::failed(finalDescriptors))
       return mlir::failure();
+
     // All legality, geometry and packing checks above are deliberately
     // completed before creating any effectful instruction.
     mlir::Value init = op.getInit();
@@ -881,42 +1102,104 @@ public:
                  .create<mlir::arith::ConstantOp>(
                      op.getLoc(), mlir::cast<mlir::TypedAttr>(initValue))
                  .getResult();
-    mlir::Value accumulatorA =
-        rewriter.create<mlir::memref::AllocOp>(op.getLoc(), tensorType);
-    mlir::Value accumulatorB =
-        rewriter.create<mlir::memref::AllocOp>(op.getLoc(), tensorType);
-    mlir::Value slice =
-        rewriter.create<mlir::memref::AllocOp>(op.getLoc(), tensorType);
+    mlir::FailureOr<mlir::Value> accumulatorA =
+        createDestAlloc(op.getLoc(), tensorType, rewriter, op, bufferRecorder);
+    mlir::FailureOr<mlir::Value> accumulatorB =
+        createDestAlloc(op.getLoc(), tensorType, rewriter, op, bufferRecorder);
+    mlir::FailureOr<mlir::Value> slice =
+        createDestAlloc(op.getLoc(), tensorType, rewriter, op, bufferRecorder);
     mlir::FailureOr<mlir::Value> dest =
-        createDestAlloc(op.getLoc(), resultType, rewriter, op);
-    if (mlir::failed(dest))
+        createDestAlloc(op.getLoc(), resultType, rewriter, op, bufferRecorder);
+    if (mlir::failed(accumulatorA) || mlir::failed(accumulatorB) ||
+        mlir::failed(slice) || mlir::failed(dest))
       return mlir::failure();
 
-    rewriter.create<InstrFillOp>(op.getLoc(), accumulatorA, init,
+    rewriter.create<InstrFillOp>(op.getLoc(), *accumulatorA, init,
                                  /*fill_domain=*/FillDomainAttr{},
                                  getDefaultNCCWorkerAttr(rewriter));
-    mlir::Value currentAccumulator = accumulatorA;
-    mlir::Value nextAccumulator = accumulatorB;
-    for (const SlicePlan &plan : slicePlans) {
-      createGatherScatterDescriptors(rewriter, op.getLoc(), op.getInput(),
-                                     slice, plan.descriptors);
-      llvm::SmallVector<mlir::Value, 2> inputs{currentAccumulator, slice};
-      rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
-                                          inputs, nextAccumulator,
-                                          getDefaultNCCWorkerAttr(rewriter));
-      std::swap(currentAccumulator, nextAccumulator);
+    mlir::Value currentAccumulator = *accumulatorA;
+    mlir::Value nextAccumulator = *accumulatorB;
+    for (const SliceRun &run : sliceRuns) {
+      const MovementDescriptorPlan &basePlan = *run.descriptors;
+      if (run.size() == 1) {
+        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getInput(),
+                                       *slice, basePlan);
+        llvm::SmallVector<mlir::Value, 2> inputs{currentAccumulator, *slice};
+        rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
+                                            inputs, nextAccumulator,
+                                            getDefaultNCCWorkerAttr(rewriter));
+        std::swap(currentAccumulator, nextAccumulator);
+        continue;
+      }
+
+      auto lower =
+          rewriter.create<mlir::arith::ConstantIndexOp>(op.getLoc(), 0);
+      auto upper = rewriter.create<mlir::arith::ConstantIndexOp>(op.getLoc(),
+                                                                 run.size());
+      auto step = rewriter.create<mlir::arith::ConstantIndexOp>(op.getLoc(), 1);
+      auto loop = rewriter.create<mlir::scf::ForOp>(
+          op.getLoc(), lower, upper, step,
+          mlir::ValueRange{currentAccumulator, nextAccumulator});
+      if (!loop.getBody()->empty() &&
+          mlir::isa<mlir::scf::YieldOp>(loop.getBody()->back()))
+        rewriter.eraseOp(&loop.getBody()->back());
+      rewriter.setInsertionPointToStart(loop.getBody());
+
+      for (auto [descriptorIndex, descriptor] : llvm::enumerate(basePlan)) {
+        const int64_t offsetBase = descriptor.source.byteOffset;
+        const int64_t offsetStep = run.sourceOffsetSteps[descriptorIndex];
+        mlir::Value dynamicOffset;
+        if (offsetStep == 0) {
+          dynamicOffset = rewriter.create<mlir::arith::ConstantIndexOp>(
+              op.getLoc(), offsetBase);
+        } else {
+          mlir::Value stepValue = rewriter.create<mlir::arith::ConstantIndexOp>(
+              op.getLoc(), offsetStep);
+          dynamicOffset = rewriter.create<mlir::arith::MulIOp>(
+              op.getLoc(), loop.getInductionVar(), stepValue);
+          if (offsetBase != 0) {
+            mlir::Value baseValue =
+                rewriter.create<mlir::arith::ConstantIndexOp>(op.getLoc(),
+                                                              offsetBase);
+            dynamicOffset = rewriter.create<mlir::arith::AddIOp>(
+                op.getLoc(), baseValue, dynamicOffset);
+          }
+        }
+        MovementDescriptor normalizedSource = descriptor.source;
+        normalizedSource.byteOffset = 0;
+        createGatherScatter(rewriter, op.getLoc(), op.getInput(), *slice,
+                            normalizedSource, descriptor.dest, dynamicOffset);
+      }
+
+      llvm::SmallVector<mlir::Value, 2> loopInputs{loop.getRegionIterArgs()[0],
+                                                   *slice};
+      rewriter.create<InstrElementwiseOp>(
+          op.getLoc(), *accumulationKind, loopInputs,
+          loop.getRegionIterArgs()[1], getDefaultNCCWorkerAttr(rewriter));
+      rewriter.create<mlir::scf::YieldOp>(
+          op.getLoc(), mlir::ValueRange{loop.getRegionIterArgs()[1],
+                                        loop.getRegionIterArgs()[0]});
+      rewriter.setInsertionPointAfter(loop);
+      currentAccumulator = loop.getResult(0);
+      nextAccumulator = loop.getResult(1);
     }
     createGatherScatterDescriptors(rewriter, op.getLoc(), currentAccumulator,
-                                   *dest, *finalDescriptors);
+                                   *dest, **finalDescriptors);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
+
+private:
+  MovementDescriptorCache *descriptorCache = nullptr;
 };
 
-class GemmLowering : public mlir::OpRewritePattern<ComputeGemmOp> {
+class GemmLowering : public mlir::OpRewritePattern<ComputeGemmOp>,
+                     private ScratchRecorderHolder {
 public:
-  GemmLowering(mlir::MLIRContext *context)
-      : mlir::OpRewritePattern<ComputeGemmOp>(context) {}
+  GemmLowering(mlir::MLIRContext *context,
+               TileRegionToInstrBufferRecorder *bufferRecorder)
+      : mlir::OpRewritePattern<ComputeGemmOp>(context),
+        ScratchRecorderHolder(bufferRecorder) {}
 
   mlir::LogicalResult
   matchAndRewrite(ComputeGemmOp op,
@@ -926,8 +1209,8 @@ public:
         inferGemmMKN(op, rewriter);
     if (mlir::failed(mkn))
       return mlir::failure();
-    mlir::FailureOr<mlir::Value> dest =
-        createDestAlloc(op.getLoc(), op.getResult().getType(), rewriter, op);
+    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, bufferRecorder);
     if (mlir::failed(dest))
       return mlir::failure();
 
@@ -946,10 +1229,13 @@ public:
   }
 };
 
-class ConvLowering : public mlir::OpRewritePattern<ComputeConvOp> {
+class ConvLowering : public mlir::OpRewritePattern<ComputeConvOp>,
+                     private ScratchRecorderHolder {
 public:
-  ConvLowering(mlir::MLIRContext *context)
-      : mlir::OpRewritePattern<ComputeConvOp>(context) {}
+  ConvLowering(mlir::MLIRContext *context,
+               TileRegionToInstrBufferRecorder *bufferRecorder)
+      : mlir::OpRewritePattern<ComputeConvOp>(context),
+        ScratchRecorderHolder(bufferRecorder) {}
 
   mlir::LogicalResult
   matchAndRewrite(ComputeConvOp op,
@@ -975,8 +1261,8 @@ public:
                          "tile.conv lowering requires two spatial strides and "
                          "dilations");
 
-    mlir::FailureOr<mlir::Value> dest =
-        createDestAlloc(op.getLoc(), op.getResult().getType(), rewriter, op);
+    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, bufferRecorder);
     if (mlir::failed(dest))
       return mlir::failure();
     auto kind =
@@ -1100,11 +1386,15 @@ wafer::tile_region_to_instr::getAccumulationElementwiseKind(
 }
 
 void wafer::tile_region_to_instr::populateComputeLoweringPatterns(
-    mlir::RewritePatternSet &patterns) {
+    mlir::RewritePatternSet &patterns,
+    TileRegionToInstrBufferRecorder *bufferRecorder,
+    MovementDescriptorCache *descriptorCache) {
   mlir::MLIRContext *context = patterns.getContext();
-  patterns.add<ConvertLowering, ElementwiseLowering, ElementwiseIntoLowering,
-               GemmLowering, ConvLowering>(context);
-  patterns.add<ReduceLowering>(context);
+  patterns.add<ElementwiseIntoLowering>(context);
+  patterns.add<GemmLowering, ConvLowering>(context, bufferRecorder);
+  patterns.add<ConvertLowering, ElementwiseLowering>(context, bufferRecorder,
+                                                     descriptorCache);
+  patterns.add<ReduceLowering>(context, bufferRecorder, descriptorCache);
 }
 
 void wafer::tile_region_to_instr::populateFillLoweringPattern(

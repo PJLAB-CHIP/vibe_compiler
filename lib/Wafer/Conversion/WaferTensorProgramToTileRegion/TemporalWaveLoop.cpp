@@ -141,6 +141,9 @@ materializeTemporalWaveLoopNest(
           nested.create<mlir::scf::ForOp>(loc, lower, upper, step, current);
       loops.push_back(
           mlir::cast<mlir::LoopLikeOpInterface>(loop.getOperation()));
+      if (!loop.getBody()->empty() &&
+          mlir::isa<mlir::scf::YieldOp>(loop.getBody()->back()))
+        loop.getBody()->back().erase();
       mlir::OpBuilder bodyBuilder =
           mlir::OpBuilder::atBlockBegin(loop.getBody());
       auto steady = materializeAt(bodyBuilder, loop.getInductionVar(), tileSize,

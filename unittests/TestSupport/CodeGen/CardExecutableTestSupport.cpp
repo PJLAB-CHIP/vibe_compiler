@@ -837,14 +837,15 @@ void expectDemandProgramCompletesExecutableGate(
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::BaselineStatistics baselineStatistics;
   wafer::compiler::ProgramDataHandoff programData;
-  std::vector<std::string> tileDataflowIRTrace;
   auto executable = wafer::compiler::detail::compileCardBaseline(
       *parsed.module, metadata, executionConfig(), diagnostics, programData,
-      &baselineStatistics, /*tilePipelineParallelism=*/0, &tileDataflowIRTrace);
+      &baselineStatistics, /*tilePipelineParallelism=*/0,
+      /*captureTileDataflowIRTrace=*/true);
   diagnostics.flush();
 
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
-  expectCompleteTileDomain(executable->executable, tileDataflowIRTrace);
+  expectCompleteTileDomain(executable->executable,
+                           executable->tileDataflowIRTrace);
   EXPECT_GT(baselineStatistics.exactDemandSatisfiedEdges, 0u);
   EXPECT_EQ(baselineStatistics.exactGates.cardModuleCompilationInvocations, 1u);
   // Baseline structural contract: every TileRegion carries exactly one

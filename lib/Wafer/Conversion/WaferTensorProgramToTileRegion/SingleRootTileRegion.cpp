@@ -237,6 +237,8 @@ void appendRelations(StructuredMaterializationRelations &destination,
       source.operationResultBuffers.end());
   destination.operandBuffers.append(source.operandBuffers.begin(),
                                     source.operandBuffers.end());
+  destination.scratchBuffers.append(source.scratchBuffers.begin(),
+                                    source.scratchBuffers.end());
   destination.outputBuffers.append(source.outputBuffers.begin(),
                                    source.outputBuffers.end());
   destination.partialReductionContributions.append(

@@ -290,6 +290,74 @@ TEST_F(CanonicalAttentionWorkProjectionTest,
 }
 
 TEST_F(CanonicalAttentionWorkProjectionTest,
+       RankFourBatchHeadSequenceAndFeatureAxesRemainDistinct) {
+  struct Case {
+    bool decoding;
+    int64_t queryExtent;
+    int64_t keyValueExtent;
+    int64_t queryKeyExtent;
+    int64_t valueExtent;
+    bool withMask;
+  };
+  for (const Case testCase :
+       {Case{false, 1024, 1024, 128, 64, false},
+        Case{true, 1025, 1031, 64, 128, true}}) {
+    SCOPED_TRACE(testCase.decoding);
+    std::string source =
+        testCase.decoding
+            ? wafer::test::buildRank4FlashDecodingPlanningFixture(
+                  /*batchExtent=*/2, /*headExtent=*/2, testCase.queryExtent,
+                  testCase.keyValueExtent, testCase.queryKeyExtent,
+                  testCase.valueExtent, testCase.withMask)
+            : wafer::test::buildRank4FlashAttentionPlanningFixture(
+                  /*batchExtent=*/2, /*headExtent=*/2, testCase.queryExtent,
+                  testCase.keyValueExtent, testCase.queryKeyExtent,
+                  testCase.valueExtent, testCase.withMask);
+    auto module = parse(source);
+    ASSERT_TRUE(module);
+    wafer::LinalgExtAttentionOp sourceAttention;
+    module->walk([&](wafer::LinalgExtAttentionOp attention) {
+      sourceAttention = attention;
+    });
+    ASSERT_TRUE(sourceAttention);
+    auto roles = sourceAttention.getIterationRoles();
+    ASSERT_TRUE(mlir::succeeded(roles));
+    EXPECT_EQ(roles->batch.size(), 2u);
+    EXPECT_EQ(roles->query.size(), 1u);
+    EXPECT_EQ(roles->queryKeyReduction.size(), 1u);
+    EXPECT_EQ(roles->keyValueReduction.size(), 1u);
+    EXPECT_EQ(roles->valueOutput.size(), 1u);
+
+    std::string failureReason;
+    auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);
+    ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+    auto inputs = buildInputs(*dag, &failureReason);
+    ASSERT_TRUE(mlir::succeeded(inputs)) << failureReason;
+    CanonicalAttentionWorkProjectionOutcome outcome =
+        buildCanonicalAttentionWorkProjection(
+            inputs->prefix.rootWorks, inputs->representations,
+            inputs->movements, inputs->storage, inputs->schedule);
+    const CanonicalAttentionWorkCoordinate *coordinate =
+        getCanonicalAttentionWorkCoordinate(outcome);
+    ASSERT_NE(coordinate, nullptr);
+    ASSERT_EQ(coordinate->roots.size(), 1u);
+    const AttentionWorkDescription &description = coordinate->roots.front();
+    for (const AttentionOperandDescription &operand : description.operands)
+      EXPECT_EQ(operand.exactDomain.getRank(), 4u);
+    for (const AttentionValueDescription &value : description.values) {
+      if (value.id.kind == AttentionValueKind::ScoreBlock)
+        EXPECT_EQ(value.exactDomain.getRank(), 4u);
+      if (value.id.kind == AttentionValueKind::BlockAccumulator ||
+          value.id.kind == AttentionValueKind::RunningAccumulator ||
+          value.id.kind == AttentionValueKind::FinalOutput)
+        EXPECT_EQ(value.exactDomain.getRank(), 4u);
+    }
+    for (const AttentionScratchDescription &scratch : description.scratch)
+      EXPECT_EQ(scratch.exactDomain.getRank(), 4u);
+  }
+}
+
+TEST_F(CanonicalAttentionWorkProjectionTest,
        MultiKeyValueAxesRemainAProjectedCartesianDomain) {
   auto module = parse(wafer::test::buildMultiK2FlashDecodingPlanningFixture());
   ASSERT_TRUE(module);

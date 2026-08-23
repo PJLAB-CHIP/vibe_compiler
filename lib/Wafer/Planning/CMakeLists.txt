@@ -1,4 +1,5 @@
 set(WAFER_PLANNING_SOURCES
+  Planning/Baseline/BaselineAttentionMaterialization.cpp
   Planning/Baseline/CardBaselineAssignment.cpp
   Planning/Baseline/CardBaselineCompilation.cpp
   Planning/Baseline/CardBaselineConsumerInputs.cpp
@@ -6,13 +7,13 @@ set(WAFER_PLANNING_SOURCES
   Planning/Baseline/CardBaselineEdgeCarriers.cpp
   Planning/Baseline/CardBaselineMaterialization.cpp
   Planning/Baseline/CardBaselineTemporalTiling.cpp
+  Planning/Baseline/BaselineTemporalPlan.cpp
   Planning/Baseline/CanonicalBaselinePlan.cpp
   Planning/PhysicalDataflow/AttentionSpatialConstraints.cpp
   Planning/PhysicalDataflow/AttentionLinalgOps.cpp
   Planning/PhysicalDataflow/AttentionWorkDescription.cpp
   Planning/PhysicalDataflow/BufferPlan.cpp
   Planning/PhysicalDataflow/CanonicalAttentionWorkProjection.cpp
-  Planning/PhysicalDataflow/CanonicalFeasibilityProof.cpp
   Planning/PhysicalDataflow/CanonicalSpatialAssignment.cpp
   Planning/PhysicalDataflow/CanonicalRegionPlan.cpp
   Planning/PhysicalDataflow/CanonicalRepresentationPlan.cpp
@@ -21,7 +22,6 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/CanonicalSchedulePlan.cpp
   Planning/PhysicalDataflow/CanonicalStoragePlan.cpp
   Planning/PhysicalDataflow/CanonicalTemporalPlan.cpp
-  Planning/PhysicalDataflow/FeasibilityProof.cpp
   Planning/PhysicalDataflow/SerializedExecutionPlan.cpp
   Planning/PhysicalDataflow/RootRegionWorkAnalysis.cpp
   Planning/PhysicalDataflow/RegionPlan.cpp
@@ -46,7 +46,6 @@ set(WAFER_PLANNING_SOURCES
   Planning/Search/DataMovementApply.cpp
   Planning/Search/InstructionSchedule.cpp
   Planning/Search/PhysicalRepresentation.cpp
-  Planning/Search/ScopedFeasibility.cpp
   Planning/Search/SimpleRoute.cpp
   Planning/Search/SpatialPlacement.cpp
   Planning/Search/StagePipeline.cpp

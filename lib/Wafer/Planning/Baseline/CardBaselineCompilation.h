@@ -3,7 +3,6 @@
 #ifndef WAFER_COMPILER_CARDBASELINECOMPILATION_H
 #define WAFER_COMPILER_CARDBASELINECOMPILATION_H
 
-#include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/CodeGen/Executable/CardExecutableLowering.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
 
@@ -34,7 +33,8 @@ namespace wafer::compiler::detail {
 struct BaselineStatistics {
   uint64_t exactDemandSatisfiedEdges = 0;
   uint64_t spatialCoordinateQueries = 0;
-  uint64_t spatialLegalizationTransitions = 0;
+  uint64_t actualSPMCapacityRejections = 0;
+  uint64_t actualTemporalRefinements = 0;
   uint64_t baselineSourcePreparations = 0;
   uint64_t baselineMaterializationPreparations = 0;
   uint64_t baselineCardModuleMaterializations = 0;
@@ -47,22 +47,24 @@ struct BaselineStatistics {
   CardExecutableLoweringStatistics exactGates;
 };
 
-/// Semantic baseline result. Diagnostic IR inspection is written only to an
-/// explicit caller-owned sink and is not carried by this result.
+/// Semantic baseline result. Diagnostic IR snapshots are present only when
+/// explicitly requested and move with the executable produced by the same
+/// baseline compilation.
 struct CardBaselineCompilationResult {
   explicit CardBaselineCompilationResult(
       CardExecutableLoweringResult executable,
-      std::unique_ptr<CardProgramAnalysis> programAnalysis)
+      std::vector<std::string> tileDataflowIRTrace)
       : executable(std::move(executable)),
-        programAnalysis(std::move(programAnalysis)) {}
+        tileDataflowIRTrace(std::move(tileDataflowIRTrace)) {}
 
   CardExecutableLoweringResult executable;
-  std::unique_ptr<CardProgramAnalysis> programAnalysis;
+  std::vector<std::string> tileDataflowIRTrace;
 };
 
 /// Materializes and admits the deterministic functional baseline. The source
 /// module is borrowed and unchanged. This boundary owns no candidate family,
-/// score, selector, search statistics or printed-IR result field.
+/// score, selector or search statistics. Optional diagnostic IR remains owned
+/// by the returned baseline result.
 mlir::FailureOr<CardBaselineCompilationResult>
 compileCardBaseline(mlir::ModuleOp tensorProgram,
                     const frontend::FrontendProgramVerificationResult &program,
@@ -71,7 +73,7 @@ compileCardBaseline(mlir::ModuleOp tensorProgram,
                     ProgramDataHandoff &programData,
                     BaselineStatistics *baselineStatistics = nullptr,
                     unsigned tilePipelineParallelism = 0,
-                    std::vector<std::string> *tileDataflowIRTrace = nullptr);
+                    bool captureTileDataflowIRTrace = false);
 
 } // namespace wafer::compiler::detail
 

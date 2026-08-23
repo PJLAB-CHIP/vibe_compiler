@@ -32,6 +32,9 @@ bool isStructuredNode(mlir::Operation *operation) {
 
 using EdgeKey =
     std::tuple<StructuredDAGNodeID, uint32_t, StructuredDAGNodeID, uint32_t>;
+using ProducerRef = std::pair<StructuredDAGNodeID, uint32_t>;
+using ProducerMemo =
+    llvm::DenseMap<mlir::Value, llvm::SmallVector<ProducerRef, 2>>;
 
 class StableNodeUnionFind {
 public:
@@ -108,42 +111,59 @@ mlir::LogicalResult collectNearestStructuredProducerNodes(
   return mlir::success();
 }
 
-mlir::LogicalResult collectNearestStructuredProducers(
+mlir::LogicalResult collectNearestStructuredProducerRefs(
     mlir::Value value, mlir::Block &body,
     const llvm::DenseMap<mlir::Operation *, StructuredDAGNodeID> &nodeIDs,
-    StructuredDAGNodeID consumer, uint32_t consumerOperand,
-    llvm::DenseSet<mlir::Value> &visited, std::set<EdgeKey> &edgeKeys,
-    std::string *failureReason) {
-  if (!value || !visited.insert(value).second)
+    ProducerMemo &memo, llvm::DenseSet<mlir::Value> &active,
+    llvm::SmallVectorImpl<ProducerRef> &producers, std::string *failureReason) {
+  if (!value)
     return mlir::success();
-  auto result = mlir::dyn_cast<mlir::OpResult>(value);
-  if (!result)
-    return mlir::success();
-  mlir::Operation *owner = result.getOwner();
-  if (!owner || owner->getBlock() != &body)
-    return mlir::success();
-  auto node = nodeIDs.find(owner);
-  if (node != nodeIDs.end()) {
-    if (node->second >= consumer) {
-      setFailureReason(failureReason,
-                       "structured SSA dependency is not in block order");
-      return mlir::failure();
-    }
-    if (result.getResultNumber() > std::numeric_limits<uint32_t>::max()) {
-      setFailureReason(failureReason,
-                       "structured producer result index is not representable");
-      return mlir::failure();
-    }
-    edgeKeys.emplace(node->second,
-                     static_cast<uint32_t>(result.getResultNumber()), consumer,
-                     consumerOperand);
+  auto cached = memo.find(value);
+  if (cached != memo.end()) {
+    llvm::append_range(producers, cached->second);
     return mlir::success();
   }
-  for (mlir::Value operand : owner->getOperands())
-    if (mlir::failed(collectNearestStructuredProducers(
-            operand, body, nodeIDs, consumer, consumerOperand, visited,
-            edgeKeys, failureReason)))
-      return mlir::failure();
+  if (!active.insert(value).second) {
+    setFailureReason(failureReason,
+                     "structured support dependency contains an SSA cycle");
+    return mlir::failure();
+  }
+
+  llvm::SmallVector<ProducerRef, 2> local;
+  auto result = mlir::dyn_cast<mlir::OpResult>(value);
+  mlir::Operation *owner = result ? result.getOwner() : nullptr;
+  if (owner && owner->getBlock() == &body) {
+    auto node = nodeIDs.find(owner);
+    if (node != nodeIDs.end()) {
+      if (result.getResultNumber() > std::numeric_limits<uint32_t>::max()) {
+        setFailureReason(
+            failureReason,
+            "structured producer result index is not representable");
+        active.erase(value);
+        return mlir::failure();
+      }
+      local.emplace_back(node->second,
+                         static_cast<uint32_t>(result.getResultNumber()));
+    } else {
+      for (mlir::Value operand : owner->getOperands()) {
+        if (mlir::failed(collectNearestStructuredProducerRefs(
+                operand, body, nodeIDs, memo, active, local, failureReason))) {
+          active.erase(value);
+          return mlir::failure();
+        }
+      }
+    }
+  }
+  llvm::sort(local);
+  local.erase(std::unique(local.begin(), local.end()), local.end());
+  active.erase(value);
+  auto [entry, inserted] = memo.try_emplace(value, std::move(local));
+  if (!inserted) {
+    setFailureReason(failureReason,
+                     "structured producer memo was populated recursively");
+    return mlir::failure();
+  }
+  llvm::append_range(producers, entry->second);
   return mlir::success();
 }
 
@@ -167,7 +187,8 @@ StructuredDAGAnalysis::create(mlir::func::FuncOp function,
   for (mlir::Operation &operation : body.without_terminator()) {
     if (isStructuredNode(&operation)) {
       if (analysis.nodes.size() >=
-          static_cast<size_t>(std::numeric_limits<StructuredDAGNodeID>::max())) {
+          static_cast<size_t>(
+              std::numeric_limits<StructuredDAGNodeID>::max())) {
         setFailureReason(failureReason,
                          "structured-DAG node count is not representable");
         return mlir::failure();
@@ -203,6 +224,7 @@ StructuredDAGAnalysis::create(mlir::func::FuncOp function,
   }
 
   std::set<EdgeKey> edgeKeys;
+  ProducerMemo producerMemo;
   for (const StructuredDAGNode &consumer : analysis.nodes) {
     for (auto indexedOperand :
          llvm::enumerate(consumer.operation->getOperands())) {
@@ -212,12 +234,21 @@ StructuredDAGAnalysis::create(mlir::func::FuncOp function,
             "structured consumer operand index is not representable");
         return mlir::failure();
       }
-      llvm::DenseSet<mlir::Value> visited;
-      if (mlir::failed(collectNearestStructuredProducers(
-              indexedOperand.value(), body, nodeIDs, consumer.id,
-              static_cast<uint32_t>(indexedOperand.index()), visited, edgeKeys,
-              failureReason)))
+      llvm::DenseSet<mlir::Value> active;
+      llvm::SmallVector<ProducerRef, 2> producers;
+      if (mlir::failed(collectNearestStructuredProducerRefs(
+              indexedOperand.value(), body, nodeIDs, producerMemo, active,
+              producers, failureReason)))
         return mlir::failure();
+      for (const auto &[producer, producerResult] : producers) {
+        if (producer >= consumer.id) {
+          setFailureReason(failureReason,
+                           "structured SSA dependency is not in block order");
+          return mlir::failure();
+        }
+        edgeKeys.emplace(producer, producerResult, consumer.id,
+                         static_cast<uint32_t>(indexedOperand.index()));
+      }
     }
   }
   if (edgeKeys.size() >

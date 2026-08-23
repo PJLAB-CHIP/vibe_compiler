@@ -119,7 +119,8 @@ combinePhysicalAlignment(mlir::MemRefType type, int64_t requestedAlignment,
 
 static mlir::Value resolveOneTileRegionBoundary(mlir::Value value) {
   if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
-    mlir::Value entry = analysis::getSingleExecutionRegionEntryOperand(blockArg);
+    mlir::Value entry =
+        analysis::getSingleExecutionRegionEntryOperand(blockArg);
     return entry ? entry : value;
   }
   auto result = mlir::dyn_cast<mlir::OpResult>(value);
@@ -202,9 +203,9 @@ static bool functionTouchesDDR(mlir::Operation *functionLike) {
   return touchesDDR;
 }
 
-static bool isSupportedDDRAliasCall(
-    mlir::func::CallOp call,
-    const analysis::DirectCallGraphAnalysis &callGraph) {
+static bool
+isSupportedDDRAliasCall(mlir::func::CallOp call,
+                        const analysis::DirectCallGraphAnalysis &callGraph) {
   if (!memory_planning::isSupportedDirectAliasCall(
           call, [](mlir::Type type) { return isWaferDDRMemRefType(type); }))
     return false;
@@ -220,9 +221,9 @@ static bool isSupportedDDRAliasCall(
   return !hasDDRResourceEffect;
 }
 
-static mlir::LogicalResult verifyDDRCallScopes(
-    mlir::ModuleOp moduleOp,
-    const analysis::DirectCallGraphAnalysis &callGraph) {
+static mlir::LogicalResult
+verifyDDRCallScopes(mlir::ModuleOp moduleOp,
+                    const analysis::DirectCallGraphAnalysis &callGraph) {
   bool moduleTouchesDDR = functionTouchesDDR(moduleOp.getOperation());
   llvm::DenseSet<mlir::Operation *> mayTouchDDR;
   moduleOp.walk([&](mlir::func::FuncOp funcOp) {
@@ -868,14 +869,44 @@ collectDDRDescriptorDemand(mlir::Operation *op, mlir::Value ddrValue,
     if (!checkedAdd(view.maxViewOffsetBytes, *localEnd, absoluteEnd))
       return op->emitError()
              << "range_end_overflow: DDR access end overflows int64";
-    if (absoluteEnd > view.rootBytes)
-      return op->emitError()
-             << "ddr_range_overflow: " << descriptor.role << " access end "
-             << absoluteEnd << " exceeds DDR root byte size " << view.rootBytes
-             << " (view max offset " << view.maxViewOffsetBytes
-             << ", descriptor local end " << *localEnd << ", view span "
-             << view.viewSpanBytes << ", value type " << ddrValue.getType()
-             << ", root type " << view.root.getType() << ")";
+    if (absoluteEnd > view.rootBytes) {
+      mlir::InFlightDiagnostic diagnostic =
+          op->emitError() << "ddr_range_overflow: " << descriptor.role
+                          << " access end " << absoluteEnd
+                          << " exceeds DDR root byte size " << view.rootBytes
+                          << " (view max offset " << view.maxViewOffsetBytes
+                          << ", descriptor local end " << *localEnd
+                          << ", view span " << view.viewSpanBytes
+                          << ", value type " << ddrValue.getType()
+                          << ", root type " << view.root.getType() << ")";
+      if (auto subview = ddrValue.getDefiningOp<mlir::memref::SubViewOp>()) {
+        std::string detail;
+        llvm::raw_string_ostream stream(detail);
+        stream << "; view definition=";
+        subview->print(stream, mlir::OpPrintingFlags().skipRegions());
+        for (auto [index, offset] :
+             llvm::enumerate(subview.getMixedOffsets())) {
+          auto dynamic = mlir::dyn_cast<mlir::Value>(offset);
+          if (!dynamic)
+            continue;
+          stream << "; dynamic offset #" << index << '=';
+          if (mlir::Operation *definition = dynamic.getDefiningOp())
+            definition->print(stream, mlir::OpPrintingFlags().skipRegions());
+          else if (auto argument =
+                       mlir::dyn_cast<mlir::BlockArgument>(dynamic)) {
+            stream << "block argument #" << argument.getArgNumber();
+            if (auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(
+                    argument.getOwner()->getParentOp()))
+              stream << " of scf.for(lower=" << loop.getLowerBound()
+                     << ", upper=" << loop.getUpperBound()
+                     << ", step=" << loop.getStep() << ')';
+          }
+        }
+        stream.flush();
+        diagnostic << detail;
+      }
+      return mlir::failure();
+    }
 
     if (!isCompilerManagedDDRRoot(view.root)) {
       auto [it, inserted] = summary.externalRootDemands.try_emplace(view.root);
@@ -959,8 +990,7 @@ emitLifetimeFailure(mlir::Operation *scope,
   llvm_unreachable("unknown DDR lifetime failure");
 }
 
-static mlir::LogicalResult
-verifyDDRAsyncFunctionClosures(
+static mlir::LogicalResult verifyDDRAsyncFunctionClosures(
     mlir::ModuleOp moduleOp,
     const ManagedTimelineMap *managedTimelines = nullptr) {
   mlir::LogicalResult result = mlir::success();
@@ -1124,16 +1154,12 @@ static mlir::LogicalResult planManagedDDROffsets(
       return origin->emitError()
              << "packing_search_exhausted: MiniMalloc consumed "
              << packing.searchNodes
-             << " deterministic search nodes and the first-fit safety "
-                "fallback could not produce a verified DDR placement";
+             << " deterministic search nodes before producing a DDR "
+                "placement or proof";
     case memory_planning::PackingStatus::InvalidSolverResult:
       return origin->emitError()
              << "invalid_packing_result: MiniMalloc returned an invalid DDR "
                 "placement";
-    case memory_planning::PackingStatus::HeuristicNoFit:
-      return origin->emitError()
-             << "invalid_packing_result: first-fit NoFit escaped the shared "
-                "packing policy";
     case memory_planning::PackingStatus::Feasible:
       break;
     }
@@ -1325,11 +1351,12 @@ static mlir::LogicalResult planScopeDDRMemory(
   return mlir::success();
 }
 
-static mlir::LogicalResult planModuleDDRMemory(
-    mlir::ModuleOp moduleOp, int64_t defaultAlignment, int64_t capacityBytes,
-    int64_t largestContiguousBytes, int64_t bandwidthLimitBytes,
-    const ManagedTimelineMap *managedTimelines,
-    const analysis::DirectCallGraphAnalysis *managedCallGraph) {
+static mlir::LogicalResult
+planModuleDDRMemory(mlir::ModuleOp moduleOp, int64_t defaultAlignment,
+                    int64_t capacityBytes, int64_t largestContiguousBytes,
+                    int64_t bandwidthLimitBytes,
+                    const ManagedTimelineMap *managedTimelines,
+                    const analysis::DirectCallGraphAnalysis *managedCallGraph) {
   llvm::SmallVector<mlir::func::FuncOp, 4> functions;
   moduleOp.walk(
       [&](mlir::func::FuncOp funcOp) { functions.push_back(funcOp); });
@@ -1361,8 +1388,7 @@ static mlir::LogicalResult planModuleDDRMemory(
   }
   if (mlir::failed(verifyDDRCallScopes(moduleOp, *managedCallGraph)))
     return mlir::failure();
-  if (mlir::failed(
-          verifyDDRAsyncFunctionClosures(moduleOp, managedTimelines)))
+  if (mlir::failed(verifyDDRAsyncFunctionClosures(moduleOp, managedTimelines)))
     return mlir::failure();
 
   mlir::LogicalResult result = mlir::success();
@@ -1396,8 +1422,7 @@ static mlir::LogicalResult planModuleDDRMemory(
 static mlir::LogicalResult planDDRMemoryModuleImpl(
     mlir::ModuleOp moduleOp, int64_t ddrAlignmentBytes,
     int64_t ddrCapacityBytes, int64_t ddrLargestContiguousBytes,
-    int64_t ddrBandwidthLimitBytes,
-    const ManagedTimelineMap *managedTimelines,
+    int64_t ddrBandwidthLimitBytes, const ManagedTimelineMap *managedTimelines,
     const analysis::DirectCallGraphAnalysis *managedCallGraph) {
   wafer::support::recordCompileWork(
       wafer::support::CompileWorkKind::DDRPlanning);
@@ -1422,8 +1447,8 @@ mlir::LogicalResult planDDRMemoryModule(mlir::ModuleOp moduleOp,
                                         int64_t ddrLargestContiguousBytes,
                                         int64_t ddrBandwidthLimitBytes) {
   return planDDRMemoryModuleImpl(
-      moduleOp, ddrAlignmentBytes, ddrCapacityBytes,
-      ddrLargestContiguousBytes, ddrBandwidthLimitBytes,
+      moduleOp, ddrAlignmentBytes, ddrCapacityBytes, ddrLargestContiguousBytes,
+      ddrBandwidthLimitBytes,
       /*managedTimelines=*/nullptr, /*managedCallGraph=*/nullptr);
 }
 

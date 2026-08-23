@@ -3,8 +3,8 @@
 #include "Scheduling/RedundantTransferElimination.h"
 
 #include "MemoryPlanning/LifetimeAnalysis.h"
-#include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
+#include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
 
@@ -112,6 +112,7 @@ static bool isCompleteContiguousCopy(InstrGatherScatterOp gather,
           gather.getSrcOffsetAttr().getInt() == 0) &&
          (!gather.getDstOffsetAttr() ||
           gather.getDstOffsetAttr().getInt() == 0) &&
+         !gather.getSrcOffsetValue() && !gather.getDstOffsetValue() &&
          gather.getByteCountAttr().getInt() == *sourceBytes &&
          gather.getInnerBytesAttr().getInt() == *sourceBytes &&
          isUnitDescriptor(gather.getSrcStrides(), gather.getSrcIterations()) &&

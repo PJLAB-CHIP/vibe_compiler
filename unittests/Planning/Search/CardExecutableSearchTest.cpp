@@ -8,30 +8,46 @@
 namespace {
 using namespace wafer::compiler::testing;
 
+TEST(CardExecutableSearchTest,
+     EmptyEvaluationBudgetFailsWithoutCompilingABaselineFallback) {
+  ParsedProgram parsed = parseProgram();
+  ASSERT_TRUE(parsed.module);
+
+  std::string diagnosticsText;
+  llvm::raw_string_ostream diagnostics(diagnosticsText);
+  wafer::compiler::ProgramDataHandoff programData;
+  wafer::compiler::detail::CardExecutableSearchSummary summary;
+  auto selected = wafer::compiler::detail::runCardExecutableSearch(
+      *parsed.module, programMetadata(), executionConfig(), diagnostics,
+      programData, wafer::compiler::detail::SearchWorkBudget::bounded(0),
+      &summary);
+
+  diagnostics.flush();
+  EXPECT_TRUE(mlir::failed(selected));
+  EXPECT_EQ(summary.work.evaluated, 0u);
+  EXPECT_EQ(summary.work.accepted, 0u);
+  EXPECT_EQ(summary.winnerUpdates, 0u);
+  EXPECT_EQ(diagnosticsText.find("card-executable-compilation outcome="),
+            std::string::npos)
+      << diagnosticsText;
+}
+
 TEST(CardExecutableSearchTest, CompleteCandidateRunsThroughTheSharedExactGate) {
   ParsedProgram parsed = parseProgram();
   ASSERT_TRUE(parsed.module);
 
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
-  wafer::compiler::detail::BaselineStatistics statistics;
   wafer::compiler::ProgramDataHandoff programData;
-  auto baseline = wafer::compiler::detail::compileCardBaseline(
-      *parsed.module, programMetadata(), executionConfig(), diagnostics,
-      programData, &statistics);
-  diagnostics.flush();
-  ASSERT_TRUE(mlir::succeeded(baseline)) << diagnosticsText;
-  ASSERT_EQ(baseline->executable.tiles.size(), 16u);
   wafer::compiler::detail::CardExecutableSearchSummary summary;
   auto selected = wafer::compiler::detail::runCardExecutableSearch(
-      *parsed.module, *baseline->programAnalysis,
-      std::move(baseline->executable), programMetadata(), executionConfig(),
-      diagnostics, programData,
-      wafer::compiler::detail::SearchWorkBudget::bounded(1, 1),
-      wafer::TargetMemoryPolicy{}, &summary);
+      *parsed.module, programMetadata(), executionConfig(), diagnostics,
+      programData, wafer::compiler::detail::SearchWorkBudget::bounded(1),
+      &summary);
 
-  ASSERT_TRUE(mlir::succeeded(selected));
-  ASSERT_EQ(selected->tiles.size(), 16u);
+  diagnostics.flush();
+  ASSERT_TRUE(mlir::succeeded(selected)) << diagnosticsText;
+  ASSERT_EQ(selected->executable.tiles.size(), 16u);
   EXPECT_EQ(summary.work.evaluated, 1u);
   EXPECT_EQ(summary.work.accepted + summary.work.exactRejected +
                 summary.work.indeterminate,
@@ -39,99 +55,101 @@ TEST(CardExecutableSearchTest, CompleteCandidateRunsThroughTheSharedExactGate) {
   EXPECT_EQ(
       summary.coverage,
       wafer::compiler::detail::CardExecutableSearchCoverage::BudgetedFeasible);
-  EXPECT_EQ(statistics.baselineCardModuleMaterializations, 1u);
-  EXPECT_EQ(statistics.exactGates.cardModuleCompilationInvocations, 1u);
+  EXPECT_EQ(summary.winnerUpdates, 1u);
 }
 
 TEST(CardExecutableSearchTest,
-     LargeStageBoundaryEvaluatesOneCapacityBoundedActualCandidate) {
+     LargeStageBoundaryReportsActualRejectionWithoutBaselineFallback) {
   ParsedProgram parsed = parseLargeProducerStageProgram();
   ASSERT_TRUE(parsed.module);
 
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::ProgramDataHandoff programData;
-  auto baseline = wafer::compiler::detail::compileCardBaseline(
-      *parsed.module, largeProducerStageProgramMetadata(), executionConfig(),
-      diagnostics, programData);
-  diagnostics.flush();
-  ASSERT_TRUE(mlir::succeeded(baseline)) << diagnosticsText;
   wafer::compiler::detail::CardExecutableSearchSummary summary;
   auto selected = wafer::compiler::detail::runCardExecutableSearch(
-      *parsed.module, *baseline->programAnalysis,
-      std::move(baseline->executable), largeProducerStageProgramMetadata(),
-      executionConfig(), diagnostics, programData,
-      wafer::compiler::detail::SearchWorkBudget::bounded(1, 1),
-      wafer::TargetMemoryPolicy{}, &summary);
+      *parsed.module, largeProducerStageProgramMetadata(), executionConfig(),
+      diagnostics, programData,
+      wafer::compiler::detail::SearchWorkBudget::bounded(1), &summary);
 
-  ASSERT_TRUE(mlir::succeeded(selected));
+  diagnostics.flush();
+  EXPECT_TRUE(mlir::failed(selected));
   EXPECT_EQ(summary.work.evaluated, 1u);
-  EXPECT_EQ(summary.work.accepted, 1u) << summary.lastDetail;
-  EXPECT_EQ(summary.work.exactRejected, 0u) << summary.lastDetail;
+  EXPECT_EQ(summary.work.accepted, 0u) << summary.lastDetail;
+  EXPECT_EQ(summary.work.exactRejected, 1u) << summary.lastDetail;
   EXPECT_EQ(summary.work.indeterminate, 0u) << summary.lastDetail;
+  EXPECT_EQ(summary.winnerUpdates, 0u);
 }
 
 TEST(CardExecutableSearchTest,
-     TransposedWeightEvaluatesOnlyItsSelectedOperandWindows) {
+     TransposedWeightReportsActualRejectionWithoutBaselineFallback) {
   ParsedProgram parsed = parseLargeTransposedWeightProgram();
   ASSERT_TRUE(parsed.module);
 
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::ProgramDataHandoff programData;
-  auto baseline = wafer::compiler::detail::compileCardBaseline(
-      *parsed.module, largeTransposedWeightProgramMetadata(), executionConfig(),
-      diagnostics, programData);
-  diagnostics.flush();
-  ASSERT_TRUE(mlir::succeeded(baseline)) << diagnosticsText;
   wafer::compiler::detail::CardExecutableSearchSummary summary;
   auto selected = wafer::compiler::detail::runCardExecutableSearch(
-      *parsed.module, *baseline->programAnalysis,
-      std::move(baseline->executable), largeTransposedWeightProgramMetadata(),
-      executionConfig(), diagnostics, programData,
-      wafer::compiler::detail::SearchWorkBudget::bounded(1, 1),
-      wafer::TargetMemoryPolicy{}, &summary);
+      *parsed.module, largeTransposedWeightProgramMetadata(), executionConfig(),
+      diagnostics, programData,
+      wafer::compiler::detail::SearchWorkBudget::bounded(1), &summary);
 
-  ASSERT_TRUE(mlir::succeeded(selected));
+  diagnostics.flush();
+  EXPECT_TRUE(mlir::failed(selected));
   EXPECT_EQ(summary.work.evaluated, 1u);
-  EXPECT_EQ(summary.work.accepted, 1u) << "proposal=" << summary.proposalDetail
+  EXPECT_EQ(summary.work.accepted, 0u) << "proposal=" << summary.proposalDetail
                                        << " candidate=" << summary.lastDetail;
-  EXPECT_EQ(summary.work.exactRejected, 0u) << summary.lastDetail;
+  EXPECT_EQ(summary.work.exactRejected, 1u) << summary.lastDetail;
   EXPECT_EQ(summary.work.indeterminate, 0u) << summary.lastDetail;
+  EXPECT_EQ(summary.winnerUpdates, 0u);
 }
 
 TEST(CardExecutableSearchTest,
-     CoupledNeighborhoodRepairsMovementAndFindsLowerDDRActualCandidate) {
+     KeepsFailedCoupledSiblingTypedAndRetainsAnAcceptedSearchOwner) {
   ParsedProgram parsed = parseDependentProgram();
   ASSERT_TRUE(parsed.module);
 
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
-  wafer::compiler::ProgramDataHandoff programData;
+  wafer::compiler::ProgramDataHandoff baselineProgramData;
   auto baseline = wafer::compiler::detail::compileCardBaseline(
       *parsed.module, dependentProgramMetadata(), executionConfig(),
-      diagnostics, programData);
+      diagnostics, baselineProgramData, /*baselineStatistics=*/nullptr,
+      /*tilePipelineParallelism=*/0,
+      /*captureTileDataflowIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(baseline)) << diagnosticsText;
   ASSERT_TRUE(
       baseline->executable.resourceCost.aggregateDDRReadBytes.isKnown());
   const uint64_t baselineDDRRead =
       baseline->executable.resourceCost.aggregateDDRReadBytes.value;
+  ASSERT_EQ(baseline->tileDataflowIRTrace.size(), 16u);
+  const std::vector<std::string> baselineTrace = baseline->tileDataflowIRTrace;
+  wafer::compiler::ProgramDataHandoff searchProgramData;
   wafer::compiler::detail::CardExecutableSearchSummary summary;
   auto selected = wafer::compiler::detail::runCardExecutableSearch(
-      *parsed.module, *baseline->programAnalysis,
-      std::move(baseline->executable), dependentProgramMetadata(),
-      executionConfig(), diagnostics, programData,
-      wafer::compiler::detail::SearchWorkBudget::bounded(2, 2),
-      wafer::TargetMemoryPolicy{}, &summary);
+      *parsed.module, dependentProgramMetadata(), executionConfig(),
+      diagnostics, searchProgramData,
+      wafer::compiler::detail::SearchWorkBudget::bounded(2), &summary,
+      /*captureTileDataflowIRTrace=*/true);
 
-  ASSERT_TRUE(mlir::succeeded(selected));
+  diagnostics.flush();
+  ASSERT_TRUE(mlir::succeeded(selected)) << diagnosticsText;
   EXPECT_EQ(summary.work.evaluated, 2u);
-  EXPECT_EQ(summary.work.accepted, 2u) << "proposal=" << summary.proposalDetail
+  EXPECT_EQ(summary.work.accepted, 1u) << "proposal=" << summary.proposalDetail
                                        << " candidate=" << summary.lastDetail;
-  ASSERT_TRUE(selected->resourceCost.aggregateDDRReadBytes.isKnown());
-  EXPECT_LT(selected->resourceCost.aggregateDDRReadBytes.value,
+  EXPECT_EQ(summary.work.accepted + summary.work.exactRejected +
+                summary.work.indeterminate,
+            2u);
+  ASSERT_TRUE(
+      selected->executable.resourceCost.aggregateDDRReadBytes.isKnown());
+  EXPECT_LE(selected->executable.resourceCost.aggregateDDRReadBytes.value,
             baselineDDRRead);
+  EXPECT_GT(summary.winnerUpdates, 0u);
+  EXPECT_EQ(selected->tileDataflowIRTrace.size(),
+            selected->executable.tiles.size());
+  EXPECT_NE(selected->tileDataflowIRTrace, baselineTrace);
 }
 
 } // namespace

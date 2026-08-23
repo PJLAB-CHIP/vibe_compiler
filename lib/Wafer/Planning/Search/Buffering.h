@@ -4,8 +4,6 @@
 
 #include "Wafer/Planning/Search/DataMovement.h"
 
-#include "Wafer/Target/Core/TargetMemory.h"
-
 namespace wafer::compiler::detail {
 
 /// One independently materializable rotating-buffer scope. An empty edge set
@@ -36,9 +34,9 @@ struct CardBufferingAssignment {
 };
 
 /// Lazy Cartesian domain over serialized and rotating-buffer choices. The
-/// finite multiplicity bound is derived from selected temporal steady waves
-/// and an exact single-fragment physical-footprint lower bound. Final alias,
-/// coexistence, lifetime and common-loop legality remain actual-IR gates.
+/// finite multiplicity bound is the exact selected temporal steady-wave count.
+/// Physical capacity, alias, coexistence, lifetime and common-loop legality
+/// are decided only after materialization by the actual memory-planning gate.
 class CardBufferingDomain {
 public:
   static mlir::FailureOr<CardBufferingDomain>
@@ -53,7 +51,6 @@ public:
          const CardPhysicalRepresentationAssignment &representationAssignment,
          const CardDataMovementDomain &movementDomain,
          const CardDataMovementAssignment &movementAssignment,
-         const TargetMemoryPolicy &memory,
          std::string *failureReason = nullptr);
 
   CardBufferingAssignment getFirstAssignment() const;

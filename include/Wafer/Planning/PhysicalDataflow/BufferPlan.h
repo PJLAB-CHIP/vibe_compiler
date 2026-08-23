@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -74,8 +75,24 @@ using StorageAccessSite = std::variant<ExecutionInstanceId, MovementActionId>;
 struct StorageResourceDescription {
   StorageObjectId object;
   analysis::ExactIndexSet exactDomain;
+  analysis::ExactIndexSet residentDomain;
   mlir::Type elementType;
   MemLayout encoding = MemLayout::Tensor;
+
+  StorageResourceDescription(StorageObjectId object,
+                             analysis::ExactIndexSet exactDomain,
+                             mlir::Type elementType, MemLayout encoding)
+      : object(std::move(object)), exactDomain(exactDomain),
+        residentDomain(std::move(exactDomain)), elementType(elementType),
+        encoding(encoding) {}
+
+  StorageResourceDescription(StorageObjectId object,
+                             analysis::ExactIndexSet exactDomain,
+                             analysis::ExactIndexSet residentDomain,
+                             mlir::Type elementType, MemLayout encoding)
+      : object(std::move(object)), exactDomain(std::move(exactDomain)),
+        residentDomain(std::move(residentDomain)), elementType(elementType),
+        encoding(encoding) {}
 };
 
 struct StorageLifetimeDescription {

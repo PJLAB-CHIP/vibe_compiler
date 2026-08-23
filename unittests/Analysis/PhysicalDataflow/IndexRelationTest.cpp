@@ -702,6 +702,49 @@ TEST(PhysicalAccessRelationTest,
       /*requireInjective=*/false)));
 }
 
+TEST(PhysicalAccessRelationTest,
+     AcceptsLargeProjectedSliceWithNonzeroConstantByConstruction) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+  mlir::AffineExpr d1 = mlir::getAffineDimExpr(1, &context);
+  mlir::AffineMap slice = mlir::AffineMap::get(
+      /*dimCount=*/2, /*symbolCount=*/0,
+      {d0, d1, mlir::getAffineConstantExpr(127, &context)}, &context);
+  IndexRelationResult relation =
+      IndexRelation::fromAffineMap(slice, /*destinationShape=*/{2, 1024},
+                                   /*sourceShape=*/{2, 1024, 128});
+  ASSERT_TRUE(relation.isExact());
+  EXPECT_TRUE(relation.get()->hasTotalBoundedAffineMapConstruction());
+
+  auto memory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                       wafer::MemLayout::NCx);
+  mlir::MemRefType endpoint =
+      mlir::MemRefType::get({2, 1024, 128}, mlir::Float16Type::get(&context),
+                            mlir::MemRefLayoutAttrInterface{}, memory);
+  mlir::FailureOr<PhysicalAccessRelation> access =
+      PhysicalAccessRelation::create(endpoint, /*iterationShape=*/{2, 1024},
+                                     *relation.get(),
+                                     /*requireInjective=*/true);
+  ASSERT_TRUE(mlir::succeeded(access));
+  EXPECT_TRUE(mlir::succeeded(access->getPhysicalElementSpan({1, 1023})));
+
+  mlir::AffineMap outside = mlir::AffineMap::get(
+      /*dimCount=*/2, /*symbolCount=*/0,
+      {d0, d1, mlir::getAffineConstantExpr(128, &context)}, &context);
+  IndexRelationResult clipped =
+      IndexRelation::fromAffineMap(outside, /*destinationShape=*/{2, 1024},
+                                   /*sourceShape=*/{2, 1024, 128});
+  ASSERT_TRUE(clipped.isExact());
+  EXPECT_FALSE(clipped.get()->hasTotalBoundedAffineMapConstruction());
+  EXPECT_TRUE(mlir::failed(PhysicalAccessRelation::create(
+      endpoint, /*iterationShape=*/{2, 1024}, *clipped.get(),
+      /*requireInjective=*/true)));
+}
+
 TEST(IndexRelationTest, RecoversNonemptyZeroDimensionalRectangleWithoutSolver) {
   IndexSetResult scalarDomain = IndexRelation::staticDomain({});
   ASSERT_TRUE(scalarDomain.isExact());

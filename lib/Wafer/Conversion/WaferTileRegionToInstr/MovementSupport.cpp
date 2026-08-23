@@ -3,8 +3,11 @@
 #include "Internal.h"
 
 #include "Wafer/Analysis/PhysicalDataflow/PhysicalAccessRelation.h"
+#include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
+#include "Wafer/Support/CompileWorkStatistics.h"
 
 #include "mlir/Analysis/FlatLinearValueConstraints.h"
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -67,16 +70,20 @@ getLogicalTensorTypeFromMemRef(mlir::Type type) {
                                      memrefType.getElementType());
 }
 
-mlir::FailureOr<mlir::Value> createDestAlloc(mlir::Location loc,
-                                             mlir::Type type,
-                                             mlir::PatternRewriter &rewriter,
-                                             mlir::Operation *op) {
+mlir::FailureOr<mlir::Value>
+createDestAlloc(mlir::Location loc, mlir::Type type,
+                mlir::PatternRewriter &rewriter, mlir::Operation *op,
+                TileRegionToInstrBufferRecorder *bufferRecorder) {
   auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
   if (!memrefType)
     return failFailureOr<mlir::Value>(
         rewriter, op,
         "tile-region to instr lowering requires memref result storage");
-  return rewriter.create<mlir::memref::AllocOp>(loc, memrefType).getResult();
+  mlir::Value allocation =
+      rewriter.create<mlir::memref::AllocOp>(loc, memrefType).getResult();
+  if (bufferRecorder)
+    bufferRecorder->recordScratchAllocation(op, allocation);
+  return allocation;
 }
 
 mlir::FailureOr<MovementDescriptor>
@@ -257,7 +264,9 @@ void createWDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
 void createGatherScatter(mlir::PatternRewriter &rewriter, mlir::Location loc,
                          mlir::Value source, mlir::Value dest,
                          const MovementDescriptor &sourceDescriptor,
-                         const MovementDescriptor &destDescriptor) {
+                         const MovementDescriptor &destDescriptor,
+                         mlir::Value dynamicSourceOffset,
+                         mlir::Value dynamicDestOffset) {
   mlir::IntegerAttr sourceOffset =
       sourceDescriptor.byteOffset == 0
           ? mlir::IntegerAttr{}
@@ -267,10 +276,10 @@ void createGatherScatter(mlir::PatternRewriter &rewriter, mlir::Location loc,
           ? mlir::IntegerAttr{}
           : rewriter.getI64IntegerAttr(destDescriptor.byteOffset);
   rewriter.create<InstrGatherScatterOp>(
-      loc, source, dest, destDescriptor.byteCount, destDescriptor.innerBytes,
-      sourceOffset, destOffset, sourceDescriptor.strides,
-      sourceDescriptor.iterations, destDescriptor.strides,
-      destDescriptor.iterations);
+      loc, source, dest, dynamicSourceOffset, dynamicDestOffset,
+      destDescriptor.byteCount, destDescriptor.innerBytes, sourceOffset,
+      destOffset, sourceDescriptor.strides, sourceDescriptor.iterations,
+      destDescriptor.strides, destDescriptor.iterations);
 }
 
 namespace {
@@ -536,6 +545,8 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
                                const analysis::IndexRelation &iterationToSource,
                                const analysis::IndexRelation &iterationToDest,
                                MovementEngine engine, llvm::StringRef opLabel) {
+  wafer::support::recordCompileWork(
+      wafer::support::CompileWorkKind::RelationDescriptorPlanning);
   wafer::support::ScopedCompileTimingSpan timing(
       "lowering-algorithm", "tile-region-to-instr",
       "relation-descriptor-planning", op->getName().getStringRef());
@@ -1098,6 +1109,84 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
                                   : llvm::Twine("overflow"))
             .str());
   return descriptors;
+}
+
+bool MovementDescriptorCache::hasOrProveIdentityPhysicalTraversal(
+    mlir::MemRefType sourceType, mlir::MemRefType destType) {
+  if (!sourceType || !destType || sourceType.getShape() != destType.getShape())
+    return false;
+  std::pair<mlir::Type, mlir::Type> key{sourceType, destType};
+  if (provenIdentityPhysicalTraversals.contains(key))
+    return true;
+  analysis::IndexRelationResult identity =
+      analysis::IndexRelation::identity(destType.getShape());
+  if (!identity.isExact() ||
+      mlir::failed(analysis::TransferRealizability::provePhysicalTraversal(
+          sourceType, destType, destType.getShape(), *identity.get(),
+          *identity.get())))
+    return false;
+  provenIdentityPhysicalTraversals.insert(key);
+  return true;
+}
+
+mlir::FailureOr<SharedMovementDescriptorPlan>
+MovementDescriptorCache::getOrCreate(
+    mlir::PatternRewriter &rewriter, mlir::Operation *op,
+    mlir::MemRefType sourceType, mlir::MemRefType destType,
+    llvm::ArrayRef<int64_t> iterationShape,
+    const analysis::IndexRelation &iterationToSource,
+    const analysis::IndexRelation &iterationToDest, MovementEngine engine,
+    llvm::StringRef opLabel) {
+  std::optional<mlir::AffineMap> sourceMap;
+  std::optional<mlir::AffineMap> destMap;
+  const bool hasClosedProjectedRelations =
+      iterationToSource.hasTotalBoundedAffineMapConstruction() &&
+      iterationToDest.hasTotalBoundedAffineMapConstruction() &&
+      (sourceMap =
+           iterationToSource.getProjectedAffineMap(rewriter.getContext())) &&
+      (destMap = iterationToDest.getProjectedAffineMap(rewriter.getContext()));
+
+  size_t keyHash = 0;
+  if (hasClosedProjectedRelations) {
+    keyHash = static_cast<size_t>(
+        llvm::hash_combine(sourceType, destType, *sourceMap, *destMap,
+                           static_cast<unsigned>(engine),
+                           llvm::hash_combine_range(iterationShape.begin(),
+                                                    iterationShape.end())));
+    auto bucket = entriesByHash.find(keyHash);
+    if (bucket != entriesByHash.end()) {
+      for (unsigned entryIndex : bucket->second) {
+        const Entry &entry = entries[entryIndex];
+        if (entry.sourceType == sourceType && entry.destType == destType &&
+            llvm::ArrayRef<int64_t>(entry.iterationShape) == iterationShape &&
+            entry.iterationToSource == *sourceMap &&
+            entry.iterationToDest == *destMap && entry.engine == engine)
+          return entry.plan;
+      }
+    }
+  }
+
+  mlir::FailureOr<MovementDescriptorPlan> descriptors =
+      getRelationMovementDescriptors(rewriter, op, sourceType, destType,
+                                     iterationShape, iterationToSource,
+                                     iterationToDest, engine, opLabel);
+  if (mlir::failed(descriptors))
+    return mlir::failure();
+  SharedMovementDescriptorPlan plan =
+      std::make_shared<MovementDescriptorPlan>(std::move(*descriptors));
+  if (hasClosedProjectedRelations) {
+    uint8_t &admissionCount = cacheAdmissionCounts[keyHash];
+    if (admissionCount < 2) {
+      ++admissionCount;
+    } else {
+      const unsigned entryIndex = entries.size();
+      entries.push_back({sourceType, destType,
+                         llvm::SmallVector<int64_t, 4>(iterationShape),
+                         *sourceMap, *destMap, engine, plan});
+      entriesByHash[keyHash].push_back(entryIndex);
+    }
+  }
+  return plan;
 }
 
 void createGatherScatterDescriptors(

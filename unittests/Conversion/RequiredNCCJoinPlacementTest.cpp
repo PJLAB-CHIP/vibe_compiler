@@ -1,4 +1,5 @@
-//===- RequiredNCCJoinPlacementTest.cpp ------------------------------------===//
+//===- RequiredNCCJoinPlacementTest.cpp
+//------------------------------------===//
 
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/InitWaferDialects.h"
@@ -10,9 +11,9 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
-#include "mlir/Parser/Parser.h"
 
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
@@ -53,7 +54,8 @@ struct MarkAfterFailedNCCPass
   }
 };
 
-TEST(RequiredNCCJoinPlacementTest, FailedOwnedRebuildReportsFailure) {
+TEST(RequiredNCCJoinPlacementTest,
+     DynamicLoopRebuildClosesEntryBackedgeAndReturn) {
   mlir::DialectRegistry registry;
   wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
@@ -61,15 +63,19 @@ TEST(RequiredNCCJoinPlacementTest, FailedOwnedRebuildReportsFailure) {
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(
-      kUnsupportedDynamicLoop, &context);
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(kUnsupportedDynamicLoop,
+                                                        &context);
   ASSERT_TRUE(module);
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
 
-  EXPECT_TRUE(mlir::failed(wafer::rebuildRequiredNCCJoins(*module)));
+  EXPECT_TRUE(mlir::succeeded(wafer::rebuildRequiredNCCJoins(*module)));
+  unsigned joins = 0;
+  module->walk([&](wafer::SyncNCCJoinOp) { ++joins; });
+  EXPECT_EQ(joins, 2u);
 }
 
-TEST(RequiredNCCJoinPlacementTest, FailedRebuildPassStopsNestedPipeline) {
+TEST(RequiredNCCJoinPlacementTest,
+     SuccessfulDynamicLoopRebuildContinuesNestedPipeline) {
   mlir::DialectRegistry registry;
   wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
@@ -77,8 +83,8 @@ TEST(RequiredNCCJoinPlacementTest, FailedRebuildPassStopsNestedPipeline) {
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(
-      kUnsupportedDynamicLoop, &context);
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(kUnsupportedDynamicLoop,
+                                                        &context);
   ASSERT_TRUE(module);
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
   mlir::PassManager manager(&context);
@@ -86,9 +92,9 @@ TEST(RequiredNCCJoinPlacementTest, FailedRebuildPassStopsNestedPipeline) {
       wafer::createRebuildRequiredNCCJoinsPass());
   manager.addNestedPass<mlir::func::FuncOp>(
       std::make_unique<MarkAfterFailedNCCPass>());
-  EXPECT_TRUE(mlir::failed(manager.run(*module)));
+  EXPECT_TRUE(mlir::succeeded(manager.run(*module)));
   mlir::func::FuncOp function = *module->getOps<mlir::func::FuncOp>().begin();
-  EXPECT_FALSE(function->hasAttr("test.after_failed_ncc"));
+  EXPECT_TRUE(function->hasAttr("test.after_failed_ncc"));
 }
 
 } // namespace

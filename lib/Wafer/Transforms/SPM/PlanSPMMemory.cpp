@@ -25,11 +25,13 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 #include <utility>
 
 namespace wafer {
@@ -856,6 +858,7 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
              const llvm::DenseSet<mlir::Operation *> &mayClobberFunctions,
              llvm::SmallVectorImpl<PendingSPMPlacement> &pendingPlacements,
              SPMMemoryPlanningFailure *failure,
+             bool emitCapacityDiagnostics,
              const ManagedTimelineMap *managedTimelines = nullptr) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
       "transformation-phase", "planFunction(SPM)", "total");
@@ -951,7 +954,8 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
     case mp::PackingStatus::ProvenInfeasible: {
       if (failure)
         failure->kind = SPMMemoryPlanningFailureKind::CapacityOverflow;
-      mlir::InFlightDiagnostic diagnostic = origin->emitError();
+      std::string diagnosticText;
+      llvm::raw_string_ostream diagnostic(diagnosticText);
       diagnostic << "capacity_overflow: SPM planning range [" << spmBase << ", "
                  << spmLimit << ") has no valid static placement";
       if (!packing.capacityConflictDemandIndices.empty()) {
@@ -981,8 +985,10 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
               bytes,
               {}};
           for (mlir::Operation *user :
-               conflictDemand.allocation.getResult().getUsers())
+               conflictDemand.allocation.getResult().getUsers()) {
             evidence.userLocations.push_back(user->getLoc());
+            evidence.userOperationNames.push_back(user->getName());
+          }
           failure->capacityConflictDemands.push_back(std::move(evidence));
         }
         diagnostic << "; capacity_conflict_demands="
@@ -1016,8 +1022,10 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
               bytes,
               {}};
           for (mlir::Operation *user :
-               oversizedDemand.allocation.getResult().getUsers())
+               oversizedDemand.allocation.getResult().getUsers()) {
             evidence.userLocations.push_back(user->getLoc());
+            evidence.userOperationNames.push_back(user->getName());
+          }
           failure->individuallyOversizedDemands.push_back(std::move(evidence));
         }
         diagnostic << "; individually_oversized_demands="
@@ -1049,8 +1057,10 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
                 static_cast<uint64_t>(candidate.sizeBytes),
                 {}};
             for (mlir::Operation *user :
-                 candidate.allocation.getResult().getUsers())
+                 candidate.allocation.getResult().getUsers()) {
               evidence.userLocations.push_back(user->getLoc());
+              evidence.userOperationNames.push_back(user->getName());
+            }
             failure->largestDemands.push_back(std::move(evidence));
           }
         }
@@ -1085,14 +1095,17 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
           break;
         }
       }
+      diagnostic.flush();
+      if (emitCapacityDiagnostics)
+        origin->emitError(diagnosticText);
       return mlir::failure();
     }
     case mp::PackingStatus::ResourceExhausted:
       return origin->emitError()
              << "packing_search_exhausted: MiniMalloc consumed "
              << packing.searchNodes
-             << " deterministic search nodes and the first-fit safety "
-                "fallback could not produce a verified SPM placement";
+             << " deterministic search nodes before producing an SPM "
+                "placement or proof";
     case mp::PackingStatus::ArithmeticOverflow:
       return origin->emitError()
              << "range_end_overflow: SPM static packing address arithmetic "
@@ -1104,10 +1117,6 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
       return origin->emitError()
              << "invalid_packing_result: MiniMalloc returned an invalid SPM "
                 "placement";
-    case mp::PackingStatus::HeuristicNoFit:
-      return origin->emitError()
-             << "invalid_packing_result: first-fit NoFit escaped the shared "
-                "packing policy";
     case mp::PackingStatus::Feasible:
       break;
     }
@@ -1212,8 +1221,10 @@ mlir::LogicalResult checkTileRegionSPMCapacity(
         demand.allocation.getLoc(), demand.allocation.getResult(),
         demand.allocation.getType(),
         static_cast<uint64_t>(demand.sizeBytes), {}};
-    for (mlir::Operation *user : demand.allocation.getResult().getUsers())
+    for (mlir::Operation *user : demand.allocation.getResult().getUsers()) {
       evidence.userLocations.push_back(user->getLoc());
+      evidence.userOperationNames.push_back(user->getName());
+    }
     return evidence;
   };
   if (failure) {
@@ -1250,6 +1261,7 @@ mlir::LogicalResult checkTileRegionSPMCapacity(
 static mlir::LogicalResult planSPMMemoryModuleImpl(
     mlir::ModuleOp moduleOp, int64_t spmBase, int64_t spmLimit,
     int64_t spmAlignment, SPMMemoryPlanningFailure *failure,
+    bool emitCapacityDiagnostics,
     const ManagedTimelineMap *managedTimelines,
     const analysis::DirectCallGraphAnalysis *managedCallGraph) {
   if (failure)
@@ -1322,6 +1334,7 @@ static mlir::LogicalResult planSPMMemoryModuleImpl(
     result = planFunction(funcOp, spmBase, spmLimit, spmAlignment,
                           *managedCallGraph,
                           mayClobberFunctions, pendingPlacements, failure,
+                          emitCapacityDiagnostics,
                           managedTimelines);
   }
   if (mlir::failed(result)) {
@@ -1344,7 +1357,9 @@ mlir::LogicalResult planSPMMemoryModule(mlir::ModuleOp moduleOp,
                                         int64_t spmAlignment,
                                         SPMMemoryPlanningFailure *failure) {
   return planSPMMemoryModuleImpl(moduleOp, spmBase, spmLimit, spmAlignment,
-                                 failure, /*managedTimelines=*/nullptr,
+                                 failure,
+                                 /*emitCapacityDiagnostics=*/true,
+                                 /*managedTimelines=*/nullptr,
                                  /*managedCallGraph=*/nullptr);
 }
 
@@ -1383,7 +1398,7 @@ struct PlanSPMMemoryPass
     });
     if (mlir::failed(planSPMMemoryModuleImpl(
             getOperation(), spmBase, spmLimit, spmAlignment,
-            failure, &managedTimelines,
+            failure, emitCapacityDiagnostics, &managedTimelines,
             &getAnalysis<analysis::DirectCallGraphAnalysis>()))) {
       signalPassFailure();
       return;

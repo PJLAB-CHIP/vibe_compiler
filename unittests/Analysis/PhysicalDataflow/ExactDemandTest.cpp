@@ -47,4 +47,27 @@ TEST(ExactDemandOutcomeTest, ExactSetKeepsItsConstructionForm) {
             (llvm::SmallVector<int64_t, 4>{2, 3}));
 }
 
+TEST(ExactDemandOutcomeTest,
+     FiniteGeneralPresburgerRecoversAlignedAndRaggedBoxesExactly) {
+  for (int64_t extent : {1024, 1025}) {
+    IndexSetResult rectangular =
+        IndexRelation::staticRectangularDomain({0, 7, 0}, {2, extent, 128});
+    ASSERT_TRUE(rectangular.isExact());
+    ExactIndexSet general(std::move(*rectangular.set),
+                          ExactIndexSetForm::GeneralPresburger);
+    mlir::FailureOr<ExactIndexSet> normalized =
+        normalizeFiniteExactIndexSet(general);
+    ASSERT_TRUE(mlir::succeeded(normalized));
+    EXPECT_EQ(normalized->getForm(), ExactIndexSetForm::BoxUnion);
+    ASSERT_EQ(normalized->getBoxes().size(), 1u);
+    EXPECT_EQ(normalized->getBoxes().front().offsets,
+              (llvm::SmallVector<int64_t, 4>{0, 7, 0}));
+    EXPECT_EQ(normalized->getBoxes().front().sizes,
+              (llvm::SmallVector<int64_t, 4>{2, extent, 128}));
+    EXPECT_EQ(normalized->getPresburgerSet().isEqual(
+                  general.getPresburgerSet()),
+              true);
+  }
+}
+
 } // namespace

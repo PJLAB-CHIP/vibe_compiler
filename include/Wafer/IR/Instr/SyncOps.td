@@ -16,10 +16,12 @@ def Wafer_SyncNCCJoinOp
     Direct DTE event, make cacheable host memory visible, or act as a multi-tile
     barrier.
   }];
-  let arguments = (ins DenseI64ArrayAttr:$participants);
+  let arguments = (ins DenseI64ArrayAttr:$participants,
+                       OptionalAttr<UnitAttr>:$schedule_boundary);
   let builders = [OpBuilder<(ins "::wafer::NCCWorker":$participant), [{
       int64_t ordinal = static_cast<int64_t>(participant);
-      build($_builder, $_state, ::llvm::ArrayRef<int64_t>(ordinal));
+      build($_builder, $_state, ::llvm::ArrayRef<int64_t>(ordinal),
+            ::mlir::UnitAttr{});
     }]>];
   let hasVerifier = 1;
   let assemblyFormat = "$participants attr-dict";

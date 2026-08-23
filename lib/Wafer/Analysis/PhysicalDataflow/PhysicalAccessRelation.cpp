@@ -111,17 +111,6 @@ mlir::FailureOr<PhysicalAccessRelation> PhysicalAccessRelation::create(
       PhysicalLayoutRelation::create(endpointType);
   if (mlir::failed(physicalLayout))
     return mlir::failure();
-  IndexRelationResult physicalBitOffsets = iterationToLogical.compose(
-      physicalLayout->getLogicalToPhysicalBitOffset());
-  IndexRelationResult physicalElementOrdinals = iterationToLogical.compose(
-      physicalLayout->getLogicalToPhysicalElementOrdinal());
-  // Both component relations are exact functions. The encoding interface owns
-  // non-overlap of valid physical element spans, so writer injectivity is
-  // already established by the logical relation check above. Re-proving the
-  // composed blocked relation with a generic solver here is both redundant and
-  // a candidate-hot-path scalability hazard.
-  if (!physicalBitOffsets.isExact() || !physicalElementOrdinals.isExact())
-    return mlir::failure();
 
   mlir::AffineMap projectedAffineMap =
       iterationToLogical.getProjectedAffineMap(endpointType.getContext())
@@ -143,11 +132,45 @@ mlir::FailureOr<PhysicalAccessRelation> PhysicalAccessRelation::create(
   return PhysicalAccessRelation(
       endpointType, llvm::SmallVector<int64_t, 4>(iterationShape),
       iterationToLogical, std::move(*physicalLayout),
-      std::move(*physicalBitOffsets.relation),
-      std::move(*physicalElementOrdinals.relation),
       WaferStaticPhysicalOffsetCalculator::create(endpointType),
       projectedAffineMap, canonicalLinearOrder, footprint, alignment, valid,
       padding);
+}
+
+IndexRelationQueryResult
+PhysicalAccessRelation::materializePhysicalRelations() const {
+  if (physicalRelationsAttempted) {
+    if (physicalRelationsStatus == IndexRelationStatus::Exact &&
+        iterationToPhysicalBitOffset && iterationToPhysicalElementOrdinal)
+      return IndexRelationQueryResult{IndexRelationStatus::Exact, true, {}};
+    return IndexRelationQueryResult{physicalRelationsStatus, std::nullopt,
+                                    physicalRelationsFailureReason};
+  }
+
+  physicalRelationsAttempted = true;
+  IndexRelationResult physicalBitOffsets = iterationToLogical.compose(
+      physicalLayout.getLogicalToPhysicalBitOffset());
+  if (!physicalBitOffsets.isExact()) {
+    physicalRelationsStatus = physicalBitOffsets.status;
+    physicalRelationsFailureReason = physicalBitOffsets.reason;
+    return IndexRelationQueryResult{physicalRelationsStatus, std::nullopt,
+                                    physicalRelationsFailureReason};
+  }
+  IndexRelationResult physicalElementOrdinals = iterationToLogical.compose(
+      physicalLayout.getLogicalToPhysicalElementOrdinal());
+  if (!physicalElementOrdinals.isExact()) {
+    physicalRelationsStatus = physicalElementOrdinals.status;
+    physicalRelationsFailureReason = physicalElementOrdinals.reason;
+    return IndexRelationQueryResult{physicalRelationsStatus, std::nullopt,
+                                    physicalRelationsFailureReason};
+  }
+
+  iterationToPhysicalBitOffset = std::move(*physicalBitOffsets.relation);
+  iterationToPhysicalElementOrdinal =
+      std::move(*physicalElementOrdinals.relation);
+  physicalRelationsStatus = IndexRelationStatus::Exact;
+  physicalRelationsFailureReason.clear();
+  return IndexRelationQueryResult{IndexRelationStatus::Exact, true, {}};
 }
 
 mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
@@ -237,8 +260,14 @@ IndexRelationQueryResult PhysicalAccessRelation::hasSamePhysicalElementMapping(
   if (physicalLayout.getElementBitWidth() !=
       other.physicalLayout.getElementBitWidth())
     return IndexRelationQueryResult{IndexRelationStatus::Exact, false, {}};
-  return iterationToPhysicalBitOffset.isEquivalentTo(
-      other.iterationToPhysicalBitOffset);
+  IndexRelationQueryResult materialized = materializePhysicalRelations();
+  if (!materialized.isProvenTrue())
+    return materialized;
+  materialized = other.materializePhysicalRelations();
+  if (!materialized.isProvenTrue())
+    return materialized;
+  return iterationToPhysicalBitOffset->isEquivalentTo(
+      *other.iterationToPhysicalBitOffset);
 }
 
 IndexRelationQueryResult PhysicalAccessRelation::hasSamePhysicalTraversal(
@@ -255,8 +284,14 @@ IndexRelationQueryResult PhysicalAccessRelation::hasSamePhysicalTraversal(
   if (physicalLayout.getPhysicalElementCount() <
       other.physicalLayout.getPhysicalElementCount())
     return IndexRelationQueryResult{IndexRelationStatus::Exact, false, {}};
-  return iterationToPhysicalElementOrdinal.isEquivalentTo(
-      other.iterationToPhysicalElementOrdinal);
+  IndexRelationQueryResult materialized = materializePhysicalRelations();
+  if (!materialized.isProvenTrue())
+    return materialized;
+  materialized = other.materializePhysicalRelations();
+  if (!materialized.isProvenTrue())
+    return materialized;
+  return iterationToPhysicalElementOrdinal->isEquivalentTo(
+      *other.iterationToPhysicalElementOrdinal);
 }
 
 } // namespace wafer::analysis
