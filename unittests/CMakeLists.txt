@@ -69,18 +69,12 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/SpatialDomainTest.cpp
   Planning/PhysicalDataflow/SpatialPlanTest.cpp
   Analysis/Executable/ProgramResourceVerificationTest.cpp
-  Planning/Search/BufferingTest.cpp
-  Planning/Search/CoupledRegionTest.cpp
-  Planning/Search/ComputeImplementationTest.cpp
-  Planning/Search/PhysicalRepresentationTest.cpp
   Planning/Search/TensorProgramAlternativeTest.cpp
-  Planning/Search/UnifiedPhysicalDataflowTest.cpp
-  Planning/Search/TemporalTilingTest.cpp
   Program/ProgramDataTest.cpp
   Conversion/AttentionNormalizationTest.cpp
   Conversion/BidirectionalTilingTest.cpp
-  Conversion/CoupledTileRegionTest.cpp
   Conversion/RequiredNCCJoinPlacementTest.cpp
+  Conversion/ReciprocalComputeLoweringTest.cpp
   Conversion/SingleRootTileRegionTest.cpp
   Conversion/WaferCardModuleToTileModulesTest.cpp
   Conversion/WaferTensorProgramToCardModuleTest.cpp

@@ -906,6 +906,7 @@ TemporalExpansionResult PhysicalDataflowPlanningSession::resumeTemporal(
     switch (lookup.failure->kind) {
     case TemporalDomainFailureKind::UnsupportedSemantics:
       ++work.unsupportedTemporalChoices;
+      continuation.exhausted = true;
       return {TemporalExpansionKind::Unsupported,
               {},
               std::move(lookup.failure->detail)};
@@ -934,6 +935,10 @@ TemporalExpansionResult PhysicalDataflowPlanningSession::resumeTemporal(
   }
   if (next.getKind() == TemporalSuccessorKind::Unsupported) {
     ++work.unsupportedTemporalChoices;
+    if (next.getCursor()) {
+      continuation.cursor = *next.getCursor();
+      continuation.started = true;
+    }
     return {TemporalExpansionKind::Unsupported, {}, next.getDetail().str()};
   }
   if (next.getKind() == TemporalSuccessorKind::Indeterminate) {
@@ -956,49 +961,6 @@ TemporalExpansionResult PhysicalDataflowPlanningSession::resumeTemporal(
   continuation.started = true;
   ++work.temporalStatesQueued;
   return {TemporalExpansionKind::State, std::move(*state)};
-}
-
-mlir::FailureOr<std::optional<TemporalState>>
-PhysicalDataflowPlanningSession::refineTemporalStateFromActualFeedback(
-    const TemporalState &state, llvm::ArrayRef<SemanticRootKey> causalRoots,
-    std::string *failureReason) {
-  auto works = rootWorkCache.find(state.getSpatialPlan());
-  TemporalDomainLookup domain =
-      getOrCreateTemporalDomain(state.getRegionState());
-  if (works == rootWorkCache.end() || !domain.domain) {
-    if (failureReason)
-      *failureReason = "actual feedback lost temporal domain facts";
-    return mlir::failure();
-  }
-  TemporalPlan refined = state.getTemporalPlan();
-  auto changed = refineTemporalPlanFromActualSPMFeedback(
-      refined, works->second, causalRoots, failureReason);
-  if (mlir::failed(changed))
-    return mlir::failure();
-  if (!*changed)
-    return std::optional<TemporalState>{};
-  auto firstNested = llvm::find_if(refined.scopes, [](const auto &scope) {
-    return !isTopLevelScope(scope.id);
-  });
-  refined.scopes.erase(firstNested, refined.scopes.end());
-  TemporalSuccessor completed = domain.domain->completePrefix(refined);
-  if (completed.getKind() != TemporalSuccessorKind::Plan ||
-      !completed.getPlan()) {
-    if (failureReason)
-      *failureReason = completed.getDetail().empty()
-                           ? "actual temporal feedback cannot close its plan"
-                           : completed.getDetail().str();
-    return mlir::failure();
-  }
-  std::string detail;
-  auto result = TemporalState::create(*domain.domain, state.getRegionState(),
-                                      *completed.getPlan(), &detail);
-  if (mlir::failed(result)) {
-    if (failureReason)
-      *failureReason = std::move(detail);
-    return mlir::failure();
-  }
-  return std::optional<TemporalState>(std::move(*result));
 }
 
 RepresentationExpansionResult
@@ -1605,26 +1567,82 @@ FullFeasibilityResult PhysicalDataflowPlanningSession::evaluateScheduledState(
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     ProgramDataHandoff &programData, FullFeasibilityStatistics *statistics,
     unsigned tilePipelineParallelism, bool captureTileDataflowIRTrace) {
+  if (statistics)
+    *statistics = {};
+  auto contractFailure = [](llvm::StringRef detail) {
+    return FullFeasibilityResult{
+        FullFeasibilityStatus::CompilerBug, {}, {}, detail.str()};
+  };
   const ExecutionStructureState &structure =
       state.getBufferState().getExecutionStructureState();
   const InitialBufferState &initial = structure.getInitialBufferState();
+  const MovementState &movement = initial.getMovementState();
+  const RepresentationState &representations =
+      movement.getRepresentationState();
+  const TemporalState &temporal = representations.getTemporalState();
+  const RegionState &region = temporal.getRegionState();
+  std::string detail;
+  auto regionDomain =
+      getOrCreateRegionDomain(region.getSpatialState(), &detail);
+  if (mlir::failed(regionDomain) ||
+      !(*regionDomain)->contains(region.getRegionPlan()))
+    return contractFailure(
+        detail.empty() ? "actual evaluation lost its region domain" : detail);
+  TemporalDomainLookup temporalDomain = getOrCreateTemporalDomain(region);
+  if (!temporalDomain.domain ||
+      !temporalDomain.domain->contains(temporal.getTemporalPlan()))
+    return contractFailure(temporalDomain.failure
+                               ? temporalDomain.failure->detail
+                               : "actual evaluation lost its temporal domain");
+  RepresentationDomainLookup representationDomain =
+      getOrCreateRepresentationDomain(temporal);
+  if (!representationDomain.domain ||
+      !representationDomain.domain->contains(
+          representations.getRepresentationPlan()))
+    return contractFailure(
+        representationDomain.failure
+            ? representationDomain.failure->detail
+            : "actual evaluation lost its representation domain");
+  MovementDomainLookup movementDomain =
+      getOrCreateMovementDomain(representations);
+  if (!movementDomain.domain ||
+      !movementDomain.domain->contains(movement.getMovementPlan()))
+    return contractFailure(movementDomain.failure
+                               ? movementDomain.failure->detail
+                               : "actual evaluation lost its movement domain");
+  StorageDomainLookup storageDomain = getOrCreateStorageDomain(movement);
+  if (!storageDomain.domain ||
+      !storageDomain.domain->contains(initial.getBufferPlan()))
+    return contractFailure(storageDomain.failure
+                               ? storageDomain.failure->detail
+                               : "actual evaluation lost its storage domain");
   EventGraphLookup eventGraph = getOrCreateEventGraph(initial);
   if (!eventGraph.graph)
-    return FullFeasibilityResult{FullFeasibilityStatus::CompilerBug,
-                                 {},
-                                 {},
-                                 eventGraph.failure
-                                     ? eventGraph.failure->detail
-                                     : "full feasibility lost its EventGraph"};
+    return contractFailure(eventGraph.failure
+                               ? eventGraph.failure->detail
+                               : "full feasibility lost its EventGraph");
+  ExecutionStructureDomainLookup structureDomain =
+      getOrCreateExecutionStructureDomain(initial, *eventGraph.graph);
+  if (!structureDomain.domain ||
+      !structureDomain.domain->contains(structure.getExecutionStructurePlan()))
+    return contractFailure(
+        structureDomain.failure
+            ? structureDomain.failure->detail
+            : "actual evaluation lost its execution-structure domain");
   StructureSpecificStorageDomainLookup fixedStorage =
       getOrCreateStructureSpecificStorage(structure, *eventGraph.graph);
-  if (!fixedStorage.domain)
-    return FullFeasibilityResult{
-        FullFeasibilityStatus::CompilerBug,
-        {},
-        {},
+  if (!fixedStorage.domain ||
+      !fixedStorage.domain->contains(state.getBufferPlan()))
+    return contractFailure(
         fixedStorage.failure ? fixedStorage.failure->detail
-                             : "full feasibility lost fixed-structure storage"};
+                             : "full feasibility lost fixed-structure storage");
+  ScheduleDomainLookup scheduleDomain =
+      getOrCreateScheduleDomain(state.getBufferState(), *eventGraph.graph);
+  if (!scheduleDomain.domain ||
+      !scheduleDomain.domain->contains(state.getSchedulePlan()))
+    return contractFailure(scheduleDomain.failure
+                               ? scheduleDomain.failure->detail
+                               : "actual evaluation lost its schedule domain");
   ++work.fullFeasibilityEvaluations;
   FullFeasibilityStatistics localStatistics;
   FullFeasibilityStatistics *evaluationStatistics =

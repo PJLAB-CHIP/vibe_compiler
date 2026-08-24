@@ -657,7 +657,8 @@ TemporalDomain::completePlan(llvm::ArrayRef<TemporalScopePlan> prefix) const {
               derived.failure
                   ? std::move(derived.failure->detail)
                   : "nested temporal derivation returned no typed outcome";
-          completion.plan.reset();
+          if (completion.kind != TemporalSuccessorKind::Unsupported)
+            completion.plan.reset();
           return completion;
         }
         children.insert(children.end(),
@@ -773,8 +774,16 @@ TemporalSuccessor TemporalDomain::getFirstPlan() const {
 TemporalSuccessor
 TemporalDomain::completePrefix(const TemporalPlan &prefix) const {
   Completion completed = completePlan(prefix.scopes);
-  if (completed.kind != TemporalSuccessorKind::Plan || !completed.plan)
+  if (completed.kind != TemporalSuccessorKind::Plan || !completed.plan) {
+    if (completed.kind == TemporalSuccessorKind::Unsupported &&
+        completed.plan) {
+      TemporalCursor cursor;
+      cursor.plan = *completed.plan;
+      return {
+          completed.kind, {}, std::move(cursor), std::move(completed.detail)};
+    }
     return {completed.kind, {}, {}, std::move(completed.detail)};
+  }
   TemporalCursor cursor;
   cursor.plan = *completed.plan;
   return {TemporalSuccessorKind::Plan, std::move(completed.plan),
@@ -783,14 +792,10 @@ TemporalDomain::completePrefix(const TemporalPlan &prefix) const {
 
 TemporalSuccessor
 TemporalDomain::getNextPlan(const TemporalCursor &cursor) const {
-  if (!contains(cursor.plan))
-    return {TemporalSuccessorKind::CompilerBug,
-            {},
-            {},
-            "temporal cursor is outside the current domain"};
   Completion current = completePlan(cursor.plan.scopes);
-  if (current.kind != TemporalSuccessorKind::Plan || !current.plan ||
-      !(*current.plan == cursor.plan))
+  if ((current.kind != TemporalSuccessorKind::Plan &&
+       current.kind != TemporalSuccessorKind::Unsupported) ||
+      !current.plan || !(*current.plan == cursor.plan))
     return {TemporalSuccessorKind::CompilerBug,
             {},
             {},
@@ -803,8 +808,14 @@ TemporalDomain::getNextPlan(const TemporalCursor &cursor) const {
     if (!advanceScopePlan(current.descriptors[index], prefix.scopes.back()))
       continue;
     Completion next = completePlan(prefix.scopes);
-    if (next.kind != TemporalSuccessorKind::Plan || !next.plan)
+    if (next.kind != TemporalSuccessorKind::Plan || !next.plan) {
+      if (next.kind == TemporalSuccessorKind::Unsupported && next.plan) {
+        TemporalCursor nextCursor;
+        nextCursor.plan = *next.plan;
+        return {next.kind, {}, std::move(nextCursor), std::move(next.detail)};
+      }
       return {next.kind, {}, {}, std::move(next.detail)};
+    }
     TemporalCursor nextCursor;
     nextCursor.plan = *next.plan;
     return {TemporalSuccessorKind::Plan, std::move(next.plan),

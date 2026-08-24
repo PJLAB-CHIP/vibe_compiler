@@ -726,8 +726,12 @@ source program
 - 完整依赖顺序固定为Spatial→Region→Temporal→Representation→Movement→InitialBuffer→ExecutionStructure→post-K Buffer→Schedule→
   ActualAdmission。每轴cursor属于session continuation；state只保存closed plan value。K/I/J必须使用各自domain cursor，不能从vector position、
   plan ordinal或actual IR恢复next sibling。
-- successor和actualization都在step前消费planning credit；耗尽只产生未穷尽coverage，不是NoSolution。ExactRejection/Unsupported只结束当前
-  complete point，外层continuation继续；Indeterminate停止当前coverage，CompilerBug poison controller。
+- resumable session用显式variant stack保存parent continuations；parent留在child下方，child exhaust后继续同一cursor。successor和
+  actualization都在step前消费planning credit；零credit不修改stack，耗尽只产生未穷尽coverage，不是NoSolution。ExactRejection/
+  Unsupported只结束当前point，外层continuation继续；Indeterminate停止当前coverage，CompilerBug poison controller。
+- persistent session复制frontend verification和ExecutionConfig values，只借用outer-owned TensorProgram/diagnostics/ProgramData。任意
+  ScheduledState可在fresh session中逐层重建domain并actualize；cache不构成隐藏前置。actual SPM roots不生成temporal shortcut，canonical
+  continuation自己覆盖siblings。
 - public `search`当前是明确的anytime first-accepted checkpoint，返回`FeasiblePartial`并直接移交该次actual Q50.0 executable；它不调用
   baseline、不把first result称best。`none`仍是独立canonical controller。Q52可改变work/priority/stop policy，但不能改变domain、typed
   actual admission或winner不重建合同。

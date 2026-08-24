@@ -442,11 +442,6 @@ public:
   }
   TemporalExpansionResult resumeTemporal(TemporalContinuation &continuation);
 
-  mlir::FailureOr<std::optional<TemporalState>>
-  refineTemporalStateFromActualFeedback(
-      const TemporalState &state, llvm::ArrayRef<SemanticRootKey> causalRoots,
-      std::string *failureReason = nullptr);
-
   RepresentationContinuation
   createRepresentationContinuation(TemporalState parent) const {
     return RepresentationContinuation(std::move(parent));

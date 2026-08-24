@@ -1,375 +1,478 @@
-//===- UnifiedSearch.cpp - Typed physical-dataflow traversal ----------===//
+//===- UnifiedSearch.cpp - Resumable physical-dataflow traversal ------===//
 
 #include "Wafer/Planning/PhysicalDataflow/Search/UnifiedSearch.h"
 
+#include "llvm/ADT/StringRef.h"
+
+#include <limits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace wafer::compiler::detail {
 namespace {
 
-class UnifiedSearchRunner {
-public:
-  UnifiedSearchRunner(
-      mlir::ModuleOp tensorProgram, PhysicalDataflowPlanningSession &session,
-      const frontend::FrontendProgramVerificationResult &program,
-      const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-      ProgramDataHandoff &programData, const UnifiedSearchOptions &options,
-      unsigned tilePipelineParallelism, bool captureTileDataflowIRTrace)
-      : tensorProgram(tensorProgram), session(session), program(program),
-        executionConfig(executionConfig), diagnostics(diagnostics),
-        programData(programData), options(options),
-        remainingCredits(options.planningCredits),
+struct SpatialFrame {};
+
+using FrontierFrame =
+    std::variant<SpatialFrame, RegionContinuation, TemporalContinuation,
+                 RepresentationContinuation, MovementContinuation,
+                 StorageContinuation, ExecutionStructureContinuation,
+                 StructureSpecificStorageContinuation, ScheduleContinuation,
+                 ScheduledState>;
+
+bool isTerminal(UnifiedSearchResumeStatus status) {
+  return status != UnifiedSearchResumeStatus::Paused;
+}
+
+} // namespace
+
+struct UnifiedSearchSession::Impl {
+  Impl(mlir::ModuleOp tensorProgram,
+       PhysicalDataflowPlanningSession &planningSession,
+       const frontend::FrontendProgramVerificationResult &program,
+       const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+       ProgramDataHandoff &programData, const UnifiedSearchOptions &options,
+       unsigned tilePipelineParallelism, bool captureTileDataflowIRTrace,
+       UnifiedSearchTrace *trace)
+      : tensorProgram(tensorProgram), planningSession(planningSession),
+        program(program), executionConfig(executionConfig),
+        diagnostics(diagnostics), programData(programData),
+        termination(options.termination),
         controller(ActualResultControllerOptions{
-            options.planningCredits, options.costCohort,
+            std::numeric_limits<uint64_t>::max(), options.costCohort,
             ExactRejectionCachePolicy::Enabled}),
         tilePipelineParallelism(tilePipelineParallelism),
-        captureTileDataflowIRTrace(captureTileDataflowIRTrace) {}
-
-  UnifiedSearchResult run() {
-    while (!stopped) {
-      if (!reserveStep())
-        break;
-      SpatialExpansionResult expansion = session.resumeSpatial();
-      ++work.successorSteps;
-      switch (expansion.getKind()) {
-      case SpatialExpansionKind::StateQueued: {
-        std::optional<SpatialState> state = session.takeNextSpatialState();
-        if (!state) {
-          fail("spatial continuation lost its queued state");
-          break;
-        }
-        expandRegion(std::move(*state));
-        break;
-      }
-      case SpatialExpansionKind::Unsupported:
-        break;
-      case SpatialExpansionKind::Indeterminate:
-        pause(expansion.getDetail());
-        break;
-      case SpatialExpansionKind::ParentExhausted:
-        frontierExhausted = true;
-        stopped = true;
-        break;
-      case SpatialExpansionKind::CompilerBug:
-        fail(expansion.getDetail());
-        break;
-      }
-    }
-    if (compilerBug)
-      controller.markCompilerBug();
-    UnifiedSearchResult result;
-    result.control =
-        controller.finish(frontierExhausted ? SearchFrontierStatus::Exhausted
-                                            : SearchFrontierStatus::Incomplete);
-    result.planning = session.getWork();
-    result.work = work;
-    result.frontierExhausted = frontierExhausted;
-    result.failureDetail = std::move(failureDetail);
-    return result;
+        captureTileDataflowIRTrace(captureTileDataflowIRTrace), trace(trace) {
+    frontier.emplace_back(SpatialFrame{});
   }
 
-private:
-  bool reserveStep() {
-    if (remainingCredits == std::numeric_limits<uint64_t>::max())
-      return true;
-    if (remainingCredits == 0) {
-      stopped = true;
-      return false;
-    }
-    --remainingCredits;
-    return true;
+  template <typename State> void recordPrefix(const State &state) {
+    if (trace)
+      trace->prefixes.emplace_back(state);
   }
 
   void fail(llvm::StringRef detail) {
-    compilerBug = true;
-    stopped = true;
+    status = UnifiedSearchResumeStatus::CompilerBug;
     failureDetail = detail.str();
   }
 
-  void pause(llvm::StringRef detail) {
-    stopped = true;
+  void pauseIndeterminate(llvm::StringRef detail) {
+    status = UnifiedSearchResumeStatus::Indeterminate;
     failureDetail = detail.str();
   }
 
-  void expandRegion(SpatialState spatial) {
-    RegionContinuation continuation =
-        session.createRegionContinuation(std::move(spatial));
-    while (!stopped) {
-      if (!reserveStep())
-        return;
-      std::string detail;
-      auto next = session.resumeRegion(continuation, &detail);
-      ++work.successorSteps;
-      if (mlir::failed(next)) {
-        fail(detail);
+  void markUnsupportedAndPop() {
+    sawUnsupportedPrefix = true;
+    frontier.pop_back();
+  }
+
+  void stepSpatial() {
+    ++work.successorSteps;
+    SpatialExpansionResult expansion = planningSession.resumeSpatial();
+    switch (expansion.getKind()) {
+    case SpatialExpansionKind::StateQueued: {
+      std::optional<SpatialState> state =
+          planningSession.takeNextSpatialState();
+      if (!state) {
+        fail("spatial continuation lost its queued state");
         return;
       }
-      if (!*next)
-        return;
-      expandTemporal(std::move(**next));
+      recordPrefix(*state);
+      frontier.emplace_back(
+          planningSession.createRegionContinuation(std::move(*state)));
+      return;
+    }
+    case SpatialExpansionKind::Unsupported:
+      sawUnsupportedPrefix = true;
+      return;
+    case SpatialExpansionKind::Indeterminate:
+      pauseIndeterminate(expansion.getDetail());
+      return;
+    case SpatialExpansionKind::ParentExhausted:
+      frontier.pop_back();
+      return;
+    case SpatialExpansionKind::CompilerBug:
+      fail(expansion.getDetail());
+      return;
     }
   }
 
-  void expandTemporal(RegionState region) {
-    TemporalContinuation continuation =
-        session.createTemporalContinuation(std::move(region));
-    while (!stopped) {
-      if (!reserveStep())
-        return;
-      TemporalExpansionResult next = session.resumeTemporal(continuation);
-      ++work.successorSteps;
-      if (next.getKind() == TemporalExpansionKind::ParentExhausted)
-        return;
-      if (next.getKind() == TemporalExpansionKind::Unsupported)
-        return;
-      if (next.getKind() == TemporalExpansionKind::Indeterminate) {
-        pause(next.getDetail());
-        return;
-      }
-      if (next.getKind() != TemporalExpansionKind::State) {
-        fail(next.getDetail());
-        return;
-      }
+  void stepRegion(RegionContinuation &continuation) {
+    ++work.successorSteps;
+    std::string detail;
+    auto next = planningSession.resumeRegion(continuation, &detail);
+    if (mlir::failed(next)) {
+      fail(detail.empty() ? "region continuation failed" : detail);
+      return;
+    }
+    if (!*next) {
+      frontier.pop_back();
+      return;
+    }
+    recordPrefix(**next);
+    frontier.emplace_back(
+        planningSession.createTemporalContinuation(std::move(**next)));
+  }
+
+  void stepTemporal(TemporalContinuation &continuation) {
+    ++work.successorSteps;
+    TemporalExpansionResult next = planningSession.resumeTemporal(continuation);
+    switch (next.getKind()) {
+    case TemporalExpansionKind::State: {
       std::optional<TemporalState> state = next.takeState();
       if (!state) {
         fail("temporal continuation lost its state");
         return;
       }
-      expandRepresentation(std::move(*state));
+      recordPrefix(*state);
+      frontier.emplace_back(
+          planningSession.createRepresentationContinuation(std::move(*state)));
+      return;
+    }
+    case TemporalExpansionKind::Unsupported:
+      sawUnsupportedPrefix = true;
+      if (continuation.isExhausted())
+        frontier.pop_back();
+      return;
+    case TemporalExpansionKind::Indeterminate:
+      pauseIndeterminate(next.getDetail());
+      return;
+    case TemporalExpansionKind::ParentExhausted:
+      frontier.pop_back();
+      return;
+    case TemporalExpansionKind::CompilerBug:
+      fail(next.getDetail());
+      return;
     }
   }
 
-  void expandRepresentation(TemporalState temporal) {
-    RepresentationContinuation continuation =
-        session.createRepresentationContinuation(std::move(temporal));
-    while (!stopped) {
-      if (!reserveStep())
-        return;
-      RepresentationExpansionResult next =
-          session.resumeRepresentation(continuation);
-      ++work.successorSteps;
-      if (next.getKind() == RepresentationExpansionKind::ParentExhausted)
-        return;
-      if (next.getKind() == RepresentationExpansionKind::Unsupported)
-        return;
-      if (next.getKind() != RepresentationExpansionKind::State) {
-        fail(next.getDetail());
-        return;
-      }
+  void stepRepresentation(RepresentationContinuation &continuation) {
+    ++work.successorSteps;
+    RepresentationExpansionResult next =
+        planningSession.resumeRepresentation(continuation);
+    switch (next.getKind()) {
+    case RepresentationExpansionKind::State: {
       std::optional<RepresentationState> state = next.takeState();
       if (!state) {
         fail("representation continuation lost its state");
         return;
       }
-      expandMovement(std::move(*state));
+      recordPrefix(*state);
+      frontier.emplace_back(
+          planningSession.createMovementContinuation(std::move(*state)));
+      return;
+    }
+    case RepresentationExpansionKind::Unsupported:
+      markUnsupportedAndPop();
+      return;
+    case RepresentationExpansionKind::ParentExhausted:
+      frontier.pop_back();
+      return;
+    case RepresentationExpansionKind::CompilerBug:
+      fail(next.getDetail());
+      return;
     }
   }
 
-  void expandMovement(RepresentationState representations) {
-    MovementContinuation continuation =
-        session.createMovementContinuation(std::move(representations));
-    while (!stopped) {
-      if (!reserveStep())
-        return;
-      MovementExpansionResult next = session.resumeMovement(continuation);
-      ++work.successorSteps;
-      if (next.getKind() == MovementExpansionKind::ParentExhausted)
-        return;
-      if (next.getKind() == MovementExpansionKind::Unsupported)
-        return;
-      if (next.getKind() != MovementExpansionKind::State) {
-        fail(next.getDetail());
-        return;
-      }
+  void stepMovement(MovementContinuation &continuation) {
+    ++work.successorSteps;
+    MovementExpansionResult next = planningSession.resumeMovement(continuation);
+    switch (next.getKind()) {
+    case MovementExpansionKind::State: {
       std::optional<MovementState> state = next.takeState();
       if (!state) {
         fail("movement continuation lost its state");
         return;
       }
-      expandInitialStorage(std::move(*state));
+      recordPrefix(*state);
+      frontier.emplace_back(
+          planningSession.createStorageContinuation(std::move(*state)));
+      return;
+    }
+    case MovementExpansionKind::Unsupported:
+      markUnsupportedAndPop();
+      return;
+    case MovementExpansionKind::ParentExhausted:
+      frontier.pop_back();
+      return;
+    case MovementExpansionKind::CompilerBug:
+      fail(next.getDetail());
+      return;
     }
   }
 
-  void expandInitialStorage(MovementState movement) {
-    StorageContinuation continuation =
-        session.createStorageContinuation(std::move(movement));
-    while (!stopped) {
-      if (!reserveStep())
-        return;
-      StorageExpansionResult next = session.resumeStorage(continuation);
-      ++work.successorSteps;
-      if (next.getKind() == StorageExpansionKind::ParentExhausted)
-        return;
-      if (next.getKind() == StorageExpansionKind::Unsupported)
-        return;
-      if (next.getKind() == StorageExpansionKind::Indeterminate) {
-        pause(next.getDetail());
-        return;
-      }
-      if (next.getKind() != StorageExpansionKind::State) {
-        fail(next.getDetail());
-        return;
-      }
+  void stepStorage(StorageContinuation &continuation) {
+    ++work.successorSteps;
+    StorageExpansionResult next = planningSession.resumeStorage(continuation);
+    switch (next.getKind()) {
+    case StorageExpansionKind::State: {
       std::optional<InitialBufferState> state = next.takeState();
       if (!state) {
         fail("initial storage continuation lost its state");
         return;
       }
-      expandExecutionStructure(std::move(*state));
+      recordPrefix(*state);
+      frontier.emplace_back(
+          planningSession.createExecutionStructureContinuation(
+              std::move(*state)));
+      return;
+    }
+    case StorageExpansionKind::Unsupported:
+      markUnsupportedAndPop();
+      return;
+    case StorageExpansionKind::Indeterminate:
+      pauseIndeterminate(next.getDetail());
+      return;
+    case StorageExpansionKind::ParentExhausted:
+      frontier.pop_back();
+      return;
+    case StorageExpansionKind::CompilerBug:
+      fail(next.getDetail());
+      return;
     }
   }
 
-  void expandExecutionStructure(InitialBufferState buffers) {
-    ExecutionStructureContinuation continuation =
-        session.createExecutionStructureContinuation(std::move(buffers));
-    while (!stopped) {
-      if (!reserveStep())
-        return;
-      std::string detail;
-      auto next = session.resumeExecutionStructure(continuation, &detail);
-      ++work.successorSteps;
-      if (mlir::failed(next)) {
-        fail(detail);
-        return;
-      }
-      if (!*next)
-        return;
-      expandStructureStorage(std::move(**next));
+  void stepExecutionStructure(ExecutionStructureContinuation &continuation) {
+    ++work.successorSteps;
+    std::string detail;
+    auto next = planningSession.resumeExecutionStructure(continuation, &detail);
+    if (mlir::failed(next)) {
+      fail(detail.empty() ? "execution-structure continuation failed" : detail);
+      return;
     }
+    if (!*next) {
+      frontier.pop_back();
+      return;
+    }
+    recordPrefix(**next);
+    frontier.emplace_back(
+        planningSession.createStructureSpecificStorageContinuation(
+            std::move(**next)));
   }
 
-  void expandStructureStorage(ExecutionStructureState structure) {
-    StructureSpecificStorageContinuation continuation =
-        session.createStructureSpecificStorageContinuation(
-            std::move(structure));
-    while (!stopped) {
-      if (!reserveStep())
-        return;
-      std::string detail;
-      auto next = session.resumeStructureSpecificStorage(continuation, &detail);
-      ++work.successorSteps;
-      if (mlir::failed(next)) {
-        fail(detail);
-        return;
-      }
-      if (!*next)
-        return;
-      expandSchedule(std::move(**next));
+  void
+  stepStructureStorage(StructureSpecificStorageContinuation &continuation) {
+    ++work.successorSteps;
+    std::string detail;
+    auto next =
+        planningSession.resumeStructureSpecificStorage(continuation, &detail);
+    if (mlir::failed(next)) {
+      fail(detail.empty() ? "post-K storage continuation failed" : detail);
+      return;
     }
+    if (!*next) {
+      frontier.pop_back();
+      return;
+    }
+    recordPrefix(**next);
+    frontier.emplace_back(
+        planningSession.createScheduleContinuation(std::move(**next)));
   }
 
-  void expandSchedule(BufferState buffers) {
-    ScheduleContinuation continuation =
-        session.createScheduleContinuation(std::move(buffers));
-    while (!stopped) {
-      if (!reserveStep())
-        return;
-      std::string detail;
-      auto next = session.resumeSchedule(continuation, &detail);
-      ++work.successorSteps;
-      if (mlir::failed(next)) {
-        fail(detail);
-        return;
-      }
-      if (!*next)
-        return;
-      visitScheduled(std::move(**next));
+  void stepSchedule(ScheduleContinuation &continuation) {
+    ++work.successorSteps;
+    std::string detail;
+    auto next = planningSession.resumeSchedule(continuation, &detail);
+    if (mlir::failed(next)) {
+      fail(detail.empty() ? "schedule continuation failed" : detail);
+      return;
     }
+    if (!*next) {
+      frontier.pop_back();
+      return;
+    }
+    recordPrefix(**next);
+    frontier.emplace_back(std::move(**next));
   }
 
-  void visitScheduled(ScheduledState state) {
+  void stepCandidate(ScheduledState state) {
     ++work.scheduledStatesVisited;
     std::string keyFailure;
     auto key = CompleteCandidateKey::create(state, &keyFailure);
     if (mlir::failed(key)) {
-      fail(keyFailure.empty() ? "unified search produced an invalid complete "
-                                "candidate key"
+      fail(keyFailure.empty() ? "complete state has no valid semantic key"
                               : keyFailure);
       return;
     }
-    if (controller.isForbidden(*key))
-      return;
-    if (!reserveStep())
-      return;
     CandidateReservation reservation = controller.reserve(*key);
-    if (reservation == CandidateReservation::Exhausted) {
-      stopped = true;
+    if (reservation == CandidateReservation::Duplicate) {
+      ++work.duplicateCompleteKeys;
       return;
     }
     if (reservation != CandidateReservation::Granted) {
-      fail("unified search produced a duplicate or closed complete key");
+      fail(reservation == CandidateReservation::Exhausted
+               ? "actual-result controller exhausted unexpectedly"
+               : "actual-result controller rejected a unique complete key");
       return;
     }
     FullFeasibilityStatistics actualStatistics;
-    FullFeasibilityResult actual = session.evaluateScheduledState(
+    FullFeasibilityResult actual = planningSession.evaluateScheduledState(
         tensorProgram, state, program, executionConfig, diagnostics,
         programData, &actualStatistics, tilePipelineParallelism,
         captureTileDataflowIRTrace);
     work.candidateActualizations += actualStatistics.candidateActualizations;
     const FullFeasibilityStatus actualStatus = actual.status;
-    std::vector<SemanticRootKey> causalRoots = actual.causalRoots;
-    TemporalState temporal = state.getBufferState()
-                                 .getExecutionStructureState()
-                                 .getInitialBufferState()
-                                 .getMovementState()
-                                 .getRepresentationState()
-                                 .getTemporalState();
+    const std::string actualDetail = actual.detail;
+    if (trace)
+      trace->candidates.push_back({*key, actualStatus});
     CandidateRecordOutcome recorded =
         controller.record(*key, std::move(actual));
     if (recorded == CandidateRecordOutcome::CompilerBug) {
-      fail("unified search actual-result controller rejected a typed result");
+      fail("actual-result controller rejected a typed actual result");
       return;
     }
     if (recorded == CandidateRecordOutcome::Indeterminate) {
-      stopped = true;
-      return;
-    }
-    if (actualStatus == FullFeasibilityStatus::ExactRejection &&
-        !causalRoots.empty()) {
-      if (!reserveStep())
-        return;
-      std::string detail;
-      auto refined = session.refineTemporalStateFromActualFeedback(
-          temporal, causalRoots, &detail);
-      ++work.successorSteps;
-      if (mlir::failed(refined)) {
-        fail(detail);
-        return;
-      }
-      if (!*refined) {
-        pause("actual SPM feedback exhausted its temporal domain");
-        return;
-      }
-      expandRepresentation(std::move(**refined));
-      if (!stopped)
-        pause("actual-feedback proposal completed without an accepted result");
+      pauseIndeterminate(actualDetail.empty()
+                             ? "complete candidate actualization is unknown"
+                             : actualDetail);
       return;
     }
     if (recorded == CandidateRecordOutcome::Accepted &&
-        options.stopAfterFirstAccepted)
-      stopped = true;
+        termination == SearchTerminationPolicy::FirstAccepted)
+      status = UnifiedSearchResumeStatus::AcceptedCheckpoint;
+  }
+
+  void step() {
+    if (frontier.empty())
+      return;
+    if (std::holds_alternative<SpatialFrame>(frontier.back())) {
+      stepSpatial();
+      return;
+    }
+    if (auto *continuation =
+            std::get_if<RegionContinuation>(&frontier.back())) {
+      stepRegion(*continuation);
+      return;
+    }
+    if (auto *continuation =
+            std::get_if<TemporalContinuation>(&frontier.back())) {
+      stepTemporal(*continuation);
+      return;
+    }
+    if (auto *continuation =
+            std::get_if<RepresentationContinuation>(&frontier.back())) {
+      stepRepresentation(*continuation);
+      return;
+    }
+    if (auto *continuation =
+            std::get_if<MovementContinuation>(&frontier.back())) {
+      stepMovement(*continuation);
+      return;
+    }
+    if (auto *continuation =
+            std::get_if<StorageContinuation>(&frontier.back())) {
+      stepStorage(*continuation);
+      return;
+    }
+    if (auto *continuation =
+            std::get_if<ExecutionStructureContinuation>(&frontier.back())) {
+      stepExecutionStructure(*continuation);
+      return;
+    }
+    if (auto *continuation = std::get_if<StructureSpecificStorageContinuation>(
+            &frontier.back())) {
+      stepStructureStorage(*continuation);
+      return;
+    }
+    if (auto *continuation =
+            std::get_if<ScheduleContinuation>(&frontier.back())) {
+      stepSchedule(*continuation);
+      return;
+    }
+    ScheduledState state = std::move(std::get<ScheduledState>(frontier.back()));
+    frontier.pop_back();
+    stepCandidate(std::move(state));
+  }
+
+  UnifiedSearchResumeResult resume(uint64_t credits) {
+    if (finalized)
+      return {UnifiedSearchResumeStatus::Finished, 0};
+    if (isTerminal(status))
+      return {status, 0};
+    ++work.resumeCalls;
+    uint64_t consumed = 0;
+    while (consumed < credits) {
+      if (frontier.empty()) {
+        status = UnifiedSearchResumeStatus::FrontierExhausted;
+        return {status, consumed};
+      }
+      step();
+      ++consumed;
+      if (isTerminal(status))
+        return {status, consumed};
+    }
+    if (frontier.empty())
+      status = UnifiedSearchResumeStatus::FrontierExhausted;
+    return {status, consumed};
+  }
+
+  UnifiedSearchResult finish() {
+    if (finalized) {
+      UnifiedSearchResult result;
+      result.control.coverage = SearchControllerCoverage::Failed;
+      result.failureDetail = "unified search session was finished twice";
+      return result;
+    }
+    if (status == UnifiedSearchResumeStatus::CompilerBug)
+      controller.markCompilerBug();
+    const bool exactExhaustion =
+        status == UnifiedSearchResumeStatus::FrontierExhausted &&
+        !sawUnsupportedPrefix;
+    UnifiedSearchResult result;
+    result.control =
+        controller.finish(exactExhaustion ? SearchFrontierStatus::Exhausted
+                                          : SearchFrontierStatus::Incomplete);
+    result.planning = planningSession.getWork();
+    result.work = work;
+    result.frontierExhausted =
+        status == UnifiedSearchResumeStatus::FrontierExhausted;
+    result.failureDetail = std::move(failureDetail);
+    if (trace && result.control.winner)
+      ++trace->winnerHandoffs;
+    frontier.clear();
+    finalized = true;
+    return result;
   }
 
   mlir::ModuleOp tensorProgram;
-  PhysicalDataflowPlanningSession &session;
-  const frontend::FrontendProgramVerificationResult &program;
-  const ExecutionConfig &executionConfig;
+  PhysicalDataflowPlanningSession &planningSession;
+  frontend::FrontendProgramVerificationResult program;
+  ExecutionConfig executionConfig;
   llvm::raw_ostream &diagnostics;
   ProgramDataHandoff &programData;
-  const UnifiedSearchOptions &options;
-  uint64_t remainingCredits;
+  SearchTerminationPolicy termination;
   ActualResultController controller;
   unsigned tilePipelineParallelism;
   bool captureTileDataflowIRTrace;
+  UnifiedSearchTrace *trace = nullptr;
+  std::vector<FrontierFrame> frontier;
   UnifiedSearchWork work;
-  bool stopped = false;
-  bool frontierExhausted = false;
-  bool compilerBug = false;
+  UnifiedSearchResumeStatus status = UnifiedSearchResumeStatus::Paused;
+  bool sawUnsupportedPrefix = false;
+  bool finalized = false;
   std::string failureDetail;
 };
 
-} // namespace
+UnifiedSearchSession::UnifiedSearchSession(
+    mlir::ModuleOp tensorProgram, PhysicalDataflowPlanningSession &session,
+    const frontend::FrontendProgramVerificationResult &program,
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    ProgramDataHandoff &programData, const UnifiedSearchOptions &options,
+    unsigned tilePipelineParallelism, bool captureTileDataflowIRTrace,
+    UnifiedSearchTrace *trace)
+    : impl(std::make_unique<Impl>(tensorProgram, session, program,
+                                  executionConfig, diagnostics, programData,
+                                  options, tilePipelineParallelism,
+                                  captureTileDataflowIRTrace, trace)) {}
+
+UnifiedSearchSession::~UnifiedSearchSession() = default;
+
+UnifiedSearchResumeResult UnifiedSearchSession::resume(uint64_t credits) {
+  return impl->resume(credits);
+}
+
+UnifiedSearchResult UnifiedSearchSession::finish() { return impl->finish(); }
 
 UnifiedSearchResult runUnifiedSearch(
     mlir::ModuleOp tensorProgram, PhysicalDataflowPlanningSession &session,
@@ -377,11 +480,12 @@ UnifiedSearchResult runUnifiedSearch(
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     ProgramDataHandoff &programData, const UnifiedSearchOptions &options,
     unsigned tilePipelineParallelism, bool captureTileDataflowIRTrace) {
-  return UnifiedSearchRunner(tensorProgram, session, program, executionConfig,
-                             diagnostics, programData, options,
-                             tilePipelineParallelism,
-                             captureTileDataflowIRTrace)
-      .run();
+  UnifiedSearchSession search(tensorProgram, session, program, executionConfig,
+                              diagnostics, programData, options,
+                              tilePipelineParallelism,
+                              captureTileDataflowIRTrace);
+  (void)search.resume(options.planningCredits);
+  return search.finish();
 }
 
 } // namespace wafer::compiler::detail

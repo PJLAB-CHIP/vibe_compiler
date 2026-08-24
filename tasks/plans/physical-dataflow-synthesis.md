@@ -1,8 +1,8 @@
 # Physical Dataflow Planning 与 Selected Execution 实施计划
 
-状态：当前线性计划第1--16项已经闭合；Q50.0/Q50.A、Q49.P、Q50.B--K的domain/selected construction/actual admission及
-Q51.Core全轴actual-result controller已经连接。下一项是Q51 `unified-search-closure`，随后按Q50.S attention production、Q52和
-Q53的顺序施工。此前关于
+状态：当前线性计划第1--17项已经闭合；Q50.0/Q50.A、Q49.P、Q50.B--K的domain/selected construction/actual admission、
+Q51.Core controller及Q51 resumable unified traversal已经连接。下一项是Q50.S `attention-production-closure`，随后按Q52和Q53的
+顺序施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
 算法、IR和长期pipeline contract仍只由
@@ -269,8 +269,8 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 | 14 | `schedule-domain` | `done` | Q50.J | post-K EventGraph、slot/FSM lifetime、worker/resource/completion完整域及minimum-participant/latest-unavoidable selected wait/join emission/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | full-feasibility |
 | 15 | `full-feasibility` | `done` | Q50.F | 全字段complete-candidate materialization、actual SPM/DDR/transport/target gate、plan/actual join-wait parity与动态work gate、typed rejection及Core反馈 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-control-closure |
 | 16 | `search-control-closure` | `done` | Q51.Core | all-axis CompleteCandidateKey、actual-result admission、cost/bound、causal no-good、coverage及independent controller oracle | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | unified-search-closure |
-| 17 | `unified-search-closure` | `doing` | Q51 | parent-by-parent/full-plan oracle、可恢复完整遍历、每complete candidate一次actual evaluation及唯一winner发布 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | attention-production-closure |
-| 18 | `attention-production-closure` | `queued` | Q50.S | donor retirement及prefill/decode none/search package/no-card；attention algorithm层零固定worker、零per-K2-block completion | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-scalability |
+| 17 | `unified-search-closure` | `done` | Q51 | parent-by-parent/full-plan oracle、可恢复完整遍历、每complete candidate一次actual evaluation及唯一winner发布 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | attention-production-closure |
+| 18 | `attention-production-closure` | `doing` | Q50.S | donor retirement及prefill/decode none/search package/no-card；attention algorithm层零固定worker、零per-K2-block completion | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-scalability |
 | 19 | `search-scalability` | `queued` | Q52 | measured memo/DP/bound/LNS及有限预算LLaMA actual evaluation | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | production-host-readiness |
 | 20 | `production-host-readiness` | `queued` | Q53 | fresh source/IR/package/oracle/runner/no-card矩阵 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | Q53 board-ready |
 
@@ -5958,29 +5958,70 @@ actual IR恢复“下一个”选择；bounded只暂停continuation并降低cove
 | deterministic handoff | proposal/input/Tile顺序扰动、无cost cohort | frontier按semantic key，controller按objective/semantic tie | incomparable不宣称best | winner key与输入顺序无关；只存在一个move-only executable | driver不重建Q50.0/offset |
 | public routing | explicit search与independent none，同一FP16 1024/1025 input | search只调用unified driver；none只调用baseline | search失败不返回none产物 | call-tree/diagnostic、candidate_actualizations、package path分离 | attention-production-closure复用同一路由 |
 
-当前已实现子集：session新增K、post-K I和J的typed continuation/cursor，全部后轴与既有Spatial/Region/Temporal/Representation/Movement/InitialBuffer
-形成同一静态依赖链。`UnifiedSearchRunner`在每次successor和actualization前消费统一planning credit，depth-first按各domain canonical order
-访问ScheduledState；exact/unsupported只处理当前point并保留外层cursor，Indeterminate或credit exhaustion以未穷尽coverage返回，compiler bug
-poison controller。每个Granted complete key调用full-feasibility一次，Accepted move给controller；winner直接携原Q50.0 executable/offset/IR
-下传，不重建。
+### Traversal调研与实现选择
 
-public `search`已删除missing-coordinate失败路由，改为unified traversal；当前production明确采用`stopAfterFirstAccepted` anytime checkpoint，
-因此无显式cost cohort时报告`coverage=feasible-partial`而不宣称best/optimal。它不是baseline incumbent：call tree只共享policy-free
-candidate materializer和Q50.0。`none`仍独立调用baseline controller。search diagnostic发布successor/state/actualization work，accepted
-result继续同一package transaction。fresh `UnifiedSearchTest` 3/3覆盖complete traversal→actual winner、credit exhaustion非NoSolution、重复
-session semantic/IR determinism；`SearchRoutingTest` 2/2和1025 StableHLO Tool lit证明search package成功、actualization=1且无baseline marker。
-ordinary host unit 894/894、core lit 227/227、Tools/Runtime lit 35 passed/4 configured unsupported、完整build、public link closure及source
-organization通过。
+| 调研对象 | 采用的规则 | 未采用的部分及原因 |
+| --- | --- | --- |
+| [Gecode search restoration](https://www.gecode.org/doc-latest/MPG.pdf) | search必须保存足以回到parent并访问下一alternative的path/choice状态 | 不clone或recompute candidate IR；Wafer各axis已经有value-owned continuation/cursor，直接保存在显式stack中 |
+| [OR-Tools all-solutions与stop callback](https://developers.google.com/optimization/cp/cp_tasks) | “停止在N个解”与“完整枚举”是不同状态，stop后不能报告exhausted/infeasible | 不引入CP solver；采用typed Paused/FrontierExhausted/AcceptedCheckpoint/Indeterminate/CompilerBug |
+| [TVM MetaSchedule SearchStrategy](https://tvm.apache.org/docs/reference/api/doxygen/classtvm_1_1s__tir_1_1meta__schedule_1_1SearchStrategyNode.html) | candidate generation与runner result notification分开，search strategy持有跨batch状态 | 不使用measurement batch/database；每个Wafer complete key仍同步调用一次Q50.F actual gate，result立即交给Q51.Core |
+| recursive DFS | canonical child顺序和实现简单 | C++调用栈销毁continuation，cutoff后只能从root重放且可能重复actualization，因此退役 |
+| best-first/beam | 可改善time-to-first | Q51 correctness先使用显式deterministic DFS stack证明完整和resume；priority/memo/LNS由Q52基于profile加入，beam不能签发exhausted coverage |
 
-当前anytime checkpoint只发布FeasiblePartial；全frontier measured priority、persistent pause/resume和有界质量由`search-scalability`拥有。
+采用的session状态机：
+
+```text
+frontier stack = [SpatialFrame]
+resume(credits):
+  before each axis successor or actualization, consume one credit
+  top continuation emits at most one child and remains below that child
+  child pushes the next-axis continuation
+  exhausted/unsupported parent pops; indeterminate preserves terminal coverage
+  ScheduledState -> CompleteCandidateKey -> reserve -> Q50.F once -> record
+  exact rejection records only full key; canonical parent continuation stays
+  budget exhaustion leaves the complete stack untouched and returns Paused
+
+finish():
+  FrontierExhausted -> controller.finish(Exhausted)
+  Paused/AcceptedCheckpoint/Indeterminate -> controller.finish(Incomplete)
+  move winner once; destroy stack and all loser state
+```
+
+test-only trace只有显式传入时才复制prefix values和actual key/status；普通compile不构造plan ledger。独立reference composer使用第二个
+PlanningSession及自己的递归nested loops，逐parent调用同一已由各Q50 direct oracle证明的successors，但不调用UnifiedSearchSession、
+ActualResultController或production stack。两者比较每层prefix set和complete key set；actual truth再由每个reference complete state调用同一
+Q50.F一次得到。
+
+实现闭合：`UnifiedSearchSession`以显式variant stack持有Spatial root及Region→Schedule continuations；一次`resume(credits)`在每个axis
+successor或complete actualization前消费credit，budget为零不修改stack。parent continuation留在child下方，child exhaust后继续同一cursor；
+不再依赖C++递归栈或从root重放。`UnifiedSearchResumeStatus`区分Paused、FrontierExhausted、AcceptedCheckpoint、Indeterminate、CompilerBug和
+Finished，`finish`只移交一次controller winner。持久session复制frontend verification value和ExecutionConfig，避免借用调用表达式临时值；
+TensorProgram、diagnostics和ProgramData仍由外层transaction持有。
+
+每个ScheduledState先生成CompleteCandidateKey并reserve，随后只调用一次Q50.F。exact rejection不再按causal root调用temporal refinement；
+canonical parent continuation自然访问其它temporal siblings。fresh-session direct actualization会从state逐层重建Region/Temporal/
+Representation/Movement/Storage/K/post-K I/J domains，不依赖之前遍历偶然填充的cache。Temporal nested choice返回typed Unsupported时携带可继续的
+cursor，Indeterminate仍保留当前point而不跳过。
+
+public `search`使用typed `SearchTerminationPolicy::FirstAccepted`作为明确anytime checkpoint，因此无显式cost cohort时继续报告
+`FeasiblePartial`，不声称best/optimal；同一resumable mechanism也支持Exhaustive。test-only trace未传入时不保存prefix/key ledger。
+独立recursive composer逐parent组合真实Q50 continuations，production在每个单credit cutoff得到相同prefix和前两个complete keys；Oracle B对
+fresh parse的每个state各调用一次Q50.F，typed result与production一致，Oracle actualization前后重跑的key/status不变，winner handoff一次。
+
+本项已删除被current Q50 owner替代的legacy Buffering、CoupledRegion、DataMovement/SimpleRoute、PhysicalRepresentation、TemporalTiling、
+UnifiedPhysicalDataflow和numeric ComputeImplementation search donors及对应tests；它们的domain/apply witness分别由Storage/StructureSpecific,
+Region/SelectedRegion, Movement/MovementTransferBuilder, Representation/PBQP/PhysicalVersion, Temporal及UnifiedSearch suites承接。attention
+alternative/clone donor仍有第18项独有迁移证据，明确留给紧接的attention-production-closure，不在本项提前删除。显式reciprocal
+lowering仍由Conversion direct test覆盖1024/1025正例和非`1/x`负例，但不再存在compute implementation search axis。
+
+fresh `UnifiedSearchTest` 5/5包含1024 first-accepted one-shot、每credit resume、两次parse determinism及parent-by-parent/Oracle-B前两个
+complete keys；controller/session/temporal/public routing定向30/30通过。排除用户未提交attention fixture的host unit 918/918、core lit
+225/225、public link 4/4及source/IR organization通过；public 1025 search source→package→no-card也使用本轮产物实际执行。
+
+当前production checkpoint只发布FeasiblePartial；measured priority、memo/DP/LNS和有界质量由`search-scalability`拥有。
 Region/layout/movement/storage/pipeline/schedule selected constructors已经接入full-feasibility；当前Unsupported只保留给各owner明确排除的
 IR/target语义和跨TileRegion storage sharing，不能fallback canonical产物。attention在形成ScheduledState前缺失的typed completion接线由
 attention-production-closure拥有；Q52不能把该缺口或FeasiblePartial改写成全domain optimal。
-
-完成状态复核确认current runner是不可恢复的depth-first traversal，public driver固定`stopAfterFirstAccepted=true`；仓库没有Q51-8要求的
-parent-by-parent/full-plan independent enumerator或Oracle B，也没有完整candidate key、production bound/cost比较和donor总迁移。
-Q50 selected constructors已经闭合；`unified-search-closure`重新打开，只有完整oracle、
-cutoff/resume、每complete key一次actualization和唯一publication都通过后才恢复`done`。
 
 ## Q51 Planning and Search
 

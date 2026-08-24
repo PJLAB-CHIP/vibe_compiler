@@ -66,14 +66,6 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/TemporalTileShape.cpp
   Planning/Search/AttentionAlternative.cpp
   Planning/Search/AttentionAnalysis.cpp
-  Planning/Search/Buffering.cpp
-  Planning/Search/CoupledRegion.cpp
-  Planning/Search/ComputeImplementation.cpp
   Planning/Search/DecodeAttentionAnalysis.cpp
-  Planning/Search/DataMovement.cpp
-  Planning/Search/PhysicalRepresentation.cpp
-  Planning/Search/SimpleRoute.cpp
-  Planning/Search/TemporalTiling.cpp
   Planning/Search/TensorProgramAlternative.cpp
-  Planning/Search/UnifiedPhysicalDataflow.cpp
   PARENT_SCOPE)

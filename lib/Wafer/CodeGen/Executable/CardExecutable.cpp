@@ -285,7 +285,7 @@ compileTensorProgramModuleToCardExecutable(
       wafer::support::ScopedCompileTimingSpan timing(
           "planning", "physical-search", "planning-frontier");
       detail::UnifiedSearchOptions options;
-      options.stopAfterFirstAccepted = true;
+      options.termination = detail::SearchTerminationPolicy::FirstAccepted;
       return detail::runUnifiedSearch(tensorModule, session, program,
                                       executionConfig, diagnostics, programData,
                                       options, /*tilePipelineParallelism=*/0,

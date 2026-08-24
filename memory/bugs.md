@@ -1328,6 +1328,19 @@
 - 防复发：用相同schedule、不同representation的1025 sibling证明rejection只命中自身；逐axis identity、cache on/off和2--7反序独立winner
   oracle同时执行。没有assignment-level explanation时，禁止按root、shape、bytes、最后一轴plan或parent pointer扩大no-good。
 
+## Resumable search不能借用临时config或依赖遍历顺序填充cache
+
+- 现象：one-shot search正常，但把同一遍历切成每次一个credit后，persistent session在actual gate读取到损坏的program boundary；另一个fresh
+  session直接actualize合法ScheduledState时报告EventGraph缺upstream domain。
+- 根因：resumable owner保存了调用表达式产生的`FrontendProgramVerificationResult`和`ExecutionConfig`引用，resume时临时值已经析构；
+  actual evaluator又假定Region/Temporal等cache必然由同一session按固定顺序预热，输入state本身不足以独立调用。
+- 修复模式：persistent session复制小型immutable config values，只借用明确由outer transaction持有的TensorProgram、diagnostics和
+  ProgramData。actualization从ScheduledState的parent chain依次重建并`contains`检查全部domain，再建立EventGraph/K/I/J；cache只是
+  request-local memo，不是隐藏前置。显式continuation stack在cutoff后原位resume，不clone/replay candidate IR。
+- 防复发：同一1024 source分别one-shot和每credit resume到同一first-accepted key；独立recursive composer与production prefix逐项相等，
+  fresh parse直接actualize前两个complete states并在这些Oracle调用前后重复production traversal，key/status保持一致。不得用延长timeout、
+  保活临时对象或先跑一次warmup修补cache依赖。
+
 ## Exact set的normal form不能代替物理可表示性证明
 
 - 现象：multi-producer `insert_slice` reconstruction产生语义有限且精确的`GeneralPresburger` domain；movement与storage保存的是同一集合，
