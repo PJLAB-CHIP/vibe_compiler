@@ -665,9 +665,13 @@ source program
 - `SlotFamilyId`标识selected physical `StorageObjectId`，不是semantic version列表。多个identity-alias/reuse semantic lifetimes和
   reduction gather staging可以归入一个实际allocation family；live distance先按各semantic ready→release区间计算，再对physical object取
   maximum，不能用最早ready到最晚release的包络误删中间有gap的合法plan。
-- multiplicity lower bound只由selected stage live distance/launch distance推出，upper bound只由exact per-axis occurrence product与selector
-  type范围推出；rotation是全部active recurrence axes的typed permutation。Serialized清除pre-K extra family；Pipelined重新枚举`min..U`。
-  bytes、SPM capacity、offset和packing estimate均不进入本域，最终合法性仍由actual MiniMalloc签发。
+- multiplicity lower bound只由selected stage live distance与current launch distance 1推出，upper bound只由K-selected recurrence axis的
+  exact occurrence count与selector type范围推出；rotation唯一为`{recurrenceAxis}`。outer axes重复inner pipeline，不产生等价axis
+  permutation states。Serialized清除pre-K extra family；Pipelined重新枚举`min..U`。bytes、SPM capacity、offset和packing estimate均不进入
+  本域，最终合法性仍由actual MiniMalloc签发。
+- actual slots是multiplicity个独立SPM memref roots。steady selector从`prefixCount + (iv-lower)/step`产生global occurrence coordinate，
+  再用typed modulo/arith.select选root；tail使用同一coordinate域。SelectLike origin union、dealloc和actual MiniMalloc共同复核lifetime/offset。
+  旧SelectedBufferMaterialization actual scan/clone/wait/join路径已经删除。
 
 ## Fixed-generation schedule closure（stable，2026-08-23）
 

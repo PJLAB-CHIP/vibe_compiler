@@ -5,11 +5,15 @@
 #include "Wafer/Analysis/PhysicalDataflow/PhysicalLayoutRelation.h"
 #include "Wafer/IR/WaferDialect.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
+#include <limits>
 #include <set>
 
 namespace wafer::compiler::detail {
@@ -147,6 +151,124 @@ StorageObjectBuilder::lookup(const PhysicalVersionId &version,
              : lookup(binding->second, coordinates);
 }
 
+llvm::ArrayRef<mlir::Value>
+StorageObjectBuilder::getSlots(const StorageObjectId &id) const {
+  auto object = objects.find(id);
+  return object == objects.end() ? llvm::ArrayRef<mlir::Value>{}
+                                 : llvm::ArrayRef<mlir::Value>(object->second);
+}
+
+mlir::FailureOr<RotatingStorageSelection>
+StorageObjectBuilder::select(const StorageObjectId &id, uint32_t recurrenceAxis,
+                             mlir::Value coordinate, mlir::OpBuilder &builder,
+                             std::string *failureReason) const {
+  auto object = objects.find(id);
+  if (object == objects.end() || object->second.empty() || !coordinate ||
+      (!mlir::isa<mlir::IndexType>(coordinate.getType()) &&
+       !mlir::isa<mlir::IntegerType>(coordinate.getType()))) {
+    setFailure(failureReason,
+               "rotating storage selection has no object or coordinate");
+    return mlir::failure();
+  }
+  RotatingStorageSelection selection;
+  selection.object = id;
+  selection.recurrenceAxis = recurrenceAxis;
+  selection.coordinate = coordinate;
+  selection.value = object->second.front();
+  auto family = families.find(id);
+  if (object->second.size() == 1) {
+    if (family != families.end() && family->second.multiplicity != 1) {
+      setFailure(failureReason,
+                 "single storage slot disagrees with its selected family");
+      return mlir::failure();
+    }
+    return selection;
+  }
+  if (family == families.end() ||
+      family->second.multiplicity != object->second.size() ||
+      family->second.rotationIterators !=
+          llvm::SmallVector<uint32_t, 4>{recurrenceAxis} ||
+      recurrenceAxis >= family->second.occurrence.axisOccurrences.size() ||
+      family->second.occurrence.axisOccurrences[recurrenceAxis] <
+          object->second.size()) {
+    setFailure(failureReason,
+               "rotating storage selection disagrees with its family");
+    return mlir::failure();
+  }
+  mlir::Location loc = builder.getUnknownLoc();
+  auto constant = [&](uint64_t value) -> mlir::Value {
+    return builder.create<mlir::arith::ConstantOp>(
+        loc, builder.getIntegerAttr(coordinate.getType(), value));
+  };
+  mlir::Value modulus = constant(object->second.size());
+  auto remainder =
+      builder.create<mlir::arith::RemUIOp>(loc, coordinate, modulus);
+  selection.selectorOperations.push_back(remainder);
+  for (uint64_t slot = 1; slot < object->second.size(); ++slot) {
+    mlir::Value slotIndex = constant(slot);
+    auto match = builder.create<mlir::arith::CmpIOp>(
+        loc, mlir::arith::CmpIPredicate::eq, remainder, slotIndex);
+    auto selected = builder.create<mlir::arith::SelectOp>(
+        loc, match, object->second[slot], selection.value);
+    selection.selectorOperations.push_back(match);
+    selection.selectorOperations.push_back(selected);
+    selection.value = selected;
+  }
+  return selection;
+}
+
+mlir::FailureOr<mlir::Value> buildSteadyOccurrenceCoordinate(
+    const PipelinedExecutionStructure &pipeline, mlir::scf::ForOp steadyLoop,
+    mlir::OpBuilder &builder, std::string *failureReason) {
+  if (!steadyLoop || pipeline.iteration.prefixCount != 1 ||
+      pipeline.iteration.recurrenceAxis >=
+          pipeline.recurrence.axisOccurrences.size() ||
+      pipeline.iteration.steadyTripCount == 0) {
+    setFailure(failureReason,
+               "steady occurrence coordinate has an invalid structure");
+    return mlir::failure();
+  }
+  std::optional<int64_t> lower =
+      mlir::getConstantIntValue(steadyLoop.getLowerBound());
+  std::optional<int64_t> upper =
+      mlir::getConstantIntValue(steadyLoop.getUpperBound());
+  std::optional<int64_t> step = mlir::getConstantIntValue(steadyLoop.getStep());
+  const __int128 difference =
+      lower && upper ? static_cast<__int128>(*upper) - *lower : 0;
+  if (!lower || !upper || !step || *step <= 0 || *upper <= *lower ||
+      difference > std::numeric_limits<int64_t>::max()) {
+    setFailure(failureReason,
+               "steady occurrence coordinate requires static safe bounds");
+    return mlir::failure();
+  }
+  const uint64_t tripCount =
+      1 + static_cast<uint64_t>(difference - 1) / static_cast<uint64_t>(*step);
+  if (tripCount != pipeline.iteration.steadyTripCount) {
+    setFailure(failureReason,
+               "steady occurrence coordinate trip count differs from K");
+    return mlir::failure();
+  }
+  mlir::Location loc = steadyLoop.getLoc();
+  mlir::Value normalized = steadyLoop.getInductionVar();
+  if (*lower != 0) {
+    auto lowerValue = builder.create<mlir::arith::ConstantOp>(
+        loc, builder.getIntegerAttr(normalized.getType(), *lower));
+    normalized =
+        builder.create<mlir::arith::SubIOp>(loc, normalized, lowerValue);
+  }
+  if (*step != 1) {
+    auto stepValue = builder.create<mlir::arith::ConstantOp>(
+        loc, builder.getIntegerAttr(normalized.getType(), *step));
+    normalized =
+        builder.create<mlir::arith::DivUIOp>(loc, normalized, stepValue);
+  }
+  auto prefix = builder.create<mlir::arith::ConstantOp>(
+      loc, builder.getIntegerAttr(normalized.getType(),
+                                  pipeline.iteration.prefixCount));
+  return builder.create<mlir::arith::AddIOp>(loc, normalized, prefix)
+      .getResult();
+}
+
 mlir::LogicalResult emitPreparedStorageObjects(
     const PreparedStoragePlan &prepared, StorageObjectBuilder &objects,
     mlir::OpBuilder &builder, std::string *failureReason) {
@@ -193,14 +315,16 @@ mlir::LogicalResult emitPreparedStorageObjects(
       if (count > 1)
         activeAxes.push_back(static_cast<uint32_t>(axis));
     }
-    llvm::SmallVector<uint32_t, 4> selectedAxes =
-        family.rotationIterators;
+    llvm::SmallVector<uint32_t, 4> selectedAxes = family.rotationIterators;
     llvm::sort(selectedAxes);
     if ((family.multiplicity == 1 && !family.rotationIterators.empty()) ||
         (family.multiplicity > 1 &&
-         (selectedAxes != activeAxes ||
+         (selectedAxes.empty() ||
           std::adjacent_find(selectedAxes.begin(), selectedAxes.end()) !=
-              selectedAxes.end())))
+              selectedAxes.end() ||
+          llvm::any_of(selectedAxes, [&](uint32_t axis) {
+            return !llvm::is_contained(activeAxes, axis);
+          }))))
       return fail(failureReason,
                   "prepared slot family has an invalid rotation relation");
     for (const StorageObjectId &object : family.id.objects) {
@@ -279,6 +403,83 @@ verifyEmittedStorageObjects(const PreparedStoragePlan &prepared,
         return fail(failureReason,
                     "selected slot family and emitted objects disagree");
     }
+  return mlir::success();
+}
+
+mlir::LogicalResult verifyRotatingStorageSelections(
+    const StorageObjectBuilder &objects,
+    llvm::ArrayRef<RotatingStorageSelection> selections,
+    std::string *failureReason) {
+  llvm::DenseSet<mlir::Value> selectedValues;
+  llvm::DenseSet<mlir::Operation *> selectorOperations;
+  for (const RotatingStorageSelection &selection : selections) {
+    llvm::ArrayRef<mlir::Value> slots = objects.getSlots(selection.object);
+    auto family = objects.families.find(selection.object);
+    if (slots.empty() || !selection.coordinate || !selection.value ||
+        !selectedValues.insert(selection.value).second)
+      return fail(failureReason,
+                  "rotating storage selection has a stale or duplicate value");
+    if (slots.size() == 1) {
+      if (selection.value != slots.front() ||
+          !selection.selectorOperations.empty() ||
+          (family != objects.families.end() &&
+           family->second.multiplicity != 1))
+        return fail(failureReason,
+                    "single-slot selection contains rotation scaffolding");
+      continue;
+    }
+    if (family == objects.families.end() ||
+        family->second.multiplicity != slots.size() ||
+        family->second.rotationIterators !=
+            llvm::SmallVector<uint32_t, 4>{selection.recurrenceAxis} ||
+        selection.recurrenceAxis >=
+            family->second.occurrence.axisOccurrences.size() ||
+        family->second.occurrence.axisOccurrences[selection.recurrenceAxis] <
+            slots.size())
+      return fail(failureReason,
+                  "rotating storage selection changed its family axis");
+    if (selection.selectorOperations.size() != 1 + 2 * (slots.size() - 1))
+      return fail(failureReason,
+                  "rotating storage selector has the wrong operation count");
+    auto remainder = mlir::dyn_cast_or_null<mlir::arith::RemUIOp>(
+        selection.selectorOperations.front());
+    if (!remainder || remainder.getLhs() != selection.coordinate ||
+        mlir::getConstantIntValue(remainder.getRhs()) !=
+            std::optional<int64_t>(static_cast<int64_t>(slots.size())))
+      return fail(failureReason,
+                  "rotating storage selector has the wrong modulo relation");
+    mlir::Value previous = slots.front();
+    mlir::Operation *previousOperation = remainder;
+    for (size_t slot = 1; slot < slots.size(); ++slot) {
+      auto match = mlir::dyn_cast_or_null<mlir::arith::CmpIOp>(
+          selection.selectorOperations[2 * slot - 1]);
+      auto selected = mlir::dyn_cast_or_null<mlir::arith::SelectOp>(
+          selection.selectorOperations[2 * slot]);
+      if (!match || !selected ||
+          match.getPredicate() != mlir::arith::CmpIPredicate::eq ||
+          match.getLhs() != remainder ||
+          mlir::getConstantIntValue(match.getRhs()) !=
+              std::optional<int64_t>(static_cast<int64_t>(slot)) ||
+          selected.getCondition() != match ||
+          selected.getTrueValue() != slots[slot] ||
+          selected.getFalseValue() != previous ||
+          match->getBlock() != remainder->getBlock() ||
+          selected->getBlock() != remainder->getBlock() ||
+          !previousOperation->isBeforeInBlock(match) ||
+          !match->isBeforeInBlock(selected))
+        return fail(failureReason,
+                    "rotating storage selector chain differs from its slots");
+      previous = selected;
+      previousOperation = selected;
+    }
+    if (previous != selection.value)
+      return fail(failureReason,
+                  "rotating storage selector result differs from its chain");
+    for (mlir::Operation *operation : selection.selectorOperations)
+      if (!operation || !selectorOperations.insert(operation).second)
+        return fail(failureReason,
+                    "rotating storage selector operation is stale or reused");
+  }
   return mlir::success();
 }
 

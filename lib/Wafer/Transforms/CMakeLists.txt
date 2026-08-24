@@ -66,7 +66,6 @@ add_mlir_library(WaferTransforms
 )
 
 set(WAFER_COMPILATION_TRANSFORM_SOURCES
-  Transforms/Bufferization/SelectedBufferMaterialization.cpp
   Transforms/Transport/DirectDTETransport.cpp
   PARENT_SCOPE)
 

@@ -79,16 +79,30 @@ uint32_t getStageCount(const PipelinedExecutionStructure &plan) {
   return count;
 }
 
-mlir::Value getStorageRoot(mlir::Value value) {
-  llvm::DenseSet<mlir::Value> visited;
-  while (value && visited.insert(value).second) {
-    auto view = mlir::dyn_cast_or_null<mlir::ViewLikeOpInterface>(
-        value.getDefiningOp());
-    if (!view)
-      break;
-    value = view.getViewSource();
+void collectStorageRoots(mlir::Value value, llvm::DenseSet<mlir::Value> &roots,
+                         llvm::DenseSet<mlir::Value> &visited) {
+  if (!value || !visited.insert(value).second)
+    return;
+  mlir::Operation *definition = value.getDefiningOp();
+  if (auto view =
+          mlir::dyn_cast_or_null<mlir::ViewLikeOpInterface>(definition)) {
+    collectStorageRoots(view.getViewSource(), roots, visited);
+    return;
   }
-  return value;
+  if (auto select =
+          mlir::dyn_cast_or_null<mlir::SelectLikeOpInterface>(definition)) {
+    collectStorageRoots(select.getTrueValue(), roots, visited);
+    collectStorageRoots(select.getFalseValue(), roots, visited);
+    return;
+  }
+  roots.insert(value);
+}
+
+llvm::DenseSet<mlir::Value> getStorageRoots(mlir::Value value) {
+  llvm::DenseSet<mlir::Value> roots;
+  llvm::DenseSet<mlir::Value> visited;
+  collectStorageRoots(value, roots, visited);
+  return roots;
 }
 
 mlir::Operation *getTopLevelOwner(mlir::Operation *operation,
@@ -197,13 +211,14 @@ checkExternalEffects(const ExecutionStructureLoopBinding &binding,
       mlir::Value value = effect.getValue();
       if (!value)
         continue;
-      mlir::Value root = getStorageRoot(value);
-      if (!root || !isExternalToLoop(root, binding.steadyLoop))
-        continue;
-      Summary &summary = summaries[root];
-      summary.write |=
-          !llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect());
-      summary.stages.insert(stage);
+      for (mlir::Value root : getStorageRoots(value)) {
+        if (!isExternalToLoop(root, binding.steadyLoop))
+          continue;
+        Summary &summary = summaries[root];
+        summary.write |=
+            !llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect());
+        summary.stages.insert(stage);
+      }
     }
   }
   for (const auto &[root, summary] : summaries)
@@ -357,8 +372,9 @@ PreparedExecutionStructureResult prepareExecutionStructureMaterialization(
     preparedScope.steadyLoop = loop;
     for (const ExternalStorageStageProof &proof :
          binding->second->externalStorageProofs) {
-      if (!proof.root || getStorageRoot(proof.root) != proof.root ||
-          !selectedObjects.count(proof.object))
+      llvm::DenseSet<mlir::Value> proofRoots = getStorageRoots(proof.root);
+      if (!proof.root || proofRoots.size() != 1 ||
+          !proofRoots.count(proof.root) || !selectedObjects.count(proof.object))
         return prepareFailure(
             ExecutionStructureMaterializationFailureKind::BrokenContract,
             "external storage proof has an unknown root or object",

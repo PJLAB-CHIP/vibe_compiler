@@ -225,15 +225,28 @@ TEST(ScheduleDomainTest, FixedGenerationSlotLifetimeAndFailuresStayTyped) {
       TraversalScopeId{RegionExecutionId{makeExecution(0)},
                        TopLevelWorkPieceId{0}},
       {2, 8, 1}};
+  PipelineIterationClass iteration{1, 1, 7, 0};
+  PipelineScopeId scope = getPipelineScope(input.structure.scopes.front());
+  scope.recurrences = {occurrence};
+  PipelinedExecutionStructure pipeline;
+  pipeline.scope = scope;
+  pipeline.recurrence = occurrence;
+  pipeline.iteration = iteration;
+  pipeline.eventStages = {{input.events[0].id, StageId(0)},
+                          {input.events[1].id, StageId(1)}};
+  pipeline.dependences = {{input.events[0].id, input.events[1].id, 0,
+                           PipelineDependenceKind::DataReady}};
+  input.structure.scopes = {pipeline};
   SlotFamilyId family{{object}};
-  input.buffers.slotFamilies.push_back({family, occurrence, 3, {0, 1}});
+  input.buffers.slotFamilies.push_back({family, occurrence, 3, {1}});
   input.slotLifetimes.push_back({family,
                                  occurrence,
+                                 iteration,
                                  {input.events[0].id},
                                  {input.events[1].id},
+                                 1,
                                  2,
-                                 3,
-                                 16});
+                                 8});
   ScheduleDomainResult result = buildScheduleDomain(input);
   ASSERT_TRUE(result.succeeded())
       << (result.failure ? result.failure->detail : "");
@@ -242,7 +255,7 @@ TEST(ScheduleDomainTest, FixedGenerationSlotLifetimeAndFailuresStayTyped) {
   ASSERT_NE(first.getPlan(), nullptr);
   EXPECT_TRUE(result.domain->isForGeneration(input.structure, input.buffers));
   BufferPlan stale = input.buffers;
-  stale.slotFamilies.front().multiplicity = 2;
+  stale.slotFamilies.front().multiplicity = 1;
   EXPECT_FALSE(result.domain->isForGeneration(input.structure, stale));
   ClosedSchedulePlan stalePlan = *first.getPlan();
   stalePlan.buffers = stale;
@@ -254,6 +267,15 @@ TEST(ScheduleDomainTest, FixedGenerationSlotLifetimeAndFailuresStayTyped) {
   ASSERT_FALSE(staleResult.succeeded());
   ASSERT_TRUE(staleResult.failure);
   EXPECT_EQ(staleResult.failure->kind,
+            ScheduleDomainFailureKind::BrokenContract);
+
+  ScheduleDomainInput staleIteration = input;
+  staleIteration.slotLifetimes.front().iteration.tailCount = 1;
+  ScheduleDomainResult staleIterationResult =
+      buildScheduleDomain(staleIteration);
+  ASSERT_FALSE(staleIterationResult.succeeded());
+  ASSERT_TRUE(staleIterationResult.failure);
+  EXPECT_EQ(staleIterationResult.failure->kind,
             ScheduleDomainFailureKind::BrokenContract);
 
   ScheduleDomainInput cyclic = makeInput(2, false, {{0, 1}, {1, 0}});

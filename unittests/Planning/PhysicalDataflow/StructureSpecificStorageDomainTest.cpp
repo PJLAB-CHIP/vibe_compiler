@@ -34,7 +34,8 @@ struct StorageProblem {
 
 StorageProblem makeProblem(unsigned objectCount, uint64_t sequenceOccurrences,
                            uint32_t releaseStage = 2,
-                           bool activeBatchAxis = true) {
+                           bool activeBatchAxis = true,
+                           uint64_t tailCount = 0) {
   StorageProblem problem;
   OccurrenceRelationId occurrence;
   occurrence.scope = TraversalScopeId{RegionExecutionId{makeExecution(100)},
@@ -47,6 +48,9 @@ StorageProblem makeProblem(unsigned objectCount, uint64_t sequenceOccurrences,
   scope.recurrences.push_back(occurrence);
   PipelinedExecutionStructure pipeline;
   pipeline.recurrence = occurrence;
+  const uint32_t recurrenceAxis = activeBatchAxis ? 1 : 0;
+  pipeline.iteration = {recurrenceAxis, 1, sequenceOccurrences - 1 - tailCount,
+                        tailCount};
   pipeline.launchDistance = 1;
   for (unsigned index = 0; index < objectCount; ++index) {
     PhysicalVersionId version = makeVersion(index);
@@ -97,6 +101,11 @@ TEST(StructureSpecificStorageDomainTest,
     SCOPED_TRACE(extent);
     const uint64_t sequenceOccurrences = (extent + 127) / 128;
     StorageProblem problem = makeProblem(1, sequenceOccurrences);
+    auto &pipeline =
+        std::get<PipelinedExecutionStructure>(problem.structure.scopes.front());
+    pipeline.iteration.tailCount = extent % 128 == 0 ? 0 : 1;
+    pipeline.iteration.steadyTripCount =
+        sequenceOccurrences - 1 - pipeline.iteration.tailCount;
     StructureSpecificStorageDomainResult result =
         buildStructureSpecificStorageDomain(problem.structure, problem.initial,
                                             problem.events);
@@ -110,20 +119,19 @@ TEST(StructureSpecificStorageDomainTest,
     ASSERT_EQ(result.domain->getLifetimeRequirements().size(), 1u);
     const SlotLifetimeRequirement &lifetime =
         result.domain->getLifetimeRequirements().front();
+    EXPECT_EQ(lifetime.iteration, pipeline.iteration);
     EXPECT_EQ(lifetime.liveStageDistance, 2u);
     EXPECT_EQ(lifetime.minimumMultiplicity, 3u);
-    EXPECT_EQ(lifetime.maximumMultiplicity, 2u * sequenceOccurrences);
+    EXPECT_EQ(lifetime.maximumMultiplicity, sequenceOccurrences);
     auto plans = enumerate(*result.domain);
     ASSERT_TRUE(plans);
-    EXPECT_EQ(plans->size(), size_t(lifetime.maximumMultiplicity - 3 + 1) * 2u);
+    EXPECT_EQ(plans->size(), size_t(lifetime.maximumMultiplicity - 3 + 1));
     for (const BufferPlan &plan : *plans) {
       ASSERT_EQ(plan.slotFamilies.size(), 1u);
       const SlotFamilyPlan &family = plan.slotFamilies.front();
       EXPECT_FALSE(family.occurrence.axisOccurrences.empty());
       EXPECT_GE(family.multiplicity, 3u);
-      EXPECT_EQ(std::set<uint32_t>(family.rotationIterators.begin(),
-                                   family.rotationIterators.end()),
-                (std::set<uint32_t>{0, 1}));
+      EXPECT_EQ(family.rotationIterators, (llvm::SmallVector<uint32_t, 4>{1}));
     }
     EXPECT_FALSE(result.domain->contains(problem.initial));
   }
@@ -228,7 +236,7 @@ TEST(StructureSpecificStorageDomainTest,
 }
 
 TEST(StructureSpecificStorageDomainTest,
-     MissingLifetimeEarlyReleaseAndRotationLimitRemainTyped) {
+     MissingLifetimeEarlyReleaseAndInvalidIterationRemainTyped) {
   StorageProblem missing = makeProblem(1, 8);
   auto &missingPipeline =
       std::get<PipelinedExecutionStructure>(missing.structure.scopes.front());
@@ -260,20 +268,17 @@ TEST(StructureSpecificStorageDomainTest,
   EXPECT_EQ(earlyResult.failure->kind,
             StructureSpecificStorageFailureKind::ExactRejection);
 
-  StorageProblem wide = makeProblem(1, 2, 1, false);
+  StorageProblem wide = makeProblem(1, 3, 1, false);
   auto &widePipeline =
       std::get<PipelinedExecutionStructure>(wide.structure.scopes.front());
-  widePipeline.recurrence.axisOccurrences.assign(10, 2);
-  widePipeline.scope.recurrences = {widePipeline.recurrence};
-  StructureSpecificStorageLimits limits;
-  limits.maxRotationPlans = 2;
+  widePipeline.iteration.recurrenceAxis = 4;
   StructureSpecificStorageDomainResult limited =
       buildStructureSpecificStorageDomain(wide.structure, wide.initial,
-                                          wide.events, limits);
+                                          wide.events);
   ASSERT_FALSE(limited.succeeded());
   ASSERT_TRUE(limited.failure);
   EXPECT_EQ(limited.failure->kind,
-            StructureSpecificStorageFailureKind::Indeterminate);
+            StructureSpecificStorageFailureKind::BrokenContract);
 }
 
 } // namespace

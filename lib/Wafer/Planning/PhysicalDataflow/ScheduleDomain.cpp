@@ -586,14 +586,25 @@ ScheduleDomainResult buildScheduleDomain(ScheduleDomainInput input,
       return failed(ScheduleDomainFailureKind::BrokenContract,
                     "schedule completion obligation is unmatched");
   for (const SlotLifetimeRequirement &lifetime : input.slotLifetimes) {
+    auto structure = llvm::find_if(
+        input.structure.scopes, [&](const ExecutionStructureChoice &choice) {
+          const auto *pipeline =
+              std::get_if<PipelinedExecutionStructure>(&choice);
+          return pipeline && pipeline->recurrence == lifetime.occurrence &&
+                 pipeline->iteration == lifetime.iteration;
+        });
     auto family = llvm::find_if(
         input.buffers.slotFamilies, [&](const SlotFamilyPlan &candidate) {
           return candidate.id == lifetime.family &&
                  candidate.occurrence == lifetime.occurrence;
         });
-    if (family == input.buffers.slotFamilies.end() ||
+    if (structure == input.structure.scopes.end() ||
+        family == input.buffers.slotFamilies.end() ||
         family->multiplicity < lifetime.minimumMultiplicity ||
-        family->multiplicity > lifetime.maximumMultiplicity)
+        family->multiplicity > lifetime.maximumMultiplicity ||
+        (family->multiplicity > 1 &&
+         family->rotationIterators !=
+             llvm::SmallVector<uint32_t, 4>{lifetime.iteration.recurrenceAxis}))
       return failed(ScheduleDomainFailureKind::BrokenContract,
                     "schedule input has a stale slot lifetime generation");
     for (const EventId &event : lifetime.readyEvents)

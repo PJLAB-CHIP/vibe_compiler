@@ -18,13 +18,10 @@
 
 namespace wafer::compiler::detail {
 
-struct StructureSpecificStorageLimits {
-  uint64_t maxRotationPlans = 100000;
-};
-
 struct SlotLifetimeRequirement {
   SlotFamilyId family;
   OccurrenceRelationId occurrence;
+  PipelineIterationClass iteration;
   std::vector<EventId> readyEvents;
   std::vector<EventId> releaseEvents;
   uint32_t liveStageDistance = 0;
@@ -34,6 +31,7 @@ struct SlotLifetimeRequirement {
   friend bool operator==(const SlotLifetimeRequirement &lhs,
                          const SlotLifetimeRequirement &rhs) {
     return lhs.family == rhs.family && lhs.occurrence == rhs.occurrence &&
+           lhs.iteration == rhs.iteration &&
            lhs.readyEvents == rhs.readyEvents &&
            lhs.releaseEvents == rhs.releaseEvents &&
            lhs.liveStageDistance == rhs.liveStageDistance &&
@@ -42,10 +40,10 @@ struct SlotLifetimeRequirement {
   }
   friend bool operator<(const SlotLifetimeRequirement &lhs,
                         const SlotLifetimeRequirement &rhs) {
-    return std::tie(lhs.family, lhs.occurrence, lhs.readyEvents,
+    return std::tie(lhs.family, lhs.occurrence, lhs.iteration, lhs.readyEvents,
                     lhs.releaseEvents, lhs.liveStageDistance,
                     lhs.minimumMultiplicity, lhs.maximumMultiplicity) <
-           std::tie(rhs.family, rhs.occurrence, rhs.readyEvents,
+           std::tie(rhs.family, rhs.occurrence, rhs.iteration, rhs.readyEvents,
                     rhs.releaseEvents, rhs.liveStageDistance,
                     rhs.minimumMultiplicity, rhs.maximumMultiplicity);
   }
@@ -53,7 +51,6 @@ struct SlotLifetimeRequirement {
 
 enum class StructureSpecificStorageFailureKind : uint8_t {
   ExactRejection,
-  Indeterminate,
   BrokenContract,
 };
 
@@ -151,8 +148,7 @@ private:
   friend StructureSpecificStorageDomainResult
   buildStructureSpecificStorageDomain(const ExecutionStructurePlan &,
                                       const BufferPlan &,
-                                      llvm::ArrayRef<PlannedEvent>,
-                                      const StructureSpecificStorageLimits &);
+                                      llvm::ArrayRef<PlannedEvent>);
 };
 
 struct StructureSpecificStorageDomainResult {
@@ -162,17 +158,14 @@ struct StructureSpecificStorageDomainResult {
   bool succeeded() const { return domain.has_value(); }
 };
 
-StructureSpecificStorageDomainResult buildStructureSpecificStorageDomain(
-    const ExecutionStructurePlan &structure, const BufferPlan &initial,
-    const EventGraph &foundation,
-    const StructureSpecificStorageLimits &limits =
-        StructureSpecificStorageLimits());
+StructureSpecificStorageDomainResult
+buildStructureSpecificStorageDomain(const ExecutionStructurePlan &structure,
+                                    const BufferPlan &initial,
+                                    const EventGraph &foundation);
 
 StructureSpecificStorageDomainResult buildStructureSpecificStorageDomain(
     const ExecutionStructurePlan &structure, const BufferPlan &initial,
-    llvm::ArrayRef<PlannedEvent> foundationEvents,
-    const StructureSpecificStorageLimits &limits =
-        StructureSpecificStorageLimits());
+    llvm::ArrayRef<PlannedEvent> foundationEvents);
 
 } // namespace wafer::compiler::detail
 

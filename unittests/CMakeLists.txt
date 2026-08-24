@@ -22,7 +22,6 @@ add_executable(WaferUnitTests
   CodeGen/Executable/CardExecutableCompilationTest.cpp
   CodeGen/Executable/CardExecutableLoweringTest.cpp
   CodeGen/Executable/SearchRoutingTest.cpp
-  Transforms/Bufferization/SelectedBufferMaterializationTest.cpp
   Transforms/Transport/DirectDTETransportTest.cpp
   Program/ProgramTensorComparisonTest.cpp
   CodeGen/Executable/TileMemoryPlanningTest.cpp

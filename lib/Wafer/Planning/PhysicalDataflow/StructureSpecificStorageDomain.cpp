@@ -18,16 +18,6 @@ failed(StructureSpecificStorageFailureKind kind, llvm::StringRef detail) {
   return {{}, StructureSpecificStorageFailure{kind, detail.str()}};
 }
 
-std::optional<uint64_t> getTripCount(const OccurrenceRelationId &occurrence) {
-  uint64_t count = 1;
-  for (uint64_t axis : occurrence.axisOccurrences) {
-    if (axis == 0 || count > std::numeric_limits<uint64_t>::max() / axis)
-      return std::nullopt;
-    count *= axis;
-  }
-  return count;
-}
-
 std::optional<uint32_t> getMinimumMultiplicity(uint32_t liveStageDistance,
                                                uint64_t launchDistance) {
   if (launchDistance == 0)
@@ -39,23 +29,6 @@ std::optional<uint32_t> getMinimumMultiplicity(uint32_t liveStageDistance,
   if (overlap >= std::numeric_limits<uint32_t>::max())
     return std::nullopt;
   return static_cast<uint32_t>(1 + overlap);
-}
-
-std::optional<std::vector<llvm::SmallVector<uint32_t, 4>>>
-buildRotations(const OccurrenceRelationId &occurrence, uint64_t limit) {
-  llvm::SmallVector<uint32_t, 4> active;
-  for (auto [axis, count] : llvm::enumerate(occurrence.axisOccurrences))
-    if (count > 1)
-      active.push_back(static_cast<uint32_t>(axis));
-  if (active.empty())
-    return std::vector<llvm::SmallVector<uint32_t, 4>>{};
-  std::vector<llvm::SmallVector<uint32_t, 4>> rotations;
-  do {
-    if (rotations.size() >= limit)
-      return std::nullopt;
-    rotations.push_back(active);
-  } while (std::next_permutation(active.begin(), active.end()));
-  return rotations;
 }
 
 } // namespace
@@ -178,16 +151,12 @@ bool StructureSpecificStorageDomain::contains(const BufferPlan &plan) const {
 
 StructureSpecificStorageDomainResult buildStructureSpecificStorageDomain(
     const ExecutionStructurePlan &structure, const BufferPlan &initial,
-    llvm::ArrayRef<PlannedEvent> foundationEvents,
-    const StructureSpecificStorageLimits &limits) {
+    llvm::ArrayRef<PlannedEvent> foundationEvents) {
   if (structure.scopes.empty() || initial.storageObjects.empty() ||
       foundationEvents.empty())
     return failed(
         StructureSpecificStorageFailureKind::BrokenContract,
         "structure-specific storage requires K, I, and J foundation facts");
-  if (limits.maxRotationPlans == 0)
-    return failed(StructureSpecificStorageFailureKind::BrokenContract,
-                  "structure-specific storage rotation limit must be positive");
 
   std::set<StorageObjectId> selectedObjects;
   for (const StorageObjectPlan &object : initial.storageObjects)
@@ -223,10 +192,26 @@ StructureSpecificStorageDomainResult buildStructureSpecificStorageDomain(
     const auto *pipelined = std::get_if<PipelinedExecutionStructure>(&choice);
     if (!pipelined)
       continue;
-    std::optional<uint64_t> tripCount = getTripCount(pipelined->recurrence);
-    if (!tripCount || *tripCount < 2)
+    const uint32_t recurrenceAxis = pipelined->iteration.recurrenceAxis;
+    const bool occurrenceSumOverflows =
+        pipelined->iteration.prefixCount >
+            std::numeric_limits<uint64_t>::max() -
+                pipelined->iteration.tailCount ||
+        pipelined->iteration.steadyTripCount >
+            std::numeric_limits<uint64_t>::max() -
+                pipelined->iteration.prefixCount -
+                pipelined->iteration.tailCount;
+    if (pipelined->launchDistance != 1 ||
+        recurrenceAxis >= pipelined->recurrence.axisOccurrences.size() ||
+        occurrenceSumOverflows || pipelined->iteration.prefixCount != 1 ||
+        pipelined->iteration.tailCount > 1 ||
+        pipelined->recurrence.axisOccurrences[recurrenceAxis] !=
+            pipelined->iteration.prefixCount +
+                pipelined->iteration.steadyTripCount +
+                pipelined->iteration.tailCount ||
+        pipelined->iteration.steadyTripCount < 2)
       return failed(StructureSpecificStorageFailureKind::BrokenContract,
-                    "pipelined structure has an invalid occurrence relation");
+                    "pipelined structure has an invalid iteration class");
     std::map<EventId, uint32_t> stages;
     for (const EventStageAssignment &assignment : pipelined->eventStages)
       if (!stages.try_emplace(assignment.event, assignment.stage.getValue())
@@ -291,27 +276,26 @@ StructureSpecificStorageDomainResult buildStructureSpecificStorageDomain(
       }
       std::optional<uint32_t> lower =
           getMinimumMultiplicity(liveDistance, pipelined->launchDistance);
-      const uint32_t upper = static_cast<uint32_t>(
-          std::min<uint64_t>(*tripCount, std::numeric_limits<uint32_t>::max()));
+      const uint32_t upper = static_cast<uint32_t>(std::min<uint64_t>(
+          pipelined->recurrence.axisOccurrences[recurrenceAxis],
+          std::numeric_limits<uint32_t>::max()));
       if (!lower || *lower > upper)
         return failed(StructureSpecificStorageFailureKind::ExactRejection,
                       "pipeline live distance has no representable slot count");
-      auto rotations =
-          buildRotations(pipelined->recurrence, limits.maxRotationPlans);
-      if (!rotations)
-        return failed(StructureSpecificStorageFailureKind::Indeterminate,
-                      "slot rotation enumeration exceeded its work limit");
-      if (upper > 1 && rotations->empty())
+      std::vector<llvm::SmallVector<uint32_t, 4>> rotations{
+          llvm::SmallVector<uint32_t, 4>{recurrenceAxis}};
+      if (upper > 1 &&
+          pipelined->recurrence.axisOccurrences[recurrenceAxis] <= 1)
         return failed(StructureSpecificStorageFailureKind::BrokenContract,
                       "multi-slot family has no active recurrence axis");
       SlotFamilyId id{{object}};
       families.push_back(
-          {id, pipelined->recurrence, *lower, upper, std::move(*rotations)});
+          {id, pipelined->recurrence, *lower, upper, std::move(rotations)});
       llvm::sort(readyEvents);
       llvm::sort(releaseEvents);
-      lifetimes.push_back({id, pipelined->recurrence, std::move(readyEvents),
-                           std::move(releaseEvents), liveDistance, *lower,
-                           upper});
+      lifetimes.push_back({id, pipelined->recurrence, pipelined->iteration,
+                           std::move(readyEvents), std::move(releaseEvents),
+                           liveDistance, *lower, upper});
     }
   }
   if (structureEvents != graphEvents)
@@ -328,12 +312,12 @@ StructureSpecificStorageDomainResult buildStructureSpecificStorageDomain(
           {}};
 }
 
-StructureSpecificStorageDomainResult buildStructureSpecificStorageDomain(
-    const ExecutionStructurePlan &structure, const BufferPlan &initial,
-    const EventGraph &foundation,
-    const StructureSpecificStorageLimits &limits) {
+StructureSpecificStorageDomainResult
+buildStructureSpecificStorageDomain(const ExecutionStructurePlan &structure,
+                                    const BufferPlan &initial,
+                                    const EventGraph &foundation) {
   return buildStructureSpecificStorageDomain(structure, initial,
-                                             foundation.getEvents(), limits);
+                                             foundation.getEvents());
 }
 
 } // namespace wafer::compiler::detail

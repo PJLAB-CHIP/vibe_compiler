@@ -9,7 +9,6 @@
 #include "Wafer/Planning/Baseline/CardBaselineCompilation.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalTileShape.h"
 #include "Wafer/Program/ProgramData.h"
-#include "Wafer/Transforms/Bufferization/SelectedBufferMaterialization.h"
 
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Support/OptimizationConfig.h"

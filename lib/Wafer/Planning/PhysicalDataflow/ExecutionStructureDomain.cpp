@@ -406,8 +406,15 @@ ExecutionStructureDomainResult buildExecutionStructureDomain(
 
     if (scope.iteration) {
       const PipelineIterationClass &iteration = *scope.iteration;
+      const bool occurrenceSumOverflows =
+          iteration.prefixCount >
+              std::numeric_limits<uint64_t>::max() - iteration.tailCount ||
+          iteration.steadyTripCount > std::numeric_limits<uint64_t>::max() -
+                                          iteration.prefixCount -
+                                          iteration.tailCount;
       if (scope.id.recurrences.size() != 1 ||
           !hasFiniteOccurrenceCount(scope.id.recurrences.front()) ||
+          occurrenceSumOverflows ||
           iteration.recurrenceAxis >=
               scope.id.recurrences.front().axisOccurrences.size() ||
           iteration.prefixCount != 1 || iteration.tailCount > 1 ||
