@@ -5,6 +5,13 @@
 #include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
 #include "Wafer/InitWaferDialects.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Parser/Parser.h"
+
 #include "gtest/gtest.h"
 
 #include <algorithm>
@@ -42,6 +49,7 @@ struct EventInputs {
   PhysicalVersionId consumerOutput;
   MovementActionId loadAction;
   MovementActionId peerAction;
+  std::vector<ExecutionEventContract> contracts;
 };
 
 EventInputs makeInputs(mlir::MLIRContext &context, int64_t extent,
@@ -101,6 +109,15 @@ EventInputs makeInputs(mlir::MLIRContext &context, int64_t extent,
        {2, extent, 128},
        {0, 1, 2}}};
   inputs.serialized.executions = {producer, consumer};
+  inputs.contracts = {
+      {producer,
+       {NCCWorker::Worker0, NCCWorker::Worker1, NCCWorker::Worker2},
+       NCCCompletionKind::OrderedAsynchronousIssue,
+       0},
+      {consumer,
+       {NCCWorker::Worker0, NCCWorker::Worker1, NCCWorker::Worker2},
+       NCCCompletionKind::OrderedAsynchronousIssue,
+       0}};
 
   inputs.movement.plan.externalLoads = {{loadId, input}};
   inputs.movement.plan.ddrTransfers = {
@@ -159,6 +176,9 @@ void appendInputs(EventInputs &destination, EventInputs source) {
   destination.serialized.executions.insert(
       destination.serialized.executions.end(),
       source.serialized.executions.begin(), source.serialized.executions.end());
+  destination.contracts.insert(destination.contracts.end(),
+                               source.contracts.begin(),
+                               source.contracts.end());
   destination.movement.plan.externalLoads.insert(
       destination.movement.plan.externalLoads.end(),
       source.movement.plan.externalLoads.begin(),
@@ -206,19 +226,25 @@ TEST(EventGraphTest, AlignedAndRaggedChainHasAllAndOnlyTypedFacts) {
     EventInputs inputs = makeInputs(context, extent);
     EventGraphBuildResult result = buildEventGraph(
         CardId(0), inputs.regions, inputs.temporal, inputs.serialized,
-        inputs.movement, inputs.storage, inputs.storage.plan);
+        inputs.movement, inputs.storage, inputs.storage.plan, inputs.contracts);
     ASSERT_TRUE(result.succeeded())
         << (result.failure ? result.failure->detail : "");
     const EventGraph &graph = *result.graph;
-    EXPECT_EQ(graph.getEvents().size(), 21u);
-    EXPECT_EQ(graph.getHardDependencies().size(), 20u);
-    EXPECT_EQ(graph.getCompletionObligations().size(), 6u);
+    EXPECT_EQ(graph.getEvents().size(), 25u);
+    EXPECT_EQ(graph.getHardDependencies().size(), 24u);
+    EXPECT_EQ(graph.getCompletionObligations().size(), 5u);
     EXPECT_EQ(graph.getComponents().size(), 1u);
     EXPECT_EQ(countResources<SPMRangeResource>(graph), 8u);
     EXPECT_EQ(countResources<CardDDRResource>(graph), 2u);
     EXPECT_EQ(countResources<TileDTEEngineResource>(graph), 4u);
     EXPECT_EQ(countResources<OpaqueNoCTransferResource>(graph), 1u);
     EXPECT_EQ(countResources<DirectedNoCLinkResource>(graph), 0u);
+    EXPECT_TRUE(llvm::none_of(
+        graph.getCompletionObligations(), [](const auto &obligation) {
+          return obligation.protocol == CompletionProtocol::Unknown ||
+                 obligation.protocol ==
+                     CompletionProtocol::NoAsynchronousCompletion;
+        }));
 
     auto ready = graph.getReadyEvents({});
     ASSERT_TRUE(ready);
@@ -239,19 +265,69 @@ TEST(EventGraphTest, OpaqueAndExactRoutesKeepDifferentKnowledgeBoundaries) {
   EventInputs inputs = makeInputs(context, 1031);
   EventGraphBuildResult opaque = buildEventGraph(
       CardId(0), inputs.regions, inputs.temporal, inputs.serialized,
-      inputs.movement, inputs.storage, inputs.storage.plan);
+      inputs.movement, inputs.storage, inputs.storage.plan, inputs.contracts);
   ASSERT_TRUE(opaque.succeeded());
   EXPECT_EQ(countResources<DirectedNoCLinkResource>(*opaque.graph), 0u);
 
-  ExactMovementRoute route{inputs.peerAction,
+  ExactMovementRoute route{{inputs.peerAction},
+                           {TileId(0), TileId(1)},
                            {{TileId(0), TileId(8)}, {TileId(8), TileId(1)}}};
-  EventGraphBuildResult exact = buildEventGraph(
-      CardId(0), inputs.regions, inputs.temporal, inputs.serialized,
-      inputs.movement, inputs.storage, inputs.storage.plan, {}, {route});
+  EventGraphBuildResult exact =
+      buildEventGraph(CardId(0), inputs.regions, inputs.temporal,
+                      inputs.serialized, inputs.movement, inputs.storage,
+                      inputs.storage.plan, inputs.contracts, {route});
   ASSERT_TRUE(exact.succeeded())
       << (exact.failure ? exact.failure->detail : "");
   EXPECT_EQ(countResources<DirectedNoCLinkResource>(*exact.graph), 2u);
   EXPECT_EQ(countResources<OpaqueNoCTransferResource>(*exact.graph), 1u);
+}
+
+TEST(EventGraphTest, RelayStorageUsesExactPerHopCompletionEvents) {
+  mlir::DialectRegistry registry;
+  registerWaferCoreDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  EventInputs inputs = makeInputs(context, 1031);
+  ASSERT_EQ(inputs.movement.plan.peerGraphs.size(), 1u);
+  PeerTransferGraphPlan &graph = inputs.movement.plan.peerGraphs.front();
+  graph.kind = PeerTransferGraphKind::SoftwareRelay;
+  graph.hops = {{TileId(0), TileId(2)}, {TileId(2), TileId(1)}};
+  PeerRelayStorageId relayId{graph.actions, 0, TileId(2)};
+  StorageObjectId relay{StorageObjectOrigin(relayId)};
+  inputs.storage.plan.storageObjects.push_back({relay, TileId(2)});
+  inputs.storage.resources.emplace_back(relay, box({2, 1031, 128}),
+                                        mlir::Float16Type::get(&context),
+                                        MemLayout::Tensor);
+  inputs.storage.lifetimes.push_back(
+      {relay,
+       StorageAccessSite{PeerTransferSiteId{graph.actions, 0,
+                                            MovementHop{TileId(0), TileId(2)}}},
+       {StorageAccessSite{PeerTransferSiteId{
+           graph.actions, 0, MovementHop{TileId(2), TileId(1)}}}}});
+  EventGraphBuildResult result = buildEventGraph(
+      CardId(0), inputs.regions, inputs.temporal, inputs.serialized,
+      inputs.movement, inputs.storage, inputs.storage.plan, inputs.contracts);
+  ASSERT_TRUE(result.succeeded())
+      << (result.failure ? result.failure->detail : "");
+  EXPECT_EQ(llvm::count_if(result.graph->getCompletionObligations(),
+                           [](const CompletionObligation &obligation) {
+                             return obligation.protocol ==
+                                    CompletionProtocol::DirectDTE;
+                           }),
+            2u);
+  EventId incomingCompletion{
+      MovementEventAction{graph.actions.front(),
+                          MovementEventPhase::PeerTransfer, 0,
+                          MovementHop{TileId(0), TileId(2)}},
+      PlannedEventKind::Completion};
+  EventId outgoingIssue{MovementEventAction{graph.actions.front(),
+                                            MovementEventPhase::PeerTransfer, 0,
+                                            MovementHop{TileId(2), TileId(1)}},
+                        PlannedEventKind::MovementIssue};
+  EXPECT_TRUE(llvm::is_contained(
+      result.graph->getHardDependencies(),
+      EventDependency{incomingCompletion, outgoingIssue,
+                      EventDependencyReason::TransferReady}));
 }
 
 TEST(EventGraphTest, CompletionContractAndInputOrderAreDeterministic) {
@@ -265,9 +341,10 @@ TEST(EventGraphTest, CompletionContractAndInputOrderAreDeterministic) {
                                    NCCWorker::Worker1, NCCWorker::Worker0},
                                   NCCCompletionKind::OrderedAsynchronousIssue,
                                   0};
+  inputs.contracts.front() = contract;
   EventGraphBuildResult original = buildEventGraph(
       CardId(0), inputs.regions, inputs.temporal, inputs.serialized,
-      inputs.movement, inputs.storage, inputs.storage.plan, {contract});
+      inputs.movement, inputs.storage, inputs.storage.plan, inputs.contracts);
   ASSERT_TRUE(original.succeeded())
       << (original.failure ? original.failure->detail : "");
   EventId issue = {ExecutionEventAction{inputs.producer},
@@ -299,9 +376,10 @@ TEST(EventGraphTest, CompletionContractAndInputOrderAreDeterministic) {
                inputs.storage.resources.end());
   std::reverse(inputs.storage.lifetimes.begin(),
                inputs.storage.lifetimes.end());
+  std::reverse(inputs.contracts.begin(), inputs.contracts.end());
   EventGraphBuildResult reversed = buildEventGraph(
       CardId(0), inputs.regions, inputs.temporal, inputs.serialized,
-      inputs.movement, inputs.storage, inputs.storage.plan, {contract});
+      inputs.movement, inputs.storage, inputs.storage.plan, inputs.contracts);
   ASSERT_TRUE(reversed.succeeded())
       << (reversed.failure ? reversed.failure->detail : "");
   EXPECT_EQ(*original.graph, *reversed.graph);
@@ -314,16 +392,20 @@ TEST(EventGraphTest, IndependentBranchesExposeExactResourceReadySuccessors) {
   context.loadAllAvailableDialects();
   EventInputs first = makeInputs(context, 1025, 0);
   EventInputs second = makeInputs(context, 1025, 2);
-  const EventId firstLoad = {
-      MovementEventAction{first.loadAction, std::nullopt},
+  const EventId firstLoad = {MovementEventAction{first.loadAction},
+                             PlannedEventKind::MovementIssue};
+  const EventId secondLoad = {MovementEventAction{second.loadAction},
+                              PlannedEventKind::MovementIssue};
+  const EventId firstLoadPhase = {
+      MovementEventAction{first.loadAction, MovementEventPhase::DDRLoad, 0},
       PlannedEventKind::MovementIssue};
-  const EventId secondLoad = {
-      MovementEventAction{second.loadAction, std::nullopt},
+  const EventId secondLoadPhase = {
+      MovementEventAction{second.loadAction, MovementEventPhase::DDRLoad, 0},
       PlannedEventKind::MovementIssue};
   appendInputs(first, std::move(second));
   EventGraphBuildResult result = buildEventGraph(
       CardId(0), first.regions, first.temporal, first.serialized,
-      first.movement, first.storage, first.storage.plan);
+      first.movement, first.storage, first.storage.plan, first.contracts);
   ASSERT_TRUE(result.succeeded())
       << (result.failure ? result.failure->detail : "");
   auto ready = result.graph->getReadyEvents({});
@@ -331,16 +413,19 @@ TEST(EventGraphTest, IndependentBranchesExposeExactResourceReadySuccessors) {
   EXPECT_EQ(std::set<EventId>(ready->begin(), ready->end()),
             (std::set<EventId>{firstLoad, secondLoad}));
 
-  EventDependency firstBeforeSecond{firstLoad, secondLoad,
+  EventDependency firstBeforeSecond{firstLoadPhase, secondLoadPhase,
                                     EventDependencyReason::EffectOrder};
-  auto ordered = result.graph->getReadyEvents({}, {firstBeforeSecond});
+  auto ordered = result.graph->getReadyEvents({firstLoad, secondLoad},
+                                              {firstBeforeSecond});
   ASSERT_TRUE(ordered);
-  EXPECT_EQ(*ordered, (std::vector<EventId>{firstLoad}));
-  EventDependency secondBeforeFirst{secondLoad, firstLoad,
+  EXPECT_TRUE(llvm::is_contained(*ordered, firstLoadPhase));
+  EXPECT_FALSE(llvm::is_contained(*ordered, secondLoadPhase));
+  EventDependency secondBeforeFirst{secondLoadPhase, firstLoadPhase,
                                     EventDependencyReason::EffectOrder};
-  EXPECT_FALSE(
-      result.graph->getReadyEvents({}, {firstBeforeSecond, secondBeforeFirst})
-          .has_value());
+  EXPECT_FALSE(result.graph
+                   ->getReadyEvents({firstLoad, secondLoad},
+                                    {firstBeforeSecond, secondBeforeFirst})
+                   .has_value());
 
   EventDependency invalid{
       firstLoad,
@@ -363,7 +448,7 @@ TEST(EventGraphTest, CycleWorkLimitAndEmptyWorkerDomainStayTyped) {
        BufferOrderKind::ReuseAfterCompletion});
   EventGraphBuildResult cycle = buildEventGraph(
       CardId(0), inputs.regions, inputs.temporal, inputs.serialized,
-      inputs.movement, inputs.storage, inputs.storage.plan);
+      inputs.movement, inputs.storage, inputs.storage.plan, inputs.contracts);
   ASSERT_FALSE(cycle.succeeded());
   ASSERT_TRUE(cycle.failure);
   EXPECT_EQ(cycle.failure->kind, EventGraphFailureKind::ExactRejection);
@@ -374,9 +459,10 @@ TEST(EventGraphTest, CycleWorkLimitAndEmptyWorkerDomainStayTyped) {
   inputs.storage.plan.orderRequirements.clear();
   EventGraphLimits limits;
   limits.maxEvents = 4;
-  EventGraphBuildResult limited = buildEventGraph(
-      CardId(0), inputs.regions, inputs.temporal, inputs.serialized,
-      inputs.movement, inputs.storage, inputs.storage.plan, {}, {}, limits);
+  EventGraphBuildResult limited =
+      buildEventGraph(CardId(0), inputs.regions, inputs.temporal,
+                      inputs.serialized, inputs.movement, inputs.storage,
+                      inputs.storage.plan, inputs.contracts, {}, limits);
   ASSERT_FALSE(limited.succeeded());
   ASSERT_TRUE(limited.failure);
   EXPECT_EQ(limited.failure->kind, EventGraphFailureKind::Indeterminate);
@@ -384,14 +470,77 @@ TEST(EventGraphTest, CycleWorkLimitAndEmptyWorkerDomainStayTyped) {
 
   ExecutionEventContract invalid{
       inputs.producer, {}, NCCCompletionKind::OrderedAsynchronousIssue, 0};
+  std::vector<ExecutionEventContract> invalidContracts = inputs.contracts;
+  invalidContracts.front() = invalid;
   EventGraphBuildResult emptyWorker = buildEventGraph(
       CardId(0), inputs.regions, inputs.temporal, inputs.serialized,
-      inputs.movement, inputs.storage, inputs.storage.plan, {invalid});
+      inputs.movement, inputs.storage, inputs.storage.plan, invalidContracts);
   ASSERT_FALSE(emptyWorker.succeeded());
   ASSERT_TRUE(emptyWorker.failure);
   EXPECT_EQ(emptyWorker.failure->kind, EventGraphFailureKind::ExactRejection);
   EXPECT_EQ(emptyWorker.failure->reason,
             EventGraphFailureReason::EmptyWorkerDomain);
+
+  EventGraphBuildResult missingContract = buildEventGraph(
+      CardId(0), inputs.regions, inputs.temporal, inputs.serialized,
+      inputs.movement, inputs.storage, inputs.storage.plan,
+      llvm::ArrayRef<ExecutionEventContract>(inputs.contracts).drop_back());
+  ASSERT_FALSE(missingContract.succeeded());
+  ASSERT_TRUE(missingContract.failure);
+  EXPECT_EQ(missingContract.failure->kind, EventGraphFailureKind::Deferred);
+}
+
+TEST(EventGraphTest,
+     ExecutionContractsUseTypedLinalgAndRejectUnmodeledEffects) {
+  mlir::DialectRegistry registry;
+  registerWaferCoreDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::linalg::LinalgDialect, mlir::memref::MemRefDialect,
+                  mlir::tensor::TensorDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @contract() {
+    %zero = arith.constant 0.0 : f16
+    %empty = tensor.empty() : tensor<2x1024x128xf16>
+    %result = linalg.fill ins(%zero : f16)
+        outs(%empty : tensor<2x1024x128xf16>) -> tensor<2x1024x128xf16>
+    %buffer = memref.alloc() : memref<2x1024x128xf16>
+    memref.dealloc %buffer : memref<2x1024x128xf16>
+    return
+  }
+}
+)mlir",
+                                                        &context);
+  ASSERT_TRUE(module);
+  auto function = *module->getOps<mlir::func::FuncOp>().begin();
+  auto fill = *function.getOps<mlir::linalg::FillOp>().begin();
+  auto allocation = *function.getOps<mlir::memref::AllocOp>().begin();
+  SemanticRootKey root;
+  RootRegionWorkId workId{root, TileId(0)};
+  LogicalShardId shard{root, {0}};
+  ExecutionInstanceId execution{RequiredRootExecution{workId, shard}};
+  SerializedExecutionPlan serialized{{execution}};
+  RootRegionWork work;
+  work.id = workId;
+  work.rootOperation = fill;
+  ExecutionEventContractResult supported =
+      deriveExecutionEventContracts(serialized, {work});
+  ASSERT_TRUE(supported.succeeded());
+  ASSERT_EQ(supported.contracts.size(), 1u);
+  EXPECT_EQ(supported.contracts.front().completion,
+            NCCCompletionKind::OrderedAsynchronousIssue);
+  EXPECT_EQ(supported.contracts.front().workerDomain.size(), kNCCWorkerCount);
+
+  work.rootOperation = allocation;
+  ExecutionEventContractResult unsupported =
+      deriveExecutionEventContracts(serialized, {work});
+  ASSERT_FALSE(unsupported.succeeded());
+  ASSERT_TRUE(unsupported.failure);
+  EXPECT_EQ(unsupported.failure->kind, EventGraphFailureKind::Unsupported);
+  EXPECT_EQ(unsupported.failure->reason,
+            EventGraphFailureReason::UnsupportedExecutionContract);
 }
 
 } // namespace

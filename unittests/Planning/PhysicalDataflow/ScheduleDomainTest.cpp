@@ -263,6 +263,16 @@ TEST(ScheduleDomainTest, FixedGenerationSlotLifetimeAndFailuresStayTyped) {
   EXPECT_EQ(cycleResult.failure->kind,
             ScheduleDomainFailureKind::ExactRejection);
 
+  ScheduleDomainInput unknown = makeInput(2, false, {{0, 1}});
+  unknown.completionObligations.push_back({unknown.events[0].id,
+                                           unknown.events[1].id,
+                                           CompletionProtocol::Unknown, 0});
+  ScheduleDomainResult unknownResult = buildScheduleDomain(unknown);
+  ASSERT_FALSE(unknownResult.succeeded());
+  ASSERT_TRUE(unknownResult.failure);
+  EXPECT_EQ(unknownResult.failure->kind,
+            ScheduleDomainFailureKind::BrokenContract);
+
   ScheduleDomainLimits limits;
   limits.maxSuccessorSteps = 1;
   ScheduleDomainInput chain =

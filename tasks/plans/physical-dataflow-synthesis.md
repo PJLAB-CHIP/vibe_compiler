@@ -265,8 +265,8 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 | 8 | `layout-domain` | `done` | Q50.G | operation/interface constraint graph、PBQP精确消元+residual solver、production tuple/alias facts及selected physical-version construction/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | movement-domain |
 | 9 | `movement-domain` | `done` | Q50.H | local/DDR/direct/relay/fanout/gather current完整域、external every-root reuse、exact multi-piece payload proof、token-only selected construction/verifier及actual surgery donor retirement；不在issue后立即await；raw collective因无current typed primitive而无state | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | storage-domain |
 | 10 | `storage-domain` | `done` | Q50.I | production alias/reuse/1..U requirements、peer-relay exact-piece ownership、selected object/multi-axis rotation construction及actual definition/use/completion/release lifetime verifier；零SPM估算或capacity控制流 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | event-resource-foundation |
-| 11 | `event-resource-foundation` | `doing` | Q50.J | 完整EventGraph/resource/recurrence/completion facts、Q63/effect接入及fixed-K后同一builder重建J的typed seam；missing contract保持typed unknown而非默认Synchronous | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | execution-structure-domain |
-| 12 | `execution-structure-domain` | `queued` | Q50.K | sound Serialized/Pipelined eligibility与完整有限域、selected phase/loop construction、structure verifier及donor retirement | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | structure-specific-storage |
+| 11 | `event-resource-foundation` | `done` | Q50.J | 完整EventGraph/resource/recurrence/completion facts、Q63/effect接入及fixed-K后同一builder重建J的typed seam；missing contract保持typed unknown而非默认Synchronous | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | execution-structure-domain |
+| 12 | `execution-structure-domain` | `doing` | Q50.K | sound Serialized/Pipelined eligibility与完整有限域、selected phase/loop construction、structure verifier及donor retirement | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | structure-specific-storage |
 | 13 | `structure-specific-storage` | `queued` | Q50.I | fixed-K occurrence/slot/lifetime重闭、actual rotating-slot construction，并触发post-K EventGraph重建 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | schedule-domain |
 | 14 | `schedule-domain` | `queued` | Q50.J | post-K EventGraph、slot/FSM lifetime、worker/resource/completion完整域及minimum-participant/latest-unavoidable selected wait/join emission/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | full-feasibility |
 | 15 | `full-feasibility` | `queued` | Q50.F | 全字段complete-candidate materialization、actual SPM/DDR/transport/target gate、plan/actual join-wait parity与动态work gate、typed rejection及Core反馈 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-control-closure |
@@ -4889,6 +4889,23 @@ components/input constraints和solution properties/verification分开。MLIR asy
 resource只描述资源类别，精确range仍由alias analysis负责。对应本仓，foundation必须是“待调度问题”的pure typed analysis，而不是
 从已排好序的Instr block反推可移动windows。
 
+| 调研对象 | 采用的工程规则 | 未采用的部分及原因 |
+| --- | --- | --- |
+| [LLVM MachineScheduler](https://github.com/llvm/llvm-project/blob/main/llvm/lib/CodeGen/MachineScheduler.cpp) | DAG/problem construction与ready-node selection分离；event identity及hard edge先于schedule policy稳定 | 不迁移MachineInstr pointer、register-pressure启发式或target hook；本stage尚无actual Instr，也不拥有profitability |
+| [CIRCT scheduling infrastructure](https://circt.llvm.org/docs/Scheduling/) | input constraints、selected solution与独立verification分层；共享资源只产生待解约束 | 不引入另一套schedule dialect或operator registry；current typed plan已经拥有semantic ID与resource key |
+| [MLIR Async dialect](https://mlir.llvm.org/docs/Dialects/AsyncDialect/) | issue/completion由显式token/value关系表达，等待只能消费对应completion | 不把region/block boundary解释成隐式await，也不创建无法被当前lowering消费的async side table |
+| [MLIR side-effect/speculation model](https://mlir.llvm.org/docs/Rationale/SideEffectsAndSpeculation/) | 只从typed effect/interface签发可重排事实；unknown/effectful execution fail closed | `MemoryEffectOpInterface`只描述effect，不能单独证明exact alias range，因此不按同root名字或source顺序补RAW/WAR/WAW |
+
+本项读取的current硬件、runtime和ABI事实分级如下；这里只把`supported`事实放入hard event/resource合同：
+
+| 事实 | 等级 | foundation中的处理 |
+| --- | --- | --- |
+| ordinary NCC issue按typed worker有序，participant join只完成mask中的pending worker | `supported`，由Q63 operation interface、analysis与target protocol共同拥有 | execution/DDR issue使用closed worker domain；completion只保留typed participant obligation，不提前插join |
+| Direct DTE send/recv产生独立token，wait/finish只完成该token | `supported`，见13号文档及current CRT/target lowering | 每个selected payload piece和physical hop建立独立`DirectDTE` issue/completion；不与NCC completion互换 |
+| current Direct DTE内部NoC route | `unknown`/opaque | 只记录endpoint DTE exact use与NoC transfer estimate；没有显式target route就不创建link contention |
+| deterministic target route输入给出的逐link路径 | `supported`仅限显式typed输入 | `ExactMovementRoute`绑定一个selected graph hop；逐link resource只附着到该hop的每个exact payload event |
+| raw broadcast/scatter或其它collective硬件执行形态 | `board-observed`但current compiler primitive未闭合 | `excluded`于本域；H没有selected typed action时J不恢复collective或同步协议 |
+
 current `CardInstructionScheduleDomain`借actual Module/Block/Operation pointers，snapshot attrs/operands/types模拟epoch；它按source block
 order给同root memref建立RAW/WAR/WAW，把任何synchronous op两侧全序化，并把任意peer endpoint伪装成exact `DirectedPeerLink`。apply又
 move-own Tile modules、移动ops、改worker并重建joins。可迁移的是topological enumeration、closed worker enum、Q63 completion和resource
@@ -5019,19 +5036,28 @@ ID/duplicate action是compiler bug。fixed semantic fact、B--I或K任一observe
 - semantic/B--I/K mutation精确invalidate affected components，hash/input/parallel discovery不改变stable graph；source byte-identical、零Instr/module
   construction、pointer snapshot、default statistics。order/worker算法由schedule-domain。
 
-当前已实现子集：current `EventGraph`从fixed Region/Temporal/Serialized、selected Movement/Buffer和canonical resource/lifetime facts
-建立stable typed issue/completion/ready/release/observable nodes、hard DAG、completion obligations、exact/estimate resource uses、
-disjunctive resource choices和connected components；`getReadyEvents`只返回hard/resource precedence下的exact ready set，不选择event。
-Core按`InitialBufferState`重建并缓存query-local graph，public `search`已推进到missing `execution-structure`，state identity和IR均不携带
-graph。opaque peer只产生endpoint/DTE exact facts与NoC estimate；只有显式`ExactMovementRoute`产生directed-link use。worker/resource
-sequence、control linearization和completion placement仍由后续`schedule-domain`拥有；calendar bound/proposal及其measured policy由
-search-control-closure与Q52拥有。
-fresh直接5/5、ordinary host unit 868/868、core lit 227/227、Tools/Runtime lit 35 passed/4 configured unsupported、完整build、public
-link closure及source organization通过。
+实现闭合：同一个`buildEventGraph`同时服务pre-K `InitialBufferState`和post-K `BufferState`。后者以完整K identity与重闭后的
+`BufferPlan`独立缓存，structure或storage sibling变化必然重建，`ScheduleDomain`只消费post-K graph。candidate state仍不保存graph、
+operation pointer或calendar。
 
-完成状态复核确认production没有传入Q63 `ExecutionEventContract`或target `ExactMovementRoute`，builder也没有读取source effect/control
-facts；当前graph只按`InitialBufferState`在K前建立，fixed K与post-K BufferPlan产生后没有用同一builder重建。上述unit facts继续保留，
-但`event-resource-foundation`重新打开，必须闭合Q63/effect/target producer、pre-K→post-K invalidation/rebuild及schedule的真实consumer。
+- `MovementEventAction`用typed `Logical/DDRLoad/DDRStore/PeerTransfer` phase、exact payload-piece编号和selected physical hop形成stable ID；
+  multi-piece DDR显式形成store→load，external fanout形成一次root DDR load→所有root sends，relay形成parent completion→child issue。
+- `PeerTransferSiteId`把I的relay definition/use lifetime直接接到同一per-piece/hop event；resident source、relay和terminal storage没有按
+  action名或shape补owner。`CanonicalStoragePlan`不再同时登记一份粗粒度peer source use。
+- ordinary DDR phase使用all-worker closed domain与`NCCParticipant` obligation，participant在J选择worker后确定；peer hop只使用
+  `DirectDTE`。logical movement completion不伪装成硬件completion，缺少execution contract返回`Deferred`，unknown/effectful source
+  execution返回`Unsupported`，`CompletionProtocol::Unknown`不能进入ScheduleDomain。
+- current production contract producer从selected root的typed op/effect读取事实：memory-effect-free Linalg execution按current
+  structured-to-Tile-to-Instr合同产生worker-selectable ordered NCC issue；纯ViewLike execution明确没有async issue；其它operation不猜测。
+  final actual Instr仍由Q63 analysis重算completion并在full-feasibility做plan/actual parity。
+- exact route现在绑定`(peer graph actions, physical transfer hop)`，不会把一条logical action的route错误套到整棵relay/fanout graph；
+  route缺失时只有opaque estimate，不进入hard resource order。
+- unit直接覆盖rank-3 1024/1025/1031 execution、DDR、direct/relay、external fanout、exact route、storage lifetime、missing/unsupported
+  contract、unknown protocol与pre/post-K rebuild。worker/resource sequence、control linearization和latest-unavoidable completion placement仍由
+  `schedule-domain`拥有；本项没有放置wait/join。
+
+本轮fresh验证：相关9个suite 42/42、排除尚未归本项的future attention production fixture后普通host unit 923/923、default configured
+lit 225/225、4个public-header/link smoke、完整configured build、IR/source organization及diff检查全部通过。
 
 ### schedule-domain 专项调研：ready/resource successor、list proposals与bounds
 

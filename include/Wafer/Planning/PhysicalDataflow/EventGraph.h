@@ -51,17 +51,28 @@ struct ExecutionEventAction {
 
 /// One semantic transfer endpoint. `hop` comes from the selected movement
 /// realization; it is not a router path inferred by the scheduler.
+enum class MovementEventPhase : uint8_t {
+  Logical,
+  DDRLoad,
+  DDRStore,
+  PeerTransfer,
+};
+
 struct MovementEventAction {
   MovementActionId action;
+  MovementEventPhase phase = MovementEventPhase::Logical;
+  uint32_t payloadSlice = 0;
   std::optional<MovementHop> hop;
 
   friend bool operator==(const MovementEventAction &lhs,
                          const MovementEventAction &rhs) {
-    return lhs.action == rhs.action && lhs.hop == rhs.hop;
+    return lhs.action == rhs.action && lhs.phase == rhs.phase &&
+           lhs.payloadSlice == rhs.payloadSlice && lhs.hop == rhs.hop;
   }
   friend bool operator<(const MovementEventAction &lhs,
                         const MovementEventAction &rhs) {
-    return std::tie(lhs.action, lhs.hop) < std::tie(rhs.action, rhs.hop);
+    return std::tie(lhs.action, lhs.phase, lhs.payloadSlice, lhs.hop) <
+           std::tie(rhs.action, rhs.phase, rhs.payloadSlice, rhs.hop);
   }
 };
 
@@ -291,7 +302,8 @@ struct DisjunctiveResourceOrder {
 };
 
 enum class CompletionProtocol : uint8_t {
-  Synchronous,
+  Unknown,
+  NoAsynchronousCompletion,
   DirectDTE,
   NCCParticipant,
 };
@@ -299,7 +311,7 @@ enum class CompletionProtocol : uint8_t {
 struct CompletionObligation {
   EventId issue;
   EventId completion;
-  CompletionProtocol protocol = CompletionProtocol::Synchronous;
+  CompletionProtocol protocol = CompletionProtocol::Unknown;
   uint32_t participantMask = 0;
 
   friend bool operator==(const CompletionObligation &lhs,
@@ -335,7 +347,8 @@ struct ExecutionEventContract {
 /// Exact target routing is an explicit input fact. In its absence a selected
 /// peer hop remains an opaque endpoint transfer and cannot claim link use.
 struct ExactMovementRoute {
-  MovementActionId action;
+  std::vector<MovementActionId> graphActions;
+  MovementHop transfer;
   std::vector<MovementHop> links;
 };
 
@@ -414,6 +427,7 @@ enum class EventGraphFailureReason : uint8_t {
   HardDependencyCycle,
   EmptyWorkerDomain,
   MissingPlanFact,
+  UnsupportedExecutionContract,
   UnsupportedResourceRange,
   WorkLimit,
   MalformedPlan,
@@ -424,6 +438,13 @@ struct EventGraphFailure {
   EventGraphFailureReason reason = EventGraphFailureReason::MalformedPlan;
   std::vector<EventId> witness;
   std::string detail;
+};
+
+struct ExecutionEventContractResult {
+  std::vector<ExecutionEventContract> contracts;
+  std::optional<EventGraphFailure> failure;
+
+  bool succeeded() const { return !failure.has_value(); }
 };
 
 struct EventGraphBuildResult {
@@ -441,6 +462,13 @@ EventGraphBuildResult buildEventGraph(
     llvm::ArrayRef<ExecutionEventContract> executionContracts = {},
     llvm::ArrayRef<ExactMovementRoute> exactRoutes = {},
     const EventGraphLimits &limits = EventGraphLimits());
+
+/// Derives the current target-abstract completion contract for every selected
+/// execution from its typed structured root. Unknown implementations remain
+/// typed Unsupported and never become implicit synchronous work.
+ExecutionEventContractResult deriveExecutionEventContracts(
+    const SerializedExecutionPlan &serialized,
+    llvm::ArrayRef<analysis::RootRegionWork> rootWorks);
 
 } // namespace wafer::compiler::detail
 

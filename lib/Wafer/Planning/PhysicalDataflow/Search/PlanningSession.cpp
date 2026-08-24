@@ -592,6 +592,18 @@ PhysicalDataflowPlanningSession::getOrCreateEventGraph(
             {},
             std::get<BrokenSerializedExecutionPlan>(serializedOutcome).detail}};
 
+  auto rootWorks = rootWorkCache.find(buffers.getSpatialPlan());
+  if (rootWorks == rootWorkCache.end())
+    return {nullptr,
+            EventGraphFailure{EventGraphFailureKind::Deferred,
+                              EventGraphFailureReason::MissingPlanFact,
+                              {},
+                              "event graph transition lost root-work facts"}};
+  ExecutionEventContractResult contracts =
+      deriveExecutionEventContracts(*serialized, rootWorks->second);
+  if (!contracts.succeeded())
+    return {nullptr, std::move(contracts.failure)};
+
   CanonicalMovementCoordinate movement;
   movement.plan = buffers.getMovementPlan();
   movement.resources.assign(movementDomain.domain->getResources().begin(),
@@ -599,7 +611,7 @@ PhysicalDataflowPlanningSession::getOrCreateEventGraph(
   EventGraphBuildResult result = buildEventGraph(
       problem.getCardId(), buffers.getRegionPlan(), buffers.getTemporalPlan(),
       *serialized, movement, storageDomain.domain->getCanonicalCoordinate(),
-      buffers.getBufferPlan());
+      buffers.getBufferPlan(), contracts.contracts);
   if (!result.succeeded())
     return {nullptr,
             result.failure
@@ -618,6 +630,69 @@ PhysicalDataflowPlanningSession::getOrCreateEventGraph(
                               {},
                               "event graph cache changed during construction"}};
   ++work.eventGraphsBuilt;
+  return {&stored->second, {}};
+}
+
+PhysicalDataflowPlanningSession::EventGraphLookup
+PhysicalDataflowPlanningSession::getOrCreateEventGraph(
+    const BufferState &buffers) {
+  auto cached = postStructureEventGraphCache.find(buffers);
+  if (cached != postStructureEventGraphCache.end())
+    return {&cached->second, {}};
+  const InitialBufferState &initial =
+      buffers.getExecutionStructureState().getInitialBufferState();
+  StorageDomainLookup storageDomain =
+      getOrCreateStorageDomain(initial.getMovementState());
+  MovementDomainLookup movementDomain = getOrCreateMovementDomain(
+      initial.getMovementState().getRepresentationState());
+  if (!storageDomain.domain || !movementDomain.domain)
+    return {nullptr, EventGraphFailure{
+                         EventGraphFailureKind::Deferred,
+                         EventGraphFailureReason::MissingPlanFact,
+                         {},
+                         "post-structure event graph lost upstream domains"}};
+  CanonicalSerializedExecutionPlanOutcome serializedOutcome =
+      buildCanonicalSerializedExecutionPlan(initial.getRegionPlan(),
+                                            initial.getTemporalPlan());
+  const SerializedExecutionPlan *serialized =
+      getSerializedExecutionPlan(serializedOutcome);
+  auto rootWorks = rootWorkCache.find(initial.getSpatialPlan());
+  if (!serialized || rootWorks == rootWorkCache.end())
+    return {nullptr, EventGraphFailure{
+                         EventGraphFailureKind::Deferred,
+                         EventGraphFailureReason::MissingPlanFact,
+                         {},
+                         "post-structure event graph lost execution facts"}};
+  ExecutionEventContractResult contracts =
+      deriveExecutionEventContracts(*serialized, rootWorks->second);
+  if (!contracts.succeeded())
+    return {nullptr, std::move(contracts.failure)};
+  CanonicalMovementCoordinate movement;
+  movement.plan = initial.getMovementPlan();
+  movement.resources.assign(movementDomain.domain->getResources().begin(),
+                            movementDomain.domain->getResources().end());
+  EventGraphBuildResult result = buildEventGraph(
+      problem.getCardId(), initial.getRegionPlan(), initial.getTemporalPlan(),
+      *serialized, movement, storageDomain.domain->getCanonicalCoordinate(),
+      buffers.getBufferPlan(), contracts.contracts);
+  if (!result.succeeded())
+    return {nullptr,
+            result.failure
+                ? std::move(result.failure)
+                : std::optional<EventGraphFailure>(EventGraphFailure{
+                      EventGraphFailureKind::CompilerBug,
+                      EventGraphFailureReason::MalformedPlan,
+                      {},
+                      "post-structure event graph returned no outcome"})};
+  ++work.postStructureEventGraphsBuilt;
+  auto [stored, inserted] = postStructureEventGraphCache.try_emplace(
+      buffers, std::move(*result.graph));
+  if (!inserted)
+    return {nullptr, EventGraphFailure{
+                         EventGraphFailureKind::CompilerBug,
+                         EventGraphFailureReason::MalformedPlan,
+                         {},
+                         "post-structure event cache changed during build"}};
   return {&stored->second, {}};
 }
 
@@ -705,22 +780,32 @@ PhysicalDataflowPlanningSession::getOrCreateScheduleDomain(
                 fixedStorage.failure
                     ? fixedStorage.failure->detail
                     : "schedule transition lost fixed-structure storage"}};
+  EventGraphLookup postStructure = getOrCreateEventGraph(buffers);
+  if (!postStructure.graph)
+    return {nullptr,
+            ScheduleDomainFailure{
+                ScheduleDomainFailureKind::BrokenContract,
+                postStructure.failure
+                    ? postStructure.failure->detail
+                    : "schedule transition lost post-structure event facts"}};
+  const EventGraph &selectedEventGraph = *postStructure.graph;
   ScheduleDomainInput input;
   input.structure = buffers.getExecutionStructurePlan();
   input.buffers = buffers.getBufferPlan();
-  input.events.assign(eventGraph.getEvents().begin(),
-                      eventGraph.getEvents().end());
-  input.hardDependencies.assign(eventGraph.getHardDependencies().begin(),
-                                eventGraph.getHardDependencies().end());
-  input.orderChoices.assign(eventGraph.getOrderChoices().begin(),
-                            eventGraph.getOrderChoices().end());
+  input.events.assign(selectedEventGraph.getEvents().begin(),
+                      selectedEventGraph.getEvents().end());
+  input.hardDependencies.assign(
+      selectedEventGraph.getHardDependencies().begin(),
+      selectedEventGraph.getHardDependencies().end());
+  input.orderChoices.assign(selectedEventGraph.getOrderChoices().begin(),
+                            selectedEventGraph.getOrderChoices().end());
   input.completionObligations.assign(
-      eventGraph.getCompletionObligations().begin(),
-      eventGraph.getCompletionObligations().end());
-  input.resourceUses.assign(eventGraph.getResourceUses().begin(),
-                            eventGraph.getResourceUses().end());
-  input.components.assign(eventGraph.getComponents().begin(),
-                          eventGraph.getComponents().end());
+      selectedEventGraph.getCompletionObligations().begin(),
+      selectedEventGraph.getCompletionObligations().end());
+  input.resourceUses.assign(selectedEventGraph.getResourceUses().begin(),
+                            selectedEventGraph.getResourceUses().end());
+  input.components.assign(selectedEventGraph.getComponents().begin(),
+                          selectedEventGraph.getComponents().end());
   input.slotLifetimes.assign(
       fixedStorage.domain->getLifetimeRequirements().begin(),
       fixedStorage.domain->getLifetimeRequirements().end());

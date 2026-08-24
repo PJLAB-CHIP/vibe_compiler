@@ -2,6 +2,10 @@
 
 #include "Wafer/Planning/PhysicalDataflow/EventGraph.h"
 
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -26,8 +30,11 @@ EventId executionEvent(const ExecutionInstanceId &execution,
 }
 
 EventId movementEvent(const MovementActionId &action, PlannedEventKind kind,
+                      MovementEventPhase phase = MovementEventPhase::Logical,
+                      uint32_t payloadSlice = 0,
                       std::optional<MovementHop> hop = std::nullopt) {
-  return {MovementEventAction{action, std::move(hop)}, kind};
+  return {MovementEventAction{action, phase, payloadSlice, std::move(hop)},
+          kind};
 }
 
 EventGraphBuildResult failed(EventGraphFailureKind kind,
@@ -279,19 +286,23 @@ private:
             "execution completion contract has an unknown or duplicate action");
     }
     for (const ExactMovementRoute &route : exactRoutes) {
-      if (!movementActions.count(route.action) || route.links.empty() ||
-          !routes.try_emplace(route.action, &route).second)
+      auto graph =
+          llvm::find_if(movement.plan.peerGraphs,
+                        [&](const PeerTransferGraphPlan &candidate) {
+                          return candidate.actions == route.graphActions;
+                        });
+      if (graph == movement.plan.peerGraphs.end() || route.links.empty() ||
+          !llvm::is_contained(graph->hops, route.transfer) ||
+          !routes
+               .try_emplace(std::make_pair(route.graphActions, route.transfer),
+                            &route)
+               .second)
         return fail(
             EventGraphFailureKind::CompilerBug,
             EventGraphFailureReason::MalformedPlan,
             "exact movement route has an unknown, duplicate, or empty action");
-      const MovementActionDescription &description =
-          movementActions.at(route.action);
-      if (!description.resource->sourceTile ||
-          !description.resource->destinationTile ||
-          route.links.front().source != *description.resource->sourceTile ||
-          route.links.back().destination !=
-              *description.resource->destinationTile)
+      if (route.links.front().source != route.transfer.source ||
+          route.links.back().destination != route.transfer.destination)
         return fail(EventGraphFailureKind::CompilerBug,
                     EventGraphFailureReason::MalformedPlan,
                     "exact movement route disagrees with its endpoints");
@@ -360,26 +371,29 @@ private:
           executionEvent(execution, PlannedEventKind::Completion);
       llvm::ArrayRef<NCCWorker> workers;
       uint32_t participants = 0;
-      CompletionProtocol protocol = CompletionProtocol::Synchronous;
+      CompletionProtocol protocol = CompletionProtocol::Unknown;
       auto contract = executionContracts.find(execution);
-      if (contract != executionContracts.end()) {
-        workers = contract->second->workerDomain;
-        const NCCCompletionKind kind = contract->second->completion;
-        participants = contract->second->participantMask;
-        if ((kind == NCCCompletionKind::OrderedAsynchronousIssue ||
-             kind == NCCCompletionKind::SynchronousWriteback) &&
-            workers.empty())
-          return fail(EventGraphFailureKind::ExactRejection,
-                      EventGraphFailureReason::EmptyWorkerDomain,
-                      "worker-capable execution has an empty worker domain");
-        if (kind == NCCCompletionKind::ParticipantJoin &&
-            (participants == 0 || (participants & ~kAllNCCWorkersMask) != 0))
-          return fail(EventGraphFailureKind::CompilerBug,
-                      EventGraphFailureReason::MalformedPlan,
-                      "NCC participant completion has an invalid mask");
-        if (kind != NCCCompletionKind::None)
-          protocol = CompletionProtocol::NCCParticipant;
-      }
+      if (contract == executionContracts.end())
+        return fail(EventGraphFailureKind::Deferred,
+                    EventGraphFailureReason::MissingPlanFact,
+                    "execution has no typed completion contract");
+      workers = contract->second->workerDomain;
+      const NCCCompletionKind kind = contract->second->completion;
+      participants = contract->second->participantMask;
+      if ((kind == NCCCompletionKind::OrderedAsynchronousIssue ||
+           kind == NCCCompletionKind::SynchronousWriteback) &&
+          workers.empty())
+        return fail(EventGraphFailureKind::ExactRejection,
+                    EventGraphFailureReason::EmptyWorkerDomain,
+                    "worker-capable execution has an empty worker domain");
+      if (kind == NCCCompletionKind::ParticipantJoin &&
+          (participants == 0 || (participants & ~kAllNCCWorkersMask) != 0))
+        return fail(EventGraphFailureKind::CompilerBug,
+                    EventGraphFailureReason::MalformedPlan,
+                    "NCC participant completion has an invalid mask");
+      protocol = kind == NCCCompletionKind::None
+                     ? CompletionProtocol::NoAsynchronousCompletion
+                     : CompletionProtocol::NCCParticipant;
       if (!addEvent(issue, tile, workers) || !addEvent(completion, tile) ||
           !addDependency(issue, completion, EventDependencyReason::Completion))
         return false;
@@ -393,45 +407,167 @@ private:
   }
 
   bool addMovementEvents() {
+    llvm::SmallVector<NCCWorker, 3> allWorkers;
+    for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker)
+      allWorkers.push_back(static_cast<NCCWorker>(worker));
+
+    auto payloadCount =
+        [&](const MovementActionId &action) -> std::optional<uint32_t> {
+      auto resource = movementResources.find(action);
+      if (resource == movementResources.end())
+        return std::nullopt;
+      auto normalized =
+          analysis::normalizeFiniteExactIndexSet(resource->second->exactDomain);
+      if (mlir::failed(normalized) || normalized->getBoxes().empty() ||
+          normalized->getBoxes().size() > std::numeric_limits<uint32_t>::max())
+        return std::nullopt;
+      return static_cast<uint32_t>(normalized->getBoxes().size());
+    };
+
+    auto addLogicalAction = [&](const MovementActionId &action,
+                                std::optional<TileId> tile) {
+      return addEvent(movementEvent(action, PlannedEventKind::MovementIssue),
+                      tile) &&
+             addEvent(movementEvent(action, PlannedEventKind::Completion),
+                      tile);
+    };
+
+    auto addDDRPhase =
+        [&](const MovementActionId &action, MovementEventPhase phase,
+            uint32_t payloadSlice,
+            TileId tile) -> std::optional<std::pair<EventId, EventId>> {
+      EventId logicalIssue =
+          movementEvent(action, PlannedEventKind::MovementIssue);
+      EventId logicalCompletion =
+          movementEvent(action, PlannedEventKind::Completion);
+      EventId issue = movementEvent(action, PlannedEventKind::MovementIssue,
+                                    phase, payloadSlice);
+      EventId completion = movementEvent(action, PlannedEventKind::Completion,
+                                         phase, payloadSlice);
+      if (!addEvent(issue, tile, allWorkers) || !addEvent(completion, tile) ||
+          !addDependency(logicalIssue, issue,
+                         EventDependencyReason::TransferReady) ||
+          !addDependency(issue, completion,
+                         EventDependencyReason::Completion) ||
+          !addDependency(completion, logicalCompletion,
+                         EventDependencyReason::Completion))
+        return std::nullopt;
+      completions.insert(
+          {issue, completion, CompletionProtocol::NCCParticipant, 0});
+      addResourceUse(issue, CardDDRResource{card}, ResourceUseMode::Exclusive,
+                     completion);
+      addResourceUse(issue, TileDTEEngineResource{tile},
+                     ResourceUseMode::Exclusive, completion);
+      addResourceUse(issue, ControlResource{tile}, ResourceUseMode::Exclusive,
+                     completion);
+      return std::pair<EventId, EventId>{issue, completion};
+    };
+
     for (const auto &[action, description] : movementActions) {
       const std::optional<TileId> source = description.resource->sourceTile;
       const std::optional<TileId> destination =
           description.resource->destinationTile;
       const std::optional<TileId> scope = destination ? destination : source;
-      EventId issue = movementEvent(action, PlannedEventKind::MovementIssue);
-      EventId completion = movementEvent(action, PlannedEventKind::Completion);
-      if (!addEvent(issue, scope) || !addEvent(completion, scope))
+      if (!addLogicalAction(action, scope))
         return false;
-
-      EventId chainTail = issue;
-      llvm::ArrayRef<MovementHop> hops;
       if (description.peerGraph)
-        hops = description.peerGraph->hops;
-      if (!hops.empty()) {
-        if ((source && hops.front().source != *source) ||
-            (destination && hops.back().destination != *destination))
-          return fail(EventGraphFailureKind::CompilerBug,
-                      EventGraphFailureReason::MalformedPlan,
-                      "movement hop endpoints disagree with its resource");
-        for (auto indexedHop : llvm::enumerate(hops)) {
-          const MovementHop &hop = indexedHop.value();
-          if (hop.source == hop.destination ||
-              (indexedHop.index() > 0 &&
-               hops[indexedHop.index() - 1].destination != hop.source))
+        continue;
+
+      std::optional<uint32_t> pieces = payloadCount(action);
+      if (!pieces)
+        return fail(EventGraphFailureKind::Unsupported,
+                    EventGraphFailureReason::UnsupportedResourceRange,
+                    "DDR movement has no finite exact payload cover");
+      for (uint32_t payloadSlice = 0; payloadSlice < *pieces; ++payloadSlice) {
+        if (std::holds_alternative<ExternalLoadId>(action)) {
+          if (!destination || !addDDRPhase(action, MovementEventPhase::DDRLoad,
+                                           payloadSlice, *destination))
+            return false;
+        } else if (std::holds_alternative<ResultPublicationId>(action)) {
+          if (!source || !addDDRPhase(action, MovementEventPhase::DDRStore,
+                                      payloadSlice, *source))
+            return false;
+        } else {
+          if (!source || !destination)
             return fail(EventGraphFailureKind::CompilerBug,
                         EventGraphFailureReason::MalformedPlan,
-                        "movement relay chain is discontinuous");
-          EventId hopIssue =
-              movementEvent(action, PlannedEventKind::MovementIssue, hop);
-          EventId hopCompletion =
-              movementEvent(action, PlannedEventKind::Completion, hop);
+                        "DDR movement has incomplete endpoints");
+          auto store = addDDRPhase(action, MovementEventPhase::DDRStore,
+                                   payloadSlice, *source);
+          auto load = addDDRPhase(action, MovementEventPhase::DDRLoad,
+                                  payloadSlice, *destination);
+          if (!store || !load ||
+              !addDependency(store->second, load->first,
+                             EventDependencyReason::TransferReady))
+            return false;
+        }
+      }
+
+      if (description.publication) {
+        EventId observable =
+            movementEvent(action, PlannedEventKind::ObservableWrite);
+        EventId completion =
+            movementEvent(action, PlannedEventKind::Completion);
+        if (!addEvent(observable, std::nullopt) ||
+            !addDependency(completion, observable,
+                           EventDependencyReason::Publication))
+          return false;
+      }
+    }
+
+    std::set<std::vector<MovementActionId>> emittedGraphs;
+    for (const auto &[action, description] : movementActions) {
+      if (!description.peerGraph ||
+          !emittedGraphs.insert(description.peerGraph->actions).second)
+        continue;
+      const PeerTransferGraphPlan &graph = *description.peerGraph;
+      const MovementActionId anchor = graph.actions.front();
+      std::map<int64_t, MovementHop> incoming;
+      std::set<int64_t> roots;
+      for (const MovementHop &hop : graph.hops) {
+        roots.insert(hop.source.getValue());
+        if (!incoming.try_emplace(hop.destination.getValue(), hop).second)
+          return fail(EventGraphFailureKind::CompilerBug,
+                      EventGraphFailureReason::MalformedPlan,
+                      "peer graph gives one Tile multiple parents");
+      }
+      for (const auto &[tile, hop] : incoming) {
+        (void)hop;
+        roots.erase(tile);
+      }
+      if (roots.size() != 1)
+        return fail(EventGraphFailureKind::CompilerBug,
+                    EventGraphFailureReason::MalformedPlan,
+                    "peer graph does not have one root");
+      const int64_t root = *roots.begin();
+      std::optional<uint32_t> pieces = payloadCount(anchor);
+      if (!pieces)
+        return fail(EventGraphFailureKind::Unsupported,
+                    EventGraphFailureReason::UnsupportedResourceRange,
+                    "peer movement has no finite exact payload cover");
+
+      for (uint32_t payloadSlice = 0; payloadSlice < *pieces; ++payloadSlice)
+        for (const MovementHop &hop : graph.hops) {
+          EventId hopIssue = movementEvent(
+              anchor, PlannedEventKind::MovementIssue,
+              MovementEventPhase::PeerTransfer, payloadSlice, hop);
+          EventId hopCompletion = movementEvent(
+              anchor, PlannedEventKind::Completion,
+              MovementEventPhase::PeerTransfer, payloadSlice, hop);
           if (!addEvent(hopIssue, hop.source) ||
               !addEvent(hopCompletion, hop.destination) ||
-              !addDependency(chainTail, hopIssue,
-                             EventDependencyReason::TransferReady) ||
               !addDependency(hopIssue, hopCompletion,
                              EventDependencyReason::Completion))
             return false;
+          auto parent = incoming.find(hop.source.getValue());
+          if (parent != incoming.end()) {
+            EventId parentCompletion = movementEvent(
+                anchor, PlannedEventKind::Completion,
+                MovementEventPhase::PeerTransfer, payloadSlice, parent->second);
+            if (!addDependency(parentCompletion, hopIssue,
+                               EventDependencyReason::TransferReady))
+              return false;
+          }
           completions.insert(
               {hopIssue, hopCompletion, CompletionProtocol::DirectDTE, 0});
           addResourceUse(hopIssue, TileDTEEngineResource{hop.source},
@@ -441,53 +577,72 @@ private:
           addResourceUse(hopIssue, OpaqueNoCTransferResource{hop},
                          ResourceUseMode::CapacityUnits, hopCompletion,
                          ResourceKnowledge::Estimate);
+          auto exact = routes.find(std::make_pair(graph.actions, hop));
+          if (exact != routes.end())
+            for (const MovementHop &link : exact->second->links)
+              addResourceUse(hopIssue, DirectedNoCLinkResource{link},
+                             ResourceUseMode::Exclusive, hopCompletion);
           addResourceUse(hopIssue, ControlResource{hop.source},
                          ResourceUseMode::Exclusive, hopCompletion);
-          chainTail = hopCompletion;
         }
-      } else if (description.gather && source && destination &&
-                 *source == *destination) {
-        EventId combine = movementEvent(action, PlannedEventKind::LocalCombine);
-        if (!addEvent(combine, destination) ||
-            !addDependency(issue, combine,
-                           EventDependencyReason::TransferReady))
-          return false;
-        chainTail = combine;
-      }
-      if (!addDependency(chainTail, completion,
-                         EventDependencyReason::Completion))
-        return false;
-      completions.insert({issue, completion,
-                          hops.empty() ? CompletionProtocol::Synchronous
-                                       : CompletionProtocol::DirectDTE,
-                          0});
-      auto exact = routes.find(action);
-      if (exact != routes.end())
-        for (const MovementHop &link : exact->second->links)
-          addResourceUse(issue, DirectedNoCLinkResource{link},
-                         ResourceUseMode::Exclusive, completion);
 
-      if (!description.peerGraph || (hops.empty() && !description.gather)) {
-        addResourceUse(issue, CardDDRResource{card}, ResourceUseMode::Exclusive,
-                       completion);
-        if (source)
-          addResourceUse(issue, TileDTEEngineResource{*source},
-                         ResourceUseMode::Exclusive, completion);
-        if (destination && (!source || *source != *destination))
-          addResourceUse(issue, TileDTEEngineResource{*destination},
-                         ResourceUseMode::Exclusive, completion);
-      }
-      if (scope)
-        addResourceUse(issue, ControlResource{*scope},
-                       ResourceUseMode::Exclusive, completion);
-
-      if (description.publication) {
-        EventId observable =
-            movementEvent(action, PlannedEventKind::ObservableWrite);
-        if (!addEvent(observable, std::nullopt) ||
-            !addDependency(completion, observable,
-                           EventDependencyReason::Publication))
-          return false;
+      for (const MovementActionId &member : graph.actions) {
+        auto selected = movementActions.find(member);
+        if (selected == movementActions.end() ||
+            !selected->second.resource->destinationTile)
+          return fail(EventGraphFailureKind::CompilerBug,
+                      EventGraphFailureReason::MalformedPlan,
+                      "peer graph member has no terminal resource");
+        EventId issue = movementEvent(member, PlannedEventKind::MovementIssue);
+        EventId completion =
+            movementEvent(member, PlannedEventKind::Completion);
+        const int64_t terminal =
+            selected->second.resource->destinationTile->getValue();
+        if (graph.kind == PeerTransferGraphKind::ExternalLoadFanout &&
+            graph.ddrRoot && member == MovementActionId(*graph.ddrRoot)) {
+          if (terminal != root)
+            return fail(EventGraphFailureKind::CompilerBug,
+                        EventGraphFailureReason::MalformedPlan,
+                        "external peer root and DDR endpoint disagree");
+          for (uint32_t payloadSlice = 0; payloadSlice < *pieces;
+               ++payloadSlice) {
+            auto load = addDDRPhase(member, MovementEventPhase::DDRLoad,
+                                    payloadSlice, TileId(root));
+            if (!load)
+              return false;
+            for (const MovementHop &hop : graph.hops)
+              if (hop.source.getValue() == root) {
+                EventId hopIssue = movementEvent(
+                    anchor, PlannedEventKind::MovementIssue,
+                    MovementEventPhase::PeerTransfer, payloadSlice, hop);
+                if (!addDependency(load->second, hopIssue,
+                                   EventDependencyReason::TransferReady))
+                  return false;
+              }
+          }
+          continue;
+        }
+        auto terminalHop = incoming.find(terminal);
+        if (terminalHop == incoming.end())
+          return fail(EventGraphFailureKind::CompilerBug,
+                      EventGraphFailureReason::MalformedPlan,
+                      "peer graph does not reach one member terminal");
+        for (uint32_t payloadSlice = 0; payloadSlice < *pieces;
+             ++payloadSlice) {
+          EventId terminalIssue =
+              movementEvent(anchor, PlannedEventKind::MovementIssue,
+                            MovementEventPhase::PeerTransfer, payloadSlice,
+                            terminalHop->second);
+          EventId terminalCompletion =
+              movementEvent(anchor, PlannedEventKind::Completion,
+                            MovementEventPhase::PeerTransfer, payloadSlice,
+                            terminalHop->second);
+          if (!addDependency(issue, terminalIssue,
+                             EventDependencyReason::TransferReady) ||
+              !addDependency(terminalCompletion, completion,
+                             EventDependencyReason::Completion))
+            return false;
+        }
       }
     }
     return true;
@@ -499,6 +654,17 @@ private:
       EventId event = executionEvent(
           *execution, completion ? PlannedEventKind::Completion
                                  : PlannedEventKind::ComputeIssue);
+      return events.count(event) ? std::optional<EventId>(event) : std::nullopt;
+    }
+    if (const auto *transfer = std::get_if<PeerTransferSiteId>(&site)) {
+      if (transfer->graphActions.empty())
+        return std::nullopt;
+      EventId event =
+          movementEvent(transfer->graphActions.front(),
+                        completion ? PlannedEventKind::Completion
+                                   : PlannedEventKind::MovementIssue,
+                        MovementEventPhase::PeerTransfer,
+                        transfer->payloadSlice, transfer->hop);
       return events.count(event) ? std::optional<EventId>(event) : std::nullopt;
     }
     const MovementActionId &action = std::get<MovementActionId>(site);
@@ -517,12 +683,18 @@ private:
                  ? std::nullopt
                  : std::optional<StorageObjectId>(selected->second);
     }
-    const ReductionGatherId &gather =
-        std::get<ReductionGatherStagingId>(semantic.origin).gather;
-    auto selected = selectedGatherObjects.find(gather);
-    return selected == selectedGatherObjects.end()
-               ? std::nullopt
-               : std::optional<StorageObjectId>(selected->second);
+    if (const auto *gather =
+            std::get_if<ReductionGatherStagingId>(&semantic.origin)) {
+      auto selected = selectedGatherObjects.find(gather->gather);
+      return selected == selectedGatherObjects.end()
+                 ? std::nullopt
+                 : std::optional<StorageObjectId>(selected->second);
+    }
+    return llvm::any_of(
+               buffers.storageObjects,
+               [&](const auto &object) { return object.id == semantic; })
+               ? std::optional<StorageObjectId>(semantic)
+               : std::nullopt;
   }
 
   std::optional<TileId> selectedTile(const StorageObjectId &object) const {
@@ -797,7 +969,9 @@ private:
   std::map<MovementActionId, const MovementResourceDescription *>
       movementResources;
   std::map<MovementActionId, MovementActionDescription> movementActions;
-  std::map<MovementActionId, const ExactMovementRoute *> routes;
+  std::map<std::pair<std::vector<MovementActionId>, MovementHop>,
+           const ExactMovementRoute *>
+      routes;
   std::set<StorageObjectId> semanticObjects;
   std::set<StorageObjectId> selectedObjects;
   std::map<StorageObjectId, const StorageResourceDescription *>
@@ -819,6 +993,73 @@ private:
 };
 
 } // namespace event_graph_detail
+
+ExecutionEventContractResult deriveExecutionEventContracts(
+    const SerializedExecutionPlan &serialized,
+    llvm::ArrayRef<analysis::RootRegionWork> rootWorks) {
+  std::map<analysis::RootRegionWorkId, mlir::Operation *> roots;
+  for (const analysis::RootRegionWork &work : rootWorks)
+    if (!work.rootOperation ||
+        !roots.try_emplace(work.id, work.rootOperation).second)
+      return {{},
+              EventGraphFailure{EventGraphFailureKind::CompilerBug,
+                                EventGraphFailureReason::MalformedPlan,
+                                {},
+                                "execution contracts have malformed root "
+                                "work"}};
+  ExecutionEventContractResult result;
+  for (const ExecutionInstanceId &execution : serialized.executions) {
+    analysis::RootRegionWorkId work = std::visit(
+        [](const auto &source) { return source.work; }, execution.source);
+    auto operation = roots.find(work);
+    if (operation == roots.end())
+      return {{},
+              EventGraphFailure{EventGraphFailureKind::CompilerBug,
+                                EventGraphFailureReason::MalformedPlan,
+                                {},
+                                "execution contract has no typed root"}};
+    ExecutionEventContract contract;
+    contract.execution = execution;
+    if (!mlir::isMemoryEffectFree(operation->second))
+      return {{},
+              EventGraphFailure{
+                  EventGraphFailureKind::Unsupported,
+                  EventGraphFailureReason::UnsupportedExecutionContract,
+                  {},
+                  "effectful structured execution needs an explicit event "
+                  "contract"}};
+    if (mlir::isa<mlir::linalg::LinalgOp>(operation->second)) {
+      for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker)
+        contract.workerDomain.push_back(static_cast<NCCWorker>(worker));
+      contract.completion = NCCCompletionKind::OrderedAsynchronousIssue;
+    } else if (mlir::isa<mlir::ViewLikeOpInterface>(operation->second)) {
+      contract.completion = NCCCompletionKind::None;
+    } else {
+      return {{},
+              EventGraphFailure{
+                  EventGraphFailureKind::Unsupported,
+                  EventGraphFailureReason::UnsupportedExecutionContract,
+                  {},
+                  "selected execution has no target completion contract"}};
+    }
+    result.contracts.push_back(std::move(contract));
+  }
+  llvm::sort(result.contracts, [](const ExecutionEventContract &lhs,
+                                  const ExecutionEventContract &rhs) {
+    return lhs.execution < rhs.execution;
+  });
+  if (std::adjacent_find(result.contracts.begin(), result.contracts.end(),
+                         [](const ExecutionEventContract &lhs,
+                            const ExecutionEventContract &rhs) {
+                           return lhs.execution == rhs.execution;
+                         }) != result.contracts.end())
+    return {{},
+            EventGraphFailure{EventGraphFailureKind::CompilerBug,
+                              EventGraphFailureReason::MalformedPlan,
+                              {},
+                              "execution contracts contain duplicates"}};
+  return result;
+}
 
 bool EventGraph::contains(const EventId &event) const {
   auto found = std::lower_bound(

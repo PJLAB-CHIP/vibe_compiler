@@ -174,7 +174,7 @@ struct CompletionPlacement {
   EventId issue;
   EventId completion;
   EventBoundaryId boundary;
-  CompletionProtocol protocol = CompletionProtocol::Synchronous;
+  CompletionProtocol protocol = CompletionProtocol::Unknown;
   uint32_t participantMask = 0;
 
   friend bool operator==(const CompletionPlacement &lhs,

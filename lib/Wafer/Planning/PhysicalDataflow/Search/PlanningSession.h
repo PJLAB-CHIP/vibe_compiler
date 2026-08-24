@@ -55,6 +55,7 @@ struct PlanningWorkCounts {
   uint64_t indeterminateStorageChoices = 0;
   uint64_t eventGraphQueries = 0;
   uint64_t eventGraphsBuilt = 0;
+  uint64_t postStructureEventGraphsBuilt = 0;
   uint64_t executionStructureQueries = 0;
   uint64_t executionStructureSuccessorSteps = 0;
   uint64_t executionStructureStatesQueued = 0;
@@ -557,6 +558,7 @@ private:
   };
 
   EventGraphLookup getOrCreateEventGraph(const InitialBufferState &buffers);
+  EventGraphLookup getOrCreateEventGraph(const BufferState &buffers);
 
   struct ExecutionStructureDomainLookup {
     ExecutionStructureDomain *domain = nullptr;
@@ -598,6 +600,7 @@ private:
   std::map<RepresentationState, MovementDomain> movementDomainCache;
   std::map<MovementState, StorageDomain> storageDomainCache;
   std::map<InitialBufferState, EventGraph> eventGraphCache;
+  std::map<BufferState, EventGraph> postStructureEventGraphCache;
   std::map<InitialBufferState, ExecutionStructureDomain>
       executionStructureDomainCache;
   std::map<ExecutionStructureState, StructureSpecificStorageDomain>

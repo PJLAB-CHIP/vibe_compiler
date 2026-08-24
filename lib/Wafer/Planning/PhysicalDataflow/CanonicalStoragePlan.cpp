@@ -565,10 +565,11 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
     MovementActionId action = transfer.id;
     if (!checkResource(*destination, action))
       break;
-    builder.use(*source, StorageAccessSite{action});
     if (std::holds_alternative<ExecutionResultValueId>(
             transfer.source.logicalValue))
       carriedExecutionResults.insert(transfer.source);
+    if (!peerGraphs.count(action))
+      builder.use(*source, StorageAccessSite{action});
     builder.define(*destination, StorageAccessSite{std::move(action)});
   }
   if (builder.failure)
@@ -597,7 +598,6 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
     MovementActionId action = gather.id;
     if (!checkResource(*source, action))
       break;
-    builder.use(*source, StorageAccessSite{action});
     gatheredSources.insert(gather.source);
 
     const MovementResourceDescription &movement = actionResource(action);
@@ -607,6 +607,8 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
         movement.elementType, source->resource.encoding);
     if (!staging)
       break;
+    if (!peerGraphs.count(action))
+      builder.use(*source, StorageAccessSite{action});
     builder.define(*staging, StorageAccessSite{action});
     builder.use(*staging, StorageAccessSite{gather.mergeExecution});
     builder.coordinate.plan.gatherStagingBindings.push_back(

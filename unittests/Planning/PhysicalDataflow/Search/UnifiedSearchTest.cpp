@@ -69,6 +69,8 @@ TEST(UnifiedSearchTest,
   EXPECT_EQ(searched.control.coverage,
             SearchControllerCoverage::FeasiblePartial);
   EXPECT_EQ(searched.work.candidateActualizations, 1u);
+  EXPECT_GE(searched.planning.eventGraphsBuilt, 1u);
+  EXPECT_GE(searched.planning.postStructureEventGraphsBuilt, 1u);
   EXPECT_EQ(searched.control.statistics.accepted, 1u);
   EXPECT_GT(searched.work.successorSteps, 8u);
   EXPECT_EQ(print(parsed.module->getOperation()), before);

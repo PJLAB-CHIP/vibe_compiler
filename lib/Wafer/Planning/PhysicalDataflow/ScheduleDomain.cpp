@@ -480,6 +480,12 @@ ScheduleDomainResult buildScheduleDomain(ScheduleDomainInput input,
           input.slotLifetimes.end())
     return failed(ScheduleDomainFailureKind::BrokenContract,
                   "schedule completion or slot lifetime facts are duplicated");
+  for (const CompletionObligation &obligation : input.completionObligations)
+    if (obligation.protocol == CompletionProtocol::Unknown ||
+        !eventIds.count(obligation.issue) ||
+        !eventIds.count(obligation.completion))
+      return failed(ScheduleDomainFailureKind::BrokenContract,
+                    "schedule completion protocol is unknown or unbound");
   for (const EventDependency &dependency : input.hardDependencies)
     if (!eventIds.count(dependency.predecessor) ||
         !eventIds.count(dependency.successor) ||
