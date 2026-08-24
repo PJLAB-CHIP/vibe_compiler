@@ -2,8 +2,6 @@
 
 #include "Wafer/Planning/Search/UnifiedPhysicalDataflow.h"
 
-#include "Wafer/Planning/Search/BufferingApply.h"
-
 #include <type_traits>
 #include <variant>
 
@@ -372,46 +370,6 @@ UnifiedPhysicalDataflowDomain::materialize(
       assignment.coupled, *temporal, assignment.temporal, *representation,
       assignment.representation, implementation, assignment.implementation,
       *movement, assignment.movement, failureReason);
-}
-
-mlir::FailureOr<std::vector<llvm::SmallVector<SelectedBufferingScope, 4>>>
-UnifiedPhysicalDataflowDomain::buildBufferingScopes(
-    const UnifiedPhysicalDataflowAssignment &assignment,
-    std::string *failureReason) const {
-  if (!contains(assignment))
-    return mlir::failure();
-  auto closed = getSpatialDemand(assignment.spatial, failureReason);
-  if (mlir::failed(closed))
-    return mlir::failure();
-  auto coupled = CoupledRegionDomain::create(program.dag, closed->spatial,
-                                             closed->demand, failureReason);
-  if (mlir::failed(coupled))
-    return mlir::failure();
-  auto temporal = CardTemporalDomain::create(
-      program.dag, spatial.getNodePlacements(assignment.spatial),
-      failureReason);
-  if (mlir::failed(temporal))
-    return mlir::failure();
-  auto representation = CardPhysicalRepresentationDomain::create(
-      program, closed->spatial, closed->demand, *coupled, assignment.coupled,
-      *temporal, assignment.temporal, failureReason);
-  if (mlir::failed(representation))
-    return mlir::failure();
-  auto movement = CardDataMovementDomain::create(
-      program, cardId, closed->spatial, closed->demand, *coupled,
-      assignment.coupled, *temporal, assignment.temporal, *representation,
-      assignment.representation, failureReason);
-  if (mlir::failed(movement))
-    return mlir::failure();
-  auto buffering = CardBufferingDomain::create(
-      program, closed->spatial, closed->demand, *coupled, assignment.coupled,
-      *temporal, assignment.temporal, *representation,
-      assignment.representation, *movement, assignment.movement, failureReason);
-  if (mlir::failed(buffering))
-    return mlir::failure();
-  return buildSelectedBufferingScopes(program, *buffering, assignment.buffering,
-                                      *movement, assignment.movement,
-                                      program.availableTileIds, failureReason);
 }
 
 } // namespace wafer::compiler::detail

@@ -31,8 +31,26 @@ struct ReductionGatherStagingId {
   }
 };
 
+struct PeerRelayStorageId {
+  std::vector<MovementActionId> graphActions;
+  uint32_t payloadSlice = 0;
+  TileId tile{0};
+
+  friend bool operator==(const PeerRelayStorageId &lhs,
+                         const PeerRelayStorageId &rhs) {
+    return lhs.graphActions == rhs.graphActions &&
+           lhs.payloadSlice == rhs.payloadSlice && lhs.tile == rhs.tile;
+  }
+  friend bool operator<(const PeerRelayStorageId &lhs,
+                        const PeerRelayStorageId &rhs) {
+    return std::tuple(lhs.graphActions, lhs.payloadSlice, lhs.tile.getValue()) <
+           std::tuple(rhs.graphActions, rhs.payloadSlice, rhs.tile.getValue());
+  }
+};
+
 using StorageObjectOrigin =
-    std::variant<PhysicalVersionId, ReductionGatherStagingId>;
+    std::variant<PhysicalVersionId, ReductionGatherStagingId,
+                 PeerRelayStorageId>;
 
 struct StorageObjectId {
   StorageObjectOrigin origin;
@@ -180,7 +198,25 @@ struct BufferPlan {
   }
 };
 
-using StorageAccessSite = std::variant<ExecutionInstanceId, MovementActionId>;
+struct PeerTransferSiteId {
+  std::vector<MovementActionId> graphActions;
+  uint32_t payloadSlice = 0;
+  MovementHop hop;
+
+  friend bool operator==(const PeerTransferSiteId &lhs,
+                         const PeerTransferSiteId &rhs) {
+    return lhs.graphActions == rhs.graphActions &&
+           lhs.payloadSlice == rhs.payloadSlice && lhs.hop == rhs.hop;
+  }
+  friend bool operator<(const PeerTransferSiteId &lhs,
+                        const PeerTransferSiteId &rhs) {
+    return std::tie(lhs.graphActions, lhs.payloadSlice, lhs.hop) <
+           std::tie(rhs.graphActions, rhs.payloadSlice, rhs.hop);
+  }
+};
+
+using StorageAccessSite =
+    std::variant<ExecutionInstanceId, MovementActionId, PeerTransferSiteId>;
 
 struct StorageResourceDescription {
   StorageObjectId object;

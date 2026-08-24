@@ -717,4 +717,98 @@ TEST_F(CanonicalStoragePlanTest,
   EXPECT_NE(getCanonicalStorageCoordinate(repeated), nullptr);
 }
 
+TEST_F(CanonicalStoragePlanTest,
+       PeerRelayCreatesOneTypedObjectPerExactPayloadPiece) {
+  for (int64_t major : {1024, 1025}) {
+    SemanticRootKey sourceRoot;
+    RootRegionWorkId sourceWork{sourceRoot, TileId(0)};
+    LogicalShardId sourceShard{sourceRoot, {0}};
+    ExecutionInstanceId sourceExecution{
+        RequiredRootExecution{sourceWork, sourceShard}};
+    PhysicalVersionId source{ExecutionResultValueId{sourceExecution, 0}};
+
+    SemanticRootKey destinationRoot;
+    destinationRoot.anchorIndex = 1;
+    RootRegionWorkId destinationWork{destinationRoot, TileId(2)};
+    LogicalShardId destinationShard{destinationRoot, {0}};
+    ExecutionInstanceId destinationExecution{
+        RequiredRootExecution{destinationWork, destinationShard}};
+    DemandFragmentId fragment;
+    fragment.source.kind = RootBoundaryKind::StructuredResult;
+    fragment.source.semantic = sourceRoot;
+    fragment.ownerShard = sourceShard;
+    fragment.ownerTile = TileId(0);
+    fragment.use = {0, destinationShard};
+    BoundaryRegionValueId destinationLogical{destinationWork, fragment};
+    PhysicalVersionId destination{destinationLogical};
+
+    const int64_t firstMajor = major / 2;
+    std::vector<StaticRectangularIndexSet> boxes{
+        {{0, 0, 0}, {2, firstMajor, 128}},
+        {{0, firstMajor, 0}, {2, major - firstMajor, 128}}};
+    IndexSetResult first = IndexRelation::staticRectangularDomain(
+        boxes.front().offsets, boxes.front().sizes);
+    IndexSetResult second = IndexRelation::staticRectangularDomain(
+        boxes.back().offsets, boxes.back().sizes);
+    ASSERT_TRUE(first.isExact());
+    ASSERT_TRUE(second.isExact());
+    first.set->unionInPlace(*second.set);
+    ExactIndexSet payload(std::move(*first.set), ExactIndexSetForm::BoxUnion,
+                          boxes);
+
+    CanonicalRepresentationCoordinate representations;
+    representations.plan.logicalValues = {
+        {source.logicalValue, source}, {destination.logicalValue, destination}};
+    representations.plan.physicalVersions = {
+        {source, wafer::MemLayout::Tensor},
+        {destination, wafer::MemLayout::Tensor}};
+    representations.resources = {
+        {source, payload, mlir::Float16Type::get(context.get()),
+         wafer::MemLayout::Tensor},
+        {destination, payload, mlir::Float16Type::get(context.get()),
+         wafer::MemLayout::Tensor}};
+    llvm::sort(representations.plan.logicalValues);
+    llvm::sort(representations.plan.physicalVersions);
+    llvm::sort(representations.resources, [](const auto &lhs, const auto &rhs) {
+      return lhs.version < rhs.version;
+    });
+
+    DDRBoundaryTransferId transferId{destinationLogical};
+    CanonicalMovementCoordinate movement;
+    movement.plan.ddrTransfers.push_back({transferId, source, destination});
+    movement.plan.peerGraphs.push_back(
+        {PeerTransferGraphKind::SoftwareRelay,
+         {{TileId(0), TileId(1)}, {TileId(1), TileId(2)}},
+         {MovementActionId(transferId)}});
+    movement.resources.push_back({MovementActionId(transferId), payload,
+                                  mlir::Float16Type::get(context.get()),
+                                  TileId(0), TileId(2)});
+    SerializedExecutionPlan serialized{{sourceExecution, destinationExecution}};
+    CanonicalStoragePlanOutcome outcome =
+        buildCanonicalStoragePlan(representations, movement, serialized);
+    const CanonicalStorageCoordinate *storage =
+        getCanonicalStorageCoordinate(outcome);
+    ASSERT_NE(storage, nullptr) << std::get<BrokenStoragePlan>(outcome).detail;
+    size_t relayObjects = 0;
+    for (const StorageObjectPlan &object : storage->plan.storageObjects)
+      if (const auto *relay =
+              std::get_if<PeerRelayStorageId>(&object.id.origin)) {
+        ++relayObjects;
+        EXPECT_EQ(relay->tile, TileId(1));
+        EXPECT_LT(relay->payloadSlice, 2u);
+        auto lifetime =
+            llvm::find_if(storage->lifetimes, [&](const auto &candidate) {
+              return candidate.object == object.id;
+            });
+        ASSERT_NE(lifetime, storage->lifetimes.end());
+        EXPECT_TRUE(
+            std::holds_alternative<PeerTransferSiteId>(lifetime->definition));
+        ASSERT_EQ(lifetime->uses.size(), 1u);
+        EXPECT_TRUE(
+            std::holds_alternative<PeerTransferSiteId>(lifetime->uses.front()));
+      }
+    EXPECT_EQ(relayObjects, 2u);
+  }
+}
+
 } // namespace

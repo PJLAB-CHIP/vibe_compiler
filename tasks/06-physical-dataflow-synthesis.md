@@ -605,6 +605,8 @@ current initial storage domain从G physical versions与H movement actions建立f
 ReuseAfterCompletion edges及`1..U` slot families。U只来自显式occurrence/selector requirement，不读取SPM capacity或buffer bytes；builder
 按selected multiplicity直接创建objects并由caller occurrence做modulo lookup，不扫描actual loop。该plan属于pre-K
 `InitialBufferState`，execution structure变化后必须由structure-specific-storage重闭。
+H peer graph的每个internal relay和exact payload piece也有typed storage owner；multi-axis coordinates按selected axis permutation做checked
+slot lookup。actual verifier只按current allocation、definition/use、matching completion和release判断lifetime，不从slot名或结构边界推断。
 
 完整assignment的唯一资源边界是actual candidate transaction：
 

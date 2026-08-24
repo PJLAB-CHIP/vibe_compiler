@@ -52,6 +52,7 @@ struct PlanningWorkCounts {
   uint64_t storageSuccessorSteps = 0;
   uint64_t storageStatesQueued = 0;
   uint64_t unsupportedStorageChoices = 0;
+  uint64_t indeterminateStorageChoices = 0;
   uint64_t eventGraphQueries = 0;
   uint64_t eventGraphsBuilt = 0;
   uint64_t executionStructureQueries = 0;
@@ -306,6 +307,7 @@ private:
 enum class StorageExpansionKind : uint8_t {
   State,
   Unsupported,
+  Indeterminate,
   ParentExhausted,
   CompilerBug,
 };

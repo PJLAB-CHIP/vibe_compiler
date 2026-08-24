@@ -8,6 +8,7 @@
 #include "Wafer/Planning/PhysicalDataflow/CanonicalStoragePlan.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
+#include "Wafer/Planning/PhysicalDataflow/StorageRequirements.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuralReadiness.h"
 
 #include <type_traits>
@@ -476,7 +477,10 @@ PhysicalDataflowPlanningSession::getOrCreateStorageDomain(
           movement.getRepresentationState().getTemporalState());
   MovementDomainLookup movementDomain =
       getOrCreateMovementDomain(movement.getRepresentationState());
-  if (!representationDomain.domain || !movementDomain.domain)
+  TemporalDomainLookup temporalDomain = getOrCreateTemporalDomain(
+      movement.getRepresentationState().getTemporalState().getRegionState());
+  if (!representationDomain.domain || !movementDomain.domain ||
+      !temporalDomain.domain)
     return {nullptr,
             StorageDomainFailure{StorageDomainFailureKind::BrokenContract,
                                  "storage transition lost an upstream domain"}};
@@ -484,11 +488,6 @@ PhysicalDataflowPlanningSession::getOrCreateStorageDomain(
   representations.plan = movement.getRepresentationPlan();
   for (const PhysicalVersionPlan &version :
        representations.plan.physicalVersions) {
-    if (!version.id.derivation.empty())
-      return {nullptr, StorageDomainFailure{
-                           StorageDomainFailureKind::UnsupportedSemantics,
-                           "pre-structure storage currently requires primary "
-                           "physical versions"}};
     const RepresentationResourceDescription *resource =
         representationDomain.domain->findResource(version.id.logicalValue);
     if (!resource)
@@ -524,7 +523,28 @@ PhysicalDataflowPlanningSession::getOrCreateStorageDomain(
     return {nullptr, StorageDomainFailure{
                          StorageDomainFailureKind::BrokenContract,
                          std::get<BrokenStoragePlan>(canonical).detail}};
-  StorageDomainResult result = buildStorageDomain(*coordinate);
+  StorageRequirementDerivationResult requirements = deriveStorageRequirements(
+      *coordinate, movement.getRepresentationPlan(), movement.getMovementPlan(),
+      movement.getTemporalPlan(), temporalDomain.domain->getScopeDescriptors());
+  if (!requirements.succeeded()) {
+    if (!requirements.failure)
+      return {nullptr,
+              StorageDomainFailure{
+                  StorageDomainFailureKind::BrokenContract,
+                  "storage requirement query returned no typed outcome"}};
+    StorageDomainFailureKind kind = StorageDomainFailureKind::BrokenContract;
+    if (requirements.failure->kind ==
+        StorageRequirementFailureKind::UnsupportedSemantics)
+      kind = StorageDomainFailureKind::UnsupportedSemantics;
+    else if (requirements.failure->kind ==
+             StorageRequirementFailureKind::Indeterminate)
+      kind = StorageDomainFailureKind::Indeterminate;
+    return {nullptr, StorageDomainFailure{
+                         kind, std::move(requirements.failure->detail)}};
+  }
+  StorageDomainResult result =
+      buildStorageDomain(*coordinate, requirements.requirements->reuse,
+                         requirements.requirements->slotFamilies);
   if (!result.succeeded()) {
     if (result.failure)
       return {nullptr, std::move(result.failure)};
@@ -1072,6 +1092,12 @@ StorageExpansionResult PhysicalDataflowPlanningSession::resumeStorage(
         StorageDomainFailureKind::UnsupportedSemantics) {
       ++work.unsupportedStorageChoices;
       return {StorageExpansionKind::Unsupported,
+              {},
+              std::move(lookup.failure->detail)};
+    }
+    if (lookup.failure->kind == StorageDomainFailureKind::Indeterminate) {
+      ++work.indeterminateStorageChoices;
+      return {StorageExpansionKind::Indeterminate,
               {},
               std::move(lookup.failure->detail)};
     }

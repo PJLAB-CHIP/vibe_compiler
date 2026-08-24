@@ -264,8 +264,8 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 | 7 | `partial-feasibility` | `done` | Q50.F | 复核A–E结构完整性/missing coordinates及5/6新schema，资源合法性保持unknown | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | layout-domain |
 | 8 | `layout-domain` | `done` | Q50.G | operation/interface constraint graph、PBQP精确消元+residual solver、production tuple/alias facts及selected physical-version construction/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | movement-domain |
 | 9 | `movement-domain` | `done` | Q50.H | local/DDR/direct/relay/fanout/gather current完整域、external every-root reuse、exact multi-piece payload proof、token-only selected construction/verifier及actual surgery donor retirement；不在issue后立即await；raw collective因无current typed primitive而无state | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | storage-domain |
-| 10 | `storage-domain` | `doing` | Q50.I | production alias/reuse/1..U requirements、selected object/rotation construction及first-read/last-release lifetime verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | event-resource-foundation |
-| 11 | `event-resource-foundation` | `queued` | Q50.J | 完整EventGraph/resource/recurrence/completion facts、Q63/effect接入及fixed-K后同一builder重建J的typed seam；missing contract保持typed unknown而非默认Synchronous | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | execution-structure-domain |
+| 10 | `storage-domain` | `done` | Q50.I | production alias/reuse/1..U requirements、peer-relay exact-piece ownership、selected object/multi-axis rotation construction及actual definition/use/completion/release lifetime verifier；零SPM估算或capacity控制流 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | event-resource-foundation |
+| 11 | `event-resource-foundation` | `doing` | Q50.J | 完整EventGraph/resource/recurrence/completion facts、Q63/effect接入及fixed-K后同一builder重建J的typed seam；missing contract保持typed unknown而非默认Synchronous | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | execution-structure-domain |
 | 12 | `execution-structure-domain` | `queued` | Q50.K | sound Serialized/Pipelined eligibility与完整有限域、selected phase/loop construction、structure verifier及donor retirement | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | structure-specific-storage |
 | 13 | `structure-specific-storage` | `queued` | Q50.I | fixed-K occurrence/slot/lifetime重闭、actual rotating-slot construction，并触发post-K EventGraph重建 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | schedule-domain |
 | 14 | `schedule-domain` | `queued` | Q50.J | post-K EventGraph、slot/FSM lifetime、worker/resource/completion完整域及minimum-participant/latest-unavoidable selected wait/join emission/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | full-feasibility |
@@ -4470,6 +4470,24 @@ MLIR One-Shot Bufferize先分析完整SSA alias/read-write conflict，再统一r
 iteration overlap和release schedule必须联合。对应本仓，I位于J/K之前时只能保存storage/rotation choices与必要ordering constraints，
 不能虚构时间戳或把current source order当最终lifetime。
 
+采用方案与边界如下：
+
+| primary source | 可迁移结论 | Wafer采用 | 明确不采用 |
+| --- | --- | --- | --- |
+| [MLIR One-Shot Bufferize](https://mlir.llvm.org/docs/Bufferization/)与[ownership-based deallocation](https://mlir.llvm.org/docs/OwnershipBasedBufferDeallocation/) | 先用完整SSA use-def、alias/equivalence和read/write conflict做analysis，再rewrite；ownership/release是独立SSA问题 | identity alias只接受G的exact alias；其它reuse先形成typed requirement，selected construction与release verifier分开 | 不在每个use临时决定in-place，不把unknown alias当可复用，不照搬通用runtime retain/dealloc ABI |
+| [OpenXLA HeapSimulator](https://github.com/openxla/xla/blob/main/xla/service/heap_simulator/heap_simulator.h) | 明确schedule/live interval之后才分配offset，最终统一返回assignment | I只选object/slot identity；actual offsets仍由final current-IR MiniMalloc产生 | 不把plan-side lifetime或heap size当SPM legality，不复制XLA schedule owner |
+| [Rau iterative modulo scheduling](https://doi.org/10.1145/192724.192731)及modulo variable expansion | 跨迭代live distance决定需要的独立名字/slot，rotation与pipeline schedule联合 | pre-K只从exact E occurrence枚举`1..U`与axis permutation；K后按actual stage distance重闭 | 不把double buffer设默认，不由slot数宣称overlap或收益，不在I里选择stage/order |
+| SSA interference/coloring | must-alias、must-separate与可排序reuse分别建约束；fresh color始终可用 | compatible且无同site forced overlap的pair产生`ReuseAfterCompletion` sibling，J决定能否满足 | 不用当前源码顺序证明lifetime disjoint，不运行SPM packing或以bytes裁剪reuse |
+
+硬件事实同样只控制可表达边界：
+
+| 分类 | current事实 | I中的处理 |
+| --- | --- | --- |
+| `supported` | SPM typed allocation/view、actual range/effect/completion、3 MiB fixed arena与MiniMalloc final placement | selected object/slot全部成为真实memref allocation；offset/capacity只在Q50.0判定 |
+| `board-observed` | single slot及double-slot偶/奇iteration correctness；Direct-DTE source/destination在matching completion后可复用 | double slot是普通domain member和回归case，不升级成默认multiplicity或收益 |
+| `unknown` | 任意3/4/5+ slot硬件收益、queue resident数量、SPM bank/port penalty及未物化pipeline的live distance | 不进入legality、upper bound、proposal裁剪或cost；只有actual SSA与completion可关闭lifetime |
+| `excluded` | plan-side footprint、buffer-count倍数、shape公式、预测lifetime和allocator retry | 不出现在requirement derivation、domain或feedback控制流 |
+
 current `CardBufferingDomain`按`(group nodes, retained edge subset, slotCount)`建域，旧实现还用单edge bytes与SPM capacity裁剪
 slot count；这条容量猜测必须删除。真正的common loop、alias、endpoint和release拖到1,900行`SelectedBufferMaterialization`在actual Instr中搜索。materializer又
 move-own整个Module、clone schedule operations并返回新的module/relations。这证明`bufferCount`不是足够的plan，也违反winner direct
@@ -4701,33 +4719,31 @@ typed unsupported，不把slot count减半、不切换single、不卡回search�
 - baseline single-slot和search complete candidates复用同一builder但policy独立；轻量source→CardModule→Q50.0→package/no-card通过，不运行重型LLaMA
   search。
 
-### `storage-domain`当前已实现子集与重新打开门禁
+### `storage-domain`实现与闭合证据
 
-- `BufferPlan`原位加入`StorageBindingKind`、typed `SlotFamilyPlan`和`BufferOrderRequirement`；canonical fresh/single point仍是同一合同成员，
-  没有parallel buffer schema。object identity继续来自PhysicalVersionId/ReductionGatherId，不使用ordinal、operation pointer或名字。
-- `StorageDomain`为每个version保留fresh sibling；G identity alias强制绑定source object，explicit proven-disjoint/schedule-dependent facts才增加
-  reuse。后者携`ReuseAfterCompletion` version edge并做cycle check，unknown/incompatible resource不产生state。plan只选择object/family/order，
-  不保存offset、timestamp或actual lifetime。
-- slot family requirement显式提供selected physical objects、exact occurrence、finite lower/upper bound和rotation iterator options；domain包含合法single-slot点及
-  每个`2..U × rotation`，不固定2/3、不读取buffer bytes/SPM capacity。input顺序扰动不改集合，order-cycle combination被跳过而fresh
-  siblings保留。pre-K `InitialBufferState`只表示Serialized occurrence eligibility，K变化后仍必须进入后续structure-specific-storage重闭。
-- `prepareStoragePlan`在mutation前关闭object/binding/family totality和multiplicity；`StorageObjectBuilder`按plan创建exact multiplicity
-  allocations，caller用显式occurrence做modulo lookup，不扫描/改写actual loop。identity alias/reuse共享同一SSA object；duplicate object或
-  invalid physical type在零allocation mutation时失败。offset仍只由final Q50.0分配。
-- `InitialBufferState`、continuation和session cache已经接入production Core；first canonical G/H point重闭current Serialized/storage carrier后，
-  public search报告missing EventResource且actualization为0。old Buffering/SelectedBufferMaterialization的capacity裁剪、loop discovery、clone/
-  wait splitting只作K/J/post-K donor保留，不进入new query/state。
+- `BufferPlan`继续由一个schema拥有fresh/identity-alias/reuse binding、slot family和order requirement；`PeerRelayStorageId`与
+  `PeerTransferSiteId`把H graph/payload slice/relay Tile及实际hop lifetime带进同一合同，不按node、shape或message ordinal恢复。
+  canonical storage为每个internal relay和每个exact payload piece建立一个typed object；terminal/root继续绑定G physical version或gather
+  staging，不复制graph事实。
+- production `deriveStorageRequirements`直接消费current representation、movement、canonical lifetime、selected TemporalPlan和同一
+  TemporalDomain descriptor。identity alias保持must-alias；compatible且没有共同actual semantic site的version pair生成
+  `ReuseAfterCompletion` sibling，fresh始终保留。unknown/forced-overlap pair不产生reuse。
+- occurrence按descriptor extent与selected tile size逐axis checked ceil-div得到；只有一个明确common scope且总occurrence大于1时形成family。
+  `U=min(exact occurrence product, uint32 selector range)`，active-axis全部permutation可达；rotation work limit耗尽为typed
+  `Indeterminate`。改变resource bytes或SPM capacity不改变family集合。
+- `StorageDomain`验证reuse target/object totality、禁止self/duplicate reuse、强制identity alias、检查order cycle，并证明family `U`不超过
+  exact occurrence product。binding改变时family object ID随selected object重闭；relay object没有version binding也不会被误删。
+- `prepareStoragePlan`与`StorageObjectBuilder`按selected multiplicity创建exact独立allocations，提供typed object/version modulo lookup；
+  `verifyEmittedStorageObjects`检查all-and-only count/type/binding，`verifySelectedStorageLifetimes`在actual current block上检查definition、
+  use、matching async completion与dealloc顺序。两者不插wait、不移动operation、不计算offset。
+- PlanningSession现在为derived physical versions和peer relay storage生产真实requirements并进入同一`MovementState -> InitialBufferState`
+  transition；missing/unsupported/indeterminate保持typed分类。legacy `BufferingApply`/expected-Tile scope adapter已经删除；old query-only
+  `Buffering`只等K/J独有oracle迁移后统一退役，不能再取得actual owner。
 
-fresh证据：`StorageDomainTest` 4/4覆盖rank-3 1024/1025/1031、36点fresh/reuse/`1..5`×multi-axis rotation oracle、identity alias、ordered reuse cycle、
-incompatible resource与invalid U；`StorageObjectBuilderTest` 2/2覆盖5-slot modulo、alias SSA sharing和duplicate atomic failure；
-`PlanningSessionTest` 6/6、`SearchRoutingTest` 2/2及`CanonicalStoragePlanTest` 6/6共同证明Core、missing EventResource、source不变及zero
-actualization，direct集合20/20；ordinary host unit 863/863（6个独立heavy baseline cases不在本项重复）；core lit 227/227，
-Tools/Runtime lit 35 passed、4 configured unsupported；compiler public link、source organization和diff检查通过。
-
-完成状态复核确认production调用`buildStorageDomain`时没有提供reuse或slot-family requirements，且upstream transition拒绝derived physical
-versions；`StorageObjectBuilder`没有production caller，full-feasibility拒绝alias/reuse/rotating storage。`storage-domain`重新打开，必须从
-current representation/movement/occurrence facts产生requirements，接入selected object/rotation construction与BufferMaterializationVerifier，
-并逐项迁移旧buffer donor。
+fresh evidence的定向矩阵覆盖rank-3 `1024/1025/1031`、input reversal、bytes/capacity metamorphic independence、
+all `1..U`与multi-axis rotation、2/3/4/5 actual allocations、identity alias/reuse cycle、peer relay multi-piece object、Direct-DTE
+send→await→release lifetime以及missing/duplicate/early-release/invalid-U/rotation-work负例。ordinary host unit `921/921`通过（独立
+attention production closure仍不归本项），configured lit `225/225`、4个public link smoke、source/IR organization和diff检查通过。
 
 ### I-closure：固定K后的structure-specific storage重闭
 
@@ -6921,7 +6937,7 @@ Q50.0路径，防止计数漏埋点。IR dump只可查看accepted winner，不�
 | 已删除的plan-side feasibility/footprint路径 | Q50.F actual admission | complete candidate→Q50.0、typed feedback、relation completeness |
 | `PhysicalRepresentation*` | Q50.G | constraint solver proposals、version DAG、actual builder |
 | query-only `SimpleRoute`、`DataMovement*`（`DataMovementApply*`已删除） | Q50.H；共享legacy query调用随I/J/K/Q51统一退役 | current payload partitions/arborescences、token-only emitter和迁移后的direct/relay/fanout/gather witness；legacy query不再取得actual owner |
-| `Buffering*`, `BufferingApply*` | Q50.I | storage/slot/lifetime plans、construction-time builder |
+| query-only `Buffering*`（`BufferingApply*`已删除） | Q50.I/Q50.K | current storage/slot/lifetime plans与K-specific overlap oracle；legacy query不再产生actual scope |
 | `InstructionSchedule*` | Q50.J/Q63 | event/resource domain、closed schedule、wait/join emitter/verifier |
 | `StagePipeline*` | Q50.K | Serialized/SCF/periodic structures及K→I-post-K→J reclosure |
 | `UnifiedPhysicalDataflow*` | Q51-1/2 state+continuations | full reference equality；mixed-radix/materialize facade均无剩余能力 |

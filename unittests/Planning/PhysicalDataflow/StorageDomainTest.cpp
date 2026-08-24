@@ -200,6 +200,25 @@ TEST(StorageDomainTest, IncompatibleReuseAndInvalidSlotUpperFailTyped) {
   ASSERT_FALSE(broken.succeeded());
   ASSERT_TRUE(broken.failure);
   EXPECT_EQ(broken.failure->kind, StorageDomainFailureKind::BrokenContract);
+
+  SlotFamilyRequirement overTrip;
+  overTrip.id.objects = {StorageObjectId{StorageObjectOrigin(makeVersion(0))}};
+  overTrip.occurrence = OccurrenceRelationId{TraversalScopeId{}, {2, 1, 1}};
+  overTrip.upperBound = 3;
+  overTrip.rotationOptions = {{0}};
+  StorageDomainResult impossibleMultiplicity =
+      buildStorageDomain(storage, {}, {overTrip});
+  ASSERT_FALSE(impossibleMultiplicity.succeeded());
+  ASSERT_TRUE(impossibleMultiplicity.failure);
+  EXPECT_EQ(impossibleMultiplicity.failure->kind,
+            StorageDomainFailureKind::BrokenContract);
+
+  StorageDomainResult duplicateReuse =
+      buildStorageDomain(storage, {reuse, reuse});
+  ASSERT_FALSE(duplicateReuse.succeeded());
+  ASSERT_TRUE(duplicateReuse.failure);
+  EXPECT_EQ(duplicateReuse.failure->kind,
+            StorageDomainFailureKind::BrokenContract);
 }
 
 } // namespace

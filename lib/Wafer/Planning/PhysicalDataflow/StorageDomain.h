@@ -24,6 +24,12 @@ struct StorageReuseRequirement {
   PhysicalVersionId version;
   StorageObjectId object;
   StorageReuseProof proof = StorageReuseProof::ProvenDisjoint;
+
+  friend bool operator==(const StorageReuseRequirement &lhs,
+                         const StorageReuseRequirement &rhs) {
+    return lhs.version == rhs.version && lhs.object == rhs.object &&
+           lhs.proof == rhs.proof;
+  }
 };
 
 struct SlotFamilyRequirement {
@@ -32,10 +38,19 @@ struct SlotFamilyRequirement {
   uint32_t lowerBound = 1;
   uint32_t upperBound = 1;
   std::vector<llvm::SmallVector<uint32_t, 4>> rotationOptions;
+
+  friend bool operator==(const SlotFamilyRequirement &lhs,
+                         const SlotFamilyRequirement &rhs) {
+    return lhs.id == rhs.id && lhs.occurrence == rhs.occurrence &&
+           lhs.lowerBound == rhs.lowerBound &&
+           lhs.upperBound == rhs.upperBound &&
+           lhs.rotationOptions == rhs.rotationOptions;
+  }
 };
 
 enum class StorageDomainFailureKind : uint8_t {
   UnsupportedSemantics,
+  Indeterminate,
   BrokenContract,
 };
 

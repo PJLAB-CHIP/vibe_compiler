@@ -199,6 +199,10 @@ private:
         return;
       if (next.getKind() == StorageExpansionKind::Unsupported)
         return;
+      if (next.getKind() == StorageExpansionKind::Indeterminate) {
+        pause(next.getDetail());
+        return;
+      }
       if (next.getKind() != StorageExpansionKind::State) {
         fail(next.getDetail());
         return;

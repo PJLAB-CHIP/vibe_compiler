@@ -1,10 +1,9 @@
 //===- BufferingTest.cpp ---------------------------------------------===//
 
 #include "Wafer/Planning/Search/Buffering.h"
-#include "Wafer/Planning/Search/BufferingApply.h"
 
-#include "Wafer/InitWaferDialects.h"
 #include "TestSupport/Planning/SpatialDemandTestSupport.h"
+#include "Wafer/InitWaferDialects.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -123,8 +122,7 @@ mlir::FailureOr<Prepared> prepare(mlir::ModuleOp module, int64_t extent,
       *dag, spatialDemand->spatial, spatialDemand->demand, failureReason);
   auto temporal = CardTemporalDomain::create(*dag, placements, failureReason);
   auto topology = TargetTopology::create(module, failureReason);
-  if (mlir::failed(coupled) || mlir::failed(temporal) ||
-      mlir::failed(topology))
+  if (mlir::failed(coupled) || mlir::failed(temporal) || mlir::failed(topology))
     return mlir::failure();
   CoupledRegionAssignment coupledAssignment = coupled->getFirstAssignment();
   while (true) {
@@ -183,10 +181,10 @@ mlir::FailureOr<Prepared> prepare(mlir::ModuleOp module, int64_t extent,
 CardBufferingDomain makeDomain(const Prepared &prepared) {
   auto domain = CardBufferingDomain::create(
       *prepared.program, prepared.spatial, prepared.demand,
-      prepared.coupledDomain, prepared.coupledAssignment, prepared.temporalDomain,
-      prepared.temporalAssignment, prepared.representationDomain,
-      prepared.representationAssignment, prepared.movementDomain,
-      prepared.movementAssignment);
+      prepared.coupledDomain, prepared.coupledAssignment,
+      prepared.temporalDomain, prepared.temporalAssignment,
+      prepared.representationDomain, prepared.representationAssignment,
+      prepared.movementDomain, prepared.movementAssignment);
   EXPECT_TRUE(mlir::succeeded(domain));
   return std::move(*domain);
 }
@@ -211,7 +209,7 @@ std::set<uint32_t> enumerateSlotCounts(
   return result;
 }
 
-TEST(BufferingTest, EnumeratesEveryWaveBoundedSlotCountAndBuildsExactScope) {
+TEST(BufferingTest, EnumeratesEveryWaveBoundedSlotCount) {
   auto context = createContext();
   auto module = parseChain(*context, 12);
   ASSERT_TRUE(module);
@@ -223,20 +221,6 @@ TEST(BufferingTest, EnumeratesEveryWaveBoundedSlotCountAndBuildsExactScope) {
   EXPECT_EQ(enumerateSlotCounts(domain, &fourSlot),
             (std::set<uint32_t>{1, 2, 3, 4, 5}));
   ASSERT_TRUE(fourSlot);
-  auto scopes = buildSelectedBufferingScopes(
-      *prepared->program, domain, *fourSlot, prepared->movementDomain,
-      prepared->movementAssignment, llvm::ArrayRef<TileId>{TileId(0)},
-      &failureReason);
-  ASSERT_TRUE(mlir::succeeded(scopes)) << failureReason;
-  ASSERT_EQ(scopes->size(), 1u);
-  ASSERT_EQ(scopes->front().size(), 1u);
-  ASSERT_EQ(scopes->front().front().requests.size(), 1u);
-  const SelectedBufferRequest &request =
-      scopes->front().front().requests.front();
-  EXPECT_EQ(request.producerNode, 0u);
-  EXPECT_EQ(request.consumerNode, 1u);
-  EXPECT_EQ(request.bufferCount, 4u);
-  EXPECT_TRUE(request.requireLocalDataflow);
 }
 
 TEST(BufferingTest, TemporalStructureAloneDefinesTheFiniteSlotDomain) {

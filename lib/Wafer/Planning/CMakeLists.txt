@@ -55,6 +55,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/SpatialPlan.cpp
   Planning/PhysicalDataflow/StorageDomain.cpp
   Planning/PhysicalDataflow/StorageObjectBuilder.cpp
+  Planning/PhysicalDataflow/StorageRequirements.cpp
   Planning/PhysicalDataflow/StructureSpecificStorageDomain.cpp
   Planning/PhysicalDataflow/StructuralReadiness.cpp
   Planning/PhysicalDataflow/StructuredDemandView.cpp
@@ -62,7 +63,6 @@ set(WAFER_PLANNING_SOURCES
   Planning/Search/AttentionAlternative.cpp
   Planning/Search/AttentionAnalysis.cpp
   Planning/Search/Buffering.cpp
-  Planning/Search/BufferingApply.cpp
   Planning/Search/CoupledRegion.cpp
   Planning/Search/ComputeImplementation.cpp
   Planning/Search/DecodeAttentionAnalysis.cpp

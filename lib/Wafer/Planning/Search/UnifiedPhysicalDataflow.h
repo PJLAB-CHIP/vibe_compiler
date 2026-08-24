@@ -4,7 +4,6 @@
 
 #include "Wafer/Planning/PhysicalDataflow/SpatialDomain.h"
 #include "Wafer/Planning/Search/Buffering.h"
-#include "Wafer/Planning/Search/BufferingApply.h"
 #include "Wafer/Planning/Search/ComputeImplementation.h"
 
 namespace wafer::compiler::detail {
@@ -65,10 +64,6 @@ public:
   materialize(mlir::ModuleOp tensorProgram,
               const UnifiedPhysicalDataflowAssignment &assignment,
               std::string *failureReason = nullptr) const;
-
-  mlir::FailureOr<std::vector<llvm::SmallVector<SelectedBufferingScope, 4>>>
-  buildBufferingScopes(const UnifiedPhysicalDataflowAssignment &assignment,
-                       std::string *failureReason = nullptr) const;
 
 private:
   UnifiedPhysicalDataflowDomain(const CardProgramAnalysis &program,

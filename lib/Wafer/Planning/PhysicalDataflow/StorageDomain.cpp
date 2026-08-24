@@ -57,6 +57,7 @@ StorageDomain::buildPlan(const StorageCursor &cursor) const {
   BufferPlan plan = base.plan;
   plan.slotFamilies.clear();
   plan.orderRequirements.clear();
+  std::set<StorageObjectId> familyObjects;
   for (auto [index, domain] : llvm::enumerate(bindings)) {
     if (cursor.bindingOptionIndices[index] >= domain.options.size())
       return std::nullopt;
@@ -78,8 +79,29 @@ StorageDomain::buildPlan(const StorageCursor &cursor) const {
       return std::nullopt;
     const FamilyOption &option =
         domain.options[cursor.familyOptionIndices[index]];
-    plan.slotFamilies.push_back(
-        {domain.id, domain.occurrence, option.multiplicity, option.rotation});
+    SlotFamilyId selectedId = domain.id;
+    for (StorageObjectId &object : selectedId.objects)
+      if (const auto *version =
+              std::get_if<PhysicalVersionId>(&object.origin)) {
+        auto binding =
+            llvm::find_if(plan.versionBindings, [&](const auto &candidate) {
+              return candidate.version == *version;
+            });
+        if (binding == plan.versionBindings.end())
+          return std::nullopt;
+        object = binding->object;
+      }
+    llvm::sort(selectedId.objects);
+    selectedId.objects.erase(
+        std::unique(selectedId.objects.begin(), selectedId.objects.end()),
+        selectedId.objects.end());
+    if (selectedId.objects.empty())
+      return std::nullopt;
+    for (const StorageObjectId &object : selectedId.objects)
+      if (!familyObjects.insert(object).second)
+        return std::nullopt;
+    plan.slotFamilies.push_back({std::move(selectedId), domain.occurrence,
+                                 option.multiplicity, option.rotation});
   }
 
   std::set<StorageObjectId> referenced;
@@ -88,6 +110,11 @@ StorageDomain::buildPlan(const StorageCursor &cursor) const {
   for (const ReductionGatherStorageBinding &binding :
        plan.gatherStagingBindings)
     referenced.insert(binding.stagingObject);
+  for (const SlotFamilyPlan &family : plan.slotFamilies)
+    referenced.insert(family.id.objects.begin(), family.id.objects.end());
+  for (const StorageObjectPlan &object : plan.storageObjects)
+    if (std::holds_alternative<PeerRelayStorageId>(object.id.origin))
+      referenced.insert(object.id);
   llvm::erase_if(plan.storageObjects, [&](const StorageObjectPlan &object) {
     return !referenced.count(object.id);
   });
@@ -161,9 +188,25 @@ StorageDomain::getCursor(const BufferPlan &plan) const {
         static_cast<uint32_t>(std::distance(domain.options.begin(), option));
   }
   for (auto [index, domain] : llvm::enumerate(families)) {
+    SlotFamilyId selectedId = domain.id;
+    for (StorageObjectId &object : selectedId.objects)
+      if (const auto *version =
+              std::get_if<PhysicalVersionId>(&object.origin)) {
+        auto binding =
+            llvm::find_if(plan.versionBindings, [&](const auto &candidate) {
+              return candidate.version == *version;
+            });
+        if (binding == plan.versionBindings.end())
+          return std::nullopt;
+        object = binding->object;
+      }
+    llvm::sort(selectedId.objects);
+    selectedId.objects.erase(
+        std::unique(selectedId.objects.begin(), selectedId.objects.end()),
+        selectedId.objects.end());
     auto family =
         llvm::find_if(plan.slotFamilies, [&](const SlotFamilyPlan &candidate) {
-          return candidate.id == domain.id &&
+          return candidate.id == selectedId &&
                  candidate.occurrence == domain.occurrence;
         });
     if (family == plan.slotFamilies.end())
@@ -259,8 +302,16 @@ buildStorageDomain(const CanonicalStorageCoordinate &canonical,
 
   std::map<PhysicalVersionId, std::vector<StorageReuseRequirement>>
       reuseByValue;
-  for (const StorageReuseRequirement &requirement : reuse)
+  std::set<std::pair<PhysicalVersionId, StorageObjectId>> reuseKeys;
+  for (const StorageReuseRequirement &requirement : reuse) {
+    if (!baseBindings.count(requirement.version) ||
+        !objects.count(requirement.object) ||
+        baseBindings.at(requirement.version).object == requirement.object ||
+        !reuseKeys.emplace(requirement.version, requirement.object).second)
+      return failed(StorageDomainFailureKind::BrokenContract,
+                    "reuse requirements are unknown or duplicated");
     reuseByValue[requirement.version].push_back(requirement);
+  }
 
   std::vector<StorageDomain::BindingDomain> bindings;
   for (const auto &[version, base] : baseBindings) {
@@ -278,31 +329,32 @@ buildStorageDomain(const CanonicalStorageCoordinate &canonical,
     } else {
       domain.options.push_back({base.object, StorageBindingKind::Fresh, {}});
     }
-    for (const StorageReuseRequirement &requirement : reuseByValue[version]) {
-      auto targetResource = resources.find(base.object);
-      auto reuseResource = resources.find(requirement.object);
-      auto reuseObject = objects.find(requirement.object);
-      if (targetResource == resources.end() ||
-          reuseResource == resources.end() || reuseObject == objects.end())
-        return failed(StorageDomainFailureKind::BrokenContract,
-                      "reuse requirement references a missing object");
-      if (reuseObject->second->tile != objects.at(base.object)->tile ||
-          !sameResource(*targetResource->second, *reuseResource->second))
-        return failed(StorageDomainFailureKind::UnsupportedSemantics,
-                      "reuse requirement has incompatible storage resources");
-      StorageDomain::BindingOption option;
-      option.object = requirement.object;
-      option.kind = StorageBindingKind::Reuse;
-      if (requirement.proof == StorageReuseProof::RequiresOrder)
-        if (const auto *earlier =
-                std::get_if<PhysicalVersionId>(&requirement.object.origin))
-          option.order = BufferOrderRequirement{
-              *earlier, version, BufferOrderKind::ReuseAfterCompletion};
-        else
+    if (!source)
+      for (const StorageReuseRequirement &requirement : reuseByValue[version]) {
+        auto targetResource = resources.find(base.object);
+        auto reuseResource = resources.find(requirement.object);
+        auto reuseObject = objects.find(requirement.object);
+        if (targetResource == resources.end() ||
+            reuseResource == resources.end() || reuseObject == objects.end())
+          return failed(StorageDomainFailureKind::BrokenContract,
+                        "reuse requirement references a missing object");
+        if (reuseObject->second->tile != objects.at(base.object)->tile ||
+            !sameResource(*targetResource->second, *reuseResource->second))
           return failed(StorageDomainFailureKind::UnsupportedSemantics,
-                        "ordered reuse source is not a physical version");
-      domain.options.push_back(std::move(option));
-    }
+                        "reuse requirement has incompatible storage resources");
+        StorageDomain::BindingOption option;
+        option.object = requirement.object;
+        option.kind = StorageBindingKind::Reuse;
+        if (requirement.proof == StorageReuseProof::RequiresOrder)
+          if (const auto *earlier =
+                  std::get_if<PhysicalVersionId>(&requirement.object.origin))
+            option.order = BufferOrderRequirement{
+                *earlier, version, BufferOrderKind::ReuseAfterCompletion};
+          else
+            return failed(StorageDomainFailureKind::UnsupportedSemantics,
+                          "ordered reuse source is not a physical version");
+        domain.options.push_back(std::move(option));
+      }
     llvm::sort(domain.options, [](const auto &lhs, const auto &rhs) {
       return std::tie(lhs.kind, lhs.object) < std::tie(rhs.kind, rhs.object);
     });
@@ -332,6 +384,18 @@ buildStorageDomain(const CanonicalStorageCoordinate &canonical,
         llvm::is_contained(requirement.occurrence.axisOccurrences, uint64_t{0}))
       return failed(StorageDomainFailureKind::BrokenContract,
                     "slot family requires a finite exact recurrence");
+    uint64_t tripCount = 1;
+    for (uint64_t count : requirement.occurrence.axisOccurrences) {
+      if (tripCount > std::numeric_limits<uint64_t>::max() / count)
+        return failed(StorageDomainFailureKind::Indeterminate,
+                      "slot occurrence product exceeds its typed range");
+      tripCount *= count;
+    }
+    const uint32_t representableTrip = static_cast<uint32_t>(
+        std::min<uint64_t>(tripCount, std::numeric_limits<uint32_t>::max()));
+    if (requirement.upperBound > representableTrip)
+      return failed(StorageDomainFailureKind::BrokenContract,
+                    "slot multiplicity exceeds the exact occurrence count");
     llvm::SmallVector<uint32_t, 4> activeAxes;
     for (auto [axis, count] :
          llvm::enumerate(requirement.occurrence.axisOccurrences))

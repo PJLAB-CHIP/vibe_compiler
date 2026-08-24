@@ -12,6 +12,7 @@
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <set>
 #include <type_traits>
@@ -34,9 +35,17 @@ StorageObjectId objectForGather(const ReductionGatherId &gather) {
   return StorageObjectId{StorageObjectOrigin{ReductionGatherStagingId{gather}}};
 }
 
+StorageObjectId objectForRelay(llvm::ArrayRef<MovementActionId> actions,
+                               uint32_t payloadSlice, TileId tile) {
+  return StorageObjectId{StorageObjectOrigin{PeerRelayStorageId{
+      std::vector<MovementActionId>(actions), payloadSlice, tile}}};
+}
+
 llvm::StringRef objectKind(const StorageObjectId &object) {
   if (std::holds_alternative<ReductionGatherStagingId>(object.origin))
     return "reduction-gather-staging";
+  if (std::holds_alternative<PeerRelayStorageId>(object.origin))
+    return "peer-relay-staging";
   const PhysicalVersionId &version = std::get<PhysicalVersionId>(object.origin);
   switch (version.logicalValue.index()) {
   case 0:
@@ -127,6 +136,16 @@ bool sameFiniteResource(const analysis::ExactIndexSet &lhs,
     if (lhsBox.offsets != rhsBox.offsets || lhsBox.sizes != rhsBox.sizes)
       return false;
   return true;
+}
+
+mlir::FailureOr<analysis::ExactIndexSet>
+singleBoxDomain(const analysis::StaticRectangularIndexSet &box) {
+  analysis::IndexSetResult result =
+      analysis::IndexRelation::staticRectangularDomain(box.offsets, box.sizes);
+  if (!result.isExact())
+    return mlir::failure();
+  return analysis::ExactIndexSet(std::move(*result.set),
+                                 analysis::ExactIndexSetForm::BoxUnion, {box});
 }
 
 struct PendingObject {
@@ -397,6 +416,19 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
       return broken(BrokenStoragePlanReason::MissingMovementResource,
                     "movement resource has no planned action");
 
+  std::map<MovementActionId, const PeerTransferGraphPlan *> peerGraphs;
+  for (const PeerTransferGraphPlan &graph : movements.plan.peerGraphs) {
+    if (graph.actions.empty() || !llvm::is_sorted(graph.actions) ||
+        std::adjacent_find(graph.actions.begin(), graph.actions.end()) !=
+            graph.actions.end() ||
+        llvm::any_of(graph.actions, [&](const MovementActionId &action) {
+          return !plannedActions.count(action) ||
+                 !peerGraphs.try_emplace(action, &graph).second;
+        }))
+      return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                    "movement plan has a malformed peer graph");
+  }
+
   std::set<PhysicalVersionId> discardedExecutionResults;
   for (const ResultDiscardPlan &discard : movements.plan.discards) {
     PhysicalVersionId expected{discard.id.source};
@@ -595,6 +627,177 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
       break;
     builder.use(*source, StorageAccessSite{std::move(action)});
     carriedExecutionResults.insert(publication.source);
+  }
+  if (builder.failure)
+    return std::move(*builder.failure);
+
+  for (const PeerTransferGraphPlan &graph : movements.plan.peerGraphs) {
+    const MovementResourceDescription *payloadResource = nullptr;
+    PendingObject *rootObject = nullptr;
+    TileId rootTile{0};
+    std::map<int64_t, PendingObject *> terminals;
+    const bool external = llvm::all_of(graph.actions, [](const auto &action) {
+      return std::holds_alternative<ExternalLoadId>(action);
+    });
+    if (external != (graph.kind == PeerTransferGraphKind::ExternalLoadFanout))
+      return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                    "peer graph mixes external and resident sources");
+    if (external) {
+      if (!graph.ddrRoot ||
+          !llvm::is_contained(graph.actions, MovementActionId(*graph.ddrRoot)))
+        return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                      "external peer graph has no selected DDR root");
+      rootTile = graph.ddrRoot->destination.work.tile;
+      rootObject =
+          builder.findVersion(PhysicalVersionId{graph.ddrRoot->destination});
+    } else if (graph.ddrRoot) {
+      return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                    "resident peer graph carries an external DDR root");
+    }
+
+    for (const MovementActionId &action : graph.actions) {
+      const MovementResourceDescription &resource = actionResource(action);
+      if (!payloadResource)
+        payloadResource = &resource;
+      else if (payloadResource->elementType != resource.elementType ||
+               !sameFiniteResource(payloadResource->exactDomain,
+                                   resource.exactDomain))
+        return broken(BrokenStoragePlanReason::ResourceMismatch,
+                      "peer graph members have different payload resources");
+
+      PendingObject *source = nullptr;
+      PendingObject *destination = nullptr;
+      if (const auto *load = std::get_if<ExternalLoadId>(&action)) {
+        destination = builder.findVersion(PhysicalVersionId{load->destination});
+      } else if (const auto *transfer =
+                     std::get_if<DDRBoundaryTransferId>(&action)) {
+        auto selected =
+            llvm::find_if(movements.plan.ddrTransfers,
+                          [&](const DDRBoundaryTransferPlan &candidate) {
+                            return candidate.id == *transfer;
+                          });
+        if (selected == movements.plan.ddrTransfers.end())
+          return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                        "peer graph boundary action has no transfer plan");
+        source = builder.findVersion(selected->source);
+        destination = builder.findVersion(selected->destination);
+      } else if (const auto *gatherId =
+                     std::get_if<ReductionGatherId>(&action)) {
+        auto selected =
+            llvm::find_if(movements.plan.reductionGathers,
+                          [&](const ReductionGatherPlan &candidate) {
+                            return candidate.id == *gatherId;
+                          });
+        auto staging = builder.objects.find(objectForGather(*gatherId));
+        if (selected == movements.plan.reductionGathers.end() ||
+            staging == builder.objects.end())
+          return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                        "peer graph gather action has no staging plan");
+        source = builder.findVersion(selected->source);
+        destination = &staging->second;
+      } else {
+        return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                      "publication cannot belong to a peer graph");
+      }
+      if (!resource.destinationTile || !destination ||
+          !terminals
+               .try_emplace(resource.destinationTile->getValue(), destination)
+               .second)
+        return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                      "peer graph has a missing or duplicate terminal");
+      if (!external) {
+        if (!source || !resource.sourceTile)
+          return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                        "resident peer graph has no source object");
+        if (!rootObject) {
+          rootObject = source;
+          rootTile = *resource.sourceTile;
+        } else if (rootObject != source || rootTile != *resource.sourceTile) {
+          return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                        "peer graph members have different source objects");
+        }
+      }
+    }
+    if (!payloadResource || !rootObject || graph.hops.empty())
+      return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                    "peer graph has no payload, root, or transfer");
+
+    std::map<int64_t, int64_t> parents;
+    std::set<int64_t> active{rootTile.getValue()};
+    std::set<int64_t> nonLeaves;
+    for (const MovementHop &hop : graph.hops) {
+      if (hop.source == hop.destination ||
+          !parents
+               .try_emplace(hop.destination.getValue(), hop.source.getValue())
+               .second)
+        return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                      "peer graph is cyclic or has multiple parents");
+      active.insert(hop.source.getValue());
+      active.insert(hop.destination.getValue());
+      nonLeaves.insert(hop.source.getValue());
+    }
+    for (const auto &[terminal, object] : terminals) {
+      (void)object;
+      if (!active.count(terminal))
+        return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                      "peer graph does not reach one terminal");
+    }
+    for (int64_t tile : active) {
+      int64_t current = tile;
+      size_t steps = 0;
+      while (current != rootTile.getValue()) {
+        auto parent = parents.find(current);
+        if (parent == parents.end() || ++steps >= active.size())
+          return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                        "peer graph is disconnected or cyclic");
+        current = parent->second;
+      }
+      if (!nonLeaves.count(tile) && !terminals.count(tile))
+        return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                      "peer graph contains a dead relay");
+    }
+
+    auto normalized =
+        analysis::normalizeFiniteExactIndexSet(payloadResource->exactDomain);
+    if (mlir::failed(normalized) || normalized->getBoxes().empty() ||
+        normalized->getBoxes().size() > std::numeric_limits<uint32_t>::max())
+      return broken(BrokenStoragePlanReason::ResourceMismatch,
+                    "peer graph payload has no finite exact pieces");
+    for (auto [payloadSlice, box] : llvm::enumerate(normalized->getBoxes())) {
+      std::map<int64_t, PendingObject *> nodeObjects = terminals;
+      nodeObjects[rootTile.getValue()] = rootObject;
+      for (int64_t tile : active) {
+        if (nodeObjects.count(tile))
+          continue;
+        auto domain = singleBoxDomain(box);
+        if (mlir::failed(domain))
+          return broken(BrokenStoragePlanReason::ResourceMismatch,
+                        "peer relay payload piece is not rectangular");
+        StorageObjectId relayId = objectForRelay(
+            graph.actions, static_cast<uint32_t>(payloadSlice), TileId(tile));
+        PendingObject *relay = builder.addObject(relayId, TileId(tile), *domain,
+                                                 payloadResource->elementType,
+                                                 rootObject->resource.encoding);
+        if (!relay)
+          break;
+        nodeObjects.emplace(tile, relay);
+      }
+      if (builder.failure)
+        break;
+      for (const MovementHop &hop : graph.hops) {
+        PendingObject *source = nodeObjects.at(hop.source.getValue());
+        PendingObject *destination = nodeObjects.at(hop.destination.getValue());
+        StorageAccessSite site = PeerTransferSiteId{
+            graph.actions, static_cast<uint32_t>(payloadSlice), hop};
+        builder.use(*source, site);
+        if (!terminals.count(hop.destination.getValue()))
+          builder.define(*destination, std::move(site));
+      }
+      if (builder.failure)
+        break;
+    }
+    if (builder.failure)
+      break;
   }
   if (builder.failure)
     return std::move(*builder.failure);
