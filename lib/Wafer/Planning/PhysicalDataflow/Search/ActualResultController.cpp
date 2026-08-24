@@ -30,11 +30,6 @@ bool hasSPMCapacityRejection(const FullFeasibilityResult &result) {
                       });
 }
 
-bool isCompletePlanKey(const ClosedSchedulePlan &plan) {
-  return !plan.structure.scopes.empty() &&
-         !plan.buffers.storageObjects.empty() && !plan.controlOrders.empty();
-}
-
 } // namespace
 
 mlir::FailureOr<SearchCostCohort>
@@ -90,36 +85,39 @@ SearchObjectiveComparison compareSearchObjectives(const SearchObjective &lhs,
 }
 
 CandidateReservation
-ActualResultController::reserve(const ClosedSchedulePlan &plan) {
-  if (!isCompletePlanKey(plan))
-    return CandidateReservation::Invalid;
-  if (finished || poisoned || reserved.count(plan) || completed.count(plan))
+ActualResultController::reserve(const CompleteCandidateKey &key) {
+  if (finished || poisoned) {
+    ++statistics.closedReservations;
+    return CandidateReservation::Closed;
+  }
+  if (reserved.count(key) || completed.count(key)) {
+    ++statistics.duplicateReservations;
     return CandidateReservation::Duplicate;
-  if (remainingCredits == 0)
+  }
+  if (remainingCredits == 0) {
+    ++statistics.exhaustedReservations;
     return CandidateReservation::Exhausted;
+  }
   --remainingCredits;
-  reserved.insert(plan);
+  reserved.insert(key);
   ++statistics.reserved;
   return CandidateReservation::Granted;
 }
 
 CandidateRecordOutcome
-ActualResultController::record(const ClosedSchedulePlan &plan,
+ActualResultController::record(const CompleteCandidateKey &key,
                                FullFeasibilityResult result) {
-  if (finished || poisoned || !reserved.erase(plan) || completed.count(plan)) {
-    poisoned = true;
-    return CandidateRecordOutcome::CompilerBug;
-  }
-  completed.insert(plan);
+  if (finished || poisoned || !reserved.erase(key) || completed.count(key))
+    return failCompilerBug();
+  completed.insert(key);
   switch (result.status) {
   case FullFeasibilityStatus::Accepted: {
-    if (!result.compilation || !result.compilation->isAccepted()) {
-      poisoned = true;
-      return CandidateRecordOutcome::CompilerBug;
-    }
+    if (!result.compilation || !result.compilation->isAccepted() ||
+        !result.compilation->executable)
+      return failCompilerBug();
     SearchObjective objective = deriveSearchObjective(
         result.compilation->executable->resourceCost, cohort);
-    RetainedSearchCandidate candidate{plan, objective,
+    RetainedSearchCandidate candidate{key, objective,
                                       std::move(*result.compilation)};
     bool replace = !incumbent;
     if (incumbent) {
@@ -133,11 +131,11 @@ ActualResultController::record(const ClosedSchedulePlan &plan,
         replace = false;
         break;
       case SearchObjectiveComparison::Equivalent:
-        replace = candidate.plan < incumbent->plan;
+        replace = candidate.key < incumbent->key;
         break;
       case SearchObjectiveComparison::Incomparable:
         sawUnknownOrIncomparable = true;
-        replace = candidate.plan < incumbent->plan;
+        replace = candidate.key < incumbent->key;
         break;
       }
     }
@@ -149,13 +147,19 @@ ActualResultController::record(const ClosedSchedulePlan &plan,
     return CandidateRecordOutcome::Accepted;
   }
   case FullFeasibilityStatus::ExactRejection: {
-    ExactCompleteRejection rejection;
-    rejection.plan = plan;
-    rejection.kind = hasSPMCapacityRejection(result)
-                         ? ExactCompleteRejectionKind::SPMCapacity
-                         : ExactCompleteRejectionKind::ExecutableGate;
-    rejection.causalRoots = std::move(result.causalRoots);
-    forbidden.insert(std::move(rejection));
+    if (!result.compilation || !result.compilation->isProvenExactRejection())
+      return failCompilerBug();
+    const bool spmCapacity = hasSPMCapacityRejection(result);
+    if (spmCapacity && result.causalRoots.empty())
+      return failCompilerBug();
+    ExactCompleteRejection rejection{
+        key,
+        spmCapacity ? ExactCompleteRejectionKind::SPMCapacity
+                    : ExactCompleteRejectionKind::ExecutableGate,
+        std::move(result.causalRoots)};
+    if (exactRejectionCache == ExactRejectionCachePolicy::Enabled &&
+        !forbidden.insert(std::move(rejection)).second)
+      return failCompilerBug();
     ++statistics.exactRejected;
     return CandidateRecordOutcome::ExactRejection;
   }
@@ -166,34 +170,45 @@ ActualResultController::record(const ClosedSchedulePlan &plan,
     ++statistics.indeterminate;
     return CandidateRecordOutcome::Indeterminate;
   case FullFeasibilityStatus::CompilerBug:
-    poisoned = true;
-    return CandidateRecordOutcome::CompilerBug;
+    return failCompilerBug();
   }
+  return failCompilerBug();
+}
+
+CandidateRecordOutcome ActualResultController::failCompilerBug() {
+  if (!poisoned)
+    ++statistics.compilerBugs;
   poisoned = true;
   return CandidateRecordOutcome::CompilerBug;
 }
 
-bool ActualResultController::isForbidden(const ClosedSchedulePlan &plan) const {
-  return findExactCompleteRejection(plan) != nullptr;
+void ActualResultController::markCompilerBug() { (void)failCompilerBug(); }
+
+bool ActualResultController::isForbidden(
+    const CompleteCandidateKey &key) const {
+  return findExactCompleteRejection(key) != nullptr;
 }
 
 const ExactCompleteRejection *
 ActualResultController::findExactCompleteRejection(
-    const ClosedSchedulePlan &plan) const {
-  auto found = forbidden.find(ExactCompleteRejection{plan});
+    const CompleteCandidateKey &key) const {
+  auto found = forbidden.find(ExactCompleteRejection{
+      key, ExactCompleteRejectionKind::ExecutableGate, {}});
   return found == forbidden.end() ? nullptr : &*found;
 }
 
-bool ActualResultController::canPrune(const SearchObjective &lowerBound) const {
+bool ActualResultController::canPrune(
+    const SearchLowerBound &lowerBound) const {
   if (!incumbent)
     return false;
-  const auto *bound = std::get_if<KnownSearchObjective>(&lowerBound);
+  const auto *bound = std::get_if<KnownSearchObjective>(&lowerBound.objective);
   const auto *best = std::get_if<KnownSearchObjective>(&incumbent->objective);
   return bound && best && bound->cohort == best->cohort &&
          bound->ticks > best->ticks;
 }
 
-SearchControllerResult ActualResultController::finish(bool frontierExhausted) {
+SearchControllerResult
+ActualResultController::finish(SearchFrontierStatus frontier) {
   SearchControllerResult result;
   result.statistics = statistics;
   result.exactCompleteRejections = forbidden.size();
@@ -205,13 +220,15 @@ SearchControllerResult ActualResultController::finish(bool frontierExhausted) {
   }
   finished = true;
   if (!incumbent) {
-    result.coverage = frontierExhausted && statistics.unsupported == 0 &&
+    result.coverage = frontier == SearchFrontierStatus::Exhausted &&
+                              statistics.unsupported == 0 &&
                               statistics.indeterminate == 0
                           ? SearchControllerCoverage::NoFeasible
                           : SearchControllerCoverage::IncompleteNoCandidate;
     return result;
   }
-  const bool incomplete = !frontierExhausted || statistics.unsupported != 0 ||
+  const bool incomplete = frontier == SearchFrontierStatus::Incomplete ||
+                          statistics.unsupported != 0 ||
                           statistics.indeterminate != 0;
   if (incomplete)
     result.coverage = SearchControllerCoverage::FeasiblePartial;

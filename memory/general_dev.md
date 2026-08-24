@@ -709,13 +709,15 @@ source program
 
 ## Actual-result controller（stable，2026-08-23）
 
-- complete candidate identity是完整`ClosedSchedulePlan`。actualization credit必须在启动transaction前按该key reserve；invalid/duplicate/
-  exhausted key不启动。只有Accepted actual result参与comparison；actual ExactRejection只缓存完整point，owner roots不授权扩大prefix no-good；
-  Unsupported/Indeterminate不写forbidden cache。
+- complete candidate identity是Spatial、Region、Temporal、Representation、Movement、initial Buffer、ExecutionStructure、post-K Buffer和
+  ClosedSchedule组成的`CompleteCandidateKey`；ClosedSchedule只占其中一个axis。factory复核K/I/J generation，actualization credit必须在
+  启动transaction前按全key reserve；duplicate/exhausted/closed key不启动。只有Accepted actual result参与comparison；actual
+  ExactRejection只缓存完整point，owner roots不授权扩大prefix no-good；Unsupported/Indeterminate不写forbidden cache。
 - 没有默认winner cost。caller不提供显式positive target-rate `SearchCostCohort`时objective为Unknown；metric unavailable或checked arithmetic
   overflow也为Unknown且没有可读value。同cohort Known objective才比较，Unknown/Incomparable只用完整semantic key决定single commit并标
   `FeasibleUnranked`，不能宣称best。lower bound只有Known同cohort且严格大于Known incumbent时才允许prune。
 - controller保留一个move-only incumbent；Better或tie-key replacement自动销毁旧owner，finish直接移交该actual executable，不重建。
+  `SearchLowerBound`必须绑定完整key，只有Known同cohort且严格更差才能prune；frontier completion使用typed Exhausted/Incomplete，不用bool猜状态。
   coverage必须区分ComparableBest、FeasibleUnranked、FeasiblePartial、NoFeasible、IncompleteNoCandidate和Failed，不能把预算耗尽或unsupported
   写成NoSolution。
 

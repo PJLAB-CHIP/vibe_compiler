@@ -107,7 +107,7 @@ TEST(UnifiedSearchTest,
 
 TEST(UnifiedSearchTest,
      RepeatedSessionsChooseTheSameSemanticWinnerAndActualIR) {
-  std::vector<ClosedSchedulePlan> plans;
+  std::vector<CompleteCandidateKey> keys;
   std::vector<std::string> traces;
   for (unsigned repetition = 0; repetition < 2; ++repetition) {
     ParsedProgram parsed = parseProgram();
@@ -125,14 +125,14 @@ TEST(UnifiedSearchTest,
         diagnostics, programData, options, /*tilePipelineParallelism=*/1,
         /*captureTileDataflowIRTrace=*/true);
     ASSERT_TRUE(searched.control.winner) << searched.failureDetail;
-    plans.push_back(searched.control.winner->plan);
+    keys.push_back(searched.control.winner->key);
     std::string joined;
     for (const std::string &trace :
          searched.control.winner->compilation.tileDataflowIRTrace)
       joined += trace;
     traces.push_back(std::move(joined));
   }
-  EXPECT_EQ(plans[0], plans[1]);
+  EXPECT_EQ(keys[0], keys[1]);
   EXPECT_EQ(traces[0], traces[1]);
 }
 

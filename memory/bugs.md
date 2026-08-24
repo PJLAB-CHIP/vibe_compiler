@@ -1317,6 +1317,17 @@
   allocation数量、verifier和event owner。不得把allocation提升到`func`、按合并后的唯一root猜event，或因synthetic fixture能verify就绕过
   actual TileRegion planning scope。
 
+## Actual feedback不能只用最后一个search axis作为candidate key
+
+- 现象：两个candidate可拥有相同`ClosedSchedulePlan`，但Region、representation、movement或initial storage不同；若controller只按schedule
+  reserve/cache，第一个actual rejection会把合法sibling当duplicate或forbidden，accepted tie-break也丢失完整physical assignment。
+- 根因：把“最后形成的plan”误当成“完整candidate identity”。ClosedSchedule只保存fixed K/post-K Buffer和J选择，不包含Spatial到Movement及
+  initial Buffer的parent chain；causal roots也只是当前actual conflict的diagnostic witness，不是可推广到prefix的nogood explanation。
+- 修复模式：从validated `ScheduledState`构造`CompleteCandidateKey`，逐值携带全部axis并复核K/I/J generation。reservation、completed set、
+  exact full-point cache、objective tie-break和retained winner统一使用该key；SPM owner roots只随exact rejection保存，不参与subsumption。
+- 防复发：用相同schedule、不同representation的1025 sibling证明rejection只命中自身；逐axis identity、cache on/off和2--7反序独立winner
+  oracle同时执行。没有assignment-level explanation时，禁止按root、shape、bytes、最后一轴plan或parent pointer扩大no-good。
+
 ## Exact set的normal form不能代替物理可表示性证明
 
 - 现象：multi-producer `insert_slice` reconstruction产生语义有限且精确的`GeneralPresburger` domain；movement与storage保存的是同一集合，

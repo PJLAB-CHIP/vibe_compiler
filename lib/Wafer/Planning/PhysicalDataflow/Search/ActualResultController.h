@@ -4,6 +4,7 @@
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_ACTUALRESULTCONTROLLER_H
 
 #include "Wafer/Planning/PhysicalDataflow/FullFeasibility.h"
+#include "Wafer/Planning/PhysicalDataflow/Search/CompleteCandidateKey.h"
 
 #include "mlir/Support/LogicalResult.h"
 
@@ -89,7 +90,7 @@ enum class CandidateReservation : uint8_t {
   Granted,
   Exhausted,
   Duplicate,
-  Invalid,
+  Closed,
 };
 enum class CandidateRecordOutcome : uint8_t {
   Accepted,
@@ -105,18 +106,18 @@ enum class ExactCompleteRejectionKind : uint8_t {
 };
 
 struct ExactCompleteRejection {
-  ClosedSchedulePlan plan;
+  CompleteCandidateKey key;
   ExactCompleteRejectionKind kind = ExactCompleteRejectionKind::ExecutableGate;
   std::vector<SemanticRootKey> causalRoots;
 
   friend bool operator<(const ExactCompleteRejection &lhs,
                         const ExactCompleteRejection &rhs) {
-    return lhs.plan < rhs.plan;
+    return lhs.key < rhs.key;
   }
 };
 
 struct RetainedSearchCandidate {
-  ClosedSchedulePlan plan;
+  CompleteCandidateKey key;
   SearchObjective objective;
   CardExecutableCompilationResult compilation;
 
@@ -134,15 +135,44 @@ enum class SearchControllerCoverage : uint8_t {
   Failed,
 };
 
+enum class SearchFrontierStatus : uint8_t {
+  Exhausted,
+  Incomplete,
+};
+
+enum class ExactRejectionCachePolicy : uint8_t {
+  Enabled,
+  Disabled,
+};
+
+struct ActualResultControllerOptions {
+  uint64_t actualizationCredits = 0;
+  std::optional<SearchCostCohort> cohort;
+  ExactRejectionCachePolicy exactRejectionCache =
+      ExactRejectionCachePolicy::Enabled;
+};
+
+/// A caller assertion that `objective` is an admissible lower bound for the
+/// named complete assignment. Q51.Core only compares the typed value; the
+/// producer and its proof are owned by the later search-policy stage.
+struct SearchLowerBound {
+  CompleteCandidateKey key;
+  SearchObjective objective;
+};
+
 llvm::StringRef
 stringifySearchControllerCoverage(SearchControllerCoverage coverage);
 
 struct SearchControllerStatistics {
   uint64_t reserved = 0;
+  uint64_t duplicateReservations = 0;
+  uint64_t exhaustedReservations = 0;
+  uint64_t closedReservations = 0;
   uint64_t accepted = 0;
   uint64_t exactRejected = 0;
   uint64_t unsupported = 0;
   uint64_t indeterminate = 0;
+  uint64_t compilerBugs = 0;
 };
 
 struct SearchControllerResult {
@@ -154,30 +184,34 @@ struct SearchControllerResult {
 
 class ActualResultController {
 public:
-  ActualResultController(uint64_t actualizationCredits,
-                         std::optional<SearchCostCohort> cohort = {})
-      : remainingCredits(actualizationCredits), cohort(std::move(cohort)) {}
+  explicit ActualResultController(ActualResultControllerOptions options)
+      : remainingCredits(options.actualizationCredits),
+        cohort(std::move(options.cohort)),
+        exactRejectionCache(options.exactRejectionCache) {}
 
-  CandidateReservation reserve(const ClosedSchedulePlan &plan);
-  CandidateRecordOutcome record(const ClosedSchedulePlan &plan,
+  CandidateReservation reserve(const CompleteCandidateKey &key);
+  CandidateRecordOutcome record(const CompleteCandidateKey &key,
                                 FullFeasibilityResult result);
 
-  bool isForbidden(const ClosedSchedulePlan &plan) const;
+  bool isForbidden(const CompleteCandidateKey &key) const;
   const ExactCompleteRejection *
-  findExactCompleteRejection(const ClosedSchedulePlan &plan) const;
-  bool canPrune(const SearchObjective &lowerBound) const;
-  void markCompilerBug() { poisoned = true; }
+  findExactCompleteRejection(const CompleteCandidateKey &key) const;
+  bool canPrune(const SearchLowerBound &lowerBound) const;
+  void markCompilerBug();
   uint64_t getRemainingCredits() const { return remainingCredits; }
   const SearchControllerStatistics &getStatistics() const { return statistics; }
   size_t getExactCompleteRejectionCount() const { return forbidden.size(); }
 
-  SearchControllerResult finish(bool frontierExhausted);
+  SearchControllerResult finish(SearchFrontierStatus frontier);
 
 private:
+  CandidateRecordOutcome failCompilerBug();
+
   uint64_t remainingCredits;
   std::optional<SearchCostCohort> cohort;
-  std::set<ClosedSchedulePlan> reserved;
-  std::set<ClosedSchedulePlan> completed;
+  ExactRejectionCachePolicy exactRejectionCache;
+  std::set<CompleteCandidateKey> reserved;
+  std::set<CompleteCandidateKey> completed;
   std::set<ExactCompleteRejection> forbidden;
   std::optional<RetainedSearchCandidate> incumbent;
   SearchControllerStatistics statistics;

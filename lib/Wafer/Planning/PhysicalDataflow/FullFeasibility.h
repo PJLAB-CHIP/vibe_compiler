@@ -46,7 +46,7 @@ struct FullFeasibilityResult {
 
   bool isAccepted() const {
     return status == FullFeasibilityStatus::Accepted && compilation &&
-           compilation->isAccepted();
+           compilation->isAccepted() && compilation->executable.has_value();
   }
   bool isExactRejection() const {
     return status == FullFeasibilityStatus::ExactRejection;

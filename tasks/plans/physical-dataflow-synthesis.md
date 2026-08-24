@@ -1,8 +1,8 @@
 # Physical Dataflow Planning 与 Selected Execution 实施计划
 
-状态：当前线性计划第1--15项已经闭合；Q50.0/Q50.A、Q49.P及Q50.B--K的domain、selected construction和actual admission
-已经由同一candidate transaction连接。下一项是Q51.Core `search-control-closure`，随后按Q51 unified search、Q50.S attention
-production、Q52和Q53的顺序施工。此前关于
+状态：当前线性计划第1--16项已经闭合；Q50.0/Q50.A、Q49.P、Q50.B--K的domain/selected construction/actual admission及
+Q51.Core全轴actual-result controller已经连接。下一项是Q51 `unified-search-closure`，随后按Q50.S attention production、Q52和
+Q53的顺序施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
 算法、IR和长期pipeline contract仍只由
@@ -268,8 +268,8 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 | 13 | `structure-specific-storage` | `done` | Q50.I | fixed-K occurrence/slot/lifetime重闭、actual rotating-slot construction，并触发post-K EventGraph重建 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | schedule-domain |
 | 14 | `schedule-domain` | `done` | Q50.J | post-K EventGraph、slot/FSM lifetime、worker/resource/completion完整域及minimum-participant/latest-unavoidable selected wait/join emission/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | full-feasibility |
 | 15 | `full-feasibility` | `done` | Q50.F | 全字段complete-candidate materialization、actual SPM/DDR/transport/target gate、plan/actual join-wait parity与动态work gate、typed rejection及Core反馈 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-control-closure |
-| 16 | `search-control-closure` | `doing` | Q51.Core | all-axis CompleteCandidateKey、actual-result admission、cost/bound、causal no-good、coverage及independent controller oracle | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | unified-search-closure |
-| 17 | `unified-search-closure` | `queued` | Q51 | parent-by-parent/full-plan oracle、可恢复完整遍历、每complete candidate一次actual evaluation及唯一winner发布 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | attention-production-closure |
+| 16 | `search-control-closure` | `done` | Q51.Core | all-axis CompleteCandidateKey、actual-result admission、cost/bound、causal no-good、coverage及independent controller oracle | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | unified-search-closure |
+| 17 | `unified-search-closure` | `doing` | Q51 | parent-by-parent/full-plan oracle、可恢复完整遍历、每complete candidate一次actual evaluation及唯一winner发布 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | attention-production-closure |
 | 18 | `attention-production-closure` | `queued` | Q50.S | donor retirement及prefill/decode none/search package/no-card；attention algorithm层零固定worker、零per-K2-block completion | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-scalability |
 | 19 | `search-scalability` | `queued` | Q52 | measured memo/DP/bound/LNS及有限预算LLaMA actual evaluation | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | production-host-readiness |
 | 20 | `production-host-readiness` | `queued` | Q53 | fresh source/IR/package/oracle/runner/no-card矩阵 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | Q53 board-ready |
@@ -5869,33 +5869,80 @@ Pipeline position:
   exact-complete cache on/off不改变accepted set；strict bound pruning只在Known bound > Known incumbent时成立。
 ```
 
+### Controller算法调研与选择
+
+| 调研对象 | 采用的规则 | 未采用的部分及原因 |
+| --- | --- | --- |
+| [Land--Doig branch-and-bound](https://jmvidal.cse.sc.edu/library/land60a.pdf) | 只有已证明下界不能改善incumbent时才剪枝；Wafer存在semantic tie-break，因此只允许`bound > incumbent`，相等仍访问 | 本项不构造松弛问题或预测bound；Q52只有提供typed admissibility proof后才能调用seam |
+| [Chu--Stuckey inter-instance nogood learning](https://people.eng.unimelb.edu.au/pstuckey/interprob/interprob.pdf) | learned nogood必须由能解释推理/冲突的assignment literals支持 | actual SPM causal roots不是prefix assignment explanation，不能把一个完整candidate rejection推广到相同root、shape或任一parent prefix |
+| [OR-Tools CP-SAT statuses](https://developers.google.com/optimization/cp/cp_solver) | 区分optimal、feasible、infeasible、model-invalid和unknown；budget/unknown不能报告infeasible | 不引入CP-SAT model或solver；只采用typed coverage语义 |
+| [TVM MetaSchedule candidate/result接口](https://tvm.apache.org/docs/reference/api/python/meta_schedule.html) | candidate generation与Builder/Runner result分离，result按candidate一一回传给search strategy | 不引入measurement database、结构hash、warm start或runtime measurement；Wafer legality只消费本次Q50.F actual result |
+| [Halide autoscheduler tree search](https://halide-lang.org/papers/halide_autoscheduler_2019.pdf) | 证明search policy可以与schedule representation/actual result分层 | beam截断只适合quality policy，不能作为Q51.Core合法覆盖或NoFeasible证明；留给Q52 measured policy |
+
+采用的controller状态机如下：
+
+```text
+CompleteCandidateKey =
+  Spatial + Region + Temporal + Representation + Movement +
+  InitialBuffer + ExecutionStructure + PostKBuffer + ClosedSchedule
+
+reserve(key):
+  require key.schedule generation == key.(structure, postKBuffer)
+  reject completed/in-flight duplicate
+  consume exactly one actualization credit and mark in-flight
+
+record(key, typed actual result):
+  require exactly one matching in-flight reservation
+  Accepted       -> compare only Known objectives from the same cohort
+  ExactRejection -> store exact full-key nogood and typed witness
+  Unsupported    -> count only; do not learn
+  Indeterminate  -> count and make coverage incomplete
+  CompilerBug    -> poison controller and release every retained loser
+
+finish(frontier status):
+  require no in-flight candidate
+  move exactly one incumbent, if any
+  distinguish comparable-best / feasible-unranked / feasible-partial /
+              no-feasible / incomplete-no-candidate / failed
+```
+
+`CompleteCandidateKey`是唯一semantic tie-break和exact-cache key；不包含pointer、ordinal、diagnostic、actual offset或cost。Q52可以提供
+同cohort的typed admissible lower bound，但不能绕过key、result taxonomy或coverage状态机。
+
 | 输入等价类 | 代表输入 | controller路径 | typed failure | 精确断言 | 直接下游witness |
 | --- | --- | --- | --- | --- | --- |
 | exactly-once ownership | rank-3 1024/1025 accepted state及duplicate key | reserve→actual result→move-only incumbent；同key第二次reserve拒绝 | unreserved/duplicate finish为compiler bug | evaluations、actualizations、accepted计数逐项一致；winner只move一次 | unified-search可直接take retained executable |
 | actual result分类 | Accepted、SPM ExactRejection、其它exact、Unsupported、Indeterminate、CompilerBug | 只有Accepted比较；exact只记完整plan；unsupported/indeterminate只降coverage | compiler bug终止且无winner替换 | forbidden size、incumbent、coverage和各类count all-and-only | public result不会把unsupported当no-solution/fallback |
 | explicit cost cohort | actual instruction/DDR/NoC metrics Known/Unknown/overflow | 只有显式rates且所有required metrics Known时产生Known ticks；否则Unknown | rate zero/overflow/metric unavailable | Better/Worse/Equivalent/Incomparable及semantic tie确定 | Q52可替换cohort facts而不改domain |
 | admissible bound seam | Known/Unknown complete-plan lower bound和Known/Unknown incumbent | strict `bound > incumbent`才允许prune；equal继续 | cohort mismatch/unknown不prune | 关闭bound只增加work，不改变selected accepted key | unified frontier复用同一predicate |
-| exact-complete feedback | 两个schedule siblings、重复SPM witness、owner roots不同 | cache key为完整ClosedSchedulePlan；只做exact equality/subsumption duplicate | empty/stale key拒绝 | rejected point命中自身、不命中任一sibling；删除cache不改accepted set | item17 traversal保留parent continuation |
+| exact-complete feedback | 相同schedule但upstream axis不同的siblings、重复SPM witness、owner roots不同 | cache key为完整CompleteCandidateKey；只做exact equality/duplicate | incomplete axis或stale K/I/J generation在key factory拒绝 | rejected point命中自身、不命中任一sibling；删除cache不改accepted set | item17 traversal保留parent continuation |
 | deterministic finish | 2--7 synthetic accepted results、输入反转、mixed comparable/incomparable | Known objective优先；Equivalent/Incomparable用完整semantic key确定commit但coverage区分 | 无accepted、allowance exhausted | winner key/order-independent，coverage为ComparableBest/FeasibleUnranked/NoFeasible | public search一次发布并准确报告coverage |
 
-当前已实现子集：`ActualResultController`以`ClosedSchedulePlan`为candidate key，actualization credit在启动前预留；invalid、duplicate或
-exhausted reservation均不启动candidate。只有`FullFeasibilityStatus::Accepted`且携actual executable的结果进入incumbent；ExactRejection
-记录plan全字段的`ExactCompleteRejection`及typed SPM/executable proof kind，Unsupported/Indeterminate不写cache，CompilerBug poison
-controller。accepted executable在replace/finish中保持move-only，loser由RAII销毁。
+实现闭合：`CompleteCandidateKey`逐值携带Spatial、Region、Temporal、Representation、Movement、initial Buffer、ExecutionStructure、
+post-K Buffer和ClosedSchedule；factory复核schedule generation及post-K只能改变slot families。`UnifiedSearchRunner`已经从真实
+`ScheduledState`构造该key，controller reservation、completed set、exact cache、semantic tie和retained winner全部只使用这一类型；相同
+ClosedSchedulePlan但其它axis不同的candidate不会互相命中。
+
+actualization credit在启动前预留；duplicate、exhausted和closed reservation分别计数且不启动candidate。只有
+`FullFeasibilityStatus::Accepted`、typed compilation status和实际executable三者一致的结果进入incumbent；ExactRejection必须携
+`ProvenExactRejection`，SPM capacity还必须有causal owner。Unsupported/Indeterminate不写cache，CompilerBug poison controller。
+accepted executable在replace/finish中保持move-only，loser由RAII销毁。exact cache具有显式Enabled/Disabled policy，两种模式的accepted
+集合、winner和coverage一致。
 
 `SearchCostCohort`必须由caller显式给出四个positive target tick rates；actual instruction/DDR/min-hop metrics任一Unknown或checked arithmetic
 overflow即得到无value的`UnknownSearchObjective`。同cohort Known objective才比较Better/Worse/Equivalent；Unknown或cohort不同为
-Incomparable，commit只用完整semantic plan key确定，但coverage标`FeasibleUnranked`。strict bound predicate仅在Known同cohort且
-`bound > incumbent`时为true。finish区分ComparableBest、FeasibleUnranked、FeasiblePartial、NoFeasible、IncompleteNoCandidate和Failed。
+Incomparable，commit只用CompleteCandidateKey确定，但coverage标`FeasibleUnranked`。`SearchLowerBound`显式绑定完整key；strict bound
+predicate仅在Known同cohort且`bound > incumbent`时为true，相等、Unknown或cohort mismatch都不prune。finish输入使用typed
+`SearchFrontierStatus`并区分ComparableBest、FeasibleUnranked、FeasiblePartial、NoFeasible、IncompleteNoCandidate和Failed。Q52在有
+admissibility proof前不得构造Known bound。
 
-fresh direct 5/5覆盖zero/unknown/overflow、2--7 accepted输入反转、exact/unsupported/indeterminate cache、allowance/duplicate/compiler bug、
-strict bound及coverage；`FullFeasibilityTest`真实1024/1025 accepted executable已经走reserve→record→finish→take winner。ordinary host unit
-891/891、core lit 227/227、Tools/Runtime lit 35 passed/4 configured unsupported、完整build、public link closure及source organization通过。
-全轴continuation/frontier和public routing仍由下一项`unified-search-closure`拥有；本项没有用mock domain声称完成遍历。
-
-完成状态复核确认`ClosedSchedulePlan`不包含完整Spatial/Region/Temporal/Representation/Movement parent identity，不能作为actual SPM
-rejection默认要求的ExactCompletePlan key；`canPrune`和cost cohort也没有production caller，direct tests不是independent controller oracle。
-`search-control-closure`重新打开，必须建立all-axis `CompleteCandidateKey`、完整typed no-good/bound/coverage和actual-result oracle。
+direct coverage以1024/1025 key逐axis检查值身份和stale generation，2--7 bounded independent oracle在反向输入上独立计算objective/key winner；
+另覆盖Known/Unknown/overflow、strict bound、相同schedule的full-key sibling、SPM/其它exact/Unsupported/Indeterminate、cache on/off、malformed
+Accepted、allowance及全部count。真实1024/1025 `FullFeasibilityTest`已走key→reserve→record→finish→take retained executable；current
+`UnifiedSearchTest`和public `SearchRoutingTest`直接消费同一controller。全轴continuation的可恢复遍历仍由下一项
+`unified-search-closure`拥有；本项没有用controller oracle代签frontier coverage。fresh direct controller 7/7、controller/
+full-feasibility/unified/public routing integration 17/17、排除用户未提交attention fixture的host unit 935/935、core lit 225/225、
+public link 4/4及source/IR organization均通过。
 
 ## Work Item `unified-search-closure`：Typed Traversal and Winner Handoff（Q51）
 

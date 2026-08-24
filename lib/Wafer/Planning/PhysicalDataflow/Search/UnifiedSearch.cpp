@@ -20,7 +20,9 @@ public:
         executionConfig(executionConfig), diagnostics(diagnostics),
         programData(programData), options(options),
         remainingCredits(options.planningCredits),
-        controller(options.planningCredits, options.costCohort),
+        controller(ActualResultControllerOptions{
+            options.planningCredits, options.costCohort,
+            ExactRejectionCachePolicy::Enabled}),
         tilePipelineParallelism(tilePipelineParallelism),
         captureTileDataflowIRTrace(captureTileDataflowIRTrace) {}
 
@@ -57,7 +59,9 @@ public:
     if (compilerBug)
       controller.markCompilerBug();
     UnifiedSearchResult result;
-    result.control = controller.finish(frontierExhausted);
+    result.control =
+        controller.finish(frontierExhausted ? SearchFrontierStatus::Exhausted
+                                            : SearchFrontierStatus::Incomplete);
     result.planning = session.getWork();
     result.work = work;
     result.frontierExhausted = frontierExhausted;
@@ -276,18 +280,25 @@ private:
 
   void visitScheduled(ScheduledState state) {
     ++work.scheduledStatesVisited;
-    const ClosedSchedulePlan &plan = state.getSchedulePlan();
-    if (controller.isForbidden(plan))
+    std::string keyFailure;
+    auto key = CompleteCandidateKey::create(state, &keyFailure);
+    if (mlir::failed(key)) {
+      fail(keyFailure.empty() ? "unified search produced an invalid complete "
+                                "candidate key"
+                              : keyFailure);
+      return;
+    }
+    if (controller.isForbidden(*key))
       return;
     if (!reserveStep())
       return;
-    CandidateReservation reservation = controller.reserve(plan);
+    CandidateReservation reservation = controller.reserve(*key);
     if (reservation == CandidateReservation::Exhausted) {
       stopped = true;
       return;
     }
     if (reservation != CandidateReservation::Granted) {
-      fail("unified search produced a duplicate or invalid complete plan");
+      fail("unified search produced a duplicate or closed complete key");
       return;
     }
     FullFeasibilityStatistics actualStatistics;
@@ -305,7 +316,7 @@ private:
                                  .getRepresentationState()
                                  .getTemporalState();
     CandidateRecordOutcome recorded =
-        controller.record(plan, std::move(actual));
+        controller.record(*key, std::move(actual));
     if (recorded == CandidateRecordOutcome::CompilerBug) {
       fail("unified search actual-result controller rejected a typed result");
       return;

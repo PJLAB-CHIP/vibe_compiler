@@ -301,13 +301,16 @@ TEST(FullFeasibilityTest,
     EXPECT_EQ(print(parsed.module->getOperation()), before);
     std::vector<std::string> traces =
         evaluated.compilation->tileDataflowIRTrace;
-    ActualResultController controller(/*actualizationCredits=*/1);
-    const ClosedSchedulePlan &plan =
-        prefix.incomplete->getState().getSchedulePlan();
-    ASSERT_EQ(controller.reserve(plan), CandidateReservation::Granted);
-    ASSERT_EQ(controller.record(plan, std::move(evaluated)),
+    ActualResultController controller(
+        ActualResultControllerOptions{/*actualizationCredits=*/1, std::nullopt,
+                                      ExactRejectionCachePolicy::Enabled});
+    auto key = CompleteCandidateKey::create(prefix.incomplete->getState());
+    ASSERT_TRUE(mlir::succeeded(key));
+    ASSERT_EQ(controller.reserve(*key), CandidateReservation::Granted);
+    ASSERT_EQ(controller.record(*key, std::move(evaluated)),
               CandidateRecordOutcome::Accepted);
-    SearchControllerResult controlled = controller.finish(true);
+    SearchControllerResult controlled =
+        controller.finish(SearchFrontierStatus::Exhausted);
     ASSERT_TRUE(controlled.winner);
     EXPECT_EQ(controlled.coverage, SearchControllerCoverage::FeasibleUnranked);
     CardExecutableLoweringResult executable =
