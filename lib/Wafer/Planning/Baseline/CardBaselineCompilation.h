@@ -43,7 +43,6 @@ struct BaselineStatistics {
   uint64_t baselineTileIRPrints = 0;
   uint64_t materializationRejections = 0;
   uint64_t indeterminateCompilationFailures = 0;
-  uint64_t rotatingSlotAllocationsMaterialized = 0;
   CardExecutableLoweringStatistics exactGates;
 };
 

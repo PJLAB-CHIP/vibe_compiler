@@ -110,12 +110,10 @@ TEST_F(CardExecutableCompilationTest,
 
   auto result = wafer::compiler::detail::compileCardModuleToExecutable(
       std::move(cardModule), wafer::CardId(0), expectedTileIds,
-      /*selectedBufferingScopes=*/{},
       /*materializationRelations=*/{}, program, executionConfig(), diagnostics,
       programData, &statistics);
   auto repeated = wafer::compiler::detail::compileCardModuleToExecutable(
       std::move(repeatedCardModule), wafer::CardId(0), expectedTileIds,
-      /*selectedBufferingScopes=*/{},
       /*materializationRelations=*/{}, program, executionConfig(), diagnostics,
       programData, &statistics);
   diagnostics.flush();
@@ -148,7 +146,6 @@ TEST_F(CardExecutableCompilationTest,
 
   auto result = wafer::compiler::detail::compileCardModuleToExecutable(
       {}, wafer::CardId(0), expectedTileIds,
-      /*selectedBufferingScopes=*/{},
       /*materializationRelations=*/{}, program, executionConfig(), diagnostics,
       programData, &statistics);
   diagnostics.flush();

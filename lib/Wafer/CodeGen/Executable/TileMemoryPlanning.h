@@ -4,7 +4,6 @@
 #define WAFER_COMPILER_TILEMEMORYPLANNING_H
 
 #include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
-#include "Wafer/Transforms/Bufferization/SelectedBufferMaterialization.h"
 
 #include "Wafer/Transforms/MemoryPlanning.h"
 
@@ -23,7 +22,6 @@ enum class TileMemoryPlanningFailureKind : uint8_t {
   PreexistingPlacementFacts,
   Verification,
   InstrMemoryPlanningPreparation,
-  SelectedBufferMaterialization,
   InstructionScheduling,
   SPMAllocation,
 };
@@ -72,8 +70,8 @@ TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
 
 /// Consumes one Tile's owned canonical Instr module and runs the
 /// complete current hard-gate sequence: prepare Instr IR for memory planning,
-/// materialize requested rotating buffers, assign SPM offsets and verify the
-/// resulting Tile module.
+/// assign SPM offsets and verify the resulting Tile module. Selected execution
+/// structure and rotating storage must already be present in the input IR.
 /// Tile-to-Instr conversion belongs to the caller and must already be complete.
 /// Whole-Card candidate evaluation may suppress only the redundant per-Tile
 /// diagnostic for a typed capacity rejection; all other failures still emit
@@ -82,10 +80,7 @@ TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> planTileMemory(
     mlir::OwningOpRef<mlir::ModuleOp> module,
     TileMemoryPlanningFailure *failure = nullptr,
-    llvm::ArrayRef<SelectedBufferingScope> selectedBufferingScopes = {},
     StructuredMaterializationRelations *materializationRelations = nullptr,
-    unsigned *materializedSlotAllocationCount = nullptr,
-    SelectedBufferMaterializationFailure *selectedBufferFailure = nullptr,
     bool applySelectedInstructionSchedule = false,
     bool emitSPMCapacityDiagnostics = true);
 

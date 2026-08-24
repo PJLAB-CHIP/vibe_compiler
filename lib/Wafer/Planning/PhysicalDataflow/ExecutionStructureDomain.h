@@ -21,6 +21,12 @@ namespace wafer::compiler::detail {
 struct ExecutionStructureLimits {
   uint32_t maxStages = 0;
   uint64_t maxSuccessorSteps = 1000000;
+  uint64_t maxFiniteUnrolledOperations = 4096;
+};
+
+enum class CyclicExecutionCapability : uint8_t {
+  Unsupported,
+  SCFDistanceOne,
 };
 
 /// Policy-free input to the finite successor kernel. Production derives these
@@ -28,10 +34,11 @@ struct ExecutionStructureLimits {
 /// reference tests can exercise the same kernel without constructing IR.
 struct ExecutionStructureScopeDescription {
   PipelineScopeId id;
-  uint64_t tripCount = 1;
+  std::optional<PipelineIterationClass> iteration;
   std::vector<EventId> stageableEvents;
-  std::vector<EventDependency> dependencies;
-  bool pipelinedEligible = false;
+  std::vector<PipelineDependence> dependences;
+  std::vector<CompletionObligation> completionObligations;
+  CyclicExecutionCapability capability = CyclicExecutionCapability::Unsupported;
 };
 
 enum class ExecutionStructureDomainFailureKind : uint8_t {
@@ -59,7 +66,6 @@ private:
     bool serialized = true;
     uint32_t stageCount = 0;
     std::vector<uint32_t> eventStages;
-    uint64_t launchDistance = 0;
   };
 
   std::vector<ScopeCursor> scopes;
@@ -130,7 +136,8 @@ private:
 
   friend ExecutionStructureDomainResult buildExecutionStructureDomain(
       const EventGraph &, llvm::ArrayRef<TemporalScopeDescriptor>,
-      const TemporalPlan &, const ExecutionStructureLimits &);
+      const TemporalPlan &, llvm::ArrayRef<analysis::RootRegionWork>,
+      const ExecutionStructureLimits &);
   friend ExecutionStructureDomainResult buildExecutionStructureDomain(
       llvm::ArrayRef<ExecutionStructureScopeDescription>,
       const ExecutionStructureLimits &);
@@ -147,6 +154,7 @@ ExecutionStructureDomainResult buildExecutionStructureDomain(
     const EventGraph &graph,
     llvm::ArrayRef<TemporalScopeDescriptor> temporalScopes,
     const TemporalPlan &temporal,
+    llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
     const ExecutionStructureLimits &limits = ExecutionStructureLimits());
 
 ExecutionStructureDomainResult buildExecutionStructureDomain(

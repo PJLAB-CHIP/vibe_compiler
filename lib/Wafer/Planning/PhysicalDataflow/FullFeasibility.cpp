@@ -406,8 +406,7 @@ FullFeasibilityResult evaluateCompleteCandidate(
     ++statistics->executableGateInvocations;
   CardExecutableCompilationResult compilation = compileCardModuleToExecutable(
       std::move(materialized->module), problem.getCardId(),
-      problem.getProgram().availableTileIds,
-      /*selectedBufferingScopes=*/{}, materialized->relations, program,
+      problem.getProgram().availableTileIds, materialized->relations, program,
       executionConfig, diagnostics, programData,
       statistics ? &statistics->exactGates : nullptr, tilePipelineParallelism,
       captureTileDataflowIRTrace,

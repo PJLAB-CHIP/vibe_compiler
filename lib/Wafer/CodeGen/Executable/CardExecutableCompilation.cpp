@@ -30,8 +30,6 @@ struct TileLoweringResult {
   StructuredMaterializationRelations materializationRelations;
   std::string detail;
   TileMemoryPlanningFailure memoryPlanning;
-  SelectedBufferMaterializationFailure selectedBuffer;
-  unsigned rotatingSlotAllocationCount = 0;
   bool conversionFailed = false;
   bool memoryPlanningFailed = false;
 };
@@ -127,15 +125,12 @@ namespace {
 static CardExecutableCompilationResult
 fail(CardExecutableCompilationStatus status, llvm::StringRef gate,
      llvm::StringRef detail,
-     llvm::SmallVector<CardExecutableTileFailure, 4> tileFailures = {},
-     uint64_t rotatingSlotAllocationsMaterialized = 0) {
+     llvm::SmallVector<CardExecutableTileFailure, 4> tileFailures = {}) {
   CardExecutableCompilationResult result;
   result.status = status;
   result.gate = gate.str();
   result.detail = detail.str();
   result.tileFailures = std::move(tileFailures);
-  result.rotatingSlotAllocationsMaterialized =
-      rotatingSlotAllocationsMaterialized;
   return result;
 }
 
@@ -144,8 +139,6 @@ fail(CardExecutableCompilationStatus status, llvm::StringRef gate,
 CardExecutableCompilationResult compileCardModuleToExecutable(
     mlir::OwningOpRef<mlir::ModuleOp> cardModule, CardId expectedCardId,
     llvm::ArrayRef<TileId> expectedTileIds,
-    llvm::ArrayRef<llvm::SmallVector<SelectedBufferingScope, 4>>
-        selectedBufferingScopes,
     const StructuredMaterializationRelations &materializationRelations,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
@@ -168,14 +161,10 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
     return result;
   };
 
-  if (!cardModule || expectedTileIds.empty() ||
-      (!selectedBufferingScopes.empty() &&
-       selectedBufferingScopes.size() != expectedTileIds.size()))
-    return reportFailure(
-        fail(CardExecutableCompilationStatus::IndeterminateFailure,
-             "compilation-contract",
-             "CardModule, Tile domain or selected-buffer request domain "
-             "is incomplete"));
+  if (!cardModule || expectedTileIds.empty())
+    return reportFailure(fail(
+        CardExecutableCompilationStatus::IndeterminateFailure,
+        "compilation-contract", "CardModule or Tile domain is incomplete"));
 
   mlir::MLIRContext *context = cardModule->getContext();
   std::string detail;
@@ -240,20 +229,14 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
       return;
     }
 
-    llvm::ArrayRef<SelectedBufferingScope> bufferingScopes;
-    if (!selectedBufferingScopes.empty())
-      bufferingScopes = selectedBufferingScopes[tileIndex];
     mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> memoryPlanned =
         planTileMemory(std::move(result.module), &result.memoryPlanning,
-                       bufferingScopes, &result.materializationRelations,
-                       &result.rotatingSlotAllocationCount,
-                       &result.selectedBuffer, applySelectedInstructionSchedule,
+                       &result.materializationRelations,
+                       applySelectedInstructionSchedule,
                        /*emitSPMCapacityDiagnostics=*/false);
     if (mlir::failed(memoryPlanned)) {
       result.memoryPlanningFailed = true;
-      result.detail = result.selectedBuffer.detail;
-      if (result.detail.empty())
-        result.detail = "Tile memory planning failed";
+      result.detail = "Tile memory planning failed";
       return;
     }
     result.module = std::move(*memoryPlanned);
@@ -273,10 +256,8 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
   std::vector<StructuredMaterializationRelations> tileRelations;
   instructionModules.reserve(loweringResults.size());
   tileRelations.reserve(loweringResults.size());
-  uint64_t rotatingSlotAllocationsMaterialized = 0;
   bool allFailuresAreExact = true;
   for (auto [tileIndex, result] : llvm::enumerate(loweringResults)) {
-    rotatingSlotAllocationsMaterialized += result.rotatingSlotAllocationCount;
     if (result.conversionFailed || result.memoryPlanningFailed ||
         !result.module) {
       CardExecutableTileFailure failure;
@@ -287,15 +268,11 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
                   TileMemoryPlanningFailureKind::SPMAllocation
               ? "spm-allocation"
           : result.memoryPlanning.kind ==
-                  TileMemoryPlanningFailureKind::SelectedBufferMaterialization
-              ? "selected-buffer-materialization"
-          : result.memoryPlanning.kind ==
                   TileMemoryPlanningFailureKind::InstructionScheduling
               ? "instruction-scheduling"
               : "tile-memory-planning";
       failure.detail = std::move(result.detail);
       failure.memoryPlanning = std::move(result.memoryPlanning);
-      failure.selectedBuffer = std::move(result.selectedBuffer);
       allFailuresAreExact &=
           !result.conversionFailed &&
           isProvenExactTileMemoryPlanningFailure(failure.memoryPlanning);
@@ -312,8 +289,7 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
         fail(allFailuresAreExact
                  ? CardExecutableCompilationStatus::ProvenExactRejection
                  : CardExecutableCompilationStatus::IndeterminateFailure,
-             primaryGate, primaryDetail, std::move(tileFailures),
-             rotatingSlotAllocationsMaterialized));
+             primaryGate, primaryDetail, std::move(tileFailures)));
   }
 
   CardExecutableLoweringFailure loweringFailure;
@@ -328,22 +304,19 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
                  : CardExecutableCompilationStatus::IndeterminateFailure,
              loweringFailure.getDiagnosticLabel(),
              loweringFailure.detail.empty() ? "Tile module lowering failed"
-                                            : loweringFailure.detail,
-             {}, rotatingSlotAllocationsMaterialized));
+                                            : loweringFailure.detail));
 
   if (executable->tiles.size() != expectedTileIds.size())
     return reportFailure(
         fail(CardExecutableCompilationStatus::IndeterminateFailure,
-             "card-executable-domain", "Tile executable domain is incomplete",
-             {}, rotatingSlotAllocationsMaterialized));
+             "card-executable-domain", "Tile executable domain is incomplete"));
   for (auto [index, tile] : llvm::enumerate(executable->tiles))
     if (tile.getCardId() != expectedCardId ||
         tile.getTileId() != expectedTileIds[index])
       return reportFailure(
           fail(CardExecutableCompilationStatus::IndeterminateFailure,
                "card-executable-domain",
-               "executable lowering changed the Tile identity", {},
-               rotatingSlotAllocationsMaterialized));
+               "executable lowering changed the Tile identity"));
 
   CardExecutableCompilationResult result;
   result.status = CardExecutableCompilationStatus::Accepted;
@@ -358,12 +331,8 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
         result.operationNodeRelations.push_back({operation, node});
     });
   }
-  result.rotatingSlotAllocationsMaterialized =
-      rotatingSlotAllocationsMaterialized;
   diagnostics << "wafer-compile: card-executable-compilation outcome=accepted"
-              << " physical_tiles=" << result.executable->tiles.size()
-              << " rotating_slot_allocations="
-              << rotatingSlotAllocationsMaterialized << '\n';
+              << " physical_tiles=" << result.executable->tiles.size() << '\n';
   return result;
 }
 

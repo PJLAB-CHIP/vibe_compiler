@@ -64,6 +64,66 @@ struct EventStageAssignment {
   }
 };
 
+enum class PipelineDependenceKind : uint8_t {
+  DataReady,
+  AsyncCompletion,
+  BufferLifetime,
+  Effect,
+};
+
+/// A dependence between two recurring event classes. Distance zero belongs to
+/// one logical iteration; distance one consumes the immediately preceding
+/// iteration. Current lowering supports no larger distance.
+struct PipelineDependence {
+  EventId source;
+  EventId destination;
+  uint32_t iterationDistance = 0;
+  PipelineDependenceKind kind = PipelineDependenceKind::DataReady;
+
+  friend bool operator==(const PipelineDependence &lhs,
+                         const PipelineDependence &rhs) {
+    return std::tie(lhs.source, lhs.destination, lhs.iterationDistance,
+                    lhs.kind) == std::tie(rhs.source, rhs.destination,
+                                          rhs.iterationDistance, rhs.kind);
+  }
+  friend bool operator<(const PipelineDependence &lhs,
+                        const PipelineDependence &rhs) {
+    return std::tie(lhs.source, lhs.destination, lhs.iterationDistance,
+                    lhs.kind) < std::tie(rhs.source, rhs.destination,
+                                         rhs.iterationDistance, rhs.kind);
+  }
+};
+
+/// Exact decomposition of one selected temporal axis as emitted by the E
+/// compact traversal: one prefix full wave, a static steady loop, and at most
+/// one remainder wave. Outer axes repeat this same structure.
+struct PipelineIterationClass {
+  uint32_t recurrenceAxis = 0;
+  uint64_t prefixCount = 1;
+  uint64_t steadyTripCount = 0;
+  uint64_t tailCount = 0;
+
+  friend bool operator==(const PipelineIterationClass &lhs,
+                         const PipelineIterationClass &rhs) {
+    return std::tie(lhs.recurrenceAxis, lhs.prefixCount, lhs.steadyTripCount,
+                    lhs.tailCount) ==
+           std::tie(rhs.recurrenceAxis, rhs.prefixCount, rhs.steadyTripCount,
+                    rhs.tailCount);
+  }
+  friend bool operator<(const PipelineIterationClass &lhs,
+                        const PipelineIterationClass &rhs) {
+    return std::tie(lhs.recurrenceAxis, lhs.prefixCount, lhs.steadyTripCount,
+                    lhs.tailCount) <
+           std::tie(rhs.recurrenceAxis, rhs.prefixCount, rhs.steadyTripCount,
+                    rhs.tailCount);
+  }
+};
+
+enum class ExecutionStructureLowering : uint8_t {
+  SCFDistanceOne,
+  FiniteUnrolled,
+};
+
 struct SerializedExecutionStructure {
   PipelineScopeId scope;
 
@@ -80,21 +140,32 @@ struct SerializedExecutionStructure {
 struct PipelinedExecutionStructure {
   PipelineScopeId scope;
   OccurrenceRelationId recurrence;
+  PipelineIterationClass iteration;
   uint64_t launchDistance = 1;
   std::vector<EventStageAssignment> eventStages;
+  std::vector<PipelineDependence> dependences;
+  std::vector<CompletionObligation> completionObligations;
+  ExecutionStructureLowering lowering =
+      ExecutionStructureLowering::SCFDistanceOne;
 
   friend bool operator==(const PipelinedExecutionStructure &lhs,
                          const PipelinedExecutionStructure &rhs) {
     return lhs.scope == rhs.scope && lhs.recurrence == rhs.recurrence &&
+           lhs.iteration == rhs.iteration &&
            lhs.launchDistance == rhs.launchDistance &&
-           lhs.eventStages == rhs.eventStages;
+           lhs.eventStages == rhs.eventStages &&
+           lhs.dependences == rhs.dependences &&
+           lhs.completionObligations == rhs.completionObligations &&
+           lhs.lowering == rhs.lowering;
   }
   friend bool operator<(const PipelinedExecutionStructure &lhs,
                         const PipelinedExecutionStructure &rhs) {
-    return std::tie(lhs.scope, lhs.recurrence, lhs.launchDistance,
-                    lhs.eventStages) < std::tie(rhs.scope, rhs.recurrence,
-                                                rhs.launchDistance,
-                                                rhs.eventStages);
+    return std::tie(lhs.scope, lhs.recurrence, lhs.iteration,
+                    lhs.launchDistance, lhs.eventStages, lhs.dependences,
+                    lhs.completionObligations, lhs.lowering) <
+           std::tie(rhs.scope, rhs.recurrence, rhs.iteration,
+                    rhs.launchDistance, rhs.eventStages, rhs.dependences,
+                    rhs.completionObligations, rhs.lowering);
   }
 };
 

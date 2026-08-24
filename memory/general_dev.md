@@ -645,17 +645,18 @@ source program
 
 ## Execution structure与selected stage construction（stable，2026-08-23）
 
-- current K domain按J connected event component形成scope；每个scope无条件有Serialized。只有component恰有一个E exact recurrence、
-  trip count至少2且stageable events至少2时才有Pipelined。`OccurrenceRelationId`保留per-axis counts；stage ID是有序phase，交换nonempty
-  stages不是label symmetry。
-- Pipelined由all-and-only event stage partition和launch distance表示；hard dependency的destination stage不能早于source。domain只拒绝
-  stage空洞，不枚举timestamp/idle，不用multi-slot或estimated overlap触发pipeline。Core固定K后必须退回structure-specific storage，
-  不能把pre-K BufferPlan/EventGraph直送J。
+- current K domain按J connected event component形成scope；每个scope无条件有Serialized。Pipelined必须有唯一E exact recurrence、typed target
+  contract和至少两个steady-loop iterations。`OccurrenceRelationId`保留per-axis counts；`PipelineIterationClass`另保存innermost recurrence axis
+  及E已经确定的prefix/steady/tail，其中1024/128为`1+7+0`，1025/128为`1+7+1`。
+- Pipelined由all-and-only event stage partition、distance 0/1 dependence和current唯一可构造的launch distance 1表示；distance 0的destination
+  stage不能早于source，distance 1允许立即前一iteration供值。domain只拒绝stage空洞，不枚举timestamp/idle，不用multi-slot或estimated
+  overlap触发pipeline。synchronous writeback只保留Serialized；跨stage Direct-DTE必须使用bounded finite-unroll，不能让token跨backedge。
+  Core固定K后必须退回structure-specific storage，不能把pre-K BufferPlan/EventGraph直送J。
 - K选择后先重建I的structure-specific occurrences/slot rotation，再由J关闭schedule；complete-candidate construction在新Card subtree构造SCF
   prologue/steady/epilogue。failure擦除subtree并终止，不在actual IR上寻找另一个structure。
-- memory planning只在selected stage/rotation完成后为全部slot分配offset。旧fixed-slot whole-Module clone不恢复，但其DTE/NCC/alias/periodic/
-  tail semantic witnesses必须迁入current owner。旧`StagePipeline`仍只是buffering scope触发的actual-IR wrapper，不是current K domain；在
-  完整K→I→J plan的selected construction迁移前不能作为production owner。
+- memory planning只在selected stage/rotation完成后为全部slot分配offset。旧fixed-slot whole-Module clone不恢复，但其DTE/NCC/alias/
+  tail semantic witnesses必须迁入current owner。旧`StagePipeline` actual-IR wrapper及CardExecutable的buffering-scope入口已删除；current
+  K constructor只消费caller-owned EventId→operation mapping和已验证schedule，pinned transform失败时销毁整个candidate module。
 
 ## Fixed-structure storage closure（stable，2026-08-23）
 

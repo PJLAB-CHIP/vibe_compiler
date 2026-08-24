@@ -24,6 +24,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/CanonicalTemporalPlan.cpp
   Planning/PhysicalDataflow/EventGraph.cpp
   Planning/PhysicalDataflow/ExecutionStructureDomain.cpp
+  Planning/PhysicalDataflow/ExecutionStructureMaterialization.cpp
   Planning/PhysicalDataflow/ExecutionStructurePlan.cpp
   Planning/PhysicalDataflow/FullFeasibility.cpp
   Planning/PhysicalDataflow/SerializedExecutionPlan.cpp
@@ -70,7 +71,6 @@ set(WAFER_PLANNING_SOURCES
   Planning/Search/InstructionSchedule.cpp
   Planning/Search/PhysicalRepresentation.cpp
   Planning/Search/SimpleRoute.cpp
-  Planning/Search/StagePipeline.cpp
   Planning/Search/TemporalTiling.cpp
   Planning/Search/TensorProgramAlternative.cpp
   Planning/Search/UnifiedPhysicalDataflow.cpp

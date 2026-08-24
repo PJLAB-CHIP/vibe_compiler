@@ -4,8 +4,6 @@
 #include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Planning/Search/InstructionSchedule.h"
-#include "Wafer/Planning/Search/StagePipeline.h"
-#include "Wafer/Transforms/Bufferization/SelectedBufferMaterialization.h"
 
 #include "Wafer/Support/CompileTiming.h"
 
@@ -202,18 +200,11 @@ TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
 planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
                TileMemoryPlanningFailure *failure,
-               llvm::ArrayRef<SelectedBufferingScope> selectedBufferingScopes,
                StructuredMaterializationRelations *materializationRelations,
-               unsigned *materializedSlotAllocationCount,
-               SelectedBufferMaterializationFailure *selectedBufferFailure,
                bool applySelectedInstructionSchedule,
                bool emitSPMCapacityDiagnostics) {
   if (failure)
     *failure = {};
-  if (materializedSlotAllocationCount)
-    *materializedSlotAllocationCount = 0;
-  if (selectedBufferFailure)
-    *selectedBufferFailure = {};
   if (!module) {
     if (failure)
       failure->kind = TileMemoryPlanningFailureKind::Contract;
@@ -279,8 +270,7 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
     manager.nest<mlir::func::FuncOp>().addPass(
         wafer::createRebuildRequiredNCCJoinsPass());
   };
-  if (mlir::failed(runPassPipeline(*module,
-                                   "instr-memory-planning-preparation",
+  if (mlir::failed(runPassPipeline(*module, "instr-memory-planning-preparation",
                                    buildPreparationPipeline))) {
     recordFailure(
         TileMemoryPlanningFailureKind::InstrMemoryPlanningPreparation);
@@ -301,41 +291,8 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
     return mlir::failure();
   }
 
-  // Buffer multiplicity is selected by the card state, but its exact
-  // rotating allocation can only be derived after function-boundary
-  // preparation and required-join recomputation expose the canonical Instr
-  // loop.
-  // It must still run before SPM planning so every cloned slot receives a
-  // fresh, nonoverlapping physical allocation below.
-  if (!selectedBufferingScopes.empty()) {
-    if (!materializationRelations) {
-      if (selectedBufferFailure) {
-        selectedBufferFailure->kind =
-            SelectedBufferMaterializationFailureKind::InvalidRequest;
-        selectedBufferFailure->detail =
-            "selected buffering requires current materialization relations";
-      }
-      recordFailure(
-          TileMemoryPlanningFailureKind::SelectedBufferMaterialization);
-      return mlir::failure();
-    }
-    auto materialized = materializeStagePipelines(
-        std::move(module), selectedBufferingScopes,
-        std::move(*materializationRelations), selectedBufferFailure);
-    if (mlir::failed(materialized)) {
-      recordFailure(
-          TileMemoryPlanningFailureKind::SelectedBufferMaterialization);
-      return mlir::failure();
-    }
-    module = std::move(materialized->module);
-    *materializationRelations =
-        std::move(materialized->materializationRelations);
-    if (materializedSlotAllocationCount)
-      *materializedSlotAllocationCount = materialized->slotAllocationCount;
-  }
-  if (mlir::failed(
-          requireCurrentBufferRelations("selected buffer materialization"))) {
-    recordFailure(TileMemoryPlanningFailureKind::SelectedBufferMaterialization);
+  if (mlir::failed(requireCurrentBufferRelations("selected structure input"))) {
+    recordFailure(TileMemoryPlanningFailureKind::Contract);
     return mlir::failure();
   }
 

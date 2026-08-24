@@ -712,9 +712,14 @@ PhysicalDataflowPlanningSession::getOrCreateExecutionStructureDomain(
                          temporalDomain.failure
                              ? temporalDomain.failure->detail
                              : "execution structure lost its temporal domain"}};
+  auto rootWorks = rootWorkCache.find(buffers.getSpatialPlan());
+  if (rootWorks == rootWorkCache.end())
+    return {nullptr, ExecutionStructureDomainFailure{
+                         ExecutionStructureDomainFailureKind::BrokenContract,
+                         "execution structure lost its root-work facts"}};
   ExecutionStructureDomainResult result = buildExecutionStructureDomain(
       eventGraph, temporalDomain.domain->getScopeDescriptors(),
-      buffers.getTemporalPlan());
+      buffers.getTemporalPlan(), rootWorks->second);
   if (!result.succeeded())
     return {
         nullptr,

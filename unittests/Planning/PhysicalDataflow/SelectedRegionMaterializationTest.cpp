@@ -541,8 +541,7 @@ TEST(SelectedRegionMaterializationTest,
       compiler::ProgramDataHandoff programData;
       CardExecutableCompilationResult compiled = compileCardModuleToExecutable(
           std::move(materialized->module), CardId(0),
-          prepared->program->availableTileIds,
-          /*selectedBufferingScopes=*/{}, materialized->relations,
+          prepared->program->availableTileIds, materialized->relations,
           metadata(extent), compiler::testing::executionConfig(), diagnostics,
           programData, /*statistics=*/nullptr,
           /*tilePipelineParallelism=*/0,
@@ -765,8 +764,7 @@ TEST(SelectedRegionMaterializationTest,
       compiler::ProgramDataHandoff programData;
       CardExecutableCompilationResult compiled = compileCardModuleToExecutable(
           std::move(materialized->module), CardId(0),
-          prepared->program->availableTileIds,
-          /*selectedBufferingScopes=*/{}, materialized->relations,
+          prepared->program->availableTileIds, materialized->relations,
           metadata(extent), compiler::testing::executionConfig(), diagnostics,
           programData, /*statistics=*/nullptr,
           /*tilePipelineParallelism=*/0,
@@ -927,8 +925,7 @@ TEST(SelectedRegionMaterializationTest,
       compiler::ProgramDataHandoff programData;
       CardExecutableCompilationResult compiled = compileCardModuleToExecutable(
           std::move(materialized->module), CardId(0),
-          prepared->program->availableTileIds,
-          /*selectedBufferingScopes=*/{}, materialized->relations,
+          prepared->program->availableTileIds, materialized->relations,
           fanoutMetadata(extent), compiler::testing::executionConfig(),
           diagnostics, programData, /*statistics=*/nullptr,
           /*tilePipelineParallelism=*/0,
@@ -1016,8 +1013,7 @@ TEST(SelectedRegionMaterializationTest,
       compiler::ProgramDataHandoff programData;
       CardExecutableCompilationResult compiled = compileCardModuleToExecutable(
           std::move(materialized->module), CardId(0),
-          prepared->program->availableTileIds,
-          /*selectedBufferingScopes=*/{}, materialized->relations,
+          prepared->program->availableTileIds, materialized->relations,
           metadata(extent), compiler::testing::executionConfig(), diagnostics,
           programData, /*statistics=*/nullptr,
           /*tilePipelineParallelism=*/0,
@@ -1108,8 +1104,7 @@ TEST(SelectedRegionMaterializationTest,
       compiler::ProgramDataHandoff programData;
       CardExecutableCompilationResult compiled = compileCardModuleToExecutable(
           std::move(materialized->module), CardId(0),
-          prepared->program->availableTileIds,
-          /*selectedBufferingScopes=*/{}, materialized->relations,
+          prepared->program->availableTileIds, materialized->relations,
           fanoutMetadata(extent), compiler::testing::executionConfig(),
           diagnostics, programData, /*statistics=*/nullptr,
           /*tilePipelineParallelism=*/0,

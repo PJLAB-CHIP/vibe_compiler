@@ -391,9 +391,18 @@ private:
         return fail(EventGraphFailureKind::CompilerBug,
                     EventGraphFailureReason::MalformedPlan,
                     "NCC participant completion has an invalid mask");
-      protocol = kind == NCCCompletionKind::None
-                     ? CompletionProtocol::NoAsynchronousCompletion
-                     : CompletionProtocol::NCCParticipant;
+      switch (kind) {
+      case NCCCompletionKind::None:
+        protocol = CompletionProtocol::NoAsynchronousCompletion;
+        break;
+      case NCCCompletionKind::OrderedAsynchronousIssue:
+      case NCCCompletionKind::ParticipantJoin:
+        protocol = CompletionProtocol::NCCParticipant;
+        break;
+      case NCCCompletionKind::SynchronousWriteback:
+        protocol = CompletionProtocol::NCCSynchronousWriteback;
+        break;
+      }
       if (!addEvent(issue, tile, workers) || !addEvent(completion, tile) ||
           !addDependency(issue, completion, EventDependencyReason::Completion))
         return false;

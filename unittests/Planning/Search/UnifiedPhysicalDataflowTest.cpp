@@ -51,13 +51,10 @@ TEST(UnifiedPhysicalDataflowTest,
       domain->materialize(*parsed.module, *first, &failureReason);
   ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
   EXPECT_EQ(countOps<TileRegionOp>(materialized->module->getOperation()), 2u);
-  std::vector<llvm::SmallVector<SelectedBufferingScope, 4>> scopes(
-      (*analysis)->availableTileIds.size());
-
   auto compiled = compileCardModuleToExecutable(
       std::move(materialized->module), CardId(0), (*analysis)->availableTileIds,
-      scopes, materialized->relations, dependentProgramMetadata(),
-      executionConfig(), diagnostics, programData, /*statistics=*/nullptr,
+      materialized->relations, dependentProgramMetadata(), executionConfig(),
+      diagnostics, programData, /*statistics=*/nullptr,
       /*tilePipelineParallelism=*/0, /*captureTileIRTrace=*/false,
       /*applySelectedInstructionSchedule=*/true);
   diagnostics.flush();

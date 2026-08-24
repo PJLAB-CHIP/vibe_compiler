@@ -6,6 +6,7 @@
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileWorkStatistics.h"
+#include "Wafer/Transforms/Bufferization/SelectedBufferMaterialization.h"
 #include "Wafer/Transforms/MemoryPlanning.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -226,9 +227,7 @@ TEST_F(TileMemoryPlanningTest, ReportsSPMFailureForOwnedTileModule) {
   wafer::compiler::detail::TileMemoryPlanningFailure quietFailure;
   auto quiet = wafer::compiler::detail::planTileMemory(
       std::move(quietModule), &quietFailure,
-      /*selectedBufferingScopes=*/{}, /*materializationRelations=*/nullptr,
-      /*materializedSlotAllocationCount=*/nullptr,
-      /*selectedBufferFailure=*/nullptr,
+      /*materializationRelations=*/nullptr,
       /*applySelectedInstructionSchedule=*/false,
       /*emitSPMCapacityDiagnostics=*/false);
   EXPECT_TRUE(mlir::failed(quiet));
@@ -300,8 +299,7 @@ TEST_F(TileMemoryPlanningTest,
   });
   ASSERT_EQ(joins.size(), 1u);
   EXPECT_EQ(joins.front().getParticipants(), (llvm::ArrayRef<int64_t>{0}));
-  EXPECT_TRUE(
-      mlir::isa<mlir::func::ReturnOp>(joins.front()->getNextNode()));
+  EXPECT_TRUE(mlir::isa<mlir::func::ReturnOp>(joins.front()->getNextNode()));
   EXPECT_FALSE(joins.front()->getParentOfType<wafer::TileRegionOp>());
   const wafer::support::CompileWorkStatistics work = workSession->snapshot();
   EXPECT_EQ(work.tileMemoryPlanningInvocations, 1u);
@@ -519,12 +517,20 @@ module {
   scopes.push_back(std::move(firstScope));
   scopes.push_back(std::move(secondScope));
 
-  unsigned slotAllocations = 0;
-  wafer::compiler::detail::TileMemoryPlanningFailure memoryFailure;
   wafer::compiler::detail::SelectedBufferMaterializationFailure bufferFailure;
+  unsigned slotAllocations = 0;
+  for (const auto &scope : scopes) {
+    auto materialized = wafer::compiler::detail::materializeSelectedBuffering(
+        std::move(module), scope.requests, std::move(relations),
+        &bufferFailure);
+    ASSERT_TRUE(mlir::succeeded(materialized)) << bufferFailure.detail;
+    module = std::move(materialized->module);
+    relations = std::move(materialized->materializationRelations);
+    slotAllocations += materialized->slotAllocationCount;
+  }
+  wafer::compiler::detail::TileMemoryPlanningFailure memoryFailure;
   auto planned = wafer::compiler::detail::planTileMemory(
-      std::move(module), &memoryFailure, scopes, &relations, &slotAllocations,
-      &bufferFailure);
+      std::move(module), &memoryFailure, &relations);
   ASSERT_TRUE(mlir::succeeded(planned)) << bufferFailure.detail;
   EXPECT_EQ(slotAllocations, 4u);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(**planned)));

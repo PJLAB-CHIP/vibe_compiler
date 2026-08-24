@@ -1,8 +1,10 @@
 //===- EventGraphTest.cpp --------------------------------------------===//
 
 #include "Wafer/Planning/PhysicalDataflow/EventGraph.h"
+#include "Wafer/Planning/PhysicalDataflow/ExecutionStructureDomain.h"
 
 #include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
+#include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/InitWaferDialects.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -362,6 +364,24 @@ TEST(EventGraphTest, CompletionContractAndInputOrderAreDeterministic) {
   ASSERT_NE(obligation, original.graph->getCompletionObligations().end());
   EXPECT_EQ(obligation->protocol, CompletionProtocol::NCCParticipant);
 
+  std::vector<ExecutionEventContract> synchronousContracts = inputs.contracts;
+  synchronousContracts.front().completion =
+      NCCCompletionKind::SynchronousWriteback;
+  synchronousContracts.front().participantMask = 1;
+  EventGraphBuildResult synchronous =
+      buildEventGraph(CardId(0), inputs.regions, inputs.temporal,
+                      inputs.serialized, inputs.movement, inputs.storage,
+                      inputs.storage.plan, synchronousContracts);
+  ASSERT_TRUE(synchronous.succeeded())
+      << (synchronous.failure ? synchronous.failure->detail : "");
+  auto synchronousObligation =
+      llvm::find_if(synchronous.graph->getCompletionObligations(),
+                    [&](const auto &item) { return item.issue == issue; });
+  ASSERT_NE(synchronousObligation,
+            synchronous.graph->getCompletionObligations().end());
+  EXPECT_EQ(synchronousObligation->protocol,
+            CompletionProtocol::NCCSynchronousWriteback);
+
   std::reverse(inputs.regions.groups.begin(), inputs.regions.groups.end());
   std::reverse(inputs.temporal.scopes.begin(), inputs.temporal.scopes.end());
   std::reverse(inputs.serialized.executions.begin(),
@@ -541,6 +561,107 @@ module {
   EXPECT_EQ(unsupported.failure->kind, EventGraphFailureKind::Unsupported);
   EXPECT_EQ(unsupported.failure->reason,
             EventGraphFailureReason::UnsupportedExecutionContract);
+}
+
+TEST(EventGraphTest,
+     ProductionStructureDerivationUsesTypedRootAndExactTemporalClasses) {
+  mlir::DialectRegistry registry;
+  registerCompilationDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  for (int64_t extent : {int64_t{1024}, int64_t{1025}, int64_t{1031}}) {
+    SCOPED_TRACE(extent);
+    EventInputs inputs = makeInputs(context, extent);
+    inputs.regions.groups.resize(1);
+    inputs.temporal.scopes.resize(1);
+    inputs.temporal.scopes.front().iteratorTileSizes = {2, 128, 128};
+    inputs.temporal.scopes.front().waveLoopOrder = {1};
+    inputs.serialized.executions = {inputs.producer};
+    inputs.contracts = {inputs.contracts.front()};
+    inputs.movement.plan.ddrTransfers.clear();
+    inputs.movement.plan.peerGraphs.clear();
+    ResultPublicationId publication{
+        std::get<ExecutionResultValueId>(inputs.producerOutput.logicalValue)};
+    inputs.movement.plan.publications = {{publication, inputs.producerOutput}};
+    ExactIndexSet domain = box({2, extent, 128});
+    mlir::Type f16 = mlir::Float16Type::get(&context);
+    inputs.movement.resources = {
+        {inputs.loadAction, domain, f16, std::nullopt, TileId(0)},
+        {MovementActionId(publication), domain, f16, TileId(0), std::nullopt}};
+    StorageObjectId inputObject{StorageObjectOrigin{inputs.input}};
+    StorageObjectId outputObject{StorageObjectOrigin{inputs.producerOutput}};
+    inputs.storage.plan.storageObjects = {{inputObject, TileId(0)},
+                                          {outputObject, TileId(0)}};
+    inputs.storage.plan.versionBindings = {
+        {inputs.input, inputObject, StorageBindingKind::Fresh},
+        {inputs.producerOutput, outputObject, StorageBindingKind::Fresh}};
+    inputs.storage.resources = {{inputObject, domain, f16, MemLayout::Tensor},
+                                {outputObject, domain, f16, MemLayout::Tensor}};
+    inputs.storage.lifetimes = {
+        {inputObject,
+         StorageAccessSite{inputs.loadAction},
+         {StorageAccessSite{inputs.producer}}},
+        {outputObject,
+         StorageAccessSite{inputs.producer},
+         {StorageAccessSite{MovementActionId(publication)}}}};
+    EventGraphBuildResult graph = buildEventGraph(
+        CardId(0), inputs.regions, inputs.temporal, inputs.serialized,
+        inputs.movement, inputs.storage, inputs.storage.plan, inputs.contracts);
+    ASSERT_TRUE(graph.succeeded())
+        << (graph.failure ? graph.failure->detail : "");
+
+    std::string source = R"mlir(
+module {
+  func.func @root() {
+    %zero = arith.constant 0.0 : f16
+    %empty = tensor.empty() : tensor<2xEXTENTx128xf16>
+    %result = linalg.fill ins(%zero : f16)
+        outs(%empty : tensor<2xEXTENTx128xf16>)
+        -> tensor<2xEXTENTx128xf16>
+    return
+  }
+}
+)mlir";
+    for (size_t marker = source.find("EXTENT"); marker != std::string::npos;
+         marker = source.find("EXTENT"))
+      source.replace(marker, 6, std::to_string(extent));
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context);
+    ASSERT_TRUE(module);
+    auto function = *module->getOps<mlir::func::FuncOp>().begin();
+    auto fill = *function.getOps<mlir::linalg::FillOp>().begin();
+    const auto &required =
+        std::get<RequiredRootExecution>(inputs.producer.source);
+    RootRegionWork work;
+    work.id = required.work;
+    work.rootOperation = fill;
+    TemporalScopeDescriptor descriptor;
+    descriptor.id = inputs.temporal.scopes.front().id;
+    descriptor.iterationOffsets = {0, 0, 0};
+    descriptor.iterationExtents = {2, extent, 128};
+    descriptor.iteratorCapabilities.assign(3,
+                                           IteratorTilingCapability::Tileable);
+    ExecutionStructureDomainResult structures = buildExecutionStructureDomain(
+        *graph.graph, {descriptor}, inputs.temporal, {work});
+    ASSERT_TRUE(structures.succeeded())
+        << (structures.failure ? structures.failure->detail : "");
+    ExecutionStructureSuccessor serialized = structures.domain->getFirstPlan();
+    ASSERT_TRUE(serialized.getCursor());
+    ExecutionStructureSuccessor pipelined =
+        structures.domain->getNextPlan(*serialized.getCursor());
+    ASSERT_EQ(pipelined.getKind(), ExecutionStructureSuccessorKind::Plan)
+        << pipelined.getDetail().str();
+    ASSERT_TRUE(pipelined.getPlan());
+    auto selected =
+        llvm::find_if(pipelined.getPlan()->scopes, [](const auto &choice) {
+          return std::holds_alternative<PipelinedExecutionStructure>(choice);
+        });
+    ASSERT_NE(selected, pipelined.getPlan()->scopes.end());
+    const auto &pipeline = std::get<PipelinedExecutionStructure>(*selected);
+    EXPECT_EQ(pipeline.iteration.recurrenceAxis, 1u);
+    EXPECT_EQ(pipeline.iteration.prefixCount, 1u);
+    EXPECT_EQ(pipeline.iteration.steadyTripCount, 7u);
+    EXPECT_EQ(pipeline.iteration.tailCount, extent == 1024 ? 0u : 1u);
+  }
 }
 
 } // namespace

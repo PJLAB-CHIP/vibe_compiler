@@ -306,6 +306,7 @@ enum class CompletionProtocol : uint8_t {
   NoAsynchronousCompletion,
   DirectDTE,
   NCCParticipant,
+  NCCSynchronousWriteback,
 };
 
 struct CompletionObligation {

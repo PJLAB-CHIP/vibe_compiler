@@ -46,7 +46,6 @@ struct CardExecutableTileFailure {
   std::string gate;
   std::string detail;
   TileMemoryPlanningFailure memoryPlanning;
-  SelectedBufferMaterializationFailure selectedBuffer;
 };
 
 /// Returns true only when Tile memory planning carries an explicit SPM
@@ -71,7 +70,6 @@ struct CardExecutableCompilationResult {
   /// Same-invocation diagnostic snapshots captured at the Tile dataflow to
   /// Instr boundary. They are not part of the accepted Tile modules.
   std::vector<std::string> tileDataflowIRTrace;
-  uint64_t rotatingSlotAllocationsMaterialized = 0;
 
   bool isAccepted() const {
     return status == CardExecutableCompilationStatus::Accepted;
@@ -92,15 +90,9 @@ struct CardExecutableCompilationResult {
 /// fixed-capacity SPM/DDR planning, Direct-DTE lowering, resource validation,
 /// and target ABI/LLVM verification.
 ///
-/// `selectedBufferingScopes`, when nonempty, must have one entry for every
-/// expected Tile in canonical Tile order. Each Tile entry contains independent
-/// exact-loop scopes. They are typed assignments owned by the caller; this
-/// boundary only materializes and verifies them.
 CardExecutableCompilationResult compileCardModuleToExecutable(
     mlir::OwningOpRef<mlir::ModuleOp> cardModule, CardId expectedCardId,
     llvm::ArrayRef<TileId> expectedTileIds,
-    llvm::ArrayRef<llvm::SmallVector<SelectedBufferingScope, 4>>
-        selectedBufferingScopes,
     const StructuredMaterializationRelations &materializationRelations,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,

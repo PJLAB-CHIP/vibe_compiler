@@ -266,8 +266,8 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 | 9 | `movement-domain` | `done` | Q50.H | local/DDR/direct/relay/fanout/gather current完整域、external every-root reuse、exact multi-piece payload proof、token-only selected construction/verifier及actual surgery donor retirement；不在issue后立即await；raw collective因无current typed primitive而无state | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | storage-domain |
 | 10 | `storage-domain` | `done` | Q50.I | production alias/reuse/1..U requirements、peer-relay exact-piece ownership、selected object/multi-axis rotation construction及actual definition/use/completion/release lifetime verifier；零SPM估算或capacity控制流 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | event-resource-foundation |
 | 11 | `event-resource-foundation` | `done` | Q50.J | 完整EventGraph/resource/recurrence/completion facts、Q63/effect接入及fixed-K后同一builder重建J的typed seam；missing contract保持typed unknown而非默认Synchronous | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | execution-structure-domain |
-| 12 | `execution-structure-domain` | `doing` | Q50.K | sound Serialized/Pipelined eligibility与完整有限域、selected phase/loop construction、structure verifier及donor retirement | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | structure-specific-storage |
-| 13 | `structure-specific-storage` | `queued` | Q50.I | fixed-K occurrence/slot/lifetime重闭、actual rotating-slot construction，并触发post-K EventGraph重建 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | schedule-domain |
+| 12 | `execution-structure-domain` | `done` | Q50.K | sound Serialized/Pipelined eligibility与完整有限域、selected phase/loop construction、structure verifier及donor retirement | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | structure-specific-storage |
+| 13 | `structure-specific-storage` | `doing` | Q50.I | fixed-K occurrence/slot/lifetime重闭、actual rotating-slot construction，并触发post-K EventGraph重建 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | schedule-domain |
 | 14 | `schedule-domain` | `queued` | Q50.J | post-K EventGraph、slot/FSM lifetime、worker/resource/completion完整域及minimum-participant/latest-unavoidable selected wait/join emission/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | full-feasibility |
 | 15 | `full-feasibility` | `queued` | Q50.F | 全字段complete-candidate materialization、actual SPM/DDR/transport/target gate、plan/actual join-wait parity与动态work gate、typed rejection及Core反馈 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-control-closure |
 | 16 | `search-control-closure` | `queued` | Q51.Core | all-axis CompleteCandidateKey、actual-result admission、cost/bound、causal no-good、coverage及independent controller oracle | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | unified-search-closure |
@@ -5246,6 +5246,13 @@ CIRCT也为`CyclicProblem`/`ModuloProblem`单独建模跨迭代dependence，而�
 结构内的resource schedule，I是storage/rotation；current StagePipeline对Instr Module调用SelectedBufferMaterialization的做法没有独立K
 domain。
 
+| 调研对象 | 本项采用 | 本项不采用 |
+| --- | --- | --- |
+| [Swing Modulo Scheduling](https://upcommons.upc.edu/bitstreams/a90677c0-9f85-4a0b-8573-a170b09f0555/download)与[LLVM MachinePipeliner](https://llvm.org/doxygen/classllvm_1_1MachinePipeliner.html) | recurrence dependence distance、stage与target lowering capability必须在选择前显式；lifetime/slot pressure由独立owner验证 | 不迁移MachineInstr、DFA itinerary、register-pressure heuristic或target-specific II；K不拥有cycle cost和winner |
+| [CIRCT cyclic/modulo scheduling](https://circt.llvm.org/docs/Scheduling/) | problem input先`check`，selected solution再`verify`；distance、resource和solution property分别建模 | 不引入SSP/LoopSchedule dialect或另一个operator library；Wafer保持typed EventId/plan并把resource order交给J |
+| [MLIR SCF software pipelining](https://github.com/llvm/llvm-project/blob/main/mlir/lib/Dialect/SCF/Transforms/LoopPipelining.cpp) | 只在caller-owned candidate subtree上消费已经验证的`(operation, stage/order)`；使用其prologue/kernel/epilogue和cross-stage SSA mechanics | 不在source/shared IR试探schedule，不把transform success当legality；失败可能已改IR，因此API必须消费owned transaction |
+| [MLIR `scf.for` semantics](https://mlir.llvm.org/docs/Dialects/SCFDialect/#scffor-scf-forop) | static positive trip、iter_args/yield和single-block结构是actual builder的直接合同 | 不把shape、loop名字或block ordinal恢复成selected recurrence |
+
 #### Typed structure
 
 ```text
@@ -5259,8 +5266,10 @@ ExecutionStructureChoice =
   | Pipelined {
     scope: PipelineScopeId
     recurrence: OccurrenceRelationId
-    launchDistance: PositiveInteger
+    iterationClass: { recurrenceAxis, prefixCount, steadyTripCount, tailCount }
+    launchDistance: 1
     eventStages: (EventId -> StageId)[]
+    lowering: SCFDistanceOne | FiniteUnrolled
   }
 
 PipelineDependence
@@ -5270,43 +5279,47 @@ PipelineDependence
 ```
 
 `PipelineScopeId`是一个E/I recurrence及其connected J event component，不是edge/node或actual loop pointer。`StageId`从0开始、无空洞；
-同stage events由J closure排序。`launchDistance`表示相邻启动的logical iteration距离，不是cycle timestamp/target II；J closure在typed
-latency/resource facts上求可行calendar/II。prologue/steady/epilogue由trip domain、stage map和launch distance唯一派生，不进入state。
+同stage events由J closure排序。current IR没有表示大于1的logical launch stride，因此唯一可构造值是`launchDistance=1`；不得枚举一个
+无法lower的整数再在commit时缩回1。`iterationClass`直接对应E的compact traversal：第一个full wave已经在steady loop前物化，整除case
+没有tail，非整除case有一个exact tail，K只改写中间static `scf.for`。例如1024/128为`1+7+0`，1025/128为`1+7+1`，二者都不能把
+8/9误当steady-loop trip count。outer active axes重复同一个innermost-axis pipeline，不把Cartesian product展平成另一种loop语义。
 
 #### Eligibility
 
 每个scope无条件有一个Serialized plan。Pipelined只在以下全部成立时进入domain：
 
-1. E提供static finite、至少两个可启动occurrences，main/tail/nested classes及iteration mapping exact；
-2. J foundation的每个event可映到该recurrence，所有hard dependencies可标成明确iteration distance，event component无unknown effect/
-   call/observer escape；
+1. E提供static finite innermost active recurrence axis、exact prefix/steady/tail class且steady trip足以容纳selected stages；
+2. J foundation的每个kernel event可映到该recurrence，所有hard dependencies可标成明确的distance 0/1；observable publication只允许作为
+   epilogue cut，event component无unknown effect/call/observer escape；
 3. H movement为每个consumer occurrence提供独立data-ready/completion identity，Direct-DTE wait不被NCC join替代；
 4. I存在与candidate live distance兼容的slot family/rotation，MustSeparate ranges独立，上一slot在reuse前有completion requirement；
 5. synchronous writeback、host/Kcore observer、region/output publication和tail要么形成pipeline cut，要么由typed stage/epilogue relation完整
    表达；
-6. target operation/resource contracts允许这些events进入cyclic execution；unknown profitability不影响legality。
+6. target operation/resource contracts允许这些events进入cyclic execution；`NCCSynchronousWriteback`和unknown completion只保留
+   Serialized。Direct-DTE issue/completion跨stage时只能使用有明确code-size bound的`FiniteUnrolled`，保证token不成为loop-carried value；
+   unknown profitability不影响legality。
 
 “buffer count>1”只满足第4项的一部分。producer/consumer在不同occurrence relations、loop-external assembled consumer、one-trip、unknown
 alias/effect或unmatched completion时只保留Serialized，不实际造loop再失败。
 
 #### Complete finite domain
 
-对eligible scope，先按EventId稳定顺序惰性枚举event的ordered set partitions：每个event选择`0..S-1`，stage IDs canonical无洞，且
-intra-iteration hard dependency不允许destination处于source之前的非法stage。`S`范围为`2..min(eventCount, tripUpper,
-targetRepresentableStages)`；每个legal launchDistance为`1..tripUpper`，但不能使steady occurrence集合为空。完整stage plan再产生
-`PipelineDependence` cyclic graph，交I revalidation和J closure验证distance/resource constraints。
+对eligible scope，先按EventId稳定顺序惰性枚举event的ordered set partitions：每个event选择`0..S-1`，stage IDs canonical无洞；
+distance 0要求source stage不晚于destination，distance 1允许由下一iteration消费，current不接受更大distance。`S`范围为
+`2..min(eventCount, steadyTripCount, targetRepresentableStages)`，`launchDistance`固定为1。每个完整stage plan根据Direct-DTE跨stage
+事实选择`SCFDistanceOne`或bounded `FiniteUnrolled`，再交I revalidation和J closure验证storage/resource约束。
 
 ```text
 structureSuccessors(prefix):
   yield Serialized once
   if scope is structurally eligible:
     choose next event's canonical StageId
-    when stage map closes, choose each legal launchDistance
+    when stage map closes, derive its one supported lowering
     derive cyclic EventGraph and invalidate affected I/J facts
     yield only plans whose structural/dependence checks close
 ```
 
-ordered partitions最坏为ordered Bell/Fubini number，乘launch-distance points；只能lazy。stage ID表示有序phase，交换两个nonempty
+ordered partitions最坏为ordered Bell/Fubini number；只能lazy。stage ID表示有序phase，交换两个nonempty
 stage会改变执行结构，不能当成label symmetry删除；canonicalization只拒绝空洞stage。不同independent scopes分别选择，不为取得一个
 “card pipeline”合并loops。
 
@@ -5333,35 +5346,31 @@ definition/use/release已体现在graph中，但structure-specific slot/live-dis
 | 输入等价类 | 代表输入 | structure路径 | typed failure | 精确断言 | 直接下游witness |
 | --- | --- | --- | --- | --- | --- |
 | Serialized identity | rank-3 1024/1025、single/multi-root、merge-only | 每个J connected component恰有一个Serialized choice；无recurrence的component仍保留 | missing component/event、duplicate scope | all-and-only scope/event coverage，plan不含stage/slot/order/worker | structure-specific-storage把相关family规范回single occurrence |
-| 单recurrence Pipelined | rank>=3，1024整除与1025/1031 tail，trip count>=2 | 2至bounded stage的无空洞ordered partitions；每个保持dependency的launch distance | unmapped recurrence/event、invalid stage/distance | stage map全覆盖、每stage非空、hard edge不后退、steady非空、tail事实不丢失 | I按同一recurrence/stage distance重建occurrence/live range |
+| 单recurrence Pipelined | rank>=3，1024整除与1025/1031 tail，steady trip>=2 | innermost active axis的2至bounded stage无空洞ordered partitions；launch distance唯一为1 | unmapped recurrence/event、invalid stage/distance | 1024=`prefix1+steady7+tail0`、1025/1031=`1+7+1`，stage map全覆盖、distance 0/1成立 | I按同一recurrence axis/stage distance重建occurrence/live range |
 | independent components | 两个rank-3 1025 roots，共享/不共享Card resource | scope choice做Cartesian product，不合并成card-global pipeline | component overlap | exact plan数等于独立scope option数乘积，输入反转identity一致 | J foundation/shared resource在fixed K后重新连接components |
-| 不eligible结构 | one-trip/rank-zero、multi-recurrence component、unknown completion/effect、loop-external cut | 只保留Serialized，不通过先造IR再失败发现 | unsupported cyclic action保持typed且不删除Serialized | 关闭/反转proposal不改变domain；multi-slot本身不产生Pipelined | 后续I/J不接收伪pipeline requirement |
-| 有界oracle与确定性 | 2--6 events、trip 2--7，依赖chain/fanout/independent | independent surjection/launch-distance枚举与production逐plan相等 | successor work-limit为Indeterminate，malformed input为compiler bug | 无stage空洞、无duplicate、stable successor、source IR byte-identical | Core exact successor可继续，不依赖proposal |
+| 不eligible结构 | 无steady loop/rank-zero、multi-recurrence component、unknown或synchronous-writeback completion/effect、loop-external cut | 只保留Serialized，不通过先造IR再失败发现 | unsupported cyclic action保持typed且不删除Serialized | 关闭/反转proposal不改变domain；multi-slot本身不产生Pipelined | 后续I/J不接收伪pipeline requirement |
+| 有界oracle与确定性 | 2--6 events、steady trip 2--7，依赖chain/fanout/independent | independent surjection/distance枚举与production逐plan相等 | successor work-limit为Indeterminate，malformed input为compiler bug | 无stage空洞、无duplicate、stable successor、source IR byte-identical | Core exact successor可继续，不依赖proposal |
 | Core invalidation/re-entry | public rank-3 1024/1025 search prefix | J foundation→K first Serialized/Pipelined state；固定K后required coordinate必须是structure-specific storage | 旧EventGraph或pre-K BufferPlan不得被当成closed I/J | work count、state identity和missing coordinate精确；零IR/clone/materialization | `structure-specific-storage`从ExecutionStructureState重闭I，禁止直达schedule |
 
-- independent有界穷举oracle对2--6 events平铺ordered stage partitions/launch distances并检查dependences，与production domain逐key一致、
+- independent有界穷举oracle对2--6 events平铺ordered stage partitions并检查distance 0/1 dependences，与production domain逐key一致、
   无stage-label duplicate；Serialized恰一；
 - eligibility覆盖single/multi-dimensional waves、nested scopes、one-trip、loop-external consumer、DDR/peer/relay、Direct-DTE token、NCC
   completion、synchronous observer、alias/effect和tail；multi-slot alone不广告pipeline；
 - structure choice产生正确cyclic EventGraph、occurrence/live distance并精确invalidate I/J；Serialized重置相关extra slots，unrelated scope不变；
 - proposal关闭/反转不改变domain或Q51有界穷举optimum；work-limit不变NoSolution；source byte-identical、零actual IR/clone/default stats；
-- actual phase construction、periodic DTE和donor mechanics由K-2。
+- actual phase construction、bounded DTE finite-unroll和donor mechanics由K-2。
 
-当前已实现子集：`ExecutionStructurePlan`使用per-axis `OccurrenceRelationId`、connected-event `PipelineScopeId`、strong `StageId`和typed
-Serialized/Pipelined sum type。domain为每个component保留唯一Serialized identity；只有单一exact recurrence、trip count至少2且至少
-两个stageable events时，才lazy枚举全部无空洞ordered stage partitions和保持hard dependency的launch distances。独立components做
-Cartesian product，successor work-limit保持Indeterminate。Core从foundation graph和TemporalDomain descriptors重建domain，签发
-`ExecutionStructureState`后明确要求`structure-specific-storage`；pre-K BufferPlan/EventGraph没有被标成closed I/J，且没有IR、clone、
-stage attr、slot/order/worker或actual construction。K-2 mechanical construction仍须在`structure-specific-storage`和`schedule-domain`
-关闭同一K choice之后由unified search
-接入。fresh直接4/4（2--6 event独立oracle、1024/1025/1031 rank-3 occurrence、independent product及typed failure）、ordinary host unit
-872/872、core lit 227/227、Tools/Runtime lit 35 passed/4 configured unsupported、完整build、public link closure及source organization通过。
+实现闭合：`ExecutionStructurePlan`现在同时保存per-axis `OccurrenceRelationId`、E-derived `PipelineIterationClass`、distance 0/1
+`PipelineDependence`、typed completion obligations、唯一可构造的launch distance 1及`SCFDistanceOne/FiniteUnrolled` lowering。production
+descriptor从EventGraph、current TilingInterface/root work和TemporalPlan重建；普通parallel innermost axis无loop-carried edge，reduction axis显式
+加入completion(i)→issue(i+1) distance-one edge。component含多个execution recurrence、没有steady loop、unknown或
+`NCCSynchronousWriteback`时只产生Serialized，不通过实际改写试错。
 
-完成状态复核确认current eligibility只以单recurrence、trip count和stageable event数量建立Pipelined states，K-2的dependence-distance、
-lowering-capability prepare、SCF/periodic phase construction与structure verifier均未接入；full-feasibility明确拒绝Pipelined choice。
-`execution-structure-domain`重新打开并在同一work item中完成K-1 sound domain与K-2 selected construction/donor门禁。
+domain只对E已经物化的innermost steady `scf.for`枚举ordered stage partitions；prefix与tail保持原位。1024/128与1025/128分别得到
+`1+7+0`和`1+7+1`，两者steady trip均为7。Direct-DTE issue/completion跨stage时只有在`events×steadyTrip`不超过显式code-size limit时
+产生`FiniteUnrolled`，否则该stage assignment不进入current domain；没有估算resource或SPM合法性控制流。
 
-### K-2 专项调研：phase construction、periodic transport与donor migration
+### K-2 专项调研：phase construction、bounded transport与donor migration
 
 pinned MLIR `pipelineForLoop`文档明确声明：它只机械生成prologue/kernel/epilogue，不决定schedule，并假设caller schedule合法；current
 实现还只支持loop-carried distance 0/1、single-block body，且某些失败发生在已修改IR之后。它适合作为selected winner中最小新建loop的
@@ -5374,7 +5383,7 @@ K domain只广告有current actual builder的结构：
 ```text
 ExecutionStructureLowering =
   SCFDistanceOne                 // launchDistance=1, dependence distance 0/1
-  | PeriodicUnrolled(period)     // static bounded donor mechanism
+  | FiniteUnrolled               // bounded static steady loop, no token backedge
 ```
 
 一般stage plan若不属于二者返回Unsupported，而不是等commit时缩成distance-one。完整winner在C mutation前形成：
@@ -5391,7 +5400,7 @@ PreparedExecutionStructure
 ```
 
 prepare模拟pinned SCF schedule checks：每个body event恰有stage、stage无洞、operand/event依赖满足unrolled-cycle relation、loop-carried values
-distance在capability内、trip count足够或tail strategy显式、nested region/predication支持明确。Period/paired DTE还验证全部participant有同构
+distance在capability内、trip count足够或tail strategy显式、nested region/predication支持明确。Finite-unroll/paired DTE还验证全部participant有同构
 occurrence、payload/message/slot selector和completion；不从actual op count猜。
 
 #### Complete-candidate construction
@@ -5407,11 +5416,12 @@ emitSCFPipeline(prepared, rewriter):
   call scf::pipelineForLoop with the prepared (operation, stage/order) schedule
   let I/J place final releases after the resulting epilogue/completion
 
-emitPeriodicPipeline(prepared, rewriter):
-  construct the finite modulo-unrolled main period directly
-  construct exact residual tail from E classes
+emitFiniteUnrolledPipeline(prepared, rewriter):
+  use the same verified SCF schedule to form prologue/kernel/epilogue
+  fully unroll the bounded steady kernel before commit
+  leave E's exact residual tail after the software-pipeline epilogue
   bind each Direct-DTE occurrence to its planned slot/message selector
-  preserve participant-isomorphic send/recv/wait structure
+  preserve participant-isomorphic send/recv/wait structure and leave no token block argument
 ```
 
 SCF builder在新subtree内对selected loop做的mechanical op duplication会成为final prologue/kernel/epilogue；它不是source/Module clone、loser
@@ -5429,7 +5439,7 @@ writeback、publication和loop-external observer成为prologue/epilogue cut或Se
 - every original occurrence的semantic work exactly once，prologue/steady/epilogue iteration coverage无gap/overlap，tail exact；
 - event stage/order、cross-stage SSA values、iteration distances及loop-carried results匹配；
 - slot family、rotation、alias/range和reuse-after-completion满足I plan；
-- DTE sender/receiver periodic shapes、message occurrence、wait/release和relay/gather state一致；
+- DTE sender/receiver finite occurrence shapes、message occurrence、wait/release和relay/gather state一致；
 - NCC pending participants、minimum joins、synchronous islands和observable output在scope exit前闭合；
 - Serialized scope没有pipeline-only extra work/slots，多个independent scopes不被合并。
 
@@ -5440,29 +5450,43 @@ writeback、publication和loop-external observer成为prologue/epilogue cut或Se
 
 | Current / donor能力 | 终态owner | 必须迁移的witness | 退役条件 |
 | --- | --- | --- | --- |
-| current `StagePipeline` wrapper | K prepare/constructor | Serialized、selected stages/slots、J invalidation | OwningOpRef module chain与scope-index protocol删除 |
+| 已删除的`StagePipeline` wrapper | K prepare/constructor | Serialized、selected stages、J invalidation | 已删除OwningOpRef module chain与scope-index protocol；CardExecutable不再接收post-hoc buffering scopes |
 | pinned `scf::pipelineForLoop` mechanics | K `SCFDistanceOne` builder | prologue/kernel/epilogue、cross-stage SSA、odd/even trip | 只消费prepared schedule，不在source/loser上试探 |
 | donor static fixed-slot pipeline | K+I+J construction | 1/2/3/4/odd/even trip、stage shortage、slot permutation、tail | whole-Module clone/provider/public header删除 |
-| donor periodic Direct-DTE specialization | K periodic builder + H/I/J | paired occurrence、selector、residual tail、message/wait | post-hoc all-rank mutation和ordinal matching删除 |
+| donor periodic Direct-DTE specialization | K finite-unrolled builder + H/I/J | paired occurrence、selector、residual tail、message/wait | post-hoc all-rank mutation和ordinal matching删除 |
 | donor NCC/DTE completion placement | Q63/J closure | same-worker order、NCC→DTE、DTE→consumer/reuse、terminal join | K不重建completion或解析target calls |
-| current selected-buffer stage inference | K-1 domain | cross-engine stage/eligibility negatives | actual scan、local stage winner和failure-driven repair删除 |
-| current StagePipeline/SelectedBuffer tests | K/I/J focused owners | 每项mechanics与negative逐表迁移 | 不因旧source删除或测试未注册而丢失 |
+| selected-buffer stage inference donor | K-1 domain | cross-engine stage/eligibility negatives | production caller与StagePipeline wrapper已删除；remaining slot/lifetime mechanics只作为下一项I donor，不再签发K structure |
+| selected-buffer donor tests | K/I/J focused owners | 每项mechanics与negative逐表迁移 | K stage/SCF/token witnesses已迁移；slot actualization随structure-specific-storage迁移后删除剩余donor |
 
 #### Complexity、failure与K-2 Gate
 
-SCF construction work/code size为`O(events * stages + slot multiplicity)`，periodic builder为`O(events * period + tail)`；period/phase数均来自
-finite plan且受work/code-size bound，超限在planning为Indeterminate/Unsupported，不部分emit后改Serialized。commit失败由C guard回滚，
+SCF construction work/code size为`O(events * stages + slot multiplicity)`，finite-unrolled builder为
+`O(events * steadyTripCount + tail)`；phase/trip数均来自finite plan且受work/code-size bound，超限时对应Pipelined plan不进入current
+domain，不部分emit后改Serialized。commit失败由C guard回滚，
 不返回planner重试。
 
-- actual覆盖Serialized、2/3+ stages、2/3/4/5 slots、main/odd/even/short/tail、nested scope、DDR→compute→store、Direct-DTE
-  issue/independent compute/wait、relay/gather和periodic paired Tiles；
-- negative覆盖stage/dependence mismatch、trip不足、dynamic/unsupported region、alias/external-write、slot reuse、DTE token/backedge、paired
-  period不一致、tail/message/participant mismatch和synchronous observer；
-- failure injection在prologue/kernel/epilogue/periodic tail/postverify各点保持source/C atomic；`verify-each`、I/H/J/Q63、Tile→Instr、SPM/
-  DDR/Direct-DTE及Q50.0 gates通过；
-- source/call-tree gate删除old StagePipeline/FixedSlot/selected-buffer coupling、whole-module clone、post-hoc repair和default stats；K domain、
-  prepare、SCF builder、periodic builder、verifier独立files/libraries；
-- baseline使用Serialized同一construction，search winner才可能Pipelined；轻量source→package/no-card通过，不运行重型LLaMA search。
+本轮K-2覆盖矩阵在实现前冻结如下；小loop只用于逐plan机械oracle，同一builder另用rank>=3的1024/1025/1031 typed fixture证明真实prefix/steady/tail：
+
+| 输入等价类 | actual结构 | typed failure | 精确断言 | 直接下游witness |
+| --- | --- | --- | --- | --- |
+| SCF distance-one | rank-3 1024/1025/1031、2/3+ stage、distance 0/1 SSA | missing/duplicate event-op binding、stage/SSA contradiction | source loop全部top-level op恰映射一次；software prologue/kernel/epilogue动态coverage恰等于steady trip；E prefix/tail不被复制 | I可在同一loop外创建slot roots，J可按EventId order映射clone |
+| Direct-DTE跨stage | static bounded steady trip、issue→wait、aligned/ragged tail | token缺wait、work/code-size超限 | 使用`FiniteUnrolled`；result中无async token loop-carried argument，每个dynamic issue有同occurrence completion | H/J可绑定message/wait，Q50.0 transport verifier读取actual tokens |
+| external storage/effect | read-only external、loop-local allocation、caller提供的exact rotating-family proof；另有external write/unknown effect负例 | 无exact family proof的跨stage write为Unsupported | 不按root名字或memref type猜独立；prepare在第一次IR修改前结束全部检查 | I下一项提供actual slot-family proof，不由K分配或猜alias |
+| multiple scopes与rollback | 两个independent loops，第二个prepare/apply failure | stale pointer、scope overlap、pinned transform partial failure | input plan/binding先全量prepare；apply消费owned module，失败后无partial module返回；成功结果`mlir::verify`及structure verifier通过 | full-feasibility可在candidate transaction中调用一次，不重放loser |
+
+- actual K tests覆盖Serialized、2/3 stages、distance 0/1 SSA、1024/1025/1031 main/tail、两个independent scopes及cross-stage async token；
+  `FiniteUnrolled`结果没有token block argument，phase relation逐event/iteration证明dynamic coverage无gap/overlap。
+- negative覆盖missing/duplicate event-op binding、stage/SSA contradiction、trip不一致、external cross-stage write无I proof、stale relation、
+  synchronous observer和finite-unroll work limit；prepare在首次修改前检查全部scope，apply消费owned module，pinned failure不返回partial IR。
+- external storage正例必须由下一项I的actual rotating-family proof接入；wait/join、resource/control order由J接入。K builder已经把二者设为
+  必需typed输入，不建立slot、completion或resource fallback。
+- source/call-tree gate已删除old `StagePipeline`、CardExecutable selected-buffer scope参数、post-hoc memory-planning stage insertion及无实际
+  producer的rotating-slot statistic。remaining `SelectedBufferMaterialization`只保留I/J尚未迁移的donor mechanics，没有production caller。
+
+本轮fresh验证：K/domain/materialization及直接上下游59/59；排除future attention production fixture后普通host unit 928/928；default
+configured lit 225/225；4个public-header/link smoke、完整configured build、IR/source organization及diff检查全部通过。production
+complete-candidate接入仍按既定artifact DAG等待structure-specific-storage与schedule-domain提供同generation BufferPlan/event order；
+full-feasibility在它们闭合前继续拒绝Pipelined，而不是偷偷使用旧actual scan。
 
 K不选择global winner。“某case pipeline获胜、另一case因movement/buffer/parallelism选择Serialized或其它region”由Q51 closure证明。
 
@@ -6965,7 +6989,7 @@ Q50.0路径，防止计数漏埋点。IR dump只可查看accepted winner，不�
 | query-only `SimpleRoute`、`DataMovement*`（`DataMovementApply*`已删除） | Q50.H；共享legacy query调用随I/J/K/Q51统一退役 | current payload partitions/arborescences、token-only emitter和迁移后的direct/relay/fanout/gather witness；legacy query不再取得actual owner |
 | query-only `Buffering*`（`BufferingApply*`已删除） | Q50.I/Q50.K | current storage/slot/lifetime plans与K-specific overlap oracle；legacy query不再产生actual scope |
 | `InstructionSchedule*` | Q50.J/Q63 | event/resource domain、closed schedule、wait/join emitter/verifier |
-| `StagePipeline*` | Q50.K | Serialized/SCF/periodic structures及K→I-post-K→J reclosure |
+| 已删除的`StagePipeline*` | Q50.K selected constructor | Serialized/SCF/finite-unrolled structures及K→I-post-K→J reclosure；旧scope-index actual scan不恢复 |
 | `UnifiedPhysicalDataflow*` | Q51-1/2 state+continuations | full reference equality；mixed-radix/materialize facade均无剩余能力 |
 | `CardExecutableSearch*`, `SearchWork*` | Q51-3--7 cost/controller/work/coverage/routing | per-complete actual gate、budget/coverage、unique publication、policy isolation |
 | historical rank/candidate/frontier/NoC providers | corresponding Q50 owner或明确淘汰 | archive donor matrix逐项有current source+test；“未注册”不算迁移 |

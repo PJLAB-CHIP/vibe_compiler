@@ -216,9 +216,10 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
 
   while (true) {
     CompleteCandidatePlan candidatePlan{
-        resolved->spatial, resolved->demand,   resolved->rootWorks,
-        resolved->regions, resolved->temporal,
-        resolved->representations.plan, resolved->preparedAttention};
+        resolved->spatial,          resolved->demand,
+        resolved->rootWorks,        resolved->regions,
+        resolved->temporal,         resolved->representations.plan,
+        resolved->preparedAttention};
     CandidateMaterializationStatistics candidateStatistics;
     mlir::FailureOr<MaterializedCardCandidate> materialized =
         materializeCardCandidate(
@@ -243,13 +244,10 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
         materialized->nodeRoots;
     CardExecutableCompilationResult compilation = compileCardModuleToExecutable(
         std::move(materialized->module), cardId, (*analysis)->availableTileIds,
-        /*selectedBufferingScopes=*/{}, materialized->relations, program,
-        executionConfig, diagnostics, programData,
+        materialized->relations, program, executionConfig, diagnostics,
+        programData,
         baselineStatistics ? &baselineStatistics->exactGates : nullptr,
         tilePipelineParallelism, captureTileDataflowIRTrace);
-    if (baselineStatistics)
-      baselineStatistics->rotatingSlotAllocationsMaterialized +=
-          compilation.rotatingSlotAllocationsMaterialized;
     if (compilation.isAccepted()) {
       if (baselineStatistics)
         baselineStatistics->baselineTileIRPrints +=
