@@ -37,7 +37,7 @@ ClosedSchedulePlan makePlan(uint32_t anchor) {
   plan.buffers.storageObjects.push_back({object, TileId(0)});
   plan.buffers.versionBindings.push_back(
       {version, object, StorageBindingKind::Fresh});
-  plan.controlOrders.push_back({TileControlScope{TileId(0)}, {event}});
+  plan.controlOrders.push_back({TileControlScope{TileId(0), scope}, {event}});
   return plan;
 }
 

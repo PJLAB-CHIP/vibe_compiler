@@ -55,8 +55,7 @@ TEST(UnifiedPhysicalDataflowTest,
       std::move(materialized->module), CardId(0), (*analysis)->availableTileIds,
       materialized->relations, dependentProgramMetadata(), executionConfig(),
       diagnostics, programData, /*statistics=*/nullptr,
-      /*tilePipelineParallelism=*/0, /*captureTileIRTrace=*/false,
-      /*applySelectedInstructionSchedule=*/true);
+      /*tilePipelineParallelism=*/0, /*captureTileIRTrace=*/false);
   diagnostics.flush();
   ASSERT_TRUE(compiled.isAccepted())
       << compiled.gate << ": " << compiled.detail << "\n"

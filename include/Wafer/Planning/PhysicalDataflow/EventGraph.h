@@ -55,7 +55,8 @@ enum class MovementEventPhase : uint8_t {
   Logical,
   DDRLoad,
   DDRStore,
-  PeerTransfer,
+  PeerSend,
+  PeerReceive,
 };
 
 struct MovementEventAction {
@@ -188,12 +189,28 @@ struct NCCWorkerResource {
   }
 };
 
-struct TileDTEEngineResource {
+struct DirectDTESenderResource {
   TileId tile{0};
-  friend bool operator==(TileDTEEngineResource lhs, TileDTEEngineResource rhs) {
+  friend bool operator==(DirectDTESenderResource lhs,
+                         DirectDTESenderResource rhs) {
     return lhs.tile == rhs.tile;
   }
-  friend bool operator<(TileDTEEngineResource lhs, TileDTEEngineResource rhs) {
+  friend bool operator<(DirectDTESenderResource lhs,
+                        DirectDTESenderResource rhs) {
+    return lhs.tile.getValue() < rhs.tile.getValue();
+  }
+};
+
+/// Current receiver FSM pool has four interchangeable lanes per destination
+/// Tile. The pool key is exact; ScheduleDomain assigns canonical lane numbers.
+struct DTEReceiverFSMResource {
+  TileId tile{0};
+  friend bool operator==(DTEReceiverFSMResource lhs,
+                         DTEReceiverFSMResource rhs) {
+    return lhs.tile == rhs.tile;
+  }
+  friend bool operator<(DTEReceiverFSMResource lhs,
+                        DTEReceiverFSMResource rhs) {
     return lhs.tile.getValue() < rhs.tile.getValue();
   }
 };
@@ -245,20 +262,10 @@ struct OpaqueNoCTransferResource {
   }
 };
 
-struct ControlResource {
-  TileId tile{0};
-  friend bool operator==(ControlResource lhs, ControlResource rhs) {
-    return lhs.tile == rhs.tile;
-  }
-  friend bool operator<(ControlResource lhs, ControlResource rhs) {
-    return lhs.tile.getValue() < rhs.tile.getValue();
-  }
-};
-
 using ResourceKey =
-    std::variant<TileEngineResource, NCCWorkerResource, TileDTEEngineResource,
-                 SPMRangeResource, CardDDRResource, DirectedNoCLinkResource,
-                 OpaqueNoCTransferResource, ControlResource>;
+    std::variant<TileEngineResource, NCCWorkerResource, DirectDTESenderResource,
+                 DTEReceiverFSMResource, SPMRangeResource, CardDDRResource,
+                 DirectedNoCLinkResource, OpaqueNoCTransferResource>;
 
 enum class ResourceUseMode : uint8_t { Read, Write, Exclusive, CapacityUnits };
 enum class ResourceIntervalKind : uint8_t {

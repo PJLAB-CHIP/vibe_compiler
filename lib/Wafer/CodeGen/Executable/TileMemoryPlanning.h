@@ -22,7 +22,6 @@ enum class TileMemoryPlanningFailureKind : uint8_t {
   PreexistingPlacementFacts,
   Verification,
   InstrMemoryPlanningPreparation,
-  InstructionScheduling,
   SPMAllocation,
 };
 
@@ -81,7 +80,6 @@ mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> planTileMemory(
     mlir::OwningOpRef<mlir::ModuleOp> module,
     TileMemoryPlanningFailure *failure = nullptr,
     StructuredMaterializationRelations *materializationRelations = nullptr,
-    bool applySelectedInstructionSchedule = false,
     bool emitSPMCapacityDiagnostics = true);
 
 } // namespace wafer::compiler::detail

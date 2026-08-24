@@ -199,19 +199,23 @@ struct BufferPlan {
 };
 
 struct PeerTransferSiteId {
+  enum class Endpoint : uint8_t { Send, Receive };
+
   std::vector<MovementActionId> graphActions;
   uint32_t payloadSlice = 0;
+  Endpoint endpoint = Endpoint::Send;
   MovementHop hop;
 
   friend bool operator==(const PeerTransferSiteId &lhs,
                          const PeerTransferSiteId &rhs) {
     return lhs.graphActions == rhs.graphActions &&
-           lhs.payloadSlice == rhs.payloadSlice && lhs.hop == rhs.hop;
+           lhs.payloadSlice == rhs.payloadSlice &&
+           lhs.endpoint == rhs.endpoint && lhs.hop == rhs.hop;
   }
   friend bool operator<(const PeerTransferSiteId &lhs,
                         const PeerTransferSiteId &rhs) {
-    return std::tie(lhs.graphActions, lhs.payloadSlice, lhs.hop) <
-           std::tie(rhs.graphActions, rhs.payloadSlice, rhs.hop);
+    return std::tie(lhs.graphActions, lhs.payloadSlice, lhs.endpoint, lhs.hop) <
+           std::tie(rhs.graphActions, rhs.payloadSlice, rhs.endpoint, rhs.hop);
   }
 };
 

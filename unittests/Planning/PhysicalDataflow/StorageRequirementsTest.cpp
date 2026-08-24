@@ -238,8 +238,14 @@ TEST(StorageRequirementsTest,
   storage.resources.emplace_back(relayObject, makeDomain({2, 1025, 128}),
                                  mlir::Float16Type::get(&context),
                                  MemLayout::Tensor);
-  PeerTransferSiteId receive{relay.graphActions, 0, {TileId(0), TileId(1)}};
-  PeerTransferSiteId send{relay.graphActions, 0, {TileId(1), TileId(2)}};
+  PeerTransferSiteId receive{relay.graphActions,
+                             0,
+                             PeerTransferSiteId::Endpoint::Receive,
+                             {TileId(0), TileId(1)}};
+  PeerTransferSiteId send{relay.graphActions,
+                          0,
+                          PeerTransferSiteId::Endpoint::Send,
+                          {TileId(1), TileId(2)}};
   storage.lifetimes.push_back(
       {relayObject, StorageAccessSite(receive), {StorageAccessSite(send)}});
 

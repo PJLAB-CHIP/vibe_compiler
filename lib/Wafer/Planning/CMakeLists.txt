@@ -42,6 +42,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/RepresentationPBQPSolver.cpp
   Planning/PhysicalDataflow/SchedulePlan.cpp
   Planning/PhysicalDataflow/ScheduleDomain.cpp
+  Planning/PhysicalDataflow/ScheduleMaterialization.cpp
   Planning/PhysicalDataflow/SelectedAttentionDecomposition.cpp
   Planning/PhysicalDataflow/SelectedRegionMaterialization.cpp
   Planning/PhysicalDataflow/MovementPlan.cpp
@@ -68,7 +69,6 @@ set(WAFER_PLANNING_SOURCES
   Planning/Search/ComputeImplementation.cpp
   Planning/Search/DecodeAttentionAnalysis.cpp
   Planning/Search/DataMovement.cpp
-  Planning/Search/InstructionSchedule.cpp
   Planning/Search/PhysicalRepresentation.cpp
   Planning/Search/SimpleRoute.cpp
   Planning/Search/TemporalTiling.cpp

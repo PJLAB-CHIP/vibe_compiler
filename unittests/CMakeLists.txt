@@ -58,6 +58,7 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/RepresentationDomainTest.cpp
   Planning/PhysicalDataflow/RepresentationPBQPSolverTest.cpp
   Planning/PhysicalDataflow/ScheduleDomainTest.cpp
+  Planning/PhysicalDataflow/ScheduleMaterializationTest.cpp
   Planning/PhysicalDataflow/StructuralReadinessTest.cpp
   Planning/PhysicalDataflow/StorageDomainTest.cpp
   Planning/PhysicalDataflow/StorageObjectBuilderTest.cpp
@@ -70,7 +71,6 @@ add_executable(WaferUnitTests
   Planning/Search/BufferingTest.cpp
   Planning/Search/CoupledRegionTest.cpp
   Planning/Search/ComputeImplementationTest.cpp
-  Planning/Search/InstructionScheduleTest.cpp
   Planning/Search/PhysicalRepresentationTest.cpp
   Planning/Search/TensorProgramAlternativeTest.cpp
   Planning/Search/UnifiedPhysicalDataflowTest.cpp

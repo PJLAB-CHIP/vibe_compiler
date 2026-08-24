@@ -144,8 +144,7 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     ProgramDataHandoff &programData,
     CardExecutableLoweringStatistics *statistics,
-    unsigned tilePipelineParallelism, bool captureTileIRTrace,
-    bool applySelectedInstructionSchedule) {
+    unsigned tilePipelineParallelism, bool captureTileIRTrace) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
       "stage", "card-module-to-executable", "card-executable-compilation");
   if (statistics)
@@ -232,7 +231,6 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
     mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> memoryPlanned =
         planTileMemory(std::move(result.module), &result.memoryPlanning,
                        &result.materializationRelations,
-                       applySelectedInstructionSchedule,
                        /*emitSPMCapacityDiagnostics=*/false);
     if (mlir::failed(memoryPlanned)) {
       result.memoryPlanningFailed = true;
@@ -262,15 +260,11 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
         !result.module) {
       CardExecutableTileFailure failure;
       failure.tileId = expectedTileIds[tileIndex];
-      failure.gate =
-          result.conversionFailed ? "tile-region-to-instr"
-          : result.memoryPlanning.kind ==
-                  TileMemoryPlanningFailureKind::SPMAllocation
-              ? "spm-allocation"
-          : result.memoryPlanning.kind ==
-                  TileMemoryPlanningFailureKind::InstructionScheduling
-              ? "instruction-scheduling"
-              : "tile-memory-planning";
+      failure.gate = result.conversionFailed ? "tile-region-to-instr"
+                     : result.memoryPlanning.kind ==
+                             TileMemoryPlanningFailureKind::SPMAllocation
+                         ? "spm-allocation"
+                         : "tile-memory-planning";
       failure.detail = std::move(result.detail);
       failure.memoryPlanning = std::move(result.memoryPlanning);
       allFailuresAreExact &=

@@ -165,8 +165,12 @@ source program
 - TX81 same-worker普通NCC链只保持SSA/effect/range要求的issue order；WDMA、unconditional loop、TileRegion exit和managed store/reload
   本身都不是join理由。cross-worker/domain crossing、actual release/reuse和observable terminal只在latest unavoidable位置完成真实pending
   participant。
-- Direct DTE issue与wait是独立程序点。recv wait在first read/FSM reuse前，send/relay wait在last release/resource reuse前；4个receiver FSM
-  和全卡wait graph无环是hard constraints，但不推出所有endpoint都立即await。
+- 只有TileId、没有typed FU/engine identity的粗粒度Tile engine fact不是capacity-1 resource；它和没有channel/controller证明的CardDDR都只能
+  进入estimate/cost，不能生成issue-to-completion exclusive edge。exact NoC path只证明link usage；没有capacity/VC字段时也不能生成
+  exclusive edge。真实Direct-DTE sender slot、receiver FSM和exact alias/effect另行处理。
+- Direct DTE issue与wait是独立程序点。matching send issue与receive preparation也没有固定先后；两侧completion才同时依赖两个issue。
+  recv wait在first read/FSM reuse前，send/relay wait在last release/resource reuse前；4个receiver FSM和全卡wait graph无环是hard
+  constraints，但不推出所有endpoint都立即await。whole-card matching/wait graph以actual transport verifier为唯一证明，不在上层另猜一份。
 - loop backedge、branch merge、entry return、Direct-DTE exact event/wait和async resource reuse都必须闭合。
 - `ReturnAfterLocalDrain`表示该Tile entry返回前，本地发起且影响结果/reuse/status的work已收敛；它不是card-scoped barrier。
 - CardExecutable成功要求16个Tile entries和全部transport obligations完成。runtime不能用统一尾等待掩盖compiler缺失的local completion。
@@ -238,7 +242,8 @@ source program
 ## Target model
 
 - model消费same-invocation owner-backed target module set，通过TargetCall frontend解码closed typed payload，不解释accepted IR。
-- 每个Tile有独立SystemC process和private SPM/address domain；card DDR可由typed resource共享。
+- 每个Tile有独立SystemC process和private SPM/address domain；DDR是card-visible address domain，但current资料没有证明一个可由compiler
+  当作capacity-1 hard resource的card-global channel/controller。只有未来显式target fact才能增加这类order。
 - transaction携带显式card/tile/launch slot和Tile-local issue ordinal；OS thread、symbol和容器位置不拥有身份。
 - descriptor/decoder负责ABI，plain C++ kernel负责functional semantics，SystemC wrapper负责event/resource ordering。
 - complete output按exact target descriptor codec解码后与独立CPU expected比较；整数/bit pattern exact，浮点使用case-owned policy。
@@ -679,8 +684,8 @@ source program
   不是新旧schema。closed plan携structure/buffer generation、EventId worker/resource bindings、shared resource sequences、per-scope control
   orders和completion placements，不携timestamp、calendar、pending cache、cost或actual operation。
 - exact schedule successor枚举closed worker sets和hard-ready linear extensions。capacity-1 resource sequence的相邻edge进入control DAG，
-  全部per-Tile/Card orders合成后重新做global cycle check；跨Tile hard edge/shared DDR不会因分scope而丢失。opaque NoC estimate既不绑定
-  resource instance，也不产生sequence。
+  全部per-Tile/Card orders合成后重新做global cycle check；跨Tile explicit hard edge不会因分scope而丢失。current资料没有证明
+  card-global capacity-1 DDR channel，CardDDR与opaque NoC estimate都不绑定resource instance、不产生sequence。
 - completion boundary由显式Completion EventId标识；NCC participant mask从selected issue worker或typed fixed obligation导出，DTE completion
   不清NCC，NCC join也不清DTE。boundary必须位于issue之后、dependent first-read/last-release之前，并满足participant/FSM/resource事实；
   missing contract不能默认Synchronous。actual wait/join/order emission只能在accepted complete-candidate subtree中执行；bounds/proposals属于后续

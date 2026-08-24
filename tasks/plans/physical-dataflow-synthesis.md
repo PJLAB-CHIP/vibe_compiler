@@ -62,7 +62,7 @@ current完成判断。旧fresh数字只说明当时实现子集通过，不能�
 | Q50.G | per-value layout Cartesian domain替代PBQP/Top-4及movement-elimination算法 | 核心算法丢失 |
 | Q50.H | exact fragment/basic route/multicast/reduction apply存在；大量NoC/alias/lifetime/partial-dataflow能力无承接证明 | 部分迁移，重大缺口 |
 | Q50.I | slot-count domain与rotating allocation mechanism存在；first choice固定single buffer，无联合选择算法 | mechanism部分可保留，选择缺失 |
-| Q50.J | hard dependency/order/worker domain存在，但不属于unified assignment，lowering只取first | 未接入search，旧能力需逐项复核 |
+| Q50.J | 审计时只有hard dependency/order/worker domain且lowering只取first；当前已由post-K EventGraph、closed schedule和selected materialization替代 | domain闭合；production接入由后续full-feasibility负责 |
 | Q50.K | wrapper按已选buffer scope自动物化stage，没有独立domain或search transition | 任务合同未实现，proof大幅丢失 |
 | Q51 | dependent Cartesian iterator直接materialize每个complete point；缺F/J/K、真实Core、完整typed rejection和actual-result owner合同 | 完成结论无效 |
 | Q52 | 两个heuristic proposal、evaluation count cap和六项raw metric字典序；无文档所述anytime/LNS | 完成结论无效 |
@@ -78,7 +78,7 @@ current owner和production consumer：
 | Q50.B | `StructuredDAGPlacementEnumeration`约2218行及15项placement tests，覆盖compact rectangle、independent components、long-DAG nondominated states、fanout与three-stage groups | current 7项domain tests；保留合法域，缺graph-level构造与质量算法 |
 | Q50.G | `LayoutMovementOptimization`约1587行，PBQP reduction、dominance、bounded exact core、Top-4、movement/footprint cost、exact unary fixed point、shared secondary和transactional apply；16项tests | current `PhysicalRepresentation`约224行和3项tests，只做独立value layout Cartesian枚举 |
 | Q50.H | NoC communication/intermediate/partial-dataflow、complete-rank/topology及相关tests同批净删除约1.34万行；36项直接transport tests覆盖owner rotation、tree/ring partial spill elision、alias overwrite、dealloc/use-before-reload、slice overlap/tail/alignment等 | current movement domain/apply约1480行和6项direct tests，另有若干CardModule tests；基础机制存在，但没有逐项承接上述proof |
-| Q50.J | `ReadyOrder`、`WorkerPlacement`及target scheduling analysis共约1300行；22项direct tests覆盖DTE issue/wait window、RAW/WAR/WAW/view alias、completion barrier和worker components | current `InstructionSchedule`约681行和6项tests；domain有实质内容，但production只取first assignment |
+| Q50.J | `ReadyOrder`、`WorkerPlacement`及target scheduling analysis共约1300行；22项direct tests覆盖DTE issue/wait window、RAW/WAR/WAW/view alias、completion barrier和worker components | 已迁移到EventGraph、ScheduleDomain、ScheduleMaterialization及Q63/Q50.0 verifier；旧InstructionSchedule source/test已删除 |
 | Q50.K | `FixedSlotPipeline`约1902行、40项tests，覆盖2/3-stage、odd tail、periodic DTE、NCC backedge、endpoint reuse、alias/external root和atomic rejection | current `StagePipeline`约67行、2项tests，加`SelectedBufferMaterialization`5项tests；大部分proof没有等价承接记录 |
 
 current production调用链也已核对：
@@ -3810,7 +3810,8 @@ Pipeline position:
   movement/event-producing ops，不写sidecar或route attr bag。explicit relay graph在commit后由逐transfer ops表达；只有target真的
   暴露programmable route时，routing才是typed assignment并由target IR合同消费。
 - Downstream consumer:
-  Q50.I从planned waves/movement completion推导slot domain，Q50.J从planned send/recv/await、compute与resource effects构造calendar；
+  Q50.I从planned waves/movement completion推导slot domain，Q50.J从planned send/recv/completion、compute与resource effects构造有限
+  worker/resource/control/completion schedule；
   每个complete candidate最终由Q50.0做message matching、completion、SPM/DDR和runtime gate。
 - User-level driver / named pipeline:
   Q51 planning session；`none`继续使用其确定性DDR/peer functional carrier，不进入本域枚举。
@@ -3995,7 +3996,7 @@ path、link order和chunk contiguity分阶段求解；TACCL也明确说明其rou
 | [TACCL](https://www.usenix.org/system/files/nsdi23-shah.pdf) | 用logical-topology sketch缩域，并分离routing、per-link ordering和chunk contiguity | H只选payload传播图，J选order，G/I证明contiguity/buffer；每层保持typed依赖 | 不接受用户sidecar sketch，不把忽略contention的routing lower bound说成可执行schedule |
 | [Blink](https://pages.cs.wisc.edu/~shivaram/publications/blink-mlsys2020.pdf)与[bandwidth-optimal pipeline schedules](https://arxiv.org/abs/2305.18461) | 以带权arborescence packing、bottleneck cut和chunk pipeline提高异构topology利用率 | cut lower bound、edge-disjoint/tree-packing seeds及多树chunk striping；只在route/capacity可证明时给exact link结论 | current target routing opaque，不能从physical mesh直接声称tree packing达到link optimum |
 | [Bruck all-to-all](https://authors.library.caltech.edu/records/ypzfe-0bb45)与[Rabenseifner reduction](https://fs.hlrs.de/projects/rabenseifner/publ/myreduce_iccs2004_2long.pdf) | 在message startup、payload bytes、round数间取不同trade-off | Bruck、pairwise、ring、recursive exchange都作为同一domain的checked proposal | 算法适用条件必须由selected physical spans、local pack/combine和target primitive证明，不能按collective名字放行 |
-| [Dally--Seitz](https://authors.library.caltech.edu/records/fd0yr-br438) | 用channel-dependency graph刻画router-level deadlock | 仅在target暴露programmable/deterministic route及VC/channel事实时验证raw route | current Direct DTE的内部route不透明；software send/recv死锁由J的event/wait graph证明，不能套XY/DOR猜硬件 |
+| [Dally--Seitz](https://authors.library.caltech.edu/records/fd0yr-br438) | 用channel-dependency graph刻画router-level deadlock | 仅在target暴露programmable/deterministic route及VC/channel事实时验证raw route | current Direct DTE内部route不透明；software send/recv wait graph由Q50.0 actual whole-card verifier证明，不能套XY/DOR猜硬件 |
 
 因此H不采用“算法枚举值 + 固定参数表”。经典方案是快速找到好点的构造器，完整语义由下面一个统一的payload-state问题拥有。
 
@@ -4842,7 +4843,7 @@ Pipeline position:
   operation handle或shadow calendar，不恢复static capability/profitability registry。
 - Done criteria:
   有界穷举independent reference逐点匹配order×worker域；planning→candidate apply correspondence、Direct-DTE issue/wait、multi-worker join、
-  alias/effect、shared DDR、opaque endpoint与known directed-link资源正负例闭合；production search不构造Instr后取first。旧ready-order/worker算法与测试
+  alias/effect、DDR estimate、opaque endpoint与known directed-link资源正负例闭合；production search不构造Instr后取first。旧ready-order/worker算法与测试
   完成能力迁移后才能删除其owner。
 
 ### Q50.J work-item分界
@@ -4923,13 +4924,13 @@ resource只描述资源类别，精确range仍由alias analysis负责。对应�
 | ordinary NCC issue按typed worker有序，participant join只完成mask中的pending worker | `supported`，由Q63 operation interface、analysis与target protocol共同拥有 | execution/DDR issue使用closed worker domain；completion只保留typed participant obligation，不提前插join |
 | Direct DTE send/recv产生独立token，wait/finish只完成该token | `supported`，见13号文档及current CRT/target lowering | 每个selected payload piece和physical hop建立独立`DirectDTE` issue/completion；不与NCC completion互换 |
 | current Direct DTE内部NoC route | `unknown`/opaque | 只记录endpoint DTE exact use与NoC transfer estimate；没有显式target route就不创建link contention |
-| deterministic target route输入给出的逐link路径 | `supported`仅限显式typed输入 | `ExactMovementRoute`绑定一个selected graph hop；逐link resource只附着到该hop的每个exact payload event |
+| deterministic target route输入给出的逐link路径 | `supported`仅限显式typed输入 | `ExactMovementRoute`绑定一个selected graph hop；逐link usage只附着到该hop的每个exact payload event。当前schema没有capacity/VC字段，因此mode为`CapacityUnits`，不生成exclusive order |
 | raw broadcast/scatter或其它collective硬件执行形态 | `board-observed`但current compiler primitive未闭合 | `excluded`于本域；H没有selected typed action时J不恢复collective或同步协议 |
 
-current `CardInstructionScheduleDomain`借actual Module/Block/Operation pointers，snapshot attrs/operands/types模拟epoch；它按source block
-order给同root memref建立RAW/WAR/WAW，把任何synchronous op两侧全序化，并把任意peer endpoint伪装成exact `DirectedPeerLink`。apply又
-move-own Tile modules、移动ops、改worker并重建joins。可迁移的是topological enumeration、closed worker enum、Q63 completion和resource
-classification测试，不是actual-IR-first API。
+已删除的`CardInstructionScheduleDomain`曾借actual Module/Block/Operation pointers并用snapshot attrs/operands/types模拟epoch；它按source
+block order给同root memref建立RAW/WAR/WAW，把任何synchronous op两侧全序化，并把任意peer endpoint伪装成exact
+`DirectedPeerLink`。已迁移的是topological enumeration、closed worker enum、Q63 completion和resource classification witness；actual-
+IR-first domain、snapshot和隐式source-order规则没有保留。
 
 #### Planned event model
 
@@ -4999,14 +5000,14 @@ foundation构图后做stable Kahn cycle check；hard cycle是完整fixed-semanti
 
 ```text
 ResourceKey =
-  TileEngine(TileId, TargetOperationResource)
+  TileEngine(TileId)                         // estimate only; no FU identity
   | NCCWorker(TileId, NCCWorker)
-  | TileDTEEngine(TileId)
+  | DirectDTESender(TileId)                 // one exact sender slot
   | SPMRange(StorageObjectId, ExactPhysicalRange)
-  | CardDDRResource(CardId, channelClass)
-  | DirectedNoCLink(DirectedLinkId)          // only with exact target route
+  | CardDDRResource(CardId)                 // estimate only; no proven channel
+  | DirectedNoCLink(DirectedLinkId)          // exact usage, unknown capacity
   | OpaqueNoCTransfer(SourceTile, DestTile)  // estimate only
-  | ControlResource(scope)
+  | DTEReceiverFSM(TileId)                   // four exact interchangeable lanes
 
 PlannedResourceUse
   event: EventId
@@ -5016,9 +5017,10 @@ PlannedResourceUse
   knowledge: Exact | LowerBound | Estimate
 ```
 
-target operation/completion interfaces给engine/worker/DTE facts，G/I exact storage ranges给SPM，H DDR plan给DDR。只有H target routing是
-deterministic/programmable且route closed时才创建`DirectedNoCLink`；current opaque target-routed peer只产生endpoint DTE exact resource、
-NoC hop/cut estimate，不能进入hard link contention。共享resource本身不自动产生hard edge：capacity/exclusive constraints进入order
+target operation/completion interfaces给worker/completion facts，G/I exact storage ranges给SPM。没有typed FU identity的粗粒度
+`TileEngine(TileId)`和H DDR plan都只给estimate；current hardware资料没有证明它们是capacity-1 hard resource，因此不得进入order。只有H target routing是
+deterministic/programmable且route closed时才创建`DirectedNoCLink`；current schema只证明link usage，不证明capacity/VC，所以仍不进入hard
+contention。opaque target-routed peer只产生endpoint DTE exact resource、NoC hop/cut estimate。共享resource本身不自动产生hard edge：capacity/exclusive constraints进入order
 choices或J closure，bandwidth只形成estimate。
 
 #### Analysis scope、failure与invalidation
@@ -5039,11 +5041,11 @@ ID/duplicate action是compiler bug。fixed semantic fact、B--I或K任一observe
 
 | 输入等价类 | 代表输入 | 结构路径 | typed failure | 精确断言 | 直接下游witness |
 | --- | --- | --- | --- | --- | --- |
-| execution与普通storage lifetime | rank-3，主维1024/1025，至少两个Tile | definition/ready→compute issue/completion→use/release，独立branch、chain、fanin/fanout | duplicate/missing execution、object、resource、lifetime | all-and-only EventId、每条data/lifetime edge reason、SPM range与Tile engine scope | execution-structure-domain直接读取同一graph的components和hard DAG |
-| DDR边界与publication | rank-3，1024/1031，multi-piece transfer | external load、DDR stage、observable write；shared DDR只贡献resource/order choice | action/resource不一致、缺completion boundary | issue/completion、ready/publication依赖、CardDDR use和observable event逐项相等 | K不能通过source order恢复movement边界 |
+| execution与普通storage lifetime | rank-3，主维1024/1025，至少两个Tile | definition/ready→compute issue/completion→use/release，独立branch、chain、fanin/fanout | duplicate/missing execution、object、resource、lifetime | all-and-only EventId、每条data/lifetime edge reason、SPM range；粗粒度Tile engine只有estimate且无hard order | execution-structure-domain直接读取同一graph的components和hard DAG |
+| DDR边界与publication | rank-3，1024/1031，multi-piece transfer | external load、DDR stage、observable write；CardDDR只贡献estimate | action/resource不一致、缺completion boundary | issue/completion、ready/publication依赖、CardDDR `Estimate/CapacityUnits`和observable event逐项相等；无CardDDR hard order | K不能通过source order恢复movement边界 |
 | peer direct/relay/gather | rank>=3，1025/1031，local与remote contribution | Direct DTE endpoint、每hop relay、gather local combine | malformed hop、endpoint不连续、unknown action | 每hopissue/completion链、source/destination DTE exact use；opaque route没有DirectedNoCLink | 后续schedule域在相同events上选择order/worker/wait |
 | alias、reuse与slot family | rank-3，1024/1025，fresh/identity alias/reuse、multiplicity>1 | alias共享object；ReuseAfterCompletion变成completion/release→later-ready hard edge | alias source缺失、reuse端点缺失、order cycle | object ready/release覆盖、slot backedge及order reason，不按shape猜lifetime | K改变occurrence后丢弃本graph并先重进I |
-| Q63 typed completion与resource facts | rank-3，1024/1025，worker-capable compute与participant join descriptor | issue→participant completion；NCC、Tile engine、DTE资源保持分层 | missing contract为Deferred；empty worker domain、invalid participant分别typed失败 | obligation participants、worker domain和resource knowledge逐字段一致；无implicit Synchronous | J closure只枚举foundation给出的closed typed domains |
+| Q63 typed completion与resource facts | rank-3，1024/1025，worker-capable compute与participant join descriptor | issue→participant completion；NCC completion、coarse engine estimate与exact DTE资源保持分层 | missing contract为Deferred；empty worker domain、invalid participant分别typed失败 | obligation participants、worker domain和resource knowledge逐字段一致；无implicit Synchronous或coarse-engine exclusive | J closure只枚举foundation给出的closed typed domains |
 | determinism与有界oracle | 2--7 event tiny oracle，加rank-3 1025输入顺序扰动 | stable Kahn/component划分、exact successor | hard cycle、work limit、unsupported resource contract、compiler bug分别分类 | graph全字段、最小cycle witness、输入反转结果一致，source IR byte-identical | Core cache只复用同一state的可重算结果 |
 
 - plan-level unit覆盖independent branches、chain/fanin/fanout、nested execution、multi-piece DDR、peer direct/relay/gather、slot rotation、
@@ -5060,8 +5062,9 @@ ID/duplicate action是compiler bug。fixed semantic fact、B--I或K任一observe
 `BufferPlan`独立缓存，structure或storage sibling变化必然重建，`ScheduleDomain`只消费post-K graph。candidate state仍不保存graph、
 operation pointer或calendar。
 
-- `MovementEventAction`用typed `Logical/DDRLoad/DDRStore/PeerTransfer` phase、exact payload-piece编号和selected physical hop形成stable ID；
-  multi-piece DDR显式形成store→load，external fanout形成一次root DDR load→所有root sends，relay形成parent completion→child issue。
+- `MovementEventAction`用typed `Logical/DDRLoad/DDRStore/PeerSend/PeerReceive` phase、exact payload-piece编号和selected physical hop形成stable
+  ID；multi-piece DDR显式形成store→load，external fanout形成一次root DDR load→所有root sends，relay形成parent receive completion→child
+  send issue。send/receive issue保持独立，两侧completion同时依赖matching两侧issue。
 - `PeerTransferSiteId`把I的relay definition/use lifetime直接接到同一per-piece/hop event；resident source、relay和terminal storage没有按
   action名或shape补owner。`CanonicalStoragePlan`不再同时登记一份粗粒度peer source use。
 - ordinary DDR phase使用all-worker closed domain与`NCCParticipant` obligation，participant在J选择worker后确定；peer hop只使用
@@ -5170,7 +5173,7 @@ operation/resource/Q63 contracts；profile profitability归Q52。registry、row 
   boundaries；与kernel plan集合一致、无lane/transitive duplicate；
 - donor counts在对应plan graph保持：两个independent worker-capable events为`2! * 3^2 = 18`，producer+两个fanout consumers为
   `2! * 3^3 = 54`；same-range ordered writes只保留semantic合法方向；
-- Direct-DTE issue→independent compute→wait、fanin/fanout、relay、slot reuse、multi-worker join、shared DDR及known/opaque NoC resources
+- Direct-DTE issue→independent compute→wait、fanin/fanout、relay、slot reuse、multi-worker join、DDR estimate及known/opaque NoC resources
   的ready sets/requirements正确；
 - critical-path/resource/transport bounds与tiny exhaustive schedule optimum比较从不高估；unknown fact不变known，list/DP proposal始终为
   exact member；关闭/反转proposal不改变domain；
@@ -5512,12 +5515,24 @@ K不选择global winner。“某case pipeline获胜、另一case因movement/buff
 
 ## Q50.J Schedule Closure
 
-### J-closure-1 专项调研：full resource-constrained domain、algorithm与bounds
+### schedule-domain调研：有限偏序、资源实例与completion lifetime
 
-固定K后问题成为resource-constrained scheduling：RCPSP一般为strongly NP-hard；modulo scheduling还要满足inter-iteration distance和resource
-congruence constraints。经典critical-path/resource-work/RecMII/ResMII都是lower bounds，不是feasible schedule。CIRCT
-`ModuloProblem`也把dependence distance、II和resource utilization分别验证。Wafer实际IR不编码cycle timestamp或arbitrary idle，因此
-完整搜索对象仍是worker/resource binding、resource/control order和completion boundary；calendar/II只作为这些choices的派生分析。
+固定K后，J只关闭Wafer IR实际表达的有限选择：worker binding、capacity-1 resource sequence、per-scope control order、receiver FSM lane和
+completion boundary。RCPSP、modulo scheduling和machine scheduling都说明“依赖/资源问题”与“选择策略”应分离；它们不构成在Wafer
+IR中增加cycle timestamp或idle变量的理由。
+
+| 调研对象 | 采用的工程规则 | 未采用的部分及原因 |
+| --- | --- | --- |
+| [LLVM MachineScheduler](https://github.com/llvm/llvm-project/blob/main/llvm/lib/CodeGen/MachineScheduler.cpp) | 先建立稳定DAG和resource facts，再由独立策略选择ready node；最终顺序可以在owned IR上统一提交 | 不迁移MachineInstr pointer、register-pressure heuristic或target hook；J的identity是`EventId` |
+| [CIRCT scheduling infrastructure](https://circt.llvm.org/docs/Scheduling/) | problem、solution和verification分层；resource constraint必须由solution显式满足 | 不引入第二套schedule dialect、calendar或字符串operator registry |
+| [MLIR Async dialect](https://mlir.llvm.org/docs/Dialects/AsyncDialect/) | async completion由exact SSA token表示，wait只能消费对应token | NCC仍使用Q63 participant域；NCC join与DTE wait不能互相清除 |
+| [IREE Stream timepoints和resource lifetime](https://iree.dev/reference/mlir-passes/Stream/#iree-stream-propagate-timepoints) | completion可以推迟到first dependent、resource reuse或release之前，不能在issue后默认等待 | Wafer直接保存离散`EventBoundaryId`，不复制IREE dialect或runtime timepoint |
+
+硬件事实只从current target/ABI文档进入hard constraint：每Tile有1个Direct-DTE sender slot和4个receiver FSM；sender programming与remote
+receive preparation可以独立发生，但两侧completion都要求matching send和receive已经issue；NCC same-worker普通链由busy-table保持地址
+顺序，不能因此插join；Direct-DTE route在没有显式`ExactMovementRoute`时保持opaque。上述事实分别由
+`TargetDirectDTEResourceLimits`、Q63和`verifyDirectDTETransportSchedule`的current实现交叉确认。未证实的route latency、barrier、join或wait
+语义保持unknown，不进入domain。
 
 #### Fixed-K rebuild与closed plan
 
@@ -5535,68 +5550,58 @@ ClosedSchedulePlan
   completionBoundaries: CompletionObligationId -> EventBoundaryId
 ```
 
-plan不保存start/end cycle、pending sets、makespan或calendar。participant mask、DTE token groups和release sets从event prefix在selected
-boundary重算；这避免相同join/wait用不同冗余mask形成duplicate state。
+plan不保存start/end cycle、pending sets、makespan或calendar。participant mask由typed obligation、selected worker及same-worker
+handoff关系确定；DTE token group在actual EventId binding上重建。相同boundary的completion canonical grouping不形成额外search axis。
 
-#### Exact closure search
+#### 有限exact successor
 
 ```text
-solveSchedule(eventGraph, fixedStructure, fixedBuffers, constraints):
-  propagate worker/resource domains and mandatory precedences
-  reject an exact empty domain or hard/resource cycle
-  decompose components only when no cross-component dependency/resource exists
-
-  choose the unresolved variable with smallest domain:
-    worker/resource binding, resource sequence prefix,
-    control ready choice, then completion boundary
-  visit states by sound lower bound, then semantic ID
-  after each choice incrementally update ready sets, pending completions,
-    slot reuse and resource capacities
-
-  at a complete leaf:
-    derive canonical earliest calendar/steady recurrence summary
-    verify every dependency, capacity, completion and publication
-    return checked ClosedSchedulePlan plus query-local facts
+buildScheduleDomain(postKEventGraph, fixedStructure, fixedBuffers):
+  validate one fixed K/I generation and all typed completion/resource intervals
+  reject a hard cycle or a mandatory receiver-live-range graph that needs >4 colors
+  enumerate worker Cartesian product
+  enumerate each capacity-1 resource's topological sequence
+  add release(previous) -> issue(next), not issue(previous) -> issue(next)
+  enumerate each (pipeline scope, Tile/Card) control linear extension
+  color receiver intervals canonically with lanes 0..3
+  derive the latest boundary before the first hard dependent or exact resource conflict
+  return only plans that pass ScheduleDomain::contains
 ```
 
-exact successor from schedule-domain remains public toQ51, so solver/proposal不是唯一domain入口。component分解必须保留shared DDR、known exact
-NoC links、cross-Tile messages、card completion和publication edges；opaque NoC只有estimate，不能制造或删除component hard edge。
+successor顺序和tie-break只使用typed semantic ID；输入容器反转不改变plan集合。current唯一明确的capacity-1 transport resource是
+Direct-DTE sender slot；粗粒度Tile engine、CardDDR和只有path没有capacity的known link都不生成串行边。receiver pool是4-color interval assignment。`CapacityUnits`不能被误降为单laneexclusive resource；不同receiver lane
+不构成completion cut。opaque NoC estimate既不生成resource sequence，也不影响合法集合。
+`SPMRangeResource`只表示同一selected storage object内的exact access/alias range，用于completion observer检查；definition/use/reuse顺序来自
+SSA与I lifetime hard edges，不再把多个reads和write压成一个resource全序search axis。它不是allocation offset、footprint或capacity proof，
+也不推断两个不同allocation object在actual SPM中是否冲突。后者只能由complete candidate的MiniMalloc结果决定。
 
-resource capacity-1由selected sequence证明；capacity-k由canonical instance assignment和per-instance sequence证明。fully pipelined
-resource的outstanding/issue limit从event interval结构计数。K cyclic scope用`PipelineDependence.iterationDistance`验证same/different
-iteration precedence和slot reuse；SCF distance-one/periodic capability各用自己的finite recurrence verifier，不把estimated cycle latency
-变成legality。
+每个Direct-DTE hop有独立send/receive issue及各自completion。两个issue之间没有硬件同步边；logical source-ready约束root send，relay只在
+parent receive completion后issue child send；send和receive completion都依赖matching两侧issue。该关系与actual transport verifier一致，
+不会靠“recv必须先执行”或“issue后立即wait”规避deadlock。
 
-completion placement逐boundary更新：pending NCC workers、DTE tokens、buffer readers/writers和observable obligations。same-worker ordered
-NCC issue可仅靠issue order，跨completion-domain consumer必须join；DTE recv/read、send/reuse只能由matching token wait；entry/region
-terminal只完成其typed obligations。任何未清pending observer为exact leaf rejection。
+completion placement只沿同一control order、同一selected K stage向后移动。遇到stage边界、actual exact-range/resource observer、FSM
+lane reuse、相关buffer release或observable terminal即停止；纯结构marker不是同步理由。J不能通过移动wait/join改变已经选定的K structure。same-worker且下一actual
+overlapping-SPM consumer使用同一worker时，中间NCC placement的mask为0；其它NCC
+placement使用minimum selected worker bit。`NCCSynchronousWriteback`使用selected worker但不生成join；Direct-DTE始终保留自己的token
+completion，不能被NCC mask替代。
 
 #### Why no timestamp axis
 
-固定precedence、resource sequences/bindings和completion boundaries后，canonical earliest calendar把每个event放到所有preds/resources ready的
-最早位置。对nonpreemptive regular objective（makespan、high-water upper envelope），无新增dependency/resource release的额外idle不会
-改善feasibility或objective；若delay有意义，它必对应另一个resource order或已有completion boundary，已经在domain中。因此不枚举
-unbounded timestamps。actual Wafer IR也只表达order/token/wait，不表达cycle start time。
+Wafer当前IR只表达order、resource lifetime、token和wait/join，不表达cycle start time。固定resource/control sequence和completion
+boundary后，额外idle既不产生新的IR，也没有current target事实可验证。因此J不枚举timestamp、II、calendar或idle；若未来target增加可验证的
+timed contract，应建立独立lowering层表示，不能把性能估计塞进本合法域。
 
-#### Bounds、proposals与knowledge
+#### Complexity与策略边界
 
-lower bound取以下known项maximum：acyclic critical path、per-resource total work/capacity、K recurrence distance、I outstanding slots、H
-dilation/tree/cut和mandatory completion latency。对cyclic resource可计算structural ResMII/RecMII-like bound供排序；current target没有
-exact latency时标Unknown并只保留structural work bound。checked arithmetic/knowledge随每项传播，Unknown不参与strict winner比较。
-
-list schedule、drain-latest、movement-early、compute-early、critical-path、resource-balanced和pipeline-aware modulo order都只是proposal；
-每个返回exact leaf。branch-and-bound只在lower bound与同knowledge incumbent可比时prune；work-limit返回checked feasible suggestion+
-lower bound或Indeterminate，不报告Optimal/NoSolution。
-
-完整穷尽后才能报告`OptimalForScheduleBound`，它也只针对固定semantic+B--K representation/movement/buffer/structure和current cost knowledge，global
-winner仍由Q51。最坏复杂度含topological orders、worker/resource assignments、completion placements的乘积，为指数/阶乘级；incremental
-ready/pending/resource updates与实际visited states成正比，默认不运行MILP或输出calendar dump。
+最坏复杂度是worker Cartesian product与resource/control linear extensions的乘积，属于指数/阶乘级。J只提供bounded lazy successor；
+`maxSuccessorSteps`耗尽返回`Indeterminate`，不报告optimal。proposal、bound、memo和LNS分别由`search-control-closure`与
+`search-scalability`拥有；关闭或更换这些策略不得改变J的plan集合。
 
 #### Failure/no-good
 
-ExactRejection witness可以是empty domain、hard/resource/deadlock cycle、capacity violation、unmatched completion、slot reuse或publication
-failure，并列出all-and-only causal semantic/B--K/J choices。Unsupported/Indeterminate/compiler bug沿F taxonomy传播。No-good只覆盖witness key，
-不能删另一个worker/resource order、K Serialized、不同slot或movement sibling。
+hard DAG cycle、capacity-1 sequence无可行linear extension和mandatory receiver interval超过4路属于`ExactRejection`。stale K/I generation、
+unbound completion/resource interval和重复issue属于`BrokenContract`；successor work limit属于`Indeterminate`。J不生成no-good；Q51只能从这些
+typed witness构造causal no-good，不能把一个worker/resource order的失败扩大到其它K/I/H sibling。
 
 #### J-closure-1 Gate
 
@@ -5606,135 +5611,126 @@ failure，并列出all-and-only causal semantic/B--K/J choices。Unsupported/Ind
 | 输入等价类 | 代表输入 | schedule路径 | typed failure | 精确断言 | 直接下游witness |
 | --- | --- | --- | --- | --- | --- |
 | worker/control domain | rank-3 1024/1025，2个independent worker-capable events及producer→fanout | closed worker set做Cartesian product；per-control scope枚举全部hard-ready linear extensions | empty worker domain、unknown event | 2-event `2!×3^2=18`、fanout `2!×3^3=54`且无duplicate | full-feasibility按EventId绑定selected worker，不从Instr默认恢复 |
-| shared resource sequence | rank>=3 1025/1031，DDR/DTE/Tile engine/SPM exact range | capacity-1 users枚举所有与hard DAG一致的resource sequence，并作为control predecessor | resource/hard cycle | sequence all-and-only、read-read不造冲突、opaque NoC无exact sequence | actual emitter按同一resource order创建operations |
-| multi-scope/cross-Tile | all-16 Tile independent scopes、cross-Tile transfer | Tile/Card control分别成序，cross dependency/shared DDR保持global DAG，不造card total order | local orders合成global cycle | component分解前后leaf集合一致，input反转plan集合相同 | selected construction可逐Tile发射而保留cross-Tile token relation |
-| completion与publication | Direct-DTE、NCC worker、synchronous completion、buffer release和observable write | completion boundary固定为显式Completion EventId，participant从typed obligation/selected worker导出 | unmatched issue/completion、terminal pending | every obligation恰一placement；DTE/NCC域不互相清除；observable terminal有前驱 | full-feasibility/prepare可生成minimum wait/join/release groups |
+| shared resource sequence | rank>=3 1025/1031，多个Direct-DTE sends及SPM read/read/write | one-slot sender users枚举所有与hard DAG一致的resource sequence，并加入release→next-issue；SPM继续使用SSA/lifetime edge | resource/hard cycle | sender sequence all-and-only；read-read不造冲突或全序；TileEngine/CardDDR/SPM/known-link-without-capacity/opaque-NoC均无额外hard sequence | actual emitter按sender order和storage hard edges创建operations |
+| multi-scope/cross-Tile | 2个Tile independent scopes、cross-Tile direct/relay；后续vertical覆盖all-16 | control按`(PipelineScopeId, Tile/Card)`分别成序，cross dependency保留在global DAG，不造card total order或CardDDR串行边 | local sequence与hard/resource edge合成cycle | 两Tile各2 events得到`2!×2!=4`且没有跨Tile全序；input反转plan集合相同 | selected construction逐Tile提交，cross-Tile token relation交给Q50.0 whole-card verifier |
+| completion与publication | Direct-DTE、NCC worker、same/cross-worker、grouped waits、buffer reuse和observable terminal | boundary下沉到first hard dependent/exact conflict之前的latest位置；participant从typed obligation/selected worker导出 | duplicate/unmatched issue、terminal pending | every issue恰一placement；same-worker handoff mask0；DTE/NCC域不互相清除；两个DTE token可在同boundary合并成一个wait | full-feasibility按同一plan/actual mapping生成minimum wait/join并做Q63 parity |
 | fixed K/I generation | Serialized与Pipelined、multiplicity/rotation/lifetime requirement | ClosedSchedulePlan携exact structure+BufferPlan，domain/state双重校验generation | stale pre-K buffer或K sibling | plan identity逐字段相等，slot lifetime lower/upper与selected family一致 | ScheduledState是full-feasibility唯一输入 |
-| exact successor与work limit | 2--7 event bounded oracle、hash/input扰动 | worker→control→resource的finite lazy successor覆盖每个leaf | work-limit Indeterminate、malformed problem compiler bug | 与独立enumerator逐plan相等；无timestamp/idle/calendar/default stats | Q51仍可直接调用exact successor，不依赖proposal |
+| exact successor与work limit | 2--7 event bounded oracle、输入顺序扰动 | worker→control→resource的finite lazy successor覆盖每个leaf | work-limit Indeterminate、malformed problem contract failure | 与独立permutation oracle逐plan相等；无timestamp/idle/calendar/default stats | Q51直接调用exact successor，不依赖proposal |
 
-当前已实现子集：canonical高层点已更名为`CanonicalSchedulePrefix`，不再占用“closed schedule”名称。current `ClosedSchedulePlan`保存exact
-ExecutionStructurePlan和post-K BufferPlan generation、EventId worker bindings、每个exact resource use的typed instance、capacity-1 shared
-resource sequences、per-Tile/Card control orders及all-and-only completion placements；不保存timestamp、pending set、calendar、cost或actual
-operation。`ScheduleDomain`在hard/resource/control edges上lazy枚举finite linear extensions，worker domain做Cartesian product，合成后重新
-验证global DAG；opaque NoC estimate不进入binding/sequence。NCC participant mask从selected worker或typed fixed obligation导出，DTE
-completion保持独立。`ScheduledState`和domain双重验证K/I generation，Core已推进到missing `full-feasibility`且zero actualization。
-fresh直接5/5覆盖18/54、2--7 event oracle、shared resource/opaque route、NCC+DTE completion及generation/failure；canonical schedule 6/6、
-Core/SearchRouting 8/8；ordinary host unit 882/882、core lit 227/227、Tools/Runtime lit 35 passed/4 configured unsupported、完整build、public
-link closure及source organization通过。canonical first schedule复用existing direct construction；noncanonical ScheduleEmitter/wait/join
-尚无逐EventId actual construction并被full-feasibility typed Unsupported，这正是本work item未完成的证据；selected construction必须由
-`schedule-domain`自身迁移后才能进入accepted set。calendar bounds/proposals由search-control-closure/Q52建立，不是本correctness domain的第二入口。
+#### Domain实现结果
 
-完成状态复核后，“由Q52迁移selected ScheduleEmitter”不再是允许的过渡边界：Q50.J自身必须先把post-K EventGraph、slot lifetime/reuse
-edges、worker/resource/completion完整域和J-closure-2 emitter/verifier闭合，Q52只能在该完整域上做scalability。current completion boundary
-固定、slot lifetime未产生约束且`applySelectedInstructionSchedule=false`，故`schedule-domain`重新打开。
+`ClosedSchedulePlan`保存exact `ExecutionStructurePlan`和post-K `BufferPlan` generation、EventId worker/resource bindings、capacity-1 resource
+sequences、per-pipeline Tile/Card control orders及all-and-only completion placements。`ScheduleDomain::contains`从原始problem重新验证每个字段；
+plan不携带actual operation pointer、timestamp、cost或隐藏epoch。
 
-- 2--7 event exhaustive oracle比较完整worker/resource/control/completion leaves、feasible set和fixed-knowledge optimum；component decomposition
-  前后集合/optimum一致；
-- serialized与SCF/periodic pipeline覆盖independent/fanin/fanout、multi-worker、DDR、target-routed peer/relay/gather、known directed link、
-  rotating slots、tail和observable output；
-- pending-state oracle逐prefix核对NCC participants、DTE tokens、buffer last-use/release和terminal obligations；deadlock/resource cycle给最小
-  causal witness；
-- critical/resource/recurrence/transport bounds从不高于tiny optimum；Unknown不变Known，list/modulo proposals为exact leaves，关闭proposals
-  不改domain；
-- no timestamp/idle state、actual IR、clone或default stats；work-limit分类和stable determinism受测。candidate apply、wait/join materialization
-  与migration由J-closure-2。
+EventGraph将peer endpoint拆成`PeerSend`与`PeerReceive`。source sender使用1-slot `DirectDTESenderResource`；destination receive使用
+4-lane `DTEReceiverFSMResource`。receiver interval按selected control order进行canonical exact coloring；四个强制重叠interval使用lanes
+0/1/2/3，第五个强制重叠得到`ExactRejection`，可排序的五个interval复用lane。capacity-1 async resource sequence写为
+`completion(previous) -> issue(next)`，不会把issue-to-completion占用错误缩成issue order。
 
-### J-closure-2 专项调研：construction-time order/completion与deadlock verification
+worker/control oracle覆盖`2!×3^2=18`和fanout `2!×3^3=54`；2--7 event逐项与permutation reference比较。两Tile独立control
+得到`2!×2!=4`，没有card total order。rank-3 1024/1025/1031 EventGraph和actual Instr fixture覆盖aligned/ragged payload、direct/relay、
+same/cross-worker、NCC+DTE separate completion、receiver 4/5 lane及grouped waits。calendar/bound/proposal继续由后续work item拥有。
 
-current `applyInstructionSchedule`在已生成Tile Instr modules中move operations、设置worker、删除所有旧joins并调用
-`rebuildRequiredNCCJoins`；domain又用operation snapshot判断“epoch”。终态已经有ClosedSchedulePlan和C winner transaction，不需要这份
-post-hoc owner。Q63 current-IR analysis仍是final verification资产：它从actual structured control/calls重算per-op pending worker mask；
-placement algorithm则迁成plan-level completion builder。
+### selected schedule物化与actual verification
+
+旧`InstructionSchedule`同时从actual operation pointer推断domain、保存snapshot epoch并修改IR，导致问题构造与selected application有两套
+owner。现行实现删除这套source/test/API。J domain只由post-K typed facts建立；selected application接收caller显式提供的
+`EventId -> operations`关系，在owned candidate transaction中统一重排、设置worker并发射completion。它不从operation name、ordinal、
+打印文本或block初始顺序恢复事件身份。
+
+这里采用LLVM/MLIR常见的“先只读prepare，再对owned IR提交变换”，而不是给D/G/H/I/K各复制一套callback emitter。后者会让同一个
+operation construction出现第二条路径。所有可能的stale binding、SSA、worker/completion和token检查先于首次mutation；提交失败不返回
+partial module。
 
 #### Prepared schedule
 
 ```text
-PreparedSchedule
-  controlScopes: PreparedControlOrder[]
-  eventBindings: EventId -> EventEmissionSite
-  workerBindings: EventId -> NCCWorker
-  resourceBindings/sequences: closed J choices
-  dteWaitGroups: EventBoundaryId -> TransferCompletionId[]
-  nccJoinGroups: EventBoundaryId -> derived participant workers/issues
-  releaseGroups: EventBoundaryId -> StorageObjectId[]
-  publication/terminal obligations: exact closed set
+PreparedScheduleMaterialization
+  plan: ClosedSchedulePlan
+  modules: borrowed Tile ModuleOp[] for one immediate epoch
+  scopes: ControlOrder + owning Block + all-and-only ScheduleEventIRBinding[]
+
+ScheduleEventIRBinding
+  event: EventId
+  tile: TileId
+  operations: exact top-level operation group; empty only for a structural marker
 ```
 
-prepare重建一次fixed-K EventGraph并要求与ClosedSchedulePlan identity、I/H/K dependencies完全相同；每个EventId、completion、resource和
-control position total/unique。DTE wait group只含该boundary已issued且仍pending的tokens；NCC participant set从pending issues导出，不由
-caller传mask；empty/redundant joins canonicalize away。所有可能的cycle/resource/lifetime检查先于mutation。
+prepare先调用`ScheduleDomain::contains`验证generation和plan。每个control EventId、actual issue operation、worker binding和completion
+placement必须all-and-only；每个DTE issue token必须尚无consumer且有唯一`DirectDTE` placement；每个NCC issue必须有selected worker和
+`NCCParticipant` placement。输入不得含旧`SyncNCCJoinOp`或`InstrDTEWaitOp`。同一control scope必须落在一个actual block，异步issue与其
+boundary也必须同block；不满足时返回typed failure而不修改IR。
 
-#### Direct event emission
-
-每个D/G/H/I/K builder不再自己挑insertion point，而向一个scope-local `ScheduleEmitter`注册EventId与typed callback：
+#### Owned IR materialization
 
 ```text
-emitControlScope(preparedOrder, emitter, rewriter):
-  for event in prepared control order:
-    invoke exactly that event's typed builder at current insertion point
-    set selected worker when creating worker-capable target op
-    bind actual operation/token/value to EventId
-    at a completion boundary:
-      emit one DTE wait for its exact token group
-      emit one NCC participant join for its derived nonempty worker set
-      emit planned buffer releases after both completion domains close
+materializeSchedule(ownedModules, prepared):
+  move each exact event operation group into its selected per-scope order
+  set the selected worker through WaferNCCIssueOpInterface
+  group CompletionPlacement by EventBoundaryId
+  for each boundary:
+    emit at most one SyncNCCJoinOp for the union of nonzero selected masks
+    emit at most one InstrDTEWaitOp for the exact issue tokens in that group
+  verify MLIR, actual order/worker/boundary/token parity and Q63 terminal state
+  return the owned modules or no module
 ```
 
-不同Tiles独立构造，cross-Tile messages通过prepared TransferId/EventId关联；不需要一个global insertion order。K SCF pipeline先在
-unpipelined selected loop中按J event order建立ops/waits/joins，再由mechanical phase builder复制；periodic builder直接按相同event map
-构造。TileRegion→Instr lowering继承worker/completion relation并生成current Instr op；不从op name/ordinal恢复。
+different Tile scopes do not acquire a synthetic card order。cross-Tile readiness仍由explicit send/receive message和actual whole-card transport
+relation表达。same-worker handoff的mask0不生成空join；cross-worker只加入minimum selected participant。DTE wait不清NCC pending，NCC
+join不清DTE token。两个独立completion落在同一latest boundary时可形成一条join和一条wait；两个DTE token落在同一boundary时形成一个
+two-token wait。
 
-same-worker issue order只由selected control/resource sequence表达，不插逐edge join。NCC→DTE/Kcore/call/return或synchronous observer在
-prepared boundary加入minimum participants；DTE wait不清NCC pending，NCC join不清DTE tokens。recv destination在wait后才publish
-PhysicalVersion，send/relay buffer在wait前不能release。
+buffer release不是J新建的旁路operation；它已经是EventGraph中的typed event及I lifetime边界。selected control/resource order保证release
+位于对应completion之后，后续actual SPM/transport verifier检查真实allocation/token lifetime。J不得在失败后retile、spill、换slot或插
+global barrier。
 
-#### Actual schedule/deadlock verifier
+#### Verifier ownership
 
-Card-scoped verifier从actual plan relations、SSA、MemoryEffects、Q63 completion与H messages重建：
+J的plan verifier和actual materialization verifier分别检查：
 
-1. all-and-only EventIds materialized，per-control actual order与worker/resource binding完全匹配；
-2. hard/resource/K cyclic dependencies、exact range RAW/WAR/WAW和I slot reuse均满足；
-3. every DTE issue token由exact selected wait一次消费，NCC pending masks与join participants逐点匹配，synchronous writeback正确清域；
-4. build global wait-for graph：event/resource/buffer/message preparation/issue/completion为nodes，hold/wait/ready为edges；acyclic scopes必须
-   无cycle，periodic scopes在一个verified finite period加backedge上无unbroken wait cycle；
-5. receiver preparation precedes matching send requirement；recv wait不晚于first read/FSM reuse，send/relay wait不晚于last release；
-   relay/gather forward waits正确，current receiver live range可在4个FSM内着色，resource instance/outstanding capacities不超；
-6. 每个region/function/entry terminal无未闭合observable、buffer、NCC或DTE obligation；opaque NoC routing不伪造link check。
+1. fixed K/I generation、hard/resource/control linear extension、slot-family generation和receiver interval coloring；
+2. all-and-only EventId operation groups、actual per-control order、selected NCC worker及completion operation所在boundary；
+3. every Direct-DTE issue token恰由其selected group中的一个wait消费，group没有多余token、join或wait；
+4. Q63从current module重算pending participants，任何function return前不得有pending NCC work；
+5. `mlir::verify`通过，actual IR中不存在未归属于selected group的derived join/wait。
 
-deadlock witness返回最小stable cycle及held resources/messages；不能靠插global barrier修复。Q50.0随后在memory-planned Instr上执行更低层
-Direct-DTE binding/range/status和SPM/DDR gates，二者不重复owner。
+整卡Direct-DTE matching、dynamic occurrence、send/receive preparation、global wait graph、actual receiver conflict coloring、range/address和binding已经
+由Q50.0的`verifyDirectDTETransportSchedule`/`bindDirectDTETransport`唯一实现。J不复制该算法，也不声称plan-level EventGraph能替代actual
+whole-card proof。`full-feasibility`必须在同一owned candidate上运行该gate，并核对selected J completion/FSM与actual结果；失败保持原typed
+分类，不能通过插global barrier修复。
 
 #### Complexity、atomicity与migration
 
-prepare/emission与events+dependencies+completion groups线性；range conflict和wait-for graph使用memo后与actual accesses/edges成正比；
-periodic verifier只展开selected finite period，不展开full trip。失败由C subtree guard回滚，不换order/worker/K plan；默认无schedule dump、
-calendar或stats。
+prepare/materialization与event operations、control order和completion groups线性；domain enumeration复杂度已在前述finite successor中说明。
+failure消费并销毁当前owned candidate，不换order、worker或K plan；默认不生成schedule dump、calendar或stats。
 
 | Current / donor能力 | 终态owner | 必须迁移的witness | 退役条件 |
 | --- | --- | --- | --- |
-| `CardInstructionScheduleDomain` actual op/block pointer+snapshot | J plan-level kernel/ClosedSchedulePlan | 18/54 domains、alias/effect、invalidation | pointer/window/snapshot/manual epoch零残留 |
-| `applyInstructionSchedule` move ops/set worker/rebuild joins | ScheduleEmitter + completion builder | selected order/worker/min joins/atomicity | owned Tile modules post-hoc apply删除 |
+| 已删除的`CardInstructionScheduleDomain` actual op/block pointer+snapshot | J `EventGraph`/`ScheduleDomain` | 18/54 domains、alias/effect、generation | pointer/window/snapshot/manual epoch已删除 |
+| 已删除的`applyInstructionSchedule`隐式domain/apply | `prepareScheduleMaterialization` + owned transaction | selected order/worker/min joins/atomicity | TileMemoryPlanning flag与旧apply API已删除 |
 | `InstructionWindowOrder/WorkerChoice` | EventId control/resource/worker bindings | multi-scope/per-Tile exact mapping | operation pointer identity删除 |
-| current `analyzeInstructionResources` | J plan resource facts + actual verifier | engine/worker/SPM/DDR/DTE/known link/overlap | opaque route不再记DirectedPeerLink，root-only SPM conflict删除 |
-| `place/rebuildRequiredNCCJoins` selection logic | plan-level nccJoinGroups | same-worker、cross-worker、NCC→DTE、terminal participants | final Q63 analysis保留，post-hoc placement API退出production |
-| old ReadyOrder/WorkerPlacement/registry donors | J exact kernel/proposals | topological/worker alternatives和target contracts | greedy/local winner/clone/static row整岛删除 |
-| current InstructionSchedule tests | J foundation/closure query+actual owners | 每项direct witness迁移 | old Instr-first fixture不代签production pipeline |
+| 已删除的`analyzeInstructionResources` | J plan resource facts + Q50.0 actual verifier | engine/worker/SPM/DDR/DTE/known link/overlap | opaque route不再伪装exact link，root-only range推断已删除 |
+| Q63 `place/rebuildRequiredNCCJoins` canonical completion | Q63 current-IR analysis；J selected completion groups | same-worker、cross-worker、NCC→DTE、terminal participants | J不调用它作为selected-plan fallback；最终none/search共同入口由attention-production-closure收敛 |
+| old ReadyOrder/WorkerPlacement/registry donors | J exact successor | topological/worker alternatives和target contracts | greedy/local winner/clone/static row整岛删除 |
+| 已删除的InstructionSchedule tests | J domain/materialization tests | 每项direct witness迁移 | old Instr-first fixture不代签production pipeline |
 
 #### J-closure-2 Gate
 
-- actual order/worker/resource tests覆盖18/54有界穷举case、fanin/fanout、exact-range alias、multi-Tile DDR、peer direct/relay/gather、slots、Serialized/
-  SCF/periodic pipeline及synchronous observer；每个EventId/worker/completion all-and-only；
-- completion tests覆盖same-worker无join、minimum cross-worker join、NCC→DTE、DTE recv→consumer、send/relay→release、grouped DTE waits、
-  region/function/entry terminal；Q63 fresh pending states与plan一致；
-- deadlock negatives覆盖send/recv preparation cycle、resource hold-and-wait、cross-Tile relay cycle、slot backedge和periodic completion cycle，
-  witness稳定且没有global-barrier repair；
-- failure injection覆盖prepare首/末scope、worker emit、DTE wait、NCC join、release和postverify，source/C subtree atomic；custom/generic
-  roundtrip、verify-each、K/I/H/Q63、Tile→Instr、Q50.0 Direct-DTE/SPM/DDR gates通过；
-- source/call-tree gate删除Instr-first domain/apply/snapshot、post-hoc join placement、false link/resource analysis、registry/clone/default stats；
-  event analysis、domain kernel、solver、prepare/emitter、actual verifier分文件/library；
-- baseline canonical order/worker0与search复用emitter但policy独立；轻量source→package/no-card通过，不运行重型LLaMA search。
+- domain tests覆盖18/54、2--7 reference enumeration、capacity-1 release-before-next-issue、两Tile独立control、fixed K/I stale generation、
+  4/5 receiver FSM和work-limit typed failure；
+- completion/materialization覆盖rank-3 1025/1031 same-worker mask0、cross-worker minimum join、NCC+DTE same latest boundary、two-token grouped
+  wait、prepare无mutation失败及verifier tamper；EventGraph另覆盖1024/1025 direct与1031 two-hop relay；
+- source gate删除Instr-first domain/apply/snapshot、TileMemoryPlanning schedule flag、`ControlResource`和endpoint合并表示；没有footprint、SPM
+  estimate、default join/wait、timestamp、calendar或第二个actual transport verifier；
+- `full-feasibility`是直接下游集成owner：它必须把selected schedule materialization接到actual candidate，再运行Q50.0 SPM/DDR/transport/
+  target gates。该vertical gate不能由本项unit提前代签。
 
-J只有foundation、closure、actual和donor gate全部闭合才完成；query-local calendar在result交付后销毁，winner IR为唯一schedule事实源。
+本项完成后，winner Instr IR是唯一actual schedule事实；`ClosedSchedulePlan`只随当前candidate transaction存在并由下游核对，不写sidecar。
+
+本轮fresh验证：EventGraph/ScheduleDomain/ScheduleMaterialization直接24/24，其中ScheduleMaterialization 6/6；排除用户尚未归入
+本项的future attention production fixture后普通host unit 927/927；default configured lit 225/225；4个public-header/link smoke、完整configured
+build、IR/source organization及diff检查通过。full-feasibility vertical尚未由本项代签，按线性计划作为下一work item执行。
 
 ## Work Item `full-feasibility`：Complete-Candidate Actual Admission（Q50.F）
 
@@ -6770,7 +6766,7 @@ current named subpipeline/leaf pass builder；`wafer-opt`测试对一个已由te
 | `materializeTensorProgramAlternative` root clone | Q50.S common normalization + per-complete-candidate selected attention Linalg decomposition |
 | per-assignment `compileCardModuleToExecutable` | Q50.F complete-candidate actual admission；每个assignment一次 |
 | `CardExecutableSearchResult{executable, IR trace}` | move-only accepted actual result + coverage；trace仅显式final-winner instrumentation |
-| DataMovement/Buffering/InstructionSchedule post-hoc apply | H/I/J/K construction-time builders |
+| DataMovement/Buffering旧apply与InstructionSchedule隐式domain/apply | H/I/K typed construction + J explicit EventId owned materialization |
 | candidate failure loop and accepted executable incumbent | typed actual-result loop；complete-point rejection精确反馈，accepted incumbent不重建 |
 
 实现文件为`PhysicalDataflowPreparation.*`、`PhysicalDataflowEmitter.*`、`CardSubtreeTransaction.*`和
@@ -7008,7 +7004,7 @@ Q50.0路径，防止计数漏埋点。IR dump只可查看accepted winner，不�
 | `PhysicalRepresentation*` | Q50.G | constraint solver proposals、version DAG、actual builder |
 | query-only `SimpleRoute`、`DataMovement*`（`DataMovementApply*`已删除） | Q50.H；共享legacy query调用随I/J/K/Q51统一退役 | current payload partitions/arborescences、token-only emitter和迁移后的direct/relay/fanout/gather witness；legacy query不再取得actual owner |
 | query-only `Buffering*`（`BufferingApply*`已删除） | Q50.I/Q50.K | current storage/slot/lifetime plans与K-specific overlap oracle；legacy query不再产生actual scope |
-| `InstructionSchedule*` | Q50.J/Q63 | event/resource domain、closed schedule、wait/join emitter/verifier |
+| 已删除的`InstructionSchedule*` | Q50.J/Q63 | EventGraph/resource domain、closed schedule、selected wait/join materialization及current-IR verifier |
 | 已删除的`StagePipeline*` | Q50.K selected constructor | Serialized/SCF/finite-unrolled structures及K→I-post-K→J reclosure；旧scope-index actual scan不恢复 |
 | `UnifiedPhysicalDataflow*` | Q51-1/2 state+continuations | full reference equality；mixed-radix/materialize facade均无剩余能力 |
 | `CardExecutableSearch*`, `SearchWork*` | Q51-3--7 cost/controller/work/coverage/routing | per-complete actual gate、budget/coverage、unique publication、policy isolation |
@@ -7162,7 +7158,7 @@ separator组合成Q51-3 admissible bound。任何restricted solver的`OPTIMAL`�
 - cache off/on、eviction、parallel single-flight和不同hash seed保持Q51有界穷举exact set/objective/winner/coverage；
 - dependency perturbation逐字段证明key完整；无pointer/digest/manual epoch、IR/offset/solver/result string cache；
 - chain/tree/component DP与flat oracle逐separator assignment比较local/global sets与objective，Unknown trade-off不被Pareto删除；
-- opaque/known NoC、shared DDR/DTE、cross-Tile message、slot/recurrence/join分别证明正确进入separator；错误拆分有negative；
+- opaque/known NoC、DDR estimate、exact DTE、cross-Tile message、slot/recurrence/join分别证明正确进入separator；错误拆分有negative；
 - symmetric 16-Tile case显著减少query次数，hole/asymmetric case停止错误sharing；assignment与winner actual Tile差异仍保留；
 - partial-state materialization保持零；每个complete candidate actualize一次，loser销毁、winner不重建且只发布一次；ordinary compile无
   profile sink/stats/log，source不变；

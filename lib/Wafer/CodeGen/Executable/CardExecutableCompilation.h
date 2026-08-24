@@ -98,8 +98,7 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     ProgramDataHandoff &programData,
     CardExecutableLoweringStatistics *statistics = nullptr,
-    unsigned tilePipelineParallelism = 0, bool captureTileIRTrace = false,
-    bool applySelectedInstructionSchedule = false);
+    unsigned tilePipelineParallelism = 0, bool captureTileIRTrace = false);
 
 } // namespace wafer::compiler::detail
 

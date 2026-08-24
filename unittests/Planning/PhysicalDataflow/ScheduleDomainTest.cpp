@@ -129,11 +129,12 @@ TEST(ScheduleDomainTest,
 TEST(ScheduleDomainTest,
      SharedResourceSequenceConstrainsControlWithoutDuplicateLeaves) {
   ScheduleDomainInput input = makeInput(2, /*workerCapable=*/false);
-  ResourceKey ddr = CardDDRResource{CardId(0)};
-  input.orderChoices.push_back({ddr, {input.events[0].id, input.events[1].id}});
+  ResourceKey sender = DirectDTESenderResource{TileId(0)};
+  input.orderChoices.push_back(
+      {sender, {input.events[0].id, input.events[1].id}});
   for (const PlannedEvent &event : input.events)
-    input.resourceUses.push_back({event.id, ddr, ResourceUseMode::Exclusive,
-                                  ResourceIntervalKind::IssueToCompletion,
+    input.resourceUses.push_back({event.id, sender, ResourceUseMode::Exclusive,
+                                  ResourceIntervalKind::Instantaneous,
                                   std::nullopt, ResourceKnowledge::Exact});
   input.resourceUses.push_back(
       {input.events.front().id,
@@ -165,6 +166,98 @@ TEST(ScheduleDomainTest,
   auto reorderedPlans = enumerate(*reordered.domain);
   ASSERT_TRUE(reorderedPlans);
   EXPECT_EQ(*plans, *reorderedPlans);
+}
+
+TEST(ScheduleDomainTest,
+     MultiTileControlScopesStayIndependentWithoutCardTotalOrder) {
+  ScheduleDomainInput input = makeInput(0, /*workerCapable=*/false);
+  input.events.clear();
+  input.structure.scopes.clear();
+  input.components.clear();
+  EventId tile0First = makeEvent(10, PlannedEventKind::ComputeIssue, TileId(0));
+  EventId tile0Second =
+      makeEvent(11, PlannedEventKind::ComputeIssue, TileId(0));
+  EventId tile1First = makeEvent(12, PlannedEventKind::ComputeIssue, TileId(1));
+  EventId tile1Second =
+      makeEvent(13, PlannedEventKind::ComputeIssue, TileId(1));
+  input.events = {{tile0First, CardId(0), TileId(0), {}},
+                  {tile0Second, CardId(0), TileId(0), {}},
+                  {tile1First, CardId(0), TileId(1), {}},
+                  {tile1Second, CardId(0), TileId(1), {}}};
+  PipelineScopeId scope{{tile0First, tile0Second, tile1First, tile1Second}, {}};
+  input.structure.scopes.push_back(SerializedExecutionStructure{scope});
+  input.components.push_back({scope.events});
+
+  ScheduleDomainResult result = buildScheduleDomain(input);
+  ASSERT_TRUE(result.succeeded())
+      << (result.failure ? result.failure->detail : "");
+  auto plans = enumerate(*result.domain);
+  ASSERT_TRUE(plans);
+  EXPECT_EQ(plans->size(), 4u);
+  for (const ClosedSchedulePlan &plan : *plans) {
+    ASSERT_EQ(plan.controlOrders.size(), 2u);
+    for (const ControlOrder &control : plan.controlOrders) {
+      const auto *tile = std::get_if<TileControlScope>(&control.scope);
+      ASSERT_NE(tile, nullptr);
+      ASSERT_EQ(control.events.size(), 2u);
+      EXPECT_TRUE(llvm::all_of(control.events, [&](const EventId &event) {
+        auto planned = llvm::find_if(input.events, [&](const auto &candidate) {
+          return candidate.id == event;
+        });
+        return planned != input.events.end() && planned->tile == tile->tile;
+      }));
+    }
+  }
+}
+
+TEST(ScheduleDomainTest,
+     AsyncExclusiveResourceSequenceOrdersReleaseBeforeNextIssue) {
+  ScheduleDomainInput input = makeInput(0, /*workerCapable=*/false);
+  input.events.clear();
+  input.structure.scopes.clear();
+  EventId firstIssue = makeEvent(20, PlannedEventKind::MovementIssue);
+  EventId firstCompletion = makeEvent(20, PlannedEventKind::Completion);
+  EventId secondIssue = makeEvent(21, PlannedEventKind::MovementIssue);
+  EventId secondCompletion = makeEvent(21, PlannedEventKind::Completion);
+  PipelineScopeId scope{
+      {firstIssue, firstCompletion, secondIssue, secondCompletion}, {}};
+  input.structure.scopes.push_back(SerializedExecutionStructure{scope});
+  input.events = {{firstIssue, CardId(0), TileId(0), {}},
+                  {firstCompletion, CardId(0), TileId(0), {}},
+                  {secondIssue, CardId(0), TileId(0), {}},
+                  {secondCompletion, CardId(0), TileId(0), {}}};
+  input.hardDependencies = {
+      {firstIssue, firstCompletion, EventDependencyReason::Completion},
+      {secondIssue, secondCompletion, EventDependencyReason::Completion}};
+  DirectDTESenderResource sender{TileId(0)};
+  input.resourceUses = {{firstIssue, sender, ResourceUseMode::Exclusive,
+                         ResourceIntervalKind::IssueToCompletion,
+                         firstCompletion, ResourceKnowledge::Exact},
+                        {secondIssue, sender, ResourceUseMode::Exclusive,
+                         ResourceIntervalKind::IssueToCompletion,
+                         secondCompletion, ResourceKnowledge::Exact}};
+  input.orderChoices = {{sender, {firstIssue, secondIssue}}};
+  input.components = {{scope.events}};
+  ScheduleDomainResult result = buildScheduleDomain(input);
+  ASSERT_TRUE(result.succeeded())
+      << (result.failure ? result.failure->detail : "");
+  auto plans = enumerate(*result.domain);
+  ASSERT_TRUE(plans);
+  ASSERT_FALSE(plans->empty());
+  for (const ClosedSchedulePlan &plan : *plans) {
+    ASSERT_EQ(plan.resourceSequences.size(), 1u);
+    ASSERT_EQ(plan.controlOrders.size(), 1u);
+    const std::vector<EventId> &resource =
+        plan.resourceSequences.front().events;
+    const std::vector<EventId> &control = plan.controlOrders.front().events;
+    auto position = [&](const EventId &event) {
+      return static_cast<size_t>(
+          std::distance(control.begin(), llvm::find(control, event)));
+    };
+    EventId release =
+        resource.front() == firstIssue ? firstCompletion : secondCompletion;
+    EXPECT_LT(position(release), position(resource.back()));
+  }
 }
 
 TEST(ScheduleDomainTest,
@@ -213,9 +306,112 @@ TEST(ScheduleDomainTest,
     EXPECT_EQ(ncc->participantMask, uint32_t{1} << static_cast<uint32_t>(
                                         plan.workerBindings.front().worker));
     EXPECT_EQ(dte->participantMask, 0u);
-    EXPECT_EQ(ncc->boundary.after, completion);
-    EXPECT_EQ(dte->boundary.after, dteCompletion);
+    ASSERT_EQ(plan.controlOrders.size(), 1u);
+    ASSERT_FALSE(plan.controlOrders.front().events.empty());
+    const EventId &latest = plan.controlOrders.front().events.back();
+    EXPECT_EQ(ncc->boundary.after, latest);
+    EXPECT_EQ(dte->boundary.after, latest);
   }
+}
+
+TEST(ScheduleDomainTest, CompletionPlacementDoesNotCrossSelectedKStage) {
+  ScheduleDomainInput input = makeInput(0, /*workerCapable=*/false);
+  input.events.clear();
+  input.structure.scopes.clear();
+  EventId issue = makeEvent(0, PlannedEventKind::ComputeIssue);
+  EventId completion = makeEvent(0, PlannedEventKind::Completion);
+  EventId laterStage = makeEvent(1, PlannedEventKind::BufferReady);
+  input.events = {
+      {issue,
+       CardId(0),
+       TileId(0),
+       {NCCWorker::Worker0, NCCWorker::Worker1, NCCWorker::Worker2}},
+      {completion, CardId(0), TileId(0), {}},
+      {laterStage, CardId(0), TileId(0), {}}};
+  input.hardDependencies = {
+      {issue, completion, EventDependencyReason::Completion}};
+  input.completionObligations = {
+      {issue, completion, CompletionProtocol::NCCParticipant, 0}};
+  OccurrenceRelationId recurrence{
+      TraversalScopeId{RegionExecutionId{makeExecution(0)},
+                       TopLevelWorkPieceId{0}},
+      {8}};
+  PipelineScopeId scope{{issue, completion, laterStage}, {recurrence}};
+  PipelinedExecutionStructure pipeline;
+  pipeline.scope = scope;
+  pipeline.recurrence = recurrence;
+  pipeline.iteration = {0, 1, 7, 0};
+  pipeline.eventStages = {
+      {issue, StageId(0)}, {completion, StageId(0)}, {laterStage, StageId(1)}};
+  input.structure.scopes.push_back(std::move(pipeline));
+  input.components = {{scope.events}};
+
+  ScheduleDomainResult result = buildScheduleDomain(input);
+  ASSERT_TRUE(result.succeeded())
+      << (result.failure ? result.failure->detail : "");
+  ScheduleSuccessor first = result.domain->getFirstPlan();
+  ASSERT_EQ(first.getKind(), ScheduleSuccessorKind::Plan);
+  ASSERT_TRUE(first.getPlan());
+  ASSERT_EQ(first.getPlan()->completionPlacements.size(), 1u);
+  EXPECT_EQ(first.getPlan()->completionPlacements.front().boundary.after,
+            completion);
+}
+
+TEST(ScheduleDomainTest, BufferReleasePreventsSameWorkerCompletionElision) {
+  ScheduleDomainInput input = makeInput(0, /*workerCapable=*/false);
+  input.events.clear();
+  input.structure.scopes.clear();
+  EventId firstIssue = makeEvent(70, PlannedEventKind::ComputeIssue);
+  EventId firstCompletion = makeEvent(70, PlannedEventKind::Completion);
+  EventId release = makeEvent(70, PlannedEventKind::BufferRelease);
+  EventId secondIssue = makeEvent(71, PlannedEventKind::ComputeIssue);
+  EventId secondCompletion = makeEvent(71, PlannedEventKind::Completion);
+  input.events = {
+      {firstIssue,
+       CardId(0),
+       TileId(0),
+       {NCCWorker::Worker0, NCCWorker::Worker1, NCCWorker::Worker2}},
+      {firstCompletion, CardId(0), TileId(0), {}},
+      {release, CardId(0), TileId(0), {}},
+      {secondIssue,
+       CardId(0),
+       TileId(0),
+       {NCCWorker::Worker0, NCCWorker::Worker1, NCCWorker::Worker2}},
+      {secondCompletion, CardId(0), TileId(0), {}}};
+  input.hardDependencies = {
+      {firstIssue, firstCompletion, EventDependencyReason::Completion},
+      {firstCompletion, release, EventDependencyReason::BufferLifetime},
+      {release, secondIssue, EventDependencyReason::BufferLifetime},
+      {secondIssue, secondCompletion, EventDependencyReason::Completion}};
+  input.completionObligations = {
+      {firstIssue, firstCompletion, CompletionProtocol::NCCParticipant, 0},
+      {secondIssue, secondCompletion, CompletionProtocol::NCCParticipant, 0}};
+  StorageObjectId object = input.buffers.storageObjects.front().id;
+  SPMRangeResource range{object, {{{0, 0, 0}, {2, 1025, 128}}}};
+  input.resourceUses = {{firstIssue, range, ResourceUseMode::Write,
+                         ResourceIntervalKind::IssueToCompletion,
+                         firstCompletion, ResourceKnowledge::Exact},
+                        {secondIssue, range, ResourceUseMode::Read,
+                         ResourceIntervalKind::IssueToCompletion,
+                         secondCompletion, ResourceKnowledge::Exact}};
+  PipelineScopeId scope{
+      {firstIssue, firstCompletion, release, secondIssue, secondCompletion},
+      {}};
+  input.structure.scopes.push_back(SerializedExecutionStructure{scope});
+  input.components = {{scope.events}};
+
+  ScheduleDomainResult result = buildScheduleDomain(input);
+  ASSERT_TRUE(result.succeeded())
+      << (result.failure ? result.failure->detail : "");
+  ScheduleSuccessor first = result.domain->getFirstPlan();
+  ASSERT_EQ(first.getKind(), ScheduleSuccessorKind::Plan);
+  ASSERT_TRUE(first.getPlan());
+  auto placement = llvm::find_if(first.getPlan()->completionPlacements,
+                                 [&](const CompletionPlacement &candidate) {
+                                   return candidate.issue == firstIssue;
+                                 });
+  ASSERT_NE(placement, first.getPlan()->completionPlacements.end());
+  EXPECT_EQ(placement->participantMask, 1u);
 }
 
 TEST(ScheduleDomainTest, FixedGenerationSlotLifetimeAndFailuresStayTyped) {
@@ -295,6 +491,17 @@ TEST(ScheduleDomainTest, FixedGenerationSlotLifetimeAndFailuresStayTyped) {
   EXPECT_EQ(unknownResult.failure->kind,
             ScheduleDomainFailureKind::BrokenContract);
 
+  ScheduleDomainInput missingResource = makeInput(2, false);
+  missingResource.orderChoices.push_back(
+      {DirectDTESenderResource{TileId(0)},
+       {missingResource.events[0].id, missingResource.events[1].id}});
+  ScheduleDomainResult missingResourceResult =
+      buildScheduleDomain(missingResource);
+  ASSERT_FALSE(missingResourceResult.succeeded());
+  ASSERT_TRUE(missingResourceResult.failure);
+  EXPECT_EQ(missingResourceResult.failure->kind,
+            ScheduleDomainFailureKind::BrokenContract);
+
   ScheduleDomainLimits limits;
   limits.maxSuccessorSteps = 1;
   ScheduleDomainInput chain =
@@ -305,6 +512,105 @@ TEST(ScheduleDomainTest, FixedGenerationSlotLifetimeAndFailuresStayTyped) {
   ASSERT_NE(only.getCursor(), nullptr);
   EXPECT_EQ(limited.domain->getNextPlan(*only.getCursor()).getKind(),
             ScheduleSuccessorKind::Indeterminate);
+}
+
+ScheduleDomainInput makeReceiverFSMInput(unsigned count, bool forceOverlap) {
+  ScheduleDomainInput input;
+  PhysicalVersionId version{ExecutionResultValueId{makeExecution(500), 0}};
+  StorageObjectId object{StorageObjectOrigin{version}};
+  input.buffers.storageObjects.push_back({object, TileId(0)});
+  input.buffers.versionBindings.push_back(
+      {version, object, StorageBindingKind::Fresh});
+  PipelineScopeId scope;
+  std::vector<EventId> issues;
+  std::vector<EventId> completions;
+  std::set<EventDependency> dependencies;
+  for (unsigned index = 0; index < count; ++index) {
+    EventId issue = makeEvent(600 + index, PlannedEventKind::MovementIssue);
+    EventId completion = makeEvent(600 + index, PlannedEventKind::Completion);
+    issues.push_back(issue);
+    completions.push_back(completion);
+    scope.events.push_back(issue);
+    scope.events.push_back(completion);
+    input.events.push_back({issue, CardId(0), TileId(0), {}});
+    input.events.push_back({completion, CardId(0), TileId(0), {}});
+    dependencies.insert({issue, completion, EventDependencyReason::Completion});
+    input.completionObligations.push_back(
+        {issue, completion, CompletionProtocol::DirectDTE, 0});
+    input.resourceUses.push_back({issue, DTEReceiverFSMResource{TileId(0)},
+                                  ResourceUseMode::CapacityUnits,
+                                  ResourceIntervalKind::IssueToCompletion,
+                                  completion, ResourceKnowledge::Exact});
+  }
+  if (forceOverlap)
+    for (const EventId &issue : issues)
+      for (const EventId &completion : completions)
+        dependencies.insert(
+            {issue, completion, EventDependencyReason::Completion});
+  input.hardDependencies.assign(dependencies.begin(), dependencies.end());
+  llvm::sort(scope.events);
+  input.structure.scopes.push_back(SerializedExecutionStructure{scope});
+  input.components.push_back({scope.events});
+  return input;
+}
+
+TEST(ScheduleDomainTest,
+     ReceiverFSMLiveIntervalsUseFourCanonicalLanesAndRejectFiveOverlap) {
+  ScheduleDomainResult four =
+      buildScheduleDomain(makeReceiverFSMInput(4, /*forceOverlap=*/true));
+  ASSERT_TRUE(four.succeeded()) << (four.failure ? four.failure->detail : "");
+  ScheduleSuccessor fourPlan = four.domain->getFirstPlan();
+  ASSERT_EQ(fourPlan.getKind(), ScheduleSuccessorKind::Plan);
+  ASSERT_TRUE(fourPlan.getPlan());
+  std::set<uint32_t> lanes;
+  for (const EventResourceBinding &binding :
+       fourPlan.getPlan()->resourceBindings)
+    if (std::holds_alternative<DTEReceiverFSMResource>(
+            binding.instance.resource))
+      lanes.insert(binding.instance.lane);
+  EXPECT_EQ(lanes, (std::set<uint32_t>{0, 1, 2, 3}));
+
+  ScheduleDomainResult five =
+      buildScheduleDomain(makeReceiverFSMInput(5, /*forceOverlap=*/true));
+  ASSERT_FALSE(five.succeeded());
+  ASSERT_TRUE(five.failure);
+  EXPECT_EQ(five.failure->kind, ScheduleDomainFailureKind::ExactRejection);
+
+  ScheduleDomainResult reusable =
+      buildScheduleDomain(makeReceiverFSMInput(5, /*forceOverlap=*/false));
+  ASSERT_TRUE(reusable.succeeded())
+      << (reusable.failure ? reusable.failure->detail : "");
+  ScheduleSuccessor reusablePlan = reusable.domain->getFirstPlan();
+  ASSERT_EQ(reusablePlan.getKind(), ScheduleSuccessorKind::Plan);
+  ASSERT_TRUE(reusablePlan.getPlan());
+  std::map<EventId, uint32_t> reusableLanes;
+  for (const EventResourceBinding &binding :
+       reusablePlan.getPlan()->resourceBindings)
+    if (std::holds_alternative<DTEReceiverFSMResource>(
+            binding.instance.resource)) {
+      EXPECT_LT(binding.instance.lane, 4u);
+      reusableLanes.emplace(binding.event, binding.instance.lane);
+    }
+  ASSERT_EQ(reusablePlan.getPlan()->controlOrders.size(), 1u);
+  const std::vector<EventId> &order =
+      reusablePlan.getPlan()->controlOrders.front().events;
+  auto position = [&](const EventId &event) {
+    return static_cast<size_t>(
+        std::distance(order.begin(), llvm::find(order, event)));
+  };
+  for (const CompletionPlacement &placement :
+       reusablePlan.getPlan()->completionPlacements) {
+    auto lane = reusableLanes.find(placement.issue);
+    ASSERT_NE(lane, reusableLanes.end());
+    for (size_t index = position(placement.completion) + 1;
+         index < order.size(); ++index) {
+      auto nextLane = reusableLanes.find(order[index]);
+      if (nextLane == reusableLanes.end() || nextLane->second != lane->second)
+        continue;
+      EXPECT_LT(position(placement.boundary.after), index);
+      break;
+    }
+  }
 }
 
 } // namespace

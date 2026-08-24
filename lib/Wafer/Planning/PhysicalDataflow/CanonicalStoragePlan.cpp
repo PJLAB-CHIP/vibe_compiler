@@ -789,11 +789,15 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
       for (const MovementHop &hop : graph.hops) {
         PendingObject *source = nodeObjects.at(hop.source.getValue());
         PendingObject *destination = nodeObjects.at(hop.destination.getValue());
-        StorageAccessSite site = PeerTransferSiteId{
-            graph.actions, static_cast<uint32_t>(payloadSlice), hop};
-        builder.use(*source, site);
+        StorageAccessSite sendSite = PeerTransferSiteId{
+            graph.actions, static_cast<uint32_t>(payloadSlice),
+            PeerTransferSiteId::Endpoint::Send, hop};
+        StorageAccessSite receiveSite = PeerTransferSiteId{
+            graph.actions, static_cast<uint32_t>(payloadSlice),
+            PeerTransferSiteId::Endpoint::Receive, hop};
+        builder.use(*source, std::move(sendSite));
         if (!terminals.count(hop.destination.getValue()))
-          builder.define(*destination, std::move(site));
+          builder.define(*destination, std::move(receiveSite));
       }
       if (builder.failure)
         break;

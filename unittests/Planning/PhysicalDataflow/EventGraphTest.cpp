@@ -232,15 +232,31 @@ TEST(EventGraphTest, AlignedAndRaggedChainHasAllAndOnlyTypedFacts) {
     ASSERT_TRUE(result.succeeded())
         << (result.failure ? result.failure->detail : "");
     const EventGraph &graph = *result.graph;
-    EXPECT_EQ(graph.getEvents().size(), 25u);
-    EXPECT_EQ(graph.getHardDependencies().size(), 24u);
-    EXPECT_EQ(graph.getCompletionObligations().size(), 5u);
+    EXPECT_EQ(graph.getEvents().size(), 27u);
+    EXPECT_EQ(graph.getHardDependencies().size(), 28u);
+    EXPECT_EQ(graph.getCompletionObligations().size(), 6u);
     EXPECT_EQ(graph.getComponents().size(), 1u);
     EXPECT_EQ(countResources<SPMRangeResource>(graph), 8u);
     EXPECT_EQ(countResources<CardDDRResource>(graph), 2u);
-    EXPECT_EQ(countResources<TileDTEEngineResource>(graph), 4u);
+    EXPECT_EQ(countResources<DirectDTESenderResource>(graph), 1u);
+    EXPECT_EQ(countResources<DTEReceiverFSMResource>(graph), 1u);
     EXPECT_EQ(countResources<OpaqueNoCTransferResource>(graph), 1u);
     EXPECT_EQ(countResources<DirectedNoCLinkResource>(graph), 0u);
+    EXPECT_TRUE(llvm::all_of(
+        graph.getResourceUses(), [](const PlannedResourceUse &use) {
+          const bool coarseEstimate =
+              std::holds_alternative<CardDDRResource>(use.resource) ||
+              std::holds_alternative<TileEngineResource>(use.resource);
+          return !coarseEstimate ||
+                 (use.knowledge == ResourceKnowledge::Estimate &&
+                  use.mode == ResourceUseMode::CapacityUnits);
+        }));
+    EXPECT_TRUE(llvm::none_of(
+        graph.getOrderChoices(), [](const DisjunctiveResourceOrder &choice) {
+          return std::holds_alternative<CardDDRResource>(choice.resource) ||
+                 std::holds_alternative<TileEngineResource>(choice.resource) ||
+                 std::holds_alternative<SPMRangeResource>(choice.resource);
+        }));
     EXPECT_TRUE(llvm::none_of(
         graph.getCompletionObligations(), [](const auto &obligation) {
           return obligation.protocol == CompletionProtocol::Unknown ||
@@ -256,6 +272,33 @@ TEST(EventGraphTest, AlignedAndRaggedChainHasAllAndOnlyTypedFacts) {
     ASSERT_NE(action, nullptr);
     EXPECT_TRUE(std::holds_alternative<ExternalLoadId>(action->action));
     EXPECT_EQ(ready->front().kind, PlannedEventKind::MovementIssue);
+
+    MovementHop hop{TileId(0), TileId(1)};
+    EventId receiveIssue{MovementEventAction{inputs.peerAction,
+                                             MovementEventPhase::PeerReceive, 0,
+                                             hop},
+                         PlannedEventKind::MovementIssue};
+    EventId sendIssue{MovementEventAction{inputs.peerAction,
+                                          MovementEventPhase::PeerSend, 0, hop},
+                      PlannedEventKind::MovementIssue};
+    EventId receiveCompletion{
+        MovementEventAction{inputs.peerAction, MovementEventPhase::PeerReceive,
+                            0, hop},
+        PlannedEventKind::Completion};
+    EventId sendCompletion{MovementEventAction{inputs.peerAction,
+                                               MovementEventPhase::PeerSend, 0,
+                                               hop},
+                           PlannedEventKind::Completion};
+    EXPECT_FALSE(llvm::is_contained(
+        graph.getHardDependencies(),
+        EventDependency{receiveIssue, sendIssue,
+                        EventDependencyReason::TransferReady}));
+    for (const EventId &issue : {receiveIssue, sendIssue})
+      for (const EventId &completion : {receiveCompletion, sendCompletion})
+        EXPECT_TRUE(llvm::is_contained(
+            graph.getHardDependencies(),
+            EventDependency{issue, completion,
+                            EventDependencyReason::Completion}));
   }
 }
 
@@ -282,6 +325,17 @@ TEST(EventGraphTest, OpaqueAndExactRoutesKeepDifferentKnowledgeBoundaries) {
       << (exact.failure ? exact.failure->detail : "");
   EXPECT_EQ(countResources<DirectedNoCLinkResource>(*exact.graph), 2u);
   EXPECT_EQ(countResources<OpaqueNoCTransferResource>(*exact.graph), 1u);
+  EXPECT_TRUE(llvm::all_of(
+      exact.graph->getResourceUses(), [](const PlannedResourceUse &use) {
+        return !std::holds_alternative<DirectedNoCLinkResource>(use.resource) ||
+               (use.knowledge == ResourceKnowledge::Exact &&
+                use.mode == ResourceUseMode::CapacityUnits);
+      }));
+  EXPECT_TRUE(llvm::none_of(
+      exact.graph->getOrderChoices(),
+      [](const DisjunctiveResourceOrder &choice) {
+        return std::holds_alternative<DirectedNoCLinkResource>(choice.resource);
+      }));
 }
 
 TEST(EventGraphTest, RelayStorageUsesExactPerHopCompletionEvents) {
@@ -302,10 +356,12 @@ TEST(EventGraphTest, RelayStorageUsesExactPerHopCompletionEvents) {
                                         MemLayout::Tensor);
   inputs.storage.lifetimes.push_back(
       {relay,
-       StorageAccessSite{PeerTransferSiteId{graph.actions, 0,
-                                            MovementHop{TileId(0), TileId(2)}}},
+       StorageAccessSite{PeerTransferSiteId{
+           graph.actions, 0, PeerTransferSiteId::Endpoint::Receive,
+           MovementHop{TileId(0), TileId(2)}}},
        {StorageAccessSite{PeerTransferSiteId{
-           graph.actions, 0, MovementHop{TileId(2), TileId(1)}}}}});
+           graph.actions, 0, PeerTransferSiteId::Endpoint::Send,
+           MovementHop{TileId(2), TileId(1)}}}}});
   EventGraphBuildResult result = buildEventGraph(
       CardId(0), inputs.regions, inputs.temporal, inputs.serialized,
       inputs.movement, inputs.storage, inputs.storage.plan, inputs.contracts);
@@ -316,14 +372,14 @@ TEST(EventGraphTest, RelayStorageUsesExactPerHopCompletionEvents) {
                              return obligation.protocol ==
                                     CompletionProtocol::DirectDTE;
                            }),
-            2u);
+            4u);
   EventId incomingCompletion{
       MovementEventAction{graph.actions.front(),
-                          MovementEventPhase::PeerTransfer, 0,
+                          MovementEventPhase::PeerReceive, 0,
                           MovementHop{TileId(0), TileId(2)}},
       PlannedEventKind::Completion};
   EventId outgoingIssue{MovementEventAction{graph.actions.front(),
-                                            MovementEventPhase::PeerTransfer, 0,
+                                            MovementEventPhase::PeerSend, 0,
                                             MovementHop{TileId(2), TileId(1)}},
                         PlannedEventKind::MovementIssue};
   EXPECT_TRUE(llvm::is_contained(
@@ -405,7 +461,7 @@ TEST(EventGraphTest, CompletionContractAndInputOrderAreDeterministic) {
   EXPECT_EQ(*original.graph, *reversed.graph);
 }
 
-TEST(EventGraphTest, IndependentBranchesExposeExactResourceReadySuccessors) {
+TEST(EventGraphTest, IndependentBranchesStayReadyWithoutInventedCardDDROrder) {
   mlir::DialectRegistry registry;
   registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);
@@ -435,17 +491,13 @@ TEST(EventGraphTest, IndependentBranchesExposeExactResourceReadySuccessors) {
 
   EventDependency firstBeforeSecond{firstLoadPhase, secondLoadPhase,
                                     EventDependencyReason::EffectOrder};
-  auto ordered = result.graph->getReadyEvents({firstLoad, secondLoad},
-                                              {firstBeforeSecond});
-  ASSERT_TRUE(ordered);
-  EXPECT_TRUE(llvm::is_contained(*ordered, firstLoadPhase));
-  EXPECT_FALSE(llvm::is_contained(*ordered, secondLoadPhase));
-  EventDependency secondBeforeFirst{secondLoadPhase, firstLoadPhase,
-                                    EventDependencyReason::EffectOrder};
-  EXPECT_FALSE(result.graph
-                   ->getReadyEvents({firstLoad, secondLoad},
-                                    {firstBeforeSecond, secondBeforeFirst})
-                   .has_value());
+  auto phases = result.graph->getReadyEvents({firstLoad, secondLoad});
+  ASSERT_TRUE(phases);
+  EXPECT_TRUE(llvm::is_contained(*phases, firstLoadPhase));
+  EXPECT_TRUE(llvm::is_contained(*phases, secondLoadPhase));
+  EXPECT_FALSE(
+      result.graph->getReadyEvents({firstLoad, secondLoad}, {firstBeforeSecond})
+          .has_value());
 
   EventDependency invalid{
       firstLoad,

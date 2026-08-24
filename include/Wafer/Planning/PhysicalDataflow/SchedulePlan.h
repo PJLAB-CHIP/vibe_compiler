@@ -125,21 +125,29 @@ struct ResourceSequence {
 
 struct CardControlScope {
   CardId card{0};
-  friend bool operator==(CardControlScope lhs, CardControlScope rhs) {
-    return lhs.card == rhs.card;
+  PipelineScopeId pipeline;
+  friend bool operator==(const CardControlScope &lhs,
+                         const CardControlScope &rhs) {
+    return lhs.card == rhs.card && lhs.pipeline == rhs.pipeline;
   }
-  friend bool operator<(CardControlScope lhs, CardControlScope rhs) {
-    return lhs.card.getValue() < rhs.card.getValue();
+  friend bool operator<(const CardControlScope &lhs,
+                        const CardControlScope &rhs) {
+    return std::tuple(lhs.card.getValue(), lhs.pipeline) <
+           std::tuple(rhs.card.getValue(), rhs.pipeline);
   }
 };
 
 struct TileControlScope {
   TileId tile{0};
-  friend bool operator==(TileControlScope lhs, TileControlScope rhs) {
-    return lhs.tile == rhs.tile;
+  PipelineScopeId pipeline;
+  friend bool operator==(const TileControlScope &lhs,
+                         const TileControlScope &rhs) {
+    return lhs.tile == rhs.tile && lhs.pipeline == rhs.pipeline;
   }
-  friend bool operator<(TileControlScope lhs, TileControlScope rhs) {
-    return lhs.tile.getValue() < rhs.tile.getValue();
+  friend bool operator<(const TileControlScope &lhs,
+                        const TileControlScope &rhs) {
+    return std::tuple(lhs.tile.getValue(), lhs.pipeline) <
+           std::tuple(rhs.tile.getValue(), rhs.pipeline);
   }
 };
 

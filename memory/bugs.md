@@ -402,8 +402,9 @@
 - 根因：communication emitter自行用局部issue顺序和immediate await修补resource/deadlock，却没有统一的actual token lifetime、
   receiver FSM interval和card-scoped wait graph owner。把“立即等”写成协议虽然限制live recv为1，也会无条件丢失异步窗口。
 - 修复模式：从explicit communication identity、round、payload slice、endpoint kind和peer建立稳定message/event关系；H只发射
-  matching token，I给出source/destination/relay lifetime，J在recv first read/FSM reuse与send/relay last release之前选择wait，并统一验证
-  current 4个receiver FSM可着色和全卡wait graph无环。hard constraints确实要求时可以立即wait，但不能把它设为所有endpoint默认值。
+  matching token，I给出source/destination/relay lifetime，J选择wait boundary并关闭plan-level 4-lane interval；Q50.0在同一actual
+  whole-card candidate上唯一验证dynamic matching、receiver冲突和wait graph无环。matching send issue与receive preparation保持独立，只有
+  completion同时依赖两者。hard constraints确实要求时可以立即wait，但不能把它设为所有endpoint默认值。
 - 防复发：多源fanin测试同时检查最大live recv不超过4、send/recv/wait dynamic exact配对、first-read/last-release、全卡无环和
   Direct-DTE binding；另有至少一个token-only issue window证明没有被emitter立即串行化。source-to-package transpose及attention baseline
   必须产生fresh no-card package，不能只检查Tile IR文本。
@@ -1176,8 +1177,9 @@
 - 现象：把Q50.J canonical query/apply直接放入共同`planTileMemory`后，baseline scalar case从约2秒退化到45秒；大block会承担O(n²)
   dependency DAG构造，即使用户选择`none`。
 - 根因：共享exact gate与共享search policy混淆；baseline的canonical source order/worker0已经确定，不需要枚举或建立schedule domain。
-- 修复模式：Tile memory planning用显式`applySelectedInstructionSchedule`控制Q50.J；search complete candidate传true，baseline/default传false。
-  两者仍共享stage、SPM/DDR和最终verification，但baseline不产生search work。
+- 修复模式：Tile memory planning不拥有schedule选择，也不接受“是否apply search schedule”的布尔开关。只有带完整selected
+  `ClosedSchedulePlan`和all-and-only EventId relation的candidate在进入memory planning前调用J的owned materialization；baseline没有selected
+  J assignment，因此不构造domain。两者仍共享Tile→Instr、SPM/DDR、transport和最终verification。
 - 防复发：baseline定向wall-time与work count必须检查schedule query为零；任何新search axis接入共同lowering时都需要显式selected入口，
   不能在无assignment路径中构造domain后再取first。
 

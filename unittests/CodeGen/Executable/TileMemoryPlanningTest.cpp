@@ -227,7 +227,6 @@ TEST_F(TileMemoryPlanningTest, ReportsSPMFailureForOwnedTileModule) {
   auto quiet = wafer::compiler::detail::planTileMemory(
       std::move(quietModule), &quietFailure,
       /*materializationRelations=*/nullptr,
-      /*applySelectedInstructionSchedule=*/false,
       /*emitSPMCapacityDiagnostics=*/false);
   EXPECT_TRUE(mlir::failed(quiet));
   EXPECT_EQ(

@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -128,6 +129,9 @@ private:
         limits(limits) {}
 
   std::optional<ScheduleCursor> getInitialCursor() const;
+  bool
+  addSelectedResourceEdges(const ScheduleCursor &cursor,
+                           std::set<std::pair<EventId, EventId>> &edges) const;
   AdvanceResult advance(ScheduleCursor &cursor) const;
   ClosedSchedulePlan buildPlan(const ScheduleCursor &cursor) const;
   std::optional<ScheduleCursor> getCursor(const ClosedSchedulePlan &plan) const;

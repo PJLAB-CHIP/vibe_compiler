@@ -2,6 +2,8 @@
 
 #include "Wafer/Planning/PhysicalDataflow/EventGraph.h"
 
+#include "Wafer/Target/Core/DirectDTE.h"
+
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
@@ -17,6 +19,10 @@
 #include <utility>
 
 namespace wafer::compiler::detail {
+
+static_assert(TargetDirectDTEResourceLimits::senderSlotsPerTile == 1,
+              "EventGraph Direct-DTE sender model requires one target slot");
+
 namespace event_graph_detail {
 
 TileId tileOf(const ExecutionInstanceId &execution) {
@@ -408,9 +414,8 @@ private:
         return false;
       completions.insert({issue, completion, protocol, participants});
       addResourceUse(issue, TileEngineResource{tile},
-                     ResourceUseMode::Exclusive, completion);
-      addResourceUse(issue, ControlResource{tile}, ResourceUseMode::Exclusive,
-                     completion);
+                     ResourceUseMode::CapacityUnits, completion,
+                     ResourceKnowledge::Estimate);
     }
     return true;
   }
@@ -463,12 +468,9 @@ private:
         return std::nullopt;
       completions.insert(
           {issue, completion, CompletionProtocol::NCCParticipant, 0});
-      addResourceUse(issue, CardDDRResource{card}, ResourceUseMode::Exclusive,
-                     completion);
-      addResourceUse(issue, TileDTEEngineResource{tile},
-                     ResourceUseMode::Exclusive, completion);
-      addResourceUse(issue, ControlResource{tile}, ResourceUseMode::Exclusive,
-                     completion);
+      addResourceUse(issue, CardDDRResource{card},
+                     ResourceUseMode::CapacityUnits, completion,
+                     ResourceKnowledge::Estimate);
       return std::pair<EventId, EventId>{issue, completion};
     };
 
@@ -557,42 +559,56 @@ private:
 
       for (uint32_t payloadSlice = 0; payloadSlice < *pieces; ++payloadSlice)
         for (const MovementHop &hop : graph.hops) {
-          EventId hopIssue = movementEvent(
-              anchor, PlannedEventKind::MovementIssue,
-              MovementEventPhase::PeerTransfer, payloadSlice, hop);
-          EventId hopCompletion = movementEvent(
-              anchor, PlannedEventKind::Completion,
-              MovementEventPhase::PeerTransfer, payloadSlice, hop);
-          if (!addEvent(hopIssue, hop.source) ||
-              !addEvent(hopCompletion, hop.destination) ||
-              !addDependency(hopIssue, hopCompletion,
+          EventId receiveIssue =
+              movementEvent(anchor, PlannedEventKind::MovementIssue,
+                            MovementEventPhase::PeerReceive, payloadSlice, hop);
+          EventId receiveCompletion =
+              movementEvent(anchor, PlannedEventKind::Completion,
+                            MovementEventPhase::PeerReceive, payloadSlice, hop);
+          EventId sendIssue =
+              movementEvent(anchor, PlannedEventKind::MovementIssue,
+                            MovementEventPhase::PeerSend, payloadSlice, hop);
+          EventId sendCompletion =
+              movementEvent(anchor, PlannedEventKind::Completion,
+                            MovementEventPhase::PeerSend, payloadSlice, hop);
+          if (!addEvent(receiveIssue, hop.destination) ||
+              !addEvent(receiveCompletion, hop.destination) ||
+              !addEvent(sendIssue, hop.source) ||
+              !addEvent(sendCompletion, hop.source) ||
+              !addDependency(receiveIssue, receiveCompletion,
+                             EventDependencyReason::Completion) ||
+              !addDependency(receiveIssue, sendCompletion,
+                             EventDependencyReason::Completion) ||
+              !addDependency(sendIssue, receiveCompletion,
+                             EventDependencyReason::Completion) ||
+              !addDependency(sendIssue, sendCompletion,
                              EventDependencyReason::Completion))
             return false;
           auto parent = incoming.find(hop.source.getValue());
           if (parent != incoming.end()) {
             EventId parentCompletion = movementEvent(
                 anchor, PlannedEventKind::Completion,
-                MovementEventPhase::PeerTransfer, payloadSlice, parent->second);
-            if (!addDependency(parentCompletion, hopIssue,
+                MovementEventPhase::PeerReceive, payloadSlice, parent->second);
+            if (!addDependency(parentCompletion, sendIssue,
                                EventDependencyReason::TransferReady))
               return false;
           }
           completions.insert(
-              {hopIssue, hopCompletion, CompletionProtocol::DirectDTE, 0});
-          addResourceUse(hopIssue, TileDTEEngineResource{hop.source},
-                         ResourceUseMode::Exclusive, hopCompletion);
-          addResourceUse(hopIssue, TileDTEEngineResource{hop.destination},
-                         ResourceUseMode::Exclusive, hopCompletion);
-          addResourceUse(hopIssue, OpaqueNoCTransferResource{hop},
-                         ResourceUseMode::CapacityUnits, hopCompletion,
+              {sendIssue, sendCompletion, CompletionProtocol::DirectDTE, 0});
+          completions.insert({receiveIssue, receiveCompletion,
+                              CompletionProtocol::DirectDTE, 0});
+          addResourceUse(sendIssue, DirectDTESenderResource{hop.source},
+                         ResourceUseMode::Exclusive, sendCompletion);
+          addResourceUse(receiveIssue, DTEReceiverFSMResource{hop.destination},
+                         ResourceUseMode::CapacityUnits, receiveCompletion);
+          addResourceUse(sendIssue, OpaqueNoCTransferResource{hop},
+                         ResourceUseMode::CapacityUnits, receiveCompletion,
                          ResourceKnowledge::Estimate);
           auto exact = routes.find(std::make_pair(graph.actions, hop));
           if (exact != routes.end())
             for (const MovementHop &link : exact->second->links)
-              addResourceUse(hopIssue, DirectedNoCLinkResource{link},
-                             ResourceUseMode::Exclusive, hopCompletion);
-          addResourceUse(hopIssue, ControlResource{hop.source},
-                         ResourceUseMode::Exclusive, hopCompletion);
+              addResourceUse(sendIssue, DirectedNoCLinkResource{link},
+                             ResourceUseMode::CapacityUnits, receiveCompletion);
         }
 
       for (const MovementActionId &member : graph.actions) {
@@ -605,6 +621,16 @@ private:
         EventId issue = movementEvent(member, PlannedEventKind::MovementIssue);
         EventId completion =
             movementEvent(member, PlannedEventKind::Completion);
+        for (uint32_t payloadSlice = 0; payloadSlice < *pieces; ++payloadSlice)
+          for (const MovementHop &hop : graph.hops)
+            if (hop.source.getValue() == root) {
+              EventId rootSend = movementEvent(
+                  anchor, PlannedEventKind::MovementIssue,
+                  MovementEventPhase::PeerSend, payloadSlice, hop);
+              if (!addDependency(issue, rootSend,
+                                 EventDependencyReason::TransferReady))
+                return false;
+            }
         const int64_t terminal =
             selected->second.resource->destinationTile->getValue();
         if (graph.kind == PeerTransferGraphKind::ExternalLoadFanout &&
@@ -621,10 +647,10 @@ private:
               return false;
             for (const MovementHop &hop : graph.hops)
               if (hop.source.getValue() == root) {
-                EventId hopIssue = movementEvent(
+                EventId sendIssue = movementEvent(
                     anchor, PlannedEventKind::MovementIssue,
-                    MovementEventPhase::PeerTransfer, payloadSlice, hop);
-                if (!addDependency(load->second, hopIssue,
+                    MovementEventPhase::PeerSend, payloadSlice, hop);
+                if (!addDependency(load->second, sendIssue,
                                    EventDependencyReason::TransferReady))
                   return false;
               }
@@ -638,17 +664,17 @@ private:
                       "peer graph does not reach one member terminal");
         for (uint32_t payloadSlice = 0; payloadSlice < *pieces;
              ++payloadSlice) {
-          EventId terminalIssue =
+          EventId terminalReceiveIssue =
               movementEvent(anchor, PlannedEventKind::MovementIssue,
-                            MovementEventPhase::PeerTransfer, payloadSlice,
+                            MovementEventPhase::PeerReceive, payloadSlice,
                             terminalHop->second);
-          EventId terminalCompletion =
+          EventId terminalReceiveCompletion =
               movementEvent(anchor, PlannedEventKind::Completion,
-                            MovementEventPhase::PeerTransfer, payloadSlice,
+                            MovementEventPhase::PeerReceive, payloadSlice,
                             terminalHop->second);
-          if (!addDependency(issue, terminalIssue,
+          if (!addDependency(issue, terminalReceiveIssue,
                              EventDependencyReason::TransferReady) ||
-              !addDependency(terminalCompletion, completion,
+              !addDependency(terminalReceiveCompletion, completion,
                              EventDependencyReason::Completion))
             return false;
         }
@@ -672,7 +698,9 @@ private:
           movementEvent(transfer->graphActions.front(),
                         completion ? PlannedEventKind::Completion
                                    : PlannedEventKind::MovementIssue,
-                        MovementEventPhase::PeerTransfer,
+                        transfer->endpoint == PeerTransferSiteId::Endpoint::Send
+                            ? MovementEventPhase::PeerSend
+                            : MovementEventPhase::PeerReceive,
                         transfer->payloadSlice, transfer->hop);
       return events.count(event) ? std::optional<EventId>(event) : std::nullopt;
     }
@@ -903,6 +931,8 @@ private:
       byResource[use.resource].push_back(&use);
     const auto successors = adjacency();
     for (auto &[resource, uses] : byResource) {
+      if (!std::holds_alternative<DirectDTESenderResource>(resource))
+        continue;
       std::set<EventId> unordered;
       for (size_t left = 0; left < uses.size(); ++left)
         for (size_t right = left + 1; right < uses.size(); ++right) {

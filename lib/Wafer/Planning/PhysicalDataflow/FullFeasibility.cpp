@@ -409,8 +409,7 @@ FullFeasibilityResult evaluateCompleteCandidate(
       problem.getProgram().availableTileIds, materialized->relations, program,
       executionConfig, diagnostics, programData,
       statistics ? &statistics->exactGates : nullptr, tilePipelineParallelism,
-      captureTileDataflowIRTrace,
-      /*applySelectedInstructionSchedule=*/false);
+      captureTileDataflowIRTrace);
 
   FullFeasibilityResult output;
   if (compilation.isAccepted()) {
