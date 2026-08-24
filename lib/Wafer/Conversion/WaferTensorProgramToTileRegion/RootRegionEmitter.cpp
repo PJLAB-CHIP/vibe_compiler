@@ -249,8 +249,7 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
     llvm::DenseSet<mlir::Operation *> closure;
     if (endpoint.streamTileSizes.empty()) {
       std::function<mlir::LogicalResult(mlir::Operation *)> addDependencies;
-      addDependencies =
-          [&](mlir::Operation *operation) -> mlir::LogicalResult {
+      addDependencies = [&](mlir::Operation *operation) -> mlir::LogicalResult {
         mlir::Operation *topLevel = getTopLevelOperation(operation);
         if (!topLevel || selectedStageAllocations.contains(topLevel) ||
             closure.contains(topLevel))
@@ -453,8 +452,8 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
         rewriter.create<mlir::memref::AllocOp>(stage.buffer.getLoc(), type);
     stageBuffers.push_back(allocation.getResult());
     if (relationRecorder)
-      relationRecorder->recordSelectedDDRStage(allocation,
-                                               stage.producerNode);
+      relationRecorder->recordSelectedDDRStage(allocation, stage.producerNode,
+                                               stage.producerResult);
   }
 
   llvm::BitVector claimedEndpoints(peerEndpoints.size());
@@ -562,12 +561,12 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
       while (nextEndpoint < localEndpoints.size()) {
         const CandidatePeerEndpoint *endpoint = localEndpoints[nextEndpoint];
         MemLayout layout = MemLayout::Tensor;
-        const bool ready = !endpoint->streamTileSizes.empty()
-                               ? compilerOwnedBuffers.contains(
-                                     endpoint->carrierBuffer)
-                               : lookupAny(endpoint->value, layout) ||
-                                     externalBuffers.contains(endpoint->value) ||
-                                     tensorAttrs.contains(endpoint->value);
+        const bool ready =
+            !endpoint->streamTileSizes.empty()
+                ? compilerOwnedBuffers.contains(endpoint->carrierBuffer)
+                : lookupAny(endpoint->value, layout) ||
+                      externalBuffers.contains(endpoint->value) ||
+                      tensorAttrs.contains(endpoint->value);
         if (!ready)
           break;
         if (mlir::failed(emitPeerEndpoint(*endpoint, rewriter)))

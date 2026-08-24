@@ -357,6 +357,43 @@ mlir::LogicalResult emitPreparedStorageObjects(
   return mlir::success();
 }
 
+mlir::LogicalResult bindPreparedStorageObjects(
+    const PreparedStoragePlan &prepared,
+    llvm::ArrayRef<ExistingStorageObjectBinding> bindings,
+    StorageObjectBuilder &objects, std::string *failureReason) {
+  if (!objects.objects.empty() || !objects.bindings.empty() ||
+      !objects.families.empty())
+    return fail(failureReason, "existing storage binding target is not empty");
+  std::map<StorageObjectId, const PreparedStorageObject *> expected;
+  for (const PreparedStorageObject &object : prepared.objects)
+    if (!expected.try_emplace(object.plan.id, &object).second)
+      return fail(failureReason,
+                  "prepared existing storage has duplicate objects");
+  for (const ExistingStorageObjectBinding &binding : bindings) {
+    auto object = expected.find(binding.object);
+    if (object == expected.end() || binding.slots.empty() ||
+        binding.slots.size() != object->second->multiplicity ||
+        !objects.objects.try_emplace(binding.object, binding.slots).second)
+      return fail(failureReason,
+                  "existing storage slot binding is missing or duplicated");
+  }
+  if (objects.objects.size() != expected.size())
+    return fail(failureReason,
+                "existing storage binding does not cover every object");
+  for (const PhysicalVersionStorageBinding &binding : prepared.bindings)
+    if (!objects.objects.count(binding.object) ||
+        !objects.bindings.try_emplace(binding.version, binding.object).second)
+      return fail(failureReason,
+                  "existing storage version binding is incomplete");
+  for (const SlotFamilyPlan &family : prepared.slotFamilies)
+    for (const StorageObjectId &object : family.id.objects)
+      if (!objects.objects.count(object) ||
+          !objects.families.try_emplace(object, family).second)
+        return fail(failureReason,
+                    "existing storage family binding is incomplete");
+  return verifyEmittedStorageObjects(prepared, objects, failureReason);
+}
+
 mlir::LogicalResult
 verifyEmittedStorageObjects(const PreparedStoragePlan &prepared,
                             const StorageObjectBuilder &objects,

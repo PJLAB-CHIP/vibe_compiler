@@ -1,4 +1,4 @@
-//===- CardBaselineDataMovement.h ---------------------------*- C++ -*-===//
+//===- CardDataflowConstruction.h - Selected edge construction -*- C++ -*-===//
 
 #pragma once
 
@@ -6,8 +6,8 @@
 
 namespace wafer::compiler::detail {
 
-mlir::LogicalResult addCardBaselineDataMovement(
+mlir::LogicalResult addCardDataflowConstruction(
     CardMaterializationPlan &assignment, const StructuredDAGAnalysis &dag,
-    std::string *failureReason);
+    const MovementPlan &movement, std::string *failureReason);
 
 } // namespace wafer::compiler::detail

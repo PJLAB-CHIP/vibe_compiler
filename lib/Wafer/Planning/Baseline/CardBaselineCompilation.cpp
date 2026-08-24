@@ -215,11 +215,18 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
   }
 
   while (true) {
-    CompleteCandidatePlan candidatePlan{
-        resolved->spatial,          resolved->demand,
-        resolved->rootWorks,        resolved->regions,
-        resolved->temporal,         resolved->representations.plan,
-        resolved->preparedAttention};
+    CompleteCandidatePlan candidatePlan{resolved->spatial,
+                                        resolved->demand,
+                                        resolved->rootWorks,
+                                        resolved->regions,
+                                        resolved->temporal,
+                                        resolved->representations.plan,
+                                        resolved->movements.plan,
+                                        resolved->movements.resources,
+                                        resolved->storage.plan,
+                                        resolved->storage.resources,
+                                        {},
+                                        resolved->preparedAttention};
     CandidateMaterializationStatistics candidateStatistics;
     mlir::FailureOr<MaterializedCardCandidate> materialized =
         materializeCardCandidate(
@@ -242,10 +249,11 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
 
     llvm::SmallVector<CandidateNodeRootRelation, 64> nodeRoots =
         materialized->nodeRoots;
+    CardExecutablePreparation preparation;
     CardExecutableCompilationResult compilation = compileCardModuleToExecutable(
         std::move(materialized->module), cardId, (*analysis)->availableTileIds,
-        materialized->relations, program, executionConfig, diagnostics,
-        programData,
+        materialized->relations, preparation, program, executionConfig,
+        diagnostics, programData,
         baselineStatistics ? &baselineStatistics->exactGates : nullptr,
         tilePipelineParallelism, captureTileDataflowIRTrace);
     if (compilation.isAccepted()) {

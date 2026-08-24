@@ -232,9 +232,9 @@ TEST(EventGraphTest, AlignedAndRaggedChainHasAllAndOnlyTypedFacts) {
     ASSERT_TRUE(result.succeeded())
         << (result.failure ? result.failure->detail : "");
     const EventGraph &graph = *result.graph;
-    EXPECT_EQ(graph.getEvents().size(), 27u);
-    EXPECT_EQ(graph.getHardDependencies().size(), 28u);
-    EXPECT_EQ(graph.getCompletionObligations().size(), 6u);
+    EXPECT_EQ(graph.getEvents().size(), 29u);
+    EXPECT_EQ(graph.getHardDependencies().size(), 30u);
+    EXPECT_EQ(graph.getCompletionObligations().size(), 7u);
     EXPECT_EQ(graph.getComponents().size(), 1u);
     EXPECT_EQ(countResources<SPMRangeResource>(graph), 8u);
     EXPECT_EQ(countResources<CardDDRResource>(graph), 2u);
@@ -299,6 +299,22 @@ TEST(EventGraphTest, AlignedAndRaggedChainHasAllAndOnlyTypedFacts) {
             graph.getHardDependencies(),
             EventDependency{issue, completion,
                             EventDependencyReason::Completion}));
+    EventId combineIssue{
+        MovementEventAction{inputs.peerAction,
+                            MovementEventPhase::LocalCombine, 0},
+        PlannedEventKind::LocalCombine};
+    EventId combineCompletion{
+        MovementEventAction{inputs.peerAction,
+                            MovementEventPhase::LocalCombine, 0},
+        PlannedEventKind::Completion};
+    EXPECT_TRUE(llvm::is_contained(
+        graph.getHardDependencies(),
+        EventDependency{receiveCompletion, combineIssue,
+                        EventDependencyReason::TransferReady}));
+    EXPECT_TRUE(llvm::is_contained(
+        graph.getCompletionObligations(),
+        CompletionObligation{combineIssue, combineCompletion,
+                             CompletionProtocol::NCCParticipant, 0}));
   }
 }
 

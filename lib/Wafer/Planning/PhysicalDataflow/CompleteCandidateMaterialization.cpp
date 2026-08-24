@@ -1,4 +1,4 @@
-//===- CardBaselineMaterialization.cpp --------------------------------===//
+//===- CompleteCandidateMaterialization.cpp - Selected Card IR --------===//
 
 #include "Wafer/Planning/PhysicalDataflow/CompleteCandidateMaterialization.h"
 
@@ -78,6 +78,50 @@ buildMaterializationRootGroups(
   for (const auto &[node, group] : groupsByNode)
     result.push_back({node, group});
   return result;
+}
+
+mlir::LogicalResult appendRequiredExecutionNodeRelations(
+    const CompleteCandidatePlan &plan,
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
+    CardMaterializationPlan &assignment) {
+  std::map<mlir::Operation *, uint32_t> nodesByOperation;
+  for (const StructuredOperationNodeMapping &mapping : operationNodes)
+    if (!mapping.operation ||
+        !nodesByOperation
+             .try_emplace(mapping.operation, mapping.structuredNodeId)
+             .second)
+      return mlir::failure();
+  std::map<analysis::RootRegionWorkId, mlir::Operation *> rootsByWork;
+  for (const analysis::RootRegionWork &work : plan.rootWorks)
+    if (!work.rootOperation ||
+        !rootsByWork.try_emplace(work.id, work.rootOperation).second)
+      return mlir::failure();
+  for (const RegionGroupPlan &group : plan.regions.groups) {
+    if (!group.replicas.empty())
+      return mlir::failure();
+    for (const ExecutionInstancePlan &execution : group.executions) {
+      analysis::RootRegionWorkId work = std::visit(
+          [](const auto &source) { return source.work; }, execution.id.source);
+      auto root = rootsByWork.find(work);
+      auto node = root == rootsByWork.end()
+                      ? nodesByOperation.end()
+                      : nodesByOperation.find(root->second);
+      if (node == nodesByOperation.end())
+        return mlir::failure();
+      assignment.selectedRegionExecutions.push_back(
+          {execution.id, node->second});
+    }
+  }
+  llvm::sort(assignment.selectedRegionExecutions, [](const auto &lhs,
+                                                     const auto &rhs) {
+    return std::tie(lhs.first, lhs.second) < std::tie(rhs.first, rhs.second);
+  });
+  for (size_t index = 1; index < assignment.selectedRegionExecutions.size();
+       ++index)
+    if (assignment.selectedRegionExecutions[index - 1].first ==
+        assignment.selectedRegionExecutions[index].first)
+      return mlir::failure();
+  return mlir::success();
 }
 
 } // namespace
@@ -295,6 +339,11 @@ materializeCardCandidate(mlir::ModuleOp tensorProgram, CardId cardId,
     statistics->maximumTileMaterializationWorkers =
         materializationStatistics.maximumTileMaterializationWorkers;
   }
+  if (mlir::failed(appendRequiredExecutionNodeRelations(
+          plan, program.operationNodes, result.assignment))) {
+    diagnostics << "wafer-compile: candidate execution/node relation failed\n";
+    return mlir::failure();
+  }
   return result;
 }
 
@@ -375,7 +424,7 @@ mlir::LogicalResult verifyMaterializedCardCandidate(
       if (region)
         actualNodes[region.getOperation()].insert(relation.structuredNodeId);
     }
-    for (const StructuredOperationBufferRelation &relation :
+    for (const StructuredOperationResultBufferRelation &relation :
          relations.operationResultBuffers) {
       mlir::Operation *owner = relation.buffer.getDefiningOp();
       if (!owner && mlir::isa<mlir::BlockArgument>(relation.buffer))
@@ -438,7 +487,7 @@ mlir::LogicalResult verifyMaterializedCardCandidate(
                         expectedSteps.end()) != enclosingSteps.end())
           sawChain = true;
       }
-      for (const StructuredOperationBufferRelation &relation :
+      for (const StructuredOperationResultBufferRelation &relation :
            relations.operationResultBuffers) {
         if (relation.structuredNodeId != node || !relation.buffer)
           continue;

@@ -9,6 +9,8 @@
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSerializedExecutionPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalStoragePlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CompleteCandidateMaterialization.h"
+#include "Wafer/Planning/PhysicalDataflow/CompleteCandidatePreparation.h"
+#include "Wafer/Planning/PhysicalDataflow/MovementDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RepresentationDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
@@ -48,6 +50,7 @@ std::string demandDetail(const analysis::ExactDemandOutcome &outcome) {
 
 struct PreparedCandidate {
   CompleteCandidatePlan materialization;
+  std::optional<ScheduleDomain> scheduleDomain;
 };
 
 struct PreparationResult {
@@ -193,11 +196,28 @@ prepareCandidate(const PhysicalDataflowPlanningProblem &problem,
     return {{},
             FullFeasibilityStatus::CompilerBug,
             "complete candidate cannot rebuild movement facts"};
-  if (!(movements->plan == state.getMovementPlan()))
+  MovementDomainResult movementDomain =
+      buildMovementDomain(*movements, state.getRepresentationPlan(),
+                          problem.getProgram().availableTileIds);
+  if (!movementDomain.succeeded())
     return {{},
-            FullFeasibilityStatus::Unsupported,
-            "current Card materializer does not yet construct selected peer "
-            "or relay movement"};
+            movementDomain.failure &&
+                    movementDomain.failure->kind ==
+                        MovementDomainFailureKind::UnsupportedSemantics
+                ? FullFeasibilityStatus::Unsupported
+                : FullFeasibilityStatus::CompilerBug,
+            movementDomain.failure
+                ? movementDomain.failure->detail
+                : "complete candidate cannot rebuild movement domain"};
+  if (!movementDomain.domain->contains(state.getMovementPlan()))
+    return {{},
+            FullFeasibilityStatus::CompilerBug,
+            "complete candidate movement is outside its rebuilt domain"};
+  CanonicalMovementCoordinate selectedMovements;
+  selectedMovements.plan = state.getMovementPlan();
+  selectedMovements.resources.assign(
+      movementDomain.domain->getResources().begin(),
+      movementDomain.domain->getResources().end());
 
   CanonicalSerializedExecutionPlanOutcome serializedOutcome =
       buildCanonicalSerializedExecutionPlan(state.getRegionPlan(),
@@ -208,31 +228,14 @@ prepareCandidate(const PhysicalDataflowPlanningProblem &problem,
     return {{},
             FullFeasibilityStatus::CompilerBug,
             "complete candidate cannot rebuild serialized executions"};
-  if (llvm::any_of(
-          state.getExecutionStructurePlan().scopes,
-          [](const ExecutionStructureChoice &choice) {
-            return !std::holds_alternative<SerializedExecutionStructure>(
-                choice);
-          }))
-    return {{},
-            FullFeasibilityStatus::Unsupported,
-            "current Card materializer does not yet construct a Pipelined "
-            "execution structure"};
-
   CanonicalStoragePlanOutcome storageOutcome = buildCanonicalStoragePlan(
-      selectedRepresentations, *movements, *serialized);
+      selectedRepresentations, selectedMovements, *serialized);
   const CanonicalStorageCoordinate *storage =
       getCanonicalStorageCoordinate(storageOutcome);
   if (!storage)
     return {{},
             FullFeasibilityStatus::CompilerBug,
             std::get<BrokenStoragePlan>(storageOutcome).detail};
-  if (!(storage->plan == state.getBufferPlan()))
-    return {{},
-            FullFeasibilityStatus::Unsupported,
-            "current Card materializer does not yet construct alias, reuse, "
-            "or rotating storage"};
-
   ScheduleDomainResult scheduleDomain =
       buildScheduleDomain(makeScheduleInput(state, eventGraph, slotLifetimes));
   if (!scheduleDomain.succeeded())
@@ -241,17 +244,10 @@ prepareCandidate(const PhysicalDataflowPlanningProblem &problem,
             scheduleDomain.failure
                 ? scheduleDomain.failure->detail
                 : "complete candidate cannot rebuild schedule domain"};
-  ScheduleSuccessor firstSchedule = scheduleDomain.domain->getFirstPlan();
-  if (firstSchedule.getKind() != ScheduleSuccessorKind::Plan ||
-      !firstSchedule.getPlan())
+  if (!scheduleDomain.domain->contains(state.getSchedulePlan()))
     return {{},
             FullFeasibilityStatus::CompilerBug,
-            "complete candidate schedule domain has no first leaf"};
-  if (!(*firstSchedule.getPlan() == state.getSchedulePlan()))
-    return {{},
-            FullFeasibilityStatus::Unsupported,
-            "current Card materializer does not yet construct a noncanonical "
-            "event schedule"};
+            "complete candidate schedule is outside its rebuilt domain"};
 
   CanonicalSchedulePlanOutcome scheduleOutcome =
       buildCanonicalSchedulePlan(*storage, *serialized);
@@ -262,9 +258,9 @@ prepareCandidate(const PhysicalDataflowPlanningProblem &problem,
             FullFeasibilityStatus::CompilerBug,
             "complete candidate cannot rebuild its canonical action prefix"};
   CanonicalAttentionWorkProjectionOutcome attentionOutcome =
-      buildCanonicalAttentionWorkProjection(rootWorks->works, *representations,
-                                            *movements, *storage, *schedule,
-                                            &state.getTemporalPlan());
+      buildCanonicalAttentionWorkProjection(
+          rootWorks->works, *representations, selectedMovements, *storage,
+          *schedule, &state.getTemporalPlan());
   const CanonicalAttentionWorkCoordinate *attention =
       getCanonicalAttentionWorkCoordinate(attentionOutcome);
   if (!attention)
@@ -287,7 +283,13 @@ prepareCandidate(const PhysicalDataflowPlanningProblem &problem,
                                state.getRegionPlan(),
                                state.getTemporalPlan(),
                                state.getRepresentationPlan(),
+                               state.getMovementPlan(),
+                               selectedMovements.resources,
+                               state.getBufferPlan(),
+                               storage->resources,
+                               state.getExecutionStructurePlan(),
                                *prepared};
+  candidate.scheduleDomain.emplace(std::move(*scheduleDomain.domain));
   return {std::move(candidate), FullFeasibilityStatus::Accepted, {}};
 }
 
@@ -404,10 +406,26 @@ FullFeasibilityResult evaluateCompleteCandidate(
       prepared.candidate->materialization.rootWorks;
   if (statistics)
     ++statistics->executableGateInvocations;
+  if (!prepared.candidate->scheduleDomain)
+    return result(FullFeasibilityStatus::CompilerBug,
+                  "complete candidate lost its selected schedule domain");
+  std::vector<CandidateExecutionNodeRelation> executionNodes;
+  for (const auto &[execution, node] :
+       materialized->assignment.selectedRegionExecutions)
+    executionNodes.push_back({execution, node});
+  CompleteCandidatePreparation preparation(
+      std::move(*prepared.candidate->scheduleDomain),
+      prepareCandidateEvents(eventGraph), state.getRepresentationPlan(),
+      state.getMovementPlan(),
+      prepared.candidate->materialization.movementResources,
+      state.getBufferPlan(),
+      prepared.candidate->materialization.storageResources,
+      state.getExecutionStructurePlan(), state.getSchedulePlan(),
+      std::move(executionNodes));
   CardExecutableCompilationResult compilation = compileCardModuleToExecutable(
       std::move(materialized->module), problem.getCardId(),
-      problem.getProgram().availableTileIds, materialized->relations, program,
-      executionConfig, diagnostics, programData,
+      problem.getProgram().availableTileIds, materialized->relations,
+      preparation, program, executionConfig, diagnostics, programData,
       statistics ? &statistics->exactGates : nullptr, tilePipelineParallelism,
       captureTileDataflowIRTrace);
 
@@ -435,7 +453,12 @@ FullFeasibilityResult evaluateCompleteCandidate(
     output.compilation.emplace(std::move(compilation));
     return output;
   }
-  output.status = FullFeasibilityStatus::Indeterminate;
+  output.status =
+      compilation.status == CardExecutableCompilationStatus::UnsupportedFailure
+          ? FullFeasibilityStatus::Unsupported
+      : compilation.status == CardExecutableCompilationStatus::CompilerFailure
+          ? FullFeasibilityStatus::CompilerBug
+          : FullFeasibilityStatus::Indeterminate;
   output.detail = compilation.detail;
   output.compilation.emplace(std::move(compilation));
   return output;

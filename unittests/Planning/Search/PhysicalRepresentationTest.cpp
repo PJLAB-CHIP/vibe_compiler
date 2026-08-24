@@ -3,10 +3,10 @@
 #include "Wafer/Planning/Search/PhysicalRepresentation.h"
 #include "Wafer/Planning/Search/DataMovement.h"
 
+#include "TestSupport/Planning/SpatialDemandTestSupport.h"
 #include "Wafer/Analysis/PhysicalDataflow/PhysicalLayoutRelation.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
-#include "TestSupport/Planning/SpatialDemandTestSupport.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -212,7 +212,7 @@ TEST(PhysicalRepresentationTest,
       }(),
       2u);
   bool sawSelectedResult = false;
-  for (const StructuredOperationBufferRelation &relation :
+  for (const StructuredOperationResultBufferRelation &relation :
        materialized->relations.operationResultBuffers) {
     auto type = mlir::dyn_cast<mlir::MemRefType>(relation.buffer.getType());
     sawSelectedResult |=

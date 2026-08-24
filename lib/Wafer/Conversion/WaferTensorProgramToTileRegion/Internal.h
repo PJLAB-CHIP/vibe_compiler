@@ -160,6 +160,7 @@ struct CandidatePeerEndpoint {
 struct CandidateSelectedDDRStage {
   mlir::Value buffer;
   uint32_t producerNode = 0;
+  unsigned producerResult = 0;
 };
 
 struct PendingPeerToken {
@@ -184,6 +185,7 @@ analyzeCompleteStaticInsertSliceAssembly(mlir::Value value);
 struct MaterializedSelectedDDRStage {
   mlir::memref::AllocOp allocation;
   uint32_t producerNode = 0;
+  unsigned producerResult = 0;
 };
 
 struct TileRegionEmissionRelations {
@@ -200,9 +202,9 @@ public:
       : output(output) {}
 
   void recordSelectedDDRStage(mlir::memref::AllocOp allocation,
-                              uint32_t producerNode);
+                              uint32_t producerNode, unsigned producerResult);
   void recordOperationResultBuffer(uint32_t structuredNodeId,
-                                   mlir::Value buffer);
+                                   unsigned resultIndex, mlir::Value buffer);
   void
   recordStructuredComputeOperation(llvm::ArrayRef<uint32_t> structuredNodeIds,
                                    mlir::Operation *operation);

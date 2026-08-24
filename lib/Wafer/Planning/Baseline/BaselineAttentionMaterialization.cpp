@@ -4,7 +4,7 @@
 
 #include "Wafer/Analysis/PhysicalDataflow/StructuredDemandAnalysis.h"
 #include "Wafer/Analysis/Structured/StructuredDAGAnalysis.h"
-#include "Wafer/Planning/Baseline/CardBaselineDataMovement.h"
+#include "Wafer/Planning/PhysicalDataflow/CardDataflowConstruction.h"
 #include "Wafer/Planning/PhysicalDataflow/SemanticRootAnalysis.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDemandView.h"
@@ -1017,8 +1017,8 @@ prepareAttentionMaterializationSource(
       SpatialDataflowMaterializationMode::IndependentDDRStages;
   assignment.mapping.outputs = std::move(*outputs);
   assignment.mapping.operationTemporalTiles = std::move(temporalTiles);
-  if (mlir::failed(
-          addCardBaselineDataMovement(assignment, *dag, failureReason)))
+  if (mlir::failed(addCardDataflowConstruction(assignment, *dag, plan.movement,
+                                               failureReason)))
     return mlir::failure();
 
   // Selected attention actions are one semantic root execution, not a family

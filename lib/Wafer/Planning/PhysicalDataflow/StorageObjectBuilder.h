@@ -31,6 +31,11 @@ struct PreparedStoragePlan {
   std::vector<SlotFamilyPlan> slotFamilies;
 };
 
+struct ExistingStorageObjectBinding {
+  StorageObjectId object;
+  std::vector<mlir::Value> slots;
+};
+
 struct SelectedStorageLifetimeBinding {
   StorageObjectId object;
   uint64_t occurrence = 0;
@@ -83,6 +88,10 @@ private:
                              StorageObjectBuilder &, mlir::OpBuilder &,
                              std::string *);
   friend mlir::LogicalResult
+  bindPreparedStorageObjects(const PreparedStoragePlan &,
+                             llvm::ArrayRef<ExistingStorageObjectBinding>,
+                             StorageObjectBuilder &, std::string *);
+  friend mlir::LogicalResult
   verifyEmittedStorageObjects(const PreparedStoragePlan &,
                               const StorageObjectBuilder &, std::string *);
   friend mlir::LogicalResult
@@ -98,6 +107,15 @@ private:
 mlir::LogicalResult emitPreparedStorageObjects(
     const PreparedStoragePlan &prepared, StorageObjectBuilder &objects,
     mlir::OpBuilder &builder, std::string *failureReason = nullptr);
+
+/// Binds all-and-only already materialized slots to the same selected storage
+/// schema used by the emitting path. This is used when a complete candidate
+/// first lowers semantic values and then closes alias/reuse/rotation inside
+/// its owned transaction; it never discovers or allocates missing slots.
+mlir::LogicalResult bindPreparedStorageObjects(
+    const PreparedStoragePlan &prepared,
+    llvm::ArrayRef<ExistingStorageObjectBinding> bindings,
+    StorageObjectBuilder &objects, std::string *failureReason = nullptr);
 
 /// Verifies all-and-only object, slot and version bindings after selected
 /// construction. Release/completion ordering is checked later against J's

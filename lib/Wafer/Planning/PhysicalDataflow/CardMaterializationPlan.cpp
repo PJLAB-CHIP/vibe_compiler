@@ -1,9 +1,8 @@
-//===- CardMaterializationPlan.cpp ------------------------------------===//
+//===- CardMaterializationPlan.cpp - Selected Card construction -------===//
 
 #include "Wafer/Planning/PhysicalDataflow/CompleteCandidateMaterialization.h"
 
-#include "Wafer/Planning/Baseline/CardBaselineDataMovement.h"
-#include "Wafer/Planning/Baseline/CardBaselineTemporalTiling.h"
+#include "Wafer/Planning/PhysicalDataflow/CardDataflowConstruction.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDemandView.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalTileShape.h"
 
@@ -60,7 +59,7 @@ mlir::FailureOr<llvm::SmallVector<OutputTileMapping, 4>> getOutputMappings(
     if (roots.size() != 1) {
       if (failureReason)
         *failureReason =
-            "baseline output requires one structured semantic root";
+            "candidate output requires one structured semantic root";
       return mlir::failure();
     }
     OutputTileMapping mapping;
@@ -73,7 +72,7 @@ mlir::FailureOr<llvm::SmallVector<OutputTileMapping, 4>> getOutputMappings(
       if (owner->domain.getForm() != analysis::ExactIndexSetForm::BoxUnion ||
           owner->domain.getBoxes().size() != 1) {
         if (failureReason)
-          *failureReason = "baseline output owner is not one finite rectangle";
+          *failureReason = "candidate output owner is not one finite rectangle";
         return mlir::failure();
       }
       const analysis::StaticRectangularIndexSet &box =
@@ -112,7 +111,9 @@ buildCardMaterializationPlan(const CardProgramAnalysis &program,
   }
   assignment.mapping.outputs = std::move(*outputs);
   assignment.mapping.materializationMode =
-      SpatialDataflowMaterializationMode::IndependentDDRStages;
+      plan.movement.peerGraphs.empty()
+          ? SpatialDataflowMaterializationMode::IndependentDDRStages
+          : SpatialDataflowMaterializationMode::JointDataflow;
 
   std::map<mlir::Operation *, llvm::SmallVector<int64_t, 4>> temporalByRoot;
   for (const TemporalScopePlan &scope : plan.temporal.scopes) {
@@ -175,9 +176,9 @@ buildCardMaterializationPlan(const CardProgramAnalysis &program,
          llvm::zip_equal(output.temporalTileSizes, *resultTile))
       outputSize = std::min(outputSize, rootSize);
   }
-  if (mlir::failed(addCardBaselineDataMovement(assignment, program.dag,
-                                               &failureReason))) {
-    diagnostics << "wafer-compile: baseline movement projection failed: "
+  if (mlir::failed(addCardDataflowConstruction(
+          assignment, program.dag, plan.movement, &failureReason))) {
+    diagnostics << "wafer-compile: candidate movement projection failed: "
                 << failureReason << '\n';
     return mlir::failure();
   }

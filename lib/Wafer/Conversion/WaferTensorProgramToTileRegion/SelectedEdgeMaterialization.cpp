@@ -441,8 +441,8 @@ mlir::LogicalResult materializeSpill(
       return failResult(
           failureReason,
           "selected DDR stage producer has no structured node identity");
-    selectedDDRStages.push_back(
-        CandidateSelectedDDRStage{allocation.getResult(), *producerNode});
+    selectedDDRStages.push_back(CandidateSelectedDDRStage{
+        allocation.getResult(), *producerNode, strategy.producerResult});
   }
   if (mlir::failed(wireStoredProducerToConsumer(stored)))
     return mlir::failure();

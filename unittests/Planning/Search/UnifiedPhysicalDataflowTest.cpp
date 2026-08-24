@@ -51,10 +51,11 @@ TEST(UnifiedPhysicalDataflowTest,
       domain->materialize(*parsed.module, *first, &failureReason);
   ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
   EXPECT_EQ(countOps<TileRegionOp>(materialized->module->getOperation()), 2u);
+  CardExecutablePreparation preparation;
   auto compiled = compileCardModuleToExecutable(
       std::move(materialized->module), CardId(0), (*analysis)->availableTileIds,
-      materialized->relations, dependentProgramMetadata(), executionConfig(),
-      diagnostics, programData, /*statistics=*/nullptr,
+      materialized->relations, preparation, dependentProgramMetadata(),
+      executionConfig(), diagnostics, programData, /*statistics=*/nullptr,
       /*tilePipelineParallelism=*/0, /*captureTileIRTrace=*/false);
   diagnostics.flush();
   ASSERT_TRUE(compiled.isAccepted())

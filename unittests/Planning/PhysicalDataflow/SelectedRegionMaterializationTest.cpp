@@ -523,6 +523,11 @@ TEST(SelectedRegionMaterializationTest,
                                       *selected,
                                       *temporal.getPlan(),
                                       *representations,
+                                      {},
+                                      {},
+                                      {},
+                                      {},
+                                      {},
                                       noAttention};
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);
@@ -539,11 +544,12 @@ TEST(SelectedRegionMaterializationTest,
           prepared->program->availableTileIds, verificationFailure)))
           << verificationFailure;
       compiler::ProgramDataHandoff programData;
+      CardExecutablePreparation preparation;
       CardExecutableCompilationResult compiled = compileCardModuleToExecutable(
           std::move(materialized->module), CardId(0),
           prepared->program->availableTileIds, materialized->relations,
-          metadata(extent), compiler::testing::executionConfig(), diagnostics,
-          programData, /*statistics=*/nullptr,
+          preparation, metadata(extent), compiler::testing::executionConfig(),
+          diagnostics, programData, /*statistics=*/nullptr,
           /*tilePipelineParallelism=*/0,
           /*captureTileDataflowIRTrace=*/false);
       ASSERT_TRUE(compiled.isAccepted())
@@ -697,6 +703,11 @@ TEST(SelectedRegionMaterializationTest,
                                       *selected,
                                       selectedTemporal,
                                       *representations,
+                                      {},
+                                      {},
+                                      {},
+                                      {},
+                                      {},
                                       noAttention};
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);
@@ -762,11 +773,12 @@ TEST(SelectedRegionMaterializationTest,
       EXPECT_GE(nestedChildLoops, 1u);
 
       compiler::ProgramDataHandoff programData;
+      CardExecutablePreparation preparation;
       CardExecutableCompilationResult compiled = compileCardModuleToExecutable(
           std::move(materialized->module), CardId(0),
           prepared->program->availableTileIds, materialized->relations,
-          metadata(extent), compiler::testing::executionConfig(), diagnostics,
-          programData, /*statistics=*/nullptr,
+          preparation, metadata(extent), compiler::testing::executionConfig(),
+          diagnostics, programData, /*statistics=*/nullptr,
           /*tilePipelineParallelism=*/0,
           /*captureTileDataflowIRTrace=*/false);
       ASSERT_TRUE(compiled.isAccepted())
@@ -873,6 +885,11 @@ TEST(SelectedRegionMaterializationTest,
                                             *selected,
                                             *temporal.getPlan(),
                                             coordinate->plan,
+                                            {},
+                                            {},
+                                            {},
+                                            {},
+                                            {},
                                             noAttention};
     std::string baselineDiagnosticsText;
     llvm::raw_string_ostream baselineDiagnostics(baselineDiagnosticsText);
@@ -896,6 +913,11 @@ TEST(SelectedRegionMaterializationTest,
                                       *selected,
                                       *temporal.getPlan(),
                                       *representations,
+                                      {},
+                                      {},
+                                      {},
+                                      {},
+                                      {},
                                       noAttention};
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);
@@ -923,11 +945,13 @@ TEST(SelectedRegionMaterializationTest,
           prepared->program->availableTileIds, verificationFailure)))
           << verificationFailure;
       compiler::ProgramDataHandoff programData;
+      CardExecutablePreparation preparation;
       CardExecutableCompilationResult compiled = compileCardModuleToExecutable(
           std::move(materialized->module), CardId(0),
           prepared->program->availableTileIds, materialized->relations,
-          fanoutMetadata(extent), compiler::testing::executionConfig(),
-          diagnostics, programData, /*statistics=*/nullptr,
+          preparation, fanoutMetadata(extent),
+          compiler::testing::executionConfig(), diagnostics, programData,
+          /*statistics=*/nullptr,
           /*tilePipelineParallelism=*/0,
           /*captureTileDataflowIRTrace=*/false);
       ASSERT_TRUE(compiled.isAccepted())
@@ -995,6 +1019,11 @@ TEST(SelectedRegionMaterializationTest,
                                       *selected,
                                       *temporal.getPlan(),
                                       *representations,
+                                      {},
+                                      {},
+                                      {},
+                                      {},
+                                      {},
                                       noAttention};
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);
@@ -1011,11 +1040,12 @@ TEST(SelectedRegionMaterializationTest,
           prepared->program->availableTileIds, verificationFailure)))
           << verificationFailure;
       compiler::ProgramDataHandoff programData;
+      CardExecutablePreparation preparation;
       CardExecutableCompilationResult compiled = compileCardModuleToExecutable(
           std::move(materialized->module), CardId(0),
           prepared->program->availableTileIds, materialized->relations,
-          metadata(extent), compiler::testing::executionConfig(), diagnostics,
-          programData, /*statistics=*/nullptr,
+          preparation, metadata(extent), compiler::testing::executionConfig(),
+          diagnostics, programData, /*statistics=*/nullptr,
           /*tilePipelineParallelism=*/0,
           /*captureTileDataflowIRTrace=*/false);
       ASSERT_TRUE(compiled.isAccepted())
@@ -1087,6 +1117,11 @@ TEST(SelectedRegionMaterializationTest,
                                       *selected,
                                       *temporal.getPlan(),
                                       *representations,
+                                      {},
+                                      {},
+                                      {},
+                                      {},
+                                      {},
                                       noAttention};
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);
@@ -1102,11 +1137,13 @@ TEST(SelectedRegionMaterializationTest,
           prepared->program->availableTileIds, verificationFailure)))
           << verificationFailure;
       compiler::ProgramDataHandoff programData;
+      CardExecutablePreparation preparation;
       CardExecutableCompilationResult compiled = compileCardModuleToExecutable(
           std::move(materialized->module), CardId(0),
           prepared->program->availableTileIds, materialized->relations,
-          fanoutMetadata(extent), compiler::testing::executionConfig(),
-          diagnostics, programData, /*statistics=*/nullptr,
+          preparation, fanoutMetadata(extent),
+          compiler::testing::executionConfig(), diagnostics, programData,
+          /*statistics=*/nullptr,
           /*tilePipelineParallelism=*/0,
           /*captureTileDataflowIRTrace=*/false);
       ASSERT_TRUE(compiled.isAccepted())

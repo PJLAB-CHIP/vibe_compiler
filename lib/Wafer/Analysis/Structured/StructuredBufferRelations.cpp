@@ -5,6 +5,7 @@
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/WaferDialect.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -55,6 +56,11 @@ collectStoragePredecessors(mlir::Value value,
   }
   if (auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(definition)) {
     predecessors.push_back(view.getViewSource());
+    return true;
+  }
+  if (auto select = mlir::dyn_cast<mlir::arith::SelectOp>(definition)) {
+    predecessors.push_back(select.getTrueValue());
+    predecessors.push_back(select.getFalseValue());
     return true;
   }
   if (mlir::Value exit =
@@ -482,13 +488,15 @@ StructuredMaterializationRelations
 remapStructuredBufferRelations(const StructuredMaterializationRelations &source,
                                const mlir::IRMapping &mapping) {
   StructuredMaterializationRelations result;
+  llvm::SmallVectorImpl<StructuredOperationResultBufferRelation>
+      *noUnmappedResults = nullptr;
   llvm::SmallVectorImpl<StructuredOperationBufferRelation> *noUnmappedOps =
       nullptr;
   llvm::SmallVectorImpl<SpatialOutputBufferRelation> *noUnmappedOutputs =
       nullptr;
-  appendRemapped(llvm::ArrayRef<StructuredOperationBufferRelation>(
-                     source.operationResultBuffers),
-                 mapping, result.operationResultBuffers, noUnmappedOps);
+  appendRemapped<StructuredOperationResultBufferRelation>(
+      source.operationResultBuffers, mapping, result.operationResultBuffers,
+      noUnmappedResults);
   appendRemapped(
       llvm::ArrayRef<StructuredOperationBufferRelation>(source.operandBuffers),
       mapping, result.operandBuffers, noUnmappedOps);
@@ -548,10 +556,9 @@ remapStructuredBufferRelationsComplete(
   StructuredRelationRemapIssue &reported = issue ? *issue : localIssue;
   reported = {};
   StructuredMaterializationRelations result;
-  appendRemapped(llvm::ArrayRef<StructuredOperationBufferRelation>(
-                     source.operationResultBuffers),
-                 mapping, result.operationResultBuffers,
-                 &reported.unmappedResultBuffers);
+  appendRemapped<StructuredOperationResultBufferRelation>(
+      source.operationResultBuffers, mapping, result.operationResultBuffers,
+      &reported.unmappedResultBuffers);
   appendRemapped(
       llvm::ArrayRef<StructuredOperationBufferRelation>(source.operandBuffers),
       mapping, result.operandBuffers, &reported.unmappedOperandBuffers);
@@ -593,7 +600,7 @@ llvm::SmallVector<uint32_t, 4> collectStructuredNodesUsedByOperation(
   llvm::SmallVector<mlir::Value, 8> values =
       collectOperationBufferValues(operation);
   llvm::SmallVector<uint32_t, 4> nodes;
-  auto collect = [&](const StructuredOperationBufferRelation &relation) {
+  auto collect = [&](const auto &relation) {
     if (llvm::any_of(values, [&](mlir::Value value) {
           return shareStructuredBufferStorage(value, relation.buffer, memo);
         }))

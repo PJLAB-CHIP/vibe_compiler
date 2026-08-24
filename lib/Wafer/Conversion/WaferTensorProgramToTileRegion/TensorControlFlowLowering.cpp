@@ -102,8 +102,8 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
       selectedDDRStageExternalBuffers.insert(cloned->getResult(0));
       if (relationRecorder)
         relationRecorder->recordSelectedDDRStage(
-            mlir::cast<mlir::memref::AllocOp>(cloned),
-            selected->producerNode);
+            mlir::cast<mlir::memref::AllocOp>(cloned), selected->producerNode,
+            selected->producerResult);
     }
     return mlir::success();
   }
@@ -668,8 +668,7 @@ TileRegionBodyEmitter::convertTensorPad(mlir::tensor::PadOp pad,
       makeSPMMemRefType(resultType, MemLayout::Tensor);
   mlir::Value destination =
       builder.create<mlir::memref::AllocOp>(pad.getLoc(), resultBufferType);
-  recordScratchAllocation(
-      destination.getDefiningOp<mlir::memref::AllocOp>());
+  recordScratchAllocation(destination.getDefiningOp<mlir::memref::AllocOp>());
   auto fill = builder.create<ComputeFillOp>(pad.getLoc(), destination, *scalar,
                                             /*fill_domain=*/FillDomainAttr{});
   recordStructuredComputeOperation(fill);

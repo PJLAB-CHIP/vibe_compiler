@@ -106,16 +106,17 @@ TEST_F(CardExecutableCompilationTest,
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   wafer::compiler::detail::CardExecutableLoweringStatistics statistics;
+  wafer::compiler::detail::CardExecutablePreparation preparation;
   wafer::compiler::ProgramDataHandoff programData;
 
   auto result = wafer::compiler::detail::compileCardModuleToExecutable(
       std::move(cardModule), wafer::CardId(0), expectedTileIds,
-      /*materializationRelations=*/{}, program, executionConfig(), diagnostics,
-      programData, &statistics);
+      /*materializationRelations=*/{}, preparation, program, executionConfig(),
+      diagnostics, programData, &statistics);
   auto repeated = wafer::compiler::detail::compileCardModuleToExecutable(
       std::move(repeatedCardModule), wafer::CardId(0), expectedTileIds,
-      /*materializationRelations=*/{}, program, executionConfig(), diagnostics,
-      programData, &statistics);
+      /*materializationRelations=*/{}, preparation, program, executionConfig(),
+      diagnostics, programData, &statistics);
   diagnostics.flush();
 
   EXPECT_FALSE(result.isAccepted());
@@ -142,12 +143,13 @@ TEST_F(CardExecutableCompilationTest,
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   wafer::compiler::detail::CardExecutableLoweringStatistics statistics;
+  wafer::compiler::detail::CardExecutablePreparation preparation;
   wafer::compiler::ProgramDataHandoff programData;
 
   auto result = wafer::compiler::detail::compileCardModuleToExecutable(
       {}, wafer::CardId(0), expectedTileIds,
-      /*materializationRelations=*/{}, program, executionConfig(), diagnostics,
-      programData, &statistics);
+      /*materializationRelations=*/{}, preparation, program, executionConfig(),
+      diagnostics, programData, &statistics);
   diagnostics.flush();
 
   EXPECT_FALSE(result.isAccepted());
@@ -159,6 +161,47 @@ TEST_F(CardExecutableCompilationTest,
   EXPECT_EQ(statistics.cardModuleCompilationInvocations, 1u);
   EXPECT_NE(diagnosticText.find("outcome=indeterminate"), std::string::npos)
       << diagnosticText;
+}
+
+TEST_F(CardExecutableCompilationTest,
+       TypedSelectedPreparationFailureStopsBeforeTileLowering) {
+  class RejectingPreparation final
+      : public wafer::compiler::detail::CardExecutablePreparation {
+  public:
+    mlir::LogicalResult prepareTileDataflow(
+        llvm::MutableArrayRef<wafer::compiler::detail::CandidateTileDataflowIR>
+            tiles,
+        wafer::compiler::detail::CardExecutablePreparationFailure &failure)
+        final {
+      observedTiles = tiles.size();
+      failure.kind = wafer::compiler::detail::
+          CardExecutablePreparationFailureKind::Unsupported;
+      failure.detail = "selected test preparation is unsupported";
+      return mlir::failure();
+    }
+
+    size_t observedTiles = 0;
+  } preparation;
+
+  auto cardModule = oversizedCardModule();
+  ASSERT_TRUE(cardModule);
+  auto expectedTileIds = tileIds();
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.numPartitions = 1;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::detail::CardExecutableLoweringStatistics statistics;
+  wafer::compiler::ProgramDataHandoff programData;
+  auto result = wafer::compiler::detail::compileCardModuleToExecutable(
+      std::move(cardModule), wafer::CardId(0), expectedTileIds,
+      /*materializationRelations=*/{}, preparation, program, executionConfig(),
+      diagnostics, programData, &statistics);
+  EXPECT_EQ(result.status,
+            wafer::compiler::detail::CardExecutableCompilationStatus::
+                UnsupportedFailure);
+  EXPECT_EQ(result.gate, "selected-tile-dataflow-preparation");
+  EXPECT_EQ(preparation.observedTiles, expectedTileIds.size());
+  EXPECT_EQ(statistics.tileModuleLoweringAttempts, 0u);
 }
 
 } // namespace

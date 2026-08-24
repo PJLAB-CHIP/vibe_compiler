@@ -1303,6 +1303,20 @@
   missing/duplicate/unknown semantic root group分别有正负例。每个actual SPM allocation没有typed owner时必须compiler-contract failure，
   不能按shape、唯一root、Location或buffer名补猜。
 
+## Selected storage改写不能越过Tile隔离边界或在alias后恢复event identity
+
+- 现象：rotating slot在`func`入口创建allocation后被`wafer.tile.region`内的`arith.select`引用，verifier报告isolated region捕获；把两个
+  result绑定到同一reuse object后，再按storage root匹配compute event会让两个instruction同时看见两个structured owner。
+- 根因：storage materializer把函数作用域当成allocation owner，没有遵守实际SPM planner要求的TileRegion scope；同时在alias/reuse已经
+  合并SSA root后才恢复`EventId -> instruction`，丢失了改写前仍然明确的一对一execution identity。
+- 修复模式：alias/reuse和rotating slot都在所有相关root共同且唯一的`wafer.tile.region`中创建；跨TileRegion共享返回typed
+  Unsupported。先从current pre-storage relations捕获instruction的execution node，再做只改变storage identity的rewrite；
+  `arith.select`作为typed memref forwarding将true/false roots都纳入relation query。辅助selector和issue归入同一event时按actual block
+  order保留SSA先后，再执行K materialization。
+- 防复发：用rank-3 1024/1025 alias/reuse和1031 pipelined rotation分别贯通selected schedule/K→actual MiniMalloc；检查source relation、
+  allocation数量、verifier和event owner。不得把allocation提升到`func`、按合并后的唯一root猜event，或因synthetic fixture能verify就绕过
+  actual TileRegion planning scope。
+
 ## Exact set的normal form不能代替物理可表示性证明
 
 - 现象：multi-producer `insert_slice` reconstruction产生语义有限且精确的`GeneralPresburger` domain；movement与storage保存的是同一集合，

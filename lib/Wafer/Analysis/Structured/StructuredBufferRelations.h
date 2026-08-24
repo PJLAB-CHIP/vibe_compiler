@@ -30,7 +30,8 @@ remapStructuredBufferRelations(const StructuredMaterializationRelations &source,
 /// caller reports these and fails closed instead of probing or planning with
 /// incomplete evidence.
 struct StructuredRelationRemapIssue {
-  llvm::SmallVector<StructuredOperationBufferRelation, 4> unmappedResultBuffers;
+  llvm::SmallVector<StructuredOperationResultBufferRelation, 4>
+      unmappedResultBuffers;
   llvm::SmallVector<StructuredOperationBufferRelation, 4>
       unmappedOperandBuffers;
   llvm::SmallVector<StructuredOperationBufferRelation, 4>

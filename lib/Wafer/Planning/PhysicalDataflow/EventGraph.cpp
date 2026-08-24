@@ -10,6 +10,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <functional>
@@ -345,10 +346,29 @@ private:
 
   bool addDependency(EventId predecessor, EventId successor,
                      EventDependencyReason reason) {
-    if (!events.count(predecessor) || !events.count(successor))
+    if (!events.count(predecessor) || !events.count(successor)) {
+      const EventId &missing =
+          !events.count(predecessor) ? predecessor : successor;
+      std::string detail;
+      llvm::raw_string_ostream diagnostic(detail);
+      diagnostic << "event dependency references an unknown "
+                 << (!events.count(predecessor) ? "predecessor" : "successor")
+                 << " reason=" << static_cast<unsigned>(reason)
+                 << " kind=" << static_cast<unsigned>(missing.kind);
+      if (const auto *movement =
+              std::get_if<MovementEventAction>(&missing.action))
+        diagnostic << " movement_phase="
+                   << static_cast<unsigned>(movement->phase)
+                   << " payload=" << movement->payloadSlice
+                   << " action_kind=" << movement->action.index();
+      if (const auto *movement =
+              std::get_if<MovementEventAction>(&missing.action))
+        if (movement->hop)
+          diagnostic << " hop=" << movement->hop->source.getValue() << "->"
+                     << movement->hop->destination.getValue();
       return fail(EventGraphFailureKind::CompilerBug,
-                  EventGraphFailureReason::MalformedPlan,
-                  "event dependency references an unknown event");
+                  EventGraphFailureReason::MalformedPlan, diagnostic.str());
+    }
     if (predecessor == successor)
       return fail(EventGraphFailureKind::ExactRejection,
                   EventGraphFailureReason::HardDependencyCycle,
@@ -584,15 +604,6 @@ private:
               !addDependency(sendIssue, sendCompletion,
                              EventDependencyReason::Completion))
             return false;
-          auto parent = incoming.find(hop.source.getValue());
-          if (parent != incoming.end()) {
-            EventId parentCompletion = movementEvent(
-                anchor, PlannedEventKind::Completion,
-                MovementEventPhase::PeerReceive, payloadSlice, parent->second);
-            if (!addDependency(parentCompletion, sendIssue,
-                               EventDependencyReason::TransferReady))
-              return false;
-          }
           completions.insert(
               {sendIssue, sendCompletion, CompletionProtocol::DirectDTE, 0});
           completions.insert({receiveIssue, receiveCompletion,
@@ -609,6 +620,21 @@ private:
             for (const MovementHop &link : exact->second->links)
               addResourceUse(sendIssue, DirectedNoCLinkResource{link},
                              ResourceUseMode::CapacityUnits, receiveCompletion);
+        }
+      for (uint32_t payloadSlice = 0; payloadSlice < *pieces; ++payloadSlice)
+        for (const MovementHop &hop : graph.hops) {
+          auto parent = incoming.find(hop.source.getValue());
+          if (parent == incoming.end())
+            continue;
+          EventId parentCompletion = movementEvent(
+              anchor, PlannedEventKind::Completion,
+              MovementEventPhase::PeerReceive, payloadSlice, parent->second);
+          EventId sendIssue =
+              movementEvent(anchor, PlannedEventKind::MovementIssue,
+                            MovementEventPhase::PeerSend, payloadSlice, hop);
+          if (!addDependency(parentCompletion, sendIssue,
+                             EventDependencyReason::TransferReady))
+            return false;
         }
 
       for (const MovementActionId &member : graph.actions) {
@@ -672,11 +698,28 @@ private:
               movementEvent(anchor, PlannedEventKind::Completion,
                             MovementEventPhase::PeerReceive, payloadSlice,
                             terminalHop->second);
+          EventId combineIssue =
+              movementEvent(member, PlannedEventKind::LocalCombine,
+                            MovementEventPhase::LocalCombine, payloadSlice);
+          EventId combineCompletion =
+              movementEvent(member, PlannedEventKind::Completion,
+                            MovementEventPhase::LocalCombine, payloadSlice);
           if (!addDependency(issue, terminalReceiveIssue,
                              EventDependencyReason::TransferReady) ||
-              !addDependency(terminalReceiveCompletion, completion,
+              !addEvent(combineIssue, TileId(terminal), allWorkers) ||
+              !addEvent(combineCompletion, TileId(terminal)) ||
+              !addDependency(terminalReceiveCompletion, combineIssue,
+                             EventDependencyReason::TransferReady) ||
+              !addDependency(combineIssue, combineCompletion,
+                             EventDependencyReason::Completion) ||
+              !addDependency(combineCompletion, completion,
                              EventDependencyReason::Completion))
             return false;
+          completions.insert({combineIssue, combineCompletion,
+                              CompletionProtocol::NCCParticipant, 0});
+          addResourceUse(combineIssue, TileEngineResource{TileId(terminal)},
+                         ResourceUseMode::CapacityUnits, combineCompletion,
+                         ResourceKnowledge::Estimate);
         }
       }
     }

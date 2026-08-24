@@ -159,12 +159,6 @@ PreparedScheduleMaterializationResult prepareScheduleMaterialization(
             "selected control order has a missing, duplicate, or wrong-Tile "
             "event binding",
             event);
-      if (!scope.block)
-        scope.block = binding->second->block;
-      if (scope.block != binding->second->block)
-        return prepareFailure(
-            ScheduleMaterializationFailureKind::Unsupported,
-            "one selected control scope spans multiple actual blocks", event);
       scope.events.push_back(*binding->second);
     }
     prepared.scopes.push_back(std::move(scope));
@@ -175,26 +169,29 @@ PreparedScheduleMaterializationResult prepareScheduleMaterialization(
         "actual event bindings are not all-and-only the selected control "
         "orders");
 
-  for (const PreparedScheduleScope &scope : prepared.scopes) {
-    std::map<mlir::Operation *, std::pair<size_t, size_t>> operationPositions;
-    for (auto [eventIndex, binding] : llvm::enumerate(scope.events)) {
-      for (auto [operationIndex, operation] :
-           llvm::enumerate(binding.operations))
-        operationPositions.emplace(operation,
-                                   std::make_pair(eventIndex, operationIndex));
-    }
+  std::map<mlir::Block *, std::vector<const ScheduleEventIRBinding *>>
+      eventsByBlock;
+  for (const PreparedScheduleScope &scope : prepared.scopes)
     for (const ScheduleEventIRBinding &binding : scope.events)
-      for (mlir::Operation *operation : binding.operations) {
-        auto destination = operationPositions.at(operation);
+      eventsByBlock[binding.block].push_back(&binding);
+  for (const auto &[block, blockEvents] : eventsByBlock) {
+    (void)block;
+    std::map<mlir::Operation *, size_t> operationPositions;
+    size_t nextPosition = 0;
+    for (const ScheduleEventIRBinding *binding : blockEvents)
+      for (mlir::Operation *operation : binding->operations)
+        operationPositions.emplace(operation, nextPosition++);
+    for (const ScheduleEventIRBinding *binding : blockEvents)
+      for (mlir::Operation *operation : binding->operations) {
+        const size_t destination = operationPositions.at(operation);
         for (mlir::Value operand : operation->getOperands()) {
-          mlir::Operation *definition = operand.getDefiningOp();
-          auto source = operationPositions.find(definition);
+          auto source = operationPositions.find(operand.getDefiningOp());
           if (source != operationPositions.end() &&
               source->second >= destination)
             return prepareFailure(
                 ScheduleMaterializationFailureKind::BrokenContract,
                 "selected actual order violates an SSA dependence",
-                binding.event);
+                binding->event);
         }
       }
   }
@@ -321,24 +318,35 @@ materializeSchedule(std::vector<mlir::OwningOpRef<mlir::ModuleOp>> modules,
           "prepared schedule is stale for the owned module epoch");
 
   mlir::IRRewriter rewriter(modules.front()->getContext());
-  for (const PreparedScheduleScope &scope : prepared.scopes) {
-    mlir::Operation *terminator = scope.block->getTerminator();
+  std::map<mlir::Block *, std::vector<const ScheduleEventIRBinding *>>
+      eventsByBlock;
+  for (const PreparedScheduleScope &scope : prepared.scopes)
+    for (const ScheduleEventIRBinding &binding : scope.events)
+      eventsByBlock[binding.block].push_back(&binding);
+  for (const auto &[block, blockEvents] : eventsByBlock) {
+    mlir::Operation *terminator = block->getTerminator();
     if (!terminator)
       return materializationFailure(
           ScheduleMaterializationFailureKind::BrokenContract,
           "schedule control block has no terminator");
-    for (const ScheduleEventIRBinding &binding : scope.events)
-      for (mlir::Operation *operation : binding.operations)
+    for (const ScheduleEventIRBinding *binding : blockEvents)
+      for (mlir::Operation *operation : binding->operations)
         rewriter.moveOpBefore(operation, terminator);
   }
 
   std::map<EventId, const ScheduleEventIRBinding *> byEvent;
-  std::map<EventId, std::pair<const PreparedScheduleScope *, size_t>> positions;
   for (const PreparedScheduleScope &scope : prepared.scopes)
-    for (auto [index, binding] : llvm::enumerate(scope.events)) {
+    for (const ScheduleEventIRBinding &binding : scope.events)
       byEvent.emplace(binding.event, &binding);
-      positions.emplace(binding.event, std::make_pair(&scope, index));
-    }
+  std::map<
+      EventId,
+      std::pair<const std::vector<const ScheduleEventIRBinding *> *, size_t>>
+      positions;
+  for (const auto &[block, blockEvents] : eventsByBlock) {
+    (void)block;
+    for (auto [index, binding] : llvm::enumerate(blockEvents))
+      positions.emplace(binding->event, std::make_pair(&blockEvents, index));
+  }
   for (const EventWorkerBinding &binding : prepared.plan.workerBindings)
     for (mlir::Operation *operation : byEvent.at(binding.event)->operations)
       if (mlir::isa<WaferNCCIssueOpInterface>(operation) &&
@@ -359,12 +367,14 @@ materializeSchedule(std::vector<mlir::OwningOpRef<mlir::ModuleOp>> modules,
       return materializationFailure(
           ScheduleMaterializationFailureKind::BrokenContract,
           "selected completion boundary is absent from actual control");
-    const PreparedScheduleScope &scope = *position->second.first;
-    mlir::Operation *insertionAnchor = scope.block->getTerminator();
-    for (size_t index = position->second.second + 1;
-         index < scope.events.size(); ++index)
-      if (!scope.events[index].operations.empty()) {
-        insertionAnchor = scope.events[index].operations.front();
+    const std::vector<const ScheduleEventIRBinding *> &blockEvents =
+        *position->second.first;
+    mlir::Block *block = blockEvents[position->second.second]->block;
+    mlir::Operation *insertionAnchor = block->getTerminator();
+    for (size_t index = position->second.second + 1; index < blockEvents.size();
+         ++index)
+      if (!blockEvents[index]->operations.empty()) {
+        insertionAnchor = blockEvents[index]->operations.front();
         break;
       }
     rewriter.setInsertionPoint(insertionAnchor);
@@ -456,18 +466,21 @@ verifyMaterializedSchedule(const MaterializedSchedule &materialized,
         return fail("schedule verifier has stale or duplicate event ops");
   }
   std::set<EventId> scheduledEvents;
+  std::map<mlir::Block *, std::vector<mlir::Operation *>> operationsByBlock;
   for (const ControlOrder &order : materialized.plan.controlOrders) {
-    std::vector<mlir::Operation *> operations;
     for (const EventId &event : order.events) {
       auto binding = byEvent.find(event);
       if (binding == byEvent.end() || !scheduledEvents.insert(event).second)
         return fail("schedule verifier is missing a control event");
+      auto &operations = operationsByBlock[binding->second->block];
       operations.insert(operations.end(), binding->second->operations.begin(),
                         binding->second->operations.end());
     }
+  }
+  for (const auto &[block, operations] : operationsByBlock) {
+    (void)block;
     for (size_t index = 1; index < operations.size(); ++index)
-      if (operations[index - 1]->getBlock() != operations[index]->getBlock() ||
-          !operations[index - 1]->isBeforeInBlock(operations[index]))
+      if (!operations[index - 1]->isBeforeInBlock(operations[index]))
         return fail("actual operation order differs from ClosedSchedulePlan");
   }
   if (scheduledEvents.size() != byEvent.size())
@@ -536,6 +549,8 @@ verifyMaterializedSchedule(const MaterializedSchedule &materialized,
         return fail("schedule completion group contains an unexpected op");
       for (size_t index = 0; index <= boundaryIndex; ++index) {
         const auto *event = byEvent.at(control->events[index]);
+        if (event->block != boundary.block)
+          continue;
         for (mlir::Operation *scheduled : event->operations)
           if (!scheduled->isBeforeInBlock(operation))
             return fail("actual completion precedes its selected boundary");
@@ -543,6 +558,8 @@ verifyMaterializedSchedule(const MaterializedSchedule &materialized,
       for (size_t index = boundaryIndex + 1; index < control->events.size();
            ++index) {
         const auto *event = byEvent.at(control->events[index]);
+        if (event->block != boundary.block)
+          continue;
         for (mlir::Operation *scheduled : event->operations)
           if (!operation->isBeforeInBlock(scheduled))
             return fail("actual completion exceeds its selected boundary");

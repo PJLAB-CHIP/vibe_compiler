@@ -1,11 +1,6 @@
 set(WAFER_PLANNING_SOURCES
   Planning/Baseline/BaselineAttentionMaterialization.cpp
-  Planning/Baseline/CardBaselineAssignment.cpp
   Planning/Baseline/CardBaselineCompilation.cpp
-  Planning/Baseline/CardBaselineConsumerInputs.cpp
-  Planning/Baseline/CardBaselineDataMovement.cpp
-  Planning/Baseline/CardBaselineEdgeCarriers.cpp
-  Planning/Baseline/CardBaselineMaterialization.cpp
   Planning/Baseline/CardBaselineTemporalTiling.cpp
   Planning/Baseline/BaselineTemporalPlan.cpp
   Planning/Baseline/CanonicalBaselinePlan.cpp
@@ -22,6 +17,12 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/CanonicalSchedulePlan.cpp
   Planning/PhysicalDataflow/CanonicalStoragePlan.cpp
   Planning/PhysicalDataflow/CanonicalTemporalPlan.cpp
+  Planning/PhysicalDataflow/CardMaterializationPlan.cpp
+  Planning/PhysicalDataflow/CardConsumerInputs.cpp
+  Planning/PhysicalDataflow/CardDataflowConstruction.cpp
+  Planning/PhysicalDataflow/CardEdgeCarriers.cpp
+  Planning/PhysicalDataflow/CompleteCandidateMaterialization.cpp
+  Planning/PhysicalDataflow/CompleteCandidatePreparation.cpp
   Planning/PhysicalDataflow/EventGraph.cpp
   Planning/PhysicalDataflow/ExecutionStructureDomain.cpp
   Planning/PhysicalDataflow/ExecutionStructureMaterialization.cpp

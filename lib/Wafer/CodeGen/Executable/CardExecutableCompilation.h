@@ -11,6 +11,7 @@
 #include "Wafer/Target/Core/TopologyIds.h"
 
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -26,6 +27,68 @@ class raw_ostream;
 
 namespace wafer::compiler::detail {
 
+struct CandidateTileDataflowIR {
+  CardId card{0};
+  TileId tile{0};
+  mlir::OwningOpRef<mlir::ModuleOp> *owner = nullptr;
+  StructuredMaterializationRelations *relations = nullptr;
+
+  mlir::ModuleOp getModule() const {
+    return owner && *owner ? owner->get() : mlir::ModuleOp{};
+  }
+};
+
+struct CandidateInstructionIR {
+  CardId card{0};
+  TileId tile{0};
+  mlir::OwningOpRef<mlir::ModuleOp> *owner = nullptr;
+  StructuredMaterializationRelations *relations = nullptr;
+
+  mlir::ModuleOp getModule() const {
+    return owner && *owner ? owner->get() : mlir::ModuleOp{};
+  }
+};
+
+enum class CardExecutablePreparationFailureKind : uint8_t {
+  Unsupported,
+  ExactRejection,
+  Indeterminate,
+  CompilerBug,
+};
+
+struct CardExecutablePreparationFailure {
+  CardExecutablePreparationFailureKind kind =
+      CardExecutablePreparationFailureKind::CompilerBug;
+  std::string detail;
+};
+
+/// Invocation-local selected-candidate handoff. Implementations may mutate
+/// only the borrowed current candidate modules during the call and must not
+/// retain IR pointers. The enclosing compiler function owns rollback by
+/// destroying the whole candidate on failure.
+class CardExecutablePreparation {
+public:
+  virtual ~CardExecutablePreparation() = default;
+
+  virtual bool ownsInstructionCompletion() const { return false; }
+
+  virtual mlir::LogicalResult
+  prepareTileDataflow(llvm::MutableArrayRef<CandidateTileDataflowIR> tiles,
+                      CardExecutablePreparationFailure &failure) {
+    (void)tiles;
+    failure = {};
+    return mlir::success();
+  }
+
+  virtual mlir::LogicalResult
+  prepareInstructionIR(llvm::MutableArrayRef<CandidateInstructionIR> tiles,
+                       CardExecutablePreparationFailure &failure) {
+    (void)tiles;
+    failure = {};
+    return mlir::success();
+  }
+};
+
 /// Query-local relation from one operation in an accepted Instr module to a
 /// structured DAG node whose materialized buffer it reads, writes or forwards.
 /// The operation pointer is valid only while the returned executable remains
@@ -38,7 +101,9 @@ struct AcceptedOperationNodeRelation {
 enum class CardExecutableCompilationStatus : uint8_t {
   Accepted,
   ProvenExactRejection,
+  UnsupportedFailure,
   IndeterminateFailure,
+  CompilerFailure,
 };
 
 struct CardExecutableTileFailure {
@@ -94,6 +159,7 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
     mlir::OwningOpRef<mlir::ModuleOp> cardModule, CardId expectedCardId,
     llvm::ArrayRef<TileId> expectedTileIds,
     const StructuredMaterializationRelations &materializationRelations,
+    CardExecutablePreparation &preparation,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     ProgramDataHandoff &programData,

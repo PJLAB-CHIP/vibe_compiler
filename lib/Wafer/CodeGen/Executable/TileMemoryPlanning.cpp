@@ -80,8 +80,7 @@ TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
     if (!llvm::is_contained(values, value))
       values.push_back(value);
   };
-  auto indexNodeRelation = [&](const StructuredOperationBufferRelation &entry,
-                               auto &index) {
+  auto indexNodeRelation = [&](const auto &entry, auto &index) {
     for (mlir::Value root : storageRoots.getStorageRoots(entry.buffer))
       appendUnique(index[root], entry.structuredNodeId);
   };

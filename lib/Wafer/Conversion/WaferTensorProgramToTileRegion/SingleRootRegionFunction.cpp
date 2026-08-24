@@ -733,7 +733,7 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
   // A verifier-legal structured passthrough may materialize only its selected
   // result buffer and no target compute op. The current result relation is the
   // exact ownership witness in that case; it is not a name/shape fallback.
-  for (const StructuredOperationBufferRelation &relation :
+  for (const StructuredOperationResultBufferRelation &relation :
        emissionRelations.materializedBuffers.operationResultBuffers)
     if (relation.buffer)
       emittedNodes.insert(relation.structuredNodeId);

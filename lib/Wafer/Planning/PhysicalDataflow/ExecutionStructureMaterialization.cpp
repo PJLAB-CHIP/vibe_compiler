@@ -14,6 +14,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <functional>
@@ -523,15 +524,25 @@ PreparedExecutionStructureResult prepareExecutionStructureMaterialization(
         const int64_t sourceCycle =
             static_cast<int64_t>(sourceOrder->second) +
             static_cast<int64_t>(sourceStage->second) * operationsPerIteration;
+        const bool orderedWithinEvent =
+            sourceEvent->second == entry.event && dependence->distance == 0;
         if (destinationCycle <
                 sourceCycle - operationsPerIteration * dependence->distance ||
-            !hasPlanDependence(pipeline, sourceEvent->second, entry.event,
-                               dependence->distance))
+            (!orderedWithinEvent &&
+             !hasPlanDependence(pipeline, sourceEvent->second, entry.event,
+                                dependence->distance))) {
+          std::string detail;
+          llvm::raw_string_ostream stream(detail);
+          stream << "actual SSA dependence contradicts the selected "
+                    "distance/stage schedule: "
+                 << dependence->source->getName() << " stage "
+                 << sourceStage->second << " -> " << entry.operation->getName()
+                 << " stage " << entry.stage.getValue() << " at distance "
+                 << dependence->distance;
           return prepareFailure(
               ExecutionStructureMaterializationFailureKind::BrokenContract,
-              "actual SSA dependence contradicts the selected distance/stage "
-              "schedule",
-              pipeline.scope);
+              stream.str(), pipeline.scope);
+        }
       }
     }
     if (std::optional<std::string> effectFailure =

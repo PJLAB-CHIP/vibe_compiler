@@ -20,31 +20,35 @@ void setFailureReason(std::string *failureReason, llvm::StringRef reason) {
 }
 
 void TileRegionEmissionRecorder::recordSelectedDDRStage(
-    mlir::memref::AllocOp allocation, uint32_t producerNode) {
+    mlir::memref::AllocOp allocation, uint32_t producerNode,
+    unsigned producerResult) {
   if (!allocation)
     return;
   if (!llvm::any_of(output.selectedDDRStages, [&](const auto &relation) {
         return relation.allocation == allocation &&
-               relation.producerNode == producerNode;
+               relation.producerNode == producerNode &&
+               relation.producerResult == producerResult;
       }))
-    output.selectedDDRStages.push_back({allocation, producerNode});
+    output.selectedDDRStages.push_back(
+        {allocation, producerNode, producerResult});
   // A selected DDR stage is an actual materialized result of its owning DAG
   // node. Keep that owner in the common current-buffer relation set so later
   // TileRegion-to-Instr scratch allocations can follow the explicit
   // store/load SSA path back to the same node.
-  recordOperationResultBuffer(producerNode, allocation.getResult());
+  recordOperationResultBuffer(producerNode, producerResult,
+                              allocation.getResult());
 }
 
 void TileRegionEmissionRecorder::recordOperationResultBuffer(
-    uint32_t structuredNodeId, mlir::Value buffer) {
+    uint32_t structuredNodeId, unsigned resultIndex, mlir::Value buffer) {
   if (!buffer)
     return;
   auto &relations = output.materializedBuffers.operationResultBuffers;
   if (!llvm::any_of(relations, [&](const auto &relation) {
         return relation.structuredNodeId == structuredNodeId &&
-               relation.buffer == buffer;
+               relation.resultIndex == resultIndex && relation.buffer == buffer;
       }))
-    relations.push_back({structuredNodeId, buffer});
+    relations.push_back({structuredNodeId, resultIndex, buffer});
 }
 
 void TileRegionEmissionRecorder::recordStructuredComputeOperation(
@@ -1178,7 +1182,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
                  {versions->second.tensor, versions->second.nTensor,
                   versions->second.cx, versions->second.nCx})
               if (buffer)
-                relationRecorder->recordOperationResultBuffer(current, buffer);
+                relationRecorder->recordOperationResultBuffer(
+                    current, resultNumber, buffer);
         BufferVersions primary;
         switch (*layout) {
         case MemLayout::Tensor:
@@ -1197,12 +1202,12 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
         buffers[value] = primary;
         if (relationRecorder)
           for (uint32_t current : activeStructuredNodes)
-            relationRecorder->recordOperationResultBuffer(current, *selected);
-        (void)resultNumber;
+            relationRecorder->recordOperationResultBuffer(current, resultNumber,
+                                                          *selected);
       }
     }
     if (mlir::succeeded(result)) {
-      for (mlir::Value value : op->getResults()) {
+      for (auto [resultNumber, value] : llvm::enumerate(op->getResults())) {
         auto versions = buffers.find(value);
         if (versions == buffers.end())
           continue;
@@ -1211,7 +1216,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
               versions->second.cx, versions->second.nCx})
           if (buffer)
             for (uint32_t current : activeStructuredNodes)
-              relationRecorder->recordOperationResultBuffer(current, buffer);
+              relationRecorder->recordOperationResultBuffer(
+                  current, static_cast<unsigned>(resultNumber), buffer);
       }
     }
     if (mlir::succeeded(result))

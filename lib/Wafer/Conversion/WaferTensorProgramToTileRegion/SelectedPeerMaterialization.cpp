@@ -49,8 +49,7 @@ mlir::FailureOr<llvm::SmallVector<int64_t, 4>> getFragmentStreamTileSizes(
   mlir::FailureOr<llvm::SmallVector<int64_t, 4>> selected =
       getResultTemporalTileSizes(producer, result, temporalTiles,
                                  failureReason);
-  if (mlir::failed(selected) ||
-      selected->size() != fragment.sizes.size())
+  if (mlir::failed(selected) || selected->size() != fragment.sizes.size())
     return mlir::failure();
   for (auto [tile, size] : llvm::zip_equal(*selected, fragment.sizes)) {
     if (tile <= 0 || size <= 0)
@@ -67,8 +66,7 @@ mlir::Value getDDRStageBuffer(mlir::Value tensor) {
       tensor = slice.getSource();
       continue;
     }
-    if (auto toTensor =
-            tensor.getDefiningOp<mlir::bufferization::ToTensorOp>())
+    if (auto toTensor = tensor.getDefiningOp<mlir::bufferization::ToTensorOp>())
       return isWaferDDRMemRefType(toTensor.getMemref().getType())
                  ? toTensor.getMemref()
                  : mlir::Value{};
@@ -236,8 +234,8 @@ materializeSelectedPeerReceives(SelectedEdgeLoweringState &state) {
             return reportSelectedEdgeFailure(
                 failureReason,
                 "peer DDR stage producer has no structured node identity");
-          selectedDDRStages.push_back(
-              CandidateSelectedDDRStage{allocation.getResult(), *producerNode});
+          selectedDDRStages.push_back(CandidateSelectedDDRStage{
+              allocation.getResult(), *producerNode, strategy.producerResult});
           auto destination = builder.create<mlir::bufferization::ToTensorOp>(
               assemblyLoc, allocation.getResult(),
               /*restrict=*/true, /*writable=*/true);
@@ -519,19 +517,18 @@ materializeSelectedPeerSends(SelectedEdgeLoweringState &state) {
       if (independentDDRStages) {
         mlir::Value stageBuffer = getDDRStageBuffer(*value);
         mlir::FailureOr<llvm::SmallVector<int64_t, 4>> streamTiles =
-            getFragmentStreamTileSizes(
-                mapped.producer, strategy.producerResult, mappedTemporalTiles,
-                fragment, failureReason);
+            getFragmentStreamTileSizes(mapped.producer, strategy.producerResult,
+                                       mappedTemporalTiles, fragment,
+                                       failureReason);
         if (!stageBuffer || mlir::failed(streamTiles))
           return reportSelectedEdgeFailure(
               failureReason,
               "selected peer send has no exact DDR stage or temporal tile");
         endpoints.push_back(CandidatePeerEndpoint{
             *value, stageBuffer, CandidatePeerEndpointKind::Send,
-            strategy.destinationTile, fragment.bytes,
-            fragment.communicationId, fragment.payloadSlice,
-            mapped.consumerScheduleOrdinal, strategy.consumerOperand,
-            *producerNode, &fragment});
+            strategy.destinationTile, fragment.bytes, fragment.communicationId,
+            fragment.payloadSlice, mapped.consumerScheduleOrdinal,
+            strategy.consumerOperand, *producerNode, &fragment});
         CandidatePeerEndpoint &endpoint = endpoints.back();
         endpoint.streamOffsets = fragment.offsets;
         endpoint.streamSizes = fragment.sizes;

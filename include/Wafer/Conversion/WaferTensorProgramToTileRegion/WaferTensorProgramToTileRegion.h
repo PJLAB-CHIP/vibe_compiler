@@ -43,6 +43,14 @@ struct StructuredOperationBufferRelation {
   mlir::Value buffer;
 };
 
+/// One exact structured result and one of its current physical buffers. A
+/// result can have several entries when selected layout versions coexist.
+struct StructuredOperationResultBufferRelation {
+  uint32_t structuredNodeId = 0;
+  unsigned resultIndex = 0;
+  mlir::Value buffer;
+};
+
 /// One physical compute operation emitted for a structured DAG node.  The
 /// operation is current-IR SSA ownership evidence used while constructing
 /// root-scoped TileRegions; it is never serialized or recovered from buffers.
@@ -79,7 +87,7 @@ struct PartialReductionMergeInputBufferRelation {
 /// the producing node. No entry outlives or identifies a different IR epoch.
 struct StructuredMaterializationRelations {
   llvm::SmallVector<StructuredOperationEmissionRelation, 16> operationEmissions;
-  llvm::SmallVector<StructuredOperationBufferRelation, 16>
+  llvm::SmallVector<StructuredOperationResultBufferRelation, 16>
       operationResultBuffers;
   llvm::SmallVector<StructuredOperationBufferRelation, 16> operandBuffers;
   /// Compiler-created buffers internal to one structured emission. They are

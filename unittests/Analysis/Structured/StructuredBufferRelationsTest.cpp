@@ -65,7 +65,7 @@ TEST_F(StructuredBufferRelationsTest,
 
   wafer::StructuredMaterializationRelations relations;
   relations.operationResultBuffers.push_back(
-      {/*structuredNodeId=*/7, copy.getResult()});
+      {/*structuredNodeId=*/7, /*resultIndex=*/0, copy.getResult()});
   ASSERT_TRUE(mlir::succeeded(
       wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
           module->getOperation(), relations)));
@@ -181,7 +181,7 @@ module {
 
   wafer::StructuredMaterializationRelations relations;
   relations.operationResultBuffers.push_back(
-      {/*structuredNodeId=*/7, function.getArgument(0)});
+      {/*structuredNodeId=*/7, /*resultIndex=*/0, function.getArgument(0)});
   wafer::compiler::detail::StructuredBufferReplacementListener listener(
       relations);
   wafer::TileRegionToInstrLoweringSession loweringSession(*context, &listener);
@@ -256,7 +256,7 @@ TEST_F(StructuredBufferRelationsTest,
 
   wafer::StructuredMaterializationRelations relations;
   relations.operationResultBuffers.push_back(
-      {/*structuredNodeId=*/7, copy.getResult()});
+      {/*structuredNodeId=*/7, /*resultIndex=*/0, copy.getResult()});
   mlir::func::FuncOp function = *module->getOps<mlir::func::FuncOp>().begin();
   wafer::TileRegionOp region = *function.getOps<wafer::TileRegionOp>().begin();
   ASSERT_TRUE(mlir::succeeded(wafer::convertTileRegionToInstr(region)));
@@ -306,7 +306,7 @@ module {
 
   wafer::StructuredMaterializationRelations relations;
   relations.operationResultBuffers.push_back(
-      {/*structuredNodeId=*/7, view.getResult()});
+      {/*structuredNodeId=*/7, /*resultIndex=*/0, view.getResult()});
   relations.operandBuffers.push_back(
       {/*structuredNodeId=*/3, view.getResult()});
   relations.outputBuffers.push_back({/*outputIndex=*/0, view.getResult()});
@@ -333,7 +333,7 @@ TEST_F(StructuredBufferRelationsTest,
 
   wafer::StructuredMaterializationRelations relations;
   relations.operationResultBuffers.push_back(
-      {/*structuredNodeId=*/7, first.getResult()});
+      {/*structuredNodeId=*/7, /*resultIndex=*/0, first.getResult()});
   wafer::compiler::detail::StructuredBufferReplacementListener listener(
       relations);
   listener.notifyOperationReplaced(first.getOperation(), second.getResult());
@@ -354,7 +354,7 @@ TEST_F(StructuredBufferRelationsTest,
 
   wafer::StructuredMaterializationRelations relations;
   relations.operationResultBuffers.push_back(
-      {/*structuredNodeId=*/7, copy.getResult()});
+      {/*structuredNodeId=*/7, /*resultIndex=*/0, copy.getResult()});
   relations.operandBuffers.push_back(
       {/*structuredNodeId=*/3, copy.getSource()});
   relations.outputBuffers.push_back({/*outputIndex=*/1, copy.getResult()});
@@ -381,6 +381,7 @@ TEST_F(StructuredBufferRelationsTest,
   EXPECT_TRUE(mlir::failed(partial));
   ASSERT_EQ(issue.unmappedResultBuffers.size(), 1u);
   EXPECT_EQ(issue.unmappedResultBuffers.front().structuredNodeId, 7u);
+  EXPECT_EQ(issue.unmappedResultBuffers.front().resultIndex, 0u);
   EXPECT_EQ(issue.unmappedOperandBuffers.size(), 0u);
   ASSERT_EQ(issue.unmappedOutputBuffers.size(), 1u);
   EXPECT_EQ(issue.unmappedOutputBuffers.front().outputIndex, 1u);
@@ -412,7 +413,7 @@ TEST_F(StructuredBufferRelationsTest,
 
   wafer::StructuredMaterializationRelations relations;
   relations.operationResultBuffers.push_back(
-      {/*structuredNodeId=*/7, copy.getResult()});
+      {/*structuredNodeId=*/7, /*resultIndex=*/0, copy.getResult()});
   relations.operandBuffers.push_back(
       {/*structuredNodeId=*/3, copy.getSource()});
 
@@ -443,7 +444,8 @@ module {
     last = builder.create<mlir::memref::CastOp>(function.getLoc(),
                                                 value.getType(), value);
     value = last.getResult();
-    relations.operationResultBuffers.push_back({/*structuredNodeId=*/9, value});
+    relations.operationResultBuffers.push_back(
+        {/*structuredNodeId=*/9, /*resultIndex=*/0, value});
   }
 
   wafer::compiler::detail::StructuredNodeUseIndex nodeUses(relations);

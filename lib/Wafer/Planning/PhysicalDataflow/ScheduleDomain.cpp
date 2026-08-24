@@ -299,7 +299,8 @@ std::vector<CompletionPlacement> deriveCompletionPlacements(
             eventStages.at(obligation.completion))
           break;
         const bool terminalObserver =
-            (order[index].kind == PlannedEventKind::BufferRelease ||
+            (order[index].kind == PlannedEventKind::LocalCombine ||
+             order[index].kind == PlannedEventKind::BufferRelease ||
              order[index].kind == PlannedEventKind::ObservableWrite) &&
             reaches(obligation.completion, order[index], selectedEdges);
         if (terminalObserver ||

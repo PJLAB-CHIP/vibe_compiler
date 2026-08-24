@@ -219,7 +219,8 @@ materializeSelectedSourceStages(SelectedEdgeLoweringState &state) {
             failureReason,
             "independent source stage has no structured node identity");
       selectedDDRStages.push_back(
-          CandidateSelectedDDRStage{allocation.getResult(), *sourceNode});
+          CandidateSelectedDDRStage{allocation.getResult(), *sourceNode,
+                                    /*producerResult=*/0});
       mlir::Value stored = destination.getResult();
       for (size_t index = groupBegin; index < groupEnd; ++index) {
         SourceOnlyDomain &domain = sourceOnlyDomains[index];
@@ -418,7 +419,8 @@ materializeSelectedConsumerStages(SelectedEdgeLoweringState &state) {
             failureReason,
             "independent consumer stage has no structured node identity");
       selectedDDRStages.push_back(
-          CandidateSelectedDDRStage{allocation.getResult(), *consumerNode});
+          CandidateSelectedDDRStage{allocation.getResult(), *consumerNode,
+                                    /*producerResult=*/0});
       mlir::FailureOr<mlir::Value> stored =
           materializeCandidateRootTileIntoDestination(
               scope, mapped.consumer, strategy.consumerOffsets,

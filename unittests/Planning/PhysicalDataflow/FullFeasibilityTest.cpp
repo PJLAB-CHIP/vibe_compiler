@@ -7,6 +7,8 @@
 #include "TestSupport/CodeGen/CardExecutableTestSupport.h"
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+
 #include "llvm/Support/raw_ostream.h"
 
 #include "gtest/gtest.h"
@@ -55,6 +57,58 @@ module {
   return {std::move(context), std::move(module)};
 }
 
+ParsedProgram parseDependentElementwise(int64_t extent) {
+  mlir::DialectRegistry registry;
+  registerCompilationDialects(registry);
+  auto context = std::make_shared<mlir::MLIRContext>(registry);
+  context->loadAllAvailableDialects();
+  std::string source;
+  llvm::raw_string_ostream stream(source);
+  stream << R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @main(%input: tensor<2x)mlir"
+         << extent << "x128xf16>) -> tensor<2x" << extent << "x128xf16> {\n"
+         << "    %producer_init = tensor.empty() : tensor<2x" << extent
+         << "x128xf16>\n"
+         << R"mlir(    %producer = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+                         affine_map<(d0, d1, d2) -> (d0, d1, d2)>],
+        iterator_types = ["parallel", "parallel", "parallel"]
+      } ins(%input : )mlir"
+         << "tensor<2x" << extent
+         << "x128xf16>) outs(%producer_init : tensor<2x" << extent
+         << "x128xf16>) {\n"
+         << R"mlir(      ^bb0(%value: f16, %old: f16):
+        %next = arith.addf %value, %value : f16
+        linalg.yield %next : f16
+    })mlir"
+         << " -> tensor<2x" << extent << "x128xf16>\n"
+         << "    %result_init = tensor.empty() : tensor<2x" << extent
+         << "x128xf16>\n"
+         << R"mlir(    %result = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+                         affine_map<(d0, d1, d2) -> (d0, d1, d2)>],
+        iterator_types = ["parallel", "parallel", "parallel"]
+      } ins(%producer : )mlir"
+         << "tensor<2x" << extent << "x128xf16>) outs(%result_init : tensor<2x"
+         << extent << "x128xf16>) {\n"
+         << R"mlir(      ^bb0(%value: f16, %old: f16):
+        %next = arith.mulf %value, %value : f16
+        linalg.yield %next : f16
+    })mlir"
+         << " -> tensor<2x" << extent << "x128xf16>\n"
+         << "    return %result : tensor<2x" << extent << "x128xf16>\n"
+         << "  }\n}\n";
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      stream.str(), mlir::ParserConfig(context.get()));
+  return {std::move(context), std::move(module)};
+}
+
 frontend::FrontendProgramVerificationResult
 elementwiseMetadata(int64_t extent) {
   frontend::FrontendProgramVerificationResult program;
@@ -62,6 +116,16 @@ elementwiseMetadata(int64_t extent) {
   program.programUserInputCount = 2;
   program.distributedInputs = {boundary(0, {2, extent, 128}),
                                boundary(1, {2, extent, 128})};
+  program.distributedOutputs = {boundary(0, {2, extent, 128})};
+  return program;
+}
+
+frontend::FrontendProgramVerificationResult
+dependentElementwiseMetadata(int64_t extent) {
+  frontend::FrontendProgramVerificationResult program;
+  program.numPartitions = 1;
+  program.programUserInputCount = 1;
+  program.distributedInputs = {boundary(0, {2, extent, 128})};
   program.distributedOutputs = {boundary(0, {2, extent, 128})};
   return program;
 }
@@ -103,6 +167,83 @@ buildPrefix(mlir::ModuleOp module,
     return result;
   result.incomplete.emplace(std::move(*incomplete));
   return result;
+}
+
+std::optional<ScheduledState>
+closeExecutionStructureState(PhysicalDataflowPlanningSession &session,
+                             ExecutionStructureState structure,
+                             std::string &failureReason) {
+  StructureSpecificStorageContinuation structureStorage =
+      session.createStructureSpecificStorageContinuation(std::move(structure));
+  auto selectedBuffers =
+      session.resumeStructureSpecificStorage(structureStorage, &failureReason);
+  if (mlir::failed(selectedBuffers) || !*selectedBuffers)
+    return std::nullopt;
+  ScheduleContinuation schedules =
+      session.createScheduleContinuation(std::move(**selectedBuffers));
+  auto scheduled = session.resumeSchedule(schedules, &failureReason);
+  if (mlir::failed(scheduled) || !*scheduled)
+    return std::nullopt;
+  return std::move(**scheduled);
+}
+
+std::optional<ScheduledState>
+closeInitialBufferState(PhysicalDataflowPlanningSession &session,
+                        InitialBufferState buffers,
+                        std::string &failureReason) {
+  ExecutionStructureContinuation structures =
+      session.createExecutionStructureContinuation(std::move(buffers));
+  auto structure = session.resumeExecutionStructure(structures, &failureReason);
+  return mlir::succeeded(structure) && *structure
+             ? closeExecutionStructureState(session, std::move(**structure),
+                                            failureReason)
+             : std::nullopt;
+}
+
+std::optional<ScheduledState>
+closeMovementState(PhysicalDataflowPlanningSession &session,
+                   MovementState movement, std::string &failureReason) {
+  StorageContinuation storage =
+      session.createStorageContinuation(std::move(movement));
+  while (true) {
+    StorageExpansionResult next = session.resumeStorage(storage);
+    if (next.getKind() == StorageExpansionKind::State) {
+      std::optional<InitialBufferState> buffers = next.takeState();
+      return buffers ? closeInitialBufferState(session, std::move(*buffers),
+                                               failureReason)
+                     : std::nullopt;
+    }
+    if (next.getKind() == StorageExpansionKind::Unsupported ||
+        next.getKind() == StorageExpansionKind::Indeterminate)
+      continue;
+    failureReason = next.getDetail().str();
+    return std::nullopt;
+  }
+}
+
+std::optional<ScheduledState>
+closeRepresentationState(PhysicalDataflowPlanningSession &session,
+                         RepresentationState representations,
+                         std::string &failureReason) {
+  MovementContinuation movements =
+      session.createMovementContinuation(std::move(representations));
+  while (true) {
+    MovementExpansionResult next = session.resumeMovement(movements);
+    if (next.getKind() == MovementExpansionKind::State) {
+      std::optional<MovementState> movement = next.takeState();
+      if (!movement)
+        return std::nullopt;
+      std::optional<ScheduledState> closed =
+          closeMovementState(session, std::move(*movement), failureReason);
+      if (closed)
+        return closed;
+      continue;
+    }
+    if (next.getKind() == MovementExpansionKind::Unsupported)
+      continue;
+    failureReason = next.getDetail().str();
+    return std::nullopt;
+  }
 }
 
 ScheduleDomainInput makeScheduleInput(const ScheduledState &state,
@@ -254,7 +395,7 @@ TEST(
 }
 
 TEST(FullFeasibilityTest,
-     UnsupportedSelectedScheduleReturnsBeforeCandidateActualization) {
+     SelectedScheduleActualizesOnceThroughTheCommonExecutableGate) {
   ParsedProgram parsed = parseProgram();
   ASSERT_TRUE(parsed.module);
   const std::string before = print(parsed.module->getOperation());
@@ -283,11 +424,136 @@ TEST(FullFeasibilityTest,
   FullFeasibilityResult evaluated = prefix.session->evaluateScheduledState(
       *parsed.module, *alternative, programMetadata(), executionConfig(),
       diagnostics, programData, &statistics);
-  EXPECT_EQ(evaluated.status, FullFeasibilityStatus::Unsupported);
+  ASSERT_TRUE(evaluated.isAccepted()) << evaluated.detail << "\n"
+                                      << diagnostics.str();
   EXPECT_EQ(statistics.evaluations, 1u);
-  EXPECT_EQ(statistics.candidateActualizations, 0u);
-  EXPECT_EQ(statistics.executableGateInvocations, 0u);
-  EXPECT_FALSE(evaluated.compilation.has_value());
+  EXPECT_EQ(statistics.candidateActualizations, 1u);
+  EXPECT_EQ(statistics.executableGateInvocations, 1u);
+  EXPECT_TRUE(evaluated.compilation.has_value());
+  uint64_t workerOneIssues = 0;
+  for (const auto &tile : evaluated.compilation->executable->tiles)
+    tile.getModule().walk([&](mlir::Operation *operation) {
+      std::optional<NCCWorker> worker = getNCCIssueWorker(operation);
+      workerOneIssues += worker && *worker == NCCWorker::Worker1;
+    });
+  EXPECT_GT(workerOneIssues, 0u);
+  EXPECT_EQ(print(parsed.module->getOperation()), before);
+}
+
+TEST(FullFeasibilityTest,
+     SelectedRelayOrFanoutMovementReachesActualWholeCardTransport) {
+  ParsedProgram parsed = parseDependentElementwise(1025);
+  ASSERT_TRUE(parsed.module);
+  const std::string before = print(parsed.module->getOperation());
+  auto metadata = dependentElementwiseMetadata(1025);
+  std::string diagnosticsText;
+  llvm::raw_string_ostream diagnostics(diagnosticsText);
+  std::string failureReason;
+  auto analysis = analyzeCardProgram(*parsed.module, metadata,
+                                     executionConfig(), diagnostics);
+  ASSERT_TRUE(mlir::succeeded(analysis));
+  auto problem = PhysicalDataflowPlanningProblem::create(
+      **analysis, CardId(0), analysis::IndexRelationLimits(), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(problem)) << failureReason;
+  PhysicalDataflowPlanningSession session(*problem);
+
+  std::optional<SpatialState> selectedSpatial;
+  for (uint64_t step = 0; step < 100000 && !selectedSpatial; ++step) {
+    SpatialExpansionResult expansion = session.resumeSpatial();
+    if (expansion.getKind() == SpatialExpansionKind::ParentExhausted)
+      break;
+    if (expansion.getKind() != SpatialExpansionKind::StateQueued)
+      continue;
+    while (std::optional<SpatialState> state = session.takeNextSpatialState()) {
+      const SpatialPlan &plan = state->getPlan();
+      if (plan.nodes.size() == 2 && !plan.nodes[0].embedding.empty() &&
+          !plan.nodes[1].embedding.empty() &&
+          plan.nodes[0].embedding != plan.nodes[1].embedding) {
+        selectedSpatial = std::move(*state);
+        break;
+      }
+    }
+  }
+  ASSERT_TRUE(selectedSpatial) << "no cross-embedding spatial state";
+  RegionContinuation regions =
+      session.createRegionContinuation(std::move(*selectedSpatial));
+  auto region = session.resumeRegion(regions, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(region) && *region) << failureReason;
+  TemporalContinuation temporals =
+      session.createTemporalContinuation(std::move(**region));
+  std::optional<TemporalState> temporal;
+  while (!temporal) {
+    TemporalExpansionResult next = session.resumeTemporal(temporals);
+    ASSERT_NE(next.getKind(), TemporalExpansionKind::ParentExhausted)
+        << next.getDetail().str();
+    if (next.getKind() == TemporalExpansionKind::State)
+      temporal = next.takeState();
+  }
+  RepresentationContinuation representations =
+      session.createRepresentationContinuation(std::move(*temporal));
+  std::optional<RepresentationState> representation;
+  while (!representation) {
+    RepresentationExpansionResult next =
+        session.resumeRepresentation(representations);
+    ASSERT_NE(next.getKind(), RepresentationExpansionKind::ParentExhausted)
+        << next.getDetail().str();
+    if (next.getKind() == RepresentationExpansionKind::State)
+      representation = next.takeState();
+  }
+  MovementContinuation movements =
+      session.createMovementContinuation(std::move(*representation));
+  std::optional<MovementState> selectedMovement;
+  while (!selectedMovement) {
+    MovementExpansionResult next = session.resumeMovement(movements);
+    ASSERT_NE(next.getKind(), MovementExpansionKind::ParentExhausted)
+        << next.getDetail().str();
+    if (next.getKind() != MovementExpansionKind::State)
+      continue;
+    std::optional<MovementState> candidate = next.takeState();
+    ASSERT_TRUE(candidate);
+    const MovementPlan &plan = candidate->getMovementPlan();
+    std::set<MovementActionId> peerActions;
+    bool selected = !plan.peerGraphs.empty();
+    bool hasSoftwareGraph = false;
+    for (const PeerTransferGraphPlan &graph : plan.peerGraphs) {
+      selected &= graph.kind != PeerTransferGraphKind::ExternalLoadFanout;
+      hasSoftwareGraph |= graph.kind == PeerTransferGraphKind::SoftwareRelay ||
+                          graph.kind == PeerTransferGraphKind::SoftwareFanout;
+      peerActions.insert(graph.actions.begin(), graph.actions.end());
+    }
+    bool coversAll = true;
+    for (const DDRBoundaryTransferPlan &transfer : plan.ddrTransfers)
+      coversAll &= peerActions.count(MovementActionId(transfer.id));
+    for (const ReductionGatherPlan &gather : plan.reductionGathers)
+      coversAll &= peerActions.count(MovementActionId(gather.id));
+    selected &= coversAll;
+    if (selected && hasSoftwareGraph)
+      selectedMovement = std::move(candidate);
+  }
+  std::optional<ScheduledState> scheduled =
+      closeMovementState(session, std::move(*selectedMovement), failureReason);
+  ASSERT_TRUE(scheduled) << failureReason;
+
+  wafer::compiler::ProgramDataHandoff programData;
+  FullFeasibilityStatistics statistics;
+  FullFeasibilityResult evaluated = session.evaluateScheduledState(
+      *parsed.module, *scheduled, metadata, executionConfig(), diagnostics,
+      programData, &statistics);
+  ASSERT_TRUE(evaluated.isAccepted()) << evaluated.detail << "\n"
+                                      << diagnostics.str();
+  uint64_t sends = 0;
+  uint64_t receives = 0;
+  uint64_t waits = 0;
+  for (const auto &tile : evaluated.compilation->executable->tiles)
+    tile.getModule().walk([&](mlir::Operation *operation) {
+      sends += mlir::isa<InstrDTESendOp>(operation);
+      receives += mlir::isa<InstrDTERecvOp>(operation);
+      waits += mlir::isa<InstrDTEWaitOp>(operation);
+    });
+  EXPECT_GT(sends, 0u);
+  EXPECT_EQ(receives, sends);
+  EXPECT_GT(waits, 0u);
+  EXPECT_EQ(statistics.candidateActualizations, 1u);
   EXPECT_EQ(print(parsed.module->getOperation()), before);
 }
 

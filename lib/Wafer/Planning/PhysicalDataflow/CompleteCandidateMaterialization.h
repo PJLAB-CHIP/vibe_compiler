@@ -45,6 +45,11 @@ struct CompleteCandidatePlan {
   RegionPlan regions;
   TemporalPlan temporal;
   RepresentationPlan representations;
+  MovementPlan movement;
+  std::vector<MovementResourceDescription> movementResources;
+  BufferPlan buffers;
+  std::vector<StorageResourceDescription> storageResources;
+  ExecutionStructurePlan structure;
   PreparedAttentionDecomposition preparedAttention;
 };
 

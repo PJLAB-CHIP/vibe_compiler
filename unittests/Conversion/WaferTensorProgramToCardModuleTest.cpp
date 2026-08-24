@@ -6,9 +6,9 @@
 #include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
 #include "Wafer/Conversion/WaferCardModuleToTileModules/WaferCardModuleToTileModules.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
-#include "Wafer/Planning/Baseline/CardBaselineConsumerInputs.h"
-#include "Wafer/Planning/Baseline/CardBaselineEdgeCarriers.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSpatialAssignment.h"
+#include "Wafer/Planning/PhysicalDataflow/CardConsumerInputs.h"
+#include "Wafer/Planning/PhysicalDataflow/CardEdgeCarriers.h"
 #include "Wafer/Target/Core/TargetMemory.h"
 
 #include "Wafer/IR/WaferDialect.h"
@@ -471,8 +471,8 @@ static wafer::TileMapping completeTemporalMapping(mlir::ModuleOp source,
           strategy.producerSizes, strategy.destinationTile});
     }
     wafer::TileMapping generated = mapping;
-    if (mlir::failed(wafer::compiler::detail::addCardBaselineEdgeCarriers(
-            generated, spatial, *proof, *dag, &failureReason))) {
+    if (mlir::failed(wafer::compiler::detail::addCardEdgeCarriers(
+            generated, spatial, *proof, *dag, {}, &failureReason))) {
       ADD_FAILURE() << "test fixture cannot derive current carriers: "
                     << failureReason;
       return mapping;
@@ -3109,13 +3109,11 @@ module {
     selected.operationTemporalTiles.push_back(
         {node.operation, std::move(temporal), {}});
   }
-  ASSERT_TRUE(
-      mlir::succeeded(wafer::compiler::detail::addCardBaselineConsumerInputs(
-          selected, spatialDemand->demand, &failureReason)));
-  ASSERT_TRUE(
-      mlir::succeeded(wafer::compiler::detail::addCardBaselineEdgeCarriers(
-          selected, spatialDemand->spatial, spatialDemand->demand, *dag,
-          &failureReason)))
+  ASSERT_TRUE(mlir::succeeded(wafer::compiler::detail::addCardConsumerInputs(
+      selected, spatialDemand->demand, &failureReason)));
+  ASSERT_TRUE(mlir::succeeded(wafer::compiler::detail::addCardEdgeCarriers(
+      selected, spatialDemand->spatial, spatialDemand->demand, *dag, {},
+      &failureReason)))
       << failureReason;
   ASSERT_EQ(selected.edgeStrategies.size(), 4u);
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
@@ -3312,7 +3310,7 @@ module {
   EXPECT_FALSE(relations.operationResultBuffers.empty());
   EXPECT_FALSE(relations.operandBuffers.empty());
   bool sawSharedProducerConsumerBuffer = false;
-  for (const wafer::StructuredOperationBufferRelation &producer :
+  for (const wafer::StructuredOperationResultBufferRelation &producer :
        relations.operationResultBuffers)
     for (const wafer::StructuredOperationBufferRelation &consumer :
          relations.operandBuffers)

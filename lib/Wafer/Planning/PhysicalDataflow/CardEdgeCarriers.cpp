@@ -1,6 +1,6 @@
-//===- CardBaselineEdgeCarriers.cpp ----------------------------------===//
+//===- CardEdgeCarriers.cpp - Selected dependency carriers ------------===//
 
-#include "Wafer/Planning/Baseline/CardBaselineEdgeCarriers.h"
+#include "Wafer/Planning/PhysicalDataflow/CardEdgeCarriers.h"
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
 
@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 
 namespace wafer::compiler::detail {
 namespace {
@@ -85,7 +86,8 @@ mlir::LogicalResult appendCarrier(
     const StructuredDAGNode &producer, const StructuredDAGNode &consumer,
     const SemanticRootKey &producerRoot, const SemanticRootKey &consumerRoot,
     const analysis::DependencyDemand &dependency,
-    const analysis::ExactDemandProof &proof, std::string *failureReason) {
+    const analysis::ExactDemandProof &proof, const MovementPlan &movement,
+    std::string *failureReason) {
   auto producerType = mlir::dyn_cast<mlir::RankedTensorType>(
       producer.operation->getResult(edge.producerResult).getType());
   if (!producerType || !producerType.hasStaticShape() ||
@@ -139,8 +141,7 @@ mlir::LogicalResult appendCarrier(
       if (mlir::failed(ownedPieces))
         return mlir::failure();
       for (const analysis::StaticRectangularIndexSet &piece : *ownedPieces) {
-        const bool resident =
-            intersection.tile == destination.destinationTile;
+        const bool resident = intersection.tile == destination.destinationTile;
         uint64_t elements = 1;
         for (int64_t size : piece.sizes)
           elements = saturatingMultiply(elements, size);
@@ -165,7 +166,7 @@ mlir::LogicalResult appendCarrier(
         });
     if (consumerOwner == proof.finalOwners.end()) {
       if (failureReason)
-        *failureReason = "baseline consumer result has no final owner";
+        *failureReason = "candidate consumer result has no final owner";
       return mlir::failure();
     }
     mlir::FailureOr<llvm::SmallVector<analysis::StaticRectangularIndexSet, 8>>
@@ -173,11 +174,55 @@ mlir::LogicalResult appendCarrier(
     if (mlir::failed(consumerPieces) || consumerPieces->size() != 1) {
       if (failureReason)
         *failureReason =
-            "baseline consumer result has no finite final-owner rectangle";
+            "candidate consumer result has no finite final-owner rectangle";
       return mlir::failure();
     }
     strategy.consumerOffsets = consumerPieces->front().offsets;
     strategy.consumerSizes = consumerPieces->front().sizes;
+    if (!movement.peerGraphs.empty() &&
+        llvm::any_of(strategy.fragments, [](const SpatialEdgeFragment &piece) {
+          return piece.kind == SpatialEdgeFragmentKind::Peer;
+        })) {
+      llvm::SmallVector<const DDRBoundaryTransferPlan *, 2> transfers;
+      for (const DDRBoundaryTransferPlan &candidate : movement.ddrTransfers) {
+        const auto *result =
+            std::get_if<ExecutionResultValueId>(&candidate.source.logicalValue);
+        const auto *execution =
+            result ? std::get_if<ExecutionInstanceId>(&result->execution)
+                   : nullptr;
+        std::optional<SemanticRootKey> sourceRoot;
+        if (execution)
+          sourceRoot =
+              std::visit([](const auto &source) { return source.work.root; },
+                         execution->source);
+        const BoundaryRegionValueId &destinationId = candidate.id.destination;
+        if (sourceRoot && *sourceRoot == producerRoot &&
+            result->result == edge.producerResult &&
+            destinationId.work.root == consumerRoot &&
+            destinationId.work.tile == destination.destinationTile &&
+            destinationId.fragment.use.operand == edge.consumerOperand &&
+            destinationId.fragment.use.destinationShard ==
+                destination.destinationShard)
+          transfers.push_back(&candidate);
+      }
+      if (transfers.size() != 1) {
+        if (failureReason)
+          *failureReason =
+              "selected edge has no unique MovementPlan boundary action";
+        return mlir::failure();
+      }
+      const MovementActionId action(transfers.front()->id);
+      const bool selectedPeer =
+          llvm::any_of(movement.peerGraphs, [&](const auto &graph) {
+            return llvm::is_contained(graph.actions, action);
+          });
+      strategy.action = selectedPeer ? SpatialEdgeAction::PeerFragments
+                                     : SpatialEdgeAction::RegionCut;
+      if (!selectedPeer) {
+        strategy.fragments.clear();
+        strategy.fragmentsDefineProducerDemand = false;
+      }
+    }
     mapping.edgeStrategies.push_back(std::move(strategy));
   }
   return mlir::success();
@@ -185,10 +230,11 @@ mlir::LogicalResult appendCarrier(
 
 } // namespace
 
-mlir::LogicalResult addCardBaselineEdgeCarriers(
-    TileMapping &mapping, const SpatialAssignment &spatial,
-    const analysis::ExactDemandProof &demand, const StructuredDAGAnalysis &dag,
-    std::string *failureReason) {
+mlir::LogicalResult
+addCardEdgeCarriers(TileMapping &mapping, const SpatialAssignment &spatial,
+                    const analysis::ExactDemandProof &demand,
+                    const StructuredDAGAnalysis &dag,
+                    const MovementPlan &movement, std::string *failureReason) {
   mlir::FailureOr<StructuredDemandView> view =
       StructuredDemandView::create(dag, spatial, demand, failureReason);
   if (mlir::failed(view))
@@ -205,7 +251,7 @@ mlir::LogicalResult addCardBaselineEdgeCarriers(
         !dependency ||
         mlir::failed(appendCarrier(mapping, edge, *producer, *consumer,
                                    *producerRoot, *consumerRoot, *dependency,
-                                   demand, failureReason)))
+                                   demand, movement, failureReason)))
       return mlir::failure();
   }
   return mlir::success();

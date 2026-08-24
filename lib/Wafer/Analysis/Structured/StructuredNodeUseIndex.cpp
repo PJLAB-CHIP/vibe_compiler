@@ -35,7 +35,7 @@ collectOperationBufferValues(mlir::Operation *operation) {
 
 StructuredNodeUseIndex::StructuredNodeUseIndex(
     const StructuredMaterializationRelations &relations) {
-  auto index = [&](const StructuredOperationBufferRelation &relation) {
+  auto index = [&](const auto &relation) {
     for (mlir::Value root : storageRoots.getStorageRoots(relation.buffer))
       nodesByRoot[root].push_back(relation.structuredNodeId);
   };

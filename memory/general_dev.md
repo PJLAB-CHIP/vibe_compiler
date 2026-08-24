@@ -693,12 +693,17 @@ source program
 
 ## Complete-candidate actual admission（stable，2026-08-23）
 
-- baseline与search共享的只是policy-free `CompleteCandidatePlan → MaterializedCardCandidate → Q50.0` leaf；search不得调用baseline planner/
-  controller。每个materializable ScheduledState先做typed compatibility和generation复验，再创建一份candidate；Unsupported在零actualization
-  返回，不能静默改成canonical/baseline产物。
-- actualization后只调用一次`compileCardModuleToExecutable`。Accepted保留该次move-only executable和offset；rejected IR随owner销毁。
+- baseline与search共享policy-free `CompleteCandidatePlan → MaterializedCardCandidate → Q50.0` leaf；search不得调用baseline planner/
+  controller。Q50.0在Card split后和TileRegion→Instr后各提供一个caller-owned preparation callback，selected builder只修改本次owned
+  candidate，canonical preparation为空操作；两者继续调用同一Tile lowering、MiniMalloc、DDR、transport和target gate。
+- 每个materializable ScheduledState先重建当前domain/generation事实，再创建一份candidate。selected Region/representation在Card construction
+  中落地；movement在current Tile dataflow上替换direct donor；storage、worker/order/completion及K phase在current Instr上落地。每一阶段后
+  同时验证IR和current relations，任何失败销毁整个candidate，不在callback中retile、换layout、spill或选择sibling。
+- actualization只调用一次`compileCardModuleToExecutable`。Accepted保留该次move-only executable和offset；rejected IR随owner销毁。
   SPM exact rejection只有在每个conflict/oversized demand的result/operand/scratch/output都能映射到SemanticRoot时才能反馈controller；owner
   缺失是compiler contract bug。其它allocator/resource/unsupported/indeterminate状态不得伪装成capacity rejection。
+- operation result relation显式携`resultIndex`。alias/reuse或rotation前先从current relation捕获`EventId -> instruction`，之后可以合并physical
+  storage root而不丢execution identity；所有新SPM object必须由共同`wafer.tile.region`持有，跨region共享保持typed Unsupported。
 - full-feasibility API没有footprint、predicted lifetime、candidate bytes或替代allocator输入。SPM合法性仍只来自actual Instr relations和唯一
   MiniMalloc路径；重复相同state用于test oracle时必须fresh materialize并得到相同accepted IR或typed witness，不能回放旧输出。
 

@@ -57,6 +57,7 @@ enum class MovementEventPhase : uint8_t {
   DDRStore,
   PeerSend,
   PeerReceive,
+  LocalCombine,
 };
 
 struct MovementEventAction {

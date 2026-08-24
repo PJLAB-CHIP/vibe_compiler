@@ -141,6 +141,44 @@ TEST(StorageObjectBuilderTest,
 }
 
 TEST(StorageObjectBuilderTest,
+     ExistingSlotsUseTheSameTypedBindingAndSelectorPath) {
+  IRFixture ir = makeIR();
+  PhysicalVersionId version = makeVersion(0);
+  StorageObjectId object{StorageObjectOrigin(version)};
+  PreparedStoragePlan prepared;
+  prepared.objects.push_back(
+      {{object, TileId(0)},
+       StorageResourceDescription{object, makeDomain({2, 1031, 128}),
+                                  ir.builder.getF16Type(), MemLayout::Tensor},
+       2});
+  prepared.bindings.push_back({version, object, StorageBindingKind::Fresh});
+  OccurrenceRelationId occurrence;
+  occurrence.axisOccurrences = {1, 9, 1};
+  prepared.slotFamilies.push_back({SlotFamilyId{{object}}, occurrence, 2, {1}});
+  auto type = mlir::MemRefType::get(
+      {2, 1031, 128}, ir.builder.getF16Type(),
+      mlir::MemRefLayoutAttrInterface{},
+      MemoryAttr::get(ir.context.get(), MemorySpace::SPM, MemLayout::Tensor));
+  std::vector<mlir::Value> slots{
+      ir.builder.create<mlir::memref::AllocOp>(ir.module->getLoc(), type),
+      ir.builder.create<mlir::memref::AllocOp>(ir.module->getLoc(), type)};
+  StorageObjectBuilder objects;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(bindPreparedStorageObjects(
+      prepared, {{object, slots}}, objects, &failureReason)))
+      << failureReason;
+  auto coordinate =
+      ir.builder.create<mlir::arith::ConstantIndexOp>(ir.module->getLoc(), 5);
+  auto selected = objects.select(object, /*recurrenceAxis=*/1, coordinate,
+                                 ir.builder, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(selected)) << failureReason;
+  EXPECT_EQ(selected->value.getType(), type);
+  EXPECT_TRUE(mlir::succeeded(
+      verifyRotatingStorageSelections(objects, {*selected}, &failureReason)))
+      << failureReason;
+}
+
+TEST(StorageObjectBuilderTest,
      PeerRelaySlotsUseTypedObjectIdentityAndExactModuloLookup) {
   IRFixture ir = makeIR();
   MovementActionId action = ExternalLoadId{};

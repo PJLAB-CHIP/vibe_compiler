@@ -43,7 +43,6 @@ struct ScheduleMaterializationFailure {
 
 struct PreparedScheduleScope {
   ControlOrder order;
-  mlir::Block *block = nullptr;
   std::vector<ScheduleEventIRBinding> events;
 };
 
