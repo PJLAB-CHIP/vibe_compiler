@@ -263,8 +263,8 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 | 6 | `temporal-domain` | `done` | Q50.E | complete temporal sizes/orders/tails、top-level/nested/coupled actual loop construction、verifier及Core consumer | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | partial-feasibility |
 | 7 | `partial-feasibility` | `done` | Q50.F | 复核A–E结构完整性/missing coordinates及5/6新schema，资源合法性保持unknown | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | layout-domain |
 | 8 | `layout-domain` | `done` | Q50.G | operation/interface constraint graph、PBQP精确消元+residual solver、production tuple/alias facts及selected physical-version construction/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | movement-domain |
-| 9 | `movement-domain` | `doing` | Q50.H | local/DDR/direct/relay/fanout/gather/qualified collective完整域、payload proof、token-only selected construction/verifier及donor retirement；不在issue后立即await | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | storage-domain |
-| 10 | `storage-domain` | `queued` | Q50.I | production alias/reuse/1..U requirements、selected object/rotation construction及first-read/last-release lifetime verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | event-resource-foundation |
+| 9 | `movement-domain` | `done` | Q50.H | local/DDR/direct/relay/fanout/gather current完整域、external every-root reuse、exact multi-piece payload proof、token-only selected construction/verifier及actual surgery donor retirement；不在issue后立即await；raw collective因无current typed primitive而无state | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | storage-domain |
+| 10 | `storage-domain` | `doing` | Q50.I | production alias/reuse/1..U requirements、selected object/rotation construction及first-read/last-release lifetime verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | event-resource-foundation |
 | 11 | `event-resource-foundation` | `queued` | Q50.J | 完整EventGraph/resource/recurrence/completion facts、Q63/effect接入及fixed-K后同一builder重建J的typed seam；missing contract保持typed unknown而非默认Synchronous | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | execution-structure-domain |
 | 12 | `execution-structure-domain` | `queued` | Q50.K | sound Serialized/Pipelined eligibility与完整有限域、selected phase/loop construction、structure verifier及donor retirement | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | structure-specific-storage |
 | 13 | `structure-specific-storage` | `queued` | Q50.I | fixed-K occurrence/slot/lifetime重闭、actual rotating-slot construction，并触发post-K EventGraph重建 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | schedule-domain |
@@ -350,7 +350,7 @@ artifact或production gate；owner整体完成由`tasks/progress.md`的owner map
 | `ScheduleDomain.cpp` | 每个completion obligation固定放在自己的completion event | 没有枚举或推导latest-unavoidable legal boundary，schedule axis实际未关闭 | `schedule-domain`在fixed K/I EventGraph上枚举有限EventBoundaryId，满足hard/lifetime/resource edge后选择最晚最弱合法点并生成actual IR |
 | canonical schedule/attention projection | canonical prefix把全部node绑定worker0，`CanonicalAttentionWorkProjection`也只接受该canonical coordinate | 对canonical `none`这是合法检查，但它证明该helper不能直接充当noncanonical selected-search consumer；worker0不能成为attention语义 | canonical helper继续只服务canonical producer；selected attention construction从worker-independent work facts与closed J plan分别取值，不复用canonical worker0检查缩小J合法域 |
 | target/cost/controller | 每个join都会发射真实target call；ExecutionCost已统计total/steady/nonterminal join与participant waits，但public search首个Accepted即停止 | cost计数本身不能消除已硬编码同步，也不能在没有候选比较时选择更好plan | 先由H/I/J构造合法最小completion，再由Q51比较actual cost；`full-feasibility`检查plan/actual join-wait parity和动态work |
-| donor/inactive路径 | `DataMovementApply`与selected-buffer donor仍含immediate await或同步surgery | 当前没有production caller不等于可作为后续迁移模板；直接接回会重新引入同类错误 | 迁移时只保留payload/lifetime/negative witness；wait/join placement统一交给J，随后删除donor |
+| donor/inactive路径 | old `DataMovementApply`含immediate await和同步surgery；selected-buffer donor仍可能被误当成movement selector | 当前没有production caller不等于可作为后续迁移模板；直接接回会重新引入同类错误 | H已迁移payload/negative witness并删除`DataMovementApply`；selected-buffer只保留I的storage/lifetime素材，wait/join placement统一交给J |
 
 Q63保持`done`：pure target completion protocol、MLIR operation interface和current-IR pending analysis的分层是正确的。本轮不新增
 第二completion interface，也不让Q63选择worker/order；Q49.P已清除审计发现的production绕行，剩余缺口是Q50.J尚未把这些facts扩展成
@@ -3803,7 +3803,8 @@ Pipeline position:
 - Current stage responsibility:
   为每个D/A boundary生成exact DDR stage、target-routed peer transfer、explicit Tile relay graph及已获target capability支持的collective
   movement完整有限域；形成all-and-only logical/physical payload、endpoint、relay、completion obligation和topology/resource facts。
-  candidate apply才生成load/store、send/recv/token/wait及relay work；compute replica和layout versions分别已由D/G决定。
+  candidate apply才生成load/store、send/recv/token及relay work；wait由J在fixed storage/structure上放置。compute replica和layout versions
+  分别已由D/G决定。
 - Output IR / files:
   query不写IR，输出typed movement assignment及可重算reuse/cost/resource facts；candidate apply输出current CardModule中的explicit
   movement/event-producing ops，不写sidecar或route attr bag。explicit relay graph在commit后由逐transfer ops表达；只有target真的
@@ -3870,9 +3871,23 @@ path，不是可编程router path，命名和cost语义都必须纠正。
 
 仓库硬件/IR事实进一步限定边界：current target为4x4 Tile grid，NoC有四方向独立收/发带宽；`wafer.tile.peer_*`和Direct DTE只携
 任意available physical peer、bytes、message与token，明确不携raw route。Kcore DTE目的地址直接编码remote Tile，现有public accepted
-subset是fixed-size unicast；raw broadcast/scatter寄存器有证据，但public-helper/板端completion尚未闭合，不能作为production
-capability。`TargetTopology::getCanonicalOnCardPath`自身也声明只是modeling fact，不是target routing claim。因此current direct peer
+subset是fixed-size unicast；raw broadcast/scatter寄存器和窄board case有证据，但current typed Tile/Instr primitive、target helper/ABI与
+完整participant/completion合同尚未闭合，不能作为production capability。`TargetTopology::getCanonicalOnCardPath`自身也声明只是modeling
+fact，不是target routing claim。因此current direct peer
 transfer是end-to-end target-routed action；只有显式在中间Tile接收、保存并再次发送时才存在compiler-selected relay graph。
+
+2026-08-23按current事实源重新分类如下；分类控制H的typed state，而不是只作说明：
+
+| 分类 | current事实 | H中的处理 |
+| --- | --- | --- |
+| `supported` | `wafer.tile.peer_send/peer_recv`与Instr Direct-DTE fixed-size unicast、physical endpoint、message、token及独立DTE completion domain | 生成`TargetRoutedPeer`或由多条endpoint transfer组成的software relay/fanout；H只发token，J决定wait |
+| `board-observed` | raw DTE broadcast/scatter的2/4/8/15 fanout、单目标source-gather、四源fanin，以及16-Tile Direct/Ring/ordered-tree collective历史correctness | 只作为未来typed capability或普通unicast action-DAG proposal的证据；不能直接产生raw collective op |
+| `unknown` | Direct-DTE内部physical route、per-link contention/device phase、任意fanout/ragged scatter、8/15源fanin、subgroup barrier及未列participant/dtype/shape | 不建route/link/schedule事实，不按“保守同步”补wait/join，也不据此删candidate |
+| `excluded` | current Tile/Instr/target ABI没有typed raw broadcast/scatter/source-gather collective primitive；cross-card transport也不在本任务 | 即使底层寄存器或历史board case存在，H仍不生成`QualifiedTargetCollective`；先扩typed IR/ABI与完整completion gate后才能开放 |
+
+因此“qualified collective”不是一个布尔开关。current transport facts根本不声明这种capability，domain也没有对应state；只有participant、
+payload mapping、alignment、status和completion等closed typed descriptor及其直接IR consumer一起加入时才扩同一schema。不得把
+board-observed raw mode提升成current production support。
 
 #### 两层topology facts
 
@@ -3907,36 +3922,33 @@ D已经决定哪些uses由local stored/direct nested value满足、哪些是expl
 
 ```text
 MovementPlan
-  boundaries: BoundaryMovementPlan[]
-  collectives: CollectiveMovementPlan[]
+  externalLoads: ExternalLoadPlan[]
+  boundaryTransfers: DDRBoundaryTransferPlan[]
+  reductionGathers: ReductionGatherPlan[]
+  publications/discards
+  peerGraphs: PeerTransferGraphPlan[]
 
-BoundaryMovementPlan
-  boundary: MovementBoundaryId
-  requiredCoverage: ExactIndexSet
-  destinationVersion: PhysicalVersionId
-  payloads: PayloadPlan[]
-  realization: DDRStagePlan | PeerTransferGraph | QualifiedTargetCollective
+PeerTransferGraphPlan
+  actions: sorted all-and-only MovementActionId[]
+  kind: TargetRoutedPeer | SoftwareRelay | SoftwareFanout | ExternalLoadFanout
+  hops: MovementHop[]
+  ddrRoot: optional ExternalLoadId
 
-PayloadPlan
-  id: PayloadId
-  logicalValue: RegionValueVersionId
-  logicalDomain: ExactIndexSet
-  sourceVersion: PhysicalVersionId
-  destinationVersion: PhysicalVersionId
-  sourcePhysicalSpans: PhysicalSpan[]
-  destinationPhysicalSpans: PhysicalSpan[]
-  physicalBytes: uint64
+MovementResourceDescription  // query-local, not plan identity
+  action: MovementActionId
+  exactDomain: ExactIndexSet
+  elementType
+  source/destination Tile
 
-PeerTransferGraph
-  transfers: DirectPeerTransfer[]
-  relayVersions: RelayPhysicalVersion[]
-  completionObligations: TransferCompletionId[]
-
-DirectPeerTransfer
-  source, destination: TileId
-  payload: PayloadId
-  routing: TargetRouted | QualifiedProgrammableRoute
+Prepared payload piece
+  graph actions + payloadSlice
+  exact logical offsets/sizes
+  source/destination/relay current-IR buffers
+  checked physicalBytes
 ```
+
+未被任何`peerGraphs`成员引用的action使用其显式DDR carrier；peer graph只保存一次，不在member action上复制。qualified target
+collective只有在未来closed typed primitive存在时才作为另一种top-level movement owner加入，不能预留一个空enum值。
 
 同一region内已local-bind的value没有H entry；同region但D选择external boundary、same-Tile sibling regions及program I/O用显式DDR
 stage。cross-Tile boundary至少保留DDR sibling，并可选择direct peer或由多个direct transfers组成的relay graph。reduction gather只消费
@@ -4313,34 +4325,42 @@ remote offset、FSM/status/resource binding。两者消费不同IR层且共享ty
 
 H只有上述query、actual和迁移gate全部闭合才完成；旧“current basic apply已存在”或若干send/recv计数不能代签alias/lifetime/slice proof。
 
-### `movement-domain`当前已实现子集与重新打开门禁
+### `movement-domain`实现与闭合证据
 
-- existing boundary/gather plan原位增加`MovementRealization`：DDR无hop，opaque target-routed peer只含一个physical endpoint transfer，
-  software relay含逐hopendpoint transfers。plan不保存raw router path、link load、cost或message ordinal；external load/publication/discard
-  继续保持原typed action identity。
-- `MovementDomain`从canonical action/resource与G selected versions重闭source/destination IDs。same-Tile或layout不兼容payload只保留DDR；
-  cross-Tile compatible payload保留DDR、direct peer及available relay Tiles的全部simple relay permutations。successor惰性推进relay count/
-  permutation，不预建path vectors，不删除DDR sibling；input Tile顺序扰动不改变plan集合。
-- remote ordinary/coupled gather复用同一realization domain；local contribution仍无action。current target没有qualified hardware collective或
-  programmable raw route，因此不伪造对应state。跨多个boundary的shared multicast/tree及ring donor仍保留在旧DataMovement owner，待J/I
-  completion/storage关系接入后迁移；new state不调用旧node/edge domain或SimpleRoute。
-- `preparePeerTransfer`用actual SPM memref type计算并逐hop验证physical bytes/layout、endpoint totality和acyclic chain，全部成功后
-  `emitPreparedPeerTransfer`生成matching `tile.peer_send/recv`及typed tokens。direct/relay source不由shape/name/first use查找；physical
-  mismatch与cycle在零communication mutation时失败。message integers只是candidate-local lowering carrier，不进入plan identity。
-- `MovementState`、continuation和session cache已经接入production Core；G first point经canonical movement重闭后进入new domain，public search
-  报告missing Storage且actualization为0。tiny no-cross-boundary case只有一个DDR point；old apply surgery与immediate-await scheduling只作为
-  H/I/J donor保留，不进入new query/state。
+- `MovementPlan.peerGraphs`现在让每个peer payload graph只保存一次sorted all-and-only action set与endpoint edges；未被graph引用的action
+  是DDR sibling，不在每个member上复制同一graph。external reuse group另用typed `ddrRoot`指定唯一seed load，逐一枚举组内每个destination
+  作root。一个endpoint edge始终表示target-routed transfer；`SoftwareRelay`/`SoftwareFanout`/`ExternalLoadFanout`只描述compiler显式
+  接收再转发的action graph，不保存raw
+  route、link load、cost、operation ordinal或手写message arithmetic。
+- `MovementDomain`先按logical value、exact Presburger domain、source physical version、dtype和transport encoding建立reuse class；随后用
+  restricted-growth sequence惰性枚举“任意DDR子集 + 其余destination的全部set partitions”。每个peer block再枚举任意active relay subset
+  与全部legal parent maps，只保留单root、每node恰一parent、全node可达且每relay贡献terminal的rooted arborescence。这个统一域同时包含
+  direct、chain、partial/max fanout和Steiner relay；它不按bytes/hops预删合法点。
+- current `MovementTransportFacts`只保存available endpoints、opaque directed endpoint-transfer capability和DDR availability。
+  current TX81 builder产生all-pairs opaque endpoint capability；directed/asymmetric fixture可注入更小能力图。physical mesh没有被冒充成
+  router route。current facts不提供无typed descriptor的collective字段，domain因而不可能生成空壳state。
+- query先给maximal reuse arborescence与all-singleton endpoint graphs作为checked proposals，再进入同一个raw successor；proposal关闭或
+  去重不改变raw集合。三个destination的独立组合oracle验证`sum C(3,k)*Bell(k)=15`个DDR/partition形态，maximal block按Cayley公式有16个
+  rooted arborescences，production逐key无duplicate；program-input fanout另证明每个destination都可作唯一DDR root，未分组load仍各自DDR。
+- remote ordinary/coupled gather复用同一per-payload DDR/direct/relay graph；local contribution仍无action。没有上游typed
+  multi-participant state/combine requirement时不凭collective名字构造ring/all-reduce；将来出现该requirement时，ring/tree只生成普通
+  transfer/combine DAG proposal，local combine仍是显式compute。
+- `prepareSelectedPeerGraphs`对整份selected plan做mutation-free all-and-only preflight并按semantic action set去重；actual SPM memref
+  逐endpoint验证physical bytes/layout、单root、acyclic reachability和terminal后，按sorted action set分配candidate-local dense message
+  identity；external group先生成唯一typed DDR root load，再由`emitPreparedSelectedPeerGraphs`生成matching `tile.peer_send/recv` token。
+  `verifyTokenOnlySelectedPeerGraphs`逐graph/root/hop/message/token验证，并把任何H层immediate `async.await`作为错误。
+  caller拥有candidate transaction，失败不换movement、不修layout、不改buffer。
+- legacy `DataMovementApply` post-hoc store/load/layout/alloc surgery及其immediate-await实现已经从source和CMake删除；legacy joint-domain
+  materializer遇到old Peer/Refetch assignment时fail closed。current H query/emitter不include old `SimpleRoute`、node/edge movement kind或
+  shape/name lookup。旧query-only coupled/buffering cluster仍由后续I/J/K迁移其独有测试后统一退役，不能重新取得actual owner身份。
 
-fresh证据：`MovementDomainTest` 4/4覆盖rank-3 1024/1025/1031、6点simple-path oracle、input-order、same-Tile DDR、layout mismatch、
-remote reduction、rank-zero与endpoint failure；`MovementTransferBuilderTest` 2/2覆盖two-hop relay matching send/recv tokens且无immediate await、actual physical
-bytes、layout mismatch/cycle atomic failure；`PlanningSessionTest` 6/6、`SearchRoutingTest` 2/2及`CanonicalMovementPlanTest` 5/5共同证明
-Core、missing Storage、source不变及zero actualization，direct集合19/19；ordinary host unit 857/857（6个独立heavy baseline cases不在本项
-重复）；core lit 227/227，Tools/Runtime lit 35 passed、4 configured unsupported；compiler public link、source organization和diff检查通过。
-
-完成状态复核确认current production domain只覆盖per-boundary DDR、end-to-end direct和simple relay permutations；它没有H-2规定的
-destination partition/source-owner payload-state完整域，也没有fanout/multicast、generic collective、ring/tree等迁移。transfer builder只有
-unit-test caller，full-feasibility拒绝selected peer/relay。`movement-domain`重新打开，必须补齐完整query、selected construction、
-MovementMaterializationVerifier和donor逐项退役门禁。
+fresh定向证据覆盖rank-3 `1024/1025/1031`：single payload的DDR/direct/全部relay permutation、directed-only relay、layout mismatch、
+same-Tile DDR、ordinary reduction gather、external every-root fanout、split/partial/max fanout、15个partition形态、16个maximal arborescence、
+input-order稳定，以及current domain中不存在raw collective state；selected actual覆盖aligned/ragged external DDR-root fanout、ordinary
+fanout、1024/1025 two-piece payload的all-and-only message slices和1031 reduction relay的matching token、零immediate await，以及missing
+binding、layout mismatch、cycle和人工immediate-await负例。Core proposal/raw去重、search到Storage的直接consumer和完整fresh回归在本项
+收尾结果中记录：本项及ordinary host unit `915/915`通过（另一个尚未归本项的attention production closure不参与），configured lit
+`225/225`、4个public link smoke、source/IR organization和diff检查通过。
 
 ## Q50.I：Buffer and Rotating Slots
 
@@ -6900,7 +6920,7 @@ Q50.0路径，防止计数漏埋点。IR dump只可查看accepted winner，不�
 | `TemporalTiling*` | Q50.E | complete vectors/orders/tails/nested scopes |
 | 已删除的plan-side feasibility/footprint路径 | Q50.F actual admission | complete candidate→Q50.0、typed feedback、relation completeness |
 | `PhysicalRepresentation*` | Q50.G | constraint solver proposals、version DAG、actual builder |
-| `SimpleRoute`, `DataMovement*`, `DataMovementApply*` | Q50.H | generic payload-state plans、classic topology proposals、complete-candidate emitter |
+| query-only `SimpleRoute`、`DataMovement*`（`DataMovementApply*`已删除） | Q50.H；共享legacy query调用随I/J/K/Q51统一退役 | current payload partitions/arborescences、token-only emitter和迁移后的direct/relay/fanout/gather witness；legacy query不再取得actual owner |
 | `Buffering*`, `BufferingApply*` | Q50.I | storage/slot/lifetime plans、construction-time builder |
 | `InstructionSchedule*` | Q50.J/Q63 | event/resource domain、closed schedule、wait/join emitter/verifier |
 | `StagePipeline*` | Q50.K | Serialized/SCF/periodic structures及K→I-post-K→J reclosure |

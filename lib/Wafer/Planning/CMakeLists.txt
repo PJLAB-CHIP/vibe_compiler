@@ -67,7 +67,6 @@ set(WAFER_PLANNING_SOURCES
   Planning/Search/ComputeImplementation.cpp
   Planning/Search/DecodeAttentionAnalysis.cpp
   Planning/Search/DataMovement.cpp
-  Planning/Search/DataMovementApply.cpp
   Planning/Search/InstructionSchedule.cpp
   Planning/Search/PhysicalRepresentation.cpp
   Planning/Search/SimpleRoute.cpp

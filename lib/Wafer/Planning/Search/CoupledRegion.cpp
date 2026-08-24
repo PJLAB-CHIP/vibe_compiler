@@ -5,7 +5,6 @@
 #include "Wafer/Planning/Search/ComputeImplementation.h"
 
 #include "Wafer/Planning/Search/DataMovement.h"
-#include "Wafer/Planning/Search/DataMovementApply.h"
 #include "Wafer/Planning/Search/PhysicalRepresentation.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -495,6 +494,17 @@ materializeCardCoupledRegionsWithImplementations(
         movement.kind != DataMovementKind::Peer)
       return fail("selected movement kind has no current actual apply");
   }
+  if (llvm::any_of(movementAssignment.edges,
+                   [](const DataMovementChoice &movement) {
+                     return movement.kind == DataMovementKind::Peer ||
+                            movement.kind == DataMovementKind::Refetch;
+                   }) ||
+      llvm::any_of(movementAssignment.reductions,
+                   [](const ReductionGatherChoice &gather) {
+                     return gather.kind == ReductionGatherKind::Peer;
+                   }))
+    return fail("legacy post-hoc movement materialization is retired; use "
+                "the complete-candidate movement builder");
 
   llvm::SmallVector<StructuredNodeShardGroup, 32> groups;
   for (const CoupledRegionGroup &selected : assignment.groups) {
@@ -613,10 +623,7 @@ materializeCardCoupledRegionsWithImplementations(
           program.operationNodes, groups, result.module, &result.relations,
           failureReason)))
     return mlir::failure();
-  if (mlir::failed(
-          applySelectedDataMovement(*result.module, program, movementAssignment,
-                                    result.relations, failureReason)) ||
-      mlir::failed(mlir::verify(*result.module)))
+  if (mlir::failed(mlir::verify(*result.module)))
     return mlir::failure();
   return result;
 }

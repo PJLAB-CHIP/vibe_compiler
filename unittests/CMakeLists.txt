@@ -69,7 +69,6 @@ add_executable(WaferUnitTests
   Planning/Search/BufferingTest.cpp
   Planning/Search/CoupledRegionTest.cpp
   Planning/Search/ComputeImplementationTest.cpp
-  Planning/Search/DataMovementTest.cpp
   Planning/Search/InstructionScheduleTest.cpp
   Planning/Search/PhysicalRepresentationTest.cpp
   Planning/Search/StagePipelineTest.cpp

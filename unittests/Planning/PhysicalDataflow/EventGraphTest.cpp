@@ -104,9 +104,10 @@ EventInputs makeInputs(mlir::MLIRContext &context, int64_t extent,
 
   inputs.movement.plan.externalLoads = {{loadId, input}};
   inputs.movement.plan.ddrTransfers = {
-      {transferId, producerOutput, transferred,
-       MovementRealization{MovementRealizationKind::TargetRoutedPeer,
-                           {{TileId(0), TileId(1)}}}}};
+      {transferId, producerOutput, transferred}};
+  inputs.movement.plan.peerGraphs = {{PeerTransferGraphKind::TargetRoutedPeer,
+                                      {{TileId(0), TileId(1)}},
+                                      {MovementActionId(transferId)}}};
   inputs.movement.plan.publications = {{publicationId, consumerOutput}};
   ExactIndexSet domain = box({2, extent, 128});
   mlir::Type f16 = mlir::Float16Type::get(&context);

@@ -8,9 +8,11 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace wafer::compiler::detail {
@@ -28,14 +30,47 @@ struct MovementDomainFailure {
 enum class MovementSuccessorKind : uint8_t { Plan, End, CompilerBug };
 
 class MovementCursor {
-private:
-  struct Choice {
-    MovementRealizationKind kind = MovementRealizationKind::DDRStage;
-    std::vector<TileId> relays;
+public:
+  struct TreeChoice {
+    size_t rootChoice = 0;
+    uint64_t relayMask = 0;
+    std::vector<size_t> parentChoices;
   };
-  std::vector<Choice> choices;
+  struct ClassChoice {
+    /// Restricted-growth digits: zero is DDR; positive values are canonical
+    /// peer-group labels in first-occurrence order.
+    std::vector<uint32_t> membership;
+    std::vector<TreeChoice> trees;
+  };
+
+private:
+  std::vector<ClassChoice> classes;
 
   friend class MovementDomain;
+};
+
+struct EndpointTransferCapability {
+  TileId source{0};
+  TileId destination{0};
+
+  friend bool operator==(const EndpointTransferCapability &lhs,
+                         const EndpointTransferCapability &rhs) {
+    return lhs.source == rhs.source && lhs.destination == rhs.destination;
+  }
+  friend bool operator<(const EndpointTransferCapability &lhs,
+                        const EndpointTransferCapability &rhs) {
+    return std::tuple(lhs.source.getValue(), lhs.destination.getValue()) <
+           std::tuple(rhs.source.getValue(), rhs.destination.getValue());
+  }
+};
+
+/// Immutable target facts consumed by the movement query. Current TX81 uses
+/// an opaque end-to-end endpoint-transfer graph. Physical mesh links are not
+/// endpoint routes and therefore do not appear here.
+struct MovementTransportFacts {
+  std::vector<TileId> availableTiles;
+  std::vector<EndpointTransferCapability> endpointTransfers;
+  bool ddrStagesSupported = true;
 };
 
 class MovementSuccessor {
@@ -65,49 +100,67 @@ private:
 
 struct MovementDomainResult;
 
-/// Complete lazy realization domain for current unicast boundaries. DDR is
-/// always retained; cross-Tile payloads additionally have one opaque
-/// target-routed transfer and every explicit simple software-relay chain.
+enum class MovementPlanActionKind : uint8_t {
+  ExternalLoad,
+  BoundaryTransfer,
+  Gather,
+};
+
+/// Complete lazy realization domain for the finite payload requirements in
+/// the current coordinate. Compatible payloads enumerate every destination
+/// partition; each peer block enumerates every verifier-legal rooted
+/// arborescence over any active relay subset. DDR remains an independent
+/// sibling. Classic stars, chains and trees are proposals, not separate
+/// legality rules.
 class MovementDomain {
 public:
   MovementSuccessor getFirstPlan() const;
   MovementSuccessor getNextPlan(const MovementCursor &cursor) const;
   bool contains(const MovementPlan &plan) const;
+  std::vector<MovementPlan> getProposals() const;
 
   llvm::ArrayRef<MovementResourceDescription> getResources() const {
     return resources;
   }
 
 private:
-  struct Variable {
-    bool gather = false;
+  struct ActionVariable {
+    MovementPlanActionKind kind = MovementPlanActionKind::BoundaryTransfer;
     size_t planIndex = 0;
+    MovementActionId action;
     TileId source{0};
     TileId destination{0};
     bool peerCapable = false;
-    std::vector<TileId> availableRelays;
+  };
+
+  struct ReuseClass {
+    std::vector<ActionVariable> actions;
   };
 
   MovementDomain(MovementPlan base,
                  std::vector<MovementResourceDescription> resources,
-                 std::vector<TileId> availableTiles,
-                 std::vector<Variable> variables)
+                 MovementTransportFacts transport,
+                 std::vector<ReuseClass> classes)
       : base(std::move(base)), resources(std::move(resources)),
-        availableTiles(std::move(availableTiles)),
-        variables(std::move(variables)) {}
+        transport(std::move(transport)), classes(std::move(classes)) {}
 
-  bool advanceChoice(size_t variable, MovementCursor::Choice &choice) const;
+  bool advanceClassChoice(size_t classIndex,
+                          MovementCursor::ClassChoice &choice) const;
   std::optional<MovementPlan> buildPlan(const MovementCursor &cursor) const;
   std::optional<MovementCursor> getCursor(const MovementPlan &plan) const;
 
   MovementPlan base;
   std::vector<MovementResourceDescription> resources;
-  std::vector<TileId> availableTiles;
-  std::vector<Variable> variables;
+  MovementTransportFacts transport;
+  std::vector<ReuseClass> classes;
 
   friend MovementDomainResult
   buildMovementDomain(const CanonicalMovementCoordinate &,
                       const RepresentationPlan &, llvm::ArrayRef<TileId>);
+  friend MovementDomainResult
+  buildMovementDomain(const CanonicalMovementCoordinate &,
+                      const RepresentationPlan &,
+                      const MovementTransportFacts &);
 };
 
 struct MovementDomainResult {
@@ -121,6 +174,14 @@ MovementDomainResult
 buildMovementDomain(const CanonicalMovementCoordinate &canonical,
                     const RepresentationPlan &representations,
                     llvm::ArrayRef<TileId> availableTiles);
+
+MovementDomainResult
+buildMovementDomain(const CanonicalMovementCoordinate &canonical,
+                    const RepresentationPlan &representations,
+                    const MovementTransportFacts &transport);
+
+MovementTransportFacts
+buildOpaqueEndpointTransportFacts(llvm::ArrayRef<TileId> availableTiles);
 
 } // namespace wafer::compiler::detail
 

@@ -40,7 +40,7 @@ EventGraphBuildResult failed(EventGraphFailureKind kind,
 
 struct MovementActionDescription {
   MovementActionId id;
-  MovementRealization realization;
+  std::optional<PeerTransferGraphPlan> peerGraph;
   const MovementResourceDescription *resource = nullptr;
   bool publication = false;
   bool gather = false;
@@ -160,7 +160,27 @@ private:
                     EventGraphFailureReason::MalformedPlan,
                     "movement coordinate has duplicate action resources");
 
-    auto addMovement = [&](MovementActionId id, MovementRealization realization,
+    std::map<MovementActionId, const PeerTransferGraphPlan *> selectedGraphs;
+    for (const PeerTransferGraphPlan &graph : movement.plan.peerGraphs) {
+      if (graph.actions.empty())
+        return fail(EventGraphFailureKind::CompilerBug,
+                    EventGraphFailureReason::MalformedPlan,
+                    "movement plan has a malformed peer graph");
+      for (const MovementActionId &action : graph.actions)
+        if (!selectedGraphs.try_emplace(action, &graph).second)
+          return fail(EventGraphFailureKind::CompilerBug,
+                      EventGraphFailureReason::MalformedPlan,
+                      "movement peer graphs overlap one semantic action");
+    }
+    auto getPeerGraph = [&](const MovementActionId &id) {
+      auto selected = selectedGraphs.find(id);
+      return selected == selectedGraphs.end()
+                 ? std::optional<PeerTransferGraphPlan>{}
+                 : std::optional<PeerTransferGraphPlan>(*selected->second);
+    };
+
+    auto addMovement = [&](MovementActionId id,
+                           std::optional<PeerTransferGraphPlan> peerGraph,
                            bool publication, bool gather) -> bool {
       auto resource = movementResources.find(id);
       if (resource == movementResources.end())
@@ -168,7 +188,7 @@ private:
                     EventGraphFailureReason::MissingPlanFact,
                     "selected movement action has no resource description");
       MovementActionDescription description{
-          id, std::move(realization), resource->second, publication, gather};
+          id, std::move(peerGraph), resource->second, publication, gather};
       if (!movementActions.try_emplace(id, std::move(description)).second)
         return fail(EventGraphFailureKind::CompilerBug,
                     EventGraphFailureReason::MalformedPlan,
@@ -176,27 +196,30 @@ private:
       return true;
     };
     for (const ExternalLoadPlan &load : movement.plan.externalLoads)
-      if (!addMovement(
-              load.id,
-              MovementRealization{MovementRealizationKind::DDRStage, {}}, false,
-              false))
+      if (!addMovement(load.id, getPeerGraph(MovementActionId(load.id)), false,
+                       false))
         return false;
     for (const DDRBoundaryTransferPlan &transfer : movement.plan.ddrTransfers)
-      if (!addMovement(transfer.id, transfer.realization, false, false))
+      if (!addMovement(transfer.id, getPeerGraph(MovementActionId(transfer.id)),
+                       false, false))
         return false;
     for (const ReductionGatherPlan &gather : movement.plan.reductionGathers)
-      if (!addMovement(gather.id, gather.realization, false, true))
+      if (!addMovement(gather.id, getPeerGraph(MovementActionId(gather.id)),
+                       false, true))
         return false;
     for (const ResultPublicationPlan &publication : movement.plan.publications)
-      if (!addMovement(
-              publication.id,
-              MovementRealization{MovementRealizationKind::DDRStage, {}}, true,
-              false))
+      if (!addMovement(publication.id, std::nullopt, true, false))
         return false;
     if (movementActions.size() != movement.resources.size())
       return fail(EventGraphFailureKind::CompilerBug,
                   EventGraphFailureReason::MalformedPlan,
                   "movement action and resource inventories differ");
+    if (llvm::any_of(selectedGraphs, [&](const auto &entry) {
+          return !movementActions.count(entry.first);
+        }))
+      return fail(EventGraphFailureKind::CompilerBug,
+                  EventGraphFailureReason::MalformedPlan,
+                  "movement peer graph references an unknown action");
 
     for (const StorageObjectPlan &object : storage.plan.storageObjects)
       if (!semanticObjects.insert(object.id).second)
@@ -381,7 +404,9 @@ private:
         return false;
 
       EventId chainTail = issue;
-      const auto &hops = description.realization.hops;
+      llvm::ArrayRef<MovementHop> hops;
+      if (description.peerGraph)
+        hops = description.peerGraph->hops;
       if (!hops.empty()) {
         if ((source && hops.front().source != *source) ||
             (destination && hops.back().destination != *destination))
@@ -442,8 +467,7 @@ private:
           addResourceUse(issue, DirectedNoCLinkResource{link},
                          ResourceUseMode::Exclusive, completion);
 
-      if (description.realization.kind == MovementRealizationKind::DDRStage ||
-          (hops.empty() && !description.gather)) {
+      if (!description.peerGraph || (hops.empty() && !description.gather)) {
         addResourceUse(issue, CardDDRResource{card}, ResourceUseMode::Exclusive,
                        completion);
         if (source)

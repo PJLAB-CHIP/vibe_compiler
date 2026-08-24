@@ -246,7 +246,11 @@ private:
 
   RepresentationState parent;
   std::optional<MovementCursor> cursor;
-  bool started = false;
+  std::vector<MovementPlan> proposals;
+  std::set<MovementPlan> emitted;
+  size_t nextProposal = 0;
+  bool proposalsInitialized = false;
+  bool rawStarted = false;
   bool exhausted = false;
 
   friend class PhysicalDataflowPlanningSession;

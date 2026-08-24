@@ -92,25 +92,14 @@ struct ResultDiscardId {
   }
 };
 
-struct ExternalLoadPlan {
-  ExternalLoadId id;
-  PhysicalVersionId destination;
+using MovementActionId = std::variant<ExternalLoadId, DDRBoundaryTransferId,
+                                      ReductionGatherId, ResultPublicationId>;
 
-  friend bool operator==(const ExternalLoadPlan &lhs,
-                         const ExternalLoadPlan &rhs) {
-    return lhs.id == rhs.id && lhs.destination == rhs.destination;
-  }
-  friend bool operator<(const ExternalLoadPlan &lhs,
-                        const ExternalLoadPlan &rhs) {
-    return std::tie(lhs.id, lhs.destination) <
-           std::tie(rhs.id, rhs.destination);
-  }
-};
-
-enum class MovementRealizationKind : uint8_t {
-  DDRStage,
+enum class PeerTransferGraphKind : uint8_t {
   TargetRoutedPeer,
   SoftwareRelay,
+  SoftwareFanout,
+  ExternalLoadFanout,
 };
 
 struct MovementHop {
@@ -126,17 +115,42 @@ struct MovementHop {
   }
 };
 
-struct MovementRealization {
-  MovementRealizationKind kind = MovementRealizationKind::DDRStage;
+struct PeerTransferGraphPlan {
+  PeerTransferGraphKind kind = PeerTransferGraphKind::TargetRoutedPeer;
   std::vector<MovementHop> hops;
+  /// All logical actions served by this one payload graph. Every graph carries
+  /// its sorted, all-and-only action set and is stored once in MovementPlan.
+  /// An action absent from every graph uses its explicit DDR carrier.
+  std::vector<MovementActionId> actions;
+  /// Present only for ExternalLoadFanout. This member performs the one DDR
+  /// load that seeds the peer graph; every other member is satisfied by the
+  /// explicit endpoint transfers.
+  std::optional<ExternalLoadId> ddrRoot;
 
-  friend bool operator==(const MovementRealization &lhs,
-                         const MovementRealization &rhs) {
-    return lhs.kind == rhs.kind && lhs.hops == rhs.hops;
+  friend bool operator==(const PeerTransferGraphPlan &lhs,
+                         const PeerTransferGraphPlan &rhs) {
+    return lhs.kind == rhs.kind && lhs.hops == rhs.hops &&
+           lhs.actions == rhs.actions && lhs.ddrRoot == rhs.ddrRoot;
   }
-  friend bool operator<(const MovementRealization &lhs,
-                        const MovementRealization &rhs) {
-    return std::tie(lhs.kind, lhs.hops) < std::tie(rhs.kind, rhs.hops);
+  friend bool operator<(const PeerTransferGraphPlan &lhs,
+                        const PeerTransferGraphPlan &rhs) {
+    return std::tie(lhs.kind, lhs.hops, lhs.actions, lhs.ddrRoot) <
+           std::tie(rhs.kind, rhs.hops, rhs.actions, rhs.ddrRoot);
+  }
+};
+
+struct ExternalLoadPlan {
+  ExternalLoadId id;
+  PhysicalVersionId destination;
+
+  friend bool operator==(const ExternalLoadPlan &lhs,
+                         const ExternalLoadPlan &rhs) {
+    return lhs.id == rhs.id && lhs.destination == rhs.destination;
+  }
+  friend bool operator<(const ExternalLoadPlan &lhs,
+                        const ExternalLoadPlan &rhs) {
+    return std::tie(lhs.id, lhs.destination) <
+           std::tie(rhs.id, rhs.destination);
   }
 };
 
@@ -144,18 +158,16 @@ struct DDRBoundaryTransferPlan {
   DDRBoundaryTransferId id;
   PhysicalVersionId source;
   PhysicalVersionId destination;
-  MovementRealization realization;
 
   friend bool operator==(const DDRBoundaryTransferPlan &lhs,
                          const DDRBoundaryTransferPlan &rhs) {
     return lhs.id == rhs.id && lhs.source == rhs.source &&
-           lhs.destination == rhs.destination &&
-           lhs.realization == rhs.realization;
+           lhs.destination == rhs.destination;
   }
   friend bool operator<(const DDRBoundaryTransferPlan &lhs,
                         const DDRBoundaryTransferPlan &rhs) {
-    return std::tie(lhs.id, lhs.source, lhs.destination, lhs.realization) <
-           std::tie(rhs.id, rhs.source, rhs.destination, rhs.realization);
+    return std::tie(lhs.id, lhs.source, lhs.destination) <
+           std::tie(rhs.id, rhs.source, rhs.destination);
   }
 };
 
@@ -163,18 +175,16 @@ struct ReductionGatherPlan {
   ReductionGatherId id;
   PhysicalVersionId source;
   ExecutionInstanceId mergeExecution;
-  MovementRealization realization;
 
   friend bool operator==(const ReductionGatherPlan &lhs,
                          const ReductionGatherPlan &rhs) {
     return lhs.id == rhs.id && lhs.source == rhs.source &&
-           lhs.mergeExecution == rhs.mergeExecution &&
-           lhs.realization == rhs.realization;
+           lhs.mergeExecution == rhs.mergeExecution;
   }
   friend bool operator<(const ReductionGatherPlan &lhs,
                         const ReductionGatherPlan &rhs) {
-    return std::tie(lhs.id, lhs.source, lhs.mergeExecution, lhs.realization) <
-           std::tie(rhs.id, rhs.source, rhs.mergeExecution, rhs.realization);
+    return std::tie(lhs.id, lhs.source, lhs.mergeExecution) <
+           std::tie(rhs.id, rhs.source, rhs.mergeExecution);
   }
 };
 
@@ -213,6 +223,7 @@ struct MovementPlan {
   std::vector<ExternalLoadPlan> externalLoads;
   std::vector<DDRBoundaryTransferPlan> ddrTransfers;
   std::vector<ReductionGatherPlan> reductionGathers;
+  std::vector<PeerTransferGraphPlan> peerGraphs;
   std::vector<ResultPublicationPlan> publications;
   std::vector<ResultDiscardPlan> discards;
 
@@ -220,18 +231,16 @@ struct MovementPlan {
     return lhs.externalLoads == rhs.externalLoads &&
            lhs.ddrTransfers == rhs.ddrTransfers &&
            lhs.reductionGathers == rhs.reductionGathers &&
+           lhs.peerGraphs == rhs.peerGraphs &&
            lhs.publications == rhs.publications && lhs.discards == rhs.discards;
   }
   friend bool operator<(const MovementPlan &lhs, const MovementPlan &rhs) {
     return std::tie(lhs.externalLoads, lhs.ddrTransfers, lhs.reductionGathers,
-                    lhs.publications, lhs.discards) <
+                    lhs.peerGraphs, lhs.publications, lhs.discards) <
            std::tie(rhs.externalLoads, rhs.ddrTransfers, rhs.reductionGathers,
-                    rhs.publications, rhs.discards);
+                    rhs.peerGraphs, rhs.publications, rhs.discards);
   }
 };
-
-using MovementActionId = std::variant<ExternalLoadId, DDRBoundaryTransferId,
-                                      ReductionGatherId, ResultPublicationId>;
 
 struct MovementResourceDescription {
   MovementActionId action;

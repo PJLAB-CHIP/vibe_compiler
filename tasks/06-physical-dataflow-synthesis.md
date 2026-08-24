@@ -495,8 +495,10 @@ version，structured fragments用owner primary→consumer boundary primary的DDR
 component逐项gather，同merge Tile的local contribution无action；沿pure non-structured SSA path到function return的final result显式
 publication。plan只保存typed action/version/execution IDs，exact domain/type进入resource description；peer/relay/reuse/collective仍由
 current movement domain扩展成DDR、opaque target-routed peer和explicit simple software-relay realization。selected G version/layout不兼容时
-peer无state；current target没有qualified hardware collective/raw-route contract时不伪造state。跨boundary multicast/ring及其I/J
-storage/completion witness仍由保留donor后续迁移，不能把endpoint path写成hardware route。
+peer无state；current target没有closed typed hardware collective/raw-route contract时不伪造state。current movement domain对exact reuse
+class惰性枚举任意DDR子集、destination set partition和rooted software relay/fanout arborescence；ring/tree只有在上游给出typed
+multi-participant payload/combine requirement时才作为普通action-DAG proposal。对应storage/completion继续由I/J从selected graph重建，
+不能把endpoint path写成hardware route。
 
 Movement proposal可以消费一个query-local、可失效的relation-derived reuse analysis：它从Q50.A exact demand、selected
 placement、TileRegion/traversal、wave-loop order和representation推导spatial-demand equivalence/invariance classes、
@@ -922,8 +924,11 @@ hardware-backed边界，不能恢复旧immediate-await或结构化join donor。
   Movement、Buffer、ExecutionStructure与ClosedSchedule选择只在full-feasibility中和canonical point比较，noncanonical member返回Unsupported；
 - Q50.G没有实现设计中的constraint graph、PBQP精确消元与residual search；production也没有产生operation tuple/alias constraints，
   selected physical-version builder仍只有direct unit consumer；
-- Q50.H只枚举per-boundary DDR、end-to-end direct和simple software relay，fanout/multicast、generic collective、ring/tree state、selected
-  movement construction与actual verifier仍未迁完；
+- Q50.H已闭合current typed boundary的DDR/direct/relay、external every-root reuse、destination partition、partial/max fanout
+  arborescence及remote gather domain，并提供
+  mutation-free selected preflight、token-only emitter和H-stage verifier；current facts不声明未经typed descriptor的raw collective，
+  因而domain中不存在对应state。
+  complete candidate把这些token与I storage、K structure和J selected wait/order共同接入Q50.0的工作仍由后续F/I/J线性闭合；
 - Q50.I production没有产生reuse/slot-family requirements，selected rotating-slot construction/lifetime verifier未接入；Q50.J EventGraph
   没有接Q63 execution contracts和source effect/control facts，缺失contract时还会默认Synchronous；DDR/no-hop movement也被默认
   Synchronous，且fixed K后没有用post-K BufferPlan重建；

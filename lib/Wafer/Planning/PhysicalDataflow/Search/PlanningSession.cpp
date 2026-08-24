@@ -1009,31 +1009,53 @@ MovementExpansionResult PhysicalDataflowPlanningSession::resumeMovement(
             {},
             std::move(lookup.failure->detail)};
   }
-  ++work.movementSuccessorSteps;
-  MovementSuccessor next =
-      continuation.started ? lookup.domain->getNextPlan(*continuation.cursor)
-                           : lookup.domain->getFirstPlan();
-  if (next.getKind() == MovementSuccessorKind::End) {
-    continuation.exhausted = true;
-    continuation.cursor.reset();
-    return {MovementExpansionKind::ParentExhausted};
+  auto makeState = [&](const MovementPlan &plan) {
+    std::string detail;
+    auto state = MovementState::create(*lookup.domain, continuation.parent,
+                                       plan, &detail);
+    if (mlir::failed(state))
+      return MovementExpansionResult{
+          MovementExpansionKind::CompilerBug, {}, std::move(detail)};
+    ++work.movementStatesQueued;
+    return MovementExpansionResult{MovementExpansionKind::State,
+                                   std::move(*state)};
+  };
+  if (!continuation.proposalsInitialized) {
+    continuation.proposals = lookup.domain->getProposals();
+    continuation.proposalsInitialized = true;
   }
-  if (next.getKind() != MovementSuccessorKind::Plan || !next.getPlan() ||
-      !next.getCursor())
-    return {MovementExpansionKind::CompilerBug,
-            {},
-            next.getDetail().empty()
-                ? "movement successor omitted its plan or cursor"
-                : next.getDetail().str()};
-  std::string detail;
-  auto state = MovementState::create(*lookup.domain, continuation.parent,
-                                     *next.getPlan(), &detail);
-  if (mlir::failed(state))
-    return {MovementExpansionKind::CompilerBug, {}, std::move(detail)};
-  continuation.cursor = *next.getCursor();
-  continuation.started = true;
-  ++work.movementStatesQueued;
-  return {MovementExpansionKind::State, std::move(*state)};
+  while (continuation.nextProposal < continuation.proposals.size()) {
+    ++work.movementSuccessorSteps;
+    const MovementPlan &proposal =
+        continuation.proposals[continuation.nextProposal++];
+    if (!continuation.emitted.insert(proposal).second)
+      continue;
+    return makeState(proposal);
+  }
+  while (true) {
+    ++work.movementSuccessorSteps;
+    MovementSuccessor next =
+        continuation.rawStarted
+            ? lookup.domain->getNextPlan(*continuation.cursor)
+            : lookup.domain->getFirstPlan();
+    if (next.getKind() == MovementSuccessorKind::End) {
+      continuation.exhausted = true;
+      continuation.cursor.reset();
+      return {MovementExpansionKind::ParentExhausted};
+    }
+    if (next.getKind() != MovementSuccessorKind::Plan || !next.getPlan() ||
+        !next.getCursor())
+      return {MovementExpansionKind::CompilerBug,
+              {},
+              next.getDetail().empty()
+                  ? "movement successor omitted its plan or cursor"
+                  : next.getDetail().str()};
+    continuation.cursor = *next.getCursor();
+    continuation.rawStarted = true;
+    if (!continuation.emitted.insert(*next.getPlan()).second)
+      continue;
+    return makeState(*next.getPlan());
+  }
 }
 
 StorageExpansionResult PhysicalDataflowPlanningSession::resumeStorage(
