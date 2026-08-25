@@ -5,6 +5,7 @@
 #include "Wafer/Planning/PhysicalDataflow/CardDataflowConstruction.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDemandView.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalTileShape.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 
@@ -15,6 +16,26 @@
 
 namespace wafer::compiler::detail {
 namespace {
+
+llvm::StringRef stringifyEdgeAction(SpatialEdgeAction action) {
+  switch (action) {
+  case SpatialEdgeAction::RecursiveProducerTiling:
+    return "recursive-producer-tiling";
+  case SpatialEdgeAction::LocalShardResidency:
+    return "local-shard-residency";
+  case SpatialEdgeAction::PeerFragments:
+    return "peer-fragments";
+  case SpatialEdgeAction::SpillReload:
+    return "spill-reload";
+  case SpatialEdgeAction::Recompute:
+    return "recompute";
+  case SpatialEdgeAction::RegionCut:
+    return "region-cut";
+  case SpatialEdgeAction::CardDDRTransfer:
+    return "card-ddr-transfer";
+  }
+  llvm_unreachable("unknown spatial edge action");
+}
 
 mlir::FailureOr<llvm::SmallVector<StructuredDAGNodePlacement, 16>>
 getNodePlacements(const StructuredDAGAnalysis &dag,
@@ -144,6 +165,24 @@ buildCardMaterializationPlan(const CardProgramAnalysis &program,
       return mlir::failure();
     assignment.mapping.operationTemporalTiles.push_back(
         {node.operation, temporal->second, {}});
+    if (wafer::support::getActiveCompileTimingSession()) {
+      auto placement = llvm::find_if(
+          assignment.nodePlacements, [&](const auto &candidate) {
+            return candidate.node == node.id;
+          });
+      diagnostics << "wafer-compile: ir-selected-node node=" << node.id
+                  << " op=" << node.operation->getName()
+                  << " spatial_tiles="
+                  << (placement == assignment.nodePlacements.end()
+                          ? 0
+                          : placement->tiles.size())
+                  << " loop_ranges=[";
+      if (auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(node.operation))
+        llvm::interleaveComma(linalg.getStaticLoopRanges(), diagnostics);
+      diagnostics << "] temporal_tiles=[";
+      llvm::interleaveComma(temporal->second, diagnostics);
+      diagnostics << "]\n";
+    }
   }
 
   llvm::ArrayRef<llvm::SmallVector<StructuredDAGNodeID, 2>> outputRoots =
@@ -179,6 +218,23 @@ buildCardMaterializationPlan(const CardProgramAnalysis &program,
     diagnostics << "wafer-compile: candidate movement projection failed: "
                 << failureReason << '\n';
     return mlir::failure();
+  }
+  if (wafer::support::getActiveCompileTimingSession()) {
+    std::map<SpatialEdgeAction, uint64_t> actions;
+    std::map<mlir::Operation *, uint64_t> strategiesByProducer;
+    for (const SpatialEdgeStrategy &strategy :
+         assignment.mapping.edgeStrategies) {
+      ++actions[strategy.action];
+      ++strategiesByProducer[strategy.producer];
+    }
+    for (const auto &[action, count] : actions)
+      diagnostics << "wafer-compile: ir-edge-actions action="
+                  << stringifyEdgeAction(action) << " count=" << count
+                  << '\n';
+    for (const StructuredDAGNode &node : program.dag.getNodes())
+      diagnostics << "wafer-compile: ir-edge-producer node=" << node.id
+                  << " strategies=" << strategiesByProducer[node.operation]
+                  << '\n';
   }
   if (statistics) {
     ++statistics->spatialCoordinateQueries;

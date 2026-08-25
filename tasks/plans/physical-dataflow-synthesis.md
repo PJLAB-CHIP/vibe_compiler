@@ -82,22 +82,22 @@ scalar/zero-rank或单点定位，并必须有同机制真实规模对应项。s
 
 | IR边界或关系 | 数量 | 相对关系 | 结论 |
 | --- | ---: | ---: | --- |
-| source StableHLO | 142 | 1.000x | 单个decoder block |
-| post-SPMD StableHLO | 144 | 1.014x/source | 不是异常膨胀点 |
-| Tensor/Linalg | 434 | 3.014x/post-SPMD | 106个structured compute，仍是一份logical program |
+| source StableHLO | 144 | 1.000x | 单个decoder block，包含current topology/mesh facts |
+| post-SPMD StableHLO | 148 | 1.028x/source | 不是异常膨胀点 |
+| Tensor/Linalg | 438 | 2.959x/post-SPMD | 106个structured compute，仍是一份logical program |
 | selected execution | 1,696 | `106 * 16` | 当前plan要求的node/Tile execution |
-| actual compute emission | 40,960 | 24.151x/selected execution | 同一execution被fragment carrier重复构造 |
-| selected Tile dataflow | 554,688 ops | 1,278.083x/Tensor | 膨胀首次完整出现在actual candidate construction |
+| actual compute emission | 42,672 | 25.160x/selected execution | 同一execution被fragment carrier重复构造 |
+| selected Tile dataflow | 560,032 ops | 1,278.612x/Tensor | 膨胀首次完整出现在actual candidate construction |
 
-主要Tile op为`wafer.tile.extract_slice=92,976`、`bufferization.to_memref=57,856`、
-`memref.global=57,600`、`memref.alloc=44,384`、`memref.subview=42,464`、`wafer.tile.load=27,504`、
-`wafer.tile.materialize_layout=19,520`、`wafer.tile.insert_slice=16,656`和`wafer.tile.transpose=13,120`。
+主要Tile op为`wafer.tile.extract_slice=92,976`、`bufferization.to_memref=57,824`、
+`memref.global=57,600`、`memref.alloc=47,184`、`memref.subview=42,384`、`wafer.tile.load=27,184`、
+`wafer.tile.materialize_layout=19,472`、`wafer.tile.insert_slice=16,608`和`wafer.tile.transpose=13,088`。
 15分钟Release只处理约13%的slice，尚未调用actual SPM planner；timeout不能解释成SPM rejection。
 
 ### Baseline独立证据
 
 同一source的fresh `none`在baseline CardModule postcondition失败，未进入TileRegion-to-Instr、SPM、DDR或target。
-Tile 0已经形成30,668 ops、2,538个compute emission和6,048个extract slice；一个TileRegion包含15个semantic root，
+Tile 0已经形成31,911 ops、2,648个compute emission和6,426个extract slice；一个TileRegion包含15个semantic root，
 违反baseline一root一region合同。该路径的`tile_memory_planning_invocations`、`tile_to_instr_lowerings`和
 `spm_planning_invocations`均为0。Baseline不使用search plan，但复用了旧edge-driven materializer，因此同时具有
 per-fragment compute重复和独立root grouping错误。
@@ -170,7 +170,7 @@ Materialized-plan检查的处置：
 
 | 顺序 | Work item | 单一责任与输出 | 精确完成条件 | 本项固定执行流程 |
 | ---: | --- | --- | --- | --- |
-| 1 | `expansion-evidence-and-contract` | 冻结同一source identity、两条路径逐stage inventory、独立materializer边界和删除清单 | instrumentation on/off结果一致；输入inventory一致；未到达stage明确标注；complete-candidate层无共享实现或互调 | 读AGENTS/progress→读06/Q52与本项矩阵→读涉及硬件/ABI事实→调研成熟compiler的stage/owner instrumentation→查官方及pinned MLIR→改诊断/tests→fresh验证→重读设计并按MLIR规范复审→更新状态并提交 |
+| 1 | `expansion-evidence-and-contract` | 冻结同一source identity、两条路径逐stage inventory、current call graph违规和目标独立materializer边界及删除清单 | instrumentation on/off结果一致；输入inventory一致；未到达stage明确标注；current shared/edge-driven调用点完整列出且第3/4/7项的清零目标可静态复核，不提前把违规写成已修复 | 读AGENTS/progress→读06/Q52与本项矩阵→读涉及硬件/ABI事实→调研成熟compiler的stage/owner instrumentation→查官方及pinned MLIR→改诊断/tests→fresh验证→重读设计并按MLIR规范复审→更新状态并提交 |
 | 2 | `verifier-contract-cleanup` | 严格执行55/38/materialized-stage分类 | 分类零遗漏；必要负例仍在正确stage失败；无新增总体验证器 | 读AGENTS/progress→读19/Q52与本项矩阵→读硬件/ABI事实→复核LLVM/MLIR成熟实践→查pinned源码→逐类改代码/tests→fresh verify-each/build→重读设计/MLIR复审→更新并提交 |
 | 3 | `search-execution-materializer` | canonical/noncanonical、generic/attention只走search execution-owned builder；carrier只消费SSA result/view | 旧conditional builder和carrier→compute tiler调用为0；fanout不增加producer compute；nested/replica/coupled/tail通过 | 读AGENTS/progress→读06/07/08/10与本项矩阵→调研MLIR/IREE/Triton materialization→查pinned MLIR→改代码/tests→fresh Card/Instr验证→重读设计/MLIR复审→更新并提交 |
 | 4 | `baseline-root-materializer` | 独立baseline materializer按root创建region和independent-DDR carrier | 15-root region消失；每个compute region恰一root；baseline call graph不触及search owner | 读AGENTS/progress→读06/07/10与本项矩阵→读hardware completion/DDR事实→调研成熟baseline pipeline→查pinned MLIR→改代码/tests→fresh baseline Card/Instr验证→重读设计/MLIR复审→更新并提交 |
@@ -185,7 +185,7 @@ Materialized-plan检查的处置：
 | 输入等价类 | shape/结构 | typed failure | 精确断言 | 直接下游witness |
 | --- | --- | --- | --- | --- |
 | instrumentation off/on | generic chain/fanout及同一LLaMA source；rank 3–6，1024/1025/1031 | report sink失败不改变compiler result | source identity、stage reachability、op/relation inventory和failure类别一致 | 后续所有checkpoint使用同一冻结基线 |
-| controller isolation | `none`和`search`独立process/owner | complete层出现共享callback或互调即contract failure | call graph、include和CMake owner明确；未到达stage不记作0开销 | 两条materializer分别施工 |
+| controller isolation | `none`和`search`独立process/owner；current shared facade作为冻结的待删违规 | instrumentation不改变现有typed result；漏记active shared/互调caller视为evidence contract failure | call graph、include和CMake owner及违规清单完整；未到达stage不记作0开销 | 第3/4项分别构造两条materializer，第7项静态清零 |
 
 ### 2. `verifier-contract-cleanup`覆盖矩阵
 
@@ -257,8 +257,8 @@ Materialized-plan检查的处置：
 - 没有current producer的`RecursiveProducerTiling`、`SpillReload`和`Recompute`surface及only-purpose tests；
 - active设计、memory、CMake和tests中把上述路径描述为current或supported的内容。
 
-冻结LLaMA回归要求：search修复后Tile total、compute和slice相对554,688/40,960/92,976严格下降，execution duplicate为0；
-baseline Tile 0相对30,668/2,538/6,048严格下降且15-root region消失。严格下降只作回归证据，不进入compiler
+冻结LLaMA回归要求：search修复后Tile total、compute和slice相对560,032/42,672/92,976严格下降，execution duplicate为0；
+baseline Tile 0相对31,911/2,648/6,426严格下降且15-root region消失。严格下降只作回归证据，不进入compiler
 legality。最终必须同时通过专项结构断言、标准MLIR verifier、actual SPM/DDR/target和package/no-card。
 
 ## 结构修复后的search scalability

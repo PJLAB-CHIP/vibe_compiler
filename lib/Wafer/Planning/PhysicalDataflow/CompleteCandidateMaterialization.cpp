@@ -18,6 +18,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <set>
 
@@ -231,6 +232,58 @@ materializeCardCandidate(mlir::ModuleOp tensorProgram, CardId cardId,
       diagnostics << "wafer-compile: selected region preparation failed: "
                   << failureReason << '\n';
       return mlir::failure();
+    }
+    if (wafer::support::getActiveCompileTimingSession() && !groups->empty()) {
+      auto firstNonEmptyGroup =
+          llvm::find_if(*groups, [](const StructuredNodeShardGroup &group) {
+            return !group.shards.empty();
+          });
+      if (firstNonEmptyGroup != groups->end()) {
+        TileId firstTile = firstNonEmptyGroup->shards.front().tile;
+        uint64_t totalShards = 0;
+        for (const StructuredNodeShardGroup &group : *groups)
+          totalShards += group.shards.size();
+        diagnostics << "wafer-compile: ir-region-plan groups=" << groups->size()
+                    << " shards=" << totalShards
+                    << " first_tile=" << firstTile.getValue() << '\n';
+        for (const StructuredNodeShardGroup &group : *groups)
+          for (const StructuredNodeIterationShard &shard : group.shards) {
+            if (shard.tile != firstTile)
+              continue;
+            auto temporal =
+                llvm::find_if(group.temporalTiles, [&](const auto &candidate) {
+                  return candidate.structuredNodeId == shard.structuredNodeId;
+                });
+            uint64_t leafVariants = 1;
+            if (temporal != group.temporalTiles.end())
+              for (auto [extent, tile] :
+                   llvm::zip_equal(shard.sizes, temporal->iteratorTileSizes)) {
+                const int64_t boundedTile = std::min(extent, tile);
+                if (boundedTile <= 0) {
+                  leafVariants = 0;
+                  break;
+                }
+                uint64_t variants = 1;
+                if (extent - extent % boundedTile > boundedTile)
+                  ++variants;
+                if (extent % boundedTile != 0)
+                  ++variants;
+                if (leafVariants <=
+                    std::numeric_limits<uint64_t>::max() / variants)
+                  leafVariants *= variants;
+              }
+            diagnostics << "wafer-compile: ir-region-node tile="
+                        << shard.tile.getValue()
+                        << " node=" << shard.structuredNodeId
+                        << " leaf_variants=" << leafVariants
+                        << " shard_sizes=[";
+            llvm::interleaveComma(shard.sizes, diagnostics);
+            diagnostics << "] temporal_tiles=[";
+            if (temporal != group.temporalTiles.end())
+              llvm::interleaveComma(temporal->iteratorTileSizes, diagnostics);
+            diagnostics << "]\n";
+          }
+      }
     }
     if (mlir::failed(applySelectedRegionRepresentations(
             plan.regions, plan.rootWorks, plan.representations,

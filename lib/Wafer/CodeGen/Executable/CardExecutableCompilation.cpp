@@ -31,6 +31,8 @@ struct TileLoweringResult {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   StructuredMaterializationRelations materializationRelations;
   std::vector<CandidateInstructionIR::RegionNodeRelation> regionNodes;
+  wafer::support::CompileIRInventory bufferizedInventory;
+  wafer::support::CompileIRInventory instructionInventory;
   std::string detail;
   TileMemoryPlanningFailure memoryPlanning;
   bool conversionFailed = false;
@@ -48,7 +50,10 @@ static std::string captureTileIR(mlir::ModuleOp module) {
 static mlir::LogicalResult lowerTileRegionsToInstructionIR(
     mlir::ModuleOp module, StructuredMaterializationRelations &relations,
     std::vector<CandidateInstructionIR::RegionNodeRelation> &regionNodes,
-    bool placeCanonicalCompletion, std::string &detail) {
+    bool placeCanonicalCompletion,
+    wafer::support::CompileIRInventory *bufferizedInventory,
+    wafer::support::CompileIRInventory *instructionInventory,
+    std::string &detail) {
   if (mlir::failed(checkStructuredBufferRelationsCurrent(module.getOperation(),
                                                          relations))) {
     detail = "CardModule splitting produced buffer relations outside the "
@@ -87,6 +92,8 @@ static mlir::LogicalResult lowerTileRegionsToInstructionIR(
              "Tile buffer relation";
     return mlir::failure();
   }
+  if (bufferizedInventory)
+    bufferizedInventory->record(module.getOperation());
   StructuredBufferReplacementListener replacementListener(relations);
   TileRegionToInstrLoweringSession loweringSession(*module.getContext(),
                                                    &replacementListener);
@@ -124,6 +131,8 @@ static mlir::LogicalResult lowerTileRegionsToInstructionIR(
       return mlir::failure();
     }
   }
+  if (instructionInventory)
+    instructionInventory->record(module.getOperation());
   return mlir::success();
 }
 
@@ -251,6 +260,65 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
                "selected-tile-dataflow-preparation",
                "selected Tile dataflow preparation produced stale relations "
                "or invalid IR"));
+  if (wafer::support::getActiveCompileTimingSession()) {
+    wafer::support::CompileIRInventory inventory;
+    for (CandidateTileDataflowIR &tile : tileDataflowViews) {
+      wafer::support::CompileIRInventory tileInventory;
+      tileInventory.record(tile.getModule().getOperation());
+      diagnostics << "wafer-compile: ir-inventory-tile "
+                  << "stage=selected-tile-dataflow tile="
+                  << tile.tile.getValue() << " total_operations="
+                  << tileInventory.getTotalOperations() << '\n';
+      diagnostics << "wafer-compile: ir-provenance-tile tile="
+                  << tile.tile.getValue() << " compute_emissions="
+                  << tile.relations->operationEmissions.size()
+                  << " operand_buffers=" << tile.relations->operandBuffers.size()
+                  << " result_buffers="
+                  << tile.relations->operationResultBuffers.size()
+                  << " scratch_buffers="
+                  << tile.relations->scratchBuffers.size() << '\n';
+      std::map<uint32_t, uint64_t> emissionsByNode;
+      for (const StructuredOperationEmissionRelation &relation :
+           tile.relations->operationEmissions)
+        ++emissionsByNode[relation.structuredNodeId];
+      std::map<uint64_t, uint64_t> emissionMultiplicity;
+      for (const auto &[node, count] : emissionsByNode) {
+        (void)node;
+        ++emissionMultiplicity[count];
+      }
+      for (const auto &[emissions, nodes] : emissionMultiplicity)
+        diagnostics << "wafer-compile: ir-provenance-multiplicity tile="
+                    << tile.tile.getValue() << " emissions_per_node="
+                    << emissions << " node_count=" << nodes << '\n';
+      if (tile.tile == expectedTileIds.front()) {
+        std::map<uint32_t, std::set<mlir::Operation *>> regionsByNode;
+        std::map<uint32_t, std::map<std::string, uint64_t>> opsByNode;
+        for (const StructuredOperationEmissionRelation &relation :
+             tile.relations->operationEmissions) {
+          if (!relation.operation)
+            continue;
+          TileRegionOp region =
+              relation.operation->getParentOfType<TileRegionOp>();
+          if (region)
+            regionsByNode[relation.structuredNodeId].insert(
+                region.getOperation());
+          ++opsByNode[relation.structuredNodeId]
+                     [relation.operation->getName().getStringRef().str()];
+        }
+        for (const auto &[node, operationCounts] : opsByNode) {
+          diagnostics << "wafer-compile: ir-provenance-node tile="
+                      << tile.tile.getValue() << " node=" << node
+                      << " regions=" << regionsByNode[node].size()
+                      << " emissions=" << emissionsByNode[node];
+          for (const auto &[name, count] : operationCounts)
+            diagnostics << " op." << name << '=' << count;
+          diagnostics << '\n';
+        }
+      }
+      inventory.merge(tileInventory);
+    }
+    inventory.print("selected-tile-dataflow", diagnostics);
+  }
 
   // Tile IR inspection is an explicit request: production compilation,
   // candidate evaluation and the deterministic baseline never pay the
@@ -271,7 +339,14 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
     if (mlir::failed(lowerTileRegionsToInstructionIR(
             *result.module, result.materializationRelations, result.regionNodes,
             /*placeCanonicalCompletion=*/
-            !preparation.ownsInstructionCompletion(), result.detail)) ||
+            !preparation.ownsInstructionCompletion(),
+            wafer::support::getActiveCompileTimingSession()
+                ? &result.bufferizedInventory
+                : nullptr,
+            wafer::support::getActiveCompileTimingSession()
+                ? &result.instructionInventory
+                : nullptr,
+            result.detail)) ||
         containsTileDataflowOperations(result.module->getOperation()) ||
         mlir::failed(mlir::verify(*result.module))) {
       result.conversionFailed = true;
@@ -306,6 +381,25 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
     return reportFailure(
         fail(CardExecutableCompilationStatus::IndeterminateFailure,
              "tile-region-to-instr", primaryDetail, std::move(tileFailures)));
+  }
+  if (wafer::support::getActiveCompileTimingSession()) {
+    wafer::support::CompileIRInventory bufferizedInventory;
+    wafer::support::CompileIRInventory instructionInventory;
+    for (auto [tileIndex, result] : llvm::enumerate(loweringResults)) {
+      diagnostics << "wafer-compile: ir-inventory-tile "
+                  << "stage=bufferized-tile-dataflow tile="
+                  << expectedTileIds[tileIndex].getValue()
+                  << " total_operations="
+                  << result.bufferizedInventory.getTotalOperations() << '\n';
+      diagnostics << "wafer-compile: ir-inventory-tile stage=instruction tile="
+                  << expectedTileIds[tileIndex].getValue()
+                  << " total_operations="
+                  << result.instructionInventory.getTotalOperations() << '\n';
+      bufferizedInventory.merge(result.bufferizedInventory);
+      instructionInventory.merge(result.instructionInventory);
+    }
+    bufferizedInventory.print("bufferized-tile-dataflow", diagnostics);
+    instructionInventory.print("instruction", diagnostics);
   }
 
   std::vector<CandidateInstructionIR> instructionViews;

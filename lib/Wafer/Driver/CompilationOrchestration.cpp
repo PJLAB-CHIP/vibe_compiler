@@ -286,6 +286,11 @@ mlir::LogicalResult runCompilationTransaction(
   if (mlir::failed(materializeOrVerifyExactExecutionConfig(
           *sourceModule, request.getExecutionConfig())))
     return mlir::failure();
+  if (timingSession) {
+    wafer::support::CompileIRInventory inventory;
+    inventory.record(sourceModule->getOperation());
+    inventory.print("source-stablehlo", diagnostics);
+  }
 
   // The resolver opens every payload from the canonical source exactly once
   // at owner establishment; program-directory verification then reads
@@ -505,6 +510,11 @@ mlir::LogicalResult runCompilationTransaction(
   }
   if (mlir::failed(verifyStablehloStageOperations(*tensorModule)))
     return mlir::failure();
+  if (timingSession) {
+    wafer::support::CompileIRInventory inventory;
+    inventory.record(tensorModule->getOperation());
+    inventory.print("post-spmd-stablehlo", diagnostics);
+  }
   frontend::FrontendProgramVerificationResult verifiedTensorFacts;
   if (mlir::failed(verifyProgramDirectoryMetadata(
           *tensorModule, tensorProgram, diagnostics, &verifiedTensorFacts,
@@ -678,6 +688,11 @@ mlir::LogicalResult runCompilationTransaction(
                                                   tensorProgram, diagnostics,
                                                   nullptr, &tensorResolver)))
     return mlir::failure();
+  if (timingSession) {
+    wafer::support::CompileIRInventory inventory;
+    inventory.record(verifiedTensorModule->getOperation());
+    inventory.print("tensor-linalg", diagnostics);
+  }
 
   sourceTiming.reset();
   if (timingSession)

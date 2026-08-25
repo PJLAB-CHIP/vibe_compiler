@@ -3,6 +3,7 @@
 #include "Internal.h"
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/IR/Verifier.h"
 #include "llvm/ADT/DenseMap.h"
@@ -255,6 +256,24 @@ lowerBaselineTileEntry(const TileMaterializationPreparation &preparation,
           failureReason))) {
     if (failureReason) {
       llvm::raw_string_ostream diagnostic(*failureReason);
+      if (wafer::support::getActiveCompileTimingSession()) {
+        wafer::support::CompileIRInventory inventory;
+        inventory.record(entry->getOperation());
+        diagnostic << '\n';
+        inventory.print("baseline-tile-dataflow-before-root-verifier",
+                        diagnostic);
+        diagnostic
+            << "wafer-compile: ir-provenance stage="
+               "baseline-tile-dataflow-before-root-verifier tile="
+            << tileId.getValue()
+            << " compute_emissions="
+            << tileRelations.operationEmissions.size()
+            << " operand_buffers=" << tileRelations.operandBuffers.size()
+            << " result_buffers="
+            << tileRelations.operationResultBuffers.size()
+            << " scratch_buffers=" << tileRelations.scratchBuffers.size()
+            << '\n';
+      }
       diagnostic << "; incident_edge_actions=[";
       bool first = true;
       for (const SpatialEdgeStrategy &strategy : mapping.edgeStrategies) {

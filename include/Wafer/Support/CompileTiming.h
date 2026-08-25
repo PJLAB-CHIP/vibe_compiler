@@ -361,6 +361,42 @@ inline std::shared_ptr<CompileTimingSession> getActiveCompileTimingSession() {
   return activeCompileTimingSession;
 }
 
+/// Exact operation inventory for one explicitly profiled IR boundary. The
+/// inventory is invocation-local diagnostic data; it is never consulted by
+/// compilation decisions or serialized into IR/package state.
+class CompileIRInventory {
+public:
+  void record(mlir::Operation *root) {
+    if (!root)
+      return;
+    root->walk([&](mlir::Operation *operation) {
+      ++totalOperations;
+      ++operationsByName[operation->getName().getStringRef().str()];
+    });
+  }
+
+  void merge(const CompileIRInventory &other) {
+    totalOperations += other.totalOperations;
+    for (const auto &[name, count] : other.operationsByName)
+      operationsByName[name] += count;
+  }
+
+  void print(llvm::StringRef stage, llvm::raw_ostream &output) const {
+    output << "wafer-compile: ir-inventory stage=" << stage
+           << " total_operations=" << totalOperations
+           << " distinct_operations=" << operationsByName.size() << '\n';
+    for (const auto &[name, count] : operationsByName)
+      output << "wafer-compile: ir-inventory-op stage=" << stage
+             << " op=" << name << " count=" << count << '\n';
+  }
+
+  uint64_t getTotalOperations() const { return totalOperations; }
+
+private:
+  uint64_t totalOperations = 0;
+  std::map<std::string, uint64_t> operationsByName;
+};
+
 /// Installs an invocation timing session on the current thread. Worker owners
 /// explicitly propagate the shared session when they create bounded threads.
 class ScopedCompileTimingActivation {

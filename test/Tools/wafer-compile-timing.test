@@ -2,16 +2,16 @@
 
 # RUN: rm -rf %t.input %t.default %t.timed %t.removed-preset %t.default.log %t.timed.log
 # RUN: mkdir -p %t.input/functions
-# RUN: printf '%b' 'module @timing {\n  func.func @main(%%arg0: tensor<32x32xf16>) -> tensor<32x32xf16> {\n    %%0 = stablehlo.add %%arg0, %%arg0 : tensor<32x32xf16>\n    return %%0 : tensor<32x32xf16>\n  }\n}\n' > %t.input/functions/forward.mlir
+# RUN: printf '%b' 'module @timing {\n  func.func @main(%%arg0: tensor<2x1024x128xf16>) -> tensor<2x1024x128xf16> {\n    %%0 = stablehlo.add %%arg0, %%arg0 : tensor<2x1024x128xf16>\n    return %%0 : tensor<2x1024x128xf16>\n  }\n}\n' > %t.input/functions/forward.mlir
 # RUN: %stablehlo_translate --serialize --target=1.7.1 %t.input/functions/forward.mlir -o %t.input/functions/forward.stablehlo.bc && rm %t.input/functions/forward.mlir
-# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":""}],"unused_inputs":[]}\n' > %t.input/functions/forward.meta
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[2,1024,128],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[2,1024,128],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":""}],"unused_inputs":[]}\n' > %t.input/functions/forward.meta
 
 # Detailed timing is opt-in. The ordinary production transaction remains free
 # of detailed events and tables.
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.removed-preset --num-partitions=1 --optimization-preset=none 2>&1 | FileCheck %s --check-prefix=REMOVED-PRESET
 # RUN: test ! -e %t.removed-preset
 # RUN: wafer-compile --input-program-dir %t.input --output-dir %t.default --num-partitions=1 --optimization-policy=none 2>&1 | tee %t.default.log
-# RUN: not grep -E -q 'compile-timing-|compile-stats|compile-work|instruction-work|program-data-io' %t.default.log
+# RUN: not grep -E -q 'compile-timing-|compile-stats|compile-work|instruction-work|program-data-io|ir-inventory|ir-provenance|ir-selected-node|ir-edge-actions' %t.default.log
 
 # One source-to-package invocation exposes the card-module/Tile seam,
 # exact memory/target gates, MLIR passes/analyses, conversions/patterns, and
@@ -22,6 +22,12 @@
 
 # REMOVED-PRESET: wafer-compile: unknown argument: --optimization-preset=none
 
+# TIMING: wafer-compile: ir-inventory stage=source-stablehlo
+# TIMING: wafer-compile: ir-inventory stage=post-spmd-stablehlo
+# TIMING: wafer-compile: ir-inventory stage=tensor-linalg
+# TIMING: wafer-compile: ir-inventory stage=selected-tile-dataflow
+# TIMING: wafer-compile: ir-inventory stage=bufferized-tile-dataflow
+# TIMING: wafer-compile: ir-inventory stage=instruction
 # TIMING: wafer-compile: compile-timing-summary-begin
 # TIMING: wafer-compile: | kind | pipeline | item | calls | cumulative wall ms | cumulative CPU ms | average wall ms | max wall ms | failures |
 # TIMING-DAG: wafer-compile: | stage | source-to-package | source-to-tensor-program | 1 |
