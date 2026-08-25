@@ -6,6 +6,7 @@
 #include "Wafer/Target/Layout/PhysicalLayout.h"
 #include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/Dialect/Async/IR/AsyncTypes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
@@ -45,6 +46,18 @@ namespace wafer {
 /// `wafer.*` attribute from becoming a second semantic IR schema.
 mlir::LogicalResult
 verifyNoSchemaFreeSemanticAttributes(mlir::Operation *operation);
+
+/// Verifies cross-operation SPM ownership at the Instr-memory stage. The
+/// TileRegion operation verifier remains local; this check may follow
+/// ViewLike/control-flow def-use chains because actual memory planning is its
+/// direct consumer.
+mlir::LogicalResult verifyTileRegionStorageBoundaries(mlir::ModuleOp module);
+
+/// Verifies tensor-program collective partition IDs against the module-owned
+/// execution mesh. Collective operation verifiers check only their local
+/// groups, shapes, regions, and attributes.
+mlir::LogicalResult
+verifyLinalgExtCollectiveExecutionMesh(mlir::ModuleOp module);
 
 } // namespace wafer
 

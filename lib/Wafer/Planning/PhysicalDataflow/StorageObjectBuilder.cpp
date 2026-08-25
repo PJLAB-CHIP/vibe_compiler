@@ -391,7 +391,7 @@ mlir::LogicalResult bindPreparedStorageObjects(
           !objects.families.try_emplace(object, family).second)
         return fail(failureReason,
                     "existing storage family binding is incomplete");
-  return verifyEmittedStorageObjects(prepared, objects, failureReason);
+  return mlir::success();
 }
 
 mlir::LogicalResult

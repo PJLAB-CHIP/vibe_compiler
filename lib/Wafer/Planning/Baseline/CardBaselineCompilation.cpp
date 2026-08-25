@@ -239,15 +239,6 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
     if (mlir::failed(materialized))
       return mlir::failure();
 
-    if (mlir::failed(verifyMaterializedCardCandidate(
-            *materialized->module, materialized->assignment, (*analysis)->dag,
-            materialized->relations, (*analysis)->availableTileIds,
-            failureReason))) {
-      diagnostics << "wafer-compile: baseline CardModule verification failed: "
-                  << failureReason << '\n';
-      return mlir::failure();
-    }
-
     llvm::SmallVector<CandidateNodeRootRelation, 64> nodeRoots =
         materialized->nodeRoots;
     CardExecutablePreparation preparation;

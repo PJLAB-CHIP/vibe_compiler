@@ -13,7 +13,6 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
-#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -641,6 +640,12 @@ static bool tryElide(InstrGatherScatterOp gather,
           analysis::TransferRealizability::proveStaticReshapeMetadataView(
               sourceType, replacementType, destinationMayWrite)))
     return false;
+  if (replacementType != destType)
+    for (mlir::OpOperand &use : destRoot.getUses())
+      if (use.getOwner() != gather.getOperation() &&
+          !mlir::isa<mlir::memref::DeallocOp>(use.getOwner()) &&
+          mlir::isa<WaferInstructionOpInterface>(use.getOwner()))
+        return false;
 
   std::optional<int64_t> sourceAlignment =
       getRequiredAlignment(sourceRootType, sourceAllocation);
@@ -696,38 +701,11 @@ static bool tryElide(InstrGatherScatterOp gather,
   }
   for (mlir::OpOperand *use : uses)
     use->set(*replacement);
-  mlir::ModuleOp module = gather->getParentOfType<mlir::ModuleOp>();
-  if (!module) {
-    for (mlir::OpOperand *use : uses)
-      use->set(destRoot);
-    eraseCreatedReplacement(*replacement, transferSource);
-    return false;
-  }
-  mlir::Attribute oldAlignment = sourceAllocation->getAttr("alignment");
   if (raisedSourceAlignment)
     sourceAllocation->setAttr(
         "alignment",
         mlir::IntegerAttr::get(mlir::IntegerType::get(gather.getContext(), 64),
                                *raisedSourceAlignment));
-  bool replacementIsLegal = false;
-  {
-    phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
-        "analysis-phase", "tryElide", "verify-rewrite");
-    mlir::ScopedDiagnosticHandler suppressExpectedCandidateDiagnostics(
-        gather.getContext(),
-        [](mlir::Diagnostic &) { return mlir::success(); });
-    replacementIsLegal = mlir::succeeded(mlir::verify(module));
-  }
-  if (!replacementIsLegal) {
-    for (mlir::OpOperand *use : uses)
-      use->set(destRoot);
-    if (oldAlignment)
-      sourceAllocation->setAttr("alignment", oldAlignment);
-    else
-      sourceAllocation->removeAttr("alignment");
-    eraseCreatedReplacement(*replacement, transferSource);
-    return false;
-  }
   gather.erase();
   if (destAllocation->use_empty())
     destAllocation.erase();
@@ -811,8 +789,14 @@ unsigned elideRedundantFullBufferTransfers(mlir::ModuleOp module) {
       changed = true;
       break;
     }
-    if (!changed)
+    if (!changed) {
+      if (mlir::failed(mlir::verify(module))) {
+        module.emitError(
+            "full-buffer transfer elimination produced invalid IR");
+        return 0;
+      }
       return eliminated;
+    }
   }
 }
 

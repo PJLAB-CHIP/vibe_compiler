@@ -59,8 +59,7 @@ verifyPartitionGroup(mlir::Operation *op,
       return op->emitOpError("partition_group entries must be unique");
   }
 
-  return verifyPartitionIdsWithinExecutionMesh(
-      op, partitionGroup, "linalg-ext collective partition_group");
+  return mlir::success();
 }
 
 mlir::LogicalResult
@@ -87,8 +86,7 @@ verifyPartitionGroups(mlir::Operation *op,
     partitionIds.push_back(partitionId);
   }
 
-  return verifyPartitionIdsWithinExecutionMesh(
-      op, partitionIds, "linalg-ext collective partition_groups");
+  return mlir::success();
 }
 
 mlir::LogicalResult verifyCollectivePartitionGroups(
@@ -382,8 +380,22 @@ verifySourceTargetPairs(mlir::Operation *op,
     partitionIds.push_back(source);
     partitionIds.push_back(target);
   }
-  return verifyPartitionIdsWithinExecutionMesh(op, partitionIds,
-                                               "source_target_pairs");
+  return mlir::success();
+}
+
+mlir::LogicalResult verifyPartitionGroupsAgainstExecutionMesh(
+    mlir::Operation *op, mlir::DenseI64ArrayAttr partitionGroup,
+    mlir::DenseIntElementsAttr partitionGroups) {
+  llvm::SmallVector<int64_t, 16> partitionIds;
+  if (partitionGroup) {
+    partitionIds.append(partitionGroup.asArrayRef().begin(),
+                        partitionGroup.asArrayRef().end());
+  } else if (partitionGroups) {
+    for (llvm::APInt value : partitionGroups.getValues<llvm::APInt>())
+      partitionIds.push_back(value.getSExtValue());
+  }
+  return verifyPartitionIdsWithinExecutionMesh(
+      op, partitionIds, "linalg-ext collective partition group");
 }
 
 mlir::OpFoldResult getTensorDim(mlir::OpBuilder &builder, mlir::Location loc,
@@ -975,4 +987,44 @@ LinalgExtCollectiveCollectivePermuteOp::getResultTilePosition(
   (void)builder;
   return getIdentityResultTilePosition(getOperation(), resultNumber, offsets,
                                        sizes, resultOffsets, resultSizes);
+}
+
+mlir::LogicalResult
+wafer::verifyLinalgExtCollectiveExecutionMesh(mlir::ModuleOp module) {
+  mlir::WalkResult result = module.walk([&](mlir::Operation *operation) {
+    mlir::LogicalResult valid = mlir::success();
+    if (auto allGather =
+            mlir::dyn_cast<LinalgExtCollectiveAllGatherOp>(operation))
+      valid = verifyPartitionGroupsAgainstExecutionMesh(
+          operation, allGather.getPartitionGroupAttr(),
+          allGather.getPartitionGroupsAttr());
+    else if (auto reduceScatter =
+                 mlir::dyn_cast<LinalgExtCollectiveReduceScatterOp>(operation))
+      valid = verifyPartitionGroupsAgainstExecutionMesh(
+          operation, reduceScatter.getPartitionGroupAttr(),
+          reduceScatter.getPartitionGroupsAttr());
+    else if (auto allReduce =
+                 mlir::dyn_cast<LinalgExtCollectiveAllReduceOp>(operation))
+      valid = verifyPartitionGroupsAgainstExecutionMesh(
+          operation, allReduce.getPartitionGroupAttr(),
+          allReduce.getPartitionGroupsAttr());
+    else if (auto allToAll =
+                 mlir::dyn_cast<LinalgExtCollectiveAllToAllOp>(operation))
+      valid = verifyPartitionGroupsAgainstExecutionMesh(
+          operation, allToAll.getPartitionGroupAttr(),
+          allToAll.getPartitionGroupsAttr());
+    else if (auto permute =
+                 mlir::dyn_cast<LinalgExtCollectiveCollectivePermuteOp>(
+                     operation)) {
+      llvm::SmallVector<int64_t, 16> partitionIds;
+      llvm::ArrayRef<int64_t> pairs =
+          permute.getSourceTargetPairsAttr().asArrayRef();
+      partitionIds.append(pairs.begin(), pairs.end());
+      valid = verifyPartitionIdsWithinExecutionMesh(operation, partitionIds,
+                                                    "source_target_pairs");
+    }
+    return mlir::failed(valid) ? mlir::WalkResult::interrupt()
+                               : mlir::WalkResult::advance();
+  });
+  return result.wasInterrupted() ? mlir::failure() : mlir::success();
 }

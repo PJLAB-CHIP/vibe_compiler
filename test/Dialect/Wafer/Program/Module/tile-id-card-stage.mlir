@@ -1,4 +1,5 @@
-// RUN: not wafer-opt %s 2>&1 | FileCheck %s
+// RUN: wafer-opt %s -o /dev/null
+// Tile-grid membership is checked against the selected target at Card stage.
 
 module {
   wafer.target.topology @target
@@ -7,11 +8,6 @@ module {
        tile_grid = array<i64: 1, 1>,
        unavailable_tiles = array<i64>}
   wafer.card.module card_id = 0 {
-    wafer.tile.module tile_id = 0 {}
-  }
-  wafer.card.module card_id = 0 {
-    wafer.tile.module tile_id = 0 {}
+    wafer.tile.module tile_id = 1 {}
   }
 }
-
-// CHECK: card_id must be unique in its module; duplicate 0

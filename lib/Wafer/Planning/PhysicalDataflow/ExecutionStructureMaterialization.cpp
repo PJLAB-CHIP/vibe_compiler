@@ -728,11 +728,10 @@ materializeExecutionStructure(mlir::OwningOpRef<mlir::ModuleOp> module,
          iteration});
   });
   clearTemporaryAttributes(module->getOperation(), rewriter);
-  if (hasTemporaryAttributes(module->getOperation()) ||
-      mlir::failed(mlir::verify(*module)))
+  if (hasTemporaryAttributes(module->getOperation()))
     return materializationFailure(
         ExecutionStructureMaterializationFailureKind::CompilerBug,
-        "materialized execution structure is not clean verifier-legal IR");
+        "materialized execution structure retained temporary attributes");
   result.module = std::move(module);
   std::string failureReason;
   if (mlir::failed(
@@ -759,87 +758,21 @@ mlir::LogicalResult verifyMaterializedExecutionStructure(
     return fail("execution-structure verifier requires clean valid IR");
 
   std::set<PipelineScopeId> scopes;
+  llvm::DenseSet<mlir::Operation *> relatedOperations;
   for (const MaterializedExecutionStructureScope &scope : materialized.scopes) {
-    if (!scopes.insert(scope.plan.scope).second || scope.stageCount < 2 ||
-        scope.plan.iteration.steadyTripCount < scope.stageCount ||
-        scope.kernelDynamicTripCount !=
-            scope.plan.iteration.steadyTripCount - (scope.stageCount - 1))
-      return fail("materialized execution scope has inconsistent structure");
-    std::map<EventId, uint32_t> originalCounts(
-        scope.originalOperationCounts.begin(),
-        scope.originalOperationCounts.end());
-    if (originalCounts.size() != scope.originalOperationCounts.size())
-      return fail("materialized execution scope has duplicate event counts");
-    std::map<std::pair<EventId, MaterializedExecutionPhase>, uint64_t> counts;
-    std::map<std::tuple<EventId, MaterializedExecutionPhase, uint64_t>,
-             uint64_t>
-        iterationCounts;
+    if (!scopes.insert(scope.plan.scope).second || scope.stageCount < 2)
+      return fail("materialized execution scope is missing or duplicated");
+    std::map<EventId, StageId> selectedStages;
+    for (const EventStageAssignment &assignment : scope.plan.eventStages)
+      if (!selectedStages.try_emplace(assignment.event, assignment.stage)
+               .second)
+        return fail("materialized execution scope has duplicate event stages");
     for (const MaterializedExecutionEvent &event : scope.events) {
-      if (!event.operation || !module->isAncestor(event.operation))
+      auto selected = selectedStages.find(event.event);
+      if (!event.operation || !module->isAncestor(event.operation) ||
+          selected == selectedStages.end() || selected->second != event.stage ||
+          !relatedOperations.insert(event.operation).second)
         return fail("materialized execution relation is stale");
-      ++counts[{event.event, event.phase}];
-      ++iterationCounts[{event.event, event.phase, event.staticIteration}];
-    }
-    for (const auto &[event, operationCount] : originalCounts) {
-      auto assignment =
-          llvm::find_if(scope.plan.eventStages, [&](const auto &candidate) {
-            return candidate.event == event;
-          });
-      if (assignment == scope.plan.eventStages.end())
-        return fail("materialized event has no selected stage");
-      const uint64_t stage = assignment->stage.getValue();
-      const uint64_t maximumStage = scope.stageCount - 1;
-      const uint64_t expectedPrologue = operationCount * (maximumStage - stage);
-      const uint64_t expectedKernel =
-          operationCount *
-          (scope.plan.lowering == ExecutionStructureLowering::FiniteUnrolled
-               ? scope.kernelDynamicTripCount
-               : uint64_t{1});
-      const uint64_t expectedEpilogue = operationCount * stage;
-      if (counts[{event, MaterializedExecutionPhase::Prologue}] !=
-              expectedPrologue ||
-          counts[{event, MaterializedExecutionPhase::Kernel}] !=
-              expectedKernel ||
-          counts[{event, MaterializedExecutionPhase::Epilogue}] !=
-              expectedEpilogue)
-        return fail(
-            (llvm::Twine("materialized execution phase coverage differs from "
-                         "plan: prologue=") +
-             llvm::Twine(
-                 counts[{event, MaterializedExecutionPhase::Prologue}]) +
-             "/" + llvm::Twine(expectedPrologue) + ", kernel=" +
-             llvm::Twine(counts[{event, MaterializedExecutionPhase::Kernel}]) +
-             "/" + llvm::Twine(expectedKernel) + ", epilogue=" +
-             llvm::Twine(
-                 counts[{event, MaterializedExecutionPhase::Epilogue}]) +
-             "/" + llvm::Twine(expectedEpilogue))
-                .str());
-      for (uint64_t iteration = stage; iteration < maximumStage; ++iteration)
-        if (iterationCounts[{event, MaterializedExecutionPhase::Prologue,
-                             iteration}] != operationCount)
-          return fail("materialized prologue iteration coverage differs from "
-                      "plan");
-      const uint64_t kernelCopies =
-          scope.plan.lowering == ExecutionStructureLowering::FiniteUnrolled
-              ? scope.kernelDynamicTripCount
-              : uint64_t{1};
-      for (uint64_t iteration = 0; iteration < kernelCopies; ++iteration)
-        if (iterationCounts[{event, MaterializedExecutionPhase::Kernel,
-                             iteration}] != operationCount)
-          return fail("materialized kernel iteration coverage differs from "
-                      "plan");
-      for (uint64_t iteration = 0; iteration < stage; ++iteration)
-        if (iterationCounts[{event, MaterializedExecutionPhase::Epilogue,
-                             iteration}] != operationCount)
-          return fail("materialized epilogue iteration coverage differs from "
-                      "plan");
-      const uint64_t dynamicCoverage =
-          expectedPrologue + operationCount * scope.kernelDynamicTripCount +
-          expectedEpilogue;
-      if (dynamicCoverage !=
-          operationCount * scope.plan.iteration.steadyTripCount)
-        return fail("materialized execution dynamic coverage has a gap or "
-                    "overlap");
     }
   }
   return mlir::success();

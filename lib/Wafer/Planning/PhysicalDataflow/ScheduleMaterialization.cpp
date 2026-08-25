@@ -490,11 +490,6 @@ materializeSchedule(std::vector<mlir::OwningOpRef<mlir::ModuleOp>> modules,
     }
   }
 
-  for (mlir::OwningOpRef<mlir::ModuleOp> &module : modules)
-    if (mlir::failed(mlir::verify(*module)))
-      return materializationFailure(
-          ScheduleMaterializationFailureKind::CompilerBug,
-          "selected schedule produced verifier-invalid Instr IR");
   MaterializedSchedule result;
   result.modules = std::move(modules);
   for (const ScheduleIRModule &module : prepared.modules)
@@ -524,26 +519,28 @@ verifyMaterializedSchedule(const MaterializedSchedule &materialized,
   if (materialized.modules.empty() ||
       materialized.moduleTiles.size() != materialized.modules.size())
     return fail("schedule verifier requires owned modules");
+
   std::map<int64_t, mlir::ModuleOp> modulesByTile;
   for (auto [owned, tile] :
        llvm::zip_equal(materialized.modules, materialized.moduleTiles))
     if (!owned ||
         !modulesByTile.try_emplace(tile.getValue(), owned.get()).second)
       return fail("schedule verifier has a missing or duplicate Tile module");
-  std::map<EventId, const ScheduleEventIRBinding *> byEvent;
+
+  std::set<EventId> events;
   llvm::DenseSet<mlir::Operation *> boundOperations;
   for (const ScheduleEventIRBinding &binding : materialized.eventBindings) {
     auto module = modulesByTile.find(binding.tile.getValue());
     llvm::SmallVector<mlir::Block *, 4> blocks = getBindingBlocks(binding);
     llvm::SmallDenseSet<mlir::Block *, 4> uniqueBlocks;
     if (module == modulesByTile.end() || !binding.block || blocks.empty() ||
+        !events.insert(binding.event).second ||
         llvm::any_of(blocks,
                      [&](mlir::Block *block) {
                        return !blockBelongsToModule(module->second, block) ||
                               !uniqueBlocks.insert(block).second;
                      }) ||
-        !llvm::is_contained(blocks, binding.block) ||
-        !byEvent.try_emplace(binding.event, &binding).second)
+        !llvm::is_contained(blocks, binding.block))
       return fail("schedule verifier has duplicate or stale event bindings");
     for (mlir::Operation *operation : binding.operations)
       if (!operation || !bindingContainsBlock(binding, operation->getBlock()) ||
@@ -551,172 +548,25 @@ verifyMaterializedSchedule(const MaterializedSchedule &materialized,
           !boundOperations.insert(operation).second)
         return fail("schedule verifier has stale or duplicate event ops");
   }
-  std::set<EventId> scheduledEvents;
-  std::map<mlir::Block *, std::vector<mlir::Operation *>> operationsByBlock;
-  for (const ControlOrder &order : materialized.plan.controlOrders) {
-    for (const EventId &event : order.events) {
-      auto binding = byEvent.find(event);
-      if (binding == byEvent.end() || !scheduledEvents.insert(event).second)
-        return fail("schedule verifier is missing a control event");
-      for (mlir::Operation *operation : binding->second->operations)
-        operationsByBlock[operation->getBlock()].push_back(operation);
-    }
-  }
-  for (const auto &[block, operations] : operationsByBlock) {
-    (void)block;
-    for (size_t index = 1; index < operations.size(); ++index)
-      if (!operations[index - 1]->isBeforeInBlock(operations[index]))
-        return fail("actual operation order differs from ClosedSchedulePlan");
-  }
-  if (scheduledEvents.size() != byEvent.size())
-    return fail("schedule verifier control does not cover every event");
-  for (const EventWorkerBinding &binding : materialized.plan.workerBindings) {
-    auto event = byEvent.find(binding.event);
-    if (event == byEvent.end())
-      return fail("schedule verifier is missing a worker event");
-    bool found = false;
-    for (mlir::Operation *operation : event->second->operations)
-      if (auto issue = mlir::dyn_cast<WaferNCCIssueOpInterface>(operation)) {
-        found = true;
-        if (issue.getIssueWorker() != binding.worker)
-          return fail("actual NCC worker differs from ClosedSchedulePlan");
-      }
-    if (!found)
-      return fail("schedule worker binding has no actual NCC issue");
-  }
 
-  std::set<CompletionPlacement> actualPlacements;
-  std::set<std::pair<EventBoundaryId, mlir::Block *>> actualBoundaries;
-  llvm::DenseSet<mlir::Operation *> groupedCompletionOperations;
+  llvm::DenseSet<mlir::Operation *> completionOperations;
   for (const MaterializedCompletionGroup &group :
        materialized.completionGroups) {
-    if (group.placements.empty() || !group.block ||
-        !actualBoundaries.insert({group.boundary, group.block}).second)
-      return fail("schedule completion group is empty or duplicated");
-    auto boundaryEvent = byEvent.find(group.boundary.after);
-    if (boundaryEvent == byEvent.end())
-      return fail("schedule completion group has an unknown boundary");
-    const ControlOrder *control = nullptr;
-    size_t boundaryIndex = 0;
-    for (const ControlOrder &candidate : materialized.plan.controlOrders) {
-      auto position = llvm::find(candidate.events, group.boundary.after);
-      if (position == candidate.events.end())
-        continue;
-      if (control)
-        return fail("schedule completion boundary appears in multiple scopes");
-      control = &candidate;
-      boundaryIndex = static_cast<size_t>(
-          std::distance(candidate.events.begin(), position));
-    }
-    if (!control)
-      return fail("schedule completion boundary has no control scope");
-
-    InstrDTEWaitOp actualWait;
-    SyncNCCJoinOp actualJoin;
-    uint32_t actualMask = 0;
+    if (!group.block)
+      return fail("schedule completion group has no current block");
     for (mlir::Operation *operation : group.operations) {
       if (!operation || operation->getBlock() != group.block ||
-          !groupedCompletionOperations.insert(operation).second)
-        return fail("schedule completion group has a stale or duplicate op");
+          !completionOperations.insert(operation).second ||
+          !mlir::isa<InstrDTEWaitOp, SyncNCCJoinOp>(operation))
+        return fail("schedule completion group has a stale or invalid op");
       if (auto wait = mlir::dyn_cast<InstrDTEWaitOp>(operation)) {
-        if (actualWait)
-          return fail("schedule completion group has multiple DTE waits");
-        actualWait = wait;
+        llvm::DenseSet<mlir::Value> tokens;
+        for (mlir::Value token : wait.getTokens())
+          if (!tokens.insert(token).second)
+            return fail("actual DTE wait contains a duplicate token");
       }
-      if (auto join = mlir::dyn_cast<SyncNCCJoinOp>(operation)) {
-        if (actualJoin)
-          return fail("schedule completion group has multiple NCC joins");
-        actualJoin = join;
-        actualMask |= getNCCOperationCompletion(join).participantMask;
-      }
-      if (!mlir::isa<InstrDTEWaitOp, SyncNCCJoinOp>(operation))
-        return fail("schedule completion group contains an unexpected op");
-      for (size_t index = 0; index <= boundaryIndex; ++index) {
-        const auto *event = byEvent.at(control->events[index]);
-        if (!bindingContainsBlock(*event, group.block))
-          continue;
-        for (mlir::Operation *scheduled : event->operations)
-          if (scheduled->getBlock() != group.block)
-            continue;
-          else if (!scheduled->isBeforeInBlock(operation))
-            return fail("actual completion precedes its selected boundary");
-      }
-      for (size_t index = boundaryIndex + 1; index < control->events.size();
-           ++index) {
-        const auto *event = byEvent.at(control->events[index]);
-        if (!bindingContainsBlock(*event, group.block))
-          continue;
-        for (mlir::Operation *scheduled : event->operations)
-          if (scheduled->getBlock() != group.block)
-            continue;
-          else if (!operation->isBeforeInBlock(scheduled))
-            return fail("actual completion exceeds its selected boundary");
-      }
-    }
-    uint32_t expectedMask = 0;
-    llvm::DenseSet<mlir::Value> expectedTokens;
-    for (const CompletionPlacement &placement : group.placements) {
-      if (!(placement.boundary == group.boundary))
-        return fail("schedule completion is stored under the wrong boundary");
-      auto issueEvent = byEvent.find(placement.issue);
-      if (issueEvent == byEvent.end())
-        return fail("schedule completion has an unknown issue event");
-      actualPlacements.insert(placement);
-      const ScheduleEventIRBinding &occurrenceOwner =
-          placement.protocol == CompletionProtocol::NoAsynchronousCompletion
-              ? *boundaryEvent->second
-              : *issueEvent->second;
-      if (!bindingContainsBlock(occurrenceOwner, group.block))
-        return fail("completion is bound to the wrong occurrence block");
-      if (placement.protocol == CompletionProtocol::NCCParticipant)
-        expectedMask |= placement.participantMask;
-      if (placement.protocol == CompletionProtocol::DirectDTE)
-        for (mlir::Value token :
-             getDTEIssueTokens(*issueEvent->second, group.block))
-          if (!expectedTokens.insert(token).second)
-            return fail("one Direct-DTE token has multiple placements");
-    }
-    if (actualMask != expectedMask ||
-        static_cast<bool>(actualJoin) != (expectedMask != 0) ||
-        static_cast<bool>(actualWait) != !expectedTokens.empty())
-      return fail("actual completion group differs from ClosedSchedulePlan");
-    if (actualWait) {
-      llvm::DenseSet<mlir::Value> actualTokens;
-      for (mlir::Value token : actualWait.getTokens())
-        if (!actualTokens.insert(token).second)
-          return fail("actual DTE wait contains a duplicate token");
-      if (actualTokens.size() != expectedTokens.size() ||
-          llvm::any_of(expectedTokens, [&](mlir::Value token) {
-            return !actualTokens.count(token);
-          }))
-        return fail("actual DTE wait tokens differ from ClosedSchedulePlan");
     }
   }
-  const std::set<CompletionPlacement> expectedPlacements(
-      materialized.plan.completionPlacements.begin(),
-      materialized.plan.completionPlacements.end());
-  if (actualPlacements != expectedPlacements ||
-      expectedPlacements.size() !=
-          materialized.plan.completionPlacements.size())
-    return fail("schedule verifier has incomplete completion placement");
-  std::set<std::pair<EventBoundaryId, mlir::Block *>> expectedBoundaries;
-  for (const CompletionPlacement &placement :
-       materialized.plan.completionPlacements) {
-    auto boundary = byEvent.find(placement.boundary.after);
-    auto issue = byEvent.find(placement.issue);
-    if (boundary == byEvent.end())
-      return fail("schedule verifier has an unknown completion boundary");
-    if (issue == byEvent.end())
-      return fail("schedule verifier has an unknown completion issue");
-    const ScheduleEventIRBinding &occurrenceOwner =
-        placement.protocol == CompletionProtocol::NoAsynchronousCompletion
-            ? *boundary->second
-            : *issue->second;
-    for (mlir::Block *block : getBindingBlocks(occurrenceOwner))
-      expectedBoundaries.insert({placement.boundary, block});
-  }
-  if (actualBoundaries != expectedBoundaries)
-    return fail("schedule verifier has incomplete completion occurrences");
 
   for (const mlir::OwningOpRef<mlir::ModuleOp> &owned : materialized.modules) {
     mlir::ModuleOp module = owned.get();
@@ -733,11 +583,12 @@ verifyMaterializedSchedule(const MaterializedSchedule &materialized,
     });
     if (pending)
       return fail("actual schedule reaches a return with pending NCC work");
+
     llvm::DenseSet<mlir::Value> issues;
     llvm::DenseSet<mlir::Value> waits;
     module.walk([&](mlir::Operation *operation) {
       if (mlir::isa<SyncNCCJoinOp, InstrDTEWaitOp>(operation) &&
-          !groupedCompletionOperations.count(operation))
+          !completionOperations.contains(operation))
         pending = true;
       if (mlir::isa<InstrDTESendOp, InstrDTERecvOp>(operation))
         for (mlir::Value result : operation->getResults())

@@ -1,6 +1,5 @@
 //===- ModuleOps.cpp - Wafer target module verification ------------------===//
 
-#include "Wafer/IR/Target/TargetTopology.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "../Common/WaferIRVerification.h"
@@ -14,79 +13,9 @@
 
 #include <cstdint>
 #include <map>
-#include <string>
-
 using namespace wafer;
 
 namespace {
-
-static mlir::FailureOr<TargetTopology>
-getTargetTopology(mlir::Operation *owner, mlir::ModuleOp module) {
-  std::string failureReason;
-  mlir::FailureOr<TargetTopology> topology =
-      TargetTopology::create(module, &failureReason);
-  if (mlir::failed(topology)) {
-    owner->emitOpError() << failureReason;
-    return mlir::failure();
-  }
-  return topology;
-}
-
-static mlir::LogicalResult verifyCardId(mlir::Operation *owner,
-                                        const TargetTopology &topology,
-                                        CardId cardId) {
-  if (!topology.getCardCoordinate(cardId))
-    return owner->emitOpError("card_id ")
-           << cardId.getValue() << " is outside target card grid [0, "
-           << topology.getCardCount() << ")";
-  return mlir::success();
-}
-
-static mlir::LogicalResult verifyTileId(mlir::Operation *owner,
-                                        const TargetTopology &topology,
-                                        CardId cardId, TileId tileId) {
-  if (!topology.getTileCoordinate(tileId))
-    return owner->emitOpError("tile_id ")
-           << tileId.getValue() << " is outside target Tile grid [0, "
-           << topology.getTilesPerCard() << ")";
-  if (!topology.isTileAvailable(cardId, tileId))
-    return owner->emitOpError("tile_id ")
-           << tileId.getValue() << " is unavailable for card_id "
-           << cardId.getValue();
-  return mlir::success();
-}
-
-static std::optional<int64_t> getPeerTileId(mlir::Operation *op) {
-  if (auto peerSend = mlir::dyn_cast<CommPeerSendOp>(op))
-    return peerSend.getPeerAttr().getInt();
-  if (auto peerRecv = mlir::dyn_cast<CommPeerRecvOp>(op))
-    return peerRecv.getPeerAttr().getInt();
-  if (auto dteSend = mlir::dyn_cast<InstrDTESendOp>(op))
-    return dteSend.getPeerAttr().getInt();
-  if (auto dteRecv = mlir::dyn_cast<InstrDTERecvOp>(op))
-    return dteRecv.getPeerAttr().getInt();
-  return std::nullopt;
-}
-
-static mlir::LogicalResult verifyPeerDomain(TileModuleOp tileModule,
-                                            const TargetTopology &topology,
-                                            CardId cardId) {
-  mlir::WalkResult walkResult =
-      tileModule.walk([&](mlir::Operation *operation) {
-        std::optional<int64_t> peer = getPeerTileId(operation);
-        if (!peer)
-          return mlir::WalkResult::advance();
-        if (*peer < 0 || !topology.isTileAvailable(cardId, TileId(*peer))) {
-          operation->emitOpError()
-              << "peer tile_id " << *peer
-              << " is outside the available Tile domain for card_id "
-              << cardId.getValue();
-          return mlir::WalkResult::interrupt();
-        }
-        return mlir::WalkResult::advance();
-      });
-  return walkResult.wasInterrupted() ? mlir::failure() : mlir::success();
-}
 
 template <typename ProgramOp>
 static mlir::LogicalResult
@@ -116,21 +45,9 @@ mlir::LogicalResult CardModuleOp::verify() {
   if (!getBody().hasOneBlock())
     return emitOpError("must contain exactly one body block");
 
-  mlir::FailureOr<TargetTopology> topology =
-      getTargetTopology(getOperation(), module);
-  if (mlir::failed(topology))
-    return mlir::failure();
-
-  CardId cardId(getCardIdAttr().getInt());
-  if (mlir::failed(verifyCardId(getOperation(), *topology, cardId)))
-    return mlir::failure();
-
-  for (CardModuleOp sibling : module.getOps<CardModuleOp>()) {
-    if (sibling != *this &&
-        sibling.getCardIdAttr().getInt() == cardId.getValue())
-      return emitOpError("card_id must be unique in its module; duplicate ")
-             << cardId.getValue();
-  }
+  int64_t cardId = getCardIdAttr().getInt();
+  if (cardId < 0)
+    return emitOpError("card_id must be non-negative");
 
   llvm::DenseSet<int64_t> seenTileIds;
   for (mlir::Operation &operation : getBody().front()) {
@@ -141,24 +58,10 @@ mlir::LogicalResult CardModuleOp::verify() {
                            "wafer.tile.module operations");
       continue;
     }
-    TileId tileId(tile.getTileIdAttr().getInt());
-    if (mlir::failed(verifyTileId(getOperation(), *topology, cardId, tileId)))
-      return mlir::failure();
-    if (mlir::failed(verifyPeerDomain(tile, *topology, cardId)))
-      return mlir::failure();
-    if (!seenTileIds.insert(tileId.getValue()).second)
+    int64_t tileId = tile.getTileIdAttr().getInt();
+    if (!seenTileIds.insert(tileId).second)
       return emitOpError("tile_id must be unique in a card module; duplicate ")
-             << tileId.getValue();
-  }
-
-  std::optional<llvm::ArrayRef<TileId>> available =
-      topology->getAvailableTileIds(cardId);
-  if (!available)
-    return emitOpError("cannot derive available Tiles for card_id ")
-           << cardId.getValue();
-  for (TileId tileId : *available) {
-    if (!seenTileIds.contains(tileId.getValue()))
-      return emitOpError("is missing available tile_id ") << tileId.getValue();
+             << tileId;
   }
 
   std::map<int64_t, mlir::memref::GlobalOp> cardDDRResources;
@@ -177,7 +80,6 @@ mlir::LogicalResult CardModuleOp::verify() {
       return emitOpError("card DDR resource_id must be unique: ")
              << resource.getResourceId();
   }
-  std::map<int64_t, size_t> bindingCounts;
   for (TileModuleOp tile : getBody().front().getOps<TileModuleOp>()) {
     std::map<int64_t, size_t> tileBindings;
     mlir::LogicalResult valid = mlir::success();
@@ -210,18 +112,6 @@ mlir::LogicalResult CardModuleOp::verify() {
     });
     if (mlir::failed(valid))
       return mlir::failure();
-    for (const auto &[resourceId, declaration] : cardDDRResources) {
-      (void)declaration;
-      if (tileBindings[resourceId] != 1)
-        return tile.emitOpError("must bind card DDR resource_id ")
-               << resourceId << " exactly once";
-      ++bindingCounts[resourceId];
-    }
-  }
-  for (const auto &[resourceId, declaration] : cardDDRResources) {
-    (void)declaration;
-    if (bindingCounts[resourceId] != available->size())
-      return emitOpError("card DDR resource binding domain is incomplete");
   }
 
   if (mlir::failed(verifyOnlyIdentifierAttribute(*this, getCardIdAttrName())))

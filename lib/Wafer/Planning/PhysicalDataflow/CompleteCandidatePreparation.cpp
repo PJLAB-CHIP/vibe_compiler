@@ -1119,9 +1119,6 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
                                 *coordinate, loopBuilder, &failureReason);
       if (mlir::failed(selection))
         return mlir::failure();
-      if (mlir::failed(verifyRotatingStorageSelections(
-              storageObjects, {*selection}, &failureReason)))
-        return mlir::failure();
       for (mlir::Operation *user :
            llvm::make_early_inc_range(oldRoot.getUsers())) {
         if (mlir::isa<mlir::memref::DeallocOp>(user)) {

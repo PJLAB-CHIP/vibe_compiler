@@ -1,4 +1,6 @@
-// RUN: not wafer-opt %s 2>&1 | FileCheck %s
+// RUN: wafer-opt %s -o /dev/null
+// Partition bounds are module-stage facts; the standalone operation remains
+// locally verifier-legal and is rejected by the compiler stage check.
 
 module {
   wafer.target.topology @default
@@ -14,7 +16,6 @@ module {
   func.func @invalid_partition_group_out_of_mesh(
       %input: tensor<2x4xf32>) -> tensor<4x4xf32> {
     %out = tensor.empty() : tensor<4x4xf32>
-    // CHECK: linalg-ext collective partition_group partition IDs must be within execution mesh partition count
     %0 = wafer.linalg_ext.collective.all_gather
         ins(%input : tensor<2x4xf32>)
         outs(%out : tensor<4x4xf32>)

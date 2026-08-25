@@ -1285,6 +1285,11 @@ static mlir::LogicalResult planSPMMemoryModuleImpl(
   auto scopeVerificationTiming =
       std::make_unique<wafer::support::ScopedCompileTimingSpan>(
           "analysis-phase", "planSPMMemoryModule", "verify-scopes");
+  if (mlir::failed(verifyTileRegionStorageBoundaries(moduleOp))) {
+    if (failure)
+      failure->kind = SPMMemoryPlanningFailureKind::Other;
+    return mlir::failure();
+  }
   mlir::WalkResult escapedAllocation =
       moduleOp.walk(
           [&](mlir::memref::AllocOp alloc) {

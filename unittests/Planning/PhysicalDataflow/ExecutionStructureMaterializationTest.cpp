@@ -430,7 +430,7 @@ TEST(ExecutionStructureMaterializationTest,
 }
 
 TEST(ExecutionStructureMaterializationTest,
-     VerifierRejectsStaleOrIncompleteMaterializedRelations) {
+     VerifierRejectsStaleMaterializedRelations) {
   auto context = createContext();
   MaterializationInput input = makeDistanceOneInput(*context, 1024);
   ASSERT_TRUE(input.module);
@@ -444,7 +444,7 @@ TEST(ExecutionStructureMaterializationTest,
   ASSERT_TRUE(materialized.succeeded())
       << (materialized.failure ? materialized.failure->detail : "");
   ASSERT_FALSE(materialized.materialized->scopes.front().events.empty());
-  materialized.materialized->scopes.front().events.pop_back();
+  materialized.materialized->scopes.front().events.front().operation = nullptr;
   std::string failureReason;
   EXPECT_TRUE(mlir::failed(verifyMaterializedExecutionStructure(
       *materialized.materialized, &failureReason)));

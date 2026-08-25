@@ -1,4 +1,5 @@
-// RUN: not wafer-opt %s 2>&1 | FileCheck %s
+// RUN: wafer-opt %s -o /dev/null
+// Tile availability is checked against the selected target at Card stage.
 
 module {
   wafer.target.topology @target
@@ -11,5 +12,3 @@ module {
     wafer.tile.module tile_id = 1 {}
   }
 }
-
-// CHECK: tile_id 1 is unavailable for card_id 0

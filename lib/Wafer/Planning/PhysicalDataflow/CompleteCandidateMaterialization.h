@@ -90,6 +90,9 @@ buildCardMaterializationPlan(const CardProgramAnalysis &program,
                              CandidateMaterializationStatistics *statistics,
                              llvm::raw_ostream &diagnostics);
 
+/// Test-only plan/materialization correspondence oracle. Production
+/// correctness is established by direct construction plus the local and
+/// downstream stage verifiers.
 mlir::LogicalResult verifyMaterializedCardCandidate(
     mlir::ModuleOp cardModule, const CardMaterializationPlan &assignment,
     const StructuredDAGAnalysis &dag,

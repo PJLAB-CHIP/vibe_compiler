@@ -1,4 +1,6 @@
-// RUN: not wafer-opt %s 2>&1 | FileCheck %s
+// RUN: wafer-opt %s -o /dev/null
+// Complete Tile coverage is checked by the Card executable stage, not the
+// local CardModule operation verifier.
 
 module {
   wafer.target.topology @target
@@ -10,5 +12,3 @@ module {
     wafer.tile.module tile_id = 0 {}
   }
 }
-
-// CHECK: is missing available tile_id 1

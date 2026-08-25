@@ -261,7 +261,7 @@ mlir::LogicalResult verifyTensorProgramStageOperations(mlir::ModuleOp module) {
     return mlir::WalkResult::advance();
   });
   if (!illegal)
-    return mlir::success();
+    return wafer::verifyLinalgExtCollectiveExecutionMesh(module);
   return illegal->emitOpError(
       "is not legal in a verified structured tensor program");
 }

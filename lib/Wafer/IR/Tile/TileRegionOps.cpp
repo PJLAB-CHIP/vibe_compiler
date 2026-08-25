@@ -220,20 +220,12 @@ mlir::LogicalResult TileRegionOp::verify() {
   if (getOperation()->getParentOfType<TileRegionOp>())
     return emitOpError("must be an outer, non-nested SPM residency region");
 
-  llvm::DenseMap<mlir::Value, StorageTrace> inputTraceMemo;
   for (auto [index, input] : llvm::enumerate(getInputs())) {
     if (!isShapedDataType(input.getType()))
       continue;
     if (!isDDRDataType(input.getType()))
       return emitOpError("shaped data input at index ")
              << index << " must be a Wafer DDR memref, got " << input.getType();
-    llvm::DenseSet<mlir::Value> active;
-    StorageTrace trace = traceSPMStorage(input, *this, active, inputTraceMemo);
-    if (!trace.valid || trace.hasSPMRoot)
-      return emitOpError("shaped data input at index ")
-             << index
-             << " depends on SPM storage across the region "
-                "boundary";
   }
 
   for (auto [index, result] : llvm::enumerate(getResults())) {
@@ -276,7 +268,6 @@ mlir::LogicalResult TileRegionOp::verifyRegions() {
            << yield.getValues().size() << " values and " << getNumResults()
            << " results";
 
-  llvm::DenseMap<mlir::Value, StorageTrace> resultTraceMemo;
   for (auto [index, yieldedAndResult] :
        llvm::enumerate(llvm::zip(yield.getValues(), getResults()))) {
     mlir::Value yielded = std::get<0>(yieldedAndResult);
@@ -286,20 +277,6 @@ mlir::LogicalResult TileRegionOp::verifyRegions() {
       return emitOpError("tile.yield type ")
              << yieldedType << " does not match wafer.tile.region result type "
              << resultType << " at index " << index;
-
-    llvm::DenseSet<mlir::Value> active;
-    StorageTrace trace =
-        traceSPMStorage(yielded, *this, active, resultTraceMemo);
-    if (!trace.valid)
-      return emitOpError("result at index ")
-             << index
-             << " has an unsupported SPM storage dependency; SPM results must "
-                "alias a matching region input or a region-owned memref.alloc";
-    if (trace.hasSPMRoot)
-      return emitOpError("result at index ")
-             << index
-             << "cannot depend on SPM storage across the "
-                "wafer.tile.region boundary";
   }
 
   for (mlir::NamedAttribute attr : getOperation()->getAttrs())
@@ -308,4 +285,46 @@ mlir::LogicalResult TileRegionOp::verifyRegions() {
              << attr.getName().getValue() << "'";
 
   return mlir::success();
+}
+
+mlir::LogicalResult
+wafer::verifyTileRegionStorageBoundaries(mlir::ModuleOp module) {
+  mlir::WalkResult result = module.walk([&](TileRegionOp region) {
+    llvm::DenseMap<mlir::Value, StorageTrace> inputTraceMemo;
+    for (auto [index, input] : llvm::enumerate(region.getInputs())) {
+      if (!isShapedDataType(input.getType()))
+        continue;
+      llvm::DenseSet<mlir::Value> active;
+      StorageTrace trace =
+          traceSPMStorage(input, region, active, inputTraceMemo);
+      if (!trace.valid || trace.hasSPMRoot) {
+        region.emitOpError("shaped data input at index ")
+            << index << " depends on SPM storage across the region boundary";
+        return mlir::WalkResult::interrupt();
+      }
+    }
+
+    auto yield = mlir::dyn_cast_or_null<TileYieldOp>(
+        region.getBody().empty() ? nullptr
+                                 : region.getBody().front().getTerminator());
+    if (!yield)
+      return mlir::WalkResult::advance();
+    llvm::DenseMap<mlir::Value, StorageTrace> resultTraceMemo;
+    for (auto [index, yielded] : llvm::enumerate(yield.getValues())) {
+      if (!isShapedDataType(yielded.getType()))
+        continue;
+      llvm::DenseSet<mlir::Value> active;
+      StorageTrace trace =
+          traceSPMStorage(yielded, region, active, resultTraceMemo);
+      if (!trace.valid || trace.hasSPMRoot) {
+        region.emitOpError("result at index ")
+            << index
+            << " depends on unsupported SPM storage across the region "
+               "boundary";
+        return mlir::WalkResult::interrupt();
+      }
+    }
+    return mlir::WalkResult::advance();
+  });
+  return result.wasInterrupted() ? mlir::failure() : mlir::success();
 }

@@ -144,17 +144,17 @@ descriptor cache、单Tile fallback或延长timeout。
 
 ### Whole-IR verification
 
-当前有38个显式`mlir::verify`调用点：
+当前有35个显式`mlir::verify`调用点：
 
 | 文件族 | 数量 | 处置 |
 | --- | ---: | --- |
 | Driver/Frontend/helper边界 | 3 | parse/import/helper返回后的新IR epoch保留 |
-| StableHLO normalization/attention | 5 | 保留pass或pipeline最终验证；删除逐新op后又验证function的重复调用 |
+| StableHLO normalization/attention | 4 | 保留pass或pipeline最终验证；已删除逐新op后又验证function的重复调用 |
 | TensorProgram→Tile/Card | 14 | 旧materializer调用随路径删除；每个最终owned output scope验证一次 |
-| selected preparation/schedule/structure | 5 | shared preparation随facade删除；schedule与structure各自重复调用合并为一次 |
+| selected preparation/schedule/structure | 3 | shared preparation随facade删除；schedule与structure已各自合并为一次稳定输出验证 |
 | memory/executable/target | 10 | 真实mutation边界保留；callback删除后再去除同epoch相邻重复 |
 | full-buffer transfer rewrite | 1 | 不逐rewrite attempt验证Module；fixed point完成后验证一次owned scope |
-| 总计 | 38 | 不预设最终配额，只删除无mutation重复并保留真实stage边界 |
+| 总计 | 35 | 不预设最终配额，只删除无mutation重复并保留真实stage边界 |
 
 Materialized-plan检查的处置：
 

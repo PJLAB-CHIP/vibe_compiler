@@ -394,13 +394,6 @@ FullFeasibilityResult evaluateCompleteCandidate(
   if (mlir::failed(materialized))
     return result(FullFeasibilityStatus::CompilerBug,
                   "complete candidate materialization failed");
-  std::string verificationFailure;
-  if (mlir::failed(verifyMaterializedCardCandidate(
-          *materialized->module, materialized->assignment,
-          problem.getProgram().dag, materialized->relations,
-          problem.getProgram().availableTileIds, verificationFailure)))
-    return result(FullFeasibilityStatus::CompilerBug, verificationFailure);
-
   llvm::SmallVector<CandidateNodeRootRelation, 64> nodeRoots =
       materialized->nodeRoots;
   std::vector<analysis::RootRegionWork> rootWorks =

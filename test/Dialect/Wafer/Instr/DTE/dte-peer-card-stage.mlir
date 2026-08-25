@@ -1,4 +1,6 @@
-// RUN: not wafer-opt %s 2>&1 | FileCheck %s
+// RUN: wafer-opt %s -o /dev/null
+// Peer membership is checked once by the Card executable stage. The DTE op
+// verifier remains local to its peer value, buffer, byte count, and token.
 
 module {
   wafer.target.topology @default
@@ -19,5 +21,3 @@ module {
     wafer.tile.module tile_id = 1 {}
   }
 }
-
-// CHECK: 'wafer.instr.dte_send' op peer tile_id 2 is outside the available Tile domain for card_id 0

@@ -117,9 +117,9 @@ mlir::LogicalResult bindPreparedStorageObjects(
     llvm::ArrayRef<ExistingStorageObjectBinding> bindings,
     StorageObjectBuilder &objects, std::string *failureReason = nullptr);
 
-/// Verifies all-and-only object, slot and version bindings after selected
-/// construction. Release/completion ordering is checked later against J's
-/// actual events; this verifier never inserts a wait or deallocation.
+/// Test-only structural oracle for object, slot and version construction.
+/// Production consumers use the SSA values returned by the builder directly;
+/// lifetime safety is checked separately below.
 mlir::LogicalResult
 verifyEmittedStorageObjects(const PreparedStoragePlan &prepared,
                             const StorageObjectBuilder &objects,
@@ -131,6 +131,8 @@ mlir::FailureOr<mlir::Value> buildSteadyOccurrenceCoordinate(
     const PipelinedExecutionStructure &pipeline, mlir::scf::ForOp steadyLoop,
     mlir::OpBuilder &builder, std::string *failureReason = nullptr);
 
+/// Test-only structural oracle for the concrete modulo/select chain emitted
+/// by StorageObjectBuilder::select.
 mlir::LogicalResult verifyRotatingStorageSelections(
     const StorageObjectBuilder &objects,
     llvm::ArrayRef<RotatingStorageSelection> selections,

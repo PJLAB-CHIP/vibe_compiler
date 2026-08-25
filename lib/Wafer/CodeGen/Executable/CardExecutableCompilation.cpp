@@ -4,6 +4,7 @@
 #include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
 #include "Wafer/Analysis/Structured/StructuredNodeUseIndex.h"
 #include "Wafer/Driver/CompilationInternal.h"
+#include "Wafer/IR/Target/TargetTopology.h"
 
 #include "Wafer/CodeGen/Executable/BoundedTileExecutor.h"
 
@@ -14,7 +15,10 @@
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Verifier.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -26,6 +30,107 @@
 
 namespace wafer::compiler::detail {
 namespace {
+
+static std::optional<int64_t> getPeerTileId(mlir::Operation *operation) {
+  if (auto peerSend = mlir::dyn_cast<CommPeerSendOp>(operation))
+    return peerSend.getPeerAttr().getInt();
+  if (auto peerRecv = mlir::dyn_cast<CommPeerRecvOp>(operation))
+    return peerRecv.getPeerAttr().getInt();
+  if (auto dteSend = mlir::dyn_cast<InstrDTESendOp>(operation))
+    return dteSend.getPeerAttr().getInt();
+  if (auto dteRecv = mlir::dyn_cast<InstrDTERecvOp>(operation))
+    return dteRecv.getPeerAttr().getInt();
+  return std::nullopt;
+}
+
+static mlir::LogicalResult
+verifyCardModuleStage(mlir::ModuleOp module, CardId expectedCardId,
+                      llvm::ArrayRef<TileId> expectedTileIds,
+                      std::string &detail) {
+  mlir::FailureOr<TargetTopology> topology =
+      TargetTopology::create(module, &detail);
+  if (mlir::failed(topology))
+    return mlir::failure();
+  if (!topology->getCardCoordinate(expectedCardId)) {
+    detail = "selected card_id is outside the target topology";
+    return mlir::failure();
+  }
+  std::optional<llvm::ArrayRef<TileId>> topologyTiles =
+      topology->getAvailableTileIds(expectedCardId);
+  if (!topologyTiles || topologyTiles->size() != expectedTileIds.size() ||
+      !std::equal(topologyTiles->begin(), topologyTiles->end(),
+                  expectedTileIds.begin(), expectedTileIds.end())) {
+    detail = "selected Tile domain does not match target topology";
+    return mlir::failure();
+  }
+
+  llvm::SmallVector<CardModuleOp, 2> cards(module.getOps<CardModuleOp>());
+  if (cards.size() != 1) {
+    detail = "expected exactly one direct wafer.card.module";
+    return mlir::failure();
+  }
+  CardModuleOp card = cards.front();
+  if (card.getCardIdAttr().getInt() != expectedCardId.getValue()) {
+    detail = "CardModule card_id does not match the selected card";
+    return mlir::failure();
+  }
+
+  llvm::DenseSet<int64_t> expectedTiles;
+  for (TileId tile : expectedTileIds)
+    if (tile.getValue() < 0 || !expectedTiles.insert(tile.getValue()).second) {
+      detail = "selected Tile domain must be non-negative and unique";
+      return mlir::failure();
+    }
+  llvm::DenseSet<int64_t> actualTiles;
+  for (TileModuleOp tile : card.getBody().front().getOps<TileModuleOp>()) {
+    const int64_t tileId = tile.getTileIdAttr().getInt();
+    if (!expectedTiles.contains(tileId) || !actualTiles.insert(tileId).second) {
+      detail = "CardModule has an unexpected or duplicate tile_id";
+      return mlir::failure();
+    }
+    mlir::WalkResult peerResult = tile.walk([&](mlir::Operation *operation) {
+      std::optional<int64_t> peer = getPeerTileId(operation);
+      if (!peer || expectedTiles.contains(*peer))
+        return mlir::WalkResult::advance();
+      operation->emitOpError()
+          << "peer tile_id " << *peer
+          << " is outside the selected available Tile domain";
+      return mlir::WalkResult::interrupt();
+    });
+    if (peerResult.wasInterrupted()) {
+      detail = "CardModule has a peer outside the selected Tile domain";
+      return mlir::failure();
+    }
+  }
+  if (actualTiles.size() != expectedTiles.size()) {
+    detail = "CardModule does not cover all selected available Tiles";
+    return mlir::failure();
+  }
+
+  llvm::DenseSet<int64_t> cardDDRResources;
+  for (mlir::memref::GlobalOp global :
+       card.getBody().front().getOps<mlir::memref::GlobalOp>())
+    if (auto resource = global->getAttrOfType<CardDDRResourceAttr>(
+            kWaferCardDDRResourceAttrName))
+      cardDDRResources.insert(resource.getResourceId());
+  for (TileModuleOp tile : card.getBody().front().getOps<TileModuleOp>()) {
+    llvm::DenseMap<int64_t, unsigned> bindings;
+    tile.walk([&](mlir::func::FuncOp function) {
+      for (unsigned argument = 0; argument < function.getNumArguments();
+           ++argument)
+        if (auto binding = function.getArgAttrOfType<CardDDRBindingAttr>(
+                argument, kWaferCardDDRBindingAttrName))
+          ++bindings[binding.getResourceId()];
+    });
+    for (int64_t resource : cardDDRResources)
+      if (bindings.lookup(resource) != 1) {
+        detail = "every selected Tile must bind each card DDR resource "
+                 "exactly once";
+        return mlir::failure();
+      }
+  }
+  return mlir::success();
+}
 
 struct TileLoweringResult {
   mlir::OwningOpRef<mlir::ModuleOp> module;
@@ -212,6 +317,10 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
 
   mlir::MLIRContext *context = cardModule->getContext();
   std::string detail;
+  if (mlir::failed(verifyCardModuleStage(*cardModule, expectedCardId,
+                                         expectedTileIds, detail)))
+    return reportFailure(fail(CardExecutableCompilationStatus::CompilerFailure,
+                              "card-module-stage", detail));
   mlir::FailureOr<llvm::SmallVector<TileModule, 16>> projectedModules;
   {
     wafer::support::ScopedCompileTimingSpan timing(
@@ -267,16 +376,16 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
       tileInventory.record(tile.getModule().getOperation());
       diagnostics << "wafer-compile: ir-inventory-tile "
                   << "stage=selected-tile-dataflow tile="
-                  << tile.tile.getValue() << " total_operations="
-                  << tileInventory.getTotalOperations() << '\n';
-      diagnostics << "wafer-compile: ir-provenance-tile tile="
-                  << tile.tile.getValue() << " compute_emissions="
-                  << tile.relations->operationEmissions.size()
-                  << " operand_buffers=" << tile.relations->operandBuffers.size()
-                  << " result_buffers="
-                  << tile.relations->operationResultBuffers.size()
-                  << " scratch_buffers="
-                  << tile.relations->scratchBuffers.size() << '\n';
+                  << tile.tile.getValue()
+                  << " total_operations=" << tileInventory.getTotalOperations()
+                  << '\n';
+      diagnostics
+          << "wafer-compile: ir-provenance-tile tile=" << tile.tile.getValue()
+          << " compute_emissions=" << tile.relations->operationEmissions.size()
+          << " operand_buffers=" << tile.relations->operandBuffers.size()
+          << " result_buffers=" << tile.relations->operationResultBuffers.size()
+          << " scratch_buffers=" << tile.relations->scratchBuffers.size()
+          << '\n';
       std::map<uint32_t, uint64_t> emissionsByNode;
       for (const StructuredOperationEmissionRelation &relation :
            tile.relations->operationEmissions)
@@ -288,8 +397,9 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
       }
       for (const auto &[emissions, nodes] : emissionMultiplicity)
         diagnostics << "wafer-compile: ir-provenance-multiplicity tile="
-                    << tile.tile.getValue() << " emissions_per_node="
-                    << emissions << " node_count=" << nodes << '\n';
+                    << tile.tile.getValue()
+                    << " emissions_per_node=" << emissions
+                    << " node_count=" << nodes << '\n';
       if (tile.tile == expectedTileIds.front()) {
         std::map<uint32_t, std::set<mlir::Operation *>> regionsByNode;
         std::map<uint32_t, std::map<std::string, uint64_t>> opsByNode;

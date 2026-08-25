@@ -150,8 +150,6 @@ struct FormAttentionOpsPass final
           match.root->getLoc(), mlir::TypeRange{match.outputType}, match.query,
           match.key, match.value, scale, match.mask, output, match.algorithm,
           rewriter.getAffineMapArrayAttr(match.indexingMaps));
-      if (mlir::failed(mlir::verify(attention.getOperation())))
-        return signalPassFailure();
 
       for (mlir::Value operand : match.root->getOperands()) {
         if (mlir::Operation *producer = operand.getDefiningOp())

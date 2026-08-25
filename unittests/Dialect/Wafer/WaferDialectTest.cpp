@@ -3,6 +3,7 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
@@ -907,6 +908,73 @@ module {
   mlir::ScopedDiagnosticHandler suppress(
       &context, [](mlir::Diagnostic &) { return mlir::success(); });
   EXPECT_TRUE(mlir::failed(mlir::verify(*invalid)));
+}
+
+TEST(WaferDialectTest, CollectiveMeshBoundsAreCheckedAtModuleStage) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::func::FuncDialect, mlir::tensor::TensorDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  constexpr llvm::StringLiteral source = R"mlir(
+module {
+  wafer.execution.mesh @mesh {axes = ["card"], shape = array<i64: 2>}
+  func.func @main(%input: tensor<2x4xf32>) -> tensor<4x4xf32> {
+    %out = tensor.empty() : tensor<4x4xf32>
+    %result = wafer.linalg_ext.collective.all_gather
+        ins(%input : tensor<2x4xf32>)
+        outs(%out : tensor<4x4xf32>)
+        {axis = 0 : i64, partition_group = array<i64: 0, 2>}
+        -> tensor<4x4xf32>
+    return %result : tensor<4x4xf32>
+  }
+}
+)mlir";
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context);
+  ASSERT_TRUE(module);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  mlir::ScopedDiagnosticHandler suppress(
+      &context, [](mlir::Diagnostic &) { return mlir::success(); });
+  EXPECT_TRUE(
+      mlir::failed(wafer::verifyLinalgExtCollectiveExecutionMesh(*module)));
+}
+
+TEST(WaferDialectTest, TileRegionSPMOwnershipIsCheckedAtMemoryStage) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  constexpr llvm::StringLiteral source = R"mlir(
+module {
+  func.func @main(
+      %input: memref<2x1025x64xf16, #wafer.memory<ddr, tensor>>)
+      -> memref<2x1025x64xf16, #wafer.memory<ddr, tensor>> {
+    %result = wafer.tile.region(
+        %input : memref<2x1025x64xf16, #wafer.memory<ddr, tensor>>)
+        -> (memref<2x1025x64xf16, #wafer.memory<ddr, tensor>>) {
+    ^bb0(%arg0: memref<2x1025x64xf16, #wafer.memory<ddr, tensor>>):
+      %spm = memref.alloc()
+          : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
+      %escaped = "builtin.unrealized_conversion_cast"(%spm)
+          : (memref<2x1025x64xf16, #wafer.memory<spm, tensor>>)
+            -> memref<2x1025x64xf16, #wafer.memory<ddr, tensor>>
+      wafer.tile.yield %escaped
+          : memref<2x1025x64xf16, #wafer.memory<ddr, tensor>>
+    }
+    return %result
+        : memref<2x1025x64xf16, #wafer.memory<ddr, tensor>>
+  }
+}
+)mlir";
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context);
+  ASSERT_TRUE(module);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  mlir::ScopedDiagnosticHandler suppress(
+      &context, [](mlir::Diagnostic &) { return mlir::success(); });
+  EXPECT_TRUE(mlir::failed(wafer::verifyTileRegionStorageBoundaries(*module)));
 }
 
 } // namespace
