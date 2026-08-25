@@ -131,7 +131,11 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
   // The selected DDR allocation is the graph cut. Every remaining current-SSA
   // producer dependency joins its structured owners into the same stage.
   for (mlir::Operation *topLevel : sourceOperations) {
-    llvm::ArrayRef<uint32_t> consumers = operationNodes.lookup(topLevel);
+    auto consumerEntry = operationNodes.find(topLevel);
+    llvm::ArrayRef<uint32_t> consumers =
+        consumerEntry == operationNodes.end()
+            ? llvm::ArrayRef<uint32_t>{}
+            : llvm::ArrayRef<uint32_t>(consumerEntry->second);
     if (consumers.empty())
       continue;
     for (uint32_t consumer : consumers.drop_front())
@@ -144,8 +148,11 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
             if (!dependency || selectedStageAllocations.contains(dependency) ||
                 !visited.insert(dependency).second)
               return;
+            auto producerEntry = operationNodes.find(dependency);
             llvm::ArrayRef<uint32_t> producers =
-                operationNodes.lookup(dependency);
+                producerEntry == operationNodes.end()
+                    ? llvm::ArrayRef<uint32_t>{}
+                    : llvm::ArrayRef<uint32_t>(producerEntry->second);
             if (!producers.empty()) {
               for (uint32_t producer : producers)
                 uniteComponents(consumer, producer);

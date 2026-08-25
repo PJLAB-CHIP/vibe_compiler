@@ -1360,10 +1360,10 @@ static mlir::LogicalResult planSPMMemoryModuleImpl(
 mlir::LogicalResult planSPMMemoryModule(mlir::ModuleOp moduleOp,
                                         int64_t spmBase, int64_t spmLimit,
                                         int64_t spmAlignment,
-                                        SPMMemoryPlanningFailure *failure) {
+                                        SPMMemoryPlanningFailure *failure,
+                                        bool emitCapacityDiagnostics) {
   return planSPMMemoryModuleImpl(moduleOp, spmBase, spmLimit, spmAlignment,
-                                 failure,
-                                 /*emitCapacityDiagnostics=*/true,
+                                 failure, emitCapacityDiagnostics,
                                  /*managedTimelines=*/nullptr,
                                  /*managedCallGraph=*/nullptr);
 }

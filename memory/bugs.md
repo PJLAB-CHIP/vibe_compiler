@@ -1275,3 +1275,16 @@
   共享plan、preparation或actual IR；两者只共享设计明确允许的无策略leaf。禁止用同一domain内的plan equality、default attribute、fixture kind
   或feature presence选择第二套IR transformation；禁止post-hoc追加本应驱动construction的relation；`set`只能验证集合语义，不能验证
   all-and-only occurrence。逐stage inventory必须把logical execution、physical compute、view、movement和target-call分别计数。
+
+## Driver-owned private IR不应为同一planning kernel反复构造临时PassManager
+
+- 现象：大图baseline在多轮actual SPM rejection后首次进入DDR planning，固定在`PassManager`析构时报
+  `double free or corruption`；GDB调用栈落在per-Tile DDR pass adapter，SPM rejection和candidate IR本身均已完成。
+- 根因：compiler driver已经拥有独立、可丢弃的per-Tile `ModuleOp` transaction，却为每个Tile重新创建只包装一个DDR planning
+  kernel的临时`PassManager`。这既没有提供跨pass analysis复用，也把pinned pass adapter的额外所有权/析构周期放进每个candidate的
+  热路径。
+- 修复模式：注册的named pipeline继续使用AnalysisManager-aware pass adapter；拥有private Module transaction的driver直接调用同一个
+  typed query/apply kernel。kernel仍执行相同actual lifetime、capacity、range和offset算法，失败时由caller丢弃当前Module，不建立第二套
+  planner或绕过verifier。
+- 防复发：direct kernel与registered pass adapter对1024/1025级rank-3输入比较exact offsets和失败类别；真实16-Tile candidate证明
+  DDR、target和package均实际到达。不得用禁用MLIR multithreading、固定单worker或猜测其它analysis线程安全来掩盖析构问题。

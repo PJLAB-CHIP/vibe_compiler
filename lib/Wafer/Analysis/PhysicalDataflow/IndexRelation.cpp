@@ -344,9 +344,35 @@ IndexRelation::getProjectedAffineMap(MLIRContext *context) const {
 
 IndexRelationResult IndexRelation::identity(llvm::ArrayRef<int64_t> shape,
                                             const IndexRelationLimits &limits) {
-  MLIRContext context;
-  AffineMap map = AffineMap::getMultiDimIdentityMap(shape.size(), &context);
-  return fromAffineMap(map, shape, shape, limits);
+  if (!isShapeValid(shape) || exceedsVariableLimit(shape.size(), shape.size(),
+                                                    limits))
+    return fail(IndexRelationStatus::Invalid,
+                "identity relation rank or shape is invalid");
+  IntegerRelation identity(
+      PresburgerSpace::getRelationSpace(shape.size(), shape.size()));
+  for (unsigned index = 0; index < shape.size(); ++index) {
+    llvm::SmallVector<int64_t, 8> equality(identity.getNumVars() + 1, 0);
+    equality[index] = 1;
+    equality[shape.size() + index] = -1;
+    identity.addEquality(equality);
+  }
+  addStaticShapeBounds(identity, shape, shape);
+  IndexRelationResult result =
+      finishExactOrBound(std::move(identity), /*isBound=*/false, limits);
+  if (!result.isExact())
+    return result;
+  result.relation->functionalByConstruction = true;
+  result.relation->totalBoundedAffineMapByConstruction = true;
+  llvm::SmallVector<int64_t, 4> pattern;
+  pattern.reserve(shape.size());
+  for (unsigned dimension = 0; dimension < shape.size(); ++dimension)
+    pattern.push_back(dimension);
+  result.relation->projectedRectanglePattern = std::move(pattern);
+  result.relation->rectangleDestinationShape =
+      llvm::SmallVector<int64_t, 4>(shape);
+  result.relation->rectangleSourceShape =
+      llvm::SmallVector<int64_t, 4>(shape);
+  return result;
 }
 
 IndexRelationResult IndexRelation::fromAffineMap(
@@ -1904,6 +1930,13 @@ IndexRelation::isEquivalentTo(const IndexRelation &other,
       other.status != IndexRelationStatus::Exact)
     return failQuery(IndexRelationStatus::SoundBound,
                      "equivalence requires exact relations");
+  if (projectedRectanglePattern && other.projectedRectanglePattern &&
+      rectangleDestinationShape && other.rectangleDestinationShape &&
+      rectangleSourceShape && other.rectangleSourceShape &&
+      *projectedRectanglePattern == *other.projectedRectanglePattern &&
+      *rectangleDestinationShape == *other.rectangleDestinationShape &&
+      *rectangleSourceShape == *other.rectangleSourceShape)
+    return IndexRelationQueryResult{IndexRelationStatus::Exact, true, {}};
   return IndexRelationQueryResult{
       IndexRelationStatus::Exact, relation.isEqual(other.relation), {}};
 }

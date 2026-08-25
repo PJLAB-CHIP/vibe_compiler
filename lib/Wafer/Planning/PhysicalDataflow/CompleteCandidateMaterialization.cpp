@@ -207,8 +207,10 @@ prepareSearchAttentionExecutionSource(
     CandidateMaterializationStatistics *statistics,
     std::string *failureReason) {
   mlir::FailureOr<AttentionMaterializationSource> attention =
-      prepareAttentionMaterializationSource(
-          tensorProgram, cardId, program, plan, program.availableTileIds,
+      expandSelectedAttentionAlgorithm(
+          tensorProgram, cardId, program, plan.spatial, plan.rootWorks,
+          plan.temporal, plan.movement, plan.preparedAttention,
+          program.availableTileIds,
           SpatialDataflowMaterializationMode::JointDataflow, statistics,
           failureReason);
   if (mlir::failed(attention))
@@ -725,8 +727,11 @@ materializeCardCandidate(mlir::ModuleOp tensorProgram, CardId cardId,
     assignment = std::move(*built);
   } else {
     mlir::FailureOr<AttentionMaterializationSource> selected =
-        prepareAttentionMaterializationSource(tensorProgram, cardId, program,
-                                              plan, program.availableTileIds,
+        expandSelectedAttentionAlgorithm(tensorProgram, cardId, program,
+                                              plan.spatial, plan.rootWorks,
+                                              plan.temporal, plan.movement,
+                                              plan.preparedAttention,
+                                              program.availableTileIds,
                                               mode, statistics, &failureReason);
     if (mlir::failed(selected)) {
       diagnostics << "wafer-compile: selected attention preparation failed: "

@@ -186,14 +186,29 @@ TransferRealizability::proveCompactDma(mlir::MemRefType sourceType,
       sourceMemory.getSpace() == destMemory.getSpace() ||
       sourceMemory.getLayout() != MemLayout::Tensor ||
       destMemory.getLayout() != MemLayout::Tensor ||
+      sourceType.getElementType() != destType.getElementType() ||
       sourceType.getShape() != destType.getShape())
     return mlir::failure();
   IndexRelationResult identity = IndexRelation::identity(destType.getShape());
   if (!identity.isExact() ||
       !relation.isEquivalentTo(*identity.get()).isProvenTrue())
     return mlir::failure();
-  return proveByteAddressableElementTransfer(sourceType, destType, relation,
-                                             /*requireInjective=*/true);
+  auto sourceEncoding =
+      mlir::dyn_cast_or_null<WaferPhysicalEncodingAttrInterface>(
+          sourceType.getMemorySpace());
+  auto destEncoding =
+      mlir::dyn_cast_or_null<WaferPhysicalEncodingAttrInterface>(
+          destType.getMemorySpace());
+  if (!sourceEncoding || !destEncoding)
+    return mlir::failure();
+  mlir::FailureOr<int64_t> sourceBits =
+      sourceEncoding.getPhysicalElementBitWidth(sourceType);
+  mlir::FailureOr<int64_t> destBits =
+      destEncoding.getPhysicalElementBitWidth(destType);
+  return mlir::success(
+      mlir::succeeded(sourceBits) && mlir::succeeded(destBits) &&
+      *sourceBits > 0 && *sourceBits % 8 == 0 &&
+      *sourceBits == *destBits);
 }
 
 mlir::LogicalResult
@@ -238,8 +253,10 @@ mlir::LogicalResult TransferRealizability::proveStagedMovement(
     mlir::MemRefType sourceType, mlir::MemRefType temporaryType,
     mlir::MemRefType destType, const IndexRelation &sourceToTemporary,
     const IndexRelation &temporaryToDest) {
-  return mlir::success(mlir::succeeded(proveCompactDma(
-                           sourceType, temporaryType, sourceToTemporary)) &&
+  return mlir::success((mlir::succeeded(proveCompactDma(
+                            sourceType, temporaryType, sourceToTemporary)) ||
+                        mlir::succeeded(proveMappedDma(
+                            sourceType, temporaryType, sourceToTemporary))) &&
                        mlir::succeeded(proveGatherScatter(
                            temporaryType, destType, temporaryToDest)));
 }

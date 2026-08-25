@@ -291,16 +291,12 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
     return mlir::failure();
   }
 
-  auto buildPreparationPipeline = [&](mlir::OpPassManager &manager) {
-    if (!materializationRelations) {
-      wafer::buildPrepareInstrForMemoryPlanningPipeline(manager);
-      return;
-    }
-    manager.nest<mlir::func::FuncOp>().addPass(
-        wafer::createRebuildRequiredNCCJoinsPass());
-  };
-  if (mlir::failed(runPassPipeline(*module, "instr-memory-planning-preparation",
-                                   buildPreparationPipeline))) {
+  mlir::LogicalResult preparationResult =
+      materializationRelations
+          ? wafer::rebuildRequiredNCCJoins(*module)
+          : runPassPipeline(*module, "instr-memory-planning-preparation",
+                            wafer::buildPrepareInstrForMemoryPlanningPipeline);
+  if (mlir::failed(preparationResult)) {
     recordFailure(
         TileMemoryPlanningFailureKind::InstrMemoryPlanningPreparation);
     return mlir::failure();
@@ -329,16 +325,9 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
 
   const TargetMemoryPolicy memory = getTargetMemoryPolicy();
   SPMMemoryPlanningFailure spmFailure;
-  PlanSPMMemoryPassOptions spmOptions;
-  spmOptions.spmBase = memory.spmBase;
-  spmOptions.spmLimit = memory.spmLimit;
-  spmOptions.spmAlignment = memory.spmAlignment;
-  spmOptions.emitCapacityDiagnostics = emitSPMCapacityDiagnostics;
-  mlir::LogicalResult spmResult = runPassPipeline(
-      *module, "tile-spm-planning", [&](mlir::OpPassManager &manager) {
-        manager.addPass(
-            wafer::createPlanSPMMemoryPassWithFailure(spmOptions, &spmFailure));
-      });
+  mlir::LogicalResult spmResult = wafer::planSPMMemoryModule(
+      *module, memory.spmBase, memory.spmLimit, memory.spmAlignment,
+      &spmFailure, emitSPMCapacityDiagnostics);
   if (mlir::failed(spmResult)) {
     recordFailure(TileMemoryPlanningFailureKind::SPMAllocation);
     if (failure) {

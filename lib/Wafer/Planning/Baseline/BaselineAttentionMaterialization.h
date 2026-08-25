@@ -7,9 +7,10 @@
 
 namespace wafer::compiler::detail {
 
-/// Candidate-owned TensorProgram used only by one actual transaction. The
-/// source module is unchanged; every structured operation in
-/// `operationNodes` belongs to `module` and is covered by `assignment`.
+/// One invocation-owned expansion of a fixed attention algorithm. The source
+/// module is unchanged; every structured operation in `operationNodes`
+/// belongs to `module`. This leaf consumes explicit physical choices but does
+/// not select a baseline/search candidate or construct a CardModule.
 struct AttentionMaterializationSource {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   CardMaterializationPlan assignment;
@@ -18,9 +19,13 @@ struct AttentionMaterializationSource {
 };
 
 mlir::FailureOr<AttentionMaterializationSource>
-prepareAttentionMaterializationSource(
+expandSelectedAttentionAlgorithm(
     mlir::ModuleOp source, CardId cardId,
-    const CardProgramAnalysis &sourceProgram, const CompleteCandidatePlan &plan,
+    const CardProgramAnalysis &sourceProgram,
+    const SpatialAssignment &sourceSpatial,
+    llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
+    const TemporalPlan &temporal, const MovementPlan &movement,
+    const PreparedAttentionDecomposition &preparedAttention,
     llvm::ArrayRef<TileId> availableTiles,
     SpatialDataflowMaterializationMode mode,
     CandidateMaterializationStatistics *statistics = nullptr,

@@ -758,19 +758,22 @@ mlir::FailureOr<llvm::SmallVector<OutputTileMapping, 4>> buildOutputMappings(
 } // namespace
 
 mlir::FailureOr<AttentionMaterializationSource>
-prepareAttentionMaterializationSource(
+expandSelectedAttentionAlgorithm(
     mlir::ModuleOp source, CardId cardId,
-    const CardProgramAnalysis &sourceProgram, const CompleteCandidatePlan &plan,
+    const CardProgramAnalysis &sourceProgram,
+    const SpatialAssignment &sourceSpatial,
+    llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
+    const TemporalPlan &temporal, const MovementPlan &movement,
+    const PreparedAttentionDecomposition &preparedAttention,
     llvm::ArrayRef<TileId> availableTiles,
     SpatialDataflowMaterializationMode mode,
     CandidateMaterializationStatistics *statistics,
     std::string *failureReason) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
-      "conversion", "complete-candidate",
-      "selected-attention-to-materialization-source");
+      "conversion", "attention-algorithm-lowering",
+      "expand-selected-attention");
   (void)cardId;
-  if (!source || availableTiles.empty() ||
-      plan.preparedAttention.work.roots.empty())
+  if (!source || availableTiles.empty() || preparedAttention.work.roots.empty())
     return fail<AttentionMaterializationSource>(
         failureReason,
         "selected attention materialization input is incomplete");
@@ -788,14 +791,14 @@ prepareAttentionMaterializationSource(
   if (mlir::failed(sourceRoots))
     return mlir::failure();
   std::map<SemanticRootKey, const NodeExecutionPartition *> sourcePartitions;
-  for (const NodeExecutionPartition &partition : plan.spatial.nodes)
+  for (const NodeExecutionPartition &partition : sourceSpatial.nodes)
     if (!sourcePartitions.try_emplace(partition.root, &partition).second)
       return fail<AttentionMaterializationSource>(
           failureReason, "source spatial partition identity is duplicated");
   std::map<SemanticRootKey, llvm::SmallVector<int64_t, 4>> sourceTemporalTiles;
   std::map<ExecutionInstanceId, llvm::SmallVector<int64_t, 4>>
       sourceTemporalByExecution;
-  for (const TemporalScopePlan &scope : plan.temporal.scopes) {
+  for (const TemporalScopePlan &scope : temporal.scopes) {
     const ExecutionInstanceId *execution = getRequiredExecution(scope.id);
     if (!execution || !isTopLevelScope(scope.id))
       return fail<AttentionMaterializationSource>(
@@ -842,7 +845,7 @@ prepareAttentionMaterializationSource(
   }
 
   std::map<SemanticRootKey, mlir::Operation *> sourceAttention;
-  for (const analysis::RootRegionWork &work : plan.rootWorks) {
+  for (const analysis::RootRegionWork &work : rootWorks) {
     if (!work.rootOperation ||
         !mlir::isa<LinalgExtAttentionOp>(work.rootOperation))
       continue;
@@ -865,7 +868,7 @@ prepareAttentionMaterializationSource(
   std::map<SemanticRootKey, AttentionIterationRoles> attentionRoles;
   mlir::IRRewriter rewriter(source.getContext());
   for (const AttentionWorkDescription &description :
-       plan.preparedAttention.work.roots) {
+       preparedAttention.work.roots) {
     auto original = sourceAttention.find(description.root);
     mlir::Operation *mapped = original == sourceAttention.end()
                                   ? nullptr
@@ -1123,7 +1126,7 @@ prepareAttentionMaterializationSource(
   analysis::ExactDemandProof selectedDemand;
   {
     wafer::support::ScopedCompileTimingSpan demandTiming(
-        "query", "complete-candidate", "selected-attention-exact-demand");
+        "query", "attention-algorithm-lowering", "expanded-exact-demand");
     mlir::FailureOr<DemandPlanningSession> demandSession =
         DemandPlanningSession::create(*dag, analysis::IndexRelationLimits(),
                                       failureReason);
@@ -1141,7 +1144,7 @@ prepareAttentionMaterializationSource(
 
   mlir::FailureOr<llvm::SmallVector<OutputTileMapping, 4>> outputs =
       buildOutputMappings(*dag, *spatial, selectedDemand, temporalByOperation,
-                          selectedOperationActions, plan.preparedAttention.work,
+                          selectedOperationActions, preparedAttention.work,
                           failureReason);
   if (mlir::failed(outputs))
     return mlir::failure();
@@ -1182,7 +1185,7 @@ prepareAttentionMaterializationSource(
             {selectedIndex, semanticIndex});
     rootMappings.push_back(std::move(mapping));
   }
-  if (mlir::failed(addCardDataflowConstruction(assignment, *dag, plan.movement,
+  if (mlir::failed(addCardDataflowConstruction(assignment, *dag, movement,
                                                componentMappings, rootMappings,
                                                failureReason)))
     return mlir::failure();

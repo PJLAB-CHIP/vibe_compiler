@@ -10,10 +10,16 @@
 #include "Wafer/IR/WaferDialect.h"
 
 #include "Wafer/Support/CompileWorkStatistics.h"
+#include "Wafer/Target/Core/TargetMemory.h"
+#include "Wafer/Transforms/MemoryPlanning.h"
+#include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Pass/PassManager.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -121,6 +127,57 @@ TEST_F(CardExecutableLoweringTest, ConsumesCompleteTileDomain) {
   EXPECT_EQ(statistics.tileModuleLoweringAttempts, 1u);
   EXPECT_EQ(statistics.tileModuleLoweringSuccesses, 1u);
   EXPECT_EQ(statistics.cardExecutablesProduced, 1u);
+}
+
+TEST_F(CardExecutableLoweringTest,
+       DirectDDRKernelMatchesTheRegisteredPassAdapter) {
+  auto direct = parseTileModule(R"mlir(
+  func.func @main() {
+    %first = memref.alloc()
+        : memref<2x16x1024xf16, #wafer.memory<ddr, tensor>>
+    %second = memref.alloc()
+        : memref<2x16x1025xf16, #wafer.memory<ddr, tensor>>
+    memref.dealloc %first
+        : memref<2x16x1024xf16, #wafer.memory<ddr, tensor>>
+    memref.dealloc %second
+        : memref<2x16x1025xf16, #wafer.memory<ddr, tensor>>
+    return
+  })mlir");
+  ASSERT_TRUE(direct);
+  mlir::OwningOpRef<mlir::ModuleOp> throughPass(
+      mlir::cast<mlir::ModuleOp>((*direct)->clone()));
+
+  const wafer::TargetMemoryPolicy memory = wafer::getTargetMemoryPolicy();
+  ASSERT_TRUE(mlir::succeeded(wafer::planDDRMemoryModule(
+      *direct, memory.ddrAlignmentBytes, memory.ddrCapacityBytes,
+      memory.ddrLargestContiguousBytes, memory.ddrBandwidthLimitBytes)));
+
+  wafer::PlanDDRMemoryPassOptions options;
+  options.ddrAlignmentBytes = memory.ddrAlignmentBytes;
+  options.ddrCapacityBytes = memory.ddrCapacityBytes;
+  options.ddrLargestContiguousBytes = memory.ddrLargestContiguousBytes;
+  options.ddrBandwidthLimitBytes = memory.ddrBandwidthLimitBytes;
+  mlir::PassManager manager(context.get());
+  manager.enableVerifier(true);
+  manager.addPass(wafer::createPlanDDRMemoryPass(options));
+  ASSERT_TRUE(mlir::succeeded(manager.run(*throughPass)));
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*direct)));
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*throughPass)));
+
+  auto collectOffsets = [](mlir::ModuleOp module) {
+    llvm::SmallVector<int64_t, 4> offsets;
+    module.walk([&](mlir::memref::AllocOp allocation) {
+      auto offset = allocation->getAttrOfType<wafer::DDROffsetAttr>(
+          wafer::kWaferDDROffsetAttrName);
+      if (offset)
+        offsets.push_back(offset.getOffset());
+    });
+    return offsets;
+  };
+  llvm::SmallVector<int64_t, 4> directOffsets = collectOffsets(*direct);
+  llvm::SmallVector<int64_t, 4> passOffsets = collectOffsets(*throughPass);
+  ASSERT_EQ(directOffsets.size(), 2u);
+  EXPECT_EQ(directOffsets, passOffsets);
 }
 
 TEST_F(CardExecutableLoweringTest,

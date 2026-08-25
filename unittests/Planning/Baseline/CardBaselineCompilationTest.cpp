@@ -162,7 +162,7 @@ TEST(CardBaselineCompilationTest,
   EXPECT_EQ(baselineStatistics.exactGates.cardModuleCompilationInvocations, 1u);
   EXPECT_EQ(baselineStatistics.baselineCardModuleMaterializations, 1u);
   EXPECT_EQ(baselineStatistics.baselineTileEntryMaterializations, 16u);
-  EXPECT_GT(baselineStatistics.baselineMaximumTileMaterializationWorkers, 1u);
+  EXPECT_EQ(baselineStatistics.baselineMaximumTileMaterializationWorkers, 1u);
   EXPECT_EQ(baselineStatistics.baselineSourcePreparations, 1u);
   EXPECT_EQ(baselineStatistics.baselineMaterializationPreparations, 1u);
   EXPECT_EQ(baselineStatistics.baselineTileIRPrints, 16u);
@@ -589,7 +589,7 @@ TEST(CardBaselineCompilationTest,
   EXPECT_EQ(baselineStatistics.exactGates.cardModuleCompilationInvocations, 1u);
   EXPECT_EQ(baselineStatistics.baselineCardModuleMaterializations, 1u);
   EXPECT_EQ(baselineStatistics.baselineTileEntryMaterializations, 16u);
-  EXPECT_GT(baselineStatistics.baselineMaximumTileMaterializationWorkers, 1u);
+  EXPECT_EQ(baselineStatistics.baselineMaximumTileMaterializationWorkers, 1u);
   // Two independent structured roots on one Tile form multiple sequential
   // regions: the shared Tile (Tile 0) carries one region per root.
   ASSERT_EQ(executable->tileDataflowIRTrace.size(), 16u);

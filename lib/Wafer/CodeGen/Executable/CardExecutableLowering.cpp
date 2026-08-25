@@ -13,6 +13,7 @@
 #include "Wafer/IR/Target/TargetTopology.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Target/Core/TargetMemory.h"
+#include "Wafer/Transforms/MemoryPlanning.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
@@ -89,15 +90,12 @@ static mlir::LogicalResult lowerTileIndexExpressions(mlir::ModuleOp module) {
 
 static mlir::LogicalResult
 assignTileDDROffsets(mlir::ModuleOp module, const TargetMemoryPolicy &memory) {
-  PlanDDRMemoryPassOptions options;
-  options.ddrAlignmentBytes = memory.ddrAlignmentBytes;
-  options.ddrCapacityBytes = memory.ddrCapacityBytes;
-  options.ddrLargestContiguousBytes = memory.ddrLargestContiguousBytes;
-  options.ddrBandwidthLimitBytes = memory.ddrBandwidthLimitBytes;
-  return runPassPipeline(
-      module, "tile-ddr-planning", [&](mlir::OpPassManager &manager) {
-        manager.addPass(wafer::createPlanDDRMemoryPass(options));
-      });
+  // This caller already owns a private per-Tile Module transaction. Invoke
+  // the same DDR planning kernel used by the registered pass adapter directly;
+  // a fresh PassManager per Tile would add no analysis reuse or IR boundary.
+  return wafer::planDDRMemoryModule(
+      module, memory.ddrAlignmentBytes, memory.ddrCapacityBytes,
+      memory.ddrLargestContiguousBytes, memory.ddrBandwidthLimitBytes);
 }
 
 static llvm::Expected<RuntimeLaunchContract>

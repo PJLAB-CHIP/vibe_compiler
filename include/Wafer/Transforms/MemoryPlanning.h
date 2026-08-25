@@ -45,12 +45,13 @@ struct SPMMemoryPlanningFailure {
 };
 
 /// Direct query/apply kernel for callers that already own a private Module
-/// transaction. Production pass pipelines should use the AnalysisManager-aware
-/// SPM pass adapter.
+/// transaction. Registered pipelines use the AnalysisManager-aware pass
+/// adapter; compiler drivers may call this kernel at the same stable boundary.
 mlir::LogicalResult
 planSPMMemoryModule(mlir::ModuleOp moduleOp, int64_t spmBase, int64_t spmLimit,
                     int64_t spmAlignment,
-                    SPMMemoryPlanningFailure *failure = nullptr);
+                    SPMMemoryPlanningFailure *failure = nullptr,
+                    bool emitCapacityDiagnostics = true);
 
 /// Prove fixed-capacity SPM feasibility for one isolated TileRegion without
 /// assigning offsets or inspecting sibling regions.
@@ -60,8 +61,9 @@ checkTileRegionSPMCapacity(TileRegionOp region, int64_t spmBase,
                            SPMMemoryPlanningFailure *failure = nullptr);
 
 /// Direct query/apply kernel for a caller-owned private Module. The caller
-/// discards the Module on failure. Whole-executable lowering uses the
-/// AnalysisManager-aware DDR pass adapter.
+/// discards the Module on failure. Registered pipelines use the
+/// AnalysisManager-aware pass adapter; compiler drivers may call this kernel
+/// at the same stable boundary.
 mlir::LogicalResult planDDRMemoryModule(mlir::ModuleOp moduleOp,
                                         int64_t ddrAlignmentBytes,
                                         int64_t ddrCapacityBytes,

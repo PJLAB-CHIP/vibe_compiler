@@ -133,6 +133,22 @@ package/no-card。Search FD中的cross-Tile component通过actual `RootValueKey`
 `MovementPlan`与actual DDR issue的精确绑定处停止；该缺口属于第5项，不得恢复旧carrier或用
 node/shape近似匹配绕过。
 
+### Baseline root materializer的current边界
+
+`compileCardBaseline`现在只调用baseline-owned materializer。普通structured root按`(root work, Tile)`形成独立
+`TileRegion`；fixed FA/FD算法展开后，同一semantic attention root在同一Tile上的多个execution scope合并为一个
+root-owned region，不与其它root融合。纯DPS初始化producer只沿current structured DAG加入其实际consumer region的
+recompute closure；其它跨root shaped dependency仍必须形成显式carrier。baseline production call graph不再调用
+`materializeCardCandidate`、search session或search materializer。
+
+同一current FP16 LLaMA source的fresh Release baseline产生23个CardModule并恰好调用23次actual admission：前22次由
+MiniMalloc返回带current owner demand的capacity rejection并推进确定性temporal successor，第23次Accepted且原owner直接
+进入DDR、target和package。初始/最终selected Tile inventory分别为26,128/34,704 ops，始终为每Tile 104个compute
+emission且没有`wafer.tile.extract_slice`；最终Instr为30,752 ops。该轮215秒完成，Tile pipeline实际使用16个worker，
+生成16-Tile package并通过strict no-card。上述数量只作膨胀和stage-reachability回归证据，不参与candidate legality。
+FP16/BF16 prefill和两步decode product cases也分别通过actual memory、target、package/no-card；1024与1025/1031的rank-4
+unit矩阵继续断言batch/head轴、tail、owner和无whole-cache SPM allocation。
+
 ## Verifier职责冻结分类
 
 ### Custom verifier hooks

@@ -165,20 +165,6 @@ static mlir::LogicalResult lowerTileRegionsToInstructionIR(
              "current IR";
     return mlir::failure();
   }
-  llvm::SmallVector<TileRegionOp, 4> regions;
-  module.walk([&](TileRegionOp region) { regions.push_back(region); });
-  std::map<mlir::Operation *, std::set<uint32_t>> nodesByRegion;
-  for (const StructuredOperationEmissionRelation &relation :
-       relations.operationEmissions) {
-    TileRegionOp region =
-        relation.operation ? relation.operation->getParentOfType<TileRegionOp>()
-                           : TileRegionOp{};
-    if (region)
-      nodesByRegion[region].insert(relation.structuredNodeId);
-  }
-  for (const auto &[region, nodes] : nodesByRegion)
-    regionNodes.push_back(
-        {region, std::vector<uint32_t>(nodes.begin(), nodes.end())});
   if (mlir::failed(rebaseStructuredBufferRelationsToStorageRoots(relations))) {
     detail = "Instr function-boundary bufferization cannot preserve a unique "
              "storage root for every selected relation";
@@ -199,6 +185,24 @@ static mlir::LogicalResult lowerTileRegionsToInstructionIR(
   }
   if (bufferizedInventory)
     bufferizedInventory->record(module.getOperation());
+  // Function-boundary bufferization is an IR mutation epoch. Recollect both
+  // TileRegion handles and their current emission ownership afterwards;
+  // retaining pre-pass operation handles here becomes a use-after-free when
+  // bufferization replaces a region or one of its source operations.
+  llvm::SmallVector<TileRegionOp, 4> regions;
+  module.walk([&](TileRegionOp region) { regions.push_back(region); });
+  std::map<mlir::Operation *, std::set<uint32_t>> nodesByRegion;
+  for (const StructuredOperationEmissionRelation &relation :
+       relations.operationEmissions) {
+    TileRegionOp region =
+        relation.operation ? relation.operation->getParentOfType<TileRegionOp>()
+                           : TileRegionOp{};
+    if (region)
+      nodesByRegion[region].insert(relation.structuredNodeId);
+  }
+  for (const auto &[region, nodes] : nodesByRegion)
+    regionNodes.push_back(
+        {region, std::vector<uint32_t>(nodes.begin(), nodes.end())});
   StructuredBufferReplacementListener replacementListener(relations);
   TileRegionToInstrLoweringSession loweringSession(*module.getContext(),
                                                    &replacementListener);
@@ -220,12 +224,7 @@ static mlir::LogicalResult lowerTileRegionsToInstructionIR(
   }
 
   if (placeCanonicalCompletion) {
-    if (mlir::failed(
-            runPassPipeline(module, "required-ncc-join-placement",
-                            [](mlir::OpPassManager &manager) {
-                              manager.nest<mlir::func::FuncOp>().addPass(
-                                  wafer::createPlaceRequiredNCCJoinsPass());
-                            }))) {
+    if (mlir::failed(wafer::placeRequiredNCCJoins(module))) {
       detail = "function-level required NCC join placement failed";
       return mlir::failure();
     }
@@ -470,8 +469,8 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
   const unsigned requestedWorkers = tilePipelineParallelism == 0
                                         ? kMaximumBoundedTilePipelineWorkers
                                         : tilePipelineParallelism;
-  unsigned workers = runBoundedTilePipelines(context, projectedModules->size(),
-                                             convertTile, requestedWorkers);
+  unsigned workers = runBoundedTilePipelines(
+      context, projectedModules->size(), convertTile, requestedWorkers);
   if (statistics)
     statistics->maximumTilePipelineWorkers =
         std::max<uint64_t>(statistics->maximumTilePipelineWorkers, workers);

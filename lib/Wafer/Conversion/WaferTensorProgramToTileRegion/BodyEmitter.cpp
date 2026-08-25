@@ -862,11 +862,27 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::getOrMaterialize(
     auto stagedDestType = mlir::cast<mlir::MemRefType>(resultType);
     analysis::IndexRelationResult identity =
         analysis::IndexRelation::identity(tensorType.getShape());
-    if (!identity.isExact() ||
-        mlir::failed(analysis::TransferRealizability::proveStagedMovement(
-            stagedBoundarySourceType, temporaryType, stagedDestType,
-            *identity.get(), *identity.get())))
-      return failValue("boundary staged movement is not exactly realizable");
+    const bool compact =
+        identity.isExact() &&
+        mlir::succeeded(analysis::TransferRealizability::proveCompactDma(
+            stagedBoundarySourceType, temporaryType, *identity.get()));
+    const bool mapped =
+        identity.isExact() &&
+        mlir::succeeded(analysis::TransferRealizability::proveMappedDma(
+            stagedBoundarySourceType, temporaryType, *identity.get()));
+    const bool local =
+        identity.isExact() &&
+        mlir::succeeded(analysis::TransferRealizability::proveGatherScatter(
+            temporaryType, stagedDestType, *identity.get()));
+    if ((!compact && !mapped) || !local) {
+      std::string detail;
+      llvm::raw_string_ostream diagnostic(detail);
+      diagnostic << "boundary staged movement is not exactly realizable: "
+                 << stagedBoundarySourceType << " -> " << temporaryType
+                 << " -> " << stagedDestType << "; compact=" << compact
+                 << ", mapped=" << mapped << ", local=" << local;
+      return failValue(detail);
+    }
   }
   auto materialize = builder.create<LayoutMaterializeOp>(materializationLoc,
                                                          resultType, source);
