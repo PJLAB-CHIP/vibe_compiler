@@ -1,8 +1,8 @@
 # Wafer Tile Communication 与 Direct DTE
 
-状态：2026-08-13按card-level GSPMD、CardModule和Tile MPMD主线收敛。本文拥有
+本文拥有
 selected片内physical peer IR及memory-planned后的CardExecutable Direct DTE verification；不拥有
-placement、communication winner或pipeline side plan。动态状态只看`tasks/progress.md`。
+placement、communication winner或pipeline side plan。
 
 ## 1. Pipeline Contract
 
@@ -15,7 +15,7 @@ Pipeline position:
   target topology给出available Tile与片内邻接，launch slot尚不属于structured IR。
 - Current stage responsibility:
   将selected mapping差异显式物化为Tile peer ops、destination staging、local compute、async token和精确lifetime obligation；
-  Q50.J在selected order/storage/control flow上放置wait，本stage不把issue位置当成默认wait位置；
+  schedule owner在selected order/storage/control flow上放置wait，本stage不把issue位置当成默认wait位置；
   在SPM/DDR
   offsets和completion确定后，对complete CardModule中的Tile modules原子匹配message、range、resource和transport binding。
 - Output IR / files:
@@ -75,7 +75,7 @@ root/alias或携带该alias的control token作为region I/O。
 current Tile IR不保留abstract collective request、algorithm selector或late topology shortcut。06的physical-dataflow planner在immutable
 TensorProgram和typed state上联合选择Tile placement、per-Tile work、TileRegion/execution、temporal scope、physical versions、explicit
 movement、buffer/slot和event order；partial plans不构造IR。每个complete candidate在自己的CardModule transaction中直接产生每个sender/receiver的
-`peer_send`、`peer_recv`、local movement/compute和async token；Q50.J再按receiver first read、sender/relay last release、slot/FSM reuse与
+`peer_send`、`peer_recv`、local movement/compute和async token；schedule owner再按receiver first read、sender/relay last release、slot/FSM reuse与
 全局无环event order产生selected wait，不先造DDR版本再post-hoc替换，也不由movement emitter立即await。message-ready/live set、root lifetime、
 resource calendar与cost从current assignments重算，最终message/range/resource/completion从candidate actual IR重证；rejected/loser
 transaction销毁，final winner不重建。
@@ -185,11 +185,10 @@ CardExecutable integration gate还必须证明general chain、branch、fanout/fa
 这些communication ops，并在最终Instr中具备chunk、buffer、order和completion witness。当前已有lowering/verification能力
 不得被写成搜索已经完成；cross-card collective也继续是明确非目标，不能恢复partition-to-Tile旧接口绕过。
 
-2026-08-23 production修正后，current `TileRegionBodyEmitter`的non-streamed peer路径保留matching SSA token：receive在对应logical
+Current non-streamed peer路径保留matching SSA token：receive在对应logical
 value第一次读取、第五个并存receiver或terminal前wait；send在同Tile唯一sender复用或terminal前wait。streamed scratch仍在receive后的
 actual store及send后的actual dealloc前wait，这两个位置分别是该scratch的first read与last release，不是通用issue-after-wait规则。
 若前序NCC地址lifetime已经沿same-worker issue链缩短，Direct DTE issue前必须先完成仍pending的NCC participant；DTE wait不完成该
 worker obligation。这个cross-domain join由actual Instr completion placement产生，不由attention或movement algorithm层写死。
-`movement-domain`仍须把完整direct/relay/fanout/gather selected construction接入同一token-only边界，`schedule-domain`再从post-K
-lifetime/resource facts选择一般wait位置。旧`DataMovementApply`/selected-buffer中的immediate-await逻辑只可作为待迁移donor，不能成为
-current合同或回归期望。
+Selected movement construction必须接入同一token-only边界，schedule owner再从selected lifetime/resource facts选择一般wait位置。
+任何旧immediate-await实现都不是current合同或回归期望。

@@ -1,8 +1,18 @@
-# MLIR 工程化整改实施计划
+# MLIR 工程化整改历史实施计划
+
+> Q54已经完成，本文件只保存当时的审计、checkpoint和验证记录。稳定MLIR工程合同由
+> `AGENTS.md`与`tasks/19-mlir-engineering.md`拥有；Q52重新发现的verifier职责问题由当前
+> `tasks/plans/physical-dataflow-synthesis.md`直接处理，不能从本历史计划恢复第二条Q54队列。
 
 状态：整改中（2026-08-18复核后重新打开）。本文是Q54 `mlir-infrastructure-conformance`的施工计划与收口记录。稳定工程合同由
 `tasks/19-mlir-engineering.md` 拥有；本文只规定施工顺序、迁移边界、验证 checkpoint 和删除门禁，动态状态与前置
 只读取`tasks/progress.md`。
+
+2026-08-25 Q52基于current source重新审计发现，M08/M10关于leaf verifier scope与container一次验证的收口结论已被后续实现回归或未被完整
+落实：current `CardModuleOp`、collective和`TileRegionOp` verifier仍读取parent/sibling/module或递归op外def-use，多组materialized-plan
+verifier仍重放builder形状，compiler另有38个whole-IR verify调用点。该子集不恢复一条平行Q54队列，由current Q52
+`verifier-contract-cleanup`按已冻结的55个custom hook、38个whole-IR call site和materialized-stage分类直接收口；本文件早期M08/M10
+“已闭合”文字不能代签该current子集。Q54其余scope/analysis/pipeline/rewrite infrastructure完成状态不因此回退。
 
 ## Pipeline Contract
 

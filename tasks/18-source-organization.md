@@ -1,8 +1,8 @@
 # Wafer 源码与构建模块化
 
-状态：本文定义当前source ownership和依赖方向，不复制IR/ABI/schema语义。稳定编译边界为
+本文定义current source ownership和依赖方向，不复制IR/ABI/schema语义。稳定编译边界为
 `TensorProgram -> physical-dataflow selection -> CardModule/TileRegion/Instr -> CardExecutable -> ExecutablePackage`。
-与新owner冲突的source、public header、CMake entry、test和兼容wrapper只有在负责该能力的Q50.0/Q50.S/Q50.A–Q50.K子项及替代测试闭合后才删除；
+与新owner冲突的source、public header、CMake entry、test和兼容wrapper只有在负责该能力的current capability owner及替代测试闭合后才删除；
 不保留空stub或旧接口alias，也不把旧owner连同仍需能力直接清空。
 
 ## 1. Pipeline Contract
@@ -101,7 +101,7 @@ Tile Instr → actual result → one retained CardExecutable winner。实现索�
 - 每Tile独立winner再拼CardExecutable；
 - complete execution domain clone N、late NoC profitability或第二selector；
 - algorithm/model/shape/name matcher和拥有独立selection/public控制面的Flash/Decode pass；attention只允许05定义的typed SSA
-  graph proof与单一current op，Q48 future semantic alternatives必须由自己的设计和consumer闭合；
+  graph proof与单一current op，future semantic alternatives必须由自己的设计和consumer闭合；
 - performance Unknown promotion/fallback。
 
 ### 3.3 Conversion chain
@@ -135,37 +135,18 @@ candidate owner，不在内部反复缩tile或切换算法。
 performance estimator只计算enabled numeric terms；完全未知项不进入比较。
 
 planning libraries从immutable IR与typed state构造proof；selected transforms物化completion、SPM/DDR offsets、worker/order和
-communication。allocator只解fixed problem，不能生成spill/retile/reorder repair。planning facts由对应Q50 query拥有，actual IR只做
+communication。allocator只解fixed problem，不能生成spill/retile/reorder repair。planning facts由对应planning query拥有，actual IR只做
 selected parity，不能把late result返回search形成第二控制线。
 
 ### 3.5 Dormant mechanism迁移边界
 
-source未进入CMake只表示它不属于current build，不能据此把仍被Q50合同需要的算法与证明一起删除。当前明确分类如下；
-这些文件不得以旧public pass、旧`Comm*` op或独立selector形式重新激活，完成承接实现与替代测试后必须删除旧文件：
+source未进入CMake只表示它不属于current build，不能据此证明其中没有尚需迁移的算法、proof、diagnostic或test witness。
+处理dormant source时逐文件记录current replacement、production caller、direct test和删除理由；仍需要的能力先迁入active owner并
+受测，随后删除旧header/source/CMake/test。不得整体恢复旧public pass、旧operation、selector或compatibility wrapper。
 
-| 当前dormant source/test | 仍需保留的能力 | 处置与删除门禁 |
-| --- | --- | --- |
-旧`ReadyOrder`、`WorkerPlacement`、`FixedSlotPipeline`、attention/decode sources及专属tests已从active registration删除，但Q50.J/K/S
-重审已经确认多项算法/proof/witness尚未由current owner承接。`current dormant表为空`只说明CMake truth，不是能力迁移证明；缺失能力
-由`tasks/plans/physical-dataflow-synthesis.md`的donor矩阵逐项迁入Q50.S/J/K后，旧删除才算合理。不得因source已不存在而把任务标完成，
-也不得整体恢复旧public pass/selector。
-
-`Transforms/SPMD/XlaSpmd*.cpp`不是dormant host library source：它们由
-`tools/build_xla_spmd_partitioner_helper.py`的exact manifest复制到显式external helper build；不得同时加入host CMake target。
-
-Q50.S current有部分attention/decode proof和builder可作donor，但单一attention op、graph-level FA/FD classifier、coupled-state query、
-planning description、complete-candidate Linalg decomposition与全部旧witness仍按Q50.S gate重新证明；旧source删除不能代签，current owner也
-不得保留whole-program alternative clone、attention algorithm search axis或decode-only physical gate。
-
-`tools/check_source_organization.py`当前只对少数目录闭合active/dormant集合；2026-08-17 follow-up review确认其余目录仍可能存在
-既未进入CMake、也未进入本表却获得green结果的source/test island。Q64
-`tasks/plans/source-registration-truth-closure.md`负责把filesystem、实际CMake target/test graph与本表扩为repo-wide唯一事实源。
-Q64完成前，各current任务必须同批删除或注册自己触及的旧source/test，不能把checker green当作全仓闭合证明。
-
-本表列出的dormant文件只作为带current task owner、独有能力和删除门禁的最小政策allowlist。新增dormant source必须先在本节说明
-承接合同和删除门禁，不能通过扩allowlist逃避build/test职责；读取implementation symbol/source marker来保活未注册实现的CTest
-一律不是合法registration，Q51.Core负责删除当前optimization comparison实例。
-
+由external helper manifest显式复制和独立构建的source不同时加入host target。Organization checker从filesystem、CMake及
+registered test graph闭合active truth；policy allowlist只保留无法自动推导且有明确owner的例外，不能通过source marker或读取
+implementation文本的测试为未注册实现制造“green”状态。
 ## 4. Target、runtime与model organization
 
 ### 4.1 Target conversion/writing
@@ -185,7 +166,7 @@ transaction bridge，不能进入package/runtime ABI文档或public header。
 
 ### 4.2 Package/runtime
 
-current package实现已按Q56依赖方向收敛到中立`Package`目录，compiler不依赖BoardRuntime：
+current package实现已按package/runtime依赖方向收敛到中立`Package`目录，compiler不依赖BoardRuntime：
 
 - 中立的package support library拥有`ExecutablePackage`、PackageManifest typed model与canonical spelling、JSON parser/serializer、
   semantic verifier以及module/data readback；
@@ -227,7 +208,7 @@ include formal/bulk model来构造静态program data。Package verifier只验证
 model不依赖package parser来重建compiler owners，也不共享vendor runtime mutable state。SystemC bridge隔离RTTI/exception ABI
 差异；LLVM/MLIR-facing TUs维持仓库编译选项。formal与bulk libraries可以依赖Target typed facts和physical codec，但
 `WaferTarget`基础library不得反向包含formal arithmetic、model capability registry或qualification implementation。model从decoded
-TargetCall直接进入family-specific API；不建立`ResolvedNumericCommand`一类跨library join object。Q62同批删除
+TargetCall直接进入family-specific API；不建立`ResolvedNumericCommand`一类跨library join object。target layering同时删除
 `WaferTargetModelCore -> WaferCompiler`反向link；managed dependency record/source-tree/license/loaded-object conformance迁到optional
 bootstrap/qualification/tool test support，不作为always-built`WaferTarget` public execution API。
 
@@ -259,9 +240,9 @@ Driver / Runtime / Model
 明确列出受控source，不依赖glob保住已经删除的文件；删除source时同批删除target/source list和only-for-it test。
 source-organization gate还必须禁止Compiler search/Analysis/Conversion include formal/bulk model header，并确认退役numeric
 umbrella/profile/pattern/resolver没有compatibility header、typedef或旧source残留。
-Q63禁止runtime/model为复用NCC completion classification依赖WaferIR：current model只消费pure target command completion，
-IR adapter与analysis留在WaferIR/WaferAnalysis。既有Model→Compiler宽link由model invocation/JIT与numeric层造成，按Q62统一拆除；
-Q64把这些link/include规则与repo-wide source/test registration一起纳入实际CMake graph检查。
+Target/IR layering禁止runtime/model为复用NCC completion classification依赖WaferIR：current model只消费pure target command completion，
+IR adapter与analysis留在WaferIR/WaferAnalysis。既有Model→Compiler宽link由model invocation/JIT与numeric层造成，按其真实owner拆除；
+Source organization checker把这些link/include规则与repo-wide source/test registration一起纳入实际CMake graph检查。
 
 独立host build/test按 `nproc`并行。若一个聚合library使无关功能被可选依赖拖住，应拆分target或用明确feature boundary，
 但不能复制接口实现。
@@ -269,7 +250,7 @@ Q64把这些link/include规则与repo-wide source/test registration一起纳入�
 ### 5.1 Driver library、产品工具与安装
 
 request/result/commit语义由01和15拥有，failure taxonomy由19拥有，frontend输入由02拥有；本节只规定它们如何落到library、
-tool与CMake依赖边界。Q59的完成状态和验证证据只看`tasks/progress.md`及其实施计划；这里记录稳定library拓扑：
+tool与CMake依赖边界。这里仅记录稳定library拓扑：
 
 - 唯一source-to-package entry是`wafer::compiler::compileProgram`，返回`llvm::Expected<CompilationResult>`：primary product为
   publication前严格绑定、publication成功后才取得committed root identity的move-only package-layer `ExecutablePackage`；
@@ -280,14 +261,14 @@ tool与CMake依赖边界。Q59的完成状态和验证证据只看`tasks/progres
   internal inspection consumer（`wafer-compile-test`的target-model gate与compiler IR dump）消费，不进入production CLI的
   post-commit控制流；production `wafer-compile`对`--target-model*`/`--dump-compiler-ir`及旧output flag报unknown
   argument；
-- source verifier和产品Python adapter复用Frontend ingestion实现（Q60继续）；`wafer-opt`保持IR development component；
+- source verifier和产品Python adapter复用Frontend ingestion实现；`wafer-opt`保持IR development component；
 - external tool discovery只有一个resolver（`resolveDriverToolFacts`）：SPMD helper、device linker script、CRT/ABI资源按
   executable-relative install位置发现，`python3`/`clang++`按PATH解析，pinned TX8依赖根由`TX8_DEPS_ROOT`显式配置，全部facts
   经existence/type/executability验证；不形成environment bag，不烘焙source/build tree绝对路径。
 
 安装闭包为可运行的production `wafer-compile`+helper+device linker script+CRT/ABI资源，且仅在importer、SPMD partitioner依赖与
 configured helper同时存在时注册install规则；feature-off install tree不安装运行即失败的production compiler
-（`wafer-compile-install-feature-off.test`钉住）。Q60再安装产品Python adapter和`wafer-verify-program`。C++ library/header是
+（`wafer-compile-install-feature-off.test`钉住）。产品配置再安装产品Python adapter和`wafer-verify-program`。C++ library/header是
 repo-current build component，不承诺SDK、CMake package export或外部consumer link compatibility。
 
 这一边界不承诺稳定C ABI、plugin SDK、通用compiler session或用户可拼pass pipeline。Wafer-owned CLI/current API原位替换，
@@ -325,20 +306,16 @@ source。删除功能时删除对应only-purpose fixture/golden/catalog；通用
 `rank`。当前source合同不得再出现旧execution-domain API、旧manifest version/reader、late selector、按模型/shape/name
 恢复语义的matcher、拥有独立selection/public控制面的algorithm pass或已删除board tooling入口。
 
-## 8. Q49.P、Q50、Q51–Q53 与产品入口 completion boundary
+## 8. Physical-Dataflow Source Cutover Boundary
 
-源码组织收口横跨Q49.P、Q50.0/Q50.S/Q50.A–Q50.K及Q51–Q53；当前状态只看`tasks/progress.md`。相关源码删除必须满足：
+源码组织只证明实现owner、build registration和test registration，不代签算法、IR或端到端完成。Physical-dataflow迁移必须满足：
 
-- physical-dataflow selection成为唯一decision owner，public optimization policy只为`search|none`，`none`只提供同pipeline baseline；
-- old/new双interface、compatibility wrapper、unused public pass和only-for-them tests全部删除；
-- Q58使large payload通过`ProgramDataSource`、checked `ProgramDataRange`和`ProgramDataHandoff`跨frontend、SPMD helper与CardExecutable同事务传递，
-  不以整树复制维持lifetime；
-- Q59使compiler library primary result、package commit、CLI exit与install tree属于同一owner；Q60产品adapter和portable
-  StableHLO ingestion复用唯一Frontend verifier与CompilationRequest；
-- Q50.0、Q50.S和Q50.A–Q50.K各自能为其负责的旧能力指向current实现、actual witness和替代测试，并独立提交；
-- current TensorProgram→CardModule/TileRegion/Instr→CardExecutable→ExecutablePackage→no-card/model纵向由Q49.P/Q51 fresh通过；
-- generic DAG、HF prefill/decode和Llama workload由Q53完整达到board-ready；
-- Q61在主search闭合后用完整程序验证IR/search/data/package规模，不把单block证据当成完整模型；
-- 真实板端matched A/B完成后Q53才满足最终done gate。
-
-组织检查或编译成功不能代签后两项。
+- baseline和search分别只有一个policy-specific controller与Card/Tile materializer；允许共享的窄leaf位于其真实IR或
+  lowering owner中，不以mode、nullable callback或plan variant形成shared complete facade；
+- 每个IR transformation只有一个active实现，named pipeline、focused工具和production driver调用同一builder或conversion；
+- 旧producer、consumer、public header、CMake source、test registration和only-purpose fixture在同一cutover删除，不保留
+  compatibility wrapper、fallback或读取源码marker的伪合同；
+- dormant source中的独有algorithm、proof、diagnostic和test witness先映射到current owner、production caller和direct test，
+  再决定迁移或删除；未进CMake不等于无能力；
+- organization checker从filesystem、CMake和registered test graph取得active truth，只维护不能自动推导的policy例外；
+  checker通过、单个target编译或文件删除都不能证明current source-to-package纵向完成。

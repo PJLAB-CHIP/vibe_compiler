@@ -23,19 +23,19 @@
 
 - 现象：`search`与`none`在所有workload上产生相同IR/package，新增搜索代码从未影响winner。
 - 根因：driver解析了optimization policy，却在executable search边界丢弃或绕过它；测试反而把相同结果锁成合同。
-- 修复模式：`search`与`none`是独立controller，只共享policy-free facts、complete-assignment schema、candidate materializer和actual
-  admission；两者从同一source分别启动独立transaction，互不调用或fallback。
+- 修复模式：`search`与`none`是独立controller并拥有不同complete schema、materializer、preparation和verifier；只共享policy-free基础facts
+  及无policy lowering/SPM/DDR/target leaf。两者从同一source分别启动独立transaction，互不调用或fallback。
 - 防复发：test-only call/work witness分别证明None的search-session为零、Search的baseline-controller为零；partial state不构造IR，
-  每个complete candidate Q50.0一次，winner不重建且publication一次。普通compile不创建统计对象。不能要求两者永远产生相同digest。
+  每个complete candidate调用actual memory/target gate一次，winner不重建且publication一次。普通compile不创建统计对象。不能要求两者永远产生相同digest。
 
 ## 物化partial state或重复物化同一candidate会导致时间与RSS失控
 
-- 现象：model-scale图对未闭合prefix就clone/lower，或者同一complete assignment先probe、再Q50.0、winner再重建；大量actual owners同时
+- 现象：model-scale图对未闭合prefix就clone/lower，或者同一complete assignment先probe、再actual memory/target gate、winner再重建；大量actual owners同时
   存活，编译时间和RSS失控。
 - 根因：没有区分partial state与complete candidate，也没有候选事务和move-only accepted owner。
-- 修复模式：partial state只运行typed domain/query；每个complete assignment实际化一次并运行Q50.0，因为SPM legality只能由actual IR
+- 修复模式：partial state只运行typed domain/query；每个complete assignment实际化一次并运行actual memory/target gate，因为SPM legality只能由actual IR
   决定。rejected/loser owner立即销毁，session只保留必要summary和一个retained incumbent，winner原样发布。
-- 防复发：显式计数证明`completeCandidates == CardModules == Q50.0 invocations`、winner rematerialization为零，并记录time-to-first-
+- 防复发：显式计数证明`completeCandidates == CardModules == actualGateInvocations`、winner rematerialization为零，并记录time-to-first-
   accepted、wall和RSS；不能用低candidate count掩盖同candidate重建或16 Tile重复整图分析。
 
 ## Late exact failure不能触发隐藏repair
@@ -49,13 +49,14 @@
 
 ## 任务顺序不能让query输入或mechanism consumer凭空出现
 
-- 现象：设计把Q50.A排在Q50.B之前，却声明A输入是`SpatialAssignment`；或者把Q51.Core拖到全部Q50轴之后，使中间交付的
+- 现象：设计把exact-demand analysis排在closed spatial assignment producer之前；或者把search controller foundation拖到全部physical axes之后，使中间交付的
   search-only domains没有production consumer。线性任务名看似无环，实际API producer/consumer断裂。
 - 根因：按任务编号或“先mechanism、后统一接线”排期，没有分别列出representation foundation、query、full domain、Core consumer和
   post-choice invalidation。
 - 修复模式：先交付plan component representation、structural validation和至少一个真实producer，再实现query，最后扩full domain；
-  因此spatial顺序是`B-foundation → A → B-full`。S/B-full形成首批真实domain后建立非mock Core foundation，后续每轴同批扩Core；
-  K改变occurrence后严格`K → I-post-K → J-closure`。
+  因此spatial顺序是`spatial foundation → exact demand → full spatial domain`。semantic normalization和full spatial domain形成
+  首批真实输入后建立非mock search foundation，后续每轴同批扩controller；execution structure改变occurrence后严格经过
+  `execution structure → post-structure storage → schedule closure`。
 - 防复发：每个checkpoint表列出输入typed object、唯一producer、输出、首个production consumer和invalidates/re-entry；对该artifact DAG
   做拓扑检查。没有producer的input、没有consumer的mechanism、或被invalidated后仍直达下游的edge都使计划未收敛。
 
@@ -133,15 +134,17 @@
 - 修复模式：Tile entry只保证本地发起的observable/reuse/status work已收敛；CardExecutable/runtime owner另行等待16个entries与全部transport obligations。
 - 防复发：一个Tile提前返回、另一个仍有Direct-DTE/event的正例；缺失global obligations和多余cycle分别失败。
 
-## SPM packing只能求解final fixed problem
+## SPM packing只能求解actual fixed problem
 
-- 现象：allocator在capacity失败时自行缩tile或spill，或只按sum(bytes)估计而忽略lifetime/conflict/alignment。
-- 根因：把allocation quality与schedule search混合，且没有从final roots/effects形成exact conflict problem。
-- 修复模式：partial planning只用sound lower/certificate；closed plan由Q50.F构造完整roots/lifetimes/alignment/conflict problem并取得
-  validated placement或完整infeasibility proof，但不把offset写入plan。selected actual IR重建同一problem，allocator只分配offset。
-- 防复发：验证overlap clique、alias、loop-carried lifetime、async use、padding与high-water；planning/actual problem不一致或selected
-  packing失败是compiler bug，不产生IR mutation也不返回planner重选。
-
+- 现象：partial planner、footprint模型或allocator按iteration volume、operand byte sum和buffer数量提前判断fit；或者capacity失败后
+  在planner/emitter内自行retile、spill、换layout或rebuffer。
+- 根因：没有先形成包含actual allocation、layout、alias/effect、completion、lifetime和alignment的current Instr problem，
+  把性能估算、候选选择和fixed-capacity allocation混成一个owner。
+- 修复模式：partial planning中的SPM状态保持unknown；每个complete candidate实际构造Card/Tile/Instr及current owner relation，
+  唯一PlanSPMMemory/MiniMalloc只返回validated offsets或带actual conflict demand的typed capacity rejection。外层controller决定
+  是否构造下一candidate，planner和emitter不repair。
+- 防复发：用iteration-volume、operand-size和actual lifetime给出相反预测的GEMM/affine-window case，证明前两者不改变合法集合；
+  aligned/ragged actual candidate覆盖alias、async use、tail、alignment、overlap clique和offset。
 ## 资源耗尽不能伪装成exact infeasible
 
 - 现象：allocator或局部solver达到work budget、timeout或内部错误后，search把该结果缓存成capacity failure/no-good，合法的
@@ -345,17 +348,6 @@
 - 防复发：小output/大K matmul与多级projection正例证明full weight不resident；检查accumulator、chunk coverage、tail、actual loop
   cost multiplicity和source arithmetic op/dtype保持不变，不按模型名、shape或operand位置特判，也不引入numeric policy。
 
-## Iterator域体积或operand footprint都不能决定SPM合法性
-
-- 现象：GEMM的cheap model按`M*N*K*元素字节和`估算SPM，把三个二维operand误当成三个三维buffer；合法大tile被过早剪掉，
-  搜索倾向大量小wave，优化后的card-scoped执行反而没有性能收益。
-- 根因：只看到iteration domain，没有用每个operand自己的indexing map求实际window；同时用一个整体alignment掩盖了
-  per-buffer allocation事实。
-- 修复模式：删除用iteration volume或operand byte sum作capacity/refinement的控制流。indexing map只用于构造当前candidate的exact
-  operand slices；temporary、copy、staging、alias和lifetime必须在actual IR中出现，再由`PlanSPMMemory`/MiniMalloc决定legality。
-- 防复发：用iteration-volume与operand-size模型给出相反预测的GEMM/affine-window conv，证明两者都不影响candidate合法集合；actual
-  overfull/fit结果只随物化IR和MiniMalloc变化。
-
 ## Temporal reduction变换不建立数值策略
 
 - 现象（历史）：reduction分块曾引入`fastmath`、源顺序、整数overflow flag和typed comparator等额外gate，使同一个IR结构变换
@@ -401,8 +393,8 @@
   又可能形成跨Tile循环等待。
 - 根因：communication emitter自行用局部issue顺序和immediate await修补resource/deadlock，却没有统一的actual token lifetime、
   receiver FSM interval和card-scoped wait graph owner。把“立即等”写成协议虽然限制live recv为1，也会无条件丢失异步窗口。
-- 修复模式：从explicit communication identity、round、payload slice、endpoint kind和peer建立稳定message/event关系；H只发射
-  matching token，I给出source/destination/relay lifetime，J选择wait boundary并关闭plan-level 4-lane interval；Q50.0在同一actual
+- 修复模式：从explicit communication identity、round、payload slice、endpoint kind和peer建立稳定message/event关系；movement只发射
+  matching token，storage/lifetime给出source/destination/relay release，schedule选择wait boundary并关闭plan-level 4-lane interval；actual memory/target gate在同一actual
   whole-card candidate上唯一验证dynamic matching、receiver冲突和wait graph无环。matching send issue与receive preparation保持独立，只有
   completion同时依赖两者。hard constraints确实要求时可以立即wait，但不能把它设为所有endpoint默认值。
 - 防复发：多源fanin测试同时检查最大live recv不超过4、send/recv/wait dynamic exact配对、first-read/last-release、全卡无环和
@@ -430,34 +422,17 @@
 - 防复发：测试必须比较同vector不同order的actual nesting，覆盖internal producer、multi-reduction、tail、partial contribution和
   clone/remap后的order；不能只比较domain key或loop数量。任何block conversion前先验证terminator与use-def，而不是等下游assert。
 
-## Typed representation迁移不能删除layout求解算法
+## Typed API存在不能证明算法已经迁移
 
-- 现象：logical edge上的`producerLayout/consumerLayout`确实是错误identity，但修复时把仍由production candidate调用、已有package/no-card
-  证据的PBQP/Top-4 layout solver误写成“dormant”，用per-value合法layout Cartesian domain替换。新domain能表达选择，却没有旧solver的
-  跨value约束、movement/footprint cost、dominance、shared secondary、fixed-point view elimination或proposal构造能力。
-- 根因：把“旧owner和local winner必须退出”错误扩大成“owner中的算法也无需迁移”；完成门禁只检查typed field、domain enumeration和
-  direct apply，没有建立donor capability到current query/production consumer的逐项对照。
-- 修复模式：保留`(Tile,node,operand|result,index)`typed identity和primary/derived version边界；从旧实现提取仍需要的constraint graph、
-  legality、cost和deterministic solver算法，使其只返回current typed assignments/bounds，不clone/apply IR也不签发全局winner。全局选择仍归
-  Q51，selected assignment只在最终commit中apply一次。
-- 防复发：退役任何solver、planner或transform前必须列出其算法、proof、diagnostic和test witness的current owner及production caller；
-  “新domain与Cartesian reference一致”只证明表示完整，不能代替候选构造质量。旧接口可以删除，未迁算法不能靠“dormant”“local
-  winner”或测试改名直接判废。
-
-## Typed外壳存在不能证明旧算法已经迁移
-
-- 现象：Q51.Core以后多项任务以`Assignment`、`Domain::create/getFirst/getNext/contains`和direct apply为完成证据，同时删除旧
-  search、placement、layout、NoC、schedule和pipeline owner及大批semantic tests。轻量package仍能靠baseline fallback或first proposal
-  通过，掩盖Q50.F/J/K未接入、layout solver丢失和Q52无LNS等事实。
-- 根因：施工计划把“禁止旧local winner/clone owner”错误解释成“旧owner中的算法无需迁移”；checkpoint按新type、文件组织和局部unit
-  验收，没有建立旧能力到current owner、production caller和test witness的完整映射。source从CMake退出又被误当成能力已淘汰。
-- 修复模式：每次替换旧owner先列出其中独有的candidate construction、solver、proof、diagnostic和test witness；逐项标为迁移、经current
-  IR明确淘汰或仍待处理。迁移项必须有current typed API、真实production caller和下游验证；只在全部完成后删除donor。旧接口、sidecar和
-  clone路径不恢复，但算法可以重写为pure query、typed transition或一次性apply。
-- 防复发：任务完成审查同时检查定义、直接consumer、production call graph、负例与端到端输出；“有domain”“测试绿”“package生成”
-  均不能单独完成任务。任何大规模删除必须附donor-to-current能力对照；fallback、默认first point和未执行轴必须有反向测试，不能让
-  未完成路径伪装成成功。
-
+- 现象：新实现增加Assignment、Domain、typed ID和direct apply后，旧placement/layout/movement/schedule owner及semantic tests被删除；
+  轻量case仍可由first point通过，但cross-value constraint、PBQP reduction、movement elimination、NoC/alias proof或pipeline能力消失。
+- 根因：把“旧local winner和clone owner必须退出”扩大成“其中算法无需迁移”，完成评审只检查新type、枚举或package成功，
+  没有建立donor capability到current query、production caller和test witness的逐项对应。
+- 修复模式：退役前列出旧owner的candidate construction、solver、proof、diagnostic和tests，逐项标成迁入current typed
+  query/transition、由current IR明确淘汰或仍待处理。Layout等solver只返回typed proposal/bound，不clone/apply IR也不拥有winner；
+  selected assignment只在policy-specific materializer中apply一次。
+- 防复发：每项能力同时核对definition、direct consumer、production call graph、negative和actual downstream witness。
+  “有domain”“测试绿”“package生成”“source未进CMake”都不能单独证明迁移完成；旧接口可以删除，未迁算法不能被改名为dormant。
 ## Partial reduction计算结果必须显式写回destination
 
 - 现象：spatial partial contribution和最终merge的compute均存在，但TileRegion直接yield原output argument，partial SSA成为死值；只数
@@ -471,36 +446,18 @@
 - 防复发：none source-to-package检查中间DDR boundary和single-root cardinality；search定向测试检查maximal/中间cut产生不同actual
   region、内部无DDR round-trip且fanout shared producer只有一个actual version。
 
-## 零actual fusion不能证明baseline已与search policy和region资源解耦
+## Baseline既不能复用search，也不能退化成fixed-assignment validator
 
-- 现象：`none`在candidate family前提前返回且`actual_fused_edges=0`，但仍复用search candidate/domain evaluator、proposal
-  ordering和group materializer；多个独立structured root可能进入同一TileRegion，共享SPM预算、lifetime/lowering scope和失败归因。
-- 根因：把“没有执行search loop”和“没有coupled edge”当成完整解耦证明，只约束edge action，没有约束baseline调用闭包和
-  TileRegion structured-root cardinality。后端允许multi-root region只说明IR合法，不代表它适合作为canonical baseline。
-- 修复模式：baseline controller直接从typed structured/relation/target facts构造唯一方案；每个TileRegion只拥有一个structured
-  compute root及exact operand demand证明必要的non-root support operations，root cardinality由materialization relation证明；同一Tile上的其它root进入独立
-  顺序region，跨root shaped dependency显式DDR。只与search
-  共享policy-free query、complete-assignment schema和candidate materialization/Q50.0，不共享state/candidate/grouping/
-  ordering，也不调用option-domain、propagation、recursive CSP/backtracking或“只取第一个”的assignment solver。
-- 防复发：除零actual fusion和DDR movement外，测试还要检查每个baseline region的structured-root数、同Tile multi-root的region
-  数及search-policy调用计数；每个complete candidate CardModule/Q50.0各一次。只有带完整current owner relation的actual SPM
-  capacity rejection推进temporal successor，Accepted owner不重建。
-
-## 去search耦合不能把baseline退化成fixed-assignment validator
-
-- 现象：设计为了禁止`none`复用candidate/evaluator，把baseline写成只apply已选placement/temporal/buffer并验证一次；正常上游IR的
-  完整tile超出SPM时，反而没有owner继续缩tile并产出可执行结果。
-- 根因：混淆了“禁止性能候选选择”和“禁止确定性功能合法化”，把resolved assignment误当成baseline输入；只设计了单次
-  closed-coordinate query，没有定义谁遍历合法breakpoint、何时终止以及支持域内的完成保证。
-- 修复模式：`none`从未绑定物理选择的正常IR进入，由controller按semantic全序维护一个current candidate；每个candidate实际构造
-  operand/halo/result/temporary/movement/allocation/completion/lifetime并调用Q50.0一次。actual SPM rejection推进下一temporal
-  candidate，Accepted owner直接下传。不得预先生成完整placement/temporal option domain；trial不进入score、incumbent或proposal统计；
-  任一transition必须预定义、单调、
-  不分支且不回溯，旧coordinate立即销毁，避免把deterministic search换名为functional fallback。
-- 防复发：至少一个初始完整tile超SPM而较小合法tile可放下的source-to-package/no-card正例，以及最小合法tile仍超限的typed
-  negative；声明支持且baseline域存在completion时必须得到accepted executable，indeterminate必须作为compiler failure，不能
-  用“未进入search”或“没有fixed assignment”解释失败。
-
+- 现象：一种实现只在search loop前提前返回且报告零fusion，却仍复用search domain、group materializer和first-choice solver；
+  另一种实现为避免耦合，只接受预选physical assignment并验证一次，正常上游IR遇到SPM超限时无人继续功能合法化。
+- 根因：把“禁止性能候选选择”与“禁止确定性功能合法化”混淆，也把零fusion当成controller、region和resource owner隔离证明。
+- 修复模式：baseline从未绑定physical choice的TensorProgram进入，始终只有一个live deterministic candidate。它直接构造
+  per-root region、deterministic representation/movement/buffer/order/completion；同Tile多root为多个顺序region，跨root shaped
+  dependency显式materialize。每个candidate actualize一次，只有带current owner relation的actual SPM capacity rejection可推进
+  预定义、单调、不分支且不回溯的smaller temporal successor。Accepted owner直接move返回，不执行winner protocol、不重建，
+  也不运行无consumer的schedule/duration或默认trace。
+- 防复发：call graph证明baseline不include/call search domain、preparation或materializer；测试同时检查一root一region、跨root
+  carrier、initial-overfull-to-fit、minimum仍超限typed failure、candidate/actual gate一一对应、accepted rematerialization和默认trace为0。
 ## Exact矩形恢复不能把generic Presburger等价证明放在baseline热路径
 
 - 现象：即使单独观察一个logical shard pair query，CPU仍可长时间停在`getExactStaticRectangularImage`后的
@@ -548,12 +505,12 @@
   对当前candidate一次性物化typed demand recipe要求的operation和endpoint，不建立公共SSA closure或materialized-IR cache。16个Tile实际构造可
   bounded并发并按Tile ID稳定归并，但并发不是work消重机制。
 - 防复发：显式test work counts检查relation construction、非空value/Tile demand、physical fragment和candidate Tile entry；每个
-  candidate CardModule/Q50.0各一次，winner不重建。测试必须包含16 Tile demand不同的fanin/fanout，证明不是16次完整DAG walk。Q51 partial
+  candidate CardModule/actual memory/target gate各一次，winner不重建。测试必须包含16 Tile demand不同的fanin/fanout，证明不是16次完整DAG walk。search partial
   state只共享immutable analysis，不能按candidate/Tile缓存actual IR。
 
 ## exact-empty producer不能被support graph重建重新拉入
 
-- 现象：fresh FP16 LLaMA baseline中，一个consumer operand由两个structured producer经`extract_slice`/`insert_slice`组合；Q50.A
+- 现象：fresh FP16 LLaMA baseline中，一个consumer operand由两个structured producer经`extract_slice`/`insert_slice`组合；exact-demand analysis
   已证明其中一个producer对当前destination的demand为空，physical strategy没有为它生成fragment，但consumer侧递归重建support
   graph时仍遇到该producer并报“unassembled structured producer”。
 - 根因：logical exact demand、root scope选择和support reconstruction由三条独立路径恢复。空需求只在per-edge carrier阶段被丢弃，
@@ -565,26 +522,13 @@
 - 防复发：穷举tiny shape的insert overwrite需求子集，并覆盖multi-producer、empty branch、Peer/RegionCut混合与模型级baseline。
   删除无条件closure、support clone/rebuild/replay；unsupported relation在mutation前typed fail closed，不能退回复制全部operand。
 
-## 单状态baseline不得套用多候选winner协议或accepted后旁路工作
-
-- 现象：唯一exact-verified Llama baseline在selection后又完整执行一次CardModule、16-Tile Instr、SPM、DDR和resource verification，额外消耗
-  数分钟；accepted后还构造并丢弃schedule/duration结果，普通compile无条件生成Tile IR trace，但这些都不改变产物语义。
-- 根因：为search cohort控制峰值内存而清空每个accepted candidate Tile module的策略，无条件复用到了只有一个semantic state的
-  `none` controller；同时把未消费分析和调试输出误放在producer主路径，而不是由真实consumer显式请求。
-- 修复模式：`none`保留已经通过全部exact verification且已清除query-local source relation的唯一executable，直接move返回；
-  未被输出合同消费的schedule/duration工作删除，可选trace在请求方惰性生成。未来search同样让accepted executable直接进入incumbent，
-  winner只move所有权，不重建或重编译，
-  不能反向规定baseline控制流。
-- 防复发：none定向测试断言每个candidate CardModule/Q50.0各一次、accepted executable rematerialization为零、默认trace为零；
-  模型规模检查work count和结果返回前的stage计数，不运行旧search或历史winner行为作对照。
-
 ## 读取源码marker的测试会把退役实现伪装成合同
 
 - 现象：source或test没有进入active CMake/lit/CTest执行图，但一个已注册测试逐文件读取其文本并断言旧symbol marker存在，整体仍显示green。
 - 根因：把“仓库里还有某段源码”当成“能力已被编译并经过行为验证”，source inventory又只检查已知子集，形成互相放行的假闭环。
 - 修复模式：组织检查以filesystem、CMake source、unit/lit/CTest registration和明确的current-task dormant owner做双向集合闭合；
   能力测试只验证编译后的接口和行为。退役实现独有能力先逐项列出proof、materializer、diagnostic和negative witness，迁入active
-  owner并受测，再删除源码和marker断言；“未注册”只能证明当前没有执行，不能证明源码没有独有能力。Q50.S曾发现未注册的
+  owner并受测，再删除源码和marker断言；“未注册”只能证明当前没有执行，不能证明源码没有独有能力。attention normalization曾发现未注册的
   attention alternative仍独有current-SSA资格证明和online/split actual-root构造，正确顺序是迁入`Planning/Search`后再删除旧源。
 - 防复发：新增源码或测试时，checker fixture分别覆盖unregistered source、unregistered test、stale registration和无owner dormant
   四类negative；禁止用源码文本marker作为build/behavior contract。
@@ -649,7 +593,7 @@
 
 ## Function-boundary bufferization必须早于TileRegion relation listener
 
-- 现象：selected multi-root Region在Tensor/TileRegion阶段通过verifier，但进入Q50.0后报structured buffer relation不属于current IR；
+- 现象：selected multi-root Region在Tensor/TileRegion阶段通过verifier，但进入actual memory/target gate后报structured buffer relation不属于current IR；
   单root canonical路径可能因bufferization形状恰好稳定而掩盖问题。
 - 根因：TileRegion-to-Instr先用listener把relation重绑到Instr SSA，随后function-boundary One-Shot Bufferize又改写function参数和
   boundary SSA；后一个pass不使用该listener，已重绑的relation再次失效。
@@ -700,7 +644,7 @@
 
 ## StringRef视图必须绑定在SmallString最后一次修改之后
 
-- 现象：Q58 TensorPayloadResolver持有指向`SmallString tensorProgram`的StringRef，构造时该path尚未append
+- 现象：payload resolver持有指向`SmallString tensorProgram`的StringRef，构造时该path尚未append
   "tensor-program"子目录；后续append触发缓冲重分配，resolver仍指向旧缓冲，stat出transactionRoot而非
   tensor-program目录，constants存在性检查误报MissingPayload且找不到新物化的文件。
 - 根因：可修改的SmallString在视图（StringRef成员）建立之后继续append；SmallString内联缓冲与堆缓冲的
@@ -753,41 +697,32 @@
   timing表stage改名、`emitOpError`输出丢失`[0]`、wafer-opt pipeline要求explicit mesh shape、XLA helper
   INVALID_ARGUMENT、`buildCardExecutable`多出`ProgramDataHandoff&`形参后SystemC树编译失败、以及
   `StructuredDAGPlacementEnumerationTest.MultiOutputFanout...`单测100% CPU死循环。
-- 根因：这些测试不属于默认lit/ctest路径，Q49-Q55多次refactor后无人刷新期望；真实行为变化与测试更新在不同commit，
+- 根因：这些测试不属于默认lit/ctest路径，repeated physical-dataflow refactors多次refactor后无人刷新期望；真实行为变化与测试更新在不同commit，
   且部分期望（如`emitOpError`带operand、旧package source copy）对应的是已经退役的表示。
 - 修复模式：逐项确认行为变化commit与测试最后touch的先后（`git merge-base --is-ancestor`），结合pinned LLVM/MLIR源码
-  判断哪个是current合同；Q56只修自己造成的失败和本批已触及文件的陈旧期望，其余登记为独立后续任务。
+  判断哪个是current合同；当前修改只修自己造成的失败和本批已触及文件的陈旧期望，其余登记为独立后续任务。
 - 防复发：改production行为时搜索所有test目录（含非默认gate），同步更新期望；"该目录不在CI"不能作为让测试红的理由；
   未知枚举case先用bounded小范围filter定位；已经定性为旧实现状态爆炸的case直接从当前批次排除，不再用长时间单跑确认。
 
-## 全量单测二进制中的单个case可能100% CPU死循环
+## 全量单测中的单个枚举case可能耗尽CPU
 
-- 现象：`WaferUnitTests`全量跑在`StructuredDAGPlacementEnumerationTest.MultiOutputFanoutCanPlaceBranchesOnDifferentDestinationGroups`
-  卡死（两个遗留进程各烧CPU 1.5-2小时）；gtest stdout块缓冲下无输出，看起来像整批挂起。
-- 根因：placement枚举在该case上状态空间爆炸，100% CPU自旋；测试文件与枚举实现均在Q56改动范围外（最后一次touch是
-  前置refactor commit）。
-- 修复模式：已有bounded诊断已经定位到旧placement枚举后，不再反复单跑长case；普通全量验证显式排除它。Q51.Core删除旧
-  search/test owner，Q50.B以带状态规模上界的tiny reference enumerator重建spatial domain，Q52只profile完整new chain。
-- 防复发：全量gtest运行前排除已知旧爆炸suite；新增枚举测试必须自带状态规模上界或明确标注预期case数，超界诊断使用更小的
-  同构fixture而不是继续烧原始长case。
-- 2026-08-16补充（Q50.A验证）：同一suite还有两个同类病理长跑case——`DiamondFaninRetainsAnExpressibleTwoOperandBoundary`
-  与`ReductionDataTransitionKeepsExactFragmentsAndLocalAlternatives`，1800s内不完成（状态数100→10,000→1M逐节点膨胀，
-  每状态`extendState`含120次pairwise拓扑最短路径查询约260µs，与Q50.A改动无关——相同状态数、相同legality结果已在
-  HEAD代码路径上逐项核对）。全量filter需一并排除这三个case；`ThreeStageChain...`与`CompletePlacementOrder...`
-  可正常完成。旧case随Q51.Core删除；需要保留的domain witness迁到Q50.B tiny oracle，Q52不以旧实现耗时作profile基准。
+- 现象：聚合测试长时间无输出且一个或多个进程持续100% CPU；单独列举case后可定位到placement/search枚举fixture。
+- 根因：test domain没有明确状态规模，逐节点extension、pairwise topology query或Cartesian state使工作指数增长；stdout缓冲又让
+  整批看起来像hang。旧case未进入默认gate时更容易长期失察。
+- 修复模式：先用test listing、filter和timeout定位具体case，再以更小同构fixture、独立reference enumerator或显式状态上界保留
+  semantic witness；已退役枚举实现和only-purpose tests随owner删除，不反复延长timeout。
+- 防复发：新增枚举测试声明domain size或预期state数，真实规模production coverage与tiny exhaustive oracle分开；
+  聚合suite运行前确认filter实际匹配并报告被排除的已知重型case。
+## Public signature变更必须重编所有active配置
 
-## 跨tree调用点没有随signature变更同步编译
-
-- 现象：Q58给`buildCardExecutable`加`ProgramDataHandoff&`形参后，q55主树编译通过，但SystemC树
-  （`build/q54-fresh-model`）的三个integration test调用点仍传7参，该树在此前从未重编过这些TU。
-- 根因：多个configured build tree共享同一source；增量验证只跑主树时其它树的编译错误不可见。
-- 修复模式：改公共API形参后，所有仍被任务引用的configured tree都要fresh build；调用点按现有模式补齐
-  default-constructed handoff。
-- 防复发：公共API变更的验证清单里显式列出所有active build tree；提交证据注明哪些tree实际重编过。
-
+- 现象：主configured build编译通过，另一个feature-on、model、runtime或board配置仍用旧参数调用同一public API。
+- 根因：多个build tree共享source；只增量构建当前主树不会触达其它配置独有的translation units。
+- 修复模式：修改public header、函数签名或跨library返回类型后，从current CMake/test ownership列出全部active consumer配置，
+  分别重新configure或fresh build受影响targets，并检查public header/link smoke。
+- 防复发：完成证据记录实际重编的配置和consumer，不写死历史build目录；一个tree通过不能代签其它feature组合。
 ## StringRef::slice第二个参数是exclusive end不是length
 
-- 现象：Q56 program-data canonical verification的零padding检查在负例上静默通过——96字节文件中[80,96)非零，
+- 现象：program-data canonical verification的零padding检查在负例上静默通过——96字节文件中[80,96)非零，
   检查却返回"全零"；该检查写成`content.slice(offset + checked, chunk)`。
 - 根因：本仓库pinned LLVM的`llvm::StringRef::slice(Start, End)`第二参数是exclusive end并在内部clamp；
   按length传入时`End < Start`被clamp成空区间，`find_first_not_of`对空串恒为npos，检查退化为恒真。
@@ -874,13 +809,13 @@
 ## 局部capacity probe与complete-candidate gate会产生不同scope和witness
 
 - 现象：baseline先用root/region/function级scratch IR判断SPM，再重新构造完整CardModule；局部路径可能报告fit或要求扩大scope，
-  最终Q50.0却在函数级packing失败。relation remap还可能在两次构造间省略或保留不同owner，使同一allocation得到不同归因。
+  最终actual memory/target gate却在函数级packing失败。relation remap还可能在两次构造间省略或保留不同owner，使同一allocation得到不同归因。
 - 根因：把“调用相同pass/checker”误当成消费同一actual IR和同一current relation certificate。只要第一次IR被销毁、第二次重建，
   operation lifetime、buffer relation、region boundary和packing scope就已经是两个事实源；继续增加scope escalation只会扩张平行链。
-- 修复模式：删除baseline的root/Tile/function局部capacity probe。每个complete candidate只产生一份完整CardModule/Q50.0；actual
+- 修复模式：删除baseline的root/Tile/function局部capacity probe。每个complete candidate只产生一份完整CardModule/actual memory/target gate；actual
   planner demand通过candidate transaction的result/operand/output/movement/scratch relations归因，缺owner就是contract failure，不能按
   region恰有一个root猜owner。
-- 防复发：显式test work counts证明`completeCandidates == CardModules == Q50.0 invocations`、accepted rematerialization为零；测试扰动
+- 防复发：显式test work counts证明`completeCandidates == CardModules == actualGateInvocations`、accepted rematerialization为零；测试扰动
   每类relation并检查所有actual SPM demands有owner，不以Location、空relation或diagnostic字符串证明一致性。
 
 ## 发布点之后不能再运行会翻转事务结果的validation
@@ -894,30 +829,17 @@
 - 防复发：failure injection必须覆盖最后一次发布前后、installed readback和进程/第二产品边界；同时断言返回status、ordinary/profile
   可见性和staging残留，不能只测第二次rename正常返回失败时的best-effort rollback。
 
-## wafer-compile-card-baseline CROSS case在baseline materialization验证中长时间挂起（已修复 2026-08-17）
+## Per-strategy whole-root walk会把materialization验证放大成高阶工作
 
-- 现象：`test/Tools/wafer-compile-card-baseline.test`的CROSS（16-Tile transpose support chain，256个peer
-  fragment）在`source-to-tensor-program`后无输出、CPU 100%数分钟以上（90s/280s timeout均杀不掉自然结束）；
-  CHAIN与GEMM case正常（~1-4s）。直接gdb启动+对inferior发SIGINT采样：主线程在
-  `synthesizeDeterministicBaseline → validateSelectedTileLayouts → rootContainsNodeLayout →
-  operationUsesStructuredNode → collectStructuredNodesUsedByOperation → shareStructuredBufferStorage →
-  collectStorageRoots`区域（StructuredBufferRelations.cpp），两次采样位置不同说明在推进而非死循环。
-- 根因：`rootContainsNodeLayout`对每个strategy在整棵tile root上walk，每个op×每个buffer relation都从零
-  递归`collectStorageRoots`（fresh visited set，无memo）；CROSS的16 destination × 16 owner peer fragment
-  使指令模块膨胀，O(ops×strategies×walk)放大到分钟级。该验证链是旧refactor遗留
-  （`git log -S validateSelectedTileLayouts` → ab8bf482/318bba75，早于Q50.A）。
-- 证据：`git checkout 22b3fd12`（Q50.A前）与HEAD（92abdf29）均复现同一挂起；Q50.A review-gap批次与
-  Gap 1 per-destination改动无关。Tools lit不在默认lit/ctest路径（见“非默认gate的lit期望静默过时”条），
-  该测试长期无人执行，属Q49.P baseline functional closure域。
-- 修复：`StructuredBufferRelations`新增query-local `StorageRootMemo`（每value一个heap-owned
-  `DenseSet`，同一IR epoch内共享），`validateSelectedTileLayouts`等每root一个memo贯穿调用链，把
-  per-op×per-relation的storage-root walk摊销为O(1)。注意：memo内层set必须heap-owned（`unique_ptr`），
-  否则外层map rehash会悬空已返回的引用。CROSS由分钟级降到~34s整套lit。
-- 修复模式：排查这类“编译挂起”时先在同一二进制内用阶段探针二分，再用gdb从启动开始跑inferior并向其
-  进程发SIGINT采样栈（attach被ptrace禁止，但gdb启动inferior可行）。
-- 防复发：Tools目录的lit/ctest在声称gate通过前要单独执行并带wall-time上限；materialization验证链的
-  每op递归walk需要memo化或按relation反向索引，避免O(N²)回归。
-
+- 现象：chain和GEMM很快，但16-Tile transpose/fanout在materialization verification中长期占满CPU；采样栈持续位于
+  root membership、buffer relation和storage-root递归，说明是高阶重复工作而非单点死循环。
+- 根因：对每个strategy、operation和buffer relation从零遍历完整Tile root并重建visited set，fragment数量、Tile数和IR
+  膨胀相乘。非默认重型gate长期未执行又掩盖了回归。
+- 修复模式：先用stage timing和中断采样定位首次重复walk，再把同一immutable IR epoch的storage-root或relation查询改为
+  request-local memo/反向索引；memo value必须有稳定owner，不能返回会因map/vector扩容悬空的引用。更优先的是删除上游
+  重复materialization，不能仅用cache掩盖错误construction。
+- 防复发：真实规模fanout/transpose记录relation construction、非空fragment、root walk和candidate次数；受影响非默认gate
+  必须实际执行并带合理timeout。
 ## operation count不能作为IR mutation snapshot
 
 - 现象：analysis/query缓存借入一个FuncOp后只记录顶层operation数量；原位修改nested op的attribute、operand或result type时，
@@ -952,63 +874,35 @@
 - 防复发：production gate至少包含一个strided support view和一个overwrite产生empty destinations的multi-piece relation，并证明
   它们进入完整CardModule/CardExecutable gate；只测whole-edge query或只用连续concat piece不能覆盖这类重复恢复缺陷。
 
-## SPMD card-level 合同切换后未跟上的 stale 测试（2026-08-17 修复）
+## Pipeline合同切换必须同步非默认测试
 
-- 现象：Tools/Runtime lit 4 个失败，全部在 Q49.P 之前即存在（2026-08-11 `76f68e29` 把 SPMD 层从 16-rank 改成
-  card-level 后测试未同步）：
-  1. `wafer-compile-structured-tensor-program.test`：用 `CPU_NUM_DEVICES=16` + `--emit-sharded-program` 采 16-device
-     sharding 程序喂给 `num_partitions=1` 的 card-level helper，撞 pinned XLA partitioner 未初始化内存 bug（`%pad`
-     垃圾 shape 且每次运行值不同，非确定性）；03 合同已废止"partition 数 = Tile 数"旧语义。
-  2. `wafer-compile-stablehlo-sharding-propagation.test`：`wafer-materialize-execution-mesh` 的 shape 在 76f68e29
-     改为必须显式传（旧 `--default-tile-count=16` fallback 已删），测试 pipeline 没传 → `logical mesh shape must be
-     explicit`。
-  3. `wafer-run.test`：manifest 读取失败消息已改（`failed to open package manifest member`），FileCheck 期望串过期。
-  4. `wafer-compile-spmd-partition.test`：reference capture 是 f32，target 明确拒绝 f32 GEMM
-     （`unsupported_target_instr: GEMM does not support f32`），连带 search 在 selected-buffer-materialization 报
-     indeterminate；且 manifest `inputs[].role_index` 语义已改（input 域内从 0 编号，不再沿用 parameter 的连续编号）。
-- 修复模式：reference capture 模块和输入按 dtype 政策改 f16（`wafer_pytorch_xla_capture.py` 的
-  `_make_reference_matmul_module`/`emit_reference_stablehlo_program`），contract mock 同步补 `float16`；
-  source-to-package 测试切 `--optimization-policy=none`，只验证当前baseline source-to-package合同，不附带运行或对照旧search；
-  mesh pipeline 补 `{shape="1"}`；manifest 断言同步 current 合同。
-- 防复发：target 合同里明确不支持的组合（f32 GEMM）先写 verifier 拒绝，再把功能纵向/qualification 默认 dtype 保持在
-  f16/bf16（见仓库板测 dtype 规则）；改 SPMD/partition 边界合同时，同批 grep 所有消费旧 CLI/字段/消息的 lit 测试。
-  外部 helper 出现非确定性垃圾 shape 时先查"喂给 helper 的输入是否符合当前合同"，不要先怀疑 helper 二进制。
+- 现象：默认suite全绿，但Tools/Runtime等非默认测试仍使用旧partition domain、缺失的新required option、过期diagnostic、
+  旧manifest field或target不支持的dtype；后来集中运行时出现多个看似无关失败。
+- 根因：接口迁移只更新了默认注册面，没有从CMake/lit/CTest事实枚举全部consumer；旧fixture成功条件还混入已退役
+  search、schema或target语义。
+- 修复模式：改变SPMD、mesh、source、package或dtype边界时，同批查找所有CLI、field、diagnostic和fixture consumer，
+  按current contract更新或删除only-for-old-path测试。target明确不支持的组合由verifier拒绝，普通纵向使用current默认dtype。
+- 防复发：source organization gate同时比较filesystem、CMake和test registration；收尾明确列出实际执行的default与non-default
+  suites及skip/unsupported。外部helper产生异常前先验证输入是否满足current contract。
+## 给未进入active target的源码插桩不会改变二进制
 
-## 给 LLVM_OPTIONAL_SOURCES 里的退役源码插桩不产生任何效果
-
-- 现象：往一个只列在`LLVM_OPTIONAL_SOURCES`、未进入active target的旧lowering source加调试打印后，`cmake --build`报告
-  "ninja: no work to do"，
-  二进制里 grep 不到新字符串，运行输出也没有。
-- 根因：该文件在 CMakeLists 的 `LLVM_OPTIONAL_SOURCES` 列表而非 `add_mlir_library` 主源列表——它是退役源码，不属于
-  active build；同名门禁逻辑已由 `CardExecutableLowering.cpp`/`CompileCardExecutableLLVMModules.cpp` 承接。插桩前没核对
-  对象文件是否存在。
-- 防复发：改代码前先确认文件在 active build 里（`ninja -C build/… -t query lib/libWaferCompiler.a | grep <文件名>` 或
-  `ar t lib/libWaferCompiler.a`）；"ninja: no work to do" + 符号不在二进制 = 源码不在构建图，立即改查 active 实现。
+- 现象：修改或插桩源码后构建显示无工作，二进制中没有新symbol/string，运行行为也不变。
+- 根因：文件只在`LLVM_OPTIONAL_SOURCES`、历史目录或未被目标消费的source列表中，不属于active build graph；同名能力已由
+  其它current实现拥有。
+- 修复模式：修改前从current CMake target和构建系统query确认source→object→library/executable闭包；再阅读真正active定义和直接consumer。
+- 防复发：source organization checker同时核对filesystem、CMake与tests。"no work to do"且symbol不在binary时先检查build registration，
+  不继续向dormant source追加补丁；但未注册也不能直接证明其中没有待迁移能力。
 
 
-## TileRegion 拼接与 carrier spill 陷阱（2026-08-17）
+## Block splice必须维持terminator、SSA与relation有效性
 
-- **现象**：`concatenateTileEntries` 合并 per-component entry 时，先 `erase` 了 terminator 再对
-  `Block::without_terminator()` 迭代 splice，导致最后一个 op（region）没被移动，随后
-  `entry->erase()` 把 region 连带销毁；relation buffer 悬挂后被打印成别的 op 的 SSA 值。
-- **根因**：`without_terminator()` 的范围由 terminator 定位；没有 terminator 时 `getTerminator()`
-  按 last op 计算，把 region 排除在范围外。擦除顺序必须保证块在每一步都维持合法状态：
-  先 RAUW/retarget 尾部 to_tensor 结果，再擦除「lastRegion 之后、terminator 之前」的 op，
-  最后 splice 剩余 op，`entry->erase()` 收尾。
-- **防复发**：region 块内不能引用 entry-level SSA（`memref.subview op using value defined
-  outside the region`）；合并时 region 的 dest block arg 必须保留（operand 重接共享 dest 即可），
-  不能把 block arg RAUW 成 entry-level 值。relation retarget（`relation.buffer == old`）必须在
-  每次 SSA rebase 时同步执行，否则 probe 的 strict remap fail-closed。
-- **wave-clone spill**：canonical carrier 的 RegionCut spill 插在 consumer 位置，consumer 的
-  temporal tiling 会把 spill 的 insert/store 按 wave 克隆（store 写 clone alloc、reload 读原
-  alloc），`splitAtRegionCut` 的 store/reload 区间检查正确拒绝。多波 baseline（CROSS gate）
-  在 carrier 拥有 wave-hoisted store/reload 发射前必须走 split kernel。现象特征是
-  `stores=N/loads=0` 且 store 的 dest 是同一 marked alloc 的多个 wave subview。
-- **插入覆盖的 demand 过拉**：`tensor.insert_slice`的source覆盖result区域`W`时，任意需求`D`必须精确分成
-  source的`inverse(D ∩ W)`和destination的`D − W`。后者为空时可以用未初始化tensor作为只承载source insertion的容器，但
-  initialized coverage仍只有前者映回的区域，consumer不得读取其它位置。它必须来自typed transfer recipe，不是
-  “完全覆盖 + unit stride”特判或materializer临时补丁。
-
+- 现象：合并entry或region时先删除terminator，再使用`without_terminator()`移动operations，最后一个真实operation被误当作
+  terminator排除并随source block销毁；relation随后指向悬空或已复用的SSA对象。
+- 根因：MLIR block helper的前置条件在mutation中途被破坏，同时只移动IR，没有同步current relation和isolated region argument。
+- 修复模式：在每一步保持block结构合法：先完成RAUW和typed relation retarget，再移动明确的operation range，最后处理terminator
+  与source owner。跨`IsolatedFromAbove`边界的value必须变成region operand/block argument，不能直接捕获entry-level SSA。
+- 防复发：测试覆盖last-op movement、空/单op block、region argument、multiple relation append和conversion replacement；
+  mutation后立即验证block/region与current relation，不从打印文本或地址恢复对应。
 ## 证明型 relation fast path 的元数据不能强于关系本身
 
 - **single-valued 不等于 total**：affine map按构造是函数，只证明同一输入至多一个输出；bounded source会裁剪其
@@ -1042,7 +936,7 @@
   `materializeCandidateRootTileIntoDestination`直接写DDR；完成后seal为read-only并缓存exact slice。SPM只保留当前leaf/staging，
   不再出现full-shard assembly。
 - 防复发：overfull-to-fit case检查full candidate的actual allocations/lifetimes与typed rejection owner，再检查smaller candidate被
-  actual gate接受；compiler work同时计deterministic successor和candidate CardModule/Q50.0，每个candidate恰一次。
+  actual gate接受；compiler work同时计deterministic successor和candidate CardModule/actual memory/target gate，每个candidate恰一次。
 
 ## 扩展 FuncOp 参数必须同步 argument attrs
 
@@ -1140,19 +1034,19 @@
 - 现象：旧ready-order用固定engine priority直接产出一个顺序，worker placement克隆整个Module后只产出一个lane映射，target registry再用
   稀疏pair/group row把hard legality与旧profile profitability混在一起；缺row返回Unknown，合法域与实验数据共同决定候选是否存在。
 - 根因：order、worker、completion和resource analysis各有独立owner/winner，且通过clone隔离而不是typed assignment+owned apply表达事务。
-- 修复模式：Q50.J foundation从typed S–I plan构造EventGraph/hard/disjunctive dependencies；固定K并由I重闭structure-specific
-  occurrences/storage后，J closure再惰性枚举order/worker/resource/completion。selected emitter一次写actual order/joins；resource
+- 修复模式：event/resource foundation从typed spatial-through-storage plan构造EventGraph和hard/disjunctive dependencies；固定execution
+  structure并重闭structure-specific occurrences/storage后，schedule closure再惰性枚举order/worker/resource/completion。selected emitter一次写actual order/joins；resource
   overlap只返回query-local facts，不成为local winner。
 - 防复发：tiny DAG与独立reference比较精确assignment数，mutation必须使domain失效；源码中不得恢复priority selector、worker clone、
-  capability/profitability row或默认calendar日志。Q50.K改变event structure后必须先重闭Q50.I，再重新query Q50.J。
+  capability/profitability row或默认calendar日志。execution-structure planning改变event structure后必须先重闭storage planning，再重新query schedule planning。
 
 ## Stage pipeline不能再拥有一套whole-Module candidate/clone入口
 
 - 现象：旧fixed-slot实现扫描任意loop、clone完整Module、自行推导slot/stage并返回一个local candidate；buffer count、logical edge、
   ready order和pipeline identity分散，后续只能靠ordinal/clone对应关系拼回search。
 - 根因：slot lifetime与stage event structure没有以同一selected edge scope为边界，rollback又被误写成每个mechanism各clone一次。
-- 修复模式：Q50.I-initial提供storage/slot possibilities，Q50.J-foundation提供EventGraph，Q50.K只选择Serialized/Pipelined structure；
-  K改变occurrence/live distance后必须经过I-post-K重闭slot/rotation/reuse，再由J closure选择schedule。winner才构造SCF phases并
+- 修复模式：initial storage planning提供storage/slot possibilities，event/resource foundation提供EventGraph，execution-structure planning只选择Serialized/Pipelined structure；
+  structure改变occurrence/live distance后必须重闭slot/rotation/reuse，再由schedule closure选择order/completion。winner才构造SCF phases并
   分配SPM offset。但这只是目标边界，不能用一个wrapper证明旧
   fixed-slot算法与protocol proof已经迁移。
 - 防复发：旧public API和whole-Module clone可以删除；旧source/test中的periodic DTE、NCC backedge、endpoint reuse、alias/external root、
@@ -1161,25 +1055,25 @@
 
 ## Per-root TileRegion不等于可执行Tile entry
 
-- 现象：Q50.C–H的CardModule包含正确private root/relay functions和TileRegions，局部tests全绿；首次由Q51送入Q50.0时却因每Tile没有
+- 现象：root-to-movement stages的CardModule包含正确private root/relay functions和TileRegions，局部tests全绿；首次由search送入actual memory/target gate时却因每Tile没有
   唯一public entry失败，临时用`func.call`组合又被DDR planner的跨call scope合同拒绝。
 - 根因：把“每个root已物化”误当成“每Tile program已闭合”，root function的source boundary/result对应关系没有作为同次construction
   typed结果保留，导致后续只能猜名字/顺序或遗漏entry。
 - 修复模式：root construction返回source-argument/structured-node-result keys；Card assembly按keys拓扑选择ready stages，把single-block
   stage body直接move进唯一public entry并用current SSA传递local intermediates。无work Tile构造同signature empty entry；不引入call、
   replay、ordinal或跨passside table。
-- 防复发：Q50.C independent actual oracle不仅数TileRegion，还必须检查每Tile恰一public entry；production Q51让每个complete candidate
-  进入一次Q50.0并通过DDR/call-closure/program-resource gate，最终只保留winner。private functions存在或局部verifier通过不能代签
+- 防复发：root-work construction independent actual oracle不仅数TileRegion，还必须检查每Tile恰一public entry；production search让每个complete candidate
+  进入一次actual memory/target gate并通过DDR/call-closure/program-resource gate，最终只保留winner。private functions存在或局部verifier通过不能代签
   executable boundary。
 
 ## Baseline不能无条件构造search schedule domain
 
-- 现象：把Q50.J canonical query/apply直接放入共同`planTileMemory`后，baseline scalar case从约2秒退化到45秒；大block会承担O(n²)
+- 现象：把schedule planning canonical query/apply直接放入共同`planTileMemory`后，baseline scalar case从约2秒退化到45秒；大block会承担O(n²)
   dependency DAG构造，即使用户选择`none`。
 - 根因：共享exact gate与共享search policy混淆；baseline的canonical source order/worker0已经确定，不需要枚举或建立schedule domain。
 - 修复模式：Tile memory planning不拥有schedule选择，也不接受“是否apply search schedule”的布尔开关。只有带完整selected
-  `ClosedSchedulePlan`和all-and-only EventId relation的candidate在进入memory planning前调用J的owned materialization；baseline没有selected
-  J assignment，因此不构造domain。两者仍共享Tile→Instr、SPM/DDR、transport和最终verification。
+  `ClosedSchedulePlan`和all-and-only EventId relation的candidate在进入memory planning前调用schedule-owned materialization；baseline没有selected
+  schedule assignment，因此不构造domain。两者仍共享Tile→Instr、SPM/DDR、transport和最终verification。
 - 防复发：baseline定向wall-time与work count必须检查schedule query为零；任何新search axis接入共同lowering时都需要显式selected入口，
   不能在无assignment路径中构造domain后再取first。
 
@@ -1279,7 +1173,7 @@
   dynamic work、位置和直接lifetime witness。只把任意后继same-worker issue当成“worker已完成”同样错误：busytable可以在后续
   同worker物理复用时按实际地址排序，但不能让更晚的不同worker、Kcore或DTE在没有join时复用仍在飞行的地址。
 - 修复模式：先读current硬件校准、target lowering和CRT/runtime，把结论区分为supported、board-observed、unknown、excluded。
-  上层只保留SSA/effect/token/lifetime；H发token，I给first-read/last-release与reuse，J foundation消费Q63/H facts，J closure在actual
+  上层只保留SSA/effect/token/lifetime；movement发token，storage给出first-read/last-release与reuse，event/resource foundation消费typed completion/movement facts，schedule closure在actual
   selected control flow中生成minimum-participant、latest-unavoidable join/wait。missing contract保持typed unknown，不能默认
   Synchronous或插全worker drain。same-worker普通链只保持issue order；resolved后继可缩短地址lifetime，但必须另存worker-domain
   obligation，不同worker/DTE/Kcore observer在exact join前一律失败。output copy消费selected temporal tile并形成有界SCF main/tail
@@ -1312,8 +1206,8 @@
 - 修复模式：alias/reuse和rotating slot都在所有相关root共同且唯一的`wafer.tile.region`中创建；跨TileRegion共享返回typed
   Unsupported。先从current pre-storage relations捕获instruction的execution node，再做只改变storage identity的rewrite；
   `arith.select`作为typed memref forwarding将true/false roots都纳入relation query。辅助selector和issue归入同一event时按actual block
-  order保留SSA先后，再执行K materialization。
-- 防复发：用rank-3 1024/1025 alias/reuse和1031 pipelined rotation分别贯通selected schedule/K→actual MiniMalloc；检查source relation、
+  order保留SSA先后，再执行execution-structure materialization。
+- 防复发：用rank-3 1024/1025 alias/reuse和1031 pipelined rotation分别贯通selected schedule/execution structure→actual MiniMalloc；检查source relation、
   allocation数量、verifier和event owner。不得把allocation提升到`func`、按合并后的唯一root猜event，或因synthetic fixture能verify就绕过
   actual TileRegion planning scope。
 
@@ -1321,9 +1215,9 @@
 
 - 现象：两个candidate可拥有相同`ClosedSchedulePlan`，但Region、representation、movement或initial storage不同；若controller只按schedule
   reserve/cache，第一个actual rejection会把合法sibling当duplicate或forbidden，accepted tie-break也丢失完整physical assignment。
-- 根因：把“最后形成的plan”误当成“完整candidate identity”。ClosedSchedule只保存fixed K/post-K Buffer和J选择，不包含Spatial到Movement及
+- 根因：把“最后形成的plan”误当成“完整candidate identity”。ClosedSchedule只保存fixed execution structure、post-structure Buffer和schedule选择，不包含Spatial到Movement及
   initial Buffer的parent chain；causal roots也只是当前actual conflict的diagnostic witness，不是可推广到prefix的nogood explanation。
-- 修复模式：从validated `ScheduledState`构造`CompleteCandidateKey`，逐值携带全部axis并复核K/I/J generation。reservation、completed set、
+- 修复模式：从validated `ScheduledState`构造`CompleteCandidateKey`，逐值携带全部axis并复核structure/storage/schedule generation。reservation、completed set、
   exact full-point cache、objective tie-break和retained winner统一使用该key；SPM owner roots只随exact rejection保存，不参与subsumption。
 - 防复发：用相同schedule、不同representation的1025 sibling证明rejection只命中自身；逐axis identity、cache on/off和2--7反序独立winner
   oracle同时执行。没有assignment-level explanation时，禁止按root、shape、bytes、最后一轴plan或parent pointer扩大no-good。
@@ -1335,7 +1229,7 @@
 - 根因：resumable owner保存了调用表达式产生的`FrontendProgramVerificationResult`和`ExecutionConfig`引用，resume时临时值已经析构；
   actual evaluator又假定Region/Temporal等cache必然由同一session按固定顺序预热，输入state本身不足以独立调用。
 - 修复模式：persistent session复制小型immutable config values，只借用明确由outer transaction持有的TensorProgram、diagnostics和
-  ProgramData。actualization从ScheduledState的parent chain依次重建并`contains`检查全部domain，再建立EventGraph/K/I/J；cache只是
+  ProgramData。actualization从ScheduledState的parent chain依次重建并`contains`检查全部domain，再建立EventGraph、execution structure、storage和schedule；cache只是
   request-local memo，不是隐藏前置。显式continuation stack在cutoff后原位resume，不clone/replay candidate IR。
 - 防复发：同一1024 source分别one-shot和每credit resume到同一first-accepted key；独立recursive composer与production prefix逐项相等，
   fresh parse直接actualize前两个complete states并在这些Oracle调用前后重复production traversal，key/status保持一致。不得用延长timeout、
@@ -1346,10 +1240,10 @@
 - 现象：multi-producer `insert_slice` reconstruction产生语义有限且精确的`GeneralPresburger` domain；movement与storage保存的是同一集合，
   但consumer只看到空box metadata并报告resource mismatch，随后feasibility也无法计算footprint。
 - 根因：representation只在输入已经标成`BoxUnion`时验证physical pieces，把exact set的construction form误当成可物化性结论；下游又比较
-  duplicated domain metadata，而没有在G owner关闭“exact logical set → finite physical pieces”的边界。
+  duplicated domain metadata，而没有在representation owner关闭“exact logical set → finite physical pieces”的边界。
 - 修复模式：representation对非empty exact set先走bounded direct-disjunct recovery；只有每个disjunct都是static rectangle且pieces两两
   disjoint时规范化为语义等价`BoxUnion`。若整体能被bounded exact equality证明为一个dense rectangle，可退化成一个piece；否则typed
-  unsupported，绝不使用bounding box。H/I/F只消费该current resource description。
+  unsupported，绝不使用bounding box。movement、storage和actual-admission owner只消费该current resource description。
 - 防复发：同时保留rank-3、主维1024/1025的multi-producer全链和一个1025级GeneralPresburger direct case；后者检查Presburger equality、
   exact piece offsets/sizes及下游可消费。不能靠`getBoxes().empty()`判语义不支持，也不能在每个consumer重复generic equality。
 
@@ -1364,3 +1258,20 @@
   discard及carried-and-discarded均fail closed。
 - 防复发：rank-3 1024/1025 multi-piece overwrite检查discard ID、source version、storage object和self-use逐项相等；独立负例删除
   publication仍必须失败，并覆盖duplicate与carried-and-discarded冲突。不得用名字、shape或“没有use”直接猜discard。
+
+## Canonical coordinate不能保留另一套IR materializer
+
+- 现象：同一个complete physical plan在canonical coordinate走旧edge-driven materializer，非canonical Region/representation走新的
+  execution-driven materializer。真实16-Tile block中1,696个selected execution形成40,960个compute emission；随后slice、layout、allocation、
+  global和movement一起膨胀。两条IR都能通过局部verifier。
+- 根因：增量迁移只为新coordinate接入新实现，并用“是否等于canonical/default plan”保留旧apply路径；后续重命名或移动到共同入口时没有退役
+  donor。旧路径让edge carrier按每个destination fragment调用producer tiler，execution relation在IR生成后才补记；verifier再把actual
+  emission收集成node ID集合，丢失了重复次数和execution identity。
+- 修复模式：每个policy的materializer直接按自己的plan构造IR。compute创建helper只对materializer可见；movement/layout API只接收已经存在的
+  SSA result/view，类型和include边界上拿不到producer op、tiling callback或compute builder。canonical只是search domain中的普通coordinate，
+  不能选择另一套builder。不增加第二份expected plan或execution-count verifier。
+- 防复发：迁移operation、representation、region或pipeline实现时，矩阵必须列出旧能力、新owner、唯一production caller和donor删除证据；
+  同一controller/domain内的canonical/noncanonical、generic/attention coordinate使用同一actual construction。该规则不要求baseline与search
+  共享plan、preparation或actual IR；两者只共享设计明确允许的无策略leaf。禁止用同一domain内的plan equality、default attribute、fixture kind
+  或feature presence选择第二套IR transformation；禁止post-hoc追加本应驱动construction的relation；`set`只能验证集合语义，不能验证
+  all-and-only occurrence。逐stage inventory必须把logical execution、physical compute、view、movement和target-call分别计数。

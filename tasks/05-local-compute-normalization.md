@@ -1,9 +1,8 @@
 # Wafer StableHLO 到 Card-Local Structured Tensor IR
 
-状态：2026-08-21按graph-level attention algorithm与single-winner physical-dataflow主线同步。本文拥有
-post-SPMD StableHLO到target-independent structured tensor IR的normalization合同，以及attention语义识别、单一
-attention op和FlashAttention/FlashDecoding算法选择。Tile、temporal block、layout、movement、buffer和schedule仍由06及其
-Q50.A--K owner负责。
+本文拥有post-SPMD StableHLO到target-independent structured tensor IR的normalization合同，以及attention语义识别、
+单一attention op和FlashAttention/FlashDecoding算法选择。Tile、temporal block、layout、movement、buffer和schedule由06号
+physical-dataflow设计负责。
 
 ## 1. Pipeline Contract
 
@@ -22,15 +21,15 @@ Pipeline position:
   DPS ties、type、SSA/control flow和effect表达；matched attention由一个self-contained semantic op表达；
   card-partition collective仍是typed tensor semantics。不产生文件、physical plan或runtime metadata。
 - Downstream consumer:
-  Q50.B从固定semantic roots开始构造spatial plan，Q50.A派生exact demand和coupled contribution/merge；
-  Q50.C--K与Q50.F/J关闭region、temporal、representation、movement、storage、execution structure、schedule和resource，
+  physical-dataflow planning从固定semantic roots构造spatial plan与exact demand/coupled contribution/merge；
+  后续stages关闭region、temporal、representation、movement、storage、execution structure、schedule和actual resource，
   selected winner在一个Card subtree transaction内展开attention并形成wafer.tile IR。
 - User-level driver / named pipeline:
   `wafer-compile`的`none`与`search`在policy分叉前共同运行同一normalization；
   `wafer-lower-stablehlo-to-linalg`及attention normalization leaf pipeline只用于IR replay和focused tests。
 - Explicit non-goals:
   不运行GSPMD，不决定card partition；不选择Tile、KV partition count、temporal block、layout、SPM/DDR、NoC/DTE、
-  buffer、worker、schedule、launch slot或runtime binding；不把FA/FD做成Q51 search axis；不从symbol、operand位置、
+  buffer、worker、schedule、launch slot或runtime binding；不把FA/FD做成physical search axis；不从symbol、operand位置、
   shape模板或workload名称恢复attention；不物化候选CardModule。
 - Done criteria:
   official conversion后无StableHLO/SDY residual；attention custom/generic form、verifier、standard interfaces与coupled-state
@@ -93,7 +92,7 @@ prob    = softmax(masked, normalization iterators)
 result  = contraction(prob, V)
 ```
 
-production matcher的输入是Q60产品入口经GSPMD和official conversion产生的实际post-Linalg IR，不是手写的理想attention图。
+production matcher的输入是current产品入口经GSPMD和official conversion产生的实际post-Linalg IR，不是手写的理想attention图。
 常见PyTorch/HF前向attention在这一边界共享同一QK--softmax--PV骨架，允许的差异收敛为有限结构族：
 
 | 差异位置 | matcher接受的current IR事实 |
@@ -221,7 +220,7 @@ CoupledReductionDescription
 semantic op上安全承载三个internal partial values。因而本op不伪装实现该standard interface，也不把三个components注册成三个
 source results。winner内selected Linalg/SCF decomposition负责创建、携带和合并三个state values；
 `WaferCoupledReductionOpInterface`只提供planning所需的component maps、coupled grouping和init/final owner query。
-Q50.A/F不得为取得这些事实materialize scratch IR，也不得逐component假设它们独立。
+Exact-demand和actual-admission query不得为取得这些事实materialize scratch IR，也不得逐component假设它们独立。
 
 ## 5. Attention Algorithms
 
@@ -260,7 +259,7 @@ output = a / l
 
 ### 5.2 FlashAttention
 
-`flash_attention`表示每个output piece只有一个K2 owner，K2不做spatial reduction partition。Q50.E为该owner选择temporal K2 block，
+`flash_attention`表示每个output piece只有一个K2 owner，K2不做spatial reduction partition。Temporal planning为该owner选择temporal K2 block，
 并可独立选择QK contraction K1及其它iterator tile。selected Linalg形式为：
 
 ```text
@@ -283,7 +282,7 @@ contraction reduction，不得与K2 online state混为同一个spatial split角�
 
 ### 5.3 FlashDecoding
 
-`flash_decoding`表示K2先由Q50.B分成至少两个nonempty spatial contributions；每个contribution内部仍运行上节同一个
+`flash_decoding`表示K2先由spatial planning分成至少两个nonempty spatial contributions；每个contribution内部仍运行上节同一个
 FlashAttention temporal recurrence：
 
 ```text
@@ -294,16 +293,16 @@ merged = combineAll(state_0 ... state_P-1)
 output = finalize(merged)
 ```
 
-Q50.A按每个output-domain piece建立一个coupled `ReductionMergeRequirement`，其中每个contribution恰覆盖一次K2 fiber，merge后只有
-selected merge Tile是final owner。Q可由多个contribution读取；K/V/mask只读取各自exact K2 slice。H可以为state components选择DDR、
+Exact-demand analysis按每个output-domain piece建立一个coupled `ReductionMergeRequirement`，其中每个contribution恰覆盖一次K2 fiber，merge后只有
+selected merge Tile是final owner。Q可由多个contribution读取；K/V/mask只读取各自exact K2 slice。Movement planning可以为state components选择DDR、
 direct peer或relay，但三个components属于同一coupled state：merge必须在全部required components ready后执行，不能逐result独立发布。
 
 merge可以按selected transfer/combine DAG逐步执行；每个combine仍使用同一state relation。通信tree、route、merge Tile、partition count、
-worker和completion属于B/H/J，不进入`algorithm` attr。
+worker和completion属于后续physical plan，不进入`algorithm` attr。
 
 ### 5.4 Algorithm选择
 
-algorithm在graph normalization中确定，不进入Q51 domain：
+algorithm在graph normalization中确定，不进入physical search domain：
 
 ```text
 selectAttentionAlgorithm(match, currentSSA):
@@ -318,13 +317,13 @@ selectAttentionAlgorithm(match, currentSSA):
 
 functional decode proof只使用tensor SSA、slice/insert relation和function results。KV cache仍是普通explicit input/output state；
 attention op、package和runtime不拥有cache allocation、eviction、serving scheduler或step policy。无法证明decode时选择FA，不按`Q length`、
-参数名或模型入口猜测FD。已经标为FD的root若后续B--F无法形成完整physical plan，compile返回对应typed failure，不静默改回FA。
+参数名或模型入口猜测FD。已经标为FD的root若后续无法形成完整physical plan，compile返回对应typed failure，不静默改回FA。
 
 ## 6. 与 Physical-Dataflow Planning 的唯一接缝
 
 ### 6.1 Pure work description
 
-attention op不能作为opaque cost box进入Q50.F，也不能在winner阶段突然产生hidden temporaries。planning library从op和已经关闭的
+attention op不能作为opaque cost box进入actual admission，也不能在winner阶段突然产生hidden temporaries。planning library从op和已经关闭的
 spatial/temporal prefix派生query-local typed result：
 
 ```text
@@ -341,26 +340,26 @@ AttentionWorkDescription
 
 action/value ID由`SemanticRootKey`、output piece、contribution和closed action kind形成；root key遵守06号文档的
 observable SSA path合同，不含operation pointer、block/operation ordinal、Tile ordinal、printed name或future worker。该description
-不进入candidate state、IR attr或文件；相关B/E choice变化后重算。
+不进入candidate state、IR attr或文件；相关spatial/temporal choice变化后重算。
 
-### 6.2 A--K映射
+### 6.2 Physical stage映射
 
-| Owner | AttentionWorkDescription投影 |
+| Stage | AttentionWorkDescription投影 |
 | --- | --- |
-| Q50.B | FA要求K2 logical interval-count product为1；FD要求该product大于1；其它parallel/K1 axes仍按通用domain处理 |
-| Q50.A | Q/K/V/mask exact operand demand、per-output final owner、FD coupled contributions与merge requirement |
-| Q50.C | root-local execution、contribution/merge work、support/boundary和selected leaf action closure |
-| Q50.D | attention root与producer/consumer的stored、nested或boundary use；内部attention actions不变成独立semantic roots |
-| Q50.E | K1/K2及parallel temporal scopes、exact tail、multi-result running state和nested invocation classes |
-| Q50.G | operand block、scratch、state、partial/merge和final output的`RegionValueVersionId/PhysicalVersionId` |
-| Q50.H | Q/K/V fanout或stage、FD state transfer、relay和coupled local combine action DAG |
-| Q50.I | running/partial state、score/probability scratch、staging和optional rotating slots的storage binding |
-| Q50.J | QK、reduce/elementwise、PV、transfer、combine、wait/release的EventGraph与closed schedule |
-| Q50.K | selected serialized或pipelined block/contribution structure；K改变occurrence后重闭I/J |
-| Q50.F | complete candidate materialization后的actual state/scratch/message/event/field、buffer relations及SPM/DDR/transport admission |
+| Spatial | FA要求K2 logical interval-count product为1；FD要求该product大于1；其它parallel/K1 axes仍按通用domain处理 |
+| Exact demand | Q/K/V/mask operand demand、per-output final owner、FD coupled contributions与merge requirement |
+| Root work | root-local execution、contribution/merge work、support/boundary和selected leaf action closure |
+| Region | attention root与producer/consumer的stored、nested或boundary use；内部attention actions不变成独立semantic roots |
+| Temporal | K1/K2及parallel scopes、exact tail、multi-result running state和nested invocation classes |
+| Representation | operand block、scratch、state、partial/merge和final output的`RegionValueVersionId/PhysicalVersionId` |
+| Movement | Q/K/V fanout或stage、FD state transfer、relay和coupled local combine action DAG |
+| Storage | running/partial state、score/probability scratch、staging和optional rotating slots的storage binding |
+| Schedule | QK、reduce/elementwise、PV、transfer、combine、wait/release的EventGraph与closed schedule |
+| Execution structure | selected serialized或pipelined block/contribution structure；occurrence变化后重闭storage与schedule |
+| Actual admission | materialization后的actual state/scratch/message/event/field、buffer relations及SPM/DDR/transport result |
 
-两条policy都必须满足mode约束：`none`的B canonical producer对FA保持K2单一logical interval，对FD构造canonical合法非平凡
-K2 partition及stable embedding/merge owner；`search`枚举同一B domain中的全部合法factor、embedding和per-output merge placements。
+两条policy都必须满足mode约束：`none`的canonical spatial producer对FA保持K2单一logical interval，对FD构造canonical合法非平凡
+K2 partition及stable embedding/merge owner；`search`枚举同一spatial domain中的全部合法factor、embedding和per-output merge placements。
 每个complete candidate由actual gate判定资源合法性；不得用attention work description、state数量或shape公式预测SPM fit。
 这只是physical policy差异，不改变attention op或算法，也不允许`none`把FD降回FA。
 
@@ -377,18 +376,18 @@ complete PhysicalDataflowPlan
   -> create one new Card subtree
   -> materialize selected tensor.extract_slice + scf.for
   -> expand attention compute to selected linalg.matmul/generic/reduce
-  -> bind G/I/H/J/K selected physical versions, storage, movement and events
+  -> bind selected physical versions, storage, movement, events and execution structure
   -> deterministically convert Linalg compute to wafer.tile.gemm/reduce/elementwise
   -> verify no attention or executable Linalg source remains
-  -> Q50.0 CardModule-to-CardExecutable
+  -> actual CardModule-to-CardExecutable memory/target gate
 ```
 
 compute先到Linalg而不是attention emitter直接创建`wafer.tile`，以复用Linalg indexing/verifier和10号通用structured-to-tile lowering；
 但该Linalg只存在于candidate Card subtree transaction内部，不是公开stop stage。rejected/loser subtree整体销毁，final winner不重建。
 movement、storage、peer和completion本来
-不属于Linalg，由G--K prepared builders直接创建typed wafer.tile/memref/SCF对象。
+不属于Linalg，由相应prepared builders直接创建typed wafer.tile/memref/SCF对象。
 
-进入Q50.0前必须满足：
+进入actual memory/target gate前必须满足：
 
 - `wafer.linalg_ext.attention`在selected Card subtree中为零；
 - 可执行Linalg source op为零；
@@ -434,7 +433,7 @@ GSPMD输出可能含由constants和static tensor views完全决定的partition/m
 - conflicting matches、malformed existing attention op或rewrite后verifier failure终止normalization；
 - normalization在首次mutation前收集完整proof，所有create/replace/erase通过同一个`IRRewriter`；不clone Module/Func/DAG；
 - algorithm classification缺decode proof只产生FA，不记录失败历史或候选；
-- op/interface无法描述selected A/E work返回typed unsupported；planning description与B--K plan矛盾是compiler contract error；
+- op/interface无法描述selected spatial/temporal work时返回typed unsupported；planning description与physical plan矛盾是compiler contract error；
 - winner Linalg expansion、wafer.tile conversion或resource parity失败擦除完整新Card subtree并终止compile，不返回planner换算法或plan；
 - `none`和`search`任一失败都不调用另一policy兜底。
 
@@ -458,15 +457,15 @@ selected pieces，而不是只检查op或pass成功。
    穷举缩小domain，但同一算法另以真实规模shape覆盖tail、多个output pieces和多block/partition；
 6. standard Tiling、Wafer coupled-state query及selected partial decomposition的shape/map/init/final owner一致，planning query前后IR
    byte-identical；
-7. `AttentionWorkDescription`的actions/values/occurrences与A--K typed objects all-and-only对应，F无hidden scratch/state/message；
+7. `AttentionWorkDescription`的actions/values/occurrences与各physical stage typed objects all-and-only对应，actual candidate无hidden scratch/state/message；
 8. winner transaction中selected Linalg/Tensor/SCF只构造一次，随后全部成为existing wafer.tile compute；失败注入保持source和parent原样；
-9. `none`和`search`从同一normalized TensorProgram各自产生一个plan并走共同commit；不存在Q51 attention algorithm axis或whole-program clone；
-10. fresh运行Q60 PyTorch产品入口，至少覆盖native SDPA causal prefill、当前HF attention prefill和functional two-step decode；
+9. `none`和`search`从同一normalized TensorProgram分别走自己的policy-specific materializer，并在policy-complete Instr后消费共同actual leaf；不存在attention algorithm axis或whole-program clone；
+10. fresh运行current PyTorch产品入口，至少覆盖native SDPA causal prefill、当前HF attention prefill和functional two-step decode；
     保存/检查本轮portable StableHLO与post-Linalg typed witness，再形成accepted Tile dataflow、Instr、Target LLVM、package和fresh
     no-card。KV cache是显式external state ports，第二步由第一步output绑定，不依赖runtime-owned cache policy。手写MLIR只补
     op/matcher unit，不能代签这一项。
 
-局部op/interface测试不能代替第8--10项。真实板端matched A/B仍由Q53串行执行，不属于本任务的host完成声明。
+局部op/interface测试不能代替第8--10项。真实板端matched A/B属于后续显式board qualification，不属于本任务的host完成声明。
 
 ## 11. 实现入口与扩展规则
 
@@ -487,21 +486,21 @@ selected Linalg expansion和structured-to-tile conversion属于Conversion。四�
 
 新增attention variant先扩同一个op/current algorithm enum、typed proof、work description和selected emitter；不得新增第二个attention op、
 字符串implementation registry或parallel lowering path。未来真正不同且无法由当前op语义、state和verifier表达的算法，必须先说明其独立
-semantic对象及A--K consumer，不能仅因某篇实现使用另一个op名就复制接口。
+semantic对象及各physical-stage consumer，不能仅因某篇实现使用另一个op名就复制接口。
 
 ## 12. 参考实现与采用边界
 
 - [FlashAttention](https://arxiv.org/abs/2205.14135)提供block-wise Q/K/V traversal、online state和避免完整attention matrix
   materialization的算法基础；本文采用其forward state结构，不把论文中的GPU线程层级写入Wafer IR。
-- [FlashAttention-2](https://arxiv.org/abs/2307.08691)说明work partition与并行组织仍需结合实际执行层；本文把这些选择留给B--K，
+- [FlashAttention-2](https://arxiv.org/abs/2307.08691)说明work partition与并行组织仍需结合实际执行层；本文把这些选择留给physical planning，
   不把warp/block调度提升为graph op字段。
 - [Flash-Decoding](https://pytorch.org/blog/flash-decoding/)明确采用KV sequence split、每split FlashAttention partial及最终state/output
-  merge；本文把split交给B、coupled availability交给A、payload/combine交给H/J。
+  merge；本文把split交给spatial planning、coupled availability交给exact-demand analysis、payload/combine交给movement与schedule。
 - [IREE LinalgExt attention ops](https://github.com/iree-org/iree/blob/main/compiler/src/iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.td)、
   [tiling/partial reduction](https://github.com/iree-org/iree/blob/main/compiler/src/iree/compiler/Dialect/LinalgExt/IR/TilingInterfaceImpl.cpp)和
   [decomposition](https://github.com/iree-org/iree/blob/main/compiler/src/iree/compiler/Dialect/LinalgExt/IR/AggregatedOpInterfaceImpl.cpp)
   证明Q/K/V semantic op、online state、tiling、partial mechanics及late Linalg decomposition可以分层。Wafer采用这些MLIR mechanics，
-  但不照搬IREE的两个attention ops、Transform-dialect调度或backend pipeline；Wafer只保留一个op，并由A--K pure planning与
+  但不照搬IREE的两个attention ops、Transform-dialect调度或backend pipeline；Wafer只保留一个op，并由typed physical planning与
   single-winner Card transaction消费。
 
 外部实现只提供算法和MLIR机制参考。Wafer op schema、fixed FA/FD classification、physical plan、resource proof、Tile/Instr lowering、

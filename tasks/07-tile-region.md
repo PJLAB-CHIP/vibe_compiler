@@ -1,12 +1,11 @@
 # Wafer Selected Tile-Dataflow IR、SPM Residency Region 与原子物化
 
-状态：2026-08-08按CardModule / Tile MPMD更新。本文定义selected Tile-dataflow IR的MLIR-native边界；
+本文定义selected Tile-dataflow IR的MLIR-native边界；
 `wafer.tile.region`表达一个Tile内的显式SPM residency domain。现有typed materialization、
-relation和physical-version机制可被新scheduler复用，但旧complete-rank/rank==Tile调用域只作历史背景。
-Q49.P、Q50、Q51–Q53各自是否完成只看`tasks/progress.md`。
+relation和physical-version机制必须由current producer和consumer闭合；旧complete-rank/rank==Tile调用域只作历史背景。
 
 source structured op 的数学语义始终存在于当前 operation、region、SSA、type、attribute 和标准MLIR interfaces 中。
-tasks/05/Q50.S已经在policy分叉前把完整attention归一为一个带固定FA/FD算法的semantic op；它不是search assignment。
+05号normalization已经在policy分叉前把完整attention归一为一个带固定FA/FD算法的semantic op；它不是search assignment。
 tasks/06随后在immutable IR上得到closed `PhysicalDataflowPlan`；这是同一compiler invocation内的typed ownership边界，不是磁盘IR层或
 shadow schedule。本文只在winner commit时消费该plan，在一个新Card subtree中构造selected Linalg/Tensor/SCF compute、temporal
 traversal、physical encoding、movement和执行结构，再把compute确定性转换为wafer.tile。本文不生成或比较另一算法。
@@ -98,7 +97,7 @@ completion都必须最终出现在actual Tile/Instr IR中并通过09–13的late
   physical-dataflow selection选中的TileRegion、cut/release boundary与materialization结构并由actual IR证明。region数量不单独计奖惩，真实DDR、GS、completion、
   tile utilization和materialization工作分别计价。
 - 不因SPM bank phase/conflict选择region partition或DDR spill；09只允许allocator在hard-valid placement中把可重算
-  bank phase作为soft preference。当前实现状态见`tasks/progress.md`的physical-dataflow队列。
+  bank phase作为soft preference。
 - 不 lower raw packet、CRT、LLVM、runtime handle 或 package 字段。
 - 不通过 op/value/parameter 名、固定 shape、参数顺序或 workload topology 恢复语义。
 - 不把单个region、representative temporal tile、单个Tile或局部FileCheck当成完整完成证据。
@@ -113,17 +112,18 @@ Pipeline position:
   在一个新Card subtree transaction内，按selected root/region/execution/temporal/version/movement/buffer/structure/event facts
   构造all-and-only TileModules与non-nested TileRegions；attention compute先形成selected Linalg/Tensor/SCF并在同一transaction
   确定性转换为wafer.tile，physical movement/storage/event直接按prepared plan生成；所有跨region值显式DDR，所有跨Tile值显式communication；一次
-  card-scoped verifier检查plan-to-actual totality与无extra work。
+  policy-specific materializer返回current typed execution/version/action relations；局部及stage verifier只检查对应IR语义，
+  builder-specific totality与multiplicity由定向测试证明，不在production重放plan。
 - Output IR / files:
   verifier-legal candidate CardModule/TileRegion IR；attention与可执行Linalg source已经消失；不输出plan文件或IR sidecar。
 - Downstream consumer:
   TileRegion-to-Instr named pipeline、fresh completion、SPM/DDR actual placement、transport/resource/ABI、target/package。
 - User-level driver / named pipeline:
-  wafer-compile `none|search`共同complete-candidate actual gate；wafer-opt只测试相同leaf conversions。
+  wafer-compile由`none`与`search`各自owner调用对应Card/Tile materialization；wafer-opt只测试设计明确允许共享的leaf conversion。
 - Explicit non-goals:
   不选择或比较plan，不clone/replay source或同一candidate，不在失败后repair/retry，不分配actual offset，不生成数学等价alternative。
 - Done criteria:
-  partial planning IR为零；每个complete candidate Card subtree一次；plan IDs与actual root/version/action/event all-and-only对应；
+  partial planning IR为零；每个complete candidate Card subtree一次；定向测试证明selected IDs与actual root/version/action/event all-and-only对应；
   failure或落选擦除整个新subtree且source不变；selected Linalg只在candidate transaction内构造并由structured-to-tile lowering消费；
   downstream actual gate消费每个candidate，只有retained winner进入package。
 ```
@@ -138,7 +138,7 @@ Pipeline position:
       -> selected structured-to-tile conversions
       -> verifier-legal tile/dataflow IR
       -> per-Tile tile-to-instruction DialectConversion
-      -> Q50.J selected worker/order actual Instr IR
+      -> selected worker/order actual Instr IR
       -> erase and fresh-rebuild dependency-driven completion
       -> derive per-Tile fixed SPM allocation problems from all tile.module roots / lifetimes / coexistence
       -> validate all-and-only root coverage and fixed-capacity placement
@@ -310,7 +310,7 @@ boundary movement的概念形式：
 
 它们是destination-style op，无隐式allocation和result；logical coordinate relation固定为identity。
 
-Q32.R后`StorageLoadOp`已满足该合同：materializer先创建SPM allocation/view，再发explicit
+Current `StorageLoadOp`满足该合同：materializer先创建SPM allocation/view，再发explicit
 source/destination load；所有builder、conversion和tests均不再保留旧result入口。tile-to-instruction lowering对
 已有destination发射RDMA并删除load，allocation identity继续由memref SSA拥有。
 slice、permutation、reshape或concat先成为可验证view，不能化为同shape identity pieces时使用显式local或
@@ -456,40 +456,19 @@ tile/dataflow verifier至少检查：
 - 任一selected builder、Tile module或later gate失败都终止compile，不返回planner或另一policy；不发布partial Tile/module/output/package。
 - 失败不得触发本层临时改写source语义、encoding、residency、movement或execution order。
 
-## 11. Q32.V Typed Target Extensions 与其它 Later 能力
+## 11. Typed Target Extension Boundary
 
-Q32.V已排期闭合并由同一physical-dataflow selection消费：
+Mapped direct movement、physical-footprint fill和typed contraction orientation只有在08–11号合同已经提供exact relation、
+valid/padding domain、descriptor、Instr及target consumer时才能由本层物化。Relation-guided Cx/NCx absorption属于selected
+physical-version assignment：若exact physical map与valid-lane proof允许，前置layout movement可以消失；packing identity仍只存在于
+encoding，不增加vector-width或packing side attribute。
 
-- 非identity、strided或多piece的mapped direct boundary movement；
-- physical-footprint fill及其valid/padding/bitpacked domain；
-- baseline以外的typed contraction operand orientation和对应target command form。
+下列能力没有完整纵向时保持unsupported：immutable prepacked resource writing；dynamic shape；复杂dynamic mask；
+target-specific composite instruction；需要新runtime/ABI/model consumer的movement或completion；尚未闭合typed running state、
+combine、tail和lowering的online reduction；没有typed fused semantics的其它contraction。
 
-relation-guided Cx/NCx physical-version absorption属于physical-version assignment而不是新target capability：现有
-concrete verifier已接受GEMM/batched GEMM和native reduce的Cx/NCx形态，也已覆盖hardware-supported、
-physical-traversal-compatible CT relation/select/logic/convert/bitpacked；Q50.G/H把这些机制接入current representation/movement
-plan，Q51只选择完整assignment。若08的exact physical-map/valid-lane proof允许，前置
-`materialize_layout`/GS movement在selected IR中消失；packing identity仍只存在于encoding，不增加vector-width或packing
-side attr。
-
-下列能力仍有独立前置，不能被当前机制存在误报为已支持：
-
-- immutable prepacked resource writing；
-- dynamic shape、复杂mask和target-specific composite。通用producer-consumer tile composition属于06当前合同；只有
-  需要新增target-specific composite instruction、复杂dynamic mask或尚无typed numeric semantics的实现才是later；
-- 需要新runtime/ABI/SystemC consumer的movement或completion形态。
-- Q39已经闭合NoC-resident result/operand/partial traversal、peer movement和Direct-DTE mechanics；Q50迁移其机制，Q51把
-  decision owner并入06的physical-dataflow planning state，本文只物化selected peer/resident Tile IR，13继续拥有typed lowering与
-  CardExecutable verification。pre-current-cutover late
-  NoC tuple path只作历史资格证据，不再是终态独立pipeline。
-- online/streamed reduction只有在typed running state、combine公式、tail与lowering闭合后才进入同一
-  reduction plan domain；未闭合时保留native/partial baseline。没有typed fused semantics的non-GEMM FMA contraction及
-  尚未闭合的其它algebraic contraction保持unsupported；
-
-只有target instruction、ABI和执行consumer具备typed合同后，才能启用其中一项。每项扩展必须同批增加
-source semantic recognition、direct typed builder、selected op fields、PatternRewriter/DialectConversion materialization、verifier、
-instruction lowering、effects/completion以及真实source正负测试。缺少任一纵向时保持unsupported；Q32.V三项是明确
-checkpoint，不得因删除provider协议而消失；其它later能力也不得被Q32/Q32.V completion假装支持。
-
+扩展任一能力必须同批增加source semantic recognition、typed plan/builder、selected op fields、materialization、verifier、
+Instr lowering、effects/completion和真实source正负测试。已有低层helper、历史资格证据或相似shape不能单独授权本层生成IR。
 ## 12. 通用案例
 
 以下只展示关系，不固定shape或workload。source概念上是一个contraction及其pointwise consumer：
@@ -551,23 +530,21 @@ region内只spill某个root、让其它root继续驻留。也要保留“独立l
 7. selected Tile IR经per-Tile tile-to-instruction conversion、SPM/DDR、cross-Tile communication、transport和ABI gate直接消费。
 8. 任一candidate builder或Tile module失败都不产生partial accepted IR、CardExecutable、output或package，且builder自身不repair；
    later actual gate只有在返回完整typed rejection时才由外层controller处理其它candidate。
-9. generic DAG、HF prefill/decode与LLaMA block最终都以card-level `num_partitions=1`完成source-to-package-to-no-card fresh纵向；
-   package必须含all-and-only topology-available Tile launch entries，且允许per-Tile op/loop/shape不同。局部fixture不算完成。
-   该矩阵按06的任务阶段执行：Q51完整new-search链闭合前，本层及Q50.C/D checkpoint只使用有界generic/relation与轻量
-   attention/decode case，不执行重型LLaMA；重型profile与正式package/no-card分别归Q52、Q53。
-10. Q32.V mapped DMA、physical fill和oriented GEMM通过typed Tile/Instr/TargetCall/ABI/SystemC纵向后由同一
-    materializer消费；其它未实现target能力结构化拒绝。
-11. Q50.S attention root在partial planning阶段不物化；Q50.B--K只选择physical realization。每个complete candidate对每个selected output piece/
-    contribution/merge恰展开一次Linalg action，并在Q50.0前消除attention与executable Linalg source；FA无完整score/probability
-    tensor，FD收齐all-and-only coupled state后只finalize一次。Cx/NCx GEMM与CT relation-guided absorption由Q50.G/H物化，
-    并随Q51 complete assignment按同一actual gate验收；final winner不重建。
+9. generic DAG、HF prefill/decode与representative model最终都以card-level `num_partitions=1`完成fresh
+   source-to-package-to-no-card纵向；package含all-and-only topology-available Tile entries，并允许per-Tile op/loop/shape不同。
+   局部fixture、profile或历史package不算完成。
+10. mapped DMA、physical fill和oriented GEMM等target capability只有在typed Tile/Instr/TargetCall/ABI及直接consumer闭合后
+    才由materializer使用；其它能力结构化拒绝。
+11. attention root在partial planning阶段不物化；physical planning只选择其realization。每个complete candidate对每个selected
+    output piece/contribution/merge恰展开一次Linalg action，并在actual memory/target gate前消除attention与executable Linalg source；
+    FA不构造完整score/probability tensor，FD收齐all-and-only coupled state后只finalize一次；accepted winner不重建。
 
 ## 14. Graph Algorithm 与 Future Alternative Boundary
 
-Q50.S attention normalization只产生一个current semantic root和一个固定FA/FD算法，不建立semantic alternative domain。
+Attention normalization只产生一个current semantic root和一个固定FA/FD算法，不建立semantic alternative domain。
 selected CardModule只消费05定义的current TensorProgram和06的physical plan；不得把instruction sketch、rewrite rule、solver AST、
 proof certificate或implementation descriptor物化为TileRegion op/attr。
 
-Q48未来若引入其它semantic superoptimization，必须在自己的编号设计中定义actual TensorProgram表示、proof、selection owner和
+未来若引入其它semantic superoptimization，必须在自己的编号设计中定义actual TensorProgram表示、proof、selection owner和
 production consumer；它不能复用attention algorithm attr作为通用registry，也不能在CardModule或Instr形成后启动第二个selector。
 target-specific Instr canonicalization仍由11/14的deterministic lowering owner负责。

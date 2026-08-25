@@ -110,7 +110,7 @@ source program
   capacity结论。
 - SPM legality只来自complete candidate actual IR上的`PlanSPMMemory`/MiniMalloc。footprint、working-set、shape公式、buffer-count、
   synthetic demand和预测lifetime不得决定admission、pruning、temporal refinement或winner。
-- partial planning不构造IR；每个complete candidate各构造一份CardModule/Instr并运行一次Q50.0。固定shortlist、beam或candidate cap会丢
+- partial planning不构造IR；每个complete candidate各构造一份CardModule/Instr并运行一次actual memory/target gate。固定shortlist、beam或candidate cap会丢
   合法状态，只能在profile和质量回归后作为显式budgeted trade-off。
 - 统一allowance同时记录deterministic successor/query work和complete-candidate actualization；wall/RSS只做外层安全与回归诊断。
 - host worker可以并行互不共享可写IR的proposal/query；state result合并、tie-break和最终顺序保持稳定。
@@ -138,8 +138,8 @@ source program
   actual result返回controller；lowering不能枚举、retile、spill、rebuffer或修candidate。带完整owner relation的actual rejection可关闭当前
   complete point；其它失败保持typed状态。
 - public optimization policy只使用`search`与`none`：`none`只materialize deterministic conservative baseline；
-  `search`启用compiler-owned搜索，但二者经过相同lowering和exact verification。
-- `none`的SPM legalization从完整per-Tile iterator tile开始；每个candidate实际物化并运行Q50.0。只有actual capacity rejection且每个
+  `search`启用compiler-owned搜索。二者分别完成policy-specific Card/Tile/Instr construction后，才调用相同actual memory/target leaf。
+- `none`的SPM legalization从完整per-Tile iterator tile开始；每个candidate实际物化并运行actual memory/target gate。只有actual capacity rejection且每个
   conflict demand都有current typed owner时，才按确定性规则生成下一smaller temporal candidate。不得用byte projection预测fit；Accepted
   owner直接下传且不重建。
 
@@ -322,437 +322,100 @@ source program
 - source snapshot只复制IR/metadata/目录结构；16个Tile binding只引用`ProgramTensorId`和range，
   parameter/constant按range一次materialize并shared view共享，card-shared target resource只encode一次。
 
-## ExecutablePackage与one-shot runtime（Q56 current合同）
+## Package与one-shot runtime调试
 
-- package目录只有三样：`manifest.json`、`modules/module_*.so`、`data/program-data.bin`（empty case也写canonical空文件，
-  `total_bytes=0`、`base_alignment=1`、canonical empty digest）。source tree、IR copy、NPY目录、exporter payload
-  一律不进入package；测试用`test ! -e`钉住该合同。
-- manifest是closed schema：program/target/launch/card_count/tile_count/program_data/program_tensors/target_tensors/
-  inputs/outputs/modules/entries（exact fields，canonical JSON，无版本分支）；参数identity是`role+role_index`
-  （=tensor program参数位），无name字段。
-- 每个entry参数是closed union `TileEntryArgument`：ExternalInput{port}、TargetTensor{tensor}、ExternalOutput{port}、
-  Workspace、ProfileRecord、TransportStatus；port id按table dense，target tensor id全局dense。
-- runtime两块allocation：program data一块（non-empty一次整体H2D，empty零provider调用），invocation一块（inputs/outputs/
-  每Tile workspace/profile/status/pointer rows预排）；TargetTensor地址=program-data base+file_offset，其余=invocation
-  base+offset；no-card打印`launch_argument: N base=invocation|program_data offset=M`。
-- 验证入口：no-card`wafer-run --package-dir <pkg> --no-card`；包布局/清单断言用python一行式
-  （hashlib digest对比、role/role_index、bytes/alignment/file_offset）。
-- `txLoadGraph`/`txLaunchModel`只存在于`docs/`反向工程资料；Wafer-owned接口、CLI、runtime只有`txLaunchKernel` family。
-- selected representation按physical-order bounded windows写出；Cx/NCx source读取可按当前window logical index分成多个连续run，
-  不得假设logical row对应contiguous physical span。不同dtype统一走current formal conversion route，identity raw copy只允许同format。
-- strict loader从package dtype/layout/shape经shared physical codec重算TargetTensor和external port bytes，并要求program-data精确结束于
-  最后一个canonical range；`modules/`所需目录祖先从declared module paths推导，额外空目录也属于closure违规。
-- 每个TargetTensor创建一个move-only `ProgramDataRangeMaterialization` reader；reader创建计一次materialization，其bounded window
-  read数量单独进入read accounting。同一ProgramTensor的不同target descriptor必须各有一个reader，16-Tile共享只复用TargetTensor。
-- `WaferPackageSupport`拥有profile instrumentation共享model/filename常量；`Package/Writer`与`Driver`不仅不能链接`WaferRuntime`，源码和public
-  header也不能include`Wafer/Runtime/*`，该双边界由source-organization检查。
+- package schema、entry、tensor和runtime binding语义只从15号设计及current shared loader读取；memory不复制字段清单。
+- strict loader必须从dtype/layout/shape和shared physical codec重算bytes/alignment，并核对manifest、module、program data、
+  entry和argument all-and-only closure。Python断言只补充测试，不维护第二个reader。
+- non-empty program data整体H2D一次；external input/output、workspace、status和pointer row使用预排的invocation allocation。
+  no-card在任何provider side effect前完成同一计划验证。
+- target representation按bounded physical-order windows写出；identity raw copy只允许同format。Cx/NCx等blocked layout不能把
+  logical row假设为连续physical span。
 
-## Q59外部工具facts、commit合同与安装（stable）
+## Product resource与package commit调试
 
-- `wafer-compile`不烘焙任何source/build绝对路径：SPMD helper、device linker script与CRT/ABI资源按executable-relative
-  install位置发现（build tree由`wafer-compile-resources`目标同步生成`bin/../share/wafer`与`bin/../libexec/wafer`，
-  install tree由install规则放置同一布局）；`python3`/`clang++`经PATH解析；pinned TX8依赖根必须显式设
-  `TX8_DEPS_ROOT=<repo>/third_party/tx8_deps`（lit/CTest已注入，手动跑build tree的`wafer-compile`必须自设）。
-- `--target-model*`/`--dump-compiler-ir`/失败注入是`wafer-compile-test`（`WAFER_ENABLE_TEST_HELPER_OVERRIDE`）专用；
-  production `wafer-compile`对它们和旧`--output-program-dir`报unknown argument。
-- install闭包验证：`cmake --install <build> --prefix <dir>`后直接跑`<dir>/bin/wafer-compile`做source→package→no-card；
-  feature-off配置（importer/SPMD deps关）不安装wafer-compile。
-- SPMD helper进程接口保持`--input-program-dir/--output-program-dir`（helper输出本来就是program目录），
-  不要和wafer-compile CLI的`--output-dir`混改。
+- production tool不烘焙source/build绝对路径。helper、linker script和CRT资源按executable-relative install布局发现；
+  外部tool经PATH或明确的current dependency配置取得。
+- 全部可失败validation、readback和digest binding在staged root中、唯一no-replace rename之前完成；rename后不能再运行会
+  翻转结果的检查。失败出口不留下部分final目录。
+- compiler返回的package owner必须拥有manifest、modules和program-data的稳定内容；只保存path、fd或可被外部原地改写的mmap
+  不能证明content ownership。
+- install验证使用`cmake --install <build> --prefix <install>`后直接运行install tree工具；build-tree和install-tree使用
+  同一资源布局，不增加兼容flag或本地路径fallback。
 
-## Q59单一发布点commit合同（stable）
+## 构建与测试命令模板
 
-- 全部可失败验证（fresh manifest load、member open/bind、profile activation digest binding）在staged root上、唯一一次
-  no-replace rename之前闭合；rename之后零可失败步骤，失败出口必然无本轮目标。不要在发布后再加任何readback。
-- package层唯一`runtime::ExecutablePackage`在rename前由shared strict binder读取manifest、modules（manifest顺序）与
-  program-data的owned volatile snapshots，逐项核对size/digest并关闭全部descriptor；删除、替换或同inode改写路径都不影响
-  result内容。只保留fd或只读mmap不能作为content ownership。
-- `--profile`输出是共同delivery root：一次rename发布`<output>/package`+`<output>/package.profile`；runtime sibling规则
-  `<primaryPackageRoot>.profile`不变（wafer-run `--package-dir <output>/package`即可发现）；普通模式`<output>`直接是package root。
-  board profile测试取`<output>/package`为package根。两次顺序rename+回滚没有共同原子性，禁止恢复。
+- 增量构建使用`cmake --build <configured-build> -j$(nproc)`；CTest使用
+  `ctest --test-dir <configured-build> -R '<affected-regex>' --output-on-failure -j$(nproc)`。
+- lit从configured build tree运行对应suite或注册的CTest，使site config注入工具和依赖；不要把source-tree test直接交给lit。
+- 修改public API时按当前CMake option重新配置并构建所有受影响consumer配置；具体build目录从当前环境取得，不写入memory。
+- 真实设备case只在明确任务中以单进程、逐case运行；无硬件时只完成host reference、package和no-card，不把skip计作通过。
+## Baseline与search materialization调试
 
-## Q56构建与验证命令（stable）
+- baseline和search分别拥有controller、complete plan、Card/Tile materializer、policy-specific verifier和accepted result。
+  静态include/call graph应证明两者在complete-candidate层不互调，也不存在按policy/canonical equality/feature presence
+  切换行为的shared facade。
+- 允许共享的leaf只消费已经完整解释的operation或stage IR，例如只读IndexRelation事实、单operation tiling/layout、
+  TileRegion-to-Instr conversion、MiniMalloc、DDR/transport和target lowering；leaf不能回调controller。
+- baseline保持一个live deterministic candidate。每个compute region恰一个semantic root；同Tile多root为多个顺序region，
+  跨root shaped dependency显式materialize。只有actual SPM capacity rejection可触发预定义的smaller temporal successor。
+- search materializer直接按selected execution、physical version和movement plan构造IR。carrier只接收已经存在的SSA result/view，
+  不得接收producer op、tiling callback或compute builder。
+- 每个candidate只构造一次CardModule并进入一次actual gate；rejected/loser owner销毁，Accepted owner不重建。可选IR inspection
+  只读取最终accepted owner，不参与admission或package语义。
 
-- 主树：`cmake --build build/q55-current-fresh -j$(nproc)`；board runtime树：`build/wafer-board-check`
-  （`WAFER_ENABLE_BOARD_RUNTIME=ON`）；SystemC树：`build/q54-fresh-model`（改公共API后三棵树都要重编）。
-- 默认lit gate：`lit -sv build/q55-current-fresh/test/{Dialect,Frontend,Pipelines,Spmd,Transforms}`。
-- Tools/Runtime lit整跑：`lit -sv build/q55-current-fresh/test/Runtime build/q55-current-fresh/test/Tools`
-  （部分case分钟级，整跑10分钟+）。
-- 单测：`WaferRunBoardIOUnitTests`、public link smoke和`WaferUnitTests --gtest_filter='...'`定向套件；全量数量随current
-  registration变化，不把固定数字写成workflow合同。长模型、外部依赖和板端case不属于这个host unit二进制。
-- 板测：`test/Board/wafer_board_single_op_add_test.py`是Q56 board gate case，CTest名为`wafer-board-program-data-add`；
-  `WAFER_EXECUTE_HARDWARE_TESTS=1`才执行，
-  无硬件时exit 77；真实板测通过前Q56不标done。
-- Tools测试的python断言先脱离lit验证：把`%t.outputs/...`替换为真实package路径后用`python3 -c`跑一遍，再交给lit。
+## Actual SPM feedback调试
 
-## Deterministic baseline 的直接链路约束（stable，2026-08-22）
+- 首先确认candidate已经形成actual Instr、allocation、alias/effect、completion、lifetime和current owner relation，再观察
+  PlanSPMMemory/MiniMalloc结果。没有这些输入时SPM legality只能是unknown。
+- allocation、result、operand、output、movement和scratch relation由candidate父transaction拥有；emitter通过caller-owned
+  recorder报告实际创建事实。relation引用使用typed kind/index/result number，不保存可扩容容器元素指针。
+- capacity rejection必须携带actual conflict demand并映射到all-and-only semantic owner。无owner、多重不相容owner或stale
+  relation是compiler contract failure；不能按shape、名称、Location或“region只有一个root”补归因。
+- footprint、working set、shape公式、buffer数量和前一candidate结果只能用于非legality诊断，不能推进baseline、prune search
+  或代替offset。
 
-- baseline不建立region/function capacity probe或plan-side resource problem。每个complete candidate构造一份CardModule并调用一次Q50.0；
-  actual SPM capacity rejection驱动下一次确定性temporal successor，Indeterminate/Unsupported/CompilerBug保持原分类。Accepted owner直接
-  下传，不得重建。
-- 一 root 一 region：IndependentDDRStages从observable output shard与actual selected edge endpoint推导该Tile的真实
-  root集合；独立component逐root/closure构造后按canonical node order拼接，connected root由selected RegionCut在物化时直接
-  形成DDR store/reload边界。baseline不再先形成multi-root region再调用post-hoc root splitter；通用
-  `splitRegionAfterPrefix`只服务已选择的RegionCut/resource crossing。
-- `StorageRootMemo`（StructuredBufferRelations.h）：query-local per-value 存储根 memo，内层 set 用
-  `unique_ptr` 持有（map rehash 不悬空引用）；只读同一 IR epoch 内共享。
-- baseline controller只消费typed iterator/topology facts、当前candidate的structural query与Q50.0 actual result；按typed SPM rejection推进下一项
-  必要coordinate。任一helper只要接收option列表/domain并通过propagation、recursive CSP、backtracking或
-  assignment solve返回一个结果，即使确定、只取第一个或标为`policy-free`，本质上仍是search，不能留在baseline transitive
-  closure。baseline只保留一个live coordinate；functional legalization transition必须预定义、单调、不分支且不回溯。
-- exact relation的变量/分段数量限制不等于wall-time有界。支持的projected/permuted/static-rectangle语义应沿
-  `IndexRelation` builder/composition保留closed-form witness，避免在baseline热路径用generic
-  `PresburgerSet::isEqual/isSubsetOf/subtract`恢复矩形；generic fallback在任何emptiness/extremum/equality调用前检查变量、分段、
-  每段constraint、local variable和绝对系数上限，资源耗尽返回indeterminate，不能当logical rejection推进coordinate。
-- 一个baseline invocation先建立一次immutable source analysis owner，只做source verifier、topology/logical mesh、static output domain
-  和structured-node identity；每个deterministic candidate建立query-local typed facts并调用一次完整Card materializer。同一
-  coordinate的全部Tile从root execution domain共同反向传播exact
-  operand demand；relation按operation/result/operand建立一次，structured producer形成停止边界。验证carrier all-and-only覆盖后，
-  每个candidate的final single-root region只一次性物化typed recipe要求的operation和endpoint，不先建立SSA closure或局部probe再rebuild。
-  16个Tile entry用共享MLIR线程池bounded并发构造并按Tile ID稳定归并；cache只保存同一IR epoch的analysis facts，不保存materialized IR。
-- 一个只有final result、但partial state由多个coupled components组成的structured op，不能把internal components伪造成额外op results。
-  exact-demand proof分别保存final result slice和coupled component的source-owned map/type及group/contribution domain；contribution只携带
-  component slices，merge完成后才产生唯一final owner。普通result movement在专门work projection闭合前必须fail closed，不能逐component
-  独立发布或复用普通multi-result reduction路径。
-- per-root/Tile materialization准备不应再次walk完整operand closure。先从closed assignment与同一exact-demand proof派生
-  `RootRegionWork`：execution/contribution/merge、operand use、support DAG、boundary和final result一次汇合；support result用semantic
-  value path标识，同一result的多个use只做bounded exact-domain union并拓扑输出一次。operation/value handle只在当前immutable IR epoch
-  内查找，不能进入identity。singleton leaf只关闭execution request；full root domain、region group和selected Card transaction继续由
-  各自owner完成，不能让leaf helper顺带选择movement/layout/schedule。
-- canonical region planning保持最小：一个nonempty root work对应一个singleton group；execution shard和merge group分别形成required
-  top-level execution，boundary use按source/use/eligible-owner形成external `DemandFragmentId`。fragment identity不复制exact set，也不按
-  node pair折叠multi-result、multi-operand或fanout。不要为canonical点预留single-value delivery enum、nested/replica nullable字段；
-  local stored/direct、nested、sharing和replica在真实domain consumer到位时原位扩current RegionPlan。
-- temporal planning以`TraversalScopeId=(required/replica execution, top-level piece或nested invocation class)`为identity；每个scope的
-  complete size域是可tile轴的`1..L`、full-extent-only轴的singleton，以及active iterator precedence DAG的全部linear extensions。
-  不同Tile的remainder保持独立变量，rank-zero是唯一empty vector，merge execution没有假scope。interval proposal只决定first singleton，
-  midpoint children仍精确覆盖其余integer points；不读取target geometry、capacity、allocator或SPM估算。
-- nested temporal classes必须在parent concrete plan后从consumer operand relation、selected fragment exact domain和producer result preimage
-  派生；absolute parent-wave offset由actual SSA提供，class identity使用translation-normalized local coordinates，使相同extent/relation的
-  steady waves共享一个plan，main、tail、halo和producer internal iterator差异仍保留。parent改变即重建children，relation work超限返回
-  indeterminate；不得用full producer、bounding box、wave ordinal或operation pointer补关系。baseline full-local初始点复用同一domain，
-  仍只是合法起点而非default winner。
-- A--E闭合后的structural readiness只验证current TemporalPlan domain membership并返回下一representation coordinate；RegionPlan由前一
-  typed transition验证，不在这里重复query。
-  result type不含resource bytes、bound、packing、capacity或rejection。Q50 mechanism只依赖plan/domain与stable coordinate schema，
-  不反向依赖Q51 state/frontier；prior axis failure保持原分类，partial query不补suffix、不构造IR也不调用actual gate。
-- physical representation使用`logicalValues + physicalVersions + uses`单一plan合同；PhysicalVersionId的typed path显式编码conversion的
-  source/target layout、shared/per-use anchor及identity-alias source。domain从exact boxes与`PhysicalLayoutRelation`惰性枚举完整primary/use
-  assignments和显式legal tuples，不按node/operand role或fixed Top-k缩域。selected builder先全量preflight，再只按version ID bind/lookup；
-  shared conversion一次定义、per-use conversion分开、identity alias零copy，不允许first-use source查找或隐式boundary load。
-- movement realization明确区分DDR、opaque target-routed endpoint transfer和compiler-emitted software relay。relay domain惰性枚举distinct
-  relay Tiles的全部simple permutations；plan只保存逐hopphysical endpoints，不声称raw router path/link load。peer eligibility要求G selected
-  source/destination encoding一致；prepare从actual SPM memref计算physical bytes并在mutation前验证全部hop，随后发出matching send/recv token。
-  message ordinal只作candidate-local lowering carrier，不能从node/edge/operation地址恢复；SPM capacity仍不参与movement query。
-- initial storage domain始终保留fresh object sibling；identity alias只消费G proof，reuse只来自proven-disjoint或携J hard edge的explicit
-  requirement。slot multiplicity完整覆盖typed `1..U`与rotation options，U不读取bytes/capacity。selected builder按multiplicity创建objects，
-  version occurrence用modulo lookup，不扫描/clone loop、不分wait或改order；pre-K BufferPlan在execution structure变化后必须失效重闭。
-- canonical representation只给已经显式存在的nonempty shaped logical versions建立一对一Tensor primary version。boundary fragment、
-  support result、execution result、ordinary partial和coupled component必须使用typed variant identity；empty/scalar不造假version。
-  exact domain/type留在query-local resource description并用`PhysicalLayoutRelation`检查finite boxes，不能只写layout enum。
-  derived conversion、alias/shared secondary与use-binding solver在真实layout domain consumer到位后再扩current contract。
-- canonical movement correctness carrier显式区分external load、cross-region DDR transfer、remote reduction gather和terminal publication。
-  structured fragment必须由D fragment owner映到G source/destination versions并校验finite-domain containment；ordinary/FD remote
-  contribution逐result/component移动，同merge Tile local contribution无action，empty/scalar不造movement。canonical H不选peer/relay/
-  reuse/buffer/order；这些在movement domain到位后扩同一current plan。
-- 显式test work counts证明`candidate CardModule count == candidate Q50.0 count`，每个candidate恰一次，rejected transaction销毁，
-  accepted executable直接move到输出且不重建，
-  也不再运行未被输出消费的schedule/duration分析。baseline public header/result与旧search statistics/result分离；可选IR inspection
-  写入显式caller-owned sink，普通compile的`tile_ir_prints=0`且accepted result不携trace。
-- baseline迭代验证只走显式`none`的direct unit、定向lit和轻量source-to-package/no-card case；不运行旧search、旧winner对照或
-  paired optimization回归。模型级materialization任务在定向门禁闭合后只运行一次fresh FP16 LLaMA `optimization-none`
-  source-to-package/no-card；wall-time用于发现work-count回归，不在每次小改后重复重模型。
-- source-to-package 端到端：reference capture 按仓库 dtype 政策是 f16（target 拒绝 f32 GEMM），
-  `env CPU_NUM_DEVICES=1 PJRT_DEVICE=CPU third_party/python-importer-py311/bin/python
-  test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-reference-program --size 32 --output-program-dir <dir>`
-  后 `TX8_DEPS_ROOT=<repo>/third_party/tx8_deps build/q55-current-fresh/bin/wafer-compile --input-program-dir <dir>
-  --output-dir <pkg> --num-partitions=1 --optimization-policy=none`。
-- Q51完整new-search链闭合前不执行LLaMA `search`；Q49.P完成门禁中的单次fresh FP16 LLaMA只验证`none`功能链和work closure，
-  不作候选质量profile。Q52再执行显式bounded LLaMA search scalability profile，Q53生成正式模型package/oracle/no-card；
-  旧输出不回放为current证据。
-- Q49.P official no-card gate：
-  `ctest --test-dir build/q55-current-fresh -R '^wafer-runtime-pytorch-llama-2-7b-block-fp16-optimization-none-no-card$' --output-on-failure`。
-  使用current CTest配置的模型级timeout，不再叠加历史240秒的临时外层限制；wall/RSS异常作为profile问题单独记录，不能通过放宽
-  correctness断言消失。
-  该测试必须从本轮source重新编译完整package；不得复用历史package。runner从source program读取`functions/forward.meta`，从
-  current package读取manifest/module/program-data，不读取或要求`package/functions`。
+## IR膨胀定位
 
+- 先记录source、post-normalization、Tensor、Tile、bufferized、Instr和target-call各stage的op family、wall、RSS及是否实际到达，
+  再定位首次异常增长；未到达stage不能记成零开销或归因给其planner。
+- 同时统计logical structured node、selected execution和actual compute occurrence。按node set验证会掩盖multiplicity；
+  fanout destination增加时producer compute不应增加，只有必要view和transport可以增加。
+- 分别解释view/alias、materializing conversion、copy、allocation、global、movement和target call。metadata-only view不得形成
+  target movement；无法证明alias时保留唯一显式copy，而不是依赖后置DCE。
+- instrumentation必须显式开启且不改变plan、IR或failure。op count和严格下降只作回归证据，不进入production assume、
+  legality、shape threshold、expected-inventory builder或专用全局verifier。
+- 首次处理重复traversal、重复materialization和错误scope，再考虑memo、descriptor cache、并行和低层优化。
 
-## baseline 定向验证边界
+## Search state与profile调试
 
-- baseline回归已经从旧search suite迁到`Planning/Baseline/CardBaselineCompilationTest.cpp`；使用
-  `CardBaselineCompilationTest.*`。current `CardExecutableSearchTest.*`只验证Q51.Core空domain路由，不覆盖baseline功能，也不会进入
-  已删除的placement枚举。再显式列出
-  `WaferTensorProgramToCardModuleTest.*`、`StructuredBufferRelationsTest.*`、`TileMemoryPlanningTest.*`和`PipelinesTest.*`；测试总数随current suite变化，
-  不把固定数字写成合同。
-- baseline 工具链用 `wafer-compile-card-baseline` 的 CHAIN/CROSS/GEMM/no-card 定向 lit；Q51完整search链闭合前不运行重型
-  LLaMA block。需要定位relation热路径时，用同结构小图和明确work count，
-  不用大模型wall-time代替算法证据。
-- CardModule构造、各Tile lowering、DDR/index及target ABI阶段都按独立Tile使用bounded executor；真实板端launch仍串行。
-  “16 Tile并发”不能掩盖重复整图分析：显式timing/测试计数同时记录Tile entry数、公共analysis构造数、complete-candidate数、
-  CardModule/Q50.0次数、winner rematerialization和两段maximum workers。相同source descriptor可复用pure analysis，不同candidate/
-  tail/offset/communication仍构造各自actual IR。
+- partial planning只保存typed immutable assignment和continuation，不构造CardModule、Instr、SPM problem或target output。
+  任意complete assignment必须能够在fresh session中从自身parent chain重建全部query并独立actualize；cache不能是隐藏前置。
+- resumable session复制小型immutable config，只借用明确由outer transaction持有的source、ProgramData和diagnostic owner。
+  continuation不能引用临时config、Operation pointer或遍历顺序产生的ordinal。
+- memo只保存pure typed query result，key覆盖query实际读取的全部fields。cache-off、eviction、hash seed和resume切分只增加work，
+  不改变successor、actual result、winner或coverage；dependency perturbation用于证明key完整。
+- profile只在结构正确且完整new path通过后开启。记录query/transition/actualization次数、time-to-first、wall、RSS和publication；
+  普通compile不构造统计对象或字符串报告。
+- memo、priority、component DP和LNS不能签发legality。固定beam、Top-k、不可恢复eviction或LNS-only会丢coverage，必须显式报告
+  budgeted result，不能宣称exact或optimal。
 
-## Single-root TileRegion actual apply（stable，2026-08-19）
+## Descriptor与completion定位
 
-- Q50.B representation foundation先关闭`SpatialAssignment`，Q50.A派生每个node/Tile的exact iterator demand；Q50.C直接在最终`TileModule`中创建private root function并
-  原位lower成一个outer `wafer.tile.region`。function-level conversion是正式窄入口，不为获得module anchor创建synthetic
-  module，也不返回scratch SSA、probe verdict或可重放body。
-- root backward closure由current SSA/effect/interface驱动：source input和其它structured node result成为typed DDR function
-  boundary；只把实际进入root operand的pure non-structured tensor transforms复制到最终function。multi-producer support graph在每个
-  structured producer处分别停止，不能递归拉入sibling compute。
-- baseline configured temporal leaf与search node-shard apply共同调用`StructuredIterationTile`；primitive只负责一次
-  TilingInterface iterator request和result-position事实，policy、root grouping、temporal winner、movement和buffer都留在各自owner。
-- spatial partial reduction的每个contribution用`PartialReductionOpInterface`的neutral initial tensor产生partial value；所有partial
-  rectangle在selected merge Tile的独立single-root region中all-and-only assembly后再merge，原始DPS init只在这里消费一次。
-  contribution若各自先merge init，再做跨Tile combine，会重复累计任意非identity init，禁止采用。
+- PhysicalAccessRelation只在需要时组合physical relation；已有total/bounded projected proof时直接构造descriptor，避免先逐点
+  展开再压缩。dynamic offset必须由current loop bounds和target verifier证明全域range。
+- completion从selected worker、movement、storage、effect、control flow和buffer reuse fresh重建。alternative branch merge与
+  sequential loop backedge分开处理；same-worker普通链只保留issue order。
+- Direct-DTE issue与wait是不同程序点。recv wait位于first read/FSM reuse前，send或relay wait位于last release/resource reuse前；
+  issue本身不是默认wait位置。NCC join和DTE token不能互相代替。
+- 修改join/wait前读取current hardware、target lowering和CRT/runtime事实并标记supported、board-observed、unknown或excluded。
+  unknown不能靠“保守同步”、operation类别、loop/region/materialization边界或立即await补齐。
 
-## Coupled TileRegion domain与actual apply（stable，2026-08-19）
+## Product source复现
 
-- search identity是每个Tile上的canonical connected node-shard partition，不是per-edge fusion bool/action。edge只有在exact
-  destination demand全部由同Tile owner覆盖、tensor chain受支持且不跨partial-reduction boundary时才可连接；assignment必须同时
-  保留maximal、singleton和中间cut。
-- partition domain先拆fusable undirected connected components，再对每个component惰性推进restricted-growth labels；否则N个
-  disconnected节点为了找到singleton或证明end会扫描Bell(N)个必然非法partition。Card domain只是这些component domain的普通
-  Cartesian product，不预存point vector。
-- actual multi-node group从immutable source SSA一次性构造最终region，不先建singletons再合并。多个sink共享一个
-  function-local producer-tile cache；cache只允许同block、同source result、同offset/size/stride且定义支配use的actual value复用，
-  不跨function、candidate、mutation epoch或CardModule owner。
-- correctness witness是一个outer TileRegion内的exact emitted-node集合和内部SSA：group内部没有额外DDR store/load，fanout/diamond
-  相同producer slice只有一个actual version。`RecursiveProducerTiling`只是已选region内部的temporal lowering donor，不能重新成为
-  search assignment或默认edge recipe。
-
-## Temporal assignment与actual loop（stable，2026-08-19）
-
-- temporal identity是每node完整iterator tile-size vector加actual multi-wave iterator permutation；spatial tail上变成one-wave的维度
-  只从该shard的loop中滤掉，不改全局assignment，也不制造等价state。
-- baseline与search actual traversal共用`TemporalWaveLoop`构造compact prologue/steady/tail，leaf共用TilingInterface；baseline只走
-  单调functional序，不能把其第一个fit或自然order写成search限制。
-- `StructuredOpTemporalTile`跨clone/remap必须整体复制；新增typed field后用整仓aggregate-construction搜索核对所有current producer和
-  consumer。builder可能被TilingInterface或递归fusion改变，leaf中的offset、accumulator和yield必须显式重设insertion point。
-- coupled内部producer只在选中order与共同traversal相容时留在该region；不相容assignment返回typed materialization failure并保留
-  Q50.D cut sibling，不静默重排，也不通过临时full-tensor组装或actual IR cache伪造支持。
-
-## Partial-state structural readiness（stable，2026-08-22）
-
-- 坐标未闭合时，SPM状态就是unknown。partial query只检查A--E等当前结构坐标是否Ready、Missing、Unsupported或Broken；不返回
-  footprint、bytes bound、synthetic demand、packing结果或capacity rejection。
-- query输入显式携带current immutable source、已有typed assignments和missing-coordinate集合；不clone/lower IR，不调用packer，不写回state。
-- 每个complete assignment必须独立actualize并运行Q50.0。actual SPM rejection默认只关闭该complete point；owner relation可用于
-  baseline选择下一temporal axis，但不能缓存成node级“最大可放下tile”或跨layout/movement/buffer sibling复用。
-
-## Actual SPM feedback与buffer relation owner（stable，2026-08-23）
-
-- SPM admission只接收完整current Card/Tile/Instr candidate，运行fresh completion、lifetime和MiniMalloc。shape、logical element数、
-  buffer count、footprint公式、synthetic demand或前一candidate结果均不能签发capacity结论或驱动refinement。
-- `StructuredMaterializationRelations`由candidate父transaction唯一拥有；TileRegion/Instr emitter只报告实际result、operand、output、
-  selected DDR stage、movement和scratch buffer。relation引用使用kind/index等typed位置，不保存可扩容vector元素指针。
-- 一个logical output可以同时关联caller-visible DDR destination和实际写入它的一个或多个SPM tile/source buffer；`outputIndex`是归因键，
-  不是“每个output只能有一条relation”的唯一性约束。complete streamed insert和incomplete whole-output assembly分别断言各自精确cardinality。
-- capacity rejection返回actual allocation/conflict witness，并通过current storage root索引到all-and-only typed owners；无owner、多个不相容
-  owner或relation已离开current IR都是compiler-contract failure。baseline只有在完整归因后推进确定性temporal successor。
-- rejected candidate连同IR/relation销毁；Accepted owner原样进入target/package，不重新materialize。quiet candidate evaluation只抑制
-  重复capacity diagnostic文本，不抑制typed certificate或其它错误。
-
-## Tile-to-Instr descriptor规划与结构化压缩（stable，2026-08-23）
-
-- `PhysicalAccessRelation`的point/span query直接使用已验证logical projection与encoding；physical bit/ordinal Presburger composition只在
-  mapping/traversal equivalence query时lazy创建。in-bounds非零constant projected slice拥有独立total/bounded construction proof。
-- ordered reduction按`WaferPhysicalLayoutPiece`的half-open bounds和declared period构造exact runs，不逐tuple建立AffineMap。run使用
-  `scf.for`携带两个accumulator并按原顺序交换；gather/scatter的SSA byte offset由target function-level verifier结合constant loop bounds
-  证明全域range，op verifier只检查局部mixed static/SSA表示合同。
-- request-local descriptor cache key包含source/destination `MemRefType`、iteration shape、两张projected affine map和engine，只缓存
-  total/bounded exact success。低复用query不保留plan；identity physical traversal按type pair复用。work statistics记录实际descriptor
-  planning次数，不能用无条件debug stderr观察cache。
-- completion fixed point区分alternative branch merge与sequential loop backedge：后者从上一轮完整body state继续；optional
-  same-worker issue只在实际发生的path上由busytable保序，未发生issue的path无completion，因此不因conditional ambiguity插backedge
-  join。cross-worker conflict在下一issue前完成，剩余same-worker流在observable exit完成。
-- resolved same-worker NCC后继可以界定旧地址lifetime：若packer后来复用该地址，首个同worker issue会由busytable按实际地址排序。
-  但这不等于worker完成；tracker必须保留ordered-release obligation，直到participant join。不同worker、Direct DTE、Kcore/call或其它
-  observer在join前出现时actual lifetime失败。只缩短区间并丢掉pending obligation会允许跨completion-domain错误复用。
-
-## Physical planning、actual candidate与唯一发布
-
-- query若消费某个plan component，必须先交付该component的policy-free representation foundation、structural validation和至少一个真实
-  producer，再实现query；不能让query暂时消费旧trial/opaque adapter。Q50.B foundation先产生`SpatialAssignment`，Q50.A只推导demand，
-  B-full随后枚举domain并调用A，就是这种producer→query→full-domain分层。
-- `none`与`search`是并列driver：分别从TensorProgram建立deterministic或optimizing plan，只共享policy-free analysis、typed plan schema、
-  materializer和lowering；任一模式不得调用或返回另一模式的结果。
-- production search在immutable source与typed partial state上生成、约束和排序；每个complete assignment必须用完整CardModule/Instr作为
-  actual candidate evaluator。统一work allowance同时计partial work和candidate actualization，不保留独立固定candidate-count协议。
-- Q51.Core不能等所有axis完成后才一次性接线，否则search-only mechanism交付时没有production consumer；也不能先落mock/nullable
-  空壳。S/B-full形成首批真实domain后建立Core foundation，缺轴返回typed incomplete；后续每个Q50提交同批扩closed variant和caller。
-- 每个complete assignment进入一次CardModule materialization和Q50.0；typed actual rejection返回controller，rejected/loser owner销毁。
-  final winner保留第一次Accepted owner并只发布一次，不得重建。independent有界穷举reference只提供assignment枚举，actual evaluator与
-  production相同；它不替代真实规模正例。
-- 每个Q50 mechanism完成必须同时有算法、production consumer、query/apply测试和donor能力映射；定义typed domain或direct apply不足以
-  证明任务完成。
-
-## Physical version与PBQP proposal边界
-
-- physical representation identity按node/Tile的operand use与result value区分；producer result是fanout共享primary version，consumer
-  operand是use-local要求。未读取DPS init和scalar不制造layout state。
-- layout合法域从actual temporal leaf shape和`PhysicalLayoutRelation`建立，不从op名、历史winner或shape默认猜测。compute固定需要的
-  Cx/NCx与外部Tensor writeback是selected primary之外的显式derived versions，不能反写logical edge assignment。
-- apply期间per-use anchor只在当前consumer范围暴露selected use version；shared anchor在同一actual region保留该derived layout供后续
-  compatible uses复用。result primary不被consumer临时覆盖。required与replica result都使用`RegionExecutionId`，不能合并candidate-local
-  replica与原required execution。
-- PBQP proposal graph显式包含primary、use/alias-source equality和n-ary tuple auxiliary variables。R0/R1/R2只做保持最优值的exact
-  elimination，degree>=3 residual core稳定穷举并在原问题复验；不使用RN、spill ratio或fixed Top-k。work limit只返回
-  Indeterminate，不能删除raw RepresentationDomain successor或报告NoSolution。
-- production proposal当前只使用已证明的hard factors和nonnegative known cost；没有typed operation layout interface时不猜hard tuple。
-  solver、domain和selected construction均不读取SPM footprint/capacity/packing，实际layout候选仍由完整candidate的Q50.0判定。
-
-## Explicit movement domain/apply（mechanism可复用，proof重审中）
-
-- movement identity绑定exact edge/destination或partial-reduction node/result/merge Tile；fragment携source shard base、global rectangle、
-  destination-relative offset、source/transport layout、element type及logical/physical bytes。不能只存edge action bool。
-- route域在current assignment上惰性DFS全部simple paths；selected path用source/destination及intermediate relay ops实际表达，每hop独立
-  message round并立即await。不得把canonical shortest path当合法域，也不得把route留在跨stage C++ side table。
-- identical payload destinations以set partition形成unicast/partial/maximal multicast siblings；只有route union为single-parent rooted tree时
-  合法。apply合并共同tree edge，destination可以消费后继续forward。
-- same-group retained与refetch、group-cut DDR/recompute属于不同typed choices；partial ownership可混合local subview load和remote peer
-  fragments。任何movement变化都要求storage/event/calendar等下游typed facts重算；complete candidate的actual packing只在Q50.0。
-- 旧NoC intermediate/partial-dataflow中的alias、lifetime、slice和tree/ring proof尚未逐项映射到current owner；不得仅凭上述domain/apply
-  存在或direct tests通过声明Q50.H完整。
-
-## NCC completion分层（stable，2026-08-19）
-
-- target command completion只使用`Target/Core/NCCCompletion.h`的pure worker/mask/kind；MLIR IR不得include TX81 NCC ABI或target
-  completion enum。IR worker count从closed ODS `NCCWorker` enum推导。
-- ordinary Instr issue通过`WaferNCCIssueOpInterface`暴露worker；participant join和synchronous-writeback op通过
-  `WaferNCCCompletionOpInterface`返回完整`NCCOperationCompletion`。新增NCC op必须实现对应interface，不能回到central concrete-op
-  switch、op name或target opcode判断。
-- cross-op pending事实由`Analysis/Scheduling/NCCCompletionAnalysis`从current Module重算；结果携per-operation before/after mask，
-  只在未变化IR epoch内有效。structured if/for/TileRegion和defined direct call受支持，递归/indirect/unsupported CFG fail closed。
-
-## Event/resource foundation与后续order/worker planning（stable，2026-08-23）
-
-- Q50.J foundation从B–I-initial typed plan构造query-local `EventGraph`；hard DAG来自typed execution nesting、movement
-  issue/completion、storage definition/use/release和explicit reuse order，不借用actual Instr pointer/snapshot。Core cache以完整
-  `InitialBufferState`为key，state变化即重建，graph不进入candidate identity或IR。
-- selected alias/reuse同时保留semantic object和physical storage object：前者定位definition/use lifetime，后者定位exact SPM range；
-  不能把复用后合并的allocation误当成只有一个semantic lifetime。opaque NoC只发布endpoint estimate，显式exact target route才发布
-  directed-link resource。
-- Q50.K只选择execution structure并改变occurrences；必须先由Q50.I post-K重闭slot/lifetime/reuse edges，随后J closure才枚举
-  topological/resource order、typed worker和completion。顺序是`J-foundation → K → I-post-K → J-closure`。
-- calendar/timestamps保持query-local；selected emitter一次写order/worker并fresh构造wait/join，actual Instr只做plan parity。共享资源
-  estimate不能签发legality/profitability，opaque NoC不伪造directed-link uses。
-
-## Structured compute implementation choice（stable，2026-08-19）
-
-- implementation是per-structured-node typed assignment，不是target capability bool、external model local winner或BodyEmitter猜测。
-  Natural始终保留；特殊实现只有current structured semantics能完整证明时才进入domain。
-- reciprocal sibling要求all-parallel static generic、identity output map、每个input exact `IndexRelation`且scalar body恰有一个
-  `arith.divf 1.0, x`。selected apply仍在scalar lowering处复验1.0常量，Natural生成Div、Reciprocal生成Recip。
-- node assignment随shard group进入同一次CardModule materialization；recomputed/unowned support node默认Natural。旧implementation donor
-  只有在domain、actual IR和negative proof迁入active source并受测后才能删除。
-
-## Execution structure与selected stage construction（stable，2026-08-23）
-
-- current K domain按J connected event component形成scope；每个scope无条件有Serialized。Pipelined必须有唯一E exact recurrence、typed target
-  contract和至少两个steady-loop iterations。`OccurrenceRelationId`保留per-axis counts；`PipelineIterationClass`另保存innermost recurrence axis
-  及E已经确定的prefix/steady/tail，其中1024/128为`1+7+0`，1025/128为`1+7+1`。
-- Pipelined由all-and-only event stage partition、distance 0/1 dependence和current唯一可构造的launch distance 1表示；distance 0的destination
-  stage不能早于source，distance 1允许立即前一iteration供值。domain只拒绝stage空洞，不枚举timestamp/idle，不用multi-slot或estimated
-  overlap触发pipeline。synchronous writeback只保留Serialized；跨stage Direct-DTE必须使用bounded finite-unroll，不能让token跨backedge。
-  Core固定K后必须退回structure-specific storage，不能把pre-K BufferPlan/EventGraph直送J。
-- K选择后先重建I的structure-specific occurrences/slot rotation，再由J关闭schedule；complete-candidate construction在新Card subtree构造SCF
-  prologue/steady/epilogue。failure擦除subtree并终止，不在actual IR上寻找另一个structure。
-- memory planning只在selected stage/rotation完成后为全部slot分配offset。旧fixed-slot whole-Module clone不恢复，但其DTE/NCC/alias/
-  tail semantic witnesses必须迁入current owner。旧`StagePipeline` actual-IR wrapper及CardExecutable的buffering-scope入口已删除；current
-  K constructor只消费caller-owned EventId→operation mapping和已验证schedule，pinned transform失败时销毁整个candidate module。
-
-## Fixed-structure storage closure（stable，2026-08-23）
-
-- K固定后必须建立新的`BufferState`；state parent中的完整`ExecutionStructurePlan`就是generation identity。post-K domain也保存同一
-  structure并在state factory复验，不能因两个K siblings偶然得到相同BufferPlan就跨generation复用。
-- `SlotFamilyId`标识selected physical `StorageObjectId`，不是semantic version列表。多个identity-alias/reuse semantic lifetimes和
-  reduction gather staging可以归入一个实际allocation family；live distance先按各semantic ready→release区间计算，再对physical object取
-  maximum，不能用最早ready到最晚release的包络误删中间有gap的合法plan。
-- multiplicity lower bound只由selected stage live distance与current launch distance 1推出，upper bound只由K-selected recurrence axis的
-  exact occurrence count与selector type范围推出；rotation唯一为`{recurrenceAxis}`。outer axes重复inner pipeline，不产生等价axis
-  permutation states。Serialized清除pre-K extra family；Pipelined重新枚举`min..U`。bytes、SPM capacity、offset和packing estimate均不进入
-  本域，最终合法性仍由actual MiniMalloc签发。
-- actual slots是multiplicity个独立SPM memref roots。steady selector从`prefixCount + (iv-lower)/step`产生global occurrence coordinate，
-  再用typed modulo/arith.select选root；tail使用同一coordinate域。SelectLike origin union、dealloc和actual MiniMalloc共同复核lifetime/offset。
-  旧SelectedBufferMaterialization actual scan/clone/wait/join路径已经删除。
-
-## Fixed-generation schedule closure（stable，2026-08-23）
-
-- canonical B--I checkpoint的高层worker0全序叫`CanonicalSchedulePrefix`；最终`ClosedSchedulePlan`只用于fixed K/I event schedule，二者
-  不是新旧schema。closed plan携structure/buffer generation、EventId worker/resource bindings、shared resource sequences、per-scope control
-  orders和completion placements，不携timestamp、calendar、pending cache、cost或actual operation。
-- exact schedule successor枚举closed worker sets和hard-ready linear extensions。capacity-1 resource sequence的相邻edge进入control DAG，
-  全部per-Tile/Card orders合成后重新做global cycle check；跨Tile explicit hard edge不会因分scope而丢失。current资料没有证明
-  card-global capacity-1 DDR channel，CardDDR与opaque NoC estimate都不绑定resource instance、不产生sequence。
-- completion boundary由显式Completion EventId标识；NCC participant mask从selected issue worker或typed fixed obligation导出，DTE completion
-  不清NCC，NCC join也不清DTE。boundary必须位于issue之后、dependent first-read/last-release之前，并满足participant/FSM/resource事实；
-  missing contract不能默认Synchronous。actual wait/join/order emission只能在accepted complete-candidate subtree中执行；bounds/proposals属于后续
-  search control/scalability，不得成为绕过exact domain的第二入口。
-
-## Complete-candidate actual admission（stable，2026-08-23）
-
-- baseline与search共享policy-free `CompleteCandidatePlan → MaterializedCardCandidate → Q50.0` leaf；search不得调用baseline planner/
-  controller。Q50.0在Card split后和TileRegion→Instr后各提供一个caller-owned preparation callback，selected builder只修改本次owned
-  candidate，canonical preparation为空操作；两者继续调用同一Tile lowering、MiniMalloc、DDR、transport和target gate。
-- 每个materializable ScheduledState先重建当前domain/generation事实，再创建一份candidate。selected Region/representation在Card construction
-  中落地；movement在current Tile dataflow上替换direct donor；storage、worker/order/completion及K phase在current Instr上落地。每一阶段后
-  同时验证IR和current relations，任何失败销毁整个candidate，不在callback中retile、换layout、spill或选择sibling。
-- actualization只调用一次`compileCardModuleToExecutable`。Accepted保留该次move-only executable和offset；rejected IR随owner销毁。
-  SPM exact rejection只有在每个conflict/oversized demand的result/operand/scratch/output都能映射到SemanticRoot时才能反馈controller；owner
-  缺失是compiler contract bug。其它allocator/resource/unsupported/indeterminate状态不得伪装成capacity rejection。
-- operation result relation显式携`resultIndex`。alias/reuse或rotation前先从current relation捕获`EventId -> instruction`，之后可以合并physical
-  storage root而不丢execution identity；所有新SPM object必须由共同`wafer.tile.region`持有，跨region共享保持typed Unsupported。
-- full-feasibility API没有footprint、predicted lifetime、candidate bytes或替代allocator输入。SPM合法性仍只来自actual Instr relations和唯一
-  MiniMalloc路径；重复相同state用于test oracle时必须fresh materialize并得到相同accepted IR或typed witness，不能回放旧输出。
-
-## Actual-result controller（stable，2026-08-23）
-
-- complete candidate identity是Spatial、Region、Temporal、Representation、Movement、initial Buffer、ExecutionStructure、post-K Buffer和
-  ClosedSchedule组成的`CompleteCandidateKey`；ClosedSchedule只占其中一个axis。factory复核K/I/J generation，actualization credit必须在
-  启动transaction前按全key reserve；duplicate/exhausted/closed key不启动。只有Accepted actual result参与comparison；actual
-  ExactRejection只缓存完整point，owner roots不授权扩大prefix no-good；Unsupported/Indeterminate不写forbidden cache。
-- 没有默认winner cost。caller不提供显式positive target-rate `SearchCostCohort`时objective为Unknown；metric unavailable或checked arithmetic
-  overflow也为Unknown且没有可读value。同cohort Known objective才比较，Unknown/Incomparable只用完整semantic key决定single commit并标
-  `FeasibleUnranked`，不能宣称best。lower bound只有Known同cohort且严格大于Known incumbent时才允许prune。
-- controller保留一个move-only incumbent；Better或tie-key replacement自动销毁旧owner，finish直接移交该actual executable，不重建。
-  `SearchLowerBound`必须绑定完整key，只有Known同cohort且严格更差才能prune；frontier completion使用typed Exhausted/Incomplete，不用bool猜状态。
-  coverage必须区分ComparableBest、FeasibleUnranked、FeasiblePartial、NoFeasible、IncompleteNoCandidate和Failed，不能把预算耗尽或unsupported
-  写成NoSolution。
-
-## Unified typed search traversal（stable，2026-08-23）
-
-- 完整依赖顺序固定为Spatial→Region→Temporal→Representation→Movement→InitialBuffer→ExecutionStructure→post-K Buffer→Schedule→
-  ActualAdmission。每轴cursor属于session continuation；state只保存closed plan value。K/I/J必须使用各自domain cursor，不能从vector position、
-  plan ordinal或actual IR恢复next sibling。
-- resumable session用显式variant stack保存parent continuations；parent留在child下方，child exhaust后继续同一cursor。successor和
-  actualization都在step前消费planning credit；零credit不修改stack，耗尽只产生未穷尽coverage，不是NoSolution。ExactRejection/
-  Unsupported只结束当前point，外层continuation继续；Indeterminate停止当前coverage，CompilerBug poison controller。
-- persistent session复制frontend verification和ExecutionConfig values，只借用outer-owned TensorProgram/diagnostics/ProgramData。任意
-  ScheduledState可在fresh session中逐层重建domain并actualize；cache不构成隐藏前置。actual SPM roots不生成temporal shortcut，canonical
-  continuation自己覆盖siblings。
-- public `search`当前是明确的anytime first-accepted checkpoint，返回`FeasiblePartial`并直接移交该次actual Q50.0 executable；它不调用
-  baseline、不把first result称best。`none`仍是独立canonical controller。Q52可改变work/priority/stop policy，但不能改变domain、typed
-  actual admission或winner不重建合同。
-
-## Physical search profile资格（Q51+重审期间暂停）
-
-- 普通编译不收集search统计。Q51+重审闭合前不执行重型search profile；旧`--search-max-candidate-evaluations`及对应public API已经退役，
-  complete materialization次数不能作为长期planning allowance或scalability证据。
-- 恢复profile前必须先证明public search不调用baseline、所有计划轴有production consumer、partial state只保存typed assignments、
-  每个complete candidate actualize一次、winner不重建且publication一次，并有可信的work/coverage定义。no-card只验证package/runtime
-  接口，不证明搜索质量或性能。
-- 16 Tile实际conversion、lifetime、packing不得靠缓存、clone或replay materialized IR伪复用；共享只允许current immutable IR与target
-  facts可完整键控的analysis。是否跨Tile共享必须由semantic key和fresh apply证明。
-
-## Portable StableHLO product source（stable，2026-08-19）
-
-- 外部source program只使用`functions/forward.stablehlo.bc`；PyTorch/XLA保存的`forward.bytecode`本身是pinned StableHLO portable
-  artifact，产品adapter原子改为current成员名并删除diagnostic text。`forward.mlir`与旧`forward.bytecode`留在source会被拒绝。
-- `wafer.frontend.export_pytorch_program`只接受module、example inputs和不存在的output directory。测试case、seed、CPU oracle、dtype
-  comparator、target/search/runtime选项不得进入该API；测试generator可以调用产品helper，但产品代码不得import test。
-- `wafer-verify-program --program-dir`是advisory；compiler仍复制结构snapshot、建立payload owner并调用同一portable deserialize/verifier。
-  post-SPMD `forward.mlir`是compiler-owned内部TensorProgram格式，只由internal parser消费，不是source fallback。
-- 显式text IR检查使用`wafer-opt --pass-pipeline='builtin.module(wafer-frontend-verification)'`。StableHLO portable测试fixture用pinned
-  `stablehlo-translate --serialize --target=<external-version>`生成，text放在program directory外。
+- 产品source只使用current frontend定义的唯一portable StableHLO artifact；text IR只用于明确的internal/focused入口，
+  不能作为同一source的第二reader或fallback。
+- advisory verifier与compiler可以复用同一ingestion实现，但compiler transaction仍独立建立source snapshot、payload owner和
+  verification result，不能信任“此前验证过”的hidden state。
+- source、seed、inputs、CPU oracle、dtype comparator和compiler policy由test case owner固定，不进入产品frontend API。
+  两种policy比较时各自重新parse/import并拥有独立ProgramData、output和package。

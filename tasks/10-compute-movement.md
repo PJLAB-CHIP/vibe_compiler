@@ -1,8 +1,8 @@
 # Wafer Compute、Movement 与 Target-Abstract IR
 
-状态：2026-08-09按CardModule / Tile MPMD主线重写。本文拥有source structured op的
+本文拥有source structured op的
 确定性typed lowering、selected `wafer.tile.*` compute/movement及其Instr lowering legality；不拥有
-physical-dataflow placement、fusion或winner。Q49.P、Q50、Q51–Q53动态状态只看`tasks/progress.md`。
+physical-dataflow placement、fusion或winner。
 
 ## 1. Pipeline Contract
 
@@ -10,8 +10,8 @@ physical-dataflow placement、fusion或winner。Q49.P、Q50、Q51–Q53动态状
 Pipeline position:
 - Upstream IR / input:
   GSPMD与normalization产生的card-local structured TensorProgram；普通source op通过current Linalg/Tensor/SCF operation、region、
-  indexing map、DPS/Tiling/MemoryEffect interfaces、type和SSA完整表达。05/Q50.S已在policy分叉前把完整Q/K/V attention
-  一次性归一为verifier-legal `wafer.linalg_ext.attention`，FA/FD是op上的固定graph fact；Q51只选择physical assignments。
+  indexing map、DPS/Tiling/MemoryEffect interfaces、type和SSA完整表达。05号normalization已在policy分叉前把完整Q/K/V attention
+  一次性归一为verifier-legal `wafer.linalg_ext.attention`，FA/FD是op上的固定graph fact；后续search只选择physical assignments。
 - Current stage responsibility:
   调用方给出本次placement、temporal tile、encoding、TileRegion、retain/recompute/spill/cut/release boundary、buffer/slot与
   event order选择后，读取selected actual TensorProgram root的current concrete structured语义；attention先展开selected
@@ -47,8 +47,8 @@ source数学语义只有一个owner：current MLIR op、region、SSA、type、at
 - RankedTensorType、dtype和shape；
 - standard tensor/view/subset semantics及current-IR-derived `IndexRelation`。
 
-Q50.S不预建每个算法/参数的TensorProgram graph。它把完整attention归一为一个带fixed `flash_attention`或
-`flash_decoding`的semantic op；Q51从spatial axis开始展开physical-dataflow spatial/temporal/fusion/representation/
+Attention normalization不预建每个算法/参数的TensorProgram graph。它把完整attention归一为一个带fixed `flash_attention`或
+`flash_decoding`的semantic op；physical-dataflow search从spatial axis开始展开spatial/temporal/fusion/representation/
 communication等调度维度，K/V block和partition分别归temporal与spatial assignment。每个complete candidate进入自己的CardModule
 transaction后，本文消费prepared root work和physical bindings执行唯一lowering：
 
@@ -67,8 +67,8 @@ capability menu、selected/forced参数或hidden fallback。rewrite改变source 
 physical-dataflow selection仍是唯一组合owner：它联合选择Tile set、per-Tile work domain、temporal tile、encoding、
 TileRegion partition、retain/recompute/spill/cut/release boundary、movement、buffer/slot和event order；lifetime、live set与cost
 从这些typed assignments及物化后的current IR重算。direct lowering不能为某个op自行决定全局mapping，也不能因为当前route失败而
-改写source数学语义。Q48未来若生成semantic alternative，必须先由其自身设计选择并形成一个current TensorProgram，再进入
-physical planning；当前Q51不为其预留generic algorithm axis。若某类source op需要多个实现，先由该语义自己的显式IR/interface
+改写source数学语义。未来若生成semantic alternative，必须先由其自身设计选择并形成一个current TensorProgram，再进入
+physical planning；本层不为其预留generic algorithm axis。若某类source op需要多个实现，先由该语义自己的显式IR/interface
 和production owner表达，不建立local selector、字符串registry或opaque graph descriptor。
 
 ## 3. Selected Tile IR
@@ -229,7 +229,8 @@ memory space/encoding、valid lanes、temporary和movement effects。Instr verif
 bytes/stride/iterations/range/alignment/narrowing、effect-associated actual roots及token/wait closure。
 
 任何Tile失败都拒绝整个selected complete CardModule；不能发布partial Tile set，也不能在actual gate中retile、spill、换layout或
-换transport。`none`与`search`走相同的materialization和late gates，区别只在上游候选生成/选择策略。
+换transport。`none`与`search`分别完成自己的policy-specific materialization，只有形成verifier-legal Instr和current relations后
+才调用相同的late memory/transport/target leaf。
 
 ## 8. Verification 与当前physical-dataflow边界
 
@@ -242,5 +243,4 @@ bytes/stride/iterations/range/alignment/narrowing、effect-associated actual roo
 - distinct Tile modules、no-work Tile、cross-Tile SPM SSA rejection；
 - Tile-to-Instr、fresh completion、SPM/DDR、communication、target与package全链实际执行。
 
-Q49.P、Q50、Q51–Q53当前实现状态由06与`tasks/progress.md`统一记录。本文不得用local lowering或movement特判代替physical-dataflow能力，
-也不得据单op或局部fixture宣称joint search完成。
+本文不得用local lowering或movement特判代替physical-dataflow能力，也不得据单op或局部fixture宣称joint search完成。

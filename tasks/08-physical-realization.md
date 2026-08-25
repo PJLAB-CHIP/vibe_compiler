@@ -1,8 +1,8 @@
 # Wafer Physical Realization：Relation、Encoding 与 Transfer
 
-状态：2026-08-13按CardModule / Tile MPMD主线收敛。本文拥有current-IR-derived
+本文拥有current-IR-derived
 `IndexRelation`、physical encoding和transfer realizability合同；不拥有spatial/temporal/fusion winner，也不记录
-动态任务状态。实现状态只看`tasks/progress.md`。
+动态任务状态。
 
 ## 1. Pipeline Contract
 
@@ -66,7 +66,7 @@ Pipeline position:
 - 与static/dynamic shape bounds和valid domain求交。
 
 无法证明时返回unsupported/unknown analysis结果并拒绝相应transition，不能按op名、shape或buffer名猜测。
-这里的unknown只表示“proof未建立”，不是performance cost值；Q51 cost comparison不传播performance Unknown。
+这里的unknown只表示“proof未建立”，不是performance cost值；search cost comparison不传播performance Unknown。
 
 relation只描述logical coordinates，不包含physical offset、Tile placement、route、descriptor、engine或cost。
 physical address关系必须将它与两端encoding interface组合后求得：
@@ -211,6 +211,6 @@ compile-time proof resource limit。planning query的typed结果可控制state�
 - actual CardModule拆成per-Tile modules后重放每Tile Instr、SPM/DDR和CardExecutable communication gate；
 - source-to-package integration实际执行，不以单op FileCheck代替。
 
-Q51完成还需要同一search真正生成dependent producer/consumer remap、partial-overlap transfer和NoC-aware placement，
-并把这些与temporal tile、fusion和LiveSPM共同比较。当前output-result balanced sharding与既有per-Tile proof只能证明
-新的IR/pipeline seam可用，不能证明上述joint search已经完成。
+End-to-end search必须实际生成dependent producer/consumer remap、partial-overlap transfer和NoC-aware placement，
+并与temporal tile、fusion和LiveSPM共同选择。单个balanced sharding或per-Tile relation proof只能证明本层机制可用，
+不能代签joint physical plan或accepted output。

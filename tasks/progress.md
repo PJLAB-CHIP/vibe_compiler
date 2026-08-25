@@ -25,12 +25,10 @@ pipeline contract、实验结论、测试数字、失败修复过程和历史复
 
 ## 当前调度
 
-当前执行队列只列一次性work item；顺序已经按artifact producer/consumer关系拓扑排序。Q50.0、Q54、Q55、Q56、Q59、Q60、Q62、
-Q63和Q64等前置已满足，不在当前队列中重复展开。2026-08-23重新闭合的第1项保留actual-feedback/SPM机制，同时删除了
-production `none`中的per-block/per-element/structural NCC join和无依据的issue后立即DTE await；第2--4项的当前输出仍成立。
-原第5--17项只闭合了部分
-domain/API、canonical路径或单测mechanism，没有满足各自设计中的selected construction、直接production consumer或完整search门禁，
-因此在原语义身份上重新打开，不旁挂第二份closure任务。已经通过的局部单测继续作为实现素材，不能代签这些重新打开项的`done`。
+当前执行队列只保留尚未完成的一次性work item，并按artifact producer/consumer关系排序。Q49–Q51各项的历史边界与
+证据已经移入`tasks/archive/completed-task-index.md`；详细施工记录位于
+`tasks/archive/physical-dataflow-synthesis-working-history.md`，不能覆盖current Q52重新发现的baseline回归、双materializer、
+IR膨胀、layout未接线和verifier职责问题。
 
 每个work item都必须独立执行下面完整流程；表中逐行重复，不能用全局说明代替本项门禁：先读`AGENTS.md`和本表，再读编号设计及
 本项覆盖矩阵；随后调研与问题直接相关的论文、经典算法和成熟编译器实现，比较合法域完整性、复杂度、正确性依据、可维护性及本仓
@@ -42,66 +40,28 @@ domain/API、canonical路径或单测mechanism，没有满足各自设计中的s
 
 | 顺序 | Work item | 状态 | 设计owner | 直接输入 | 完成输出 | 本项执行流程 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `deterministic-baseline-closure` | `done` | Q49.P | canonical-plan-coverage-closure、Q59、Q63、current hardware/ABI completion facts | 保留actual candidate→SPM→typed feedback闭环；删除per-block/per-element/structural join与unproved immediate await，fresh `none`满足最小completion及动态work gate | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 2 | `spatial-domain` | `done` | Q50.B | spatial-plan-schema、attention-spatial-integration、attention-demand-integration、exact-demand-boundary、Q64 | complete spatial successors、reference enumerator及proposal | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 3 | `search-control-foundation` | `done` | Q51.Core | spatial-domain、exact-demand-boundary、attention-demand-integration | SpatialState frontier/continuation及public `search` routing；missing axis typed incomplete | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 4 | `root-work-domain` | `done` | Q50.C | search-control-foundation、canonical-root-work | full root/merge work domain、Core consumer及complete-candidate emitter输入 | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 5 | `region-execution-domain` | `done` | Q50.D | deterministic-baseline-closure的shared completion/materializer修正、root-work-domain、canonical-region-plan | 完整region/execution/use-binding域、selected RegionPlan直接构造、nested/replica/coupled verifier及actual downstream witness；region builder不选择worker/participant/completion | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 6 | `temporal-domain` | `done` | Q50.E | region-execution-domain、canonical-temporal-plan | complete temporal sizes/orders/tails、top-level/nested/coupled actual loop construction、verifier及Core consumer | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 7 | `partial-feasibility` | `done` | Q50.F | temporal-domain、exact-demand-boundary | 复核A–E结构完整性/missing coordinates及5/6新schema，资源合法性保持unknown | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 8 | `layout-domain` | `done` | Q50.G | partial-feasibility、canonical-representation-plan | operation/interface constraint graph、PBQP精确消元+residual solver、production tuple/alias facts及selected physical-version construction/verifier | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 9 | `movement-domain` | `done` | Q50.H | layout-domain、canonical-movement-plan | local/DDR/direct/relay/fanout/gather current完整域、external every-root reuse、exact multi-piece payload proof、token-only selected construction/verifier及actual surgery donor retirement；不在issue后立即await；raw collective因无current typed primitive而无state | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 10 | `storage-domain` | `done` | Q50.I | movement-domain、canonical-storage-plan | production alias/reuse/`1..U` requirements、peer-relay exact-piece ownership、selected object/multi-axis rotation construction及actual definition/use/completion/release lifetime verifier；零SPM估算或capacity控制流 | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 11 | `event-resource-foundation` | `done` | Q50.J | storage-domain、Q63、target/effect facts | 完整EventGraph/resource/recurrence/completion facts、Q63/effect接入及fixed-K后同一builder重建J的typed seam；missing contract保持typed unknown而非默认Synchronous | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 12 | `execution-structure-domain` | `done` | Q50.K | event-resource-foundation、storage-domain、serialized-execution | sound Serialized/Pipelined eligibility与完整有限域、selected phase/loop construction、structure verifier及donor retirement | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 13 | `structure-specific-storage` | `done` | Q50.I | execution-structure-domain、storage-domain | fixed-K occurrence/slot/lifetime重闭、actual rotating-slot construction，并触发post-K EventGraph重建 | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 14 | `schedule-domain` | `done` | Q50.J | structure-specific-storage、event-resource-foundation | post-K EventGraph、slot/FSM lifetime、worker/resource/completion完整域及minimum-participant/latest-unavoidable selected wait/join emission/verifier | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 15 | `full-feasibility` | `done` | Q50.F | schedule-domain及完整B–K→I→J selected construction | 全字段complete-candidate materialization、actual SPM/DDR/transport/target gate、plan/actual join-wait parity与动态work gate、typed rejection及Core反馈 | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 16 | `search-control-closure` | `done` | Q51.Core | full-feasibility、全部domain work items | all-axis CompleteCandidateKey、actual-result admission、cost/bound、causal no-good、coverage及independent controller oracle | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 17 | `unified-search-closure` | `done` | Q51 | search-control-closure、attention-selected-decomposition、Q50.0 | parent-by-parent/full-plan oracle、可恢复完整遍历、每complete candidate一次actual evaluation及唯一winner发布 | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 18 | `attention-production-closure` | `done` | Q50.S | deterministic-baseline-closure、unified-search-closure | donor retirement及prefill/decode的none/search package/no-card；attention algorithm层零固定worker、零per-K2-block completion | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 19 | `search-scalability` | `doing` | Q52 | unified-search-closure、attention-production-closure | measured memo/DP/bound/LNS policy、有限预算LLaMA actual evaluation及唯一winner发布 | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 20 | `production-host-readiness` | `queued` | Q53 | search-scalability、Q60、Q55、Q56 board-ready | fresh source/IR/package/oracle/runner/no-card矩阵；Q53 `board-ready` | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 1 | `search-scalability` | `doing` | Q52 | Q51 unified search与attention production的current输出、current baseline regression、Q50.0 actual memory/target leaf | 按当前计划九个checkpoint分别闭合verifier职责、两套独立materializer、IR膨胀、movement/layout、旧路径删除和measured scalability；同一current FP16 LLaMA block的`none`/`search`各自在15分钟Release门限内生成package并strict readback/no-card | 读AGENTS/progress→读06及本项九个矩阵→读相关硬件/ABI事实并把未证同步语义保持unknown→调研论文和成熟编译器算法/实现并比较取舍→查官方及pinned LLVM/MLIR API→按checkpoint改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审完整diff和下游witness→更新状态并提交 |
+| 2 | `production-host-readiness` | `queued` | Q53 | search-scalability、Q60产品入口、Q55 current interface、Q56 board-ready package/runtime | 从fresh产品source完成representative source/IR/package/oracle/runner/no-card矩阵并准备无需设备上临时补充的board cases；状态只到`board-ready`，真实板端不在当前目标 | 读AGENTS/progress→读02/06/14–16及本项矩阵→读hardware/runtime/ABI事实→调研成熟compiler的host qualification/board-ready实现→查官方及pinned API→改runner/测试→fresh host/no-card验证→按设计和MLIR/runtime规范复审→更新状态并提交 |
 失败留在当前work item修复；不跳过、不fallback，也不把owner整体状态提前标为完成。
 
-### 设计owner映射
+### 当前owner完成边界
 
-| 设计owner | 组成work items | Owner整体完成边界 |
+| 设计owner | Work item | Owner整体完成边界 |
 | --- | --- | --- |
-| Q50.B | spatial-plan-schema、canonical-spatial-assignment、spatial-domain | 三项均通过且spatial-domain在unified search中取得production witness |
-| Q50.S | attention-normalization、attention-spatial-integration、attention-demand-integration、attention-work-projection、attention-selected-decomposition、attention-production-closure | 最后一项通过 |
-| Q50.A | exact-demand-boundary | work item通过且所有physical consumers迁移 |
-| Q50.C | canonical-root-work、root-work-domain | 两项通过且unified search取得selected witness |
-| Q50.D | canonical-region-plan、region-execution-domain | domain与selected construction均通过且unified search取得nested/replica/coupled actual witness |
-| Q50.E | canonical-temporal-plan、temporal-domain | complete domain与top-level/nested/coupled actual loop construction通过且unified search取得selected witness |
-| Q50.F | partial-feasibility、full-feasibility | 两项均通过；前者只签发结构完整性，后者以actual candidate gate签发资源结果 |
-| Q50.G | canonical-representation-plan、layout-domain | solver、production constraint producer和selected construction均通过且unified search取得actual witness |
-| Q50.H | canonical-movement-plan、movement-domain | 完整domain、selected construction/verifier和donor迁移均通过且unified search取得actual witness |
-| Q50.I | canonical-storage-plan、storage-domain、structure-specific-storage | production requirement、selected slot construction、lifetime及K re-entry witness全部闭合 |
-| Q50.J | canonical-schedule、event-resource-foundation、schedule-domain | Q63/effect、post-K EventGraph、slot/resource/completion schedule及actual emitter/verifier闭合 |
-| Q50.K | serialized-execution、execution-structure-domain | sound domain、selected phase construction/verifier及I/J re-entry闭合 |
-| Q49.P | deterministic-baseline-closure | 对应work item通过 |
-| Q51.Core | search-control-foundation、search-control-closure | 完整candidate key、actual controller、bound/no-good和coverage oracle通过 |
-| Q51 | unified-search-closure | 全轴独立oracle、可恢复遍历、一次actualization和唯一winner/publication通过 |
-| Q52 | search-scalability | 对应work item通过 |
+| Q52 | search-scalability | 本项九个线性checkpoint全部通过；baseline/search保持controller隔离，仓库compiler verifier按LLVM/MLIR职责完成清理，已确认的IR膨胀、双路径、baseline root grouping及layout未接线问题全部直接修复，旧complete materializer零残留，并由同一current FP16 LLaMA source的两次fresh package/no-card验收签发 |
 | Q53 | production-host-readiness | 对应work item通过即为`board-ready`；真实板端不在当前目标 |
 
 ### 当前已满足前置
 
-历史完成明细见`tasks/archive/completed-task-index.md`；这里仅保留当前queue仍直接消费的前置状态。
+历史完成明细见`tasks/archive/completed-task-index.md`；这里仅保留两个current work item直接消费的前置。
 
 | Owner | 状态 | 当前作用 | 证据入口 |
 | --- | --- | --- | --- |
-| Q50.0 | `done` | complete-candidate CardModule→CardExecutable actual compile/verification/admission seam | `tasks/plans/physical-dataflow-synthesis.md` |
-| Q54 | `done` | MLIR scope、analysis、pipeline与rewrite infrastructure | `tasks/plans/mlir-engineering-remediation.md` |
+| Q50.0 | `done` | 两条policy各自产生policy-complete Instr后共同消费的actual SPM/DDR/transport/target leaf；不拥有complete materializer | 06、09、12–14；历史见`tasks/archive/completed-task-index.md` |
+| Q51/Q50.S | `done` | current search controller、typed domains和fixed FA/FD semantic/decomposition输入；不能代签Q52 materializer正确性 | 05–06；历史见`tasks/archive/completed-task-index.md` |
 | Q55 | `done` | current target/package/runtime interface closure | `tasks/plans/interface-version-consolidation.md` |
-| Q58 | `done` | program data ownership/handoff | `tasks/plans/program-data-and-whole-program-scale.md` |
 | Q56 | `board-ready` | current package data与host/no-card contract；真实板端尚未执行 | `tasks/plans/executable-package-and-resident-runtime.md` |
-| Q59 | `done` | compiler transaction与package commit | `tasks/plans/compiler-entry-productization.md` |
 | Q60 | `done` | product frontend与portable StableHLO ingestion | `tasks/plans/compiler-entry-productization.md` |
-| Q62 | `done` | current typed target materialization/model boundary | `tasks/plans/target-numeric-contract-reconstruction.md` |
-| Q63 | `done` | NCC completion interface与analysis facts | `tasks/plans/ncc-synchronization-contract-layering.md` |
-| Q64 | `done` | source registration与library ownership truth | `tasks/plans/source-registration-truth-closure.md` |
 
 ## Later / External Gates
 
@@ -128,9 +88,9 @@ WCRE/global registry、capability lease、跨model state migration、共享weigh
 
 ## 导航
 
-- Q49.P、Q50.0/Q50.S/Q50.A–Q50.K及Q51–Q53的baseline隔离、机制迁移、统一搜索、scalability与production readiness共用实施计划：
-  `tasks/plans/physical-dataflow-synthesis.md`。
-- Q54 MLIR工程化整改计划：`tasks/plans/mlir-engineering-remediation.md`；稳定工程合同由19拥有。
+- Q52–Q53当前实施计划：`tasks/plans/physical-dataflow-synthesis.md`；Q49–Q51详细施工历史位于
+  `tasks/archive/physical-dataflow-synthesis-working-history.md`，稳定设计由06拥有。
+- Q54历史实施计划：`tasks/archive/mlir-engineering-remediation.md`；稳定工程合同由19和`AGENTS.md`拥有。
 - Q56 package数据闭合与Q57设备常驻执行共用实施计划：
   `tasks/plans/executable-package-and-resident-runtime.md`；稳定package/runtime字段语义由15拥有。
 - Q58 program data ownership与Q61 whole-program scale共用实施计划：

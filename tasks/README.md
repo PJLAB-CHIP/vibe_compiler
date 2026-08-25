@@ -58,127 +58,21 @@
 
 ## 实施计划导航
 
-旧layout与ABI施工记录已移入`tasks/archive/`。current layout、target ABI、package和runtime合同只由06、08、
-11、14-17编号设计文档拥有，状态只看`tasks/progress.md`；不得从旧计划恢复接口。
+本节只列仍由current或later队列消费的实施计划。任务状态、顺序和启动条件只读`tasks/progress.md`；已完成计划
+只从下方archive索引定位，不能作为current协议。
 
-Q49.P、Q50、Q51–Q53共用card-local multi-Tile planning与selected execution计划`tasks/plans/physical-dataflow-synthesis.md`。队列按可验证边界拆成：
-Q50.0建立complete-candidate CardModule actual compilation/verification/admission seam；current execution queue随后只使用一次性semantic work item，
-不把Q50.* owner反复当任务。主线从`spatial-plan-schema`开始，经`attention-normalization`、`attention-spatial-integration`、
-`canonical-spatial-assignment`、`exact-demand-boundary`和`attention-demand-integration`建立真实semantic/spatial/demand输入；canonical root/region/temporal/
-representation/movement/serialized/storage/schedule work items逐项形成baseline assignment，再由`attention-work-projection`和
-`attention-selected-decomposition`关闭work description与candidate builder。随后由
-`canonical-plan-coverage-closure`补齐并连续重放当前全部canonical B--K/attention artifact的真实规模覆盖，
-`deterministic-baseline-closure`通过该前置后编排actual candidate→SPM planning→typed feedback闭环，不生产这些component，也不成为search输入。
-旧candidate/generator/feedback/selector接口不保留，但删除其source/test前
-必须逐项迁移仍需要的algorithm/proof/diagnostic/test witness。`spatial-domain`形成首批真实domain后，
-`search-control-foundation`切explicit `search`到new owner；后续每个domain work item都同批接Core consumer，`full-feasibility`后由
-`search-control-closure`关闭actual-result admission、cost/bound/coverage。search不调用Q49.P、不接收baseline executable；partial state
-不物化IR，每个complete assignment进入一次Q50.0 actual gate。
-`unified-search-closure`以independent actual oracle核对每个complete assignment，让production销毁rejected/loser owner并只发布一个
-retained winner且不重建；它与独立baseline纵向
-共同供`attention-production-closure`验收，之后`search-scalability`才按实际负载优化。旧输出格式无兼容义务，
-但旧semantic能力不能因接口退役直接判废。Q53形成production
-`board-ready`与真实板端证据。06仍是唯一联合决策设计owner；任务拆分只提供可验证接入checkpoint，不产生独立layout、
-fusion、buffering、communication或worker selector。动态状态、依赖和完成门禁只看`tasks/progress.md`。
+| 当前或later范围 | 实施计划 | 稳定设计owner |
+| --- | --- | --- |
+| Q52 search scalability与Q53 production host readiness | `tasks/plans/physical-dataflow-synthesis.md` | 06；直接下游07–16 |
+| Q57 resident static execution | `tasks/plans/executable-package-and-resident-runtime.md` | 15–17 |
+| Q61 whole-program scale readiness | `tasks/plans/program-data-and-whole-program-scale.md` | 01–02、06、14–18 |
+| Q48 semantic superoptimization | `tasks/plans/semantic-superoptimization.md` | 05–08、10–11、16–18 |
 
-Q54 MLIR工程化整改计划见`tasks/plans/mlir-engineering-remediation.md`。19是横向工程合同owner：让现有operation/region
-层级成为真实pass与analysis层级，收口typed ODS、standard interface、named nested pipeline和transactional rewrite，并
-通过18定义的source truth gate；它不产生新IR stage或第二production driver。Q54之后严格按`tasks/progress.md`唯一work item队列施工，
-不再从Q50 owner内部阶段恢复另一份顺序。避免把semantic Location、whole-module
-local wrapper、actual compile probe和手工analysis lifecycle固化进baseline或新的candidate/search实现。
-
-Q63 NCC completion合同分层计划见`tasks/plans/ncc-synchronization-contract-layering.md`。pure target completion protocol、
-MLIR op interface/adapter和query-local analysis已经分层，IR header到TX81 ABI的反向include与旧free concrete-op switch已删除；
-Q50.J直接消费current typed completion与pending-worker facts。
-
-Q55接口版本收敛计划见`tasks/plans/interface-version-consolidation.md`。20只定义版本owner和兼容边界；02、11、14-17
-继续拥有具体frontend、target、package、runtime、profiler与verification字段语义。Q55不建立compatibility mode，
-只保留真实外围版本并让repo内同步接口回到一种current表示。
-
-Q62 Target数值合同重建计划见`tasks/plans/target-numeric-contract-reconstruction.md`。它保留physical codec、formal arithmetic、
-managed/bulk backend与qualification的真实能力，但删除Q22.N时期把target command、model policy、compiler emittability和evidence
-捆在一起的`NumericSemantics` profile/registry。顶层依赖原则由01拥有，target字段回到11/14的TargetOperation/TargetCall，
-TargetTensor materialization由14显式拥有，formal/SystemC和bulk evidence由16/17拥有，library/include方向由18约束；不建立
-兼容header、旧resolver或回归旧registry。Q62同批把parser后的logical/target dtype从字符串切为closed typed value，
-把managed dependency conformance迁出always-built target execution API，并删除TargetModelCore到Compiler的反向link。
-
-Q64 source registration truth闭合计划见`tasks/plans/source-registration-truth-closure.md`。18继续拥有稳定source/library规则；Q64在
-Q51.Core、Q62、Q63删除各自旧island后，让checker从filesystem与实际CMake/test graph闭合repo-wide active/dormant truth，
-未注册source/test不能再因目录不在hard-coded检查范围而假绿，也不能靠读取旧source marker的CTest获得保留身份。
-
-Q58 program data ownership与Q61 whole-program scale共用
-`tasks/plans/program-data-and-whole-program-scale.md`。Q58先把verified source→外部SPMD helper→CardExecutable同事务
-data handoff切换成`ProgramDataSource`、checked `ProgramDataRange`和move-only `ProgramDataHandoff`，删除整树和per-Tile
-大payload复制，并以完整大型参数inventory量化RSS/disk/IO；它不选择target layout或定义package schema。Q61在Q53
-`board-ready`后用完整程序验证frontend、IR、search、target和
-package的共同规模，Llama 7B仅作可选named scale witness，不把LLM或serving协议写入compiler合同。
-
-Q56 package数据闭合与Q57设备驻留执行共用`tasks/plans/executable-package-and-resident-runtime.md`。Q56消费Q58 handoff，
-把`ProgramTensor`、selected `TargetTensor`、`data/program-data.bin` file range和`TileEntryArgument`闭合为唯一静态package合同；
-runtime在side effect前预排program data与invocation memory，并以`BoardDeviceMemory base + offset`绑定，不逐tensor分配。
-Q57只在Q53按新package合同达到`board-ready`后启动，把同一合同延长为`PreparedExecution -> submit* -> close`；当前仍以
-single context、单inflight、无cancel和provider声明的loaded graph/module上限为事实，不把external execution engine、
-multi-inflight或persistent device loop并入runtime。15继续是唯一package/runtime设计owner，实施计划不复制current schema。
-
-Q59 compiler entry transaction与Q60 frontend production entry共用
-`tasks/plans/compiler-entry-productization.md`。Q59在Q56达到`board-ready`后让compiler library primary result、package commit、CLI status
-与install tree成为同一事务；Q60已经基于current PyTorch/XLA capture/export资产和Q59独立完成最小framework adapter与portable
-StableHLO ingestion，不依赖Q51/Q52 search。Q52只负责Q51后的search scalability；Q53同时消费Q52结果和Q60产品入口，必须从
-该入口fresh生成证据，不能继续把test generator当成用户frontend。
-
-Q48语义驱动superoptimizer计划见`tasks/plans/semantic-superoptimization.md`。它必须在Q53按card-local multi-Tile新合同
-重新达到`board-ready`、Q47 current ABI可消费final Instr/TargetCall后启动，
-复用05-08、10-11、16-18的现有IR、candidate、proof consumer、model和源码ownership合同；目标是把自动生成并证明的
-actual MLIR统一物化为`TensorProgram` alternative并交给Q51唯一owner，不另建语义IR/interface/sidecar，也不预设独立
-shortlist或固定候选cap。动态状态和
-完成门禁只看`tasks/progress.md`。
-
-Q9 profiler foundation已按`tasks/archive/board-profiler.md`完成：唯一public入口是
-`wafer-compile --profile`；profile transaction只发布一个未插桩Primary production output，最后写入的activation把该
-production manifest与instrumentation metadata exact-hash绑定，不另编一个关闭profile的ordinary package做逐字节对照。
-`wafer-run`复用既有resource/expected/output binding，在一个qualified session内固定执行一次
-未插桩Primary、一次Count和一次Trace；Primary主延迟是production launch前后同一TX stream event pair的
-launch-to-completion设备包络，host submit与host launch→trusted-completion只作独立诊断。Trace header同时提供
-entry-local span、五类NCC engine aggregate PMU和16-tile typed engine/DTE event。
-tile clock未资格化时只展示16行entry-local timeline，不声称跨tile顺序。它尚不回写candidate cost；动态状态只看
-`tasks/progress.md`。report writing体积收口另列Q9.R later；它不改变Q9采集协议已经完成的结论。
-
-最新完成的compiler throughput收口为Q32.C，记录见
-`tasks/archive/whole-variant-search-throughput.md`。它在当时的历史架构中保持candidate domain、hard cap、exact gate和winner语义，
-删除passing ordinal之后的无消费者评估、逐batch线程/context churn、accepted module二次lowering、不可达owner
-parse及不会进入fully-gated Pareto candidate set的ABI/LLVM lowering；性能记录只含优化后Release实测，不重跑旧二进制。
-Q32.N numeric algebraic extension施工记录见
-`tasks/archive/numeric-algebraic-extension.md`。它直接删除physical-dataflow algebraic、reduction/GEMM切分和
-Ring collective中不必要的float类型门槛，以无额外标注的f16/bf16覆盖现有production pipeline，不增加
-frontend mode、私有numeric policy或Tile/Instr carrier。Q36 topology-aware collective lowering已经闭合，
-证据归档为`tasks/archive/topology-aware-collective-lowering.md`。Q35 full-4096 K-sharded GEMM board vertical也已完成，
-实施与板端重复raw-exact证据归档为`tasks/archive/k-sharded-gemm-board-vertical.md`；它复用Q6.B cluster
-Direct DTE路径闭合large-shape M/N tiling与communication，没有重开runtime ABI，也不单case完成Q22.C。
-Q6.B board runtime完成计划已归档为
-`tasks/archive/runtime-board.md`。Q32 integrated completion audit已归档为
-`tasks/archive/physical-dataflow-synthesis-completion-audit.md`，完成后的实施计划归档为
-`tasks/archive/physical-dataflow-synthesis.md`；Q32.G/S/M/V/B/R/I各checkpoint仍由对应独立归档记录保存详细变更和
-验证证据。Q34 static memory packing已归档为`tasks/archive/static-memory-packing.md`。这些计划和记录只保存施工checkpoint、
-验证/删除门槛与历史证据；动态blocked-by只看progress，算法与IR合同仍由01、05、06-18编号设计文档拥有，
-横向MLIR工程合同由19拥有。
-
-已完成Q31标准7B单block多seed数值表征和source/model gate收紧归档为
-`tasks/archive/llama-block-numeric-characterization.md`；Q30标准7B单block production vertical性能收口归档为
-`tasks/archive/llama-block-production-performance.md`，Q28 Llama-2 7B单block纵向归档为
-`tasks/archive/llama-7b-block-vertical.md`，Q29
-tile-dataflow scheduling归档为`tasks/archive/tile-dataflow-scheduling.md`。Q27 reference executor退役已归档为`tasks/archive/reference-executor-retirement.md`，
-Q26 memory lifetime analysis已归档为`tasks/archive/memory-lifetime-analysis.md`，
-Q25剩余聚合边界模块化已归档为`tasks/archive/residual-source-modularity.md`，Q24剩余热点模块化已归档为
-`tasks/archive/remaining-source-modularity.md`，Q23首轮源码组织重构已归档为
-`tasks/archive/source-organization-refactor.md`；
-Q13.W依赖root一致性计划已归档为`tasks/archive/third-party-dependency-root-consistency.md`。Q22.S、Q22.V与最终
-完成性审计计划已分别归档为`tasks/archive/systemc-functional-event-model.md`、
-`tasks/archive/target-model-source-verticals.md`和`tasks/archive/target-model-completion-audit.md`。
-Q22.B/Q22.L/Q22.N/Q0.L/Q22.H计划分别归档为`tasks/archive/target-bulk-qualification.md`、`tasks/archive/target-llvm-module-bundle.md`、
-`tasks/archive/target-numeric-foundation.md`、`tasks/archive/target-command-legality-closure.md`和
-`tasks/archive/target-call-functional-frontend.md`，Q22.R readiness归档为`tasks/archive/target-model-readiness.md`。
-Q22.N+Q22.H已经在Q22.S SystemC event model汇合，Q22.B与Q22.S再由Q22.V source vertical闭合并完成Q22汇总；
-后续代码任务开工前都需独立计划。动态执行状态只看`tasks/progress.md`。
+Q52当前同时处理baseline回归、两条policy各自的IR膨胀、verifier职责、movement/layout接线和后续search
+scalability；它不再只是Q51后的profile优化。Q53当前只形成fresh host/package/no-card与board-ready输入，不运行真实设备。
+Q49–Q51详细施工与原Q53板端设想位于
+`tasks/archive/physical-dataflow-synthesis-working-history.md`，Q54历史整改位于
+`tasks/archive/mlir-engineering-remediation.md`。
 
 ## 归档文档
 
@@ -195,6 +89,8 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 | 文档 | 原性质 |
 | --- | --- |
 | `tasks/archive/completed-task-index.md` | 已完成任务的历史边界与证据入口索引；不参与current调度 |
+| `tasks/archive/physical-dataflow-synthesis-working-history.md` | 截至2026-08-25的Q49–Q51详细施工、Q52重基线审计和原Q53板端设想；current Q52/Q53计划已重写，禁止从本文件恢复旧顺序或shared materializer |
+| `tasks/archive/mlir-engineering-remediation.md` | 已完成Q54的审计、checkpoint和验证记录；current verifier cleanup由Q52拥有，稳定规则由19和AGENTS拥有 |
 | `tasks/archive/whole-card-tile-dataflow-synthesis.md` | 2026-08-11至08-13的旧Q49/Q50完整施工计划；旧任务拆法、shortlist和owner合同不再有效 |
 | `tasks/archive/whole-rank-tile-dataflow-synthesis.md` | 2026-08-08的structured-DAG/card历史施工计划；已由current physical-dataflow计划替代，旧public policy与bounded candidate set不再有效 |
 | `tasks/archive/whole-variant-search-throughput.md` | 已完成Q32.C的passing-ordinal early stop、bounded persistent candidate executor、accepted-module owner import、exact attempt-plan selective parse和fully-gated Pareto前置late ABI/LLVM，并记录优化后Release单次实测 |

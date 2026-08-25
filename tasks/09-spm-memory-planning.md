@@ -1,13 +1,13 @@
 # Wafer SPM Memory Planning Design
 
-状态：2026-08-22同步complete-candidate actual admission、MiniMalloc-only packing、per-Tile LiveSPM和SPM1 fixed-problem分配合同。本文覆盖每个
+本文定义complete-candidate actual admission中的MiniMalloc-only packing、per-Tile LiveSPM和SPM1 fixed-problem分配合同，覆盖每个
 physical `tile.module`的instruction IR上SPM lifetime/range planning；async issue的全部read/write resource必须活到可信
 completion。`wafer.tile.region`表达一个单Tile内的SPM residency domain；每个有assigned work的Tile module
 可有一个或多个non-nested regions。spatial placement、region partition、temporal tile shape、selective
 spill/recompute和cross-region/cross-Tile materialization由06在typed assignment中选择；每个complete candidate物化actual IR；typed opaque SPM
 clobber仍拒绝。
 nested/async/parallel scope和缺少arena/resource summary的调用保持fail closed。
-实现状态以`tasks/progress.md`为准。accepted fact为offset-only `wafer.spm.offset`；size、alignment和SPM1
+accepted fact为offset-only `wafer.spm.offset`；size、alignment和SPM1
 bank phase均由memref type、layout、accepted offset和target policy重算。allocator对每个complete candidate产生的
 finalized complete CardModule Instr IR，逐Tile从全部roots、control-flow coexistence与pairwise conflict派生
 all-and-only fixed allocation problems，并用每Tile 3 MiB MiniMalloc与独立validator求解。已证明不重叠的regions/roots可复用地址，
@@ -215,7 +215,7 @@ program；
 offset facts只有作为complete passing candidate CardModule的一部分才能进入本次actual result；最终仅retained winner进入发布IR。
 其中 allocation summary 只覆盖 `#wafer.memory<spm, *>`；DDR 的 external view/descriptor validation、
 constant residency/storage、compiler-managed DDR `memref.alloc`、全局容量、largest contiguous range
-属于 DDR memory planning；movement/scheduler把 exact DDR byte footprint作为cost input。带宽只有Q9 PMU校准后才能参与
+属于 DDR memory planning；movement/scheduler把 exact DDR byte footprint作为cost input。带宽只有qualified PMU事实存在后才能参与
 合法候选排序，不能反向改变range/capacity legality。
 
 ## 4. Instruction Storage Requirements
@@ -360,8 +360,7 @@ selected instruction lowering下，对全部SPM roots按真实lifetime/coexisten
 - effect / async issue / typed participant join / exact wait / barrier。
 - target range、reserved range、alignment、range-end policy。
 - explicit communication staging policy；multi-buffer policy只有在IR已有两个真实slot和typed completion时才可输入。
-  Q38 candidate set接入只作旧机制证据；current Q50.I/J仍须把actual buffers、slot relation、worker/order和completion迁移到该
-  output边界，planner始终不推断或补建这些事实。
+  actual buffers、slot relation、worker/order和completion必须由上游selected construction交付到该output边界，planner始终不推断或补建。
 
 输出：
 

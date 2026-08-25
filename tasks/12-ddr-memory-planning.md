@@ -1,11 +1,11 @@
 # Wafer DDR Memory Planning Design
 
-状态：2026-08-22同步complete-candidate actual admission、MiniMalloc-only packing、CardModule / Tile MPMD、SPM residency-region与typed NCC worker completion；当前合同覆盖default-arena
+本文定义complete-candidate actual admission中的default-arena
 DDR demand/range validation、dependency-driven completion和accepted offsets。
-multi-arena、state/streaming weight和provider allocation model延后。实现状态以`tasks/progress.md`为准。
+multi-arena、state/streaming weight和provider allocation model延后。
 它不能只是DDR access validation；DDR byte span、lifetime、capacity和largest-contiguous约束只能从每个complete candidate的actual
 current IR判定。partial planning不签发DDR resource proof。DDR movement bytes按
-current descriptors精确统计并交给06 cost；未经Q9
+current descriptors精确统计并交给06 cost；未经qualified PMU
 校准的“bandwidth pressure”不是硬件legality。
 CardExecutable构造只能从accepted DDR facts和当前IR demand重算launch-facing requirements，并形成typed
 Tile resource/entry bindings；当前没有独立resource-view协议或executable dialect。
@@ -182,7 +182,7 @@ wafer.ddr.offset = #wafer.ddr_offset<offset>
 ```
 
 typed Tile executable record说明offset属于对应Tile的default arena，并保留target address lowering需要的
-range/alignment facts。Q17从剩余compiler-managed DDR allocations重算high-water bytes/alignment，追加唯一workspace kind的
+range/alignment facts。Target/runtime owner从剩余compiler-managed DDR allocations重算high-water bytes/alignment，追加唯一workspace kind的
 `TileEntryArgument`；target lowering把它变成显式i64 workspace-base entry argument，并只在收到该typed argument index时生成
 `base + wafer.ddr.offset`，默认pass调用仍fail closed。argument与workspace最低alignment沿用生成memory plan的同一
 target policy；workspace alignment是该policy与全部显式alloc alignment约束的checked least common multiple，
@@ -217,7 +217,7 @@ workspace/temp/explicit-spill allocations。函数式状态线程仍属于extern
 | --- | --- | --- |
 | external input | validate view/range/descriptor in selected IR | derive external binding requirement, shape/dtype/layout/size/alignment contract |
 | external output | validate view/range/descriptor and write use in selected IR | derive output binding/writeback visibility requirement |
-| package-owned immutable parameter/constant | validate read-only descriptor/view、content/shard/layout identity和range；不为external DDR root分配compiler workspace offset | Q56绑定exact ProgramTensor/TargetTensor、digest、shard和target descriptor；不写provider allocation identity，禁止write alias |
+| package-owned immutable parameter/constant | validate read-only descriptor/view、content/shard/layout identity和range；不为external DDR root分配compiler workspace offset | package owner绑定exact ProgramTensor/TargetTensor、digest、shard和target descriptor；不写provider allocation identity，禁止write alias |
 | streamed immutable parameter | 未来只接受上游actual IR中已有的typed source chunks、staging roots、copy/consumer/reuse completion和slot relation；本stage不形成window proposal | 按普通compiler-managed DDR/SPM roots规划可见range/lifetime；长期只保留actual IR、accepted offset及apply后的typed resource binding |
 | persistent state resource | future extension；必须先由上游IR显式给出capacity、subview、alias/update、effect与跨invocation lifetime，本stage不自行恢复 | 未来另建有真实producer/consumer的typed state/port合同；当前不预埋identity、page policy或runtime allocation record |
 | compiler-managed workspace/temp | plan symbolic offset with lifetime/reuse | summarize workspace bytes/ranges and accepted offset contract |
@@ -452,7 +452,7 @@ retention/release，并擦除未提交Card subtree。外层controller可以继�
 SPM的3 MiB fixed-problem constraints与DDR的explicit arena/placement-domain constraints分别是各自planning gate输入；
 DDR exact movement bytes是06 cost输入，不是plan field或未校准
 bandwidth legality。12统计每个static descriptor site的exact bytes；static-trip loop-expanded multiplicity与conditional bounds由06
-从complete Instr IR计算，真正runtime-measured count由Q9拥有。12不能把一次site冒充整次workload流量。
+从complete Instr IR计算，真正runtime-measured count由profiler/board evidence owner拥有。12不能把一次site冒充整次workload流量。
 
 ### 9.4 Tile Executable Boundary
 
@@ -471,7 +471,7 @@ role/slice/payload locator进入typed card-partition binding；accepted offsets�
 owning module表达，不复制成第二份resource record。Tile executable显式声明
 `DefaultArenaRelativeOffsets`，不allocate/import/query runtime object或materialize physical address。all-Tile records
 通过后才能在同一transaction中构造并验证`CardExecutable`；只有CardExecutable也通过才把winning Tile modules与执行对象一次
-提交，apply之后不再执行可能失败的record materialization。Q17已把returned compiler-managed DDR root重定向到显式output slot，并结合
+提交，apply之后不再执行可能失败的record materialization。Target/runtime output owner把returned compiler-managed DDR root重定向到显式output slot，并结合
 accepted instruction IR与这些bindings派生arena-base/address/range/descriptor和fixed `void(i64...)` entry ABI；
 package emission只从accepted `CardExecutable`及其verified target writing view序列化runtime-observable
 fields。package/runtime不从program shard文件名或薄launch metadata恢复resource。
