@@ -783,16 +783,55 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
         return;
       llvm::SmallVector<uint32_t, 4> nodes =
           nodeUses.collectNodesUsedBy(operation);
-      if (nodes.empty() && tile.regionNodes) {
+      if (tile.regionNodes) {
         TileRegionOp region = operation->getParentOfType<TileRegionOp>();
         if (region) {
           auto relation =
               llvm::find_if(*tile.regionNodes, [&](const auto &candidate) {
                 return candidate.region == region.getOperation();
               });
-          if (relation != tile.regionNodes->end())
-            nodes.assign(relation->structuredNodes.begin(),
-                         relation->structuredNodes.end());
+          if (relation != tile.regionNodes->end()) {
+            llvm::SmallVector<uint32_t, 4> localNodes;
+            for (uint32_t node : nodes)
+              if (llvm::is_contained(relation->structuredNodes, node))
+                localNodes.push_back(node);
+            if (!localNodes.empty())
+              nodes = std::move(localNodes);
+            else if (nodes.empty())
+              nodes.assign(relation->structuredNodes.begin(),
+                           relation->structuredNodes.end());
+          }
+        }
+      }
+      if (*kind == ActualIssueKind::Compute) {
+        llvm::SmallVector<mlir::Value, 4> writtenBuffers;
+        if (auto effects =
+                mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation)) {
+          llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 4>
+              instances;
+          effects.getEffects(instances);
+          for (const auto &instance : instances)
+            if (mlir::isa<mlir::MemoryEffects::Write>(
+                    instance.getEffect()) &&
+                instance.getValue() &&
+                mlir::isa<mlir::BaseMemRefType>(
+                    instance.getValue().getType()))
+              writtenBuffers.push_back(instance.getValue());
+        }
+        StorageRootMemo memo;
+        llvm::SmallVector<uint32_t, 4> resultOwners;
+        for (const StructuredOperationResultBufferRelation &relation :
+             tile.relations->operationResultBuffers)
+          if (llvm::any_of(writtenBuffers, [&](mlir::Value written) {
+                return shareStructuredBufferStorage(written, relation.buffer,
+                                                    memo);
+              }) &&
+              !llvm::is_contained(resultOwners,
+                                  relation.structuredNodeId))
+            resultOwners.push_back(relation.structuredNodeId);
+        if (!resultOwners.empty()) {
+          llvm::sort(resultOwners);
+          nodes = std::move(resultOwners);
         }
       }
       actualIssues.push_back(
@@ -1197,6 +1236,8 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
     }
   llvm::DenseSet<mlir::Operation *> assignedOperations;
   std::map<EventId, std::vector<mlir::Operation *>> operationsByEvent;
+  std::map<EventId, llvm::SmallVector<mlir::Block *, 4>>
+      issueFreeBlocksByEvent;
 
   auto assignUnique = [&](const EventId &event,
                           llvm::ArrayRef<ActualIssue *> candidates) {
@@ -1223,6 +1264,58 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
     return true;
   };
 
+  std::map<EventId, std::pair<size_t, size_t>> selectedEventPositions;
+  for (auto [controlIndex, control] : llvm::enumerate(schedule.controlOrders))
+    for (auto [eventIndex, event] : llvm::enumerate(control.events))
+      if (!selectedEventPositions
+               .try_emplace(event,
+                            std::make_pair(static_cast<size_t>(controlIndex),
+                                           static_cast<size_t>(eventIndex)))
+               .second) {
+        failureReason = "selected schedule repeats one event occurrence";
+        return mlir::failure();
+      }
+  std::map<mlir::Operation *, EventId> computeEventByIssue;
+  for (const ActualIssue &issue : actualIssues) {
+    if (issue.kind != ActualIssueKind::Compute)
+      continue;
+    llvm::SmallVector<const PlannedEvent *, 4> candidates;
+    for (const PlannedEvent &planned : events.events) {
+      if (planned.id.kind != PlannedEventKind::ComputeIssue || !planned.tile ||
+          *planned.tile != issue.tile)
+        continue;
+      const auto *action =
+          std::get_if<ExecutionEventAction>(&planned.id.action);
+      auto node = action ? nodesByExecution.find(action->execution)
+                         : nodesByExecution.end();
+      if (node != nodesByExecution.end() && hasNode(issue, node->second))
+        candidates.push_back(&planned);
+    }
+    if (candidates.empty())
+      continue;
+    const PlannedEvent *owner = candidates.front();
+    auto ownerPosition = selectedEventPositions.find(owner->id);
+    if (ownerPosition == selectedEventPositions.end()) {
+      failureReason = "actual compute issue has no selected control position";
+      return mlir::failure();
+    }
+    for (const PlannedEvent *candidate :
+         llvm::ArrayRef<const PlannedEvent *>(candidates).drop_front()) {
+      auto position = selectedEventPositions.find(candidate->id);
+      if (position == selectedEventPositions.end() ||
+          position->second.first != ownerPosition->second.first) {
+        failureReason =
+            "one actual compute issue spans selected control scopes";
+        return mlir::failure();
+      }
+      if (position->second.second > ownerPosition->second.second) {
+        owner = candidate;
+        ownerPosition = position;
+      }
+    }
+    computeEventByIssue.emplace(issue.operation, owner->id);
+  }
+
   for (const PlannedEvent &planned : events.events) {
     if (planned.id.kind != PlannedEventKind::ComputeIssue)
       continue;
@@ -1236,17 +1329,56 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
       return mlir::failure();
     }
     std::vector<ActualIssue *> matches;
-    for (ActualIssue &issue : actualIssues)
+    for (ActualIssue &issue : actualIssues) {
+      auto owner = computeEventByIssue.find(issue.operation);
       if (issue.kind == ActualIssueKind::Compute &&
-          issue.tile == *planned.tile && hasNode(issue, node->second))
+          issue.tile == *planned.tile && hasNode(issue, node->second) &&
+          owner != computeEventByIssue.end() && owner->second == planned.id)
         matches.push_back(&issue);
+    }
     if (matches.empty()) {
-      failureReason = "compute event has no actual typed NCC issue";
-      return mlir::failure();
+      auto tile = tilesById.find(planned.tile->getValue());
+      llvm::SmallVector<mlir::Block *, 4> blocks;
+      if (tile != tilesById.end())
+        for (const StructuredOperationResultBufferRelation &relation :
+             tile->second->relations->operationResultBuffers) {
+          if (relation.structuredNodeId != node->second || !relation.buffer)
+            continue;
+          mlir::Value buffer = relation.buffer;
+          mlir::Block *block = buffer.getParentBlock();
+          if (block && !llvm::is_contained(blocks, block))
+            blocks.push_back(block);
+        }
+      if (blocks.empty()) {
+        llvm::raw_string_ostream diagnostic(failureReason);
+        diagnostic << "compute event has neither an actual typed NCC issue "
+                      "nor a current result relation; tile="
+                   << planned.tile->getValue() << ",node=" << node->second;
+        return mlir::failure();
+      }
+      issueFreeBlocksByEvent.emplace(planned.id, std::move(blocks));
+      continue;
     }
     for (ActualIssue *match : matches) {
       if (!assignedOperations.insert(match->operation).second) {
-        failureReason = "one actual NCC issue belongs to several events";
+        llvm::raw_string_ostream diagnostic(failureReason);
+        diagnostic << "one actual NCC issue belongs to several events; tile="
+                   << match->tile.getValue() << ",requested-node="
+                   << node->second << ",actual-nodes=[";
+        llvm::interleaveComma(match->nodes, diagnostic);
+        diagnostic << "],previous-events=[";
+        bool first = true;
+        for (const auto &[event, operations] : operationsByEvent)
+          if (llvm::is_contained(operations, match->operation)) {
+            if (!first)
+              diagnostic << ';';
+            first = false;
+            diagnostic << "action-kind=" << event.action.index()
+                       << ",event-kind="
+                       << static_cast<unsigned>(event.kind);
+          }
+        diagnostic << "],op=";
+        match->operation->print(diagnostic);
         return mlir::failure();
       }
       operationsByEvent[planned.id].push_back(match->operation);
@@ -2095,7 +2227,8 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
       "close-event-occurrences");
 
   using EventBlocks = llvm::SmallVector<mlir::Block *, 4>;
-  std::map<EventId, EventBlocks> blocksByEvent;
+  std::map<EventId, EventBlocks> blocksByEvent =
+      std::move(issueFreeBlocksByEvent);
   auto sameBlocks = [](llvm::ArrayRef<mlir::Block *> lhs,
                        llvm::ArrayRef<mlir::Block *> rhs) {
     return lhs.size() == rhs.size() &&

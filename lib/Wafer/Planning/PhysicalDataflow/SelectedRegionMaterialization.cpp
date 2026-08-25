@@ -223,8 +223,6 @@ prepareSelectedRegionMaterializationSource(
           replica.id.fragment.source.index >= clonedProducer->getNumResults())
         return fail<SelectedRegionMaterializationSource>(
             failureReason, "selected replica producer clone is malformed");
-      consumerOperand.set(
-          clonedProducer->getResult(replica.id.fragment.source.index));
       result.operationNodes.push_back({clonedProducer, nextNode});
       result.executionNodes.push_back(
           {replica.id, nextNode, producerWork->id.root});
@@ -394,12 +392,32 @@ prepareSelectedRegionGroups(
     }
 
     for (const LocalUseBinding &binding : group.localBindings) {
+      auto consumerExecution = llvm::find_if(
+          group.executions, [&](const ExecutionInstancePlan &candidate) {
+            const auto *root =
+                std::get_if<RequiredRootExecution>(&candidate.id.source);
+            return root &&
+                   root->shard == binding.fragment.use.destinationShard;
+          });
+      auto consumerNode =
+          consumerExecution == group.executions.end()
+              ? nodesByExecution.end()
+              : nodesByExecution.find(consumerExecution->id);
+      if (consumerNode == nodesByExecution.end() ||
+          binding.fragment.source.kind !=
+              analysis::RootBoundaryKind::StructuredResult) {
+        return fail<std::vector<StructuredNodeShardGroup>>(
+            failureReason,
+            "local binding has no exact structured consumer occurrence");
+      }
+      uint32_t producerNode = 0;
       if (const auto *required =
               std::get_if<ExecutionInstanceId>(&binding.producer)) {
         auto node = nodesByExecution.find(*required);
         if (node == nodesByExecution.end())
           return fail<std::vector<StructuredNodeShardGroup>>(
               failureReason, "local required binding has no group execution");
+        producerNode = node->second;
         auto executionPosition = executionsByNode.find(node->second);
         const ExecutionInstancePlan *execution =
             executionPosition == executionsByNode.end()
@@ -429,6 +447,7 @@ prepareSelectedRegionGroups(
         if (node == nodesByReplica.end() || replicaPlan == group.replicas.end())
           return fail<std::vector<StructuredNodeShardGroup>>(
               failureReason, "local replica binding has no group execution");
+        producerNode = node->second;
         const bool topLevel =
             std::holds_alternative<ExecutionInstancePlan::TopLevel>(
                 replicaPlan->placement);
@@ -443,6 +462,9 @@ prepareSelectedRegionGroups(
                                 node->second))
           selected.independentlyMaterializedNodes.push_back(node->second);
       }
+      selected.localUses.push_back(
+          {producerNode, consumerNode->second, binding.fragment.source.index,
+           binding.fragment.use.operand});
     }
 
     for (const ExternalUseBinding &binding : group.externalBindings)
@@ -522,6 +544,22 @@ prepareSelectedRegionGroups(
                       rhs.producerIterationExtents, rhs.iteratorTileSizes,
                       rhs.waveLoopOrder);
     });
+    llvm::sort(selected.localUses, [](const auto &lhs, const auto &rhs) {
+      return std::tie(lhs.producerNodeId, lhs.consumerNodeId,
+                      lhs.producerResult, lhs.consumerOperand) <
+             std::tie(rhs.producerNodeId, rhs.consumerNodeId,
+                      rhs.producerResult, rhs.consumerOperand);
+    });
+    if (std::adjacent_find(
+            selected.localUses.begin(), selected.localUses.end(),
+            [](const auto &lhs, const auto &rhs) {
+              return std::tie(lhs.producerNodeId, lhs.consumerNodeId,
+                              lhs.producerResult, lhs.consumerOperand) ==
+                     std::tie(rhs.producerNodeId, rhs.consumerNodeId,
+                              rhs.producerResult, rhs.consumerOperand);
+            }) != selected.localUses.end())
+      return fail<std::vector<StructuredNodeShardGroup>>(
+          failureReason, "selected local use relation is duplicated");
     llvm::sort(selected.independentlyMaterializedNodes);
     if (!selected.shards.empty())
       result.push_back(std::move(selected));

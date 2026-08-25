@@ -12,8 +12,11 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
 
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/Interfaces/TilingInterface.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -125,7 +128,578 @@ mlir::LogicalResult appendRequiredExecutionNodeRelations(
   return mlir::success();
 }
 
+struct SearchAttentionExecutionSource {
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+  llvm::SmallVector<StructuredOperationNodeMapping, 64> operationNodes;
+  std::vector<SelectedRegionExecutionNode> executionNodes;
+  std::vector<StructuredNodeShardGroup> groups;
+  llvm::SmallVector<CandidateNodeRootRelation, 64> nodeRoots;
+  CardMaterializationPlan assignment;
+  std::map<uint32_t, uint32_t> semanticNodeByActualNode;
+};
+
+mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
+getStaticIterationExtents(mlir::Operation *operation,
+                          std::string *failureReason) {
+  auto tiling = mlir::dyn_cast_or_null<mlir::TilingInterface>(operation);
+  if (!tiling) {
+    if (failureReason)
+      *failureReason =
+          "search attention operation has no TilingInterface";
+    return mlir::failure();
+  }
+  mlir::OpBuilder builder(operation);
+  llvm::SmallVector<int64_t, 4> extents;
+  for (const mlir::Range &range : tiling.getIterationDomain(builder)) {
+    std::optional<int64_t> offset =
+        mlir::getConstantIntValue(range.offset);
+    std::optional<int64_t> size = mlir::getConstantIntValue(range.size);
+    std::optional<int64_t> stride =
+        mlir::getConstantIntValue(range.stride);
+    if (!offset || *offset != 0 || !size || *size <= 0 || !stride ||
+        *stride != 1) {
+      if (failureReason)
+        *failureReason =
+            "search attention operation has a dynamic iteration domain";
+      return mlir::failure();
+    }
+    extents.push_back(*size);
+  }
+  if (extents.size() != tiling.getLoopIteratorTypes().size()) {
+    if (failureReason)
+      *failureReason =
+          "search attention operation iteration rank is inconsistent";
+    return mlir::failure();
+  }
+  return extents;
+}
+
+analysis::RootRegionWorkId
+getRegionExecutionWork(const RegionExecutionId &execution) {
+  if (const auto *required = std::get_if<ExecutionInstanceId>(&execution))
+    return std::visit([](const auto &source) { return source.work; },
+                      required->source);
+  return std::get<ReplicaExecutionId>(execution).producer.work;
+}
+
+bool isIdentityBroadcastGeneric(mlir::Operation *operation) {
+  auto generic = mlir::dyn_cast_or_null<mlir::linalg::GenericOp>(operation);
+  if (!generic || generic.getNumDpsInputs() != 1 ||
+      generic.getNumDpsInits() != 1 || generic->getNumResults() != 1 ||
+      generic.getNumLoops() == 0 ||
+      !llvm::all_of(generic.getIteratorTypesArray(),
+                    mlir::linalg::isParallelIterator))
+    return false;
+  llvm::ArrayRef<mlir::AffineMap> maps = generic.getIndexingMapsArray();
+  if (maps.size() != 2 || !maps.front().isProjectedPermutation() ||
+      !maps.back().isIdentity() || !generic.getRegion().hasOneBlock())
+    return false;
+  mlir::Block &body = generic.getRegion().front();
+  auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(body.getTerminator());
+  return yield && yield.getNumOperands() == 1 &&
+         yield.getOperand(0) == body.getArgument(0);
+}
+
+mlir::FailureOr<SearchAttentionExecutionSource>
+prepareSearchAttentionExecutionSource(
+    mlir::ModuleOp tensorProgram, CardId cardId,
+    const CardProgramAnalysis &program, const CompleteCandidatePlan &plan,
+    CandidateMaterializationStatistics *statistics,
+    std::string *failureReason) {
+  mlir::FailureOr<AttentionMaterializationSource> attention =
+      prepareAttentionMaterializationSource(
+          tensorProgram, cardId, program, plan, program.availableTileIds,
+          SpatialDataflowMaterializationMode::JointDataflow, statistics,
+          failureReason);
+  if (mlir::failed(attention))
+    return mlir::failure();
+
+  mlir::func::FuncOp selectedProgram;
+  for (mlir::func::FuncOp function :
+       attention->module->getOps<mlir::func::FuncOp>()) {
+    if (function.isExternal())
+      continue;
+    if (selectedProgram) {
+      if (failureReason)
+        *failureReason =
+            "search attention source has several program functions";
+      return mlir::failure();
+    }
+    selectedProgram = function;
+  }
+  if (!selectedProgram) {
+    if (failureReason)
+      *failureReason = "search attention source has no program function";
+    return mlir::failure();
+  }
+  mlir::FailureOr<StructuredDAGAnalysis> dag =
+      StructuredDAGAnalysis::create(selectedProgram, failureReason);
+  if (mlir::failed(dag))
+    return mlir::failure();
+
+  std::map<mlir::Operation *, const StructuredOperationNodeMapping *>
+      sourceMappings;
+  std::map<uint32_t, SemanticRootKey> rootsBySemanticNode;
+  for (const CandidateNodeRootRelation &relation : attention->nodeRoots)
+    if (!rootsBySemanticNode.try_emplace(relation.structuredNodeId,
+                                         relation.root)
+             .second) {
+      if (failureReason)
+        *failureReason =
+            "search attention source has duplicate semantic node roots";
+      return mlir::failure();
+    }
+  for (const StructuredOperationNodeMapping &mapping :
+       attention->operationNodes)
+    if (!mapping.operation ||
+        !sourceMappings.try_emplace(mapping.operation, &mapping).second) {
+      if (failureReason)
+        *failureReason =
+            "search attention source has malformed operation mappings";
+      return mlir::failure();
+    }
+
+  std::map<uint32_t, const StructuredDAGNode *> dagNodes;
+  std::map<uint32_t, const StructuredDAGNodePlacement *> placements;
+  std::map<uint32_t, llvm::SmallVector<uint32_t, 8>>
+      actualNodesBySemanticNode;
+  SearchAttentionExecutionSource result;
+  result.module = std::move(attention->module);
+  result.assignment = std::move(attention->assignment);
+  result.nodeRoots = std::move(attention->nodeRoots);
+  for (const StructuredDAGNode &node : dag->getNodes()) {
+    auto source = sourceMappings.find(node.operation);
+    if (source == sourceMappings.end() ||
+        !dagNodes.try_emplace(node.id, &node).second) {
+      if (failureReason)
+        *failureReason =
+            "search attention DAG lost one selected operation mapping";
+      return mlir::failure();
+    }
+    result.operationNodes.push_back(
+        {node.operation, node.id, source->second->coupledComponentIndices});
+    result.semanticNodeByActualNode.emplace(
+        node.id, source->second->structuredNodeId);
+    actualNodesBySemanticNode[source->second->structuredNodeId].push_back(
+        node.id);
+  }
+  for (const StructuredDAGNodePlacement &placement :
+       result.assignment.nodePlacements)
+    if (!placements.try_emplace(placement.node, &placement).second) {
+      if (failureReason)
+        *failureReason =
+            "search attention source has duplicate actual node placement";
+      return mlir::failure();
+    }
+
+  std::map<mlir::Operation *, const StructuredOpTemporalTile *>
+      temporalByOperation;
+  for (const StructuredOpTemporalTile &temporal :
+       result.assignment.mapping.operationTemporalTiles)
+    if (!temporal.operation ||
+        !temporalByOperation.try_emplace(temporal.operation, &temporal)
+             .second) {
+      if (failureReason)
+        *failureReason =
+            "search attention source has duplicate temporal operation";
+      return mlir::failure();
+    }
+
+  std::map<RegionExecutionId, uint32_t> semanticNodeByExecution;
+  for (const auto &[execution, node] :
+       result.assignment.selectedRegionExecutions)
+    if (!semanticNodeByExecution.try_emplace(execution, node).second) {
+      if (failureReason)
+        *failureReason =
+            "search attention source has duplicate execution identity";
+      return mlir::failure();
+    }
+
+  auto findComponentEncoding =
+      [&](const RegionExecutionId &execution,
+          wafer::CoupledReductionComponentKind component)
+      -> std::optional<MemLayout> {
+    const auto *required = std::get_if<ExecutionInstanceId>(&execution);
+    if (!required)
+      return std::nullopt;
+    std::optional<MemLayout> encoding;
+    for (const LogicalRepresentationPlan &logical :
+         plan.representations.logicalValues) {
+      const auto *value =
+          std::get_if<CoupledComponentValueId>(&logical.value);
+      if (!value || !(value->execution == *required) ||
+          value->component != component)
+        continue;
+      auto physical = llvm::find_if(
+          plan.representations.physicalVersions,
+          [&](const PhysicalVersionPlan &candidate) {
+            return candidate.id == logical.primary;
+          });
+      if (physical == plan.representations.physicalVersions.end() ||
+          (encoding && *encoding != physical->encoding))
+        return std::nullopt;
+      encoding = physical->encoding;
+    }
+    return encoding;
+  };
+
+  std::set<std::pair<uint32_t, int64_t>> coveredActualNodes;
+  for (const RegionGroupPlan &region : plan.regions.groups) {
+    StructuredNodeShardGroup group;
+    llvm::SmallVector<RegionExecutionId, 8> executions;
+    for (const ExecutionInstancePlan &execution : region.executions)
+      executions.emplace_back(execution.id);
+    for (const ReplicaExecutionPlan &replica : region.replicas)
+      executions.emplace_back(replica.id);
+    for (const RegionExecutionId &execution : executions) {
+      auto semantic = semanticNodeByExecution.find(execution);
+      if (semantic == semanticNodeByExecution.end()) {
+        const SemanticRootKey root = getRegionExecutionWork(execution).root;
+        llvm::SmallVector<uint32_t, 2> candidates;
+        for (const auto &[node, candidateRoot] : rootsBySemanticNode)
+          if (candidateRoot == root)
+            candidates.push_back(node);
+        if (candidates.size() != 1) {
+          if (failureReason)
+            *failureReason =
+                "search attention execution has no unique semantic node";
+          return mlir::failure();
+        }
+        semantic = semanticNodeByExecution
+                       .try_emplace(execution, candidates.front())
+                       .first;
+      }
+      auto actualNodes = actualNodesBySemanticNode.find(semantic->second);
+      if (actualNodes == actualNodesBySemanticNode.end()) {
+        if (failureReason)
+          *failureReason =
+              "search attention execution has no actual structured nodes";
+        return mlir::failure();
+      }
+      for (uint32_t actualNode : actualNodes->second) {
+        auto placement = placements.find(actualNode);
+        auto dagNode = dagNodes.find(actualNode);
+        const StructuredDAGNode *node =
+            dagNode == dagNodes.end() ? nullptr : dagNode->second;
+        if (placement == placements.end() || !node ||
+            !llvm::is_contained(placement->second->tiles, region.tile))
+          continue;
+        if (!coveredActualNodes.emplace(actualNode, region.tile.getValue())
+                 .second)
+          continue;
+        mlir::FailureOr<llvm::SmallVector<int64_t, 4>> extents =
+            getStaticIterationExtents(node->operation, failureReason);
+        auto temporal = temporalByOperation.find(node->operation);
+        if (mlir::failed(extents) || temporal == temporalByOperation.end() ||
+            temporal->second->iteratorTileSizes.size() != extents->size()) {
+          if (failureReason && failureReason->empty())
+            *failureReason =
+                "search attention actual node has no complete temporal plan";
+          return mlir::failure();
+        }
+        if (mlir::isa<mlir::linalg::FillOp>(node->operation) ||
+            isIdentityBroadcastGeneric(node->operation)) {
+          group.recomputedProducerNodes.push_back(actualNode);
+          continue;
+        }
+        StructuredNodeIterationShard shard;
+        shard.structuredNodeId = actualNode;
+        shard.tile = region.tile;
+        shard.offsets.assign(extents->size(), 0);
+        shard.sizes = *extents;
+        group.shards.push_back(std::move(shard));
+        group.temporalTiles.push_back(
+            {actualNode, temporal->second->iteratorTileSizes,
+             temporal->second->waveLoopOrder});
+        group.independentlyMaterializedNodes.push_back(actualNode);
+
+        StructuredNodePhysicalRepresentation representation;
+        representation.structuredNodeId = actualNode;
+        representation.preserveNaturalOperands = true;
+        for (mlir::Value operand : node->operation->getOperands()) {
+          (void)operand;
+          representation.operandLayouts.push_back(std::nullopt);
+          representation.sharedOperands.push_back(0);
+        }
+        const StructuredOperationNodeMapping *sourceMapping =
+            sourceMappings.at(node->operation);
+        if (!sourceMapping->coupledComponentIndices.empty() &&
+            sourceMapping->coupledComponentIndices.size() !=
+                node->operation->getNumResults()) {
+          if (failureReason)
+            *failureReason =
+                "search attention component/result mapping is incomplete";
+          return mlir::failure();
+        }
+        for (auto [resultNumber, value] :
+             llvm::enumerate(node->operation->getResults())) {
+          if (!mlir::isa<mlir::RankedTensorType>(value.getType())) {
+            representation.resultLayouts.push_back(std::nullopt);
+            continue;
+          }
+          MemLayout layout = MemLayout::Tensor;
+          if (!sourceMapping->coupledComponentIndices.empty()) {
+            const unsigned raw =
+                sourceMapping->coupledComponentIndices[resultNumber];
+            if (raw > static_cast<unsigned>(
+                          wafer::CoupledReductionComponentKind::Accumulator)) {
+              if (failureReason)
+                *failureReason =
+                    "search attention component kind is outside the IR "
+                    "contract";
+              return mlir::failure();
+            }
+            auto selected = findComponentEncoding(
+                execution,
+                static_cast<wafer::CoupledReductionComponentKind>(raw));
+            if (!selected) {
+              if (failureReason)
+                *failureReason =
+                    "search attention component has no selected physical "
+                    "version";
+              return mlir::failure();
+            }
+            layout = *selected;
+          }
+          representation.resultLayouts.push_back(layout);
+        }
+        group.representations.push_back(std::move(representation));
+      }
+    }
+    llvm::sort(group.shards, [](const auto &lhs, const auto &rhs) {
+      return lhs.structuredNodeId < rhs.structuredNodeId;
+    });
+    llvm::sort(group.temporalTiles, [](const auto &lhs, const auto &rhs) {
+      return lhs.structuredNodeId < rhs.structuredNodeId;
+    });
+    llvm::sort(group.representations, [](const auto &lhs, const auto &rhs) {
+      return lhs.structuredNodeId < rhs.structuredNodeId;
+    });
+    llvm::sort(group.independentlyMaterializedNodes);
+    llvm::sort(group.recomputedProducerNodes);
+    if (!group.shards.empty())
+      result.groups.push_back(std::move(group));
+  }
+
+  std::set<std::pair<uint32_t, int64_t>> expectedActualNodes;
+  for (const auto &[node, placement] : placements)
+    for (TileId tile : placement->tiles)
+      expectedActualNodes.emplace(node, tile.getValue());
+  if (coveredActualNodes != expectedActualNodes) {
+    if (failureReason)
+      *failureReason =
+          "search attention RegionPlan does not cover every actual node/Tile";
+    return mlir::failure();
+  }
+
+  for (const auto &[execution, node] : semanticNodeByExecution) {
+    auto root = rootsBySemanticNode.find(node);
+    if (root == rootsBySemanticNode.end()) {
+      if (failureReason)
+        *failureReason =
+            "search attention execution has no semantic root relation";
+      return mlir::failure();
+    }
+    result.executionNodes.push_back({execution, node, root->second});
+  }
+  llvm::sort(result.executionNodes, [](const auto &lhs, const auto &rhs) {
+    return lhs.execution < rhs.execution;
+  });
+  result.assignment.selectedRegionExecutions.clear();
+  for (const SelectedRegionExecutionNode &execution : result.executionNodes)
+    result.assignment.selectedRegionExecutions.push_back(
+        {execution.execution, execution.structuredNodeId});
+  return result;
+}
+
+void remapAttentionMaterializationRelations(
+    StructuredMaterializationRelations &relations,
+    const std::map<uint32_t, uint32_t> &semanticNodeByActualNode) {
+  auto remap = [&](auto &entries) {
+    for (auto &entry : entries) {
+      auto semantic =
+          semanticNodeByActualNode.find(entry.structuredNodeId);
+      if (semantic != semanticNodeByActualNode.end())
+        entry.structuredNodeId = semantic->second;
+    }
+  };
+  remap(relations.operationEmissions);
+  remap(relations.operationResultBuffers);
+  remap(relations.operandBuffers);
+  remap(relations.scratchBuffers);
+  remap(relations.partialReductionContributions);
+  remap(relations.partialReductionMergeInputs);
+}
+
 } // namespace
+
+mlir::FailureOr<MaterializedCardCandidate>
+materializeSearchCardCandidate(
+    mlir::ModuleOp tensorProgram, CardId cardId,
+    const CardProgramAnalysis &program, const CompleteCandidatePlan &plan,
+    CandidateMaterializationStatistics *statistics,
+    llvm::raw_ostream &diagnostics) {
+  std::string failureReason;
+  CanonicalRepresentationPlanOutcome canonicalRepresentation =
+      buildCanonicalRepresentationPlan(plan.regions, plan.temporal,
+                                       plan.rootWorks);
+  const CanonicalRepresentationCoordinate *representationCoordinate =
+      getCanonicalRepresentationCoordinate(canonicalRepresentation);
+  if (!representationCoordinate) {
+    diagnostics << "wafer-compile: search representation inventory "
+                   "validation failed\n";
+    return mlir::failure();
+  }
+  RepresentationDomainResult representationDomain =
+      buildRepresentationDomain(*representationCoordinate);
+  if (!representationDomain.succeeded() ||
+      !representationDomain.domain->contains(plan.representations)) {
+    diagnostics << "wafer-compile: search representation plan is outside "
+                   "its current domain\n";
+    return mlir::failure();
+  }
+  if (mlir::failed(prepareRepresentationPlan(
+          *representationDomain.domain, plan.representations,
+          &failureReason))) {
+    diagnostics << "wafer-compile: search representation preflight failed: "
+                << failureReason << '\n';
+    return mlir::failure();
+  }
+
+  if (!plan.preparedAttention.work.roots.empty()) {
+    mlir::FailureOr<SearchAttentionExecutionSource> source =
+        prepareSearchAttentionExecutionSource(
+            tensorProgram, cardId, program, plan, statistics, &failureReason);
+    if (mlir::failed(source)) {
+      diagnostics << "wafer-compile: search attention execution "
+                     "preparation failed: "
+                  << failureReason << '\n';
+      return mlir::failure();
+    }
+    if (statistics) {
+      ++statistics->sourcePreparations;
+      ++statistics->materializationPreparations;
+    }
+    MaterializedCardCandidate result;
+    result.assignment = std::move(source->assignment);
+    result.assignment.selectedRegions = plan.regions;
+    result.assignment.selectedRepresentations = plan.representations;
+    result.assignment.selectedRegionGroups = source->groups;
+    result.nodeRoots = std::move(source->nodeRoots);
+    result.materializationSource = std::move(source->module);
+    wafer::support::ScopedCompileTimingSpan timing(
+        "conversion", "search-execution",
+        "selected-attention-to-card-module");
+    if (mlir::failed(lowerStructuredNodeGroupsToCardModule(
+            *result.materializationSource, cardId, program.availableTileIds,
+            source->operationNodes, source->groups, result.module,
+            &result.relations, &failureReason))) {
+      diagnostics << "wafer-compile: search attention CardModule "
+                     "materialization failed: "
+                  << failureReason << '\n';
+      return mlir::failure();
+    }
+    remapAttentionMaterializationRelations(
+        result.relations, source->semanticNodeByActualNode);
+    if (statistics) {
+      ++statistics->cardModuleMaterializations;
+      statistics->tileEntryMaterializations +=
+          program.availableTileIds.size();
+      statistics->maximumTileMaterializationWorkers = 1;
+    }
+    return result;
+  }
+
+  mlir::FailureOr<SelectedRegionMaterializationSource> source =
+      prepareSelectedRegionMaterializationSource(
+          tensorProgram, program, plan.regions, plan.rootWorks,
+          &failureReason);
+  if (mlir::failed(source)) {
+    diagnostics << "wafer-compile: search execution source preparation "
+                   "failed: "
+                << failureReason << '\n';
+    return mlir::failure();
+  }
+  if (statistics)
+    ++statistics->sourcePreparations;
+
+  mlir::FailureOr<std::vector<StructuredNodeShardGroup>> groups =
+      prepareSelectedRegionGroups(program, plan.regions, plan.rootWorks,
+                                  plan.temporal, source->executionNodes,
+                                  &failureReason);
+  if (mlir::failed(groups)) {
+    diagnostics << "wafer-compile: search execution preparation failed: "
+                << failureReason << '\n';
+    return mlir::failure();
+  }
+  if (statistics)
+    ++statistics->materializationPreparations;
+
+  if (wafer::support::getActiveCompileTimingSession() && !groups->empty()) {
+    auto firstNonEmptyGroup =
+        llvm::find_if(*groups, [](const StructuredNodeShardGroup &group) {
+          return !group.shards.empty();
+        });
+    if (firstNonEmptyGroup != groups->end()) {
+      TileId firstTile = firstNonEmptyGroup->shards.front().tile;
+      uint64_t totalShards = 0;
+      for (const StructuredNodeShardGroup &group : *groups)
+        totalShards += group.shards.size();
+      diagnostics << "wafer-compile: ir-region-plan groups=" << groups->size()
+                  << " shards=" << totalShards
+                  << " first_tile=" << firstTile.getValue() << '\n';
+    }
+  }
+
+  if (mlir::failed(applySelectedRegionRepresentations(
+          plan.regions, plan.rootWorks, plan.representations,
+          source->executionNodes, *groups, &failureReason))) {
+    diagnostics << "wafer-compile: search representation preparation "
+                   "failed: "
+                << failureReason << '\n';
+    return mlir::failure();
+  }
+
+  MaterializedCardCandidate result;
+  result.assignment.spatial = plan.spatial;
+  result.assignment.demand = plan.demand;
+  result.assignment.selectedRegions = plan.regions;
+  result.assignment.selectedRepresentations = plan.representations;
+  result.assignment.selectedRegionGroups = *groups;
+  std::map<uint32_t, SemanticRootKey> rootsByNode;
+  for (const SelectedRegionExecutionNode &execution : source->executionNodes) {
+    auto [position, inserted] = rootsByNode.try_emplace(
+        execution.structuredNodeId, execution.root);
+    if (!inserted && position->second != execution.root) {
+      diagnostics << "wafer-compile: search execution node has several "
+                     "semantic roots\n";
+      return mlir::failure();
+    }
+    result.assignment.selectedRegionExecutions.push_back(
+        {execution.execution, execution.structuredNodeId});
+  }
+  for (const auto &[node, root] : rootsByNode)
+    result.nodeRoots.push_back({node, root});
+  result.materializationSource = std::move(source->module);
+
+  wafer::support::ScopedCompileTimingSpan timing(
+      "conversion", "search-execution", "selected-region-to-card-module");
+  if (mlir::failed(lowerStructuredNodeGroupsToCardModule(
+          *result.materializationSource, cardId, program.availableTileIds,
+          source->operationNodes, *groups, result.module, &result.relations,
+          &failureReason))) {
+    diagnostics << "wafer-compile: search execution CardModule "
+                   "materialization failed: "
+                << failureReason << '\n';
+    return mlir::failure();
+  }
+  if (statistics) {
+    ++statistics->cardModuleMaterializations;
+    statistics->tileEntryMaterializations += program.availableTileIds.size();
+    statistics->maximumTileMaterializationWorkers = 1;
+  }
+  return result;
+}
 
 mlir::FailureOr<MaterializedCardCandidate>
 materializeCardCandidate(mlir::ModuleOp tensorProgram, CardId cardId,

@@ -11,6 +11,7 @@
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -199,8 +200,46 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
       orderedNodeIds, recomputedNodeIds, independentlyMaterializedNodeIds,
       failureReason, operationNodes, functionalArgumentCount, result.boundaries,
       result.results);
-  if (mlir::failed(function) ||
-      mlir::failed(appendTileOutputDestinations(*function, failureReason)))
+  if (mlir::failed(function))
+    return mlir::failure();
+  for (const StructuredNodeLocalUse &use : group.localUses) {
+    auto producer = llvm::find_if(
+        operationNodes, [&](const StructuredOperationNodeMapping &mapping) {
+          return mapping.structuredNodeId == use.producerNodeId;
+        });
+    auto consumer = llvm::find_if(
+        operationNodes, [&](const StructuredOperationNodeMapping &mapping) {
+          return mapping.structuredNodeId == use.consumerNodeId;
+        });
+    if (producer == operationNodes.end() || consumer == operationNodes.end() ||
+        !producer->operation || !consumer->operation ||
+        use.producerResult >= producer->operation->getNumResults() ||
+        use.consumerOperand >= consumer->operation->getNumOperands() ||
+        producer->operation->getResult(use.producerResult).getType() !=
+            consumer->operation->getOperand(use.consumerOperand).getType())
+      return fail<RootFragment>(
+          failureReason,
+          "selected local use has no current producer/consumer SSA edge");
+    consumer->operation->setOperand(
+        use.consumerOperand,
+        producer->operation->getResult(use.producerResult));
+  }
+  llvm::BitVector eraseArguments((*function).getNumArguments());
+  llvm::SmallVector<RootValueKey, 8> retainedBoundaries;
+  for (auto [index, boundary] : llvm::enumerate(result.boundaries)) {
+    mlir::BlockArgument argument = (*function).getArgument(index);
+    if (argument.use_empty())
+      eraseArguments.set(index);
+    else
+      retainedBoundaries.push_back(boundary);
+  }
+  const unsigned erasedArguments = eraseArguments.count();
+  if (erasedArguments != 0) {
+    (*function).eraseArguments(eraseArguments);
+    functionalArgumentCount -= erasedArguments;
+    result.boundaries = std::move(retainedBoundaries);
+  }
+  if (mlir::failed(appendTileOutputDestinations(*function, failureReason)))
     return mlir::failure();
 
   TensorProgramScope scope(*function, functionalArgumentCount);
@@ -595,6 +634,20 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
     llvm::interleaveComma(expectedNodes, diagnostic);
     diagnostic << "], emitted=[";
     llvm::interleaveComma(emittedNodes, diagnostic);
+    diagnostic << "], missing=[";
+    bool firstMissing = true;
+    for (uint32_t node : selectedNodeIds) {
+      if (emittedNodes.contains(node))
+        continue;
+      if (!firstMissing)
+        diagnostic << ',';
+      firstMissing = false;
+      diagnostic << node << ':';
+      if (mlir::Operation *source = sourceByNode.lookup(node))
+        diagnostic << source->getName();
+      else
+        diagnostic << "unknown";
+    }
     diagnostic << "], regions=" << regionCount;
     return fail<RootFragment>(failureReason, diagnostic.str());
   }

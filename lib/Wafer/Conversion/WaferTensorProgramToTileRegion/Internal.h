@@ -59,6 +59,7 @@ struct BufferVersions {
 };
 
 struct SelectedNodeRepresentation {
+  bool preserveNaturalOperands = false;
   llvm::SmallVector<std::optional<MemLayout>, 4> operandLayouts;
   llvm::SmallVector<uint8_t, 4> sharedOperands;
   llvm::SmallVector<std::optional<MemLayout>, 2> resultLayouts;

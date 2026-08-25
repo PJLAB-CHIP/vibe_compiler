@@ -51,7 +51,45 @@ struct TileEntryStage {
   mlir::func::FuncOp function;
   llvm::SmallVector<RootValueKey, 8> boundaries;
   llvm::SmallVector<RootValueKey, 4> results;
+  llvm::SmallVector<llvm::SmallVector<mlir::Value, 2>, 4> outputBuffers;
 };
+
+mlir::FailureOr<TileEntryStage> makeTileEntryStage(
+    const RootFragment &fragment, std::string *failureReason) {
+  TileEntryStage stage{fragment.function, fragment.boundaries,
+                       fragment.results, {}};
+  stage.outputBuffers.resize(stage.results.size());
+  for (const SpatialOutputBufferRelation &relation :
+       fragment.relations.outputBuffers) {
+    if (relation.outputIndex >= stage.outputBuffers.size()) {
+      setFailureReason(
+          failureReason,
+          "root fragment has an out-of-range output relation");
+      return mlir::failure();
+    }
+    auto &buffers = stage.outputBuffers[relation.outputIndex];
+    if (!llvm::is_contained(buffers, relation.buffer))
+      buffers.push_back(relation.buffer);
+  }
+  return stage;
+}
+
+struct CardDDRStageResource {
+  RootValueKey value;
+  int64_t resourceId = -1;
+  mlir::RankedTensorType tensorType;
+  TileId producer{0};
+  llvm::SmallVector<TileId, 4> consumers;
+};
+
+const CardDDRStageResource *findCardDDRStageResource(
+    llvm::ArrayRef<CardDDRStageResource> resources,
+    const RootValueKey &value) {
+  auto resource = llvm::find_if(resources, [&](const auto &candidate) {
+    return !(candidate.value < value) && !(value < candidate.value);
+  });
+  return resource == resources.end() ? nullptr : &*resource;
+}
 
 mlir::Value createEmptyTensor(mlir::Type type, mlir::Location loc,
                               mlir::OpBuilder &builder) {
@@ -83,25 +121,60 @@ mlir::Value createDDRTensorDestination(mlir::Type type, mlir::Location loc,
 }
 
 mlir::LogicalResult composeTileEntry(
-    TileModuleOp tile, mlir::func::FuncOp sourceProgram,
+    TileModuleOp tile, TileId tileId, mlir::func::FuncOp sourceProgram,
     llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
-    llvm::ArrayRef<TileEntryStage> stages, std::string *failureReason) {
+    llvm::ArrayRef<TileEntryStage> stages,
+    llvm::ArrayRef<CardDDRStageResource> cardDDRResources,
+    StructuredMaterializationRelations &relations,
+    std::string *failureReason) {
   if (!tile || !sourceProgram || sourceProgram.isExternal() ||
       !sourceProgram.getBody().hasOneBlock())
     return failResult(failureReason,
                       "Tile entry composition requires one source function");
   mlir::OpBuilder builder(&tile.getBody().front(),
                           tile.getBody().front().begin());
+  llvm::SmallVector<mlir::Type, 16> entryInputTypes(
+      sourceProgram.getArgumentTypes().begin(),
+      sourceProgram.getArgumentTypes().end());
+  for (const CardDDRStageResource &resource : cardDDRResources)
+    entryInputTypes.push_back(resource.tensorType);
   auto entry = builder.create<mlir::func::FuncOp>(
       sourceProgram.getLoc(), sourceProgram.getSymName(),
-      sourceProgram.getFunctionType());
+      builder.getFunctionType(entryInputTypes, sourceProgram.getResultTypes()));
   mlir::Block *body = entry.addEntryBlock();
   builder.setInsertionPointToStart(body);
   std::map<RootValueKey, mlir::Value> values;
   std::map<RootValueKey, llvm::SmallVector<mlir::Value, 2>> destinations;
-  for (auto [index, argument] : llvm::enumerate(body->getArguments()))
+  for (auto [index, argument] : llvm::enumerate(
+           body->getArguments().take_front(sourceProgram.getNumArguments())))
     values[{RootValueKind::SourceArgument, static_cast<uint32_t>(index), 0}] =
         argument;
+  std::map<int64_t, mlir::BlockArgument> cardDDRArguments;
+  for (auto [resourceIndex, resource] :
+       llvm::enumerate(cardDDRResources)) {
+    const unsigned argumentIndex =
+        sourceProgram.getNumArguments() + resourceIndex;
+    mlir::BlockArgument argument = body->getArgument(argumentIndex);
+    CardDDRAccess access = CardDDRAccess::None;
+    const bool writes = resource.producer == tileId;
+    const bool reads = llvm::is_contained(resource.consumers, tileId);
+    if (writes && reads)
+      access = CardDDRAccess::ReadWrite;
+    else if (writes)
+      access = CardDDRAccess::Write;
+    else if (reads)
+      access = CardDDRAccess::Read;
+    std::string symbol =
+        (llvm::Twine("card_ddr_") + llvm::Twine(resource.resourceId)).str();
+    entry.setArgAttr(
+        argumentIndex, kWaferCardDDRBindingAttrName,
+        CardDDRBindingAttr::get(
+            entry.getContext(),
+            mlir::FlatSymbolRefAttr::get(entry.getContext(), symbol),
+            resource.resourceId, access));
+    cardDDRArguments.emplace(resource.resourceId, argument);
+    relations.cardDDRBuffers.push_back({resource.resourceId, argument});
+  }
 
   llvm::SmallVector<const TileEntryStage *, 8> pending;
   for (const TileEntryStage &stage : stages)
@@ -110,7 +183,11 @@ mlir::LogicalResult composeTileEntry(
     auto ready = llvm::find_if(pending, [&](const TileEntryStage *stage) {
       return llvm::all_of(stage->boundaries, [&](const RootValueKey &key) {
         return key.kind == RootValueKind::SourceArgument ||
-               values.count(key) != 0;
+               values.count(key) != 0 ||
+               (findCardDDRStageResource(cardDDRResources, key) &&
+                llvm::is_contained(
+                    findCardDDRStageResource(cardDDRResources, key)->consumers,
+                    tileId));
       });
     });
     if (ready == pending.end())
@@ -125,37 +202,53 @@ mlir::LogicalResult composeTileEntry(
     llvm::SmallVector<mlir::Value, 8> operands;
     for (auto [index, key] : llvm::enumerate(stage.boundaries)) {
       auto value = values.find(key);
-      mlir::Value operand =
-          value == values.end()
-              ? (key.kind == RootValueKind::StructuredResult
-                     ? createDDRTensorDestination(
-                           function.getArgumentTypes()[index],
-                           function.getLoc(), builder)
-                     : createEmptyTensor(function.getArgumentTypes()[index],
-                                         function.getLoc(), builder))
-              : value->second;
+      mlir::Value operand = value == values.end() ? mlir::Value{}
+                                                  : value->second;
+      if (!operand) {
+        const CardDDRStageResource *resource =
+            findCardDDRStageResource(cardDDRResources, key);
+        auto argument = resource
+                            ? cardDDRArguments.find(resource->resourceId)
+                            : cardDDRArguments.end();
+        if (resource && argument != cardDDRArguments.end() &&
+            llvm::is_contained(resource->consumers, tileId))
+          operand = argument->second;
+      }
+      if (!operand && key.kind == RootValueKind::SourceArgument)
+        operand = createEmptyTensor(function.getArgumentTypes()[index],
+                                    function.getLoc(), builder);
       if (!operand || operand.getType() != function.getArgumentTypes()[index])
         return failResult(failureReason,
                           "Tile entry cannot resolve one stage boundary");
       operands.push_back(operand);
     }
-    for (unsigned index = stage.boundaries.size();
-         index < function.getNumArguments(); ++index) {
+    if (function.getNumArguments() !=
+        stage.boundaries.size() + stage.results.size())
+      return failResult(failureReason,
+                        "Tile entry stage destination arity changed");
+    for (auto [resultIndex, key] : llvm::enumerate(stage.results)) {
+      const unsigned index = stage.boundaries.size() + resultIndex;
       // A stage result crosses this private fragment boundary. The first
       // movement assignment is an explicit DDR cut, so its full logical
       // destination must not become a full-size Tile-local SPM allocation.
       // Actual wave/shard buffers remain inside the moved TileRegion body.
-      mlir::Value destination = createDDRTensorDestination(
-          function.getArgumentTypes()[index], function.getLoc(), builder);
+      mlir::Value destination;
+      const CardDDRStageResource *resource =
+          findCardDDRStageResource(cardDDRResources, key);
+      auto argument = resource ? cardDDRArguments.find(resource->resourceId)
+                               : cardDDRArguments.end();
+      if (resource && resource->producer == tileId &&
+          argument != cardDDRArguments.end())
+        destination = argument->second;
+      else
+        destination = createDDRTensorDestination(
+            function.getArgumentTypes()[index], function.getLoc(), builder);
       if (!destination)
         return failResult(failureReason,
                           "Tile entry stage destination is not static tensor");
       operands.push_back(destination);
+      destinations[key].push_back(destination);
     }
-    for (const RootValueKey &key : stage.results)
-      for (size_t operandIndex = stage.boundaries.size();
-           operandIndex < operands.size(); ++operandIndex)
-        destinations[key].push_back(operands[operandIndex]);
     if (!function.getBody().hasOneBlock())
       return failResult(failureReason,
                         "Tile entry stage function is not one block");
@@ -240,8 +333,6 @@ void appendRelations(StructuredMaterializationRelations &destination,
                                     source.operandBuffers.end());
   destination.scratchBuffers.append(source.scratchBuffers.begin(),
                                     source.scratchBuffers.end());
-  destination.outputBuffers.append(source.outputBuffers.begin(),
-                                   source.outputBuffers.end());
   destination.cardDDRBuffers.append(source.cardDDRBuffers.begin(),
                                     source.cardDDRBuffers.end());
   destination.partialReductionContributions.append(
@@ -510,6 +601,24 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
                           "selected nested temporal assignment is malformed");
       nestedProducerNodes.insert(nested.producerNodeId);
     }
+    std::set<std::tuple<uint32_t, uint32_t, unsigned, unsigned>> localUseKeys;
+    for (const StructuredNodeLocalUse &use : group.localUses)
+      if (use.producerNodeId == use.consumerNodeId ||
+          (!llvm::any_of(group.shards, [&](const auto &shard) {
+             return shard.structuredNodeId == use.producerNodeId;
+           }) &&
+           !llvm::is_contained(group.recomputedProducerNodes,
+                               use.producerNodeId)) ||
+          !llvm::any_of(group.shards, [&](const auto &shard) {
+            return shard.structuredNodeId == use.consumerNodeId;
+          }) ||
+          !localUseKeys
+               .emplace(use.producerNodeId, use.consumerNodeId,
+                        use.producerResult, use.consumerOperand)
+               .second)
+        return failResult(
+            failureReason,
+            "selected local use is self-referential, missing, or duplicated");
     if ((!group.temporalTiles.empty() || !group.nestedTemporalTiles.empty()) &&
         llvm::any_of(group.shards, [&](const auto &shard) {
           const bool topLevel = temporalByNode.count(shard.structuredNodeId);
@@ -642,8 +751,11 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
                          "selected node-group fragment materialization failed");
       return mlir::failure();
     }
-    entryStages[firstShard.tile.getValue()].push_back(
-        {fragment->function, fragment->boundaries, fragment->results});
+    mlir::FailureOr<TileEntryStage> stage =
+        makeTileEntryStage(*fragment, failureReason);
+    if (mlir::failed(stage))
+      return mlir::failure();
+    entryStages[firstShard.tile.getValue()].push_back(std::move(*stage));
     if (!firstShard.reductionGroups.empty()) {
       const ReductionGroupPlacement &placement =
           firstShard.reductionGroups.front();
@@ -675,16 +787,152 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
         group.functions, group.mergeRepresentation, failureReason);
     if (mlir::failed(merge))
       return mlir::failure();
-    entryStages[group.mergeTile.getValue()].push_back(
-        {merge->function, merge->boundaries, merge->results});
+    mlir::FailureOr<TileEntryStage> stage =
+        makeTileEntryStage(*merge, failureReason);
+    if (mlir::failed(stage))
+      return mlir::failure();
+    entryStages[group.mergeTile.getValue()].push_back(std::move(*stage));
     appendRelations(relations, std::move(merge->relations));
+  }
+
+  struct StageEndpoint {
+    TileId tile{0};
+    mlir::Type type;
+  };
+  std::map<RootValueKey, std::vector<StageEndpoint>> producers;
+  std::map<RootValueKey, std::vector<StageEndpoint>> consumers;
+  for (const auto &[tileValue, stages] : entryStages) {
+    TileId tileId(tileValue);
+    for (const TileEntryStage &stage : stages) {
+      mlir::func::FuncOp function = stage.function;
+      if (!function || function.getNumResults() != stage.results.size() ||
+          function.getNumArguments() < stage.boundaries.size())
+        return failResult(failureReason,
+                          "node-group stage boundary inventory is malformed");
+      for (auto [index, key] : llvm::enumerate(stage.results))
+        producers[key].push_back({tileId, function.getResultTypes()[index]});
+      for (auto [index, key] : llvm::enumerate(stage.boundaries))
+        if (key.kind == RootValueKind::StructuredResult)
+          consumers[key].push_back({tileId, function.getArgumentTypes()[index]});
+    }
+  }
+  std::map<RootValueKey, CardDDRStageResource> resourcesByValue;
+  for (const auto &[value, uses] : consumers) {
+    auto definitions = producers.find(value);
+    if (definitions == producers.end()) {
+      if (failureReason) {
+        llvm::raw_string_ostream diagnostic(*failureReason);
+        diagnostic << "structured stage boundary has no selected producer; "
+                      "node="
+                   << value.owner << ",result=" << value.resultIndex
+                   << ",consumer-tiles=[";
+        for (auto [index, use] : llvm::enumerate(uses))
+          diagnostic << (index ? "," : "") << use.tile.getValue();
+        diagnostic << ']';
+      }
+      return mlir::failure();
+    }
+    for (const StageEndpoint &use : uses) {
+      if (llvm::any_of(definitions->second, [&](const StageEndpoint &producer) {
+            return producer.tile == use.tile;
+          }))
+        continue;
+      if (definitions->second.size() != 1)
+        return failResult(
+            failureReason,
+            "cross-Tile structured boundary has no unique selected owner");
+      const StageEndpoint &producer = definitions->second.front();
+      auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(producer.type);
+      if (!tensorType || !tensorType.hasStaticShape() ||
+          use.type != producer.type)
+        return failResult(
+            failureReason,
+            "cross-Tile structured boundary has inconsistent tensor types");
+      auto [resource, inserted] = resourcesByValue.try_emplace(value);
+      if (inserted) {
+        resource->second.value = value;
+        resource->second.tensorType = tensorType;
+        resource->second.producer = producer.tile;
+      } else if (resource->second.producer != producer.tile ||
+                 resource->second.tensorType != tensorType) {
+        return failResult(
+            failureReason,
+            "cross-Tile structured boundary changed its selected owner");
+      }
+      if (!llvm::is_contained(resource->second.consumers, use.tile))
+        resource->second.consumers.push_back(use.tile);
+    }
+  }
+  std::vector<CardDDRStageResource> cardDDRResources;
+  cardDDRResources.reserve(resourcesByValue.size());
+  int64_t nextCardDDRResource = 0;
+  for (auto &[value, resource] : resourcesByValue) {
+    (void)value;
+    llvm::sort(resource.consumers, [](TileId lhs, TileId rhs) {
+      return lhs.getValue() < rhs.getValue();
+    });
+    resource.resourceId = nextCardDDRResource++;
+    cardDDRResources.push_back(resource);
+  }
+  for (const CardDDRStageResource &resource : cardDDRResources) {
+    auto memrefType = mlir::MemRefType::get(
+        resource.tensorType.getShape(), resource.tensorType.getElementType(),
+        mlir::MemRefLayoutAttrInterface{},
+        MemoryAttr::get(sourceModule.getContext(), MemorySpace::DDR,
+                        MemLayout::Tensor));
+    std::string symbol =
+        (llvm::Twine("card_ddr_") + llvm::Twine(resource.resourceId)).str();
+    auto declaration = cardBuilder.create<mlir::memref::GlobalOp>(
+        sourceModule.getLoc(), symbol, cardBuilder.getStringAttr("private"),
+        memrefType, /*initial_value=*/mlir::Attribute{}, /*constant=*/false,
+        /*alignment=*/mlir::IntegerAttr{});
+    declaration->setAttr(
+        kWaferCardDDRResourceAttrName,
+        CardDDRResourceAttr::get(sourceModule.getContext(),
+                                 resource.resourceId));
+  }
+
+  auto sourceReturn = mlir::cast<mlir::func::ReturnOp>(
+      sourceProgram.getBody().front().getTerminator());
+  for (auto [outputIndex, sourceValue] :
+       llvm::enumerate(sourceReturn.getOperands())) {
+    auto result = mlir::dyn_cast<mlir::OpResult>(sourceValue);
+    auto owner =
+        result ? llvm::find_if(
+                     operationNodes,
+                     [&](const StructuredOperationNodeMapping &candidate) {
+                       return candidate.operation == result.getOwner();
+                     })
+               : operationNodes.end();
+    if (!result || owner == operationNodes.end())
+      continue;
+    RootValueKey outputKey{RootValueKind::StructuredResult,
+                           owner->structuredNodeId,
+                           result.getResultNumber()};
+    for (const auto &[tileValue, stages] : entryStages) {
+      (void)tileValue;
+      llvm::SmallVector<mlir::Value, 4> outputBuffers;
+      for (const TileEntryStage &stage : stages)
+        for (auto [resultIndex, key] : llvm::enumerate(stage.results)) {
+          const bool sameKey = !(key < outputKey) && !(outputKey < key);
+          if (!sameKey || resultIndex >= stage.outputBuffers.size())
+            continue;
+          for (mlir::Value buffer : stage.outputBuffers[resultIndex])
+            if (buffer && !llvm::is_contained(outputBuffers, buffer))
+              outputBuffers.push_back(buffer);
+        }
+      for (mlir::Value outputBuffer : outputBuffers)
+        relations.outputBuffers.push_back(
+            {static_cast<unsigned>(outputIndex), outputBuffer});
+    }
   }
 
   for (TileId tileId : sortedTiles) {
     TileModuleOp tile = tiles.lookup(tileId.getValue());
     if (!tile || mlir::failed(composeTileEntry(
-                     tile, sourceProgram, operationNodes,
-                     entryStages[tileId.getValue()], failureReason)))
+                     tile, tileId, sourceProgram, operationNodes,
+                     entryStages[tileId.getValue()], cardDDRResources,
+                     relations, failureReason)))
       return mlir::failure();
   }
 

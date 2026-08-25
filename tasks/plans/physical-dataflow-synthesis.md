@@ -119,6 +119,20 @@ per-fragment compute重复和独立root grouping错误。
 Frontier state数、MiniMalloc、SPM estimate、source模型规模和temporal tile过细均不是本次膨胀起点。修复不能依赖DCE、
 descriptor cache、单Tile fallback或延长timeout。
 
+### Search execution builder的current边界
+
+canonical/noncanonical generic与FA/FD现在都由search-owned execution/RegionPlan builder直接构造；
+`FullFeasibility`不再调用edge-driven `TileMaterializationSession`。同一LLaMA source的fresh Release
+inventory为26,128个selected Tile op、1,664个compute emission和21,248个Instr op；每Tile为1,633/104，
+且完成1,696次TileRegion→Instr lowering。这些数相对冻结的560,032/42,672严格下降，只作
+IR膨胀回归证据，不进入legality。
+
+FA/FD的1024与1025/1031、FP16/BF16、`none`/`search`矩阵已经实际进入Instr、SPM、target、
+package/no-card。Search FD中的cross-Tile component通过actual `RootValueKey`建立CardDDR resource；只有
+唯一current producer才可建立该carrier，不按shape或位置补owner。普通LLaMA仍在selected
+`MovementPlan`与actual DDR issue的精确绑定处停止；该缺口属于第5项，不得恢复旧carrier或用
+node/shape近似匹配绕过。
+
 ## Verifier职责冻结分类
 
 ### Custom verifier hooks

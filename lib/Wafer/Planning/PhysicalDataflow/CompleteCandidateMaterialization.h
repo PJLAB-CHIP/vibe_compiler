@@ -107,6 +107,17 @@ materializeCardCandidate(mlir::ModuleOp tensorProgram, CardId cardId,
                          CandidateMaterializationStatistics *statistics,
                          llvm::raw_ostream &diagnostics);
 
+/// Materializes one complete search assignment through the selected
+/// execution/RegionPlan builder. Canonical and non-canonical assignments use
+/// this same path; it never invokes the edge-driven Tile materialization
+/// session or chooses a different builder from plan equality.
+mlir::FailureOr<MaterializedCardCandidate>
+materializeSearchCardCandidate(
+    mlir::ModuleOp tensorProgram, CardId cardId,
+    const CardProgramAnalysis &program, const CompleteCandidatePlan &plan,
+    CandidateMaterializationStatistics *statistics,
+    llvm::raw_ostream &diagnostics);
+
 } // namespace wafer::compiler::detail
 
 #endif // WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_COMPLETECANDIDATEMATERIALIZATION_H

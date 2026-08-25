@@ -211,7 +211,8 @@ TileRegionBodyEmitter::TileRegionBodyEmitter(
       relationRecorder(relationRecorder) {
   for (const StructuredNodePhysicalRepresentation &representation :
        representations) {
-    SelectedNodeRepresentation selected{representation.operandLayouts,
+    SelectedNodeRepresentation selected{representation.preserveNaturalOperands,
+                                        representation.operandLayouts,
                                         representation.sharedOperands,
                                         representation.resultLayouts};
     if (!selectedRepresentations
@@ -1070,7 +1071,10 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
       for (uint32_t current : activeStructuredNodes) {
         auto selected = selectedRepresentations.find(current);
         if (selected == selectedRepresentations.end() ||
-            (representation && (representation->operandLayouts !=
+            (representation &&
+             (representation->preserveNaturalOperands !=
+                  selected->second.preserveNaturalOperands ||
+              representation->operandLayouts !=
                                     selected->second.operandLayouts ||
                                 representation->sharedOperands !=
                                     selected->second.sharedOperands ||
@@ -1119,6 +1123,12 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
     };
     llvm::SmallVector<SavedVersions, 4> savedOperands;
     if (representation) {
+      if (representation->preserveNaturalOperands &&
+          llvm::any_of(representation->operandLayouts,
+                       [](const auto &layout) { return layout.has_value(); })) {
+        activeStructuredNodes = std::move(previous);
+        return fail("natural operand representation must not select layouts");
+      }
       for (auto [operandNumber, layout] :
            llvm::enumerate(representation->operandLayouts)) {
         mlir::OpOperand &opOperand = op->getOpOperand(operandNumber);
@@ -1128,10 +1138,13 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
             (!mlir::isa<mlir::linalg::LinalgOp>(op) ||
              mlir::cast<mlir::linalg::LinalgOp>(op).payloadUsesValueFromOperand(
                  &opOperand));
-        if (requiresRepresentation != layout.has_value()) {
+        if (!representation->preserveNaturalOperands &&
+            requiresRepresentation != layout.has_value()) {
           activeStructuredNodes = std::move(previous);
           return fail("selected operand representation is incomplete");
         }
+        if (representation->preserveNaturalOperands)
+          continue;
         if (!layout)
           continue;
         auto existing = buffers.find(operand);

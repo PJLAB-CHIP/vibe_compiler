@@ -532,9 +532,8 @@ TEST(SelectedRegionMaterializationTest,
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);
       CandidateMaterializationStatistics materializationStatistics;
-      auto materialized = materializeCardCandidate(
+      auto materialized = materializeSearchCardCandidate(
           *prepared->module, CardId(0), *prepared->program, candidate,
-          SpatialDataflowMaterializationMode::JointDataflow,
           &materializationStatistics, diagnostics);
       ASSERT_TRUE(mlir::succeeded(materialized)) << diagnostics.str();
       EXPECT_EQ(materializationStatistics.cardModuleMaterializations, 1u);
@@ -713,10 +712,9 @@ TEST(SelectedRegionMaterializationTest,
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);
       CandidateMaterializationStatistics statistics;
-      auto materialized = materializeCardCandidate(
+      auto materialized = materializeSearchCardCandidate(
           *prepared->module, CardId(0), *prepared->program, candidate,
-          SpatialDataflowMaterializationMode::JointDataflow, &statistics,
-          diagnostics);
+          &statistics, diagnostics);
       ASSERT_TRUE(mlir::succeeded(materialized)) << diagnostics.str();
       std::string verificationFailure;
       ASSERT_TRUE(mlir::succeeded(verifyMaterializedCardCandidate(
@@ -895,9 +893,8 @@ TEST(SelectedRegionMaterializationTest,
                                             noAttention};
     std::string baselineDiagnosticsText;
     llvm::raw_string_ostream baselineDiagnostics(baselineDiagnosticsText);
-    auto baselineMaterialized = materializeCardCandidate(
+    auto baselineMaterialized = materializeSearchCardCandidate(
         *prepared->module, CardId(0), *prepared->program, baselineCandidate,
-        SpatialDataflowMaterializationMode::JointDataflow,
         /*statistics=*/nullptr, baselineDiagnostics);
     ASSERT_TRUE(mlir::succeeded(baselineMaterialized))
         << baselineDiagnostics.str();
@@ -925,10 +922,9 @@ TEST(SelectedRegionMaterializationTest,
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);
       CandidateMaterializationStatistics statistics;
-      auto materialized = materializeCardCandidate(
+      auto materialized = materializeSearchCardCandidate(
           *prepared->module, CardId(0), *prepared->program, candidate,
-          SpatialDataflowMaterializationMode::JointDataflow, &statistics,
-          diagnostics);
+          &statistics, diagnostics);
       ASSERT_TRUE(mlir::succeeded(materialized)) << diagnostics.str();
       unsigned selectedConversions = 0;
       materialized->module->walk([&](LayoutMaterializeOp conversion) {
@@ -1032,10 +1028,9 @@ TEST(SelectedRegionMaterializationTest,
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);
       CandidateMaterializationStatistics statistics;
-      auto materialized = materializeCardCandidate(
+      auto materialized = materializeSearchCardCandidate(
           *prepared->module, CardId(0), *prepared->program, candidate,
-          SpatialDataflowMaterializationMode::JointDataflow, &statistics,
-          diagnostics);
+          &statistics, diagnostics);
       ASSERT_TRUE(mlir::succeeded(materialized)) << diagnostics.str();
       EXPECT_EQ(statistics.cardModuleMaterializations, 1u);
       std::string verificationFailure;
@@ -1131,10 +1126,9 @@ TEST(SelectedRegionMaterializationTest,
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);
       CandidateMaterializationStatistics statistics;
-      auto materialized = materializeCardCandidate(
+      auto materialized = materializeSearchCardCandidate(
           *prepared->module, CardId(0), *prepared->program, candidate,
-          SpatialDataflowMaterializationMode::JointDataflow, &statistics,
-          diagnostics);
+          &statistics, diagnostics);
       ASSERT_TRUE(mlir::succeeded(materialized)) << diagnostics.str();
       std::string verificationFailure;
       ASSERT_TRUE(mlir::succeeded(verifyMaterializedCardCandidate(

@@ -328,7 +328,11 @@ static bool hasFollowingExecutableWork(mlir::Operation *op) {
        current = current->getParentOp()) {
     for (mlir::Operation *next = current->getNextNode(); next != nullptr;
          next = next->getNextNode()) {
-      if (!next->hasTrait<mlir::OpTrait::IsTerminator>())
+      bool executable = isInstructionProgramOperation(next);
+      next->walk([&](mlir::Operation *nested) {
+        executable |= nested != next && isInstructionProgramOperation(nested);
+      });
+      if (executable)
         return true;
     }
     if (mlir::isa_and_nonnull<mlir::func::FuncOp>(current->getParentOp()))

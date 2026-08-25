@@ -18,6 +18,7 @@
 #include "Wafer/Planning/PhysicalDataflow/SelectedAttentionDecomposition.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <map>
@@ -297,12 +298,16 @@ mlir::FailureOr<std::vector<SemanticRootKey>>
 validateCapacityOwners(const CardExecutableCompilationResult &compilation,
                        const CardProgramAnalysis &program,
                        llvm::ArrayRef<CandidateNodeRootRelation> nodeRoots,
-                       llvm::ArrayRef<analysis::RootRegionWork> rootWorks) {
+                       llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
+                       std::string *failureReason) {
   std::map<uint32_t, SemanticRootKey> rootsByNode;
   for (const CandidateNodeRootRelation &relation : nodeRoots)
     if (!rootsByNode.try_emplace(relation.structuredNodeId, relation.root)
-             .second)
+             .second) {
+      if (failureReason)
+        *failureReason = "candidate has duplicate node/root relations";
       return mlir::failure();
+    }
   std::map<mlir::Operation *, SemanticRootKey> rootsByOperation;
   for (const analysis::RootRegionWork &work : rootWorks)
     if (work.rootOperation)
@@ -310,8 +315,14 @@ validateCapacityOwners(const CardExecutableCompilationResult &compilation,
   std::set<SemanticRootKey> causal;
   auto addNode = [&](uint32_t node) {
     auto root = rootsByNode.find(node);
-    if (root == rootsByNode.end())
+    if (root == rootsByNode.end()) {
+      if (failureReason)
+        *failureReason =
+            (llvm::Twine("actual SPM demand has no semantic root for node ") +
+             llvm::Twine(node))
+                .str();
       return false;
+    }
     causal.insert(root->second);
     return true;
   };
@@ -332,20 +343,35 @@ validateCapacityOwners(const CardExecutableCompilationResult &compilation,
           return false;
       for (unsigned output : demand.outputIndices) {
         auto roots = program.dag.getObservableOutputRootNodes();
-        if (output >= roots.size())
+        if (output >= roots.size()) {
+          if (failureReason)
+            *failureReason =
+                (llvm::Twine("actual SPM demand names output ") +
+                 llvm::Twine(output) + " but the source has " +
+                 llvm::Twine(roots.size()))
+                    .str();
           return false;
+        }
         for (uint32_t node : roots[output]) {
           const StructuredDAGNode *entry = program.dag.getNode(node);
           auto root = entry ? rootsByOperation.find(entry->operation)
                             : rootsByOperation.end();
-          if (!entry || root == rootsByOperation.end())
+          if (!entry || root == rootsByOperation.end()) {
+            if (failureReason)
+              *failureReason =
+                  "actual SPM output demand has no semantic root";
             return false;
+          }
           causal.insert(root->second);
         }
       }
-      return !demand.operationResultNodes.empty() ||
-             !demand.operandDemandNodes.empty() ||
-             !demand.scratchNodes.empty() || !demand.outputIndices.empty();
+      const bool nonempty = !demand.operationResultNodes.empty() ||
+                            !demand.operandDemandNodes.empty() ||
+                            !demand.scratchNodes.empty() ||
+                            !demand.outputIndices.empty();
+      if (!nonempty && failureReason)
+        *failureReason = "actual SPM rejection has an ownerless demand";
+      return nonempty;
     };
     for (const auto &demand : tile.memoryPlanning.spmCapacityConflictDemands)
       if (!validateDemand(demand))
@@ -355,8 +381,13 @@ validateCapacityOwners(const CardExecutableCompilationResult &compilation,
       if (!validateDemand(demand))
         return mlir::failure();
   }
-  if (!sawDemand || causal.empty())
+  if (!sawDemand || causal.empty()) {
+    if (failureReason)
+      *failureReason = !sawDemand
+                           ? "actual SPM rejection has no conflict demand"
+                           : "actual SPM rejection has no causal semantic root";
     return mlir::failure();
+  }
   return std::vector<SemanticRootKey>(causal.begin(), causal.end());
 }
 
@@ -386,10 +417,9 @@ FullFeasibilityResult evaluateCompleteCandidate(
   if (statistics)
     ++statistics->candidateActualizations;
   mlir::FailureOr<MaterializedCardCandidate> materialized =
-      materializeCardCandidate(
+      materializeSearchCardCandidate(
           tensorProgram, problem.getCardId(), problem.getProgram(),
           prepared.candidate->materialization,
-          SpatialDataflowMaterializationMode::JointDataflow,
           /*statistics=*/nullptr, diagnostics);
   if (mlir::failed(materialized))
     return result(FullFeasibilityStatus::CompilerBug,
@@ -435,11 +465,15 @@ FullFeasibilityResult evaluateCompleteCandidate(
           return isProvenExactTileMemoryPlanningFailure(failure.memoryPlanning);
         });
     if (hasSPMCapacityFailure) {
+      std::string ownerFailure;
       auto owners = validateCapacityOwners(compilation, problem.getProgram(),
-                                           nodeRoots, rootWorks);
+                                           nodeRoots, rootWorks,
+                                           &ownerFailure);
       if (mlir::failed(owners))
         return result(FullFeasibilityStatus::CompilerBug,
-                      "actual SPM rejection has incomplete owner evidence");
+                      ownerFailure.empty()
+                          ? "actual SPM rejection has incomplete owner evidence"
+                          : ownerFailure);
       output.causalRoots = std::move(*owners);
     }
     output.status = FullFeasibilityStatus::ExactRejection;

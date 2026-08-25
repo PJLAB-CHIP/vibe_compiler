@@ -28,12 +28,28 @@ struct StructuredNodeNestedTemporalTile {
   llvm::SmallVector<uint32_t, 4> waveLoopOrder;
 };
 
+/// Exact selected SSA edge inside one candidate-local group. Replica
+/// producers use this relation to rewire only the consumer occurrence in this
+/// group; the shared immutable source graph is never globally rewired.
+struct StructuredNodeLocalUse {
+  uint32_t producerNodeId = 0;
+  uint32_t consumerNodeId = 0;
+  unsigned producerResult = 0;
+  unsigned consumerOperand = 0;
+};
+
 /// One selected primary physical version for every shaped operand/result of a
 /// structured node in this Tile shard. Scalar entries are std::nullopt. The
 /// conversion may create target-required derived versions explicitly, but
 /// subsequent consumers observe only the selected primary result version.
 struct StructuredNodePhysicalRepresentation {
   uint32_t structuredNodeId = 0;
+  /// Selected decompositions may have target-internal operands whose natural
+  /// layout is fixed by the direct typed compute builder rather than by a
+  /// RegionValueVersionId. When true, operand entries remain null and the
+  /// emitter preserves those natural operand buffers while still applying the
+  /// selected result versions below.
+  bool preserveNaturalOperands = false;
   llvm::SmallVector<std::optional<MemLayout>, 4> operandLayouts;
   llvm::SmallVector<uint8_t, 4> sharedOperands;
   llvm::SmallVector<std::optional<MemLayout>, 2> resultLayouts;
@@ -56,6 +72,7 @@ struct StructuredNodeShardGroup {
   /// Parent-dependent plans for consumer-nested executions. Absolute wave
   /// offsets remain actual SSA facts and are not duplicated here.
   llvm::SmallVector<StructuredNodeNestedTemporalTile, 4> nestedTemporalTiles;
+  llvm::SmallVector<StructuredNodeLocalUse, 4> localUses;
   /// Empty before physical-representation selection. A complete selected
   /// group carries exactly one entry for every shard/node.
   llvm::SmallVector<StructuredNodePhysicalRepresentation, 4> representations;
