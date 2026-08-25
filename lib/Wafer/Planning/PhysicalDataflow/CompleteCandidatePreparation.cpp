@@ -3,10 +3,12 @@
 #include "Wafer/Planning/PhysicalDataflow/CompleteCandidatePreparation.h"
 
 #include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
+#include "Wafer/Analysis/Structured/StructuredNodeUseIndex.h"
 #include "Wafer/Planning/PhysicalDataflow/ExecutionStructureMaterialization.h"
 #include "Wafer/Planning/PhysicalDataflow/MovementTransferBuilder.h"
 #include "Wafer/Planning/PhysicalDataflow/ScheduleMaterialization.h"
 #include "Wafer/Planning/PhysicalDataflow/StorageObjectBuilder.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "Wafer/IR/WaferDialect.h"
 
@@ -26,6 +28,7 @@
 #include <optional>
 #include <set>
 #include <tuple>
+#include <type_traits>
 
 namespace wafer::compiler::detail {
 namespace {
@@ -101,16 +104,21 @@ struct ResultKey {
   TileId tile{0};
   uint32_t node = 0;
   unsigned result = 0;
+  StructuredResultIdentityKind identityKind =
+      StructuredResultIdentityKind::OperationResult;
   MemLayout layout = MemLayout::Tensor;
 
   friend bool operator==(const ResultKey &lhs, const ResultKey &rhs) {
     return lhs.tile == rhs.tile && lhs.node == rhs.node &&
-           lhs.result == rhs.result && lhs.layout == rhs.layout;
+           lhs.result == rhs.result && lhs.identityKind == rhs.identityKind &&
+           lhs.layout == rhs.layout;
   }
 
   friend bool operator<(const ResultKey &lhs, const ResultKey &rhs) {
-    return std::tuple(lhs.tile.getValue(), lhs.node, lhs.result, lhs.layout) <
-           std::tuple(rhs.tile.getValue(), rhs.node, rhs.result, rhs.layout);
+    return std::tuple(lhs.tile.getValue(), lhs.node, lhs.result,
+                      lhs.identityKind, lhs.layout) <
+           std::tuple(rhs.tile.getValue(), rhs.node, rhs.result,
+                      rhs.identityKind, rhs.layout);
   }
 };
 
@@ -311,8 +319,58 @@ mlir::LogicalResult materializeSelectedPeerGraphs(
           std::optional<ExistingExternalLoad> load = findExternalLoad(
               action, static_cast<uint32_t>(payloadSlice), box.sizes);
           if (!load) {
-            failureReason =
-                "selected external fanout has no unique DDR load donor";
+            llvm::raw_string_ostream diagnostic(failureReason);
+            diagnostic << "selected external fanout has no unique DDR load "
+                          "donor; expected_shape=[";
+            llvm::interleaveComma(box.sizes, diagnostic);
+            diagnostic << "] candidates=[";
+            auto actionResource = resourcesByAction.find(action);
+            auto tile =
+                actionResource == resourcesByAction.end() ||
+                        !actionResource->second->destinationTile
+                    ? tilesById.end()
+                    : tilesById.find(
+                          actionResource->second->destinationTile->getValue());
+            bool first = true;
+            if (tile != tilesById.end())
+              tile->second->getModule().walk([&](StorageLoadOp candidate) {
+                if (!first)
+                  diagnostic << ';';
+                first = false;
+                std::optional<unsigned> argument =
+                    getTileLoadSourceArgument(candidate);
+                diagnostic << "arg=";
+                if (argument)
+                  diagnostic << *argument;
+                else
+                  diagnostic << "unknown";
+                diagnostic << ",type=" << candidate.getDest().getType()
+                           << ",roots=[";
+                StorageRootMemo memo;
+                bool firstRoot = true;
+                for (mlir::Value root :
+                     memo.getStorageRoots(candidate.getSource())) {
+                  if (!firstRoot)
+                    diagnostic << ',';
+                  firstRoot = false;
+                  if (auto blockArgument =
+                          mlir::dyn_cast<mlir::BlockArgument>(root)) {
+                    diagnostic << "block-arg:" << blockArgument.getArgNumber()
+                               << "@";
+                    if (mlir::Operation *parent =
+                            blockArgument.getOwner()->getParentOp())
+                      diagnostic << parent->getName();
+                  } else if (mlir::Operation *definition =
+                                 root.getDefiningOp()) {
+                    diagnostic << definition->getName();
+                  } else {
+                    diagnostic << "unknown";
+                  }
+                }
+                diagnostic << "],op=";
+                candidate->print(diagnostic);
+              });
+            diagnostic << ']';
             return mlir::failure();
           }
           graphLoads.push_back(*load);
@@ -571,10 +629,11 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareTileDataflow(
     }
   }
 
-  std::set<ResultKey> expected;
+  std::map<ResultKey, size_t> expected;
   for (const PhysicalVersionPlan &version : representations.physicalVersions) {
     std::optional<RegionExecutionId> execution;
     unsigned result = 0;
+    bool coupledComponent = false;
     if (const auto *value =
             std::get_if<ExecutionResultValueId>(&version.id.logicalValue)) {
       execution = value->execution;
@@ -586,22 +645,32 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareTileDataflow(
     } else if (const auto *value = std::get_if<CoupledComponentValueId>(
                    &version.id.logicalValue)) {
       execution = RegionExecutionId(value->execution);
-      result = 0;
+      result = static_cast<unsigned>(value->component);
+      coupledComponent = true;
     } else {
       continue;
     }
     auto node = nodesByExecution.find(*execution);
     auto tile = versionTiles.find(version.id);
-    if (node == nodesByExecution.end() || tile == versionTiles.end() ||
-        !expected.insert({tile->second, node->second, result, version.encoding})
-             .second) {
+    if (node == nodesByExecution.end() || tile == versionTiles.end()) {
       failure.detail =
           "candidate result version has no unique execution/storage owner";
       return mlir::failure();
     }
+    ResultKey key{tile->second, node->second, result,
+                  coupledComponent
+                      ? StructuredResultIdentityKind::CoupledReductionComponent
+                      : StructuredResultIdentityKind::OperationResult,
+                  version.encoding};
+    if (!coupledComponent && expected.count(key)) {
+      failure.detail =
+          "candidate result version has no unique execution/storage owner";
+      return mlir::failure();
+    }
+    ++expected[key];
   }
 
-  std::set<ResultKey> actual;
+  std::map<ResultKey, size_t> actual;
   for (CandidateTileDataflowIR &tile : tiles) {
     if (!tile.owner || !*tile.owner || !tile.relations) {
       failure.detail = "candidate Tile dataflow relation is stale";
@@ -611,19 +680,34 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareTileDataflow(
          tile.relations->operationResultBuffers) {
       auto type = mlir::dyn_cast<mlir::MemRefType>(relation.buffer.getType());
       MemoryAttr memory = type ? getWaferMemoryAttr(type) : MemoryAttr{};
-      if (!type || !memory || memory.getSpace() != MemorySpace::SPM) {
-        failure.detail = "candidate result relation is not a typed SPM value";
-        return mlir::failure();
-      }
+      if (!type || !memory || memory.getSpace() != MemorySpace::SPM)
+        continue;
       ResultKey key{tile.tile, relation.structuredNodeId, relation.resultIndex,
-                    memory.getLayout()};
-      if (expected.count(key))
-        actual.insert(key);
+                    relation.identityKind, memory.getLayout()};
+      auto required = expected.find(key);
+      if (required != expected.end() && actual[key] < required->second)
+        ++actual[key];
     }
   }
   if (actual != expected) {
-    failure.detail =
-        "actual result/version coverage differs from RepresentationPlan";
+    llvm::raw_string_ostream diagnostic(failure.detail);
+    diagnostic << "actual result/version coverage differs from "
+                  "RepresentationPlan; missing=[";
+    bool first = true;
+    for (const auto &[key, required] : expected) {
+      const size_t observed = actual[key];
+      if (observed >= required)
+        continue;
+      if (!first)
+        diagnostic << ';';
+      first = false;
+      diagnostic << "tile=" << key.tile.getValue() << ",node=" << key.node
+                 << ",result=" << key.result
+                 << ",result-kind=" << static_cast<unsigned>(key.identityKind)
+                 << ",layout=" << static_cast<unsigned>(key.layout)
+                 << ",required=" << required << ",actual=" << observed;
+    }
+    diagnostic << ']';
     return mlir::failure();
   }
   return mlir::success();
@@ -632,6 +716,9 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareTileDataflow(
 mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
     llvm::MutableArrayRef<CandidateInstructionIR> tiles,
     CardExecutablePreparationFailure &failure) {
+  auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "planning-materialization-phase", "complete-candidate",
+      "collect-current-instruction-relations");
   failure = {};
   std::string &failureReason = failure.detail;
   failureReason.clear();
@@ -647,7 +734,6 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
       failureReason = "complete candidate instruction Tile domain is malformed";
       return mlir::failure();
     }
-
   std::map<ExecutionInstanceId, uint32_t> nodesByExecution;
   std::map<analysis::RootRegionWorkId, std::set<uint32_t>> nodesByWork;
   for (const CandidateExecutionNodeRelation &relation : executionNodes) {
@@ -678,6 +764,7 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
   std::vector<ActualIssue> actualIssues;
   for (CandidateInstructionIR &tile : tiles) {
     mlir::ModuleOp module = tile.getModule();
+    StructuredNodeUseIndex nodeUses(*tile.relations);
     module.walk([&](mlir::Operation *operation) {
       std::optional<ActualIssueKind> kind;
       if (mlir::isa<InstrGatherScatterOp>(operation))
@@ -694,12 +781,28 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
         kind = ActualIssueKind::Compute;
       if (!kind)
         return;
+      llvm::SmallVector<uint32_t, 4> nodes =
+          nodeUses.collectNodesUsedBy(operation);
+      if (nodes.empty() && tile.regionNodes) {
+        TileRegionOp region = operation->getParentOfType<TileRegionOp>();
+        if (region) {
+          auto relation =
+              llvm::find_if(*tile.regionNodes, [&](const auto &candidate) {
+                return candidate.region == region.getOperation();
+              });
+          if (relation != tile.regionNodes->end())
+            nodes.assign(relation->structuredNodes.begin(),
+                         relation->structuredNodes.end());
+        }
+      }
       actualIssues.push_back(
-          {tile.tile, operation, *kind,
-           collectStructuredNodesUsedByOperation(operation, *tile.relations),
-           tile.relations});
+          {tile.tile, operation, *kind, std::move(nodes), tile.relations});
     });
   }
+
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "planning-materialization-phase", "complete-candidate",
+      "materialize-selected-storage");
 
   std::map<PhysicalVersionId, const PhysicalVersionPlan *> versionPlans;
   for (const PhysicalVersionPlan &version : representations.physicalVersions)
@@ -718,19 +821,31 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
       selectedVersionTiles.emplace(binding.version, tile->second);
   }
   auto getVersionResult = [&](const PhysicalVersionId &version)
-      -> std::optional<std::pair<uint32_t, unsigned>> {
+      -> std::optional<
+          std::tuple<uint32_t, unsigned, StructuredResultIdentityKind>> {
     if (const auto *result =
             std::get_if<ExecutionResultValueId>(&version.logicalValue)) {
       auto node = nodesByRegionExecution.find(result->execution);
       if (node != nodesByRegionExecution.end())
-        return std::make_pair(node->second, result->result);
+        return std::make_tuple(node->second, result->result,
+                               StructuredResultIdentityKind::OperationResult);
     }
     if (const auto *partial =
             std::get_if<ReductionPartialValueId>(&version.logicalValue)) {
       auto node =
           nodesByRegionExecution.find(RegionExecutionId(partial->execution));
       if (node != nodesByRegionExecution.end())
-        return std::make_pair(node->second, partial->result);
+        return std::make_tuple(node->second, partial->result,
+                               StructuredResultIdentityKind::OperationResult);
+    }
+    if (const auto *component =
+            std::get_if<CoupledComponentValueId>(&version.logicalValue)) {
+      auto node =
+          nodesByRegionExecution.find(RegionExecutionId(component->execution));
+      if (node != nodesByRegionExecution.end())
+        return std::make_tuple(
+            node->second, static_cast<unsigned>(component->component),
+            StructuredResultIdentityKind::CoupledReductionComponent);
     }
     return std::nullopt;
   };
@@ -781,8 +896,9 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
           auto type =
               mlir::dyn_cast<mlir::MemRefType>(relation.buffer.getType());
           MemoryAttr memory = type ? getWaferMemoryAttr(type) : MemoryAttr{};
-          if (relation.structuredNodeId == result->first &&
-              relation.resultIndex == result->second && memory &&
+          if (relation.structuredNodeId == std::get<0>(*result) &&
+              relation.resultIndex == std::get<1>(*result) &&
+              relation.identityKind == std::get<2>(*result) && memory &&
               memory.getLayout() == versionPlan->second->encoding &&
               !llvm::is_contained(values, relation.buffer))
             values.push_back(relation.buffer);
@@ -800,6 +916,7 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
       retarget(tile.relations->operandBuffers);
       retarget(tile.relations->scratchBuffers);
       retarget(tile.relations->outputBuffers);
+      retarget(tile.relations->cardDDRBuffers);
       retarget(tile.relations->partialReductionContributions);
       retarget(tile.relations->partialReductionMergeInputs);
     }
@@ -1052,6 +1169,7 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
         expandRelations(tile.relations->operandBuffers);
         expandRelations(tile.relations->scratchBuffers);
         expandRelations(tile.relations->outputBuffers);
+        expandRelations(tile.relations->cardDDRBuffers);
         expandRelations(tile.relations->partialReductionContributions);
         expandRelations(tile.relations->partialReductionMergeInputs);
       }
@@ -1070,6 +1188,10 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
       return mlir::failure();
     }
 
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "planning-materialization-phase", "complete-candidate",
+      "bind-selected-events");
+
   std::map<EventId, const PlannedEvent *> plannedById;
   for (const PlannedEvent &event : events.events)
     if (!plannedById.try_emplace(event.id, &event).second) {
@@ -1085,6 +1207,22 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
         !assignedOperations.insert(candidates.front()->operation).second)
       return false;
     operationsByEvent[event].push_back(candidates.front()->operation);
+    return true;
+  };
+  auto assignAll = [&](const EventId &event,
+                       llvm::ArrayRef<ActualIssue *> candidates) {
+    llvm::SmallDenseSet<mlir::Operation *, 4> unique;
+    if (candidates.empty() ||
+        llvm::any_of(candidates, [&](const ActualIssue *candidate) {
+          return !candidate || !candidate->operation ||
+                 assignedOperations.count(candidate->operation) ||
+                 !unique.insert(candidate->operation).second;
+        }))
+      return false;
+    for (ActualIssue *candidate : candidates) {
+      assignedOperations.insert(candidate->operation);
+      operationsByEvent[event].push_back(candidate->operation);
+    }
     return true;
   };
 
@@ -1193,6 +1331,222 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
     }
     return std::nullopt;
   };
+  auto publicationOutput =
+      [&](const MovementEventAction &action) -> std::optional<unsigned> {
+    const auto *publication = std::get_if<ResultPublicationId>(&action.action);
+    if (!publication || action.phase != MovementEventPhase::DDRStore)
+      return std::nullopt;
+    SemanticRootKey root = std::visit(
+        [](const auto &execution) -> SemanticRootKey {
+          using T = std::decay_t<decltype(execution)>;
+          if constexpr (std::is_same_v<T, ExecutionInstanceId>)
+            return std::visit(
+                [](const auto &source) { return source.work.root; },
+                execution.source);
+          else
+            return execution.producer.work.root;
+        },
+        publication->source.execution);
+    return root.anchorKind == SemanticRootAnchorKind::FunctionResult
+               ? std::optional<unsigned>(root.anchorIndex)
+               : std::nullopt;
+  };
+  auto issueUsesOutput = [](const ActualIssue &issue, unsigned output) {
+    if (!issue.operation || !issue.relations)
+      return false;
+    for (const SpatialOutputBufferRelation &relation :
+         issue.relations->outputBuffers) {
+      if (relation.outputIndex != output)
+        continue;
+      for (mlir::Value operand : issue.operation->getOperands())
+        if (mlir::isa<mlir::BaseMemRefType>(operand.getType()) &&
+            shareStructuredBufferStorage(operand, relation.buffer))
+          return true;
+    }
+    return false;
+  };
+  auto issueMatchesReductionGather = [&](const ActualIssue &issue,
+                                         const MovementEventAction &action) {
+    const auto *gather = std::get_if<ReductionGatherId>(&action.action);
+    if (!gather || !issue.operation || !issue.relations)
+      return !gather;
+    auto plan = llvm::find_if(movement.reductionGathers,
+                              [&](const ReductionGatherPlan &candidate) {
+                                return candidate.id == *gather;
+                              });
+    auto sourceTile = plan == movement.reductionGathers.end()
+                          ? selectedVersionTiles.end()
+                          : selectedVersionTiles.find(plan->source);
+    if (plan == movement.reductionGathers.end() ||
+        sourceTile == selectedVersionTiles.end())
+      return false;
+    const unsigned resultIndex = std::visit(
+        [](const auto &value) -> unsigned {
+          using T = std::decay_t<decltype(value)>;
+          if constexpr (std::is_same_v<T, ReductionPartialValueId>)
+            return value.result;
+          else
+            return static_cast<unsigned>(value.component);
+        },
+        gather->value);
+    const StructuredResultIdentityKind resultIdentityKind =
+        std::holds_alternative<CoupledComponentValueId>(gather->value)
+            ? StructuredResultIdentityKind::CoupledReductionComponent
+            : StructuredResultIdentityKind::OperationResult;
+    StorageRootMemo memo;
+    std::optional<uint32_t> sourceNode = findVersionNode(plan->source);
+    auto matchesVersionRelation = [&](mlir::Value endpoint) {
+      return sourceNode &&
+             llvm::any_of(issue.relations->operationResultBuffers,
+                          [&](const auto &relation) {
+                            return relation.structuredNodeId == *sourceNode &&
+                                   relation.resultIndex == resultIndex &&
+                                   relation.identityKind ==
+                                       resultIdentityKind &&
+                                   shareStructuredBufferStorage(
+                                       endpoint, relation.buffer, memo);
+                          });
+    };
+    if (action.phase == MovementEventPhase::DDRLoad) {
+      auto rdma = mlir::dyn_cast<InstrRDMAOp>(issue.operation);
+      return rdma &&
+             (matchesVersionRelation(rdma.getSource()) ||
+              matchesVersionRelation(rdma.getDest()) ||
+              llvm::any_of(issue.relations->partialReductionMergeInputs,
+                           [&](const auto &relation) {
+                             return relation.group == gather->group &&
+                                    relation.resultIndex == resultIndex &&
+                                    relation.sourceTile == sourceTile->second &&
+                                    shareStructuredBufferStorage(
+                                        rdma.getDest(), relation.buffer, memo);
+                           }));
+    }
+    if (action.phase == MovementEventPhase::DDRStore) {
+      auto wdma = mlir::dyn_cast<InstrWDMAOp>(issue.operation);
+      return wdma && (matchesVersionRelation(wdma.getSource()) ||
+                      matchesVersionRelation(wdma.getDest()) ||
+                      llvm::any_of(
+                          issue.relations->partialReductionContributions,
+                          [&](const auto &relation) {
+                            return relation.group == gather->group &&
+                                   relation.resultIndex == resultIndex &&
+                                   relation.sourceTile == sourceTile->second &&
+                                   shareStructuredBufferStorage(
+                                       wdma.getSource(), relation.buffer, memo);
+                          }));
+    }
+    if (action.phase == MovementEventPhase::LocalCombine) {
+      auto combine = mlir::dyn_cast<InstrGatherScatterOp>(issue.operation);
+      if (!combine)
+        return false;
+      auto matchesPartial = [&](const auto &relation) {
+        return relation.group == gather->group &&
+               relation.resultIndex == resultIndex &&
+               relation.sourceTile == sourceTile->second &&
+               (shareStructuredBufferStorage(combine.getSource(),
+                                             relation.buffer, memo) ||
+                shareStructuredBufferStorage(combine.getDest(), relation.buffer,
+                                             memo));
+      };
+      return matchesVersionRelation(combine.getSource()) ||
+             matchesVersionRelation(combine.getDest()) ||
+             llvm::any_of(issue.relations->partialReductionContributions,
+                          matchesPartial) ||
+             llvm::any_of(issue.relations->partialReductionMergeInputs,
+                          matchesPartial);
+    }
+    return false;
+  };
+  auto issueMatchesBoundaryTransferCombine =
+      [&](const ActualIssue &issue, const MovementEventAction &action) {
+        const auto *transfer =
+            std::get_if<DDRBoundaryTransferId>(&action.action);
+        if (!transfer || issue.kind != ActualIssueKind::LocalCombine ||
+            !issue.operation || !issue.relations)
+          return false;
+        auto plan =
+            llvm::find_if(movement.ddrTransfers,
+                          [&](const DDRBoundaryTransferPlan &candidate) {
+                            return candidate.id == *transfer;
+                          });
+        const auto *result = plan == movement.ddrTransfers.end()
+                                 ? nullptr
+                                 : std::get_if<ExecutionResultValueId>(
+                                       &plan->source.logicalValue);
+        std::optional<uint32_t> sourceNode =
+            plan == movement.ddrTransfers.end() ? std::nullopt
+                                                : findVersionNode(plan->source);
+        std::optional<uint32_t> destinationNode =
+            plan == movement.ddrTransfers.end()
+                ? std::nullopt
+                : findWorkNode(plan->id.destination.work);
+        if (!result || !sourceNode || !destinationNode ||
+            !hasNode(issue, *sourceNode) || !hasNode(issue, *destinationNode))
+          return false;
+        StorageRootMemo memo;
+        return llvm::any_of(
+            issue.relations->operationResultBuffers, [&](const auto &relation) {
+              if (relation.structuredNodeId != *sourceNode ||
+                  relation.resultIndex != result->result ||
+                  relation.identityKind !=
+                      StructuredResultIdentityKind::OperationResult)
+                return false;
+              return llvm::any_of(
+                  issue.operation->getOperands(), [&](mlir::Value operand) {
+                    return mlir::isa<mlir::BaseMemRefType>(operand.getType()) &&
+                           shareStructuredBufferStorage(operand,
+                                                        relation.buffer, memo);
+                  });
+            });
+      };
+  std::set<MovementActionId> selectedPeerActions;
+  for (const PeerTransferGraphPlan &graph : movement.peerGraphs)
+    selectedPeerActions.insert(graph.actions.begin(), graph.actions.end());
+  std::vector<MovementActionId> cardDDRActions;
+  for (const DDRBoundaryTransferPlan &transfer : movement.ddrTransfers) {
+    auto sourceTile = selectedVersionTiles.find(transfer.source);
+    if (!selectedPeerActions.count(MovementActionId(transfer.id)) &&
+        sourceTile != selectedVersionTiles.end() &&
+        sourceTile->second != transfer.id.destination.work.tile)
+      cardDDRActions.emplace_back(transfer.id);
+  }
+  for (const ReductionGatherPlan &gather : movement.reductionGathers)
+    if (!selectedPeerActions.count(MovementActionId(gather.id)))
+      cardDDRActions.emplace_back(gather.id);
+  llvm::sort(cardDDRActions);
+  std::map<MovementActionId, int64_t> cardDDRByAction;
+  for (auto [resourceId, action] : llvm::enumerate(cardDDRActions))
+    cardDDRByAction.emplace(action, static_cast<int64_t>(resourceId));
+  auto issueMatchesCardDDRMovementTag = [&](const ActualIssue &issue,
+                                            const MovementEventAction &action) {
+    auto resource = cardDDRByAction.find(action.action);
+    auto combine =
+        mlir::dyn_cast_or_null<InstrGatherScatterOp>(issue.operation);
+    CardDDRResourceAttr tagged =
+        combine ? combine.getCardDdrResourceAttr() : CardDDRResourceAttr{};
+    return resource != cardDDRByAction.end() && tagged &&
+           tagged.getResourceId() == resource->second;
+  };
+  auto issueMatchesCardDDR = [&](const ActualIssue &issue,
+                                 const MovementEventAction &action) {
+    auto resource = cardDDRByAction.find(action.action);
+    if (resource == cardDDRByAction.end() || !issue.operation ||
+        !issue.relations)
+      return false;
+    StorageRootMemo memo;
+    return llvm::any_of(
+        issue.relations->cardDDRBuffers,
+        [&](const CardDDRBufferRelation &relation) {
+          return relation.resourceId == resource->second &&
+                 llvm::any_of(issue.operation->getOperands(),
+                              [&](mlir::Value operand) {
+                                return mlir::isa<mlir::BaseMemRefType>(
+                                           operand.getType()) &&
+                                       shareStructuredBufferStorage(
+                                           operand, relation.buffer, memo);
+                              });
+        });
+  };
 
   for (const PlannedEvent &planned : events.events) {
     const auto *movement = std::get_if<MovementEventAction>(&planned.id.action);
@@ -1205,7 +1559,8 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
       if (issue.kind == ActualIssueKind::LocalCombine &&
           issue.tile == *planned.tile &&
           !assignedOperations.count(issue.operation) &&
-          (!node || issue.nodes.empty() || hasNode(issue, *node)))
+          (!node || issue.nodes.empty() || hasNode(issue, *node)) &&
+          issueMatchesReductionGather(issue, *movement))
         matches.push_back(&issue);
     if (matches.empty()) {
       failureReason = "local-combine event has no actual gather-scatter issue";
@@ -1243,12 +1598,30 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
                                      ? ActualIssueKind::DDRLoad
                                      : ActualIssueKind::DDRStore;
     std::optional<uint32_t> node = expectedMovementNode(*movement);
+    std::optional<unsigned> output = publicationOutput(*movement);
     std::vector<ActualIssue *> matches;
     for (ActualIssue &issue : actualIssues) {
-      if (issue.kind != kind || !planned.tile || issue.tile != *planned.tile ||
+      if (!planned.tile || issue.tile != *planned.tile ||
           assignedOperations.count(issue.operation))
         continue;
-      if (node && !hasNode(issue, *node))
+      if (issue.kind == ActualIssueKind::LocalCombine &&
+          cardDDRByAction.count(movement->action)) {
+        MovementEventAction combineAction = *movement;
+        combineAction.phase = MovementEventPhase::LocalCombine;
+        if (issueMatchesCardDDRMovementTag(issue, combineAction) ||
+            issueMatchesBoundaryTransferCombine(issue, combineAction) ||
+            issueMatchesReductionGather(issue, combineAction)) {
+          matches.push_back(&issue);
+          continue;
+        }
+      }
+      if (issue.kind != kind)
+        continue;
+      const bool cardDDRMatch = issueMatchesCardDDR(issue, *movement);
+      if (!cardDDRMatch && node && !hasNode(issue, *node) &&
+          (!output || !issueUsesOutput(issue, *output)))
+        continue;
+      if (!cardDDRMatch && !issueMatchesReductionGather(issue, *movement))
         continue;
       if (const auto *load = std::get_if<ExternalLoadId>(&movement->action)) {
         if (load->destination.fragment.source.kind ==
@@ -1261,19 +1634,262 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
       }
       matches.push_back(&issue);
     }
-    if (!assignUnique(planned.id, matches)) {
-      failureReason =
-          "DDR movement event has no unique actual typed instruction";
+    if (!assignAll(planned.id, matches)) {
+      llvm::raw_string_ostream diagnostic(failureReason);
+      diagnostic << "DDR movement event has no complete actual typed "
+                    "instruction occurrence set; tile=";
+      if (planned.tile)
+        diagnostic << planned.tile->getValue();
+      else
+        diagnostic << "none";
+      diagnostic << ",action=" << stringifyMovementActionKind(movement->action)
+                 << ",phase=" << static_cast<unsigned>(movement->phase)
+                 << ",payload=" << movement->payloadSlice << ",node=";
+      auto expectedCardDDR = cardDDRByAction.find(movement->action);
+      if (expectedCardDDR != cardDDRByAction.end())
+        diagnostic << "card-ddr:" << expectedCardDDR->second << ':';
+      if (node)
+        diagnostic << *node;
+      else
+        diagnostic << "none";
+      if (const auto *gather =
+              std::get_if<ReductionGatherId>(&movement->action)) {
+        diagnostic
+            << ",gather-value-kind=" << gather->value.index()
+            << ",gather-result="
+            << std::visit(
+                   [](const auto &value) -> unsigned {
+                     using T = std::decay_t<decltype(value)>;
+                     if constexpr (std::is_same_v<T, ReductionPartialValueId>)
+                       return value.result;
+                     else
+                       return static_cast<unsigned>(value.component);
+                   },
+                   gather->value);
+      }
+      diagnostic << ",resource-issues=[";
+      bool firstResourceIssue = true;
+      for (ActualIssue &issue : actualIssues) {
+        if (!planned.tile || issue.tile != *planned.tile ||
+            !issueMatchesCardDDR(issue, *movement))
+          continue;
+        if (!firstResourceIssue)
+          diagnostic << ';';
+        firstResourceIssue = false;
+        diagnostic << "kind=" << static_cast<unsigned>(issue.kind)
+                   << ",assigned=" << assignedOperations.count(issue.operation)
+                   << ",op=";
+        issue.operation->print(diagnostic);
+      }
+      diagnostic << ']';
+      diagnostic << ",candidates=[";
+      bool first = true;
+      for (ActualIssue &issue : actualIssues) {
+        if (issue.kind != kind || !planned.tile || issue.tile != *planned.tile)
+          continue;
+        if (!first)
+          diagnostic << ';';
+        first = false;
+        diagnostic << "nodes=[";
+        llvm::interleaveComma(issue.nodes, diagnostic);
+        diagnostic << "],arg=";
+        std::optional<unsigned> argument =
+            getDDRSourceArgument(issue.operation);
+        if (argument)
+          diagnostic << *argument;
+        else
+          diagnostic << "unknown";
+        diagnostic << ",assigned=" << assignedOperations.count(issue.operation)
+                   << ",result-relations=[";
+        StorageRootMemo relationMemo;
+        bool firstRelation = true;
+        for (const StructuredOperationResultBufferRelation &relation :
+             issue.relations->operationResultBuffers) {
+          if (!llvm::any_of(
+                  issue.operation->getOperands(), [&](mlir::Value operand) {
+                    return mlir::isa<mlir::BaseMemRefType>(operand.getType()) &&
+                           shareStructuredBufferStorage(
+                               operand, relation.buffer, relationMemo);
+                  }))
+            continue;
+          if (!firstRelation)
+            diagnostic << ',';
+          firstRelation = false;
+          diagnostic << relation.structuredNodeId << ':' << relation.resultIndex
+                     << ':' << static_cast<unsigned>(relation.identityKind);
+        }
+        diagnostic << "],merge-inputs=[";
+        firstRelation = true;
+        for (const PartialReductionMergeInputBufferRelation &relation :
+             issue.relations->partialReductionMergeInputs) {
+          if (!llvm::any_of(
+                  issue.operation->getOperands(), [&](mlir::Value operand) {
+                    return mlir::isa<mlir::BaseMemRefType>(operand.getType()) &&
+                           shareStructuredBufferStorage(
+                               operand, relation.buffer, relationMemo);
+                  }))
+            continue;
+          if (!firstRelation)
+            diagnostic << ',';
+          firstRelation = false;
+          diagnostic << relation.resultIndex << '@'
+                     << relation.sourceTile.getValue();
+        }
+        diagnostic << "]"
+                   << ",op=";
+        issue.operation->print(diagnostic);
+      }
+      diagnostic << ']';
       return mlir::failure();
     }
   }
 
-  // A layout/staging gather-scatter owned by one structured execution is part
-  // of that execution event. Destination assembly combines start without a
-  // node relation and were bound to LocalCombine above.
+  // Lowering can expand one structured execution into layout combines and
+  // private DDR staging issues. After all selected movement actions have been
+  // bound above, an otherwise-unbound issue belongs to the execution event
+  // only when its current-IR relations name exactly one structured node and
+  // that node has exactly one execution event on this Tile. Cross-node or
+  // relation-free issues remain errors. Destination assembly combines start
+  // without a node relation and were bound to LocalCombine above.
+  auto isPrivateDDRStage = [](const ActualIssue &issue) {
+    mlir::Value endpoint;
+    if (auto load = mlir::dyn_cast<InstrRDMAOp>(issue.operation))
+      endpoint = load.getSource();
+    else if (auto store = mlir::dyn_cast<InstrWDMAOp>(issue.operation))
+      endpoint = store.getDest();
+    else
+      return false;
+    StorageRootMemo memo;
+    const llvm::DenseSet<mlir::Value> &roots = memo.getStorageRoots(endpoint);
+    return !roots.empty() && llvm::all_of(roots, [](mlir::Value root) {
+      auto allocation = root.getDefiningOp<mlir::memref::AllocOp>();
+      return allocation && isWaferDDRMemRefType(allocation.getType());
+    });
+  };
   for (ActualIssue &issue : actualIssues) {
-    if (issue.kind != ActualIssueKind::LocalCombine ||
-        assignedOperations.count(issue.operation) || issue.nodes.empty())
+    const bool loweringOwnedIssue =
+        issue.kind == ActualIssueKind::LocalCombine ||
+        issue.kind == ActualIssueKind::DDRLoad ||
+        issue.kind == ActualIssueKind::DDRStore;
+    if (!loweringOwnedIssue || assignedOperations.count(issue.operation))
+      continue;
+    if ((issue.kind == ActualIssueKind::DDRLoad ||
+         issue.kind == ActualIssueKind::DDRStore) &&
+        !isPrivateDDRStage(issue))
+      continue;
+    if (auto combine = mlir::dyn_cast<InstrGatherScatterOp>(issue.operation)) {
+      llvm::SmallVector<EventId, 2> downstreamEvents;
+      TileRegionOp ownerRegion =
+          issue.operation->getParentOfType<TileRegionOp>();
+      for (const ActualIssue &candidate : actualIssues) {
+        if (!assignedOperations.count(candidate.operation) || !ownerRegion ||
+            candidate.tile != issue.tile ||
+            candidate.operation->getParentOfType<TileRegionOp>() != ownerRegion)
+          continue;
+        StorageRootMemo memo;
+        const bool consumesDestination = llvm::any_of(
+            candidate.operation->getOperands(), [&](mlir::Value operand) {
+              return mlir::isa<mlir::BaseMemRefType>(operand.getType()) &&
+                     shareStructuredBufferStorage(combine.getDest(), operand,
+                                                  memo);
+            });
+        if (!consumesDestination)
+          continue;
+        for (const auto &[event, operations] : operationsByEvent)
+          if (llvm::is_contained(operations, candidate.operation) &&
+              !llvm::is_contained(downstreamEvents, event))
+            downstreamEvents.push_back(event);
+      }
+      if (downstreamEvents.size() == 1) {
+        assignedOperations.insert(issue.operation);
+        operationsByEvent[downstreamEvents.front()].push_back(issue.operation);
+        continue;
+      }
+    }
+    std::optional<uint32_t> ownedNode;
+    if (auto combine = mlir::dyn_cast<InstrGatherScatterOp>(issue.operation)) {
+      StorageRootMemo memo;
+      llvm::SmallVector<uint32_t, 4> destinationNodes;
+      auto collectDestinationOwner = [&](const auto &relation) {
+        if (shareStructuredBufferStorage(combine.getDest(), relation.buffer,
+                                         memo) &&
+            !llvm::is_contained(destinationNodes, relation.structuredNodeId))
+          destinationNodes.push_back(relation.structuredNodeId);
+      };
+      for (const StructuredOperationBufferRelation &relation :
+           issue.relations->scratchBuffers)
+        collectDestinationOwner(relation);
+      for (const StructuredOperationBufferRelation &relation :
+           issue.relations->operandBuffers)
+        collectDestinationOwner(relation);
+      if (destinationNodes.size() == 1)
+        ownedNode = destinationNodes.front();
+      if (!ownedNode) {
+        llvm::SmallVector<uint32_t, 4> downstreamNodes;
+        llvm::SmallVector<mlir::Value, 4> reachableStorage{combine.getDest()};
+        llvm::DenseSet<mlir::Operation *> reachedOperations;
+        TileRegionOp ownerRegion =
+            issue.operation->getParentOfType<TileRegionOp>();
+        bool changed = true;
+        while (changed) {
+          changed = false;
+          for (const ActualIssue &candidate : actualIssues) {
+            if (candidate.tile != issue.tile || !ownerRegion ||
+                candidate.operation->getParentOfType<TileRegionOp>() !=
+                    ownerRegion ||
+                (candidate.operation->getBlock() ==
+                     issue.operation->getBlock() &&
+                 !issue.operation->isBeforeInBlock(candidate.operation)) ||
+                reachedOperations.contains(candidate.operation))
+              continue;
+            StorageRootMemo downstreamMemo;
+            const bool consumesReachable = llvm::any_of(
+                candidate.operation->getOperands(), [&](mlir::Value operand) {
+                  return mlir::isa<mlir::BaseMemRefType>(operand.getType()) &&
+                         llvm::any_of(reachableStorage,
+                                      [&](mlir::Value reachable) {
+                                        return shareStructuredBufferStorage(
+                                            reachable, operand, downstreamMemo);
+                                      });
+                });
+            if (!consumesReachable)
+              continue;
+            reachedOperations.insert(candidate.operation);
+            changed = true;
+            if (candidate.kind == ActualIssueKind::LocalCombine) {
+              auto downstream =
+                  mlir::cast<InstrGatherScatterOp>(candidate.operation);
+              reachableStorage.push_back(downstream.getDest());
+              continue;
+            }
+            if (candidate.kind != ActualIssueKind::Compute)
+              continue;
+            for (uint32_t node : candidate.nodes)
+              if (!llvm::is_contained(downstreamNodes, node))
+                downstreamNodes.push_back(node);
+          }
+        }
+        if (downstreamNodes.size() == 1)
+          ownedNode = downstreamNodes.front();
+      }
+    }
+    if (!ownedNode && issue.nodes.size() == 1) {
+      ownedNode = issue.nodes.front();
+    } else if (!ownedNode) {
+      TileRegionOp region = issue.operation->getParentOfType<TileRegionOp>();
+      auto tile = tilesById.find(issue.tile.getValue());
+      if (region && tile != tilesById.end() && tile->second->regionNodes) {
+        auto relation = llvm::find_if(
+            *tile->second->regionNodes, [&](const auto &candidate) {
+              return candidate.region == region.getOperation();
+            });
+        if (relation != tile->second->regionNodes->end() &&
+            relation->structuredNodes.size() == 1 &&
+            hasNode(issue, relation->structuredNodes.front()))
+          ownedNode = relation->structuredNodes.front();
+      }
+    }
+    if (!ownedNode)
       continue;
     std::vector<EventId> matches;
     for (const PlannedEvent &planned : events.events) {
@@ -1284,17 +1900,44 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
           std::get_if<ExecutionEventAction>(&planned.id.action);
       auto node = action ? nodesByExecution.find(action->execution)
                          : nodesByExecution.end();
-      if (node != nodesByExecution.end() && hasNode(issue, node->second))
+      if (node != nodesByExecution.end() && node->second == *ownedNode)
         matches.push_back(planned.id);
     }
     if (matches.size() != 1 ||
         !assignedOperations.insert(issue.operation).second) {
-      failureReason =
-          "owned gather-scatter has no unique structured execution event";
+      failureReason = "lowering-owned instruction issue has no unique "
+                      "structured execution event";
       return mlir::failure();
     }
     operationsByEvent[matches.front()].push_back(issue.operation);
   }
+
+  struct PeerGraphMessageIdentity {
+    const PeerTransferGraphPlan *graph = nullptr;
+    int64_t communication = -1;
+  };
+  std::map<MovementActionId, PeerGraphMessageIdentity> peerGraphMessages;
+  std::vector<const PeerTransferGraphPlan *> orderedPeerGraphs;
+  for (const PeerTransferGraphPlan &graph : movement.peerGraphs) {
+    if (graph.actions.empty()) {
+      failureReason = "selected peer graph has no message identity";
+      return mlir::failure();
+    }
+    orderedPeerGraphs.push_back(&graph);
+  }
+  llvm::sort(orderedPeerGraphs, [](const PeerTransferGraphPlan *lhs,
+                                   const PeerTransferGraphPlan *rhs) {
+    return lhs->actions < rhs->actions;
+  });
+  for (auto [communication, graph] : llvm::enumerate(orderedPeerGraphs))
+    if (!peerGraphMessages
+             .try_emplace(graph->actions.front(),
+                          PeerGraphMessageIdentity{
+                              graph, static_cast<int64_t>(communication)})
+             .second) {
+      failureReason = "selected peer graphs have duplicate message anchors";
+      return mlir::failure();
+    }
 
   for (const PlannedEvent &planned : events.events) {
     const auto *movement = std::get_if<MovementEventAction>(&planned.id.action);
@@ -1304,6 +1947,19 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
         !movement->hop || !planned.tile)
       continue;
     const bool send = movement->phase == MovementEventPhase::PeerSend;
+    auto graphIdentity = peerGraphMessages.find(movement->action);
+    if (graphIdentity == peerGraphMessages.end()) {
+      failureReason = "peer movement event has no selected graph identity";
+      return mlir::failure();
+    }
+    auto expectedRound =
+        llvm::find(graphIdentity->second.graph->hops, *movement->hop);
+    if (expectedRound == graphIdentity->second.graph->hops.end()) {
+      failureReason = "peer movement event has no selected graph identity";
+      return mlir::failure();
+    }
+    const int64_t round = static_cast<int64_t>(std::distance(
+        graphIdentity->second.graph->hops.begin(), expectedRound));
     std::vector<ActualIssue *> matches;
     for (ActualIssue &issue : actualIssues) {
       if (issue.tile != *planned.tile ||
@@ -1326,7 +1982,20 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
       const TileId expectedPeer =
           send ? movement->hop->destination : movement->hop->source;
       if (peer == expectedPeer.getValue() &&
-          payload == static_cast<int64_t>(movement->payloadSlice))
+          payload == static_cast<int64_t>(movement->payloadSlice) &&
+          (send ? mlir::cast<InstrDTESendOp>(issue.operation)
+                      .getMessageAttr()
+                      .getCommunicationId()
+                : mlir::cast<InstrDTERecvOp>(issue.operation)
+                      .getMessageAttr()
+                      .getCommunicationId()) ==
+              graphIdentity->second.communication &&
+          (send ? mlir::cast<InstrDTESendOp>(issue.operation)
+                      .getMessageAttr()
+                      .getRound()
+                : mlir::cast<InstrDTERecvOp>(issue.operation)
+                      .getMessageAttr()
+                      .getRound()) == round)
         matches.push_back(&issue);
     }
     if (!assignUnique(planned.id, matches)) {
@@ -1345,26 +2014,127 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
       llvm::interleaveComma(issue.nodes, diagnostic);
       diagnostic << "] op=";
       issue.operation->print(diagnostic);
+      if (issue.kind == ActualIssueKind::PeerSend ||
+          issue.kind == ActualIssueKind::PeerReceive) {
+        const bool send = issue.kind == ActualIssueKind::PeerSend;
+        DTEMessageAttr message =
+            send ? mlir::cast<InstrDTESendOp>(issue.operation).getMessageAttr()
+                 : mlir::cast<InstrDTERecvOp>(issue.operation).getMessageAttr();
+        const int64_t peer = send ? mlir::cast<InstrDTESendOp>(issue.operation)
+                                        .getPeerAttr()
+                                        .getInt()
+                                  : mlir::cast<InstrDTERecvOp>(issue.operation)
+                                        .getPeerAttr()
+                                        .getInt();
+        diagnostic << " peer-message=[communication="
+                   << message.getCommunicationId()
+                   << ",round=" << message.getRound()
+                   << ",payload=" << message.getPayloadSlice()
+                   << ",peer=" << peer << "] selected-graph=[";
+        if (message.getCommunicationId() >= 0 &&
+            static_cast<size_t>(message.getCommunicationId()) <
+                orderedPeerGraphs.size()) {
+          const PeerTransferGraphPlan &graph =
+              *orderedPeerGraphs[message.getCommunicationId()];
+          diagnostic << "actions=" << graph.actions.size() << ",hops=";
+          for (auto [round, hop] : llvm::enumerate(graph.hops))
+            diagnostic << (round ? "," : "") << round << ':'
+                       << hop.source.getValue() << "->"
+                       << hop.destination.getValue();
+        } else {
+          diagnostic << "absent";
+        }
+        diagnostic << ']';
+      }
+      TileRegionOp region = issue.operation->getParentOfType<TileRegionOp>();
+      diagnostic << " region=" << static_cast<bool>(region)
+                 << " explicit_region_relations=[";
+      auto tile = tilesById.find(issue.tile.getValue());
+      if (tile != tilesById.end() && tile->second->regionNodes) {
+        bool first = true;
+        for (const auto &relation : *tile->second->regionNodes) {
+          if (!first)
+            diagnostic << ';';
+          first = false;
+          diagnostic << "matches="
+                     << (region && relation.region == region.getOperation())
+                     << ",nodes=[";
+          llvm::interleaveComma(relation.structuredNodes, diagnostic);
+          diagnostic << ']';
+        }
+      }
+      diagnostic << ']';
       return mlir::failure();
     }
 
-  std::map<EventId, mlir::Block *> blocksByEvent;
+  // Several typed collectors contribute operations to one logical event. Keep
+  // the current per-block program order when combining those contributions;
+  // collector phase order is not an execution order and must not move layout
+  // copies away from their producer/consumer chain.
+  for (auto &[event, operations] : operationsByEvent) {
+    (void)event;
+    llvm::SmallVector<mlir::Block *, 4> blockOrder;
+    std::map<mlir::Block *, llvm::SmallVector<mlir::Operation *, 8>> byBlock;
+    for (mlir::Operation *operation : operations) {
+      mlir::Block *block = operation->getBlock();
+      if (!byBlock.count(block))
+        blockOrder.push_back(block);
+      byBlock[block].push_back(operation);
+    }
+    operations.clear();
+    for (mlir::Block *block : blockOrder) {
+      auto &blockOperations = byBlock.at(block);
+      llvm::sort(blockOperations,
+                 [](mlir::Operation *lhs, mlir::Operation *rhs) {
+                   return lhs != rhs && lhs->isBeforeInBlock(rhs);
+                 });
+      operations.insert(operations.end(), blockOperations.begin(),
+                        blockOperations.end());
+    }
+  }
+
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "planning-materialization-phase", "complete-candidate",
+      "close-event-occurrences");
+
+  using EventBlocks = llvm::SmallVector<mlir::Block *, 4>;
+  std::map<EventId, EventBlocks> blocksByEvent;
+  auto sameBlocks = [](llvm::ArrayRef<mlir::Block *> lhs,
+                       llvm::ArrayRef<mlir::Block *> rhs) {
+    return lhs.size() == rhs.size() &&
+           llvm::all_of(lhs, [&](mlir::Block *block) {
+             return llvm::is_contained(rhs, block);
+           });
+  };
+  auto setEventBlocks = [&](const EventId &event,
+                            llvm::ArrayRef<mlir::Block *> blocks) {
+    auto [position, inserted] =
+        blocksByEvent.try_emplace(event, blocks.begin(), blocks.end());
+    return inserted || sameBlocks(position->second, blocks);
+  };
   for (const auto &[event, operations] : operationsByEvent) {
     if (operations.empty())
       continue;
-    mlir::Block *block = operations.front()->getBlock();
-    if (!block || llvm::any_of(operations, [&](mlir::Operation *operation) {
-          return operation->getBlock() != block;
-        })) {
-      failureReason = "one event issue spans several actual blocks";
-      return mlir::failure();
+    EventBlocks blocks;
+    for (mlir::Operation *operation : operations) {
+      mlir::Block *block = operation ? operation->getBlock() : nullptr;
+      if (!block) {
+        failureReason = "one event issue has no current actual block";
+        return mlir::failure();
+      }
+      if (!llvm::is_contained(blocks, block))
+        blocks.push_back(block);
     }
-    blocksByEvent.emplace(event, block);
+    blocksByEvent.emplace(event, std::move(blocks));
   }
   for (const CompletionObligation &completion : events.completionObligations) {
     auto issue = blocksByEvent.find(completion.issue);
-    if (issue != blocksByEvent.end())
-      blocksByEvent[completion.completion] = issue->second;
+    if (issue != blocksByEvent.end() &&
+        !setEventBlocks(completion.completion, issue->second)) {
+      failureReason =
+          "completion event occurrence blocks differ from its actual issue";
+      return mlir::failure();
+    }
   }
   for (size_t iteration = 0; iteration < events.events.size(); ++iteration) {
     bool changed = false;
@@ -1392,20 +2162,21 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
       break;
   }
   for (const ControlOrder &control : schedule.controlOrders) {
-    mlir::Block *fallback = nullptr;
+    EventBlocks actualScopeBlocks;
     for (const EventId &event : control.events) {
       auto block = blocksByEvent.find(event);
-      if (block != blocksByEvent.end()) {
-        fallback = block->second;
-        break;
-      }
+      if (block == blocksByEvent.end())
+        continue;
+      for (mlir::Block *occurrence : block->second)
+        if (!llvm::is_contained(actualScopeBlocks, occurrence))
+          actualScopeBlocks.push_back(occurrence);
     }
-    if (!fallback) {
+    if (actualScopeBlocks.empty()) {
       failureReason = "selected control scope has no actual block";
       return mlir::failure();
     }
     for (const EventId &event : control.events)
-      blocksByEvent.try_emplace(event, fallback);
+      blocksByEvent.try_emplace(event, actualScopeBlocks);
   }
 
   std::map<mlir::Operation *, EventId> eventsByIssue;
@@ -1458,28 +2229,40 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
   for (CandidateInstructionIR &tile : tiles)
     modules.push_back({tile.tile, tile.getModule()});
   for (const PlannedEvent &planned : events.events) {
-    auto block = blocksByEvent.find(planned.id);
-    if (block == blocksByEvent.end()) {
+    auto eventBlocks = blocksByEvent.find(planned.id);
+    if (eventBlocks == blocksByEvent.end() || eventBlocks->second.empty()) {
       failureReason = "planned event has no actual control block";
       return mlir::failure();
     }
     std::optional<TileId> ownerTile;
-    for (CandidateInstructionIR &tile : tiles) {
-      mlir::Operation *parent = block->second->getParentOp();
-      if (parent && tile.getModule()->isAncestor(parent)) {
-        if (ownerTile) {
-          failureReason = "one event block belongs to several Tile modules";
-          return mlir::failure();
+    for (mlir::Block *block : eventBlocks->second) {
+      std::optional<TileId> blockTile;
+      for (CandidateInstructionIR &tile : tiles) {
+        mlir::Operation *parent = block->getParentOp();
+        if (parent && tile.getModule()->isAncestor(parent)) {
+          if (blockTile) {
+            failureReason = "one event block belongs to several Tile modules";
+            return mlir::failure();
+          }
+          blockTile = tile.tile;
         }
-        ownerTile = tile.tile;
       }
+      if (!blockTile || (ownerTile && *ownerTile != *blockTile)) {
+        failureReason = "one event occurrence set crosses Tile modules";
+        return mlir::failure();
+      }
+      ownerTile = blockTile;
     }
     if (!ownerTile || (planned.tile && *planned.tile != *ownerTile)) {
       failureReason = "planned event is bound to the wrong actual Tile";
       return mlir::failure();
     }
-    bindings.push_back(
-        {planned.id, *ownerTile, block->second, operationsByEvent[planned.id]});
+    ScheduleEventIRBinding binding{planned.id, *ownerTile,
+                                   eventBlocks->second.front(),
+                                   operationsByEvent[planned.id]};
+    binding.blocks.assign(eventBlocks->second.begin(),
+                          eventBlocks->second.end());
+    bindings.push_back(std::move(binding));
   }
   PreparedScheduleMaterializationResult prepared =
       prepareScheduleMaterialization(scheduleDomain, schedule, modules,
@@ -1489,6 +2272,10 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
                                      : "selected schedule preparation failed";
     return mlir::failure();
   }
+
+  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
+      "planning-materialization-phase", "complete-candidate",
+      "materialize-selected-schedule");
 
   std::vector<mlir::OwningOpRef<mlir::ModuleOp>> owners;
   owners.reserve(tiles.size());

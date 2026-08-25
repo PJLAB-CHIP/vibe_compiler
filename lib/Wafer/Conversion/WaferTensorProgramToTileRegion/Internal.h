@@ -161,6 +161,8 @@ struct CandidateSelectedDDRStage {
   mlir::Value buffer;
   uint32_t producerNode = 0;
   unsigned producerResult = 0;
+  StructuredResultIdentityKind producerResultKind =
+      StructuredResultIdentityKind::OperationResult;
 };
 
 struct PendingPeerToken {
@@ -186,6 +188,8 @@ struct MaterializedSelectedDDRStage {
   mlir::memref::AllocOp allocation;
   uint32_t producerNode = 0;
   unsigned producerResult = 0;
+  StructuredResultIdentityKind producerResultKind =
+      StructuredResultIdentityKind::OperationResult;
 };
 
 struct TileRegionEmissionRelations {
@@ -202,9 +206,12 @@ public:
       : output(output) {}
 
   void recordSelectedDDRStage(mlir::memref::AllocOp allocation,
-                              uint32_t producerNode, unsigned producerResult);
-  void recordOperationResultBuffer(uint32_t structuredNodeId,
-                                   unsigned resultIndex, mlir::Value buffer);
+                              uint32_t producerNode, unsigned producerResult,
+                              StructuredResultIdentityKind producerResultKind);
+  void recordOperationResultBuffer(
+      uint32_t structuredNodeId, unsigned resultIndex, mlir::Value buffer,
+      StructuredResultIdentityKind identityKind =
+          StructuredResultIdentityKind::OperationResult);
   void
   recordStructuredComputeOperation(llvm::ArrayRef<uint32_t> structuredNodeIds,
                                    mlir::Operation *operation);
@@ -212,6 +219,7 @@ public:
   void recordScratchBuffer(llvm::ArrayRef<uint32_t> structuredNodeIds,
                            mlir::Value buffer);
   void recordOutputBuffer(unsigned outputIndex, mlir::Value buffer);
+  void recordCardDDRBuffer(int64_t resourceId, mlir::Value buffer);
 
 private:
   TileRegionEmissionRelations &output;
@@ -395,6 +403,8 @@ private:
   TileRegionEmissionRecorder *relationRecorder = nullptr;
   llvm::DenseMap<mlir::Operation *, llvm::SmallVector<uint32_t, 2>>
       structuredNodeIds;
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<unsigned, 2>>
+      coupledComponentIndices;
   llvm::DenseMap<uint32_t, SelectedNodeRepresentation> selectedRepresentations;
   bool malformedRepresentations = false;
   llvm::DenseMap<uint32_t, StructuredComputeImplementation>

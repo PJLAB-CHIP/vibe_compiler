@@ -103,7 +103,7 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
       if (relationRecorder)
         relationRecorder->recordSelectedDDRStage(
             mlir::cast<mlir::memref::AllocOp>(cloned), selected->producerNode,
-            selected->producerResult);
+            selected->producerResult, selected->producerResultKind);
     }
     return mlir::success();
   }
@@ -164,7 +164,8 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
         mlir::DenseI64ArrayAttr::get(materialize.getContext(), offsets),
         mlir::DenseI64ArrayAttr::get(materialize.getContext(),
                                      resultType.getShape()),
-        mlir::DenseI64ArrayAttr::get(materialize.getContext(), strides));
+        mlir::DenseI64ArrayAttr::get(materialize.getContext(), strides),
+        CardDDRResourceAttr{});
     record(materialize.getResult(), MemLayout::Tensor, *dest);
     return mlir::success();
   }
@@ -676,7 +677,7 @@ TileRegionBodyEmitter::convertTensorPad(mlir::tensor::PadOp pad,
   builder.create<MoveInsertSliceOp>(
       pad.getLoc(), *source, destination, builder.getDenseI64ArrayAttr(low),
       builder.getDenseI64ArrayAttr(sourceType.getShape()),
-      builder.getDenseI64ArrayAttr(strides));
+      builder.getDenseI64ArrayAttr(strides), CardDDRResourceAttr{});
   record(pad.getResult(), MemLayout::Tensor, destination);
   return mlir::success();
 }
@@ -831,11 +832,16 @@ TileRegionBodyEmitter::materializeStaticTensorWindow(
     if (mlir::failed(destination) || mlir::failed(source))
       return mlir::failure();
     llvm::SmallVector<int64_t, 4> unitStrides(offsets.size(), 1);
-    builder.create<MoveInsertSliceOp>(
+    auto moved = builder.create<MoveInsertSliceOp>(
         loc, *source, *destination,
         mlir::DenseI64ArrayAttr::get(builder.getContext(), windowOffsets),
         mlir::DenseI64ArrayAttr::get(builder.getContext(), intersectionSizes),
-        mlir::DenseI64ArrayAttr::get(builder.getContext(), unitStrides));
+        mlir::DenseI64ArrayAttr::get(builder.getContext(), unitStrides),
+        CardDDRResourceAttr{});
+    if (auto resource = insert->getAttrOfType<CardDDRResourceAttr>(
+            kWaferCardDDRMovementAttrName))
+      moved.setCardDdrResourceAttr(resource);
+    recordStructuredComputeOperation(moved);
     return *destination;
   }
 
@@ -1157,7 +1163,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorExtractSlice(
       return mlir::failure();
     auto move = builder.create<MoveCopyOp>(
         extractSlice.getLoc(),
-        makeSPMMemRefType(resultTensorType, MemLayout::Tensor), *tileView);
+        makeSPMMemRefType(resultTensorType, MemLayout::Tensor), *tileView,
+        CardDDRResourceAttr{});
     record(extractSlice.getResult(), MemLayout::Tensor, move.getResult());
     return mlir::success();
   }
@@ -1512,13 +1519,16 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
       getOrMaterialize(insertSlice.getDest(), MemLayout::Tensor, builder);
   if (mlir::failed(source) || mlir::failed(dest))
     return mlir::failure();
-  if (!hasNoObservableDestUseExceptInsert(insertSlice))
-    *dest =
-        builder
-            .create<MoveCopyOp>(
-                insertSlice.getLoc(),
-                makeSPMMemRefType(resultTensorType, MemLayout::Tensor), *dest)
-            .getResult();
+  if (!hasNoObservableDestUseExceptInsert(insertSlice)) {
+    auto resource = insertSlice->getAttrOfType<CardDDRResourceAttr>(
+        kWaferCardDDRMovementAttrName);
+    auto copied = builder.create<MoveCopyOp>(
+        insertSlice.getLoc(),
+        makeSPMMemRefType(resultTensorType, MemLayout::Tensor), *dest,
+        resource);
+    recordStructuredComputeOperation(copied);
+    *dest = copied.getResult();
+  }
 
   mlir::MLIRContext *context = insertSlice.getContext();
   auto offsets =
@@ -1527,8 +1537,13 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
       mlir::DenseI64ArrayAttr::get(context, insertSlice.getStaticSizes());
   auto strides =
       mlir::DenseI64ArrayAttr::get(context, insertSlice.getStaticStrides());
-  builder.create<MoveInsertSliceOp>(insertSlice.getLoc(), *source, *dest,
-                                    offsets, sizes, strides);
+  auto moved = builder.create<MoveInsertSliceOp>(insertSlice.getLoc(), *source,
+                                                 *dest, offsets, sizes, strides,
+                                                 CardDDRResourceAttr{});
+  if (auto resource = insertSlice->getAttrOfType<CardDDRResourceAttr>(
+          kWaferCardDDRMovementAttrName))
+    moved.setCardDdrResourceAttr(resource);
+  recordStructuredComputeOperation(moved);
   record(insertSlice.getResult(), MemLayout::Tensor, *dest);
   return mlir::success();
 }

@@ -89,6 +89,7 @@ mlir::FailureOr<llvm::SmallVector<OutputTileMapping, 4>> getOutputMappings(
 mlir::FailureOr<CardMaterializationPlan>
 buildCardMaterializationPlan(const CardProgramAnalysis &program,
                              const CompleteCandidatePlan &plan,
+                             SpatialDataflowMaterializationMode mode,
                              CandidateMaterializationStatistics *statistics,
                              llvm::raw_ostream &diagnostics) {
   std::string failureReason;
@@ -110,10 +111,7 @@ buildCardMaterializationPlan(const CardProgramAnalysis &program,
     return mlir::failure();
   }
   assignment.mapping.outputs = std::move(*outputs);
-  assignment.mapping.materializationMode =
-      plan.movement.peerGraphs.empty()
-          ? SpatialDataflowMaterializationMode::IndependentDDRStages
-          : SpatialDataflowMaterializationMode::JointDataflow;
+  assignment.mapping.materializationMode = mode;
 
   std::map<mlir::Operation *, llvm::SmallVector<int64_t, 4>> temporalByRoot;
   for (const TemporalScopePlan &scope : plan.temporal.scopes) {
@@ -177,7 +175,7 @@ buildCardMaterializationPlan(const CardProgramAnalysis &program,
       outputSize = std::min(outputSize, rootSize);
   }
   if (mlir::failed(addCardDataflowConstruction(
-          assignment, program.dag, plan.movement, &failureReason))) {
+          assignment, program.dag, plan.movement, {}, {}, &failureReason))) {
     diagnostics << "wafer-compile: candidate movement projection failed: "
                 << failureReason << '\n';
     return mlir::failure();

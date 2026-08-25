@@ -74,11 +74,18 @@ prepareTileMaterializationSource(
   preparation.operationNodes.reserve(operationNodes.size());
   for (const StructuredOperationNodeMapping &node : operationNodes) {
     if (!node.operation || !nodeOperations.insert(node.operation).second ||
-        node.operation->getParentOfType<mlir::ModuleOp>() != sourceModule)
+        node.operation->getParentOfType<mlir::ModuleOp>() != sourceModule ||
+        (!node.coupledComponentIndices.empty() &&
+         (node.coupledComponentIndices.size() !=
+              node.operation->getNumResults() ||
+          llvm::SmallDenseSet<unsigned, 4>(node.coupledComponentIndices.begin(),
+                                           node.coupledComponentIndices.end())
+                  .size() != node.coupledComponentIndices.size())))
       return failCardModuleValue<TileMaterializationSourcePreparation>(
           failureReason,
           "card structured operation-node mapping has a null or duplicated "
-          "operation, or is outside the tensor program");
+          "operation, invalid result identities, or is outside the tensor "
+          "program");
     nodeIds.insert(node.structuredNodeId);
     preparation.operationNodes.push_back(node);
   }

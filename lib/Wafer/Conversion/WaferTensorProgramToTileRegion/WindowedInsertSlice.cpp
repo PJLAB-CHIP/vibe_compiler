@@ -127,8 +127,19 @@ void materializeWindowedInsertSlice(
     mlir::IRRewriter &rewriter, mlir::tensor::ExtractSliceOp slice,
     mlir::tensor::InsertSliceOp insert, mlir::OpResult producerResult,
     EnqueueProducerSlices enqueueSlices,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes,
     llvm::SmallVectorImpl<MaterializedCoupledProducerTile>
         &materializedCoupledTiles) {
+  auto copyNodeMappings = [&](mlir::Operation *mapped) {
+    if (!operationNodes || !mapped)
+      return;
+    llvm::SmallVector<StructuredOperationNodeMapping, 2> additions;
+    for (const StructuredOperationNodeMapping &mapping : *operationNodes)
+      if (mapping.operation == insert.getOperation())
+        additions.push_back({mapped, mapping.structuredNodeId,
+                             mapping.coupledComponentIndices});
+    operationNodes->append(additions.begin(), additions.end());
+  };
   const size_t rank = slice.getMixedOffsets().size();
   llvm::SmallVector<int64_t, 4> insertOffsets;
   llvm::SmallVector<int64_t, 4> insertSizes;
@@ -254,6 +265,10 @@ void materializeWindowedInsertSlice(
       auto tiledInsert = rewriter.create<mlir::tensor::InsertSliceOp>(
           slice.getLoc(), inputSlice, destSlice, windowRelativeOffsets,
           tiledInsertSizes, insert.getMixedStrides());
+      if (auto resource = insert->getAttrOfType<CardDDRResourceAttr>(
+              kWaferCardDDRMovementAttrName))
+        tiledInsert->setAttr(kWaferCardDDRMovementAttrName, resource);
+      copyNodeMappings(tiledInsert);
       tiled = tiledInsert.getResult();
       // The intersecting input slice continues the fusion walk upstream
       // toward the structured producer of the inserted value.
@@ -489,6 +504,10 @@ void materializeWindowedInsertSlice(
     auto inserted = branchBuilder.create<mlir::tensor::InsertSliceOp>(
         slice.getLoc(), inputSlice, destSlice, windowRelativeOffsets,
         inputSizes, insert.getMixedStrides());
+    if (auto resource = insert->getAttrOfType<CardDDRResourceAttr>(
+            kWaferCardDDRMovementAttrName))
+      inserted->setAttr(kWaferCardDDRMovementAttrName, resource);
+    copyNodeMappings(inserted);
     enqueueSlices({inputSlice.getDefiningOp()}, insert.getOperation(),
                   {inserted.getOperation()});
     return inserted.getResult();

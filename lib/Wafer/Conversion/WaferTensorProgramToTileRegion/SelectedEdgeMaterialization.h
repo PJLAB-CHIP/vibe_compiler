@@ -6,6 +6,8 @@
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
 
+#include <map>
+
 namespace wafer::tensor_program_to_tile_region {
 
 struct MappedStrategy {
@@ -14,6 +16,8 @@ struct MappedStrategy {
   mlir::Operation *consumer = nullptr;
   mlir::Operation *sourceProducer = nullptr;
   mlir::Operation *sourceConsumer = nullptr;
+  mlir::Value cardDDRBoundary;
+  std::map<int64_t, mlir::Value> cardDDRBoundaries;
   uint64_t consumerScheduleOrdinal = 0;
   bool requiresConsumerInputReconstruction = false;
 };

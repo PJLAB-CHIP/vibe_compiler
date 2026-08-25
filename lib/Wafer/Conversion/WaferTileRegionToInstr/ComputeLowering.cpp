@@ -372,9 +372,13 @@ public:
           op.getLoc(), resultType, rewriter, op, bufferRecorder);
       if (mlir::failed(dest))
         return mlir::failure();
-      createGatherScatterDescriptors(rewriter, op.getLoc(),
-                                     constantSelect->selectedInput, *dest,
-                                     **descriptors);
+      llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
+          createGatherScatterDescriptors(rewriter, op.getLoc(),
+                                         constantSelect->selectedInput, *dest,
+                                         **descriptors);
+      if (bufferRecorder)
+        for (InstrGatherScatterOp operation : lowered)
+          bufferRecorder->recordLoweredOperation(op, operation);
       rewriter.replaceOp(op, *dest);
       // In rollback-enabled dialect conversion, a source fill and its legal
       // replacement can temporarily coexist. Erase the replacement and let
@@ -532,8 +536,12 @@ public:
           op.getLoc(), plan.materializedType, rewriter, op, bufferRecorder);
       if (mlir::failed(materialized))
         return mlir::failure();
-      createGatherScatterDescriptors(rewriter, op.getLoc(), plan.source,
-                                     *materialized, plan.descriptors);
+      llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
+          createGatherScatterDescriptors(rewriter, op.getLoc(), plan.source,
+                                         *materialized, plan.descriptors);
+      if (bufferRecorder)
+        for (InstrGatherScatterOp operation : lowered)
+          bufferRecorder->recordLoweredOperation(op, operation);
       inputs.push_back(*materialized);
       materializedMappedInput = true;
     }
@@ -543,8 +551,12 @@ public:
       return mlir::failure();
 
     if (op.getKind() == ComputeElementwiseKind::Select) {
-      createGatherScatterDescriptors(rewriter, op.getLoc(), inputs[2], *dest,
-                                     selectCopyDescriptors);
+      llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
+          createGatherScatterDescriptors(rewriter, op.getLoc(), inputs[2],
+                                         *dest, selectCopyDescriptors);
+      if (bufferRecorder)
+        for (InstrGatherScatterOp operation : lowered)
+          bufferRecorder->recordLoweredOperation(op, operation);
       mlir::FailureOr<mlir::Value> mask = createDestAlloc(
           op.getLoc(), resultType, rewriter, op, bufferRecorder);
       if (mlir::failed(mask))
@@ -1122,8 +1134,12 @@ public:
     for (const SliceRun &run : sliceRuns) {
       const MovementDescriptorPlan &basePlan = *run.descriptors;
       if (run.size() == 1) {
-        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getInput(),
-                                       *slice, basePlan);
+        llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
+            createGatherScatterDescriptors(rewriter, op.getLoc(), op.getInput(),
+                                           *slice, basePlan);
+        if (bufferRecorder)
+          for (InstrGatherScatterOp operation : lowered)
+            bufferRecorder->recordLoweredOperation(op, operation);
         llvm::SmallVector<mlir::Value, 2> inputs{currentAccumulator, *slice};
         rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
                                             inputs, nextAccumulator,
@@ -1167,8 +1183,11 @@ public:
         }
         MovementDescriptor normalizedSource = descriptor.source;
         normalizedSource.byteOffset = 0;
-        createGatherScatter(rewriter, op.getLoc(), op.getInput(), *slice,
-                            normalizedSource, descriptor.dest, dynamicOffset);
+        InstrGatherScatterOp lowered = createGatherScatter(
+            rewriter, op.getLoc(), op.getInput(), *slice, normalizedSource,
+            descriptor.dest, dynamicOffset);
+        if (bufferRecorder)
+          bufferRecorder->recordLoweredOperation(op, lowered);
       }
 
       llvm::SmallVector<mlir::Value, 2> loopInputs{loop.getRegionIterArgs()[0],
@@ -1183,8 +1202,13 @@ public:
       currentAccumulator = loop.getResult(0);
       nextAccumulator = loop.getResult(1);
     }
-    createGatherScatterDescriptors(rewriter, op.getLoc(), currentAccumulator,
-                                   *dest, **finalDescriptors);
+    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
+        createGatherScatterDescriptors(rewriter, op.getLoc(),
+                                       currentAccumulator, *dest,
+                                       **finalDescriptors);
+    if (bufferRecorder)
+      for (InstrGatherScatterOp operation : lowered)
+        bufferRecorder->recordLoweredOperation(op, operation);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }

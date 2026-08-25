@@ -43,6 +43,11 @@ struct CandidateInstructionIR {
   TileId tile{0};
   mlir::OwningOpRef<mlir::ModuleOp> *owner = nullptr;
   StructuredMaterializationRelations *relations = nullptr;
+  struct RegionNodeRelation {
+    mlir::Operation *region = nullptr;
+    std::vector<uint32_t> structuredNodes;
+  };
+  std::vector<RegionNodeRelation> *regionNodes = nullptr;
 
   mlir::ModuleOp getModule() const {
     return owner && *owner ? owner->get() : mlir::ModuleOp{};

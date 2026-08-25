@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -303,6 +304,63 @@ TEST_F(TileMemoryPlanningTest,
   EXPECT_EQ(work.tileMemoryPlanningInvocations, 1u);
   EXPECT_EQ(work.tileToInstructionLowerings, 0u);
   EXPECT_EQ(work.spmPlanningInvocations, 1u);
+}
+
+TEST_F(TileMemoryPlanningTest,
+       SinksSequentialStaticScratchToItsActualFirstUseBeforePlanning) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(
+      %boundary: memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    %unused = wafer.tile.region(%boundary
+        : memref<4xf16, #wafer.memory<ddr, tensor>>) ->
+        (memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    ^bb0(%ddr: memref<4xf16, #wafer.memory<ddr, tensor>>):
+      %a = memref.alloc() : memref<1x1024x512xf16, #wafer.memory<spm, tensor>>
+      %b = memref.alloc() : memref<1x1024x512xf16, #wafer.memory<spm, tensor>>
+      %c = memref.alloc() : memref<1x1024x512xf16, #wafer.memory<spm, tensor>>
+      %d = memref.alloc() : memref<1x1024x512xf16, #wafer.memory<spm, tensor>>
+      %zero = arith.constant 0.000000e+00 : f16
+      wafer.instr.fill %a, %zero
+          : memref<1x1024x512xf16, #wafer.memory<spm, tensor>>, f16
+      wafer.instr.fill %b, %zero
+          : memref<1x1024x512xf16, #wafer.memory<spm, tensor>>, f16
+      wafer.instr.fill %c, %zero
+          : memref<1x1024x512xf16, #wafer.memory<spm, tensor>>, f16
+      wafer.instr.fill %d, %zero
+          : memref<1x1024x512xf16, #wafer.memory<spm, tensor>>, f16
+      wafer.tile.yield %ddr
+          : memref<4xf16, #wafer.memory<ddr, tensor>>
+    }
+    return
+  }
+}
+)mlir",
+                                                        context.get());
+  ASSERT_TRUE(module);
+  auto memoryPlanned =
+      wafer::compiler::detail::planTileMemory(std::move(module));
+  ASSERT_TRUE(mlir::succeeded(memoryPlanned));
+
+  std::set<int64_t> offsets;
+  unsigned allocations = 0;
+  (*memoryPlanned)->walk([&](mlir::memref::AllocOp allocation) {
+    if (!wafer::isWaferSPMMemRefType(allocation.getType()))
+      return;
+    ++allocations;
+    auto offset = allocation->getAttrOfType<wafer::SPMOffsetAttr>(
+        wafer::kWaferSPMOffsetAttrName);
+    ASSERT_TRUE(offset);
+    offsets.insert(offset.getOffset());
+    mlir::Operation *next = allocation->getNextNode();
+    ASSERT_TRUE(mlir::isa_and_nonnull<wafer::InstrFillOp>(next));
+    EXPECT_EQ(next->getOperand(0), allocation.getResult());
+  });
+  EXPECT_EQ(allocations, 4u);
+  // Each fill is an OrderedAsynchronousIssue. The next allocation starts at
+  // the same timeline boundary as the preceding issue, so that pair cannot
+  // alias; the actual lifetime graph permits exact two-slot alternation.
+  EXPECT_EQ(offsets.size(), 2u);
 }
 
 TEST_F(TileMemoryPlanningTest,

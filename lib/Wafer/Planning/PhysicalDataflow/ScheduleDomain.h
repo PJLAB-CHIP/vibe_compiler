@@ -57,6 +57,7 @@ private:
   std::vector<uint32_t> workerIndices;
   std::vector<std::vector<EventId>> resourceOrders;
   std::vector<std::vector<EventId>> controlOrders;
+  bool proposal = false;
 
   friend class ScheduleDomain;
 };
@@ -129,6 +130,7 @@ private:
         limits(limits) {}
 
   std::optional<ScheduleCursor> getInitialCursor() const;
+  std::optional<ScheduleCursor> getReceiverFeasibleProposalCursor() const;
   bool
   addSelectedResourceEdges(const ScheduleCursor &cursor,
                            std::set<std::pair<EventId, EventId>> &edges) const;
@@ -142,6 +144,7 @@ private:
   std::vector<ControlDomain> controls;
   std::vector<EventResourceBinding> fixedResourceBindings;
   ScheduleDomainLimits limits;
+  std::optional<std::pair<ClosedSchedulePlan, ScheduleCursor>> firstPlan;
 
   friend ScheduleDomainResult buildScheduleDomain(ScheduleDomainInput,
                                                   const ScheduleDomainLimits &);

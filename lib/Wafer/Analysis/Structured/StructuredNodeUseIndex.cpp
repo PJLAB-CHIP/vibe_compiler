@@ -35,6 +35,15 @@ collectOperationBufferValues(mlir::Operation *operation) {
 
 StructuredNodeUseIndex::StructuredNodeUseIndex(
     const StructuredMaterializationRelations &relations) {
+  for (const StructuredOperationEmissionRelation &relation :
+       relations.operationEmissions)
+    if (relation.operation)
+      nodesByOperation[relation.operation].push_back(relation.structuredNodeId);
+  for (auto &entry : nodesByOperation) {
+    llvm::sort(entry.second);
+    entry.second.erase(std::unique(entry.second.begin(), entry.second.end()),
+                       entry.second.end());
+  }
   auto index = [&](const auto &relation) {
     for (mlir::Value root : storageRoots.getStorageRoots(relation.buffer))
       nodesByRoot[root].push_back(relation.structuredNodeId);
@@ -54,6 +63,10 @@ StructuredNodeUseIndex::StructuredNodeUseIndex(
 
 llvm::SmallVector<uint32_t, 4>
 StructuredNodeUseIndex::collectNodesUsedBy(mlir::Operation *operation) {
+  auto explicitOwner = nodesByOperation.find(operation);
+  if (explicitOwner != nodesByOperation.end())
+    return llvm::SmallVector<uint32_t, 4>(explicitOwner->second.begin(),
+                                          explicitOwner->second.end());
   llvm::SmallVector<uint32_t, 4> nodes;
   for (mlir::Value value : collectOperationBufferValues(operation))
     for (mlir::Value root : storageRoots.getStorageRoots(value)) {

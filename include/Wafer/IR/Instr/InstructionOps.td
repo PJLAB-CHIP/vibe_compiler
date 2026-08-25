@@ -89,6 +89,7 @@ def Wafer_InstrGatherScatterOp : Wafer_InstrDMAOp<"instr.gather_scatter", [
     DenseI64ArrayAttr:$src_iterations,
     DenseI64ArrayAttr:$dst_strides,
     DenseI64ArrayAttr:$dst_iterations,
+    OptionalAttr<Wafer_CardDDRResourceAttr>:$card_ddr_resource,
     DefaultValuedAttr<Wafer_NCCWorkerAttr,
                       "::wafer::NCCWorker::Worker0">:$worker
   );

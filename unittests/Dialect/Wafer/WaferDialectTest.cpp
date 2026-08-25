@@ -1,12 +1,17 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
 #include <cstdint>
@@ -836,6 +841,72 @@ TEST(WaferDialectTest, ComputesBitpackedOffsetsWithoutGuessingBitOrder) {
                             mlir::MemRefLayoutAttrInterface{}, tensorMemory);
   EXPECT_EQ(wafer::computeWaferPhysicalElementByteOffset(f16, {1, 2}), 10);
   EXPECT_EQ(wafer::computeWaferPhysicalElementBitOffset(f16, {1, 2}), 80);
+}
+
+TEST(WaferDialectTest,
+     CardDDRBindingsRoundTripAndRequireAnEnclosingDeclaration) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  constexpr llvm::StringLiteral valid = R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.card.module card_id = 0 {
+    memref.global "private" @card_ddr_0
+        : memref<1x1024x64xf16, #wafer.memory<ddr, tensor>>
+        {wafer.card_ddr.resource = #wafer.card_ddr_resource<0>}
+    wafer.tile.module tile_id = 0 {
+      func.func @entry(
+          %arg0: tensor<1x1024x64xf16>
+              {wafer.card_ddr.binding =
+                  #wafer.card_ddr_binding<@card_ddr_0, id = 0, read_write>}) {
+        return
+      }
+    }
+  }
+}
+)mlir";
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      valid, mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  std::string printed;
+  llvm::raw_string_ostream stream(printed);
+  module->print(stream);
+  stream.flush();
+  auto reparsed = mlir::parseSourceString<mlir::ModuleOp>(
+      printed, mlir::ParserConfig(&context));
+  ASSERT_TRUE(reparsed);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*reparsed)));
+
+  constexpr llvm::StringLiteral orphan = R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.card.module card_id = 0 {
+    wafer.tile.module tile_id = 0 {
+      func.func @entry(
+          %arg0: tensor<1x1025x64xf16>
+              {wafer.card_ddr.binding =
+                  #wafer.card_ddr_binding<@missing, id = 0, read>}) {
+        return
+      }
+    }
+  }
+}
+)mlir";
+  auto invalid = mlir::parseSourceString<mlir::ModuleOp>(
+      orphan, mlir::ParserConfig(&context, /*verifyAfterParse=*/false));
+  ASSERT_TRUE(invalid);
+  mlir::ScopedDiagnosticHandler suppress(
+      &context, [](mlir::Diagnostic &) { return mlir::success(); });
+  EXPECT_TRUE(mlir::failed(mlir::verify(*invalid)));
 }
 
 } // namespace

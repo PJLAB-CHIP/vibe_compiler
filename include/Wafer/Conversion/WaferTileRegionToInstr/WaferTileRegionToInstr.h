@@ -91,6 +91,8 @@ public:
   virtual ~TileRegionToInstrBufferRecorder() = default;
   virtual void recordScratchAllocation(mlir::Operation *sourceOperation,
                                        mlir::Value allocation) = 0;
+  virtual void recordLoweredOperation(mlir::Operation *sourceOperation,
+                                      mlir::Operation *loweredOperation) = 0;
 };
 
 /// Immutable, request-scoped lowering infrastructure for one MLIRContext.

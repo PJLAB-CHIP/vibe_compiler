@@ -13,6 +13,9 @@
 
 #include "gtest/gtest.h"
 
+#include <map>
+#include <set>
+
 namespace {
 
 using namespace wafer;
@@ -433,13 +436,20 @@ TEST(FullFeasibilityTest,
   EXPECT_EQ(statistics.candidateActualizations, 1u);
   EXPECT_EQ(statistics.executableGateInvocations, 1u);
   EXPECT_TRUE(evaluated.compilation.has_value());
-  uint64_t workerOneIssues = 0;
+  std::set<NCCWorker> selectedComputeWorkers;
+  for (const EventWorkerBinding &binding : next.getPlan()->workerBindings)
+    if (binding.event.kind == PlannedEventKind::ComputeIssue)
+      selectedComputeWorkers.insert(binding.worker);
+  ASSERT_FALSE(selectedComputeWorkers.empty());
+  std::map<NCCWorker, uint64_t> actualIssuesByWorker;
   for (const auto &tile : evaluated.compilation->executable->tiles)
     tile.getModule().walk([&](mlir::Operation *operation) {
       std::optional<NCCWorker> worker = getNCCIssueWorker(operation);
-      workerOneIssues += worker && *worker == NCCWorker::Worker1;
+      if (worker)
+        ++actualIssuesByWorker[*worker];
     });
-  EXPECT_GT(workerOneIssues, 0u);
+  for (NCCWorker worker : selectedComputeWorkers)
+    EXPECT_GT(actualIssuesByWorker[worker], 0u);
   EXPECT_EQ(print(parsed.module->getOperation()), before);
 }
 

@@ -470,56 +470,185 @@ static wafer::TileMapping completeTemporalMapping(mlir::ModuleOp source,
           wafer::SpatialEdgeFragmentKind::Resident, strategy.producerOffsets,
           strategy.producerSizes, strategy.destinationTile});
     }
-    wafer::TileMapping generated = mapping;
-    if (mlir::failed(wafer::compiler::detail::addCardEdgeCarriers(
-            generated, spatial, *proof, *dag, {}, &failureReason))) {
-      ADD_FAILURE() << "test fixture cannot derive current carriers: "
-                    << failureReason;
-      return mapping;
-    }
-    int64_t nextCommunicationId = 0;
-    for (const wafer::SpatialEdgeStrategy &strategy : mapping.edgeStrategies)
-      for (const wafer::SpatialEdgeFragment &fragment : strategy.fragments)
-        if (fragment.kind == wafer::SpatialEdgeFragmentKind::Peer)
-          nextCommunicationId =
-              std::max(nextCommunicationId, fragment.communicationId + 1);
-    for (wafer::SpatialEdgeStrategy &strategy : generated.edgeStrategies) {
-      auto configuredStrategy = llvm::find_if(
-          mapping.edgeStrategies, [&](const wafer::SpatialEdgeStrategy &edge) {
-            return edge.producer == strategy.producer &&
-                   edge.producerResult == strategy.producerResult &&
-                   edge.consumer == strategy.consumer &&
-                   edge.consumerOperand == strategy.consumerOperand &&
-                   edge.destinationTile == strategy.destinationTile;
-          });
-      if (configuredStrategy != mapping.edgeStrategies.end()) {
-        if (configuredStrategy->consumerOffsets.empty() &&
-            configuredStrategy->consumerSizes.empty()) {
-          configuredStrategy->consumerOffsets = strategy.consumerOffsets;
-          configuredStrategy->consumerSizes = strategy.consumerSizes;
+    auto normalizedBoxes = [&](const wafer::analysis::ExactIndexSet &domain)
+        -> std::optional<
+            llvm::SmallVector<wafer::analysis::StaticRectangularIndexSet, 8>> {
+      auto normalized = wafer::analysis::normalizeFiniteExactIndexSet(domain);
+      if (mlir::failed(normalized))
+        return std::nullopt;
+      llvm::SmallVector<wafer::analysis::StaticRectangularIndexSet, 8> boxes(
+          normalized->getBoxes().begin(), normalized->getBoxes().end());
+      llvm::sort(boxes, [](const auto &lhs, const auto &rhs) {
+        return std::tie(lhs.offsets, lhs.sizes) <
+               std::tie(rhs.offsets, rhs.sizes);
+      });
+      return boxes;
+    };
+    auto sameBoxes =
+        [](llvm::ArrayRef<wafer::analysis::StaticRectangularIndexSet> lhs,
+           llvm::ArrayRef<wafer::analysis::StaticRectangularIndexSet> rhs) {
+          return lhs.size() == rhs.size() &&
+                 llvm::equal(lhs, rhs, [](const auto &left, const auto &right) {
+                   return left.offsets == right.offsets &&
+                          left.sizes == right.sizes;
+                 });
+        };
+    auto bounds = [](llvm::ArrayRef<wafer::analysis::StaticRectangularIndexSet>
+                         boxes) {
+      std::pair<llvm::SmallVector<int64_t, 4>, llvm::SmallVector<int64_t, 4>>
+          result;
+      if (boxes.empty())
+        return result;
+      result.first = boxes.front().offsets;
+      result.second = boxes.front().sizes;
+      for (const auto &box : boxes)
+        for (size_t dimension = 0; dimension < box.offsets.size();
+             ++dimension) {
+          const int64_t end =
+              result.first[dimension] + result.second[dimension];
+          const int64_t boxEnd = box.offsets[dimension] + box.sizes[dimension];
+          result.first[dimension] =
+              std::min(result.first[dimension], box.offsets[dimension]);
+          result.second[dimension] =
+              std::max(end, boxEnd) - result.first[dimension];
         }
-        continue;
+      return result;
+    };
+    for (const auto &edge : dag->getEdges()) {
+      const auto *producer = dag->getNode(edge.producer);
+      const auto *consumer = dag->getNode(edge.consumer);
+      auto dependency =
+          consumer
+              ? llvm::find_if(
+                    proof->dependencyDemands,
+                    [&](const wafer::analysis::DependencyDemand &candidate) {
+                      return candidate.consumerOperation ==
+                                 consumer->operation &&
+                             candidate.consumerOperand == edge.consumerOperand;
+                    })
+              : proof->dependencyDemands.end();
+      if (!producer || !consumer ||
+          dependency == proof->dependencyDemands.end()) {
+        ADD_FAILURE() << "test fixture cannot find one exact dependency";
+        return mapping;
       }
-      bool hasPeerFragment = false;
-      for (wafer::SpatialEdgeFragment &fragment : strategy.fragments) {
-        if (fragment.kind != wafer::SpatialEdgeFragmentKind::Peer)
+      for (const wafer::analysis::DestinationDemand &destination :
+           dependency->perDestination) {
+        auto configured = llvm::find_if(
+            mapping.edgeStrategies,
+            [&](const wafer::SpatialEdgeStrategy &strategy) {
+              return strategy.producer == producer->operation &&
+                     strategy.producerResult == edge.producerResult &&
+                     strategy.consumer == consumer->operation &&
+                     strategy.consumerOperand == edge.consumerOperand &&
+                     strategy.destinationTile == destination.destinationTile;
+            });
+        if (configured != mapping.edgeStrategies.end()) {
+          if (configured->consumerOffsets.empty() &&
+              configured->consumerSizes.empty()) {
+            auto consumerOwner = llvm::find_if(
+                proof->finalOwners,
+                [&](const wafer::analysis::FinalResultOwner &owner) {
+                  return owner.root == dependency->consumer &&
+                         owner.result == 0 && owner.shard &&
+                         *owner.shard == destination.destinationShard &&
+                         owner.tile == destination.destinationTile;
+                });
+            auto consumerBoxes =
+                consumerOwner == proof->finalOwners.end()
+                    ? std::optional<llvm::SmallVector<
+                          wafer::analysis::StaticRectangularIndexSet, 8>>()
+                    : normalizedBoxes(consumerOwner->domain);
+            if (!consumerBoxes || consumerBoxes->size() != 1) {
+              ADD_FAILURE() << "test fixture consumer owner is not one box";
+              return mapping;
+            }
+            configured->consumerOffsets = consumerBoxes->front().offsets;
+            configured->consumerSizes = consumerBoxes->front().sizes;
+          }
           continue;
-        hasPeerFragment = true;
-        fragment.communicationId = nextCommunicationId;
+        }
+        auto source = llvm::find_if(
+            destination.sources,
+            [&](const wafer::analysis::SourceDemand &candidate) {
+              const auto *structured =
+                  std::get_if<wafer::analysis::StructuredResultSource>(
+                      &candidate.source);
+              return structured &&
+                     structured->operation == producer->operation &&
+                     structured->result == edge.producerResult;
+            });
+        if (source == destination.sources.end() ||
+            source->requiredDomain.isEmpty())
+          continue;
+        auto required = normalizedBoxes(source->requiredDomain);
+        llvm::SmallVector<wafer::analysis::StaticRectangularIndexSet, 8>
+            residentBoxes;
+        for (const wafer::analysis::OwnerIntersection &owner :
+             source->eligibleFinalOwners) {
+          if (owner.tile != destination.destinationTile)
+            continue;
+          auto ownerBoxes = normalizedBoxes(owner.domain);
+          if (!ownerBoxes) {
+            ADD_FAILURE() << "test fixture owner is not a finite box union";
+            return mapping;
+          }
+          residentBoxes.append(ownerBoxes->begin(), ownerBoxes->end());
+        }
+        llvm::sort(residentBoxes, [](const auto &lhs, const auto &rhs) {
+          return std::tie(lhs.offsets, lhs.sizes) <
+                 std::tie(rhs.offsets, rhs.sizes);
+        });
+        if (!required || !sameBoxes(*required, residentBoxes)) {
+          ADD_FAILURE() << "test fixture omitted a selected cross-Tile "
+                           "MovementPlan action";
+          return mapping;
+        }
+        auto consumerOwner = llvm::find_if(
+            proof->finalOwners,
+            [&](const wafer::analysis::FinalResultOwner &owner) {
+              return owner.root == dependency->consumer && owner.result == 0 &&
+                     owner.shard &&
+                     *owner.shard == destination.destinationShard &&
+                     owner.tile == destination.destinationTile;
+            });
+        auto consumerBoxes =
+            consumerOwner == proof->finalOwners.end()
+                ? std::optional<llvm::SmallVector<
+                      wafer::analysis::StaticRectangularIndexSet, 8>>()
+                : normalizedBoxes(consumerOwner->domain);
+        if (!consumerBoxes || consumerBoxes->size() != 1) {
+          ADD_FAILURE() << "test fixture consumer owner is not one box";
+          return mapping;
+        }
+        auto producerBounds = bounds(*required);
+        wafer::SpatialEdgeStrategy strategy;
+        strategy.producer = producer->operation;
+        strategy.producerResult = edge.producerResult;
+        strategy.consumer = consumer->operation;
+        strategy.consumerOperand = edge.consumerOperand;
+        strategy.sourceTile = destination.destinationTile;
+        strategy.destinationTile = destination.destinationTile;
+        strategy.producerOffsets = std::move(producerBounds.first);
+        strategy.producerSizes = std::move(producerBounds.second);
+        strategy.consumerOffsets = consumerBoxes->front().offsets;
+        strategy.consumerSizes = consumerBoxes->front().sizes;
+        const bool reconstruction = !destination.reconstruction.steps.empty();
+        if (mapping.materializationMode ==
+                wafer::SpatialDataflowMaterializationMode::
+                    IndependentDDRStages ||
+            reconstruction || required->size() != 1) {
+          strategy.action = wafer::SpatialEdgeAction::PeerFragments;
+          strategy.fragmentsDefineProducerDemand = required->size() != 1;
+          for (const auto &box : *required)
+            strategy.fragments.push_back(wafer::SpatialEdgeFragment{
+                wafer::SpatialEdgeFragmentKind::Resident, box.offsets,
+                box.sizes, destination.destinationTile});
+        } else {
+          strategy.action = wafer::SpatialEdgeAction::LocalShardResidency;
+        }
+        mapping.edgeStrategies.push_back(std::move(strategy));
       }
-      nextCommunicationId += hasPeerFragment;
-      if (mapping.materializationMode !=
-              wafer::SpatialDataflowMaterializationMode::IndependentDDRStages &&
-          !requiresReconstruction(strategy) &&
-          llvm::all_of(strategy.fragments, [](const auto &fragment) {
-            return fragment.kind == wafer::SpatialEdgeFragmentKind::Resident;
-          })) {
-        strategy.action = wafer::SpatialEdgeAction::LocalShardResidency;
-        strategy.sourceTile = strategy.destinationTile;
-        strategy.fragments.clear();
-        strategy.fragmentsDefineProducerDemand = false;
-      }
-      mapping.edgeStrategies.push_back(std::move(strategy));
     }
     session->close();
   }
@@ -3035,7 +3164,7 @@ module {
 }
 
 TEST(WaferTensorProgramToCardModuleTest,
-     MaterializesRelationDerivedReductionPeerFragmentsToActualCardIR) {
+     RejectsRelationDerivedCrossTileFragmentsWithoutMovementPlan) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = parseModule(*context, R"mlir(
 module {
@@ -3111,56 +3240,158 @@ module {
   }
   ASSERT_TRUE(mlir::succeeded(wafer::compiler::detail::addCardConsumerInputs(
       selected, spatialDemand->demand, &failureReason)));
-  ASSERT_TRUE(mlir::succeeded(wafer::compiler::detail::addCardEdgeCarriers(
-      selected, spatialDemand->spatial, spatialDemand->demand, *dag, {},
-      &failureReason)))
+  const size_t strategyCount = selected.edgeStrategies.size();
+  const size_t resourceCount = selected.cardDDRResources.size();
+  EXPECT_TRUE(mlir::failed(wafer::compiler::detail::addCardEdgeCarriers(
+      selected, spatialDemand->spatial, spatialDemand->demand, *dag, {}, {}, {},
+      &failureReason)));
+  EXPECT_NE(failureReason.find(
+                "selected cross-Tile edge has no MovementPlan boundary action"),
+            std::string::npos)
       << failureReason;
-  ASSERT_EQ(selected.edgeStrategies.size(), 4u);
+  EXPECT_EQ(selected.edgeStrategies.size(), strategyCount);
+  EXPECT_EQ(selected.cardDDRResources.size(), resourceCount);
+}
+
+TEST(WaferTensorProgramToCardModuleTest,
+     MaterializesMultiPieceCardDDRTransferWithoutDensifyingItsUnion) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @chain(%input: tensor<1x1025x64xf16>)
+      -> tensor<1x1025x64xf16> {
+    %producer_init = tensor.empty() : tensor<1x1025x64xf16>
+    %consumer_init = tensor.empty() : tensor<1x1025x64xf16>
+    %producer = linalg.map ins(%input : tensor<1x1025x64xf16>)
+        outs(%producer_init : tensor<1x1025x64xf16>) (%value: f16) {
+      %sum = arith.addf %value, %value : f16
+      linalg.yield %sum : f16
+    }
+    %consumer = linalg.map ins(%producer : tensor<1x1025x64xf16>)
+        outs(%consumer_init : tensor<1x1025x64xf16>) (%value: f16) {
+      %product = arith.mulf %value, %value : f16
+      linalg.yield %product : f16
+    }
+    return %consumer : tensor<1x1025x64xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  llvm::SmallVector<mlir::linalg::MapOp, 2> operations;
+  source->walk(
+      [&](mlir::linalg::MapOp operation) { operations.push_back(operation); });
+  ASSERT_EQ(operations.size(), 2u);
+
+  wafer::TileMapping selected =
+      mapping(/*shardDimension=*/1, {1}, {1, 1025, 64});
+  auto tensorType =
+      mlir::cast<mlir::RankedTensorType>(operations[0]->getResult(0).getType());
+  selected.cardDDRResources.push_back({0, tensorType});
+  wafer::SpatialEdgeStrategy transfer = edgeStrategy(
+      operations[0], operations[1], wafer::TileId(1),
+      wafer::SpatialEdgeAction::CardDDRTransfer,
+      /*producerOffsets=*/{0, 0, 0}, /*producerSizes=*/{1, 1025, 64},
+      /*consumerOffsets=*/{0, 0, 0}, /*consumerSizes=*/{1, 1025, 64});
+  transfer.sourceTile = wafer::TileId(0);
+  transfer.cardDDRResource = 0;
+  transfer.fragments = {
+      {wafer::SpatialEdgeFragmentKind::CardDDR,
+       /*offsets=*/{0, 0, 0}, /*sizes=*/{1, 512, 64}, wafer::TileId(0),
+       /*bytes=*/65536, /*communicationId=*/0, /*payloadSlice=*/0},
+      {wafer::SpatialEdgeFragmentKind::CardDDR,
+       /*offsets=*/{0, 512, 0}, /*sizes=*/{1, 513, 64}, wafer::TileId(0),
+       /*bytes=*/65664, /*communicationId=*/0, /*payloadSlice=*/0}};
+  selected.edgeStrategies.push_back(std::move(transfer));
+
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
-  wafer::StructuredMaterializationRelations relations;
+  std::string failureReason;
   ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
       *source, wafer::CardId(0), std::move(selected), cardModule,
-      &failureReason, /*operationNodes=*/{}, &relations)))
+      &failureReason)))
       << failureReason;
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
-  EXPECT_GT(countOps<mlir::scf::ForOp>(cardModule->getOperation()), 0u);
-  EXPECT_EQ(countOps<wafer::CommPeerSendOp>(cardModule->getOperation()), 4u);
-  EXPECT_EQ(countOps<wafer::CommPeerRecvOp>(cardModule->getOperation()), 4u);
-  EXPECT_EQ(countOps<mlir::async::AwaitOp>(cardModule->getOperation()), 8u);
+  unsigned resources = 0;
+  cardModule->walk([&](mlir::memref::GlobalOp global) {
+    resources +=
+        static_cast<bool>(global->getAttrOfType<wafer::CardDDRResourceAttr>(
+            wafer::kWaferCardDDRResourceAttrName));
+  });
+  EXPECT_EQ(resources, 1u);
+  std::set<std::vector<int64_t>> storedPieces;
+  cardModule->walk([&](wafer::StorageStoreOp store) {
+    mlir::func::FuncOp function = store->getParentOfType<mlir::func::FuncOp>();
+    bool cardDestination = false;
+    for (unsigned argument = 0;
+         function && argument < function.getNumArguments(); ++argument)
+      cardDestination |=
+          static_cast<bool>(
+              function.getArgAttrOfType<wafer::CardDDRBindingAttr>(
+                  argument, wafer::kWaferCardDDRBindingAttrName)) &&
+          wafer::compiler::detail::shareStructuredBufferStorage(
+              store.getDest(), function.getArgument(argument));
+    if (!cardDestination)
+      return;
+    auto subview = store.getDest().getDefiningOp<mlir::memref::SubViewOp>();
+    ASSERT_TRUE(subview);
+    llvm::SmallVector<int64_t, 4> offsets(subview.getStaticOffsets().begin(),
+                                          subview.getStaticOffsets().end());
+    llvm::SmallVector<int64_t, 4> sizes(subview.getStaticSizes().begin(),
+                                        subview.getStaticSizes().end());
+    storedPieces.insert(
+        {offsets[0], offsets[1], offsets[2], sizes[0], sizes[1], sizes[2]});
+  });
+  EXPECT_EQ(storedPieces, (std::set<std::vector<int64_t>>{
+                              {0, 0, 0, 1, 512, 64}, {0, 512, 0, 1, 513, 64}}));
+  EXPECT_EQ(countOps<wafer::CommPeerSendOp>(cardModule->getOperation()), 0u);
+  EXPECT_EQ(countOps<wafer::CommPeerRecvOp>(cardModule->getOperation()), 0u);
 
-  auto tileModules = wafer::splitCardModuleIntoTileModules(
-      std::move(cardModule), &failureReason, &relations);
-  ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
-  for (wafer::TileModule &tile : *tileModules) {
-    wafer::compiler::detail::StructuredBufferReplacementListener listener(
-        tile.materializationRelations);
-    wafer::TileRegionToInstrLoweringSession loweringSession(*context,
-                                                            &listener);
-    llvm::SmallVector<wafer::TileRegionOp, 8> regions;
-    tile.module->walk(
-        [&](wafer::TileRegionOp region) { regions.push_back(region); });
-    for (wafer::TileRegionOp region : regions)
-      ASSERT_TRUE(mlir::succeeded(
-          wafer::convertTileRegionToInstr(region, loweringSession, &listener)))
-          << "Tile " << tile.tileId.getValue();
-    ASSERT_TRUE(listener.finalizeAfterRewrite())
-        << listener.getFailureReason().str();
-    ASSERT_TRUE(mlir::succeeded(
-        wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
-            tile.module->getOperation(), tile.materializationRelations)));
-    mlir::PassManager completion(tile.module->getContext());
-    completion.enableVerifier(true);
-    completion.nest<mlir::func::FuncOp>().addPass(
-        wafer::createPlaceRequiredNCCJoinsPass());
-    ASSERT_TRUE(mlir::succeeded(completion.run(*tile.module)));
+  wafer::TileMapping mixed = mapping(/*shardDimension=*/1, {1}, {1, 1025, 64});
+  mixed.materializationMode =
+      wafer::SpatialDataflowMaterializationMode::JointDataflow;
+  mixed.cardDDRResources.push_back({0, tensorType});
+  wafer::SpatialEdgeStrategy assembly = edgeStrategy(
+      operations[0], operations[1], wafer::TileId(1),
+      wafer::SpatialEdgeAction::PeerFragments,
+      /*producerOffsets=*/{0, 0, 0}, /*producerSizes=*/{1, 1025, 64},
+      /*consumerOffsets=*/{0, 0, 0}, /*consumerSizes=*/{1, 1025, 64});
+  wafer::SpatialEdgeFragment cardPiece{wafer::SpatialEdgeFragmentKind::CardDDR,
+                                       /*offsets=*/{0, 0, 0},
+                                       /*sizes=*/{1, 512, 64},
+                                       wafer::TileId(0),
+                                       /*bytes=*/65536,
+                                       /*communicationId=*/0,
+                                       /*payloadSlice=*/0};
+  cardPiece.cardDDRResource = 0;
+  assembly.fragments = {std::move(cardPiece),
+                        {wafer::SpatialEdgeFragmentKind::Resident,
+                         /*offsets=*/{0, 512, 0}, /*sizes=*/{1, 513, 64},
+                         wafer::TileId(1)}};
+  mixed.edgeStrategies.push_back(std::move(assembly));
+  mlir::OwningOpRef<mlir::ModuleOp> mixedCard;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
+      *source, wafer::CardId(0), std::move(mixed), mixedCard, &failureReason)))
+      << failureReason;
+  auto mixedTiles = wafer::splitCardModuleIntoTileModules(std::move(mixedCard),
+                                                          &failureReason);
+  ASSERT_TRUE(mlir::succeeded(mixedTiles)) << failureReason;
+  unsigned taggedCopies = 0;
+  for (wafer::TileModule &tile : *mixedTiles) {
+    ASSERT_TRUE(
+        mlir::succeeded(wafer::convertTileRegionToInstrModule(*tile.module)));
     ASSERT_TRUE(mlir::succeeded(mlir::verify(*tile.module)));
-    wafer::SPMMemoryPlanningFailure spmFailure;
-    ASSERT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(
-        *tile.module, /*spmBase=*/65536, /*spmLimit=*/3080192,
-        /*spmAlignment=*/256, &spmFailure)))
-        << "Tile " << tile.tileId.getValue()
-        << " failure=" << static_cast<unsigned>(spmFailure.kind);
+    tile.module->walk([&](wafer::InstrGatherScatterOp operation) {
+      if (auto resource = operation.getCardDdrResourceAttr()) {
+        EXPECT_EQ(resource.getResourceId(), 0);
+        ++taggedCopies;
+      }
+    });
   }
+  EXPECT_GT(taggedCopies, 0u);
 }
 
 TEST(WaferTensorProgramToCardModuleTest,

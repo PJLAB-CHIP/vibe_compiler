@@ -86,6 +86,7 @@ struct MaterializedCardCandidate {
 mlir::FailureOr<CardMaterializationPlan>
 buildCardMaterializationPlan(const CardProgramAnalysis &program,
                              const CompleteCandidatePlan &plan,
+                             SpatialDataflowMaterializationMode mode,
                              CandidateMaterializationStatistics *statistics,
                              llvm::raw_ostream &diagnostics);
 
@@ -99,6 +100,7 @@ mlir::FailureOr<MaterializedCardCandidate>
 materializeCardCandidate(mlir::ModuleOp tensorProgram, CardId cardId,
                          const CardProgramAnalysis &program,
                          const CompleteCandidatePlan &plan,
+                         SpatialDataflowMaterializationMode mode,
                          CandidateMaterializationStatistics *statistics,
                          llvm::raw_ostream &diagnostics);
 

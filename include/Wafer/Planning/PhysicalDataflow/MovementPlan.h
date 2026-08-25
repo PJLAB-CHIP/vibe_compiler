@@ -5,6 +5,8 @@
 
 #include "Wafer/Planning/PhysicalDataflow/RepresentationPlan.h"
 
+#include "llvm/ADT/StringRef.h"
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -94,6 +96,8 @@ struct ResultDiscardId {
 
 using MovementActionId = std::variant<ExternalLoadId, DDRBoundaryTransferId,
                                       ReductionGatherId, ResultPublicationId>;
+
+llvm::StringRef stringifyMovementActionKind(const MovementActionId &action);
 
 enum class PeerTransferGraphKind : uint8_t {
   TargetRoutedPeer,

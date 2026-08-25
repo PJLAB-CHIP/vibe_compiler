@@ -289,7 +289,8 @@ mlir::FailureOr<mlir::func::FuncOp> buildRegionFunction(
                       });
     if (node != sourceOperationNodes.end() &&
         emittedOperations.contains(&operation))
-      operationNodes.push_back({cloned, node->structuredNodeId});
+      operationNodes.push_back(
+          {cloned, node->structuredNodeId, node->coupledComponentIndices});
   }
   llvm::SmallVector<mlir::Value, 4> returnedValues;
   for (mlir::Operation *root : sourceRoots) {

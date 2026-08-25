@@ -37,10 +37,12 @@ struct StructuredRelationRemapIssue {
   llvm::SmallVector<StructuredOperationBufferRelation, 4>
       unmappedScratchBuffers;
   llvm::SmallVector<SpatialOutputBufferRelation, 4> unmappedOutputBuffers;
+  llvm::SmallVector<CardDDRBufferRelation, 4> unmappedCardDDRBuffers;
 
   bool empty() const {
     return unmappedResultBuffers.empty() && unmappedOperandBuffers.empty() &&
-           unmappedScratchBuffers.empty() && unmappedOutputBuffers.empty();
+           unmappedScratchBuffers.empty() && unmappedOutputBuffers.empty() &&
+           unmappedCardDDRBuffers.empty();
   }
 };
 
@@ -79,12 +81,14 @@ public:
   void notifyOperationErased(mlir::Operation *operation) final;
   void recordScratchAllocation(mlir::Operation *sourceOperation,
                                mlir::Value allocation) final;
+  void recordLoweredOperation(mlir::Operation *sourceOperation,
+                              mlir::Operation *loweredOperation) final;
 
   /// Completes one rewrite epoch. Relations to explicitly erased dead private
   /// allocations are discarded because those buffers no longer contribute
   /// executable work; every other untracked erasure remains a failure. Source
-  /// Tile operation-emission pointers are dropped after full conversion;
-  /// current Instr attribution continues through the buffer relations.
+  /// Erased Tile operation-emission pointers are replaced by explicit live
+  /// Instr operation owners recorded by the lowering patterns.
   bool finalizeAfterRewrite();
   llvm::StringRef getFailureReason() const;
 

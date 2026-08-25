@@ -6,6 +6,7 @@
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -56,6 +57,16 @@ collectStoragePredecessors(mlir::Value value,
   }
   if (auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(definition)) {
     predecessors.push_back(view.getViewSource());
+    return true;
+  }
+  if (auto toMemref =
+          mlir::dyn_cast<mlir::bufferization::ToMemrefOp>(definition)) {
+    predecessors.push_back(toMemref.getTensor());
+    return true;
+  }
+  if (auto toTensor =
+          mlir::dyn_cast<mlir::bufferization::ToTensorOp>(definition)) {
+    predecessors.push_back(toTensor.getMemref());
     return true;
   }
   if (auto select = mlir::dyn_cast<mlir::arith::SelectOp>(definition)) {
@@ -139,9 +150,11 @@ static StructuredBufferOwners collectBufferOwnersUsedByOperation(
        relations.operationEmissions)
     if (relation.operation == operation)
       owners.nodes.push_back(relation.structuredNodeId);
-  llvm::SmallVector<uint32_t, 4> bufferNodes =
-      collectStructuredNodesUsedByOperation(operation, relations);
-  owners.nodes.append(bufferNodes.begin(), bufferNodes.end());
+  if (owners.nodes.empty()) {
+    llvm::SmallVector<uint32_t, 4> bufferNodes =
+        collectStructuredNodesUsedByOperation(operation, relations);
+    owners.nodes.append(bufferNodes.begin(), bufferNodes.end());
+  }
 
   StorageRootMemo memo;
   llvm::SmallVector<mlir::Value, 8> values =
@@ -248,6 +261,7 @@ struct StructuredBufferReplacementListener::Impl {
     Operand,
     Scratch,
     Output,
+    CardDDR,
   };
 
   struct RelationReference {
@@ -271,6 +285,7 @@ struct StructuredBufferReplacementListener::Impl {
     record(relations.operandBuffers, RelationKind::Operand);
     record(relations.scratchBuffers, RelationKind::Scratch);
     record(relations.outputBuffers, RelationKind::Output);
+    record(relations.cardDDRBuffers, RelationKind::CardDDR);
   }
 
   mlir::Value &getBuffer(const RelationReference &reference) {
@@ -283,6 +298,8 @@ struct StructuredBufferReplacementListener::Impl {
       return relations.scratchBuffers[reference.index].buffer;
     case RelationKind::Output:
       return relations.outputBuffers[reference.index].buffer;
+    case RelationKind::CardDDR:
+      return relations.cardDDRBuffers[reference.index].buffer;
     }
     llvm_unreachable("unknown structured buffer relation kind");
   }
@@ -349,6 +366,30 @@ void StructuredBufferReplacementListener::recordScratchAllocation(
     }
 }
 
+void StructuredBufferReplacementListener::recordLoweredOperation(
+    mlir::Operation *sourceOperation, mlir::Operation *loweredOperation) {
+  StructuredBufferOwners owners =
+      collectBufferOwnersUsedByOperation(sourceOperation, impl->relations);
+  if (owners.empty())
+    owners =
+        collectOwnersInTileDataflowComponent(sourceOperation, impl->relations);
+  if (owners.nodes.empty())
+    return;
+  if (!loweredOperation) {
+    impl->preservedAll = false;
+    if (impl->failureReason.empty())
+      impl->failureReason = "typed lowered operation owner has no target op";
+    return;
+  }
+  for (uint32_t node : owners.nodes)
+    if (!llvm::any_of(impl->relations.operationEmissions,
+                      [&](const StructuredOperationEmissionRelation &relation) {
+                        return relation.structuredNodeId == node &&
+                               relation.operation == loweredOperation;
+                      }))
+      impl->relations.operationEmissions.push_back({node, loweredOperation});
+}
+
 void StructuredBufferReplacementListener::notifyOperationReplaced(
     mlir::Operation *operation, mlir::ValueRange replacements) {
   auto iterator = impl->references.find(operation);
@@ -376,6 +417,10 @@ void StructuredBufferReplacementListener::notifyOperationReplaced(
 
 void StructuredBufferReplacementListener::notifyOperationErased(
     mlir::Operation *operation) {
+  llvm::erase_if(impl->relations.operationEmissions,
+                 [&](const StructuredOperationEmissionRelation &relation) {
+                   return relation.operation == operation;
+                 });
   auto iterator = impl->references.find(operation);
   if (iterator == impl->references.end())
     return;
@@ -397,11 +442,7 @@ bool StructuredBufferReplacementListener::finalizeAfterRewrite() {
   dropErased(impl->relations.operandBuffers);
   dropErased(impl->relations.scratchBuffers);
   dropErased(impl->relations.outputBuffers);
-  // Structured Tile operations are the source-epoch ownership witnesses.
-  // Successful full conversion erases that source class, so no raw operation
-  // address may survive into the Instr epoch. Current buffer relations remain
-  // the complete attribution source below this boundary.
-  impl->relations.operationEmissions.clear();
+  dropErased(impl->relations.cardDDRBuffers);
   return impl->preservedAll;
 }
 
@@ -416,7 +457,9 @@ mlir::LogicalResult checkStructuredBufferRelationsCurrent(
     return mlir::failure();
 
   llvm::DenseSet<const void *> liveValues;
+  llvm::DenseSet<mlir::Operation *> liveOperations;
   root->walk([&](mlir::Operation *operation) {
+    liveOperations.insert(operation);
     for (mlir::Value result : operation->getResults())
       liveValues.insert(result.getAsOpaquePointer());
     for (mlir::Region &region : operation->getRegions())
@@ -431,17 +474,26 @@ mlir::LogicalResult checkStructuredBufferRelationsCurrent(
              liveValues.contains(entry.buffer.getAsOpaquePointer());
     });
   };
-  return mlir::success(allCurrent(relations.operationResultBuffers) &&
+  const bool currentOperations =
+      llvm::all_of(relations.operationEmissions, [&](const auto &relation) {
+        return relation.operation &&
+               liveOperations.contains(relation.operation);
+      });
+  return mlir::success(currentOperations &&
+                       allCurrent(relations.operationResultBuffers) &&
                        allCurrent(relations.operandBuffers) &&
                        allCurrent(relations.scratchBuffers) &&
-                       allCurrent(relations.outputBuffers));
+                       allCurrent(relations.outputBuffers) &&
+                       allCurrent(relations.cardDDRBuffers));
 }
 
 void retainCurrentStructuredBufferRelations(
     mlir::Operation *root, StructuredMaterializationRelations &relations) {
   llvm::DenseSet<const void *> liveValues;
+  llvm::DenseSet<mlir::Operation *> liveOperations;
   if (root)
     root->walk([&](mlir::Operation *operation) {
+      liveOperations.insert(operation);
       for (mlir::Value result : operation->getResults())
         liveValues.insert(result.getAsOpaquePointer());
       for (mlir::Region &region : operation->getRegions())
@@ -459,8 +511,14 @@ void retainCurrentStructuredBufferRelations(
   retain(relations.operandBuffers);
   retain(relations.scratchBuffers);
   retain(relations.outputBuffers);
+  retain(relations.cardDDRBuffers);
   retain(relations.partialReductionContributions);
   retain(relations.partialReductionMergeInputs);
+  llvm::erase_if(relations.operationEmissions,
+                 [&](const StructuredOperationEmissionRelation &relation) {
+                   return !relation.operation ||
+                          !liveOperations.contains(relation.operation);
+                 });
 }
 
 mlir::LogicalResult rebaseStructuredBufferRelationsToStorageRoots(
@@ -476,12 +534,12 @@ mlir::LogicalResult rebaseStructuredBufferRelationsToStorageRoots(
     }
     return true;
   };
-  return mlir::success(rebase(relations.operationResultBuffers) &&
-                       rebase(relations.operandBuffers) &&
-                       rebase(relations.scratchBuffers) &&
-                       rebase(relations.outputBuffers) &&
-                       rebase(relations.partialReductionContributions) &&
-                       rebase(relations.partialReductionMergeInputs));
+  return mlir::success(
+      rebase(relations.operationResultBuffers) &&
+      rebase(relations.operandBuffers) && rebase(relations.scratchBuffers) &&
+      rebase(relations.outputBuffers) && rebase(relations.cardDDRBuffers) &&
+      rebase(relations.partialReductionContributions) &&
+      rebase(relations.partialReductionMergeInputs));
 }
 
 StructuredMaterializationRelations
@@ -494,6 +552,7 @@ remapStructuredBufferRelations(const StructuredMaterializationRelations &source,
       nullptr;
   llvm::SmallVectorImpl<SpatialOutputBufferRelation> *noUnmappedOutputs =
       nullptr;
+  llvm::SmallVectorImpl<CardDDRBufferRelation> *noUnmappedCardDDR = nullptr;
   appendRemapped<StructuredOperationResultBufferRelation>(
       source.operationResultBuffers, mapping, result.operationResultBuffers,
       noUnmappedResults);
@@ -506,6 +565,8 @@ remapStructuredBufferRelations(const StructuredMaterializationRelations &source,
   appendRemapped(
       llvm::ArrayRef<SpatialOutputBufferRelation>(source.outputBuffers),
       mapping, result.outputBuffers, noUnmappedOutputs);
+  appendRemapped(llvm::ArrayRef<CardDDRBufferRelation>(source.cardDDRBuffers),
+                 mapping, result.cardDDRBuffers, noUnmappedCardDDR);
   return result;
 }
 
@@ -545,6 +606,9 @@ StructuredMaterializationRelations scopeStructuredBufferRelations(
   for (const auto &entry : relations.outputBuffers)
     if (inScopeEntry(entry))
       result.outputBuffers.push_back(entry);
+  for (const auto &entry : relations.cardDDRBuffers)
+    if (inScopeEntry(entry))
+      result.cardDDRBuffers.push_back(entry);
   return result;
 }
 
@@ -568,6 +632,9 @@ remapStructuredBufferRelationsComplete(
   appendRemapped(
       llvm::ArrayRef<SpatialOutputBufferRelation>(source.outputBuffers),
       mapping, result.outputBuffers, &reported.unmappedOutputBuffers);
+  appendRemapped(llvm::ArrayRef<CardDDRBufferRelation>(source.cardDDRBuffers),
+                 mapping, result.cardDDRBuffers,
+                 &reported.unmappedCardDDRBuffers);
   if (!reported.empty())
     return mlir::failure();
   return result;

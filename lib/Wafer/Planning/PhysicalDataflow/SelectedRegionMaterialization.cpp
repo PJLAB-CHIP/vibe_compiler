@@ -126,7 +126,8 @@ prepareSelectedRegionMaterializationSource(
       return fail<SelectedRegionMaterializationSource>(
           failureReason,
           "selected region source cannot clone one structured node");
-    result.operationNodes.push_back({cloned, mapping.structuredNodeId});
+    result.operationNodes.push_back(
+        {cloned, mapping.structuredNodeId, mapping.coupledComponentIndices});
     nextNode = std::max(nextNode, mapping.structuredNodeId + 1);
   }
 

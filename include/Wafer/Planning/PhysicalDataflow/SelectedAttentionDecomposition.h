@@ -59,6 +59,14 @@ struct AttentionValueMaterialization {
   llvm::SmallVector<mlir::Value, 2> occurrences;
 };
 
+struct AttentionOperandMaterialization {
+  AttentionWorkScopeId scope;
+  AttentionOperandRole role = AttentionOperandRole::Query;
+  /// Current selected-subtree SSA occurrences of this semantic operand. A
+  /// temporally split Key/Value/Mask has one occurrence per static block.
+  llvm::SmallVector<mlir::Value, 2> occurrences;
+};
+
 struct AttentionScratchMaterialization {
   AttentionScratchId id;
   /// A statically expanded recurrence may materialize the same planned
@@ -79,6 +87,7 @@ struct SelectedAttentionRootMaterialization {
   SemanticRootKey root;
   mlir::Value result;
   std::vector<AttentionActionMaterialization> actions;
+  std::vector<AttentionOperandMaterialization> operands;
   std::vector<AttentionValueMaterialization> values;
   std::vector<AttentionScratchMaterialization> scratch;
   std::vector<AttentionScopeOperationMaterialization> scopes;

@@ -89,7 +89,8 @@ mlir::LogicalResult wafer::lowerSpatialOutputShardsToTileRegionModule(
                        "module");
       return mlir::failure();
     }
-    mappedOperationNodes.push_back({mapped, node.structuredNodeId});
+    mappedOperationNodes.push_back(
+        {mapped, node.structuredNodeId, node.coupledComponentIndices});
   }
 
   TensorProgramScope scope(function, functionalArgumentCount);

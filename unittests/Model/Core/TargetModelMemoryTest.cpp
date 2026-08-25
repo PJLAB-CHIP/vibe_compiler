@@ -4,6 +4,7 @@
 
 #include "gtest/gtest.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -167,6 +168,48 @@ TEST(TargetModelMemoryTest,
   std::string error = expectError(registry.readSnapshot(
       1, TargetModelAddressSpace::CardDDR, tile0Workspace, 1, 1));
   EXPECT_NE(error.find("unknown-resource"), std::string::npos);
+}
+
+TEST(TargetModelMemoryTest,
+     CardWorkspaceSharesStorageAndPreservesPerTileAccess) {
+  TargetCallInvocationDescriptor invocation = makeInvocation(3);
+  const uint64_t shared = UINT64_C(0x130000);
+  for (auto [tile, descriptor] : llvm::enumerate(invocation.tiles)) {
+    TileEntryArgumentAccess access =
+        tile == 0   ? TileEntryArgumentAccess::WriteOnly
+        : tile == 1 ? TileEntryArgumentAccess::ReadOnly
+                    : TileEntryArgumentAccess::None;
+    descriptor.tileEntryArguments.push_back(
+        {3,
+         TileEntryArgumentKind::CardWorkspace,
+         0,
+         "ignored-card-workspace-name",
+         LogicalFormat::F32,
+         MemLayout::Tensor,
+         {4},
+         16,
+         256,
+         access});
+    descriptor.slotValues.push_back(shared);
+  }
+  InvocationMemoryRegistry registry =
+      llvm::cantFail(InvocationMemoryRegistry::create(llvm::cantFail(
+          InvocationAddressPlan::create(invocation, makeBindings(3)))));
+  ASSERT_FALSE(registry.applyAtomically({TargetModelByteWrite{
+      0, TargetModelAddressSpace::CardDDR, shared, 1, {4, 3, 2, 1}}}));
+  EXPECT_EQ(llvm::cantFail(registry.readSnapshot(
+                1, TargetModelAddressSpace::CardDDR, shared, 4, 1)),
+            (std::vector<uint8_t>{4, 3, 2, 1}));
+  std::string writerRead = expectError(
+      registry.readSnapshot(0, TargetModelAddressSpace::CardDDR, shared, 1, 1));
+  EXPECT_NE(writerRead.find("access-denied"), std::string::npos);
+  std::string readerWrite =
+      expectError(registry.applyAtomically({TargetModelByteWrite{
+          1, TargetModelAddressSpace::CardDDR, shared, 1, {0}}}));
+  EXPECT_NE(readerWrite.find("access-denied"), std::string::npos);
+  std::string error = expectError(
+      registry.readSnapshot(2, TargetModelAddressSpace::CardDDR, shared, 1, 1));
+  EXPECT_NE(error.find("access-denied"), std::string::npos);
 }
 
 TEST(TargetModelMemoryTest, ResolvesExactEndAndRejectsCrossResource) {

@@ -10,7 +10,6 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
-#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <functional>
@@ -163,10 +162,15 @@ private:
                     "temporal scope references an unknown execution");
       scoped.insert(*execution);
     }
-    if (scoped != executionSet)
+    std::set<ExecutionInstanceId> temporallyScheduled;
+    for (const ExecutionInstanceId &execution : executionSet)
+      if (!std::holds_alternative<RequiredMergeExecution>(execution.source))
+        temporallyScheduled.insert(execution);
+    if (scoped != temporallyScheduled)
       return fail(EventGraphFailureKind::Deferred,
                   EventGraphFailureReason::MissingPlanFact,
-                  "event graph requires temporal coverage for every execution");
+                  "event graph requires temporal coverage for every iterated "
+                  "execution");
 
     for (const MovementResourceDescription &resource : movement.resources)
       if (!movementResources.try_emplace(resource.action, &resource).second)
@@ -359,8 +363,8 @@ private:
               std::get_if<MovementEventAction>(&missing.action))
         diagnostic << " movement_phase="
                    << static_cast<unsigned>(movement->phase)
-                   << " payload=" << movement->payloadSlice
-                   << " action_kind=" << movement->action.index();
+                   << " payload=" << movement->payloadSlice << " action_kind="
+                   << stringifyMovementActionKind(movement->action);
       if (const auto *movement =
               std::get_if<MovementEventAction>(&missing.action))
         if (movement->hop)
@@ -509,7 +513,12 @@ private:
         return fail(EventGraphFailureKind::Unsupported,
                     EventGraphFailureReason::UnsupportedResourceRange,
                     "DDR movement has no finite exact payload cover");
-      for (uint32_t payloadSlice = 0; payloadSlice < *pieces; ++payloadSlice) {
+      const bool cardTransfer =
+          std::holds_alternative<DDRBoundaryTransferId>(action) ||
+          std::holds_alternative<ReductionGatherId>(action);
+      const uint32_t phaseCount = cardTransfer ? 1 : *pieces;
+      for (uint32_t payloadSlice = 0; payloadSlice < phaseCount;
+           ++payloadSlice) {
         if (std::holds_alternative<ExternalLoadId>(action)) {
           if (!destination || !addDDRPhase(action, MovementEventPhase::DDRLoad,
                                            payloadSlice, *destination))
@@ -698,6 +707,14 @@ private:
               movementEvent(anchor, PlannedEventKind::Completion,
                             MovementEventPhase::PeerReceive, payloadSlice,
                             terminalHop->second);
+          if (graph.kind == PeerTransferGraphKind::ExternalLoadFanout) {
+            if (!addDependency(issue, terminalReceiveIssue,
+                               EventDependencyReason::TransferReady) ||
+                !addDependency(terminalReceiveCompletion, completion,
+                               EventDependencyReason::Completion))
+              return false;
+            continue;
+          }
           EventId combineIssue =
               movementEvent(member, PlannedEventKind::LocalCombine,
                             MovementEventPhase::LocalCombine, payloadSlice);
@@ -786,14 +803,94 @@ private:
                : std::optional<TileId>(found->tile);
   }
 
-  ResourceKey spmResource(const StorageObjectId &object) const {
+  std::optional<ResourceKey>
+  spmResource(const StorageObjectId &object,
+              std::optional<uint32_t> payloadSlice = std::nullopt) const {
     const StorageResourceDescription &resource = *storageResources.at(object);
     std::vector<PhysicalRangeBox> boxes;
     for (const analysis::StaticRectangularIndexSet &box :
          resource.residentDomain.getBoxes())
       boxes.push_back({box.offsets, box.sizes});
     llvm::sort(boxes);
+    if (payloadSlice) {
+      if (*payloadSlice >= boxes.size())
+        return std::nullopt;
+      boxes = {boxes[*payloadSlice]};
+    }
     return SPMRangeResource{object, std::move(boxes)};
+  }
+
+  bool addStorageResourceUses(const StorageAccessSite &site,
+                              const StorageObjectId &object,
+                              ResourceUseMode mode) {
+    auto addUse = [&](EventId issue, EventId completion,
+                      std::optional<uint32_t> payloadSlice) {
+      std::optional<ResourceKey> resource = spmResource(object, payloadSlice);
+      if (!resource || !events.count(issue) || !events.count(completion))
+        return false;
+      addResourceUse(issue, std::move(*resource), mode, completion);
+      return true;
+    };
+
+    if (const auto *transfer = std::get_if<PeerTransferSiteId>(&site)) {
+      std::optional<EventId> issue = siteEvent(site, false);
+      std::optional<EventId> completion = siteEvent(site, true);
+      return issue && completion &&
+             addUse(*issue, *completion, transfer->payloadSlice);
+    }
+    const auto *action = std::get_if<MovementActionId>(&site);
+    if (action) {
+      auto description = movementActions.find(*action);
+      auto resource = movementResources.find(*action);
+      std::optional<TileId> objectTile = selectedTile(object);
+      if (description == movementActions.end() ||
+          resource == movementResources.end() || !objectTile)
+        return false;
+      if (!description->second.peerGraph) {
+        auto normalized = analysis::normalizeFiniteExactIndexSet(
+            resource->second->exactDomain);
+        if (mlir::failed(normalized) || normalized->getBoxes().empty() ||
+            normalized->getBoxes().size() >
+                std::numeric_limits<uint32_t>::max())
+          return false;
+        llvm::SmallVector<MovementEventPhase, 2> phases;
+        if (std::holds_alternative<ExternalLoadId>(*action)) {
+          if (resource->second->destinationTile == objectTile)
+            phases.push_back(MovementEventPhase::DDRLoad);
+        } else if (std::holds_alternative<ResultPublicationId>(*action)) {
+          if (resource->second->sourceTile == objectTile)
+            phases.push_back(MovementEventPhase::DDRStore);
+        } else {
+          if (resource->second->sourceTile == objectTile)
+            phases.push_back(MovementEventPhase::DDRStore);
+          if (resource->second->destinationTile == objectTile)
+            phases.push_back(MovementEventPhase::DDRLoad);
+        }
+        if (!phases.empty()) {
+          const bool cardTransfer =
+              std::holds_alternative<DDRBoundaryTransferId>(*action) ||
+              std::holds_alternative<ReductionGatherId>(*action);
+          const uint32_t phaseCount =
+              cardTransfer ? 1 : normalized->getBoxes().size();
+          for (uint32_t payloadSlice = 0; payloadSlice < phaseCount;
+               ++payloadSlice)
+            for (MovementEventPhase phase : phases)
+              if (!addUse(movementEvent(*action,
+                                        PlannedEventKind::MovementIssue, phase,
+                                        payloadSlice),
+                          movementEvent(*action, PlannedEventKind::Completion,
+                                        phase, payloadSlice),
+                          cardTransfer ? std::nullopt
+                                       : std::optional<uint32_t>(payloadSlice)))
+                return false;
+          return true;
+        }
+      }
+    }
+
+    std::optional<EventId> issue = siteEvent(site, false);
+    std::optional<EventId> completion = siteEvent(site, true);
+    return issue && completion && addUse(*issue, *completion, std::nullopt);
   }
 
   bool addStorageEvents() {
@@ -827,8 +924,11 @@ private:
       if (!addDependency(*definition, ready,
                          EventDependencyReason::BufferLifetime))
         return false;
-      addResourceUse(*definitionIssue, spmResource(*selected),
-                     ResourceUseMode::Write, *definition);
+      if (!addStorageResourceUses(lifetime->definition, *selected,
+                                  ResourceUseMode::Write))
+        return fail(EventGraphFailureKind::Deferred,
+                    EventGraphFailureReason::MissingPlanFact,
+                    "storage definition has no exact physical event");
 
       if (lifetime->uses.empty())
         return fail(EventGraphFailureKind::CompilerBug,
@@ -841,12 +941,25 @@ private:
           return fail(EventGraphFailureKind::Deferred,
                       EventGraphFailureReason::MissingPlanFact,
                       "storage use has no planned event");
+        if (*useIssue == *definitionIssue) {
+          if (!(*useCompletion == *definition))
+            return fail(EventGraphFailureKind::CompilerBug,
+                        EventGraphFailureReason::MalformedPlan,
+                        "one execution has inconsistent internal storage "
+                        "completion");
+          if (!addDependency(*useCompletion, release,
+                             EventDependencyReason::BufferLifetime))
+            return false;
+          continue;
+        }
         if (!addDependency(ready, *useIssue, EventDependencyReason::SSAValue) ||
             !addDependency(*useCompletion, release,
                            EventDependencyReason::BufferLifetime))
           return false;
-        addResourceUse(*useIssue, spmResource(*selected), ResourceUseMode::Read,
-                       *useCompletion);
+        if (!addStorageResourceUses(use, *selected, ResourceUseMode::Read))
+          return fail(EventGraphFailureKind::Deferred,
+                      EventGraphFailureReason::MissingPlanFact,
+                      "storage use has no exact physical event");
       }
     }
     return true;
@@ -1110,7 +1223,8 @@ ExecutionEventContractResult deriveExecutionEventContracts(
                   {},
                   "effectful structured execution needs an explicit event "
                   "contract"}};
-    if (mlir::isa<mlir::linalg::LinalgOp>(operation->second)) {
+    if (mlir::isa<mlir::linalg::LinalgOp, LinalgExtAttentionOp>(
+            operation->second)) {
       for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker)
         contract.workerDomain.push_back(static_cast<NCCWorker>(worker));
       contract.completion = NCCCompletionKind::OrderedAsynchronousIssue;

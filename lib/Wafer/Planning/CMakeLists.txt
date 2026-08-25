@@ -64,8 +64,4 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/StructuralReadiness.cpp
   Planning/PhysicalDataflow/StructuredDemandView.cpp
   Planning/PhysicalDataflow/TemporalTileShape.cpp
-  Planning/Search/AttentionAlternative.cpp
-  Planning/Search/AttentionAnalysis.cpp
-  Planning/Search/DecodeAttentionAnalysis.cpp
-  Planning/Search/TensorProgramAlternative.cpp
   PARENT_SCOPE)

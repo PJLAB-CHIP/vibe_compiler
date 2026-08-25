@@ -24,8 +24,12 @@ struct ScheduleIRModule {
 struct ScheduleEventIRBinding {
   EventId event;
   TileId tile{0};
+  /// Primary block retained for the common single-occurrence case.
   mlir::Block *block = nullptr;
   std::vector<mlir::Operation *> operations;
+  /// All static occurrence blocks for this EventId. Empty means `{block}`.
+  /// Operations must belong to exactly one listed block.
+  std::vector<mlir::Block *> blocks;
 };
 
 enum class ScheduleMaterializationFailureKind : uint8_t {
@@ -61,6 +65,7 @@ struct PreparedScheduleMaterializationResult {
 
 struct MaterializedCompletionGroup {
   EventBoundaryId boundary;
+  mlir::Block *block = nullptr;
   std::vector<CompletionPlacement> placements;
   std::vector<mlir::Operation *> operations;
 };

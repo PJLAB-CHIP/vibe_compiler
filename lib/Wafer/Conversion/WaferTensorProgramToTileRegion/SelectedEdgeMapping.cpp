@@ -8,6 +8,9 @@
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/Twine.h"
+
+#include <map>
 
 using namespace wafer;
 
@@ -78,7 +81,8 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
       return failResult(failureReason,
                         "structured operation-node mapping is outside source "
                         "module");
-    result.operationNodes.push_back({mapped, node.structuredNodeId});
+    result.operationNodes.push_back(
+        {mapped, node.structuredNodeId, node.coupledComponentIndices});
   }
 
   result.consumerInputDemands.reserve(operandDemands.size());
@@ -146,6 +150,49 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
   }
 
   result.strategies.reserve(normalizedEdgeStrategies.size());
+  std::map<int64_t, mlir::BlockArgument> cardDDRArguments;
+  std::map<int64_t, mlir::RankedTensorType> cardDDRTypes;
+  for (const SpatialEdgeStrategy &strategy : normalizedEdgeStrategies) {
+    mlir::Operation *producer = cloneMapping.lookupOrNull(strategy.producer);
+    auto type =
+        producer && strategy.producerResult < producer->getNumResults()
+            ? mlir::dyn_cast<mlir::RankedTensorType>(
+                  producer->getResult(strategy.producerResult).getType())
+            : mlir::RankedTensorType{};
+    auto recordType = [&](int64_t resourceId) {
+      if (resourceId < 0 || !type || !type.hasStaticShape())
+        return false;
+      auto [resource, inserted] = cardDDRTypes.try_emplace(resourceId, type);
+      return inserted || resource->second == type;
+    };
+    if (strategy.cardDDRResource && !recordType(*strategy.cardDDRResource))
+      return failResult(failureReason,
+                        "card DDR resource has inconsistent producer types");
+    for (const SpatialEdgeFragment &fragment : strategy.fragments)
+      if (fragment.cardDDRResource && !recordType(*fragment.cardDDRResource))
+        return failResult(failureReason,
+                          "card DDR fragment has inconsistent producer types");
+  }
+  for (const auto &[resourceId, type] : cardDDRTypes) {
+    const unsigned argumentIndex = scope.getFunction().getNumArguments();
+    std::string symbol =
+        (llvm::Twine("card_ddr_") + llvm::Twine(resourceId)).str();
+    auto binding = CardDDRBindingAttr::get(
+        scope.getContext(),
+        mlir::FlatSymbolRefAttr::get(scope.getContext(), symbol), resourceId,
+        CardDDRAccess::None);
+    scope.getFunction().insertArgument(
+        argumentIndex, type,
+        mlir::DictionaryAttr::get(
+            scope.getContext(),
+            {mlir::NamedAttribute(
+                mlir::StringAttr::get(scope.getContext(),
+                                      kWaferCardDDRBindingAttrName),
+                binding)}),
+        scope.getLoc());
+    cardDDRArguments.emplace(resourceId,
+                             scope.getFunction().getArgument(argumentIndex));
+  }
   for (auto [strategyIndex, strategy] :
        llvm::enumerate(normalizedEdgeStrategies)) {
     if (!isSpatialEdgeStrategyIncidentOnTile(strategy, currentTile))
@@ -180,10 +227,11 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
         effectiveEdgeFacts[strategyIndex].requiresConsumerInputReconstruction;
     if (mapped.requiresConsumerInputReconstruction &&
         strategy.action != SpatialEdgeAction::RegionCut &&
-        strategy.action != SpatialEdgeAction::PeerFragments)
+        strategy.action != SpatialEdgeAction::PeerFragments &&
+        strategy.action != SpatialEdgeAction::CardDDRTransfer)
       return failResult(failureReason, "pure tensor input-chain dependencies "
-                                       "require RegionCut or exact peer "
-                                       "fragments");
+                                       "require RegionCut, card DDR, or exact "
+                                       "peer fragments");
     auto producerType = mlir::dyn_cast<mlir::RankedTensorType>(
         mapped.producer->getResult(strategy.producerResult).getType());
     auto consumerType = mlir::dyn_cast<mlir::RankedTensorType>(
@@ -218,18 +266,103 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
                         "edge mapping duplicates one destination strategy");
 
     if (strategy.action != SpatialEdgeAction::PeerFragments &&
+        strategy.action != SpatialEdgeAction::CardDDRTransfer &&
         (!strategy.fragments.empty() || strategy.fragmentsDefineProducerDemand))
       return failResult(failureReason,
-                        "non-peer edge strategy cannot carry fragments");
+                        "non-fragment edge strategy cannot carry fragments");
     if (strategy.fragmentsDefineProducerDemand &&
         !mapped.requiresConsumerInputReconstruction)
       return failResult(failureReason,
                         "fragment-union producer demand requires a typed "
                         "consumer-input reconstruction recipe");
     if (strategy.action != SpatialEdgeAction::PeerFragments &&
+        strategy.action != SpatialEdgeAction::CardDDRTransfer &&
         strategy.sourceTile != strategy.destinationTile)
       return failResult(failureReason,
                         "local edge strategy requires one Tile placement");
+    if (strategy.action == SpatialEdgeAction::CardDDRTransfer &&
+        (!strategy.cardDDRResource || strategy.fragments.empty()))
+      return failResult(
+          failureReason,
+          "card DDR transfer requires one resource and exact pieces");
+    if (strategy.action != SpatialEdgeAction::CardDDRTransfer &&
+        strategy.cardDDRResource)
+      return failResult(failureReason,
+                        "non-card-DDR edge carries a card resource identity");
+    const unsigned elementBits =
+        producerType.getElementType().getIntOrFloatBitWidth();
+    if (elementBits == 0 || elementBits % 8 != 0)
+      return failResult(failureReason,
+                        "edge fragment element type is not byte-sized");
+    auto bindCardDDR = [&](int64_t resourceId, bool reads, bool writes) {
+      auto boundary = cardDDRArguments.find(resourceId);
+      if (boundary == cardDDRArguments.end())
+        return false;
+      auto existing = scope.getFunction().getArgAttrOfType<CardDDRBindingAttr>(
+          boundary->second.getArgNumber(), kWaferCardDDRBindingAttrName);
+      if (!existing || existing.getResourceId() != resourceId)
+        return false;
+      CardDDRAccess access = reads && writes ? CardDDRAccess::ReadWrite
+                             : reads         ? CardDDRAccess::Read
+                                             : CardDDRAccess::Write;
+      CardDDRAccess merged =
+          existing.getAccess() == CardDDRAccess::None ? access
+          : existing.getAccess() == access            ? access
+                                           : CardDDRAccess::ReadWrite;
+      scope.getFunction().setArgAttr(
+          boundary->second.getArgNumber(), kWaferCardDDRBindingAttrName,
+          CardDDRBindingAttr::get(scope.getContext(), existing.getResource(),
+                                  existing.getResourceId(), merged));
+      mapped.cardDDRBoundaries.try_emplace(resourceId, boundary->second);
+      return true;
+    };
+    for (const SpatialEdgeFragment &fragment : strategy.fragments) {
+      std::optional<int64_t> resourceId = fragment.cardDDRResource;
+      if (!resourceId && strategy.action == SpatialEdgeAction::CardDDRTransfer)
+        resourceId = strategy.cardDDRResource;
+      if (strategy.action == SpatialEdgeAction::CardDDRTransfer &&
+          resourceId != strategy.cardDDRResource)
+        return failResult(
+            failureReason,
+            "card DDR transfer piece disagrees with its uniform resource");
+      if (fragment.kind != SpatialEdgeFragmentKind::CardDDR) {
+        if (fragment.cardDDRResource)
+          return failResult(
+              failureReason,
+              "non-card-DDR fragment carries a card resource identity");
+        continue;
+      }
+      uint64_t elements = 1;
+      for (int64_t size : fragment.sizes) {
+        if (size <= 0 || elements > std::numeric_limits<uint64_t>::max() /
+                                        static_cast<uint64_t>(size))
+          return failResult(
+              failureReason,
+              "card DDR transfer piece has invalid static volume");
+        elements *= static_cast<uint64_t>(size);
+      }
+      const uint64_t elementBytes = elementBits / 8;
+      if (!resourceId ||
+          elements > std::numeric_limits<uint64_t>::max() / elementBytes ||
+          fragment.bytes != elements * elementBytes ||
+          fragment.communicationId != 0 || fragment.payloadSlice != 0 ||
+          !bindCardDDR(*resourceId, currentTile == strategy.destinationTile,
+                       currentTile == fragment.sourceTile))
+        return failResult(
+            failureReason,
+            "card DDR transfer piece has invalid resource, bytes, or access");
+    }
+    if (strategy.action == SpatialEdgeAction::CardDDRTransfer) {
+      auto boundary = mapped.cardDDRBoundaries.find(*strategy.cardDDRResource);
+      if (boundary == mapped.cardDDRBoundaries.end() ||
+          llvm::any_of(strategy.fragments, [](const auto &fragment) {
+            return fragment.kind != SpatialEdgeFragmentKind::CardDDR;
+          }))
+        return failResult(
+            failureReason,
+            "card DDR transfer does not have one uniform fragment carrier");
+      mapped.cardDDRBoundary = boundary->second;
+    }
     result.strategies.push_back(std::move(mapped));
   }
 
@@ -240,12 +373,13 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
   if (result.independentDDRStages &&
       !llvm::all_of(result.strategies, [](const MappedStrategy &mapped) {
         return mapped.strategy.action == SpatialEdgeAction::RegionCut ||
+               mapped.strategy.action == SpatialEdgeAction::CardDDRTransfer ||
                mapped.strategy.action == SpatialEdgeAction::PeerFragments;
       }))
     return failResult(
         failureReason,
-        "independent DDR stages require RegionCut or exact cross-Tile "
-        "fragment actions");
+        "independent DDR stages require RegionCut, card DDR, or exact "
+        "cross-Tile fragment actions");
 
   return result;
 }

@@ -438,6 +438,21 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
     currentOutputs.push_back(*boundary);
   }
 
+  llvm::SmallVector<mlir::Value, 8> boundaryInputs;
+  for (mlir::Value original : scope.getBoundaryArguments()) {
+    auto argument = mlir::cast<mlir::BlockArgument>(original);
+    auto cardDDR = scope.getFunction().getArgAttrOfType<CardDDRBindingAttr>(
+        argument.getArgNumber(), kWaferCardDDRBindingAttrName);
+    const bool readOnly = !cardDDR ||
+                          cardDDR.getAccess() == CardDDRAccess::None ||
+                          cardDDR.getAccess() == CardDDRAccess::Read;
+    mlir::FailureOr<mlir::Value> boundary =
+        materializeDdrBoundary(original, original, readOnly, rewriter);
+    if (mlir::failed(boundary))
+      return mlir::failure();
+    boundaryInputs.push_back(*boundary);
+  }
+
   llvm::SmallVector<mlir::Value, 8> stageBuffers;
   stageBuffers.reserve(selectedDDRStages.size());
   llvm::DenseSet<mlir::Value> seenStageBuffers;
@@ -453,7 +468,8 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
     stageBuffers.push_back(allocation.getResult());
     if (relationRecorder)
       relationRecorder->recordSelectedDDRStage(allocation, stage.producerNode,
-                                               stage.producerResult);
+                                               stage.producerResult,
+                                               stage.producerResultKind);
   }
 
   llvm::BitVector claimedEndpoints(peerEndpoints.size());
@@ -487,6 +503,7 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
     llvm::SmallVector<mlir::Value, 16> regionInputs(sourceInputs.begin(),
                                                     sourceInputs.end());
     regionInputs.append(currentOutputs.begin(), currentOutputs.end());
+    regionInputs.append(boundaryInputs.begin(), boundaryInputs.end());
     regionInputs.append(stageBuffers.begin(), stageBuffers.end());
     llvm::SmallVector<mlir::Type, 4> resultTypes;
     for (mlir::Value output : currentOutputs)
@@ -525,9 +542,25 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
       mlir::BlockArgument regionArgument = body->getArgument(argumentIndex++);
       if (mlir::isa<mlir::RankedTensorType>(sourceArgument.getType())) {
         externalBuffers[sourceArgument] = regionArgument;
-        if (sourceIndex >= inputCount) {
+        if (sourceIndex >= inputCount &&
+            sourceIndex < inputCount + scope.getOutputCount()) {
           writableExternalBuffers.insert(sourceArgument);
           externalOutputIndices[sourceArgument] = sourceIndex - inputCount;
+        } else if (sourceIndex >= inputCount + scope.getOutputCount()) {
+          auto cardDDR =
+              scope.getFunction().getArgAttrOfType<CardDDRBindingAttr>(
+                  sourceIndex, kWaferCardDDRBindingAttrName);
+          if (cardDDR) {
+            if (cardDDR.getResourceId() < 0)
+              return failAndReturn(
+                  "card DDR boundary has no resource declaration");
+            if (cardDDR.getAccess() == CardDDRAccess::Write ||
+                cardDDR.getAccess() == CardDDRAccess::ReadWrite)
+              writableExternalBuffers.insert(sourceArgument);
+            if (relationRecorder)
+              relationRecorder->recordCardDDRBuffer(cardDDR.getResourceId(),
+                                                    regionArgument);
+          }
         }
       } else if (isScalarType(sourceArgument.getType())) {
         scalarValues[sourceArgument] = regionArgument;

@@ -140,12 +140,11 @@ void createRDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
 void createWDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
                 mlir::Value source, mlir::Value dest,
                 const MovementDescriptor &descriptor);
-void createGatherScatter(mlir::PatternRewriter &rewriter, mlir::Location loc,
-                         mlir::Value source, mlir::Value dest,
-                         const MovementDescriptor &sourceDescriptor,
-                         const MovementDescriptor &destDescriptor,
-                         mlir::Value dynamicSourceOffset = {},
-                         mlir::Value dynamicDestOffset = {});
+InstrGatherScatterOp createGatherScatter(
+    mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
+    mlir::Value dest, const MovementDescriptor &sourceDescriptor,
+    const MovementDescriptor &destDescriptor,
+    mlir::Value dynamicSourceOffset = {}, mlir::Value dynamicDestOffset = {});
 mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>>
 getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
                                mlir::Operation *op, mlir::MemRefType sourceType,
@@ -154,7 +153,7 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
                                const analysis::IndexRelation &iterationToSource,
                                const analysis::IndexRelation &iterationToDest,
                                MovementEngine engine, llvm::StringRef opLabel);
-void createGatherScatterDescriptors(
+llvm::SmallVector<InstrGatherScatterOp, 4> createGatherScatterDescriptors(
     mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
     mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors);
 void createMappedRDMADescriptors(

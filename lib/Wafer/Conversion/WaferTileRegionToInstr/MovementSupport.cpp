@@ -261,12 +261,11 @@ void createWDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
                                descriptor.strides, descriptor.iterations);
 }
 
-void createGatherScatter(mlir::PatternRewriter &rewriter, mlir::Location loc,
-                         mlir::Value source, mlir::Value dest,
-                         const MovementDescriptor &sourceDescriptor,
-                         const MovementDescriptor &destDescriptor,
-                         mlir::Value dynamicSourceOffset,
-                         mlir::Value dynamicDestOffset) {
+InstrGatherScatterOp createGatherScatter(
+    mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
+    mlir::Value dest, const MovementDescriptor &sourceDescriptor,
+    const MovementDescriptor &destDescriptor, mlir::Value dynamicSourceOffset,
+    mlir::Value dynamicDestOffset) {
   mlir::IntegerAttr sourceOffset =
       sourceDescriptor.byteOffset == 0
           ? mlir::IntegerAttr{}
@@ -275,11 +274,12 @@ void createGatherScatter(mlir::PatternRewriter &rewriter, mlir::Location loc,
       destDescriptor.byteOffset == 0
           ? mlir::IntegerAttr{}
           : rewriter.getI64IntegerAttr(destDescriptor.byteOffset);
-  rewriter.create<InstrGatherScatterOp>(
+  return rewriter.create<InstrGatherScatterOp>(
       loc, source, dest, dynamicSourceOffset, dynamicDestOffset,
       destDescriptor.byteCount, destDescriptor.innerBytes, sourceOffset,
       destOffset, sourceDescriptor.strides, sourceDescriptor.iterations,
-      destDescriptor.strides, destDescriptor.iterations);
+      destDescriptor.strides, destDescriptor.iterations, CardDDRResourceAttr{},
+      NCCWorker::Worker0);
 }
 
 namespace {
@@ -1189,12 +1189,14 @@ MovementDescriptorCache::getOrCreate(
   return plan;
 }
 
-void createGatherScatterDescriptors(
+llvm::SmallVector<InstrGatherScatterOp, 4> createGatherScatterDescriptors(
     mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
     mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors) {
+  llvm::SmallVector<InstrGatherScatterOp, 4> operations;
   for (const MovementDescriptorPair &descriptor : descriptors)
-    createGatherScatter(rewriter, loc, source, dest, descriptor.source,
-                        descriptor.dest);
+    operations.push_back(createGatherScatter(
+        rewriter, loc, source, dest, descriptor.source, descriptor.dest));
+  return operations;
 }
 
 void createMappedRDMADescriptors(

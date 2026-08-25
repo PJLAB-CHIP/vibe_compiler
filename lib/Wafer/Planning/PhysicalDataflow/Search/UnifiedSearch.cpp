@@ -14,12 +14,17 @@ namespace {
 
 struct SpatialFrame {};
 
+struct TemporalFeedbackFrame {
+  TemporalState state;
+  std::vector<SemanticRootKey> causalRoots;
+};
+
 using FrontierFrame =
     std::variant<SpatialFrame, RegionContinuation, TemporalContinuation,
                  RepresentationContinuation, MovementContinuation,
                  StorageContinuation, ExecutionStructureContinuation,
                  StructureSpecificStorageContinuation, ScheduleContinuation,
-                 ScheduledState>;
+                 ScheduledState, TemporalFeedbackFrame>;
 
 bool isTerminal(UnifiedSearchResumeStatus status) {
   return status != UnifiedSearchResumeStatus::Paused;
@@ -314,6 +319,13 @@ struct UnifiedSearchSession::Impl {
     work.candidateActualizations += actualStatistics.candidateActualizations;
     const FullFeasibilityStatus actualStatus = actual.status;
     const std::string actualDetail = actual.detail;
+    std::vector<SemanticRootKey> causalRoots = actual.causalRoots;
+    TemporalState temporal = state.getBufferState()
+                                 .getExecutionStructureState()
+                                 .getInitialBufferState()
+                                 .getMovementState()
+                                 .getRepresentationState()
+                                 .getTemporalState();
     if (trace)
       trace->candidates.push_back({*key, actualStatus});
     CandidateRecordOutcome recorded =
@@ -331,6 +343,26 @@ struct UnifiedSearchSession::Impl {
     if (recorded == CandidateRecordOutcome::Accepted &&
         termination == SearchTerminationPolicy::FirstAccepted)
       status = UnifiedSearchResumeStatus::AcceptedCheckpoint;
+    if (recorded == CandidateRecordOutcome::ExactRejection &&
+        !causalRoots.empty())
+      frontier.emplace_back(
+          TemporalFeedbackFrame{std::move(temporal), std::move(causalRoots)});
+  }
+
+  void stepTemporalFeedback(TemporalFeedbackFrame feedback) {
+    ++work.successorSteps;
+    std::string detail;
+    auto refined = planningSession.refineTemporalStateFromActualFeedback(
+        feedback.state, feedback.causalRoots, &detail);
+    if (mlir::failed(refined)) {
+      fail(detail.empty() ? "actual temporal proposal failed" : detail);
+      return;
+    }
+    if (!*refined)
+      return;
+    recordPrefix(**refined);
+    frontier.emplace_back(
+        planningSession.createRepresentationContinuation(std::move(**refined)));
   }
 
   void step() {
@@ -378,6 +410,13 @@ struct UnifiedSearchSession::Impl {
     if (auto *continuation =
             std::get_if<ScheduleContinuation>(&frontier.back())) {
       stepSchedule(*continuation);
+      return;
+    }
+    if (std::holds_alternative<TemporalFeedbackFrame>(frontier.back())) {
+      TemporalFeedbackFrame feedback =
+          std::move(std::get<TemporalFeedbackFrame>(frontier.back()));
+      frontier.pop_back();
+      stepTemporalFeedback(std::move(feedback));
       return;
     }
     ScheduledState state = std::move(std::get<ScheduledState>(frontier.back()));

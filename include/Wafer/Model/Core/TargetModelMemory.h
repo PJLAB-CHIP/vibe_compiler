@@ -69,9 +69,8 @@ struct TargetModelResourceId {
 
   friend bool operator==(const TargetModelResourceId &lhs,
                          const TargetModelResourceId &rhs) {
-    return lhs.cardId == rhs.cardId &&
-           lhs.tileId == rhs.tileId && lhs.kind == rhs.kind &&
-           lhs.resourceIndex == rhs.resourceIndex;
+    return lhs.cardId == rhs.cardId && lhs.tileId == rhs.tileId &&
+           lhs.kind == rhs.kind && lhs.resourceIndex == rhs.resourceIndex;
   }
   friend bool operator!=(const TargetModelResourceId &lhs,
                          const TargetModelResourceId &rhs) {
@@ -83,10 +82,10 @@ struct TargetModelResourceId {
 /// argument facts. External input, TargetTensor and external output arguments
 /// are card-owned; workspace, profile record and transport status arguments
 /// are Tile-owned.
-TargetModelResourceId getTargetModelResourceId(CardId cardId,
-                                               TileId tileId,
-                                               compiler::TileEntryArgumentKind kind,
-                                               int64_t resourceIndex);
+TargetModelResourceId
+getTargetModelResourceId(CardId cardId, TileId tileId,
+                         compiler::TileEntryArgumentKind kind,
+                         int64_t resourceIndex);
 
 /// Initial contents for one read-only model allocation. There is exactly one
 /// binding for a card-shared input resource, regardless of how many Tile ABI
@@ -102,6 +101,8 @@ struct TargetModelPlannedSlot {
   compiler::TileEntryArgumentKind kind =
       compiler::TileEntryArgumentKind::ExternalInput;
   int64_t resourceIndex = -1;
+  compiler::TileEntryArgumentAccess access =
+      compiler::TileEntryArgumentAccess::ReadOnly;
   TargetModelResourceId resource;
   uint64_t base = 0;
   uint64_t byteSize = 0;

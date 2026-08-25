@@ -916,39 +916,25 @@ terminal继续由Q63 facts和current lifetime产生minimum participant completio
 不能跨domain静默复用。Q50.H/I/J后续扩展完整selected domain时必须复用这些
 hardware-backed边界，不能恢复旧immediate-await或结构化join donor。
 
-当前完成状态复核确认Q49.P、Q50.B spatial raw domain、Q51 control foundation和Q50.C root-work输入闭合；施工从Q50.D继续。
-后续仍有以下production差距；这些差距已经在`tasks/progress.md`和实施计划中按原work item线性
-打开：
+当前线性计划第1--18项已经闭合。Region/Temporal/Representation/Movement/Buffer/Event/Structure/Schedule全部进入同一
+`CompleteCandidatePlan`和actual Card transaction；Q51以完整key可恢复遍历，每个complete key至多actualize一次，actual SPM rejection
+直接反馈controller，accepted winner不重建。Q50.S的FA/FD也经过相同链路：算法层无固定worker或per-K2 completion；未选择peer的
+cross-Tile action使用CardModule唯一shared DDR declaration、source WDMA和destination RDMA，选择peer时才生成Direct-DTE及其必要wait。
+mixed owner demand按每个MovementPlan action组装Resident/peer/CardDDR exact fragments；decomposition后的execution、semantic operand和coupled
+component identity显式映射到actual structured operation。baseline/search materialization mode由caller分别选择Independent/Joint，不从peer
+graph形状反推。旧attention alternative/analysis owner已经退役。第18项fresh host unit `937/937`、configured lit `225/225`、4个
+public-link smoke及source/IR organization检查通过；no-card证据是strict package readback与16-Tile runtime invocation planning，产品CLI runner
+仍由Q53拥有。
 
-- RegionDomain与TemporalDomain的局部successor存在，但selected RegionPlan/nested/replica/coupled construction尚未成为完整candidate
-  materializer的输入；Temporal selected construction也必须对top-level、nested和coupled scopes形成actual verifier witness；
-- current `CompleteCandidatePlan`只携spatial、exact demand、root work、TemporalPlan和prepared attention decomposition。Representation、
-  Movement、Buffer、ExecutionStructure与ClosedSchedule选择只在full-feasibility中和canonical point比较，noncanonical member返回Unsupported；
-- Q50.G没有实现设计中的constraint graph、PBQP精确消元与residual search；production也没有产生operation tuple/alias constraints，
-  selected physical-version builder仍只有direct unit consumer；
-- Q50.H已闭合current typed boundary的DDR/direct/relay、external every-root reuse、destination partition、partial/max fanout
-  arborescence及remote gather domain，并提供
-  mutation-free selected preflight、token-only emitter和H-stage verifier；current facts不声明未经typed descriptor的raw collective，
-  因而domain中不存在对应state。
-  complete candidate把这些token与I storage、K structure和J selected wait/order共同接入Q50.0的工作仍由后续F/I/J线性闭合；
-- Q50.I production没有产生reuse/slot-family requirements，selected rotating-slot construction/lifetime verifier未接入；Q50.J EventGraph
-  没有接Q63 execution contracts和source effect/control facts，缺失contract时还会默认Synchronous；DDR/no-hop movement也被默认
-  Synchronous，且fixed K后没有用post-K BufferPlan重建；
-- Q50.K Pipelined choice没有selected phase construction。ScheduleDomain只验证slot-lifetime generation，没有把它变成reuse/order约束，
-  completion boundary仍固定为obligation自身completion event，selected order/worker/wait/join/release没有写入actual IR；
-- Q50.F因此只有canonical actual surface。Q51 controller只用ClosedSchedulePlan作为key，public search首个Accepted即停止；完整all-axis key、
-  parent-by-parent/full-plan oracle、可恢复遍历、production bound/cost比较与donor retirement均未闭合。
+当前只剩两个线性production差距，状态以`tasks/progress.md`为准：
 
-任务按以下output闭环推进，具体状态以`tasks/progress.md`为准：
+- Q52还需基于本轮measurements闭合memo/DP/bound/LNS策略及有限预算LLaMA actual evaluation；不得以SPM估算或candidate cap代替actual
+  legality，也不得改变fixed attention algorithm；
+- Q53还需从Q60产品入口完成fresh source/IR/package/oracle/runner/no-card全矩阵并准备单session板端case，使状态达到
+  `board-ready`；本轮不执行真实板测，也不把host/no-card结果称作board correctness或performance。
 
-1. 保持已经闭合的无SPM repair actual-admission及hardware-evidence-driven completion normal form；后续J向同一primitive传selected
-   schedule，不能另建baseline completion算法，search不消费baseline结果；
-2. 从`region-execution-domain`开始按`tasks/progress.md`重新闭合每个domain、selected construction/verifier与直接下游；partial state
-   零IR，complete assignment全字段进入同一actual gate，且search不消费baseline output；
-3. 以`search-control-closure`和`unified-search-closure`关闭all-axis key、independent oracle、complete-candidate actual evaluation、
-   唯一retained winner和一次publication，再经
-   `attention-production-closure`和`search-scalability`取得production search证据；
-4. `production-host-readiness`从Q60产品入口完成fresh workload/package/no-card/runner矩阵，使Q53达到`board-ready`。
+后续严格按`search-scalability`、`production-host-readiness`两项顺序闭合；已经完成的domain、attention和unified-search work item不重新
+打开，也不建立第二套materializer、completion或winner路径。
 
 ## 14. Verification and Done Criteria
 

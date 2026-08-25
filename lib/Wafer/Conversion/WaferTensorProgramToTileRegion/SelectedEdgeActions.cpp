@@ -7,6 +7,9 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 
+#include <map>
+#include <set>
+
 using namespace wafer;
 
 namespace wafer::tensor_program_to_tile_region {
@@ -24,7 +27,99 @@ materializeSelectedDirectActions(SelectedEdgeLoweringState &state) {
   auto &materializedRegionCutSpills = state.regionCutSpills;
   auto &selectedDDRStages = state.selectedDDRStages;
   auto &preserved = state.preservedOperations;
+  auto &producerValues = state.producerValues;
+  auto &consumerInputDemands = state.mapping.consumerInputDemands;
   std::string *failureReason = state.failureReason;
+  std::set<std::pair<mlir::Operation *, unsigned>> cardDDRReconstructions;
+  std::set<int64_t> materializedCardDDRStores;
+  for (MappedStrategy &mapped : mappedStrategies) {
+    SpatialEdgeStrategy &strategy = mapped.strategy;
+    std::map<int64_t, llvm::SmallVector<const SpatialEdgeFragment *, 4>>
+        fragmentsByResource;
+    for (const SpatialEdgeFragment &fragment : strategy.fragments) {
+      if (fragment.kind != SpatialEdgeFragmentKind::CardDDR ||
+          fragment.sourceTile != currentTile)
+        continue;
+      std::optional<int64_t> resource = fragment.cardDDRResource;
+      if (!resource && strategy.action == SpatialEdgeAction::CardDDRTransfer)
+        resource = strategy.cardDDRResource;
+      if (!resource)
+        return reportSelectedEdgeFailure(
+            failureReason,
+            "card DDR source piece has no selected resource identity");
+      fragmentsByResource[*resource].push_back(&fragment);
+    }
+    for (auto &[resourceId, fragments] : fragmentsByResource) {
+      if (materializedCardDDRStores.count(resourceId))
+        continue;
+      auto boundary = mapped.cardDDRBoundaries.find(resourceId);
+      if (boundary == mapped.cardDDRBoundaries.end())
+        return reportSelectedEdgeFailure(
+            failureReason,
+            "card DDR transfer has no current boundary argument");
+      auto producerOwner =
+          llvm::find_if(mappedOperationNodes,
+                        [&](const StructuredOperationNodeMapping &mapping) {
+                          return mapping.operation == mapped.producer;
+                        });
+      if (producerOwner == mappedOperationNodes.end())
+        return reportSelectedEdgeFailure(
+            failureReason,
+            "card DDR source store has no structured execution owner");
+      const uint32_t producerNode = producerOwner->structuredNodeId;
+      llvm::sort(fragments, [](const auto *lhs, const auto *rhs) {
+        return std::tie(lhs->offsets, lhs->sizes) <
+               std::tie(rhs->offsets, rhs->sizes);
+      });
+      mlir::Value cardDDRDestination = boundary->second;
+      for (const SpatialEdgeFragment *fragment : fragments) {
+        mlir::FailureOr<mlir::Value> slice = getOrMaterializeSource(
+            scope, mapped.producer, strategy.producerResult, fragment->offsets,
+            fragment->sizes, materialized, preserved, mappedTemporalTiles,
+            failureReason, &mappedOperationNodes);
+        if (mlir::failed(slice))
+          return mlir::failure();
+        mlir::Operation *definition = slice->getDefiningOp();
+        mlir::OpBuilder builder(definition ? definition : mapped.producer);
+        if (definition)
+          builder.setInsertionPointAfter(definition);
+        mlir::Value stored = insertExactSlice(
+            builder, mapped.producer->getLoc(), *slice, cardDDRDestination,
+            fragment->offsets, fragment->sizes);
+        cardDDRDestination = stored;
+        preserved.insert(stored.getDefiningOp());
+        mappedOperationNodes.push_back(
+            {stored.getDefiningOp(), producerNode, {}});
+      }
+      materializedCardDDRStores.insert(resourceId);
+    }
+  }
+  for (MappedStrategy &mapped : mappedStrategies) {
+    SpatialEdgeStrategy &strategy = mapped.strategy;
+    if (strategy.action == SpatialEdgeAction::CardDDRTransfer &&
+        strategy.destinationTile == currentTile) {
+      if (!mapped.cardDDRBoundary)
+        return reportSelectedEdgeFailure(
+            failureReason,
+            "card DDR transfer has no uniform destination boundary");
+      if (mapped.requiresConsumerInputReconstruction) {
+        producerValues.push_back(
+            ProducerValue{mapped.producer, strategy.producerResult,
+                          mapped.consumer, strategy.consumerOperand,
+                          strategy.destinationTile, mapped.cardDDRBoundary});
+        cardDDRReconstructions.insert(
+            {mapped.consumer, strategy.consumerOperand});
+      } else {
+        mapped.consumer->setOperand(strategy.consumerOperand,
+                                    mapped.cardDDRBoundary);
+      }
+    }
+  }
+  for (const auto &[consumer, operand] : cardDDRReconstructions)
+    if (mlir::failed(reconstructConsumerInput(consumer, operand, currentTile,
+                                              consumerInputDemands,
+                                              producerValues, failureReason)))
+      return mlir::failure();
   for (MappedStrategy &mapped : mappedStrategies) {
     SpatialEdgeStrategy &strategy = mapped.strategy;
     if (strategy.destinationTile != currentTile)
@@ -111,6 +206,7 @@ materializeSelectedDirectActions(SelectedEdgeLoweringState &state) {
         return mlir::failure();
       break;
     case SpatialEdgeAction::PeerFragments:
+    case SpatialEdgeAction::CardDDRTransfer:
       break;
     }
   }
@@ -218,9 +314,26 @@ materializeSelectedSourceStages(SelectedEdgeLoweringState &state) {
         return reportSelectedEdgeFailure(
             failureReason,
             "independent source stage has no structured node identity");
-      selectedDDRStages.push_back(
-          CandidateSelectedDDRStage{allocation.getResult(), *sourceNode,
-                                    /*producerResult=*/0});
+      auto sourceMapping =
+          llvm::find_if(mappedOperationNodes,
+                        [&](const StructuredOperationNodeMapping &mapping) {
+                          return mapping.operation == operation;
+                        });
+      const bool coupledComponent =
+          sourceMapping != mappedOperationNodes.end() &&
+          !sourceMapping->coupledComponentIndices.empty();
+      if (coupledComponent && sourceMapping->coupledComponentIndices.size() !=
+                                  operation->getNumResults())
+        return reportSelectedEdgeFailure(
+            failureReason,
+            "independent source stage has incomplete coupled component "
+            "identity");
+      selectedDDRStages.push_back(CandidateSelectedDDRStage{
+          allocation.getResult(), *sourceNode,
+          coupledComponent ? sourceMapping->coupledComponentIndices.front() : 0,
+          coupledComponent
+              ? StructuredResultIdentityKind::CoupledReductionComponent
+              : StructuredResultIdentityKind::OperationResult});
       mlir::Value stored = destination.getResult();
       for (size_t index = groupBegin; index < groupEnd; ++index) {
         SourceOnlyDomain &domain = sourceOnlyDomains[index];
@@ -418,9 +531,27 @@ materializeSelectedConsumerStages(SelectedEdgeLoweringState &state) {
         return reportSelectedEdgeFailure(
             failureReason,
             "independent consumer stage has no structured node identity");
-      selectedDDRStages.push_back(
-          CandidateSelectedDDRStage{allocation.getResult(), *consumerNode,
-                                    /*producerResult=*/0});
+      auto consumerMapping =
+          llvm::find_if(mappedOperationNodes,
+                        [&](const StructuredOperationNodeMapping &mapping) {
+                          return mapping.operation == mapped.consumer;
+                        });
+      const bool coupledComponent =
+          consumerMapping != mappedOperationNodes.end() &&
+          !consumerMapping->coupledComponentIndices.empty();
+      if (coupledComponent && consumerMapping->coupledComponentIndices.size() !=
+                                  mapped.consumer->getNumResults())
+        return reportSelectedEdgeFailure(
+            failureReason,
+            "independent consumer stage has incomplete coupled component "
+            "identity");
+      selectedDDRStages.push_back(CandidateSelectedDDRStage{
+          allocation.getResult(), *consumerNode,
+          coupledComponent ? consumerMapping->coupledComponentIndices.front()
+                           : 0,
+          coupledComponent
+              ? StructuredResultIdentityKind::CoupledReductionComponent
+              : StructuredResultIdentityKind::OperationResult});
       mlir::FailureOr<mlir::Value> stored =
           materializeCandidateRootTileIntoDestination(
               scope, mapped.consumer, strategy.consumerOffsets,

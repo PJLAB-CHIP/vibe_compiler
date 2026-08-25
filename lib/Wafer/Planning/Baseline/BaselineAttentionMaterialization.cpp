@@ -25,9 +25,11 @@
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <set>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -331,6 +333,42 @@ bool dependsOnValue(mlir::Value value, mlir::Value target,
         dependsOnValue(operation->getOperand(operand.operand), target, visited))
       return true;
   return false;
+}
+
+mlir::FailureOr<mlir::OpResult>
+findUniqueStructuredProducer(mlir::Value value) {
+  llvm::SmallVector<mlir::OpResult, 2> producers;
+  llvm::DenseSet<mlir::Value> visited;
+  std::function<void(mlir::Value)> visit = [&](mlir::Value current) {
+    if (!current || !visited.insert(current).second)
+      return;
+    auto result = mlir::dyn_cast<mlir::OpResult>(current);
+    if (!result)
+      return;
+    mlir::Operation *operation = result.getOwner();
+    if (mlir::isa<mlir::DestinationStyleOpInterface>(operation) &&
+        mlir::isa<mlir::TilingInterface>(operation)) {
+      if (!llvm::is_contained(producers, result))
+        producers.push_back(result);
+      return;
+    }
+    auto indexing =
+        mlir::dyn_cast<wafer::WaferTensorIndexingOpInterface>(operation);
+    if (!indexing)
+      return;
+    mlir::FailureOr<wafer::TensorIndexingDescription> description =
+        indexing.getTensorIndexingDescription(result.getResultNumber());
+    if (mlir::failed(description))
+      return;
+    for (const wafer::TensorIndexingOperandDescription &operand :
+         description->operands)
+      if (operand.operand < operation->getNumOperands())
+        visit(operation->getOperand(operand.operand));
+  };
+  visit(value);
+  if (producers.size() != 1)
+    return mlir::failure();
+  return producers.front();
 }
 
 mlir::FailureOr<analysis::IndexRelation> buildTensorIndexRelation(
@@ -724,6 +762,7 @@ prepareAttentionMaterializationSource(
     mlir::ModuleOp source, CardId cardId,
     const CardProgramAnalysis &sourceProgram, const CompleteCandidatePlan &plan,
     llvm::ArrayRef<TileId> availableTiles,
+    SpatialDataflowMaterializationMode mode,
     CandidateMaterializationStatistics *statistics,
     std::string *failureReason) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
@@ -817,6 +856,12 @@ prepareAttentionMaterializationSource(
 
   std::map<mlir::Operation *, TileId> selectedOperationTiles;
   std::map<mlir::Operation *, AttentionActionId> selectedOperationActions;
+  std::map<mlir::Operation *, llvm::SmallVector<unsigned, 2>>
+      selectedResultIndices;
+  std::map<mlir::Operation *, std::map<unsigned, unsigned>>
+      selectedOperandIndices;
+  std::map<std::pair<mlir::Operation *, unsigned>, CoupledComponentValueId>
+      selectedComponents;
   std::map<SemanticRootKey, AttentionIterationRoles> attentionRoles;
   mlir::IRRewriter rewriter(source.getContext());
   for (const AttentionWorkDescription &description :
@@ -829,6 +874,18 @@ prepareAttentionMaterializationSource(
     if (!attention)
       return fail<AttentionMaterializationSource>(
           failureReason, "selected attention root has no cloned operation");
+    std::map<AttentionOperandRole, unsigned> semanticOperandIndices{
+        {AttentionOperandRole::Query,
+         attention.getQueryMutable().getOperandNumber()},
+        {AttentionOperandRole::Key,
+         attention.getKeyMutable().getOperandNumber()},
+        {AttentionOperandRole::Value,
+         attention.getValueMutable().getOperandNumber()}};
+    if (attention.getMask())
+      semanticOperandIndices.emplace(AttentionOperandRole::Mask,
+                                     attention.getMaskMutable()
+                                         .getAsOperandRange()
+                                         .getBeginOperandIndex());
     mlir::FailureOr<AttentionIterationRoles> roles =
         attention.getIterationRoles();
     if (mlir::failed(roles) ||
@@ -840,6 +897,87 @@ prepareAttentionMaterializationSource(
                                            failureReason);
     if (mlir::failed(materialized))
       return mlir::failure();
+    for (const AttentionOperandMaterialization &operand :
+         materialized->operands) {
+      auto semanticIndex = semanticOperandIndices.find(operand.role);
+      auto scope = llvm::find_if(
+          materialized->scopes,
+          [&](const AttentionScopeOperationMaterialization &candidate) {
+            return candidate.scope == operand.scope;
+          });
+      if (semanticIndex == semanticOperandIndices.end() ||
+          scope == materialized->scopes.end())
+        return fail<AttentionMaterializationSource>(
+            failureReason,
+            "selected attention operand has no semantic scope identity");
+      for (mlir::Value occurrence : operand.occurrences) {
+        bool matched = false;
+        for (mlir::Operation *operation : scope->operations)
+          for (mlir::OpOperand &selectedOperand : operation->getOpOperands()) {
+            llvm::DenseSet<mlir::Value> visited;
+            if (!dependsOnValue(selectedOperand.get(), occurrence, visited))
+              continue;
+            auto [position, inserted] =
+                selectedOperandIndices[operation].try_emplace(
+                    selectedOperand.getOperandNumber(), semanticIndex->second);
+            if (!inserted && position->second != semanticIndex->second)
+              return fail<AttentionMaterializationSource>(
+                  failureReason,
+                  "selected attention operand has conflicting semantic "
+                  "indices");
+            matched = true;
+          }
+        if (!matched)
+          return fail<AttentionMaterializationSource>(
+              failureReason,
+              "selected attention operand occurrence has no structured use");
+      }
+    }
+    for (const AttentionValueMaterialization &value : materialized->values) {
+      auto described = llvm::find_if(
+          description.values, [&](const AttentionValueDescription &candidate) {
+            return candidate.id == value.id;
+          });
+      const auto *component =
+          described == description.values.end() || !described->physicalVersion
+              ? nullptr
+              : std::get_if<CoupledComponentValueId>(
+                    &described->physicalVersion->logicalValue);
+      if (!component)
+        continue;
+      const unsigned semanticResult =
+          static_cast<unsigned>(component->component);
+      for (mlir::Value occurrence : value.occurrences) {
+        mlir::FailureOr<mlir::OpResult> resultValue =
+            findUniqueStructuredProducer(occurrence);
+        if (mlir::failed(resultValue))
+          return fail<AttentionMaterializationSource>(
+              failureReason,
+              "selected attention component has no unique structured "
+              "producer");
+        mlir::Operation *owner = resultValue->getOwner();
+        auto [entry, inserted] = selectedResultIndices.try_emplace(owner);
+        if (inserted)
+          for (unsigned result = 0; result < owner->getNumResults(); ++result)
+            entry->second.push_back(result);
+        const unsigned resultNumber = resultValue->getResultNumber();
+        if (resultNumber >= entry->second.size() ||
+            (entry->second[resultNumber] != resultNumber &&
+             entry->second[resultNumber] != semanticResult))
+          return fail<AttentionMaterializationSource>(
+              failureReason,
+              "selected attention component result identity conflicts");
+        entry->second[resultNumber] = semanticResult;
+        auto [componentEntry, componentInserted] =
+            selectedComponents.try_emplace(std::make_pair(owner, resultNumber),
+                                           *component);
+        if (!componentInserted && !(componentEntry->second == *component))
+          return fail<AttentionMaterializationSource>(
+              failureReason,
+              "selected attention operation result has conflicting coupled "
+              "component identities");
+      }
+    }
     for (const AttentionScopeOperationMaterialization &scope :
          materialized->scopes) {
       TileId tile = workOf(scope.scope.execution).tile;
@@ -963,7 +1101,11 @@ prepareAttentionMaterializationSource(
       selectedTemporal = preserved->second.temporalTileSizes;
     }
     spatialPlan.nodes.push_back(std::move(nodePlan));
-    operationNodes.push_back({node.operation, node.id});
+    StructuredOperationNodeMapping operationNode{node.operation, node.id};
+    auto semanticResults = selectedResultIndices.find(node.operation);
+    if (semanticResults != selectedResultIndices.end())
+      operationNode.coupledComponentIndices = semanticResults->second;
+    operationNodes.push_back(std::move(operationNode));
     temporalByOperation.emplace(node.operation, selectedTemporal);
     temporalTiles.push_back({node.operation, std::move(selectedTemporal), {}});
   }
@@ -1013,11 +1155,35 @@ prepareAttentionMaterializationSource(
     return mlir::failure();
   assignment.nodePlacements.assign(std::make_move_iterator(placements->begin()),
                                    std::make_move_iterator(placements->end()));
-  assignment.mapping.materializationMode =
-      SpatialDataflowMaterializationMode::IndependentDDRStages;
+  assignment.mapping.materializationMode = mode;
   assignment.mapping.outputs = std::move(*outputs);
   assignment.mapping.operationTemporalTiles = std::move(temporalTiles);
+  llvm::SmallVector<CoupledComponentResultMapping, 16> componentMappings;
+  componentMappings.reserve(selectedComponents.size());
+  for (const auto &[operationResult, component] : selectedComponents)
+    componentMappings.push_back(
+        {operationResult.first, operationResult.second, component});
+  llvm::SmallVector<StructuredOperationRootMapping, 64> rootMappings;
+  rootMappings.reserve(plannedRoots.size());
+  for (const auto &[operation, root] : plannedRoots) {
+    auto action = selectedOperationActions.find(operation);
+    StructuredOperationRootMapping mapping{
+        operation,
+        root,
+        action == selectedOperationActions.end()
+            ? std::optional<ExecutionInstanceId>{}
+            : std::optional<ExecutionInstanceId>(
+                  action->second.scope.execution),
+        {}};
+    auto operands = selectedOperandIndices.find(operation);
+    if (operands != selectedOperandIndices.end())
+      for (const auto &[selectedIndex, semanticIndex] : operands->second)
+        mapping.semanticOperandIndices.push_back(
+            {selectedIndex, semanticIndex});
+    rootMappings.push_back(std::move(mapping));
+  }
   if (mlir::failed(addCardDataflowConstruction(assignment, *dag, plan.movement,
+                                               componentMappings, rootMappings,
                                                failureReason)))
     return mlir::failure();
 
@@ -1046,6 +1212,26 @@ prepareAttentionMaterializationSource(
       return mlir::failure();
     mapping.structuredNodeId = representative->second;
   }
+  for (const auto &[scope, node] : scopeRepresentatives)
+    assignment.selectedRegionExecutions.push_back(
+        {RegionExecutionId(scope.execution), node});
+  llvm::sort(assignment.selectedRegionExecutions, [](const auto &lhs,
+                                                     const auto &rhs) {
+    return std::tie(lhs.first, lhs.second) < std::tie(rhs.first, rhs.second);
+  });
+  for (size_t index = 1; index < assignment.selectedRegionExecutions.size();
+       ++index)
+    if (assignment.selectedRegionExecutions[index - 1].first ==
+            assignment.selectedRegionExecutions[index].first &&
+        assignment.selectedRegionExecutions[index - 1].second !=
+            assignment.selectedRegionExecutions[index].second)
+      return fail<AttentionMaterializationSource>(
+          failureReason,
+          "one attention execution maps to several structured nodes");
+  assignment.selectedRegionExecutions.erase(
+      std::unique(assignment.selectedRegionExecutions.begin(),
+                  assignment.selectedRegionExecutions.end()),
+      assignment.selectedRegionExecutions.end());
   std::map<uint32_t, SemanticRootKey> rootsByNode;
   for (const StructuredOperationNodeMapping &mapping : operationNodes) {
     auto root = plannedRoots.find(mapping.operation);

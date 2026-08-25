@@ -75,6 +75,7 @@ TileEntryArgumentAccess getTileEntryArgumentAccess(TileEntryArgumentKind kind) {
   case TileEntryArgumentKind::ExternalOutput:
     return TileEntryArgumentAccess::WriteOnly;
   case TileEntryArgumentKind::Workspace:
+  case TileEntryArgumentKind::CardWorkspace:
   case TileEntryArgumentKind::ProfileRecord:
   case TileEntryArgumentKind::TransportStatus:
     return TileEntryArgumentAccess::ReadWrite;
@@ -205,6 +206,10 @@ prepareTargetABI(const TileExecutable &tileExecutable,
   const unsigned resultCount = function.getFunctionType().getNumResults();
   std::vector<const ProgramResourceBinding *> argumentBindings(
       originalArgumentCount, nullptr);
+  std::vector<CardDDRBindingAttr> cardDDRBindings(originalArgumentCount);
+  for (unsigned index = 0; index < originalArgumentCount; ++index)
+    cardDDRBindings[index] = function.getArgAttrOfType<CardDDRBindingAttr>(
+        index, kWaferCardDDRBindingAttrName);
   std::vector<const ProgramResourceBinding *> outputBindings(resultCount,
                                                              nullptr);
   for (const ProgramResourceBinding &binding :
@@ -214,7 +219,8 @@ prepareTargetABI(const TileExecutable &tileExecutable,
                                                     : argumentBindings;
     if (binding.index < 0 ||
         binding.index >= static_cast<int64_t>(domain.size()) ||
-        domain[binding.index]) {
+        domain[binding.index] ||
+        (&domain == &argumentBindings && cardDDRBindings[binding.index])) {
       function.emitError()
           << "target_abi_mismatch: resource bindings do not form an exact "
              "function boundary";
@@ -222,7 +228,10 @@ prepareTargetABI(const TileExecutable &tileExecutable,
     }
     domain[binding.index] = &binding;
   }
-  if (llvm::is_contained(argumentBindings, nullptr) ||
+  if (llvm::any_of(llvm::seq<unsigned>(0, originalArgumentCount),
+                   [&](unsigned index) {
+                     return !argumentBindings[index] && !cardDDRBindings[index];
+                   }) ||
       llvm::is_contained(outputBindings, nullptr)) {
     function.emitError()
         << "target_abi_mismatch: resource bindings do not cover every "
@@ -281,11 +290,60 @@ prepareTargetABI(const TileExecutable &tileExecutable,
     return mlir::success();
   };
 
-  for (unsigned index = 0; index < originalArgumentCount; ++index)
-    if (mlir::failed(appendSlot(
-            *argumentBindings[index], function.getArgument(index).getType(),
-            getTileEntryArgumentKind(argumentBindings[index]->role))))
+  for (unsigned index = 0; index < originalArgumentCount; ++index) {
+    if (const ProgramResourceBinding *binding = argumentBindings[index]) {
+      if (mlir::failed(appendSlot(*binding,
+                                  function.getArgument(index).getType(),
+                                  getTileEntryArgumentKind(binding->role))))
+        return mlir::failure();
+      continue;
+    }
+    CardDDRBindingAttr binding = cardDDRBindings[index];
+    auto declaration =
+        mlir::SymbolTable::lookupNearestSymbolFrom<mlir::memref::GlobalOp>(
+            function, binding.getResource());
+    auto resource = declaration
+                        ? declaration->getAttrOfType<CardDDRResourceAttr>(
+                              kWaferCardDDRResourceAttrName)
+                        : CardDDRResourceAttr{};
+    auto memrefType =
+        mlir::dyn_cast<mlir::MemRefType>(function.getArgument(index).getType());
+    if (!declaration || !resource || !memrefType ||
+        declaration.getType() != memrefType || resource.getResourceId() < 0 ||
+        resource.getResourceId() != binding.getResourceId()) {
+      function.emitError(
+          "target_abi_mismatch: card DDR argument has no matching resource "
+          "declaration");
       return mlir::failure();
+    }
+    mlir::FailureOr<WaferPhysicalTensorInfo> physical =
+        getPhysicalInfo(memrefType, function);
+    mlir::FailureOr<int64_t> alignment = getRequiredPhysicalAlignment(
+        memrefType, {defaultDDRAlignment}, function,
+        "card DDR boundary alignment is invalid");
+    mlir::FailureOr<LogicalFormat> format =
+        mlir::succeeded(physical)
+            ? getPhysicalFormat(*physical, function)
+            : mlir::FailureOr<LogicalFormat>(mlir::failure());
+    if (mlir::failed(physical) || mlir::failed(alignment) ||
+        mlir::failed(format))
+      return mlir::failure();
+    TileEntryArgumentAccess access =
+        binding.getAccess() == CardDDRAccess::None
+            ? TileEntryArgumentAccess::None
+        : binding.getAccess() == CardDDRAccess::Read
+            ? TileEntryArgumentAccess::ReadOnly
+        : binding.getAccess() == CardDDRAccess::Write
+            ? TileEntryArgumentAccess::WriteOnly
+            : TileEntryArgumentAccess::ReadWrite;
+    prepared.slots.push_back(
+        {static_cast<int64_t>(prepared.slots.size()),
+         TileEntryArgumentKind::CardWorkspace, resource.getResourceId(),
+         binding.getResource().getValue().str(), *format, physical->layout,
+         std::vector<int64_t>(memrefType.getShape().begin(),
+                              memrefType.getShape().end()),
+         physical->physicalBytes, *alignment, access});
+  }
 
   llvm::SmallVector<mlir::func::ReturnOp, 2> returns;
   function.walk([&](mlir::func::ReturnOp returnOp) {
@@ -397,7 +455,9 @@ prepareTargetABI(const TileExecutable &tileExecutable,
     allocation.erase();
   }
 
-  if (arenaBytes > 0) {
+  {
+    const int64_t effectiveArenaBytes =
+        std::max(arenaBytes, defaultDDRAlignment);
     prepared.defaultDDRArenaArgumentIndex = function.getNumArguments();
     function.insertArgument(prepared.defaultDDRArenaArgumentIndex,
                             mlir::IntegerType::get(function.getContext(), 64),
@@ -409,8 +469,8 @@ prepareTargetABI(const TileExecutable &tileExecutable,
          "default_ddr_arena",
          LogicalFormat::U8,
          MemLayout::Tensor,
-         {arenaBytes},
-         arenaBytes,
+         {effectiveArenaBytes},
+         effectiveArenaBytes,
          arenaAlignment,
          getTileEntryArgumentAccess(TileEntryArgumentKind::Workspace)});
   }
@@ -450,6 +510,17 @@ prepareTargetABI(const TileExecutable &tileExecutable,
          WAFER_TX81_PROFILER_BUFFER_ALIGNMENT,
          getTileEntryArgumentAccess(TileEntryArgumentKind::ProfileRecord)});
   }
+
+  for (unsigned index = 0; index < originalArgumentCount; ++index)
+    if (cardDDRBindings[index])
+      function.removeArgAttr(index, kWaferCardDDRBindingAttrName);
+  llvm::SmallVector<mlir::memref::GlobalOp, 4> cardDDRDeclarations;
+  for (mlir::memref::GlobalOp global :
+       prepared.module->getOps<mlir::memref::GlobalOp>())
+    if (global->hasAttr(kWaferCardDDRResourceAttrName))
+      cardDDRDeclarations.push_back(global);
+  for (mlir::memref::GlobalOp global : cardDDRDeclarations)
+    global.erase();
 
   if (mlir::failed(mlir::verify(*prepared.module)))
     return mlir::failure();

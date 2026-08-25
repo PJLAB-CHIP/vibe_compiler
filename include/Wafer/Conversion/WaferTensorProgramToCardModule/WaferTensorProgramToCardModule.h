@@ -50,6 +50,11 @@ struct StructuredNodeRootGroup {
   uint32_t rootGroupId = 0;
 };
 
+struct CardDDRResource {
+  int64_t resourceId = -1;
+  mlir::RankedTensorType tensorType;
+};
+
 /// Complete physical placement consumed atomically by CardModule
 /// materialization.  Every function result appears exactly once.  Different
 /// results may use different dimensions and disjoint Tile sets; Tiles not
@@ -61,6 +66,7 @@ struct TileMapping {
   /// into selected IR and is never recovered from edge actions or names.
   SpatialDataflowMaterializationMode materializationMode =
       SpatialDataflowMaterializationMode::JointDataflow;
+  llvm::SmallVector<CardDDRResource, 8> cardDDRResources;
   llvm::SmallVector<OutputTileMapping, 4> outputs;
   /// Per-structured-operation iterator tiles selected jointly with placement.
   /// Every scheduled source operation appears exactly once.  Reduction
@@ -131,22 +137,21 @@ public:
   /// session. This performs only coordinate-dependent validation and owns a
   /// private scheduling clone; source IR, topology and immutable operation
   /// identity are not revalidated.
-  static mlir::FailureOr<std::unique_ptr<TileMaterializationSession>> create(
-      const TileMaterializationSourceSession &sourceSession,
-      const TileMapping &mapping, std::string *failureReason = nullptr);
+  static mlir::FailureOr<std::unique_ptr<TileMaterializationSession>>
+  create(const TileMaterializationSourceSession &sourceSession,
+         const TileMapping &mapping, std::string *failureReason = nullptr);
 
   /// Convenience boundary for callers that own only one mapping. Multi-trial
   /// controllers should create a TileMaterializationSourceSession once and
   /// use the overload above for each coordinate.
-  static mlir::FailureOr<std::unique_ptr<TileMaterializationSession>> create(
-      mlir::ModuleOp sourceModule, CardId cardId, const TileMapping &mapping,
-      std::string *failureReason = nullptr,
-      llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {});
+  static mlir::FailureOr<std::unique_ptr<TileMaterializationSession>>
+  create(mlir::ModuleOp sourceModule, CardId cardId, const TileMapping &mapping,
+         std::string *failureReason = nullptr,
+         llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {});
 
   ~TileMaterializationSession();
   TileMaterializationSession(TileMaterializationSession &&) noexcept;
-  TileMaterializationSession &
-  operator=(TileMaterializationSession &&) noexcept;
+  TileMaterializationSession &operator=(TileMaterializationSession &&) noexcept;
   TileMaterializationSession(const TileMaterializationSession &) = delete;
   TileMaterializationSession &
   operator=(const TileMaterializationSession &) = delete;
@@ -176,11 +181,12 @@ public:
          std::string *failureReason = nullptr);
 
   ~TileMaterializationSourceSession();
-  TileMaterializationSourceSession(TileMaterializationSourceSession &&) noexcept;
+  TileMaterializationSourceSession(
+      TileMaterializationSourceSession &&) noexcept;
   TileMaterializationSourceSession &
   operator=(TileMaterializationSourceSession &&) noexcept;
-  TileMaterializationSourceSession(
-      const TileMaterializationSourceSession &) = delete;
+  TileMaterializationSourceSession(const TileMaterializationSourceSession &) =
+      delete;
   TileMaterializationSourceSession &
   operator=(const TileMaterializationSourceSession &) = delete;
 

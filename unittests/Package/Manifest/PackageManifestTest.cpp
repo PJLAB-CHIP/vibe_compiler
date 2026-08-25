@@ -959,6 +959,55 @@ TEST_F(PackageManifestTest, RuntimeInvocationPlanningIsExactAndSideEffectFree) {
 }
 
 TEST_F(PackageManifestTest,
+       CardWorkspaceIsAllocatedOnceAndSharedByTypedReadersAndWriter) {
+  writeFullProgramData();
+  PackageManifest manifest = makeManifest();
+  for (PackageEntrypointRecord &entry : manifest.entries) {
+    ASSERT_FALSE(entry.arguments.empty());
+    TileEntryArgumentRecord workspace = entry.arguments.back();
+    entry.arguments.pop_back();
+    const bool writer = entry.tileId == wafer::TileId(1);
+    entry.arguments.push_back(
+        {static_cast<uint64_t>(entry.arguments.size()),
+         CardWorkspaceArgument{/*resource=*/0, /*bytes=*/1024,
+                               /*alignment=*/256},
+         writer ? PackageAccessMode::WriteOnly : PackageAccessMode::ReadOnly});
+    workspace.ordinal = entry.arguments.size();
+    entry.arguments.push_back(std::move(workspace));
+  }
+
+  llvm::Expected<VerifiedPackageManifest> verified =
+      verifyPackageManifest(std::move(manifest), root);
+  ASSERT_TRUE(static_cast<bool>(verified))
+      << llvm::toString(verified.takeError());
+  llvm::Expected<RuntimeInvocationPlan> plan = planRuntimeInvocation(
+      *verified, makeInputBindings(verified->getManifest()),
+      makeEnvironment(1024 * 1024));
+  ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
+  ASSERT_EQ(plan->cardWorkspaceRanges.size(), 1u);
+  EXPECT_EQ(plan->cardWorkspaceRanges.front().offset, 512u);
+  EXPECT_EQ(plan->cardWorkspaceRanges.front().bytes, 1024u);
+  ASSERT_EQ(plan->tiles.size(), 16u);
+  for (const RuntimeSessionPlan &tile : plan->tiles) {
+    ASSERT_EQ(tile.argumentAddresses.size(), 6u);
+    EXPECT_EQ(tile.argumentAddresses[4].base,
+              RuntimeArgumentAddressBase::Invocation);
+    EXPECT_EQ(tile.argumentAddresses[4].offset, 512u);
+  }
+
+  PackageManifest missingWriter = verified->getManifest();
+  for (PackageEntrypointRecord &entry : missingWriter.entries)
+    for (TileEntryArgumentRecord &argument : entry.arguments)
+      if (std::holds_alternative<CardWorkspaceArgument>(argument.reference))
+        argument.access = PackageAccessMode::ReadOnly;
+  llvm::Expected<VerifiedPackageManifest> rejected =
+      verifyPackageManifest(std::move(missingWriter), root);
+  EXPECT_FALSE(static_cast<bool>(rejected));
+  if (!rejected)
+    llvm::consumeError(rejected.takeError());
+}
+
+TEST_F(PackageManifestTest,
        SharedTargetTensorsFeedEveryTileLaunchWithoutDuplication) {
   writeFullProgramData();
   PackageManifest manifest = makeSharedTargetTensorManifest();

@@ -19,7 +19,9 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <map>
 #include <memory>
+#include <set>
 #include <utility>
 
 namespace wafer::compiler::detail {
@@ -28,6 +30,7 @@ namespace {
 struct TileLoweringResult {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   StructuredMaterializationRelations materializationRelations;
+  std::vector<CandidateInstructionIR::RegionNodeRelation> regionNodes;
   std::string detail;
   TileMemoryPlanningFailure memoryPlanning;
   bool conversionFailed = false;
@@ -44,6 +47,7 @@ static std::string captureTileIR(mlir::ModuleOp module) {
 
 static mlir::LogicalResult lowerTileRegionsToInstructionIR(
     mlir::ModuleOp module, StructuredMaterializationRelations &relations,
+    std::vector<CandidateInstructionIR::RegionNodeRelation> &regionNodes,
     bool placeCanonicalCompletion, std::string &detail) {
   if (mlir::failed(checkStructuredBufferRelationsCurrent(module.getOperation(),
                                                          relations))) {
@@ -51,6 +55,20 @@ static mlir::LogicalResult lowerTileRegionsToInstructionIR(
              "current IR";
     return mlir::failure();
   }
+  llvm::SmallVector<TileRegionOp, 4> regions;
+  module.walk([&](TileRegionOp region) { regions.push_back(region); });
+  std::map<mlir::Operation *, std::set<uint32_t>> nodesByRegion;
+  for (const StructuredOperationEmissionRelation &relation :
+       relations.operationEmissions) {
+    TileRegionOp region =
+        relation.operation ? relation.operation->getParentOfType<TileRegionOp>()
+                           : TileRegionOp{};
+    if (region)
+      nodesByRegion[region].insert(relation.structuredNodeId);
+  }
+  for (const auto &[region, nodes] : nodesByRegion)
+    regionNodes.push_back(
+        {region, std::vector<uint32_t>(nodes.begin(), nodes.end())});
   if (mlir::failed(rebaseStructuredBufferRelationsToStorageRoots(relations))) {
     detail = "Instr function-boundary bufferization cannot preserve a unique "
              "storage root for every selected relation";
@@ -69,9 +87,6 @@ static mlir::LogicalResult lowerTileRegionsToInstructionIR(
              "Tile buffer relation";
     return mlir::failure();
   }
-
-  llvm::SmallVector<TileRegionOp, 4> regions;
-  module.walk([&](TileRegionOp region) { regions.push_back(region); });
   StructuredBufferReplacementListener replacementListener(relations);
   TileRegionToInstrLoweringSession loweringSession(*module.getContext(),
                                                    &replacementListener);
@@ -254,7 +269,7 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
     result.module = std::move(tile.module);
     result.materializationRelations = std::move(tile.materializationRelations);
     if (mlir::failed(lowerTileRegionsToInstructionIR(
-            *result.module, result.materializationRelations,
+            *result.module, result.materializationRelations, result.regionNodes,
             /*placeCanonicalCompletion=*/
             !preparation.ownsInstructionCompletion(), result.detail)) ||
         containsTileDataflowOperations(result.module->getOperation()) ||
@@ -296,9 +311,9 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
   std::vector<CandidateInstructionIR> instructionViews;
   instructionViews.reserve(loweringResults.size());
   for (auto [index, result] : llvm::enumerate(loweringResults))
-    instructionViews.push_back({expectedCardId, expectedTileIds[index],
-                                &result.module,
-                                &result.materializationRelations});
+    instructionViews.push_back(
+        {expectedCardId, expectedTileIds[index], &result.module,
+         &result.materializationRelations, &result.regionNodes});
   preparationFailure = {};
   if (mlir::failed(preparation.prepareInstructionIR(instructionViews,
                                                     preparationFailure)))
@@ -307,6 +322,11 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
                               preparationFailure.detail.empty()
                                   ? "selected instruction preparation failed"
                                   : preparationFailure.detail));
+  for (CandidateInstructionIR &tile : instructionViews)
+    tile.getModule().walk([](InstrGatherScatterOp operation) {
+      if (operation.getCardDdrResourceAttr())
+        operation.setCardDdrResourceAttr(CardDDRResourceAttr{});
+    });
   for (CandidateInstructionIR &tile : instructionViews)
     if (!tile.getModule() || !tile.relations ||
         mlir::failed(checkStructuredBufferRelationsCurrent(

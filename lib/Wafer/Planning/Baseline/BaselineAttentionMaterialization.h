@@ -22,6 +22,7 @@ prepareAttentionMaterializationSource(
     mlir::ModuleOp source, CardId cardId,
     const CardProgramAnalysis &sourceProgram, const CompleteCandidatePlan &plan,
     llvm::ArrayRef<TileId> availableTiles,
+    SpatialDataflowMaterializationMode mode,
     CandidateMaterializationStatistics *statistics = nullptr,
     std::string *failureReason = nullptr);
 

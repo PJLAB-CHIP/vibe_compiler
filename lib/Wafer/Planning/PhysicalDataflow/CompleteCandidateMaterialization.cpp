@@ -130,6 +130,7 @@ mlir::FailureOr<MaterializedCardCandidate>
 materializeCardCandidate(mlir::ModuleOp tensorProgram, CardId cardId,
                          const CardProgramAnalysis &program,
                          const CompleteCandidatePlan &plan,
+                         SpatialDataflowMaterializationMode mode,
                          CandidateMaterializationStatistics *statistics,
                          llvm::raw_ostream &diagnostics) {
   std::string failureReason;
@@ -142,7 +143,8 @@ materializeCardCandidate(mlir::ModuleOp tensorProgram, CardId cardId,
       program.operationNodes;
   if (plan.preparedAttention.work.roots.empty()) {
     mlir::FailureOr<CardMaterializationPlan> built =
-        buildCardMaterializationPlan(program, plan, statistics, diagnostics);
+        buildCardMaterializationPlan(program, plan, mode, statistics,
+                                     diagnostics);
     if (mlir::failed(built))
       return mlir::failure();
     assignment = std::move(*built);
@@ -150,7 +152,7 @@ materializeCardCandidate(mlir::ModuleOp tensorProgram, CardId cardId,
     mlir::FailureOr<AttentionMaterializationSource> selected =
         prepareAttentionMaterializationSource(tensorProgram, cardId, program,
                                               plan, program.availableTileIds,
-                                              statistics, &failureReason);
+                                              mode, statistics, &failureReason);
     if (mlir::failed(selected)) {
       diagnostics << "wafer-compile: selected attention preparation failed: "
                   << failureReason << '\n';
@@ -339,7 +341,8 @@ materializeCardCandidate(mlir::ModuleOp tensorProgram, CardId cardId,
     statistics->maximumTileMaterializationWorkers =
         materializationStatistics.maximumTileMaterializationWorkers;
   }
-  if (mlir::failed(appendRequiredExecutionNodeRelations(
+  if (result.assignment.selectedRegionExecutions.empty() &&
+      mlir::failed(appendRequiredExecutionNodeRelations(
           plan, program.operationNodes, result.assignment))) {
     diagnostics << "wafer-compile: candidate execution/node relation failed\n";
     return mlir::failure();

@@ -24,11 +24,12 @@ public:
 
   /// Returns the sorted unique structured DAG node ids whose materialized
   /// buffers are read, written or forwarded by `operation`.
-  llvm::SmallVector<uint32_t, 4>
-  collectNodesUsedBy(mlir::Operation *operation);
+  llvm::SmallVector<uint32_t, 4> collectNodesUsedBy(mlir::Operation *operation);
 
 private:
   StorageRootMemo storageRoots;
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<uint32_t, 2>>
+      nodesByOperation;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<uint32_t, 2>> nodesByRoot;
 };
 

@@ -18,16 +18,17 @@ void recordStructuredOperationNodeMaterialization(
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   if (!source || !materialized || !operationNodes)
     return;
-  llvm::SmallVector<uint32_t, 2> nodeIds;
+  llvm::SmallVector<StructuredOperationNodeMapping, 2> sourceMappings;
   for (const StructuredOperationNodeMapping &mapping : *operationNodes)
     if (mapping.operation == source)
-      nodeIds.push_back(mapping.structuredNodeId);
-  for (uint32_t nodeId : nodeIds)
+      sourceMappings.push_back(mapping);
+  for (const StructuredOperationNodeMapping &sourceMapping : sourceMappings)
     if (!llvm::any_of(*operationNodes, [&](const auto &mapping) {
           return mapping.operation == materialized &&
-                 mapping.structuredNodeId == nodeId;
+                 mapping.structuredNodeId == sourceMapping.structuredNodeId;
         }))
-      operationNodes->push_back({materialized, nodeId});
+      operationNodes->push_back({materialized, sourceMapping.structuredNodeId,
+                                 sourceMapping.coupledComponentIndices});
 }
 
 /// Pushes a non-rank-reducing slice through a static expand_shape when every
@@ -585,7 +586,8 @@ static mlir::LogicalResult fuseProducerSlices(
     if (auto insert = mlir::dyn_cast<mlir::tensor::InsertSliceOp>(
             producerResult.getOwner())) {
       materializeWindowedInsertSlice(rewriter, slice, insert, producerResult,
-                                     enqueueSlices, materializedCoupledTiles);
+                                     enqueueSlices, operationNodes,
+                                     materializedCoupledTiles);
       continue;
     }
     if (!mlir::isa<mlir::TilingInterface>(producerResult.getOwner())) {

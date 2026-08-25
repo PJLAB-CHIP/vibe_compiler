@@ -43,6 +43,9 @@ enum class TileEntryArgumentKind {
   ExternalOutput,
   /// Entry-local compiler-managed default DDR arena.
   Workspace,
+  /// Card-shared compiler-managed DDR carrier. `resourceIndex` identifies the
+  /// same allocation across all Tile entries that reference it.
+  CardWorkspace,
   /// Entry-local profiler capture record.
   ProfileRecord,
   /// Entry-local Direct-DTE status.
@@ -51,7 +54,7 @@ enum class TileEntryArgumentKind {
 
 /// Host access pattern of one tile entry argument. The producer sets it from
 /// the closed kind; consumers verify consistency instead of re-deriving it.
-enum class TileEntryArgumentAccess { ReadOnly, WriteOnly, ReadWrite };
+enum class TileEntryArgumentAccess { None, ReadOnly, WriteOnly, ReadWrite };
 
 /// One ordered argument of one Tile target entry: ordinal, closed kind,
 /// exactly one typed reference, target descriptor facts, and access. It never

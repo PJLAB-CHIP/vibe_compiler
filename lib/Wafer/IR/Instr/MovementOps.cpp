@@ -435,6 +435,9 @@ mlir::LogicalResult InstrWDMAOp::verify() {
 InstrFamily InstrWDMAOp::getInstructionFamily() { return InstrFamily::WDMA; }
 
 mlir::LogicalResult InstrGatherScatterOp::verify() {
+  if (CardDDRResourceAttr resource = getCardDdrResourceAttr())
+    if (resource.getResourceId() < 0)
+      return emitOpError("card DDR movement resource must be non-negative");
   if (mlir::failed(
           verifySPMMemRef(getOperation(), getSource().getType(), "source")) ||
       mlir::failed(

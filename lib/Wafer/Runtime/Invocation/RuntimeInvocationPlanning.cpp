@@ -8,19 +8,19 @@
 
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
+#include <utility>
 #include <variant>
 #include <vector>
 
 namespace wafer::runtime {
-
 
 namespace {
 
 llvm::Error invalid(llvm::Twine message) {
   return llvm::createStringError(llvm::errc::invalid_argument, message);
 }
-
 
 bool checkedAdd(uint64_t lhs, uint64_t rhs, uint64_t &result) {
   if (rhs > std::numeric_limits<uint64_t>::max() - lhs)
@@ -83,15 +83,14 @@ llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
   if (llvm::is_contained(entriesByLaunchSlot, nullptr))
     return invalid("runtime invocation launch-slot domain is incomplete");
 
-  const size_t transportKind =
-      entriesByLaunchSlot.front()->transport.index();
+  const size_t transportKind = entriesByLaunchSlot.front()->transport.index();
   if (llvm::any_of(entriesByLaunchSlot, [&](const auto *entry) {
         return entry->transport.index() != transportKind;
       }))
     return invalid("runtime invocation contains mixed transport requirements");
   for (const PackageEntrypointRecord *entry : entriesByLaunchSlot)
-    if (const auto *requirements = std::get_if<DirectDTETransportRequirements>(
-            &entry->transport)) {
+    if (const auto *requirements =
+            std::get_if<DirectDTETransportRequirements>(&entry->transport)) {
       if (!environment.supportsDirectDTE ||
           environment.directDTEStatusABI != requirements->statusABI ||
           (requirements->hostWatchdogRequired &&
@@ -111,10 +110,8 @@ llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
         bindingsByPort[binding.port.getValue()])
       return invalid(
           "runtime invocation contains duplicate or unknown input binding");
-    const ExternalPortRecord &port =
-        manifest.inputs[binding.port.getValue()];
-    if (binding.bytes != port.bytes ||
-        binding.alignment == 0 ||
+    const ExternalPortRecord &port = manifest.inputs[binding.port.getValue()];
+    if (binding.bytes != port.bytes || binding.alignment == 0 ||
         !checkedAlignment(binding.alignment, port.alignment) ||
         binding.alignment < port.alignment)
       return invalid("runtime invocation binding does not satisfy input "
@@ -139,8 +136,7 @@ llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
                    "insufficient");
   plan.targetTensorRanges.reserve(manifest.targetTensors.size());
   for (const TargetTensorRecord &tensor : manifest.targetTensors)
-    plan.targetTensorRanges.push_back(
-        {tensor.fileOffset, tensor.bytes});
+    plan.targetTensorRanges.push_back({tensor.fileOffset, tensor.bytes});
 
   // Invocation allocation: deterministic packing of inputs, outputs,
   // per-Tile entry-local ranges, and (for TileRowPointerTable) per-Tile
@@ -148,8 +144,9 @@ llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
   const KernelRuntimeLaunchContract &kernel = manifest.launch.getKernel();
   uint64_t nextOffset = 0;
   uint64_t invocationAlignment = 1;
-  auto placeRange = [&](uint64_t bytes,
-                        uint64_t alignment) -> llvm::Expected<RuntimePlannedRange> {
+  auto placeRange =
+      [&](uint64_t bytes,
+          uint64_t alignment) -> llvm::Expected<RuntimePlannedRange> {
     if (bytes == 0 || alignment == 0)
       return invalid("runtime child range has zero bytes or alignment");
     uint64_t offset = 0;
@@ -177,6 +174,30 @@ llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
       return range.takeError();
     plan.outputRanges.push_back(*range);
   }
+  std::map<uint64_t, std::pair<uint64_t, uint64_t>> cardWorkspaceRequirements;
+  for (const PackageEntrypointRecord *entry : entriesByLaunchSlot)
+    for (const TileEntryArgumentRecord &argument : entry->arguments)
+      if (const auto *workspace =
+              std::get_if<CardWorkspaceArgument>(&argument.reference)) {
+        auto [requirement, inserted] = cardWorkspaceRequirements.try_emplace(
+            workspace->resource,
+            std::make_pair(workspace->bytes, workspace->alignment));
+        if (!inserted &&
+            requirement->second !=
+                std::make_pair(workspace->bytes, workspace->alignment))
+          return invalid("runtime card workspace requirements disagree");
+      }
+  plan.cardWorkspaceRanges.reserve(cardWorkspaceRequirements.size());
+  uint64_t expectedCardWorkspace = 0;
+  for (const auto &[resource, requirement] : cardWorkspaceRequirements) {
+    if (resource != expectedCardWorkspace++)
+      return invalid("runtime card workspace IDs are not dense");
+    llvm::Expected<RuntimePlannedRange> range =
+        placeRange(requirement.first, requirement.second);
+    if (!range)
+      return range.takeError();
+    plan.cardWorkspaceRanges.push_back(*range);
+  }
   plan.tileRanges.reserve(entriesByLaunchSlot.size());
   for (const PackageEntrypointRecord *entry : entriesByLaunchSlot) {
     RuntimeEntryLocalRanges ranges;
@@ -191,8 +212,7 @@ llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
           return range.takeError();
         ranges.workspace = *range;
       } else if (const auto *profile =
-                     std::get_if<ProfileRecordArgument>(
-                         &argument.reference)) {
+                     std::get_if<ProfileRecordArgument>(&argument.reference)) {
         if (ranges.profileRecord)
           return invalid("runtime entry has more than one profile record");
         llvm::Expected<RuntimePlannedRange> range =
@@ -268,8 +288,8 @@ llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
         session.argumentAddresses.push_back(
             {RuntimeArgumentAddressBase::ProgramData,
              manifest.targetTensors[tensor->tensor.getValue()].fileOffset});
-      } else if (const auto *output = std::get_if<ExternalOutputArgument>(
-                     &argument.reference)) {
+      } else if (const auto *output =
+                     std::get_if<ExternalOutputArgument>(&argument.reference)) {
         session.argumentAddresses.push_back(
             {RuntimeArgumentAddressBase::Invocation,
              plan.outputRanges[output->port.getValue()].offset});
@@ -280,6 +300,13 @@ llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
         session.argumentAddresses.push_back(
             {RuntimeArgumentAddressBase::Invocation,
              plan.tileRanges[launchSlot].workspace->offset});
+      } else if (const auto *workspace =
+                     std::get_if<CardWorkspaceArgument>(&argument.reference)) {
+        if (workspace->resource >= plan.cardWorkspaceRanges.size())
+          return invalid("runtime card workspace range is missing");
+        session.argumentAddresses.push_back(
+            {RuntimeArgumentAddressBase::Invocation,
+             plan.cardWorkspaceRanges[workspace->resource].offset});
       } else if (std::holds_alternative<ProfileRecordArgument>(
                      argument.reference)) {
         if (!plan.tileRanges[launchSlot].profileRecord)

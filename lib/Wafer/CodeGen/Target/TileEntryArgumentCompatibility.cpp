@@ -21,7 +21,8 @@ findTileEntryArgumentOrderDifference(llvm::ArrayRef<TileEntryArgument> lhs,
       return TileEntryArgumentOrderDifference{index, "kind"};
     if (left.resourceIndex != right.resourceIndex)
       return TileEntryArgumentOrderDifference{index, "resource-index"};
-    if (left.access != right.access)
+    if (left.kind != TileEntryArgumentKind::CardWorkspace &&
+        left.access != right.access)
       return TileEntryArgumentOrderDifference{index, "access"};
     if (left.targetTensorMaterialization != right.targetTensorMaterialization)
       return TileEntryArgumentOrderDifference{index,

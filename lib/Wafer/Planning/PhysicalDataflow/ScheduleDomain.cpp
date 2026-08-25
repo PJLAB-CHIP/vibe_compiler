@@ -2,13 +2,16 @@
 
 #include "Wafer/Planning/PhysicalDataflow/ScheduleDomain.h"
 
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Target/Core/DirectDTE.h"
 
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
+#include <array>
 #include <functional>
 #include <map>
+#include <numeric>
 #include <set>
 #include <utility>
 
@@ -185,47 +188,130 @@ bool modesConflict(ResourceUseMode lhs, ResourceUseMode rhs) {
          rhs == ResourceUseMode::Write;
 }
 
-bool hasExactSPMConflict(const ScheduleDomainInput &input, const EventId &lhs,
+struct ResourceUseIndex {
+  explicit ResourceUseIndex(const ScheduleDomainInput &input) {
+    for (const PlannedResourceUse &use : input.resourceUses)
+      byEvent[use.event].push_back(&use);
+  }
+
+  std::map<EventId, std::vector<const PlannedResourceUse *>> byEvent;
+};
+
+bool hasExactSPMConflict(const ResourceUseIndex &index, const EventId &lhs,
                          const EventId &rhs) {
-  for (const PlannedResourceUse &left : input.resourceUses) {
-    if (!(left.event == lhs) || left.knowledge != ResourceKnowledge::Exact)
+  auto leftUses = index.byEvent.find(lhs);
+  auto rightUses = index.byEvent.find(rhs);
+  if (leftUses == index.byEvent.end() || rightUses == index.byEvent.end())
+    return false;
+  for (const PlannedResourceUse *left : leftUses->second) {
+    if (left->knowledge != ResourceKnowledge::Exact)
       continue;
-    const auto *leftRange = std::get_if<SPMRangeResource>(&left.resource);
+    const auto *leftRange = std::get_if<SPMRangeResource>(&left->resource);
     if (!leftRange)
       continue;
-    for (const PlannedResourceUse &right : input.resourceUses) {
-      if (!(right.event == rhs) || right.knowledge != ResourceKnowledge::Exact)
+    for (const PlannedResourceUse *right : rightUses->second) {
+      if (right->knowledge != ResourceKnowledge::Exact)
         continue;
-      const auto *rightRange = std::get_if<SPMRangeResource>(&right.resource);
+      const auto *rightRange = std::get_if<SPMRangeResource>(&right->resource);
       if (rightRange && rangesOverlap(*leftRange, *rightRange) &&
-          modesConflict(left.mode, right.mode))
+          modesConflict(left->mode, right->mode))
         return true;
     }
   }
   return false;
 }
 
-bool hasExactResourceConflict(const ScheduleDomainInput &input,
-                              const EventId &lhs, const EventId &rhs,
-                              llvm::ArrayRef<EventResourceBinding> bindings) {
-  if (hasExactSPMConflict(input, lhs, rhs))
-    return true;
-  for (const PlannedResourceUse &left : input.resourceUses) {
-    if (!(left.event == lhs) || left.knowledge != ResourceKnowledge::Exact)
-      continue;
-    for (const PlannedResourceUse &right : input.resourceUses) {
-      if (!(right.event == rhs) ||
-          right.knowledge != ResourceKnowledge::Exact ||
-          !(left.resource == right.resource))
+bool isRelevantTerminalObserver(const ScheduleDomainInput &input,
+                                const ResourceUseIndex &index,
+                                const EventId &issue, const EventId &observer) {
+  llvm::SmallVector<const SPMRangeResource *, 4> issueRanges;
+  auto issueUses = index.byEvent.find(issue);
+  if (issueUses != index.byEvent.end())
+    for (const PlannedResourceUse *use : issueUses->second)
+      if (use->knowledge == ResourceKnowledge::Exact)
+        if (const auto *range = std::get_if<SPMRangeResource>(&use->resource))
+          issueRanges.push_back(range);
+  if (issueRanges.empty())
+    return false;
+
+  if (observer.kind == PlannedEventKind::BufferRelease)
+    if (const auto *buffer = std::get_if<BufferEventAction>(&observer.action)) {
+      const bool selectedReuse =
+          llvm::any_of(input.buffers.versionBindings,
+                       [&](const auto &binding) {
+                         return binding.object == buffer->storageObject &&
+                                binding.kind == StorageBindingKind::Reuse;
+                       }) ||
+          llvm::any_of(input.buffers.slotFamilies,
+                       [&](const auto &family) {
+                         return llvm::is_contained(family.id.objects,
+                                                   buffer->storageObject);
+                       }) ||
+          llvm::any_of(input.buffers.orderRequirements,
+                       [&](const BufferOrderRequirement &requirement) {
+                         return llvm::any_of(
+                             input.buffers.versionBindings,
+                             [&](const auto &binding) {
+                               return binding.version == requirement.earlier &&
+                                      binding.object == buffer->storageObject;
+                             });
+                       });
+      if (!selectedReuse)
+        return false;
+      return llvm::any_of(issueRanges, [&](const SPMRangeResource *range) {
+        return range->object == buffer->storageObject;
+      });
+    }
+
+  if (observer.kind != PlannedEventKind::ObservableWrite)
+    return false;
+  const auto *observable = std::get_if<MovementEventAction>(&observer.action);
+  if (!observable)
+    return false;
+  for (const auto &[event, uses] : index.byEvent)
+    if (const auto *movement =
+            std::get_if<MovementEventAction>(&event.action)) {
+      if (!(movement->action == observable->action))
         continue;
-      if (std::holds_alternative<DTEReceiverFSMResource>(left.resource)) {
+      for (const PlannedResourceUse *use : uses) {
+        if (use->knowledge != ResourceKnowledge::Exact)
+          continue;
+        const auto *range = std::get_if<SPMRangeResource>(&use->resource);
+        if (range &&
+            llvm::any_of(issueRanges, [&](const SPMRangeResource *issueRange) {
+              return rangesOverlap(*issueRange, *range) &&
+                     modesConflict(ResourceUseMode::Write, use->mode);
+            }))
+          return true;
+      }
+    }
+  return false;
+}
+
+bool hasExactResourceConflict(const ResourceUseIndex &index, const EventId &lhs,
+                              const EventId &rhs,
+                              llvm::ArrayRef<EventResourceBinding> bindings) {
+  if (hasExactSPMConflict(index, lhs, rhs))
+    return true;
+  auto leftUses = index.byEvent.find(lhs);
+  auto rightUses = index.byEvent.find(rhs);
+  if (leftUses == index.byEvent.end() || rightUses == index.byEvent.end())
+    return false;
+  for (const PlannedResourceUse *left : leftUses->second) {
+    if (left->knowledge != ResourceKnowledge::Exact)
+      continue;
+    for (const PlannedResourceUse *right : rightUses->second) {
+      if (right->knowledge != ResourceKnowledge::Exact ||
+          !(left->resource == right->resource))
+        continue;
+      if (std::holds_alternative<DTEReceiverFSMResource>(left->resource)) {
         auto leftBinding = llvm::find_if(bindings, [&](const auto &binding) {
           return binding.event == lhs &&
-                 binding.instance.resource == left.resource;
+                 binding.instance.resource == left->resource;
         });
         auto rightBinding = llvm::find_if(bindings, [&](const auto &binding) {
           return binding.event == rhs &&
-                 binding.instance.resource == right.resource;
+                 binding.instance.resource == right->resource;
         });
         if (leftBinding != bindings.end() && rightBinding != bindings.end()) {
           if (leftBinding->instance.lane != rightBinding->instance.lane)
@@ -233,7 +319,7 @@ bool hasExactResourceConflict(const ScheduleDomainInput &input,
           return true;
         }
       }
-      if (modesConflict(left.mode, right.mode))
+      if (modesConflict(left->mode, right->mode))
         return true;
     }
   }
@@ -251,6 +337,16 @@ std::vector<CompletionPlacement> deriveCompletionPlacements(
   for (const ControlOrder &control : controlOrders)
     for (auto [index, event] : llvm::enumerate(control.events))
       positions.emplace(event, std::make_pair(&control.events, index));
+  ResourceUseIndex resourceUses(input);
+  std::map<Edge, bool> reachability;
+  auto reachesSelected = [&](const EventId &source,
+                             const EventId &destination) {
+    auto [entry, inserted] =
+        reachability.try_emplace({source, destination}, false);
+    if (inserted)
+      entry->second = reaches(source, destination, selectedEdges);
+    return entry->second;
+  };
 
   std::vector<CompletionPlacement> placements;
   for (const CompletionObligation &obligation : input.completionObligations) {
@@ -267,9 +363,13 @@ std::vector<CompletionPlacement> deriveCompletionPlacements(
            ++index) {
         if ((order[index].kind == PlannedEventKind::BufferRelease ||
              order[index].kind == PlannedEventKind::ObservableWrite) &&
-            reaches(obligation.completion, order[index], selectedEdges))
+            reachesSelected(obligation.completion, order[index]) &&
+            isRelevantTerminalObserver(input, resourceUses, obligation.issue,
+                                       order[index]))
           break;
-        if (!hasExactSPMConflict(input, obligation.issue, order[index]))
+        const bool exactConflict =
+            hasExactSPMConflict(resourceUses, obligation.issue, order[index]);
+        if (!exactConflict)
           continue;
         auto consumerWorker = selectedWorkers.find(order[index]);
         sameWorkerHandoff = consumerWorker != selectedWorkers.end() &&
@@ -298,14 +398,22 @@ std::vector<CompletionPlacement> deriveCompletionPlacements(
         if (eventStages.at(order[index]) !=
             eventStages.at(obligation.completion))
           break;
+        const bool reachableActualIssue =
+            reachesSelected(obligation.completion, order[index]) &&
+            (order[index].kind == PlannedEventKind::ComputeIssue ||
+             order[index].kind == PlannedEventKind::MovementIssue ||
+             order[index].kind == PlannedEventKind::LocalCombine);
+        if (reachableActualIssue)
+          break;
         const bool terminalObserver =
-            (order[index].kind == PlannedEventKind::LocalCombine ||
-             order[index].kind == PlannedEventKind::BufferRelease ||
+            (order[index].kind == PlannedEventKind::BufferRelease ||
              order[index].kind == PlannedEventKind::ObservableWrite) &&
-            reaches(obligation.completion, order[index], selectedEdges);
+            reachesSelected(obligation.completion, order[index]) &&
+            isRelevantTerminalObserver(input, resourceUses, obligation.issue,
+                                       order[index]);
         if (terminalObserver ||
-            hasExactResourceConflict(input, obligation.issue, order[index],
-                                     resourceBindings))
+            hasExactResourceConflict(resourceUses, obligation.issue,
+                                     order[index], resourceBindings))
           break;
         boundary = order[index];
       }
@@ -371,34 +479,26 @@ deriveReceiverFSMBindings(const ScheduleDomainInput &input,
   std::vector<EventResourceBinding> bindings;
   for (auto &[resource, intervals] : byReceiver) {
     llvm::sort(intervals, [](const Interval &lhs, const Interval &rhs) {
-      return lhs.issue < rhs.issue;
+      return std::tie(lhs.begin, lhs.end, lhs.issue) <
+             std::tie(rhs.begin, rhs.end, rhs.issue);
     });
-    std::vector<uint32_t> colors(intervals.size(), 0);
-    std::function<bool(size_t)> color = [&](size_t index) {
-      if (index == intervals.size())
-        return true;
+    std::vector<uint32_t> colors;
+    std::array<size_t, TargetDirectDTEResourceLimits::receiverFSMsPerTile>
+        laneEnds{};
+    colors.reserve(intervals.size());
+    for (const Interval &interval : intervals) {
+      std::optional<uint32_t> selected;
       for (uint32_t lane = 0;
-           lane < TargetDirectDTEResourceLimits::receiverFSMsPerTile; ++lane) {
-        bool available = true;
-        for (size_t previous = 0; previous < index; ++previous) {
-          const bool overlap =
-              intervals[previous].begin < intervals[index].end &&
-              intervals[index].begin < intervals[previous].end;
-          if (overlap && colors[previous] == lane) {
-            available = false;
-            break;
-          }
+           lane < TargetDirectDTEResourceLimits::receiverFSMsPerTile; ++lane)
+        if (laneEnds[lane] <= interval.begin) {
+          selected = lane;
+          break;
         }
-        if (!available)
-          continue;
-        colors[index] = lane;
-        if (color(index + 1))
-          return true;
-      }
-      return false;
-    };
-    if (!color(0))
-      return std::nullopt;
+      if (!selected)
+        return std::nullopt;
+      colors.push_back(*selected);
+      laneEnds[*selected] = interval.end;
+    }
     for (auto [interval, lane] : llvm::zip_equal(intervals, colors))
       bindings.push_back({interval.issue, ResourceInstanceId{resource, lane}});
   }
@@ -412,6 +512,14 @@ bool mandatoryReceiverFSMConflictsAreColorable(const ScheduleDomainInput &input,
     EventId issue;
     EventId completion;
   };
+  std::map<Edge, bool> reachability;
+  auto reachesHard = [&](const EventId &source, const EventId &destination) {
+    auto [entry, inserted] =
+        reachability.try_emplace({source, destination}, false);
+    if (inserted)
+      entry->second = reaches(source, destination, hard);
+    return entry->second;
+  };
   std::map<DTEReceiverFSMResource, std::vector<Interval>> byReceiver;
   for (const PlannedResourceUse &use : input.resourceUses)
     if (const auto *resource =
@@ -422,6 +530,8 @@ bool mandatoryReceiverFSMConflictsAreColorable(const ScheduleDomainInput &input,
     }
   for (auto &[resource, intervals] : byReceiver) {
     (void)resource;
+    if (intervals.size() <= TargetDirectDTEResourceLimits::receiverFSMsPerTile)
+      continue;
     llvm::sort(intervals, [](const Interval &lhs, const Interval &rhs) {
       return lhs.issue < rhs.issue;
     });
@@ -430,36 +540,132 @@ bool mandatoryReceiverFSMConflictsAreColorable(const ScheduleDomainInput &input,
     for (size_t left = 0; left < intervals.size(); ++left)
       for (size_t right = left + 1; right < intervals.size(); ++right) {
         const bool cannotPlaceLeftFirst =
-            reaches(intervals[right].issue, intervals[left].completion, hard);
+            reachesHard(intervals[right].issue, intervals[left].completion);
         const bool cannotPlaceRightFirst =
-            reaches(intervals[left].issue, intervals[right].completion, hard);
+            reachesHard(intervals[left].issue, intervals[right].completion);
         conflicts[left][right] = conflicts[right][left] =
             cannotPlaceLeftFirst && cannotPlaceRightFirst;
       }
-    std::vector<uint32_t> colors(intervals.size(), 0);
-    std::function<bool(size_t)> color = [&](size_t index) {
-      if (index == intervals.size())
-        return true;
-      for (uint32_t lane = 0;
-           lane < TargetDirectDTEResourceLimits::receiverFSMsPerTile; ++lane) {
-        bool available = true;
-        for (size_t previous = 0; previous < index; ++previous)
-          if (conflicts[index][previous] && colors[previous] == lane) {
-            available = false;
-            break;
+    constexpr size_t forbiddenCliqueSize =
+        TargetDirectDTEResourceLimits::receiverFSMsPerTile + 1;
+    std::function<bool(std::vector<size_t>, size_t)> hasForbiddenClique =
+        [&](std::vector<size_t> candidates, size_t depth) {
+          if (depth == forbiddenCliqueSize)
+            return true;
+          if (depth + candidates.size() < forbiddenCliqueSize)
+            return false;
+          while (!candidates.empty()) {
+            const size_t vertex = candidates.front();
+            candidates.erase(candidates.begin());
+            std::vector<size_t> next;
+            for (size_t candidate : candidates)
+              if (conflicts[vertex][candidate])
+                next.push_back(candidate);
+            if (hasForbiddenClique(std::move(next), depth + 1))
+              return true;
           }
-        if (!available)
-          continue;
-        colors[index] = lane;
-        if (color(index + 1))
-          return true;
-      }
-      return false;
-    };
-    if (!color(0))
+          return false;
+        };
+    std::vector<size_t> candidates(intervals.size());
+    std::iota(candidates.begin(), candidates.end(), size_t{0});
+    if (hasForbiddenClique(std::move(candidates), 0))
       return false;
   }
   return true;
+}
+
+std::optional<std::vector<EventId>>
+getFirstReceiverFeasibleControlOrder(const ScheduleDomainInput &input,
+                                     llvm::ArrayRef<EventId> events,
+                                     const std::set<Edge> &edges) {
+  std::set<EventId> members(events.begin(), events.end());
+  std::map<EventId, std::vector<DTEReceiverFSMResource>> starts;
+  std::map<EventId, std::vector<DTEReceiverFSMResource>> ends;
+  for (const PlannedResourceUse &use : input.resourceUses) {
+    const auto *resource = std::get_if<DTEReceiverFSMResource>(&use.resource);
+    if (!resource || use.knowledge != ResourceKnowledge::Exact || !use.until)
+      continue;
+    const bool hasStart = members.count(use.event);
+    const bool hasEnd = members.count(*use.until);
+    if (hasStart != hasEnd)
+      return std::nullopt;
+    if (!hasStart)
+      continue;
+    starts[use.event].push_back(*resource);
+    ends[*use.until].push_back(*resource);
+  }
+  if (starts.empty())
+    return getFirstTopologicalOrder(events, edges);
+
+  std::map<EventId, size_t> indegree;
+  std::map<EventId, std::set<EventId>> successors;
+  for (const EventId &event : members)
+    indegree.emplace(event, 0);
+  for (const Edge &edge : edges) {
+    if (!members.count(edge.first) || !members.count(edge.second))
+      continue;
+    if (successors[edge.first].insert(edge.second).second)
+      ++indegree[edge.second];
+  }
+
+  std::vector<EventId> order;
+  std::set<EventId> scheduled;
+  std::map<DTEReceiverFSMResource, uint32_t> active;
+  while (order.size() != members.size()) {
+    std::vector<EventId> ready;
+    for (const EventId &event : members)
+      if (!scheduled.count(event) && indegree[event] == 0)
+        ready.push_back(event);
+    llvm::sort(ready, [&](const EventId &lhs, const EventId &rhs) {
+      auto priority = [&](const EventId &event) {
+        if (!ends[event].empty())
+          return 0;
+        if (starts[event].empty())
+          return 1;
+        return 2;
+      };
+      return std::pair<int, EventId>{priority(lhs), lhs} <
+             std::pair<int, EventId>{priority(rhs), rhs};
+    });
+    std::optional<EventId> selected;
+    std::map<DTEReceiverFSMResource, uint32_t> selectedActive;
+    for (const EventId &event : ready) {
+      std::map<DTEReceiverFSMResource, uint32_t> nextActive = active;
+      bool valid = true;
+      for (const DTEReceiverFSMResource &resource : ends[event]) {
+        auto current = nextActive.find(resource);
+        if (current == nextActive.end() || current->second == 0) {
+          valid = false;
+          break;
+        }
+        --current->second;
+      }
+      if (!valid)
+        continue;
+      for (const DTEReceiverFSMResource &resource : starts[event])
+        if (++nextActive[resource] >
+            TargetDirectDTEResourceLimits::receiverFSMsPerTile) {
+          valid = false;
+          break;
+        }
+      if (!valid)
+        continue;
+      selected = event;
+      selectedActive = std::move(nextActive);
+      break;
+    }
+    if (!selected)
+      return std::nullopt;
+    active = std::move(selectedActive);
+    scheduled.insert(*selected);
+    order.push_back(*selected);
+    for (const EventId &successor : successors[*selected])
+      --indegree[successor];
+  }
+  return llvm::all_of(active,
+                      [](const auto &entry) { return entry.second == 0; })
+             ? std::optional<std::vector<EventId>>(std::move(order))
+             : std::nullopt;
 }
 
 } // namespace
@@ -498,6 +704,41 @@ std::optional<ScheduleCursor> ScheduleDomain::getInitialCursor() const {
       return std::nullopt;
     cursor.controlOrders.push_back(std::move(*order));
   }
+  return cursor;
+}
+
+std::optional<ScheduleCursor>
+ScheduleDomain::getReceiverFeasibleProposalCursor() const {
+  ScheduleCursor cursor;
+  cursor.workerIndices.assign(workers.size(), 0);
+  const std::set<Edge> hard = getHardEdges(input.hardDependencies);
+  for (const ResourceDomain &resource : resources) {
+    auto order = getFirstTopologicalOrder(resource.events, hard);
+    if (!order)
+      return std::nullopt;
+    cursor.resourceOrders.push_back(std::move(*order));
+  }
+  std::set<Edge> controlEdges = hard;
+  if (!addSelectedResourceEdges(cursor, controlEdges))
+    return std::nullopt;
+  std::vector<EventId> allEvents;
+  for (const PlannedEvent &event : input.events)
+    allEvents.push_back(event.id);
+  auto global =
+      getFirstReceiverFeasibleControlOrder(input, allEvents, controlEdges);
+  if (!global)
+    return std::nullopt;
+  for (const ControlDomain &control : controls) {
+    std::set<EventId> members(control.events.begin(), control.events.end());
+    std::vector<EventId> projected;
+    for (const EventId &event : *global)
+      if (members.count(event))
+        projected.push_back(event);
+    if (projected.size() != control.events.size())
+      return std::nullopt;
+    cursor.controlOrders.push_back(std::move(projected));
+  }
+  cursor.proposal = true;
   return cursor;
 }
 
@@ -636,16 +877,6 @@ ScheduleDomain::getCursor(const ClosedSchedulePlan &plan) const {
 
 ScheduleDomain::AdvanceResult
 ScheduleDomain::advance(ScheduleCursor &cursor) const {
-  for (size_t reverse = 0; reverse < workers.size(); ++reverse) {
-    const size_t index = workers.size() - reverse - 1;
-    if (++cursor.workerIndices[index] < workers[index].workers.size()) {
-      for (size_t reset = index + 1; reset < workers.size(); ++reset)
-        cursor.workerIndices[reset] = 0;
-      return {AdvanceKind::Advanced, {}};
-    }
-    cursor.workerIndices[index] = 0;
-  }
-
   std::set<Edge> hard = getHardEdges(input.hardDependencies);
   if (!addSelectedResourceEdges(cursor, hard))
     return {AdvanceKind::End, {}};
@@ -708,10 +939,41 @@ ScheduleDomain::advance(ScheduleCursor &cursor) const {
       return {AdvanceKind::End, {}};
     cursor.resourceOrders[index] = std::move(*first);
   }
+
+  for (size_t reverse = 0; reverse < workers.size(); ++reverse) {
+    const size_t index = workers.size() - reverse - 1;
+    if (++cursor.workerIndices[index] < workers[index].workers.size()) {
+      for (size_t reset = index + 1; reset < workers.size(); ++reset)
+        cursor.workerIndices[reset] = 0;
+      return {AdvanceKind::Advanced, {}};
+    }
+    cursor.workerIndices[index] = 0;
+  }
   return {AdvanceKind::End, {}};
 }
 
 ScheduleSuccessor ScheduleDomain::getFirstPlan() const {
+  if (firstPlan)
+    return {ScheduleSuccessorKind::Plan, firstPlan->first, firstPlan->second};
+  std::optional<ScheduleCursor> receiverProposal;
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "planning-algorithm", "schedule-domain", "receiver-feasible-proposal");
+    receiverProposal = getReceiverFeasibleProposalCursor();
+  }
+  if (receiverProposal) {
+    ScheduleCursor &proposal = *receiverProposal;
+    ClosedSchedulePlan plan = buildPlan(proposal);
+    bool accepted = false;
+    {
+      wafer::support::ScopedCompileTimingSpan timing(
+          "planning-algorithm", "schedule-domain", "validate-proposal");
+      accepted = contains(plan);
+    }
+    if (accepted)
+      return {ScheduleSuccessorKind::Plan, std::move(plan),
+              std::move(proposal)};
+  }
   std::optional<ScheduleCursor> initial = getInitialCursor();
   if (!initial)
     return {ScheduleSuccessorKind::End};
@@ -739,24 +1001,38 @@ ScheduleSuccessor ScheduleDomain::getFirstPlan() const {
 
 ScheduleSuccessor
 ScheduleDomain::getNextPlan(const ScheduleCursor &cursor) const {
-  if (!getCursor(buildPlan(cursor)))
+  ClosedSchedulePlan currentPlan = buildPlan(cursor);
+  if (!contains(currentPlan))
     return {ScheduleSuccessorKind::CompilerBug,
             {},
             {},
             "schedule cursor is outside the current domain"};
-  ScheduleCursor next = cursor;
+  ScheduleCursor next;
+  bool advanceBeforeCheck = true;
+  if (cursor.proposal) {
+    std::optional<ScheduleCursor> canonical = getInitialCursor();
+    if (!canonical)
+      return {ScheduleSuccessorKind::End};
+    next = std::move(*canonical);
+    advanceBeforeCheck = false;
+  } else {
+    next = cursor;
+  }
   uint64_t steps = 0;
   while (true) {
-    AdvanceResult advanced = advance(next);
-    if (advanced.kind == AdvanceKind::End)
-      return {ScheduleSuccessorKind::End};
-    if (advanced.kind == AdvanceKind::Indeterminate)
-      return {ScheduleSuccessorKind::Indeterminate,
-              {},
-              {},
-              std::move(advanced.detail)};
+    if (advanceBeforeCheck) {
+      AdvanceResult advanced = advance(next);
+      if (advanced.kind == AdvanceKind::End)
+        return {ScheduleSuccessorKind::End};
+      if (advanced.kind == AdvanceKind::Indeterminate)
+        return {ScheduleSuccessorKind::Indeterminate,
+                {},
+                {},
+                std::move(advanced.detail)};
+    }
+    advanceBeforeCheck = true;
     ClosedSchedulePlan plan = buildPlan(next);
-    if (contains(plan))
+    if (contains(plan) && !(plan == currentPlan))
       return {ScheduleSuccessorKind::Plan, std::move(plan), std::move(next)};
     if (++steps > limits.maxSuccessorSteps)
       return {ScheduleSuccessorKind::Indeterminate,
@@ -851,7 +1127,6 @@ ScheduleDomainResult buildScheduleDomain(ScheduleDomainInput input,
     return failed(ScheduleDomainFailureKind::ExactRejection,
                   "mandatory receiver FSM live ranges exceed the target "
                   "per-Tile limit");
-
   std::vector<ScheduleDomain::WorkerDomain> workers;
   for (PlannedEvent &event : input.events) {
     llvm::sort(event.workerDomain);
@@ -996,6 +1271,7 @@ ScheduleDomainResult buildScheduleDomain(ScheduleDomainInput input,
   if (first.getKind() != ScheduleSuccessorKind::Plan)
     return failed(ScheduleDomainFailureKind::BrokenContract,
                   "schedule domain failed to construct its first leaf");
+  domain.firstPlan.emplace(*first.getPlan(), *first.getCursor());
   return {std::move(domain), {}};
 }
 

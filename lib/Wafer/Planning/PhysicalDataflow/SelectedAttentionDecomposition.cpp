@@ -25,6 +25,7 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <tuple>
 #include <type_traits>
 
 namespace wafer::compiler::detail {
@@ -712,6 +713,8 @@ emitSelectedAttentionDecomposition(mlir::RewriterBase &rewriter,
   SelectedAttentionRootMaterialization result;
   result.root = description.root;
   std::map<AttentionActionId, size_t> actionMapping;
+  std::map<std::pair<AttentionWorkScopeId, AttentionOperandRole>, size_t>
+      operandMapping;
   std::map<AttentionValueId, size_t> valueMapping;
   std::map<AttentionScratchId, size_t> scratchMapping;
   auto recordAction = [&](AttentionActionId id,
@@ -731,6 +734,19 @@ emitSelectedAttentionDecomposition(mlir::RewriterBase &rewriter,
       if (!llvm::is_contained(materialization.structuredOperations, operation))
         materialization.structuredOperations.push_back(operation);
     insertedStructuredOperations.clear();
+    return true;
+  };
+  auto recordOperand = [&](AttentionWorkScopeId scope,
+                           AttentionOperandRole role, mlir::Value value) {
+    if (!value)
+      return false;
+    auto [position, inserted] = operandMapping.try_emplace(
+        std::make_pair(scope, role), result.operands.size());
+    if (inserted)
+      result.operands.push_back({scope, role, {}});
+    auto &occurrences = result.operands[position->second].occurrences;
+    if (!llvm::is_contained(occurrences, value))
+      occurrences.push_back(value);
     return true;
   };
   auto recordValue = [&](AttentionValueId id, mlir::Value value) {
@@ -925,6 +941,13 @@ emitSelectedAttentionDecomposition(mlir::RewriterBase &rewriter,
                    "selected attention operand pieces cannot be assembled");
       return mlir::failure();
     }
+    if (!recordOperand(scope, AttentionOperandRole::Query, *query) ||
+        (!temporalSplit &&
+         (!recordOperand(scope, AttentionOperandRole::Key, *key) ||
+          !recordOperand(scope, AttentionOperandRole::Value, *value) ||
+          (attention.getMask() &&
+           !recordOperand(scope, AttentionOperandRole::Mask, *mask)))))
+      return mlir::failure();
 
     auto emitScaleMask = [&](mlir::OpBuilder &builder, mlir::Value score,
                              mlir::Value selectedMask,
@@ -1140,6 +1163,11 @@ emitSelectedAttentionDecomposition(mlir::RewriterBase &rewriter,
               roles->keyValueReduction, keyValueOffsets, keyValueSizes);
         if (mlir::failed(blockKey) || mlir::failed(blockValue) ||
             (attention.getMask() && mlir::failed(blockMask)))
+          return mlir::failure();
+        if (!recordOperand(scope, AttentionOperandRole::Key, *blockKey) ||
+            !recordOperand(scope, AttentionOperandRole::Value, *blockValue) ||
+            (attention.getMask() &&
+             !recordOperand(scope, AttentionOperandRole::Mask, *blockMask)))
           return mlir::failure();
 
         mlir::FailureOr<llvm::SmallVector<int64_t, 6>> scoreShape =
@@ -1808,6 +1836,14 @@ emitSelectedAttentionDecomposition(mlir::RewriterBase &rewriter,
                "selected attention materialized undescribed lowering scratch");
     return mlir::failure();
   }
+  if (result.operands.size() != description.operands.size() ||
+      llvm::any_of(result.operands, [](const auto &operand) {
+        return operand.occurrences.empty();
+      })) {
+    setFailure(failureReason,
+               "selected attention omitted one planned operand occurrence");
+    return mlir::failure();
+  }
   if (!insertedStructuredOperations.empty()) {
     setFailure(failureReason,
                "selected attention created structured operations outside an "
@@ -1820,6 +1856,10 @@ emitSelectedAttentionDecomposition(mlir::RewriterBase &rewriter,
   llvm::sort(result.actions, [](const AttentionActionMaterialization &lhs,
                                 const AttentionActionMaterialization &rhs) {
     return lhs.id < rhs.id;
+  });
+  llvm::sort(result.operands, [](const AttentionOperandMaterialization &lhs,
+                                 const AttentionOperandMaterialization &rhs) {
+    return std::tie(lhs.scope, lhs.role) < std::tie(rhs.scope, rhs.role);
   });
   llvm::sort(result.values, [](const AttentionValueMaterialization &lhs,
                                const AttentionValueMaterialization &rhs) {

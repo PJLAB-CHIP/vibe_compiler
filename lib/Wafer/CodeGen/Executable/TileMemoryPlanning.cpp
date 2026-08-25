@@ -55,6 +55,38 @@ static bool hasDDROrTransportAssignments(mlir::ModuleOp module) {
   return found;
 }
 
+/// Bufferization may place every static scratch allocation at the beginning of
+/// a TileRegion block. For compiler-owned SPM this needlessly makes independent
+/// straight-line scratch intervals start together. Move each fresh static
+/// allocation to its first same-block use; allocations used from nested or
+/// different blocks retain their original dominance scope.
+static void sinkStaticSPMAllocationsToFirstUse(mlir::ModuleOp module) {
+  llvm::SmallVector<mlir::memref::AllocOp, 32> allocations;
+  module.walk([&](mlir::memref::AllocOp allocation) {
+    if (isWaferSPMMemRefType(allocation.getType()) &&
+        allocation.getDynamicSizes().empty() &&
+        allocation.getSymbolOperands().empty())
+      allocations.push_back(allocation);
+  });
+  for (mlir::memref::AllocOp allocation : allocations) {
+    mlir::Block *block = allocation->getBlock();
+    mlir::Operation *firstUse = nullptr;
+    bool sameBlock = true;
+    for (mlir::Operation *user : allocation.getResult().getUsers()) {
+      if (mlir::isa<mlir::memref::DeallocOp>(user))
+        continue;
+      if (user->getBlock() != block) {
+        sameBlock = false;
+        break;
+      }
+      if (!firstUse || user->isBeforeInBlock(firstUse))
+        firstUse = user;
+    }
+    if (sameBlock && firstUse && allocation->getNextNode() != firstUse)
+      allocation->moveBefore(firstUse);
+  }
+}
+
 } // namespace
 
 TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
@@ -287,6 +319,8 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
     recordFailure(TileMemoryPlanningFailureKind::Verification);
     return mlir::failure();
   }
+
+  sinkStaticSPMAllocationsToFirstUse(*module);
 
   if (mlir::failed(requireCurrentBufferRelations("selected structure input"))) {
     recordFailure(TileMemoryPlanningFailureKind::Contract);

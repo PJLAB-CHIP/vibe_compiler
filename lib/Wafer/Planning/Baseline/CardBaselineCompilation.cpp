@@ -231,6 +231,7 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
     mlir::FailureOr<MaterializedCardCandidate> materialized =
         materializeCardCandidate(
             tensorProgram, cardId, **analysis, candidatePlan,
+            SpatialDataflowMaterializationMode::IndependentDDRStages,
             baselineStatistics ? &candidateStatistics : nullptr, diagnostics);
     if (baselineStatistics)
       accumulateMaterializationStatistics(*baselineStatistics,

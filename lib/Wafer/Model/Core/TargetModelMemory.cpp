@@ -40,6 +40,7 @@ bool isInputRole(compiler::TileEntryArgumentKind kind) {
     return true;
   case compiler::TileEntryArgumentKind::ExternalOutput:
   case compiler::TileEntryArgumentKind::Workspace:
+  case compiler::TileEntryArgumentKind::CardWorkspace:
   case compiler::TileEntryArgumentKind::ProfileRecord:
   case compiler::TileEntryArgumentKind::TransportStatus:
     return false;
@@ -56,6 +57,7 @@ bool permitsWrite(compiler::TileEntryArgumentKind kind) {
     return false;
   case compiler::TileEntryArgumentKind::ExternalOutput:
   case compiler::TileEntryArgumentKind::Workspace:
+  case compiler::TileEntryArgumentKind::CardWorkspace:
   case compiler::TileEntryArgumentKind::ProfileRecord:
   case compiler::TileEntryArgumentKind::TransportStatus:
     return true;
@@ -72,6 +74,25 @@ bool permitsAccess(compiler::TileEntryArgumentKind kind,
     return permitsWrite(kind);
   case TargetModelAccess::ReadWrite:
     return permitsRead(kind) && permitsWrite(kind);
+  }
+  llvm_unreachable("unknown target model access");
+}
+
+bool permitsDeclaredAccess(compiler::TileEntryArgumentAccess declared,
+                           TargetModelAccess access) {
+  const bool canRead =
+      declared == compiler::TileEntryArgumentAccess::ReadOnly ||
+      declared == compiler::TileEntryArgumentAccess::ReadWrite;
+  const bool canWrite =
+      declared == compiler::TileEntryArgumentAccess::WriteOnly ||
+      declared == compiler::TileEntryArgumentAccess::ReadWrite;
+  switch (access) {
+  case TargetModelAccess::Read:
+    return canRead;
+  case TargetModelAccess::Write:
+    return canWrite;
+  case TargetModelAccess::ReadWrite:
+    return canRead && canWrite;
   }
   llvm_unreachable("unknown target model access");
 }
@@ -208,6 +229,8 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
     uint64_t byteSize = 0;
     uint64_t alignment = 0;
     std::vector<int64_t> launchSlots;
+    bool read = false;
+    bool write = false;
   };
   std::vector<ResourceFacts> resources;
   launchSlots.reserve(tileCount);
@@ -275,6 +298,12 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
               tileSlot(launchSlot, slot.ordinal) +
                   " disagrees with another slot for the same resource");
         facts->launchSlots.push_back(launchSlot);
+        facts->read |=
+            slot.access == compiler::TileEntryArgumentAccess::ReadOnly ||
+            slot.access == compiler::TileEntryArgumentAccess::ReadWrite;
+        facts->write |=
+            slot.access == compiler::TileEntryArgumentAccess::WriteOnly ||
+            slot.access == compiler::TileEntryArgumentAccess::ReadWrite;
       } else {
         const TargetModelInputBinding *input = nullptr;
         for (const TargetModelInputBinding &candidate : inputBindings)
@@ -302,10 +331,19 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
                std::vector<uint8_t>(static_cast<size_t>(byteSize), 0)});
         }
         resources.push_back(
-            {resource, slot, base, byteSize, alignment, {launchSlot}});
+            {resource,
+             slot,
+             base,
+             byteSize,
+             alignment,
+             {launchSlot},
+             slot.access == compiler::TileEntryArgumentAccess::ReadOnly ||
+                 slot.access == compiler::TileEntryArgumentAccess::ReadWrite,
+             slot.access == compiler::TileEntryArgumentAccess::WriteOnly ||
+                 slot.access == compiler::TileEntryArgumentAccess::ReadWrite});
       }
       slots.push_back({launchSlot, slot.ordinal, slot.kind, slot.resourceIndex,
-                       resource, base, byteSize, alignment});
+                       slot.access, resource, base, byteSize, alignment});
     }
   }
 
@@ -322,7 +360,12 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
   }
   for (const ResourceFacts &resource : resources) {
     const bool cardOwned = !resource.id.tileId.has_value();
-    if ((cardOwned && resource.launchSlots.size() != tileCount) ||
+    const bool cardWorkspace =
+        resource.slot.kind == compiler::TileEntryArgumentKind::CardWorkspace;
+    if ((cardWorkspace && (resource.launchSlots.size() < 2 || !resource.read ||
+                           !resource.write)) ||
+        (cardOwned && !cardWorkspace &&
+         resource.launchSlots.size() != tileCount) ||
         (!cardOwned && resource.launchSlots.size() != 1))
       return memoryError(
           TargetModelMemoryErrorCode::InvalidSlot,
@@ -409,7 +452,10 @@ llvm::Expected<TargetModelResolvedRange> InvocationAddressPlan::resolve(
   if (end > slotEnd)
     return memoryError(TargetModelMemoryErrorCode::CrossResource,
                        "DDR range crosses its ABI slot resource boundary");
-  if (!permitsAccess(containingStart->kind, access))
+  if (!permitsAccess(containingStart->kind, access) ||
+      (containingStart->kind ==
+           compiler::TileEntryArgumentKind::CardWorkspace &&
+       !permitsDeclaredAccess(containingStart->access, access)))
     return memoryError(
         TargetModelMemoryErrorCode::AccessDenied,
         tileSlot(containingStart->launchSlot, containingStart->slotOrdinal) +

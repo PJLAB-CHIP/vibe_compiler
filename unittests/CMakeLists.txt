@@ -31,6 +31,7 @@ add_executable(WaferUnitTests
   Target/Execution/TargetCallExecutionTest.cpp
   CodeGen/Target/TargetIdentityTest.cpp
   Planning/PhysicalDataflow/AttentionSpatialConstraintsTest.cpp
+  Planning/PhysicalDataflow/AttentionProductionClosureTest.cpp
   Planning/PhysicalDataflow/CanonicalAttentionWorkProjectionTest.cpp
   Planning/PhysicalDataflow/CanonicalSpatialAssignmentTest.cpp
   Planning/PhysicalDataflow/CanonicalRegionPlanTest.cpp
@@ -69,7 +70,6 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/SpatialDomainTest.cpp
   Planning/PhysicalDataflow/SpatialPlanTest.cpp
   Analysis/Executable/ProgramResourceVerificationTest.cpp
-  Planning/Search/TensorProgramAlternativeTest.cpp
   Program/ProgramDataTest.cpp
   Conversion/AttentionNormalizationTest.cpp
   Conversion/BidirectionalTilingTest.cpp

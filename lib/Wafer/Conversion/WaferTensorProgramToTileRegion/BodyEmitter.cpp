@@ -21,34 +21,38 @@ void setFailureReason(std::string *failureReason, llvm::StringRef reason) {
 
 void TileRegionEmissionRecorder::recordSelectedDDRStage(
     mlir::memref::AllocOp allocation, uint32_t producerNode,
-    unsigned producerResult) {
+    unsigned producerResult, StructuredResultIdentityKind producerResultKind) {
   if (!allocation)
     return;
   if (!llvm::any_of(output.selectedDDRStages, [&](const auto &relation) {
         return relation.allocation == allocation &&
                relation.producerNode == producerNode &&
-               relation.producerResult == producerResult;
+               relation.producerResult == producerResult &&
+               relation.producerResultKind == producerResultKind;
       }))
     output.selectedDDRStages.push_back(
-        {allocation, producerNode, producerResult});
+        {allocation, producerNode, producerResult, producerResultKind});
   // A selected DDR stage is an actual materialized result of its owning DAG
   // node. Keep that owner in the common current-buffer relation set so later
   // TileRegion-to-Instr scratch allocations can follow the explicit
   // store/load SSA path back to the same node.
   recordOperationResultBuffer(producerNode, producerResult,
-                              allocation.getResult());
+                              allocation.getResult(), producerResultKind);
 }
 
 void TileRegionEmissionRecorder::recordOperationResultBuffer(
-    uint32_t structuredNodeId, unsigned resultIndex, mlir::Value buffer) {
+    uint32_t structuredNodeId, unsigned resultIndex, mlir::Value buffer,
+    StructuredResultIdentityKind identityKind) {
   if (!buffer)
     return;
   auto &relations = output.materializedBuffers.operationResultBuffers;
   if (!llvm::any_of(relations, [&](const auto &relation) {
         return relation.structuredNodeId == structuredNodeId &&
-               relation.resultIndex == resultIndex && relation.buffer == buffer;
+               relation.resultIndex == resultIndex &&
+               relation.buffer == buffer &&
+               relation.identityKind == identityKind;
       }))
-    relations.push_back({structuredNodeId, resultIndex, buffer});
+    relations.push_back({structuredNodeId, resultIndex, buffer, identityKind});
 }
 
 void TileRegionEmissionRecorder::recordStructuredComputeOperation(
@@ -106,6 +110,17 @@ void TileRegionEmissionRecorder::recordOutputBuffer(unsigned outputIndex,
         return relation.outputIndex == outputIndex && relation.buffer == buffer;
       }))
     relations.push_back({outputIndex, buffer});
+}
+
+void TileRegionEmissionRecorder::recordCardDDRBuffer(int64_t resourceId,
+                                                     mlir::Value buffer) {
+  if (resourceId < 0 || !buffer)
+    return;
+  auto &relations = output.materializedBuffers.cardDDRBuffers;
+  if (!llvm::any_of(relations, [&](const auto &relation) {
+        return relation.resourceId == resourceId && relation.buffer == buffer;
+      }))
+    relations.push_back({resourceId, buffer});
 }
 
 std::optional<ComputeReduceKind>
@@ -217,6 +232,9 @@ TileRegionBodyEmitter::TileRegionBodyEmitter(
     auto &nodes = structuredNodeIds[mapping.operation];
     if (!llvm::is_contained(nodes, mapping.structuredNodeId))
       nodes.push_back(mapping.structuredNodeId);
+    if (!mapping.coupledComponentIndices.empty())
+      coupledComponentIndices.try_emplace(mapping.operation,
+                                          mapping.coupledComponentIndices);
   }
 }
 
@@ -272,8 +290,14 @@ TileRegionBodyEmitter::emit(TensorProgramScope scope,
   // region as read-only DDR boundaries exactly like source inputs; the
   // sibling structured producer's compute is never pulled into this scope.
   for (mlir::Value original : scope.getBoundaryArguments()) {
+    auto argument = mlir::cast<mlir::BlockArgument>(original);
+    auto cardDDR = scope.getFunction().getArgAttrOfType<CardDDRBindingAttr>(
+        argument.getArgNumber(), kWaferCardDDRBindingAttrName);
+    const bool readOnly = !cardDDR ||
+                          cardDDR.getAccess() == CardDDRAccess::None ||
+                          cardDDR.getAccess() == CardDDRAccess::Read;
     mlir::FailureOr<mlir::Value> boundary =
-        materializeDdrBoundary(original, original, /*readOnly=*/true, rewriter);
+        materializeDdrBoundary(original, original, readOnly, rewriter);
     if (mlir::failed(boundary))
       return mlir::failure();
     tileRegionInputs.push_back(*boundary);
@@ -937,6 +961,19 @@ TileRegionBodyEmitter::initializeBoundary(TensorProgramScope scope,
         argIndex < inputCount + scope.getOutputCount()) {
       writableExternalBuffers.insert(sourceArg);
       externalOutputIndices[sourceArg] = argIndex - inputCount;
+    } else if (argIndex >= inputCount + scope.getOutputCount()) {
+      auto cardDDR = scope.getFunction().getArgAttrOfType<CardDDRBindingAttr>(
+          argIndex, kWaferCardDDRBindingAttrName);
+      if (cardDDR) {
+        if (cardDDR.getResourceId() < 0)
+          return fail("card DDR boundary has no resource declaration");
+        if (cardDDR.getAccess() == CardDDRAccess::Write ||
+            cardDDR.getAccess() == CardDDRAccess::ReadWrite)
+          writableExternalBuffers.insert(sourceArg);
+        if (relationRecorder)
+          relationRecorder->recordCardDDRBuffer(cardDDR.getResourceId(),
+                                                tileArg);
+      }
     }
   }
   if (tileArgIndex != tileBlock.getNumArguments())
@@ -1156,6 +1193,15 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
       else
         buffers.erase(saved.value);
     }
+    auto relationResultIdentity = [&](unsigned resultNumber) {
+      auto selected = coupledComponentIndices.find(op);
+      return selected == coupledComponentIndices.end()
+                 ? std::pair(resultNumber,
+                             StructuredResultIdentityKind::OperationResult)
+                 : std::pair(
+                       selected->second[resultNumber],
+                       StructuredResultIdentityKind::CoupledReductionComponent);
+    };
     if (mlir::succeeded(result) && representation) {
       for (auto [resultNumber, value, layout] :
            llvm::enumerate(op->getResults(), representation->resultLayouts)) {
@@ -1181,9 +1227,12 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
             for (mlir::Value buffer :
                  {versions->second.tensor, versions->second.nTensor,
                   versions->second.cx, versions->second.nCx})
-              if (buffer)
+              if (buffer) {
+                auto [resultIndex, identityKind] =
+                    relationResultIdentity(resultNumber);
                 relationRecorder->recordOperationResultBuffer(
-                    current, resultNumber, buffer);
+                    current, resultIndex, buffer, identityKind);
+              }
         BufferVersions primary;
         switch (*layout) {
         case MemLayout::Tensor:
@@ -1201,9 +1250,12 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
         }
         buffers[value] = primary;
         if (relationRecorder)
-          for (uint32_t current : activeStructuredNodes)
-            relationRecorder->recordOperationResultBuffer(current, resultNumber,
-                                                          *selected);
+          for (uint32_t current : activeStructuredNodes) {
+            auto [resultIndex, identityKind] =
+                relationResultIdentity(resultNumber);
+            relationRecorder->recordOperationResultBuffer(
+                current, resultIndex, *selected, identityKind);
+          }
       }
     }
     if (mlir::succeeded(result)) {
@@ -1215,9 +1267,12 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
              {versions->second.tensor, versions->second.nTensor,
               versions->second.cx, versions->second.nCx})
           if (buffer)
-            for (uint32_t current : activeStructuredNodes)
+            for (uint32_t current : activeStructuredNodes) {
+              auto [resultIndex, identityKind] =
+                  relationResultIdentity(static_cast<unsigned>(resultNumber));
               relationRecorder->recordOperationResultBuffer(
-                  current, static_cast<unsigned>(resultNumber), buffer);
+                  current, resultIndex, buffer, identityKind);
+            }
       }
     }
     if (mlir::succeeded(result))

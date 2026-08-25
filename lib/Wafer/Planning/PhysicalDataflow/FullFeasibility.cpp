@@ -386,10 +386,11 @@ FullFeasibilityResult evaluateCompleteCandidate(
   if (statistics)
     ++statistics->candidateActualizations;
   mlir::FailureOr<MaterializedCardCandidate> materialized =
-      materializeCardCandidate(tensorProgram, problem.getCardId(),
-                               problem.getProgram(),
-                               prepared.candidate->materialization,
-                               /*statistics=*/nullptr, diagnostics);
+      materializeCardCandidate(
+          tensorProgram, problem.getCardId(), problem.getProgram(),
+          prepared.candidate->materialization,
+          SpatialDataflowMaterializationMode::JointDataflow,
+          /*statistics=*/nullptr, diagnostics);
   if (mlir::failed(materialized))
     return result(FullFeasibilityStatus::CompilerBug,
                   "complete candidate materialization failed");

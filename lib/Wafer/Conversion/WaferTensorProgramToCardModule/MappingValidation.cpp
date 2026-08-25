@@ -12,6 +12,8 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
+#include <map>
+
 namespace wafer::tensor_program_to_card_module {
 
 mlir::FailureOr<TileMaterializationPreparation>
@@ -172,8 +174,8 @@ prepareTileMaterialization(const TileMaterializationSourcePreparation &source,
             "query", "tensor-program-to-card-module",
             "derive-edge-materialization-facts");
         return deriveSpatialEdgeMaterializationFacts(
-            preparation.sourceProgram.getBody().front(),
-            mapping.edgeStrategies, mapping.operandDemands, failureReason);
+            preparation.sourceProgram.getBody().front(), mapping.edgeStrategies,
+            mapping.operandDemands, failureReason);
       }();
   if (mlir::failed(edgeFacts))
     return mlir::failure();
@@ -294,16 +296,91 @@ prepareTileMaterialization(const TileMaterializationSourcePreparation &source,
   llvm::DenseSet<int64_t> availableTileValues;
   for (TileId tileId : preparation.availableTiles)
     availableTileValues.insert(tileId.getValue());
+  llvm::DenseSet<int64_t> cardDDRResourceIds;
+  struct CardDDRWriterSignature {
+    mlir::Operation *producer = nullptr;
+    unsigned result = 0;
+    TileId source{0};
+    llvm::SmallVector<analysis::StaticRectangularIndexSet, 4> pieces;
+  };
+  std::map<int64_t, CardDDRWriterSignature> cardDDRWriters;
+  int64_t previousCardDDRResourceId = -1;
+  for (const CardDDRResource &resource : mapping.cardDDRResources) {
+    if (resource.resourceId < 0 ||
+        resource.resourceId <= previousCardDDRResourceId ||
+        !resource.tensorType || !resource.tensorType.hasStaticShape() ||
+        !cardDDRResourceIds.insert(resource.resourceId).second)
+      return failCardModuleValue<TileMaterializationPreparation>(
+          failureReason,
+          "card DDR resources must be ordered, unique, and statically typed");
+    previousCardDDRResourceId = resource.resourceId;
+  }
   for (const SpatialEdgeStrategy &strategy : mapping.edgeStrategies) {
     if (!availableTileValues.contains(strategy.destinationTile.getValue()) ||
         (strategy.action != SpatialEdgeAction::PeerFragments &&
          !availableTileValues.contains(strategy.sourceTile.getValue())))
       return failCardModuleValue<TileMaterializationPreparation>(
           failureReason, "card edge strategy names an unavailable Tile");
-    for (const SpatialEdgeFragment &fragment : strategy.fragments)
+    if ((strategy.action == SpatialEdgeAction::CardDDRTransfer) !=
+        strategy.cardDDRResource.has_value())
+      return failCardModuleValue<TileMaterializationPreparation>(
+          failureReason,
+          "card edge strategy has an inconsistent card DDR resource");
+    if (strategy.cardDDRResource &&
+        !cardDDRResourceIds.contains(*strategy.cardDDRResource))
+      return failCardModuleValue<TileMaterializationPreparation>(
+          failureReason, "card edge strategy names an unknown DDR resource");
+    std::map<int64_t, llvm::SmallVector<const SpatialEdgeFragment *, 4>>
+        fragmentsByCardDDRResource;
+    for (const SpatialEdgeFragment &fragment : strategy.fragments) {
       if (!availableTileValues.contains(fragment.sourceTile.getValue()))
         return failCardModuleValue<TileMaterializationPreparation>(
             failureReason, "card edge fragment names an unavailable Tile");
+      std::optional<int64_t> resource = fragment.cardDDRResource;
+      if (!resource && strategy.action == SpatialEdgeAction::CardDDRTransfer)
+        resource = strategy.cardDDRResource;
+      if ((fragment.kind == SpatialEdgeFragmentKind::CardDDR) !=
+          resource.has_value())
+        return failCardModuleValue<TileMaterializationPreparation>(
+            failureReason,
+            "card edge fragment has an inconsistent DDR resource");
+      if (!resource)
+        continue;
+      if (!cardDDRResourceIds.contains(*resource))
+        return failCardModuleValue<TileMaterializationPreparation>(
+            failureReason, "card edge fragment names an unknown DDR resource");
+      fragmentsByCardDDRResource[*resource].push_back(&fragment);
+    }
+    for (const auto &[resourceId, fragments] : fragmentsByCardDDRResource) {
+      CardDDRWriterSignature signature{strategy.producer,
+                                       strategy.producerResult,
+                                       fragments.front()->sourceTile,
+                                       {}};
+      for (const SpatialEdgeFragment *fragment : fragments) {
+        if (fragment->sourceTile != signature.source)
+          return failCardModuleValue<TileMaterializationPreparation>(
+              failureReason,
+              "one card DDR resource has several selected source Tiles");
+        signature.pieces.push_back({fragment->offsets, fragment->sizes});
+      }
+      llvm::sort(signature.pieces, [](const auto &lhs, const auto &rhs) {
+        return std::tie(lhs.offsets, lhs.sizes) <
+               std::tie(rhs.offsets, rhs.sizes);
+      });
+      auto [writer, inserted] =
+          cardDDRWriters.try_emplace(resourceId, signature);
+      if (!inserted && (writer->second.producer != signature.producer ||
+                        writer->second.result != signature.result ||
+                        writer->second.source != signature.source ||
+                        !llvm::equal(writer->second.pieces, signature.pieces,
+                                     [](const auto &lhs, const auto &rhs) {
+                                       return lhs.offsets == rhs.offsets &&
+                                              lhs.sizes == rhs.sizes;
+                                     })))
+        return failCardModuleValue<TileMaterializationPreparation>(
+            failureReason,
+            "one card DDR resource has inconsistent selected writers");
+    }
   }
 
   if (mapping.outputs.size() != preparation.outputDomains.size())

@@ -5,12 +5,15 @@
 
 #include "../Common/WaferIRVerification.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <cstdint>
+#include <map>
 #include <string>
 
 using namespace wafer;
@@ -156,6 +159,69 @@ mlir::LogicalResult CardModuleOp::verify() {
   for (TileId tileId : *available) {
     if (!seenTileIds.contains(tileId.getValue()))
       return emitOpError("is missing available tile_id ") << tileId.getValue();
+  }
+
+  std::map<int64_t, mlir::memref::GlobalOp> cardDDRResources;
+  for (mlir::memref::GlobalOp global :
+       getBody().front().getOps<mlir::memref::GlobalOp>()) {
+    auto resource = global->getAttrOfType<CardDDRResourceAttr>(
+        kWaferCardDDRResourceAttrName);
+    if (!resource)
+      continue;
+    auto type = global.getType();
+    if (resource.getResourceId() < 0 || !type || !type.hasStaticShape() ||
+        !isWaferDDRMemRefType(type) || global.getInitialValue())
+      return emitOpError(
+          "card DDR declaration must be external, static, and DDR-typed");
+    if (!cardDDRResources.try_emplace(resource.getResourceId(), global).second)
+      return emitOpError("card DDR resource_id must be unique: ")
+             << resource.getResourceId();
+  }
+  std::map<int64_t, size_t> bindingCounts;
+  for (TileModuleOp tile : getBody().front().getOps<TileModuleOp>()) {
+    std::map<int64_t, size_t> tileBindings;
+    mlir::LogicalResult valid = mlir::success();
+    tile.walk([&](mlir::func::FuncOp function) {
+      if (mlir::failed(valid))
+        return;
+      for (unsigned argument = 0; argument < function.getNumArguments();
+           ++argument) {
+        auto binding = function.getArgAttrOfType<CardDDRBindingAttr>(
+            argument, kWaferCardDDRBindingAttrName);
+        if (!binding)
+          continue;
+        auto resource = cardDDRResources.find(binding.getResourceId());
+        mlir::Operation *declaration =
+            mlir::SymbolTable::lookupSymbolIn(*this, binding.getResource());
+        auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(
+            function.getArgument(argument).getType());
+        if (resource == cardDDRResources.end() ||
+            declaration != resource->second.getOperation() || !tensorType ||
+            tensorType.getShape() != resource->second.getType().getShape() ||
+            tensorType.getElementType() !=
+                resource->second.getType().getElementType() ||
+            ++tileBindings[binding.getResourceId()] != 1) {
+          function.emitOpError(
+              "has an invalid or duplicate card DDR argument binding");
+          valid = mlir::failure();
+          return;
+        }
+      }
+    });
+    if (mlir::failed(valid))
+      return mlir::failure();
+    for (const auto &[resourceId, declaration] : cardDDRResources) {
+      (void)declaration;
+      if (tileBindings[resourceId] != 1)
+        return tile.emitOpError("must bind card DDR resource_id ")
+               << resourceId << " exactly once";
+      ++bindingCounts[resourceId];
+    }
+  }
+  for (const auto &[resourceId, declaration] : cardDDRResources) {
+    (void)declaration;
+    if (bindingCounts[resourceId] != available->size())
+      return emitOpError("card DDR resource binding domain is incomplete");
   }
 
   if (mlir::failed(verifyOnlyIdentifierAttribute(*this, getCardIdAttrName())))

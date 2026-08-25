@@ -67,6 +67,8 @@ llvm::StringRef stringifyProgramTensorRole(ProgramTensorRole role) {
 
 llvm::StringRef stringifyPackageAccessMode(PackageAccessMode access) {
   switch (access) {
+  case PackageAccessMode::None:
+    return "none";
   case PackageAccessMode::ReadOnly:
     return "read_only";
   case PackageAccessMode::WriteOnly:

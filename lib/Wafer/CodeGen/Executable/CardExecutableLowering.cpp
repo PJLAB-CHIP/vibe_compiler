@@ -108,11 +108,26 @@ formRuntimeLaunchContract(const ExecutionConfig &executionConfig,
   constexpr std::array prepareMain{RuntimeLaunchPhaseRole::Prepare,
                                    RuntimeLaunchPhaseRole::Main};
   bool requiresRuntimePrepare = false;
-  for (mlir::ModuleOp module : acceptedTileModules)
+  std::optional<uint64_t> cardDDRSlotsPerTile;
+  for (mlir::ModuleOp module : acceptedTileModules) {
+    uint64_t currentCardDDRSlots = 0;
+    module.walk([&](mlir::func::FuncOp function) {
+      for (unsigned argument = 0; argument < function.getNumArguments();
+           ++argument)
+        currentCardDDRSlots +=
+            static_cast<bool>(function.getArgAttrOfType<CardDDRBindingAttr>(
+                argument, kWaferCardDDRBindingAttrName));
+    });
+    if (cardDDRSlotsPerTile && *cardDDRSlotsPerTile != currentCardDDRSlots)
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "card DDR argument count differs across Tile entries");
+    cardDDRSlotsPerTile = currentCardDDRSlots;
     module.walk([&](mlir::Operation *operation) {
       if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(operation))
         requiresRuntimePrepare = true;
     });
+  }
 
   if (executionConfig.getTileCount() != 16)
     return llvm::createStringError(
@@ -132,7 +147,8 @@ formRuntimeLaunchContract(const ExecutionConfig &executionConfig,
   // for cluster launches, one transport-status slot after program-boundary
   // bindings have been fixed.
   const uint64_t possibleCompilerSlots =
-      2 + static_cast<uint64_t>(requiresRuntimePrepare);
+      2 + static_cast<uint64_t>(requiresRuntimePrepare) +
+      cardDDRSlotsPerTile.value_or(0);
   const KernelEntryABI entryABI =
       programSlotCount > directSlotsPerTile ||
               possibleCompilerSlots > directSlotsPerTile - programSlotCount

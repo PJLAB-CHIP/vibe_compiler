@@ -595,7 +595,9 @@ mlir::LogicalResult TileRegionBodyEmitter::convertPassthroughGeneric(
   mlir::Value result;
   if (inputTensorType == resultTensorType &&
       isIdentityMap(inputMap, resultTensorType.getRank())) {
-    result = builder.create<MoveCopyOp>(generic.getLoc(), resultType, *source)
+    result = builder
+                 .create<MoveCopyOp>(generic.getLoc(), resultType, *source,
+                                     CardDDRResourceAttr{})
                  .getResult();
   } else if (inputTensorType.getRank() == resultTensorType.getRank()) {
     llvm::SmallVector<int64_t, 4> permutation(resultTensorType.getRank(), -1);
@@ -847,14 +849,14 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTwoWayConcatGeneric(
       generic.getLoc(), *first, seed.getResult(),
       mlir::DenseI64ArrayAttr::get(context, offsets),
       mlir::DenseI64ArrayAttr::get(context, firstSizes),
-      mlir::DenseI64ArrayAttr::get(context, strides));
+      mlir::DenseI64ArrayAttr::get(context, strides), CardDDRResourceAttr{});
 
   offsets[concatAxis] = firstType.getDimSize(concatAxis);
   builder.create<MoveInsertSliceOp>(
       generic.getLoc(), *second, seed.getResult(),
       mlir::DenseI64ArrayAttr::get(context, offsets),
       mlir::DenseI64ArrayAttr::get(context, secondSizes),
-      mlir::DenseI64ArrayAttr::get(context, strides));
+      mlir::DenseI64ArrayAttr::get(context, strides), CardDDRResourceAttr{});
 
   record(generic->getResult(0), MemLayout::Tensor, seed.getResult());
   return mlir::success();

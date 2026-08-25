@@ -361,9 +361,11 @@ TEST(ScheduleDomainTest, BufferReleasePreventsSameWorkerCompletionElision) {
   ScheduleDomainInput input = makeInput(0, /*workerCapable=*/false);
   input.events.clear();
   input.structure.scopes.clear();
+  StorageObjectId object = input.buffers.storageObjects.front().id;
   EventId firstIssue = makeEvent(70, PlannedEventKind::ComputeIssue);
   EventId firstCompletion = makeEvent(70, PlannedEventKind::Completion);
-  EventId release = makeEvent(70, PlannedEventKind::BufferRelease);
+  EventId release{BufferEventAction{object, object},
+                  PlannedEventKind::BufferRelease};
   EventId secondIssue = makeEvent(71, PlannedEventKind::ComputeIssue);
   EventId secondCompletion = makeEvent(71, PlannedEventKind::Completion);
   input.events = {
@@ -386,7 +388,12 @@ TEST(ScheduleDomainTest, BufferReleasePreventsSameWorkerCompletionElision) {
   input.completionObligations = {
       {firstIssue, firstCompletion, CompletionProtocol::NCCParticipant, 0},
       {secondIssue, secondCompletion, CompletionProtocol::NCCParticipant, 0}};
-  StorageObjectId object = input.buffers.storageObjects.front().id;
+  const PhysicalVersionId earlier = std::get<PhysicalVersionId>(object.origin);
+  const PhysicalVersionId later{ExecutionResultValueId{makeExecution(71), 0}};
+  input.buffers.versionBindings.push_back(
+      {later, object, StorageBindingKind::Reuse});
+  input.buffers.orderRequirements.push_back(
+      {earlier, later, BufferOrderKind::ReuseAfterCompletion});
   SPMRangeResource range{object, {{{0, 0, 0}, {2, 1025, 128}}}};
   input.resourceUses = {{firstIssue, range, ResourceUseMode::Write,
                          ResourceIntervalKind::IssueToCompletion,

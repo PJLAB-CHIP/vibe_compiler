@@ -52,8 +52,7 @@ namespace mlir::OpTrait::wafer {
 
 template <typename ConcreteType>
 class NoSchemaFreeSemanticAttrs
-    : public mlir::OpTrait::TraitBase<ConcreteType,
-                                     NoSchemaFreeSemanticAttrs> {
+    : public mlir::OpTrait::TraitBase<ConcreteType, NoSchemaFreeSemanticAttrs> {
 public:
   static mlir::LogicalResult verifyTrait(mlir::Operation *operation) {
     return ::wafer::verifyNoSchemaFreeSemanticAttributes(operation);
@@ -69,6 +68,11 @@ namespace wafer {
 
 inline constexpr char kWaferSPMOffsetAttrName[] = "wafer.spm.offset";
 inline constexpr char kWaferDDROffsetAttrName[] = "wafer.ddr.offset";
+inline constexpr char kWaferCardDDRBindingAttrName[] = "wafer.card_ddr.binding";
+inline constexpr char kWaferCardDDRResourceAttrName[] =
+    "wafer.card_ddr.resource";
+inline constexpr char kWaferCardDDRMovementAttrName[] =
+    "wafer.card_ddr.movement";
 inline constexpr int64_t kWaferSPMBankLineBytes = 256;
 
 /// Typed parameter contract shared by instruction verification and consumers

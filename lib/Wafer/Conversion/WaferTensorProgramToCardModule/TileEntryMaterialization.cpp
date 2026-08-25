@@ -13,15 +13,36 @@
 
 namespace wafer::tensor_program_to_card_module {
 
+static llvm::StringRef stringifyEdgeAction(SpatialEdgeAction action) {
+  switch (action) {
+  case SpatialEdgeAction::RecursiveProducerTiling:
+    return "recursive-producer-tiling";
+  case SpatialEdgeAction::LocalShardResidency:
+    return "local-shard-residency";
+  case SpatialEdgeAction::PeerFragments:
+    return "peer-fragments";
+  case SpatialEdgeAction::SpillReload:
+    return "spill-reload";
+  case SpatialEdgeAction::Recompute:
+    return "recompute";
+  case SpatialEdgeAction::RegionCut:
+    return "region-cut";
+  case SpatialEdgeAction::CardDDRTransfer:
+    return "card-ddr-transfer";
+  }
+  llvm_unreachable("unknown spatial edge action");
+}
+
 void collectTileOutputShards(
     const TileMaterializationPreparation &preparation, TileId tileId,
     llvm::SmallVectorImpl<SpatialOutputShard> &tileShards,
     llvm::SmallVectorImpl<int64_t> &coveredShardExtents) {
   for (auto [outputIndex, output] :
        llvm::enumerate(preparation.outputMappings)) {
-    auto selected = llvm::find_if(
-        output->shards,
-        [tileId](const OutputTileShard &shard) { return shard.tile == tileId; });
+    auto selected =
+        llvm::find_if(output->shards, [tileId](const OutputTileShard &shard) {
+          return shard.tile == tileId;
+        });
     if (selected == output->shards.end())
       continue;
     const llvm::SmallVector<int64_t, 4> &domain =
@@ -150,8 +171,10 @@ static mlir::LogicalResult verifyOneStructuredRootPerRegion(
   unsigned regionOrdinal = 0;
   llvm::SmallVector<uint32_t, 4> violatingNodes;
   llvm::SmallVector<uint32_t, 4> violatingRootGroups;
+  llvm::SmallVector<std::string, 4> violatingOperations;
   llvm::SmallVector<uint32_t, 4> nodes;
   llvm::SmallVector<uint32_t, 4> rootGroups;
+  llvm::SmallVector<std::string, 4> operations;
   entry.walk([&](TileRegionOp region) {
     if (contractViolated || missingRootGroup ||
         region->getParentOfType<TileRegionOp>())
@@ -159,6 +182,7 @@ static mlir::LogicalResult verifyOneStructuredRootPerRegion(
     const unsigned currentRegion = regionOrdinal++;
     nodes.clear();
     rootGroups.clear();
+    operations.clear();
     for (const StructuredOperationEmissionRelation &relation :
          tileRelations.operationEmissions) {
       mlir::Operation *operation = relation.operation;
@@ -172,6 +196,7 @@ static mlir::LogicalResult verifyOneStructuredRootPerRegion(
         }
         if (!llvm::is_contained(rootGroups, root->second))
           rootGroups.push_back(root->second);
+        operations.push_back(operation->getName().getStringRef().str());
       }
     }
     if (nodes.empty())
@@ -181,6 +206,7 @@ static mlir::LogicalResult verifyOneStructuredRootPerRegion(
       violatingRegion = currentRegion;
       violatingNodes = nodes;
       violatingRootGroups = rootGroups;
+      violatingOperations = operations;
     }
   });
   if (missingRootGroup)
@@ -192,13 +218,15 @@ static mlir::LogicalResult verifyOneStructuredRootPerRegion(
     llvm::raw_string_ostream diagnostic(detail);
     diagnostic << "carrier-boundary materialization on Tile "
                << tileId.getValue() << " produced compute region "
-               << violatingRegion << " with "
-               << violatingRootGroups.size() << " semantic roots";
+               << violatingRegion << " with " << violatingRootGroups.size()
+               << " semantic roots";
     if (!violatingNodes.empty()) {
       diagnostic << "; structured_nodes=[";
       llvm::interleaveComma(violatingNodes, diagnostic);
       diagnostic << "]; root_groups=[";
       llvm::interleaveComma(violatingRootGroups, diagnostic);
+      diagnostic << "]; operations=[";
+      llvm::interleaveComma(violatingOperations, diagnostic);
       diagnostic << ']';
     }
     diagnostic << "; exactly one is required; entry carries "
@@ -224,8 +252,27 @@ lowerBaselineTileEntry(const TileMaterializationPreparation &preparation,
     return entry;
   if (mlir::failed(verifyOneStructuredRootPerRegion(
           *entry, tileId, tileRelations, preparation.operationRootGroups,
-          failureReason)))
+          failureReason))) {
+    if (failureReason) {
+      llvm::raw_string_ostream diagnostic(*failureReason);
+      diagnostic << "; incident_edge_actions=[";
+      bool first = true;
+      for (const SpatialEdgeStrategy &strategy : mapping.edgeStrategies) {
+        if (!isSpatialEdgeStrategyIncidentOnTile(strategy, tileId))
+          continue;
+        if (!first)
+          diagnostic << ';';
+        first = false;
+        diagnostic << stringifyEdgeAction(strategy.action) << ':'
+                   << strategy.producer->getName() << "->"
+                   << strategy.consumer->getName()
+                   << ":destination=" << strategy.destinationTile.getValue()
+                   << ":fragments=" << strategy.fragments.size();
+      }
+      diagnostic << ']';
+    }
     return mlir::failure();
+  }
   return entry;
 }
 

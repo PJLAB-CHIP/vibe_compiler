@@ -49,8 +49,8 @@ std::optional<uint64_t> getIntersectionVolume(const StaticBoxRef &lhs,
       lhs.sizes.size() != rhs.sizes.size())
     return std::nullopt;
   uint64_t result = 1;
-  for (auto [lhsOffset, lhsSize, rhsOffset, rhsSize] : llvm::zip_equal(
-           lhs.offsets, lhs.sizes, rhs.offsets, rhs.sizes)) {
+  for (auto [lhsOffset, lhsSize, rhsOffset, rhsSize] :
+       llvm::zip_equal(lhs.offsets, lhs.sizes, rhs.offsets, rhs.sizes)) {
     int64_t lhsEnd = 0;
     int64_t rhsEnd = 0;
     if (llvm::AddOverflow(lhsOffset, lhsSize, lhsEnd) ||
@@ -86,7 +86,8 @@ validateStrategyDemand(const SpatialEdgeStrategy &strategy,
     return mlir::failure();
   }
   llvm::SmallVector<StaticBoxRef, 16> pieces;
-  if (strategy.action == SpatialEdgeAction::PeerFragments) {
+  if (strategy.action == SpatialEdgeAction::PeerFragments ||
+      strategy.action == SpatialEdgeAction::CardDDRTransfer) {
     if (strategy.fragments.size() > limits.maxRectangularPieces) {
       setFailureReason(failureReason,
                        "selected carrier fragment count exceeds work limit");
@@ -107,8 +108,8 @@ validateStrategyDemand(const SpatialEdgeStrategy &strategy,
   for (const analysis::StaticRectangularIndexSet &box :
        normalizedRequired->getBoxes()) {
     std::optional<uint64_t> volume = getBoxVolume({box.offsets, box.sizes});
-    if (!volume || requiredVolume >
-                       std::numeric_limits<uint64_t>::max() - *volume)
+    if (!volume ||
+        requiredVolume > std::numeric_limits<uint64_t>::max() - *volume)
       return mlir::failure();
     requiredVolume += *volume;
   }
@@ -116,15 +117,16 @@ validateStrategyDemand(const SpatialEdgeStrategy &strategy,
   for (const StaticBoxRef &piece : pieces) {
     std::optional<uint64_t> pieceVolume = getBoxVolume(piece);
     if (!pieceVolume) {
-      setFailureReason(failureReason,
-                       "dependent fragment extends outside its consumer demand");
+      setFailureReason(
+          failureReason,
+          "dependent fragment extends outside its consumer demand");
       return mlir::failure();
     }
     uint64_t insideVolume = 0;
     for (const analysis::StaticRectangularIndexSet &required :
          normalizedRequired->getBoxes()) {
-      std::optional<uint64_t> overlap = getIntersectionVolume(
-          piece, {required.offsets, required.sizes});
+      std::optional<uint64_t> overlap =
+          getIntersectionVolume(piece, {required.offsets, required.sizes});
       if (!overlap) {
         setFailureReason(
             failureReason,
@@ -136,8 +138,9 @@ validateStrategyDemand(const SpatialEdgeStrategy &strategy,
       insideVolume += *overlap;
     }
     if (insideVolume != *pieceVolume) {
-      setFailureReason(failureReason,
-                       "dependent fragment extends outside its consumer demand");
+      setFailureReason(
+          failureReason,
+          "dependent fragment extends outside its consumer demand");
       return mlir::failure();
     }
     if (coveredVolume > std::numeric_limits<uint64_t>::max() - *pieceVolume)
@@ -147,8 +150,7 @@ validateStrategyDemand(const SpatialEdgeStrategy &strategy,
 
   if (pieces.front().offsets.empty()) {
     if (pieces.size() != 1) {
-      setFailureReason(failureReason,
-                       "zero-rank carrier domain is duplicated");
+      setFailureReason(failureReason, "zero-rank carrier domain is duplicated");
       return mlir::failure();
     }
   } else {
@@ -187,7 +189,8 @@ validateStrategyDemand(const SpatialEdgeStrategy &strategy,
         if (*overlap != 0) {
           setFailureReason(
               failureReason,
-              strategy.action == SpatialEdgeAction::PeerFragments
+              strategy.action == SpatialEdgeAction::PeerFragments ||
+                      strategy.action == SpatialEdgeAction::CardDDRTransfer
                   ? "dependent fragments overlap within one consumer demand"
                   : "selected producer domain overlaps itself");
           return mlir::failure();
@@ -197,7 +200,9 @@ validateStrategyDemand(const SpatialEdgeStrategy &strategy,
   }
   if (coveredVolume != requiredVolume) {
     setFailureReason(failureReason,
-                     strategy.action == SpatialEdgeAction::PeerFragments
+                     strategy.action == SpatialEdgeAction::PeerFragments ||
+                             strategy.action ==
+                                 SpatialEdgeAction::CardDDRTransfer
                          ? "dependent fragments do not exactly cover the "
                            "consumer demand"
                          : "selected producer domain differs from the exact "
@@ -220,10 +225,13 @@ bool wafer::isSpatialEdgeStrategyIncidentOnTile(
     const SpatialEdgeStrategy &strategy, TileId tile) {
   if (strategy.destinationTile == tile)
     return true;
+  if (strategy.action == SpatialEdgeAction::CardDDRTransfer)
+    return strategy.sourceTile == tile;
   if (strategy.action != SpatialEdgeAction::PeerFragments)
     return false;
   return llvm::any_of(strategy.fragments, [&](const SpatialEdgeFragment &item) {
-    return item.kind == SpatialEdgeFragmentKind::Peer &&
+    return (item.kind == SpatialEdgeFragmentKind::Peer ||
+            item.kind == SpatialEdgeFragmentKind::CardDDR) &&
            item.sourceTile == tile;
   });
 }
@@ -244,10 +252,9 @@ wafer::deriveSpatialEdgeMaterializationFacts(
       dependencies;
   for (const analysis::DependencyDemand &demand : operandDemands)
     if (!dependencies
-             .try_emplace(
-                 std::make_pair(demand.consumerOperation,
-                                demand.consumerOperand),
-                 &demand)
+             .try_emplace(std::make_pair(demand.consumerOperation,
+                                         demand.consumerOperand),
+                          &demand)
              .second) {
       setFailureReason(failureReason,
                        "grouped exact-demand dependency is duplicated");

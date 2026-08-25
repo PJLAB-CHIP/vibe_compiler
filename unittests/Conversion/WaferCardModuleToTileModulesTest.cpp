@@ -100,10 +100,12 @@ module attributes {test.module_attribute = "preserved"} {
   });
   ASSERT_NE(constantTen, nullptr);
   ASSERT_NE(constantTwenty, nullptr);
+  wafer::StructuredMaterializationRelations relations;
+  relations.operationEmissions = {{7, constantTen}, {9, constantTwenty}};
 
   std::string failureReason;
-  auto tileModules =
-      wafer::splitCardModuleIntoTileModules(std::move(source), &failureReason);
+  auto tileModules = wafer::splitCardModuleIntoTileModules(
+      std::move(source), &failureReason, &relations);
 
   ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
   ASSERT_EQ(tileModules->size(), 2u);
@@ -133,10 +135,22 @@ module attributes {test.module_attribute = "preserved"} {
   ASSERT_EQ(tileOneConstants.size(), 1u);
   EXPECT_EQ(tileZeroConstants.front(), 10);
   EXPECT_EQ(tileOneConstants.front(), 20);
-  EXPECT_TRUE((*tileModules)[0].module->getOperation()->isProperAncestor(
-      constantTen));
+  EXPECT_TRUE(
+      (*tileModules)[0].module->getOperation()->isProperAncestor(constantTen));
   EXPECT_TRUE((*tileModules)[1].module->getOperation()->isProperAncestor(
       constantTwenty));
+  ASSERT_EQ(
+      (*tileModules)[0].materializationRelations.operationEmissions.size(), 1u);
+  ASSERT_EQ(
+      (*tileModules)[1].materializationRelations.operationEmissions.size(), 1u);
+  EXPECT_EQ((*tileModules)[0]
+                .materializationRelations.operationEmissions.front()
+                .structuredNodeId,
+            7u);
+  EXPECT_EQ((*tileModules)[1]
+                .materializationRelations.operationEmissions.front()
+                .structuredNodeId,
+            9u);
 }
 
 TEST(WaferCardModuleToTileModulesTest, RequiresExactlyOneCardModule) {

@@ -3,6 +3,7 @@
 #include "Wafer/Planning/PhysicalDataflow/EventGraph.h"
 #include "Wafer/Planning/PhysicalDataflow/ExecutionStructureDomain.h"
 
+#include "TestSupport/Planning/CanonicalPlanningTestSupport.h"
 #include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/InitWaferDialects.h"
@@ -35,6 +36,22 @@ ExactIndexSet box(llvm::ArrayRef<int64_t> sizes) {
                                       llvm::SmallVector<int64_t, 4>(sizes)};
   return ExactIndexSet(std::move(*result.set), ExactIndexSetForm::BoxUnion,
                        {rectangle});
+}
+
+ExactIndexSet boxUnion(llvm::ArrayRef<StaticRectangularIndexSet> rectangles) {
+  EXPECT_FALSE(rectangles.empty());
+  IndexSetResult first = IndexRelation::staticRectangularDomain(
+      rectangles.front().offsets, rectangles.front().sizes);
+  EXPECT_TRUE(first.isExact()) << first.reason;
+  mlir::presburger::PresburgerSet combined = std::move(*first.set);
+  for (const StaticRectangularIndexSet &rectangle : rectangles.drop_front()) {
+    IndexSetResult next = IndexRelation::staticRectangularDomain(
+        rectangle.offsets, rectangle.sizes);
+    EXPECT_TRUE(next.isExact()) << next.reason;
+    combined.unionInPlace(*next.set);
+  }
+  return ExactIndexSet(std::move(combined), ExactIndexSetForm::BoxUnion,
+                       rectangles);
 }
 
 struct EventInputs {
@@ -299,13 +316,13 @@ TEST(EventGraphTest, AlignedAndRaggedChainHasAllAndOnlyTypedFacts) {
             graph.getHardDependencies(),
             EventDependency{issue, completion,
                             EventDependencyReason::Completion}));
-    EventId combineIssue{
-        MovementEventAction{inputs.peerAction,
-                            MovementEventPhase::LocalCombine, 0},
-        PlannedEventKind::LocalCombine};
+    EventId combineIssue{MovementEventAction{inputs.peerAction,
+                                             MovementEventPhase::LocalCombine,
+                                             0},
+                         PlannedEventKind::LocalCombine};
     EventId combineCompletion{
-        MovementEventAction{inputs.peerAction,
-                            MovementEventPhase::LocalCombine, 0},
+        MovementEventAction{inputs.peerAction, MovementEventPhase::LocalCombine,
+                            0},
         PlannedEventKind::Completion};
     EXPECT_TRUE(llvm::is_contained(
         graph.getHardDependencies(),
@@ -316,6 +333,78 @@ TEST(EventGraphTest, AlignedAndRaggedChainHasAllAndOnlyTypedFacts) {
         CompletionObligation{combineIssue, combineCompletion,
                              CompletionProtocol::NCCParticipant, 0}));
   }
+}
+
+TEST(EventGraphTest,
+     MultiPieceCardTransferUsesOneExactPhaseWithoutPerPieceCompletion) {
+  mlir::DialectRegistry registry;
+  registerWaferCoreDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  EventInputs inputs = makeInputs(context, /*extent=*/1025);
+  inputs.movement.plan.peerGraphs.clear();
+  const llvm::SmallVector<StaticRectangularIndexSet, 2> pieces{
+      {{0, 0, 0}, {2, 512, 128}}, {{0, 512, 0}, {2, 513, 128}}};
+  for (MovementResourceDescription &resource : inputs.movement.resources)
+    if (resource.action == inputs.peerAction)
+      resource.exactDomain = boxUnion(pieces);
+  for (StorageResourceDescription &resource : inputs.storage.resources)
+    if (resource.object ==
+            StorageObjectId{StorageObjectOrigin{inputs.producerOutput}} ||
+        resource.object ==
+            StorageObjectId{StorageObjectOrigin{inputs.transferred}})
+      resource.residentDomain = boxUnion(pieces);
+
+  EventGraphBuildResult result = buildEventGraph(
+      CardId(0), inputs.regions, inputs.temporal, inputs.serialized,
+      inputs.movement, inputs.storage, inputs.storage.plan, inputs.contracts);
+  ASSERT_TRUE(result.succeeded())
+      << (result.failure ? result.failure->detail : "");
+  const EventGraph &graph = *result.graph;
+  auto phaseEvent = [&](MovementEventPhase phase, PlannedEventKind kind,
+                        uint32_t payloadSlice) {
+    return EventId{MovementEventAction{inputs.peerAction, phase, payloadSlice},
+                   kind};
+  };
+  const EventId storeIssue = phaseEvent(MovementEventPhase::DDRStore,
+                                        PlannedEventKind::MovementIssue, 0);
+  const EventId storeCompletion =
+      phaseEvent(MovementEventPhase::DDRStore, PlannedEventKind::Completion, 0);
+  const EventId loadIssue = phaseEvent(MovementEventPhase::DDRLoad,
+                                       PlannedEventKind::MovementIssue, 0);
+  auto hasEvent = [&](const EventId &event) {
+    return llvm::any_of(graph.getEvents(), [&](const PlannedEvent &candidate) {
+      return candidate.id == event;
+    });
+  };
+  EXPECT_TRUE(hasEvent(storeIssue));
+  EXPECT_TRUE(llvm::is_contained(
+      graph.getHardDependencies(),
+      EventDependency{storeCompletion, loadIssue,
+                      EventDependencyReason::TransferReady}));
+  for (MovementEventPhase phase :
+       {MovementEventPhase::DDRStore, MovementEventPhase::DDRLoad}) {
+    EXPECT_FALSE(
+        hasEvent(phaseEvent(phase, PlannedEventKind::MovementIssue, 1)));
+  }
+  unsigned exactUnionUses = 0;
+  for (const PlannedResourceUse &use : graph.getResourceUses()) {
+    if (!(use.event == storeIssue) && !(use.event == loadIssue))
+      continue;
+    const auto *range = std::get_if<SPMRangeResource>(&use.resource);
+    if (range && range->boxes.size() == 2)
+      ++exactUnionUses;
+  }
+  EXPECT_EQ(exactUnionUses, 2u);
+  unsigned cardTransferUses = 0;
+  for (const PlannedResourceUse &use : graph.getResourceUses()) {
+    const auto *movement = std::get_if<MovementEventAction>(&use.event.action);
+    if (movement && movement->action == inputs.peerAction &&
+        std::holds_alternative<CardDDRResource>(use.resource))
+      ++cardTransferUses;
+  }
+  EXPECT_EQ(cardTransferUses, 2u);
+  EXPECT_EQ(countResources<CardDDRResource>(graph), 4u);
 }
 
 TEST(EventGraphTest, OpaqueAndExactRoutesKeepDifferentKnowledgeBoundaries) {
@@ -581,7 +670,7 @@ TEST(EventGraphTest, CycleWorkLimitAndEmptyWorkerDomainStayTyped) {
 TEST(EventGraphTest,
      ExecutionContractsUseTypedLinalgAndRejectUnmodeledEffects) {
   mlir::DialectRegistry registry;
-  registerWaferCoreDialects(registry);
+  registerCompilationDialects(registry);
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
                   mlir::linalg::LinalgDialect, mlir::memref::MemRefDialect,
                   mlir::tensor::TensorDialect>();
@@ -620,6 +709,28 @@ module {
   EXPECT_EQ(supported.contracts.front().completion,
             NCCCompletionKind::OrderedAsynchronousIssue);
   EXPECT_EQ(supported.contracts.front().workerDomain.size(), kNCCWorkerCount);
+
+  auto attentionModule = mlir::parseSourceString<mlir::ModuleOp>(
+      wafer::test::buildFlashAttentionPlanningFixture(
+          /*queryExtent=*/1025, /*keyValueExtent=*/1031,
+          /*withMask=*/true),
+      &context);
+  ASSERT_TRUE(attentionModule);
+  LinalgExtAttentionOp attention;
+  attentionModule->walk([&](LinalgExtAttentionOp candidate) {
+    if (!attention)
+      attention = candidate;
+  });
+  ASSERT_TRUE(attention);
+  work.rootOperation = attention;
+  supported = deriveExecutionEventContracts(serialized, {work});
+  ASSERT_TRUE(supported.succeeded());
+  ASSERT_EQ(supported.contracts.size(), 1u);
+  EXPECT_EQ(supported.contracts.front().completion,
+            NCCCompletionKind::OrderedAsynchronousIssue);
+  EXPECT_EQ(supported.contracts.front().workerDomain,
+            (std::vector<NCCWorker>{NCCWorker::Worker0, NCCWorker::Worker1,
+                                    NCCWorker::Worker2}));
 
   work.rootOperation = allocation;
   ExecutionEventContractResult unsupported =

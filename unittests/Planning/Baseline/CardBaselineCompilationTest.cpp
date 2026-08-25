@@ -3,6 +3,7 @@
 #include "TestSupport/CodeGen/CardExecutableTestSupport.h"
 #include "TestSupport/Planning/CanonicalPlanningTestSupport.h"
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
+#include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
 #include "Wafer/Planning/Baseline/BaselineTemporalPlan.h"
 #include "Wafer/Planning/Baseline/CanonicalBaselinePlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CompleteCandidateMaterialization.h"
@@ -16,6 +17,7 @@
 
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <tuple>
 
@@ -48,14 +50,68 @@ void expectNoAvoidableNCCDrains(
   for (const wafer::compiler::TileExecutable &tile : executable.tiles) {
     tile.getModule().walk([&](wafer::SyncNCCJoinOp join) {
       mlir::Operation *next = join->getNextNode();
-      if (mlir::isa_and_nonnull<mlir::func::ReturnOp>(next))
+      mlir::Operation *nextIssue = next;
+      while (mlir::isa_and_nonnull<mlir::memref::AllocOp>(nextIssue))
+        nextIssue = nextIssue->getNextNode();
+      if (mlir::isa_and_nonnull<mlir::func::ReturnOp>(nextIssue))
         return;
       ++requiredCrossingJoins;
       requiredCrossingParticipants += join.getParticipants().size();
       bool validCrossing =
           mlir::isa_and_nonnull<wafer::InstrDTESendOp, wafer::InstrDTERecvOp>(
-              next) &&
+              nextIssue) &&
           !join->getParentOfType<mlir::scf::ForOp>();
+      if (!validCrossing) {
+        auto nextAllocation =
+            mlir::dyn_cast_or_null<mlir::memref::AllocOp>(next);
+        auto nextOffset =
+            nextAllocation
+                ? nextAllocation->getAttrOfType<wafer::SPMOffsetAttr>(
+                      wafer::kWaferSPMOffsetAttrName)
+                : wafer::SPMOffsetAttr{};
+        if (nextAllocation && nextOffset &&
+            nextAllocation->getBlock() == join->getBlock()) {
+          auto topLevelInJoinBlock = [&](mlir::Operation *operation) {
+            while (operation && operation->getBlock() != join->getBlock())
+              operation = operation->getParentOp();
+            return operation;
+          };
+          tile.getModule().walk([&](mlir::memref::AllocOp prior) {
+            if (validCrossing)
+              return;
+            auto priorOffset = prior
+                                   ? prior->getAttrOfType<wafer::SPMOffsetAttr>(
+                                         wafer::kWaferSPMOffsetAttrName)
+                                   : wafer::SPMOffsetAttr{};
+            mlir::Operation *priorTop =
+                topLevelInJoinBlock(prior.getOperation());
+            if (!priorOffset || !priorTop || priorTop == join.getOperation() ||
+                !priorTop->isBeforeInBlock(join) ||
+                priorOffset.getOffset() != nextOffset.getOffset())
+              return;
+            bool pendingUse = false;
+            tile.getModule().walk([&](mlir::Operation *candidate) {
+              mlir::Operation *candidateTop = topLevelInJoinBlock(candidate);
+              if (pendingUse || !candidateTop ||
+                  candidateTop == join.getOperation() ||
+                  !candidateTop->isBeforeInBlock(join) ||
+                  !mlir::isa<wafer::WaferNCCIssueOpInterface>(candidate))
+                return;
+              wafer::compiler::detail::StorageRootMemo memo;
+              pendingUse = llvm::any_of(
+                  candidate->getOperands(), [&](mlir::Value operand) {
+                    return mlir::isa<mlir::BaseMemRefType>(operand.getType()) &&
+                           wafer::compiler::detail::
+                               shareStructuredBufferStorage(
+                                   operand, prior.getResult(), memo);
+                  });
+            });
+            if (pendingUse) {
+              validCrossing = true;
+            }
+          });
+        }
+      }
       if (!validCrossing) {
         invalidDrainStream << "tile=" << tile.getTileId().getValue()
                            << " join=" << join << " next=";
@@ -248,10 +304,22 @@ module {
   wafer::compiler::detail::CandidateMaterializationStatistics statistics;
   auto materializationPlan = makeMaterializationPlan(*plan);
   auto materialized = wafer::compiler::detail::materializeCardCandidate(
-      *module, wafer::CardId(0), **program, materializationPlan, &statistics,
-      diagnostics);
+      *module, wafer::CardId(0), **program, materializationPlan,
+      wafer::SpatialDataflowMaterializationMode::IndependentDDRStages,
+      &statistics, diagnostics);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(materialized)) << diagnosticsText;
+
+  std::set<unsigned> semanticComponentResults;
+  for (const wafer::StructuredOperationResultBufferRelation &relation :
+       materialized->relations.operationResultBuffers)
+    if (relation.identityKind ==
+        wafer::StructuredResultIdentityKind::CoupledReductionComponent) {
+      semanticComponentResults.insert(relation.resultIndex);
+    }
+  EXPECT_TRUE(semanticComponentResults.count(0));
+  EXPECT_TRUE(semanticComponentResults.count(1));
+  EXPECT_TRUE(semanticComponentResults.count(2));
 
   unsigned wholeCacheSPMAllocations = 0;
   std::string allocationDetails;
@@ -309,6 +377,7 @@ module {
   materializationPlan = makeMaterializationPlan(*plan);
   auto refinedMaterialized = wafer::compiler::detail::materializeCardCandidate(
       *module, wafer::CardId(0), **program, materializationPlan,
+      wafer::SpatialDataflowMaterializationMode::IndependentDDRStages,
       &refinedStatistics, diagnostics);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(refinedMaterialized)) << diagnosticsText;

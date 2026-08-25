@@ -57,6 +57,8 @@ llvm::StringRef stringifyTileEntryArgumentKind(TileEntryArgumentKind kind) {
     return "external-output";
   case TileEntryArgumentKind::Workspace:
     return "workspace";
+  case TileEntryArgumentKind::CardWorkspace:
+    return "card-workspace";
   case TileEntryArgumentKind::ProfileRecord:
     return "profile-record";
   case TileEntryArgumentKind::TransportStatus:
@@ -68,6 +70,8 @@ llvm::StringRef stringifyTileEntryArgumentKind(TileEntryArgumentKind kind) {
 llvm::StringRef
 stringifyTileEntryArgumentAccess(TileEntryArgumentAccess access) {
   switch (access) {
+  case TileEntryArgumentAccess::None:
+    return "none";
   case TileEntryArgumentAccess::ReadOnly:
     return "read-only";
   case TileEntryArgumentAccess::WriteOnly:

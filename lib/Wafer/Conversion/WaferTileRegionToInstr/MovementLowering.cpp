@@ -204,8 +204,15 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
-    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(), *dest,
-                                   *descriptors);
+    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
+        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                       *dest, *descriptors);
+    if (CardDDRResourceAttr resource = op.getCardDdrResourceAttr())
+      for (InstrGatherScatterOp operation : lowered)
+        operation.setCardDdrResourceAttr(resource);
+    if (bufferRecorder)
+      for (InstrGatherScatterOp operation : lowered)
+        bufferRecorder->recordLoweredOperation(op, operation);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -321,11 +328,14 @@ public:
 };
 
 class MoveInsertSliceLowering
-    : public mlir::OpRewritePattern<MoveInsertSliceOp> {
+    : public mlir::OpRewritePattern<MoveInsertSliceOp>,
+      private ScratchRecorderHolder {
 public:
   MoveInsertSliceLowering(mlir::MLIRContext *context,
+                          TileRegionToInstrBufferRecorder *bufferRecorder,
                           MovementDescriptorCache *descriptorCache)
       : mlir::OpRewritePattern<MoveInsertSliceOp>(context),
+        ScratchRecorderHolder(bufferRecorder),
         descriptorCache(descriptorCache) {}
 
   mlir::LogicalResult
@@ -379,8 +389,15 @@ public:
     if (mlir::failed(insertDescriptors))
       return mlir::failure();
 
-    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
-                                   op.getDest(), **insertDescriptors);
+    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
+        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                       op.getDest(), **insertDescriptors);
+    if (CardDDRResourceAttr resource = op.getCardDdrResourceAttr())
+      for (InstrGatherScatterOp operation : lowered)
+        operation.setCardDdrResourceAttr(resource);
+    if (bufferRecorder)
+      for (InstrGatherScatterOp operation : lowered)
+        bufferRecorder->recordLoweredOperation(op, operation);
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -852,7 +869,8 @@ void wafer::tile_region_to_instr::populateMovementLoweringPatterns(
   mlir::MLIRContext *context = patterns.getContext();
   patterns.add<TileLoadLowering, TileStoreLowering, TileCopyIntoLowering,
                InstrTDMADataMoveLowering>(context);
-  patterns.add<MoveInsertSliceLowering>(context, descriptorCache);
+  patterns.add<MoveInsertSliceLowering>(context, bufferRecorder,
+                                        descriptorCache);
   patterns.add<TileCopyLowering, MoveExtractSliceLowering, MoveReshapeLowering,
                MoveTransposeLowering, MoveBroadcastLowering>(context,
                                                              bufferRecorder);

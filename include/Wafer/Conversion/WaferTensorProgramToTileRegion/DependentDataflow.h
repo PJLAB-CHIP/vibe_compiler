@@ -60,17 +60,25 @@ enum class SpatialEdgeAction : uint8_t {
   /// and reload belong to two consecutive TileRegions so all SPM roots are
   /// released at the boundary.
   RegionCut,
+  /// The selected producer Tile stores to one card-owned DDR boundary and a
+  /// different consumer Tile loads from that same runtime-provided resource.
+  /// `cardDDRResource` names the corresponding card declaration.
+  CardDDRTransfer,
 };
 
 enum class SpatialEdgeFragmentKind : uint8_t {
   Resident,
   Peer,
+  CardDDR,
 };
 
-/// One rectangular fragment of a PeerFragments strategy.  `sourceTile` is the
-/// Tile that computes the exact producer domain.  Resident fragments require
-/// sourceTile == destinationTile and carry no message fields.  Peer fragments
-/// require distinct endpoints and a unique message identity.
+/// One rectangular fragment of a PeerFragments or CardDDRTransfer strategy.
+/// `sourceTile` computes the exact producer domain. Resident fragments require
+/// sourceTile == destinationTile and carry no message fields. Peer fragments
+/// require distinct endpoints and a unique message identity. CardDDR fragments
+/// require the selected source Tile, one `cardDDRResource`, and exact bytes but
+/// no peer message. Owner identity is copied from exact demand solely to match
+/// the selected MovementPlan action; it is not recovered from names or order.
 struct SpatialEdgeFragment {
   SpatialEdgeFragmentKind kind = SpatialEdgeFragmentKind::Resident;
   llvm::SmallVector<int64_t, 4> offsets;
@@ -79,6 +87,9 @@ struct SpatialEdgeFragment {
   uint64_t bytes = 0;
   int64_t communicationId = 0;
   int64_t payloadSlice = 0;
+  std::optional<int64_t> cardDDRResource;
+  std::optional<compiler::detail::LogicalShardId> ownerShard;
+  std::optional<compiler::detail::ReductionGroupId> reductionGroup;
 };
 
 /// Exact current-SSA edge strategy selected jointly with spatial placement,
@@ -87,11 +98,12 @@ struct SpatialEdgeFragment {
 /// broadcast dimensions. A same-placement provider may leave both consumer
 /// vectors empty only when the live TilingInterface can derive one static
 /// consumer result domain from the exact producer demand; lowering resolves
-/// and validates that relation before changing IR. For PeerFragments,
-/// `fragments` must cover the producer demand all-and-only; every other action
-/// has no fragments. A finite non-rectangular required producer region uses the
-/// rectangle-union form: `producerOffsets`/`producerSizes` are its carrier
-/// bounds and `fragmentsDefineProducerDemand` states that the disjoint
+/// and validates that relation before changing IR. For PeerFragments and
+/// CardDDRTransfer, `fragments` must cover the producer demand all-and-only;
+/// every other action has no fragments. A finite non-rectangular required
+/// producer region uses the rectangle-union form:
+/// `producerOffsets`/`producerSizes` are its carrier bounds and
+/// `fragmentsDefineProducerDemand` states that the disjoint
 /// fragment union, rather than those bounds, is the exact demand.
 struct SpatialEdgeStrategy {
   mlir::Operation *producer = nullptr;
@@ -105,6 +117,7 @@ struct SpatialEdgeStrategy {
   TileId sourceTile{0};
   TileId destinationTile{0};
   SpatialEdgeAction action = SpatialEdgeAction::LocalShardResidency;
+  std::optional<int64_t> cardDDRResource;
   bool fragmentsDefineProducerDemand = false;
   llvm::SmallVector<SpatialEdgeFragment, 4> fragments;
 };

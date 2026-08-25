@@ -435,14 +435,29 @@ mlir::LogicalResult materializeSpill(
       return failResult(
           failureReason,
           "selected DDR stage requires structured producer identity");
-    std::optional<uint32_t> producerNode =
-        findStructuredNodeId(mapped.producer, *operationNodes);
-    if (!producerNode)
+    auto producerMapping = llvm::find_if(
+        *operationNodes, [&](const StructuredOperationNodeMapping &mapping) {
+          return mapping.operation == mapped.producer;
+        });
+    if (producerMapping == operationNodes->end() ||
+        (!producerMapping->coupledComponentIndices.empty() &&
+         strategy.producerResult >=
+             producerMapping->coupledComponentIndices.size()))
       return failResult(
           failureReason,
           "selected DDR stage producer has no structured node identity");
+    const bool coupledComponent =
+        !producerMapping->coupledComponentIndices.empty();
+    const unsigned producerResult =
+        !coupledComponent
+            ? strategy.producerResult
+            : producerMapping->coupledComponentIndices[strategy.producerResult];
     selectedDDRStages.push_back(CandidateSelectedDDRStage{
-        allocation.getResult(), *producerNode, strategy.producerResult});
+        allocation.getResult(), producerMapping->structuredNodeId,
+        producerResult,
+        coupledComponent
+            ? StructuredResultIdentityKind::CoupledReductionComponent
+            : StructuredResultIdentityKind::OperationResult});
   }
   if (mlir::failed(wireStoredProducerToConsumer(stored)))
     return mlir::failure();
@@ -482,7 +497,8 @@ mlir::LogicalResult materializeRecompute(
         return entry.operation == mapped.producer;
       });
   if (sourceNode != operationNodes.end())
-    operationNodes.push_back({clone, sourceNode->structuredNodeId});
+    operationNodes.push_back({clone, sourceNode->structuredNodeId,
+                              sourceNode->coupledComponentIndices});
   mapped.consumer->setOperand(mapped.strategy.consumerOperand,
                               clone->getResult(mapped.strategy.producerResult));
   return mlir::success();

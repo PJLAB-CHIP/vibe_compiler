@@ -51,6 +51,7 @@ void materializeWindowedInsertSlice(
     mlir::IRRewriter &rewriter, mlir::tensor::ExtractSliceOp slice,
     mlir::tensor::InsertSliceOp insert, mlir::OpResult producerResult,
     EnqueueProducerSlices enqueueSlices,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes,
     llvm::SmallVectorImpl<MaterializedCoupledProducerTile>
         &materializedCoupledTiles);
 

@@ -56,6 +56,13 @@ createTileModule(mlir::ModuleOp sourceModule, CardModuleOp cardModule,
   }
 
   if (sourceRelations) {
+    for (const StructuredOperationEmissionRelation &relation :
+         sourceRelations->operationEmissions) {
+      mlir::Operation *operation = relation.operation;
+      if (operation && (operation == sourceTileModule.getOperation() ||
+                        sourceTileModule->isProperAncestor(operation)))
+        tileRelations.operationEmissions.push_back(relation);
+    }
     auto retain = [&](const auto &source, auto &destination) {
       for (const auto &relation : source) {
         mlir::Value buffer = relation.buffer;
@@ -73,6 +80,11 @@ createTileModule(mlir::ModuleOp sourceModule, CardModuleOp cardModule,
     retain(sourceRelations->operandBuffers, tileRelations.operandBuffers);
     retain(sourceRelations->scratchBuffers, tileRelations.scratchBuffers);
     retain(sourceRelations->outputBuffers, tileRelations.outputBuffers);
+    retain(sourceRelations->cardDDRBuffers, tileRelations.cardDDRBuffers);
+    retain(sourceRelations->partialReductionContributions,
+           tileRelations.partialReductionContributions);
+    retain(sourceRelations->partialReductionMergeInputs,
+           tileRelations.partialReductionMergeInputs);
   }
 
   // TileModuleOp is IsolatedFromAbove, so its body owns a closed SSA graph.

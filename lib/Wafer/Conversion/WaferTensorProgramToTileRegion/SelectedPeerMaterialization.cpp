@@ -187,7 +187,21 @@ materializeSelectedPeerReceives(SelectedEdgeLoweringState &state) {
             getElementBytes(producerType.getElementType());
         if (!elementBytes ||
             *elements > std::numeric_limits<uint64_t>::max() / *elementBytes ||
-            fragment.bytes != *elements * *elementBytes ||
+            fragment.bytes != *elements * *elementBytes)
+          return reportSelectedEdgeFailure(
+              failureReason, "fragment has an invalid exact byte count");
+        if (fragment.kind == SpatialEdgeFragmentKind::CardDDR) {
+          if (!fragment.cardDDRResource || fragment.communicationId != 0 ||
+              fragment.payloadSlice != 0 ||
+              !mapped.cardDDRBoundaries.count(*fragment.cardDDRResource))
+            return reportSelectedEdgeFailure(
+                failureReason,
+                "card DDR fragment has no typed boundary or carries a peer "
+                "message");
+          continue;
+        }
+        if (fragment.kind != SpatialEdgeFragmentKind::Peer ||
+            fragment.cardDDRResource ||
             fragment.sourceTile == strategy.destinationTile ||
             fragment.communicationId < 0 || fragment.payloadSlice < 0)
           return reportSelectedEdgeFailure(
@@ -234,8 +248,29 @@ materializeSelectedPeerReceives(SelectedEdgeLoweringState &state) {
             return reportSelectedEdgeFailure(
                 failureReason,
                 "peer DDR stage producer has no structured node identity");
+          auto producerMapping =
+              llvm::find_if(mappedOperationNodes,
+                            [&](const StructuredOperationNodeMapping &mapping) {
+                              return mapping.operation == mapped.producer;
+                            });
+          const bool coupledComponent =
+              producerMapping != mappedOperationNodes.end() &&
+              !producerMapping->coupledComponentIndices.empty();
+          if (coupledComponent &&
+              strategy.producerResult >=
+                  producerMapping->coupledComponentIndices.size())
+            return reportSelectedEdgeFailure(
+                failureReason,
+                "peer DDR stage has incomplete coupled component identity");
           selectedDDRStages.push_back(CandidateSelectedDDRStage{
-              allocation.getResult(), *producerNode, strategy.producerResult});
+              allocation.getResult(), *producerNode,
+              coupledComponent
+                  ? producerMapping
+                        ->coupledComponentIndices[strategy.producerResult]
+                  : strategy.producerResult,
+              coupledComponent
+                  ? StructuredResultIdentityKind::CoupledReductionComponent
+                  : StructuredResultIdentityKind::OperationResult});
           auto destination = builder.create<mlir::bufferization::ToTensorOp>(
               assemblyLoc, allocation.getResult(),
               /*restrict=*/true, /*writable=*/true);
@@ -251,8 +286,15 @@ materializeSelectedPeerReceives(SelectedEdgeLoweringState &state) {
         }
         llvm::SmallVector<const SpatialEdgeFragment *, 4> ordered;
         llvm::SmallVector<size_t, 4> streamedReceiveEndpoints;
+        std::optional<int64_t> assemblyCardDDRResource;
         for (const SpatialEdgeFragment &fragment : strategy.fragments)
           ordered.push_back(&fragment);
+        for (const SpatialEdgeFragment &fragment : strategy.fragments)
+          if (fragment.kind == SpatialEdgeFragmentKind::CardDDR &&
+              fragment.cardDDRResource &&
+              (!assemblyCardDDRResource ||
+               *fragment.cardDDRResource < *assemblyCardDDRResource))
+            assemblyCardDDRResource = *fragment.cardDDRResource;
         llvm::sort(ordered, [](const auto *lhs, const auto *rhs) {
           if (lhs->offsets != rhs->offsets)
             return lhs->offsets < rhs->offsets;
@@ -284,6 +326,19 @@ materializeSelectedPeerReceives(SelectedEdgeLoweringState &state) {
                 return mlir::failure();
               value = *local;
             }
+          } else if (fragment->kind == SpatialEdgeFragmentKind::CardDDR) {
+            auto boundary =
+                fragment->cardDDRResource
+                    ? mapped.cardDDRBoundaries.find(*fragment->cardDDRResource)
+                    : mapped.cardDDRBoundaries.end();
+            if (boundary == mapped.cardDDRBoundaries.end())
+              return reportSelectedEdgeFailure(
+                  failureReason,
+                  "card DDR fragment has no current boundary argument");
+            value = createExactSlice(builder, mapped.producer->getLoc(),
+                                     boundary->second, fragment->offsets,
+                                     fragment->sizes);
+            preserved.insert(value.getDefiningOp());
           } else {
             std::optional<uint32_t> consumerNode =
                 findStructuredNodeId(mapped.consumer, mappedOperationNodes);
@@ -335,6 +390,29 @@ materializeSelectedPeerReceives(SelectedEdgeLoweringState &state) {
           mlir::Value inserted =
               insertExactSlice(builder, assemblyLoc, value, assembled,
                                fragment->offsets, fragment->sizes);
+          if (!consumerNode)
+            return reportSelectedEdgeFailure(
+                failureReason,
+                "fragment assembly has no structured consumer identity");
+          if (llvm::none_of(mappedOperationNodes,
+                            [&](const StructuredOperationNodeMapping &mapping) {
+                              return mapping.operation ==
+                                     inserted.getDefiningOp();
+                            }))
+            mappedOperationNodes.push_back(
+                {inserted.getDefiningOp(), *consumerNode, {}});
+          std::optional<int64_t> movementResource =
+              fragment->kind == SpatialEdgeFragmentKind::CardDDR
+                  ? fragment->cardDDRResource
+              : fragment->kind == SpatialEdgeFragmentKind::Resident
+                  ? assemblyCardDDRResource
+                  : std::nullopt;
+          if (movementResource) {
+            inserted.getDefiningOp()->setAttr(
+                kWaferCardDDRMovementAttrName,
+                CardDDRResourceAttr::get(builder.getContext(),
+                                         *movementResource));
+          }
           if (assembleInDDR) {
             // Every exact fragment writes a disjoint slice of the same
             // compiler-owned writable DDR allocation. Do not thread those

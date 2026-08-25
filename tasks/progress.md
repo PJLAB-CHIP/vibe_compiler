@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-08-24
+更新时间：2026-08-25
 
 本文件是任务调度入口，只记录任务状态、前置关系、当前工作、完成门禁和设计/证据owner。具体设计、
 pipeline contract、实验结论、测试数字、失败修复过程和历史复盘不在这里重复；分别进入编号设计文档、
@@ -59,8 +59,8 @@ domain/API、canonical路径或单测mechanism，没有满足各自设计中的s
 | 15 | `full-feasibility` | `done` | Q50.F | schedule-domain及完整B–K→I→J selected construction | 全字段complete-candidate materialization、actual SPM/DDR/transport/target gate、plan/actual join-wait parity与动态work gate、typed rejection及Core反馈 | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
 | 16 | `search-control-closure` | `done` | Q51.Core | full-feasibility、全部domain work items | all-axis CompleteCandidateKey、actual-result admission、cost/bound、causal no-good、coverage及independent controller oracle | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
 | 17 | `unified-search-closure` | `done` | Q51 | search-control-closure、attention-selected-decomposition、Q50.0 | parent-by-parent/full-plan oracle、可恢复完整遍历、每complete candidate一次actual evaluation及唯一winner发布 | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 18 | `attention-production-closure` | `doing` | Q50.S | deterministic-baseline-closure、unified-search-closure | donor retirement及prefill/decode的none/search package/no-card；attention algorithm层零固定worker、零per-K2-block completion | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
-| 19 | `search-scalability` | `queued` | Q52 | unified-search-closure、attention-production-closure | measured memo/DP/bound/LNS policy、有限预算LLaMA actual evaluation及唯一winner发布 | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 18 | `attention-production-closure` | `done` | Q50.S | deterministic-baseline-closure、unified-search-closure | donor retirement及prefill/decode的none/search package/no-card；attention algorithm层零固定worker、零per-K2-block completion | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 19 | `search-scalability` | `doing` | Q52 | unified-search-closure、attention-production-closure | measured memo/DP/bound/LNS policy、有限预算LLaMA actual evaluation及唯一winner发布 | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
 | 20 | `production-host-readiness` | `queued` | Q53 | search-scalability、Q60、Q55、Q56 board-ready | fresh source/IR/package/oracle/runner/no-card矩阵；Q53 `board-ready` | 读AGENTS/progress→读编号设计与本项矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
 失败留在当前work item修复；不跳过、不fallback，也不把owner整体状态提前标为完成。
 

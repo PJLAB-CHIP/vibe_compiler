@@ -90,7 +90,7 @@ using LaunchSlotId = StrongId<LaunchSlotIdTag>;
 /// program argument domain, constants from the captured-constant domain.
 enum class ProgramTensorRole { Parameter, Constant };
 
-enum class PackageAccessMode { ReadOnly, WriteOnly, ReadWrite };
+enum class PackageAccessMode { None, ReadOnly, WriteOnly, ReadWrite };
 
 /// Closed physical memory layout family of the current target. Values match
 /// the compiler IR MemLayout enumeration; the manifest keeps its own closed
@@ -242,6 +242,21 @@ struct WorkspaceArgument {
     return !(lhs == rhs);
   }
 };
+/// Card-shared compiler-managed DDR carrier.
+struct CardWorkspaceArgument {
+  uint64_t resource = std::numeric_limits<uint64_t>::max();
+  uint64_t bytes = 0;
+  uint64_t alignment = 0;
+  friend bool operator==(const CardWorkspaceArgument &lhs,
+                         const CardWorkspaceArgument &rhs) {
+    return lhs.resource == rhs.resource && lhs.bytes == rhs.bytes &&
+           lhs.alignment == rhs.alignment;
+  }
+  friend bool operator!=(const CardWorkspaceArgument &lhs,
+                         const CardWorkspaceArgument &rhs) {
+    return !(lhs == rhs);
+  }
+};
 /// Entry-local profiler capture record.
 struct ProfileRecordArgument {
   std::string recordABI;
@@ -276,7 +291,8 @@ struct TransportStatusArgument {
 using TileEntryArgumentReference =
     std::variant<ExternalInputArgument, TargetTensorArgument,
                  ExternalOutputArgument, WorkspaceArgument,
-                 ProfileRecordArgument, TransportStatusArgument>;
+                 CardWorkspaceArgument, ProfileRecordArgument,
+                 TransportStatusArgument>;
 
 /// One ordered argument of one Tile target entry. Ordinals are dense and
 /// zero-based. The argument carries a closed reference and an access mode; it
@@ -578,6 +594,8 @@ struct RuntimeInvocationPlan {
   /// Input/output child ranges, indexed by PortId.
   std::vector<RuntimePlannedRange> inputRanges;
   std::vector<RuntimePlannedRange> outputRanges;
+  /// Card-shared DDR child ranges indexed by CardWorkspace resource id.
+  std::vector<RuntimePlannedRange> cardWorkspaceRanges;
   /// Per-Tile entry-local ranges, indexed by launch slot.
   std::vector<RuntimeEntryLocalRanges> tileRanges;
   /// Per-Tile device pointer rows for the TileRowPointerTable entry ABI;

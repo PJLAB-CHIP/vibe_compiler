@@ -963,6 +963,49 @@ TemporalExpansionResult PhysicalDataflowPlanningSession::resumeTemporal(
   return {TemporalExpansionKind::State, std::move(*state)};
 }
 
+mlir::FailureOr<std::optional<TemporalState>>
+PhysicalDataflowPlanningSession::refineTemporalStateFromActualFeedback(
+    const TemporalState &state, llvm::ArrayRef<SemanticRootKey> causalRoots,
+    std::string *failureReason) {
+  auto works = rootWorkCache.find(state.getSpatialPlan());
+  TemporalDomainLookup domain =
+      getOrCreateTemporalDomain(state.getRegionState());
+  if (works == rootWorkCache.end() || !domain.domain) {
+    if (failureReason)
+      *failureReason = "actual feedback lost temporal domain facts";
+    return mlir::failure();
+  }
+  TemporalPlan refined = state.getTemporalPlan();
+  auto changed = refineTemporalPlanFromActualSPMFeedback(
+      refined, works->second, causalRoots, failureReason);
+  if (mlir::failed(changed))
+    return mlir::failure();
+  if (!*changed)
+    return std::optional<TemporalState>{};
+  auto firstNested = llvm::find_if(refined.scopes, [](const auto &scope) {
+    return !isTopLevelScope(scope.id);
+  });
+  refined.scopes.erase(firstNested, refined.scopes.end());
+  TemporalSuccessor completed = domain.domain->completePrefix(refined);
+  if (completed.getKind() != TemporalSuccessorKind::Plan ||
+      !completed.getPlan()) {
+    if (failureReason)
+      *failureReason = completed.getDetail().empty()
+                           ? "actual temporal feedback cannot close its plan"
+                           : completed.getDetail().str();
+    return mlir::failure();
+  }
+  std::string detail;
+  auto result = TemporalState::create(*domain.domain, state.getRegionState(),
+                                      *completed.getPlan(), &detail);
+  if (mlir::failed(result)) {
+    if (failureReason)
+      *failureReason = std::move(detail);
+    return mlir::failure();
+  }
+  return std::optional<TemporalState>(std::move(*result));
+}
+
 RepresentationExpansionResult
 PhysicalDataflowPlanningSession::resumeRepresentation(
     RepresentationContinuation &continuation) {
@@ -1092,6 +1135,25 @@ MovementExpansionResult PhysicalDataflowPlanningSession::resumeMovement(
     return MovementExpansionResult{MovementExpansionKind::State,
                                    std::move(*state)};
   };
+  if (!continuation.rawStarted) {
+    ++work.movementSuccessorSteps;
+    MovementSuccessor first = lookup.domain->getFirstPlan();
+    if (first.getKind() == MovementSuccessorKind::End) {
+      continuation.exhausted = true;
+      return MovementExpansionResult{MovementExpansionKind::ParentExhausted};
+    }
+    if (first.getKind() != MovementSuccessorKind::Plan || !first.getPlan() ||
+        !first.getCursor())
+      return {MovementExpansionKind::CompilerBug,
+              {},
+              first.getDetail().empty()
+                  ? "movement successor omitted its first plan or cursor"
+                  : first.getDetail().str()};
+    continuation.cursor = *first.getCursor();
+    continuation.rawStarted = true;
+    continuation.emitted.insert(*first.getPlan());
+    return makeState(*first.getPlan());
+  }
   if (!continuation.proposalsInitialized) {
     continuation.proposals = lookup.domain->getProposals();
     continuation.proposalsInitialized = true;
@@ -1106,10 +1168,7 @@ MovementExpansionResult PhysicalDataflowPlanningSession::resumeMovement(
   }
   while (true) {
     ++work.movementSuccessorSteps;
-    MovementSuccessor next =
-        continuation.rawStarted
-            ? lookup.domain->getNextPlan(*continuation.cursor)
-            : lookup.domain->getFirstPlan();
+    MovementSuccessor next = lookup.domain->getNextPlan(*continuation.cursor);
     if (next.getKind() == MovementSuccessorKind::End) {
       continuation.exhausted = true;
       continuation.cursor.reset();
@@ -1123,7 +1182,6 @@ MovementExpansionResult PhysicalDataflowPlanningSession::resumeMovement(
                   ? "movement successor omitted its plan or cursor"
                   : next.getDetail().str()};
     continuation.cursor = *next.getCursor();
-    continuation.rawStarted = true;
     if (!continuation.emitted.insert(*next.getPlan()).second)
       continue;
     return makeState(*next.getPlan());

@@ -473,7 +473,10 @@ EventGraphBuildResult buildEventGraph(
     const EventGraphLimits &limits = EventGraphLimits());
 
 /// Derives the current target-abstract completion contract for every selected
-/// execution from its typed structured root. Unknown implementations remain
+/// execution from its typed structured root. A fixed-mode attention root is a
+/// composite of selected Linalg NCC issues and therefore exposes the same
+/// worker domain with one execution-level pending obligation; it does not
+/// create per-action or per-K2 completion. Unknown implementations remain
 /// typed Unsupported and never become implicit synchronous work.
 ExecutionEventContractResult deriveExecutionEventContracts(
     const SerializedExecutionPlan &serialized,

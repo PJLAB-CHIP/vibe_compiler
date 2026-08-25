@@ -1,8 +1,8 @@
 # Physical Dataflow Planning 与 Selected Execution 实施计划
 
-状态：当前线性计划第1--17项已经闭合；Q50.0/Q50.A、Q49.P、Q50.B--K的domain/selected construction/actual admission、
-Q51.Core controller及Q51 resumable unified traversal已经连接。下一项是Q50.S `attention-production-closure`，随后按Q52和Q53的
-顺序施工。此前关于
+状态：当前线性计划第1--18项已经闭合；Q50.0/Q50.A、Q49.P、Q50.B--K的domain/selected construction/actual admission、
+Q51.Core controller、Q51 resumable unified traversal及Q50.S production attention路径已经连接。下一项按线性顺序施工Q52，
+随后进入Q53。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
 算法、IR和长期pipeline contract仍只由
@@ -270,8 +270,8 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 | 15 | `full-feasibility` | `done` | Q50.F | 全字段complete-candidate materialization、actual SPM/DDR/transport/target gate、plan/actual join-wait parity与动态work gate、typed rejection及Core反馈 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-control-closure |
 | 16 | `search-control-closure` | `done` | Q51.Core | all-axis CompleteCandidateKey、actual-result admission、cost/bound、causal no-good、coverage及independent controller oracle | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | unified-search-closure |
 | 17 | `unified-search-closure` | `done` | Q51 | parent-by-parent/full-plan oracle、可恢复完整遍历、每complete candidate一次actual evaluation及唯一winner发布 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | attention-production-closure |
-| 18 | `attention-production-closure` | `doing` | Q50.S | donor retirement及prefill/decode none/search package/no-card；attention algorithm层零固定worker、零per-K2-block completion | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-scalability |
-| 19 | `search-scalability` | `queued` | Q52 | measured memo/DP/bound/LNS及有限预算LLaMA actual evaluation | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | production-host-readiness |
+| 18 | `attention-production-closure` | `done` | Q50.S | donor retirement及prefill/decode none/search package/no-card；attention algorithm层零固定worker、零per-K2-block completion | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-scalability |
+| 19 | `search-scalability` | `doing` | Q52 | measured memo/DP/bound/LNS及有限预算LLaMA actual evaluation | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | production-host-readiness |
 | 20 | `production-host-readiness` | `queued` | Q53 | fresh source/IR/package/oracle/runner/no-card矩阵 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | Q53 board-ready |
 
 表中读取硬件/ABI事实源是算法调研之前的独立正确性门禁：涉及completion、resource、memory hierarchy或target行为时，必须先读
@@ -289,8 +289,8 @@ candidate上落地。第15项负责把这些stage通过Q50.0的两个typed prepa
 contract及prefill/decode产品证据仍由队列第18项拥有；Q50.F只接收已经形成完整`ScheduledState`的输入，不在actual admission里猜缺失的
 attention worker或completion。
 
-剩余第16--20项依次关闭all-axis actual-result controller、完整可恢复遍历与winner handoff、attention production、measured scalability和
-Q53 host board-ready。SPM合法性在全部后续工作中仍只接受actual current IR上的`PlanSPMMemory`/MiniMalloc结果；不引入footprint、bytes
+第16--18项已经依次关闭all-axis actual-result controller、完整可恢复遍历与winner handoff及attention production；剩余第19--20项关闭
+measured scalability和Q53 host board-ready。SPM合法性在全部后续工作中仍只接受actual current IR上的`PlanSPMMemory`/MiniMalloc结果；不引入footprint、bytes
 比例或预测lifetime准入路径。
 
 work item是唯一调度身份，Q50.*只表示设计owner。一个owner可以拥有多个work item，但每个work item只出现一次、只签发一个typed
@@ -1558,6 +1558,17 @@ source是否active或已删除不证明能力迁移。每行必须同时有curre
 
 ### S-7：施工checkpoints与Gate
 
+#### attention-production-closure专项调研与采用结论
+
+| Primary工作 | 可迁移事实 | 本项采用 | 明确不采用 |
+| --- | --- | --- | --- |
+| [FlashAttention论文](https://arxiv.org/abs/2205.14135) | exact attention可按Q/K/V block和online softmax state计算，避免物化完整score/probability，并以片上/片外IO为优化对象 | 一个fixed `flash_attention` semantic op在complete candidate内展开block-sized QK、max/exp/sum、PV和running state | GPU SRAM容量公式、kernel launch shape和论文中的硬件调度不进入Wafer legality或search identity |
+| [PyTorch Flash-Decoding](https://pytorch.org/blog/flash-decoding/) | decode沿KV sequence分片并行，每片运行同一online recurrence，再用额外row state做最终归并 | `flash_decoding`只改变K2 spatial contribution/merge结构；Maximum/Sum/Accumulator保持typed component并由通用H/I/J移动、存储和调度 | 不新增第二个attention op、decode-only backend pass、固定partition count或按query shape在compiler中重选算法 |
+| [IREE LinalgExt attention](https://iree.dev/reference/mlir-dialects/LinalgExt/#iree_linalg_extattention-linalgextattentionop) | attention可作为一个带Q/K/V/scale/optional mask、DPS output和region的structured semantic op，再由后续decomposition/lowering消费 | Wafer同样保留一个semantic attention op和现有Linalg/Tiling/DPS边界；selected decomposition只在winner transaction中产生standard Linalg/Tensor/SCF | 不复制IREE的GPU lowering schedule、backend-specific intrinsic或把attention提前降到Wafer Tile/Instr op |
+
+结论是一个semantic op、两个fixed algorithm值和一条共同physical-dataflow pipeline。FA/FD不是Q51 numeric或algorithm search axis；
+block、K2 placement、movement、storage和schedule仍分别由E/B/H/I/J选择。后端只消费最终selected Linalg/Tile/Instr，不反向决定算法。
+
 Q50.S通过六个独立work items交付，不作为一个跨阶段task调度：
 
 1. **attention-normalization**：ODS op/interface、attention proof、FA/FD classifier、DCE和共同normalization；
@@ -1567,9 +1578,10 @@ Q50.S通过六个独立work items交付，不作为一个跨阶段task调度：
 5. **attention-selected-decomposition**：prepare、Linalg/Tensor/SCF emitter、structured-to-tile conversion及rollback；
 6. **attention-production-closure**：确认前五项逐项迁移donor后删除旧alternatives/clone/gates，并完成prefill/decode的两policy证据。
 
-当前attention planning在post-K EventGraph前没有selected execution的typed target completion contract，因此还不能形成完整ScheduledState。
-第6项必须从selected decomposition的实际Linalg action/effect与Q63接口构造该contract，再进入通用J/F；缺失时保持typed failure，禁止默认
-worker、Synchronous completion、per-K2 join或结构性drain。该接线完成前，Q50.F不能用普通candidate的通过结果代签attention actual witness。
+第6项已经从selected decomposition的实际Linalg action/effect与Q63接口构造typed execution contract并进入通用J/F。attention
+algorithm层不固定worker，不为每个K2 block创建completion；post-K EventGraph只为实际compute、selected DDR/peer movement、buffer
+reuse/release和observable terminal建立事件。same-worker普通NCC链、region边界和allocation本身不产生join；Direct-DTE只有在H明确选择
+peer graph时才出现，未选择peer的action具体化为card-owned DDR declaration、source WDMA和destination RDMA。
 
 本work item施工前冻结覆盖矩阵。所有positive使用FP16/BF16、rank>=3、sequence 1024与1025/1031配对；shape仅用于覆盖均匀/tail，
 不参与FA/FD识别、algorithm选择或search legality。
@@ -1580,8 +1592,28 @@ worker、Synchronous completion、per-K2 join或结构性drain。该接线完成
 | FD decode | rank-4/5，K2 1024及1025/1031，local+remote contributions | contribution/state merge/finalize IDs经B--J进入两policyactual | component/gather/staging/schedule缺失typed失败 | all contribution和唯一merge/finalize actual mapping，search不调用none | package/no-card及returned state inventory完整 |
 | multi-K2/tail | rank-6 33×31且query=1025 | 二维Cartesian K2和tail沿same decomposition/temporal carrier | 一维split-count旁路禁止 | 无global score，tail coverage无gap/overlap，source不变 | Q52可在同semantic op上优化physical plans |
 | policy isolation | 同一source各开独立transaction运行none/search，输入顺序扰动 | 共同normalization/materializer/Q50.0，controller独立 | search失败不返回none package | diagnostics/call tree无互调；各自commit一次；search coverage typed | matched tests只在外层比较package facts |
-| package/no-card | prefill/decode各policy fresh output | source→portable frontend→package→`wafer-run --no-card` | no-card unsupported只允许配置性feature，不跳case | manifest、16 modules、dtype/source/program descriptors一致，no-card实际执行 | Q53直接复用case/oracle/runner进入board-ready |
+| package/no-card | prefill/decode各policy fresh output | source→portable frontend→package→strict readback→runtime no-card invocation planning | no-card planning失败不跳case | manifest、16 modules、dtype/source/program descriptors一致，16-Tile invocation实际形成 | Q53复用case/oracle并补CLI runner进入board-ready |
 | donor retirement | AttentionAnalysis/Alternative/TensorProgramAlternative/old clone callers | current owner+caller+test逐项对照后删除 | 仍有独有proof/test则停止删除 | old algorithm frontier、whole-module alternative clone、decode-only gate零production caller | source organization和call-tree gate |
+
+实现结果逐项对应上述矩阵：
+
+- FP16/BF16各自覆盖FA/FD、1024整除与1025/1031非整除、`none/search`独立transaction；16个case都从同一semantic op进入selected
+  decomposition，actual Tile前attention/Linalg均归零，steady-state join和per-loop wait为零；
+- FD DDR raw candidate使用24个typed card-shared resources。每个resource在CardModule只声明一次，全部Tile entry携带同序ABI slot，
+  nonparticipant access为`None`；source/destination分别产生实际WDMA/RDMA。target ABI自动选择`TileRowPointerTable`避免参数packet超限；
+- selected attention op把原始`ExecutionInstanceId`、operand role/index和coupled component identity显式映射到decomposition后的structured
+  operation。一个consumer demand可由`Resident`、selected peer和多个CardDDR action的exact fragments共同组装；每个fragment按MovementPlan
+  owner shard/group匹配，不使用first owner、shape或walk order。same-Tile DDR action继续使用RegionCut/Tile-local DDR，只有cross-Tile
+  nonpeer action创建card-shared resource；
+- deterministic baseline显式选择`IndependentDDRStages`，full-feasibility/search显式选择`JointDataflow`，不再从是否存在peer graph反推
+  materialization mode。CardDDR assembly的临时typed resource identity沿tensor→Tile→Instr lowering传播，actual event绑定后统一删除；Tile→Instr
+  pattern同时把source operation owner迁到live Instr operation，缺失时才回退当前buffer relation；
+- search对每个`CompleteCandidateKey`只actualize一次。FD首个complete candidate的SPM capacity rejection来自本轮实际MiniMalloc demand，
+  controller随后构造新的temporal candidate；accepted candidate携带实际offset继续DDR、target、package，不重建winner；
+- 每个case都继续完成target LLVM、device link、strict package readback和no-card invocation planning。decode package中的card workspace只分配
+  一次并由相关Tile共享；manifest/model负例覆盖缺writer、不同geometry和`None`访问；
+- `AttentionAnalysis`、`DecodeAttentionAnalysis`、`AttentionAlternative`、`TensorProgramAlternative`及其独立test/CMake registration已经删除。
+  normalized op/verifier、work projection、selected decomposition和actual production tests是唯一current实现与witness。
 
 完成验证至少包括：
 
@@ -1595,11 +1627,15 @@ worker、Synchronous completion、per-K2 join或结构性drain。该接线完成
 - planning source byte-identical、Module/Func/CardModule/Q50.0计数为零；
 - B/A/C/E/F direct queries证明无逐component独立merge、无hidden state/scratch和init/final重复；
 - winner selected Linalg只构造一次，随后只剩existing wafer.tile compute/movement；failure injection保持source/parent一致；
-- none/search各plan=1、commit=1、Q50.0=1，无algorithm frontier、baseline/search互调或fallback；
+- none只提交一个accepted candidate；search中每个complete key至多actualize一次，actual capacity rejection可产生下一temporal candidate，
+  最终winner只commit一次且不重建；无algorithm frontier、baseline/search互调或fallback；
 - FP16/BF16 official prefill与functional two-step decode从Q60产品入口形成package/fresh no-card；Q53之前不声称board correctness或性能。
 
-Q50.S只有owner map列出的六个work items、donor矩阵和production gate全部闭合才可完成。op注册、matcher unit、partial interface或单个Linalg dump
-都不能代签完整任务。
+本项最终fresh门禁：host unit `937/937`实际执行（含上述16个产品case），configured lit `225/225`，4个public-link smoke、source
+organization和IR organization检查通过。没有执行真实板端测试；Q53仍拥有产品CLI runner、oracle与board-ready矩阵。
+
+Q50.S owner map列出的六个work items、donor矩阵和production gate已经闭合。后续Q52直接消费同一fixed semantic op和actual candidate
+结果做scalability工作；Q53复用本项package/no-card case进入更大的产品source/oracle/runner矩阵，不重新建立attention算法或同步路径。
 
 ## Q50.B：Spatial Partition + Physical Placement
 

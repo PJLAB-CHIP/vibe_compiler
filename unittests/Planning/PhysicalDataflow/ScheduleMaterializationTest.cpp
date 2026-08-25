@@ -232,6 +232,107 @@ TEST(ScheduleMaterializationTest,
 }
 
 TEST(ScheduleMaterializationTest,
+     RepeatedStaticBlocksMaterializeEverySelectedCompletionOccurrence) {
+  auto context = createContext();
+  NCCProblem problem = makeNCCProblem();
+  ScheduleDomainResult result = buildScheduleDomain(problem.input);
+  ASSERT_TRUE(result.succeeded())
+      << (result.failure ? result.failure->detail : "");
+  ScheduleSuccessor sameWorker = result.domain->getFirstPlan();
+  ASSERT_TRUE(sameWorker.getCursor());
+  ScheduleSuccessor crossWorker =
+      result.domain->getNextPlan(*sameWorker.getCursor());
+  ASSERT_EQ(crossWorker.getKind(), ScheduleSuccessorKind::Plan);
+  ASSERT_TRUE(crossWorker.getPlan());
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @first() {
+    %buffer = memref.alloc()
+        : memref<2x1025x128xf16, #wafer.memory<spm, tensor>>
+    %zero = arith.constant 0.0 : f16
+    wafer.instr.fill %buffer, %zero
+        : memref<2x1025x128xf16, #wafer.memory<spm, tensor>>, f16
+    wafer.instr.fill %buffer, %zero
+        : memref<2x1025x128xf16, #wafer.memory<spm, tensor>>, f16
+    return
+  }
+  func.func @second() {
+    %buffer = memref.alloc()
+        : memref<2x1025x128xf16, #wafer.memory<spm, tensor>>
+    %zero = arith.constant 0.0 : f16
+    wafer.instr.fill %buffer, %zero
+        : memref<2x1025x128xf16, #wafer.memory<spm, tensor>>, f16
+    wafer.instr.fill %buffer, %zero
+        : memref<2x1025x128xf16, #wafer.memory<spm, tensor>>, f16
+    return
+  }
+}
+)mlir",
+                                                        context.get());
+  ASSERT_TRUE(module);
+  llvm::SmallVector<mlir::func::FuncOp, 2> functions;
+  module->walk(
+      [&](mlir::func::FuncOp function) { functions.push_back(function); });
+  ASSERT_EQ(functions.size(), 2u);
+  llvm::SmallVector<InstrFillOp, 4> fills;
+  for (mlir::func::FuncOp function : functions)
+    function.walk([&](InstrFillOp fill) { fills.push_back(fill); });
+  ASSERT_EQ(fills.size(), 4u);
+  mlir::Block *firstBlock = &functions[0].getBody().front();
+  mlir::Block *secondBlock = &functions[1].getBody().front();
+  std::vector<ScheduleEventIRBinding> bindings{
+      {problem.firstIssue,
+       TileId(0),
+       firstBlock,
+       {fills[0], fills[2]},
+       {firstBlock, secondBlock}},
+      {problem.firstCompletion,
+       TileId(0),
+       firstBlock,
+       {},
+       {firstBlock, secondBlock}},
+      {problem.handoffReady, TileId(0), firstBlock, {}},
+      {problem.secondIssue,
+       TileId(0),
+       firstBlock,
+       {fills[1], fills[3]},
+       {firstBlock, secondBlock}},
+      {problem.secondCompletion,
+       TileId(0),
+       firstBlock,
+       {},
+       {firstBlock, secondBlock}}};
+  PreparedScheduleMaterializationResult prepared =
+      prepareScheduleMaterialization(*result.domain, *crossWorker.getPlan(),
+                                     {ScheduleIRModule{TileId(0), *module}},
+                                     bindings);
+  ASSERT_TRUE(prepared.succeeded())
+      << (prepared.failure ? prepared.failure->detail : "");
+  std::vector<mlir::OwningOpRef<mlir::ModuleOp>> modules;
+  modules.push_back(std::move(module));
+  MaterializedScheduleResult materialized =
+      materializeSchedule(std::move(modules), std::move(*prepared.prepared));
+  ASSERT_TRUE(materialized.succeeded())
+      << (materialized.failure ? materialized.failure->detail : "");
+
+  unsigned joins = 0;
+  materialized.materialized->modules.front()->walk(
+      [&](SyncNCCJoinOp) { ++joins; });
+  EXPECT_EQ(joins, 4u);
+  EXPECT_EQ(materialized.materialized->completionGroups.size(), 4u);
+  std::set<std::pair<EventBoundaryId, mlir::Block *>> occurrences;
+  for (const MaterializedCompletionGroup &group :
+       materialized.materialized->completionGroups)
+    EXPECT_TRUE(occurrences.insert({group.boundary, group.block}).second);
+  EXPECT_EQ(occurrences.size(), 4u);
+  std::string failureReason;
+  EXPECT_TRUE(mlir::succeeded(
+      verifyMaterializedSchedule(*materialized.materialized, &failureReason)))
+      << failureReason;
+}
+
+TEST(ScheduleMaterializationTest,
      SynchronousWritebackUsesSelectedWorkerWithoutDerivedJoin) {
   auto context = createContext();
   ScheduleDomainInput input;

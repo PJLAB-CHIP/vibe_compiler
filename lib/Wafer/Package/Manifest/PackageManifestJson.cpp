@@ -128,6 +128,8 @@ llvm::Expected<ProgramTensorRole> parseProgramTensorRole(llvm::StringRef role) {
 }
 
 llvm::Expected<PackageAccessMode> parseAccess(llvm::StringRef access) {
+  if (access == "none")
+    return PackageAccessMode::None;
   if (access == "read_only")
     return PackageAccessMode::ReadOnly;
   if (access == "write_only")
@@ -623,6 +625,26 @@ parseTileEntryArgumentReference(const llvm::json::Object &object,
     if (!alignment)
       return alignment.takeError();
     return TileEntryArgumentReference{WorkspaceArgument{*bytes, *alignment}};
+  }
+  if (*kind == "card_workspace") {
+    if (llvm::Error error = requireExactFields(
+            object,
+            {"kind", "ordinal", "resource", "bytes", "alignment", "access"},
+            context))
+      return std::move(error);
+    llvm::Expected<uint64_t> resource =
+        requireUnsigned(object, "resource", context);
+    llvm::Expected<uint64_t> bytes = requireUnsigned(object, "bytes", context);
+    llvm::Expected<uint64_t> alignment =
+        requireUnsigned(object, "alignment", context);
+    if (!resource)
+      return resource.takeError();
+    if (!bytes)
+      return bytes.takeError();
+    if (!alignment)
+      return alignment.takeError();
+    return TileEntryArgumentReference{
+        CardWorkspaceArgument{*resource, *bytes, *alignment}};
   }
   if (*kind == "profile_record") {
     if (llvm::Error error = requireExactFields(

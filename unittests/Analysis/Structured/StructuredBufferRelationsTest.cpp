@@ -90,6 +90,17 @@ TEST_F(StructuredBufferRelationsTest,
                mlir::isa_and_nonnull<mlir::memref::AllocOp>(
                    relation.buffer.getDefiningOp());
       }));
+  auto emitted = llvm::find_if(
+      relations.operationEmissions,
+      [](const wafer::StructuredOperationEmissionRelation &relation) {
+        return relation.structuredNodeId == 7 &&
+               mlir::isa_and_nonnull<wafer::InstrGatherScatterOp>(
+                   relation.operation);
+      });
+  ASSERT_NE(emitted, relations.operationEmissions.end());
+  wafer::compiler::detail::StructuredNodeUseIndex nodeUses(relations);
+  EXPECT_EQ(nodeUses.collectNodesUsedBy(emitted->operation),
+            (llvm::SmallVector<uint32_t, 4>{7}));
 
   ASSERT_TRUE(mlir::succeeded(wafer::compiler::detail::runPassPipeline(
       *module, "test-required-ncc-join-placement",

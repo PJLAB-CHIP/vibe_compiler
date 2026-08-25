@@ -86,6 +86,8 @@ bool haveSameProgramBinding(const ProgramResourceBinding &lhs,
 
 runtime::PackageAccessMode getAccess(TileEntryArgumentAccess access) {
   switch (access) {
+  case TileEntryArgumentAccess::None:
+    return runtime::PackageAccessMode::None;
   case TileEntryArgumentAccess::ReadOnly:
     return runtime::PackageAccessMode::ReadOnly;
   case TileEntryArgumentAccess::WriteOnly:
@@ -343,6 +345,21 @@ buildManifest(const CardExecutable &cardExecutable,
     return match;
   };
 
+  std::set<int64_t> compilerCardWorkspaceIds;
+  for (const VerifiedTargetTileInterface *tileInterface :
+       interfacesByLaunchSlot)
+    for (const TileEntryArgument &slot : tileInterface->getTileEntryArguments())
+      if (slot.kind == TileEntryArgumentKind::CardWorkspace) {
+        if (slot.resourceIndex < 0)
+          return fail(diagnostics,
+                      "package card workspace has a negative compiler ID");
+        compilerCardWorkspaceIds.insert(slot.resourceIndex);
+      }
+  std::map<int64_t, uint64_t> packageCardWorkspaceIds;
+  for (int64_t compilerId : compilerCardWorkspaceIds)
+    packageCardWorkspaceIds.emplace(
+        compilerId, static_cast<uint64_t>(packageCardWorkspaceIds.size()));
+
   for (int64_t launchSlot = 0; launchSlot < static_cast<int64_t>(tileCount);
        ++launchSlot) {
     const TileExecutable &tile = *tilesByLaunchSlot[launchSlot];
@@ -555,6 +572,21 @@ buildManifest(const CardExecutable &cardExecutable,
         entry.arguments.push_back(
             {static_cast<uint64_t>(slot.ordinal),
              runtime::TileEntryArgumentReference(runtime::WorkspaceArgument{
+                 static_cast<uint64_t>(slot.byteSize),
+                 static_cast<uint64_t>(slot.alignment)}),
+             getAccess(slot.access)});
+        continue;
+      }
+
+      if (slot.kind == TileEntryArgumentKind::CardWorkspace) {
+        if (!detail::isValidPackageCompilerManagedSlot(slot))
+          return fail(diagnostics,
+                      "package card workspace tile entry argument identity "
+                      "is invalid");
+        entry.arguments.push_back(
+            {static_cast<uint64_t>(slot.ordinal),
+             runtime::TileEntryArgumentReference(runtime::CardWorkspaceArgument{
+                 packageCardWorkspaceIds.at(slot.resourceIndex),
                  static_cast<uint64_t>(slot.byteSize),
                  static_cast<uint64_t>(slot.alignment)}),
              getAccess(slot.access)});
@@ -1177,6 +1209,7 @@ bool detail::doesPackageSlotMatchProgramBinding(
       return false;
     break;
   case TileEntryArgumentKind::Workspace:
+  case TileEntryArgumentKind::CardWorkspace:
   case TileEntryArgumentKind::ProfileRecord:
   case TileEntryArgumentKind::TransportStatus:
     return false;
@@ -1192,6 +1225,8 @@ bool detail::isValidPackageCompilerManagedSlot(const TileEntryArgument &slot) {
   if (slot.kind == TileEntryArgumentKind::Workspace)
     return slot.resourceIndex == 0 && slot.dtype == LogicalFormat::U8 &&
            slot.shape.size() == 1 && slot.shape.front() == slot.byteSize;
+  if (slot.kind == TileEntryArgumentKind::CardWorkspace)
+    return slot.resourceIndex >= 0 && !slot.shape.empty();
   if (slot.kind == TileEntryArgumentKind::ProfileRecord)
     return slot.resourceIndex == 0 && slot.dtype == LogicalFormat::U8 &&
            slot.shape.size() == 1 && slot.shape.front() == slot.byteSize &&

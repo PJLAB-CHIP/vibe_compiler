@@ -442,6 +442,14 @@ public:
   }
   TemporalExpansionResult resumeTemporal(TemporalContinuation &continuation);
 
+  /// Builds one ordinary TemporalDomain member from an actual attributed SPM
+  /// capacity rejection. This is a proposal only: it does not advance the
+  /// canonical cursor or learn a prefix no-good.
+  mlir::FailureOr<std::optional<TemporalState>>
+  refineTemporalStateFromActualFeedback(
+      const TemporalState &state, llvm::ArrayRef<SemanticRootKey> causalRoots,
+      std::string *failureReason = nullptr);
+
   RepresentationContinuation
   createRepresentationContinuation(TemporalState parent) const {
     return RepresentationContinuation(std::move(parent));

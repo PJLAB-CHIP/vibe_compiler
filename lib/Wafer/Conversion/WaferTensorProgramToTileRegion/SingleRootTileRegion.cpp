@@ -242,6 +242,8 @@ void appendRelations(StructuredMaterializationRelations &destination,
                                     source.scratchBuffers.end());
   destination.outputBuffers.append(source.outputBuffers.begin(),
                                    source.outputBuffers.end());
+  destination.cardDDRBuffers.append(source.cardDDRBuffers.begin(),
+                                    source.cardDDRBuffers.end());
   destination.partialReductionContributions.append(
       source.partialReductionContributions.begin(),
       source.partialReductionContributions.end());

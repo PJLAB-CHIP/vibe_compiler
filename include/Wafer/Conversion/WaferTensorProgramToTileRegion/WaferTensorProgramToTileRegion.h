@@ -34,6 +34,15 @@ enum class StructuredComputeImplementation : uint8_t {
 struct StructuredOperationNodeMapping {
   mlir::Operation *operation = nullptr;
   uint32_t structuredNodeId = 0;
+  /// Optional coupled-reduction component for each operation result. Empty
+  /// means that every result keeps its ordinary operation-result identity.
+  /// The mapping is carried only in the current materialization transaction.
+  llvm::SmallVector<unsigned, 2> coupledComponentIndices;
+};
+
+enum class StructuredResultIdentityKind : uint8_t {
+  OperationResult,
+  CoupledReductionComponent,
 };
 
 /// One materialized buffer associated with a structured DAG node.  The buffer
@@ -49,6 +58,8 @@ struct StructuredOperationResultBufferRelation {
   uint32_t structuredNodeId = 0;
   unsigned resultIndex = 0;
   mlir::Value buffer;
+  StructuredResultIdentityKind identityKind =
+      StructuredResultIdentityKind::OperationResult;
 };
 
 /// One physical compute operation emitted for a structured DAG node.  The
@@ -62,6 +73,11 @@ struct StructuredOperationEmissionRelation {
 /// One materialized buffer associated with an observable function result.
 struct SpatialOutputBufferRelation {
   unsigned outputIndex = 0;
+  mlir::Value buffer;
+};
+
+struct CardDDRBufferRelation {
+  int64_t resourceId = -1;
   mlir::Value buffer;
 };
 
@@ -95,6 +111,7 @@ struct StructuredMaterializationRelations {
   /// node owner for actual resource rejection attribution.
   llvm::SmallVector<StructuredOperationBufferRelation, 16> scratchBuffers;
   llvm::SmallVector<SpatialOutputBufferRelation, 4> outputBuffers;
+  llvm::SmallVector<CardDDRBufferRelation, 8> cardDDRBuffers;
   llvm::SmallVector<PartialReductionContributionBufferRelation, 8>
       partialReductionContributions;
   llvm::SmallVector<PartialReductionMergeInputBufferRelation, 8>
@@ -106,6 +123,7 @@ struct StructuredMaterializationRelations {
     operandBuffers.clear();
     scratchBuffers.clear();
     outputBuffers.clear();
+    cardDDRBuffers.clear();
     partialReductionContributions.clear();
     partialReductionMergeInputs.clear();
   }
