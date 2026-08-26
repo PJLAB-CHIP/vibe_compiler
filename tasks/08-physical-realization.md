@@ -67,6 +67,26 @@ Movement transformation只能读取这些current endpoint和exact relation，不
 三种TileRegion form的局部和stage verifier合同由07定义。两项transformation必须各自使用唯一registered实现；baseline先逐项接入同一实现，
 search cutover后只改变choice/controller owner，不增加第二套rewrite。
 
+### 2.2 Layout assignment 与cleanup
+
+Layout domain builder只读current structural TileRegion，为每个SSA value、consumer use、exact alias和op layout tuple枚举合法
+`MemLayout` label。Baseline与search调用同一个query-local exact PBQP optimizer，PBQP结果不进入IR、candidate key或下一stage。
+Baseline每个attempt只求解并应用一次，不建立layout frontier；search先访问同一assignment，再保留完整raw合法域。
+PBQP budget exhaustion对baseline是typed resource failure，对search只表示proposal unavailable，均不产生layout legality结论。
+
+PBQP hard factor只表达current interface和physical encoding能够证明的合法性。Soft factor只计
+`instruction_tick × (exact layout-dependent compute instructions + exact unique conversion descriptors)`。Shared conversion只计一次；
+same-layout、metadata view和alias为0。当前没有local-SPM byte tick，因此physical bytes只作诊断；DDR/NoC和SPM capacity分别留给
+movement与MiniMalloc。Unknown term对整个solve禁用而不是按0；checked arithmetic overflow返回`Indeterminate`，不能与hard infinity混合。
+
+Solver output在mutation前重新验证，然后由唯一layout transformation立即创建或复用actual SSA：same-layout不建op，exact metadata
+view绑定原storage，多个use共享同一`(source, target layout)` conversion，per-use conversion保持独立，unused conversion不生成。
+Transformation成功后solver graph、state index和assignment立即销毁。
+
+Movement transformation完成后，以同一relation/physical-map/alias/effect/lifetime proof运行一次full-transfer cleanup；该cleanup必须在
+execution-structure和Instr scheduling前完成。现有Instr-only或test-only eliminator的独有正负资产迁移到这一owner后删除旧实现，
+不能并存两个production cleanup路径。
+
 | 事实 | owner | 生命周期 |
 | --- | --- | --- |
 | iterator/indexing与tensor访问语义 | current structured op及标准interfaces | IR epoch |
@@ -229,10 +249,12 @@ compile-time proof resource limit。planning query的typed结果可控制state�
 验证必须覆盖：
 
 - structural→layout-resolved→physical TileRegion的逐stage positive/negative transition，wrong-form输入在直接stage拒绝；
+- exact PBQP对flat layout oracle的cost/tie/status一致性，以及baseline一次apply、search首proposal+完整raw域；
 - encoding interface的Tensor/NTensor/Cx/NCx、dtype、full/tail/padding与checked arithmetic；
 - relation的identity/permutation/reshape/broadcast/slice/concat/composition及rewrite invalidation；
 - metadata view正负例、alias/range/lifetime与physical-map equality；
 - direct/mapped/staged/local movement和one/multi-descriptor cover；
+- same-layout/unused零materialization、1/2/15 uses共享conversion，以及full-transfer cleanup的on/off等价与唯一production caller；
 - invalid-lane fill/mask/segmented path及negative observation；
 - distinct Tile peer IDs、message matching、cross-Tile SPM SSA rejection；
 - actual CardModule拆成per-Tile modules后重放每Tile Instr、SPM/DDR和CardExecutable communication gate；

@@ -194,6 +194,37 @@ destination mutation、view/alias与materializing copy必须已经是actual IR�
 Redundant full-buffer transfer normalization只在current IR上使用exact logical relation、physical map、SSA root、effect和
 use/lifetime证明删除；partial、permuted、layout-changing或alias-unknown transfer保留。
 
+#### 6.1.1 Layout domain 与 PBQP proposal
+
+Layout合法域直接从current structural TileRegion的SSA value/use、consumer interface、exact `IndexRelation`和可验证encoding构造。
+Baseline与search都调用同一个query-local PBQP layout optimizer；它不是search state，也不共享两条policy的candidate owner。
+Baseline对每个actual attempt求解并应用一次确定性assignment，不枚举layout frontier；search把同一assignment作为首个proposal，
+随后仍可遍历完整raw layout域。PBQP不是合法性owner，也不决定最终search winner。
+
+PBQP factor graph只在一次query内存在：value/use是当前SSA的局部变量，op tuple constraint通过auxiliary factor表达；hard factor以
+显式infinity拒绝不支持的layout tuple、alias或use binding。Soft cost必须是final actual objective在layout stage的精确投影：
+
+```text
+layout_ticks = instruction_tick *
+               (exact layout-dependent compute instruction count
+                + exact unique layout-conversion descriptor count)
+```
+
+一个shared conversion的descriptor只计一次，per-use conversion分别计；same-layout、exact metadata view和alias计0。当前final objective
+没有local-SPM byte tick，因此layout bytes只作诊断，不参与PBQP；DDR/NoC work由第9项actual movement计算，SPM footprint/capacity只由
+MiniMalloc判断。未来若增加local-SPM term，必须在final actual objective和PBQP cohort中同批增加，不能只改PBQP。
+
+`instruction_tick`来自baseline/search共享的显式target cost cohort。Descriptor cover或layout-dependent compute count不能从current
+interface精确求得时，该soft term对整个solve禁用，不能把单个unknown按0、极大值或任意权重参与。没有可比较soft term时，PBQP只在
+hard-feasible assignment间使用全局semantic tie-break，并明确不宣称performance optimal。Hard infinity只表示已证明illegal；finite
+cost的加法/乘法使用checked arithmetic，任一影响比较的overflow返回`Indeterminate`，不能转成infinity或`NoSolution`。
+
+Solver必须区分`Optimal`、`NoSolution`、`Indeterminate`和`BrokenContract`，R0/R1/R2与residual core均受同一work budget约束；
+全assignment tie-break必须与独立flat oracle一致。Baseline只接受`Optimal`结果；`NoSolution`、`Indeterminate`和`BrokenContract`
+分别成为typed unsupported、resource failure和compiler error，不fallback canonical layout。Search的PBQP `Indeterminate`只表示首个proposal
+不可用，不能删除raw合法域或形成no-good。Assignment选中后立即在各自candidate owner上创建actual
+view/alias/allocation/layout materialization，随后销毁factor graph和assignment；下游不读取solver对象。
+
 ### 6.2 Movement
 
 Movement choice以current producer value、consumer operand、exact demanded domain和physical layout为输入，选择local view/copy、
@@ -203,6 +234,10 @@ staging buffer、token和effect。
 Movement不从shape、value名或future version ID恢复source/destination，也不先创建donor movement再替换。不同realization
 使用同一transformation实现；每个alternative作用于自己的candidate transaction。跨region或跨Tile的每个非空domain
 必须all-and-only覆盖，且每个movement op必须有current SSA owner和effect。
+
+Movement形成后运行一次current-IR exact cleanup。只有full payload、same storage、same physical map且alias/effect/lifetime安全时
+才删除transfer；partial、permuted、真正layout-changing、unknown ownership或不受支持的control flow全部保留。Cleanup与layout
+creation共用`PhysicalLayoutRelation`/`TransferRealizability` proof，不保留Tile与Instr两套production eliminator。
 
 ### 6.3 Execution structure 与 rotating storage
 
@@ -274,8 +309,9 @@ current structured semantics和exact demand直接使用固定placement、single-
 成为shared schema。
 
 Baseline从full local temporal extent开始。只有actual MiniMalloc返回带current owner/conflict demand的capacity rejection时，
-controller才按稳定semantic顺序选择受影响axis的下一个更小temporal choice。它不评分、不保留alternative、
-不调用search domain，不用预测bytes选tile size。
+controller才按稳定semantic顺序选择受影响axis的下一个更小temporal choice。它不评分或保留whole-candidate alternative，
+不调用search domain，不用预测bytes选tile size；第6.1.1节的policy-free PBQP只是对每个actual attempt执行一次的local layout
+optimization，不形成baseline frontier或fallback。
 
 ### 7.3 Search
 

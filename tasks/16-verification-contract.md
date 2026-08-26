@@ -134,6 +134,13 @@ position、Attention/decode/mask专用matcher或公共pass残留。
   真实规模整除/非整除正例；
 - independent flat reference composer证明pre-structural choice set；independent runner从fresh source逐choice调用与production相同的
   structural materializer和后续current-IR transformations/actual gates，以实际结果形成accepted/rejected truth set；
+- layout PBQP使用独立flat assignment oracle检查optimal cost、全assignment semantic tie、`NoSolution`、`Indeterminate`和
+  `BrokenContract`；至少覆盖R0/R1/R2、degree>=3 residual、disconnected/asymmetric states、matrix orientation、hard infinity、finite
+  arithmetic overflow和exact budget boundary。Overflow必须是`Indeterminate`，不能成为`NoSolution`。Tiny oracle之外，同一solver必须由
+  1024/1025/1031 actual baseline与search layout stage直接调用；
+- baseline每个actual attempt只调用一次共享PBQP并立即apply，不建立layout frontier；search以相同assignment为首proposal但仍枚举
+  完整raw layout域。PBQP on/off、solver budget和soft-cost availability不得改变raw legal域或exhaustive actual accepted set；
+  whole-search budget导致的访问顺序/best-found差异必须保持partial/budgeted coverage并显式报告；
 - cheap structural legality、exact coverage、topology symmetry、canonical dedup和已证明performance bound只有在不删除合法最优解时才能在
   state expansion前剪枝；SPM capacity没有plan-side early rejection；
 - footprint、working-set、shape公式、buffer-count、synthetic demand、预测lifetime或nominal bandwidth projection不能签发SPM
@@ -180,6 +187,10 @@ exact continuation和admissible bound表示时可为`feasible-with-bound`；obje
   qualified exact route才有directed-link work；
 - dependency phases相加，独立branch/资源取并发最大值，只有显式double/triple buffering才用steady-state II；
 - estimate只排priority，不剪枝；lower bound逐prefix与flat completion minimum比较不高估；raw work与term source不写入selected IR。
+- PBQP hard factor只表达current interface/encoding的exact legality；soft factor只使用同一cohort内完整可比较的actual-derived terms。
+  当前layout cost只能是`instruction_tick × (exact layout-dependent compute instructions + exact unique conversion descriptors)`；
+  shared conversion只计一次。Unknown term不能按0或任意权重混入；local-SPM bytes、DDR/NoC和SPM capacity不得提前进入；无soft cohort时
+  只声明hard-feasible canonical assignment，不声明performance optimal。Apply后actual新增Instr必须与PBQP projection一致；
 
 ## 5. Completion、memory 与 transport gates
 
@@ -363,6 +374,9 @@ current target容量、target-model能力或host预算不足，必须按stage报
   multiple block/wave、remainder和tail。tiny只用于有界oracle、最小负例和scalar/zero-rank，并有同机制真实规模对应项。
 - generic chain/diamond/fanout/reduction、mixed compute/movement、layout/view、capacity rejection、attention prefill/decode
   分别检查exact coverage、owner、merge、tail、movement、lifetime、completion及直接下游结果，而不是只断言成功。
+- layout/movement cleanup必须成对覆盖same-layout、shared conversion、exact metadata view、full same-map transfer和
+  partial/permuted/layout-changing/unknown-alias负例；cleanup on/off保持observable IR语义与actual accepted outcome，且真实规模case
+  直接检查conversion/transfer/allocation数量，不以unit helper被调用代替production caller。
 - 同一product source的`none`和`search`端到端证据必须来自两次fresh独立transaction，各自产生current
   CardExecutable、ExecutablePackage、strict readback和no-card结果。历史package、旧日志、skip或unsupported不能代签。
 - `board-ready`要求source、inputs、expected、package、guard、continuation、deadline、runner和no-card全部在无设备环境闭合；

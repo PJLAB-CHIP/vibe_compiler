@@ -90,6 +90,12 @@ single-card current path向physical-dataflow stage交付一个完整card-local T
   再确定性转换到wafer.tile；
 - current-IR physical realization：先一次完成function-boundary与region-local bufferization/layout/view，再应用movement choice；
   每次rewrite后验证并使旧analysis失效；
+- current-IR layout query：Planning内部的通用exact PBQP solver与factor builder只读candidate SSA/interface并返回query-local
+  assignment；baseline和search共享实现但各自立即apply到自己的owner。Solver不依赖LLVM RegAlloc/`LLVMCodeGen`，不保存
+  `PhysicalVersion`或candidate state；两条policy从同一policy-free target cost cohort读取`instruction_tick`，不能让baseline依赖
+  search controller类型；layout/movement rewrite仍由physical-realization library唯一拥有；
+- exact transfer cleanup：与layout/movement共用relation/physical-map/alias/effect/lifetime proof，在movement后、execution structure前
+  只有一个production入口；旧Instr-only/test-only helper迁移测试后删除；
 - current Tile execution structure：在movement-closed physical TileRegion上物化Serialized或software-pipelined loop、
   prefix/steady/tail、rotating roots和slot SSA；不创建completion或memory offset；
 - bounded candidate Tile executor：对每个candidate并行互不共享可写IR的per-Tile lowering work，并维持deterministic result order；
