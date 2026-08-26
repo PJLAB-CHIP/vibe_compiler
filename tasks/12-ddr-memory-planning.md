@@ -4,7 +4,7 @@
 DDR demand/range validation、dependency-driven completion和accepted offsets。
 multi-arena、state/streaming weight和provider allocation model延后。
 它不能只是DDR access validation；DDR byte span、lifetime、capacity和largest-contiguous约束只能从每个complete candidate的actual
-current IR判定。partial planning不签发DDR resource proof。DDR movement bytes按
+current IR判定。Pre-DDR stages不签发DDR resource proof。DDR movement bytes按
 current descriptors精确统计并交给06 cost；未经qualified PMU
 校准的“bandwidth pressure”不是硬件legality。
 CardExecutable构造只能从accepted DDR facts和当前IR demand重算launch-facing requirements，并形成typed
@@ -69,7 +69,7 @@ Pipeline position:
 - Explicit non-goals:
   不选择或修改tile/region/temporal/layout/movement/buffer/order，不构造其它candidate，不做runtime allocation。
 - Done criteria:
-  partial planning不签发DDR legality；每个candidate从current IR重建actual problem；all Tiles原子成功后才写offset，任一failure无partial output。
+  Pre-DDR stages不签发DDR legality；每个candidate从current IR重建actual problem；all Tiles原子成功后才写offset，任一failure无partial output。
 ```
 
 ### 2.1 Shared Recomputable Analysis Boundary
@@ -436,19 +436,20 @@ storage bytes, the corresponding memref type/encoding must make that visible.
 
 effect-proven read-only imported parameter仍是现有typed external root。pure transpose/view relation可以由08与consumer indexing
 semantics组合：例如先让oriented GEMM吸收transpose relation，再让原始逻辑shape的weight通过exact composed Tensor DDR mapped
-transfer进入所需physical version；这不需要identity DMA，也不需要
+transfer进入current consumer要求的actual encoded buffer；这不需要identity DMA，也不需要
 新的DDR协议，也不表示任意transpose都能由DMA完成。只有package-time persistent prepack才需要未来typed resource/package
 合同，当前保持非目标。
 
 ### 9.3 与 Physical-Dataflow Planning 的边界
 
-physical-dataflow planning由tasks/06拥有；每个complete assignment物化自己的candidate CardModule。spatial placement、region partition、temporal tile/loop、retention/release/materialization、
+physical-dataflow planning由tasks/06拥有；spatial/region/temporal choice闭合后物化candidate CardModule，之后layout/movement/bufferization在
+current IR上实施。Spatial placement、region partition、temporal tile/loop、retention/release/materialization、
 explicit spill、mapped/staged movement与completion都必须已经在current IR显式；typed opaque SPM clobber输入拒绝，DDR
 planner不创建或改变boundary。DDR owner不知道scope policy、output kind、
-plan ordinal或生成历史，只执行exact demand、lifetime、range、capacity与offset gate。partial planning不形成DDR problem/proof；
+plan ordinal或生成历史，只执行exact demand、lifetime、range、capacity与offset gate。Pre-DDR stages不形成DDR problem/proof；
 逐Tile cheap fact不能单独证明traversal coverage、descriptor closure、lifetime、capacity或completion。
 candidate all-and-only Tile modules形成actual fixed problem后，本层原子分配offset；failure不写partial IR、不改变transfer、TileRegion或
-retention/release，并擦除未提交Card subtree。外层controller可以继续其它complete assignment，但不得clone/replay失败candidate。
+retention/release，并擦除未提交Card subtree。外层controller可以继续其它explicit choice，但不得clone/replay失败candidate。
 SPM的3 MiB fixed-problem constraints与DDR的explicit arena/placement-domain constraints分别是各自planning gate输入；
 DDR exact movement bytes是06 cost输入，不是plan field或未校准
 bandwidth legality。12统计每个static descriptor site的exact bytes；static-trip loop-expanded multiplicity与conditional bounds由06

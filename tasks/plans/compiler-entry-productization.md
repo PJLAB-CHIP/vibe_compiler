@@ -7,7 +7,7 @@ Q59/Q60 的施工顺序、checkpoint 和验证门禁，不复制 frontend progra
 或接口演进合同，也不建立第二条 source-to-package pipeline。
 
 Q59 `compiler-entry-transaction-closure` 在 Q56 达到 `board-ready` 后执行；Q60 `frontend-production-entry`只依赖current
-PyTorch/XLA capture/export资产和Q59，不依赖Q51/Q52 search。Q53 production readiness把Q60产品frontend和Q52 search
+PyTorch/XLA capture/export资产和Q59，不依赖Q52 search。Q53 production readiness把Q60产品frontend和Q52 search
 scalability作为两个并列直接输入，只消费Q60交付的产品frontend output；Q59/Q60均不以测试generator或历史package代替完成证据。
 
 当前状态：Q59和Q60均为`done`；动态状态和后续前置只看`tasks/progress.md`。
@@ -19,9 +19,9 @@ CardExecutable/target writing、package readback和 no-replace publication。尚
 
 1. library 的普通返回值仍是 package writing 之前的中间编译对象，CLI 又在 package 发布后执行 debug/qualification
    action；同时产品工具依赖 build/source tree 绝对路径。这是 Q56 current package 固定后即可独立修复的入口事务问题，
-   不依赖 Q51/Q52 search 设计。
+   不依赖 Q52 search 设计。
 2. framework/exporter到source program的产品边界与compiler search正交：它把current capture/export mechanics收敛为可安装的
-   最小adapter，并让外部StableHLO以portable bytecode进入同一source contract。该边界在Q59之后独立闭合，不等待Q51/Q52；
+   最小adapter，并让外部StableHLO以portable bytecode进入同一source contract。该边界在Q59之后独立闭合，不等待Q52；
    Q53再同时消费该产品入口和Q52交付的search scalability。
 
 Q59 不修改 frontend source 格式或 search/runtime 语义；Q60 不修改 compiler selection、target、package 或 execution
@@ -52,7 +52,7 @@ Pipeline position:
   wafer-compile只执行source-to-package的search|none；wafer-opt保持显式IR开发入口，frontend verifier保持advisory
   verification。production与wafer-opt继续复用同一named semantic pipeline implementation。
 - Explicit non-goals:
-  不改变frontend source格式、Q51/Q52 search域、CardExecutable语义、target/package schema或runtime加载；不建立
+  不改变frontend source格式、Q52 search域、CardExecutable语义、target/package schema或runtime加载；不建立
   稳定C ABI、通用plugin/session框架、用户可拼pass pipeline、compile-from/to模式、旧CLI alias或第二份compiler driver。
 - Done criteria:
   library/CLI成功当且仅当ordinary package及显式请求的共同产品已经readback并commit；任一compile failure不留下目标

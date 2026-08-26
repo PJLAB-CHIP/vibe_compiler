@@ -12,14 +12,14 @@
 
 1. **source semantics只有一个owner。** 数学语义来自verified program与structured tensor IR；compiler不从op、buffer、
    parameter、symbol、文件名或workload名字恢复语义。
-2. **analysis、partial choice、actual candidate和publication分离。** analysis从current source IR与immutable target facts重算；partial
-   state只保存typed assignments。每个complete candidate在独立transaction中物化current IR并运行SPM、DDR、completion、transport和
-   target ABI gate；rejected/loser owner销毁，final winner保留首次Accepted owner并只发布一次。
+2. **analysis、choice、actual candidate和publication分离。** Analysis从current source/candidate IR和immutable target facts重算；
+   pre-structural state只保存spatial/region/temporal choice。这些choice闭合后立即在独立transaction中物化actual TileRegion IR；
+   后续layout、movement、bufferization、Instr、completion和memory只读各自current IR。Rejected/loser owner销毁，final winner不重建并只发布一次。
 3. **graph algorithm与physical-dataflow decision分层。** 05号normalization在policy分叉前把已证明的完整Q/K/V attention一次性归一为
    一个自包含semantic op并确定FA或FD；physical-dataflow search不重新选择graph algorithm，只展开Tile placement、不同op/branch/wave并行、
-   traversal fusion与separation、temporal tile/loop order、physical encoding、storage、communication、
-   movement和buffered overlap联合决定。下游不得另做layout assignment、route fallback、communication reselection或
-   late repair。合法域在immutable IR与typed state上惰性展开；每个complete assignment进入一次共同actual gate，只有最终Accepted winner进入发布。
+   traversal fusion与separation以及temporal tile/loop order。这些structural choice闭合后立即进入actual IR；physical encoding、
+   storage、communication、movement和buffered overlap均在current candidate IR上实施。下游不得late fallback、reselection或repair。
+   只有通过共同actual gate的owner进入winner比较和publication。
 4. **spatial mapping、TileRegion、fusion和temporal tiling必须共同选择。** `tile.region`表示一个Tile内的SPM
    ownership/lifetime domain；current `tile.module`可有一个或多个non-nested regions。region内部可以有多个traversal/loop nest、不同tile shape、逐root lifetime、
    retained/recompute以及显式selective spill/reload；跨region data必须显式DDR materialize，SPM root/value/alias不跨界。
@@ -84,8 +84,8 @@ Pipeline position:
 - Done criteria:
   card-level partition与Tile launch domain分离；CardModule、CardExecutable、atomic writing、typed package/no-card、
   repo-owned CModel和configured board RuntimeProvider链保持有效。semantic algorithm先存在normalized TensorProgram中；spatial mapping、
-  op-wave并行、temporal tile、encoding/view/route、TileRegion/movement、buffering/order和collective relation存在typed planning state中；
-  每个complete candidate在pre-Instr actual CardModule中一次表达，finalized per-Tile Instr在worker/order确定后fresh重建completion并经过
+  op-wave并行、temporal tile和TileRegion membership是被结构materializer消费的choice；encoding/view/buffer/movement在actual TileRegion SSA中表达；
+  worker/order/completion在current Instr上应用和fresh重算。每个candidate的全部physical facts最终存在同一actual CardModule/Instr owner中并经过
   card-scoped actual gates。rejected/loser销毁，winner保留原actual owner进入提交。
   winner capability projection只在真实package/runtime consumer需要时派生，model/board verification不参与candidate选择。
   新的profiling证据或multi-engine software pipeline只有通过自己的production vertical后才能扩展该基线。
@@ -144,8 +144,8 @@ output的实现索引，不能提升为额外架构层。
 | Execution configuration | factory-only `ExecutionConfig` | card-level `num_partitions`与current target identity | Tile work assignment、planner policy |
 | Topology/SPMD | `wafer.target.topology`、card-level logical partition mesh、post-SPMD StableHLO | global-to-card-local tensor partition | Tile mapping、SPM/DDR、physical transport |
 | TensorProgram | Linalg/Tensor/SCF/Arith/Math、typed logical collective与`wafer.linalg_ext.attention` | card-local数学DAG、iterator/indexing relation及effect/control；matched attention显式携带fixed FA/FD algorithm | target compute/movement lowering、Tile、offset、算法sidecar |
-| Physical-dataflow selection | query-local typed assignment state；独立、可失效且可重算的op-wave/ready/live/calendar、`IndexRelation`与liveness/lifetime analysis | spatial、TileRegion、temporal/fusion、layout/movement、buffer/event-order选择及惰性actual evaluation；partial state只保存typed physical assignments，不保存派生analysis或graph algorithm choice | accepted事实、package字段、shadow schedule、长期side table |
-| CardModule / TileRegion | `wafer.card.module`、per-`tile_id` `wafer.tile.module`、non-nested `wafer.tile.region`、SCF/SSA、typed movement/event | selected MPMD、work coverage、Tile-local SPM ownership/lifetime、cross-Tile NoC和实际执行依赖 | rejected candidates、search score、runtime launch |
+| Physical-dataflow choice | query-local spatial/region/temporal transformation parameters以及从current TensorProgram可重算的`IndexRelation` | 选择partition、placement、TileRegion membership和temporal traversal；选择后立即交给candidate-owned materializer | future operation/SSA/buffer/movement/event/schedule、accepted事实、package字段 |
+| CardModule / TileRegion | `wafer.card.module`、per-`tile_id` `wafer.tile.module`、non-nested `wafer.tile.region`、SCF/SSA、typed layout/view/buffer/movement | actual MPMD、work coverage、Tile-local SPM ownership/lifetime、cross-Tile communication和执行依赖；下游事实只从该current IR派生 | rejected choices、search score、shadow physical plan、runtime launch |
 | Instruction/memory program | `wafer.instr.*`、accepted SPM/DDR offsets、completion/Direct DTE | target-abstract invocation、physical geometry、range/lifetime/effect | raw host handle、package schedule |
 | CardExecutable | all-and-only Tile executable records | Tile modules、entry、program bindings、completion、transport和resource的card-scoped atomic acceptance | target object、runtime session、rejected choice |
 | Target modules/data preparation | 一次target conversion产生的owner-backed modules、device-linked verified modules、`TargetTensor` descriptor与`TileEntryArgument` | target dtype/layout/shape/bytes/alignment、entry argument relation、profile identity、module readback | source bytes ownership、package file placement、runtime allocation、CModel重新lowering |
@@ -164,30 +164,28 @@ physical-dataflow selection直接通过Linalg/DPS/Tiling/MemoryEffect、Wafer Op
 责任严格分层：
 
 1. 05号normalization只从typed SSA证明完整Q/K/V attention并产生一个`wafer.linalg_ext.attention`；FA/FD是op上的
-   fixed graph fact，不进入physical search domain。K/V block与partition分别归temporal/spatial轴；每个complete candidate构造selected
+   fixed graph fact，不进入physical search domain。K/V block与partition分别归temporal/spatial轴；每个structural candidate构造selected
    Linalg/Tensor/SCF implementation，再确定性转换为existing wafer.tile compute。未来若引入其它semantic optimization，
    必须由自己的设计定义表示与selection owner，不能复用attention attr充当registry；
-2. query-local analysis从current IR与typed assignments形成symbolic op-wave DAG、ready/running/completed、per-Tile live set、
-   `IndexRelation`、liveness/lifetime、resource calendar和finite temporal breakpoints；这些结果可失效、可重算，不进入partial state、
-   不跨pass或进入accepted output；
-3. event-driven physical-dataflow selection的partial state只保存ready-op dispatch、Tile/work assignment、
-   temporal tile/order、TileRegion partition、retain/recompute/spill/cut/release boundary、layout/movement/transport、buffer/slot与
-   issue/event order等typed choices；所有ready/live/lifetime/calendar/cost事实均从current assignments重算。它允许不同op与branch在不同Tile并发；
+2. Query-local analysis从current source或candidate IR形成exact demand、ready/live set、`IndexRelation`、liveness/lifetime和
+   resource/dependence graph；这些结果可失效、可重算，不跨IR mutation或进入accepted output；
+3. Pre-structural state只保存Tile/work assignment、temporal tile/order、TileRegion partition和retain/recompute choice。选择闭合后
+   立即物化actual TileRegion IR；layout/movement/transport、buffer/slot和issue/event order不得作为future IR state跨stage传递；
 4. current theoretical cost只聚合comparison cohort统一enabled的numeric terms；有实际参数用实际值，其次用已有理论值，完全未知的term对
    整批候选删除。performance Unknown、proof/promotion margin不属于选择合同；
-5. production partial state不物化IR；每个complete assignment构造一次actual CardModule并经过actual memory/target gate。rejected/loser owner销毁，
+5. Spatial/region/temporal choice闭合后立即构造一次actual CardModule/TileRegion；后续choice作用于current IR。Rejected/loser owner销毁，
    allocator、completion、communication和cost owner均不产生repair；
-6. candidate CardModule投影为all-and-only Tile Instr programs，fresh重建completion并经过actual SPM/DDR/transport/ABI gates；
+6. Candidate CardModule投影为all-and-only Tile Instr programs，在current Instr上应用worker/order并fresh重建completion，再经过actual SPM/DDR/transport/ABI gates；
    Accepted results按actual cost与semantic tie-break比较，final winner保留首次accepted owner并原子形成CardExecutable/package publication。
 
 Attention由一个explicit `wafer.linalg_ext.attention`表示。Attention normalization从Linalg indexing map、iterator、scalar region、use-def、view和
 observable semantics证明完整Q/K/V关系，并从functional KV-cache append/return SSA确定FA或FD。Temporal planning选择K/V block，
 spatial planning选择physical partition，exact-demand analysis证明coupled partial/merge；physical search只联合这些physical坐标，不构造algorithm alternatives。
-每个complete candidate根据query-local work description一次展开selected Linalg actions并转换到wafer.tile；final winner不重建。KV cache继续是普通tensor
+每个structural candidate根据current work description一次展开selected Linalg actions并转换到wafer.tile；final winner不重建。KV cache继续是普通tensor
 SSA/function-result语义，不进入runtime-owned cache或名字/参数matcher。
 
 合法候选域使用event dispatch和finite semantic breakpoints惰性生成。exact coverage、topology symmetry、canonical
-dedup和已证明的performance bound可以在不删除合法最优解时剪枝；SPM capacity只由complete candidate actual planning决定。beam、候选cap、随机启发式或其它
+dedup和已证明的performance bound可以在不删除合法最优解时剪枝；SPM capacity只由current candidate actual planning决定。beam、候选cap、随机启发式或其它
 可能损失最优性的trade-off只能在实际负载profiling后启用并持续用小图完整枚举oracle校准。`none`保留同pipeline
 deterministic baseline；driver/process cancellation终止整个transaction且不发布partial output。
 
@@ -198,7 +196,7 @@ deterministic baseline；driver/process cancellation终止整个transaction且�
 - `#wafer.memory<space, layout>`只表达address space与physical encoding marker；offset不是layout字段。
 - physical encoding拥有logical-to-physical bit map、footprint、valid/padding domain和view compatibility；selected transfer route
   必须有exact descriptor/address coverage，不能在lowering失败时静默换route。
-- Partial planning只交付selected structural facts，SPM/DDR legality保持unknown；actual SPM/DDR planner从每个Tile/Card final IR派生
+- Pre-memory stage只交付actual structural/layout/movement IR，SPM/DDR legality保持unknown；actual SPM/DDR planner从每个Tile/Card final IR派生
   roots、lifetime/conflict、range并分配accepted offset。SPM actual high-water只报告capacity/headroom，不参与plan objective；
   allocator用受管MiniMalloc和独立validator all-and-only覆盖派生的fixed problems，problem/query数量不是region/entry语义，
   也不产生、排序或修改partition/traversal/tile/region/movement choice。
@@ -277,7 +275,7 @@ target-model是独立qualification consumer，其mismatch不改变已经验证�
 | 维度 | 稳定合同 |
 | --- | --- |
 | source | 产品adapter与pre-exported input形成唯一static-ranked StableHLO source；card partition显式；logical data identity、checked range与transaction lifetime分离 |
-| decision | graph normalization产生fixed semantic roots；baseline和search分别拥有自己的physical plan与materializer；每个complete candidate actualize一次，只有一个Accepted result进入发布 |
+| decision | graph normalization产生fixed semantic roots；baseline和search分别拥有自己的structural choice owner与materializer；choice闭后立即生成actual TileRegion IR，后续只在current IR上变换，只有一个Accepted owner进入发布 |
 | value semantics | 算术operation和dtype语义由上游IR拥有；physical-dataflow只消费这些事实，不增加数值policy或search axis |
 | physical realization | CardModule、per-Tile TileModule/TileRegion、typed physical movement、Instr及actual lifetime-derived SPM/DDR offsets共同闭合 |
 | communication | endpoint、payload、token、wait和completion来自current topology、selected movement及actual lifetime；不存在late route或同步repair |

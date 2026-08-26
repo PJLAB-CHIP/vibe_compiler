@@ -85,14 +85,16 @@ single-card current path向physical-dataflow stage交付一个完整card-local T
 
 - graph normalization：从current TensorProgram typed SSA证明完整attention并创建一个fixed-algorithm semantic op；不构造
   algorithm points或isolated alternative；
-- physical-dataflow selection：从fixed TensorProgram roots构造query-local DAG、component/event facts和typed
-  partial choices，惰性生成spatial/temporal/TileRegion/fusion/layout/movement/communication/buffering候选；
-- CardModule/TileRegion materialization：消费每个complete assignment；attention先展开selected Linalg/Tensor/SCF，再确定性转换到wafer.tile；
+- physical-dataflow selection：从fixed TensorProgram roots构造query-local exact demand和typed spatial/region/temporal choices；
+- CardModule/TileRegion materialization：消费每个闭合structural choice并立即生成actual IR；attention先展开selected Linalg/Tensor/SCF，
+  再确定性转换到wafer.tile；
+- current-IR physical realization：针对actual TileRegion SSA应用layout/view/bufferization和movement choice，每次rewrite后验证并使旧analysis失效；
 - bounded candidate Tile executor：对每个candidate并行互不共享可写IR的per-Tile lowering work，并维持deterministic result order；
-- Instr construction and physical verification：对candidate Tile module消费已经物化的worker/slot/order/completion，执行memory、transport和ABI验证；
+- Instr construction and physical verification：TileRegion-to-Instr后从current Instr重建dependence/resource graph，应用worker/order、
+  fresh构造completion，再执行memory、transport和ABI验证；
 - CardExecutable actual admission：返回Accepted或typed rejection/failure，不生成repair；rejected/loser owner销毁，final winner再进入target output。
 
-现有类名或函数名只作为实现索引；长期合同仍是：TensorProgram → complete candidate CardModule/TileRegion → all-and-only
+现有类名或函数名只作为实现索引；长期合同仍是：TensorProgram → structural choice → actual CardModule/TileRegion → all-and-only
 Tile Instr → actual result → one retained CardExecutable winner。实现索引不得升级为output名或要求其它library读取search对象。
 
 禁止恢复：
@@ -134,9 +136,9 @@ candidate owner，不在内部反复缩tile或切换算法。
 `Analysis`拥有current-IR schedule work、theoretical cohort cost、physical relation、lifetime/conflict和topology facts。
 performance estimator只计算enabled numeric terms；完全未知项不进入比较。
 
-planning libraries从immutable IR与typed state构造proof；selected transforms物化completion、SPM/DDR offsets、worker/order和
-communication。allocator只解fixed problem，不能生成spill/retile/reorder repair。planning facts由对应planning query拥有，actual IR只做
-selected parity，不能把late result返回search形成第二控制线。
+Planning libraries从current IR和显式target facts构造可失效proof；transforms将当前choice物化为actual layout、movement、
+worker/order/completion，memory planners再从该IR生成SPM/DDR offsets。Allocator只解fixed problem，不能生成spill/retile/reorder repair。
+Current IR是事实源，不与物化前plan做parity；late typed result只返回外层controller，不形成第二控制线。
 
 ### 3.5 Dormant mechanism迁移边界
 

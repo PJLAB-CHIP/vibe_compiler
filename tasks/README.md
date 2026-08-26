@@ -68,8 +68,9 @@
 | Q61 whole-program scale readiness | `tasks/plans/program-data-and-whole-program-scale.md` | 01–02、06、14–18 |
 | Q48 semantic superoptimization | `tasks/plans/semantic-superoptimization.md` | 05–08、10–11、16–18 |
 
-Q52当前同时处理baseline回归、两条policy各自的IR膨胀、verifier职责、movement/layout接线和后续search
-scalability；它不再只是Q51后的profile优化。Q53当前只形成fresh host/package/no-card与board-ready输入，不运行真实设备。
+Q52当前同时处理baseline回归、两条policy各自的IR膨胀、verifier职责、actual-IR materialization boundary、
+movement/layout和后续search scalability；历史Q51 shadow planning state只作donor/删除输入，不是current设计。Q53只形成
+fresh host/package/no-card与board-ready输入，不运行真实设备。
 Q49–Q51详细施工与原Q53板端设想位于
 `tasks/archive/physical-dataflow-synthesis-working-history.md`，Q54历史整改位于
 `tasks/archive/mlir-engineering-remediation.md`。
@@ -108,7 +109,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 | `tasks/archive/llama-block-numeric-characterization.md` | 已完成Q31的ProgramTensor逐rank abs/ULP统计、非verification多seed 7B重放及source/model comparator gate收紧记录 |
 | `tasks/archive/llama-block-production-performance.md` | 已完成Q30的static movement/physical codec host性能收口、package等价性和完整7B双replay记录 |
 | `tasks/archive/llama-7b-block-vertical.md` | 已完成Q28的标准Llama-2 7B单block TP16 source/package、repo-owned SystemC managed-reference和完整PyTorch eager output differential记录 |
-| `tasks/archive/tile-dataflow-scheduling.md` | 已完成Q29历史structured tensor program直达bounded task/dataflow scheduling、当时的跨region SPM合同、card结果写入、旧group executable surface退役及7B TP16 compile-only验证记录；current region语义已由07及Q49.P/Q50/Q51边界替代 |
+| `tasks/archive/tile-dataflow-scheduling.md` | 已完成Q29历史structured tensor program直达bounded task/dataflow scheduling、当时的跨region SPM合同、card结果写入、旧group executable surface退役及7B TP16 compile-only验证记录；current region语义只看06/07和Q52 current plan |
 | `tasks/archive/reference-executor-retirement.md` | 已完成Q27的accepted-IR第二套解释器、oracle分支和旧CLI退役，以及CPU-expected到target CModel纵向gate收敛记录 |
 | `tasks/archive/memory-lifetime-analysis.md` | 已完成Q26的共享structured lifetime/packing core、DDR issue-to-fence completion、两侧scope/source relation、offset一次性写入和双配置gate记录 |
 | `tasks/archive/residual-source-modularity.md` | 已完成Q25的reference/model、numeric/bulk、compiler/output/package与frontend bridge共11个聚合实现模块化和双配置gate记录 |

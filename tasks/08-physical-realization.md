@@ -9,13 +9,12 @@
 ```text
 Pipeline position:
 - Upstream IR / input:
-  immutable card-local structured TensorProgram与typed planning state，或winner commit中新建的selected Card subtree；current op、
-  indexing maps、Tiling/DPS interfaces、SSA/view/control flow、dtype/shape/effect与target topology均可验证，
-  selected Tile work domain由closed plan表达。
+  immutable card-local structured TensorProgram，或spatial/region/temporal choice已物化的candidate-owned Card/TileRegion IR；current op、
+  indexing maps、Tiling/DPS/Bufferizable interfaces、SSA/view/control flow、dtype/shape/effect与target topology均可验证。
 - Current stage responsibility:
-  从当前IR派生logical IndexRelation、alias/root和shape bounds；由memref encoding解释footprint、alignment、
-  valid/padding domain与logical-to-physical bit mapping；证明metadata view或selected DDR/SPM/NoC movement是否exact
-  可实现；planning query不写IR，selected emitter在新Card subtree中物化typed view、allocation、movement、temporary、staging、token与wait。
+  从current IR派生logical IndexRelation、alias/root和shape bounds；由memref encoding解释footprint、alignment、
+  valid/padding domain与logical-to-physical bit mapping；证明metadata view或DDR/SPM/NoC movement是否exact可实现；
+  针对current SSA/use的transformation立即物化typed view、allocation、movement、temporary、staging和token。Wait只在Instr completion stage生成。
 - Output IR / files:
   query-local且随rewrite失效的analysis proof，或自包含的selected wafer.card.module / wafer.tile.module body；
   accepted事实只存在于typed memref、SSA/view、wafer.tile.region、movement/event和必要typed attrs中。
@@ -40,8 +39,8 @@ Pipeline position:
 - encoding行为属于承载它的attr/type interface；consumer不能各自复制block/tail/padding公式。
 - transfer realizability同时读取source、destination、relation、encoding、alias/effect和current target limits，
   因而是跨对象analysis/helper，不是某个op上的隐藏plan。
-- proposal先以typed relation、encoding、alias/effect和target facts进入planning proof；未选路线不构造IR。selected route在新Card subtree
-  中物化后由actual verifier重证parity。score、失败历史和descriptor列表不持久化。
+- Proposal只作为针对current value/use的typed transformation choice；选中后立即物化new actual IR，旧relation/alias proof失效并fresh重算。
+  Score、失败历史和descriptor列表不持久化，也不作为parallel physical plan。
 - lowering可以重证legality，不能重新规划、静默换encoding、插fallback或读取search state。
 
 | 事实 | owner | 生命周期 |
@@ -105,7 +104,8 @@ metadata view只有在以下条件全部成立时合法：
 4. alias、lifetime、alignment和effect保持；
 5. standard view/subset op的type与verifier能表达结果。
 
-否则必须由不同typed plan alternatives表达真实movement；每个complete candidate物化自己选择的对应IR，rejected/loser owner随后销毁：
+否则必须选择并在当前candidate transaction中物化真实movement；每个alternative作用于自己的current IR owner，
+rejected/loser owner随后销毁：
 
 - compact direct DDR↔SPM load/store；
 - relation-mapped DMA/WDMA；
@@ -114,8 +114,8 @@ metadata view只有在以下条件全部成立时合法：
 - Tile peer send/recv及destination staging。
 
 一个movement op的operands、types、view chain和typed fields必须唯一决定direction、logical relation、physical
-span和effect。descriptor可以从current IR重建，不作为attr列表保存。direct route不可实现时由planning query只拒绝对应typed
-assignment；另一plan alternative仍从immutable source可达，但production不会为两者构造actual clones。
+span和effect。Descriptor可以从current IR重建，不作为attr列表保存。Direct route不可实现时只拒绝当前typed
+choice；其它alternative从同一verified current scope试行，不依赖donor IR或hidden fallback。
 
 ### Boundary 与 local movement
 
@@ -181,18 +181,18 @@ IR中显式fill/mask/segmented movement。host-visible output不得把padding发
 
 ## 8. Materialization 与 Cleanup
 
-调用方本次选择按以下transaction物化；本文不拥有shortlist或candidate set：
+调用方本次choice按以下transaction物化；本文不拥有shortlist或candidate set：
 
-1. 在mutation前用current source与closed plan重验relation、bounds、alias、physical-map和effect；
-2. 由outer Card transaction提供新subtree，本文不clone source/parent；
-3. 用PatternRewriter/IRMapping/DialectConversion创建selected typed views、roots、movement、temporary和events；
-4. rewrite后销毁旧analysis并从current IR重建；
-5. 对新IR运行verifier、descriptor、invalid-lane、range、lifetime与completion parity；
-6. 失败由outer transaction擦除整个新subtree并终止compile，成功继续selected downstream pipeline。
+1. 在mutation前用current source/value/use重验relation、bounds、alias、physical map和effect；
+2. 由outer Card transaction提供current candidate scope；试运行只clone最近`IsolatedFromAbove` owner；
+3. 用PatternRewriter/IRMapping/DialectConversion创建typed views、roots、movement、temporary和tokens；
+4. rewrite后销毁旧analysis并从new current IR重建；
+5. 对new IR运行verifier、descriptor、invalid-lane、range和effect/lifetime检查；completion由后续Instr stage负责；
+6. 失败擦除本次transaction，成功owner直接继续downstream pipeline。
 
-cleanup只删除可由exact proof确认的冗余：same-root/same-map metadata view、dead无effect movement、完整等价
+Cleanup只删除可由exact proof确认的冗余：same-root/same-map metadata view、dead无effect movement、完整等价
 same-space copy和不延长lifetime的duplicate materialization。它不能移动fusion cut、改变encoding/route、创造spill、
-重排execution或替search选择另一physical version。
+重排execution或替search选择另一layout/movement alternative。
 
 ## 9. Failure 与 Verification
 

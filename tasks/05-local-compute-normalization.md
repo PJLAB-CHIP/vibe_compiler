@@ -21,9 +21,9 @@ Pipeline position:
   DPS ties、type、SSA/control flow和effect表达；matched attention由一个self-contained semantic op表达；
   card-partition collective仍是typed tensor semantics。不产生文件、physical plan或runtime metadata。
 - Downstream consumer:
-  physical-dataflow planning从固定semantic roots构造spatial plan与exact demand/coupled contribution/merge；
-  后续stages关闭region、temporal、representation、movement、storage、execution structure、schedule和actual resource，
-  selected winner在一个Card subtree transaction内展开attention并形成wafer.tile IR。
+  physical-dataflow planning从固定semantic roots构造spatial/region/temporal choice和exact demand/coupled contribution/merge；
+  choice闭合后立即在candidate-owned Card subtree内展开attention并形成actual TileRegion/SSA。后续layout、movement、bufferization、
+  Instr、completion和memory只从该current IR生成或重算。
 - User-level driver / named pipeline:
   `wafer-compile`的`none`与`search`在policy分叉前共同运行同一normalization；
   `wafer-lower-stablehlo-to-linalg`及attention normalization leaf pipeline只用于IR replay和focused tests。
@@ -35,7 +35,7 @@ Pipeline position:
   official conversion后无StableHLO/SDY residual；attention custom/generic form、verifier、standard interfaces与coupled-state
   query闭合；graph matcher、FA/FD分类、算法reference、planning description和selected Linalg decomposition均有正负例；
   `none`与`search`消费同一normalized TensorProgram；selected prefill/decode分别沿06--15主线形成package/no-card，
-  planning阶段attention IR materialization为零。
+  pre-structural choice阶段不展开attention IR，choice闭合后每个candidate只展开一次。
 ```
 
 ## 2. 稳定 TensorProgram 边界
@@ -351,47 +351,47 @@ observable SSA path合同，不含operation pointer、block/operation ordinal、
 | Root work | root-local execution、contribution/merge work、support/boundary和selected leaf action closure |
 | Region | attention root与producer/consumer的stored、nested或boundary use；内部attention actions不变成独立semantic roots |
 | Temporal | K1/K2及parallel scopes、exact tail、multi-result running state和nested invocation classes |
-| Representation | operand block、scratch、state、partial/merge和final output的`RegionValueVersionId/PhysicalVersionId` |
-| Movement | Q/K/V fanout或stage、FD state transfer、relay和coupled local combine action DAG |
-| Storage | running/partial state、score/probability scratch、staging和optional rotating slots的storage binding |
-| Schedule | QK、reduce/elementwise、PV、transfer、combine、wait/release的EventGraph与closed schedule |
-| Execution structure | selected serialized或pipelined block/contribution structure；occurrence变化后重闭storage与schedule |
-| Actual admission | materialization后的actual state/scratch/message/event/field、buffer relations及SPM/DDR/transport result |
+| Structural materialization | spatial/region/temporal choice在candidate transaction中展开actual action、state component、loop和SSA |
+| Layout/view/bufferization | 针对current operand、scratch、running/partial state和final output建立actual layout conversion、view/alias和allocation |
+| Movement | 从current producer/use创建Q/K/V fanout或stage、FD state transfer、relay和local combine typed ops |
+| Instr scheduling | TileRegion-to-Instr后从current operation/effect/token重建event/dependence，应用worker/order并fresh构造completion |
+| Actual admission | 从同一current Instr重算buffer relation、lifetime、SPM/DDR/transport和target result |
 
 两条policy都必须满足mode约束：`none`的canonical spatial producer对FA保持K2单一logical interval，对FD构造canonical合法非平凡
 K2 partition及stable embedding/merge owner；`search`枚举同一spatial domain中的全部合法factor、embedding和per-output merge placements。
-每个complete candidate由actual gate判定资源合法性；不得用attention work description、state数量或shape公式预测SPM fit。
+每个current candidate由actual gate判定资源合法性；不得用attention work description、state数量或shape公式预测SPM fit。
 这只是physical policy差异，不改变attention op或算法，也不允许`none`把FD降回FA。
 
-这里不新增attention-specific layout、movement、buffer、schedule或resource interface。每个owner只消费自己的现有typed plan schema；
-`AttentionWorkDescription`只是semantic root到这些schema的派生适配。
+这里不新增attention-specific layout、movement、buffer、schedule或resource interface。`AttentionWorkDescription`只是从
+current semantic op重算的短生命期work description；结构choice消费它生成actual IR后立即失效，不成为后续stage schema。
 
-### 6.3 Complete candidate内的Linalg展开与wafer.tile conversion
+### 6.3 Candidate-owned Linalg展开与wafer.tile conversion
 
-partial state仍是纯typed assignment，不包含IR。每个complete candidate transaction执行：
+Spatial/region/temporal choice闭合后立即进入candidate transaction；不先构造physical value、storage、event或schedule的未来图。
+每个candidate执行：
 
 ```text
-complete PhysicalDataflowPlan
-  -> pure PreparedPhysicalDataflow / AttentionWorkDescription validation
-  -> create one new Card subtree
+spatial/region/temporal choice
+  -> validate current TensorProgram and recomputable AttentionWorkDescription
+  -> create one candidate-owned Card subtree
   -> materialize selected tensor.extract_slice + scf.for
   -> expand attention compute to selected linalg.matmul/generic/reduce
-  -> bind selected physical versions, storage, movement, events and execution structure
+  -> materialize actual layout/view/bufferization and movement on current SSA
   -> deterministically convert Linalg compute to wafer.tile.gemm/reduce/elementwise
+  -> lower to Instr, then derive worker/order/completion from current Instr
   -> verify no attention or executable Linalg source remains
   -> actual CardModule-to-CardExecutable memory/target gate
 ```
 
 compute先到Linalg而不是attention emitter直接创建`wafer.tile`，以复用Linalg indexing/verifier和10号通用structured-to-tile lowering；
-但该Linalg只存在于candidate Card subtree transaction内部，不是公开stop stage。rejected/loser subtree整体销毁，final winner不重建。
-movement、storage、peer和completion本来
-不属于Linalg，由相应prepared builders直接创建typed wafer.tile/memref/SCF对象。
+但该Linalg只存在于candidate Card subtree transaction内部，不是公开stop stage。Rejected/loser subtree整体销毁，final winner不重建。
+Movement、buffer和completion不属于Linalg；它们由直接stage读取current SSA/Instr后生成，不由attention prepared builder预建。
 
 进入actual memory/target gate前必须满足：
 
 - `wafer.linalg_ext.attention`在selected Card subtree中为零；
 - 可执行Linalg source op为零；
-- all-and-only actions、values、storage、messages和events与prepared IDs对应；
+- all-and-only actions、values、buffers、messages和events已在current IR中表达且可由直接stage verifier解释；
 - 每个actual allocation都有current typed owner relation，SPM/DDR/transport结果来自该candidate IR；
 - source TensorProgram在candidate失败或落选时保持不变。
 
@@ -434,7 +434,8 @@ GSPMD输出可能含由constants和static tensor views完全决定的partition/m
 - normalization在首次mutation前收集完整proof，所有create/replace/erase通过同一个`IRRewriter`；不clone Module/Func/DAG；
 - algorithm classification缺decode proof只产生FA，不记录失败历史或候选；
 - op/interface无法描述selected spatial/temporal work时返回typed unsupported；planning description与physical plan矛盾是compiler contract error；
-- winner Linalg expansion、wafer.tile conversion或resource parity失败擦除完整新Card subtree并终止compile，不返回planner换算法或plan；
+- Candidate Linalg expansion、wafer.tile conversion或直接stage verifier失败擦除完整新Card subtree并终止该candidate，
+  不在materializer内换算法、layout、route或buffer；
 - `none`和`search`任一失败都不调用另一policy兜底。
 
 ## 10. Verification

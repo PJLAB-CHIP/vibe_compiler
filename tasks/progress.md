@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-08-25
+更新时间：2026-08-26
 
 本文件是任务调度入口，只记录任务状态、前置关系、当前工作、完成门禁和设计/证据owner。具体设计、
 pipeline contract、实验结论、测试数字、失败修复过程和历史复盘不在这里重复；分别进入编号设计文档、
@@ -40,7 +40,7 @@ IR膨胀、layout未接线和verifier职责问题。
 
 | 顺序 | Work item | 状态 | 设计owner | 直接输入 | 完成输出 | 本项执行流程 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `search-scalability` | `doing` | Q52 | Q51 unified search与attention production的current输出、current baseline regression、Q50.0 actual memory/target leaf | 按当前计划九个checkpoint分别闭合verifier职责、两套独立materializer、IR膨胀、movement/layout、旧路径删除和measured scalability；同一current FP16 LLaMA block的`none`/`search`各自在15分钟Release门限内生成package并strict readback/no-card | 读AGENTS/progress→读06及本项九个矩阵→读相关硬件/ABI事实并把未证同步语义保持unknown→调研论文和成熟编译器算法/实现并比较取舍→查官方及pinned LLVM/MLIR API→按checkpoint改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审完整diff和下游witness→更新状态并提交 |
+| 1 | `search-scalability` | `doing` | Q52 | Q51 search controller、structural choice与attention展开donor，current baseline regression，Q50.0 actual memory/target leaf | 按current plan的13个线性checkpoint保留verifier清理与两套独立structural materializer，将materialization boundary前移到spatial/region/temporal choice之后；删除future physical value/movement/storage/event/schedule的shadow search chain，layout、movement、bufferization、Instr、completion和MiniMalloc均读current IR；完成IR膨胀/融合/最终Instr汇总；同一current FP16 LLaMA block的`none`/`search`各自在15分钟Release门限内生成package并strict readback/no-card | 读AGENTS/progress→读06及本项13个矩阵→读相关硬件/ABI事实并把未证同步语义保持unknown→调研论文和成熟编译器算法/实现并比较取舍→查官方及pinned LLVM/MLIR API→按checkpoint改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审完整diff和下游witness→更新状态并提交 |
 | 2 | `production-host-readiness` | `queued` | Q53 | search-scalability、Q60产品入口、Q55 current interface、Q56 board-ready package/runtime | 从fresh产品source完成representative source/IR/package/oracle/runner/no-card矩阵并准备无需设备上临时补充的board cases；状态只到`board-ready`，真实板端不在当前目标 | 读AGENTS/progress→读02/06/14–16及本项矩阵→读hardware/runtime/ABI事实→调研成熟compiler的host qualification/board-ready实现→查官方及pinned API→改runner/测试→fresh host/no-card验证→按设计和MLIR/runtime规范复审→更新状态并提交 |
 失败留在当前work item修复；不跳过、不fallback，也不把owner整体状态提前标为完成。
 
@@ -48,7 +48,7 @@ IR膨胀、layout未接线和verifier职责问题。
 
 | 设计owner | Work item | Owner整体完成边界 |
 | --- | --- | --- |
-| Q52 | search-scalability | 本项九个线性checkpoint全部通过；baseline/search保持controller隔离，仓库compiler verifier按LLVM/MLIR职责完成清理，已确认的IR膨胀、双路径、baseline root grouping及layout未接线问题全部直接修复，旧complete materializer零残留，并由同一current FP16 LLaMA source的两次fresh package/no-card验收签发 |
+| Q52 | search-scalability | 本项13个线性checkpoint全部通过；baseline/search保持controller和actual IR owner隔离；verifier按LLVM/MLIR职责闭合；spatial/region/temporal choice之后每个candidate均以actual TileRegion/Instr IR作唯一事实源；旧physical-value、movement、storage、execution-structure、schedule shadow state、domain rebuild、parity verifier和complete materializer零production残留；已确认的IR膨胀、双路径、baseline root grouping和layout/movement问题已修复；同一current FP16 LLaMA source的两次fresh package/no-card验收通过 |
 | Q53 | production-host-readiness | 对应work item通过即为`board-ready`；真实板端不在当前目标 |
 
 ### 当前已满足前置
@@ -58,7 +58,7 @@ IR膨胀、layout未接线和verifier职责问题。
 | Owner | 状态 | 当前作用 | 证据入口 |
 | --- | --- | --- | --- |
 | Q50.0 | `done` | 两条policy各自产生policy-complete Instr后共同消费的actual SPM/DDR/transport/target leaf；不拥有complete materializer | 06、09、12–14；历史见`tasks/archive/completed-task-index.md` |
-| Q51/Q50.S | `done` | current search controller、typed domains和fixed FA/FD semantic/decomposition输入；不能代签Q52 materializer正确性 | 05–06；历史见`tasks/archive/completed-task-index.md` |
+| Q51/Q50.S | `done` | current search controller、structural choice/domain算法donor和fixed FA/FD semantic/decomposition输入；旧physical-value/movement/storage/schedule domain不再作current事实源，也不能代签Q52 actual-IR pipeline | 05–06；历史见`tasks/archive/completed-task-index.md` |
 | Q55 | `done` | current target/package/runtime interface closure | `tasks/plans/interface-version-consolidation.md` |
 | Q56 | `board-ready` | current package data与host/no-card contract；真实板端尚未执行 | `tasks/plans/executable-package-and-resident-runtime.md` |
 | Q60 | `done` | product frontend与portable StableHLO ingestion | `tasks/plans/compiler-entry-productization.md` |
@@ -78,7 +78,7 @@ IR膨胀、layout未接线和verifier职责问题。
 | Q47 | `target-abi-retirement` | `later` | Q55、Q56、Q59 current interface/package/transaction闭合，且进入configured-board资格窗口 | 编译器侧ABI retirement已经闭合；启动时只用Q59之后的current package定向重签ordinary与Direct-DTE source→package→model/no-card，随后才标`board-ready`。真实板端只验证current ABI correctness、guard和lifecycle，通过后标`done`；不重复Q53性能A/B，也不执行任何历史package批次。 | 11、14-17、20 |
 | Q57 | `resident-static-execution` | `later` | Q56达到`board-ready`且Q53按新package合同达到`board-ready` | 不改变selected `CardExecutable`、`TileEntryArgument`、program-data offset或Tile指令；把Q56的一次执行lifetime延长为`PreparedExecution -> submit* -> close`。PreparedExecution拥有loaded kernel modules、optional non-empty program data `BoardDeviceMemory`、invocation `BoardDeviceMemory`、pointer rows、transport/profile状态和provider failure state；submission/completion携带device generation。TX provider初始只single context、`max_inflight=1`、无cancel；板端证明load-once/run-many、non-empty program data只H2D一次、稳定地址、workspace初始化/覆盖、public terminal和poison quarantine。one-shot只保留同一路径便利封装。request scheduler、runtime-owned KV policy、multi-inflight、persistent device loop、跨卡和external execution-engine policy均不在本项。 | 12、14-17；`tasks/plans/executable-package-and-resident-runtime.md` |
 | Q61 | `whole-program-scale-readiness` | `later` | Q53达到`board-ready`、Q58、Q60 | 在主search、产品frontend和package data链闭合后，使用完整程序而非单算子/单block验证source→TensorProgram→search→`CardExecutable`→`ExecutablePackage`的规模行为；同时覆盖完整小模型语义、大型完整parameter inventory和至少一个完整大图，记录IR/op/candidate/work、wall、RSS、disk/IO、target/package bytes及失败分类。Llama-2 7B可作一个scale witness，但模型名、层数和LLM调度不进入合同；本项不以full-model board execution、resident runtime或serving integration作默认完成门禁。 | 01-02、06、14-18；`tasks/plans/program-data-and-whole-program-scale.md` |
-| Q48 | `semantic-superoptimization` | `later` | Q53按current CardModule/Tile合同达到`board-ready`，且current compiler/runtime closure可消费final Instr/TargetCall；当前前置未满足 | 从actual structured MLIR生成verifier-legal TensorProgram alternatives并以query-local solver证明外部可观察value、memory与effect等价；alternatives进入Q51 planning state，完整physical candidate通过同一actual admission，只有一个accepted winner进入最终发布。Q48不在Instr层建立第二selector，不预设shortlist或固定候选cap。 | 05-08、10-11、16-18；`tasks/plans/semantic-superoptimization.md` |
+| Q48 | `semantic-superoptimization` | `later` | Q53按current CardModule/Tile合同达到`board-ready`，且current compiler/runtime closure可消费final Instr/TargetCall；当前前置未满足 | 从actual structured MLIR生成verifier-legal TensorProgram alternatives并以query-local solver证明外部可观察value、memory与effect等价；每个alternative作为自己的current TensorProgram进入Q52 actual-IR candidate pipeline，只有一个accepted owner进入最终发布。Q48不在Instr层建立第二selector，不建立shadow planning state，不预设shortlist或固定候选cap。 | 05-08、10-11、16-18；`tasks/plans/semantic-superoptimization.md` |
 | Q38.W | `multi-worker-production-promotion` | `later` | current typed ABI、actual clone和host/model资格已闭合，且出现需要隔离等待域并可能受益的独立命令链 | 以configured-board matched correctness/performance证明非零worker相对worker0流水的明确收益后才允许normal production promotion；不得为使用worker1/2而拆分已能在worker0并行的流水。 | 08、11、14-17 |
 | Q3.6 | `crt-writeback-scalar` | `later` | 明确Count predicate及wrapper/target/model evidence | 独立闭合typed instruction、effect/completion、ABI/CRT、model和必要package readback。 | 11、14-17 |
 

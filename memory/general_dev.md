@@ -76,12 +76,11 @@ source program
 ## Physical-dataflow planning与selected execution
 
 - `search`策略的优化对象是card-local完整structured DAG，不是单op、单consumer chain或预切好的Tile副本。
-- 同一个候选共同决定不同op的Tile集合、intra-op spatial work、temporal tile、loop order、TileRegion/融合、
-  NoC redistribution、spill/reload/recompute、buffering和overlap。
-- query-local DAG state只保存semantic root、spatial/region/traversal/temporal、representation/movement、buffer、
-  event/resource order、worker与completion等typed assignments。ready/running/completed op-wave、structural calendar、makespan estimate和
-  observable completion analysis从immutable source与assignments重算，不进入state identity；actual allocation/lifetime/LiveSPM/offset只从
-  每个complete candidate current IR重算。final winner直接保留其actual IR，search state随后销毁。
+- Search共同考察不同op的Tile集合、intra-op spatial work、temporal tile、loop order、TileRegion/融合、NoC redistribution、
+  spill/reload/recompute、buffering和overlap，但不把这些都存成一套future execution plan。
+- Search state只保存尚未被transformation消费的显式choice。Spatial/region/temporal choice闭合后立即生成candidate-owned
+  actual TileRegion IR；随后layout、movement、bufferization、Instr、worker/order/completion和memory只从各自current IR实施或重算。
+  Final winner直接保留其actual IR，不rematerialize。
 - semantic root与physical候选只从structured op semantics、indexing maps、type/shape/dtype、SSA/effect、
   explicit communication和target capability生成。改变算法DAG的候选必须先物化为actual TensorProgram root；算子先验
   可以贡献有限domain ordering，但不能形成framework/model/algorithm matcher、opaque provider identity或公共专用pass。
@@ -108,10 +107,11 @@ source program
   独立nested loops枚举scheme/embedding/merge，不include或调用production successor。
 - cheap structural legality、coverage、topology symmetry和已证明performance bound可在partial-state expansion中应用；它们不能签发SPM
   capacity结论。
-- SPM legality只来自complete candidate actual IR上的`PlanSPMMemory`/MiniMalloc。footprint、working-set、shape公式、buffer-count、
+- SPM legality只来自current candidate Instr IR上的`PlanSPMMemory`/MiniMalloc。footprint、working-set、shape公式、buffer-count、
   synthetic demand和预测lifetime不得决定admission、pruning、temporal refinement或winner。
-- partial planning不构造IR；每个complete candidate各构造一份CardModule/Instr并运行一次actual memory/target gate。固定shortlist、beam或candidate cap会丢
-  合法状态，只能在profile和质量回归后作为显式budgeted trade-off。
+- Pre-structural frontier不构造IR；spatial/region/temporal choice闭合后必须立即生成candidate-owned actual TileRegion IR。
+  后续choice作用于current IR并产生new verified IR；每个进入memory/target gate的candidate只有一份move-only owner。
+  固定shortlist、beam或candidate cap只能在profile和质量回归后作为显式budgeted trade-off。
 - 统一allowance同时记录deterministic successor/query work和complete-candidate actualization；wall/RSS只做外层安全与回归诊断。
 - host worker可以并行互不共享可写IR的proposal/query；state result合并、tie-break和最终顺序保持稳定。
 - regular factorized mapping、reuse-guided movement与分层resource cost应作为现有typed domain上的proposal/order机制；不为它们
@@ -119,21 +119,21 @@ source program
 - search control foundation从validated `SpatialPlan`建立`SpatialState`；state只含typed semantic value。session单独拥有checked proposal
   keys、last canonical choice、paused indeterminate choice和stable frontier。proposal/canonical dedup只记录有限proposal keys；canonical
   successor已经证明无重复，不能为保险再保存全部canonical plans形成第二份全域集合。
-- planning coordinate未闭合时，显式search取得真实prefix后返回typed missing coordinate，且actual candidate count为0；public default
-  不得指向无法完成的controller。search不能baseline fallback、补default后缀或发布package；每个新轴由其owner原位扩closed state和
-  continuation，直到complete assignment才进入actual admission。
+- Pre-structural coordinate未闭合时，search返回typed missing choice，且actual candidate count为0。Search不能baseline fallback、
+  补default后缀或发布package。Spatial/region/temporal choice闭合时进入actual TileRegion materialization；之后不继续构造
+  future representation/movement/storage/schedule state。
 - root work是从closed spatial assignment与exact-demand proof派生的root×Tile domain，不是candidate axis。successor使用domain-created
   opaque cursor按semantic root/Tile稳定推进并跳过NoWork；不能为cursor validation重跑刚返回的昂贵work query，也不能保存全部work points。
   baseline和search消费同一domain/collector，RootRegionWork仍留在query-local derived values。
-- selected root leaf必须同时表达optional execution和owned merge placements。merge-only Tile不是“没有leaf”；outer group emitter必须证明
-  每个merge由selected contribution shards承接。Region partition未选择前只能test-only direct actualize，production partial planning保持零IR。
+- Selected root leaf必须同时表达optional execution和owned merge placements。Merge-only Tile不是“没有leaf”；structural materializer必须证明
+  每个merge由selected contribution work承接。Region choice闭合前不物化；闭合后production立即生成actual TileRegion IR。
 - region planning把group partition、execution placement和use delivery分开：required execution与explicit replica是不同typed IDs，
   StoredRegionValue与DirectNestedValue是local binding选择，External由fragment未绑定直接表达。same Tile不自动fusion，movement也不能反向
   新增replica或改变group。
-- connected partition和fragment choices用opaque continuation lazy推进；candidate只保存`RegionPlan`。pure producer replica可跨group/Tile，
+- Connected partition和fragment choices用opaque continuation lazy推进；它们在一次structural materialization中被消费。Pure producer replica可跨group/Tile，
   required execution只有在same group时可local供给；fanout共享必须由多个bindings显式引用同一execution，split方案必须有多个replica IDs。
   effectful producer不进入direct/replica choice。Region未闭合时public search不能越过到actual IR。
-- 每个complete candidate CardModule只经过一次无策略CardExecutable compilation函数：Tile module splitting、Tile→Instr、fresh
+- 每个进入actual gate的candidate CardModule只经过一次无策略CardExecutable compilation函数：Tile module splitting、Tile→Instr、fresh
   completion、SPM/DDR、transport/resource/ABI和final recost。seam返回accepted、proven exact rejection或indeterminate；
   actual result返回controller；lowering不能枚举、retile、spill、rebuffer或修candidate。带完整owner relation的actual rejection可关闭当前
   complete point；其它失败保持typed状态。
@@ -389,8 +389,8 @@ source program
 
 ## Search state与profile调试
 
-- partial planning只保存typed immutable assignment和continuation，不构造CardModule、Instr、SPM problem或target output。
-  任意complete assignment必须能够在fresh session中从自身parent chain重建全部query并独立actualize；cache不能是隐藏前置。
+- Pre-structural frontier只保存typed immutable choice和continuation。任意闭合structural choice必须能在fresh session中通过唯一
+  materializer独立生成actual TileRegion IR；后续choice只作用于current candidate IR，cache不能是隐藏前置。
 - resumable session复制小型immutable config，只借用明确由outer transaction持有的source、ProgramData和diagnostic owner。
   continuation不能引用临时config、Operation pointer或遍历顺序产生的ordinal。
 - memo只保存pure typed query result，key覆盖query实际读取的全部fields。cache-off、eviction、hash seed和resume切分只增加work，

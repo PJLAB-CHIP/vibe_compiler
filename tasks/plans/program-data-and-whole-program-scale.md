@@ -241,11 +241,11 @@ Pipeline position:
 
 ### 7.2 Qualification requirements
 
-- `none`证明无search也不存在重复whole-program读取/转换；`search`沿用Q51/Q52的candidate/result合同；
+- `none`证明无search也不存在重复whole-program读取/转换；`search`沿用Q52的current-IR candidate/result合同；
 - 每个stage显式记录IR walk/selected duplication、planning states generated/admitted/pruned、target compile次数、ProgramData I/O和package write/readback；
 - 完整payload实际read/hash/convert/write，不以sparse或metadata count冒充；
 - 至少两次fresh compile比较winner、module digest、program-data digest、package tree和关键work counts；
-- hotspot修复回到唯一owner：source/data归02/Q58，search归06/Q51/Q52，target layout/codec归14，package/runtime归15；
+- hotspot修复回到唯一owner：source/data归02/Q58，search归06/Q52，target layout/codec归14，package/runtime归15；
 - mandatory cases无skip/unsupported后才能done；可选named witness的capacity/unsupported单独报告。
 
 ## 8. 共同约束

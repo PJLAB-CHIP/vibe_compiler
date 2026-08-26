@@ -13,10 +13,9 @@ Pipeline position:
   indexing map、DPS/Tiling/MemoryEffect interfaces、type和SSA完整表达。05号normalization已在policy分叉前把完整Q/K/V attention
   一次性归一为verifier-legal `wafer.linalg_ext.attention`，FA/FD是op上的固定graph fact；后续search只选择physical assignments。
 - Current stage responsibility:
-  调用方给出本次placement、temporal tile、encoding、TileRegion、retain/recompute/spill/cut/release boundary、buffer/slot与
-  event order选择后，读取selected actual TensorProgram root的current concrete structured语义；attention先展开selected
-  Linalg/Tensor/SCF，然后确定性创建对应TileModule/TileRegion中的typed compute、view、movement、temporary和event；再把每个
-  Tile module合法化为canonical/unplaced wafer.instr.*。
+  消费已物化的candidate-owned Card/TileRegion IR。Attention在该transaction内展开selected Linalg/Tensor/SCF；
+  compute lowering只读current structured op/SSA，layout/view/bufferization和movement transformation只读current value/use并生成new IR；
+  最后把每个Tile module合法化为canonical/unplaced `wafer.instr.*`。
 - Output IR / files:
   selected complete CardModule中的typed wafer.tile.*与Wafer-tagged memref，或projected per-Tile wafer.instr.*；
   compute form、geometry、movement和effect事实全部在actual IR中，不保留候选side channel。
@@ -26,8 +25,8 @@ Pipeline position:
 - User-level driver / named pipeline:
   wafer-compile production pipeline；局部wafer-opt conversion只用于focused leaf testing。
 - Explicit non-goals:
-  不决定spatial placement、ready-op concurrency、fusion、TileRegion、retain/recompute/spill/cut/release boundary、buffer/event order、
-  communication或global cost；lifetime、live set和cost只由上游/下游analysis从current assignments与actual IR派生；不按workload、shape、
+  不决定spatial placement、ready-op concurrency、fusion、TileRegion或retain/recompute choice；不在conversion中选layout、route、buffer、worker或completion；
+  lifetime、live set和cost只由直接analysis从current IR派生；不按workload、shape、
   parameter/symbol/op名字选择lowering；不分配physical offsets、runtime handles或launch slots；selected lowering失败终止compile。
 - Done criteria:
   fill、named GEMM/batched GEMM、ordinary static 2-D convolution和generic由current op class、region、indexing maps与
@@ -48,12 +47,11 @@ source数学语义只有一个owner：current MLIR op、region、SSA、type、at
 - standard tensor/view/subset semantics及current-IR-derived `IndexRelation`。
 
 Attention normalization不预建每个算法/参数的TensorProgram graph。它把完整attention归一为一个带fixed `flash_attention`或
-`flash_decoding`的semantic op；physical-dataflow search从spatial axis开始展开spatial/temporal/fusion/representation/
-communication等调度维度，K/V block和partition分别归temporal与spatial assignment。每个complete candidate进入自己的CardModule
-transaction后，本文消费prepared root work和physical bindings执行唯一lowering：
+`flash_decoding`的semantic op；physical-dataflow search只选择spatial/region/temporal parameters并生成actual candidate。K/V block和
+partition分别归temporal与spatial choice。Candidate transaction中本文消费current root work和actual SSA执行唯一lowering：
 
 ```text
-lower current structured op(current_op, selected_physical_values, rewriter)
+lower current structured op(current_op, current_operands_and_results, rewriter)
 ```
 
 `linalg.fill`、named matmul和named batch matmul按concrete op class进入对应typed lowering。`linalg.generic`只有在
@@ -64,9 +62,9 @@ symbol-free affine window maps和scalar region共同证明ordinary static 2-D co
 target-implementation OpInterface、external-model registry、plan kind、
 capability menu、selected/forced参数或hidden fallback。rewrite改变source region/type/SSA/effect后，lowering只重新读取current IR。
 
-physical-dataflow selection仍是唯一组合owner：它联合选择Tile set、per-Tile work domain、temporal tile、encoding、
-TileRegion partition、retain/recompute/spill/cut/release boundary、movement、buffer/slot和event order；lifetime、live set与cost
-从这些typed assignments及物化后的current IR重算。direct lowering不能为某个op自行决定全局mapping，也不能因为当前route失败而
+Physical-dataflow controller是choice和candidate ownership的唯一owner：它选择Tile set、per-Tile work domain、temporal tile和
+TileRegion partition，随后把actual candidate IR交给layout/movement/bufferization与Instr stage。Direct lowering不能为某个op自行决定
+全局mapping，也不能因为当前route失败而
 改写source数学语义。未来若生成semantic alternative，必须先由其自身设计选择并形成一个current TensorProgram，再进入
 physical planning；本层不为其预留generic algorithm axis。若某类source op需要多个实现，先由该语义自己的显式IR/interface
 和production owner表达，不建立local selector、字符串registry或opaque graph descriptor。
@@ -118,13 +116,13 @@ QK contraction
   -> final divide
 ```
 
-这些Linalg ops使用B/E已经关闭的output piece、K1/K2 tile、tail和FD contribution；它们不得重新选择block、partition、merge
-owner或loop order。G/I/H/J/K prepared builders分别提供physical versions、storage、movement、event sites和execution structure。
+这些Linalg ops使用已选择的output piece、K1/K2 tile、tail和FD contribution；它们不得重新选择block、partition、merge
+owner或loop order。展开后的layout、view、buffer、movement和event只能由直接stage从current SSA/Instr生成。
 随后同一transaction调用普通structured-to-tile lowering，把compute确定性变成existing `wafer.tile.gemm`、
 `wafer.tile.reduce`和`wafer.tile.elementwise`。Linalg中间态不是公开IR层、candidate cache或第二production pipeline。
 
-进入Tile-to-Instr前，attention op和可执行Linalg source必须全部消失。任何未在plan resource description中的scratch、state、
-conversion、movement或event都是plan/actual parity failure；不能由lowering临时补齐。本文不定义`wafer.tile.attention`或
+进入Tile-to-Instr前，attention op和可执行Linalg source必须全部消失。Scratch、state、conversion、movement和event必须是
+current IR中有current SSA owner和typed effect的actual objects；不能由lowering临时猜测或补齐。本文不定义`wafer.tile.attention`或
 `wafer.instr.attention`。
 
 ### GEMM
@@ -179,8 +177,9 @@ movement不是type cast。是否能成为metadata view由08的IndexRelation与co
 - explicit Tile peer/collective communication。
 
 source、destination、logical relation、direction、range和effect从operands、types、view chain和typed fields重建。
-两条路线若产生不同commands、temporary或completion，就必须是不同typed plan alternatives，而不是一个movement op在late
-lowering时自行选择；每个complete candidate形成actual IR并进入09/12实际规划，rejected/loser owner销毁，final winner不重建。
+两条路线若产生不同commands或temporary，就必须是针对current producer/use的不同typed transformation choices，而不是
+一个movement op在late lowering时自行选择。Choice应用后产生actual IR并进入09/12实际规划，rejected/loser owner销毁，
+final winner不重建。Completion由后续current Instr stage决定。
 连续/strided/mapped descriptor cover由08证明；SPM/DDR offsets由09/12的actual planners决定。
 
 同一source经多段view/broadcast/materialize组成的relation可以在candidate新Card subtree中合成一次direct movement，前提是

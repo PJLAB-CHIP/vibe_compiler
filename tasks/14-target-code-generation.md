@@ -1,8 +1,8 @@
 # Wafer Target Code Generation 与 TargetCall
 
 状态：本文是target conversion、target-ready program data、LLVM module、device link、readback与TargetCall的唯一现行设计合同；
-Q58/Q56的数据代码实施状态只看`tasks/progress.md`。单卡编译边界固定覆盖16个available Tiles；Q49.P先收口`none` baseline，
-Q51再把selected `CardExecutable`接入这条边界。现有host/model
+Q58/Q56的数据代码实施状态只看`tasks/progress.md`。单卡编译边界固定覆盖16个available Tiles；Q52的
+none/search只将各自final accepted `CardExecutable`接入这条边界。现有host/model
 验证不能代替Q53的fresh package/no-card和真实板端matched A/B gate。
 
 ## 1. Pipeline Contract
@@ -10,7 +10,7 @@ Q51再把selected `CardExecutable`接入这条边界。现有host/model
 ```text
 Pipeline position:
 - Upstream IR / input:
-  Q49.P `none` baseline或Q51 `search`选中的`CardExecutable`；其中all-and-only `wafer.tile.module`已投影为16个
+  Q52 `none`或`search`产生的accepted `CardExecutable`；其中all-and-only `wafer.tile.module`已投影为16个
   Tile ModuleOp，并完成TileRegion→Instr、fresh completion、SPM/DDR placement、transport与executable verification；
   Tile entry携带typed program binding，Q58 `ProgramDataHandoff`稳定拥有对应parameter/external captured-constant文件与checked range。
 - Current stage responsibility:
@@ -73,7 +73,7 @@ target ABI preparation将16个Tile的program bindings与最终entry argument typ
 - 引用该TargetTensor的all-and-only(card, tile, launch slot, argument ordinal)集合；
 - Q56 package writer所需的bounded source reader和target codec动作。
 
-ProgramTensor、ProgramDataRange和TargetTensor是不同identity。同一个ProgramDataRange可因Q50.G选择的representation不同形成多个
+ProgramTensor、ProgramDataRange和TargetTensor是不同identity。同一个ProgramDataRange可因accepted current IR中不同actual encoding/conversion形成多个
 TargetTensor；只有显式引用同一TargetTensor的entry arguments才能共享target bytes。不同ProgramTensor即使path、shape、bytes或
 digest相同也不自动合并。TargetTensor descriptor只进入同次target/package writing结果，不写回Instr、不创建package path，也不携带
 device address。
@@ -120,8 +120,8 @@ TargetTensor slot另携带一个same-invocation materialization action；其它k
 - target call descriptor 是唯一 field-position 与 scalar-width 事实源。
 
 ABI preparation不得改变 selected mapping、temporal tile、fusion、movement、worker、completion 或 placement；
-late failure终止当前compile并保留准确owner diagnostic；它表示planning/commit/target合同缺口或真实unsupported，不能返回Q51
-选择其它plan，`none`与`search`也都不能调用另一policy兜底。
+Late failure终止当前actual gate并保留准确owner diagnostic；它表示upstream IR/target合同缺口或真实unsupported，
+不返回layout/route/retile repair recipe，`none`与`search`也都不能调用另一policy兜底。
 
 ### 3.2 Accepted immutable data preparation
 

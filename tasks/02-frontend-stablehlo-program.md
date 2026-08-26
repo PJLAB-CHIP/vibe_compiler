@@ -253,7 +253,7 @@ variant seed和原固定seed全部通过后，scale case只把source/model compa
 
 旧TP16/rank-as-Tile资格只作历史背景，不属于current frontend合同。当前GEMM、HuggingFace attention、
 KV-cache decode与Llama-2 7B block都从真实framework module和原始dtype tensor导出
-`num_partitions=1`的card-local program；source IR不携带物理Tile mesh或卡内TP标记。Q49.P `none` baseline与Q51 `search`随后
+`num_partitions=1`的card-local program；source IR不携带物理Tile mesh或卡内TP标记。Q52 `none`与`search`随后
 从同一structured DAG决定16个Tile上的spatial mapping、temporal tiling、TileRegion/融合与通信。不得用手写
 StableHLO/MLIR、parameter name或测试fixture把这些卡内决定提前编码进frontend。
 同一组tensor先在PyTorch eager CPU执行形成唯一用户级expected；NumPy不得参与expected生成或最终结果比较。
@@ -290,8 +290,8 @@ content-stable且完成extent/digest校验的`ProgramDataSource`/`ProgramDataRan
 source不得被原地补metadata、topology或shards。compiler transaction最终发布重新parse/verify过的card-partition-local
 structured program state；local compute normalization与fixed structured optimization随后建立`TensorProgram` boundary，之后
 physical-dataflow synthesis从单卡partition output构造一个`CardModule`，其中all-and-only available Tiles
-各有独立`wafer.tile.module`。每个Tile可有不同op、loop和temporal tile shape；Q51唯一search owner联合决定
-placement、tiling、TileRegion/融合和显式NoC/DDR movement，exact gates通过后形成`CardExecutable`，再由target与
+各有独立`wafer.tile.module`。每个Tile可有不同op、loop和temporal tile shape；Q52 search owner选择
+placement、tiling和TileRegion membership并立即生成actual IR，随后在current IR上物化NoC/DDR movement，exact gates通过后形成`CardExecutable`，再由target与
 package阶段发布`ExecutablePackage`。`TensorProgram`是该planning阶段的唯一输入output；已删除的`wafer.group`
 formation/selector没有兼容、debug或发布旁路。
 

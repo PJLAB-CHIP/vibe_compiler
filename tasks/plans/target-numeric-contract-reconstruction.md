@@ -145,7 +145,7 @@ lane按自己的明确支持域执行，它不是qualification record，也不�
 Instr/TargetCall legality只读取typed IR、current target operation/format/call合同及target-owned capability事实。formal model是否实现、
 bulk backend是否可用、是否已有board correlation都只影响各自下游gate，不反向改变compiler-emittable集合。
 
-Q49.P/Q51及所有Analysis/Conversion/search source不得include model formal/bulk header，也不得出现model profile、resolved numeric
+Q52及所有Analysis/Conversion/search source不得include model formal/bulk header，也不得出现model profile、resolved numeric
 command或qualification digest。Q62不运行、不维护也不对照任何历史search winner、candidate set或异常长integration。
 
 ### 3.8 Logical dtype边界
@@ -285,7 +285,7 @@ record仍可严格read-back验证且没有旧reader。
 - 增加dtype typed-roundtrip/unknown spelling拒绝、feature-off target public-link以及feature-on optional dependency-conformance direct
   tests，确认disabled配置不编译或链接managed dependency verifier。
 
-本任务不运行Q49.P/Q51长搜索、历史numeric registry基准、历史package、历史板端raw或真实板端批次。若direct source-to-package
+本任务不运行Q52长搜索、历史numeric registry基准、历史package、历史板端raw或真实板端批次。若direct source-to-package
 case意外进入search，应使用已接受的最小`none`路径定位调用错误，不能把旧异常长路径加入回归。
 
 ## 7. 完成标准

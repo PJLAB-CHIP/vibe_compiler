@@ -125,28 +125,30 @@ position、Attention/decode/mask专用matcher或公共pass残留。
 
 ### 4.3 Search correctness 与 exact gates
 
-- semantic、spatial、temporal、TileRegion/融合、layout、movement、buffer、communication和order合法域从current IR惰性生成；
+- semantic、spatial、region和temporal choice domain从current TensorProgram惰性生成；choice闭合后立即生成actual TileRegion IR；
+  layout、movement、bufferization、communication和order的候选与验证只读各自current candidate IR；
 - temporal域同时覆盖完整all-iterator tile vector与selected traversal内会改变reuse/lifetime/tail的有限
   wave-loop order；regular
   mapping、relation-derived reuse和coarse resource estimate只改变proposal顺序，开关后有界穷举oracle的accepted domain与winner不变；
 - independent有界穷举reference domain enumerator不调用production domain builder，证明有限小图合法域完整；同一机制另有
   真实规模整除/非整除正例；
-- independent flat reference composer证明complete assignment set；independent runner从fresh source逐assignment调用与production相同的
-  materializer和actual gates，以实际结果形成accepted/rejected truth set；
+- independent flat reference composer证明pre-structural choice set；independent runner从fresh source逐choice调用与production相同的
+  structural materializer和后续current-IR transformations/actual gates，以实际结果形成accepted/rejected truth set；
 - cheap structural legality、exact coverage、topology symmetry、canonical dedup和已证明performance bound只有在不删除合法最优解时才能在
   state expansion前剪枝；SPM capacity没有plan-side early rejection；
 - footprint、working-set、shape公式、buffer-count、synthetic demand、预测lifetime或nominal bandwidth projection不能签发SPM
   packing、admission或temporal refinement；
-- production partial state不物化IR；每个complete assignment各构造一个candidate CardModule并执行一次Tile→Instr、fresh completion、
-  actual SPM/DDR、transport/resource/ABI和actual cost，rejected/loser owner销毁，winner不重建；
-- actual proven exact failure只拒绝当前complete assignment；只有verifier直接提供extension-closed typed proof时才能拒绝更宽prefix。
+- production pre-structural state不物化IR；spatial/region/temporal choice闭合后各构造一个candidate CardModule/TileRegion，之后
+  layout/movement/bufferization在current IR上实施，再执行Tile→Instr、fresh completion、actual SPM/DDR、transport/resource/ABI和actual cost；
+  rejected/loser owner销毁，winner不重建；
+- actual proven exact failure只拒绝生成当前IR的完整显式choice；只有verifier直接提供extension-closed typed proof时才能拒绝更宽prefix。
   allocator/lowering不触发late repair、retile、spill或另一selector；
   `ResourceExhausted`、solver timeout或internal failure属于indeterminate，必须保留合法state，不能形成no-good；
 - logical demand outcome必须区分`satisfied`、`unsupported semantic relation`、`indeterminate resource exhaustion`和
   `compiler contract error`；完整execution assignment产生完整logical result，cross-op demand不形成placement no-good。
   `InvalidSpatialAssignment`只定位上游未满足closed assignment合同，不能被压成`FailureOr + string`、legality bool或普通search rejection；
 - 对同一logical trial切换dense/strided/multi-piece carrier能力、layout或route可用性，exact demand与logical outcome必须
-  extensionally相同；physical分解必须回证pieces union等于原set，carrier失败只拒绝对应representation/movement assignment；
+  extensionally相同；physical分解必须回证pieces union等于原set，carrier失败只拒绝当前layout/movement choice；
 - exact-demand relation facts依赖MLIR AnalysisManager/current immutable source session失效；consumer domain、final ownership或
   partition/reduction/replication变化必须进入完整`SpatialAssignment` semantic key。candidate mutation只发生在独立transaction；source
   session保持immutable，candidate analysis/relation/offset不得回流source memo。不使用manual epoch、fingerprint、pointer或diagnostic text

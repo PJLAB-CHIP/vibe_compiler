@@ -74,7 +74,7 @@ event wait直接推导endpoint/resource/completion输入。它不是另一层buf
   instruction lowering 必须基于该 unplaced Wafer-tagged memref graph 做转换，不能再引入
   storage/buffer IR 层。
 - RDMA/WDMA lowering 可以消费 DDR `memref.subview` / strided memref view，但不会从
-  IR 外的调度计划自行恢复这些 view。closed plan选择的tile必须先由selected materialization显式变成DDR subview。
+  IR 外的调度计划自行恢复这些 view。Structural/layout/movement choice必须先由上游transformation显式变成actual DDR subview。
 - instruction lowering只消费selected rewrite已经物化到payload IR的typed implementation字段、operands、views和memory/
   layout types，以及compiler固定的immutable target facts；不消费implementation/route proposal或其它
   side plan。compute lowering验证显式selected字段；boundary lowering从两端typed views/encoding和08 transfer proof导出
@@ -101,11 +101,11 @@ tile use，instruction lowering只保持这个结构，不能从同region或相�
 ```text
 Pipeline position:
 - Upstream IR / input:
-  selected complete CardModule；all-and-only TileModules含verifier-legal TileRegions、typed memrefs/views、compute/movement、
-  structured control、DTE events，以及closed plan的worker/order/event facts。
+  candidate-owned CardModule；all-and-only TileModules含verifier-legal TileRegions、typed memrefs/views、compute/movement、
+  structured control、DTE tokens和effects；worker/order/completion尚未由future plan代签。
 - Current stage responsibility:
-  对每个Tile运行同一TileRegion→Instr named conversion，选择唯一target instruction form并保留SSA/effects/control；随后由schedule owner
-  selected schedule emitter放置worker/order，统一completion owner从current Instr fresh建立必要wait/join。
+  对每个Tile运行同一TileRegion→Instr named conversion，选择唯一target instruction form并保留SSA/effects/control；随后由scheduler
+  从current Instr构造一次性dependence/resource graph、应用worker/order choice，completion owner再从new current Instr fresh建立wait/join。
 - Output IR / files:
   all-and-only Tile structured Instr programs；无candidate artifact、worker side plan或printed trace。
 - Downstream consumer:
@@ -115,8 +115,8 @@ Pipeline position:
 - Explicit non-goals:
   不枚举plan，不clone complete CardModule，不在lowering失败后换implementation/worker/buffer，不从layout/name恢复字段。
 - Done criteria:
-  partial planning Instr为零；每个complete candidate的每Tile lower一次；source op分类full conversion fail closed；completion与schedule owner
-  selected assignment all-and-only对应；failure擦除未提交candidate subtree，actual gate返回typed result。
+  pre-structural planning Instr为零；每个actual candidate的每Tile lower一次；source op分类full conversion fail closed；worker/order/completion
+  与current Instr operation/effect/token all-and-only一致；failure擦除未提交candidate subtree，actual gate返回typed result。
 ```
 
 ## 2. Wafer MemRef Contract
@@ -898,7 +898,7 @@ non-singleton cross-card collective在对应transport尚未实现时fail closed�
 | `wafer.tile.store` | consume destination-style source/dest；compact Tensor是baseline。mapped extension从两端typed views/encoding、08 exact transfer proof及current DMA instruction limits导出direct cover，并发射显式`src_offset`/`dst_offset`的WDMA；target identity不参与physical encoding query。staged alternative必须已显式物化在payload IR，source lifetime由typed worker ordered-pending及其真实external/terminal cut闭合，不能因WDMA本身插join |
 | `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; derive exact full-block/tail physical pieces from the unified physical encoding facts, directly form up to three stride/iteration levels, and emit one or more `wafer.instr.gather_scatter`; do not require source/result physical byte counts to match and do not copy padding; structured failure only when static logical movement cannot be represented by supported descriptors |
 | `wafer.tile.fill` | current只对Tensor logical-valid domain生成无domain attr的`wafer.instr.fill`；padding/physical-footprint初始化已增加typed Instr/TargetCall字段并闭合count/raw-value纵向 |
-| `wafer.tile.gemm` | ensure/create selected aligned SPM physical versions；plain form只在normal/normal relation成立时生成无orientation字段的`wafer.instr.gemm`。若operand/result已是合法Cx/NCx，直接消费该encoding且不插入packing字段；本lowering不判断历史上是否删除过layout/GS，tasks/06集成证据从winner readback证明absorption。typed orientation无损写入current oriented Instr op；不能从shape或op名恢复flag |
+| `wafer.tile.gemm` | 只消费current operand/result memref的actual encoding；需要的Tensor/Cx/NCx conversion必须已由上游layout stage物化，本lowering不创建另一份physical representation或根据consumer临时选layout。Plain form只在normal/normal relation成立时生成无orientation字段的`wafer.instr.gemm`；已是合法Cx/NCx时直接消费该encoding。Typed orientation无损写入current oriented Instr op，不从shape或op名恢复flag |
 | `wafer.tile.elementwise` | materialize every input indexing map into explicit movement/same-shape operands; strip even identity maps; ensure/create destination; map non-select kind and emit map-free `wafer.instr.elementwise`; semantic select lowers to false-copy `gather_scatter` + `bit2fp` + `mask_move`; reject if a map is unrepresentable |
 | `wafer.tile.reduce` | typed baseline验证init后显式构造fill、slice、map-free elementwise ping-pong和final movement。native plan必须证明完整logical reduction domain/dimension/combiner/init映射；dynamic-init/combiner/budget或native proof失败只拒绝对应typed plan |
 | `wafer.tile.copy` | ensure / create destination SPM memref; emit one gather_scatter; replace result with dest memref |

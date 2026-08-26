@@ -54,8 +54,8 @@ Wafer不使用一条“是否clone”或“是否module pass”的统一规则�
 | ordinary pass / rewrite | 完成变换所需的最小operation anchor；mutation经PatternRewriter、DialectConversion或pass API | 按framework合同处理；caller不能自行假设root回滚 |
 | explicit transaction | 最近的IsolatedFromAbove owner或明确的compiler output owner | 失败时销毁transaction result，不发布部分output |
 | analysis / dataflow | current operation和显式只读target facts | 不修改IR；相关mutation后失效并重算 |
-| partial planning | immutable TensorProgram与typed assignment value | 不构造IR，不保存Operation pointer、offset或hidden epoch |
-| policy-specific materialization | baseline或search各自的complete plan和独立Card/Tile owner | rejected/loser销毁；Accepted owner继续下游，不重建 |
+| pre-structural planning | immutable TensorProgram与spatial/region/temporal choice | 不构造IR，不保存Operation pointer、offset或hidden epoch；choice闭合后立即交给materializer |
+| policy-specific materialization | baseline或search各自的structural choice和独立Card/Tile owner | 生成actual TileRegion IR；后续choice在current IR上实施；rejected/loser销毁，Accepted owner不重建 |
 | actual memory/target leaf | policy-complete Instr IR及current relations | 返回typed accepted/rejection/failure，不选择或repair candidate |
 | output fan-out | 已accepted CardExecutable及明确请求的target/package variants | 每个真实output有唯一owner；只为真实consumer复制或转换 |
 
@@ -289,7 +289,7 @@ verifier，不能把unknown全legal的`applyFullConversion`当作闭合证明。
 | MLIR DialectConversion与PatternRewriter局部修改事务 | rewrite log、conversion legality、pattern state | conversion driver记录mutation并能`undoRewrites`；`applyAnalysisConversion`运行legalization搜索但不提交变换 | rollback是framework语义的一部分，范围是该driver管理的rewrite | 能直接使用framework transaction时不另造root snapshot；也不能把framework rollback描述成所有pass都无事务 |
 | Transform dialect `alternatives` | 显式alternative region | 对每个alternative复制`IsolatedFromAbove` scope，失败副本销毁，首个成功副本替换原scope | 多个真实IR可依次存在，复制是该operation语义 | 只有显式使用这项IR语义时才适用；current attention normalization使用一个fixed-algorithm op，不据此复制whole program |
 | MLIR reducer / crash-reproducer | interestingness、size、reproducer config | reducer clone整个Module并运行待测pipeline；debug快照也可clone root | 这是显式工具模式，不是production pass惯例 | reducer/debug clone列为独立模式，不能用它论证普通lowering snapshot，也不能把它误删 |
-| LLVM LoopVectorize/SLP/FunctionSpecialization/AMDGPU split proposal | VPlan、tree/cost、specialization record、`SplitProposal` | 多数选择先比较轻量plan，选中后执行；specialization和module split只复制最终保留的函数/partition | selected copy成为最终CFG或output | Wafer的非资源partial axes可借鉴轻量plan；SPM legality不能，因为allocation/lifetime只在complete candidate actual IR中存在。actual gate是明确例外，不得退回估算 |
+| LLVM LoopVectorize/SLP/FunctionSpecialization/AMDGPU split proposal | VPlan、tree/cost、specialization record、`SplitProposal` | 多数选择先比较轻量plan，选中后执行；specialization和module split只复制最终保留的函数/partition | selected copy成为最终CFG或output | Wafer只对spatial/region/temporal等明确structural choice借鉴轻量枚举，并在choice闭合后立即物化actual TileRegion IR。不仿照VPlan在C++ struct中模拟future SSA/buffer/event；SPM legality仅来自current Instr |
 | XLA GPU autotuning | backend config、isolated HLO module、compiled executable、`AutotuneResult` | 各config可并发extract/compile/profile；winner config写回原HLO，完整程序随后按集成上下文再编译 | candidate executable是测量对象；失败分类、结果cache和确定顺序均为显式合同 | compile-and-measure允许多actual artifact和后续集成编译；必须与普通analytic search分开建模 |
 | TVM MetaSchedule | base workload、`Trace`、Schedule/IRModule、builder artifact、measurement record | 每worker持有base module copy，trace可并行replay成多个schedule；database query也会重放trace | replay是持久化tuning record的定义，不要求winner沿用第一次内存中的IR对象 | rematerialization本身不是错误；需要稳定trace/base/version合同、确定性和测得的memory/work取舍 |
 | LLVM `SplitModule`、AMDGPU split、IREE executable variants | partition/target assignment和稳定output identity | 选择后clone多个最终Module/variant；独立output可并发lower/codegen并按identity汇合 | clone均被下游消费，不是rollback snapshot | Card→16 Tile与target/profile variants首先按output fan-out审查，不应与discarded validation混为一谈 |
@@ -302,14 +302,14 @@ Wafer中的root duplication只允许以下明确类别：
 
 | 类别 | owner与产物命运 | 约束 |
 | --- | --- | --- |
-| policy-specific actual candidate | baseline或search各自复制所需局部source operation，形成独立Card/Tile owner | complete candidate只构造一次；失败/loser销毁，Accepted不重建；两条policy不共享materializer |
+| policy-specific actual candidate | baseline或search各自复制所需局部source operation，形成独立Card/Tile owner | structural choice只物化一次；后续choice作用于current IR；失败/loser销毁，Accepted不重建；两条policy不共享materializer |
 | Card→Tile output fan-out | 大型Tile bodymove到唯一output；每个output都需要的小型declaration按IRMapping复制 | 每份copy有真实下游consumer，按Tile/launch identity稳定汇合 |
 | external helper projection | transaction从source投影helper所需Module并序列化 | helper input是明确output，失败随transaction销毁，不回灌隐藏state |
 | target/package variant | accepted CardExecutable按明确请求构造ordinary/profile等私有target output | 每个真实variant完整lower一次；不提前构造后丢弃，也不从另一variant恢复语义 |
 | reducer/debug | 显式tool mode复制isolated root并产生诊断或reproducer | 普通compile默认不执行，产物不进入candidate identity或下一次编译 |
 
-Partial planning不复制或物化IR。局部SPM probe、validate-transform-replay、accepted winner replay和按mode切换的
-complete materializer不属于允许类别；SPM合法性只来自每个actual complete candidate的current Instr与relations。
+Pre-structural planning不复制或物化IR；structural choice闭合后只产生一份candidate-owned TileRegion IR。局部SPM probe、
+validate-transform-replay、accepted winner replay和按mode切换的complete materializer不属于允许类别；SPM合法性只来自current Instr与relations。
 Dormant source是否删除由18号能力迁移流程决定，不能因包含clone或未进CMake直接判废。
 ### 7.3 Clone/materialization review checklist
 

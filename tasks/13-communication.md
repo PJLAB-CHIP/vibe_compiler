@@ -72,13 +72,13 @@ root/alias或携带该alias的control token作为region I/O。
 
 ### 3.2 Physical-dataflow communication materialization
 
-current Tile IR不保留abstract collective request、algorithm selector或late topology shortcut。06的physical-dataflow planner在immutable
-TensorProgram和typed state上联合选择Tile placement、per-Tile work、TileRegion/execution、temporal scope、physical versions、explicit
-movement、buffer/slot和event order；partial plans不构造IR。每个complete candidate在自己的CardModule transaction中直接产生每个sender/receiver的
-`peer_send`、`peer_recv`、local movement/compute和async token；schedule owner再按receiver first read、sender/relay last release、slot/FSM reuse与
-全局无环event order产生selected wait，不先造DDR版本再post-hoc替换，也不由movement emitter立即await。message-ready/live set、root lifetime、
-resource calendar与cost从current assignments重算，最终message/range/resource/completion从candidate actual IR重证；rejected/loser
-transaction销毁，final winner不重建。
+current Tile IR不保留abstract collective request、algorithm selector或late topology shortcut。06的controller先选择Tile placement、
+per-Tile work、TileRegion membership和temporal scope，然后立即物化candidate-owned actual TileRegion IR。Communication transformation
+只从该IR的current producer/consumer SSA、exact domain、layout、topology和effect选择realization，并直接生成每个sender/receiver的
+`peer_send`、`peer_recv`、local movement和async token。TileRegion-to-Instr后，schedule/completion owner从current issue/token/effect
+重算receiver first read、sender/relay last release、FSM reuse和全局无环order，再fresh生成wait。不先造DDR donor再post-hoc
+替换，不由movement emitter立即await，也不用future physical value/buffer/event代签actual IR。Rejected transaction销毁，
+final winner不重建。
 
 planner中的通信对象是exact chunk初始/目标state和transfer/combine action DAG，不是`Ring/Tree`算法attr。经典ring、tree、recursive
 exchange、row/column及aggregate/pairwise方案只负责提出checked DAG；actual Tile/Instr IR最终只保留这些DAG展开后的local work、

@@ -23,26 +23,40 @@
 
 - 现象：`search`与`none`在所有workload上产生相同IR/package，新增搜索代码从未影响winner。
 - 根因：driver解析了optimization policy，却在executable search边界丢弃或绕过它；测试反而把相同结果锁成合同。
-- 修复模式：`search`与`none`是独立controller并拥有不同complete schema、materializer、preparation和verifier；只共享policy-free基础facts
-  及无policy lowering/SPM/DDR/target leaf。两者从同一source分别启动独立transaction，互不调用或fallback。
-- 防复发：test-only call/work witness分别证明None的search-session为零、Search的baseline-controller为零；partial state不构造IR，
-  每个complete candidate调用actual memory/target gate一次，winner不重建且publication一次。普通compile不创建统计对象。不能要求两者永远产生相同digest。
+- 修复模式：`search`与`none`是独立controller并拥有各自的structural materializer和candidate owner；只共享policy-free
+  source facts、single-op rewrite/conversion和无policy SPM/DDR/target leaf。两者从同一source分别启动独立transaction，互不调用或fallback。
+- 防复发：test-only call/work witness分别证明None的search-session为零、Search的baseline-controller为零；pre-structural
+  frontier不构造IR，structural choice闭合后只产生一份candidate owner，winner不重建且publication一次。普通compile不创建统计对象。
 
-## 物化partial state或重复物化同一candidate会导致时间与RSS失控
+## 多层C++ shadow plan不能代替future IR
 
-- 现象：model-scale图对未闭合prefix就clone/lower，或者同一complete assignment先probe、再actual memory/target gate、winner再重建；大量actual owners同时
+- 现象：search在actual IR之前依次建立future value、movement、storage、event、execution structure和schedule record，
+  最后由materializer重放成MLIR。一旦不对应，便继续增加ID mapping、expected inventory和plan/actual parity verifier。
+- 根因：把“避免物化候选IR”误当成架构目标，混淆了transformation choice与只能由current IR表达或派生的
+  operation、SSA、buffer、alias、lifetime、effect、order和completion事实。每个局部schema都能解决一个接线问题，
+  但合起来形成与MLIR并行的第二编译器。
+- 修复模式：search只保存尚未被消费的显式choice。Spatial/region/temporal choice闭合后立即在candidate-owned
+  `IsolatedFromAbove` transaction中生成actual TileRegion IR。之后每个choice都作用于current IR，经verifier后使旧analysis失效；
+  layout/movement/bufferization、Instr scheduling/completion和memory planning只读当前stage IR。Rejected owner销毁，Accepted owner不重建。
+- 防复发：每个新plan字段先分类为“choice”或“物化后IR事实”。后者不得进入C++ cross-stage state。搜索源码和active docs
+  必须保持future operation/value/buffer/event/schedule owner、rebuild/parity verifier和winner replay为零；每个stage用actual IR数量、
+  SSA/effect/lifetime witness和直接下游验证，不用plan inventory代签。
+
+## 在structural choice闭合前物化或重建candidate会导致时间与RSS失控
+
+- 现象：model-scale图对未闭合structural choice就clone/lower，或者同一candidate IR先probe、再actual memory/target gate、winner再重建；大量actual owners同时
   存活，编译时间和RSS失控。
-- 根因：没有区分partial state与complete candidate，也没有候选事务和move-only accepted owner。
-- 修复模式：partial state只运行typed domain/query；每个complete assignment实际化一次并运行actual memory/target gate，因为SPM legality只能由actual IR
-  决定。rejected/loser owner立即销毁，session只保留必要summary和一个retained incumbent，winner原样发布。
-- 防复发：显式计数证明`completeCandidates == CardModules == actualGateInvocations`、winner rematerialization为零，并记录time-to-first-
-  accepted、wall和RSS；不能用低candidate count掩盖同candidate重建或16 Tile重复整图分析。
+- 根因：没有明确pre-structural choice frontier与candidate-owned actual IR的materialization boundary，也没有move-only accepted owner。
+- 修复模式：pre-structural state只运行typed choice/query；spatial/region/temporal闭合后物化一份candidate-owned TileRegion IR。
+  后续choice作用于current IR；rejected/loser owner立即销毁，session只保留必要summary和一个retained incumbent，winner原样发布。
+- 防复发：显式计数structural materialization、后stage transformation、actual gate和winner publication，断言同一choice/IR epoch不重建。
+  不能用低candidate count掩盖winner rematerialization或16 Tile重复整图分析。
 
 ## Late exact failure不能触发隐藏repair
 
 - 现象：SPM packing或ABI failure后，late pass自行缩tile、spill、改worker或切communication，selected IR与search cost不一致。
 - 根因：allocator/finalizer被赋予了搜索职责，产生第二winner owner。
-- 修复模式：actual gate只实现当前complete assignment并返回typed Accepted/rejection/failure；allocator/finalizer自身不得缩tile、spill、
+- 修复模式：actual gate只消费当前candidate IR并返回typed Accepted/rejection/failure；allocator/finalizer自身不得缩tile、spill、
   改worker或切communication。带完整witness的rejection可由外层当前policy controller消费，其它状态不得伪装成rejection。
 - 防复发：failure injection锁定packing/ABI/target失败不在candidate IR内repair、不调用另一policy；repo scan禁止late
   retile/spill/replan selector和allocator fallback。
@@ -53,10 +67,9 @@
   search-only domains没有production consumer。线性任务名看似无环，实际API producer/consumer断裂。
 - 根因：按任务编号或“先mechanism、后统一接线”排期，没有分别列出representation foundation、query、full domain、Core consumer和
   post-choice invalidation。
-- 修复模式：先交付plan component representation、structural validation和至少一个真实producer，再实现query，最后扩full domain；
-  因此spatial顺序是`spatial foundation → exact demand → full spatial domain`。semantic normalization和full spatial domain形成
-  首批真实输入后建立非mock search foundation，后续每轴同批扩controller；execution structure改变occurrence后严格经过
-  `execution structure → post-structure storage → schedule closure`。
+- 修复模式：先交付choice representation、structural validation和真实producer，再实现query与full domain。Spatial顺序为
+  `spatial foundation → exact demand → full spatial domain`。Spatial/region/temporal choice闭合后立即生成actual TileRegion IR；后续
+  layout/movement/buffer/schedule能力必须以该current IR为输入同批交付producer和consumer，不再串接future-plan artifact DAG。
 - 防复发：每个checkpoint表列出输入typed object、唯一producer、输出、首个production consumer和invalidates/re-entry；对该artifact DAG
   做拓扑检查。没有producer的input、没有consumer的mechanism、或被invalidated后仍直达下游的edge都使计划未收敛。
 
@@ -99,8 +112,8 @@
 
 - 现象：先固定Tile分配再选temporal tile/fusion，或先尽量融合再事后安排NoC，导致SPM放不下、Tile空闲或通信爆炸。
 - 根因：将互相决定resource和critical path的变量交给独立selector。
-- 修复模式：同一complete typed assignment共同表达Tile集合/work domain、temporal tile、TileRegion/融合、communication、buffering和overlap；
-  每个complete assignment构造CardModule并跑actual gate，只有Accepted结果参与winner比较。
+- 修复模式：spatial/region/temporal作为联合structural choice，闭合后立即生成actual Card/TileRegion IR。Communication、buffering和
+  overlap choice作用于current candidate IR并生成new verified IR；只有通过actual gate的owner参与winner比较。
 - 防复发：测试同时保留maximal local residency与cross-Tile operator pipeline、large-tile cut与small-tile overlap等对立候选。
 
 ## 修改temporal size时必须同时关闭active order
@@ -125,7 +138,7 @@
 - 根因：completion被当成持久plan而不是current effects/tokens/control flow的派生语义。
 - 修复模式：Instr verification先清除旧required joins，再从current actual Instr fresh构造loop backedge、branch merge、entry return、
   engine join和Direct-DTE exact wait。
-- 防复发：selected actual IR执行fresh completion并与plan event proof做parity；missing/wrong worker/event/participant/reuse分别有负例。
+- 防复发：selected actual Instr执行fresh completion，直接检查current worker/effect/token/lifetime与join/wait位置；不与future event plan做parity。
 
 ## `ReturnAfterLocalDrain`不是card-scoped barrier
 
@@ -140,7 +153,7 @@
   在planner/emitter内自行retile、spill、换layout或rebuffer。
 - 根因：没有先形成包含actual allocation、layout、alias/effect、completion、lifetime和alignment的current Instr problem，
   把性能估算、候选选择和fixed-capacity allocation混成一个owner。
-- 修复模式：partial planning中的SPM状态保持unknown；每个complete candidate实际构造Card/Tile/Instr及current owner relation，
+- 修复模式：pre-actual-memory stage的SPM状态保持unknown；每个candidate先实际构造Card/Tile/Instr及current owner relation，
   唯一PlanSPMMemory/MiniMalloc只返回validated offsets或带actual conflict demand的typed capacity rejection。外层controller决定
   是否构造下一candidate，planner和emitter不repair。
 - 防复发：用iteration-volume、operand-size和actual lifetime给出相反预测的GEMM/affine-window case，证明前两者不改变合法集合；
@@ -505,8 +518,8 @@
   对当前candidate一次性物化typed demand recipe要求的operation和endpoint，不建立公共SSA closure或materialized-IR cache。16个Tile实际构造可
   bounded并发并按Tile ID稳定归并，但并发不是work消重机制。
 - 防复发：显式test work counts检查relation construction、非空value/Tile demand、physical fragment和candidate Tile entry；每个
-  candidate CardModule/actual memory/target gate各一次，winner不重建。测试必须包含16 Tile demand不同的fanin/fanout，证明不是16次完整DAG walk。search partial
-  state只共享immutable analysis，不能按candidate/Tile缓存actual IR。
+  candidate CardModule/actual memory/target gate各一次，winner不重建。测试必须包含16 Tile demand不同的fanin/fanout，证明不是16次完整DAG walk。
+  Pre-structural frontier只共享immutable analysis，不能按candidate/Tile缓存actual IR。
 
 ## exact-empty producer不能被support graph重建重新拉入
 
@@ -812,10 +825,11 @@
   最终actual memory/target gate却在函数级packing失败。relation remap还可能在两次构造间省略或保留不同owner，使同一allocation得到不同归因。
 - 根因：把“调用相同pass/checker”误当成消费同一actual IR和同一current relation certificate。只要第一次IR被销毁、第二次重建，
   operation lifetime、buffer relation、region boundary和packing scope就已经是两个事实源；继续增加scope escalation只会扩张平行链。
-- 修复模式：删除baseline的root/Tile/function局部capacity probe。每个complete candidate只产生一份完整CardModule/actual memory/target gate；actual
+- 修复模式：删除baseline的root/Tile/function局部capacity probe。每个进入memory/target gate的candidate只产生一份完整CardModule；actual
   planner demand通过candidate transaction的result/operand/output/movement/scratch relations归因，缺owner就是contract failure，不能按
   region恰有一个root猜owner。
-- 防复发：显式test work counts证明`completeCandidates == CardModules == actualGateInvocations`、accepted rematerialization为零；测试扰动
+- 防复发：显式test work counts证明每个完整物理choice/IR epoch至多生成一份actual-gate CardModule，且
+  `actualGateCandidates == actualGateInvocations`、accepted rematerialization为零；测试扰动
   每类relation并检查所有actual SPM demands有owner，不以Location、空relation或diagnostic字符串证明一致性。
 
 ## 发布点之后不能再运行会翻转事务结果的validation
@@ -1010,9 +1024,9 @@
   并把合法multiplicity写死为2或3；同一Tile存在两个独立region时还会被错误要求共享一个loop。
 - 根因：候选identity、actual loop proof和memory planning三个边界混在一个入口。logical edge尚不知道temporal steady loop、physical
   leaf footprint、alias、最后consumer或release，因此既不能拥有slot winner，也不能证明多buffer可物化。
-- 修复模式：buffering使用独立typed domain，输入closed spatial/group/temporal/representation/movement assignment和显式capacity；
-  single是无工作identity，multi-slot只携group scope、exact edge子集和count。每个scope在prepared Instr上用current buffer relation证明
-  exact endpoint共享static loop，再原位生成slot family/SSA rotation/phase/release并立即执行fresh SPM planning；不同scope顺序处理。
+- 修复模式：先物化actual TileRegion loop、endpoint SSA和buffer roots。Multi-slot只是针对current loop/root的一次
+  transformation choice；rewrite在同一region内创建actual rotating allocations、slot selection、phase和release relation，然后使旧
+  alias/lifetime analysis失效并立即运行fresh verifier和MiniMalloc。不在actual IR之前创建buffer domain、slot family或预测capacity。
 - 防复发：删除logical carrier字段和无edge overload；测试必须同时覆盖2/3/4+、tail/capacity、external-write alias hazard、Direct-DTE
   issue/wait、不同loop拒绝与同Tile多scope。query不得clone/lower，统计只在caller显式请求时启用，overlap winner只能由完整search选择。
 
@@ -1034,21 +1048,20 @@
 - 现象：旧ready-order用固定engine priority直接产出一个顺序，worker placement克隆整个Module后只产出一个lane映射，target registry再用
   稀疏pair/group row把hard legality与旧profile profitability混在一起；缺row返回Unknown，合法域与实验数据共同决定候选是否存在。
 - 根因：order、worker、completion和resource analysis各有独立owner/winner，且通过clone隔离而不是typed assignment+owned apply表达事务。
-- 修复模式：event/resource foundation从typed spatial-through-storage plan构造EventGraph和hard/disjunctive dependencies；固定execution
-  structure并重闭structure-specific occurrences/storage后，schedule closure再惰性枚举order/worker/resource/completion。selected emitter一次写actual order/joins；resource
-  overlap只返回query-local facts，不成为local winner。
-- 防复发：tiny DAG与独立reference比较精确assignment数，mutation必须使domain失效；源码中不得恢复priority selector、worker clone、
-  capability/profitability row或默认calendar日志。execution-structure planning改变event structure后必须先重闭storage planning，再重新query schedule planning。
+- 修复模式：TileRegion-to-Instr后从current Instr operation、SSA、effect、range、token和control flow构造一次性
+  dependence/resource graph。Scheduler枚举并应用order/worker choice到这份IR，mutation后旧graph失效；completion owner
+  随后从new current IR fresh生成join/wait。不从spatial、storage或future event plan构造schedule。
+- 防复发：tiny DAG与独立reference比较current Instr上的合法order/worker选择，mutation必须使旧graph失效；源码中不得
+  恢复priority selector、whole-Module worker clone、capability/profitability row、future event ID或默认calendar日志。
 
 ## Stage pipeline不能再拥有一套whole-Module candidate/clone入口
 
 - 现象：旧fixed-slot实现扫描任意loop、clone完整Module、自行推导slot/stage并返回一个local candidate；buffer count、logical edge、
   ready order和pipeline identity分散，后续只能靠ordinal/clone对应关系拼回search。
 - 根因：slot lifetime与stage event structure没有以同一selected edge scope为边界，rollback又被误写成每个mechanism各clone一次。
-- 修复模式：initial storage planning提供storage/slot possibilities，event/resource foundation提供EventGraph，execution-structure planning只选择Serialized/Pipelined structure；
-  structure改变occurrence/live distance后必须重闭slot/rotation/reuse，再由schedule closure选择order/completion。winner才构造SCF phases并
-  分配SPM offset。但这只是目标边界，不能用一个wrapper证明旧
-  fixed-slot算法与protocol proof已经迁移。
+- 修复模式：结构choice后立即构造candidate-owned TileRegion IR。Pipelined alternative在最近`IsolatedFromAbove`
+  scope上物化actual SCF phases、movement、rotating buffers和SSA slot relation，然后从该IR重算event、lifetime、completion和
+  MiniMalloc demand。不先建initial storage/EventGraph/execution-structure/storage/schedule链，也不等winner后再重放结构。
 - 防复发：旧public API和whole-Module clone可以删除；旧source/test中的periodic DTE、NCC backedge、endpoint reuse、alias/external root、
   odd tail和atomic failure能力必须逐项迁入current owner并受测后才能删除。stage还必须成为search typed transition，而不是由nonempty
   buffering scope自动触发。2个wrapper test和少量selected-buffer test不能代签旧40项semantic witness。
@@ -1071,11 +1084,11 @@
 - 现象：把schedule planning canonical query/apply直接放入共同`planTileMemory`后，baseline scalar case从约2秒退化到45秒；大block会承担O(n²)
   dependency DAG构造，即使用户选择`none`。
 - 根因：共享exact gate与共享search policy混淆；baseline的canonical source order/worker0已经确定，不需要枚举或建立schedule domain。
-- 修复模式：Tile memory planning不拥有schedule选择，也不接受“是否apply search schedule”的布尔开关。只有带完整selected
-  `ClosedSchedulePlan`和all-and-only EventId relation的candidate在进入memory planning前调用schedule-owned materialization；baseline没有selected
-  schedule assignment，因此不构造domain。两者仍共享Tile→Instr、SPM/DDR、transport和最终verification。
-- 防复发：baseline定向wall-time与work count必须检查schedule query为零；任何新search axis接入共同lowering时都需要显式selected入口，
-  不能在无assignment路径中构造domain后再取first。
+- 修复模式：Tile memory planning不拥有schedule选择，也不接受“是否apply search schedule”的布尔开关。Baseline和
+  search各自先产生current Instr；baseline在该IR上应用deterministic order/worker，search在该IR上运行自己的scheduler。
+  两者都从应用后的current Instr fresh构造completion，然后共享SPM/DDR、transport和最终verification。
+- 防复发：baseline定向wall-time与work count必须检查search scheduler调用为零；任何新search axis接入共同lowering时都只能
+  提供当前transformation的显式choice，不能在无actual IR的路径中构造future domain后再取first。
 
 ## Search constructive proposal不能静默退回exact域第一点
 
@@ -1173,8 +1186,9 @@
   dynamic work、位置和直接lifetime witness。只把任意后继same-worker issue当成“worker已完成”同样错误：busytable可以在后续
   同worker物理复用时按实际地址排序，但不能让更晚的不同worker、Kcore或DTE在没有join时复用仍在飞行的地址。
 - 修复模式：先读current硬件校准、target lowering和CRT/runtime，把结论区分为supported、board-observed、unknown、excluded。
-  上层只保留SSA/effect/token/lifetime；movement发token，storage给出first-read/last-release与reuse，event/resource foundation消费typed completion/movement facts，schedule closure在actual
-  selected control flow中生成minimum-participant、latest-unavoidable join/wait。missing contract保持typed unknown，不能默认
+  上层只保留SSA/effect/token/lifetime；movement发actual token，bufferization物化actual allocation/view和reuse。TileRegion-to-Instr后从
+  current operation/effect/range/token/control flow重建一次性dependence/resource graph，应用worker/order后再fresh生成minimum-participant、
+  latest-unavoidable join/wait。Missing contract保持typed unknown，不能默认
   Synchronous或插全worker drain。same-worker普通链只保持issue order；resolved后继可缩短地址lifetime，但必须另存worker-domain
   obligation，不同worker/DTE/Kcore observer在exact join前一律失败。output copy消费selected temporal tile并形成有界SCF main/tail
   traversal，不能退回全1 tile。
@@ -1197,67 +1211,65 @@
   missing/duplicate/unknown semantic root group分别有正负例。每个actual SPM allocation没有typed owner时必须compiler-contract failure，
   不能按shape、唯一root、Location或buffer名补猜。
 
-## Selected storage改写不能越过Tile隔离边界或在alias后恢复event identity
+## Bufferization不能越过Tile隔离边界或丢失actual execution identity
 
 - 现象：rotating slot在`func`入口创建allocation后被`wafer.tile.region`内的`arith.select`引用，verifier报告isolated region捕获；把两个
   result绑定到同一reuse object后，再按storage root匹配compute event会让两个instruction同时看见两个structured owner。
-- 根因：storage materializer把函数作用域当成allocation owner，没有遵守实际SPM planner要求的TileRegion scope；同时在alias/reuse已经
-  合并SSA root后才恢复`EventId -> instruction`，丢失了改写前仍然明确的一对一execution identity。
-- 修复模式：alias/reuse和rotating slot都在所有相关root共同且唯一的`wafer.tile.region`中创建；跨TileRegion共享返回typed
-  Unsupported。先从current pre-storage relations捕获instruction的execution node，再做只改变storage identity的rewrite；
-  `arith.select`作为typed memref forwarding将true/false roots都纳入relation query。辅助selector和issue归入同一event时按actual block
-  order保留SSA先后，再执行execution-structure materialization。
-- 防复发：用rank-3 1024/1025 alias/reuse和1031 pipelined rotation分别贯通selected schedule/execution structure→actual MiniMalloc；检查source relation、
-  allocation数量、verifier和event owner。不得把allocation提升到`func`、按合并后的唯一root猜event，或因synthetic fixture能verify就绕过
-  actual TileRegion planning scope。
+- 根因：bufferization rewrite把函数作用域当成allocation owner，没有遵守实际SPM planner要求的TileRegion scope；
+  同时企图在alias/reuse合并SSA root后恢复未物化event identity，把buffer identity误当成execution identity。
+- 修复模式：alias/reuse和rotating allocation都在所有相关root共同且唯一的`wafer.tile.region`中创建；跨TileRegion
+  共享返回typed Unsupported。Rewrite使用current operation/SSA relation和listener更新直接owner；不创建EventId或在合并后
+  反查execution。Scheduler在TileRegion-to-Instr后从actual operations/effects重建依赖。
+- 防复发：用rank-3 1024/1025 alias/reuse和1031 pipelined rotation分别贯通actual TileRegion→Instr→MiniMalloc；检查
+  allocation数量、SSA owner、verifier和current-Instr dependency。不得把allocation提升到`func`、按合并后root猜execution，
+  或因synthetic fixture能verify就绕过actual TileRegion scope。
 
-## Actual feedback不能只用最后一个search axis作为candidate key
+## Actual feedback必须绑定完整显式choice和current source epoch
 
-- 现象：两个candidate可拥有相同`ClosedSchedulePlan`，但Region、representation、movement或initial storage不同；若controller只按schedule
-  reserve/cache，第一个actual rejection会把合法sibling当duplicate或forbidden，accepted tie-break也丢失完整physical assignment。
-- 根因：把“最后形成的plan”误当成“完整candidate identity”。ClosedSchedule只保存fixed execution structure、post-structure Buffer和schedule选择，不包含Spatial到Movement及
-  initial Buffer的parent chain；causal roots也只是当前actual conflict的diagnostic witness，不是可推广到prefix的nogood explanation。
-- 修复模式：从validated `ScheduledState`构造`CompleteCandidateKey`，逐值携带全部axis并复核structure/storage/schedule generation。reservation、completed set、
-  exact full-point cache、objective tie-break和retained winner统一使用该key；SPM owner roots只随exact rejection保存，不参与subsumption。
-- 防复发：用相同schedule、不同representation的1025 sibling证明rejection只命中自身；逐axis identity、cache on/off和2--7反序独立winner
-  oracle同时执行。没有assignment-level explanation时，禁止按root、shape、bytes、最后一轴plan或parent pointer扩大no-good。
+- 现象：两个candidate的最后一个choice相同，但spatial/region/temporal/layout/movement choice不同；若controller只按
+  最后choice reserve/cache，第一个actual rejection会把合法sibling当duplicate或forbidden。
+- 根因：用未物化的最后plan object代替完整transformation choice identity和current source epoch；actual conflict root又被误当成
+  可推广到prefix的no-good explanation。
+- 修复模式：reservation和exact full-point cache使用完整显式choice key与immutable source identity；actual IR由该choice通过
+  唯一materializer生成一次。SPM owner/conflict只随该exact rejection保存，没有证明时不做prefix subsumption。
+- 防复发：用最后choice相同、上游choice不同的1025 sibling证明rejection只命中自身；逐choice identity、cache on/off
+  和反序独立winner oracle同时执行。禁止按root、shape、bytes、最后一轴或parent pointer扩大no-good。
 
 ## Resumable search不能借用临时config或依赖遍历顺序填充cache
 
-- 现象：one-shot search正常，但把同一遍历切成每次一个credit后，persistent session在actual gate读取到损坏的program boundary；另一个fresh
-  session直接actualize合法ScheduledState时报告EventGraph缺upstream domain。
+- 现象：one-shot search正常，但把同一遍历切成每次一个credit后，persistent session在actual gate读取到损坏的program boundary；
+  另一个fresh session从完整choice生成candidate时暴露隐藏cache前置。
 - 根因：resumable owner保存了调用表达式产生的`FrontendProgramVerificationResult`和`ExecutionConfig`引用，resume时临时值已经析构；
-  actual evaluator又假定Region/Temporal等cache必然由同一session按固定顺序预热，输入state本身不足以独立调用。
+  actual evaluator又假定cache必然按固定顺序预热，显式choice和source本身不足以独立物化candidate。
 - 修复模式：persistent session复制小型immutable config values，只借用明确由outer transaction持有的TensorProgram、diagnostics和
-  ProgramData。actualization从ScheduledState的parent chain依次重建并`contains`检查全部domain，再建立EventGraph、execution structure、storage和schedule；cache只是
-  request-local memo，不是隐藏前置。显式continuation stack在cutoff后原位resume，不clone/replay candidate IR。
-- 防复发：同一1024 source分别one-shot和每credit resume到同一first-accepted key；独立recursive composer与production prefix逐项相等，
-  fresh parse直接actualize前两个complete states并在这些Oracle调用前后重复production traversal，key/status保持一致。不得用延长timeout、
-  保活临时对象或先跑一次warmup修补cache依赖。
+  ProgramData。任一完整choice均能通过唯一materializer独立产生candidate-owned current IR；cache只是request-local pure-query memo，
+  不是隐藏前置。显式continuation stack在cutoff后原位resume，不重放或重建winner IR。
+- 防复发：同一1024 source分别one-shot和每credit resume到同一first-accepted choice；fresh parse可直接物化前两个
+  complete choices，且在pure-query cache on/off下IR/status一致。不得用延长timeout、保活临时对象或先跑warmup修补cache依赖。
 
 ## Exact set的normal form不能代替物理可表示性证明
 
-- 现象：multi-producer `insert_slice` reconstruction产生语义有限且精确的`GeneralPresburger` domain；movement与storage保存的是同一集合，
-  但consumer只看到空box metadata并报告resource mismatch，随后feasibility也无法计算footprint。
-- 根因：representation只在输入已经标成`BoxUnion`时验证physical pieces，把exact set的construction form误当成可物化性结论；下游又比较
-  duplicated domain metadata，而没有在representation owner关闭“exact logical set → finite physical pieces”的边界。
-- 修复模式：representation对非empty exact set先走bounded direct-disjunct recovery；只有每个disjunct都是static rectangle且pieces两两
-  disjoint时规范化为语义等价`BoxUnion`。若整体能被bounded exact equality证明为一个dense rectangle，可退化成一个piece；否则typed
-  unsupported，绝不使用bounding box。movement、storage和actual-admission owner只消费该current resource description。
+- 现象：multi-producer `insert_slice` reconstruction产生语义有限且精确的`GeneralPresburger` domain；后续layout/movement
+  transformation只看到空box metadata并报告resource mismatch。
+- 根因：把exact set的construction form误当成可物化性结论，或在多个下游复制domain metadata后比较副本，而不是让
+  current-IR transformation消费同一exact relation。
+- 修复模式：针对current value/use的layout或movement rewrite在一次调用内对非empty exact set做bounded direct-disjunct recovery；
+  只有每个disjunct都是static rectangle且pieces两两disjoint时规范化为语义等价`BoxUnion`。若整体能被bounded exact
+  equality证明为一个dense rectangle，可退化成一个piece；否则typed unsupported，绝不使用bounding box或跨stage
+  resource description。
 - 防复发：同时保留rank-3、主维1024/1025的multi-producer全链和一个1025级GeneralPresburger direct case；后者检查Presburger equality、
   exact piece offsets/sizes及下游可消费。不能靠`getBoxes().empty()`判语义不支持，也不能在每个consumer重复generic equality。
 
-## Definition-only result必须有显式disposition
+## Definition-only result不能靠伪造use或discard plan闭合
 
 - 现象：`insert_slice`覆盖producer输出的一部分后，canonical spatial仍执行对应shard并需要output storage；该result没有transfer/publication，
   storage把它当成漏use拒绝。若简单允许所有empty-use，又会放过真正漏掉的observable publication。
-- 根因：movement carrier只表达load/transfer/gather/publication，没有区分“已产生但被pure reconstruction完全覆盖”与“应该被消费却漏了
-  carrier”；storage只能从absence猜语义。
-- 修复模式：H为每个没有carrier的`ExecutionResultValueId`签发typed `ResultDiscardPlan`。discard不是movement action且没有payload；I只对
-  该显式version建立definition-local self-use，J不生成伪edge，F仍在definition点计入footprint。没有carrier也没有discard、duplicate
-  discard及carried-and-discarded均fail closed。
-- 防复发：rank-3 1024/1025 multi-piece overwrite检查discard ID、source version、storage object和self-use逐项相等；独立负例删除
-  publication仍必须失败，并覆盖duplicate与carried-and-discarded冲突。不得用名字、shape或“没有use”直接猜discard。
+- 根因：在actual SSA之前预先列出result、carrier和storage，遇到无consumer的future result后只能再发明discard和self-use让计划自洽。
+- 修复模式：structural materializer只创建current exact demand和observable/effect closure要求的execution。Pure result物化后没有actual use时，
+  由局部DCE/canonicalization删除其compute和allocation；effectful op保留actual effect；observable result必须有actual publication use。不创建
+  discard ID、fake self-use或storage edge。
+- 防复发：rank-3 1024/1025 multi-piece overwrite检查actual IR无orphan pure compute/allocation；独立负例删除observable publication
+  仍必须失败。不得用名字、shape或伪造use判断discard。
 
 ## Canonical coordinate不能保留另一套IR materializer
 
