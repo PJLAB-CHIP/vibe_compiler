@@ -38,7 +38,8 @@
   但合起来形成与MLIR并行的第二编译器。
 - 修复模式：search只保存尚未被消费的显式choice。Spatial/region/temporal choice闭合后立即在candidate-owned
   `IsolatedFromAbove` transaction中生成actual TileRegion IR。之后每个choice都作用于current IR，经verifier后使旧analysis失效；
-  layout/movement/bufferization、Instr scheduling/completion和memory planning只读当前stage IR。Rejected owner销毁，Accepted owner不重建。
+  layout/bufferization、movement、execution structure、Instr scheduling/completion和memory planning只读当前stage IR；memory leaf只接受
+  completion-closed Instr，不重建join/wait。Rejected owner销毁，Accepted owner不重建。
 - 防复发：每个新plan字段先分类为“choice”或“物化后IR事实”。后者不得进入C++ cross-stage state。搜索源码和active docs
   必须保持future operation/value/buffer/event/schedule owner、rebuild/parity verifier和winner replay为零；每个stage用actual IR数量、
   SSA/effect/lifetime witness和直接下游验证，不用plan inventory代签。
@@ -613,10 +614,11 @@
   单root canonical路径可能因bufferization形状恰好稳定而掩盖问题。
 - 根因：TileRegion-to-Instr先用listener把relation重绑到Instr SSA，随后function-boundary One-Shot Bufferize又改写function参数和
   boundary SSA；后一个pass不使用该listener，已重绑的relation再次失效。
-- 修复模式：在收集TileRegion和安装replacement listener前，把relation重绑到唯一current storage root，再完成function-boundary
-  bufferization；cleanup结束显式删除只对应已消失dead SSA的attribution entry并检查其余relation仍属于current module。之后
-  TileRegion-to-Instr的所有replacement只由同一个listener跟踪。memory-planning preparation在已有materialization relations的
-  production路径不得再次运行同一bufferization，只重建当前IR要求的completion结构。
+- 修复模式：在movement和execution structure前，由layout stage一次完成function-boundary与region-local bufferization，并把relation
+  重绑到唯一current storage root；cleanup结束显式删除只对应已消失dead SSA的attribution entry并检查其余relation仍属于current module。
+  之后
+  TileRegion-to-Instr的所有replacement只由同一个listener跟踪。Current-Instr stage随后完成worker/order和completion；
+  memory/target leaf在已有materialization relations的production路径不得再次运行bufferization或重建completion，缺失时直接拒绝。
 - 防复发：真实规模selected multi-root stored/direct与replica候选必须走完整CardModule→Instr→actual SPM gate；只验证TileRegion
   或单root路径不能签发relation epoch正确性。
 
@@ -1189,7 +1191,8 @@
   dynamic work、位置和直接lifetime witness。只把任意后继same-worker issue当成“worker已完成”同样错误：busytable可以在后续
   同worker物理复用时按实际地址排序，但不能让更晚的不同worker、Kcore或DTE在没有join时复用仍在飞行的地址。
 - 修复模式：先读current硬件校准、target lowering和CRT/runtime，把结论区分为supported、board-observed、unknown、excluded。
-  上层只保留SSA/effect/token/lifetime；movement发actual token，bufferization物化actual allocation/view和reuse。TileRegion-to-Instr后从
+  上层只保留SSA/effect/token/lifetime；bufferization物化actual allocation/view和reuse，movement发actual token，execution-structure
+  transformation物化pipeline/rotating slot。TileRegion-to-Instr后从
   current operation/effect/range/token/control flow重建一次性dependence/resource graph，应用worker/order后再fresh生成minimum-participant、
   latest-unavoidable join/wait。Missing contract保持typed unknown，不能默认
   Synchronous或插全worker drain。same-worker普通链只保持issue order；resolved后继可缩短地址lifetime，但必须另存worker-domain

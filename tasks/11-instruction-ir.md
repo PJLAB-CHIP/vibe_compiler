@@ -82,6 +82,9 @@ event wait直接推导endpoint/resource/completion输入。它不是另一层buf
 - tile-region 已支持 `scf.if` / `scf.for` 作为 tile-region 内 structured control-flow。instruction lowering 必须递归
   legalize 这些 region body 内的 executable target-abstract op，并保留 `scf` container；是否选择
   硬件 branch/loop、predication 或 unroll 不是 instruction-level IR 的当前职责。
+- software pipeline、prefix/steady/tail、chunk occurrence、rotating allocation root和slot SSA必须已由上游current Tile
+  execution-structure transformation物化。TileRegion→Instr只保持这些actual结构，不接收或构造`ExecutionStructurePlan`、
+  buffer multiplicity或预测lifetime。
 
 `wafer.tile.region`在本层仍严格表示单个Tile的SPM residency domain，不是可跨Tile或跨region的pipeline
 container。任何跨region shaped value必须已经通过显式DDR store/completion/load；SPM root/value/alias不能成为region
@@ -102,21 +105,24 @@ tile use，instruction lowering只保持这个结构，不能从同region或相�
 Pipeline position:
 - Upstream IR / input:
   candidate-owned CardModule；all-and-only TileModules含verifier-legal TileRegions、typed memrefs/views、compute/movement、
-  structured control、DTE tokens和effects；worker/order/completion尚未由future plan代签。
+  bufferized function boundary、explicit execution structure/rotating slots、structured control、DTE tokens和effects；
+  worker/order/completion尚未由future plan代签。
 - Current stage responsibility:
   对每个Tile运行同一TileRegion→Instr named conversion，选择唯一target instruction form并保留SSA/effects/control；随后由scheduler
   从current Instr构造一次性dependence/resource graph、应用worker/order choice，completion owner再从new current Instr fresh建立wait/join。
 - Output IR / files:
   all-and-only Tile structured Instr programs；无candidate artifact、worker side plan或printed trace。
 - Downstream consumer:
-  actual SPM/DDR placement、transport/resource/ABI verification、target LLVM、package/runtime。
+  completion-closed canonical Instr→actual SPM/DDR/transport/target leaf、package/runtime。该leaf不得再重建join/wait或修改worker/order。
 - User-level driver / named pipeline:
   wafer-compile complete-candidate execution pipeline；wafer-opt复用相同leaf named pipeline做IR tests。
 - Explicit non-goals:
-  不枚举plan，不clone complete CardModule，不在lowering失败后换implementation/worker/buffer，不从layout/name恢复字段。
+  不枚举structural/layout/movement/execution-structure plan，不clone complete CardModule，不在lowering失败后换implementation/worker/buffer，
+  不运行function-boundary或region-local bufferization，不从layout/name恢复字段。
 - Done criteria:
-  pre-structural planning Instr为零；每个actual candidate的每Tile lower一次；source op分类full conversion fail closed；worker/order/completion
-  与current Instr operation/effect/token all-and-only一致；failure擦除未提交candidate subtree，actual gate返回typed result。
+  pre-structural planning Instr为零；每个actual candidate的每Tile lower一次；source op分类full conversion fail closed；上游actual
+  execution structure/rotating slot在Instr中保持；worker/order/completion与current Instr operation/effect/token all-and-only一致；
+  failure擦除未提交candidate subtree，actual gate返回typed result。
 ```
 
 ## 2. Wafer MemRef Contract

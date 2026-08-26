@@ -79,7 +79,7 @@ source program
 - Search共同考察不同op的Tile集合、intra-op spatial work、temporal tile、loop order、TileRegion/融合、NoC redistribution、
   spill/reload/recompute、buffering和overlap，但不把这些都存成一套future execution plan。
 - Search state只保存尚未被transformation消费的显式choice。Spatial/region/temporal choice闭合后立即生成candidate-owned
-  actual TileRegion IR；随后layout、movement、bufferization、Instr、worker/order/completion和memory只从各自current IR实施或重算。
+  actual TileRegion IR；随后layout/bufferization、movement、execution structure、Instr/worker/order/completion和memory只从各自current IR实施或重算。
   Final winner直接保留其actual IR，不rematerialize。
 - semantic root与physical候选只从structured op semantics、indexing maps、type/shape/dtype、SSA/effect、
   explicit communication和target capability生成。改变算法DAG的候选必须先物化为actual TensorProgram root；算子先验
@@ -149,11 +149,13 @@ source program
 - 同一TileRegion、相同domain优先local SPM reuse；不同TileRegion即使位于同一Tile也必须显式DDR materialize；
   部分重叠mapping只传缺失domain；mapping改变时显式形成
   scatter/gather/broadcast/reduction/redistribution。
-- 同一 `tile.region`可包含不同temporal tile和独立traversal；region表示单个Tile内的SPM lifetime/ownership domain，
-  不表示hardware Tile本身。
+- 同一 `tile.region`可包含不同temporal tile和独立traversal；structural/layout-resolved form不签发SPM结论，physical form才表示
+  单个Tile内的SPM lifetime/ownership domain；region不表示hardware Tile本身。
 - maximal feasible residency与cross-Tile operator pipeline必须作为对立候选比较，fusion长度本身不是收益。
 - SPM planner只读取current candidate中的actual input/intermediate/output、temporary、conversion、staging和rotating-slot allocations及
   lifetime/conflict，返回validated offsets或typed failure；它不改变选择。
+- function-boundary与region-local bufferization必须在movement和execution structure之前一次闭合；TileRegion-to-Instr和
+  worker/order/completion随后在actual memory/target leaf之前闭合。Leaf只消费completion-closed canonical Instr，不再次bufferize或重建join/wait。
 - cross-Tile data由source SPM、explicit send、destination staging、recv/wait表达；SPM root不跨Tile SSA共享。
 - communication mapping从explicit physical endpoint、message identity、domain、encoding、bytes和topology派生；不从编号算术
   或symbol名恢复route/algorithm。

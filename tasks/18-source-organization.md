@@ -88,10 +88,13 @@ single-card current path向physical-dataflow stage交付一个完整card-local T
 - physical-dataflow selection：从fixed TensorProgram roots构造query-local exact demand和typed spatial/region/temporal choices；
 - CardModule/TileRegion materialization：消费每个闭合structural choice并立即生成actual IR；attention先展开selected Linalg/Tensor/SCF，
   再确定性转换到wafer.tile；
-- current-IR physical realization：针对actual TileRegion SSA应用layout/view/bufferization和movement choice，每次rewrite后验证并使旧analysis失效；
+- current-IR physical realization：先一次完成function-boundary与region-local bufferization/layout/view，再应用movement choice；
+  每次rewrite后验证并使旧analysis失效；
+- current Tile execution structure：在movement-closed physical TileRegion上物化Serialized或software-pipelined loop、
+  prefix/steady/tail、rotating roots和slot SSA；不创建completion或memory offset；
 - bounded candidate Tile executor：对每个candidate并行互不共享可写IR的per-Tile lowering work，并维持deterministic result order；
-- Instr construction and physical verification：TileRegion-to-Instr后从current Instr重建dependence/resource graph，应用worker/order、
-  fresh构造completion，再执行memory、transport和ABI验证；
+- Instr construction and physical verification：structure-closed TileRegion-to-Instr后从current Instr重建dependence/resource graph，
+  应用worker/order并fresh构造completion；completion-closed Instr随后进入不再修改completion的memory、transport和ABI leaf；
 - CardExecutable actual admission：返回Accepted或typed rejection/failure，不生成repair；rejected/loser owner销毁，final winner再进入target output。
 
 现有类名或函数名只作为实现索引；长期合同仍是：TensorProgram → structural choice → actual CardModule/TileRegion → all-and-only

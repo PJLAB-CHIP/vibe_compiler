@@ -15,10 +15,11 @@ Pipeline position:
 - Current stage responsibility:
   消费已物化的candidate-owned Card/TileRegion IR。Attention在该transaction内展开selected Linalg/Tensor/SCF；
   compute lowering只读current structured op/SSA，layout/view/bufferization和movement transformation只读current value/use并生成new IR；
-  最后把每个Tile module合法化为canonical/unplaced `wafer.instr.*`。
+  movement闭合后，execution-structure transformation在current Tile IR上物化actual serialized/pipelined loop与rotating slot；
+  最后把每个structure-closed Tile module合法化为canonical/unplaced `wafer.instr.*`。
 - Output IR / files:
   selected complete CardModule中的typed wafer.tile.*与Wafer-tagged memref，或projected per-Tile wafer.instr.*；
-  compute form、geometry、movement和effect事实全部在actual IR中，不保留候选side channel。
+  compute form、geometry、movement、execution structure/rotating slot和effect事实全部在actual IR中，不保留候选side channel。
 - Downstream consumer:
   fresh worker/order/completion reconstruction、fixed-capacity SPM/DDR planning、CardExecutable communication/resource
   verification、target conversion、explicit `(card_id, tile_id, launch_slot)` output/package writing。
@@ -63,7 +64,7 @@ target-implementation OpInterface、external-model registry、plan kind、
 capability menu、selected/forced参数或hidden fallback。rewrite改变source region/type/SSA/effect后，lowering只重新读取current IR。
 
 Physical-dataflow controller是choice和candidate ownership的唯一owner：它选择Tile set、per-Tile work domain、temporal tile和
-TileRegion partition，随后把actual candidate IR交给layout/movement/bufferization与Instr stage。Direct lowering不能为某个op自行决定
+TileRegion partition，随后把actual candidate IR依次交给layout/bufferization、movement、execution structure与Instr stage。Direct lowering不能为某个op自行决定
 全局mapping，也不能因为当前route失败而
 改写source数学语义。未来若生成semantic alternative，必须先由其自身设计选择并形成一个current TensorProgram，再进入
 physical planning；本层不为其预留generic algorithm axis。若某类source op需要多个实现，先由该语义自己的显式IR/interface
@@ -75,8 +76,10 @@ selected physical dataflow存在于`wafer.card.module`内all-and-only `wafer.til
 不同compute ops、loop nests、tile shapes和执行长度。Tile-local SPM residency由一个或多个non-nested
 `wafer.tile.region`表达；region内允许多个traversal，不要求统一tile size。
 
-每个`wafer.tile.region`严格属于一个Tile。任何跨region shaped value必须显式store到DDR并由下一region
-load；SPM memref/root/alias不能作为region argument/result。把producer和consumer放入同一region只表示共享SPM
+每个`wafer.tile.region`严格属于一个Tile。07定义的structural和layout-resolved form允许尚未physical闭合的logical tensor
+boundary，但不签发SPM residency结论，也不能进入本节的Tile-to-Instr conversion。Physical form的任何跨region shaped value
+必须显式store到DDR并由下一regionload，或由已定义typed communication闭合；SPM memref/root/alias不能作为region
+argument/result。把producer和consumer放入同一region只表示共享SPM
 residency domain，不等于op fusion或coupled traversal；只有producer work实际嵌入consumer traversal、其中间tile由direct
 SSA use连接且没有独立producer traversal/DDR materialization时，才是coupled traversal。实际residency也不能由action名
 宣告，必须由actual roots、movement、effects、order、completion和09的late offset gate共同证明。
@@ -95,7 +98,8 @@ selected `wafer.tile.*` op必须满足：
 SPM value/alias不能跨TileModule，也不能跨TileRegion boundary。跨region数据显式store/load；跨Tile数据由
 peer/collective communication与destination staging表达。TileRegion boundary不是completion或barrier。
 
-多stage流水不是一个target-abstract mode。Tile IR必须显式包含每个chunk/temporal iteration、相应load/store/local/peer
+多stage流水不是一个target-abstract mode。Execution-structure transformation的输出Tile IR必须显式包含每个chunk/temporal
+iteration、相应load/store/local/peer
 movement、独立或rotating buffer roots及slot relation、数据依赖和event；Instr IR继续物化实际issue order与completion。
 缺少其中任一项时，planning必须拒绝对应typed plan；若selected lowering才发现则终止为合同缺口，不能按估算补全。
 
@@ -201,7 +205,8 @@ SPM/DDR offset、worker/order或transport resource，也不插入基于region/lo
 
 若输入表达stage pipeline，conversion必须逐一保留actual chunk control flow、movement、buffer/slot SSA relation和已知
 dependency，并生成对应issue op；最终worker/issue order和latest-necessary completion在11定义的actual Instr sibling上
-物化，不能携带pipeline recipe或shadow schedule跨过本边界。
+物化，不能携带pipeline recipe或shadow schedule跨过本边界。输入没有显式execution structure时，conversion不得自行选择
+pipeline、复制buffer或构造rotating slot。
 
 fresh completion owner在worker/order确定后，从actual SSA、effects、ranges、control-flow path和observable obligations重建
 latest-necessary completion。DTE wait、NCC participant join和group barrier是不同resource语义，不能互相替代。
@@ -212,6 +217,9 @@ selected complete CardModule统一经过：
 
 ```text
 selected CardModule
+  -> structural-to-layout-resolved transformation
+  -> movement and physical-boundary closure
+  -> execution-structure/rotating-slot transformation
   -> split into all Tile modules
   -> Tile-to-Instr conversion
   -> worker/order placement and fresh completion
@@ -240,6 +248,7 @@ bytes/stride/iterations/range/alignment/narrowing、effect-associated actual roo
 - Tensor/NTensor/Cx/NCx及tail/invalid-lane的direct与explicit-movement路径；
 - chain、branch、fanout/fanin、view/permutation和structured control flow；
 - distinct Tile modules、no-work Tile、cross-Tile SPM SSA rejection；
+- Serialized/pipelined structure、prefix/steady/tail和rotating slot的Tile→Instr preservation；
 - Tile-to-Instr、fresh completion、SPM/DDR、communication、target与package全链实际执行。
 
 本文不得用local lowering或movement特判代替physical-dataflow能力，也不得据单op或局部fixture宣称joint search完成。

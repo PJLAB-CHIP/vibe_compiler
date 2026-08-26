@@ -126,7 +126,7 @@ position、Attention/decode/mask专用matcher或公共pass残留。
 ### 4.3 Search correctness 与 exact gates
 
 - semantic、spatial、region和temporal choice domain从current TensorProgram惰性生成；choice闭合后立即生成actual TileRegion IR；
-  layout、movement、bufferization、communication和order的候选与验证只读各自current candidate IR；
+  layout、movement、bufferization、execution structure、communication和order的候选与验证只读各自current candidate IR；
 - temporal域同时覆盖完整all-iterator tile vector与selected traversal内会改变reuse/lifetime/tail的有限
   wave-loop order；regular
   mapping、relation-derived reuse和coarse resource estimate只改变proposal顺序，开关后有界穷举oracle的accepted domain与winner不变；
@@ -139,7 +139,8 @@ position、Attention/decode/mask专用matcher或公共pass残留。
 - footprint、working-set、shape公式、buffer-count、synthetic demand、预测lifetime或nominal bandwidth projection不能签发SPM
   packing、admission或temporal refinement；
 - production pre-structural state不物化IR；spatial/region/temporal choice闭合后各构造一个candidate CardModule/TileRegion，之后
-  layout/movement/bufferization在current IR上实施，再执行Tile→Instr、fresh completion、actual SPM/DDR、transport/resource/ABI和actual cost；
+  layout/bufferization、movement和execution structure依次在current Tile IR上实施，再执行Tile→Instr、fresh order/completion、
+  completion-closed actual SPM/DDR、transport/resource/ABI和actual cost；
   rejected/loser owner销毁，winner不重建；
 - actual proven exact failure只拒绝生成当前IR的完整显式choice；只有verifier直接提供extension-closed typed proof时才能拒绝更宽prefix。
   allocator/lowering不触发late repair、retile、spill或另一selector；
@@ -192,12 +193,12 @@ completion从final actual Instr的effects、worker issue domains、async tokens�
 - `ReturnAfterLocalDrain`只声明Tile-local return条件，不冒充card-scoped barrier；
 - CardExecutable成功需要16个Tile entry及transport obligations全部完成。
 
-planning必须在J中证明completion；selected materialization仍缺失completion是compiler bug并终止compile，不能由runtime轮询、
-统一entry尾等待或返回planner重选掩盖。
+current Instr completion transformation必须直接证明并物化completion；进入memory leaf的IR仍缺失completion是compiler bug并终止compile，
+不能由memory pass、runtime轮询、统一entry尾等待或返回planner重选掩盖。
 
 ### 5.2 SPM/DDR
 
-- search-time SPM live set包含inputs、resident intermediates、outputs、temporaries、layout buffers、NoC staging和rotating buffers；
+- actual candidate SPM live set包含inputs、resident intermediates、outputs、temporaries、layout buffers、NoC staging和rotating buffers；
 - exact SPM packing只读final roots/lifetimes/conflicts，返回validated offsets或失败；
 - DDR planning覆盖program resource、spill/reload、workspace、status和observable output，offset/alignment/range无overflow；
 - allocator不改变selected tile、fusion、region、order、worker、communication或completion；
@@ -347,7 +348,7 @@ current target容量、target-model能力或host预算不足，必须按stage报
 
 ### 10.2 IR and resource evidence
 
-- selected execution、actual compute、view/layout、movement、allocation、Instr和target-call必须逐层有typed correspondence；
+- selected execution、actual compute、view/layout、movement、execution structure/rotating slot、allocation、Instr和target-call必须逐层有typed correspondence；
   set membership不能代替all-and-only occurrence或multiplicity。
 - SPM合法性只由current actual Instr、allocation、alias/effect/completion/lifetime和MiniMalloc结果签发。带完整owner
   relation的capacity rejection可以反馈相应controller；timeout、unsupported、resource exhaustion和compiler error保持原typed状态。

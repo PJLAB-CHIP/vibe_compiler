@@ -75,7 +75,8 @@ root/alias或携带该alias的control token作为region I/O。
 current Tile IR不保留abstract collective request、algorithm selector或late topology shortcut。06的controller先选择Tile placement、
 per-Tile work、TileRegion membership和temporal scope，然后立即物化candidate-owned actual TileRegion IR。Communication transformation
 只从该IR的current producer/consumer SSA、exact domain、layout、topology和effect选择realization，并直接生成每个sender/receiver的
-`peer_send`、`peer_recv`、local movement和async token。TileRegion-to-Instr后，schedule/completion owner从current issue/token/effect
+`peer_send`、`peer_recv`、local movement和async token。Movement闭合后，current Tile execution-structure transformation先物化
+pipeline/rotating slot；TileRegion-to-Instr后，schedule/completion owner再从current issue/token/effect
 重算receiver first read、sender/relay last release、FSM reuse和全局无环order，再fresh生成wait。不先造DDR donor再post-hoc
 替换，不由movement emitter立即await，也不用future physical value/buffer/event代签actual IR。Rejected transaction销毁，
 final winner不重建。
@@ -163,7 +164,7 @@ package/runtime不重新选择peer、route、algorithm或memory placement。
 
 | gate | failure | result |
 | --- | --- | --- |
-| partial H/J query | endpoint、payload cover或completion结构被typed verifier拒绝 | 只拒绝对应partial assignment；不构造IR |
+| query-local movement/completion alternative | endpoint、payload cover或completion结构被typed verifier拒绝 | 只拒绝当前current-IR alternative；不发布partial IR |
 | candidate Tile IR/materialization | physical peer、encoding、cover、local compute或token与assignment不一致 | compiler bug；擦除未提交Card subtree |
 | candidate memory/completion | actual staging capacity rejection有完整owner witness | 返回当前complete candidate typed rejection；planner不repair |
 | CardExecutable verification | missing/duplicate peer、message/range/resource conflict | 返回verifier-owned typed result；不写partial binding |

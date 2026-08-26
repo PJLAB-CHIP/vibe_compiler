@@ -50,7 +50,8 @@ Pipeline position:
 - Current stage responsibility:
   none由baseline-owned materializer从current TensorProgram和固定规则直接构造actual Card/TileRegion IR，不创建search choice/domain/state；
   search才枚举spatial/region/temporal transformation choice并交给search-owned structural materializer。两条policy随后各自只在
-  current IR上完成layout/view/bufferization、movement、TileRegion-to-Instr、worker/order/completion，再进入共同actual leaf。
+  current IR上依次完成layout/view/bufferization、movement、execution structure、TileRegion-to-Instr、worker/order/completion，
+  再以completion-closed Instr进入共同actual leaf。
 - Output IR / files:
   policy-complete、verifier-valid的CardModule/TileModule/TileRegion/Instr IR，以及由同一accepted owner形成的
   CardExecutable和ExecutablePackage。
@@ -84,15 +85,18 @@ TileModule传递。
 
 ### 3.3 `wafer.tile.region`
 
-`wafer.tile.region`是一个Tile上的SPM ownership/lifetime domain，不是硬件Tile、单个loop或标签。它可以包含：
+`wafer.tile.region`是一个Tile上的selected execution/local-storage scope，不是硬件Tile、单个loop或标签。07定义同一op的
+structural、layout-resolved和physical form；前两者不签发SPM residency或capacity结论。Physical form才是SPM
+ownership/lifetime domain，并可以包含：
 
 - consumer-driven coupled traversal；
 - 多个独立traversal及其不同temporal shape；
 - local view/layout conversion和movement；
 - explicit scratch、accumulator、staging和effect ordering。
 
-SPM root和shaped alias不跨TileRegion。跨region shaped data必须由actual DDR store/completion/load或其它已定义的
-boundary IR表达；跨Tile data由actual peer/collective send、recv、token/wait和destination staging表达。
+SPM root和shaped alias不跨TileRegion。Structural/layout-resolved form以tensor boundary保存尚未physical闭合的logical edge；
+physical form中的跨region shaped data必须由actual DDR store/completion/load或其它已定义的boundary IR表达；跨Tile data由
+actual peer/collective send、recv、token/wait和destination staging表达。
 TileRegion boundary本身不是completion boundary。
 
 ### 3.4 Instr、CardExecutable 与 package
@@ -152,7 +156,7 @@ invalid和exact-empty保持不同typed result。
 ### 5.2 TileRegion formation
 
 对每个Tile的local structured DAG，region choice决定哪些root work进入同一TileRegion，以及producer是top-level、
-consumer-nested还是explicit recompute/replica。同region只是共同residency scope；只有actual producer work位于consumer
+consumer-nested还是explicit recompute/replica。同region只选择共同local-storage scope，不证明SPM residency；只有actual producer work位于consumer
 traversal内、中间值由direct SSA使用且无独立DDR往返时才称为coupled traversal。
 
 Region choice必须覆盖fanout的每个use、reduction partial/merge、effect order和observable output。完全无依赖的
@@ -200,13 +204,24 @@ Movement不从shape、value名或future version ID恢复source/destination，也
 使用同一transformation实现；每个alternative作用于自己的candidate transaction。跨region或跨Tile的每个非空domain
 必须all-and-only覆盖，且每个movement op必须有current SSA owner和effect。
 
-### 6.3 TileRegion-to-Instr
+### 6.3 Execution structure 与 rotating storage
+
+Execution-structure choice只能从movement-closed physical TileRegion中的actual loop、compute、movement、SSA、effect和token重算。
+Serialized choice不修改IR；software-pipelined choice由唯一current-IR transformation立即创建prefix/steady/tail、chunk control、
+actual stage occurrence、rotating allocation roots、slot selection和loop-carried SSA。它不使用future event/buffer ID、预测lifetime或
+SPM footprint，也不把`ExecutionStructurePlan`或buffer multiplicity传给下游。
+
+无法证明recurrence、effect、slot reuse、external observation，或无法用current SSA/effect/token表达下游必须闭合的completion
+obligation时返回typed unknown/unsupported；不在本stage
+插join、分配offset、spill或退回另一structure。每个alternative作用于自己的candidate owner，成功后旧analysis失效并fresh重算。
+
+### 6.4 TileRegion-to-Instr
 
 Conversion按actual typed Tile op使用DialectConversion/RewritePattern生成canonical Instr。它不重新选择layout、movement、buffer、
-worker或completion，也不从上游plan恢复这些事实。输出Instr在每个Tile上显式包含actual compute/movement issue、
-memref use-def、effect、token和control flow。
+execution structure、worker或completion，也不从上游plan恢复这些事实。输出Instr在每个Tile上显式保留actual loop/slot relation、
+compute/movement issue、memref use-def、effect、token和control flow。
 
-### 6.4 Worker、order 与 completion
+### 6.5 Worker、order 与 completion
 
 Event/dependence graph只能作为从current Instr的operation、SSA、effect、range、token和control flow重算的query-local analysis。
 它可以为scheduler枚举worker/resource/order choice，但不成为candidate identity或跨mutation事实源。
@@ -215,11 +230,14 @@ Event/dependence graph只能作为从current Instr的operation、SSA、effect、
 该IR和已证hardware/runtime/ABI合同fresh构造minimum-strength、latest-unavoidable join/wait。不从TileRegion boundary、
 loop backedge、movement类别或“保守”经验猜测completion。
 
-### 6.5 SPM、DDR 与 target acceptance
+### 6.6 SPM、DDR 与 target acceptance
 
-SPM legality只由current Instr IR中的actual allocation、layout、SSA alias、effect、completion和lifetime经唯一
+SPM legality只由completion-closed current Instr IR中的actual allocation、layout、SSA alias、effect和lifetime经唯一
 `PlanSPMMemory`/MiniMalloc生成并验证offset后确立。不使用footprint estimate、buffer数量、shape公式、synthetic demand或
 predicted lifetime决定admission、pruning、retile或fallback。
+
+Actual memory/target leaf不得运行function-boundary bufferization、重建join/wait或修改worker/order。若输入仍含Tile op、未闭合
+tensor boundary、缺失completion或preexisting offset，按typed contract failure停止；memory leaf不是completion repair pass。
 
 DDR planning、transport/resource verification和target lowering同样读取已经物化和通过verifier的current IR。任一stage修改
 allocation、alias、movement、order或completion后，memory problem、offset和cost全部失效并fresh重算。

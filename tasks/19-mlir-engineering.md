@@ -56,7 +56,8 @@ Wafer不使用一条“是否clone”或“是否module pass”的统一规则�
 | analysis / dataflow | current operation和显式只读target facts | 不修改IR；相关mutation后失效并重算 |
 | pre-structural planning | immutable TensorProgram与spatial/region/temporal choice | 不构造IR，不保存Operation pointer、offset或hidden epoch；choice闭合后立即交给materializer |
 | policy-specific materialization | baseline从current TensorProgram/固定规则直接构造；search消费explicit structural choice；两者各有独立Card/Tile owner | 生成actual TileRegion IR；后续只在current IR上实施；rejected/loser销毁，Accepted owner不重建 |
-| actual memory/target leaf | policy-complete Instr IR及current relations | 返回typed accepted/rejection/failure，不选择或repair candidate |
+| current-IR physical/execution transforms | candidate-owned structural/physical TileRegion | layout stage一次完成function-boundary与region-local bufferization，随后movement和execution structure分别对current IR立即变换；每次mutation后旧analysis失效；不传future value/buffer/event plan |
+| actual memory/target leaf | completion-closed canonical Instr IR及current relations | 返回typed accepted/rejection/failure，不运行bufferization、completion reconstruction，也不选择或repair candidate |
 | output fan-out | 已accepted CardExecutable及明确请求的target/package variants | 每个真实output有唯一owner；只为真实consumer复制或转换 |
 
 Operation verifier只检查自身、owned region结构及operand/result/attribute局部关系。Card/module topology、symbol closure、

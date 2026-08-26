@@ -16,11 +16,11 @@
 | 03 | `tasks/03-shardy-spmd.md` | Shardy/XLA的card-level GSPMD output与`num_partitions`；不绑定片内Tile |
 | 04 | `tasks/04-topology-execution-mesh.md` | logical card partition mesh与独立target card/Tile topology |
 | 05 | `tasks/05-local-compute-normalization.md` | card-partition-local structured compute normalization、single attention op、graph-level FA/FD算法与tensor collective boundary |
-| 06 | `tasks/06-physical-dataflow-synthesis.md` | card-local `TensorProgram -> PhysicalDataflowPlan -> CardModule/TileRegion/Instr -> CardExecutable`规划与selected execution构造：统一决定spatial、temporal、fusion、physical representation、movement、buffering与调度；预算限制planning工作而不预先截断合法域 |
-| 07 | `tasks/07-tile-region.md` | selected tile/dataflow actual IR物化；一个或多个non-nested `tile.region`表达SPM residency domains，data边variadic DDR、SPM root不跨界，boundary不自动产生movement或join |
+| 06 | `tasks/06-physical-dataflow-synthesis.md` | card-local TensorProgram的spatial/region/temporal choice、actual Card/TileRegion、current-IR layout/movement/execution-structure/Instr与actual admission；预算限制planning工作而不预先截断合法域 |
+| 07 | `tasks/07-tile-region.md` | selected tile/dataflow structural IR物化以及structural、layout-resolved、physical TileRegion forms；SPM root不跨界，boundary不自动产生movement或join |
 | 08 | `tasks/08-physical-realization.md` | physical encoding attr/type语义、valid domain、view、transfer realizability analysis、descriptor cover和selected physical realization |
 | 09 | `tasks/09-spm-memory-planning.md` | SPM lifetime/coexistence、fixed-capacity MiniMalloc legality、all-root coverage、validated placement/headroom和accepted offsets；candidate choice仍由06拥有 |
-| 10 | `tasks/10-compute-movement.md` | selected Linalg/Tensor/SCF到typed target-abstract compute/movement的确定性lowering、standard MLIR effects/interface reuse和issue/token/fence/wait |
+| 10 | `tasks/10-compute-movement.md` | selected Linalg/Tensor/SCF到typed target-abstract compute/movement的确定性lowering、current Tile execution structure、standard MLIR effects/interface reuse和issue/token/fence/wait |
 | 11 | `tasks/11-instruction-ir.md` | complete static Tile instruction program、current descriptor/geometry/range/narrowing legality及mapped/physical-fill/oriented typed extension |
 | 12 | `tasks/12-ddr-memory-planning.md` | 当前DDR demand/accepted offsets；多DDR分区、state和streaming延后 |
 | 13 | `tasks/13-communication.md` | selected Tile edge到typed p2p/staging/token/wait IR、Direct DTE card-scoped verification和completion；multi-card延后 |
@@ -69,7 +69,8 @@
 | Q48 semantic superoptimization | `tasks/plans/semantic-superoptimization.md` | 05–08、10–11、16–18 |
 
 Q52当前同时处理baseline回归、两条policy各自的IR膨胀、verifier职责、actual-IR materialization boundary、
-movement/layout和后续search scalability；历史Q51 shadow planning state只作donor/删除输入，不是current设计。Q53只形成
+layout/movement、current Tile execution structure/rotating storage和后续search scalability；历史Q51 shadow planning state只作
+donor/删除输入，不是current设计。Q53只形成
 fresh host/package/no-card与board-ready输入，不运行真实设备。
 Q49–Q51详细施工与原Q53板端设想位于
 `tasks/archive/physical-dataflow-synthesis-working-history.md`，Q54历史整改位于

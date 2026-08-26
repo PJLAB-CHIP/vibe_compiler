@@ -9,25 +9,29 @@
 ```text
 Pipeline position:
 - Upstream IR / input:
-  immutable card-local structured TensorProgram，或spatial/region/temporal choice已物化的candidate-owned Card/TileRegion IR；current op、
-  indexing maps、Tiling/DPS/Bufferizable interfaces、SSA/view/control flow、dtype/shape/effect与target topology均可验证。
+  spatial/region/temporal choice已物化的candidate-owned structural Card/TileRegion IR；current op、indexing maps、
+  Tiling/DPS/Bufferizable interfaces、SSA/view/control flow、dtype/shape/effect与target topology均可验证。
 - Current stage responsibility:
   从current IR派生logical IndexRelation、alias/root和shape bounds；由memref encoding解释footprint、alignment、
-  valid/padding domain与logical-to-physical bit mapping；证明metadata view或DDR/SPM/NoC movement是否exact可实现；
-  针对current SSA/use的transformation立即物化typed view、allocation、movement、temporary、staging和token。Wait只在Instr completion stage生成。
+  valid/padding domain与logical-to-physical bit mapping。第一个transformation一次完成function-boundary与region-local bufferization，
+  并物化layout、view/alias和region-local buffer endpoint，
+  产生layout-resolved TileRegion；第二个transformation只从这些current endpoint证明并物化local、DDR、peer/collective movement、
+  temporary、staging、token和effect，产生physical TileRegion。Wait只在Instr completion stage生成。
 - Output IR / files:
-  query-local且随rewrite失效的analysis proof，或自包含的selected wafer.card.module / wafer.tile.module body；
-  accepted事实只存在于typed memref、SSA/view、wafer.tile.region、movement/event和必要typed attrs中。
+  query-local且随rewrite失效的analysis proof，以及candidate-owned layout-resolved或physical Card/TileRegion IR；accepted事实只存在于
+  typed tensor/memref、SSA/view、wafer.tile.region、movement/event和必要typed attrs中。
 - Downstream consumer:
-  per-Tile Tile-to-Instr conversion、fresh completion reconstruction、fixed-capacity SPM/DDR planning、
+  current Tile execution-structure transformation；随后是per-Tile Tile-to-Instr conversion、fresh completion reconstruction、fixed-capacity SPM/DDR planning、
   CardExecutable communication/resource verification、target conversion与package writing。
 - User-level driver / named pipeline:
   wafer-compile production pipeline；wafer-opt入口只用于parser/verifier/conversion leaf testing，不能组成第二条production路径。
 - Explicit non-goals:
-  不选择全局placement、tile size、fusion、TileRegion、retention/release或route；lifetime只从actual IR重算；不保存relation/descriptor/search side table；
+  不选择全局placement、tile size、fusion、TileRegion或retention/release；本层只应用caller针对current endpoint选择的一个layout或route alternative，
+  不在失败后自行换alternative；lifetime只从actual IR重算；不保存relation/descriptor/search side table；
   不分配runtime handle或launch slot；不从op/value/symbol/workload名字恢复语义；lowering失败不隐式换路线。
 - Done criteria:
-  每个accepted view/movement只凭current IR可重建exact logical/physical cover、range、effect、lifetime和completion；
+  每个accepted view/movement只凭current IR可重建exact logical/physical cover、range、effect和pending lifetime obligation；
+  本层不创建completion，但下游可从这些current token/effect和actual execution structure推导completion；
   cross-Tile movement显式指向Tile并经CardExecutable matching；rewrite后旧analysis不再使用，late exact gate
   不需要search proposal即可验证和lower。
 ```
@@ -42,6 +46,26 @@ Pipeline position:
 - Proposal只作为针对current value/use的typed transformation choice；选中后立即物化new actual IR，旧relation/alias proof失效并fresh重算。
   Score、失败历史和descriptor列表不持久化，也不作为parallel physical plan。
 - lowering可以重证legality，不能重新规划、静默换encoding、插fallback或读取search state。
+
+### 2.1 两个有序transformation
+
+Physical realization不是一个同时猜layout和route的builder：
+
+```text
+structural TileRegion
+  -> layout/view/function-boundary and region-local bufferization
+  -> layout-resolved TileRegion
+  -> movement/staging/boundary closure
+  -> physical TileRegion
+```
+
+Layout transformation先闭合function boundary，再为每个current compute use建立实际endpoint，但保留显式TileRegion logical tensor
+boundary；它不创建route、message或DDR donor。
+Movement transformation只能读取这些current endpoint和exact relation，不能反向改compute layout。某条route需要另一种endpoint layout时，
+当前alternative返回typed failure，由outer controller在另一个candidate owner上先应用另一layout choice；movement内部不fallback。
+
+三种TileRegion form的局部和stage verifier合同由07定义。两项transformation必须各自使用唯一registered实现；baseline先逐项接入同一实现，
+search cutover后只改变choice/controller owner，不增加第二套rewrite。
 
 | 事实 | owner | 生命周期 |
 | --- | --- | --- |
@@ -147,7 +171,8 @@ typed multicast capability；fanin/reduction必须显式包含receive、local co
 TileModule绑定一个physical `tile_id`，可以包含不同op、loop、temporal tile shape和执行长度。SPM value不能跨
 TileModule SSA传递；跨Tile依赖只能通过card DDR或explicit communication表达。
 
-`wafer.tile.region`只表示一个Tile内的SPM residency domain。region内允许多个traversal和不同tile shape；
+Structural和layout-resolved `wafer.tile.region`不签发SPM residency结论。Movement闭合后的physical TileRegion才表示一个Tile内的
+SPM ownership/lifetime domain。region内允许多个traversal和不同tile shape；
 root可以分别retain、spill、reload或release。任何跨region shaped value都必须由显式DDR store/completion/load
 materialize；SPM root/value/alias跨界非法。region boundary不是自动completion，仍访问root的
 compute/movement/communication必须完成后才能释放。
@@ -157,9 +182,9 @@ compute/movement/communication必须完成后才能释放。
 fusion。类似地，requested resident action不等于actual residency：只有物化后的root/use/effect/order/completion证明中间值
 未经过DDR，且09在final Instr上给出合法offset，才形成可接受的SPM事实。
 
-stage pipeline的physical realizability也只接受actual结构：chunk/subview、每段movement、独立或rotating buffer roots、
-slot reuse、issue order和matching completion必须能从Tile/Instr IR重建。一个pipeline flag、估算overlap窗口或descriptor
-side list既不能证明transfer，也不能缩短lifetime。
+Movement stage只交付actual compute/movement、endpoint、token和effect。后续execution-structure transformation才创建chunk/subview、
+prefix/steady/tail、独立或rotating buffer roots和slot reuse；再后续Instr stage创建issue order和matching completion。每项都必须能从
+其current Tile/Instr IR重建；一个pipeline flag、估算overlap窗口或descriptor side list既不能证明transfer，也不能缩短lifetime。
 
 spatial placement、temporal tile、fusion、encoding和communication由06的同一个physical-dataflow selection共同选择。
 本文只验证它物化的actual relation和physical dataflow，不因某个route更便宜而修改placement，也不创建独立layout或
@@ -181,7 +206,8 @@ IR中显式fill/mask/segmented movement。host-visible output不得把padding发
 
 ## 8. Materialization 与 Cleanup
 
-调用方本次choice按以下transaction物化；本文不拥有shortlist或candidate set：
+调用方本次choice按以下transaction物化；本文不拥有shortlist或candidate set。Layout与movement分别执行一次完整transaction，
+不能把两者合并成失败时换layout/route的内部循环：
 
 1. 在mutation前用current source/value/use重验relation、bounds、alias、physical map和effect；
 2. 由outer Card transaction提供current candidate scope；试运行只clone最近`IsolatedFromAbove` owner；
@@ -202,6 +228,7 @@ compile-time proof resource limit。planning query的typed结果可控制state�
 
 验证必须覆盖：
 
+- structural→layout-resolved→physical TileRegion的逐stage positive/negative transition，wrong-form输入在直接stage拒绝；
 - encoding interface的Tensor/NTensor/Cx/NCx、dtype、full/tail/padding与checked arithmetic；
 - relation的identity/permutation/reshape/broadcast/slice/concat/composition及rewrite invalidation；
 - metadata view正负例、alias/range/lifetime与physical-map equality；
