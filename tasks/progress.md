@@ -40,7 +40,7 @@ IR膨胀、layout未接线和verifier职责问题。
 
 | 顺序 | Work item | 状态 | 设计owner | 直接输入 | 完成输出 | 本项执行流程 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `search-scalability` | `doing` | Q52 | Q51 search controller、structural choice与attention展开donor，current baseline regression，Q50.0 actual memory/target leaf | 按current plan的13个线性checkpoint保留verifier清理与两套独立structural materializer，将materialization boundary前移到spatial/region/temporal choice之后；删除future physical value/movement/storage/event/schedule的shadow search chain，layout、movement、bufferization、Instr、completion和MiniMalloc均读current IR；完成IR膨胀/融合/最终Instr汇总；同一current FP16 LLaMA block的`none`/`search`各自在15分钟Release门限内生成package并strict readback/no-card | 读AGENTS/progress→读06及本项13个矩阵→读相关硬件/ABI事实并把未证同步语义保持unknown→调研论文和成熟编译器算法/实现并比较取舍→查官方及pinned LLVM/MLIR API→按checkpoint改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审完整diff和下游witness→更新状态并提交 |
+| 1 | `search-scalability` | `doing` | Q52 | Q51 search controller、structural choice与attention展开donor，current baseline regression，Q50.0 actual memory/target leaf | 按current plan的13个线性checkpoint保留verifier清理和两套独立actual IR materializer；baseline从current TensorProgram和固定规则直接构造actual IR，不进入search choice/domain/state；search将materialization boundary前移到spatial/region/temporal choice之后；删除future physical value/movement/storage/event/schedule的shadow search chain，layout、movement、bufferization、Instr、completion和MiniMalloc均读current IR；完成IR膨胀/融合/最终Instr汇总；同一current FP16 LLaMA block的`none`/`search`各自在15分钟Release门限内生成package并strict readback/no-card | 读AGENTS/progress→读06及本项13个矩阵→读相关硬件/ABI事实并把未证同步语义保持unknown→调研论文和成熟编译器算法/实现并比较取舍→查官方及pinned LLVM/MLIR API→按checkpoint改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审完整diff和下游witness→更新状态并提交 |
 | 2 | `production-host-readiness` | `queued` | Q53 | search-scalability、Q60产品入口、Q55 current interface、Q56 board-ready package/runtime | 从fresh产品source完成representative source/IR/package/oracle/runner/no-card矩阵并准备无需设备上临时补充的board cases；状态只到`board-ready`，真实板端不在当前目标 | 读AGENTS/progress→读02/06/14–16及本项矩阵→读hardware/runtime/ABI事实→调研成熟compiler的host qualification/board-ready实现→查官方及pinned API→改runner/测试→fresh host/no-card验证→按设计和MLIR/runtime规范复审→更新状态并提交 |
 失败留在当前work item修复；不跳过、不fallback，也不把owner整体状态提前标为完成。
 
@@ -48,7 +48,7 @@ IR膨胀、layout未接线和verifier职责问题。
 
 | 设计owner | Work item | Owner整体完成边界 |
 | --- | --- | --- |
-| Q52 | search-scalability | 本项13个线性checkpoint全部通过；baseline/search保持controller和actual IR owner隔离；verifier按LLVM/MLIR职责闭合；spatial/region/temporal choice之后每个candidate均以actual TileRegion/Instr IR作唯一事实源；旧physical-value、movement、storage、execution-structure、schedule shadow state、domain rebuild、parity verifier和complete materializer零production残留；已确认的IR膨胀、双路径、baseline root grouping和layout/movement问题已修复；同一current FP16 LLaMA source的两次fresh package/no-card验收通过 |
+| Q52 | search-scalability | 本项13个线性checkpoint全部通过；baseline/search保持controller和actual IR owner隔离；baseline直接构造actual attempts且search state/domain调用为零；search的spatial/region/temporal choice闭合后每个candidate均以actual TileRegion/Instr IR作唯一事实源；verifier按LLVM/MLIR职责闭合；旧physical-value、movement、storage、execution-structure、schedule shadow state、domain rebuild、parity verifier和complete materializer零production残留；已确认的IR膨胀、双路径、baseline root grouping和layout/movement问题已修复；同一current FP16 LLaMA source的两次fresh package/no-card验收通过 |
 | Q53 | production-host-readiness | 对应work item通过即为`board-ready`；真实板端不在当前目标 |
 
 ### 当前已满足前置

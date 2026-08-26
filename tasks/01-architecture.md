@@ -275,7 +275,7 @@ target-model是独立qualification consumer，其mismatch不改变已经验证�
 | 维度 | 稳定合同 |
 | --- | --- |
 | source | 产品adapter与pre-exported input形成唯一static-ranked StableHLO source；card partition显式；logical data identity、checked range与transaction lifetime分离 |
-| decision | graph normalization产生fixed semantic roots；baseline和search分别拥有自己的structural choice owner与materializer；choice闭后立即生成actual TileRegion IR，后续只在current IR上变换，只有一个Accepted owner进入发布 |
+| decision | graph normalization产生fixed semantic roots；baseline从current TensorProgram和固定规则直接构造actual IR，不创建search choice state；search才拥有structural choice frontier和materializer；两者后续都只在各自current IR上变换，只有Accepted owner进入发布 |
 | value semantics | 算术operation和dtype语义由上游IR拥有；physical-dataflow只消费这些事实，不增加数值policy或search axis |
 | physical realization | CardModule、per-Tile TileModule/TileRegion、typed physical movement、Instr及actual lifetime-derived SPM/DDR offsets共同闭合 |
 | communication | endpoint、payload、token、wait和completion来自current topology、selected movement及actual lifetime；不存在late route或同步repair |

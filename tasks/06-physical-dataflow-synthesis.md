@@ -48,9 +48,9 @@ Pipeline position:
   GSPMD完成card级分区、05号normalization完成后的verifier-valid card-local TensorProgram。
   SSA、structured iterator、indexing map/relation、region、effect、type、shape和dtype已完整；尚未绑定Tile。
 - Current stage responsibility:
-  none和search各自选择spatial/region/temporal transformation参数，生成policy-owned actual Card/TileRegion IR；
-  随后只在current IR上完成layout/view/bufferization、movement、TileRegion-to-Instr、worker/order/completion、
-  actual SPM/DDR/transport与target acceptance。
+  none由baseline-owned materializer从current TensorProgram和固定规则直接构造actual Card/TileRegion IR，不创建search choice/domain/state；
+  search才枚举spatial/region/temporal transformation choice并交给search-owned structural materializer。两条policy随后各自只在
+  current IR上完成layout/view/bufferization、movement、TileRegion-to-Instr、worker/order/completion，再进入共同actual leaf。
 - Output IR / files:
   policy-complete、verifier-valid的CardModule/TileModule/TileRegion/Instr IR，以及由同一accepted owner形成的
   CardExecutable和ExecutablePackage。
@@ -62,8 +62,9 @@ Pipeline position:
   不重做跨card GSPMD；不从名称、shape或workload恢复语义；不新建future-output IR或shadow candidate schema；
   不让lowering、allocator、communication或completion在失败后repair候选；不修改数值语义。
 - Completion criteria:
-  none和search从同一current source分别形成独立actual candidate和accepted package；每个stage只保留一个实现和
-  一个事实源；每个进入actual gate的candidate只物化一次；唯一MiniMalloc运行于同一current Instr IR；
+  none从current source直接形成独立baseline attempts，search从explicit structural choices形成独立candidates；每条policy的
+  transformation只保留一个实现和一个事实源，不通过mode-switched complete materializer共享；每个进入actual gate的candidate
+  只物化一次；唯一MiniMalloc运行于同一current Instr IR；
   current主线不再含未物化physical value、storage object、event或schedule的跨stage协议。
 ```
 
@@ -235,8 +236,8 @@ Allocator不返回retile、spill、layout、route或completion repair recipe。
 | 边界 | `none` | `search` |
 | --- | --- | --- |
 | controller | deterministic baseline owner | bounded search owner |
-| structural choice | 每root独立region、canonical placement/temporal successor | 枚举spatial/region/temporal alternatives |
-| actual IR | baseline-owned materializer | search-owned structural materializer |
+| construction input | current TensorProgram + baseline fixed rules；无search choice state | current TensorProgram + explicit spatial/region/temporal choice |
+| actual IR | baseline-owned direct materializer | search-owned structural materializer |
 | downstream stages | 只消费baseline current IR | 只消费当前search candidate IR |
 | feedback | 仅actual SPM capacity rejection生成确定smaller temporal successor | typed actual outcome返回frontier/controller |
 | accepted result | 第一个通过全部actual gate的candidate | 预算内的retained best-known actual owner |
@@ -249,6 +250,10 @@ candidate schema、Card/Tile materializer、controller、fallback或accepted own
 Baseline的functional contract是：每个compute TileRegion恰有一个semantic root，跨root shaped dependency显式经DDR或已定义
 peer boundary，单buffer、deterministic order和完整observable output。这些事实必须存在于baseline actual IR，不是
 baseline plan的声明。
+
+Baseline不构造Spatial/Region/Temporal search state、frontier、domain或complete-choice key。Baseline materializer在一次调用内从
+current structured semantics和exact demand直接使用固定placement、single-root region和temporal规则产生actual IR；这些局部参数不跨stage
+成为shared schema。
 
 Baseline从full local temporal extent开始。只有actual MiniMalloc返回带current owner/conflict demand的capacity rejection时，
 controller才按稳定semantic顺序选择受影响axis的下一个更小temporal choice。它不评分、不保留alternative、

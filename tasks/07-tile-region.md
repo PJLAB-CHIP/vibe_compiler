@@ -6,10 +6,18 @@ lowering归10号设计；Instr、memory和communication分别归11–13。
 
 ## 1. 核心边界
 
-TileRegion物化是确定性IR transformation，不是第二个optimizer。它的输入只是：
+TileRegion物化是确定性IR transformation，不是第二个optimizer。Baseline和search使用两个独立policy-owned入口：
+
+- baseline materializer从current TensorProgram、exact demand和固定placement/single-root-region/temporal规则直接构造IR，
+  不创建search choice/domain/state；
+- search materializer消费已闭合的spatial/region/temporal choice。
+
+两个入口可共享single-op typed builders、relation helpers和conversion kernels，但不共享complete schema、controller或fallback。
+它们的输入只能是：
 
 - verifier-valid current TensorProgram和其standard interfaces；
-- 已选择的spatial placement、region membership和temporal traversal参数；
+- baseline固定规则在本次调用中得到的局部参数，或search已选择的spatial placement、region membership和
+  temporal traversal参数；
 - 显式target configuration和本次rewrite可重算的analysis。
 
 它的输出是candidate-owned actual Card/TileRegion IR。不接收也不创建future physical value、storage object、event、schedule或
@@ -32,6 +40,7 @@ Rejected candidate擦除整个新subtree。Accepted owner原样交给下游，�
 Pipeline position:
 - Upstream IR / input:
   normalized card-local TensorProgram；Linalg/Tensor/SCF/Arith/Math、typed collective和fixed FA/FD attention完整表达语义。
+  Baseline入口不额外接收search choice；search入口另接收closed spatial/region/temporal choice。
 - Current stage responsibility:
   消费spatial/region/temporal choice，在新Card subtree中生成all-and-only TileModules、non-nested TileRegions、
   traversal loops、tail、compute SSA和loop-carried state；随后在current SSA上物化layout/view/buffer/movement。
@@ -40,7 +49,7 @@ Pipeline position:
 - Downstream consumer:
   TileRegion-to-Instr conversion，随后是current-Instr worker/order/completion与actual SPM/DDR/transport/target gate。
 - User-level driver / named pipeline:
-  none/search各自的compiler transaction；focused test使用同一registered pipeline/API。
+  none/search各自的compiler transaction和materializer entry；focused leaf test可共享同一registered single-op pipeline/API。
 - Explicit non-goals:
   不选择winner、不在失败后retile/spill/recompute/换route，不分配SPM/DDR offset，不选worker/order/completion，
   不新建shadow plan、side table或attention-specific Tile/Instr op。
@@ -88,8 +97,8 @@ Region formation必须覆盖fanout的每个use、reduction partial/merge、effec
 
 ## 5. 原子 Materialization Algorithm
 
-1. **只读preflight**：在第一次mutation前检查source op/interface、type/indexing、symbol closure、Tile domain和
-   spatial/region/temporal choice。临时C++对象只保存本次rewrite参数，不创建future SSA/buffer/event。
+1. **只读preflight**：在第一次mutation前检查source op/interface、type/indexing、symbol closure和Tile domain。Baseline在本次
+   调用中直接得到固定参数；search检查其closed spatial/region/temporal choice。临时C++对象不创建future SSA/buffer/event。
 2. **建立transaction**：在source parent下创建新CardModule和all-and-only TileModules。Source保持不变；failure只擦除
    新subtree。
 3. **创建TileRegion与traversal**：根据region membership创建non-nested regions，根据temporal choice创建compact loop、

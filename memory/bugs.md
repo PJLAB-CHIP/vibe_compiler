@@ -23,8 +23,9 @@
 
 - 现象：`search`与`none`在所有workload上产生相同IR/package，新增搜索代码从未影响winner。
 - 根因：driver解析了optimization policy，却在executable search边界丢弃或绕过它；测试反而把相同结果锁成合同。
-- 修复模式：`search`与`none`是独立controller并拥有各自的structural materializer和candidate owner；只共享policy-free
-  source facts、single-op rewrite/conversion和无policy SPM/DDR/target leaf。两者从同一source分别启动独立transaction，互不调用或fallback。
+- 修复模式：`search`与`none`是独立controller并拥有各自的actual IR materializer和candidate/attempt owner。Baseline
+  从current TensorProgram和固定规则直接构造IR，不创建search structural choice state；search才消费explicit choice。两者只共享
+  policy-free source facts、single-op rewrite/conversion和无policy SPM/DDR/target leaf，互不调用或fallback。
 - 防复发：test-only call/work witness分别证明None的search-session为零、Search的baseline-controller为零；pre-structural
   frontier不构造IR，structural choice闭合后只产生一份candidate owner，winner不重建且publication一次。普通compile不创建统计对象。
 
@@ -120,10 +121,12 @@
 
 - 现象：full-local plan的order为空；actual SPM反馈缩小某个size后仍保留空order。旧emitter把空order解释成隐式source order，所以case能跑，
   但同一plan不属于complete temporal domain，query与apply合同分裂。
-- 根因：baseline refinement只改size字段，没有通过共享temporal domain重新关闭由`size < extent`产生的active iterators。
-- 修复模式：先在临时size vector上计算precedence DAG的stable first linear extension，成功后原子提交size与order；full-local和refined point
-  都由同一domain `contains`验证。
-- 防复发：actual-feedback unit必须断言refined `TemporalPlan`仍是shared domain member；不能以lowering对空order的隐式解释代签planning合法性。
+- 根因：baseline refinement只改size字段，没有通过baseline-owned deterministic temporal validator重新关闭
+  由`size < extent`产生的active iterators。
+- 修复模式：先在临时size vector上计算precedence DAG的stable first linear extension，成功后在同一baseline materializer
+  调用内原子构造size/order对应的actual loop IR；不构造或调用search temporal domain。
+- 防复发：actual-feedback unit必须断言refined actual loop的active iterators、order和tail完整，且baseline search-domain
+  call count为零；不能以lowering对空order的隐式解释代签。
 
 ## Tile region不要求所有op使用相同tile shape
 

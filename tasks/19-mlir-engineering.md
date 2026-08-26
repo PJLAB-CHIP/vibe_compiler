@@ -55,7 +55,7 @@ Wafer不使用一条“是否clone”或“是否module pass”的统一规则�
 | explicit transaction | 最近的IsolatedFromAbove owner或明确的compiler output owner | 失败时销毁transaction result，不发布部分output |
 | analysis / dataflow | current operation和显式只读target facts | 不修改IR；相关mutation后失效并重算 |
 | pre-structural planning | immutable TensorProgram与spatial/region/temporal choice | 不构造IR，不保存Operation pointer、offset或hidden epoch；choice闭合后立即交给materializer |
-| policy-specific materialization | baseline或search各自的structural choice和独立Card/Tile owner | 生成actual TileRegion IR；后续choice在current IR上实施；rejected/loser销毁，Accepted owner不重建 |
+| policy-specific materialization | baseline从current TensorProgram/固定规则直接构造；search消费explicit structural choice；两者各有独立Card/Tile owner | 生成actual TileRegion IR；后续只在current IR上实施；rejected/loser销毁，Accepted owner不重建 |
 | actual memory/target leaf | policy-complete Instr IR及current relations | 返回typed accepted/rejection/failure，不选择或repair candidate |
 | output fan-out | 已accepted CardExecutable及明确请求的target/package variants | 每个真实output有唯一owner；只为真实consumer复制或转换 |
 
@@ -302,7 +302,7 @@ Wafer中的root duplication只允许以下明确类别：
 
 | 类别 | owner与产物命运 | 约束 |
 | --- | --- | --- |
-| policy-specific actual candidate | baseline或search各自复制所需局部source operation，形成独立Card/Tile owner | structural choice只物化一次；后续choice作用于current IR；失败/loser销毁，Accepted不重建；两条policy不共享materializer |
+| policy-specific actual candidate | baseline或search各自复制所需局部source operation，形成独立Card/Tile owner | baseline attempt直接物化一次；search structural choice物化一次；后续只作用于current IR；失败/loser销毁，Accepted不重建；两条policy不共享materializer |
 | Card→Tile output fan-out | 大型Tile bodymove到唯一output；每个output都需要的小型declaration按IRMapping复制 | 每份copy有真实下游consumer，按Tile/launch identity稳定汇合 |
 | external helper projection | transaction从source投影helper所需Module并序列化 | helper input是明确output，失败随transaction销毁，不回灌隐藏state |
 | target/package variant | accepted CardExecutable按明确请求构造ordinary/profile等私有target output | 每个真实variant完整lower一次；不提前构造后丢弃，也不从另一variant恢复语义 |

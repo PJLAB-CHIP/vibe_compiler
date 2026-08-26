@@ -460,7 +460,8 @@ selected pieces，而不是只检查op或pass成功。
    byte-identical；
 7. `AttentionWorkDescription`的actions/values/occurrences与各physical stage typed objects all-and-only对应，actual candidate无hidden scratch/state/message；
 8. winner transaction中selected Linalg/Tensor/SCF只构造一次，随后全部成为existing wafer.tile compute；失败注入保持source和parent原样；
-9. `none`和`search`从同一normalized TensorProgram分别走自己的policy-specific materializer，并在policy-complete Instr后消费共同actual leaf；不存在attention algorithm axis或whole-program clone；
+9. `none`和`search`从同一normalized TensorProgram分别走自己的policy-specific materializer；baseline直接消费固定规则，
+   search才消费explicit structural choice。两者在policy-complete Instr后消费共同actual leaf；不存在attention algorithm axis或whole-program clone；
 10. fresh运行current PyTorch产品入口，至少覆盖native SDPA causal prefill、当前HF attention prefill和functional two-step decode；
     保存/检查本轮portable StableHLO与post-Linalg typed witness，再形成accepted Tile dataflow、Instr、Target LLVM、package和fresh
     no-card。KV cache是显式external state ports，第二步由第一步output绑定，不依赖runtime-owned cache policy。手写MLIR只补

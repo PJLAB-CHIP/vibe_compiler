@@ -335,8 +335,9 @@ current target容量、target-model能力或host预算不足，必须按stage报
 
 ### 10.1 Policy-specific construction
 
-- `none`与`search`从同一类verified TensorProgram输入分别建立独立controller、plan、Card/Tile materializer、
-  policy-specific Instr construction和accepted result owner；同一source identity不授权共享Module、analysis、ProgramData、
+- `none`与`search`从同一类verified TensorProgram输入分别建立独立controller、Card/Tile materializer、policy-specific Instr construction
+  和accepted result owner。Baseline直接消费current TensorProgram和固定规则，不创建search plan/domain/state；search才拥有explicit
+  structural choice frontier。同一source identity不授权共享Module、analysis、ProgramData、
   candidate IR或package。
 - 两条路径只在各自形成policy-complete、verifier-legal Instr IR及current buffer/effect/completion relation后，调用共同的
   actual SPM/DDR/transport/target leaf。任一路径失败不得调用另一policy或旧实现。

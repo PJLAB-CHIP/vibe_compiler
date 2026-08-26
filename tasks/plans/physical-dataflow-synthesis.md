@@ -55,8 +55,8 @@ current IR
 | 边界 | Baseline / `none` | Search / `search` |
 | --- | --- | --- |
 | controller | `compileCardBaseline` | `runUnifiedSearch` |
-| structural choice | deterministic single-root region与temporal successor | bounded spatial/region/temporal exploration |
-| actual IR owner | baseline materializer | search structural materializer |
+| construction input | current TensorProgram + fixed baseline rules；无search choice/domain/state | current TensorProgram + bounded spatial/region/temporal choice frontier |
+| actual IR owner | baseline direct materializer | search structural materializer |
 | downstream | 只消费baseline current IR | 只消费当前search candidate IR |
 | feedback | 仅actual SPM capacity rejection生成smaller temporal choice | typed actual result返回frontier/controller |
 | failure | 不启动search | 不fallback baseline |

@@ -124,7 +124,8 @@ source program
   future representation/movement/storage/schedule state。
 - root work是从closed spatial assignment与exact-demand proof派生的root×Tile domain，不是candidate axis。successor使用domain-created
   opaque cursor按semantic root/Tile稳定推进并跳过NoWork；不能为cursor validation重跑刚返回的昂贵work query，也不能保存全部work points。
-  baseline和search消费同一domain/collector，RootRegionWork仍留在query-local derived values。
+  Search消费该domain/collector；baseline只可复用policy-free exact-demand和RootRegionWork collector，不调用search successor/domain。
+  RootRegionWork仍留在query-local derived values。
 - Selected root leaf必须同时表达optional execution和owned merge placements。Merge-only Tile不是“没有leaf”；structural materializer必须证明
   每个merge由selected contribution work承接。Region choice闭合前不物化；闭合后production立即生成actual TileRegion IR。
 - region planning把group partition、execution placement和use delivery分开：required execution与explicit replica是不同typed IDs，
@@ -352,7 +353,8 @@ source program
 - 真实设备case只在明确任务中以单进程、逐case运行；无硬件时只完成host reference、package和no-card，不把skip计作通过。
 ## Baseline与search materialization调试
 
-- baseline和search分别拥有controller、complete plan、Card/Tile materializer、policy-specific verifier和accepted result。
+- Baseline和search分别拥有controller、Card/Tile materializer和accepted result。Baseline直接消费current TensorProgram与固定规则，
+  不拥有search complete plan、frontier或domain；search才拥有explicit structural choice state。
   静态include/call graph应证明两者在complete-candidate层不互调，也不存在按policy/canonical equality/feature presence
   切换行为的shared facade。
 - 允许共享的leaf只消费已经完整解释的operation或stage IR，例如只读IndexRelation事实、单operation tiling/layout、
