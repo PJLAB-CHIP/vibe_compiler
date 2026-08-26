@@ -316,8 +316,7 @@ MemoryAttr::getPhysicalLayoutPieces(mlir::MemRefType type) const {
 
   int64_t storageBits = 0;
   int64_t fullC = 0;
-  int64_t blockedOuterElements =
-      getLayout() == MemLayout::NCx ? info.hwElements : info.outerElements;
+  int64_t blockedOuterElements = info.blockOuterElements;
   int64_t blockStrideElements = 0;
   int64_t fullBlockElements = 0;
   if (!checkedMul(info.cxBlocks, info.cBlock, fullC) ||
@@ -334,9 +333,10 @@ MemoryAttr::getPhysicalLayoutPieces(mlir::MemRefType type) const {
   for (unsigned dim = firstOuterDim; dim < channelDim; ++dim)
     outer = outer * shape[dim] + mlir::getAffineDimExpr(dim, context);
 
-  mlir::AffineExpr batchBase = mlir::getAffineConstantExpr(0, context);
+  mlir::AffineExpr outerSliceBase = mlir::getAffineConstantExpr(0, context);
   if (getLayout() == MemLayout::NCx && shape.size() > 1)
-    batchBase = mlir::getAffineDimExpr(0, context) * info.batchElements;
+    outerSliceBase = mlir::getAffineDimExpr(0, context) *
+                     info.outerSliceStrideElements;
 
   const int64_t logicalC = shape.back();
   const int64_t fullUpper = std::min(logicalC, fullC);
@@ -346,7 +346,7 @@ MemoryAttr::getPhysicalLayoutPieces(mlir::MemRefType type) const {
     fullUpperBounds[channelDim] = fullUpper;
     fullPeriods[channelDim] = info.cBlock;
     mlir::AffineExpr physicalElements =
-        batchBase + channel.floorDiv(info.cBlock) * blockStrideElements +
+        outerSliceBase + channel.floorDiv(info.cBlock) * blockStrideElements +
         outer * info.cBlock + channel % info.cBlock;
     if (mlir::failed(addPiece(lower, fullUpperBounds, fullPeriods,
                               physicalElements * storageBits)))
@@ -359,7 +359,7 @@ MemoryAttr::getPhysicalLayoutPieces(mlir::MemRefType type) const {
     llvm::SmallVector<int64_t, 4> tailLowerBounds(lower);
     tailLowerBounds[channelDim] = fullC;
     mlir::AffineExpr physicalElements =
-        batchBase + fullBlockElements + outer * info.c0 + channel - fullC;
+        outerSliceBase + fullBlockElements + outer * info.c0 + channel - fullC;
     if (mlir::failed(addPiece(tailLowerBounds, upper, noPeriods,
                               physicalElements * storageBits)))
       return mlir::failure();
@@ -467,8 +467,8 @@ wafer::computeWaferPhysicalTensorInfo(mlir::MemRefType type) {
   info.alignedC = geometry->alignedC;
   info.tailC = geometry->tailC;
   info.outerElements = geometry->outerElements;
-  info.hwElements = geometry->hwElements;
-  info.batchElements = geometry->batchElements;
+  info.blockOuterElements = geometry->blockOuterElements;
+  info.outerSliceStrideElements = geometry->outerSliceStrideElements;
   info.bankAlignElements = geometry->bankAlignElements;
   info.bitPackedElement = geometry->bitPackedElement;
 
@@ -535,8 +535,8 @@ projectPhysicalTensorGeometry(const WaferPhysicalTensorInfo &info) {
   geometry.alignedC = info.alignedC;
   geometry.tailC = info.tailC;
   geometry.outerElements = info.outerElements;
-  geometry.hwElements = info.hwElements;
-  geometry.batchElements = info.batchElements;
+  geometry.blockOuterElements = info.blockOuterElements;
+  geometry.outerSliceStrideElements = info.outerSliceStrideElements;
   geometry.bankAlignElements = info.bankAlignElements;
   geometry.bitPackedElement = info.bitPackedElement;
   return geometry;

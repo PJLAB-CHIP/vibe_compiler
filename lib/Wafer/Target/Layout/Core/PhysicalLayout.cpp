@@ -155,37 +155,41 @@ std::optional<PhysicalTensorGeometry> computePhysicalTensorGeometry(
 
   int64_t physicalElements = 0;
   if (layout == PhysicalTensorLayout::NCx) {
-    const int64_t batches = shape.size() > 1 ? shape.front() : 1;
-    llvm::ArrayRef<int64_t> hwShape = shape.size() > 1
-                                          ? shape.drop_front().drop_back()
-                                          : llvm::ArrayRef<int64_t>{};
-    std::optional<int64_t> hwElements = product(hwShape);
-    int64_t unalignedBatch = 0;
-    if (!hwElements ||
-        !checkedMul(*hwElements, geometry.alignedC, unalignedBatch))
+    const int64_t outerSliceCount = shape.size() > 1 ? shape.front() : 1;
+    llvm::ArrayRef<int64_t> blockOuterShape =
+        shape.size() > 1 ? shape.drop_front().drop_back()
+                         : llvm::ArrayRef<int64_t>{};
+    std::optional<int64_t> blockOuterElements = product(blockOuterShape);
+    int64_t unpaddedOuterSliceElements = 0;
+    if (!blockOuterElements ||
+        !checkedMul(*blockOuterElements, geometry.alignedC,
+                    unpaddedOuterSliceElements))
       return std::nullopt;
-    std::optional<int64_t> batchElements =
-        alignTo(unalignedBatch, geometry.bankAlignElements);
-    if (!batchElements ||
-        !checkedMul(batches, *batchElements, physicalElements) ||
-        !checkedMul(batches, *hwElements, geometry.outerElements))
+    std::optional<int64_t> outerSliceStrideElements =
+        alignTo(unpaddedOuterSliceElements, geometry.bankAlignElements);
+    if (!outerSliceStrideElements ||
+        !checkedMul(outerSliceCount, *outerSliceStrideElements,
+                    physicalElements) ||
+        !checkedMul(outerSliceCount, *blockOuterElements,
+                    geometry.outerElements))
       return std::nullopt;
-    geometry.hwElements = *hwElements;
-    geometry.batchElements = *batchElements;
+    geometry.blockOuterElements = *blockOuterElements;
+    geometry.outerSliceStrideElements = *outerSliceStrideElements;
   } else {
     std::optional<int64_t> outerElements = product(shape.drop_back());
-    int64_t unalignedBatch = 0;
+    int64_t unpaddedOuterSliceElements = 0;
     if (!outerElements ||
-        !checkedMul(*outerElements, geometry.alignedC, unalignedBatch))
+        !checkedMul(*outerElements, geometry.alignedC,
+                    unpaddedOuterSliceElements))
       return std::nullopt;
-    std::optional<int64_t> batchElements =
-        alignTo(unalignedBatch, geometry.bankAlignElements);
-    if (!batchElements)
+    std::optional<int64_t> outerSliceStrideElements =
+        alignTo(unpaddedOuterSliceElements, geometry.bankAlignElements);
+    if (!outerSliceStrideElements)
       return std::nullopt;
-    physicalElements = *batchElements;
+    physicalElements = *outerSliceStrideElements;
     geometry.outerElements = *outerElements;
-    geometry.hwElements = *outerElements;
-    geometry.batchElements = *batchElements;
+    geometry.blockOuterElements = *outerElements;
+    geometry.outerSliceStrideElements = *outerSliceStrideElements;
   }
   geometry.physicalElements = physicalElements;
   geometry.physicalBytes =
@@ -230,8 +234,7 @@ StaticPhysicalTensorOffsetCalculator::create(
         return std::nullopt;
     }
     const int64_t blockOuterElements =
-        geometry.layout == PhysicalTensorLayout::NCx ? geometry.hwElements
-                                                     : geometry.outerElements;
+        geometry.blockOuterElements;
     if (!checkedMul(geometry.cxBlocks, geometry.cBlock, fullC) ||
         !checkedMul(blockOuterElements, geometry.cBlock, blockStrideElements) ||
         !checkedMul(geometry.cxBlocks, blockStrideElements, fullBlockElements))
@@ -279,7 +282,7 @@ std::optional<int64_t> StaticPhysicalTensorOffsetCalculator::getBitOffset(
   }
   if (geometry.layout == PhysicalTensorLayout::NCx &&
       logicalIndices.size() > 1 &&
-      !checkedMul(logicalIndices.front(), geometry.batchElements,
+      !checkedMul(logicalIndices.front(), geometry.outerSliceStrideElements,
                   physicalElements))
     return std::nullopt;
   if (logicalC < fullC) {

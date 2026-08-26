@@ -31,8 +31,14 @@ struct PhysicalTensorGeometry {
   int64_t alignedC = -1;
   int64_t tailC = 0;
   int64_t outerElements = -1;
-  int64_t hwElements = -1;
-  int64_t batchElements = -1;
+  /// Logical positions covered by one C block inside one physical outer
+  /// slice. For Cx this is product(shape[0..rank-2]); for NCx this is
+  /// product(shape[1..rank-2]). The leading NCx slice has no semantic name.
+  int64_t blockOuterElements = -1;
+  /// Physical element stride between leading NCx outer slices, including
+  /// target-required trailing padding. Cx has one implicit outer slice whose
+  /// stride is its complete physical span.
+  int64_t outerSliceStrideElements = -1;
   int64_t bankAlignElements = -1;
   bool bitPackedElement = false;
 };

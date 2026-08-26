@@ -265,33 +265,31 @@ struct PhysicalTensorWindowPlan::Impl {
     const uint64_t blocks = static_cast<uint64_t>(layout.info.cxBlocks);
     const uint64_t tail = static_cast<uint64_t>(layout.info.c0);
     const uint64_t blockOuter =
-        static_cast<uint64_t>(layout.info.layout == PhysicalTensorLayout::NCx
-                                  ? layout.info.hwElements
-                                  : layout.info.outerElements);
+        static_cast<uint64_t>(layout.info.blockOuterElements);
     const uint64_t blockStride = blockOuter * block;
     const uint64_t fullBlockElements = blocks * blockStride;
 
-    uint64_t batch = 0;
-    uint64_t localPhysical = physicalElement;
+    uint64_t outerSlice = 0;
+    uint64_t slicePhysical = physicalElement;
     if (layout.info.layout == PhysicalTensorLayout::NCx) {
-      const uint64_t batchElements =
-          static_cast<uint64_t>(layout.info.batchElements);
-      batch = physicalElement / batchElements;
-      localPhysical = physicalElement % batchElements;
-      const uint64_t batches = shape.size() > 1 ? shape.front() : 1;
-      if (batch >= batches)
+      const uint64_t outerSliceStrideElements =
+          static_cast<uint64_t>(layout.info.outerSliceStrideElements);
+      outerSlice = physicalElement / outerSliceStrideElements;
+      slicePhysical = physicalElement % outerSliceStrideElements;
+      const uint64_t outerSliceCount = shape.size() > 1 ? shape.front() : 1;
+      if (outerSlice >= outerSliceCount)
         return std::nullopt;
     }
 
     uint64_t outer = 0;
     uint64_t channel = 0;
-    if (localPhysical < fullBlockElements) {
-      const uint64_t blockIndex = localPhysical / blockStride;
-      const uint64_t withinBlock = localPhysical % blockStride;
+    if (slicePhysical < fullBlockElements) {
+      const uint64_t blockIndex = slicePhysical / blockStride;
+      const uint64_t withinBlock = slicePhysical % blockStride;
       outer = withinBlock / block;
       channel = blockIndex * block + withinBlock % block;
     } else {
-      const uint64_t tailPhysical = localPhysical - fullBlockElements;
+      const uint64_t tailPhysical = slicePhysical - fullBlockElements;
       if (tail == 0 || tailPhysical >= blockOuter * tail)
         return std::nullopt;
       outer = tailPhysical / tail;
@@ -299,8 +297,8 @@ struct PhysicalTensorWindowPlan::Impl {
     }
     if (outer >= blockOuter || channel >= channels)
       return std::nullopt;
-    const uint64_t outerWithBatch = batch * blockOuter + outer;
-    const uint64_t logicalIndex = outerWithBatch * channels + channel;
+    const uint64_t globalOuter = outerSlice * blockOuter + outer;
+    const uint64_t logicalIndex = globalOuter * channels + channel;
     return logicalIndex < elementCount ? std::optional<uint64_t>(logicalIndex)
                                        : std::nullopt;
   }

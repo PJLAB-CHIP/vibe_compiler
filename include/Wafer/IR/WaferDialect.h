@@ -115,8 +115,12 @@ struct WaferPhysicalTensorInfo {
   int64_t alignedC = -1;
   int64_t tailC = 0;
   int64_t outerElements = -1;
-  int64_t hwElements = -1;
-  int64_t batchElements = -1;
+  /// Logical positions covered by one C block inside one physical outer
+  /// slice. The leading NCx slice has no semantic name.
+  int64_t blockOuterElements = -1;
+  /// Physical element stride between leading NCx outer slices, including
+  /// target-required padding. Cx has one implicit outer slice.
+  int64_t outerSliceStrideElements = -1;
   int64_t bankAlignElements = -1;
   bool bitPackedElement = false;
 };

@@ -44,8 +44,8 @@ struct SlowPhysicalLayout {
   int64_t tailWidth = 0;
   int64_t alignedC = 0;
   int64_t outerElements = 0;
-  int64_t hwElements = 0;
-  int64_t batchElements = 0;
+  int64_t blockOuterElements = 0;
+  int64_t outerSliceStrideElements = 0;
 };
 
 int64_t slowProduct(llvm::ArrayRef<int64_t> values) {
@@ -113,22 +113,25 @@ SlowPhysicalLayout slowPhysicalLayout(const SlowLayoutCase &testCase) {
   if (testCase.layout == wafer::MemLayout::Cx) {
     result.outerElements =
         slowProduct(llvm::ArrayRef<int64_t>(testCase.shape).drop_back());
-    result.hwElements = result.outerElements;
-    result.batchElements =
+    result.blockOuterElements = result.outerElements;
+    result.outerSliceStrideElements =
         slowAlignUp(result.outerElements * result.alignedC, bankElements);
-    result.physicalElements = result.batchElements;
+    result.physicalElements = result.outerSliceStrideElements;
     return result;
   }
 
-  int64_t n = testCase.shape.size() > 1 ? testCase.shape.front() : 1;
-  llvm::ArrayRef<int64_t> hwShape;
+  int64_t outerSliceCount =
+      testCase.shape.size() > 1 ? testCase.shape.front() : 1;
+  llvm::ArrayRef<int64_t> blockOuterShape;
   if (testCase.shape.size() > 1)
-    hwShape = llvm::ArrayRef<int64_t>(testCase.shape).drop_front().drop_back();
-  result.hwElements = slowProduct(hwShape);
-  result.outerElements = n * result.hwElements;
-  result.batchElements =
-      slowAlignUp(result.hwElements * result.alignedC, bankElements);
-  result.physicalElements = n * result.batchElements;
+    blockOuterShape =
+        llvm::ArrayRef<int64_t>(testCase.shape).drop_front().drop_back();
+  result.blockOuterElements = slowProduct(blockOuterShape);
+  result.outerElements = outerSliceCount * result.blockOuterElements;
+  result.outerSliceStrideElements = slowAlignUp(
+      result.blockOuterElements * result.alignedC, bankElements);
+  result.physicalElements =
+      outerSliceCount * result.outerSliceStrideElements;
   return result;
 }
 
@@ -173,21 +176,25 @@ int64_t slowPhysicalElementOffset(const SlowLayoutCase &testCase,
            outer * layout.cBlock + channelOffset;
   }
 
-  int64_t n = testCase.shape.size() > 1 ? indices.front() : 0;
-  llvm::ArrayRef<int64_t> hwShape;
-  llvm::ArrayRef<int64_t> hwIndices;
+  int64_t outerSlice = testCase.shape.size() > 1 ? indices.front() : 0;
+  llvm::ArrayRef<int64_t> blockOuterShape;
+  llvm::ArrayRef<int64_t> blockOuterIndices;
   if (testCase.shape.size() > 1) {
-    hwShape = llvm::ArrayRef<int64_t>(testCase.shape).drop_front().drop_back();
-    hwIndices = indices.drop_front().drop_back();
+    blockOuterShape =
+        llvm::ArrayRef<int64_t>(testCase.shape).drop_front().drop_back();
+    blockOuterIndices = indices.drop_front().drop_back();
   }
-  int64_t hw = slowRowMajorIndex(hwShape, hwIndices);
-  int64_t batchBase = n * layout.batchElements;
+  int64_t blockOuter =
+      slowRowMajorIndex(blockOuterShape, blockOuterIndices);
+  int64_t outerSliceBase =
+      outerSlice * layout.outerSliceStrideElements;
   if (isTail)
-    return batchBase + layout.fullBlocks * layout.hwElements * layout.cBlock +
-           hw * layout.tailWidth + channelOffset;
+    return outerSliceBase +
+           layout.fullBlocks * layout.blockOuterElements * layout.cBlock +
+           blockOuter * layout.tailWidth + channelOffset;
   int64_t block = logicalC / layout.cBlock;
-  return batchBase + block * layout.hwElements * layout.cBlock +
-         hw * layout.cBlock + channelOffset;
+  return outerSliceBase + block * layout.blockOuterElements * layout.cBlock +
+         blockOuter * layout.cBlock + channelOffset;
 }
 
 template <typename Callback>
@@ -399,7 +406,7 @@ TEST(WaferDialectTest, ComputesCxAndNCxBlockMajorOffsetsForLargeC) {
   EXPECT_EQ(ncxInfo->cxBlocks, 16);
   EXPECT_EQ(ncxInfo->c0, 0);
   EXPECT_EQ(ncxInfo->alignedC, 1024);
-  EXPECT_EQ(ncxInfo->batchElements, 3072);
+  EXPECT_EQ(ncxInfo->outerSliceStrideElements, 3072);
   EXPECT_EQ(ncxInfo->physicalBytes, 12288);
 
   std::optional<int64_t> ncxOffset =
@@ -408,7 +415,7 @@ TEST(WaferDialectTest, ComputesCxAndNCxBlockMajorOffsetsForLargeC) {
   EXPECT_EQ(*ncxOffset, 6784);
 }
 
-TEST(WaferDialectTest, SingleBatchNCxIsPhysicallyEquivalentToCx) {
+TEST(WaferDialectTest, SingleOuterSliceNCxIsPhysicallyEquivalentToCx) {
   mlir::DialectRegistry registry;
   wafer::registerWaferCoreDialects(registry);
 
@@ -426,12 +433,12 @@ TEST(WaferDialectTest, SingleBatchNCxIsPhysicallyEquivalentToCx) {
   constexpr int64_t c = 129;
   auto cxType = mlir::MemRefType::get(
       {m, c}, f16, mlir::MemRefLayoutAttrInterface{}, cxMemory);
-  auto singleBatchNCxType = mlir::MemRefType::get(
+  auto singleOuterSliceNCxType = mlir::MemRefType::get(
       {1, m, c}, f16, mlir::MemRefLayoutAttrInterface{}, ncxMemory);
   std::optional<wafer::WaferPhysicalTensorInfo> cxInfo =
       wafer::computeWaferPhysicalTensorInfo(cxType);
   std::optional<wafer::WaferPhysicalTensorInfo> ncxInfo =
-      wafer::computeWaferPhysicalTensorInfo(singleBatchNCxType);
+      wafer::computeWaferPhysicalTensorInfo(singleOuterSliceNCxType);
   ASSERT_TRUE(cxInfo);
   ASSERT_TRUE(ncxInfo);
   ASSERT_EQ(cxInfo->cxBlocks, 2);
@@ -448,7 +455,7 @@ TEST(WaferDialectTest, SingleBatchNCxIsPhysicallyEquivalentToCx) {
       std::optional<int64_t> cxOffset =
           wafer::computeWaferPhysicalElementByteOffset(cxType, {row, channel});
       std::optional<int64_t> ncxOffset =
-          wafer::computeWaferPhysicalElementByteOffset(singleBatchNCxType,
+          wafer::computeWaferPhysicalElementByteOffset(singleOuterSliceNCxType,
                                                        {0, row, channel});
       ASSERT_TRUE(cxOffset);
       ASSERT_TRUE(ncxOffset);
@@ -733,8 +740,10 @@ TEST(WaferDialectTest, PhysicalLayoutMatchesIndependentSlowCoordinateOracle) {
       EXPECT_EQ(actualLayout->c0, expectedLayout.tailWidth);
       EXPECT_EQ(actualLayout->alignedC, expectedLayout.alignedC);
       EXPECT_EQ(actualLayout->outerElements, expectedLayout.outerElements);
-      EXPECT_EQ(actualLayout->hwElements, expectedLayout.hwElements);
-      EXPECT_EQ(actualLayout->batchElements, expectedLayout.batchElements);
+      EXPECT_EQ(actualLayout->blockOuterElements,
+                expectedLayout.blockOuterElements);
+      EXPECT_EQ(actualLayout->outerSliceStrideElements,
+                expectedLayout.outerSliceStrideElements);
     }
 
     std::optional<wafer::WaferStaticPhysicalOffsetCalculator> calculator =
@@ -832,7 +841,7 @@ TEST(WaferDialectTest, ComputesBitpackedOffsetsWithoutGuessingBitOrder) {
   std::optional<wafer::WaferPhysicalTensorInfo> ncxInfo =
       wafer::computeWaferPhysicalTensorInfo(ncx);
   ASSERT_TRUE(ncxInfo);
-  EXPECT_EQ(ncxInfo->batchElements, 2048);
+  EXPECT_EQ(ncxInfo->outerSliceStrideElements, 2048);
   EXPECT_EQ(ncxInfo->physicalBytes, 512);
   EXPECT_EQ(wafer::computeWaferPhysicalElementBitOffset(ncx, {0, 2, 8}), 40);
   EXPECT_EQ(wafer::computeWaferPhysicalElementBitOffset(ncx, {1, 2, 8}), 2088);
