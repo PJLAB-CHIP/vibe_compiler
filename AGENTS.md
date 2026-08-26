@@ -178,6 +178,28 @@ Pipeline position:
 - 只在一次函数调用中使用的临时计划可以保存在C++对象中。不要把它序列化为旁路文件，也不要在IR已经表达
   执行顺序后再保存一份调度表。
 
+### Current IR是唯一事实源
+
+- **不得发明或猜测IR。** Search、planning和cost model可以选择明确的transformation参数，但不得创建代表
+  未来operation、SSA value、buffer、allocation、view/alias、movement、effect、lifetime、event、order或completion的
+  ID或record，再让后续stage把它们当作current IR事实。未在current IR中存在的事实是unknown。
+- Tile placement、region membership、temporal tile size、layout choice和movement realization等可以是显式选择。
+  选择一旦会改变operation、SSA、control flow、memory或effect，必须先在candidate-owned transaction中实际物化并
+  通过verifier；下游只读物化后的current IR和从它fresh重算的analysis。
+- Candidate流程必须是`current IR → typed choice → actual transformation → verifier → fresh analysis`。试运行只克隆
+  最近的`IsolatedFromAbove` owner；失败擦除该transaction，成功结果由同一owner继续交给下游，不按旁路
+  plan重建winner。
+- C++计划对象只能在一次transformation调用内保存显式参数和临时工作数据。它不得跨IR stage成为后续
+  movement、storage、schedule、completion或memory planning的事实源，也不得与actual IR并行维护另一套
+  def-use、alias、lifetime或execution graph。
+- 不用expected-inventory、plan/actual parity verifier、名称恢复、ordinal对应或物化后反查来使shadow plan变成“正确”。
+  出现plan与actual IR对不上时，先修正materialization boundary和唯一owner，不增加重放型verifier。
+- Cost model可以对显式选择排序，但不得把推算的operation、buffer、instruction或resource inventory当作已物化
+  事实，也不得代替current IR上的legality、alias、lifetime、completion或memory检查。
+- 本仓默认不新建类似VPlan的future-output IR。若现有dialect IR无法承载必要的transformation语义，此类新stage必须
+  有用户明确同意的编号设计，并且自身是唯一authoritative stage IR：具有typed def-use、parser/printer、verifier、
+  ownership/invalidation和唯一execute/lowering路径。分散的C++ struct、多层domain或对未来MLIR的重放不符合此条件。
+
 ## 接口修改
 
 - Wafer定义的C++ API、IR、磁盘格式、runtime ABI和测试fixture只保留一个受支持的形式。修改时同时更新
@@ -374,6 +396,7 @@ MLIR行为以官方文档为准；具体API以仓库pinned LLVM/MLIR源码和测
 - 不把单个case的shape、调度或runtime路径写成通用规则。
 - 不直接把硬件文档中的历史名称用作compiler IR名称。
 - 不在上层IR中加入只能由低层target或runtime解释的字段。
+- 不建立代表未来operation、SSA、buffer、movement、storage或schedule的多层C++ shadow plan，再将其重放为actual IR。
 
 ## 设计检查
 
@@ -384,6 +407,10 @@ MLIR行为以官方文档为准；具体API以仓库pinned LLVM/MLIR源码和测
 - 验证是否只重放了产生该输入所需的最小上游链路。
 - 每项信息能否从输入IR重新计算；不能时，为什么必须保留。
 - 该信息应该表示为SSA、region、operation、type、attribute、effect还是analysis。
+- 每个plan字段是显式transformation choice，还是只有物化后才能存在的IR事实；后者是否已在直接使用者运行前
+  进入candidate-owned current IR。
+- 是否有任何ID、resource description、event graph或parity check在代替尚未存在的operation、SSA、buffer、alias、lifetime或
+  completion；若有，是否应前移materialization boundary并删除shadow owner。
 - 是否产生重复事实、名字依赖或case特化。
 - parser/printer、verifier、canonicalization和lowering分别负责什么。
 - 新对象是否直接帮助合法性检查、transformation、lowering或diagnostic。
