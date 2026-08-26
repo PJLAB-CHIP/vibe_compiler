@@ -202,22 +202,30 @@ Baseline对每个actual attempt求解并应用一次确定性assignment，不枚
 随后仍可遍历完整raw layout域。PBQP不是合法性owner，也不决定最终search winner。
 
 PBQP factor graph只在一次query内存在：value/use是当前SSA的局部变量，op tuple constraint通过auxiliary factor表达；hard factor以
-显式infinity拒绝不支持的layout tuple、alias或use binding。Soft cost必须是final actual objective在layout stage的精确投影：
+显式infinity拒绝不支持的layout tuple、alias或use binding。Soft cost必须是final actual objective在layout stage的精确投影，不能用
+统一的instruction权重代替不同engine的工作：
 
 ```text
-layout_ticks = instruction_tick *
-               (exact layout-dependent compute instruction count
-                + exact unique layout-conversion descriptor count)
+layout_cost_ps =
+    time(exact layout-dependent NE FP16/BF16 logical ops, NE throughput)
+  + time(exact layout-dependent Vector FP16/BF16 logical ops, Vector FP16/BF16 throughput)
+  + time(exact layout-dependent Vector F32 logical ops, Vector F32 throughput)
+  + time(exact layout-conversion SPM movement bytes, SPM service rate)
+  + exact layout-dependent instruction executions * instruction_issue_ps
 ```
 
-一个shared conversion的descriptor只计一次，per-use conversion分别计；same-layout、exact metadata view和alias计0。当前final objective
-没有local-SPM byte tick，因此layout bytes只作诊断，不参与PBQP；DDR/NoC work由第9项actual movement计算，SPM footprint/capacity只由
-MiniMalloc判断。未来若增加local-SPM term，必须在final actual objective和PBQP cohort中同批增加，不能只改PBQP。
+这里的Vector work最终由CT family执行；instruction term只表示发射/控制开销，不能替代NE或Vector执行时间。一个shared
+conversion的actual descriptor及其dynamic execution只计一次，per-use conversion分别计；same-layout、exact metadata view和alias计0。
+Layout conversion同时产生的Vector或SPM movement work必须进入各自term，不能只计descriptor。DDR/NoC work只有在current endpoint和
+choice-local transformation contract能够精确投影时才进入PBQP；否则留给第9项物化后的actual movement和最终candidate objective。
+SPM footprint/capacity仍只由MiniMalloc判断，任何duration term都不参与legality。
 
-`instruction_tick`来自baseline/search共享的显式target cost cohort。Descriptor cover或layout-dependent compute count不能从current
-interface精确求得时，该soft term对整个solve禁用，不能把单个unknown按0、极大值或任意权重参与。没有可比较soft term时，PBQP只在
-hard-feasible assignment间使用全局semantic tie-break，并明确不宣称performance optimal。Hard infinity只表示已证明illegal；finite
-cost的加法/乘法使用checked arithmetic，任一影响比较的overflow返回`Indeterminate`，不能转成infinity或`NoSolution`。
+吞吐率和每instruction发射开销来自baseline/search共享的显式target performance profile，并携带其证据边界；它们不是IR语义或
+legality事实。某项layout-dependent work、static execution multiplicity或对应rate不能从current IR、current interface和显式profile
+精确取得时，该soft term对整个solve禁用，不能把单个unknown按0、统一`instruction_tick`、极大值或任意权重参与。没有可比较soft
+term时，PBQP只在hard-feasible assignment间使用全局semantic tie-break，并明确不宣称performance optimal。Hard infinity只表示已证明
+illegal；finite cost的加法、乘法和work-to-time换算使用checked arithmetic，任一影响比较的overflow返回`Indeterminate`，不能转成
+infinity或`NoSolution`。
 
 Solver必须区分`Optimal`、`NoSolution`、`Indeterminate`和`BrokenContract`，R0/R1/R2与residual core均受同一work budget约束；
 全assignment tie-break必须与独立flat oracle一致。Baseline只接受`Optimal`结果；`NoSolution`、`Indeterminate`和`BrokenContract`
@@ -326,6 +334,28 @@ DP、memo、priority、dominance和LNS可以改变choice访问顺序和搜索工
 Source-IR-derived lower bound只能用于frontier ordering，必须标明不是actual cost。Candidate comparison使用物化后的TileRegion、Instr、
 movement、completion和memory/target数据。推算结果不进入legality、SPM feedback或exact no-good。
 
+最终winner objective从每个Accepted owner的final current Instr和fresh schedule/cost analysis计算，不使用
+`aggregateInstructionCount * instruction_tick`作为compute cost。比较合同至少分别保留：
+
+- 每Tile的NE FP16/BF16 logical work及target-profile NE throughput；
+- 每Tile的Vector/CT FP16/BF16和F32 logical work及各自throughput；
+- instruction issue/control、wait、DDR、NoC和显式SPM movement的独立work与service term；
+- current control flow、effect、token和已物化execution structure决定的有限schedule/makespan。
+
+NE与Vector的service time分别计算；instruction数量只额外计发射/控制开销。一条NE GEMM与一条Vector instruction即使instruction数相同，
+也不能因此得到相同compute cost。当前硬件事实证明CT、NE是不同engine/completion domain，并有CT/NE与movement engine overlap的
+profile内观测；尚无证据证明NE与CT彼此如何重叠。Current IR明确依赖或completion顺序的work按该顺序累加；没有依赖的NE/CT work
+不能擅自按`max`重叠，也不能把强制串行的诊断上界冒充可比较的actual makespan。若候选排序取决于这项unknown，objective保持
+incomparable。只有后续硬件文档和matched profile明确证明的并发关系才能增加对应schedule resource组合。
+
+同一次winner比较的所有candidate必须使用同一target profile和同一组enabled terms。某个实际出现的NE/Vector work、所需rate、
+schedule multiplicity或算术结果为unknown/unsupported/overflow时，该objective保持typed incomparable，controller只能报告
+`FeasibleUnranked`或其它准确coverage；不得退回统一instruction cost，也不得把semantic tie-break伪装成cost winner。PBQP只使用上述
+objective的choice-local精确投影来安排proposal，最终仍以物化后的actual objective比较。
+
+本修改复用final Instr的现有work collector和duration analysis，删除search controller中的flat instruction objective；不新增operation、
+attribute、Wafer-specific interface或legality verifier。Cost和duration仍是mutation后失效、可从current IR fresh重算的analysis结果。
+
 Actual capacity rejection默认只对产生该current IR的完整choice有效。只有从actual owner/conflict witness可证明的有限条件
 才能作为causal feedback；unknown、unsupported、timeout和compiler error不得改写为capacity rejection。
 
@@ -386,6 +416,7 @@ Current迁移必须遵守：
 - 每TileRegion的actual nested operation数的minimum/average/maximum；
 - region-local use、cross-region external use和actual DDR/peer movement数；
 - accepted final Wafer Instr总数、per-Tile minimum/average/maximum和per-kind exact count。
+- accepted final NE/Vector logical work、各自启用的throughput/service time、instruction-control term和最终makespan。
 
 该汇总不逐region打印日志，不把structured execution数与raw operation/Instr数混为一个指标，也不构造
 expected inventory。
