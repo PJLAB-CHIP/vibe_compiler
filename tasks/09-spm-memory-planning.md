@@ -181,6 +181,13 @@ live segment，不靠symbol名字判断callee行为，也不形成跨过程summa
   fixed-capacity feasibility core，并在adapter外保留自己的path/lifetime语义、typed outcome和placement validator。
 - register allocation：lifetime 不重叠才可复用，但 Wafer 还要处理 size、alignment、range 和 wait。
 
+当前actual memory/target leaf采用上述边界的直接结果：MLIR whole-function bufferization是会改变SSA、alias和allocation的
+analysis+rewrite，必须由layout/bufferization stage在进入leaf前完成；MiniMalloc只消费随后从completion-closed current Instr
+重建的fixed problem。Leaf复用现有SPM、DDR、transport和target kernel，不再运行组合式“bufferize + rebuild completion”
+preparation pipeline，也不移动allocation来制造更短lifetime。Register-allocation类比只用于从actual lifetime判断range reuse，
+不采用allocator内部spill、retile、join insertion或其它repair。缺少bufferized boundary或completion时按typed contract failure停止，
+而不是由memory stage补齐。
+
 ## 3. 输入输出
 
 输入：

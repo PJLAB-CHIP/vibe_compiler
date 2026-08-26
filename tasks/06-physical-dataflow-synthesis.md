@@ -288,6 +288,24 @@ allocation、alias、movement、order或completion后，memory problem、offset�
 Actual gate只返回typed `Accepted`、actual capacity rejection、`Unsupported`、`ResourceExhausted`、timeout或compiler error。
 Allocator不返回retile、spill、layout、route或completion repair recipe。
 
+### 6.7 能力 owner
+
+下列能力只保留一个最终owner。Memory/target leaf发现输入缺口时只返回typed failure，不接管上游能力：
+
+| 能力 | 最终owner与输出 | 不允许出现的位置 |
+| --- | --- | --- |
+| function-boundary与region-local bufferization、view/alias、materializing allocation | 6.1 layout/bufferization transformation；输出layout-resolved、function-boundary-bufferized current IR | actual memory/target leaf、SPM/DDR planner |
+| 普通layout/bufferization allocation的创建位置 | 创建该allocation的6.1 transformation；allocation在current IR中的dominance/effect位置就是memory input事实 | MiniMalloc前的generic first-use sinking或lifetime改写 |
+| software pipeline/rotating allocation root、slot selection和loop-carried SSA | 6.3 execution-structure transformation；输出actual loop与allocation roots | BodyEmitter旁路buffer plan、SPM planner按queue depth补建 |
+| TileRegion-to-Instr、worker/order和minimum completion | 6.4/6.5 current-Instr transformation；输出completion-closed canonical Instr | bufferization、movement、execution-structure或memory planner |
+| SPM lifetime/demand、MiniMalloc offset和accepted high-water/headroom | 6.6 actual SPM leaf，从上述current Instr fresh重算 | candidate proposal、footprint estimate或上游shape规则 |
+| DDR offset/high-water、transport/resource与target acceptance | 6.6 actual leaf依次调用12、13、14定义的唯一kernel | layout/search shadow state或runtime重新planning |
+
+`sinkStaticSPMAllocationsToFirstUse`不构成一项长期compiler能力：它若只服务memory leaf的synthetic fixture，应连同fixture期望删除；
+若fresh production case证明allocation确实创建过早，则分别修正6.1或6.3的直接producer，不能把该helper迁成新的通用pass。
+同理，组合式“bufferize + rebuild completion + memory planning”pipeline在leaf停止调用且caller inventory为零后删除；其中bufferization
+和completion能力分别由6.1与6.5保留，不随wrapper删除。
+
 ## 7. `none` 与 `search`
 
 ### 7.1 独立 owner
