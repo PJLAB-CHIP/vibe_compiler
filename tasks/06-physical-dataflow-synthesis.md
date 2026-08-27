@@ -163,8 +163,8 @@ consumer-nested还是explicit recompute/replica。同region只选择共同local-
 traversal内、中间值由direct SSA使用且无独立DDR往返时才称为coupled traversal。
 
 Region choice只决定哪些actual operations进入同一TileRegion，不预先指定future producer delivery、nested placement或storage。
-Materializer先生成保留真实producer/use关系的current SSA；candidate attention expansion新建的pure Linalg subtree先调用05号
-同一scoped access-relation normalization kernel，普通source graph不重复全图exploration。随后由同一transaction中的SCF
+05号access-relation e-graph已经在policy分叉前完成并且只运行一次；本stage不读取或重建e-graph。Materializer先生成保留真实
+producer/use关系的current SSA，candidate attention expansion由其owner直接生成canonical actual Linalg。随后由同一transaction中的SCF
 tile-and-fuse transformation依据current operation、use-def、indexing relation、effect和region boundary立即决定并执行fusion。Producer留在consumer loop外或
 进入loop内只能是rewrite后的actual IR结果，不能由`LocalUseDelivery`、布尔rewire或其它旁路计划声明。
 
@@ -196,8 +196,8 @@ Linalg/Tensor/SCF或typed Tile work，并返回actual SSA。下游不消费未�
 
 Normalized TensorProgram中的`wafer.linalg_ext.attention`已将`flash_attention`或`flash_decoding`固定为graph fact。Search只选择
 Q/K/V的spatial partition、K/V block、temporal traversal、region fusion和movement。Structural materializer在candidate transaction中
-展开actual QK contraction、scale/mask、online max/sum、PV contraction、state update/merge和final divide。展开结果在同一private
-IR epoch运行05号scoped logical normalization后，使用普通Linalg/Tensor/SCF与同一Tile/Instr lowering，不创建attention专用shadow graph。
+直接展开canonical actual QK contraction、scale/mask、online max/sum、PV contraction、state update/merge和final divide，再使用普通
+Linalg/Tensor/SCF与同一Tile/Instr lowering，不创建attention专用shadow graph，也不调用05号全图normalization来修补展开结果。
 
 ## 6. Current IR 上的 physical realization
 
@@ -449,8 +449,8 @@ Current迁移必须遵守：
 
 ### 10.2 Current-IR 证据
 
-- global post-attention logical normalization只在policy分叉前运行一次；candidate attention展开只对本次private subtree调用同一
-  scoped kernel；e-graph budget exhaustion保持对应current component不变且不进入candidate key或legality；
+- post-attention ordinary logical normalization只在policy分叉前运行一次；attention op在该pass中保持opaque，candidate attention展开及
+  后续stage不再调用e-graph；e-graph budget exhaustion保持对应current component不变且不进入candidate key或legality；
 - instrumentation on/off产生同一IR、candidate result和package；
 - 每个candidate的actual Card/TileRegion/Instr owner只物化一次，winner不重建；
 - 不存在代表future operation/value/buffer/event/schedule的跨stage状态或为其服务的parity verifier；
@@ -462,7 +462,7 @@ Current迁移必须遵守：
 
 启用compile timing时只从current choice和actual IR输出有界汇总，不参与candidate selection或legality：
 
-- global/scoped logical normalization的component、input op、e-node/e-class、match、iteration、extraction work、wall、RSS及
+- global logical normalization的component、input op、relation query、e-node/e-class、match、iteration、extraction work、wall、RSS及
   reshape/transpose/broadcast/concat消除数；budget exhaustion单独计数且输出graph保持原样；
 - physical Tile数、TileRegion数和structured execution instance总数；
 - 每TileRegion的structured execution数的minimum/average/maximum和singleton region数；

@@ -27,7 +27,6 @@ schedule或completion plan。下游只从输出IR的operation、SSA、type、reg
 ```text
 post-attention bounded-normalized TensorProgram + structural choice
   -> candidate-owned Card/TileRegion rewrite
-  -> scoped normalization of candidate attention Linalg expansion
   -> temporal tile-and-fuse and local slice/view cleanup
   -> verifier
   -> current-IR layout/view/bufferization
@@ -48,7 +47,7 @@ Pipeline position:
   Baseline入口不额外接收search choice；search入口另接收closed spatial/region/temporal choice。
 - Current stage responsibility:
   消费spatial/region/temporal choice，在新Card subtree中生成all-and-only TileModules、non-nested TileRegions、
-  candidate attention Linalg展开后调用05号同一scoped normalizer，再生成canonical traversal loops、必要tail、从current
+  将candidate attention直接展开为本stage owner定义的canonical actual Linalg，再生成canonical traversal loops、必要tail、从current
   producer/use直接形成的compute SSA和loop-carried state。只生成structural IR，不选择或物化layout、movement、software pipeline、
   rotating storage、worker、order或completion。
 - Output IR / files:
@@ -60,7 +59,7 @@ Pipeline position:
   none/search各自的compiler transaction和materializer entry；focused leaf test可共享同一registered single-op pipeline/API。
 - Explicit non-goals:
   不选择winner、不在失败后retile/spill/recompute/换route，不分配SPM/DDR offset，不选worker/order/completion，
-  不新建shadow plan、side table或attention-specific Tile/Instr op。
+  不新建shadow plan、side table或attention-specific Tile/Instr op；不调用05号全图e-graph修补candidate展开。
 - Completion criteria:
   每个structural choice只生成一份candidate IR；实际SSA与TileRegion表达all-and-only execution/coverage；本stage没有physical layout、
   allocation、movement、pipeline slot或completion事实；mutation后analysis失效；failure不留partial subtree；输出可由08的下一stage直接读取。
