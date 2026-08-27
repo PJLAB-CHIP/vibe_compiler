@@ -17,7 +17,7 @@ TileRegion物化是确定性IR transformation，不是第二个optimizer。Basel
 
 - verifier-valid current TensorProgram和其standard interfaces；
 - baseline固定规则在本次调用中得到的局部参数，或search已选择的spatial placement、region membership和
-  temporal traversal参数，包括每条same-region use的stored、reconstructed或direct-nested delivery；
+  temporal traversal参数；
 - 显式target configuration和本次rewrite可重算的analysis。
 
 它的输出是candidate-owned actual structural Card/TileRegion IR。不接收也不创建future physical value、storage object、event、
@@ -45,7 +45,7 @@ Pipeline position:
   Baseline入口不额外接收search choice；search入口另接收closed spatial/region/temporal choice。
 - Current stage responsibility:
   消费spatial/region/temporal choice，在新Card subtree中生成all-and-only TileModules、non-nested TileRegions、
-  canonical traversal loops、必要tail、按selected delivery形成的compute SSA和loop-carried state。只生成structural IR，不选择或物化layout、movement、software pipeline、
+  canonical traversal loops、必要tail、从current producer/use直接形成的compute SSA和loop-carried state。只生成structural IR，不选择或物化layout、movement、software pipeline、
   rotating storage、worker、order或completion。
 - Output IR / files:
   verifier-valid structural `wafer.card.module`、`wafer.tile.module`、`wafer.tile.region`以及实际Linalg/Tensor/SCF或typed Tile compute。
@@ -112,15 +112,10 @@ SPM root和shaped alias不跨TileRegion。若选择不同region，所有跨界sh
 - intermediate是current tile/window大小，不是完整local shard；
 - 没有独立producer traversal或中间DDR store/load。
 
-Same-region use有三种不同的materialization语义，不能在进入rewrite前合并：
-
-- stored：producer在consumer traversal外实际物化一次，consumer只读取该current SSA/view；它优先形成region-local
-  SPM reuse，不等于DDR cut；
-- reconstructed：保留current reshape/slice/assembly support chain，只有exact canonicalization可以缩短该chain；
-- direct-nested：producer tile进入consumer traversal，只有该类或explicit recompute/replica才允许producer fusion。
-
-这些选择只作为本次transaction的fusion control输入。Rewrite成功后，top-level或nested placement、SSA use-def和loop nesting
-成为唯一事实源。Generic tiling/fusion不得再次把stored edge改成nested recompute，也不得为了减少Region数制造额外DDR边界。
+Same-region grouping不预先选择producer delivery、storage或nested placement。Materializer先在candidate-owned Region中创建
+actual operations及其current SSA use-def，再由SCF tile-and-fuse直接检查该IR并立即rewrite。未融合producer可以在同一Region内
+独立执行并由后续bufferization形成local reuse；它不因未融合自动变成DDR。融合后的producer实际位于consumer loop内。
+`LocalUseDelivery`、`DirectNestedValue`、`StoredRegionValue`、`ReconstructedRegionValue`和`rewireDirectSSA`不属于终态输入或IR。
 
 Region formation必须覆盖fanout的每个use、reduction partial/merge、effect order和observable output。不相关component不因
 “region更大”而合并。Retain/recompute/spill/cut是transformation choice，但其结果必须是actual traversal、SSA、allocation和movement；
@@ -135,11 +130,11 @@ Region formation必须覆盖fanout的每个use、reduction partial/merge、effec
 3. **创建TileRegion与traversal**：根据region membership创建non-nested regions。使用pinned MLIR SCF tiling从完整
    temporal vector生成一个canonical `scf.for` loop nest；loop IV和bounded size表达wave与remainder，不递归生成
    `first / steady / tail`笛卡尔积。Reduction使用标准partial-reduction mechanics或只负责sequential accumulator的窄adapter。
-4. **按delivery创建compute SSA与fusion**：以consumer为tiling root，通过SCF producer-fusion control只接纳direct-nested或
-   explicit recompute/replica edge；stored、reconstructed、collective、cross-region以及无法证明无重算的multi-use/reduction/
-   contraction producer保持barrier。Pinned接口不能表达的exact reshape/insert window可先做局部current-SSA rewrite，不能另建
-   通用fusion worklist。当前Instr要求static shape时，在本stage handoff前只peel最后一个partial iteration并canonicalize bounds；
-   不peel first iteration。Padding、window和scalar payload只从current op读取。
+4. **从current IR创建compute SSA与fusion**：以actual consumer为tiling root，通过SCF producer-fusion control读取同一Region内
+   current producer/use、indexing relation、use count和effect；无法证明无重算的multi-use/reduction/contraction producer以及
+   collective、cross-region edge保持barrier。Explicit recompute/replica alternative必须先在candidate clone中实际创建op。
+   Pinned接口不能表达的exact reshape/insert window可先做局部current-SSA rewrite，不能另建通用fusion worklist。当前Instr要求
+   static shape时，在本stage handoff前只peel最后一个partial iteration并canonicalize bounds；不peel first iteration。
 5. **验证与handoff**：运行op/interface verifier和card-scoped structural stage check，直接检查traversal coverage、SSA use-def、
    tensor boundary、loop-carried state和source-form elimination。Success后下游只消费该current IR；本stage不顺带调用layout或movement。
 
@@ -211,12 +206,12 @@ fallback builder或partial result。Unsupported semantics、resource exhaustion�
 
 - rank 3–6的1024与1025/1031，实际经过多Tile、多wave、remainder和tail；
 - single-root、multi-root region、independent/coupled traversal、fanout/fanin、reduction partial/merge；
-- stored/reconstructed/direct-nested三类local edge、single/multi-use producer、reduction/contraction producer barrier，以及
-  explicit recompute/replica；
+- same-region current SSA edge、single/multi-use producer、reduction/contraction producer barrier，以及actual explicit
+  recompute/replica；
 - 1024整除时每个traversal只有一个shared loop body；1025/1031只含必要的main/remainder static form，不含front peel，
   不随wave trip count复制compute closure；
-- 每个source structured op的actual iteration tiles并集等于selected work且除explicit recompute外两两不重叠；stored producer
-  位于consumer loop外且每selected execution只物化一次，direct-nested producer只位于对应consumer traversal内；
+- 每个source structured op的actual iteration tiles并集等于selected work且除explicit recompute外两两不重叠；未融合producer
+  位于consumer loop外且每selected execution只物化一次，融合producer只位于对应consumer traversal内；
 - exact/partial view、layout-compatible/incompatible、shared conversion、alias和explicit copy；
 - function result direct destination、region-local SPM reuse和真正cross-region DDR boundary；movement closure后compiler-created
   DDR→DDR `memref.copy`为0，Instr conversion不新建copy-only TileRegion；
@@ -226,6 +221,6 @@ fallback builder或partial result。Unsupported semantics、resource exhaustion�
 - attention prefill/decode的FP16/BF16、aligned/ragged和batch/head/seqlen/head-dim axes；
 - parser/printer、local verifier负例、stage check、named/driver parity和`verify-each`。
 
-正例必须断言actual TileRegion数、structured execution coverage、SSA owner、local delivery、producer occurrence、alias/copy、
+正例必须断言actual TileRegion数、structured execution coverage、SSA owner、fusion result、producer occurrence、alias/copy、
 movement、tail和直接下游Instr可消费性。
 不以plan field数、fixture成功或单个小shape作为完成证据。
