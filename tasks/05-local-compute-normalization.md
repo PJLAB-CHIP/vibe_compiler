@@ -472,12 +472,20 @@ epoch内映射到query-local identity；地址不进入排序、hash的可观察
 
 合并e-class要求这些事实一致；unknown relation、dynamic shape、effect或conversion capability不是“较贵”状态，而是禁止该merge/rewrite。
 
-首批实现使用request-local C++ e-graph core：stable integer e-class/e-node IDs、union-find、hash-cons、deterministic rebuild
-worklist和typed e-class analysis。Core不拥有MLIR `Operation`/`Value`/`Region`，只持有当前context生命期内可重算的canonical
-relation/type facts；MLIR importer在未修改IR epoch中建立query-local映射，extractor返回typed expression，单独的rewriter adapter
-负责一次性修改MLIR。不得通过Rust FFI、外部进程、临时文件或全局singleton接入`egg`，也不得让e-graph library反向依赖
-Planning、Tile/Instr或runtime。若实施调研发现成熟C++ library能满足同一ownership、determinism和build边界，可替换core mechanics，
-但不能改变本文IR和failure合同。
+首批实现优先复用pinned [egg](https://github.com/egraphs-good/egg) Rust library，不自研union-find、hash-cons、rebuild、scheduler、
+e-class analysis或extractor core。仓库以固定source revision、Cargo lock和可离线重现的third-party source构建Rust `staticlib`，由CMake
+显式链接；产品构建不得在configure/build时从网络解析浮动crate。`egglog`的database/Datalog执行模型不属于首批依赖，除非后续独立
+调研证明它在相同typed language、determinism、DAG extraction和compile-time gate下优于`egg`。
+
+C++/Rust边界使用一层窄C ABI。C++ importer在未修改IR epoch中把pure component导出为stable integer IDs、tagged e-node records、
+ordered child lists及owned shape/dtype/relation tables；不得传递MLIR `Operation`/`Value`/`Region`、context pointer或callback。Rust adapter
+为本次component创建一个`egg::EGraph`/runner，执行固定rules和确定性work budget，extract后返回typed expression records和typed status；
+C++ rewriter adapter完成全部检查后一次性修改MLIR。所有跨ABI buffer均有唯一allocator/deallocator和长度合同；Rust panic不得跨ABI，
+必须在Rust入口转换为compiler-internal typed failure，控制流不得解析diagnostic文本。
+
+`egg`对象、analysis和extractor仍然request-local：一次component创建、提取后销毁，不进入全局singleton、跨candidate cache或下一IR
+stage。Compiler运行时不启动外部optimizer进程、不写临时文件，也不让Rust library依赖Planning、Tile/Instr或runtime。Cargo/rustc只是
+hermetic build依赖，不是编译请求中的外部优化流程。
 
 当前StableHLO concat在official conversion前被规范化为`tensor.empty`加ordered `tensor.insert_slice`链。只有链满足static同rank/
 同dtype、单一concat axis、unit stride、ordered non-overlap、完整result coverage、base全部覆盖且中间result无其它observable use时，
@@ -526,10 +534,12 @@ rewrite match
 rebuild work
 iteration
 extraction work
+ABI import/export records and bytes
 ```
 
 具体production上限必须先由真实HF/LLaMA corpus的off/on profile确定，不能先写任意常数。达到budget、内部资源耗尽或没有唯一
 strictly dominating extraction时，原verified component保持不变；这不是compiler error、unsupported program或physical rejection。
+Compile timing分别记录C++ import、Rust runner/rebuild、extraction和C++ rebuild/verify，避免把FFI serialization成本藏进一个总时间。
 
 首批extractor不使用target、layout、SPM/DDR bytes或预测instruction cost，只接受相对原表达式满足以下exact dominance的结果：
 
@@ -579,6 +589,7 @@ implementation在新的private IR epoch上的直接调用。Tile-and-fuse后的c
 | reduction anchor | rank-3/4；parallel-axis transpose/reshape；1024/1025/1031 | reduction iterator重排、parallel/reduction混合或broadcast multiplicity变化保持原IR | ordered reduction domain、combiner、init和result relation一致 | reduction tiling与coupled-state query可消费 |
 | canonical concat assembly | N-ary/nested concat；transpose/broadcast/pointwise；1024/1025 segment及tail | overlap、gap、partial coverage、dynamic或intermediate external use不恢复Concat | ordered pieces all-and-only cover；prefix exact；extract回标准Tensor IR | exact-demand piece propagation与consumer maps |
 | attention/collective/effect barriers | ordinary DAG邻接attention、collective、SCF/call和effect | rewrite不得越界；malformed current IR仍由原owner失败 | barrier两侧SSA/use不变；attention classification不变 | physical planning看到相同semantic roots |
+| pinned `egg` C ABI与ownership | empty/single/dense component；连续请求和并行compiler context；malformed tag/length/relation ID及forced Rust error/panic seam | importer/exporter或Rust adapter返回typed status；不得越界、泄漏、double-free、abort或残留global state | POD roundtrip byte/expression exact；allocator/deallocator all-and-only；同一work budget跨请求确定；tiny结果与独立test-only flat equivalence oracle一致 | named pipeline与compiler API调用同一adapter |
 | deterministic budget与规模 | tiny flat e-class oracle；真实HF/LLaMA dense pure component | budget/resource exhaustion保留原component，不产生typed legality结论 | 相同work budget产生相同IR/diagnostic；on/off exact语义与downstream representability一致但不要求raw choice identity；记录e-node/e-class/match/iteration/wall/RSS | 后续layout/movement/instruction inventory对比 |
 
 小shape只用于独立e-class congruence和extractor oracle；所有production rewrite family仍须由表中真实规模case覆盖。
@@ -618,6 +629,8 @@ GSPMD输出可能含由constants和static tensor views完全决定的partition/m
 - attention near-miss不是错误，保持普通verified Linalg DAG；
 - e-graph component不受支持、没有strictly dominating extraction或确定性work budget耗尽不是错误，保持该component原IR；
 - e-graph声称等价但extracted graph无法通过type/relation proof或verifier是compiler error；rewrite transaction必须回滚且不得发布部分结果；
+- C ABI schema/tag/length/ownership错误、Rust panic或`egg` internal failure是compiler-internal typed failure；不得fallback自研C++ engine、
+  外部进程或另一rewrite路径；缺失pinned Rust build dependency在configure/build时直接失败，不伪装为runtime optimization skip；
 - conflicting matches、malformed existing attention op或rewrite后verifier failure终止normalization；
 - normalization在首次mutation前收集完整proof，所有create/replace/erase通过同一个`IRRewriter`；不clone Module/Func/DAG；
 - algorithm classification缺decode proof只产生FA，不记录失败历史或候选；
@@ -685,8 +698,10 @@ semantic对象及各physical-stage consumer，不能仅因某篇实现使用另�
 - [MLIR Linalg transformations](https://mlir.llvm.org/docs/Dialects/Linalg/)与
   [standard passes](https://mlir.llvm.org/docs/Passes/)提供indexing-map驱动的elementwise fusion、transpose/broadcast folding、
   tiling和producer-consumer fusion；Wafer先复用pinned版本实际存在的patterns，再将剩余非相邻等价图交给bounded e-graph。
-- [egg](https://arxiv.org/abs/2004.03082)提供rebuilding、e-class analysis和equality saturation的基础；Wafer只采用query-local
-  equivalence exploration，不把e-class建成IR或跨stage协议。
+- [egg](https://arxiv.org/abs/2004.03082)提供rebuilding、e-class analysis和equality saturation的基础；Wafer优先复用其pinned
+  Rust library，并通过不暴露MLIR对象的薄C ABI保持query-local ownership，不把e-class建成IR或跨stage协议。
+- [egglog](https://github.com/egraphs-good/egglog)是活跃的next-generation equality-saturation/Datalog engine，但首批Wafer
+  transform language不需要database execution model，且fanout/DAG extraction仍需本仓独立合同，因此不与`egg`并行接入。
 - [TENSAT](https://proceedings.mlsys.org/paper_files/paper/2021/file/cc427d934a7f6c0663e5923f49eba531-Paper.pdf)
   证明tensor DAG equality saturation能缓解rewrite phase ordering，也表明multi-pattern增长、cycle和DAG-aware extraction会成为主要
   scalability风险；Wafer首批排除需要ILP的multi-output rewrite，并用确定性work budget关闭探索。
