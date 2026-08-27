@@ -45,8 +45,9 @@ Accepted owner原样交给下游和最终publication，不重建IR或offset。
 ```text
 Pipeline position:
 - Upstream IR / input:
-  GSPMD完成card级分区、05号normalization完成后的verifier-valid card-local TensorProgram。
-  SSA、structured iterator、indexing map/relation、region、effect、type、shape和dtype已完整；尚未绑定Tile。
+  GSPMD完成card级分区、05号attention semantic recognition及bounded access-relation e-graph normalization完成后的
+  verifier-valid card-local TensorProgram。SSA、structured iterator、canonical indexing relation、region、effect、type、shape和
+  dtype已完整；尚未绑定Tile，且不携带e-class、rewrite history或提取side table。
 - Current stage responsibility:
   none由baseline-owned materializer从current TensorProgram和固定规则直接构造actual Card/TileRegion IR，不创建search choice/domain/state；
   search才枚举spatial/region/temporal transformation choice并交给search-owned structural materializer。两条policy随后各自只在
@@ -61,7 +62,8 @@ Pipeline position:
   wafer-compile的typed `none`与`search`产品入口；局部测试使用注册named pipeline或同一compiler API。
 - Explicit non-goals:
   不重做跨card GSPMD；不从名称、shape或workload恢复语义；不新建future-output IR或shadow candidate schema；
-  不让lowering、allocator、communication或completion在失败后repair候选；不修改数值语义。
+  不重新运行全图equality exploration，不让e-graph选择Tile、fusion、layout、movement或winner；不让lowering、allocator、
+  communication或completion在失败后repair候选；不修改数值语义。
 - Completion criteria:
   none从current source直接形成独立baseline attempts，search从explicit structural choices形成独立candidates；每条policy的
   transformation只保留一个实现和一个事实源，不通过mode-switched complete materializer共享；每个进入actual gate的candidate
@@ -113,7 +115,8 @@ effect、token和control flow；worker/order/completion必须在该IR上物化�
 
 一次policy invocation可读取：
 
-- current normalized TensorProgram、SSA use-def、standard interfaces和typed effect；
+- 05号bounded access-relation e-graph normalization已经提交并verify的current TensorProgram、SSA use-def、standard interfaces和
+  typed effect；physical planning不读取或重建e-graph；
 - structured iterator、indexing map以及从current IR派生的`IndexRelation`；
 - available Tiles、topology和显式target configuration；
 - 各transformation的有限typed choice domain。
@@ -160,8 +163,9 @@ consumer-nested还是explicit recompute/replica。同region只选择共同local-
 traversal内、中间值由direct SSA使用且无独立DDR往返时才称为coupled traversal。
 
 Region choice只决定哪些actual operations进入同一TileRegion，不预先指定future producer delivery、nested placement或storage。
-Materializer先生成保留真实producer/use关系的current SSA，再由同一transaction中的SCF tile-and-fuse transformation依据
-current operation、use-def、indexing relation、effect和region boundary立即决定并执行fusion。Producer留在consumer loop外或
+Materializer先生成保留真实producer/use关系的current SSA；candidate attention expansion新建的pure Linalg subtree先调用05号
+同一scoped access-relation normalization kernel，普通source graph不重复全图exploration。随后由同一transaction中的SCF
+tile-and-fuse transformation依据current operation、use-def、indexing relation、effect和region boundary立即决定并执行fusion。Producer留在consumer loop外或
 进入loop内只能是rewrite后的actual IR结果，不能由`LocalUseDelivery`、布尔rewire或其它旁路计划声明。
 
 Region choice必须覆盖fanout的每个use、reduction partial/merge、effect order和observable output。完全无依赖的
@@ -182,7 +186,8 @@ specialization提前复制无关producer closure。
 Fusion control直接读取current SSA：producer必须位于同一actual Region、tile relation exact、effect允许移动，且不会因multi-use、
 reduction/contraction或consumer tile overlap引入未选择的重算；cross-region和collective保持barrier。Explicit recompute/replica若作为
 search alternative，必须先在自己的candidate clone中实际创建producer operation，再进入同一fusion transformation，不能恢复
-future delivery plan。Pinned接口暂时不能表达的exact reshape或`tensor.insert_slice` window只保留窄的current-SSA adapter。
+future delivery plan。Tile-and-fuse后只运行有界local canonicalization清理本次新建的slice/view恒等式，不重新运行全图e-graph；
+pinned接口暂时不能表达的exact reshape或`tensor.insert_slice` window只保留窄的current-SSA adapter。
 
 Spatial、region和temporal choice闭合后，唯一structural materializer立即生成candidate-owned CardModule/TileModule/TileRegion、
 Linalg/Tensor/SCF或typed Tile work，并返回actual SSA。下游不消费未物化execution/value ID。
@@ -191,8 +196,8 @@ Linalg/Tensor/SCF或typed Tile work，并返回actual SSA。下游不消费未�
 
 Normalized TensorProgram中的`wafer.linalg_ext.attention`已将`flash_attention`或`flash_decoding`固定为graph fact。Search只选择
 Q/K/V的spatial partition、K/V block、temporal traversal、region fusion和movement。Structural materializer在candidate transaction中
-展开actual QK contraction、scale/mask、online max/sum、PV contraction、state update/merge和final divide。展开结果使用
-普通Linalg/Tensor/SCF与同一Tile/Instr lowering，不创建attention专用shadow graph。
+展开actual QK contraction、scale/mask、online max/sum、PV contraction、state update/merge和final divide。展开结果在同一private
+IR epoch运行05号scoped logical normalization后，使用普通Linalg/Tensor/SCF与同一Tile/Instr lowering，不创建attention专用shadow graph。
 
 ## 6. Current IR 上的 physical realization
 
@@ -318,6 +323,8 @@ Allocator不返回retile、spill、layout、route或completion repair recipe。
 
 | 能力 | 最终owner与输出 | 不允许出现的位置 |
 | --- | --- | --- |
+| pure structured logical graph normalization | 05号bounded access-relation e-graph；输出verified canonical Tensor/Linalg graph，不发布e-class | spatial/region search、PBQP、movement、Instr lowering |
+| temporal tiling、producer fusion和本次新建slice/view local cleanup | 5.2/5.3 structural transformation；输出final current loop/use graph | e-graph extractor、layout PBQP、memory planner |
 | function-boundary与region-local bufferization、view/alias、materializing allocation | 6.1 layout/bufferization transformation；输出layout-resolved、function-boundary-bufferized current IR | actual memory/target leaf、SPM/DDR planner |
 | 普通layout/bufferization allocation的创建位置 | 创建该allocation的6.1 transformation；allocation在current IR中的dominance/effect位置就是memory input事实 | MiniMalloc前的generic first-use sinking或lifetime改写 |
 | software pipeline/rotating allocation root、slot selection和loop-carried SSA | 6.3 execution-structure transformation；输出actual loop与allocation roots | BodyEmitter旁路buffer plan、SPM planner按queue depth补建 |
@@ -442,6 +449,8 @@ Current迁移必须遵守：
 
 ### 10.2 Current-IR 证据
 
+- global post-attention logical normalization只在policy分叉前运行一次；candidate attention展开只对本次private subtree调用同一
+  scoped kernel；e-graph budget exhaustion保持对应current component不变且不进入candidate key或legality；
 - instrumentation on/off产生同一IR、candidate result和package；
 - 每个candidate的actual Card/TileRegion/Instr owner只物化一次，winner不重建；
 - 不存在代表future operation/value/buffer/event/schedule的跨stage状态或为其服务的parity verifier；
@@ -453,6 +462,8 @@ Current迁移必须遵守：
 
 启用compile timing时只从current choice和actual IR输出有界汇总，不参与candidate selection或legality：
 
+- global/scoped logical normalization的component、input op、e-node/e-class、match、iteration、extraction work、wall、RSS及
+  reshape/transpose/broadcast/concat消除数；budget exhaustion单独计数且输出graph保持原样；
 - physical Tile数、TileRegion数和structured execution instance总数；
 - 每TileRegion的structured execution数的minimum/average/maximum和singleton region数；
 - 每TileRegion的actual nested operation数的minimum/average/maximum；

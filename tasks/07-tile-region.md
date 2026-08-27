@@ -25,8 +25,10 @@ schedule或completion plan。下游只从输出IR的operation、SSA、type、reg
 固定顺序完成physical realization、execution structure和Instr。
 
 ```text
-current TensorProgram + structural choice
+post-attention bounded-normalized TensorProgram + structural choice
   -> candidate-owned Card/TileRegion rewrite
+  -> scoped normalization of candidate attention Linalg expansion
+  -> temporal tile-and-fuse and local slice/view cleanup
   -> verifier
   -> current-IR layout/view/bufferization
   -> current-IR movement
@@ -41,11 +43,13 @@ Rejected candidate擦除整个新subtree。Accepted owner原样交给下游，�
 ```text
 Pipeline position:
 - Upstream IR / input:
-  normalized card-local TensorProgram；Linalg/Tensor/SCF/Arith/Math、typed collective和fixed FA/FD attention完整表达语义。
+  05号bounded access-relation e-graph normalization完成的card-local TensorProgram；Linalg/Tensor/SCF/Arith/Math、typed
+  collective和fixed FA/FD attention完整表达语义，不携带e-class或rewrite history。
   Baseline入口不额外接收search choice；search入口另接收closed spatial/region/temporal choice。
 - Current stage responsibility:
   消费spatial/region/temporal choice，在新Card subtree中生成all-and-only TileModules、non-nested TileRegions、
-  canonical traversal loops、必要tail、从current producer/use直接形成的compute SSA和loop-carried state。只生成structural IR，不选择或物化layout、movement、software pipeline、
+  candidate attention Linalg展开后调用05号同一scoped normalizer，再生成canonical traversal loops、必要tail、从current
+  producer/use直接形成的compute SSA和loop-carried state。只生成structural IR，不选择或物化layout、movement、software pipeline、
   rotating storage、worker、order或completion。
 - Output IR / files:
   verifier-valid structural `wafer.card.module`、`wafer.tile.module`、`wafer.tile.region`以及实际Linalg/Tensor/SCF或typed Tile compute。

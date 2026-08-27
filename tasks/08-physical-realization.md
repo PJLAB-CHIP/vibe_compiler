@@ -52,7 +52,9 @@ Pipeline position:
 Physical realization不是一个同时猜layout和route的builder：
 
 ```text
-structural TileRegion
+post-attention bounded logical normalization
+  -> temporal tile-and-fuse and final current SSA/use graph
+  -> structural TileRegion
   -> layout/view/function-boundary and region-local bufferization
   -> layout-resolved TileRegion
   -> movement/staging/boundary closure
@@ -60,7 +62,8 @@ structural TileRegion
 ```
 
 Layout transformation先闭合function boundary，再为每个current compute use建立实际endpoint，但保留显式TileRegion logical tensor
-boundary；它不创建route、message或DDR donor。
+boundary；它不重新移动/融合reshape、transpose、broadcast、concat或compute graph，不创建route、message或DDR donor。若input仍含
+可由05号logical normalizer严格支配的graph form，属于上游stage未闭合，不能在PBQP里恢复另一套e-graph。
 Movement transformation只能读取这些current endpoint和exact relation，不能反向改compute layout。某条route需要另一种endpoint layout时，
 当前alternative返回typed failure，由outer controller在另一个candidate owner上先应用另一layout choice；movement内部不fallback。
 

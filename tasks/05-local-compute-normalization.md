@@ -15,13 +15,18 @@ Pipeline position:
   先把supported StableHLO collectives规整为typed destination-style tensor ops，再通过仓库pinned官方
   StableHLO-to-Linalg conversion把compute、shape/data movement和constant变成Linalg/Tensor/SCF/Arith/Math；
   折叠可由static IR完全证明的SPMD helper residual；最后从current structured SSA证明完整Q/K/V attention，
-  归一为一个`wafer.linalg_ext.attention` op并确定`flash_attention`或`flash_decoding`算法。
+  归一为一个`wafer.linalg_ext.attention` op并确定`flash_attention`或`flash_decoding`算法。Attention识别完成后，
+  对剩余pure structured Tensor/Linalg connected component运行有界access-relation e-graph normalization，组合并消除
+  可证明等价的static reshape、transpose、broadcast、concat和受限elementwise/contraction/reduction access graph；
+  candidate-owned attention Linalg展开在交给temporal tile-and-fuse前消费同一normalization kernel。
 - Output IR / files:
   一个尚未绑定Tile的card-local structured TensorProgram。普通数学语义由op、region、indexing map、iterator、
   DPS ties、type、SSA/control flow和effect表达；matched attention由一个self-contained semantic op表达；
-  card-partition collective仍是typed tensor semantics。不产生文件、physical plan或runtime metadata。
+  card-partition collective仍是typed tensor semantics。Pure component已经使用canonical exact access relation收敛，
+  不保留e-graph、e-class ID、rewrite history或其它旁路表示。不产生文件、physical plan或runtime metadata。
 - Downstream consumer:
-  physical-dataflow planning从固定semantic roots构造spatial/region/temporal choice和exact demand/coupled contribution/merge；
+  physical-dataflow planning从normalized current graph的固定semantic roots构造spatial/region/temporal choice和exact
+  demand/coupled contribution/merge；
   choice闭合后立即在candidate-owned Card subtree内展开attention并形成actual TileRegion/SSA。后续layout、movement、bufferization、
   Instr、completion和memory只从该current IR生成或重算。
 - User-level driver / named pipeline:
@@ -30,12 +35,15 @@ Pipeline position:
 - Explicit non-goals:
   不运行GSPMD，不决定card partition；不选择Tile、KV partition count、temporal block、layout、SPM/DDR、NoC/DTE、
   buffer、worker、schedule、launch slot或runtime binding；不把FA/FD做成physical search axis；不从symbol、operand位置、
-  shape模板或workload名称恢复attention；不物化候选CardModule。
+  shape模板或workload名称恢复attention；不物化候选CardModule。E-graph不修改scalar arithmetic region，不做算术结合、
+  分配、reduction重排、matmul chain reassociation、compute partition或target/layout选择，也不承担compiler correctness所需的legalization。
 - Done criteria:
   official conversion后无StableHLO/SDY residual；attention custom/generic form、verifier、standard interfaces与coupled-state
   query闭合；graph matcher、FA/FD分类、算法reference、planning description和selected Linalg decomposition均有正负例；
-  `none`与`search`消费同一normalized TensorProgram；selected prefill/decode分别沿06--15主线形成package/no-card，
-  pre-structural choice阶段不展开attention IR，choice闭合后每个candidate只展开一次。
+  bounded e-graph对支持的pure component只产生verified canonical Tensor/Linalg IR，预算耗尽保持原verified component且不改变
+  legality；on/off以exact relation/scalar-region proof保持program语义和downstream representability，不要求结构choice集合逐项相同；
+  `none`与`search`消费同一normalized TensorProgram；selected
+  prefill/decode分别沿06--15主线形成package/no-card，pre-structural choice阶段不展开attention IR，choice闭合后每个candidate只展开一次。
 ```
 
 ## 2. 稳定 TensorProgram 边界
@@ -374,10 +382,12 @@ Spatial/region/temporal choice闭合后立即进入candidate transaction；不�
 spatial/region/temporal choice
   -> validate current TensorProgram and recomputable AttentionWorkDescription
   -> create one candidate-owned Card subtree
-  -> materialize selected tensor.extract_slice + scf.for
   -> expand attention compute to selected linalg.matmul/generic/reduce
-  -> materialize actual layout/view/bufferization and movement on current SSA
-  -> deterministically convert Linalg compute to wafer.tile.gemm/reduce/elementwise
+  -> run scoped bounded access-relation e-graph normalization
+  -> materialize selected tensor.extract_slice + canonical scf.for and fuse current producers
+  -> build/apply current-SSA layout assignment, exact views and bufferization
+  -> deterministically convert layout-resolved Linalg compute to wafer.tile.gemm/reduce/elementwise
+  -> materialize actual movement on current SSA
   -> lower to Instr, then derive worker/order/completion from current Instr
   -> verify no attention or executable Linalg source remains
   -> actual CardModule-to-CardExecutable memory/target gate
@@ -397,7 +407,183 @@ Movement、buffer和completion不属于Linalg；它们由直接stage读取curren
 
 本设计不新增`wafer.tile.attention`、`wafer.instr.attention`、attention TargetCall或package/runtime algorithm字段。
 
-## 7. Card-Partition Collective Boundary
+## 7. Bounded Access-Relation E-Graph Normalization
+
+### 7.1 Pipeline边界
+
+```text
+Pipeline position:
+- Upstream IR / input:
+  attention semantic recognition完成后的verified static-ranked Tensor/Linalg/Arith/Math graph；或者candidate-owned
+  attention Linalg展开完成、但尚未temporal tile-and-fuse的private Card subtree。
+- Current stage responsibility:
+  先运行仓库pinned MLIR已有的transpose/broadcast-to-elementwise、elementwise fusion、reassociative reshape folding、CSE和
+  canonicalization patterns；再把剩余pure connected component编码为有界access-relation e-graph，使用exact IndexRelation、
+  shape、dtype、iterator和scalar-region facts证明等价，提取一个不增加compute occurrence且严格支配原表达式的canonical graph，
+  最后通过一个PatternRewriter transaction修改current MLIR并verify。
+- Output IR / files:
+  dialect集合不变的verified Tensor/Linalg current IR；支持的reshape、transpose、broadcast、concat和受限structured compute
+  access graph已经收敛。E-graph、e-class、match、rewrite history和extractor state全部销毁，不产生文件或旁路IR。
+- Downstream consumer:
+  global TensorProgram由StructuredDAG、exact-demand和physical-dataflow choice消费；candidate-owned展开由SCF temporal
+  tile-and-fuse消费。两种调用都使用同一normalization kernel，后续layout PBQP只读取rewrite后的actual SSA/use graph。
+- User-level driver / named pipeline:
+  `wafer-compile`在policy分叉前的structured Tensor normalization调用global form；candidate attention expansion API在返回
+  actual Linalg subtree前调用scoped form；`wafer-lower-stablehlo-to-linalg`重放同一global implementation。
+- Explicit non-goals:
+  不修改scalar arithmetic region、dtype或reduction combiner；不做算术结合/分配、matmul chain reassociation、compute partition、
+  partial reduction、attention变换、layout assignment、bufferization、movement、SPM admission或winner选择；不把MLIR operation
+  pointer、e-class ID或提取结果保存到下一stage。
+- Completion criteria:
+  支持的每条rewrite由exact relation/type/iterator proof签发；budgeted exploration确定且有界，超预算保持输入component逐字节
+  不变；extraction不复制producer occurrence、不破坏fanout/DPS/effect；输出通过verifier并由直接StructuredDAG或candidate
+  tile-and-fuse消费；真实规模on/off矩阵记录work、wall、RSS、IR变化和下游stage reachability，不建立raw candidate parity合同。
+```
+
+Attention recognition必须先于本stage。通用elementwise fusion若先运行，可能把QK--softmax--PV semantic skeleton改写为matcher
+不再识别的结构；形成`wafer.linalg_ext.attention`后该op作为opaque barrier，普通graph normalization不能进入其内部。
+
+### 7.2 Query-local expression与e-class facts
+
+E-graph不是新IR stage，也不直接持有一份可被下游读取的future graph。一次调用内将pure MLIR component映射为下面的表达式语言：
+
+```text
+Input(current SSA identity)
+Access(source expression, exact IndexRelation)
+Elementwise(scalar region identity, ordered operands, indexing relations)
+Contraction(iterator signature, ordered operands, result relation,
+            scalar region identity, init identity)
+Reduction(parallel iterators, ordered reduction iterators, input/result relation,
+          combiner region identity, init identity)
+Concat(axis, ordered inputs, static prefix extents)
+```
+
+`reshape`、`transpose`和`broadcast`均先变为`Access`；嵌套access通过relation composition规范化。MLIR value只在当前未修改IR
+epoch内映射到query-local identity；地址不进入排序、hash的可观察结果、跨线程任务或cache。
+
+每个e-class analysis至少携带：
+
+- static logical shape、rank和dtype；
+- canonical exact `IndexRelation`及其domain；
+- iterator kinds和ordered reduction iterator identity；
+- scalar/combiner region的structural identity；
+- purity、DPS tie和是否越过component boundary；
+- 当前Linalg-to-Tile conversion能否表达所得到的contraction/reduction maps。
+
+合并e-class要求这些事实一致；unknown relation、dynamic shape、effect或conversion capability不是“较贵”状态，而是禁止该merge/rewrite。
+
+首批实现使用request-local C++ e-graph core：stable integer e-class/e-node IDs、union-find、hash-cons、deterministic rebuild
+worklist和typed e-class analysis。Core不拥有MLIR `Operation`/`Value`/`Region`，只持有当前context生命期内可重算的canonical
+relation/type facts；MLIR importer在未修改IR epoch中建立query-local映射，extractor返回typed expression，单独的rewriter adapter
+负责一次性修改MLIR。不得通过Rust FFI、外部进程、临时文件或全局singleton接入`egg`，也不得让e-graph library反向依赖
+Planning、Tile/Instr或runtime。若实施调研发现成熟C++ library能满足同一ownership、determinism和build边界，可替换core mechanics，
+但不能改变本文IR和failure合同。
+
+当前StableHLO concat在official conversion前被规范化为`tensor.empty`加ordered `tensor.insert_slice`链。只有链满足static同rank/
+同dtype、单一concat axis、unit stride、ordered non-overlap、完整result coverage、base全部覆盖且中间result无其它observable use时，
+analysis才恢复一个N-ary `Concat`表达式；extract仍生成标准Tensor IR，不新增Wafer concat op。
+
+### 7.3 首批operation与rewrite边界
+
+| Operation family | 首批支持的等价变换 | 明确排除 |
+| --- | --- | --- |
+| `tensor.expand_shape`、`tensor.collapse_shape`及static `tensor.reshape` | compose、identity/inverse消除、只跨不混合iterator role的pure structured op传播 | dynamic shape、把parallel与reduction/contraction role混入同一reassociation |
+| `linalg.transpose`、`linalg.broadcast`及其projected-permutation generic form | relation compose、吸收到elementwise maps、相同access在fanout内共享 | 任意data permutation、broadcast改变reduction multiplicity |
+| pure elementwise-like `linalg.map`/`linalg.generic` | scalar region保持原SSA顺序的producer-consumer fusion；相同access上推/下沉 | scalar algebra rewrite、reassociation、effectful或读取未知DPS init的region |
+| supported `linalg.matmul`、`linalg.batch_matmul`和generic contraction | operand/result access map compose、当前lowering已支持的orientation、只处理parallel batch reassociation/projection | matmul结合/分配、concat/split、K partition、accumulation结构变化 |
+| supported `linalg.reduce`和generic reduction | 只重命名/重组parallel axes，保持ordered reduction iterators、domain、combiner和init不变；result view compose | reduction iterator重排、domain拆分/合并、broadcast穿过reduction、partial/merge |
+| recovered static `Concat` | same-axis flatten、single-input消除、transpose axis remap、非concat轴broadcast提取、相同segment partition的pointwise compose | input重排/子集枚举、重新分组、partial overlap/dynamic concat、向matmul/reduce分配 |
+
+核心rewrite包括：
+
+```text
+Access(Access(x, R1), R2)
+  <=> Access(x, R1 compose R2)
+
+Elementwise(f, Access(x, R), Access(y, R))
+  <=> Access(Elementwise(f, x, y), R)
+
+Concat(axis, [Concat(axis, xs), ys...])
+  <=> Concat(axis, [xs..., ys...])
+```
+
+双向规则不意味着无条件扩张。可能复制`Access`或compute的方向只有在producer occurrence不增加、consumer集合有界且能产生新的
+exact match时才admit；其它match不加入e-graph。Attention、collective、call、SCF、effectful op、general slice/insert、pad、
+gather/scatter、unsupported contraction/reduction maps和复杂multi-result joint rewrite都是component barrier。
+
+### 7.4 Exploration、extraction与MLIR mutation
+
+标准MLIR patterns先运行，e-graph只接收仍有非相邻或rewrite-order冲突的pure component。Component以function/Region中的effect、
+control flow、attention、collective、unsupported compute和复杂fanout为边界；首批不做需要ILP或跨多个observable root联合选择的
+multi-output extraction。
+
+预算使用确定性work而不是wall-clock控制输出，至少统计并限制：
+
+```text
+e-node insertion
+e-class merge
+rewrite match
+rebuild work
+iteration
+extraction work
+```
+
+具体production上限必须先由真实HF/LLaMA corpus的off/on profile确定，不能先写任意常数。达到budget、内部资源耗尽或没有唯一
+strictly dominating extraction时，原verified component保持不变；这不是compiler error、unsupported program或physical rejection。
+
+首批extractor不使用target、layout、SPM/DDR bytes或预测instruction cost，只接受相对原表达式满足以下exact dominance的结果：
+
+- scalar/combiner region、dtype、iteration domain及observable results相同；
+- logical scalar compute occurrence不增加；
+- producer occurrence和fanout materialization不增加；
+- 显式access/transform数不增加，并至少一项严格减少；
+- semantic tie-break只依赖canonical expression、source order和typed fields。
+
+存在transform减少但compute复制等trade-off时不强行extract。所有proof在首次mutation前完成；成功结果由一个
+`PatternRewriter`/`IRMapping` transaction重建，随后verify并使旧analysis失效。失败不留下部分MLIR修改。
+
+### 7.5 与tile/fuse、layout和movement的顺序
+
+稳定运行顺序是：
+
+```text
+official StableHLO-to-Linalg
+  -> attention semantic recognition
+  -> bounded logical e-graph normalization
+  -> StructuredDAG / spatial / Region choice
+  -> candidate-owned attention Linalg expansion
+  -> scoped logical e-graph normalization
+  -> SCF temporal tile-and-fuse
+  -> local canonicalization of newly-created slice/view chains
+  -> current-IR layout domain + PBQP assignment
+  -> exact metadata view or explicit layout materialization
+  -> bufferization
+  -> movement closure and exact transfer cleanup
+```
+
+E-graph只选择logical graph表达；tile-and-fuse改变actual operation/loop/use-def；PBQP在最终current SSA graph上选择MemLayout；
+`PhysicalLayoutRelation`再判断同storage view或真实movement。四者不能共同维护一个平行choice graph，也不能让e-graph或PBQP
+重做另一个stage的选择。
+
+Candidate attention expansion创建的新Linalg必须通过同一个scoped kernel再进入tile-and-fuse；这不是第二套normalizer，只是相同
+implementation在新的private IR epoch上的直接调用。Tile-and-fuse后的canonicalization仅清理它刚创建的slice/view恒等式，不重新运行
+全图equality exploration。
+
+### 7.6 覆盖矩阵
+
+| 输入等价类 | shape/结构 | typed/optimization failure | 精确断言 | 直接下游witness |
+| --- | --- | --- | --- | --- |
+| adjacent/non-adjacent reshape、transpose、broadcast | rank 3--6；1024/1025/1031；chain/diamond | relation不exact、dynamic或跨barrier时保持原IR | before/after exact relation与result type相同；transform减少；compute occurrence不增 | current StructuredDAG与exact-demand可消费 |
+| elementwise access propagation | 1/2/15 uses；single/fanout；aligned/ragged | unknown DPS init/effect或multi-output trade-off保持原IR | scalar region逐op同序；无producer复制；共享access一个SSA | temporal tile-and-fuse读取rewrite后current uses |
+| contraction anchor | rank-3/4 matmul与batch matmul；operand transpose、batch reshape/broadcast；1024/1025 | unsupported orientation、K role混合或map不可lower时不rewrite | M/N/K/batch role、iterator和scalar region一致；只消除access op | candidate Linalg-to-Tile conversion成功 |
+| reduction anchor | rank-3/4；parallel-axis transpose/reshape；1024/1025/1031 | reduction iterator重排、parallel/reduction混合或broadcast multiplicity变化保持原IR | ordered reduction domain、combiner、init和result relation一致 | reduction tiling与coupled-state query可消费 |
+| canonical concat assembly | N-ary/nested concat；transpose/broadcast/pointwise；1024/1025 segment及tail | overlap、gap、partial coverage、dynamic或intermediate external use不恢复Concat | ordered pieces all-and-only cover；prefix exact；extract回标准Tensor IR | exact-demand piece propagation与consumer maps |
+| attention/collective/effect barriers | ordinary DAG邻接attention、collective、SCF/call和effect | rewrite不得越界；malformed current IR仍由原owner失败 | barrier两侧SSA/use不变；attention classification不变 | physical planning看到相同semantic roots |
+| deterministic budget与规模 | tiny flat e-class oracle；真实HF/LLaMA dense pure component | budget/resource exhaustion保留原component，不产生typed legality结论 | 相同work budget产生相同IR/diagnostic；on/off exact语义与downstream representability一致但不要求raw choice identity；记录e-node/e-class/match/iteration/wall/RSS | 后续layout/movement/instruction inventory对比 |
+
+小shape只用于独立e-class congruence和extractor oracle；所有production rewrite family仍须由表中真实规模case覆盖。
+
+## 8. Card-Partition Collective Boundary
 
 supported StableHLO collective先转换为：
 
@@ -415,7 +601,7 @@ normalization不得把collective直接lower成Direct DTE，也不得把algorithm
 single-card mesh上的singleton collective可在后续materialization中证明为identity；非singleton card-partition collective需要独立
 cross-card transport合同，不能借片内16 Tile通信凑出结果。
 
-## 8. Static Residual Cleanup
+## 9. Static Residual Cleanup
 
 GSPMD输出可能含由constants和static tensor views完全决定的partition/mask helper。cleanup仅覆盖可精确证明的：
 
@@ -427,9 +613,11 @@ GSPMD输出可能含由constants和static tensor views完全决定的partition/m
 原IR并由最终legality gate拒绝。cleanup不是runtime shape evaluator，也不能按partition名、symbol或常见mask shape猜结果。
 最终输出不得残留SDY或raw StableHLO。
 
-## 9. Failure 与 Atomicity
+## 10. Failure 与 Atomicity
 
 - attention near-miss不是错误，保持普通verified Linalg DAG；
+- e-graph component不受支持、没有strictly dominating extraction或确定性work budget耗尽不是错误，保持该component原IR；
+- e-graph声称等价但extracted graph无法通过type/relation proof或verifier是compiler error；rewrite transaction必须回滚且不得发布部分结果；
 - conflicting matches、malformed existing attention op或rewrite后verifier failure终止normalization；
 - normalization在首次mutation前收集完整proof，所有create/replace/erase通过同一个`IRRewriter`；不clone Module/Func/DAG；
 - algorithm classification缺decode proof只产生FA，不记录失败历史或候选；
@@ -438,7 +626,7 @@ GSPMD输出可能含由constants和static tensor views完全决定的partition/m
   不在materializer内换算法、layout、route或buffer；
 - `none`和`search`任一失败都不调用另一policy兜底。
 
-## 10. Verification
+## 11. Verification
 
 attention正例直接采用真实规模的rank-3或更高Q/K/V/output shape，至少一个sequence或其它主要迭代维度不小于1024；
 block与partition验证必须包含整除矩阵，例如Q/K/V sequence为`1024`；同时包含非整除矩阵，例如
@@ -469,7 +657,7 @@ selected pieces，而不是只检查op或pass成功。
 
 局部op/interface测试不能代替第8--10项。真实板端matched A/B属于后续显式board qualification，不属于本任务的host完成声明。
 
-## 11. 实现入口与扩展规则
+## 12. 实现入口与扩展规则
 
 production内部顺序为：
 
@@ -479,19 +667,31 @@ collective normalization
   -> official StableHLO-to-Linalg legalization
   -> canonicalization
   -> attention semantic normalization and algorithm classification
+  -> bounded access-relation e-graph normalization
   -> final TensorProgram legality
 ```
 
 实现可以拆成多个patterns/passes，但长期合同是上述输入、输出和legality。创建Wafer op的pass必须声明dependent dialects。
-attention ODS/verifier/interfaces属于IR owner；graph proof/classification属于normalization owner；query-local work description属于Planning；
-selected Linalg expansion和structured-to-tile conversion属于Conversion。四者依赖单向，不建立IR→Planning反向include。
+attention ODS/verifier/interfaces属于IR owner；attention graph proof/classification和access-relation e-graph属于normalization owner；
+query-local work description属于Planning；selected Linalg expansion和structured-to-tile conversion属于Conversion。四者依赖单向，
+不建立IR→Planning反向include。
 
 新增attention variant先扩同一个op/current algorithm enum、typed proof、work description和selected emitter；不得新增第二个attention op、
 字符串implementation registry或parallel lowering path。未来真正不同且无法由当前op语义、state和verifier表达的算法，必须先说明其独立
 semantic对象及各physical-stage consumer，不能仅因某篇实现使用另一个op名就复制接口。
 
-## 12. 参考实现与采用边界
+## 13. 参考实现与采用边界
 
+- [MLIR Linalg transformations](https://mlir.llvm.org/docs/Dialects/Linalg/)与
+  [standard passes](https://mlir.llvm.org/docs/Passes/)提供indexing-map驱动的elementwise fusion、transpose/broadcast folding、
+  tiling和producer-consumer fusion；Wafer先复用pinned版本实际存在的patterns，再将剩余非相邻等价图交给bounded e-graph。
+- [egg](https://arxiv.org/abs/2004.03082)提供rebuilding、e-class analysis和equality saturation的基础；Wafer只采用query-local
+  equivalence exploration，不把e-class建成IR或跨stage协议。
+- [TENSAT](https://proceedings.mlsys.org/paper_files/paper/2021/file/cc427d934a7f6c0663e5923f49eba531-Paper.pdf)
+  证明tensor DAG equality saturation能缓解rewrite phase ordering，也表明multi-pattern增长、cycle和DAG-aware extraction会成为主要
+  scalability风险；Wafer首批排除需要ILP的multi-output rewrite，并用确定性work budget关闭探索。
+- [Glenside](https://arxiv.org/abs/2105.09377)展示以pure access-pattern表示reshape/transpose/interleave等tensor访问再进行
+  equality saturation的可行性；Wafer复用已有`IndexRelation`和current Linalg/Tensor IR，不新增公开access-pattern dialect。
 - [FlashAttention](https://arxiv.org/abs/2205.14135)提供block-wise Q/K/V traversal、online state和避免完整attention matrix
   materialization的算法基础；本文采用其forward state结构，不把论文中的GPU线程层级写入Wafer IR。
 - [FlashAttention-2](https://arxiv.org/abs/2307.08691)说明work partition与并行组织仍需结合实际执行层；本文把这些选择留给physical planning，
