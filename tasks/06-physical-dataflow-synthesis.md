@@ -159,6 +159,12 @@ invalid和exact-empty保持不同typed result。
 consumer-nested还是explicit recompute/replica。同region只选择共同local-storage scope，不证明SPM residency；只有actual producer work位于consumer
 traversal内、中间值由direct SSA使用且无独立DDR往返时才称为coupled traversal。
 
+同region的local use必须保留所选delivery直到本次structural rewrite完成：`StoredRegionValue`要求producer在consumer
+traversal外实际物化一次并由region-local SSA/view复用，`ReconstructedRegionValue`保留current SSA support chain，
+`DirectNestedValue`才允许把producer tile物化到consumer traversal内。Materializer不得把这三者压成同一个布尔rewire，
+也不得在后续greedy fusion中把stored edge改成consumer-local recompute。该delivery只在一次candidate transaction内控制
+transformation，成功后由actual loop、SSA和use-def取代，不成为跨stage plan。
+
 Region choice必须覆盖fanout的每个use、reduction partial/merge、effect order和observable output。完全无依赖的
 components不为扩大region而合并。SPM residency不是独立上层choice，只能由最终actual allocation/lifetime/offset证明。
 
@@ -166,6 +172,17 @@ components不为扩大region而合并。SPM residency不是独立上层choice，
 
 每个actual traversal选择complete temporal tile vector和loop order，不允许单一标量`tile_size`代替多轴语义。所有wave和
 tail必须all-and-only覆盖local work domain；reduction accumulator和loop-carried state必须在物化的SSA/control flow中表达。
+
+Temporal materialization以一个canonical SCF loop nest承载同一traversal。完整块和remainder共享同一个current loop body；
+offset与bounded tile size由loop IV和exact upper bound计算。不得在结构层递归生成`first / steady / tail`的多维笛卡尔积，
+也不得按wave trip count复制compute closure。当前Instr只接受static shaped buffer时，先形成上述canonical loop，再在直接
+需要static shape的边界只peel最后一个partial iteration并canonicalize其bound；不peel first iteration，不让tail
+specialization提前复制无关producer closure。
+
+实现使用pinned MLIR的`TilingInterface`、SCF tiling和producer-fusion API作为loop/fusion的唯一mechanics owner。
+Fusion control只接受本次transaction中明确选择的`DirectNestedValue`或explicit recompute/replica edge；stored、reconstructed、
+cross-region、collective以及无法证明不会重算的multi-use/reduction/contraction producer保持barrier。Pinned接口暂时不能表达的
+exact reshape或`tensor.insert_slice` window只保留窄的current-SSA adapter，不能保留另一套通用loop/fusion engine。
 
 Spatial、region和temporal choice闭合后，唯一structural materializer立即生成candidate-owned CardModule/TileModule/TileRegion、
 Linalg/Tensor/SCF或typed Tile work，并返回actual SSA。下游不消费未物化execution/value ID。
@@ -238,6 +255,11 @@ view/alias/allocation/layout materialization，随后销毁factor graph和assign
 Movement choice以current producer value、consumer operand、exact demanded domain和physical layout为输入，选择local view/copy、
 DDR store/load、Direct DTE、software relay或已定义collective。选择由唯一movement transformation立即创建actual typed ops、
 staging buffer、token和effect。
+
+Function/TileRegion observable result在bufferization前绑定actual destination。Compiler-created DDR→DDR `memref.copy`不是
+正常output协议：同一result若可直接写最终DDR destination就使用DPS/out-parameter关系；region-local producer先在SPM形成后
+发布时使用actual SPM→DDR store。真正的semantic DDR→DDR copy若不能消除，必须在本stage显式物化其Tile owner、有限SPM
+staging、RDMA/WDMA、effect和completion，不能留到Instr conversion临时为每条copy创建TileRegion。
 
 Movement不从shape、value名或future version ID恢复source/destination，也不先创建donor movement再替换。不同realization
 使用同一transformation实现；每个alternative作用于自己的candidate transaction。跨region或跨Tile的每个非空domain
@@ -433,7 +455,10 @@ Current迁移必须遵守：
 - 每TileRegion的structured execution数的minimum/average/maximum和singleton region数；
 - 每TileRegion的actual nested operation数的minimum/average/maximum；
 - region-local use、cross-region external use和actual DDR/peer movement数；
-- accepted final Wafer Instr总数、per-Tile minimum/average/maximum和per-kind exact count。
+- local delivery按stored/reconstructed/direct-nested分类的edge数，以及每类实际producer materialization数；
+- function-boundary bufferization产生和movement closure后残留的`memref.copy`按memory-space pair分类；进入Instr conversion的
+  compiler-created DDR→DDR copy必须为0；
+- accepted final Wafer Instr总数、per-Tile minimum/average/maximum和per-kind exact count；
 - accepted final NE/Vector logical work、各自启用的throughput/service time、instruction-control term和最终makespan。
 
 该汇总不逐region打印日志，不把structured execution数与raw operation/Instr数混为一个指标，也不构造

@@ -898,6 +898,10 @@ Tile-to-Instr只消费已经由physical-dataflow selection materialize的Tile bo
 collective、tile group、ring/tree算法或late communication selector。card-level collective singleton identity在更上游消解，
 non-singleton cross-card collective在对应transport尚未实现时fail closed。
 
+Function-boundary bufferization产生的standard `memref.copy`必须在进入本stage前由output/movement closure消除或物化为typed
+Tile movement。Tile-to-Instr不把module-scope DDR→DDR copy包装成新TileRegion，不创建其SPM staging，也不在这里选择RDMA/WDMA
+路线；残留copy按输入合同失败。
+
 | target-abstract op | instruction-level lowering |
 | --- | --- |
 | `wafer.tile.load` | consume destination-style source/dest；compact Tensor是baseline。mapped extension从两端typed views/encoding、08 exact transfer proof及current DMA instruction limits导出direct cover，并发射显式`src_offset`/`dst_offset`的RDMA；target identity不参与physical encoding query。若consumer要求known padding，先fill完整destination再发valid segments；staged alternative必须已显式物化为Tensor+GS payload IR |

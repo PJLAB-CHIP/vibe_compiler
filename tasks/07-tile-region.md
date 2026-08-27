@@ -17,7 +17,7 @@ TileRegion物化是确定性IR transformation，不是第二个optimizer。Basel
 
 - verifier-valid current TensorProgram和其standard interfaces；
 - baseline固定规则在本次调用中得到的局部参数，或search已选择的spatial placement、region membership和
-  temporal traversal参数；
+  temporal traversal参数，包括每条same-region use的stored、reconstructed或direct-nested delivery；
 - 显式target configuration和本次rewrite可重算的analysis。
 
 它的输出是candidate-owned actual structural Card/TileRegion IR。不接收也不创建future physical value、storage object、event、
@@ -45,7 +45,7 @@ Pipeline position:
   Baseline入口不额外接收search choice；search入口另接收closed spatial/region/temporal choice。
 - Current stage responsibility:
   消费spatial/region/temporal choice，在新Card subtree中生成all-and-only TileModules、non-nested TileRegions、
-  traversal loops、tail、compute SSA和loop-carried state。只生成structural IR，不选择或物化layout、movement、software pipeline、
+  canonical traversal loops、必要tail、按selected delivery形成的compute SSA和loop-carried state。只生成structural IR，不选择或物化layout、movement、software pipeline、
   rotating storage、worker、order或completion。
 - Output IR / files:
   verifier-valid structural `wafer.card.module`、`wafer.tile.module`、`wafer.tile.region`以及实际Linalg/Tensor/SCF或typed Tile compute。
@@ -112,6 +112,16 @@ SPM root和shaped alias不跨TileRegion。若选择不同region，所有跨界sh
 - intermediate是current tile/window大小，不是完整local shard；
 - 没有独立producer traversal或中间DDR store/load。
 
+Same-region use有三种不同的materialization语义，不能在进入rewrite前合并：
+
+- stored：producer在consumer traversal外实际物化一次，consumer只读取该current SSA/view；它优先形成region-local
+  SPM reuse，不等于DDR cut；
+- reconstructed：保留current reshape/slice/assembly support chain，只有exact canonicalization可以缩短该chain；
+- direct-nested：producer tile进入consumer traversal，只有该类或explicit recompute/replica才允许producer fusion。
+
+这些选择只作为本次transaction的fusion control输入。Rewrite成功后，top-level或nested placement、SSA use-def和loop nesting
+成为唯一事实源。Generic tiling/fusion不得再次把stored edge改成nested recompute，也不得为了减少Region数制造额外DDR边界。
+
 Region formation必须覆盖fanout的每个use、reduction partial/merge、effect order和observable output。不相关component不因
 “region更大”而合并。Retain/recompute/spill/cut是transformation choice，但其结果必须是actual traversal、SSA、allocation和movement；
 不保存`resident=true`或长期lifetime table。
@@ -122,10 +132,14 @@ Region formation必须覆盖fanout的每个use、reduction partial/merge、effec
    调用中直接得到固定参数；search检查其closed spatial/region/temporal choice。临时C++对象不创建future SSA/buffer/event。
 2. **建立transaction**：在source parent下创建新CardModule和all-and-only TileModules。Source保持不变；failure只擦除
    新subtree。
-3. **创建TileRegion与traversal**：根据region membership创建non-nested regions，根据temporal choice创建compact loop、
-   exact tail、branch、reduction accumulator和loop-carried state。所有execution all-and-only一次。
-4. **创建compute SSA**：从current structured op class、indexing maps、region和DPS/Tiling interfaces生成actual Linalg/Tensor/SCF
-   或typed Tile compute。Padding、window和scalar payload只从current op读取。
+3. **创建TileRegion与traversal**：根据region membership创建non-nested regions。使用pinned MLIR SCF tiling从完整
+   temporal vector生成一个canonical `scf.for` loop nest；loop IV和bounded size表达wave与remainder，不递归生成
+   `first / steady / tail`笛卡尔积。Reduction使用标准partial-reduction mechanics或只负责sequential accumulator的窄adapter。
+4. **按delivery创建compute SSA与fusion**：以consumer为tiling root，通过SCF producer-fusion control只接纳direct-nested或
+   explicit recompute/replica edge；stored、reconstructed、collective、cross-region以及无法证明无重算的multi-use/reduction/
+   contraction producer保持barrier。Pinned接口不能表达的exact reshape/insert window可先做局部current-SSA rewrite，不能另建
+   通用fusion worklist。当前Instr要求static shape时，在本stage handoff前只peel最后一个partial iteration并canonicalize bounds；
+   不peel first iteration。Padding、window和scalar payload只从current op读取。
 5. **验证与handoff**：运行op/interface verifier和card-scoped structural stage check，直接检查traversal coverage、SSA use-def、
    tensor boundary、loop-carried state和source-form elimination。Success后下游只消费该current IR；本stage不顺带调用layout或movement。
 
@@ -144,6 +158,12 @@ Movement闭合后，execution-structure transformation才可依据current physic
 结构。Pipelined结果必须显式包含prefix/steady/tail、chunk control、rotating allocation roots、slot SSA选择以及实际movement/compute
 occurrence和下游必须闭合的reuse/observation obligation；不能把`ExecutionStructurePlan`、buffer multiplicity或预测lifetime带到
 Instr或memory stage。
+
+Current transformation入口只接收同一IR epoch的actual `scf.for`、top-level operation groups、stage assignment和可选的
+`memref.alloc` rotation binding。Serialized是verifier-checked byte-equivalent identity；pipelined choice立即调用pinned SCF机械
+pipeliner生成prologue/kernel/epilogue。Rotating binding在allocation所属TileRegion内创建全部actual slot roots，并以归一化
+`(iv-lower)/step % multiplicity`形成loop-local`arith.select` SSA；caller-owned relation在同一transaction扩展到每个slot。
+这些query-local choice和raw handle不越过调用，downstream只看到rewritten SCF/memref/SSA/effect。
 
 ## 7. Control flow、event 与completion
 
@@ -191,12 +211,21 @@ fallback builder或partial result。Unsupported semantics、resource exhaustion�
 
 - rank 3–6的1024与1025/1031，实际经过多Tile、多wave、remainder和tail；
 - single-root、multi-root region、independent/coupled traversal、fanout/fanin、reduction partial/merge；
+- stored/reconstructed/direct-nested三类local edge、single/multi-use producer、reduction/contraction producer barrier，以及
+  explicit recompute/replica；
+- 1024整除时每个traversal只有一个shared loop body；1025/1031只含必要的main/remainder static form，不含front peel，
+  不随wave trip count复制compute closure；
+- 每个source structured op的actual iteration tiles并集等于selected work且除explicit recompute外两两不重叠；stored producer
+  位于consumer loop外且每selected execution只物化一次，direct-nested producer只位于对应consumer traversal内；
 - exact/partial view、layout-compatible/incompatible、shared conversion、alias和explicit copy；
+- function result direct destination、region-local SPM reuse和真正cross-region DDR boundary；movement closure后compiler-created
+  DDR→DDR `memref.copy`为0，Instr conversion不新建copy-only TileRegion；
 - local、DDR、peer/relay/collective movement与actual effect/token；
 - structural、layout-resolved和physical form的parser/printer、合法transition和wrong-stage rejection；
 - Serialized与software-pipelined execution structure、prefix/steady/tail、rotating roots和slot SSA；
 - attention prefill/decode的FP16/BF16、aligned/ragged和batch/head/seqlen/head-dim axes；
 - parser/printer、local verifier负例、stage check、named/driver parity和`verify-each`。
 
-正例必须断言actual TileRegion数、structured execution coverage、SSA owner、alias/copy、movement、tail和直接下游Instr可消费性。
+正例必须断言actual TileRegion数、structured execution coverage、SSA owner、local delivery、producer occurrence、alias/copy、
+movement、tail和直接下游Instr可消费性。
 不以plan field数、fixture成功或单个小shape作为完成证据。

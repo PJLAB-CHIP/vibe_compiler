@@ -186,6 +186,12 @@ source、destination、logical relation、direction、range和effect从operands�
 final winner不重建。Completion由后续current Instr stage决定。
 连续/strided/mapped descriptor cover由08证明；SPM/DDR offsets由09/12的actual planners决定。
 
+Observable function/TileRegion result在function-boundary bufferization前绑定actual destination。可直接发布的result使用DPS/
+out-parameter或actual SPM→DDR store，不先生成第二个DDR allocation再`memref.copy`。Bufferization产生的standard copy必须在
+本stage按current source/destination memory space、exact relation、owner和effect消除或物化成上述typed movement。真正不可消除的
+DDR→DDR semantic copy必须在这里显式拥有Tile、有限SPM staging及RDMA/WDMA；不能留到Tile-to-Instr conversion为每条copy
+临时创建TileRegion。
+
 同一source经多段view/broadcast/materialize组成的relation可以在candidate新Card subtree中合成一次direct movement，前提是
 relation exact、其它uses/effects/alias闭合且final destination cover可证明。cleanup只能删除fully proven same-root/same-map
 冗余，不能移动fusion cut、改变route或创造spill/recompute。
@@ -202,6 +208,8 @@ conversion按concrete typed op class使用DialectConversion/RewritePattern，生
 per-Tile conversion输出canonical/unplaced Instr：Wafer-tagged memref尚未带runtime address，但instruction kind、
 geometry、descriptor relation、worker-independent effects/ranges和async obligations完整。conversion不选择Tile placement、
 SPM/DDR offset、worker/order或transport resource，也不插入基于region/loop boundary猜出的completion。
+Movement closure后未分类`memref.copy`是直接stage contract failure；conversion不得据此创建copy-only TileRegion、SPM allocation、
+route或staging sequence。
 
 若输入表达stage pipeline，conversion必须逐一保留actual chunk control flow、movement、buffer/slot SSA relation和已知
 dependency，并生成对应issue op；最终worker/issue order和latest-necessary completion在11定义的actual Instr sibling上
