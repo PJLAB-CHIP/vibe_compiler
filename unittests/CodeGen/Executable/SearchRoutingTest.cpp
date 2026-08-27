@@ -1,10 +1,13 @@
 //===- SearchRoutingTest.cpp ------------------------------------------===//
 
 #include "TestSupport/CodeGen/CardExecutableTestSupport.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "llvm/Support/raw_ostream.h"
 
 #include "gtest/gtest.h"
+
+#include <memory>
 
 namespace {
 
@@ -20,6 +23,9 @@ TEST(SearchRoutingTest,
   beforeStream.flush();
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
+  auto timing =
+      std::make_shared<wafer::support::CompileTimingSession>(diagnostics);
+  wafer::support::ScopedCompileTimingActivation timingActivation(timing);
   wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::buildCardExecutable(
       parsed.context, *parsed.module, programMetadata(), executionConfig(),
@@ -44,41 +50,41 @@ TEST(SearchRoutingTest,
       << diagnosticsText;
   EXPECT_NE(diagnosticsText.find("temporal_indeterminate=0"), std::string::npos)
       << diagnosticsText;
-  EXPECT_NE(diagnosticsText.find("structural_readiness_queries=1"),
+  EXPECT_NE(diagnosticsText.find("structural_readiness_queries=0"),
             std::string::npos)
       << diagnosticsText;
-  EXPECT_NE(diagnosticsText.find("representation_states=1"), std::string::npos)
+  EXPECT_NE(diagnosticsText.find("representation_states=0"), std::string::npos)
       << diagnosticsText;
   EXPECT_NE(diagnosticsText.find("representation_unsupported=0"),
             std::string::npos)
       << diagnosticsText;
-  EXPECT_NE(diagnosticsText.find("movement_states=1"), std::string::npos)
+  EXPECT_NE(diagnosticsText.find("movement_states=0"), std::string::npos)
       << diagnosticsText;
   EXPECT_NE(diagnosticsText.find("movement_unsupported=0"), std::string::npos)
       << diagnosticsText;
-  EXPECT_NE(diagnosticsText.find("storage_states=1"), std::string::npos)
+  EXPECT_NE(diagnosticsText.find("storage_states=0"), std::string::npos)
       << diagnosticsText;
   EXPECT_NE(diagnosticsText.find("storage_unsupported=0"), std::string::npos)
       << diagnosticsText;
-  EXPECT_NE(diagnosticsText.find("event_graph_queries=1"), std::string::npos)
+  EXPECT_NE(diagnosticsText.find("event_graph_queries=0"), std::string::npos)
       << diagnosticsText;
-  EXPECT_NE(diagnosticsText.find("event_graphs_built=1"), std::string::npos)
+  EXPECT_NE(diagnosticsText.find("event_graphs_built=0"), std::string::npos)
       << diagnosticsText;
-  EXPECT_NE(diagnosticsText.find("execution_structure_queries=1"),
+  EXPECT_NE(diagnosticsText.find("execution_structure_queries=0"),
             std::string::npos)
       << diagnosticsText;
-  EXPECT_NE(diagnosticsText.find("execution_structure_states=1"),
+  EXPECT_NE(diagnosticsText.find("execution_structure_states=0"),
             std::string::npos)
       << diagnosticsText;
-  EXPECT_NE(diagnosticsText.find("structure_storage_queries=1"),
+  EXPECT_NE(diagnosticsText.find("structure_storage_queries=0"),
             std::string::npos)
       << diagnosticsText;
-  EXPECT_NE(diagnosticsText.find("structure_storage_states=1"),
+  EXPECT_NE(diagnosticsText.find("structure_storage_states=0"),
             std::string::npos)
       << diagnosticsText;
-  EXPECT_NE(diagnosticsText.find("schedule_queries=1"), std::string::npos)
+  EXPECT_NE(diagnosticsText.find("schedule_queries=0"), std::string::npos)
       << diagnosticsText;
-  EXPECT_NE(diagnosticsText.find("schedule_states=1"), std::string::npos)
+  EXPECT_NE(diagnosticsText.find("schedule_states=0"), std::string::npos)
       << diagnosticsText;
   EXPECT_EQ(diagnosticsText.find("deterministic-card-executable-baseline"),
             std::string::npos)

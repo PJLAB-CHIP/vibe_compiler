@@ -327,16 +327,11 @@ TEST_P(AttentionProductionClosureTest, CompilesIndependentlyInBothPolicies) {
     EXPECT_EQ(cost.aggregateNonTerminalNCCParticipantWaitCount.value, 0u);
   }
   if (policy.isSearch()) {
-    EXPECT_NE(diagnosticsText.find("physical-search result"),
-              std::string::npos);
-    EXPECT_NE(diagnosticsText.find("coverage=feasible-partial"),
-              std::string::npos);
     EXPECT_EQ(diagnosticsText.find("deterministic-card-executable-baseline"),
               std::string::npos);
-    EXPECT_NE(diagnosticsText.find("candidate_actualizations="),
+    EXPECT_EQ(diagnosticsText.find("physical-search result"),
               std::string::npos);
-    EXPECT_EQ(diagnosticsText.find("candidate_actualizations=0"),
-              std::string::npos);
+    EXPECT_EQ(diagnosticsText.find("planning-profile"), std::string::npos);
   } else {
     EXPECT_EQ(diagnosticsText.find("physical-search"), std::string::npos);
   }

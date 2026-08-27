@@ -5,6 +5,7 @@
 
 #include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/CoupledTileRegion.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Target/Core/DirectDTE.h"
 
 #include <iterator>
@@ -13,6 +14,35 @@
 using namespace wafer;
 
 namespace wafer::tensor_program_to_tile_region {
+namespace {
+
+bool isFunctionBoundaryView(mlir::Value value,
+                            llvm::DenseSet<mlir::Value> &visited) {
+  if (!value || !visited.insert(value).second)
+    return false;
+  if (mlir::isa<mlir::BlockArgument>(value))
+    return true;
+  mlir::Operation *definition = value.getDefiningOp();
+  if (auto expand = mlir::dyn_cast_or_null<mlir::tensor::ExpandShapeOp>(
+          definition))
+    return isFunctionBoundaryView(expand.getSrc(), visited);
+  if (auto collapse = mlir::dyn_cast_or_null<mlir::tensor::CollapseShapeOp>(
+          definition))
+    return isFunctionBoundaryView(collapse.getSrc(), visited);
+  if (auto extract =
+          mlir::dyn_cast_or_null<mlir::tensor::ExtractSliceOp>(definition))
+    return isFunctionBoundaryView(extract.getSource(), visited);
+  if (auto cast = mlir::dyn_cast_or_null<mlir::tensor::CastOp>(definition))
+    return isFunctionBoundaryView(cast.getSource(), visited);
+  return false;
+}
+
+bool isFunctionBoundaryView(mlir::Value value) {
+  llvm::DenseSet<mlir::Value> visited;
+  return isFunctionBoundaryView(value, visited);
+}
+
+} // namespace
 
 void setFailureReason(std::string *failureReason, llvm::StringRef reason) {
   if (failureReason)
@@ -246,7 +276,9 @@ TileRegionBodyEmitter::emit(TensorProgramScope scope,
     return failAndReturn("logical partition must be non-negative");
   currentStageNodes.clear();
   convertedStructuredOperations.clear();
+  elidedStructuredOperations.clear();
   convertingStructuredOperations.clear();
+  structuredEmissionLog.clear();
   for (const auto &[operation, nodes] : structuredNodeIds)
     for (uint32_t node : nodes)
       currentStageNodes.insert(node);
@@ -686,7 +718,7 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::materializeTensorConstant(
   auto scalar = builder.create<mlir::arith::ConstantOp>(loc, scalarAttr);
   auto tensorBuffer = builder.create<mlir::memref::AllocOp>(
       loc, makeSPMMemRefType(tensorType, MemLayout::Tensor));
-  recordScratchAllocation(tensorBuffer);
+  recordScratchAllocationForValue(tensorBuffer, original);
   auto fill = builder.create<ComputeFillOp>(loc, tensorBuffer.getResult(),
                                             scalar.getResult(),
                                             /*fill_domain=*/FillDomainAttr{});
@@ -698,6 +730,7 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::materializeTensorConstant(
   auto materialized = builder.create<LayoutMaterializeOp>(
       loc, makeSPMMemRefType(tensorType, targetLayout),
       tensorBuffer.getResult());
+  recordStructuredComputeOperationForValue(materialized, original);
   record(original, targetLayout, materialized.getResult());
   return materialized.getResult();
 }
@@ -841,7 +874,7 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::getOrMaterialize(
         mlir::dyn_cast<mlir::MemRefType>(externalIt->second.getType());
     auto destination = builder.create<mlir::memref::AllocOp>(
         materializationLoc, makeSPMMemRefType(tensorType, MemLayout::Tensor));
-    recordScratchAllocation(destination);
+    recordScratchAllocationForValue(destination, original);
     builder.create<StorageLoadOp>(materializationLoc, externalIt->second,
                                   destination.getResult());
     stagedBoundarySourceType = externalType;
@@ -886,6 +919,7 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::getOrMaterialize(
   }
   auto materialize = builder.create<LayoutMaterializeOp>(materializationLoc,
                                                          resultType, source);
+  recordStructuredComputeOperationForValue(materialize, original);
   record(original, targetLayout, materialize.getResult());
   return materialize.getResult();
 }
@@ -916,17 +950,126 @@ TileRegionBodyEmitter::getOrMaterializeStructuredInput(
 
 void TileRegionBodyEmitter::recordStructuredComputeOperation(
     mlir::Operation *operation) {
-  if (relationRecorder)
-    relationRecorder->recordStructuredComputeOperation(activeStructuredNodes,
-                                                       operation);
+  if (operation)
+    structuredEmissionLog.push_back(operation);
+  if (!relationRecorder)
+    return;
+  llvm::SmallVector<uint32_t, 4> owners(activeStructuredNodes.begin(),
+                                         activeStructuredNodes.end());
+  // Some consumer-driven temporal helpers are created for the selected group
+  // rather than for one source operation. Their caller-provided group node set
+  // is the explicit shared owner; this is not recovered from shape, name or
+  // region position.
+  if (owners.empty())
+    owners.append(currentStageNodes.begin(), currentStageNodes.end());
+  llvm::sort(owners);
+  owners.erase(std::unique(owners.begin(), owners.end()), owners.end());
+  relationRecorder->recordStructuredComputeOperation(owners, operation);
+}
+
+void TileRegionBodyEmitter::recordStructuredComputeOperationForValue(
+    mlir::Operation *operation, mlir::Value logicalValue) {
+  if (operation)
+    structuredEmissionLog.push_back(operation);
+  if (!relationRecorder || !logicalValue)
+    return;
+  llvm::SmallVector<uint32_t, 4> owners =
+      collectStructuredOwnersForValue(logicalValue);
+  relationRecorder->recordStructuredComputeOperation(owners, operation);
+}
+
+llvm::SmallVector<uint32_t, 4>
+TileRegionBodyEmitter::collectStructuredOwnersForValue(
+    mlir::Value logicalValue) {
+  llvm::SmallVector<uint32_t, 4> owners;
+  llvm::SmallVector<mlir::Value, 8> frontier{logicalValue};
+  llvm::DenseSet<mlir::Value> visited;
+  while (owners.empty() && !frontier.empty()) {
+    llvm::SmallVector<mlir::Value, 8> next;
+    for (mlir::Value value : frontier) {
+      if (!visited.insert(value).second)
+        continue;
+      mlir::Operation *definition = value.getDefiningOp();
+      auto mapped = definition ? structuredNodeIds.find(definition)
+                               : structuredNodeIds.end();
+      if (mapped != structuredNodeIds.end()) {
+        owners.append(mapped->second.begin(), mapped->second.end());
+        continue;
+      }
+      if (definition && mlir::isMemoryEffectFree(definition))
+        next.append(definition->getOperands().begin(),
+                    definition->getOperands().end());
+    }
+    frontier = std::move(next);
+  }
+  if (owners.empty()) {
+    frontier.clear();
+    frontier.push_back(logicalValue);
+    visited.clear();
+    while (owners.empty() && !frontier.empty()) {
+      llvm::SmallVector<mlir::Value, 8> next;
+      for (mlir::Value value : frontier) {
+        if (!visited.insert(value).second)
+          continue;
+        for (mlir::Operation *user : value.getUsers()) {
+          auto mapped = structuredNodeIds.find(user);
+          if (mapped != structuredNodeIds.end()) {
+            owners.append(mapped->second.begin(), mapped->second.end());
+            continue;
+          }
+          if (mlir::isMemoryEffectFree(user))
+            next.append(user->getResults().begin(), user->getResults().end());
+        }
+      }
+      frontier = std::move(next);
+    }
+  }
+  if (owners.empty())
+    owners.append(activeStructuredNodes.begin(), activeStructuredNodes.end());
+  if (owners.empty())
+    owners.append(currentStageNodes.begin(), currentStageNodes.end());
+  llvm::sort(owners);
+  owners.erase(std::unique(owners.begin(), owners.end()), owners.end());
+  return owners;
+}
+
+void TileRegionBodyEmitter::recordElidedInitOwners(
+    mlir::linalg::LinalgOp source, mlir::Operation *emittedOperation) {
+  if (!relationRecorder || !source || !emittedOperation)
+    return;
+  for (mlir::Value init : source.getDpsInits()) {
+    auto fill = init.getDefiningOp<mlir::linalg::FillOp>();
+    auto owners = fill ? structuredNodeIds.find(fill.getOperation())
+                       : structuredNodeIds.end();
+    if (owners == structuredNodeIds.end())
+      continue;
+    relationRecorder->recordStructuredComputeOperation(owners->second,
+                                                       emittedOperation);
+  }
 }
 
 void TileRegionBodyEmitter::recordScratchAllocation(
     mlir::memref::AllocOp allocation) {
-  if (relationRecorder && allocation &&
-      isWaferSPMMemRefType(allocation.getType()))
-    relationRecorder->recordScratchBuffer(activeStructuredNodes,
-                                          allocation.getResult());
+  if (!relationRecorder || !allocation ||
+      !isWaferSPMMemRefType(allocation.getType()))
+    return;
+  llvm::SmallVector<uint32_t, 4> owners(activeStructuredNodes.begin(),
+                                         activeStructuredNodes.end());
+  if (owners.empty())
+    owners.append(currentStageNodes.begin(), currentStageNodes.end());
+  llvm::sort(owners);
+  owners.erase(std::unique(owners.begin(), owners.end()), owners.end());
+  relationRecorder->recordScratchBuffer(owners, allocation.getResult());
+}
+
+void TileRegionBodyEmitter::recordScratchAllocationForValue(
+    mlir::memref::AllocOp allocation, mlir::Value logicalValue) {
+  if (!relationRecorder || !allocation ||
+      !isWaferSPMMemRefType(allocation.getType()))
+    return;
+  llvm::SmallVector<uint32_t, 4> owners =
+      collectStructuredOwnersForValue(logicalValue);
+  relationRecorder->recordScratchBuffer(owners, allocation.getResult());
 }
 
 mlir::LogicalResult
@@ -1066,13 +1209,52 @@ mlir::LogicalResult TileRegionBodyEmitter::bindCompleteInsertSliceOutputsToDDR(
 
 mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
                                                      mlir::OpBuilder &builder) {
+  auto findNearestStructuredConsumers = [&]() {
+    llvm::SmallVector<uint32_t, 2> consumers;
+    llvm::DenseSet<mlir::Value> visited;
+    llvm::SmallVector<mlir::Value, 8> frontier(op->getResults().begin(),
+                                               op->getResults().end());
+    while (!frontier.empty() && consumers.empty()) {
+      llvm::SmallVector<mlir::Value, 8> next;
+      for (mlir::Value value : frontier) {
+        if (!value || !visited.insert(value).second)
+          continue;
+        for (mlir::OpOperand &use : value.getUses()) {
+          mlir::Operation *user = use.getOwner();
+          while (user && user->getBlock() != op->getBlock())
+            user = user->getParentOp();
+          if (!user)
+            continue;
+          auto mapped = structuredNodeIds.find(user);
+          if (mapped != structuredNodeIds.end()) {
+            for (uint32_t node : mapped->second)
+              if (!llvm::is_contained(consumers, node))
+                consumers.push_back(node);
+            continue;
+          }
+          if (!mlir::isMemoryEffectFree(user))
+            continue;
+          next.append(user->getResults().begin(), user->getResults().end());
+        }
+      }
+      frontier = std::move(next);
+    }
+    llvm::sort(consumers);
+    return consumers;
+  };
+
   auto convertStructured = [&](llvm::function_ref<mlir::LogicalResult()>
                                    convert) {
     llvm::SmallVector<uint32_t, 2> previous = activeStructuredNodes;
     auto node = structuredNodeIds.find(op);
-    activeStructuredNodes.clear();
-    if (node != structuredNodeIds.end())
+    // A recursively materialized producer may not have its own scheduled-node
+    // identity in this selected group. In that case it is implementation work
+    // of the requesting consumer and must retain the caller's explicit owner.
+    // Only an operation with its own current mapping replaces that scope.
+    if (node != structuredNodeIds.end()) {
+      activeStructuredNodes.clear();
       activeStructuredNodes.append(node->second.begin(), node->second.end());
+    }
     const SelectedNodeRepresentation *representation = nullptr;
     if (!selectedRepresentations.empty()) {
       if (malformedRepresentations) {
@@ -1164,11 +1346,28 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
         if (!layout)
           continue;
         auto existing = buffers.find(operand);
-        if (!representation->sharedOperands[operandNumber])
+        if (wafer::support::getActiveCompileTimingSession() &&
+            (externalBuffers.contains(operand) ||
+             isFunctionBoundaryView(operand))) {
+          llvm::errs() << "wafer-compile: representation-boundary-use nodes=[";
+          llvm::interleaveComma(activeStructuredNodes, llvm::errs());
+          llvm::errs() << "] operand=" << operandNumber
+                       << " shared="
+                       << static_cast<unsigned>(
+                              representation->sharedOperands[operandNumber])
+                       << " external=" << externalBuffers.contains(operand)
+                       << " view=" << isFunctionBoundaryView(operand)
+                       << " cached=" << (existing != buffers.end()) << '\n';
+        }
+        if (!representation->sharedOperands[operandNumber]) {
           savedOperands.push_back(
               {operand, existing == buffers.end()
                             ? std::optional<BufferVersions>{}
                             : std::optional<BufferVersions>(existing->second)});
+          if (externalBuffers.contains(operand) ||
+              isFunctionBoundaryView(operand))
+            buffers.erase(operand);
+        }
         mlir::FailureOr<mlir::Value> selected =
             getOrMaterialize(operand, *layout, builder);
         if (mlir::failed(selected)) {
@@ -1214,6 +1413,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
     StructuredComputeImplementation previousImplementation =
         activeImplementation;
     activeImplementation = implementation;
+    const size_t emissionStart = structuredEmissionLog.size();
     mlir::LogicalResult result = convert();
     activeImplementation = previousImplementation;
     for (const SavedVersions &saved : savedOperands) {
@@ -1287,6 +1487,40 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
           }
       }
     }
+    if (mlir::succeeded(result) && relationRecorder) {
+      auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(op);
+      llvm::DenseSet<mlir::Operation *> fusedFills;
+      if (linalg)
+        for (mlir::Value operand : op->getOperands()) {
+          auto fill = operand.getDefiningOp<mlir::linalg::FillOp>();
+          auto fillNodes = fill ? structuredNodeIds.find(fill.getOperation())
+                                : structuredNodeIds.end();
+          if (!fill || fillNodes == structuredNodeIds.end() ||
+              !fusedFills.insert(fill.getOperation()).second ||
+              (convertedStructuredOperations.contains(fill.getOperation()) &&
+               !elidedStructuredOperations.contains(fill.getOperation())))
+            continue;
+          for (mlir::Operation *emitted :
+               llvm::ArrayRef<mlir::Operation *>(structuredEmissionLog)
+                   .drop_front(emissionStart))
+            relationRecorder->recordStructuredComputeOperation(
+                fillNodes->second, emitted);
+          if (!llvm::is_contained(linalg.getDpsInits(), operand))
+            continue;
+          for (auto [resultNumber, value] : llvm::enumerate(op->getResults())) {
+            auto versions = buffers.find(value);
+            if (versions == buffers.end())
+              continue;
+            for (mlir::Value buffer :
+                 {versions->second.tensor, versions->second.nTensor,
+                  versions->second.cx, versions->second.nCx})
+              if (buffer)
+                for (uint32_t fillNode : fillNodes->second)
+                  relationRecorder->recordOperationResultBuffer(
+                      fillNode, static_cast<unsigned>(resultNumber), buffer);
+          }
+        }
+    }
     if (mlir::succeeded(result)) {
       for (auto [resultNumber, value] : llvm::enumerate(op->getResults())) {
         auto versions = buffers.find(value);
@@ -1354,7 +1588,18 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
           mlir::tensor::PadOp, mlir::tensor::ExtractSliceOp,
           mlir::tensor::InsertSliceOp, mlir::tensor::ExpandShapeOp,
           mlir::tensor::CollapseShapeOp, mlir::scf::IfOp, mlir::scf::ForOp>(op))
-    return convertSupportOp(op, builder);
+  {
+    llvm::SmallVector<uint32_t, 2> previous = activeStructuredNodes;
+    if (activeStructuredNodes.empty()) {
+      llvm::SmallVector<uint32_t, 2> consumers =
+          findNearestStructuredConsumers();
+      if (consumers.size() == 1)
+        activeStructuredNodes = std::move(consumers);
+    }
+    mlir::LogicalResult result = convertSupportOp(op, builder);
+    activeStructuredNodes = std::move(previous);
+    return result;
+  }
 
   return fail("unsupported tensor-program op " +
               op->getName().getStringRef().str());

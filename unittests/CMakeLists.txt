@@ -36,7 +36,7 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/CanonicalSpatialAssignmentTest.cpp
   Planning/PhysicalDataflow/CanonicalRegionPlanTest.cpp
   Planning/PhysicalDataflow/CanonicalTemporalPlanTest.cpp
-  Planning/PhysicalDataflow/CompleteCandidatePreparationTest.cpp
+  Planning/PhysicalDataflow/CurrentIRLayoutOptimizationTest.cpp
   Planning/PhysicalDataflow/CanonicalRepresentationPlanTest.cpp
   Planning/PhysicalDataflow/CanonicalMovementPlanTest.cpp
   Planning/PhysicalDataflow/CanonicalSerializedExecutionPlanTest.cpp
@@ -46,7 +46,6 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/EventGraphTest.cpp
   Planning/PhysicalDataflow/ExecutionStructureDomainTest.cpp
   Planning/PhysicalDataflow/ExecutionStructureMaterializationTest.cpp
-  Planning/PhysicalDataflow/FullFeasibilityTest.cpp
   Planning/PhysicalDataflow/SelectedAttentionDecompositionTest.cpp
   Planning/PhysicalDataflow/SelectedRegionMaterializationTest.cpp
   Planning/PhysicalDataflow/Search/PlanningSessionTest.cpp

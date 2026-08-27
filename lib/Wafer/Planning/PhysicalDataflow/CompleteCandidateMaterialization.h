@@ -83,6 +83,17 @@ struct MaterializedCardCandidate {
   CardMaterializationPlan assignment;
 };
 
+/// Invocation-local structural input. It contains only already-selected
+/// spatial/region/temporal semantics and no future physical value, buffer,
+/// movement, event, execution-structure or schedule identity.
+struct CurrentStructuralCandidatePlan {
+  SpatialAssignment spatial;
+  analysis::ExactDemandProof demand;
+  std::vector<analysis::RootRegionWork> rootWorks;
+  RegionPlan regions;
+  TemporalPlan temporal;
+};
+
 mlir::FailureOr<CardMaterializationPlan>
 buildCardMaterializationPlan(const CardProgramAnalysis &program,
                              const CompleteCandidatePlan &plan,
@@ -115,6 +126,18 @@ mlir::FailureOr<MaterializedCardCandidate>
 materializeSearchCardCandidate(
     mlir::ModuleOp tensorProgram, CardId cardId,
     const CardProgramAnalysis &program, const CompleteCandidatePlan &plan,
+    CandidateMaterializationStatistics *statistics,
+    llvm::raw_ostream &diagnostics);
+
+/// Materializes one search structural choice directly into candidate-owned
+/// Card/TileRegion IR. Layout, movement, execution structure, Instr order,
+/// completion and memory are deliberately absent from the input and are read
+/// or chosen only by their current-IR downstream owners.
+mlir::FailureOr<MaterializedCardCandidate>
+materializeSearchStructuralCandidate(
+    mlir::ModuleOp tensorProgram, CardId cardId,
+    const CardProgramAnalysis &program,
+    const CurrentStructuralCandidatePlan &plan,
     CandidateMaterializationStatistics *statistics,
     llvm::raw_ostream &diagnostics);
 

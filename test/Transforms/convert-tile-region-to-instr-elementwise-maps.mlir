@@ -3,7 +3,8 @@
 
 // STATS: ConvertTileRegionToInstrPass
 // STATS-NEXT: {{ *}}(S) {{[1-9][0-9]*}} dataflow-ops-lowered
-// STATS: PlaceRequiredNCCJoinsPass
+// STATS: RebuildRequiredNCCJoinsPass
+// STATS-NEXT: {{ *}}(S) 0 derived-joins-removed
 // STATS-NEXT: {{ *}}(S) {{[1-9][0-9]*}} required-joins-inserted
 
 #id2 = affine_map<(d0, d1) -> (d0, d1)>

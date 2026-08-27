@@ -19,6 +19,19 @@ def ConvertTileRegionToInstrPass
   ];
 }
 
+def ConvertBufferizationCopiesToInstrPass
+    : Pass<"wafer-convert-bufferization-copies-to-instr", "mlir::ModuleOp"> {
+  let summary =
+      "Convert owned bufferization copies and reject ownerless copies";
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::async::AsyncDialect",
+                           "mlir::func::FuncDialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::scf::SCFDialect",
+                           "wafer::WaferDialect"
+  ];
+}
+
 def PlaceRequiredNCCJoinsPass
     : Pass<"wafer-place-required-ncc-joins", "mlir::func::FuncOp"> {
   let summary =

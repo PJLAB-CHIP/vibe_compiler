@@ -49,6 +49,17 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
       if (!structuredNodeIds.contains(fill.getOperation()) ||
           !onlyFeedsScalarInitializedComputeInit(fill.getResult(0)))
         return;
+      auto fillNodes = structuredNodeIds.find(fill.getOperation());
+      const bool hasSelectedResultVersion =
+          fillNodes != structuredNodeIds.end() &&
+          llvm::any_of(fillNodes->second, [&](uint32_t node) {
+            auto selected = selectedRepresentations.find(node);
+            return selected != selectedRepresentations.end() &&
+                   !selected->second.resultLayouts.empty() &&
+                   selected->second.resultLayouts.front().has_value();
+          });
+      if (hasSelectedResultVersion)
+        return;
 
       llvm::DenseSet<mlir::Value> visited;
       llvm::SmallVector<uint32_t, 2> consumerNodes;

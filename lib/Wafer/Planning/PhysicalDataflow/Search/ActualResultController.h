@@ -3,8 +3,8 @@
 #ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_ACTUALRESULTCONTROLLER_H
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_ACTUALRESULTCONTROLLER_H
 
+#include "Wafer/Analysis/ScheduleCost/TheoreticalScheduleCostAnalysis.h"
 #include "Wafer/Planning/PhysicalDataflow/FullFeasibility.h"
-#include "Wafer/Planning/PhysicalDataflow/Search/CompleteCandidateKey.h"
 
 #include "mlir/Support/LogicalResult.h"
 
@@ -15,53 +15,143 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
 
 namespace wafer::compiler::detail {
 
-class SearchCostCohort {
+/// Stable identity of one structural search transaction. Facts created after
+/// TileRegion materialization (layout, buffers, movement, events, schedule and
+/// offsets) cannot enter this key.
+class StructuralCandidateKey {
 public:
-  static mlir::FailureOr<SearchCostCohort>
-  create(uint64_t instructionTick, uint64_t ddrReadByteTick,
-         uint64_t ddrWriteByteTick, uint64_t nocMinimumHopByteTick,
-         std::string *failureReason = nullptr);
+  static StructuralCandidateKey create(const TemporalState &state) {
+    return StructuralCandidateKey(state.getSpatialPlan(), state.getRegionPlan(),
+                                  state.getTemporalPlan());
+  }
+  static StructuralCandidateKey create(SpatialPlan spatial,
+                                       RegionPlan regions,
+                                       TemporalPlan temporal) {
+    return StructuralCandidateKey(std::move(spatial), std::move(regions),
+                                  std::move(temporal));
+  }
 
-  uint64_t getInstructionTick() const { return instructionTick; }
-  uint64_t getDDRReadByteTick() const { return ddrReadByteTick; }
-  uint64_t getDDRWriteByteTick() const { return ddrWriteByteTick; }
-  uint64_t getNoCMinimumHopByteTick() const { return nocMinimumHopByteTick; }
+  const SpatialPlan &getSpatialPlan() const { return spatial; }
+  const RegionPlan &getRegionPlan() const { return regions; }
+  const TemporalPlan &getTemporalPlan() const { return temporal; }
 
-  friend bool operator==(const SearchCostCohort &lhs,
-                         const SearchCostCohort &rhs) {
-    return lhs.instructionTick == rhs.instructionTick &&
-           lhs.ddrReadByteTick == rhs.ddrReadByteTick &&
-           lhs.ddrWriteByteTick == rhs.ddrWriteByteTick &&
-           lhs.nocMinimumHopByteTick == rhs.nocMinimumHopByteTick;
+  friend bool operator==(const StructuralCandidateKey &lhs,
+                         const StructuralCandidateKey &rhs) {
+    return std::tie(lhs.spatial, lhs.regions, lhs.temporal) ==
+           std::tie(rhs.spatial, rhs.regions, rhs.temporal);
+  }
+  friend bool operator<(const StructuralCandidateKey &lhs,
+                        const StructuralCandidateKey &rhs) {
+    return std::tie(lhs.spatial, lhs.regions, lhs.temporal) <
+           std::tie(rhs.spatial, rhs.regions, rhs.temporal);
   }
 
 private:
-  SearchCostCohort(uint64_t instructionTick, uint64_t ddrReadByteTick,
-                   uint64_t ddrWriteByteTick, uint64_t nocMinimumHopByteTick)
-      : instructionTick(instructionTick), ddrReadByteTick(ddrReadByteTick),
-        ddrWriteByteTick(ddrWriteByteTick),
-        nocMinimumHopByteTick(nocMinimumHopByteTick) {}
+  StructuralCandidateKey(SpatialPlan spatial, RegionPlan regions,
+                         TemporalPlan temporal)
+      : spatial(std::move(spatial)), regions(std::move(regions)),
+        temporal(std::move(temporal)) {}
 
-  uint64_t instructionTick;
-  uint64_t ddrReadByteTick;
-  uint64_t ddrWriteByteTick;
-  uint64_t nocMinimumHopByteTick;
+  SpatialPlan spatial;
+  RegionPlan regions;
+  TemporalPlan temporal;
+};
+
+class SearchCostCohort {
+public:
+  static mlir::FailureOr<SearchCostCohort>
+  create(const analysis::ScheduleEstimatePolicy &policy,
+         std::string *failureReason = nullptr);
+
+  const analysis::ScheduleEstimatePolicy &getPolicy() const { return policy; }
+
+  friend bool operator==(const SearchCostCohort &lhs,
+                         const SearchCostCohort &rhs) {
+    const auto &left = lhs.policy;
+    const auto &right = rhs.policy;
+    return left.cardDDRNominalBytesPerSecond ==
+               right.cardDDRNominalBytesPerSecond &&
+           left.directionalNoCBytesPerSecond ==
+               right.directionalNoCBytesPerSecond &&
+           left.dteEndpointBytesPerSecondEstimate ==
+               right.dteEndpointBytesPerSecondEstimate &&
+           left.dteMessageStartupPicosecondsEstimate ==
+               right.dteMessageStartupPicosecondsEstimate &&
+           left.noCHopPicosecondsEstimate ==
+               right.noCHopPicosecondsEstimate &&
+           left.instructionFixedPicosecondsEstimate ==
+               right.instructionFixedPicosecondsEstimate &&
+           left.dteWaitedEventPicosecondsEstimate ==
+               right.dteWaitedEventPicosecondsEstimate &&
+           left.nccParticipantWaitPicosecondsEstimate ==
+               right.nccParticipantWaitPicosecondsEstimate &&
+           left.f16Bf16NPULogicalOpsPerSecondPerTile ==
+               right.f16Bf16NPULogicalOpsPerSecondPerTile &&
+           left.f16Bf16VectorLogicalOpsPerSecondPerTile ==
+               right.f16Bf16VectorLogicalOpsPerSecondPerTile &&
+           left.f32VectorLogicalOpsPerSecondPerTile ==
+               right.f32VectorLogicalOpsPerSecondPerTile &&
+           left.spmExplicitMovementBytesPerSecondPerTileEstimate ==
+               right.spmExplicitMovementBytesPerSecondPerTileEstimate;
+  }
+
+private:
+  explicit SearchCostCohort(analysis::ScheduleEstimatePolicy policy)
+      : policy(policy) {}
+
+  analysis::ScheduleEstimatePolicy policy;
+};
+
+/// Independently comparable service dimensions derived from the final actual
+/// Instr program. NE and Vector/CT are deliberately not collapsed into one
+/// compute number: without a proved inter-engine schedule, a trade-off between
+/// them has no total order.
+struct SearchResourceDurations {
+  uint64_t neF16Bf16Picoseconds = 0;
+  uint64_t vectorF16Bf16Picoseconds = 0;
+  uint64_t vectorF32Picoseconds = 0;
+  uint64_t ddrPicoseconds = 0;
+  uint64_t nocPicoseconds = 0;
+  uint64_t spmMovementPicoseconds = 0;
+  uint64_t instructionControlPicoseconds = 0;
+  uint64_t dteWaitControlPicoseconds = 0;
+  uint64_t nccWaitControlPicoseconds = 0;
+
+  friend bool operator==(const SearchResourceDurations &lhs,
+                         const SearchResourceDurations &rhs) {
+    return std::tie(lhs.neF16Bf16Picoseconds,
+                    lhs.vectorF16Bf16Picoseconds,
+                    lhs.vectorF32Picoseconds, lhs.ddrPicoseconds,
+                    lhs.nocPicoseconds, lhs.spmMovementPicoseconds,
+                    lhs.instructionControlPicoseconds,
+                    lhs.dteWaitControlPicoseconds,
+                    lhs.nccWaitControlPicoseconds) ==
+           std::tie(rhs.neF16Bf16Picoseconds,
+                    rhs.vectorF16Bf16Picoseconds,
+                    rhs.vectorF32Picoseconds, rhs.ddrPicoseconds,
+                    rhs.nocPicoseconds, rhs.spmMovementPicoseconds,
+                    rhs.instructionControlPicoseconds,
+                    rhs.dteWaitControlPicoseconds,
+                    rhs.nccWaitControlPicoseconds);
+  }
 };
 
 struct KnownSearchObjective {
-  uint64_t ticks = 0;
+  SearchResourceDurations durations;
   SearchCostCohort cohort;
 };
 
 enum class SearchObjectiveUnknownReason : uint8_t {
   NoCohort,
   MetricUnavailable,
+  UncalibratedWork,
   ArithmeticOverflow,
 };
 
@@ -106,7 +196,7 @@ enum class ExactCompleteRejectionKind : uint8_t {
 };
 
 struct ExactCompleteRejection {
-  CompleteCandidateKey key;
+  StructuralCandidateKey key;
   ExactCompleteRejectionKind kind = ExactCompleteRejectionKind::ExecutableGate;
   std::vector<SemanticRootKey> causalRoots;
 
@@ -117,7 +207,7 @@ struct ExactCompleteRejection {
 };
 
 struct RetainedSearchCandidate {
-  CompleteCandidateKey key;
+  StructuralCandidateKey key;
   SearchObjective objective;
   CardExecutableCompilationResult compilation;
 
@@ -156,7 +246,7 @@ struct ActualResultControllerOptions {
 /// named complete assignment. Q51.Core only compares the typed value; the
 /// producer and its proof are owned by the later search-policy stage.
 struct SearchLowerBound {
-  CompleteCandidateKey key;
+  StructuralCandidateKey key;
   SearchObjective objective;
 };
 
@@ -189,13 +279,13 @@ public:
         cohort(std::move(options.cohort)),
         exactRejectionCache(options.exactRejectionCache) {}
 
-  CandidateReservation reserve(const CompleteCandidateKey &key);
-  CandidateRecordOutcome record(const CompleteCandidateKey &key,
+  CandidateReservation reserve(const StructuralCandidateKey &key);
+  CandidateRecordOutcome record(const StructuralCandidateKey &key,
                                 FullFeasibilityResult result);
 
-  bool isForbidden(const CompleteCandidateKey &key) const;
+  bool isForbidden(const StructuralCandidateKey &key) const;
   const ExactCompleteRejection *
-  findExactCompleteRejection(const CompleteCandidateKey &key) const;
+  findExactCompleteRejection(const StructuralCandidateKey &key) const;
   bool canPrune(const SearchLowerBound &lowerBound) const;
   void markCompilerBug();
   uint64_t getRemainingCredits() const { return remainingCredits; }
@@ -210,8 +300,8 @@ private:
   uint64_t remainingCredits;
   std::optional<SearchCostCohort> cohort;
   ExactRejectionCachePolicy exactRejectionCache;
-  std::set<CompleteCandidateKey> reserved;
-  std::set<CompleteCandidateKey> completed;
+  std::set<StructuralCandidateKey> reserved;
+  std::set<StructuralCandidateKey> completed;
   std::set<ExactCompleteRejection> forbidden;
   std::optional<RetainedSearchCandidate> incumbent;
   SearchControllerStatistics statistics;

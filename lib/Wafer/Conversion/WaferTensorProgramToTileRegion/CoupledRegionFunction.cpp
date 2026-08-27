@@ -30,6 +30,7 @@ mlir::FailureOr<T> fail(std::string *failureReason, llvm::StringRef message) {
 bool reachesObservableBoundary(
     mlir::Value value,
     const llvm::DenseSet<mlir::Operation *> &selectedOperations,
+    const llvm::DenseSet<mlir::Operation *> &structuredOperations,
     llvm::DenseSet<mlir::Value> &visited) {
   if (!value || !visited.insert(value).second)
     return false;
@@ -41,13 +42,37 @@ bool reachesObservableBoundary(
       continue;
     if (mlir::isa<mlir::func::ReturnOp>(user))
       return true;
-    if (selectedOperations.contains(user) || !mlir::isMemoryEffectFree(user))
+    if (structuredOperations.contains(user)) {
+      if (!selectedOperations.contains(user))
+        return true;
+      continue;
+    }
+    if (!mlir::isMemoryEffectFree(user))
       continue;
     for (mlir::Value result : user->getResults())
-      if (reachesObservableBoundary(result, selectedOperations, visited))
+      if (reachesObservableBoundary(result, selectedOperations,
+                                    structuredOperations, visited))
         return true;
   }
   return false;
+}
+
+bool dependsOnSelectedResult(
+    mlir::Value value, mlir::Value selectedResult,
+    const llvm::DenseSet<mlir::Operation *> &structuredOperations,
+    llvm::DenseSet<mlir::Value> &visited) {
+  if (value == selectedResult)
+    return true;
+  if (!value || !visited.insert(value).second)
+    return false;
+  mlir::Operation *definition = value.getDefiningOp();
+  if (!definition || structuredOperations.contains(definition) ||
+      !mlir::isMemoryEffectFree(definition))
+    return false;
+  return llvm::any_of(definition->getOperands(), [&](mlir::Value operand) {
+    return dependsOnSelectedResult(operand, selectedResult,
+                                   structuredOperations, visited);
+  });
 }
 
 } // namespace
@@ -148,6 +173,10 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
              });
   llvm::DenseSet<mlir::Operation *> selectedOperationSet(
       selectedOperations.begin(), selectedOperations.end());
+  llvm::DenseSet<mlir::Operation *> sourceStructuredOperationSet;
+  for (const StructuredOperationNodeMapping &mapping : sourceOperationNodes)
+    if (mapping.operation)
+      sourceStructuredOperationSet.insert(mapping.operation);
   llvm::DenseSet<mlir::Operation *> independentSourceOperations;
   for (uint32_t node : independentlyMaterializedNodeIds)
     if (mlir::Operation *operation = sourceByNode.lookup(node))
@@ -181,6 +210,7 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
         llvm::any_of(candidate->getResults(), [&](mlir::Value result) {
           llvm::DenseSet<mlir::Value> visited;
           return reachesObservableBoundary(result, selectedOperationSet,
+                                           sourceStructuredOperationSet,
                                            visited);
         });
     if (observable ||
@@ -202,6 +232,9 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
       result.results);
   if (mlir::failed(function))
     return mlir::failure();
+  llvm::DenseSet<mlir::Operation *> structuredOperations;
+  for (const StructuredOperationNodeMapping &mapping : operationNodes)
+    structuredOperations.insert(mapping.operation);
   for (const StructuredNodeLocalUse &use : group.localUses) {
     auto producer = llvm::find_if(
         operationNodes, [&](const StructuredOperationNodeMapping &mapping) {
@@ -214,15 +247,29 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
     if (producer == operationNodes.end() || consumer == operationNodes.end() ||
         !producer->operation || !consumer->operation ||
         use.producerResult >= producer->operation->getNumResults() ||
-        use.consumerOperand >= consumer->operation->getNumOperands() ||
-        producer->operation->getResult(use.producerResult).getType() !=
-            consumer->operation->getOperand(use.consumerOperand).getType())
+        use.consumerOperand >= consumer->operation->getNumOperands())
       return fail<RootFragment>(
           failureReason,
           "selected local use has no current producer/consumer SSA edge");
-    consumer->operation->setOperand(
-        use.consumerOperand,
-        producer->operation->getResult(use.producerResult));
+    mlir::Value producerResult =
+        producer->operation->getResult(use.producerResult);
+    mlir::Value consumerOperand =
+        consumer->operation->getOperand(use.consumerOperand);
+    if (use.rewireDirectSSA) {
+      if (producerResult.getType() != consumerOperand.getType())
+        return fail<RootFragment>(
+            failureReason,
+            "selected direct local use has incompatible SSA types");
+      consumer->operation->setOperand(use.consumerOperand, producerResult);
+      continue;
+    }
+    llvm::DenseSet<mlir::Value> visited;
+    if (!dependsOnSelectedResult(consumerOperand, producerResult,
+                                 structuredOperations, visited))
+      return fail<RootFragment>(
+          failureReason,
+          "selected reconstructed local use lost its current SSA support "
+          "chain");
   }
   llvm::BitVector eraseArguments((*function).getNumArguments());
   llvm::SmallVector<RootValueKey, 8> retainedBoundaries;
@@ -622,10 +669,15 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
        emissionRelations.materializedBuffers.operationEmissions)
     if (relation.operation)
       emittedNodes.insert(relation.structuredNodeId);
+  llvm::DenseSet<uint32_t> materializedNodes = emittedNodes;
+  for (const StructuredOperationResultBufferRelation &relation :
+       emissionRelations.materializedBuffers.operationResultBuffers)
+    if (relation.buffer)
+      materializedNodes.insert(relation.structuredNodeId);
   llvm::DenseSet<uint32_t> expectedNodes = selectedNodeIds;
-  if (regionCount != 1 || emittedNodes.size() != expectedNodes.size() ||
+  if (regionCount != 1 || materializedNodes.size() != expectedNodes.size() ||
       llvm::any_of(selectedNodeIds, [&](uint32_t node) {
-        return !emittedNodes.contains(node);
+        return !materializedNodes.contains(node);
       })) {
     std::string detail;
     llvm::raw_string_ostream diagnostic(detail);
@@ -634,18 +686,32 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
     llvm::interleaveComma(expectedNodes, diagnostic);
     diagnostic << "], emitted=[";
     llvm::interleaveComma(emittedNodes, diagnostic);
+    diagnostic << "], materialized=[";
+    llvm::interleaveComma(materializedNodes, diagnostic);
     diagnostic << "], missing=[";
     bool firstMissing = true;
     for (uint32_t node : selectedNodeIds) {
-      if (emittedNodes.contains(node))
+      if (materializedNodes.contains(node))
         continue;
       if (!firstMissing)
         diagnostic << ',';
       firstMissing = false;
       diagnostic << node << ':';
-      if (mlir::Operation *source = sourceByNode.lookup(node))
+      if (mlir::Operation *source = sourceByNode.lookup(node)) {
         diagnostic << source->getName();
-      else
+        diagnostic << "(";
+        source->print(diagnostic, mlir::OpPrintingFlags().skipRegions());
+        diagnostic << ";users=[";
+        bool firstUser = true;
+        for (mlir::Value result : source->getResults())
+          for (mlir::Operation *user : result.getUsers()) {
+            if (!firstUser)
+              diagnostic << ',';
+            firstUser = false;
+            diagnostic << user->getName();
+          }
+        diagnostic << "])";
+      } else
         diagnostic << "unknown";
     }
     diagnostic << "], regions=" << regionCount;

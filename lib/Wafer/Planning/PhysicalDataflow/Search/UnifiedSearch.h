@@ -25,23 +25,23 @@ struct UnifiedSearchOptions {
   uint64_t planningCredits = std::numeric_limits<uint64_t>::max();
   SearchTerminationPolicy termination = SearchTerminationPolicy::Exhaustive;
   std::optional<SearchCostCohort> costCohort;
+  PlanningProfileSink *profile = nullptr;
 };
 
 struct UnifiedSearchWork {
   uint64_t resumeCalls = 0;
   uint64_t successorSteps = 0;
   uint64_t scheduledStatesVisited = 0;
+  uint64_t structuralStatesActualized = 0;
   uint64_t candidateActualizations = 0;
   uint64_t duplicateCompleteKeys = 0;
 };
 
 using UnifiedSearchPrefixKey =
-    std::variant<SpatialState, RegionState, TemporalState, RepresentationState,
-                 MovementState, InitialBufferState, ExecutionStructureState,
-                 BufferState, ScheduledState>;
+    std::variant<SpatialState, RegionState, TemporalState>;
 
 struct UnifiedSearchCandidateTrace {
-  CompleteCandidateKey key;
+  StructuralCandidateKey key;
   FullFeasibilityStatus status = FullFeasibilityStatus::CompilerBug;
 
   friend bool operator==(const UnifiedSearchCandidateTrace &lhs,

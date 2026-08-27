@@ -8,6 +8,8 @@
 #include "Wafer/Planning/PhysicalDataflow/ExecutionStructurePlan.h"
 
 #include <cstdint>
+#include <initializer_list>
+#include <memory>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -108,9 +110,48 @@ struct EventResourceBinding {
   }
 };
 
+class EventOrder {
+public:
+  using const_iterator = std::vector<EventId>::const_iterator;
+
+  EventOrder() : events(std::make_shared<const std::vector<EventId>>()) {}
+  EventOrder(std::initializer_list<EventId> events)
+      : events(
+            std::make_shared<const std::vector<EventId>>(std::move(events))) {}
+  EventOrder(std::vector<EventId> events)
+      : events(
+            std::make_shared<const std::vector<EventId>>(std::move(events))) {}
+
+  EventOrder &operator=(std::vector<EventId> value) {
+    events = std::make_shared<const std::vector<EventId>>(std::move(value));
+    return *this;
+  }
+
+  const std::vector<EventId> &get() const { return *events; }
+  const EventId *data() const { return events->data(); }
+  size_t size() const { return events->size(); }
+  bool empty() const { return events->empty(); }
+  const EventId &front() const { return events->front(); }
+  const EventId &back() const { return events->back(); }
+  const EventId &operator[](size_t index) const { return (*events)[index]; }
+  const_iterator begin() const { return events->begin(); }
+  const_iterator end() const { return events->end(); }
+  operator const std::vector<EventId> &() const { return *events; }
+
+  friend bool operator==(const EventOrder &lhs, const EventOrder &rhs) {
+    return lhs.events == rhs.events || lhs.get() == rhs.get();
+  }
+  friend bool operator<(const EventOrder &lhs, const EventOrder &rhs) {
+    return lhs.get() < rhs.get();
+  }
+
+private:
+  std::shared_ptr<const std::vector<EventId>> events;
+};
+
 struct ResourceSequence {
   ResourceInstanceId instance;
-  std::vector<EventId> events;
+  EventOrder events;
 
   friend bool operator==(const ResourceSequence &lhs,
                          const ResourceSequence &rhs) {
@@ -125,29 +166,57 @@ struct ResourceSequence {
 
 struct CardControlScope {
   CardId card{0};
-  PipelineScopeId pipeline;
+  std::shared_ptr<const PipelineScopeId> pipeline =
+      std::make_shared<const PipelineScopeId>();
+
+  CardControlScope() = default;
+  CardControlScope(CardId card, PipelineScopeId pipeline)
+      : card(card),
+        pipeline(std::make_shared<const PipelineScopeId>(std::move(pipeline))) {
+  }
+  CardControlScope(CardId card, std::shared_ptr<const PipelineScopeId> pipeline)
+      : card(card), pipeline(std::move(pipeline)) {}
+
   friend bool operator==(const CardControlScope &lhs,
                          const CardControlScope &rhs) {
-    return lhs.card == rhs.card && lhs.pipeline == rhs.pipeline;
+    return lhs.card == rhs.card &&
+           (lhs.pipeline == rhs.pipeline || *lhs.pipeline == *rhs.pipeline);
   }
   friend bool operator<(const CardControlScope &lhs,
                         const CardControlScope &rhs) {
-    return std::tuple(lhs.card.getValue(), lhs.pipeline) <
-           std::tuple(rhs.card.getValue(), rhs.pipeline);
+    if (lhs.card != rhs.card)
+      return lhs.card.getValue() < rhs.card.getValue();
+    if (lhs.pipeline == rhs.pipeline)
+      return false;
+    return *lhs.pipeline < *rhs.pipeline;
   }
 };
 
 struct TileControlScope {
   TileId tile{0};
-  PipelineScopeId pipeline;
+  std::shared_ptr<const PipelineScopeId> pipeline =
+      std::make_shared<const PipelineScopeId>();
+
+  TileControlScope() = default;
+  TileControlScope(TileId tile, PipelineScopeId pipeline)
+      : tile(tile),
+        pipeline(std::make_shared<const PipelineScopeId>(std::move(pipeline))) {
+  }
+  TileControlScope(TileId tile, std::shared_ptr<const PipelineScopeId> pipeline)
+      : tile(tile), pipeline(std::move(pipeline)) {}
+
   friend bool operator==(const TileControlScope &lhs,
                          const TileControlScope &rhs) {
-    return lhs.tile == rhs.tile && lhs.pipeline == rhs.pipeline;
+    return lhs.tile == rhs.tile &&
+           (lhs.pipeline == rhs.pipeline || *lhs.pipeline == *rhs.pipeline);
   }
   friend bool operator<(const TileControlScope &lhs,
                         const TileControlScope &rhs) {
-    return std::tuple(lhs.tile.getValue(), lhs.pipeline) <
-           std::tuple(rhs.tile.getValue(), rhs.pipeline);
+    if (lhs.tile != rhs.tile)
+      return lhs.tile.getValue() < rhs.tile.getValue();
+    if (lhs.pipeline == rhs.pipeline)
+      return false;
+    return *lhs.pipeline < *rhs.pipeline;
   }
 };
 
@@ -155,7 +224,7 @@ using ControlScopeId = std::variant<CardControlScope, TileControlScope>;
 
 struct ControlOrder {
   ControlScopeId scope;
-  std::vector<EventId> events;
+  EventOrder events;
 
   friend bool operator==(const ControlOrder &lhs, const ControlOrder &rhs) {
     return lhs.scope == rhs.scope && lhs.events == rhs.events;
@@ -203,17 +272,38 @@ struct CompletionPlacement {
 /// Complete plan-level schedule for one fixed structure/storage generation.
 /// It intentionally carries no timestamp, pending-set, calendar, or cost.
 struct ClosedSchedulePlan {
-  ExecutionStructurePlan structure;
-  BufferPlan buffers;
+  std::shared_ptr<const ExecutionStructurePlan> structure =
+      std::make_shared<const ExecutionStructurePlan>();
+  std::shared_ptr<const BufferPlan> buffers =
+      std::make_shared<const BufferPlan>();
   std::vector<EventWorkerBinding> workerBindings;
   std::vector<EventResourceBinding> resourceBindings;
   std::vector<ResourceSequence> resourceSequences;
   std::vector<ControlOrder> controlOrders;
   std::vector<CompletionPlacement> completionPlacements;
 
+  const ExecutionStructurePlan &getStructure() const { return *structure; }
+  const BufferPlan &getBuffers() const { return *buffers; }
+  void setStructure(ExecutionStructurePlan value) {
+    structure =
+        std::make_shared<const ExecutionStructurePlan>(std::move(value));
+  }
+  void setBuffers(BufferPlan value) {
+    buffers = std::make_shared<const BufferPlan>(std::move(value));
+  }
+  void
+  setGeneration(std::shared_ptr<const ExecutionStructurePlan> structureValue,
+                std::shared_ptr<const BufferPlan> bufferValue) {
+    structure = std::move(structureValue);
+    buffers = std::move(bufferValue);
+  }
+
   friend bool operator==(const ClosedSchedulePlan &lhs,
                          const ClosedSchedulePlan &rhs) {
-    return lhs.structure == rhs.structure && lhs.buffers == rhs.buffers &&
+    return (lhs.structure == rhs.structure ||
+            lhs.getStructure() == rhs.getStructure()) &&
+           (lhs.buffers == rhs.buffers ||
+            lhs.getBuffers() == rhs.getBuffers()) &&
            lhs.workerBindings == rhs.workerBindings &&
            lhs.resourceBindings == rhs.resourceBindings &&
            lhs.resourceSequences == rhs.resourceSequences &&
@@ -222,10 +312,10 @@ struct ClosedSchedulePlan {
   }
   friend bool operator<(const ClosedSchedulePlan &lhs,
                         const ClosedSchedulePlan &rhs) {
-    return std::tie(lhs.structure, lhs.buffers, lhs.workerBindings,
+    return std::tie(lhs.getStructure(), lhs.getBuffers(), lhs.workerBindings,
                     lhs.resourceBindings, lhs.resourceSequences,
                     lhs.controlOrders, lhs.completionPlacements) <
-           std::tie(rhs.structure, rhs.buffers, rhs.workerBindings,
+           std::tie(rhs.getStructure(), rhs.getBuffers(), rhs.workerBindings,
                     rhs.resourceBindings, rhs.resourceSequences,
                     rhs.controlOrders, rhs.completionPlacements);
   }

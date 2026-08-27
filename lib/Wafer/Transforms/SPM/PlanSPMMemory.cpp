@@ -759,6 +759,25 @@ static mlir::LogicalResult emitLifetimeFailure(
   llvm_unreachable("unknown lifetime failure kind");
 }
 
+static SPMMemoryPlanningFailureKind
+classifyLifetimeFailure(const mp::LifetimeFailure &failure) {
+  switch (failure.kind) {
+  case mp::LifetimeFailureKind::MissingAsyncCompletion:
+  case mp::LifetimeFailureKind::MissingLocalCompletion:
+  case mp::LifetimeFailureKind::LoopBackedgeCompletion:
+  case mp::LifetimeFailureKind::InconsistentCompletionState:
+    return SPMMemoryPlanningFailureKind::MissingCompletion;
+  case mp::LifetimeFailureKind::UnsupportedTrackedValueProducer:
+  case mp::LifetimeFailureKind::UnsupportedTrackedValueEscape:
+  case mp::LifetimeFailureKind::LoopCarriedAllocationInstance:
+  case mp::LifetimeFailureKind::UnsupportedAsyncCompletionFlow:
+    return SPMMemoryPlanningFailureKind::UnsupportedLifetime;
+  case mp::LifetimeFailureKind::MissingAllocationEvent:
+    return SPMMemoryPlanningFailureKind::Other;
+  }
+  llvm_unreachable("unknown lifetime failure kind");
+}
+
 static mlir::LogicalResult
 emitAsyncFunctionLifetimeFailure(mlir::async::FuncOp funcOp,
                                  const mp::LifetimeFailure &failure) {
@@ -921,8 +940,11 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "analysis-phase", "planFunction(SPM)", "lifetime-dataflow");
   DTECompletionTracker dteCompletion(*timeline);
-  if (mlir::failed(dteCompletion.run(funcOp.getOperation())))
+  if (mlir::failed(dteCompletion.run(funcOp.getOperation()))) {
+    if (failure)
+      failure->kind = SPMMemoryPlanningFailureKind::MissingCompletion;
     return mlir::failure();
+  }
 
   mp::LocalCompletionTracker localCompletion;
   mp::LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
@@ -932,12 +954,15 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
   if (mlir::failed(dataflow.run(funcOp.getOperation(), &localCompletion,
                                 &lifetimeFailure))) {
     if (failure)
-      failure->kind = SPMMemoryPlanningFailureKind::UnsupportedLifetime;
+      failure->kind = classifyLifetimeFailure(lifetimeFailure);
     return emitLifetimeFailure(funcOp.getOperation(), lifetimeFailure);
   }
   if (mlir::failed(verifyLiveSPMAcrossCalls(
-          funcOp, *timeline, demands, callGraph, mayClobberFunctions)))
+          funcOp, *timeline, demands, callGraph, mayClobberFunctions))) {
+    if (failure)
+      failure->kind = SPMMemoryPlanningFailureKind::UnsupportedLifetime;
     return mlir::failure();
+  }
 
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "analysis-phase", "planFunction(SPM)", "packStaticMemory");
@@ -1101,6 +1126,8 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
       return mlir::failure();
     }
     case mp::PackingStatus::ResourceExhausted:
+      if (failure)
+        failure->kind = SPMMemoryPlanningFailureKind::ResourceExhausted;
       return origin->emitError()
              << "packing_search_exhausted: MiniMalloc consumed "
              << packing.searchNodes
@@ -1176,7 +1203,7 @@ mlir::LogicalResult checkTileRegionSPMCapacity(
   DTECompletionTracker dteCompletion(*timeline);
   if (mlir::failed(dteCompletion.run(region.getOperation()))) {
     if (failure)
-      failure->kind = SPMMemoryPlanningFailureKind::UnsupportedLifetime;
+      failure->kind = SPMMemoryPlanningFailureKind::MissingCompletion;
     timing.markFailed();
     return mlir::failure();
   }
@@ -1188,7 +1215,7 @@ mlir::LogicalResult checkTileRegionSPMCapacity(
   if (mlir::failed(dataflow.run(region.getOperation(), &localCompletion,
                                 &lifetimeFailure))) {
     if (failure)
-      failure->kind = SPMMemoryPlanningFailureKind::UnsupportedLifetime;
+      failure->kind = classifyLifetimeFailure(lifetimeFailure);
     timing.markFailed();
     return emitLifetimeFailure(region.getOperation(), lifetimeFailure);
   }
@@ -1203,12 +1230,15 @@ mlir::LogicalResult checkTileRegionSPMCapacity(
   if (packing.demandIndex && *packing.demandIndex < demands.size())
     origin = demands[*packing.demandIndex].allocation.getOperation();
   if (packing.status != mp::PackingStatus::ProvenInfeasible) {
-    if (failure)
-      failure->kind = SPMMemoryPlanningFailureKind::Other;
-    if (packing.status == mp::PackingStatus::ResourceExhausted)
+    if (packing.status == mp::PackingStatus::ResourceExhausted) {
+      if (failure)
+        failure->kind = SPMMemoryPlanningFailureKind::ResourceExhausted;
       return origin->emitError()
              << "packing_search_exhausted: TileRegion SPM capacity query "
                 "exhausted deterministic search";
+    }
+    if (failure)
+      failure->kind = SPMMemoryPlanningFailureKind::Other;
     return origin->emitError()
            << "invalid_packing_result: TileRegion SPM capacity query failed "
               "without a proven infeasibility certificate";

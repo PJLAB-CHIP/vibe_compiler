@@ -30,6 +30,8 @@ remapStructuredBufferRelations(const StructuredMaterializationRelations &source,
 /// caller reports these and fails closed instead of probing or planning with
 /// incomplete evidence.
 struct StructuredRelationRemapIssue {
+  llvm::SmallVector<StructuredOperationEmissionRelation, 4>
+      unmappedOperationEmissions;
   llvm::SmallVector<StructuredOperationResultBufferRelation, 4>
       unmappedResultBuffers;
   llvm::SmallVector<StructuredOperationBufferRelation, 4>
@@ -40,7 +42,8 @@ struct StructuredRelationRemapIssue {
   llvm::SmallVector<CardDDRBufferRelation, 4> unmappedCardDDRBuffers;
 
   bool empty() const {
-    return unmappedResultBuffers.empty() && unmappedOperandBuffers.empty() &&
+    return unmappedOperationEmissions.empty() &&
+           unmappedResultBuffers.empty() && unmappedOperandBuffers.empty() &&
            unmappedScratchBuffers.empty() && unmappedOutputBuffers.empty() &&
            unmappedCardDDRBuffers.empty();
   }

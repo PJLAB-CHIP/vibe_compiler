@@ -402,10 +402,14 @@ RepresentationDomain::getNextPlan(const RepresentationCursor &cursor) const {
 
 const RepresentationResourceDescription *
 RepresentationDomain::findResource(const RegionValueVersionId &value) const {
-  auto found = llvm::find_if(values, [&](const ValueDomain &candidate) {
-    return candidate.value == value;
-  });
-  return found == values.end() ? nullptr : &found->resource;
+  PhysicalVersionId key{value};
+  auto found = llvm::lower_bound(
+      values, key,
+      [](const ValueDomain &candidate, const PhysicalVersionId &key) {
+        return candidate.primary < key;
+      });
+  return found == values.end() || !(found->value == value) ? nullptr
+                                                           : &found->resource;
 }
 
 RepresentationDomainResult buildRepresentationDomain(

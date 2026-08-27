@@ -351,7 +351,15 @@ TileRegionBodyEmitter::convertFill(mlir::linalg::FillOp fill,
   // Target GEMM/reduce consume a typed scalar initialization while their
   // complete traversal writes every result tile. Preserve that source-level
   // fact without materializing a full-shape fill in SPM.
-  if (onlyFeedsScalarInitializedComputeInit(fill.getResult(0))) {
+  const bool hasSelectedResultVersion =
+      llvm::any_of(activeStructuredNodes, [&](uint32_t node) {
+        auto selected = selectedRepresentations.find(node);
+        return selected != selectedRepresentations.end() &&
+               !selected->second.resultLayouts.empty() &&
+               selected->second.resultLayouts.front().has_value();
+      });
+  if (onlyFeedsScalarInitializedComputeInit(fill.getResult(0)) &&
+      !hasSelectedResultVersion) {
     // The fill result still names the same destination object.  Preserve an
     // explicit DDR destination across the proof-only fill so a tiled compute
     // can carry that object through its traversal loops and store each
@@ -373,6 +381,7 @@ TileRegionBodyEmitter::convertFill(mlir::linalg::FillOp fill,
       if (baseBuffer)
         directYieldBuffers[fill.getResult(0)] = baseBuffer;
     }
+    elidedStructuredOperations.insert(fill.getOperation());
     return mlir::success();
   }
 
@@ -483,10 +492,10 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::createAccumulatorCombine(
       makeSPMMemRefType(resultTensorType, MemLayout::Tensor);
   mlir::Value partialTensor = partial;
   if (partialTensor.getType() != tensorBufferType) {
-    partialTensor =
-        builder
-            .create<LayoutMaterializeOp>(loc, tensorBufferType, partialTensor)
-            .getResult();
+    auto materialized = builder.create<LayoutMaterializeOp>(
+        loc, tensorBufferType, partialTensor);
+    recordStructuredComputeOperation(materialized);
+    partialTensor = materialized.getResult();
   }
   if ((*previous).getType() != tensorBufferType)
     return failValue("explicit accumulator type mismatch");
@@ -541,6 +550,8 @@ TileRegionBodyEmitter::convertMatmul(mlir::linalg::LinalgOp op,
       mlir::DenseI64ArrayAttr{}, mlir::IntegerAttr{}, mlir::IntegerAttr{},
       mlir::DenseI64ArrayAttr{}, mlir::IntegerAttr{}, mlir::IntegerAttr{});
   recordStructuredComputeOperation(gemm);
+  if (overwriteInit)
+    recordElidedInitOwners(op, gemm);
   if (!overwriteInit) {
     mlir::FailureOr<mlir::Value> combined = createAccumulatorCombine(
         op->getLoc(), ComputeReduceKind::Sum, op.getDpsInits().front(),
@@ -735,6 +746,8 @@ TileRegionBodyEmitter::convertBatchMatmul(mlir::linalg::LinalgOp op,
       builder.getI64IntegerAttr(attrs->resultMDim),
       builder.getI64IntegerAttr(attrs->resultNDim));
   recordStructuredComputeOperation(gemm);
+  if (overwriteInit)
+    recordElidedInitOwners(op, gemm);
   if (!overwriteInit) {
     mlir::FailureOr<mlir::Value> combined = createAccumulatorCombine(
         op->getLoc(), ComputeReduceKind::Sum, op.getDpsInits().front(),
@@ -785,10 +798,11 @@ TileRegionBodyEmitter::convertConvolution(mlir::linalg::LinalgOp op,
     mlir::Type targetType = makeSPMMemRefType(targetTensor, MemLayout::NCx);
     if (isIdentityPermutation(permutation) && source.getType() == targetType)
       return source;
-    return builder
-        .create<MoveTransposeOp>(op->getLoc(), targetType, source,
-                                 builder.getDenseI64ArrayAttr(permutation))
-        .getResult();
+    auto transpose = builder.create<MoveTransposeOp>(
+        op->getLoc(), targetType, source,
+        builder.getDenseI64ArrayAttr(permutation));
+    recordStructuredComputeOperation(transpose);
+    return transpose.getResult();
   };
 
   mlir::FailureOr<mlir::Value> canonicalInput =
@@ -808,6 +822,8 @@ TileRegionBodyEmitter::convertConvolution(mlir::linalg::LinalgOp op,
       builder.getDenseI64ArrayAttr(geometry->stridesHW),
       builder.getDenseI64ArrayAttr(geometry->dilationsHW));
   recordStructuredComputeOperation(convolution);
+  if (overwriteInit)
+    recordElidedInitOwners(op, convolution);
 
   mlir::FailureOr<mlir::Value> sourceOrderedResult = transpose(
       convolution.getResult(), canonicalResultTensor, geometry->outputFromNHWC);

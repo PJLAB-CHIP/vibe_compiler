@@ -174,12 +174,15 @@ multiPieceDemandProgramMetadata() {
 }
 
 wafer::frontend::FrontendProgramVerificationResult
-multiProducerJoinProgramMetadata() {
+multiProducerJoinProgramMetadata(int64_t extent) {
+  const int64_t leftExtent = extent / 2;
+  const int64_t rightExtent = extent - leftExtent;
   wafer::frontend::FrontendProgramVerificationResult program;
   program.numPartitions = 1;
   program.programUserInputCount = 2;
-  program.distributedInputs = {boundary(0, {8}), boundary(1, {8})};
-  program.distributedOutputs = {boundary(0, {16})};
+  program.distributedInputs = {boundary(0, {2, leftExtent, 128}),
+                               boundary(1, {2, rightExtent, 128})};
+  program.distributedOutputs = {boundary(0, {2, extent, 128})};
   return program;
 }
 
@@ -748,48 +751,75 @@ module {
   return ParsedProgram{std::move(context), std::move(module)};
 }
 
-ParsedProgram parseMultiProducerJoinProgram() {
+ParsedProgram parseMultiProducerJoinProgram(int64_t extent) {
   mlir::DialectRegistry registry;
   wafer::compiler::detail::registerCompilationDialects(registry);
   auto context = std::make_shared<mlir::MLIRContext>(registry);
   context->loadAllAvailableDialects();
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(
-      R"mlir(
+  const int64_t leftExtent = extent / 2;
+  const int64_t rightExtent = extent - leftExtent;
+  std::string source;
+  llvm::raw_string_ostream stream(source);
+  stream << R"mlir(
+#id = affine_map<(b, m, n) -> (b, m, n)>
 module {
   wafer.target.topology @default
       {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
        tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
   wafer.execution.mesh @default_mesh
       {axes = ["card"], shape = array<i64: 1>}
-  func.func @main(%left: tensor<8xf16>, %right: tensor<8xf16>)
-      -> tensor<16xf16> {
-    %leftOut = tensor.empty() : tensor<8xf16>
-    %producerA = linalg.map ins(%left : tensor<8xf16>)
-        outs(%leftOut : tensor<8xf16>) (%value: f16) {
-      %next = arith.addf %value, %value : f16
-      linalg.yield %next : f16
-    }
-    %rightOut = tensor.empty() : tensor<8xf16>
-    %producerB = linalg.map ins(%right : tensor<8xf16>)
-        outs(%rightOut : tensor<8xf16>) (%value: f16) {
-      %next = arith.mulf %value, %value : f16
-      linalg.yield %next : f16
-    }
-    %empty = tensor.empty() : tensor<16xf16>
-    %lower = tensor.insert_slice %producerA into %empty[0] [8] [1]
-        : tensor<8xf16> into tensor<16xf16>
-    %assembled = tensor.insert_slice %producerB into %lower[8] [8] [1]
-        : tensor<8xf16> into tensor<16xf16>
-    %resultOut = tensor.empty() : tensor<16xf16>
-    %result = linalg.map ins(%assembled : tensor<16xf16>)
-        outs(%resultOut : tensor<16xf16>) (%value: f16) {
-      %next = arith.addf %value, %value : f16
-      linalg.yield %next : f16
-    }
-    return %result : tensor<16xf16>
-  }
-}
-)mlir",
+  func.func @main(%left: tensor<2x)mlir"
+         << leftExtent << "x128xf16>, %right: tensor<2x" << rightExtent
+         << "x128xf16>) -> tensor<2x" << extent << "x128xf16> {\n"
+         << "    %leftOut = tensor.empty() : tensor<2x" << leftExtent
+         << "x128xf16>\n"
+         << "    %producerA = linalg.generic {indexing_maps = [#id, #id], "
+            "iterator_types = [\"parallel\", \"parallel\", \"parallel\"]}\n"
+         << "        ins(%left : tensor<2x" << leftExtent
+         << "x128xf16>) outs(%leftOut : tensor<2x" << leftExtent
+         << "x128xf16>) {\n"
+         << "      ^bb0(%value: f16, %old: f16):\n"
+         << "        %next = arith.addf %value, %value : f16\n"
+         << "        linalg.yield %next : f16\n"
+         << "    } -> tensor<2x" << leftExtent << "x128xf16>\n"
+         << "    %rightOut = tensor.empty() : tensor<2x" << rightExtent
+         << "x128xf16>\n"
+         << "    %producerB = linalg.generic {indexing_maps = [#id, #id], "
+            "iterator_types = [\"parallel\", \"parallel\", \"parallel\"]}\n"
+         << "        ins(%right : tensor<2x" << rightExtent
+         << "x128xf16>) outs(%rightOut : tensor<2x" << rightExtent
+         << "x128xf16>) {\n"
+         << "      ^bb0(%value: f16, %old: f16):\n"
+         << "        %next = arith.mulf %value, %value : f16\n"
+         << "        linalg.yield %next : f16\n"
+         << "    } -> tensor<2x" << rightExtent << "x128xf16>\n"
+         << "    %empty = tensor.empty() : tensor<2x" << extent
+         << "x128xf16>\n"
+         << "    %lower = tensor.insert_slice %producerA into %empty"
+         << "[0, 0, 0] [2, " << leftExtent
+         << ", 128] [1, 1, 1] : tensor<2x" << leftExtent
+         << "x128xf16> into tensor<2x" << extent << "x128xf16>\n"
+         << "    %assembled = tensor.insert_slice %producerB into %lower"
+         << "[0, " << leftExtent << ", 0] [2, " << rightExtent
+         << ", 128] [1, 1, 1] : tensor<2x" << rightExtent
+         << "x128xf16> into tensor<2x" << extent << "x128xf16>\n"
+         << "    %resultOut = tensor.empty() : tensor<2x" << extent
+         << "x128xf16>\n"
+         << "    %result = linalg.generic {indexing_maps = [#id, #id], "
+            "iterator_types = [\"parallel\", \"parallel\", \"parallel\"]}\n"
+         << "        ins(%assembled : tensor<2x" << extent
+         << "x128xf16>) outs(%resultOut : tensor<2x" << extent
+         << "x128xf16>) {\n"
+         << "      ^bb0(%value: f16, %old: f16):\n"
+         << "        %next = arith.addf %value, %value : f16\n"
+         << "        linalg.yield %next : f16\n"
+         << "    } -> tensor<2x" << extent << "x128xf16>\n"
+         << "    return %result : tensor<2x" << extent << "x128xf16>\n"
+         << "  }\n"
+         << "}\n";
+  stream.flush();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      source,
       mlir::ParserConfig(context.get()));
   return ParsedProgram{std::move(context), std::move(module)};
 }

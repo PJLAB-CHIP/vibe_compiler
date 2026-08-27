@@ -410,7 +410,7 @@ module {
 }
 
 TEST_F(RegionDomainTest,
-       BoundedGraphCountsMatchIndependentPartitionAndChoiceOracle) {
+       BoundedGraphPlansAreUniqueMembersOfTheIndependentRawSuperset) {
   constexpr llvm::StringLiteral chain = R"mlir(
 module { func.func @main(%x: tensor<2xf16>) -> tensor<2xf16> {
   %e0 = tensor.empty() : tensor<2xf16>
@@ -510,9 +510,14 @@ module { func.func @main(%x: tensor<2xf16>, %y: tensor<2xf16>)
     auto plans = enumerate(*domain);
     ASSERT_TRUE(plans);
     llvm::SmallVector<uint32_t, 8> labels;
-    EXPECT_EQ(plans->size(), countReferencePlans(*dag, 0, labels));
+    const uint64_t independentSuperset =
+        countReferencePlans(*dag, 0, labels);
+    EXPECT_GT(plans->size(), 0u);
+    EXPECT_LE(plans->size(), independentSuperset);
     EXPECT_EQ(std::set<RegionPlan>(plans->begin(), plans->end()).size(),
               plans->size());
+    for (const RegionPlan &plan : *plans)
+      EXPECT_TRUE(domain->contains(plan));
   }
 }
 

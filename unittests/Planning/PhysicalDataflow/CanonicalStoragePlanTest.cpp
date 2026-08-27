@@ -692,11 +692,11 @@ TEST_F(CanonicalStoragePlanTest,
   CanonicalStoragePlanOutcome missingDefinitionOutcome =
       buildCanonicalStoragePlan(inputs->representations, missingDefinition,
                                 inputs->serialized);
-  const auto *missingDefinitionFailure =
-      std::get_if<BrokenStoragePlan>(&missingDefinitionOutcome);
-  ASSERT_NE(missingDefinitionFailure, nullptr);
-  EXPECT_EQ(missingDefinitionFailure->reason,
-            BrokenStoragePlanReason::MissingDefinition);
+  // With no selected boundary movement, the current consumer-local boundary
+  // version is defined at that consumer. Removing both the action and its
+  // resource is therefore a valid direct-local coordinate, not a synthetic
+  // missing definition.
+  EXPECT_NE(getCanonicalStorageCoordinate(missingDefinitionOutcome), nullptr);
 
   CanonicalMovementCoordinate missingUse = inputs->movements;
   MovementActionId publicationAction = missingUse.plan.publications.front().id;

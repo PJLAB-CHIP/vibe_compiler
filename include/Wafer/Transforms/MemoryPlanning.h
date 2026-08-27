@@ -15,7 +15,9 @@ class TileRegionOp;
 enum class SPMMemoryPlanningFailureKind : uint8_t {
   None,
   CapacityOverflow,
+  ResourceExhausted,
   UnsupportedLifetime,
+  MissingCompletion,
   Other,
 };
 

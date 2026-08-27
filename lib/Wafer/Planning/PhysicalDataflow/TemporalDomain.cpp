@@ -1253,7 +1253,8 @@ buildTemporalAxisWaves(IteratorInterval interval, int64_t tileSize,
 
 mlir::FailureOr<bool> refineTemporalPlanFromActualSPMFeedback(
     TemporalPlan &temporal, llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
-    llvm::ArrayRef<SemanticRootKey> affectedRoots, std::string *failureReason) {
+    llvm::ArrayRef<SemanticRootKey> affectedRoots, std::string *failureReason,
+    bool preferReductionAxes) {
   if (affectedRoots.empty()) {
     if (failureReason)
       *failureReason = "actual SPM rejection has no attributed semantic root";
@@ -1310,9 +1311,19 @@ mlir::FailureOr<bool> refineTemporalPlanFromActualSPMFeedback(
               "actual SPM rejection root is not temporally tileable";
         return mlir::failure();
       }
-      for (unsigned axis = 0; axis < tiling.getLoopIteratorTypes().size();
-           ++axis)
-        allowedAxes.push_back(axis);
+      llvm::SmallVector<mlir::utils::IteratorType, 4> iteratorTypes =
+          tiling.getLoopIteratorTypes();
+      if (preferReductionAxes)
+        for (auto [axis, iteratorType] : llvm::enumerate(iteratorTypes))
+          if (iteratorType == mlir::utils::IteratorType::reduction)
+            allowedAxes.push_back(static_cast<unsigned>(axis));
+      // A reduction root can stream its reduction operands while retaining
+      // one output tile. Refining a parallel result axis first duplicates the
+      // complete consumer closure per output wave. Elementwise/parallel-only
+      // roots have no such axis and keep their ordinary complete axis set.
+      if (allowedAxes.empty())
+        for (unsigned axis = 0; axis < iteratorTypes.size(); ++axis)
+          allowedAxes.push_back(axis);
     }
 
     std::optional<unsigned> selectedAxis;

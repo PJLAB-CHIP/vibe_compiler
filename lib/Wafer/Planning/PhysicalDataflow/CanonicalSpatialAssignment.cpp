@@ -239,6 +239,29 @@ buildCanonicalSpatialAssignment(const StructuredDAGAnalysis &dag,
       problem.getStructuralProblem(), plan, failureReason);
   if (mlir::failed(assignment))
     return mlir::failure();
+
+  mlir::FailureOr<DemandPlanningSession> demandSession =
+      DemandPlanningSession::create(dag, analysis::IndexRelationLimits(),
+                                    failureReason);
+  if (mlir::failed(demandSession))
+    return mlir::failure();
+  analysis::ExactDemandOutcome demand = demandSession->query(*assignment);
+  demandSession->close();
+  if (const analysis::ExactDemandProof *proof =
+          analysis::getExactDemandProof(demand)) {
+    mlir::FailureOr<SpatialPlan> coherent =
+        buildGraphCoherentSpatialProposal(problem, plan, *assignment, *proof,
+                                          failureReason);
+    if (mlir::failed(coherent))
+      return mlir::failure();
+    if (!(*coherent == plan)) {
+      assignment = closeSpatialPlanStructure(problem.getStructuralProblem(),
+                                             *coherent, failureReason);
+      if (mlir::failed(assignment))
+        return mlir::failure();
+      plan = std::move(*coherent);
+    }
+  }
   return CanonicalSpatialCoordinate{problem.getSemanticRoots(),
                                     problem.getStructuralProblem(),
                                     std::move(plan), std::move(*assignment)};

@@ -191,6 +191,7 @@ using RegionExecutionId = std::variant<ExecutionInstanceId, ReplicaExecutionId>;
 
 enum class LocalUseDelivery : uint8_t {
   StoredRegionValue,
+  ReconstructedRegionValue,
   DirectNestedValue,
 };
 

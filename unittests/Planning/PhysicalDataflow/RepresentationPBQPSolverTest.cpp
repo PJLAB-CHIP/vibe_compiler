@@ -7,6 +7,7 @@
 
 #include "gtest/gtest.h"
 
+#include <algorithm>
 #include <functional>
 #include <limits>
 #include <optional>
@@ -120,6 +121,23 @@ TEST(RepresentationPBQPSolverTest, ResidualCliqueUsesStableOptimalTieBreak) {
             return left == right ? 2 : 0;
           }));
   expectOracle(clique);
+}
+
+TEST(RepresentationPBQPSolverTest,
+     ReductionReconstructionUsesTheGlobalAssignmentTieBreak) {
+  RepresentationPBQPProblem problem = makeProblem(/*nodes=*/2, /*states=*/2);
+  for (RepresentationPBQPVariable &variable : problem.variables)
+    std::fill(variable.unaryCosts.begin(), variable.unaryCosts.end(), 0);
+  problem.factors.push_back(factor(
+      0, 1, 2, [](uint32_t lhs, uint32_t rhs) {
+        return lhs == rhs ? RepresentationPBQPCost{1}
+                          : RepresentationPBQPCost{0};
+      }));
+  RepresentationPBQPResult solved =
+      solveRepresentationPBQP(problem, /*workLimit=*/1000);
+  ASSERT_EQ(solved.status, RepresentationPBQPStatus::Optimal);
+  EXPECT_EQ(solved.cost, 0u);
+  EXPECT_EQ(solved.assignment, (std::vector<uint32_t>{0, 1}));
 }
 
 TEST(RepresentationPBQPSolverTest,

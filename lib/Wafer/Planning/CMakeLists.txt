@@ -23,6 +23,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/CardEdgeCarriers.cpp
   Planning/PhysicalDataflow/CompleteCandidateMaterialization.cpp
   Planning/PhysicalDataflow/CompleteCandidatePreparation.cpp
+  Planning/PhysicalDataflow/CurrentIRLayoutOptimization.cpp
   Planning/PhysicalDataflow/EventGraph.cpp
   Planning/PhysicalDataflow/ExecutionStructureDomain.cpp
   Planning/PhysicalDataflow/ExecutionStructureMaterialization.cpp
@@ -33,7 +34,8 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/RootWorkDomain.cpp
   Planning/PhysicalDataflow/Search/PlanningProblem.cpp
   Planning/PhysicalDataflow/Search/ActualResultController.cpp
-  Planning/PhysicalDataflow/Search/CompleteCandidateKey.cpp
+  Planning/PhysicalDataflow/Search/PlanningMemo.cpp
+  Planning/PhysicalDataflow/Search/PlanningProfile.cpp
   Planning/PhysicalDataflow/Search/PlanningSession.cpp
   Planning/PhysicalDataflow/Search/UnifiedSearch.cpp
   Planning/PhysicalDataflow/Search/PlanningState.cpp

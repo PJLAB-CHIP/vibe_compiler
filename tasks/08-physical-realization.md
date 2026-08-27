@@ -74,14 +74,18 @@ Layout domain builder只读current structural TileRegion，为每个SSA value、
 Baseline每个attempt只求解并应用一次，不建立layout frontier；search先访问同一assignment，再保留完整raw合法域。
 PBQP budget exhaustion对baseline是typed resource failure，对search只表示proposal unavailable，均不产生layout legality结论。
 
-PBQP hard factor只表达current interface和physical encoding能够证明的合法性。Soft factor只计
-`instruction_tick × (exact layout-dependent compute instructions + exact unique conversion descriptors)`。Shared conversion只计一次；
-same-layout、metadata view和alias为0。当前没有local-SPM byte tick，因此physical bytes只作诊断；DDR/NoC和SPM capacity分别留给
-movement与MiniMalloc。Unknown term对整个solve禁用而不是按0；checked arithmetic overflow返回`Indeterminate`，不能与hard infinity混合。
+PBQP hard factor只表达current interface和physical encoding能够证明的合法性。Soft factor只能使用final objective在本stage可精确
+投影的NE FP16/BF16、Vector/CT FP16/BF16、Vector/CT F32、SPM movement和instruction-control work，并分别使用显式target
+performance profile中的对应rate；不能退回统一instruction权重。Shared conversion的actual descriptor和dynamic execution只计一次，
+same-layout、metadata view和alias为0。若current IR尚不能精确给出layout-dependent work、execution multiplicity或descriptor count，
+则整个soft term set禁用，PBQP只使用全assignment semantic tie-break，并明确不宣称performance optimal。DDR/NoC只有在current
+endpoint能够精确投影时才进入；SPM capacity始终留给MiniMalloc。Unknown term不能按0参与比较，checked arithmetic overflow返回
+`Indeterminate`，不能与hard infinity混合。
 
 Solver output在mutation前重新验证，然后由唯一layout transformation立即创建或复用actual SSA：same-layout不建op，exact metadata
 view绑定原storage，多个use共享同一`(source, target layout)` conversion，per-use conversion保持独立，unused conversion不生成。
-Transformation成功后solver graph、state index和assignment立即销毁。
+共享还必须证明canonical conversion支配全部新use、两端consumer只读，并且两次materialization之间没有对source或其alias的write/free；
+不同block、未知effect或alias不确定时保留各自conversion。Transformation成功后solver graph、state index和assignment立即销毁。
 
 Movement transformation完成后，以同一relation/physical-map/alias/effect/lifetime proof运行一次full-transfer cleanup；该cleanup必须在
 execution-structure和Instr scheduling前完成。现有Instr-only或test-only eliminator的独有正负资产迁移到这一owner后删除旧实现，
@@ -239,6 +243,12 @@ IR中显式fill/mask/segmented movement。host-visible output不得把padding发
 Cleanup只删除可由exact proof确认的冗余：same-root/same-map metadata view、dead无effect movement、完整等价
 same-space copy和不延长lifetime的duplicate materialization。它不能移动fusion cut、改变encoding/route、创造spill、
 重排execution或替search选择另一layout/movement alternative。
+
+唯一production cleanup在canonical Instr形成后、fresh completion前运行现有exact full-buffer kernel；这是current movement rewrite的
+直接consumer位置，不构成第二种movement selection。Kernel每次replacement通过invocation-local callback同步retarget caller-owned
+buffer relation，随后删除dead emission并验证current IR。Replacement type改变时只允许typed Instr或普通memref load/store这类
+不固定原memory attr的consumer；standard view、region/call boundary等要求operand/result type关系的consumer保留原transfer，禁止
+先改IR再靠最终verifier发现非法cast。
 
 ## 9. Failure 与 Verification
 

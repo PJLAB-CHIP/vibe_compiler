@@ -8,18 +8,13 @@
 # RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<2x1025x128xf16>, %%rhs: tensor<2x1025x128xf16>) -> tensor<2x1025x128xf16> {\n    %%result = stablehlo.add %%lhs, %%rhs : tensor<2x1025x128xf16>\n    return %%result : tensor<2x1025x128xf16>\n  }\n}\n' > %t.source/functions/forward.mlir
 # RUN: %stablehlo_translate --serialize --target=1.7.1 %t.source/functions/forward.mlir -o %t.source/functions/forward.stablehlo.bc && rm %t.source/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[2,1025,128],"dtype":"float16","dynamic_dims":[]},{"shape":[2,1025,128],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[2,1025,128],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.source/functions/forward.meta
-# RUN: wafer-compile --input-program-dir %t.source --output-dir %t.package --num-partitions=1 --optimization-policy=search 2>&1 | FileCheck %s --check-prefix=SEARCH --implicit-check-not=deterministic-card-executable-baseline
+# RUN: wafer-compile --input-program-dir %t.source --output-dir %t.package --num-partitions=1 --optimization-policy=search 2>&1 | FileCheck %s --check-prefix=SEARCH --implicit-check-not=deterministic-card-executable-baseline --implicit-check-not=planning-profile --implicit-check-not="physical-search result"
 # RUN: test -e %t.package/manifest.json
 # RUN: wafer-run --package-dir %t.package --no-card | FileCheck %s --check-prefix=NO-CARD
 # RUN: wafer-compile --input-program-dir %t.source --output-dir %t.timed-package --num-partitions=1 --optimization-policy=search --compile-timing 2>&1 | FileCheck %s --check-prefix=SEARCH-TIMED --implicit-check-not=deterministic-card-executable-baseline
 # RUN: test -e %t.timed-package/manifest.json
 
 # SEARCH: wafer-compile: card-executable-compilation outcome=accepted
-# SEARCH: wafer-compile: physical-search result coverage=feasible-partial
-# SEARCH-SAME: execution_structure_states=1
-# SEARCH-SAME: structure_storage_states=1
-# SEARCH-SAME: schedule_states=1
-# SEARCH-SAME: candidate_actualizations=1
 # SEARCH: wafer-compile: wrote verified package
 # SEARCH-TIMED: wafer-compile: card-executable-compilation outcome=accepted
 # SEARCH-TIMED: wafer-compile: physical-search result coverage=feasible-partial
@@ -27,6 +22,9 @@
 # SEARCH-TIMED-SAME: structure_storage_states=1
 # SEARCH-TIMED-SAME: schedule_states=1
 # SEARCH-TIMED-SAME: candidate_actualizations=1
+# SEARCH-TIMED: wafer-compile: planning-profile peak_frontier_depth=
+# SEARCH-TIMED-SAME: candidate_actualizations=1 accepted_candidates=1 winner_handoffs=1
+# SEARCH-TIMED: wafer-compile: planning-profile-memo kind=region-domain
 # SEARCH-TIMED: wafer-compile: wrote verified package
 # NO-CARD: package: id=0 cards=1 tiles=16
 # NO-CARD: board_execution: false

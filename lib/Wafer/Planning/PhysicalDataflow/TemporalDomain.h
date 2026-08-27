@@ -223,7 +223,8 @@ buildTemporalAxisWaves(IteratorInterval interval, int64_t tileSize,
 mlir::FailureOr<bool> refineTemporalPlanFromActualSPMFeedback(
     TemporalPlan &temporal, llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
     llvm::ArrayRef<SemanticRootKey> affectedRoots,
-    std::string *failureReason = nullptr);
+    std::string *failureReason = nullptr,
+    bool preferReductionAxes = false);
 
 } // namespace wafer::compiler::detail
 

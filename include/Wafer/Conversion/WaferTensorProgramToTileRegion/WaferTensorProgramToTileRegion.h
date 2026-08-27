@@ -81,6 +81,18 @@ struct CardDDRBufferRelation {
   mlir::Value buffer;
 };
 
+/// Candidate-local identity of one selected structured transfer through an
+/// actual CardDDR resource. Several producer Tiles may contribute disjoint
+/// shards to the same resource; every relation names one producer/consumer
+/// pair selected by the current demand plan.
+struct CardDDRTransferRelation {
+  uint32_t producerNodeId = 0;
+  unsigned producerResult = 0;
+  TileId producerTile{0};
+  TileId consumerTile{0};
+  int64_t resourceId = -1;
+};
+
 struct PartialReductionContributionBufferRelation {
   uint32_t structuredNodeId = 0;
   compiler::detail::ReductionGroupId group;
@@ -112,6 +124,7 @@ struct StructuredMaterializationRelations {
   llvm::SmallVector<StructuredOperationBufferRelation, 16> scratchBuffers;
   llvm::SmallVector<SpatialOutputBufferRelation, 4> outputBuffers;
   llvm::SmallVector<CardDDRBufferRelation, 8> cardDDRBuffers;
+  llvm::SmallVector<CardDDRTransferRelation, 8> cardDDRTransfers;
   llvm::SmallVector<PartialReductionContributionBufferRelation, 8>
       partialReductionContributions;
   llvm::SmallVector<PartialReductionMergeInputBufferRelation, 8>
@@ -124,6 +137,7 @@ struct StructuredMaterializationRelations {
     scratchBuffers.clear();
     outputBuffers.clear();
     cardDDRBuffers.clear();
+    cardDDRTransfers.clear();
     partialReductionContributions.clear();
     partialReductionMergeInputs.clear();
   }

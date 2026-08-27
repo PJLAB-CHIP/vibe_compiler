@@ -2,7 +2,9 @@
 
 #include "Wafer/Planning/PhysicalDataflow/ExecutionStructureMaterialization.h"
 
+#include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/InitWaferDialects.h"
+#include "Wafer/Transforms/MemoryPlanning.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -211,9 +213,11 @@ TEST(ExecutionStructureMaterializationTest,
     MaterializationInput input = makeDistanceOneInput(*context, extent);
     ASSERT_TRUE(input.module);
     ASSERT_TRUE(mlir::succeeded(mlir::verify(*input.module)));
+    const auto &pipeline =
+        std::get<PipelinedExecutionStructure>(input.plan.scopes.front());
     PreparedExecutionStructureResult prepared =
-        prepareExecutionStructureMaterialization(*input.module, input.plan,
-                                                 BufferPlan{}, {input.binding});
+        prepareTileExecutionStructure(*input.module, {pipeline},
+                                      {input.binding});
     ASSERT_TRUE(prepared.succeeded())
         << (prepared.failure ? prepared.failure->detail : "");
     MaterializedExecutionStructureResult materialized =
@@ -233,6 +237,91 @@ TEST(ExecutionStructureMaterializationTest,
         *materialized.materialized, &failureReason)))
         << failureReason;
   }
+}
+
+TEST(ExecutionStructureMaterializationTest,
+     SerializedCurrentIRChoiceIsByteEquivalent) {
+  auto context = createContext();
+  MaterializationInput input = makeDistanceOneInput(*context, 1025);
+  ASSERT_TRUE(input.module);
+  const std::string before = print(input.module->getOperation());
+  PreparedExecutionStructureResult prepared =
+      prepareTileExecutionStructure(*input.module, {}, {});
+  ASSERT_TRUE(prepared.succeeded())
+      << (prepared.failure ? prepared.failure->detail : "");
+  MaterializedExecutionStructureResult materialized =
+      materializeExecutionStructure(std::move(input.module),
+                                    std::move(*prepared.prepared));
+  ASSERT_TRUE(materialized.succeeded())
+      << (materialized.failure ? materialized.failure->detail : "");
+  EXPECT_TRUE(materialized.materialized->scopes.empty());
+  EXPECT_EQ(print(materialized.materialized->module->getOperation()), before);
+}
+
+TEST(ExecutionStructureMaterializationTest,
+     CurrentIRRotatingAllocationFeedsActualMiniMalloc) {
+  auto context = createContext();
+  mlir::Location loc = mlir::UnknownLoc::get(context.get());
+  auto module = mlir::ModuleOp::create(loc);
+  mlir::OpBuilder moduleBuilder(module.getBodyRegion());
+  auto function = moduleBuilder.create<mlir::func::FuncOp>(
+      loc, "main",
+      moduleBuilder.getFunctionType(mlir::TypeRange{}, mlir::TypeRange{}));
+  mlir::Block *entry = function.addEntryBlock();
+  mlir::OpBuilder builder = mlir::OpBuilder::atBlockBegin(entry);
+  auto region = builder.create<TileRegionOp>(loc, mlir::TypeRange{},
+                                             mlir::ValueRange{});
+  region.getBody().push_back(new mlir::Block());
+  mlir::OpBuilder regionBuilder =
+      mlir::OpBuilder::atBlockBegin(&region.getBody().front());
+  auto type = mlir::MemRefType::get(
+      {2, 1031, 128}, regionBuilder.getF16Type(),
+      mlir::MemRefLayoutAttrInterface{},
+      MemoryAttr::get(context.get(), MemorySpace::SPM, MemLayout::Tensor));
+  auto allocation = regionBuilder.create<mlir::memref::AllocOp>(loc, type);
+  auto lower = regionBuilder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+  auto upper = regionBuilder.create<mlir::arith::ConstantIndexOp>(loc, 1024);
+  auto step = regionBuilder.create<mlir::arith::ConstantIndexOp>(loc, 128);
+  auto zero = regionBuilder.create<mlir::arith::ConstantOp>(
+      loc, regionBuilder.getFloatAttr(regionBuilder.getF16Type(), 0.0));
+  auto loop = regionBuilder.create<mlir::scf::ForOp>(loc, lower, upper, step);
+  mlir::OpBuilder loopBuilder = mlir::OpBuilder::atBlockBegin(loop.getBody());
+  loopBuilder.create<InstrFillOp>(loc, allocation.getResult(), zero,
+                                  FillDomainAttr(), NCCWorker::Worker0);
+  regionBuilder.setInsertionPointAfter(loop);
+  regionBuilder.create<mlir::memref::DeallocOp>(loc, allocation);
+  regionBuilder.create<TileYieldOp>(loc);
+  builder.setInsertionPointAfter(region);
+  builder.create<mlir::func::ReturnOp>(loc);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module)));
+
+  StructuredMaterializationRelations relations;
+  relations.scratchBuffers.push_back({0, allocation});
+  mlir::OwningOpRef<mlir::ModuleOp> owned(module);
+  RotatingAllocationMaterializationResult rotated =
+      materializeRotatingAllocations(
+          std::move(owned), {{allocation, loop, /*multiplicity=*/2}}, relations);
+  ASSERT_TRUE(rotated.succeeded())
+      << (rotated.failure ? rotated.failure->detail : "");
+  ASSERT_EQ(rotated.materialized->slots.size(), 2u);
+  EXPECT_EQ(relations.scratchBuffers.size(), 2u);
+  unsigned selects = 0;
+  rotated.materialized->module->walk(
+      [&](mlir::arith::SelectOp) { ++selects; });
+  EXPECT_EQ(selects, 1u);
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::rebuildRequiredNCCJoins(*rotated.materialized->module)));
+  ASSERT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(
+      *rotated.materialized->module, /*spmBase=*/0,
+      /*spmLimit=*/3 * 1024 * 1024, /*spmAlignment=*/16)));
+  unsigned placed = 0;
+  rotated.materialized->module->walk([&](mlir::memref::AllocOp current) {
+    if (isWaferSPMMemRefType(current.getType())) {
+      ++placed;
+      EXPECT_TRUE(current->hasAttr(kWaferSPMOffsetAttrName));
+    }
+  });
+  EXPECT_EQ(placed, 2u);
 }
 
 TEST(ExecutionStructureMaterializationTest,

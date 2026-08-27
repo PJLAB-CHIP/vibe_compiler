@@ -23,49 +23,6 @@ MovementDomainResult failed(MovementDomainFailureKind kind,
   return {{}, MovementDomainFailure{kind, detail.str()}};
 }
 
-const PhysicalVersionId *findPrimary(const RepresentationPlan &plan,
-                                     const RegionValueVersionId &logical) {
-  auto found = llvm::find_if(plan.logicalValues,
-                             [&](const LogicalRepresentationPlan &candidate) {
-                               return candidate.value == logical;
-                             });
-  return found == plan.logicalValues.end() ? nullptr : &found->primary;
-}
-
-const PhysicalVersionId *findBoundaryUse(const RepresentationPlan &plan,
-                                         const BoundaryRegionValueId &value) {
-  RepresentationUseId use = BoundaryRepresentationUseId{value};
-  auto found = llvm::find_if(plan.uses, [&](const PhysicalUseBinding &binding) {
-    return binding.use == use;
-  });
-  return found == plan.uses.end() ? nullptr : &found->version;
-}
-
-bool hasVersion(const RepresentationPlan &plan, const PhysicalVersionId &id) {
-  return llvm::any_of(
-      plan.physicalVersions,
-      [&](const PhysicalVersionPlan &version) { return version.id == id; });
-}
-
-std::optional<MemLayout> findEncoding(const RepresentationPlan &plan,
-                                      const PhysicalVersionId &id) {
-  auto found = llvm::find_if(
-      plan.physicalVersions,
-      [&](const PhysicalVersionPlan &version) { return version.id == id; });
-  return found == plan.physicalVersions.end()
-             ? std::nullopt
-             : std::optional<MemLayout>(found->encoding);
-}
-
-const MovementResourceDescription *
-findResource(llvm::ArrayRef<MovementResourceDescription> resources,
-             const MovementActionId &action) {
-  auto found = llvm::find_if(resources, [&](const auto &resource) {
-    return resource.action == action;
-  });
-  return found == resources.end() ? nullptr : &*found;
-}
-
 bool exactDomainsEqual(const analysis::ExactIndexSet &lhs,
                        const analysis::ExactIndexSet &rhs) {
   return lhs.getRank() == rhs.getRank() &&
@@ -825,46 +782,93 @@ buildMovementDomain(const CanonicalMovementCoordinate &canonical,
   if (!canonical.plan.peerGraphs.empty())
     return failed(MovementDomainFailureKind::BrokenContract,
                   "canonical movement unexpectedly contains a peer graph");
+
+  std::map<RegionValueVersionId, PhysicalVersionId> primaryVersions;
+  for (const LogicalRepresentationPlan &logical : representations.logicalValues)
+    if (!primaryVersions.try_emplace(logical.value, logical.primary).second)
+      return failed(MovementDomainFailureKind::BrokenContract,
+                    "movement representation has duplicate logical values");
+
+  std::map<BoundaryRegionValueId, PhysicalVersionId> boundaryVersions;
+  for (const PhysicalUseBinding &binding : representations.uses)
+    if (const auto *boundary =
+            std::get_if<BoundaryRepresentationUseId>(&binding.use))
+      if (!boundaryVersions.try_emplace(boundary->value, binding.version)
+               .second)
+        return failed(MovementDomainFailureKind::BrokenContract,
+                      "movement representation has duplicate boundary uses");
+
+  std::map<PhysicalVersionId, MemLayout> versionEncodings;
+  for (const PhysicalVersionPlan &version : representations.physicalVersions)
+    if (!versionEncodings.try_emplace(version.id, version.encoding).second)
+      return failed(MovementDomainFailureKind::BrokenContract,
+                    "movement representation has duplicate physical versions");
+
+  std::map<MovementActionId, const MovementResourceDescription *> resources;
+  for (const MovementResourceDescription &resource : canonical.resources)
+    if (!resources.try_emplace(resource.action, &resource).second)
+      return failed(MovementDomainFailureKind::BrokenContract,
+                    "movement coordinate has duplicate resource actions");
+
+  auto findPrimary =
+      [&](const RegionValueVersionId &logical) -> const PhysicalVersionId * {
+    auto found = primaryVersions.find(logical);
+    return found == primaryVersions.end() ? nullptr : &found->second;
+  };
+  auto findBoundary =
+      [&](const BoundaryRegionValueId &value) -> const PhysicalVersionId * {
+    auto found = boundaryVersions.find(value);
+    return found == boundaryVersions.end() ? nullptr : &found->second;
+  };
+  auto findEncoding =
+      [&](const PhysicalVersionId &version) -> std::optional<MemLayout> {
+    auto found = versionEncodings.find(version);
+    return found == versionEncodings.end()
+               ? std::nullopt
+               : std::optional<MemLayout>(found->second);
+  };
+  auto findResource = [&](const MovementActionId &action)
+      -> const MovementResourceDescription * {
+    auto found = resources.find(action);
+    return found == resources.end() ? nullptr : found->second;
+  };
+
   MovementPlan base = canonical.plan;
   for (ExternalLoadPlan &load : base.externalLoads) {
-    const PhysicalVersionId *destination =
-        findBoundaryUse(representations, load.id.destination);
-    if (!destination || !hasVersion(representations, *destination))
+    const PhysicalVersionId *destination = findBoundary(load.id.destination);
+    if (!destination || !versionEncodings.count(*destination))
       return failed(MovementDomainFailureKind::BrokenContract,
                     "external load has no selected destination version");
     load.destination = *destination;
   }
   for (DDRBoundaryTransferPlan &transfer : base.ddrTransfers) {
-    const PhysicalVersionId *source =
-        findPrimary(representations, transfer.source.logicalValue);
+    const PhysicalVersionId *source = findPrimary(transfer.source.logicalValue);
     const PhysicalVersionId *destination =
-        findBoundaryUse(representations, transfer.id.destination);
-    if (!source || !destination || !hasVersion(representations, *source) ||
-        !hasVersion(representations, *destination))
+        findBoundary(transfer.id.destination);
+    if (!source || !destination || !versionEncodings.count(*source) ||
+        !versionEncodings.count(*destination))
       return failed(MovementDomainFailureKind::BrokenContract,
                     "boundary transfer has missing selected versions");
     transfer.source = *source;
     transfer.destination = *destination;
   }
   for (ReductionGatherPlan &gather : base.reductionGathers) {
-    const PhysicalVersionId *source =
-        findPrimary(representations, gather.source.logicalValue);
-    if (!source || !hasVersion(representations, *source))
+    const PhysicalVersionId *source = findPrimary(gather.source.logicalValue);
+    if (!source || !versionEncodings.count(*source))
       return failed(MovementDomainFailureKind::BrokenContract,
                     "reduction gather has no selected source version");
     gather.source = *source;
   }
   for (ResultPublicationPlan &publication : base.publications) {
     const PhysicalVersionId *source =
-        findPrimary(representations, publication.source.logicalValue);
+        findPrimary(publication.source.logicalValue);
     if (!source)
       return failed(MovementDomainFailureKind::BrokenContract,
                     "publication has no selected source version");
     publication.source = *source;
   }
   for (ResultDiscardPlan &discard : base.discards) {
-    const PhysicalVersionId *source =
-        findPrimary(representations, discard.source.logicalValue);
+    const PhysicalVersionId *source = findPrimary(discard.source.logicalValue);
     if (!source)
       return failed(MovementDomainFailureKind::BrokenContract,
                     "discard has no selected source version");
@@ -872,12 +876,14 @@ buildMovementDomain(const CanonicalMovementCoordinate &canonical,
   }
 
   std::vector<MovementDomain::ReuseClass> classes;
+  std::map<analysis::RootBoundaryId, std::vector<size_t>> externalClassBuckets;
+  using BoundaryClassKey = std::tuple<PhysicalVersionId, int64_t, MemLayout>;
+  std::map<BoundaryClassKey, std::vector<size_t>> boundaryClassBuckets;
   auto addVariable = [&](MovementPlanActionKind kind, size_t planIndex,
                          const MovementActionId &action,
                          const PhysicalVersionId *sourceVersion,
                          const PhysicalVersionId *destinationVersion) -> bool {
-    const MovementResourceDescription *resource =
-        findResource(canonical.resources, action);
+    const MovementResourceDescription *resource = findResource(action);
     const bool external = kind == MovementPlanActionKind::ExternalLoad;
     TileId semanticDestination = std::visit(
         [&](const auto &id) -> TileId {
@@ -906,11 +912,9 @@ buildMovementDomain(const CanonicalMovementCoordinate &canonical,
                             *resource->destinationTile))
       return false;
     std::optional<MemLayout> sourceEncoding =
-        sourceVersion ? findEncoding(representations, *sourceVersion)
-                      : std::nullopt;
+        sourceVersion ? findEncoding(*sourceVersion) : std::nullopt;
     std::optional<MemLayout> destinationEncoding =
-        destinationVersion ? findEncoding(representations, *destinationVersion)
-                           : sourceEncoding;
+        destinationVersion ? findEncoding(*destinationVersion) : sourceEncoding;
     MovementDomain::ActionVariable variable;
     variable.kind = kind;
     variable.planIndex = planIndex;
@@ -926,15 +930,27 @@ buildMovementDomain(const CanonicalMovementCoordinate &canonical,
                                      hasEndpointPath(transport, variable.source,
                                                      variable.destination);
 
-    if (kind != MovementPlanActionKind::Gather && variable.peerCapable) {
-      for (MovementDomain::ReuseClass &candidate : classes) {
+    std::vector<size_t> *candidateClasses = nullptr;
+    if (variable.peerCapable && external) {
+      const ExternalLoadPlan &load = base.externalLoads[planIndex];
+      candidateClasses =
+          &externalClassBuckets[load.id.destination.fragment.source];
+    } else if (variable.peerCapable &&
+               kind == MovementPlanActionKind::BoundaryTransfer &&
+               sourceVersion && destinationEncoding) {
+      candidateClasses = &boundaryClassBuckets[BoundaryClassKey{
+          *sourceVersion, variable.source.getValue(), *destinationEncoding}];
+    }
+    if (candidateClasses) {
+      for (size_t classIndex : *candidateClasses) {
+        MovementDomain::ReuseClass &candidate = classes[classIndex];
         if (candidate.actions.empty() ||
             candidate.actions.front().kind != kind ||
             !candidate.actions.front().peerCapable)
           continue;
         const auto &first = candidate.actions.front();
         const MovementResourceDescription *firstResource =
-            findResource(canonical.resources, first.action);
+            findResource(first.action);
         bool compatible = firstResource &&
                           firstResource->elementType == resource->elementType &&
                           exactDomainsEqual(firstResource->exactDomain,
@@ -943,19 +959,18 @@ buildMovementDomain(const CanonicalMovementCoordinate &canonical,
           const ExternalLoadPlan &firstLoad =
               base.externalLoads[first.planIndex];
           const ExternalLoadPlan &load = base.externalLoads[planIndex];
-          compatible = compatible &&
-                       firstLoad.id.destination.fragment.source ==
-                           load.id.destination.fragment.source &&
-                       findEncoding(representations, firstLoad.destination) ==
-                           destinationEncoding;
+          compatible =
+              compatible &&
+              firstLoad.id.destination.fragment.source ==
+                  load.id.destination.fragment.source &&
+              findEncoding(firstLoad.destination) == destinationEncoding;
         } else {
           const auto &firstTransfer = base.ddrTransfers[first.planIndex];
           compatible =
               compatible && sourceVersion &&
               firstTransfer.source == *sourceVersion &&
               first.source == variable.source &&
-              findEncoding(representations, firstTransfer.destination) ==
-                  destinationEncoding;
+              findEncoding(firstTransfer.destination) == destinationEncoding;
         }
         if (compatible) {
           candidate.actions.push_back(std::move(variable));
@@ -963,7 +978,10 @@ buildMovementDomain(const CanonicalMovementCoordinate &canonical,
         }
       }
     }
+    const size_t classIndex = classes.size();
     classes.push_back({{std::move(variable)}});
+    if (candidateClasses)
+      candidateClasses->push_back(classIndex);
     return true;
   };
   for (auto [index, load] : llvm::enumerate(base.externalLoads))

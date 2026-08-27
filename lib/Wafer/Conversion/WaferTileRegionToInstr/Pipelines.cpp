@@ -12,9 +12,10 @@
 namespace wafer {
 
 void buildLowerTileRegionToInstrPipeline(mlir::OpPassManager &pm) {
-  mlir::OpPassManager &functionPM = pm.nest<mlir::func::FuncOp>();
-  functionPM.nest<TileRegionOp>().addPass(createConvertTileRegionToInstrPass());
-  functionPM.addPass(createPlaceRequiredNCCJoinsPass());
+  pm.nest<mlir::func::FuncOp>().nest<TileRegionOp>().addPass(
+      createConvertTileRegionToInstrPass());
+  pm.addPass(createConvertBufferizationCopiesToInstrPass());
+  pm.nest<mlir::func::FuncOp>().addPass(createRebuildRequiredNCCJoinsPass());
 }
 
 } // namespace wafer

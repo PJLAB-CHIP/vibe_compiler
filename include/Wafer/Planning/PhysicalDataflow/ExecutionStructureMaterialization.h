@@ -5,7 +5,9 @@
 #define WAFER_PLANNING_PHYSICALDATAFLOW_EXECUTIONSTRUCTUREMATERIALIZATION_H
 
 #include "Wafer/Planning/PhysicalDataflow/ExecutionStructurePlan.h"
+#include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 
@@ -124,6 +126,44 @@ PreparedExecutionStructureResult prepareExecutionStructureMaterialization(
     const BufferPlan &buffers,
     llvm::ArrayRef<ExecutionStructureLoopBinding> bindings,
     const ExecutionStructureMaterializationLimits &limits = {});
+
+/// Current-IR entry used by the Tile execution-structure stage. `pipelines`
+/// are invocation-local transformation choices whose operation bindings refer
+/// directly to the unchanged input module. No BufferPlan, slot-family plan or
+/// future event inventory crosses this boundary. An empty pipeline list is the
+/// serialized identity.
+PreparedExecutionStructureResult prepareTileExecutionStructure(
+    mlir::ModuleOp module,
+    llvm::ArrayRef<PipelinedExecutionStructure> pipelines,
+    llvm::ArrayRef<ExecutionStructureLoopBinding> bindings,
+    const ExecutionStructureMaterializationLimits &limits = {});
+
+struct RotatingAllocationBinding {
+  mlir::memref::AllocOp allocation;
+  mlir::scf::ForOp loop;
+  uint32_t multiplicity = 0;
+};
+
+struct RotatingAllocationMaterialization {
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+  llvm::SmallVector<mlir::Value, 4> slots;
+};
+
+struct RotatingAllocationMaterializationResult {
+  std::optional<RotatingAllocationMaterialization> materialized;
+  std::optional<ExecutionStructureMaterializationFailure> failure;
+
+  bool succeeded() const { return materialized.has_value(); }
+};
+
+/// Materializes actual rotating allocation roots and loop-local SSA slot
+/// selection. Every binding names current IR directly; all preflight completes
+/// before mutation. Relations are expanded to the actual slot roots in the same
+/// transaction. Offset assignment and completion remain downstream.
+RotatingAllocationMaterializationResult materializeRotatingAllocations(
+    mlir::OwningOpRef<mlir::ModuleOp> module,
+    llvm::ArrayRef<RotatingAllocationBinding> bindings,
+    StructuredMaterializationRelations &relations);
 
 /// Consumes the candidate module because pinned SCF pipelining can modify IR
 /// before reporting failure. No partially modified module is returned.

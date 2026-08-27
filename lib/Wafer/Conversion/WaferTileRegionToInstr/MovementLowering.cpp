@@ -158,8 +158,12 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
-    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(), *dest,
-                                   **descriptors);
+    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
+        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                       *dest, **descriptors);
+    if (bufferRecorder)
+      for (InstrGatherScatterOp operation : lowered)
+        bufferRecorder->recordLoweredOperation(op, operation);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -220,8 +224,10 @@ public:
 
 class TileCopyIntoLowering : public mlir::OpRewritePattern<MoveCopyIntoOp> {
 public:
-  TileCopyIntoLowering(mlir::MLIRContext *context)
-      : mlir::OpRewritePattern<MoveCopyIntoOp>(context) {}
+  TileCopyIntoLowering(mlir::MLIRContext *context,
+                       TileRegionToInstrBufferRecorder *bufferRecorder)
+      : mlir::OpRewritePattern<MoveCopyIntoOp>(context),
+        bufferRecorder(bufferRecorder) {}
 
   mlir::LogicalResult
   matchAndRewrite(MoveCopyIntoOp op,
@@ -246,11 +252,154 @@ public:
     if (mlir::failed(descriptors))
       return mlir::failure();
 
-    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
-                                   op.getDest(), *descriptors);
+    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
+        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                       op.getDest(), *descriptors);
+    if (bufferRecorder)
+      for (InstrGatherScatterOp operation : lowered)
+        bufferRecorder->recordLoweredOperation(op, operation);
     rewriter.eraseOp(op);
     return mlir::success();
   }
+
+private:
+  TileRegionToInstrBufferRecorder *bufferRecorder = nullptr;
+};
+
+class MemRefCopyLowering : public mlir::OpRewritePattern<mlir::memref::CopyOp> {
+public:
+  MemRefCopyLowering(mlir::MLIRContext *context,
+                     TileRegionToInstrBufferRecorder *bufferRecorder)
+      : mlir::OpRewritePattern<mlir::memref::CopyOp>(context),
+        bufferRecorder(bufferRecorder) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::memref::CopyOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
+    if (!op->getParentOfType<TileRegionOp>())
+      return failPattern(
+          rewriter, op,
+          "memref.copy requires an existing TileRegion movement owner");
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
+    auto destType = mlir::dyn_cast<mlir::MemRefType>(op.getTarget().getType());
+    MemoryAttr sourceMemory =
+        sourceType ? getWaferMemoryAttr(sourceType) : MemoryAttr{};
+    MemoryAttr destMemory =
+        destType ? getWaferMemoryAttr(destType) : MemoryAttr{};
+    if (!sourceType || !destType || !sourceMemory || !destMemory ||
+        sourceType.getShape() != destType.getShape())
+      return failPattern(rewriter, op,
+                         "memref.copy requires equal static Wafer memrefs");
+    analysis::IndexRelationResult relation =
+        analysis::IndexRelation::identity(destType.getShape());
+    if (!relation.isExact())
+      return failPattern(rewriter, op,
+                         "memref.copy identity relation is not exact");
+
+    auto record = [&](mlir::Operation *lowered) {
+      if (bufferRecorder)
+        bufferRecorder->recordLoweredOperation(op, lowered);
+    };
+    if (sourceMemory.getSpace() == MemorySpace::DDR &&
+        destMemory.getSpace() == MemorySpace::SPM) {
+      if (mlir::succeeded(analysis::TransferRealizability::proveCompactDma(
+              sourceType, destType, *relation.get()))) {
+        auto descriptor = getStridedTensorDescriptor(rewriter, op, sourceType,
+                                                     "memref.copy RDMA source");
+        if (mlir::failed(descriptor))
+          return mlir::failure();
+        record(createRDMA(rewriter, op.getLoc(), op.getSource(), op.getTarget(),
+                          *descriptor));
+      } else {
+        auto descriptors = getRelationMovementDescriptors(
+            rewriter, op, sourceType, destType, destType.getShape(),
+            *relation.get(), *relation.get(), MovementEngine::RDMA,
+            "memref.copy RDMA");
+        if (mlir::failed(descriptors))
+          return mlir::failure();
+        for (InstrRDMAOp lowered :
+             createMappedRDMADescriptors(rewriter, op.getLoc(), op.getSource(),
+                                         op.getTarget(), *descriptors))
+          record(lowered);
+      }
+    } else if (sourceMemory.getSpace() == MemorySpace::SPM &&
+               destMemory.getSpace() == MemorySpace::DDR) {
+      if (mlir::succeeded(analysis::TransferRealizability::proveCompactDma(
+              sourceType, destType, *relation.get()))) {
+        auto descriptor = getStridedTensorDescriptor(
+            rewriter, op, destType, "memref.copy WDMA destination");
+        if (mlir::failed(descriptor))
+          return mlir::failure();
+        record(createWDMA(rewriter, op.getLoc(), op.getSource(), op.getTarget(),
+                          *descriptor));
+      } else {
+        auto descriptors = getRelationMovementDescriptors(
+            rewriter, op, sourceType, destType, destType.getShape(),
+            *relation.get(), *relation.get(), MovementEngine::WDMA,
+            "memref.copy WDMA");
+        if (mlir::failed(descriptors))
+          return mlir::failure();
+        for (InstrWDMAOp lowered :
+             createMappedWDMADescriptors(rewriter, op.getLoc(), op.getSource(),
+                                         op.getTarget(), *descriptors))
+          record(lowered);
+      }
+    } else if (sourceMemory.getSpace() == MemorySpace::SPM &&
+               destMemory.getSpace() == MemorySpace::SPM) {
+      auto descriptors = getRelationMovementDescriptors(
+          rewriter, op, sourceType, destType, destType.getShape(),
+          *relation.get(), *relation.get(), MovementEngine::GatherScatter,
+          "memref.copy SPM");
+      if (mlir::failed(descriptors))
+        return mlir::failure();
+      for (InstrGatherScatterOp lowered :
+           createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                          op.getTarget(), *descriptors))
+        record(lowered);
+    } else if (sourceMemory.getSpace() == MemorySpace::DDR &&
+               destMemory.getSpace() == MemorySpace::DDR) {
+      auto stagingType = mlir::MemRefType::get(
+          sourceType.getShape(), sourceType.getElementType(),
+          mlir::MemRefLayoutAttrInterface{},
+          MemoryAttr::get(rewriter.getContext(), MemorySpace::SPM,
+                          sourceMemory.getLayout()));
+      auto readDescriptors = getRelationMovementDescriptors(
+          rewriter, op, sourceType, stagingType, stagingType.getShape(),
+          *relation.get(), *relation.get(), MovementEngine::RDMA,
+          "memref.copy DDR staging read");
+      auto writeDescriptors = getRelationMovementDescriptors(
+          rewriter, op, stagingType, destType, stagingType.getShape(),
+          *relation.get(), *relation.get(), MovementEngine::WDMA,
+          "memref.copy DDR staging write");
+      if (mlir::failed(readDescriptors) || mlir::failed(writeDescriptors))
+        return mlir::failure();
+      auto emitStagedCopy = [&](mlir::Value source, mlir::Value dest) {
+        mlir::FailureOr<mlir::Value> staging = createDestAlloc(
+            op.getLoc(), stagingType, rewriter, op, bufferRecorder);
+        if (mlir::failed(staging))
+          return mlir::failure();
+        for (InstrRDMAOp lowered : createMappedRDMADescriptors(
+                 rewriter, op.getLoc(), source, *staging, *readDescriptors))
+          record(lowered);
+        for (InstrWDMAOp lowered : createMappedWDMADescriptors(
+                 rewriter, op.getLoc(), *staging, dest, *writeDescriptors))
+          record(lowered);
+        return mlir::success();
+      };
+      if (mlir::failed(emitStagedCopy(op.getSource(), op.getTarget())))
+        return mlir::failure();
+    } else {
+      return failPattern(rewriter, op,
+                         "memref.copy has unsupported Wafer memory spaces");
+    }
+    rewriter.eraseOp(op);
+    return mlir::success();
+  }
+
+private:
+  TileRegionToInstrBufferRecorder *bufferRecorder = nullptr;
 };
 
 class MoveExtractSliceLowering
@@ -320,8 +469,12 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
-    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(), *dest,
-                                   *descriptors);
+    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
+        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                       *dest, *descriptors);
+    if (bufferRecorder)
+      for (InstrGatherScatterOp operation : lowered)
+        bufferRecorder->recordLoweredOperation(op, operation);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -464,8 +617,12 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
-    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(), *dest,
-                                   *descriptors);
+    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
+        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                       *dest, *descriptors);
+    if (bufferRecorder)
+      for (InstrGatherScatterOp operation : lowered)
+        bufferRecorder->recordLoweredOperation(op, operation);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -742,8 +899,12 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
-    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(), *dest,
-                                   *descriptors);
+    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
+        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                       *dest, *descriptors);
+    if (bufferRecorder)
+      for (InstrGatherScatterOp operation : lowered)
+        bufferRecorder->recordLoweredOperation(op, operation);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -853,8 +1014,12 @@ public:
         op.getLoc(), op.getResult().getType(), rewriter, op, bufferRecorder);
     if (mlir::failed(dest))
       return mlir::failure();
-    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(), *dest,
-                                   *descriptors);
+    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
+        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
+                                       *dest, *descriptors);
+    if (bufferRecorder)
+      for (InstrGatherScatterOp operation : lowered)
+        bufferRecorder->recordLoweredOperation(op, operation);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -867,8 +1032,10 @@ void wafer::tile_region_to_instr::populateMovementLoweringPatterns(
     TileRegionToInstrBufferRecorder *bufferRecorder,
     MovementDescriptorCache *descriptorCache) {
   mlir::MLIRContext *context = patterns.getContext();
-  patterns.add<TileLoadLowering, TileStoreLowering, TileCopyIntoLowering,
-               InstrTDMADataMoveLowering>(context);
+  patterns.add<TileLoadLowering, TileStoreLowering, InstrTDMADataMoveLowering>(
+      context);
+  patterns.add<TileCopyIntoLowering>(context, bufferRecorder);
+  patterns.add<MemRefCopyLowering>(context, bufferRecorder);
   patterns.add<MoveInsertSliceLowering>(context, bufferRecorder,
                                         descriptorCache);
   patterns.add<TileCopyLowering, MoveExtractSliceLowering, MoveReshapeLowering,

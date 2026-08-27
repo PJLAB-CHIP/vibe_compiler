@@ -46,7 +46,10 @@ TEST(PipelinesTest, TileLoweringBuilderUsesTheProductionNestedStructure) {
   const std::string pipeline = printPipeline(production);
   EXPECT_NE(pipeline.find("wafer-convert-tile-region-to-instr"),
             std::string::npos);
-  EXPECT_NE(pipeline.find("wafer-place-required-ncc-joins"), std::string::npos);
+  EXPECT_NE(pipeline.find("wafer-convert-bufferization-copies-to-instr"),
+            std::string::npos);
+  EXPECT_NE(pipeline.find("wafer-rebuild-required-ncc-joins"),
+            std::string::npos);
 }
 
 wafer::frontend::ProgramBoundaryBinding
@@ -83,6 +86,16 @@ TEST(PipelinesTest, InstrFunctionBufferizationExposesLeafAndAssignsNoOffsets) {
   EXPECT_NE(pipeline.find("wafer-bufferize-instr-function-boundaries"),
             std::string::npos)
       << pipeline;
+  EXPECT_NE(pipeline.find("drop-equivalent-buffer-results"), std::string::npos)
+      << pipeline;
+  const size_t firstCanonicalize = pipeline.find("canonicalize");
+  const size_t cse = pipeline.find("cse", firstCanonicalize);
+  const size_t secondCanonicalize = pipeline.find("canonicalize", cse);
+  EXPECT_NE(firstCanonicalize, std::string::npos) << pipeline;
+  EXPECT_NE(cse, std::string::npos) << pipeline;
+  EXPECT_NE(secondCanonicalize, std::string::npos) << pipeline;
+  EXPECT_LT(firstCanonicalize, cse) << pipeline;
+  EXPECT_LT(cse, secondCanonicalize) << pipeline;
   EXPECT_EQ(pipeline.find("wafer-plan-spm-memory"), std::string::npos)
       << pipeline;
   EXPECT_EQ(pipeline.find("wafer-plan-ddr-memory"), std::string::npos)
@@ -99,21 +112,6 @@ TEST(PipelinesTest, InstrFunctionBufferizationExposesLeafAndAssignsNoOffsets) {
       << leafPipeline;
   EXPECT_EQ(leafPipeline.find("canonicalize"), std::string::npos)
       << leafPipeline;
-}
-
-TEST(PipelinesTest, MemoryPlanningPreparationExposesModuleAndFunctionLeaves) {
-  mlir::MLIRContext context;
-  mlir::PassManager production(&context);
-  wafer::buildPrepareInstrForMemoryPlanningPipeline(production);
-  const std::string pipeline = printPipeline(production);
-  EXPECT_NE(pipeline.find("wafer-bufferize-instr-function-boundaries"),
-            std::string::npos)
-      << pipeline;
-  EXPECT_NE(pipeline.find("func.func(wafer-rebuild-required-ncc-joins)"),
-            std::string::npos)
-      << pipeline;
-  EXPECT_EQ(pipeline.find("wafer-plan-spm-memory"), std::string::npos)
-      << pipeline;
 }
 
 TEST(PipelinesTest, MemoryAssignmentBuildersExposeAtomicPasses) {

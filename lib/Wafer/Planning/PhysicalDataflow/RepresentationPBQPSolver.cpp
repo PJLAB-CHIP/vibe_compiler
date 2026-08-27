@@ -175,14 +175,13 @@ evaluate(const RepresentationPBQPProblem &problem,
 
 } // namespace
 
-RepresentationPBQPResult
-solveRepresentationPBQP(const RepresentationPBQPProblem &problem,
-                        uint64_t workLimit) {
+static RepresentationPBQPResult
+solveNumericRepresentationPBQP(const RepresentationPBQPProblem &problem,
+                               Budget &budget) {
   RepresentationPBQPResult result;
   Graph graph;
-  if (workLimit == 0 || !validateAndBuild(problem, graph))
+  if (budget.limit == 0 || !validateAndBuild(problem, graph))
     return result;
-  Budget budget{workLimit, 0};
   llvm::SmallVector<bool, 16> active(graph.nodes.size(), true);
   llvm::SmallVector<ReductionRecord, 16> records;
   bool exhausted = false;
@@ -358,15 +357,33 @@ solveRepresentationPBQP(const RepresentationPBQPProblem &problem,
                                    std::numeric_limits<uint32_t>::max());
   std::optional<RepresentationPBQPCost> bestCost;
   std::vector<uint32_t> bestAssignment;
+  auto reconstruct = [&](std::vector<uint32_t> candidate) {
+    for (const ReductionRecord &record : llvm::reverse(records)) {
+      if (record.neighbors.empty())
+        candidate[record.node] = record.choices.front();
+      else if (record.neighbors.size() == 1)
+        candidate[record.node] =
+            record.choices[candidate[record.neighbors.front()]];
+      else {
+        const uint32_t rhsStates = graph.nodes[record.neighbors[1]].size();
+        candidate[record.node] =
+            record.choices[static_cast<size_t>(candidate[record.neighbors[0]]) *
+                               rhsStates +
+                           candidate[record.neighbors[1]]];
+      }
+    }
+    return candidate;
+  };
   std::function<void(size_t, RepresentationPBQPCost)> search =
       [&](size_t position, RepresentationPBQPCost partial) {
         if (exhausted)
           return;
         if (position == core.size()) {
+          std::vector<uint32_t> complete = reconstruct(assignment);
           if (!bestCost || partial < *bestCost ||
-              (partial == *bestCost && assignment < bestAssignment)) {
+              (partial == *bestCost && complete < bestAssignment)) {
             bestCost = partial;
-            bestAssignment = assignment;
+            bestAssignment = std::move(complete);
           }
           return;
         }
@@ -407,20 +424,6 @@ solveRepresentationPBQP(const RepresentationPBQPProblem &problem,
     return result;
   }
   assignment = std::move(bestAssignment);
-  for (const ReductionRecord &record : llvm::reverse(records)) {
-    if (record.neighbors.empty())
-      assignment[record.node] = record.choices.front();
-    else if (record.neighbors.size() == 1)
-      assignment[record.node] =
-          record.choices[assignment[record.neighbors.front()]];
-    else {
-      const uint32_t rhsStates = graph.nodes[record.neighbors[1]].size();
-      assignment[record.node] =
-          record.choices[static_cast<size_t>(assignment[record.neighbors[0]]) *
-                             rhsStates +
-                         assignment[record.neighbors[1]]];
-    }
-  }
   std::optional<RepresentationPBQPCost> checked = evaluate(problem, assignment);
   if (!checked)
     return result;
@@ -430,6 +433,77 @@ solveRepresentationPBQP(const RepresentationPBQPProblem &problem,
   result.lowerBound = *checked;
   result.work = budget.used;
   return result;
+}
+
+RepresentationPBQPResult
+solveRepresentationPBQP(const RepresentationPBQPProblem &problem,
+                        uint64_t workLimit) {
+  Budget budget{workLimit, 0};
+  RepresentationPBQPResult optimum =
+      solveNumericRepresentationPBQP(problem, budget);
+  if (optimum.status != RepresentationPBQPStatus::Optimal)
+    return optimum;
+
+  // A reduction may have several states with the same primary cost. Keeping
+  // only the smallest state at that reduction is not a global tie-break: an
+  // earlier variable can have been reduced through the state being selected.
+  // Recover the lexicographically first complete optimum by fixing variables
+  // in observable order and proving that the remaining PBQP still reaches the
+  // already established optimum. All probes share the caller's work budget.
+  const RepresentationPBQPCost targetCost = *optimum.cost;
+  RepresentationPBQPProblem constrained = problem;
+  RepresentationPBQPResult selected = optimum;
+  for (uint32_t variable = 0; variable < constrained.variables.size();
+       ++variable) {
+    const uint32_t stateCount =
+        static_cast<uint32_t>(constrained.variables[variable].unaryCosts.size());
+    if (selected.assignment.size() != constrained.variables.size() ||
+        selected.assignment[variable] >= stateCount) {
+      RepresentationPBQPResult broken;
+      broken.work = budget.used;
+      return broken;
+    }
+
+    // `selected` is already a witness for its current state. Only states that
+    // would improve the lexicographic result need another exact solve.
+    uint32_t fixedState = selected.assignment[variable];
+    for (uint32_t state = 0; state < fixedState; ++state) {
+      RepresentationPBQPProblem trial = constrained;
+      for (uint32_t other = 0; other < stateCount; ++other)
+        if (other != state)
+          trial.variables[variable].unaryCosts[other] =
+              kRepresentationPBQPInfinity;
+
+      RepresentationPBQPResult candidate =
+          solveNumericRepresentationPBQP(trial, budget);
+      if (candidate.status == RepresentationPBQPStatus::Indeterminate) {
+        candidate.work = budget.used;
+        return candidate;
+      }
+      if (candidate.status == RepresentationPBQPStatus::BrokenContract) {
+        candidate.work = budget.used;
+        return candidate;
+      }
+      if (candidate.status != RepresentationPBQPStatus::Optimal ||
+          candidate.cost != targetCost)
+        continue;
+
+      constrained = std::move(trial);
+      selected = std::move(candidate);
+      fixedState = state;
+      break;
+    }
+
+    // Preserve the established witness without spending another solve on the
+    // state it already proves feasible.
+    for (uint32_t other = 0; other < stateCount; ++other)
+      if (other != fixedState)
+        constrained.variables[variable].unaryCosts[other] =
+            kRepresentationPBQPInfinity;
+  }
+
+  selected.work = budget.used;
+  return selected;
 }
 
 } // namespace wafer::compiler::detail

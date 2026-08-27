@@ -193,6 +193,9 @@ mlir::LogicalResult lowerPreparedTensorProgramToCardModule(
     resultRelations.cardDDRBuffers.append(
         materialized.relations.cardDDRBuffers.begin(),
         materialized.relations.cardDDRBuffers.end());
+    resultRelations.cardDDRTransfers.append(
+        materialized.relations.cardDDRTransfers.begin(),
+        materialized.relations.cardDDRTransfers.end());
     resultRelations.partialReductionContributions.append(
         materialized.relations.partialReductionContributions.begin(),
         materialized.relations.partialReductionContributions.end());

@@ -98,6 +98,17 @@ SpatialDomainProblemResult
 buildSpatialDomainProblem(const StructuredDAGAnalysis &dag,
                           llvm::ArrayRef<TileId> availableTiles);
 
+/// Reassigns only the existing logical shards to available Tiles so exact
+/// producer-owner intersections and their destination shards are co-located
+/// whenever one injective embedding can do so. This is a deterministic
+/// proposal transformation: it does not change axes, merge choices, the raw
+/// spatial domain, or any legality result.
+mlir::FailureOr<SpatialPlan> buildGraphCoherentSpatialProposal(
+    const SpatialDomainProblem &problem, const SpatialPlan &plan,
+    const SpatialAssignment &assignment,
+    const analysis::ExactDemandProof &demand,
+    std::string *failureReason = nullptr);
+
 enum class SpatialPlanSuccessorKind : uint8_t { Successor, End, Failure };
 
 struct SpatialPlanSuccessor {
@@ -140,6 +151,15 @@ public:
   /// Deterministic topology-shaped seeds. Every returned plan is validated by
   /// `contains`; this list is visitation priority, not a legality shortlist.
   llvm::SmallVector<SpatialPlan, 4> getProposals() const;
+
+  /// Places relation-coordinated variants before their raw topology-shaped
+  /// seeds. Both forms remain ordinary domain members; demand evaluation and
+  /// the complete raw successor traversal are unchanged.
+  mlir::FailureOr<llvm::SmallVector<SpatialPlan, 8>>
+  getGraphCoherentProposals(
+      const StructuredDAGAnalysis &dag,
+      const analysis::IndexRelationLimits &limits =
+          analysis::IndexRelationLimits()) const;
 
   llvm::SmallVector<StructuredDAGNodePlacement, 16>
   getNodePlacements(const SpatialPlan &plan) const;

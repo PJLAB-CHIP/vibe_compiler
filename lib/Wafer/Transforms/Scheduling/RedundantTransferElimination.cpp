@@ -482,6 +482,8 @@ static mlir::Value getStaticFullTransferSource(mlir::Value source) {
 static mlir::FailureOr<mlir::Value>
 createReplacementView(InstrGatherScatterOp gather, mlir::Value source,
                       mlir::MemRefType sourceType, mlir::MemRefType destType) {
+  if (source.getType() != sourceType)
+    return mlir::failure();
   mlir::MemRefType replacementType =
       mlir::MemRefType::get(destType.getShape(), destType.getElementType(),
                             destType.getLayout(), sourceType.getMemorySpace());
@@ -516,8 +518,9 @@ static void eraseCreatedReplacement(mlir::Value replacement,
     definition->erase();
 }
 
-static bool tryElide(InstrGatherScatterOp gather,
-                     const mp::StructuredTimeline &timeline) {
+static bool tryElide(
+    InstrGatherScatterOp gather, const mp::StructuredTimeline &timeline,
+    llvm::function_ref<void(mlir::Value, mlir::Value)> notifyReplacement) {
   wafer::support::ScopedCompileTimingSpan totalTiming("optimization-phase",
                                                       "tryElide", "total");
   auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
@@ -692,6 +695,15 @@ static bool tryElide(InstrGatherScatterOp gather,
     eraseCreatedReplacement(*replacement, transferSource);
     return false;
   }
+  if (replacement->getType() != destRoot.getType() &&
+      llvm::any_of(uses, [&](mlir::OpOperand *use) {
+        mlir::Operation *owner = use->getOwner();
+        return !mlir::isa<WaferInstructionOpInterface, mlir::memref::LoadOp,
+                          mlir::memref::StoreOp>(owner);
+      })) {
+    eraseCreatedReplacement(*replacement, transferSource);
+    return false;
+  }
   mlir::DominanceInfo dominance(function);
   if (llvm::any_of(uses, [&](mlir::OpOperand *use) {
         return !dominance.dominates(*replacement, use->getOwner());
@@ -701,6 +713,9 @@ static bool tryElide(InstrGatherScatterOp gather,
   }
   for (mlir::OpOperand *use : uses)
     use->set(*replacement);
+  notifyReplacement(gather.getDest(), *replacement);
+  if (destRoot != gather.getDest())
+    notifyReplacement(destRoot, *replacement);
   if (raisedSourceAlignment)
     sourceAllocation->setAttr(
         "alignment",
@@ -714,7 +729,9 @@ static bool tryElide(InstrGatherScatterOp gather,
 
 } // namespace
 
-unsigned elideRedundantFullBufferTransfers(mlir::ModuleOp module) {
+unsigned elideRedundantFullBufferTransfers(
+    mlir::ModuleOp module,
+    llvm::function_ref<void(mlir::Value, mlir::Value)> notifyReplacement) {
   wafer::support::ScopedCompileTimingSpan timing(
       "optimization", "full-buffer-transfer-elision",
       "elideRedundantFullBufferTransfers");
@@ -781,7 +798,7 @@ unsigned elideRedundantFullBufferTransfers(mlir::ModuleOp module) {
         wafer::support::ScopedCompileTimingSpan elideTiming(
             "optimization-phase", "elideRedundantFullBufferTransfers",
             "tryElide");
-        elided = tryElide(gather, *timelineIt->second);
+        elided = tryElide(gather, *timelineIt->second, notifyReplacement);
       }
       if (!elided)
         continue;
@@ -798,6 +815,11 @@ unsigned elideRedundantFullBufferTransfers(mlir::ModuleOp module) {
       return eliminated;
     }
   }
+}
+
+unsigned elideRedundantFullBufferTransfers(mlir::ModuleOp module) {
+  return elideRedundantFullBufferTransfers(
+      module, [](mlir::Value, mlir::Value) {});
 }
 
 } // namespace wafer::tensor_program_scheduling

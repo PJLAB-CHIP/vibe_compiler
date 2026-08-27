@@ -51,7 +51,8 @@ frontend::FrontendProgramVerificationResult reductionDemandProgramMetadata();
 frontend::FrontendProgramVerificationResult windowDemandProgramMetadata();
 frontend::FrontendProgramVerificationResult stridedDemandProgramMetadata();
 frontend::FrontendProgramVerificationResult multiPieceDemandProgramMetadata();
-frontend::FrontendProgramVerificationResult multiProducerJoinProgramMetadata();
+frontend::FrontendProgramVerificationResult
+multiProducerJoinProgramMetadata(int64_t extent);
 
 struct ParsedProgram {
   std::shared_ptr<mlir::MLIRContext> context;
@@ -72,7 +73,7 @@ ParsedProgram parseReductionDemandProgram();
 ParsedProgram parseWindowDemandProgram();
 ParsedProgram parseStridedDemandProgram();
 ParsedProgram parseMultiPieceDemandProgram();
-ParsedProgram parseMultiProducerJoinProgram();
+ParsedProgram parseMultiProducerJoinProgram(int64_t extent);
 
 size_t countOccurrences(llvm::StringRef text, llvm::StringRef needle);
 ExecutionConfig executionConfig();

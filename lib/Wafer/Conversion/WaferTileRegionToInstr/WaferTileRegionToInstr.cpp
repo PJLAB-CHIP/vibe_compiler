@@ -36,6 +36,7 @@ using namespace wafer::tile_region_to_instr;
 
 namespace wafer {
 #define GEN_PASS_DEF_CONVERTTILEREGIONTOINSTRPASS
+#define GEN_PASS_DEF_CONVERTBUFFERIZATIONCOPIESTOINSTRPASS
 #define GEN_PASS_DEF_PLACEREQUIREDNCCJOINSPASS
 #define GEN_PASS_DEF_REBUILDREQUIREDNCCJOINSPASS
 #include "Wafer/Transforms/WaferPasses.h.inc"
@@ -47,6 +48,10 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   target.addLegalDialect<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
                          mlir::func::FuncDialect, mlir::memref::MemRefDialect,
                          mlir::scf::SCFDialect>();
+  // One-Shot function-boundary bufferization may introduce this standard
+  // materializing copy. It is an explicit source of the movement stage and
+  // must not inherit the MemRef dialect's generic legality.
+  target.addIllegalOp<mlir::memref::CopyOp>();
   target.addLegalOp<mlir::ModuleOp, TileRegionOp, TileYieldOp, SyncNCCJoinOp,
                     InstrRDMAOp, InstrWDMAOp, InstrGatherScatterOp, InstrFillOp,
                     InstrElementwiseOp, InstrBit2FpOp, InstrMaskMoveOp,
@@ -752,6 +757,24 @@ struct ConvertTileRegionToInstrPass
   }
 };
 
+struct ConvertBufferizationCopiesToInstrPass
+    : public wafer::impl::ConvertBufferizationCopiesToInstrPassBase<
+          ConvertBufferizationCopiesToInstrPass> {
+  using wafer::impl::ConvertBufferizationCopiesToInstrPassBase<
+      ConvertBufferizationCopiesToInstrPass>::
+      ConvertBufferizationCopiesToInstrPassBase;
+
+  void runOnOperation() final {
+    TileRegionToInstrLoweringSession session(*getOperation().getContext());
+    if (mlir::succeeded(
+            wafer::convertBufferizationCopiesToInstr(getOperation(), session)))
+      return;
+    getOperation().emitError(
+        "bufferization copy to instruction conversion failed");
+    signalPassFailure();
+  }
+};
+
 struct PlaceRequiredNCCJoinsPass
     : public wafer::impl::PlaceRequiredNCCJoinsPassBase<
           PlaceRequiredNCCJoinsPass> {
@@ -946,6 +969,17 @@ mlir::LogicalResult wafer::convertTileRegionToInstr(TileRegionOp region) {
                                          /*listener=*/nullptr);
 }
 
+mlir::LogicalResult wafer::convertBufferizationCopiesToInstr(
+    mlir::ModuleOp module, TileRegionToInstrLoweringSession &session,
+    mlir::RewriterBase::Listener *listener) {
+  if (!module)
+    return mlir::failure();
+  mlir::ConversionConfig config;
+  config.listener = listener;
+  return mlir::applyPartialConversion(module, session.impl->target,
+                                      session.impl->loweringPatterns, config);
+}
+
 mlir::LogicalResult
 wafer::convertTileRegionToInstrModule(mlir::ModuleOp module) {
   if (!module)
@@ -956,7 +990,9 @@ wafer::convertTileRegionToInstrModule(mlir::ModuleOp module) {
   for (TileRegionOp region : regions)
     if (mlir::failed(wafer::convertTileRegionToInstr(region, session)))
       return mlir::failure();
-  return wafer::placeRequiredNCCJoins(module);
+  if (mlir::failed(wafer::convertBufferizationCopiesToInstr(module, session)))
+    return mlir::failure();
+  return wafer::rebuildRequiredNCCJoins(module);
 }
 
 mlir::LogicalResult wafer::detail::placeRequiredNCCJoinsInPrivateFunction(

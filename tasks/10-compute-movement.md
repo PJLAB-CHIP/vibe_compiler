@@ -192,6 +192,11 @@ output DDR，它是冗余publication copy，必须在产生点消除。因actual
 layout/memory-space materialization而必要的copy可以保留，但必须从current SSA、alias、effect和exact relation得到witness，
 并由本stage物化成typed movement；不能留到Tile-to-Instr conversion为每条copy临时创建TileRegion。
 
+同一Card DDR resource在一个Tile entry的多个stage之间是mutable destination。Function block argument只表示entry初始值；一个stage
+写入并返回该resource后，后续reader和writer必须消费该stage result形成current SSA chain，不能重新使用原block argument。否则Tensor
+SSA把后续use解释为读取旧值，One-Shot Bufferization为保留该旧值而生成DDR→DDR copy；这种copy是错误串接造成的publication copy，
+不是必要movement。
+
 同一source经多段view/broadcast/materialize组成的relation可以在candidate新Card subtree中合成一次direct movement，前提是
 relation exact、其它uses/effects/alias闭合且final destination cover可证明。cleanup只能删除fully proven same-root/same-map
 冗余，不能移动fusion cut、改变route或创造spill/recompute。

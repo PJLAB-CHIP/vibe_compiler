@@ -36,6 +36,9 @@ struct StructuredNodeLocalUse {
   uint32_t consumerNodeId = 0;
   unsigned producerResult = 0;
   unsigned consumerOperand = 0;
+  /// False keeps the exact current SSA support chain (reshape/slice/assembly)
+  /// between producer and consumer. True rewires a direct typed SSA edge.
+  bool rewireDirectSSA = true;
 };
 
 /// One selected primary physical version for every shaped operand/result of a
@@ -61,6 +64,15 @@ struct StructuredNodeComputeImplementation {
       StructuredComputeImplementation::Natural;
 };
 
+/// Selected owner of one structured value entering this group from another
+/// Tile or region. The producer node/result remain semantic identity; the Tile
+/// is the exact owner chosen by the current spatial/demand plan.
+struct StructuredNodeExternalSource {
+  uint32_t producerNodeId = 0;
+  unsigned producerResult = 0;
+  TileId producerTile{0};
+};
+
 /// One already-selected group of node shards that must share one TileRegion.
 /// Every shard names the same physical Tile and a distinct structured node.
 /// Singleton groups are the ordinary single-root representation.
@@ -73,6 +85,7 @@ struct StructuredNodeShardGroup {
   /// offsets remain actual SSA facts and are not duplicated here.
   llvm::SmallVector<StructuredNodeNestedTemporalTile, 4> nestedTemporalTiles;
   llvm::SmallVector<StructuredNodeLocalUse, 4> localUses;
+  llvm::SmallVector<StructuredNodeExternalSource, 4> externalSources;
   /// Empty before physical-representation selection. A complete selected
   /// group carries exactly one entry for every shard/node.
   llvm::SmallVector<StructuredNodePhysicalRepresentation, 4> representations;

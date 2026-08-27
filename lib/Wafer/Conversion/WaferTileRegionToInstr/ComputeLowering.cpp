@@ -201,10 +201,12 @@ public:
         createDestAlloc(op.getLoc(), resultType, rewriter, op, bufferRecorder);
     if (mlir::failed(dest))
       return mlir::failure();
-    rewriter.create<InstrConvertOp>(
+    auto instr = rewriter.create<InstrConvertOp>(
         op.getLoc(), InstrConvertKindAttr::get(rewriter.getContext(), *kind),
         op.getSource(), *dest, zeroPoint, roundingMode,
         getDefaultNCCWorkerAttr(rewriter));
+    if (bufferRecorder)
+      bufferRecorder->recordLoweredOperation(op, instr);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -561,14 +563,23 @@ public:
           op.getLoc(), resultType, rewriter, op, bufferRecorder);
       if (mlir::failed(mask))
         return mlir::failure();
-      rewriter.create<InstrBit2FpOp>(op.getLoc(), inputs[0], *mask);
-      rewriter.create<InstrMaskMoveOp>(op.getLoc(), inputs[1], *mask, *dest);
+      auto bit2fp =
+          rewriter.create<InstrBit2FpOp>(op.getLoc(), inputs[0], *mask);
+      auto maskMove = rewriter.create<InstrMaskMoveOp>(
+          op.getLoc(), inputs[1], *mask, *dest);
+      if (bufferRecorder) {
+        bufferRecorder->recordLoweredOperation(op, bit2fp);
+        bufferRecorder->recordLoweredOperation(op, maskMove);
+      }
       rewriter.replaceOp(op, *dest);
       return mlir::success();
     }
 
-    rewriter.create<InstrElementwiseOp>(op.getLoc(), instrKind, inputs, *dest,
-                                        getDefaultNCCWorkerAttr(rewriter));
+    auto instr = rewriter.create<InstrElementwiseOp>(
+        op.getLoc(), instrKind, inputs, *dest,
+        getDefaultNCCWorkerAttr(rewriter));
+    if (bufferRecorder)
+      bufferRecorder->recordLoweredOperation(op, instr);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -580,8 +591,10 @@ private:
 class ElementwiseIntoLowering
     : public mlir::OpRewritePattern<ComputeElementwiseIntoOp> {
 public:
-  ElementwiseIntoLowering(mlir::MLIRContext *context)
-      : mlir::OpRewritePattern<ComputeElementwiseIntoOp>(context) {}
+  ElementwiseIntoLowering(mlir::MLIRContext *context,
+                          TileRegionToInstrBufferRecorder *bufferRecorder)
+      : mlir::OpRewritePattern<ComputeElementwiseIntoOp>(context),
+        bufferRecorder(bufferRecorder) {}
 
   mlir::LogicalResult
   matchAndRewrite(ComputeElementwiseIntoOp op,
@@ -591,12 +604,17 @@ public:
         getInstrElementwiseKindAttr(rewriter, op, op.getKindAttr());
     if (mlir::failed(instrKind))
       return mlir::failure();
-    rewriter.create<InstrElementwiseOp>(op.getLoc(), *instrKind, op.getInputs(),
-                                        op.getDest(),
-                                        getDefaultNCCWorkerAttr(rewriter));
+    auto instr = rewriter.create<InstrElementwiseOp>(
+        op.getLoc(), *instrKind, op.getInputs(), op.getDest(),
+        getDefaultNCCWorkerAttr(rewriter));
+    if (bufferRecorder)
+      bufferRecorder->recordLoweredOperation(op, instr);
     rewriter.eraseOp(op);
     return mlir::success();
   }
+
+private:
+  TileRegionToInstrBufferRecorder *bufferRecorder = nullptr;
 };
 
 class ReduceLowering : public mlir::OpRewritePattern<ComputeReduceOp>,
@@ -859,9 +877,12 @@ public:
           return mlir::failure();
         auto kind =
             InstrReduceKindAttr::get(rewriter.getContext(), *nativeKind);
-        rewriter.create<InstrReduceOp>(op.getLoc(), kind, op.getInput(), *dest,
-                                       getI64Attr(rewriter, *targetDim),
-                                       getDefaultNCCWorkerAttr(rewriter));
+        auto instr = rewriter.create<InstrReduceOp>(
+            op.getLoc(), kind, op.getInput(), *dest,
+            getI64Attr(rewriter, *targetDim),
+            getDefaultNCCWorkerAttr(rewriter));
+        if (bufferRecorder)
+          bufferRecorder->recordLoweredOperation(op, instr);
         rewriter.replaceOp(op, *dest);
         return mlir::success();
       }
@@ -1126,9 +1147,11 @@ public:
         mlir::failed(slice) || mlir::failed(dest))
       return mlir::failure();
 
-    rewriter.create<InstrFillOp>(op.getLoc(), *accumulatorA, init,
-                                 /*fill_domain=*/FillDomainAttr{},
-                                 getDefaultNCCWorkerAttr(rewriter));
+    auto initialize = rewriter.create<InstrFillOp>(
+        op.getLoc(), *accumulatorA, init,
+        /*fill_domain=*/FillDomainAttr{}, getDefaultNCCWorkerAttr(rewriter));
+    if (bufferRecorder)
+      bufferRecorder->recordLoweredOperation(op, initialize);
     mlir::Value currentAccumulator = *accumulatorA;
     mlir::Value nextAccumulator = *accumulatorB;
     for (const SliceRun &run : sliceRuns) {
@@ -1141,9 +1164,11 @@ public:
           for (InstrGatherScatterOp operation : lowered)
             bufferRecorder->recordLoweredOperation(op, operation);
         llvm::SmallVector<mlir::Value, 2> inputs{currentAccumulator, *slice};
-        rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
-                                            inputs, nextAccumulator,
-                                            getDefaultNCCWorkerAttr(rewriter));
+        auto accumulate = rewriter.create<InstrElementwiseOp>(
+            op.getLoc(), *accumulationKind, inputs, nextAccumulator,
+            getDefaultNCCWorkerAttr(rewriter));
+        if (bufferRecorder)
+          bufferRecorder->recordLoweredOperation(op, accumulate);
         std::swap(currentAccumulator, nextAccumulator);
         continue;
       }
@@ -1192,9 +1217,11 @@ public:
 
       llvm::SmallVector<mlir::Value, 2> loopInputs{loop.getRegionIterArgs()[0],
                                                    *slice};
-      rewriter.create<InstrElementwiseOp>(
+      auto accumulate = rewriter.create<InstrElementwiseOp>(
           op.getLoc(), *accumulationKind, loopInputs,
           loop.getRegionIterArgs()[1], getDefaultNCCWorkerAttr(rewriter));
+      if (bufferRecorder)
+        bufferRecorder->recordLoweredOperation(op, accumulate);
       rewriter.create<mlir::scf::YieldOp>(
           op.getLoc(), mlir::ValueRange{loop.getRegionIterArgs()[1],
                                         loop.getRegionIterArgs()[0]});
@@ -1248,6 +1275,8 @@ public:
         op.getRhsContractingDimAttr(), op.getRhsNDimAttr(),
         op.getResultBatchDimsAttr(), op.getResultMDimAttr(),
         op.getResultNDimAttr(), getDefaultNCCWorkerAttr(rewriter));
+    if (bufferRecorder)
+      bufferRecorder->recordLoweredOperation(op, instr);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -1300,10 +1329,12 @@ public:
         {weight->getDimSize(0), weight->getDimSize(1), strides[1], strides[0]});
     auto instructionDilations =
         rewriter.getDenseI64ArrayAttr({dilations[1], dilations[0]});
-    rewriter.create<InstrConvOp>(
+    auto instr = rewriter.create<InstrConvOp>(
         op.getLoc(), kind, op.getInput(), op.getWeight(), *dest, inputShape,
         weightShape, outputShape, op.getPadsAttr(), op.getUnpadsAttr(),
         kernelStrides, instructionDilations, getDefaultNCCWorkerAttr(rewriter));
+    if (bufferRecorder)
+      bufferRecorder->recordLoweredOperation(op, instr);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -1414,7 +1445,7 @@ void wafer::tile_region_to_instr::populateComputeLoweringPatterns(
     TileRegionToInstrBufferRecorder *bufferRecorder,
     MovementDescriptorCache *descriptorCache) {
   mlir::MLIRContext *context = patterns.getContext();
-  patterns.add<ElementwiseIntoLowering>(context);
+  patterns.add<ElementwiseIntoLowering>(context, bufferRecorder);
   patterns.add<GemmLowering, ConvLowering>(context, bufferRecorder);
   patterns.add<ConvertLowering, ElementwiseLowering>(context, bufferRecorder,
                                                      descriptorCache);

@@ -428,7 +428,7 @@ prepareSelectedRegionGroups(
             std::holds_alternative<ExecutionInstancePlan::TopLevel>(
                 execution->placement);
         const bool stored =
-            binding.delivery == LocalUseDelivery::StoredRegionValue;
+            binding.delivery != LocalUseDelivery::DirectNestedValue;
         if (stored != topLevel)
           return fail<std::vector<StructuredNodeShardGroup>>(
               failureReason,
@@ -452,7 +452,7 @@ prepareSelectedRegionGroups(
             std::holds_alternative<ExecutionInstancePlan::TopLevel>(
                 replicaPlan->placement);
         const bool stored =
-            binding.delivery == LocalUseDelivery::StoredRegionValue;
+            binding.delivery != LocalUseDelivery::DirectNestedValue;
         if (stored != topLevel)
           return fail<std::vector<StructuredNodeShardGroup>>(
               failureReason,
@@ -464,15 +464,73 @@ prepareSelectedRegionGroups(
       }
       selected.localUses.push_back(
           {producerNode, consumerNode->second, binding.fragment.source.index,
-           binding.fragment.use.operand});
+           binding.fragment.use.operand,
+           binding.delivery != LocalUseDelivery::ReconstructedRegionValue});
     }
 
-    for (const ExternalUseBinding &binding : group.externalBindings)
+    for (const ExternalUseBinding &binding : group.externalBindings) {
       if (isStructuredMember(group, binding.fragment))
         return fail<std::vector<StructuredNodeShardGroup>>(
             failureReason,
             "current selected construction requires same-group external "
             "delivery from the movement stage");
+      if (binding.fragment.source.kind !=
+          analysis::RootBoundaryKind::StructuredResult)
+        continue;
+      std::optional<TileId> ownerTile = binding.fragment.ownerTile;
+      if (!ownerTile && binding.fragment.ownerShard)
+        for (const analysis::RootRegionWork &work : rootWorks) {
+          if (work.id.root != binding.fragment.source.semantic ||
+              !findExecution(work, *binding.fragment.ownerShard))
+            continue;
+          if (ownerTile && *ownerTile != work.id.tile)
+            return fail<std::vector<StructuredNodeShardGroup>>(
+                failureReason,
+                "selected external shard has several physical owners");
+          ownerTile = work.id.tile;
+        }
+      if (!ownerTile && binding.fragment.reductionGroup)
+        for (const analysis::RootRegionWork &work : rootWorks) {
+          if (work.id.root != binding.fragment.source.semantic ||
+              llvm::none_of(work.merges, [&](const auto &merge) {
+                return merge.group == *binding.fragment.reductionGroup;
+              }))
+            continue;
+          if (ownerTile && *ownerTile != work.id.tile)
+            return fail<std::vector<StructuredNodeShardGroup>>(
+                failureReason,
+                "selected external reduction has several merge owners");
+          ownerTile = work.id.tile;
+        }
+      auto producerWork = ownerTile
+                              ? llvm::find_if(
+                                    rootWorks, [&](const auto &work) {
+                                      return work.id.root ==
+                                                 binding.fragment.source
+                                                     .semantic &&
+                                             work.id.tile == *ownerTile;
+                                    })
+                              : rootWorks.end();
+      const StructuredOperationNodeMapping *producerNode =
+          producerWork == rootWorks.end()
+              ? nullptr
+              : findNode(program, producerWork->rootOperation);
+      if (!ownerTile || !producerNode)
+        return fail<std::vector<StructuredNodeShardGroup>>(
+            failureReason,
+            "selected external structured value has no exact physical owner");
+      auto existing = llvm::find_if(
+          selected.externalSources,
+          [&](const StructuredNodeExternalSource &source) {
+            return source.producerNodeId == producerNode->structuredNodeId &&
+                   source.producerResult == binding.fragment.source.index &&
+                   source.producerTile == *ownerTile;
+          });
+      if (existing == selected.externalSources.end())
+        selected.externalSources.push_back(
+            {producerNode->structuredNodeId,
+             binding.fragment.source.index, *ownerTile});
+    }
 
     for (const TemporalScopePlan &scope : temporal.scopes) {
       const auto *invocation =
@@ -546,17 +604,27 @@ prepareSelectedRegionGroups(
     });
     llvm::sort(selected.localUses, [](const auto &lhs, const auto &rhs) {
       return std::tie(lhs.producerNodeId, lhs.consumerNodeId,
-                      lhs.producerResult, lhs.consumerOperand) <
+                      lhs.producerResult, lhs.consumerOperand,
+                      lhs.rewireDirectSSA) <
              std::tie(rhs.producerNodeId, rhs.consumerNodeId,
-                      rhs.producerResult, rhs.consumerOperand);
+                      rhs.producerResult, rhs.consumerOperand,
+                      rhs.rewireDirectSSA);
+    });
+    llvm::sort(selected.externalSources, [](const auto &lhs, const auto &rhs) {
+      return std::tuple(lhs.producerNodeId, lhs.producerResult,
+                        lhs.producerTile.getValue()) <
+             std::tuple(rhs.producerNodeId, rhs.producerResult,
+                        rhs.producerTile.getValue());
     });
     if (std::adjacent_find(
             selected.localUses.begin(), selected.localUses.end(),
             [](const auto &lhs, const auto &rhs) {
               return std::tie(lhs.producerNodeId, lhs.consumerNodeId,
-                              lhs.producerResult, lhs.consumerOperand) ==
+                              lhs.producerResult, lhs.consumerOperand,
+                              lhs.rewireDirectSSA) ==
                      std::tie(rhs.producerNodeId, rhs.consumerNodeId,
-                              rhs.producerResult, rhs.consumerOperand);
+                              rhs.producerResult, rhs.consumerOperand,
+                              rhs.rewireDirectSSA);
             }) != selected.localUses.end())
       return fail<std::vector<StructuredNodeShardGroup>>(
           failureReason, "selected local use relation is duplicated");

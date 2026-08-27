@@ -2,6 +2,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/SpatialDomain.h"
 
+#include "TestSupport/CodeGen/CardExecutableTestSupport.h"
 #include "TestSupport/Planning/SpatialPlanReference.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/RootRegionWorkAnalysis.h"
@@ -426,6 +427,13 @@ module {
   ASSERT_TRUE(built) << failureReason;
   const auto &root = built->domain.getProblem().getRoots().front();
   ASSERT_TRUE(root.partitionableReductionIterators.test(1));
+  auto proposals = built->domain.getProposals();
+  ASSERT_FALSE(proposals.empty());
+  ASSERT_EQ(proposals.front().nodes.front().axes.size(), 3u);
+  EXPECT_EQ(proposals.front().nodes.front().axes[1].parameter, 1)
+      << "the first constructive proposal must not add an optional spatial "
+         "reduction";
+  EXPECT_EQ(proposals.front().nodes.front().embedding.size(), 16u);
 
   SpatialPlan plan = built->domain.getFirstPlan();
   NodeSpatialPlan &node = plan.nodes.front();
@@ -886,6 +894,51 @@ module {
   overlapping.nodes[1].root = built->domain.getProblem().getRoots()[1].root;
   EXPECT_TRUE(built->domain.contains(overlapping))
       << "component-disjoint proposal must not remove overlapping raw siblings";
+}
+
+TEST_F(SpatialDomainTest,
+       GraphCoherentProposalKeepsMultiProducerClosureInTheRawDomain) {
+  for (int64_t extent : {1024, 1025}) {
+    SCOPED_TRACE(extent);
+    auto parsed =
+        wafer::compiler::testing::parseMultiProducerJoinProgram(extent);
+    ASSERT_TRUE(parsed.module);
+    const std::string before = print(parsed.module->getOperation());
+    std::string failureReason;
+    auto built = build(*parsed.module, failureReason);
+    ASSERT_TRUE(built) << failureReason;
+    llvm::SmallVector<SpatialPlan, 4> raw = built->domain.getProposals();
+    ASSERT_FALSE(raw.empty());
+    ASSERT_TRUE(llvm::any_of(raw, [](const SpatialPlan &plan) {
+      return llvm::any_of(plan.nodes, [](const NodeSpatialPlan &node) {
+        return node.embedding.size() > 1;
+      });
+    }));
+
+    auto coherent =
+        built->domain.getGraphCoherentProposals(built->dag);
+    ASSERT_TRUE(mlir::succeeded(coherent));
+    ASSERT_FALSE(coherent->empty());
+    const SpatialPlan &first = coherent->front();
+    ASSERT_TRUE(built->domain.contains(first));
+    ASSERT_EQ(first.nodes.size(), 3u);
+    ASSERT_EQ(first.nodes.front().embedding.size(), 16u);
+    for (const NodeSpatialPlan &node : first.nodes) {
+      EXPECT_EQ(node.embedding.size(), 16u);
+      std::set<int64_t> tileIds;
+      for (TileId tile : node.embedding)
+        tileIds.insert(tile.getValue());
+      EXPECT_EQ(tileIds.size(), node.embedding.size());
+    }
+    SpatialDomainEvaluation evaluation =
+        built->domain.evaluate(built->dag, first);
+    EXPECT_TRUE(evaluation.isSatisfied());
+    for (const SpatialPlan &rawPlan : raw) {
+      EXPECT_TRUE(built->domain.contains(rawPlan));
+      EXPECT_TRUE(llvm::is_contained(*coherent, rawPlan));
+    }
+    EXPECT_EQ(print(parsed.module->getOperation()), before);
+  }
 }
 
 } // namespace

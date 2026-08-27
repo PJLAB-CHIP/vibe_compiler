@@ -11,8 +11,8 @@ module {
 
 // LEAF-LABEL: func.func @identity(%arg0: memref<4xf32, #wafer.memory<ddr, tensor>>) -> memref<4xf32, #wafer.memory<ddr, tensor>>
 // LEAF-NEXT: return %arg0
-// COMPOSITE-LABEL: func.func @identity(%arg0: memref<4xf32, #wafer.memory<ddr, tensor>>) -> memref<4xf32, #wafer.memory<ddr, tensor>>
-// COMPOSITE-NEXT: return %arg0
+// COMPOSITE-LABEL: func.func @identity(%arg0: memref<4xf32, #wafer.memory<ddr, tensor>>) {
+// COMPOSITE-NEXT: return
 // SPM-LABEL: func.func @identity(%arg0: tensor<4xf32>) -> tensor<4xf32>
 // SPM-NEXT: return %arg0
 // DDR-LABEL: func.func @identity(%arg0: tensor<4xf32>) -> tensor<4xf32>

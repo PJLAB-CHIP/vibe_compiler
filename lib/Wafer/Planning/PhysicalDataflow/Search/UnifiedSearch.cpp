@@ -2,6 +2,9 @@
 
 #include "Wafer/Planning/PhysicalDataflow/Search/UnifiedSearch.h"
 
+#include "Wafer/Planning/PhysicalDataflow/Search/PlanningProfile.h"
+#include "Wafer/Support/CompileTiming.h"
+
 #include "llvm/ADT/StringRef.h"
 
 #include <limits>
@@ -19,12 +22,14 @@ struct TemporalFeedbackFrame {
   std::vector<SemanticRootKey> causalRoots;
 };
 
+struct StructuralCandidateFrame {
+  TemporalState state;
+  std::vector<SemanticRootKey> refinementRoots;
+};
+
 using FrontierFrame =
     std::variant<SpatialFrame, RegionContinuation, TemporalContinuation,
-                 RepresentationContinuation, MovementContinuation,
-                 StorageContinuation, ExecutionStructureContinuation,
-                 StructureSpecificStorageContinuation, ScheduleContinuation,
-                 ScheduledState, TemporalFeedbackFrame>;
+                 StructuralCandidateFrame, TemporalFeedbackFrame>;
 
 bool isTerminal(UnifiedSearchResumeStatus status) {
   return status != UnifiedSearchResumeStatus::Paused;
@@ -48,8 +53,13 @@ struct UnifiedSearchSession::Impl {
             std::numeric_limits<uint64_t>::max(), options.costCohort,
             ExactRejectionCachePolicy::Enabled}),
         tilePipelineParallelism(tilePipelineParallelism),
+        profile(options.profile),
         captureTileDataflowIRTrace(captureTileDataflowIRTrace), trace(trace) {
     frontier.emplace_back(SpatialFrame{});
+    if (profile) {
+      profile->beginSearch();
+      profile->observeFrontierDepth(frontier.size());
+    }
   }
 
   template <typename State> void recordPrefix(const State &state) {
@@ -65,11 +75,6 @@ struct UnifiedSearchSession::Impl {
   void pauseIndeterminate(llvm::StringRef detail) {
     status = UnifiedSearchResumeStatus::Indeterminate;
     failureDetail = detail.str();
-  }
-
-  void markUnsupportedAndPop() {
-    sawUnsupportedPrefix = true;
-    frontier.pop_back();
   }
 
   void stepSpatial() {
@@ -132,11 +137,14 @@ struct UnifiedSearchSession::Impl {
       }
       recordPrefix(*state);
       frontier.emplace_back(
-          planningSession.createRepresentationContinuation(std::move(*state)));
+          StructuralCandidateFrame{std::move(*state), {}});
       return;
     }
     case TemporalExpansionKind::Unsupported:
       sawUnsupportedPrefix = true;
+      if (wafer::support::getActiveCompileTimingSession())
+        diagnostics << "wafer-compile: temporal-prefix unsupported detail="
+                    << next.getDetail() << '\n';
       if (continuation.isExhausted())
         frontier.pop_back();
       return;
@@ -152,155 +160,13 @@ struct UnifiedSearchSession::Impl {
     }
   }
 
-  void stepRepresentation(RepresentationContinuation &continuation) {
-    ++work.successorSteps;
-    RepresentationExpansionResult next =
-        planningSession.resumeRepresentation(continuation);
-    switch (next.getKind()) {
-    case RepresentationExpansionKind::State: {
-      std::optional<RepresentationState> state = next.takeState();
-      if (!state) {
-        fail("representation continuation lost its state");
-        return;
-      }
-      recordPrefix(*state);
-      frontier.emplace_back(
-          planningSession.createMovementContinuation(std::move(*state)));
-      return;
-    }
-    case RepresentationExpansionKind::Unsupported:
-      markUnsupportedAndPop();
-      return;
-    case RepresentationExpansionKind::ParentExhausted:
-      frontier.pop_back();
-      return;
-    case RepresentationExpansionKind::CompilerBug:
-      fail(next.getDetail());
-      return;
-    }
-  }
-
-  void stepMovement(MovementContinuation &continuation) {
-    ++work.successorSteps;
-    MovementExpansionResult next = planningSession.resumeMovement(continuation);
-    switch (next.getKind()) {
-    case MovementExpansionKind::State: {
-      std::optional<MovementState> state = next.takeState();
-      if (!state) {
-        fail("movement continuation lost its state");
-        return;
-      }
-      recordPrefix(*state);
-      frontier.emplace_back(
-          planningSession.createStorageContinuation(std::move(*state)));
-      return;
-    }
-    case MovementExpansionKind::Unsupported:
-      markUnsupportedAndPop();
-      return;
-    case MovementExpansionKind::ParentExhausted:
-      frontier.pop_back();
-      return;
-    case MovementExpansionKind::CompilerBug:
-      fail(next.getDetail());
-      return;
-    }
-  }
-
-  void stepStorage(StorageContinuation &continuation) {
-    ++work.successorSteps;
-    StorageExpansionResult next = planningSession.resumeStorage(continuation);
-    switch (next.getKind()) {
-    case StorageExpansionKind::State: {
-      std::optional<InitialBufferState> state = next.takeState();
-      if (!state) {
-        fail("initial storage continuation lost its state");
-        return;
-      }
-      recordPrefix(*state);
-      frontier.emplace_back(
-          planningSession.createExecutionStructureContinuation(
-              std::move(*state)));
-      return;
-    }
-    case StorageExpansionKind::Unsupported:
-      markUnsupportedAndPop();
-      return;
-    case StorageExpansionKind::Indeterminate:
-      pauseIndeterminate(next.getDetail());
-      return;
-    case StorageExpansionKind::ParentExhausted:
-      frontier.pop_back();
-      return;
-    case StorageExpansionKind::CompilerBug:
-      fail(next.getDetail());
-      return;
-    }
-  }
-
-  void stepExecutionStructure(ExecutionStructureContinuation &continuation) {
-    ++work.successorSteps;
-    std::string detail;
-    auto next = planningSession.resumeExecutionStructure(continuation, &detail);
-    if (mlir::failed(next)) {
-      fail(detail.empty() ? "execution-structure continuation failed" : detail);
-      return;
-    }
-    if (!*next) {
-      frontier.pop_back();
-      return;
-    }
-    recordPrefix(**next);
-    frontier.emplace_back(
-        planningSession.createStructureSpecificStorageContinuation(
-            std::move(**next)));
-  }
-
-  void
-  stepStructureStorage(StructureSpecificStorageContinuation &continuation) {
-    ++work.successorSteps;
-    std::string detail;
-    auto next =
-        planningSession.resumeStructureSpecificStorage(continuation, &detail);
-    if (mlir::failed(next)) {
-      fail(detail.empty() ? "post-K storage continuation failed" : detail);
-      return;
-    }
-    if (!*next) {
-      frontier.pop_back();
-      return;
-    }
-    recordPrefix(**next);
-    frontier.emplace_back(
-        planningSession.createScheduleContinuation(std::move(**next)));
-  }
-
-  void stepSchedule(ScheduleContinuation &continuation) {
-    ++work.successorSteps;
-    std::string detail;
-    auto next = planningSession.resumeSchedule(continuation, &detail);
-    if (mlir::failed(next)) {
-      fail(detail.empty() ? "schedule continuation failed" : detail);
-      return;
-    }
-    if (!*next) {
-      frontier.pop_back();
-      return;
-    }
-    recordPrefix(**next);
-    frontier.emplace_back(std::move(**next));
-  }
-
-  void stepCandidate(ScheduledState state) {
-    ++work.scheduledStatesVisited;
-    std::string keyFailure;
-    auto key = CompleteCandidateKey::create(state, &keyFailure);
-    if (mlir::failed(key)) {
-      fail(keyFailure.empty() ? "complete state has no valid semantic key"
-                              : keyFailure);
-      return;
-    }
-    CandidateReservation reservation = controller.reserve(*key);
+  void stepCandidate(StructuralCandidateFrame frame) {
+    TemporalState state = std::move(frame.state);
+    std::vector<SemanticRootKey> inheritedRoots =
+        std::move(frame.refinementRoots);
+    ++work.structuralStatesActualized;
+    StructuralCandidateKey key = StructuralCandidateKey::create(state);
+    CandidateReservation reservation = controller.reserve(key);
     if (reservation == CandidateReservation::Duplicate) {
       ++work.duplicateCompleteKeys;
       return;
@@ -312,24 +178,22 @@ struct UnifiedSearchSession::Impl {
       return;
     }
     FullFeasibilityStatistics actualStatistics;
-    FullFeasibilityResult actual = planningSession.evaluateScheduledState(
-        tensorProgram, state, program, executionConfig, diagnostics,
-        programData, &actualStatistics, tilePipelineParallelism,
-        captureTileDataflowIRTrace);
+    FullFeasibilityResult actual = evaluateCurrentStructuralCandidate(
+        tensorProgram, planningSession.getProblem(), state, program,
+        executionConfig, diagnostics, programData, &actualStatistics,
+        tilePipelineParallelism, captureTileDataflowIRTrace);
     work.candidateActualizations += actualStatistics.candidateActualizations;
     const FullFeasibilityStatus actualStatus = actual.status;
+    if (profile)
+      profile->recordCandidateActualization(
+          actualStatistics.candidateActualizations,
+          actualStatus == FullFeasibilityStatus::Accepted);
     const std::string actualDetail = actual.detail;
     std::vector<SemanticRootKey> causalRoots = actual.causalRoots;
-    TemporalState temporal = state.getBufferState()
-                                 .getExecutionStructureState()
-                                 .getInitialBufferState()
-                                 .getMovementState()
-                                 .getRepresentationState()
-                                 .getTemporalState();
     if (trace)
-      trace->candidates.push_back({*key, actualStatus});
+      trace->candidates.push_back({key, actualStatus});
     CandidateRecordOutcome recorded =
-        controller.record(*key, std::move(actual));
+        controller.record(key, std::move(actual));
     if (recorded == CandidateRecordOutcome::CompilerBug) {
       fail("actual-result controller rejected a typed actual result");
       return;
@@ -346,14 +210,19 @@ struct UnifiedSearchSession::Impl {
     if (recorded == CandidateRecordOutcome::ExactRejection &&
         !causalRoots.empty())
       frontier.emplace_back(
-          TemporalFeedbackFrame{std::move(temporal), std::move(causalRoots)});
+          TemporalFeedbackFrame{std::move(state), std::move(causalRoots)});
+    else if (recorded == CandidateRecordOutcome::Unsupported &&
+             !inheritedRoots.empty())
+      frontier.emplace_back(
+          TemporalFeedbackFrame{std::move(state), std::move(inheritedRoots)});
   }
 
   void stepTemporalFeedback(TemporalFeedbackFrame feedback) {
     ++work.successorSteps;
     std::string detail;
     auto refined = planningSession.refineTemporalStateFromActualFeedback(
-        feedback.state, feedback.causalRoots, &detail);
+        feedback.state, feedback.causalRoots, &detail,
+        /*proposalRefinementSteps=*/3);
     if (mlir::failed(refined)) {
       fail(detail.empty() ? "actual temporal proposal failed" : detail);
       return;
@@ -361,8 +230,8 @@ struct UnifiedSearchSession::Impl {
     if (!*refined)
       return;
     recordPrefix(**refined);
-    frontier.emplace_back(
-        planningSession.createRepresentationContinuation(std::move(**refined)));
+    frontier.emplace_back(StructuralCandidateFrame{
+        std::move(**refined), std::move(feedback.causalRoots)});
   }
 
   void step() {
@@ -382,36 +251,6 @@ struct UnifiedSearchSession::Impl {
       stepTemporal(*continuation);
       return;
     }
-    if (auto *continuation =
-            std::get_if<RepresentationContinuation>(&frontier.back())) {
-      stepRepresentation(*continuation);
-      return;
-    }
-    if (auto *continuation =
-            std::get_if<MovementContinuation>(&frontier.back())) {
-      stepMovement(*continuation);
-      return;
-    }
-    if (auto *continuation =
-            std::get_if<StorageContinuation>(&frontier.back())) {
-      stepStorage(*continuation);
-      return;
-    }
-    if (auto *continuation =
-            std::get_if<ExecutionStructureContinuation>(&frontier.back())) {
-      stepExecutionStructure(*continuation);
-      return;
-    }
-    if (auto *continuation = std::get_if<StructureSpecificStorageContinuation>(
-            &frontier.back())) {
-      stepStructureStorage(*continuation);
-      return;
-    }
-    if (auto *continuation =
-            std::get_if<ScheduleContinuation>(&frontier.back())) {
-      stepSchedule(*continuation);
-      return;
-    }
     if (std::holds_alternative<TemporalFeedbackFrame>(frontier.back())) {
       TemporalFeedbackFrame feedback =
           std::move(std::get<TemporalFeedbackFrame>(frontier.back()));
@@ -419,9 +258,14 @@ struct UnifiedSearchSession::Impl {
       stepTemporalFeedback(std::move(feedback));
       return;
     }
-    ScheduledState state = std::move(std::get<ScheduledState>(frontier.back()));
-    frontier.pop_back();
-    stepCandidate(std::move(state));
+    if (std::holds_alternative<StructuralCandidateFrame>(frontier.back())) {
+      StructuralCandidateFrame frame =
+          std::move(std::get<StructuralCandidateFrame>(frontier.back()));
+      frontier.pop_back();
+      stepCandidate(std::move(frame));
+      return;
+    }
+    fail("current search frontier contains an unknown structural frame");
   }
 
   UnifiedSearchResumeResult resume(uint64_t credits) {
@@ -437,6 +281,8 @@ struct UnifiedSearchSession::Impl {
         return {status, consumed};
       }
       step();
+      if (profile)
+        profile->observeFrontierDepth(frontier.size());
       ++consumed;
       if (isTerminal(status))
         return {status, consumed};
@@ -467,8 +313,12 @@ struct UnifiedSearchSession::Impl {
     result.frontierExhausted =
         status == UnifiedSearchResumeStatus::FrontierExhausted;
     result.failureDetail = std::move(failureDetail);
-    if (trace && result.control.winner)
-      ++trace->winnerHandoffs;
+    if (result.control.winner) {
+      if (trace)
+        ++trace->winnerHandoffs;
+      if (profile)
+        profile->recordWinnerHandoff();
+    }
     frontier.clear();
     finalized = true;
     return result;
@@ -483,6 +333,7 @@ struct UnifiedSearchSession::Impl {
   SearchTerminationPolicy termination;
   ActualResultController controller;
   unsigned tilePipelineParallelism;
+  PlanningProfileSink *profile = nullptr;
   bool captureTileDataflowIRTrace;
   UnifiedSearchTrace *trace = nullptr;
   std::vector<FrontierFrame> frontier;

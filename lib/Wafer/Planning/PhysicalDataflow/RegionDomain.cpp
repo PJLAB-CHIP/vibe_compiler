@@ -4,6 +4,7 @@
 
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
@@ -329,9 +330,12 @@ RegionDomain::create(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
            std::pair<analysis::RootRegionWorkId, ExecutionInstanceId>>
       consumers;
   std::map<analysis::RootRegionWorkId, bool> replicaAllowedByWork;
-  for (const analysis::RootRegionWork &work : rootWorks)
+  std::map<analysis::RootRegionWorkId, const analysis::RootRegionWork *> works;
+  for (const analysis::RootRegionWork &work : rootWorks) {
+    works.emplace(work.id, &work);
     replicaAllowedByWork[work.id] =
         work.rootOperation && mlir::isMemoryEffectFree(work.rootOperation);
+  }
   for (const RegionGroupPlan &group : base->groups)
     for (const ExecutionInstancePlan &execution : group.executions) {
       if (const auto *root =
@@ -380,7 +384,23 @@ RegionDomain::create(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
         continue;
       const bool allowsRequiredLocal =
           producer->first.tile == consumer->second.first.tile;
-      const bool allowsDirect = replicaAllowedByWork[producer->first];
+      const analysis::RootRegionWork *producerWork = works[producer->first];
+      const analysis::RootRegionWork *consumerWork =
+          works[consumer->second.first];
+      const bool directSSA =
+          producerWork && consumerWork && producerWork->rootOperation &&
+          consumerWork->rootOperation &&
+          external.fragment.source.index <
+              producerWork->rootOperation->getNumResults() &&
+          external.fragment.use.operand <
+              consumerWork->rootOperation->getNumOperands() &&
+          consumerWork->rootOperation->getOperand(
+              external.fragment.use.operand) ==
+              producerWork->rootOperation->getResult(
+                  external.fragment.source.index);
+      const bool requiresReconstruction = !directSSA;
+      const bool allowsDirect =
+          directSSA && replicaAllowedByWork[producer->first];
       const bool allowsReplica =
           isRootExecution(producer->second) && allowsDirect;
       if (!allowsRequiredLocal && !allowsReplica)
@@ -388,7 +408,8 @@ RegionDomain::create(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
       fragments.push_back({external.fragment, producer->first,
                            consumer->second.first, producer->second,
                            consumer->second.second, allowsRequiredLocal,
-                           allowsDirect, allowsReplica});
+                           requiresReconstruction, allowsDirect,
+                           allowsReplica});
     }
   }
   llvm::sort(fragments, [](const LocalFragment &lhs, const LocalFragment &rhs) {
@@ -407,6 +428,24 @@ RegionDomain::create(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
   std::map<int64_t, llvm::SmallVector<analysis::RootRegionWorkId, 8>> byTile;
   for (const RegionGroupPlan &group : base->groups)
     byTile[group.tile.getValue()].push_back(group.mandatoryRoots.front());
+  llvm::SmallVector<mlir::Operation *, 128> orderedRoots;
+  for (const analysis::RootRegionWork &work : rootWorks)
+    if (work.rootOperation &&
+        !llvm::is_contained(orderedRoots, work.rootOperation))
+      orderedRoots.push_back(work.rootOperation);
+  llvm::sort(orderedRoots, [](mlir::Operation *lhs, mlir::Operation *rhs) {
+    return lhs != rhs && lhs->isBeforeInBlock(rhs);
+  });
+  llvm::DenseMap<mlir::Operation *, uint32_t> rootOrdinals;
+  for (auto [ordinal, operation] : llvm::enumerate(orderedRoots))
+    rootOrdinals.try_emplace(operation, static_cast<uint32_t>(ordinal));
+  std::map<analysis::RootRegionWorkId, uint32_t> workOrdinals;
+  for (const analysis::RootRegionWork &work : rootWorks) {
+    auto ordinal = rootOrdinals.find(work.rootOperation);
+    if (ordinal == rootOrdinals.end())
+      return mlir::failure();
+    workOrdinals.emplace(work.id, ordinal->second);
+  }
   llvm::SmallVector<Component, 16> components;
   for (auto &[tileValue, works] : byTile) {
     llvm::sort(works);
@@ -442,7 +481,10 @@ RegionDomain::create(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
             worklist.push_back(candidate);
           }
       }
-      llvm::sort(indices);
+      llvm::sort(indices, [&](size_t lhs, size_t rhs) {
+        return std::tie(workOrdinals.at(works[lhs]), works[lhs]) <
+               std::tie(workOrdinals.at(works[rhs]), works[rhs]);
+      });
       Component component;
       component.tile = TileId(tileValue);
       for (size_t index : indices)
@@ -667,13 +709,26 @@ RegionDomain::buildPlan(llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
       group.replicas.push_back(replica);
       producerId = replica.id;
     }
-    group.localBindings.push_back({fragment->fragment, std::move(producerId),
-                                   direct
-                                       ? LocalUseDelivery::DirectNestedValue
-                                       : LocalUseDelivery::StoredRegionValue});
+    LocalUseDelivery delivery =
+        direct ? LocalUseDelivery::DirectNestedValue
+               : fragment->requiresReconstruction
+                     ? LocalUseDelivery::ReconstructedRegionValue
+                     : LocalUseDelivery::StoredRegionValue;
+    group.localBindings.push_back(
+        {fragment->fragment, std::move(producerId), delivery});
   }
 
   for (RegionGroupPlan &group : plan.groups) {
+    for (const ExternalUseBinding &binding : group.externalBindings)
+      if (binding.fragment.source.kind ==
+              analysis::RootBoundaryKind::StructuredResult &&
+          llvm::any_of(group.mandatoryRoots,
+                       [&](const analysis::RootRegionWorkId &work) {
+                         return work.root ==
+                                binding.fragment.source.semantic;
+                       }))
+        return std::nullopt;
+
     for (const LocalUseBinding &binding : group.localBindings) {
       if (const auto *required =
               std::get_if<ExecutionInstanceId>(&binding.producer)) {
@@ -683,7 +738,7 @@ RegionDomain::buildPlan(llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
             });
         if (execution == group.executions.end())
           return std::nullopt;
-        if ((binding.delivery == LocalUseDelivery::StoredRegionValue) !=
+        if ((binding.delivery != LocalUseDelivery::DirectNestedValue) !=
             std::holds_alternative<ExecutionInstancePlan::TopLevel>(
                 execution->placement))
           return std::nullopt;
@@ -721,6 +776,57 @@ RegionDomain::buildPlan(llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
     llvm::sort(group.localBindings);
     llvm::sort(group.externalBindings);
   }
+
+  std::vector<std::set<size_t>> successors(plan.groups.size());
+  std::vector<size_t> indegree(plan.groups.size(), 0);
+  for (auto [consumerIndex, group] : llvm::enumerate(plan.groups)) {
+    for (const ExternalUseBinding &binding : group.externalBindings) {
+      if (binding.fragment.source.kind !=
+          analysis::RootBoundaryKind::StructuredResult)
+        continue;
+      std::set<size_t> producers;
+      for (const LocalFragment &fragment : localFragments) {
+        if (!(fragment.fragment == binding.fragment))
+          continue;
+        auto producer = groupByWork.find(fragment.producerWork);
+        if (producer != groupByWork.end())
+          producers.insert(producer->second);
+      }
+      if (producers.empty())
+        for (auto [producerIndex, candidate] : llvm::enumerate(plan.groups)) {
+          if (binding.fragment.ownerTile &&
+              candidate.tile != *binding.fragment.ownerTile)
+            continue;
+          if (llvm::any_of(candidate.mandatoryRoots,
+                           [&](const analysis::RootRegionWorkId &work) {
+                             return work.root ==
+                                    binding.fragment.source.semantic;
+                           }))
+            producers.insert(producerIndex);
+        }
+      for (size_t producerIndex : producers) {
+        if (producerIndex == consumerIndex)
+          return std::nullopt;
+        if (successors[producerIndex].insert(consumerIndex).second)
+          ++indegree[consumerIndex];
+      }
+    }
+  }
+  std::set<size_t> ready;
+  for (auto [index, degree] : llvm::enumerate(indegree))
+    if (degree == 0)
+      ready.insert(index);
+  size_t visited = 0;
+  while (!ready.empty()) {
+    size_t current = *ready.begin();
+    ready.erase(ready.begin());
+    ++visited;
+    for (size_t successor : successors[current])
+      if (--indegree[successor] == 0)
+        ready.insert(successor);
+  }
+  if (visited != plan.groups.size())
+    return std::nullopt;
   return plan;
 }
 
@@ -803,7 +909,8 @@ RegionDomain::getCursor(const RegionPlan &plan) const {
     }
     if (externalCount != 0 || local == group->localBindings.end())
       return std::nullopt;
-    const bool direct = local->delivery == LocalUseDelivery::DirectNestedValue;
+    const bool direct =
+        local->delivery == LocalUseDelivery::DirectNestedValue;
     if (const auto *required =
             std::get_if<ExecutionInstanceId>(&local->producer)) {
       if (!(*required == fragment->producer))
@@ -841,9 +948,6 @@ std::vector<RegionPlan> RegionDomain::getProposals() const {
 
   llvm::SmallVector<llvm::SmallVector<uint32_t, 8>, 8> singleton =
       getFirstLabels();
-  append(buildPlan(singleton,
-                   llvm::SmallVector<uint8_t, 16>(
-                       getChoiceFragments(singleton).size(), 0)));
 
   llvm::SmallVector<llvm::SmallVector<uint32_t, 8>, 8> maximal;
   for (const Component &component : components)
@@ -880,8 +984,133 @@ std::vector<RegionPlan> RegionDomain::getProposals() const {
     return choices;
   };
 
+  // Grow connected groups from the singleton point. Each tentative union is
+  // accepted only when it does not place an unlocalizable structured boundary
+  // inside the group. Connectivity is preserved because unions follow a
+  // potential local edge; the complete RegionPlan is constructed and checked
+  // once after the incremental partition is closed.
+  llvm::SmallVector<llvm::SmallVector<uint32_t, 8>, 8> coherent = singleton;
+  for (auto [componentIndex, component] : llvm::enumerate(components)) {
+    const size_t count = component.works.size();
+    std::map<DemandFragmentId, size_t> localRealizations;
+    for (const LocalFragment &fragment : localFragments)
+      if (fragment.allowsRequiredLocal)
+        ++localRealizations[fragment.fragment];
+    llvm::SmallVector<std::pair<size_t, size_t>, 8> cannotLink;
+    llvm::SmallVector<std::pair<size_t, size_t>, 32> directedEdges;
+    auto findWorkIndex = [&](const analysis::RootRegionWorkId &work)
+        -> std::optional<size_t> {
+      auto found = llvm::find(component.works, work);
+      return found == component.works.end()
+                 ? std::nullopt
+                 : std::optional<size_t>(
+                       std::distance(component.works.begin(), found));
+    };
+    for (const LocalFragment &fragment : localFragments) {
+      std::optional<size_t> producer = findWorkIndex(fragment.producerWork);
+      std::optional<size_t> consumer = findWorkIndex(fragment.consumerWork);
+      if (producer && consumer && *producer != *consumer &&
+          !llvm::is_contained(directedEdges,
+                              std::make_pair(*producer, *consumer)))
+        directedEdges.emplace_back(*producer, *consumer);
+    }
+    for (const RegionGroupPlan &base : baseGroups) {
+      if (base.tile != component.tile || base.mandatoryRoots.size() != 1)
+        continue;
+      auto consumer = llvm::find(component.works,
+                                 base.mandatoryRoots.front());
+      if (consumer == component.works.end())
+        continue;
+      for (const ExternalUseBinding &binding : base.externalBindings) {
+        if (binding.fragment.source.kind !=
+                analysis::RootBoundaryKind::StructuredResult ||
+            localRealizations[binding.fragment] == 1)
+          continue;
+        auto producer = llvm::find_if(
+            component.works, [&](const analysis::RootRegionWorkId &work) {
+              return work.root == binding.fragment.source.semantic;
+            });
+        if (producer == component.works.end() || producer == consumer)
+          continue;
+        size_t lhs = std::distance(component.works.begin(), producer);
+        size_t rhs = std::distance(component.works.begin(), consumer);
+        if (rhs < lhs)
+          std::swap(lhs, rhs);
+        if (!llvm::is_contained(cannotLink, std::make_pair(lhs, rhs)))
+          cannotLink.emplace_back(lhs, rhs);
+        size_t producerIndex =
+            std::distance(component.works.begin(), producer);
+        size_t consumerIndex =
+            std::distance(component.works.begin(), consumer);
+        if (!llvm::is_contained(
+                directedEdges,
+                std::make_pair(producerIndex, consumerIndex)))
+          directedEdges.emplace_back(producerIndex, consumerIndex);
+      }
+    }
+    auto isAcyclic = [&](llvm::ArrayRef<uint32_t> labels) {
+      const uint32_t groupCount = *llvm::max_element(labels) + 1;
+      std::vector<std::set<uint32_t>> successors(groupCount);
+      std::vector<uint32_t> indegree(groupCount, 0);
+      for (const auto &[producer, consumer] : directedEdges) {
+        uint32_t source = labels[producer];
+        uint32_t destination = labels[consumer];
+        if (source != destination &&
+            successors[source].insert(destination).second)
+          ++indegree[destination];
+      }
+      std::set<uint32_t> ready;
+      for (auto [group, degree] : llvm::enumerate(indegree))
+        if (degree == 0)
+          ready.insert(static_cast<uint32_t>(group));
+      uint32_t visited = 0;
+      while (!ready.empty()) {
+        uint32_t current = *ready.begin();
+        ready.erase(ready.begin());
+        ++visited;
+        for (uint32_t successor : successors[current])
+          if (--indegree[successor] == 0)
+            ready.insert(successor);
+      }
+      return visited == groupCount;
+    };
+    for (size_t lhs = 0; lhs < count; ++lhs) {
+      for (size_t rhs = lhs + 1; rhs < count; ++rhs) {
+        if (!component.potentialEdges[lhs * count + rhs] ||
+            coherent[componentIndex][lhs] ==
+                coherent[componentIndex][rhs])
+          continue;
+        auto trial = coherent;
+        const uint32_t kept = trial[componentIndex][lhs];
+        const uint32_t removed = trial[componentIndex][rhs];
+        for (uint32_t &label : trial[componentIndex])
+          if (label == removed)
+            label = kept;
+        std::map<uint32_t, uint32_t> normalized;
+        for (uint32_t &label : trial[componentIndex]) {
+          auto [entry, inserted] = normalized.try_emplace(
+              label, static_cast<uint32_t>(normalized.size()));
+          (void)inserted;
+          label = entry->second;
+        }
+        if (llvm::none_of(cannotLink, [&](const auto &edge) {
+              return trial[componentIndex][edge.first] ==
+                     trial[componentIndex][edge.second];
+            }) &&
+            isAcyclic(trial[componentIndex]))
+          coherent = std::move(trial);
+      }
+    }
+  }
+
+  append(buildPlan(coherent,
+                   makeChoices(coherent, /*stored required=*/1)));
+
   append(buildPlan(maximal, makeChoices(maximal, /*stored required=*/1)));
   append(buildPlan(maximal, makeChoices(maximal, /*direct required=*/2)));
+  append(buildPlan(singleton,
+                   llvm::SmallVector<uint8_t, 16>(
+                       getChoiceFragments(singleton).size(), 0)));
   append(buildPlan(singleton,
                    makeChoices(singleton, /*stored replicas=*/3)));
   append(buildPlan(singleton,

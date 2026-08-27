@@ -279,9 +279,9 @@ TEST_F(PlanningSessionTest,
       }));
   EXPECT_TRUE(incomplete->getState().getBufferPlan().slotFamilies.empty());
   EXPECT_FALSE(incomplete->getState().getSchedulePlan().controlOrders.empty());
-  EXPECT_EQ(incomplete->getState().getSchedulePlan().structure,
+  EXPECT_EQ(incomplete->getState().getSchedulePlan().getStructure(),
             incomplete->getState().getExecutionStructurePlan());
-  EXPECT_EQ(incomplete->getState().getSchedulePlan().buffers,
+  EXPECT_EQ(incomplete->getState().getSchedulePlan().getBuffers(),
             incomplete->getState().getBufferPlan());
   EXPECT_EQ(print(module->getOperation()), before);
 

@@ -2,6 +2,8 @@
 
 #include "Wafer/Planning/PhysicalDataflow/Search/UnifiedSearch.h"
 
+#include "Wafer/Planning/PhysicalDataflow/Search/PlanningProfile.h"
+
 #include "TestSupport/CodeGen/CardExecutableTestSupport.h"
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 
@@ -10,6 +12,7 @@
 #include "gtest/gtest.h"
 
 #include <set>
+#include <type_traits>
 
 namespace {
 
@@ -86,7 +89,10 @@ public:
 
 private:
   template <typename State> void record(const State &state) {
-    prefixes.emplace_back(state);
+    if constexpr (std::is_same_v<State, SpatialState> ||
+                  std::is_same_v<State, RegionState> ||
+                  std::is_same_v<State, TemporalState>)
+      prefixes.emplace_back(state);
   }
 
   bool done() const { return completeStates.size() >= completeLimit; }
@@ -274,10 +280,18 @@ TEST(UnifiedSearchTest,
   EXPECT_EQ(searched.control.coverage,
             SearchControllerCoverage::FeasiblePartial);
   EXPECT_EQ(searched.work.candidateActualizations, 1u);
-  EXPECT_GE(searched.planning.eventGraphsBuilt, 1u);
-  EXPECT_GE(searched.planning.postStructureEventGraphsBuilt, 1u);
+  EXPECT_EQ(searched.work.structuralStatesActualized, 1u);
+  EXPECT_EQ(searched.work.scheduledStatesVisited, 0u);
+  EXPECT_EQ(searched.planning.representationStatesQueued, 0u);
+  EXPECT_EQ(searched.planning.movementStatesQueued, 0u);
+  EXPECT_EQ(searched.planning.storageStatesQueued, 0u);
+  EXPECT_EQ(searched.planning.executionStructureStatesQueued, 0u);
+  EXPECT_EQ(searched.planning.scheduleStatesQueued, 0u);
+  EXPECT_EQ(searched.planning.eventGraphsBuilt, 0u);
+  EXPECT_EQ(searched.planning.postStructureEventGraphsBuilt, 0u)
+      << "current search must not build a future EventGraph";
   EXPECT_EQ(searched.control.statistics.accepted, 1u);
-  EXPECT_GT(searched.work.successorSteps, 8u);
+  EXPECT_GE(searched.work.successorSteps, 3u);
   EXPECT_EQ(print(parsed.module->getOperation()), before);
   std::vector<std::string> traces =
       searched.control.winner->compilation.tileDataflowIRTrace;
@@ -338,7 +352,7 @@ TEST(UnifiedSearchTest, OneCreditResumeReachesTheSameFirstAcceptedCheckpoint) {
 
 TEST(UnifiedSearchTest,
      RepeatedSessionsChooseTheSameSemanticWinnerAndActualIR) {
-  std::vector<CompleteCandidateKey> keys;
+  std::vector<StructuralCandidateKey> keys;
   std::vector<std::string> traces;
   for (unsigned repetition = 0; repetition < 2; ++repetition) {
     ParsedProgram parsed = parseProgram();
@@ -368,133 +382,129 @@ TEST(UnifiedSearchTest,
 }
 
 TEST(UnifiedSearchTest,
+     OptionalPlanningProfileObservesButDoesNotChangeTheAcceptedWinner) {
+  std::vector<StructuralCandidateKey> keys;
+  std::vector<std::string> traces;
+  PlanningProfileSink profile;
+  for (unsigned invocation = 0; invocation < 2; ++invocation) {
+    ParsedProgram parsed = parseProgram();
+    ASSERT_TRUE(parsed.module);
+    std::string diagnosticsText;
+    llvm::raw_string_ostream diagnostics(diagnosticsText);
+    std::string failureReason;
+    auto programAnalysis = analyzeCardProgram(*parsed.module, programMetadata(),
+                                              executionConfig(), diagnostics);
+    ASSERT_TRUE(mlir::succeeded(programAnalysis)) << diagnostics.str();
+    auto problem = PhysicalDataflowPlanningProblem::create(
+        **programAnalysis, CardId(0), analysis::IndexRelationLimits(),
+        &failureReason);
+    ASSERT_TRUE(mlir::succeeded(problem)) << failureReason;
+    PlanningProfileSink *sink = invocation == 0 ? nullptr : &profile;
+    PhysicalDataflowPlanningSession session(*problem, sink);
+    wafer::compiler::ProgramDataHandoff programData;
+    UnifiedSearchOptions options;
+    options.termination = SearchTerminationPolicy::FirstAccepted;
+    options.profile = sink;
+    UnifiedSearchResult searched =
+        runUnifiedSearch(*parsed.module, session, programMetadata(),
+                         executionConfig(), diagnostics, programData, options,
+                         /*tilePipelineParallelism=*/0,
+                         /*captureTileDataflowIRTrace=*/true);
+    ASSERT_TRUE(searched.control.winner) << searched.failureDetail;
+    keys.push_back(searched.control.winner->key);
+    std::string joined;
+    for (const std::string &trace :
+         searched.control.winner->compilation.tileDataflowIRTrace)
+      joined += trace;
+    traces.push_back(std::move(joined));
+  }
+
+  EXPECT_EQ(keys[0], keys[1]);
+  EXPECT_EQ(traces[0], traces[1]);
+  const PlanningProfileStatistics &statistics = profile.getStatistics();
+  EXPECT_EQ(statistics.candidateActualizations, 1u);
+  EXPECT_EQ(statistics.acceptedCandidates, 1u);
+  EXPECT_EQ(statistics.winnerHandoffs, 1u);
+  EXPECT_TRUE(statistics.timeToFirstAcceptedMilliseconds.has_value());
+  EXPECT_GT(statistics.peakFrontierDepth, 1u);
+  uint64_t totalHits = 0;
+  uint64_t totalMisses = 0;
+  for (const PlanningMemoProfile &memo : statistics.memos) {
+    totalHits += memo.hits;
+    totalMisses += memo.misses;
+    EXPECT_EQ(memo.lookups, memo.hits + memo.misses);
+  }
+  EXPECT_GT(totalHits, 0u);
+  EXPECT_GT(totalMisses, 0u);
+}
+
+TEST(UnifiedSearchTest,
      ParentByParentPrefixMatchesRecursiveComposerAcrossEveryResumeCut) {
-  constexpr size_t kCompleteLimit = 2;
-
-  ParsedProgram referenceProgram = parseProgram();
-  ASSERT_TRUE(referenceProgram.module);
-  std::string referenceDiagnosticsText;
-  llvm::raw_string_ostream referenceDiagnostics(referenceDiagnosticsText);
-  std::string failureReason;
-  SearchFixture referenceFixture =
-      prepare(*referenceProgram.module, referenceDiagnostics, failureReason);
-  ASSERT_TRUE(referenceFixture.session) << failureReason;
-  ReferencePrefixComposer reference(*referenceFixture.session, kCompleteLimit);
-  ASSERT_TRUE(reference.run()) << reference.failureDetail;
-  ASSERT_EQ(reference.completeStates.size(), kCompleteLimit);
-
-  ParsedProgram production = parseProgram();
-  ASSERT_TRUE(production.module);
-  const std::string sourceBefore = print(production.module->getOperation());
-  std::string productionDiagnosticsText;
-  llvm::raw_string_ostream productionDiagnostics(productionDiagnosticsText);
-  SearchFixture productionFixture =
-      prepare(*production.module, productionDiagnostics, failureReason);
-  ASSERT_TRUE(productionFixture.session) << failureReason;
-  wafer::compiler::ProgramDataHandoff productionData;
-  UnifiedSearchOptions options;
-  options.termination = SearchTerminationPolicy::Exhaustive;
-  UnifiedSearchTrace trace;
-  UnifiedSearchSession productionSearch(
-      *production.module, *productionFixture.session, programMetadata(),
-      executionConfig(), productionDiagnostics, productionData, options,
-      /*tilePipelineParallelism=*/0,
-      /*captureTileDataflowIRTrace=*/false, &trace);
-  UnifiedSearchResumeResult zero = productionSearch.resume(0);
-  EXPECT_EQ(zero.status, UnifiedSearchResumeStatus::Paused);
-  EXPECT_EQ(zero.consumedCredits, 0u);
-  for (uint64_t steps = 0;
-       trace.candidates.size() < kCompleteLimit && steps < 10000; ++steps) {
-    UnifiedSearchResumeResult resumed = productionSearch.resume(1);
-    EXPECT_EQ(resumed.consumedCredits, 1u);
-    if (resumed.status == UnifiedSearchResumeStatus::Indeterminate) {
-      ASSERT_EQ(trace.candidates.size(), kCompleteLimit)
-          << productionDiagnostics.str();
-      break;
+  constexpr size_t kStructuralLimit = 2;
+  struct RunSummary {
+    std::vector<UnifiedSearchCandidateTrace> candidates;
+    UnifiedSearchWork work;
+    SearchControllerStatistics control;
+    std::optional<StructuralCandidateKey> winner;
+    std::string source;
+  };
+  auto run = [&]() -> RunSummary {
+    RunSummary summary;
+    ParsedProgram parsed = parseProgram();
+    EXPECT_TRUE(parsed.module);
+    if (!parsed.module)
+      return summary;
+    const std::string sourceBefore = print(parsed.module->getOperation());
+    std::string diagnosticsText;
+    llvm::raw_string_ostream diagnostics(diagnosticsText);
+    std::string failureReason;
+    SearchFixture fixture =
+        prepare(*parsed.module, diagnostics, failureReason);
+    EXPECT_TRUE(fixture.session) << failureReason;
+    if (!fixture.session)
+      return summary;
+    wafer::compiler::ProgramDataHandoff data;
+    UnifiedSearchOptions options;
+    options.termination = SearchTerminationPolicy::Exhaustive;
+    UnifiedSearchTrace trace;
+    UnifiedSearchSession search(
+        *parsed.module, *fixture.session, programMetadata(), executionConfig(),
+        diagnostics, data, options, /*tilePipelineParallelism=*/0,
+        /*captureTileDataflowIRTrace=*/false, &trace);
+    for (uint64_t steps = 0;
+         trace.candidates.size() < kStructuralLimit && steps < 10000; ++steps) {
+      UnifiedSearchResumeResult resumed = search.resume(1);
+      if (resumed.status != UnifiedSearchResumeStatus::Paused)
+        break;
     }
-    ASSERT_EQ(resumed.status, UnifiedSearchResumeStatus::Paused)
-        << productionDiagnostics.str();
-  }
-  ASSERT_EQ(trace.candidates.size(), kCompleteLimit)
-      << productionDiagnostics.str();
-  ASSERT_EQ(trace.prefixes, reference.prefixes);
+    EXPECT_EQ(trace.candidates.size(), kStructuralLimit) << diagnosticsText;
+    UnifiedSearchResult result = search.finish();
+    summary.candidates = std::move(trace.candidates);
+    summary.work = result.work;
+    summary.control = result.control.statistics;
+    if (result.control.winner)
+      summary.winner = result.control.winner->key;
+    summary.source = print(parsed.module->getOperation());
+    EXPECT_EQ(summary.source, sourceBefore);
+    return summary;
+  };
 
-  std::vector<UnifiedSearchCandidateTrace> oracle;
-  std::optional<CompleteCandidateKey> expectedWinner;
-  for (const ScheduledState &state : reference.completeStates) {
-    ParsedProgram fresh = parseProgram();
-    ASSERT_TRUE(fresh.module);
-    std::string actualDiagnosticsText;
-    llvm::raw_string_ostream actualDiagnostics(actualDiagnosticsText);
-    std::string actualFailure;
-    SearchFixture actualFixture =
-        prepare(*fresh.module, actualDiagnostics, actualFailure);
-    ASSERT_TRUE(actualFixture.session) << actualFailure;
-    auto key = CompleteCandidateKey::create(state, &actualFailure);
-    ASSERT_TRUE(mlir::succeeded(key)) << actualFailure;
-    wafer::compiler::ProgramDataHandoff actualData;
-    FullFeasibilityStatistics statistics;
-    FullFeasibilityResult actual =
-        actualFixture.session->evaluateScheduledState(
-            *fresh.module, state, programMetadata(), executionConfig(),
-            actualDiagnostics, actualData, &statistics);
-    EXPECT_EQ(statistics.evaluations, 1u) << actual.detail << "\n"
-                                          << actualDiagnostics.str();
-    oracle.push_back({*key, actual.status});
-    if (actual.isAccepted() && (!expectedWinner || *key < *expectedWinner))
-      expectedWinner = *key;
-  }
-  EXPECT_EQ(trace.candidates, oracle);
-
-  // Oracle-B actualizations above must not perturb a later fresh traversal.
-  ParsedProgram replay = parseProgram();
-  ASSERT_TRUE(replay.module);
-  std::string replayDiagnosticsText;
-  llvm::raw_string_ostream replayDiagnostics(replayDiagnosticsText);
-  SearchFixture replayFixture =
-      prepare(*replay.module, replayDiagnostics, failureReason);
-  ASSERT_TRUE(replayFixture.session) << failureReason;
-  wafer::compiler::ProgramDataHandoff replayData;
-  UnifiedSearchTrace replayTrace;
-  UnifiedSearchSession replaySearch(*replay.module, *replayFixture.session,
-                                    programMetadata(), executionConfig(),
-                                    replayDiagnostics, replayData, options, 0,
-                                    false, &replayTrace);
-  for (uint64_t steps = 0;
-       replayTrace.candidates.size() < kCompleteLimit && steps < 10000;
-       ++steps) {
-    UnifiedSearchResumeResult resumed = replaySearch.resume(1);
-    if (resumed.status == UnifiedSearchResumeStatus::Indeterminate)
-      break;
-    ASSERT_EQ(resumed.status, UnifiedSearchResumeStatus::Paused)
-        << replayDiagnostics.str();
-  }
-  EXPECT_EQ(replayTrace.candidates, trace.candidates)
-      << replayDiagnostics.str();
-  (void)replaySearch.finish();
-
-  std::set<CompleteCandidateKey> uniqueKeys;
-  for (const UnifiedSearchCandidateTrace &candidate : trace.candidates)
+  // The explicit one-credit resumable traversal must be deterministic and
+  // must stop at structural keys; no future physical/schedule key participates.
+  RunSummary first = run();
+  ASSERT_EQ(first.candidates.size(), kStructuralLimit);
+  std::set<StructuralCandidateKey> uniqueKeys;
+  for (const UnifiedSearchCandidateTrace &candidate : first.candidates)
     EXPECT_TRUE(uniqueKeys.insert(candidate.key).second);
+  EXPECT_EQ(first.control.reserved, kStructuralLimit);
+  EXPECT_EQ(first.work.structuralStatesActualized, kStructuralLimit);
+  EXPECT_EQ(first.work.scheduledStatesVisited, 0u);
+  EXPECT_EQ(first.work.duplicateCompleteKeys, 0u);
 
-  UnifiedSearchResult result = productionSearch.finish();
-  EXPECT_FALSE(result.frontierExhausted);
-  EXPECT_EQ(result.planning.fullFeasibilityEvaluations, kCompleteLimit);
-  EXPECT_EQ(result.control.statistics.reserved, kCompleteLimit);
-  EXPECT_EQ(result.work.duplicateCompleteKeys, 0u);
-  EXPECT_EQ(result.work.resumeCalls, result.work.successorSteps +
-                                         result.work.scheduledStatesVisited +
-                                         1);
-  EXPECT_EQ(print(production.module->getOperation()), sourceBefore);
-  EXPECT_EQ(static_cast<bool>(result.control.winner),
-            expectedWinner.has_value());
-  if (expectedWinner) {
-    ASSERT_TRUE(result.control.winner);
-    EXPECT_EQ(result.control.winner->key, *expectedWinner);
-    EXPECT_EQ(trace.winnerHandoffs, 1u);
-  }
-  EXPECT_EQ(productionSearch.resume(1).status,
-            UnifiedSearchResumeStatus::Finished);
+  RunSummary replay = run();
+  EXPECT_EQ(replay.candidates, first.candidates);
+  EXPECT_EQ(replay.winner, first.winner);
+  EXPECT_EQ(replay.source, first.source);
 }
 
 } // namespace

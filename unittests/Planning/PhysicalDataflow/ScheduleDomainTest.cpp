@@ -312,6 +312,16 @@ TEST(ScheduleDomainTest,
     EXPECT_EQ(ncc->boundary.after, latest);
     EXPECT_EQ(dte->boundary.after, latest);
   }
+
+  ScheduleDomainInput indirect = input;
+  indirect.hardDependencies = {
+      {issue, dteIssue, EventDependencyReason::TransferReady},
+      {dteIssue, completion, EventDependencyReason::Completion},
+      {dteIssue, dteCompletion, EventDependencyReason::Completion}};
+  ScheduleDomainResult rejected = buildScheduleDomain(std::move(indirect));
+  ASSERT_FALSE(rejected.succeeded());
+  ASSERT_TRUE(rejected.failure);
+  EXPECT_EQ(rejected.failure->kind, ScheduleDomainFailureKind::BrokenContract);
 }
 
 TEST(ScheduleDomainTest, CompletionPlacementDoesNotCrossSelectedKStage) {
@@ -461,7 +471,7 @@ TEST(ScheduleDomainTest, FixedGenerationSlotLifetimeAndFailuresStayTyped) {
   stale.slotFamilies.front().multiplicity = 1;
   EXPECT_FALSE(result.domain->isForGeneration(input.structure, stale));
   ClosedSchedulePlan stalePlan = *first.getPlan();
-  stalePlan.buffers = stale;
+  stalePlan.setBuffers(stale);
   EXPECT_FALSE(result.domain->contains(stalePlan));
 
   ScheduleDomainInput staleInput = input;

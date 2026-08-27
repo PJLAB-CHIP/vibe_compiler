@@ -10,6 +10,7 @@
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RepresentationDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/ScheduleDomain.h"
+#include "Wafer/Planning/PhysicalDataflow/Search/PlanningMemo.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningProblem.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningState.h"
 #include "Wafer/Planning/PhysicalDataflow/StorageDomain.h"
@@ -21,7 +22,6 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
-#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -416,8 +416,25 @@ private:
 class PhysicalDataflowPlanningSession {
 public:
   explicit PhysicalDataflowPlanningSession(
-      const PhysicalDataflowPlanningProblem &problem)
-      : problem(problem) {}
+      const PhysicalDataflowPlanningProblem &problem,
+      PlanningProfileSink *profile = nullptr)
+      : problem(problem),
+        spatialProposalCache(PlanningMemoKind::SpatialProposals, profile),
+        rootWorkCache(PlanningMemoKind::RootWork, profile),
+        regionDomainCache(PlanningMemoKind::RegionDomain, profile),
+        temporalDomainCache(PlanningMemoKind::TemporalDomain, profile),
+        representationDomainCache(PlanningMemoKind::RepresentationDomain,
+                                  profile),
+        movementDomainCache(PlanningMemoKind::MovementDomain, profile),
+        storageDomainCache(PlanningMemoKind::StorageDomain, profile),
+        eventGraphCache(PlanningMemoKind::InitialEventGraph, profile),
+        postStructureEventGraphCache(PlanningMemoKind::PostStructureEventGraph,
+                                     profile),
+        executionStructureDomainCache(
+            PlanningMemoKind::ExecutionStructureDomain, profile),
+        structureSpecificStorageDomainCache(
+            PlanningMemoKind::StructureSpecificStorageDomain, profile),
+        scheduleDomainCache(PlanningMemoKind::ScheduleDomain, profile) {}
 
   PhysicalDataflowPlanningSession(const PhysicalDataflowPlanningSession &) =
       delete;
@@ -448,7 +465,8 @@ public:
   mlir::FailureOr<std::optional<TemporalState>>
   refineTemporalStateFromActualFeedback(
       const TemporalState &state, llvm::ArrayRef<SemanticRootKey> causalRoots,
-      std::string *failureReason = nullptr);
+      std::string *failureReason = nullptr,
+      unsigned proposalRefinementSteps = 1);
 
   RepresentationContinuation
   createRepresentationContinuation(TemporalState parent) const {
@@ -498,18 +516,7 @@ public:
   mlir::FailureOr<IncompletePlanningDomain>
   getFirstIncompleteState(std::string *failureReason = nullptr);
 
-  /// Actualizes one complete ScheduledState exactly once. The returned
-  /// accepted executable is retained; rejected candidate IR is destroyed
-  /// before return. This method never advances or repairs the planning state.
-  FullFeasibilityResult evaluateScheduledState(
-      mlir::ModuleOp tensorProgram, const ScheduledState &state,
-      const frontend::FrontendProgramVerificationResult &program,
-      const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-      ProgramDataHandoff &programData,
-      FullFeasibilityStatistics *statistics = nullptr,
-      unsigned tilePipelineParallelism = 0,
-      bool captureTileDataflowIRTrace = false);
-
+  const PhysicalDataflowPlanningProblem &getProblem() const { return problem; }
   const PlanningWorkCounts &getWork() const { return work; }
   bool hasRemainingSpatialWork() const;
   bool isSpatialExhausted() const {
@@ -596,19 +603,21 @@ private:
   bool pausedChoiceIsProposal = false;
   std::set<SpatialPlan> resolvedProposalChoices;
   std::set<SpatialState> frontier;
-  std::map<SpatialPlan, std::vector<analysis::RootRegionWork>> rootWorkCache;
-  std::map<SpatialPlan, RegionDomain> regionDomainCache;
-  std::map<RegionState, TemporalDomain> temporalDomainCache;
-  std::map<TemporalState, RepresentationDomain> representationDomainCache;
-  std::map<RepresentationState, MovementDomain> movementDomainCache;
-  std::map<MovementState, StorageDomain> storageDomainCache;
-  std::map<InitialBufferState, EventGraph> eventGraphCache;
-  std::map<BufferState, EventGraph> postStructureEventGraphCache;
-  std::map<InitialBufferState, ExecutionStructureDomain>
+  PlanningMemo<uint8_t, std::vector<SpatialPlan>> spatialProposalCache;
+  PlanningMemo<SpatialPlan, std::vector<analysis::RootRegionWork>>
+      rootWorkCache;
+  PlanningMemo<SpatialPlan, RegionDomain> regionDomainCache;
+  PlanningMemo<RegionState, TemporalDomain> temporalDomainCache;
+  PlanningMemo<TemporalState, RepresentationDomain> representationDomainCache;
+  PlanningMemo<RepresentationState, MovementDomain> movementDomainCache;
+  PlanningMemo<MovementState, StorageDomain> storageDomainCache;
+  PlanningMemo<InitialBufferState, EventGraph> eventGraphCache;
+  PlanningMemo<BufferState, EventGraph> postStructureEventGraphCache;
+  PlanningMemo<InitialBufferState, ExecutionStructureDomain>
       executionStructureDomainCache;
-  std::map<ExecutionStructureState, StructureSpecificStorageDomain>
+  PlanningMemo<ExecutionStructureState, StructureSpecificStorageDomain>
       structureSpecificStorageDomainCache;
-  std::map<BufferState, ScheduleDomain> scheduleDomainCache;
+  PlanningMemo<BufferState, ScheduleDomain> scheduleDomainCache;
   PlanningWorkCounts work;
 };
 

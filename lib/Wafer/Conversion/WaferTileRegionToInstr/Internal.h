@@ -134,12 +134,12 @@ mlir::FailureOr<MovementDescriptor>
 getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
                            mlir::Type type, llvm::StringRef role);
 
-void createRDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
-                mlir::Value source, mlir::Value dest,
-                const MovementDescriptor &descriptor);
-void createWDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
-                mlir::Value source, mlir::Value dest,
-                const MovementDescriptor &descriptor);
+InstrRDMAOp createRDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
+                       mlir::Value source, mlir::Value dest,
+                       const MovementDescriptor &descriptor);
+InstrWDMAOp createWDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
+                       mlir::Value source, mlir::Value dest,
+                       const MovementDescriptor &descriptor);
 InstrGatherScatterOp createGatherScatter(
     mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
     mlir::Value dest, const MovementDescriptor &sourceDescriptor,
@@ -156,10 +156,10 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
 llvm::SmallVector<InstrGatherScatterOp, 4> createGatherScatterDescriptors(
     mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
     mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors);
-void createMappedRDMADescriptors(
+llvm::SmallVector<InstrRDMAOp, 4> createMappedRDMADescriptors(
     mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
     mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors);
-void createMappedWDMADescriptors(
+llvm::SmallVector<InstrWDMAOp, 4> createMappedWDMADescriptors(
     mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
     mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors);
 mlir::IntegerAttr getI64Attr(mlir::PatternRewriter &rewriter, int64_t value);

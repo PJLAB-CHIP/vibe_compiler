@@ -352,51 +352,60 @@ ExecutionStructureDomainResult buildExecutionStructureDomain(
       return failed(
           ExecutionStructureDomainFailureKind::BrokenContract,
           "execution-structure scope has an empty or duplicate inventory");
-    std::set<EventId> scopeEvents(scope.id.events.begin(),
-                                  scope.id.events.end());
-    std::set<EventId> stageable(scope.stageableEvents.begin(),
-                                scope.stageableEvents.end());
     for (const EventId &event : scope.id.events)
       if (!allEvents.insert(event).second)
         return failed(ExecutionStructureDomainFailureKind::BrokenContract,
                       "execution-structure scopes overlap");
     for (const EventId &event : scope.stageableEvents)
-      if (!scopeEvents.count(event))
+      if (!llvm::binary_search(scope.id.events, event))
         return failed(ExecutionStructureDomainFailureKind::BrokenContract,
                       "stageable event is outside its structure scope");
     for (const PipelineDependence &dependence : scope.dependences)
       if ((dependence.source == dependence.destination &&
            dependence.iterationDistance == 0) ||
           dependence.iterationDistance > 1 ||
-          !stageable.count(dependence.source) ||
-          !stageable.count(dependence.destination))
+          !llvm::binary_search(scope.stageableEvents, dependence.source) ||
+          !llvm::binary_search(scope.stageableEvents, dependence.destination))
         return failed(ExecutionStructureDomainFailureKind::BrokenContract,
                       "pipeline dependence is outside its supported event "
                       "and distance domain");
     for (const CompletionObligation &obligation : scope.completionObligations)
-      if (!scopeEvents.count(obligation.issue) ||
-          !scopeEvents.count(obligation.completion))
+      if (!llvm::binary_search(scope.id.events, obligation.issue) ||
+          !llvm::binary_search(scope.id.events, obligation.completion))
         return failed(ExecutionStructureDomainFailureKind::BrokenContract,
                       "completion obligation is outside its structure scope");
 
-    std::map<EventId, size_t> indegree;
-    std::map<EventId, std::set<EventId>> successors;
-    for (const EventId &event : scope.stageableEvents)
-      indegree.try_emplace(event, 0);
+    auto eventIndex = [&](const EventId &event) -> std::optional<size_t> {
+      auto found = llvm::lower_bound(scope.stageableEvents, event);
+      return found == scope.stageableEvents.end() || !(*found == event)
+                 ? std::nullopt
+                 : std::optional<size_t>(
+                       std::distance(scope.stageableEvents.begin(), found));
+    };
+    std::vector<size_t> indegree(scope.stageableEvents.size(), 0);
+    std::vector<std::vector<size_t>> successors(scope.stageableEvents.size());
     for (const PipelineDependence &dependence : scope.dependences)
-      if (dependence.iterationDistance == 0 &&
-          successors[dependence.source].insert(dependence.destination).second)
-        ++indegree[dependence.destination];
-    std::set<EventId> ready;
-    for (const auto &[event, degree] : indegree)
+      if (dependence.iterationDistance == 0) {
+        std::optional<size_t> source = eventIndex(dependence.source);
+        std::optional<size_t> destination = eventIndex(dependence.destination);
+        if (!source || !destination)
+          return failed(ExecutionStructureDomainFailureKind::BrokenContract,
+                        "distance-zero dependence has no event ordinal");
+        if (!llvm::is_contained(successors[*source], *destination)) {
+          successors[*source].push_back(*destination);
+          ++indegree[*destination];
+        }
+      }
+    std::set<size_t> ready;
+    for (auto [event, degree] : llvm::enumerate(indegree))
       if (degree == 0)
         ready.insert(event);
     size_t visited = 0;
     while (!ready.empty()) {
-      EventId event = *ready.begin();
+      size_t event = *ready.begin();
       ready.erase(ready.begin());
       ++visited;
-      for (const EventId &successor : successors[event])
+      for (size_t successor : successors[event])
         if (--indegree[successor] == 0)
           ready.insert(successor);
     }
@@ -530,12 +539,67 @@ ExecutionStructureDomainResult buildExecutionStructureDomain(
       occurrencesByExecution[*execution].push_back(std::move(facts));
   }
 
-  std::set<EventId> allEvents;
-  std::vector<ExecutionStructureScopeDescription> scopeDomains;
-  for (const EventComponent &component : graph.getComponents()) {
+  std::vector<std::pair<const EventId *, size_t>> componentEvents;
+  componentEvents.reserve(graph.getEvents().size());
+  for (auto [componentIndex, component] :
+       llvm::enumerate(graph.getComponents())) {
     if (component.events.empty())
       return failed(ExecutionStructureDomainFailureKind::BrokenContract,
                     "EventGraph has an empty component");
+    for (const EventId &event : component.events)
+      componentEvents.emplace_back(&event, componentIndex);
+  }
+  llvm::sort(componentEvents, [](const auto &lhs, const auto &rhs) {
+    return *lhs.first < *rhs.first;
+  });
+  if (componentEvents.size() != graph.getEvents().size() ||
+      std::adjacent_find(componentEvents.begin(), componentEvents.end(),
+                         [](const auto &lhs, const auto &rhs) {
+                           return *lhs.first == *rhs.first;
+                         }) != componentEvents.end() ||
+      !llvm::all_of(llvm::zip_equal(componentEvents, graph.getEvents()),
+                    [](const auto &values) {
+                      const auto &[component, event] = values;
+                      return *component.first == event.id;
+                    }))
+    return failed(ExecutionStructureDomainFailureKind::BrokenContract,
+                  "EventGraph components overlap or do not cover every event");
+  auto findComponent = [&](const EventId &event) -> std::optional<size_t> {
+    auto found =
+        llvm::lower_bound(componentEvents, event,
+                          [](const auto &candidate, const EventId &event) {
+                            return *candidate.first < event;
+                          });
+    return found == componentEvents.end() || !(*found->first == event)
+               ? std::nullopt
+               : std::optional<size_t>(found->second);
+  };
+
+  std::vector<std::vector<const EventDependency *>> dependenciesByComponent(
+      graph.getComponents().size());
+  for (const EventDependency &dependency : graph.getHardDependencies()) {
+    std::optional<size_t> predecessor = findComponent(dependency.predecessor);
+    std::optional<size_t> successor = findComponent(dependency.successor);
+    if (!predecessor || !successor || *predecessor != *successor)
+      return failed(ExecutionStructureDomainFailureKind::BrokenContract,
+                    "hard dependency crosses EventGraph components");
+    dependenciesByComponent[*predecessor].push_back(&dependency);
+  }
+  std::vector<std::vector<const CompletionObligation *>> completionsByComponent(
+      graph.getComponents().size());
+  for (const CompletionObligation &obligation :
+       graph.getCompletionObligations()) {
+    std::optional<size_t> issue = findComponent(obligation.issue);
+    std::optional<size_t> completion = findComponent(obligation.completion);
+    if (!issue || !completion || *issue != *completion)
+      return failed(ExecutionStructureDomainFailureKind::BrokenContract,
+                    "completion obligation crosses EventGraph components");
+    completionsByComponent[*issue].push_back(&obligation);
+  }
+
+  std::vector<ExecutionStructureScopeDescription> scopeDomains;
+  for (auto [componentIndex, component] :
+       llvm::enumerate(graph.getComponents())) {
     ExecutionStructureScopeDescription scope;
     scope.id.events = component.events;
     llvm::sort(scope.id.events);
@@ -547,10 +611,6 @@ ExecutionStructureDomainResult buildExecutionStructureDomain(
     std::map<OccurrenceRelationId, PipelineIterationClass> iterations;
     std::set<ExecutionInstanceId> componentExecutions;
     for (const EventId &event : scope.id.events) {
-      if (!graph.contains(event) || !allEvents.insert(event).second)
-        return failed(
-            ExecutionStructureDomainFailureKind::BrokenContract,
-            "EventGraph components overlap or reference unknown events");
       if (event.kind != PlannedEventKind::ObservableWrite)
         scope.stageableEvents.push_back(event);
       const auto *execution = std::get_if<ExecutionEventAction>(&event.action);
@@ -578,24 +638,16 @@ ExecutionStructureDomainResult buildExecutionStructureDomain(
     llvm::sort(scope.stageableEvents);
     std::set<EventId> stageable(scope.stageableEvents.begin(),
                                 scope.stageableEvents.end());
-    for (const EventDependency &dependency : graph.getHardDependencies())
-      if (stageable.count(dependency.predecessor) &&
-          stageable.count(dependency.successor))
-        scope.dependences.push_back({dependency.predecessor,
-                                     dependency.successor, 0,
-                                     getDependenceKind(dependency.reason)});
-    for (const CompletionObligation &obligation :
-         graph.getCompletionObligations()) {
-      const bool hasIssue =
-          llvm::is_contained(scope.id.events, obligation.issue);
-      const bool hasCompletion =
-          llvm::is_contained(scope.id.events, obligation.completion);
-      if (hasIssue != hasCompletion)
-        return failed(ExecutionStructureDomainFailureKind::BrokenContract,
-                      "completion obligation crosses EventGraph components");
-      if (hasIssue)
-        scope.completionObligations.push_back(obligation);
-    }
+    for (const EventDependency *dependency :
+         dependenciesByComponent[componentIndex])
+      if (stageable.count(dependency->predecessor) &&
+          stageable.count(dependency->successor))
+        scope.dependences.push_back({dependency->predecessor,
+                                     dependency->successor, 0,
+                                     getDependenceKind(dependency->reason)});
+    for (const CompletionObligation *obligation :
+         completionsByComponent[componentIndex])
+      scope.completionObligations.push_back(*obligation);
 
     bool supported = scope.id.recurrences.size() == 1 &&
                      componentExecutions.size() == 1 &&
@@ -655,9 +707,6 @@ ExecutionStructureDomainResult buildExecutionStructureDomain(
     llvm::sort(scope.completionObligations);
     scopeDomains.push_back(std::move(scope));
   }
-  if (allEvents.size() != graph.getEvents().size())
-    return failed(ExecutionStructureDomainFailureKind::BrokenContract,
-                  "EventGraph components do not cover every event");
   return buildExecutionStructureDomain(scopeDomains, limits);
 }
 

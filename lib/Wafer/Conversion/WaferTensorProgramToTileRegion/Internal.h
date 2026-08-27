@@ -416,7 +416,9 @@ private:
   llvm::SmallVector<uint32_t, 2> activeStructuredNodes;
   llvm::DenseSet<uint32_t> currentStageNodes;
   llvm::DenseSet<mlir::Operation *> convertedStructuredOperations;
+  llvm::DenseSet<mlir::Operation *> elidedStructuredOperations;
   llvm::DenseSet<mlir::Operation *> convertingStructuredOperations;
+  llvm::SmallVector<mlir::Operation *, 32> structuredEmissionLog;
   llvm::DenseMap<mlir::Value, BufferVersions> buffers;
   llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
   llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
@@ -500,7 +502,15 @@ private:
   getOrMaterializeStructuredInput(mlir::Value original, MemLayout targetLayout,
                                   mlir::OpBuilder &builder);
   void recordStructuredComputeOperation(mlir::Operation *operation);
+  void recordStructuredComputeOperationForValue(mlir::Operation *operation,
+                                                mlir::Value logicalValue);
+  llvm::SmallVector<uint32_t, 4>
+  collectStructuredOwnersForValue(mlir::Value logicalValue);
+  void recordElidedInitOwners(mlir::linalg::LinalgOp source,
+                              mlir::Operation *emittedOperation);
   void recordScratchAllocation(mlir::memref::AllocOp allocation);
+  void recordScratchAllocationForValue(mlir::memref::AllocOp allocation,
+                                       mlir::Value logicalValue);
 
   mlir::FailureOr<SelectedCollectivePartitionGroup>
   getCollectivePartitionGroup(mlir::DenseI64ArrayAttr partitionGroup,
@@ -638,9 +648,6 @@ private:
                               llvm::DenseSet<mlir::Value> &visited) const;
 
   bool onlyFeedsUnreadDpsInit(mlir::Value value) const;
-
-  bool onlyFeedsScalarInitializedComputeInit(
-      mlir::Value value, llvm::DenseSet<mlir::Value> &visited) const;
 
   bool onlyFeedsScalarInitializedComputeInit(mlir::Value value) const;
 

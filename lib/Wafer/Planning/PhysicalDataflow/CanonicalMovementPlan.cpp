@@ -2,6 +2,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/CanonicalMovementPlan.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
@@ -64,6 +65,19 @@ bool finiteDomainContains(const analysis::ExactIndexSet &outer,
       return boxContains(outerBox, innerBox);
     });
   });
+}
+
+bool isLocallyMaterializedConstant(mlir::Value value) {
+  auto constant = value.getDefiningOp<mlir::arith::ConstantOp>();
+  if (!constant)
+    return false;
+  if (mlir::isa<mlir::FloatType, mlir::IntegerType, mlir::IndexType>(
+          value.getType()))
+    return true;
+  auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+  auto elements = mlir::dyn_cast<mlir::DenseElementsAttr>(constant.getValue());
+  return tensorType && elements && elements.isSplat() &&
+         elements.getElementType() == tensorType.getElementType();
 }
 
 enum class OutputReachability : uint8_t {
@@ -154,35 +168,104 @@ CanonicalMovementPlanOutcome buildCanonicalMovementPlan(
   if (resources.size() != representations.plan.physicalVersions.size())
     return broken(BrokenMovementPlanReason::MissingPhysicalVersion,
                   "canonical representation plan/resource mismatch");
+  std::map<RepresentationUseId, PhysicalVersionId> selectedUses;
+  for (const PhysicalUseBinding &binding : representations.plan.uses)
+    if (!selectedUses.try_emplace(binding.use, binding.version).second)
+      return broken(BrokenMovementPlanReason::MissingPhysicalVersion,
+                    "canonical representation has duplicate use bindings");
+  std::map<RegionValueVersionId, PhysicalVersionId> primaryVersions;
+  for (const LogicalRepresentationPlan &logical :
+       representations.plan.logicalValues)
+    if (!primaryVersions.try_emplace(logical.value, logical.primary).second)
+      return broken(BrokenMovementPlanReason::MissingPhysicalVersion,
+                    "canonical representation has duplicate logical values");
 
   CoordinateBuilder builder;
   std::set<PhysicalVersionId> carriedExecutionResults;
   for (const RegionGroupPlan &group : regions.groups) {
-    if (group.mandatoryRoots.size() != 1)
+    if (group.mandatoryRoots.empty())
       return broken(BrokenMovementPlanReason::PlanWorkMismatch,
-                    "canonical movement input is not singleton regions");
-    const analysis::RootRegionWorkId workId = group.mandatoryRoots.front();
-    auto work = works.find(workId);
-    if (work == works.end())
-      return broken(BrokenMovementPlanReason::PlanWorkMismatch,
-                    "region has no root work", workId);
+                    "canonical movement region has no mandatory root");
 
     for (const ExternalUseBinding &binding : group.externalBindings) {
+      analysis::RootRegionWorkId workId{
+          binding.fragment.use.destinationShard.root, group.tile};
+      auto work = works.find(workId);
+      if (work == works.end() ||
+          !llvm::is_contained(group.mandatoryRoots, workId)) {
+        builder.failure = broken(BrokenMovementPlanReason::PlanWorkMismatch,
+                                 "region binding has no consumer root work",
+                                 workId);
+        break;
+      }
       BoundaryRegionValueId destinationLogical{workId, binding.fragment};
-      PhysicalVersionId destination{destinationLogical};
+      RepresentationUseId use =
+          BoundaryRepresentationUseId{destinationLogical};
+      auto selectedUse = selectedUses.find(use);
+      PhysicalVersionId destination =
+          selectedUse == selectedUses.end()
+              ? PhysicalVersionId{destinationLogical}
+              : selectedUse->second;
       auto destinationResource = resources.find(destination);
       if (destinationResource == resources.end())
         continue;
+      const analysis::RootBoundaryWork *boundary = nullptr;
+      if (work != works.end()) {
+        auto found = llvm::find_if(
+            work->second->boundaries,
+            [&](const analysis::RootBoundaryWork &candidate) {
+              return candidate.id == binding.fragment.source;
+            });
+        if (found != work->second->boundaries.end())
+          boundary = &*found;
+      }
       switch (binding.fragment.source.kind) {
-      case analysis::RootBoundaryKind::ProgramInput:
       case analysis::RootBoundaryKind::Constant:
-      case analysis::RootBoundaryKind::CapturedValue: {
-        ExternalLoadPlan load{{destinationLogical}, destination};
+        if (!boundary) {
+          builder.failure = broken(
+              BrokenMovementPlanReason::PlanWorkMismatch,
+              "constant boundary has no current root-work source", workId);
+          break;
+        }
+        if (isLocallyMaterializedConstant(boundary->sourceValue))
+          break;
+        [[fallthrough]];
+      case analysis::RootBoundaryKind::ProgramInput: {
+        PhysicalVersionId loadVersion = destination;
+        if (!destination.derivation.empty()) {
+          RegionValueVersionId loadLogical = destination.logicalValue;
+          for (const PhysicalVersionDerivationStep &step :
+               destination.derivation)
+            if (step.sourceLogicalValue)
+              loadLogical = *step.sourceLogicalValue;
+          auto primary = primaryVersions.find(loadLogical);
+          if (primary == primaryVersions.end()) {
+            builder.failure = broken(
+                BrokenMovementPlanReason::MissingPhysicalVersion,
+                "derived boundary version has no selected primary", workId);
+            break;
+          }
+          loadVersion = primary->second;
+        }
+        auto loadResource = resources.find(loadVersion);
+        if (loadResource == resources.end()) {
+          builder.failure = broken(
+              BrokenMovementPlanReason::MissingPhysicalVersion,
+              "external boundary primary has no physical resource", workId);
+          break;
+        }
+        BoundaryRegionValueId loadDestination = destinationLogical;
+        if (const auto *selectedBoundary =
+                std::get_if<BoundaryRegionValueId>(&loadVersion.logicalValue))
+          loadDestination = *selectedBoundary;
+        ExternalLoadPlan load{{loadDestination}, loadVersion};
         builder.coordinate.plan.externalLoads.push_back(load);
-        builder.addResource(load.id, *destinationResource->second, std::nullopt,
+        builder.addResource(load.id, *loadResource->second, std::nullopt,
                             workId.tile, workId);
         break;
       }
+      case analysis::RootBoundaryKind::CapturedValue:
+        break;
       case analysis::RootBoundaryKind::StructuredResult: {
         if (!binding.fragment.ownerTile ||
             (binding.fragment.ownerShard.has_value() ==

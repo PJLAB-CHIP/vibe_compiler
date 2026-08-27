@@ -56,6 +56,21 @@ struct FullFeasibilityResult {
   }
 };
 
+/// Actualizes one validated spatial/region/temporal choice. No physical value,
+/// movement, storage, event, execution-structure or schedule plan is accepted
+/// as input; downstream stages read and transform the candidate-owned current
+/// IR directly.
+FullFeasibilityResult evaluateCurrentStructuralCandidate(
+    mlir::ModuleOp tensorProgram,
+    const PhysicalDataflowPlanningProblem &problem,
+    const TemporalState &state,
+    const frontend::FrontendProgramVerificationResult &program,
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    ProgramDataHandoff &programData,
+    FullFeasibilityStatistics *statistics = nullptr,
+    unsigned tilePipelineParallelism = 0,
+    bool captureTileDataflowIRTrace = false);
+
 FullFeasibilityResult evaluateCompleteCandidate(
     mlir::ModuleOp tensorProgram,
     const PhysicalDataflowPlanningProblem &problem, const ScheduledState &state,

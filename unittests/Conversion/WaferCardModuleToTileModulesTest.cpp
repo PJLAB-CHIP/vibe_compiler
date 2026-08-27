@@ -183,7 +183,8 @@ module {
             "expected exactly one direct wafer.card.module in source module");
 }
 
-TEST(WaferCardModuleToTileModulesTest, RejectsUnverifiedSource) {
+TEST(WaferCardModuleToTileModulesTest,
+     SplitsVerifierValidPartialTileDomainForCallerStageCheck) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
@@ -211,15 +212,13 @@ module {
   }
   ASSERT_TRUE(tileToErase);
   tileToErase.erase();
-  mlir::ScopedDiagnosticHandler suppress(
-      context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
-
   std::string failureReason;
   auto tileModules =
       wafer::splitCardModuleIntoTileModules(std::move(source), &failureReason);
 
-  EXPECT_TRUE(mlir::failed(tileModules));
-  EXPECT_EQ(failureReason, "source module is not verifier-legal");
+  ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
+  ASSERT_EQ(tileModules->size(), 1u);
+  EXPECT_EQ(tileModules->front().tileId, wafer::TileId(0));
 }
 
 TEST(WaferCardModuleToTileModulesTest,

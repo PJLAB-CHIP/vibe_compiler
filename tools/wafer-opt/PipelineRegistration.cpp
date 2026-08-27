@@ -59,12 +59,6 @@ void registerWaferOptPipelines() {
       [](mlir::OpPassManager &pm) {
         wafer::buildBufferizeInstrFunctionsPipeline(pm);
       });
-  mlir::PassPipelineRegistration<>(
-      "wafer-prepare-instr-for-memory-planning",
-      "Prepare Instr function boundaries and joins for memory planning",
-      [](mlir::OpPassManager &pm) {
-        wafer::buildPrepareInstrForMemoryPlanningPipeline(pm);
-      });
 #ifdef WAFER_ENABLE_SHARDY
   mlir::PassPipelineRegistration<>(
       "wafer-propagate-stablehlo-sharding",

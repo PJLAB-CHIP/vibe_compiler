@@ -4,6 +4,7 @@
 #include "TemporalWaveLoop.h"
 
 #include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
+#include "Wafer/Analysis/Structured/ScalarInitialization.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
 #include "Wafer/Target/Core/TargetMemory.h"
 
@@ -89,6 +90,9 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
       return mlir::success();
     mlir::Operation *cloned = builder.clone(*allocation.getOperation());
     compilerOwnedBuffers[allocation.getResult()] = cloned->getResult(0);
+    auto clonedAllocation = mlir::cast<mlir::memref::AllocOp>(cloned);
+    if (isWaferSPMMemRefType(clonedAllocation.getType()))
+      recordScratchAllocation(clonedAllocation);
     auto selected = llvm::find_if(
         selectedDDRStages, [&](const CandidateSelectedDDRStage &stage) {
           return stage.buffer == allocation.getResult();
@@ -102,7 +106,7 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
       selectedDDRStageExternalBuffers.insert(cloned->getResult(0));
       if (relationRecorder)
         relationRecorder->recordSelectedDDRStage(
-            mlir::cast<mlir::memref::AllocOp>(cloned), selected->producerNode,
+            clonedAllocation, selected->producerNode,
             selected->producerResult, selected->producerResultKind);
     }
     return mlir::success();
@@ -159,13 +163,14 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
 
     llvm::SmallVector<int64_t, 4> offsets(resultType.getRank(), 0);
     llvm::SmallVector<int64_t, 4> strides(resultType.getRank(), 1);
-    builder.create<MoveInsertSliceOp>(
+    auto moved = builder.create<MoveInsertSliceOp>(
         materialize.getLoc(), *source, *dest,
         mlir::DenseI64ArrayAttr::get(materialize.getContext(), offsets),
         mlir::DenseI64ArrayAttr::get(materialize.getContext(),
                                      resultType.getShape()),
         mlir::DenseI64ArrayAttr::get(materialize.getContext(), strides),
         CardDDRResourceAttr{});
+    recordStructuredComputeOperation(moved);
     record(materialize.getResult(), MemLayout::Tensor, *dest);
     return mlir::success();
   }
@@ -674,10 +679,11 @@ TileRegionBodyEmitter::convertTensorPad(mlir::tensor::PadOp pad,
                                             /*fill_domain=*/FillDomainAttr{});
   recordStructuredComputeOperation(fill);
   llvm::SmallVector<int64_t, 4> strides(sourceType.getRank(), 1);
-  builder.create<MoveInsertSliceOp>(
+  auto moved = builder.create<MoveInsertSliceOp>(
       pad.getLoc(), *source, destination, builder.getDenseI64ArrayAttr(low),
       builder.getDenseI64ArrayAttr(sourceType.getShape()),
       builder.getDenseI64ArrayAttr(strides), CardDDRResourceAttr{});
+  recordStructuredComputeOperation(moved);
   record(pad.getResult(), MemLayout::Tensor, destination);
   return mlir::success();
 }
@@ -880,13 +886,13 @@ TileRegionBodyEmitter::materializeStaticTensorWindow(
       llvm::equal(sizes, tensorType.getShape()))
     return *source;
   llvm::SmallVector<int64_t, 4> unitStrides(offsets.size(), 1);
-  return builder
-      .create<MoveExtractSliceOp>(
-          loc, makeSPMMemRefType(windowType, MemLayout::Tensor), *source,
-          mlir::DenseI64ArrayAttr::get(builder.getContext(), offsets),
-          mlir::DenseI64ArrayAttr::get(builder.getContext(), sizes),
-          mlir::DenseI64ArrayAttr::get(builder.getContext(), unitStrides))
-      .getResult();
+  auto moved = builder.create<MoveExtractSliceOp>(
+      loc, makeSPMMemRefType(windowType, MemLayout::Tensor), *source,
+      mlir::DenseI64ArrayAttr::get(builder.getContext(), offsets),
+      mlir::DenseI64ArrayAttr::get(builder.getContext(), sizes),
+      mlir::DenseI64ArrayAttr::get(builder.getContext(), unitStrides));
+  recordStructuredComputeOperation(moved);
+  return moved.getResult();
 }
 
 mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::materializeMemRefSubview(
@@ -1165,6 +1171,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorExtractSlice(
         extractSlice.getLoc(),
         makeSPMMemRefType(resultTensorType, MemLayout::Tensor), *tileView,
         CardDDRResourceAttr{});
+    recordStructuredComputeOperation(move);
     record(extractSlice.getResult(), MemLayout::Tensor, move.getResult());
     return mlir::success();
   }
@@ -1180,6 +1187,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorExtractSlice(
       extractSlice.getLoc(),
       makeSPMMemRefType(resultTensorType, MemLayout::Tensor), *source, offsets,
       sizes, strides);
+  recordStructuredComputeOperation(move);
   record(extractSlice.getResult(), MemLayout::Tensor, move.getResult());
   mlir::Attribute fillInitAttr = fillInitAttrs.lookup(extractSlice.getSource());
   if (fillInitAttr)
@@ -1508,7 +1516,9 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
         insertSlice.getStaticStrides(), builder);
     if (mlir::failed(destView))
       return mlir::failure();
-    builder.create<MoveCopyIntoOp>(insertSlice.getLoc(), *source, *destView);
+    auto copied = builder.create<MoveCopyIntoOp>(insertSlice.getLoc(), *source,
+                                                 *destView);
+    recordStructuredComputeOperation(copied);
     record(insertSlice.getResult(), MemLayout::Tensor, *dest);
     return mlir::success();
   }
@@ -1642,9 +1652,12 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorReshape(
               sourceType, resultType, /*destinationMayWrite=*/true)))
     result = builder.create<ViewReshapeOp>(op->getLoc(), resultType, source)
                  .getResult();
-  else
-    result = builder.create<MoveReshapeOp>(op->getLoc(), resultType, source)
-                 .getResult();
+  else {
+    auto moved =
+        builder.create<MoveReshapeOp>(op->getLoc(), resultType, source);
+    recordStructuredComputeOperation(moved);
+    result = moved.getResult();
+  }
   record(resultValue, sourceLayout, result);
   return mlir::success();
 }
@@ -1743,59 +1756,8 @@ bool TileRegionBodyEmitter::onlyFeedsUnreadDpsInit(mlir::Value value) const {
 }
 
 bool TileRegionBodyEmitter::onlyFeedsScalarInitializedComputeInit(
-    mlir::Value value, llvm::DenseSet<mlir::Value> &visited) const {
-  if (value.use_empty() || !visited.insert(value).second)
-    return false;
-
-  for (mlir::OpOperand &use : value.getUses()) {
-    mlir::Operation *owner = use.getOwner();
-    if (auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(owner);
-        linalg && linalg.isDpsInit(&use) &&
-        mlir::succeeded(inferOrdinaryConv2DGeometry(linalg)))
-      continue;
-    if (mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::MatmulTransposeAOp,
-                  mlir::linalg::MatmulTransposeBOp, mlir::linalg::BatchMatmulOp,
-                  mlir::linalg::BatchMatmulTransposeAOp,
-                  mlir::linalg::BatchMatmulTransposeBOp>(owner)) {
-      auto dpsOp = mlir::cast<mlir::linalg::LinalgOp>(owner);
-      if (dpsOp.isDpsInit(&use))
-        continue;
-      return false;
-    }
-
-    if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(owner)) {
-      auto linalg = mlir::cast<mlir::linalg::LinalgOp>(owner);
-      if (linalg.isDpsInit(&use) && hasReductionIterator(generic))
-        continue;
-      return false;
-    }
-
-    if (auto expand = mlir::dyn_cast<mlir::tensor::ExpandShapeOp>(owner)) {
-      if (expand.getSrc() == value &&
-          onlyFeedsScalarInitializedComputeInit(expand.getResult(), visited))
-        continue;
-      return false;
-    }
-    if (auto collapse = mlir::dyn_cast<mlir::tensor::CollapseShapeOp>(owner)) {
-      if (collapse.getSrc() == value &&
-          onlyFeedsScalarInitializedComputeInit(collapse.getResult(), visited))
-        continue;
-      return false;
-    }
-
-    auto extractSlice = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(owner);
-    if (!extractSlice || extractSlice.getSource() != value ||
-        !onlyFeedsScalarInitializedComputeInit(extractSlice.getResult(),
-                                               visited))
-      return false;
-  }
-  return true;
-}
-
-bool TileRegionBodyEmitter::onlyFeedsScalarInitializedComputeInit(
     mlir::Value value) const {
-  llvm::DenseSet<mlir::Value> visited;
-  return onlyFeedsScalarInitializedComputeInit(value, visited);
+  return wafer::analysis::onlyFeedsScalarInitializedReduction(value);
 }
 
 } // namespace wafer::tensor_program_to_tile_region

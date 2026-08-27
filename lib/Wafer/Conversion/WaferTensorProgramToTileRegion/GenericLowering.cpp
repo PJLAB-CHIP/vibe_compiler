@@ -134,11 +134,11 @@ TileRegionBodyEmitter::materializeElementwiseExprOperand(
           return static_cast<int64_t>(indexed.index()) == indexed.value();
         }))
       return exprValue.buffer;
-    return builder
-        .create<MoveTransposeOp>(
-            loc, operandType, exprValue.buffer,
-            mlir::DenseI64ArrayAttr::get(builder.getContext(), permutation))
-        .getResult();
+    auto transpose = builder.create<MoveTransposeOp>(
+        loc, operandType, exprValue.buffer,
+        mlir::DenseI64ArrayAttr::get(builder.getContext(), permutation));
+    recordStructuredComputeOperation(transpose);
+    return transpose.getResult();
   }
 
   if (sourceTensorType.getRank() < resultTensorType.getRank()) {
@@ -149,11 +149,11 @@ TileRegionBodyEmitter::materializeElementwiseExprOperand(
         return failValue("unsupported elementwise broadcast map");
       dimensions.push_back(dimExpr.getPosition());
     }
-    return builder
-        .create<MoveBroadcastOp>(
-            loc, operandType, exprValue.buffer,
-            mlir::DenseI64ArrayAttr::get(builder.getContext(), dimensions))
-        .getResult();
+    auto broadcast = builder.create<MoveBroadcastOp>(
+        loc, operandType, exprValue.buffer,
+        mlir::DenseI64ArrayAttr::get(builder.getContext(), dimensions));
+    recordStructuredComputeOperation(broadcast);
+    return broadcast.getResult();
   }
 
   return failValue("unsupported elementwise expression rank relation");
@@ -635,6 +635,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertPassthroughGeneric(
     return fail("unsupported passthrough movement rank relation");
   }
 
+  recordStructuredComputeOperation(result.getDefiningOp());
   record(generic->getResult(0), MemLayout::Tensor, result);
   return mlir::success();
 }
@@ -845,18 +846,20 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTwoWayConcatGeneric(
                                             secondType.getShape().end());
 
   mlir::MLIRContext *context = generic.getContext();
-  builder.create<MoveInsertSliceOp>(
+  auto firstInsert = builder.create<MoveInsertSliceOp>(
       generic.getLoc(), *first, seed.getResult(),
       mlir::DenseI64ArrayAttr::get(context, offsets),
       mlir::DenseI64ArrayAttr::get(context, firstSizes),
       mlir::DenseI64ArrayAttr::get(context, strides), CardDDRResourceAttr{});
+  recordStructuredComputeOperation(firstInsert);
 
   offsets[concatAxis] = firstType.getDimSize(concatAxis);
-  builder.create<MoveInsertSliceOp>(
+  auto secondInsert = builder.create<MoveInsertSliceOp>(
       generic.getLoc(), *second, seed.getResult(),
       mlir::DenseI64ArrayAttr::get(context, offsets),
       mlir::DenseI64ArrayAttr::get(context, secondSizes),
       mlir::DenseI64ArrayAttr::get(context, strides), CardDDRResourceAttr{});
+  recordStructuredComputeOperation(secondInsert);
 
   record(generic->getResult(0), MemLayout::Tensor, seed.getResult());
   return mlir::success();

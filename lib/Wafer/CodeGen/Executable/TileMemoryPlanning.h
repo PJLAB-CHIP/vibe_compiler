@@ -21,7 +21,6 @@ enum class TileMemoryPlanningFailureKind : uint8_t {
   Contract,
   PreexistingPlacementFacts,
   Verification,
-  InstrMemoryPlanningPreparation,
   SPMAllocation,
 };
 
@@ -68,10 +67,11 @@ TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
     const StructuredMaterializationRelations &relations);
 
 /// Consumes one Tile's owned canonical Instr module and runs the
-/// complete current hard-gate sequence: prepare Instr IR for memory planning,
-/// assign SPM offsets and verify the resulting Tile module. Selected execution
-/// structure and rotating storage must already be present in the input IR.
-/// Tile-to-Instr conversion belongs to the caller and must already be complete.
+/// complete current hard-gate sequence: validate the completion-closed,
+/// function-boundary-bufferized canonical Instr input, assign SPM offsets and
+/// verify the resulting Tile module. Selected execution structure, rotating
+/// storage, Tile-to-Instr conversion, worker/order and completion must already
+/// be present in the input IR. This leaf never runs those upstream mutations.
 /// Whole-Card candidate evaluation may suppress only the redundant per-Tile
 /// diagnostic for a typed capacity rejection; all other failures still emit
 /// their ordinary diagnostics and remain typed failures.

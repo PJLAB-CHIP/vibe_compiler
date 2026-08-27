@@ -81,6 +81,11 @@ createTileModule(mlir::ModuleOp sourceModule, CardModuleOp cardModule,
     retain(sourceRelations->scratchBuffers, tileRelations.scratchBuffers);
     retain(sourceRelations->outputBuffers, tileRelations.outputBuffers);
     retain(sourceRelations->cardDDRBuffers, tileRelations.cardDDRBuffers);
+    TileId tileId(sourceTileModule.getTileIdAttr().getInt());
+    for (const CardDDRTransferRelation &relation :
+         sourceRelations->cardDDRTransfers)
+      if (relation.producerTile == tileId || relation.consumerTile == tileId)
+        tileRelations.cardDDRTransfers.push_back(relation);
     retain(sourceRelations->partialReductionContributions,
            tileRelations.partialReductionContributions);
     retain(sourceRelations->partialReductionMergeInputs,

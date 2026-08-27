@@ -6,6 +6,7 @@
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -51,6 +52,12 @@ materializationFailure(ExecutionStructureMaterializationFailureKind kind,
   return {{},
           ExecutionStructureMaterializationFailure{kind, std::move(scope),
                                                    detail.str()}};
+}
+
+RotatingAllocationMaterializationResult
+rotationFailure(ExecutionStructureMaterializationFailureKind kind,
+                llvm::StringRef detail) {
+  return {{}, ExecutionStructureMaterializationFailure{kind, {}, detail.str()}};
 }
 
 std::optional<uint64_t> getStaticTripCount(mlir::scf::ForOp loop) {
@@ -578,6 +585,192 @@ PreparedExecutionStructureResult prepareExecutionStructureMaterialization(
     return lhs.plan.scope < rhs.plan.scope;
   });
   return {std::move(prepared), {}};
+}
+
+PreparedExecutionStructureResult prepareTileExecutionStructure(
+    mlir::ModuleOp module,
+    llvm::ArrayRef<PipelinedExecutionStructure> pipelines,
+    llvm::ArrayRef<ExecutionStructureLoopBinding> bindings,
+    const ExecutionStructureMaterializationLimits &limits) {
+  if (llvm::any_of(bindings, [](const ExecutionStructureLoopBinding &binding) {
+        return !binding.externalStorageProofs.empty();
+      }))
+    return prepareFailure(
+        ExecutionStructureMaterializationFailureKind::BrokenContract,
+        "current-IR execution structure does not accept shadow storage proofs");
+  ExecutionStructurePlan localChoice;
+  localChoice.scopes.reserve(pipelines.size());
+  for (const PipelinedExecutionStructure &pipeline : pipelines)
+    localChoice.scopes.push_back(pipeline);
+  return prepareExecutionStructureMaterialization(module, localChoice,
+                                                  BufferPlan{}, bindings,
+                                                  limits);
+}
+
+RotatingAllocationMaterializationResult materializeRotatingAllocations(
+    mlir::OwningOpRef<mlir::ModuleOp> module,
+    llvm::ArrayRef<RotatingAllocationBinding> bindings,
+    StructuredMaterializationRelations &relations) {
+  if (!module)
+    return rotationFailure(
+        ExecutionStructureMaterializationFailureKind::BrokenContract,
+        "rotating allocation materialization requires an owned module");
+
+  struct PreparedRotation {
+    RotatingAllocationBinding binding;
+    uint64_t tripCount = 0;
+    llvm::SmallVector<mlir::Operation *, 8> insideUses;
+    llvm::SmallVector<mlir::Operation *, 4> beforeUses;
+    llvm::SmallVector<mlir::Operation *, 4> afterUses;
+    mlir::memref::DeallocOp deallocation;
+  };
+  llvm::SmallVector<PreparedRotation, 4> prepared;
+  llvm::DenseSet<mlir::Operation *> allocations;
+  for (const RotatingAllocationBinding &binding : bindings) {
+    mlir::memref::AllocOp allocation = binding.allocation;
+    mlir::scf::ForOp loop = binding.loop;
+    std::optional<uint64_t> tripCount = getStaticTripCount(loop);
+    TileRegionOp allocationRegion =
+        allocation ? allocation->getParentOfType<TileRegionOp>() : TileRegionOp{};
+    if (!allocation || !loop ||
+        !module->getOperation()->isAncestor(allocation) ||
+        !module->getOperation()->isAncestor(loop) || !allocationRegion ||
+        loop->getParentOfType<TileRegionOp>() != allocationRegion ||
+        allocation->getBlock() != loop->getBlock() ||
+        !allocation->isBeforeInBlock(loop) || binding.multiplicity < 2 ||
+        !tripCount || *tripCount < binding.multiplicity ||
+        !allocation.getDynamicSizes().empty() ||
+        !allocation.getSymbolOperands().empty() ||
+        !allocations.insert(allocation).second)
+      return rotationFailure(
+          ExecutionStructureMaterializationFailureKind::BrokenContract,
+          "rotating allocation requires one static pre-loop TileRegion root, "
+          "a static loop and a bounded multiplicity");
+
+    bool hasRelation = false;
+    auto findRelation = [&](const auto &entries) {
+      hasRelation |= llvm::any_of(entries, [&](const auto &entry) {
+        return entry.buffer == allocation.getResult();
+      });
+    };
+    findRelation(relations.operationResultBuffers);
+    findRelation(relations.operandBuffers);
+    findRelation(relations.scratchBuffers);
+    findRelation(relations.outputBuffers);
+    findRelation(relations.cardDDRBuffers);
+    findRelation(relations.partialReductionContributions);
+    findRelation(relations.partialReductionMergeInputs);
+    if (!hasRelation)
+      return rotationFailure(
+          ExecutionStructureMaterializationFailureKind::BrokenContract,
+          "rotating allocation has no current typed owner relation");
+
+    PreparedRotation rotation{binding, *tripCount};
+    for (mlir::Operation *user : allocation.getResult().getUsers()) {
+      if (auto dealloc = mlir::dyn_cast<mlir::memref::DeallocOp>(user)) {
+        if (rotation.deallocation)
+          return rotationFailure(
+              ExecutionStructureMaterializationFailureKind::BrokenContract,
+              "rotating allocation has several deallocations");
+        rotation.deallocation = dealloc;
+        continue;
+      }
+      if (loop->isAncestor(user)) {
+        rotation.insideUses.push_back(user);
+        continue;
+      }
+      if (user->getBlock() != loop->getBlock())
+        return rotationFailure(
+            ExecutionStructureMaterializationFailureKind::Unsupported,
+            "rotating allocation use is outside prefix/steady/tail control");
+      (user->isBeforeInBlock(loop) ? rotation.beforeUses : rotation.afterUses)
+          .push_back(user);
+    }
+    prepared.push_back(std::move(rotation));
+  }
+
+  RotatingAllocationMaterialization result;
+  result.module = std::move(module);
+  for (PreparedRotation &rotation : prepared) {
+    mlir::memref::AllocOp allocation = rotation.binding.allocation;
+    mlir::scf::ForOp loop = rotation.binding.loop;
+    llvm::SmallVector<mlir::Value, 4> slots{allocation.getResult()};
+    mlir::OpBuilder allocationBuilder(allocation);
+    mlir::Operation *lastAllocation = allocation.getOperation();
+    for (uint32_t index = 1; index < rotation.binding.multiplicity; ++index) {
+      allocationBuilder.setInsertionPointAfter(lastAllocation);
+      mlir::IRMapping mapping;
+      auto clone = mlir::cast<mlir::memref::AllocOp>(
+          allocationBuilder.clone(*allocation.getOperation(), mapping));
+      slots.push_back(clone.getResult());
+      lastAllocation = clone.getOperation();
+    }
+
+    mlir::OpBuilder loopBuilder = mlir::OpBuilder::atBlockBegin(loop.getBody());
+    mlir::Value delta = loopBuilder.create<mlir::arith::SubIOp>(
+        loop.getLoc(), loop.getInductionVar(), loop.getLowerBound());
+    mlir::Value iteration = loopBuilder.create<mlir::arith::DivUIOp>(
+        loop.getLoc(), delta, loop.getStep());
+    mlir::Value divisor = loopBuilder.create<mlir::arith::ConstantIndexOp>(
+        loop.getLoc(), rotation.binding.multiplicity);
+    mlir::Value slotIndex = loopBuilder.create<mlir::arith::RemUIOp>(
+        loop.getLoc(), iteration, divisor);
+    mlir::Value selected = slots.front();
+    for (uint32_t index = 1; index < rotation.binding.multiplicity; ++index) {
+      mlir::Value expected = loopBuilder.create<mlir::arith::ConstantIndexOp>(
+          loop.getLoc(), index);
+      mlir::Value condition = loopBuilder.create<mlir::arith::CmpIOp>(
+          loop.getLoc(), mlir::arith::CmpIPredicate::eq, slotIndex, expected);
+      selected = loopBuilder.create<mlir::arith::SelectOp>(
+          loop.getLoc(), condition, slots[index], selected);
+    }
+    mlir::Value finalSlot =
+        slots[(rotation.tripCount - 1) % rotation.binding.multiplicity];
+    auto replace = [&](llvm::ArrayRef<mlir::Operation *> users,
+                       mlir::Value replacement) {
+      for (mlir::Operation *user : users)
+        for (mlir::OpOperand &operand : user->getOpOperands())
+          if (operand.get() == allocation.getResult())
+            operand.set(replacement);
+    };
+    replace(rotation.beforeUses, slots.front());
+    replace(rotation.insideUses, selected);
+    replace(rotation.afterUses, finalSlot);
+
+    if (rotation.deallocation) {
+      mlir::OpBuilder deallocBuilder(rotation.deallocation);
+      for (mlir::Value slot : llvm::ArrayRef<mlir::Value>(slots).drop_front())
+        deallocBuilder.create<mlir::memref::DeallocOp>(
+            rotation.deallocation.getLoc(), slot);
+    }
+
+    auto expandRelations = [&](auto &entries) {
+      const size_t originalSize = entries.size();
+      for (size_t index = 0; index < originalSize; ++index) {
+        if (entries[index].buffer != allocation.getResult())
+          continue;
+        auto original = entries[index];
+        for (mlir::Value slot : llvm::ArrayRef<mlir::Value>(slots).drop_front()) {
+          auto copy = original;
+          copy.buffer = slot;
+          entries.push_back(std::move(copy));
+        }
+      }
+    };
+    expandRelations(relations.operationResultBuffers);
+    expandRelations(relations.operandBuffers);
+    expandRelations(relations.scratchBuffers);
+    expandRelations(relations.outputBuffers);
+    expandRelations(relations.cardDDRBuffers);
+    expandRelations(relations.partialReductionContributions);
+    expandRelations(relations.partialReductionMergeInputs);
+    result.slots.append(slots.begin(), slots.end());
+  }
+  if (mlir::failed(mlir::verify(*result.module)))
+    return rotationFailure(
+        ExecutionStructureMaterializationFailureKind::CompilerBug,
+        "rotating allocation materialization produced verifier-invalid IR");
+  return {std::move(result), {}};
 }
 
 MaterializedExecutionStructureResult

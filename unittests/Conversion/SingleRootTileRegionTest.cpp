@@ -1,5 +1,6 @@
 //===- SingleRootTileRegionTest.cpp -----------------------------------===//
 
+#include "Wafer/Conversion/WaferCardModuleToTileModules/WaferCardModuleToTileModules.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/CoupledTileRegion.h"
 
 #include "TestSupport/Planning/SpatialDemandTestSupport.h"
@@ -9,6 +10,7 @@
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSpatialAssignment.h"
 #include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
+#include "Wafer/Transforms/MemoryPlanningPipelines.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -29,6 +31,7 @@
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
 #include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Pass/PassManager.h"
 
 #include "llvm/ADT/Twine.h"
 
@@ -305,6 +308,120 @@ module {
   }
 }
 
+TEST(SingleRootTileRegionTest,
+     ThreadsCurrentCardDDRValueAcrossProducerConsumerStages) {
+  for (int64_t extent : {1024, 1025}) {
+    SCOPED_TRACE(extent);
+    std::unique_ptr<mlir::MLIRContext> context = createContext();
+    std::string sourceText;
+    llvm::raw_string_ostream stream(sourceText);
+    stream << "module {" << topology << R"mlir(
+  func.func @chain(%input: tensor<2x)mlir"
+           << extent << "x128xf16>) -> tensor<2x" << extent
+           << R"mlir(x128xf16> {
+    %producer_empty = tensor.empty() : tensor<2x)mlir"
+           << extent << R"mlir(x128xf16>
+    %producer = linalg.map ins(%input : tensor<2x)mlir"
+           << extent << R"mlir(x128xf16>)
+        outs(%producer_empty : tensor<2x)mlir"
+           << extent << R"mlir(x128xf16>) (%value: f16) {
+      %next = arith.addf %value, %value : f16
+      linalg.yield %next : f16
+    }
+    %consumer_empty = tensor.empty() : tensor<2x)mlir"
+           << extent << R"mlir(x128xf16>
+    %consumer = linalg.map ins(%producer : tensor<2x)mlir"
+           << extent << R"mlir(x128xf16>)
+        outs(%consumer_empty : tensor<2x)mlir"
+           << extent << R"mlir(x128xf16>) (%value: f16) {
+      %next = arith.mulf %value, %value : f16
+      linalg.yield %next : f16
+    }
+    return %consumer : tensor<2x)mlir"
+           << extent << R"mlir(x128xf16>
+  }
+}
+)mlir";
+    auto source = parse(*context, sourceText);
+    ASSERT_TRUE(source);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
+
+    llvm::SmallVector<mlir::linalg::MapOp, 2> roots;
+    source->walk(
+        [&](mlir::linalg::MapOp operation) { roots.push_back(operation); });
+    ASSERT_EQ(roots.size(), 2u);
+    std::array<wafer::StructuredOperationNodeMapping, 2> operationNodes = {
+        wafer::StructuredOperationNodeMapping{roots[0].getOperation(), 0},
+        wafer::StructuredOperationNodeMapping{roots[1].getOperation(), 1}};
+    std::array<wafer::TileId, 2> tiles = {wafer::TileId(0), wafer::TileId(1)};
+    llvm::SmallVector<wafer::StructuredNodeShardGroup, 3> groups;
+    for (int64_t tile = 0; tile < 2; ++tile) {
+      wafer::StructuredNodeShardGroup producer;
+      producer.shards.push_back(wafer::StructuredNodeIterationShard{
+          0, wafer::TileId(tile), {tile, 0, 0}, {1, extent, 128}});
+      groups.push_back(std::move(producer));
+    }
+    wafer::StructuredNodeShardGroup consumer;
+    consumer.shards.push_back(wafer::StructuredNodeIterationShard{
+        1, wafer::TileId(0), {0, 0, 0}, {2, extent, 128}});
+    consumer.externalSources.push_back({0, 0, wafer::TileId(0)});
+    consumer.externalSources.push_back({0, 0, wafer::TileId(1)});
+    groups.push_back(std::move(consumer));
+
+    mlir::OwningOpRef<mlir::ModuleOp> materialized;
+    std::string failureReason;
+    ASSERT_TRUE(mlir::succeeded(wafer::lowerStructuredNodeGroupsToCardModule(
+        *source, wafer::CardId(0), tiles, operationNodes, groups, materialized,
+        nullptr, &failureReason)))
+        << failureReason;
+
+    auto tileModules = wafer::splitCardModuleIntoTileModules(
+        std::move(materialized), &failureReason);
+    ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
+    auto tileZero =
+        llvm::find_if(*tileModules, [](const wafer::TileModule &tile) {
+          return tile.tileId == wafer::TileId(0);
+        });
+    ASSERT_NE(tileZero, tileModules->end());
+
+    mlir::func::FuncOp readWriteEntry;
+    tileZero->module->walk([&](mlir::func::FuncOp function) {
+      for (unsigned index = 0; index < function.getNumArguments(); ++index) {
+        auto binding = function.getArgAttrOfType<wafer::CardDDRBindingAttr>(
+            index, wafer::kWaferCardDDRBindingAttrName);
+        if (binding && binding.getAccess() == wafer::CardDDRAccess::ReadWrite)
+          readWriteEntry = function;
+      }
+    });
+    ASSERT_TRUE(readWriteEntry);
+    bool hasCurrentValueChain = false;
+    readWriteEntry.walk([&](mlir::bufferization::ToMemrefOp toMemref) {
+      auto toTensor =
+          toMemref.getTensor().getDefiningOp<mlir::bufferization::ToTensorOp>();
+      auto producer =
+          toTensor ? toTensor.getMemref().getDefiningOp<wafer::TileRegionOp>()
+                   : wafer::TileRegionOp{};
+      if (!producer)
+        return;
+      hasCurrentValueChain |= llvm::any_of(
+          toMemref.getMemref().getUsers(), [](mlir::Operation *user) {
+            return mlir::isa<wafer::TileRegionOp>(user);
+          });
+    });
+    EXPECT_TRUE(hasCurrentValueChain);
+
+    mlir::PassManager manager(context.get());
+    wafer::buildBufferizeInstrFunctionsPipeline(manager);
+    ASSERT_TRUE(mlir::succeeded(manager.run(*tileZero->module)));
+    unsigned unownedCopies = 0;
+    tileZero->module->walk([&](mlir::memref::CopyOp copy) {
+      if (!copy->getParentOfType<wafer::TileRegionOp>())
+        ++unownedCopies;
+    });
+    EXPECT_EQ(unownedCopies, 0u);
+  }
+}
+
 TEST(SingleRootTileRegionTest, CarriesValuesCapturedByStructuredRegions) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   std::string sourceText = (llvm::Twine("module {") + topology + R"mlir(
@@ -448,7 +565,7 @@ TEST(SingleRootTileRegionTest, AppliesClosedMultiAxisPlacement) {
 }
 
 TEST(SingleRootTileRegionTest,
-     KeepsStructuredInitProducerOutsideConsumerRegion) {
+     RejectsStructuredInitBoundaryWithoutSelectedProducer) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   std::string sourceText = (llvm::Twine("module {") + topology + R"mlir(
   func.func @init_boundary(%input: tensor<4xf16>) -> tensor<4xf16> {
@@ -492,18 +609,16 @@ TEST(SingleRootTileRegionTest,
   wafer::StructuredMaterializationRelations relations;
   mlir::OwningOpRef<mlir::ModuleOp> materialized;
   std::string failureReason;
-  ASSERT_TRUE(mlir::succeeded(wafer::lowerStructuredNodeShardsToCardModule(
+  EXPECT_TRUE(mlir::failed(wafer::lowerStructuredNodeShardsToCardModule(
       *source, wafer::CardId(0), tiles, operationNodes, shards, materialized,
-      &relations, &failureReason)))
-      << failureReason;
-  ASSERT_FALSE(relations.operationEmissions.empty());
-  for (const wafer::StructuredOperationEmissionRelation &relation :
-       relations.operationEmissions)
-    EXPECT_EQ(relation.structuredNodeId, 1u);
+      &relations, &failureReason)));
+  EXPECT_EQ(failureReason,
+            "structured stage boundary has no selected producer; "
+            "node=0,result=0,consumer-tiles=[0]");
 }
 
 TEST(SingleRootTileRegionTest,
-     KeepsEveryMultiProducerSupportBoundaryOutsideConsumerRegion) {
+     RejectsMultiProducerBoundaryWithoutSelectedProducers) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   std::string sourceText = (llvm::Twine("module {") + topology + R"mlir(
   func.func @fanin(%lhs: tensor<2xf16>, %rhs: tensor<2xf16>)
@@ -552,14 +667,12 @@ TEST(SingleRootTileRegionTest,
   wafer::StructuredMaterializationRelations relations;
   mlir::OwningOpRef<mlir::ModuleOp> materialized;
   std::string failureReason;
-  ASSERT_TRUE(mlir::succeeded(wafer::lowerStructuredNodeShardsToCardModule(
+  EXPECT_TRUE(mlir::failed(wafer::lowerStructuredNodeShardsToCardModule(
       *source, wafer::CardId(0), tiles, operationNodes, shards, materialized,
-      &relations, &failureReason)))
-      << failureReason;
-  ASSERT_FALSE(relations.operationEmissions.empty());
-  for (const wafer::StructuredOperationEmissionRelation &relation :
-       relations.operationEmissions)
-    EXPECT_EQ(relation.structuredNodeId, 2u);
+      &relations, &failureReason)));
+  EXPECT_EQ(failureReason,
+            "structured stage boundary has no selected producer; "
+            "node=0,result=0,consumer-tiles=[0]");
 }
 
 TEST(SingleRootTileRegionTest, MaterializesMultipleStructuredResults) {
@@ -847,7 +960,7 @@ TEST(SingleRootTileRegionTest,
 }
 
 TEST(SingleRootTileRegionTest,
-     MaterializesPartialContributionsAndSelectedMergeRegion) {
+     RejectsLegacyPartialReductionWithoutCompleteDestinations) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   std::string sourceText = (llvm::Twine("module {") + topology + R"mlir(
   func.func @reduce(%input: tensor<4x8xf16>, %init: tensor<4xf16>)
@@ -892,25 +1005,12 @@ TEST(SingleRootTileRegionTest,
   auto materialized = materializeSingletonRootWorksForTest(
       *source, program, wafer::CardId(0), spatialDemand->spatial,
       spatialDemand->demand, &failureReason);
-  ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
-  EXPECT_EQ(countOps<wafer::TileRegionOp>(materialized->module->getOperation()),
-            6u);
-  EXPECT_EQ(countOps<mlir::func::FuncOp>(materialized->module->getOperation()),
-            4u);
-  llvm::SmallVector<unsigned, 4> regionsByTile(4, 0);
-  materialized->module->walk([&](wafer::TileModuleOp tile) {
-    tile.walk([&](wafer::TileRegionOp) {
-      ++regionsByTile[tile.getTileIdAttr().getInt()];
-    });
-  });
-  EXPECT_EQ(regionsByTile, (llvm::SmallVector<unsigned, 4>{2, 1, 2, 1}));
-  EXPECT_EQ(
-      countOps<wafer::StorageStoreOp>(materialized->module->getOperation()),
-      6u);
+  EXPECT_TRUE(mlir::failed(materialized));
+  EXPECT_EQ(failureReason, "Tile entry stage destination arity changed");
 }
 
 TEST(SingleRootTileRegionTest,
-     MaterializesTemporalWavesInsideSpatialReductionContributions) {
+     RejectsLegacyTemporalReductionWithoutCompleteDestinations) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   std::string sourceText = (llvm::Twine("module {") + topology + R"mlir(
   func.func @reduce(%input: tensor<4x8xf16>, %init: tensor<4xf16>)
@@ -956,14 +1056,10 @@ TEST(SingleRootTileRegionTest,
   }
   mlir::OwningOpRef<mlir::ModuleOp> materialized;
   std::string failureReason;
-  ASSERT_TRUE(mlir::succeeded(wafer::lowerStructuredNodeGroupsToCardModule(
+  EXPECT_TRUE(mlir::failed(wafer::lowerStructuredNodeGroupsToCardModule(
       *source, wafer::CardId(0), tiles, operationNodes, groups, materialized,
-      nullptr, &failureReason)))
-      << failureReason;
-  EXPECT_EQ(countOps<wafer::TileRegionOp>(materialized->getOperation()), 6u);
-  EXPECT_GT(countOps<mlir::scf::ForOp>(materialized->getOperation()), 0u);
-  EXPECT_EQ(countOps<wafer::StorageStoreOp>(materialized->getOperation()), 6u);
-  EXPECT_TRUE(mlir::succeeded(mlir::verify(*materialized)));
+      nullptr, &failureReason)));
+  EXPECT_EQ(failureReason, "Tile entry stage destination arity changed");
 }
 
 TEST(SingleRootTileRegionTest, RejectsEffectfulDependencyAtomically) {

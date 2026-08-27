@@ -55,8 +55,8 @@ enum class ScheduleSuccessorKind : uint8_t {
 class ScheduleCursor {
 private:
   std::vector<uint32_t> workerIndices;
-  std::vector<std::vector<EventId>> resourceOrders;
-  std::vector<std::vector<EventId>> controlOrders;
+  std::vector<EventOrder> resourceOrders;
+  std::vector<EventOrder> controlOrders;
   bool proposal = false;
 
   friend class ScheduleDomain;
@@ -96,7 +96,7 @@ public:
   bool contains(const ClosedSchedulePlan &plan) const;
   bool isForGeneration(const ExecutionStructurePlan &structure,
                        const BufferPlan &buffers) const {
-    return input.structure == structure && input.buffers == buffers;
+    return *generationStructure == structure && *generationBuffers == buffers;
   }
 
 private:
@@ -123,11 +123,14 @@ private:
                  std::vector<ResourceDomain> resources,
                  std::vector<ControlDomain> controls,
                  std::vector<EventResourceBinding> fixedResourceBindings,
+                 std::shared_ptr<const ExecutionStructurePlan> structure,
+                 std::shared_ptr<const BufferPlan> buffers,
                  ScheduleDomainLimits limits)
       : input(std::move(input)), workers(std::move(workers)),
         resources(std::move(resources)), controls(std::move(controls)),
         fixedResourceBindings(std::move(fixedResourceBindings)),
-        limits(limits) {}
+        generationStructure(std::move(structure)),
+        generationBuffers(std::move(buffers)), limits(limits) {}
 
   std::optional<ScheduleCursor> getInitialCursor() const;
   std::optional<ScheduleCursor> getReceiverFeasibleProposalCursor() const;
@@ -143,6 +146,8 @@ private:
   std::vector<ResourceDomain> resources;
   std::vector<ControlDomain> controls;
   std::vector<EventResourceBinding> fixedResourceBindings;
+  std::shared_ptr<const ExecutionStructurePlan> generationStructure;
+  std::shared_ptr<const BufferPlan> generationBuffers;
   ScheduleDomainLimits limits;
   std::optional<std::pair<ClosedSchedulePlan, ScheduleCursor>> firstPlan;
 

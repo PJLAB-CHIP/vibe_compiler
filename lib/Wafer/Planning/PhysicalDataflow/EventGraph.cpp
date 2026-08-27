@@ -2,6 +2,10 @@
 
 #include "Wafer/Planning/PhysicalDataflow/EventGraph.h"
 
+#include "Wafer/Analysis/Structured/ScalarInitialization.h"
+
+#include "Wafer/Support/CompileTiming.h"
+
 #include "Wafer/Target/Core/DirectDTE.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -59,6 +63,11 @@ struct MovementActionDescription {
   bool gather = false;
 };
 
+struct EventRecord {
+  PlannedEvent planned;
+  uint32_t ordinal = 0;
+};
+
 class EventGraphBuilder {
 public:
   EventGraphBuilder(CardId card, const RegionPlan &regions,
@@ -76,30 +85,69 @@ public:
         limits(limits) {}
 
   EventGraphBuildResult build() {
-    if (!collectInputs())
-      return std::move(*failure);
-    if (!addExecutionEvents() || !addMovementEvents() || !addStorageEvents() ||
-        !addNestedDependencies() || !addBufferOrderDependencies())
-      return std::move(*failure);
+    {
+      wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                     "collect-event-inputs");
+      if (!collectInputs())
+        return std::move(*failure);
+    }
+    {
+      wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                     "build-execution-events");
+      if (!addExecutionEvents())
+        return std::move(*failure);
+    }
+    {
+      wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                     "build-movement-events");
+      if (!addMovementEvents())
+        return std::move(*failure);
+    }
+    {
+      wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                     "build-storage-events");
+      if (!addStorageEvents())
+        return std::move(*failure);
+    }
+    {
+      wafer::support::ScopedCompileTimingSpan timing(
+          "query", "physical-search", "build-event-dependencies");
+      if (!addNestedDependencies() || !addBufferOrderDependencies())
+        return std::move(*failure);
+    }
     if (events.size() > limits.maxEvents ||
         dependencies.size() > limits.maxDependencies)
       return failed(EventGraphFailureKind::Indeterminate,
                     EventGraphFailureReason::WorkLimit,
                     "event graph construction exceeded its work limit");
 
-    std::vector<EventId> cycle = findCycle();
+    std::vector<EventId> cycle = [&]() {
+      wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                     "find-event-cycle");
+      return findCycle();
+    }();
     if (!cycle.empty())
       return failed(EventGraphFailureKind::ExactRejection,
                     EventGraphFailureReason::HardDependencyCycle,
                     "event graph has a hard dependency cycle",
                     std::move(cycle));
 
-    buildOrderChoices();
-    buildComponents();
+    {
+      wafer::support::ScopedCompileTimingSpan timing(
+          "query", "physical-search", "build-event-order-choices");
+      buildOrderChoices();
+    }
+    {
+      wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                     "build-event-components");
+      buildComponents();
+    }
 
     std::vector<PlannedEvent> plannedEvents;
-    for (auto &[id, event] : events)
-      plannedEvents.push_back(std::move(event));
+    for (auto &[id, event] : events) {
+      (void)id;
+      plannedEvents.push_back(std::move(event.planned));
+    }
     std::vector<EventDependency> hardDependencies(dependencies.begin(),
                                                   dependencies.end());
     std::vector<CompletionObligation> completionObligations(completions.begin(),
@@ -239,6 +287,46 @@ private:
                   EventGraphFailureReason::MalformedPlan,
                   "movement peer graph references an unknown action");
 
+    using AssembledBoundaryKey =
+        std::tuple<analysis::RootRegionWorkId, analysis::RootBoundaryId,
+                   analysis::RootUseId>;
+    std::map<AssembledBoundaryKey, std::vector<DDRBoundaryTransferId>>
+        assembledGroups;
+    for (const DDRBoundaryTransferPlan &transfer :
+         movement.plan.ddrTransfers) {
+      if (selectedGraphs.count(MovementActionId(transfer.id)))
+        continue;
+      const BoundaryRegionValueId &destination = transfer.id.destination;
+      assembledGroups[{destination.work, destination.fragment.source,
+                       destination.fragment.use}]
+          .push_back(transfer.id);
+    }
+    for (auto &[key, actions] : assembledGroups) {
+      (void)key;
+      llvm::sort(actions);
+      actions.erase(std::unique(actions.begin(), actions.end()), actions.end());
+      if (actions.size() < 2)
+        continue;
+      const DDRBoundaryTransferId root = actions.front();
+      assembledBoundaryGroups.emplace(root, actions);
+      for (const DDRBoundaryTransferId &action : actions)
+        assembledBoundaryRoot.emplace(action, root);
+    }
+    std::map<PhysicalVersionId, std::vector<DDRBoundaryTransferId>>
+        storesBySource;
+    for (const DDRBoundaryTransferPlan &transfer :
+         movement.plan.ddrTransfers)
+      if (assembledBoundaryRoot.count(transfer.id))
+        storesBySource[transfer.source].push_back(transfer.id);
+    for (auto &[source, actions] : storesBySource) {
+      (void)source;
+      llvm::sort(actions);
+      actions.erase(std::unique(actions.begin(), actions.end()), actions.end());
+      const DDRBoundaryTransferId root = actions.front();
+      for (const DDRBoundaryTransferId &action : actions)
+        assembledBoundaryStoreRoot.emplace(action, root);
+    }
+
     for (const StorageObjectPlan &object : storage.plan.storageObjects)
       if (!semanticObjects.insert(object.id).second)
         return fail(EventGraphFailureKind::CompilerBug,
@@ -267,6 +355,7 @@ private:
 
     for (const StorageObjectPlan &object : buffers.storageObjects)
       if (!selectedObjects.insert(object.id).second ||
+          !selectedObjectTiles.try_emplace(object.id, object.tile).second ||
           !storageResources.count(object.id))
         return fail(EventGraphFailureKind::Deferred,
                     EventGraphFailureReason::MissingPlanFact,
@@ -336,11 +425,22 @@ private:
     llvm::sort(workers);
     workers.erase(std::unique(workers.begin(), workers.end()), workers.end());
     PlannedEvent planned{std::move(id), card, tile, std::move(workers)};
-    auto [position, inserted] = events.try_emplace(planned.id, planned);
-    if (!inserted && !(position->second == planned))
-      return fail(EventGraphFailureKind::CompilerBug,
-                  EventGraphFailureReason::MalformedPlan,
-                  "one EventId has inconsistent descriptors");
+    auto existing = events.find(planned.id);
+    if (existing != events.end()) {
+      if (!(existing->second.planned == planned))
+        return fail(EventGraphFailureKind::CompilerBug,
+                    EventGraphFailureReason::MalformedPlan,
+                    "one EventId has inconsistent descriptors");
+      return true;
+    }
+    if (events.size() > std::numeric_limits<uint32_t>::max())
+      return fail(EventGraphFailureKind::Indeterminate,
+                  EventGraphFailureReason::WorkLimit,
+                  "event graph ordinal domain is not representable");
+    EventId key = planned.id;
+    events.emplace(
+        std::move(key),
+        EventRecord{std::move(planned), static_cast<uint32_t>(events.size())});
     if (events.size() > limits.maxEvents)
       return fail(EventGraphFailureKind::Indeterminate,
                   EventGraphFailureReason::WorkLimit,
@@ -350,13 +450,15 @@ private:
 
   bool addDependency(EventId predecessor, EventId successor,
                      EventDependencyReason reason) {
-    if (!events.count(predecessor) || !events.count(successor)) {
-      const EventId &missing =
-          !events.count(predecessor) ? predecessor : successor;
+    auto predecessorEvent = events.find(predecessor);
+    auto successorEvent = events.find(successor);
+    if (predecessorEvent == events.end() || successorEvent == events.end()) {
+      const bool missingPredecessor = predecessorEvent == events.end();
+      const EventId &missing = missingPredecessor ? predecessor : successor;
       std::string detail;
       llvm::raw_string_ostream diagnostic(detail);
       diagnostic << "event dependency references an unknown "
-                 << (!events.count(predecessor) ? "predecessor" : "successor")
+                 << (missingPredecessor ? "predecessor" : "successor")
                  << " reason=" << static_cast<unsigned>(reason)
                  << " kind=" << static_cast<unsigned>(missing.kind);
       if (const auto *movement =
@@ -437,10 +539,23 @@ private:
           !addDependency(issue, completion, EventDependencyReason::Completion))
         return false;
       completions.insert({issue, completion, protocol, participants});
-      addResourceUse(issue, TileEngineResource{tile},
-                     ResourceUseMode::CapacityUnits, completion,
-                     ResourceKnowledge::Estimate);
+      if (contract->second->foldedInto.empty())
+        addResourceUse(issue, TileEngineResource{tile},
+                       ResourceUseMode::CapacityUnits, completion,
+                       ResourceKnowledge::Estimate);
     }
+    for (const auto &[execution, contract] : executionContracts)
+      for (const ExecutionInstanceId &consumer : contract->foldedInto) {
+        if (!executionSet.count(consumer) || consumer == execution)
+          return fail(EventGraphFailureKind::CompilerBug,
+                      EventGraphFailureReason::MalformedPlan,
+                      "folded execution references an unknown consumer");
+        if (!addDependency(
+                executionEvent(execution, PlannedEventKind::Completion),
+                executionEvent(consumer, PlannedEventKind::ComputeIssue),
+                EventDependencyReason::SSAValue))
+          return false;
+      }
     return true;
   }
 
@@ -454,6 +569,13 @@ private:
       auto resource = movementResources.find(action);
       if (resource == movementResources.end())
         return std::nullopt;
+      llvm::ArrayRef<analysis::StaticRectangularIndexSet> boxes =
+          resource->second->exactDomain.getBoxes();
+      if (!boxes.empty()) {
+        if (boxes.size() > std::numeric_limits<uint32_t>::max())
+          return std::nullopt;
+        return static_cast<uint32_t>(boxes.size());
+      }
       auto normalized =
           analysis::normalizeFiniteExactIndexSet(resource->second->exactDomain);
       if (mlir::failed(normalized) || normalized->getBoxes().empty() ||
@@ -472,7 +594,7 @@ private:
 
     auto addDDRPhase =
         [&](const MovementActionId &action, MovementEventPhase phase,
-            uint32_t payloadSlice,
+            uint32_t payloadSlice, bool completesLogicalAction,
             TileId tile) -> std::optional<std::pair<EventId, EventId>> {
       EventId logicalIssue =
           movementEvent(action, PlannedEventKind::MovementIssue);
@@ -486,7 +608,9 @@ private:
           !addDependency(logicalIssue, issue,
                          EventDependencyReason::TransferReady) ||
           !addDependency(issue, completion,
-                         EventDependencyReason::Completion) ||
+                         EventDependencyReason::Completion))
+        return std::nullopt;
+      if (completesLogicalAction &&
           !addDependency(completion, logicalCompletion,
                          EventDependencyReason::Completion))
         return std::nullopt;
@@ -521,21 +645,49 @@ private:
            ++payloadSlice) {
         if (std::holds_alternative<ExternalLoadId>(action)) {
           if (!destination || !addDDRPhase(action, MovementEventPhase::DDRLoad,
-                                           payloadSlice, *destination))
+                                           payloadSlice,
+                                           /*completesLogicalAction=*/true,
+                                           *destination))
             return false;
         } else if (std::holds_alternative<ResultPublicationId>(action)) {
           if (!source || !addDDRPhase(action, MovementEventPhase::DDRStore,
-                                      payloadSlice, *source))
+                                      payloadSlice,
+                                      /*completesLogicalAction=*/true, *source))
             return false;
         } else {
           if (!source || !destination)
             return fail(EventGraphFailureKind::CompilerBug,
                         EventGraphFailureReason::MalformedPlan,
                         "DDR movement has incomplete endpoints");
-          auto store = addDDRPhase(action, MovementEventPhase::DDRStore,
-                                   payloadSlice, *source);
-          auto load = addDDRPhase(action, MovementEventPhase::DDRLoad,
-                                  payloadSlice, *destination);
+          const auto *boundary = std::get_if<DDRBoundaryTransferId>(&action);
+          auto assembled = boundary ? assembledBoundaryRoot.find(*boundary)
+                                    : assembledBoundaryRoot.end();
+          const bool assembledMember =
+              assembled != assembledBoundaryRoot.end();
+          const bool assembledRoot =
+              assembledMember && assembled->first == assembled->second;
+          auto selectedStore =
+              boundary ? assembledBoundaryStoreRoot.find(*boundary)
+                       : assembledBoundaryStoreRoot.end();
+          const bool assembledStoreRoot =
+              assembledMember &&
+              selectedStore != assembledBoundaryStoreRoot.end() &&
+              selectedStore->first == selectedStore->second;
+          std::optional<std::pair<EventId, EventId>> store;
+          if (!assembledMember || assembledStoreRoot)
+            store = addDDRPhase(
+                action, MovementEventPhase::DDRStore, payloadSlice,
+                /*completesLogicalAction=*/!assembledMember, *source);
+          std::optional<std::pair<EventId, EventId>> load;
+          if (!assembledMember || assembledRoot)
+            load = addDDRPhase(
+                action, MovementEventPhase::DDRLoad, payloadSlice,
+                /*completesLogicalAction=*/!assembledMember, *destination);
+          if (assembledMember) {
+            if ((assembledStoreRoot && !store) || (assembledRoot && !load))
+              return false;
+            continue;
+          }
           if (!store || !load ||
               !addDependency(store->second, load->first,
                              EventDependencyReason::TransferReady))
@@ -551,6 +703,42 @@ private:
         if (!addEvent(observable, std::nullopt) ||
             !addDependency(completion, observable,
                            EventDependencyReason::Publication))
+          return false;
+      }
+    }
+
+    for (const auto &[root, actions] : assembledBoundaryGroups) {
+      MovementActionId rootAction(root);
+      EventId loadIssue = movementEvent(
+          rootAction, PlannedEventKind::MovementIssue,
+          MovementEventPhase::DDRLoad, /*payloadSlice=*/0);
+      EventId loadCompletion = movementEvent(
+          rootAction, PlannedEventKind::Completion,
+          MovementEventPhase::DDRLoad, /*payloadSlice=*/0);
+      for (const DDRBoundaryTransferId &member : actions) {
+        MovementActionId action(member);
+        auto selectedStore = assembledBoundaryStoreRoot.find(member);
+        if (selectedStore == assembledBoundaryStoreRoot.end())
+          return fail(EventGraphFailureKind::CompilerBug,
+                      EventGraphFailureReason::MalformedPlan,
+                      "assembled boundary member has no store root");
+        MovementActionId storeAction(selectedStore->second);
+        EventId logicalIssue =
+            movementEvent(action, PlannedEventKind::MovementIssue);
+        EventId storeIssue = movementEvent(
+            storeAction, PlannedEventKind::MovementIssue,
+            MovementEventPhase::DDRStore, /*payloadSlice=*/0);
+        EventId storeCompletion = movementEvent(
+            storeAction, PlannedEventKind::Completion,
+            MovementEventPhase::DDRStore, /*payloadSlice=*/0);
+        EventId logicalCompletion =
+            movementEvent(action, PlannedEventKind::Completion);
+        if (!addDependency(logicalIssue, storeIssue,
+                           EventDependencyReason::TransferReady) ||
+            !addDependency(storeCompletion, loadIssue,
+                           EventDependencyReason::TransferReady) ||
+            !addDependency(loadCompletion, logicalCompletion,
+                           EventDependencyReason::Completion))
           return false;
       }
     }
@@ -677,7 +865,9 @@ private:
           for (uint32_t payloadSlice = 0; payloadSlice < *pieces;
                ++payloadSlice) {
             auto load = addDDRPhase(member, MovementEventPhase::DDRLoad,
-                                    payloadSlice, TileId(root));
+                                    payloadSlice,
+                                    /*completesLogicalAction=*/true,
+                                    TileId(root));
             if (!load)
               return false;
             for (const MovementHop &hop : graph.hops)
@@ -787,37 +977,47 @@ private:
                  ? std::nullopt
                  : std::optional<StorageObjectId>(selected->second);
     }
-    return llvm::any_of(
-               buffers.storageObjects,
-               [&](const auto &object) { return object.id == semantic; })
+    return selectedObjects.count(semantic)
                ? std::optional<StorageObjectId>(semantic)
                : std::nullopt;
   }
 
   std::optional<TileId> selectedTile(const StorageObjectId &object) const {
-    auto found = llvm::find_if(buffers.storageObjects, [&](const auto &plan) {
-      return plan.id == object;
-    });
-    return found == buffers.storageObjects.end()
+    auto found = selectedObjectTiles.find(object);
+    return found == selectedObjectTiles.end()
                ? std::nullopt
-               : std::optional<TileId>(found->tile);
+               : std::optional<TileId>(found->second);
   }
 
-  std::optional<ResourceKey>
+  const SPMRangeResource *
   spmResource(const StorageObjectId &object,
-              std::optional<uint32_t> payloadSlice = std::nullopt) const {
-    const StorageResourceDescription &resource = *storageResources.at(object);
-    std::vector<PhysicalRangeBox> boxes;
-    for (const analysis::StaticRectangularIndexSet &box :
-         resource.residentDomain.getBoxes())
-      boxes.push_back({box.offsets, box.sizes});
-    llvm::sort(boxes);
-    if (payloadSlice) {
-      if (*payloadSlice >= boxes.size())
-        return std::nullopt;
-      boxes = {boxes[*payloadSlice]};
+              std::optional<uint32_t> payloadSlice = std::nullopt) {
+    auto full = fullSPMResources.find(object);
+    if (full == fullSPMResources.end()) {
+      const StorageResourceDescription &resource = *storageResources.at(object);
+      std::vector<PhysicalRangeBox> boxes;
+      for (const analysis::StaticRectangularIndexSet &box :
+           resource.residentDomain.getBoxes())
+        boxes.push_back({box.offsets, box.sizes});
+      llvm::sort(boxes);
+      full =
+          fullSPMResources
+              .try_emplace(object, SPMRangeResource{object, std::move(boxes)})
+              .first;
     }
-    return SPMRangeResource{object, std::move(boxes)};
+    if (!payloadSlice)
+      return &full->second;
+    if (*payloadSlice >= full->second.boxes.size())
+      return nullptr;
+    auto key = std::make_pair(object, *payloadSlice);
+    auto slice = slicedSPMResources.find(key);
+    if (slice == slicedSPMResources.end())
+      slice = slicedSPMResources
+                  .try_emplace(key,
+                               SPMRangeResource{
+                                   object, {full->second.boxes[*payloadSlice]}})
+                  .first;
+    return &slice->second;
   }
 
   bool addStorageResourceUses(const StorageAccessSite &site,
@@ -825,10 +1025,11 @@ private:
                               ResourceUseMode mode) {
     auto addUse = [&](EventId issue, EventId completion,
                       std::optional<uint32_t> payloadSlice) {
-      std::optional<ResourceKey> resource = spmResource(object, payloadSlice);
-      if (!resource || !events.count(issue) || !events.count(completion))
+      const SPMRangeResource *resource = spmResource(object, payloadSlice);
+      if (!resource || events.find(issue) == events.end() ||
+          events.find(completion) == events.end())
         return false;
-      addResourceUse(issue, std::move(*resource), mode, completion);
+      addResourceUse(issue, ResourceKey(*resource), mode, completion);
       return true;
     };
 
@@ -847,11 +1048,19 @@ private:
           resource == movementResources.end() || !objectTile)
         return false;
       if (!description->second.peerGraph) {
-        auto normalized = analysis::normalizeFiniteExactIndexSet(
-            resource->second->exactDomain);
-        if (mlir::failed(normalized) || normalized->getBoxes().empty() ||
-            normalized->getBoxes().size() >
-                std::numeric_limits<uint32_t>::max())
+        llvm::ArrayRef<analysis::StaticRectangularIndexSet> boxes =
+            resource->second->exactDomain.getBoxes();
+        std::optional<analysis::ExactIndexSet> normalized;
+        if (boxes.empty()) {
+          auto result = analysis::normalizeFiniteExactIndexSet(
+              resource->second->exactDomain);
+          if (mlir::failed(result))
+            return false;
+          normalized.emplace(std::move(*result));
+          boxes = normalized->getBoxes();
+        }
+        if (boxes.empty() ||
+            boxes.size() > std::numeric_limits<uint32_t>::max())
           return false;
         llvm::SmallVector<MovementEventPhase, 2> phases;
         if (std::holds_alternative<ExternalLoadId>(*action)) {
@@ -870,19 +1079,35 @@ private:
           const bool cardTransfer =
               std::holds_alternative<DDRBoundaryTransferId>(*action) ||
               std::holds_alternative<ReductionGatherId>(*action);
-          const uint32_t phaseCount =
-              cardTransfer ? 1 : normalized->getBoxes().size();
+          const uint32_t phaseCount = cardTransfer ? 1 : boxes.size();
           for (uint32_t payloadSlice = 0; payloadSlice < phaseCount;
                ++payloadSlice)
-            for (MovementEventPhase phase : phases)
-              if (!addUse(movementEvent(*action,
+            for (MovementEventPhase phase : phases) {
+              MovementActionId eventAction = *action;
+              if (phase == MovementEventPhase::DDRLoad)
+                if (const auto *transfer =
+                        std::get_if<DDRBoundaryTransferId>(&*action)) {
+                  auto root = assembledBoundaryRoot.find(*transfer);
+                  if (root != assembledBoundaryRoot.end())
+                    eventAction = MovementActionId(root->second);
+                }
+              if (phase == MovementEventPhase::DDRStore)
+                if (const auto *transfer =
+                        std::get_if<DDRBoundaryTransferId>(&*action)) {
+                  auto root = assembledBoundaryStoreRoot.find(*transfer);
+                  if (root != assembledBoundaryStoreRoot.end())
+                    eventAction = MovementActionId(root->second);
+                }
+              if (!addUse(movementEvent(eventAction,
                                         PlannedEventKind::MovementIssue, phase,
                                         payloadSlice),
-                          movementEvent(*action, PlannedEventKind::Completion,
-                                        phase, payloadSlice),
+                          movementEvent(eventAction,
+                                        PlannedEventKind::Completion, phase,
+                                        payloadSlice),
                           cardTransfer ? std::nullopt
                                        : std::optional<uint32_t>(payloadSlice)))
                 return false;
+            }
           return true;
         }
       }
@@ -1015,34 +1240,51 @@ private:
     return result;
   }
 
+  std::optional<uint32_t> eventOrdinal(const EventId &event) const {
+    auto found = events.find(event);
+    return found == events.end()
+               ? std::nullopt
+               : std::optional<uint32_t>(found->second.ordinal);
+  }
+
   std::vector<EventId> findCycle() const {
-    auto successors = adjacency();
-    std::map<EventId, uint8_t> colors;
-    std::vector<EventId> stack;
-    std::map<EventId, size_t> stackPositions;
+    std::vector<std::vector<uint32_t>> successors(events.size());
+    for (const EventDependency &edge : dependencies) {
+      std::optional<uint32_t> predecessor = eventOrdinal(edge.predecessor);
+      std::optional<uint32_t> successor = eventOrdinal(edge.successor);
+      if (predecessor && successor)
+        successors[*predecessor].push_back(*successor);
+    }
+    std::vector<const EventId *> ids(events.size(), nullptr);
+    for (const auto &[id, event] : events)
+      ids[event.ordinal] = &id;
+    std::vector<uint8_t> colors(events.size(), 0);
+    std::vector<uint32_t> stack;
+    std::vector<size_t> stackPositions(events.size(), 0);
     std::vector<EventId> cycle;
-    std::function<bool(const EventId &)> visit = [&](const EventId &event) {
+    std::function<bool(uint32_t)> visit = [&](uint32_t event) {
       colors[event] = 1;
       stackPositions[event] = stack.size();
       stack.push_back(event);
-      for (const EventId &successor : successors[event]) {
+      for (uint32_t successor : successors[event]) {
         if (colors[successor] == 0) {
           if (visit(successor))
             return true;
         } else if (colors[successor] == 1) {
-          cycle.assign(stack.begin() + stackPositions[successor], stack.end());
-          cycle.push_back(successor);
+          for (uint32_t member : llvm::ArrayRef<uint32_t>(stack).drop_front(
+                   stackPositions[successor]))
+            cycle.push_back(*ids[member]);
+          cycle.push_back(*ids[successor]);
           return true;
         }
       }
-      stackPositions.erase(event);
       stack.pop_back();
       colors[event] = 2;
       return false;
     };
-    for (const auto &[event, ignored] : successors) {
-      (void)ignored;
-      if (colors[event] == 0 && visit(event))
+    for (const auto &[id, event] : events) {
+      (void)id;
+      if (colors[event.ordinal] == 0 && visit(event.ordinal))
         break;
     }
     return cycle;
@@ -1082,6 +1324,10 @@ private:
   }
 
   void buildOrderChoices() {
+    if (llvm::none_of(resourceUses, [](const PlannedResourceUse &use) {
+          return std::holds_alternative<DirectDTESenderResource>(use.resource);
+        }))
+      return;
     std::map<ResourceKey, std::vector<const PlannedResourceUse *>> byResource;
     for (const PlannedResourceUse &use : resourceUses)
       byResource[use.resource].push_back(&use);
@@ -1109,38 +1355,43 @@ private:
   }
 
   void buildComponents() {
-    std::map<EventId, std::set<EventId>> undirected;
-    for (const auto &[id, event] : events) {
-      (void)event;
-      undirected.try_emplace(id);
-    }
-    for (const EventDependency &edge : dependencies) {
-      undirected[edge.predecessor].insert(edge.successor);
-      undirected[edge.successor].insert(edge.predecessor);
-    }
+    std::vector<uint32_t> parents(events.size());
+    for (uint32_t ordinal = 0; ordinal < parents.size(); ++ordinal)
+      parents[ordinal] = ordinal;
+    std::function<uint32_t(uint32_t)> findRoot = [&](uint32_t event) {
+      if (parents[event] == event)
+        return event;
+      parents[event] = findRoot(parents[event]);
+      return parents[event];
+    };
+    auto unite = [&](const EventId &lhs, const EventId &rhs) {
+      std::optional<uint32_t> left = eventOrdinal(lhs);
+      std::optional<uint32_t> right = eventOrdinal(rhs);
+      if (!left || !right)
+        return;
+      left = findRoot(*left);
+      right = findRoot(*right);
+      if (*left == *right)
+        return;
+      if (*right < *left)
+        std::swap(left, right);
+      parents[*right] = *left;
+    };
+    for (const EventDependency &edge : dependencies)
+      unite(edge.predecessor, edge.successor);
     for (const DisjunctiveResourceOrder &choice : orderChoices)
-      for (size_t index = 1; index < choice.events.size(); ++index) {
-        undirected[choice.events.front()].insert(choice.events[index]);
-        undirected[choice.events[index]].insert(choice.events.front());
-      }
-    std::set<EventId> visited;
-    for (const auto &[root, ignored] : undirected) {
-      (void)ignored;
-      if (visited.count(root))
-        continue;
-      std::set<EventId> memberSet;
-      std::vector<EventId> stack{root};
-      while (!stack.empty()) {
-        EventId current = stack.back();
-        stack.pop_back();
-        if (!visited.insert(current).second)
-          continue;
-        memberSet.insert(current);
-        for (const EventId &neighbor : undirected[current])
-          stack.push_back(neighbor);
-      }
-      components.push_back(
-          {std::vector<EventId>(memberSet.begin(), memberSet.end())});
+      for (size_t index = 1; index < choice.events.size(); ++index)
+        unite(choice.events.front(), choice.events[index]);
+
+    std::vector<std::vector<EventId>> members(events.size());
+    for (const auto &[id, event] : events)
+      members[findRoot(event.ordinal)].push_back(id);
+    std::set<uint32_t> emitted;
+    for (const auto &[id, event] : events) {
+      (void)id;
+      uint32_t root = findRoot(event.ordinal);
+      if (emitted.insert(root).second)
+        components.push_back({std::move(members[root])});
     }
   }
 
@@ -1164,11 +1415,18 @@ private:
   std::map<MovementActionId, const MovementResourceDescription *>
       movementResources;
   std::map<MovementActionId, MovementActionDescription> movementActions;
+  std::map<DDRBoundaryTransferId, DDRBoundaryTransferId>
+      assembledBoundaryRoot;
+  std::map<DDRBoundaryTransferId, DDRBoundaryTransferId>
+      assembledBoundaryStoreRoot;
+  std::map<DDRBoundaryTransferId, std::vector<DDRBoundaryTransferId>>
+      assembledBoundaryGroups;
   std::map<std::pair<std::vector<MovementActionId>, MovementHop>,
            const ExactMovementRoute *>
       routes;
   std::set<StorageObjectId> semanticObjects;
   std::set<StorageObjectId> selectedObjects;
+  std::map<StorageObjectId, TileId> selectedObjectTiles;
   std::map<StorageObjectId, const StorageResourceDescription *>
       storageResources;
   std::map<StorageObjectId, const StorageLifetimeDescription *>
@@ -1177,8 +1435,11 @@ private:
   std::map<ReductionGatherId, StorageObjectId> selectedGatherObjects;
   std::map<StorageObjectId, EventId> bufferReady;
   std::map<StorageObjectId, EventId> bufferRelease;
+  std::map<StorageObjectId, SPMRangeResource> fullSPMResources;
+  std::map<std::pair<StorageObjectId, uint32_t>, SPMRangeResource>
+      slicedSPMResources;
 
-  std::map<EventId, PlannedEvent> events;
+  std::map<EventId, EventRecord> events;
   std::set<EventDependency> dependencies;
   std::set<CompletionObligation> completions;
   std::set<PlannedResourceUse> resourceUses;
@@ -1189,19 +1450,82 @@ private:
 
 } // namespace event_graph_detail
 
-ExecutionEventContractResult deriveExecutionEventContracts(
-    const SerializedExecutionPlan &serialized,
+static std::optional<unsigned>
+getPassthroughInput(mlir::linalg::GenericOp generic) {
+  if (generic.getNumDpsInits() != 1 || generic->getNumResults() != 1)
+    return std::nullopt;
+  auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(
+      generic.getBody()->getTerminator());
+  if (!yield || yield.getValues().size() != 1)
+    return std::nullopt;
+  auto argument = mlir::dyn_cast<mlir::BlockArgument>(yield.getValues()[0]);
+  if (!argument || argument.getOwner() != generic.getBody() ||
+      argument.getArgNumber() >= generic.getNumDpsInputs())
+    return std::nullopt;
+  return argument.getArgNumber();
+}
+
+static bool isMetadataPassthroughExecution(
+    mlir::Operation *operation, const ExecutionInstanceId &execution,
+    const analysis::RootRegionWork &work) {
+  auto generic = mlir::dyn_cast_or_null<mlir::linalg::GenericOp>(operation);
+  const auto *required =
+      std::get_if<RequiredRootExecution>(&execution.source);
+  std::optional<unsigned> input =
+      generic ? getPassthroughInput(generic) : std::nullopt;
+  if (!generic || !required || !input)
+    return false;
+  auto piece = llvm::find_if(work.execution, [&](const auto &candidate) {
+    return candidate.shard == required->shard;
+  });
+  if (piece == work.execution.end())
+    return false;
+  llvm::SmallVector<mlir::AffineMap, 4> maps =
+      generic.getIndexingMapsArray();
+  if (*input >= maps.size() || maps.size() != generic.getNumDpsInputs() + 1)
+    return false;
+  llvm::SmallVector<unsigned, 4> resultDims;
+  for (mlir::AffineExpr expression : maps.back().getResults()) {
+    auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+    if (!dimension || dimension.getPosition() >= piece->iterationDomain.size())
+      return false;
+    resultDims.push_back(dimension.getPosition());
+  }
+  size_t nextResult = 0;
+  std::set<unsigned> retained;
+  for (mlir::AffineExpr expression : maps[*input].getResults()) {
+    auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+    if (!dimension)
+      return false;
+    while (nextResult < resultDims.size() &&
+           resultDims[nextResult] != dimension.getPosition())
+      ++nextResult;
+    if (nextResult == resultDims.size())
+      return false;
+    retained.insert(dimension.getPosition());
+    ++nextResult;
+  }
+  return llvm::all_of(resultDims, [&](unsigned dimension) {
+    return retained.count(dimension) ||
+           piece->iterationDomain[dimension].size == 1;
+  });
+}
+
+static ExecutionEventContractResult deriveExecutionEventContractsImpl(
+    const SerializedExecutionPlan &serialized, const RegionPlan *regions,
     llvm::ArrayRef<analysis::RootRegionWork> rootWorks) {
-  std::map<analysis::RootRegionWorkId, mlir::Operation *> roots;
+  std::map<analysis::RootRegionWorkId, const analysis::RootRegionWork *> roots;
   for (const analysis::RootRegionWork &work : rootWorks)
     if (!work.rootOperation ||
-        !roots.try_emplace(work.id, work.rootOperation).second)
+        !roots.try_emplace(work.id, &work).second)
       return {{},
               EventGraphFailure{EventGraphFailureKind::CompilerBug,
                                 EventGraphFailureReason::MalformedPlan,
                                 {},
                                 "execution contracts have malformed root "
                                 "work"}};
+  std::set<ExecutionInstanceId> serializedExecutions(
+      serialized.executions.begin(), serialized.executions.end());
   ExecutionEventContractResult result;
   for (const ExecutionInstanceId &execution : serialized.executions) {
     analysis::RootRegionWorkId work = std::visit(
@@ -1215,7 +1539,8 @@ ExecutionEventContractResult deriveExecutionEventContracts(
                                 "execution contract has no typed root"}};
     ExecutionEventContract contract;
     contract.execution = execution;
-    if (!mlir::isMemoryEffectFree(operation->second))
+    mlir::Operation *rootOperation = operation->second->rootOperation;
+    if (!mlir::isMemoryEffectFree(rootOperation))
       return {{},
               EventGraphFailure{
                   EventGraphFailureKind::Unsupported,
@@ -1223,12 +1548,44 @@ ExecutionEventContractResult deriveExecutionEventContracts(
                   {},
                   "effectful structured execution needs an explicit event "
                   "contract"}};
-    if (mlir::isa<mlir::linalg::LinalgOp, LinalgExtAttentionOp>(
-            operation->second)) {
+    std::set<ExecutionInstanceId> foldedInto;
+    if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(rootOperation);
+        regions && fill && analysis::onlyFeedsScalarInitializedReduction(
+                               fill.getResult(0))) {
+      for (const RegionGroupPlan &group : regions->groups)
+        for (const LocalUseBinding &binding : group.localBindings) {
+          const auto *producer =
+              std::get_if<ExecutionInstanceId>(&binding.producer);
+          if (!producer || !(*producer == execution) ||
+              binding.fragment.source.kind !=
+                  analysis::RootBoundaryKind::StructuredResult ||
+              binding.fragment.source.semantic != work.root ||
+              binding.fragment.source.index != 0)
+            continue;
+          analysis::RootRegionWorkId consumerWork{
+              binding.fragment.use.destinationShard.root, group.tile};
+          ExecutionInstanceId consumer{RequiredRootExecution{
+              consumerWork, binding.fragment.use.destinationShard}};
+          if (consumer == execution || !serializedExecutions.count(consumer) ||
+              llvm::none_of(group.executions, [&](const auto &candidate) {
+                return candidate.id == consumer;
+              }))
+            continue;
+          foldedInto.insert(std::move(consumer));
+        }
+    }
+    if (!foldedInto.empty()) {
+      contract.completion = NCCCompletionKind::None;
+      contract.foldedInto.assign(foldedInto.begin(), foldedInto.end());
+    } else if (isMetadataPassthroughExecution(
+                   rootOperation, execution, *operation->second)) {
+      contract.completion = NCCCompletionKind::None;
+    } else if (mlir::isa<mlir::linalg::LinalgOp, LinalgExtAttentionOp>(
+                   rootOperation)) {
       for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker)
         contract.workerDomain.push_back(static_cast<NCCWorker>(worker));
       contract.completion = NCCCompletionKind::OrderedAsynchronousIssue;
-    } else if (mlir::isa<mlir::ViewLikeOpInterface>(operation->second)) {
+    } else if (mlir::isa<mlir::ViewLikeOpInterface>(rootOperation)) {
       contract.completion = NCCCompletionKind::None;
     } else {
       return {{},
@@ -1255,6 +1612,18 @@ ExecutionEventContractResult deriveExecutionEventContracts(
                               {},
                               "execution contracts contain duplicates"}};
   return result;
+}
+
+ExecutionEventContractResult deriveExecutionEventContracts(
+    const SerializedExecutionPlan &serialized,
+    llvm::ArrayRef<analysis::RootRegionWork> rootWorks) {
+  return deriveExecutionEventContractsImpl(serialized, nullptr, rootWorks);
+}
+
+ExecutionEventContractResult deriveExecutionEventContracts(
+    const SerializedExecutionPlan &serialized, const RegionPlan &regions,
+    llvm::ArrayRef<analysis::RootRegionWork> rootWorks) {
+  return deriveExecutionEventContractsImpl(serialized, &regions, rootWorks);
 }
 
 bool EventGraph::contains(const EventId &event) const {

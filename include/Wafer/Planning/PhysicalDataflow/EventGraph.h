@@ -351,6 +351,10 @@ struct ExecutionEventContract {
   std::vector<NCCWorker> workerDomain;
   NCCCompletionKind completion = NCCCompletionKind::None;
   uint32_t participantMask = 0;
+  /// A source execution may have no standalone target issue when its exact
+  /// SSA value is consumed inside one or more selected local executions. The
+  /// dependencies retain that semantic occurrence without inventing work.
+  std::vector<ExecutionInstanceId> foldedInto;
 };
 
 /// Exact target routing is an explicit input fact. In its absence a selected
@@ -480,6 +484,10 @@ EventGraphBuildResult buildEventGraph(
 /// typed Unsupported and never become implicit synchronous work.
 ExecutionEventContractResult deriveExecutionEventContracts(
     const SerializedExecutionPlan &serialized,
+    llvm::ArrayRef<analysis::RootRegionWork> rootWorks);
+
+ExecutionEventContractResult deriveExecutionEventContracts(
+    const SerializedExecutionPlan &serialized, const RegionPlan &regions,
     llvm::ArrayRef<analysis::RootRegionWork> rootWorks);
 
 } // namespace wafer::compiler::detail

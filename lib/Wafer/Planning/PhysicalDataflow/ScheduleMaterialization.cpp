@@ -364,6 +364,54 @@ materializeSchedule(std::vector<mlir::OwningOpRef<mlir::ModuleOp>> modules,
           "prepared schedule is stale for the owned module epoch");
 
   mlir::IRRewriter rewriter(modules.front()->getContext());
+  for (const PreparedScheduleScope &scope : prepared.scopes) {
+    const auto *tileScope = std::get_if<TileControlScope>(&scope.order.scope);
+    if (!tileScope || !tileScope->pipeline ||
+        !tileScope->pipeline->events.empty() ||
+        !tileScope->pipeline->recurrences.empty())
+      continue;
+    llvm::SmallVector<TileRegionOp, 32> orderedRegions;
+    for (const EventId &event : scope.order.events) {
+      auto binding = llvm::find_if(scope.events, [&](const auto &candidate) {
+        return candidate.event == event;
+      });
+      if (binding == scope.events.end())
+        return materializationFailure(
+            ScheduleMaterializationFailureKind::BrokenContract,
+            "top-level Tile schedule lost one event binding", event);
+      auto appendRegion = [&](mlir::Operation *operation) {
+        TileRegionOp region =
+            operation ? operation->getParentOfType<TileRegionOp>()
+                      : TileRegionOp{};
+        while (region) {
+          TileRegionOp parent =
+              region->getParentOfType<TileRegionOp>();
+          if (!parent)
+            break;
+          region = parent;
+        }
+        if (region && !llvm::is_contained(orderedRegions, region))
+          orderedRegions.push_back(region);
+      };
+      for (mlir::Operation *operation : binding->operations)
+        appendRegion(operation);
+      if (binding->operations.empty())
+        for (mlir::Block *block : getBindingBlocks(*binding))
+          appendRegion(block ? block->getParentOp() : nullptr);
+    }
+    mlir::Block *parentBlock = nullptr;
+    for (TileRegionOp region : orderedRegions) {
+      if (!parentBlock)
+        parentBlock = region->getBlock();
+      if (region->getBlock() != parentBlock || !parentBlock->getTerminator())
+        return materializationFailure(
+            ScheduleMaterializationFailureKind::Unsupported,
+            "top-level Tile schedule spans incompatible region blocks");
+    }
+    if (parentBlock)
+      for (TileRegionOp region : orderedRegions)
+        region->moveBefore(parentBlock->getTerminator());
+  }
   std::map<mlir::Block *, std::vector<const ScheduleEventIRBinding *>>
       eventsByBlock;
   for (const PreparedScheduleScope &scope : prepared.scopes)
@@ -568,7 +616,7 @@ verifyMaterializedSchedule(const MaterializedSchedule &materialized,
     }
   }
 
-  for (const mlir::OwningOpRef<mlir::ModuleOp> &owned : materialized.modules) {
+  for (auto [moduleIndex, owned] : llvm::enumerate(materialized.modules)) {
     mlir::ModuleOp module = owned.get();
     if (!module || mlir::failed(mlir::verify(module)))
       return fail("schedule verifier received invalid Instr IR");
@@ -577,12 +625,79 @@ verifyMaterializedSchedule(const MaterializedSchedule &materialized,
     if (mlir::failed(completion))
       return mlir::failure();
     bool pending = false;
+    uint32_t pendingMask = 0;
     module.walk([&](mlir::func::ReturnOp operation) {
       auto state = completion->getOperationState(operation);
-      pending |= state && state->pendingBefore != 0;
+      if (state) {
+        pending |= state->pendingBefore != 0;
+        pendingMask |= state->pendingBefore;
+      }
     });
-    if (pending)
-      return fail("actual schedule reaches a return with pending NCC work");
+    if (pending) {
+      if (failureReason)
+        {
+          llvm::raw_string_ostream diagnostic(*failureReason);
+          diagnostic << "actual schedule reaches a return with pending NCC "
+                        "work; tile="
+                     << materialized.moduleTiles[moduleIndex].getValue()
+                     << ",worker-mask=" << pendingMask << ",tail=[";
+          llvm::SmallVector<analysis::NCCOperationPendingState, 8> changes;
+          mlir::Operation *lastPendingIssue = nullptr;
+          for (const analysis::NCCOperationPendingState &state :
+               completion->getOperationStates())
+            if (state.pendingBefore != state.pendingAfter) {
+              if (changes.size() == 8)
+                changes.erase(changes.begin());
+              changes.push_back(state);
+              if ((state.pendingAfter & pendingMask) != 0 &&
+                  mlir::isa<WaferNCCIssueOpInterface>(state.operation))
+                lastPendingIssue = state.operation;
+            }
+          for (auto [index, state] : llvm::enumerate(changes))
+            diagnostic << (index ? ";" : "")
+                       << state.operation->getName() << ':'
+                       << state.pendingBefore << "->" << state.pendingAfter;
+          diagnostic << "],last-issue=";
+          if (lastPendingIssue) {
+            lastPendingIssue->print(
+                diagnostic, mlir::OpPrintingFlags().skipRegions());
+            diagnostic << ",event=";
+            bool foundEvent = false;
+            for (const ScheduleEventIRBinding &binding :
+                 materialized.eventBindings)
+              if (llvm::is_contained(binding.operations, lastPendingIssue)) {
+                foundEvent = true;
+                diagnostic << static_cast<unsigned>(binding.event.kind) << ':'
+                           << binding.event.action.index();
+                if (const auto *movement =
+                        std::get_if<MovementEventAction>(
+                            &binding.event.action))
+                  diagnostic << ':'
+                             << stringifyMovementActionKind(movement->action)
+                             << ':' << static_cast<unsigned>(movement->phase);
+                diagnostic << ":placements=";
+                bool firstPlacement = true;
+                for (const CompletionPlacement &placement :
+                     materialized.plan.completionPlacements)
+                  if (placement.issue == binding.event) {
+                    diagnostic << (firstPlacement ? "" : ",")
+                               << static_cast<unsigned>(placement.protocol)
+                               << '/' << placement.participantMask << '/'
+                               << static_cast<unsigned>(
+                                      placement.boundary.after.kind);
+                    firstPlacement = false;
+                  }
+                if (firstPlacement)
+                  diagnostic << "none";
+              }
+            if (!foundEvent)
+              diagnostic << "unbound";
+          } else {
+            diagnostic << "unknown";
+          }
+        }
+      return mlir::failure();
+    }
 
     llvm::DenseSet<mlir::Value> issues;
     llvm::DenseSet<mlir::Value> waits;

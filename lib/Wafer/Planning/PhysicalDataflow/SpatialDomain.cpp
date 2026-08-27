@@ -15,6 +15,7 @@
 #include <set>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 namespace wafer::compiler::detail {
 namespace {
@@ -462,8 +463,27 @@ getCompactEmbedding(const TargetTopology &topology, CardId cardId,
                             : candidates.front();
 }
 
+enum class BalancedAxisSelection : uint8_t {
+  Constructive,
+  AllPartitionable,
+};
+
+bool canPartitionForProposal(const SpatialRootDomainFacts &root,
+                             size_t iterator, BalancedAxisSelection selection) {
+  if (selection == BalancedAxisSelection::AllPartitionable)
+    return canPartitionIterator(root, iterator);
+  if (root.partitionableParallelIterators.test(iterator))
+    return true;
+  return root.attention &&
+         root.attention->keyValuePartition ==
+             AttentionKeyValuePartitionRequirement::MultipleIntervals &&
+         llvm::is_contained(root.attention->keyValueReductionIterators,
+                            static_cast<unsigned>(iterator));
+}
+
 void findMaximumBalancedAxes(const SpatialRootDomainFacts &root,
-                             size_t tileCount, size_t iterator, size_t cells,
+                             BalancedAxisSelection selection, size_t tileCount,
+                             size_t iterator, size_t cells,
                              llvm::SmallVectorImpl<IteratorPartition> &current,
                              llvm::SmallVectorImpl<IteratorPartition> &best,
                              size_t &bestCells) {
@@ -483,7 +503,7 @@ void findMaximumBalancedAxes(const SpatialRootDomainFacts &root,
     return;
   }
   const size_t maximumFactor =
-      canPartitionIterator(root, iterator)
+      canPartitionForProposal(root, iterator, selection)
           ? std::min<size_t>(
                 static_cast<size_t>(root.iteratorExtents[iterator]),
                 tileCount / cells)
@@ -492,20 +512,22 @@ void findMaximumBalancedAxes(const SpatialRootDomainFacts &root,
     current.push_back({static_cast<uint32_t>(iterator),
                        IteratorPartitionScheme::BalancedParts,
                        static_cast<int64_t>(factor)});
-    findMaximumBalancedAxes(root, tileCount, iterator + 1, cells * factor,
-                            current, best, bestCells);
+    findMaximumBalancedAxes(root, selection, tileCount, iterator + 1,
+                            cells * factor, current, best, bestCells);
     current.pop_back();
   }
 }
 
-std::optional<llvm::SmallVector<IteratorPartition, 4>>
-getMaximumBalancedAxes(const SpatialRootDomainFacts &root, size_t tileCount) {
+std::optional<llvm::SmallVector<IteratorPartition, 4>> getMaximumBalancedAxes(
+    const SpatialRootDomainFacts &root, size_t tileCount,
+    BalancedAxisSelection selection = BalancedAxisSelection::AllPartitionable) {
   if (tileCount == 0)
     return std::nullopt;
   llvm::SmallVector<IteratorPartition, 4> current;
   llvm::SmallVector<IteratorPartition, 4> best;
   size_t bestCells = 0;
-  findMaximumBalancedAxes(root, tileCount, 0, 1, current, best, bestCells);
+  findMaximumBalancedAxes(root, selection, tileCount, 0, 1, current, best,
+                          bestCells);
   if (bestCells == 0)
     return std::nullopt;
   return best;
@@ -564,6 +586,195 @@ SpatialDomainProblem::findRoot(const SemanticRootKey &root) const {
       [](const SpatialRootDomainFacts &facts,
          const SemanticRootKey &candidate) { return facts.root < candidate; });
   return found == roots.end() || found->root != root ? nullptr : &*found;
+}
+
+mlir::FailureOr<SpatialPlan> buildGraphCoherentSpatialProposal(
+    const SpatialDomainProblem &problem, const SpatialPlan &plan,
+    const SpatialAssignment &assignment,
+    const analysis::ExactDemandProof &demand, std::string *failureReason) {
+  const SpatialPlanningProblem &structure = problem.getStructuralProblem();
+  if (mlir::failed(
+          validateSpatialPlanStructure(structure, plan, failureReason)))
+    return mlir::failure();
+
+  std::map<LogicalShardId, TileId> tilesByShard;
+  std::map<SemanticRootKey, const NodeExecutionPartition *> partitions;
+  for (const NodeExecutionPartition &partition : assignment.nodes) {
+    if (!partitions.try_emplace(partition.root, &partition).second) {
+      if (failureReason)
+        *failureReason =
+            "graph-coherent proposal has duplicate assignment roots";
+      return mlir::failure();
+    }
+    for (const ExecutionShard &shard : partition.shards)
+      if (!tilesByShard.try_emplace(shard.shard, shard.tile).second) {
+        if (failureReason)
+          *failureReason =
+              "graph-coherent proposal has duplicate logical shards";
+        return mlir::failure();
+      }
+  }
+
+  using TileVotes = std::map<int64_t, uint64_t>;
+  std::map<LogicalShardId, TileVotes> votes;
+  for (const analysis::DependencyDemand &dependency :
+       demand.dependencyDemands)
+    for (const analysis::DestinationDemand &destination :
+         dependency.perDestination) {
+      auto destinationTile = tilesByShard.find(destination.destinationShard);
+      if (destinationTile == tilesByShard.end() ||
+          destinationTile->second != destination.destinationTile) {
+        if (failureReason)
+          *failureReason =
+              "graph-coherent proposal has stale destination ownership";
+        return mlir::failure();
+      }
+      for (const analysis::SourceDemand &source : destination.sources)
+        for (const analysis::OwnerIntersection &owner :
+             source.eligibleFinalOwners) {
+          if (!owner.ownerShard || owner.domain.isEmpty())
+            continue;
+          auto ownerTile = tilesByShard.find(*owner.ownerShard);
+          if (ownerTile == tilesByShard.end() ||
+              ownerTile->second != owner.tile) {
+            if (failureReason)
+              *failureReason =
+                  "graph-coherent proposal has stale producer ownership";
+            return mlir::failure();
+          }
+          uint64_t &weight =
+              votes[*owner.ownerShard][destination.destinationTile.getValue()];
+          if (weight == std::numeric_limits<uint64_t>::max()) {
+            if (failureReason)
+              *failureReason = "graph-coherent proposal vote count overflows";
+            return mlir::failure();
+          }
+          ++weight;
+        }
+    }
+
+  llvm::ArrayRef<TileId> available = structure.getAvailableTiles();
+  SpatialPlan result = plan;
+  for (NodeSpatialPlan &node : result.nodes) {
+    auto partition = partitions.find(node.root);
+    if (partition == partitions.end() ||
+        partition->second->shards.size() != node.embedding.size() ||
+        node.embedding.size() > available.size()) {
+      if (failureReason)
+        *failureReason =
+            "graph-coherent proposal plan/assignment roots do not match";
+      return mlir::failure();
+    }
+    const size_t shardCount = node.embedding.size();
+    const size_t tileCount = available.size();
+    bool hasVote = false;
+    for (auto [index, shard] : llvm::enumerate(partition->second->shards)) {
+      if (shard.shard.root != node.root || shard.tile != node.embedding[index]) {
+        if (failureReason)
+          *failureReason =
+              "graph-coherent proposal plan/assignment embedding is stale";
+        return mlir::failure();
+      }
+      hasVote |= votes.count(shard.shard) != 0;
+    }
+    if (!hasVote)
+      continue;
+
+    const int64_t primaryScale = static_cast<int64_t>(shardCount) + 1;
+    std::vector<std::vector<int64_t>> costs(
+        shardCount + 1, std::vector<int64_t>(tileCount + 1));
+    for (size_t row = 1; row <= shardCount; ++row) {
+      const ExecutionShard &shard = partition->second->shards[row - 1];
+      auto shardVotes = votes.find(shard.shard);
+      for (size_t column = 1; column <= tileCount; ++column) {
+        uint64_t weight = 0;
+        if (shardVotes != votes.end()) {
+          auto found =
+              shardVotes->second.find(available[column - 1].getValue());
+          if (found != shardVotes->second.end())
+            weight = found->second;
+        }
+        const uint64_t maximumWeight =
+            static_cast<uint64_t>(std::numeric_limits<int64_t>::max() /
+                                  primaryScale);
+        if (weight > maximumWeight) {
+          if (failureReason)
+            *failureReason = "graph-coherent proposal score overflows";
+          return mlir::failure();
+        }
+        int64_t score = static_cast<int64_t>(weight) * primaryScale;
+        score += node.embedding[row - 1] == available[column - 1];
+        costs[row][column] = -score;
+      }
+    }
+
+    // Rectangular Hungarian assignment. Rows use canonical logical-shard
+    // order and columns use sorted physical Tile IDs; equal scores therefore
+    // have a complete, deterministic semantic tie-break.
+    const int64_t infinity = std::numeric_limits<int64_t>::max() / 4;
+    std::vector<int64_t> rowPotential(shardCount + 1);
+    std::vector<int64_t> columnPotential(tileCount + 1);
+    std::vector<size_t> matchedRow(tileCount + 1);
+    std::vector<size_t> predecessor(tileCount + 1);
+    for (size_t row = 1; row <= shardCount; ++row) {
+      matchedRow[0] = row;
+      size_t column = 0;
+      std::vector<int64_t> minimum(tileCount + 1, infinity);
+      std::vector<bool> used(tileCount + 1, false);
+      do {
+        used[column] = true;
+        const size_t currentRow = matchedRow[column];
+        int64_t delta = infinity;
+        size_t nextColumn = 0;
+        for (size_t candidate = 1; candidate <= tileCount; ++candidate) {
+          if (used[candidate])
+            continue;
+          const int64_t reduced = costs[currentRow][candidate] -
+                                  rowPotential[currentRow] -
+                                  columnPotential[candidate];
+          if (reduced < minimum[candidate]) {
+            minimum[candidate] = reduced;
+            predecessor[candidate] = column;
+          }
+          if (minimum[candidate] < delta) {
+            delta = minimum[candidate];
+            nextColumn = candidate;
+          }
+        }
+        if (nextColumn == 0 || delta == infinity) {
+          if (failureReason)
+            *failureReason =
+                "graph-coherent proposal has no injective Tile embedding";
+          return mlir::failure();
+        }
+        for (size_t candidate = 0; candidate <= tileCount; ++candidate) {
+          if (used[candidate]) {
+            rowPotential[matchedRow[candidate]] += delta;
+            columnPotential[candidate] -= delta;
+          } else {
+            minimum[candidate] -= delta;
+          }
+        }
+        column = nextColumn;
+      } while (matchedRow[column] != 0);
+      do {
+        const size_t previous = predecessor[column];
+        matchedRow[column] = matchedRow[previous];
+        column = previous;
+      } while (column != 0);
+    }
+
+    llvm::SmallVector<TileId, 16> embedding(shardCount, TileId(0));
+    for (size_t column = 1; column <= tileCount; ++column)
+      if (matchedRow[column] != 0)
+        embedding[matchedRow[column] - 1] = available[column - 1];
+    node.embedding = std::move(embedding);
+  }
+
+  if (mlir::failed(
+          validateSpatialPlanStructure(structure, result, failureReason)))
+    return mlir::failure();
+  return result;
 }
 
 SpatialDomainProblemResult
@@ -996,8 +1207,29 @@ llvm::SmallVector<SpatialPlan, 4> SpatialPlanDomain::getProposals() const {
     return node;
   };
 
-  SpatialPlan maximum;
+  // The first constructive point uses as many parallel partitions as the
+  // target admits, while leaving optional reductions local. Flash decoding's
+  // required key/value partition remains explicit. This is an ordinary exact
+  // domain member; later proposals still cover reduction-parallel points.
+  SpatialPlan constructive;
   bool complete = true;
+  for (const SpatialRootDomainFacts &root : problem.getRoots()) {
+    std::optional<llvm::SmallVector<IteratorPartition, 4>> axes =
+        getMaximumBalancedAxes(root, available.size(),
+                               BalancedAxisSelection::Constructive);
+    std::optional<NodeSpatialPlan> node =
+        axes ? buildNode(root, std::move(*axes), available) : std::nullopt;
+    if (!node) {
+      complete = false;
+      break;
+    }
+    constructive.nodes.push_back(std::move(*node));
+  }
+  if (complete)
+    append(std::move(constructive));
+
+  SpatialPlan maximum;
+  complete = true;
   for (const SpatialRootDomainFacts &root : problem.getRoots()) {
     std::optional<llvm::SmallVector<IteratorPartition, 4>> axes =
         getMaximumBalancedAxes(root, available.size());
@@ -1083,6 +1315,38 @@ llvm::SmallVector<SpatialPlan, 4> SpatialPlanDomain::getProposals() const {
     append(std::move(uniformBoundary));
   append(getFirstPlan());
   return proposals;
+}
+
+mlir::FailureOr<llvm::SmallVector<SpatialPlan, 8>>
+SpatialPlanDomain::getGraphCoherentProposals(
+    const StructuredDAGAnalysis &dag,
+    const analysis::IndexRelationLimits &limits) const {
+  llvm::SmallVector<SpatialPlan, 8> result;
+  auto append = [&](SpatialPlan plan) {
+    if (contains(plan) && !llvm::is_contained(result, plan))
+      result.push_back(std::move(plan));
+  };
+  for (const SpatialPlan &raw : getProposals()) {
+    SpatialDomainEvaluation evaluation = evaluate(dag, raw, limits);
+    if (evaluation.failure)
+      return mlir::failure();
+    const analysis::ExactDemandProof *proof =
+        evaluation.demand
+            ? analysis::getExactDemandProof(*evaluation.demand)
+            : nullptr;
+    if (evaluation.assignment && proof) {
+      std::string detail;
+      mlir::FailureOr<SpatialPlan> coherent =
+          buildGraphCoherentSpatialProposal(problem, raw,
+                                            *evaluation.assignment, *proof,
+                                            &detail);
+      if (mlir::failed(coherent))
+        return mlir::failure();
+      append(std::move(*coherent));
+    }
+    append(raw);
+  }
+  return result;
 }
 
 } // namespace wafer::compiler::detail

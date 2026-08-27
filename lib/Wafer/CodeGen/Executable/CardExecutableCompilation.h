@@ -54,6 +54,18 @@ struct CandidateInstructionIR {
   }
 };
 
+/// Move-only input for the actual memory/target leaf. Every module is already
+/// function-boundary-bufferized, lowered to canonical Instr, assigned its final
+/// worker/order and closed by the required completion operations. The leaf owns
+/// these modules and their current owner relations and destroys all of them on
+/// any failure.
+struct CanonicalInstructionTile {
+  CardId card{0};
+  TileId tile{0};
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+  StructuredMaterializationRelations relations;
+};
+
 enum class CardExecutablePreparationFailureKind : uint8_t {
   Unsupported,
   ExactRejection,
@@ -119,16 +131,29 @@ struct CardExecutableTileFailure {
 };
 
 /// Returns true only when Tile memory planning carries an explicit SPM
-/// capacity-overflow proof. Verifier, unsupported-lifetime and pipeline
-/// failures remain indeterminate rather than becoming candidate no-goods.
+/// capacity-overflow proof. Every other typed failure remains outside the
+/// exact-rejection class and therefore cannot become a candidate no-good.
 bool isProvenExactTileMemoryPlanningFailure(
     const TileMemoryPlanningFailure &failure);
 
+/// Classifies one Tile memory-planning outcome without inspecting diagnostic
+/// text. Only a proven capacity result is exact; deterministic search resource
+/// exhaustion remains indeterminate, unsupported lifetime is unsupported, and
+/// a missing completion or malformed leaf input is a compiler failure.
+CardExecutableCompilationStatus classifyTileMemoryPlanningFailure(
+    const TileMemoryPlanningFailure &failure);
+
+/// Runs the unique exact full-buffer transfer cleanup on canonical Instr and
+/// retargets caller-owned current buffer relations in the same transaction.
+/// Failure means the cleanup produced stale relations or invalid IR; zero is a
+/// successful no-op.
+mlir::FailureOr<unsigned> cleanupCanonicalInstructionTransfers(
+    mlir::ModuleOp module, StructuredMaterializationRelations &relations);
+
 /// Move-only result of compiling one already selected CardModule.  An exact
-/// rejection is backed by explicit capacity evidence in the returned
-/// per-Tile failures. Unsupported IR, resource exhaustion, unclassified
-/// allocator failure and internal pipeline failure remain indeterminate and
-/// therefore cannot become a search no-good.
+/// rejection is backed by explicit capacity evidence in the returned per-Tile
+/// failures. Unsupported IR, resource exhaustion and compiler failures retain
+/// distinct typed classifications and cannot become a search no-good.
 struct CardExecutableCompilationResult {
   CardExecutableCompilationStatus status =
       CardExecutableCompilationStatus::IndeterminateFailure;
@@ -153,12 +178,26 @@ struct CardExecutableCompilationResult {
   }
 };
 
+/// Consumes all-and-only completion-closed canonical Instr modules for one
+/// selected Card candidate. This is the unique actual SPM/DDR/transport/target
+/// leaf shared by baseline and search. It does not bufferize, lower Tile
+/// dataflow, choose worker/order, rebuild completion, repair memory pressure or
+/// construct another candidate.
+CardExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
+    std::vector<CanonicalInstructionTile> tiles, CardId expectedCardId,
+    llvm::ArrayRef<TileId> expectedTileIds,
+    const frontend::FrontendProgramVerificationResult &program,
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    ProgramDataHandoff &programData,
+    CardExecutableLoweringStatistics *statistics = nullptr,
+    unsigned tilePipelineParallelism = 0);
+
 /// Compiles exactly one owned, verifier-legal, already selected CardModule.
 /// The function performs no candidate enumeration and never changes spatial,
-/// temporal, layout, movement or buffering choices.  It materializes every
-/// Tile, lowers TileRegion to Instr, recomputes required NCC joins,
-/// fixed-capacity SPM/DDR planning, Direct-DTE lowering, resource validation,
-/// and target ABI/LLVM verification.
+/// temporal, layout, movement or buffering choices. It materializes every Tile,
+/// performs the currently selected upstream preparation and delegates the
+/// resulting completion-closed canonical Instr owners to
+/// `compileCanonicalInstructionTilesToExecutable`.
 ///
 CardExecutableCompilationResult compileCardModuleToExecutable(
     mlir::OwningOpRef<mlir::ModuleOp> cardModule, CardId expectedCardId,

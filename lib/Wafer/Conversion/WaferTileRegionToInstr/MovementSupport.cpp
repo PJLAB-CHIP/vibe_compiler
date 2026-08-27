@@ -241,24 +241,24 @@ getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
   return descriptor;
 }
 
-void createRDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
-                mlir::Value source, mlir::Value dest,
-                const MovementDescriptor &descriptor) {
-  rewriter.create<InstrRDMAOp>(loc, source, dest, descriptor.byteCount,
-                               descriptor.innerBytes,
-                               /*src_offset=*/mlir::IntegerAttr{},
-                               /*dst_offset=*/mlir::IntegerAttr{},
-                               descriptor.strides, descriptor.iterations);
+InstrRDMAOp createRDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
+                       mlir::Value source, mlir::Value dest,
+                       const MovementDescriptor &descriptor) {
+  return rewriter.create<InstrRDMAOp>(
+      loc, source, dest, descriptor.byteCount, descriptor.innerBytes,
+      /*src_offset=*/mlir::IntegerAttr{},
+      /*dst_offset=*/mlir::IntegerAttr{}, descriptor.strides,
+      descriptor.iterations);
 }
 
-void createWDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
-                mlir::Value source, mlir::Value dest,
-                const MovementDescriptor &descriptor) {
-  rewriter.create<InstrWDMAOp>(loc, source, dest, descriptor.byteCount,
-                               descriptor.innerBytes,
-                               /*src_offset=*/mlir::IntegerAttr{},
-                               /*dst_offset=*/mlir::IntegerAttr{},
-                               descriptor.strides, descriptor.iterations);
+InstrWDMAOp createWDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
+                       mlir::Value source, mlir::Value dest,
+                       const MovementDescriptor &descriptor) {
+  return rewriter.create<InstrWDMAOp>(
+      loc, source, dest, descriptor.byteCount, descriptor.innerBytes,
+      /*src_offset=*/mlir::IntegerAttr{},
+      /*dst_offset=*/mlir::IntegerAttr{}, descriptor.strides,
+      descriptor.iterations);
 }
 
 InstrGatherScatterOp createGatherScatter(
@@ -1199,28 +1199,32 @@ llvm::SmallVector<InstrGatherScatterOp, 4> createGatherScatterDescriptors(
   return operations;
 }
 
-void createMappedRDMADescriptors(
+llvm::SmallVector<InstrRDMAOp, 4> createMappedRDMADescriptors(
     mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
     mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors) {
+  llvm::SmallVector<InstrRDMAOp, 4> operations;
   for (const MovementDescriptorPair &descriptor : descriptors)
-    rewriter.create<InstrRDMAOp>(
+    operations.push_back(rewriter.create<InstrRDMAOp>(
         loc, source, dest, descriptor.source.byteCount,
         descriptor.source.innerBytes,
         rewriter.getI64IntegerAttr(descriptor.source.byteOffset),
         rewriter.getI64IntegerAttr(descriptor.dest.byteOffset),
-        descriptor.source.strides, descriptor.source.iterations);
+        descriptor.source.strides, descriptor.source.iterations));
+  return operations;
 }
 
-void createMappedWDMADescriptors(
+llvm::SmallVector<InstrWDMAOp, 4> createMappedWDMADescriptors(
     mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
     mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors) {
+  llvm::SmallVector<InstrWDMAOp, 4> operations;
   for (const MovementDescriptorPair &descriptor : descriptors)
-    rewriter.create<InstrWDMAOp>(
+    operations.push_back(rewriter.create<InstrWDMAOp>(
         loc, source, dest, descriptor.dest.byteCount,
         descriptor.dest.innerBytes,
         rewriter.getI64IntegerAttr(descriptor.source.byteOffset),
         rewriter.getI64IntegerAttr(descriptor.dest.byteOffset),
-        descriptor.dest.strides, descriptor.dest.iterations);
+        descriptor.dest.strides, descriptor.dest.iterations));
+  return operations;
 }
 
 mlir::IntegerAttr getI64Attr(mlir::PatternRewriter &rewriter, int64_t value) {

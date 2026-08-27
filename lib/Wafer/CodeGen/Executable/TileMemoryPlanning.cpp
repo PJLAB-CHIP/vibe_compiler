@@ -2,7 +2,6 @@
 
 #include "Wafer/CodeGen/Executable/TileMemoryPlanning.h"
 #include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
-#include "Wafer/Driver/CompilationInternal.h"
 
 #include "Wafer/Support/CompileTiming.h"
 
@@ -11,15 +10,13 @@
 #include "Wafer/Support/CompileWorkStatistics.h"
 #include "Wafer/Target/Core/TargetIdentity.h"
 #include "Wafer/Target/Core/TargetMemory.h"
-#include "Wafer/Transforms/MemoryPlanningPipelines.h"
-#include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Verifier.h"
-#include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
 
 namespace wafer::compiler::detail {
 namespace {
@@ -55,36 +52,25 @@ static bool hasDDROrTransportAssignments(mlir::ModuleOp module) {
   return found;
 }
 
-/// Bufferization may place every static scratch allocation at the beginning of
-/// a TileRegion block. For compiler-owned SPM this needlessly makes independent
-/// straight-line scratch intervals start together. Move each fresh static
-/// allocation to its first same-block use; allocations used from nested or
-/// different blocks retain their original dominance scope.
-static void sinkStaticSPMAllocationsToFirstUse(mlir::ModuleOp module) {
-  llvm::SmallVector<mlir::memref::AllocOp, 32> allocations;
-  module.walk([&](mlir::memref::AllocOp allocation) {
-    if (isWaferSPMMemRefType(allocation.getType()) &&
-        allocation.getDynamicSizes().empty() &&
-        allocation.getSymbolOperands().empty())
-      allocations.push_back(allocation);
+static bool hasTensorValues(mlir::ModuleOp module) {
+  bool found = false;
+  module.walk([&](mlir::Operation *operation) {
+    auto isTensor = [](mlir::Type type) {
+      return mlir::isa<mlir::TensorType>(type);
+    };
+    found = llvm::any_of(operation->getOperandTypes(), isTensor) ||
+            llvm::any_of(operation->getResultTypes(), isTensor);
+    if (!found)
+      for (mlir::Region &region : operation->getRegions())
+        for (mlir::Block &block : region)
+          if (llvm::any_of(block.getArgumentTypes(), isTensor)) {
+            found = true;
+            break;
+          }
+    return found ? mlir::WalkResult::interrupt()
+                 : mlir::WalkResult::advance();
   });
-  for (mlir::memref::AllocOp allocation : allocations) {
-    mlir::Block *block = allocation->getBlock();
-    mlir::Operation *firstUse = nullptr;
-    bool sameBlock = true;
-    for (mlir::Operation *user : allocation.getResult().getUsers()) {
-      if (mlir::isa<mlir::memref::DeallocOp>(user))
-        continue;
-      if (user->getBlock() != block) {
-        sameBlock = false;
-        break;
-      }
-      if (!firstUse || user->isBeforeInBlock(firstUse))
-        firstUse = user;
-    }
-    if (sameBlock && firstUse && allocation->getNextNode() != firstUse)
-      allocation->moveBefore(firstUse);
-  }
+  return found;
 }
 
 } // namespace
@@ -175,20 +161,6 @@ TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
         } else if (auto dataMove = mlir::dyn_cast<InstrTDMADataMoveOp>(user)) {
           witnesses.push_back(dataMove.getSource());
           witnesses.push_back(dataMove.getDest());
-        } else if (mlir::isa<WaferInstructionOpInterface>(user)) {
-          // Lowering-created compute temporaries may be connected to their
-          // structured owner only through the actual instruction dataflow:
-          // movement fills an input, then GEMM/reduce/elementwise consumes it
-          // and writes a result buffer that already has a typed relation.
-          // Follow only explicit memref SSA operands/results. Operation names,
-          // locations and shapes remain diagnostic facts and never select an
-          // owner.
-          for (mlir::Value operand : user->getOperands())
-            if (mlir::isa<mlir::BaseMemRefType>(operand.getType()))
-              witnesses.push_back(operand);
-          for (mlir::Value result : user->getResults())
-            if (mlir::isa<mlir::BaseMemRefType>(result.getType()))
-              witnesses.push_back(result);
         }
       }
     }
@@ -261,6 +233,13 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
            "canonical Instr parent";
     return mlir::failure();
   }
+  if (hasTensorValues(*module)) {
+    recordFailure(TileMemoryPlanningFailureKind::Contract);
+    module->emitError()
+        << "tile_memory_planning_requires_bufferized_canonical_instr: tensor "
+           "values must be bufferized before the actual memory/target leaf";
+    return mlir::failure();
+  }
   if (hasPreexistingPlacementFacts(*module)) {
     recordFailure(TileMemoryPlanningFailureKind::PreexistingPlacementFacts);
     module->emitError()
@@ -290,33 +269,6 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
         "structured buffer relation has no unique current storage root");
     return mlir::failure();
   }
-
-  mlir::LogicalResult preparationResult =
-      materializationRelations
-          ? wafer::rebuildRequiredNCCJoins(*module)
-          : runPassPipeline(*module, "instr-memory-planning-preparation",
-                            wafer::buildPrepareInstrForMemoryPlanningPipeline);
-  if (mlir::failed(preparationResult)) {
-    recordFailure(
-        TileMemoryPlanningFailureKind::InstrMemoryPlanningPreparation);
-    return mlir::failure();
-  }
-  // The preparation pipeline must preserve every attribution relation. A
-  // relation whose buffer left the current IR is a probe/final evidence
-  // contract violation and fails closed here instead of being silently
-  // dropped from the certificate.
-  if (mlir::failed(
-          requireCurrentBufferRelations("memory-planning preparation"))) {
-    recordFailure(
-        TileMemoryPlanningFailureKind::InstrMemoryPlanningPreparation);
-    return mlir::failure();
-  }
-  if (mlir::failed(mlir::verify(*module))) {
-    recordFailure(TileMemoryPlanningFailureKind::Verification);
-    return mlir::failure();
-  }
-
-  sinkStaticSPMAllocationsToFirstUse(*module);
 
   if (mlir::failed(requireCurrentBufferRelations("selected structure input"))) {
     recordFailure(TileMemoryPlanningFailureKind::Contract);

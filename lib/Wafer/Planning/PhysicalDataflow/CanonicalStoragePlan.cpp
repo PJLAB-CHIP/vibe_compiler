@@ -440,6 +440,12 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
                     "movement plan has a duplicate result discard");
   }
 
+  std::set<PhysicalVersionId> movementDefinedBoundaryVersions;
+  for (const ExternalLoadPlan &load : movements.plan.externalLoads)
+    movementDefinedBoundaryVersions.insert(load.destination);
+  for (const DDRBoundaryTransferPlan &transfer : movements.plan.ddrTransfers)
+    movementDefinedBoundaryVersions.insert(transfer.destination);
+
   CoordinateBuilder builder;
   std::set<PhysicalVersionId> carriedExecutionResults;
   for (const PhysicalVersionPlan &version :
@@ -467,6 +473,8 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
                   "boundary version consumer is not serialized", objectId);
               return;
             }
+            if (!movementDefinedBoundaryVersions.count(version.id))
+              builder.define(*object, StorageAccessSite{consumer});
             builder.use(*object, StorageAccessSite{consumer});
           } else if constexpr (std::is_same_v<T, SupportRegionValueId>) {
             auto roots = rootExecutionsByWork.find(logical.work);

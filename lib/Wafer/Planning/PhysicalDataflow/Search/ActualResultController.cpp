@@ -6,19 +6,70 @@
 
 #include <array>
 #include <limits>
+#include <optional>
 #include <utility>
 
 namespace wafer::compiler::detail {
 namespace {
 
-bool addWeightedMetric(uint64_t value, uint64_t weight, uint64_t &total) {
-  if (value > std::numeric_limits<uint64_t>::max() / weight)
+bool checkedAdd(uint64_t lhs, uint64_t rhs, uint64_t &result) {
+  if (rhs > std::numeric_limits<uint64_t>::max() - lhs)
     return false;
-  const uint64_t weighted = value * weight;
-  if (total > std::numeric_limits<uint64_t>::max() - weighted)
-    return false;
-  total += weighted;
+  result = lhs + rhs;
   return true;
+}
+
+bool checkedMultiply(uint64_t lhs, uint64_t rhs, uint64_t &result) {
+  if (lhs != 0 && rhs > std::numeric_limits<uint64_t>::max() / lhs)
+    return false;
+  result = lhs * rhs;
+  return true;
+}
+
+std::optional<uint64_t> timeForWork(uint64_t work, uint64_t rate) {
+  if (rate == 0)
+    return std::nullopt;
+  if (work == 0)
+    return uint64_t{0};
+  constexpr uint64_t picosecondsPerSecond = UINT64_C(1000000000000);
+  const unsigned __int128 numerator =
+      static_cast<unsigned __int128>(work) * picosecondsPerSecond;
+  const unsigned __int128 duration =
+      (numerator + static_cast<unsigned __int128>(rate) - 1) / rate;
+  if (duration > std::numeric_limits<uint64_t>::max())
+    return std::nullopt;
+  return static_cast<uint64_t>(duration);
+}
+
+template <typename Accessor>
+std::optional<uint64_t>
+maximumTileMetric(const analysis::CardInstructionProgramCost &cost,
+                  Accessor accessor,
+                  const analysis::ScheduleCostMetric &aggregate) {
+  if (cost.tileCosts.empty())
+    return aggregate.isKnown() ? std::optional<uint64_t>(aggregate.value)
+                               : std::nullopt;
+  uint64_t maximum = 0;
+  for (const analysis::InstructionProgramCost &tile : cost.tileCosts) {
+    const analysis::ScheduleCostMetric &metric = accessor(tile);
+    if (!metric.isKnown())
+      return std::nullopt;
+    maximum = std::max(maximum, metric.value);
+  }
+  return maximum;
+}
+
+std::array<uint64_t, 9>
+asArray(const SearchResourceDurations &durations) {
+  return {durations.neF16Bf16Picoseconds,
+          durations.vectorF16Bf16Picoseconds,
+          durations.vectorF32Picoseconds,
+          durations.ddrPicoseconds,
+          durations.nocPicoseconds,
+          durations.spmMovementPicoseconds,
+          durations.instructionControlPicoseconds,
+          durations.dteWaitControlPicoseconds,
+          durations.nccWaitControlPicoseconds};
 }
 
 bool hasSPMCapacityRejection(const FullFeasibilityResult &result) {
@@ -33,18 +84,28 @@ bool hasSPMCapacityRejection(const FullFeasibilityResult &result) {
 } // namespace
 
 mlir::FailureOr<SearchCostCohort>
-SearchCostCohort::create(uint64_t instructionTick, uint64_t ddrReadByteTick,
-                         uint64_t ddrWriteByteTick,
-                         uint64_t nocMinimumHopByteTick,
+SearchCostCohort::create(const analysis::ScheduleEstimatePolicy &policy,
                          std::string *failureReason) {
-  if (instructionTick == 0 || ddrReadByteTick == 0 || ddrWriteByteTick == 0 ||
-      nocMinimumHopByteTick == 0) {
+  const std::array<uint64_t, 12> rates{
+      policy.cardDDRNominalBytesPerSecond,
+      policy.directionalNoCBytesPerSecond,
+      policy.dteEndpointBytesPerSecondEstimate,
+      policy.dteMessageStartupPicosecondsEstimate,
+      policy.noCHopPicosecondsEstimate,
+      policy.instructionFixedPicosecondsEstimate,
+      policy.dteWaitedEventPicosecondsEstimate,
+      policy.nccParticipantWaitPicosecondsEstimate,
+      policy.f16Bf16NPULogicalOpsPerSecondPerTile,
+      policy.f16Bf16VectorLogicalOpsPerSecondPerTile,
+      policy.f32VectorLogicalOpsPerSecondPerTile,
+      policy.spmExplicitMovementBytesPerSecondPerTileEstimate};
+  if (llvm::is_contained(rates, uint64_t{0})) {
     if (failureReason)
-      *failureReason = "search cost cohort rates must be positive";
+      *failureReason = "search cost cohort requires positive rates for every "
+                       "enabled resource term";
     return mlir::failure();
   }
-  return SearchCostCohort(instructionTick, ddrReadByteTick, ddrWriteByteTick,
-                          nocMinimumHopByteTick);
+  return SearchCostCohort(policy);
 }
 
 SearchObjective
@@ -52,23 +113,119 @@ deriveSearchObjective(const analysis::CardInstructionProgramCost &cost,
                       const std::optional<SearchCostCohort> &cohort) {
   if (!cohort)
     return UnknownSearchObjective{SearchObjectiveUnknownReason::NoCohort};
-  const std::array<const analysis::ScheduleCostMetric *, 4> metrics{
-      &cost.aggregateInstructionCount, &cost.aggregateDDRReadBytes,
-      &cost.aggregateDDRWriteBytes, &cost.minimumHopLinkByteDemand};
-  if (llvm::any_of(metrics, [](const analysis::ScheduleCostMetric *metric) {
-        return !metric->isKnown();
-      }))
+  const analysis::ScheduleEstimatePolicy &policy = cohort->getPolicy();
+  if (!cost.aggregateCompute.npuOtherLogicalOps.isKnown() ||
+      !cost.aggregateCompute.vectorOtherLogicalOps.isKnown())
     return UnknownSearchObjective{
         SearchObjectiveUnknownReason::MetricUnavailable};
-  const std::array<uint64_t, 4> weights{
-      cohort->getInstructionTick(), cohort->getDDRReadByteTick(),
-      cohort->getDDRWriteByteTick(), cohort->getNoCMinimumHopByteTick()};
-  uint64_t total = 0;
-  for (auto [metric, weight] : llvm::zip_equal(metrics, weights))
-    if (!addWeightedMetric(metric->value, weight, total))
+  if (cost.aggregateCompute.npuOtherLogicalOps.value != 0 ||
+      cost.aggregateCompute.vectorOtherLogicalOps.value != 0)
+    return UnknownSearchObjective{
+        SearchObjectiveUnknownReason::UncalibratedWork};
+
+  auto npu = maximumTileMetric(
+      cost,
+      [](const analysis::InstructionProgramCost &tile)
+          -> const analysis::ScheduleCostMetric & {
+        return tile.compute.npuF16Bf16LogicalOps;
+      },
+      cost.aggregateCompute.npuF16Bf16LogicalOps);
+  auto vectorF16 = maximumTileMetric(
+      cost,
+      [](const analysis::InstructionProgramCost &tile)
+          -> const analysis::ScheduleCostMetric & {
+        return tile.compute.vectorF16Bf16LogicalOps;
+      },
+      cost.aggregateCompute.vectorF16Bf16LogicalOps);
+  auto vectorF32 = maximumTileMetric(
+      cost,
+      [](const analysis::InstructionProgramCost &tile)
+          -> const analysis::ScheduleCostMetric & {
+        return tile.compute.vectorF32LogicalOps;
+      },
+      cost.aggregateCompute.vectorF32LogicalOps);
+  auto spm = maximumTileMetric(
+      cost,
+      [](const analysis::InstructionProgramCost &tile)
+          -> const analysis::ScheduleCostMetric & {
+        return tile.spmMovementBytes;
+      },
+      cost.aggregateSPMMovementBytes);
+  auto instructions = maximumTileMetric(
+      cost,
+      [](const analysis::InstructionProgramCost &tile)
+          -> const analysis::ScheduleCostMetric & {
+        return tile.instructionCount;
+      },
+      cost.aggregateInstructionCount);
+  auto dteWaits = maximumTileMetric(
+      cost,
+      [](const analysis::InstructionProgramCost &tile)
+          -> const analysis::ScheduleCostMetric & {
+        return tile.noc.waitedEventCount;
+      },
+      cost.aggregateNoC.waitedEventCount);
+  auto nccWaits = maximumTileMetric(
+      cost,
+      [](const analysis::InstructionProgramCost &tile)
+          -> const analysis::ScheduleCostMetric & {
+        return tile.nccParticipantWaitCount;
+      },
+      cost.aggregateNCCParticipantWaitCount);
+  if (!npu || !vectorF16 || !vectorF32 || !spm || !instructions ||
+      !dteWaits || !nccWaits || !cost.aggregateDDRReadBytes.isKnown() ||
+      !cost.aggregateDDRWriteBytes.isKnown() ||
+      !cost.aggregateNoC.staticIssueSiteCount.isKnown())
+    return UnknownSearchObjective{
+        SearchObjectiveUnknownReason::MetricUnavailable};
+
+  uint64_t ddrBytes = 0;
+  if (!checkedAdd(cost.aggregateDDRReadBytes.value,
+                  cost.aggregateDDRWriteBytes.value, ddrBytes))
+    return UnknownSearchObjective{
+        SearchObjectiveUnknownReason::ArithmeticOverflow};
+  uint64_t nocBytes = 0;
+  if (cost.aggregateNoC.staticIssueSiteCount.value != 0) {
+    if (!cost.modeledNoCRoute.peakDirectedLinkByteDemand.isKnown())
       return UnknownSearchObjective{
-          SearchObjectiveUnknownReason::ArithmeticOverflow};
-  return KnownSearchObjective{total, *cohort};
+          SearchObjectiveUnknownReason::MetricUnavailable};
+    nocBytes = cost.modeledNoCRoute.peakDirectedLinkByteDemand.value;
+  }
+
+  SearchResourceDurations durations;
+  auto assignTime = [&](uint64_t work, uint64_t rate, uint64_t &destination) {
+    std::optional<uint64_t> duration = timeForWork(work, rate);
+    if (!duration)
+      return false;
+    destination = *duration;
+    return true;
+  };
+  if (!assignTime(*npu, policy.f16Bf16NPULogicalOpsPerSecondPerTile,
+                  durations.neF16Bf16Picoseconds) ||
+      !assignTime(*vectorF16,
+                  policy.f16Bf16VectorLogicalOpsPerSecondPerTile,
+                  durations.vectorF16Bf16Picoseconds) ||
+      !assignTime(*vectorF32, policy.f32VectorLogicalOpsPerSecondPerTile,
+                  durations.vectorF32Picoseconds) ||
+      !assignTime(ddrBytes, policy.cardDDRNominalBytesPerSecond,
+                  durations.ddrPicoseconds) ||
+      !assignTime(nocBytes, policy.directionalNoCBytesPerSecond,
+                  durations.nocPicoseconds) ||
+      !assignTime(*spm,
+                  policy.spmExplicitMovementBytesPerSecondPerTileEstimate,
+                  durations.spmMovementPicoseconds) ||
+      !checkedMultiply(*instructions,
+                       policy.instructionFixedPicosecondsEstimate,
+                       durations.instructionControlPicoseconds) ||
+      !checkedMultiply(*dteWaits,
+                       policy.dteWaitedEventPicosecondsEstimate,
+                       durations.dteWaitControlPicoseconds) ||
+      !checkedMultiply(*nccWaits,
+                       policy.nccParticipantWaitPicosecondsEstimate,
+                       durations.nccWaitControlPicoseconds))
+    return UnknownSearchObjective{
+        SearchObjectiveUnknownReason::ArithmeticOverflow};
+  return KnownSearchObjective{durations, *cohort};
 }
 
 SearchObjectiveComparison compareSearchObjectives(const SearchObjective &lhs,
@@ -77,15 +234,28 @@ SearchObjectiveComparison compareSearchObjectives(const SearchObjective &lhs,
   const auto *right = std::get_if<KnownSearchObjective>(&rhs);
   if (!left || !right || !(left->cohort == right->cohort))
     return SearchObjectiveComparison::Incomparable;
-  if (left->ticks < right->ticks)
+  const std::array<uint64_t, 9> leftTerms = asArray(left->durations);
+  const std::array<uint64_t, 9> rightTerms = asArray(right->durations);
+  bool noWorse = true;
+  bool noBetter = true;
+  bool strictlyBetter = false;
+  bool strictlyWorse = false;
+  for (auto [leftTerm, rightTerm] : llvm::zip_equal(leftTerms, rightTerms)) {
+    noWorse &= leftTerm <= rightTerm;
+    noBetter &= leftTerm >= rightTerm;
+    strictlyBetter |= leftTerm < rightTerm;
+    strictlyWorse |= leftTerm > rightTerm;
+  }
+  if (noWorse && strictlyBetter)
     return SearchObjectiveComparison::Better;
-  if (left->ticks > right->ticks)
+  if (noBetter && strictlyWorse)
     return SearchObjectiveComparison::Worse;
-  return SearchObjectiveComparison::Equivalent;
+  return leftTerms == rightTerms ? SearchObjectiveComparison::Equivalent
+                                 : SearchObjectiveComparison::Incomparable;
 }
 
 CandidateReservation
-ActualResultController::reserve(const CompleteCandidateKey &key) {
+ActualResultController::reserve(const StructuralCandidateKey &key) {
   if (finished || poisoned) {
     ++statistics.closedReservations;
     return CandidateReservation::Closed;
@@ -105,7 +275,7 @@ ActualResultController::reserve(const CompleteCandidateKey &key) {
 }
 
 CandidateRecordOutcome
-ActualResultController::record(const CompleteCandidateKey &key,
+ActualResultController::record(const StructuralCandidateKey &key,
                                FullFeasibilityResult result) {
   if (finished || poisoned || !reserved.erase(key) || completed.count(key))
     return failCompilerBug();
@@ -185,13 +355,13 @@ CandidateRecordOutcome ActualResultController::failCompilerBug() {
 void ActualResultController::markCompilerBug() { (void)failCompilerBug(); }
 
 bool ActualResultController::isForbidden(
-    const CompleteCandidateKey &key) const {
+    const StructuralCandidateKey &key) const {
   return findExactCompleteRejection(key) != nullptr;
 }
 
 const ExactCompleteRejection *
 ActualResultController::findExactCompleteRejection(
-    const CompleteCandidateKey &key) const {
+    const StructuralCandidateKey &key) const {
   auto found = forbidden.find(ExactCompleteRejection{
       key, ExactCompleteRejectionKind::ExecutableGate, {}});
   return found == forbidden.end() ? nullptr : &*found;
@@ -204,7 +374,8 @@ bool ActualResultController::canPrune(
   const auto *bound = std::get_if<KnownSearchObjective>(&lowerBound.objective);
   const auto *best = std::get_if<KnownSearchObjective>(&incumbent->objective);
   return bound && best && bound->cohort == best->cohort &&
-         bound->ticks > best->ticks;
+         compareSearchObjectives(lowerBound.objective, incumbent->objective) ==
+             SearchObjectiveComparison::Worse;
 }
 
 SearchControllerResult

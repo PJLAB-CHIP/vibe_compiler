@@ -160,6 +160,8 @@ TEST(CardBaselineCompilationTest,
   EXPECT_EQ(baselineStatistics.materializationRejections, 0u);
   EXPECT_EQ(baselineStatistics.exactGates.tileModuleLoweringAttempts, 1u);
   EXPECT_EQ(baselineStatistics.exactGates.cardModuleCompilationInvocations, 1u);
+  EXPECT_EQ(baselineStatistics.exactGates.actualMemoryTargetGateInvocations,
+            1u);
   EXPECT_EQ(baselineStatistics.baselineCardModuleMaterializations, 1u);
   EXPECT_EQ(baselineStatistics.baselineTileEntryMaterializations, 16u);
   EXPECT_EQ(baselineStatistics.baselineMaximumTileMaterializationWorkers, 1u);
@@ -170,6 +172,11 @@ TEST(CardBaselineCompilationTest,
   EXPECT_EQ(baselineStatistics.spatialCoordinateQueries, 1u);
   EXPECT_EQ(baselineStatistics.actualSPMCapacityRejections, 0u);
   EXPECT_EQ(baselineStatistics.actualTemporalRefinements, 0u);
+  EXPECT_EQ(
+      baselineStatistics.exactGates.currentIRLayoutOptimizationInvocations,
+      1u);
+  EXPECT_EQ(
+      baselineStatistics.exactGates.currentIRLayoutHardOnlyInvocations, 1u);
   EXPECT_EQ(diagnosticsText.find("card-executable-search policy=none"),
             std::string::npos)
       << diagnosticsText;
@@ -472,8 +479,12 @@ TEST(CardBaselineCompilationTest,
               statistics.actualSPMCapacityRejections);
     EXPECT_EQ(statistics.baselineCardModuleMaterializations,
               statistics.actualTemporalRefinements + 1);
+    EXPECT_EQ(statistics.exactGates.currentIRLayoutOptimizationInvocations,
+              statistics.baselineCardModuleMaterializations);
     EXPECT_EQ(statistics.exactGates.cardModuleCompilationInvocations,
               statistics.baselineCardModuleMaterializations);
+    EXPECT_EQ(statistics.exactGates.actualMemoryTargetGateInvocations,
+              statistics.exactGates.cardModuleCompilationInvocations);
     EXPECT_EQ(statistics.baselineTileEntryMaterializations,
               statistics.baselineCardModuleMaterializations * 16);
   }
@@ -559,8 +570,12 @@ TEST_P(CardBaselineRankFourPrefillTest,
             statistics.actualSPMCapacityRejections);
   EXPECT_EQ(statistics.baselineCardModuleMaterializations,
             statistics.actualTemporalRefinements + 1);
+  EXPECT_EQ(statistics.exactGates.currentIRLayoutOptimizationInvocations,
+            statistics.baselineCardModuleMaterializations);
   EXPECT_EQ(statistics.exactGates.cardModuleCompilationInvocations,
             statistics.baselineCardModuleMaterializations);
+  EXPECT_EQ(statistics.exactGates.actualMemoryTargetGateInvocations,
+            statistics.exactGates.cardModuleCompilationInvocations);
   EXPECT_EQ(statistics.baselineTileEntryMaterializations,
             statistics.baselineCardModuleMaterializations * 16);
 }
@@ -731,9 +746,49 @@ TEST(CardBaselineCompilationTest,
 
 TEST(CardBaselineCompilationTest,
      ReconstructsMultiProducerInputThroughTheCompleteExecutableGate) {
-  ParsedProgram parsed = parseMultiProducerJoinProgram();
-  expectDemandProgramCompletesExecutableGate(
-      parsed, multiProducerJoinProgramMetadata());
+  for (int64_t extent : {1024, 1025}) {
+    SCOPED_TRACE(extent);
+    ParsedProgram parsed = parseMultiProducerJoinProgram(extent);
+    ASSERT_TRUE(parsed.module);
+    std::string diagnosticsText;
+    llvm::raw_string_ostream diagnostics(diagnosticsText);
+    wafer::compiler::detail::BaselineStatistics statistics;
+    wafer::compiler::ProgramDataHandoff programData;
+    auto executable = wafer::compiler::detail::compileCardBaseline(
+        *parsed.module, multiProducerJoinProgramMetadata(extent),
+        executionConfig(), diagnostics, programData, &statistics,
+        /*tilePipelineParallelism=*/0,
+        /*captureTileDataflowIRTrace=*/true);
+    diagnostics.flush();
+    ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
+    ASSERT_EQ(executable->executable.tiles.size(), 16u);
+    ASSERT_EQ(executable->tileDataflowIRTrace.size(), 16u);
+    unsigned activeTiles = 0;
+    unsigned cardDDRBindings = 0;
+    for (auto [tileIndex, tile] :
+         llvm::enumerate(executable->executable.tiles)) {
+      EXPECT_EQ(tile.getTileId(),
+                wafer::TileId(static_cast<int64_t>(tileIndex)));
+      llvm::StringRef trace = executable->tileDataflowIRTrace[tileIndex];
+      activeTiles += trace.contains("wafer.tile.region");
+      tile.getModule().walk([&](mlir::func::FuncOp function) {
+        for (unsigned argument = 0; argument < function.getNumArguments();
+             ++argument)
+          cardDDRBindings += static_cast<bool>(
+              function.getArgAttrOfType<wafer::CardDDRBindingAttr>(
+                  argument, wafer::kWaferCardDDRBindingAttrName));
+      });
+    }
+    // Exact producer and consumer shards use the same injective Tile
+    // embedding, so all 16 Tiles carry work without introducing a DDR edge.
+    EXPECT_EQ(activeTiles, 16u);
+    EXPECT_EQ(cardDDRBindings, 0u);
+    EXPECT_GT(statistics.exactDemandSatisfiedEdges, 0u);
+    EXPECT_GE(statistics.exactGates.cardModuleCompilationInvocations, 1u);
+    EXPECT_EQ(statistics.exactGates.actualMemoryTargetGateInvocations,
+              statistics.exactGates.cardModuleCompilationInvocations);
+    expectNoAvoidableNCCDrains(executable->executable);
+  }
 }
 
 TEST(CardBaselineCompilationTest, ProducesStableCardModuleAndCardExecutableIR) {
@@ -829,14 +884,14 @@ TEST(CardBaselineCompilationTest,
   EXPECT_GT(countOccurrences(firstTileIR, "wafer.tile.load"), 1u)
       << firstTileIR.str();
   size_t peerEndpoints = 0;
-  size_t temporalLoops = 0;
+  size_t unclassifiedCopies = 0;
   for (llvm::StringRef tileIR : executable->tileDataflowIRTrace) {
     peerEndpoints += countOccurrences(tileIR, "wafer.tile.peer_send");
     peerEndpoints += countOccurrences(tileIR, "wafer.tile.peer_recv");
-    temporalLoops += countOccurrences(tileIR, "scf.for");
+    unclassifiedCopies += countOccurrences(tileIR, "memref.copy");
   }
   EXPECT_LT(peerEndpoints, 256u);
-  EXPECT_GT(temporalLoops, 0u);
+  EXPECT_EQ(unclassifiedCopies, 0u);
   EXPECT_NE(diagnosticsText.find(
                 "card-executable-compilation outcome=exact-rejection"),
             std::string::npos)

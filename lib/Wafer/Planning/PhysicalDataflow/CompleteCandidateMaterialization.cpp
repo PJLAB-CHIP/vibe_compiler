@@ -3,11 +3,17 @@
 #include "Wafer/Planning/PhysicalDataflow/CompleteCandidateMaterialization.h"
 
 #include "Wafer/Planning/Baseline/BaselineAttentionMaterialization.h"
+#include "Wafer/Planning/PhysicalDataflow/CanonicalAttentionWorkProjection.h"
+#include "Wafer/Planning/PhysicalDataflow/CanonicalMovementPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalRegionPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalRepresentationPlan.h"
+#include "Wafer/Planning/PhysicalDataflow/CanonicalSchedulePlan.h"
+#include "Wafer/Planning/PhysicalDataflow/CanonicalSerializedExecutionPlan.h"
+#include "Wafer/Planning/PhysicalDataflow/CanonicalStoragePlan.h"
 #include "Wafer/Planning/PhysicalDataflow/PhysicalVersionBuilder.h"
 #include "Wafer/Planning/PhysicalDataflow/RepresentationDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/SelectedRegionMaterialization.h"
+#include "Wafer/Planning/PhysicalDataflow/SelectedAttentionDecomposition.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
@@ -21,6 +27,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <map>
 #include <set>
@@ -138,6 +145,16 @@ struct SearchAttentionExecutionSource {
   std::map<uint32_t, uint32_t> semanticNodeByActualNode;
 };
 
+struct AttentionStructuralMaterializationPlan {
+  SpatialAssignment spatial;
+  std::vector<analysis::RootRegionWork> rootWorks;
+  RegionPlan regions;
+  TemporalPlan temporal;
+  RepresentationPlan representations;
+  MovementPlan movement;
+  PreparedAttentionDecomposition preparedAttention;
+};
+
 mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
 getStaticIterationExtents(mlir::Operation *operation,
                           std::string *failureReason) {
@@ -200,10 +217,11 @@ bool isIdentityBroadcastGeneric(mlir::Operation *operation) {
          yield.getOperand(0) == body.getArgument(0);
 }
 
+template <typename PlanT>
 mlir::FailureOr<SearchAttentionExecutionSource>
 prepareSearchAttentionExecutionSource(
     mlir::ModuleOp tensorProgram, CardId cardId,
-    const CardProgramAnalysis &program, const CompleteCandidatePlan &plan,
+    const CardProgramAnalysis &program, const PlanT &plan,
     CandidateMaterializationStatistics *statistics,
     std::string *failureReason) {
   mlir::FailureOr<AttentionMaterializationSource> attention =
@@ -536,6 +554,247 @@ void remapAttentionMaterializationRelations(
 } // namespace
 
 mlir::FailureOr<MaterializedCardCandidate>
+materializeSearchStructuralCandidate(
+    mlir::ModuleOp tensorProgram, CardId cardId,
+    const CardProgramAnalysis &program,
+    const CurrentStructuralCandidatePlan &plan,
+    CandidateMaterializationStatistics *statistics,
+    llvm::raw_ostream &diagnostics) {
+  std::string failureReason;
+  const bool hasAttention =
+      llvm::any_of(plan.rootWorks, [](const analysis::RootRegionWork &work) {
+        return mlir::isa_and_nonnull<LinalgExtAttentionOp>(work.rootOperation);
+      });
+  if (hasAttention) {
+    CanonicalRepresentationPlanOutcome representationOutcome =
+        buildCanonicalRepresentationPlan(plan.regions, plan.temporal,
+                                         plan.rootWorks);
+    const CanonicalRepresentationCoordinate *representations =
+        getCanonicalRepresentationCoordinate(representationOutcome);
+    if (!representations)
+      return mlir::failure();
+    CanonicalMovementPlanOutcome movementOutcome = buildCanonicalMovementPlan(
+        plan.regions, *representations, plan.rootWorks);
+    const CanonicalMovementCoordinate *movements =
+        getCanonicalMovementCoordinate(movementOutcome);
+    if (!movements)
+      return mlir::failure();
+    CanonicalSerializedExecutionPlanOutcome serializedOutcome =
+        buildCanonicalSerializedExecutionPlan(plan.regions, plan.temporal);
+    const SerializedExecutionPlan *serialized =
+        getSerializedExecutionPlan(serializedOutcome);
+    if (!serialized)
+      return mlir::failure();
+    CanonicalStoragePlanOutcome storageOutcome =
+        buildCanonicalStoragePlan(*representations, *movements, *serialized);
+    const CanonicalStorageCoordinate *storage =
+        getCanonicalStorageCoordinate(storageOutcome);
+    if (!storage)
+      return mlir::failure();
+    CanonicalStoragePlanOutcome residentOutcome =
+        recloseCanonicalStorageForTemporal(*storage, plan.temporal,
+                                           plan.rootWorks);
+    const CanonicalStorageCoordinate *resident =
+        getCanonicalStorageCoordinate(residentOutcome);
+    if (!resident)
+      return mlir::failure();
+    CanonicalSchedulePlanOutcome scheduleOutcome =
+        buildCanonicalSchedulePlan(*resident, *serialized);
+    const CanonicalScheduleCoordinate *schedule =
+        getCanonicalScheduleCoordinate(scheduleOutcome);
+    if (!schedule)
+      return mlir::failure();
+    CanonicalAttentionWorkProjectionOutcome attentionOutcome =
+        buildCanonicalAttentionWorkProjection(
+            plan.rootWorks, *representations, *movements, *resident, *schedule,
+            &plan.temporal);
+    const CanonicalAttentionWorkCoordinate *attention =
+        getCanonicalAttentionWorkCoordinate(attentionOutcome);
+    if (!attention)
+      return mlir::failure();
+    PreparedAttentionDecompositionOutcome preparedOutcome =
+        prepareSelectedAttentionDecomposition(*attention);
+    const auto *prepared =
+        std::get_if<PreparedAttentionDecomposition>(&preparedOutcome);
+    if (!prepared)
+      return mlir::failure();
+
+    AttentionStructuralMaterializationPlan transaction;
+    transaction.spatial = plan.spatial;
+    transaction.rootWorks = plan.rootWorks;
+    transaction.regions = plan.regions;
+    transaction.temporal = plan.temporal;
+    transaction.representations = representations->plan;
+    transaction.movement = movements->plan;
+    transaction.preparedAttention = *prepared;
+    mlir::FailureOr<SearchAttentionExecutionSource> source =
+        prepareSearchAttentionExecutionSource(
+            tensorProgram, cardId, program, transaction, statistics,
+            &failureReason);
+    if (mlir::failed(source)) {
+      diagnostics << "wafer-compile: search attention structural expansion "
+                     "failed: "
+                  << failureReason << '\n';
+      return mlir::failure();
+    }
+    if (statistics) {
+      ++statistics->sourcePreparations;
+      ++statistics->materializationPreparations;
+    }
+    MaterializedCardCandidate result;
+    result.assignment = std::move(source->assignment);
+    result.assignment.selectedRegions = plan.regions;
+    result.assignment.selectedRegionGroups = source->groups;
+    result.nodeRoots = std::move(source->nodeRoots);
+    result.materializationSource = std::move(source->module);
+    wafer::support::ScopedCompileTimingSpan timing(
+        "conversion", "search-structural",
+        "expanded-attention-to-card-module");
+    if (mlir::failed(lowerStructuredNodeGroupsToCardModule(
+            *result.materializationSource, cardId, program.availableTileIds,
+            source->operationNodes, source->groups, result.module,
+            &result.relations, &failureReason))) {
+      diagnostics << "wafer-compile: search attention structural CardModule "
+                     "materialization failed: "
+                  << failureReason << '\n';
+      return mlir::failure();
+    }
+    remapAttentionMaterializationRelations(
+        result.relations, source->semanticNodeByActualNode);
+    if (statistics) {
+      ++statistics->cardModuleMaterializations;
+      statistics->tileEntryMaterializations +=
+          program.availableTileIds.size();
+      statistics->maximumTileMaterializationWorkers = 1;
+    }
+    return result;
+  }
+  mlir::FailureOr<SelectedRegionMaterializationSource> source =
+      prepareSelectedRegionMaterializationSource(
+          tensorProgram, program, plan.regions, plan.rootWorks,
+          &failureReason);
+  if (mlir::failed(source)) {
+    diagnostics << "wafer-compile: search structural source preparation "
+                   "failed: "
+                << failureReason << '\n';
+    return mlir::failure();
+  }
+  if (statistics)
+    ++statistics->sourcePreparations;
+
+  mlir::FailureOr<std::vector<StructuredNodeShardGroup>> groups =
+      prepareSelectedRegionGroups(program, plan.regions, plan.rootWorks,
+                                  plan.temporal, source->executionNodes,
+                                  &failureReason);
+  if (mlir::failed(groups)) {
+    diagnostics << "wafer-compile: search structural group preparation "
+                   "failed: "
+                << failureReason << '\n';
+    return mlir::failure();
+  }
+  // A pure linalg.fill whose complete SSA use set stays inside this selected
+  // group is consumer-local initialization, not an independently scheduled
+  // execution. Keep its exact shard as recomputation input and let the typed
+  // consumer lowering record the fused implementation. Observable or
+  // cross-group fills remain ordinary selected shards.
+  std::map<uint32_t, mlir::Operation *> operationsByNode;
+  std::map<mlir::Operation *, uint32_t> nodesByOperation;
+  for (const StructuredOperationNodeMapping &mapping : source->operationNodes) {
+    operationsByNode.try_emplace(mapping.structuredNodeId, mapping.operation);
+    nodesByOperation.try_emplace(mapping.operation, mapping.structuredNodeId);
+  }
+  for (StructuredNodeShardGroup &group : *groups) {
+    std::set<uint32_t> selectedNodes;
+    for (const StructuredNodeIterationShard &shard : group.shards)
+      selectedNodes.insert(shard.structuredNodeId);
+    llvm::SmallVector<StructuredNodeIterationShard, 4> scheduled;
+    for (const StructuredNodeIterationShard &shard : group.shards) {
+      auto operation = operationsByNode.find(shard.structuredNodeId);
+      auto fill = operation == operationsByNode.end()
+                      ? mlir::linalg::FillOp{}
+                      : mlir::dyn_cast<mlir::linalg::FillOp>(
+                            operation->second);
+      bool localInitialization = fill && !fill.getResult(0).use_empty();
+      if (localInitialization)
+        for (mlir::Operation *user : fill.getResult(0).getUsers()) {
+          auto consumer = nodesByOperation.find(user);
+          if (consumer == nodesByOperation.end() ||
+              !selectedNodes.count(consumer->second)) {
+            localInitialization = false;
+            break;
+          }
+        }
+      if (!localInitialization) {
+        scheduled.push_back(shard);
+        continue;
+      }
+      if (!llvm::is_contained(group.recomputedProducerNodes,
+                              shard.structuredNodeId)) {
+        group.recomputedProducerNodes.push_back(shard.structuredNodeId);
+        group.recomputedProducerShards.push_back(shard);
+      }
+      llvm::erase_if(group.independentlyMaterializedNodes,
+                     [&](uint32_t node) {
+                       return node == shard.structuredNodeId;
+                     });
+      llvm::erase_if(group.temporalTiles, [&](const auto &temporal) {
+        return temporal.structuredNodeId == shard.structuredNodeId;
+      });
+      llvm::erase_if(group.localUses, [&](const auto &use) {
+        return use.producerNodeId == shard.structuredNodeId;
+      });
+    }
+    group.shards.assign(scheduled.begin(), scheduled.end());
+    llvm::sort(group.recomputedProducerNodes);
+    llvm::sort(group.recomputedProducerShards,
+               [](const auto &lhs, const auto &rhs) {
+                 return lhs.structuredNodeId < rhs.structuredNodeId;
+               });
+  }
+  if (statistics)
+    ++statistics->materializationPreparations;
+
+  MaterializedCardCandidate result;
+  result.assignment.spatial = plan.spatial;
+  result.assignment.demand = plan.demand;
+  result.assignment.selectedRegions = plan.regions;
+  result.assignment.selectedRegionGroups = *groups;
+  std::map<uint32_t, SemanticRootKey> rootsByNode;
+  for (const SelectedRegionExecutionNode &execution : source->executionNodes) {
+    auto [position, inserted] = rootsByNode.try_emplace(
+        execution.structuredNodeId, execution.root);
+    if (!inserted && position->second != execution.root) {
+      diagnostics << "wafer-compile: search structural execution node has "
+                     "several semantic roots\n";
+      return mlir::failure();
+    }
+    result.assignment.selectedRegionExecutions.push_back(
+        {execution.execution, execution.structuredNodeId});
+  }
+  for (const auto &[node, root] : rootsByNode)
+    result.nodeRoots.push_back({node, root});
+  result.materializationSource = std::move(source->module);
+
+  wafer::support::ScopedCompileTimingSpan timing(
+      "conversion", "search-structural", "selected-region-to-card-module");
+  if (mlir::failed(lowerStructuredNodeGroupsToCardModule(
+          *result.materializationSource, cardId, program.availableTileIds,
+          source->operationNodes, *groups, result.module, &result.relations,
+          &failureReason))) {
+    diagnostics << "wafer-compile: search structural CardModule "
+                   "materialization failed: "
+                << failureReason << '\n';
+    return mlir::failure();
+  }
+  if (statistics) {
+    ++statistics->cardModuleMaterializations;
+    statistics->tileEntryMaterializations += program.availableTileIds.size();
+    statistics->maximumTileMaterializationWorkers = 1;
+  }
+  return result;
+}
+
+mlir::FailureOr<MaterializedCardCandidate>
 materializeSearchCardCandidate(
     mlir::ModuleOp tensorProgram, CardId cardId,
     const CardProgramAnalysis &program, const CompleteCandidatePlan &plan,
@@ -645,11 +904,25 @@ materializeSearchCardCandidate(
     if (firstNonEmptyGroup != groups->end()) {
       TileId firstTile = firstNonEmptyGroup->shards.front().tile;
       uint64_t totalShards = 0;
+      std::array<uint64_t, 3> localDeliveries{};
       for (const StructuredNodeShardGroup &group : *groups)
         totalShards += group.shards.size();
+      for (const RegionGroupPlan &group : plan.regions.groups)
+        for (const LocalUseBinding &binding : group.localBindings)
+          ++localDeliveries[static_cast<unsigned>(binding.delivery)];
       diagnostics << "wafer-compile: ir-region-plan groups=" << groups->size()
                   << " shards=" << totalShards
-                  << " first_tile=" << firstTile.getValue() << '\n';
+                  << " first_tile=" << firstTile.getValue()
+                  << " stored="
+                  << localDeliveries[static_cast<unsigned>(
+                         LocalUseDelivery::StoredRegionValue)]
+                  << " reconstructed-stored="
+                  << localDeliveries[static_cast<unsigned>(
+                         LocalUseDelivery::ReconstructedRegionValue)]
+                  << " direct-nested="
+                  << localDeliveries[static_cast<unsigned>(
+                         LocalUseDelivery::DirectNestedValue)]
+                  << '\n';
     }
   }
 

@@ -82,6 +82,7 @@ private:
     ExecutionInstanceId producer;
     ExecutionInstanceId consumer;
     bool allowsRequiredLocal = false;
+    bool requiresReconstruction = false;
     bool allowsDirect = false;
     bool allowsReplica = false;
   };

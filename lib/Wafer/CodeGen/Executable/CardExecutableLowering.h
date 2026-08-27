@@ -71,10 +71,19 @@ struct CardExecutableLoweringResult {
 /// stored in IR, Tile executables, or package files.
 struct CardExecutableLoweringStatistics {
   uint64_t cardModuleCompilationInvocations = 0;
+  uint64_t actualMemoryTargetGateInvocations = 0;
   uint64_t tileModuleLoweringAttempts = 0;
   uint64_t tileModuleLoweringSuccesses = 0;
   uint64_t cardExecutablesProduced = 0;
   uint64_t maximumTilePipelineWorkers = 1;
+  uint64_t currentIRLayoutOptimizationInvocations = 0;
+  uint64_t currentIRLayoutPBQPWork = 0;
+  uint64_t currentIRLayoutMaterializationsBefore = 0;
+  uint64_t currentIRLayoutMaterializationsAfter = 0;
+  uint64_t currentIRLayoutMaterializationsErased = 0;
+  uint64_t currentIRLayoutMaterializationsReused = 0;
+  uint64_t currentIRLayoutHardOnlyInvocations = 0;
+  uint64_t redundantFullBufferTransfersEliminated = 0;
 };
 
 /// Takes exactly one memory-planned Instr module per available Tile.

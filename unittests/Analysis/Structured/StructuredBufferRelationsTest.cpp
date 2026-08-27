@@ -158,7 +158,7 @@ module {
 }
 
 TEST_F(StructuredBufferRelationsTest,
-       ConversionListenerOwnsSupportCopyThroughTypedStoreDataflow) {
+       ConversionListenerOwnsSupportCopyFromExplicitEmission) {
   mlir::OwningOpRef<mlir::ModuleOp> module =
       mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
@@ -193,6 +193,9 @@ module {
   wafer::StructuredMaterializationRelations relations;
   relations.operationResultBuffers.push_back(
       {/*structuredNodeId=*/7, /*resultIndex=*/0, function.getArgument(0)});
+  auto copy = *region.getBody().front().getOps<wafer::MoveCopyOp>().begin();
+  relations.operationEmissions.push_back(
+      {/*structuredNodeId=*/7, copy.getOperation()});
   wafer::compiler::detail::StructuredBufferReplacementListener listener(
       relations);
   wafer::TileRegionToInstrLoweringSession loweringSession(*context, &listener);

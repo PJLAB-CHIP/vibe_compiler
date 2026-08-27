@@ -54,11 +54,12 @@ mlir::LogicalResult placeRequiredNCCJoins(mlir::ModuleOp module);
 
 /// Erase every compiler-derived NCC participant join and rebuild required joins
 /// solely from the module's current worker order, typed issues/effects,
-/// aliases, ranges, event tokens, and observer boundaries. Tile
-/// memory planning uses this after function-boundary bufferization; action
-/// construction uses the incremental normalizer above while its loop-carried
-/// communication topology is still being formed. The operation mutates the
-/// caller-owned function once and does not promise rollback on failure.
+/// aliases, ranges, event tokens, and observer boundaries. The current Instr
+/// owner uses this after function-boundary bufferization and final order; the
+/// memory/target leaf only validates the result. Action construction may use
+/// the incremental normalizer above while loop-carried communication topology
+/// is still being formed. The operation mutates the caller-owned function once
+/// and does not promise rollback on failure.
 mlir::LogicalResult rebuildRequiredNCCJoins(mlir::func::FuncOp function);
 
 /// Applies the same rebuild to every directly nested function in a
@@ -117,6 +118,9 @@ private:
   friend mlir::LogicalResult
   convertTileRegionToInstr(TileRegionOp, TileRegionToInstrLoweringSession &,
                            mlir::RewriterBase::Listener *);
+  friend mlir::LogicalResult convertBufferizationCopiesToInstr(
+      mlir::ModuleOp, TileRegionToInstrLoweringSession &,
+      mlir::RewriterBase::Listener *);
 };
 
 /// Lower exactly one isolated TileRegion body. This operation does not run
@@ -127,12 +131,19 @@ convertTileRegionToInstr(TileRegionOp region,
                          TileRegionToInstrLoweringSession &session,
                          mlir::RewriterBase::Listener *listener = nullptr);
 
+/// Lowers standard materializing copies introduced by function-boundary
+/// bufferization after all TileRegion bodies have been converted. Copies are
+/// classified from their current Wafer memory spaces and exact relation.
+mlir::LogicalResult convertBufferizationCopiesToInstr(
+    mlir::ModuleOp module, TileRegionToInstrLoweringSession &session,
+    mlir::RewriterBase::Listener *listener = nullptr);
+
 /// One-shot compatibility adapter. Multi-region compiler requests should
 /// construct one request-scoped session and use the overload above.
 mlir::LogicalResult convertTileRegionToInstr(TileRegionOp region);
 
 /// Compatibility adapter that lowers every TileRegion in an owned module and
-/// then runs function-wide required NCC join placement. Production pass
+/// then runs function-wide fresh required NCC join construction. Production pass
 /// pipelines should use the region-anchored conversion and function-anchored
 /// join-placement pass. The caller discards the module on failure; this
 /// adapter does not clone the module to manufacture rollback.

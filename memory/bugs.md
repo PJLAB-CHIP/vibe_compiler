@@ -143,6 +143,9 @@
 - 修复模式：Instr verification先清除旧required joins，再从current actual Instr fresh构造loop backedge、branch merge、entry return、
   engine join和Direct-DTE exact wait。
 - 防复发：selected actual Instr执行fresh completion，直接检查current worker/effect/token/lifetime与join/wait位置；不与future event plan做parity。
+- memory planner中的第二次completion rebuild会掩盖上游stage未闭合，并让单独调用leaf与production结果不同。Function-boundary
+  bufferization必须先于TileRegion relation listener；TileRegion-to-Instr和任何selected order mutation完成后，由current-Instr owner执行
+  唯一fresh rebuild，再把IR交给只验证completion的memory/target leaf。Named pipeline和compiler driver必须调用同一fresh kernel。
 
 ## `ReturnAfterLocalDrain`不是card-scoped barrier
 
@@ -760,6 +763,18 @@
 - 防复发：window输出必须逐字节等于full codec，并覆盖多outer-row Cx/NCx、full block、tail、bank padding和bitpacked BOOL；
   测试同时断言每个window不超过budget、offset连续且logical value all-and-only covered。
 
+## Full-transfer cleanup必须在mutation前验证replacement consumer类型
+
+- 现象：exact byte/map proof允许NCx source替代Tensor destination，但destination的后继是`memref.reinterpret_cast`等standard view；
+  cleanup改写operand后才由verifier发现source/result memory attr不一致，production candidate已经被破坏。
+- 根因：只验证transfer与storage lifetime，没有验证每个actual consumer是否允许replacement type改变；test-only compute/load consumer
+  恰好宽松，未覆盖standard view链。
+- 修复模式：收集全部待替换use并在第一次mutation前分类。Replacement type不变可正常替换；type改变只允许合同明确接受该Wafer
+  memref的Instr或普通memref load/store，view、select、region/call boundary及其它typed relation consumer保留transfer。成功replacement
+  同步retarget caller-owned current relations，cleanup后fresh verify。
+- 防复发：rank-changing NCx→Tensor view链必须保留，cross-encoding direct compute/load正例仍可删除；production baseline与独立kernel
+  正负矩阵同时执行，不能只看eliminator fixture。
+
 ## 同storage width不能代签dtype数值转换
 
 - 现象：F16 1.0转换到BF16时直接把`0x3c00`塞进BF16，结果仍是`0x3c00`而非`0x3f80`；因为两者都是16 bit，
@@ -1216,6 +1231,10 @@
 - 防复发：测试在多次append和多跳replacement后核对每个relation仍指向current IR；support copy→typed store、output source、scratch及
   missing/duplicate/unknown semantic root group分别有正负例。每个actual SPM allocation没有typed owner时必须compiler-contract failure，
   不能按shape、唯一root、Location或buffer名补猜。
+- temporal/control-flow materialization克隆wave-local allocation时，clone必须在创建点通过caller-owned recorder记录当前selected stage的
+  显式node集合。不能在SPM rejection后沿普通Instr operand/result依赖扩散owner：compute dependency不是alias或ownership，扩散会把
+  无关program output编号带入同一demand并使actual feedback失真。Tile-to-Instr新建scratch同样只从source operation的显式emission或
+  buffer relation取得owner；手写fixture必须提供该relation，不能要求listener从后续store反推。
 
 ## Bufferization不能越过Tile隔离边界或丢失actual execution identity
 
@@ -1229,6 +1248,9 @@
 - 防复发：用rank-3 1024/1025 alias/reuse和1031 pipelined rotation分别贯通actual TileRegion→Instr→MiniMalloc；检查
   allocation数量、SSA owner、verifier和current-Instr dependency。不得把allocation提升到`func`、按合并后root猜execution，
   或因synthetic fixture能verify就绕过actual TileRegion scope。
+- rotation selector必须使用归一化iteration coordinate`(iv-lower)/step`再取模，不能直接对raw induction variable取模；非单位step会
+  否则长期选择同一slot。创建的每个slot是同一TileRegion中的actual allocation root，caller-owned relation同步扩展；memory stage
+  只从select/root union和fresh completion重算lifetime，不读取slot-family plan。
 
 ## Actual feedback必须绑定完整显式choice和current source epoch
 
@@ -1306,3 +1328,17 @@
   planner或绕过verifier。
 - 防复发：direct kernel与registered pass adapter对1024/1025级rank-3输入比较exact offsets和失败类别；真实16-Tile candidate证明
   DDR、target和package均实际到达。不得用禁用MLIR multithreading、固定单worker或猜测其它analysis线程安全来掩盖析构问题。
+
+## Memref SSA identity不是memory version
+
+- 现象：一个Tile entry先把结果写入Card DDR function argument并返回更新值，后续stage却再次读取原argument；One-Shot
+  Bufferization为保存Tensor SSA所要求的旧值生成整buffer DDR→DDR copy。类似地，两个相同source/type的layout materialization仅凭
+  dominance合并时，若中间存在对source alias的写入，后一个consumer会错误读取写入前的转换结果。
+- 根因：把同一个memref SSA value误当成“内存内容始终相同”的version。Memref SSA只固定引用，不会为memory mutation产生新SSA
+  definition；Tensor destination/result和显式stage result才形成可见值的current chain。
+- 修复模式：mutable function/resource destination由每个writer返回current Tensor/SSA result，后续reader和writer顺序消费该result；
+  block argument只作为初始值。复用layout/materialization时除same source/type和dominance外，还要用alias/mod-ref证明两次materialization
+  之间没有source或其alias的write/free；不同block、未知effect或不确定alias保留独立materialization。
+- 防复发：rank-3 1024/1025 producer→shared Card DDR→consumer case在bufferization前断言current result链、之后断言冗余copy为0；
+  1/2/15-use layout case覆盖只读共享，并用intervening alias write反例证明不复用。不能用CSE、copy lowering或copy-only TileRegion掩盖
+  错误的current-value串接。

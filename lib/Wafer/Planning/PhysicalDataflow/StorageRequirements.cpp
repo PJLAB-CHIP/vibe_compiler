@@ -2,9 +2,11 @@
 
 #include "Wafer/Planning/PhysicalDataflow/StorageRequirements.h"
 
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <map>
 #include <set>
@@ -29,6 +31,29 @@ bool sameResource(const StorageResourceDescription &lhs,
   return lhs.elementType == rhs.elementType && lhs.encoding == rhs.encoding &&
          sameSet(lhs.exactDomain, rhs.exactDomain) &&
          sameSet(lhs.residentDomain, rhs.residentDomain);
+}
+
+size_t hashSetStructure(const analysis::ExactIndexSet &set) {
+  const mlir::presburger::PresburgerSet &presburger = set.getPresburgerSet();
+  llvm::hash_code hash =
+      llvm::hash_combine(set.getRank(), presburger.getNumDisjuncts());
+  for (unsigned disjunctIndex = 0; disjunctIndex < presburger.getNumDisjuncts();
+       ++disjunctIndex) {
+    const mlir::presburger::IntegerRelation &disjunct =
+        presburger.getDisjunct(disjunctIndex);
+    hash = llvm::hash_combine(
+        hash, disjunct.getNumDomainVars(), disjunct.getNumRangeVars(),
+        disjunct.getNumSymbolVars(), disjunct.getNumLocalVars(),
+        disjunct.getNumEqualities(), disjunct.getNumInequalities(),
+        disjunct.getNumCols());
+    for (unsigned row = 0; row < disjunct.getNumEqualities(); ++row)
+      for (unsigned column = 0; column < disjunct.getNumCols(); ++column)
+        hash = llvm::hash_combine(hash, disjunct.atEq(row, column));
+    for (unsigned row = 0; row < disjunct.getNumInequalities(); ++row)
+      for (unsigned column = 0; column < disjunct.getNumCols(); ++column)
+        hash = llvm::hash_combine(hash, disjunct.atIneq(row, column));
+  }
+  return static_cast<size_t>(hash);
 }
 
 std::optional<RegionExecutionId>
@@ -207,6 +232,66 @@ StorageRequirementDerivationResult deriveStorageRequirements(
     return failed(StorageRequirementFailureKind::BrokenContract,
                   "storage requirements do not cover every physical version");
 
+  struct ResourceBucketKey {
+    int64_t tile = 0;
+    const void *elementType = nullptr;
+    MemLayout encoding = MemLayout::Tensor;
+    unsigned exactRank = 0;
+    unsigned residentRank = 0;
+    size_t exactStructure = 0;
+    size_t residentStructure = 0;
+  };
+  struct ResourceBucketKeyLess {
+    bool operator()(const ResourceBucketKey &lhs,
+                    const ResourceBucketKey &rhs) const {
+      if (lhs.tile != rhs.tile)
+        return lhs.tile < rhs.tile;
+      if (lhs.elementType != rhs.elementType)
+        return std::less<const void *>{}(lhs.elementType, rhs.elementType);
+      return std::tie(lhs.encoding, lhs.exactRank, lhs.residentRank,
+                      lhs.exactStructure, lhs.residentStructure) <
+             std::tie(rhs.encoding, rhs.exactRank, rhs.residentRank,
+                      rhs.exactStructure, rhs.residentStructure);
+    }
+  };
+  auto getBucketKey = [](const StorageObjectPlan &object,
+                         const StorageResourceDescription &resource) {
+    return ResourceBucketKey{object.tile.getValue(),
+                             resource.elementType.getAsOpaquePointer(),
+                             resource.encoding,
+                             resource.exactDomain.getRank(),
+                             resource.residentDomain.getRank(),
+                             hashSetStructure(resource.exactDomain),
+                             hashSetStructure(resource.residentDomain)};
+  };
+
+  std::map<ResourceBucketKey,
+           std::vector<const PhysicalVersionStorageBinding *>,
+           ResourceBucketKeyLess>
+      reuseCandidates;
+  for (const PhysicalVersionStorageBinding &candidate :
+       canonical.plan.versionBindings) {
+    const auto *candidateVersion =
+        std::get_if<PhysicalVersionId>(&candidate.object.origin);
+    if (!candidateVersion || identityAliasVersions.count(*candidateVersion))
+      continue;
+    auto object = objects.find(candidate.object);
+    auto resource = resources.find(candidate.object);
+    if (object == objects.end() || resource == resources.end())
+      return failed(StorageRequirementFailureKind::BrokenContract,
+                    "reuse candidate has no closed storage facts");
+    reuseCandidates[getBucketKey(*object->second, *resource->second)].push_back(
+        &candidate);
+  }
+
+  std::map<StorageObjectId, std::set<StorageAccessSite>> accessSites;
+  for (const auto &[object, lifetime] : lifetimes) {
+    std::set<StorageAccessSite> sites(lifetime->uses.begin(),
+                                      lifetime->uses.end());
+    sites.insert(lifetime->definition);
+    accessSites.emplace(object, std::move(sites));
+  }
+
   DerivedStorageRequirements result;
   for (const PhysicalVersionStorageBinding &target :
        canonical.plan.versionBindings) {
@@ -222,8 +307,13 @@ StorageRequirementDerivationResult deriveStorageRequirements(
         targetLifetime == lifetimes.end())
       return failed(StorageRequirementFailureKind::BrokenContract,
                     "version binding has no closed storage facts");
-    for (const PhysicalVersionStorageBinding &candidate :
-         canonical.plan.versionBindings) {
+    auto bucket = reuseCandidates.find(
+        getBucketKey(*targetObject->second, *targetResource->second));
+    if (bucket == reuseCandidates.end())
+      continue;
+    for (const PhysicalVersionStorageBinding *candidatePointer :
+         bucket->second) {
+      const PhysicalVersionStorageBinding &candidate = *candidatePointer;
       const auto *candidateVersion =
           std::get_if<PhysicalVersionId>(&candidate.object.origin);
       if (!candidateVersion || candidate.version == target.version ||
@@ -236,17 +326,16 @@ StorageRequirementDerivationResult deriveStorageRequirements(
       if (candidateObject == objects.end() ||
           candidateResource == resources.end() ||
           candidateLifetime == lifetimes.end() ||
-          candidateObject->second->tile != targetObject->second->tile ||
           !sameResource(*candidateResource->second, *targetResource->second))
         continue;
-      std::set<StorageAccessSite> candidateSites(
-          candidateLifetime->second->uses.begin(),
-          candidateLifetime->second->uses.end());
-      candidateSites.insert(candidateLifetime->second->definition);
-      bool forcedOverlap =
-          candidateSites.count(targetLifetime->second->definition);
-      for (const StorageAccessSite &use : targetLifetime->second->uses)
-        forcedOverlap |= candidateSites.count(use);
+      const std::set<StorageAccessSite> &candidateSites =
+          accessSites.at(candidate.object);
+      const std::set<StorageAccessSite> &targetSites =
+          accessSites.at(target.object);
+      const bool forcedOverlap =
+          llvm::any_of(targetSites, [&](const StorageAccessSite &site) {
+            return candidateSites.count(site) != 0;
+          });
       if (forcedOverlap)
         continue;
       result.reuse.push_back(

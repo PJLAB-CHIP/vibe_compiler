@@ -5,6 +5,7 @@
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/Driver/CompilationStatistics.h"
 #include "Wafer/Planning/Baseline/CardBaselineCompilation.h"
+#include "Wafer/Planning/PhysicalDataflow/Search/PlanningProfile.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningSession.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/UnifiedSearch.h"
 
@@ -248,6 +249,20 @@ compileTensorProgramModuleToCardExecutable(
           << statistics->actualSPMCapacityRejections
           << " actual_temporal_refinements="
           << statistics->actualTemporalRefinements
+          << " layout_pbqp_invocations="
+          << exactGates.currentIRLayoutOptimizationInvocations
+          << " layout_pbqp_work="
+          << exactGates.currentIRLayoutPBQPWork
+          << " layout_pbqp_hard_only="
+          << exactGates.currentIRLayoutHardOnlyInvocations
+          << " layout_materializations_before="
+          << exactGates.currentIRLayoutMaterializationsBefore
+          << " layout_materializations_after="
+          << exactGates.currentIRLayoutMaterializationsAfter
+          << " layout_materializations_erased="
+          << exactGates.currentIRLayoutMaterializationsErased
+          << " layout_materializations_reused="
+          << exactGates.currentIRLayoutMaterializationsReused
           << " spatial_coordinate_queries="
           << statistics->spatialCoordinateQueries
           << " exact_demand_edges=" << statistics->exactDemandSatisfiedEdges
@@ -257,6 +272,10 @@ compileTensorProgramModuleToCardExecutable(
           << statistics->materializationRejections
           << " card_executable_compilations="
           << exactGates.cardModuleCompilationInvocations
+          << " actual_memory_target_gates="
+          << exactGates.actualMemoryTargetGateInvocations
+          << " redundant_full_transfers_eliminated="
+          << exactGates.redundantFullBufferTransfersEliminated
           << " tile_pipeline_workers=" << exactGates.maximumTilePipelineWorkers
           << " tile_ir_prints=" << statistics->baselineTileIRPrints << '\n';
     }
@@ -280,56 +299,75 @@ compileTensorProgramModuleToCardExecutable(
             &failureReason);
     if (mlir::failed(problem))
       return fail("physical search problem failed: " + failureReason);
-    detail::PhysicalDataflowPlanningSession session(*problem);
+    mlir::FailureOr<detail::SearchCostCohort> searchCohort =
+        detail::SearchCostCohort::create(
+            analysis::getScheduleEstimatePolicy(), &failureReason);
+    if (mlir::failed(searchCohort))
+      return fail("physical search cost profile failed: " + failureReason);
+    std::optional<detail::PlanningProfileSink> planningProfile;
+    if (reportDetailedStatistics)
+      planningProfile.emplace();
+    detail::PhysicalDataflowPlanningSession session(
+        *problem, planningProfile ? &*planningProfile : nullptr);
     detail::UnifiedSearchResult searched = [&]() {
       wafer::support::ScopedCompileTimingSpan timing(
           "planning", "physical-search", "planning-frontier");
       detail::UnifiedSearchOptions options;
       options.termination = detail::SearchTerminationPolicy::FirstAccepted;
+      options.costCohort = *searchCohort;
+      options.profile = planningProfile ? &*planningProfile : nullptr;
       return detail::runUnifiedSearch(tensorModule, session, program,
                                       executionConfig, diagnostics, programData,
                                       options, /*tilePipelineParallelism=*/0,
                                       requestTileIRTrace);
     }();
     const detail::PlanningWorkCounts &work = searched.planning;
-    diagnostics
-        << "wafer-compile: physical-search result"
-        << " coverage="
-        << detail::stringifySearchControllerCoverage(searched.control.coverage)
-        << " spatial_successor_steps=" << work.spatialSuccessorSteps
-        << " spatial_demand_queries=" << work.spatialDemandQueries
-        << " spatial_states=" << work.spatialStatesQueued
-        << " root_work_steps=" << work.rootWorkSuccessorSteps
-        << " root_works=" << work.rootWorksValidated
-        << " region_steps=" << work.regionSuccessorSteps
-        << " region_states=" << work.regionStatesQueued
-        << " temporal_steps=" << work.temporalSuccessorSteps
-        << " temporal_states=" << work.temporalStatesQueued
-        << " temporal_unsupported=" << work.unsupportedTemporalChoices
-        << " temporal_indeterminate=" << work.indeterminateTemporalChoices
-        << " structural_readiness_queries=" << work.structuralReadinessQueries
-        << " representation_steps=" << work.representationSuccessorSteps
-        << " representation_states=" << work.representationStatesQueued
-        << " representation_unsupported="
-        << work.unsupportedRepresentationChoices
-        << " movement_steps=" << work.movementSuccessorSteps
-        << " movement_states=" << work.movementStatesQueued
-        << " movement_unsupported=" << work.unsupportedMovementChoices
-        << " storage_steps=" << work.storageSuccessorSteps
-        << " storage_states=" << work.storageStatesQueued
-        << " storage_unsupported=" << work.unsupportedStorageChoices
-        << " event_graph_queries=" << work.eventGraphQueries
-        << " event_graphs_built=" << work.eventGraphsBuilt
-        << " execution_structure_queries=" << work.executionStructureQueries
-        << " execution_structure_states=" << work.executionStructureStatesQueued
-        << " structure_storage_queries=" << work.structureSpecificStorageQueries
-        << " structure_storage_states="
-        << work.structureSpecificStorageStatesQueued
-        << " schedule_queries=" << work.scheduleQueries
-        << " schedule_states=" << work.scheduleStatesQueued
-        << " scheduled_states=" << searched.work.scheduledStatesVisited
-        << " candidate_actualizations=" << searched.work.candidateActualizations
-        << '\n';
+    if (planningProfile) {
+      diagnostics
+          << "wafer-compile: physical-search result"
+          << " coverage="
+          << detail::stringifySearchControllerCoverage(
+                 searched.control.coverage)
+          << " spatial_successor_steps=" << work.spatialSuccessorSteps
+          << " spatial_demand_queries=" << work.spatialDemandQueries
+          << " spatial_states=" << work.spatialStatesQueued
+          << " root_work_steps=" << work.rootWorkSuccessorSteps
+          << " root_works=" << work.rootWorksValidated
+          << " region_steps=" << work.regionSuccessorSteps
+          << " region_states=" << work.regionStatesQueued
+          << " temporal_steps=" << work.temporalSuccessorSteps
+          << " temporal_states=" << work.temporalStatesQueued
+          << " temporal_unsupported=" << work.unsupportedTemporalChoices
+          << " temporal_indeterminate=" << work.indeterminateTemporalChoices
+          << " structural_readiness_queries=" << work.structuralReadinessQueries
+          << " representation_steps=" << work.representationSuccessorSteps
+          << " representation_states=" << work.representationStatesQueued
+          << " representation_unsupported="
+          << work.unsupportedRepresentationChoices
+          << " movement_steps=" << work.movementSuccessorSteps
+          << " movement_states=" << work.movementStatesQueued
+          << " movement_unsupported=" << work.unsupportedMovementChoices
+          << " storage_steps=" << work.storageSuccessorSteps
+          << " storage_states=" << work.storageStatesQueued
+          << " storage_unsupported=" << work.unsupportedStorageChoices
+          << " event_graph_queries=" << work.eventGraphQueries
+          << " event_graphs_built=" << work.eventGraphsBuilt
+          << " execution_structure_queries=" << work.executionStructureQueries
+          << " execution_structure_states="
+          << work.executionStructureStatesQueued
+          << " structure_storage_queries="
+          << work.structureSpecificStorageQueries
+          << " structure_storage_states="
+          << work.structureSpecificStorageStatesQueued
+          << " schedule_queries=" << work.scheduleQueries
+          << " schedule_states=" << work.scheduleStatesQueued
+          << " scheduled_states=" << searched.work.scheduledStatesVisited
+          << " structural_candidates="
+          << searched.work.structuralStatesActualized
+          << " candidate_actualizations="
+          << searched.work.candidateActualizations << '\n';
+      detail::printPlanningProfile(diagnostics, *planningProfile);
+    }
     if (!searched.control.winner)
       return fail(searched.failureDetail.empty()
                       ? "physical search produced no accepted candidate"

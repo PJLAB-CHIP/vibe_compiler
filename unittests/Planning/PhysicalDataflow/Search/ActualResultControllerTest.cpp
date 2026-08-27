@@ -81,27 +81,18 @@ KeyParts makeKeyParts(uint32_t anchor, int64_t extent = 1024) {
                 PlannedEventKind::ComputeIssue};
   PipelineScopeId scope{{event}, {}};
   parts.structure.scopes.push_back(SerializedExecutionStructure{scope});
-  parts.schedule.structure = parts.structure;
-  parts.schedule.buffers = parts.buffers;
+  parts.schedule.setStructure(parts.structure);
+  parts.schedule.setBuffers(parts.buffers);
   parts.schedule.controlOrders.push_back(
       {TileControlScope{TileId(0), scope}, {event}});
   return parts;
 }
 
-CompleteCandidateKey closeKey(KeyParts parts) {
-  std::string failureReason;
-  auto key = CompleteCandidateKey::createFromValidatedPlans(
+StructuralCandidateKey makeKey(uint32_t anchor, int64_t extent = 1024) {
+  KeyParts parts = makeKeyParts(anchor, extent);
+  return StructuralCandidateKey::create(
       std::move(parts.spatial), std::move(parts.regions),
-      std::move(parts.temporal), std::move(parts.representations),
-      std::move(parts.movement), std::move(parts.initialBuffers),
-      std::move(parts.structure), std::move(parts.buffers),
-      std::move(parts.schedule), &failureReason);
-  EXPECT_TRUE(mlir::succeeded(key)) << failureReason;
-  return std::move(*key);
-}
-
-CompleteCandidateKey makeKey(uint32_t anchor, int64_t extent = 1024) {
-  return closeKey(makeKeyParts(anchor, extent));
+      std::move(parts.temporal));
 }
 
 ActualResultController makeController(
@@ -117,12 +108,31 @@ RuntimeLaunchContract makeLaunch() {
       {RuntimeLaunchPhaseRole::Main}));
 }
 
+ScheduleEstimatePolicy unitCostPolicy() {
+  ScheduleEstimatePolicy policy;
+  policy.cardDDRNominalBytesPerSecond = UINT64_C(1000000000000);
+  policy.directionalNoCBytesPerSecond = UINT64_C(1000000000000);
+  policy.dteEndpointBytesPerSecondEstimate = UINT64_C(1000000000000);
+  policy.dteMessageStartupPicosecondsEstimate = 1;
+  policy.noCHopPicosecondsEstimate = 1;
+  policy.instructionFixedPicosecondsEstimate = 1;
+  policy.dteWaitedEventPicosecondsEstimate = 1;
+  policy.nccParticipantWaitPicosecondsEstimate = 1;
+  policy.f16Bf16NPULogicalOpsPerSecondPerTile = UINT64_C(1000000000000);
+  policy.f16Bf16VectorLogicalOpsPerSecondPerTile = UINT64_C(1000000000000);
+  policy.f32VectorLogicalOpsPerSecondPerTile = UINT64_C(1000000000000);
+  policy.spmExplicitMovementBytesPerSecondPerTileEstimate =
+      UINT64_C(1000000000000);
+  return policy;
+}
+
 FullFeasibilityResult accepted(uint64_t instructions, bool known = true) {
   CardInstructionProgramCost cost;
   cost.aggregateInstructionCount.value = instructions;
   cost.aggregateDDRReadBytes.value = instructions * 2;
   cost.aggregateDDRWriteBytes.value = instructions * 3;
-  cost.minimumHopLinkByteDemand.value = instructions * 4;
+  cost.aggregateNoC.staticIssueSiteCount.value = instructions == 0 ? 0 : 1;
+  cost.modeledNoCRoute.peakDirectedLinkByteDemand.value = instructions * 4;
   if (!known)
     cost.aggregateInstructionCount.knowledge =
         ScheduleCostKnowledge::Unavailable;
@@ -158,94 +168,26 @@ FullFeasibilityResult exactRejected(uint32_t rootAnchor,
 }
 
 TEST(ActualResultControllerTest,
-     CompleteKeyUsesEveryAxisAndRejectsStaleGenerations) {
-  // This is a value-schema test: each axis' domain tests own plan legality.
-  // CompleteCandidateKey joins those already-validated values and must retain
-  // every field while independently rejecting stale K/I/J generation joins.
-  for (int64_t extent : {1024, 1025}) {
-    SCOPED_TRACE(extent);
-    KeyParts baseParts = makeKeyParts(0, extent);
-    CompleteCandidateKey base = closeKey(baseParts);
-    std::set<CompleteCandidateKey> variants;
-    variants.insert(base);
-
-    KeyParts spatial = baseParts;
-    spatial.spatial.nodes.front().axes.front().parameter = 2;
-    variants.insert(closeKey(std::move(spatial)));
-    KeyParts regions = baseParts;
-    regions.regions.groups.front().tile = TileId(1);
-    variants.insert(closeKey(std::move(regions)));
-    KeyParts temporal = baseParts;
-    --temporal.temporal.scopes.front().iteratorTileSizes[1];
-    variants.insert(closeKey(std::move(temporal)));
-    KeyParts representations = baseParts;
-    representations.representations.physicalVersions.front().encoding =
-        MemLayout::NCx;
-    variants.insert(closeKey(std::move(representations)));
-    KeyParts movement = baseParts;
-    movement.movement.publications.clear();
-    variants.insert(closeKey(std::move(movement)));
-    KeyParts initial = baseParts;
-    initial.initialBuffers.slotFamilies.push_back(
-        {SlotFamilyId{{initial.initialBuffers.storageObjects.front().id}},
-         OccurrenceRelationId{},
-         1,
-         {}});
-    variants.insert(closeKey(std::move(initial)));
-    KeyParts structure = baseParts;
-    structure.structure.scopes.push_back(structure.structure.scopes.front());
-    structure.schedule.structure = structure.structure;
-    variants.insert(closeKey(std::move(structure)));
-    KeyParts buffers = baseParts;
-    buffers.buffers.slotFamilies.push_back(
-        {SlotFamilyId{{buffers.buffers.storageObjects.front().id}},
-         OccurrenceRelationId{},
-         2,
-         {0}});
-    buffers.schedule.buffers = buffers.buffers;
-    variants.insert(closeKey(std::move(buffers)));
-    KeyParts schedule = baseParts;
-    schedule.schedule.workerBindings.push_back(
-        {schedule.schedule.controlOrders.front().events.front(),
-         NCCWorker::Worker1});
-    variants.insert(closeKey(std::move(schedule)));
-    EXPECT_EQ(variants.size(), 10u);
-
-    KeyParts stale = baseParts;
-    stale.schedule.buffers.slotFamilies.push_back(
-        {SlotFamilyId{{stale.buffers.storageObjects.front().id}},
-         OccurrenceRelationId{},
-         2,
-         {0}});
-    std::string failureReason;
-    EXPECT_TRUE(mlir::failed(CompleteCandidateKey::createFromValidatedPlans(
-        std::move(stale.spatial), std::move(stale.regions),
-        std::move(stale.temporal), std::move(stale.representations),
-        std::move(stale.movement), std::move(stale.initialBuffers),
-        std::move(stale.structure), std::move(stale.buffers),
-        std::move(stale.schedule), &failureReason)));
-    EXPECT_EQ(failureReason,
-              "complete candidate key has a stale schedule generation");
-  }
-}
-
-TEST(ActualResultControllerTest,
-     ExplicitCohortDerivesKnownUnknownOverflowAndStrictBound) {
+     ExplicitCohortDerivesResourceTermsUnknownOverflowAndStrictBound) {
   std::string failureReason;
-  auto cohort = SearchCostCohort::create(1, 2, 3, 4, &failureReason);
+  ScheduleEstimatePolicy policy = unitCostPolicy();
+  auto cohort = SearchCostCohort::create(policy, &failureReason);
   ASSERT_TRUE(mlir::succeeded(cohort)) << failureReason;
-  EXPECT_TRUE(
-      mlir::failed(SearchCostCohort::create(0, 1, 1, 1, &failureReason)));
+  policy.cardDDRNominalBytesPerSecond = 0;
+  EXPECT_TRUE(mlir::failed(SearchCostCohort::create(policy, &failureReason)));
 
   CardInstructionProgramCost cost;
   cost.aggregateInstructionCount.value = 1;
   cost.aggregateDDRReadBytes.value = 2;
   cost.aggregateDDRWriteBytes.value = 3;
-  cost.minimumHopLinkByteDemand.value = 4;
+  cost.aggregateNoC.staticIssueSiteCount.value = 1;
+  cost.modeledNoCRoute.peakDirectedLinkByteDemand.value = 4;
   SearchObjective known = deriveSearchObjective(cost, *cohort);
   const auto *knownValue = std::get_if<KnownSearchObjective>(&known);
   ASSERT_NE(knownValue, nullptr);
-  EXPECT_EQ(knownValue->ticks, 30u);
+  EXPECT_EQ(knownValue->durations.instructionControlPicoseconds, 1u);
+  EXPECT_EQ(knownValue->durations.ddrPicoseconds, 5u);
+  EXPECT_EQ(knownValue->durations.nocPicoseconds, 4u);
   EXPECT_TRUE(std::holds_alternative<UnknownSearchObjective>(
       deriveSearchObjective(cost, std::nullopt)));
   cost.aggregateInstructionCount.knowledge = ScheduleCostKnowledge::Unavailable;
@@ -255,18 +197,30 @@ TEST(ActualResultControllerTest,
       SearchObjectiveUnknownReason::MetricUnavailable);
   cost.aggregateInstructionCount.knowledge = ScheduleCostKnowledge::Known;
   cost.aggregateInstructionCount.value = std::numeric_limits<uint64_t>::max();
+  ScheduleEstimatePolicy overflowPolicy = unitCostPolicy();
+  overflowPolicy.instructionFixedPicosecondsEstimate = 2;
+  auto overflowCohort = *SearchCostCohort::create(overflowPolicy);
   EXPECT_EQ(
-      std::get<UnknownSearchObjective>(deriveSearchObjective(cost, *cohort))
+      std::get<UnknownSearchObjective>(
+          deriveSearchObjective(cost, overflowCohort))
           .reason,
       SearchObjectiveUnknownReason::ArithmeticOverflow);
 
   ActualResultController controller = makeController(1, *cohort);
-  CompleteCandidateKey key = makeKey(0);
+  StructuralCandidateKey key = makeKey(0);
   ASSERT_EQ(controller.reserve(key), CandidateReservation::Granted);
   ASSERT_EQ(controller.record(key, accepted(1)),
             CandidateRecordOutcome::Accepted);
-  SearchLowerBound equal{key, KnownSearchObjective{30, *cohort}};
-  SearchLowerBound worse{key, KnownSearchObjective{31, *cohort}};
+  SearchResourceDurations equalDurations;
+  equalDurations.instructionControlPicoseconds = 1;
+  equalDurations.ddrPicoseconds = 5;
+  equalDurations.nocPicoseconds = 4;
+  SearchResourceDurations worseDurations = equalDurations;
+  worseDurations.instructionControlPicoseconds = 2;
+  SearchLowerBound equal{
+      key, KnownSearchObjective{equalDurations, *cohort}};
+  SearchLowerBound worse{
+      key, KnownSearchObjective{worseDurations, *cohort}};
   SearchLowerBound unknown{
       key, UnknownSearchObjective{SearchObjectiveUnknownReason::NoCohort}};
   EXPECT_FALSE(controller.canPrune(equal));
@@ -278,12 +232,12 @@ TEST(ActualResultControllerTest,
      TwoToSevenAcceptedResultsMatchIndependentWinnerOracleInAnyOrder) {
   // Two-to-seven is intentionally a bounded independent controller oracle;
   // the same mechanism has real-scale 1024/1025 keys in the other tests.
-  auto cohort = *SearchCostCohort::create(1, 1, 1, 1);
+  auto cohort = *SearchCostCohort::create(unitCostPolicy());
   for (unsigned count = 2; count <= 7; ++count) {
     SCOPED_TRACE(count);
     ActualResultController controller = makeController(count, cohort);
     struct Record {
-      CompleteCandidateKey key;
+      StructuralCandidateKey key;
       uint64_t instructions = 0;
     };
     std::vector<Record> records;
@@ -297,7 +251,7 @@ TEST(ActualResultControllerTest,
           (record.instructions == expected->instructions &&
            record.key < expected->key))
         expected = &record;
-    CompleteCandidateKey expectedKey = expected->key;
+    StructuralCandidateKey expectedKey = expected->key;
     std::reverse(records.begin(), records.end());
     for (const Record &record : records) {
       ASSERT_EQ(controller.reserve(record.key), CandidateReservation::Granted);
@@ -314,10 +268,40 @@ TEST(ActualResultControllerTest,
 }
 
 TEST(ActualResultControllerTest,
+     SameInstructionCountKeepsNEAndVectorTradeoffIncomparable) {
+  auto cohort = *SearchCostCohort::create(unitCostPolicy());
+  auto makeCost = [](uint64_t ne, uint64_t vector) {
+    CardInstructionProgramCost cost;
+    cost.aggregateInstructionCount.value = 10;
+    cost.aggregateCompute.npuF16Bf16LogicalOps.value = ne;
+    cost.aggregateCompute.vectorF16Bf16LogicalOps.value = vector;
+    return cost;
+  };
+
+  SearchObjective neHeavy = deriveSearchObjective(makeCost(1024, 0), cohort);
+  SearchObjective vectorHeavy =
+      deriveSearchObjective(makeCost(0, 1024), cohort);
+  EXPECT_EQ(compareSearchObjectives(neHeavy, vectorHeavy),
+            SearchObjectiveComparison::Incomparable);
+
+  SearchObjective lessOfBoth =
+      deriveSearchObjective(makeCost(1024, 1024), cohort);
+  SearchObjective moreOfBoth =
+      deriveSearchObjective(makeCost(1025, 1031), cohort);
+  EXPECT_EQ(compareSearchObjectives(lessOfBoth, moreOfBoth),
+            SearchObjectiveComparison::Better);
+  const auto *known = std::get_if<KnownSearchObjective>(&lessOfBoth);
+  ASSERT_NE(known, nullptr);
+  EXPECT_EQ(known->durations.neF16Bf16Picoseconds, 1024u);
+  EXPECT_EQ(known->durations.vectorF16Bf16Picoseconds, 1024u);
+  EXPECT_EQ(known->durations.instructionControlPicoseconds, 10u);
+}
+
+TEST(ActualResultControllerTest,
      UnknownObjectivesUseCompleteKeyButRemainFeasibleUnranked) {
   ActualResultController controller = makeController(3);
   for (uint32_t index : {2u, 0u, 1u}) {
-    CompleteCandidateKey key = makeKey(index);
+    StructuralCandidateKey key = makeKey(index);
     ASSERT_EQ(controller.reserve(key), CandidateReservation::Granted);
     ASSERT_EQ(controller.record(key, accepted(10, /*known=*/false)),
               CandidateRecordOutcome::Accepted);
@@ -331,16 +315,12 @@ TEST(ActualResultControllerTest,
 
 TEST(ActualResultControllerTest,
      ExactFeedbackDoesNotMatchACompleteKeyWithTheSameSchedule) {
-  KeyParts rejectedParts = makeKeyParts(0, 1025);
-  KeyParts siblingParts = rejectedParts;
-  siblingParts.representations.physicalVersions.front().encoding =
-      MemLayout::NCx;
-  CompleteCandidateKey rejected = closeKey(std::move(rejectedParts));
-  CompleteCandidateKey sibling = closeKey(std::move(siblingParts));
+  StructuralCandidateKey rejected = makeKey(0, 1025);
+  StructuralCandidateKey sibling = makeKey(1, 1025);
   ActualResultController controller = makeController(4);
-  CompleteCandidateKey unsupported = makeKey(2, 1025);
-  CompleteCandidateKey indeterminate = makeKey(3, 1025);
-  for (const CompleteCandidateKey *key :
+  StructuralCandidateKey unsupported = makeKey(2, 1025);
+  StructuralCandidateKey indeterminate = makeKey(3, 1025);
+  for (const StructuralCandidateKey *key :
        {&rejected, &sibling, &unsupported, &indeterminate})
     ASSERT_EQ(controller.reserve(*key), CandidateReservation::Granted);
   EXPECT_EQ(controller.record(rejected, exactRejected(0, true)),
@@ -373,15 +353,15 @@ TEST(ActualResultControllerTest,
 
 TEST(ActualResultControllerTest,
      ExactCachePolicyDoesNotChangeAcceptedSetOrWinner) {
-  std::vector<CompleteCandidateKey> winners;
+  std::vector<StructuralCandidateKey> winners;
   std::vector<SearchControllerCoverage> coverage;
   std::vector<size_t> cacheSizes;
   for (ExactRejectionCachePolicy policy :
        {ExactRejectionCachePolicy::Enabled,
         ExactRejectionCachePolicy::Disabled}) {
     ActualResultController controller = makeController(2, std::nullopt, policy);
-    CompleteCandidateKey rejected = makeKey(0, 1024);
-    CompleteCandidateKey acceptedKey = makeKey(1, 1025);
+    StructuralCandidateKey rejected = makeKey(0, 1024);
+    StructuralCandidateKey acceptedKey = makeKey(1, 1025);
     ASSERT_EQ(controller.reserve(rejected), CandidateReservation::Granted);
     ASSERT_EQ(controller.record(rejected, exactRejected(0)),
               CandidateRecordOutcome::ExactRejection);
@@ -404,8 +384,8 @@ TEST(ActualResultControllerTest,
 TEST(ActualResultControllerTest,
      ReservationAndMalformedActualResultsFailClosedWithExactCounts) {
   ActualResultController controller = makeController(1);
-  CompleteCandidateKey first = makeKey(0);
-  CompleteCandidateKey second = makeKey(1);
+  StructuralCandidateKey first = makeKey(0);
+  StructuralCandidateKey second = makeKey(1);
   ASSERT_EQ(controller.reserve(first), CandidateReservation::Granted);
   EXPECT_EQ(controller.reserve(first), CandidateReservation::Duplicate);
   EXPECT_EQ(controller.reserve(second), CandidateReservation::Exhausted);
@@ -428,7 +408,7 @@ TEST(ActualResultControllerTest,
 
   ActualResultController noFeasible = makeController(2);
   for (uint32_t index = 0; index < 2; ++index) {
-    CompleteCandidateKey key = makeKey(index);
+    StructuralCandidateKey key = makeKey(index);
     ASSERT_EQ(noFeasible.reserve(key), CandidateReservation::Granted);
     ASSERT_EQ(noFeasible.record(key, exactRejected(index)),
               CandidateRecordOutcome::ExactRejection);
@@ -439,7 +419,7 @@ TEST(ActualResultControllerTest,
   EXPECT_EQ(exhausted.coverage, SearchControllerCoverage::NoFeasible);
 
   ActualResultController typedBug = makeController(1);
-  CompleteCandidateKey bugKey = makeKey(4, 1025);
+  StructuralCandidateKey bugKey = makeKey(4, 1025);
   ASSERT_EQ(typedBug.reserve(bugKey), CandidateReservation::Granted);
   FullFeasibilityResult compilerBug;
   compilerBug.status = FullFeasibilityStatus::CompilerBug;
@@ -449,13 +429,13 @@ TEST(ActualResultControllerTest,
             SearchControllerCoverage::Failed);
 
   ActualResultController unreserved = makeController(1);
-  CompleteCandidateKey unreservedKey = makeKey(5, 1025);
+  StructuralCandidateKey unreservedKey = makeKey(5, 1025);
   EXPECT_EQ(unreserved.record(unreservedKey, accepted(1)),
             CandidateRecordOutcome::CompilerBug);
   EXPECT_EQ(unreserved.getStatistics().compilerBugs, 1u);
 
   ActualResultController inFlight = makeController(1);
-  CompleteCandidateKey inFlightKey = makeKey(6, 1025);
+  StructuralCandidateKey inFlightKey = makeKey(6, 1025);
   ASSERT_EQ(inFlight.reserve(inFlightKey), CandidateReservation::Granted);
   EXPECT_EQ(inFlight.finish(SearchFrontierStatus::Exhausted).coverage,
             SearchControllerCoverage::Failed);

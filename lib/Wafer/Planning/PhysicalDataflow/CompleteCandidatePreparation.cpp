@@ -47,6 +47,7 @@ struct ActualIssue {
   mlir::Operation *operation = nullptr;
   ActualIssueKind kind = ActualIssueKind::Compute;
   llvm::SmallVector<uint32_t, 4> nodes;
+  llvm::SmallVector<uint32_t, 4> directEmissionNodes;
   StructuredMaterializationRelations *relations = nullptr;
 };
 
@@ -71,6 +72,24 @@ std::optional<unsigned> getDDRSourceArgument(mlir::Operation *operation) {
   if (!mlir::isa_and_nonnull<mlir::func::FuncOp>(parent))
     return std::nullopt;
   return argument.getArgNumber();
+}
+
+std::optional<int64_t> getCardDDRBindingResource(mlir::Value value) {
+  StorageRootMemo memo;
+  const llvm::DenseSet<mlir::Value> &roots = memo.getStorageRoots(value);
+  if (roots.size() != 1)
+    return std::nullopt;
+  auto argument = mlir::dyn_cast<mlir::BlockArgument>(*roots.begin());
+  auto function = argument
+                      ? mlir::dyn_cast_or_null<mlir::func::FuncOp>(
+                            argument.getOwner()->getParentOp())
+                      : mlir::func::FuncOp{};
+  if (!function)
+    return std::nullopt;
+  CardDDRBindingAttr binding = function.getArgAttrOfType<CardDDRBindingAttr>(
+      argument.getArgNumber(), kWaferCardDDRBindingAttrName);
+  return binding ? std::optional<int64_t>(binding.getResourceId())
+                 : std::nullopt;
 }
 
 bool hasNode(const ActualIssue &issue, uint32_t node) {
@@ -783,6 +802,7 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
         return;
       llvm::SmallVector<uint32_t, 4> nodes =
           nodeUses.collectNodesUsedBy(operation);
+      llvm::SmallVector<uint32_t, 4> directEmissionNodes;
       if (tile.regionNodes) {
         TileRegionOp region = operation->getParentOfType<TileRegionOp>();
         if (region) {
@@ -803,7 +823,21 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
           }
         }
       }
+      for (const StructuredOperationEmissionRelation &relation :
+           tile.relations->operationEmissions)
+        if (relation.operation == operation &&
+            !llvm::is_contained(directEmissionNodes,
+                                relation.structuredNodeId))
+          directEmissionNodes.push_back(relation.structuredNodeId);
+      if (*kind == ActualIssueKind::LocalCombine &&
+          !directEmissionNodes.empty())
+        kind = ActualIssueKind::Compute;
       if (*kind == ActualIssueKind::Compute) {
+        const bool hasDirectEmissionOwner = !directEmissionNodes.empty();
+        if (hasDirectEmissionOwner) {
+          llvm::sort(directEmissionNodes);
+          nodes = directEmissionNodes;
+        }
         llvm::SmallVector<mlir::Value, 4> writtenBuffers;
         if (auto effects =
                 mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation)) {
@@ -829,13 +863,14 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
               !llvm::is_contained(resultOwners,
                                   relation.structuredNodeId))
             resultOwners.push_back(relation.structuredNodeId);
-        if (!resultOwners.empty()) {
+        if (!hasDirectEmissionOwner && !resultOwners.empty()) {
           llvm::sort(resultOwners);
           nodes = std::move(resultOwners);
         }
       }
       actualIssues.push_back(
-          {tile.tile, operation, *kind, std::move(nodes), tile.relations});
+          {tile.tile, operation, *kind, std::move(nodes),
+           std::move(directEmissionNodes), tile.relations});
     });
   }
 
@@ -1277,7 +1312,8 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
       }
   std::map<mlir::Operation *, EventId> computeEventByIssue;
   for (const ActualIssue &issue : actualIssues) {
-    if (issue.kind != ActualIssueKind::Compute)
+    if (issue.kind != ActualIssueKind::Compute ||
+        issue.directEmissionNodes.empty())
       continue;
     llvm::SmallVector<const PlannedEvent *, 4> candidates;
     for (const PlannedEvent &planned : events.events) {
@@ -1288,7 +1324,8 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
           std::get_if<ExecutionEventAction>(&planned.id.action);
       auto node = action ? nodesByExecution.find(action->execution)
                          : nodesByExecution.end();
-      if (node != nodesByExecution.end() && hasNode(issue, node->second))
+      if (node != nodesByExecution.end() &&
+          llvm::is_contained(issue.directEmissionNodes, node->second))
         candidates.push_back(&planned);
     }
     if (candidates.empty())
@@ -1304,8 +1341,45 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
       auto position = selectedEventPositions.find(candidate->id);
       if (position == selectedEventPositions.end() ||
           position->second.first != ownerPosition->second.first) {
-        failureReason =
-            "one actual compute issue spans selected control scopes";
+        llvm::raw_string_ostream diagnostic(failureReason);
+        diagnostic << "one actual compute issue spans selected control "
+                      "scopes; tile="
+                   << issue.tile.getValue() << ",nodes=[";
+        llvm::interleaveComma(issue.nodes, diagnostic);
+        diagnostic << "],direct-emission-owners=[";
+        bool firstEmissionOwner = true;
+        for (const StructuredOperationEmissionRelation &relation :
+             issue.relations->operationEmissions) {
+          if (relation.operation != issue.operation)
+            continue;
+          if (!firstEmissionOwner)
+            diagnostic << ',';
+          firstEmissionOwner = false;
+          diagnostic << relation.structuredNodeId;
+        }
+        diagnostic << "],events=[";
+        for (auto [index, event] : llvm::enumerate(candidates)) {
+          auto eventPosition = selectedEventPositions.find(event->id);
+          diagnostic << (index ? ";" : "")
+                     << "control=";
+          if (eventPosition == selectedEventPositions.end())
+            diagnostic << "missing";
+          else
+            diagnostic << eventPosition->second.first << ':'
+                       << eventPosition->second.second;
+          const auto *eventAction =
+              std::get_if<ExecutionEventAction>(&event->id.action);
+          auto eventNode = eventAction
+                               ? nodesByExecution.find(eventAction->execution)
+                               : nodesByExecution.end();
+          diagnostic << ",node=";
+          if (eventNode == nodesByExecution.end())
+            diagnostic << "missing";
+          else
+            diagnostic << eventNode->second;
+        }
+        diagnostic << "],op=";
+        issue.operation->print(diagnostic);
         return mlir::failure();
       }
       if (position->second.second > ownerPosition->second.second) {
@@ -1318,8 +1392,6 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
 
   for (const PlannedEvent &planned : events.events) {
     if (planned.id.kind != PlannedEventKind::ComputeIssue)
-      continue;
-    if (planned.workerDomain.empty())
       continue;
     const auto *action = std::get_if<ExecutionEventAction>(&planned.id.action);
     auto node = action ? nodesByExecution.find(action->execution)
@@ -1350,11 +1422,12 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
             blocks.push_back(block);
         }
       if (blocks.empty()) {
-        llvm::raw_string_ostream diagnostic(failureReason);
-        diagnostic << "compute event has neither an actual typed NCC issue "
-                      "nor a current result relation; tile="
-                   << planned.tile->getValue() << ",node=" << node->second;
-        return mlir::failure();
+        // Some verifier-valid structured executions are intentionally folded
+        // into a directly dependent execution (for example, a scalar
+        // reduction initializer). They have no standalone issue or retained
+        // result buffer. Leave the occurrence unresolved here; only the exact
+        // EventGraph hard dependencies below may place it in an actual block.
+        continue;
       }
       issueFreeBlocksByEvent.emplace(planned.id, std::move(blocks));
       continue;
@@ -1631,21 +1704,96 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
   std::set<MovementActionId> selectedPeerActions;
   for (const PeerTransferGraphPlan &graph : movement.peerGraphs)
     selectedPeerActions.insert(graph.actions.begin(), graph.actions.end());
-  std::vector<MovementActionId> cardDDRActions;
-  for (const DDRBoundaryTransferPlan &transfer : movement.ddrTransfers) {
-    auto sourceTile = selectedVersionTiles.find(transfer.source);
-    if (!selectedPeerActions.count(MovementActionId(transfer.id)) &&
-        sourceTile != selectedVersionTiles.end() &&
-        sourceTile->second != transfer.id.destination.work.tile)
-      cardDDRActions.emplace_back(transfer.id);
-  }
-  for (const ReductionGatherPlan &gather : movement.reductionGathers)
-    if (!selectedPeerActions.count(MovementActionId(gather.id)))
-      cardDDRActions.emplace_back(gather.id);
-  llvm::sort(cardDDRActions);
   std::map<MovementActionId, int64_t> cardDDRByAction;
-  for (auto [resourceId, action] : llvm::enumerate(cardDDRActions))
-    cardDDRByAction.emplace(action, static_cast<int64_t>(resourceId));
+  struct BoundaryTransferIssues {
+    llvm::SmallVector<mlir::Operation *, 2> stores;
+    llvm::SmallVector<mlir::Operation *, 2> loads;
+  };
+  std::map<DDRBoundaryTransferId, BoundaryTransferIssues>
+      boundaryTransferIssues;
+  for (const DDRBoundaryTransferPlan &transfer : movement.ddrTransfers) {
+    MovementActionId action(transfer.id);
+    if (selectedPeerActions.count(action))
+      continue;
+    const auto *result =
+        std::get_if<ExecutionResultValueId>(&transfer.source.logicalValue);
+    std::optional<uint32_t> sourceNode = findVersionNode(transfer.source);
+    if (!result || !sourceNode)
+      continue;
+    std::set<int64_t> resources;
+    auto selectedSourceTile = selectedVersionTiles.find(transfer.source);
+    if (selectedSourceTile != selectedVersionTiles.end())
+      for (const ActualIssue &issue : actualIssues)
+        if (issue.relations)
+          for (const CardDDRTransferRelation &relation :
+               issue.relations->cardDDRTransfers)
+            if (relation.producerNodeId == *sourceNode &&
+                relation.producerResult == result->result &&
+                relation.producerTile == selectedSourceTile->second &&
+                relation.consumerTile == transfer.id.destination.work.tile)
+              resources.insert(relation.resourceId);
+    llvm::SmallVector<const ActualIssue *, 2> stores;
+    for (const ActualIssue &issue : actualIssues) {
+      auto store = mlir::dyn_cast_or_null<InstrWDMAOp>(issue.operation);
+      if (!store || !issue.relations || !hasNode(issue, *sourceNode))
+        continue;
+      StorageRootMemo memo;
+      const bool storesSelectedResult = llvm::any_of(
+          issue.relations->operationResultBuffers,
+          [&](const StructuredOperationResultBufferRelation &relation) {
+            return relation.structuredNodeId == *sourceNode &&
+                   relation.resultIndex == result->result &&
+                   relation.identityKind ==
+                       StructuredResultIdentityKind::OperationResult &&
+                   shareStructuredBufferStorage(store.getSource(),
+                                                relation.buffer, memo);
+          });
+      if (!storesSelectedResult)
+        continue;
+      stores.push_back(&issue);
+      if (std::optional<int64_t> resource =
+              getCardDDRBindingResource(store.getDest()))
+        resources.insert(*resource);
+      for (const CardDDRBufferRelation &relation :
+           issue.relations->cardDDRBuffers)
+        if (shareStructuredBufferStorage(store.getDest(), relation.buffer,
+                                         memo))
+          resources.insert(relation.resourceId);
+    }
+    if (resources.size() == 1)
+      cardDDRByAction.emplace(action, *resources.begin());
+
+    auto sourceTile = selectedVersionTiles.find(transfer.source);
+    std::optional<uint32_t> destinationNode =
+        findWorkNode(transfer.id.destination.work);
+    if (sourceTile == selectedVersionTiles.end() ||
+        sourceTile->second != transfer.id.destination.work.tile ||
+        !destinationNode)
+      continue;
+    BoundaryTransferIssues exact;
+    for (const ActualIssue *storeIssue : stores) {
+      auto store = mlir::cast<InstrWDMAOp>(storeIssue->operation);
+      llvm::SmallVector<mlir::Operation *, 2> pairedLoads;
+      for (ActualIssue &loadIssue : actualIssues) {
+        auto load = mlir::dyn_cast_or_null<InstrRDMAOp>(loadIssue.operation);
+        if (!load || loadIssue.tile != transfer.id.destination.work.tile ||
+            !hasNode(loadIssue, *destinationNode))
+          continue;
+        StorageRootMemo memo;
+        if (shareStructuredBufferStorage(store.getDest(), load.getSource(),
+                                         memo))
+          pairedLoads.push_back(loadIssue.operation);
+      }
+      if (pairedLoads.empty())
+        continue;
+      exact.stores.push_back(storeIssue->operation);
+      for (mlir::Operation *load : pairedLoads)
+        if (!llvm::is_contained(exact.loads, load))
+          exact.loads.push_back(load);
+    }
+    if (!exact.stores.empty() && !exact.loads.empty())
+      boundaryTransferIssues.emplace(transfer.id, std::move(exact));
+  }
   auto issueMatchesCardDDRMovementTag = [&](const ActualIssue &issue,
                                             const MovementEventAction &action) {
     auto resource = cardDDRByAction.find(action.action);
@@ -1662,6 +1810,16 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
     if (resource == cardDDRByAction.end() || !issue.operation ||
         !issue.relations)
       return false;
+    mlir::Value endpoint;
+    if (auto load = mlir::dyn_cast<InstrRDMAOp>(issue.operation))
+      endpoint = load.getSource();
+    else if (auto store = mlir::dyn_cast<InstrWDMAOp>(issue.operation))
+      endpoint = store.getDest();
+    if (endpoint) {
+      std::optional<int64_t> binding = getCardDDRBindingResource(endpoint);
+      if (binding && *binding == resource->second)
+        return true;
+    }
     StorageRootMemo memo;
     return llvm::any_of(
         issue.relations->cardDDRBuffers,
@@ -1729,6 +1887,27 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
     std::optional<uint32_t> node = expectedMovementNode(*movement);
     std::optional<unsigned> output = publicationOutput(*movement);
     std::vector<ActualIssue *> matches;
+    if (const auto *transfer =
+            std::get_if<DDRBoundaryTransferId>(&movement->action)) {
+      auto exact = boundaryTransferIssues.find(*transfer);
+      if (exact != boundaryTransferIssues.end()) {
+        llvm::ArrayRef<mlir::Operation *> expected =
+            movement->phase == MovementEventPhase::DDRLoad
+                ? llvm::ArrayRef<mlir::Operation *>(exact->second.loads)
+                : llvm::ArrayRef<mlir::Operation *>(exact->second.stores);
+        for (ActualIssue &issue : actualIssues)
+          if (issue.kind == kind && llvm::is_contained(expected,
+                                                       issue.operation) &&
+              !assignedOperations.count(issue.operation))
+            matches.push_back(&issue);
+        if (!assignAll(planned.id, matches)) {
+          failureReason = "same-Tile DDR boundary event has no complete "
+                          "actual WDMA/RDMA storage-root pair";
+          return mlir::failure();
+        }
+        continue;
+      }
+    }
     for (ActualIssue &issue : actualIssues) {
       if (!planned.tile || issue.tile != *planned.tile ||
           assignedOperations.count(issue.operation))
@@ -1774,6 +1953,125 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
       diagnostic << ",action=" << stringifyMovementActionKind(movement->action)
                  << ",phase=" << static_cast<unsigned>(movement->phase)
                  << ",payload=" << movement->payloadSlice << ",node=";
+      if (const auto *load = std::get_if<ExternalLoadId>(&movement->action)) {
+        auto loadPlan = llvm::find_if(
+            this->movement.externalLoads,
+            [&](const ExternalLoadPlan &candidate) {
+              return candidate.id == *load;
+            });
+        if (loadPlan != this->movement.externalLoads.end()) {
+          diagnostic << "load-source-kind="
+                     << static_cast<unsigned>(
+                            load->destination.fragment.source.kind)
+                     << ",load-source-index="
+                     << load->destination.fragment.source.index
+                     << ",load-version-kind="
+                     << loadPlan->destination.logicalValue.index()
+                     << ",load-derivation=[";
+          for (auto [index, step] :
+               llvm::enumerate(loadPlan->destination.derivation)) {
+            diagnostic << (index ? ";" : "")
+                       << static_cast<unsigned>(step.kind) << ':'
+                       << step.sourceLogicalValue.has_value();
+            if (step.sourceLogicalValue)
+              diagnostic << ':' << step.sourceLogicalValue->index();
+          }
+          diagnostic << "],";
+        }
+      } else if (const auto *transfer =
+                     std::get_if<DDRBoundaryTransferId>(&movement->action)) {
+        auto transferPlan = llvm::find_if(
+            this->movement.ddrTransfers,
+            [&](const DDRBoundaryTransferPlan &candidate) {
+              return candidate.id == *transfer;
+            });
+        diagnostic << "transfer-source-node=";
+        if (transferPlan == this->movement.ddrTransfers.end()) {
+          diagnostic << "missing";
+        } else {
+          std::optional<uint32_t> sourceNode =
+              findVersionNode(transferPlan->source);
+          auto sourceTile = selectedVersionTiles.find(transferPlan->source);
+          if (sourceNode)
+            diagnostic << *sourceNode;
+          else
+            diagnostic << "unknown";
+          diagnostic << ",transfer-source-tile=";
+          if (sourceTile != selectedVersionTiles.end())
+            diagnostic << sourceTile->second.getValue();
+          else
+            diagnostic << "unknown";
+          diagnostic << ",source-stores=[";
+          bool firstStore = true;
+          const auto *sourceResult = std::get_if<ExecutionResultValueId>(
+              &transferPlan->source.logicalValue);
+          for (const ActualIssue &issue : actualIssues) {
+            auto store = mlir::dyn_cast_or_null<InstrWDMAOp>(issue.operation);
+            if (!store || !issue.relations || !sourceNode ||
+                !hasNode(issue, *sourceNode))
+              continue;
+            if (!firstStore)
+              diagnostic << ';';
+            firstStore = false;
+            StorageRootMemo memo;
+            const bool resultMatch = sourceResult && llvm::any_of(
+                issue.relations->operationResultBuffers,
+                [&](const StructuredOperationResultBufferRelation &relation) {
+                  return relation.structuredNodeId == *sourceNode &&
+                         relation.resultIndex == sourceResult->result &&
+                         relation.identityKind ==
+                             StructuredResultIdentityKind::OperationResult &&
+                         shareStructuredBufferStorage(
+                             store.getSource(), relation.buffer, memo);
+                });
+            diagnostic << "tile=" << issue.tile.getValue()
+                       << ",result=" << resultMatch << ",card=";
+            bool firstCard = true;
+            for (const CardDDRBufferRelation &relation :
+                 issue.relations->cardDDRBuffers)
+              if (shareStructuredBufferStorage(store.getDest(),
+                                               relation.buffer, memo)) {
+                diagnostic << (firstCard ? "" : ",")
+                           << relation.resourceId;
+                firstCard = false;
+              }
+            if (firstCard)
+              diagnostic << "none";
+            diagnostic << ",roots=";
+            const llvm::DenseSet<mlir::Value> &storeRoots =
+                memo.getStorageRoots(store.getDest());
+            diagnostic << '[';
+            bool firstRoot = true;
+            for (mlir::Value root : storeRoots) {
+              if (!firstRoot)
+                diagnostic << ',';
+              firstRoot = false;
+              if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(root)) {
+                diagnostic << "arg#" << argument.getArgNumber();
+                auto function = mlir::dyn_cast_or_null<mlir::func::FuncOp>(
+                    argument.getOwner()->getParentOp());
+                CardDDRBindingAttr binding =
+                    function ? function.getArgAttrOfType<CardDDRBindingAttr>(
+                                   argument.getArgNumber(),
+                                   kWaferCardDDRBindingAttrName)
+                             : CardDDRBindingAttr{};
+                if (binding)
+                  diagnostic << ":card" << binding.getResourceId();
+              } else if (mlir::Operation *definition = root.getDefiningOp()) {
+                diagnostic << definition->getName();
+              } else {
+                diagnostic << "unknown";
+              }
+            }
+            diagnostic << ']';
+          }
+          diagnostic << ']';
+        }
+        diagnostic << ",exact-pair="
+                   << boundaryTransferIssues.count(*transfer)
+                   << ",card-ddr="
+                   << cardDDRByAction.count(movement->action) << ',';
+      }
       auto expectedCardDDR = cardDDRByAction.find(movement->action);
       if (expectedCardDDR != cardDDRByAction.end())
         diagnostic << "card-ddr:" << expectedCardDDR->second << ':';
@@ -1896,8 +2194,11 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
     });
   };
   for (ActualIssue &issue : actualIssues) {
+    const bool loweringOwnedCompute =
+        issue.kind == ActualIssueKind::Compute &&
+        issue.directEmissionNodes.empty();
     const bool loweringOwnedIssue =
-        issue.kind == ActualIssueKind::LocalCombine ||
+        loweringOwnedCompute || issue.kind == ActualIssueKind::LocalCombine ||
         issue.kind == ActualIssueKind::DDRLoad ||
         issue.kind == ActualIssueKind::DDRStore;
     if (!loweringOwnedIssue || assignedOperations.count(issue.operation))
@@ -1906,6 +2207,85 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
          issue.kind == ActualIssueKind::DDRStore) &&
         !isPrivateDDRStage(issue))
       continue;
+    if (loweringOwnedCompute) {
+      TileRegionOp ownerRegion =
+          issue.operation->getParentOfType<TileRegionOp>();
+      llvm::SmallVector<mlir::Value, 4> reachableStorage;
+      if (auto effects =
+              mlir::dyn_cast<mlir::MemoryEffectOpInterface>(issue.operation)) {
+        llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 4> instances;
+        effects.getEffects(instances);
+        for (const auto &instance : instances)
+          if (mlir::isa<mlir::MemoryEffects::Write>(instance.getEffect()) &&
+              instance.getValue() &&
+              mlir::isa<mlir::BaseMemRefType>(
+                  instance.getValue().getType()))
+            reachableStorage.push_back(instance.getValue());
+      }
+      llvm::DenseSet<mlir::Operation *> reached;
+      llvm::SmallVector<EventId, 4> downstreamEvents;
+      bool changed = !reachableStorage.empty();
+      while (changed) {
+        changed = false;
+        for (ActualIssue &candidate : actualIssues) {
+          if (candidate.tile != issue.tile || !ownerRegion ||
+              candidate.operation == issue.operation ||
+              candidate.operation->getParentOfType<TileRegionOp>() !=
+                  ownerRegion ||
+              reached.contains(candidate.operation))
+            continue;
+          mlir::Operation *candidateInIssueBlock = candidate.operation;
+          while (candidateInIssueBlock &&
+                 candidateInIssueBlock->getBlock() !=
+                     issue.operation->getBlock())
+            candidateInIssueBlock = candidateInIssueBlock->getParentOp();
+          if (!candidateInIssueBlock ||
+              !issue.operation->isBeforeInBlock(candidateInIssueBlock))
+            continue;
+          StorageRootMemo memo;
+          const bool consumesReachable = llvm::any_of(
+              candidate.operation->getOperands(), [&](mlir::Value operand) {
+                return mlir::isa<mlir::BaseMemRefType>(operand.getType()) &&
+                       llvm::any_of(reachableStorage,
+                                    [&](mlir::Value reachable) {
+                                      return shareStructuredBufferStorage(
+                                          reachable, operand, memo);
+                                    });
+              });
+          if (!consumesReachable)
+            continue;
+          reached.insert(candidate.operation);
+          changed = true;
+          if (assignedOperations.count(candidate.operation)) {
+            for (const auto &[event, operations] : operationsByEvent)
+              if (llvm::is_contained(operations, candidate.operation) &&
+                  !llvm::is_contained(downstreamEvents, event))
+                downstreamEvents.push_back(event);
+            continue;
+          }
+          if (!candidate.directEmissionNodes.empty())
+            continue;
+          if (auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(
+                  candidate.operation)) {
+            llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 4> instances;
+            effects.getEffects(instances);
+            for (const auto &instance : instances)
+              if (mlir::isa<mlir::MemoryEffects::Write>(
+                      instance.getEffect()) &&
+                  instance.getValue() &&
+                  mlir::isa<mlir::BaseMemRefType>(
+                      instance.getValue().getType()) &&
+                  !llvm::is_contained(reachableStorage, instance.getValue()))
+                reachableStorage.push_back(instance.getValue());
+          }
+        }
+      }
+      if (downstreamEvents.size() == 1) {
+        assignedOperations.insert(issue.operation);
+        operationsByEvent[downstreamEvents.front()].push_back(issue.operation);
+        continue;
+      }
+    }
     if (auto combine = mlir::dyn_cast<InstrGatherScatterOp>(issue.operation)) {
       llvm::SmallVector<EventId, 2> downstreamEvents;
       TileRegionOp ownerRegion =
@@ -2291,7 +2671,8 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
     if (!changed)
       break;
   }
-  for (const ControlOrder &control : schedule.controlOrders) {
+  for (auto [controlIndex, control] :
+       llvm::enumerate(schedule.controlOrders)) {
     EventBlocks actualScopeBlocks;
     for (const EventId &event : control.events) {
       auto block = blocksByEvent.find(event);
@@ -2302,7 +2683,24 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
           actualScopeBlocks.push_back(occurrence);
     }
     if (actualScopeBlocks.empty()) {
-      failureReason = "selected control scope has no actual block";
+      llvm::raw_string_ostream diagnostic(failureReason);
+      diagnostic << "selected control scope has no actual block; control="
+                 << controlIndex << ",events=[";
+      for (auto [eventIndex, event] : llvm::enumerate(control.events)) {
+        diagnostic << (eventIndex ? ";" : "")
+                   << "kind=" << static_cast<unsigned>(event.kind)
+                   << ",action-kind=" << event.action.index();
+        if (const auto *execution =
+                std::get_if<ExecutionEventAction>(&event.action)) {
+          auto node = nodesByExecution.find(execution->execution);
+          diagnostic << ",node=";
+          if (node == nodesByExecution.end())
+            diagnostic << "missing";
+          else
+            diagnostic << node->second;
+        }
+      }
+      diagnostic << ']';
       return mlir::failure();
     }
     for (const EventId &event : control.events)
@@ -2400,6 +2798,67 @@ mlir::LogicalResult CompleteCandidatePreparation::prepareInstructionIR(
   if (!prepared.succeeded()) {
     failureReason = prepared.failure ? prepared.failure->detail
                                      : "selected schedule preparation failed";
+    if (prepared.failure && prepared.failure->event) {
+      llvm::raw_string_ostream diagnostic(failureReason);
+      diagnostic << "; event-kind="
+                 << static_cast<unsigned>(prepared.failure->event->kind)
+                 << ",action-kind="
+                 << prepared.failure->event->action.index();
+      if (const auto *execution = std::get_if<ExecutionEventAction>(
+              &prepared.failure->event->action)) {
+        auto node = nodesByExecution.find(execution->execution);
+        diagnostic << ",node=";
+        if (node == nodesByExecution.end())
+          diagnostic << "missing";
+        else
+          diagnostic << node->second;
+        if (node != nodesByExecution.end()) {
+          diagnostic << ",node-issues=[";
+          bool firstIssue = true;
+          for (const ActualIssue &issue : actualIssues) {
+            if (!llvm::is_contained(issue.directEmissionNodes, node->second))
+              continue;
+            if (!firstIssue)
+              diagnostic << ';';
+            firstIssue = false;
+            diagnostic << issue.operation->getName() << "->";
+            bool firstEvent = true;
+            for (const auto &[event, operations] : operationsByEvent) {
+              if (!llvm::is_contained(operations, issue.operation))
+                continue;
+              if (!firstEvent)
+                diagnostic << ',';
+              firstEvent = false;
+              diagnostic << static_cast<unsigned>(event.kind) << ':';
+              if (const auto *owner =
+                      std::get_if<ExecutionEventAction>(&event.action)) {
+                auto ownerNode = nodesByExecution.find(owner->execution);
+                if (ownerNode != nodesByExecution.end())
+                  diagnostic << ownerNode->second;
+                else
+                  diagnostic << "missing";
+              } else {
+                diagnostic << "movement";
+              }
+            }
+          }
+          diagnostic << ']';
+        }
+      }
+      auto actual = operationsByEvent.find(*prepared.failure->event);
+      diagnostic << ",actual-operations=[";
+      if (actual != operationsByEvent.end())
+        for (auto [index, operation] : llvm::enumerate(actual->second)) {
+          diagnostic << (index ? ";" : "");
+          if (!operation) {
+            diagnostic << "null";
+            continue;
+          }
+          diagnostic << operation->getName() << ":ncc="
+                     << mlir::isa<WaferNCCIssueOpInterface>(operation);
+        }
+      diagnostic << ']';
+    }
     return mlir::failure();
   }
 

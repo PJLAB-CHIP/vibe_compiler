@@ -10,6 +10,7 @@
 #include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/StorageRequirements.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuralReadiness.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include <type_traits>
 #include <variant>
@@ -54,8 +55,12 @@ SpatialExpansionResult
 PhysicalDataflowPlanningSession::evaluateAndQueue(SpatialPlan choice,
                                                   bool proposalChoice) {
   ++work.spatialDemandQueries;
-  SpatialDomainEvaluation evaluation = problem.getSpatialDomain().evaluate(
-      problem.getProgram().dag, choice, problem.getRelationLimits());
+  SpatialDomainEvaluation evaluation = [&]() {
+    wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                   "evaluate-spatial-demand");
+    return problem.getSpatialDomain().evaluate(problem.getProgram().dag, choice,
+                                               problem.getRelationLimits());
+  }();
   if (evaluation.failure) {
     if (evaluation.failure->kind ==
         SpatialDomainFailureKind::UnsupportedSemantics) {
@@ -98,51 +103,63 @@ PhysicalDataflowPlanningSession::evaluateAndQueue(SpatialPlan choice,
     return {SpatialExpansionKind::CompilerBug,
             "satisfied spatial choice has no assignment or demand proof"};
   std::string detail;
-  mlir::FailureOr<RootWorkDomain> rootDomain = RootWorkDomain::create(
-      problem.getProgram().dag, *evaluation.assignment, *proof,
-      problem.getProgram().availableTileIds, &detail);
-  if (mlir::failed(rootDomain))
-    return {SpatialExpansionKind::CompilerBug, std::move(detail)};
-  RootWorkSuccessor rootWork =
-      rootDomain->getFirstWork(problem.getRelationLimits());
-  uint64_t validatedRootWorks = 0;
-  while (rootWork.getKind() == RootWorkSuccessorKind::Work) {
+  std::vector<analysis::RootRegionWork> rootWorks;
+  {
+    wafer::support::ScopedCompileTimingSpan rootWorkTiming(
+        "query", "physical-search", "validate-root-work-domain");
+    mlir::FailureOr<RootWorkDomain> rootDomain = RootWorkDomain::create(
+        problem.getProgram().dag, *evaluation.assignment, *proof,
+        problem.getProgram().availableTileIds, &detail);
+    if (mlir::failed(rootDomain))
+      return {SpatialExpansionKind::CompilerBug, std::move(detail)};
+    RootWorkSuccessor rootWork =
+        rootDomain->getFirstWork(problem.getRelationLimits());
+    while (rootWork.getKind() == RootWorkSuccessorKind::Work) {
+      ++work.rootWorkSuccessorSteps;
+      ++work.rootWorksValidated;
+      const analysis::RootRegionWork *value = rootWork.getWork();
+      const RootWorkCursor *cursor = rootWork.getCursor();
+      if (!value || !cursor)
+        return {SpatialExpansionKind::CompilerBug,
+                "root-work successor omitted its work value"};
+      rootWorks.push_back(*value);
+      rootWork = rootDomain->getNextWork(*cursor, problem.getRelationLimits());
+    }
     ++work.rootWorkSuccessorSteps;
-    ++work.rootWorksValidated;
-    ++validatedRootWorks;
-    const analysis::RootRegionWork *value = rootWork.getWork();
-    const RootWorkCursor *cursor = rootWork.getCursor();
-    if (!value || !cursor)
+    if (rootWork.getKind() != RootWorkSuccessorKind::End) {
+      const RootWorkDomainFailure *failure = rootWork.getFailure();
+      if (!failure)
+        return {SpatialExpansionKind::CompilerBug,
+                "root-work successor omitted its typed failure"};
+      if (rootWork.getKind() == RootWorkSuccessorKind::Indeterminate) {
+        pausedSpatialChoice = std::move(choice);
+        pausedChoiceIsProposal = proposalChoice;
+        ++work.indeterminateSpatialChoices;
+        return {SpatialExpansionKind::Indeterminate,
+                getRootWorkFailureDetail(*failure)};
+      }
+      if (rootWork.getKind() == RootWorkSuccessorKind::Unsupported) {
+        if (proposalChoice)
+          resolvedProposalChoices.insert(std::move(choice));
+        ++work.unsupportedSpatialChoices;
+        return {SpatialExpansionKind::Unsupported,
+                getRootWorkFailureDetail(*failure)};
+      }
       return {SpatialExpansionKind::CompilerBug,
-              "root-work successor omitted its work value"};
-    rootWork = rootDomain->getNextWork(*cursor, problem.getRelationLimits());
-  }
-  ++work.rootWorkSuccessorSteps;
-  if (rootWork.getKind() != RootWorkSuccessorKind::End) {
-    const RootWorkDomainFailure *failure = rootWork.getFailure();
-    if (!failure)
-      return {SpatialExpansionKind::CompilerBug,
-              "root-work successor omitted its typed failure"};
-    if (rootWork.getKind() == RootWorkSuccessorKind::Indeterminate) {
-      pausedSpatialChoice = std::move(choice);
-      pausedChoiceIsProposal = proposalChoice;
-      ++work.indeterminateSpatialChoices;
-      return {SpatialExpansionKind::Indeterminate,
               getRootWorkFailureDetail(*failure)};
     }
-    if (rootWork.getKind() == RootWorkSuccessorKind::Unsupported) {
-      if (proposalChoice)
-        resolvedProposalChoices.insert(std::move(choice));
-      ++work.unsupportedSpatialChoices;
-      return {SpatialExpansionKind::Unsupported,
-              getRootWorkFailureDetail(*failure)};
-    }
-    return {SpatialExpansionKind::CompilerBug,
-            getRootWorkFailureDetail(*failure)};
   }
-  if (validatedRootWorks == 0)
+  if (rootWorks.empty())
     return {SpatialExpansionKind::CompilerBug,
             "spatial choice produced an empty root-work domain"};
+
+  mlir::FailureOr<RegionDomain> regionDomain = [&]() {
+    wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                   "build-region-domain");
+    return RegionDomain::create(rootWorks, &detail);
+  }();
+  if (mlir::failed(regionDomain))
+    return {SpatialExpansionKind::CompilerBug, std::move(detail)};
 
   if (proposalChoice)
     resolvedProposalChoices.insert(choice);
@@ -150,6 +167,15 @@ PhysicalDataflowPlanningSession::evaluateAndQueue(SpatialPlan choice,
       SpatialState::create(problem, std::move(choice), &detail);
   if (mlir::failed(state))
     return {SpatialExpansionKind::CompilerBug, std::move(detail)};
+  auto [storedWorks, insertedWorks] =
+      rootWorkCache.try_emplace(state->getPlan(), std::move(rootWorks));
+  auto [storedRegion, insertedRegion] =
+      regionDomainCache.try_emplace(state->getPlan(), std::move(*regionDomain));
+  (void)storedWorks;
+  (void)storedRegion;
+  if (!insertedWorks || !insertedRegion)
+    return {SpatialExpansionKind::CompilerBug,
+            "resolved spatial choice changed its session memo"};
   if (!frontier.insert(*state).second)
     return {SpatialExpansionKind::CompilerBug,
             "resolved spatial choice produced a duplicate state"};
@@ -164,8 +190,21 @@ SpatialExpansionResult PhysicalDataflowPlanningSession::resumeSpatial() {
       return evaluateAndQueue(*pausedSpatialChoice, pausedChoiceIsProposal);
     }
 
-    for (const SpatialPlan &proposal :
-         problem.getSpatialDomain().getProposals()) {
+    auto proposals = spatialProposalCache.find(0);
+    if (proposals == spatialProposalCache.end()) {
+      mlir::FailureOr<llvm::SmallVector<SpatialPlan, 8>> generated = [&]() {
+        wafer::support::ScopedCompileTimingSpan timing(
+            "query", "physical-search", "build-spatial-proposals");
+        return problem.getSpatialDomain().getGraphCoherentProposals(
+            problem.getProgram().dag, problem.getRelationLimits());
+      }();
+      if (mlir::failed(generated))
+        return {SpatialExpansionKind::CompilerBug,
+                "graph-coherent spatial proposal construction failed"};
+      std::vector<SpatialPlan> values(generated->begin(), generated->end());
+      proposals = spatialProposalCache.try_emplace(0, std::move(values)).first;
+    }
+    for (const SpatialPlan &proposal : proposals->second) {
       if (resolvedProposalChoices.count(proposal))
         continue;
       ++work.spatialSuccessorSteps;
@@ -304,6 +343,8 @@ PhysicalDataflowPlanningSession::getOrCreateTemporalDomain(
   auto cached = temporalDomainCache.find(region);
   if (cached != temporalDomainCache.end())
     return {&cached->second, {}};
+  wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                 "build-temporal-domain");
   auto rootWorks = rootWorkCache.find(region.getSpatialPlan());
   if (rootWorks == rootWorkCache.end())
     return {nullptr, TemporalDomainFailure{
@@ -336,6 +377,8 @@ PhysicalDataflowPlanningSession::getOrCreateRepresentationDomain(
   auto cached = representationDomainCache.find(temporal);
   if (cached != representationDomainCache.end())
     return {&cached->second, {}};
+  wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                 "build-representation-domain");
   auto rootWorks = rootWorkCache.find(temporal.getSpatialPlan());
   if (rootWorks == rootWorkCache.end())
     return {nullptr, RepresentationDomainFailure{
@@ -361,7 +404,62 @@ PhysicalDataflowPlanningSession::getOrCreateRepresentationDomain(
                          {},
                          std::get<BrokenRepresentationPlan>(canonical).detail}};
   }
-  RepresentationDomainResult result = buildRepresentationDomain(*coordinate);
+  struct BoundaryAliasCandidate {
+    RepresentationUseId use;
+    RegionValueVersionId logical;
+    const RepresentationResourceDescription *resource = nullptr;
+  };
+  llvm::DenseMap<mlir::Value, std::vector<BoundaryAliasCandidate>>
+      aliasesBySource;
+  std::vector<IdentityAliasRequirement> aliases;
+  for (const PhysicalUseBinding &binding : coordinate->plan.uses) {
+    const auto *boundaryUse =
+        std::get_if<BoundaryRepresentationUseId>(&binding.use);
+    const auto *logical =
+        std::get_if<BoundaryRegionValueId>(&binding.version.logicalValue);
+    if (!boundaryUse || !logical)
+      continue;
+    auto work = llvm::find_if(
+        rootWorks->second, [&](const analysis::RootRegionWork &candidate) {
+          return candidate.id == boundaryUse->value.work;
+        });
+    const analysis::RootBoundaryWork *boundary = nullptr;
+    if (work != rootWorks->second.end()) {
+      auto found = llvm::find_if(
+          work->boundaries,
+          [&](const analysis::RootBoundaryWork &candidate) {
+            return candidate.id == boundaryUse->value.fragment.source;
+          });
+      if (found != work->boundaries.end())
+        boundary = &*found;
+    }
+    auto resource = llvm::find_if(
+        coordinate->resources,
+        [&](const RepresentationResourceDescription &candidate) {
+          return candidate.version.logicalValue == binding.version.logicalValue;
+        });
+    if (!boundary || !boundary->sourceValue ||
+        resource == coordinate->resources.end())
+      continue;
+    auto &candidates = aliasesBySource[boundary->sourceValue];
+    auto source = llvm::find_if(
+        candidates, [&](const BoundaryAliasCandidate &candidate) {
+          return candidate.resource &&
+                 candidate.resource->elementType == resource->elementType &&
+                 candidate.resource->exactDomain.getPresburgerSet()
+                     .isEqual(
+                         resource->exactDomain.getPresburgerSet());
+        });
+    if (source == candidates.end()) {
+      candidates.push_back(
+          {binding.use, binding.version.logicalValue, &*resource});
+      continue;
+    }
+    if (!(source->logical == binding.version.logicalValue))
+      aliases.push_back({binding.use, source->logical});
+  }
+  RepresentationDomainResult result =
+      buildRepresentationDomain(*coordinate, aliases);
   if (!result.succeeded()) {
     if (result.failure)
       return {nullptr, std::move(result.failure)};
@@ -387,6 +485,8 @@ PhysicalDataflowPlanningSession::getOrCreateMovementDomain(
   auto cached = movementDomainCache.find(representations);
   if (cached != movementDomainCache.end())
     return {&cached->second, {}};
+  wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                 "build-movement-domain");
   RepresentationDomainLookup representationDomain =
       getOrCreateRepresentationDomain(representations.getTemporalState());
   if (!representationDomain.domain)
@@ -402,39 +502,28 @@ PhysicalDataflowPlanningSession::getOrCreateMovementDomain(
                          MovementDomainFailureKind::BrokenContract,
                          "movement transition has no derived root work"}};
 
-  CanonicalRepresentationCoordinate primary;
-  for (const LogicalRepresentationPlan &logical :
-       representations.getRepresentationPlan().logicalValues) {
-    auto version =
-        llvm::find_if(representations.getRepresentationPlan().physicalVersions,
-                      [&](const PhysicalVersionPlan &candidate) {
-                        return candidate.id == logical.primary;
-                      });
+  CanonicalRepresentationCoordinate selected;
+  selected.plan = representations.getRepresentationPlan();
+  for (const PhysicalVersionPlan &version : selected.plan.physicalVersions) {
     const RepresentationResourceDescription *resource =
-        representationDomain.domain->findResource(logical.value);
-    if (version ==
-            representations.getRepresentationPlan().physicalVersions.end() ||
-        !resource)
+        representationDomain.domain->findResource(version.id.logicalValue);
+    if (!resource)
       return {nullptr, MovementDomainFailure{
                            MovementDomainFailureKind::BrokenContract,
-                           "movement transition has an incomplete primary "
+                           "movement transition has an incomplete selected "
                            "representation"}};
-    primary.plan.logicalValues.push_back(logical);
-    primary.plan.physicalVersions.push_back(*version);
-    RepresentationResourceDescription selected = *resource;
-    selected.version = logical.primary;
-    selected.encoding = version->encoding;
-    primary.resources.push_back(std::move(selected));
+    RepresentationResourceDescription selectedResource = *resource;
+    selectedResource.version = version.id;
+    selectedResource.encoding = version.encoding;
+    selected.resources.push_back(std::move(selectedResource));
   }
-  llvm::sort(primary.plan.logicalValues);
-  llvm::sort(primary.plan.physicalVersions);
-  llvm::sort(primary.resources,
+  llvm::sort(selected.resources,
              [](const RepresentationResourceDescription &lhs,
                 const RepresentationResourceDescription &rhs) {
                return lhs.version < rhs.version;
              });
   CanonicalMovementPlanOutcome canonical = buildCanonicalMovementPlan(
-      representations.getRegionPlan(), primary, rootWorks->second);
+      representations.getRegionPlan(), selected, rootWorks->second);
   const CanonicalMovementCoordinate *coordinate =
       getCanonicalMovementCoordinate(canonical);
   if (!coordinate) {
@@ -472,6 +561,8 @@ PhysicalDataflowPlanningSession::getOrCreateStorageDomain(
   auto cached = storageDomainCache.find(movement);
   if (cached != storageDomainCache.end())
     return {&cached->second, {}};
+  wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                 "build-storage-domain");
   RepresentationDomainLookup representationDomain =
       getOrCreateRepresentationDomain(
           movement.getRepresentationState().getTemporalState());
@@ -515,17 +606,25 @@ PhysicalDataflowPlanningSession::getOrCreateStorageDomain(
         StorageDomainFailure{
             StorageDomainFailureKind::BrokenContract,
             std::get<BrokenSerializedExecutionPlan>(serializedOutcome).detail}};
-  CanonicalStoragePlanOutcome canonical =
-      buildCanonicalStoragePlan(representations, movements, *serialized);
+  CanonicalStoragePlanOutcome canonical = [&]() {
+    wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                   "build-canonical-storage");
+    return buildCanonicalStoragePlan(representations, movements, *serialized);
+  }();
   const CanonicalStorageCoordinate *coordinate =
       getCanonicalStorageCoordinate(canonical);
   if (!coordinate)
     return {nullptr, StorageDomainFailure{
                          StorageDomainFailureKind::BrokenContract,
                          std::get<BrokenStoragePlan>(canonical).detail}};
-  StorageRequirementDerivationResult requirements = deriveStorageRequirements(
-      *coordinate, movement.getRepresentationPlan(), movement.getMovementPlan(),
-      movement.getTemporalPlan(), temporalDomain.domain->getScopeDescriptors());
+  StorageRequirementDerivationResult requirements = [&]() {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "query", "physical-search", "derive-storage-requirements");
+    return deriveStorageRequirements(
+        *coordinate, movement.getRepresentationPlan(),
+        movement.getMovementPlan(), movement.getTemporalPlan(),
+        temporalDomain.domain->getScopeDescriptors());
+  }();
   if (!requirements.succeeded()) {
     if (!requirements.failure)
       return {nullptr,
@@ -542,9 +641,12 @@ PhysicalDataflowPlanningSession::getOrCreateStorageDomain(
     return {nullptr, StorageDomainFailure{
                          kind, std::move(requirements.failure->detail)}};
   }
-  StorageDomainResult result =
-      buildStorageDomain(*coordinate, requirements.requirements->reuse,
-                         requirements.requirements->slotFamilies);
+  StorageDomainResult result = [&]() {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "query", "physical-search", "build-storage-choice-domain");
+    return buildStorageDomain(*coordinate, requirements.requirements->reuse,
+                              requirements.requirements->slotFamilies);
+  }();
   if (!result.succeeded()) {
     if (result.failure)
       return {nullptr, std::move(result.failure)};
@@ -567,6 +669,8 @@ PhysicalDataflowPlanningSession::getOrCreateEventGraph(
   auto cached = eventGraphCache.find(buffers);
   if (cached != eventGraphCache.end())
     return {&cached->second, {}};
+  wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                 "build-initial-event-graph");
   StorageDomainLookup storageDomain =
       getOrCreateStorageDomain(buffers.getMovementState());
   MovementDomainLookup movementDomain = getOrCreateMovementDomain(
@@ -600,7 +704,8 @@ PhysicalDataflowPlanningSession::getOrCreateEventGraph(
                               {},
                               "event graph transition lost root-work facts"}};
   ExecutionEventContractResult contracts =
-      deriveExecutionEventContracts(*serialized, rootWorks->second);
+      deriveExecutionEventContracts(*serialized, buffers.getRegionPlan(),
+                                    rootWorks->second);
   if (!contracts.succeeded())
     return {nullptr, std::move(contracts.failure)};
 
@@ -641,6 +746,10 @@ PhysicalDataflowPlanningSession::getOrCreateEventGraph(
     return {&cached->second, {}};
   const InitialBufferState &initial =
       buffers.getExecutionStructureState().getInitialBufferState();
+  if (buffers.getBufferPlan() == initial.getBufferPlan())
+    return getOrCreateEventGraph(initial);
+  wafer::support::ScopedCompileTimingSpan timing(
+      "query", "physical-search", "build-post-structure-event-graph");
   StorageDomainLookup storageDomain =
       getOrCreateStorageDomain(initial.getMovementState());
   MovementDomainLookup movementDomain = getOrCreateMovementDomain(
@@ -664,7 +773,8 @@ PhysicalDataflowPlanningSession::getOrCreateEventGraph(
                          {},
                          "post-structure event graph lost execution facts"}};
   ExecutionEventContractResult contracts =
-      deriveExecutionEventContracts(*serialized, rootWorks->second);
+      deriveExecutionEventContracts(*serialized, initial.getRegionPlan(),
+                                    rootWorks->second);
   if (!contracts.succeeded())
     return {nullptr, std::move(contracts.failure)};
   CanonicalMovementCoordinate movement;
@@ -702,6 +812,8 @@ PhysicalDataflowPlanningSession::getOrCreateExecutionStructureDomain(
   auto cached = executionStructureDomainCache.find(buffers);
   if (cached != executionStructureDomainCache.end())
     return {&cached->second, {}};
+  wafer::support::ScopedCompileTimingSpan timing(
+      "query", "physical-search", "build-execution-structure-domain");
   const TemporalState &temporal =
       buffers.getMovementState().getRepresentationState().getTemporalState();
   TemporalDomainLookup temporalDomain =
@@ -745,6 +857,8 @@ PhysicalDataflowPlanningSession::getOrCreateStructureSpecificStorage(
   auto cached = structureSpecificStorageDomainCache.find(structure);
   if (cached != structureSpecificStorageDomainCache.end())
     return {&cached->second, {}};
+  wafer::support::ScopedCompileTimingSpan timing(
+      "query", "physical-search", "build-structure-storage-domain");
   StructureSpecificStorageDomainResult result =
       buildStructureSpecificStorageDomain(structure.getExecutionStructurePlan(),
                                           structure.getInitialBufferPlan(),
@@ -775,6 +889,8 @@ PhysicalDataflowPlanningSession::getOrCreateScheduleDomain(
   auto cached = scheduleDomainCache.find(buffers);
   if (cached != scheduleDomainCache.end())
     return {&cached->second, {}};
+  wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                 "build-schedule-domain");
   StructureSpecificStorageDomainLookup fixedStorage =
       getOrCreateStructureSpecificStorage(buffers.getExecutionStructureState(),
                                           eventGraph);
@@ -841,7 +957,11 @@ PhysicalDataflowPlanningSession::resumeRegion(RegionContinuation &continuation,
   if (mlir::failed(regionDomain))
     return mlir::failure();
   if (!continuation.proposalsInitialized) {
-    continuation.proposals = (*regionDomain)->getProposals();
+    continuation.proposals = [&]() {
+      wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                     "build-region-proposals");
+      return (*regionDomain)->getProposals();
+    }();
     continuation.proposalsInitialized = true;
   }
   auto makeState = [&](const RegionPlan &plan)
@@ -925,9 +1045,13 @@ TemporalExpansionResult PhysicalDataflowPlanningSession::resumeTemporal(
             "temporal domain failure has an invalid category"};
   }
   ++work.temporalSuccessorSteps;
-  TemporalSuccessor next =
-      continuation.started ? lookup.domain->getNextPlan(*continuation.cursor)
-                           : lookup.domain->getFirstPlan();
+  TemporalSuccessor next = [&]() {
+    wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                   "advance-temporal-domain");
+    return continuation.started
+               ? lookup.domain->getNextPlan(*continuation.cursor)
+               : lookup.domain->getFirstPlan();
+  }();
   if (next.getKind() == TemporalSuccessorKind::End) {
     continuation.exhausted = true;
     continuation.cursor.reset();
@@ -966,7 +1090,7 @@ TemporalExpansionResult PhysicalDataflowPlanningSession::resumeTemporal(
 mlir::FailureOr<std::optional<TemporalState>>
 PhysicalDataflowPlanningSession::refineTemporalStateFromActualFeedback(
     const TemporalState &state, llvm::ArrayRef<SemanticRootKey> causalRoots,
-    std::string *failureReason) {
+    std::string *failureReason, unsigned proposalRefinementSteps) {
   auto works = rootWorkCache.find(state.getSpatialPlan());
   TemporalDomainLookup domain =
       getOrCreateTemporalDomain(state.getRegionState());
@@ -975,12 +1099,24 @@ PhysicalDataflowPlanningSession::refineTemporalStateFromActualFeedback(
       *failureReason = "actual feedback lost temporal domain facts";
     return mlir::failure();
   }
-  TemporalPlan refined = state.getTemporalPlan();
-  auto changed = refineTemporalPlanFromActualSPMFeedback(
-      refined, works->second, causalRoots, failureReason);
-  if (mlir::failed(changed))
+  if (proposalRefinementSteps == 0) {
+    if (failureReason)
+      *failureReason = "actual temporal proposal requires positive steps";
     return mlir::failure();
-  if (!*changed)
+  }
+  TemporalPlan refined = state.getTemporalPlan();
+  bool changedAny = false;
+  for (unsigned step = 0; step < proposalRefinementSteps; ++step) {
+    auto changed = refineTemporalPlanFromActualSPMFeedback(
+        refined, works->second, causalRoots, failureReason,
+        /*preferReductionAxes=*/true);
+    if (mlir::failed(changed))
+      return mlir::failure();
+    if (!*changed)
+      break;
+    changedAny = true;
+  }
+  if (!changedAny)
     return std::optional<TemporalState>{};
   auto firstNested = llvm::find_if(refined.scopes, [](const auto &scope) {
     return !isTopLevelScope(scope.id);
@@ -1065,8 +1201,11 @@ PhysicalDataflowPlanningSession::resumeRepresentation(
   };
   if (!continuation.proposalChecked) {
     continuation.proposalChecked = true;
-    RepresentationProposalResult proposal =
-        lookup.domain->getPBQPProposal(/*workLimit=*/UINT64_C(1048576));
+    RepresentationProposalResult proposal = [&]() {
+      wafer::support::ScopedCompileTimingSpan timing(
+          "query", "physical-search", "build-representation-proposal");
+      return lookup.domain->getPBQPProposal(/*workLimit=*/UINT64_C(1048576));
+    }();
     if (proposal.status == RepresentationPBQPStatus::BrokenContract)
       return {RepresentationExpansionKind::CompilerBug,
               {},
@@ -1079,10 +1218,13 @@ PhysicalDataflowPlanningSession::resumeRepresentation(
   }
   while (true) {
     ++work.representationSuccessorSteps;
-    RepresentationSuccessor next =
-        continuation.rawStarted
-            ? lookup.domain->getNextPlan(*continuation.cursor)
-            : lookup.domain->getFirstPlan();
+    RepresentationSuccessor next = [&]() {
+      wafer::support::ScopedCompileTimingSpan timing(
+          "query", "physical-search", "advance-representation-domain");
+      return continuation.rawStarted
+                 ? lookup.domain->getNextPlan(*continuation.cursor)
+                 : lookup.domain->getFirstPlan();
+    }();
     if (next.getKind() == RepresentationSuccessorKind::End) {
       continuation.exhausted = true;
       continuation.cursor.reset();
@@ -1137,7 +1279,11 @@ MovementExpansionResult PhysicalDataflowPlanningSession::resumeMovement(
   };
   if (!continuation.rawStarted) {
     ++work.movementSuccessorSteps;
-    MovementSuccessor first = lookup.domain->getFirstPlan();
+    MovementSuccessor first = [&]() {
+      wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                     "advance-movement-domain");
+      return lookup.domain->getFirstPlan();
+    }();
     if (first.getKind() == MovementSuccessorKind::End) {
       continuation.exhausted = true;
       return MovementExpansionResult{MovementExpansionKind::ParentExhausted};
@@ -1155,7 +1301,11 @@ MovementExpansionResult PhysicalDataflowPlanningSession::resumeMovement(
     return makeState(*first.getPlan());
   }
   if (!continuation.proposalsInitialized) {
-    continuation.proposals = lookup.domain->getProposals();
+    continuation.proposals = [&]() {
+      wafer::support::ScopedCompileTimingSpan timing(
+          "query", "physical-search", "build-movement-proposals");
+      return lookup.domain->getProposals();
+    }();
     continuation.proposalsInitialized = true;
   }
   while (continuation.nextProposal < continuation.proposals.size()) {
@@ -1168,7 +1318,11 @@ MovementExpansionResult PhysicalDataflowPlanningSession::resumeMovement(
   }
   while (true) {
     ++work.movementSuccessorSteps;
-    MovementSuccessor next = lookup.domain->getNextPlan(*continuation.cursor);
+    MovementSuccessor next = [&]() {
+      wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                     "advance-movement-domain");
+      return lookup.domain->getNextPlan(*continuation.cursor);
+    }();
     if (next.getKind() == MovementSuccessorKind::End) {
       continuation.exhausted = true;
       continuation.cursor.reset();
@@ -1216,9 +1370,13 @@ StorageExpansionResult PhysicalDataflowPlanningSession::resumeStorage(
             std::move(lookup.failure->detail)};
   }
   ++work.storageSuccessorSteps;
-  StorageSuccessor next = continuation.started
-                              ? lookup.domain->getNextPlan(*continuation.cursor)
-                              : lookup.domain->getFirstPlan();
+  StorageSuccessor next = [&]() {
+    wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                   "advance-storage-domain");
+    return continuation.started
+               ? lookup.domain->getNextPlan(*continuation.cursor)
+               : lookup.domain->getFirstPlan();
+  }();
   if (next.getKind() == StorageSuccessorKind::End) {
     continuation.exhausted = true;
     continuation.cursor.reset();
@@ -1267,9 +1425,13 @@ PhysicalDataflowPlanningSession::resumeExecutionStructure(
     return mlir::failure();
   }
   ++work.executionStructureSuccessorSteps;
-  ExecutionStructureSuccessor next =
-      continuation.started ? domain.domain->getNextPlan(*continuation.cursor)
-                           : domain.domain->getFirstPlan();
+  ExecutionStructureSuccessor next = [&]() {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "query", "physical-search", "advance-execution-structure-domain");
+    return continuation.started
+               ? domain.domain->getNextPlan(*continuation.cursor)
+               : domain.domain->getFirstPlan();
+  }();
   if (next.getKind() == ExecutionStructureSuccessorKind::End) {
     continuation.exhausted = true;
     continuation.cursor.reset();
@@ -1322,9 +1484,13 @@ PhysicalDataflowPlanningSession::resumeStructureSpecificStorage(
     return mlir::failure();
   }
   ++work.structureSpecificStorageSuccessorSteps;
-  StructureSpecificStorageSuccessor next =
-      continuation.started ? domain.domain->getNextPlan(*continuation.cursor)
-                           : domain.domain->getFirstPlan();
+  StructureSpecificStorageSuccessor next = [&]() {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "query", "physical-search", "advance-structure-storage-domain");
+    return continuation.started
+               ? domain.domain->getNextPlan(*continuation.cursor)
+               : domain.domain->getFirstPlan();
+  }();
   if (next.getKind() == StructureSpecificStorageSuccessorKind::End) {
     continuation.exhausted = true;
     continuation.cursor.reset();
@@ -1377,9 +1543,13 @@ PhysicalDataflowPlanningSession::resumeSchedule(
     return mlir::failure();
   }
   ++work.scheduleSuccessorSteps;
-  ScheduleSuccessor next =
-      continuation.started ? domain.domain->getNextPlan(*continuation.cursor)
-                           : domain.domain->getFirstPlan();
+  ScheduleSuccessor next = [&]() {
+    wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                   "advance-schedule-domain");
+    return continuation.started
+               ? domain.domain->getNextPlan(*continuation.cursor)
+               : domain.domain->getFirstPlan();
+  }();
   if (next.getKind() == ScheduleSuccessorKind::End) {
     continuation.exhausted = true;
     continuation.cursor.reset();
@@ -1617,101 +1787,6 @@ PhysicalDataflowPlanningSession::getFirstIncompleteState(
 bool PhysicalDataflowPlanningSession::hasRemainingSpatialWork() const {
   return canonicalCursor != CanonicalCursor::Exhausted ||
          pausedSpatialChoice.has_value() || !frontier.empty();
-}
-
-FullFeasibilityResult PhysicalDataflowPlanningSession::evaluateScheduledState(
-    mlir::ModuleOp tensorProgram, const ScheduledState &state,
-    const frontend::FrontendProgramVerificationResult &program,
-    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-    ProgramDataHandoff &programData, FullFeasibilityStatistics *statistics,
-    unsigned tilePipelineParallelism, bool captureTileDataflowIRTrace) {
-  if (statistics)
-    *statistics = {};
-  auto contractFailure = [](llvm::StringRef detail) {
-    return FullFeasibilityResult{
-        FullFeasibilityStatus::CompilerBug, {}, {}, detail.str()};
-  };
-  const ExecutionStructureState &structure =
-      state.getBufferState().getExecutionStructureState();
-  const InitialBufferState &initial = structure.getInitialBufferState();
-  const MovementState &movement = initial.getMovementState();
-  const RepresentationState &representations =
-      movement.getRepresentationState();
-  const TemporalState &temporal = representations.getTemporalState();
-  const RegionState &region = temporal.getRegionState();
-  std::string detail;
-  auto regionDomain =
-      getOrCreateRegionDomain(region.getSpatialState(), &detail);
-  if (mlir::failed(regionDomain) ||
-      !(*regionDomain)->contains(region.getRegionPlan()))
-    return contractFailure(
-        detail.empty() ? "actual evaluation lost its region domain" : detail);
-  TemporalDomainLookup temporalDomain = getOrCreateTemporalDomain(region);
-  if (!temporalDomain.domain ||
-      !temporalDomain.domain->contains(temporal.getTemporalPlan()))
-    return contractFailure(temporalDomain.failure
-                               ? temporalDomain.failure->detail
-                               : "actual evaluation lost its temporal domain");
-  RepresentationDomainLookup representationDomain =
-      getOrCreateRepresentationDomain(temporal);
-  if (!representationDomain.domain ||
-      !representationDomain.domain->contains(
-          representations.getRepresentationPlan()))
-    return contractFailure(
-        representationDomain.failure
-            ? representationDomain.failure->detail
-            : "actual evaluation lost its representation domain");
-  MovementDomainLookup movementDomain =
-      getOrCreateMovementDomain(representations);
-  if (!movementDomain.domain ||
-      !movementDomain.domain->contains(movement.getMovementPlan()))
-    return contractFailure(movementDomain.failure
-                               ? movementDomain.failure->detail
-                               : "actual evaluation lost its movement domain");
-  StorageDomainLookup storageDomain = getOrCreateStorageDomain(movement);
-  if (!storageDomain.domain ||
-      !storageDomain.domain->contains(initial.getBufferPlan()))
-    return contractFailure(storageDomain.failure
-                               ? storageDomain.failure->detail
-                               : "actual evaluation lost its storage domain");
-  EventGraphLookup eventGraph = getOrCreateEventGraph(initial);
-  if (!eventGraph.graph)
-    return contractFailure(eventGraph.failure
-                               ? eventGraph.failure->detail
-                               : "full feasibility lost its EventGraph");
-  ExecutionStructureDomainLookup structureDomain =
-      getOrCreateExecutionStructureDomain(initial, *eventGraph.graph);
-  if (!structureDomain.domain ||
-      !structureDomain.domain->contains(structure.getExecutionStructurePlan()))
-    return contractFailure(
-        structureDomain.failure
-            ? structureDomain.failure->detail
-            : "actual evaluation lost its execution-structure domain");
-  StructureSpecificStorageDomainLookup fixedStorage =
-      getOrCreateStructureSpecificStorage(structure, *eventGraph.graph);
-  if (!fixedStorage.domain ||
-      !fixedStorage.domain->contains(state.getBufferPlan()))
-    return contractFailure(
-        fixedStorage.failure ? fixedStorage.failure->detail
-                             : "full feasibility lost fixed-structure storage");
-  ScheduleDomainLookup scheduleDomain =
-      getOrCreateScheduleDomain(state.getBufferState(), *eventGraph.graph);
-  if (!scheduleDomain.domain ||
-      !scheduleDomain.domain->contains(state.getSchedulePlan()))
-    return contractFailure(scheduleDomain.failure
-                               ? scheduleDomain.failure->detail
-                               : "actual evaluation lost its schedule domain");
-  ++work.fullFeasibilityEvaluations;
-  FullFeasibilityStatistics localStatistics;
-  FullFeasibilityStatistics *evaluationStatistics =
-      statistics ? statistics : &localStatistics;
-  FullFeasibilityResult evaluated = evaluateCompleteCandidate(
-      tensorProgram, problem, state, *eventGraph.graph,
-      fixedStorage.domain->getLifetimeRequirements(), program, executionConfig,
-      diagnostics, programData, evaluationStatistics, tilePipelineParallelism,
-      captureTileDataflowIRTrace);
-  work.candidateActualizations += evaluationStatistics->candidateActualizations;
-  return evaluated;
 }
 
 } // namespace wafer::compiler::detail

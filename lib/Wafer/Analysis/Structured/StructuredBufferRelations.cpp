@@ -128,6 +128,28 @@ collectOperationBufferValues(mlir::Operation *operation) {
   return values;
 }
 
+static llvm::SmallVector<mlir::Value, 4>
+collectOperationDefinedBufferValues(mlir::Operation *operation) {
+  llvm::SmallVector<mlir::Value, 4> values;
+  if (!operation)
+    return values;
+  auto append = [&](mlir::Value value) {
+    if (value && mlir::isa<mlir::BaseMemRefType>(value.getType()) &&
+        !llvm::is_contained(values, value))
+      values.push_back(value);
+  };
+  for (mlir::Value result : operation->getResults())
+    append(result);
+  if (auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation)) {
+    llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 4> instances;
+    effects.getEffects(instances);
+    for (const auto &instance : instances)
+      if (mlir::isa<mlir::MemoryEffects::Write>(instance.getEffect()))
+        append(instance.getValue());
+  }
+  return values;
+}
+
 struct StructuredBufferOwners {
   llvm::SmallVector<uint32_t, 4> nodes;
   llvm::SmallVector<unsigned, 2> outputs;
@@ -150,65 +172,51 @@ static StructuredBufferOwners collectBufferOwnersUsedByOperation(
        relations.operationEmissions)
     if (relation.operation == operation)
       owners.nodes.push_back(relation.structuredNodeId);
-  if (owners.nodes.empty()) {
-    llvm::SmallVector<uint32_t, 4> bufferNodes =
-        collectStructuredNodesUsedByOperation(operation, relations);
-    owners.nodes.append(bufferNodes.begin(), bufferNodes.end());
-  }
-
   StorageRootMemo memo;
-  llvm::SmallVector<mlir::Value, 8> values =
-      collectOperationBufferValues(operation);
+  llvm::SmallVector<mlir::Value, 4> values =
+      collectOperationDefinedBufferValues(operation);
+  if (mlir::isa<mlir::memref::CopyOp>(operation)) {
+    llvm::SmallVector<mlir::Value, 8> copyValues =
+        collectOperationBufferValues(operation);
+    values.assign(copyValues.begin(), copyValues.end());
+  }
+  auto collectNodeOwners = [&](const auto &entries) {
+    for (const auto &relation : entries)
+      if (llvm::any_of(values, [&](mlir::Value value) {
+            return shareStructuredBufferStorage(value, relation.buffer, memo);
+          }))
+        owners.nodes.push_back(relation.structuredNodeId);
+  };
+  if (owners.nodes.empty())
+    collectNodeOwners(relations.operationResultBuffers);
+  if (owners.nodes.empty())
+    collectNodeOwners(relations.operandBuffers);
+  if (owners.nodes.empty())
+    collectNodeOwners(relations.scratchBuffers);
+  if (owners.nodes.empty())
+    for (mlir::Value value : values) {
+      auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
+      auto function =
+          argument ? mlir::dyn_cast<mlir::func::FuncOp>(
+                         argument.getOwner()->getParentOp())
+                   : mlir::func::FuncOp{};
+      if (!function || argument.getOwner() != &function.getBody().front())
+        continue;
+      auto binding = function.getArgAttrOfType<CardDDRBindingAttr>(
+          argument.getArgNumber(), kWaferCardDDRBindingAttrName);
+      if (!binding)
+        continue;
+      for (const CardDDRTransferRelation &transfer :
+           relations.cardDDRTransfers)
+        if (transfer.resourceId == binding.getResourceId()) {
+          owners.nodes.push_back(transfer.producerNodeId);
+        }
+    }
   for (const SpatialOutputBufferRelation &relation : relations.outputBuffers)
     if (llvm::any_of(values, [&](mlir::Value value) {
           return shareStructuredBufferStorage(value, relation.buffer, memo);
         }))
       owners.outputs.push_back(relation.outputIndex);
-  owners.normalize();
-  return owners;
-}
-
-static StructuredBufferOwners collectOwnersInTileDataflowComponent(
-    mlir::Operation *seed,
-    const StructuredMaterializationRelations &relations) {
-  StructuredBufferOwners owners;
-  struct WorkItem {
-    mlir::Operation *operation = nullptr;
-    unsigned distance = 0;
-  };
-  llvm::SmallVector<WorkItem, 16> worklist;
-  llvm::DenseSet<mlir::Operation *> visited;
-  if (seed)
-    worklist.push_back({seed, 0});
-  std::optional<unsigned> ownerDistance;
-  for (size_t index = 0; index < worklist.size(); ++index) {
-    WorkItem item = worklist[index];
-    if (ownerDistance && item.distance > *ownerDistance)
-      break;
-    mlir::Operation *operation = item.operation;
-    if (!operation || !visited.insert(operation).second)
-      continue;
-    StructuredBufferOwners current =
-        collectBufferOwnersUsedByOperation(operation, relations);
-    if (!current.empty()) {
-      ownerDistance = item.distance;
-      owners.nodes.append(current.nodes.begin(), current.nodes.end());
-      owners.outputs.append(current.outputs.begin(), current.outputs.end());
-      continue;
-    }
-
-    for (mlir::Value value : collectOperationBufferValues(operation)) {
-      auto enqueue = [&](mlir::Operation *candidate) {
-        if (candidate && (mlir::isa<WaferTileDataflowOpInterface>(candidate) ||
-                          mlir::isa<WaferInstructionOpInterface>(candidate) ||
-                          mlir::isa<mlir::ViewLikeOpInterface>(candidate)))
-          worklist.push_back({candidate, item.distance + 1});
-      };
-      enqueue(value.getDefiningOp());
-      for (mlir::Operation *user : value.getUsers())
-        enqueue(user);
-    }
-  }
   owners.normalize();
   return owners;
 }
@@ -322,18 +330,28 @@ void StructuredBufferReplacementListener::recordScratchAllocation(
     mlir::Operation *sourceOperation, mlir::Value allocation) {
   StructuredBufferOwners owners =
       collectBufferOwnersUsedByOperation(sourceOperation, impl->relations);
-  if (owners.empty())
-    owners =
-        collectOwnersInTileDataflowComponent(sourceOperation, impl->relations);
   if (owners.empty() || !allocation ||
       !isWaferSPMMemRefType(allocation.getType())) {
     impl->preservedAll = false;
     if (impl->failureReason.empty()) {
       llvm::raw_string_ostream diagnostic(impl->failureReason);
       diagnostic << "lowering scratch allocation has no typed owner; source=";
-      if (sourceOperation)
+      if (sourceOperation) {
         diagnostic << sourceOperation->getName();
-      else
+        diagnostic << "; source_ir=";
+        sourceOperation->print(
+            diagnostic, mlir::OpPrintingFlags().skipRegions());
+        diagnostic << "; result_users=[";
+        bool first = true;
+        for (mlir::Value result : sourceOperation->getResults())
+          for (mlir::Operation *user : result.getUsers()) {
+            if (!first)
+              diagnostic << ',';
+            first = false;
+            diagnostic << user->getName();
+          }
+        diagnostic << ']';
+      } else
         diagnostic << "<null>";
     }
     return;
@@ -370,9 +388,6 @@ void StructuredBufferReplacementListener::recordLoweredOperation(
     mlir::Operation *sourceOperation, mlir::Operation *loweredOperation) {
   StructuredBufferOwners owners =
       collectBufferOwnersUsedByOperation(sourceOperation, impl->relations);
-  if (owners.empty())
-    owners =
-        collectOwnersInTileDataflowComponent(sourceOperation, impl->relations);
   if (owners.nodes.empty())
     return;
   if (!loweredOperation) {
@@ -546,6 +561,11 @@ StructuredMaterializationRelations
 remapStructuredBufferRelations(const StructuredMaterializationRelations &source,
                                const mlir::IRMapping &mapping) {
   StructuredMaterializationRelations result;
+  for (const StructuredOperationEmissionRelation &entry :
+       source.operationEmissions)
+    if (mlir::Operation *mapped = mapping.lookupOrNull(entry.operation))
+      result.operationEmissions.push_back(
+          {entry.structuredNodeId, mapped});
   llvm::SmallVectorImpl<StructuredOperationResultBufferRelation>
       *noUnmappedResults = nullptr;
   llvm::SmallVectorImpl<StructuredOperationBufferRelation> *noUnmappedOps =
@@ -567,6 +587,7 @@ remapStructuredBufferRelations(const StructuredMaterializationRelations &source,
       mapping, result.outputBuffers, noUnmappedOutputs);
   appendRemapped(llvm::ArrayRef<CardDDRBufferRelation>(source.cardDDRBuffers),
                  mapping, result.cardDDRBuffers, noUnmappedCardDDR);
+  result.cardDDRTransfers = source.cardDDRTransfers;
   return result;
 }
 
@@ -594,6 +615,10 @@ StructuredMaterializationRelations scopeStructuredBufferRelations(
     return entry.buffer && inScope.contains(entry.buffer.getAsOpaquePointer());
   };
   StructuredMaterializationRelations result;
+  for (const StructuredOperationEmissionRelation &entry :
+       relations.operationEmissions)
+    if (entry.operation && root->isAncestor(entry.operation))
+      result.operationEmissions.push_back(entry);
   for (const auto &entry : relations.operationResultBuffers)
     if (inScopeEntry(entry))
       result.operationResultBuffers.push_back(entry);
@@ -609,6 +634,7 @@ StructuredMaterializationRelations scopeStructuredBufferRelations(
   for (const auto &entry : relations.cardDDRBuffers)
     if (inScopeEntry(entry))
       result.cardDDRBuffers.push_back(entry);
+  result.cardDDRTransfers = relations.cardDDRTransfers;
   return result;
 }
 
@@ -620,6 +646,13 @@ remapStructuredBufferRelationsComplete(
   StructuredRelationRemapIssue &reported = issue ? *issue : localIssue;
   reported = {};
   StructuredMaterializationRelations result;
+  for (const StructuredOperationEmissionRelation &entry :
+       source.operationEmissions)
+    if (mlir::Operation *mapped = mapping.lookupOrNull(entry.operation))
+      result.operationEmissions.push_back(
+          {entry.structuredNodeId, mapped});
+    else
+      reported.unmappedOperationEmissions.push_back(entry);
   appendRemapped<StructuredOperationResultBufferRelation>(
       source.operationResultBuffers, mapping, result.operationResultBuffers,
       &reported.unmappedResultBuffers);
@@ -635,6 +668,7 @@ remapStructuredBufferRelationsComplete(
   appendRemapped(llvm::ArrayRef<CardDDRBufferRelation>(source.cardDDRBuffers),
                  mapping, result.cardDDRBuffers,
                  &reported.unmappedCardDDRBuffers);
+  result.cardDDRTransfers = source.cardDDRTransfers;
   if (!reported.empty())
     return mlir::failure();
   return result;

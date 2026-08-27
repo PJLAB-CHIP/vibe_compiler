@@ -70,7 +70,6 @@ mlir::LogicalResult recloseCanonicalBaselinePlan(CanonicalBaselinePlan &plan,
           "canonical representation plan is not available");
     return mlir::failure();
   }
-
   CanonicalMovementPlanOutcome movementOutcome = buildCanonicalMovementPlan(
       plan.regions, *representations, plan.rootWorks);
   const CanonicalMovementCoordinate *movements =
@@ -124,7 +123,8 @@ mlir::LogicalResult recloseCanonicalBaselinePlan(CanonicalBaselinePlan &plan,
   }
 
   CanonicalAttentionWorkProjectionOutcome attentionOutcome =
-      buildCanonicalAttentionWorkProjection(plan.rootWorks, *representations,
+      buildCanonicalAttentionWorkProjection(plan.rootWorks,
+                                            *representations,
                                             *movements, *residentStorage,
                                             *schedule, &plan.temporal);
   const CanonicalAttentionWorkCoordinate *attention =
