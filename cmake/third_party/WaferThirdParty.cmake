@@ -11,6 +11,10 @@ set(WAFER_LLVM_BUILD_DIR "${CMAKE_SOURCE_DIR}/build/third_party/llvm-project-${_
   "Build directory for the pinned LLVM/MLIR source tree, used for tools not installed by LLVM")
 set(WAFER_MINIMALLOC_SOURCE_DIR "${WAFER_DEPS_ROOT}/minimalloc" CACHE PATH
   "Wafer-curated MiniMalloc fixed-capacity solver source")
+set(WAFER_EGG_SOURCE_DIR "${WAFER_DEPS_ROOT}/egg" CACHE PATH
+  "Pinned upstream egg checkout")
+set(WAFER_RUST_VENDOR_DIR "${WAFER_DEPS_ROOT}/rust-vendor" CACHE PATH
+  "Bootstrap-managed Cargo directory source for locked Rust dependencies")
 option(WAFER_ALLOW_UNPINNED_LLVM
   "Allow an LLVM/MLIR package with the right major version but not the exact pinned package version" OFF)
 option(WAFER_ENABLE_IMPORTER_DEPS
@@ -166,6 +170,7 @@ list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}" "${MLIR_CMAKE_DIR}")
 include(AddLLVM)
 include(AddMLIR)
 include(TableGen)
+include(HandleLLVMOptions)
 
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
@@ -296,4 +301,114 @@ function(wafer_add_minimalloc)
     "${WAFER_MINIMALLOC_SOURCE_DIR}"
     "${CMAKE_BINARY_DIR}/third_party/minimalloc"
     EXCLUDE_FROM_ALL)
+endfunction()
+
+function(wafer_add_structured_egraph)
+  if(TARGET WaferThirdPartyStructuredEGraph)
+    return()
+  endif()
+
+  set(_wafer_egraph_crate
+    "${CMAKE_SOURCE_DIR}/lib/Wafer/Conversion/StableHLOToLinalg/EGraphCore")
+  set(_wafer_egraph_manifest "${_wafer_egraph_crate}/Cargo.toml")
+  set(_wafer_egraph_lock "${_wafer_egraph_crate}/Cargo.lock")
+  set(_wafer_egraph_vendor_record
+    "${WAFER_RUST_VENDOR_DIR}/wafer-egraph-deps.json")
+  if(NOT EXISTS "${WAFER_EGG_SOURCE_DIR}/Cargo.toml" OR
+     NOT EXISTS "${WAFER_EGG_SOURCE_DIR}/LICENSE")
+    message(FATAL_ERROR
+      "The pinned egg source is missing at ${WAFER_EGG_SOURCE_DIR}. "
+      "Run tools/bootstrap_deps.py --egraph-sources.")
+  endif()
+  if(NOT EXISTS "${_wafer_egraph_manifest}" OR
+     NOT EXISTS "${_wafer_egraph_lock}")
+    message(FATAL_ERROR "The Wafer structured e-graph Cargo crate is incomplete")
+  endif()
+  if(NOT EXISTS "${_wafer_egraph_vendor_record}")
+    message(FATAL_ERROR
+      "Locked Rust vendor sources are missing at ${WAFER_RUST_VENDOR_DIR}. "
+      "Run tools/bootstrap_deps.py --egraph-sources.")
+  endif()
+
+  file(SHA256 "${_wafer_egraph_lock}" _wafer_egraph_lock_sha256)
+  file(READ "${_wafer_egraph_vendor_record}" _wafer_egraph_vendor_json)
+  string(JSON _wafer_egraph_vendor_status ERROR_VARIABLE _wafer_egraph_json_error
+    GET "${_wafer_egraph_vendor_json}" status)
+  string(JSON _wafer_egraph_vendor_commit ERROR_VARIABLE _wafer_egraph_json_error
+    GET "${_wafer_egraph_vendor_json}" egg_commit)
+  string(JSON _wafer_egraph_vendor_lock ERROR_VARIABLE _wafer_egraph_json_error
+    GET "${_wafer_egraph_vendor_json}" cargo_lock_sha256)
+  if(_wafer_egraph_json_error OR
+     NOT _wafer_egraph_vendor_status STREQUAL "complete" OR
+     NOT _wafer_egraph_vendor_commit STREQUAL WAFER_EGG_COMMIT OR
+     NOT _wafer_egraph_vendor_lock STREQUAL _wafer_egraph_lock_sha256)
+    message(FATAL_ERROR
+      "The Rust vendor source does not match the pinned egg/Cargo lock. "
+      "Run tools/bootstrap_deps.py --egraph-sources.")
+  endif()
+
+  find_program(WAFER_CARGO_EXECUTABLE NAMES cargo REQUIRED)
+  find_program(WAFER_RUSTC_EXECUTABLE NAMES rustc REQUIRED)
+  execute_process(
+    COMMAND "${WAFER_RUSTC_EXECUTABLE}" --version
+    OUTPUT_VARIABLE _wafer_rustc_version
+    RESULT_VARIABLE _wafer_rustc_result
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if(NOT _wafer_rustc_result EQUAL 0 OR
+     NOT _wafer_rustc_version MATCHES "^rustc ([0-9]+)\\.([0-9]+)")
+    message(FATAL_ERROR "rustc is present but its version cannot be read")
+  endif()
+  if(CMAKE_MATCH_1 LESS 1 OR
+     (CMAKE_MATCH_1 EQUAL 1 AND CMAKE_MATCH_2 LESS 82))
+    message(FATAL_ERROR
+      "Wafer structured e-graph requires rustc 1.82 or newer; found "
+      "${_wafer_rustc_version}")
+  endif()
+
+  set(_wafer_egraph_cargo_home
+    "${CMAKE_BINARY_DIR}/third_party/structured-egraph/cargo-home")
+  set(_wafer_egraph_target_dir
+    "${CMAKE_BINARY_DIR}/third_party/structured-egraph/target")
+  file(MAKE_DIRECTORY "${_wafer_egraph_cargo_home}")
+  file(TO_CMAKE_PATH "${WAFER_RUST_VENDOR_DIR}" _wafer_rust_vendor_toml)
+  file(WRITE "${_wafer_egraph_cargo_home}/config.toml"
+    "[source.crates-io]\n"
+    "replace-with = \"wafer-vendored\"\n\n"
+    "[source.wafer-vendored]\n"
+    "directory = \"${_wafer_rust_vendor_toml}\"\n\n"
+    "[net]\n"
+    "offline = true\n")
+
+  set(_wafer_egraph_library
+    "${_wafer_egraph_target_dir}/release/libwafer_structured_egraph.a")
+  file(GLOB_RECURSE _wafer_egraph_adapter_sources CONFIGURE_DEPENDS
+    "${_wafer_egraph_crate}/src/*.rs")
+  file(GLOB_RECURSE _wafer_egg_sources CONFIGURE_DEPENDS
+    "${WAFER_EGG_SOURCE_DIR}/src/*.rs")
+  add_custom_command(
+    OUTPUT "${_wafer_egraph_library}"
+    COMMAND "${CMAKE_COMMAND}" -E env
+      "CARGO_HOME=${_wafer_egraph_cargo_home}"
+      "CARGO_TARGET_DIR=${_wafer_egraph_target_dir}"
+      "CARGO_NET_OFFLINE=true"
+      "${WAFER_CARGO_EXECUTABLE}" build
+      --manifest-path "${_wafer_egraph_manifest}"
+      --release --locked --offline
+    DEPENDS
+      ${_wafer_egraph_adapter_sources}
+      ${_wafer_egg_sources}
+      "${_wafer_egraph_manifest}"
+      "${_wafer_egraph_lock}"
+      "${WAFER_EGG_SOURCE_DIR}/Cargo.toml"
+      "${_wafer_egraph_vendor_record}"
+    WORKING_DIRECTORY "${_wafer_egraph_crate}"
+    VERBATIM)
+  add_custom_target(WaferStructuredEGraphBuild
+    DEPENDS "${_wafer_egraph_library}")
+  add_library(WaferThirdPartyStructuredEGraph STATIC IMPORTED GLOBAL)
+  set_target_properties(WaferThirdPartyStructuredEGraph PROPERTIES
+    IMPORTED_LOCATION "${_wafer_egraph_library}"
+    INTERFACE_LINK_LIBRARIES
+      "util;rt;pthread;m;${CMAKE_DL_LIBS}")
+  add_dependencies(WaferThirdPartyStructuredEGraph WaferStructuredEGraphBuild)
 endfunction()

@@ -16,3 +16,6 @@
 [submodule "third_party/pytorch-xla"]
 	path = third_party/pytorch-xla
 	url = https://github.com/pytorch/xla.git
+[submodule "third_party/egg"]
+	path = third_party/egg
+	url = https://github.com/egraphs-good/egg.git

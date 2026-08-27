@@ -22,6 +22,7 @@ set(WAFER_GOOGLETEST_REPOSITORY "https://github.com/google/googletest.git")
 set(WAFER_PYTORCH_VERSION "2.5.0")
 set(WAFER_TORCHVISION_VERSION "0.20.0")
 set(WAFER_TORCH_XLA_PYTHON_VERSION "2.5.0")
+set(WAFER_IMPORTER_PYTHON_MAJOR_MINOR "3.11")
 set(WAFER_PYTORCH_XLA_COMMIT "396608c7105b3763874fe3800dfabdfa2b38a28a")
 set(WAFER_PYTORCH_XLA_REPOSITORY "https://github.com/pytorch/xla.git")
 set(WAFER_BAZEL_VERSION "6.5.0")
@@ -34,6 +35,13 @@ set(WAFER_PYTHON_LIT_VERSION "18.1.8")
 # C++17 core port from this exact upstream commit; CMake never fetches it.
 set(WAFER_MINIMALLOC_COMMIT "9f5cf810fec4494df473c23cffd0567989e81b69")
 set(WAFER_MINIMALLOC_REPOSITORY "https://github.com/google/minimalloc.git")
+
+# Request-local equality saturation core.  The Wafer adapter is built as a
+# Rust static library with Cargo locked and offline; this source checkout is
+# never invoked as an external compiler process.
+set(WAFER_EGG_VERSION "0.11.0")
+set(WAFER_EGG_COMMIT "fb6167957beb5dd7c784121459e08ebd1ccb1a00")
+set(WAFER_EGG_REPOSITORY "https://github.com/egraphs-good/egg.git")
 
 # Functional-numeric model dependencies.  These are source archive pins rather
 # than host package/SONAME requirements.  CMake never downloads these archives;

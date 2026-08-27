@@ -25,12 +25,12 @@ module {
 
 // CHECK-LABEL: func.func @linear_residual
 // CHECK-NOT: stablehlo.
-// CHECK: linalg.matmul
-// CHECK: linalg.generic
-// CHECK-SAME: ins(%arg2 : tensor<16xf32>)
-// CHECK: linalg.generic
+// CHECK: %[[LINEAR:.+]] = linalg.matmul
+// CHECK: %[[BIASED:.+]] = linalg.generic
+// CHECK-SAME: ins(%[[LINEAR]], %arg2 : tensor<4x16xf32>, tensor<16xf32>)
 // CHECK: arith.addf
 // CHECK: linalg.generic
+// CHECK-SAME: ins(%[[BIASED]], %arg3 : tensor<4x16xf32>, tensor<4x16xf32>)
 // CHECK: arith.addf
 // CHECK-NOT: wafer.
 // CHECK: return %{{.+}} : tensor<4x16xf32>

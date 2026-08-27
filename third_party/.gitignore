@@ -8,6 +8,8 @@
 !xla
 !xla/
 !googletest/
+!egg
+!egg/
 !minimalloc/
 !minimalloc/**
 !tx8_deps/

@@ -15,12 +15,14 @@ third_party/
   pytorch-xla/           # PyTorch/XLA git submodule; source of truth for the frontend XLA version
   googletest/            # googletest git submodule for unit-test fallback
   minimalloc/            # audited source-derived C++17 MiniMalloc core port
+  egg/                   # pinned upstream Rust e-graph implementation
+  rust-vendor/           # bootstrap-managed Cargo directory source for locked Rust dependencies
   tx8_deps/              # vendored TX8 headers, static libraries, RTOS evidence, and Xuantie RISC-V GCC toolchain
   numeric-model/         # managed SoftFloat/TestFloat/m4/GMP/MPFR source, build, install, and conformance record
   bulk-model/            # managed oneDNN source, build, install, and conformance record
   systemc-model/         # managed Accellera SystemC source, build, install, and conformance record
   python/                # fixed-version Python test-tool venv
-  python-importer/       # importer Python env with torch and a usable torch_xla runtime
+  python-importer/       # canonical Python 3.11 importer env with torch and source-built torch_xla
   downloads/             # resumable downloaded archives
 ```
 
@@ -43,8 +45,9 @@ Dependency classes:
 | --- | --- | --- |
 | core compiler | LLVM/MLIR | git submodule under `third_party/llvm-project`; build/install it and pass `MLIR_DIR`/`LLVM_DIR` or use `WAFER_LLVM_INSTALL_DIR` |
 | static memory packing | MiniMalloc | audited Apache-2.0 source-derived C++17 core port under `third_party/minimalloc`; fixed-capacity solver only, built offline as a hidden non-exported target |
+| structured graph normalization | egg | exact git submodule under `third_party/egg`; the Wafer-owned adapter uses a committed Cargo lock and bootstrap-managed directory source, and CMake builds it locked/offline as a hidden static library |
 | input dialect / SPMD | StableHLO, Shardy, OpenXLA/XLA | git submodules under `third_party/stablehlo`, `third_party/shardy`, and `third_party/xla`; XLA is selected by the PyTorch/XLA `WORKSPACE` `xla_hash`; LLVM/StableHLO versions match XLA, and Shardy must contain XLA's Shardy base commit while using the same lower stack |
-| frontend importer | PyTorch/XLA source, torch/torchvision, `torch_xla` runtime | `third_party/pytorch-xla` fixes the framework importer source version and may be built/installed to produce the importable `torch_xla` package plus `_XLAC` extension; `requirements-importer.txt` fixes the prebuilt-wheel route when compatible wheels exist; current Wafer core code does not call `torch_xla` |
+| frontend importer | PyTorch/XLA source, torch/torchvision, `torch_xla` runtime | `third_party/pytorch-xla` fixes the framework importer source version and may be built/installed to produce the importable `torch_xla` package plus `_XLAC` extension; the current `_XLAC` contract pins Python 3.11 and `requirements-importer.txt` fixes the matching Python packages; current Wafer core code does not call `torch_xla` |
 | device code link | TX8 deps, Xuantie RISC-V GCC, Wafer CRT source | `third_party/tx8_deps` is vendored and is the default root for TX8 headers, `libcommon_util.a`, `libinstr_tx81.a`, `liblibc_stub.a`, sysroot, `riscv64-unknown-elf-gcc`, `riscv64-unknown-elf-objcopy`, and `riscv64-unknown-elf-nm`; Wafer-owned CRT symbols are built from `runtime/wafer_crt` during device linking |
 | functional numeric model | SoftFloat/TestFloat, GNU m4, GMP, MPFR | `tools/bootstrap_deps.py --numeric-model-deps` owns `third_party/numeric-model`; CMake consumes only its validated canonical record and imported targets |
 | bulk functional model | oneDNN | `tools/bootstrap_deps.py --bulk-model-deps` owns `third_party/bulk-model`; CMake consumes only its validated canonical record and `WaferBulk::oneDNN` |

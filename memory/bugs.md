@@ -1342,3 +1342,26 @@
 - 防复发：rank-3 1024/1025 producer→shared Card DDR→consumer case在bufferization前断言current result链、之后断言冗余copy为0；
   1/2/15-use layout case覆盖只读共享，并用intervening alias write反例证明不复用。不能用CSE、copy lowering或copy-only TileRegion掩盖
   错误的current-value串接。
+
+## Structured component重建必须使用一个拓扑一致的insertion boundary
+
+- 现象：小型reshape/transpose case通过，但fresh HF component在rewrite后出现前序`linalg.generic`读取后面才定义的Access；e-graph
+  rule统计和type verifier均正常，最终function verifier报告dominance failure。
+- 根因：materializer把Access/Concat插在component root前，却把Compute插回各自旧recipe位置。Extracted expression本身是拓扑有序的，
+  分散insertion point后却把较晚创建的Access反向接给较早Compute。为回滚而clone整个Func不能修复这个错误，也不是普通graph pass所需。
+- 修复模式：e-graph和全部relation/type/map/downstream检查保持只读；首次mutation前preflight完整extraction。随后按extracted拓扑把所有
+  新Tensor/Linalg op统一插在旧root前，旧root保持不动，完整后一次`replaceOp`。创建失败只逆序擦除本component本轮插入的顶层op；不clone
+  Module、Func或DAG。复制原`linalg.generic`的scalar region只用于新op实际继承计算语义。
+- 防复发：除1024/1025/1031 focused chain外，必须用fresh长HF graph运行`verify-each`并比较input/output op分布；测试要包含Access位于
+  多个Compute之间的长链。禁止按recipe location分散物化extracted DAG，也不能用关闭verifier或whole-function clone掩盖dominance错误。
+
+## Wafer与pinned LLVM必须使用一致的assertion ABI
+
+- 现象：Release Wafer在析构包含`llvm::Statistic`的pass时出现内存破坏；相同源码的局部逻辑和Debug运行正常，调用栈落在与本次变换无关的
+  pass storage。
+- 根因：pinned LLVM以assertions enabled构建，而Wafer Release单独定义`NDEBUG`。LLVM headers中的assertion-sensitive class layout与已链接
+  library不一致，形成跨库C++ ABI mismatch。
+- 修复模式：加载pinned LLVM/MLIR CMake package后包含`HandleLLVMOptions`，让Wafer target继承同一assertion compile flags；不能在单个
+  source或测试上局部增删`NDEBUG`修补症状。
+- 防复发：fresh Release compile command必须与pinned LLVM assertion配置一致，并运行至少一个创建/销毁pass statistics的linked smoke。
+  遇到跨pass随机析构损坏时先比较LLVM package flags和consumer flags，不猜线程、allocator或IR ownership。

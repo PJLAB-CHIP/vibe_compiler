@@ -418,7 +418,8 @@ Pipeline position:
 - Current stage responsibility:
   将剩余ordinary pure single-root component编码为有界access-relation e-graph；Rust `egg`中的固定dynamic rules在rebuild后的
   新e-class上继续匹配，C++ request-local `IndexRelation`服务只计算和证明relation composition/map reindex，不预构造最终graph
-  candidate。提取保持compute occurrence、scalar/combiner、dtype和iterator语义，并通过一次`IRRewriter` transaction修改current IR。
+  candidate。提取保持compute occurrence、scalar/combiner、dtype和iterator语义，并通过一次`IRRewriter`直接修改current IR；不复制
+  `ModuleOp`、`FuncOp`或component owner。
 - Output IR / files:
   dialect集合不变的verified Tensor/Linalg current IR；支持的reshape、transpose、broadcast、concat和structured compute access
   graph已经收敛。Attention op数量、类型、result type、attribute、algorithm和region保持不变。E-graph、e-class、relation ID、
@@ -582,6 +583,12 @@ Access(R, Compute(id, kind, ...))
 result axes、所有operand maps与init/result可同步转换、reduction axes/order/domain不变、compute occurrence不变且当前下游已支持新
 signature时返回`Exact`。Broadcast、projection、slice和涉及reduction axis的relation不应用。
 
+当前实现保持原iteration domain不变，以identity作为iteration-domain bijection，只把DPS init/result map从旧result coordinates组合到
+新coordinates。未读取的`tensor.empty` init直接按新result type重建；scalar region读取的init由egg RHS显式建立同一个bijective
+`Access`，可继续与已有init access做composition/identity消除。Elementwise输出、generic reduction以及能够恢复成既有
+`linalg.matmul`/`linalg.batch_matmul`及transpose-input named variant的exact contraction均走同一rule；其它contraction signature由
+当前直接下游能力检查返回`Unsupported`，不要求后端新增形式。
+
 首批不注册elementwise fusion、scalar algebra、matmul associativity/distributivity、reduction domain拆分/合并、concat向matmul/reduce
 分配或multi-pattern rewrite；前序pinned MLIR已经拥有的fold/fusion继续由其标准实现负责。Attention、collective、call、SCF、effectful
 op、general unsupported slice/insert、pad、gather/scatter和unsupported multi-result compute都是component barrier。
@@ -591,7 +598,9 @@ op、general unsupported slice/insert、pad、gather/scatter和unsupported multi
 E-graph只接收前序pinned MLIR folds之后仍有非相邻或rewrite-order冲突的ordinary pure component。Rule以固定semantic顺序注册，但
 输出不依赖rule遍历、hash table、地址或并行完成顺序；pinned `egg` deterministic runner与完整semantic tie-break共同保证可观察确定性。
 
-预算使用确定性work而不是wall-clock控制输出，至少统计并限制：
+预算使用确定性work而不是wall-clock控制输出。Request直接限制relation service call、e-node、rewrite match和iteration；这些有限
+container与iteration同时给e-class merge、rebuild和extraction建立上界，并分别报告实际计数。ABI node/child/relation记录在C++与Rust
+两端做checked length/offset验证，越过request有限记录表示时保持component不变。当前统计包括：
 
 ```text
 relation query and composition
@@ -604,10 +613,12 @@ extraction work
 ABI import/export records and bytes
 ```
 
-具体production上限必须先由真实HF/LLaMA corpus的off/on profile确定，不能先写任意常数。达到任一budget、typed work limit、内部
+当前production默认值由同一FP16 HF Llama block的1024/1025 fresh profile确定为8192次relation call、4096个e-node、8192个match和
+8次iteration；shape不进入选择逻辑。达到任一budget、typed work limit、内部
 资源耗尽或没有strictly dominating extraction时，销毁request并保持原verified component不变；这不是compiler error、unsupported
 program、physical rejection或candidate feedback。
-Compile timing分别记录C++ import、Rust runner/rebuild、extraction和C++ rebuild/verify，避免把FFI serialization成本藏进一个总时间。
+标准MLIR pass statistics记录上述work、input/output op和rule application；fresh qualification另用host profile记录wall/RSS。Timing和RSS
+只用于诊断，不进入输出选择。
 
 Single-root extractor先执行hard constraints：
 
@@ -623,10 +634,14 @@ Single-root extractor先执行hard constraints：
 - Tensor/Linalg operation数量最少；
 - semantic tie-break只依赖canonical expression、source order和typed fields。
 
+只有前三项结构cost至少一项严格下降时才改IR；canonical tie-break只在多个同cost最优表达之间选择，不能单独触发rewrite。
+
 Extractor不读取target、layout、SPM/DDR、movement、instruction或runtime cost，不接受compute复制换transform减少的trade-off。C++收到
-extracted generic expression后，在首次修改前检查全部type/relation/map/iterator和materialization；随后先创建完整新Tensor/Linalg
-subgraph，旧root仍保持不变。新建失败由RAII擦除；完整后一次`replaceOp`，再删除component内新死且effect-free的旧support op并verify
-`func::FuncOp`。成功mutation使旧analysis全部失效；不把input/output operation对应关系发布给下一stage。
+extracted generic expression后，在首次修改前检查全部type/relation/map/iterator和materialization；随后按extracted拓扑顺序把完整新
+Tensor/Linalg subgraph统一插在旧root之前，不能把Compute插回旧recipe位置而让较晚Access反向供给。旧root在创建期间保持不变；新建失败
+只擦除本component本轮插入的op，完整后一次`replaceOp`，再删除component内新死且effect-free的旧support op并verify`func::FuncOp`。
+这里直接rewrite current IR，不clone `ModuleOp`、`FuncOp`或DAG。成功mutation使旧analysis全部失效；不把input/output operation对应关系
+发布给下一stage。
 
 ### 7.6 与后续pipeline的隔离
 

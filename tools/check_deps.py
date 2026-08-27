@@ -40,6 +40,7 @@ REQUIRED_KEYS = [
     "WAFER_PYTORCH_VERSION",
     "WAFER_TORCHVISION_VERSION",
     "WAFER_TORCH_XLA_PYTHON_VERSION",
+    "WAFER_IMPORTER_PYTHON_MAJOR_MINOR",
     "WAFER_PYTORCH_XLA_COMMIT",
     "WAFER_BAZEL_VERSION",
     "WAFER_BAZEL_LINUX_X64_URL",
@@ -47,6 +48,9 @@ REQUIRED_KEYS = [
     "WAFER_PYTHON_LIT_VERSION",
     "WAFER_MINIMALLOC_COMMIT",
     "WAFER_MINIMALLOC_REPOSITORY",
+    "WAFER_EGG_VERSION",
+    "WAFER_EGG_COMMIT",
+    "WAFER_EGG_REPOSITORY",
     "WAFER_SOFTFLOAT_VERSION",
     "WAFER_SOFTFLOAT_URL",
     "WAFER_SOFTFLOAT_SHA256",
@@ -222,6 +226,8 @@ def check_cmake_target_visibility() -> None:
         "WAFER_LLVM_INSTALL_DIR",
         "WAFER_LLVM_BUILD_DIR",
         "WAFER_MINIMALLOC_SOURCE_DIR",
+        "WAFER_EGG_SOURCE_DIR",
+        "WAFER_RUST_VENDOR_DIR",
         "WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS",
         "WAFER_ENABLE_SPMD_PARTITIONER_DEPS",
         '${WAFER_DEPS_ROOT}/llvm-project',
@@ -255,10 +261,22 @@ def check_cmake_target_visibility() -> None:
         "add_dependencies(check-wafer wafer-shardy-cmake-gate)",
     )
     check_text_contains(REPO_ROOT / "CMakeLists.txt", "wafer_add_minimalloc()")
+    check_text_contains(
+        REPO_ROOT / "CMakeLists.txt", "wafer_add_structured_egraph()"
+    )
     for needle in [
         "function(wafer_add_minimalloc)",
         "WaferThirdPartyMiniMalloc",
         'add_subdirectory(\n    "${WAFER_MINIMALLOC_SOURCE_DIR}"',
+    ]:
+        check_text_contains(
+            REPO_ROOT / "cmake" / "third_party" / "WaferThirdParty.cmake",
+            needle,
+        )
+    for needle in [
+        "function(wafer_add_structured_egraph)",
+        "WaferThirdPartyStructuredEGraph",
+        "--release --locked --offline",
     ]:
         check_text_contains(
             REPO_ROOT / "cmake" / "third_party" / "WaferThirdParty.cmake",
@@ -311,6 +329,7 @@ def check_cmake_target_visibility() -> None:
         "third_party/xla",
         "third_party/googletest",
         "third_party/pytorch-xla",
+        "third_party/egg",
     ]:
         check_text_contains(REPO_ROOT / ".gitmodules", submodule_path)
     for requirement in [
@@ -977,6 +996,7 @@ def print_versions(versions: dict[str, str]) -> None:
     )
     print(f"googletest {versions['WAFER_GOOGLETEST_TAG']} {versions['WAFER_GOOGLETEST_COMMIT']}")
     print(f"lit {versions['WAFER_PYTHON_LIT_VERSION']}")
+    print(f"egg {versions['WAFER_EGG_VERSION']} {versions['WAFER_EGG_COMMIT']}")
     print(
         "numeric-model sources "
         f"SoftFloat {versions['WAFER_SOFTFLOAT_VERSION']} "
@@ -996,6 +1016,40 @@ def check_checkout_pin(
             raise RuntimeError(
                 f"{label} checkout mismatch in {rel(checkout)}: {actual_commit}"
             )
+
+
+def check_egraph_sources(versions: dict[str, str]) -> None:
+    crate_root = (
+        REPO_ROOT
+        / "lib"
+        / "Wafer"
+        / "Conversion"
+        / "StableHLOToLinalg"
+        / "EGraphCore"
+    )
+    lock = crate_root / "Cargo.lock"
+    record_path = DEPS_ROOT / "rust-vendor" / "wafer-egraph-deps.json"
+    if not lock.is_file() or not record_path.is_file():
+        raise RuntimeError(
+            "structured e-graph Cargo lock/vendor record is missing; run "
+            "tools/bootstrap_deps.py --egraph-sources"
+        )
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    expected = {
+        "status": "complete",
+        "egg_version": versions["WAFER_EGG_VERSION"],
+        "egg_commit": versions["WAFER_EGG_COMMIT"],
+        "cargo_lock_sha256": sha256_file(lock),
+    }
+    mismatches = [
+        f"{key}={record.get(key)!r} expected {value!r}"
+        for key, value in expected.items()
+        if record.get(key) != value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "structured e-graph vendor record mismatch: " + "; ".join(mismatches)
+        )
 
 
 def main() -> int:
@@ -1069,6 +1123,7 @@ def main() -> int:
         "WAFER_ENABLE_IMPORTER_DEPS",
     )
     check_minimalloc_snapshot(versions)
+    check_egraph_sources(versions)
     check_dependency_layering()
     check_openxla_stack_pins(versions)
     check_framework_source_alignment(versions)
@@ -1106,6 +1161,11 @@ def main() -> int:
         label="googletest",
         relative=pathlib.Path("googletest"),
         expected_commit=versions["WAFER_GOOGLETEST_COMMIT"],
+    )
+    check_checkout_pin(
+        label="egg",
+        relative=pathlib.Path("egg"),
+        expected_commit=versions["WAFER_EGG_COMMIT"],
     )
 
     print("dependency layering checks passed")

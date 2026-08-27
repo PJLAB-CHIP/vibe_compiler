@@ -134,14 +134,18 @@ add_mlir_conversion_library(WaferStableHLOToLinalg
   StableHLOToLinalg/LegalizeStablehloToLinalg.cpp
   StableHLOToLinalg/LowerStaticStablehloConcatenate.cpp
   StableHLOToLinalg/NormalizeAttention.cpp
+  StableHLOToLinalg/NormalizeStructuredGraph.cpp
   StableHLOToLinalg/NormalizeStablehloCollectives.cpp
+  StableHLOToLinalg/StructuredGraphEGraph.cpp
 
   DEPENDS
   WaferPassesIncGen
 
   LINK_LIBS PUBLIC
+  WaferAnalysis
   WaferIR
   MLIRArithDialect
+  MLIRDialectUtils
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
@@ -151,6 +155,10 @@ add_mlir_conversion_library(WaferStableHLOToLinalg
   MLIRSupport
   MLIRTensorDialect
 )
+
+target_link_libraries(WaferStableHLOToLinalg PRIVATE
+  WaferThirdPartyStructuredEGraph)
+add_dependencies(WaferStableHLOToLinalg WaferStructuredEGraphBuild)
 
 if(WAFER_ENABLE_IMPORTER_DEPS)
   target_compile_definitions(obj.WaferStableHLOToLinalg PRIVATE

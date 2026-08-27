@@ -146,6 +146,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
 wafer_add_minimalloc()
+wafer_add_structured_egraph()
 
 add_subdirectory(include/Wafer/IR)
 add_subdirectory(include/Wafer/Transforms)

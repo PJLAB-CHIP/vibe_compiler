@@ -1,0 +1,18 @@
+[package]
+name = "wafer-structured-egraph"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "Apache-2.0 WITH LLVM-exception"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+egg = { path = "../../../../../third_party/egg", default-features = false, features = ["deterministic"] }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "unwind"

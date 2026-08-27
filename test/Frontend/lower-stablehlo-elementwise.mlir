@@ -64,7 +64,6 @@ module {
 
 // CHECK-LABEL: func.func @lower_broadcasted_add
 // CHECK-NOT: stablehlo.
-// CHECK: linalg.generic
-// CHECK-SAME: ins(%arg0 : tensor<4xf32>)
-// CHECK: linalg.generic
+// CHECK-COUNT-1: linalg.generic
+// CHECK-SAME: ins(%arg0, %arg1 : tensor<4xf32>, tensor<2x4xf32>)
 // CHECK: arith.addf

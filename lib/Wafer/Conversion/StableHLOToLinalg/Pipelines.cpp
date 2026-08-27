@@ -35,6 +35,8 @@ void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
   buildSimplifyStructuredTensorPipeline(pm);
   pm.addPass(mlir::createCanonicalizerPass());
   buildNormalizeAttentionPipeline(pm);
+  pm.addNestedPass<mlir::func::FuncOp>(
+      createNormalizeStructuredTensorGraphPass());
 }
 
 } // namespace wafer

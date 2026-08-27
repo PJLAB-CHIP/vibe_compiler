@@ -71,6 +71,8 @@ add_executable(WaferUnitTests
   Analysis/Executable/ProgramResourceVerificationTest.cpp
   Program/ProgramDataTest.cpp
   Conversion/AttentionNormalizationTest.cpp
+  Conversion/StructuredGraphEGraphTest.cpp
+  Conversion/StructuredGraphNormalizationTest.cpp
   Conversion/BidirectionalTilingTest.cpp
   Conversion/RequiredNCCJoinPlacementTest.cpp
   Conversion/ReciprocalComputeLoweringTest.cpp
@@ -137,6 +139,7 @@ target_link_libraries(WaferUnitTests
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
+  MLIRLinalgTransforms
   MLIRMathDialect
   MLIRMemRefDialect
   MLIRParser

@@ -96,6 +96,40 @@ def ensure_venv(prefix: pathlib.Path, name: str, requirements: pathlib.Path) -> 
     return python
 
 
+def ensure_importer_venv(
+    prefix: pathlib.Path,
+    requirements: pathlib.Path,
+    expected_major_minor: str,
+) -> pathlib.Path:
+    venv = prefix / "python-importer"
+    python = venv / "bin" / "python"
+    if python.exists():
+        actual = subprocess.check_output(
+            [str(python), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+            text=True,
+        ).strip()
+        if actual != expected_major_minor:
+            raise RuntimeError(
+                "existing importer Python ABI does not match the pinned "
+                f"PyTorch/XLA runtime: {actual} != {expected_major_minor}; "
+                "remove the stale third_party/python-importer and recreate it "
+                f"with Python {expected_major_minor}"
+            )
+    else:
+        actual = f"{sys.version_info.major}.{sys.version_info.minor}"
+        if actual != expected_major_minor:
+            raise RuntimeError(
+                "creating the importer environment requires running "
+                f"bootstrap_deps.py with Python {expected_major_minor}; "
+                f"the current interpreter is {actual}"
+            )
+        venv.mkdir(parents=True, exist_ok=True)
+        run([sys.executable, "-m", "venv", str(venv)])
+    run([str(python), "-m", "pip", "install", "--upgrade", "pip"])
+    run([str(python), "-m", "pip", "install", "-r", str(requirements)])
+    return python
+
+
 def clone_or_update(repo: str, commit: str, destination: pathlib.Path) -> None:
     if not destination.exists():
         destination.mkdir(parents=True)
@@ -1570,6 +1604,89 @@ def fetch_importer_bazel(
     return default
 
 
+def prepare_egraph_sources(
+    versions: dict[str, str], prefix: pathlib.Path
+) -> pathlib.Path:
+    egg_root = REPO_ROOT / "third_party" / "egg"
+    sync_submodule(egg_root, versions["WAFER_EGG_COMMIT"])
+
+    cargo = shutil.which("cargo")
+    rustc = shutil.which("rustc")
+    if cargo is None or rustc is None:
+        raise RuntimeError(
+            "--egraph-sources requires cargo and rustc 1.82 or newer"
+        )
+    rustc_version = subprocess.check_output(
+        [rustc, "--version"], text=True
+    ).strip()
+    version_match = re.fullmatch(
+        r"rustc (\d+)\.(\d+)(?:\.\d+)?(?: .*)?", rustc_version
+    )
+    if version_match is None or (
+        int(version_match.group(1)), int(version_match.group(2))
+    ) < (1, 82):
+        raise RuntimeError(
+            "--egraph-sources requires rustc 1.82 or newer; "
+            f"found {rustc_version}"
+        )
+    crate_root = (
+        REPO_ROOT
+        / "lib"
+        / "Wafer"
+        / "Conversion"
+        / "StableHLOToLinalg"
+        / "EGraphCore"
+    )
+    manifest = crate_root / "Cargo.toml"
+    lock = crate_root / "Cargo.lock"
+    if not manifest.is_file() or not lock.is_file():
+        raise RuntimeError("the Wafer structured e-graph Cargo crate is incomplete")
+
+    vendor_root = prefix / "rust-vendor"
+    candidate = prefix / f".rust-vendor.candidate-{uuid.uuid4().hex}"
+    backup = prefix / f".rust-vendor.backup-{uuid.uuid4().hex}"
+    candidate.mkdir(parents=False)
+    try:
+        run(
+            [
+                cargo,
+                "vendor",
+                "--locked",
+                "--manifest-path",
+                str(manifest),
+                str(candidate),
+            ],
+            cwd=REPO_ROOT,
+        )
+        record = {
+            "status": "complete",
+            "egg_version": versions["WAFER_EGG_VERSION"],
+            "egg_commit": versions["WAFER_EGG_COMMIT"],
+            "cargo_lock_sha256": sha256_file(lock),
+            "cargo": subprocess.check_output(
+                [cargo, "--version"], text=True
+            ).strip(),
+            "rustc": rustc_version,
+        }
+        atomic_write_json(candidate / "wafer-egraph-deps.json", record)
+        if vendor_root.exists() or vendor_root.is_symlink():
+            if vendor_root.is_symlink() or not vendor_root.is_dir():
+                raise RuntimeError(
+                    f"managed Rust vendor path is not a directory: {vendor_root}"
+                )
+            vendor_root.rename(backup)
+        candidate.rename(vendor_root)
+        if backup.exists():
+            shutil.rmtree(backup)
+    except BaseException:
+        if candidate.exists():
+            shutil.rmtree(candidate)
+        if backup.exists() and not vendor_root.exists():
+            backup.rename(vendor_root)
+        raise
+    return vendor_root / "wafer-egraph-deps.json"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--prefix", default=str(REPO_ROOT / "third_party"))
@@ -1592,6 +1709,11 @@ def main() -> int:
         help="download and checksum the Bazel binary pinned for the PyTorch/XLA source build",
     )
     parser.add_argument("--test-sources", action="store_true", help="sync pinned googletest submodule")
+    parser.add_argument(
+        "--egraph-sources",
+        action="store_true",
+        help="sync pinned egg and prepare the Cargo.lock-matched offline directory source",
+    )
     parser.add_argument(
         "--numeric-model-sources",
         action="store_true",
@@ -1687,7 +1809,11 @@ def main() -> int:
         print(f"Python tools installed: {python}")
 
     if args.all or args.importer_python:
-        importer_python = ensure_venv(prefix, "python-importer", REPO_ROOT / "requirements-importer.txt")
+        importer_python = ensure_importer_venv(
+            prefix,
+            REPO_ROOT / "requirements-importer.txt",
+            versions["WAFER_IMPORTER_PYTHON_MAJOR_MINOR"],
+        )
         print(f"Importer Python tools installed: {importer_python}")
 
     if args.all or args.importer_bazel:
@@ -1714,6 +1840,10 @@ def main() -> int:
         sync_submodule(prefix / "googletest", versions["WAFER_GOOGLETEST_COMMIT"])
         print(f"Test sources installed under: {prefix}")
 
+    if args.all or args.egraph_sources:
+        record = prepare_egraph_sources(versions, prefix)
+        print(f"Structured e-graph dependency record installed: {record}")
+
     if args.numeric_model_deps:
         build_numeric_model_dependencies(versions, numeric_root, args.numeric_jobs)
     elif args.all or args.numeric_model_sources:
@@ -1735,6 +1865,7 @@ def main() -> int:
         or args.importer_python
         or args.importer_bazel
         or args.test_sources
+        or args.egraph_sources
         or args.numeric_model_sources
         or args.numeric_model_deps
         or args.bulk_model_deps
