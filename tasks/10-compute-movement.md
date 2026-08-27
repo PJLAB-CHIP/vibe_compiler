@@ -187,9 +187,10 @@ final winner不重建。Completion由后续current Instr stage决定。
 连续/strided/mapped descriptor cover由08证明；SPM/DDR offsets由09/12的actual planners决定。
 
 Observable function/TileRegion result在function-boundary bufferization前绑定actual destination。可直接发布的result使用DPS/
-out-parameter或actual SPM→DDR store，不先生成第二个DDR allocation再`memref.copy`。当前source contract没有独立DDR→DDR
-semantic copy；function-boundary bufferization产生这种copy就是上游DPS/output binding bug，必须在产生点消除，不能把它物化成
-新的movement能力，也不能留到Tile-to-Instr conversion为每条copy临时创建TileRegion。
+out-parameter或actual SPM→DDR store。若copy只因DPS/output binding缺失而把同一logical result从temporary DDR发布到designated
+output DDR，它是冗余publication copy，必须在产生点消除。因actual alias conflict、旧值保留、out-of-place语义或明确
+layout/memory-space materialization而必要的copy可以保留，但必须从current SSA、alias、effect和exact relation得到witness，
+并由本stage物化成typed movement；不能留到Tile-to-Instr conversion为每条copy临时创建TileRegion。
 
 同一source经多段view/broadcast/materialize组成的relation可以在candidate新Card subtree中合成一次direct movement，前提是
 relation exact、其它uses/effects/alias闭合且final destination cover可证明。cleanup只能删除fully proven same-root/same-map

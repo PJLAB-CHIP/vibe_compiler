@@ -256,9 +256,12 @@ Movement choice以current producer value、consumer operand、exact demanded dom
 DDR store/load、Direct DTE、software relay或已定义collective。选择由唯一movement transformation立即创建actual typed ops、
 staging buffer、token和effect。
 
-Function/TileRegion observable result在bufferization前通过DPS/out-parameter绑定唯一actual destination。当前compiler source没有
-独立DDR→DDR semantic copy合同；function-boundary bufferization生成DDR→DDR `memref.copy`说明output binding实现错误，必须在
-产生点修复。Movement closure后该copy为0，Instr conversion不得用SPM staging、RDMA/WDMA或copy-only TileRegion掩盖错误。
+Function/TileRegion observable result在bufferization前通过DPS/out-parameter绑定唯一actual destination。Bufferization可以因
+actual alias conflict、保留旧值、out-of-place语义或明确layout/memory-space materialization产生必要copy；这些copy必须由current
+SSA、alias、effect和exact relation证明，并在movement closure时成为typed movement。若DDR→DDR `memref.copy`的唯一作用只是把
+同一logical result从bufferization temporary发布到designated output，而且正确DPS绑定即可消除，则它是冗余publication copy，
+必须在产生点修复为0。Movement closure后未分类`memref.copy`为0，Instr conversion不得用SPM staging、RDMA/WDMA或copy-only
+TileRegion掩盖错误。
 
 Movement不从shape、value名或future version ID恢复source/destination，也不先创建donor movement再替换。不同realization
 使用同一transformation实现；每个alternative作用于自己的candidate transaction。跨region或跨Tile的每个非空domain
@@ -455,7 +458,8 @@ Current迁移必须遵守：
 - 每TileRegion的actual nested operation数的minimum/average/maximum；
 - region-local use、cross-region external use和actual DDR/peer movement数；
 - current SSA local edge、loop外/loop内producer occurrence、fusion barrier和explicit recompute数；
-- function-boundary bufferization产生的compiler-created DDR→DDR `memref.copy`数；进入movement和Instr conversion时必须为0；
+- function-boundary bufferization产生的copy按必要性证据和memory-space pair分类；冗余DDR→DDR publication copy为0，进入
+  movement和Instr conversion的未分类`memref.copy`为0；
 - accepted final Wafer Instr总数、per-Tile minimum/average/maximum和per-kind exact count；
 - accepted final NE/Vector logical work、各自启用的throughput/service time、instruction-control term和最终makespan。
 

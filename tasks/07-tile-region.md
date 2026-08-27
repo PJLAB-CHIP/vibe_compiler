@@ -213,8 +213,9 @@ fallback builder或partial result。Unsupported semantics、resource exhaustion�
 - 每个source structured op的actual iteration tiles并集等于selected work且除explicit recompute外两两不重叠；未融合producer
   位于consumer loop外且每selected execution只物化一次，融合producer只位于对应consumer traversal内；
 - exact/partial view、layout-compatible/incompatible、shared conversion、alias和explicit copy；
-- function result direct destination、region-local SPM reuse和真正cross-region DDR boundary；movement closure后compiler-created
-  DDR→DDR `memref.copy`为0，Instr conversion不新建copy-only TileRegion；
+- function result direct destination、region-local SPM reuse和真正cross-region DDR boundary；因output DPS缺失产生的冗余
+  DDR→DDR publication copy为0，必要copy有SSA/alias/effect witness并在movement closure后成为typed movement；Instr
+  conversion不接收未分类`memref.copy`或新建copy-only TileRegion；
 - local、DDR、peer/relay/collective movement与actual effect/token；
 - structural、layout-resolved和physical form的parser/printer、合法transition和wrong-stage rejection；
 - Serialized与software-pipelined execution structure、prefix/steady/tail、rotating roots和slot SSA；
