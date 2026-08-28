@@ -129,7 +129,7 @@ call interface 解析。CLI 可以提供默认 symbol 名，IR 合同不能依�
 
 | Anchor | 应负责 | 不应负责 |
 | --- | --- | --- |
-| `ModuleOp` | topology/mesh、top-level Tile domain、symbol/call closure、function-boundary bufferization、shared DDR/transport/resource/ABI verification、module fan-out、closed target conversion | 为每个 TileRegion 重跑 local conversion、local lifetime 或 local canonicalization |
+| `ModuleOp` | topology/mesh、top-level Tile domain、symbol/call closure、function-boundary bufferization、shared DDR/transport/resource/ABI verification、standalone Tile module creation、closed target conversion | 为每个 TileRegion 重跑 local conversion、local lifetime 或 local canonicalization |
 | `TileModuleOp` | local region结构、typed `(card_id, tile_id)`、tile-level symbol boundary与独立Tile output preparation | 遍历siblings恢复complete Tile domain或跨Tile relation |
 | `func::FuncOp` | 跨TileRegion/loop的outstanding NCC access与required join、call-site boundary、function-local control/dataflow summary | 每个region建synthetic function再执行同一func pipeline |
 | `TileRegionOp` | Tile→Instr conversion、region canonicalization、local lifetime与SPM root conflicts/packing query | call graph、跨region pending state、function-boundary bufferization、module verification |
@@ -168,7 +168,7 @@ taxonomy；这些不适合硬塞进普通 MLIR pass。每个稳定 IR→IR subst
 3. unit/lit instrumentation 和 verify-each。
 
 工程上区分三个层级：atomic pass/kernel在最窄合法anchor完成一个可验证result condition；semantic subpipeline在一个稳定、
-verifier-legal的IR边界内组合这些pass并提供唯一builder；compiler driver管理搜索、module fan-out、外部工具和目录写入，
+verifier-legal的IR边界内组合这些pass并提供唯一builder；compiler driver管理搜索、standalone Tile modules、外部工具和目录写入，
 只调用前两层而不复制IR变换。顶层aggregate pipeline可以包含多个stage，MLIR upstream也普遍如此；判断粒度是否合适的标准
 不是pass数量，而是leaf stage能否独立重放、production是否复用同一builder、analysis/diagnostic是否保留真实anchor，以及
 中间IR是否有合法合同。不能为了“细粒度”拆出verifier-invalid中间态，或破坏memory/target conversion所需的原子提交。
@@ -304,7 +304,7 @@ Wafer中的root duplication只允许以下明确类别：
 | 类别 | owner与产物命运 | 约束 |
 | --- | --- | --- |
 | policy-specific actual candidate | baseline或search各自复制所需局部source operation，形成独立TileModule owner | baseline attempt直接物化一次；search structural choice物化一次；后续只作用于current IR；失败/loser销毁，Accepted不重建；两条policy不共享materializer |
-| Card→Tile output fan-out | 大型Tile bodymove到唯一output；每个output都需要的小型declaration按IRMapping复制 | 每份copy有真实下游consumer，按Tile/launch identity稳定汇合 |
+| top-level `TileModuleOp` → `StandaloneTileModule` | 大型Tile body move到唯一output；每个output都需要的小型declaration按IRMapping复制 | 每份copy有真实下游consumer，按Tile/launch identity稳定汇合 |
 | external helper projection | transaction从source投影helper所需Module并序列化 | helper input是明确output，失败随transaction销毁，不回灌隐藏state |
 | target/package variant | accepted DeviceExecutable按明确请求构造ordinary/profile等私有target output | 每个真实variant完整lower一次；不提前构造后丢弃，也不从另一variant恢复语义 |
 | reducer/debug | 显式tool mode复制isolated root并产生诊断或reproducer | 普通compile默认不执行，产物不进入candidate identity或下一次编译 |
@@ -348,7 +348,7 @@ IR/analysis/rewrite/conversion/pipeline正例默认rank至少3、主要迭代维
 - SPM/DDR placement全部成功后一次写入offset，失败不修改 IR；
 - selected-root scoped constant-select rewrite；
 - pass dependent dialect声明、fresh verifier、typed exact rejection/indeterminate failure分类；
-- production module fan-out与atomic directory rename的真实 module/card scope。
+- production standalone-module creation与atomic directory rename的真实module/device scope。
 
 ## 10. 官方依据
 

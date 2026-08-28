@@ -235,7 +235,7 @@ selected top-level TileModule set
   -> structural-to-layout-resolved transformation
   -> movement and physical-boundary closure
   -> execution-structure/rotating-slot transformation
-  -> WaferTileModuleFanout
+  -> createStandaloneTileModules
   -> Tile-to-Instr conversion
   -> worker/order placement and fresh completion
   -> fixed-capacity SPM planning per Tile

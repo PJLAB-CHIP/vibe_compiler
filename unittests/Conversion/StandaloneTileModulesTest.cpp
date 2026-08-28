@@ -1,6 +1,6 @@
-//===- WaferTileModuleFanoutTest.cpp - Module fan-out tests -----------===//
+//===- StandaloneTileModulesTest.cpp - Standalone module tests -----------===//
 
-#include "Wafer/Conversion/WaferTileModuleFanout/WaferTileModuleFanout.h"
+#include "Wafer/Conversion/StandaloneTileModules/StandaloneTileModules.h"
 
 #include "Wafer/IR/WaferDialect.h"
 
@@ -52,7 +52,7 @@ collectIntegerConstants(mlir::ModuleOp module) {
   return values;
 }
 
-TEST(WaferTileModuleFanoutTest,
+TEST(StandaloneTileModulesTest,
      MovesStableTypedTileBodiesIntoStandaloneModules) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
@@ -92,19 +92,19 @@ module attributes {test.module_attribute = "preserved"} {
   relations.operationEmissions = {{7, constantTen}, {9, constantTwenty}};
 
   std::string failureReason;
-  auto tileModules =
-      wafer::fanOutTileModules(std::move(source), &failureReason, &relations);
+  auto standaloneModules = wafer::createStandaloneTileModules(
+      std::move(source), &failureReason, &relations);
 
-  ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
-  ASSERT_EQ(tileModules->size(), 2u);
-  EXPECT_EQ((*tileModules)[0].cardId.getValue(), 0);
-  EXPECT_EQ((*tileModules)[0].tileId.getValue(), 0);
-  EXPECT_EQ((*tileModules)[1].cardId.getValue(), 0);
-  EXPECT_EQ((*tileModules)[1].tileId.getValue(), 1);
-  EXPECT_TRUE((*tileModules)[0].cardId == wafer::CardId(0));
-  EXPECT_TRUE((*tileModules)[0].tileId != wafer::TileId(1));
+  ASSERT_TRUE(mlir::succeeded(standaloneModules)) << failureReason;
+  ASSERT_EQ(standaloneModules->size(), 2u);
+  EXPECT_EQ((*standaloneModules)[0].cardId.getValue(), 0);
+  EXPECT_EQ((*standaloneModules)[0].tileId.getValue(), 0);
+  EXPECT_EQ((*standaloneModules)[1].cardId.getValue(), 0);
+  EXPECT_EQ((*standaloneModules)[1].tileId.getValue(), 1);
+  EXPECT_TRUE((*standaloneModules)[0].cardId == wafer::CardId(0));
+  EXPECT_TRUE((*standaloneModules)[0].tileId != wafer::TileId(1));
 
-  for (auto &tile : *tileModules) {
+  for (auto &tile : *standaloneModules) {
     ASSERT_TRUE(tile.module);
     EXPECT_TRUE(mlir::succeeded(mlir::verify(*tile.module)));
     EXPECT_TRUE(tile.module->getOperation()->hasAttr("test.module_attribute"));
@@ -115,32 +115,34 @@ module attributes {test.module_attribute = "preserved"} {
   }
 
   llvm::SmallVector<int64_t, 4> tileZeroConstants =
-      collectIntegerConstants(*(*tileModules)[0].module);
+      collectIntegerConstants(*(*standaloneModules)[0].module);
   llvm::SmallVector<int64_t, 4> tileOneConstants =
-      collectIntegerConstants(*(*tileModules)[1].module);
+      collectIntegerConstants(*(*standaloneModules)[1].module);
   ASSERT_EQ(tileZeroConstants.size(), 1u);
   ASSERT_EQ(tileOneConstants.size(), 1u);
   EXPECT_EQ(tileZeroConstants.front(), 10);
   EXPECT_EQ(tileOneConstants.front(), 20);
-  EXPECT_TRUE(
-      (*tileModules)[0].module->getOperation()->isProperAncestor(constantTen));
-  EXPECT_TRUE((*tileModules)[1].module->getOperation()->isProperAncestor(
+  EXPECT_TRUE((*standaloneModules)[0].module->getOperation()->isProperAncestor(
+      constantTen));
+  EXPECT_TRUE((*standaloneModules)[1].module->getOperation()->isProperAncestor(
       constantTwenty));
-  ASSERT_EQ(
-      (*tileModules)[0].materializationRelations.operationEmissions.size(), 1u);
-  ASSERT_EQ(
-      (*tileModules)[1].materializationRelations.operationEmissions.size(), 1u);
-  EXPECT_EQ((*tileModules)[0]
+  ASSERT_EQ((*standaloneModules)[0]
+                .materializationRelations.operationEmissions.size(),
+            1u);
+  ASSERT_EQ((*standaloneModules)[1]
+                .materializationRelations.operationEmissions.size(),
+            1u);
+  EXPECT_EQ((*standaloneModules)[0]
                 .materializationRelations.operationEmissions.front()
                 .structuredNodeId,
             7u);
-  EXPECT_EQ((*tileModules)[1]
+  EXPECT_EQ((*standaloneModules)[1]
                 .materializationRelations.operationEmissions.front()
                 .structuredNodeId,
             9u);
 }
 
-TEST(WaferTileModuleFanoutTest, RequiresAtLeastOneTileModule) {
+TEST(StandaloneTileModulesTest, RequiresAtLeastOneTileModule) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
@@ -156,15 +158,15 @@ module {
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
 
   std::string failureReason;
-  auto tileModules =
-      wafer::fanOutTileModules(std::move(source), &failureReason);
+  auto standaloneModules =
+      wafer::createStandaloneTileModules(std::move(source), &failureReason);
 
-  EXPECT_TRUE(mlir::failed(tileModules));
+  EXPECT_TRUE(mlir::failed(standaloneModules));
   EXPECT_EQ(failureReason,
             "source module contains no top-level wafer.tile.module");
 }
 
-TEST(WaferTileModuleFanoutTest, RejectsDuplicatePhysicalTileIdentity) {
+TEST(StandaloneTileModulesTest, RejectsDuplicatePhysicalTileIdentity) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
@@ -184,15 +186,15 @@ module {
       context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
 
   std::string failureReason;
-  auto tileModules =
-      wafer::fanOutTileModules(std::move(source), &failureReason);
+  auto standaloneModules =
+      wafer::createStandaloneTileModules(std::move(source), &failureReason);
 
-  EXPECT_TRUE(mlir::failed(tileModules));
+  EXPECT_TRUE(mlir::failed(standaloneModules));
   EXPECT_EQ(failureReason, "source Tile module set is invalid");
 }
 
-TEST(WaferTileModuleFanoutTest,
-     SplitsVerifierValidPartialTileDomainForCallerStageCheck) {
+TEST(StandaloneTileModulesTest,
+     CreatesStandaloneModuleForVerifierValidPartialTileDomain) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
@@ -219,16 +221,17 @@ module {
   ASSERT_TRUE(tileToErase);
   tileToErase.erase();
   std::string failureReason;
-  auto tileModules =
-      wafer::fanOutTileModules(std::move(source), &failureReason);
+  auto standaloneModules =
+      wafer::createStandaloneTileModules(std::move(source), &failureReason);
 
-  ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
-  ASSERT_EQ(tileModules->size(), 1u);
-  EXPECT_EQ(tileModules->front().tileId, wafer::TileId(0));
-  EXPECT_EQ(countOps<mlir::memref::GlobalOp>(*tileModules->front().module), 1u);
+  ASSERT_TRUE(mlir::succeeded(standaloneModules)) << failureReason;
+  ASSERT_EQ(standaloneModules->size(), 1u);
+  EXPECT_EQ(standaloneModules->front().tileId, wafer::TileId(0));
+  EXPECT_EQ(
+      countOps<mlir::memref::GlobalOp>(*standaloneModules->front().module), 1u);
 }
 
-TEST(WaferTileModuleFanoutTest, RejectsExecutableOperationOutsideTileModule) {
+TEST(StandaloneTileModulesTest, RejectsExecutableOperationOutsideTileModule) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
@@ -247,16 +250,16 @@ module {
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
 
   std::string failureReason;
-  auto tileModules =
-      wafer::fanOutTileModules(std::move(source), &failureReason);
+  auto standaloneModules =
+      wafer::createStandaloneTileModules(std::move(source), &failureReason);
 
-  EXPECT_TRUE(mlir::failed(tileModules));
+  EXPECT_TRUE(mlir::failed(standaloneModules));
   EXPECT_EQ(failureReason,
             "source module contains a non-declaration operation outside a "
             "wafer.tile.module");
 }
 
-TEST(WaferTileModuleFanoutTest, RejectsImplicitCrossTileSSA) {
+TEST(StandaloneTileModulesTest, RejectsImplicitCrossTileSSA) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
@@ -282,10 +285,10 @@ module {
   EXPECT_TRUE(mlir::failed(mlir::verify(*source)));
 
   std::string failureReason;
-  auto tileModules =
-      wafer::fanOutTileModules(std::move(source), &failureReason);
+  auto standaloneModules =
+      wafer::createStandaloneTileModules(std::move(source), &failureReason);
 
-  EXPECT_TRUE(mlir::failed(tileModules));
+  EXPECT_TRUE(mlir::failed(standaloneModules));
   EXPECT_EQ(failureReason, "source module is not verifier-legal");
 }
 

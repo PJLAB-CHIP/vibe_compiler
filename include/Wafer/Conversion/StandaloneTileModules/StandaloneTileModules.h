@@ -1,7 +1,7 @@
-//===- WaferTileModuleFanout.h - Per-Tile module fan-out ------*- C++ -*-===//
+//===- StandaloneTileModules.h - Create standalone Tile modules -*- C++ -*-===//
 
-#ifndef WAFER_CONVERSION_WAFERTILEMODULEFANOUT_H
-#define WAFER_CONVERSION_WAFERTILEMODULEFANOUT_H
+#ifndef WAFER_CONVERSION_STANDALONETILEMODULES_H
+#define WAFER_CONVERSION_STANDALONETILEMODULES_H
 
 #include "Wafer/Analysis/Structured/StructuredMaterializationRelations.h"
 #include "Wafer/Target/Core/TopologyIds.h"
@@ -14,7 +14,7 @@
 namespace wafer {
 
 /// One owning, standalone module for a selected Tile.
-struct TileModule {
+struct StandaloneTileModule {
   CardId cardId;
   TileId tileId;
   mlir::OwningOpRef<mlir::ModuleOp> module;
@@ -34,12 +34,12 @@ struct TileModule {
 /// every standalone module must own are copied. Search state, other Tile
 /// bodies, Target execution bindings and launch slots are never inferred or
 /// copied from the logical mesh.
-mlir::FailureOr<llvm::SmallVector<TileModule, 16>> fanOutTileModules(
-    mlir::OwningOpRef<mlir::ModuleOp> sourceModule,
-    std::string *failureReason = nullptr,
-    const StructuredMaterializationRelations *materializationRelations =
-        nullptr);
+mlir::FailureOr<llvm::SmallVector<StandaloneTileModule, 16>>
+createStandaloneTileModules(mlir::OwningOpRef<mlir::ModuleOp> sourceModule,
+                            std::string *failureReason = nullptr,
+                            const StructuredMaterializationRelations
+                                *materializationRelations = nullptr);
 
 } // namespace wafer
 
-#endif // WAFER_CONVERSION_WAFERTILEMODULEFANOUT_H
+#endif // WAFER_CONVERSION_STANDALONETILEMODULES_H

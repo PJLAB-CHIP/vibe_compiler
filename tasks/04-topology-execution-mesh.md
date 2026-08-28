@@ -146,7 +146,7 @@ topology/mesh不是helper必须保留的unknown op，也不是opaque sidecar。l
 physical topology可以在helper边界后fresh重建，因为helper不消费Tile语义。helper path、output path和pass名不
 进入`ExecutionConfig`或IR。
 
-## 5. Top-level Tile modules 与 late fan-out
+## 5. Top-level Tile modules 与 standalone modules
 
 对每个card-local structured DAG，下游在现有`builtin.module`中产生selected top-level
 `wafer.tile.module(card_id=..., tile_id=...)`集合。不同Tile module可以包含不同op、loop和work domain；
@@ -154,7 +154,7 @@ physical topology可以在helper边界后fresh重建，因为helper不消费Tile
 SPM ownership和completion由直接消费该集合的module/executable stages检查。具体搜索状态、候选生成、fusion和cost只在
 `tasks/06-physical-dataflow-synthesis.md`定义，本文不复制。
 
-selected Tile module collection随后由`WaferTileModuleFanout`拆成standalone modules：
+selected Tile module set随后由`createStandaloneTileModules`转换为standalone modules：
 
 ```text
 builtin.module
@@ -184,4 +184,4 @@ launch slot一一对应。launch slot只是最低层ABI编码，不能反向进�
 
 任一frontend失败发生在transaction staging内，source和既有final output保持byte-identical。IR-local pass success只证明
 op或analysis合同；只有统一driver从真实program重放helper、metadata、structured program和final readback才完成
-frontend gate。Tile module collection、fan-out和package completion由各自owner的integration gate证明。
+frontend gate。Tile module set、standalone module creation和package completion由各自owner的integration gate证明。

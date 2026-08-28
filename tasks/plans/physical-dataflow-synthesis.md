@@ -295,7 +295,7 @@ search:
     -> legacy combined executable facade
 
 shared hidden facade:
-  WaferTileModuleFanout
+  createStandaloneTileModules
     -> current layout cleanup
     -> function-boundary bufferization
     -> selected preparation
@@ -345,7 +345,7 @@ Temporal，内部仍重建Representation到Schedule。这两条事实是第11项
 | 旧实现族 | 保留的最小资产与直接owner | 第11项删除内容 |
 | --- | --- | --- |
 | Spatial、ExactDemand、RootWork、Region、Temporal | `SpatialDomain`、exact demand/RootWork、connected Region/explicit replica及真正自由temporal axis/loop-order枚举留在Planning；先删除delivery和nested-future字段，并以第12/13项输入类型和direct oracle编译 | `LocalUseDelivery`、stored/direct/reconstructed carrier、nested invocation、future occurrence和由它们驱动的group recipe |
-| TensorProgram→TileModule/TileRegion construction | 旧整体assembly不保留；只把不依赖group/delivery recipe、直接调用pinned `TilingInterface`并创建actual IR的operand tiling与partial-reduction tiling迁到`WaferStructuredTiling`；`WaferTileModuleFanout`继续只消费actual TileModule IR；第12项重新建立唯一structural construction | 整个旧TensorProgram→TileModule set和TensorProgram→TileRegion library、test-only projected-permutation helper、`StructuredNodeShardGroup` complete recipe、`SelectedRegionMaterialization` replay、`rewireDirectSSA`、手写三段wave递归和通用future fusion worklist/cache |
+| TensorProgram→TileModule/TileRegion construction | 旧整体assembly不保留；只把不依赖group/delivery recipe、直接调用pinned `TilingInterface`并创建actual IR的operand tiling与partial-reduction tiling迁到`WaferStructuredTiling`；`createStandaloneTileModules`继续只消费actual TileModule IR；第12项重新建立唯一structural construction | 整个旧TensorProgram→TileModule set和TensorProgram→TileRegion library、test-only projected-permutation helper、`StructuredNodeShardGroup` complete recipe、`SelectedRegionMaterialization` replay、`rewireDirectSSA`、手写三段wave递归和通用future fusion worklist/cache |
 | Representation与PBQP | exact R0/R1/R2/residual solver core改为layout-owner内部的中性query-local PBQP；flat oracle保留；`CurrentIRLayoutOptimization`只保留已验证的current cleanup mechanics，不代签第15项完整layout assignment | `RepresentationPlan/Domain/State`、`PhysicalVersion*`、canonical representation replay及所有future value binding；迁移后API和状态名不再使用`RepresentationPBQP*` |
 | Movement与physical relation | `IndexRelation`、`PhysicalLayoutRelation`、`TransferRealizability`和第9项唯一current-IR cleanup留在Analysis/Transforms；只接受actual endpoint/value/effect | `MovementPlan/Domain/State`、canonical/donor movement、future action/resource ID和边扫描边替换的旧builder |
 | Execution structure、order与completion | SCF pipelining和rotating-allocation的机械rewrite迁成只接current loop/operation/binding的private kernel；`NCCCompletionAnalysis`、TileRegion→Instr、current worker/order/fresh completion保留 | `EventGraph` future action/resource model、`ExecutionStructurePlan/State`跨stagecarrier、`StorageObjectId/BufferPlan`依赖、`SchedulePlan/Domain/Materialization`及EventId→operation反查 |

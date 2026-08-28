@@ -1,6 +1,6 @@
-//===- WaferTileModuleFanout.cpp - Per-Tile module fan-out ------------===//
+//===- StandaloneTileModules.cpp - Create standalone Tile modules --------===//
 
-#include "Wafer/Conversion/WaferTileModuleFanout/WaferTileModuleFanout.h"
+#include "Wafer/Conversion/StandaloneTileModules/StandaloneTileModules.h"
 
 #include "Wafer/IR/WaferDialect.h"
 
@@ -16,10 +16,10 @@
 namespace wafer {
 namespace {
 
-using TileModuleList = llvm::SmallVector<TileModule, 16>;
+using StandaloneTileModuleList = llvm::SmallVector<StandaloneTileModule, 16>;
 
-static mlir::FailureOr<TileModuleList> failSplit(std::string *failureReason,
-                                                 llvm::StringRef message) {
+static mlir::FailureOr<StandaloneTileModuleList>
+failCreate(std::string *failureReason, llvm::StringRef message) {
   if (failureReason)
     *failureReason = message.str();
   return mlir::failure();
@@ -33,10 +33,11 @@ static bool isSharedDeclaration(mlir::Operation &operation) {
 }
 
 static mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
-createTileModule(mlir::ModuleOp sourceModule, TileModuleOp sourceTileModule,
-                 const StructuredMaterializationRelations *sourceRelations,
-                 StructuredMaterializationRelations &tileRelations,
-                 std::string *failureReason) {
+createStandaloneTileModule(
+    mlir::ModuleOp sourceModule, TileModuleOp sourceTileModule,
+    const StructuredMaterializationRelations *sourceRelations,
+    StructuredMaterializationRelations &tileRelations,
+    std::string *failureReason) {
   mlir::OwningOpRef<mlir::ModuleOp> resultModule =
       mlir::ModuleOp::create(sourceModule.getLoc());
   resultModule->getOperation()->setAttrs(sourceModule->getAttrDictionary());
@@ -105,26 +106,27 @@ createTileModule(mlir::ModuleOp sourceModule, TileModuleOp sourceTileModule,
 
 } // namespace
 
-mlir::FailureOr<llvm::SmallVector<TileModule, 16>> fanOutTileModules(
+mlir::FailureOr<llvm::SmallVector<StandaloneTileModule, 16>>
+createStandaloneTileModules(
     mlir::OwningOpRef<mlir::ModuleOp> sourceModuleOwner,
     std::string *failureReason,
     const StructuredMaterializationRelations *materializationRelations) {
   if (failureReason)
     failureReason->clear();
   if (!sourceModuleOwner)
-    return failSplit(failureReason, "source module is null");
+    return failCreate(failureReason, "source module is null");
   mlir::ModuleOp sourceModule = *sourceModuleOwner;
   if (mlir::failed(mlir::verify(sourceModule)))
-    return failSplit(failureReason, "source module is not verifier-legal");
+    return failCreate(failureReason, "source module is not verifier-legal");
   if (mlir::failed(verifyTileModuleCollection(sourceModule)))
-    return failSplit(failureReason, "source Tile module set is invalid");
+    return failCreate(failureReason, "source Tile module set is invalid");
 
   for (mlir::Operation &operation :
        sourceModule.getBody()->without_terminator()) {
     if (mlir::isa<TileModuleOp>(operation) || isSharedDeclaration(operation) ||
         mlir::isa<TargetTopologyOp, ExecutionMeshOp>(operation))
       continue;
-    return failSplit(
+    return failCreate(
         failureReason,
         "source module contains a non-declaration operation outside a "
         "wafer.tile.module");
@@ -133,8 +135,8 @@ mlir::FailureOr<llvm::SmallVector<TileModule, 16>> fanOutTileModules(
   llvm::SmallVector<TileModuleOp, 16> sourceTileModules(
       sourceModule.getOps<TileModuleOp>());
   if (sourceTileModules.empty())
-    return failSplit(failureReason,
-                     "source module contains no top-level wafer.tile.module");
+    return failCreate(failureReason,
+                      "source module contains no top-level wafer.tile.module");
   llvm::sort(sourceTileModules, [](TileModuleOp lhs, TileModuleOp rhs) {
     return std::tuple(lhs.getCardIdAttr().getInt(),
                       lhs.getTileIdAttr().getInt()) <
@@ -145,23 +147,23 @@ mlir::FailureOr<llvm::SmallVector<TileModule, 16>> fanOutTileModules(
        llvm::zip(sourceTileModules, llvm::drop_begin(sourceTileModules)))
     if (lhs.getCardIdAttr() == rhs.getCardIdAttr() &&
         lhs.getTileIdAttr() == rhs.getTileIdAttr())
-      return failSplit(failureReason,
-                       "source module repeats one (card_id, tile_id)");
+      return failCreate(failureReason,
+                        "source module repeats one (card_id, tile_id)");
 
-  TileModuleList resultModules;
+  StandaloneTileModuleList resultModules;
   resultModules.reserve(sourceTileModules.size());
   for (TileModuleOp sourceTileModule : sourceTileModules) {
     StructuredMaterializationRelations tileRelations;
     mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> resultModule =
-        createTileModule(sourceModule, sourceTileModule,
-                         materializationRelations, tileRelations,
-                         failureReason);
+        createStandaloneTileModule(sourceModule, sourceTileModule,
+                                   materializationRelations, tileRelations,
+                                   failureReason);
     if (mlir::failed(resultModule))
       return mlir::failure();
-    resultModules.push_back(
-        TileModule{CardId(sourceTileModule.getCardIdAttr().getInt()),
-                   TileId(sourceTileModule.getTileIdAttr().getInt()),
-                   std::move(*resultModule), std::move(tileRelations)});
+    resultModules.push_back(StandaloneTileModule{
+        CardId(sourceTileModule.getCardIdAttr().getInt()),
+        TileId(sourceTileModule.getTileIdAttr().getInt()),
+        std::move(*resultModule), std::move(tileRelations)});
   }
   return std::move(resultModules);
 }

@@ -46,7 +46,7 @@ add_executable(WaferUnitTests
   Conversion/StructuredGraphNormalizationTest.cpp
   Conversion/StructuredTilingTest.cpp
   Conversion/RequiredNCCJoinPlacementTest.cpp
-  Conversion/WaferTileModuleFanoutTest.cpp
+  Conversion/StandaloneTileModulesTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
   Dialect/Wafer/TargetTopologyTest.cpp
@@ -99,7 +99,7 @@ target_link_libraries(WaferUnitTests
   WaferStableHLOPipelines
   WaferTileRegionPipelines
   WaferStructuredTiling
-  WaferTileModuleFanout
+  WaferStandaloneTileModules
   WaferTransforms
   MLIRAsyncDialect
   MLIRArithDialect

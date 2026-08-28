@@ -134,7 +134,7 @@ TensorProgram
 ```
 
 - TensorProgram→top-level TileModule set materializes selected physical spatial mapping及coverage；
-- `WaferTileModuleFanout`只从explicit top-level Tile modules拆出standalone ModuleOps并保留physical identity；
+- `createStandaloneTileModules`只从explicit top-level Tile modules创建standalone ModuleOps并保留physical identity；
 - TileModule内的TileRegion materialization使用structured tiling/reduction interfaces、DPS和IndexRelation，
   负责Tile-local dataflow；
 - TileRegion→Instr lower actual compute/movement/communication，不做全局选择；

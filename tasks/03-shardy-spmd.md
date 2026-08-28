@@ -21,7 +21,7 @@ Pipeline position:
   输出尚未绑定card_id、target tile_id、launch slot或runtime endpoint。
 - Downstream consumer:
   fixed target-independent structured optimization；随后physical-dataflow planning对每个card-local DAG
-  构造top-level TileModule set，并选择target tile_id。Tile module fan-out只发生在该collection完成之后。
+  构造top-level TileModule set，并选择target tile_id。Standalone Tile modules只在该set完成后创建。
 - User-level driver / named pipeline:
   正式入口为
   `wafer-compile --input-program-dir=... --output-dir=... --num-partitions=N`；

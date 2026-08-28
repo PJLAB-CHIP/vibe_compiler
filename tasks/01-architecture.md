@@ -123,7 +123,7 @@ fixed semantic roots + query-local physical-dataflow selection
 selected top-level TileModule / TileRegion
         |
         v
-TileModule fan-out -> final placed/bound Instr programs
+create standalone Tile modules -> final placed/bound Instr programs
         |
         v
 DeviceExecutable (all-and-only Tile executables)

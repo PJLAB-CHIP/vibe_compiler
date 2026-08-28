@@ -21,7 +21,7 @@ PyTorch/XLA StableHLO program directory
   -> card-local Linalg/Tensor/SCF structured DAG
   -> bounded structured-DAG spatial/temporal/dataflow search
   -> top-level wafer.tile.module(card_id, tile_id)*
-  -> per-Tile module fan-out
+  -> standalone per-Tile modules
   -> Tile IR -> Instr IR + completion + SPM/DDR + Direct-DTE gates
   -> module/executable verification and candidate selection
   -> DeviceExecutable

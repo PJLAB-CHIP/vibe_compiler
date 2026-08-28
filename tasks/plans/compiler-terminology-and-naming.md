@@ -51,7 +51,7 @@ Pipeline position:
 - Current stage responsibility:
   让IR hierarchy、analysis、lowering与最终产物名称分别对应真实职责，删除没有独立语义的中间wrapper和范围限定。
 - Output IR / files:
-  builtin module中的top-level `wafer.tile.module(card_id, tile_id)`或后续直接fan-out的per-Tile builtin modules；
+  builtin module中的top-level `wafer.tile.module(card_id, tile_id)`或由`createStandaloneTileModules`产生的per-Tile builtin modules；
   `StructuredProgramAnalysis`、`InstructionProgramCost`、`InstructionProgramAggregateCost`、`ExecutableLowering`、
   `ExecutableCompilation`与`DeviceExecutable`。
 - Downstream consumer:
@@ -70,7 +70,7 @@ current形式：
 | 概念 | current表示 | 理由 |
 | --- | --- | --- |
 | shared module scope与Tile ownership | `builtin.module` + top-level `TileModuleOp(card_id, tile_id)` | builtin module已经提供共同scope；Tile op提供实际execution ownership |
-| per-Tile fan-out | `WaferTileModuleFanout` | 直接消费top-level Tile modules并按typed identity稳定排序 |
+| standalone Tile modules | `StandaloneTileModule` / `createStandaloneTileModules` | 直接消费top-level Tile modules并按typed identity稳定排序 |
 | structured analysis | `StructuredProgramAnalysis` | 输入是current structured function、topology和Tile domain |
 | instruction cost | `InstructionProgramCost` / `InstructionProgramAggregateCost` | 分别表示单Tile program与完整Tile集合，类型边界明确 |
 | executable action | `ExecutableLowering*` / `ExecutableCompilation*` | namespace、输入和输出已经确定作用范围 |
@@ -82,7 +82,7 @@ current形式：
 
 | 输入等价类 | 结构 | failure | 精确断言 | 直接下游witness |
 | --- | --- | --- | --- | --- |
-| top-level Tile module set | 16个unique `(card_id=0,tile_id)`、顺序扰动、2x1024x64与2x1025x64 shared declarations、缺失/重复/负值 | local verifier只查自身；collection check拒绝duplicate；executable stage拒绝missing/foreign/unavailable Tile | fan-out按typed ID稳定排序；每个body只move一次；共享declaration复制一次；partial set保留给caller stage判定 | Executable lowering消费16个standalone modules |
+| top-level Tile module set | 16个unique `(card_id=0,tile_id)`、顺序扰动、2x1024x64与2x1025x64 shared declarations、缺失/重复/负值 | local verifier只查自身；collection check拒绝duplicate；executable stage拒绝missing/foreign/unavailable Tile | `createStandaloneTileModules`按typed ID稳定排序；每个body只move一次；共享declaration复制一次；partial set保留给caller stage判定 | Executable lowering消费16个standalone modules |
 | whole-device final owner | ordinary/profile、program data empty/nonempty、target-model consumer | incomplete Tile/target module/argument closure保持原typed failure | `DeviceExecutable`唯一持有all-and-only Tile executables及program data | package writer、target modules、model/runtime |
 | shared DDR/workspace | DDR resource/binding/movement、shared workspace、package `card_id/card_count`、topology multi-card verifier | 任何字段丢失、scope改变或旧reader仍接受即失败 | DDR行为byte-equivalent；repo-owned workspace spelling只接受`shared_workspace`；physical card identity不变 | package strict readback与runtime invocation |
 | residual scan | source/header/CMake/test/current docs | 任一旧wrapper/API仍有current caller即失败 | 旧名0；archive不改 | source/IR organization、public link与完整build |
