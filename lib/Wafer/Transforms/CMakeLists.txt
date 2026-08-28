@@ -9,6 +9,7 @@ add_mlir_library(WaferTransforms
   Module/StripTargetMetadata.cpp
   Tile/ExecutionStructure.cpp
   Instr/BufferizeInstrFunctionBoundaries.cpp
+  Instr/DirectDTETransport.cpp
   Instr/LifetimeAnalysis.cpp
   Instr/MiniMallocPacking.cpp
   Instr/NCCJoinPlacement.cpp
@@ -17,7 +18,11 @@ add_mlir_library(WaferTransforms
   Instr/PlanSPMMemory.cpp
   Instr/RedundantTransferElimination.cpp
   Instr/StaticMemoryPacking.cpp
+  Instr/TileMemoryPlanning.cpp
   Passes.cpp
+  Tile/CurrentIRLayoutOptimization.cpp
+  Tile/StructuredBufferRelations.cpp
+  Tile/StructuredNodeUseIndex.cpp
 
   DEPENDS
   WaferPassesIncGen
@@ -51,14 +56,6 @@ add_mlir_library(WaferTransforms
   MLIRTransforms
   MLIRValueBoundsOpInterface
 )
-
-set(WAFER_COMPILATION_TRANSFORM_SOURCES
-  Transforms/Instr/TileMemoryPlanning.cpp
-  Transforms/Tile/CurrentIRLayoutOptimization.cpp
-  Transforms/Tile/StructuredBufferRelations.cpp
-  Transforms/Tile/StructuredNodeUseIndex.cpp
-  Transforms/Instr/DirectDTETransport.cpp
-  PARENT_SCOPE)
 
 target_include_directories(obj.WaferTransforms PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}

@@ -1,11 +1,11 @@
 //===- ExecutableLoweringTest.cpp ----------------------------===//
 
 #include "Wafer/Driver/ExecutableLowering.h"
-#include "Wafer/Driver/BoundedTileExecutor.h"
 #include "Wafer/CodeGen/DeviceExecutableInternal.h"
 #include "Wafer/CodeGen/LLVM/TargetCodeGenInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Driver/ProgramData.h"
+#include "Wafer/Support/BoundedTilePipelines.h"
 
 #include "Wafer/IR/WaferDialect.h"
 
@@ -281,8 +281,8 @@ TEST_F(ExecutableLoweringTest,
   EXPECT_EQ(finalWork.targetLoweringInvocations, 16u);
   EXPECT_EQ(finalWork.targetTranslationInvocations, 16u);
   const unsigned expectedWorkers =
-      wafer::compiler::detail::getBoundedTilePipelineWorkerCount(
-          context.get(), /*tileCount=*/16);
+      wafer::support::getBoundedTilePipelineWorkerCount(context.get(),
+                                                        /*tileCount=*/16);
   EXPECT_EQ(targetStats.maximumTilePipelineWorkers, expectedWorkers);
   if (expectedWorkers > 1) {
     EXPECT_GT(targetStats.maximumTilePipelineWorkers, 1u);

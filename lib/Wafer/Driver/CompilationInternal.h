@@ -6,8 +6,8 @@
 #include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Driver/CompilationResult.h"
-#include "Wafer/Frontend/Program.h"
 #include "Wafer/Driver/ProgramData.h"
+#include "Wafer/Frontend/Program.h"
 
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Pass/PassManager.h"
@@ -108,10 +108,6 @@ materializeOrVerifyExactExecutionConfig(mlir::ModuleOp module,
                                         const ExecutionConfig &config);
 void eraseTargetTopologyAndExecutionMesh(mlir::ModuleOp module);
 void registerCompilationDialects(mlir::DialectRegistry &registry);
-mlir::LogicalResult
-runPassPipeline(mlir::ModuleOp module, llvm::StringRef pipelineLabel,
-                llvm::function_ref<void(mlir::OpPassManager &)> builder);
-
 mlir::LogicalResult runSpmdHelper(llvm::StringRef helper,
                                   llvm::StringRef inputProgramDirectory,
                                   llvm::StringRef outputProgramDirectory,

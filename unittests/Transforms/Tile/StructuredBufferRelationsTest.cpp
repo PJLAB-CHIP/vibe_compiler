@@ -1,12 +1,13 @@
 //===- StructuredBufferRelationsTest.cpp -------------------------------===//
 
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
-#include "Wafer/Transforms/Tile/StructuredNodeUseIndex.h"
 #include "Wafer/Driver/CompilationInternal.h"
+#include "Wafer/Transforms/Tile/StructuredNodeUseIndex.h"
 
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileWorkStatistics.h"
+#include "Wafer/Support/PassPipeline.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -102,7 +103,7 @@ TEST_F(StructuredBufferRelationsTest,
   EXPECT_EQ(nodeUses.collectNodesUsedBy(emitted->operation),
             (llvm::SmallVector<uint32_t, 4>{7}));
 
-  ASSERT_TRUE(mlir::succeeded(wafer::compiler::detail::runPassPipeline(
+  ASSERT_TRUE(mlir::succeeded(wafer::support::runPassPipeline(
       *module, "test-required-ncc-join-placement",
       [](mlir::OpPassManager &manager) {
         manager.nest<mlir::func::FuncOp>().addPass(

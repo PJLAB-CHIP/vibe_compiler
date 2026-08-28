@@ -23,12 +23,10 @@ foreach(_wafer_native_jit_lib IN LISTS WAFER_NATIVE_JIT_LIBS)
 endforeach()
 
 add_mlir_library(WaferCompiler
-  ${WAFER_PLANNING_SOURCES}
   ${WAFER_CODEGEN_SOURCES}
   ${WAFER_DRIVER_SOURCES}
   Package/Writer/Package.cpp
   Package/Writer/WriteExecutablePackage.cpp
-  ${WAFER_COMPILATION_TRANSFORM_SOURCES}
 
   LINK_LIBS PUBLIC
   LLVMSupport
@@ -46,6 +44,7 @@ add_mlir_library(WaferCompiler
   WaferIR
   WaferInstrToLLVM
   WaferPackage
+  WaferPlanning
   WaferStandaloneTileModules
   WaferStableHLOPipelines
   WaferTarget

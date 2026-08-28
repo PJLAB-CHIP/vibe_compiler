@@ -1,17 +1,17 @@
 //===- ExecutableCompilation.cpp - Policy-free executable seam ------===//
 
 #include "Wafer/Driver/ExecutableCompilation.h"
-#include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
-#include "Wafer/Transforms/Tile/StructuredNodeUseIndex.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/IR/Topology/TargetTopology.h"
+#include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
+#include "Wafer/Transforms/Tile/StructuredNodeUseIndex.h"
 
-#include "Wafer/Driver/BoundedTileExecutor.h"
+#include "Wafer/Support/BoundedTilePipelines.h"
 
-#include "Wafer/Transforms/Instr/RedundantTransferElimination.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Instr/MemoryPlanningPipelines.h"
+#include "Wafer/Transforms/Instr/RedundantTransferElimination.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -216,11 +216,12 @@ ExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
     result.module = std::move(*memoryPlanned);
   };
 
-  const unsigned requestedWorkers = tilePipelineParallelism == 0
-                                        ? kMaximumBoundedTilePipelineWorkers
-                                        : tilePipelineParallelism;
-  unsigned workers = runBoundedTilePipelines(context, loweringResults.size(),
-                                             planMemory, requestedWorkers);
+  const unsigned requestedWorkers =
+      tilePipelineParallelism == 0
+          ? wafer::support::kMaximumBoundedTilePipelineWorkers
+          : tilePipelineParallelism;
+  unsigned workers = wafer::support::runBoundedTilePipelines(
+      context, loweringResults.size(), planMemory, requestedWorkers);
   if (statistics)
     statistics->maximumTilePipelineWorkers =
         std::max<uint64_t>(statistics->maximumTilePipelineWorkers, workers);

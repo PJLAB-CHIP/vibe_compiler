@@ -8,6 +8,7 @@
 #include "Wafer/Conversion/StableHLOToLinalg/Pipelines.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Support/CompileWorkStatistics.h"
+#include "Wafer/Support/PassPipeline.h"
 
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
@@ -651,8 +652,9 @@ mlir::LogicalResult runCompilationTransaction(
       return mlir::failure();
   }
 
-  if (mlir::failed(runPassPipeline(*tensorModule, "stablehlo-to-linalg",
-                                   wafer::buildStablehloToLinalgPipeline)))
+  if (mlir::failed(wafer::support::runPassPipeline(
+          *tensorModule, "stablehlo-to-linalg",
+          wafer::buildStablehloToLinalgPipeline)))
     return mlir::failure();
   if (containsDialectSemantics(*tensorModule, "stablehlo") ||
       containsDialectSemantics(*tensorModule, "sdy")) {

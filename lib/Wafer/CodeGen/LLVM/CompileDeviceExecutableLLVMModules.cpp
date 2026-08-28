@@ -3,7 +3,7 @@
 
 #include "Wafer/CodeGen/LLVM/TargetCodeGenInternal.h"
 
-#include "Wafer/Driver/BoundedTileExecutor.h"
+#include "Wafer/Support/BoundedTilePipelines.h"
 
 #include "Wafer/Target/TargetMemory.h"
 
@@ -99,57 +99,61 @@ compileDeviceExecutableToTargetLLVMModulesImpl(
   {
     mlir::ParallelDiagnosticHandler parallelDiagnostics(
         tileModules.front().getContext());
-    workers = runBoundedTileModulePipelines(tileModules, [&](size_t tileIndex) {
-      const TileExecutable &tile = tiles[tileIndex];
-      parallelDiagnostics.setOrderIDForThread(
-          static_cast<size_t>(tile.getLaunchSlotId().getValue()));
-      auto eraseDiagnosticOrder = llvm::make_scope_exit(
-          [&] { parallelDiagnostics.eraseOrderIDForThread(); });
-      TileCompilationResult &result = tileResults[tileIndex];
-      result.abiPreparationAttempted = true;
-      mlir::FailureOr<PreparedTile> prepared = prepareTargetABI(
-          tile, executionConfig, transportPreparedBeforeEntry, profileCapture);
-      if (mlir::failed(prepared)) {
-        result.failure = TileCompilationFailure::ABIPreparation;
-        return;
-      }
-      if (llvm::Error error = verifyProfileCaptureTileEntryArguments(
-              prepared->slots, profileCapture)) {
-        result.failure = TileCompilationFailure::ProfileSlots;
-        result.detail = llvm::toString(std::move(error));
-        return;
-      }
-      result.loweringAttempted = true;
-      if (mlir::failed(lowerToTargetLLVM(*prepared))) {
-        result.failure = TileCompilationFailure::Lowering;
-        return;
-      }
-      if (mlir::failed(
-              verifyLoweredKernelABI(*prepared, tile.getEntrySymbol()))) {
-        result.failure = TileCompilationFailure::ABIVerification;
-        return;
-      }
-      if (prepared->cardId != tile.getCardId() ||
-          prepared->tileId != tile.getTileId() ||
-          prepared->launchSlotId != tile.getLaunchSlotId() ||
-          prepared->targetIdentity != executionConfig.getTargetIdentityId() ||
-          prepared->transportPreparedBeforeEntry !=
-              transportPreparedBeforeEntry ||
-          prepared->kernelRuntimeABI != KernelRuntimeABIId::waferTx81Kernel() ||
-          prepared->moduleFormat != kCurrentTargetModuleFormat) {
-        result.failure = TileCompilationFailure::IdentityReadback;
-        return;
-      }
-      result.translationAttempted = true;
-      llvm::Expected<TargetLLVMModule> translated =
-          translatePreparedTile(std::move(*prepared), tile.getEntrySymbol());
-      if (!translated) {
-        result.failure = TileCompilationFailure::Translation;
-        result.detail = llvm::toString(translated.takeError());
-        return;
-      }
-      result.module.emplace(std::move(*translated));
-    });
+    workers = wafer::support::runBoundedTileModulePipelines(
+        tileModules, [&](size_t tileIndex) {
+          const TileExecutable &tile = tiles[tileIndex];
+          parallelDiagnostics.setOrderIDForThread(
+              static_cast<size_t>(tile.getLaunchSlotId().getValue()));
+          auto eraseDiagnosticOrder = llvm::make_scope_exit(
+              [&] { parallelDiagnostics.eraseOrderIDForThread(); });
+          TileCompilationResult &result = tileResults[tileIndex];
+          result.abiPreparationAttempted = true;
+          mlir::FailureOr<PreparedTile> prepared =
+              prepareTargetABI(tile, executionConfig,
+                               transportPreparedBeforeEntry, profileCapture);
+          if (mlir::failed(prepared)) {
+            result.failure = TileCompilationFailure::ABIPreparation;
+            return;
+          }
+          if (llvm::Error error = verifyProfileCaptureTileEntryArguments(
+                  prepared->slots, profileCapture)) {
+            result.failure = TileCompilationFailure::ProfileSlots;
+            result.detail = llvm::toString(std::move(error));
+            return;
+          }
+          result.loweringAttempted = true;
+          if (mlir::failed(lowerToTargetLLVM(*prepared))) {
+            result.failure = TileCompilationFailure::Lowering;
+            return;
+          }
+          if (mlir::failed(
+                  verifyLoweredKernelABI(*prepared, tile.getEntrySymbol()))) {
+            result.failure = TileCompilationFailure::ABIVerification;
+            return;
+          }
+          if (prepared->cardId != tile.getCardId() ||
+              prepared->tileId != tile.getTileId() ||
+              prepared->launchSlotId != tile.getLaunchSlotId() ||
+              prepared->targetIdentity !=
+                  executionConfig.getTargetIdentityId() ||
+              prepared->transportPreparedBeforeEntry !=
+                  transportPreparedBeforeEntry ||
+              prepared->kernelRuntimeABI !=
+                  KernelRuntimeABIId::waferTx81Kernel() ||
+              prepared->moduleFormat != kCurrentTargetModuleFormat) {
+            result.failure = TileCompilationFailure::IdentityReadback;
+            return;
+          }
+          result.translationAttempted = true;
+          llvm::Expected<TargetLLVMModule> translated = translatePreparedTile(
+              std::move(*prepared), tile.getEntrySymbol());
+          if (!translated) {
+            result.failure = TileCompilationFailure::Translation;
+            result.detail = llvm::toString(translated.takeError());
+            return;
+          }
+          result.module.emplace(std::move(*translated));
+        });
   }
 
   if (statistics) {

@@ -3,15 +3,16 @@
 #include "Wafer/Driver/ExecutableLowering.h"
 
 #include "Wafer/Analysis/Module/ExecutableCallClosure.h"
-#include "Wafer/Driver/ProgramResourceVerification.h"
-#include "Wafer/Driver/BoundedTileExecutor.h"
 #include "Wafer/CodeGen/DeviceExecutableInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
+#include "Wafer/Driver/ProgramResourceVerification.h"
+#include "Wafer/Support/BoundedTilePipelines.h"
 #include "Wafer/Transforms/Instr/DirectDTETransport.h"
 
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/Topology/TargetTopology.h"
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Support/PassPipeline.h"
 #include "Wafer/Target/TargetMemory.h"
 #include "Wafer/Transforms/Instr/MemoryPlanning.h"
 #include "Wafer/Transforms/Passes.h"
@@ -82,10 +83,10 @@ bool ExecutableLoweringFailure::isProvenExactRejection() const {
 namespace {
 
 static mlir::LogicalResult lowerTileIndexExpressions(mlir::ModuleOp module) {
-  return runPassPipeline(module, "tile-index-lowering",
-                         [](mlir::OpPassManager &manager) {
-                           manager.addPass(mlir::createLowerAffinePass());
-                         });
+  return wafer::support::runPassPipeline(
+      module, "tile-index-lowering", [](mlir::OpPassManager &manager) {
+        manager.addPass(mlir::createLowerAffinePass());
+      });
 }
 
 static mlir::LogicalResult
@@ -657,7 +658,7 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
     wafer::support::ScopedCompileTimingSpan timing(
         "lowering", "tile-modules-to-device-executable", "ddr-planning");
     std::vector<uint8_t> failedTiles(tileCount);
-    runBoundedTileModulePipelines(
+    wafer::support::runBoundedTileModulePipelines(
         moduleViews,
         [&](size_t tile) {
           mlir::ModuleOp module = moduleViews[tile];
@@ -665,8 +666,9 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
               mlir::failed(assignTileDDROffsets(module, memory)) ||
               mlir::failed(mlir::verify(module));
         },
-        tilePipelineParallelism == 0 ? kMaximumBoundedTilePipelineWorkers
-                                     : tilePipelineParallelism);
+        tilePipelineParallelism == 0
+            ? wafer::support::kMaximumBoundedTilePipelineWorkers
+            : tilePipelineParallelism);
     if (llvm::is_contained(failedTiles, uint8_t{1})) {
       failureKind = ExecutableLoweringFailureKind::DDRPlanning;
       return mlir::failure();
@@ -677,15 +679,16 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
     wafer::support::ScopedCompileTimingSpan timing(
         "lowering", "tile-modules-to-device-executable", "index-lowering");
     std::vector<uint8_t> failedTiles(tileCount);
-    runBoundedTileModulePipelines(
+    wafer::support::runBoundedTileModulePipelines(
         moduleViews,
         [&](size_t tile) {
           mlir::ModuleOp module = moduleViews[tile];
           failedTiles[tile] = mlir::failed(lowerTileIndexExpressions(module)) ||
                               mlir::failed(mlir::verify(module));
         },
-        tilePipelineParallelism == 0 ? kMaximumBoundedTilePipelineWorkers
-                                     : tilePipelineParallelism);
+        tilePipelineParallelism == 0
+            ? wafer::support::kMaximumBoundedTilePipelineWorkers
+            : tilePipelineParallelism);
     if (llvm::is_contained(failedTiles, uint8_t{1})) {
       failureKind = ExecutableLoweringFailureKind::IndexLowering;
       return mlir::failure();

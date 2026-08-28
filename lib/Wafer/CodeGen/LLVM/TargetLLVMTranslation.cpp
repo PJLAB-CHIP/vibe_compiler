@@ -1,14 +1,13 @@
 //===- TargetLLVMTranslation.cpp - Target conversion and translation ----===//
 
 #include "Wafer/CodeGen/LLVM/TargetCodeGenInternal.h"
-#include "Wafer/Driver/CompilationInternal.h"
-
 #include "Wafer/Support/CompileWorkStatistics.h"
 
+#include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Support/PassPipeline.h"
 #include "Wafer/Target/TargetMemory.h"
 #include "Wafer/Transforms/Passes.h"
-#include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Pass/Pass.h"
@@ -399,7 +398,7 @@ mlir::LogicalResult lowerToTargetLLVM(PreparedTile &prepared) {
   request.transportStatusArgumentIndex = prepared.transportStatusArgumentIndex;
   request.transportPreparedBeforeEntry = prepared.transportPreparedBeforeEntry;
   request.profileRecordArgumentIndex = prepared.profileRecordArgumentIndex;
-  return runPassPipeline(
+  return wafer::support::runPassPipeline(
       *prepared.module, "instr-to-target-llvm",
       [&](mlir::OpPassManager &manager) {
         manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));

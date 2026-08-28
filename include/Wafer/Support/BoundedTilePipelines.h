@@ -1,7 +1,7 @@
-//===- BoundedTileExecutor.h - Independent Tile work -*- C++ -*-===//
+//===- BoundedTilePipelines.h - Independent Tile work ---------*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_BOUNDEDTILEEXECUTOR_H
-#define WAFER_COMPILER_BOUNDEDTILEEXECUTOR_H
+#ifndef WAFER_SUPPORT_BOUNDEDTILEPIPELINES_H
+#define WAFER_SUPPORT_BOUNDEDTILEPIPELINES_H
 
 #include "Wafer/Support/BoundedParallel.h"
 
@@ -12,19 +12,18 @@
 #include <cstddef>
 #include <utility>
 
-namespace wafer::compiler::detail {
+namespace wafer::support {
 
 /// The effective worker count is always bounded by the current independent
 /// workload and the MLIR context pool. Keep the default request unconstrained
 /// so host capability determines how many independent Tile pipelines run.
 inline constexpr unsigned kMaximumBoundedTilePipelineWorkers =
-    wafer::support::kMaximumBoundedParallelWorkers;
+    kMaximumBoundedParallelWorkers;
 
 inline unsigned getBoundedTilePipelineWorkerCount(
     mlir::MLIRContext *context, size_t tileCount,
     unsigned requestedMaximum = kMaximumBoundedTilePipelineWorkers) {
-  return wafer::support::getBoundedParallelWorkerCount(
-      context, tileCount, requestedMaximum);
+  return getBoundedParallelWorkerCount(context, tileCount, requestedMaximum);
 }
 
 /// Runs only mutually independent Tile transformations. Callers own
@@ -35,9 +34,8 @@ template <typename FunctionT>
 unsigned runBoundedTilePipelines(
     mlir::MLIRContext *context, size_t tileCount, FunctionT &&function,
     unsigned requestedMaximum = kMaximumBoundedTilePipelineWorkers) {
-  return wafer::support::runBoundedParallelWork(
-      context, tileCount, std::forward<FunctionT>(function),
-      requestedMaximum);
+  return runBoundedParallelWork(
+      context, tileCount, std::forward<FunctionT>(function), requestedMaximum);
 }
 
 /// Uses bounded shared-context parallelism when every Tile module
@@ -63,6 +61,6 @@ unsigned runBoundedTileModulePipelines(
                                  requestedMaximum);
 }
 
-} // namespace wafer::compiler::detail
+} // namespace wafer::support
 
-#endif // WAFER_COMPILER_BOUNDEDTILEEXECUTOR_H
+#endif // WAFER_SUPPORT_BOUNDEDTILEPIPELINES_H

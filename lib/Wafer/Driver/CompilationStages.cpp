@@ -7,6 +7,7 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Support/PassPipeline.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -365,7 +366,7 @@ materializeOrVerifyExactExecutionConfig(mlir::ModuleOp module,
   if (topologies.empty() || meshes.empty()) {
     wafer::MaterializeExecutionMeshPassOptions meshOptions;
     meshOptions.shape = std::to_string(config.getNumPartitions());
-    if (mlir::failed(runPassPipeline(
+    if (mlir::failed(wafer::support::runPassPipeline(
             module, "execution-config", [&](mlir::OpPassManager &manager) {
               if (topologies.empty())
                 manager.addPass(wafer::createMaterializeTargetTopologyPass());
@@ -413,16 +414,6 @@ void registerCompilationDialects(mlir::DialectRegistry &registry) {
   mlir::tensor::registerTilingInterfaceExternalModels(registry);
   mlir::func::registerInlinerExtension(registry);
   mlir::LLVM::registerInlinerInterface(registry);
-}
-
-mlir::LogicalResult
-runPassPipeline(mlir::ModuleOp module, llvm::StringRef pipelineLabel,
-                llvm::function_ref<void(mlir::OpPassManager &)> builder) {
-  mlir::PassManager manager(module.getContext());
-  manager.enableVerifier(true);
-  wafer::support::attachCompileTiming(manager, pipelineLabel);
-  builder(manager);
-  return manager.run(module);
 }
 
 mlir::LogicalResult
