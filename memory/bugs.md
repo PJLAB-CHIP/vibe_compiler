@@ -1365,3 +1365,26 @@
   source或测试上局部增删`NDEBUG`修补症状。
 - 防复发：fresh Release compile command必须与pinned LLVM assertion配置一致，并运行至少一个创建/销毁pass statistics的linked smoke。
   遇到跨pass随机析构损坏时先比较LLVM package flags和consumer flags，不猜线程、allocator或IR ownership。
+
+## 可选的不可物化relation不能把其它合法e-graph路径变成work limit
+
+- 现象：简单inverse reshape、transpose和Compute测试均通过，但把它们串成`reshape→transpose→Compute→transpose`后，e-node和match
+  很少，component仍以budget exhaustion保持原图；把iteration上限从8提高到32完全无效。
+- 根因：Access composition无条件对`projected map ∘ general row-major reshape`调用通用Presburger compose。这个可选RHS通常没有单一
+  Tensor/Linalg materialization form，却先触发relation solver的`ResourceExhausted`；callback把它正确翻译成WorkLimit后，整个request按
+  合同销毁，掩盖了相邻expand/collapse先闭合identity再通过congruence暴露transpose的合法路径。
+- 修复模式：relation service先按materialization class分派。identity、reshape∘reshape和projected∘projected走各自exact构造；没有当前
+  materialization form的reshape/projected mixed pair直接返回typed Unsupported，不启动通用solver。真正执行的query达到work limit仍保持
+  整个component不变，不能降级成Unsupported。
+- 防复发：同时保留1024/1025/1031的reshape/broadcast/concat与elementwise/reduction/contraction连续链，以及4个以上Compute交替Access
+  深链；记录budget、e-node、relation query、match和before/after op。发现低work图exhaustion时先按callback种类归因，不能直接提高budget。
+
+## Fanout boundary变化必须在同一次normalization中闭合
+
+- 现象：共享Access最初同时作为Compute data operand和另一个passthrough op的DPS init，all-users preflight正确保持整组；随后e-graph删除
+  passthrough旁支，Access只剩一个可吸收use，但旧实现要第二次运行同一pass才删除它，破坏idempotence。
+- 根因：把multi-use boundary rewrite和single-root equality saturation各运行一次，默认后者不会改变前者观察到的current use集合。
+- 修复模式：在一次pass invocation内交替运行两者，直到本轮没有修改。每个成功轮次必须从实际current IR证明`Access`数量严格下降，或
+  `Access`不变而canonical `Concat`数量严格下降；没有结构下降则按transformation contract failure停止，不用固定轮数或历史rewrite记录。
+- 防复发：1024/1025/1031矩阵同时保留异构fanout正例、会被同轮其它rewrite删除的暂时DPS-init use、持续存在的observable use barrier和
+  第二次运行byte-equivalent检查。不能通过把暂时use写成永久barrier、重复调用产品pipeline或增加whole-graph clone掩盖phase order。

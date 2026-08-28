@@ -103,6 +103,10 @@ struct FakeRelationService {
           *reindexReadInit = service->reindexReadInit ? 1 : 0;
           return WAFER_EGRAPH_CALLBACK_EXACT;
         },
+        [](void *, uint32_t, uint32_t, uint32_t, uint32_t, const uint32_t *,
+           uint64_t, uint32_t, uint32_t *, uint32_t *, uint32_t *) -> uint32_t {
+          return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+        },
         [](void *, uint32_t resultTypeId, int32_t axis,
            const uint32_t *inputTypeIds, uint64_t inputCount) -> uint32_t {
           if (!resultTypeId || axis < 0 || !inputCount || !inputTypeIds)

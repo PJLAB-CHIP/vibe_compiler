@@ -110,6 +110,8 @@ def NormalizeStructuredTensorGraphPass
               "Number of serialized C ABI output bytes">,
     Statistic<"numAccessTransformsRemoved", "access-transforms-removed",
               "Number of explicit access-transform occurrences removed">,
+    Statistic<"numMultiUseAccessPropagations", "multi-use-access-propagations",
+              "Number of shared projected accesses propagated to all supported Linalg data users">,
     Statistic<"numConcatTransformsRemoved", "concat-transforms-removed",
               "Number of concat assembly occurrences removed">,
     Statistic<"numRelationQueries", "relation-queries",

@@ -4,6 +4,7 @@ use egg::{
 };
 use std::cell::Cell;
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -11,7 +12,7 @@ use std::rc::Rc;
 use std::slice;
 use std::sync::{
     atomic::{AtomicU32, AtomicU64, Ordering as AtomicOrdering},
-    Arc,
+    Arc, Mutex,
 };
 use std::time::Duration;
 
@@ -86,6 +87,19 @@ type ReindexComputeFn = unsafe extern "C" fn(
     *mut u32,
     *mut u32,
 ) -> u32;
+type ReparameterizeElementwiseFn = unsafe extern "C" fn(
+    *mut c_void,
+    u32,
+    u32,
+    u32,
+    u32,
+    *const u32,
+    u64,
+    u32,
+    *mut u32,
+    *mut u32,
+    *mut u32,
+) -> u32;
 type ValidateConcatFn = unsafe extern "C" fn(*mut c_void, u32, i32, *const u32, u64) -> u32;
 type FactorConcatFn = unsafe extern "C" fn(
     *mut c_void,
@@ -107,6 +121,7 @@ pub struct WaferEGraphRelationService {
     compose_relations: Option<ComposeRelationsFn>,
     validate_compute: Option<ValidateComputeFn>,
     reindex_compute: Option<ReindexComputeFn>,
+    reparameterize_elementwise: Option<ReparameterizeElementwiseFn>,
     validate_concat: Option<ValidateConcatFn>,
     factor_concat: Option<FactorConcatFn>,
 }
@@ -293,6 +308,44 @@ fn valid_node_shape(node: &GraphLanguage) -> bool {
     }
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ComputeValidationKey {
+    semantic_id: u32,
+    kind: u32,
+    result_type: u32,
+    relations: Vec<u32>,
+    operand_types: Vec<u32>,
+    data_input_count: u32,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ReindexKey {
+    semantic_id: u32,
+    kind: u32,
+    source_type: u32,
+    destination_type: u32,
+    result_relation: u32,
+    input_relations: Vec<u32>,
+    data_input_count: u32,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ConcatValidationKey {
+    result_type: u32,
+    axis: i32,
+    input_types: Vec<u32>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ConcatFactorKey {
+    result_type: u32,
+    axis: i32,
+    relations: Vec<u32>,
+    source_types: Vec<u32>,
+}
+
+type ReparameterizationValue = (Vec<u32>, Vec<u32>, Vec<u32>);
+
 #[derive(Default)]
 struct RuntimeState {
     status: AtomicU32,
@@ -302,6 +355,13 @@ struct RuntimeState {
     compute_absorption_applications: AtomicU64,
     concat_applications: AtomicU64,
     result_reindex_applications: AtomicU64,
+    relation_facts_cache: Mutex<BTreeMap<u32, Option<WaferEGraphRelationFacts>>>,
+    composition_cache: Mutex<BTreeMap<(u32, u32), Option<u32>>>,
+    compute_validation_cache: Mutex<BTreeMap<ComputeValidationKey, bool>>,
+    reindex_cache: Mutex<BTreeMap<ReindexKey, Option<(Vec<u32>, bool)>>>,
+    reparameterization_cache: Mutex<BTreeMap<ReindexKey, Option<ReparameterizationValue>>>,
+    concat_validation_cache: Mutex<BTreeMap<ConcatValidationKey, bool>>,
+    concat_factor_cache: Mutex<BTreeMap<ConcatFactorKey, Option<(u32, u32, i32)>>>,
 }
 
 impl RuntimeState {
@@ -349,6 +409,7 @@ struct RelationService {
     compose_relations: ComposeRelationsFn,
     validate_compute_fn: ValidateComputeFn,
     reindex_compute_fn: ReindexComputeFn,
+    reparameterize_elementwise_fn: ReparameterizeElementwiseFn,
     validate_concat_fn: ValidateConcatFn,
     factor_concat_fn: FactorConcatFn,
 }
@@ -364,6 +425,7 @@ impl RelationService {
             compose_relations: raw.compose_relations?,
             validate_compute_fn: raw.validate_compute?,
             reindex_compute_fn: raw.reindex_compute?,
+            reparameterize_elementwise_fn: raw.reparameterize_elementwise?,
             validate_concat_fn: raw.validate_concat?,
             factor_concat_fn: raw.factor_concat?,
         })
@@ -377,9 +439,20 @@ impl RelationService {
         if !runtime.is_running() || relation_id == 0 {
             return None;
         }
+        match runtime.relation_facts_cache.lock() {
+            Ok(cache) => {
+                if let Some(cached) = cache.get(&relation_id) {
+                    return *cached;
+                }
+            }
+            Err(_) => {
+                runtime.set_status(RUNTIME_INTERNAL_ERROR);
+                return None;
+            }
+        }
         let mut facts = WaferEGraphRelationFacts::default();
         let status = unsafe { (self.get_relation_facts)(self.context(), relation_id, &mut facts) };
-        if runtime.record_callback_status(status)
+        let value = if runtime.record_callback_status(status)
             && facts.destination_type_id != 0
             && facts.source_type_id != 0
             && facts.reserved == 0
@@ -390,23 +463,53 @@ impl RelationService {
                 runtime.set_status(RUNTIME_INTERNAL_ERROR);
             }
             None
+        };
+        if runtime.is_running() {
+            match runtime.relation_facts_cache.lock() {
+                Ok(mut cache) => {
+                    cache.insert(relation_id, value);
+                }
+                Err(_) => runtime.set_status(RUNTIME_INTERNAL_ERROR),
+            }
         }
+        value
     }
 
     fn compose(&self, outer: u32, inner: u32, runtime: &RuntimeState) -> Option<u32> {
         if !runtime.is_running() || outer == 0 || inner == 0 {
             return None;
         }
+        let key = (outer, inner);
+        match runtime.composition_cache.lock() {
+            Ok(cache) => {
+                if let Some(cached) = cache.get(&key) {
+                    return *cached;
+                }
+            }
+            Err(_) => {
+                runtime.set_status(RUNTIME_INTERNAL_ERROR);
+                return None;
+            }
+        }
         let mut result = 0;
         let status = unsafe { (self.compose_relations)(self.context(), outer, inner, &mut result) };
-        if runtime.record_callback_status(status) && result != 0 {
+        let value = if runtime.record_callback_status(status) && result != 0 {
             Some(result)
         } else {
             if status == CALLBACK_EXACT {
                 runtime.set_status(RUNTIME_INTERNAL_ERROR);
             }
             None
+        };
+        if runtime.is_running() {
+            match runtime.composition_cache.lock() {
+                Ok(mut cache) => {
+                    cache.insert(key, value);
+                }
+                Err(_) => runtime.set_status(RUNTIME_INTERNAL_ERROR),
+            }
         }
+        value
     }
 
     fn validate_compute(
@@ -423,6 +526,25 @@ impl RelationService {
             .iter()
             .map(|child| egraph[egraph.find(*child)].data.type_id)
             .collect();
+        let key = ComputeValidationKey {
+            semantic_id: node.semantic_id,
+            kind: node.kind,
+            result_type: node.type_id,
+            relations: node.relations.to_vec(),
+            operand_types: operand_types.clone(),
+            data_input_count: node.data_input_count,
+        };
+        match runtime.compute_validation_cache.lock() {
+            Ok(cache) => {
+                if let Some(cached) = cache.get(&key) {
+                    return *cached;
+                }
+            }
+            Err(_) => {
+                runtime.set_status(RUNTIME_INTERNAL_ERROR);
+                return false;
+            }
+        }
         let status = unsafe {
             (self.validate_compute_fn)(
                 self.context(),
@@ -435,7 +557,16 @@ impl RelationService {
                 node.data_input_count,
             )
         };
-        runtime.record_callback_status(status)
+        let valid = runtime.record_callback_status(status);
+        if runtime.is_running() {
+            match runtime.compute_validation_cache.lock() {
+                Ok(mut cache) => {
+                    cache.insert(key, valid);
+                }
+                Err(_) => runtime.set_status(RUNTIME_INTERNAL_ERROR),
+            }
+        }
+        valid
     }
 
     fn validate_concat(
@@ -452,6 +583,22 @@ impl RelationService {
             .iter()
             .map(|child| egraph[egraph.find(*child)].data.type_id)
             .collect();
+        let key = ConcatValidationKey {
+            result_type: node.type_id,
+            axis: node.axis,
+            input_types: child_types.clone(),
+        };
+        match runtime.concat_validation_cache.lock() {
+            Ok(cache) => {
+                if let Some(cached) = cache.get(&key) {
+                    return *cached;
+                }
+            }
+            Err(_) => {
+                runtime.set_status(RUNTIME_INTERNAL_ERROR);
+                return false;
+            }
+        }
         let status = unsafe {
             (self.validate_concat_fn)(
                 self.context(),
@@ -461,7 +608,16 @@ impl RelationService {
                 child_types.len() as u64,
             )
         };
-        runtime.record_callback_status(status)
+        let valid = runtime.record_callback_status(status);
+        if runtime.is_running() {
+            match runtime.concat_validation_cache.lock() {
+                Ok(mut cache) => {
+                    cache.insert(key, valid);
+                }
+                Err(_) => runtime.set_status(RUNTIME_INTERNAL_ERROR),
+            }
+        }
+        valid
     }
 
     fn factor_concat(
@@ -474,6 +630,23 @@ impl RelationService {
     ) -> Option<(u32, u32, i32)> {
         if !runtime.is_running() || relations.len() != source_types.len() {
             return None;
+        }
+        let key = ConcatFactorKey {
+            result_type,
+            axis,
+            relations: relations.to_vec(),
+            source_types: source_types.to_vec(),
+        };
+        match runtime.concat_factor_cache.lock() {
+            Ok(cache) => {
+                if let Some(cached) = cache.get(&key) {
+                    return *cached;
+                }
+            }
+            Err(_) => {
+                runtime.set_status(RUNTIME_INTERNAL_ERROR);
+                return None;
+            }
         }
         let mut result_relation = 0;
         let mut source_concat_type = 0;
@@ -491,7 +664,7 @@ impl RelationService {
                 &mut source_axis,
             )
         };
-        if runtime.record_callback_status(status)
+        let value = if runtime.record_callback_status(status)
             && result_relation != 0
             && source_concat_type != 0
             && source_axis >= 0
@@ -502,7 +675,16 @@ impl RelationService {
                 runtime.set_status(RUNTIME_INTERNAL_ERROR);
             }
             None
+        };
+        if runtime.is_running() {
+            match runtime.concat_factor_cache.lock() {
+                Ok(mut cache) => {
+                    cache.insert(key, value);
+                }
+                Err(_) => runtime.set_status(RUNTIME_INTERNAL_ERROR),
+            }
         }
+        value
     }
 
     fn reindex_compute(
@@ -514,6 +696,26 @@ impl RelationService {
     ) -> Option<(Vec<u32>, bool)> {
         if !runtime.is_running() || !is_compute_kind(compute.kind) {
             return None;
+        }
+        let key = ReindexKey {
+            semantic_id: compute.semantic_id,
+            kind: compute.kind,
+            source_type: compute.type_id,
+            destination_type,
+            result_relation: relation,
+            input_relations: compute.relations.to_vec(),
+            data_input_count: compute.data_input_count,
+        };
+        match runtime.reindex_cache.lock() {
+            Ok(cache) => {
+                if let Some(cached) = cache.get(&key) {
+                    return cached.clone();
+                }
+            }
+            Err(_) => {
+                runtime.set_status(RUNTIME_INTERNAL_ERROR);
+                return None;
+            }
         }
         let mut output = vec![0; compute.relations.len()];
         let mut reindex_read_init = 0;
@@ -532,7 +734,7 @@ impl RelationService {
                 &mut reindex_read_init,
             )
         };
-        if runtime.record_callback_status(status)
+        let value = if runtime.record_callback_status(status)
             && output.iter().all(|id| *id != 0)
             && reindex_read_init <= 1
         {
@@ -542,7 +744,89 @@ impl RelationService {
                 runtime.set_status(RUNTIME_INTERNAL_ERROR);
             }
             None
+        };
+        if runtime.is_running() {
+            match runtime.reindex_cache.lock() {
+                Ok(mut cache) => {
+                    cache.insert(key, value.clone());
+                }
+                Err(_) => runtime.set_status(RUNTIME_INTERNAL_ERROR),
+            }
         }
+        value
+    }
+
+    fn reparameterize_elementwise(
+        &self,
+        compute: &GraphLanguage,
+        destination_type: u32,
+        relation: u32,
+        runtime: &RuntimeState,
+    ) -> Option<(Vec<u32>, Vec<u32>, Vec<u32>)> {
+        if !runtime.is_running() || compute.kind != NODE_ELEMENTWISE {
+            return None;
+        }
+        let key = ReindexKey {
+            semantic_id: compute.semantic_id,
+            kind: compute.kind,
+            source_type: compute.type_id,
+            destination_type,
+            result_relation: relation,
+            input_relations: compute.relations.to_vec(),
+            data_input_count: compute.data_input_count,
+        };
+        match runtime.reparameterization_cache.lock() {
+            Ok(cache) => {
+                if let Some(cached) = cache.get(&key) {
+                    return cached.clone();
+                }
+            }
+            Err(_) => {
+                runtime.set_status(RUNTIME_INTERNAL_ERROR);
+                return None;
+            }
+        }
+        let mut compute_relations = vec![0; compute.relations.len()];
+        let mut access_relations = vec![0; compute.relations.len()];
+        let mut access_types = vec![0; compute.relations.len()];
+        let status = unsafe {
+            (self.reparameterize_elementwise_fn)(
+                self.context(),
+                compute.semantic_id,
+                compute.type_id,
+                destination_type,
+                relation,
+                compute.relations.as_ptr(),
+                compute.relations.len() as u64,
+                compute.data_input_count,
+                compute_relations.as_mut_ptr(),
+                access_relations.as_mut_ptr(),
+                access_types.as_mut_ptr(),
+            )
+        };
+        let value = if runtime.record_callback_status(status)
+            && compute_relations.iter().all(|id| *id != 0)
+            && access_relations
+                .iter()
+                .zip(&access_types)
+                .all(|(relation, ty)| (*relation == 0) == (*ty == 0))
+        {
+            Some((compute_relations, access_relations, access_types))
+        } else {
+            if status == CALLBACK_EXACT {
+                runtime.set_status(RUNTIME_INTERNAL_ERROR);
+            }
+            None
+        };
+        if runtime.is_running() {
+            match runtime.reparameterization_cache.lock() {
+                Ok(mut cache) => {
+                    cache.insert(key, value.clone());
+                }
+                Err(_) => runtime.set_status(RUNTIME_INTERNAL_ERROR),
+            }
+        }
+        value
     }
 }
 
@@ -1050,41 +1334,79 @@ impl DynamicApplier {
                 .into_iter()
                 .filter(|node| is_compute_kind(node.kind))
             {
-                let Some((relations, reindex_read_init)) = self.service.reindex_compute(
+                if let Some((relations, reindex_read_init)) = self.service.reindex_compute(
                     &compute,
                     access.type_id,
                     access.relations[0],
                     &self.runtime,
-                ) else {
-                    continue;
-                };
-                let mut target = compute.clone();
-                target.type_id = access.type_id;
-                target.relations = relations.into_boxed_slice();
-                if reindex_read_init {
-                    for init in compute.data_input_count as usize..target.children.len() {
-                        let reindexed_init = egraph.add(GraphLanguage {
+                ) {
+                    let mut target = compute.clone();
+                    target.type_id = access.type_id;
+                    target.relations = relations.into_boxed_slice();
+                    if reindex_read_init {
+                        for init in compute.data_input_count as usize..target.children.len() {
+                            let reindexed_init = egraph.add(GraphLanguage {
+                                kind: NODE_ACCESS,
+                                semantic_id: 0,
+                                type_id: access.type_id,
+                                relations: access.relations.clone(),
+                                data_input_count: 0,
+                                axis: -1,
+                                source_order: 0,
+                                children: vec![egraph.find(target.children[init])]
+                                    .into_boxed_slice(),
+                            });
+                            target.children[init] = reindexed_init;
+                        }
+                    }
+                    if self
+                        .service
+                        .validate_compute(&target, egraph, &self.runtime)
+                    {
+                        let target = egraph.add(target);
+                        if self.merge_target(egraph, eclass, target) {
+                            applied.push(target);
+                        }
+                    }
+                }
+
+                if let Some((relations, access_relations, access_types)) =
+                    self.service.reparameterize_elementwise(
+                        &compute,
+                        access.type_id,
+                        access.relations[0],
+                        &self.runtime,
+                    )
+                {
+                    let mut target = compute.clone();
+                    target.type_id = access.type_id;
+                    target.relations = relations.into_boxed_slice();
+                    for operand in 0..target.children.len() {
+                        if access_relations[operand] == 0 {
+                            continue;
+                        }
+                        let reindexed_operand = egraph.add(GraphLanguage {
                             kind: NODE_ACCESS,
                             semantic_id: 0,
-                            type_id: access.type_id,
-                            relations: access.relations.clone(),
+                            type_id: access_types[operand],
+                            relations: vec![access_relations[operand]].into_boxed_slice(),
                             data_input_count: 0,
                             axis: -1,
                             source_order: 0,
-                            children: vec![egraph.find(target.children[init])].into_boxed_slice(),
+                            children: vec![egraph.find(target.children[operand])]
+                                .into_boxed_slice(),
                         });
-                        target.children[init] = reindexed_init;
+                        target.children[operand] = reindexed_operand;
                     }
-                }
-                if !self
-                    .service
-                    .validate_compute(&target, egraph, &self.runtime)
-                {
-                    continue;
-                }
-                let target = egraph.add(target);
-                if self.merge_target(egraph, eclass, target) {
-                    applied.push(target);
+                    if self
+                        .service
+                        .validate_compute(&target, egraph, &self.runtime)
+                    {
+                        let target = egraph.add(target);
+                        if self.merge_target(egraph, eclass, target) {
+                            applied.push(target);
+                        }
+                    }
                 }
             }
         }

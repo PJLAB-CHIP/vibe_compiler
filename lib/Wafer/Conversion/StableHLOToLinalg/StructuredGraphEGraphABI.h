@@ -85,6 +85,14 @@ using WaferEGraphReindexComputeFn =
                  uint64_t relationCount, uint32_t dataInputCount,
                  uint32_t *outputRelations, uint32_t *reindexReadInit);
 
+using WaferEGraphReparameterizeElementwiseFn = uint32_t (*)(
+    void *context, uint32_t semanticId, uint32_t sourceResultTypeId,
+    uint32_t destinationResultTypeId, uint32_t resultRelationId,
+    const uint32_t *inputRelations, uint64_t relationCount,
+    uint32_t dataInputCount, uint32_t *outputComputeRelations,
+    uint32_t *outputOperandAccessRelations,
+    uint32_t *outputOperandAccessTypeIds);
+
 using WaferEGraphValidateConcatFn = uint32_t (*)(void *context,
                                                  uint32_t resultTypeId,
                                                  int32_t axis,
@@ -103,6 +111,7 @@ struct WaferEGraphRelationService {
   WaferEGraphComposeRelationsFn composeRelations;
   WaferEGraphValidateComputeFn validateCompute;
   WaferEGraphReindexComputeFn reindexCompute;
+  WaferEGraphReparameterizeElementwiseFn reparameterizeElementwise;
   WaferEGraphValidateConcatFn validateConcat;
   WaferEGraphFactorConcatFn factorConcat;
 };

@@ -485,6 +485,14 @@ request仍存活时映射到query-local input ID；地址不进入observable排�
 单一axis、unit stride、ordered non-overlap、完整coverage、base全部覆盖且中间result无额外observable use时，才导入N-ary `Concat`。
 Extract仍生成标准Tensor IR，不新增Wafer concat op。
 
+Single-root request之前允许一个窄的multi-use boundary rewrite：若同一projected `Access`的全部uses都是ordinary pure、single-result
+Linalg data operands，而且每个elementwise、reduction或contraction consumer的operand-map composition均exact、total，组合后的完整
+indexing-map集合仍能推导全部loop bounds，并且current直接下游已经接受所得signature，则一次preflight后把所有consumer原地改为读取
+Access source并同步更新各自indexing map，最后删除唯一Access。Contraction只有在组合后仍可表示为current支持的canonical
+matmul/batch-matmul signature时才接受。任一use不满足即整组不改；不复制Compute、不改变iterator、scalar/combiner、DPS init或result，
+也不建立tuple root或multi-output extractor。这是对current fanout cut的all-users Access propagation，不扩大为通用joint multi-output
+equality saturation。
+
 ### 7.3 `egg`、C ABI与request-local relation service
 
 实现复用pinned [egg](https://github.com/egraphs-good/egg) Rust library，不自研union-find、hash-cons、rebuild、scheduler、e-class analysis或
@@ -502,6 +510,7 @@ composeRelations(outer, inner)
 composeOperandMap(operandMapRelation, accessRelation)
 factorCommonConcatAccess(relation, destinationAxis, segmentTypes)
 reindexParallelResult(computeSignature, resultRelation)
+reparameterizeElementwise(computeSignature, resultRelation)
 getMaterializationForm(relation)
 ```
 
@@ -509,6 +518,10 @@ getMaterializationForm(relation)
 Rust只得到整数ID、typed callback table和一个同步调用期间有效的opaque service handle；不得得到或保存MLIR `Operation`、`Value`、
 `Region`或`MLIRContext`指针。Callback不得异步执行或跨request保存handle，返回值区分`Exact`、`Unsupported`、`WorkLimit`和
 `InternalError`，不得解析diagnostic文本决定控制流。
+
+Rust adapter对relation facts、composition、Compute/Concat validation、result reindex、elementwise reparameterization和concat factor
+使用request-local typed memo；key只含上述整数typed fields，value保留完整callback状态和typed结果。Cache hit不重复跨FFI证明，miss才
+计入relation-query budget；cache随request销毁，不跨函数、线程或IR mutation保存，也不改变rule可见的合法集合。
 
 Rust固定注册下面第7.4节的dynamic rules。Searcher只匹配e-node/e-class结构；Applier查询e-class facts与relation service，只有
 `Exact`且materializable/downstream-representable时才创建RHS e-node并union。Rebuild后的新e-class继续参与所有rules，因此多步
@@ -589,6 +602,12 @@ signature时返回`Exact`。Broadcast、projection、slice和涉及reduction axi
 `linalg.matmul`/`linalg.batch_matmul`及transpose-input named variant的exact contraction均走同一rule；其它contraction signature由
 当前直接下游能力检查返回`Unsupported`，不要求后端新增形式。
 
+对于single-use producer chain中的all-parallel elementwise，Applier还可创建同一等价式的第二种RHS：把iteration domain重参数化到新
+result coordinates，将每个data operand map物化为显式exact `Access`，并让elementwise自身使用identity maps。该RHS不融合、复制或
+交换Compute；禁止用于含`linalg.index`语义的region。它只用于让后续rule看见`Access(R, producer Compute)`并继续做producer result
+reindex；如果不能继续消除，新增Access使结构cost不下降，extractor不会选择。Multi-use producer仍由single-root component boundary阻止
+这种传播；共享projected Access的异构consumer只由上面的原子all-users fanout rewrite处理。
+
 首批不注册elementwise fusion、scalar algebra、matmul associativity/distributivity、reduction domain拆分/合并、concat向matmul/reduce
 分配或multi-pattern rewrite；前序pinned MLIR已经拥有的fold/fusion继续由其标准实现负责。Attention、collective、call、SCF、effectful
 op、general unsupported slice/insert、pad、gather/scatter和unsupported multi-result compute都是component barrier。
@@ -597,6 +616,11 @@ op、general unsupported slice/insert、pad、gather/scatter和unsupported multi
 
 E-graph只接收前序pinned MLIR folds之后仍有非相邻或rewrite-order冲突的ordinary pure component。Rule以固定semantic顺序注册，但
 输出不依赖rule遍历、hash table、地址或并行完成顺序；pinned `egg` deterministic runner与完整semantic tie-break共同保证可观察确定性。
+
+一次pass invocation在current function内交替运行all-users fanout rewrite与single-root request，直到本轮没有修改。每个成功轮次都必须使
+实际current IR中可识别的`Access`数量严格减少，或在`Access`数量不变时使canonical `Concat`数量严格减少；否则作为transformation
+contract failure停止。这个定点只闭合“前一改写删除旁支后暴露新的single-use/fanout机会”，不增加egg rule、future candidate或固定轮数，
+第二次运行同一pass必须byte-equivalent。
 
 预算使用确定性work而不是wall-clock控制输出。Request直接限制relation service call、e-node、rewrite match和iteration；这些有限
 container与iteration同时给e-class merge、rebuild和extraction建立上界，并分别报告实际计数。ABI node/child/relation记录在C++与Rust
@@ -667,10 +691,11 @@ actual Linalg；若它产生冗余IR，应修正该emitter或其本地canonicali
 | 输入等价类 | shape/结构 | typed/optimization failure | 精确断言 | 直接下游witness |
 | --- | --- | --- | --- | --- |
 | multi-rule phase ordering | rank 3--6；1024/1025/1031；`Compute(Access(T, Concat(Access(T,a), Access(T,b))))`及长链不同排列 | 任一composition unknown或work limit时整个component不变 | common-access extraction→nested composition→identity elimination由不同egg rules连续产生；C++最终candidate builder为0；result type/relation相同 | StructuredDAG与exact-demand直接消费最终Concat/Compute SSA |
+| continuous mixed Access/Compute chain | 1024/1025/1031；inverse reshape→transpose→elementwise→transpose、common-access concat→elementwise→transpose、broadcast→elementwise→transpose、reshape/transpose→reduction或contraction→result transpose | general reshape不能恢复AffineMap、broadcast会丢失唯一loop-bound map、concat gap/overlap或named contraction payload不匹配时只应用仍可证明的子链，其余保持current IR | 对每条链精确检查各Access前后数量、有效rule种类、最终input/output maps、computeId/scalar/iterator/init不变和第二次运行byte-equivalent；不能用fresh长图汇总计数代签focused chain | elementwise形成单一StructuredDAG node；reduction/contraction分别直接通过pinned partial-reduction tiler和既有named lowering |
 | generic compute operand absorption | elementwise、matmul/batch-matmul、generic contraction/reduction；1/2/15 inputs/uses；aligned/ragged | relation非total/single-valued、map不可表示、DPS init或downstream unsupported时不rewrite | iteration domain、iterator order、`computeId`、scalar/combiner、init、result和compute occurrence完全不变；只减少Access | current structured consumer及已有tiling/lowering在不改后端时成功 |
 | restricted compute result reindex | elementwise/contraction/reduction的parallel result transpose/reassociation；1024/1025/1031 | non-bijective、projection、slice、涉及reduction axis或任一map/init不可同步转换时不rewrite | exact iteration bijection；全部operand/result maps同步；reduction axes/domain不变；compute occurrence不变 | StructuredDAG、reduction tiling和现有direct consumer可消费 |
 | canonical concat assembly | N-ary/nested concat；common reshape/transpose/broadcast Access；1024/1025 segment及tail | overlap、gap、partial coverage、dynamic、axis被投影或intermediate external use时不恢复/提取 | ordered pieces all-and-only cover；common relation与axis remap exact；extract回标准Tensor IR | exact-demand piece propagation与consumer maps |
-| fanout boundary | producer root的1/2/15 uses、chain/diamond | 需要joint multi-output extraction或会复制compute时保持原IR | multi-use producer最多改写一次；所有consumer共享一个replacement SSA；computeId multiset不变 | StructuredDAG edge和producer occurrence inventory一致 |
+| fanout boundary | producer root的1/2/15 uses、chain/diamond；elementwise、reduction和contraction同构及混合uses；暂时DPS-init use与observable use；1024/1025/1031 | 任一use不是pure single-result Linalg data operand、map不可组合、完整maps无法恢复loop bounds、contraction signature不被current下游接受或需要改变iterator/result时整组保持；observable use持续阻挡 | projected Access由一次all-users propagation从全部consumer删除；每个consumer直接读取同一source SSA，operand/result maps、iterator、scalar/combiner、DPS init和compute occurrence精确检查；不复制Compute；被其它rewrite删除的暂时use在同一次pass内暴露并闭合，第二次运行byte-equivalent；observable barrier逐op保持 | StructuredDAG edge、partial-reduction tiler、named contraction lowering和producer occurrence inventory一致 |
 | attention/collective/effect barriers | ordinary DAG邻接attention、collective、SCF/call和effect | rule不得同时匹配barrier两侧；malformed输入由原verifier失败 | attention op数量、类型、result type、attributes、algorithm和region逐项不变；只允许data operand被exact同type SSA正常rewire | physical planning看到相同attention semantic roots |
 | pinned `egg` relation-service C ABI与ownership | empty/single/dense records；连续/并行compiler context；malformed tag/length/relation/callback result及forced Rust panic | configure/build缺依赖直接失败；callback typed Unsupported/WorkLimit/InternalError不发布partial rewrite | importer只含原始e-nodes；dynamic Applier实际创建RHS；无MLIR对象跨ABI；handle同步且不逃逸；allocator/deallocator all-and-only | named/driver同一pass和adapter |
 | deterministic budget与真实规模 | tiny independent e-class oracle；fresh PyTorch/HF/LLaMA dense ordinary component | relation/e-node/match/rebuild/extraction limit保持原component，不进入legality或candidate feedback | 相同budget产生相同IR/diagnostic；至少一个fresh真实component由两条以上rules产生非零有效变换；记录relation/e-node/e-class/match/iteration/extraction/wall/RSS | 第15项scale inventory与第16项完整pipeline reachability |

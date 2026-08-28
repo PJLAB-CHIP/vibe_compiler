@@ -93,8 +93,9 @@ EGraphOutcome runEGraph(llvm::ArrayRef<EGraphNode> nodes, uint32_t rootNode,
       budget.maximumMatches == 0 || budget.maximumIterations == 0 ||
       !relationService.context || !relationService.getRelationFacts ||
       !relationService.composeRelations || !relationService.validateCompute ||
-      !relationService.reindexCompute || !relationService.validateConcat ||
-      !relationService.factorConcat)
+      !relationService.reindexCompute ||
+      !relationService.reparameterizeElementwise ||
+      !relationService.validateConcat || !relationService.factorConcat)
     return invalid;
 
   llvm::SmallVector<WaferEGraphNode, 16> abiNodes;

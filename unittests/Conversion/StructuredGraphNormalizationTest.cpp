@@ -257,26 +257,36 @@ TEST_F(StructuredGraphNormalizationTest,
     #result = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2)>
     module {
       func.func @reindex_reduction(
-          %input: tensor<2x4x64x1031xf32>, %init: tensor<2x64x4xf32>)
-          -> tensor<2x64x4xf32> {
-        %init_empty = tensor.empty() : tensor<2x4x64xf32>
+          %input: tensor<2x4x64x1031xf32>, %init: tensor<2x4x64xf32>)
+          -> tensor<2x4x64xf32> {
+        %expanded = tensor.expand_shape %input [[0], [1], [2], [3, 4]]
+            output_shape [2, 4, 64, 1, 1031] :
+            tensor<2x4x64x1031xf32> into tensor<2x4x64x1x1031xf32>
+        %reshaped = tensor.collapse_shape %expanded [[0], [1], [2], [3, 4]] :
+            tensor<2x4x64x1x1031xf32> into tensor<2x4x64x1031xf32>
+        %input_empty = tensor.empty() : tensor<2x64x4x1031xf32>
+        %input_transposed = linalg.transpose
+            ins(%reshaped : tensor<2x4x64x1031xf32>)
+            outs(%input_empty : tensor<2x64x4x1031xf32>)
+            permutation = [0, 2, 1, 3]
+        %init_empty = tensor.empty() : tensor<2x64x4xf32>
         %init_transposed = linalg.transpose
-            ins(%init : tensor<2x64x4xf32>)
-            outs(%init_empty : tensor<2x4x64xf32>) permutation = [0, 2, 1]
+            ins(%init : tensor<2x4x64xf32>)
+            outs(%init_empty : tensor<2x64x4xf32>) permutation = [0, 2, 1]
         %reduced = linalg.generic {
             indexing_maps = [#identity, #result],
             iterator_types = ["parallel", "parallel", "parallel", "reduction"]}
-            ins(%input : tensor<2x4x64x1031xf32>)
-            outs(%init_transposed : tensor<2x4x64xf32>) {
+            ins(%input_transposed : tensor<2x64x4x1031xf32>)
+            outs(%init_transposed : tensor<2x64x4xf32>) {
           ^bb0(%element: f32, %accumulator: f32):
             %sum = arith.addf %accumulator, %element : f32
             linalg.yield %sum : f32
-        } -> tensor<2x4x64xf32>
-        %result_empty = tensor.empty() : tensor<2x64x4xf32>
+        } -> tensor<2x64x4xf32>
+        %result_empty = tensor.empty() : tensor<2x4x64xf32>
         %result = linalg.transpose
-            ins(%reduced : tensor<2x4x64xf32>)
-            outs(%result_empty : tensor<2x64x4xf32>) permutation = [0, 2, 1]
-        return %result : tensor<2x64x4xf32>
+            ins(%reduced : tensor<2x64x4xf32>)
+            outs(%result_empty : tensor<2x4x64xf32>) permutation = [0, 2, 1]
+        return %result : tensor<2x4x64xf32>
       }
     }
   )mlir");
@@ -289,6 +299,9 @@ TEST_F(StructuredGraphNormalizationTest,
       wafer::normalizeStructuredTensorGraph(function, {}, &statistics);
   ASSERT_TRUE(mlir::succeeded(outcome));
   EXPECT_EQ(*outcome, wafer::StructuredGraphNormalizationOutcome::Changed);
+  EXPECT_EQ(statistics.budgetExhaustedComponents, 0u);
+  EXPECT_GE(statistics.compositionApplications, 1u);
+  EXPECT_GE(statistics.computeAbsorptionApplications, 1u);
   EXPECT_GE(statistics.resultReindexApplications, 1u);
   EXPECT_EQ(count<mlir::linalg::TransposeOp>(function), 0u);
   mlir::linalg::GenericOp normalized;
@@ -297,6 +310,14 @@ TEST_F(StructuredGraphNormalizationTest,
   ASSERT_TRUE(normalized);
   EXPECT_EQ(normalized.getIteratorTypesArray()[3],
             mlir::utils::IteratorType::reduction);
+  ASSERT_EQ(normalized.getIndexingMapsArray().size(), 2u);
+  EXPECT_EQ(normalized.getIndexingMapsArray().front(),
+            mlir::AffineMap::get(4, 0,
+                                 {mlir::getAffineDimExpr(0, context.get()),
+                                  mlir::getAffineDimExpr(2, context.get()),
+                                  mlir::getAffineDimExpr(1, context.get()),
+                                  mlir::getAffineDimExpr(3, context.get())},
+                                 context.get()));
   EXPECT_EQ(normalized.getIndexingMapsArray().back(),
             mlir::AffineMap::get(4, 0,
                                  {mlir::getAffineDimExpr(0, context.get()),
@@ -316,8 +337,8 @@ TEST_F(StructuredGraphNormalizationTest,
       builder.getIndexAttr(0), builder.getIndexAttr(0), builder.getIndexAttr(0),
       builder.getIndexAttr(0)};
   llvm::SmallVector<mlir::OpFoldResult, 4> sizes{
-      builder.getIndexAttr(2), builder.getIndexAttr(4),
-      builder.getIndexAttr(64), builder.getIndexAttr(1024)};
+      builder.getIndexAttr(2), builder.getIndexAttr(64),
+      builder.getIndexAttr(4), builder.getIndexAttr(1024)};
   mlir::FailureOr<wafer::PartialReductionTileMaterialization> tiled =
       wafer::materializePartialReductionTile(normalized.getOperation(), builder,
                                              offsets, sizes, &failureReason);
@@ -329,13 +350,22 @@ TEST_F(StructuredGraphNormalizationTest,
 TEST_F(StructuredGraphNormalizationTest,
        RaggedBatchContractionResultReindexFeedsPinnedReductionTiling) {
   mlir::OwningOpRef<mlir::ModuleOp> module = parse(R"mlir(
-    #lhs = affine_map<(d0, d1, d2, d3) -> (d0, d1, d3)>
+    #lhs = affine_map<(d0, d1, d2, d3) -> (d0, d3, d1)>
     #rhs = affine_map<(d0, d1, d2, d3) -> (d0, d3, d2)>
     #out = affine_map<(d0, d1, d2, d3) -> (d0, d2, d1)>
     module {
       func.func @reindex_contraction(
           %lhs: tensor<2x64x1031xf32>, %rhs: tensor<2x1031x128xf32>,
           %init: tensor<2x64x128xf32>) -> tensor<2x64x128xf32> {
+        %lhs_expanded = tensor.expand_shape %lhs [[0], [1], [2, 3]]
+            output_shape [2, 64, 1, 1031] :
+            tensor<2x64x1031xf32> into tensor<2x64x1x1031xf32>
+        %lhs_reshaped = tensor.collapse_shape %lhs_expanded [[0], [1], [2, 3]] :
+            tensor<2x64x1x1031xf32> into tensor<2x64x1031xf32>
+        %lhs_empty = tensor.empty() : tensor<2x1031x64xf32>
+        %lhs_transposed = linalg.transpose
+            ins(%lhs_reshaped : tensor<2x64x1031xf32>)
+            outs(%lhs_empty : tensor<2x1031x64xf32>) permutation = [0, 2, 1]
         %init_empty = tensor.empty() : tensor<2x128x64xf32>
         %init_transposed = linalg.transpose
             ins(%init : tensor<2x64x128xf32>)
@@ -343,7 +373,8 @@ TEST_F(StructuredGraphNormalizationTest,
         %contracted = linalg.generic {
             indexing_maps = [#lhs, #rhs, #out],
             iterator_types = ["parallel", "parallel", "parallel", "reduction"]}
-            ins(%lhs, %rhs : tensor<2x64x1031xf32>, tensor<2x1031x128xf32>)
+            ins(%lhs_transposed, %rhs :
+                tensor<2x1031x64xf32>, tensor<2x1031x128xf32>)
             outs(%init_transposed : tensor<2x128x64xf32>) {
           ^bb0(%left: f32, %right: f32, %accumulator: f32):
             %product = arith.mulf %left, %right : f32
@@ -368,6 +399,9 @@ TEST_F(StructuredGraphNormalizationTest,
       wafer::normalizeStructuredTensorGraph(function, {}, &statistics);
   ASSERT_TRUE(mlir::succeeded(outcome));
   EXPECT_EQ(*outcome, wafer::StructuredGraphNormalizationOutcome::Changed);
+  EXPECT_EQ(statistics.budgetExhaustedComponents, 0u);
+  EXPECT_GE(statistics.compositionApplications, 1u);
+  EXPECT_GE(statistics.computeAbsorptionApplications, 1u);
   EXPECT_GE(statistics.resultReindexApplications, 1u);
   EXPECT_EQ(count<mlir::linalg::TransposeOp>(function), 0u);
   EXPECT_EQ(count<mlir::linalg::GenericOp>(function), 0u);
@@ -389,6 +423,136 @@ TEST_F(StructuredGraphNormalizationTest,
                                              offsets, sizes, &failureReason);
   ASSERT_TRUE(mlir::succeeded(tiled)) << failureReason;
   EXPECT_EQ(tiled->reductionDimensions, (llvm::SmallVector<int, 2>{3}));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+}
+
+TEST_F(StructuredGraphNormalizationTest,
+       RaggedHeterogeneousFanoutUsesOneSourceWithoutComputeCopies) {
+  mlir::OwningOpRef<mlir::ModuleOp> module = parse(R"mlir(
+    #identity3 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
+    #reduce_last = affine_map<(d0, d1, d2) -> (d0, d1)>
+    module {
+      func.func @heterogeneous_fanout(
+          %lhs: tensor<2x1031x64xf32>, %rhs: tensor<2x1031x128xf32>,
+          %reduction_init: tensor<2x64xf32>,
+          %contraction_init: tensor<2x64x128xf32>)
+          -> (tensor<2x64x1031xf32>, tensor<2x64xf32>,
+              tensor<2x64x128xf32>) {
+        %shared_init = tensor.empty() : tensor<2x64x1031xf32>
+        %shared = linalg.transpose
+            ins(%lhs : tensor<2x1031x64xf32>)
+            outs(%shared_init : tensor<2x64x1031xf32>)
+            permutation = [0, 2, 1]
+        %elementwise_init = tensor.empty() : tensor<2x64x1031xf32>
+        %elementwise = linalg.generic {
+            indexing_maps = [#identity3, #identity3],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%shared : tensor<2x64x1031xf32>)
+            outs(%elementwise_init : tensor<2x64x1031xf32>) {
+          ^bb0(%input: f32, %output: f32):
+            %negated = arith.negf %input : f32
+            linalg.yield %negated : f32
+        } -> tensor<2x64x1031xf32>
+        %reduced = linalg.generic {
+            indexing_maps = [#identity3, #reduce_last],
+            iterator_types = ["parallel", "parallel", "reduction"]}
+            ins(%shared : tensor<2x64x1031xf32>)
+            outs(%reduction_init : tensor<2x64xf32>) {
+          ^bb0(%input: f32, %accumulator: f32):
+            %sum = arith.addf %accumulator, %input : f32
+            linalg.yield %sum : f32
+        } -> tensor<2x64xf32>
+        %contracted = linalg.batch_matmul
+            ins(%shared, %rhs :
+                tensor<2x64x1031xf32>, tensor<2x1031x128xf32>)
+            outs(%contraction_init : tensor<2x64x128xf32>)
+            -> tensor<2x64x128xf32>
+        return %elementwise, %reduced, %contracted :
+            tensor<2x64x1031xf32>, tensor<2x64xf32>, tensor<2x64x128xf32>
+      }
+    }
+  )mlir");
+  ASSERT_TRUE(module);
+  auto function =
+      module->lookupSymbol<mlir::func::FuncOp>("heterogeneous_fanout");
+  ASSERT_TRUE(function);
+
+  wafer::StructuredGraphNormalizationStatistics statistics;
+  mlir::FailureOr<wafer::StructuredGraphNormalizationOutcome> outcome =
+      wafer::normalizeStructuredTensorGraph(function, {}, &statistics);
+  ASSERT_TRUE(mlir::succeeded(outcome));
+  EXPECT_EQ(*outcome, wafer::StructuredGraphNormalizationOutcome::Changed);
+  EXPECT_EQ(statistics.multiUseAccessPropagations, 1u);
+  EXPECT_EQ(statistics.accessTransformsRemoved, 1u);
+  EXPECT_EQ(count<mlir::linalg::TransposeOp>(function), 0u);
+  EXPECT_EQ(count<mlir::linalg::GenericOp>(function), 2u);
+  EXPECT_EQ(count<mlir::arith::NegFOp>(function), 1u);
+
+  mlir::linalg::GenericOp elementwise;
+  mlir::linalg::GenericOp reduction;
+  function.walk([&](mlir::linalg::GenericOp operation) {
+    if (llvm::is_contained(operation.getIteratorTypesArray(),
+                           mlir::utils::IteratorType::reduction))
+      reduction = operation;
+    else
+      elementwise = operation;
+  });
+  ASSERT_TRUE(elementwise);
+  ASSERT_TRUE(reduction);
+  EXPECT_EQ(elementwise.getDpsInputs().front(), function.getArgument(0));
+  EXPECT_EQ(reduction.getDpsInputs().front(), function.getArgument(0));
+  EXPECT_EQ(reduction.getDpsInits().front(), function.getArgument(2));
+  EXPECT_TRUE(llvm::equal(reduction.getIteratorTypesArray(),
+                          llvm::ArrayRef<mlir::utils::IteratorType>{
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::reduction}));
+  llvm::SmallVector<unsigned, 3> permutation{0, 2, 1};
+  mlir::AffineMap swap =
+      mlir::AffineMap::getPermutationMap(permutation, context.get());
+  EXPECT_EQ(elementwise.getIndexingMapsArray().front(), swap);
+  EXPECT_EQ(reduction.getIndexingMapsArray().front(), swap);
+
+  mlir::linalg::BatchMatmulTransposeAOp contraction;
+  function.walk([&](mlir::linalg::BatchMatmulTransposeAOp operation) {
+    contraction = operation;
+  });
+  ASSERT_TRUE(contraction);
+  EXPECT_EQ(contraction.getDpsInputs()[0], function.getArgument(0));
+  EXPECT_EQ(contraction.getDpsInputs()[1], function.getArgument(1));
+  EXPECT_EQ(contraction.getDpsInits().front(), function.getArgument(3));
+
+  std::string failureReason;
+  mlir::OpBuilder reductionBuilder(reduction);
+  llvm::SmallVector<mlir::OpFoldResult, 3> reductionOffsets{
+      reductionBuilder.getIndexAttr(0), reductionBuilder.getIndexAttr(0),
+      reductionBuilder.getIndexAttr(0)};
+  llvm::SmallVector<mlir::OpFoldResult, 3> reductionSizes{
+      reductionBuilder.getIndexAttr(2), reductionBuilder.getIndexAttr(64),
+      reductionBuilder.getIndexAttr(1024)};
+  mlir::FailureOr<wafer::PartialReductionTileMaterialization> tiledReduction =
+      wafer::materializePartialReductionTile(reduction.getOperation(),
+                                             reductionBuilder, reductionOffsets,
+                                             reductionSizes, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(tiledReduction)) << failureReason;
+  EXPECT_EQ(tiledReduction->reductionDimensions,
+            (llvm::SmallVector<int, 2>{2}));
+
+  mlir::OpBuilder contractionBuilder(contraction);
+  llvm::SmallVector<mlir::OpFoldResult, 4> contractionOffsets{
+      contractionBuilder.getIndexAttr(0), contractionBuilder.getIndexAttr(0),
+      contractionBuilder.getIndexAttr(0), contractionBuilder.getIndexAttr(0)};
+  llvm::SmallVector<mlir::OpFoldResult, 4> contractionSizes{
+      contractionBuilder.getIndexAttr(2), contractionBuilder.getIndexAttr(64),
+      contractionBuilder.getIndexAttr(128),
+      contractionBuilder.getIndexAttr(1024)};
+  mlir::FailureOr<wafer::PartialReductionTileMaterialization> tiledContraction =
+      wafer::materializePartialReductionTile(
+          contraction.getOperation(), contractionBuilder, contractionOffsets,
+          contractionSizes, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(tiledContraction)) << failureReason;
+  EXPECT_EQ(tiledContraction->reductionDimensions,
+            (llvm::SmallVector<int, 2>{3}));
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
 }
 
@@ -456,11 +620,106 @@ TEST_F(StructuredGraphNormalizationTest,
       wafer::normalizeStructuredTensorGraph(function, {}, &statistics);
   ASSERT_TRUE(mlir::succeeded(outcome));
   EXPECT_EQ(*outcome, wafer::StructuredGraphNormalizationOutcome::Changed);
+  EXPECT_GE(statistics.multiUseAccessPropagations, 1u);
   EXPECT_EQ(statistics.accessTransformsRemoved, 2u);
   EXPECT_EQ(count<mlir::linalg::TransposeOp>(function), 0u);
   EXPECT_EQ(count<mlir::linalg::GenericOp>(function), 15u);
   EXPECT_EQ(count<mlir::arith::NegFOp>(function), 15u);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+}
+
+TEST_F(StructuredGraphNormalizationTest,
+       RaggedAlternatingAccessChainsRemainBoundedThroughThirtyTwoComputes) {
+  for (unsigned computeCount : {4u, 8u, 16u, 32u}) {
+    SCOPED_TRACE("compute-count=" + std::to_string(computeCount));
+    std::string source;
+    llvm::raw_string_ostream stream(source);
+    stream << R"mlir(
+    #identity = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
+    module {
+      func.func @deep_chain_)mlir"
+           << computeCount << R"mlir((
+          %arg0: tensor<2x1025x64xf32>) -> tensor<2x1025x64xf32> {
+  )mlir";
+    std::string current = "%arg0";
+    std::string currentType = "tensor<2x1025x64xf32>";
+    for (unsigned index = 0; index < computeCount; ++index) {
+      std::string targetType =
+          index % 2 == 0 ? "tensor<2x64x1025xf32>" : "tensor<2x1025x64xf32>";
+      stream << "        %transpose_empty" << index
+             << " = tensor.empty() : " << targetType << "\n";
+      stream << "        %transpose" << index << " = linalg.transpose ins("
+             << current << " : " << currentType << ") outs(%transpose_empty"
+             << index << " : " << targetType << ") permutation = [0, 2, 1]\n";
+      stream << "        %compute_empty" << index
+             << " = tensor.empty() : " << targetType << "\n";
+      stream << "        %compute" << index << R"mlir( = linalg.generic {
+            indexing_maps = [#identity, #identity],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%transpose)mlir"
+             << index << " : " << targetType << ") outs(%compute_empty" << index
+             << " : " << targetType << R"mlir() {
+          ^bb0(%input: f32, %output: f32):
+            %negated = arith.negf %input : f32
+            linalg.yield %negated : f32
+        } -> )mlir"
+             << targetType << "\n";
+      current = "%compute" + std::to_string(index);
+      currentType = targetType;
+    }
+    stream << "        return " << current << " : " << currentType << R"mlir(
+      }
+    }
+  )mlir";
+    stream.flush();
+
+    mlir::OwningOpRef<mlir::ModuleOp> module = parse(source);
+    ASSERT_TRUE(module) << source;
+    auto function = module->lookupSymbol<mlir::func::FuncOp>(
+        "deep_chain_" + std::to_string(computeCount));
+    ASSERT_TRUE(function);
+    ASSERT_EQ(count<mlir::linalg::TransposeOp>(function), computeCount);
+    ASSERT_EQ(count<mlir::linalg::GenericOp>(function), computeCount);
+    ASSERT_EQ(count<mlir::arith::NegFOp>(function), computeCount);
+
+    wafer::StructuredGraphNormalizationStatistics statistics;
+    mlir::FailureOr<wafer::StructuredGraphNormalizationOutcome> outcome =
+        wafer::normalizeStructuredTensorGraph(function, {}, &statistics);
+    ASSERT_TRUE(mlir::succeeded(outcome));
+    EXPECT_EQ(*outcome, wafer::StructuredGraphNormalizationOutcome::Changed);
+    EXPECT_EQ(statistics.budgetExhaustedComponents, 0u);
+    EXPECT_EQ(count<mlir::linalg::TransposeOp>(function), 0u);
+    EXPECT_EQ(count<mlir::linalg::GenericOp>(function), computeCount);
+    EXPECT_EQ(count<mlir::arith::NegFOp>(function), computeCount);
+    EXPECT_GE(statistics.accessTransformsRemoved, computeCount);
+    EXPECT_LT(statistics.eNodes, computeCount * 16u);
+    EXPECT_LT(statistics.relationQueries, computeCount * 40u);
+    EXPECT_LT(statistics.rewriteMatches, computeCount * 40u);
+    if (computeCount == 32) {
+      RecordProperty("max_chain_input_operations", statistics.inputOperations);
+      RecordProperty("max_chain_output_operations",
+                     statistics.outputOperations);
+      RecordProperty("max_chain_access_transforms_removed",
+                     statistics.accessTransformsRemoved);
+      RecordProperty("max_chain_e_nodes", statistics.eNodes);
+      RecordProperty("max_chain_relation_queries", statistics.relationQueries);
+      RecordProperty("max_chain_rewrite_matches", statistics.rewriteMatches);
+    }
+
+    std::string failureReason;
+    mlir::FailureOr<wafer::compiler::detail::StructuredDAGAnalysis> dag =
+        wafer::compiler::detail::StructuredDAGAnalysis::create(function,
+                                                               &failureReason);
+    ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+    EXPECT_EQ(dag->getNodes().size(), computeCount);
+    const std::string once = print(function);
+    mlir::FailureOr<wafer::StructuredGraphNormalizationOutcome> second =
+        wafer::normalizeStructuredTensorGraph(function);
+    ASSERT_TRUE(mlir::succeeded(second));
+    EXPECT_EQ(*second, wafer::StructuredGraphNormalizationOutcome::Unchanged);
+    EXPECT_EQ(print(function), once);
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  }
 }
 
 } // namespace

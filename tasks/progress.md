@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-08-27
+更新时间：2026-08-28
 
 本文件是任务调度入口，只记录任务状态、前置关系、当前工作、完成门禁和设计/证据owner。具体设计、
 pipeline contract、实验结论、测试数字、失败修复过程和历史复盘不在这里重复；分别进入编号设计文档、
@@ -40,7 +40,7 @@ IR膨胀、layout未接线和verifier职责问题。
 
 | 顺序 | Work item | 状态 | 设计owner | 直接输入 | 完成输出 | 本项执行流程 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `search-scalability` | `doing` | Q52 | Q51 search controller、structural choice与attention展开donor，current baseline regression，Q50.0 actual memory/target leaf | 按current plan的16个线性checkpoint施工：第6--10项已经闭合actual leaf、Instr completion、execution structure、movement和post-attention structured logical normalization；第10项使用pinned `egg` Rust staticlib和typed C ABI，只对ordinary pure Tensor/Linalg graph运行一次relation-driven equality saturation，直接rewrite current IR且不clone Module/Func/DAG，不保留预构造candidate、scoped/candidate入口或第二个C++ core，attention始终为opaque barrier；当前下一直接项为第11项，以pinned MLIR SCF tile-and-fuse替换手写三段展开并删除future delivery协议；第12项消费最终current SSA补齐完整layout domain/PBQP assignment、exact view和bufferization，保留已完成的output DPS/copy closure/solver资产但整体状态重新打开；第13项运行baseline gate；第14项原子切换search current-IR production、resource-aware winner并删除旧shadow；第15项闭合e-graph/fusion/layout/movement/Instr inventory；第16项完成同源LLaMA `none`/`search`验收。SPM legality仍只由actual MiniMalloc决定 | 读AGENTS/progress→读05/06及本项16个矩阵→按每个semantic work item分别完成算法调研、pinned API确认、代码/测试、fresh验证和MLIR规范复审→更新状态并提交 |
+| 1 | `search-scalability` | `doing` | Q52 | Q51 search controller、structural choice与attention展开donor，current baseline regression，Q50.0 actual memory/target leaf | 按current plan的16个线性checkpoint施工：第6--10项已经闭合actual leaf、Instr completion、execution structure、movement和structured logical normalization。第10项使用pinned `egg` Rust staticlib和typed C ABI，只对ordinary pure Tensor/Linalg graph运行一次stage-level relation-driven equality saturation；内部以actual Access/Concat严格下降闭合fanout phase order，直接rewrite current IR且不clone Module/Func/DAG，不保留预构造candidate、scoped/candidate入口或第二个C++ core，attention始终为opaque barrier。当前下一直接项为第11项，以pinned MLIR SCF tile-and-fuse替换手写三段展开并删除future delivery协议；第12项消费最终current SSA补齐完整layout domain/PBQP assignment、exact view和bufferization；第13项运行baseline gate；第14项原子切换search current-IR production并删除旧shadow；第15项闭合全stage inventory；第16项完成同源LLaMA `none`/`search`验收。SPM legality仍只由actual MiniMalloc决定 | 读AGENTS/progress→读05/06及本项16个矩阵→按每个semantic work item分别完成算法调研、pinned API确认、代码/测试、fresh验证和MLIR规范复审→更新状态并提交 |
 | 2 | `production-host-readiness` | `queued` | Q53 | search-scalability、Q60产品入口、Q55 current interface、Q56 board-ready package/runtime | 从fresh产品source完成representative source/IR/package/oracle/runner/no-card矩阵并准备无需设备上临时补充的board cases；状态只到`board-ready`，真实板端不在当前目标 | 读AGENTS/progress→读02/06/14–16及本项矩阵→读hardware/runtime/ABI事实→调研成熟compiler的host qualification/board-ready实现→查官方及pinned API→改runner/测试→fresh host/no-card验证→按设计和MLIR/runtime规范复审→更新状态并提交 |
 失败留在当前work item修复；不跳过、不fallback，也不把owner整体状态提前标为完成。
 
