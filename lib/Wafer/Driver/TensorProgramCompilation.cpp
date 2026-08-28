@@ -1,6 +1,6 @@
 //===- TensorProgramCompilation.cpp - Tensor-program compilation --------===//
 
-#include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
+#include "Wafer/CodeGen/DeviceExecutableInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
 
 #include "mlir/IR/Diagnostics.h"

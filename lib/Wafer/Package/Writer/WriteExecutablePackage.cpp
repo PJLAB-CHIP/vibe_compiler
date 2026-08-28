@@ -1,8 +1,8 @@
 //===- WriteExecutablePackage.cpp - Write target modules and package ----===//
 
 #include "Wafer/Analysis/Module/ExecutableCallClosure.h"
-#include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
-#include "Wafer/CodeGen/Target/TargetCodeGenInternal.h"
+#include "Wafer/CodeGen/DeviceExecutableInternal.h"
+#include "Wafer/CodeGen/LLVM/TargetCodeGenInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Driver/CompilationStatistics.h"
 #include "Wafer/Package/Writer/PackageInternal.h"

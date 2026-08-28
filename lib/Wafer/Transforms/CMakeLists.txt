@@ -54,6 +54,7 @@ add_mlir_library(WaferTransforms
 )
 
 set(WAFER_COMPILATION_TRANSFORM_SOURCES
+  Transforms/Instr/TileMemoryPlanning.cpp
   Transforms/Tile/CurrentIRLayoutOptimization.cpp
   Transforms/Tile/StructuredBufferRelations.cpp
   Transforms/Tile/StructuredNodeUseIndex.cpp

@@ -4,8 +4,8 @@
 #ifndef WAFER_UNITTESTS_COMPILER_EXECUTABLETESTSUPPORT_H
 #define WAFER_UNITTESTS_COMPILER_EXECUTABLETESTSUPPORT_H
 
-#include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
-#include "Wafer/CodeGen/Executable/ExecutableCompilation.h"
+#include "Wafer/CodeGen/DeviceExecutableInternal.h"
+#include "Wafer/Driver/ExecutableCompilation.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Program/ProgramData.h"
 

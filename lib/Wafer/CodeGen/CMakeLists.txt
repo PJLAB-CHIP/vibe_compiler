@@ -1,16 +1,13 @@
 set(WAFER_CODEGEN_SOURCES
-  CodeGen/Executable/DeviceExecutable.cpp
-  CodeGen/Executable/ExecutableCompilation.cpp
-  CodeGen/Executable/ExecutableLowering.cpp
-  CodeGen/Executable/TileMemoryPlanning.cpp
-  CodeGen/Target/CompileDeviceExecutableLLVMModules.cpp
-  CodeGen/Target/TargetABIPreparation.cpp
-  CodeGen/Target/TargetDeviceLink.cpp
-  CodeGen/Target/TargetInstrumentation.cpp
-  CodeGen/Target/TargetKernelAggregate.cpp
-  CodeGen/Target/TargetLLVMModule.cpp
-  CodeGen/Target/TargetLLVMTranslation.cpp
-  CodeGen/Target/TargetModuleLinking.cpp
-  CodeGen/Target/TargetModuleReadback.cpp
-  CodeGen/Target/TileEntryArgumentCompatibility.cpp
+  CodeGen/DeviceExecutable.cpp
+  CodeGen/LLVM/CompileDeviceExecutableLLVMModules.cpp
+  CodeGen/LLVM/TargetABIPreparation.cpp
+  CodeGen/LLVM/TargetDeviceLink.cpp
+  CodeGen/LLVM/TargetInstrumentation.cpp
+  CodeGen/LLVM/TargetKernelAggregate.cpp
+  CodeGen/LLVM/TargetLLVMModule.cpp
+  CodeGen/LLVM/TargetLLVMTranslation.cpp
+  CodeGen/LLVM/TargetModuleLinking.cpp
+  CodeGen/LLVM/TargetModuleReadback.cpp
+  CodeGen/LLVM/TileEntryArgumentCompatibility.cpp
   PARENT_SCOPE)

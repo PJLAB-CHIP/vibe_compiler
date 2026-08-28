@@ -3,7 +3,7 @@
 #include "SystemCTargetModelTestSupport.h"
 
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
-#include "Wafer/CodeGen/Target/TargetCodeGenInternal.h"
+#include "Wafer/CodeGen/LLVM/TargetCodeGenInternal.h"
 #include "Wafer/Target/Core/RuntimeLaunchContract.h"
 #include "Wafer/Target/Core/TargetFormat.h"
 #include "Wafer/Target/Layout/PhysicalTensorCodec.h"

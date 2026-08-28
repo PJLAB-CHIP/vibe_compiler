@@ -14,25 +14,25 @@ add_executable(WaferUnitTests
   TestSupport/CodeGen/ExecutableTestSupport.cpp
   TestSupport/Planning/SpatialDemandTestSupport.cpp
   TestSupport/Planning/SpatialPlanReference.cpp
-  CodeGen/Executable/ExecutableCompilationTest.cpp
-  CodeGen/Executable/ExecutableLoweringTest.cpp
-  CodeGen/Executable/SearchRoutingTest.cpp
+  Driver/ExecutableCompilationTest.cpp
+  Driver/ExecutableLoweringTest.cpp
+  Driver/PhysicalDataflow/SearchRoutingTest.cpp
   Transforms/Instr/DirectDTETransportTest.cpp
   Program/ProgramTensorComparisonTest.cpp
-  CodeGen/Executable/TileMemoryPlanningTest.cpp
+  Transforms/Instr/TileMemoryPlanningTest.cpp
   Transforms/Tile/StructuredBufferRelationsTest.cpp
-  CodeGen/Target/TargetABIPreparationTest.cpp
-  CodeGen/Target/TargetCodeGenTest.cpp
+  CodeGen/LLVM/TargetABIPreparationTest.cpp
+  CodeGen/LLVM/TargetCodeGenTest.cpp
   Target/Execution/TargetCallExecutionTest.cpp
-  CodeGen/Target/TargetIdentityTest.cpp
+  CodeGen/LLVM/TargetIdentityTest.cpp
   Planning/PhysicalDataflow/AttentionSpatialConstraintsTest.cpp
   Planning/PhysicalDataflow/CanonicalSpatialAssignmentTest.cpp
   Planning/PhysicalDataflow/CanonicalRegionPlanTest.cpp
   Transforms/Tile/CurrentIRLayoutOptimizationTest.cpp
   Transforms/Tile/ExecutionStructureMaterializationTest.cpp
-  Planning/PhysicalDataflow/Search/PlanningSessionTest.cpp
-  Planning/PhysicalDataflow/Search/ActualResultControllerTest.cpp
-  Planning/PhysicalDataflow/Search/UnifiedSearchTest.cpp
+  Planning/PhysicalDataflow/PlanningSessionTest.cpp
+  Driver/PhysicalDataflow/ActualResultControllerTest.cpp
+  Driver/PhysicalDataflow/UnifiedSearchTest.cpp
   Planning/PhysicalDataflow/RootWorkDomainTest.cpp
   Planning/PhysicalDataflow/RegionDomainTest.cpp
   Planning/PhysicalDataflow/ExactPBQPSolverTest.cpp

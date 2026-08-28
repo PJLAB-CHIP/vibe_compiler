@@ -1,6 +1,6 @@
 //===- CompilationStages.cpp - Stage verification and registry ----------===//
 
-#include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
+#include "Wafer/CodeGen/DeviceExecutableInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
 
 #include "Wafer/Frontend/InitImporterDialects.h"

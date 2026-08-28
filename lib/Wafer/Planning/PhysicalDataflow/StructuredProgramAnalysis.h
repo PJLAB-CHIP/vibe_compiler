@@ -4,20 +4,11 @@
 #pragma once
 
 #include "Wafer/Analysis/Linalg/StructuredDAGAnalysis.h"
-
-#include "Wafer/Driver/Compilation.h"
-#include "Wafer/Frontend/Program/Program.h"
 #include "Wafer/IR/Topology/TargetTopology.h"
 
-#include "mlir/IR/BuiltinOps.h"
-#include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/SmallVector.h"
 
-#include <memory>
-
-namespace llvm {
-class raw_ostream;
-}
+#include <utility>
 
 namespace wafer::compiler::detail {
 
@@ -41,11 +32,5 @@ struct StructuredProgramAnalysis {
   StaticOutputDomains outputDomains;
   llvm::SmallVector<StructuredOperationNodeMapping, 16> operationNodes;
 };
-
-mlir::FailureOr<std::unique_ptr<StructuredProgramAnalysis>>
-analyzeStructuredProgram(
-    mlir::ModuleOp tensorProgram,
-    const frontend::FrontendProgramVerificationResult &program,
-    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics);
 
 } // namespace wafer::compiler::detail

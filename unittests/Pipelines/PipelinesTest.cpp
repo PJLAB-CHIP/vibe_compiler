@@ -3,7 +3,7 @@
 #include "Wafer/Conversion/TileToInstr/Pipelines.h"
 #include "Wafer/CodeGen/TargetCodeGen.h"
 
-#include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
+#include "Wafer/CodeGen/DeviceExecutableInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Program/ProgramData.h"
 #include "Wafer/Transforms/Instr/MemoryPlanningPipelines.h"

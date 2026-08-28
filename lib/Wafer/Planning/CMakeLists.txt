@@ -5,19 +5,16 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/ExactDemand.cpp
   Planning/PhysicalDataflow/RootRegionWorkAnalysis.cpp
   Planning/PhysicalDataflow/RootWorkDomain.cpp
-  Planning/PhysicalDataflow/Search/PlanningProblem.cpp
-  Planning/PhysicalDataflow/Search/ActualResultController.cpp
-  Planning/PhysicalDataflow/Search/PlanningMemo.cpp
-  Planning/PhysicalDataflow/Search/PlanningProfile.cpp
-  Planning/PhysicalDataflow/Search/PlanningSession.cpp
-  Planning/PhysicalDataflow/Search/UnifiedSearch.cpp
-  Planning/PhysicalDataflow/Search/PlanningState.cpp
+  Planning/PhysicalDataflow/PlanningProblem.cpp
+  Planning/PhysicalDataflow/PlanningMemo.cpp
+  Planning/PhysicalDataflow/PlanningProfile.cpp
+  Planning/PhysicalDataflow/PlanningSession.cpp
+  Planning/PhysicalDataflow/PlanningState.cpp
   Planning/PhysicalDataflow/RegionPlan.cpp
   Planning/PhysicalDataflow/RegionDomain.cpp
   Planning/PhysicalDataflow/ExactPBQPSolver.cpp
   Planning/PhysicalDataflow/TemporalDomain.cpp
   Planning/PhysicalDataflow/StructuredDemandAnalysis.cpp
-  Planning/PhysicalDataflow/StructuredProgramAnalysis.cpp
   Planning/PhysicalDataflow/SpatialDomain.cpp
   Planning/PhysicalDataflow/SpatialPlan.cpp
   Planning/PhysicalDataflow/StructuredDemandView.cpp
