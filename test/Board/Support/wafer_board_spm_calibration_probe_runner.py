@@ -314,7 +314,7 @@ def main() -> int:
     if not args.no_card:
         if os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
             print(
-                "wafer_board_spm_calibration_probe_test: hardware execution "
+                "wafer_board_spm_calibration_probe_runner: hardware execution "
                 "is not armed; set WAFER_EXECUTE_HARDWARE_TESTS=1",
                 file=sys.stderr,
             )
@@ -338,7 +338,7 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
         print(
-            f"wafer_board_spm_calibration_probe_test: {error}",
+            f"wafer_board_spm_calibration_probe_runner: {error}",
             file=sys.stderr,
         )
         raise SystemExit(1)

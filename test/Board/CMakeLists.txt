@@ -27,6 +27,8 @@ set(_wafer_board_python_contracts
   wafer-datamove-catalog=Cases/wafer_datamove_calibration_catalog_test.py
   wafer-datamove-extended-catalog=Cases/wafer_datamove_extended_calibration_catalog_test.py
   wafer-direct-dte-evidence-contract=Cases/wafer_direct_dte_board_evidence_test.py
+  wafer-direct-dte-profile-contract=Cases/wafer_board_direct_dte_profile_test.py
+  wafer-board-direct-dte-outer-deadline=Cases/wafer_board_direct_dte_timeout_test.py
   wafer-engine-pipeline-catalog=Cases/wafer_engine_pipeline_characterization_catalog_test.py
   wafer-complete-tile-add-profile-contract=Cases/wafer_board_complete_tile_add_profile_test.py
   wafer-complete-tile-barrier-contract=Cases/wafer_complete_tile_barrier_contract_test.py

@@ -283,7 +283,8 @@ class DirectDTEProfileGateTest(unittest.TestCase):
                     "verify_profile_report",
                     return_value=(
                         8400,
-                        work_dir / "package.profile/runs/current/index.html",
+                        work_dir
+                        / "package/package.profile/runs/current/index.html",
                     ),
                 )
             )
@@ -316,13 +317,13 @@ class DirectDTEProfileGateTest(unittest.TestCase):
             ],
         )
         compare.assert_called_once_with(
-            work_dir / "ordinary-package", work_dir / "package"
+            work_dir / "ordinary-package", work_dir / "package/package"
         )
-        permissions.assert_called_once_with(work_dir / "package")
+        permissions.assert_called_once_with(work_dir / "package/package")
         run.assert_called_once()
         self.assertEqual(
             run.call_args.args[0][1:3],
-            ["--package-dir", str(work_dir / "package")],
+            ["--package-dir", str(work_dir / "package/package")],
         )
         self.assertEqual(
             run.call_args.kwargs["timeout_seconds"],

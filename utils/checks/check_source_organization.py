@@ -201,6 +201,45 @@ def check_no_retired_includes(root: Path, errors: list[str]) -> None:
                     errors.append(f"{path.relative_to(root)} retains {needle}")
 
 
+def check_component_cmake_ownership(root: Path, errors: list[str]) -> None:
+    for manifest in (root / "lib/Wafer").rglob("CMakeLists.txt"):
+        text = strip_cmake_comments(manifest.read_text(encoding="utf-8"))
+        if "PARENT_SCOPE" in text:
+            errors.append(
+                f"component CMake aggregates ownership through PARENT_SCOPE: "
+                f"{manifest.relative_to(root)}"
+            )
+
+
+def check_python_test_registration(root: Path, errors: list[str]) -> None:
+    registration_files = [*cmake_files(root)]
+    registration_files.extend((root / "test").rglob("*.test"))
+    registration_files.extend((root / "test").rglob("*.mlir"))
+    registration_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in registration_files
+    )
+    for path in sorted((root / "test").rglob("*_test.py")):
+        if path.name not in registration_text:
+            errors.append(
+                "Python test has no CTest registration: "
+                f"{path.relative_to(root)}"
+            )
+
+    board_support = root / "test/Board/Support"
+    if board_support.is_dir():
+        for path in sorted(board_support.glob("*_test.py")):
+            errors.append(
+                "Board helper uses a test filename in Support: "
+                f"{path.relative_to(root)}"
+            )
+
+
+def check_source_tree_artifacts(root: Path, errors: list[str]) -> None:
+    if (root / ".deps").exists():
+        errors.append("legacy source-tree dependency artifact exists: .deps")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path.cwd())
@@ -209,8 +248,11 @@ def main() -> int:
     errors: list[str] = []
     check_directory_owners(root, errors)
     check_no_retired_includes(root, errors)
+    check_component_cmake_ownership(root, errors)
     check_library_sources(root, errors)
     check_unit_sources(root, errors)
+    check_python_test_registration(root, errors)
+    check_source_tree_artifacts(root, errors)
     if errors:
         for error in errors:
             print(f"error: {error}", file=sys.stderr)

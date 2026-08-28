@@ -468,7 +468,7 @@ def main() -> int:
     args.repo_root = args.repo_root.resolve()
     if not args.no_card and os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
         print(
-            "wafer_board_ncc_pmu_probe_test: hardware execution is not armed; "
+            "wafer_board_ncc_pmu_probe_runner: hardware execution is not armed; "
             "set WAFER_EXECUTE_HARDWARE_TESTS=1",
             file=sys.stderr,
         )
@@ -499,5 +499,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
-        print(f"wafer_board_ncc_pmu_probe_test: {error}", file=sys.stderr)
+        print(f"wafer_board_ncc_pmu_probe_runner: {error}", file=sys.stderr)
         raise SystemExit(1)

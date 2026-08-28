@@ -266,7 +266,7 @@ NE_CALIBRATION = (
     "test/Board/Inputs/wafer_ne_calibration_probe_protocol.h",
 )
 SPM_CALIBRATION = (
-    "test/Board/Cases/wafer_board_spm_calibration_probe_test.py",
+    "test/Board/Support/wafer_board_spm_calibration_probe_runner.py",
     "test/Board/Support/wafer_spm_calibration_catalog.py",
     "test/Board/Inputs/wafer_spm_calibration_probe.c",
     "test/Board/Inputs/wafer_spm_calibration_probe_protocol.h",
@@ -299,7 +299,7 @@ COMPLETE_TILE_BARRIER = (
     "test/Board/Inputs/wafer_complete_tile_barrier_probe.c",
 )
 NCC_PMU = (
-    "test/Board/Cases/wafer_board_ncc_pmu_probe_test.py",
+    "test/Board/Support/wafer_board_ncc_pmu_probe_runner.py",
     "test/Board/Inputs/wafer_ncc_pmu_readonly_probe.c",
 )
 
@@ -327,7 +327,7 @@ BARRIER_CATALOG = "test/Board/Support/wafer_board_complete_tile_barrier_probe_ru
 TRANSPORT_PMU_CATALOG = (
     "test/Board/Support/wafer_transport_pmu_calibration_catalog.py"
 )
-NCC_PMU_CATALOG = "test/Board/Cases/wafer_board_ncc_pmu_probe_test.py"
+NCC_PMU_CATALOG = "test/Board/Support/wafer_board_ncc_pmu_probe_runner.py"
 RUNTIME_CATALOG = "test/Board/Support/wafer_board_complete_tile_add_runner.py"
 RUNTIME_TILE_ADD_CATALOG = (
     "test/Board/Cases/wafer_board_single_op_add_test.py"
