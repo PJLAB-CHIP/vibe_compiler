@@ -59,6 +59,16 @@ enum class CommitFailureInjection {
   FailAfterVerification,
 };
 
+llvm::Expected<CompilationResult>
+compileProgramImpl(CompilationRequest request, llvm::StringRef outputDirectory,
+                   llvm::StringRef xlaSpmdPartitionerHelper,
+                   const TargetToolchain &targetToolchain,
+                   CompilationOptions options, llvm::raw_ostream &diagnostics,
+                   std::optional<int64_t> failAfterLaunchSlot,
+                   std::optional<int64_t> failAfterTargetLaunchSlot,
+                   std::optional<int64_t> failAfterPackageLaunchSlot,
+                   CommitFailureInjection commitFailureInjection);
+
 bool pathEntryExists(llvm::StringRef path);
 bool isDirectory(llvm::StringRef path);
 bool isRegularFile(llvm::StringRef path);

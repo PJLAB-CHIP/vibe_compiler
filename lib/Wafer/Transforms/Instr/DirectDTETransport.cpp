@@ -3,11 +3,11 @@
 #include "Wafer/Transforms/Instr/DirectDTETransport.h"
 
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
+#include "Wafer/Analysis/Instr/StaticIndexRange.h"
 #include "Wafer/Analysis/Module/ExecutableCallClosure.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/DirectDTE.h"
 #include "Wafer/Target/TargetMemory.h"
-#include "Wafer/Analysis/Instr/StaticIndexRange.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -1658,12 +1658,3 @@ bindDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
 }
 
 } // namespace wafer::compiler::detail
-
-namespace wafer::compiler::testing {
-
-mlir::FailureOr<TransportContract>
-bindDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
-  return detail::bindDirectDTETransport(tileModules);
-}
-
-} // namespace wafer::compiler::testing

@@ -1,0 +1,11 @@
+#include "Wafer/CodeGen/DeviceExecutable.h"
+
+#include "llvm/Support/Error.h"
+
+int main() {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
+  if (config)
+    return 0;
+  llvm::consumeError(config.takeError());
+  return 1;
+}

@@ -97,14 +97,3 @@ verifyProgramResources(llvm::ArrayRef<mlir::ModuleOp> inputModules,
 }
 
 } // namespace wafer::compiler::detail
-
-namespace wafer::compiler::testing {
-
-mlir::FailureOr<analysis::InstructionProgramAggregateCost>
-verifyProgramResources(llvm::ArrayRef<mlir::ModuleOp> tileModules,
-                       llvm::ArrayRef<TileId> tileIds,
-                       const ExecutionConfig &executionConfig) {
-  return detail::verifyProgramResources(tileModules, tileIds, executionConfig);
-}
-
-} // namespace wafer::compiler::testing

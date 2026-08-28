@@ -1,128 +1,205 @@
 wafer_require_gtest()
 
-add_executable(WaferUnitTests
-  Analysis/Module/DirectCallGraphAnalysisTest.cpp
-  Analysis/Instr/NCCCompletionAnalysisTest.cpp
-  Analysis/Linalg/IndexRelationTest.cpp
-  Planning/PhysicalDataflow/ExactDemandTest.cpp
-  Planning/PhysicalDataflow/StructuredDemandAnalysisTest.cpp
-  Planning/PhysicalDataflow/AttentionDemandIntegrationTest.cpp
-  Planning/PhysicalDataflow/RootRegionWorkAnalysisTest.cpp
-  Analysis/Instr/ScheduleCostAnalysisTest.cpp
-  Driver/CompilationOutputTest.cpp
-  Driver/CompilationTest.cpp
-  TestSupport/CodeGen/ExecutableTestSupport.cpp
-  TestSupport/Planning/SpatialDemandTestSupport.cpp
-  TestSupport/Planning/SpatialPlanReference.cpp
-  Driver/ExecutableCompilationTest.cpp
-  Driver/ExecutableLoweringTest.cpp
-  Driver/PhysicalDataflow/SearchRoutingTest.cpp
-  Transforms/Instr/DirectDTETransportTest.cpp
-  Simulator/Invocation/ProgramTensorComparisonTest.cpp
-  Transforms/Instr/TileMemoryPlanningTest.cpp
-  Transforms/Tile/StructuredBufferRelationsTest.cpp
-  CodeGen/LLVM/TargetABIPreparationTest.cpp
-  CodeGen/LLVM/TargetCodeGenTest.cpp
-  Simulator/Invocation/TargetCallExecutionTest.cpp
-  CodeGen/LLVM/TargetIdentityTest.cpp
-  Planning/PhysicalDataflow/AttentionSpatialConstraintsTest.cpp
-  Planning/PhysicalDataflow/CanonicalSpatialAssignmentTest.cpp
-  Planning/PhysicalDataflow/CanonicalRegionPlanTest.cpp
-  Transforms/Tile/CurrentIRLayoutOptimizationTest.cpp
-  Transforms/Tile/ExecutionStructureMaterializationTest.cpp
-  Planning/PhysicalDataflow/PlanningSessionTest.cpp
-  Driver/PhysicalDataflow/ActualResultControllerTest.cpp
-  Driver/PhysicalDataflow/UnifiedSearchTest.cpp
-  Planning/PhysicalDataflow/RootWorkDomainTest.cpp
-  Planning/PhysicalDataflow/RegionDomainTest.cpp
-  Planning/PhysicalDataflow/ExactPBQPSolverTest.cpp
-  Planning/PhysicalDataflow/TemporalDomainTest.cpp
-  Planning/PhysicalDataflow/SpatialDomainTest.cpp
-  Planning/PhysicalDataflow/SpatialPlanTest.cpp
-  Driver/ProgramResourceVerificationTest.cpp
-  Driver/ProgramDataTest.cpp
-  Transforms/Linalg/AttentionNormalizationTest.cpp
-  Transforms/Linalg/StructuredGraphEGraphTest.cpp
-  Transforms/Linalg/StructuredGraphNormalizationTest.cpp
-  Transforms/Linalg/StructuredTilingTest.cpp
-  Transforms/Instr/RequiredNCCJoinPlacementTest.cpp
-  Driver/StandaloneTileModulesTest.cpp
-  Dialect/Wafer/WaferDialectTest.cpp
-  Dialect/Wafer/WaferInterfacesTest.cpp
-  Dialect/Wafer/TargetTopologyTest.cpp
-  Frontend/NpyPayloadTest.cpp
-  Simulator/Memory/TargetModelMemoryTest.cpp
-  Pipelines/PipelinesTest.cpp
-  Runtime/Board/BoardRuntimeTest.cpp
-  Package/Manifest/PackageManifestTest.cpp
-  Runtime/Profile/ProfileInstrumentationTest.cpp
-  Runtime/Profile/ProfilerRecordTest.cpp
-  Simulator/Reference/FormalNumericTest.cpp
-  Target/PhysicalTensor/NumericCodecTest.cpp
-  Target/PhysicalTensor/NumericRawRounderTest.cpp
-  Target/PhysicalTensor/PhysicalTensorCodecTest.cpp
-  Target/PhysicalTensor/TargetTensorMaterializationTest.cpp
-  Target/TargetFormatTest.cpp
-  Transforms/Instr/LifetimeAnalysisTest.cpp
-  Transforms/Instr/MiniMallocPackingTest.cpp
-  Transforms/Instr/StaticMemoryPackingTest.cpp
-  Transforms/Instr/RedundantTransferEliminationTest.cpp
-  Conversion/InstrToLLVM/LowerInstrToLLVMTest.cpp
-)
-llvm_update_compile_flags(WaferUnitTests)
-target_include_directories(WaferUnitTests PRIVATE
+find_program(WAFER_TEST_LLVM_CLANGXX NAMES clang++ REQUIRED)
+
+set(WAFER_COMPONENT_UNIT_TARGETS)
+function(wafer_add_component_unit_test target)
+  cmake_parse_arguments(ARG "" "" "SOURCES;LINK_LIBS" ${ARGN})
+  add_executable(${target} ${ARG_SOURCES})
+  llvm_update_compile_flags(${target})
+  target_include_directories(${target} PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib
+    ${CMAKE_SOURCE_DIR}/lib/Wafer/Transforms
+    ${CMAKE_SOURCE_DIR}/unittests)
+  target_compile_definitions(${target} PRIVATE
+    WAFER_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    WAFER_TEST_PYTHON_EXECUTABLE="${Python3_EXECUTABLE}"
+    WAFER_TEST_DEVICE_LINKER_SCRIPT="${CMAKE_SOURCE_DIR}/tools/wafer_device_link.py"
+    WAFER_TEST_LLVM_CLANGXX="${WAFER_TEST_LLVM_CLANGXX}"
+    WAFER_TEST_TX8_DEPS_ROOT="${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
+    WAFER_TEST_WAFER_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/include"
+    WAFER_TEST_WAFER_CRT_SOURCE="${CMAKE_SOURCE_DIR}/runtime/crt/src/wafer_tx81_crt.c"
+    WAFER_TEST_WAFER_CRT_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/runtime/crt/include"
+    WAFER_TEST_TARGET_DATA_ENTRY_LLVM_IR="${CMAKE_SOURCE_DIR}/test/Tools/Inputs/minimal-target-data-entry.ll")
+  target_link_libraries(${target} PRIVATE
+    ${ARG_LINK_LIBS}
+    MLIRAsyncDialect
+    MLIRArithDialect
+    MLIRFuncDialect
+    MLIRIR
+    MLIRLinalgDialect
+    MLIRLinalgTransforms
+    MLIRMathDialect
+    MLIRMemRefDialect
+    MLIRParser
+    MLIRPass
+    MLIRSCFDialect
+    MLIRTensorDialect
+    GTest::gtest_main)
+  if(WAFER_ENABLE_IMPORTER_DEPS)
+    target_compile_definitions(${target} PRIVATE WAFER_ENABLE_STABLEHLO=1)
+    target_link_libraries(${target} PRIVATE StablehloRegister)
+  endif()
+  add_test(NAME ${target} COMMAND ${target})
+  set_tests_properties(${target} PROPERTIES LABELS "unit;component")
+  set(WAFER_COMPONENT_UNIT_TARGETS
+    ${WAFER_COMPONENT_UNIT_TARGETS} ${target} PARENT_SCOPE)
+endfunction()
+
+add_library(WaferExecutableTestSupport STATIC
+  TestSupport/CodeGen/ExecutableTestSupport.cpp)
+llvm_update_compile_flags(WaferExecutableTestSupport)
+target_include_directories(WaferExecutableTestSupport PUBLIC
   ${CMAKE_SOURCE_DIR}/lib
   ${CMAKE_SOURCE_DIR}/lib/Wafer/Transforms
-  ${CMAKE_SOURCE_DIR}/unittests
-)
-find_program(WAFER_TEST_LLVM_CLANGXX NAMES clang++ REQUIRED)
-target_compile_definitions(WaferUnitTests PRIVATE
-  WAFER_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-  WAFER_TEST_PYTHON_EXECUTABLE="${Python3_EXECUTABLE}"
-  WAFER_TEST_DEVICE_LINKER_SCRIPT="${CMAKE_SOURCE_DIR}/tools/wafer_device_link.py"
-  WAFER_TEST_LLVM_CLANGXX="${WAFER_TEST_LLVM_CLANGXX}"
-  WAFER_TEST_TX8_DEPS_ROOT="${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
-  WAFER_TEST_WAFER_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/include"
-  WAFER_TEST_WAFER_CRT_SOURCE="${CMAKE_SOURCE_DIR}/runtime/crt/src/wafer_tx81_crt.c"
-  WAFER_TEST_WAFER_CRT_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/runtime/crt/include"
-  WAFER_TEST_TARGET_DATA_ENTRY_LLVM_IR="${CMAKE_SOURCE_DIR}/test/Tools/Inputs/minimal-target-data-entry.ll"
-)
-target_link_libraries(WaferUnitTests
-  PRIVATE
-  WaferAnalysis
+  ${CMAKE_SOURCE_DIR}/unittests)
+target_link_libraries(WaferExecutableTestSupport PUBLIC
+  WaferCodeGen
   WaferCompiler
-  WaferIR
-  WaferFormalNumeric
-  WaferSimulatorMemory
-  WaferSimulatorInvocation
-  WaferPhysicalTensor
-  WaferRuntime
-  WaferStableHLOPipelines
-  WaferTileToInstrPipelines
-  WaferLinalgTransforms
-  WaferStandaloneTileModules
-  WaferTransforms
-  MLIRAsyncDialect
-  MLIRArithDialect
-  MLIRFuncDialect
+  WaferProgramData
   MLIRIR
-  MLIRLinalgDialect
-  MLIRLinalgTransforms
-  MLIRMathDialect
-  MLIRMemRefDialect
   MLIRParser
-  MLIRPass
-  MLIRSCFDialect
-  MLIRTensorDialect
-  GTest::gtest_main
-)
-if(WAFER_ENABLE_IMPORTER_DEPS)
-  target_compile_definitions(WaferUnitTests PRIVATE WAFER_ENABLE_STABLEHLO=1)
-  target_link_libraries(WaferUnitTests PRIVATE StablehloRegister)
-endif()
-add_test(NAME WaferUnitTests
-  COMMAND WaferUnitTests
-)
+  GTest::gtest)
+
+wafer_add_component_unit_test(WaferIRUnitTests
+  SOURCES
+    Dialect/Wafer/WaferDialectTest.cpp
+    Dialect/Wafer/WaferInterfacesTest.cpp
+    Dialect/Wafer/TargetTopologyTest.cpp
+  LINK_LIBS WaferIR WaferPhysicalTensor WaferStableHLOPipelines)
+
+wafer_add_component_unit_test(WaferAnalysisUnitTests
+  SOURCES
+    Analysis/Module/DirectCallGraphAnalysisTest.cpp
+    Analysis/Instr/NCCCompletionAnalysisTest.cpp
+    Analysis/Linalg/IndexRelationTest.cpp
+    Analysis/Instr/ScheduleCostAnalysisTest.cpp
+  LINK_LIBS WaferAnalysis WaferIR)
+
+wafer_add_component_unit_test(WaferPlanningUnitTests
+  SOURCES
+    Planning/PhysicalDataflow/ExactDemandTest.cpp
+    Planning/PhysicalDataflow/StructuredDemandAnalysisTest.cpp
+    Planning/PhysicalDataflow/AttentionDemandIntegrationTest.cpp
+    Planning/PhysicalDataflow/RootRegionWorkAnalysisTest.cpp
+    Planning/PhysicalDataflow/AttentionSpatialConstraintsTest.cpp
+    Planning/PhysicalDataflow/CanonicalSpatialAssignmentTest.cpp
+    Planning/PhysicalDataflow/CanonicalRegionPlanTest.cpp
+    Planning/PhysicalDataflow/PlanningSessionTest.cpp
+    Planning/PhysicalDataflow/RootWorkDomainTest.cpp
+    Planning/PhysicalDataflow/RegionDomainTest.cpp
+    Planning/PhysicalDataflow/ExactPBQPSolverTest.cpp
+    Planning/PhysicalDataflow/TemporalDomainTest.cpp
+    Planning/PhysicalDataflow/SpatialDomainTest.cpp
+    Planning/PhysicalDataflow/SpatialPlanTest.cpp
+    TestSupport/Planning/SpatialDemandTestSupport.cpp
+    TestSupport/Planning/SpatialPlanReference.cpp
+  LINK_LIBS WaferAnalysis WaferExecutableTestSupport WaferIR WaferPlanning)
+
+wafer_add_component_unit_test(WaferDriverUnitTests
+  SOURCES
+    Driver/CompilationOutputTest.cpp
+    Driver/CompilationTest.cpp
+    Driver/ExecutableCompilationTest.cpp
+    Driver/ExecutableLoweringTest.cpp
+    Driver/PhysicalDataflow/SearchRoutingTest.cpp
+    Driver/PhysicalDataflow/ActualResultControllerTest.cpp
+    Driver/PhysicalDataflow/UnifiedSearchTest.cpp
+    Driver/ProgramResourceVerificationTest.cpp
+    Driver/ProgramDataTest.cpp
+    Driver/StandaloneTileModulesTest.cpp
+  LINK_LIBS
+    WaferCompiler
+    WaferCompilerTestSupport
+    WaferExecutableTestSupport
+    WaferSimulatorInvocation
+    WaferStandaloneTileModules)
+
+wafer_add_component_unit_test(WaferTransformsUnitTests
+  SOURCES
+    Transforms/Instr/DirectDTETransportTest.cpp
+    Transforms/Instr/TileMemoryPlanningTest.cpp
+    Transforms/Tile/StructuredBufferRelationsTest.cpp
+    Transforms/Tile/CurrentIRLayoutOptimizationTest.cpp
+    Transforms/Tile/ExecutionStructureMaterializationTest.cpp
+    Transforms/Linalg/AttentionNormalizationTest.cpp
+    Transforms/Linalg/StructuredGraphEGraphTest.cpp
+    Transforms/Linalg/StructuredGraphNormalizationTest.cpp
+    Transforms/Linalg/StructuredTilingTest.cpp
+    Transforms/Instr/RequiredNCCJoinPlacementTest.cpp
+    Transforms/Instr/LifetimeAnalysisTest.cpp
+    Transforms/Instr/MiniMallocPackingTest.cpp
+    Transforms/Instr/StaticMemoryPackingTest.cpp
+    Transforms/Instr/RedundantTransferEliminationTest.cpp
+  LINK_LIBS
+    WaferCompiler
+    WaferCompilerTestSupport
+    WaferLinalgTransforms
+    WaferTileToInstrPipelines
+    WaferTransforms)
+
+wafer_add_component_unit_test(WaferCodeGenUnitTests
+  SOURCES
+    CodeGen/LLVM/TargetABIPreparationTest.cpp
+    CodeGen/LLVM/TargetCodeGenTest.cpp
+    CodeGen/LLVM/TargetIdentityTest.cpp
+  LINK_LIBS
+    WaferCodeGen
+    WaferExecutableTestSupport
+    WaferPackageWriter
+    WaferRuntime)
+
+wafer_add_component_unit_test(WaferConversionUnitTests
+  SOURCES Conversion/InstrToLLVM/LowerInstrToLLVMTest.cpp
+  LINK_LIBS WaferIR WaferInstrToLLVM)
+
+wafer_add_component_unit_test(WaferFrontendUnitTests
+  SOURCES Frontend/NpyPayloadTest.cpp
+  LINK_LIBS WaferFrontend WaferIR)
+
+wafer_add_component_unit_test(WaferSimulatorUnitTests
+  SOURCES
+    Simulator/Invocation/ProgramTensorComparisonTest.cpp
+    Simulator/Invocation/TargetCallExecutionTest.cpp
+    Simulator/Memory/TargetModelMemoryTest.cpp
+    Simulator/Reference/FormalNumericTest.cpp
+  LINK_LIBS
+    WaferFormalNumeric
+    WaferSimulatorInvocation
+    WaferSimulatorMemory)
+
+wafer_add_component_unit_test(WaferPipelineUnitTests
+  SOURCES Pipelines/PipelinesTest.cpp
+  LINK_LIBS
+    WaferCompiler
+    WaferStableHLOPipelines
+    WaferTileToInstrPipelines
+    WaferTransforms)
+
+wafer_add_component_unit_test(WaferRuntimeUnitTests
+  SOURCES
+    Runtime/Board/BoardRuntimeTest.cpp
+    Runtime/Profile/ProfileInstrumentationTest.cpp
+    Runtime/Profile/ProfilerRecordTest.cpp
+  LINK_LIBS WaferRuntime)
+
+wafer_add_component_unit_test(WaferPackageUnitTests
+  SOURCES Package/Manifest/PackageManifestTest.cpp
+  LINK_LIBS WaferPackage WaferRuntime)
+
+wafer_add_component_unit_test(WaferTargetUnitTests
+  SOURCES
+    Target/PhysicalTensor/NumericCodecTest.cpp
+    Target/PhysicalTensor/NumericRawRounderTest.cpp
+    Target/PhysicalTensor/PhysicalTensorCodecTest.cpp
+    Target/PhysicalTensor/TargetTensorMaterializationTest.cpp
+    Target/TargetFormatTest.cpp
+  LINK_LIBS
+    WaferFormalNumeric
+    WaferIR
+    WaferInstrToLLVM
+    WaferPhysicalTensor
+    WaferTarget)
 
 add_executable(WaferRunBoardIOUnitTests
   Runtime/WaferProfileCollectionTest.cpp
@@ -165,6 +242,21 @@ add_executable(WaferCompilerPublicLinkSmoke
 llvm_update_compile_flags(WaferCompilerPublicLinkSmoke)
 target_link_libraries(WaferCompilerPublicLinkSmoke PRIVATE WaferCompiler)
 
+add_executable(WaferCodeGenPublicLinkSmoke
+  LinkClosure/CodeGenPublicLinkSmoke.cpp)
+llvm_update_compile_flags(WaferCodeGenPublicLinkSmoke)
+target_link_libraries(WaferCodeGenPublicLinkSmoke PRIVATE WaferCodeGen)
+
+add_executable(WaferPlanningPublicLinkSmoke
+  LinkClosure/PlanningPublicLinkSmoke.cpp)
+llvm_update_compile_flags(WaferPlanningPublicLinkSmoke)
+target_link_libraries(WaferPlanningPublicLinkSmoke PRIVATE WaferPlanning)
+
+add_executable(WaferProgramDataPublicLinkSmoke
+  LinkClosure/ProgramDataPublicLinkSmoke.cpp)
+llvm_update_compile_flags(WaferProgramDataPublicLinkSmoke)
+target_link_libraries(WaferProgramDataPublicLinkSmoke PRIVATE WaferProgramData)
+
 add_executable(WaferSimulatorPublicLinkSmoke
   LinkClosure/SimulatorPublicLinkSmoke.cpp)
 llvm_update_compile_flags(WaferSimulatorPublicLinkSmoke)
@@ -175,6 +267,9 @@ foreach(_wafer_public_link_smoke IN ITEMS
     WaferPhysicalTensorPublicLinkSmoke
     WaferRuntimePublicLinkSmoke
     WaferCompilerPublicLinkSmoke
+    WaferCodeGenPublicLinkSmoke
+    WaferPlanningPublicLinkSmoke
+    WaferProgramDataPublicLinkSmoke
     WaferSimulatorPublicLinkSmoke)
   add_test(NAME ${_wafer_public_link_smoke}
     COMMAND ${_wafer_public_link_smoke})
@@ -182,21 +277,34 @@ foreach(_wafer_public_link_smoke IN ITEMS
     LABELS "public-header;link-closure")
 endforeach()
 
+include(ProcessorCount)
+ProcessorCount(WAFER_UNIT_TEST_JOBS)
+if(NOT WAFER_UNIT_TEST_JOBS)
+  set(WAFER_UNIT_TEST_JOBS 1)
+endif()
+
 add_custom_target(check-wafer-unit
-  COMMAND $<TARGET_FILE:WaferUnitTests>
+  COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+    --label-regex "^unit$" --parallel ${WAFER_UNIT_TEST_JOBS}
   COMMAND $<TARGET_FILE:WaferRunBoardIOUnitTests>
   COMMAND $<TARGET_FILE:WaferTargetPublicLinkSmoke>
   COMMAND $<TARGET_FILE:WaferPhysicalTensorPublicLinkSmoke>
   COMMAND $<TARGET_FILE:WaferRuntimePublicLinkSmoke>
   COMMAND $<TARGET_FILE:WaferCompilerPublicLinkSmoke>
+  COMMAND $<TARGET_FILE:WaferCodeGenPublicLinkSmoke>
+  COMMAND $<TARGET_FILE:WaferPlanningPublicLinkSmoke>
+  COMMAND $<TARGET_FILE:WaferProgramDataPublicLinkSmoke>
   COMMAND $<TARGET_FILE:WaferSimulatorPublicLinkSmoke>
   DEPENDS
-    WaferUnitTests
+    ${WAFER_COMPONENT_UNIT_TARGETS}
     WaferRunBoardIOUnitTests
     WaferTargetPublicLinkSmoke
     WaferPhysicalTensorPublicLinkSmoke
     WaferRuntimePublicLinkSmoke
     WaferCompilerPublicLinkSmoke
+    WaferCodeGenPublicLinkSmoke
+    WaferPlanningPublicLinkSmoke
+    WaferProgramDataPublicLinkSmoke
     WaferSimulatorPublicLinkSmoke
   USES_TERMINAL
 )

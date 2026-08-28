@@ -119,21 +119,26 @@ llvm_update_compile_flags(wafer-compile)
 add_dependencies(wafer-compile wafer-compile-resources)
 target_link_libraries(wafer-compile PRIVATE LLVMSupport WaferCompiler)
 
-add_executable(wafer-compile-test ${_wafer_compile_sources}
-  ${_wafer_compile_test_sources})
-llvm_update_compile_flags(wafer-compile-test)
-add_dependencies(wafer-compile-test wafer-compile-resources)
-target_link_libraries(wafer-compile-test PRIVATE LLVMSupport WaferCompiler)
-target_compile_definitions(wafer-compile-test PRIVATE
-  WAFER_ENABLE_TEST_HELPER_OVERRIDE=1)
-if(WAFER_ENABLE_SYSTEMC_MODEL)
+if(WAFER_ENABLE_UNIT_TESTS)
+  add_executable(wafer-compile-test ${_wafer_compile_sources}
+    ${_wafer_compile_test_sources})
+  llvm_update_compile_flags(wafer-compile-test)
+  add_dependencies(wafer-compile-test wafer-compile-resources)
+  target_link_libraries(wafer-compile-test PRIVATE
+    LLVMSupport
+    WaferCompiler
+    WaferCompilerTestSupport)
   target_compile_definitions(wafer-compile-test PRIVATE
-    WAFER_ENABLE_SYSTEMC_MODEL=1)
-  target_link_libraries(wafer-compile-test PRIVATE WaferSystemCSimulator)
-  if(WAFER_ENABLE_TARGET_NUMERIC_BACKEND)
+    WAFER_ENABLE_TEST_HELPER_OVERRIDE=1)
+  if(WAFER_ENABLE_SYSTEMC_MODEL)
     target_compile_definitions(wafer-compile-test PRIVATE
-      WAFER_ENABLE_TARGET_NUMERIC_BACKEND=1)
-    target_link_libraries(wafer-compile-test PRIVATE WaferTargetNumericBackend)
+      WAFER_ENABLE_SYSTEMC_MODEL=1)
+    target_link_libraries(wafer-compile-test PRIVATE WaferSystemCSimulator)
+    if(WAFER_ENABLE_TARGET_NUMERIC_BACKEND)
+      target_compile_definitions(wafer-compile-test PRIVATE
+        WAFER_ENABLE_TARGET_NUMERIC_BACKEND=1)
+      target_link_libraries(wafer-compile-test PRIVATE WaferTargetNumericBackend)
+    endif()
   endif()
 endif()
 

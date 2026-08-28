@@ -100,3 +100,7 @@ if(WAFER_ENABLE_SPMD_PARTITIONER_DEPS)
   target_link_libraries(obj.WaferCompiler PRIVATE ShardySdyRegister)
   target_link_libraries(WaferCompiler PRIVATE ShardySdyRegister)
 endif()
+
+if(WAFER_ENABLE_UNIT_TESTS)
+  add_subdirectory(TestSupport)
+endif()
