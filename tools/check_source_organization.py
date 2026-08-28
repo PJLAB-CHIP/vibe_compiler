@@ -103,9 +103,11 @@ def resolve_source(root: Path, manifest: Path, token: str) -> str | None:
         return None
 
 
-def source_occurrences(root: Path) -> tuple[dict[str, list[Path]], set[str]]:
+def source_occurrences(
+    root: Path,
+) -> tuple[dict[str, list[Path]], dict[str, list[Path]]]:
     occurrences: dict[str, list[Path]] = defaultdict(list)
-    optional: set[str] = set()
+    optional: dict[str, list[Path]] = defaultdict(list)
     for manifest in cmake_files(root):
         text = strip_cmake_comments(manifest.read_text(encoding="utf-8"))
         for token in re.findall(r'[^\s()"]+\.cpp|"[^"]+\.cpp"', text):
@@ -118,7 +120,7 @@ def source_occurrences(root: Path) -> tuple[dict[str, list[Path]], set[str]]:
             for token in re.findall(r'[^\s()"]+\.cpp|"[^"]+\.cpp"', body):
                 source = resolve_source(root, manifest, token)
                 if source:
-                    optional.add(source)
+                    optional[source].append(manifest)
     return occurrences, optional
 
 
@@ -131,7 +133,12 @@ def check_library_sources(root: Path, errors: list[str]) -> None:
     declared_dormant = set(DORMANT_LIBRARY_SOURCES)
     declared_external = set(EXTERNAL_HELPER_SOURCES)
     for source in sorted(actual):
-        active_manifests = [] if source in optional else occurrences.get(source, [])
+        optional_manifests = set(optional.get(source, []))
+        active_manifests = [
+            manifest
+            for manifest in occurrences.get(source, [])
+            if manifest not in optional_manifests
+        ]
         if active_manifests:
             if len(active_manifests) != 1:
                 errors.append(

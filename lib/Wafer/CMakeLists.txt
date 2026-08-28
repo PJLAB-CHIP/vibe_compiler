@@ -26,7 +26,8 @@ add_mlir_library(WaferCompiler
   ${WAFER_PLANNING_SOURCES}
   ${WAFER_CODEGEN_SOURCES}
   ${WAFER_DRIVER_SOURCES}
-  ${WAFER_PACKAGE_WRITER_SOURCES}
+  Package/Writer/Package.cpp
+  Package/Writer/WriteExecutablePackage.cpp
   ${WAFER_COMPILATION_TRANSFORM_SOURCES}
 
   LINK_LIBS PUBLIC
@@ -44,7 +45,7 @@ add_mlir_library(WaferCompiler
   WaferAnalysis
   WaferIR
   WaferInstrToLLVM
-  WaferPackageSupport
+  WaferPackage
   WaferStandaloneTileModules
   WaferStableHLOPipelines
   WaferTarget

@@ -1,6 +1,4 @@
 add_mlir_library(WaferRuntime
-  PARTIAL_SOURCES_INTENDED
-
   Board/BoardRuntime.cpp
   Profile/ProfileInstrumentation.cpp
   Profile/ProfilerRecord.cpp
@@ -9,5 +7,5 @@ add_mlir_library(WaferRuntime
   LINK_LIBS PUBLIC
   LLVMSupport
   WaferTarget
-  WaferPackageSupport
+  WaferPackage
 )

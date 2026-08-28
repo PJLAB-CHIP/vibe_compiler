@@ -1,5 +1,9 @@
-add_mlir_library(WaferPackageSupport
-  PARTIAL_SOURCES_INTENDED
+set(LLVM_OPTIONAL_SOURCES
+  Writer/Package.cpp
+  Writer/WriteExecutablePackage.cpp
+)
+
+add_mlir_library(WaferPackage
 
   Manifest/PackageManifest.cpp
   Manifest/PackageManifestJson.cpp
@@ -13,8 +17,3 @@ add_mlir_library(WaferPackageSupport
   WaferPhysicalTensor
   WaferTarget
 )
-
-set(WAFER_PACKAGE_WRITER_SOURCES
-  Package/Writer/Package.cpp
-  Package/Writer/WriteExecutablePackage.cpp
-  PARENT_SCOPE)
