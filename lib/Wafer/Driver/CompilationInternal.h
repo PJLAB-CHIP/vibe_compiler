@@ -6,7 +6,7 @@
 #include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Driver/CompilationResult.h"
-#include "Wafer/Driver/ProgramData.h"
+#include "Wafer/Driver/ProgramData/ProgramData.h"
 #include "Wafer/Frontend/Program.h"
 
 #include "mlir/IR/DialectRegistry.h"

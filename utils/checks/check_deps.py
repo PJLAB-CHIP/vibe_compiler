@@ -456,19 +456,54 @@ def check_cmake_target_visibility() -> None:
             )
 
     compiler_cmake_path = REPO_ROOT / "lib" / "Wafer" / "CMakeLists.txt"
+    for component in (
+        "CodeGen",
+        "Driver",
+        "Package",
+        "Planning",
+        "Transforms",
+    ):
+        check_text_contains(
+            compiler_cmake_path, f"add_subdirectory({component})"
+        )
+
+    driver_cmake_path = REPO_ROOT / "lib" / "Wafer" / "Driver" / "CMakeLists.txt"
     for needle in [
-        "WaferCompiler",
-        "WaferFrontend",
-        "WaferStableHLOPipelines",
-        "WaferTileToInstrPipelines",
+        "add_mlir_library(WaferCompiler",
+        "WaferCodeGen",
+        "WaferPackageWriter",
+        "WaferPlanning",
         "WaferTransforms",
         "WAFER_ENABLE_IMPORTER_DEPS",
         "StablehloRegister",
         "WAFER_ENABLE_SPMD_PARTITIONER_DEPS",
         "ShardySdyRegister",
     ]:
-        check_text_contains(compiler_cmake_path, needle)
-    compiler_cmake = compiler_cmake_path.read_text(encoding="utf-8")
+        check_text_contains(driver_cmake_path, needle)
+    check_text_contains(
+        REPO_ROOT / "lib" / "Wafer" / "CodeGen" / "CMakeLists.txt",
+        "add_mlir_library(WaferCodeGen",
+    )
+    check_text_contains(
+        REPO_ROOT / "lib" / "Wafer" / "Package" / "CMakeLists.txt",
+        "add_mlir_library(WaferPackageWriter",
+    )
+    check_text_contains(
+        REPO_ROOT / "lib" / "Wafer" / "Planning" / "CMakeLists.txt",
+        "add_mlir_library(WaferPlanning",
+    )
+
+    compiler_cmake = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            compiler_cmake_path,
+            driver_cmake_path,
+        )
+    )
+    if "PARENT_SCOPE" in compiler_cmake:
+        raise RuntimeError(
+            "compiler components must not aggregate source lists through PARENT_SCOPE"
+        )
     for needle in [*RUNTIME_DRIVER_NEEDLES, *TEST_TOOLING_NEEDLES]:
         if needle in compiler_cmake:
             raise RuntimeError(

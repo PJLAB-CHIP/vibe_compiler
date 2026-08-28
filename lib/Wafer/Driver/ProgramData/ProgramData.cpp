@@ -1,6 +1,6 @@
 //===- ProgramData.cpp - Transaction-owned program data ------------------===//
 
-#include "Wafer/Driver/ProgramData.h"
+#include "Wafer/Driver/ProgramData/ProgramData.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Errc.h"

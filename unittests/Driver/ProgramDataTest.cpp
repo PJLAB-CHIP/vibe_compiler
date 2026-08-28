@@ -1,6 +1,6 @@
 //===- ProgramDataTest.cpp - Transaction-owned program data tests --------===//
 
-#include "Wafer/Driver/ProgramData.h"
+#include "Wafer/Driver/ProgramData/ProgramData.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Simulator/Invocation/ProgramInvocation.h"

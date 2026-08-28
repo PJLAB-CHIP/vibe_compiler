@@ -3,6 +3,7 @@
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Driver/CompilationResult.h"
+#include "Wafer/Driver/CompiledProgram.h"
 #include "Wafer/Package/Manifest/PackageManifest.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Target/RuntimeLaunchContract.h"

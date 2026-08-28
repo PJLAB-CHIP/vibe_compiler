@@ -2,7 +2,7 @@
 
 #include "Wafer/Simulator/Invocation/ProgramInvocation.h"
 
-#include "Wafer/Driver/ProgramData.h"
+#include "Wafer/Driver/ProgramData/ProgramData.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"

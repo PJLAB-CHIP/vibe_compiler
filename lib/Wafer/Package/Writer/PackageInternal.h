@@ -3,6 +3,7 @@
 #ifndef WAFER_COMPILER_PACKAGEINTERNAL_H
 #define WAFER_COMPILER_PACKAGEINTERNAL_H
 
+#include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Driver/CompilationResult.h"
 
 #include <optional>

@@ -7,7 +7,7 @@
 #include "Wafer/CodeGen/DeviceExecutableInternal.h"
 #include "Wafer/Driver/ExecutableCompilation.h"
 #include "Wafer/Driver/CompilationInternal.h"
-#include "Wafer/Driver/ProgramData.h"
+#include "Wafer/Driver/ProgramData/ProgramData.h"
 
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Support/OptimizationConfig.h"

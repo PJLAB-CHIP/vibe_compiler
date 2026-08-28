@@ -3,6 +3,7 @@
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Driver/CompilationResult.h"
+#include "Wafer/Driver/CompiledProgram.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/TestSupport/CompilerTesting.h"
 
@@ -51,15 +52,6 @@ llvm::StringRef stringifyCompilationStage(CompilationStage stage) {
     return "package-commit";
   }
   llvm_unreachable("unknown compilation stage");
-}
-
-llvm::Expected<ExecutionConfig>
-ExecutionConfig::createForSingleCard(int64_t numPartitions) {
-  if (numPartitions != 1)
-    return llvm::createStringError(
-        llvm::errc::invalid_argument,
-        "num-partitions must be exactly 1 for the single-card compiler");
-  return ExecutionConfig(numPartitions, kSingleCardTileCount);
 }
 
 llvm::Expected<CompilationRequest>

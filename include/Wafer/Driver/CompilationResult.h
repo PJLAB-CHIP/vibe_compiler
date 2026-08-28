@@ -3,7 +3,6 @@
 #ifndef WAFER_DRIVER_COMPILATIONRESULT_H
 #define WAFER_DRIVER_COMPILATIONRESULT_H
 
-#include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Package/Manifest/PackageManifest.h"
 

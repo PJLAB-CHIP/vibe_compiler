@@ -4,8 +4,9 @@
 #ifndef WAFER_COMPILER_DEVICEEXECUTABLEINTERNAL_H
 #define WAFER_COMPILER_DEVICEEXECUTABLEINTERNAL_H
 
-#include "Wafer/Driver/Compilation.h"
-#include "Wafer/Driver/ProgramData.h"
+#include "Wafer/CodeGen/DeviceExecutable.h"
+#include "Wafer/Driver/ProgramData/ProgramData.h"
+#include "Wafer/Support/OptimizationConfig.h"
 
 #include "llvm/Support/Error.h"
 

@@ -4,7 +4,7 @@
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
 #include "Wafer/Package/Profile/ProfileInstrumentationModel.h"
-#include "Wafer/Driver/ProgramData.h"
+#include "Wafer/Driver/ProgramData/ProgramData.h"
 #include "Wafer/Target/TargetFormat.h"
 #include "Wafer/Target/PhysicalTensor/PhysicalTensorCodec.h"
 #include "Wafer/Target/PhysicalTensor/TargetTensorMaterialization.h"

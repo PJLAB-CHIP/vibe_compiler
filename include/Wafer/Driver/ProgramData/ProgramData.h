@@ -12,7 +12,7 @@
 #ifndef WAFER_PROGRAM_PROGRAMDATA_H
 #define WAFER_PROGRAM_PROGRAMDATA_H
 
-#include "Wafer/Driver/Compilation.h"
+#include "Wafer/CodeGen/DeviceExecutable.h"
 #include "Wafer/Frontend/Program.h"
 #include "Wafer/Frontend/ProgramElementType.h"
 

@@ -3,16 +3,17 @@
 #ifndef WAFER_CODEGEN_TARGETCODEGEN_H
 #define WAFER_CODEGEN_TARGETCODEGEN_H
 
-#include "Wafer/Driver/Compilation.h"
+#include "Wafer/CodeGen/DeviceExecutable.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Target/TargetFormat.h"
 #include "Wafer/Target/PhysicalTensor/TargetTensorMaterialization.h"
+#include "Wafer/Target/TargetFormat.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -202,57 +203,6 @@ private:
   std::string waferCrtSource;
   std::string waferCrtIncludeDir;
 };
-
-class CompiledProgram;
-
-/// Owner-backed result retained by downstream consumers that need the same
-/// accepted Tile domain and the exact target LLVM modules consumed by
-/// target module linking. Neither member is reconstructed from the package or
-/// serialized as a side channel.
-class CompiledProgram {
-public:
-  CompiledProgram(CompiledProgram &&) = default;
-  CompiledProgram &operator=(CompiledProgram &&) = default;
-  CompiledProgram(const CompiledProgram &) = delete;
-  CompiledProgram &operator=(const CompiledProgram &) = delete;
-
-  const DeviceExecutable &getDeviceExecutable() const {
-    return deviceExecutable;
-  }
-  const TargetLLVMModules &getTargetLLVMModules() const {
-    return targetLLVMModules;
-  }
-  const CompilationIRTrace &getIRTrace() const { return irTrace; }
-
-private:
-  friend llvm::Expected<CompiledProgram> compileProgramWithTargetLLVMModules(
-      CompilationRequest request, llvm::StringRef outputDirectory,
-      llvm::StringRef xlaSpmdPartitionerHelper,
-      const TargetToolchain &targetToolchain, CompilationOptions options,
-      llvm::raw_ostream &diagnostics);
-
-  CompiledProgram(DeviceExecutable deviceExecutable,
-                  TargetLLVMModules targetLLVMModules,
-                  CompilationIRTrace irTrace)
-      : deviceExecutable(std::move(deviceExecutable)),
-        targetLLVMModules(std::move(targetLLVMModules)),
-        irTrace(std::move(irTrace)) {}
-
-  DeviceExecutable deviceExecutable;
-  TargetLLVMModules targetLLVMModules;
-  CompilationIRTrace irTrace;
-};
-
-/// Runs the same compilation transaction as compileProgram while
-/// retaining the owner-backed DeviceExecutable, the exact target LLVM modules
-/// used to create the linked target modules, and the IR trace. This is the
-/// internal qualification/debug entry; no second lowering is performed and
-/// the members never enter the ordinary public result.
-llvm::Expected<CompiledProgram> compileProgramWithTargetLLVMModules(
-    CompilationRequest request, llvm::StringRef outputDirectory,
-    llvm::StringRef xlaSpmdPartitionerHelper,
-    const TargetToolchain &targetToolchain, CompilationOptions options,
-    llvm::raw_ostream &diagnostics);
 
 /// Prepares the fixed Kernel Runtime ABI, lowers, translates, and verifies
 /// every accepted Tile before atomically returning an owner-backed

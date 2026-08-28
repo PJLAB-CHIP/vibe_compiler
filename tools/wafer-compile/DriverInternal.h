@@ -6,6 +6,7 @@
 #include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Driver/CompilationResult.h"
+#include "Wafer/Driver/CompiledProgram.h"
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 #include "Wafer/Simulator/SystemC/SystemCTargetModel.h"
 #endif
