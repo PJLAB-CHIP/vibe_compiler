@@ -134,8 +134,6 @@ endpoint attach和真实`send_async`，matching wait负责完成与release。因
 slot reuse的actual lifetime决定。该语义分离不等于已经证明所有DTE/NCC overlap都有性能收益；没有对应profile证据时收益仍为
 `unknown`。
 
-![Slot reuse 与 DTE completion](presentations/2026-07-31-vibe-compiler-collaboration-review/assets/figures/06-slot-reuse-plate.png)
-
 当前 Direct DTE qualification 还给出了一个重要的运行时边界：
 
 - 正向 modes 1--6 已闭合 payload、status、completion 和 cleanup；
