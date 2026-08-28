@@ -59,8 +59,7 @@ maximumTileMetric(const analysis::CardInstructionProgramCost &cost,
   return maximum;
 }
 
-std::array<uint64_t, 9>
-asArray(const SearchResourceDurations &durations) {
+std::array<uint64_t, 9> asArray(const SearchResourceDurations &durations) {
   return {durations.neF16Bf16Picoseconds,
           durations.vectorF16Bf16Picoseconds,
           durations.vectorF32Picoseconds,
@@ -72,7 +71,7 @@ asArray(const SearchResourceDurations &durations) {
           durations.nccWaitControlPicoseconds};
 }
 
-bool hasSPMCapacityRejection(const FullFeasibilityResult &result) {
+bool hasSPMCapacityRejection(const ActualCandidateResult &result) {
   return result.compilation &&
          llvm::any_of(result.compilation->tileFailures,
                       [](const CardExecutableTileFailure &failure) {
@@ -84,7 +83,7 @@ bool hasSPMCapacityRejection(const FullFeasibilityResult &result) {
 } // namespace
 
 mlir::FailureOr<SearchCostCohort>
-SearchCostCohort::create(const analysis::ScheduleEstimatePolicy &policy,
+SearchCostCohort::create(const SearchCostPolicy &policy,
                          std::string *failureReason) {
   const std::array<uint64_t, 12> rates{
       policy.cardDDRNominalBytesPerSecond,
@@ -113,7 +112,7 @@ deriveSearchObjective(const analysis::CardInstructionProgramCost &cost,
                       const std::optional<SearchCostCohort> &cohort) {
   if (!cohort)
     return UnknownSearchObjective{SearchObjectiveUnknownReason::NoCohort};
-  const analysis::ScheduleEstimatePolicy &policy = cohort->getPolicy();
+  const SearchCostPolicy &policy = cohort->getPolicy();
   if (!cost.aggregateCompute.npuOtherLogicalOps.isKnown() ||
       !cost.aggregateCompute.vectorOtherLogicalOps.isKnown())
     return UnknownSearchObjective{
@@ -172,8 +171,8 @@ deriveSearchObjective(const analysis::CardInstructionProgramCost &cost,
         return tile.nccParticipantWaitCount;
       },
       cost.aggregateNCCParticipantWaitCount);
-  if (!npu || !vectorF16 || !vectorF32 || !spm || !instructions ||
-      !dteWaits || !nccWaits || !cost.aggregateDDRReadBytes.isKnown() ||
+  if (!npu || !vectorF16 || !vectorF32 || !spm || !instructions || !dteWaits ||
+      !nccWaits || !cost.aggregateDDRReadBytes.isKnown() ||
       !cost.aggregateDDRWriteBytes.isKnown() ||
       !cost.aggregateNoC.staticIssueSiteCount.isKnown())
     return UnknownSearchObjective{
@@ -202,8 +201,7 @@ deriveSearchObjective(const analysis::CardInstructionProgramCost &cost,
   };
   if (!assignTime(*npu, policy.f16Bf16NPULogicalOpsPerSecondPerTile,
                   durations.neF16Bf16Picoseconds) ||
-      !assignTime(*vectorF16,
-                  policy.f16Bf16VectorLogicalOpsPerSecondPerTile,
+      !assignTime(*vectorF16, policy.f16Bf16VectorLogicalOpsPerSecondPerTile,
                   durations.vectorF16Bf16Picoseconds) ||
       !assignTime(*vectorF32, policy.f32VectorLogicalOpsPerSecondPerTile,
                   durations.vectorF32Picoseconds) ||
@@ -211,17 +209,14 @@ deriveSearchObjective(const analysis::CardInstructionProgramCost &cost,
                   durations.ddrPicoseconds) ||
       !assignTime(nocBytes, policy.directionalNoCBytesPerSecond,
                   durations.nocPicoseconds) ||
-      !assignTime(*spm,
-                  policy.spmExplicitMovementBytesPerSecondPerTileEstimate,
+      !assignTime(*spm, policy.spmExplicitMovementBytesPerSecondPerTileEstimate,
                   durations.spmMovementPicoseconds) ||
       !checkedMultiply(*instructions,
                        policy.instructionFixedPicosecondsEstimate,
                        durations.instructionControlPicoseconds) ||
-      !checkedMultiply(*dteWaits,
-                       policy.dteWaitedEventPicosecondsEstimate,
+      !checkedMultiply(*dteWaits, policy.dteWaitedEventPicosecondsEstimate,
                        durations.dteWaitControlPicoseconds) ||
-      !checkedMultiply(*nccWaits,
-                       policy.nccParticipantWaitPicosecondsEstimate,
+      !checkedMultiply(*nccWaits, policy.nccParticipantWaitPicosecondsEstimate,
                        durations.nccWaitControlPicoseconds))
     return UnknownSearchObjective{
         SearchObjectiveUnknownReason::ArithmeticOverflow};
@@ -276,12 +271,12 @@ ActualResultController::reserve(const StructuralCandidateKey &key) {
 
 CandidateRecordOutcome
 ActualResultController::record(const StructuralCandidateKey &key,
-                               FullFeasibilityResult result) {
+                               ActualCandidateResult result) {
   if (finished || poisoned || !reserved.erase(key) || completed.count(key))
     return failCompilerBug();
   completed.insert(key);
   switch (result.status) {
-  case FullFeasibilityStatus::Accepted: {
+  case ActualCandidateStatus::Accepted: {
     if (!result.compilation || !result.compilation->isAccepted() ||
         !result.compilation->executable)
       return failCompilerBug();
@@ -316,7 +311,7 @@ ActualResultController::record(const StructuralCandidateKey &key,
     ++statistics.accepted;
     return CandidateRecordOutcome::Accepted;
   }
-  case FullFeasibilityStatus::ExactRejection: {
+  case ActualCandidateStatus::ExactRejection: {
     if (!result.compilation || !result.compilation->isProvenExactRejection())
       return failCompilerBug();
     const bool spmCapacity = hasSPMCapacityRejection(result);
@@ -333,13 +328,13 @@ ActualResultController::record(const StructuralCandidateKey &key,
     ++statistics.exactRejected;
     return CandidateRecordOutcome::ExactRejection;
   }
-  case FullFeasibilityStatus::Unsupported:
+  case ActualCandidateStatus::Unsupported:
     ++statistics.unsupported;
     return CandidateRecordOutcome::Unsupported;
-  case FullFeasibilityStatus::Indeterminate:
+  case ActualCandidateStatus::Indeterminate:
     ++statistics.indeterminate;
     return CandidateRecordOutcome::Indeterminate;
-  case FullFeasibilityStatus::CompilerBug:
+  case ActualCandidateStatus::CompilerBug:
     return failCompilerBug();
   }
   return failCompilerBug();
@@ -410,25 +405,6 @@ ActualResultController::finish(SearchFrontierStatus frontier) {
   result.winner.emplace(std::move(*incumbent));
   incumbent.reset();
   return result;
-}
-
-llvm::StringRef
-stringifySearchControllerCoverage(SearchControllerCoverage coverage) {
-  switch (coverage) {
-  case SearchControllerCoverage::ComparableBest:
-    return "comparable-best";
-  case SearchControllerCoverage::FeasibleUnranked:
-    return "feasible-unranked";
-  case SearchControllerCoverage::FeasiblePartial:
-    return "feasible-partial";
-  case SearchControllerCoverage::NoFeasible:
-    return "no-feasible";
-  case SearchControllerCoverage::IncompleteNoCandidate:
-    return "incomplete-no-candidate";
-  case SearchControllerCoverage::Failed:
-    return "failed";
-  }
-  return "unknown";
 }
 
 } // namespace wafer::compiler::detail

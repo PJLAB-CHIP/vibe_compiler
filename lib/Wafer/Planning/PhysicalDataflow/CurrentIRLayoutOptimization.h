@@ -3,8 +3,8 @@
 #ifndef WAFER_COMPILER_PLANNING_CURRENTIRLAYOUTOPTIMIZATION_H
 #define WAFER_COMPILER_PLANNING_CURRENTIRLAYOUTOPTIMIZATION_H
 
-#include "Wafer/Planning/PhysicalDataflow/RepresentationPBQPSolver.h"
-#include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
+#include "Wafer/Analysis/Structured/StructuredMaterializationRelations.h"
+#include "Wafer/Planning/PhysicalDataflow/ExactPBQPSolver.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -31,13 +31,11 @@ struct CurrentIRLayoutOptimizationStatistics {
 };
 
 struct CurrentIRLayoutOptimizationResult {
-  RepresentationPBQPStatus status = RepresentationPBQPStatus::BrokenContract;
+  ExactPBQPStatus status = ExactPBQPStatus::BrokenContract;
   CurrentIRLayoutOptimizationStatistics statistics;
   std::string detail;
 
-  bool succeeded() const {
-    return status == RepresentationPBQPStatus::Optimal;
-  }
+  bool succeeded() const { return status == ExactPBQPStatus::Optimal; }
 };
 
 /// Builds one query-local PBQP directly from the supplied current Tile IR and
@@ -46,17 +44,9 @@ struct CurrentIRLayoutOptimizationResult {
 /// no performance-comparable soft term until the concrete target descriptor
 /// count is known, so this query uses only hard feasibility and the solver's
 /// complete semantic tie-break.
-CurrentIRLayoutOptimizationResult optimizeCurrentIRLayouts(
-    llvm::MutableArrayRef<CurrentIRLayoutModule> modules,
-    uint64_t workLimit = UINT64_C(1048576));
-
-/// Re-establishes explicit semantic owners for result-producing current Tile
-/// operations after a function-boundary bufferization epoch. Owners come only
-/// from current buffer relations or already-recorded current consumers;
-/// absence of that evidence is a contract failure.
-mlir::LogicalResult closeCurrentTileDataflowOwnerRelations(
-    mlir::ModuleOp module, StructuredMaterializationRelations &relations,
-    std::string *failureReason = nullptr);
+CurrentIRLayoutOptimizationResult
+optimizeCurrentIRLayouts(llvm::MutableArrayRef<CurrentIRLayoutModule> modules,
+                         uint64_t workLimit = UINT64_C(1048576));
 
 } // namespace wafer::compiler::detail
 

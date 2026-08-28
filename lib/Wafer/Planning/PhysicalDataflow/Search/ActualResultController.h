@@ -3,13 +3,12 @@
 #ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_ACTUALRESULTCONTROLLER_H
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_ACTUALRESULTCONTROLLER_H
 
-#include "Wafer/Analysis/ScheduleCost/TheoreticalScheduleCostAnalysis.h"
-#include "Wafer/Planning/PhysicalDataflow/FullFeasibility.h"
+#include "Wafer/CodeGen/Executable/CardExecutableCompilation.h"
+#include "Wafer/Planning/PhysicalDataflow/Search/PlanningState.h"
 
 #include "mlir/Support/LogicalResult.h"
 
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
 #include <optional>
@@ -22,6 +21,24 @@
 
 namespace wafer::compiler::detail {
 
+/// Performance-only rates shared by one accepted-candidate comparison cohort.
+/// They never participate in IR legality or memory admission.
+struct SearchCostPolicy {
+  uint64_t cardDDRNominalBytesPerSecond = 150'000'000'000ULL;
+  uint64_t directionalNoCBytesPerSecond = 128'000'000'000ULL;
+  uint64_t dteEndpointBytesPerSecondEstimate = 128'000'000'000ULL;
+  uint64_t dteMessageStartupPicosecondsEstimate = 10'000'000ULL;
+  uint64_t noCHopPicosecondsEstimate = 1'000ULL;
+  uint64_t instructionFixedPicosecondsEstimate = 1'000ULL;
+  uint64_t dteWaitedEventPicosecondsEstimate = 1'000ULL;
+  uint64_t nccParticipantWaitPicosecondsEstimate = 1'000ULL;
+  uint64_t f16Bf16NPULogicalOpsPerSecondPerTile = 8'000'000'000'000ULL;
+  uint64_t f16Bf16VectorLogicalOpsPerSecondPerTile = 64'000'000'000ULL;
+  uint64_t f32VectorLogicalOpsPerSecondPerTile = 32'000'000'000ULL;
+  uint64_t spmExplicitMovementBytesPerSecondPerTileEstimate =
+      256'000'000'000ULL;
+};
+
 /// Stable identity of one structural search transaction. Facts created after
 /// TileRegion materialization (layout, buffers, movement, events, schedule and
 /// offsets) cannot enter this key.
@@ -31,8 +48,7 @@ public:
     return StructuralCandidateKey(state.getSpatialPlan(), state.getRegionPlan(),
                                   state.getTemporalPlan());
   }
-  static StructuralCandidateKey create(SpatialPlan spatial,
-                                       RegionPlan regions,
+  static StructuralCandidateKey create(SpatialPlan spatial, RegionPlan regions,
                                        TemporalPlan temporal) {
     return StructuralCandidateKey(std::move(spatial), std::move(regions),
                                   std::move(temporal));
@@ -67,10 +83,9 @@ private:
 class SearchCostCohort {
 public:
   static mlir::FailureOr<SearchCostCohort>
-  create(const analysis::ScheduleEstimatePolicy &policy,
-         std::string *failureReason = nullptr);
+  create(const SearchCostPolicy &policy, std::string *failureReason = nullptr);
 
-  const analysis::ScheduleEstimatePolicy &getPolicy() const { return policy; }
+  const SearchCostPolicy &getPolicy() const { return policy; }
 
   friend bool operator==(const SearchCostCohort &lhs,
                          const SearchCostCohort &rhs) {
@@ -84,8 +99,7 @@ public:
                right.dteEndpointBytesPerSecondEstimate &&
            left.dteMessageStartupPicosecondsEstimate ==
                right.dteMessageStartupPicosecondsEstimate &&
-           left.noCHopPicosecondsEstimate ==
-               right.noCHopPicosecondsEstimate &&
+           left.noCHopPicosecondsEstimate == right.noCHopPicosecondsEstimate &&
            left.instructionFixedPicosecondsEstimate ==
                right.instructionFixedPicosecondsEstimate &&
            left.dteWaitedEventPicosecondsEstimate ==
@@ -103,10 +117,9 @@ public:
   }
 
 private:
-  explicit SearchCostCohort(analysis::ScheduleEstimatePolicy policy)
-      : policy(policy) {}
+  explicit SearchCostCohort(SearchCostPolicy policy) : policy(policy) {}
 
-  analysis::ScheduleEstimatePolicy policy;
+  SearchCostPolicy policy;
 };
 
 /// Independently comparable service dimensions derived from the final actual
@@ -126,20 +139,16 @@ struct SearchResourceDurations {
 
   friend bool operator==(const SearchResourceDurations &lhs,
                          const SearchResourceDurations &rhs) {
-    return std::tie(lhs.neF16Bf16Picoseconds,
-                    lhs.vectorF16Bf16Picoseconds,
-                    lhs.vectorF32Picoseconds, lhs.ddrPicoseconds,
-                    lhs.nocPicoseconds, lhs.spmMovementPicoseconds,
-                    lhs.instructionControlPicoseconds,
-                    lhs.dteWaitControlPicoseconds,
-                    lhs.nccWaitControlPicoseconds) ==
-           std::tie(rhs.neF16Bf16Picoseconds,
-                    rhs.vectorF16Bf16Picoseconds,
-                    rhs.vectorF32Picoseconds, rhs.ddrPicoseconds,
-                    rhs.nocPicoseconds, rhs.spmMovementPicoseconds,
-                    rhs.instructionControlPicoseconds,
-                    rhs.dteWaitControlPicoseconds,
-                    rhs.nccWaitControlPicoseconds);
+    return std::tie(
+               lhs.neF16Bf16Picoseconds, lhs.vectorF16Bf16Picoseconds,
+               lhs.vectorF32Picoseconds, lhs.ddrPicoseconds, lhs.nocPicoseconds,
+               lhs.spmMovementPicoseconds, lhs.instructionControlPicoseconds,
+               lhs.dteWaitControlPicoseconds, lhs.nccWaitControlPicoseconds) ==
+           std::tie(
+               rhs.neF16Bf16Picoseconds, rhs.vectorF16Bf16Picoseconds,
+               rhs.vectorF32Picoseconds, rhs.ddrPicoseconds, rhs.nocPicoseconds,
+               rhs.spmMovementPicoseconds, rhs.instructionControlPicoseconds,
+               rhs.dteWaitControlPicoseconds, rhs.nccWaitControlPicoseconds);
   }
 };
 
@@ -206,6 +215,32 @@ struct ExactCompleteRejection {
   }
 };
 
+enum class ActualCandidateStatus : uint8_t {
+  Accepted,
+  ExactRejection,
+  Unsupported,
+  Indeterminate,
+  CompilerBug,
+};
+
+/// Result returned by the caller-owned current-IR actualizer. Accepted keeps
+/// the original actual Card/Instr owner; rejected results contain only typed
+/// witness facts. No structural or downstream shadow plan enters this type.
+struct ActualCandidateResult {
+  ActualCandidateStatus status = ActualCandidateStatus::CompilerBug;
+  std::optional<CardExecutableCompilationResult> compilation;
+  std::vector<SemanticRootKey> causalRoots;
+  std::string detail;
+
+  bool isAccepted() const {
+    return status == ActualCandidateStatus::Accepted && compilation &&
+           compilation->isAccepted() && compilation->executable.has_value();
+  }
+  bool isExactRejection() const {
+    return status == ActualCandidateStatus::ExactRejection;
+  }
+};
+
 struct RetainedSearchCandidate {
   StructuralCandidateKey key;
   SearchObjective objective;
@@ -243,15 +278,12 @@ struct ActualResultControllerOptions {
 };
 
 /// A caller assertion that `objective` is an admissible lower bound for the
-/// named complete assignment. Q51.Core only compares the typed value; the
-/// producer and its proof are owned by the later search-policy stage.
+/// named complete assignment. The controller only compares the typed value;
+/// the producer and its proof are owned by the search policy.
 struct SearchLowerBound {
   StructuralCandidateKey key;
   SearchObjective objective;
 };
-
-llvm::StringRef
-stringifySearchControllerCoverage(SearchControllerCoverage coverage);
 
 struct SearchControllerStatistics {
   uint64_t reserved = 0;
@@ -281,7 +313,7 @@ public:
 
   CandidateReservation reserve(const StructuralCandidateKey &key);
   CandidateRecordOutcome record(const StructuralCandidateKey &key,
-                                FullFeasibilityResult result);
+                                ActualCandidateResult result);
 
   bool isForbidden(const StructuralCandidateKey &key) const;
   const ExactCompleteRejection *

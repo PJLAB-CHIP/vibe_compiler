@@ -91,9 +91,9 @@ CONVERSION_LIBRARIES = {
         "include": "include/Wafer/Conversion/WaferCardModuleToTileModules/WaferCardModuleToTileModules.h",
         "lib": "lib/Wafer/Conversion/WaferCardModuleToTileModules/WaferCardModuleToTileModules.cpp",
     },
-    "WaferTensorProgramToTileRegion": {
-        "include": "include/Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h",
-        "lib": "lib/Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.cpp",
+    "WaferStructuredTiling": {
+        "include": "include/Wafer/Conversion/StructuredTiling.h",
+        "lib": "lib/Wafer/Conversion/StructuredTiling/StructuredTiling.cpp",
     },
     "WaferTileRegionToInstr": {
         "include": "include/Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h",

@@ -316,7 +316,7 @@ getConstantPredicateSelectPlan(ComputeElementwiseOp op) {
 class ElementwiseLowering : public mlir::OpRewritePattern<ComputeElementwiseOp>,
                             private ScratchRecorderHolder {
 public:
-  struct InputMovementPlan {
+  struct MappedInputRewrite {
     mlir::Value source;
     mlir::MemRefType materializedType;
     llvm::SmallVector<MovementDescriptorPair> descriptors;
@@ -399,8 +399,8 @@ public:
     // Validate every map before creating an allocation or an instruction.
     // A failed conversion therefore cannot leave a partially materialized
     // operand sequence in the pattern rewriter.
-    llvm::SmallVector<InputMovementPlan, 3> movementPlans;
-    movementPlans.reserve(op.getInputs().size());
+    llvm::SmallVector<MappedInputRewrite, 3> inputRewrites;
+    inputRewrites.reserve(op.getInputs().size());
     mlir::ArrayAttr indexingMaps = op.getIndexingMapsAttr();
     if (indexingMaps) {
       if (indexingMaps.size() != op.getInputs().size() + 1)
@@ -421,8 +421,8 @@ public:
     }
 
     for (auto [index, input] : llvm::enumerate(op.getInputs())) {
-      InputMovementPlan plan;
-      plan.source = input;
+      MappedInputRewrite inputRewrite;
+      inputRewrite.source = input;
       auto sourceType = mlir::dyn_cast<mlir::MemRefType>(input.getType());
       if (!sourceType)
         return failPattern(rewriter, op,
@@ -432,7 +432,7 @@ public:
                 rewriter, op, sourceType, resultType, descriptorCache,
                 "map-free tile.elementwise")))
           return mlir::failure();
-        movementPlans.push_back(std::move(plan));
+        inputRewrites.push_back(std::move(inputRewrite));
         continue;
       }
 
@@ -461,12 +461,12 @@ public:
         if (identity.isExact() &&
             descriptorCache->hasOrProveIdentityPhysicalTraversal(sourceType,
                                                                  resultType)) {
-          movementPlans.push_back(std::move(plan));
+          inputRewrites.push_back(std::move(inputRewrite));
           continue;
         }
       }
 
-      plan.materializedType = mlir::MemRefType::get(
+      inputRewrite.materializedType = mlir::MemRefType::get(
           resultType.getShape(), sourceType.getElementType(),
           resultType.getLayout(), resultType.getMemorySpace());
       analysis::IndexRelationResult sourceRelation =
@@ -479,18 +479,19 @@ public:
                            "tile.elementwise indexing relation is not exact");
       mlir::FailureOr<SharedMovementDescriptorPlan> descriptors =
           descriptorCache->getOrCreate(
-              rewriter, op, sourceType, plan.materializedType,
+              rewriter, op, sourceType, inputRewrite.materializedType,
               resultType.getShape(), *sourceRelation.get(), *destRelation.get(),
               MovementEngine::GatherScatter,
               "tile.elementwise indexing map materialization");
       if (mlir::failed(descriptors))
         return mlir::failure();
-      plan.descriptors.assign((*descriptors)->begin(), (*descriptors)->end());
+      inputRewrite.descriptors.assign((*descriptors)->begin(),
+                                      (*descriptors)->end());
       if (mlir::failed(proveIdentityPhysicalTraversal(
-              rewriter, op, plan.materializedType, resultType, descriptorCache,
-              "materialized tile.elementwise operand")))
+              rewriter, op, inputRewrite.materializedType, resultType,
+              descriptorCache, "materialized tile.elementwise operand")))
         return mlir::failure();
-      movementPlans.push_back(std::move(plan));
+      inputRewrites.push_back(std::move(inputRewrite));
     }
 
     InstrElementwiseKindAttr instrKind;
@@ -506,9 +507,9 @@ public:
     // descriptors as well, still before emitting any effect.
     llvm::SmallVector<MovementDescriptorPair> selectCopyDescriptors;
     if (op.getKind() == ComputeElementwiseKind::Select) {
-      mlir::Type falseType = movementPlans[2].source.getType();
-      if (movementPlans[2].materializedType)
-        falseType = movementPlans[2].materializedType;
+      mlir::Type falseType = inputRewrites[2].source.getType();
+      if (inputRewrites[2].materializedType)
+        falseType = inputRewrites[2].materializedType;
       auto falseMemRef = mlir::dyn_cast<mlir::MemRefType>(falseType);
       analysis::IndexRelationResult relation =
           analysis::IndexRelation::identity(resultType.getShape());
@@ -527,25 +528,25 @@ public:
     }
 
     llvm::SmallVector<mlir::Value, 3> inputs;
-    inputs.reserve(movementPlans.size());
-    bool materializedMappedInput = false;
-    for (const InputMovementPlan &plan : movementPlans) {
-      if (!plan.materializedType) {
-        inputs.push_back(plan.source);
+    inputs.reserve(inputRewrites.size());
+    for (const MappedInputRewrite &inputRewrite : inputRewrites) {
+      if (!inputRewrite.materializedType) {
+        inputs.push_back(inputRewrite.source);
         continue;
       }
-      mlir::FailureOr<mlir::Value> materialized = createDestAlloc(
-          op.getLoc(), plan.materializedType, rewriter, op, bufferRecorder);
+      mlir::FailureOr<mlir::Value> materialized =
+          createDestAlloc(op.getLoc(), inputRewrite.materializedType, rewriter,
+                          op, bufferRecorder);
       if (mlir::failed(materialized))
         return mlir::failure();
       llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
-          createGatherScatterDescriptors(rewriter, op.getLoc(), plan.source,
-                                         *materialized, plan.descriptors);
+          createGatherScatterDescriptors(rewriter, op.getLoc(),
+                                         inputRewrite.source, *materialized,
+                                         inputRewrite.descriptors);
       if (bufferRecorder)
         for (InstrGatherScatterOp operation : lowered)
           bufferRecorder->recordLoweredOperation(op, operation);
       inputs.push_back(*materialized);
-      materializedMappedInput = true;
     }
     mlir::FailureOr<mlir::Value> dest =
         createDestAlloc(op.getLoc(), resultType, rewriter, op, bufferRecorder);
@@ -565,8 +566,8 @@ public:
         return mlir::failure();
       auto bit2fp =
           rewriter.create<InstrBit2FpOp>(op.getLoc(), inputs[0], *mask);
-      auto maskMove = rewriter.create<InstrMaskMoveOp>(
-          op.getLoc(), inputs[1], *mask, *dest);
+      auto maskMove = rewriter.create<InstrMaskMoveOp>(op.getLoc(), inputs[1],
+                                                       *mask, *dest);
       if (bufferRecorder) {
         bufferRecorder->recordLoweredOperation(op, bit2fp);
         bufferRecorder->recordLoweredOperation(op, maskMove);

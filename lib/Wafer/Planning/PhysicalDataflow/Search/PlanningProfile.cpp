@@ -49,35 +49,6 @@ void PlanningProfileSink::recordCandidateActualization(uint64_t count,
   }
 }
 
-void PlanningProfileSink::recordWinnerHandoff() {
-  ++statistics.winnerHandoffs;
-}
-
-void printPlanningProfile(llvm::raw_ostream &output,
-                          const PlanningProfileSink &profile) {
-  const PlanningProfileStatistics &statistics = profile.getStatistics();
-  output << "wafer-compile: planning-profile"
-         << " peak_frontier_depth=" << statistics.peakFrontierDepth
-         << " candidate_actualizations="
-         << statistics.candidateActualizations
-         << " accepted_candidates=" << statistics.acceptedCandidates
-         << " winner_handoffs=" << statistics.winnerHandoffs
-         << " time_to_first_accepted_ms=";
-  if (statistics.timeToFirstAcceptedMilliseconds)
-    output << *statistics.timeToFirstAcceptedMilliseconds;
-  else
-    output << "unknown";
-  output << '\n';
-  for (unsigned index = 0;
-       index < static_cast<unsigned>(PlanningMemoKind::Count); ++index) {
-    PlanningMemoKind kind = static_cast<PlanningMemoKind>(index);
-    const PlanningMemoProfile &memo = statistics.memos[index];
-    output << "wafer-compile: planning-profile-memo"
-           << " kind=" << stringifyPlanningMemoKind(kind)
-           << " lookups=" << memo.lookups << " hits=" << memo.hits
-           << " misses=" << memo.misses << " entries=" << memo.entries
-           << " peak_entries=" << memo.peakEntries << '\n';
-  }
-}
+void PlanningProfileSink::recordWinnerHandoff() { ++statistics.winnerHandoffs; }
 
 } // namespace wafer::compiler::detail

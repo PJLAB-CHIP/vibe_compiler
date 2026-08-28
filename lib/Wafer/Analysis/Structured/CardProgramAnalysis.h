@@ -4,8 +4,8 @@
 
 #include "Wafer/Analysis/Structured/StructuredDAGAnalysis.h"
 
+#include "Wafer/Analysis/Structured/StructuredMaterializationRelations.h"
 #include "Wafer/Driver/Compilation.h"
-#include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "Wafer/Frontend/Program/Program.h"
 #include "Wafer/IR/Target/TargetTopology.h"
 
@@ -21,8 +21,7 @@ class raw_ostream;
 
 namespace wafer::compiler::detail {
 
-using StaticOutputDomains =
-    llvm::SmallVector<llvm::SmallVector<int64_t, 4>, 4>;
+using StaticOutputDomains = llvm::SmallVector<llvm::SmallVector<int64_t, 4>, 4>;
 
 /// Immutable current-IR facts shared by the baseline and search entrypoints.
 /// Construction performs no placement, tiling, materialization or selection.
@@ -43,9 +42,10 @@ struct CardProgramAnalysis {
   llvm::SmallVector<StructuredOperationNodeMapping, 16> operationNodes;
 };
 
-mlir::FailureOr<std::unique_ptr<CardProgramAnalysis>> analyzeCardProgram(
-    mlir::ModuleOp tensorProgram,
-    const frontend::FrontendProgramVerificationResult &program,
-    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics);
+mlir::FailureOr<std::unique_ptr<CardProgramAnalysis>>
+analyzeCardProgram(mlir::ModuleOp tensorProgram,
+                   const frontend::FrontendProgramVerificationResult &program,
+                   const ExecutionConfig &executionConfig,
+                   llvm::raw_ostream &diagnostics);
 
 } // namespace wafer::compiler::detail

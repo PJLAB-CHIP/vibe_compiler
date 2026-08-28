@@ -3,8 +3,6 @@
 #ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGMEMO_H
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGMEMO_H
 
-#include "llvm/ADT/StringRef.h"
-
 #include <cstddef>
 #include <map>
 #include <utility>
@@ -21,18 +19,8 @@ enum class PlanningMemoKind : unsigned {
   RootWork,
   RegionDomain,
   TemporalDomain,
-  RepresentationDomain,
-  MovementDomain,
-  StorageDomain,
-  InitialEventGraph,
-  PostStructureEventGraph,
-  ExecutionStructureDomain,
-  StructureSpecificStorageDomain,
-  ScheduleDomain,
   Count,
 };
-
-llvm::StringRef stringifyPlanningMemoKind(PlanningMemoKind kind);
 
 void recordPlanningMemoLookup(PlanningProfileSink *profile,
                               PlanningMemoKind kind, bool hit);

@@ -3,7 +3,7 @@
 #include "Wafer/Conversion/StableHLOToLinalg/StructuredGraphNormalization.h"
 #include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
 #include "Wafer/Analysis/Structured/StructuredDAGAnalysis.h"
-#include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
+#include "Wafer/Conversion/StructuredTiling.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

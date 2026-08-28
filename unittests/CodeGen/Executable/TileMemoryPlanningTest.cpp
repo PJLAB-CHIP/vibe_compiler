@@ -29,6 +29,20 @@
 
 namespace {
 
+mlir::LogicalResult lowerTileRegionModule(mlir::ModuleOp module) {
+  if (!module)
+    return mlir::failure();
+  llvm::SmallVector<wafer::TileRegionOp, 4> regions;
+  module.walk([&](wafer::TileRegionOp region) { regions.push_back(region); });
+  wafer::TileRegionToInstrLoweringSession session(*module.getContext());
+  for (wafer::TileRegionOp region : regions)
+    if (mlir::failed(wafer::convertTileRegionToInstr(region, session)))
+      return mlir::failure();
+  if (mlir::failed(wafer::convertBufferizationCopiesToInstr(module, session)))
+    return mlir::failure();
+  return wafer::rebuildRequiredNCCJoins(module);
+}
+
 class TileMemoryPlanningTest : public ::testing::Test {
 protected:
   TileMemoryPlanningTest() {
@@ -171,7 +185,7 @@ TEST_F(TileMemoryPlanningTest, ReportsSPMFailureForOwnedTileModule) {
   mlir::OwningOpRef<mlir::ModuleOp> module =
       candidateWithSPMElements(/*elements=*/2'000'000);
   ASSERT_TRUE(module);
-  ASSERT_TRUE(mlir::succeeded(wafer::convertTileRegionToInstrModule(*module)));
+  ASSERT_TRUE(mlir::succeeded(lowerTileRegionModule(*module)));
   ASSERT_FALSE(wafer::containsTileDataflowOperations(module->getOperation()));
 
   std::string diagnostics;
@@ -221,8 +235,7 @@ TEST_F(TileMemoryPlanningTest, ReportsSPMFailureForOwnedTileModule) {
   mlir::OwningOpRef<mlir::ModuleOp> quietModule =
       candidateWithSPMElements(/*elements=*/2'000'000);
   ASSERT_TRUE(quietModule);
-  ASSERT_TRUE(
-      mlir::succeeded(wafer::convertTileRegionToInstrModule(*quietModule)));
+  ASSERT_TRUE(mlir::succeeded(lowerTileRegionModule(*quietModule)));
   wafer::compiler::detail::TileMemoryPlanningFailure quietFailure;
   auto quiet = wafer::compiler::detail::planTileMemory(
       std::move(quietModule), &quietFailure,
@@ -296,8 +309,8 @@ TEST_F(TileMemoryPlanningTest,
         return mlir::success();
       });
   wafer::compiler::detail::TileMemoryPlanningFailure failure;
-  auto memoryPlanned = wafer::compiler::detail::planTileMemory(
-      std::move(module), &failure);
+  auto memoryPlanned =
+      wafer::compiler::detail::planTileMemory(std::move(module), &failure);
   EXPECT_TRUE(mlir::failed(memoryPlanned));
   EXPECT_EQ(
       failure.kind,
@@ -359,8 +372,9 @@ module {
         wafer::kWaferSPMOffsetAttrName);
     ASSERT_TRUE(offset);
   });
-  (*memoryPlanned)->walk(
-      [&](wafer::InstrFillOp fill) { fills.push_back(fill); });
+  (*memoryPlanned)->walk([&](wafer::InstrFillOp fill) {
+    fills.push_back(fill);
+  });
   ASSERT_EQ(allocations.size(), 4u);
   ASSERT_EQ(fills.size(), 4u);
   for (size_t index = 0; index + 1 < allocations.size(); ++index)

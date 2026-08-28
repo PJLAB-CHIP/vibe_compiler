@@ -3,7 +3,7 @@
 #ifndef WAFER_CONVERSION_WAFERCARDMODULETOTILEMODULES_H
 #define WAFER_CONVERSION_WAFERCARDMODULETOTILEMODULES_H
 
-#include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
+#include "Wafer/Analysis/Structured/StructuredMaterializationRelations.h"
 #include "Wafer/Target/Core/TopologyIds.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -35,11 +35,10 @@ struct TileModule {
 /// bodies, Target execution bindings and launch slots are never inferred or
 /// copied from the logical mesh.
 mlir::FailureOr<llvm::SmallVector<TileModule, 16>>
-splitCardModuleIntoTileModules(
-    mlir::OwningOpRef<mlir::ModuleOp> sourceModule,
-    std::string *failureReason = nullptr,
-    const StructuredMaterializationRelations *materializationRelations =
-        nullptr);
+splitCardModuleIntoTileModules(mlir::OwningOpRef<mlir::ModuleOp> sourceModule,
+                               std::string *failureReason = nullptr,
+                               const StructuredMaterializationRelations
+                                   *materializationRelations = nullptr);
 
 } // namespace wafer
 

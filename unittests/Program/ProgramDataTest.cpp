@@ -665,10 +665,10 @@ TEST_F(ProgramDataTest, VerifyShardAgainstSourceDeduplicatesAndAdopts) {
   EXPECT_EQ(handoff.getCandidateCount(), 0u);
   EXPECT_FALSE(llvm::sys::fs::exists(unusedCandidatePath));
 
-  // The optional I/O statistics cover every establishment and digest pass: two helper
-  // outputs, one canonical source, source-copy and owned-content digests for
-  // all three, two shard region-digest pairs, plus the failed-rank attempt is
-  // classified before any I/O.
+  // The optional I/O statistics cover every establishment and digest pass: two
+  // helper outputs, one canonical source, source-copy and owned-content digests
+  // for all three, two shard region-digest pairs, plus the failed-rank attempt
+  // is classified before any I/O.
   EXPECT_EQ(handoff.getIOStatistics().sourceOpens, 3u);
   EXPECT_EQ(handoff.getIOStatistics().fileOpens, 9u);
   EXPECT_EQ(handoff.getIOStatistics().readWindows, 13u);
@@ -787,155 +787,6 @@ TEST_F(ProgramDataTest, DTypeWidthTableAdmitsProgramBoundaryDtypes) {
   auto unknown = wafer::parseProgramElementType("f128");
   EXPECT_FALSE(static_cast<bool>(unknown));
   llvm::consumeError(unknown.takeError());
-}
-
-namespace {
-
-wafer::frontend::ProgramPartitionSlice
-singleCardPartitionSlice(llvm::ArrayRef<int64_t> shape) {
-  wafer::frontend::ProgramPartitionSlice slice;
-  slice.partitionId = 0;
-  slice.replicaId = 0;
-  slice.offsets.assign(shape.size(), 0);
-  slice.sizes.assign(shape.begin(), shape.end());
-  slice.strides.assign(shape.size(), 1);
-  return slice;
-}
-
-wafer::frontend::ProgramBoundaryBinding
-shapedBoundary(int64_t index, llvm::ArrayRef<int64_t> shape) {
-  wafer::frontend::ProgramBoundaryBinding binding;
-  binding.index = index;
-  binding.programIndex = index;
-  binding.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
-  binding.globalShape.assign(shape.begin(), shape.end());
-  binding.localShape.assign(shape.begin(), shape.end());
-  binding.dtype = wafer::ProgramElementType::F32;
-  binding.partitionSlices.push_back(singleCardPartitionSlice(shape));
-  return binding;
-}
-
-} // namespace
-
-TEST_F(ProgramDataTest, PrepareProgramInvocationsMaterializesOnceAcrossTiles) {
-  std::vector<uint8_t> payload = f32Bytes({1.0f, 2.0f, 3.0f, 4.0f});
-  writeNpy("weight.npy", "<f4", {4}, payload);
-  writeNpy("replicated-shard.npy", "<f4", {4}, payload);
-
-  mlir::DialectRegistry registry;
-  wafer::compiler::detail::registerCompilationDialects(registry);
-  auto context = std::make_shared<mlir::MLIRContext>(registry);
-  context->loadAllAvailableDialects();
-
-  auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
-      R"mlir(
-module {
-  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
-  wafer.execution.mesh @default_mesh {axes = ["card_partition"], shape = array<i64: 1>}
-  func.func @main(%lhs: tensor<4xf32>, %weight: tensor<4xf32>)
-      -> tensor<4xf32> {
-    %tmp = tensor.empty() : tensor<4xf32>
-    %sum = linalg.generic {
-        indexing_maps = [affine_map<(d0) -> (d0)>,
-                         affine_map<(d0) -> (d0)>,
-                         affine_map<(d0) -> (d0)>],
-        iterator_types = ["parallel"]
-      } ins(%lhs, %weight : tensor<4xf32>, tensor<4xf32>)
-        outs(%tmp : tensor<4xf32>) {
-      ^bb0(%a: f32, %b: f32, %old: f32):
-        %value = arith.addf %a, %b : f32
-        linalg.yield %value : f32
-    } -> tensor<4xf32>
-    return %sum : tensor<4xf32>
-  }
-}
-)mlir",
-      mlir::ParserConfig(context.get()));
-  ASSERT_TRUE(tensorProgram);
-
-  wafer::frontend::FrontendProgramVerificationResult program;
-  program.numPartitions = 1;
-  program.programUserInputCount = 1;
-  program.programParameterCount = 1;
-  program.distributedInputs = {shapedBoundary(0, {4})};
-  program.distributedOutputs = {shapedBoundary(0, {4})};
-  wafer::frontend::ProgramParameterBinding parameter;
-  parameter.argumentIndex = 1;
-  parameter.name = "weight";
-  parameter.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
-  parameter.globalShape = {4};
-  parameter.localShape = {4};
-  parameter.dtype = wafer::ProgramElementType::F32;
-  parameter.partitionSlices.push_back(singleCardPartitionSlice({4}));
-  program.parameters.push_back(std::move(parameter));
-
-  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
-  ASSERT_TRUE(static_cast<bool>(config));
-
-  ProgramDataHandoff handoff(temporaryDirectory.str().str(),
-                             /*collectIOStatistics=*/true);
-  ProgramDataFailure failure;
-  auto sourceId =
-      handoff.establishSource(path("weight.npy"), "data/weight", &failure);
-  ASSERT_TRUE(static_cast<bool>(sourceId));
-  auto unusedCandidate = handoff.establishHelperOutput(
-      path("replicated-shard.npy"),
-      "parameter_shards/weight/partition_00000.npy", &failure);
-  ASSERT_TRUE(static_cast<bool>(unusedCandidate));
-  EXPECT_EQ(handoff.getCandidateCount(), 1u);
-  ProgramDataFailure rangeFailure;
-  auto range = ProgramDataRange::create(
-      {ProgramResourceRole::Parameter, 1}, wafer::ProgramElementType::F32, {4},
-      {4}, wafer::frontend::ProgramDistributionKind::Replicated,
-      ProgramDataRangeOrigin::OriginalSource, std::vector<int64_t>{0},
-      std::vector<int64_t>{4}, std::vector<int64_t>{1}, *sourceId,
-      handoff.getSource(*sourceId), &rangeFailure);
-  ASSERT_TRUE(static_cast<bool>(range));
-  ASSERT_FALSE(static_cast<bool>(handoff.addRange(std::move(*range))));
-
-  std::string diagnosticsText;
-  llvm::raw_string_ostream diagnostics(diagnosticsText);
-  auto cardExecutable = wafer::compiler::detail::buildCardExecutable(
-      context, *tensorProgram, std::move(program), *config,
-      wafer::OptimizationConfig::none(), diagnostics, std::nullopt, handoff);
-  if (!cardExecutable)
-    FAIL() << diagnosticsText << llvm::toString(cardExecutable.takeError());
-  ASSERT_EQ(cardExecutable->getTileExecutables().size(), 16u);
-  EXPECT_EQ(cardExecutable->getProgramDataHandoff().getCandidateCount(), 0u)
-      << "CardExecutable must retain only adopted live sources";
-
-  auto inputTensor = ProgramTensor::create(wafer::ProgramElementType::F32, {4},
-                                           f32Bytes({9.0f, 9.0f, 9.0f, 9.0f}));
-  ASSERT_TRUE(static_cast<bool>(inputTensor));
-  ProgramGlobalInputBinding input{0, std::move(*inputTensor)};
-  llvm::Expected<std::vector<ProgramTileInvocation>> invocations =
-      prepareProgramInvocations(*cardExecutable, {input});
-  ASSERT_TRUE(static_cast<bool>(invocations));
-  EXPECT_EQ(invocations->size(), 16u);
-
-  // One range materialization for the whole card, shared across all 16 Tiles.
-  EXPECT_EQ(cardExecutable->getProgramDataHandoff()
-                .getIOStatistics()
-                .rangeMaterializations,
-            1u);
-  const uint8_t *sharedStorage = nullptr;
-  for (const ProgramTileInvocation &invocation : *invocations) {
-    const ProgramTensor *weight = nullptr;
-    for (const ProgramInputBinding &binding : invocation.inputs) {
-      if (binding.role != ProgramResourceRole::Parameter)
-        continue;
-      EXPECT_EQ(binding.tensor.getDType(), wafer::ProgramElementType::F32);
-      EXPECT_EQ(binding.tensor.getShape(), llvm::ArrayRef<int64_t>({4}));
-      EXPECT_EQ(binding.tensor.getBytes(), llvm::ArrayRef<uint8_t>(payload));
-      weight = &binding.tensor;
-      break;
-    }
-    ASSERT_NE(weight, nullptr) << "every Tile must bind the parameter";
-    if (!sharedStorage)
-      sharedStorage = weight->getBytes().data();
-    EXPECT_EQ(weight->getBytes().data(), sharedStorage)
-        << "Tile parameter views must share one materialization";
-  }
 }
 
 } // namespace

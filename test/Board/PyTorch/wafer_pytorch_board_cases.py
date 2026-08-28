@@ -60,7 +60,7 @@ class PyTorchBoardCase:
 
 @dataclasses.dataclass(frozen=True)
 class SourceNoCardWorkload:
-    """One explicitly callable source/oracle/package/no-card vertical."""
+    """One retained source/oracle/package/no-card qualification case."""
 
     ctest_name: str
     case_name: str

@@ -12,8 +12,8 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
@@ -152,11 +152,11 @@ protected:
     std::vector<wafer::compiler::detail::CanonicalInstructionTile> result;
     result.reserve(16);
     for (int64_t tile = 0; tile < 16; ++tile)
-      result.push_back(
-          {wafer::CardId(0), wafer::TileId(tile),
-           mlir::OwningOpRef<mlir::ModuleOp>(
-               mlir::cast<mlir::ModuleOp>(source->clone())),
-           {}});
+      result.push_back({wafer::CardId(0),
+                        wafer::TileId(tile),
+                        mlir::OwningOpRef<mlir::ModuleOp>(
+                            mlir::cast<mlir::ModuleOp>(source->clone())),
+                        {}});
     return result;
   }
 
@@ -244,9 +244,8 @@ module {
     else
       dest = allocation;
   });
-  module->walk([&](wafer::InstrGatherScatterOp operation) {
-    gather = operation;
-  });
+  module->walk(
+      [&](wafer::InstrGatherScatterOp operation) { gather = operation; });
   ASSERT_TRUE(source && dest && gather);
   wafer::StructuredMaterializationRelations relations;
   relations.scratchBuffers.push_back({0, source});
@@ -272,77 +271,6 @@ module {
   EXPECT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(
       *module, /*spmBase=*/0, /*spmLimit=*/3 * 1024 * 1024,
       /*spmAlignment=*/16)));
-}
-
-TEST_F(CardExecutableCompilationTest,
-       ClassifiesExactCapacityRejectionWithoutRepairingCardModule) {
-  auto cardModule = oversizedCardModule();
-  ASSERT_TRUE(cardModule);
-  auto repeatedCardModule = oversizedCardModule();
-  ASSERT_TRUE(repeatedCardModule);
-  auto expectedTileIds = tileIds();
-  wafer::frontend::FrontendProgramVerificationResult program;
-  program.numPartitions = 1;
-  std::string diagnosticText;
-  llvm::raw_string_ostream diagnostics(diagnosticText);
-  wafer::compiler::detail::CardExecutableLoweringStatistics statistics;
-  wafer::compiler::detail::CardExecutablePreparation preparation;
-  wafer::compiler::ProgramDataHandoff programData;
-
-  auto result = wafer::compiler::detail::compileCardModuleToExecutable(
-      std::move(cardModule), wafer::CardId(0), expectedTileIds,
-      /*materializationRelations=*/{}, preparation, program, executionConfig(),
-      diagnostics, programData, &statistics);
-  auto repeated = wafer::compiler::detail::compileCardModuleToExecutable(
-      std::move(repeatedCardModule), wafer::CardId(0), expectedTileIds,
-      /*materializationRelations=*/{}, preparation, program, executionConfig(),
-      diagnostics, programData, &statistics);
-  diagnostics.flush();
-
-  EXPECT_FALSE(result.isAccepted());
-  EXPECT_TRUE(result.isProvenExactRejection());
-  EXPECT_EQ(result.gate, "spm-allocation");
-  EXPECT_EQ(repeated.status, result.status);
-  EXPECT_EQ(repeated.gate, result.gate);
-  ASSERT_FALSE(repeated.tileFailures.empty());
-  EXPECT_EQ(repeated.tileFailures.front().memoryPlanning.spmPlanningFailureKind,
-            result.tileFailures.front().memoryPlanning.spmPlanningFailureKind);
-  EXPECT_EQ(statistics.cardModuleCompilationInvocations, 2u);
-  EXPECT_EQ(statistics.actualMemoryTargetGateInvocations, 2u);
-  EXPECT_EQ(statistics.tileModuleLoweringAttempts, 0u);
-  ASSERT_FALSE(result.tileFailures.empty());
-  EXPECT_TRUE(result.tileFailures.front().memoryPlanning.spmCapacityOverflow);
-  EXPECT_NE(diagnosticText.find("outcome=exact-rejection"), std::string::npos)
-      << diagnosticText;
-}
-
-TEST_F(CardExecutableCompilationTest,
-       KeepsIncompleteInvocationIndeterminateInsteadOfRejectingCandidate) {
-  auto expectedTileIds = tileIds();
-  wafer::frontend::FrontendProgramVerificationResult program;
-  program.numPartitions = 1;
-  std::string diagnosticText;
-  llvm::raw_string_ostream diagnostics(diagnosticText);
-  wafer::compiler::detail::CardExecutableLoweringStatistics statistics;
-  wafer::compiler::detail::CardExecutablePreparation preparation;
-  wafer::compiler::ProgramDataHandoff programData;
-
-  auto result = wafer::compiler::detail::compileCardModuleToExecutable(
-      {}, wafer::CardId(0), expectedTileIds,
-      /*materializationRelations=*/{}, preparation, program, executionConfig(),
-      diagnostics, programData, &statistics);
-  diagnostics.flush();
-
-  EXPECT_FALSE(result.isAccepted());
-  EXPECT_FALSE(result.isProvenExactRejection());
-  EXPECT_EQ(result.status,
-            wafer::compiler::detail::CardExecutableCompilationStatus::
-                IndeterminateFailure);
-  EXPECT_EQ(result.gate, "compilation-contract");
-  EXPECT_EQ(statistics.cardModuleCompilationInvocations, 1u);
-  EXPECT_EQ(statistics.actualMemoryTargetGateInvocations, 0u);
-  EXPECT_NE(diagnosticText.find("outcome=indeterminate"), std::string::npos)
-      << diagnosticText;
 }
 
 TEST_F(CardExecutableCompilationTest,
@@ -473,148 +401,6 @@ TEST_F(CardExecutableCompilationTest,
             std::string::npos)
       << mlirDiagnosticText;
   EXPECT_EQ(statistics.actualMemoryTargetGateInvocations, 1u);
-  EXPECT_EQ(statistics.tileModuleLoweringAttempts, 0u);
-}
-
-TEST_F(CardExecutableCompilationTest,
-       CardStageRejectsIncompleteTileDomainAfterLocalVerification) {
-  auto cardModule = oversizedCardModule();
-  ASSERT_TRUE(cardModule);
-  auto card = *cardModule->getOps<wafer::CardModuleOp>().begin();
-  wafer::TileModuleOp lastTile;
-  for (wafer::TileModuleOp tile :
-       card.getBody().front().getOps<wafer::TileModuleOp>())
-    if (tile.getTileIdAttr().getInt() == 15)
-      lastTile = tile;
-  ASSERT_TRUE(lastTile);
-  lastTile.erase();
-  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
-
-  wafer::frontend::FrontendProgramVerificationResult program;
-  program.numPartitions = 1;
-  std::string diagnosticsText;
-  llvm::raw_string_ostream diagnostics(diagnosticsText);
-  wafer::compiler::detail::CardExecutablePreparation preparation;
-  wafer::compiler::ProgramDataHandoff programData;
-  auto result = wafer::compiler::detail::compileCardModuleToExecutable(
-      std::move(cardModule), wafer::CardId(0), tileIds(),
-      /*materializationRelations=*/{}, preparation, program, executionConfig(),
-      diagnostics, programData);
-  EXPECT_EQ(result.status,
-            wafer::compiler::detail::CardExecutableCompilationStatus::
-                CompilerFailure);
-  EXPECT_EQ(result.gate, "card-module-stage");
-}
-
-TEST_F(CardExecutableCompilationTest,
-       CardStageRejectsPeerOutsideSelectedTileDomain) {
-  auto cardModule = oversizedCardModule(/*addInvalidPeer=*/true);
-  ASSERT_TRUE(cardModule);
-  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
-
-  wafer::frontend::FrontendProgramVerificationResult program;
-  program.numPartitions = 1;
-  std::string diagnosticsText;
-  llvm::raw_string_ostream diagnostics(diagnosticsText);
-  wafer::compiler::detail::CardExecutablePreparation preparation;
-  wafer::compiler::ProgramDataHandoff programData;
-  auto result = wafer::compiler::detail::compileCardModuleToExecutable(
-      std::move(cardModule), wafer::CardId(0), tileIds(),
-      /*materializationRelations=*/{}, preparation, program, executionConfig(),
-      diagnostics, programData);
-  EXPECT_EQ(result.status,
-            wafer::compiler::detail::CardExecutableCompilationStatus::
-                CompilerFailure);
-  EXPECT_EQ(result.gate, "card-module-stage");
-}
-
-TEST_F(CardExecutableCompilationTest,
-       CardStageRejectsMissingParentTopologyAfterLocalVerification) {
-  auto cardModule = oversizedCardModule();
-  ASSERT_TRUE(cardModule);
-  auto topology = *cardModule->getOps<wafer::TargetTopologyOp>().begin();
-  topology.erase();
-  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
-
-  wafer::frontend::FrontendProgramVerificationResult program;
-  program.numPartitions = 1;
-  std::string diagnosticsText;
-  llvm::raw_string_ostream diagnostics(diagnosticsText);
-  wafer::compiler::detail::CardExecutablePreparation preparation;
-  wafer::compiler::ProgramDataHandoff programData;
-  auto result = wafer::compiler::detail::compileCardModuleToExecutable(
-      std::move(cardModule), wafer::CardId(0), tileIds(),
-      /*materializationRelations=*/{}, preparation, program, executionConfig(),
-      diagnostics, programData);
-  EXPECT_EQ(result.status,
-            wafer::compiler::detail::CardExecutableCompilationStatus::
-                CompilerFailure);
-  EXPECT_EQ(result.gate, "card-module-stage");
-}
-
-TEST_F(CardExecutableCompilationTest,
-       CardStageRejectsCardIdOutsideSelectedCard) {
-  auto cardModule = oversizedCardModule();
-  ASSERT_TRUE(cardModule);
-  auto card = *cardModule->getOps<wafer::CardModuleOp>().begin();
-  card.setCardIdAttr(
-      mlir::IntegerAttr::get(mlir::IntegerType::get(context.get(), 64), 1));
-  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
-
-  wafer::frontend::FrontendProgramVerificationResult program;
-  program.numPartitions = 1;
-  std::string diagnosticsText;
-  llvm::raw_string_ostream diagnostics(diagnosticsText);
-  wafer::compiler::detail::CardExecutablePreparation preparation;
-  wafer::compiler::ProgramDataHandoff programData;
-  auto result = wafer::compiler::detail::compileCardModuleToExecutable(
-      std::move(cardModule), wafer::CardId(0), tileIds(),
-      /*materializationRelations=*/{}, preparation, program, executionConfig(),
-      diagnostics, programData);
-  EXPECT_EQ(result.status,
-            wafer::compiler::detail::CardExecutableCompilationStatus::
-                CompilerFailure);
-  EXPECT_EQ(result.gate, "card-module-stage");
-}
-
-TEST_F(CardExecutableCompilationTest,
-       TypedSelectedPreparationFailureStopsBeforeTileLowering) {
-  class RejectingPreparation final
-      : public wafer::compiler::detail::CardExecutablePreparation {
-  public:
-    mlir::LogicalResult prepareTileDataflow(
-        llvm::MutableArrayRef<wafer::compiler::detail::CandidateTileDataflowIR>
-            tiles,
-        wafer::compiler::detail::CardExecutablePreparationFailure &failure)
-        final {
-      observedTiles = tiles.size();
-      failure.kind = wafer::compiler::detail::
-          CardExecutablePreparationFailureKind::Unsupported;
-      failure.detail = "selected test preparation is unsupported";
-      return mlir::failure();
-    }
-
-    size_t observedTiles = 0;
-  } preparation;
-
-  auto cardModule = oversizedCardModule();
-  ASSERT_TRUE(cardModule);
-  auto expectedTileIds = tileIds();
-  wafer::frontend::FrontendProgramVerificationResult program;
-  program.numPartitions = 1;
-  std::string diagnosticText;
-  llvm::raw_string_ostream diagnostics(diagnosticText);
-  wafer::compiler::detail::CardExecutableLoweringStatistics statistics;
-  wafer::compiler::ProgramDataHandoff programData;
-  auto result = wafer::compiler::detail::compileCardModuleToExecutable(
-      std::move(cardModule), wafer::CardId(0), expectedTileIds,
-      /*materializationRelations=*/{}, preparation, program, executionConfig(),
-      diagnostics, programData, &statistics);
-  EXPECT_EQ(result.status,
-            wafer::compiler::detail::CardExecutableCompilationStatus::
-                UnsupportedFailure);
-  EXPECT_EQ(result.gate, "selected-tile-dataflow-preparation");
-  EXPECT_EQ(preparation.observedTiles, expectedTileIds.size());
   EXPECT_EQ(statistics.tileModuleLoweringAttempts, 0u);
 }
 

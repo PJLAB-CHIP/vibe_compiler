@@ -11,7 +11,6 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/raw_ostream.h"
 
 #include "gtest/gtest.h"
 
@@ -36,14 +35,6 @@ static std::unique_ptr<mlir::MLIRContext> createContext() {
   auto context = std::make_unique<mlir::MLIRContext>(registry);
   context->loadAllAvailableDialects();
   return context;
-}
-
-static std::string printModule(mlir::ModuleOp module) {
-  std::string text;
-  llvm::raw_string_ostream stream(text);
-  module.print(stream);
-  stream.flush();
-  return text;
 }
 
 template <typename OpT> static unsigned countOps(mlir::ModuleOp module) {

@@ -27,33 +27,6 @@ class raw_ostream;
 
 namespace wafer::compiler::detail {
 
-struct CandidateTileDataflowIR {
-  CardId card{0};
-  TileId tile{0};
-  mlir::OwningOpRef<mlir::ModuleOp> *owner = nullptr;
-  StructuredMaterializationRelations *relations = nullptr;
-
-  mlir::ModuleOp getModule() const {
-    return owner && *owner ? owner->get() : mlir::ModuleOp{};
-  }
-};
-
-struct CandidateInstructionIR {
-  CardId card{0};
-  TileId tile{0};
-  mlir::OwningOpRef<mlir::ModuleOp> *owner = nullptr;
-  StructuredMaterializationRelations *relations = nullptr;
-  struct RegionNodeRelation {
-    mlir::Operation *region = nullptr;
-    std::vector<uint32_t> structuredNodes;
-  };
-  std::vector<RegionNodeRelation> *regionNodes = nullptr;
-
-  mlir::ModuleOp getModule() const {
-    return owner && *owner ? owner->get() : mlir::ModuleOp{};
-  }
-};
-
 /// Move-only input for the actual memory/target leaf. Every module is already
 /// function-boundary-bufferized, lowered to canonical Instr, assigned its final
 /// worker/order and closed by the required completion operations. The leaf owns
@@ -64,46 +37,6 @@ struct CanonicalInstructionTile {
   TileId tile{0};
   mlir::OwningOpRef<mlir::ModuleOp> module;
   StructuredMaterializationRelations relations;
-};
-
-enum class CardExecutablePreparationFailureKind : uint8_t {
-  Unsupported,
-  ExactRejection,
-  Indeterminate,
-  CompilerBug,
-};
-
-struct CardExecutablePreparationFailure {
-  CardExecutablePreparationFailureKind kind =
-      CardExecutablePreparationFailureKind::CompilerBug;
-  std::string detail;
-};
-
-/// Invocation-local selected-candidate handoff. Implementations may mutate
-/// only the borrowed current candidate modules during the call and must not
-/// retain IR pointers. The enclosing compiler function owns rollback by
-/// destroying the whole candidate on failure.
-class CardExecutablePreparation {
-public:
-  virtual ~CardExecutablePreparation() = default;
-
-  virtual bool ownsInstructionCompletion() const { return false; }
-
-  virtual mlir::LogicalResult
-  prepareTileDataflow(llvm::MutableArrayRef<CandidateTileDataflowIR> tiles,
-                      CardExecutablePreparationFailure &failure) {
-    (void)tiles;
-    failure = {};
-    return mlir::success();
-  }
-
-  virtual mlir::LogicalResult
-  prepareInstructionIR(llvm::MutableArrayRef<CandidateInstructionIR> tiles,
-                       CardExecutablePreparationFailure &failure) {
-    (void)tiles;
-    failure = {};
-    return mlir::success();
-  }
 };
 
 /// Query-local relation from one operation in an accepted Instr module to a
@@ -140,8 +73,8 @@ bool isProvenExactTileMemoryPlanningFailure(
 /// text. Only a proven capacity result is exact; deterministic search resource
 /// exhaustion remains indeterminate, unsupported lifetime is unsupported, and
 /// a missing completion or malformed leaf input is a compiler failure.
-CardExecutableCompilationStatus classifyTileMemoryPlanningFailure(
-    const TileMemoryPlanningFailure &failure);
+CardExecutableCompilationStatus
+classifyTileMemoryPlanningFailure(const TileMemoryPlanningFailure &failure);
 
 /// Runs the unique exact full-buffer transfer cleanup on canonical Instr and
 /// retargets caller-owned current buffer relations in the same transaction.
@@ -191,24 +124,6 @@ CardExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
     ProgramDataHandoff &programData,
     CardExecutableLoweringStatistics *statistics = nullptr,
     unsigned tilePipelineParallelism = 0);
-
-/// Compiles exactly one owned, verifier-legal, already selected CardModule.
-/// The function performs no candidate enumeration and never changes spatial,
-/// temporal, layout, movement or buffering choices. It materializes every Tile,
-/// performs the currently selected upstream preparation and delegates the
-/// resulting completion-closed canonical Instr owners to
-/// `compileCanonicalInstructionTilesToExecutable`.
-///
-CardExecutableCompilationResult compileCardModuleToExecutable(
-    mlir::OwningOpRef<mlir::ModuleOp> cardModule, CardId expectedCardId,
-    llvm::ArrayRef<TileId> expectedTileIds,
-    const StructuredMaterializationRelations &materializationRelations,
-    CardExecutablePreparation &preparation,
-    const frontend::FrontendProgramVerificationResult &program,
-    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-    ProgramDataHandoff &programData,
-    CardExecutableLoweringStatistics *statistics = nullptr,
-    unsigned tilePipelineParallelism = 0, bool captureTileIRTrace = false);
 
 } // namespace wafer::compiler::detail
 

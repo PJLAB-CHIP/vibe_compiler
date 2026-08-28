@@ -3,7 +3,6 @@
 #include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
 
 #include "Wafer/Analysis/PhysicalDataflow/StructuredDemandAnalysis.h"
-#include "Wafer/Conversion/WaferTensorProgramToTileRegion/SingleRootTileRegion.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSpatialAssignment.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialDomain.h"
@@ -148,7 +147,8 @@ TEST_F(RootWorkDomainTest, AlignedAndRaggedSuccessorMatchesEveryNonemptySite) {
     std::vector<RootRegionWorkId> expected;
     for (const SemanticRootBinding &root : coordinate->semanticRoots.getRoots())
       for (TileId tile : allTiles())
-        if (getRootRegionWork(reference->query(root.key, tile)))
+        if (std::holds_alternative<RootRegionWork>(
+                reference->query(root.key, tile)))
           expected.push_back({root.key, tile});
     EXPECT_EQ(actual, expected);
 
@@ -235,11 +235,7 @@ module {
     EXPECT_TRUE(works[index].execution.empty());
     EXPECT_EQ(works[index].merges.size(), 1u);
     EXPECT_EQ(works[index].results.size(), 1u);
-    auto prepared = wafer::prepareRootWorkLeaf(dag->getNodes().front().id,
-                                               works[index], &failureReason);
-    ASSERT_TRUE(mlir::succeeded(prepared)) << failureReason;
-    EXPECT_FALSE(prepared->execution.has_value());
-    EXPECT_EQ(prepared->merges.size(), 1u);
+    EXPECT_EQ(works[index].merges.front().mergeTile, works[index].id.tile);
   }
 
   EXPECT_EQ(successor.getCursor(), nullptr);

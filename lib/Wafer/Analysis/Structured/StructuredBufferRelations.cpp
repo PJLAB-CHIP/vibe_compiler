@@ -164,6 +164,14 @@ struct StructuredBufferOwners {
   }
 };
 
+static bool shareStructuredBufferStorage(mlir::Value lhs, mlir::Value rhs,
+                                         StorageRootMemo &memo) {
+  const llvm::DenseSet<mlir::Value> &lhsRoots = memo.getStorageRoots(lhs);
+  const llvm::DenseSet<mlir::Value> &rhsRoots = memo.getStorageRoots(rhs);
+  return llvm::any_of(
+      lhsRoots, [&](mlir::Value root) { return rhsRoots.contains(root); });
+}
+
 static StructuredBufferOwners collectBufferOwnersUsedByOperation(
     mlir::Operation *operation,
     const StructuredMaterializationRelations &relations) {
@@ -196,18 +204,16 @@ static StructuredBufferOwners collectBufferOwnersUsedByOperation(
   if (owners.nodes.empty())
     for (mlir::Value value : values) {
       auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
-      auto function =
-          argument ? mlir::dyn_cast<mlir::func::FuncOp>(
-                         argument.getOwner()->getParentOp())
-                   : mlir::func::FuncOp{};
+      auto function = argument ? mlir::dyn_cast<mlir::func::FuncOp>(
+                                     argument.getOwner()->getParentOp())
+                               : mlir::func::FuncOp{};
       if (!function || argument.getOwner() != &function.getBody().front())
         continue;
       auto binding = function.getArgAttrOfType<CardDDRBindingAttr>(
           argument.getArgNumber(), kWaferCardDDRBindingAttrName);
       if (!binding)
         continue;
-      for (const CardDDRTransferRelation &transfer :
-           relations.cardDDRTransfers)
+      for (const CardDDRTransferRelation &transfer : relations.cardDDRTransfers)
         if (transfer.resourceId == binding.getResourceId()) {
           owners.nodes.push_back(transfer.producerNodeId);
         }
@@ -219,21 +225,6 @@ static StructuredBufferOwners collectBufferOwnersUsedByOperation(
       owners.outputs.push_back(relation.outputIndex);
   owners.normalize();
   return owners;
-}
-
-template <typename RelationT>
-static void appendRemapped(llvm::ArrayRef<RelationT> source,
-                           const mlir::IRMapping &mapping,
-                           llvm::SmallVectorImpl<RelationT> &destination,
-                           llvm::SmallVectorImpl<RelationT> *unmapped) {
-  for (const RelationT &relation : source)
-    if (mlir::Value mapped = mapping.lookupOrNull(relation.buffer)) {
-      RelationT copy = relation;
-      copy.buffer = mapped;
-      destination.push_back(copy);
-    } else if (unmapped) {
-      unmapped->push_back(relation);
-    }
 }
 
 } // namespace
@@ -339,8 +330,8 @@ void StructuredBufferReplacementListener::recordScratchAllocation(
       if (sourceOperation) {
         diagnostic << sourceOperation->getName();
         diagnostic << "; source_ir=";
-        sourceOperation->print(
-            diagnostic, mlir::OpPrintingFlags().skipRegions());
+        sourceOperation->print(diagnostic,
+                               mlir::OpPrintingFlags().skipRegions());
         diagnostic << "; result_users=[";
         bool first = true;
         for (mlir::Value result : sourceOperation->getResults())
@@ -555,184 +546,6 @@ mlir::LogicalResult rebaseStructuredBufferRelationsToStorageRoots(
       rebase(relations.outputBuffers) && rebase(relations.cardDDRBuffers) &&
       rebase(relations.partialReductionContributions) &&
       rebase(relations.partialReductionMergeInputs));
-}
-
-StructuredMaterializationRelations
-remapStructuredBufferRelations(const StructuredMaterializationRelations &source,
-                               const mlir::IRMapping &mapping) {
-  StructuredMaterializationRelations result;
-  for (const StructuredOperationEmissionRelation &entry :
-       source.operationEmissions)
-    if (mlir::Operation *mapped = mapping.lookupOrNull(entry.operation))
-      result.operationEmissions.push_back(
-          {entry.structuredNodeId, mapped});
-  llvm::SmallVectorImpl<StructuredOperationResultBufferRelation>
-      *noUnmappedResults = nullptr;
-  llvm::SmallVectorImpl<StructuredOperationBufferRelation> *noUnmappedOps =
-      nullptr;
-  llvm::SmallVectorImpl<SpatialOutputBufferRelation> *noUnmappedOutputs =
-      nullptr;
-  llvm::SmallVectorImpl<CardDDRBufferRelation> *noUnmappedCardDDR = nullptr;
-  appendRemapped<StructuredOperationResultBufferRelation>(
-      source.operationResultBuffers, mapping, result.operationResultBuffers,
-      noUnmappedResults);
-  appendRemapped(
-      llvm::ArrayRef<StructuredOperationBufferRelation>(source.operandBuffers),
-      mapping, result.operandBuffers, noUnmappedOps);
-  appendRemapped(
-      llvm::ArrayRef<StructuredOperationBufferRelation>(source.scratchBuffers),
-      mapping, result.scratchBuffers, noUnmappedOps);
-  appendRemapped(
-      llvm::ArrayRef<SpatialOutputBufferRelation>(source.outputBuffers),
-      mapping, result.outputBuffers, noUnmappedOutputs);
-  appendRemapped(llvm::ArrayRef<CardDDRBufferRelation>(source.cardDDRBuffers),
-                 mapping, result.cardDDRBuffers, noUnmappedCardDDR);
-  result.cardDDRTransfers = source.cardDDRTransfers;
-  return result;
-}
-
-StructuredMaterializationRelations scopeStructuredBufferRelations(
-    mlir::Operation *root,
-    const StructuredMaterializationRelations &relations) {
-  llvm::DenseSet<const void *> inScope;
-  auto insert = [&](mlir::Value value) {
-    if (value)
-      inScope.insert(value.getAsOpaquePointer());
-  };
-  for (mlir::Value operand : root->getOperands())
-    insert(operand);
-  for (mlir::Value result : root->getResults())
-    insert(result);
-  for (mlir::Region &region : root->getRegions())
-    for (mlir::Block &block : region)
-      for (mlir::BlockArgument argument : block.getArguments())
-        insert(argument);
-  root->walk([&](mlir::Operation *operation) {
-    for (mlir::Value result : operation->getResults())
-      insert(result);
-  });
-  auto inScopeEntry = [&](const auto &entry) {
-    return entry.buffer && inScope.contains(entry.buffer.getAsOpaquePointer());
-  };
-  StructuredMaterializationRelations result;
-  for (const StructuredOperationEmissionRelation &entry :
-       relations.operationEmissions)
-    if (entry.operation && root->isAncestor(entry.operation))
-      result.operationEmissions.push_back(entry);
-  for (const auto &entry : relations.operationResultBuffers)
-    if (inScopeEntry(entry))
-      result.operationResultBuffers.push_back(entry);
-  for (const auto &entry : relations.operandBuffers)
-    if (inScopeEntry(entry))
-      result.operandBuffers.push_back(entry);
-  for (const auto &entry : relations.scratchBuffers)
-    if (inScopeEntry(entry))
-      result.scratchBuffers.push_back(entry);
-  for (const auto &entry : relations.outputBuffers)
-    if (inScopeEntry(entry))
-      result.outputBuffers.push_back(entry);
-  for (const auto &entry : relations.cardDDRBuffers)
-    if (inScopeEntry(entry))
-      result.cardDDRBuffers.push_back(entry);
-  result.cardDDRTransfers = relations.cardDDRTransfers;
-  return result;
-}
-
-mlir::FailureOr<StructuredMaterializationRelations>
-remapStructuredBufferRelationsComplete(
-    const StructuredMaterializationRelations &source,
-    const mlir::IRMapping &mapping, StructuredRelationRemapIssue *issue) {
-  StructuredRelationRemapIssue localIssue;
-  StructuredRelationRemapIssue &reported = issue ? *issue : localIssue;
-  reported = {};
-  StructuredMaterializationRelations result;
-  for (const StructuredOperationEmissionRelation &entry :
-       source.operationEmissions)
-    if (mlir::Operation *mapped = mapping.lookupOrNull(entry.operation))
-      result.operationEmissions.push_back(
-          {entry.structuredNodeId, mapped});
-    else
-      reported.unmappedOperationEmissions.push_back(entry);
-  appendRemapped<StructuredOperationResultBufferRelation>(
-      source.operationResultBuffers, mapping, result.operationResultBuffers,
-      &reported.unmappedResultBuffers);
-  appendRemapped(
-      llvm::ArrayRef<StructuredOperationBufferRelation>(source.operandBuffers),
-      mapping, result.operandBuffers, &reported.unmappedOperandBuffers);
-  appendRemapped(
-      llvm::ArrayRef<StructuredOperationBufferRelation>(source.scratchBuffers),
-      mapping, result.scratchBuffers, &reported.unmappedScratchBuffers);
-  appendRemapped(
-      llvm::ArrayRef<SpatialOutputBufferRelation>(source.outputBuffers),
-      mapping, result.outputBuffers, &reported.unmappedOutputBuffers);
-  appendRemapped(llvm::ArrayRef<CardDDRBufferRelation>(source.cardDDRBuffers),
-                 mapping, result.cardDDRBuffers,
-                 &reported.unmappedCardDDRBuffers);
-  result.cardDDRTransfers = source.cardDDRTransfers;
-  if (!reported.empty())
-    return mlir::failure();
-  return result;
-}
-
-bool shareStructuredBufferStorage(mlir::Value lhs, mlir::Value rhs) {
-  StorageRootMemo memo;
-  return shareStructuredBufferStorage(lhs, rhs, memo);
-}
-
-bool shareStructuredBufferStorage(mlir::Value lhs, mlir::Value rhs,
-                                  StorageRootMemo &memo) {
-  const llvm::DenseSet<mlir::Value> &lhsRoots = memo.getStorageRoots(lhs);
-  const llvm::DenseSet<mlir::Value> &rhsRoots = memo.getStorageRoots(rhs);
-  return llvm::any_of(
-      lhsRoots, [&](mlir::Value root) { return rhsRoots.contains(root); });
-}
-
-llvm::SmallVector<uint32_t, 4> collectStructuredNodesUsedByOperation(
-    mlir::Operation *operation,
-    const StructuredMaterializationRelations &relations) {
-  StorageRootMemo memo;
-  return collectStructuredNodesUsedByOperation(operation, relations, memo);
-}
-
-llvm::SmallVector<uint32_t, 4> collectStructuredNodesUsedByOperation(
-    mlir::Operation *operation,
-    const StructuredMaterializationRelations &relations,
-    StorageRootMemo &memo) {
-  llvm::SmallVector<mlir::Value, 8> values =
-      collectOperationBufferValues(operation);
-  llvm::SmallVector<uint32_t, 4> nodes;
-  auto collect = [&](const auto &relation) {
-    if (llvm::any_of(values, [&](mlir::Value value) {
-          return shareStructuredBufferStorage(value, relation.buffer, memo);
-        }))
-      nodes.push_back(relation.structuredNodeId);
-  };
-  for (const auto &relation : relations.operationResultBuffers)
-    collect(relation);
-  for (const auto &relation : relations.operandBuffers)
-    collect(relation);
-  for (const auto &relation : relations.scratchBuffers)
-    collect(relation);
-  llvm::sort(nodes);
-  nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
-  return nodes;
-}
-
-bool operationUsesStructuredNode(
-    mlir::Operation *operation, uint32_t structuredNodeId,
-    const StructuredMaterializationRelations &relations) {
-  llvm::SmallVector<uint32_t, 4> nodes =
-      collectStructuredNodesUsedByOperation(operation, relations);
-  return llvm::is_contained(nodes, structuredNodeId);
-}
-
-bool operationUsesStructuredNode(
-    mlir::Operation *operation, uint32_t structuredNodeId,
-    const StructuredMaterializationRelations &relations,
-    StorageRootMemo &memo) {
-  llvm::SmallVector<uint32_t, 4> nodes =
-      collectStructuredNodesUsedByOperation(operation, relations, memo);
-  return llvm::is_contained(nodes, structuredNodeId);
 }
 
 } // namespace wafer::compiler::detail

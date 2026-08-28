@@ -2,9 +2,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/RootRegionWorkAnalysis.h"
 
-#include "TestSupport/Planning/CanonicalPlanningTestSupport.h"
 #include "Wafer/Analysis/PhysicalDataflow/StructuredDemandAnalysis.h"
-#include "Wafer/Conversion/WaferTensorProgramToTileRegion/SingleRootTileRegion.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSpatialAssignment.h"
 
@@ -32,6 +30,44 @@ namespace {
 using wafer::TileId;
 using namespace wafer::analysis;
 using namespace wafer::compiler::detail;
+
+static std::string makeFlashDecodingSource(int64_t queryExtent,
+                                           int64_t keyValueExtent) {
+  std::string source;
+  llvm::raw_string_ostream stream(source);
+  stream << R"mlir(
+#q = affine_map<(b, m, k1, k2, n) -> (b, m, k1)>
+#k = affine_map<(b, m, k1, k2, n) -> (b, k2, k1)>
+#v = affine_map<(b, m, k1, k2, n) -> (b, k2, n)>
+#s = affine_map<(b, m, k1, k2, n) -> ()>
+#mask = affine_map<(b, m, k1, k2, n) -> (m, k2)>
+#o = affine_map<(b, m, k1, k2, n) -> (b, m, n)>
+module {
+  func.func @decode(
+      %query: tensor<2x)mlir"
+         << queryExtent << "x128xf16>, %key: tensor<2x" << keyValueExtent
+         << "x128xf16>,\n"
+         << "      %value: tensor<2x" << keyValueExtent
+         << "x64xf16>, %scale: f32,\n"
+         << "      %mask: tensor<" << queryExtent << "x" << keyValueExtent
+         << "xf16>) -> tensor<2x" << queryExtent << "x64xf16> {\n"
+         << "    %out = tensor.empty() : tensor<2x" << queryExtent
+         << "x64xf16>\n"
+         << "    %result = wafer.linalg_ext.attention\n"
+         << "        ins(%query, %key, %value, %scale, %mask :\n"
+         << "            tensor<2x" << queryExtent << "x128xf16>, tensor<2x"
+         << keyValueExtent << "x128xf16>,\n"
+         << "            tensor<2x" << keyValueExtent << "x64xf16>, f32, "
+         << "tensor<" << queryExtent << "x" << keyValueExtent << "xf16>)\n"
+         << "        outs(%out : tensor<2x" << queryExtent << "x64xf16>)\n"
+         << "        algorithm(<flash_decoding>)\n"
+         << "        indexing_maps = [#q, #k, #v, #s, #mask, #o]\n"
+         << "        -> tensor<2x" << queryExtent << "x64xf16>\n"
+         << "    return %result : tensor<2x" << queryExtent << "x64xf16>\n"
+         << "  }\n"
+         << "}\n";
+  return source;
+}
 
 class RootRegionWorkAnalysisTest : public ::testing::Test {
 protected:
@@ -183,37 +219,22 @@ module {
   ASSERT_NE(consumer, nullptr);
   const SemanticRootBinding *binding = coordinate->semanticRoots.find(consumer);
   ASSERT_NE(binding, nullptr);
-  auto consumerNode =
-      llvm::find_if(dag->getNodes(), [&](const StructuredDAGNode &node) {
-        return node.operation == consumer;
-      });
-  ASSERT_NE(consumerNode, dag->getNodes().end());
-
   unsigned exactEmptyBoundaries = 0;
   std::map<RootBoundaryId, unsigned> nonemptyBoundaries;
   llvm::SmallVector<SupportValueId, 2> firstSupportIds;
   llvm::SmallVector<RootBoundaryId, 2> firstBoundaryIds;
   for (TileId tile : allTiles()) {
     RootRegionWorkOutcome outcome = analysis->query(binding->key, tile);
-    const RootRegionWork *work = getRootRegionWork(outcome);
+    const RootRegionWork *work = std::get_if<RootRegionWork>(&outcome);
     ASSERT_NE(work, nullptr) << outcomeDetail(outcome);
     ASSERT_EQ(work->execution.size(), 1u);
     ASSERT_EQ(work->operands.size(), 1u);
     ASSERT_EQ(work->supportValues.size(), 2u);
     ASSERT_EQ(work->boundaries.size(), 2u);
-    auto leaf =
-        wafer::prepareRootWorkLeaf(consumerNode->id, *work, &failureReason);
-    ASSERT_TRUE(mlir::succeeded(leaf)) << failureReason;
-    ASSERT_TRUE(leaf->execution.has_value());
-    EXPECT_EQ(leaf->execution->tile, tile);
-    ASSERT_EQ(leaf->execution->offsets.size(),
-              work->execution.front().iterationDomain.size());
-    for (auto [offset, size, interval] :
-         llvm::zip_equal(leaf->execution->offsets, leaf->execution->sizes,
-                         work->execution.front().iterationDomain)) {
-      EXPECT_EQ(offset, interval.offset);
-      EXPECT_EQ(size, interval.size);
-    }
+    EXPECT_EQ(work->id.tile, tile);
+    EXPECT_TRUE(llvm::all_of(
+        work->execution.front().iterationDomain,
+        [](const IteratorInterval &interval) { return interval.size > 0; }));
     EXPECT_EQ(work->supportValues[0].operation->getNumResults(), 1u);
     EXPECT_NE(work->supportValues[0].id, work->supportValues[1].id);
     EXPECT_TRUE(llvm::all_of(work->supportValues, [](const auto &support) {
@@ -254,7 +275,8 @@ module {
   ASSERT_TRUE(mlir::succeeded(permutedAnalysis)) << failureReason;
   RootRegionWorkOutcome permutedOutcome =
       permutedAnalysis->query(binding->key, TileId(0));
-  const RootRegionWork *permutedWork = getRootRegionWork(permutedOutcome);
+  const RootRegionWork *permutedWork =
+      std::get_if<RootRegionWork>(&permutedOutcome);
   ASSERT_NE(permutedWork, nullptr) << outcomeDetail(permutedOutcome);
   EXPECT_TRUE(llvm::equal(
       firstSupportIds, llvm::map_range(permutedWork->supportValues,
@@ -308,7 +330,7 @@ module {
   const SemanticRootKey root = coordinate->semanticRoots.getRoots().front().key;
   for (TileId tile : allTiles()) {
     RootRegionWorkOutcome outcome = analysis->query(root, tile);
-    const RootRegionWork *work = getRootRegionWork(outcome);
+    const RootRegionWork *work = std::get_if<RootRegionWork>(&outcome);
     ASSERT_NE(work, nullptr) << outcomeDetail(outcome);
     EXPECT_EQ(work->results.size(), 2u);
     ASSERT_EQ(work->operands.size(), 3u);
@@ -388,7 +410,7 @@ module {
   unsigned crossingUses = 0;
   for (TileId tile : allTiles()) {
     RootRegionWorkOutcome outcome = analysis->query(binding->key, tile);
-    const RootRegionWork *work = getRootRegionWork(outcome);
+    const RootRegionWork *work = std::get_if<RootRegionWork>(&outcome);
     ASSERT_NE(work, nullptr) << outcomeDetail(outcome);
     ASSERT_EQ(work->supportValues.size(), 4u);
     auto structured =
@@ -457,7 +479,7 @@ module {
   unsigned clippedInputWorks = 0;
   for (TileId tile : allTiles()) {
     RootRegionWorkOutcome outcome = analysis->query(root, tile);
-    const RootRegionWork *work = getRootRegionWork(outcome);
+    const RootRegionWork *work = std::get_if<RootRegionWork>(&outcome);
     ASSERT_NE(work, nullptr) << outcomeDetail(outcome);
     ASSERT_EQ(work->supportValues.size(), 1u);
     const RootSupportValueWork &support = work->supportValues.front();
@@ -557,7 +579,7 @@ module {
     unsigned finalResults = 0;
     for (TileId tile : allTiles()) {
       RootRegionWorkOutcome outcome = analysis->query(node.root, tile);
-      const RootRegionWork *work = getRootRegionWork(outcome);
+      const RootRegionWork *work = std::get_if<RootRegionWork>(&outcome);
       ASSERT_NE(work, nullptr) << outcomeDetail(outcome);
       contributions += work->contributions.size();
       merges += work->merges.size();
@@ -567,11 +589,6 @@ module {
       if (tile == TileId(0)) {
         ASSERT_EQ(work->merges.size(), 2u);
         ASSERT_EQ(work->results.size(), 2u);
-        auto prepared = wafer::prepareRootWorkLeaf(
-            dag->getNodes().front().id, *work, &failureReason);
-        ASSERT_TRUE(mlir::succeeded(prepared)) << failureReason;
-        EXPECT_TRUE(prepared->execution.has_value());
-        EXPECT_EQ(prepared->merges.size(), 2u);
         for (auto [result, merge] :
              llvm::zip_equal(work->results, work->merges))
           EXPECT_EQ(result.reductionGroup, merge.group);
@@ -622,7 +639,7 @@ module {
   ASSERT_TRUE(mlir::succeeded(analysis)) << failureReason;
   RootRegionWorkOutcome outcome = analysis->query(
       coordinate->semanticRoots.getRoots().front().key, TileId(0));
-  const RootRegionWork *work = getRootRegionWork(outcome);
+  const RootRegionWork *work = std::get_if<RootRegionWork>(&outcome);
   ASSERT_NE(work, nullptr) << outcomeDetail(outcome);
   ASSERT_EQ(work->invariantInputs.size(), 1u);
   EXPECT_EQ(work->invariantInputs.front().kind,
@@ -671,7 +688,7 @@ module {
   ASSERT_TRUE(mlir::succeeded(analysis)) << failureReason;
   const SemanticRootKey root = coordinate->semanticRoots.getRoots().front().key;
   RootRegionWorkOutcome local = analysis->query(root, TileId(0));
-  const RootRegionWork *work = getRootRegionWork(local);
+  const RootRegionWork *work = std::get_if<RootRegionWork>(&local);
   ASSERT_NE(work, nullptr) << outcomeDetail(local);
   ASSERT_EQ(work->execution.size(), 1u);
   EXPECT_TRUE(work->execution.front().iterationDomain.empty());
@@ -685,8 +702,7 @@ TEST_F(RootRegionWorkAnalysisTest,
   for (const auto &[queryExtent, keyValueExtent] :
        {std::pair<int64_t, int64_t>{1024, 1024}, {1025, 1031}}) {
     SCOPED_TRACE(queryExtent);
-    auto module = parse(wafer::test::buildFlashDecodingPlanningFixture(
-        queryExtent, keyValueExtent));
+    auto module = parse(makeFlashDecodingSource(queryExtent, keyValueExtent));
     ASSERT_TRUE(module);
     ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
     std::string failureReason;
@@ -708,7 +724,7 @@ TEST_F(RootRegionWorkAnalysisTest,
     unsigned results = 0;
     for (TileId tile : allTiles()) {
       RootRegionWorkOutcome outcome = analysis->query(root, tile);
-      const RootRegionWork *work = getRootRegionWork(outcome);
+      const RootRegionWork *work = std::get_if<RootRegionWork>(&outcome);
       ASSERT_NE(work, nullptr) << outcomeDetail(outcome);
       ASSERT_EQ(work->execution.size(), 1u);
       ASSERT_EQ(work->operands.size(), 4u);

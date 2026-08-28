@@ -341,7 +341,9 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             ["wafer-run", "--package-dir", "package"],
         )
 
-    def test_source_no_card_matrix_is_callable_and_not_deferred(self) -> None:
+    def test_source_no_card_matrix_is_retained_without_ctest_registration(
+        self,
+    ) -> None:
         expected = {
             (case_name, dtype_name, 1, optimization_policy)
             for case_name in cases.PRODUCTION_SOURCE_CASES
@@ -401,57 +403,9 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             / "test"
             / "CMakeLists.txt"
         ).read_text(encoding="utf-8")
-        registered_source_no_card = re.findall(
-            r"wafer_add_pytorch_source_no_card_test\(\s*"
-            r"(wafer-runtime-pytorch-[^\s()]+-no-card)\s+"
-            r"([^\s()]+)\s+([^\s()]+)\s+([^\s()]+)\s+"
-            r"(search|none)\s*\)",
-            cmake,
-        )
-        catalog_names = [
-            entry.ctest_name for entry in cases.SOURCE_NO_CARD_WORKLOADS
-        ]
-        self.assertEqual(
-            len(registered_source_no_card),
-            len(set(registered_source_no_card)),
-        )
-        self.assertCountEqual(
-            [entry[0] for entry in registered_source_no_card], catalog_names
-        )
-        registered_by_name = {
-            test_name: (case_name, dtype_name, optimization_policy)
-            for (
-                test_name,
-                case_name,
-                dtype_name,
-                _dtype_label,
-                optimization_policy,
-            ) in registered_source_no_card
-        }
+        self.assertNotIn("wafer_add_pytorch_source_no_card_test", cmake)
         for entry in cases.SOURCE_NO_CARD_WORKLOADS:
-            self.assertEqual(
-                registered_by_name.get(entry.ctest_name),
-                (
-                    entry.case_name,
-                    entry.dtype_name,
-                    entry.optimization_policy,
-                ),
-            )
-
-        helper = re.search(
-            r"function\(wafer_add_pytorch_source_no_card_test"
-            r"(?P<body>.*?)endfunction\(\)",
-            cmake,
-            re.DOTALL,
-        )
-        self.assertIsNotNone(helper)
-        self.assertIn("--case ${case_name}", helper.group("body"))
-        self.assertIn("--dtype ${dtype_name}", helper.group("body"))
-        self.assertIn(
-            "--optimization-policy ${optimization_policy}",
-            helper.group("body"),
-        )
-        self.assertIn("--no-card", helper.group("body"))
+            self.assertNotIn(entry.ctest_name, cmake)
 
         runner_source = inspect.getsource(board_runner.main)
         self.assertNotIn("torch_eager_reference=deferred", runner_source)

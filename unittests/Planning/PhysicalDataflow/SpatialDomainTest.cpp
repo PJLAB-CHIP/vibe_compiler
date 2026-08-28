@@ -221,9 +221,9 @@ TEST_F(SpatialDomainTest,
     size_t tilesWithWork = 0;
     for (TileId tile :
          built->domain.getProblem().getStructuralProblem().getAvailableTiles())
-      tilesWithWork += analysis::getRootRegionWork(rootWork->query(
-                           built->domain.getProblem().getRoots().front().root,
-                           tile)) != nullptr;
+      tilesWithWork +=
+          std::holds_alternative<analysis::RootRegionWork>(rootWork->query(
+              built->domain.getProblem().getRoots().front().root, tile));
     EXPECT_EQ(tilesWithWork, 16u);
     EXPECT_EQ(print(module->getOperation()), before);
   }
@@ -915,8 +915,7 @@ TEST_F(SpatialDomainTest,
       });
     }));
 
-    auto coherent =
-        built->domain.getGraphCoherentProposals(built->dag);
+    auto coherent = built->domain.getGraphCoherentProposals(built->dag);
     ASSERT_TRUE(mlir::succeeded(coherent));
     ASSERT_FALSE(coherent->empty());
     const SpatialPlan &first = coherent->front();

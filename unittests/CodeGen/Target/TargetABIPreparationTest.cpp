@@ -40,30 +40,6 @@
 
 namespace {
 
-wafer::frontend::ProgramPartitionSlice
-singleCardPartitionSlice(llvm::ArrayRef<int64_t> shape) {
-  wafer::frontend::ProgramPartitionSlice slice;
-  slice.partitionId = 0;
-  slice.replicaId = 0;
-  slice.offsets.assign(shape.size(), 0);
-  slice.sizes.assign(shape.begin(), shape.end());
-  slice.strides.assign(shape.size(), 1);
-  return slice;
-}
-
-wafer::frontend::ProgramBoundaryBinding
-shapedBoundary(int64_t index, llvm::ArrayRef<int64_t> shape) {
-  wafer::frontend::ProgramBoundaryBinding binding;
-  binding.index = index;
-  binding.programIndex = index;
-  binding.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
-  binding.globalShape.assign(shape.begin(), shape.end());
-  binding.localShape.assign(shape.begin(), shape.end());
-  binding.dtype = wafer::ProgramElementType::F32;
-  binding.partitionSlices.push_back(singleCardPartitionSlice(shape));
-  return binding;
-}
-
 TEST(TargetABIPreparationTest,
      WorkspaceAlignmentCombinesPolicyAndAllocationRequirements) {
   mlir::DialectRegistry registry;
@@ -71,71 +47,27 @@ TEST(TargetABIPreparationTest,
   auto context = std::make_shared<mlir::MLIRContext>(registry);
   context->loadAllAvailableDialects();
 
-  auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
 module {
-  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
-  wafer.execution.mesh @default_mesh {axes = ["card_partition"], shape = array<i64: 1>}
-  func.func @main(%lhs: tensor<4xf32>, %rhs: tensor<4xf32>,
-                  %bias: tensor<4xf32>) -> tensor<4xf32> {
-    %tmp = tensor.empty() : tensor<4xf32>
-    %first = linalg.generic {
-        indexing_maps = [affine_map<(d0) -> (d0)>,
-                         affine_map<(d0) -> (d0)>,
-                         affine_map<(d0) -> (d0)>],
-        iterator_types = ["parallel"]
-      } ins(%lhs, %rhs : tensor<4xf32>, tensor<4xf32>)
-        outs(%tmp : tensor<4xf32>) {
-      ^bb0(%a: f32, %b: f32, %old: f32):
-        %value = arith.addf %a, %b : f32
-        linalg.yield %value : f32
-    } -> tensor<4xf32>
-
-    %out = tensor.empty() : tensor<4xf32>
-    %second = linalg.generic {
-        indexing_maps = [affine_map<(d0) -> (d0)>,
-                         affine_map<(d0) -> (d0)>,
-                         affine_map<(d0) -> (d0)>],
-        iterator_types = ["parallel"]
-      } ins(%first, %bias : tensor<4xf32>, tensor<4xf32>)
-        outs(%out : tensor<4xf32>) {
-      ^bb0(%a: f32, %b: f32, %old: f32):
-        %value = arith.addf %a, %b : f32
-        linalg.yield %value : f32
-    } -> tensor<4xf32>
-    return %second : tensor<4xf32>
+  func.func @main() {
+    %workspace = memref.alloc() {
+      alignment = 384 : i64,
+      wafer.ddr.offset = #wafer.ddr_offset<0>
+    } : memref<1024xf32, #wafer.memory<ddr, tensor>>
+    return
   }
 }
 )mlir",
       mlir::ParserConfig(context.get()));
-  ASSERT_TRUE(tensorProgram);
-
-  wafer::frontend::FrontendProgramVerificationResult program;
-  program.numPartitions = 1;
-  program.programUserInputCount = 3;
-  program.distributedInputs = {shapedBoundary(0, {4}), shapedBoundary(1, {4}),
-                               shapedBoundary(2, {4})};
-  program.distributedOutputs = {shapedBoundary(0, {4})};
+  ASSERT_TRUE(module);
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
   ASSERT_TRUE(static_cast<bool>(config));
-  std::string diagnosticsText;
-  llvm::raw_string_ostream diagnostics(diagnosticsText);
-  wafer::compiler::ProgramDataHandoff programData;
-  auto cardExecutable = wafer::compiler::detail::buildCardExecutable(
-      context, *tensorProgram, std::move(program), *config,
-      wafer::OptimizationConfig::none(), diagnostics, std::nullopt,
-      programData);
-  if (!cardExecutable)
-    FAIL() << diagnosticsText << llvm::toString(cardExecutable.takeError());
-  tensorProgram = nullptr;
-  ASSERT_EQ(cardExecutable->getTileExecutables().size(), 16u);
-  for (size_t tileIndex = 0;
-       tileIndex < cardExecutable->getTileExecutables().size(); ++tileIndex)
-    EXPECT_EQ(cardExecutable->getTileExecutables()[tileIndex].getTileId(),
-              wafer::TileId(static_cast<int64_t>(tileIndex)));
-
-  const wafer::compiler::TileExecutable &tile =
-      cardExecutable->getTileExecutables().front();
+  wafer::compiler::TileExecutable tile =
+      wafer::compiler::CardExecutableBuilder::makeTileExecutable(
+          wafer::CardId(0), wafer::TileId(0), wafer::LaunchSlotId(0),
+          std::move(module), "main", {},
+          wafer::compiler::TransportContract::None);
   mlir::func::FuncOp entry =
       tile.getModule().lookupSymbol<mlir::func::FuncOp>(tile.getEntrySymbol());
   ASSERT_TRUE(entry);

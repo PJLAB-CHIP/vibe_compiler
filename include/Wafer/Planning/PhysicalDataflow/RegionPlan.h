@@ -75,34 +75,14 @@ struct ExecutionInstanceId {
 
 struct ExecutionInstancePlan {
   ExecutionInstanceId id;
-  struct TopLevel {
-    friend bool operator==(TopLevel, TopLevel) { return true; }
-    friend bool operator<(TopLevel, TopLevel) { return false; }
-  };
-  struct NestedUnder {
-    RequiredExecutionSource consumer;
-
-    friend bool operator==(const NestedUnder &lhs, const NestedUnder &rhs) {
-      return lhs.consumer == rhs.consumer;
-    }
-    friend bool operator<(const NestedUnder &lhs, const NestedUnder &rhs) {
-      return lhs.consumer < rhs.consumer;
-    }
-  };
-  using Placement = std::variant<TopLevel, NestedUnder>;
-  Placement placement = TopLevel{};
 
   friend bool operator==(const ExecutionInstancePlan &lhs,
                          const ExecutionInstancePlan &rhs) {
-    return lhs.id == rhs.id && lhs.placement == rhs.placement;
+    return lhs.id == rhs.id;
   }
   friend bool operator<(const ExecutionInstancePlan &lhs,
                         const ExecutionInstancePlan &rhs) {
-    if (lhs.id < rhs.id)
-      return true;
-    if (rhs.id < lhs.id)
-      return false;
-    return lhs.placement < rhs.placement;
+    return lhs.id < rhs.id;
   }
 };
 
@@ -170,48 +150,32 @@ struct ReplicaExecutionId {
 
 struct ReplicaExecutionPlan {
   ReplicaExecutionId id;
-  ExecutionInstancePlan::Placement placement =
-      ExecutionInstancePlan::TopLevel{};
 
   friend bool operator==(const ReplicaExecutionPlan &lhs,
                          const ReplicaExecutionPlan &rhs) {
-    return lhs.id == rhs.id && lhs.placement == rhs.placement;
+    return lhs.id == rhs.id;
   }
   friend bool operator<(const ReplicaExecutionPlan &lhs,
                         const ReplicaExecutionPlan &rhs) {
-    if (lhs.id < rhs.id)
-      return true;
-    if (rhs.id < lhs.id)
-      return false;
-    return lhs.placement < rhs.placement;
+    return lhs.id < rhs.id;
   }
 };
 
 using RegionExecutionId = std::variant<ExecutionInstanceId, ReplicaExecutionId>;
 
-enum class LocalUseDelivery : uint8_t {
-  StoredRegionValue,
-  ReconstructedRegionValue,
-  DirectNestedValue,
-};
-
 struct LocalUseBinding {
   DemandFragmentId fragment;
   RegionExecutionId producer;
-  LocalUseDelivery delivery = LocalUseDelivery::StoredRegionValue;
 
   friend bool operator==(const LocalUseBinding &lhs,
                          const LocalUseBinding &rhs) {
-    return lhs.fragment == rhs.fragment && lhs.producer == rhs.producer &&
-           lhs.delivery == rhs.delivery;
+    return lhs.fragment == rhs.fragment && lhs.producer == rhs.producer;
   }
   friend bool operator<(const LocalUseBinding &lhs,
                         const LocalUseBinding &rhs) {
     if (!(lhs.fragment == rhs.fragment))
       return lhs.fragment < rhs.fragment;
-    if (!(lhs.producer == rhs.producer))
-      return lhs.producer < rhs.producer;
-    return lhs.delivery < rhs.delivery;
+    return lhs.producer < rhs.producer;
   }
 };
 

@@ -5,8 +5,10 @@
 #include "Wafer/Target/Core/TargetCall.h"
 
 #include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
+#include "Wafer/CodeGen/Target/TargetCodeGenInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Program/ProgramData.h"
+#include "Wafer/Target/Core/TargetIdentity.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -50,87 +52,88 @@
 
 namespace {
 
-wafer::frontend::ProgramPartitionSlice singlePartitionSlice() {
-  wafer::frontend::ProgramPartitionSlice slice;
-  slice.partitionId = 0;
-  slice.replicaId = 0;
-  slice.offsets = {0};
-  slice.sizes = {8};
-  slice.strides = {1};
-  return slice;
-}
-
-wafer::frontend::ProgramBoundaryBinding boundary(int64_t index) {
-  wafer::frontend::ProgramBoundaryBinding binding;
-  binding.index = index;
-  binding.programIndex = index;
-  binding.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
-  binding.globalShape = {8};
-  binding.localShape = {8};
-  binding.dtype = wafer::ProgramElementType::F32;
-  binding.partitionSlices.push_back(singlePartitionSlice());
-  return binding;
-}
-
-std::shared_ptr<mlir::MLIRContext> createCompilerContext() {
-  mlir::DialectRegistry registry;
-  wafer::compiler::detail::registerCompilationDialects(registry);
-  auto context = std::make_shared<mlir::MLIRContext>(registry);
-  context->loadAllAvailableDialects();
-  return context;
-}
+std::vector<uint64_t>
+makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor);
 
 llvm::Expected<wafer::compiler::TargetLLVMModules>
 compileElementwiseTargetModules(std::string &diagnosticText) {
-  auto context = createCompilerContext();
-
-  auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
-      R"mlir(
-module {
-  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
-  wafer.execution.mesh @default_mesh {axes = ["partition"], shape = array<i64: 1>}
-  func.func @main(%lhs: tensor<8xf32>, %rhs: tensor<8xf32>)
-      -> tensor<8xf32> {
-    %out = tensor.empty() : tensor<8xf32>
-    %sum = linalg.generic {
-        indexing_maps = [affine_map<(d0) -> (d0)>,
-                         affine_map<(d0) -> (d0)>,
-                         affine_map<(d0) -> (d0)>],
-        iterator_types = ["parallel"]
-      } ins(%lhs, %rhs : tensor<8xf32>, tensor<8xf32>)
-        outs(%out : tensor<8xf32>) {
-      ^bb0(%a: f32, %b: f32, %old: f32):
-        %value = arith.addf %a, %b : f32
-        linalg.yield %value : f32
-    } -> tensor<8xf32>
-    return %sum : tensor<8xf32>
-  }
-}
-)mlir",
-      mlir::ParserConfig(context.get()));
-  if (!tensorProgram)
-    return llvm::createStringError("failed to parse target-call test module");
-
-  wafer::frontend::FrontendProgramVerificationResult program;
-  program.numPartitions = 1;
-  program.programUserInputCount = 2;
-  program.distributedInputs = {boundary(0), boundary(1)};
-  program.distributedOutputs = {boundary(0)};
+  diagnosticText.clear();
   auto executionConfig =
       wafer::compiler::ExecutionConfig::createForSingleCard(1);
   if (!executionConfig)
     return executionConfig.takeError();
-  llvm::raw_string_ostream diagnostics(diagnosticText);
-  wafer::compiler::ProgramDataHandoff programData;
-  auto executable = wafer::compiler::detail::buildCardExecutable(
-      context, *tensorProgram, std::move(program), *executionConfig,
-      wafer::OptimizationConfig::none(), diagnostics, std::nullopt,
-      programData);
-  if (!executable)
-    return executable.takeError();
-  tensorProgram = nullptr;
-  return wafer::compiler::compileCardExecutableToTargetLLVMModules(*executable,
-                                                                   diagnostics);
+  auto launch = wafer::RuntimeLaunchContract::createKernel(
+      wafer::KernelLaunchForm::Grid,
+      wafer::KernelEntryABI::TileMajorPointerTable,
+      {wafer::RuntimeLaunchPhaseRole::Main});
+  if (!launch)
+    return launch.takeError();
+
+  const wafer::TargetCallDescriptor &descriptor =
+      wafer::getTargetCallDescriptor(wafer::TargetElementwiseOperation::Add);
+  std::vector<uint64_t> rawArguments = makeDecodableArguments(descriptor);
+  rawArguments[3] = 1;
+  const wafer::TargetCallDescriptor &rdma =
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA);
+  const std::vector<uint64_t> rdmaArguments = makeDecodableArguments(rdma);
+  std::vector<wafer::compiler::TargetLLVMModule> modules;
+  modules.reserve(16);
+  for (int64_t tile = 0; tile < 16; ++tile) {
+    auto context = std::make_unique<llvm::LLVMContext>();
+    auto module =
+        std::make_unique<llvm::Module>("target-call-execution", *context);
+    module->setTargetTriple("riscv64-unknown-unknown-elf");
+    auto getScalarType = [&](wafer::TargetCallScalarType scalar) {
+      return scalar == wafer::TargetCallScalarType::I64
+                 ? llvm::Type::getInt64Ty(*context)
+                 : llvm::Type::getInt32Ty(*context);
+    };
+    llvm::Function *entry = llvm::Function::Create(
+        llvm::FunctionType::get(llvm::Type::getVoidTy(*context),
+                                {llvm::Type::getInt64Ty(*context)}, false),
+        llvm::GlobalValue::ExternalLinkage, "main", *module);
+    llvm::IRBuilder<> builder(
+        llvm::BasicBlock::Create(*context, "entry", entry));
+    auto emitCall = [&](const wafer::TargetCallDescriptor &call,
+                        llvm::ArrayRef<uint64_t> values) {
+      llvm::SmallVector<llvm::Type *, 16> argumentTypes;
+      llvm::SmallVector<llvm::Value *, 16> arguments;
+      for (auto [scalar, value] : llvm::zip_equal(call.arguments, values)) {
+        llvm::Type *type = getScalarType(scalar);
+        argumentTypes.push_back(type);
+        arguments.push_back(llvm::ConstantInt::get(type, value));
+      }
+      llvm::Type *resultType = call.result == wafer::TargetCallResultType::I64
+                                   ? llvm::Type::getInt64Ty(*context)
+                                   : llvm::Type::getVoidTy(*context);
+      llvm::FunctionCallee callee = module->getOrInsertFunction(
+          call.symbol,
+          llvm::FunctionType::get(resultType, argumentTypes, false));
+      builder.CreateCall(callee, arguments);
+    };
+    if (tile < 8)
+      emitCall(descriptor, rawArguments);
+    emitCall(rdma, rdmaArguments);
+    builder.CreateRetVoid();
+    wafer::compiler::TileEntryArgument slot;
+    slot.ordinal = 0;
+    slot.kind = wafer::compiler::TileEntryArgumentKind::ExternalInput;
+    slot.resourceIndex = 0;
+    slot.name = "input";
+    slot.dtype = wafer::LogicalFormat::F32;
+    slot.layout = wafer::MemLayout::Tensor;
+    slot.shape = {8};
+    slot.byteSize = 32;
+    slot.alignment = 8;
+    slot.access = wafer::compiler::TileEntryArgumentAccess::ReadOnly;
+    modules.push_back(wafer::compiler::TargetLLVMModulesBuilder::makeModule(
+        wafer::CardId(0), wafer::TileId(tile), wafer::LaunchSlotId(tile),
+        "main", wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
+        wafer::kCurrentTargetModuleFormat, {std::move(slot)},
+        std::move(context), std::move(module)));
+  }
+  return wafer::compiler::TargetLLVMModulesBuilder::makeModules(
+      *executionConfig, std::move(*launch), std::move(modules));
 }
 
 class RecordingSink final : public wafer::compiler::TargetCommandSink {

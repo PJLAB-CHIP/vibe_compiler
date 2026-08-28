@@ -53,8 +53,7 @@ add_mlir_library(WaferCompiler
   WaferTarget
   WaferTargetTensorMaterialization
   WaferCardModuleToTileModules
-  WaferTensorProgramToCardModule
-  WaferTensorProgramToTileRegion
+  WaferStructuredTiling
   WaferTileRegionToInstr
   WaferTileRegionPipelines
   WaferTransforms

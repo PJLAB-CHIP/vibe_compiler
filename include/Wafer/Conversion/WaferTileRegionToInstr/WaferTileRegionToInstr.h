@@ -118,9 +118,10 @@ private:
   friend mlir::LogicalResult
   convertTileRegionToInstr(TileRegionOp, TileRegionToInstrLoweringSession &,
                            mlir::RewriterBase::Listener *);
-  friend mlir::LogicalResult convertBufferizationCopiesToInstr(
-      mlir::ModuleOp, TileRegionToInstrLoweringSession &,
-      mlir::RewriterBase::Listener *);
+  friend mlir::LogicalResult
+  convertBufferizationCopiesToInstr(mlir::ModuleOp,
+                                    TileRegionToInstrLoweringSession &,
+                                    mlir::RewriterBase::Listener *);
 };
 
 /// Lower exactly one isolated TileRegion body. This operation does not run
@@ -137,17 +138,6 @@ convertTileRegionToInstr(TileRegionOp region,
 mlir::LogicalResult convertBufferizationCopiesToInstr(
     mlir::ModuleOp module, TileRegionToInstrLoweringSession &session,
     mlir::RewriterBase::Listener *listener = nullptr);
-
-/// One-shot compatibility adapter. Multi-region compiler requests should
-/// construct one request-scoped session and use the overload above.
-mlir::LogicalResult convertTileRegionToInstr(TileRegionOp region);
-
-/// Compatibility adapter that lowers every TileRegion in an owned module and
-/// then runs function-wide fresh required NCC join construction. Production pass
-/// pipelines should use the region-anchored conversion and function-anchored
-/// join-placement pass. The caller discards the module on failure; this
-/// adapter does not clone the module to manufacture rollback.
-mlir::LogicalResult convertTileRegionToInstrModule(mlir::ModuleOp module);
 
 namespace detail {
 

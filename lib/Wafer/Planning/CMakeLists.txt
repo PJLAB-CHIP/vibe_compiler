@@ -1,35 +1,8 @@
 set(WAFER_PLANNING_SOURCES
-  Planning/Baseline/BaselineAttentionMaterialization.cpp
-  Planning/Baseline/CardBaselineCompilation.cpp
-  Planning/Baseline/CardBaselineTemporalTiling.cpp
-  Planning/Baseline/BaselineTemporalPlan.cpp
-  Planning/Baseline/CanonicalBaselinePlan.cpp
   Planning/PhysicalDataflow/AttentionSpatialConstraints.cpp
-  Planning/PhysicalDataflow/AttentionLinalgOps.cpp
-  Planning/PhysicalDataflow/AttentionWorkDescription.cpp
-  Planning/PhysicalDataflow/BufferPlan.cpp
-  Planning/PhysicalDataflow/CanonicalAttentionWorkProjection.cpp
   Planning/PhysicalDataflow/CanonicalSpatialAssignment.cpp
   Planning/PhysicalDataflow/CanonicalRegionPlan.cpp
-  Planning/PhysicalDataflow/CanonicalRepresentationPlan.cpp
-  Planning/PhysicalDataflow/CanonicalMovementPlan.cpp
-  Planning/PhysicalDataflow/CanonicalSerializedExecutionPlan.cpp
-  Planning/PhysicalDataflow/CanonicalSchedulePlan.cpp
-  Planning/PhysicalDataflow/CanonicalStoragePlan.cpp
-  Planning/PhysicalDataflow/CanonicalTemporalPlan.cpp
-  Planning/PhysicalDataflow/CardMaterializationPlan.cpp
-  Planning/PhysicalDataflow/CardConsumerInputs.cpp
-  Planning/PhysicalDataflow/CardDataflowConstruction.cpp
-  Planning/PhysicalDataflow/CardEdgeCarriers.cpp
-  Planning/PhysicalDataflow/CompleteCandidateMaterialization.cpp
-  Planning/PhysicalDataflow/CompleteCandidatePreparation.cpp
   Planning/PhysicalDataflow/CurrentIRLayoutOptimization.cpp
-  Planning/PhysicalDataflow/EventGraph.cpp
-  Planning/PhysicalDataflow/ExecutionStructureDomain.cpp
-  Planning/PhysicalDataflow/ExecutionStructureMaterialization.cpp
-  Planning/PhysicalDataflow/ExecutionStructurePlan.cpp
-  Planning/PhysicalDataflow/FullFeasibility.cpp
-  Planning/PhysicalDataflow/SerializedExecutionPlan.cpp
   Planning/PhysicalDataflow/RootRegionWorkAnalysis.cpp
   Planning/PhysicalDataflow/RootWorkDomain.cpp
   Planning/PhysicalDataflow/Search/PlanningProblem.cpp
@@ -41,29 +14,10 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/Search/PlanningState.cpp
   Planning/PhysicalDataflow/RegionPlan.cpp
   Planning/PhysicalDataflow/RegionDomain.cpp
-  Planning/PhysicalDataflow/RepresentationPlan.cpp
-  Planning/PhysicalDataflow/RepresentationDomain.cpp
-  Planning/PhysicalDataflow/RepresentationPBQPSolver.cpp
-  Planning/PhysicalDataflow/SchedulePlan.cpp
-  Planning/PhysicalDataflow/ScheduleDomain.cpp
-  Planning/PhysicalDataflow/ScheduleMaterialization.cpp
-  Planning/PhysicalDataflow/SelectedAttentionDecomposition.cpp
-  Planning/PhysicalDataflow/SelectedRegionMaterialization.cpp
-  Planning/PhysicalDataflow/MovementPlan.cpp
-  Planning/PhysicalDataflow/MovementDomain.cpp
-  Planning/PhysicalDataflow/MovementTransferBuilder.cpp
-  Planning/PhysicalDataflow/PhysicalVersionBuilder.cpp
-  Planning/PhysicalDataflow/PlanningCoordinate.cpp
-  Planning/PhysicalDataflow/TemporalPlan.cpp
+  Planning/PhysicalDataflow/ExactPBQPSolver.cpp
   Planning/PhysicalDataflow/TemporalDomain.cpp
   Planning/PhysicalDataflow/SemanticRootAnalysis.cpp
   Planning/PhysicalDataflow/SpatialDomain.cpp
   Planning/PhysicalDataflow/SpatialPlan.cpp
-  Planning/PhysicalDataflow/StorageDomain.cpp
-  Planning/PhysicalDataflow/StorageObjectBuilder.cpp
-  Planning/PhysicalDataflow/StorageRequirements.cpp
-  Planning/PhysicalDataflow/StructureSpecificStorageDomain.cpp
-  Planning/PhysicalDataflow/StructuralReadiness.cpp
   Planning/PhysicalDataflow/StructuredDemandView.cpp
-  Planning/PhysicalDataflow/TemporalTileShape.cpp
   PARENT_SCOPE)

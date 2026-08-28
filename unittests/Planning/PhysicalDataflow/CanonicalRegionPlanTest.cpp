@@ -141,7 +141,7 @@ protected:
         RootRegionWorkOutcome outcome = analysis->query(*root, tile);
         if (std::holds_alternative<NoRootRegionWork>(outcome))
           continue;
-        const RootRegionWork *work = getRootRegionWork(outcome);
+        const RootRegionWork *work = std::get_if<RootRegionWork>(&outcome);
         if (!work) {
           if (failureReason)
             *failureReason = rootWorkDetail(outcome);

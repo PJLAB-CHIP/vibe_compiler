@@ -4,10 +4,9 @@
 #ifndef WAFER_UNITTESTS_COMPILER_CARDEXECUTABLETESTSUPPORT_H
 #define WAFER_UNITTESTS_COMPILER_CARDEXECUTABLETESTSUPPORT_H
 
+#include "Wafer/CodeGen/Executable/CardExecutableCompilation.h"
 #include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
-#include "Wafer/Planning/Baseline/CardBaselineCompilation.h"
-#include "Wafer/Planning/PhysicalDataflow/TemporalTileShape.h"
 #include "Wafer/Program/ProgramData.h"
 
 #include "Wafer/Driver/Compilation.h"
@@ -81,10 +80,6 @@ ExecutionConfig executionConfig();
 void expectCompleteTileDomain(
     const detail::CardExecutableLoweringResult &executable,
     llvm::ArrayRef<std::string> tileDataflowIRTrace);
-
-void expectDemandProgramCompletesExecutableGate(
-    ParsedProgram &parsed,
-    const frontend::FrontendProgramVerificationResult &metadata);
 
 } // namespace wafer::compiler::testing
 

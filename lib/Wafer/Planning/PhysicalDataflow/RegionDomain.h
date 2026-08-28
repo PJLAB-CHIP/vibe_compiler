@@ -52,8 +52,8 @@ private:
 };
 
 /// Complete lazy domain of connected root-work partitions and every current
-/// External/Stored/Direct/Replica use choice. It owns only typed descriptors
-/// derived from RootRegionWork and never owns source or candidate IR.
+/// external/local-once/explicit-replica use choice. Fusion and storage are
+/// decided only after this choice has been materialized as current IR.
 class RegionDomain {
 public:
   static mlir::FailureOr<RegionDomain>
@@ -82,8 +82,6 @@ private:
     ExecutionInstanceId producer;
     ExecutionInstanceId consumer;
     bool allowsRequiredLocal = false;
-    bool requiresReconstruction = false;
-    bool allowsDirect = false;
     bool allowsReplica = false;
   };
 

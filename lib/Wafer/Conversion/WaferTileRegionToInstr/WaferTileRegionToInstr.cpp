@@ -747,7 +747,9 @@ struct ConvertTileRegionToInstrPass
     unsigned sourceOperationCount = 0;
     getOperation().walk(
         [&](WaferTileDataflowOpInterface) { ++sourceOperationCount; });
-    if (mlir::succeeded(wafer::convertTileRegionToInstr(getOperation()))) {
+    TileRegionToInstrLoweringSession session(*getOperation().getContext());
+    if (mlir::succeeded(
+            wafer::convertTileRegionToInstr(getOperation(), session))) {
       numDataflowOperationsLowered += sourceOperationCount;
       return;
     }
@@ -961,14 +963,6 @@ wafer::convertTileRegionToInstr(TileRegionOp region,
   return mlir::success();
 }
 
-mlir::LogicalResult wafer::convertTileRegionToInstr(TileRegionOp region) {
-  if (!region)
-    return mlir::failure();
-  TileRegionToInstrLoweringSession session(*region.getContext());
-  return wafer::convertTileRegionToInstr(region, session,
-                                         /*listener=*/nullptr);
-}
-
 mlir::LogicalResult wafer::convertBufferizationCopiesToInstr(
     mlir::ModuleOp module, TileRegionToInstrLoweringSession &session,
     mlir::RewriterBase::Listener *listener) {
@@ -978,21 +972,6 @@ mlir::LogicalResult wafer::convertBufferizationCopiesToInstr(
   config.listener = listener;
   return mlir::applyPartialConversion(module, session.impl->target,
                                       session.impl->loweringPatterns, config);
-}
-
-mlir::LogicalResult
-wafer::convertTileRegionToInstrModule(mlir::ModuleOp module) {
-  if (!module)
-    return mlir::failure();
-  llvm::SmallVector<TileRegionOp, 4> regions;
-  module.walk([&](TileRegionOp region) { regions.push_back(region); });
-  TileRegionToInstrLoweringSession session(*module.getContext());
-  for (TileRegionOp region : regions)
-    if (mlir::failed(wafer::convertTileRegionToInstr(region, session)))
-      return mlir::failure();
-  if (mlir::failed(wafer::convertBufferizationCopiesToInstr(module, session)))
-    return mlir::failure();
-  return wafer::rebuildRequiredNCCJoins(module);
 }
 
 mlir::LogicalResult wafer::detail::placeRequiredNCCJoinsInPrivateFunction(

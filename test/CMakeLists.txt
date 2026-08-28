@@ -121,66 +121,6 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
   )
 endif()
 
-if(WAFER_ENABLE_IMPORTER_DEPS AND
-   WAFER_ENABLE_SPMD_PARTITIONER_DEPS AND
-  WAFER_XLA_SPMD_PARTITIONER_HELPER)
-  if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
-    function(wafer_add_pytorch_source_no_card_test
-        test_name case_name dtype_name dtype_label optimization_policy)
-      set(_wafer_pytorch_dump_arguments)
-      if(optimization_policy STREQUAL "search")
-        list(APPEND _wafer_pytorch_dump_arguments
-          --dump-compiler-ir
-          ${CMAKE_CURRENT_BINARY_DIR}/${test_name}/compiler-ir)
-      endif()
-      add_test(NAME ${test_name}
-        COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
-          ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
-          --case ${case_name}
-          --dtype ${dtype_name}
-          --seed 20260803
-          --wafer-compile $<TARGET_FILE:wafer-compile>
-          --wafer-run $<TARGET_FILE:wafer-run>
-          --work-dir ${CMAKE_CURRENT_BINARY_DIR}/${test_name}
-          --compile-timing
-          --optimization-policy ${optimization_policy}
-          ${_wafer_pytorch_dump_arguments}
-          --no-card
-      )
-      set_tests_properties(${test_name} PROPERTIES
-        LABELS "runtime;no-card;heavy;pytorch;source;production;${case_name};${dtype_label};optimization-${optimization_policy}"
-        ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
-        TIMEOUT 3600
-      )
-    endfunction()
-
-    wafer_add_pytorch_source_no_card_test(
-      wafer-runtime-pytorch-conv-mixed-dag-fp16-optimization-none-no-card
-      conv-mixed-dag float16 fp16 none)
-    wafer_add_pytorch_source_no_card_test(
-      wafer-runtime-pytorch-conv-mixed-dag-bf16-optimization-none-no-card
-      conv-mixed-dag bfloat16 bf16 none)
-    wafer_add_pytorch_source_no_card_test(
-      wafer-runtime-pytorch-attention-prefill-fp16-optimization-none-no-card
-      attention-prefill float16 fp16 none)
-    wafer_add_pytorch_source_no_card_test(
-      wafer-runtime-pytorch-attention-prefill-bf16-optimization-none-no-card
-      attention-prefill bfloat16 bf16 none)
-    wafer_add_pytorch_source_no_card_test(
-      wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-none-no-card
-      attention-decode-kv-cache float16 fp16 none)
-    wafer_add_pytorch_source_no_card_test(
-      wafer-runtime-pytorch-attention-decode-kv-cache-bf16-optimization-none-no-card
-      attention-decode-kv-cache bfloat16 bf16 none)
-    wafer_add_pytorch_source_no_card_test(
-      wafer-runtime-pytorch-llama-2-7b-block-fp16-optimization-none-no-card
-      llama-2-7b-block float16 fp16 none)
-    wafer_add_pytorch_source_no_card_test(
-      wafer-runtime-pytorch-llama-2-7b-block-bf16-optimization-none-no-card
-      llama-2-7b-block bfloat16 bf16 none)
-  endif()
-endif()
-
 if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
   if(NOT WAFER_ENABLE_IMPORTER_DEPS OR
      NOT WAFER_ENABLE_SPMD_PARTITIONER_DEPS OR

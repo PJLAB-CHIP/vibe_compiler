@@ -238,8 +238,6 @@ using RootRegionWorkOutcome =
     std::variant<RootRegionWork, NoRootRegionWork, UnsupportedRootRegionWork,
                  BrokenRootRegionWork, RootRegionWorkLimitReached>;
 
-const RootRegionWork *getRootRegionWork(const RootRegionWorkOutcome &outcome);
-
 } // namespace wafer::analysis
 
 #endif // WAFER_ANALYSIS_PHYSICALDATAFLOW_ROOTREGIONWORK_H

@@ -5,8 +5,6 @@
 
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningMemo.h"
 
-#include "llvm/Support/raw_ostream.h"
-
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -24,8 +22,7 @@ struct PlanningMemoProfile {
 };
 
 struct PlanningProfileStatistics {
-  std::array<PlanningMemoProfile,
-             static_cast<size_t>(PlanningMemoKind::Count)>
+  std::array<PlanningMemoProfile, static_cast<size_t>(PlanningMemoKind::Count)>
       memos{};
   uint64_t peakFrontierDepth = 0;
   uint64_t candidateActualizations = 0;
@@ -51,9 +48,6 @@ private:
   PlanningProfileStatistics statistics;
   std::optional<std::chrono::steady_clock::time_point> searchStart;
 };
-
-void printPlanningProfile(llvm::raw_ostream &output,
-                          const PlanningProfileSink &profile);
 
 } // namespace wafer::compiler::detail
 

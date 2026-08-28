@@ -793,12 +793,10 @@ module {
          << "        %next = arith.mulf %value, %value : f16\n"
          << "        linalg.yield %next : f16\n"
          << "    } -> tensor<2x" << rightExtent << "x128xf16>\n"
-         << "    %empty = tensor.empty() : tensor<2x" << extent
-         << "x128xf16>\n"
+         << "    %empty = tensor.empty() : tensor<2x" << extent << "x128xf16>\n"
          << "    %lower = tensor.insert_slice %producerA into %empty"
-         << "[0, 0, 0] [2, " << leftExtent
-         << ", 128] [1, 1, 1] : tensor<2x" << leftExtent
-         << "x128xf16> into tensor<2x" << extent << "x128xf16>\n"
+         << "[0, 0, 0] [2, " << leftExtent << ", 128] [1, 1, 1] : tensor<2x"
+         << leftExtent << "x128xf16> into tensor<2x" << extent << "x128xf16>\n"
          << "    %assembled = tensor.insert_slice %producerB into %lower"
          << "[0, " << leftExtent << ", 0] [2, " << rightExtent
          << ", 128] [1, 1, 1] : tensor<2x" << rightExtent
@@ -819,8 +817,7 @@ module {
          << "}\n";
   stream.flush();
   auto module = mlir::parseSourceString<mlir::ModuleOp>(
-      source,
-      mlir::ParserConfig(context.get()));
+      source, mlir::ParserConfig(context.get()));
   return ParsedProgram{std::move(context), std::move(module)};
 }
 
@@ -856,34 +853,6 @@ void expectCompleteTileDomain(
     EXPECT_NE(tileDataflowIR.find("wafer.tile.load"), llvm::StringRef::npos);
     EXPECT_NE(tileDataflowIR.find("wafer.tile.store"), llvm::StringRef::npos);
   }
-}
-
-void expectDemandProgramCompletesExecutableGate(
-    ParsedProgram &parsed,
-    const wafer::frontend::FrontendProgramVerificationResult &metadata) {
-  ASSERT_TRUE(parsed.module);
-
-  std::string diagnosticsText;
-  llvm::raw_string_ostream diagnostics(diagnosticsText);
-  wafer::compiler::detail::BaselineStatistics baselineStatistics;
-  wafer::compiler::ProgramDataHandoff programData;
-  auto executable = wafer::compiler::detail::compileCardBaseline(
-      *parsed.module, metadata, executionConfig(), diagnostics, programData,
-      &baselineStatistics, /*tilePipelineParallelism=*/0,
-      /*captureTileDataflowIRTrace=*/true);
-  diagnostics.flush();
-
-  ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
-  expectCompleteTileDomain(executable->executable,
-                           executable->tileDataflowIRTrace);
-  EXPECT_GT(baselineStatistics.exactDemandSatisfiedEdges, 0u);
-  EXPECT_EQ(baselineStatistics.exactGates.cardModuleCompilationInvocations, 1u);
-  // Baseline structural contract: every TileRegion carries exactly one
-  // structured compute root; an in-region operand demand of a foreign node
-  // never counts as a second root.
-  EXPECT_EQ(diagnosticsText.find("multiple structured compute roots"),
-            std::string::npos)
-      << diagnosticsText;
 }
 
 } // namespace wafer::compiler::testing

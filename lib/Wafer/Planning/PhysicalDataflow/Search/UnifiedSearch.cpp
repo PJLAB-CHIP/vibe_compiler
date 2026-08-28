@@ -3,7 +3,6 @@
 #include "Wafer/Planning/PhysicalDataflow/Search/UnifiedSearch.h"
 
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningProfile.h"
-#include "Wafer/Support/CompileTiming.h"
 
 #include "llvm/ADT/StringRef.h"
 
@@ -38,23 +37,15 @@ bool isTerminal(UnifiedSearchResumeStatus status) {
 } // namespace
 
 struct UnifiedSearchSession::Impl {
-  Impl(mlir::ModuleOp tensorProgram,
-       PhysicalDataflowPlanningSession &planningSession,
-       const frontend::FrontendProgramVerificationResult &program,
-       const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-       ProgramDataHandoff &programData, const UnifiedSearchOptions &options,
-       unsigned tilePipelineParallelism, bool captureTileDataflowIRTrace,
-       UnifiedSearchTrace *trace)
-      : tensorProgram(tensorProgram), planningSession(planningSession),
-        program(program), executionConfig(executionConfig),
-        diagnostics(diagnostics), programData(programData),
+  Impl(PhysicalDataflowPlanningSession &planningSession,
+       StructuralCandidateEvaluator &evaluator,
+       const UnifiedSearchOptions &options, UnifiedSearchTrace *trace)
+      : planningSession(planningSession), evaluator(evaluator),
         termination(options.termination),
         controller(ActualResultControllerOptions{
             std::numeric_limits<uint64_t>::max(), options.costCohort,
             ExactRejectionCachePolicy::Enabled}),
-        tilePipelineParallelism(tilePipelineParallelism),
-        profile(options.profile),
-        captureTileDataflowIRTrace(captureTileDataflowIRTrace), trace(trace) {
+        profile(options.profile), trace(trace) {
     frontier.emplace_back(SpatialFrame{});
     if (profile) {
       profile->beginSearch();
@@ -136,15 +127,11 @@ struct UnifiedSearchSession::Impl {
         return;
       }
       recordPrefix(*state);
-      frontier.emplace_back(
-          StructuralCandidateFrame{std::move(*state), {}});
+      frontier.emplace_back(StructuralCandidateFrame{std::move(*state), {}});
       return;
     }
     case TemporalExpansionKind::Unsupported:
       sawUnsupportedPrefix = true;
-      if (wafer::support::getActiveCompileTimingSession())
-        diagnostics << "wafer-compile: temporal-prefix unsupported detail="
-                    << next.getDetail() << '\n';
       if (continuation.isExhausted())
         frontier.pop_back();
       return;
@@ -177,23 +164,19 @@ struct UnifiedSearchSession::Impl {
                : "actual-result controller rejected a unique complete key");
       return;
     }
-    FullFeasibilityStatistics actualStatistics;
-    FullFeasibilityResult actual = evaluateCurrentStructuralCandidate(
-        tensorProgram, planningSession.getProblem(), state, program,
-        executionConfig, diagnostics, programData, &actualStatistics,
-        tilePipelineParallelism, captureTileDataflowIRTrace);
-    work.candidateActualizations += actualStatistics.candidateActualizations;
-    const FullFeasibilityStatus actualStatus = actual.status;
+    StructuralCandidateEvaluation evaluation = evaluator.evaluate(state);
+    work.candidateActualizations += evaluation.actualizations;
+    const ActualCandidateStatus actualStatus = evaluation.result.status;
     if (profile)
       profile->recordCandidateActualization(
-          actualStatistics.candidateActualizations,
-          actualStatus == FullFeasibilityStatus::Accepted);
-    const std::string actualDetail = actual.detail;
-    std::vector<SemanticRootKey> causalRoots = actual.causalRoots;
+          evaluation.actualizations,
+          actualStatus == ActualCandidateStatus::Accepted);
+    const std::string actualDetail = evaluation.result.detail;
+    std::vector<SemanticRootKey> causalRoots = evaluation.result.causalRoots;
     if (trace)
       trace->candidates.push_back({key, actualStatus});
     CandidateRecordOutcome recorded =
-        controller.record(key, std::move(actual));
+        controller.record(key, std::move(evaluation.result));
     if (recorded == CandidateRecordOutcome::CompilerBug) {
       fail("actual-result controller rejected a typed actual result");
       return;
@@ -324,17 +307,11 @@ struct UnifiedSearchSession::Impl {
     return result;
   }
 
-  mlir::ModuleOp tensorProgram;
   PhysicalDataflowPlanningSession &planningSession;
-  frontend::FrontendProgramVerificationResult program;
-  ExecutionConfig executionConfig;
-  llvm::raw_ostream &diagnostics;
-  ProgramDataHandoff &programData;
+  StructuralCandidateEvaluator &evaluator;
   SearchTerminationPolicy termination;
   ActualResultController controller;
-  unsigned tilePipelineParallelism;
   PlanningProfileSink *profile = nullptr;
-  bool captureTileDataflowIRTrace;
   UnifiedSearchTrace *trace = nullptr;
   std::vector<FrontierFrame> frontier;
   UnifiedSearchWork work;
@@ -345,16 +322,10 @@ struct UnifiedSearchSession::Impl {
 };
 
 UnifiedSearchSession::UnifiedSearchSession(
-    mlir::ModuleOp tensorProgram, PhysicalDataflowPlanningSession &session,
-    const frontend::FrontendProgramVerificationResult &program,
-    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-    ProgramDataHandoff &programData, const UnifiedSearchOptions &options,
-    unsigned tilePipelineParallelism, bool captureTileDataflowIRTrace,
-    UnifiedSearchTrace *trace)
-    : impl(std::make_unique<Impl>(tensorProgram, session, program,
-                                  executionConfig, diagnostics, programData,
-                                  options, tilePipelineParallelism,
-                                  captureTileDataflowIRTrace, trace)) {}
+    PhysicalDataflowPlanningSession &session,
+    StructuralCandidateEvaluator &evaluator,
+    const UnifiedSearchOptions &options, UnifiedSearchTrace *trace)
+    : impl(std::make_unique<Impl>(session, evaluator, options, trace)) {}
 
 UnifiedSearchSession::~UnifiedSearchSession() = default;
 
@@ -364,16 +335,10 @@ UnifiedSearchResumeResult UnifiedSearchSession::resume(uint64_t credits) {
 
 UnifiedSearchResult UnifiedSearchSession::finish() { return impl->finish(); }
 
-UnifiedSearchResult runUnifiedSearch(
-    mlir::ModuleOp tensorProgram, PhysicalDataflowPlanningSession &session,
-    const frontend::FrontendProgramVerificationResult &program,
-    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-    ProgramDataHandoff &programData, const UnifiedSearchOptions &options,
-    unsigned tilePipelineParallelism, bool captureTileDataflowIRTrace) {
-  UnifiedSearchSession search(tensorProgram, session, program, executionConfig,
-                              diagnostics, programData, options,
-                              tilePipelineParallelism,
-                              captureTileDataflowIRTrace);
+UnifiedSearchResult runUnifiedSearch(PhysicalDataflowPlanningSession &session,
+                                     StructuralCandidateEvaluator &evaluator,
+                                     const UnifiedSearchOptions &options) {
+  UnifiedSearchSession search(session, evaluator, options);
   (void)search.resume(options.planningCredits);
   return search.finish();
 }

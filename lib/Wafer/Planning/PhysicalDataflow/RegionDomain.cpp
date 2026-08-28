@@ -108,8 +108,7 @@ getConnectedChildren(const ComponentT &component,
     ConnectedGroup child(group.begin(), group.end());
     child.push_back(candidate);
     llvm::sort(child);
-    std::optional<ConnectedGroup> parent =
-        getConnectedParent(component, child);
+    std::optional<ConnectedGroup> parent = getConnectedParent(component, child);
     if (parent && *parent == group)
       children.push_back(std::move(child));
   }
@@ -122,7 +121,8 @@ std::optional<ConnectedGroup>
 getNextConnectedGroup(const ComponentT &component,
                       llvm::ArrayRef<uint32_t> current,
                       llvm::ArrayRef<uint32_t> allowed) {
-  if (current.empty() || allowed.empty() || current.front() != allowed.front() ||
+  if (current.empty() || allowed.empty() ||
+      current.front() != allowed.front() ||
       !isConnectedGroup(component, current))
     return std::nullopt;
   ConnectedGroup node(current.begin(), current.end());
@@ -146,16 +146,16 @@ getNextConnectedGroup(const ComponentT &component,
   return std::nullopt;
 }
 
-ConnectedPartition getFirstConnectedPartition(llvm::ArrayRef<uint32_t> allowed) {
+ConnectedPartition
+getFirstConnectedPartition(llvm::ArrayRef<uint32_t> allowed) {
   ConnectedPartition partition;
   for (uint32_t vertex : allowed)
     partition.push_back(ConnectedGroup{vertex});
   return partition;
 }
 
-llvm::SmallVector<uint32_t, 8>
-subtractGroup(llvm::ArrayRef<uint32_t> allowed,
-              llvm::ArrayRef<uint32_t> group) {
+llvm::SmallVector<uint32_t, 8> subtractGroup(llvm::ArrayRef<uint32_t> allowed,
+                                             llvm::ArrayRef<uint32_t> group) {
   llvm::SmallVector<uint32_t, 8> remaining;
   for (uint32_t vertex : allowed)
     if (!llvm::is_contained(group, vertex))
@@ -177,8 +177,8 @@ advanceConnectedPartition(const ComponentT &component,
   if (!remaining.empty()) {
     if (current.size() < 2)
       return std::nullopt;
-    std::optional<ConnectedPartition> suffix = advanceConnectedPartition(
-        component, current.drop_front(), remaining);
+    std::optional<ConnectedPartition> suffix =
+        advanceConnectedPartition(component, current.drop_front(), remaining);
     if (suffix) {
       ConnectedPartition result{current.front()};
       result.append(suffix->begin(), suffix->end());
@@ -398,17 +398,14 @@ RegionDomain::create(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
               external.fragment.use.operand) ==
               producerWork->rootOperation->getResult(
                   external.fragment.source.index);
-      const bool requiresReconstruction = !directSSA;
-      const bool allowsDirect =
-          directSSA && replicaAllowedByWork[producer->first];
-      const bool allowsReplica =
-          isRootExecution(producer->second) && allowsDirect;
+      const bool allowsReplica = isRootExecution(producer->second) &&
+                                 directSSA &&
+                                 replicaAllowedByWork[producer->first];
       if (!allowsRequiredLocal && !allowsReplica)
         continue;
       fragments.push_back({external.fragment, producer->first,
                            consumer->second.first, producer->second,
                            consumer->second.second, allowsRequiredLocal,
-                           requiresReconstruction, allowsDirect,
                            allowsReplica});
     }
   }
@@ -575,17 +572,11 @@ bool RegionDomain::advanceChoices(
     const bool sameGroup = producer != groups.end() &&
                            consumer != groups.end() &&
                            producer->second == consumer->second;
-    llvm::SmallVector<uint8_t, 5> allowed{0};
-    if (sameGroup && fragment.allowsRequiredLocal) {
+    llvm::SmallVector<uint8_t, 3> allowed{0};
+    if (sameGroup && fragment.allowsRequiredLocal)
       allowed.push_back(1);
-      if (fragment.allowsDirect)
-        allowed.push_back(2);
-    }
-    if (fragment.allowsReplica) {
-      allowed.push_back(3);
-      if (fragment.allowsDirect)
-        allowed.push_back(4);
-    }
+    if (fragment.allowsReplica)
+      allowed.push_back(2);
     auto current = llvm::find(allowed, choices[index]);
     if (current == allowed.end())
       return false;
@@ -654,12 +645,9 @@ RegionDomain::buildPlan(llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
         consumerGroup == groupByWork.end())
       return std::nullopt;
     const bool sameGroup = producerGroup->second == consumerGroup->second;
-    if ((choice == 1 || choice == 2) &&
-        (!sameGroup || !fragment->allowsRequiredLocal))
+    if (choice == 1 && (!sameGroup || !fragment->allowsRequiredLocal))
       return std::nullopt;
-    if ((choice == 2 || choice == 4) && !fragment->allowsDirect)
-      return std::nullopt;
-    if ((choice == 3 || choice == 4) && !fragment->allowsReplica)
+    if (choice == 2 && !fragment->allowsReplica)
       return std::nullopt;
     RegionGroupPlan &group = plan.groups[consumerGroup->second];
     auto external = llvm::find_if(
@@ -671,25 +659,13 @@ RegionDomain::buildPlan(llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
     group.externalBindings.erase(external);
 
     RegionExecutionId producerId;
-    const bool direct = choice == 2 || choice == 4;
-    if (choice <= 2) {
+    if (choice == 1) {
       auto execution = llvm::find_if(
           group.executions, [&](const ExecutionInstancePlan &candidate) {
             return candidate.id == fragment->producer;
           });
       if (execution == group.executions.end())
         return std::nullopt;
-      ExecutionInstancePlan::Placement placement =
-          direct ? ExecutionInstancePlan::Placement(
-                       ExecutionInstancePlan::NestedUnder{
-                           fragment->consumer.source})
-                 : ExecutionInstancePlan::Placement(
-                       ExecutionInstancePlan::TopLevel{});
-      if (!std::holds_alternative<ExecutionInstancePlan::TopLevel>(
-              execution->placement) &&
-          !(execution->placement == placement))
-        return std::nullopt;
-      execution->placement = placement;
       producerId = fragment->producer;
     } else {
       const auto *required =
@@ -699,23 +675,12 @@ RegionDomain::buildPlan(llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
       ReplicaExecutionPlan replica;
       replica.id.producer = *required;
       replica.id.fragment = fragment->fragment;
-      replica.placement = direct ? ExecutionInstancePlan::Placement(
-                                       ExecutionInstancePlan::NestedUnder{
-                                           fragment->consumer.source})
-                                 : ExecutionInstancePlan::Placement(
-                                       ExecutionInstancePlan::TopLevel{});
       if (llvm::is_contained(group.replicas, replica))
         return std::nullopt;
       group.replicas.push_back(replica);
       producerId = replica.id;
     }
-    LocalUseDelivery delivery =
-        direct ? LocalUseDelivery::DirectNestedValue
-               : fragment->requiresReconstruction
-                     ? LocalUseDelivery::ReconstructedRegionValue
-                     : LocalUseDelivery::StoredRegionValue;
-    group.localBindings.push_back(
-        {fragment->fragment, std::move(producerId), delivery});
+    group.localBindings.push_back({fragment->fragment, std::move(producerId)});
   }
 
   for (RegionGroupPlan &group : plan.groups) {
@@ -724,12 +689,11 @@ RegionDomain::buildPlan(llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
               analysis::RootBoundaryKind::StructuredResult &&
           llvm::any_of(group.mandatoryRoots,
                        [&](const analysis::RootRegionWorkId &work) {
-                         return work.root ==
-                                binding.fragment.source.semantic;
+                         return work.root == binding.fragment.source.semantic;
                        }))
         return std::nullopt;
 
-    for (const LocalUseBinding &binding : group.localBindings) {
+    for (const LocalUseBinding &binding : group.localBindings)
       if (const auto *required =
               std::get_if<ExecutionInstanceId>(&binding.producer)) {
         auto execution = llvm::find_if(
@@ -738,12 +702,7 @@ RegionDomain::buildPlan(llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
             });
         if (execution == group.executions.end())
           return std::nullopt;
-        if ((binding.delivery != LocalUseDelivery::DirectNestedValue) !=
-            std::holds_alternative<ExecutionInstancePlan::TopLevel>(
-                execution->placement))
-          return std::nullopt;
       }
-    }
 
     if (group.mandatoryRoots.size() > 1) {
       std::map<analysis::RootRegionWorkId, size_t> index;
@@ -909,13 +868,11 @@ RegionDomain::getCursor(const RegionPlan &plan) const {
     }
     if (externalCount != 0 || local == group->localBindings.end())
       return std::nullopt;
-    const bool direct =
-        local->delivery == LocalUseDelivery::DirectNestedValue;
     if (const auto *required =
             std::get_if<ExecutionInstanceId>(&local->producer)) {
       if (!(*required == fragment->producer))
         return std::nullopt;
-      cursor.fragmentChoices.push_back(direct ? 2 : 1);
+      cursor.fragmentChoices.push_back(1);
     } else {
       const auto &replica = std::get<ReplicaExecutionId>(local->producer);
       const auto *producerRoot =
@@ -923,7 +880,7 @@ RegionDomain::getCursor(const RegionPlan &plan) const {
       if (!producerRoot || !(replica.producer == *producerRoot) ||
           !(replica.fragment == fragment->fragment))
         return std::nullopt;
-      cursor.fragmentChoices.push_back(direct ? 4 : 3);
+      cursor.fragmentChoices.push_back(2);
     }
   }
   std::optional<RegionPlan> rebuilt =
@@ -974,11 +931,10 @@ std::vector<RegionPlan> RegionDomain::getProposals() const {
                              consumer != groups.end() &&
                              producer->second == consumer->second;
       uint8_t choice = 0;
-      if (requested <= 2 && sameGroup && fragment->allowsRequiredLocal) {
-        choice = requested == 2 && fragment->allowsDirect ? 2 : 1;
-      } else if (requested >= 3 && fragment->allowsReplica) {
-        choice = requested == 4 && fragment->allowsDirect ? 4 : 3;
-      }
+      if (requested == 1 && sameGroup && fragment->allowsRequiredLocal)
+        choice = 1;
+      else if (requested == 2 && fragment->allowsReplica)
+        choice = 2;
       choices.push_back(choice);
     }
     return choices;
@@ -998,8 +954,8 @@ std::vector<RegionPlan> RegionDomain::getProposals() const {
         ++localRealizations[fragment.fragment];
     llvm::SmallVector<std::pair<size_t, size_t>, 8> cannotLink;
     llvm::SmallVector<std::pair<size_t, size_t>, 32> directedEdges;
-    auto findWorkIndex = [&](const analysis::RootRegionWorkId &work)
-        -> std::optional<size_t> {
+    auto findWorkIndex =
+        [&](const analysis::RootRegionWorkId &work) -> std::optional<size_t> {
       auto found = llvm::find(component.works, work);
       return found == component.works.end()
                  ? std::nullopt
@@ -1017,8 +973,7 @@ std::vector<RegionPlan> RegionDomain::getProposals() const {
     for (const RegionGroupPlan &base : baseGroups) {
       if (base.tile != component.tile || base.mandatoryRoots.size() != 1)
         continue;
-      auto consumer = llvm::find(component.works,
-                                 base.mandatoryRoots.front());
+      auto consumer = llvm::find(component.works, base.mandatoryRoots.front());
       if (consumer == component.works.end())
         continue;
       for (const ExternalUseBinding &binding : base.externalBindings) {
@@ -1038,13 +993,10 @@ std::vector<RegionPlan> RegionDomain::getProposals() const {
           std::swap(lhs, rhs);
         if (!llvm::is_contained(cannotLink, std::make_pair(lhs, rhs)))
           cannotLink.emplace_back(lhs, rhs);
-        size_t producerIndex =
-            std::distance(component.works.begin(), producer);
-        size_t consumerIndex =
-            std::distance(component.works.begin(), consumer);
-        if (!llvm::is_contained(
-                directedEdges,
-                std::make_pair(producerIndex, consumerIndex)))
+        size_t producerIndex = std::distance(component.works.begin(), producer);
+        size_t consumerIndex = std::distance(component.works.begin(), consumer);
+        if (!llvm::is_contained(directedEdges,
+                                std::make_pair(producerIndex, consumerIndex)))
           directedEdges.emplace_back(producerIndex, consumerIndex);
       }
     }
@@ -1077,8 +1029,7 @@ std::vector<RegionPlan> RegionDomain::getProposals() const {
     for (size_t lhs = 0; lhs < count; ++lhs) {
       for (size_t rhs = lhs + 1; rhs < count; ++rhs) {
         if (!component.potentialEdges[lhs * count + rhs] ||
-            coherent[componentIndex][lhs] ==
-                coherent[componentIndex][rhs])
+            coherent[componentIndex][lhs] == coherent[componentIndex][rhs])
           continue;
         auto trial = coherent;
         const uint32_t kept = trial[componentIndex][lhs];
@@ -1093,28 +1044,23 @@ std::vector<RegionPlan> RegionDomain::getProposals() const {
           (void)inserted;
           label = entry->second;
         }
-        if (llvm::none_of(cannotLink, [&](const auto &edge) {
-              return trial[componentIndex][edge.first] ==
-                     trial[componentIndex][edge.second];
-            }) &&
+        if (llvm::none_of(cannotLink,
+                          [&](const auto &edge) {
+                            return trial[componentIndex][edge.first] ==
+                                   trial[componentIndex][edge.second];
+                          }) &&
             isAcyclic(trial[componentIndex]))
           coherent = std::move(trial);
       }
     }
   }
 
-  append(buildPlan(coherent,
-                   makeChoices(coherent, /*stored required=*/1)));
+  append(buildPlan(coherent, makeChoices(coherent, /*local once=*/1)));
 
-  append(buildPlan(maximal, makeChoices(maximal, /*stored required=*/1)));
-  append(buildPlan(maximal, makeChoices(maximal, /*direct required=*/2)));
-  append(buildPlan(singleton,
-                   llvm::SmallVector<uint8_t, 16>(
-                       getChoiceFragments(singleton).size(), 0)));
-  append(buildPlan(singleton,
-                   makeChoices(singleton, /*stored replicas=*/3)));
-  append(buildPlan(singleton,
-                   makeChoices(singleton, /*direct replicas=*/4)));
+  append(buildPlan(maximal, makeChoices(maximal, /*local once=*/1)));
+  append(buildPlan(singleton, llvm::SmallVector<uint8_t, 16>(
+                                  getChoiceFragments(singleton).size(), 0)));
+  append(buildPlan(singleton, makeChoices(singleton, /*explicit replicas=*/2)));
   return proposals;
 }
 

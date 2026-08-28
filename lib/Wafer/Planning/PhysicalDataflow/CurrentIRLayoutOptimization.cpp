@@ -12,7 +12,6 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
-#include "mlir/Interfaces/ViewLikeInterface.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -97,112 +96,6 @@ void preserveEmissionOwners(StructuredMaterializationRelations &relations,
 
 } // namespace
 
-mlir::LogicalResult closeCurrentTileDataflowOwnerRelations(
-    mlir::ModuleOp module, StructuredMaterializationRelations &relations,
-    std::string *failureReason) {
-  if (!module ||
-      mlir::failed(checkStructuredBufferRelationsCurrent(module, relations))) {
-    if (failureReason)
-      *failureReason = "layout owner closure requires current IR relations";
-    return mlir::failure();
-  }
-
-  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<uint32_t, 2>>
-      explicitOwners;
-  for (const StructuredOperationEmissionRelation &entry :
-       relations.operationEmissions)
-    if (entry.operation && !llvm::is_contained(explicitOwners[entry.operation],
-                                               entry.structuredNodeId))
-      explicitOwners[entry.operation].push_back(entry.structuredNodeId);
-
-  llvm::SmallVector<mlir::Operation *, 32> resultProducingTileOps;
-  StorageRootMemo ownerMemo;
-  module.walk([&](mlir::Operation *operation) {
-    if (!mlir::isa<WaferTileDataflowOpInterface>(operation) ||
-        mlir::isa<mlir::ViewLikeOpInterface>(operation) ||
-        !llvm::any_of(operation->getResults(), [](mlir::Value result) {
-          return mlir::isa<mlir::BaseMemRefType>(result.getType());
-        }))
-      return;
-    resultProducingTileOps.push_back(operation);
-  });
-  for (mlir::Operation *tileOperation : llvm::reverse(resultProducingTileOps)) {
-    llvm::SmallVector<uint32_t, 4> owners =
-        explicitOwners.lookup(tileOperation);
-    if (owners.empty())
-      owners = collectStructuredNodesUsedByOperation(tileOperation, relations,
-                                                     ownerMemo);
-    llvm::SmallVector<mlir::Value, 8> worklist;
-    worklist.append(tileOperation->getResults().begin(),
-                    tileOperation->getResults().end());
-    llvm::DenseSet<mlir::Operation *> visited;
-    while (!worklist.empty()) {
-      mlir::Value value = worklist.pop_back_val();
-      for (mlir::Operation *user : value.getUsers()) {
-        if (!visited.insert(user).second)
-          continue;
-        auto found = explicitOwners.find(user);
-        if (found == explicitOwners.end()) {
-          llvm::SmallVector<uint32_t, 4> currentOwners =
-              collectStructuredNodesUsedByOperation(user, relations, ownerMemo);
-          if (!currentOwners.empty()) {
-            for (uint32_t owner : currentOwners) {
-              explicitOwners[user].push_back(owner);
-              relations.operationEmissions.push_back({owner, user});
-            }
-            found = explicitOwners.find(user);
-          }
-        }
-        if (found != explicitOwners.end())
-          for (uint32_t owner : found->second)
-            if (!llvm::is_contained(owners, owner))
-              owners.push_back(owner);
-        if (found != explicitOwners.end())
-          continue;
-        if (!mlir::isa<mlir::ViewLikeOpInterface, WaferTileDataflowOpInterface>(
-                user) &&
-            !mlir::isMemoryEffectFree(user))
-          continue;
-        worklist.append(user->getResults().begin(), user->getResults().end());
-      }
-    }
-    llvm::sort(owners);
-    for (uint32_t owner : owners)
-      if (!llvm::any_of(relations.operationEmissions, [&](const auto &entry) {
-            return entry.operation == tileOperation &&
-                   entry.structuredNodeId == owner;
-          })) {
-        relations.operationEmissions.push_back({owner, tileOperation});
-        explicitOwners[tileOperation].push_back(owner);
-      }
-    const bool hasOutputOwner =
-        llvm::any_of(relations.outputBuffers, [&](const auto &entry) {
-          return llvm::is_contained(tileOperation->getResults(), entry.buffer);
-        });
-    if (owners.empty() && !hasOutputOwner) {
-      if (failureReason) {
-        llvm::raw_string_ostream diagnostic(*failureReason);
-        diagnostic << "current Tile result has no explicit consumer/output "
-                      "owner: ";
-        tileOperation->print(diagnostic, mlir::OpPrintingFlags().skipRegions());
-        diagnostic << "; users=[";
-        bool first = true;
-        for (mlir::Value result : tileOperation->getResults())
-          for (mlir::Operation *user : result.getUsers()) {
-            if (!first)
-              diagnostic << ',';
-            first = false;
-            diagnostic << user->getName()
-                       << ":owners=" << explicitOwners.lookup(user).size();
-          }
-        diagnostic << ']';
-      }
-      return mlir::failure();
-    }
-  }
-  return mlir::success();
-}
-
 CurrentIRLayoutOptimizationResult
 optimizeCurrentIRLayouts(llvm::MutableArrayRef<CurrentIRLayoutModule> modules,
                          uint64_t workLimit) {
@@ -210,15 +103,15 @@ optimizeCurrentIRLayouts(llvm::MutableArrayRef<CurrentIRLayoutModule> modules,
   result.statistics.invocations = 1;
   result.statistics.hardOnlyInvocations = 1;
   if (modules.empty() || workLimit == 0) {
-    result.status = workLimit == 0 ? RepresentationPBQPStatus::Indeterminate
-                                   : RepresentationPBQPStatus::BrokenContract;
+    result.status = workLimit == 0 ? ExactPBQPStatus::Indeterminate
+                                   : ExactPBQPStatus::BrokenContract;
     result.detail = modules.empty() ? "current layout query has no Tile IR"
                                     : "current layout PBQP has no work budget";
     return result;
   }
 
   std::vector<LayoutChoice> choices;
-  RepresentationPBQPProblem problem;
+  ExactPBQPProblem problem;
   for (CurrentIRLayoutModule &candidate : modules) {
     if (!candidate.module || !candidate.relations ||
         mlir::failed(mlir::verify(candidate.module)) ||
@@ -263,8 +156,8 @@ optimizeCurrentIRLayouts(llvm::MutableArrayRef<CurrentIRLayoutModule> modules,
       }
       if (choice.states.empty())
         choice.states = {ChoiceKind::Keep};
-      problem.variables.push_back(RepresentationPBQPVariable{
-          std::vector<RepresentationPBQPCost>(choice.states.size(), 0)});
+      problem.variables.push_back(ExactPBQPVariable{
+          std::vector<ExactPBQPCost>(choice.states.size(), 0)});
       choices.push_back(std::move(choice));
     });
   }
@@ -273,17 +166,17 @@ optimizeCurrentIRLayouts(llvm::MutableArrayRef<CurrentIRLayoutModule> modules,
   // one-state variable so the shared exact solver still supplies the same
   // typed budget and determinism contract as non-empty domains.
   if (problem.variables.empty())
-    problem.variables.push_back(RepresentationPBQPVariable{{0}});
-  RepresentationPBQPResult solved = solveRepresentationPBQP(problem, workLimit);
+    problem.variables.push_back(ExactPBQPVariable{{0}});
+  ExactPBQPResult solved = solveExactPBQP(problem, workLimit);
   result.status = solved.status;
   result.statistics.solverWork = solved.work;
-  if (solved.status != RepresentationPBQPStatus::Optimal) {
+  if (solved.status != ExactPBQPStatus::Optimal) {
     result.detail = "current layout PBQP did not produce an Optimal assignment";
     return result;
   }
   if (solved.assignment.size() != problem.variables.size() ||
       solved.assignment.size() < choices.size()) {
-    result.status = RepresentationPBQPStatus::BrokenContract;
+    result.status = ExactPBQPStatus::BrokenContract;
     result.detail = "current layout PBQP returned an incomplete assignment";
     return result;
   }
@@ -297,7 +190,7 @@ optimizeCurrentIRLayouts(llvm::MutableArrayRef<CurrentIRLayoutModule> modules,
   for (auto [index, choice] : llvm::enumerate(choices)) {
     const uint32_t state = solved.assignment[index];
     if (state >= choice.states.size()) {
-      result.status = RepresentationPBQPStatus::BrokenContract;
+      result.status = ExactPBQPStatus::BrokenContract;
       result.detail = "current layout PBQP selected an invalid state";
       return result;
     }
@@ -307,7 +200,7 @@ optimizeCurrentIRLayouts(llvm::MutableArrayRef<CurrentIRLayoutModule> modules,
       continue;
     auto replacement = choiceIndices.find(choice.replacement);
     if (replacement == choiceIndices.end() || replacement->second >= index) {
-      result.status = RepresentationPBQPStatus::BrokenContract;
+      result.status = ExactPBQPStatus::BrokenContract;
       result.detail = "current layout reuse has no earlier selected owner";
       return result;
     }
@@ -316,7 +209,7 @@ optimizeCurrentIRLayouts(llvm::MutableArrayRef<CurrentIRLayoutModule> modules,
             ? selectedReplacements[replacement->second]
             : choice.replacement;
     if (!selectedReplacements[index]) {
-      result.status = RepresentationPBQPStatus::BrokenContract;
+      result.status = ExactPBQPStatus::BrokenContract;
       result.detail = "current layout reuse resolved to an empty owner";
       return result;
     }
@@ -373,7 +266,7 @@ optimizeCurrentIRLayouts(llvm::MutableArrayRef<CurrentIRLayoutModule> modules,
     if (mlir::failed(checkStructuredBufferRelationsCurrent(
             candidate.module, *candidate.relations)) ||
         mlir::failed(mlir::verify(candidate.module))) {
-      result.status = RepresentationPBQPStatus::BrokenContract;
+      result.status = ExactPBQPStatus::BrokenContract;
       result.detail =
           "current layout assignment produced invalid IR or stale relations";
       return result;

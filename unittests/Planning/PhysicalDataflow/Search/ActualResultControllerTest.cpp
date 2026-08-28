@@ -31,12 +31,6 @@ struct KeyParts {
   SpatialPlan spatial;
   RegionPlan regions;
   TemporalPlan temporal;
-  RepresentationPlan representations;
-  MovementPlan movement;
-  BufferPlan initialBuffers;
-  ExecutionStructurePlan structure;
-  BufferPlan buffers;
-  ClosedSchedulePlan schedule;
 };
 
 KeyParts makeKeyParts(uint32_t anchor, int64_t extent = 1024) {
@@ -55,44 +49,21 @@ KeyParts makeKeyParts(uint32_t anchor, int64_t extent = 1024) {
   RegionGroupPlan region;
   region.tile = TileId(0);
   region.mandatoryRoots.push_back(rootExecution.work);
-  region.executions.push_back({execution, ExecutionInstancePlan::TopLevel{}});
+  region.executions.push_back({execution});
   parts.regions.groups.push_back(std::move(region));
 
   parts.temporal.scopes.push_back(
-      {TraversalScopeId{RegionExecutionId(execution), TopLevelWorkPieceId{0}},
+      {TemporalScopeId{RegionExecutionId(execution)},
        {2, extent, 128},
        {0, 1, 2}});
-
-  PhysicalVersionId version{ExecutionResultValueId{execution, 0}};
-  parts.representations.logicalValues.push_back(
-      {version.logicalValue, version});
-  parts.representations.physicalVersions.push_back(
-      {version, MemLayout::Tensor});
-  ResultPublicationId publication{ExecutionResultValueId{execution, 0}};
-  parts.movement.publications.push_back({publication, version});
-
-  StorageObjectId object{StorageObjectOrigin(version)};
-  parts.initialBuffers.storageObjects.push_back({object, TileId(0)});
-  parts.initialBuffers.versionBindings.push_back(
-      {version, object, StorageBindingKind::Fresh});
-  parts.buffers = parts.initialBuffers;
-
-  EventId event{ExecutionEventAction{execution},
-                PlannedEventKind::ComputeIssue};
-  PipelineScopeId scope{{event}, {}};
-  parts.structure.scopes.push_back(SerializedExecutionStructure{scope});
-  parts.schedule.setStructure(parts.structure);
-  parts.schedule.setBuffers(parts.buffers);
-  parts.schedule.controlOrders.push_back(
-      {TileControlScope{TileId(0), scope}, {event}});
   return parts;
 }
 
 StructuralCandidateKey makeKey(uint32_t anchor, int64_t extent = 1024) {
   KeyParts parts = makeKeyParts(anchor, extent);
-  return StructuralCandidateKey::create(
-      std::move(parts.spatial), std::move(parts.regions),
-      std::move(parts.temporal));
+  return StructuralCandidateKey::create(std::move(parts.spatial),
+                                        std::move(parts.regions),
+                                        std::move(parts.temporal));
 }
 
 ActualResultController makeController(
@@ -108,8 +79,8 @@ RuntimeLaunchContract makeLaunch() {
       {RuntimeLaunchPhaseRole::Main}));
 }
 
-ScheduleEstimatePolicy unitCostPolicy() {
-  ScheduleEstimatePolicy policy;
+SearchCostPolicy unitCostPolicy() {
+  SearchCostPolicy policy;
   policy.cardDDRNominalBytesPerSecond = UINT64_C(1000000000000);
   policy.directionalNoCBytesPerSecond = UINT64_C(1000000000000);
   policy.dteEndpointBytesPerSecondEstimate = UINT64_C(1000000000000);
@@ -126,7 +97,7 @@ ScheduleEstimatePolicy unitCostPolicy() {
   return policy;
 }
 
-FullFeasibilityResult accepted(uint64_t instructions, bool known = true) {
+ActualCandidateResult accepted(uint64_t instructions, bool known = true) {
   CardInstructionProgramCost cost;
   cost.aggregateInstructionCount.value = instructions;
   cost.aggregateDDRReadBytes.value = instructions * 2;
@@ -140,16 +111,16 @@ FullFeasibilityResult accepted(uint64_t instructions, bool known = true) {
   compilation.status = CardExecutableCompilationStatus::Accepted;
   compilation.executable.emplace(std::vector<compiler::TileExecutable>{},
                                  makeLaunch(), std::move(cost));
-  FullFeasibilityResult result;
-  result.status = FullFeasibilityStatus::Accepted;
+  ActualCandidateResult result;
+  result.status = ActualCandidateStatus::Accepted;
   result.compilation.emplace(std::move(compilation));
   return result;
 }
 
-FullFeasibilityResult exactRejected(uint32_t rootAnchor,
+ActualCandidateResult exactRejected(uint32_t rootAnchor,
                                     bool spmCapacity = false) {
-  FullFeasibilityResult result;
-  result.status = FullFeasibilityStatus::ExactRejection;
+  ActualCandidateResult result;
+  result.status = ActualCandidateStatus::ExactRejection;
   CardExecutableCompilationResult compilation;
   compilation.status = CardExecutableCompilationStatus::ProvenExactRejection;
   if (spmCapacity) {
@@ -170,7 +141,7 @@ FullFeasibilityResult exactRejected(uint32_t rootAnchor,
 TEST(ActualResultControllerTest,
      ExplicitCohortDerivesResourceTermsUnknownOverflowAndStrictBound) {
   std::string failureReason;
-  ScheduleEstimatePolicy policy = unitCostPolicy();
+  SearchCostPolicy policy = unitCostPolicy();
   auto cohort = SearchCostCohort::create(policy, &failureReason);
   ASSERT_TRUE(mlir::succeeded(cohort)) << failureReason;
   policy.cardDDRNominalBytesPerSecond = 0;
@@ -197,14 +168,13 @@ TEST(ActualResultControllerTest,
       SearchObjectiveUnknownReason::MetricUnavailable);
   cost.aggregateInstructionCount.knowledge = ScheduleCostKnowledge::Known;
   cost.aggregateInstructionCount.value = std::numeric_limits<uint64_t>::max();
-  ScheduleEstimatePolicy overflowPolicy = unitCostPolicy();
+  SearchCostPolicy overflowPolicy = unitCostPolicy();
   overflowPolicy.instructionFixedPicosecondsEstimate = 2;
   auto overflowCohort = *SearchCostCohort::create(overflowPolicy);
-  EXPECT_EQ(
-      std::get<UnknownSearchObjective>(
-          deriveSearchObjective(cost, overflowCohort))
-          .reason,
-      SearchObjectiveUnknownReason::ArithmeticOverflow);
+  EXPECT_EQ(std::get<UnknownSearchObjective>(
+                deriveSearchObjective(cost, overflowCohort))
+                .reason,
+            SearchObjectiveUnknownReason::ArithmeticOverflow);
 
   ActualResultController controller = makeController(1, *cohort);
   StructuralCandidateKey key = makeKey(0);
@@ -217,10 +187,8 @@ TEST(ActualResultControllerTest,
   equalDurations.nocPicoseconds = 4;
   SearchResourceDurations worseDurations = equalDurations;
   worseDurations.instructionControlPicoseconds = 2;
-  SearchLowerBound equal{
-      key, KnownSearchObjective{equalDurations, *cohort}};
-  SearchLowerBound worse{
-      key, KnownSearchObjective{worseDurations, *cohort}};
+  SearchLowerBound equal{key, KnownSearchObjective{equalDurations, *cohort}};
+  SearchLowerBound worse{key, KnownSearchObjective{worseDurations, *cohort}};
   SearchLowerBound unknown{
       key, UnknownSearchObjective{SearchObjectiveUnknownReason::NoCohort}};
   EXPECT_FALSE(controller.canPrune(equal));
@@ -334,12 +302,12 @@ TEST(ActualResultControllerTest,
   EXPECT_EQ(proof->causalRoots.front().anchorIndex, 0u);
   EXPECT_EQ(controller.record(sibling, accepted(1)),
             CandidateRecordOutcome::Accepted);
-  FullFeasibilityResult unsupportedResult;
-  unsupportedResult.status = FullFeasibilityStatus::Unsupported;
+  ActualCandidateResult unsupportedResult;
+  unsupportedResult.status = ActualCandidateStatus::Unsupported;
   EXPECT_EQ(controller.record(unsupported, std::move(unsupportedResult)),
             CandidateRecordOutcome::Unsupported);
-  FullFeasibilityResult indeterminateResult;
-  indeterminateResult.status = FullFeasibilityStatus::Indeterminate;
+  ActualCandidateResult indeterminateResult;
+  indeterminateResult.status = ActualCandidateStatus::Indeterminate;
   EXPECT_EQ(controller.record(indeterminate, std::move(indeterminateResult)),
             CandidateRecordOutcome::Indeterminate);
   SearchControllerResult result =
@@ -389,8 +357,8 @@ TEST(ActualResultControllerTest,
   ASSERT_EQ(controller.reserve(first), CandidateReservation::Granted);
   EXPECT_EQ(controller.reserve(first), CandidateReservation::Duplicate);
   EXPECT_EQ(controller.reserve(second), CandidateReservation::Exhausted);
-  FullFeasibilityResult malformedAccepted;
-  malformedAccepted.status = FullFeasibilityStatus::Accepted;
+  ActualCandidateResult malformedAccepted;
+  malformedAccepted.status = ActualCandidateStatus::Accepted;
   CardExecutableCompilationResult compilation;
   compilation.status = CardExecutableCompilationStatus::Accepted;
   malformedAccepted.compilation.emplace(std::move(compilation));
@@ -421,8 +389,8 @@ TEST(ActualResultControllerTest,
   ActualResultController typedBug = makeController(1);
   StructuralCandidateKey bugKey = makeKey(4, 1025);
   ASSERT_EQ(typedBug.reserve(bugKey), CandidateReservation::Granted);
-  FullFeasibilityResult compilerBug;
-  compilerBug.status = FullFeasibilityStatus::CompilerBug;
+  ActualCandidateResult compilerBug;
+  compilerBug.status = ActualCandidateStatus::CompilerBug;
   EXPECT_EQ(typedBug.record(bugKey, std::move(compilerBug)),
             CandidateRecordOutcome::CompilerBug);
   EXPECT_EQ(typedBug.finish(SearchFrontierStatus::Incomplete).coverage,

@@ -10,88 +10,18 @@ add_mlir_conversion_library(WaferCardModuleToTileModules
   MLIRSupport
 )
 
-add_mlir_conversion_library(WaferTensorProgramToCardModule
-  WaferTensorProgramToCardModule/CardModuleAssembly.cpp
-  WaferTensorProgramToCardModule/CardModuleCommon.cpp
-  WaferTensorProgramToCardModule/MappingValidation.cpp
-  WaferTensorProgramToCardModule/SourceValidation.cpp
-  WaferTensorProgramToCardModule/TileEntryMaterialization.cpp
-  WaferTensorProgramToCardModule/WaferTensorProgramToCardModule.cpp
+add_mlir_conversion_library(WaferStructuredTiling
+  StructuredTiling/StructuredTiling.cpp
 
   ADDITIONAL_HEADER_DIRS
-  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/WaferTensorProgramToCardModule
+  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion
 
   LINK_LIBS PUBLIC
-  WaferIR
-  WaferTensorProgramToTileRegion
-  MLIRFuncDialect
-  MLIRIR
-  MLIRSupport
-)
-
-add_mlir_conversion_library(WaferTensorProgramToTileRegion
-  WaferTensorProgramToTileRegion/BidirectionalTiling.cpp
-  WaferTensorProgramToTileRegion/BodyEmitter.cpp
-  WaferTensorProgramToTileRegion/CandidateMaterialization.cpp
-  WaferTensorProgramToTileRegion/CandidateSupport.cpp
-  WaferTensorProgramToTileRegion/CollectiveLowering.cpp
-  WaferTensorProgramToTileRegion/CoupledRegionFunction.cpp
-  WaferTensorProgramToTileRegion/ConfiguredReductionTraversal.cpp
-  WaferTensorProgramToTileRegion/ConfiguredStructuredTraversal.cpp
-  WaferTensorProgramToTileRegion/DependentDataflow.cpp
-  WaferTensorProgramToTileRegion/EdgeDomain.cpp
-  WaferTensorProgramToTileRegion/EdgeFragmentPlanning.cpp
-  WaferTensorProgramToTileRegion/GenericLowering.cpp
-  WaferTensorProgramToTileRegion/NamedComputeLowering.cpp
-  WaferTensorProgramToTileRegion/PartialReductionRegion.cpp
-  WaferTensorProgramToTileRegion/ProducerTileFusion.cpp
-  WaferTensorProgramToTileRegion/ConsumerInputReconstruction.cpp
-  WaferTensorProgramToTileRegion/RootRegionEmitter.cpp
-  WaferTensorProgramToTileRegion/SingleRootTileRegion.cpp
-  WaferTensorProgramToTileRegion/SingleRootRegionFunction.cpp
-  WaferTensorProgramToTileRegion/SelectedEdgeActions.cpp
-  WaferTensorProgramToTileRegion/SelectedEdgeFinalization.cpp
-  WaferTensorProgramToTileRegion/SelectedEdgeMaterialization.cpp
-  WaferTensorProgramToTileRegion/SelectedEdgeMapping.cpp
-  WaferTensorProgramToTileRegion/SelectedPeerMaterialization.cpp
-  WaferTensorProgramToTileRegion/StaticInsertSliceAssembly.cpp
-  WaferTensorProgramToTileRegion/StructuredIterationTile.cpp
-  WaferTensorProgramToTileRegion/TensorControlFlowLowering.cpp
-  WaferTensorProgramToTileRegion/TemporalTileMaterialization.cpp
-  WaferTensorProgramToTileRegion/TemporalRegionTraversal.cpp
-  WaferTensorProgramToTileRegion/TemporalPartialReductionTraversal.cpp
-  WaferTensorProgramToTileRegion/TemporalWaveLoop.cpp
-  WaferTensorProgramToTileRegion/TileMaterialization.cpp
-  WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.cpp
-  WaferTensorProgramToTileRegion/WindowedInsertSlice.cpp
-
-  ADDITIONAL_HEADER_DIRS
-  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/WaferTensorProgramToTileRegion
-
-  DEPENDS
-  WaferPassesIncGen
-
-  LINK_LIBS PUBLIC
-  WaferAnalysis
-  WaferIR
-  MLIRAnalysis
-  MLIRAffineDialect
-  MLIRAffineUtils
-  MLIRArithDialect
-  MLIRBufferizationDialect
-  MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
-  MLIRLinalgUtils
-  MLIRMathDialect
-  MLIRMemRefDialect
-  MLIRPass
-  MLIRSCFDialect
-  MLIRSCFTransforms
   MLIRSupport
   MLIRTensorDialect
-  MLIRTransforms
-  MLIRDialectUtils
+  MLIRTilingInterface
 )
 
 set(LLVM_TARGET_DEFINITIONS WaferTileRegionToInstr/Patterns.td)

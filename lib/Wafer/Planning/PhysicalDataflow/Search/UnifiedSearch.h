@@ -42,7 +42,7 @@ using UnifiedSearchPrefixKey =
 
 struct UnifiedSearchCandidateTrace {
   StructuralCandidateKey key;
-  FullFeasibilityStatus status = FullFeasibilityStatus::CompilerBug;
+  ActualCandidateStatus status = ActualCandidateStatus::CompilerBug;
 
   friend bool operator==(const UnifiedSearchCandidateTrace &lhs,
                          const UnifiedSearchCandidateTrace &rhs) {
@@ -56,6 +56,21 @@ struct UnifiedSearchTrace {
   std::vector<UnifiedSearchPrefixKey> prefixes;
   std::vector<UnifiedSearchCandidateTrace> candidates;
   uint64_t winnerHandoffs = 0;
+};
+
+struct StructuralCandidateEvaluation {
+  ActualCandidateResult result;
+  uint64_t actualizations = 0;
+};
+
+/// Caller-owned synchronous current-IR actualizer. Implementations materialize
+/// and verify one TemporalState in their own transaction; this search core
+/// never owns IR or a complete/shadow materializer.
+class StructuralCandidateEvaluator {
+public:
+  virtual ~StructuralCandidateEvaluator() = default;
+  virtual StructuralCandidateEvaluation
+  evaluate(const TemporalState &state) = 0;
 };
 
 enum class UnifiedSearchResumeStatus : uint8_t {
@@ -84,17 +99,13 @@ struct UnifiedSearchResult {
 
 /// Resumable, deterministic parent-by-parent traversal. The session owns only
 /// typed continuations and controller state; candidate IR lives solely inside
-/// one synchronous Q50.F evaluation.
+/// one synchronous actual evaluation.
 class UnifiedSearchSession {
 public:
-  UnifiedSearchSession(
-      mlir::ModuleOp tensorProgram, PhysicalDataflowPlanningSession &session,
-      const frontend::FrontendProgramVerificationResult &program,
-      const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-      ProgramDataHandoff &programData, const UnifiedSearchOptions &options,
-      unsigned tilePipelineParallelism = 0,
-      bool captureTileDataflowIRTrace = false,
-      UnifiedSearchTrace *trace = nullptr);
+  UnifiedSearchSession(PhysicalDataflowPlanningSession &session,
+                       StructuralCandidateEvaluator &evaluator,
+                       const UnifiedSearchOptions &options,
+                       UnifiedSearchTrace *trace = nullptr);
   ~UnifiedSearchSession();
 
   UnifiedSearchSession(const UnifiedSearchSession &) = delete;
@@ -108,13 +119,9 @@ private:
   std::unique_ptr<Impl> impl;
 };
 
-UnifiedSearchResult runUnifiedSearch(
-    mlir::ModuleOp tensorProgram, PhysicalDataflowPlanningSession &session,
-    const frontend::FrontendProgramVerificationResult &program,
-    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-    ProgramDataHandoff &programData, const UnifiedSearchOptions &options,
-    unsigned tilePipelineParallelism = 0,
-    bool captureTileDataflowIRTrace = false);
+UnifiedSearchResult runUnifiedSearch(PhysicalDataflowPlanningSession &session,
+                                     StructuralCandidateEvaluator &evaluator,
+                                     const UnifiedSearchOptions &options);
 
 } // namespace wafer::compiler::detail
 

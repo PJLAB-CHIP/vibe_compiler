@@ -1,6 +1,7 @@
 add_mlir_library(WaferTransforms
   FrontendVerification.cpp
   Bufferization/BufferizeInstrFunctionBoundaries.cpp
+  Execution/ExecutionStructure.cpp
   Scheduling/RedundantTransferElimination.cpp
   DDR/PlanDDRMemory.cpp
   MemoryPlanning/LifetimeAnalysis.cpp
@@ -35,7 +36,6 @@ add_mlir_library(WaferTransforms
   LINK_LIBS PUBLIC
   WaferAnalysis
   WaferFrontend
-  WaferTensorProgramToTileRegion
   WaferIR
   WaferStableHLOToLinalg
   WaferTarget

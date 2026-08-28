@@ -74,20 +74,18 @@ mlir::FailureOr<llvm::SmallVector<uint32_t, 4>> buildFirstTemporalWaveLoopOrder(
 /// Immutable descriptor of one traversal variable. Offsets, extents,
 /// capability and precedence are derived facts and do not enter TemporalPlan.
 struct TemporalScopeDescriptor {
-  TraversalScopeId id;
+  TemporalScopeId id;
   llvm::SmallVector<int64_t, 4> iterationOffsets;
   llvm::SmallVector<int64_t, 4> iterationExtents;
   llvm::SmallVector<IteratorTilingCapability, 4> iteratorCapabilities;
   llvm::SmallVector<TemporalPrecedenceEdge, 4> precedence;
-  std::optional<TraversalScopeId> parentScope;
 
   friend bool operator==(const TemporalScopeDescriptor &lhs,
                          const TemporalScopeDescriptor &rhs) {
     return lhs.id == rhs.id && lhs.iterationOffsets == rhs.iterationOffsets &&
            lhs.iterationExtents == rhs.iterationExtents &&
            lhs.iteratorCapabilities == rhs.iteratorCapabilities &&
-           lhs.precedence == rhs.precedence &&
-           lhs.parentScope == rhs.parentScope;
+           lhs.precedence == rhs.precedence;
   }
 };
 
@@ -99,7 +97,7 @@ enum class TemporalDomainFailureKind : uint8_t {
 
 struct TemporalDomainFailure {
   TemporalDomainFailureKind kind = TemporalDomainFailureKind::BrokenContract;
-  std::optional<TraversalScopeId> scope;
+  std::optional<TemporalScopeId> scope;
   std::string detail;
 };
 
@@ -163,12 +161,10 @@ public:
   }
 
 private:
-  struct NestedTemporalFacts;
   struct Completion;
 
-  TemporalDomain(std::vector<TemporalScopeDescriptor> scopes,
-                 std::shared_ptr<const NestedTemporalFacts> nestedFacts = {})
-      : scopes(std::move(scopes)), nestedFacts(std::move(nestedFacts)) {}
+  explicit TemporalDomain(std::vector<TemporalScopeDescriptor> scopes)
+      : scopes(std::move(scopes)) {}
 
   static TemporalScopePlan
   getFirstScopePlan(const TemporalScopeDescriptor &scope);
@@ -177,7 +173,6 @@ private:
   Completion completePlan(llvm::ArrayRef<TemporalScopePlan> prefix) const;
 
   std::vector<TemporalScopeDescriptor> scopes;
-  std::shared_ptr<const NestedTemporalFacts> nestedFacts;
 
   friend struct TemporalDomainResult;
   friend TemporalDomainResult
@@ -199,10 +194,8 @@ struct TemporalDomainResult {
 TemporalDomainResult
 buildTemporalDomain(llvm::ArrayRef<TemporalScopeDescriptor> scopes);
 
-/// Derives top-level required/replica scopes and parent-dependent nested
-/// classes from the selected region plan and root work. A reconstruction that
-/// has no composed exact relation is typed unsupported; it is never replaced
-/// by full-producer or bounding-box work.
+/// Derives one free temporal scope for each required or explicit-replica
+/// execution selected by the Region plan. Fusion is deliberately absent.
 TemporalDomainResult
 buildTemporalDomain(const RegionPlan &regions,
                     llvm::ArrayRef<analysis::RootRegionWork> rootWorks);
@@ -216,15 +209,14 @@ buildTemporalAxisWaves(IteratorInterval interval, int64_t tileSize,
 
 /// Produces a refined top-level TemporalPlan prefix after the actual Instr SPM
 /// planner attributed an exact capacity rejection to `affectedRoots`. The
-/// caller re-closes parent-dependent nested classes through the same
-/// TemporalDomain. Refinement halves one largest legal iterator at a time and
+/// caller re-closes the same free domain. Refinement halves one largest legal
+/// iterator at a time and
 /// reads no demand bytes, target capacity, footprint, or packing estimate.
 /// Returns false when every implicated scope is already at its minimum.
 mlir::FailureOr<bool> refineTemporalPlanFromActualSPMFeedback(
     TemporalPlan &temporal, llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
     llvm::ArrayRef<SemanticRootKey> affectedRoots,
-    std::string *failureReason = nullptr,
-    bool preferReductionAxes = false);
+    std::string *failureReason = nullptr, bool preferReductionAxes = false);
 
 } // namespace wafer::compiler::detail
 

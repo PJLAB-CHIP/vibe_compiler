@@ -273,7 +273,9 @@ TEST_F(StructuredBufferRelationsTest,
       {/*structuredNodeId=*/7, /*resultIndex=*/0, copy.getResult()});
   mlir::func::FuncOp function = *module->getOps<mlir::func::FuncOp>().begin();
   wafer::TileRegionOp region = *function.getOps<wafer::TileRegionOp>().begin();
-  ASSERT_TRUE(mlir::succeeded(wafer::convertTileRegionToInstr(region)));
+  wafer::TileRegionToInstrLoweringSession loweringSession(*context);
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::convertTileRegionToInstr(region, loweringSession)));
 
   EXPECT_TRUE(mlir::failed(
       wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
@@ -356,65 +358,6 @@ TEST_F(StructuredBufferRelationsTest,
   listener.notifyOperationReplaced(second.getOperation(), third.getResult());
   EXPECT_EQ(relations.operationResultBuffers.front().buffer, third.getResult());
   EXPECT_TRUE(listener.finalizeAfterRewrite());
-}
-
-TEST_F(StructuredBufferRelationsTest,
-       StrictRemapFailsClosedOnUnmappedRelationAndReportsTheIssue) {
-  mlir::OwningOpRef<mlir::ModuleOp> module = createModule();
-  ASSERT_TRUE(module);
-  wafer::MoveCopyOp copy;
-  module->walk([&](wafer::MoveCopyOp operation) { copy = operation; });
-  ASSERT_TRUE(copy);
-
-  wafer::StructuredMaterializationRelations relations;
-  relations.operationResultBuffers.push_back(
-      {/*structuredNodeId=*/7, /*resultIndex=*/0, copy.getResult()});
-  relations.operandBuffers.push_back(
-      {/*structuredNodeId=*/3, copy.getSource()});
-  relations.outputBuffers.push_back({/*outputIndex=*/1, copy.getResult()});
-
-  // A complete mapping remaps everything and succeeds.
-  mlir::IRMapping completeMapping;
-  completeMapping.map(copy.getResult(), copy.getSource());
-  completeMapping.map(copy.getSource(), copy.getResult());
-  auto complete =
-      wafer::compiler::detail::remapStructuredBufferRelationsComplete(
-          relations, completeMapping);
-  ASSERT_TRUE(mlir::succeeded(complete));
-  EXPECT_EQ(complete->operationResultBuffers.front().buffer, copy.getSource());
-  EXPECT_EQ(complete->operandBuffers.front().buffer, copy.getResult());
-  EXPECT_EQ(complete->outputBuffers.front().buffer, copy.getSource());
-
-  // Any unmapped relation fails the remap and reports the dropped entry.
-  mlir::IRMapping partialMapping;
-  partialMapping.map(copy.getSource(), copy.getResult());
-  wafer::compiler::detail::StructuredRelationRemapIssue issue;
-  auto partial =
-      wafer::compiler::detail::remapStructuredBufferRelationsComplete(
-          relations, partialMapping, &issue);
-  EXPECT_TRUE(mlir::failed(partial));
-  ASSERT_EQ(issue.unmappedResultBuffers.size(), 1u);
-  EXPECT_EQ(issue.unmappedResultBuffers.front().structuredNodeId, 7u);
-  EXPECT_EQ(issue.unmappedResultBuffers.front().resultIndex, 0u);
-  EXPECT_EQ(issue.unmappedOperandBuffers.size(), 0u);
-  ASSERT_EQ(issue.unmappedOutputBuffers.size(), 1u);
-  EXPECT_EQ(issue.unmappedOutputBuffers.front().outputIndex, 1u);
-
-  // Reusing the caller-owned issue for a later successful remap must not
-  // retain stale failure entries from the previous attempt.
-  auto recovered =
-      wafer::compiler::detail::remapStructuredBufferRelationsComplete(
-          relations, completeMapping, &issue);
-  ASSERT_TRUE(mlir::succeeded(recovered));
-  EXPECT_TRUE(issue.empty());
-
-  // The loose remap keeps omitting for one-shot call sites.
-  wafer::StructuredMaterializationRelations loose =
-      wafer::compiler::detail::remapStructuredBufferRelations(relations,
-                                                              partialMapping);
-  EXPECT_TRUE(loose.operationResultBuffers.empty());
-  EXPECT_EQ(loose.operandBuffers.size(), 1u);
-  EXPECT_TRUE(loose.outputBuffers.empty());
 }
 
 TEST_F(StructuredBufferRelationsTest,

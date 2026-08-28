@@ -2,7 +2,6 @@ wafer_require_gtest()
 
 add_executable(WaferUnitTests
   Analysis/CallGraph/DirectCallGraphAnalysisTest.cpp
-  Analysis/ScheduleCost/TheoreticalScheduleCostAnalysisTest.cpp
   Analysis/Scheduling/NCCCompletionAnalysisTest.cpp
   Analysis/PhysicalDataflow/IndexRelationTest.cpp
   Analysis/PhysicalDataflow/ExactDemandTest.cpp
@@ -10,15 +9,11 @@ add_executable(WaferUnitTests
   Analysis/PhysicalDataflow/AttentionDemandIntegrationTest.cpp
   Analysis/PhysicalDataflow/RootRegionWorkAnalysisTest.cpp
   Analysis/ScheduleCost/ScheduleCostAnalysisTest.cpp
-  Analysis/Memory/StaticBufferRangeTest.cpp
   Driver/CompilationOutputTest.cpp
   Driver/CompilationTest.cpp
   TestSupport/CodeGen/CardExecutableTestSupport.cpp
   TestSupport/Planning/SpatialDemandTestSupport.cpp
-  TestSupport/Planning/CanonicalPlanningTestSupport.cpp
   TestSupport/Planning/SpatialPlanReference.cpp
-  Planning/Baseline/CardBaselineCompilationTest.cpp
-  Planning/Baseline/CanonicalBaselinePlanTest.cpp
   CodeGen/Executable/CardExecutableCompilationTest.cpp
   CodeGen/Executable/CardExecutableLoweringTest.cpp
   CodeGen/Executable/SearchRoutingTest.cpp
@@ -31,40 +26,16 @@ add_executable(WaferUnitTests
   Target/Execution/TargetCallExecutionTest.cpp
   CodeGen/Target/TargetIdentityTest.cpp
   Planning/PhysicalDataflow/AttentionSpatialConstraintsTest.cpp
-  Planning/PhysicalDataflow/AttentionProductionClosureTest.cpp
-  Planning/PhysicalDataflow/CanonicalAttentionWorkProjectionTest.cpp
   Planning/PhysicalDataflow/CanonicalSpatialAssignmentTest.cpp
   Planning/PhysicalDataflow/CanonicalRegionPlanTest.cpp
-  Planning/PhysicalDataflow/CanonicalTemporalPlanTest.cpp
   Planning/PhysicalDataflow/CurrentIRLayoutOptimizationTest.cpp
-  Planning/PhysicalDataflow/CanonicalRepresentationPlanTest.cpp
-  Planning/PhysicalDataflow/CanonicalMovementPlanTest.cpp
-  Planning/PhysicalDataflow/CanonicalSerializedExecutionPlanTest.cpp
-  Planning/PhysicalDataflow/CanonicalStoragePlanTest.cpp
-  Planning/PhysicalDataflow/CanonicalSchedulePlanTest.cpp
-  Planning/PhysicalDataflow/CanonicalPlanningCoverageTest.cpp
-  Planning/PhysicalDataflow/EventGraphTest.cpp
-  Planning/PhysicalDataflow/ExecutionStructureDomainTest.cpp
   Planning/PhysicalDataflow/ExecutionStructureMaterializationTest.cpp
-  Planning/PhysicalDataflow/SelectedAttentionDecompositionTest.cpp
-  Planning/PhysicalDataflow/SelectedRegionMaterializationTest.cpp
   Planning/PhysicalDataflow/Search/PlanningSessionTest.cpp
   Planning/PhysicalDataflow/Search/ActualResultControllerTest.cpp
   Planning/PhysicalDataflow/Search/UnifiedSearchTest.cpp
   Planning/PhysicalDataflow/RootWorkDomainTest.cpp
   Planning/PhysicalDataflow/RegionDomainTest.cpp
-  Planning/PhysicalDataflow/MovementDomainTest.cpp
-  Planning/PhysicalDataflow/MovementTransferBuilderTest.cpp
-  Planning/PhysicalDataflow/PhysicalVersionBuilderTest.cpp
-  Planning/PhysicalDataflow/RepresentationDomainTest.cpp
-  Planning/PhysicalDataflow/RepresentationPBQPSolverTest.cpp
-  Planning/PhysicalDataflow/ScheduleDomainTest.cpp
-  Planning/PhysicalDataflow/ScheduleMaterializationTest.cpp
-  Planning/PhysicalDataflow/StructuralReadinessTest.cpp
-  Planning/PhysicalDataflow/StorageDomainTest.cpp
-  Planning/PhysicalDataflow/StorageObjectBuilderTest.cpp
-  Planning/PhysicalDataflow/StorageRequirementsTest.cpp
-  Planning/PhysicalDataflow/StructureSpecificStorageDomainTest.cpp
+  Planning/PhysicalDataflow/ExactPBQPSolverTest.cpp
   Planning/PhysicalDataflow/TemporalDomainTest.cpp
   Planning/PhysicalDataflow/SpatialDomainTest.cpp
   Planning/PhysicalDataflow/SpatialPlanTest.cpp
@@ -73,12 +44,9 @@ add_executable(WaferUnitTests
   Conversion/AttentionNormalizationTest.cpp
   Conversion/StructuredGraphEGraphTest.cpp
   Conversion/StructuredGraphNormalizationTest.cpp
-  Conversion/BidirectionalTilingTest.cpp
+  Conversion/StructuredTilingTest.cpp
   Conversion/RequiredNCCJoinPlacementTest.cpp
-  Conversion/ReciprocalComputeLoweringTest.cpp
-  Conversion/SingleRootTileRegionTest.cpp
   Conversion/WaferCardModuleToTileModulesTest.cpp
-  Conversion/WaferTensorProgramToCardModuleTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
   Dialect/Wafer/TargetTopologyTest.cpp
@@ -130,9 +98,8 @@ target_link_libraries(WaferUnitTests
   WaferRuntime
   WaferStableHLOPipelines
   WaferTileRegionPipelines
-  WaferTensorProgramToTileRegion
+  WaferStructuredTiling
   WaferCardModuleToTileModules
-  WaferTensorProgramToCardModule
   WaferTransforms
   MLIRAsyncDialect
   MLIRArithDialect

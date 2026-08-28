@@ -229,9 +229,9 @@ TEST_F(RegionDomainTest, TwoNodeChainEnumeratesEveryCurrentUseForm) {
   ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
   auto plans = enumerate(*domain);
   ASSERT_TRUE(plans);
-  ASSERT_EQ(plans->size(), 7u);
+  ASSERT_EQ(plans->size(), 4u);
   std::vector<RegionPlan> proposals = domain->getProposals();
-  EXPECT_GE(proposals.size(), 4u);
+  EXPECT_GE(proposals.size(), 3u);
   EXPECT_EQ(std::set<RegionPlan>(proposals.begin(), proposals.end()).size(),
             proposals.size());
   for (const RegionPlan &proposal : proposals) {
@@ -241,10 +241,8 @@ TEST_F(RegionDomainTest, TwoNodeChainEnumeratesEveryCurrentUseForm) {
 
   unsigned singletonExternal = 0;
   unsigned singletonReplica = 0;
-  unsigned storedRequired = 0;
-  unsigned directRequired = 0;
-  unsigned storedReplica = 0;
-  unsigned directReplica = 0;
+  unsigned localRequired = 0;
+  unsigned localReplica = 0;
   for (const RegionPlan &plan : *plans) {
     if (plan.groups.size() == 2) {
       auto localGroup =
@@ -270,20 +268,17 @@ TEST_F(RegionDomainTest, TwoNodeChainEnumeratesEveryCurrentUseForm) {
                  analysis::RootBoundaryKind::StructuredResult;
         }));
     const LocalUseBinding &binding = group.localBindings.front();
-    const bool direct = binding.delivery == LocalUseDelivery::DirectNestedValue;
     if (std::holds_alternative<ExecutionInstanceId>(binding.producer)) {
-      direct ? ++directRequired : ++storedRequired;
+      ++localRequired;
     } else {
       ASSERT_EQ(group.replicas.size(), 1u);
-      direct ? ++directReplica : ++storedReplica;
+      ++localReplica;
     }
   }
   EXPECT_EQ(singletonExternal, 1u);
-  EXPECT_EQ(singletonReplica, 2u);
-  EXPECT_EQ(storedRequired, 1u);
-  EXPECT_EQ(directRequired, 1u);
-  EXPECT_EQ(storedReplica, 1u);
-  EXPECT_EQ(directReplica, 1u);
+  EXPECT_EQ(singletonReplica, 1u);
+  EXPECT_EQ(localRequired, 1u);
+  EXPECT_EQ(localReplica, 1u);
 
   RegionPlan invalid = plans->front();
   invalid.groups.front().mandatoryRoots.push_back(
@@ -328,10 +323,9 @@ TEST_F(RegionDomainTest,
   ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
   auto plans = enumerate(*domain);
   ASSERT_TRUE(plans);
-  ASSERT_EQ(plans->size(), 3u);
+  ASSERT_EQ(plans->size(), 2u);
   unsigned external = 0;
-  unsigned storedReplica = 0;
-  unsigned directReplica = 0;
+  unsigned explicitReplica = 0;
   for (const RegionPlan &plan : *plans) {
     ASSERT_EQ(plan.groups.size(), 2u);
     auto consumer =
@@ -346,15 +340,10 @@ TEST_F(RegionDomainTest,
     }
     ASSERT_EQ(consumer->replicas.size(), 1u);
     ASSERT_EQ(consumer->localBindings.size(), 1u);
-    if (consumer->localBindings.front().delivery ==
-        LocalUseDelivery::DirectNestedValue)
-      ++directReplica;
-    else
-      ++storedReplica;
+    ++explicitReplica;
   }
   EXPECT_EQ(external, 1u);
-  EXPECT_EQ(storedReplica, 1u);
-  EXPECT_EQ(directReplica, 1u);
+  EXPECT_EQ(explicitReplica, 1u);
 }
 
 TEST_F(RegionDomainTest, FanoutIncludesSharedRequiredAndSplitReplicaPlans) {
@@ -393,9 +382,8 @@ module {
         continue;
       if (group.replicas.empty() &&
           llvm::all_of(group.localBindings, [](const LocalUseBinding &binding) {
-            return binding.delivery == LocalUseDelivery::StoredRegionValue &&
-                   std::holds_alternative<ExecutionInstanceId>(
-                       binding.producer);
+            return std::holds_alternative<ExecutionInstanceId>(
+                binding.producer);
           }))
         foundSharedRequired = true;
       if (group.replicas.size() == 2 &&
@@ -510,8 +498,7 @@ module { func.func @main(%x: tensor<2xf16>, %y: tensor<2xf16>)
     auto plans = enumerate(*domain);
     ASSERT_TRUE(plans);
     llvm::SmallVector<uint32_t, 8> labels;
-    const uint64_t independentSuperset =
-        countReferencePlans(*dag, 0, labels);
+    const uint64_t independentSuperset = countReferencePlans(*dag, 0, labels);
     EXPECT_GT(plans->size(), 0u);
     EXPECT_LE(plans->size(), independentSuperset);
     EXPECT_EQ(std::set<RegionPlan>(plans->begin(), plans->end()).size(),
@@ -549,7 +536,7 @@ module {
   ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
   auto plans = enumerate(*domain);
   ASSERT_TRUE(plans);
-  EXPECT_EQ(plans->size(), 7u);
+  EXPECT_EQ(plans->size(), 4u);
   EXPECT_EQ(print(module->getOperation()), before);
 }
 

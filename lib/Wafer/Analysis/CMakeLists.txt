@@ -2,16 +2,13 @@ add_mlir_library(WaferAnalysis
   CallGraph/DirectCallGraphAnalysis.cpp
   PhysicalDataflow/IndexRelation.cpp
   PhysicalDataflow/ExactDemand.cpp
-  PhysicalDataflow/RootRegionWork.cpp
   PhysicalDataflow/PhysicalAccessRelation.cpp
   PhysicalDataflow/PhysicalLayoutRelation.cpp
   PhysicalDataflow/TransferRealizability.cpp
-  ScheduleCost/TheoreticalScheduleCostAnalysis.cpp
   ScheduleCost/ExecutionCost.cpp
   ScheduleCost/DDRHighWater.cpp
   ScheduleCost/SPMHighWater.cpp
   ScheduleCost/ScheduleCostAnalysis.cpp
-  Memory/StaticBufferRange.cpp
   Scheduling/NCCCompletionAnalysis.cpp
   Structured/StructuredDAGAnalysis.cpp
 
