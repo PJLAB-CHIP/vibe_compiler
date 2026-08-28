@@ -2,7 +2,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/CurrentIRLayoutOptimization.h"
 
-#include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
+#include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
 #include "Wafer/IR/WaferDialect.h"
 

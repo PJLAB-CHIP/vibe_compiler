@@ -1,6 +1,6 @@
 //===- WriteExecutablePackage.cpp - Write target modules and package ----===//
 
-#include "Wafer/Analysis/Executable/ExecutableCallClosure.h"
+#include "Wafer/Analysis/Module/ExecutableCallClosure.h"
 #include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
 #include "Wafer/CodeGen/Target/TargetCodeGenInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
@@ -8,7 +8,7 @@
 #include "Wafer/Package/Writer/PackageInternal.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
-#include "Wafer/Analysis/ScheduleCost/ScheduleCostAnalysis.h"
+#include "Wafer/Analysis/Instr/ScheduleCostAnalysis.h"
 #include "Wafer/Driver/CompilationResult.h"
 #include "Wafer/Package/Manifest/PackageManifest.h"
 #include "Wafer/Package/Profile/ProfileInstrumentationModel.h"

@@ -3,7 +3,7 @@
 #include "Wafer/Conversion/StableHLOToLinalg/StructuredGraphNormalization.h"
 
 #include "StructuredGraphEGraph.h"
-#include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
+#include "Wafer/Analysis/Linalg/IndexRelation.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Passes.h"
 

@@ -3,6 +3,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/CanonicalSpatialAssignment.cpp
   Planning/PhysicalDataflow/CanonicalRegionPlan.cpp
   Planning/PhysicalDataflow/CurrentIRLayoutOptimization.cpp
+  Planning/PhysicalDataflow/ExactDemand.cpp
   Planning/PhysicalDataflow/RootRegionWorkAnalysis.cpp
   Planning/PhysicalDataflow/RootWorkDomain.cpp
   Planning/PhysicalDataflow/Search/PlanningProblem.cpp
@@ -16,7 +17,8 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/RegionDomain.cpp
   Planning/PhysicalDataflow/ExactPBQPSolver.cpp
   Planning/PhysicalDataflow/TemporalDomain.cpp
-  Planning/PhysicalDataflow/SemanticRootAnalysis.cpp
+  Planning/PhysicalDataflow/StructuredDemandAnalysis.cpp
+  Planning/PhysicalDataflow/StructuredProgramAnalysis.cpp
   Planning/PhysicalDataflow/SpatialDomain.cpp
   Planning/PhysicalDataflow/SpatialPlan.cpp
   Planning/PhysicalDataflow/StructuredDemandView.cpp

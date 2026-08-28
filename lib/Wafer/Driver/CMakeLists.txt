@@ -3,6 +3,7 @@ set(WAFER_DRIVER_SOURCES
   Driver/CompilationOrchestration.cpp
   Driver/CompilationStages.cpp
   Driver/ProgramDirectoryTransaction.cpp
+  Driver/ProgramResourceVerification.cpp
   Driver/SpmdCompilationBridge.cpp
   Driver/TensorProgramCompilation.cpp
   PARENT_SCOPE)

@@ -3,7 +3,7 @@
 #ifndef WAFER_LIB_CONVERSION_WAFERTILEREGIONTOINSTR_INTERNAL_H
 #define WAFER_LIB_CONVERSION_WAFERTILEREGIONTOINSTR_INTERNAL_H
 
-#include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
+#include "Wafer/Analysis/Linalg/IndexRelation.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/Support/CompileTiming.h"
 

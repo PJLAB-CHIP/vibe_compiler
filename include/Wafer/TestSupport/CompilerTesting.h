@@ -4,7 +4,7 @@
 #ifndef WAFER_TESTSUPPORT_COMPILERTESTING_H
 #define WAFER_TESTSUPPORT_COMPILERTESTING_H
 
-#include "Wafer/Analysis/ScheduleCost/ScheduleCostAnalysis.h"
+#include "Wafer/Analysis/Instr/ScheduleCostAnalysis.h"
 #include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Driver/CompilationResult.h"

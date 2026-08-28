@@ -1,8 +1,8 @@
 //===- StructuredGraphNormalizationTest.cpp -----------------------------===//
 
 #include "Wafer/Conversion/StableHLOToLinalg/StructuredGraphNormalization.h"
-#include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
-#include "Wafer/Analysis/Structured/StructuredDAGAnalysis.h"
+#include "Wafer/Analysis/Linalg/IndexRelation.h"
+#include "Wafer/Analysis/Linalg/StructuredDAGAnalysis.h"
 #include "Wafer/Conversion/StructuredTiling.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"

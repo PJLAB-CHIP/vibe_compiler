@@ -1,7 +1,7 @@
 //===- ComputeLowering.cpp - Tile-region compute lowering --------------===//
 
 #include "Internal.h"
-#include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
+#include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "Wafer/Target/Core/TargetCall.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"

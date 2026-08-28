@@ -3,7 +3,7 @@
 #ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_CANONICALSPATIALASSIGNMENT_H
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_CANONICALSPATIALASSIGNMENT_H
 
-#include "Wafer/Planning/PhysicalDataflow/SemanticRootAnalysis.h"
+#include "Wafer/Analysis/Linalg/SemanticRootAnalysis.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"
 
 #include "mlir/Support/LogicalResult.h"

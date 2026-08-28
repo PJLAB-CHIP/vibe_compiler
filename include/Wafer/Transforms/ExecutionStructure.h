@@ -3,7 +3,7 @@
 #ifndef WAFER_TRANSFORMS_EXECUTIONSTRUCTURE_H
 #define WAFER_TRANSFORMS_EXECUTIONSTRUCTURE_H
 
-#include "Wafer/Analysis/Structured/StructuredMaterializationRelations.h"
+#include "Wafer/Transforms/Tile/StructuredMaterializationRelations.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"

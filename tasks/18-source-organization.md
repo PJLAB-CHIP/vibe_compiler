@@ -60,7 +60,8 @@ Pipeline position:
 
 ### 2.2 第二层按作用IR或真实backend
 
-- `Analysis/{Module,Linalg,Tile,Instr}`按被分析的current anchor/IR分类；跨层事实放在能够完整解释它的最低共同输入层。
+- `Analysis/{ControlFlow,Module,Linalg,Tile,Instr}`按被分析的current anchor/IR分类；`ControlFlow`只保留跨多层IR复用的
+  standard RegionBranch/CFG query，跨层事实放在能够完整解释它的最低共同输入层。
 - `Transforms/{Module,StableHLO,Linalg,Tile,Instr}`按变换开始时的current IR分类；输出名不代替输入边界。
 - `Conversion/{StableHLOToLinalg,TileToInstr,InstrToLLVM}`只保留实际conversion。Tile formation仍保留Linalg/Tensor
   operation，因此是`Transforms/Linalg`中的materialization，不建立虚假的`LinalgToTile` full conversion。
@@ -92,6 +93,7 @@ Wafer/
 │   ├── Instr/
 │   └── Topology/
 ├── Analysis/
+│   ├── ControlFlow/
 │   ├── Module/
 │   ├── Linalg/
 │   ├── Tile/
@@ -172,14 +174,16 @@ Conversion/WaferTileRegionToInstr
 
 Physical-dataflow不能整体塞入CodeGen，也不能继续把analysis、choice和mutation混在一个目录：
 
-- current Linalg/Tensor SSA、IndexRelation、DAG、ExactDemand等只读事实进入`Analysis/Linalg`；
-- Tile membership、current materialization relation和physical relation进入`Analysis/Tile`；
+- current Linalg/Tensor SSA、IndexRelation、DAG、SemanticRoot和choice-independent source relation进入`Analysis/Linalg`；
+- Tile physical access/layout/transfer relation进入`Analysis/Tile`；
 - Instr lifetime、completion、cost和resource analysis进入`Analysis/Instr`；
-- explicit spatial/region/temporal domain、PBQP assignment和search traversal留在`Planning/PhysicalDataflow`，其对象仅在
-  当前planning调用中存活；
+- explicit SpatialAssignment、choice-dependent ExactDemand/RootRegionWork、spatial/region/temporal domain、PBQP assignment和
+  search traversal留在`Planning/PhysicalDataflow`，其对象仅在当前planning调用中存活；
 - closed spatial/region choice到actual TileModule/TileRegion的原子物化进入`Transforms/Linalg/TileFormation`；
 - compact tile/fuse、selected attention lowering、layout/view/movement和execution structure按其真实输入进入
   `Transforms/Linalg`或`Transforms/Tile`；
+- candidate-owned current materialization relation、replacement listener和buffer relation query进入`Transforms/Tile`，由caller-owned
+  transaction传递且不跨IR epoch；
 - completion-closed Instr上的memory、transfer和transport rewrite进入`Transforms/Instr`。
 
 Planning不拥有candidate IR。Driver连接planning session与candidate-owned materializer，accepted owner原样交给下游；失败或

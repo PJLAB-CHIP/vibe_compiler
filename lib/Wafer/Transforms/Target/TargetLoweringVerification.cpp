@@ -3,7 +3,7 @@
 #include "MemoryPlanning/StaticIndexRange.h"
 #include "Target/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
-#include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
+#include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/Core/TargetCall.h"

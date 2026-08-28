@@ -2,8 +2,8 @@
 
 #include "Wafer/CodeGen/Executable/ExecutableLowering.h"
 
-#include "Wafer/Analysis/Executable/ExecutableCallClosure.h"
-#include "Wafer/Analysis/Executable/ProgramResourceVerification.h"
+#include "Wafer/Analysis/Module/ExecutableCallClosure.h"
+#include "Wafer/Driver/ProgramResourceVerification.h"
 #include "Wafer/CodeGen/Executable/BoundedTileExecutor.h"
 #include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"

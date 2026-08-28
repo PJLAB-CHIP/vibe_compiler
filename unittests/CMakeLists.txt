@@ -1,14 +1,14 @@
 wafer_require_gtest()
 
 add_executable(WaferUnitTests
-  Analysis/CallGraph/DirectCallGraphAnalysisTest.cpp
-  Analysis/Scheduling/NCCCompletionAnalysisTest.cpp
-  Analysis/PhysicalDataflow/IndexRelationTest.cpp
-  Analysis/PhysicalDataflow/ExactDemandTest.cpp
-  Analysis/PhysicalDataflow/StructuredDemandAnalysisTest.cpp
-  Analysis/PhysicalDataflow/AttentionDemandIntegrationTest.cpp
-  Analysis/PhysicalDataflow/RootRegionWorkAnalysisTest.cpp
-  Analysis/ScheduleCost/ScheduleCostAnalysisTest.cpp
+  Analysis/Module/DirectCallGraphAnalysisTest.cpp
+  Analysis/Instr/NCCCompletionAnalysisTest.cpp
+  Analysis/Linalg/IndexRelationTest.cpp
+  Planning/PhysicalDataflow/ExactDemandTest.cpp
+  Planning/PhysicalDataflow/StructuredDemandAnalysisTest.cpp
+  Planning/PhysicalDataflow/AttentionDemandIntegrationTest.cpp
+  Planning/PhysicalDataflow/RootRegionWorkAnalysisTest.cpp
+  Analysis/Instr/ScheduleCostAnalysisTest.cpp
   Driver/CompilationOutputTest.cpp
   Driver/CompilationTest.cpp
   TestSupport/CodeGen/ExecutableTestSupport.cpp
@@ -20,7 +20,7 @@ add_executable(WaferUnitTests
   Transforms/Transport/DirectDTETransportTest.cpp
   Program/ProgramTensorComparisonTest.cpp
   CodeGen/Executable/TileMemoryPlanningTest.cpp
-  Analysis/Structured/StructuredBufferRelationsTest.cpp
+  Transforms/Tile/StructuredBufferRelationsTest.cpp
   CodeGen/Target/TargetABIPreparationTest.cpp
   CodeGen/Target/TargetCodeGenTest.cpp
   Target/Execution/TargetCallExecutionTest.cpp
@@ -39,7 +39,7 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/TemporalDomainTest.cpp
   Planning/PhysicalDataflow/SpatialDomainTest.cpp
   Planning/PhysicalDataflow/SpatialPlanTest.cpp
-  Analysis/Executable/ProgramResourceVerificationTest.cpp
+  Driver/ProgramResourceVerificationTest.cpp
   Program/ProgramDataTest.cpp
   Conversion/AttentionNormalizationTest.cpp
   Conversion/StructuredGraphEGraphTest.cpp

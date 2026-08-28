@@ -3,7 +3,7 @@
 #include "Wafer/Transforms/Transport/DirectDTETransport.h"
 
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
-#include "Wafer/Analysis/Executable/ExecutableCallClosure.h"
+#include "Wafer/Analysis/Module/ExecutableCallClosure.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/Core/DirectDTE.h"
 #include "Wafer/Target/Core/TargetMemory.h"

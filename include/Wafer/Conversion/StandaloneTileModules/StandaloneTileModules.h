@@ -3,7 +3,7 @@
 #ifndef WAFER_CONVERSION_STANDALONETILEMODULES_H
 #define WAFER_CONVERSION_STANDALONETILEMODULES_H
 
-#include "Wafer/Analysis/Structured/StructuredMaterializationRelations.h"
+#include "Wafer/Transforms/Tile/StructuredMaterializationRelations.h"
 #include "Wafer/Target/Core/TopologyIds.h"
 
 #include "mlir/IR/BuiltinOps.h"

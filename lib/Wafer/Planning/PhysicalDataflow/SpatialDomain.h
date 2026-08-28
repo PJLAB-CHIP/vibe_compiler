@@ -3,11 +3,11 @@
 #ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SPATIALDOMAIN_H
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SPATIALDOMAIN_H
 
-#include "Wafer/Analysis/PhysicalDataflow/StructuredDemandAnalysis.h"
-#include "Wafer/Analysis/Structured/StructuredDAGAnalysis.h"
+#include "Wafer/Planning/PhysicalDataflow/StructuredDemandAnalysis.h"
+#include "Wafer/Analysis/Linalg/StructuredDAGAnalysis.h"
 #include "Wafer/IR/Topology/TargetTopology.h"
 #include "Wafer/Planning/PhysicalDataflow/AttentionSpatialConstraints.h"
-#include "Wafer/Planning/PhysicalDataflow/SemanticRootAnalysis.h"
+#include "Wafer/Analysis/Linalg/SemanticRootAnalysis.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
 

@@ -3,7 +3,7 @@
 #ifndef WAFER_COMPILER_TILEMEMORYPLANNING_H
 #define WAFER_COMPILER_TILEMEMORYPLANNING_H
 
-#include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
+#include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
 #include "Wafer/Transforms/MemoryPlanning.h"
 

@@ -2,7 +2,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/CanonicalRegionPlan.h"
 
-#include "Wafer/Analysis/PhysicalDataflow/StructuredDemandAnalysis.h"
+#include "Wafer/Planning/PhysicalDataflow/StructuredDemandAnalysis.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSpatialAssignment.h"
 #include "Wafer/Planning/PhysicalDataflow/RootRegionWorkAnalysis.h"

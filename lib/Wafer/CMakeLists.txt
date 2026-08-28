@@ -25,7 +25,6 @@ foreach(_wafer_native_jit_lib IN LISTS WAFER_NATIVE_JIT_LIBS)
 endforeach()
 
 add_mlir_library(WaferCompiler
-  ${WAFER_COMPILATION_ANALYSIS_SOURCES}
   ${WAFER_PLANNING_SOURCES}
   ${WAFER_CODEGEN_SOURCES}
   ${WAFER_DRIVER_SOURCES}

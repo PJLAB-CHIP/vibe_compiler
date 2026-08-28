@@ -3,7 +3,7 @@
 #ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGPROBLEM_H
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGPROBLEM_H
 
-#include "Wafer/Analysis/Structured/StructuredProgramAnalysis.h"
+#include "Wafer/Planning/PhysicalDataflow/StructuredProgramAnalysis.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialDomain.h"
 
 #include "mlir/Support/LogicalResult.h"

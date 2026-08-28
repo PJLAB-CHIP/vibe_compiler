@@ -3,7 +3,7 @@
 #ifndef WAFER_COMPILER_PLANNING_CURRENTIRLAYOUTOPTIMIZATION_H
 #define WAFER_COMPILER_PLANNING_CURRENTIRLAYOUTOPTIMIZATION_H
 
-#include "Wafer/Analysis/Structured/StructuredMaterializationRelations.h"
+#include "Wafer/Transforms/Tile/StructuredMaterializationRelations.h"
 #include "Wafer/Planning/PhysicalDataflow/ExactPBQPSolver.h"
 
 #include "mlir/IR/BuiltinOps.h"

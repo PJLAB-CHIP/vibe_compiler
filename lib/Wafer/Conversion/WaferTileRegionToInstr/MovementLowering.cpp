@@ -2,7 +2,7 @@
 
 #include "Internal.h"
 
-#include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
+#include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 

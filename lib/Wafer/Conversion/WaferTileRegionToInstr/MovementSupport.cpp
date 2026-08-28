@@ -2,8 +2,8 @@
 
 #include "Internal.h"
 
-#include "Wafer/Analysis/PhysicalDataflow/PhysicalAccessRelation.h"
-#include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
+#include "Wafer/Analysis/Tile/PhysicalAccessRelation.h"
+#include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "Wafer/Support/CompileWorkStatistics.h"
 
 #include "mlir/Analysis/FlatLinearValueConstraints.h"

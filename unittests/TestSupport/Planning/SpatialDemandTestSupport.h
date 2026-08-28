@@ -3,7 +3,7 @@
 #ifndef WAFER_UNITTESTS_TESTSUPPORT_PLANNING_SPATIALDEMANDTESTSUPPORT_H
 #define WAFER_UNITTESTS_TESTSUPPORT_PLANNING_SPATIALDEMANDTESTSUPPORT_H
 
-#include "Wafer/Analysis/PhysicalDataflow/StructuredDemandAnalysis.h"
+#include "Wafer/Planning/PhysicalDataflow/StructuredDemandAnalysis.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
 
 #include "mlir/Support/LogicalResult.h"

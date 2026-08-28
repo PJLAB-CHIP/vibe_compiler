@@ -1,7 +1,7 @@
 //===- TileMemoryPlanning.cpp - Tile memory planning ----===//
 
 #include "Wafer/CodeGen/Executable/TileMemoryPlanning.h"
-#include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
+#include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
 #include "Wafer/Support/CompileTiming.h"
 

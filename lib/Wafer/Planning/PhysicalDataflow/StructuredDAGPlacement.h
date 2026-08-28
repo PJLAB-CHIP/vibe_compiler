@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "Wafer/Analysis/Structured/StructuredDAGAnalysis.h"
+#include "Wafer/Analysis/Linalg/StructuredDAGAnalysis.h"
 
 #include "Wafer/IR/Topology/TargetTopology.h"
 

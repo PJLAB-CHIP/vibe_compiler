@@ -2,7 +2,7 @@
 
 #include "Wafer/CodeGen/Target/TargetCodeGenInternal.h"
 
-#include "Wafer/Analysis/Executable/ExecutableCallClosure.h"
+#include "Wafer/Analysis/Module/ExecutableCallClosure.h"
 
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"

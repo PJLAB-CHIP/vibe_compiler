@@ -50,8 +50,10 @@ Pipeline position:
 | `IR/Program/ModuleOps.*` | `IR/Tile/TileModuleOps.*` | 只定义`wafer.tile.module`；同步ODS include、generated dependency、实现和Dialect tests |
 | `IR/Resource/SPMOps.*` | `IR/Tile/StorageOps.*` | `tile.load/store`是Tile movement；effect resource仍由Wafer interface集中定义 |
 | `IR/Target` | `IR/Topology` | 只移动typed topology/mesh IR；pure C++ ID/fact留在Target |
-| `Analysis/{Structured,PhysicalDataflow,ScheduleCost,Scheduling,Executable,CallGraph,ControlFlow}` | `Analysis/{Module,Linalg,Tile,Instr}` | 逐API按实际anchor拆分；analysis不得依赖Conversion/Planning |
-| `Planning/PhysicalDataflow` | 同名收窄owner | 只保留choice/domain/PBQP/search；IR analysis、mutation和future/shadow事实分别迁出或删除 |
+| `Analysis/ControlFlow` | 同名generic analysis owner | 只保留跨IR复用的standard RegionBranch/CFG query；不扩成generic execution owner |
+| `Analysis/{Structured,PhysicalDataflow,ScheduleCost,Scheduling,Executable,CallGraph}` | `Analysis/{Module,Linalg,Tile,Instr}` | IndexRelation/DAG/SemanticRoot等choice-independent事实按anchor拆分；analysis不得依赖Conversion/Planning |
+| `Planning/PhysicalDataflow`及choice-dependent demand文件 | 同名收窄owner | 保留SpatialAssignment、ExactDemand/RootRegionWork、choice/domain/PBQP/search；actual IR、mutation和future/shadow事实迁出或删除 |
+| mutable structured materialization/buffer relations | `Transforms/Tile` | caller-owned current-IR transaction bookkeeping，不由Analysis拥有且不跨IR epoch |
 | `Conversion/StructuredTiling` | `Transforms/Linalg` | interface-driven tiling是同层变换helper，不是conversion |
 | structural Tile materialization | `Transforms/Linalg/TileFormation` | closed choice立即产生actual TileModule/TileRegion；baseline/search调用同一atomic transform但各有owner |
 | `Transforms/{Execution,Bufferization,SPM,DDR,MemoryPlanning,Scheduling,Transport}` | `Transforms/{Tile,Instr}` | 按变换输入IR拆分；不保留generic execution/scheduling/memory owner |

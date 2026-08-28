@@ -3,7 +3,7 @@
 #ifndef WAFER_PLANNING_PHYSICALDATAFLOW_REGIONPLAN_H
 #define WAFER_PLANNING_PHYSICALDATAFLOW_REGIONPLAN_H
 
-#include "Wafer/Analysis/PhysicalDataflow/RootRegionWork.h"
+#include "Wafer/Planning/PhysicalDataflow/RootRegionWork.h"
 
 #include "llvm/ADT/SmallVector.h"
 

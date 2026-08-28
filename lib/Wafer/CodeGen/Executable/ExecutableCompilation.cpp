@@ -1,8 +1,8 @@
 //===- ExecutableCompilation.cpp - Policy-free executable seam ------===//
 
 #include "Wafer/CodeGen/Executable/ExecutableCompilation.h"
-#include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
-#include "Wafer/Analysis/Structured/StructuredNodeUseIndex.h"
+#include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
+#include "Wafer/Transforms/Tile/StructuredNodeUseIndex.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/IR/Topology/TargetTopology.h"
 

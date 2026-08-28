@@ -4,7 +4,7 @@
 #ifndef WAFER_COMPILER_EXECUTABLELOWERING_H
 #define WAFER_COMPILER_EXECUTABLELOWERING_H
 
-#include "Wafer/Analysis/ScheduleCost/ScheduleCostAnalysis.h"
+#include "Wafer/Analysis/Instr/ScheduleCostAnalysis.h"
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Frontend/Program/Program.h"
 

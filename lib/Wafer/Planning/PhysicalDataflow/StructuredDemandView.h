@@ -3,9 +3,9 @@
 #ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_STRUCTUREDDEMANDVIEW_H
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_STRUCTUREDDEMANDVIEW_H
 
-#include "Wafer/Analysis/PhysicalDataflow/ExactDemand.h"
-#include "Wafer/Analysis/Structured/StructuredDAGAnalysis.h"
-#include "Wafer/Planning/PhysicalDataflow/SemanticRootAnalysis.h"
+#include "Wafer/Planning/PhysicalDataflow/ExactDemand.h"
+#include "Wafer/Analysis/Linalg/StructuredDAGAnalysis.h"
+#include "Wafer/Analysis/Linalg/SemanticRootAnalysis.h"
 
 #include "mlir/Support/LogicalResult.h"
 

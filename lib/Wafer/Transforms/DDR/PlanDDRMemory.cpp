@@ -8,7 +8,7 @@
 #include "MemoryPlanning/StaticMemoryPacking.h"
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 
-#include "Wafer/Analysis/CallGraph/DirectCallGraphAnalysis.h"
+#include "Wafer/Analysis/Module/DirectCallGraphAnalysis.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Support/CompileWorkStatistics.h"

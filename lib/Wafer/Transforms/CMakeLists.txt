@@ -66,6 +66,8 @@ add_mlir_library(WaferTransforms
 )
 
 set(WAFER_COMPILATION_TRANSFORM_SOURCES
+  Transforms/Tile/StructuredBufferRelations.cpp
+  Transforms/Tile/StructuredNodeUseIndex.cpp
   Transforms/Transport/DirectDTETransport.cpp
   PARENT_SCOPE)
 

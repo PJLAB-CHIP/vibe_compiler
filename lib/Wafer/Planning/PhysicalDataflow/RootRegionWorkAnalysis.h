@@ -3,7 +3,7 @@
 #ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_ROOTREGIONWORKANALYSIS_H
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_ROOTREGIONWORKANALYSIS_H
 
-#include "Wafer/Analysis/PhysicalDataflow/RootRegionWork.h"
+#include "Wafer/Planning/PhysicalDataflow/RootRegionWork.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDemandView.h"
 
 #include "mlir/Support/LogicalResult.h"
