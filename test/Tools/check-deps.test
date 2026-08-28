@@ -1,5 +1,5 @@
-# RUN: %python %wafer_src_root/tools/check_deps.py --versions-only | FileCheck %s --check-prefix=VERSIONS
-# RUN: %python %wafer_src_root/tools/check_deps.py | FileCheck %s --check-prefix=LAYERS
+# RUN: %python %wafer_src_root/utils/checks/check_deps.py --versions-only | FileCheck %s --check-prefix=VERSIONS
+# RUN: %python %wafer_src_root/utils/checks/check_deps.py | FileCheck %s --check-prefix=LAYERS
 
 # VERSIONS: LLVM/MLIR 20.0.0git f0b3287297aeeddcf030e3c1b08d05a69ad465aa
 # VERSIONS: StableHLO v1.7.1 e51fd95e5b2c28861f22dc9d609fb2a7f002124e

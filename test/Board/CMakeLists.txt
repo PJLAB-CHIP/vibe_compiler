@@ -9,42 +9,42 @@ function(wafer_add_board_python_contract test_name script)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/${script}
   )
   set_tests_properties(${test_name} PROPERTIES
-    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}"
+    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Support:${CMAKE_CURRENT_SOURCE_DIR}/Cases"
     LABELS "board;host;calibration;contract"
     TIMEOUT 60
   )
 endfunction()
 
 set(_wafer_board_python_contracts
-  wafer-cache-coherence-catalog=wafer_cache_coherence_calibration_catalog_test.py
-  wafer-collective-algorithm-source-contract=wafer_collective_hardware_characterization_catalog_test.py
-  wafer-collective-traffic-source-contract=wafer_collective_traffic_behavior_catalog_test.py
-  wafer-ct-convert-catalog=wafer_ct_convert_calibration_catalog_test.py
-  wafer-ct-opcode-disposition-catalog=wafer_ct_opcode_disposition_catalog_test.py
-  wafer-ct-reduce-pool-capability-catalog=wafer_ct_reduce_pool_capability_catalog_test.py
-  wafer-ct-vector-catalog=wafer_ct_vector_calibration_catalog_test.py
-  wafer-ct-vuvloop-catalog=wafer_ct_vuvloop_semantics_catalog_test.py
-  wafer-datamove-catalog=wafer_datamove_calibration_catalog_test.py
-  wafer-datamove-extended-catalog=wafer_datamove_extended_calibration_catalog_test.py
-  wafer-direct-dte-evidence-contract=wafer_direct_dte_board_evidence_test.py
-  wafer-engine-pipeline-catalog=wafer_engine_pipeline_characterization_catalog_test.py
-  wafer-complete-tile-add-profile-contract=wafer_board_complete_tile_add_profile_test.py
-  wafer-complete-tile-barrier-contract=wafer_complete_tile_barrier_contract_test.py
-  wafer-hardware-calibration-runner-contract=wafer_hardware_calibration_batch_runner_test.py
-  wafer-hardware-calibration-matrix=wafer_hardware_calibration_matrix_test.py
-  wafer-instruction-family-catalog=wafer_instruction_family_catalog_test.py
-  wafer-memory-descriptor-catalog=wafer_memory_descriptor_calibration_catalog_test.py
-  wafer-ncc-protocol-contract=wafer_ncc_probe_protocol_test.py
-  wafer-ne-catalog=wafer_ne_calibration_catalog_test.py
-  wafer-ne-tail-throughput-catalog=wafer_ne_tail_throughput_catalog_test.py
-  wafer-calibration-inventory=wafer_pending_hardware_calibration_inventory_test.py
-  wafer-spm-catalog=wafer_spm_calibration_catalog_test.py
-  wafer-spm-cross-tile-contract=wafer_spm_cross_tile_conflict_probe_contract_test.py
-  wafer-spm-sustained-contract=wafer_spm_sustained_conflict_probe_contract_test.py
-  wafer-transport-pmu-catalog=wafer_transport_pmu_calibration_catalog_test.py
-  wafer-unrepresentable-hardware-catalog=wafer_unrepresentable_hardware_behavior_catalog_test.py
-  wafer-worker-memory-contention-contract=wafer_worker_memory_contention_characterization_test.py
-  wafer-worker-placement-contract=wafer_worker_placement_characterization_test.py
+  wafer-cache-coherence-catalog=Cases/wafer_cache_coherence_calibration_catalog_test.py
+  wafer-collective-algorithm-source-contract=Cases/wafer_collective_hardware_characterization_catalog_test.py
+  wafer-collective-traffic-source-contract=Cases/wafer_collective_traffic_behavior_catalog_test.py
+  wafer-ct-convert-catalog=Cases/wafer_ct_convert_calibration_catalog_test.py
+  wafer-ct-opcode-disposition-catalog=Cases/wafer_ct_opcode_disposition_catalog_test.py
+  wafer-ct-reduce-pool-capability-catalog=Cases/wafer_ct_reduce_pool_capability_catalog_test.py
+  wafer-ct-vector-catalog=Cases/wafer_ct_vector_calibration_catalog_test.py
+  wafer-ct-vuvloop-catalog=Cases/wafer_ct_vuvloop_semantics_catalog_test.py
+  wafer-datamove-catalog=Cases/wafer_datamove_calibration_catalog_test.py
+  wafer-datamove-extended-catalog=Cases/wafer_datamove_extended_calibration_catalog_test.py
+  wafer-direct-dte-evidence-contract=Cases/wafer_direct_dte_board_evidence_test.py
+  wafer-engine-pipeline-catalog=Cases/wafer_engine_pipeline_characterization_catalog_test.py
+  wafer-complete-tile-add-profile-contract=Cases/wafer_board_complete_tile_add_profile_test.py
+  wafer-complete-tile-barrier-contract=Cases/wafer_complete_tile_barrier_contract_test.py
+  wafer-hardware-calibration-runner-contract=Cases/wafer_hardware_calibration_batch_runner_test.py
+  wafer-hardware-calibration-matrix=Cases/wafer_hardware_calibration_matrix_test.py
+  wafer-instruction-family-catalog=Cases/wafer_instruction_family_catalog_test.py
+  wafer-memory-descriptor-catalog=Cases/wafer_memory_descriptor_calibration_catalog_test.py
+  wafer-ncc-protocol-contract=Cases/wafer_ncc_probe_protocol_test.py
+  wafer-ne-catalog=Cases/wafer_ne_calibration_catalog_test.py
+  wafer-ne-tail-throughput-catalog=Cases/wafer_ne_tail_throughput_catalog_test.py
+  wafer-calibration-inventory=Cases/wafer_pending_hardware_calibration_inventory_test.py
+  wafer-spm-catalog=Cases/wafer_spm_calibration_catalog_test.py
+  wafer-spm-cross-tile-contract=Cases/wafer_spm_cross_tile_conflict_probe_contract_test.py
+  wafer-spm-sustained-contract=Cases/wafer_spm_sustained_conflict_probe_contract_test.py
+  wafer-transport-pmu-catalog=Cases/wafer_transport_pmu_calibration_catalog_test.py
+  wafer-unrepresentable-hardware-catalog=Cases/wafer_unrepresentable_hardware_behavior_catalog_test.py
+  wafer-worker-memory-contention-contract=Cases/wafer_worker_memory_contention_characterization_test.py
+  wafer-worker-placement-contract=Cases/wafer_worker_placement_characterization_test.py
 )
 foreach(_wafer_board_contract IN LISTS _wafer_board_python_contracts)
   string(REPLACE "=" ";" _wafer_board_contract_fields
@@ -56,7 +56,7 @@ foreach(_wafer_board_contract IN LISTS _wafer_board_python_contracts)
 endforeach()
 
 add_executable(wafer-ncc-probe-plan-test
-  wafer_ncc_probe_plan_test.c
+  Cases/wafer_ncc_probe_plan_test.c
   Inputs/wafer_ncc_probe_plan.c)
 target_include_directories(wafer-ncc-probe-plan-test PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/Inputs)
@@ -67,7 +67,7 @@ set_tests_properties(wafer-ncc-probe-plan-contract PROPERTIES
   TIMEOUT 30)
 
 add_executable(wafer-ncc-hazard-relation-test
-  wafer_ncc_hazard_relation_test.c
+  Cases/wafer_ncc_hazard_relation_test.c
   Inputs/wafer_ncc_hazard_relation.c)
 target_include_directories(wafer-ncc-hazard-relation-test PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/Inputs)
@@ -96,7 +96,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
           ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_LIBRARY_SHA256}
     )
     set_tests_properties(${test_name} PROPERTIES
-      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR};TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_EXECUTE_HARDWARE_TESTS=1"
+      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Support:${CMAKE_CURRENT_SOURCE_DIR}/Cases;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_EXECUTE_HARDWARE_TESTS=1"
       LABELS "board;hardware;calibration;current-interface;pending"
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77
@@ -120,7 +120,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
           ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_LIBRARY_SHA256}
     )
     set_tests_properties(${test_name} PROPERTIES
-      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR};TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_EXECUTE_HARDWARE_TESTS=1"
+      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Support:${CMAKE_CURRENT_SOURCE_DIR}/Cases;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_EXECUTE_HARDWARE_TESTS=1"
       LABELS "board;hardware;calibration;current-interface;pending"
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77
@@ -130,41 +130,41 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
 
   wafer_add_current_board_probe(
     wafer-board-dte-ncc-execution-probe
-    wafer_board_dte_ncc_execution_probe_test.py
+    Cases/wafer_board_dte_ncc_execution_probe_test.py
     --mode 1 --payload-bytes 16 --total-timeout-seconds 420)
   wafer_add_current_board_probe(
     wafer-board-complete-tile-barrier-probe
-    wafer_board_complete_tile_barrier_probe_test.py --participants 16)
+    Support/wafer_board_complete_tile_barrier_probe_runner.py --participants 16)
   wafer_add_current_source_board_case(
     wafer-board-complete-tile-add
-    wafer_board_complete_tile_add_test.py --repeat 2)
+    Support/wafer_board_complete_tile_add_runner.py --repeat 2)
   wafer_add_current_source_board_case(
     wafer-board-complete-tile-add-profile
-    wafer_board_complete_tile_add_test.py --profile --repeat 1)
+    Support/wafer_board_complete_tile_add_runner.py --profile --repeat 1)
   wafer_add_current_source_board_case(
     wafer-board-program-data-add
-    wafer_board_single_op_add_test.py --repeat 2)
+    Cases/wafer_board_single_op_add_test.py --repeat 2)
   wafer_add_current_board_probe(
     wafer-board-ddr-tile-offset-probe
-    wafer_board_ddr_tile_offset_probe_test.py)
+    Support/wafer_board_ddr_tile_offset_probe_runner.py)
   wafer_add_current_board_probe(
     wafer-board-worker-placement-probe
-    wafer_board_worker_placement_characterization_test.py
+    Support/wafer_board_worker_placement_characterization_runner.py
     --group worker-outstanding-ct-w0)
   wafer_add_current_board_probe(
     wafer-board-spm-cross-tile-conflict-probe
-    wafer_board_spm_cross_tile_conflict_probe_test.py
+    Support/wafer_board_spm_cross_tile_conflict_probe_runner.py
     --case spm-cross-tile-ct-rdma-translation-0-phase-0-bytes-256-a-b)
   wafer_add_current_board_probe(
     wafer-board-ne-tail-throughput-probe
-    wafer_board_ne_tail_throughput_test.py --group single-ne-tail)
+    Support/wafer_board_ne_tail_throughput_runner.py --group single-ne-tail)
   wafer_add_current_board_probe(
     wafer-board-engine-pipeline-characterization-probe
-    wafer_board_engine_pipeline_characterization_test.py
+    Support/wafer_board_engine_pipeline_characterization_runner.py
     --mode board --cell single/ct/small)
   wafer_add_current_board_probe(
     wafer-board-ddr-active-tile-contention-probe
-    wafer_worker_memory_contention_characterization_driver.py
+    Support/wafer_worker_memory_contention_characterization_driver.py
     --mode board
     --case ddr-contention-rdma-only-4k-contiguous-active-1)
 endif()

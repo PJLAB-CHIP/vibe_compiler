@@ -37,7 +37,9 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
     def make_package(self, root: pathlib.Path) -> pathlib.Path:
         package = root / "package"
         (package / "modules").mkdir(parents=True)
+        (package / "data").mkdir()
         (package / "modules" / "tile_00000.so").touch()
+        (package / "data" / "program-data.bin").touch()
         shutil.copyfile(self.manifest, package / "manifest.json")
         return package
 
@@ -80,7 +82,7 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
             )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
-            "runtime environment resource capacity is insufficient",
+            "runtime environment invocation capacity is insufficient",
             result.stderr,
         )
 

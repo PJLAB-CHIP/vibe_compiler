@@ -1,7 +1,7 @@
 # Managed functional-numeric dependency identity and imported targets.
 #
 # This module is intentionally offline.  The only producer is
-# tools/bootstrap_deps.py --numeric-model-deps; configure merely validates the
+# utils/deps/bootstrap_deps.py --numeric-model-deps; configure merely validates the
 # complete record and imports the exact recorded files.
 
 function(_wafer_numeric_file_path output_variable file_name)
@@ -23,7 +23,7 @@ function(wafer_enable_numeric_model_deps)
      NOT IS_DIRECTORY "${WAFER_NUMERIC_MODEL_DEPS_ROOT}")
     message(FATAL_ERROR
       "WAFER_ENABLE_NUMERIC_MODEL_DEPS=ON requires a managed dependency root. "
-      "Run tools/bootstrap_deps.py --numeric-model-deps or set "
+      "Run utils/deps/bootstrap_deps.py --numeric-model-deps or set "
       "WAFER_NUMERIC_MODEL_DEPS_ROOT explicitly.")
   endif()
   if(NOT EXISTS "${WAFER_NUMERIC_MODEL_DEPS_RECORD}" OR
@@ -31,12 +31,12 @@ function(wafer_enable_numeric_model_deps)
     message(FATAL_ERROR
       "WAFER_ENABLE_NUMERIC_MODEL_DEPS=ON requires the completed managed "
       "numeric-model conformance record. Run "
-      "tools/bootstrap_deps.py --numeric-model-deps.")
+      "utils/deps/bootstrap_deps.py --numeric-model-deps.")
   endif()
 
   execute_process(
     COMMAND "${Python3_EXECUTABLE}"
-            "${CMAKE_SOURCE_DIR}/tools/check_deps.py"
+            "${CMAKE_SOURCE_DIR}/utils/checks/check_deps.py"
             --numeric-only
             --numeric-root "${WAFER_NUMERIC_MODEL_DEPS_ROOT}"
             --numeric-record "${WAFER_NUMERIC_MODEL_DEPS_RECORD}"

@@ -1,5 +1,5 @@
 # Managed oneDNN identity and imported target for WaferOneDNNBackend.
-# This module is deliberately offline; tools/bootstrap_deps.py is the only
+# This module is deliberately offline; utils/deps/bootstrap_deps.py is the only
 # supported source/build producer.
 
 function(wafer_enable_onednn_backend)
@@ -13,7 +13,7 @@ function(wafer_enable_onednn_backend)
      NOT IS_DIRECTORY "${WAFER_ONEDNN_DEPS_ROOT}")
     message(FATAL_ERROR
       "WAFER_ENABLE_TARGET_NUMERIC_BACKEND=ON requires a managed oneDNN root. "
-      "Run tools/bootstrap_deps.py --onednn-deps or set "
+      "Run utils/deps/bootstrap_deps.py --onednn-deps or set "
       "WAFER_ONEDNN_DEPS_ROOT explicitly.")
   endif()
   if(NOT EXISTS "${WAFER_ONEDNN_DEPS_RECORD}" OR
@@ -21,12 +21,12 @@ function(wafer_enable_onednn_backend)
     message(FATAL_ERROR
       "WAFER_ENABLE_TARGET_NUMERIC_BACKEND=ON requires the completed managed "
       "oneDNN dependency record. Run "
-      "tools/bootstrap_deps.py --onednn-deps.")
+      "utils/deps/bootstrap_deps.py --onednn-deps.")
   endif()
 
   execute_process(
     COMMAND "${Python3_EXECUTABLE}"
-            "${CMAKE_SOURCE_DIR}/tools/onednn_deps.py"
+            "${CMAKE_SOURCE_DIR}/utils/deps/onednn_deps.py"
             --root "${WAFER_ONEDNN_DEPS_ROOT}"
             --record "${WAFER_ONEDNN_DEPS_RECORD}"
             --emit-cmake-snapshot

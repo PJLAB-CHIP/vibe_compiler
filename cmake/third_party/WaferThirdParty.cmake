@@ -1,7 +1,7 @@
 # Central third-party dependency discovery for the Wafer compiler.
 
 set(WAFER_DEPS_ROOT "${CMAKE_SOURCE_DIR}/third_party" CACHE PATH
-  "Root for pinned third-party dependencies fetched by tools/bootstrap_deps.py")
+  "Root for pinned third-party dependencies fetched by utils/deps/bootstrap_deps.py")
 set(WAFER_LLVM_SOURCE_DIR "${WAFER_DEPS_ROOT}/llvm-project" CACHE PATH
   "Pinned llvm-project checkout matching the OpenXLA/XLA workspace")
 set(WAFER_LLVM_INSTALL_DIR "${CMAKE_SOURCE_DIR}/build/third_party/llvm-install/${WAFER_LLVM_COMMIT}" CACHE PATH
@@ -36,19 +36,19 @@ option(WAFER_FETCH_GTEST
 
 set(WAFER_NUMERIC_MODEL_DEPS_ROOT
   "${WAFER_DEPS_ROOT}/numeric-model" CACHE PATH
-  "Root produced by tools/bootstrap_deps.py --numeric-model-deps")
+  "Root produced by utils/deps/bootstrap_deps.py --numeric-model-deps")
 set(WAFER_NUMERIC_MODEL_DEPS_RECORD
   "${WAFER_NUMERIC_MODEL_DEPS_ROOT}/numeric-model-deps.json" CACHE FILEPATH
   "Completed managed numeric-model dependency conformance record")
 set(WAFER_ONEDNN_DEPS_ROOT
   "${WAFER_DEPS_ROOT}/onednn" CACHE PATH
-  "Root produced by tools/bootstrap_deps.py --onednn-deps")
+  "Root produced by utils/deps/bootstrap_deps.py --onednn-deps")
 set(WAFER_ONEDNN_DEPS_RECORD
   "${WAFER_ONEDNN_DEPS_ROOT}/onednn-deps.json" CACHE FILEPATH
   "Completed managed oneDNN dependency conformance record")
 set(WAFER_SYSTEMC_MODEL_DEPS_ROOT
   "${WAFER_DEPS_ROOT}/systemc-model" CACHE PATH
-  "Root produced by tools/bootstrap_deps.py --systemc-model-deps")
+  "Root produced by utils/deps/bootstrap_deps.py --systemc-model-deps")
 set(WAFER_SYSTEMC_MODEL_DEPS_RECORD
   "${WAFER_SYSTEMC_MODEL_DEPS_ROOT}/systemc-model-deps.json" CACHE FILEPATH
   "Completed managed SystemC-model dependency conformance record")
@@ -77,7 +77,7 @@ if(WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS)
   if(NOT EXISTS "${WAFER_PYTORCH_XLA_SOURCE_DIR}/WORKSPACE")
     message(FATAL_ERROR
       "PyTorch/XLA source checkout is enabled but missing. "
-      "Run tools/bootstrap_deps.py --importer-sources or set WAFER_PYTORCH_XLA_SOURCE_DIR.")
+      "Run utils/deps/bootstrap_deps.py --importer-sources or set WAFER_PYTORCH_XLA_SOURCE_DIR.")
   endif()
   if(EXISTS "${WAFER_IMPORTER_PYTHON_EXECUTABLE}")
     execute_process(
@@ -93,7 +93,7 @@ if(WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS)
     else()
       message(FATAL_ERROR
         "WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS=ON requires an importer Python "
-        "that can import source-built torch_xla. Run tools/build_pytorch_xla_runtime.py "
+        "that can import source-built torch_xla. Run utils/deps/build_pytorch_xla_runtime.py "
         "with WAFER_IMPORTER_PYTHON_EXECUTABLE pointing at that environment.")
     endif()
   else()
@@ -182,7 +182,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS OR WAFER_ENABLE_SPMD_PARTITIONER_DEPS)
   if(NOT EXISTS "${WAFER_STABLEHLO_SOURCE_DIR}" OR NOT EXISTS "${WAFER_SHARDY_SOURCE_DIR}")
     message(FATAL_ERROR
       "StableHLO/Shardy sources are enabled but missing. "
-      "Run tools/bootstrap_deps.py --importer-sources or set WAFER_STABLEHLO_SOURCE_DIR/WAFER_SHARDY_SOURCE_DIR.")
+      "Run utils/deps/bootstrap_deps.py --importer-sources or set WAFER_STABLEHLO_SOURCE_DIR/WAFER_SHARDY_SOURCE_DIR.")
   endif()
 
   set(STABLEHLO_BUILD_EMBEDDED ON CACHE BOOL "Build StableHLO embedded in Wafer" FORCE)
@@ -318,7 +318,7 @@ function(wafer_add_structured_egraph)
      NOT EXISTS "${WAFER_EGG_SOURCE_DIR}/LICENSE")
     message(FATAL_ERROR
       "The pinned egg source is missing at ${WAFER_EGG_SOURCE_DIR}. "
-      "Run tools/bootstrap_deps.py --egraph-sources.")
+      "Run utils/deps/bootstrap_deps.py --egraph-sources.")
   endif()
   if(NOT EXISTS "${_wafer_egraph_manifest}" OR
      NOT EXISTS "${_wafer_egraph_lock}")
@@ -327,7 +327,7 @@ function(wafer_add_structured_egraph)
   if(NOT EXISTS "${_wafer_egraph_vendor_record}")
     message(FATAL_ERROR
       "Locked Rust vendor sources are missing at ${WAFER_RUST_VENDOR_DIR}. "
-      "Run tools/bootstrap_deps.py --egraph-sources.")
+      "Run utils/deps/bootstrap_deps.py --egraph-sources.")
   endif()
 
   file(SHA256 "${_wafer_egraph_lock}" _wafer_egraph_lock_sha256)
@@ -344,7 +344,7 @@ function(wafer_add_structured_egraph)
      NOT _wafer_egraph_vendor_lock STREQUAL _wafer_egraph_lock_sha256)
     message(FATAL_ERROR
       "The Rust vendor source does not match the pinned egg/Cargo lock. "
-      "Run tools/bootstrap_deps.py --egraph-sources.")
+      "Run utils/deps/bootstrap_deps.py --egraph-sources.")
   endif()
 
   find_program(WAFER_CARGO_EXECUTABLE NAMES cargo REQUIRED)

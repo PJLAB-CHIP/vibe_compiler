@@ -1661,7 +1661,7 @@ def _import_runtime_modules() -> tuple[Any, Any]:
         raise RuntimeError(
             "PyTorch/XLA importer runtime is unavailable; install pinned torch "
             "Python packages, then build/install torch_xla from "
-            "third_party/pytorch-xla with tools/build_pytorch_xla_runtime.py"
+            "third_party/pytorch-xla with utils/deps/build_pytorch_xla_runtime.py"
         ) from error
     return torch, stablehlo
 

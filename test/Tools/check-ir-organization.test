@@ -1,4 +1,4 @@
-# RUN: %python %wafer_src_root/tools/check_ir_organization.py --root %wafer_src_root
-# RUN: %python %wafer_src_root/tools/check_ir_organization.py --self-test | FileCheck %s
+# RUN: %python %wafer_src_root/utils/checks/check_ir_organization.py --root %wafer_src_root
+# RUN: %python %wafer_src_root/utils/checks/check_ir_organization.py --self-test | FileCheck %s
 
 # CHECK: Wafer IR organization self-test passed

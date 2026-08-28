@@ -56,8 +56,8 @@ LOADER_ABI_UNDEFINED_SYMBOLS = {
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_TX8_DEPS_DIR = REPO_ROOT / "third_party" / "tx8_deps"
 DEFAULT_WAFER_INCLUDE_DIR = REPO_ROOT / "include"
-DEFAULT_WAFER_CRT_SOURCE = REPO_ROOT / "runtime" / "wafer_crt" / "src" / "wafer_tx81_crt.c"
-DEFAULT_WAFER_CRT_INCLUDE_DIR = REPO_ROOT / "runtime" / "wafer_crt" / "include"
+DEFAULT_WAFER_CRT_SOURCE = REPO_ROOT / "runtime" / "crt" / "src" / "wafer_tx81_crt.c"
+DEFAULT_WAFER_CRT_INCLUDE_DIR = REPO_ROOT / "runtime" / "crt" / "include"
 
 
 def fail(message: str) -> None:

@@ -1,5 +1,5 @@
 # Managed Accellera SystemC identity and official imported target for the
-# functional-event model. This module is offline; tools/bootstrap_deps.py is
+# functional-event model. This module is offline; utils/deps/bootstrap_deps.py is
 # the only supported source/build producer.
 
 function(wafer_enable_systemc_model_deps)
@@ -13,7 +13,7 @@ function(wafer_enable_systemc_model_deps)
      NOT IS_DIRECTORY "${WAFER_SYSTEMC_MODEL_DEPS_ROOT}")
     message(FATAL_ERROR
       "WAFER_ENABLE_SYSTEMC_MODEL=ON requires a managed SystemC-model root. "
-      "Run tools/bootstrap_deps.py --systemc-model-deps or set "
+      "Run utils/deps/bootstrap_deps.py --systemc-model-deps or set "
       "WAFER_SYSTEMC_MODEL_DEPS_ROOT explicitly.")
   endif()
   if(NOT EXISTS "${WAFER_SYSTEMC_MODEL_DEPS_RECORD}" OR
@@ -21,12 +21,12 @@ function(wafer_enable_systemc_model_deps)
     message(FATAL_ERROR
       "WAFER_ENABLE_SYSTEMC_MODEL=ON requires the completed managed "
       "SystemC-model dependency record. Run "
-      "tools/bootstrap_deps.py --systemc-model-deps.")
+      "utils/deps/bootstrap_deps.py --systemc-model-deps.")
   endif()
 
   execute_process(
     COMMAND "${Python3_EXECUTABLE}"
-            "${CMAKE_SOURCE_DIR}/tools/systemc_deps.py"
+            "${CMAKE_SOURCE_DIR}/utils/deps/systemc_deps.py"
             --root "${WAFER_SYSTEMC_MODEL_DEPS_ROOT}"
             --record "${WAFER_SYSTEMC_MODEL_DEPS_RECORD}"
             --emit-cmake-snapshot

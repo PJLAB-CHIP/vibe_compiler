@@ -10,7 +10,6 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Pass/Pass.h"
 
-#ifdef WAFER_ENABLE_STABLEHLO
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/PatternMatch.h"
@@ -607,8 +606,6 @@ mlir::LogicalResult foldConstantTensorOps(mlir::Operation *root) {
 }
 
 } // namespace wafer::stablehlo_normalization
-#endif
-
 namespace wafer {
 #define GEN_PASS_DEF_FOLDSTATICTENSOROPSPASS
 #include "Wafer/Transforms/WaferPasses.h.inc"
@@ -621,14 +618,12 @@ struct FoldStaticTensorOpsPass
       FoldStaticTensorOpsPass>::FoldStaticTensorOpsPassBase;
 
   void runOnOperation() final {
-#ifdef WAFER_ENABLE_STABLEHLO
     mlir::ModuleOp module = getOperation();
     if (mlir::failed(stablehlo_normalization::foldConstantTensorOps(module)) ||
         mlir::failed(mlir::verify(module))) {
       signalPassFailure();
       return;
     }
-#endif
   }
 };
 

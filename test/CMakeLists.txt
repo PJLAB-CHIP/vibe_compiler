@@ -5,7 +5,7 @@ execute_process(
 if(NOT WAFER_LIT_IMPORT_RESULT EQUAL 0)
   message(FATAL_ERROR
     "Python package 'lit' is required for FileCheck tests. "
-    "Run tools/bootstrap_deps.py --python and configure with that Python, or install requirements-dev.txt.")
+    "Run utils/deps/bootstrap_deps.py --python and configure with that Python, or install requirements-dev.txt.")
 endif()
 
 get_filename_component(WAFER_PYTHON_BIN_DIR "${Python3_EXECUTABLE}" DIRECTORY)
@@ -59,8 +59,10 @@ separate_arguments(WAFER_LIT_ARGS)
 
 set(_wafer_default_lit_paths
   ${CMAKE_CURRENT_BINARY_DIR}/Dialect
+  ${CMAKE_CURRENT_BINARY_DIR}/Conversion
   ${CMAKE_CURRENT_BINARY_DIR}/Frontend
   ${CMAKE_CURRENT_BINARY_DIR}/Pipelines
+  ${CMAKE_CURRENT_BINARY_DIR}/Runtime
   ${CMAKE_CURRENT_BINARY_DIR}/Spmd
   ${CMAKE_CURRENT_BINARY_DIR}/Transforms
   ${CMAKE_CURRENT_BINARY_DIR}/Tools
@@ -94,9 +96,20 @@ add_test(NAME wafer-lit
   COMMAND ${WAFER_LIT_EXECUTABLE} ${WAFER_LIT_ARGS}
     ${_wafer_default_lit_paths}
 )
+
+add_test(NAME wafer-runtime-adapter-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Runtime/wafer_runtime_adapter_test.py
+    --repo-root ${CMAKE_SOURCE_DIR}
+    --wafer-run $<TARGET_FILE:wafer-run>
+)
+set_tests_properties(wafer-runtime-adapter-python PROPERTIES
+  LABELS "runtime;no-card;adapter"
+  TIMEOUT 30
+)
 add_test(NAME wafer-physical-tensor-codec-python
   COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_physical_tensor_codec_test.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/Cases/wafer_physical_tensor_codec_test.py
 )
 set_tests_properties(wafer-physical-tensor-codec-python PROPERTIES
   LABELS "runtime;no-card;layout;calibration;oracle"
@@ -299,12 +312,12 @@ add_subdirectory(Board)
 
 add_test(NAME wafer-numeric-dependency-record-python
   COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_SOURCE_DIR}/tools/test_numeric_deps.py
+    ${CMAKE_SOURCE_DIR}/test/Tools/test_numeric_deps.py
 )
 
 add_test(NAME wafer-pytorch-xla-runtime-build-python
   COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_SOURCE_DIR}/tools/test_pytorch_xla_runtime_build.py
+    ${CMAKE_SOURCE_DIR}/test/Tools/test_pytorch_xla_runtime_build.py
 )
 set_tests_properties(wafer-pytorch-xla-runtime-build-python PROPERTIES
   LABELS "framework-importer;managed-dependencies"
@@ -312,7 +325,7 @@ set_tests_properties(wafer-pytorch-xla-runtime-build-python PROPERTIES
 
 add_test(NAME wafer-onednn-dependency-record-python
   COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_SOURCE_DIR}/tools/test_onednn_deps.py
+    ${CMAKE_SOURCE_DIR}/test/Tools/test_onednn_deps.py
 )
 set_tests_properties(wafer-onednn-dependency-record-python PROPERTIES
   LABELS "onednn;managed-dependencies"
@@ -320,10 +333,19 @@ set_tests_properties(wafer-onednn-dependency-record-python PROPERTIES
 
 add_test(NAME wafer-systemc-dependency-record-python
   COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_SOURCE_DIR}/tools/test_systemc_deps.py
+    ${CMAKE_SOURCE_DIR}/test/Tools/test_systemc_deps.py
 )
 set_tests_properties(wafer-systemc-dependency-record-python PROPERTIES
   LABELS "systemc-model;managed-dependencies"
+)
+
+set_tests_properties(
+  wafer-numeric-dependency-record-python
+  wafer-pytorch-xla-runtime-build-python
+  wafer-onednn-dependency-record-python
+  wafer-systemc-dependency-record-python
+  PROPERTIES
+  ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/utils/deps"
 )
 
 set(_wafer_numeric_cmake_gate_args
@@ -355,7 +377,7 @@ if(CMAKE_BUILD_TYPE)
 endif()
 add_test(NAME wafer-numeric-cmake-configuration-gates
   COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_SOURCE_DIR}/tools/test_numeric_cmake_gates.py
+    ${CMAKE_SOURCE_DIR}/test/Tools/test_numeric_cmake_gates.py
     ${_wafer_numeric_cmake_gate_args}
 )
 set_tests_properties(wafer-numeric-cmake-configuration-gates PROPERTIES
@@ -397,7 +419,7 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
 endif()
 add_test(NAME wafer-onednn-cmake-configuration-gates
   COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_SOURCE_DIR}/tools/test_onednn_cmake_gates.py
+    ${CMAKE_SOURCE_DIR}/test/Tools/test_onednn_cmake_gates.py
     ${_wafer_onednn_cmake_gate_args}
 )
 set_tests_properties(wafer-onednn-cmake-configuration-gates PROPERTIES
@@ -444,7 +466,7 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
 endif()
 add_test(NAME wafer-systemc-cmake-configuration-gates
   COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_SOURCE_DIR}/tools/test_systemc_cmake_gates.py
+    ${CMAKE_SOURCE_DIR}/test/Tools/test_systemc_cmake_gates.py
     ${_wafer_systemc_cmake_gate_args}
 )
 set_tests_properties(wafer-systemc-cmake-configuration-gates PROPERTIES
@@ -455,7 +477,7 @@ set_tests_properties(wafer-systemc-cmake-configuration-gates PROPERTIES
 if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   add_test(NAME wafer-numeric-dependency-configured-record-python
     COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_SOURCE_DIR}/tools/check_deps.py
+      ${CMAKE_SOURCE_DIR}/utils/checks/check_deps.py
       --numeric-only
       --numeric-root ${WAFER_NUMERIC_MODEL_DEPS_CANONICAL_ROOT}
       --numeric-record ${WAFER_NUMERIC_MODEL_DEPS_CANONICAL_RECORD}
@@ -477,7 +499,7 @@ if(WAFER_ENABLE_TARGET_NUMERIC_BACKEND)
   endif()
   add_test(NAME wafer-onednn-dependency-configured-record-python
     COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_SOURCE_DIR}/tools/onednn_deps.py
+      ${CMAKE_SOURCE_DIR}/utils/deps/onednn_deps.py
       --root ${WAFER_ONEDNN_DEPS_CANONICAL_ROOT}
       --record ${WAFER_ONEDNN_DEPS_CANONICAL_RECORD}
       --emit-cmake-snapshot
@@ -488,7 +510,7 @@ if(WAFER_ENABLE_TARGET_NUMERIC_BACKEND)
       LABELS "onednn;managed-dependencies")
   add_test(NAME wafer-onednn-feature-on-link-closure
     COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_SOURCE_DIR}/tools/check_onednn_enabled_link_closure.py
+      ${CMAKE_SOURCE_DIR}/utils/checks/check_onednn_enabled_link_closure.py
       --binary $<TARGET_FILE:wafer-cmodel-qualify-onednn>
       --readelf ${CMAKE_READELF}
       --nm ${CMAKE_NM}
@@ -498,7 +520,7 @@ if(WAFER_ENABLE_TARGET_NUMERIC_BACKEND)
   )
   add_test(NAME wafer-onednn-qualification-cli
     COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_SOURCE_DIR}/tools/test_onednn_qualification_cli.py
+      ${CMAKE_SOURCE_DIR}/test/Tools/test_onednn_qualification_cli.py
       --tool $<TARGET_FILE:wafer-cmodel-qualify-onednn>
       --work-root ${CMAKE_CURRENT_BINARY_DIR}/onednn-qualification-cli
   )
@@ -511,7 +533,7 @@ endif()
 if(WAFER_ENABLE_SYSTEMC_MODEL)
   add_test(NAME wafer-systemc-dependency-configured-record-python
     COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_SOURCE_DIR}/tools/systemc_deps.py
+      ${CMAKE_SOURCE_DIR}/utils/deps/systemc_deps.py
       --root ${WAFER_SYSTEMC_MODEL_DEPS_CANONICAL_ROOT}
       --record ${WAFER_SYSTEMC_MODEL_DEPS_CANONICAL_RECORD}
       --emit-cmake-snapshot

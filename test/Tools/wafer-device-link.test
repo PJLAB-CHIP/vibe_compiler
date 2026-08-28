@@ -110,7 +110,7 @@
 
 # CHECK-LABEL: compile-crt:
 # CHECK-SAME: {{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-gcc
-# CHECK-SAME: runtime/wafer_crt/src/wafer_tx81_crt.c
+# CHECK-SAME: runtime/crt/src/wafer_tx81_crt.c
 # CHECK-SAME: -O2
 # CHECK-SAME: -c
 # CHECK-SAME: -fPIC
@@ -119,7 +119,7 @@
 # CHECK-SAME: -fvisibility=hidden
 # CHECK-SAME: -DCONFIG_NO_PLATFORM_HOOK_H
 # CHECK-SAME: -DUSING_RISCV
-# CHECK-SAME: -I{{[^ ]*}}/runtime/wafer_crt/include
+# CHECK-SAME: -I{{[^ ]*}}/runtime/crt/include
 # CHECK-SAME: -I{{[^ ]*}}/include
 # CHECK-SAME: -I{{[^ ]*}}/third_party/tx8_deps/include
 # CHECK-SAME: -mcpu=c908
