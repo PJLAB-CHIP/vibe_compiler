@@ -1,4 +1,4 @@
-# Q64 Source registration truth闭合实施计划
+# Q64 Source registration truth闭合实施计划（历史）
 
 状态：`done`。全仓source ownership、重复顶层目录清理和repo-wide registration mirror已闭合；稳定library依赖由18号设计文档
 拥有，动态任务状态只看`tasks/progress.md`。Q62/Q63仍分别拥有numeric与NCC语义重构，并在当前Target/Model owner内继续。

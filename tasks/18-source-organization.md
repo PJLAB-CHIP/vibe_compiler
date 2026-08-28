@@ -1,340 +1,305 @@
-# Wafer 源码与构建模块化
+# Wafer 源码与构建组织
 
-本文定义current source ownership和依赖方向，不复制IR/ABI/schema语义。稳定编译边界为
-`TensorProgram -> physical-dataflow selection -> TileModule/TileRegion/Instr -> DeviceExecutable -> ExecutablePackage`。
-与新owner冲突的source、public header、CMake entry、test和兼容wrapper只有在负责该能力的current capability owner及替代测试闭合后才删除；
-不保留空stub或旧接口alias，也不把旧owner连同仍需能力直接清空。
+本文定义Wafer-owned源码、public header、CMake library、tool和测试的长期owner。各IR、ABI、package和runtime
+语义仍由对应编号设计拥有；源码目录不能建立第二套pipeline或协议。当前目标是让文件位置直接回答两个问题：
+
+1. 该文件承担哪种编译器职责；
+2. 对IR工作的文件读取或修改哪一层current IR。
+
+目录不按任务号、历史阶段、算法昵称或临时实现状态命名。迁移时同步更新definition、consumer、CMake、测试和
+current文档，不保留旧路径转发header、target alias或兼容wrapper。
 
 ## 1. Pipeline Contract
 
 ```text
 Pipeline position:
 - Upstream IR / input:
-  当前frontend program、TensorProgram、TileModule/TileRegion、Instr、DeviceExecutable、target LLVM modules/linked ELF、
-  ExecutablePackage、runtime/model invocation及其CMake libraries。
+  verifier-valid StableHLO/Linalg、TileModule/TileRegion、Instr、DeviceExecutable、target LLVM module、
+  ExecutablePackage，以及当前源码树、CMake target和registered tests。
 - Current stage responsibility:
-  按稳定IR/output边界组织public API、internal helper、translation unit和build依赖；保证physical-dataflow selection、
-  conversion、target writing、runtime和model各有唯一owner，并删除旧架构旁路。
+  按真实compiler职责和current IR边界组织public API、internal helper、translation unit、library依赖与测试；
+  拆除含义重叠的Program、Model、generic Execution、generic Scheduling和多处Target owner。
 - Output IR / files:
-  依赖单向、职责可检查的libraries/tools/tests；不改变各owner定义的IR/output语义，也不产生第二份schema或sidecar。
+  IR和产品输出语义不变；产出include/lib镜像、单向依赖、exact source registration和测试镜像均可检查的源码树。
 - Downstream consumer:
-  Wafer named pipelines、wafer-compile、wafer-run、TargetCall/SystemC和configured host/board tests。
+  named pipelines、wafer-compile、wafer-opt、wafer-run、Simulator backends、package/runtime和host/board tests。
 - User-level driver / named pipeline:
-  current public drivers与named pipelines；源码组织本身不增加用户入口、pass option或optimization mode。
+  不增加CLI、pass、pipeline或optimization mode；production driver与named pipeline继续调用同一实现。
 - Explicit non-goals:
-  不按任务编号/agent/checkpoint建用户级module；不保留deprecated API；不把common helper变成语义恢复黑箱；
-  不在test/tool中复制compiler/runtime合同。
-- Done criteria:
-  current owner map与CMake一致；public header只暴露稳定typed boundary；repo-wide无旧execution-domain、旧schema/
-  ABI reader、late selector或algorithm shortcut source/test；fresh build、unit/lit/CTest和组织检查通过。
+  不借目录迁移修改数值语义、搜索合法域、SPM/completion合同、target ABI或package schema；不拆分Wafer dialect；
+  不为目录整齐创建空library、无consumer interface或第二套实现。
+- Completion criteria:
+  本文目标树与filesystem、public include、CMake source/target、registered test和current文档一致；旧owner路径、空目录、
+  source-tree generated artifacts和产品库中的test hook清零；canonical build、全部registered CTest/lit、组织检查与
+  受影响source-to-downstream witness通过。
 ```
 
-## 2. Ownership原则
+## 2. 分类规则
 
-### 2.1 一个长期事实，一个owner
+### 2.1 第一层按职责
 
-- IR语义与verifier归对应Dialect/ODS和实现文件；
-- query-local analysis只从current IR派生，可失效、可重算，不序列化；
-- transformation只物化一个IR边界，不同时承担selection、allocation和writing；
-- public typed output由其header定义，serializer/parser/verifier引用同一enum/key/version；
-- target ABI descriptor、format/identity、package schema和runtime launch contract各只有一个代码事实源；
-- tests只构造/消费public合同，不实现另一个parser、selector、router或oracle。
+| 目录 | 唯一职责 | 明确不包含 |
+| --- | --- | --- |
+| `IR` | Wafer operation、type、attribute、interface、parser/printer和局部verifier | analysis、search、pass、lowering、runtime对象 |
+| `Analysis` | 只读current IR和显式只读target facts，可重算并随mutation失效 | choice、IR mutation、writer、future IR record |
+| `Planning` | 一次compile中的显式transformation choice、domain、PBQP和search traversal | actual IR、未来operation/buffer/event、lowering、offset |
+| `Transforms` | 保持主要表示层的IR rewrite、materialization、optimization和memory/completion planning | source-to-target legalization、candidate枚举、外部工具 |
+| `Conversion` | 具有明确source/target表示和legality合同的`XToY`转换 | 同层tiling/fusion、module fan-out、target linking |
+| `CodeGen` | 已闭合Instr/LLVM IR的ABI准备、LLVM translation、link和目标代码形成 | physical-dataflow search、layout assignment、memory planning、Simulator |
+| `Driver` | policy路由、candidate transaction、module拆分、pipeline编排、外部工具和publication | leaf rewrite、analysis算法、schema实现 |
+| `Target` | compiler/runtime/Simulator共享的纯target command、format、identity、memory和physical tensor合同 | MLIR pass、host JIT、formal oracle、OneDNN/SystemC实现 |
+| `Simulator` | same-invocation TargetCall host执行、functional kernel和Reference/OneDNN/SystemC backend | compiler planning、package parser owner、board runtime provider |
+| `Frontend` | source ingestion、program metadata、payload、parameter和card-level distribution输入 | Tile placement、target layout、model数学恢复 |
+| `Package` | ExecutablePackage typed model、manifest、parse/serialize/readback和writer | runtime execution、compiler selection |
+| `Runtime` | verified package的host invocation planning、board lifecycle和profile collection | compiler IR、planning、Simulator backend |
+| `ABI` | firmware、CRT、runtime共享的外部ABI事实 | compiler内部choice或C++ convenience API |
+| `Support` | 无IR语义的通用bounded parallel、timing、statistics和small utility | target/IR/schema语义 |
 
-当旧设计与current owner冲突时，删除旧header、source、CMake entry和tests。旧case通过不是保留接口的理由；需要的
-mechanics迁到新owner并由新边界测试。
+`IR`目录只保存IR定义。不能建立`IR/Instr/Analysis`或`IR/Tile/Transforms`。需要区分作用层时，先进入
+`Analysis`或`Transforms`，再按输入IR拆分。
 
-### 2.2 Public与internal边界
+### 2.2 第二层按作用IR或真实backend
 
-`include/Wafer/`只放跨library稳定typed API、IR declarations和真正用户/consumer可调用入口。query-local state、plan
-recipe、staging builder、failure bookkeeping和单library协作helper放在 `lib/Wafer/.../*Internal.h` 或同目录private header。
+- `Analysis/{Module,Linalg,Tile,Instr}`按被分析的current anchor/IR分类；跨层事实放在能够完整解释它的最低共同输入层。
+- `Transforms/{Module,StableHLO,Linalg,Tile,Instr}`按变换开始时的current IR分类；输出名不代替输入边界。
+- `Conversion/{StableHLOToLinalg,TileToInstr,InstrToLLVM}`只保留实际conversion。Tile formation仍保留Linalg/Tensor
+  operation，因此是`Transforms/Linalg`中的materialization，不建立虚假的`LinalgToTile` full conversion。
+- `CodeGen/LLVM`按实际backend representation分类。`DeviceExecutable`是CodeGen的typed output，不作为容纳所有下游工作的
+  `Executable/`目录。
+- `Simulator/{Reference,OneDNN,SystemC}`按执行backend分类；共享invocation、memory和kernel实现位于`Simulator`根目录，
+  不建立无区分作用的`Core/`。
+- 只有至少两个稳定文件组且职责边界可说明时才增加子目录。单文件或仅靠历史命名形成的目录直接展平。
 
-禁止：
+### 2.3 Public、private与命名
 
-- 为迁移保留同义old/new方法、enum、field或wrapper；
-- 用opaque bag、side table、名字约定或serialized shadow plan穿越stage；
-- 把一个internal bridge的symbol提升为runtime/public ABI；
-- 从test helper、Markdown marker或output filename恢复协议事实。
+`include/Wafer/`只保存跨library稳定typed API和IR declaration。query-local state、solver内部结构、staging builder、failure
+bookkeeping及单library helper留在`lib/Wafer/...`的private header。`include/Wafer`与`lib/Wafer`在稳定component层镜像，
+不要求每个private helper都有public对应物。
 
-### 2.3 Translation unit
+目录和target使用稳定语义名称，不含任务号、TX81目录、`V2`、`Current`、`Legacy`、`Facade`或实现状态。外部ABI文件中的
+TX81 spelling保持原协议。重命名必须同步定义、直接consumer、verifier/lowering、CMake、测试和current文档。
 
-一个实现文件只承担一个可命名动作。需要“并且”连接两个独立stage时拆分：
+## 3. 目标源码树
 
-- analysis与mutation分开；
-- planning proposal/transition、selected materialization、actual verification与controller分开；
-- ABI preparation、LLVM translation、device link、readback与package writing分开；
-- package parse、serialize、semantic verify、runtime validation和board execution分开；
-- TargetCall decode、functional kernel、SystemC scheduling和numeric codec分开。
-
-顶层driver只编排typed substage，不重写业务逻辑；不为此另造`Facade`架构层。internal helper不可复制公共verifier的规则。
-
-## 3. Current compiler organization
-
-### 3.1 Frontend与card-level GSPMD
-
-`Frontend`拥有source program metadata、DPS/program boundary、distribution和parameter shards。`Transforms/SPMD`只负责
-global tensor到card partition；`num_partitions`属于card domain，不能创建或编号Tiles。
-
-single-card current path向physical-dataflow stage交付一个完整card-local TensorProgram。frontend不识别Attention/decode、
-不注入mask或模型数学，也不写physical placement attrs。
-
-### 3.2 Physical-dataflow selection 与 materialization
-
-05 normalization拥有attention graph proof与fixed FA/FD semantic op；`Planning`是后续整图physical-dataflow决策唯一owner。
-项目本身已经是compiler，不再建立包罗万象的`Compiler`中间目录。源码按
-下列output动作组织：
-
-- graph normalization：从current TensorProgram typed SSA证明完整attention并创建一个fixed-algorithm semantic op；不构造
-  algorithm points或isolated alternative；
-- physical-dataflow selection：从fixed TensorProgram roots构造query-local exact demand和typed spatial/region/temporal choices；
-- Spatial/Region TileModule set materialization：消费closed spatial assignment、ExactDemand/RootWork和Region membership/explicit replica，
-  立即生成actual TileModules/TileRegions与ordinary op/SSA；attention保持opaque，不创建temporal/layout/movement事实；
-- compact temporal tile-and-fuse：消费actual Region与free temporal choice，从current SSA决定fusion；attention仍保持semantic op opaque，
-  只处理接口可证明且不依赖内部use/replica推测的外部edge；
-- selected-attention lowering：在candidate module owner中消费fixed FA/FD和尚未使用的K1/K2/contribution/merge choice，一次性生成actual
-  Linalg/Tensor/SCF与coupled state；不创建future action/value inventory，输出attention为零并直接交给physical realization；
-- current-IR physical realization：先一次完成function-boundary与region-local bufferization/layout/view，再应用movement choice；
-  每次rewrite后验证并使旧analysis失效；
-- current-IR layout query：Planning内部的通用exact PBQP solver与factor builder只读candidate SSA/interface并返回query-local
-  assignment；baseline和search共享实现但各自立即apply到自己的owner。Solver不依赖LLVM RegAlloc/`LLVMCodeGen`，不保存
-  `PhysicalVersion`或candidate state；两条policy从同一policy-free target cost cohort读取`instruction_tick`，不能让baseline依赖
-  search controller类型；layout/movement rewrite仍由physical-realization library唯一拥有；
-- exact transfer cleanup：与layout/movement共用relation/physical-map/alias/effect/lifetime proof，在movement后、execution structure前
-  只有一个production入口；旧Instr-only/test-only helper迁移测试后删除；
-- current Tile execution structure：在movement-closed physical TileRegion上物化Serialized或software-pipelined loop、
-  prefix/steady/tail、rotating roots和slot SSA；不创建completion或memory offset；
-- bounded candidate Tile executor：对每个candidate并行互不共享可写IR的per-Tile lowering work，并维持deterministic result order；
-- Instr construction and physical verification：structure-closed TileRegion-to-Instr后从current Instr重建dependence/resource graph，
-  应用worker/order并fresh构造completion；completion-closed Instr随后进入不再修改completion的memory、transport和ABI leaf；
-- DeviceExecutable actual admission：返回Accepted或typed rejection/failure，不生成repair；rejected/loser owner销毁，final winner再进入target output。
-
-现有类名或函数名只作为实现索引；长期合同仍是：TensorProgram → structural choice → actual TileModule/TileRegion → all-and-only
-Tile Instr → actual result → one retained DeviceExecutable winner。实现索引不得升级为output名或要求其它library读取search对象。
-
-禁止恢复：
-
-- GSPMD partition直接绑定Tile；
-- 每Tile独立winner再拼DeviceExecutable；
-- complete execution domain clone N、late NoC profitability或第二selector；
-- algorithm/model/shape/name matcher和拥有独立selection/public控制面的Flash/Decode pass；attention只允许05定义的typed SSA
-  graph proof与单一current op，future semantic alternatives必须由自己的设计和consumer闭合；
-- performance Unknown promotion/fallback。
-
-### 3.3 Conversion chain
-
-conversion libraries按IR边界组织。稳定output流为：
+`include/Wafer`与`lib/Wafer`的稳定component如下：
 
 ```text
-TensorProgram
-  -> physical-dataflow selection
-  -> top-level TileModule set / TileRegion
-  -> Instr
-  -> DeviceExecutable
-  -> target conversion
-  -> ExecutablePackage
+Wafer/
+├── ABI/
+├── IR/
+│   ├── LinalgExt/
+│   ├── Tile/
+│   ├── Instr/
+│   └── Topology/
+├── Analysis/
+│   ├── Module/
+│   ├── Linalg/
+│   ├── Tile/
+│   └── Instr/
+├── Planning/
+│   └── PhysicalDataflow/
+├── Transforms/
+│   ├── Module/
+│   ├── StableHLO/
+│   ├── Linalg/
+│   │   └── TileFormation/
+│   ├── Tile/
+│   └── Instr/
+├── Conversion/
+│   ├── StableHLOToLinalg/
+│   ├── TileToInstr/
+│   └── InstrToLLVM/
+├── CodeGen/
+│   └── LLVM/
+├── Frontend/
+├── Driver/
+├── Target/
+│   └── PhysicalTensor/
+├── Simulator/
+│   ├── Reference/
+│   ├── OneDNN/
+│   └── SystemC/
+├── Package/
+│   ├── Manifest/
+│   └── Profile/
+├── Runtime/
+│   ├── Board/
+│   └── Profile/
+└── Support/
 ```
 
-- TensorProgram→top-level TileModule set materializes selected physical spatial mapping及coverage；
-- `createStandaloneTileModules`只从explicit top-level Tile modules创建standalone ModuleOps并保留physical identity；
-- TileModule内的TileRegion materialization使用structured tiling/reduction interfaces、DPS和IndexRelation，
-  负责Tile-local dataflow；
-- TileRegion→Instr lower actual compute/movement/communication，不做全局选择；
-- DeviceExecutable verification只消费all-and-only finalized Instr并原子验证；
-- target conversion和package writing分别消费DeviceExecutable与verified target modules，不恢复physical choice。
-
-不同output/op可拥有不同active Tile set与tile shape；projection不能假设common result tile vector。conversion failure返回
-candidate owner，不在内部反复缩tile或切换算法。
-
-### 3.4 Analysis与memory planning
-
-`Analysis`拥有current-IR schedule work、theoretical cohort cost、physical relation、lifetime/conflict和topology facts。
-performance estimator只计算enabled numeric terms；完全未知项不进入比较。
-
-Planning libraries从current IR和显式target facts构造可失效proof；transforms将当前choice物化为actual layout、movement、
-worker/order/completion，memory planners再从该IR生成SPM/DDR offsets。Allocator只解fixed problem，不能生成spill/retile/reorder repair。
-Current IR是事实源，不与物化前plan做parity；late typed result只返回外层controller，不形成第二控制线。
-
-### 3.5 Dormant mechanism迁移边界
-
-source未进入CMake只表示它不属于current build，不能据此证明其中没有尚需迁移的算法、proof、diagnostic或test witness。
-处理dormant source时逐文件记录current replacement、production caller、direct test和删除理由；仍需要的能力先迁入active owner并
-受测，随后删除旧header/source/CMake/test。不得整体恢复旧public pass、旧operation、selector或compatibility wrapper。
-
-由external helper manifest显式复制和独立构建的source不同时加入host target。Organization checker从filesystem、CMake及
-registered test graph闭合active truth；policy allowlist只保留无法自动推导且有明确owner的例外，不能通过source marker或读取
-implementation文本的测试为未注册实现制造“green”状态。
-## 4. Target、runtime与model organization
-
-### 4.1 Target conversion/writing
-
-`CodeGen/Target`中的target职责按以下边界拆分：
-
-- target ABI preparation；
-- Instr→Target LLVM conversion；
-- LLVM translation与current metadata verification；
-- optional Grid/Cluster aggregate target-module materialization；
-- device link、ELF/export/digest readback；
-- verified target modules atomic writing；
-- ExecutablePackage assembly与profile instrumentation writing。
-
-aggregate module是低层representation，不能吞掉16个explicit Tile interfaces。host TargetCall JIT dispatch是internal
-transaction bridge，不能进入package/runtime ABI文档或public header。
-
-### 4.2 Package/runtime
-
-current package实现已按package/runtime依赖方向收敛到中立`Package`目录，compiler不依赖BoardRuntime：
-
-- 中立的package support library拥有`ExecutablePackage`、PackageManifest typed model与canonical spelling、JSON parser/serializer、
-  semantic verifier以及module/data readback；
-- compiler package writer依赖该library完成assembly和atomic commit，不拥有第二套schema/parser；
-- Runtime loader依赖该library取得verified `ExecutablePackage`；Runtime自身继续拥有`RuntimeEnvironment`匹配、caller binding、
-  device inventory/capability和no-card invocation planning，再进入BoardRuntime generic lifecycle和TX provider adapter；
-- ProfileInstrumentation的typed model、canonical spelling和共享filename常量由中立package support拥有；strict loader、device
-  collection与verified runtime object仍是独立runtime consumer，不反向成为package schema owner。
-
-source-organization gate同时禁止`WaferCompiler`链接`WaferRuntime`，并禁止`Driver`/`Package/Writer`源码或public header include
-`Wafer/Runtime/*`；只修link edge而保留runtime header反向依赖不算边界闭合。
-
-ExecutablePackage manifest identity与profile activation format identity分别只在其typed owner定义；profile plan/site map不拥有版本；
-package各文件的fields、resource scopes、entry completion和verification由package owner统一定义。Python runner只能消费canonical manifest/evidence或调用public tool；
-不得内置另一份schema validator。旧schema reader和兼容translation不存在。profile instrumentation只暴露单一primary executable output、
-count/trace captures和一个16-Tile site map，不保留output集合shell或重复digest API。
-
-### 4.3 TargetCall与model
-
-`Target`拥有closed TargetCall descriptor registry与decoder。`Target/Execution`只负责same-invocation LLVM JIT、
-physical identity binding和atomic transaction sink lifecycle。
-
-`Target`中的typed facts进一步按真实职责分开：`TargetOperation`拥有target command enum/parameter，physical tensor descriptor/codec
-拥有format、layout、shape、count与bounded byte mapping，raw scalar codec只拥有encoding。它不得再以一个public numeric umbrella
-聚合model profile、formal policy、compiler emittability、hardware evidence、command key和qualification digest。
-
-CodeGen accepted-data preparation拥有显式TargetTensor materialization action并依赖上述physical/scalar primitives；它不能链接或
-include formal/target numeric backend来构造静态program data。Package verifier只验证descriptor、exact bytes与file closure，不执行model command。
-
-`Model`进一步拆成：
-
-- program tensor/target tensor↔`TileEntryArgument` binding/codec；
-- private memory/address/range；
-- plain functional kernels；
-- formal numeric与qualified target numeric backend；
-- SystemC bridge与per-Tile process/event scheduling；
-- invocation/result assembly。
-
-model不依赖package parser来重建compiler owners，也不共享vendor runtime mutable state。SystemC bridge隔离RTTI/exception ABI
-差异；LLVM/MLIR-facing TUs维持仓库编译选项。formal与target numeric backend libraries可以依赖Target typed facts和physical codec，但
-`WaferTarget`基础library不得反向包含formal arithmetic、model capability registry或qualification implementation。model从decoded
-TargetCall直接进入family-specific API；不建立`ResolvedNumericCommand`一类跨library join object。target layering同时删除
-`WaferTargetModelCore -> WaferCompiler`反向link；managed dependency record/source-tree/license/loaded-object conformance迁到optional
-bootstrap/qualification/tool test support，不作为always-built`WaferTarget` public execution API。
-
-## 5. Build graph
-
-依赖必须单向：
+以下旧目录不得出现在完成后的current树中：
 
 ```text
-IR / Support / Target typed facts
-  -> Analysis
+IR/Program
+IR/Resource
+Program
+Model
+TestSupport
+CodeGen/Executable
+CodeGen/Target
+Target/Core
+Target/Execution
+Target/Layout
+Target/Numeric
+Transforms/Bufferization
+Transforms/DDR
+Transforms/Execution
+Transforms/MemoryPlanning
+Transforms/Scheduling
+Transforms/SPM
+Transforms/Target
+Transforms/Transport
+Conversion/StandaloneTileModules
+Conversion/StructuredTiling
+Conversion/WaferTileRegionToInstr
+```
+
+上表表示旧owner退役，不表示其中能力被删除。仍有current consumer的实现必须先迁到下述唯一owner并保持direct test；无consumer、
+重复或已由current实现替代的文件连同CMake/test一起删除。
+
+## 4. 关键owner边界
+
+### 4.1 IR
+
+- `wafer.tile.module`是Tile级SSA/symbol owner，定义进入`IR/Tile/TileModuleOps.td`；不存在独立`IR/Program`层。
+- DDR↔SPM的`wafer.tile.load/store`是Tile dataflow movement，定义进入`IR/Tile/StorageOps.td`；MLIR
+  `MemoryEffects::Resource`仍由Wafer interface集中定义，不建立`IR/Resource`目录。
+- `IR/Topology`只保存target topology和logical execution mesh的typed IR。纯C++ physical identity和topology ID属于`Target`。
+- operation verifier实现与对应IR同目录；module、call graph、alias/lifetime和resource closure进入显式analysis或stage check。
+
+### 4.2 Analysis、Planning与IR变换
+
+Physical-dataflow不能整体塞入CodeGen，也不能继续把analysis、choice和mutation混在一个目录：
+
+- current Linalg/Tensor SSA、IndexRelation、DAG、ExactDemand等只读事实进入`Analysis/Linalg`；
+- Tile membership、current materialization relation和physical relation进入`Analysis/Tile`；
+- Instr lifetime、completion、cost和resource analysis进入`Analysis/Instr`；
+- explicit spatial/region/temporal domain、PBQP assignment和search traversal留在`Planning/PhysicalDataflow`，其对象仅在
+  当前planning调用中存活；
+- closed spatial/region choice到actual TileModule/TileRegion的原子物化进入`Transforms/Linalg/TileFormation`；
+- compact tile/fuse、selected attention lowering、layout/view/movement和execution structure按其真实输入进入
+  `Transforms/Linalg`或`Transforms/Tile`；
+- completion-closed Instr上的memory、transfer和transport rewrite进入`Transforms/Instr`。
+
+Planning不拥有candidate IR。Driver连接planning session与candidate-owned materializer，accepted owner原样交给下游；失败或
+loser销毁。任何旧planning source若保存future operation/value/buffer/movement/storage/schedule事实，按06号设计删除而不是迁移。
+
+`createStandaloneTileModules`改变compiler output multiplicity并由outer owner持有结果，属于`Driver`的module拆分边界，
+不是DialectConversion。Structured tiling/reduction interface helper属于`Transforms/Linalg`。
+
+### 4.3 Conversion与CodeGen
+
+- StableHLO legalization只在`Conversion/StableHLOToLinalg`；conversion前后的同层normalization分别回到
+  `Transforms/StableHLO`和`Transforms/Linalg`。
+- Tile dataflow op到Instr的closed legality进入`Conversion/TileToInstr`。
+- Instr到LLVM dialect的full/partial legality、TargetCall construction和postcheck进入`Conversion/InstrToLLVM`。
+- LLVM dialect translation、target ABI preparation、LLVM module verification、aggregate、device link、ELF/digest readback进入
+  `CodeGen/LLVM`。
+- `DeviceExecutable`及target LLVM module typed owner位于`CodeGen`根目录。candidate admission、memory planning和pipeline
+  orchestration分别归Transforms或Driver，不进入CodeGen。
+
+### 4.4 Target与Simulator
+
+`Target`根目录保存TargetOperation、TargetCall descriptor/decoder、TargetFormat、TargetIdentity、TargetMemory、launch contract、
+completion classification和topology ID等纯C++合同。它不依赖MLIR、Driver、Simulator或optional backend。
+
+`Target/PhysicalTensor`拥有physical layout、descriptor、bounded coordinate/byte mapping、element encoding/decoding和compiler-selected
+TargetTensor materialization action。这里的layout是target physical format，不是PBQP layout assignment或MLIR layout transform。
+
+`Simulator`拥有same-invocation TargetCall JIT、input binding、private memory和functional kernel：
+
+- `Reference`保存formal/MPFR/SoftFloat reference arithmetic和managed reference backend；
+- `OneDNN`保存OneDNN simulator backend及其共享执行adapter；校准/资格CLI留在`tools/`，测试留在测试树；
+- `SystemC`只保存SystemC process/event scheduling和bridge。
+
+Simulator不反向依赖compiler planning/Driver，不成为package schema owner。Target基础library不得反向链接Reference、OneDNN或SystemC。
+
+### 4.5 Frontend、Package、Runtime与Support
+
+- 顶层`Program`退役。source metadata、NPY payload、parameter shard和frontend verification进入`Frontend`；compiler-owned
+  handoff/transaction进入`Driver`；Simulator invocation/comparison进入`Simulator`；共享element/physical format进入真实Target或
+  package owner。
+- `Package`继续唯一拥有manifest、parse/serialize/readback和writer；`Driver`只拥有publication transaction。
+- `Runtime`只消费verified package并拥有no-card/board invocation lifecycle；compiler和Simulator不依赖Board runtime。
+- `Support`只保存可由任意component复用且不携带IR/target/schema语义的utility。
+
+## 5. 根目录、工具与测试
+
+仓库根目录采用：
+
+```text
+include/       public C++/IR headers
+lib/           Wafer libraries
+runtime/crt/   target CRT source与headers
+tools/         安装或直接供用户调用的产品工具
+utils/         build/dependency/check等开发脚本
+python/        Python package
+test/          lit、Python、integration和board tests
+unittests/     C++ unit tests
+cmake/         CMake modules
+third_party/   pinned source；禁止source-tree build artifact
+docs/          hardware/runtime/ABI facts
+tasks/         current design、plan和archive
+memory/        稳定开发经验
+```
+
+`tools/`不保存`test_*.py`。产品工具自身的private source与对应tool同目录；build/bootstrap/organization scripts进入`utils/`，
+其测试进入`test/Tools`。Python `__pycache__`、Rust `target/`和其它generated output只允许位于ignored build/cache边界。
+
+lit测试按`Dialect/Wafer`、`Analysis`、`Transforms`、`Conversion`、`CodeGen`、`Pipelines`、`Tools`、`Runtime`、`Simulator`和
+`Board`组织。C++ unit目录镜像被测library。Board support/helper与执行case分开，helper文件不使用`*_test.py`名称；每个test必须
+由lit或CTest实际注册。Test hook和failure injection通过test-only library或fixture提供，不编入产品library。
+
+## 6. Build graph
+
+依赖方向为：
+
+```text
+ABI / Support / Target / IR
+  -> Frontend / Analysis
   -> Planning
-  -> Conversion / Transforms -> CodeGen/Executable -> CodeGen/Target
-  -> Driver orchestration
+  -> Transforms / Conversion
+  -> CodeGen
+  -> Package
+  -> Driver
 
-Support / Target typed facts
-  -> ExecutablePackage contract / parse / serialize / readback
-      -> Package writing -> Driver publication
-      -> Runtime validation -> Board provider or Model consumer
+Target / CodeGen outputs
+  -> Simulator
 
-Target operation / physical tensor / scalar codec
-  -> target scalar conversion -> CodeGen TargetTensor materialization
-                           \-> Formal numeric -> WaferTargetNumericBackend -> SystemC consumer
+ABI / Target / Package
+  -> Runtime
 
-Driver / Runtime / Model
+Driver / Simulator / Runtime
   -> Tools
 ```
 
-禁止runtime/model反向依赖planning/driver private state，禁止analysis依赖writing，禁止conversion调用tool/runner。CMake target
-明确列出受控source，不依赖glob保住已经删除的文件；删除source时同批删除target/source list和only-for-it test。
-`WaferTargetNumericBackend`是model-facing整体组件，`WaferOneDNNBackend`只是其GEMM/reorder host实现；二者不能与
-`WaferSystemCModel`合并成一个含混target。source-organization gate还必须禁止Compiler search/Analysis/Conversion include
-formal/target numeric backend header，并确认退役numeric
-umbrella/profile/pattern/resolver没有compatibility header、typedef或旧source残留。
-Target/IR layering禁止runtime/model为复用NCC completion classification依赖WaferIR：current model只消费pure target command completion，
-IR adapter与analysis留在WaferIR/WaferAnalysis。既有Model→Compiler宽link由model invocation/JIT与numeric层造成，按其真实owner拆除；
-Source organization checker把这些link/include规则与repo-wide source/test registration一起纳入实际CMake graph检查。
+图表示允许依赖，不要求一个上层library链接所有前置。Analysis不得依赖Conversion或Planning；Planning不得依赖Driver、CodeGen或
+Simulator；Conversion不得调用tool；compiler core不得依赖Runtime/Board或Simulator backend；Target不得依赖MLIR。
 
-独立host build/test按 `nproc`并行。若一个聚合library使无关功能被可选依赖拖住，应拆分target或用明确feature boundary，
-但不能复制接口实现。
+CMake为稳定component建立真实library target并显式列出source、generated dependency和`LINK_LIBS`。不得通过多级
+`set(... PARENT_SCOPE)`把所有source塞入一个`WaferCompiler`，不得以单个聚合`WaferUnitTests`掩盖public-header、自包含或link
+closure错误。同一translation unit只能被一个production library编译；需要共享时先建立最窄真实library。
 
-### 5.1 Driver library、产品工具与安装
+## 7. 迁移与完成门禁
 
-request/result/commit语义由01和15拥有，failure taxonomy由19拥有，frontend输入由02拥有；本节只规定它们如何落到library、
-tool与CMake依赖边界。这里仅记录稳定library拓扑：
+迁移按definition及直接consumer闭合，不按目录批量移动后再修编译：
 
-- 唯一source-to-package entry是`wafer::compiler::compileProgram`，返回`llvm::Expected<CompilationResult>`：primary product为
-  publication前严格绑定、publication成功后才取得committed root identity的move-only package-layer `ExecutablePackage`；
-  显式profile时另持有compiler-owned `ProfileInstrumentationProduct`（root+identity digests+exact metadata/capture owners）；
-  失败返回`CompilationFailure`并携带
-  `CompilationStage`分类。`wafer-compile`只链接该target并负责参数解析、单一tool resolver构造、调用和diagnostic rendering；
-- `compileProgramWithTargetLLVMModules`（`llvm::Expected<CompiledProgram>`）保留DeviceExecutable/target modules/IR trace，只由
-  internal inspection consumer（`wafer-compile-test`的target-model gate与compiler IR dump）消费，不进入production CLI的
-  post-commit控制流；production `wafer-compile`对`--target-model*`/`--dump-compiler-ir`及旧output flag报unknown
-  argument；
-- source verifier和产品Python adapter复用Frontend ingestion实现；`wafer-opt`保持IR development component；
-- external tool discovery只有一个resolver（`resolveDriverToolFacts`）：SPMD helper、device linker script、CRT/ABI资源按
-  executable-relative install位置发现，`python3`/`clang++`按PATH解析，pinned TX8依赖根由`TX8_DEPS_ROOT`显式配置，全部facts
-  经existence/type/executability验证；不形成environment bag，不烘焙source/build tree绝对路径。
+1. 冻结旧文件、current能力、新owner、production consumer和direct test的对应表；
+2. 先移动private implementation与unit mirror，再移动public header和CMake owner；
+3. 同一概念完成后立即扫描旧include、namespace、target和路径残留；
+4. 删除空目录、兼容入口和only-purpose test；
+5. 更新所有受影响current编号设计、current plans、`tasks/README.md`、`progress.md`和必要memory；archive保留历史原路径；
+6. fresh configure后从实际CMake graph重算source/test registration，运行完整build与全部registered本地tests。
 
-安装规则只在canonical build显式开启product install且importer、SPMD partitioner与configured helper均闭合时注册。一次完整build
-产生两个安装组件：`Compiler`包含`wafer-compile`、helper、device linker、CRT/ABI、产品Python adapter和`wafer-verify-program`；
-`Runtime`包含`wafer-run`及其loader/report资源。完整安装包含两者，部署时可以从同一build只选择`Runtime`组件；这不定义或要求
-runtime-only build。本仓当前不支持通过关闭importer、StableHLO或SPMD来形成另一种产品，dependency/configuration gate build不注册
-任何产品install rule，也不维护feature-off install测试。C++ library/header是repo-current build component，不承诺SDK、CMake package
-export或外部consumer link compatibility。
+本任务只改变源码组织，正例仍使用现有真实规模IR回归证明搬迁没有丢失能力：rank至少3，主要迭代维度覆盖1024与
+1025/1031，包含多Tile、remainder和tail。目录检查、FileCheck或单个unit通过不能代替named pipeline/直接下游witness。
 
-这一边界不承诺稳定C ABI、plugin SDK、通用compiler session或用户可拼pass pipeline。Wafer-owned CLI/current API原位替换，
-不保留旧flag alias、build-tree compatibility wrapper或第二production driver。
+完成时必须同时满足：
 
-## 6. Test organization
-
-tests按所证明的边界组织：
-
-- Dialect：parser/printer/verifier与negative contracts；
-- Conversion/Transforms：局部IR边界、legality与failure atomicity；
-- Unit：typed API、analysis、serializer、runtime plan、model kernel；
-- Pipelines/Tools：named pipeline和public driver纵向；
-- Runtime：current manifest/no-card/provider lifecycle；
-- Model：same-target-LLVM functional differential；
-- Board：仅current board-ready case、payload/oracle和串行runner。
-
-测试不得长期手工拼source-to-package passes、复制schema/ABI enum、依赖private candidate ordinal，或通过旧fixture要求保留已退役
-source。删除功能时删除对应only-purpose fixture/golden/catalog；通用负例迁到current owner。
-
-## 7. Source review checks
-
-每个非小修批次至少检查：
-
-1. public header是否只暴露一个current typed interface；
-2. source/CMake/test是否同时删除旧consumer与旧producer；
-3. 新对象是否帮助legality、planning、lowering、diagnostic或删除旁路；
-4. analysis state是否query-local且可从current IR重算；
-5. physical identity是否显式传递而非从name/ordinal/pid推导；
-6. schema/ABI key、enum、version是否单一owner；
-7. pipeline contract、任务文档和代码是否同批更新；
-8. full build、unit/lit/CTest和source-organization scan是否fresh通过。
-
-推荐的residual search按概念分组执行，并逐条区分合法tensor rank、外部ABI spelling和已归档历史；不能机械替换所有
-`rank`。当前source合同不得再出现旧execution-domain API、旧manifest version/reader、late selector、按模型/shape/name
-恢复语义的matcher、拥有独立selection/public控制面的algorithm pass或已删除board tooling入口。
-
-## 8. Physical-Dataflow Source Cutover Boundary
-
-源码组织只证明实现owner、build registration和test registration，不代签算法、IR或端到端完成。Physical-dataflow迁移必须满足：
-
-- baseline和search分别只有一个policy-specific controller与TileModule materializer；允许共享的窄leaf位于其真实IR或
-  lowering owner中，不以mode、nullable callback或plan variant形成shared complete facade；
-- 每个IR transformation只有一个active实现，named pipeline、focused工具和production driver调用同一builder或conversion；
-- 旧producer、consumer、public header、CMake source、test registration和only-purpose fixture在同一cutover删除，不保留
-  compatibility wrapper、fallback或读取源码marker的伪合同；
-- dormant source中的独有algorithm、proof、diagnostic和test witness先映射到current owner、production caller和direct test，
-  再决定迁移或删除；未进CMake不等于无能力；
-- organization checker从filesystem、CMake和registered test graph取得active truth，只维护不能自动推导的policy例外；
-  checker通过、单个target编译或文件删除都不能证明current source-to-package纵向完成。
+- filesystem中每个Wafer-owned C/C++ translation unit和test恰有一个active owner或明确current dormant disposition；
+- `include/Wafer` public header自包含，component link closure通过；
+- 旧目录和旧CMake target/include spelling在current source、test和current docs中为零；
+- 所有registered tests实际执行，无因迁移新增的unsupported、skip或未注册case；
+- canonical build第二次运行为Ninja no-op；
+- `git diff --check`、source/IR organization、dependency layering及完整diff复审通过。
