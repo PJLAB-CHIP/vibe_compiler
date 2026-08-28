@@ -11,8 +11,9 @@ Physical-dataflow search可以选择明确的transformation参数，但current I
 可以在物化前保存的是选择：
 
 - structured iteration的spatial partition和Tile placement；
-- TileRegion membership、top-level/nested execution和recompute/replica choice；
-- temporal tile vector、wave-loop order和tail方案；
+- TileRegion membership和显式replica choice；operation最终位于loop内或loop外不是choice；
+- 尚未被exact relation唯一决定的temporal tile vector和dependence-legal loop order；
+- attention fixed algorithm下尚未消费的K1/K2 block、FD contribution和merge choice；
 - 针对current value/use的layout、movement、worker或order choice。
 
 必须先进入candidate-owned current IR才能存在的是事实：
@@ -51,8 +52,9 @@ Pipeline position:
 - Current stage responsibility:
   none由baseline-owned materializer从current TensorProgram和固定规则直接构造actual Card/TileRegion IR，不创建search choice/domain/state；
   search才枚举spatial/region/temporal transformation choice并交给search-owned structural materializer。两条policy随后各自只在
-  current IR上依次完成layout/view/bufferization、movement、execution structure、TileRegion-to-Instr、worker/order/completion，
-  再以completion-closed Instr进入共同actual leaf。
+  current IR上先完成compact temporal tile-and-fuse；该stage保持attention semantic op opaque。独立selected-attention lowering随后
+  消费剩余attention choice并生成actual Linalg/Tensor/SCF，之后依次完成layout/view/bufferization、movement、execution structure、
+  TileRegion-to-Instr、worker/order/completion，再以completion-closed Instr进入共同actual leaf。
 - Output IR / files:
   policy-complete、verifier-valid的CardModule/TileModule/TileRegion/Instr IR，以及由同一accepted owner形成的
   CardExecutable和ExecutablePackage。
@@ -158,14 +160,15 @@ invalid和exact-empty保持不同typed result。
 
 ### 5.2 TileRegion formation
 
-对每个Tile的local structured DAG，region choice决定哪些root work进入同一TileRegion，以及producer是top-level、
-consumer-nested还是explicit recompute/replica。同region只选择共同local-storage scope，不证明SPM residency；只有actual producer work位于consumer
+对每个Tile的local structured DAG，region choice决定哪些root work进入同一TileRegion。一个producer相对当前Region只有三种
+结构选择：位于Region外、在Region内实际存在一次、或明确允许为selected consumer实际复制。它不选择top-level/nested、stored/direct、
+spill或future delivery。同region只选择共同local-storage scope，不证明SPM residency；只有actual producer work位于consumer
 traversal内、中间值由direct SSA使用且无独立DDR往返时才称为coupled traversal。
 
 Region choice只决定哪些actual operations进入同一TileRegion，不预先指定future producer delivery、nested placement或storage。
 05号access-relation e-graph已经在policy分叉前完成并且只运行一次；本stage不读取或重建e-graph。Materializer先生成保留真实
-producer/use关系的current SSA，candidate attention expansion由其owner直接生成canonical actual Linalg。随后由同一transaction中的SCF
-tile-and-fuse transformation依据current operation、use-def、indexing relation、effect和region boundary立即决定并执行fusion。Producer留在consumer loop外或
+producer/use关系的current SSA；attention此时仍是一个semantic op。随后由同一transaction中的SCF tile-and-fuse transformation依据
+current operation、use-def、indexing relation、effect和region boundary立即决定并执行fusion。Producer留在consumer loop外或
 进入loop内只能是rewrite后的actual IR结果，不能由`LocalUseDelivery`、布尔rewire或其它旁路计划声明。
 
 Region choice必须覆盖fanout的每个use、reduction partial/merge、effect order和observable output。完全无依赖的
@@ -173,21 +176,38 @@ components不为扩大region而合并。SPM residency不是独立上层choice，
 
 ### 5.3 Temporal tiling
 
-每个actual traversal选择complete temporal tile vector和loop order，不允许单一标量`tile_size`代替多轴语义。所有wave和
-tail必须all-and-only覆盖local work domain；reduction accumulator和loop-carried state必须在物化的SSA/control flow中表达。
+每个actual traversal选择complete temporal tile vector和loop order，不允许单一标量`tile_size`代替多轴语义。Temporal domain只枚举
+真正自由的tile axis和每个dependence-legal loop order；所有合法自由取值保留在确定性的lazy domain中。Proposal或cost只能改变
+访问顺序，不能Top-k或删除raw choice。所有wave和tail必须all-and-only覆盖local work domain；reduction accumulator和
+loop-carried state必须在物化的SSA/control flow中表达。
 
-Temporal materialization以一个canonical SCF loop nest承载同一traversal。完整块和remainder共享同一个current loop body；
+Producer tile是否由consumer tile唯一决定，只能由一次transformation调用内的只读exact tile-relation query判断。该query只读取current
+producer/result、current consumer/operand、已经选定的自由tile参数、indexing map与`IndexRelation`/`ExactIndexSet`，不调用会修改IR的
+tiling builder，也不保存offset、extent、operation或SSA到`TemporalPlan`。只有证明为total single-valued relation时才能把producer参数
+作为派生量移出domain；存在多个合法取值时继续完整枚举，无法证明或当前接口不支持时保留独立producer traversal和Region candidate。
+查询结果区分exact、unsupported、indeterminate和broken contract；unsupported/indeterminate只关闭本次fusion机会，不签发resource结论，
+broken contract终止该candidate。
+
+Temporal materialization以一个canonical SCF loop nest承载同一traversal。完整块和remainder先共享同一个current loop body；
 offset与bounded tile size由loop IV和exact upper bound计算。不得在结构层递归生成`first / steady / tail`的多维笛卡尔积，
 也不得按wave trip count复制compute closure。当前Instr只接受static shaped buffer时，先形成上述canonical loop，再在直接
-需要static shape的边界只peel最后一个partial iteration并canonicalize其bound；不peel first iteration，不让tail
-specialization提前复制无关producer closure。
+需要static shape的边界按内到外peel每个ragged loop的最后一个partial iteration，promote单次tail loop并canonicalize其bound；
+不peel first iteration，不让tail specialization提前复制无关producer closure。若有`r`个非整除tiled axes，静态main/tail
+组合最多为`2^r`，不能恢复三段式`3^r`展开。
 
 实现使用pinned MLIR的`TilingInterface`、SCF tiling和producer-fusion API作为loop/fusion的唯一mechanics owner。
 Fusion control直接读取current SSA：producer必须位于同一actual Region、tile relation exact、effect允许移动，且不会因multi-use、
-reduction/contraction或consumer tile overlap引入未选择的重算；cross-region和collective保持barrier。Explicit recompute/replica若作为
-search alternative，必须先在自己的candidate clone中实际创建producer operation，再进入同一fusion transformation，不能恢复
-future delivery plan。Tile-and-fuse后只运行有界local canonicalization清理本次新建的slice/view恒等式，不重新运行全图e-graph；
+reduction/contraction或consumer tile overlap引入未选择的重算；cross-region和collective保持barrier。Explicit replica若作为
+search alternative，必须先在controller拥有的candidate IR中实际创建producer operation，再进入同一fusion transformation，不能恢复
+future delivery plan。相同consumer中的相同exact request由standard fusion后scoped CSE合并；多个consumer默认共享一个loop外producer，
+只有显式replica choice才允许实际复制。Exact但重叠的不同request、unknown relation和effectful producer不融合。Reduction/contraction
+不作为统一barrier：标准interface与all-and-only、无重叠result tile relation均可证明时参与fusion；其余保持current producer独立。
+Tile-and-fuse后只运行有界local canonicalization、CSE和DCE清理本次新建的slice/view恒等式，不重新运行全图e-graph；
 pinned接口暂时不能表达的exact reshape或`tensor.insert_slice` window只保留窄的current-SSA adapter。
+
+Candidate transaction的owner只由controller建立一次：已有candidate-owned IR时本stage直接rewrite，不再clone Card/Tile owner；只有试行
+existing isolated owner上的alternative且caller仍需保留原IR时，controller才clone最近的`IsolatedFromAbove` scope。Standard tiling创建的
+tiled producer是最终actual IR，不是scratch owner clone。Baseline独占自己的IR，不进入search clone或frontier。
 
 Spatial、region和temporal choice闭合后，唯一structural materializer立即生成candidate-owned CardModule/TileModule/TileRegion、
 Linalg/Tensor/SCF或typed Tile work，并返回actual SSA。下游不消费未物化execution/value ID。
@@ -195,9 +215,16 @@ Linalg/Tensor/SCF或typed Tile work，并返回actual SSA。下游不消费未�
 ### 5.4 Attention
 
 Normalized TensorProgram中的`wafer.linalg_ext.attention`已将`flash_attention`或`flash_decoding`固定为graph fact。Search只选择
-Q/K/V的spatial partition、K/V block、temporal traversal、region fusion和movement。Structural materializer在candidate transaction中
-直接展开canonical actual QK contraction、scale/mask、online max/sum、PV contraction、state update/merge和final divide，再使用普通
-Linalg/Tensor/SCF与同一Tile/Instr lowering，不创建attention专用shadow graph，也不调用05号全图normalization来修补展开结果。
+Q/K/V的spatial partition、K/V block、temporal traversal、region membership和movement。5.2/5.3形成Region与ordinary temporal
+tile-and-fuse时attention保持同一个semantic op；generic fusion不得查看或规划其QK、PV、online state和merge。它只能通过attention
+当前`TilingInterface`保持K1/K2完整地处理output/parallel tile，以及无需推测内部use/replica即可由公开relation精确证明的外部edge；
+其它attention edge保持barrier。
+
+紧随本stage的selected-attention lowering由05号定义。它从current attention op、固定algorithm与尚未消费的K1/K2、FD contribution/
+merge choice一次性创建canonical actual QK contraction、scale/mask、online Maximum/Sum/Accumulator、PV contraction、state combine/
+finalize和必要SCF state，然后擦除attention op，并只对本次新建loop复用5.3的late remainder specialization。该transformation不重跑
+generic tile-and-fuse，不接收future action/value/materialization inventory，也不clone整个candidate owner；输出直接交给layout。
+进入layout时attention op必须为零。
 
 ## 6. Current IR 上的 physical realization
 
@@ -325,6 +352,7 @@ Allocator不返回retile、spill、layout、route或completion repair recipe。
 | --- | --- | --- |
 | pure structured logical graph normalization | 05号bounded access-relation e-graph；输出verified canonical Tensor/Linalg graph，不发布e-class | spatial/region search、PBQP、movement、Instr lowering |
 | temporal tiling、producer fusion和本次新建slice/view local cleanup | 5.2/5.3 structural transformation；输出final current loop/use graph | e-graph extractor、layout PBQP、memory planner |
+| selected attention algorithm lowering | 05号selected-attention transformation；输入保持opaque的current attention op与尚未消费的显式choice，输出actual Linalg/Tensor/SCF且attention为零 | compact tile-and-fuse、layout PBQP、Instr lowering或winner阶段 |
 | function-boundary与region-local bufferization、view/alias、materializing allocation | 6.1 layout/bufferization transformation；输出layout-resolved、function-boundary-bufferized current IR | actual memory/target leaf、SPM/DDR planner |
 | 普通layout/bufferization allocation的创建位置 | 创建该allocation的6.1 transformation；allocation在current IR中的dominance/effect位置就是memory input事实 | MiniMalloc前的generic first-use sinking或lifetime改写 |
 | software pipeline/rotating allocation root、slot selection和loop-carried SSA | 6.3 execution-structure transformation；输出actual loop与allocation roots | BodyEmitter旁路buffer plan、SPM planner按queue depth补建 |
@@ -420,7 +448,8 @@ Actual capacity rejection默认只对产生该current IR的完整choice有效。
 源码稳定职责为：
 
 - TensorProgram analysis：structured semantics、exact demand、spatial/region/temporal choice domain；
-- TensorProgram/Card/Tile transforms：structural materialization、layout/view/bufferization和movement；
+- TensorProgram/Card/Tile transforms：structural materialization、compact temporal tile-and-fuse、selected attention lowering、
+  layout/view/bufferization和movement；
 - TileRegion-to-Instr conversion：deterministic target-abstract lowering；
 - Instr analysis/transforms：worker/order、completion、lifetime和memory problem derivation；
 - actual memory/transport/target leaf：offset、range、resource、ABI和CardExecutable acceptance；
@@ -451,6 +480,11 @@ Current迁移必须遵守：
 
 - post-attention ordinary logical normalization只在policy分叉前运行一次；attention op在该pass中保持opaque，candidate attention展开及
   后续stage不再调用e-graph；e-graph budget exhaustion保持对应current component不变且不进入candidate key或legality；
+- compact temporal tile-and-fuse产生的每个attention occurrence保持同一op kind、algorithm、type、result和内部opaque边界；
+  occurrence增量只能由selected outer tile、necessary tail或explicit replica解释。Exact tile-relation query只读取公开operand/result
+  relation，不构造内部QK/PV/state；selected-attention lowering在layout前对每个actual occurrence运行一次且输出attention为零；
+- temporal domain只在exact total single-valued proof下删除派生参数；non-unique、unsupported和indeterminate case保留原自由维度或
+  独立producer，Region candidate不因fusion无法证明而消失；
 - instrumentation on/off产生同一IR、candidate result和package；
 - 每个candidate的actual Card/TileRegion/Instr owner只物化一次，winner不重建；
 - 不存在代表future operation/value/buffer/event/schedule的跨stage状态或为其服务的parity verifier；
@@ -468,7 +502,10 @@ Current迁移必须遵守：
 - 每TileRegion的structured execution数的minimum/average/maximum和singleton region数；
 - 每TileRegion的actual nested operation数的minimum/average/maximum；
 - region-local use、cross-region external use和actual DDR/peer movement数；
-- current SSA local edge、loop外/loop内producer occurrence、fusion barrier和explicit recompute数；
+- current SSA local edge、loop外/loop内producer occurrence、fusion barrier和explicit replica数；
+- 每个traversal的自由与exact-derived temporal axis数、main/remainder静态variant数；`r`个ragged tiled axes不超过`2^r`且first peel为零；
+- attention在compact tile-and-fuse前后的occurrence及其outer-tile/tail/replica witness，以及selected-attention lowering后的
+  QK/PV/state/merge actual occurrence；不输出预测action inventory；
 - function-boundary bufferization产生的copy按必要性证据和memory-space pair分类；冗余DDR→DDR publication copy为0，进入
   movement和Instr conversion的未分类`memref.copy`为0；
 - accepted final Wafer Instr总数、per-Tile minimum/average/maximum和per-kind exact count；

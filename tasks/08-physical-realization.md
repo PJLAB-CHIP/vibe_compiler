@@ -9,8 +9,9 @@
 ```text
 Pipeline position:
 - Upstream IR / input:
-  spatial/region/temporal choice已物化的candidate-owned structural Card/TileRegion IR；current op、indexing maps、
-  Tiling/DPS/Bufferizable interfaces、SSA/view/control flow、dtype/shape/effect与target topology均可验证。
+  spatial/region/temporal choice、compact tile-and-fuse及selected-attention lowering均已物化的candidate-owned structural
+  Card/TileRegion IR；attention op已经为零，current Linalg/Tensor/SCF、indexing maps、Tiling/DPS/Bufferizable interfaces、
+  SSA/view/control flow、dtype/shape/effect与target topology均可验证。
 - Current stage responsibility:
   从current IR派生logical IndexRelation、alias/root和shape bounds；由memref encoding解释footprint、alignment、
   valid/padding domain与logical-to-physical bit mapping。第一个transformation一次完成function-boundary与region-local bufferization，
@@ -53,8 +54,9 @@ Physical realization不是一个同时猜layout和route的builder：
 
 ```text
 post-attention bounded logical normalization
-  -> temporal tile-and-fuse and final current SSA/use graph
   -> structural TileRegion
+  -> compact temporal tile-and-fuse; attention remains opaque
+  -> selected-attention lowering and final current SSA/use graph
   -> layout/view/function-boundary and region-local bufferization
   -> layout-resolved TileRegion
   -> movement/staging/boundary closure
@@ -206,15 +208,15 @@ compute/movement/communication必须完成后才能释放。
 
 把多个traversal放入同一region只证明共享一个residency domain，不证明op fusion或coupled traversal。coupled traversal
 必须由producer work嵌入consumer traversal及其direct SSA tile use证明；同region的独立loop nests/local staging不能统计为
-fusion。类似地，requested resident action不等于actual residency：只有物化后的root/use/effect/order/completion证明中间值
+fusion。类似地，same-region或local-once choice不等于actual residency：只有物化后的root/use/effect/order/completion证明中间值
 未经过DDR，且09在final Instr上给出合法offset，才形成可接受的SPM事实。
 
 Movement stage只交付actual compute/movement、endpoint、token和effect。后续execution-structure transformation才创建chunk/subview、
 prefix/steady/tail、独立或rotating buffer roots和slot reuse；再后续Instr stage创建issue order和matching completion。每项都必须能从
 其current Tile/Instr IR重建；一个pipeline flag、估算overlap窗口或descriptor side list既不能证明transfer，也不能缩短lifetime。
 
-spatial placement、temporal tile、fusion、encoding和communication由06的同一个physical-dataflow selection共同选择。
-本文只验证它物化的actual relation和physical dataflow，不因某个route更便宜而修改placement，也不创建独立layout或
+spatial placement、Region membership/replica、自由temporal tile、encoding和communication由06的physical-dataflow selection选择；
+fusion由这些choice物化后的current SSA transformation决定。本文只验证actual relation和physical dataflow，不因某个route更便宜而修改placement，也不创建独立layout或
 NoC selector。
 
 ## 7. Exact Descriptor 与 Invalid Lane
@@ -261,6 +263,8 @@ compile-time proof resource limit。planning query的typed结果可控制state�
 
 验证必须覆盖：
 
+- layout入口拒绝任何`wafer.linalg_ext.attention` residual，并接受selected-attention lowering产生的actual Linalg/Tensor/SCF、
+  coupled state和cross-Region tensor boundary；
 - structural→layout-resolved→physical TileRegion的逐stage positive/negative transition，wrong-form输入在直接stage拒绝；
 - exact PBQP对flat layout oracle的cost/tie/status一致性，以及baseline一次apply、search首proposal+完整raw域；
 - encoding interface的Tensor/NTensor/Cx/NCx、dtype、full/tail/padding与checked arithmetic；
@@ -274,5 +278,5 @@ compile-time proof resource limit。planning query的typed结果可控制state�
 - source-to-package integration实际执行，不以单op FileCheck代替。
 
 End-to-end search必须实际生成dependent producer/consumer remap、partial-overlap transfer和NoC-aware placement，
-并与temporal tile、fusion和LiveSPM共同选择。单个balanced sharding或per-Tile relation proof只能证明本层机制可用，
+并覆盖不同Region membership/replica、temporal tile、actual fusion结果和LiveSPM。单个balanced sharding或per-Tile relation proof只能证明本层机制可用，
 不能代签joint physical plan或accepted output。

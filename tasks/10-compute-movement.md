@@ -26,7 +26,7 @@ Pipeline position:
 - User-level driver / named pipeline:
   wafer-compile production pipeline；局部wafer-opt conversion只用于focused leaf testing。
 - Explicit non-goals:
-  不决定spatial placement、ready-op concurrency、fusion、TileRegion或retain/recompute choice；不在conversion中选layout、route、buffer、worker或completion；
+  不决定spatial placement、ready-op concurrency、fusion、TileRegion membership或explicit replica choice；不在conversion中选layout、route、buffer、worker或completion；
   lifetime、live set和cost只由直接analysis从current IR派生；不按workload、shape、
   parameter/symbol/op名字选择lowering；不分配physical offsets、runtime handles或launch slots；selected lowering失败终止compile。
 - Done criteria:
@@ -105,11 +105,12 @@ movement、独立或rotating buffer roots及slot relation、数据依赖和event
 
 ## 4. Compute Contracts
 
-### Attention selected decomposition
+### Attention selected lowering
 
-`wafer.linalg_ext.attention`只存在于normalized TensorProgram。planning从其interfaces和query-local
-`AttentionWorkDescription`读取Q/K/V/mask slices、coupled state、internal actions和resource facts，不创建IR。唯一winner在新Card
-subtree中先生成selected `tensor.extract_slice`、compact `scf.for`和Linalg compute：
+`wafer.linalg_ext.attention`从normalized TensorProgram保持到candidate的compact temporal tile-and-fuse输出；该stage只读取其公开
+operand/result relation，不展开内部算法。紧随其后的selected-attention lowering从current op interfaces、fixed algorithm和显式
+K1/K2/contribution/merge choice读取iterator、operand-demand与coupled-component relation，不创建future action/value inventory。
+每个candidate在自己的Card owner中一次性生成selected `tensor.extract_slice`、compact `scf.for`和Linalg compute：
 
 ```text
 QK contraction

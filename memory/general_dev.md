@@ -131,12 +131,13 @@ source program
   RootRegionWork仍留在query-local derived values。
 - Selected root leaf必须同时表达optional execution和owned merge placements。Merge-only Tile不是“没有leaf”；structural materializer必须证明
   每个merge由selected contribution work承接。Region choice闭合前不物化；闭合后production立即生成actual TileRegion IR。
-- region planning把group partition、execution placement和use delivery分开：required execution与explicit replica是不同typed IDs，
-  StoredRegionValue与DirectNestedValue是local binding选择，External由fragment未绑定直接表达。same Tile不自动fusion，movement也不能反向
-  新增replica或改变group。
-- Connected partition和fragment choices用opaque continuation lazy推进；它们在一次structural materialization中被消费。Pure producer replica可跨group/Tile，
-  required execution只有在same group时可local供给；fanout共享必须由多个bindings显式引用同一execution，split方案必须有多个replica IDs。
-  effectful producer不进入direct/replica choice。Region未闭合时public search不能越过到actual IR。
+- region planning只选择connected group membership，以及producer相对Region的`external`、`local-once`或`explicit-replica`。
+  它不选择top-level/nested、stored/direct、rewire或storage；same Tile不自动fusion，loop内/外位置只能由随后actual tile-and-fuse的
+  current SSA结果表达，movement也不能反向新增replica或改变group。
+- Connected partition和free temporal choices用opaque continuation lazy推进，并在一次structural materialization中消费。只有total
+  single-valued exact relation可以把producer tile作为派生量；non-unique/unsupported/indeterminate保留自由参数、独立producer和Region
+  candidate。Fanout默认共享一个actual producer，只有explicit replica choice才允许复制；effectful producer不进入replica choice。
+  Region未闭合时public search不能越过到actual IR。
 - 每个进入actual gate的candidate CardModule只经过一次无策略CardExecutable compilation函数：Tile module splitting、Tile→Instr、fresh
   completion、SPM/DDR、transport/resource/ABI和final recost。seam返回accepted、proven exact rejection或indeterminate；
   actual result返回controller；lowering不能枚举、retile、spill、rebuffer或修candidate。带完整owner relation的actual rejection可关闭当前

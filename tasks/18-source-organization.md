@@ -86,8 +86,10 @@ single-card current path向physical-dataflow stage交付一个完整card-local T
 - graph normalization：从current TensorProgram typed SSA证明完整attention并创建一个fixed-algorithm semantic op；不构造
   algorithm points或isolated alternative；
 - physical-dataflow selection：从fixed TensorProgram roots构造query-local exact demand和typed spatial/region/temporal choices；
-- CardModule/TileRegion materialization：消费每个闭合structural choice并立即生成actual IR；attention先展开selected Linalg/Tensor/SCF，
-  再确定性转换到wafer.tile；
+- CardModule/TileRegion materialization：消费每个闭合structural choice并立即生成actual IR；compact temporal tile-and-fuse保持attention
+  semantic op opaque，只处理ordinary current SSA和接口可证明且不依赖内部use/replica推测的attention外部edge；
+- selected-attention lowering：在candidate Card owner中消费fixed FA/FD和尚未使用的K1/K2/contribution/merge choice，一次性生成actual
+  Linalg/Tensor/SCF与coupled state；不创建future action/value inventory，输出attention为零并直接交给physical realization；
 - current-IR physical realization：先一次完成function-boundary与region-local bufferization/layout/view，再应用movement choice；
   每次rewrite后验证并使旧analysis失效；
 - current-IR layout query：Planning内部的通用exact PBQP solver与factor builder只读candidate SSA/interface并返回query-local

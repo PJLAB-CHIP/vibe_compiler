@@ -26,9 +26,10 @@ Pipeline position:
   不保留e-graph、e-class ID、rewrite history或其它旁路表示。不产生文件、physical plan或runtime metadata。
 - Downstream consumer:
   physical-dataflow planning从normalized current graph的固定semantic roots构造spatial/region/temporal choice和exact
-  demand/coupled contribution/merge；
-  choice闭合后立即在candidate-owned Card subtree内展开attention并形成canonical actual TileRegion/SSA。后续layout、movement、bufferization、
-  Instr、completion和memory只从该current IR生成或重算。
+  demand/coupled contribution/merge；choice闭合后先在candidate-owned Card subtree内形成Region和ordinary temporal
+  tile-and-fuse，attention仍保持同一个semantic op。紧随其后的selected-attention lowering才消费尚未使用的K1/K2及
+  contribution choice，把该op一次性改写为canonical actual Linalg/Tensor/SCF。后续layout、movement、bufferization、Instr、
+  completion和memory只从该current IR生成或重算。
 - User-level driver / named pipeline:
   `wafer-compile`的`none`与`search`在policy分叉前共同运行同一normalization；
   `wafer-lower-stablehlo-to-linalg`及attention normalization leaf pipeline只用于IR replay和focused tests。
@@ -43,7 +44,8 @@ Pipeline position:
   bounded e-graph对支持的ordinary pure component只产生verified canonical Tensor/Linalg IR，预算耗尽保持原verified component且不改变
   legality；on/off以exact relation/scalar-region proof保持program语义和downstream representability，不要求结构choice集合逐项相同；
   `none`与`search`消费同一normalized TensorProgram；selected
-  prefill/decode分别沿06--15主线形成package/no-card，pre-structural choice阶段不展开attention IR，choice闭合后每个candidate只展开一次。
+  prefill/decode分别沿06--15主线形成package/no-card，compact temporal tile-and-fuse结束前不展开attention内部算法，
+  每个candidate只在独立selected-attention lowering中展开一次。
 ```
 
 ## 2. 稳定 TensorProgram 边界
@@ -161,7 +163,7 @@ tensor form返回一个与output同type的result；buffer form写入tied destina
 state buffer、merge owner或schedule字段。
 
 Q/K/V/output使用同一floating storage element type；scale保持source scalar floating type，并作为Maximum/Sum online state的
-element type，optional additive mask保持自己的显式floating type，selected decomposition按current SSA所表达的转换边界使用它们。
+element type，optional additive mask保持自己的显式floating type，selected-attention lowering按current SSA所表达的转换边界使用它们。
 Accumulator component使用output storage element type。这些都是op operand/type事实，不形成algorithm或physical candidate轴。
 
 current semantic subset是forward scaled dot-product attention和optional additive/broadcast mask。dropout或其它random effect、backward、
@@ -205,7 +207,7 @@ attention op实现：
 
 - `DestinationStyleOpInterface`：output destination及tensor/buffer tie；
 - `TilingInterface`：iteration domain、iterator kinds、output tile position及Q/K/V/mask exact slices；semantic op只允许保持
-  K1/K2完整的output/parallel tiling，K2 coupled partial由selected decomposition物化；
+  K1/K2完整的output/parallel tiling，K2 coupled partial由selected-attention lowering物化；
 - `MemoryEffectOpInterface`：tensor form pure，buffer form读取inputs并写destination；
 - `ReifyRankedShapedTypeOpInterface`：从output map/type重建result shape；
 - `WaferCoupledReductionOpInterface`：为planning提供不创建IR的coupled-state描述。
@@ -331,35 +333,32 @@ attention op、package和runtime不拥有cache allocation、eviction、serving s
 
 ### 6.1 Pure work description
 
-attention op不能作为opaque cost box进入actual admission，也不能在winner阶段突然产生hidden temporaries。planning library从op和已经关闭的
-spatial/temporal prefix派生query-local typed result：
+attention op不能作为opaque cost box进入actual admission，也不能在winner阶段突然产生hidden temporaries。Planning从current op和已经关闭的
+spatial/temporal prefix执行一次只读语义查询；结果只描述当前op能够证明的逻辑域与显式choice，不描述未来operation、SSA或buffer：
 
 ```text
-AttentionWorkDescription
-  root: SemanticRootKey
-  outputPiece / contribution / merge identities
-  actions: QK, ScaleMask, RowMax, Exponential, RowSum,
-           PV, StateUpdate, StateMerge, Finalize
-  values: operand slices, score/probability scratch,
-          block/running/partial state components, final output
-  exact indexing and occurrence relations
+query-local result
+  semantic root and fixed algorithm
+  iterator roles and exact ranges
+  selected output-piece and K2-contribution intervals
+  operand-demand indexing relations
+  coupled component maps and merge/finalization requirement
   logical work and mandatory simultaneous-state groups
 ```
 
-action/value ID由`SemanticRootKey`、output piece、contribution和closed action kind形成；root key遵守06号文档的
-observable SSA path合同，不含operation pointer、block/operation ordinal、Tile ordinal、printed name或future worker。该description
-不进入candidate state、IR attr或文件；相关spatial/temporal choice变化后重算。
+Semantic root遵守06号文档的observable SSA path合同，不含operation pointer、block/operation ordinal、Tile ordinal、printed name或
+future worker。查询结果不分配action/value/materialization ID，不进入candidate state、IR attr或文件；相关spatial/temporal choice变化后重算。
 
 ### 6.2 Physical stage映射
 
-| Stage | AttentionWorkDescription投影 |
+| Stage | 只读attention语义查询的投影 |
 | --- | --- |
 | Spatial | FA要求K2 logical interval-count product为1；FD要求该product大于1；其它parallel/K1 axes仍按通用domain处理 |
 | Exact demand | Q/K/V/mask operand demand、per-output final owner、FD coupled contributions与merge requirement |
-| Root work | root-local execution、contribution/merge work、support/boundary和selected leaf action closure |
-| Region | attention root与producer/consumer的stored、nested或boundary use；内部attention actions不变成独立semantic roots |
-| Temporal | K1/K2及parallel scopes、exact tail、multi-result running state和nested invocation classes |
-| Structural materialization | spatial/region/temporal choice在candidate transaction中展开actual action、state component、loop和SSA |
+| Root work | root-local output、K2 contribution/merge requirement以及external support/boundary |
+| Region | attention root与外部producer/consumer的Region membership和显式replica；内部算法步骤不成为Region choice |
+| Temporal | output/parallel自由tile、K1/K2自由block与dependence-legal loop order；可唯一推导的operand tile不是独立choice |
+| Structural materialization | 先形成attention仍opaque的actual Region/outer loop/SSA，再由独立selected-attention lowering展开内部算法 |
 | Layout/view/bufferization | 针对current operand、scratch、running/partial state和final output建立actual layout conversion、view/alias和allocation |
 | Movement | 从current producer/use创建Q/K/V fanout或stage、FD state transfer、relay和local combine typed ops |
 | Instr scheduling | TileRegion-to-Instr后从current operation/effect/token重建event/dependence，应用worker/order并fresh构造completion |
@@ -370,20 +369,22 @@ K2 partition及stable embedding/merge owner；`search`枚举同一spatial domain
 每个current candidate由actual gate判定资源合法性；不得用attention work description、state数量或shape公式预测SPM fit。
 这只是physical policy差异，不改变attention op或算法，也不允许`none`把FD降回FA。
 
-这里不新增attention-specific layout、movement、buffer、schedule或resource interface。`AttentionWorkDescription`只是从
-current semantic op重算的短生命期work description；结构choice消费它生成actual IR后立即失效，不成为后续stage schema。
+这里不新增attention-specific layout、movement、buffer、schedule或resource interface。只读语义查询结果从current semantic op
+与显式choice重算；它不携带future action/value/materialization identity，相关choice被actual transformation消费后立即失效，
+不成为后续stage schema。
 
-### 6.3 Candidate-owned Linalg展开与wafer.tile conversion
+### 6.3 Candidate-owned selected-attention lowering与wafer.tile conversion
 
 Spatial/region/temporal choice闭合后立即进入candidate transaction；不先构造physical value、storage、event或schedule的未来图。
 每个candidate执行：
 
 ```text
 spatial/region/temporal choice
-  -> validate current TensorProgram and recomputable AttentionWorkDescription
+  -> validate current TensorProgram and recomputable attention semantic query
   -> create one candidate-owned Card subtree
-  -> expand attention compute directly to canonical selected linalg.matmul/generic/reduce
-  -> materialize selected tensor.extract_slice + canonical scf.for and fuse current producers
+  -> materialize Region and compact temporal tile-and-fuse while attention remains one semantic op
+  -> selected-attention lowering consumes fixed algorithm and remaining K1/K2/contribution choices
+  -> create canonical selected linalg.matmul/generic/reduce, tensor slices, scf.for and coupled state SSA
   -> build/apply current-SSA layout assignment, exact views and bufferization
   -> deterministically convert layout-resolved Linalg compute to wafer.tile.gemm/reduce/elementwise
   -> materialize actual movement on current SSA
@@ -391,6 +392,17 @@ spatial/region/temporal choice
   -> verify no attention or executable Linalg source remains
   -> actual CardModule-to-CardExecutable memory/target gate
 ```
+
+Compact temporal tile-and-fuse不得匹配attention内部的QK、PV、online state或merge，也不得调用selected-attention lowering。
+它只可通过attention当前`TilingInterface`保持K1/K2完整地切分output/parallel轴，并在current operand/result relation精确时处理
+不依赖内部use或replica推测的attention外部producer/consumer；其它外部edge保持barrier。K1/K2 block、FD contribution和merge choice
+在该stage尚未消费，继续作为显式choice交给下一直接stage。
+
+Selected-attention lowering是独立的candidate-owned transformation。它直接读取current attention op、固定`algorithm`和上述剩余choice，
+在同一owner中一次性创建actual Linalg/Tensor/SCF、loop-carried Maximum/Sum/Accumulator以及FD contribution/merge SSA，然后擦除该
+semantic op；随后只对本次新建的ragged attention loops复用structural stage的late remainder specialization。它不重跑全图e-graph或
+generic tile-and-fuse，不根据未来action/value inventory重放IR，不clone整个candidate owner，也不创建worker、Instr、join或wait。
+无法表达selected attention lowering时返回typed candidate failure，不换FA/FD、不保留opaque attention进入layout，也不调用另一builder。
 
 compute先到Linalg而不是attention emitter直接创建`wafer.tile`，以复用Linalg indexing/verifier和10号通用structured-to-tile lowering；
 但该Linalg只存在于candidate Card subtree transaction内部，不是公开stop stage。Rejected/loser subtree整体销毁，final winner不重建。
@@ -698,7 +710,7 @@ actual Linalg；若它产生冗余IR，应修正该emitter或其本地canonicali
 | fanout boundary | producer root的1/2/15 uses、chain/diamond；elementwise、reduction和contraction同构及混合uses；暂时DPS-init use与observable use；1024/1025/1031 | 任一use不是pure single-result Linalg data operand、map不可组合、完整maps无法恢复loop bounds、contraction signature不被current下游接受或需要改变iterator/result时整组保持；observable use持续阻挡 | projected Access由一次all-users propagation从全部consumer删除；每个consumer直接读取同一source SSA，operand/result maps、iterator、scalar/combiner、DPS init和compute occurrence精确检查；不复制Compute；被其它rewrite删除的暂时use在同一次pass内暴露并闭合，第二次运行byte-equivalent；observable barrier逐op保持 | StructuredDAG edge、partial-reduction tiler、named contraction lowering和producer occurrence inventory一致 |
 | attention/collective/effect barriers | ordinary DAG邻接attention、collective、SCF/call和effect | rule不得同时匹配barrier两侧；malformed输入由原verifier失败 | attention op数量、类型、result type、attributes、algorithm和region逐项不变；只允许data operand被exact同type SSA正常rewire | physical planning看到相同attention semantic roots |
 | pinned `egg` relation-service C ABI与ownership | empty/single/dense records；连续/并行compiler context；malformed tag/length/relation/callback result及forced Rust panic | configure/build缺依赖直接失败；callback typed Unsupported/WorkLimit/InternalError不发布partial rewrite | importer只含原始e-nodes；dynamic Applier实际创建RHS；无MLIR对象跨ABI；handle同步且不逃逸；allocator/deallocator all-and-only | named/driver同一pass和adapter |
-| deterministic budget与真实规模 | tiny independent e-class oracle；fresh PyTorch/HF/LLaMA dense ordinary component | relation/e-node/match/rebuild/extraction limit保持原component，不进入legality或candidate feedback | 相同budget产生相同IR/diagnostic；至少一个fresh真实component由两条以上rules产生非零有效变换；记录relation/e-node/e-class/match/iteration/extraction/wall/RSS | 第15项scale inventory与第16项完整pipeline reachability |
+| deterministic budget与真实规模 | tiny independent e-class oracle；fresh PyTorch/HF/LLaMA dense ordinary component | relation/e-node/match/rebuild/extraction limit保持原component，不进入legality或candidate feedback | 相同budget产生相同IR/diagnostic；至少一个fresh真实component由两条以上rules产生非零有效变换；记录relation/e-node/e-class/match/iteration/extraction/wall/RSS | 第16项scale inventory与第17项完整pipeline reachability |
 
 小shape只用于独立e-class congruence和extractor oracle；所有production rewrite family仍须由表中真实规模case覆盖。
 
@@ -742,8 +754,8 @@ GSPMD输出可能含由constants和static tensor views完全决定的partition/m
 - conflicting matches、malformed existing attention op或rewrite后verifier failure终止normalization；
 - normalization在首次mutation前收集完整proof，所有create/replace/erase通过同一个`IRRewriter`；不clone Module/Func/DAG；
 - algorithm classification缺decode proof只产生FA，不记录失败历史或候选；
-- op/interface无法描述selected spatial/temporal work时返回typed unsupported；planning description与physical plan矛盾是compiler contract error；
-- Candidate Linalg expansion、wafer.tile conversion或直接stage verifier失败擦除完整新Card subtree并终止该candidate，
+- op/interface无法描述selected spatial/temporal work时返回typed unsupported；current语义查询与显式choice矛盾是compiler contract error；
+- Selected-attention lowering、wafer.tile conversion或直接stage verifier失败擦除完整新Card subtree并终止该candidate，
   不在materializer内换算法、layout、route或buffer；
 - `none`和`search`任一失败都不调用另一policy兜底。
 
@@ -765,10 +777,13 @@ selected pieces，而不是只检查op或pass成功。
 4. functional KV prefix append/return的FD正负例；改变symbol、argument order或model name不改变分类，无法证明时稳定得到FA；
 5. 有界独立reference逐block比较FA state update，并逐partition/tree比较FD contribution/merge/finalize；reference可为逐点
    穷举缩小domain，但同一算法另以真实规模shape覆盖tail、多个output pieces和多block/partition；
-6. standard Tiling、Wafer coupled-state query及selected partial decomposition的shape/map/init/final owner一致，planning query前后IR
+6. standard Tiling、Wafer coupled-state query及selected attention lowering的shape/map/init/final owner一致，planning query前后IR
    byte-identical；
-7. `AttentionWorkDescription`的actions/values/occurrences与各physical stage typed objects all-and-only对应，actual candidate无hidden scratch/state/message；
-8. winner transaction中selected Linalg/Tensor/SCF只构造一次，随后全部成为existing wafer.tile compute；失败注入保持source和parent原样；
+7. 只读语义查询不产生action/value/materialization ID；selected lowering后scratch、state、contribution、merge和external boundary
+   all-and-only存在于current IR，没有hidden inventory；
+8. candidate transaction中compact tile-and-fuse产生的每个attention occurrence仍是同一op kind并保持algorithm/type/result语义，
+   只允许selected outer tile、necessary tail和explicit replica解释新增occurrence；selected-attention lowering对每个actual occurrence只运行一次；
+   生成的Linalg/Tensor/SCF随后全部成为existing wafer.tile compute，失败注入保持source和parent原样；
 9. `none`和`search`从同一normalized TensorProgram分别走自己的policy-specific materializer；baseline直接消费固定规则，
    search才消费explicit structural choice。两者在policy-complete Instr后消费共同actual leaf；不存在attention algorithm axis或whole-program clone；
 10. fresh运行current PyTorch产品入口，至少覆盖native SDPA causal prefill、当前HF attention prefill和functional two-step decode；

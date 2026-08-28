@@ -498,8 +498,8 @@
 - 根因：把“baseline不枚举可选edge action/route”误写成“任何跨Tile correctness communication都不存在”。不同op的确定性
   spatial shard集合可能不一致，同一Tile的private workspace也不能冒充card-shared中间buffer。
 - 修复模式：本地依赖使用compiler-owned DDR RegionCut；跨轴依赖只按typed indexing relation物化唯一required peer fragments，
-  destination先在compiler-owned DDR assembly，再进入独立consumer stage。可选peer/retained/recompute/layout动作和route优化仍只由
-  统一search拥有。
+  destination先在compiler-owned DDR assembly，再进入独立consumer stage。可选peer、explicit replica、layout/movement choice和route优化
+  仍只由统一search拥有；choice被选中后必须立即成为current operation/SSA/movement，不保存retain/recompute旁路状态。
 - 防复发：baseline回归同时覆盖本地multi-op chain的零peer和observable transpose的exact send/recv/wait；两者都必须16-Tile、
   buffer=1、actual fusion为零并通过package/no-card。
 
