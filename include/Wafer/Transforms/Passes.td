@@ -5,9 +5,12 @@
 
 include "mlir/Pass/PassBase.td"
 
-include "Wafer/Transforms/FrontendPasses.td"
-include "Wafer/Transforms/MemoryPasses.td"
-include "Wafer/Transforms/TargetPasses.td"
-include "Wafer/Transforms/TileLoweringPasses.td"
+include "Wafer/Transforms/StableHLO/Passes.td"
+include "Wafer/Transforms/Linalg/Passes.td"
+include "Wafer/Transforms/Module/Passes.td"
+include "Wafer/Transforms/Instr/Passes.td"
+include "Wafer/Conversion/StableHLOToLinalg/Passes.td"
+include "Wafer/Conversion/TileToInstr/Passes.td"
+include "Wafer/Conversion/InstrToLLVM/Passes.td"
 
 #endif // WAFER_TRANSFORMS_PASSES_TD

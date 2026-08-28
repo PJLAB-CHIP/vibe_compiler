@@ -2,7 +2,7 @@
 
 #include "Wafer/Target/Core/TargetFormat.h"
 #include "Wafer/InitWaferDialects.h"
-#include "Wafer/Transforms/TargetConversion.h"
+#include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"

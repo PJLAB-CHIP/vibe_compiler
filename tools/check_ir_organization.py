@@ -85,23 +85,18 @@ IR_LAYERS = {
     "Common",
 }
 CONVERSION_LIBRARIES = {
-    "WaferStandaloneTileModules": {
-        "include": "include/Wafer/Conversion/StandaloneTileModules/StandaloneTileModules.h",
-        "lib": "lib/Wafer/Conversion/StandaloneTileModules/StandaloneTileModules.cpp",
+    "WaferTileToInstr": {
+        "include": "include/Wafer/Conversion/TileToInstr/TileToInstr.h",
+        "lib": "lib/Wafer/Conversion/TileToInstr/TileToInstr.cpp",
     },
-    "WaferStructuredTiling": {
-        "include": "include/Wafer/Conversion/StructuredTiling.h",
-        "lib": "lib/Wafer/Conversion/StructuredTiling/StructuredTiling.cpp",
-    },
-    "WaferTileRegionToInstr": {
-        "include": "include/Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h",
-        "lib": "lib/Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.cpp",
+    "WaferInstrToLLVM": {
+        "include": "include/Wafer/Conversion/InstrToLLVM/InstrToLLVM.h",
+        "lib": "lib/Wafer/Conversion/InstrToLLVM/LowerInstrToTargetLLVM.cpp",
     },
 }
 STABLEHLO_CONVERSION_SOURCES = [
-    "lib/Wafer/Conversion/StableHLOToLinalg/AttentionMatching.cpp",
     "lib/Wafer/Conversion/StableHLOToLinalg/LegalizeStablehloToLinalg.cpp",
-    "lib/Wafer/Conversion/StableHLOToLinalg/NormalizeAttention.cpp",
+    "lib/Wafer/Conversion/StableHLOToLinalg/LowerStaticStablehloConcatenate.cpp",
     "lib/Wafer/Conversion/StableHLOToLinalg/NormalizeStablehloCollectives.cpp",
 ]
 FORBIDDEN_IR_STRINGS = (
@@ -432,6 +427,30 @@ def check_conversion_organization(root: Path, errors: list[str]) -> None:
             fail(errors, f"lib/Wafer/Conversion/CMakeLists.txt missing {name}")
     for relative in STABLEHLO_CONVERSION_SOURCES:
         check_file(root / relative, errors)
+
+    for name, cmake, include, source in [
+        (
+            "WaferLinalgTransforms",
+            check_file(
+                root / "lib/Wafer/Transforms/Linalg/CMakeLists.txt", errors
+            ),
+            "include/Wafer/Transforms/Linalg/StructuredTiling.h",
+            "lib/Wafer/Transforms/Linalg/StructuredTiling.cpp",
+        ),
+        (
+            "WaferStandaloneTileModules",
+            check_file(
+                root / "lib/Wafer/Driver/StandaloneTileModules/CMakeLists.txt",
+                errors,
+            ),
+            "include/Wafer/Driver/StandaloneTileModules/StandaloneTileModules.h",
+            "lib/Wafer/Driver/StandaloneTileModules/StandaloneTileModules.cpp",
+        ),
+    ]:
+        check_file(root / include, errors)
+        check_file(root / source, errors)
+        if name not in cmake:
+            fail(errors, f"component CMake is missing {name}")
 
     for old_conversion in [
         root / "include/Wafer/Conversion/TileRegionCandidate",

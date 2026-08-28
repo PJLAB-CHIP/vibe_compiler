@@ -1,3 +1,5 @@
+add_subdirectory(StandaloneTileModules)
+
 set(WAFER_DRIVER_SOURCES
   Driver/Compilation.cpp
   Driver/CompilationOrchestration.cpp

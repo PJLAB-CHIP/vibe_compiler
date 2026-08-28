@@ -47,13 +47,15 @@ add_mlir_library(WaferCompiler
   WaferFrontend
   WaferAnalysis
   WaferIR
+  WaferInstrToLLVM
   WaferPackageSupport
+  WaferStandaloneTileModules
   WaferStableHLOPipelines
   WaferTarget
   WaferTargetTensorMaterialization
-  WaferStructuredTiling
-  WaferTileRegionToInstr
-  WaferTileRegionPipelines
+  WaferLinalgTransforms
+  WaferTileToInstr
+  WaferTileToInstrPipelines
   WaferTransforms
   MLIRAffineToStandard
   MLIRAffineDialect

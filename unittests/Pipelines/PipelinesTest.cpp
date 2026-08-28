@@ -1,14 +1,14 @@
 //===- PipelinesTest.cpp - Production pipeline contracts ----------------===//
 
-#include "Wafer/Conversion/WaferTileRegionToInstr/Pipelines.h"
+#include "Wafer/Conversion/TileToInstr/Pipelines.h"
 #include "Wafer/CodeGen/TargetCodeGen.h"
 
 #include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Program/ProgramData.h"
-#include "Wafer/Transforms/MemoryPlanningPipelines.h"
+#include "Wafer/Transforms/Instr/MemoryPlanningPipelines.h"
 #include "Wafer/Transforms/Passes.h"
-#include "Wafer/Transforms/TargetConversion.h"
+#include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

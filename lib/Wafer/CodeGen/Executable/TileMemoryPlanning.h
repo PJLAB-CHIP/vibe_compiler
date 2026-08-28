@@ -5,7 +5,7 @@
 
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
-#include "Wafer/Transforms/MemoryPlanning.h"
+#include "Wafer/Transforms/Instr/MemoryPlanning.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"

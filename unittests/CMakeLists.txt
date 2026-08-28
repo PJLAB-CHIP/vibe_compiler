@@ -17,7 +17,7 @@ add_executable(WaferUnitTests
   CodeGen/Executable/ExecutableCompilationTest.cpp
   CodeGen/Executable/ExecutableLoweringTest.cpp
   CodeGen/Executable/SearchRoutingTest.cpp
-  Transforms/Transport/DirectDTETransportTest.cpp
+  Transforms/Instr/DirectDTETransportTest.cpp
   Program/ProgramTensorComparisonTest.cpp
   CodeGen/Executable/TileMemoryPlanningTest.cpp
   Transforms/Tile/StructuredBufferRelationsTest.cpp
@@ -28,8 +28,8 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/AttentionSpatialConstraintsTest.cpp
   Planning/PhysicalDataflow/CanonicalSpatialAssignmentTest.cpp
   Planning/PhysicalDataflow/CanonicalRegionPlanTest.cpp
-  Planning/PhysicalDataflow/CurrentIRLayoutOptimizationTest.cpp
-  Planning/PhysicalDataflow/ExecutionStructureMaterializationTest.cpp
+  Transforms/Tile/CurrentIRLayoutOptimizationTest.cpp
+  Transforms/Tile/ExecutionStructureMaterializationTest.cpp
   Planning/PhysicalDataflow/Search/PlanningSessionTest.cpp
   Planning/PhysicalDataflow/Search/ActualResultControllerTest.cpp
   Planning/PhysicalDataflow/Search/UnifiedSearchTest.cpp
@@ -41,12 +41,12 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/SpatialPlanTest.cpp
   Driver/ProgramResourceVerificationTest.cpp
   Program/ProgramDataTest.cpp
-  Conversion/AttentionNormalizationTest.cpp
-  Conversion/StructuredGraphEGraphTest.cpp
-  Conversion/StructuredGraphNormalizationTest.cpp
-  Conversion/StructuredTilingTest.cpp
-  Conversion/RequiredNCCJoinPlacementTest.cpp
-  Conversion/StandaloneTileModulesTest.cpp
+  Transforms/Linalg/AttentionNormalizationTest.cpp
+  Transforms/Linalg/StructuredGraphEGraphTest.cpp
+  Transforms/Linalg/StructuredGraphNormalizationTest.cpp
+  Transforms/Linalg/StructuredTilingTest.cpp
+  Transforms/Instr/RequiredNCCJoinPlacementTest.cpp
+  Driver/StandaloneTileModulesTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
   Dialect/Wafer/TargetTopologyTest.cpp
@@ -63,11 +63,11 @@ add_executable(WaferUnitTests
   Target/Layout/PhysicalTensorCodecTest.cpp
   Target/Layout/TargetTensorMaterializationTest.cpp
   Target/Core/TargetFormatTest.cpp
-  Transforms/MemoryPlanning/LifetimeAnalysisTest.cpp
-  Transforms/MemoryPlanning/MiniMallocPackingTest.cpp
-  Transforms/MemoryPlanning/StaticMemoryPackingTest.cpp
-  Transforms/Scheduling/RedundantTransferEliminationTest.cpp
-  Transforms/Target/LowerInstrToTargetLLVMTest.cpp
+  Transforms/Instr/LifetimeAnalysisTest.cpp
+  Transforms/Instr/MiniMallocPackingTest.cpp
+  Transforms/Instr/StaticMemoryPackingTest.cpp
+  Transforms/Instr/RedundantTransferEliminationTest.cpp
+  Conversion/InstrToLLVM/LowerInstrToLLVMTest.cpp
 )
 llvm_update_compile_flags(WaferUnitTests)
 target_include_directories(WaferUnitTests PRIVATE
@@ -97,8 +97,8 @@ target_link_libraries(WaferUnitTests
   WaferTargetTensorMaterialization
   WaferRuntime
   WaferStableHLOPipelines
-  WaferTileRegionPipelines
-  WaferStructuredTiling
+  WaferTileToInstrPipelines
+  WaferLinalgTransforms
   WaferStandaloneTileModules
   WaferTransforms
   MLIRAsyncDialect

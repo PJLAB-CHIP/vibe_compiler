@@ -4,7 +4,7 @@
 #define WAFER_COMPILER_TRANSFORMS_TILE_STRUCTUREDBUFFERRELATIONS_H
 
 #include "Wafer/Transforms/Tile/StructuredMaterializationRelations.h"
-#include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
+#include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"

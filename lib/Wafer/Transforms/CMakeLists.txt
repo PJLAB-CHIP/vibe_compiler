@@ -1,33 +1,23 @@
+add_subdirectory(Linalg)
+
 add_mlir_library(WaferTransforms
-  FrontendVerification.cpp
-  Bufferization/BufferizeInstrFunctionBoundaries.cpp
-  Execution/ExecutionStructure.cpp
-  Scheduling/RedundantTransferElimination.cpp
-  DDR/PlanDDRMemory.cpp
-  MemoryPlanning/LifetimeAnalysis.cpp
-  MemoryPlanning/MiniMallocPacking.cpp
-  MemoryPlanning/Pipelines.cpp
-  MemoryPlanning/StaticIndexRange.cpp
-  MemoryPlanning/StaticMemoryPacking.cpp
-  SPM/PlanSPMMemory.cpp
-  SPMD/ApplyDefaultSpmdSharding.cpp
-  SPMD/Pipelines.cpp
-  Target/MaterializeExecutionMesh.cpp
-  Target/MaterializeTargetTopology.cpp
-  Target/LowerInstrToTargetLLVM.cpp
-  Target/TargetLoweringVerification.cpp
-  Target/TargetCallIRAdapter.cpp
-  Target/TargetCallLoweringSupport.cpp
-  Target/MovementTargetCallLowering.cpp
-  Target/ComputeTargetCallLowering.cpp
-  Target/DirectDTETargetCallLowering.cpp
-  Target/PeripheralTargetCallLowering.cpp
-  Target/SyncTargetCallLowering.cpp
-  Target/InstructionTargetCallLowering.cpp
-  Target/TargetLLVMStructure.cpp
-  Target/TargetLLVMConversionPatterns.cpp
-  Target/TargetLLVMConversion.cpp
-  Target/StripTargetMetadata.cpp
+  StableHLO/FrontendVerification.cpp
+  StableHLO/SPMD/ApplyDefaultSpmdSharding.cpp
+  StableHLO/SPMD/Pipelines.cpp
+  Module/MaterializeExecutionMesh.cpp
+  Module/MaterializeTargetTopology.cpp
+  Module/StripTargetMetadata.cpp
+  Tile/ExecutionStructure.cpp
+  Instr/BufferizeInstrFunctionBoundaries.cpp
+  Instr/LifetimeAnalysis.cpp
+  Instr/MiniMallocPacking.cpp
+  Instr/NCCJoinPlacement.cpp
+  Instr/Pipelines.cpp
+  Instr/PlanDDRMemory.cpp
+  Instr/PlanSPMMemory.cpp
+  Instr/RedundantTransferElimination.cpp
+  Instr/StaticIndexRange.cpp
+  Instr/StaticMemoryPacking.cpp
   Passes.cpp
 
   DEPENDS
@@ -37,28 +27,26 @@ add_mlir_library(WaferTransforms
   WaferAnalysis
   WaferFrontend
   WaferIR
+  WaferInstrToLLVM
+  WaferLinalgTransforms
   WaferStableHLOToLinalg
   WaferTarget
-  WaferTileRegionToInstr
-  MLIRArithToLLVM
+  WaferTileToInstr
   MLIRArithDialect
   MLIRAsyncDialect
   MLIRBufferizationDialect
   MLIRBufferizationTransforms
   MLIRControlFlowDialect
-  MLIRControlFlowToLLVM
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
   MLIRLinalgTransforms
-  MLIRLLVMCommonConversion
   MLIRLLVMDialect
   MLIRMathDialect
   MLIRMemRefDialect
   MLIRPass
   MLIRSCFDialect
   MLIRSCFTransforms
-  MLIRSCFToControlFlow
   MLIRSupport
   MLIRTensorDialect
   MLIRTransforms
@@ -66,15 +54,18 @@ add_mlir_library(WaferTransforms
 )
 
 set(WAFER_COMPILATION_TRANSFORM_SOURCES
+  Transforms/Tile/CurrentIRLayoutOptimization.cpp
   Transforms/Tile/StructuredBufferRelations.cpp
   Transforms/Tile/StructuredNodeUseIndex.cpp
-  Transforms/Transport/DirectDTETransport.cpp
+  Transforms/Instr/DirectDTETransport.cpp
   PARENT_SCOPE)
 
-target_include_directories(obj.WaferTransforms PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
-                                                    ${PROJECT_SOURCE_DIR}/lib)
-target_include_directories(WaferTransforms PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
-                                                ${PROJECT_SOURCE_DIR}/lib)
+target_include_directories(obj.WaferTransforms PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${PROJECT_SOURCE_DIR}/lib)
+target_include_directories(WaferTransforms PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${PROJECT_SOURCE_DIR}/lib)
 
 target_link_libraries(obj.WaferTransforms PRIVATE WaferThirdPartyMiniMalloc)
 target_link_libraries(WaferTransforms PRIVATE WaferThirdPartyMiniMalloc)

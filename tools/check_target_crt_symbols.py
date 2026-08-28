@@ -278,7 +278,9 @@ def main() -> int:
     source_path = repo_root / "runtime" / "wafer_crt" / "src" / "wafer_tx81_crt.c"
     attrs_path = repo_root / "include" / "Wafer" / "IR" / "WaferAttrs.td"
     instruction_ops_dir = repo_root / "lib" / "Wafer" / "IR" / "Instr"
-    target_lowering_dir = repo_root / "lib" / "Wafer" / "Transforms" / "Target"
+    target_lowering_dir = (
+        repo_root / "lib" / "Wafer" / "Conversion" / "InstrToLLVM"
+    )
     registry_path = (
         repo_root / "lib" / "Wafer" / "Target" / "Core" / "TargetCall.cpp"
     )

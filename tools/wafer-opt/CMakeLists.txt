@@ -5,7 +5,7 @@ target_link_libraries(wafer-opt
   PRIVATE
   WaferIR
   WaferStableHLOPipelines
-  WaferTileRegionPipelines
+  WaferTileToInstrPipelines
   WaferTransforms
   MLIRAffineDialect
   MLIRArithDialect

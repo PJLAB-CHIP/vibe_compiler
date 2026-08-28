@@ -20,7 +20,7 @@ DORMANT_LIBRARY_SOURCES = {
 # build, not host CMake targets. tools/build_xla_spmd_partitioner_helper.py
 # owns their exact source manifest and copies them into the external build.
 EXTERNAL_HELPER_SOURCES = {
-    f"lib/Wafer/Transforms/SPMD/{name}.cpp"
+    f"lib/Wafer/Transforms/StableHLO/SPMD/{name}.cpp"
     for name in (
         "XlaSpmdBoundary",
         "XlaSpmdDriver",

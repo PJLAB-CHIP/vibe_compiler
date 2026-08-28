@@ -8,10 +8,10 @@
 
 #include "Wafer/CodeGen/Executable/BoundedTileExecutor.h"
 
-#include "Scheduling/RedundantTransferElimination.h"
-#include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
+#include "Wafer/Transforms/Instr/RedundantTransferElimination.h"
+#include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/Support/CompileTiming.h"
-#include "Wafer/Transforms/MemoryPlanningPipelines.h"
+#include "Wafer/Transforms/Instr/MemoryPlanningPipelines.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"

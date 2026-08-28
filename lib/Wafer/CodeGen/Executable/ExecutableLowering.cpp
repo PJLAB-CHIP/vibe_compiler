@@ -7,13 +7,13 @@
 #include "Wafer/CodeGen/Executable/BoundedTileExecutor.h"
 #include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
-#include "Wafer/Transforms/Transport/DirectDTETransport.h"
+#include "Wafer/Transforms/Instr/DirectDTETransport.h"
 
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/Topology/TargetTopology.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Target/Core/TargetMemory.h"
-#include "Wafer/Transforms/MemoryPlanning.h"
+#include "Wafer/Transforms/Instr/MemoryPlanning.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"

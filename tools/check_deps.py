@@ -92,9 +92,9 @@ SHARDY_API_NEEDLES = [
 
 SHARDY_API_ALLOWED_PREFIXES = [
     "include/Wafer/Frontend",
-    "include/Wafer/Transforms/SpmdPipelines.h",
+    "include/Wafer/Transforms/StableHLO/SpmdPipelines.h",
     "lib/Wafer/Driver",
-    "lib/Wafer/Transforms/SPMD",
+    "lib/Wafer/Transforms/StableHLO/SPMD",
     "tools/wafer-opt",
     "tools/wafer-verify-program",
 ]
@@ -459,7 +459,7 @@ def check_cmake_target_visibility() -> None:
         "WaferCompiler",
         "WaferFrontend",
         "WaferStableHLOPipelines",
-        "WaferTileRegionPipelines",
+        "WaferTileToInstrPipelines",
         "WaferTransforms",
         "WAFER_ENABLE_IMPORTER_DEPS",
         "StablehloRegister",
@@ -483,7 +483,7 @@ def check_cmake_target_visibility() -> None:
     for needle in [
         "WaferFrontend",
         "WaferStableHLOPipelines",
-        "WaferTileRegionPipelines",
+        "WaferTileToInstrPipelines",
         "WaferTransforms",
         "Stablehlo",
         "Shardy",
@@ -506,7 +506,7 @@ def check_cmake_target_visibility() -> None:
     for needle in [
         "WaferCompiler",
         "WaferStableHLOPipelines",
-        "WaferTileRegionPipelines",
+        "WaferTileToInstrPipelines",
         "WaferTransforms",
     ]:
         if needle in stablehlo_tool_cmake:
@@ -1023,8 +1023,8 @@ def check_egraph_sources(versions: dict[str, str]) -> None:
         REPO_ROOT
         / "lib"
         / "Wafer"
-        / "Conversion"
-        / "StableHLOToLinalg"
+        / "Transforms"
+        / "Linalg"
         / "EGraphCore"
     )
     lock = crate_root / "Cargo.lock"

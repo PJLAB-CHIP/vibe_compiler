@@ -11,7 +11,7 @@
 
 #include "Wafer/Support/CompileWorkStatistics.h"
 #include "Wafer/Target/Core/TargetMemory.h"
-#include "Wafer/Transforms/MemoryPlanning.h"
+#include "Wafer/Transforms/Instr/MemoryPlanning.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"

@@ -1633,8 +1633,8 @@ def prepare_egraph_sources(
         REPO_ROOT
         / "lib"
         / "Wafer"
-        / "Conversion"
-        / "StableHLOToLinalg"
+        / "Transforms"
+        / "Linalg"
         / "EGraphCore"
     )
     manifest = crate_root / "Cargo.toml"

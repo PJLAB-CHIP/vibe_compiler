@@ -8,7 +8,7 @@
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Target/Core/TargetMemory.h"
 #include "Wafer/Transforms/Passes.h"
-#include "Wafer/Transforms/TargetConversion.h"
+#include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Pass/Pass.h"

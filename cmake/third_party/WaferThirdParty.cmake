@@ -309,7 +309,7 @@ function(wafer_add_structured_egraph)
   endif()
 
   set(_wafer_egraph_crate
-    "${CMAKE_SOURCE_DIR}/lib/Wafer/Conversion/StableHLOToLinalg/EGraphCore")
+    "${CMAKE_SOURCE_DIR}/lib/Wafer/Transforms/Linalg/EGraphCore")
   set(_wafer_egraph_manifest "${_wafer_egraph_crate}/Cargo.toml")
   set(_wafer_egraph_lock "${_wafer_egraph_crate}/Cargo.lock")
   set(_wafer_egraph_vendor_record

@@ -5,7 +5,8 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Program/ProgramData.h"
 #include "Wafer/Target/Core/TargetMemory.h"
-#include "Wafer/Transforms/MemoryPlanning.h"
+#include "Wafer/Transforms/Instr/MemoryPlanning.h"
+#include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/MLIRContext.h"

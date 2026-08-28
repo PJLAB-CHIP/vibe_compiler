@@ -139,7 +139,9 @@ def _populate_workspace(
 
     helper_pkg = xla_dst / "wafer_tools"
     helper_pkg.mkdir()
-    source_root = repo / "lib" / "Wafer" / "Transforms" / "SPMD"
+    source_root = (
+        repo / "lib" / "Wafer" / "Transforms" / "StableHLO" / "SPMD"
+    )
     for source_name, overlay_name in HELPER_SOURCES:
         _symlink(source_root / source_name, helper_pkg / overlay_name)
     _symlink(

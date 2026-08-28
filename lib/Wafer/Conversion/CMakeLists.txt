@@ -1,46 +1,20 @@
-add_mlir_conversion_library(WaferStandaloneTileModules
-  StandaloneTileModules/StandaloneTileModules.cpp
+set(LLVM_TARGET_DEFINITIONS TileToInstr/Patterns.td)
+mlir_tablegen(TileToInstr/Patterns.inc -gen-rewriters)
+add_public_tablegen_target(WaferTileToInstrPatternsIncGen)
+
+add_mlir_conversion_library(WaferTileToInstr
+  TileToInstr/ComputeLowering.cpp
+  TileToInstr/MovementLowering.cpp
+  TileToInstr/MovementSupport.cpp
+  TileToInstr/PeerLowering.cpp
+  TileToInstr/TileToInstr.cpp
 
   ADDITIONAL_HEADER_DIRS
-  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/StandaloneTileModules
-
-  LINK_LIBS PUBLIC
-  WaferIR
-  MLIRIR
-  MLIRSupport
-)
-
-add_mlir_conversion_library(WaferStructuredTiling
-  StructuredTiling/StructuredTiling.cpp
-
-  ADDITIONAL_HEADER_DIRS
-  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion
-
-  LINK_LIBS PUBLIC
-  MLIRIR
-  MLIRLinalgDialect
-  MLIRSupport
-  MLIRTensorDialect
-  MLIRTilingInterface
-)
-
-set(LLVM_TARGET_DEFINITIONS WaferTileRegionToInstr/Patterns.td)
-mlir_tablegen(WaferTileRegionToInstr/Patterns.inc -gen-rewriters)
-add_public_tablegen_target(WaferTileRegionToInstrPatternsIncGen)
-
-add_mlir_conversion_library(WaferTileRegionToInstr
-  WaferTileRegionToInstr/ComputeLowering.cpp
-  WaferTileRegionToInstr/MovementLowering.cpp
-  WaferTileRegionToInstr/MovementSupport.cpp
-  WaferTileRegionToInstr/PeerLowering.cpp
-  WaferTileRegionToInstr/WaferTileRegionToInstr.cpp
-
-  ADDITIONAL_HEADER_DIRS
-  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/WaferTileRegionToInstr
+  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/TileToInstr
 
   DEPENDS
   WaferPassesIncGen
-  WaferTileRegionToInstrPatternsIncGen
+  WaferTileToInstrPatternsIncGen
 
   LINK_LIBS PUBLIC
   WaferAnalysis
@@ -55,18 +29,62 @@ add_mlir_conversion_library(WaferTileRegionToInstr
   MLIRTransforms
 )
 
-target_include_directories(obj.WaferTileRegionToInstr PRIVATE
+target_include_directories(obj.WaferTileToInstr PRIVATE
   ${CMAKE_CURRENT_BINARY_DIR})
 
+add_mlir_conversion_library(WaferInstrToLLVM
+  InstrToLLVM/ComputeTargetCallLowering.cpp
+  InstrToLLVM/DirectDTETargetCallLowering.cpp
+  InstrToLLVM/InstructionTargetCallLowering.cpp
+  InstrToLLVM/LowerInstrToTargetLLVM.cpp
+  InstrToLLVM/MovementTargetCallLowering.cpp
+  InstrToLLVM/PeripheralTargetCallLowering.cpp
+  InstrToLLVM/SyncTargetCallLowering.cpp
+  InstrToLLVM/TargetCallIRAdapter.cpp
+  InstrToLLVM/TargetCallLoweringSupport.cpp
+  InstrToLLVM/TargetLLVMConversion.cpp
+  InstrToLLVM/TargetLLVMConversionPatterns.cpp
+  InstrToLLVM/TargetLLVMStructure.cpp
+  InstrToLLVM/TargetLoweringVerification.cpp
+
+  ADDITIONAL_HEADER_DIRS
+  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/InstrToLLVM
+
+  DEPENDS
+  WaferPassesIncGen
+
+  LINK_LIBS PUBLIC
+  WaferAnalysis
+  WaferIR
+  WaferTarget
+  WaferTileToInstr
+  MLIRArithToLLVM
+  MLIRArithDialect
+  MLIRAsyncDialect
+  MLIRControlFlowDialect
+  MLIRControlFlowToLLVM
+  MLIRFuncDialect
+  MLIRIR
+  MLIRLLVMCommonConversion
+  MLIRLLVMDialect
+  MLIRMathDialect
+  MLIRMemRefDialect
+  MLIRPass
+  MLIRSCFDialect
+  MLIRSCFToControlFlow
+  MLIRSupport
+  MLIRTransforms
+)
+
+target_include_directories(obj.WaferInstrToLLVM PRIVATE
+  ${PROJECT_SOURCE_DIR}/lib)
+target_include_directories(WaferInstrToLLVM PRIVATE
+  ${PROJECT_SOURCE_DIR}/lib)
+
 add_mlir_conversion_library(WaferStableHLOToLinalg
-  StableHLOToLinalg/AttentionMatching.cpp
-  StableHLOToLinalg/ConstantTensorFolding.cpp
   StableHLOToLinalg/LegalizeStablehloToLinalg.cpp
   StableHLOToLinalg/LowerStaticStablehloConcatenate.cpp
-  StableHLOToLinalg/NormalizeAttention.cpp
-  StableHLOToLinalg/NormalizeStructuredGraph.cpp
   StableHLOToLinalg/NormalizeStablehloCollectives.cpp
-  StableHLOToLinalg/StructuredGraphEGraph.cpp
 
   DEPENDS
   WaferPassesIncGen
@@ -86,10 +104,6 @@ add_mlir_conversion_library(WaferStableHLOToLinalg
   MLIRTensorDialect
 )
 
-target_link_libraries(WaferStableHLOToLinalg PRIVATE
-  WaferThirdPartyStructuredEGraph)
-add_dependencies(WaferStableHLOToLinalg WaferStructuredEGraphBuild)
-
 if(WAFER_ENABLE_IMPORTER_DEPS)
   target_compile_definitions(obj.WaferStableHLOToLinalg PRIVATE
     WAFER_ENABLE_STABLEHLO=1)
@@ -105,16 +119,19 @@ add_mlir_library(WaferStableHLOPipelines
   StableHLOToLinalg/Pipelines.cpp
 
   LINK_LIBS PUBLIC
+  WaferLinalgTransforms
+  WaferStableHLOToLinalg
   WaferTransforms
   MLIRPass
   MLIRTransforms
 )
 
-add_mlir_library(WaferTileRegionPipelines
-  WaferTileRegionToInstr/Pipelines.cpp
+add_mlir_library(WaferTileToInstrPipelines
+  TileToInstr/Pipelines.cpp
 
   LINK_LIBS PUBLIC
   WaferIR
+  WaferTileToInstr
   WaferTransforms
   MLIRFuncDialect
   MLIRPass

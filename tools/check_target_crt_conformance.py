@@ -1161,7 +1161,9 @@ def main() -> int:
     if not instruction_sources:
         fail(f"no instruction implementation sources found in {instruction_ops_dir}")
     instruction_ops_text = "\n".join(read_text(path) for path in instruction_sources)
-    target_lowering_dir = repo_root / "lib" / "Wafer" / "Transforms" / "Target"
+    target_lowering_dir = (
+        repo_root / "lib" / "Wafer" / "Conversion" / "InstrToLLVM"
+    )
     lowering_text = "\n".join(
         read_text(target_lowering_dir / source) for source in TARGET_LOWERING_SOURCES
     )

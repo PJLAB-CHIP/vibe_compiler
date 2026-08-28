@@ -3,10 +3,10 @@
 #include "PipelineRegistration.h"
 
 #include "Wafer/Conversion/StableHLOToLinalg/Pipelines.h"
-#include "Wafer/Conversion/WaferTileRegionToInstr/Pipelines.h"
-#include "Wafer/Transforms/MemoryPlanningPipelines.h"
-#include "Wafer/Transforms/FrontendVerification.h"
-#include "Wafer/Transforms/SpmdPipelines.h"
+#include "Wafer/Conversion/TileToInstr/Pipelines.h"
+#include "Wafer/Transforms/Instr/MemoryPlanningPipelines.h"
+#include "Wafer/Transforms/StableHLO/FrontendVerification.h"
+#include "Wafer/Transforms/StableHLO/SpmdPipelines.h"
 
 #include "mlir/Pass/PassRegistry.h"
 

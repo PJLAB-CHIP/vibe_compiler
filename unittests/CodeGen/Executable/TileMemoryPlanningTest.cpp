@@ -3,10 +3,11 @@
 #include "Wafer/CodeGen/Executable/TileMemoryPlanning.h"
 #include "Wafer/Driver/CompilationInternal.h"
 
-#include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
+#include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileWorkStatistics.h"
-#include "Wafer/Transforms/MemoryPlanning.h"
+#include "Wafer/Transforms/Instr/MemoryPlanning.h"
+#include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

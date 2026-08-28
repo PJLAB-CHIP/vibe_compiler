@@ -2,7 +2,6 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/AttentionSpatialConstraints.cpp
   Planning/PhysicalDataflow/CanonicalSpatialAssignment.cpp
   Planning/PhysicalDataflow/CanonicalRegionPlan.cpp
-  Planning/PhysicalDataflow/CurrentIRLayoutOptimization.cpp
   Planning/PhysicalDataflow/ExactDemand.cpp
   Planning/PhysicalDataflow/RootRegionWorkAnalysis.cpp
   Planning/PhysicalDataflow/RootWorkDomain.cpp

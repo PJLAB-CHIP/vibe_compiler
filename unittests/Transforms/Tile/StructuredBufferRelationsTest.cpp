@@ -4,7 +4,7 @@
 #include "Wafer/Transforms/Tile/StructuredNodeUseIndex.h"
 #include "Wafer/Driver/CompilationInternal.h"
 
-#include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
+#include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileWorkStatistics.h"
 #include "Wafer/Transforms/Passes.h"
