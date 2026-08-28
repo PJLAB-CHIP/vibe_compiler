@@ -138,7 +138,9 @@ Region formation必须覆盖fanout的每个use、reduction partial/merge、effec
    `IsolatedFromAbove` scope。Source保持不变；failure只擦除新subtree。后续tile/fuse与attention lowering不得再clone Card/Tile owner。
 3. **创建TileRegion与traversal**：根据region membership和explicit replica创建non-nested regions及actual roots。Temporal domain只
    保存自由tile参数和dependence-legal loop order；可从current producer/consumer exact relation唯一推导的tile不是独立choice，
-   non-unique/unsupported/indeterminate关系保留原自由参数与独立producer。使用pinned MLIR SCF tiling生成canonical `scf.for` nest；
+   non-unique/unsupported/indeterminate关系保留原自由参数与独立producer。FD可按explicit contribution/merge choice创建body仅含
+   terminator的actual target Region shells；它们只表达Region membership，必须由第5步填入actual work且不能进入layout。使用pinned MLIR
+   SCF tiling生成canonical `scf.for` nest；
    loop IV和bounded size表达wave与remainder，不递归生成`first / steady / tail`笛卡尔积。
 4. **从current IR创建普通compute SSA与fusion**：以actual consumer为tiling root，通过standard SCF producer-fusion control读取同一
    Region内current producer/use、indexing relation、use count和effect。Attention保持同一个semantic op，只允许其接口明确支持的
@@ -235,8 +237,8 @@ fallback builder或partial result。Unsupported semantics、resource exhaustion�
   位于consumer loop外且每selected execution只物化一次，融合producer只位于对应consumer traversal内；
 - compact tile-and-fuse的每个attention occurrence保持op kind、algorithm、type和opaque内部语义；新增occurrence逐一由outer tile、
   necessary tail或explicit replica解释；selected-attention lowering对每个actual occurrence恰运行一次；FA产生一个
-  K2-owner的actual coupled-state recurrence，FD产生selected contributions、merge/finalize和跨Region current tensor boundary，进入layout前
-  attention op为零；
+  K2-owner的actual coupled-state recurrence；FD target Region shells逐显式choice存在且compact前后只有terminator，selected lowering后
+  contributions、merge/finalize和跨Region current tensor boundary all-and-only，进入layout前attention op和未填充attention shell均为零；
 - structural candidate owner每attempt只新建或clone一次；tile/fuse和selected-attention lowering均不额外clone Card/Tile owner；
 - exact/partial view、layout-compatible/incompatible、shared conversion、alias和explicit copy；
 - function result direct destination、region-local SPM reuse和真正cross-region DDR boundary；因output DPS缺失产生的冗余

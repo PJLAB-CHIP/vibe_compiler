@@ -172,7 +172,9 @@ current operation、use-def、indexing relation、effect和region boundary立即
 进入loop内只能是rewrite后的actual IR结果，不能由`LocalUseDelivery`、布尔rewire或其它旁路计划声明。
 
 Region choice必须覆盖fanout的每个use、reduction partial/merge、effect order和observable output。完全无依赖的
-components不为扩大region而合并。SPM residency不是独立上层choice，只能由最终actual allocation/lifetime/offset证明。
+components不为扩大region而合并。FD explicit contribution/merge可先物化body只有terminator的actual target Region shells；它们只表达
+membership，必须由紧随compact stage的selected-attention lowering填入actual work，不能进入layout。SPM residency不是独立上层choice，
+只能由最终actual allocation/lifetime/offset证明。
 
 ### 5.3 Temporal tiling
 
@@ -222,8 +224,9 @@ tile-and-fuse时attention保持同一个semantic op；generic fusion不得查看
 
 紧随本stage的selected-attention lowering由05号定义。它从current attention op、固定algorithm与尚未消费的K1/K2、FD contribution/
 merge choice一次性创建canonical actual QK contraction、scale/mask、online Maximum/Sum/Accumulator、PV contraction、state combine/
-finalize和必要SCF state，然后擦除attention op，并只对本次新建loop复用5.3的late remainder specialization。该transformation不重跑
-generic tile-and-fuse，不接收future action/value/materialization inventory，也不clone整个candidate owner；输出直接交给layout。
+finalize和必要SCF state，填充all-and-only FD target Region shells，然后擦除attention op，并只对本次新建loop复用5.3的late remainder
+specialization。该transformation不重跑generic tile-and-fuse，不接收future action/value/materialization inventory，也不clone整个
+candidate owner；输出直接交给layout。
 进入layout时attention op必须为零。
 
 ## 6. Current IR 上的 physical realization

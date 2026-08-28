@@ -70,7 +70,7 @@ Movement transformation只能读取这些current endpoint和exact relation，不
 当前alternative返回typed failure，由outer controller在另一个candidate owner上先应用另一layout choice；movement内部不fallback。
 
 三种TileRegion form的局部和stage verifier合同由07定义。两项transformation必须各自使用唯一registered实现；baseline先逐项接入同一实现，
-search cutover后只改变choice/controller owner，不增加第二套rewrite。
+search integration只增加独立choice/controller owner，不增加第二套rewrite。
 
 ### 2.2 Layout assignment 与cleanup
 
