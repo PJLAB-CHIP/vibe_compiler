@@ -30,7 +30,7 @@
   coupled/reduction/communication分支。规则建立前的current-plan输出先做独立coverage closure，再作为后续可信前置。
 - 仓库同时存在多个LLVM/MLIR源码、解压或安装树时，API可用性以当前configured build的compile include路径和TableGen include
   路径为准；不能因旁置`.deps`树含某个header就声称pinned toolchain可用该interface。
-- Structured e-graph依赖先用`tools/bootstrap_deps.py --egraph-sources`同步pinned `egg`并生成与committed Cargo lock匹配的
+- Structured e-graph依赖先用`utils/deps/bootstrap_deps.py --egraph-sources`同步pinned `egg`并生成与committed Cargo lock匹配的
   directory source；CMake只执行`cargo build --locked --offline`。缺少source、vendor record、Cargo或rustc版本不足时在
   configure/build边界修复依赖，不让compiler invocation启动Cargo、rustc或外部optimizer。
 - 查看实际执行、skip与unsupported清单；`ctest passed`不证明关键source vertical被配置和执行。
@@ -65,10 +65,9 @@
 source program
   -> card-level GSPMD
   -> card-local structured DAG
-  -> closed PhysicalDataflowPlan
-  -> selected top-level TileModule set
+  -> explicit spatial/region/temporal choices
+  -> candidate-owned actual TileModule/TileRegion IR
   -> all-and-only wafer.tile.module
-  -> TileRegion
   -> Instr
   -> Target LLVM modules
   -> ExecutablePackage

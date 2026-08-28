@@ -1,7 +1,7 @@
 //===- TargetModelInvocation.h - Typed source/model binding ----*- C++ -*-===//
 
-#ifndef WAFER_MODEL_TARGETMODELINVOCATION_H
-#define WAFER_MODEL_TARGETMODELINVOCATION_H
+#ifndef WAFER_SIMULATOR_INVOCATION_TARGETMODELINVOCATION_H
+#define WAFER_SIMULATOR_INVOCATION_TARGETMODELINVOCATION_H
 
 #include "Wafer/Simulator/Memory/TargetModelMemory.h"
 #include "Wafer/Simulator/Invocation/ProgramInvocation.h"
@@ -105,4 +105,4 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
 
 } // namespace wafer::model
 
-#endif // WAFER_MODEL_TARGETMODELINVOCATION_H
+#endif // WAFER_SIMULATOR_INVOCATION_TARGETMODELINVOCATION_H

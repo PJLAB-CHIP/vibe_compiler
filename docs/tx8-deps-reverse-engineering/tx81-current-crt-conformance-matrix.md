@@ -3,14 +3,14 @@
 本文把旧DLCompiler TX81 CRT source、当前public headers/installed binary反汇编与repo-local Wafer CRT实现做静态对照。它只记录
 source/disassembly-backed evidence，不拥有production membership、prototype/signature、IR、ABI、lowering或
 runtime policy。当前IR / ABI和production closure合同查看`tasks/14-target-code-generation.md`，
-prototype与repo-local实现分别查看`runtime/wafer_crt/include/wafer_tx81_crt.h`和
-`runtime/wafer_crt/src/wafer_tx81_crt.c`；闭合状态查看`tools/check_target_crt_symbols.py`与
+prototype与repo-local实现分别查看`runtime/crt/include/wafer_tx81_crt.h`和
+`runtime/crt/src/wafer_tx81_crt.c`；闭合状态查看`utils/checks/check_target_crt_symbols.py`与
 `tasks/progress.md`。
 
 ## Scope
 
 - Evidence source：旧 DLCompiler `lib/Tx81` source snapshot、public TX8 headers，以及digest-qualified installed Kcore/vendor module反汇编。
-- Repo-local observation：compiler target lowering以及`runtime/wafer_crt` public header/source中可直接
+- Repo-local observation：compiler target lowering以及`runtime/crt` public header/source中可直接
   读取的legality、ABI、wrapper调用、参数处理、wait/writeback和optional-feature配置。
 - 本表不因旧helper存在而授权新symbol，也不定义某个family的production状态。
 - 当前symbol checker从target lowering和Wafer enum registry推导出111个production symbol；这是当前

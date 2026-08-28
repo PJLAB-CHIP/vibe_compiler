@@ -130,6 +130,8 @@ if(WAFER_ENABLE_UNIT_TESTS)
     WaferCompilerTestSupport)
   target_compile_definitions(wafer-compile-test PRIVATE
     WAFER_ENABLE_TEST_HELPER_OVERRIDE=1)
+  target_include_directories(wafer-compile-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/unittests)
   if(WAFER_ENABLE_SYSTEMC_MODEL)
     target_compile_definitions(wafer-compile-test PRIVATE
       WAFER_ENABLE_SYSTEMC_MODEL=1)

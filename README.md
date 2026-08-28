@@ -69,11 +69,13 @@ spatial mapping、temporal tiling、fusion/SPM residency、NoC和compute/communi
 
 | 路径 | 内容 |
 | --- | --- |
-| `include/Wafer/` | Dialect、interface、analysis、compiler/runtime 公共接口 |
-| `lib/Wafer/` | Frontend、SPMD、scheduling、conversion、compiler、target code generation、runtime 和 model 实现 |
-| `tools/` | `wafer-compile`、`wafer-run`、`wafer-opt`、StableHLO 工具、profile report、依赖 bootstrap 和一致性检查 |
-| `test/` | lit/FileCheck、CLI 和 Python tool tests |
-| `unittests/` | C++ unit、target numeric backend 和可选 SystemC tests |
+| `include/Wafer/` | IR、Analysis、Planning、Transforms、Conversion、CodeGen、Driver、Target、Simulator、Package、Runtime的稳定typed API |
+| `lib/Wafer/` | 与public component对应的实现；analysis/planning/rewrite/conversion/codegen/driver按职责分库 |
+| `tools/` | `wafer-compile`、`wafer-run`、`wafer-opt`、`wafer-verify-program`、profile report和device linker等产品入口 |
+| `utils/` | 依赖准备、源码/IR/ABI一致性检查和hardware calibration编排等开发脚本 |
+| `runtime/crt/` | target CRT public header和source |
+| `test/` | lit/FileCheck、CLI、Python、Runtime和Board contracts |
+| `unittests/` | 按component拆分的C++ unit、public link smoke、target numeric backend和可选SystemC tests |
 | `tasks/` | 当前编号设计合同、任务队列、实施计划和历史审计 |
 | `docs/` | 硬件、runtime、ABI 和依赖逆向事实资料 |
 | `memory/` | 稳定构建、调试和防复发经验，不是任务状态或架构合同 |
@@ -90,11 +92,11 @@ git submodule update --init --recursive
 依赖版本集中定义在 `cmake/third_party/WaferDependencyVersions.cmake`。常用 bootstrap 入口包括：
 
 ```bash
-python3 tools/bootstrap_deps.py --python
-python3 tools/bootstrap_deps.py --llvm-source
-python3 tools/bootstrap_deps.py --numeric-model-deps
-python3 tools/bootstrap_deps.py --onednn-deps
-python3 tools/bootstrap_deps.py --systemc-model-deps
+python3 utils/deps/bootstrap_deps.py --python
+python3 utils/deps/bootstrap_deps.py --llvm-source
+python3 utils/deps/bootstrap_deps.py --numeric-model-deps
+python3 utils/deps/bootstrap_deps.py --onednn-deps
+python3 utils/deps/bootstrap_deps.py --systemc-model-deps
 ```
 
 这些命令按需执行；core compiler、importer、target numeric backend 和 SystemC 的完整准备方式不同。开始构建前请阅读

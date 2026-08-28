@@ -5,9 +5,9 @@
 production membership、promotion 顺序、IR / ABI 设计或 runtime ownership。
 
 当前IR / ABI和production closure合同以`tasks/14-target-code-generation.md`为准，prototype以
-`runtime/wafer_crt/include/wafer_tx81_crt.h`为准，repo-local实现以
-`runtime/wafer_crt/src/wafer_tx81_crt.c`为准；静态闭包检查入口是
-`tools/check_target_crt_symbols.py`，任务状态以`tasks/progress.md`为准。
+`runtime/crt/include/wafer_tx81_crt.h`为准，repo-local实现以
+`runtime/crt/src/wafer_tx81_crt.c`为准；静态闭包检查入口是
+`utils/checks/check_target_crt_symbols.py`，任务状态以`tasks/progress.md`为准。
 
 ## Direct Wrapper Shapes Outside The Current Header/Source Snapshot
 
@@ -71,9 +71,9 @@ layout、shape、memory-space 或 descriptor 语义。
 本清单不维护 covered / excluded 状态，也不授权新增 symbol、IR、ABI 或 runtime path。查询当前闭包时：
 
 - IR / ABI和production closure合同读取`tasks/14-target-code-generation.md`；
-- prototype读取`runtime/wafer_crt/include/wafer_tx81_crt.h`，实现读取
-  `runtime/wafer_crt/src/wafer_tx81_crt.c`；
-- 静态 symbol、signature 和 object closure 读取 `tools/check_target_crt_symbols.py` 的检查结果；
+- prototype读取`runtime/crt/include/wafer_tx81_crt.h`，实现读取
+  `runtime/crt/src/wafer_tx81_crt.c`；
+- 静态 symbol、signature 和 object closure 读取 `utils/checks/check_target_crt_symbols.py` 的检查结果；
 - 当前任务状态读取 `tasks/progress.md`。
 
 任何长期 IR / ABI 选择都需要在对应编号设计文档中收敛；本文件中的缺失证据不是设计提案。

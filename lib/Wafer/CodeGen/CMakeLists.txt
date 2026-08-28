@@ -23,6 +23,7 @@ add_mlir_library(WaferCodeGen
   WaferFrontend
   WaferIR
   WaferInstrToLLVM
+  WaferPackage
   WaferPhysicalTensor
   WaferProgramData
   WaferTarget

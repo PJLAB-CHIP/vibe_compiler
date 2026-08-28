@@ -1,7 +1,7 @@
 //===- TargetModelKernel.h - Plain target command kernels -*- C++ -*-===//
 
-#ifndef WAFER_MODEL_TARGETMODELKERNEL_H
-#define WAFER_MODEL_TARGETMODELKERNEL_H
+#ifndef WAFER_SIMULATOR_KERNEL_TARGETMODELKERNEL_H
+#define WAFER_SIMULATOR_KERNEL_TARGETMODELKERNEL_H
 
 #include "Wafer/Simulator/Memory/TargetModelMemory.h"
 #include "Wafer/Simulator/Reference/FormalTensorNumeric.h"
@@ -294,4 +294,4 @@ applyTargetModelCommandEffect(InvocationMemoryRegistry &memory,
 
 } // namespace wafer::model
 
-#endif // WAFER_MODEL_TARGETMODELKERNEL_H
+#endif // WAFER_SIMULATOR_KERNEL_TARGETMODELKERNEL_H

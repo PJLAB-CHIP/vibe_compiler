@@ -1,6 +1,6 @@
 //===- CompilerTesting.cpp - Compiler test-only adapters ----------------===//
 
-#include "Wafer/TestSupport/CompilerTesting.h"
+#include "TestSupport/Driver/CompilerTesting.h"
 
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Driver/ProgramResourceVerification.h"

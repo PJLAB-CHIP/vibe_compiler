@@ -1,7 +1,7 @@
 //===- ProgramElementType.h - Closed program element types ----*- C++ -*-===//
 
-#ifndef WAFER_PROGRAM_PROGRAMELEMENTTYPE_H
-#define WAFER_PROGRAM_PROGRAMELEMENTTYPE_H
+#ifndef WAFER_FRONTEND_PROGRAMELEMENTTYPE_H
+#define WAFER_FRONTEND_PROGRAMELEMENTTYPE_H
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -132,4 +132,4 @@ inline bool isFloatingProgramElementType(ProgramElementType type) {
 
 } // namespace wafer
 
-#endif // WAFER_PROGRAM_PROGRAMELEMENTTYPE_H
+#endif // WAFER_FRONTEND_PROGRAMELEMENTTYPE_H

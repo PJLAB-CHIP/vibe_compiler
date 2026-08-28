@@ -1,7 +1,7 @@
 //===- SystemCTargetModel.h - SystemC functional-event model -*- C++ -*-===//
 
-#ifndef WAFER_MODEL_SYSTEMCTARGETMODEL_H
-#define WAFER_MODEL_SYSTEMCTARGETMODEL_H
+#ifndef WAFER_SIMULATOR_SYSTEMC_SYSTEMCTARGETMODEL_H
+#define WAFER_SIMULATOR_SYSTEMC_SYSTEMCTARGETMODEL_H
 
 #include "Wafer/Simulator/Kernel/TargetModelKernel.h"
 
@@ -95,4 +95,4 @@ executeSystemCTargetModel(compiler::TargetCallExecutable executable,
 
 } // namespace wafer::model
 
-#endif // WAFER_MODEL_SYSTEMCTARGETMODEL_H
+#endif // WAFER_SIMULATOR_SYSTEMC_SYSTEMCTARGETMODEL_H

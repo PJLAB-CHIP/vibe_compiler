@@ -127,7 +127,7 @@ Target numeric本地执行采用按职责分层的唯一命名：
 - `WaferFormalNumeric`是有界精确oracle和fallback，不属于oneDNN实现。
 - `WaferOneDNNBackend`是`WaferTargetNumericBackend`当前用于GEMM/reorder的具体host执行实现；oneDNN managed dependency、environment
   identity与qualification record由该层拥有。qualification使用formal oracle作比较，不会因此把formal实现改名为oneDNN。
-- `WaferSystemCModel`仍独立消费完整target command、memory、event与completion合同。它可以调用target numeric backend完成一个numeric
+- `WaferSystemCSimulator`仍独立消费完整target command、memory、event与completion合同。它可以调用target numeric backend完成一个numeric
   command，但不由numeric backend替代。
 
 current CMake/API/CLI只保留上述职责名称。历史`bulk model`、`Bulk*`、`bulk-model`和`bulk-then-formal`均不是受支持协议；改名必须同步

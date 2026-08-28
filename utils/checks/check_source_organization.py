@@ -52,6 +52,34 @@ RETIRED_PATHS = (
     "lib/Wafer/IR/Tensor/GroupOps.cpp",
     "lib/Wafer/Transforms/Group",
     "lib/Wafer/Conversion/WaferGroupToTileRegion",
+    "include/Wafer/TestSupport",
+    "include/Wafer/IR/Program",
+    "include/Wafer/IR/Resource",
+    "include/Wafer/IR/Target",
+    "lib/Wafer/IR/Program",
+    "lib/Wafer/IR/Resource",
+    "lib/Wafer/IR/Target",
+    "lib/Wafer/Analysis/Structured",
+    "lib/Wafer/Analysis/PhysicalDataflow",
+    "lib/Wafer/Analysis/Scheduling",
+    "lib/Wafer/CodeGen/Executable",
+    "lib/Wafer/CodeGen/Target",
+    "lib/Wafer/Target/Core",
+    "lib/Wafer/Target/Execution",
+    "lib/Wafer/Target/Layout",
+    "lib/Wafer/Target/Numeric",
+    "lib/Wafer/Transforms/Bufferization",
+    "lib/Wafer/Transforms/DDR",
+    "lib/Wafer/Transforms/Execution",
+    "lib/Wafer/Transforms/MemoryPlanning",
+    "lib/Wafer/Transforms/Scheduling",
+    "lib/Wafer/Transforms/SPM",
+    "lib/Wafer/Transforms/Target",
+    "lib/Wafer/Transforms/Transport",
+    "lib/Wafer/Conversion/StandaloneTileModules",
+    "lib/Wafer/Conversion/StructuredTiling",
+    "lib/Wafer/Conversion/WaferTileRegionToInstr",
+    "runtime/wafer_crt",
 )
 
 ALLOWED_LIBRARY_DIRECTORIES = {
@@ -189,7 +217,22 @@ def check_directory_owners(root: Path, errors: list[str]) -> None:
 
 
 def check_no_retired_includes(root: Path, errors: list[str]) -> None:
-    needles = ("Wafer/Compiler/", "Wafer/Pipelines/")
+    needles = (
+        "Wafer/Compiler/",
+        "Wafer/Pipelines/",
+        "Wafer/Driver/ProgramData.h",
+        "Wafer/TestSupport/",
+        "Wafer/IR/Program/",
+        "Wafer/IR/Resource/",
+        "Wafer/IR/Target/",
+        "Wafer/CodeGen/Executable/",
+        "Wafer/CodeGen/Target/",
+        "Wafer/Target/Core/",
+        "Wafer/Target/Execution/",
+        "Wafer/Target/Layout/",
+        "Wafer/Target/Numeric/",
+        "Wafer/Conversion/WaferTileRegionToInstr/",
+    )
     suffixes = {".h", ".hpp", ".c", ".cc", ".cpp", ".td"}
     for directory in ("include", "lib", "runtime", "tools", "unittests"):
         for path in (root / directory).rglob("*"):
@@ -209,6 +252,13 @@ def check_component_cmake_ownership(root: Path, errors: list[str]) -> None:
                 f"component CMake aggregates ownership through PARENT_SCOPE: "
                 f"{manifest.relative_to(root)}"
             )
+    unit_manifest = root / "unittests/CMakeLists.txt"
+    if unit_manifest.is_file() and "add_executable(WaferUnitTests" in (
+        strip_cmake_comments(unit_manifest.read_text(encoding="utf-8"))
+    ):
+        errors.append(
+            "unit tests are aggregated into the retired all-component target"
+        )
 
 
 def check_python_test_registration(root: Path, errors: list[str]) -> None:

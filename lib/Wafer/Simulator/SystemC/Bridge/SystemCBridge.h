@@ -1,7 +1,7 @@
 //===- SystemCBridge.h - RTTI-isolated SystemC process bridge -*- C++ -*-===//
 
-#ifndef WAFER_MODEL_SYSTEMCBRIDGE_H
-#define WAFER_MODEL_SYSTEMCBRIDGE_H
+#ifndef WAFER_SIMULATOR_SYSTEMC_BRIDGE_SYSTEMCBRIDGE_H
+#define WAFER_SIMULATOR_SYSTEMC_BRIDGE_SYSTEMCBRIDGE_H
 
 #include <cstdint>
 
@@ -31,4 +31,4 @@ void waitSystemCDelta();
 
 } // namespace wafer::model::detail
 
-#endif // WAFER_MODEL_SYSTEMCBRIDGE_H
+#endif // WAFER_SIMULATOR_SYSTEMC_BRIDGE_SYSTEMCBRIDGE_H

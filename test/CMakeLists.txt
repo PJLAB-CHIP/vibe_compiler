@@ -112,6 +112,7 @@ add_test(NAME wafer-physical-tensor-codec-python
     ${CMAKE_CURRENT_SOURCE_DIR}/Board/Cases/wafer_physical_tensor_codec_test.py
 )
 set_tests_properties(wafer-physical-tensor-codec-python PROPERTIES
+  ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Board/Support"
   LABELS "runtime;no-card;layout;calibration;oracle"
   TIMEOUT 30
 )

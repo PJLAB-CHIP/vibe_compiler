@@ -1712,7 +1712,7 @@ PMU 计数器由 kcore 侧寄存器窗口和 host 侧 `ProcessProfData`/dyn TLV 
 - API/结构体附录：[tx8-api-struct-contract-annex.md](tx8-api-struct-contract-annex.md)
 - 人读摘要：[tx8-symbol-coverage-matrix.md](tx8-symbol-coverage-matrix.md)
 - 全量 CSV：[tx8-symbol-coverage-matrix.csv](tx8-symbol-coverage-matrix.csv)
-- 生成器：[tools/tx8_symbol_coverage.py](../../tools/tx8_symbol_coverage.py)
+- 生成器：[utils/checks/tx8_symbol_coverage.py](../../utils/checks/tx8_symbol_coverage.py)
 
 | 层 | 本文档覆盖方式 |
 |---|---|

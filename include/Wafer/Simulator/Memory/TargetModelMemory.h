@@ -1,7 +1,7 @@
 //===- TargetModelMemory.h - Private target model memory ------*- C++ -*-===//
 
-#ifndef WAFER_MODEL_TARGETMODELMEMORY_H
-#define WAFER_MODEL_TARGETMODELMEMORY_H
+#ifndef WAFER_SIMULATOR_MEMORY_TARGETMODELMEMORY_H
+#define WAFER_SIMULATOR_MEMORY_TARGETMODELMEMORY_H
 
 #include "Wafer/Simulator/Invocation/TargetCallExecution.h"
 
@@ -264,4 +264,4 @@ private:
 
 } // namespace wafer::model
 
-#endif // WAFER_MODEL_TARGETMODELMEMORY_H
+#endif // WAFER_SIMULATOR_MEMORY_TARGETMODELMEMORY_H

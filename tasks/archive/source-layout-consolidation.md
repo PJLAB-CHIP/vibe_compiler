@@ -1,7 +1,7 @@
 # 源码布局收敛实施计划
 
-状态：`doing`。动态状态只读`tasks/progress.md`，稳定目录与依赖合同由18号设计拥有，MLIR作用域与
-rewrite/conversion规则由19号设计和`AGENTS.md`拥有。本计划只安排本次迁移，不复制各IR、target、package或runtime语义。
+状态：`done`。本文件保存本次迁移的施工顺序和旧owner映射，只作历史审计；当前目录与依赖合同只读18号设计，MLIR作用域与
+rewrite/conversion规则只读19号设计和`AGENTS.md`。任务状态只读`tasks/progress.md`。
 
 ## 1. Pipeline Contract
 

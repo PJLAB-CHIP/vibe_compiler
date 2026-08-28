@@ -63,7 +63,6 @@
 
 | 当前或later范围 | 实施计划 | 稳定设计owner |
 | --- | --- | --- |
-| current source layout consolidation | `tasks/plans/source-layout-consolidation.md` | 18；MLIR component边界由19约束 |
 | Q52 search scalability与Q53 production host readiness | `tasks/plans/physical-dataflow-synthesis.md` | 06；直接下游07–16 |
 | Q57 resident static execution | `tasks/plans/executable-package-and-resident-runtime.md` | 15–17 |
 | Q61 whole-program scale readiness | `tasks/plans/program-data-and-whole-program-scale.md` | 01–02、06、14–18 |
@@ -92,7 +91,10 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 | 文档 | 原性质 |
 | --- | --- |
 | `tasks/archive/completed-task-index.md` | 已完成任务的历史边界与证据入口索引；不参与current调度 |
-| `tasks/archive/source-registration-truth-closure.md` | 已完成Q64的repo-wide source/test registration mirror与旧一轮owner迁移记录；其中目录分类已由current 18号设计和source-layout plan替代 |
+| `tasks/archive/source-layout-consolidation.md` | 已完成的源码目录、component target、test mirror、tools/runtime路径与current文档收敛计划；稳定规则只读18、19 |
+| `tasks/archive/target-numeric-contract-reconstruction.md` | 已完成Q62的Target数值合同拆分记录；稳定语义只读01、11、14、16–18 |
+| `tasks/archive/ncc-synchronization-contract-layering.md` | 已完成Q63的NCC completion合同分层记录；稳定语义只读11、13、17、19 |
+| `tasks/archive/source-registration-truth-closure.md` | 已完成Q64的repo-wide source/test registration mirror与旧一轮owner迁移记录；其中目录分类已由current 18号设计替代 |
 | `tasks/archive/physical-dataflow-synthesis-working-history.md` | 截至2026-08-25的Q49–Q51详细施工、Q52重基线审计和原Q53板端设想；current Q52/Q53计划已重写，禁止从本文件恢复旧顺序或shared materializer |
 | `tasks/archive/mlir-engineering-remediation.md` | 已完成Q54的审计、checkpoint和验证记录；current verifier cleanup由Q52拥有，稳定规则由19和AGENTS拥有 |
 | `tasks/archive/whole-card-tile-dataflow-synthesis.md` | 2026-08-11至08-13的旧Q49/Q50完整施工计划；旧任务拆法、shortlist和owner合同不再有效 |

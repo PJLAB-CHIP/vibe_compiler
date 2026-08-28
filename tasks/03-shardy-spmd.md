@@ -163,7 +163,7 @@ snapshot；原source不被原地补topology、改MLIR或写shards。helper和loc
 - user driver：`wafer-compile`；
 - source program advisory verifier：`wafer-verify-program`；
 - IR debug：`wafer-opt`和IR-local sharding pipelines；
-- pinned helper build：`tools/build_xla_spmd_partitioner_helper.py`；
+- pinned helper build：`utils/deps/build_xla_spmd_partitioner_helper.py`；
 - real program generator：`test/Tools/Inputs/wafer_pytorch_xla_capture.py`。
 
 实现入口不是长期IR/file名，测试文件名也不能恢复额外program mode。

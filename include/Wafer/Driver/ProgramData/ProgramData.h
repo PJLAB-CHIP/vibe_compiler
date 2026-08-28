@@ -9,8 +9,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef WAFER_PROGRAM_PROGRAMDATA_H
-#define WAFER_PROGRAM_PROGRAMDATA_H
+#ifndef WAFER_DRIVER_PROGRAMDATA_PROGRAMDATA_H
+#define WAFER_DRIVER_PROGRAMDATA_PROGRAMDATA_H
 
 #include "Wafer/CodeGen/DeviceExecutable.h"
 #include "Wafer/Frontend/Program.h"
@@ -471,4 +471,4 @@ private:
 
 } // namespace wafer::compiler
 
-#endif // WAFER_PROGRAM_PROGRAMDATA_H
+#endif // WAFER_DRIVER_PROGRAMDATA_PROGRAMDATA_H

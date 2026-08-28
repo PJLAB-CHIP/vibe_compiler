@@ -1,7 +1,7 @@
 //===- TargetNumericBackend.h - Target numeric backend adapters -*- C++ -*-===//
 
-#ifndef WAFER_MODEL_QUALIFICATION_TARGETNUMERICBACKEND_H
-#define WAFER_MODEL_QUALIFICATION_TARGETNUMERICBACKEND_H
+#ifndef WAFER_SIMULATOR_REFERENCE_TARGETNUMERICBACKEND_H
+#define WAFER_SIMULATOR_REFERENCE_TARGETNUMERICBACKEND_H
 
 #include "Wafer/Simulator/Kernel/TargetModelKernel.h"
 #include "Wafer/Simulator/OneDNN/OneDNNQualification.h"
@@ -88,4 +88,4 @@ private:
 
 } // namespace wafer::model
 
-#endif // WAFER_MODEL_QUALIFICATION_TARGETNUMERICBACKEND_H
+#endif // WAFER_SIMULATOR_REFERENCE_TARGETNUMERICBACKEND_H

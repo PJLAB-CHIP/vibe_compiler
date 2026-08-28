@@ -1,6 +1,6 @@
 //===- DirectDTETransportTest.cpp - Tile DTE tests -------------===//
 
-#include "Wafer/TestSupport/CompilerTesting.h"
+#include "TestSupport/Driver/CompilerTesting.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Target/TopologyIds.h"

@@ -1,9 +1,9 @@
 //===- ProgramInvocation.h - Typed program invocation -------*- C++ -*-===//
 
-#ifndef WAFER_PROGRAM_PROGRAMINVOCATION_H
-#define WAFER_PROGRAM_PROGRAMINVOCATION_H
+#ifndef WAFER_SIMULATOR_INVOCATION_PROGRAMINVOCATION_H
+#define WAFER_SIMULATOR_INVOCATION_PROGRAMINVOCATION_H
 
-#include "Wafer/Driver/Compilation.h"
+#include "Wafer/CodeGen/DeviceExecutable.h"
 #include "Wafer/Frontend/ProgramElementType.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -107,4 +107,4 @@ sliceProgramTensorForBinding(const ProgramTensor &global,
 
 } // namespace wafer::compiler
 
-#endif // WAFER_PROGRAM_PROGRAMINVOCATION_H
+#endif // WAFER_SIMULATOR_INVOCATION_PROGRAMINVOCATION_H

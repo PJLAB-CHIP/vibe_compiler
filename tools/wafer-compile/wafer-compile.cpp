@@ -12,7 +12,7 @@
 #include "Wafer/Simulator/Reference/TargetNumericBackend.h"
 #endif
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
-#include "Wafer/TestSupport/CompilerTesting.h"
+#include "TestSupport/Driver/CompilerTesting.h"
 #endif
 
 #include "llvm/ADT/StringRef.h"

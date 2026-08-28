@@ -1,7 +1,7 @@
 //===- ProgramTensorComparison.h - Expected output comparison -*- C++ -*-===//
 
-#ifndef WAFER_PROGRAM_PROGRAMTENSORCOMPARISON_H
-#define WAFER_PROGRAM_PROGRAMTENSORCOMPARISON_H
+#ifndef WAFER_SIMULATOR_INVOCATION_PROGRAMTENSORCOMPARISON_H
+#define WAFER_SIMULATOR_INVOCATION_PROGRAMTENSORCOMPARISON_H
 
 #include "Wafer/Simulator/Invocation/ProgramInvocation.h"
 
@@ -93,4 +93,4 @@ computeProgramTensorComparisonStatistics(const ProgramTensor &actual,
 
 } // namespace wafer::compiler
 
-#endif // WAFER_PROGRAM_PROGRAMTENSORCOMPARISON_H
+#endif // WAFER_SIMULATOR_INVOCATION_PROGRAMTENSORCOMPARISON_H

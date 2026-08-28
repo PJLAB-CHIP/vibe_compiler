@@ -42,8 +42,8 @@ source definitions rather than treating supporting documentation as an input.
 Regenerate generated outputs from repo root:
 
 ```bash
-python3 tools/tx8_symbol_coverage.py
-python3 tools/tx8_contract_annex.py
+python3 utils/checks/tx8_symbol_coverage.py
+python3 utils/checks/tx8_contract_annex.py
 ```
 
 ## Generated Coverage Snapshot

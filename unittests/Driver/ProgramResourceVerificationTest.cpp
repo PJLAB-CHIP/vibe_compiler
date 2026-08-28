@@ -2,7 +2,7 @@
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
-#include "Wafer/TestSupport/CompilerTesting.h"
+#include "TestSupport/Driver/CompilerTesting.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

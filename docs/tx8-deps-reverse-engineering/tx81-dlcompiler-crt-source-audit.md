@@ -5,9 +5,9 @@
 ABI、production membership 或任务状态。
 
 查询当前边界时，IR / ABI 合同读取 `tasks/14-target-code-generation.md`，prototype读取
-`runtime/wafer_crt/include/wafer_tx81_crt.h`，repo-local实现读取
-`runtime/wafer_crt/src/wafer_tx81_crt.c`，静态闭包检查读取
-`tools/check_target_crt_symbols.py`的结果，任务状态读取`tasks/progress.md`。
+`runtime/crt/include/wafer_tx81_crt.h`，repo-local实现读取
+`runtime/crt/src/wafer_tx81_crt.c`，静态闭包检查读取
+`utils/checks/check_target_crt_symbols.py`的结果，任务状态读取`tasks/progress.md`。
 
 ## Scope
 
@@ -180,9 +180,9 @@ ABI、production membership 或任务状态。
 本审计不维护 covered / excluded list。查询当前事实时：
 
 - IR / ABI 和production closure合同读取`tasks/14-target-code-generation.md`；
-- prototype读取`runtime/wafer_crt/include/wafer_tx81_crt.h`，实现读取
-  `runtime/wafer_crt/src/wafer_tx81_crt.c`；
-- symbol、signature 和 object-level 静态闭包读取 `tools/check_target_crt_symbols.py` 的检查结果；
+- prototype读取`runtime/crt/include/wafer_tx81_crt.h`，实现读取
+  `runtime/crt/src/wafer_tx81_crt.c`；
+- symbol、signature 和 object-level 静态闭包读取 `utils/checks/check_target_crt_symbols.py` 的检查结果；
 - 队列状态读取 `tasks/progress.md`。
 
 inventory与这些当前边界的差异只表示evidence gap，不授权扩展symbol、IR、ABI或runtime path。

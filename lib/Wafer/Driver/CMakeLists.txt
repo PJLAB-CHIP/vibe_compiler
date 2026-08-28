@@ -21,12 +21,8 @@ add_mlir_library(WaferCompiler
   LLVMCore
   LLVMBitReader
   LLVMBitWriter
-  LLVMExecutionEngine
-  LLVMJITLink
   LLVMLinker
   LLVMObject
-  LLVMOrcJIT
-  LLVMRuntimeDyld
   WaferAnalysis
   WaferCodeGen
   WaferFrontend
@@ -75,7 +71,6 @@ add_mlir_library(WaferCompiler
   MLIRTransforms
   LLVMTarget
   LLVMTargetParser
-  ${WAFER_NATIVE_JIT_LIBS}
 )
 
 target_include_directories(obj.WaferCompiler PRIVATE
