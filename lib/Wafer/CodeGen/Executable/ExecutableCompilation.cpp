@@ -4,7 +4,7 @@
 #include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
 #include "Wafer/Analysis/Structured/StructuredNodeUseIndex.h"
 #include "Wafer/Driver/CompilationInternal.h"
-#include "Wafer/IR/Target/TargetTopology.h"
+#include "Wafer/IR/Topology/TargetTopology.h"
 
 #include "Wafer/CodeGen/Executable/BoundedTileExecutor.h"
 

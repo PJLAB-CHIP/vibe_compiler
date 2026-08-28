@@ -1,7 +1,7 @@
 //===- TopologyOps.td - Wafer target topology ops ---------*- tablegen -*-===//
 
-#ifndef WAFER_IR_TARGET_TOPOLOGYOPS_TD
-#define WAFER_IR_TARGET_TOPOLOGYOPS_TD
+#ifndef WAFER_IR_TOPOLOGY_TOPOLOGYOPS_TD
+#define WAFER_IR_TOPOLOGY_TOPOLOGYOPS_TD
 
 def Wafer_TargetTopologyOp : Wafer_Op<"target.topology", [Symbol]> {
   let summary = "regular Wafer target topology facts";
@@ -46,4 +46,4 @@ def Wafer_ExecutionMeshOp : Wafer_Op<"execution.mesh", [Symbol]> {
   let assemblyFormat = "$sym_name attr-dict";
 }
 
-#endif // WAFER_IR_TARGET_TOPOLOGYOPS_TD
+#endif // WAFER_IR_TOPOLOGY_TOPOLOGYOPS_TD

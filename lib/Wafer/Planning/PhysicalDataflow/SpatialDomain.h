@@ -5,7 +5,7 @@
 
 #include "Wafer/Analysis/PhysicalDataflow/StructuredDemandAnalysis.h"
 #include "Wafer/Analysis/Structured/StructuredDAGAnalysis.h"
-#include "Wafer/IR/Target/TargetTopology.h"
+#include "Wafer/IR/Topology/TargetTopology.h"
 #include "Wafer/Planning/PhysicalDataflow/AttentionSpatialConstraints.h"
 #include "Wafer/Planning/PhysicalDataflow/SemanticRootAnalysis.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"

@@ -2,7 +2,7 @@
 
 #include "Target/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
-#include "Wafer/IR/Target/TargetTopology.h"
+#include "Wafer/IR/Topology/TargetTopology.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/Core/TargetCall.h"
 #include "Wafer/Target/Core/TargetFormat.h"

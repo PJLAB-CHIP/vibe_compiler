@@ -1,7 +1,7 @@
-//===- SPMOps.td - Wafer SPM operation definitions ----*- tablegen -*-===//
+//===- StorageOps.td - Wafer SPM operation definitions ----*- tablegen -*-===//
 
-#ifndef WAFER_IR_OPS_SPMOPS_TD
-#define WAFER_IR_OPS_SPMOPS_TD
+#ifndef WAFER_IR_TILE_STORAGEOPS_TD
+#define WAFER_IR_TILE_STORAGEOPS_TD
 
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 
@@ -37,4 +37,4 @@ def Wafer_StorageStoreOp : Wafer_Op<"tile.store", [
       "$source `,` $dest attr-dict `:` type($source) `->` type($dest)";
 }
 
-#endif // WAFER_IR_OPS_SPMOPS_TD
+#endif // WAFER_IR_TILE_STORAGEOPS_TD

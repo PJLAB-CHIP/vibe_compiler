@@ -1,4 +1,4 @@
-//===- SPMOps.cpp - Wafer SPM verifier implementation ----------===//
+//===- StorageOps.cpp - Wafer SPM verifier implementation ----------===//
 
 #include "Wafer/IR/WaferDialect.h"
 

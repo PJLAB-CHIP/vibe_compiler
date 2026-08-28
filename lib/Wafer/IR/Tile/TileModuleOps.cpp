@@ -1,4 +1,4 @@
-//===- ModuleOps.cpp - Wafer target module verification ------------------===//
+//===- TileModuleOps.cpp - Wafer target module verification ------------------===//
 
 #include "Wafer/IR/WaferDialect.h"
 

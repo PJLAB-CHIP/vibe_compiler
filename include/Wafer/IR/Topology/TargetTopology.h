@@ -1,8 +1,8 @@
 //===- TargetTopology.h - Verifier-grade target topology view -*- C++
 //-*-===//
 
-#ifndef WAFER_IR_TARGET_TARGETTOPOLOGY_H
-#define WAFER_IR_TARGET_TARGETTOPOLOGY_H
+#ifndef WAFER_IR_TOPOLOGY_TARGETTOPOLOGY_H
+#define WAFER_IR_TOPOLOGY_TARGETTOPOLOGY_H
 
 #include "Wafer/Target/Core/TopologyIds.h"
 
@@ -110,4 +110,4 @@ private:
 
 } // namespace wafer
 
-#endif // WAFER_IR_TARGET_TARGETTOPOLOGY_H
+#endif // WAFER_IR_TOPOLOGY_TARGETTOPOLOGY_H

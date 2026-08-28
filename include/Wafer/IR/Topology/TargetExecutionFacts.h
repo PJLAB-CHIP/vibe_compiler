@@ -1,7 +1,7 @@
 //===- TargetExecutionFacts.h - Clone target execution IR -*- C++ -*-===//
 
-#ifndef WAFER_IR_TARGET_TARGETEXECUTIONFACTS_H
-#define WAFER_IR_TARGET_TARGETEXECUTIONFACTS_H
+#ifndef WAFER_IR_TOPOLOGY_TARGETEXECUTIONFACTS_H
+#define WAFER_IR_TOPOLOGY_TARGETEXECUTIONFACTS_H
 
 #include "mlir/IR/BuiltinOps.h"
 
@@ -16,4 +16,4 @@ void cloneTargetExecutionFacts(mlir::ModuleOp sourceModule,
 
 } // namespace wafer
 
-#endif // WAFER_IR_TARGET_TARGETEXECUTIONFACTS_H
+#endif // WAFER_IR_TOPOLOGY_TARGETEXECUTIONFACTS_H

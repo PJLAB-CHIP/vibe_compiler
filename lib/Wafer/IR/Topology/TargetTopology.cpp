@@ -1,6 +1,6 @@
 //===- TargetTopology.cpp - Verifier-grade physical topology view ------===//
 
-#include "Wafer/IR/Target/TargetTopology.h"
+#include "Wafer/IR/Topology/TargetTopology.h"
 
 #include "Wafer/IR/WaferDialect.h"
 

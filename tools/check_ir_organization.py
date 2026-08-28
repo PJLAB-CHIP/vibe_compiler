@@ -11,13 +11,13 @@ from pathlib import Path
 
 
 OP_FAMILY_LAYOUT = {
-    "Program/ModuleOps.td": {
-        "cpp": ("Program/ModuleOps.cpp",),
-        "tests": "Program/Module",
+    "Tile/TileModuleOps.td": {
+        "cpp": ("Tile/TileModuleOps.cpp",),
+        "tests": "Tile/TileModule",
     },
-    "Target/TopologyOps.td": {
-        "cpp": ("Target/TopologyOps.cpp",),
-        "tests": "Target/Topology",
+    "Topology/TopologyOps.td": {
+        "cpp": ("Topology/TopologyOps.cpp",),
+        "tests": "Topology",
     },
     "LinalgExt/CollectiveOps.td": {
         "cpp": ("LinalgExt/CollectiveOps.cpp",),
@@ -51,9 +51,9 @@ OP_FAMILY_LAYOUT = {
         "cpp": ("Tile/CommOps.cpp",),
         "tests": "Tile/Comm",
     },
-    "Resource/SPMOps.td": {
-        "cpp": ("Resource/SPMOps.cpp",),
-        "tests": "Resource/SPM",
+    "Tile/StorageOps.td": {
+        "cpp": ("Tile/StorageOps.cpp",),
+        "tests": "Tile/Storage",
     },
     # InstructionOps.td deliberately splits verifier implementations by
     # instruction family. The ODS include remains the schema truth.
@@ -77,11 +77,9 @@ OP_FAMILY_LAYOUT = {
 
 SUPPORT_TEST_DIRS = {"Common/Attrs"}
 IR_LAYERS = {
-    "Program",
-    "Target",
     "LinalgExt",
     "Tile",
-    "Resource",
+    "Topology",
     "Instr",
     "Runtime",
     "Common",

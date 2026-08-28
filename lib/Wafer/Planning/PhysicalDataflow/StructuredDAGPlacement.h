@@ -4,7 +4,7 @@
 
 #include "Wafer/Analysis/Structured/StructuredDAGAnalysis.h"
 
-#include "Wafer/IR/Target/TargetTopology.h"
+#include "Wafer/IR/Topology/TargetTopology.h"
 
 #include "llvm/ADT/SmallVector.h"
 

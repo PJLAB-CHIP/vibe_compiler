@@ -4,7 +4,7 @@
 #define WAFER_TRANSFORMS_TARGET_LOWERINSTRTOTARGETLLVMINTERNAL_H
 
 #include "Wafer/Analysis/CallGraph/DirectCallGraphAnalysis.h"
-#include "Wafer/IR/Target/TargetTopology.h"
+#include "Wafer/IR/Topology/TargetTopology.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/Core/TopologyIds.h"
 #include "Wafer/Target/Core/TargetCall.h"

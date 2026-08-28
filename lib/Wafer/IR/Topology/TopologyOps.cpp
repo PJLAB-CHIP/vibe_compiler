@@ -1,6 +1,6 @@
 //===- TopologyOps.cpp - Wafer target topology verifier implementation ----===//
 
-#include "Wafer/IR/Target/TargetExecutionFacts.h"
+#include "Wafer/IR/Topology/TargetExecutionFacts.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/IR/Builders.h"

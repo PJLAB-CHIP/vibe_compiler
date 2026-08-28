@@ -3,7 +3,7 @@
 #include "Wafer/Analysis/ScheduleCost/ScheduleCostAnalysis.h"
 
 #include "Internal.h"
-#include "Wafer/IR/Target/TargetTopology.h"
+#include "Wafer/IR/Topology/TargetTopology.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/IR/BuiltinOps.h"

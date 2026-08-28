@@ -11,10 +11,10 @@ add_mlir_dialect_library(WaferIR
   Instr/SyncOps.cpp
   LinalgExt/AttentionOps.cpp
   LinalgExt/CollectiveOps.cpp
-  Program/ModuleOps.cpp
-  Resource/SPMOps.cpp
-  Target/TargetTopology.cpp
-  Target/TopologyOps.cpp
+  Tile/TileModuleOps.cpp
+  Tile/StorageOps.cpp
+  Topology/TargetTopology.cpp
+  Topology/TopologyOps.cpp
   Tile/CommOps.cpp
   Tile/ComputeOps.cpp
   Tile/LayoutOps.cpp

@@ -10,7 +10,7 @@
 #include "Wafer/Transforms/Transport/DirectDTETransport.h"
 
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
-#include "Wafer/IR/Target/TargetTopology.h"
+#include "Wafer/IR/Topology/TargetTopology.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Target/Core/TargetMemory.h"
 #include "Wafer/Transforms/MemoryPlanning.h"

@@ -1,7 +1,7 @@
-//===- ModuleOps.td - Wafer target module operations ----------*- tablegen -*-===//
+//===- TileModuleOps.td - Wafer target module operations ----------*- tablegen -*-===//
 
-#ifndef WAFER_IR_PROGRAM_MODULEOPS_TD
-#define WAFER_IR_PROGRAM_MODULEOPS_TD
+#ifndef WAFER_IR_TILE_TILEMODULEOPS_TD
+#define WAFER_IR_TILE_TILEMODULEOPS_TD
 
 def Wafer_TileModuleOp : Wafer_Op<"tile.module", [
     IsolatedFromAbove,
@@ -34,4 +34,4 @@ def Wafer_TileModuleOp : Wafer_Op<"tile.module", [
   }];
 }
 
-#endif // WAFER_IR_PROGRAM_MODULEOPS_TD
+#endif // WAFER_IR_TILE_TILEMODULEOPS_TD

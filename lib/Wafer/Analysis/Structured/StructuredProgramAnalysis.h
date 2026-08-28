@@ -8,7 +8,7 @@
 #include "Wafer/Analysis/Structured/StructuredMaterializationRelations.h"
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Frontend/Program/Program.h"
-#include "Wafer/IR/Target/TargetTopology.h"
+#include "Wafer/IR/Topology/TargetTopology.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
