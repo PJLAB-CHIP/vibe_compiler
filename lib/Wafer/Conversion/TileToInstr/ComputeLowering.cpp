@@ -2,7 +2,7 @@
 
 #include "Internal.h"
 #include "Wafer/Analysis/Tile/TransferRealizability.h"
-#include "Wafer/Target/Core/TargetCall.h"
+#include "Wafer/Target/TargetCall.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"

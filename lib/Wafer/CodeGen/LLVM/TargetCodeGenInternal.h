@@ -7,7 +7,7 @@
 #include "Wafer/ABI/Tx81ProfilerABI.h"
 #include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Package/Profile/ProfileInstrumentationModel.h"
-#include "Wafer/Target/Core/TargetCall.h"
+#include "Wafer/Target/TargetCall.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"

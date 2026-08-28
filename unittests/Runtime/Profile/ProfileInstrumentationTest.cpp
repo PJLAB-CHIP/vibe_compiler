@@ -3,8 +3,8 @@
 #include "Wafer/Runtime/Profile/ProfileInstrumentation.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
-#include "Wafer/Target/Core/TargetCall.h"
-#include "Wafer/Target/Core/TargetIdentity.h"
+#include "Wafer/Target/TargetCall.h"
+#include "Wafer/Target/TargetIdentity.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"

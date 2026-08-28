@@ -2,7 +2,7 @@
 
 #include "Wafer/Transforms/StableHLO/FrontendVerification.h"
 
-#include "Wafer/Frontend/Program/Program.h"
+#include "Wafer/Frontend/Program.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/IR/BuiltinOps.h"

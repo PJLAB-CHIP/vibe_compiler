@@ -1168,15 +1168,10 @@ def main() -> int:
         read_text(target_lowering_dir / source) for source in TARGET_LOWERING_SOURCES
     )
     registry_text = read_text(
-        repo_root
-        / "lib"
-        / "Wafer"
-        / "Target"
-        / "Core"
-        / "TargetCall.cpp"
+        repo_root / "lib" / "Wafer" / "Target" / "TargetCall.cpp"
     )
     target_format_text = read_text(
-        repo_root / "lib" / "Wafer" / "Target" / "Core" / "TargetFormat.cpp"
+        repo_root / "lib" / "Wafer" / "Target" / "TargetFormat.cpp"
     )
     vendor_header_text = read_text(
         repo_root / "third_party" / "tx8_deps" / "include" / "instr_def.h"

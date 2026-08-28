@@ -3,12 +3,12 @@
 #ifndef WAFER_DRIVER_COMPILATION_H
 #define WAFER_DRIVER_COMPILATION_H
 
-#include "Wafer/Frontend/Program/Program.h"
-#include "Wafer/Program/ProgramElementType.h"
+#include "Wafer/Frontend/Program.h"
+#include "Wafer/Frontend/ProgramElementType.h"
 #include "Wafer/Support/OptimizationConfig.h"
-#include "Wafer/Target/Core/RuntimeLaunchContract.h"
-#include "Wafer/Target/Core/TargetIdentity.h"
-#include "Wafer/Target/Core/TopologyIds.h"
+#include "Wafer/Target/RuntimeLaunchContract.h"
+#include "Wafer/Target/TargetIdentity.h"
+#include "Wafer/Target/TopologyIds.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"

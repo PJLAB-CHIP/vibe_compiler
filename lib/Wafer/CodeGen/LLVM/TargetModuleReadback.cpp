@@ -2,7 +2,7 @@
 
 #include "Wafer/CodeGen/LLVM/TargetCodeGenInternal.h"
 
-#include "Wafer/Target/Core/TargetMemory.h"
+#include "Wafer/Target/TargetMemory.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"

@@ -10,6 +10,7 @@ add_mlir_library(WaferAnalysis
   Instr/ExecutionCost.cpp
   Instr/DDRHighWater.cpp
   Instr/SPMHighWater.cpp
+  Instr/StaticIndexRange.cpp
   Instr/ScheduleCostAnalysis.cpp
   Instr/NCCCompletionAnalysis.cpp
 

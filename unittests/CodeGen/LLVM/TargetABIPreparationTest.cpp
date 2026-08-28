@@ -7,7 +7,7 @@
 #include "Wafer/CodeGen/DeviceExecutableInternal.h"
 #include "Wafer/CodeGen/LLVM/TargetCodeGenInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
-#include "Wafer/Program/ProgramData.h"
+#include "Wafer/Driver/ProgramData.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"

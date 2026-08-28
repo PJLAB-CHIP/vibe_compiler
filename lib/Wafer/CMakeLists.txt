@@ -1,4 +1,3 @@
-add_subdirectory(Target/Layout/Core)
 add_subdirectory(IR)
 add_subdirectory(Target)
 add_subdirectory(Frontend)
@@ -10,7 +9,6 @@ add_subdirectory(Runtime)
 add_subdirectory(Planning)
 add_subdirectory(CodeGen)
 add_subdirectory(Driver)
-add_subdirectory(Program)
 
 set(WAFER_NATIVE_JIT_LIBS
   LLVM${LLVM_NATIVE_ARCH}CodeGen
@@ -28,9 +26,7 @@ add_mlir_library(WaferCompiler
   ${WAFER_PLANNING_SOURCES}
   ${WAFER_CODEGEN_SOURCES}
   ${WAFER_DRIVER_SOURCES}
-  ${WAFER_PROGRAM_SOURCES}
   ${WAFER_PACKAGE_WRITER_SOURCES}
-  ${WAFER_TARGET_EXECUTION_SOURCES}
   ${WAFER_COMPILATION_TRANSFORM_SOURCES}
 
   LINK_LIBS PUBLIC
@@ -52,7 +48,7 @@ add_mlir_library(WaferCompiler
   WaferStandaloneTileModules
   WaferStableHLOPipelines
   WaferTarget
-  WaferTargetTensorMaterialization
+  WaferPhysicalTensor
   WaferLinalgTransforms
   WaferTileToInstr
   WaferTileToInstrPipelines
@@ -116,4 +112,4 @@ if(WAFER_ENABLE_SPMD_PARTITIONER_DEPS)
   target_link_libraries(WaferCompiler PRIVATE ShardySdyRegister)
 endif()
 
-add_subdirectory(Model)
+add_subdirectory(Simulator)

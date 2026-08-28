@@ -5,8 +5,8 @@
 
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Target/Core/TargetFormat.h"
-#include "Wafer/Target/Layout/TargetTensorMaterialization.h"
+#include "Wafer/Target/TargetFormat.h"
+#include "Wafer/Target/PhysicalTensor/TargetTensorMaterialization.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"

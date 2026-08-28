@@ -3,8 +3,8 @@
 #ifndef WAFER_ANALYSIS_SCHEDULECOSTANALYSIS_H
 #define WAFER_ANALYSIS_SCHEDULECOSTANALYSIS_H
 
-#include "Wafer/Target/Core/TargetMemory.h"
-#include "Wafer/Target/Core/TopologyIds.h"
+#include "Wafer/Target/TargetMemory.h"
+#include "Wafer/Target/TopologyIds.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"

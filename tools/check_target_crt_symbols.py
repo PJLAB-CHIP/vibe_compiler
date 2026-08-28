@@ -123,7 +123,7 @@ def production_symbols_from_registry(
     attrs_text: str,
     target_operation_text: str,
 ) -> set[str]:
-    if '"Wafer/Target/Core/TargetCall.h"' not in lowering_text:
+    if '"Wafer/Target/TargetCall.h"' not in lowering_text:
         fail("target lowering does not include the shared target-call registry")
     if "makeTargetSymbol" in lowering_text:
         fail("target lowering retains the old symbol-construction path")
@@ -282,10 +282,10 @@ def main() -> int:
         repo_root / "lib" / "Wafer" / "Conversion" / "InstrToLLVM"
     )
     registry_path = (
-        repo_root / "lib" / "Wafer" / "Target" / "Core" / "TargetCall.cpp"
+        repo_root / "lib" / "Wafer" / "Target" / "TargetCall.cpp"
     )
     target_operation_path = (
-        repo_root / "lib" / "Wafer" / "Target" / "Core" / "TargetOperation.cpp"
+        repo_root / "lib" / "Wafer" / "Target" / "TargetOperation.cpp"
     )
 
     header_text = read_text(header_path)

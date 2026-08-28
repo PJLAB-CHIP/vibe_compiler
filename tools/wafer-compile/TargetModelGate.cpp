@@ -4,20 +4,15 @@
 
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 
-#include "Wafer/Model/Core/TargetModelInvocation.h"
-#include "Wafer/Model/SystemC/SystemCTargetModel.h"
-#include "Wafer/Program/ProgramInvocation.h"
-#include "Wafer/Program/ProgramTensorComparison.h"
-#ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
-#include "Wafer/Model/TestSupport/Testing.h"
-#endif
-
+#include "Wafer/Simulator/Invocation/TargetModelInvocation.h"
+#include "Wafer/Simulator/SystemC/SystemCTargetModel.h"
+#include "Wafer/Simulator/Invocation/ProgramInvocation.h"
+#include "Wafer/Simulator/Invocation/ProgramTensorComparison.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <cstdlib>
 #include <set>
 #include <utility>
 #include <vector>
@@ -67,28 +62,10 @@ bool runTargetModelGate(
                  << "\n";
     return true;
   }
-  llvm::Expected<wafer::model::TargetModelResult> result = [&]() {
-#ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
-    if (const char *failureLaunchSlot =
-            std::getenv("WAFER_TEST_FAIL_TARGET_MODEL_TILE_COMPLETION_SLOT")) {
-      int64_t parsedFailureLaunchSlot = -1;
-      if (llvm::StringRef(failureLaunchSlot)
-              .getAsInteger(10, parsedFailureLaunchSlot))
-        return llvm::Expected<wafer::model::TargetModelResult>(
-            llvm::createStringError(
-                "invalid test-only target model Tile completion failure "
-                "launch slot"));
-      return wafer::model::testing::
-          executeSystemCTargetModelWithTileCompletionFailure(
-              std::move(invocation->getExecutable()),
-              invocation->getInputBindings(), budget, executionPolicy,
-              parsedFailureLaunchSlot);
-    }
-#endif
-    return wafer::model::executeSystemCTargetModel(
-        std::move(invocation->getExecutable()), invocation->getInputBindings(),
-        budget, executionPolicy);
-  }();
+  llvm::Expected<wafer::model::TargetModelResult> result =
+      wafer::model::executeSystemCTargetModel(
+          std::move(invocation->getExecutable()),
+          invocation->getInputBindings(), budget, executionPolicy);
   if (!result) {
     llvm::errs() << "wafer-compile: " << llvm::toString(result.takeError())
                  << "\n";

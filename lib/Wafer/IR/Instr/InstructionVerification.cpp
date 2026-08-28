@@ -2,7 +2,7 @@
 
 #include "InstructionVerification.h"
 
-#include "Wafer/Target/Core/Tx81InstructionLimits.h"
+#include "Wafer/Target/Tx81InstructionLimits.h"
 #include "WaferIRVerification.h"
 
 #include <array>

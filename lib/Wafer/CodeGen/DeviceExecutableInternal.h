@@ -5,7 +5,7 @@
 #define WAFER_COMPILER_DEVICEEXECUTABLEINTERNAL_H
 
 #include "Wafer/Driver/Compilation.h"
-#include "Wafer/Program/ProgramData.h"
+#include "Wafer/Driver/ProgramData.h"
 
 #include "llvm/Support/Error.h"
 

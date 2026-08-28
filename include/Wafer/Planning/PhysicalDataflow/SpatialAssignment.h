@@ -4,7 +4,7 @@
 #define WAFER_PLANNING_PHYSICALDATAFLOW_SPATIALASSIGNMENT_H
 
 #include "Wafer/Analysis/Linalg/SemanticRoot.h"
-#include "Wafer/Target/Core/TopologyIds.h"
+#include "Wafer/Target/TopologyIds.h"
 
 #include "llvm/ADT/SmallVector.h"
 

@@ -2,10 +2,10 @@
 //-------===//
 
 #include "Wafer/CodeGen/TargetCodeGen.h"
-#include "Wafer/Model/Core/TargetModelInvocation.h"
-#include "Wafer/Program/ProgramInvocation.h"
-#include "Wafer/Target/Layout/TargetTensorMaterialization.h"
-#include "Wafer/Target/Numeric/Qualification/OneDNNQualification.h"
+#include "Wafer/Simulator/Invocation/TargetModelInvocation.h"
+#include "Wafer/Simulator/Invocation/ProgramInvocation.h"
+#include "Wafer/Target/PhysicalTensor/TargetTensorMaterialization.h"
+#include "Wafer/Simulator/OneDNN/OneDNNQualification.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Errc.h"

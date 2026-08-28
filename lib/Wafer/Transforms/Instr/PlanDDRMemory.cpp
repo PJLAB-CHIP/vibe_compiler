@@ -4,7 +4,7 @@
 #include "Wafer/Transforms/Passes.h"
 
 #include "Wafer/Transforms/Instr/LifetimeAnalysis.h"
-#include "Wafer/Transforms/Instr/StaticIndexRange.h"
+#include "Wafer/Analysis/Instr/StaticIndexRange.h"
 #include "Wafer/Transforms/Instr/StaticMemoryPacking.h"
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 

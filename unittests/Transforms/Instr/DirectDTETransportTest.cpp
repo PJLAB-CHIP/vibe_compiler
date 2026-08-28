@@ -3,7 +3,7 @@
 #include "Wafer/TestSupport/CompilerTesting.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
-#include "Wafer/Target/Core/TopologyIds.h"
+#include "Wafer/Target/TopologyIds.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

@@ -3,10 +3,10 @@
 #include "Wafer/CodeGen/DeviceExecutableInternal.h"
 #include "Wafer/CodeGen/LLVM/TargetCodeGenInternal.h"
 #include "Wafer/Package/Writer/PackageInternal.h"
-#include "Wafer/Program/ProgramData.h"
+#include "Wafer/Driver/ProgramData.h"
 
-#include "Wafer/Target/Core/RuntimeLaunchContract.h"
-#include "Wafer/Target/Core/TargetIdentity.h"
+#include "Wafer/Target/RuntimeLaunchContract.h"
+#include "Wafer/Target/TargetIdentity.h"
 
 #include "mlir/IR/Builders.h"
 #include "llvm/ADT/STLExtras.h"

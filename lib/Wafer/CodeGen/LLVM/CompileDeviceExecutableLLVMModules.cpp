@@ -5,7 +5,7 @@
 
 #include "Wafer/Driver/BoundedTileExecutor.h"
 
-#include "Wafer/Target/Core/TargetMemory.h"
+#include "Wafer/Target/TargetMemory.h"
 
 #include "mlir/IR/Diagnostics.h"
 

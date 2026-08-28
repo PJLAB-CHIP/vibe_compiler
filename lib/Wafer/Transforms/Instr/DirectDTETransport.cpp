@@ -5,9 +5,9 @@
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/Analysis/Module/ExecutableCallClosure.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Target/Core/DirectDTE.h"
-#include "Wafer/Target/Core/TargetMemory.h"
-#include "Wafer/Transforms/Instr/StaticIndexRange.h"
+#include "Wafer/Target/DirectDTE.h"
+#include "Wafer/Target/TargetMemory.h"
+#include "Wafer/Analysis/Instr/StaticIndexRange.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

@@ -8,7 +8,7 @@
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileWorkStatistics.h"
-#include "Wafer/Target/Core/TargetMemory.h"
+#include "Wafer/Target/TargetMemory.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"

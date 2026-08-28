@@ -3,7 +3,7 @@
 #ifndef WAFER_CONVERSION_INSTRTOLLVM_H
 #define WAFER_CONVERSION_INSTRTOLLVM_H
 
-#include "Wafer/Target/Core/TargetIdentity.h"
+#include "Wafer/Target/TargetIdentity.h"
 
 #include <cstdint>
 #include <memory>

@@ -590,7 +590,10 @@ def check_dependency_layering() -> None:
         label="numeric-model",
         roots=compiler_library_roots,
         needles=NUMERIC_MODEL_API_NEEDLES,
-        allowed_prefixes=["include/Wafer/Target", "lib/Wafer/Target"],
+        allowed_prefixes=[
+            "include/Wafer/Simulator/Reference",
+            "lib/Wafer/Simulator/Reference",
+        ],
     )
     for cmake_path in [
         REPO_ROOT / "lib" / "Wafer" / "Analysis" / "CMakeLists.txt",

@@ -18,12 +18,12 @@ add_executable(WaferUnitTests
   Driver/ExecutableLoweringTest.cpp
   Driver/PhysicalDataflow/SearchRoutingTest.cpp
   Transforms/Instr/DirectDTETransportTest.cpp
-  Program/ProgramTensorComparisonTest.cpp
+  Simulator/Invocation/ProgramTensorComparisonTest.cpp
   Transforms/Instr/TileMemoryPlanningTest.cpp
   Transforms/Tile/StructuredBufferRelationsTest.cpp
   CodeGen/LLVM/TargetABIPreparationTest.cpp
   CodeGen/LLVM/TargetCodeGenTest.cpp
-  Target/Execution/TargetCallExecutionTest.cpp
+  Simulator/Invocation/TargetCallExecutionTest.cpp
   CodeGen/LLVM/TargetIdentityTest.cpp
   Planning/PhysicalDataflow/AttentionSpatialConstraintsTest.cpp
   Planning/PhysicalDataflow/CanonicalSpatialAssignmentTest.cpp
@@ -40,7 +40,7 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/SpatialDomainTest.cpp
   Planning/PhysicalDataflow/SpatialPlanTest.cpp
   Driver/ProgramResourceVerificationTest.cpp
-  Program/ProgramDataTest.cpp
+  Driver/ProgramDataTest.cpp
   Transforms/Linalg/AttentionNormalizationTest.cpp
   Transforms/Linalg/StructuredGraphEGraphTest.cpp
   Transforms/Linalg/StructuredGraphNormalizationTest.cpp
@@ -50,19 +50,19 @@ add_executable(WaferUnitTests
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
   Dialect/Wafer/TargetTopologyTest.cpp
-  Frontend/Program/NpyPayloadTest.cpp
-  Model/Core/TargetModelMemoryTest.cpp
+  Frontend/NpyPayloadTest.cpp
+  Simulator/Memory/TargetModelMemoryTest.cpp
   Pipelines/PipelinesTest.cpp
   Runtime/Board/BoardRuntimeTest.cpp
   Package/Manifest/PackageManifestTest.cpp
   Runtime/Profile/ProfileInstrumentationTest.cpp
   Runtime/Profile/ProfilerRecordTest.cpp
-  Target/Numeric/Formal/FormalNumericTest.cpp
-  Target/Numeric/NumericCodecTest.cpp
-  Target/Numeric/NumericRawRounderTest.cpp
-  Target/Layout/PhysicalTensorCodecTest.cpp
-  Target/Layout/TargetTensorMaterializationTest.cpp
-  Target/Core/TargetFormatTest.cpp
+  Simulator/Reference/FormalNumericTest.cpp
+  Target/PhysicalTensor/NumericCodecTest.cpp
+  Target/PhysicalTensor/NumericRawRounderTest.cpp
+  Target/PhysicalTensor/PhysicalTensorCodecTest.cpp
+  Target/PhysicalTensor/TargetTensorMaterializationTest.cpp
+  Target/TargetFormatTest.cpp
   Transforms/Instr/LifetimeAnalysisTest.cpp
   Transforms/Instr/MiniMallocPackingTest.cpp
   Transforms/Instr/StaticMemoryPackingTest.cpp
@@ -93,8 +93,9 @@ target_link_libraries(WaferUnitTests
   WaferCompiler
   WaferIR
   WaferFormalNumeric
-  WaferTargetModelCore
-  WaferTargetTensorMaterialization
+  WaferSimulatorMemory
+  WaferSimulatorInvocation
+  WaferPhysicalTensor
   WaferRuntime
   WaferStableHLOPipelines
   WaferTileToInstrPipelines
@@ -148,6 +149,12 @@ add_executable(WaferTargetPublicLinkSmoke
 llvm_update_compile_flags(WaferTargetPublicLinkSmoke)
 target_link_libraries(WaferTargetPublicLinkSmoke PRIVATE WaferTarget)
 
+add_executable(WaferPhysicalTensorPublicLinkSmoke
+  LinkClosure/PhysicalTensorPublicLinkSmoke.cpp)
+llvm_update_compile_flags(WaferPhysicalTensorPublicLinkSmoke)
+target_link_libraries(WaferPhysicalTensorPublicLinkSmoke PRIVATE
+  WaferPhysicalTensor)
+
 add_executable(WaferRuntimePublicLinkSmoke
   LinkClosure/RuntimePublicLinkSmoke.cpp)
 llvm_update_compile_flags(WaferRuntimePublicLinkSmoke)
@@ -158,16 +165,17 @@ add_executable(WaferCompilerPublicLinkSmoke
 llvm_update_compile_flags(WaferCompilerPublicLinkSmoke)
 target_link_libraries(WaferCompilerPublicLinkSmoke PRIVATE WaferCompiler)
 
-add_executable(WaferModelPublicLinkSmoke
-  LinkClosure/ModelPublicLinkSmoke.cpp)
-llvm_update_compile_flags(WaferModelPublicLinkSmoke)
-target_link_libraries(WaferModelPublicLinkSmoke PRIVATE WaferTargetModelCore)
+add_executable(WaferSimulatorPublicLinkSmoke
+  LinkClosure/SimulatorPublicLinkSmoke.cpp)
+llvm_update_compile_flags(WaferSimulatorPublicLinkSmoke)
+target_link_libraries(WaferSimulatorPublicLinkSmoke PRIVATE WaferSimulatorMemory)
 
 foreach(_wafer_public_link_smoke IN ITEMS
     WaferTargetPublicLinkSmoke
+    WaferPhysicalTensorPublicLinkSmoke
     WaferRuntimePublicLinkSmoke
     WaferCompilerPublicLinkSmoke
-    WaferModelPublicLinkSmoke)
+    WaferSimulatorPublicLinkSmoke)
   add_test(NAME ${_wafer_public_link_smoke}
     COMMAND ${_wafer_public_link_smoke})
   set_tests_properties(${_wafer_public_link_smoke} PROPERTIES
@@ -178,42 +186,46 @@ add_custom_target(check-wafer-unit
   COMMAND $<TARGET_FILE:WaferUnitTests>
   COMMAND $<TARGET_FILE:WaferRunBoardIOUnitTests>
   COMMAND $<TARGET_FILE:WaferTargetPublicLinkSmoke>
+  COMMAND $<TARGET_FILE:WaferPhysicalTensorPublicLinkSmoke>
   COMMAND $<TARGET_FILE:WaferRuntimePublicLinkSmoke>
   COMMAND $<TARGET_FILE:WaferCompilerPublicLinkSmoke>
-  COMMAND $<TARGET_FILE:WaferModelPublicLinkSmoke>
+  COMMAND $<TARGET_FILE:WaferSimulatorPublicLinkSmoke>
   DEPENDS
     WaferUnitTests
     WaferRunBoardIOUnitTests
     WaferTargetPublicLinkSmoke
+    WaferPhysicalTensorPublicLinkSmoke
     WaferRuntimePublicLinkSmoke
     WaferCompilerPublicLinkSmoke
-    WaferModelPublicLinkSmoke
+    WaferSimulatorPublicLinkSmoke
   USES_TERMINAL
 )
 
 if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
-  add_executable(WaferNumericModelUnitTests
-    Model/Core/TargetModelKernelTest.cpp
-    Target/Numeric/Formal/FormalTensorNumericTest.cpp
-    Target/Numeric/Formal/MPFRNumericTest.cpp
-    Target/Numeric/NumericOracleDifferentialTest.cpp
-    Target/Numeric/Formal/SoftFloatOracleTest.cpp
+  add_executable(WaferReferenceNumericUnitTests
+    Simulator/Kernel/TargetModelKernelTest.cpp
+    Simulator/Reference/FormalTensorNumericTest.cpp
+    Simulator/Reference/MPFRNumericTest.cpp
+    Simulator/Reference/NumericOracleDifferentialTest.cpp
+    Simulator/Reference/SoftFloatOracleTest.cpp
   )
-  llvm_update_compile_flags(WaferNumericModelUnitTests)
-  target_compile_definitions(WaferNumericModelUnitTests PRIVATE
+  llvm_update_compile_flags(WaferReferenceNumericUnitTests)
+  target_include_directories(WaferReferenceNumericUnitTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib)
+  target_compile_definitions(WaferReferenceNumericUnitTests PRIVATE
     WAFER_NUMERIC_MODEL_DEPS_ROOT="${WAFER_NUMERIC_MODEL_DEPS_CANONICAL_ROOT}"
     WAFER_NUMERIC_MODEL_DEPS_RECORD="${WAFER_NUMERIC_MODEL_DEPS_CANONICAL_RECORD}"
     WAFER_NUMERIC_MODEL_DEPS_RECORD_SHA256="${WAFER_NUMERIC_MODEL_DEPS_RECORD_SHA256}"
   )
-  target_link_libraries(WaferNumericModelUnitTests
+  target_link_libraries(WaferReferenceNumericUnitTests
     PRIVATE
-    WaferNumericModel
-    WaferTargetFunctionalModel
+    WaferReferenceNumeric
+    WaferSimulatorKernel
     GTest::gtest_main
   )
-  add_test(NAME WaferNumericModelUnitTests COMMAND WaferNumericModelUnitTests)
+  add_test(NAME WaferReferenceNumericUnitTests COMMAND WaferReferenceNumericUnitTests)
   set_tests_properties(
-    WaferNumericModelUnitTests PROPERTIES
+    WaferReferenceNumericUnitTests PROPERTIES
     ENVIRONMENT
       "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
     LABELS "numeric-model;managed-dependencies"
@@ -221,16 +233,16 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   add_custom_target(check-wafer-numeric-model-unit
     COMMAND ${CMAKE_COMMAND} -E env
       "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferNumericModelUnitTests>
-    DEPENDS WaferNumericModelUnitTests
+      $<TARGET_FILE:WaferReferenceNumericUnitTests>
+    DEPENDS WaferReferenceNumericUnitTests
     USES_TERMINAL
   )
 endif()
 
 if(WAFER_ENABLE_TARGET_NUMERIC_BACKEND)
   add_executable(WaferTargetNumericBackendUnitTests
-    Model/Reference/ManagedReferenceTargetModelTest.cpp
-    Target/Numeric/Qualification/OneDNNQualificationTest.cpp
+    Simulator/Reference/ManagedReferenceTargetModelTest.cpp
+    Simulator/OneDNN/OneDNNQualificationTest.cpp
   )
   llvm_update_compile_flags(WaferTargetNumericBackendUnitTests)
   target_link_libraries(WaferTargetNumericBackendUnitTests
@@ -252,17 +264,17 @@ if(WAFER_ENABLE_TARGET_NUMERIC_BACKEND)
 endif()
 
 if(WAFER_ENABLE_SYSTEMC_MODEL)
-  add_library(WaferSystemCModelTestSupport STATIC
-    Model/SystemC/SystemCTargetModelTestSupport.cpp
+  add_library(WaferSystemCSimulatorTestSupport STATIC
+    Simulator/SystemC/SystemCTargetModelTestSupport.cpp
   )
-  llvm_update_compile_flags(WaferSystemCModelTestSupport)
-  target_include_directories(WaferSystemCModelTestSupport PUBLIC
+  llvm_update_compile_flags(WaferSystemCSimulatorTestSupport)
+  target_include_directories(WaferSystemCSimulatorTestSupport PUBLIC
     ${CMAKE_SOURCE_DIR}/lib
-    ${CMAKE_SOURCE_DIR}/unittests/Model/SystemC
+    ${CMAKE_SOURCE_DIR}/unittests/Simulator/SystemC
   )
-  target_link_libraries(WaferSystemCModelTestSupport
+  target_link_libraries(WaferSystemCSimulatorTestSupport
     PUBLIC
-    WaferSystemCModel
+    WaferSystemCSimulator
     WaferCompiler
     WaferIR
     MLIRArithDialect
@@ -283,7 +295,7 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     add_executable(${target} ${source})
     llvm_update_compile_flags(${target})
     target_link_libraries(${target} PRIVATE
-      WaferSystemCModelTestSupport
+      WaferSystemCSimulatorTestSupport
       GTest::gtest
     )
     add_test(NAME ${target} COMMAND ${target})
@@ -293,57 +305,57 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   endfunction()
 
   add_wafer_systemc_transport_test(
-    WaferSystemCModelDTEIntegrationTest
-    Model/SystemC/SystemCTargetModelDTEIntegrationTest.cpp)
+    WaferSystemCSimulatorDTEIntegrationTest
+    Simulator/SystemC/SystemCTargetModelDTEIntegrationTest.cpp)
   add_wafer_systemc_transport_test(
-    WaferSystemCModelDTEComputeDisjointTest
-    Model/SystemC/SystemCTargetModelDTEComputeAccessTest.cpp)
-  target_compile_definitions(WaferSystemCModelDTEComputeDisjointTest PRIVATE
+    WaferSystemCSimulatorDTEComputeDisjointTest
+    Simulator/SystemC/SystemCTargetModelDTEComputeAccessTest.cpp)
+  target_compile_definitions(WaferSystemCSimulatorDTEComputeDisjointTest PRIVATE
     WAFER_TEST_DTE_COMPUTE_ACCESS_MODE=0)
   add_wafer_systemc_transport_test(
-    WaferSystemCModelDTEComputeOverlapWithoutJoinTest
-    Model/SystemC/SystemCTargetModelDTEComputeAccessTest.cpp)
+    WaferSystemCSimulatorDTEComputeOverlapWithoutJoinTest
+    Simulator/SystemC/SystemCTargetModelDTEComputeAccessTest.cpp)
   target_compile_definitions(
-    WaferSystemCModelDTEComputeOverlapWithoutJoinTest PRIVATE
+    WaferSystemCSimulatorDTEComputeOverlapWithoutJoinTest PRIVATE
     WAFER_TEST_DTE_COMPUTE_ACCESS_MODE=1)
   add_wafer_systemc_transport_test(
-    WaferSystemCModelDTEComputeOverlapWithJoinTest
-    Model/SystemC/SystemCTargetModelDTEComputeAccessTest.cpp)
-  target_compile_definitions(WaferSystemCModelDTEComputeOverlapWithJoinTest
+    WaferSystemCSimulatorDTEComputeOverlapWithJoinTest
+    Simulator/SystemC/SystemCTargetModelDTEComputeAccessTest.cpp)
+  target_compile_definitions(WaferSystemCSimulatorDTEComputeOverlapWithJoinTest
     PRIVATE WAFER_TEST_DTE_COMPUTE_ACCESS_MODE=2)
   add_wafer_systemc_transport_test(
-    WaferSystemCModelDTELateSourceWriteTest
-    Model/SystemC/SystemCTargetModelDTELateJoinTest.cpp)
-  target_compile_definitions(WaferSystemCModelDTELateSourceWriteTest PRIVATE
+    WaferSystemCSimulatorDTELateSourceWriteTest
+    Simulator/SystemC/SystemCTargetModelDTELateJoinTest.cpp)
+  target_compile_definitions(WaferSystemCSimulatorDTELateSourceWriteTest PRIVATE
     WAFER_TEST_DTE_LATE_JOIN_ACCESS_MODE=0)
   add_wafer_systemc_transport_test(
-    WaferSystemCModelDTELateDestinationReadTest
-    Model/SystemC/SystemCTargetModelDTELateJoinTest.cpp)
-  target_compile_definitions(WaferSystemCModelDTELateDestinationReadTest PRIVATE
+    WaferSystemCSimulatorDTELateDestinationReadTest
+    Simulator/SystemC/SystemCTargetModelDTELateJoinTest.cpp)
+  target_compile_definitions(WaferSystemCSimulatorDTELateDestinationReadTest PRIVATE
     WAFER_TEST_DTE_LATE_JOIN_ACCESS_MODE=1)
   add_wafer_systemc_transport_test(
-    WaferSystemCModelDTELateDestinationWriteTest
-    Model/SystemC/SystemCTargetModelDTELateJoinTest.cpp)
-  target_compile_definitions(WaferSystemCModelDTELateDestinationWriteTest
+    WaferSystemCSimulatorDTELateDestinationWriteTest
+    Simulator/SystemC/SystemCTargetModelDTELateJoinTest.cpp)
+  target_compile_definitions(WaferSystemCSimulatorDTELateDestinationWriteTest
     PRIVATE WAFER_TEST_DTE_LATE_JOIN_ACCESS_MODE=2)
   add_wafer_systemc_transport_test(
-    WaferSystemCModelDTEMismatchTest
-    Model/SystemC/SystemCTargetModelDTEMismatchTest.cpp)
+    WaferSystemCSimulatorDTEMismatchTest
+    Simulator/SystemC/SystemCTargetModelDTEMismatchTest.cpp)
   add_wafer_systemc_transport_test(
-    WaferSystemCModelDTEPreIssueTest
-    Model/SystemC/SystemCTargetModelDTEPreIssueTest.cpp)
+    WaferSystemCSimulatorDTEPreIssueTest
+    Simulator/SystemC/SystemCTargetModelDTEPreIssueTest.cpp)
   add_wafer_systemc_transport_test(
-    WaferSystemCModelDTEReadinessTest
-    Model/SystemC/SystemCTargetModelDTEReadinessTest.cpp)
+    WaferSystemCSimulatorDTEReadinessTest
+    Simulator/SystemC/SystemCTargetModelDTEReadinessTest.cpp)
   add_wafer_systemc_transport_test(
-    WaferSystemCModelEventFailureTest
-    Model/SystemC/SystemCTargetModelEventFailureTest.cpp)
+    WaferSystemCSimulatorEventFailureTest
+    Simulator/SystemC/SystemCTargetModelEventFailureTest.cpp)
   add_wafer_systemc_transport_test(
-    WaferSystemCModelNCCVisibilityTest
-    Model/SystemC/SystemCTargetModelNCCVisibilityTest.cpp)
+    WaferSystemCSimulatorNCCVisibilityTest
+    Simulator/SystemC/SystemCTargetModelNCCVisibilityTest.cpp)
   add_wafer_systemc_transport_test(
-    WaferSystemCModelNoProgressTest
-    Model/SystemC/SystemCTargetModelNoProgressTest.cpp)
+    WaferSystemCSimulatorNoProgressTest
+    Simulator/SystemC/SystemCTargetModelNoProgressTest.cpp)
 
   set_tests_properties(
     ${WAFER_SYSTEMC_MODEL_TEST_TARGETS}
@@ -354,7 +366,7 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   )
   add_custom_target(check-wafer-systemc-model
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-      -R "^WaferSystemCModel"
+      -R "^WaferSystemCSimulator"
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DEPENDS ${WAFER_SYSTEMC_MODEL_TEST_TARGETS}
     USES_TERMINAL

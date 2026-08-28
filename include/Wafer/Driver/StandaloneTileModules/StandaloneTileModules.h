@@ -4,7 +4,7 @@
 #define WAFER_DRIVER_STANDALONETILEMODULES_H
 
 #include "Wafer/Transforms/Tile/StructuredMaterializationRelations.h"
-#include "Wafer/Target/Core/TopologyIds.h"
+#include "Wafer/Target/TopologyIds.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/SmallVector.h"

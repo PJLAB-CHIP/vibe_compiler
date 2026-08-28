@@ -1,12 +1,12 @@
 add_mlir_library(WaferFrontend
-  Distribution/DistributedBoundary.cpp
-  Distribution/DistributedSupport.cpp
-  Program/FunctionBoundary.cpp
-  Program/NpyPayload.cpp
-  Program/ParameterShards.cpp
-  Program/Program.cpp
-  Program/ProgramMetadata.cpp
-  Program/ProgramSupport.cpp
+  DistributedBoundary.cpp
+  DistributedSupport.cpp
+  FunctionBoundary.cpp
+  NpyPayload.cpp
+  ParameterShards.cpp
+  Program.cpp
+  ProgramMetadata.cpp
+  ProgramSupport.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport

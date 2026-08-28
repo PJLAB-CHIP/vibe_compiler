@@ -4,7 +4,7 @@
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
 #include "Wafer/Package/Profile/ProfileInstrumentationModel.h"
-#include "Wafer/Target/Layout/PhysicalTensorCodec.h"
+#include "Wafer/Target/PhysicalTensor/PhysicalTensorCodec.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"

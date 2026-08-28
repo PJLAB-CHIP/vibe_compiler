@@ -1,7 +1,7 @@
 //===- WaferDialect.cpp - Wafer dialect implementation -------------------===//
 
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Target/Core/DirectDTE.h"
+#include "Wafer/Target/DirectDTE.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/IR/AffineExpr.h"

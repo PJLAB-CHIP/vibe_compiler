@@ -6,8 +6,8 @@
 #include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Driver/CompilationResult.h"
-#include "Wafer/Frontend/Program/Program.h"
-#include "Wafer/Program/ProgramData.h"
+#include "Wafer/Frontend/Program.h"
+#include "Wafer/Driver/ProgramData.h"
 
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Pass/PassManager.h"

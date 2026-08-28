@@ -3,7 +3,7 @@
 #ifndef WAFER_FRONTEND_STABLEHLO_PROGRAMINGESTION_H
 #define WAFER_FRONTEND_STABLEHLO_PROGRAMINGESTION_H
 
-#include "Wafer/Frontend/Program/Program.h"
+#include "Wafer/Frontend/Program.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"

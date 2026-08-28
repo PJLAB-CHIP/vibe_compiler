@@ -5,7 +5,7 @@
 #define WAFER_TRANSFORMS_TILE_STRUCTUREDMATERIALIZATIONRELATIONS_H
 
 #include "Wafer/Planning/PhysicalDataflow/SpatialAssignment.h"
-#include "Wafer/Target/Core/TopologyIds.h"
+#include "Wafer/Target/TopologyIds.h"
 
 #include "mlir/IR/BuiltinOps.h"
 

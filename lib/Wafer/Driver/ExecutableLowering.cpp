@@ -12,7 +12,7 @@
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/Topology/TargetTopology.h"
 #include "Wafer/Support/CompileTiming.h"
-#include "Wafer/Target/Core/TargetMemory.h"
+#include "Wafer/Target/TargetMemory.h"
 #include "Wafer/Transforms/Instr/MemoryPlanning.h"
 #include "Wafer/Transforms/Passes.h"
 

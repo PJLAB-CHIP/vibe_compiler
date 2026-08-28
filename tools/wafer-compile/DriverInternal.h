@@ -7,7 +7,7 @@
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Driver/CompilationResult.h"
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
-#include "Wafer/Model/SystemC/SystemCTargetModel.h"
+#include "Wafer/Simulator/SystemC/SystemCTargetModel.h"
 #endif
 
 #include "llvm/ADT/ArrayRef.h"

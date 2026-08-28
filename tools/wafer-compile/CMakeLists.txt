@@ -129,7 +129,7 @@ target_compile_definitions(wafer-compile-test PRIVATE
 if(WAFER_ENABLE_SYSTEMC_MODEL)
   target_compile_definitions(wafer-compile-test PRIVATE
     WAFER_ENABLE_SYSTEMC_MODEL=1)
-  target_link_libraries(wafer-compile-test PRIVATE WaferSystemCModel)
+  target_link_libraries(wafer-compile-test PRIVATE WaferSystemCSimulator)
   if(WAFER_ENABLE_TARGET_NUMERIC_BACKEND)
     target_compile_definitions(wafer-compile-test PRIVATE
       WAFER_ENABLE_TARGET_NUMERIC_BACKEND=1)

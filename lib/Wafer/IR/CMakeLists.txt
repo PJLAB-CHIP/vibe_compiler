@@ -46,7 +46,7 @@ add_mlir_dialect_library(WaferIR
   MLIRTensorDialect
   MLIRTilingInterface
   MLIRViewLikeInterface
-  WaferTargetPhysicalLayout
+  WaferPhysicalTensor
 )
 
 target_include_directories(WaferIR PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Common)

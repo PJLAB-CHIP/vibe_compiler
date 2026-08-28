@@ -5,7 +5,7 @@
 
 #include "Wafer/CodeGen/DeviceExecutableInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
-#include "Wafer/Program/ProgramData.h"
+#include "Wafer/Driver/ProgramData.h"
 #include "Wafer/Transforms/Instr/MemoryPlanningPipelines.h"
 #include "Wafer/Transforms/Passes.h"
 #include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"

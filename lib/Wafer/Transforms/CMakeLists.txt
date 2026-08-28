@@ -16,7 +16,6 @@ add_mlir_library(WaferTransforms
   Instr/PlanDDRMemory.cpp
   Instr/PlanSPMMemory.cpp
   Instr/RedundantTransferElimination.cpp
-  Instr/StaticIndexRange.cpp
   Instr/StaticMemoryPacking.cpp
   Passes.cpp
 

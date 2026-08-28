@@ -4,7 +4,7 @@
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SPATIALPLAN_H
 
 #include "Wafer/Planning/PhysicalDataflow/SpatialAssignment.h"
-#include "Wafer/Target/Core/TopologyIds.h"
+#include "Wafer/Target/TopologyIds.h"
 
 #include "mlir/Support/LogicalResult.h"
 

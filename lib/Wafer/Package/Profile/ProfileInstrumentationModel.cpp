@@ -2,7 +2,7 @@
 
 #include "Wafer/Package/Profile/ProfileInstrumentationModel.h"
 
-#include "Wafer/Target/Core/TargetCall.h"
+#include "Wafer/Target/TargetCall.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"

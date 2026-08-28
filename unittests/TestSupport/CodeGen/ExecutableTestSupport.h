@@ -7,11 +7,11 @@
 #include "Wafer/CodeGen/DeviceExecutableInternal.h"
 #include "Wafer/Driver/ExecutableCompilation.h"
 #include "Wafer/Driver/CompilationInternal.h"
-#include "Wafer/Program/ProgramData.h"
+#include "Wafer/Driver/ProgramData.h"
 
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Support/OptimizationConfig.h"
-#include "Wafer/Target/Core/TargetMemory.h"
+#include "Wafer/Target/TargetMemory.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"

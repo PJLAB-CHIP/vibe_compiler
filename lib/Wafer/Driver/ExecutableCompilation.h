@@ -7,8 +7,8 @@
 #include "Wafer/Driver/ExecutableLowering.h"
 #include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
 
-#include "Wafer/Frontend/Program/Program.h"
-#include "Wafer/Target/Core/TopologyIds.h"
+#include "Wafer/Frontend/Program.h"
+#include "Wafer/Target/TopologyIds.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"

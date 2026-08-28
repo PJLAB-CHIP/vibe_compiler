@@ -4,7 +4,7 @@
 #define WAFER_TRANSFORMS_TARGET_TARGETCALLIRADAPTER_H
 
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Target/Core/TargetCall.h"
+#include "Wafer/Target/TargetCall.h"
 
 namespace wafer {
 

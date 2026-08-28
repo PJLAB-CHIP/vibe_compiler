@@ -2,7 +2,7 @@
 
 #include "Wafer/Driver/PhysicalDataflow/ActualResultController.h"
 
-#include "Wafer/Target/Core/RuntimeLaunchContract.h"
+#include "Wafer/Target/RuntimeLaunchContract.h"
 
 #include "llvm/Support/Error.h"
 

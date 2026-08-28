@@ -1,14 +1,14 @@
 //===- Target LLVM lowering implementation -------------------------------===//
 
-#include "Wafer/Transforms/Instr/StaticIndexRange.h"
+#include "Wafer/Analysis/Instr/StaticIndexRange.h"
 #include "Wafer/Conversion/InstrToLLVM/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Target/Core/TargetCall.h"
-#include "Wafer/Target/Core/TargetFormat.h"
-#include "Wafer/Target/Core/TargetMemory.h"
+#include "Wafer/Target/TargetCall.h"
+#include "Wafer/Target/TargetFormat.h"
+#include "Wafer/Target/TargetMemory.h"
 #include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"

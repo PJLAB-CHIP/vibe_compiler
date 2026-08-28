@@ -4,12 +4,12 @@
 #define WAFER_PACKAGE_PACKAGEMANIFEST_H
 
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
-#include "Wafer/Program/ProgramElementType.h"
-#include "Wafer/Target/Core/RuntimeLaunchContract.h"
-#include "Wafer/Target/Core/TargetFormat.h"
-#include "Wafer/Target/Core/TargetIdentity.h"
-#include "Wafer/Target/Core/TopologyIds.h"
-#include "Wafer/Target/Layout/PhysicalLayout.h"
+#include "Wafer/Frontend/ProgramElementType.h"
+#include "Wafer/Target/RuntimeLaunchContract.h"
+#include "Wafer/Target/TargetFormat.h"
+#include "Wafer/Target/TargetIdentity.h"
+#include "Wafer/Target/TopologyIds.h"
+#include "Wafer/Target/PhysicalTensor/PhysicalLayout.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"

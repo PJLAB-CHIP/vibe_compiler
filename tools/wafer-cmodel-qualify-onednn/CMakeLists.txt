@@ -5,5 +5,5 @@ target_link_libraries(wafer-cmodel-qualify-onednn
   LLVMSupport
   WaferOneDNNBackend
   WaferCompiler
-  WaferTargetModelInvocation
+  WaferSimulatorInvocation
 )

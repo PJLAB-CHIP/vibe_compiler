@@ -10,6 +10,7 @@ set(WAFER_DRIVER_SOURCES
   Driver/PhysicalDataflow/StructuredProgramAnalysis.cpp
   Driver/PhysicalDataflow/UnifiedSearch.cpp
   Driver/ProgramDirectoryTransaction.cpp
+  Driver/ProgramData.cpp
   Driver/ProgramResourceVerification.cpp
   Driver/SpmdCompilationBridge.cpp
   Driver/TensorProgramCompilation.cpp

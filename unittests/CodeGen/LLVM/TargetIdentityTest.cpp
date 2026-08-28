@@ -1,6 +1,6 @@
 //===- TargetIdentityTest.cpp - Current target identity tests ------------===//
 
-#include "Wafer/Target/Core/TargetIdentity.h"
+#include "Wafer/Target/TargetIdentity.h"
 
 #include "llvm/Support/Error.h"
 #include "gtest/gtest.h"

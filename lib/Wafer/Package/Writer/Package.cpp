@@ -4,11 +4,11 @@
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
 #include "Wafer/Package/Profile/ProfileInstrumentationModel.h"
-#include "Wafer/Program/ProgramData.h"
-#include "Wafer/Target/Core/TargetFormat.h"
-#include "Wafer/Target/Layout/PhysicalTensorCodec.h"
-#include "Wafer/Target/Layout/TargetTensorMaterialization.h"
-#include "Wafer/Target/Numeric/NumericCodec.h"
+#include "Wafer/Driver/ProgramData.h"
+#include "Wafer/Target/TargetFormat.h"
+#include "Wafer/Target/PhysicalTensor/PhysicalTensorCodec.h"
+#include "Wafer/Target/PhysicalTensor/TargetTensorMaterialization.h"
+#include "Wafer/Target/PhysicalTensor/NumericCodec.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"

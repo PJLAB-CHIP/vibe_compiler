@@ -3,8 +3,8 @@
 #include "Wafer/Driver/ExecutableCompilation.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Program/ProgramData.h"
-#include "Wafer/Target/Core/TargetMemory.h"
+#include "Wafer/Driver/ProgramData.h"
+#include "Wafer/Target/TargetMemory.h"
 #include "Wafer/Transforms/Instr/MemoryPlanning.h"
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
 

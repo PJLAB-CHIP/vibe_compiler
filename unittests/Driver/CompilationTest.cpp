@@ -5,8 +5,8 @@
 #include "Wafer/Driver/CompilationResult.h"
 #include "Wafer/Package/Manifest/PackageManifest.h"
 #include "Wafer/Support/CompileTiming.h"
-#include "Wafer/Target/Core/RuntimeLaunchContract.h"
-#include "Wafer/Target/Core/TargetIdentity.h"
+#include "Wafer/Target/RuntimeLaunchContract.h"
+#include "Wafer/Target/TargetIdentity.h"
 
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringExtras.h"

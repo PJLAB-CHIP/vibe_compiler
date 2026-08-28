@@ -13,7 +13,7 @@
 #include "Wafer/Package/Manifest/PackageManifest.h"
 #include "Wafer/Package/Profile/ProfileInstrumentationModel.h"
 #include "Wafer/Support/CompileTiming.h"
-#include "Wafer/Target/Core/TargetCall.h"
+#include "Wafer/Target/TargetCall.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"

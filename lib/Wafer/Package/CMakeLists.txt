@@ -10,6 +10,7 @@ add_mlir_library(WaferPackageSupport
 
   LINK_LIBS PUBLIC
   LLVMSupport
+  WaferPhysicalTensor
   WaferTarget
 )
 
