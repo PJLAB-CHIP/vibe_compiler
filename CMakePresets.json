@@ -1,0 +1,52 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "Canonical development",
+      "description": "Complete repository-managed compiler, model, and local test configuration",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "WAFER_DEPS_ROOT": "${sourceDir}/third_party",
+        "WAFER_ENABLE_UNIT_TESTS": "ON",
+        "WAFER_ENABLE_IMPORTER_DEPS": "ON",
+        "WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS": "ON",
+        "WAFER_ENABLE_SPMD_PARTITIONER_DEPS": "ON",
+        "WAFER_ENABLE_NUMERIC_MODEL_DEPS": "ON",
+        "WAFER_ENABLE_TARGET_NUMERIC_BACKEND": "ON",
+        "WAFER_ENABLE_SYSTEMC_MODEL": "ON",
+        "WAFER_ENABLE_RUNTIME_DEPS": "OFF",
+        "WAFER_ENABLE_BOARD_RUNTIME": "OFF",
+        "WAFER_ENABLE_BOARD_TEST_EXECUTION": "OFF",
+        "WAFER_ENABLE_PRODUCT_INSTALL": "ON",
+        "WAFER_ENABLE_WARNINGS_AS_ERRORS": "ON",
+        "WAFER_XLA_SPMD_PARTITIONER_HELPER": "${sourceDir}/build/xla-spmd-helper/wafer_xla_spmd_partitioner"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    }
+  ]
+}

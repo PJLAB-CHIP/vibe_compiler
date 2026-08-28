@@ -35,11 +35,11 @@ void printHelp() {
                   "--target-model-max-movement-bytes <bytes> "
                   "--target-model-max-movement-segments <count> "
                   "[--target-model-numeric-policy "
-                  "<formal|bulk-then-formal|managed-reference> "
-                  "[--target-model-bulk-record <record>] "
-                  "--target-model-max-bulk-total-bytes <bytes> "
-                  "--target-model-max-bulk-scratchpad-bytes <bytes> "
-                  "--target-model-max-bulk-reorder-bytes <bytes>]]\n";
+                  "<formal|onednn-then-formal|managed-reference> "
+                  "[--target-model-onednn-record <record>] "
+                  "--target-model-max-onednn-total-bytes <bytes> "
+                  "--target-model-max-onednn-scratchpad-bytes <bytes> "
+                  "--target-model-max-onednn-reorder-bytes <bytes>]]\n";
 #endif
 }
 
@@ -72,6 +72,7 @@ bool parseValueOption(int argc, char **argv, int &index, llvm::StringRef arg,
   return false;
 }
 
+#ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
 bool parseRepeatedValueOption(int argc, char **argv, int &index,
                               llvm::StringRef arg, llvm::StringRef option,
                               std::vector<std::string> &values) {
@@ -90,6 +91,7 @@ bool parseRepeatedValueOption(int argc, char **argv, int &index,
   }
   return false;
 }
+#endif
 
 bool isRegularFile(llvm::StringRef path) {
   return llvm::sys::fs::get_file_type(path, /*Follow=*/false) ==
@@ -256,35 +258,35 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       continue;
     }
-    if (arg == "--target-model-bulk-record" ||
-        arg.starts_with("--target-model-bulk-record=")) {
+    if (arg == "--target-model-onednn-record" ||
+        arg.starts_with("--target-model-onednn-record=")) {
       if (parseRepeatedValueOption(argc, argv, index, arg,
-                                   "--target-model-bulk-record",
-                                   options.targetModelBulkRecords))
+                                   "--target-model-onednn-record",
+                                   options.targetModelOneDNNRecords))
         return false;
       continue;
     }
-    if (arg == "--target-model-max-bulk-total-bytes" ||
-        arg.starts_with("--target-model-max-bulk-total-bytes=")) {
+    if (arg == "--target-model-max-onednn-total-bytes" ||
+        arg.starts_with("--target-model-max-onednn-total-bytes=")) {
       if (parseValueOption(argc, argv, index, arg,
-                           "--target-model-max-bulk-total-bytes",
-                           options.targetModelMaximumBulkTotalBytes))
+                           "--target-model-max-onednn-total-bytes",
+                           options.targetModelMaximumOneDNNTotalBytes))
         return false;
       continue;
     }
-    if (arg == "--target-model-max-bulk-scratchpad-bytes" ||
-        arg.starts_with("--target-model-max-bulk-scratchpad-bytes=")) {
+    if (arg == "--target-model-max-onednn-scratchpad-bytes" ||
+        arg.starts_with("--target-model-max-onednn-scratchpad-bytes=")) {
       if (parseValueOption(argc, argv, index, arg,
-                           "--target-model-max-bulk-scratchpad-bytes",
-                           options.targetModelMaximumBulkScratchpadBytes))
+                           "--target-model-max-onednn-scratchpad-bytes",
+                           options.targetModelMaximumOneDNNScratchpadBytes))
         return false;
       continue;
     }
-    if (arg == "--target-model-max-bulk-reorder-bytes" ||
-        arg.starts_with("--target-model-max-bulk-reorder-bytes=")) {
+    if (arg == "--target-model-max-onednn-reorder-bytes" ||
+        arg.starts_with("--target-model-max-onednn-reorder-bytes=")) {
       if (parseValueOption(argc, argv, index, arg,
-                           "--target-model-max-bulk-reorder-bytes",
-                           options.targetModelMaximumBulkReorderBytes))
+                           "--target-model-max-onednn-reorder-bytes",
+                           options.targetModelMaximumOneDNNReorderBytes))
         return false;
       continue;
     }

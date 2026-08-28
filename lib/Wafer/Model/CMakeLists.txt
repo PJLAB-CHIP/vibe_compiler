@@ -43,14 +43,14 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   )
 endif()
 
-if(WAFER_ENABLE_BULK_MODEL_DEPS)
-  add_mlir_library(WaferTargetBulkModel
+if(WAFER_ENABLE_TARGET_NUMERIC_BACKEND)
+  add_mlir_library(WaferTargetNumericBackend
     PARTIAL_SOURCES_INTENDED
     Reference/ManagedReferenceTargetModel.cpp
-    Qualification/TargetBulkModel.cpp
+    Qualification/TargetNumericBackend.cpp
 
     LINK_LIBS PUBLIC
-    WaferBulkModel
+    WaferOneDNNBackend
     WaferTargetFunctionalModel
     LLVMSupport
   )

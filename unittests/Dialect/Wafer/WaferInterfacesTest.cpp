@@ -404,9 +404,10 @@ template <typename OpT> void expectLinalgExtCollectiveInterfaces(OpT op) {
     EXPECT_EQ(iterators[dim], mlir::utils::IteratorType::parallel);
     EXPECT_EQ(mlir::getConstantIntValue(domain[dim].offset), 0);
     EXPECT_EQ(mlir::getConstantIntValue(domain[dim].stride), 1);
-    if (!mlir::ShapedType::isDynamic(resultType.getDimSize(dim)))
+    if (!mlir::ShapedType::isDynamic(resultType.getDimSize(dim))) {
       EXPECT_EQ(mlir::getConstantIntValue(domain[dim].size),
                 resultType.getDimSize(dim));
+    }
   }
 }
 

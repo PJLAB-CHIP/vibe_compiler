@@ -27,19 +27,6 @@ StaticPackingProblem makeValidationProblem() {
   return problem;
 }
 
-// Size-first first-fit places demands 2 and 3 at [0, 3), then demand 0 at
-// [3, 4), leaving no range for demand 1.  A legal placement exists:
-//   2 -> [0, 3), 3 -> [1, 4), 0 -> [0, 1), 1 -> [3, 4).
-StaticPackingProblem makeFourDemandFirstFitCounterexample() {
-  StaticPackingProblem problem;
-  problem.arena = ArenaRange{0, 4};
-  problem.demands = {makeDemand(1, 1, 0), makeDemand(1, 1, 1),
-                     makeDemand(3, 1, 2), makeDemand(3, 1, 3)};
-  problem.conflicts = {PackingConflict{0, 1}, PackingConflict{0, 3},
-                       PackingConflict{1, 2}};
-  return problem;
-}
-
 TEST(StaticMemoryPackingTest, ProblemValidatorAcceptsCanonicalProblem) {
   EXPECT_FALSE(validatePackingProblem(makeValidationProblem()));
 }

@@ -617,8 +617,7 @@ mlir::FailureOr<SpatialPlan> buildGraphCoherentSpatialProposal(
 
   using TileVotes = std::map<int64_t, uint64_t>;
   std::map<LogicalShardId, TileVotes> votes;
-  for (const analysis::DependencyDemand &dependency :
-       demand.dependencyDemands)
+  for (const analysis::DependencyDemand &dependency : demand.dependencyDemands)
     for (const analysis::DestinationDemand &destination :
          dependency.perDestination) {
       auto destinationTile = tilesByShard.find(destination.destinationShard);
@@ -669,7 +668,8 @@ mlir::FailureOr<SpatialPlan> buildGraphCoherentSpatialProposal(
     const size_t tileCount = available.size();
     bool hasVote = false;
     for (auto [index, shard] : llvm::enumerate(partition->second->shards)) {
-      if (shard.shard.root != node.root || shard.tile != node.embedding[index]) {
+      if (shard.shard.root != node.root ||
+          shard.tile != node.embedding[index]) {
         if (failureReason)
           *failureReason =
               "graph-coherent proposal plan/assignment embedding is stale";
@@ -694,9 +694,8 @@ mlir::FailureOr<SpatialPlan> buildGraphCoherentSpatialProposal(
           if (found != shardVotes->second.end())
             weight = found->second;
         }
-        const uint64_t maximumWeight =
-            static_cast<uint64_t>(std::numeric_limits<int64_t>::max() /
-                                  primaryScale);
+        const uint64_t maximumWeight = static_cast<uint64_t>(
+            std::numeric_limits<int64_t>::max() / primaryScale);
         if (weight > maximumWeight) {
           if (failureReason)
             *failureReason = "graph-coherent proposal score overflows";
@@ -1282,7 +1281,7 @@ llvm::SmallVector<SpatialPlan, 4> SpatialPlanDomain::getProposals() const {
         size_t componentIndex =
             static_cast<size_t>(std::distance(components.begin(), component));
         llvm::ArrayRef<TileId> pool = componentPools[componentIndex];
-        const SpatialRootDomainFacts &root = problem.getRoots()[rootIndex];
+        const SpatialRootDomainFacts root = problem.getRoots()[rootIndex];
         std::optional<llvm::SmallVector<IteratorPartition, 4>> axes =
             getMaximumBalancedAxes(root, pool.size());
         std::optional<NodeSpatialPlan> node =
@@ -1331,15 +1330,12 @@ SpatialPlanDomain::getGraphCoherentProposals(
     if (evaluation.failure)
       return mlir::failure();
     const analysis::ExactDemandProof *proof =
-        evaluation.demand
-            ? analysis::getExactDemandProof(*evaluation.demand)
-            : nullptr;
+        evaluation.demand ? analysis::getExactDemandProof(*evaluation.demand)
+                          : nullptr;
     if (evaluation.assignment && proof) {
       std::string detail;
-      mlir::FailureOr<SpatialPlan> coherent =
-          buildGraphCoherentSpatialProposal(problem, raw,
-                                            *evaluation.assignment, *proof,
-                                            &detail);
+      mlir::FailureOr<SpatialPlan> coherent = buildGraphCoherentSpatialProposal(
+          problem, raw, *evaluation.assignment, *proof, &detail);
       if (mlir::failed(coherent))
         return mlir::failure();
       append(std::move(*coherent));

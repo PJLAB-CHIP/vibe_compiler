@@ -662,7 +662,7 @@ lowering存活的完整expansion，checked统计实际拆分后的engine command
 terminal `wafer.instr.reduce`的ODS移除optional init operand，verifier拒绝`init_value`等残留attr。它只表示无init字段的
 target-native leaf；current production source path只有在完整logical reduction domain、dimension、combiner和init合同没有丢失，
 且current target revision对该完整command tuple已有足以证明source等价的target-owned numeric contract时才可选择它。
-formal CModel是否实现、bulk backend是否可用或有限host corpus是否通过都不能代签该compiler gate。floating leaf order无需与
+formal CModel是否实现、oneDNN backend是否可用或有限host corpus是否通过都不能代签该compiler gate。floating leaf order无需与
 source一致，integer仍须满足exact/modular合同；保留在Instr IR但不进入CRT call的init不是合法production语义，CModel不得补偿。
 
 ### 7.5 GEMM
@@ -699,7 +699,7 @@ byte-order歧义。Fused bias、activation、quant、psum accumulation policy �
 目标Instr IR在选择oriented ABI时必须显式携带两个orientation字段且不得依赖default；未携带orientation的
 plain form只表示normal/normal。orientation进入tasks/14的typed target-call/ABI capability和tasks/17的
 family-specific model request及concrete GEMM qualification identity。typed ABI与compiler emission、formal/model support、
-bulk qualification和真实board provider allowlist是四个独立结论，不能由通用profile混称或互相代签。
+oneDNN qualification和真实board provider allowlist是四个独立结论，不能由通用profile混称或互相代签。
 
 plain GEMM还只要求lhs/rhs/dest element type相同，target CRT call只传一个format；IR没有product、accumulator、
 逐MAC rounding、FMA或reduction-order字段。若这些行为是program-selectable，必须先扩typed tile/instruction op及CRT ABI；
@@ -1027,7 +1027,7 @@ instr-lowering verifier checks only instruction legality:
   某个op×dtype的数值执行也只限制model gate，不反向缩小compiler/ABI legality。
 - NE GEMM and CT reduce require supported aligned layout marker, dtype and rank. current plain GEMM按implicit
   normal/normal relation匹配stored shape与M/K/N/batch；oriented tuple只有在typed orientation字段、
-  target ABI和op-specific verifier同时匹配时合法；model或bulk coverage是下游独立gate。terminal CT reduce has no init operand/
+  target ABI和op-specific verifier同时匹配时合法；model或oneDNN coverage是下游独立gate。terminal CT reduce has no init operand/
   attr，任何残留字段target-illegal；source reduce legalization必须更早lower为有序fill/movement/elementwise composite或拒绝，native
   reduce只有compiler-owned full-domain mapping与target-owned numeric proof后才可进入production。
 - relation-guided physical-encoding absorption不增加Instr字段；verifier只从current Instr/operands的memref type与

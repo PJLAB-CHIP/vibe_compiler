@@ -4,7 +4,7 @@ set(WAFER_DEPS_ROOT "${CMAKE_SOURCE_DIR}/third_party" CACHE PATH
   "Root for pinned third-party dependencies fetched by tools/bootstrap_deps.py")
 set(WAFER_LLVM_SOURCE_DIR "${WAFER_DEPS_ROOT}/llvm-project" CACHE PATH
   "Pinned llvm-project checkout matching the OpenXLA/XLA workspace")
-set(WAFER_LLVM_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/llvm-install/${WAFER_LLVM_COMMIT}" CACHE PATH
+set(WAFER_LLVM_INSTALL_DIR "${CMAKE_SOURCE_DIR}/build/third_party/llvm-install/${WAFER_LLVM_COMMIT}" CACHE PATH
   "Install prefix for a source-built pinned LLVM/MLIR package")
 string(SUBSTRING "${WAFER_LLVM_COMMIT}" 0 4 _wafer_llvm_commit_short)
 set(WAFER_LLVM_BUILD_DIR "${CMAKE_SOURCE_DIR}/build/third_party/llvm-project-${_wafer_llvm_commit_short}" CACHE PATH
@@ -27,8 +27,8 @@ option(WAFER_ENABLE_RUNTIME_DEPS
   "Enable future runtime/driver SDK dependency roots" OFF)
 option(WAFER_ENABLE_NUMERIC_MODEL_DEPS
   "Enable exact managed SoftFloat/TestFloat/GMP/MPFR numeric-model files" OFF)
-option(WAFER_ENABLE_BULK_MODEL_DEPS
-  "Enable the exact managed oneDNN bulk functional-model files" OFF)
+option(WAFER_ENABLE_TARGET_NUMERIC_BACKEND
+  "Enable the target numeric backend with its managed oneDNN implementation" OFF)
 option(WAFER_ENABLE_SYSTEMC_MODEL
   "Enable the exact managed SystemC functional-event model dependency" OFF)
 option(WAFER_FETCH_GTEST
@@ -40,12 +40,12 @@ set(WAFER_NUMERIC_MODEL_DEPS_ROOT
 set(WAFER_NUMERIC_MODEL_DEPS_RECORD
   "${WAFER_NUMERIC_MODEL_DEPS_ROOT}/numeric-model-deps.json" CACHE FILEPATH
   "Completed managed numeric-model dependency conformance record")
-set(WAFER_BULK_MODEL_DEPS_ROOT
-  "${WAFER_DEPS_ROOT}/bulk-model" CACHE PATH
-  "Root produced by tools/bootstrap_deps.py --bulk-model-deps")
-set(WAFER_BULK_MODEL_DEPS_RECORD
-  "${WAFER_BULK_MODEL_DEPS_ROOT}/bulk-model-deps.json" CACHE FILEPATH
-  "Completed managed bulk-model dependency conformance record")
+set(WAFER_ONEDNN_DEPS_ROOT
+  "${WAFER_DEPS_ROOT}/onednn" CACHE PATH
+  "Root produced by tools/bootstrap_deps.py --onednn-deps")
+set(WAFER_ONEDNN_DEPS_RECORD
+  "${WAFER_ONEDNN_DEPS_ROOT}/onednn-deps.json" CACHE FILEPATH
+  "Completed managed oneDNN dependency conformance record")
 set(WAFER_SYSTEMC_MODEL_DEPS_ROOT
   "${WAFER_DEPS_ROOT}/systemc-model" CACHE PATH
   "Root produced by tools/bootstrap_deps.py --systemc-model-deps")
@@ -143,9 +143,9 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   wafer_enable_numeric_model_deps()
 endif()
 
-if(WAFER_ENABLE_BULK_MODEL_DEPS)
-  include("${CMAKE_CURRENT_LIST_DIR}/WaferBulkModelDeps.cmake")
-  wafer_enable_bulk_model_deps()
+if(WAFER_ENABLE_TARGET_NUMERIC_BACKEND)
+  include("${CMAKE_CURRENT_LIST_DIR}/WaferOneDNNBackendDeps.cmake")
+  wafer_enable_onednn_backend()
 endif()
 
 if(WAFER_ENABLE_SYSTEMC_MODEL)

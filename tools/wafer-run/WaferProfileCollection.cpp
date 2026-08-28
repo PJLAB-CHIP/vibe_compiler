@@ -806,7 +806,8 @@ llvm::Error ensureRunsDirectory(llvm::StringRef instrumentationRoot,
   llvm::sys::fs::file_status status;
   std::error_code error = llvm::sys::fs::status(runs, status, /*follow=*/false);
   if (error == std::errc::no_such_file_or_directory) {
-    if (error = llvm::sys::fs::create_directory(runs))
+    error = llvm::sys::fs::create_directory(runs);
+    if (error)
       return llvm::createStringError(error,
                                      "failed to create profile runs directory");
   } else if (error) {
@@ -816,7 +817,8 @@ llvm::Error ensureRunsDirectory(llvm::StringRef instrumentationRoot,
     return invalid("profile runs path is not a real directory");
   }
   llvm::SmallString<256> canonical;
-  if (error = llvm::sys::fs::real_path(runs, canonical))
+  error = llvm::sys::fs::real_path(runs, canonical);
+  if (error)
     return llvm::createStringError(error,
                                    "failed to resolve profile runs directory");
   llvm::SmallString<256> expected(instrumentationRoot);
@@ -825,7 +827,8 @@ llvm::Error ensureRunsDirectory(llvm::StringRef instrumentationRoot,
     return invalid(
         "profile runs directory escapes the verified instrumentation");
   runs.assign(canonical.begin(), canonical.end());
-  if (error = llvm::sys::fs::setPermissions(runs, llvm::sys::fs::all_all))
+  error = llvm::sys::fs::setPermissions(runs, llvm::sys::fs::all_all);
+  if (error)
     return llvm::createStringError(
         error, "failed to set profile runs directory permissions");
   return llvm::Error::success();
@@ -905,7 +908,8 @@ resolveCurrentProfileRun(llvm::StringRef runsDirectory) {
     return invalid("current profile report entry is not a managed link");
 
   llvm::SmallString<256> resolved;
-  if (error = llvm::sys::fs::real_path(current, resolved))
+  error = llvm::sys::fs::real_path(current, resolved);
+  if (error)
     return llvm::createStringError(
         error, "failed to resolve current profile report entry");
   if (llvm::sys::path::parent_path(resolved) != runsDirectory ||
@@ -1305,8 +1309,8 @@ llvm::Error BoardProfileOutputValidator::recordPrimaryOutputs(
 
     const size_t index = resources.size();
     outputIndices.emplace(key, index);
-    expectedOutputs.push_back({key, exactOutputContract(*output.port),
-                               referencePath.str().str()});
+    expectedOutputs.push_back(
+        {key, exactOutputContract(*output.port), referencePath.str().str()});
     resources.push_back({output.port->id, output.port->roleIndex,
                          output.port->bytes,
                          hashOutputBytes(output.output->bytes),
@@ -1604,12 +1608,11 @@ runBoardProfileCollection(const VerifiedProfileInstrumentation &instrumentation,
               return observation;
             }
             case BoardProfileProtocolLaunch::Count: {
-              llvm::Expected<BoardRuntimeInvocationResult> result =
-                  execute(collection.countPackage->getPackage(),
-                          collection.countPlan,
-                          /*profilerExpected=*/true,
-                          BoardCompletionObservationPolicy::Normal,
-                          BoardDeviceTimingPolicy::Disabled);
+              llvm::Expected<BoardRuntimeInvocationResult> result = execute(
+                  collection.countPackage->getPackage(), collection.countPlan,
+                  /*profilerExpected=*/true,
+                  BoardCompletionObservationPolicy::Normal,
+                  BoardDeviceTimingPolicy::Disabled);
               if (!result)
                 return result.takeError();
               if (llvm::Error error =
@@ -1629,12 +1632,11 @@ runBoardProfileCollection(const VerifiedProfileInstrumentation &instrumentation,
               return observation;
             }
             case BoardProfileProtocolLaunch::Trace: {
-              llvm::Expected<BoardRuntimeInvocationResult> result =
-                  execute(collection.tracePackage->getPackage(),
-                          collection.tracePlan,
-                          /*profilerExpected=*/true,
-                          BoardCompletionObservationPolicy::Normal,
-                          BoardDeviceTimingPolicy::Disabled);
+              llvm::Expected<BoardRuntimeInvocationResult> result = execute(
+                  collection.tracePackage->getPackage(), collection.tracePlan,
+                  /*profilerExpected=*/true,
+                  BoardCompletionObservationPolicy::Normal,
+                  BoardDeviceTimingPolicy::Disabled);
               if (!result)
                 return result.takeError();
               if (llvm::Error error =

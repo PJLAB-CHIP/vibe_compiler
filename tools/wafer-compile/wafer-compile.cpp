@@ -2,14 +2,14 @@
 
 #include "DriverInternal.h"
 
+#include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Driver/CompilationResult.h"
-#include "Wafer/CodeGen/TargetCodeGen.h"
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 #include "Wafer/Model/SystemC/SystemCTargetModel.h"
 #endif
-#ifdef WAFER_ENABLE_TARGET_BULK_MODEL
-#include "Wafer/Model/Qualification/TargetBulkModel.h"
+#ifdef WAFER_ENABLE_TARGET_NUMERIC_BACKEND
+#include "Wafer/Model/Qualification/TargetNumericBackend.h"
 #endif
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
 #include "Wafer/TestSupport/CompilerTesting.h"
@@ -32,8 +32,7 @@ namespace {
 /// diagnostics already went to stderr during the transaction, so the CLI only
 /// classifies the failure and exits non-zero without touching any output.
 int reportCompilationFailure(llvm::Error error) {
-  llvm::errs() << "wafer-compile: " << llvm::toString(std::move(error))
-               << "\n";
+  llvm::errs() << "wafer-compile: " << llvm::toString(std::move(error)) << "\n";
   return 1;
 }
 
@@ -42,8 +41,8 @@ int reportSuccess(const wafer::compiler::CompilationResult &result,
   llvm::outs() << "wafer-compile: wrote verified package with "
                   "num-partitions="
                << numPartitions << " tiles="
-               << wafer::compiler::ExecutionConfig::kSingleCardTileCount
-               << ": " << result.getPackage().getRootDirectory() << "\n";
+               << wafer::compiler::ExecutionConfig::kSingleCardTileCount << ": "
+               << result.getPackage().getRootDirectory() << "\n";
   if (result.getProfileInstrumentation())
     llvm::outs() << "wafer-compile: wrote profile instrumentation: "
                  << result.getProfileInstrumentation()->getRootDirectory()
@@ -87,10 +86,10 @@ int main(int argc, char **argv) {
       options.targetModelMaximumMovementSegments ||
       options.modelReportNumericStatistics ||
       options.targetModelNumericPolicy ||
-      !options.targetModelBulkRecords.empty() ||
-      options.targetModelMaximumBulkTotalBytes ||
-      options.targetModelMaximumBulkScratchpadBytes ||
-      options.targetModelMaximumBulkReorderBytes;
+      !options.targetModelOneDNNRecords.empty() ||
+      options.targetModelMaximumOneDNNTotalBytes ||
+      options.targetModelMaximumOneDNNScratchpadBytes ||
+      options.targetModelMaximumOneDNNReorderBytes;
   if (targetModelOptionsProvided && !options.targetModel) {
     llvm::errs() << "wafer-compile: target model budget options require "
                     "--target-model\n";
@@ -179,8 +178,8 @@ int main(int argc, char **argv) {
 
   llvm::Expected<DriverToolFacts> toolFacts = resolveDriverToolFacts();
   if (!toolFacts) {
-    llvm::errs() << "wafer-compile: "
-                 << llvm::toString(toolFacts.takeError()) << "\n";
+    llvm::errs() << "wafer-compile: " << llvm::toString(toolFacts.takeError())
+                 << "\n";
     return 1;
   }
   llvm::Expected<wafer::compiler::TargetToolchain> targetToolchain =
@@ -208,12 +207,10 @@ int main(int argc, char **argv) {
       std::getenv("WAFER_TEST_CORRUPT_PACKAGE_COMMIT_MEMBER");
   const char *profileBindingFailure =
       std::getenv("WAFER_TEST_CORRUPT_PROFILE_COMMIT_MEMBER");
-  unsigned failureInjectionCount = (executableFailureSlot ? 1u : 0u) +
-                                   (targetFailureSlot ? 1u : 0u) +
-                                   (packageFailureSlot ? 1u : 0u) +
-                                   (commitVerificationFailure ? 1u : 0u) +
-                                   (packageBindingFailure ? 1u : 0u) +
-                                   (profileBindingFailure ? 1u : 0u);
+  unsigned failureInjectionCount =
+      (executableFailureSlot ? 1u : 0u) + (targetFailureSlot ? 1u : 0u) +
+      (packageFailureSlot ? 1u : 0u) + (commitVerificationFailure ? 1u : 0u) +
+      (packageBindingFailure ? 1u : 0u) + (profileBindingFailure ? 1u : 0u);
   if (options.profile &&
       (executableFailureSlot || targetFailureSlot || packageFailureSlot)) {
     llvm::errs() << "wafer-compile: --profile cannot be combined with "
@@ -334,9 +331,9 @@ int main(int argc, char **argv) {
       std::optional<wafer::model::TargetModelKernelBudget> targetModelBudget;
       std::optional<wafer::model::TargetModelExecutionPolicy>
           targetModelExecutionPolicy;
-#ifdef WAFER_ENABLE_TARGET_BULK_MODEL
-      std::unique_ptr<wafer::model::TargetModelBulkBackend>
-          targetModelBulkBackend;
+#ifdef WAFER_ENABLE_TARGET_NUMERIC_BACKEND
+      std::unique_ptr<wafer::model::TargetModelOneDNNBackend>
+          targetModelOneDNNBackend;
       std::unique_ptr<wafer::model::ManagedReferenceTargetModelBackend>
           targetModelManagedReferenceBackend;
 #endif
@@ -362,67 +359,69 @@ int main(int argc, char **argv) {
           options.targetModelNumericPolicy
               ? llvm::StringRef(*options.targetModelNumericPolicy)
               : llvm::StringRef("formal");
-      const bool hasBulkConfiguration =
-          !options.targetModelBulkRecords.empty() ||
-          options.targetModelMaximumBulkTotalBytes ||
-          options.targetModelMaximumBulkScratchpadBytes ||
-          options.targetModelMaximumBulkReorderBytes;
+      const bool hasOneDNNConfiguration =
+          !options.targetModelOneDNNRecords.empty() ||
+          options.targetModelMaximumOneDNNTotalBytes ||
+          options.targetModelMaximumOneDNNScratchpadBytes ||
+          options.targetModelMaximumOneDNNReorderBytes;
       if (numericPolicy == "formal") {
-        if (hasBulkConfiguration) {
-          llvm::errs() << "wafer-compile: bulk model options require "
-                          "--target-model-numeric-policy=bulk-then-formal or "
+        if (hasOneDNNConfiguration) {
+          llvm::errs() << "wafer-compile: oneDNN backend options require "
+                          "--target-model-numeric-policy=onednn-then-formal or "
                           "managed-reference\n";
           return 1;
         }
         targetModelExecutionPolicy.emplace(
             wafer::model::TargetModelExecutionPolicy::formalOnly());
-      } else if (numericPolicy == "bulk-then-formal" ||
+      } else if (numericPolicy == "onednn-then-formal" ||
                  numericPolicy == "managed-reference") {
-#ifdef WAFER_ENABLE_TARGET_BULK_MODEL
-        if (numericPolicy == "bulk-then-formal" &&
-            options.targetModelBulkRecords.empty()) {
-          llvm::errs() << "wafer-compile: bulk-then-formal GEMM requires at "
-                          "least one --target-model-bulk-record\n";
+#ifdef WAFER_ENABLE_TARGET_NUMERIC_BACKEND
+        if (numericPolicy == "onednn-then-formal" &&
+            options.targetModelOneDNNRecords.empty()) {
+          llvm::errs() << "wafer-compile: onednn-then-formal GEMM requires at "
+                          "least one --target-model-onednn-record\n";
           return 1;
         }
         if (numericPolicy == "managed-reference" &&
-            !options.targetModelBulkRecords.empty()) {
-          llvm::errs() << "wafer-compile: managed-reference GEMM does not "
-                          "consume exact --target-model-bulk-record entries\n";
+            !options.targetModelOneDNNRecords.empty()) {
+          llvm::errs()
+              << "wafer-compile: managed-reference GEMM does not "
+                 "consume exact --target-model-onednn-record entries\n";
           return 1;
         }
         auto maximumTotalBytes =
-            parsePositiveCount(options.targetModelMaximumBulkTotalBytes,
-                               "--target-model-max-bulk-total-bytes");
+            parsePositiveCount(options.targetModelMaximumOneDNNTotalBytes,
+                               "--target-model-max-onednn-total-bytes");
         auto maximumScratchpadBytes =
-            parsePositiveCount(options.targetModelMaximumBulkScratchpadBytes,
-                               "--target-model-max-bulk-scratchpad-bytes");
+            parsePositiveCount(options.targetModelMaximumOneDNNScratchpadBytes,
+                               "--target-model-max-onednn-scratchpad-bytes");
         auto maximumReorderBytes =
-            parsePositiveCount(options.targetModelMaximumBulkReorderBytes,
-                               "--target-model-max-bulk-reorder-bytes");
+            parsePositiveCount(options.targetModelMaximumOneDNNReorderBytes,
+                               "--target-model-max-onednn-reorder-bytes");
         if (!maximumTotalBytes || !maximumScratchpadBytes ||
             !maximumReorderBytes)
           return 1;
-        const wafer::BulkNumericWorkBudget bulkBudget =
-            wafer::BulkNumericWorkBudget::create(*maximumTotalBytes,
-                                                 *maximumScratchpadBytes,
-                                                 *maximumReorderBytes);
-        if (numericPolicy == "bulk-then-formal") {
-          auto qualified = wafer::model::QualifiedTargetModelBulkBackend::create(
-              options.targetModelBulkRecords, bulkBudget);
+        const wafer::OneDNNNumericWorkBudget onednnBudget =
+            wafer::OneDNNNumericWorkBudget::create(*maximumTotalBytes,
+                                                   *maximumScratchpadBytes,
+                                                   *maximumReorderBytes);
+        if (numericPolicy == "onednn-then-formal") {
+          auto qualified =
+              wafer::model::QualifiedTargetModelOneDNNBackend::create(
+                  options.targetModelOneDNNRecords, onednnBudget);
           if (!qualified) {
             llvm::errs() << "wafer-compile: "
                          << llvm::toString(qualified.takeError()) << "\n";
             return 1;
           }
-          targetModelBulkBackend = std::move(*qualified);
+          targetModelOneDNNBackend = std::move(*qualified);
           targetModelExecutionPolicy.emplace(
-              wafer::model::TargetModelExecutionPolicy::bulkThenFormal(
-                  *targetModelBulkBackend));
+              wafer::model::TargetModelExecutionPolicy::onednnThenFormal(
+                  *targetModelOneDNNBackend));
         } else {
           auto managed =
               wafer::model::ManagedReferenceTargetModelBackend::create(
-                  bulkBudget);
+                  onednnBudget);
           if (!managed) {
             llvm::errs() << "wafer-compile: "
                          << llvm::toString(managed.takeError()) << "\n";
@@ -435,7 +434,7 @@ int main(int argc, char **argv) {
                   *targetModelManagedReferenceBackend));
         }
 #else
-        llvm::errs() << "wafer-compile: bulk model support is not "
+        llvm::errs() << "wafer-compile: target numeric backend support is not "
                         "configured\n";
         return 1;
 #endif

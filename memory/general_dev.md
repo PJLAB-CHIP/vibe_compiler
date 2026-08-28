@@ -14,6 +14,10 @@
 
 ## 构建与验证
 
+- 唯一主工程build由checked-in preset `default`拥有，binary dir直接为`build/`。普通任务不创建task/checkpoint/config/date命名的
+  第二build；toolchain、preset、managed dependency identity或CMake配置改变时重新configure同一目录。
+- 修改期间可以先构建受影响target；完成结论或提交前必须执行一次无target的`cmake --build --preset default`完整增量构建。
+  无源变更的第二次构建应为Ninja no-op。全部本地test只从该build注册和执行，`UNSUPPORTED`、skip或未注册都不计通过。
 - host构建、unit、CTest、lit、catalog和no-card默认使用机器可用逻辑CPU并行；CMake/CTest优先
   `-j$(nproc)`。只有证实内存、共享可写目录、resource lock或工具限制时才降并发。
 - 先做直接受影响target的增量构建/测试，再做完整configured build与相关CTest/lit。不要用编译单个object代替link或integration。
@@ -352,25 +356,26 @@ source program
 
 ## 构建与测试命令模板
 
-- 增量构建使用`cmake --build <configured-build> -j$(nproc)`；CTest使用
-  `ctest --test-dir <configured-build> -R '<affected-regex>' --output-on-failure -j$(nproc)`。
+- CMake输入或managed dependency改变时使用`cmake --preset default`；完整增量构建使用
+  `cmake --build --preset default -j$(nproc)`；canonical build gate使用`ctest --preset default -j$(nproc)`。
+- 定向反馈使用`cmake --build --preset default --target <target> -j$(nproc)`和
+  `ctest --test-dir build -R '<affected-regex>' --output-on-failure -j$(nproc)`，但不能代替上述完整构建与全部本地CTest。
 - lit从configured build tree运行对应suite或注册的CTest，使site config注入工具和依赖；不要把source-tree test直接交给lit。
-- 修改public API时按当前CMake option重新配置并构建所有受影响consumer配置；具体build目录从当前环境取得，不写入memory。
+- product install从同一build按`Compiler`/`Runtime`component选择内容；部署Runtime component不建立runtime-only build。
 - 真实设备case只在明确任务中以单进程、逐case运行；无硬件时只完成host reference、package和no-card，不把skip计作通过。
-## Baseline与search materialization调试
 
-- Baseline和search分别拥有controller、Card/Tile materializer和accepted result。Baseline直接消费current TensorProgram与固定规则，
-  不拥有search complete plan、frontier或domain；search才拥有explicit structural choice state。
-  静态include/call graph应证明两者在complete-candidate层不互调，也不存在按policy/canonical equality/feature presence
-  切换行为的shared facade。
-- 允许共享的leaf只消费已经完整解释的operation或stage IR，例如只读IndexRelation事实、单operation tiling/layout、
-  TileRegion-to-Instr conversion、MiniMalloc、DDR/transport和target lowering；leaf不能回调controller。
-- baseline保持一个live deterministic candidate。每个compute region恰一个semantic root；同Tile多root为多个顺序region，
-  跨root shaped dependency显式materialize。只有actual SPM capacity rejection可触发预定义的smaller temporal successor。
-- search materializer直接按selected execution、physical version和movement plan构造IR。carrier只接收已经存在的SSA result/view，
-  不得接收producer op、tiling callback或compute builder。
-- 每个candidate只构造一次CardModule并进入一次actual gate；rejected/loser owner销毁，Accepted owner不重建。可选IR inspection
-  只读取最终accepted owner，不参与admission或package语义。
+## None与search current-IR调试
+
+- `none`和`search`分别拥有controller与attempt/candidate transaction，彼此不调用或fallback；二者只共享具有相同current-IR
+  输入输出的atomic transformation、verifier和actual memory/target leaf。
+- controller只能选择显式transformation参数。choice一旦影响operation、SSA、buffer、movement或control flow，立即在candidate-owned
+  owner中实际改写并验证；下一stage只读改写后的current IR并fresh重算analysis。
+- `none`保持一个live deterministic attempt；只有带actual conflict demand和完整current owner relation的MiniMalloc capacity
+  rejection可以触发预定义的下一temporal attempt。其它typed failure不变形成retile/fallback。
+- `search`的未消费state只保存explicit choice，不保存physical version、movement/storage/schedule plan或future operation/value ID。
+  选中的layout、movement和execution choice由各自stage立即apply，不能在末端按plan重放winner。
+- 每个candidate只构造一次actual owner并进入一次actual gate；rejected/loser owner销毁，Accepted owner直接交给下游。
+  inspection只读最终accepted owner，不参与admission或package语义。
 
 ## Actual SPM feedback调试
 

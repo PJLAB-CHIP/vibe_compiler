@@ -1,6 +1,6 @@
 //===- OneDNNGemmAdapter.cpp - Qualified oneDNN GEMM adapter --------===//
 
-#include "BulkTensorNumericInternal.h"
+#include "OneDNNTensorNumericInternal.h"
 
 #include "oneapi/dnnl/dnnl.hpp"
 #include "llvm/ADT/ScopeExit.h"
@@ -21,7 +21,7 @@
 #include <immintrin.h>
 #endif
 
-namespace wafer::bulk_detail {
+namespace wafer::onednn_detail {
 
 namespace {
 
@@ -98,21 +98,21 @@ makeF32DenseBytes(llvm::ArrayRef<RawLogicalValue> values,
   uint64_t byteCount = 0;
   if (!checkedMultiply(values.size(), elementBytes, byteCount) ||
       byteCount > std::numeric_limits<size_t>::max())
-    return bulkError(BulkTensorNumericErrorCode::WorkCountOverflow,
-                     "dense adapter byte count overflows");
+    return onednnError(OneDNNTensorNumericErrorCode::WorkCountOverflow,
+                       "dense adapter byte count overflows");
   std::vector<uint8_t> bytes(static_cast<size_t>(byteCount));
   for (size_t index = 0; index < values.size(); ++index) {
     if (values[index].format != format)
-      return bulkError(BulkTensorNumericErrorCode::InvalidInputEncoding,
-                       "dense adapter saw a mixed logical format");
+      return onednnError(OneDNNTensorNumericErrorCode::InvalidInputEncoding,
+                         "dense adapter saw a mixed logical format");
     switch (format) {
     case LogicalFormat::F16:
     case LogicalFormat::BF16:
     case LogicalFormat::F32:
       break;
     default:
-      return bulkError(BulkTensorNumericErrorCode::UnsupportedFormat,
-                       "F32 dense adapter received an unsupported format");
+      return onednnError(OneDNNTensorNumericErrorCode::UnsupportedFormat,
+                         "F32 dense adapter received an unsupported format");
     }
     // The physical codec produced these values with the selected strict
     // decode policy, so repeating scalar canonicalization here would only
@@ -133,8 +133,8 @@ makeRawValues(llvm::ArrayRef<uint8_t> bytes, LogicalFormat format,
   if (elementBytes == 0 ||
       !checkedMultiply(count, elementBytes, expectedBytes) ||
       expectedBytes != bytes.size())
-    return bulkError(BulkTensorNumericErrorCode::BackendExecutionFailure,
-                     "backend dense result has an inconsistent size");
+    return onednnError(OneDNNTensorNumericErrorCode::BackendExecutionFailure,
+                       "backend dense result has an inconsistent size");
   std::vector<RawLogicalValue> values;
   values.reserve(static_cast<size_t>(count));
   for (uint64_t index = 0; index < count; ++index) {
@@ -146,8 +146,8 @@ makeRawValues(llvm::ArrayRef<uint8_t> bytes, LogicalFormat format,
     llvm::Expected<RawLogicalValue> value =
         makeRawLogicalValue(format, bits, NonCanonicalEncodingPolicy::Reject);
     if (!value)
-      return bulkError(BulkTensorNumericErrorCode::BackendExecutionFailure,
-                       llvm::toString(value.takeError()));
+      return onednnError(OneDNNTensorNumericErrorCode::BackendExecutionFailure,
+                         llvm::toString(value.takeError()));
     values.push_back(*value);
   }
   return values;
@@ -176,87 +176,87 @@ struct ValidatedGemm {
 
 llvm::Expected<ValidatedGemm>
 validateGemm(const FormalGemmOperation &operation,
-             llvm::ArrayRef<BulkTensorStorage> inputs,
-             const BulkTensorStorage &destinationTemplate) {
+             llvm::ArrayRef<OneDNNTensorStorage> inputs,
+             const OneDNNTensorStorage &destinationTemplate) {
   const FormalGemmOperation *gemm = &operation;
   if (inputs.size() != 2)
-    return bulkError(BulkTensorNumericErrorCode::InputArityMismatch,
-                     "NE GEMM bulk execution requires two inputs");
+    return onednnError(OneDNNTensorNumericErrorCode::InputArityMismatch,
+                       "NE GEMM onednn execution requires two inputs");
   if (inputs[0].getKey() != gemm->lhs || inputs[1].getKey() != gemm->rhs ||
       destinationTemplate.getKey() != gemm->destination)
-    return bulkError(BulkTensorNumericErrorCode::InvalidPhysicalStorage,
-                     "bulk tensor keys do not exactly match the operation");
+    return onednnError(OneDNNTensorNumericErrorCode::InvalidPhysicalStorage,
+                       "onednn tensor keys do not exactly match the operation");
   if (gemm->lhs.getFormat() != gemm->rhs.getFormat() ||
       gemm->lhs.getFormat() != gemm->destination.getFormat() ||
       !getDNNLAdapterDataType(gemm->lhs.getFormat()))
-    return bulkError(BulkTensorNumericErrorCode::UnsupportedFormat,
-                     "bulk GEMM only admits same-format f16, bf16 or f32");
+    return onednnError(OneDNNTensorNumericErrorCode::UnsupportedFormat,
+                       "onednn GEMM only admits same-format f16, bf16 or f32");
   if (gemm->lhs.getShape().size() < 2 || gemm->lhs.getShape().size() > 12 ||
       gemm->rhs.getShape().size() != gemm->lhs.getShape().size() ||
       gemm->destination.getShape().size() != gemm->lhs.getShape().size())
-    return bulkError(BulkTensorNumericErrorCode::UnsupportedOperation,
-                     "oneDNN MatMul requires a common rank in [2, 12]");
+    return onednnError(OneDNNTensorNumericErrorCode::UnsupportedOperation,
+                       "oneDNN MatMul requires a common rank in [2, 12]");
   uint64_t outputCount = 0;
   uint64_t fusedMultiplyAdds = 0;
   if (!checkedMultiply(gemm->batchCount, gemm->m, outputCount) ||
       !checkedMultiply(outputCount, gemm->n, outputCount) ||
       outputCount != gemm->destination.getElementCount() ||
       !checkedMultiply(outputCount, gemm->k, fusedMultiplyAdds))
-    return bulkError(BulkTensorNumericErrorCode::WorkCountOverflow,
-                     "NE GEMM work count is inconsistent or overflows");
+    return onednnError(OneDNNTensorNumericErrorCode::WorkCountOverflow,
+                       "NE GEMM work count is inconsistent or overflows");
   return ValidatedGemm{gemm, gemm->lhs.getFormat(), fusedMultiplyAdds};
 }
 
 llvm::Expected<uint64_t>
-computeTensorBufferBytes(llvm::ArrayRef<BulkTensorStorage> inputs,
-                         const BulkTensorStorage &destination,
-                         BulkNumericWorkBudget budget) {
+computeTensorBufferBytes(llvm::ArrayRef<OneDNNTensorStorage> inputs,
+                         const OneDNNTensorStorage &destination,
+                         OneDNNNumericWorkBudget budget) {
   uint64_t total = 0;
   auto add = [&](uint64_t bytes) -> bool {
     return checkedAdd(total, bytes, total);
   };
-  for (const BulkTensorStorage &input : inputs)
+  for (const OneDNNTensorStorage &input : inputs)
     if (!add(input.getStorage().size()))
-      return bulkError(BulkTensorNumericErrorCode::WorkCountOverflow,
-                       "physical input byte count overflows");
+      return onednnError(OneDNNTensorNumericErrorCode::WorkCountOverflow,
+                         "physical input byte count overflows");
   if (!add(destination.getStorage().size()))
-    return bulkError(BulkTensorNumericErrorCode::WorkCountOverflow,
-                     "physical destination byte count overflows");
+    return onednnError(OneDNNTensorNumericErrorCode::WorkCountOverflow,
+                       "physical destination byte count overflows");
   constexpr uint64_t elementBytes = sizeof(uint32_t);
-  for (const BulkTensorStorage &input : inputs) {
+  for (const OneDNNTensorStorage &input : inputs) {
     uint64_t dense = 0;
     if (!checkedMultiply(input.getKey().getElementCount(), elementBytes,
                          dense) ||
         !add(dense))
-      return bulkError(BulkTensorNumericErrorCode::WorkCountOverflow,
-                       "dense input byte count overflows");
+      return onednnError(OneDNNTensorNumericErrorCode::WorkCountOverflow,
+                         "dense input byte count overflows");
   }
   uint64_t denseDestination = 0;
   if (!checkedMultiply(destination.getKey().getElementCount(), elementBytes,
                        denseDestination) ||
       !add(denseDestination))
-    return bulkError(BulkTensorNumericErrorCode::WorkCountOverflow,
-                     "dense destination byte count overflows");
+    return onednnError(OneDNNTensorNumericErrorCode::WorkCountOverflow,
+                       "dense destination byte count overflows");
   if (total > budget.getMaximumTotalBytes())
-    return bulkError(BulkTensorNumericErrorCode::TotalByteBudgetExceeded,
-                     llvm::Twine("bulk adapter requires at least ") +
-                         llvm::Twine(total) + " bytes but budget allows " +
-                         llvm::Twine(budget.getMaximumTotalBytes()));
+    return onednnError(OneDNNTensorNumericErrorCode::TotalByteBudgetExceeded,
+                       llvm::Twine("onednn adapter requires at least ") +
+                           llvm::Twine(total) + " bytes but budget allows " +
+                           llvm::Twine(budget.getMaximumTotalBytes()));
   return total;
 }
 
 llvm::Expected<std::string> descriptorDigest(
     dnnl::memory::desc descriptor, llvm::StringRef implementation,
-    uint64_t scratchpadBytes, const BulkExecutionEnvironment &environment,
+    uint64_t scratchpadBytes, const OneDNNExecutionEnvironment &environment,
     const FormalGemmOperation &operation, LogicalFormat targetFormat) {
   std::vector<uint8_t> blob = descriptor.get_blob();
   llvm::SmallString<512> identity;
   llvm::raw_svector_ostream stream(identity);
-  appendField(stream, "schema", "wafer-bulk-descriptor");
+  appendField(stream, "schema", "wafer-onednn-descriptor");
   appendField(stream, "environment", environment.getDigest());
-  appendField(stream, "adapter", getBulkAdapterContractDigest());
+  appendField(stream, "adapter", getOneDNNAdapterContractDigest());
   llvm::Expected<std::string> problemDigest =
-      computeBulkGemmProblemDigest(operation);
+      computeOneDNNGemmProblemDigest(operation);
   if (!problemDigest)
     return problemDigest.takeError();
   appendField(stream, "problem", *problemDigest);
@@ -271,12 +271,12 @@ llvm::Expected<std::string> descriptorDigest(
 
 } // namespace
 
-llvm::Expected<detail::UnqualifiedBulkExecutionResult>
-executeOneDNN(const BulkExecutionEnvironment &environment,
+llvm::Expected<detail::UnqualifiedOneDNNExecutionResult>
+executeOneDNN(const OneDNNExecutionEnvironment &environment,
               const FormalGemmOperation &operation,
-              llvm::ArrayRef<BulkTensorStorage> inputs,
-              const BulkTensorStorage &destinationTemplate,
-              BulkNumericWorkBudget budget) {
+              llvm::ArrayRef<OneDNNTensorStorage> inputs,
+              const OneDNNTensorStorage &destinationTemplate,
+              OneDNNNumericWorkBudget budget) {
   llvm::Expected<ValidatedGemm> validatedGemm =
       validateGemm(operation, inputs, destinationTemplate);
   if (!validatedGemm)
@@ -288,8 +288,9 @@ executeOneDNN(const BulkExecutionEnvironment &environment,
 
   std::fenv_t savedFloatingEnvironment;
   if (std::fegetenv(&savedFloatingEnvironment) != 0)
-    return bulkError(BulkTensorNumericErrorCode::BackendConfigurationFailure,
-                     "could not snapshot the caller floating environment");
+    return onednnError(
+        OneDNNTensorNumericErrorCode::BackendConfigurationFailure,
+        "could not snapshot the caller floating environment");
   const uint32_t savedMXCSR = readMXCSR();
   auto restoreFloatingEnvironment = llvm::make_scope_exit([&] {
     std::fesetenv(&savedFloatingEnvironment);
@@ -299,11 +300,11 @@ executeOneDNN(const BulkExecutionEnvironment &environment,
   });
 
   llvm::Expected<std::vector<RawLogicalValue>> lhsValues =
-      unpackBulkTensorLogicalValues(inputs[0]);
+      unpackOneDNNTensorLogicalValues(inputs[0]);
   if (!lhsValues)
     return lhsValues.takeError();
   llvm::Expected<std::vector<RawLogicalValue>> rhsValues =
-      unpackBulkTensorLogicalValues(inputs[1]);
+      unpackOneDNNTensorLogicalValues(inputs[1]);
   if (!rhsValues)
     return rhsValues.takeError();
   llvm::Expected<std::vector<uint8_t>> lhsDense =
@@ -320,8 +321,8 @@ executeOneDNN(const BulkExecutionEnvironment &environment,
   if (!checkedMultiply(validatedGemm->gemm->destination.getElementCount(),
                        elementBytes, destinationBytes) ||
       destinationBytes > std::numeric_limits<size_t>::max())
-    return bulkError(BulkTensorNumericErrorCode::WorkCountOverflow,
-                     "dense destination allocation overflows");
+    return onednnError(OneDNNTensorNumericErrorCode::WorkCountOverflow,
+                       "dense destination allocation overflows");
   std::vector<uint8_t> destinationDense(static_cast<size_t>(destinationBytes),
                                         0);
 
@@ -358,25 +359,25 @@ executeOneDNN(const BulkExecutionEnvironment &environment,
     const uint64_t reorderedBytes = resolvedWeights.get_size();
     const bool needsReorder = resolvedWeights != rhsPlainDescriptor;
     if (scratchpadBytes > budget.getMaximumScratchpadBytes())
-      return bulkError(BulkTensorNumericErrorCode::ScratchpadBudgetExceeded,
-                       llvm::Twine("oneDNN scratchpad requires ") +
-                           llvm::Twine(scratchpadBytes) + " bytes");
+      return onednnError(OneDNNTensorNumericErrorCode::ScratchpadBudgetExceeded,
+                         llvm::Twine("oneDNN scratchpad requires ") +
+                             llvm::Twine(scratchpadBytes) + " bytes");
     const uint64_t reorderBudget = needsReorder ? reorderedBytes : 0;
     if (reorderBudget > budget.getMaximumReorderBytes())
-      return bulkError(BulkTensorNumericErrorCode::ReorderBudgetExceeded,
-                       llvm::Twine("oneDNN weights reorder requires ") +
-                           llvm::Twine(reorderBudget) + " bytes");
+      return onednnError(OneDNNTensorNumericErrorCode::ReorderBudgetExceeded,
+                         llvm::Twine("oneDNN weights reorder requires ") +
+                             llvm::Twine(reorderBudget) + " bytes");
     uint64_t totalBytes = *tensorBufferBytes;
     if (!checkedAdd(totalBytes, scratchpadBytes, totalBytes) ||
         !checkedAdd(totalBytes, reorderBudget, totalBytes))
-      return bulkError(BulkTensorNumericErrorCode::WorkCountOverflow,
-                       "oneDNN scratch/reorder byte count overflows");
+      return onednnError(OneDNNTensorNumericErrorCode::WorkCountOverflow,
+                         "oneDNN scratch/reorder byte count overflows");
     if (totalBytes > budget.getMaximumTotalBytes())
-      return bulkError(BulkTensorNumericErrorCode::TotalByteBudgetExceeded,
-                       llvm::Twine("bulk execution requires ") +
-                           llvm::Twine(totalBytes) +
-                           " bytes but budget allows " +
-                           llvm::Twine(budget.getMaximumTotalBytes()));
+      return onednnError(OneDNNTensorNumericErrorCode::TotalByteBudgetExceeded,
+                         llvm::Twine("onednn execution requires ") +
+                             llvm::Twine(totalBytes) +
+                             " bytes but budget allows " +
+                             llvm::Twine(budget.getMaximumTotalBytes()));
 
     std::vector<uint8_t> reorderedStorage;
     if (needsReorder)
@@ -418,11 +419,12 @@ executeOneDNN(const BulkExecutionEnvironment &environment,
       llvm::Expected<FormalNumericResult> finalized =
           evaluateFormalGemmFinalize(operation, accumulator);
       if (!finalized)
-        return bulkError(BulkTensorNumericErrorCode::BackendExecutionFailure,
-                         llvm::toString(finalized.takeError()));
+        return onednnError(
+            OneDNNTensorNumericErrorCode::BackendExecutionFailure,
+            llvm::toString(finalized.takeError()));
       destinationValues.push_back(finalized->value);
     }
-    llvm::Expected<BulkTensorStorage> packed =
+    llvm::Expected<OneDNNTensorStorage> packed =
         packIntoTemplate(validatedGemm->gemm->destination, destinationValues,
                          destinationTemplate.getStorage().vec());
     if (!packed)
@@ -431,31 +433,31 @@ executeOneDNN(const BulkExecutionEnvironment &environment,
     std::string implementation =
         implementationPointer ? implementationPointer : "";
     if (implementation.empty())
-      return bulkError(BulkTensorNumericErrorCode::BackendDescriptorFailure,
-                       "oneDNN returned an empty implementation identity");
+      return onednnError(OneDNNTensorNumericErrorCode::BackendDescriptorFailure,
+                         "oneDNN returned an empty implementation identity");
     llvm::Expected<std::string> resolvedDescriptorDigest =
         descriptorDigest(resolvedWeights, implementation, scratchpadBytes,
                          environment, operation, validatedGemm->format);
     if (!resolvedDescriptorDigest)
       return resolvedDescriptorDigest.takeError();
-    BulkDispatchEvidence evidence{/*matmulInvocations=*/1,
-                                  reorderInvocations,
-                                  /*formalFusedMultiplyAdds=*/0,
-                                  totalBytes,
-                                  scratchpadBytes,
-                                  implementation,
-                                  std::move(*resolvedDescriptorDigest)};
-    return detail::UnqualifiedBulkExecutionResult{std::move(*packed),
-                                                  std::move(evidence)};
+    OneDNNDispatchEvidence evidence{/*matmulInvocations=*/1,
+                                    reorderInvocations,
+                                    /*formalFusedMultiplyAdds=*/0,
+                                    totalBytes,
+                                    scratchpadBytes,
+                                    implementation,
+                                    std::move(*resolvedDescriptorDigest)};
+    return detail::UnqualifiedOneDNNExecutionResult{std::move(*packed),
+                                                    std::move(evidence)};
   } catch (const dnnl::error &error) {
-    return bulkError(BulkTensorNumericErrorCode::BackendExecutionFailure,
-                     llvm::Twine("oneDNN status ") +
-                         llvm::Twine(static_cast<int>(error.status)) + ": " +
-                         error.what());
+    return onednnError(OneDNNTensorNumericErrorCode::BackendExecutionFailure,
+                       llvm::Twine("oneDNN status ") +
+                           llvm::Twine(static_cast<int>(error.status)) + ": " +
+                           error.what());
   } catch (const std::exception &error) {
-    return bulkError(BulkTensorNumericErrorCode::BackendExecutionFailure,
-                     error.what());
+    return onednnError(OneDNNTensorNumericErrorCode::BackendExecutionFailure,
+                       error.what());
   }
 }
 
-} // namespace wafer::bulk_detail
+} // namespace wafer::onednn_detail

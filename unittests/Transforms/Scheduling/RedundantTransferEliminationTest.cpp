@@ -25,8 +25,8 @@ static std::string withDTETargetTopology(llvm::StringRef source) {
       source.contains("wafer.target.topology"))
     return text;
   size_t module = text.find("module");
-  size_t body = module == std::string::npos ? std::string::npos
-                                             : text.find('{', module);
+  size_t body =
+      module == std::string::npos ? std::string::npos : text.find('{', module);
   if (body == std::string::npos)
     return text;
   text.insert(body + 1, R"mlir(
@@ -291,8 +291,9 @@ module {
   module->walk([&](mlir::memref::AllocOp allocation) {
     if (allocation.getType().getShape() == llvm::ArrayRef<int64_t>({4, 64}) &&
         wafer::getWaferMemoryAttr(allocation.getType()).getLayout() ==
-            wafer::MemLayout::Tensor)
+            wafer::MemLayout::Tensor) {
       EXPECT_FALSE(allocation.getAlignment().has_value());
+    }
   });
   EXPECT_EQ(countOps<mlir::memref::ReinterpretCastOp>(*module), 0u);
 }

@@ -130,39 +130,43 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   target_compile_definitions(wafer-compile-test PRIVATE
     WAFER_ENABLE_SYSTEMC_MODEL=1)
   target_link_libraries(wafer-compile-test PRIVATE WaferSystemCModel)
-  if(WAFER_ENABLE_BULK_MODEL_DEPS)
+  if(WAFER_ENABLE_TARGET_NUMERIC_BACKEND)
     target_compile_definitions(wafer-compile-test PRIVATE
-      WAFER_ENABLE_TARGET_BULK_MODEL=1)
-    target_link_libraries(wafer-compile-test PRIVATE WaferTargetBulkModel)
+      WAFER_ENABLE_TARGET_NUMERIC_BACKEND=1)
+    target_link_libraries(wafer-compile-test PRIVATE WaferTargetNumericBackend)
   endif()
 endif()
 
-# The installed closure only contains a production compiler that can actually
-# run: it requires the frontend importer, the SPMD partitioner dependencies
-# and a configured helper. Feature-off install trees install neither the
-# compiler nor its resources.
-if(WAFER_ENABLE_IMPORTER_DEPS AND WAFER_ENABLE_SPMD_PARTITIONER_DEPS AND
-   WAFER_XLA_SPMD_PARTITIONER_HELPER)
+# Product install is registered only by the canonical build. The
+# top-level contract already verified its importer, SPMD and helper closure.
+if(WAFER_ENABLE_PRODUCT_INSTALL)
   include(GNUInstallDirs)
-  install(TARGETS wafer-compile RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  install(TARGETS wafer-compile
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    COMPONENT Compiler)
   install(PROGRAMS "${WAFER_XLA_SPMD_PARTITIONER_HELPER}"
-    DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/wafer")
+    DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/wafer"
+    COMPONENT Compiler)
   install(FILES
     "${CMAKE_SOURCE_DIR}/tools/wafer_device_link.py"
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/wafer")
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/wafer"
+    COMPONENT Compiler)
   install(FILES
     "${CMAKE_SOURCE_DIR}/runtime/wafer_crt/src/wafer_tx81_crt.c"
     "${CMAKE_SOURCE_DIR}/runtime/wafer_crt/src/wafer_tx81_profiler_impl.inc"
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/wafer/crt/src")
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/wafer/crt/src"
+    COMPONENT Compiler)
   install(FILES
     "${CMAKE_SOURCE_DIR}/runtime/wafer_crt/include/wafer_tx81_crt.h"
     "${CMAKE_SOURCE_DIR}/runtime/wafer_crt/include/wafer_tx81_profiler.h"
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/wafer/crt/include")
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/wafer/crt/include"
+    COMPONENT Compiler)
   install(FILES
     "${CMAKE_SOURCE_DIR}/include/Wafer/ABI/Tx81DirectDTEStatusABI.h"
     "${CMAKE_SOURCE_DIR}/include/Wafer/ABI/Tx81NCCABI.h"
     "${CMAKE_SOURCE_DIR}/include/Wafer/ABI/Tx81ProfilerABI.h"
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/wafer/include/Wafer/ABI")
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/wafer/include/Wafer/ABI"
+    COMPONENT Compiler)
 endif()
 unset(_wafer_compile_resource_directory)
 unset(_wafer_compile_libexec_directory)

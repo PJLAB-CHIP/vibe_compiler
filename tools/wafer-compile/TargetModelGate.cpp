@@ -228,16 +228,17 @@ bool runTargetModelGate(
                << result->managedReferenceNumericOperationCount
                << " managed_reference_scalars="
                << result->managedReferenceScalarEvaluationCount
-               << " bulk_operations=" << result->bulkNumericOperationCount
-               << " bulk_matmuls=" << result->bulkMatmulInvocationCount
-               << " bulk_reorders=" << result->bulkReorderInvocationCount
-               << " bulk_formal_fmas="
-               << result->bulkFormalFusedMultiplyAddCount
+               << " onednn_operations=" << result->onednnNumericOperationCount
+               << " onednn_matmuls=" << result->onednnMatmulInvocationCount
+               << " onednn_reorders=" << result->onednnReorderInvocationCount
+               << " onednn_formal_fmas="
+               << result->onednnFormalFusedMultiplyAddCount
                << " scheduler=" << result->schedulerIdentity << "\n";
-  for (llvm::StringRef digest : result->bulkQualificationRecordDigests)
-    llvm::outs() << "wafer-compile: target model bulk qualification=" << digest
-                 << "\n";
-  for (llvm::StringRef digest : result->bulkManagedReferenceEnvironmentDigests)
+  for (llvm::StringRef digest : result->onednnQualificationRecordDigests)
+    llvm::outs() << "wafer-compile: target model onednn qualification="
+                 << digest << "\n";
+  for (llvm::StringRef digest :
+       result->onednnManagedReferenceEnvironmentDigests)
     llvm::outs() << "wafer-compile: target model managed-reference environment="
                  << digest << "\n";
   for (llvm::StringRef digest :

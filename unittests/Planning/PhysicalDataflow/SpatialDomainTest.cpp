@@ -251,7 +251,8 @@ module {
   auto built = build(*module, failureReason);
   ASSERT_TRUE(built) << failureReason;
   ASSERT_EQ(built->domain.getProblem().getRoots().size(), 1u);
-  const auto &root = built->domain.getProblem().getRoots().front();
+  const SpatialRootDomainFacts root =
+      built->domain.getProblem().getRoots().front();
   wafer::test::ReferenceSpatialRoot reference;
   reference.root = root.root;
   reference.iteratorExtents = {1, 4, 1};
@@ -318,7 +319,7 @@ module {
   std::string failureReason;
   auto built = build(*module, failureReason);
   ASSERT_TRUE(built) << failureReason;
-  const SpatialRootDomainFacts &root =
+  const SpatialRootDomainFacts root =
       built->domain.getProblem().getRoots().front();
   wafer::test::ReferenceSpatialRoot reference;
   reference.root = root.root;
@@ -425,7 +426,8 @@ module {
   std::string failureReason;
   auto built = build(*module, failureReason);
   ASSERT_TRUE(built) << failureReason;
-  const auto &root = built->domain.getProblem().getRoots().front();
+  const SpatialRootDomainFacts root =
+      built->domain.getProblem().getRoots().front();
   ASSERT_TRUE(root.partitionableReductionIterators.test(1));
   auto proposals = built->domain.getProposals();
   ASSERT_FALSE(proposals.empty());
@@ -726,7 +728,7 @@ module {
   std::string failureReason;
   auto built = build(*module, failureReason);
   ASSERT_TRUE(built) << failureReason;
-  const SpatialRootDomainFacts &root =
+  const SpatialRootDomainFacts root =
       built->domain.getProblem().getRoots().front();
   ASSERT_TRUE(root.attention);
   ASSERT_EQ(root.attention->keyValueReductionIterators.size(), 2u);
@@ -780,7 +782,7 @@ module {
   std::string failureReason;
   auto built = build(*module, failureReason);
   ASSERT_TRUE(built) << failureReason;
-  const SpatialRootDomainFacts &root =
+  const SpatialRootDomainFacts root =
       built->domain.getProblem().getRoots().front();
   EXPECT_EQ(root.reductionResultGroupCount, 2u);
   ASSERT_EQ(root.resultParallelIteratorsByGroup.size(), 2u);
@@ -829,7 +831,7 @@ module {
   std::string failureReason;
   auto built = build(*module, failureReason);
   ASSERT_TRUE(built) << failureReason;
-  const SpatialRootDomainFacts &root =
+  const SpatialRootDomainFacts root =
       built->domain.getProblem().getRoots().front();
   ASSERT_TRUE(root.partitionableReductionIterators.test(1));
   ASSERT_TRUE(root.partitionableReductionIterators.test(2));

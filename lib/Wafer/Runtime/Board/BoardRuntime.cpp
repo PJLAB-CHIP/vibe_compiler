@@ -2,8 +2,8 @@
 
 #include "Wafer/Runtime/Board/BoardRuntime.h"
 
-#include "Wafer/Package/Manifest/PackageManifest.h"
 #include "Wafer/ABI/Tx81ProfilerABI.h"
+#include "Wafer/Package/Manifest/PackageManifest.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -182,10 +182,9 @@ llvm::Error verifyPlannedTileBindings(const BoardDeviceInfo &device,
              candidate.launchSlot == tile.launchSlot;
     });
     if (inventory == device.tiles.end())
-      return boardError(
-          BoardRuntimeStage::Validation, locationFor(tile),
-          "package Tile/launch-slot binding is absent from the "
-          "qualified device inventory");
+      return boardError(BoardRuntimeStage::Validation, locationFor(tile),
+                        "package Tile/launch-slot binding is absent from the "
+                        "qualified device inventory");
   }
   return llvm::Error::success();
 }
@@ -270,10 +269,9 @@ struct BoardLiveAllocation {
 };
 
 llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
-    const ExecutablePackage &package,
-    BoardRuntimeInvocationRequest request, BoardRuntimeDriver &driver,
-    const BoardDeviceInfo *qualifiedDevice, uint32_t qualifiedTileCount,
-    bool *qualifiedSessionUsable) {
+    const ExecutablePackage &package, BoardRuntimeInvocationRequest request,
+    BoardRuntimeDriver &driver, const BoardDeviceInfo *qualifiedDevice,
+    uint32_t qualifiedTileCount, bool *qualifiedSessionUsable) {
   const PackageManifest &manifest = package.getManifest();
   const KernelRuntimeLaunchContract &kernelLaunch = manifest.launch.getKernel();
   if (!hasCompleteQualification(request.qualification))
@@ -326,8 +324,8 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   const auto profileArgument = [](const PackageEntrypointRecord &entry)
       -> const ProfileRecordArgument * {
     for (const TileEntryArgumentRecord &argument : entry.arguments)
-      if (const auto *profile = std::get_if<ProfileRecordArgument>(
-              &argument.reference))
+      if (const auto *profile =
+              std::get_if<ProfileRecordArgument>(&argument.reference))
         return profile;
     return nullptr;
   };
@@ -335,24 +333,23 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   for (const PackageEntrypointRecord *entry : entriesByLaunchSlot)
     if (profileArgument(*entry))
       ++packageProfileRecords;
-  if (packageProfileRecords != 0 &&
-      packageProfileRecords != manifest.tileCount)
+  const size_t tileCount = static_cast<size_t>(manifest.tileCount);
+  if (packageProfileRecords != 0 && packageProfileRecords != tileCount)
     return boardError(BoardRuntimeStage::Validation, {},
                       "package profile records do not cover the complete "
                       "Tile domain");
   if (request.profilerRecordBytes) {
-    if (packageProfileRecords != manifest.tileCount ||
-        request.profilerRecordBytes->size() != manifest.tileCount)
+    if (packageProfileRecords != tileCount ||
+        request.profilerRecordBytes->size() != tileCount)
       return boardError(BoardRuntimeStage::Validation, {},
                         "invocation provides profiler records for a package "
                         "without the complete record domain");
     for (int64_t launchSlot = 0; launchSlot < manifest.tileCount; ++launchSlot)
       if (profileArgument(*entriesByLaunchSlot[launchSlot])->bytes !=
           (*request.profilerRecordBytes)[launchSlot].size())
-        return boardError(
-            BoardRuntimeStage::Validation,
-            locationFor(*entriesByLaunchSlot[launchSlot]),
-            "profiler invocation buffer byte count is not exact");
+        return boardError(BoardRuntimeStage::Validation,
+                          locationFor(*entriesByLaunchSlot[launchSlot]),
+                          "profiler invocation buffer byte count is not exact");
   } else if (packageProfileRecords != 0) {
     return boardError(BoardRuntimeStage::Validation, {},
                       "package profile records require exact invocation "
@@ -362,17 +359,13 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   std::vector<RuntimeInvocationBinding> invocationBindings;
   invocationBindings.reserve(manifest.inputs.size());
   for (const ExternalPortRecord &port : manifest.inputs) {
-    const BoardRuntimeBinding *binding =
-        bindingsByPort.lookup(port.id.getValue());
-    invocationBindings.push_back(
-        {port.id, port.bytes, port.alignment});
+    invocationBindings.push_back({port.id, port.bytes, port.alignment});
   }
 
   const RuntimeEnvironment &providerEnvironment =
       driver.getProviderEnvironment();
-  llvm::Expected<RuntimeInvocationPlan> semanticPlan =
-      planRuntimeInvocation(package.getVerifiedManifest(), invocationBindings,
-                            providerEnvironment);
+  llvm::Expected<RuntimeInvocationPlan> semanticPlan = planRuntimeInvocation(
+      package.getVerifiedManifest(), invocationBindings, providerEnvironment);
   if (!semanticPlan)
     return wrapDriverError(BoardRuntimeStage::Validation, {},
                            semanticPlan.takeError());
@@ -391,9 +384,9 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                         "package contains an unreferenced module");
     llvm::StringRef owned =
         package.getModuleBuffers()[moduleIndex]->getBuffer();
-    std::vector<uint8_t> bytes(
-        reinterpret_cast<const uint8_t *>(owned.data()),
-        reinterpret_cast<const uint8_t *>(owned.data()) + owned.size());
+    std::vector<uint8_t> bytes(reinterpret_cast<const uint8_t *>(owned.data()),
+                               reinterpret_cast<const uint8_t *>(owned.data()) +
+                                   owned.size());
     moduleSnapshots.push_back(
         {&module, locationFor(*firstTile), std::move(bytes)});
   }
@@ -431,9 +424,8 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
 
   RuntimeEnvironment capacityEnvironment = providerEnvironment;
   capacityEnvironment.maxResourceBytes = device.freeMemoryBytes;
-  llvm::Expected<RuntimeInvocationPlan> capacityPlan =
-      planRuntimeInvocation(package.getVerifiedManifest(), invocationBindings,
-                            capacityEnvironment);
+  llvm::Expected<RuntimeInvocationPlan> capacityPlan = planRuntimeInvocation(
+      package.getVerifiedManifest(), invocationBindings, capacityEnvironment);
   if (!capacityPlan)
     return wrapDriverError(BoardRuntimeStage::Validation, {},
                            capacityPlan.takeError());
@@ -441,21 +433,20 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
     return std::move(error);
 
   uint64_t allocationBytes = 0;
-  auto accumulate = [&](uint64_t bytes,
-                        llvm::StringRef what) -> llvm::Error {
+  auto accumulate = [&](uint64_t bytes, llvm::StringRef what) -> llvm::Error {
     if (bytes > std::numeric_limits<uint64_t>::max() - allocationBytes)
-      return boardError(BoardRuntimeStage::Validation, {},
-                        (llvm::Twine("aggregate board ") + what +
-                         " byte count overflows")
-                            .str());
+      return boardError(
+          BoardRuntimeStage::Validation, {},
+          (llvm::Twine("aggregate board ") + what + " byte count overflows")
+              .str());
     allocationBytes += bytes;
     return llvm::Error::success();
   };
-  if (llvm::Error error = accumulate(capacityPlan->programDataBytes,
-                                     "program data"))
+  if (llvm::Error error =
+          accumulate(capacityPlan->programDataBytes, "program data"))
     return std::move(error);
-  if (llvm::Error error = accumulate(capacityPlan->invocationBytes,
-                                     "invocation"))
+  if (llvm::Error error =
+          accumulate(capacityPlan->invocationBytes, "invocation"))
     return std::move(error);
   for (const VerifiedModuleSnapshot &snapshot : moduleSnapshots) {
     if (llvm::Error error = accumulate(snapshot.bytes.size(), "module"))
@@ -544,17 +535,17 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   std::vector<uint8_t> programDataBytes;
   if (capacityPlan->programDataRequired) {
     llvm::StringRef owned = package.getProgramDataBuffer().getBuffer();
-    programDataBytes.assign(
-        reinterpret_cast<const uint8_t *>(owned.data()),
-        reinterpret_cast<const uint8_t *>(owned.data()) + owned.size());
-    llvm::Expected<BoardDeviceMemory> memory =
-        driver.allocate(capacityPlan->programDataBytes,
-                        capacityPlan->programDataAlignment);
+    programDataBytes.assign(reinterpret_cast<const uint8_t *>(owned.data()),
+                            reinterpret_cast<const uint8_t *>(owned.data()) +
+                                owned.size());
+    llvm::Expected<BoardDeviceMemory> memory = driver.allocate(
+        capacityPlan->programDataBytes, capacityPlan->programDataAlignment);
     if (!memory)
-      return fail(BoardRuntimeStage::ResourceAllocation, {}, memory.takeError());
-    allocations.push_back({BoardLiveAllocation::Kind::ProgramData, {}, *memory});
-    if (llvm::Error error =
-            driver.copyHostToDevice(*memory, programDataBytes))
+      return fail(BoardRuntimeStage::ResourceAllocation, {},
+                  memory.takeError());
+    allocations.push_back(
+        {BoardLiveAllocation::Kind::ProgramData, {}, *memory});
+    if (llvm::Error error = driver.copyHostToDevice(*memory, programDataBytes))
       return fail(BoardRuntimeStage::HostToDevice, {}, std::move(error));
     programDataMemory = *memory;
   }
@@ -579,12 +570,12 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   // Host-to-device: exact input bytes, profiler records, and the Direct-DTE
   // status poison pattern. Workspace is allocation-only storage.
   for (const ExternalPortRecord &port : manifest.inputs) {
-    const RuntimePlannedRange &range = capacityPlan->inputRanges[port.id.getValue()];
+    const RuntimePlannedRange &range =
+        capacityPlan->inputRanges[port.id.getValue()];
     const BoardRuntimeBinding *binding =
         bindingsByPort.lookup(port.id.getValue());
     if (llvm::Error error = driver.copyHostToDevice(
-            BoardDeviceMemory{checkedInvocationAddress(range)},
-            binding->bytes))
+            BoardDeviceMemory{checkedInvocationAddress(range)}, binding->bytes))
       return fail(BoardRuntimeStage::HostToDevice, {}, std::move(error));
   }
   if (request.profilerRecordBytes) {
@@ -595,7 +586,8 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
         return fail(BoardRuntimeStage::HostToDevice, locationFor(tile),
                     invalid("profiler record range is missing"));
       if (llvm::Error error = driver.copyHostToDevice(
-              BoardDeviceMemory{checkedInvocationAddress(*ranges.profileRecord)},
+              BoardDeviceMemory{
+                  checkedInvocationAddress(*ranges.profileRecord)},
               image))
         return fail(BoardRuntimeStage::HostToDevice, locationFor(tile),
                     std::move(error));
@@ -609,8 +601,8 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
         return fail(BoardRuntimeStage::HostToDevice, locationFor(tile),
                     invalid("transport status range is missing"));
       if (llvm::Error error = driver.copyHostToDevice(
-              BoardDeviceMemory{checkedInvocationAddress(
-                  *ranges.transportStatus)},
+              BoardDeviceMemory{
+                  checkedInvocationAddress(*ranges.transportStatus)},
               poison))
         return fail(BoardRuntimeStage::HostToDevice, locationFor(tile),
                     std::move(error));
@@ -640,7 +632,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
       if (range.bytes != row.size() * sizeof(uint64_t))
         return fail(BoardRuntimeStage::HostToDevice, locationFor(tile),
                     invalid("Tile-row plan does not match the "
-                                    "resolved argument count"));
+                            "resolved argument count"));
       tileRowAddresses.push_back(checkedInvocationAddress(range));
       llvm::ArrayRef<uint8_t> rowBytes(
           reinterpret_cast<const uint8_t *>(row.data()),
@@ -749,14 +741,13 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
               return tile.module == liveModule.moduleRecord->id;
             });
         if (firstTile == capacityPlan->tiles.end())
-          return fail(
-              BoardRuntimeStage::EntryResolve, {},
-              invalid("loaded module has no typed Tile interface"));
+          return fail(BoardRuntimeStage::EntryResolve, {},
+                      invalid("loaded module has no typed Tile interface"));
         if (firstTile->phases.size() != launchPhases.size() ||
             firstTile->phases[phaseIndex].role != phaseRole)
-          return fail(BoardRuntimeStage::EntryResolve, locationFor(*firstTile),
-                      invalid(
-                          "Tile launch phase plan does not match manifest"));
+          return fail(
+              BoardRuntimeStage::EntryResolve, locationFor(*firstTile),
+              invalid("Tile launch phase plan does not match manifest"));
         llvm::Expected<BoardFunctionHandle> function = driver.resolveEntry(
             liveModule.module, firstTile->phases[phaseIndex].symbol);
         if (!function)
@@ -774,9 +765,9 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
       for (auto [tileIndex, tile] : llvm::enumerate(capacityPlan->tiles)) {
         if (tile.phases.size() != launchPhases.size() ||
             tile.phases[phaseIndex].role != phaseRole)
-          return fail(BoardRuntimeStage::EntryResolve, locationFor(tile),
-                      invalid(
-                          "Tile launch phase plan does not match manifest"));
+          return fail(
+              BoardRuntimeStage::EntryResolve, locationFor(tile),
+              invalid("Tile launch phase plan does not match manifest"));
         auto function =
             functionsByPhase[phaseIndex].find(tile.module.getValue());
         if (function == functionsByPhase[phaseIndex].end())
@@ -841,9 +832,8 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
       ++observedStatuses;
       std::vector<uint8_t> statusBytes(ranges.transportStatus->bytes);
       if (llvm::Error error = driver.copyDeviceToHost(
-              statusBytes,
-              BoardDeviceMemory{checkedInvocationAddress(
-                  *ranges.transportStatus)})) {
+              statusBytes, BoardDeviceMemory{checkedInvocationAddress(
+                               *ranges.transportStatus)})) {
         driver.quarantine();
         return fail(BoardRuntimeStage::DeviceToHost, locationFor(tile),
                     std::move(error));
@@ -854,28 +844,24 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                     kDirectDTEStatusValueBytes);
       if (status != static_cast<uint32_t>(DirectDTEStatusValue::Success)) {
         driver.quarantine();
-        return fail(
-            BoardRuntimeStage::Completion, locationFor(tile),
-            invalid("Direct DTE terminal status is not success: " +
+        return fail(BoardRuntimeStage::Completion, locationFor(tile),
+                    invalid("Direct DTE terminal status is not success: " +
                             llvm::Twine(status)));
       }
     }
     if (observedStatuses != directDTETiles.size()) {
       driver.quarantine();
-      return fail(
-          BoardRuntimeStage::Completion, {},
-          invalid("Direct DTE terminal status domain is incomplete"));
+      return fail(BoardRuntimeStage::Completion, {},
+                  invalid("Direct DTE terminal status domain is incomplete"));
     }
   }
 
   for (const ExternalPortRecord &port : manifest.outputs) {
     const RuntimePlannedRange &range =
         capacityPlan->outputRanges[port.id.getValue()];
-    BoardRuntimeOutput output{port.id,
-                              std::vector<uint8_t>(range.bytes)};
+    BoardRuntimeOutput output{port.id, std::vector<uint8_t>(range.bytes)};
     if (llvm::Error error = driver.copyDeviceToHost(
-            output.bytes,
-            BoardDeviceMemory{checkedInvocationAddress(range)})) {
+            output.bytes, BoardDeviceMemory{checkedInvocationAddress(range)})) {
       if (hasDirectDTETransport)
         driver.quarantine();
       return fail(BoardRuntimeStage::DeviceToHost, {}, std::move(error));
@@ -891,9 +877,8 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
       BoardRuntimeProfilerOutput output{
           tile.launchSlot, std::vector<uint8_t>(ranges.profileRecord->bytes)};
       if (llvm::Error error = driver.copyDeviceToHost(
-              output.bytes,
-              BoardDeviceMemory{checkedInvocationAddress(
-                  *ranges.profileRecord)})) {
+              output.bytes, BoardDeviceMemory{checkedInvocationAddress(
+                                *ranges.profileRecord)})) {
         if (hasDirectDTETransport)
           driver.quarantine();
         return fail(BoardRuntimeStage::DeviceToHost, locationFor(tile),
@@ -968,8 +953,8 @@ executeBoardInvocationInSession(const ExecutablePackage &package,
                       BoardRuntimeContextState::Poisoned);
   }
   return executeBoardInvocationImpl(
-      package, std::move(request), *session.driver,
-      &session.device, session.qualifiedTileCount, &session.usable);
+      package, std::move(request), *session.driver, &session.device,
+      session.qualifiedTileCount, &session.usable);
 }
 
 llvm::Expected<
@@ -982,8 +967,8 @@ executeBoardInvocationAndStartSession(const ExecutablePackage &package,
       static_cast<uint32_t>(package.getManifest().tileCount);
   BoardDeviceQualification qualification = request.qualification;
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocationImpl(package, std::move(request),
-                                 driver, /*qualifiedDevice=*/nullptr,
+      executeBoardInvocationImpl(package, std::move(request), driver,
+                                 /*qualifiedDevice=*/nullptr,
                                  /*qualifiedTileCount=*/0,
                                  /*qualifiedSessionUsable=*/nullptr);
   if (!result)
@@ -993,11 +978,12 @@ executeBoardInvocationAndStartSession(const ExecutablePackage &package,
   return std::pair(std::move(*result), std::move(session));
 }
 
-llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
-    const ExecutablePackage &package, BoardRuntimeInvocationRequest request,
-    BoardRuntimeDriver &driver) {
-  return executeBoardInvocationImpl(package, std::move(request),
-                                    driver, /*qualifiedDevice=*/nullptr,
+llvm::Expected<BoardRuntimeInvocationResult>
+executeBoardInvocation(const ExecutablePackage &package,
+                       BoardRuntimeInvocationRequest request,
+                       BoardRuntimeDriver &driver) {
+  return executeBoardInvocationImpl(package, std::move(request), driver,
+                                    /*qualifiedDevice=*/nullptr,
                                     /*qualifiedTileCount=*/0,
                                     /*qualifiedSessionUsable=*/nullptr);
 }

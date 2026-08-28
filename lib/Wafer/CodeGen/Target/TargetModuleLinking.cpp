@@ -177,9 +177,8 @@ llvm::Expected<LinkedTargetModules> detail::linkTargetLLVMModulesImpl(
   if (targetLLVMModules.getModules().size() !=
       static_cast<size_t>(
           targetLLVMModules.getExecutionConfig().getTileCount()))
-    return detail::fail(diagnostics,
-                        "target LLVM module Tile domain is "
-                        "incomplete");
+    return detail::fail(diagnostics, "target LLVM module Tile domain is "
+                                     "incomplete");
   if (llvm::Error error =
           detail::validateRuntimeLaunchContractDomain(targetLLVMModules))
     return detail::fail(diagnostics,
@@ -258,8 +257,7 @@ llvm::Expected<LinkedTargetModules> detail::linkTargetLLVMModulesImpl(
         targetLLVMModule.getCardId().getValue() < 0 ||
         targetLLVMModule.getTileId().getValue() < 0 ||
         targetLLVMModule.getLaunchSlotId().getValue() < 0 ||
-        !tileIds.insert(targetLLVMModule.getTileId().getValue())
-             .second ||
+        !tileIds.insert(targetLLVMModule.getTileId().getValue()).second ||
         !launchSlotIds.insert(targetLLVMModule.getLaunchSlotId().getValue())
              .second)
       return detail::fail(
@@ -286,7 +284,6 @@ llvm::Expected<LinkedTargetModules> detail::linkTargetLLVMModulesImpl(
           diagnostics,
           "target LLVM module launch-slot domain is not dense and canonical");
 
-  const ExecutionConfig &config = targetLLVMModules.getExecutionConfig();
   const RuntimeLaunchContract &runtimeLaunchContract =
       targetLLVMModules.getRuntimeLaunchContract();
   const bool hasPrepare = llvm::is_contained(runtimeLaunchContract.getPhases(),
@@ -357,9 +354,9 @@ llvm::Expected<LinkedTargetModules> detail::linkTargetLLVMModulesImpl(
     std::vector<VerifiedTargetExport> exports =
         makeExports(first.getEntrySymbol());
     llvm::Expected<detail::TargetModuleReadback> readback = linkAndReadback(
-        *aggregate->module, first.getEntrySymbol(), first.getTileEntryArguments(),
-        LaunchSlotId(0), stem, modulePath, exports, first.getTargetIdentityId(),
-        first.getModuleFormat());
+        *aggregate->module, first.getEntrySymbol(),
+        first.getTileEntryArguments(), LaunchSlotId(0), stem, modulePath,
+        exports, first.getTargetIdentityId(), first.getModuleFormat());
     if (!readback)
       return detail::fail(diagnostics,
                           "target_module_verification_failed: " +
@@ -371,8 +368,8 @@ llvm::Expected<LinkedTargetModules> detail::linkTargetLLVMModulesImpl(
         readback->moduleFormat, std::move(exports)));
     for (const TargetLLVMModule &tile : targetLLVMModules.getModules())
       tileInterfaces.push_back(LinkedTargetModulesBuilder::makeTileInterface(
-          tile.getCardId(), tile.getTileId(),
-          tile.getLaunchSlotId(), moduleId, tile.getTileEntryArguments()));
+          tile.getCardId(), tile.getTileId(), tile.getLaunchSlotId(), moduleId,
+          tile.getTileEntryArguments()));
   }
 
   if (std::error_code error = llvm::sys::fs::remove_directories(workDirectory))

@@ -19,6 +19,11 @@ import wafer_worker_placement_characterization_catalog as worker_placement
 PENDING_BOARD = "pending-board"
 HOST_NEGATIVE = "host-negative"
 BLOCKED_EXTERNAL = "blocked-external"
+BLOCKED_CURRENT_PIPELINE = "blocked-current-pipeline"
+CURRENT_PIPELINE_BLOCKER = (
+    "current none controller is unavailable until baseline current-IR "
+    "integration recreates source-to-package and no-card gates"
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -240,7 +245,8 @@ FAMILIES = (
     ),
     PendingCalibrationFamily(
         key="complete-tile-barrier",
-        disposition=PENDING_BOARD,
+        disposition=BLOCKED_CURRENT_PIPELINE,
+        blocker=CURRENT_PIPELINE_BLOCKER,
         execution_scope="complete-Tile-domain",
         bindings=(
             _binding(
@@ -268,7 +274,8 @@ FAMILIES = (
     ),
     PendingCalibrationFamily(
         key="complete-tile-add",
-        disposition=PENDING_BOARD,
+        disposition=BLOCKED_CURRENT_PIPELINE,
+        blocker=CURRENT_PIPELINE_BLOCKER,
         execution_scope="complete-Tile-domain",
         bindings=(
             _binding(
@@ -302,7 +309,8 @@ FAMILIES = (
     ),
     PendingCalibrationFamily(
         key="direct-dte-raw-multidestination-and-fanin",
-        disposition=PENDING_BOARD,
+        disposition=BLOCKED_CURRENT_PIPELINE,
+        blocker=CURRENT_PIPELINE_BLOCKER,
         execution_scope="complete-Tile-domain-isolated-per-case",
         bindings=(
             _binding(
@@ -363,7 +371,8 @@ FAMILIES = (
     ),
     PendingCalibrationFamily(
         key="single-engine-and-engine-pair-characterization",
-        disposition=PENDING_BOARD,
+        disposition=BLOCKED_CURRENT_PIPELINE,
+        blocker=CURRENT_PIPELINE_BLOCKER,
         execution_scope="program-local-complete-activation-group-per-ctest",
         bindings=(
             _binding(
@@ -437,7 +446,8 @@ FAMILIES = (
     ),
     PendingCalibrationFamily(
         key="queue-saturation-response",
-        disposition=PENDING_BOARD,
+        disposition=BLOCKED_CURRENT_PIPELINE,
+        blocker=CURRENT_PIPELINE_BLOCKER,
         execution_scope="program-local-isolated-per-case",
         bindings=(
             _binding(
@@ -467,7 +477,8 @@ FAMILIES = (
     ),
     PendingCalibrationFamily(
         key="worker-wait-scope-exclusion",
-        disposition=PENDING_BOARD,
+        disposition=BLOCKED_CURRENT_PIPELINE,
+        blocker=CURRENT_PIPELINE_BLOCKER,
         execution_scope="program-local-isolated-per-case",
         bindings=(
             _binding(
@@ -493,7 +504,8 @@ FAMILIES = (
     ),
     PendingCalibrationFamily(
         key="worker-subset-join-exclusion",
-        disposition=PENDING_BOARD,
+        disposition=BLOCKED_CURRENT_PIPELINE,
+        blocker=CURRENT_PIPELINE_BLOCKER,
         execution_scope="program-local-isolated-per-case",
         bindings=(
             _binding(
@@ -519,7 +531,8 @@ FAMILIES = (
     ),
     PendingCalibrationFamily(
         key="worker-placement-and-bounded-progress",
-        disposition=PENDING_BOARD,
+        disposition=BLOCKED_CURRENT_PIPELINE,
+        blocker=CURRENT_PIPELINE_BLOCKER,
         execution_scope="program-local-matched-group-per-ctest",
         bindings=(
             _binding(
@@ -584,7 +597,8 @@ FAMILIES = (
     ),
     PendingCalibrationFamily(
         key="spm-conflict-equivalence",
-        disposition=PENDING_BOARD,
+        disposition=BLOCKED_CURRENT_PIPELINE,
+        blocker=CURRENT_PIPELINE_BLOCKER,
         execution_scope="program-local-plus-complete-Tile-domain-held-out",
         bindings=(
             _binding(
@@ -621,7 +635,8 @@ FAMILIES = (
     ),
     PendingCalibrationFamily(
         key="spm-sustained-conflict-pilot",
-        disposition=PENDING_BOARD,
+        disposition=BLOCKED_CURRENT_PIPELINE,
+        blocker=CURRENT_PIPELINE_BLOCKER,
         execution_scope="program-local-matched-group-per-ctest",
         bindings=(
             _binding(
@@ -653,7 +668,8 @@ FAMILIES = (
     ),
     PendingCalibrationFamily(
         key="ddr-conflict-equivalence",
-        disposition=PENDING_BOARD,
+        disposition=BLOCKED_CURRENT_PIPELINE,
+        blocker=CURRENT_PIPELINE_BLOCKER,
         execution_scope="program-local-plus-complete-Tile-domain-held-out",
         bindings=(
             _binding(
@@ -689,7 +705,8 @@ FAMILIES = (
     ),
     PendingCalibrationFamily(
         key="ddr-active-tile-contention",
-        disposition=PENDING_BOARD,
+        disposition=BLOCKED_CURRENT_PIPELINE,
+        blocker=CURRENT_PIPELINE_BLOCKER,
         execution_scope="complete-Tile-domain-five-point-matched-group-per-ctest",
         bindings=(
             _binding(
@@ -789,7 +806,8 @@ FAMILIES = (
     ),
     PendingCalibrationFamily(
         key="argmin-tie-and-nan-domain",
-        disposition=PENDING_BOARD,
+        disposition=BLOCKED_CURRENT_PIPELINE,
+        blocker=CURRENT_PIPELINE_BLOCKER,
         execution_scope="program-local-isolated-per-case",
         bindings=(
             _binding(
@@ -814,7 +832,8 @@ FAMILIES = (
     ),
     PendingCalibrationFamily(
         key="unpool-repeated-overlap-collision",
-        disposition=PENDING_BOARD,
+        disposition=BLOCKED_CURRENT_PIPELINE,
+        blocker=CURRENT_PIPELINE_BLOCKER,
         execution_scope="program-local-isolated-per-case",
         bindings=(
             _binding(
@@ -856,6 +875,7 @@ def validate_inventory() -> None:
             PENDING_BOARD,
             HOST_NEGATIVE,
             BLOCKED_EXTERNAL,
+            BLOCKED_CURRENT_PIPELINE,
         }:
             raise RuntimeError(f"{family.key}: invalid disposition")
         if not family.oracle or not family.activation_gate:
@@ -872,6 +892,16 @@ def validate_inventory() -> None:
             if family.blocker is not None:
                 raise RuntimeError(
                     f"{family.key}: executable family unexpectedly has blocker"
+                )
+        elif family.disposition == BLOCKED_CURRENT_PIPELINE:
+            if not family.bindings or not family.no_card_ctests:
+                raise RuntimeError(
+                    f"{family.key}: pipeline-blocked family lacks retained "
+                    "no-card test identities"
+                )
+            if family.blocker != CURRENT_PIPELINE_BLOCKER:
+                raise RuntimeError(
+                    f"{family.key}: pipeline-blocked family has the wrong blocker"
                 )
         else:
             if family.board_ctests or family.runner_batch is not None:

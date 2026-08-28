@@ -28,8 +28,8 @@ namespace wafer::compiler::detail {
 
 PreparedTile::PreparedTile(const ExecutionConfig &executionConfig,
                            bool transportPreparedBeforeEntry)
-    : targetIdentity(executionConfig.getTargetIdentityId()),
-      transportPreparedBeforeEntry(transportPreparedBeforeEntry),
+    : transportPreparedBeforeEntry(transportPreparedBeforeEntry),
+      targetIdentity(executionConfig.getTargetIdentityId()),
       kernelRuntimeABI(KernelRuntimeABIId::waferTx81Kernel()),
       moduleFormat(kCurrentTargetModuleFormat.str()) {}
 

@@ -15,6 +15,16 @@ option(WAFER_ENABLE_BOARD_RUNTIME
   "Build the TX board RuntimeProvider capability" OFF)
 option(WAFER_ENABLE_BOARD_TEST_EXECUTION
   "Register explicitly qualified tests that execute TX hardware" OFF)
+option(WAFER_ENABLE_PRODUCT_INSTALL
+  "Register Compiler and Runtime install components" OFF)
+option(WAFER_ENABLE_WARNINGS_AS_ERRORS
+  "Treat diagnostics from Wafer-owned targets as errors" OFF)
+if(WAFER_ENABLE_WARNINGS_AS_ERRORS)
+  set(CMAKE_COMPILE_WARNING_AS_ERROR ON)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-overloaded-virtual>)
+  endif()
+endif()
 if(WAFER_ENABLE_BOARD_TEST_EXECUTION AND NOT WAFER_ENABLE_BOARD_RUNTIME)
   message(FATAL_ERROR
     "WAFER_ENABLE_BOARD_TEST_EXECUTION=ON requires "
@@ -141,6 +151,17 @@ if(WAFER_XLA_SPMD_PARTITIONER_HELPER)
     "Path to the pinned-XLA SPMD partitioner helper used by wafer-compile" FORCE)
 endif()
 
+if(WAFER_ENABLE_PRODUCT_INSTALL)
+  if(NOT WAFER_ENABLE_IMPORTER_DEPS OR
+     NOT WAFER_ENABLE_SPMD_PARTITIONER_DEPS OR
+     NOT WAFER_ENABLE_PYTORCH_XLA_IMPORTER OR
+     NOT WAFER_XLA_SPMD_PARTITIONER_HELPER)
+    message(FATAL_ERROR
+      "WAFER_ENABLE_PRODUCT_INSTALL=ON requires the importer, framework "
+      "adapter, SPMD dependencies, and configured partitioner helper")
+  endif()
+endif()
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
@@ -155,12 +176,11 @@ add_subdirectory(tools/wafer-opt)
 add_subdirectory(tools/wafer-compile)
 add_subdirectory(tools/wafer-verify-program)
 add_subdirectory(tools/wafer-run)
-if(WAFER_ENABLE_BULK_MODEL_DEPS)
-  add_subdirectory(tools/wafer-cmodel-qualify-bulk)
+if(WAFER_ENABLE_TARGET_NUMERIC_BACKEND)
+  add_subdirectory(tools/wafer-cmodel-qualify-onednn)
 endif()
 
 if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
-  include(GNUInstallDirs)
   set(_wafer_python_build_dir "${CMAKE_BINARY_DIR}/python")
   add_custom_command(
     OUTPUT "${_wafer_python_build_dir}/wafer/frontend/__init__.py"
@@ -173,8 +193,12 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
     VERBATIM)
   add_custom_target(wafer-python ALL
     DEPENDS "${_wafer_python_build_dir}/wafer/frontend/__init__.py")
-  install(DIRECTORY "${CMAKE_SOURCE_DIR}/python/wafer"
-    DESTINATION "${CMAKE_INSTALL_LIBDIR}/python")
+  if(WAFER_ENABLE_PRODUCT_INSTALL)
+    include(GNUInstallDirs)
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/python/wafer"
+      DESTINATION "${CMAKE_INSTALL_LIBDIR}/python"
+      COMPONENT Compiler)
+  endif()
 endif()
 
 enable_testing()
@@ -190,7 +214,7 @@ set(_wafer_check_targets
 foreach(_wafer_optional_check_target IN ITEMS
     check-wafer-unit
     check-wafer-numeric-model-unit
-    check-wafer-bulk-model-unit
+    check-wafer-target-numeric-backend-unit
     check-wafer-systemc-model)
   if(TARGET ${_wafer_optional_check_target})
     list(APPEND _wafer_check_targets ${_wafer_optional_check_target})

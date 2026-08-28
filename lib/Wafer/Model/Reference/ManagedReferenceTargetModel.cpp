@@ -1,6 +1,6 @@
 //===- ManagedReferenceTargetModel.cpp - Scalable tensor reference -------===//
 
-#include "Wafer/Model/Qualification/TargetBulkModel.h"
+#include "Wafer/Model/Qualification/TargetNumericBackend.h"
 
 #include "Wafer/Target/Layout/PhysicalTensorCodec.h"
 
@@ -416,7 +416,7 @@ uint64_t getScalarEvaluations(const FormalReduceOperation &operation) {
 
 llvm::Error validateBudget(const TargetModelNumericOperands &tensors,
                            FormalNumericWorkBudget scalarBudget,
-                           BulkNumericWorkBudget byteBudget,
+                           OneDNNNumericWorkBudget byteBudget,
                            uint64_t scalarEvaluations) {
   if (scalarEvaluations > scalarBudget.getMaximumScalarEvaluations())
     return referenceError("scalar evaluation budget exceeded");
@@ -458,8 +458,8 @@ template <typename Request>
 llvm::Expected<TargetModelManagedReferenceResult>
 executeManagedReference(const Request &request,
                         FormalNumericWorkBudget scalarBudget,
-                        BulkNumericWorkBudget byteBudget,
-                        const BulkExecutionEnvironment &environment) {
+                        OneDNNNumericWorkBudget byteBudget,
+                        const OneDNNExecutionEnvironment &environment) {
   if (llvm::Error error = validateRequestIdentity(request))
     return std::move(error);
   const uint64_t scalarEvaluations = getScalarEvaluations(request.operation);

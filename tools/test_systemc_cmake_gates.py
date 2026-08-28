@@ -101,7 +101,7 @@ def common_command(args: argparse.Namespace) -> list[str]:
         definition("WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS", "OFF"),
         definition("WAFER_ENABLE_SPMD_PARTITIONER_DEPS", "OFF"),
         definition("WAFER_ENABLE_RUNTIME_DEPS", "OFF"),
-        definition("WAFER_ENABLE_BULK_MODEL_DEPS", "OFF"),
+        definition("WAFER_ENABLE_TARGET_NUMERIC_BACKEND", "OFF"),
         definition("WAFER_ENABLE_UNIT_TESTS", "OFF"),
         definition("WAFER_ENABLE_SYSTEMC_MODEL", "ON"),
     ]

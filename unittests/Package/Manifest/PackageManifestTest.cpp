@@ -456,9 +456,10 @@ protected:
                              llvm::StringRef expectedMessage) {
     ASSERT_FALSE(static_cast<bool>(result));
     std::string message = llvm::toString(result.takeError());
-    if (!expectedMessage.empty())
+    if (!expectedMessage.empty()) {
       EXPECT_NE(message.find(expectedMessage.str()), std::string::npos)
           << message;
+    }
   }
 
   llvm::SmallString<256> root;
@@ -675,9 +676,10 @@ TEST_F(PackageManifestTest, EnforcesParseLimitsBeforeAcceptance) {
       return;
     }
     std::string message = llvm::toString(result.takeError());
-    if (!expectedMessage.empty())
+    if (!expectedMessage.empty()) {
       EXPECT_NE(message.find(expectedMessage.str()), std::string::npos)
           << message;
+    }
   };
 
   PackageParseLimits limits;
@@ -1045,10 +1047,11 @@ TEST_F(PackageManifestTest,
     const RuntimePlannedRange &workspace =
         *plan->tileRanges[launchSlot].workspace;
     EXPECT_EQ(workspace.bytes, 256u + 16u * tileId);
-    if (launchSlot != 0)
+    if (launchSlot != 0) {
       EXPECT_GE(workspace.offset,
                 plan->tileRanges[launchSlot - 1].workspace->offset +
                     plan->tileRanges[launchSlot - 1].workspace->bytes);
+    }
   }
   EXPECT_EQ(plan->tileRanges[0].workspace->offset, 320u);
   EXPECT_EQ(plan->tileRanges[15].workspace->offset, 5840u);

@@ -46,8 +46,9 @@ protected:
   }
 
   void TearDown() override {
-    if (!temporaryDirectory.empty())
+    if (!temporaryDirectory.empty()) {
       EXPECT_FALSE(llvm::sys::fs::remove_directories(temporaryDirectory));
+    }
   }
 
   llvm::SmallString<256> path(llvm::StringRef filename) const {

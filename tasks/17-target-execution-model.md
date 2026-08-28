@@ -136,14 +136,15 @@ peripheral和transport。unsupported组合返回typed error，不能落到“近
 
 ## 5. Numeric contract
 
-target numeric command、physical tensor、formal arithmetic和bulk evidence是四个owner，不存在跨四者共享的profile/registry：
+target numeric command、physical tensor、formal arithmetic和backend evidence是四个owner，不存在跨四者共享的profile/registry：
 
 - `TargetOperation`/`TargetCall`拥有rounding、operation、dimension、format、geometry field及exact decoded payload；
 - shared physical tensor descriptor只拥有format、layout、static shape与checked count，不携model identity或内建digest；
 - formal/model implementation从typed command直接进入family-specific validator/kernel，支持或拒绝都不经过global resolver；
-- bulk qualification只绑定concrete problem、payload、comparator、backend和environment，不记录semantic profile或resolution digest。
+- `WaferTargetNumericBackend`拥有model-facing host numeric dispatch；其中`WaferOneDNNBackend`只实现qualified GEMM/reorder。
+  oneDNN qualification只绑定concrete problem、payload、comparator、backend和environment，不记录semantic profile或resolution digest。
 
-compiler/ABI legality不读取formal/bulk support；model support和board correlation也不能反向签发compiler legality。Q22.N时期的
+compiler/ABI legality不读取formal/target numeric backend support；model support和board correlation也不能反向签发compiler legality。Q22.N时期的
 `NumericSemantics` aggregate、model profile、capability pattern和resolved command不是current合同，按Q62计划原位退役且不保留
 compatibility surface。
 
@@ -169,9 +170,9 @@ formal lane拥有确定的dtype arithmetic、rounding、NaN/Inf/signed-zero、co
 family接收typed target operation/format/parameter；实现未覆盖的组合在任何memory write或flags merge前分类拒绝，不以稀疏policy row、
 wildcard selector或digest resolution决定控制流。
 
-### 5.3 Qualified bulk lane
+### 5.3 `WaferOneDNNBackend` qualification lane
 
-大规模支持项可以进入qualified bulk implementation，但必须：
+大规模支持项可以进入qualified oneDNN implementation，但必须：
 
 - 通过固定concrete problem、payload、comparator、backend/environment与validated record准入；
 - 使用与formal lane相同的typed input/output codec；
@@ -217,7 +218,7 @@ Unit/integration gate至少覆盖：
 - descriptor registry的每个payload family、bad width/enum/range/format负例；
 - 一Tile一SC_THREAD、independent progress、event wait/wakeup、NoProgress和atomic abort；
 - local SPM isolation、card DDR sharing、cross-Tile Direct-DTE、worker/join与reuse hazard；
-- formal numeric、qualified bulk、完整output differential与environment provenance；
+- formal numeric、`WaferOneDNNBackend` qualification、完整output differential与environment provenance；
 - aggregate/nonaggregate module topology具有相同typed Tile interfaces和functional outputs。
 
 Q53 source/model gate必须重新执行generic mixed DAG、HF prefill、functional two-step decode和Llama block的current

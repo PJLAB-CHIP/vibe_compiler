@@ -3,7 +3,7 @@
 状态：实施已闭合。动态状态只看`tasks/progress.md`；稳定语义由01、11、14、16、17、18号设计文档共同拥有。
 
 本任务不是给`NumericSemantics`换名，也不是继续维护Q22.N时期的profile/registry框架。终态是保留真实需要的
-target operation、physical codec、formal arithmetic与bulk qualification能力，同时删除把这些能力捆成一套全局
+target operation、physical codec、formal arithmetic与`WaferTargetNumericBackend`能力，同时删除把这些能力捆成一套全局
 “numeric semantics”身份的对象、digest、resolver、兼容路径和专属测试。
 
 ## 1. 已确认的问题
@@ -25,7 +25,7 @@ TargetCall / physical codec / Compiler package / Package verifier
                          -> exact command key
                          -> global profile + capability pattern
                          -> ResolvedNumericCommand
-                         -> formal model / managed reference / bulk qualification
+                         -> formal model / managed reference / oneDNN qualification
 ```
 
 这条链有六个概念错误：
@@ -55,18 +55,18 @@ Pipeline position:
 - Upstream IR / input:
   已通过Instr/target verifier的current TargetCall typed payload；accepted CardExecutable中的ProgramTensor、
   已验证且在parser后立即类型化的source logical element type、selected TargetTensor descriptor与显式materialization action；
-  same-invocation target LLVM owner；bulk qualification
+  same-invocation target LLVM owner；oneDNN qualification
   的concrete GEMM spec、physical payload和host environment。
 - Current stage responsibility:
   验证并编解码current target physical tensor；按显式materialization action生成target-ready immutable bytes；
-  从decoded TargetCall直接调用family-specific formal functional implementation或可选bulk implementation；
-  只在bulk evidence边界核对具体problem、payload、comparator、backend和environment。
+  从decoded TargetCall直接调用family-specific formal functional implementation或`WaferTargetNumericBackend`；
+  只在oneDNN evidence边界核对具体problem、payload、comparator、backend和environment。
 - Output IR / files:
-  target-ready program-data bytes；TargetModelCommandEffect/TargetModelResult；current bulk qualification
+  target-ready program-data bytes；TargetModelCommandEffect/TargetModelResult；current oneDNN qualification
   spec/policy/validated record。该阶段不产生compiler IR、search sidecar或全局numeric profile文件。
 - Downstream consumer:
   ExecutablePackage assembly/verification、TargetCall/SystemC functional model、source/model differential、
-  configured bulk backend与后续独立board numeric correlation。
+  configured `WaferTargetNumericBackend`与后续独立board numeric correlation。
 - User-level driver / named pipeline:
   既有wafer-compile package/no-card路径和configured target-model/qualification入口；不增加numeric mode、
   compatibility mode或第三条compiler/search driver。
@@ -77,7 +77,7 @@ Pipeline position:
   NumericSemantics umbrella、profile/pattern/resolver及其digest全部删除；所有producer/consumer原位切到正确owner；
   compiler/package不依赖formal/model dispatch，model core不公开链接compiler；logical/target dtype在外部parse之后均为closed
   typed value；managed dependency conformance退出always-built target execution API；formal/model按typed family直接执行或分类拒绝；
-  bulk record只绑定concrete evidence；fresh定向build/unit/integration/no-card与source-organization检查通过。
+  oneDNN record只绑定concrete evidence；fresh定向build/unit/integration/no-card与source-organization检查通过。
 ```
 
 ## 3. 终态职责
@@ -95,7 +95,7 @@ Pipeline position:
 
 ### 3.2 Physical tensor与codec
 
-format、physical layout、static shape和checked element count形成`PhysicalTensorDescriptor`。它是package、model和bulk共享的
+format、physical layout、static shape和checked element count形成`PhysicalTensorDescriptor`。它是package、model和oneDNN共享的
 纯physical描述，不携带model identity或内建digest。`PhysicalTensorCodec`只消费该descriptor和明确的scalar encoding
 policy；固定source/target边界可以提供自己的typed policy，但不能从process-global model profile取得。
 
@@ -127,13 +127,14 @@ formal实现中的RNE、NaN canonicalization、signed-zero、F32 FMA accumulator
 ### 3.5 Target model dispatch
 
 TargetCall handler从decoded payload及其固定target layout规则构造family-specific execution input，直接调用formal或显式选择的
-managed/bulk backend。`TargetModelResult`保留target identity、numeric flags、命令计数和真实backend evidence；删除恒定
+`WaferTargetNumericBackend`。当前managed-reference和qualified oneDNN路径由该组件聚合，具体GEMM/reorder实现位于
+`WaferOneDNNBackend`。`TargetModelResult`保留target identity、numeric flags、命令计数和真实backend evidence；删除恒定
 `modelProfile`。`NumericResolutionFailure`拆成能定位command validation、formal unsupported/execution及backend failure的typed
 错误，不再解析registry状态。
 
-### 3.6 Bulk qualification
+### 3.6 OneDNN qualification
 
-bulk lane当前只服务具体GEMM问题，因此接口和evidence都按GEMM表达：format、layout、M/K/N/batch、orientation、physical
+oneDNN lane当前只服务具体GEMM问题，因此接口和evidence都按GEMM表达：format、layout、M/K/N/batch、orientation、physical
 input/destination和implementation environment。validated record保留真正需要的record、policy/comparator、adapter、problem、
 payload、expected output、backend/environment与implementation digests；删除`semanticProfileDigest`和`resolutionDigest`。
 
@@ -143,9 +144,9 @@ lane按自己的明确支持域执行，它不是qualification record，也不�
 ### 3.7 Compiler legality与search
 
 Instr/TargetCall legality只读取typed IR、current target operation/format/call合同及target-owned capability事实。formal model是否实现、
-bulk backend是否可用、是否已有board correlation都只影响各自下游gate，不反向改变compiler-emittable集合。
+oneDNN backend是否可用、是否已有board correlation都只影响各自下游gate，不反向改变compiler-emittable集合。
 
-Q52及所有Analysis/Conversion/search source不得include model formal/bulk header，也不得出现model profile、resolved numeric
+Q52及所有Analysis/Conversion/search source不得include model formal/oneDNN header，也不得出现model profile、resolved numeric
 command或qualification digest。Q62不运行、不维护也不对照任何历史search winner、candidate set或异常长integration。
 
 ### 3.8 Logical dtype边界
@@ -175,7 +176,7 @@ result交付，不能让model include compiler internal header或取得整个com
 | --- | --- | --- |
 | `ModelProfileId`、`ModelProfileRecord`及registry/parser | 只有一个formal model常量及codec policy | 全部删除；codec policy归具体source/target encoding边界 |
 | compiler/runtime/package中的`std::string dtype`字段与重复解析helper | parser边界后仍未类型化的logical/target element事实 | 原位切为closed typed value；字符串只在外部parser/printer/serializer存在，不保留dual field或compat spelling |
-| `NumericTensorKey` | physical format/layout/static shape/count | 迁为无digest的`PhysicalTensorDescriptor`；更新package/model/bulk全部consumer |
+| `NumericTensorKey` | physical format/layout/static shape/count | 迁为无digest的`PhysicalTensorDescriptor`；更新package/model/oneDNN全部consumer |
 | `NumericRoundingMode` | target RND_MODE字段 | 迁入`TargetOperation`并使用target命名 |
 | `NumericConvertParameter` | target convert的rounding或zero point | 迁为typed target parameter；TargetCall payload不再暴露两个并存nullable字段 |
 | `NumericElementwiseOperation`、`NumericReduceOperation` | target wrapper semantic enum | 迁入`TargetOperation`并使用target命名 |
@@ -190,7 +191,7 @@ result交付，不能让model include compiler internal header或取得整个com
 | tensor/key/profile/pattern/resolution digest | 重复的内部身份 | 全部删除；只在package或qualification evidence owner按实际字段计算canonical digest |
 | `TargetModelNumericRequest` | generic request中嵌入resolved registry对象 | 拆成family-specific model/backend request |
 | `TargetModelResult::modelProfile` | 恒定值 | 删除 |
-| bulk `semanticProfileDigest`、`resolutionDigest` | 对旧registry的证据绑定 | 用concrete GEMM problem与真实policy/adapter/evidence字段替代 |
+| oneDNN `semanticProfileDigest`、`resolutionDigest` | 对旧registry的证据绑定 | 用concrete GEMM problem与真实policy/adapter/evidence字段替代 |
 | `NumericDependencyConformance` public target API与always-built source | managed dependency供应链/qualification验证，不是target execution语义 | 保留验证能力但迁入optional bootstrap/qualification/tool test support；从`WaferTarget` public surface和普通link closure删除 |
 | `WaferTargetModelCore PUBLIC WaferCompiler` | 为少量typed artifact形成的整库反向依赖 | 删除；model改依赖pure target/package/formal typed owner，缺少窄输入时补typed result而非链接compiler |
 
@@ -206,7 +207,7 @@ result交付，不能让model include compiler internal header或取得整个com
 | convert APFloat/APInt、elementwise、GEMM FMA/finalize、reduce step | family-specific formal tests与SoftFloat/MPFR differential |
 | tensor work budget、failure atomicity与flags aggregation | formal tensor/model kernel tests |
 | managed reference与oneDNN execution | concrete family/backend tests |
-| calibration/freeze/held-out validation、environment和payload binding | bulk qualification tests与tool roundtrip |
+| calibration/freeze/held-out validation、environment和payload binding | oneDNN qualification tests与tool roundtrip |
 | package physical bytes、bounded source reads和model/package一致性 | program-data/package/no-card与target-model materialization tests |
 | external numeric dependency pin、digest、license与loaded-object核对 | optional dependency/bootstrap/qualification tooling及其direct tests；不进入target execution public API |
 
@@ -218,7 +219,7 @@ registry条数、pattern closure、digest稳定性和profile字段的case随旧�
 ### C1：收口target operation和physical descriptor
 
 - 在`TargetOperation`建立target-named rounding/elementwise/reduce/dimension类型及typed convert parameter；
-- 建立`PhysicalTensorDescriptor`，迁移physical codec、package verifier和简单model/bulk storage consumer；
+- 建立`PhysicalTensorDescriptor`，迁移physical codec、package verifier和简单model/oneDNN storage consumer；
 - 从frontend source dtype parser开始，把compiler、ProgramData、invocation、Tile entry、package、runtime和model直接consumer原位切到
   closed typed logical/target element value；删除重复字符串parse/classification/element-byte表，serializer最后再打印canonical spelling；
 - 从`TargetCall.h`移除`NumericSemantics.h` include；decoder直接生成完整typed payload；
@@ -249,15 +250,15 @@ parameter/constant source→package→no-card证明bytes、window bound和digest
 完成标志：formal source不出现profile、pattern、selector、resolution或`NotApplicable` policy matrix；现有oracle与failure atomicity
 能力由新API覆盖。
 
-### C4：迁移Target model与bulk evidence
+### C4：迁移Target model与oneDNN evidence
 
-- TargetModelTensorNumeric从TargetCall payload直接进入formal/managed/bulk family API；
+- TargetModelTensorNumeric从TargetCall payload直接进入formal/managed/oneDNN family API；
 - 删除generic resolved request、model profile结果字段和resolution error；
-- bulk/managed backend改用concrete GEMM或family request；
+- oneDNN/managed backend改用concrete GEMM或family request；
 - qualification spec、validated record、tool和fixtures切换到concrete problem/payload/environment evidence，删除semantic/profile/
   resolution digest字段。
 
-完成标志：model与bulk全链不存在global registry join；unsupported command在任何write/flags mutation前分类返回；qualification
+完成标志：model与oneDNN全链不存在global registry join；unsupported command在任何write/flags mutation前分类返回；qualification
 record仍可严格read-back验证且没有旧reader。
 
 ### C5：删除旧实现与专属测试
@@ -277,13 +278,13 @@ record仍可严格read-back验证且没有旧reader。
 ### C6：current pipeline验证与收尾
 
 - 同步01、11、14、16、17、18号设计合同、任务队列和必要memory；
-- feature-off fresh并行构建target/compiler/package及其direct tests；
-- feature-on fresh并行构建formal numeric、bulk和SystemC/model libraries；
-- 运行迁移后的target operation、codec、package materialization、formal、bulk qualification、model kernel/SystemC定向测试；
+- 在canonical `host`配置中并行构建target/compiler/package、formal numeric、`WaferOneDNNBackend`、
+  `WaferTargetNumericBackend`和SystemC及其direct tests；
+- 运行迁移后的target operation、codec、package materialization、formal、oneDNN qualification、model kernel/SystemC定向测试；
 - 运行一个包含非identity physical layout和实际dtype conversion的fresh source→package→no-card case；
 - 运行source organization、dependency/link closure和旧symbol/field残留扫描。
-- 增加dtype typed-roundtrip/unknown spelling拒绝、feature-off target public-link以及feature-on optional dependency-conformance direct
-  tests，确认disabled配置不编译或链接managed dependency verifier。
+- 增加dtype typed-roundtrip/unknown spelling拒绝、public-link以及managed dependency-conformance direct tests；缺失或失配依赖在
+  configure边界fail closed，不建立另一产品配置。
 
 本任务不运行Q52长搜索、历史numeric registry基准、历史package、历史板端raw或真实板端批次。若direct source-to-package
 case意外进入search，应使用已接受的最小`none`路径定位调用错误，不能把旧异常长路径加入回归。
@@ -296,7 +297,7 @@ case意外进入search，应使用已接受的最小`none`路径定位调用错�
 - logical/target dtype在外部parse后均为typed value，字符串只由外部格式parser/printer拥有；
 - formal/model直接消费typed target operation并fail closed，不通过全局registry或digest恢复语义；
 - managed dependency验证位于optional tooling/qualification owner，target/model/compiler library依赖保持单向；
-- bulk evidence严格但只绑定真实问题和环境，不绑定内部selector/profile/resolution；
+- oneDNN evidence严格但只绑定真实问题和环境，不绑定内部selector/profile/resolution；
 - current docs、CMake、source checker、tools、fixtures和tests同步；
 - fresh定向验证实际执行且通过，未用旧长链或旧测试给新合同背书；
 - 本轮若没有产生可复用的新workflow经验，则不为完成任务强写memory。
@@ -304,7 +305,7 @@ case意外进入search，应使用已接受的最小`none`路径定位调用错�
 ## 8. 完成记录
 
 六个checkpoint已经闭合：target operation字段、physical descriptor和explicit TargetTensor materialization各有唯一owner；formal与
-model按四个operation family的具体类型直连；bulk qualification只保留concrete GEMM problem/payload/backend/environment证据；
+model按四个operation family的具体类型直连；oneDNN qualification只保留concrete GEMM problem/payload/backend/environment证据；
 旧umbrella、profile/pattern/resolver、generic command、semantic/resolution digest及其专属测试均已删除。program logical element、
 Tile ABI target format和package record在外部parser之后均为closed typed value，serializer才生成canonical spelling。
 `WaferTarget`现在只拥有target facts、physical descriptor/codec与raw logical codec；确定的scalar conversion primitive位于
@@ -312,21 +313,21 @@ Tile ABI target format和package record在外部parser之后均为closed typed v
 `WaferFormalNumeric`。后两者共同依赖scalar primitive，CodeGen不反向链接formal。非identity action必须显式携带parameter，
 package writer不再选择默认rounding。
 
-依赖边界同批收口：managed dependency conformance由`numeric_deps.py`、`bulk_deps.py`、`systemc_deps.py`及其configured gate承接，
+依赖边界同批收口：managed dependency conformance由`numeric_deps.py`、`onednn_deps.py`、`systemc_deps.py`及其configured gate承接，
 不再进入always-built Target C++ API；`WaferTargetModelCore`只保留memory/core，compiler integration位于独立
-`WaferTargetModelInvocation` leaf library。bulk link closure改为验证真正消费oneDNN的qualification tool，production compiler不为
+`WaferTargetModelInvocation` leaf library。oneDNN link closure改为验证真正消费oneDNN的qualification tool，production compiler不为
 可选qualification backend付默认链接成本。
 
 fresh验证如下：
 
-- feature-off全目标并行构建通过；`WaferUnitTests`、Board IO unit、四个public-link smoke、numeric configured gate与feature-off
-  link closure共9/9通过；
-- feature-on target/formal/bulk/model/SystemC libraries与qualification tool并行构建通过；numeric、bulk、dependency、CLI、
-  public-link及16项current SystemC gate通过。旧的单一SystemC transport聚合目标原本同时包含多个`sc_main`且遗漏必需的scenario
+- current canonical build无target完整增量构建及随后no-op通过；base/model/lit/Tools与全部本地registered CTest实际执行，
+  `WaferTargetNumericBackend`及oneDNN dependency/qualification/link direct gate通过，未使用skip/unsupported代签；
+- target/formal/`WaferOneDNNBackend`/`WaferTargetNumericBackend`/SystemC libraries与qualification tool并行构建通过。
+  旧的单一SystemC transport聚合目标原本同时包含多个`sc_main`且遗漏必需的scenario
   compile definition；现已拆成共享fixture library与逐scenario executable，Direct-DTE/NCC成功、hazard和failure能力没有随旧API退役；
-- `WaferUnitTests` 756项通过；selected-representation package test覆盖F16→BF16显式RNE value conversion、Cx padding、canonical bytes和
+- selected-representation package test覆盖F16→BF16显式RNE value conversion、Cx padding、canonical bytes和
   strict read-back；FP16 parameter产品入口以`optimization-policy=none`完成fresh source→package→no-card；
-- active source/test对旧numeric symbol与semantic/resolution digest零残留；本任务未运行search、LLaMA或真实板端。
+- active source/test对旧numeric symbol、旧`bulk`接口与semantic/resolution digest零残留；本任务未运行search、LLaMA或真实板端。
 
 验证过程中另定位到baseline分stage构造没有对新纳入的compiler-owned DDR依赖继续做闭包扩展，导致计算写入临时DDR后，
 从同一DDR读取并写入`ExternalOutput`的最终链被漏掉；formal GEMM、layout conversion、accumulator merge和最终WDMA源数据本身均正确，

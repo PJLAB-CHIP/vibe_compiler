@@ -57,7 +57,7 @@ vendor规范版本是外部事实，继续精确记录，
 - `forward.meta`中的nested distributed boundary，以及repo-owned SPMD helper生成的parameter shard metadata；
 - profile activation引用的plan/site map内部记录及evidence中可由已验证输入重建的版本副本；
 - target LLVM内部metadata、loader policy选择、static cost模型名、site correlation/key规则；
-- numeric/bulk/model qualification的hash-domain separator、算法名、当前policy/schema字符串和内部dependency snapshot；
+- target numeric backend/model qualification的hash-domain separator、算法名、当前policy/schema字符串和内部dependency snapshot；
 - workload fixture、当前corpus和工具CLI中只用于表示“当前实现”的版本后缀。
 
 这些位置使用稳定语义名和strict field verification。结构变化通过同步修改current producer/consumer完成，不能新增

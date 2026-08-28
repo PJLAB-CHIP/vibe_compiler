@@ -50,12 +50,17 @@ if(WAFER_ENABLE_BOARD_RUNTIME)
   target_link_libraries(wafer-run PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
-include(GNUInstallDirs)
-install(TARGETS wafer-run RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES
-  "${CMAKE_SOURCE_DIR}/tools/wafer_profile_report.py"
-  "${CMAKE_SOURCE_DIR}/tools/wafer_profile_evidence.schema.json"
-  DESTINATION "${CMAKE_INSTALL_DATADIR}/wafer")
+if(WAFER_ENABLE_PRODUCT_INSTALL)
+  include(GNUInstallDirs)
+  install(TARGETS wafer-run
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    COMPONENT Runtime)
+  install(FILES
+    "${CMAKE_SOURCE_DIR}/tools/wafer_profile_report.py"
+    "${CMAKE_SOURCE_DIR}/tools/wafer_profile_evidence.schema.json"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/wafer"
+    COMPONENT Runtime)
+endif()
 unset(_wafer_run_resource_directory)
 unset(_wafer_run_report_resource)
 unset(_wafer_run_schema_resource)

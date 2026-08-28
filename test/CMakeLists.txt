@@ -63,6 +63,7 @@ set(_wafer_default_lit_paths
   ${CMAKE_CURRENT_BINARY_DIR}/Pipelines
   ${CMAKE_CURRENT_BINARY_DIR}/Spmd
   ${CMAKE_CURRENT_BINARY_DIR}/Transforms
+  ${CMAKE_CURRENT_BINARY_DIR}/Tools
 )
 
 set(_wafer_lit_dependencies
@@ -74,9 +75,12 @@ set(_wafer_lit_dependencies
 if(TARGET wafer-verify-program)
   list(APPEND _wafer_lit_dependencies wafer-verify-program stablehlo-translate)
 endif()
-if(TARGET wafer-cmodel-qualify-bulk)
-  list(APPEND _wafer_lit_dependencies wafer-cmodel-qualify-bulk)
+if(TARGET wafer-cmodel-qualify-onednn)
+  list(APPEND _wafer_lit_dependencies wafer-cmodel-qualify-onednn)
 endif()
+
+add_custom_target(wafer-test-tools ALL
+  DEPENDS ${_wafer_lit_dependencies})
 
 add_custom_target(check-wafer-lit
   COMMAND ${WAFER_LIT_EXECUTABLE} ${WAFER_LIT_ARGS}
@@ -90,7 +94,6 @@ add_test(NAME wafer-lit
   COMMAND ${WAFER_LIT_EXECUTABLE} ${WAFER_LIT_ARGS}
     ${_wafer_default_lit_paths}
 )
-
 add_test(NAME wafer-physical-tensor-codec-python
   COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_physical_tensor_codec_test.py
@@ -307,12 +310,12 @@ set_tests_properties(wafer-pytorch-xla-runtime-build-python PROPERTIES
   LABELS "framework-importer;managed-dependencies"
 )
 
-add_test(NAME wafer-bulk-dependency-record-python
+add_test(NAME wafer-onednn-dependency-record-python
   COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_SOURCE_DIR}/tools/test_bulk_deps.py
+    ${CMAKE_SOURCE_DIR}/tools/test_onednn_deps.py
 )
-set_tests_properties(wafer-bulk-dependency-record-python PROPERTIES
-  LABELS "bulk-model;managed-dependencies"
+set_tests_properties(wafer-onednn-dependency-record-python PROPERTIES
+  LABELS "onednn;managed-dependencies"
 )
 
 add_test(NAME wafer-systemc-dependency-record-python
@@ -360,10 +363,10 @@ set_tests_properties(wafer-numeric-cmake-configuration-gates PROPERTIES
   TIMEOUT 180
 )
 
-set(_wafer_bulk_cmake_gate_args
+set(_wafer_onednn_cmake_gate_args
   --cmake ${CMAKE_COMMAND}
   --source-dir ${CMAKE_SOURCE_DIR}
-  --work-root ${CMAKE_CURRENT_BINARY_DIR}/bulk-cmake-gates
+  --work-root ${CMAKE_CURRENT_BINARY_DIR}/onednn-cmake-gates
   --generator ${CMAKE_GENERATOR}
   --c-compiler ${CMAKE_C_COMPILER}
   --cxx-compiler ${CMAKE_CXX_COMPILER}
@@ -372,33 +375,33 @@ set(_wafer_bulk_cmake_gate_args
   --python ${Python3_EXECUTABLE}
 )
 if(CMAKE_GENERATOR_PLATFORM)
-  list(APPEND _wafer_bulk_cmake_gate_args
+  list(APPEND _wafer_onednn_cmake_gate_args
     --generator-platform ${CMAKE_GENERATOR_PLATFORM})
 endif()
 if(CMAKE_GENERATOR_TOOLSET)
-  list(APPEND _wafer_bulk_cmake_gate_args
+  list(APPEND _wafer_onednn_cmake_gate_args
     --generator-toolset ${CMAKE_GENERATOR_TOOLSET})
 endif()
 if(CMAKE_MAKE_PROGRAM)
-  list(APPEND _wafer_bulk_cmake_gate_args
+  list(APPEND _wafer_onednn_cmake_gate_args
     --make-program ${CMAKE_MAKE_PROGRAM})
 endif()
 if(CMAKE_BUILD_TYPE)
-  list(APPEND _wafer_bulk_cmake_gate_args
+  list(APPEND _wafer_onednn_cmake_gate_args
     --build-type ${CMAKE_BUILD_TYPE})
 endif()
 if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
-  list(APPEND _wafer_bulk_cmake_gate_args
+  list(APPEND _wafer_onednn_cmake_gate_args
     --numeric-root ${WAFER_NUMERIC_MODEL_DEPS_CANONICAL_ROOT}
     --numeric-record ${WAFER_NUMERIC_MODEL_DEPS_CANONICAL_RECORD})
 endif()
-add_test(NAME wafer-bulk-cmake-configuration-gates
+add_test(NAME wafer-onednn-cmake-configuration-gates
   COMMAND ${Python3_EXECUTABLE}
-    ${CMAKE_SOURCE_DIR}/tools/test_bulk_cmake_gates.py
-    ${_wafer_bulk_cmake_gate_args}
+    ${CMAKE_SOURCE_DIR}/tools/test_onednn_cmake_gates.py
+    ${_wafer_onednn_cmake_gate_args}
 )
-set_tests_properties(wafer-bulk-cmake-configuration-gates PROPERTIES
-  LABELS "bulk-model;configuration"
+set_tests_properties(wafer-onednn-cmake-configuration-gates PROPERTIES
+  LABELS "onednn;configuration"
   TIMEOUT 240
 )
 
@@ -463,44 +466,44 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
       "wafer-numeric-model-canonical-snapshot")
 endif()
 
-if(WAFER_ENABLE_BULK_MODEL_DEPS)
+if(WAFER_ENABLE_TARGET_NUMERIC_BACKEND)
   if(NOT CMAKE_READELF OR NOT EXISTS "${CMAKE_READELF}")
     message(FATAL_ERROR
-      "feature-on bulk link closure requires the configured readelf tool")
+      "feature-on onednn link closure requires the configured readelf tool")
   endif()
   if(NOT CMAKE_NM OR NOT EXISTS "${CMAKE_NM}")
     message(FATAL_ERROR
-      "feature-on bulk link closure requires the configured nm tool")
+      "feature-on onednn link closure requires the configured nm tool")
   endif()
-  add_test(NAME wafer-bulk-dependency-configured-record-python
+  add_test(NAME wafer-onednn-dependency-configured-record-python
     COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_SOURCE_DIR}/tools/bulk_deps.py
-      --root ${WAFER_BULK_MODEL_DEPS_CANONICAL_ROOT}
-      --record ${WAFER_BULK_MODEL_DEPS_CANONICAL_RECORD}
+      ${CMAKE_SOURCE_DIR}/tools/onednn_deps.py
+      --root ${WAFER_ONEDNN_DEPS_CANONICAL_ROOT}
+      --record ${WAFER_ONEDNN_DEPS_CANONICAL_RECORD}
       --emit-cmake-snapshot
   )
-  set_tests_properties(wafer-bulk-dependency-configured-record-python
+  set_tests_properties(wafer-onednn-dependency-configured-record-python
     PROPERTIES
-      PASS_REGULAR_EXPRESSION "wafer-bulk-model-canonical-snapshot"
-      LABELS "bulk-model;managed-dependencies")
-  add_test(NAME wafer-bulk-feature-on-link-closure
+      PASS_REGULAR_EXPRESSION "wafer-onednn-canonical-snapshot"
+      LABELS "onednn;managed-dependencies")
+  add_test(NAME wafer-onednn-feature-on-link-closure
     COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_SOURCE_DIR}/tools/check_bulk_enabled_link_closure.py
-      --binary $<TARGET_FILE:wafer-cmodel-qualify-bulk>
+      ${CMAKE_SOURCE_DIR}/tools/check_onednn_enabled_link_closure.py
+      --binary $<TARGET_FILE:wafer-cmodel-qualify-onednn>
       --readelf ${CMAKE_READELF}
       --nm ${CMAKE_NM}
   )
-  set_tests_properties(wafer-bulk-feature-on-link-closure PROPERTIES
-    LABELS "bulk-model;link-closure"
+  set_tests_properties(wafer-onednn-feature-on-link-closure PROPERTIES
+    LABELS "onednn;link-closure"
   )
-  add_test(NAME wafer-bulk-qualification-cli
+  add_test(NAME wafer-onednn-qualification-cli
     COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_SOURCE_DIR}/tools/test_bulk_qualification_cli.py
-      --tool $<TARGET_FILE:wafer-cmodel-qualify-bulk>
-      --work-root ${CMAKE_CURRENT_BINARY_DIR}/bulk-qualification-cli
+      ${CMAKE_SOURCE_DIR}/tools/test_onednn_qualification_cli.py
+      --tool $<TARGET_FILE:wafer-cmodel-qualify-onednn>
+      --work-root ${CMAKE_CURRENT_BINARY_DIR}/onednn-qualification-cli
   )
-  set_tests_properties(wafer-bulk-qualification-cli PROPERTIES
-    LABELS "bulk-model;qualification"
+  set_tests_properties(wafer-onednn-qualification-cli PROPERTIES
+    LABELS "onednn;qualification"
     TIMEOUT 180
   )
 endif()

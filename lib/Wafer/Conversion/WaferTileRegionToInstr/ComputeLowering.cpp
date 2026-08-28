@@ -1345,72 +1345,56 @@ static mlir::FailureOr<InstrElementwiseKindAttr>
 getInstrElementwiseKindAttr(mlir::PatternRewriter &rewriter,
                             mlir::Operation *op,
                             ComputeElementwiseKindAttr computeKind) {
-  InstrElementwiseKind instrKind;
+  auto makeKind = [&](InstrElementwiseKind kind) {
+    return InstrElementwiseKindAttr::get(rewriter.getContext(), kind);
+  };
   switch (computeKind.getValue()) {
   case ComputeElementwiseKind::Add:
-    instrKind = InstrElementwiseKind::Add;
-    break;
+    return makeKind(InstrElementwiseKind::Add);
   case ComputeElementwiseKind::Sub:
-    instrKind = InstrElementwiseKind::Sub;
-    break;
+    return makeKind(InstrElementwiseKind::Sub);
   case ComputeElementwiseKind::Mul:
-    instrKind = InstrElementwiseKind::Mul;
-    break;
+    return makeKind(InstrElementwiseKind::Mul);
   case ComputeElementwiseKind::Div:
-    instrKind = InstrElementwiseKind::Div;
-    break;
+    return makeKind(InstrElementwiseKind::Div);
   case ComputeElementwiseKind::Max:
-    instrKind = InstrElementwiseKind::Max;
-    break;
+    return makeKind(InstrElementwiseKind::Max);
   case ComputeElementwiseKind::Min:
-    instrKind = InstrElementwiseKind::Min;
-    break;
+    return makeKind(InstrElementwiseKind::Min);
   case ComputeElementwiseKind::Neg:
-    instrKind = InstrElementwiseKind::Neg;
-    break;
+    return makeKind(InstrElementwiseKind::Neg);
   case ComputeElementwiseKind::Recip:
-    instrKind = InstrElementwiseKind::Recip;
-    break;
+    return makeKind(InstrElementwiseKind::Recip);
   case ComputeElementwiseKind::Sqrt:
-    instrKind = InstrElementwiseKind::Sqrt;
-    break;
+    return makeKind(InstrElementwiseKind::Sqrt);
   case ComputeElementwiseKind::Rsqrt:
-    instrKind = InstrElementwiseKind::Rsqrt;
-    break;
+    return makeKind(InstrElementwiseKind::Rsqrt);
   case ComputeElementwiseKind::Exp:
-    instrKind = InstrElementwiseKind::Exp;
-    break;
+    return makeKind(InstrElementwiseKind::Exp);
   case ComputeElementwiseKind::Ln:
-    instrKind = InstrElementwiseKind::Ln;
-    break;
+    return makeKind(InstrElementwiseKind::Ln);
   case ComputeElementwiseKind::Tanh:
-    instrKind = InstrElementwiseKind::Tanh;
-    break;
+    return makeKind(InstrElementwiseKind::Tanh);
   case ComputeElementwiseKind::Eq:
-    instrKind = InstrElementwiseKind::Eq;
-    break;
+    return makeKind(InstrElementwiseKind::Eq);
   case ComputeElementwiseKind::Ne:
-    instrKind = InstrElementwiseKind::Ne;
-    break;
+    return makeKind(InstrElementwiseKind::Ne);
   case ComputeElementwiseKind::Lt:
-    instrKind = InstrElementwiseKind::Lt;
-    break;
+    return makeKind(InstrElementwiseKind::Lt);
   case ComputeElementwiseKind::Le:
-    instrKind = InstrElementwiseKind::Le;
-    break;
+    return makeKind(InstrElementwiseKind::Le);
   case ComputeElementwiseKind::Gt:
-    instrKind = InstrElementwiseKind::Gt;
-    break;
+    return makeKind(InstrElementwiseKind::Gt);
   case ComputeElementwiseKind::Ge:
-    instrKind = InstrElementwiseKind::Ge;
-    break;
+    return makeKind(InstrElementwiseKind::Ge);
   case ComputeElementwiseKind::Select:
     return failFailureOr<InstrElementwiseKindAttr>(
         rewriter, op,
         "tile.elementwise select must lower to target movement sequence before "
         "instruction elementwise");
   }
-  return InstrElementwiseKindAttr::get(rewriter.getContext(), instrKind);
+  return failFailureOr<InstrElementwiseKindAttr>(
+      rewriter, op, "tile.elementwise kind is outside the closed enum");
 }
 
 } // namespace
@@ -1419,17 +1403,16 @@ mlir::FailureOr<InstrElementwiseKindAttr>
 wafer::tile_region_to_instr::getAccumulationElementwiseKind(
     mlir::PatternRewriter &rewriter, mlir::Operation *op,
     ComputeReduceKindAttr reduceKind, llvm::StringRef opLabel) {
-  InstrElementwiseKind elementwiseKind;
   switch (reduceKind.getValue()) {
   case ComputeReduceKind::Sum:
-    elementwiseKind = InstrElementwiseKind::Add;
-    break;
+    return InstrElementwiseKindAttr::get(rewriter.getContext(),
+                                         InstrElementwiseKind::Add);
   case ComputeReduceKind::Max:
-    elementwiseKind = InstrElementwiseKind::Max;
-    break;
+    return InstrElementwiseKindAttr::get(rewriter.getContext(),
+                                         InstrElementwiseKind::Max);
   case ComputeReduceKind::Min:
-    elementwiseKind = InstrElementwiseKind::Min;
-    break;
+    return InstrElementwiseKindAttr::get(rewriter.getContext(),
+                                         InstrElementwiseKind::Min);
   case ComputeReduceKind::Avg:
     return failFailureOr<InstrElementwiseKindAttr>(
         rewriter, op,
@@ -1437,8 +1420,9 @@ wafer::tile_region_to_instr::getAccumulationElementwiseKind(
             .concat(" lowering does not support avg accumulation")
             .str());
   }
-
-  return InstrElementwiseKindAttr::get(rewriter.getContext(), elementwiseKind);
+  return failFailureOr<InstrElementwiseKindAttr>(
+      rewriter, op,
+      llvm::Twine(opLabel).concat(" kind is outside the closed enum").str());
 }
 
 void wafer::tile_region_to_instr::populateComputeLoweringPatterns(

@@ -319,7 +319,7 @@ target-model是独立qualification consumer，其mismatch不改变已经验证�
 | target conversion、CRT ABI、TargetLLVM/module writing与capability registry | 14 |
 | typed manifest、package、RuntimeInvocationPlan与provider boundary | 15 |
 | 跨stage verification contract与evidence口径 | 16 |
-| target execution model、numeric/bulk/SystemC与board correlation | 17 |
+| target execution model、`WaferTargetNumericBackend`、SystemC与board correlation | 17 |
 | source/build ownership、依赖与测试镜像 | 18 |
 | 跨IR层的ODS、interface、operation-scoped pass/analysis、rewrite/conversion与named pipeline工程合同 | 19 |
 | profile-scoped compiler-hardware行为与外推边界 | `docs/tx81-compiler-hardware-calibration.md` |

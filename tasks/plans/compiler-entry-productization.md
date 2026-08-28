@@ -79,7 +79,7 @@ Pipeline position:
 > | CLI status | `wafer-compile.cpp` main | commit 后执行 `--dump-compiler-ir`/`--target-model` gate，gate 失败翻转 exit 1 | package 已提交却 exit≠0，违反「success ⟺ package 可见」；01.11 明确禁止 |
 > | 内部/qualification 消费 | `compileProgramWithTargetLLVMModules` → `CompiledProgram` | CLI model/IR-dump 路径 | 保留为 internal inspection entry，退出 production CLI |
 > | 测试注入 seam | `testing::compileProgramWith*LaunchSlotFailure`（`WAFER_ENABLE_TEST_HELPER_OVERRIDE`） | lit 失败注入 | 保持 `wafer-compile-test` 专用，不进入 production |
-> | install | 根 CMake 无 install 规则（仅 wafer-run 有） | — | Q59 新增；feature-off 不得安装运行即失败的 production compiler |
+> | install | 当时根 CMake 无 install 规则（仅 wafer-run 有） | — | Q59已迁入canonical build的`Compiler`/`Runtime`component合同；该行只保留迁移前事实 |
 >
 > 普通调用必须返回的唯一产品 = 已 readback 且原子提交的共享 `runtime::ExecutablePackage`
 > （committed root+VerifiedPackageManifest+exact member snapshots）；`CompilationResult`另持有ExecutionConfig。
@@ -114,20 +114,22 @@ Pipeline position:
    完成条件，除非它阻碍唯一action、稳定help或错误分类。
    （2026-08-16 follow-up完成：CLI、success/error渲染、全部consumer（test/Board、test/Tools、README、check_deps）同步；
    SPMD helper进程接口的`--output-program-dir`是helper自身语义，保持不动。）
-5. **Install与tool discovery**：按18号owner安装production `wafer-compile`及其运行所需helper/configuration；helper、Python、
-   device linker和target toolchain不再以source/build绝对路径固化到产品二进制。feature-off install tree不安装一个只能在运行时
-   报依赖缺失却冒充可用的production compiler。`wafer-opt`仍是developer component，本任务不借安装要求把它提升为产品入口。
+5. **Install与tool discovery**：按18号owner从canonical build安装production `Compiler`/`Runtime` components；helper、Python、
+   device linker和target toolchain不再以source/build绝对路径固化到产品二进制。关闭compiler必需依赖的配置不形成产品install tree；
+   只交付runtime时从同一完整host build选择`Runtime` component，不建立runtime-only build。`wafer-opt`仍是developer component，
+   本任务不借安装要求把它提升为产品入口。
    （2026-08-16 完成：install规则+单一resolver `resolveDriverToolFacts`；helper/linker script/CRT/ABI为
    executable-relative install资源，python3/clang++经PATH，pinned TX8依赖根经`TX8_DEPS_ROOT`；`TargetToolchain`显式携带
    tx8-deps/CRT/ABI facts并在device link逐项传参；build-tree资源copy与install共享同一发现路径；install规则被
    importer+SPMD deps+configured helper条件门控。）
 6. **定向验证**：覆盖request/options正负例、source/helper/target/package各阶段typed failure、existing-output与竞争writer、
    ordinary/profile共同提交、API/CLI manifest identity一致、post-commit action absence、install-prefix relocate smoke以及
-   feature-on/off构建。Q59不改变package/runtime/board语义，因此不重复Q56板测；fresh source→package readback/no-card是其
+   canonical build的full/Compiler/Runtime component closure。Q59不改变package/runtime/board语义，因此不重复Q56板测；fresh source→package readback/no-card是其
    最大完成证据。
    （2026-08-16：`wafer-compile-internal-options.test`（production拒绝internal选项/旧flag/help面）、
    `wafer-compile-install-relocate.test`（fresh source→package readback/no-card于relocated install tree）、
-   `wafer-compile-install-feature-off.test`（feature-off不安装production compiler）新增；atomicity/request/install测试通过；
+   当时新增的`wafer-compile-install-feature-off.test`及隐式缺依赖产品模式已由canonical build component安装合同取代，不再是current gate；
+   atomicity/request/install测试通过；
    Compilation/TargetCodeGen unit 28/28。工具测试矩阵见各测试与Q59 row；pre-existing外部缺口：
    `wafer-compile-structured-tensor-program.test`的32x32 dot输入被pinned XLA helper拒绝（helper调用byte-identical，与Q59无关）；
    `wafer-compile-spmd-partition.test`同一输入上search 45分钟+未收敛（候选序号持续增长，Q52 search cost范围）。）
@@ -189,8 +191,8 @@ Pipeline position:
    旧入口，不保留alias。旧工具的program-directory action迁入`wafer-verify-program`；显式MLIR的IR-local verification action迁入
    `wafer-opt`的named `frontend-verification`开发pipeline，并迁移bounded-dynamic正例及graph-break/eager/unbounded-dynamic负例。
    IR-local bounded dynamic通过不代表program-directory或production compiler支持dynamic boundary。adapter、verifier和wafer-compile
-   从同一install tree运行，不引用repo test数据、源码路径或source-built环境位置；缺少真实frontend/importer依赖时不构建或安装
-   运行即失败的adapter/verifier stub，feature-off install manifest和diagnostic有定向测试。
+   从同一install tree运行，不引用repo test数据、源码路径或source-built环境位置。current canonical build要求真实frontend/importer
+   依赖在configure时闭合；不构建运行即失败的adapter/verifier stub，也不维护feature-off产品install manifest。
 6. **定向验证**：覆盖普通小模型、branched/static模型和一个Q53会继续消费的代表source；覆盖真实export重复等价、
    pre-exported portable bytecode、metadata/shape/dtype/role、安全路径、graph break/fallback/side effect和dynamic负例；证明
    adapter output未经重写直接进入Q59 library/CLI并完成package readback/no-card。Q60不声称Q53规模、板端或性能完成。

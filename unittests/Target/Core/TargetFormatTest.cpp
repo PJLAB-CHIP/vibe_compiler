@@ -76,10 +76,12 @@ TEST(TargetFormatTest, LogicalDescriptorsExactlyCoverStorageFormats) {
   EXPECT_TRUE(boolean->bitpacked);
 
   for (const wafer::LogicalFormatDescriptor &descriptor : descriptors) {
-    if (descriptor.format != LogicalFormat::Bool)
+    if (descriptor.format != LogicalFormat::Bool) {
       EXPECT_FALSE(descriptor.bitpacked);
-    if (descriptor.format != LogicalFormat::TF32)
+    }
+    if (descriptor.format != LogicalFormat::TF32) {
       EXPECT_EQ(descriptor.storageBits, descriptor.semanticBits);
+    }
     if (descriptor.category == LogicalFormatCategory::BinaryFloatingPoint) {
       EXPECT_GT(descriptor.exponentBits, 0);
       EXPECT_GT(descriptor.precisionBits, 1);

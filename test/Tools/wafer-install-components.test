@@ -1,0 +1,29 @@
+# REQUIRES: product-install
+
+# RUN: rm -rf %t.full %t.compiler %t.runtime
+# RUN: %cmake --install %wafer_obj_root --prefix %t.full
+# RUN: test -x %t.full/bin/wafer-compile
+# RUN: test -x %t.full/bin/wafer-verify-program
+# RUN: test -x %t.full/bin/wafer-run
+# RUN: test -x %t.full/libexec/wafer/wafer_xla_spmd_partitioner
+# RUN: test -f %t.full/lib/python/wafer/frontend/__init__.py
+# RUN: test -f %t.full/share/wafer/wafer_device_link.py
+# RUN: test -f %t.full/share/wafer/wafer_profile_report.py
+
+# RUN: %cmake --install %wafer_obj_root --prefix %t.compiler --component Compiler
+# RUN: test -x %t.compiler/bin/wafer-compile
+# RUN: test -x %t.compiler/bin/wafer-verify-program
+# RUN: test -x %t.compiler/libexec/wafer/wafer_xla_spmd_partitioner
+# RUN: test -f %t.compiler/lib/python/wafer/frontend/__init__.py
+# RUN: test -f %t.compiler/share/wafer/wafer_device_link.py
+# RUN: test ! -e %t.compiler/bin/wafer-run
+# RUN: test ! -e %t.compiler/share/wafer/wafer_profile_report.py
+
+# RUN: %cmake --install %wafer_obj_root --prefix %t.runtime --component Runtime
+# RUN: test -x %t.runtime/bin/wafer-run
+# RUN: test -f %t.runtime/share/wafer/wafer_profile_report.py
+# RUN: test -f %t.runtime/share/wafer/wafer_profile_evidence.schema.json
+# RUN: test ! -e %t.runtime/bin/wafer-compile
+# RUN: test ! -e %t.runtime/bin/wafer-verify-program
+# RUN: test ! -e %t.runtime/lib/python/wafer
+# RUN: test ! -e %t.runtime/libexec/wafer/wafer_xla_spmd_partitioner

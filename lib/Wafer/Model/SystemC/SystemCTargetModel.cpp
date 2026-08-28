@@ -193,7 +193,7 @@ public:
     switch (effect->controlAction) {
     case TargetModelControlAction::None: {
       const TargetModelNumericBackend numericBackend = effect->numericBackend;
-      TargetModelBulkDispatchEvidence bulkEvidence = effect->bulkEvidence;
+      TargetModelOneDNNDispatchEvidence onednnEvidence = effect->onednnEvidence;
       TargetModelManagedReferenceEvidence managedReferenceEvidence =
           effect->managedReferenceEvidence;
       std::optional<PendingNCCMemoryEffect> pendingMemoryEffect;
@@ -223,21 +223,22 @@ public:
           managedReferenceTensorImplementations.push_back(
               std::move(managedReferenceEvidence.implementation));
       }
-      if (numericBackend == TargetModelNumericBackend::Bulk) {
-        ++bulkNumericOperationCount;
-        bulkMatmulInvocationCount += bulkEvidence.matmulInvocations;
-        bulkReorderInvocationCount += bulkEvidence.reorderInvocations;
-        bulkFormalFusedMultiplyAddCount += bulkEvidence.formalFusedMultiplyAdds;
-        if (bulkEvidence.evidenceKind ==
-            TargetModelBulkEvidenceKind::ExactQualificationRecord)
-          bulkQualificationRecordDigests.push_back(
-              std::move(bulkEvidence.evidenceDigest));
-        else if (bulkEvidence.evidenceKind ==
-                 TargetModelBulkEvidenceKind::ManagedReferenceEnvironment) {
-          if (!llvm::is_contained(bulkManagedReferenceEnvironmentDigests,
-                                  bulkEvidence.evidenceDigest))
-            bulkManagedReferenceEnvironmentDigests.push_back(
-                std::move(bulkEvidence.evidenceDigest));
+      if (numericBackend == TargetModelNumericBackend::OneDNN) {
+        ++onednnNumericOperationCount;
+        onednnMatmulInvocationCount += onednnEvidence.matmulInvocations;
+        onednnReorderInvocationCount += onednnEvidence.reorderInvocations;
+        onednnFormalFusedMultiplyAddCount +=
+            onednnEvidence.formalFusedMultiplyAdds;
+        if (onednnEvidence.evidenceKind ==
+            TargetModelOneDNNEvidenceKind::ExactQualificationRecord)
+          onednnQualificationRecordDigests.push_back(
+              std::move(onednnEvidence.evidenceDigest));
+        else if (onednnEvidence.evidenceKind ==
+                 TargetModelOneDNNEvidenceKind::ManagedReferenceEnvironment) {
+          if (!llvm::is_contained(onednnManagedReferenceEnvironmentDigests,
+                                  onednnEvidence.evidenceDigest))
+            onednnManagedReferenceEnvironmentDigests.push_back(
+                std::move(onednnEvidence.evidenceDigest));
         }
       }
       if (command.nccIssueDomain) {
@@ -368,12 +369,12 @@ public:
                           formalNumericOperationCount,
                           managedReferenceNumericOperationCount,
                           managedReferenceScalarEvaluationCount,
-                          bulkNumericOperationCount,
-                          bulkMatmulInvocationCount,
-                          bulkReorderInvocationCount,
-                          bulkFormalFusedMultiplyAddCount,
-                          std::move(bulkQualificationRecordDigests),
-                          std::move(bulkManagedReferenceEnvironmentDigests),
+                          onednnNumericOperationCount,
+                          onednnMatmulInvocationCount,
+                          onednnReorderInvocationCount,
+                          onednnFormalFusedMultiplyAddCount,
+                          std::move(onednnQualificationRecordDigests),
+                          std::move(onednnManagedReferenceEnvironmentDigests),
                           std::move(managedReferenceTensorEnvironmentDigests),
                           std::move(managedReferenceTensorImplementations),
                           detail::getSystemCVersion(),
@@ -1109,12 +1110,12 @@ private:
   uint64_t formalNumericOperationCount = 0;
   uint64_t managedReferenceNumericOperationCount = 0;
   uint64_t managedReferenceScalarEvaluationCount = 0;
-  uint64_t bulkNumericOperationCount = 0;
-  uint64_t bulkMatmulInvocationCount = 0;
-  uint64_t bulkReorderInvocationCount = 0;
-  uint64_t bulkFormalFusedMultiplyAddCount = 0;
-  std::vector<std::string> bulkQualificationRecordDigests;
-  std::vector<std::string> bulkManagedReferenceEnvironmentDigests;
+  uint64_t onednnNumericOperationCount = 0;
+  uint64_t onednnMatmulInvocationCount = 0;
+  uint64_t onednnReorderInvocationCount = 0;
+  uint64_t onednnFormalFusedMultiplyAddCount = 0;
+  std::vector<std::string> onednnQualificationRecordDigests;
+  std::vector<std::string> onednnManagedReferenceEnvironmentDigests;
   std::vector<std::string> managedReferenceTensorEnvironmentDigests;
   std::vector<std::string> managedReferenceTensorImplementations;
   bool begun = false;

@@ -79,40 +79,40 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
     THREAD_LOCAL=thread_local)
 endif()
 
-if(WAFER_ENABLE_BULK_MODEL_DEPS)
-  add_mlir_library(WaferBulkModel
+if(WAFER_ENABLE_TARGET_NUMERIC_BACKEND)
+  add_mlir_library(WaferOneDNNBackend
     PARTIAL_SOURCES_INTENDED
-    Numeric/Qualification/QualifiedBulkExecution.cpp
-    Numeric/Qualification/BulkExecutionEnvironment.cpp
-    Numeric/Qualification/BulkQualification.cpp
-    Numeric/Qualification/BulkQualificationCalibration.cpp
-    Numeric/Qualification/BulkQualificationCase.cpp
-    Numeric/Qualification/BulkQualificationComparison.cpp
-    Numeric/Qualification/BulkQualificationExecution.cpp
-    Numeric/Qualification/BulkQualificationPolicy.cpp
-    Numeric/Qualification/BulkQualificationValidation.cpp
-    Numeric/Qualification/BulkTensorCodec.cpp
-    Numeric/Qualification/BulkTensorNumericSupport.cpp
+    Numeric/Qualification/QualifiedOneDNNExecution.cpp
+    Numeric/Qualification/OneDNNExecutionEnvironment.cpp
+    Numeric/Qualification/OneDNNQualification.cpp
+    Numeric/Qualification/OneDNNQualificationCalibration.cpp
+    Numeric/Qualification/OneDNNQualificationCase.cpp
+    Numeric/Qualification/OneDNNQualificationComparison.cpp
+    Numeric/Qualification/OneDNNQualificationExecution.cpp
+    Numeric/Qualification/OneDNNQualificationPolicy.cpp
+    Numeric/Qualification/OneDNNQualificationValidation.cpp
+    Numeric/Qualification/OneDNNTensorCodec.cpp
+    Numeric/Qualification/OneDNNTensorNumericSupport.cpp
     Numeric/Qualification/OneDNNGemmAdapter.cpp
 
     LINK_LIBS PUBLIC
     WaferIR
     WaferNumericModel
-    WaferBulk::oneDNN
+    WaferOneDNN::oneDNN
     LLVMTargetParser
   )
-  target_compile_definitions(obj.WaferBulkModel PRIVATE
-    WAFER_BULK_DEPENDENCY_RECORD_SHA256="${WAFER_BULK_MODEL_DEPS_RECORD_SHA256}"
-    WAFER_BULK_ONEDNN_LIBRARY_SHA256="${WAFER_BULK_MODEL_ONEDNN_LIBRARY_SHA256}"
-    WAFER_BULK_ONEDNN_VERSION="${WAFER_BULK_MODEL_ONEDNN_VERSION}"
-    WAFER_BULK_ONEDNN_COMMIT="${WAFER_BULK_MODEL_ONEDNN_COMMIT}"
+  target_compile_definitions(obj.WaferOneDNNBackend PRIVATE
+    WAFER_ONEDNN_DEPENDENCY_RECORD_SHA256="${WAFER_ONEDNN_DEPS_RECORD_SHA256}"
+    WAFER_ONEDNN_LIBRARY_SHA256="${WAFER_ONEDNN_BACKEND_LIBRARY_SHA256}"
+    WAFER_ONEDNN_VERSION="${WAFER_ONEDNN_BACKEND_VERSION}"
+    WAFER_ONEDNN_COMMIT="${WAFER_ONEDNN_BACKEND_COMMIT}"
   )
   # oneDNN's C++ wrapper reports primitive creation/execution failures with
   # exceptions.  Keep exception support local to the managed backend adapter;
   # the rest of the compiler retains LLVM's no-exceptions policy.
   if(MSVC)
-    target_compile_options(obj.WaferBulkModel PRIVATE /EHsc)
+    target_compile_options(obj.WaferOneDNNBackend PRIVATE /EHsc)
   else()
-    target_compile_options(obj.WaferBulkModel PRIVATE -fexceptions)
+    target_compile_options(obj.WaferOneDNNBackend PRIVATE -fexceptions)
   endif()
 endif()

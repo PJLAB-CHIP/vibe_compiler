@@ -484,13 +484,13 @@ executeGemm(const compiler::TargetCommand &command,
                        llvm::toString(operation.takeError()));
 
   if (policy.getGemmDispatchPolicy() ==
-          TargetModelGemmDispatchPolicy::BulkThenFormal &&
+          TargetModelGemmDispatchPolicy::OneDNNThenFormal &&
       value.lhsOrientation == TargetGemmOrientation::Normal &&
       value.rhsOrientation == TargetGemmOrientation::Normal) {
-    const TargetModelBulkBackend *backend = policy.getBulkBackend();
+    const TargetModelOneDNNBackend *backend = policy.getOneDNNBackend();
     if (!backend)
-      return kernelError(TargetModelKernelErrorCode::BulkBackendUnavailable,
-                         "bulk-then-formal policy has no bulk backend");
+      return kernelError(TargetModelKernelErrorCode::OneDNNBackendUnavailable,
+                         "onednn-then-formal policy has no onednn backend");
     llvm::Expected<std::vector<uint8_t>> lhsStorage = readTensorStorage(
         memory, command.launchSlotId.getValue(), value.lhs, *lhsKey);
     llvm::Expected<std::vector<uint8_t>> rhsStorage = readTensorStorage(
@@ -508,27 +508,27 @@ executeGemm(const compiler::TargetCommand &command,
         *operation,
         {{{*lhsKey, std::move(*lhsStorage)}, {*rhsKey, std::move(*rhsStorage)}},
          {*destinationKey, std::move(*destinationStorage)}}};
-    llvm::Expected<std::optional<TargetModelBulkResult>> bulk =
+    llvm::Expected<std::optional<TargetModelOneDNNResult>> onednn =
         backend->tryExecute(request);
-    if (!bulk)
-      return kernelError(TargetModelKernelErrorCode::BulkBackendFailure,
-                         llvm::toString(bulk.takeError()));
-    if (*bulk) {
-      TargetModelBulkResult result = std::move(**bulk);
+    if (!onednn)
+      return kernelError(TargetModelKernelErrorCode::OneDNNBackendFailure,
+                         llvm::toString(onednn.takeError()));
+    if (*onednn) {
+      TargetModelOneDNNResult result = std::move(**onednn);
       if (result.destination.key != *destinationKey ||
           result.destination.storage.size() !=
               request.tensors.destinationTemplate.storage.size())
-        return kernelError(TargetModelKernelErrorCode::BulkBackendFailure,
-                           "bulk backend returned a mismatched destination");
+        return kernelError(TargetModelKernelErrorCode::OneDNNBackendFailure,
+                           "onednn backend returned a mismatched destination");
       if (result.evidence.matmulInvocations != 1 ||
           result.evidence.reorderInvocations > 1 ||
           result.evidence.formalFusedMultiplyAdds != 0 ||
-          result.evidence.evidenceKind == TargetModelBulkEvidenceKind::None ||
+          result.evidence.evidenceKind == TargetModelOneDNNEvidenceKind::None ||
           result.evidence.evidenceDigest.empty() ||
           result.evidence.implementation.empty())
         return kernelError(
-            TargetModelKernelErrorCode::BulkBackendFailure,
-            "bulk backend returned incomplete dispatch evidence");
+            TargetModelKernelErrorCode::OneDNNBackendFailure,
+            "onednn backend returned incomplete dispatch evidence");
       return withReads(
           TargetModelCommandEffect{
               {TargetModelByteWrite{command.launchSlotId.getValue(),
@@ -537,7 +537,7 @@ executeGemm(const compiler::TargetCommand &command,
                                     std::move(result.destination.storage)}},
               result.flags,
               TargetModelControlAction::None,
-              TargetModelNumericBackend::Bulk,
+              TargetModelNumericBackend::OneDNN,
               std::move(result.evidence)},
           {makeTensorRead(command.launchSlotId.getValue(), value.lhs, *lhsKey),
            makeTensorRead(command.launchSlotId.getValue(), value.rhs,
@@ -556,9 +556,9 @@ executeGemm(const compiler::TargetCommand &command,
     const FormalNumericWorkBudget formalBudget = budget.getNumericBudget();
     if (scalarEvaluations > formalBudget.getMaximumScalarEvaluations() ||
         fusedMultiplyAdds > formalBudget.getMaximumFusedMultiplyAdds())
-      return kernelError(
-          TargetModelKernelErrorCode::BulkBackendUnavailable,
-          "GEMM exceeds the formal budget and has no exact bulk qualification");
+      return kernelError(TargetModelKernelErrorCode::OneDNNBackendUnavailable,
+                         "GEMM exceeds the formal budget and has no exact "
+                         "onednn qualification");
   }
 
   llvm::Expected<std::vector<RawLogicalValue>> lhs =

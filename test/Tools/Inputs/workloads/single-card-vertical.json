@@ -29,7 +29,7 @@
         "activation": "tanh",
         "residual": true
       },
-      "bulk_qualification": {
+      "onednn_qualification": {
         "format": "f32",
         "m": 2,
         "k": 16,
@@ -66,7 +66,7 @@
         "k": 16,
         "n": 16
       },
-      "bulk_qualification": {
+      "onednn_qualification": {
         "format": "f16",
         "m": 4,
         "k": 16,
@@ -129,7 +129,7 @@
         "k": 64,
         "n": 64
       },
-      "bulk_qualification": {
+      "onednn_qualification": {
         "format": "f32",
         "m": 64,
         "k": 64,
@@ -166,7 +166,7 @@
         "k": 64,
         "n": 64
       },
-      "bulk_qualification": {
+      "onednn_qualification": {
         "format": "f16",
         "m": 64,
         "k": 64,

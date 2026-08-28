@@ -250,10 +250,11 @@ llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
   }
   const auto &firstBindings =
       cardExecutable.getTileExecutables().front().getProgramBindings();
-  if (globalInputs.size() !=
+  const size_t expectedGlobalInputs = static_cast<size_t>(
       llvm::count_if(firstBindings, [](const ProgramResourceBinding &binding) {
         return binding.role == ProgramResourceRole::UserInput;
-      }))
+      }));
+  if (globalInputs.size() != expectedGlobalInputs)
     return invalid("unexpected global program input index");
   return invocations;
 }

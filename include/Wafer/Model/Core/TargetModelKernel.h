@@ -27,8 +27,8 @@ enum class TargetModelKernelErrorCode : uint8_t {
   PhysicalCodecFailure,
   ManagedReferenceBackendUnavailable,
   ManagedReferenceBackendFailure,
-  BulkBackendUnavailable,
-  BulkBackendFailure,
+  OneDNNBackendUnavailable,
+  OneDNNBackendFailure,
 };
 
 llvm::StringRef
@@ -98,7 +98,7 @@ enum class TargetModelNumericBackend : uint8_t {
   None,
   Formal,
   ManagedReference,
-  Bulk,
+  OneDNN,
 };
 
 struct TargetModelNumericTensor {
@@ -131,36 +131,37 @@ struct TargetModelGemmRequest {
   TargetModelNumericOperands tensors;
 };
 
-enum class TargetModelBulkEvidenceKind : uint8_t {
+enum class TargetModelOneDNNEvidenceKind : uint8_t {
   None,
   ExactQualificationRecord,
   ManagedReferenceEnvironment,
 };
 
-struct TargetModelBulkDispatchEvidence {
+struct TargetModelOneDNNDispatchEvidence {
   uint64_t matmulInvocations = 0;
   uint64_t reorderInvocations = 0;
   uint64_t formalFusedMultiplyAdds = 0;
-  TargetModelBulkEvidenceKind evidenceKind = TargetModelBulkEvidenceKind::None;
+  TargetModelOneDNNEvidenceKind evidenceKind =
+      TargetModelOneDNNEvidenceKind::None;
   std::string evidenceDigest;
   std::string implementation;
 };
 
-struct TargetModelBulkResult {
+struct TargetModelOneDNNResult {
   TargetModelNumericTensor destination;
   FormalNumericExceptionFlags flags;
-  TargetModelBulkDispatchEvidence evidence;
+  TargetModelOneDNNDispatchEvidence evidence;
 };
 
-/// Feature-independent bulk backend interface. Implementations return a result
-/// only when the command, payload and environment match either an exact
+/// Feature-independent onednn backend interface. Implementations return a
+/// result only when the command, payload and environment match either an exact
 /// qualification record or the managed-reference execution domain. A
 /// successful null optional means neither execution mode matched.
-class TargetModelBulkBackend {
+class TargetModelOneDNNBackend {
 public:
-  virtual ~TargetModelBulkBackend() = default;
+  virtual ~TargetModelOneDNNBackend() = default;
 
-  virtual llvm::Expected<std::optional<TargetModelBulkResult>>
+  virtual llvm::Expected<std::optional<TargetModelOneDNNResult>>
   tryExecute(const TargetModelGemmRequest &request) const = 0;
 };
 
@@ -196,7 +197,7 @@ public:
 
 enum class TargetModelGemmDispatchPolicy : uint8_t {
   FormalOnly,
-  BulkThenFormal,
+  OneDNNThenFormal,
 };
 
 enum class TargetModelTensorDispatchPolicy : uint8_t {
@@ -213,18 +214,18 @@ public:
   }
 
   static TargetModelExecutionPolicy
-  bulkThenFormal(const TargetModelBulkBackend &backend) {
+  onednnThenFormal(const TargetModelOneDNNBackend &backend) {
     return TargetModelExecutionPolicy(
-        TargetModelGemmDispatchPolicy::BulkThenFormal,
+        TargetModelGemmDispatchPolicy::OneDNNThenFormal,
         TargetModelTensorDispatchPolicy::FormalOnly, &backend, nullptr);
   }
 
   static TargetModelExecutionPolicy
-  managedReference(const TargetModelBulkBackend &bulkBackend,
+  managedReference(const TargetModelOneDNNBackend &onednnBackend,
                    const TargetModelManagedReferenceBackend &tensorBackend) {
     return TargetModelExecutionPolicy(
-        TargetModelGemmDispatchPolicy::BulkThenFormal,
-        TargetModelTensorDispatchPolicy::ManagedReference, &bulkBackend,
+        TargetModelGemmDispatchPolicy::OneDNNThenFormal,
+        TargetModelTensorDispatchPolicy::ManagedReference, &onednnBackend,
         &tensorBackend);
   }
 
@@ -234,7 +235,9 @@ public:
   TargetModelTensorDispatchPolicy getTensorDispatchPolicy() const {
     return tensorDispatchPolicy;
   }
-  const TargetModelBulkBackend *getBulkBackend() const { return bulkBackend; }
+  const TargetModelOneDNNBackend *getOneDNNBackend() const {
+    return onednnBackend;
+  }
   const TargetModelManagedReferenceBackend *getManagedReferenceBackend() const {
     return managedReferenceBackend;
   }
@@ -243,15 +246,16 @@ private:
   constexpr TargetModelExecutionPolicy(
       TargetModelGemmDispatchPolicy gemmDispatchPolicy,
       TargetModelTensorDispatchPolicy tensorDispatchPolicy,
-      const TargetModelBulkBackend *bulkBackend,
+      const TargetModelOneDNNBackend *onednnBackend,
       const TargetModelManagedReferenceBackend *managedReferenceBackend)
       : gemmDispatchPolicy(gemmDispatchPolicy),
-        tensorDispatchPolicy(tensorDispatchPolicy), bulkBackend(bulkBackend),
+        tensorDispatchPolicy(tensorDispatchPolicy),
+        onednnBackend(onednnBackend),
         managedReferenceBackend(managedReferenceBackend) {}
 
   TargetModelGemmDispatchPolicy gemmDispatchPolicy;
   TargetModelTensorDispatchPolicy tensorDispatchPolicy;
-  const TargetModelBulkBackend *bulkBackend;
+  const TargetModelOneDNNBackend *onednnBackend;
   const TargetModelManagedReferenceBackend *managedReferenceBackend;
 };
 
@@ -262,7 +266,7 @@ struct TargetModelCommandEffect {
   FormalNumericExceptionFlags numericFlags;
   TargetModelControlAction controlAction = TargetModelControlAction::None;
   TargetModelNumericBackend numericBackend = TargetModelNumericBackend::None;
-  TargetModelBulkDispatchEvidence bulkEvidence;
+  TargetModelOneDNNDispatchEvidence onednnEvidence;
   TargetModelManagedReferenceEvidence managedReferenceEvidence;
   std::vector<TargetModelByteRead> pendingReads;
 };

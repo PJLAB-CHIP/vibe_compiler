@@ -188,7 +188,7 @@ module {
   SpatialDomainProblemResult problem =
       buildSpatialDomainProblem(*dag, allTiles());
   ASSERT_TRUE(problem.succeeded());
-  const SpatialRootDomainFacts &root = problem.problem->getRoots().front();
+  const SpatialRootDomainFacts root = problem.problem->getRoots().front();
   SpatialPlan plan;
   NodeSpatialPlan node;
   node.root = root.root;

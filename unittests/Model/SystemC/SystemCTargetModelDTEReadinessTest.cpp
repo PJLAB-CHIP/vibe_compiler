@@ -26,8 +26,6 @@ using namespace wafer::model;
 
 static llvm::Expected<size_t>
 cloneIndependentNCCAfterSendIssue(TargetLLVMModules &targetLLVMModules) {
-  const TargetIdentityId targetIdentity =
-      targetLLVMModules.getExecutionConfig().getTargetIdentityId();
   const llvm::StringRef issueSymbol =
       getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue).symbol;
   size_t inserted = 0;

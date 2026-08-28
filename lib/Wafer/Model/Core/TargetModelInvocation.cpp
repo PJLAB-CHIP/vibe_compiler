@@ -56,7 +56,7 @@ makeTensorKey(const compiler::TileEntryArgument &slot) {
           "tile entry argument has a dynamic or negative dimension");
     shape.push_back(static_cast<uint64_t>(dimension));
   }
-  PhysicalTensorLayout layout;
+  std::optional<PhysicalTensorLayout> layout;
   switch (slot.layout) {
   case MemLayout::Tensor:
     layout = PhysicalTensorLayout::Tensor;
@@ -71,8 +71,12 @@ makeTensorKey(const compiler::TileEntryArgument &slot) {
     layout = PhysicalTensorLayout::NCx;
     break;
   }
+  if (!layout)
+    return invocationError(
+        TargetModelInvocationErrorCode::InvalidTileEntryArgument,
+        "tile entry argument layout is outside the closed enum");
   llvm::Expected<PhysicalTensorDescriptor> key =
-      PhysicalTensorDescriptor::create(format, layout, std::move(shape));
+      PhysicalTensorDescriptor::create(format, *layout, std::move(shape));
   if (!key)
     return invocationError(
         TargetModelInvocationErrorCode::InvalidTileEntryArgument,

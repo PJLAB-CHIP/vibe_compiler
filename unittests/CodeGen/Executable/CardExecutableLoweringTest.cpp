@@ -3,8 +3,8 @@
 #include "Wafer/CodeGen/Executable/CardExecutableLowering.h"
 #include "Wafer/CodeGen/Executable/BoundedTileExecutor.h"
 #include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
-#include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/CodeGen/Target/TargetCodeGenInternal.h"
+#include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Program/ProgramData.h"
 
 #include "Wafer/IR/WaferDialect.h"
@@ -287,8 +287,9 @@ TEST_F(CardExecutableLoweringTest,
       wafer::compiler::detail::getBoundedTilePipelineWorkerCount(
           context.get(), /*tileCount=*/16);
   EXPECT_EQ(targetStats.maximumTilePipelineWorkers, expectedWorkers);
-  if (expectedWorkers > 1)
+  if (expectedWorkers > 1) {
     EXPECT_GT(targetStats.maximumTilePipelineWorkers, 1u);
+  }
 
   ASSERT_EQ(targetModules->getModules().size(), 16u);
   for (auto [launchSlot, targetModule] :

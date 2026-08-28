@@ -280,6 +280,7 @@ llvm::Expected<DirectDTEInvocationData> buildDirectDTEInvocationData(
                static_cast<uint64_t>(tile) * UINT64_C(0x10000);
         break;
       case compiler::TileEntryArgumentKind::TargetTensor:
+      case compiler::TileEntryArgumentKind::CardWorkspace:
       case compiler::TileEntryArgumentKind::Workspace:
       case compiler::TileEntryArgumentKind::ProfileRecord:
         return llvm::createStringError(
@@ -384,8 +385,6 @@ llvm::Expected<PendingComputeDTERewriteResult>
 insertPendingComputeBeforeDTEReceive(
     compiler::TargetLLVMModules &targetLLVMModules,
     PendingComputeDTEAccessMode accessMode) {
-  const TargetIdentityId targetIdentity =
-      targetLLVMModules.getExecutionConfig().getTargetIdentityId();
   const TargetCallDescriptor &receiveDescriptor =
       getTargetCallDescriptor(TargetCallBuiltin::DirectDTERecvPrepare);
   const TargetCallDescriptor &elementwiseDescriptor =
@@ -511,9 +510,6 @@ insertPendingComputeBeforeDTEReceive(
 llvm::Expected<LateJoinDTERewriteResult>
 insertPendingComputeWithLateJoin(compiler::TargetLLVMModules &targetLLVMModules,
                                  LateJoinDTEAccessMode accessMode) {
-  const TargetIdentityId targetIdentity =
-      targetLLVMModules.getExecutionConfig().getTargetIdentityId();
-
   const TargetCallDescriptor &sendPrepareDescriptor =
       getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendPrepare);
   const TargetCallDescriptor &sendIssueDescriptor =

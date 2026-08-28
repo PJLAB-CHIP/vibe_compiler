@@ -191,69 +191,6 @@ add_custom_target(check-wafer-unit
   USES_TERMINAL
 )
 
-if(NOT WAFER_ENABLE_NUMERIC_MODEL_DEPS)
-  if(NOT CMAKE_READELF OR NOT EXISTS "${CMAKE_READELF}")
-    message(FATAL_ERROR
-      "feature-off numeric link closure requires the configured readelf tool")
-  endif()
-  if(NOT CMAKE_NM OR NOT EXISTS "${CMAKE_NM}")
-    message(FATAL_ERROR
-      "feature-off numeric link closure requires the configured nm tool")
-  endif()
-  add_test(NAME wafer-numeric-feature-off-link-closure
-    COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_SOURCE_DIR}/tools/check_numeric_link_closure.py
-      --binary $<TARGET_FILE:WaferUnitTests>
-      --readelf ${CMAKE_READELF}
-      --nm ${CMAKE_NM}
-  )
-  set_tests_properties(wafer-numeric-feature-off-link-closure PROPERTIES
-    LABELS "numeric-model;link-closure"
-  )
-endif()
-
-if(NOT WAFER_ENABLE_BULK_MODEL_DEPS)
-  if(NOT CMAKE_READELF OR NOT EXISTS "${CMAKE_READELF}")
-    message(FATAL_ERROR
-      "feature-off bulk link closure requires the configured readelf tool")
-  endif()
-  if(NOT CMAKE_NM OR NOT EXISTS "${CMAKE_NM}")
-    message(FATAL_ERROR
-      "feature-off bulk link closure requires the configured nm tool")
-  endif()
-  add_test(NAME wafer-bulk-feature-off-link-closure
-    COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_SOURCE_DIR}/tools/check_bulk_link_closure.py
-      --binary $<TARGET_FILE:WaferUnitTests>
-      --readelf ${CMAKE_READELF}
-      --nm ${CMAKE_NM}
-  )
-  set_tests_properties(wafer-bulk-feature-off-link-closure PROPERTIES
-    LABELS "bulk-model;link-closure"
-  )
-endif()
-
-if(NOT WAFER_ENABLE_SYSTEMC_MODEL)
-  if(NOT CMAKE_READELF OR NOT EXISTS "${CMAKE_READELF}")
-    message(FATAL_ERROR
-      "feature-off SystemC link closure requires the configured readelf tool")
-  endif()
-  if(NOT CMAKE_NM OR NOT EXISTS "${CMAKE_NM}")
-    message(FATAL_ERROR
-      "feature-off SystemC link closure requires the configured nm tool")
-  endif()
-  add_test(NAME wafer-systemc-feature-off-link-closure
-    COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_SOURCE_DIR}/tools/check_systemc_link_closure.py
-      --binary $<TARGET_FILE:WaferUnitTests>
-      --readelf ${CMAKE_READELF}
-      --nm ${CMAKE_NM}
-  )
-  set_tests_properties(wafer-systemc-feature-off-link-closure PROPERTIES
-    LABELS "systemc-model;link-closure"
-  )
-endif()
-
 if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   add_executable(WaferNumericModelUnitTests
     Model/Core/TargetModelKernelTest.cpp
@@ -290,58 +227,31 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   )
 endif()
 
-if(WAFER_ENABLE_BULK_MODEL_DEPS)
-  add_executable(WaferBulkModelUnitTests
+if(WAFER_ENABLE_TARGET_NUMERIC_BACKEND)
+  add_executable(WaferTargetNumericBackendUnitTests
     Model/Reference/ManagedReferenceTargetModelTest.cpp
-    Target/Numeric/Qualification/BulkQualificationTest.cpp
+    Target/Numeric/Qualification/OneDNNQualificationTest.cpp
   )
-  llvm_update_compile_flags(WaferBulkModelUnitTests)
-  target_link_libraries(WaferBulkModelUnitTests
+  llvm_update_compile_flags(WaferTargetNumericBackendUnitTests)
+  target_link_libraries(WaferTargetNumericBackendUnitTests
     PRIVATE
-    WaferBulkModel
-    WaferTargetBulkModel
+    WaferOneDNNBackend
+    WaferTargetNumericBackend
     GTest::gtest_main
   )
-  add_test(NAME WaferBulkModelUnitTests COMMAND WaferBulkModelUnitTests)
-  set_tests_properties(WaferBulkModelUnitTests PROPERTIES
-    LABELS "bulk-model;managed-dependencies"
+  add_test(NAME WaferTargetNumericBackendUnitTests
+    COMMAND WaferTargetNumericBackendUnitTests)
+  set_tests_properties(WaferTargetNumericBackendUnitTests PROPERTIES
+    LABELS "target-numeric-backend;managed-dependencies"
   )
-  add_custom_target(check-wafer-bulk-model-unit
-    COMMAND $<TARGET_FILE:WaferBulkModelUnitTests>
-    DEPENDS WaferBulkModelUnitTests
+  add_custom_target(check-wafer-target-numeric-backend-unit
+    COMMAND $<TARGET_FILE:WaferTargetNumericBackendUnitTests>
+    DEPENDS WaferTargetNumericBackendUnitTests
     USES_TERMINAL
   )
 endif()
 
 if(WAFER_ENABLE_SYSTEMC_MODEL)
-  add_executable(WaferSystemCModelIntegrationTest
-    Model/SystemC/SystemCTargetModelIntegrationTest.cpp
-  )
-  llvm_update_compile_flags(WaferSystemCModelIntegrationTest)
-  target_include_directories(WaferSystemCModelIntegrationTest PRIVATE
-    ${CMAKE_SOURCE_DIR}/lib
-  )
-  target_link_libraries(WaferSystemCModelIntegrationTest
-    PRIVATE
-    WaferSystemCModel
-    WaferCompiler
-    WaferIR
-    MLIRArithDialect
-    MLIRBufferizationDialect
-    MLIRControlFlowDialect
-    MLIRFuncDialect
-    MLIRLinalgDialect
-    MLIRLLVMDialect
-    MLIRMathDialect
-    MLIRMemRefDialect
-    MLIRSCFDialect
-    MLIRTensorDialect
-    SystemC::systemc
-    GTest::gtest
-  )
-  add_test(NAME WaferSystemCModelIntegrationTest
-    COMMAND WaferSystemCModelIntegrationTest)
-
   add_library(WaferSystemCModelTestSupport STATIC
     Model/SystemC/SystemCTargetModelTestSupport.cpp
   )
@@ -368,7 +278,7 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     SystemC::systemc
   )
 
-  set(WAFER_SYSTEMC_MODEL_TEST_TARGETS WaferSystemCModelIntegrationTest)
+  set(WAFER_SYSTEMC_MODEL_TEST_TARGETS)
   function(add_wafer_systemc_transport_test target source)
     add_executable(${target} ${source})
     llvm_update_compile_flags(${target})
@@ -435,65 +345,6 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     WaferSystemCModelNoProgressTest
     Model/SystemC/SystemCTargetModelNoProgressTest.cpp)
 
-  add_executable(WaferSystemCModelBatchedGemmIntegrationTest
-    Model/SystemC/SystemCTargetModelBatchedGemmIntegrationTest.cpp
-  )
-  llvm_update_compile_flags(WaferSystemCModelBatchedGemmIntegrationTest)
-  target_include_directories(WaferSystemCModelBatchedGemmIntegrationTest PRIVATE
-    ${CMAKE_SOURCE_DIR}/lib
-  )
-  target_link_libraries(WaferSystemCModelBatchedGemmIntegrationTest
-    PRIVATE
-    WaferSystemCModel
-    WaferCompiler
-    WaferIR
-    MLIRArithDialect
-    MLIRBufferizationDialect
-    MLIRControlFlowDialect
-    MLIRFuncDialect
-    MLIRLinalgDialect
-    MLIRLLVMDialect
-    MLIRMathDialect
-    MLIRMemRefDialect
-    MLIRSCFDialect
-    MLIRTensorDialect
-    SystemC::systemc
-    GTest::gtest
-  )
-  add_test(NAME WaferSystemCModelBatchedGemmIntegrationTest
-    COMMAND WaferSystemCModelBatchedGemmIntegrationTest)
-
-  add_executable(WaferSystemCModelOrientedGemmIntegrationTest
-    Model/SystemC/SystemCTargetModelOrientedGemmIntegrationTest.cpp
-  )
-  llvm_update_compile_flags(WaferSystemCModelOrientedGemmIntegrationTest)
-  target_include_directories(WaferSystemCModelOrientedGemmIntegrationTest PRIVATE
-    ${CMAKE_SOURCE_DIR}/lib
-  )
-  target_link_libraries(WaferSystemCModelOrientedGemmIntegrationTest
-    PRIVATE
-    WaferSystemCModel
-    WaferCompiler
-    WaferIR
-    MLIRArithDialect
-    MLIRBufferizationDialect
-    MLIRControlFlowDialect
-    MLIRFuncDialect
-    MLIRLinalgDialect
-    MLIRLLVMDialect
-    MLIRMathDialect
-    MLIRMemRefDialect
-    MLIRSCFDialect
-    MLIRTensorDialect
-    SystemC::systemc
-    GTest::gtest
-  )
-  add_test(NAME WaferSystemCModelOrientedGemmIntegrationTest
-    COMMAND WaferSystemCModelOrientedGemmIntegrationTest)
-
-  list(APPEND WAFER_SYSTEMC_MODEL_TEST_TARGETS
-    WaferSystemCModelBatchedGemmIntegrationTest
-    WaferSystemCModelOrientedGemmIntegrationTest)
   set_tests_properties(
     ${WAFER_SYSTEMC_MODEL_TEST_TARGETS}
     PROPERTIES

@@ -284,22 +284,14 @@ static void collectComputeCost(mlir::Operation *op,
 static void collectNoCCost(mlir::Operation *op, InstructionProgramCost &cost,
                            Quantity multiplicity) {
   if (auto send = mlir::dyn_cast<InstrDTESendOp>(op)) {
-    Quantity bytes =
-        send.getBytes() < 0
-            ? Quantity::unsupported(
-                  ScheduleCostReason::UnsupportedInstructionSemantics)
-            : Quantity{static_cast<uint64_t>(send.getBytes())};
+    Quantity bytes{static_cast<uint64_t>(send.getBytes())};
     Quantity total = multiply(bytes, multiplicity);
     add(cost.noc.aggregateTransmitBytes, total);
     markDirectionalNoCUnavailable(cost);
     return;
   }
   if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(op)) {
-    Quantity bytes =
-        recv.getBytes() < 0
-            ? Quantity::unsupported(
-                  ScheduleCostReason::UnsupportedInstructionSemantics)
-            : Quantity{static_cast<uint64_t>(recv.getBytes())};
+    Quantity bytes{static_cast<uint64_t>(recv.getBytes())};
     add(cost.noc.aggregateReceiveBytes, multiply(bytes, multiplicity));
     return;
   }

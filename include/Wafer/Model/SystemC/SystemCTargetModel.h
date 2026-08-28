@@ -70,12 +70,12 @@ struct TargetModelResult {
   uint64_t formalNumericOperationCount = 0;
   uint64_t managedReferenceNumericOperationCount = 0;
   uint64_t managedReferenceScalarEvaluationCount = 0;
-  uint64_t bulkNumericOperationCount = 0;
-  uint64_t bulkMatmulInvocationCount = 0;
-  uint64_t bulkReorderInvocationCount = 0;
-  uint64_t bulkFormalFusedMultiplyAddCount = 0;
-  std::vector<std::string> bulkQualificationRecordDigests;
-  std::vector<std::string> bulkManagedReferenceEnvironmentDigests;
+  uint64_t onednnNumericOperationCount = 0;
+  uint64_t onednnMatmulInvocationCount = 0;
+  uint64_t onednnReorderInvocationCount = 0;
+  uint64_t onednnFormalFusedMultiplyAddCount = 0;
+  std::vector<std::string> onednnQualificationRecordDigests;
+  std::vector<std::string> onednnManagedReferenceEnvironmentDigests;
   std::vector<std::string> managedReferenceTensorEnvironmentDigests;
   std::vector<std::string> managedReferenceTensorImplementations;
   std::string systemCVersion;

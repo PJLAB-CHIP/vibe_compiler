@@ -152,24 +152,6 @@ getStaticStridedElementSpan(mlir::MemRefType type) {
   return span;
 }
 
-static std::optional<int64_t> linearizeIndex(llvm::ArrayRef<int64_t> shape,
-                                             llvm::ArrayRef<int64_t> indices) {
-  if (shape.size() != indices.size())
-    return std::nullopt;
-  int64_t linear = 0;
-  for (auto [dim, index] : llvm::zip_equal(shape, indices)) {
-    if (dim == mlir::ShapedType::kDynamic || dim < 0 || index < 0 ||
-        index >= dim)
-      return std::nullopt;
-    int64_t scaled = 0;
-    if (!checkedMul(linear, dim, scaled))
-      return std::nullopt;
-    if (!checkedAdd(scaled, index, linear))
-      return std::nullopt;
-  }
-  return linear;
-}
-
 } // namespace
 
 MemoryAttr wafer::getWaferMemoryAttr(mlir::MemRefType type) {
@@ -335,8 +317,8 @@ MemoryAttr::getPhysicalLayoutPieces(mlir::MemRefType type) const {
 
   mlir::AffineExpr outerSliceBase = mlir::getAffineConstantExpr(0, context);
   if (getLayout() == MemLayout::NCx && shape.size() > 1)
-    outerSliceBase = mlir::getAffineDimExpr(0, context) *
-                     info.outerSliceStrideElements;
+    outerSliceBase =
+        mlir::getAffineDimExpr(0, context) * info.outerSliceStrideElements;
 
   const int64_t logicalC = shape.back();
   const int64_t fullUpper = std::min(logicalC, fullC);
@@ -435,7 +417,7 @@ wafer::computeWaferPhysicalTensorInfo(mlir::MemRefType type) {
   // an invalid encoding; retain the known type facts and leave sizes unknown.
   if (!type.hasStaticShape())
     return info;
-  PhysicalTensorLayout physicalLayout;
+  std::optional<PhysicalTensorLayout> physicalLayout;
   switch (info.layout) {
   case MemLayout::Tensor:
     physicalLayout = PhysicalTensorLayout::Tensor;
@@ -450,10 +432,12 @@ wafer::computeWaferPhysicalTensorInfo(mlir::MemRefType type) {
     physicalLayout = PhysicalTensorLayout::NCx;
     break;
   }
+  if (!physicalLayout)
+    return std::nullopt;
   std::optional<PhysicalTensorGeometry> geometry =
       computePhysicalTensorGeometry(type.getShape(), *elementBits,
                                     integerType && integerType.getWidth() == 8,
-                                    physicalLayout,
+                                    *physicalLayout,
                                     getStaticStridedElementSpan(type));
   if (!geometry)
     return std::nullopt;

@@ -153,22 +153,22 @@ uint64_t supportedF32Code(TargetFormatEngine engine) {
   return supportedFormatCode(engine, LogicalFormat::F32);
 }
 
-class FakeBulkBackend final : public TargetModelBulkBackend {
+class FakeOneDNNBackend final : public TargetModelOneDNNBackend {
 public:
-  explicit FakeBulkBackend(bool hasMatchingExecution)
+  explicit FakeOneDNNBackend(bool hasMatchingExecution)
       : hasMatchingExecution(hasMatchingExecution) {}
 
-  llvm::Expected<std::optional<TargetModelBulkResult>>
+  llvm::Expected<std::optional<TargetModelOneDNNResult>>
   tryExecute(const TargetModelGemmRequest &request) const override {
     ++invocations;
     if (!hasMatchingExecution)
-      return std::optional<TargetModelBulkResult>();
-    TargetModelBulkResult result{
+      return std::optional<TargetModelOneDNNResult>();
+    TargetModelOneDNNResult result{
         request.tensors.destinationTemplate,
         {},
-        {1, 1, 0, TargetModelBulkEvidenceKind::ExactQualificationRecord,
-         "sha256:fake-qualification-record", "fake-bulk"}};
-    return std::optional<TargetModelBulkResult>(std::move(result));
+        {1, 1, 0, TargetModelOneDNNEvidenceKind::ExactQualificationRecord,
+         "sha256:fake-qualification-record", "fake-onednn"}};
+    return std::optional<TargetModelOneDNNResult>(std::move(result));
   }
 
   mutable uint64_t invocations = 0;
@@ -989,7 +989,7 @@ TEST(TargetModelKernelTest, BatchedGemmUsesImplicitNCxStorageContract) {
 }
 
 TEST(TargetModelKernelTest,
-     BulkThenFormalUsesMatchingBackendOrFailsBeyondFormalBudget) {
+     OneDNNThenFormalUsesMatchingBackendOrFailsBeyondFormalBudget) {
   InvocationMemoryRegistry memory = makeRegistry();
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   PhysicalTensorDescriptor matrix =
@@ -1008,23 +1008,23 @@ TEST(TargetModelKernelTest,
       /*maximumMovementBytes=*/4096,
       /*maximumMovementSegments=*/256);
 
-  FakeBulkBackend missing(/*hasMatchingExecution=*/false);
+  FakeOneDNNBackend missing(/*hasMatchingExecution=*/false);
   std::string error = expectError(executeTargetModelCommand(
       gemm, memory, smallBudget,
-      TargetModelExecutionPolicy::bulkThenFormal(missing)));
-  EXPECT_NE(error.find("bulk-backend-unavailable"), std::string::npos);
+      TargetModelExecutionPolicy::onednnThenFormal(missing)));
+  EXPECT_NE(error.find("onednn-backend-unavailable"), std::string::npos);
   EXPECT_EQ(missing.invocations, 1u);
 
-  FakeBulkBackend matched(/*hasMatchingExecution=*/true);
+  FakeOneDNNBackend matched(/*hasMatchingExecution=*/true);
   TargetModelCommandEffect effect = llvm::cantFail(executeTargetModelCommand(
       gemm, memory, smallBudget,
-      TargetModelExecutionPolicy::bulkThenFormal(matched)));
-  EXPECT_EQ(effect.numericBackend, TargetModelNumericBackend::Bulk);
-  EXPECT_EQ(effect.bulkEvidence.matmulInvocations, 1u);
-  EXPECT_EQ(effect.bulkEvidence.formalFusedMultiplyAdds, 0u);
-  EXPECT_EQ(effect.bulkEvidence.evidenceKind,
-            TargetModelBulkEvidenceKind::ExactQualificationRecord);
-  EXPECT_EQ(effect.bulkEvidence.evidenceDigest,
+      TargetModelExecutionPolicy::onednnThenFormal(matched)));
+  EXPECT_EQ(effect.numericBackend, TargetModelNumericBackend::OneDNN);
+  EXPECT_EQ(effect.onednnEvidence.matmulInvocations, 1u);
+  EXPECT_EQ(effect.onednnEvidence.formalFusedMultiplyAdds, 0u);
+  EXPECT_EQ(effect.onednnEvidence.evidenceKind,
+            TargetModelOneDNNEvidenceKind::ExactQualificationRecord);
+  EXPECT_EQ(effect.onednnEvidence.evidenceDigest,
             "sha256:fake-qualification-record");
   EXPECT_EQ(matched.invocations, 1u);
 }

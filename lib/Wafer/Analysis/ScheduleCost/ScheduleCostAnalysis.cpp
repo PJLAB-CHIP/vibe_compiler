@@ -390,11 +390,7 @@ static void collectMinimumHopLinkByteDemand(
       auto send = mlir::dyn_cast<InstrDTESendOp>(operation);
       if (!send)
         return;
-      detail::Quantity bytes =
-          send.getBytes() < 0
-              ? detail::Quantity::unsupported(
-                    ScheduleCostReason::UnsupportedInstructionSemantics)
-              : detail::Quantity{static_cast<uint64_t>(send.getBytes())};
+      detail::Quantity bytes{static_cast<uint64_t>(send.getBytes())};
       detail::Quantity payload = detail::multiply(bytes, multiplicity);
       if (payload.knowledge != ScheduleCostKnowledge::Known) {
         detail::add(minimumHopLinkByteDemand, payload);

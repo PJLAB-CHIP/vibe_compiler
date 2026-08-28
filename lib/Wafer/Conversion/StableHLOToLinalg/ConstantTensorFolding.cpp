@@ -459,8 +459,9 @@ foldConstantLinalgGeneric(mlir::linalg::GenericOp generic,
 
   llvm::SmallVector<mlir::AffineMap> indexingMaps =
       generic.getIndexingMapsArray();
-  if (indexingMaps.size() !=
-      generic.getNumDpsInputs() + generic.getNumDpsInits())
+  const size_t expectedIndexingMaps =
+      static_cast<size_t>(generic.getNumDpsInputs() + generic.getNumDpsInits());
+  if (indexingMaps.size() != expectedIndexingMaps)
     return mlir::failure();
 
   llvm::SmallVector<std::optional<mlir::DenseElementsAttr>> operandAttrs;

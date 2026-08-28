@@ -258,8 +258,9 @@ module {
       EXPECT_EQ(boundary.id.kind, RootBoundaryKind::StructuredResult);
       ASSERT_EQ(boundary.consumerUses.size(), 1u);
       ASSERT_TRUE(boundary.consumerUses.front().requiredDomain.has_value());
-      if (!boundary.consumerUses.front().requiredDomain->isEmpty())
+      if (!boundary.consumerUses.front().requiredDomain->isEmpty()) {
         EXPECT_FALSE(boundary.consumerUses.front().eligibleFinalOwners.empty());
+      }
     }
     EXPECT_GE(nonempty, 1u);
   }
@@ -501,9 +502,9 @@ module {
     ASSERT_TRUE(input->requiredDomain.has_value());
     ASSERT_EQ(input->requiredDomain->getBoxes().size(), 1u);
     ASSERT_EQ(support.requiredDomain.getBoxes().size(), 1u);
-    const StaticRectangularIndexSet &inputBox =
+    const StaticRectangularIndexSet inputBox =
         input->requiredDomain->getBoxes().front();
-    const StaticRectangularIndexSet &outputBox =
+    const StaticRectangularIndexSet outputBox =
         support.requiredDomain.getBoxes().front();
     clippedInputWorks += inputBox.sizes[1] < outputBox.sizes[1];
     ASSERT_EQ(support.inputs.front().requiredDomain.getBoxes().size(), 1u);

@@ -17,14 +17,14 @@ import tarfile
 import urllib.request
 import uuid
 
-from bulk_deps import (
-    BUILD_OPTIONS as BULK_BUILD_OPTIONS,
-    RECORD_KIND as BULK_RECORD_KIND,
-    RECORD_STATUS as BULK_RECORD_STATUS,
-    REQUIRED_GATES as BULK_REQUIRED_GATES,
-    SOURCE_DIRECTORY_PREFIX as BULK_SOURCE_DIRECTORY_PREFIX,
-    sha256_file as sha256_bulk_file,
-    validate_record as validate_bulk_record,
+from onednn_deps import (
+    BUILD_OPTIONS as ONEDNN_BUILD_OPTIONS,
+    RECORD_KIND as ONEDNN_RECORD_KIND,
+    RECORD_STATUS as ONEDNN_RECORD_STATUS,
+    REQUIRED_GATES as ONEDNN_REQUIRED_GATES,
+    SOURCE_DIRECTORY_PREFIX as ONEDNN_SOURCE_DIRECTORY_PREFIX,
+    sha256_file as sha256_onednn_file,
+    validate_record as validate_onednn_record,
 )
 
 from systemc_deps import (
@@ -908,9 +908,9 @@ int main(void) {{
 
 
 @contextmanager
-def bulk_build_lock(root: pathlib.Path):
+def onednn_build_lock(root: pathlib.Path):
     root = prepare_managed_directory(root)
-    lock_path = root / ".bulk-model-deps.lock"
+    lock_path = root / ".onednn-deps.lock"
     reject_symlink_ancestors(lock_path, allow_missing=True)
     flags = os.O_CREAT | os.O_RDWR
     if hasattr(os, "O_CLOEXEC"):
@@ -923,7 +923,7 @@ def bulk_build_lock(root: pathlib.Path):
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise RuntimeError(
-                f"managed bulk-model root is already being modified: {root}"
+                f"managed onednn root is already being modified: {root}"
             ) from error
         yield
     finally:
@@ -931,10 +931,10 @@ def bulk_build_lock(root: pathlib.Path):
         os.close(descriptor)
 
 
-def capture_bulk_tool(executable: str) -> dict[str, str]:
+def capture_onednn_tool(executable: str) -> dict[str, str]:
     discovered = shutil.which(executable, path=os.defpath)
     if not discovered:
-        raise RuntimeError(f"managed bulk build requires host tool {executable!r}")
+        raise RuntimeError(f"managed onednn build requires host tool {executable!r}")
     path = pathlib.Path(discovered).resolve(strict=True)
     result = subprocess.run(
         [str(path), "--version"],
@@ -948,22 +948,22 @@ def capture_bulk_tool(executable: str) -> dict[str, str]:
     return {
         "path": path.as_posix(),
         "version": first_line,
-        "sha256": sha256_bulk_file(path),
+        "sha256": sha256_onednn_file(path),
     }
 
 
-def bulk_file_identity(root: pathlib.Path, path: pathlib.Path) -> dict[str, object]:
+def onednn_file_identity(root: pathlib.Path, path: pathlib.Path) -> dict[str, object]:
     path = reject_symlink_ancestors(path)
     if not path.is_file() or path.is_symlink():
-        raise RuntimeError(f"bulk file is not a regular file: {path}")
+        raise RuntimeError(f"onednn file is not a regular file: {path}")
     return {
         "path": path.relative_to(root).as_posix(),
-        "sha256": sha256_bulk_file(path),
+        "sha256": sha256_onednn_file(path),
         "size": path.stat().st_size,
     }
 
 
-def run_bulk_gate(
+def run_onednn_gate(
     name: str,
     command: list[str],
     *,
@@ -977,12 +977,12 @@ def run_bulk_gate(
         "name": name,
         "command": command,
         "log": log.relative_to(root).as_posix(),
-        "log_sha256": sha256_bulk_file(log),
+        "log_sha256": sha256_onednn_file(log),
         "exit_code": 0,
     }
 
 
-def write_bulk_api_smoke(path: pathlib.Path) -> None:
+def write_onednn_api_smoke(path: pathlib.Path) -> None:
     path.write_text(
         r'''#include <oneapi/dnnl/dnnl.hpp>
 #include <cmath>
@@ -1041,49 +1041,49 @@ int main() {
     )
 
 
-def build_bulk_model_dependencies(
-    versions: dict[str, str], bulk_root: pathlib.Path, jobs: int
+def build_onednn_dependencies(
+    versions: dict[str, str], onednn_root: pathlib.Path, jobs: int
 ) -> pathlib.Path:
     if jobs < 1:
-        raise RuntimeError("bulk dependency job count must be positive")
-    bulk_root = prepare_managed_directory(bulk_root)
-    record_path = bulk_root / "bulk-model-deps.json"
-    with bulk_build_lock(bulk_root):
+        raise RuntimeError("onednn dependency job count must be positive")
+    onednn_root = prepare_managed_directory(onednn_root)
+    record_path = onednn_root / "onednn-deps.json"
+    with onednn_build_lock(onednn_root):
         if record_path.exists():
-            validate_bulk_record(record_path, bulk_root, versions)
-            print(f"Bulk model dependency record already valid: {record_path}")
+            validate_onednn_record(record_path, onednn_root, versions)
+            print(f"oneDNN dependency record already valid: {record_path}")
             return record_path
 
-        downloads = prepare_managed_directory(bulk_root / "downloads")
-        sources = prepare_managed_directory(bulk_root / "sources")
+        downloads = prepare_managed_directory(onednn_root / "downloads")
+        sources = prepare_managed_directory(onednn_root / "sources")
         archive = downloads / f"oneDNN-{versions['WAFER_ONEDNN_COMMIT']}.tar.gz"
         reject_symlink_ancestors(archive, allow_missing=True)
-        if not archive.exists() or sha256_bulk_file(archive) != versions["WAFER_ONEDNN_SHA256"]:
+        if not archive.exists() or sha256_onednn_file(archive) != versions["WAFER_ONEDNN_SHA256"]:
             archive.unlink(missing_ok=True)
             download_with_resume(versions["WAFER_ONEDNN_URL"], archive)
-        if sha256_bulk_file(archive) != versions["WAFER_ONEDNN_SHA256"]:
+        if sha256_onednn_file(archive) != versions["WAFER_ONEDNN_SHA256"]:
             archive.unlink(missing_ok=True)
             raise RuntimeError("oneDNN archive SHA256 mismatch")
 
-        source_top = BULK_SOURCE_DIRECTORY_PREFIX + versions["WAFER_ONEDNN_COMMIT"]
+        source_top = ONEDNN_SOURCE_DIRECTORY_PREFIX + versions["WAFER_ONEDNN_COMMIT"]
         source = sources / source_top
         safe_extract_archive(archive, source, source_top)
         source_digest = sha256_tree(source)
 
-        build_root = bulk_root / "build"
-        install_root = bulk_root / "install"
-        conformance_root = bulk_root / "conformance"
-        clean_directory(build_root, bulk_root)
-        clean_directory(install_root, bulk_root)
-        clean_directory(conformance_root, bulk_root)
+        build_root = onednn_root / "build"
+        install_root = onednn_root / "install"
+        conformance_root = onednn_root / "conformance"
+        clean_directory(build_root, onednn_root)
+        clean_directory(install_root, onednn_root)
+        clean_directory(conformance_root, onednn_root)
         onednn_build = build_root / "onednn"
         onednn_build.mkdir()
         install_prefix = install_root / "onednn"
 
         toolchain = {
-            "cmake": capture_bulk_tool("cmake"),
-            "c": capture_bulk_tool("cc"),
-            "cxx": capture_bulk_tool("c++"),
+            "cmake": capture_onednn_tool("cmake"),
+            "c": capture_onednn_tool("cc"),
+            "cxx": capture_onednn_tool("c++"),
         }
         environment = {
             "HOME": str(build_root / "home"),
@@ -1107,17 +1107,17 @@ def build_bulk_model_dependencies(
             f"-DCMAKE_INSTALL_PREFIX={install_prefix}",
         ]
         configure.extend(
-            f"-D{name}={value}" for name, value in sorted(BULK_BUILD_OPTIONS.items())
+            f"-D{name}={value}" for name, value in sorted(ONEDNN_BUILD_OPTIONS.items())
         )
         gates = [
-            run_bulk_gate(
-                "configure", configure, root=bulk_root, cwd=bulk_root, environment=environment
+            run_onednn_gate(
+                "configure", configure, root=onednn_root, cwd=onednn_root, environment=environment
             )
         ]
         build = [cmake, "--build", str(onednn_build), "--target", "install", "--parallel", str(jobs)]
         gates.append(
-            run_bulk_gate(
-                "build-install", build, root=bulk_root, cwd=bulk_root, environment=environment
+            run_onednn_gate(
+                "build-install", build, root=onednn_root, cwd=onednn_root, environment=environment
             )
         )
 
@@ -1129,10 +1129,10 @@ def build_bulk_model_dependencies(
             if not path.is_file():
                 raise RuntimeError(f"oneDNN install file is missing: {path}")
 
-        smoke_source = build_root / "bulk-api-smoke.cpp"
-        smoke = install_prefix / "bin" / "bulk-api-smoke"
+        smoke_source = build_root / "onednn-api-smoke.cpp"
+        smoke = install_prefix / "bin" / "onednn-api-smoke"
         smoke.parent.mkdir(parents=True)
-        write_bulk_api_smoke(smoke_source)
+        write_onednn_api_smoke(smoke_source)
         compile_smoke = [
             toolchain["cxx"]["path"],
             "-std=c++17",
@@ -1146,17 +1146,17 @@ def build_bulk_model_dependencies(
             str(smoke),
         ]
         gates.append(
-            run_bulk_gate(
-                "api-smoke-compile", compile_smoke, root=bulk_root, cwd=bulk_root, environment=environment
+            run_onednn_gate(
+                "api-smoke-compile", compile_smoke, root=onednn_root, cwd=onednn_root, environment=environment
             )
         )
         gates.append(
-            run_bulk_gate(
-                "api-smoke-run", [str(smoke)], root=bulk_root, cwd=bulk_root, environment=environment
+            run_onednn_gate(
+                "api-smoke-run", [str(smoke)], root=onednn_root, cwd=onednn_root, environment=environment
             )
         )
-        if {gate["name"] for gate in gates} != BULK_REQUIRED_GATES:
-            raise RuntimeError("internal bulk dependency gate closure is incomplete")
+        if {gate["name"] for gate in gates} != ONEDNN_REQUIRED_GATES:
+            raise RuntimeError("internal onednn dependency gate closure is incomplete")
 
         licenses = install_prefix / "licenses"
         licenses.mkdir()
@@ -1176,8 +1176,8 @@ def build_bulk_model_dependencies(
             "api-smoke": smoke,
         }
         record = {
-            "kind": BULK_RECORD_KIND,
-            "status": BULK_RECORD_STATUS,
+            "kind": ONEDNN_RECORD_KIND,
+            "status": ONEDNN_RECORD_STATUS,
             "dependency": {
                 "name": "oneDNN",
                 "version": versions["WAFER_ONEDNN_VERSION"],
@@ -1187,13 +1187,13 @@ def build_bulk_model_dependencies(
                 "source_tree_sha256": source_digest,
             },
             "build": {
-                "options": BULK_BUILD_OPTIONS,
+                "options": ONEDNN_BUILD_OPTIONS,
                 "generator": "default-cmake-generator",
                 "install_prefix": "install/onednn",
             },
             "toolchain": toolchain,
             "artifacts": {
-                name: bulk_file_identity(bulk_root, path)
+                name: onednn_file_identity(onednn_root, path)
                 for name, path in sorted(files.items())
             },
             "licenses": {
@@ -1205,14 +1205,14 @@ def build_bulk_model_dependencies(
             },
             "conformance": {"gates": sorted(gates, key=lambda gate: str(gate["name"]))},
         }
-        candidate = bulk_root / f".bulk-model-deps.candidate-{uuid.uuid4().hex}.json"
+        candidate = onednn_root / f".onednn-deps.candidate-{uuid.uuid4().hex}.json"
         try:
             atomic_write_json(candidate, record)
-            validate_bulk_record(candidate, bulk_root, versions)
+            validate_onednn_record(candidate, onednn_root, versions)
             install_file_noreplace(candidate, record_path)
         finally:
             candidate.unlink(missing_ok=True)
-        print(f"Bulk model dependency record installed: {record_path}", flush=True)
+        print(f"oneDNN dependency record installed: {record_path}", flush=True)
         return record_path
 
 
@@ -1741,22 +1741,22 @@ def main() -> int:
         help="parallel make job count for --numeric-model-deps",
     )
     parser.add_argument(
-        "--bulk-model-deps",
+        "--onednn-deps",
         action="store_true",
         help=(
-            "clean-build and smoke-test the pinned oneDNN bulk-model dependency, "
+            "clean-build and smoke-test the pinned oneDNN dependency, "
             "then atomically write its conformance record"
         ),
     )
     parser.add_argument(
-        "--bulk-model-root",
-        help="managed bulk-model root (defaults to <prefix>/bulk-model)",
+        "--onednn-root",
+        help="managed onednn root (defaults to <prefix>/onednn)",
     )
     parser.add_argument(
-        "--bulk-jobs",
+        "--onednn-jobs",
         type=int,
         default=max(1, os.cpu_count() or 1),
-        help="parallel build job count for --bulk-model-deps",
+        help="parallel build job count for --onednn-deps",
     )
     parser.add_argument(
         "--systemc-model-deps",
@@ -1786,10 +1786,10 @@ def main() -> int:
         if args.numeric_model_root
         else prefix / "numeric-model"
     )
-    bulk_root = (
-        pathlib.Path(args.bulk_model_root).absolute()
-        if args.bulk_model_root
-        else prefix / "bulk-model"
+    onednn_root = (
+        pathlib.Path(args.onednn_root).absolute()
+        if args.onednn_root
+        else prefix / "onednn"
     )
     systemc_root = (
         pathlib.Path(args.systemc_model_root).absolute()
@@ -1798,8 +1798,8 @@ def main() -> int:
     )
     if args.numeric_model_deps or args.numeric_model_sources or args.all:
         prepare_managed_directory(numeric_root)
-    if args.bulk_model_deps or args.all:
-        prepare_managed_directory(bulk_root)
+    if args.onednn_deps or args.all:
+        prepare_managed_directory(onednn_root)
     if args.systemc_model_deps or args.all:
         prepare_managed_directory(systemc_root)
     versions = load_versions()
@@ -1850,8 +1850,8 @@ def main() -> int:
         fetch_numeric_sources(versions, numeric_root)
         print(f"Numeric model sources installed under: {numeric_root / 'sources'}")
 
-    if args.all or args.bulk_model_deps:
-        build_bulk_model_dependencies(versions, bulk_root, args.bulk_jobs)
+    if args.all or args.onednn_deps:
+        build_onednn_dependencies(versions, onednn_root, args.onednn_jobs)
 
     if args.all or args.systemc_model_deps:
         build_systemc_model_dependency(versions, systemc_root, args.systemc_jobs)
@@ -1868,7 +1868,7 @@ def main() -> int:
         or args.egraph_sources
         or args.numeric_model_sources
         or args.numeric_model_deps
-        or args.bulk_model_deps
+        or args.onednn_deps
         or args.systemc_model_deps
     ):
         parser.print_help()

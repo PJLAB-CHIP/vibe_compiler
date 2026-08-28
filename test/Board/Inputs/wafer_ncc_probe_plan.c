@@ -2,8 +2,8 @@
 
 #include <stddef.h>
 
-static void wafer_ncc_probe_zero(void *pointer, uint32_t bytes) {
-  uint8_t *output = (uint8_t *)pointer;
+static void wafer_ncc_probe_zero(volatile void *pointer, uint32_t bytes) {
+  volatile uint8_t *output = (volatile uint8_t *)pointer;
   for (uint32_t index = 0; index < bytes; ++index)
     output[index] = 0;
 }
@@ -826,11 +826,10 @@ wafer_ncc_probe_execute_plan(const WaferNccProbeRequest *request,
       hooks->read_cycle == NULL || hooks->read_worker_control == NULL)
     return WAFER_NCC_STATUS_BAD_REQUEST;
 
-  wafer_ncc_probe_zero((void *)record,
+  wafer_ncc_probe_zero(record,
                        WAFER_NCC_PROTOCOL_RECORD_WORDS * sizeof(uint64_t));
   record[WAFER_NCC_REC_MAGIC] = WAFER_NCC_PROTOCOL_RECORD_MAGIC;
-  record[WAFER_NCC_REC_WORD_COUNT] =
-      WAFER_NCC_PROTOCOL_RECORD_WORDS;
+  record[WAFER_NCC_REC_WORD_COUNT] = WAFER_NCC_PROTOCOL_RECORD_WORDS;
   record[WAFER_NCC_REC_STATUS] = WAFER_NCC_STATUS_BAD_REQUEST;
 
   uint32_t status =

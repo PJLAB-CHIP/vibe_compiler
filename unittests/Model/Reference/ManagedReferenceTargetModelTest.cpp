@@ -1,6 +1,6 @@
 //===- ManagedReferenceTargetModelTest.cpp - Tensor reference tests ------===//
 
-#include "Wafer/Model/Qualification/TargetBulkModel.h"
+#include "Wafer/Model/Qualification/TargetNumericBackend.h"
 
 #include "Wafer/Target/Layout/PhysicalTensorCodec.h"
 #include "Wafer/Target/Numeric/Formal/FormalTensorNumeric.h"
@@ -54,8 +54,8 @@ template <typename T> std::string expectError(llvm::Expected<T> value) {
 }
 
 std::unique_ptr<ManagedReferenceTargetModelBackend> makeBackend() {
-  return llvm::cantFail(
-      ManagedReferenceTargetModelBackend::create(BulkNumericWorkBudget::create(
+  return llvm::cantFail(ManagedReferenceTargetModelBackend::create(
+      OneDNNNumericWorkBudget::create(
           /*maximumTotalBytes=*/UINT64_C(1) << 20,
           /*maximumScratchpadBytes=*/UINT64_C(1) << 20,
           /*maximumReorderBytes=*/UINT64_C(1) << 20)));

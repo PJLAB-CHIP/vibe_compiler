@@ -554,10 +554,10 @@ stringifyTargetModelKernelErrorCode(TargetModelKernelErrorCode code) {
     return "managed-reference-backend-unavailable";
   case TargetModelKernelErrorCode::ManagedReferenceBackendFailure:
     return "managed-reference-backend-failure";
-  case TargetModelKernelErrorCode::BulkBackendUnavailable:
-    return "bulk-backend-unavailable";
-  case TargetModelKernelErrorCode::BulkBackendFailure:
-    return "bulk-backend-failure";
+  case TargetModelKernelErrorCode::OneDNNBackendUnavailable:
+    return "onednn-backend-unavailable";
+  case TargetModelKernelErrorCode::OneDNNBackendFailure:
+    return "onednn-backend-failure";
   }
   llvm_unreachable("unknown target model kernel error code");
 }

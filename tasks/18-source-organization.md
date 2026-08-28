@@ -209,19 +209,19 @@ physical identity binding和atomic transaction sink lifecycle。
 聚合model profile、formal policy、compiler emittability、hardware evidence、command key和qualification digest。
 
 CodeGen accepted-data preparation拥有显式TargetTensor materialization action并依赖上述physical/scalar primitives；它不能链接或
-include formal/bulk model来构造静态program data。Package verifier只验证descriptor、exact bytes与file closure，不执行model command。
+include formal/target numeric backend来构造静态program data。Package verifier只验证descriptor、exact bytes与file closure，不执行model command。
 
 `Model`进一步拆成：
 
 - program tensor/target tensor↔`TileEntryArgument` binding/codec；
 - private memory/address/range；
 - plain functional kernels；
-- formal/qualified bulk numeric；
+- formal numeric与qualified target numeric backend；
 - SystemC bridge与per-Tile process/event scheduling；
 - invocation/result assembly。
 
 model不依赖package parser来重建compiler owners，也不共享vendor runtime mutable state。SystemC bridge隔离RTTI/exception ABI
-差异；LLVM/MLIR-facing TUs维持仓库编译选项。formal与bulk libraries可以依赖Target typed facts和physical codec，但
+差异；LLVM/MLIR-facing TUs维持仓库编译选项。formal与target numeric backend libraries可以依赖Target typed facts和physical codec，但
 `WaferTarget`基础library不得反向包含formal arithmetic、model capability registry或qualification implementation。model从decoded
 TargetCall直接进入family-specific API；不建立`ResolvedNumericCommand`一类跨library join object。target layering同时删除
 `WaferTargetModelCore -> WaferCompiler`反向link；managed dependency record/source-tree/license/loaded-object conformance迁到optional
@@ -245,7 +245,7 @@ Support / Target typed facts
 
 Target operation / physical tensor / scalar codec
   -> target scalar conversion -> CodeGen TargetTensor materialization
-                           \-> Formal model -> managed/bulk model -> SystemC consumer
+                           \-> Formal numeric -> WaferTargetNumericBackend -> SystemC consumer
 
 Driver / Runtime / Model
   -> Tools
@@ -253,7 +253,9 @@ Driver / Runtime / Model
 
 禁止runtime/model反向依赖planning/driver private state，禁止analysis依赖writing，禁止conversion调用tool/runner。CMake target
 明确列出受控source，不依赖glob保住已经删除的文件；删除source时同批删除target/source list和only-for-it test。
-source-organization gate还必须禁止Compiler search/Analysis/Conversion include formal/bulk model header，并确认退役numeric
+`WaferTargetNumericBackend`是model-facing整体组件，`WaferOneDNNBackend`只是其GEMM/reorder host实现；二者不能与
+`WaferSystemCModel`合并成一个含混target。source-organization gate还必须禁止Compiler search/Analysis/Conversion include
+formal/target numeric backend header，并确认退役numeric
 umbrella/profile/pattern/resolver没有compatibility header、typedef或旧source残留。
 Target/IR layering禁止runtime/model为复用NCC completion classification依赖WaferIR：current model只消费pure target command completion，
 IR adapter与analysis留在WaferIR/WaferAnalysis。既有Model→Compiler宽link由model invocation/JIT与numeric层造成，按其真实owner拆除；
@@ -281,10 +283,12 @@ tool与CMake依赖边界。这里仅记录稳定library拓扑：
   executable-relative install位置发现，`python3`/`clang++`按PATH解析，pinned TX8依赖根由`TX8_DEPS_ROOT`显式配置，全部facts
   经existence/type/executability验证；不形成environment bag，不烘焙source/build tree绝对路径。
 
-安装闭包为可运行的production `wafer-compile`+helper+device linker script+CRT/ABI资源，且仅在importer、SPMD partitioner依赖与
-configured helper同时存在时注册install规则；feature-off install tree不安装运行即失败的production compiler
-（`wafer-compile-install-feature-off.test`钉住）。产品配置再安装产品Python adapter和`wafer-verify-program`。C++ library/header是
-repo-current build component，不承诺SDK、CMake package export或外部consumer link compatibility。
+安装规则只在canonical build显式开启product install且importer、SPMD partitioner与configured helper均闭合时注册。一次完整build
+产生两个安装组件：`Compiler`包含`wafer-compile`、helper、device linker、CRT/ABI、产品Python adapter和`wafer-verify-program`；
+`Runtime`包含`wafer-run`及其loader/report资源。完整安装包含两者，部署时可以从同一build只选择`Runtime`组件；这不定义或要求
+runtime-only build。本仓当前不支持通过关闭importer、StableHLO或SPMD来形成另一种产品，dependency/configuration gate build不注册
+任何产品install rule，也不维护feature-off install测试。C++ library/header是repo-current build component，不承诺SDK、CMake package
+export或外部consumer link compatibility。
 
 这一边界不承诺稳定C ABI、plugin SDK、通用compiler session或用户可拼pass pipeline。Wafer-owned CLI/current API原位替换，
 不保留旧flag alias、build-tree compatibility wrapper或第二production driver。

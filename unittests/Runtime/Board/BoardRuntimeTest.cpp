@@ -827,8 +827,9 @@ protected:
         llvm::sys::path::append(
             path, "modules",
             "tile_" + std::string(5 - tileText.size(), '0') + tileText + ".so");
-        if (llvm::sys::fs::exists(path))
+        if (llvm::sys::fs::exists(path)) {
           EXPECT_FALSE(llvm::sys::fs::remove(path));
+        }
       }
     } else {
       createTileModules(16);

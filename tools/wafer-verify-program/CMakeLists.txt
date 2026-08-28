@@ -9,6 +9,10 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
     StablehloRegister
     WaferStableHLOProgram
   )
-  include(GNUInstallDirs)
-  install(TARGETS wafer-verify-program RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  if(WAFER_ENABLE_PRODUCT_INSTALL)
+    include(GNUInstallDirs)
+    install(TARGETS wafer-verify-program
+      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+      COMPONENT Compiler)
+  endif()
 endif()

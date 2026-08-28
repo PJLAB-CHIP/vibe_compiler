@@ -66,7 +66,7 @@ set(WAFER_MPFR_VERSION "4.2.2")
 set(WAFER_MPFR_URL "https://www.mpfr.org/mpfr-current/mpfr-4.2.2.tar.xz")
 set(WAFER_MPFR_SHA256 "b67ba0383ef7e8a8563734e2e889ef5ec3c3b898a01d00fa0a6869ad81c6ce01")
 
-# Bulk functional-model dependency. This is a full commit archive pin rather
+# OneDNN functional-model dependency. This is a full commit archive pin rather
 # than a host package/SONAME requirement. CMake remains offline; only the
 # dependency bootstrap may fetch and build it.
 set(WAFER_ONEDNN_VERSION "3.12")

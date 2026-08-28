@@ -1153,7 +1153,7 @@
 - 根因：外部format authority、内部TensorProgram text和package typed ID没有按owner显式限定，增量构建掩盖了header重编译事实。
 - 修复模式：外部source只读StableHLO portable artifact，retired成员fail closed；post-SPMD text使用不同internal API。跨namespace schema字段
   include其owner并解析成唯一强类型，public header fresh全构建。advisory verifier和compiler复用同一ingestion但不共享verified-path state。
-- 防复发：installed product adapter→verifier→compiler→no-card、feature-off absence、portable corrupt/retired/mismatch负例和public full rebuild同批执行；
+- 防复发：canonical build中的installed product adapter→verifier→compiler→no-card、portable corrupt/retired/mismatch负例和public full rebuild同批执行；
   不能因某个增量target链接成功就跳过完整header consumer构建。
 
 ## 上游shape覆盖不能代签下游语义分支

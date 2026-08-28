@@ -71,7 +71,7 @@ spatial mapping、temporal tiling、fusion/SPM residency、NoC和compute/communi
 | `lib/Wafer/` | Frontend、SPMD、scheduling、conversion、compiler、target code generation、runtime 和 model 实现 |
 | `tools/` | `wafer-compile`、`wafer-run`、`wafer-opt`、StableHLO 工具、profile report、依赖 bootstrap 和一致性检查 |
 | `test/` | lit/FileCheck、CLI 和 Python tool tests |
-| `unittests/` | C++ unit、numeric/bulk 和可选 SystemC tests |
+| `unittests/` | C++ unit、target numeric backend 和可选 SystemC tests |
 | `tasks/` | 当前编号设计合同、任务队列、实施计划和历史审计 |
 | `docs/` | 硬件、runtime、ABI 和依赖逆向事实资料 |
 | `memory/` | 稳定构建、调试和防复发经验，不是任务状态或架构合同 |
@@ -91,51 +91,50 @@ git submodule update --init --recursive
 python3 tools/bootstrap_deps.py --python
 python3 tools/bootstrap_deps.py --llvm-source
 python3 tools/bootstrap_deps.py --numeric-model-deps
-python3 tools/bootstrap_deps.py --bulk-model-deps
+python3 tools/bootstrap_deps.py --onednn-deps
 python3 tools/bootstrap_deps.py --systemc-model-deps
 ```
 
-这些命令按需执行；core compiler、importer、bulk model 和 SystemC 的完整准备方式不同。开始构建前请阅读
+这些命令按需执行；core compiler、importer、target numeric backend 和 SystemC 的完整准备方式不同。开始构建前请阅读
 [`third_party/README.md`](third_party/README.md) 和 [`memory/general_dev.md`](memory/general_dev.md)，不要用未固定的系统依赖
 冒充正式验证环境。
 
 ## 构建与测试
 
-使用与仓库固定 commit 匹配、已经 build/install 的 LLVM/MLIR：
+先准备仓库pinned dependencies，再使用checked-in default preset；主工程binary dir就是`build/`：
 
 ```bash
-cmake -S . -B build/wafer-dev -GNinja \
-  -DMLIR_DIR=<llvm-install>/lib/cmake/mlir \
-  -DLLVM_DIR=<llvm-install>/lib/cmake/llvm
-
-cmake --build build/wafer-dev --target check-wafer -- -j"$(nproc)"
-ctest --test-dir build/wafer-dev -j"$(nproc)" --output-on-failure
+cmake --preset default
+cmake --build --preset default -j"$(nproc)"
+cmake --build --preset default --target check-wafer -j"$(nproc)"
+ctest --preset default -j"$(nproc)"
 ```
 
 常用验证入口：
 
-- `check-wafer-lit`：Dialect、Frontend、Pipelines、Spmd和Transforms中的直接IR tests；
+- `check-wafer-lit`：Dialect、Frontend、Pipelines、Spmd、Transforms和Tools中的直接tests；
 - `check-wafer-unit`：直接C++ unit tests；
 - `check-wafer`：执行当前配置中实际存在的全部 mandatory 子 gate；
-- `ctest --output-on-failure`：运行已注册的配置、依赖、feature 和 integration tests。
+- `ctest --preset default`：不按label过滤，运行本配置全部已注册的本地tests。
 
-启用 importer、Shardy/XLA helper、numeric/bulk model 或 SystemC 时，需要相应的受管依赖记录和 CMake feature。测试报告中的
-`unsupported` 必须按当前 feature matrix 单独审计；`ctest passed` 不能替代对关键 source/program gate 是否实际执行的检查。
+canonical build要求importer、Shardy/XLA helper、target numeric backend和SystemC的受管依赖全部闭合。测试报告中的
+`unsupported`、skip或未注册case都不计通过；`ctest passed`不能替代对关键source/program gate是否实际执行的检查。
 
 ## 使用默认编译入口
 
 `wafer-compile` 是唯一 production decision owner。当前单卡输入显式指定一个 logical card partition：
 
 ```bash
-build/wafer-dev/bin/wafer-compile \
+build/bin/wafer-compile \
   --input-program-dir <stablehlo-program-dir> \
   --output-dir <output-dir> \
   --num-partitions 1 \
   --optimization-policy search
 ```
 
-`search` 和 `none` 都经过同一 CardModule、Tile selection 和 exact verification pipeline；`search`启用
-compiler-owned候选搜索，`none`只生成保守baseline。编译成功当且仅当 package 已原子提交并 readback
+`search`和`none`是两个独立controller，分别构造自己的current Card/Tile/Instr IR，只在policy-complete后消费同一个actual
+memory/target leaf，二者不能互相调用或fallback。当前这两条controller尚未重新接通，会在CardExecutable边界明确返回
+`operation_not_supported`，不会发布package；状态与恢复顺序以`tasks/progress.md`为准。编译成功当且仅当package已原子提交并readback
 验证：CLI 退出 0 时目标 package 必然可见，退出非 0 时本次目标 package 不可见。`--profile` 时输出目录是
 共同 delivery root，一次 rename 发布 `<output>/package` 与 `<output>/package.profile`，runtime 的
 `<package-root>.profile` sibling 规则不变。target-model 与 compiler IR dump 只属于 internal/test 入口
@@ -143,7 +142,7 @@ compiler-owned候选搜索，`none`只生成保守baseline。编译成功当且�
 它是共同delivery root，package root为`<output-dir>/package`。package可先做无板卡validation：
 
 ```bash
-build/wafer-dev/bin/wafer-run \
+build/bin/wafer-run \
   --package-dir <package-root> \
   --no-card
 ```

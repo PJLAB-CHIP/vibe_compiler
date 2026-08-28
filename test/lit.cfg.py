@@ -27,7 +27,7 @@ if os.path.isdir(config.tx8_deps_root):
 config.substitutions.append(("%python", config.python_executable))
 config.substitutions.append(("%wafer_obj_root", config.wafer_obj_root))
 config.substitutions.append(("%wafer_compile_test", config.wafer_compile_test))
-config.substitutions.append(("%wafer_bulk_qualify", config.wafer_bulk_qualify))
+config.substitutions.append(("%wafer_onednn_qualify", config.wafer_onednn_qualify))
 config.substitutions.append(("%cmake", config.cmake_command))
 config.substitutions.append(("%stablehlo_translate", config.stablehlo_translate))
 config.environment["WAFER_STABLEHLO_TRANSLATE"] = config.stablehlo_translate
@@ -68,15 +68,18 @@ if config.wafer_enable_numeric_model == "ON":
         if value
     )
 
-if config.wafer_enable_bulk_model == "ON":
-    config.available_features.add("bulk-model")
+if config.wafer_enable_target_numeric_backend == "ON":
+    config.available_features.add("target-numeric-backend")
 
 if config.wafer_enable_systemc_model == "ON":
     config.available_features.add("systemc-model")
 
+if config.wafer_enable_product_install == "ON":
+    config.available_features.add("product-install")
+
 if (
     config.wafer_enable_numeric_model == "ON"
-    and config.wafer_enable_bulk_model == "ON"
+    and config.wafer_enable_target_numeric_backend == "ON"
     and config.wafer_enable_systemc_model == "ON"
 ):
-    config.available_features.add("target-model-bulk")
+    config.available_features.add("target-model-numeric")

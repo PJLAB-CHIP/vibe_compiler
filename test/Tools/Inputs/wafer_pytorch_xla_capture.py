@@ -1583,14 +1583,14 @@ def emit_workload_cpu_reference(
             numpy_module, parameter_dir / f"{name}.npy", value
         )
 
-    bulk_qualification = case.get("bulk_qualification")
-    if bulk_qualification is not None:
-        if not isinstance(bulk_qualification, dict):
-            raise RuntimeError("bulk_qualification must be an object")
-        m = int(bulk_qualification["m"])
-        k = int(bulk_qualification["k"])
-        n = int(bulk_qualification["n"])
-        calibration_seed = int(bulk_qualification["calibration_seed"])
+    onednn_qualification = case.get("onednn_qualification")
+    if onednn_qualification is not None:
+        if not isinstance(onednn_qualification, dict):
+            raise RuntimeError("onednn_qualification must be an object")
+        m = int(onednn_qualification["m"])
+        k = int(onednn_qualification["k"])
+        n = int(onednn_qualification["n"])
+        calibration_seed = int(onednn_qualification["calibration_seed"])
         qualification_dir = output_dir / "qualification"
         qualification_dir.mkdir()
         calibration_lhs = _cast_gemm_storage(
@@ -1618,7 +1618,7 @@ def emit_workload_cpu_reference(
             calibration_rhs,
         )
         (qualification_dir / "qualification.json").write_text(
-            json.dumps(bulk_qualification, indent=2, sort_keys=True) + "\n",
+            json.dumps(onednn_qualification, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
 
@@ -1643,7 +1643,7 @@ def emit_workload_cpu_reference(
                 for index in sorted(payload["extra_inputs"])
             },
         },
-        "bulk_qualification": bulk_qualification,
+        "onednn_qualification": onednn_qualification,
     }
     (output_dir / "reference.json").write_text(
         json.dumps(reference_record, indent=2, sort_keys=True) + "\n",
@@ -2183,7 +2183,7 @@ def emit_workload_corpus(
             "seed": case["seed"],
             "dtype": case["dtype"],
             "config": case["config"],
-            "bulk_qualification": case.get("bulk_qualification"),
+            "onednn_qualification": case.get("onednn_qualification"),
             "digests": {
                 **payload["digests"],
                 "exported_program": program_digest,

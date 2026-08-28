@@ -95,20 +95,9 @@ Q45的历史命名核对不赋予旧实现current身份。Q51.Core已确认退�
 
 ## 已完成批次验证
 
-- `build/q45-fresh`独立配置并完成419个构建步骤；没有复用`build/wafer-dev`生成物。
-- fresh `WaferUnitTests`排除Q49.P/Q52已知长搜索后为629/629通过；长搜索不属于命名整改门禁。
-- fresh CTest 1–11为11/11通过，包含lit、dependency snapshot、PyTorch/no-card和配置测试。
-- fresh CTest 13–20为8/8通过，包含runtime IO、public-header/link smoke和feature-off link closure。
-- source/IR organization、Python compileall、profile report、dependency helpers及受影响Board协议的host-only测试通过。
-- `git diff --check`通过；未执行真实板端测试。
-
-限定词与IR层级最终批次使用`build/q45-qualifier-fresh`独立验证：
-
-- fresh configure后419/419构建通过，包含新ODS/TableGen、renamed source和public link targets；
-- topology、CardModule/TileModule conversion、StructuredDAG、program resources、CardExecutable lowering、Tile memory
-  planning、target ABI/codegen、named pipelines和Instr-to-target conversion定向单测138/138通过；
-- CTest 1–11为11/11通过，CTest 13–20为8/8通过；Wafer lit 216/216由CTest实际执行；
-- IR/source organization、Python compileall和`git diff --check`通过。
+历史task命名build目录、按CTest ordinal记录的批次数字和feature-off link-absence gate不再是current完成证据；其施工记录由Git保留。
+current命名合同由canonical `host`完整增量build、host unit/model/lit/Tools、public-link、dependency/source/IR organization及旧名称
+残留扫描共同验证，具体完成入口见`tasks/archive/completed-task-index.md`。命名任务不执行真实板端测试。
 
 StructuredDAG placement enumeration和CardExecutable candidate synthesis属于Q49.P/Q52搜索行为，本批没有用
 长搜索代替命名合同验证；没有执行真实板端测试。

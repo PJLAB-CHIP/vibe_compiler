@@ -42,10 +42,10 @@ struct CommandLineOptions {
   std::optional<std::string> targetModelMaximumMovementBytes;
   std::optional<std::string> targetModelMaximumMovementSegments;
   std::optional<std::string> targetModelNumericPolicy;
-  std::vector<std::string> targetModelBulkRecords;
-  std::optional<std::string> targetModelMaximumBulkTotalBytes;
-  std::optional<std::string> targetModelMaximumBulkScratchpadBytes;
-  std::optional<std::string> targetModelMaximumBulkReorderBytes;
+  std::vector<std::string> targetModelOneDNNRecords;
+  std::optional<std::string> targetModelMaximumOneDNNTotalBytes;
+  std::optional<std::string> targetModelMaximumOneDNNScratchpadBytes;
+  std::optional<std::string> targetModelMaximumOneDNNReorderBytes;
 };
 
 /// Validated external tool facts for one invocation. The single resolver

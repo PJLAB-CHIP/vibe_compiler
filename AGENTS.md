@@ -38,6 +38,17 @@ Wafer compiler和runtime的设计、IR、pass、工具和测试会一起演进�
 
 ### 主机端构建和测试
 
+- 本仓库只有一个主工程CMake build，使用checked-in preset `default`，binary dir直接为`build/`。它开启compiler、importer、
+  SPMD、numeric、`WaferTargetNumericBackend`、SystemC和全部本地test target，关闭外部TX board SDK及真实设备执行。不得创建第二个
+  repo-local主工程build，也不得按任务、checkpoint、bug、agent、配置或日期建立build子目录。`build/third_party`和configured helper
+  是该build消费的dependency artifact，不是第二个主工程配置。
+- 修改期间可以先构建具体target取得快速反馈；形成完成结论或提交前，必须在同一`build/`执行不指定target的完整默认
+  增量构建。Ninja只重建失效节点，不删除build、不为“fresh”新建目录。只有toolchain、preset、managed dependency identity或
+  CMake配置变化时才重新configure同一build；clean build只用于CI、配置迁移或明确的构建系统故障定位。
+- product install只从该build产生，使用`Compiler`和`Runtime`component选择交付内容。本仓当前不支持runtime-only build，
+  也不从缺少importer、StableHLO、SPMD或helper推断另一种产品配置。
+- sanitizer/debug或需要外部TX SDK的特殊配置不能在仓库`build/`内建立第二棵CMake tree；确需诊断时由对应环境owner在workspace
+  外临时配置并在结束后删除，不能代签canonical build。repository-managed依赖缺失或record失配必须修复，不能自动关feature继续工作。
 - 独立的主机端构建、单元测试、`catalog`、`no-card`和静态检查使用机器可用的逻辑CPU并行运行。
   CMake build和CTest默认使用`nproc`给出的并发度。
 - 只有内存限制、共享写目录、资源锁或工具限制要求串行时才降低并发度。使用当前环境允许的最大安全
@@ -54,6 +65,8 @@ Wafer compiler和runtime的设计、IR、pass、工具和测试会一起演进�
   整除/非整除、相关结构路径、typed failure、需要精确断言的输出和直接下游witness。全局测试原则不能替代本项矩阵；
   实现完成后逐行核对实际case。规则建立前已经完成、但没有这种逐项证据的work item，必须先安排独立coverage
   closure补齐，不能依靠历史`done`、测试总数或单个成功case继续向下游签发可信前置。
+- lit/CTest中的`UNSUPPORTED`、skip、未注册case和未构建feature都表示没有执行，永远不能计入通过。canonical build gate不得包含
+  意外unsupported；真正只属于board、OS或target的case必须有明确配置owner，并从canonical build范围中排除而不是显示为通过。
 - 真实设备测试始终单进程、逐case运行。
 
 ### 板端测试
@@ -132,6 +145,8 @@ Wafer compiler和runtime的设计、IR、pass、工具和测试会一起演进�
 ## 版本控制
 
 - 直接在当前checkout工作。只有用户明确要求时才创建worktree。
+- 会在多个work item之间暂时关闭current产品入口、删除正式测试或使canonical build gate失败的破坏性迁移必须在独立开发分支完成；
+  main只接收产品入口和canonical build gate同时闭合的提交。不能通过删除/跳过正式测试把中间状态伪装成main-ready。
 - Git操作前检查`git status`。
 - 不使用破坏性Git命令，不撤销无关修改。
 - Codex提交使用`Codex <codex@openai.com>`作为author，并添加
