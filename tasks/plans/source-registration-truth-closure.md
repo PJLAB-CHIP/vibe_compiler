@@ -51,7 +51,7 @@ Pipeline position:
 | --- | --- | --- |
 | current-IR/query-local事实 | `Analysis` | DAG、node-use、footprint、buffer relation、exact-demand/index/physical-layout relation及executable call/resource analysis；旧rank-global `GlobalTileRelation`已由current typed relation承接并删除 |
 | physical assignment、baseline与search | `Planning` | 原`Compiler/Baseline`、`Compiler/Search`及placement/edge/temporal assignment；attention/decode纯proof单独进入`Analysis/Structured` |
-| actual CardExecutable与Tile lowering | `CodeGen/Executable` | CardExecutable ownership、CardModule→Tile/Instr exact compile、fixed memory planning和bounded Tile execution |
+| actual DeviceExecutable与Tile lowering | `CodeGen/Executable` | DeviceExecutable ownership、top-level TileModule fan-out、Instr exact compile、fixed memory planning和bounded Tile execution |
 | target LLVM/ABI/link/readback | `CodeGen/Target` | 原`Compiler/Target`除host TargetCall execution外的全部target code generation |
 | actual communication/transport rewrite | `Transforms/Transport` | 原`Compiler/Transport`；它们修改/验证已选IR，不是driver或analysis |
 | source-to-product orchestration | `Driver` | 原`Compiler/Pipeline`、SPMD helper bridge和outer publication transaction |

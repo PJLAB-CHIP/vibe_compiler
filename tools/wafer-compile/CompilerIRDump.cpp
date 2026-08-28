@@ -22,9 +22,8 @@ bool createDirectory(llvm::StringRef path, llvm::raw_ostream &diagnostics) {
   return true;
 }
 
-llvm::SmallString<256> tilePath(llvm::StringRef directory,
-                                        TileId tileId,
-                                        llvm::StringRef extension) {
+llvm::SmallString<256> tilePath(llvm::StringRef directory, TileId tileId,
+                                llvm::StringRef extension) {
   llvm::SmallString<32> filename;
   llvm::raw_svector_ostream stream(filename);
   stream << "tile_" << llvm::formatv("{0:05}", tileId.getValue()) << extension;
@@ -82,13 +81,12 @@ bool dumpCompilerIR(llvm::StringRef destination,
     return false;
 
   const auto &tiles =
-      compiledProgram.getCardExecutable().getTileExecutables();
+      compiledProgram.getDeviceExecutable().getTileExecutables();
   const auto &targetModules =
       compiledProgram.getTargetLLVMModules().getModules();
   const auto &irTrace = compiledProgram.getIRTrace().tiles;
   if (tiles.size() != targetModules.size() || tiles.size() != irTrace.size()) {
-    diagnostics
-        << "wafer-compile: compiler IR dump Tile domains differ\n";
+    diagnostics << "wafer-compile: compiler IR dump Tile domains differ\n";
     return false;
   }
   for (size_t index = 0; index < tiles.size(); ++index) {
@@ -102,12 +100,11 @@ bool dumpCompilerIR(llvm::StringRef destination,
         tile.getCardId() != tileTrace.cardId ||
         tile.getTileId() != tileTrace.tileId ||
         tile.getLaunchSlotId() != tileTrace.launchSlotId) {
-      diagnostics
-          << "wafer-compile: compiler IR dump Tile order differs\n";
+      diagnostics << "wafer-compile: compiler IR dump Tile order differs\n";
       return false;
     }
-    llvm::SmallString<256> tileDataflowPath = tilePath(
-        tileDataflowDirectory, tile.getTileId(), ".mlir");
+    llvm::SmallString<256> tileDataflowPath =
+        tilePath(tileDataflowDirectory, tile.getTileId(), ".mlir");
     if (!writeIRFile(
             tileDataflowPath,
             [&](llvm::raw_ostream &output) {
@@ -115,8 +112,8 @@ bool dumpCompilerIR(llvm::StringRef destination,
             },
             diagnostics))
       return false;
-    llvm::SmallString<256> instructionPath = tilePath(
-        instructionDirectory, tile.getTileId(), ".mlir");
+    llvm::SmallString<256> instructionPath =
+        tilePath(instructionDirectory, tile.getTileId(), ".mlir");
     if (!writeIRFile(
             instructionPath,
             [&](llvm::raw_ostream &output) { tile.getModule().print(output); },

@@ -9,7 +9,7 @@ Q58/Q56/Q57实施状态只看`tasks/progress.md`。本文按当前single-card、
 ```text
 Pipeline position:
 - Upstream IR / input:
-  Q58 ProgramDataHandoff、final verified CardExecutable、同次target lowering产生的owner-backed modules、
+  Q58 ProgramDataHandoff、final verified DeviceExecutable、同次target lowering产生的owner-backed modules、
   16个TileEntryArgument[]与TargetTensor descriptors。
 - Current stage responsibility:
   为package-owned TargetTensor确定program-data.bin中的deterministic offset/span/alignment并只转换一次；
@@ -75,7 +75,7 @@ current要求`card_count=1`、`tile_count=16`。parser要求exact field set、bo
 checked integer conversion和canonical serialization；没有version branch、upgrade reader或兼容alias。
 
 `target`记录compiler-fixed target identity、runtime ABI和module format；`launch`直接记录current kernel launch mode、entry ABI和
-ordered phases。它们必须与CardExecutable、target module readback及全部entries逐项相等，runtime不得从module path或entry
+ordered phases。它们必须与DeviceExecutable、target module readback及全部entries逐项相等，runtime不得从module path或entry
 shape猜测launch方式。
 
 ### 3.1 ProgramTensor
@@ -324,7 +324,7 @@ runtime不拥有request queue、continuous batching、prefix/KV policy、tokeniz
 
 ## 8. Profile
 
-Profile instrumentation必须复用同一个CardExecutable、TargetTensor materialization和program-data bytes：
+Profile instrumentation必须复用同一个DeviceExecutable、TargetTensor materialization和program-data bytes：
 
 - ordinary/count/trace package的TargetTensor identity、offset和digest关系一致；
 - profile record只作为entry-local typed requirement增加；
@@ -359,4 +359,4 @@ Host/no-card至少覆盖：
 - XLA/PJRT：采用编译结果与prepared execution分层、on-device layout与completion显式；不照搬Client/Buffer大接口。
 - TileRT：采用prepare一次、地址稳定、重复执行；不假设GPU单kernel或闭源内部实现。
 - vLLM/SGLang：只用于压力测试未来固定容量state和step metadata；scheduler/cache policy不进入本合同。
-- Wafer的CardExecutable、TileEntryArgument、kernel pointer row、workspace offsets、RDMA/WDMA、Direct-DTE和provider能力始终是主事实源。
+- Wafer的DeviceExecutable、TileEntryArgument、kernel pointer row、workspace offsets、RDMA/WDMA、Direct-DTE和provider能力始终是主事实源。

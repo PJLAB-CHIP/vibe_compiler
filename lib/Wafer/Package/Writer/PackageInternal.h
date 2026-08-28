@@ -34,7 +34,7 @@ bool isValidPackageCompilerManagedSlot(const TileEntryArgument &slot);
 /// commit stage.
 llvm::Expected<runtime::VerifiedPackageManifest>
 writePackage(llvm::StringRef tensorProgramDirectory,
-             const CardExecutable &cardExecutable,
+             const DeviceExecutable &deviceExecutable,
              const LinkedTargetModules &targetModules,
              llvm::StringRef outputDirectory, llvm::raw_ostream &diagnostics,
              std::optional<int64_t> failAfterLaunchSlot);

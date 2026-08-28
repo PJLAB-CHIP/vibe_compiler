@@ -20,12 +20,12 @@ Pipeline position:
   IR-only frontend verifier检查，尚未进入directory schema或production lowering。
 - Output IR / files:
   verified StableHLO program directory。它仍由MLIR、`forward.meta`和必要payload共同组成，不是
-  `TensorProgram`、`CardModule`、`CardExecutable`、target module或`ExecutablePackage`。
+  `TensorProgram`、top-level TileModule set、`DeviceExecutable`、target module或`ExecutablePackage`。
 - Downstream consumer:
   compiler transaction在owned snapshot上建立card-partition mesh，调用pinned XLA SPMD helper，
   然后做local compute normalization并发布verified card-local structured tensor program；05 structured
   optimization继续在同一IR上建立verified `TensorProgram` boundary。06随后以target physical topology为独立输入，
-  形成`CardModule`并联合搜索spatial placement、temporal tiling、TileRegion/融合与communication。
+  形成top-level TileModule set并联合搜索spatial placement、temporal tiling、TileRegion/融合与communication。
 - User-level driver / named pipeline:
   `wafer-verify-program --program-dir`只做program-directory advisory verification；继续编译只经
   当前`wafer-compile --input-program-dir=... --output-dir=... --num-partitions=1`；
@@ -101,7 +101,7 @@ byte-identical shard来暗示sharing。
 SPMD helper是外部进程边界，不是一个可继续传裸C++引用的pass。Q58必须让helper消费transaction-owned、content-stable的
 all-and-only IR/metadata/ProgramDataRange，并把真正产生的新shard作为`ProgramDataSource` readback接管；helper不能重新打开原source path、整树复制
 或整NPY读入host vector。current product compiler只接受`num_partitions=1`，多partition shard只在frontend/helper isolated gate中
-证明，不冒充source→CardExecutable完整产品路径。
+证明，不冒充source→DeviceExecutable完整产品路径。
 
 该边界由Q58原位替换current复制实现。它不定义checkpoint registry、framework adapter、target packing、package schema、
 device residency或compute-time weight streaming。
@@ -289,9 +289,9 @@ content-stable且完成extent/digest校验的`ProgramDataSource`/`ProgramDataRan
 拥有的事实。当前整目录复制以及propagated/original/shard多份payload是Q58必须删除的实现差距，不能成为长期隔离机制。
 source不得被原地补metadata、topology或shards。compiler transaction最终发布重新parse/verify过的card-partition-local
 structured program state；local compute normalization与fixed structured optimization随后建立`TensorProgram` boundary，之后
-physical-dataflow synthesis从单卡partition output构造一个`CardModule`，其中all-and-only available Tiles
+physical-dataflow synthesis从单卡partition output构造一个top-level TileModule set，其中all-and-only available Tiles
 各有独立`wafer.tile.module`。每个Tile可有不同op、loop和temporal tile shape；Q52 search owner选择
-placement、tiling和TileRegion membership并立即生成actual IR，随后在current IR上物化NoC/DDR movement，exact gates通过后形成`CardExecutable`，再由target与
+placement、tiling和TileRegion membership并立即生成actual IR，随后在current IR上物化NoC/DDR movement，exact gates通过后形成`DeviceExecutable`，再由target与
 package阶段发布`ExecutablePackage`。`TensorProgram`是该planning阶段的唯一输入output；已删除的`wafer.group`
 formation/selector没有兼容、debug或发布旁路。
 
@@ -319,5 +319,5 @@ frontend mandatory coverage包括：
 - pre-exported StableHLO parse/printer及显式IR-local lowering补充测试。
 
 完成记录必须区分真实exporter gate、program verifier和下游SPMD handoff/TensorProgram normalization gate。FileCheck、手写MLIR或CPU oracle单独通过
-都不能证明card-local spatial/temporal/fusion/communication scheduling、`CardExecutable`、target modules、`ExecutablePackage`、runtime
+都不能证明card-local spatial/temporal/fusion/communication scheduling、`DeviceExecutable`、target modules、`ExecutablePackage`、runtime
 或board正确。

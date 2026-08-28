@@ -281,7 +281,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "card_ddr_bytes_per_second",
+            "ddr_bytes_per_second",
             "directional_noc_bytes_per_second",
             "f16_bf16_npu_logical_ops_per_second_per_tile",
             "f16_bf16_vector_logical_ops_per_second_per_tile",
@@ -289,7 +289,7 @@
             "spm_movement_bytes_per_second"
           ],
           "properties": {
-            "card_ddr_bytes_per_second": {
+            "ddr_bytes_per_second": {
               "type": "integer",
               "minimum": 1,
               "maximum": 18446744073709551615

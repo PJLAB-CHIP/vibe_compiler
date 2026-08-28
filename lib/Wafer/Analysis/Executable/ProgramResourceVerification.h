@@ -15,10 +15,10 @@ namespace wafer::compiler::detail {
 /// domain. Every hard-capacity fact required here must be exact; an unavailable
 /// performance-only work term remains raw analysis data and is omitted
 /// cohort-wide by the numeric estimator.
-mlir::FailureOr<analysis::CardInstructionProgramCost>
+mlir::FailureOr<analysis::InstructionProgramAggregateCost>
 verifyProgramResources(llvm::ArrayRef<mlir::ModuleOp> tileModules,
-                         llvm::ArrayRef<TileId> tileIds,
-                         const ExecutionConfig &executionConfig);
+                       llvm::ArrayRef<TileId> tileIds,
+                       const ExecutionConfig &executionConfig);
 
 } // namespace wafer::compiler::detail
 

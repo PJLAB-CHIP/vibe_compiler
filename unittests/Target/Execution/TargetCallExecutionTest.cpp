@@ -4,7 +4,7 @@
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Target/Core/TargetCall.h"
 
-#include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
+#include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
 #include "Wafer/CodeGen/Target/TargetCodeGenInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Program/ProgramData.h"

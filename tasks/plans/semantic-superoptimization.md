@@ -11,8 +11,8 @@ fixed FA/FD attention normalization，不提供通用semantic-alternative接口�
 ```text
 TensorProgram alternatives
   -> Q52 physical-dataflow search
-  -> CardModule / TileRegion / Instr
-  -> CardExecutable
+  -> TileModule set / TileRegion / Instr
+  -> DeviceExecutable
   -> ExecutablePackage
 ```
 
@@ -50,7 +50,7 @@ Pipeline position:
 ## 2. 单一候选边界
 
 Q48只有一个architecture-visible接入点：`TensorProgram -> TensorProgram alternatives`。生成器不返回recipe、enum列表、
-opaque payload或临时side table，也不直接返回`CardModule`/`Instr`候选。
+opaque payload或临时side table，也不直接返回top-level TileModule set/`Instr`候选。
 
 ### 2.1 普通structured alternative
 
@@ -79,7 +79,7 @@ Query/head/KV temporal block和Tile集合属于Q52 structural choices；layout�
 
 ### 2.3 Instr级变换边界
 
-Q48不在`CardModule`或Instr形成后运行独立superoptimizer。能由structured semantics表达的等价变换必须先成为
+Q48不在top-level TileModule set或Instr形成后运行独立superoptimizer。能由structured semantics表达的等价变换必须先成为
 TensorProgram alternative；只与target Instr encoding有关的canonicalization由对应Instr/lowering owner处理，不能产生
 另一个winner或绕过Q52重新选择physical realization。若未来存在无法上提且确有独立收益的Instr等价变换，必须另行收敛
 pipeline contract，并证明它如何作用于current IR且回到同一Q52 actual admission，而不是在本计划中预留隐藏入口。
@@ -155,14 +155,14 @@ current TensorProgram
   -> Q52 PhysicalDataflowSearch session:
        pre-structural choice frontier + work accounting
        each closed spatial/region/temporal choice:
-         actual CardModule/TileRegion materialization once
+         actual TileModule/TileRegion materialization once
          current-IR layout / movement / bufferization
          TileRegion-to-Instr
          current-Instr schedule / fresh completion
          SPM / DDR / communication / resource / ABI verification
          Accepted or typed rejection/failure
        compare accepted actual results
-  -> one retained best CardExecutable without rematerialization
+  -> one retained best DeviceExecutable without rematerialization
   -> target conversion / ExecutablePackage / no-card / runtime
 ```
 
@@ -187,7 +187,7 @@ TensorProgram alternative或插入fallback。Q52可以在typed rejection后处�
    materialization和original-root preservation；预算只由Q52 search owner消费，不在生成器内设置固定候选cap。
 5. **Algorithm alternatives**：把已证明的online/reduction类算法族及会改变其DAG的window/split参数逐点物化为actual
    TensorProgram；不改变DAG的temporal块大小与physical资源选择留给Q52。
-6. **Pipeline integration**：所有alternative进入同一CardExecutable compilation/verification；删除旧独立selector、shortlist、
+6. **Pipeline integration**：所有alternative进入同一DeviceExecutable compilation/verification；删除旧独立selector、shortlist、
    fallback repair和不能被下游消费的proof residue。
 7. **Source-to-package与board-ready验证**：重放host/full-feature、source→package/fresh no-card，准备FP16/BF16 source/oracle/runner；
    达到`board-ready`后才串行执行同源`none`/`search`真实板端A/B。

@@ -15,7 +15,7 @@ scalability作为两个并列直接输入，只消费Q60交付的产品frontend 
 ## 1. 拆分依据
 
 当前 source-to-package driver 已经拥有 source snapshot、frontend/SPMD 再验证、共享 named pipelines、
-CardExecutable/target writing、package readback和 no-replace publication。尚未闭合的是两个依赖不同的产品边界：
+DeviceExecutable/target writing、package readback和 no-replace publication。尚未闭合的是两个依赖不同的产品边界：
 
 1. library 的普通返回值仍是 package writing 之前的中间编译对象，CLI 又在 package 发布后执行 debug/qualification
    action；同时产品工具依赖 build/source tree 绝对路径。这是 Q56 current package 固定后即可独立修复的入口事务问题，
@@ -47,12 +47,12 @@ Pipeline position:
   本任务不产生新IR层或第二种磁盘产品。
 - Downstream consumer:
   wafer-compile薄CLI、Q53 source-to-package readiness、wafer-run与package审计；
-  qualification/debug consumer只能通过独立的internal/test入口取得CardExecutable、target modules或IR trace。
+  qualification/debug consumer只能通过独立的internal/test入口取得DeviceExecutable、target modules或IR trace。
 - User-level driver / named pipeline:
   wafer-compile只执行source-to-package的search|none；wafer-opt保持显式IR开发入口，frontend verifier保持advisory
   verification。production与wafer-opt继续复用同一named semantic pipeline implementation。
 - Explicit non-goals:
-  不改变frontend source格式、Q52 search域、CardExecutable语义、target/package schema或runtime加载；不建立
+  不改变frontend source格式、Q52 search域、DeviceExecutable语义、target/package schema或runtime加载；不建立
   稳定C ABI、通用plugin/session框架、用户可拼pass pipeline、compile-from/to模式、旧CLI alias或第二份compiler driver。
 - Done criteria:
   library/CLI成功当且仅当ordinary package及显式请求的共同产品已经readback并commit；任一compile failure不留下目标
@@ -71,7 +71,7 @@ Pipeline position:
 > | CLI options | `DriverOptions.cpp` 手写 parser | `CommandLineOptions`（未定型 string slot），main 内校验 | `--output-package-dir` 在profile模式不表示共同delivery root；`--target-model*`/`--model-*`/`--dump-compiler-ir` 混入 production CLI |
 > | request/options | `ExecutionConfig::createForSingleCard`、`CompilationOptions::standard/profile`、`CompilationRequest::create` | main 栈内，move 进 `compileProgram` | 已 typed，保持不变 |
 > | 外部工具事实 | `WAFER_XLA_SPMD_PARTITIONER_HELPER`、`WAFER_PYTHON_EXECUTABLE`、`WAFER_DEVICE_LINKER_SCRIPT`（=source-tree 绝对路径）、`WAFER_DEVICE_CLANGXX`（=build-tree LLVM install 路径）编译期宏 | 二进制内烘焙，永远存活 | 违反 install 可迁移；helper 实际指向 `build/xla-spmd-helper/`，clang++ 指向 `build/third_party/llvm-install/` |
-> | library entry | `Compilation.cpp::compileProgram` | 返回 `mlir::FailureOr<CardExecutable>` | primary result 是中间 CardExecutable；`writePackage` 产出的 `VerifiedPackage` 在 `stageExecutablePackage` 被丢弃 |
+> | library entry | `Compilation.cpp::compileProgram` | 返回 `mlir::FailureOr<DeviceExecutable>` | primary result 是中间 DeviceExecutable；`writePackage` 产出的 `VerifiedPackage` 在 `stageExecutablePackage` 被丢弃 |
 > | transaction | `runCompilationTransaction` | staging `.wafer-compile-staging*` scope_exit 清理 | 失败不留目标目录（no-replace rename 唯一发布点）✓；失败无 stage 分类 |
 > | package staging | `Package.cpp::writePackage` | 自建 `.wafer-package-staging*` → 内部 readback/fsync → no-replace rename 到 `<transactionRoot>/package` | readback 发生在 staging root，最终 rename 后不重读 installed root |
 > | profile 共同提交 | `WriteExecutablePackage.cpp::writeProfileInstrumentation` | 单一delivery root一次rename共同发布（2026-08-16 review后修复前为两次顺序rename+回滚） | write 侧已计算 primary/plan/site-map digest；commit前staged binding验证，发布后无可失败步骤 |
@@ -85,17 +85,17 @@ Pipeline position:
 > （committed root+VerifiedPackageManifest+exact member snapshots）；`CompilationResult`另持有ExecutionConfig。
 > 显式 profile 时共同提交的 profile product 以 compiler-owned `ProfileInstrumentationProduct`（root+identity digests+exact
 > activation/plan/site-map snapshots+两份strictly bound capture package）表达，全部在commit前绑定；runtime strict loader仍是launch语义reader。
-> `CardExecutable`、`TargetLLVMModules`、`CompilationIRTrace` 只保留给 internal/qualification 入口（`compileProgramWithTargetLLVMModules`）。
+> `DeviceExecutable`、`TargetLLVMModules`、`CompilationIRTrace` 只保留给 internal/qualification 入口（`compileProgramWithTargetLLVMModules`）。
 > 约束：Compiler/Package 不能链接 `WaferRuntime`、不能 include `Wafer/Runtime/*`（18 号 source-organization gate），因此 profile product
 > 类型与 activation readback 位于 compiler 层。
 >
-> 1. **入口事实映射**：逐项列出 `CompilationRequest -> transaction -> CardExecutable -> target writing ->
+> 1. **入口事实映射**：逐项列出 `CompilationRequest -> transaction -> DeviceExecutable -> target writing ->
    ExecutablePackage -> CLI status` 的producer、owner、lifetime和failure edge；确认普通调用必须返回的唯一产品、仅供
    qualification/debug保留的中间值，以及profile共同提交边界。不得用diagnostic字符串或output existence反推控制流。
 2. **Typed result/error**：Q56将现有compiler-only `VerifiedPackage`与runtime-only `VerifiedPackageManifest`收敛为一个
    move-only `ExecutablePackage` owner；Q59让它沿package writer和transaction返回至public compiler entry，以named
    `CompilationResult`表达普通结果。MLIR transformation内部继续使用`LogicalResult`/diagnostic，filesystem、external tool、
-   package和library边界使用`llvm::Error`/`Expected`及可分类stage failure。普通public result不暴露CardExecutable、
+   package和library边界使用`llvm::Error`/`Expected`及可分类stage failure。普通public result不暴露DeviceExecutable、
    target LLVM modules或IR trace。
    （2026-08-16 follow-up完成：package层定义唯一`runtime::ExecutablePackage`，compiler只保留type alias；runtime loader、
    compiler result和board执行均消费同一owner；`CompilationResult`持有ExecutionConfig、ExecutablePackage与optional
@@ -205,7 +205,7 @@ Pipeline position:
 2. Q59/Q60按current-interface原则原位替换producer、consumer、CLI、fixtures和文档；不保留旧symbol、旧flag、旧reader、
    fallback或双写。StableHLO portable format/version继续按第三方事实检查，不改写成Wafer版本。
 3. Q59先在Q56 current package上闭合结果和commit，Q60再只消费Q59的入口；不得为了产品adapter绕过transaction、直接调用
-   pass、重建CardExecutable或自行写package。
+   pass、重建DeviceExecutable或自行写package。
 4. 每项实现完成时同步其编号设计owner、`tasks/progress.md`和受影响的current测试；只有产生稳定、可复用的构建/调试经验时
    才更新`memory/`。Q59/Q60没有新的board行为，host与no-card门禁完成即可标`done`，真实production workload和board结论仍由
    Q53拥有。

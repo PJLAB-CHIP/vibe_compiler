@@ -2,7 +2,7 @@
 
 状态：本文是target conversion、target-ready program data、LLVM module、device link、readback与TargetCall的唯一现行设计合同；
 Q58/Q56的数据代码实施状态只看`tasks/progress.md`。单卡编译边界固定覆盖16个available Tiles；Q52的
-none/search只将各自final accepted `CardExecutable`接入这条边界。现有host/model
+none/search只将各自final accepted `DeviceExecutable`接入这条边界。现有host/model
 验证不能代替Q53的fresh package/no-card和真实板端matched A/B gate。
 
 ## 1. Pipeline Contract
@@ -10,7 +10,7 @@ none/search只将各自final accepted `CardExecutable`接入这条边界。现�
 ```text
 Pipeline position:
 - Upstream IR / input:
-  Q52 `none`或`search`产生的accepted `CardExecutable`；其中all-and-only `wafer.tile.module`已投影为16个
+  Q52 `none`或`search`产生的accepted `DeviceExecutable`；其中all-and-only `wafer.tile.module`已投影为16个
   Tile ModuleOp，并完成TileRegion→Instr、fresh completion、SPM/DDR placement、transport与executable verification；
   Tile entry携带typed program binding，Q58 `ProgramDataHandoff`稳定拥有对应parameter/external captured-constant文件与checked range。
 - Current stage responsibility:
@@ -18,10 +18,10 @@ Pipeline position:
   target-call legality、device link、ELF/readback验证；同时将logical bindings、ProgramDataRange与16 Tile entry arguments做一次
   all-and-only join，形成selected TargetTensor与bounded materialization input。
 - Output IR / files:
-  与同一`CardExecutable`绑定的invocation-local target LLVM owner set及原子发布target-module view；每个Tile
+  与同一`DeviceExecutable`绑定的invocation-local target LLVM owner set及原子发布target-module view；每个Tile
   interface都携带(card_id, tile_id, launch_slot)、entry symbol、typed `TileEntryArgument[]`、module relation、
   target identity、runtime ABI、format与digest；同一writing result另携带accepted TargetTensor descriptors。
-  它们是`CardExecutable -> ExecutablePackage`之间的lowering内部表示，
+  它们是`DeviceExecutable -> ExecutablePackage`之间的lowering内部表示，
   不是新的稳定output层。
 - Downstream consumer:
   `ExecutablePackage` assembly、no-card/runtime validation、host TargetCall frontend、SystemC model、profile instrumentation
@@ -40,9 +40,9 @@ Pipeline position:
 
 ## 2. 稳定对象与身份
 
-### 2.1 CardExecutable 的 Tile entry
+### 2.1 DeviceExecutable 的 Tile entry
 
-`CardExecutable`原子拥有当前卡all-and-only 16个Tile entries；每个entry包含：
+`DeviceExecutable`原子拥有当前卡all-and-only 16个Tile entries；每个entry包含：
 
 - `CardId`：当前单卡为 `card_id=0`；
 - `TileId`：来自 verified physical topology；
@@ -56,17 +56,17 @@ Pipeline position:
 materializer、JIT bridge、runtime 或 diagnostic 都必须转发 typed fields，而不是使用容器位置重建它们。
 
 没有单Tile production output，也没有把`num_partitions`当作Tile count的入口；`num_partitions`仍属于
-GSPMD的card-level domain。`CardExecutable`是唯一card-level accepted executable boundary，不能再由单Tile聚合或
+GSPMD的card-level domain。`DeviceExecutable`是唯一device-level accepted executable boundary，不能再由单Tile聚合或
 post-selection wrapper定义第二层长期output。
 
 ### 2.2 Program data 与 TargetTensor
 
 Q58 `ProgramDataHandoff`为每个parameter/constant提供稳定`ProgramTensorId`、logical descriptor、owned file和
-checked `ProgramDataRange`；`CardExecutable`的Tile bindings只引用这些identity/slice，不携带payload。
+checked `ProgramDataRange`；`DeviceExecutable`的Tile bindings只引用这些identity/slice，不携带payload。
 Q62把source parser之后仍以`std::string dtype`传播的实现原位切为closed typed logical element value；本层只消费该typed
 descriptor，不能重新解析NPY/JSON spelling或维护第二份element-byte/floating分类表。
 
-target ABI preparation将16个Tile的program bindings与最终entry argument types做一次card-scoped join，验证all-and-only覆盖并形成：
+target ABI preparation将16个Tile的program bindings与最终entry argument types做一次device-scoped join，验证all-and-only覆盖并形成：
 
 - 每个selected `TargetTensor`的ProgramTensor/ProgramDataRange来源；
 - exact target dtype、`MemLayout`、logical shape、physical span、alignment和转换identity；
@@ -82,7 +82,7 @@ device address。
 
 每个accepted Tile只翻译一次，结果由`TargetLLVMModule`连同其`LLVMContext`所有。下游target writing、
 TargetCall frontend和model必须共享这组invocation-local owner-backed modules，不得重新lower accepted IR；该owner set是
-`CardExecutable -> ExecutablePackage` lowering内部结果，不是新的稳定output层。
+`DeviceExecutable -> ExecutablePackage` lowering内部结果，不是新的稳定output层。
 
 current target LLVM module通过typed metadata精确绑定：
 
@@ -111,7 +111,7 @@ TargetTensor slot另携带一个same-invocation materialization action；其它k
 稳定规则：
 
 - parameter/constant对应card-scoped ProgramTensor/TargetTensor；program input/output对应external port；
-- accepted Tile entry在ABI preparation前精确保留frontend的全部真实arguments和results；CardModule内部使用过的
+- accepted Tile entry在ABI preparation前精确保留frontend的全部真实arguments和results；TileModule set内部使用过的
   scheduling destination已被消费，不能作为额外argument到达本层；
 - compiler workspace、profile record与Direct-DTE status是entry-local typed requirements，不伪装成ProgramTensor；
 - output是caller-visible append-only entry argument，不通过隐藏返回buffer或symbol约定发布；
@@ -168,14 +168,14 @@ conversion不得新增“最终统一等待”来掩盖缺失的 Tile-local comp
 
 ### 4.1 保留显式 Tile interfaces
 
-与`CardExecutable`绑定的target writing view包含：
+与`DeviceExecutable`绑定的target writing view包含：
 
 - verified module records；
 - exactly 16 个 `VerifiedTargetTileInterface`；
 - 每个interface的显式`(card_id, tile_id, launch_slot)`、module ID与typed Tile entry arguments；
 - card-level ExecutionConfig与RuntimeLaunchContract。
 
-link/write result记录linker写出并校验过的modules，但只在同一次package transaction内存活，不能成为`CardExecutable`与
+link/write result记录linker写出并校验过的modules，但只在同一次package transaction内存活，不能成为`DeviceExecutable`与
 `ExecutablePackage`之间的第二个长期output事实源。
 
 module topology可以按 runtime launch contract使用不同低层表示：Grid/Cluster允许将 16 个不同 Tile body

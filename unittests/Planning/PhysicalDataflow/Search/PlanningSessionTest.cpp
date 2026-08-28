@@ -61,7 +61,7 @@ module {
         source, mlir::ParserConfig(context.get()));
   }
 
-  static std::unique_ptr<CardProgramAnalysis>
+  static std::unique_ptr<StructuredProgramAnalysis>
   buildProgram(mlir::ModuleOp module, std::string &failureReason) {
     auto function = *module.getOps<mlir::func::FuncOp>().begin();
     auto dag = StructuredDAGAnalysis::create(function, &failureReason);
@@ -85,7 +85,7 @@ module {
     for (const StructuredDAGNode &node : dag->getNodes())
       operationNodes.push_back({node.operation, node.id});
     llvm::SmallVector<TileId, 16> tiles(available->begin(), available->end());
-    return std::make_unique<CardProgramAnalysis>(
+    return std::make_unique<StructuredProgramAnalysis>(
         std::move(*topology), std::move(tiles), std::move(*dag),
         std::move(outputs), std::move(operationNodes));
   }

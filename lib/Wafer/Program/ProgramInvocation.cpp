@@ -180,11 +180,11 @@ llvm::Expected<ProgramTensor> ProgramTensor::loadNpy(llvm::StringRef path) {
 }
 
 llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
-    const CardExecutable &cardExecutable,
+    const DeviceExecutable &deviceExecutable,
     llvm::ArrayRef<ProgramGlobalInputBinding> globalInputs) {
-  if (cardExecutable.getTileExecutables().empty())
+  if (deviceExecutable.getTileExecutables().empty())
     return invalid("program invocation executable domain must not be empty");
-  const ProgramDataHandoff &handoff = cardExecutable.getProgramDataHandoff();
+  const ProgramDataHandoff &handoff = deviceExecutable.getProgramDataHandoff();
 
   // One shared materialization per owned data range: every Tile binding for
   // the same program tensor references the same storage, so parameter and
@@ -192,8 +192,8 @@ llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
   std::map<ProgramTensorId, std::shared_ptr<const std::vector<uint8_t>>>
       materializedRanges;
   std::vector<ProgramTileInvocation> invocations;
-  invocations.reserve(cardExecutable.getTileExecutables().size());
-  for (const TileExecutable &tile : cardExecutable.getTileExecutables()) {
+  invocations.reserve(deviceExecutable.getTileExecutables().size());
+  for (const TileExecutable &tile : deviceExecutable.getTileExecutables()) {
     if (tile.getCardId() != CardId(0))
       return invalid(
           "program invocation supports only the current single-card domain");
@@ -249,7 +249,7 @@ llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
     invocations.push_back(std::move(invocation));
   }
   const auto &firstBindings =
-      cardExecutable.getTileExecutables().front().getProgramBindings();
+      deviceExecutable.getTileExecutables().front().getProgramBindings();
   const size_t expectedGlobalInputs = static_cast<size_t>(
       llvm::count_if(firstBindings, [](const ProgramResourceBinding &binding) {
         return binding.role == ProgramResourceRole::UserInput;

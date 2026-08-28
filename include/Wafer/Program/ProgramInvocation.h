@@ -87,15 +87,15 @@ struct ProgramGlobalInputBinding {
   ProgramTensor tensor;
 };
 
-/// Builds all Tile-local source bindings from typed cardExecutable
+/// Builds all Tile-local source bindings from typed deviceExecutable
 /// slices. User inputs are sliced from complete logical tensors;
 /// parameters/constants are materialized exactly once per owned
-/// ProgramDataRange through the card executable's program data handoff, and
+/// ProgramDataRange through the device executable's program data handoff, and
 /// every Tile view shares the same materialized storage. The function
 /// performs no compute and is shared by independent execution consumers
 /// without sharing their numeric kernels or schedulers.
 llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
-    const CardExecutable &cardExecutable,
+    const DeviceExecutable &deviceExecutable,
     llvm::ArrayRef<ProgramGlobalInputBinding> globalInputs);
 
 /// Applies one already-verified program binding slice to a complete logical

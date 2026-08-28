@@ -2,7 +2,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/SpatialDomain.h"
 
-#include "TestSupport/CodeGen/CardExecutableTestSupport.h"
+#include "TestSupport/CodeGen/ExecutableTestSupport.h"
 #include "TestSupport/Planning/SpatialPlanReference.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/RootRegionWorkAnalysis.h"

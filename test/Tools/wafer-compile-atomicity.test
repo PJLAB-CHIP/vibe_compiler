@@ -47,7 +47,7 @@
 # RUN: test ! -e %t.outputs/bad-metadata
 
 # A marker alone cannot establish the typed user-input/result distribution
-# contract that the tensor program hands to CardModule construction.
+# contract that the tensor program hands to executable construction.
 # RUN: not env HELPER_MODE=no-boundary WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-dir %t.outputs/missing-boundary --num-partitions=1 2>&1 | FileCheck %s --check-prefix=NO-BOUNDARY
 # RUN: test ! -e %t.outputs/missing-boundary
 

@@ -4,7 +4,7 @@
 `tasks/16-verification-contract.md`拥有，状态只看`tasks/progress.md`。本计划只拆施工顺序，不建立第二套总体架构。
 
 状态：Q58已闭合编译事务中的parameter/constant所有权和target data handoff；Q56已落下
-`CardExecutable -> ExecutablePackage -> txLaunchKernel one-shot runtime`并退役model launch分支；首轮review的六个闭环项
+`DeviceExecutable -> ExecutablePackage -> txLaunchKernel one-shot runtime`并退役model launch分支；首轮review的六个闭环项
 （TargetTensor canonical identity、selected representation materialization、TileRow单一invocation allocation、program-data
 canonical layout verification、package root all-and-only closure、中立package support library）均已修复并配回归测试；
 二次review继续收紧了physical-order bounded encoding、正式dtype转换、descriptor codec verification、trailing-byte拒绝、
@@ -47,7 +47,7 @@ Q58完成只证明source data能够安全、bounded且确定地交给target/pack
 ```text
 Pipeline position:
 - Upstream IR / input:
-  final verified CardExecutable、同次target lowering产生的TargetLLVMModules/linked modules、Q58 transaction-owned
+  final verified DeviceExecutable、同次target lowering产生的TargetLLVMModules/linked modules、Q58 transaction-owned
   parameter/constant ranges，以及每Tile canonical TileEntryArgument[]。
 - Current stage responsibility:
   对16个Tile entry arguments做card-level all-and-only join；区分logical ProgramTensor与selected TargetTensor；为所有package-owned
@@ -189,7 +189,7 @@ invocation memory另成一块，是因为它承载每次更新/回读并可在�
 ```text
 Pipeline position:
 - Upstream IR / input:
-  Q56 board-ready的single-card ExecutablePackage、Q53 board-ready的CardExecutable行为及qualified TX provider。
+  Q56 board-ready的single-card ExecutablePackage、Q53 board-ready的DeviceExecutable行为及qualified TX provider。
 - Current stage responsibility:
   将Q56同一memory plan和module set的lifetime从一次invoke延长到prepare/submit*/close；建立device generation、
   explicit completion和poison传播，但不改变compiler ABI、package data或Tile指令。
@@ -216,7 +216,7 @@ transport/profile状态和provider failure state。one-shot API只能成为同�
 | XLA/PJRT | 编译结果与已准备执行对象分离；on-device layout、buffer lifetime和completion显式 | Client聚合compile/load、弱shape检查、把package parameter当每次input |
 | TileRT | prepare一次、地址稳定、重复forward/reset；参数/cache/temp执行前准备 | 假设GPU单kernel、照搬其closed binary内部实现或bs=1限制 |
 | vLLM/SGLang | 将请求调度、cache policy与device execution分层；未来固定容量状态和step metadata作为压力测试 | 把scheduler、prefix tree、KV page分配和serving协议写入Wafer底层runtime |
-| Wafer | CardExecutable、16 Tile、TileEntryArgument、kernel pointer table、每Tile workspace、RDMA/WDMA、Direct-DTE和typed completion | 用外部项目对象替代当前compiler/CRT/provider事实；把历史model-launch adapter保留为current产品分支 |
+| Wafer | DeviceExecutable、16 Tile、TileEntryArgument、kernel pointer table、每Tile workspace、RDMA/WDMA、Direct-DTE和typed completion | 用外部项目对象替代当前compiler/CRT/provider事实；把历史model-launch adapter保留为current产品分支 |
 
 ## 6. 明确不算完成
 
@@ -225,5 +225,5 @@ transport/profile状态和provider failure state。one-shot API只能成为同�
 - 为每个parameter执行独立txMalloc/H2D；
 - runtime根据logical shape重新选择layout或pack；
 - 把source checkpoint、NPY目录或compiler IR复制进执行package；
-- 只通过manifest fixture，未走fresh source→CardExecutable→target data→package→no-card；
+- 只通过manifest fixture，未走fresh source→DeviceExecutable→target data→package→no-card；
 - 用IREE/PJRT/TileRT/vLLM类型名替代Wafer对象，却没有对应现有producer、consumer和verifier。

@@ -568,7 +568,7 @@ private:
         std::get<target::TargetDirectDTEBeginCommand>(command.payload);
     llvm::Expected<TargetModelResolvedRange> status =
         memory.getAddressPlan().resolve(
-            launchSlot, TargetModelAddressSpace::CardDDR,
+            launchSlot, TargetModelAddressSpace::DDR,
             TargetModelAccess::ReadWrite, begin.statusAddress,
             WAFER_TX81_DIRECT_DTE_STATUS_VALUE_BYTES,
             WAFER_TX81_DIRECT_DTE_STATUS_VALUE_BYTES);

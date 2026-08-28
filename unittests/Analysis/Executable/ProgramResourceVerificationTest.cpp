@@ -1,8 +1,8 @@
 //===- ProgramResourceVerificationTest.cpp ------------------------------===//
 
-#include "Wafer/TestSupport/CompilerTesting.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
+#include "Wafer/TestSupport/CompilerTesting.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -74,15 +74,15 @@ module {
     return modules;
   }
 
-  mlir::FailureOr<wafer::analysis::CardInstructionProgramCost>
+  mlir::FailureOr<wafer::analysis::InstructionProgramAggregateCost>
   verifyResources(llvm::ArrayRef<mlir::ModuleOp> modules,
                   const wafer::compiler::ExecutionConfig &executionConfig) {
     llvm::SmallVector<wafer::TileId, 16> tileIds;
     tileIds.reserve(modules.size());
     for (size_t tile = 0; tile < modules.size(); ++tile)
       tileIds.emplace_back(static_cast<int64_t>(tile));
-    return wafer::compiler::testing::verifyProgramResources(
-        modules, tileIds, executionConfig);
+    return wafer::compiler::testing::verifyProgramResources(modules, tileIds,
+                                                            executionConfig);
   }
 
   mlir::DialectRegistry registry;
@@ -392,8 +392,7 @@ module {
   EXPECT_EQ(resources->maximumNoCHopCount.value, 1u);
 }
 
-TEST_F(ProgramResourceVerificationTest,
-       RejectsDuplicateExplicitTileIdentity) {
+TEST_F(ProgramResourceVerificationTest, RejectsDuplicateExplicitTileIdentity) {
   constexpr llvm::StringLiteral source = R"mlir(
 module {
   func.func @main() {

@@ -1,11 +1,11 @@
-//===- CardExecutableLowering.cpp - Card executable lowering ===//
+//===- ExecutableLowering.cpp - Executable lowering =====================//
 
-#include "Wafer/CodeGen/Executable/CardExecutableLowering.h"
+#include "Wafer/CodeGen/Executable/ExecutableLowering.h"
 
 #include "Wafer/Analysis/Executable/ExecutableCallClosure.h"
 #include "Wafer/Analysis/Executable/ProgramResourceVerification.h"
 #include "Wafer/CodeGen/Executable/BoundedTileExecutor.h"
-#include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
+#include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Transforms/Transport/DirectDTETransport.h"
 
@@ -39,39 +39,39 @@
 
 namespace wafer::compiler::detail {
 
-llvm::StringRef CardExecutableLoweringFailure::getDiagnosticLabel() const {
+llvm::StringRef ExecutableLoweringFailure::getDiagnosticLabel() const {
   switch (kind) {
-  case CardExecutableLoweringFailureKind::None:
+  case ExecutableLoweringFailureKind::None:
     return "none";
-  case CardExecutableLoweringFailureKind::Contract:
-    return "card-executable-lowering-contract";
-  case CardExecutableLoweringFailureKind::TileDomain:
+  case ExecutableLoweringFailureKind::Contract:
+    return "device-executable-lowering-contract";
+  case ExecutableLoweringFailureKind::TileDomain:
     return "tile-domain";
-  case CardExecutableLoweringFailureKind::MissingTileModule:
+  case ExecutableLoweringFailureKind::MissingTileModule:
     return "missing-tile-module";
-  case CardExecutableLoweringFailureKind::TileVerification:
+  case ExecutableLoweringFailureKind::TileVerification:
     return "tile-module-verifier";
-  case CardExecutableLoweringFailureKind::DDRPlanning:
+  case ExecutableLoweringFailureKind::DDRPlanning:
     return "card-ddr";
-  case CardExecutableLoweringFailureKind::IndexLowering:
+  case ExecutableLoweringFailureKind::IndexLowering:
     return "tile-index-lowering";
-  case CardExecutableLoweringFailureKind::DirectDTETransport:
+  case ExecutableLoweringFailureKind::DirectDTETransport:
     return "direct-dte";
-  case CardExecutableLoweringFailureKind::ProgramResources:
+  case ExecutableLoweringFailureKind::ProgramResources:
     return "program-resources";
-  case CardExecutableLoweringFailureKind::TileExecutableVerification:
+  case ExecutableLoweringFailureKind::TileExecutableVerification:
     return "tile-executable-verifier";
-  case CardExecutableLoweringFailureKind::CallClosure:
+  case ExecutableLoweringFailureKind::CallClosure:
     return "call-closure";
-  case CardExecutableLoweringFailureKind::ProgramResourceBindings:
+  case ExecutableLoweringFailureKind::ProgramResourceBindings:
     return "program-resource-bindings";
-  case CardExecutableLoweringFailureKind::RuntimeLaunchContract:
+  case ExecutableLoweringFailureKind::RuntimeLaunchContract:
     return "runtime-launch-contract";
   }
-  llvm_unreachable("unknown card executable lowering failure kind");
+  llvm_unreachable("unknown executable lowering failure kind");
 }
 
-bool CardExecutableLoweringFailure::isProvenExactRejection() const {
+bool ExecutableLoweringFailure::isProvenExactRejection() const {
   // The current failure kinds identify the stage that failed, not a proof
   // class. Each stage still combines unsupported IR, verifier/internal errors
   // and (in some cases) exact resource rejection. Until those producers return
@@ -106,21 +106,21 @@ formRuntimeLaunchContract(const ExecutionConfig &executionConfig,
   constexpr std::array prepareMain{RuntimeLaunchPhaseRole::Prepare,
                                    RuntimeLaunchPhaseRole::Main};
   bool requiresRuntimePrepare = false;
-  std::optional<uint64_t> cardDDRSlotsPerTile;
+  std::optional<uint64_t> ddrSlotsPerTile;
   for (mlir::ModuleOp module : acceptedTileModules) {
-    uint64_t currentCardDDRSlots = 0;
+    uint64_t currentDDRSlots = 0;
     module.walk([&](mlir::func::FuncOp function) {
       for (unsigned argument = 0; argument < function.getNumArguments();
            ++argument)
-        currentCardDDRSlots +=
-            static_cast<bool>(function.getArgAttrOfType<CardDDRBindingAttr>(
-                argument, kWaferCardDDRBindingAttrName));
+        currentDDRSlots +=
+            static_cast<bool>(function.getArgAttrOfType<DDRBindingAttr>(
+                argument, kWaferDDRBindingAttrName));
     });
-    if (cardDDRSlotsPerTile && *cardDDRSlotsPerTile != currentCardDDRSlots)
+    if (ddrSlotsPerTile && *ddrSlotsPerTile != currentDDRSlots)
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "card DDR argument count differs across Tile entries");
-    cardDDRSlotsPerTile = currentCardDDRSlots;
+    ddrSlotsPerTile = currentDDRSlots;
     module.walk([&](mlir::Operation *operation) {
       if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(operation))
         requiresRuntimePrepare = true;
@@ -146,7 +146,7 @@ formRuntimeLaunchContract(const ExecutionConfig &executionConfig,
   // bindings have been fixed.
   const uint64_t possibleCompilerSlots =
       2 + static_cast<uint64_t>(requiresRuntimePrepare) +
-      cardDDRSlotsPerTile.value_or(0);
+      ddrSlotsPerTile.value_or(0);
   const KernelEntryABI entryABI =
       programSlotCount > directSlotsPerTile ||
               possibleCompilerSlots > directSlotsPerTile - programSlotCount
@@ -597,32 +597,33 @@ deriveTileDomain(llvm::ArrayRef<mlir::ModuleOp> modules,
 }
 
 struct InstrModuleLoweringResult {
-  InstrModuleLoweringResult(std::vector<TileExecutable> tiles,
-                            RuntimeLaunchContract runtimeLaunchContract,
-                            analysis::CardInstructionProgramCost resourceCost)
+  InstrModuleLoweringResult(
+      std::vector<TileExecutable> tiles,
+      RuntimeLaunchContract runtimeLaunchContract,
+      analysis::InstructionProgramAggregateCost resourceCost)
       : tiles(std::move(tiles)),
         runtimeLaunchContract(std::move(runtimeLaunchContract)),
         resourceCost(std::move(resourceCost)) {}
 
   std::vector<TileExecutable> tiles;
   RuntimeLaunchContract runtimeLaunchContract;
-  analysis::CardInstructionProgramCost resourceCost;
+  analysis::InstructionProgramAggregateCost resourceCost;
 };
 
 static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
     std::vector<mlir::OwningOpRef<mlir::ModuleOp>> modules,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig,
-    CardExecutableLoweringFailureKind &failureKind,
-    ProgramDataHandoff &programData, unsigned tilePipelineParallelism) {
+    ExecutableLoweringFailureKind &failureKind, ProgramDataHandoff &programData,
+    unsigned tilePipelineParallelism) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
-      "lowering", "tile-modules-to-card-executable", "instr-modules");
+      "lowering", "tile-modules-to-device-executable", "instr-modules");
 
   const size_t tileCount = modules.size();
   if (tileCount == 0 ||
       tileCount != static_cast<size_t>(executionConfig.getTileCount()) ||
       program.numPartitions != executionConfig.getNumPartitions()) {
-    failureKind = CardExecutableLoweringFailureKind::TileDomain;
+    failureKind = ExecutableLoweringFailureKind::TileDomain;
     return mlir::failure();
   }
   mlir::MLIRContext *sharedContext = nullptr;
@@ -630,7 +631,7 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
   moduleViews.reserve(tileCount);
   for (mlir::OwningOpRef<mlir::ModuleOp> &owned : modules) {
     if (!owned) {
-      failureKind = CardExecutableLoweringFailureKind::MissingTileModule;
+      failureKind = ExecutableLoweringFailureKind::MissingTileModule;
       return mlir::failure();
     }
     mlir::ModuleOp module = *owned;
@@ -639,7 +640,7 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
     if (module.getContext() != sharedContext ||
         mlir::failed(verifyExactExecutionConfig(module, executionConfig)) ||
         mlir::failed(mlir::verify(module))) {
-      failureKind = CardExecutableLoweringFailureKind::TileVerification;
+      failureKind = ExecutableLoweringFailureKind::TileVerification;
       return mlir::failure();
     }
     moduleViews.push_back(module);
@@ -647,14 +648,14 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
   mlir::FailureOr<llvm::SmallVector<TileId, 16>> tileIds =
       deriveTileDomain(moduleViews, executionConfig);
   if (mlir::failed(tileIds)) {
-    failureKind = CardExecutableLoweringFailureKind::TileDomain;
+    failureKind = ExecutableLoweringFailureKind::TileDomain;
     return mlir::failure();
   }
 
   const TargetMemoryPolicy memory = getTargetMemoryPolicy();
   {
     wafer::support::ScopedCompileTimingSpan timing(
-        "lowering", "tile-modules-to-card-executable", "ddr-planning");
+        "lowering", "tile-modules-to-device-executable", "ddr-planning");
     std::vector<uint8_t> failedTiles(tileCount);
     runBoundedTileModulePipelines(
         moduleViews,
@@ -667,14 +668,14 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
         tilePipelineParallelism == 0 ? kMaximumBoundedTilePipelineWorkers
                                      : tilePipelineParallelism);
     if (llvm::is_contained(failedTiles, uint8_t{1})) {
-      failureKind = CardExecutableLoweringFailureKind::DDRPlanning;
+      failureKind = ExecutableLoweringFailureKind::DDRPlanning;
       return mlir::failure();
     }
   }
 
   {
     wafer::support::ScopedCompileTimingSpan timing(
-        "lowering", "tile-modules-to-card-executable", "index-lowering");
+        "lowering", "tile-modules-to-device-executable", "index-lowering");
     std::vector<uint8_t> failedTiles(tileCount);
     runBoundedTileModulePipelines(
         moduleViews,
@@ -686,7 +687,7 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
         tilePipelineParallelism == 0 ? kMaximumBoundedTilePipelineWorkers
                                      : tilePipelineParallelism);
     if (llvm::is_contained(failedTiles, uint8_t{1})) {
-      failureKind = CardExecutableLoweringFailureKind::IndexLowering;
+      failureKind = ExecutableLoweringFailureKind::IndexLowering;
       return mlir::failure();
     }
   }
@@ -694,23 +695,23 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
   mlir::FailureOr<TransportContract> transport;
   {
     wafer::support::ScopedCompileTimingSpan timing(
-        "lowering", "tile-modules-to-card-executable", "transport");
+        "lowering", "tile-modules-to-device-executable", "transport");
     transport = bindDirectDTETransport(moduleViews);
   }
   if (mlir::failed(transport)) {
-    failureKind = CardExecutableLoweringFailureKind::DirectDTETransport;
+    failureKind = ExecutableLoweringFailureKind::DirectDTETransport;
     return mlir::failure();
   }
 
-  mlir::FailureOr<analysis::CardInstructionProgramCost> resourceCost;
+  mlir::FailureOr<analysis::InstructionProgramAggregateCost> resourceCost;
   {
     wafer::support::ScopedCompileTimingSpan timing(
-        "lowering", "tile-modules-to-card-executable", "program-resources");
+        "lowering", "tile-modules-to-device-executable", "program-resources");
     resourceCost =
         verifyProgramResources(moduleViews, *tileIds, executionConfig);
   }
   if (mlir::failed(resourceCost)) {
-    failureKind = CardExecutableLoweringFailureKind::ProgramResources;
+    failureKind = ExecutableLoweringFailureKind::ProgramResources;
     return mlir::failure();
   }
 
@@ -723,15 +724,14 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
     const TileId tileId = (*tileIds)[tileIndex];
     if (mlir::failed(verifyTileExecutableModule(module, executionConfig, cardId,
                                                 tileId, *transport))) {
-      failureKind =
-          CardExecutableLoweringFailureKind::TileExecutableVerification;
+      failureKind = ExecutableLoweringFailureKind::TileExecutableVerification;
       return mlir::failure();
     }
     llvm::Expected<ExecutableCallClosure> closure =
         analyzeExecutableCallClosure(module);
     if (!closure) {
       llvm::consumeError(closure.takeError());
-      failureKind = CardExecutableLoweringFailureKind::CallClosure;
+      failureKind = ExecutableLoweringFailureKind::CallClosure;
       return mlir::failure();
     }
     // Card-level GSPMD has one partition in the current producer. Every
@@ -741,10 +741,10 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
         buildProgramResourceBindings(program, kSingleCardPartitionId, module,
                                      programData);
     if (mlir::failed(bindings)) {
-      failureKind = CardExecutableLoweringFailureKind::ProgramResourceBindings;
+      failureKind = ExecutableLoweringFailureKind::ProgramResourceBindings;
       return mlir::failure();
     }
-    tiles.push_back(CardExecutableBuilder::makeTileExecutable(
+    tiles.push_back(DeviceExecutableBuilder::makeTileExecutable(
         cardId, tileId, LaunchSlotId(static_cast<int64_t>(tileIndex)),
         std::move(modules[tileIndex]), closure->entry.getSymName(),
         std::move(*bindings), *transport));
@@ -754,14 +754,14 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
   if (llvm::any_of(tiles, [&](const TileExecutable &tile) {
         return tile.getProgramBindings().size() != programSlotCount;
       })) {
-    failureKind = CardExecutableLoweringFailureKind::RuntimeLaunchContract;
+    failureKind = ExecutableLoweringFailureKind::RuntimeLaunchContract;
     return mlir::failure();
   }
   llvm::Expected<RuntimeLaunchContract> runtimeLaunchContract =
       formRuntimeLaunchContract(executionConfig, moduleViews, programSlotCount);
   if (!runtimeLaunchContract) {
     llvm::consumeError(runtimeLaunchContract.takeError());
-    failureKind = CardExecutableLoweringFailureKind::RuntimeLaunchContract;
+    failureKind = ExecutableLoweringFailureKind::RuntimeLaunchContract;
     return mlir::failure();
   }
 
@@ -772,25 +772,24 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
 
 } // namespace
 
-mlir::FailureOr<CardExecutableLoweringResult> lowerTileModulesToCardExecutable(
+mlir::FailureOr<ExecutableLoweringResult> lowerTileModulesToExecutable(
     std::vector<mlir::OwningOpRef<mlir::ModuleOp>> tileModules,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-    CardExecutableLoweringFailure &failure, ProgramDataHandoff &programData,
-    CardExecutableLoweringStatistics *statistics,
+    ExecutableLoweringFailure &failure, ProgramDataHandoff &programData,
+    ExecutableLoweringStatistics *statistics,
     unsigned tilePipelineParallelism) {
   failure = {};
-  auto fail = [&](CardExecutableLoweringFailureKind kind,
-                  llvm::StringRef message) {
+  auto fail = [&](ExecutableLoweringFailureKind kind, llvm::StringRef message) {
     failure.kind = kind;
     failure.detail = message.str();
     if (!message.empty())
       diagnostics << "wafer-compile: " << message << '\n';
-    return mlir::FailureOr<CardExecutableLoweringResult>(mlir::failure());
+    return mlir::FailureOr<ExecutableLoweringResult>(mlir::failure());
   };
 
-  CardExecutableLoweringFailureKind failureKind =
-      CardExecutableLoweringFailureKind::None;
+  ExecutableLoweringFailureKind failureKind =
+      ExecutableLoweringFailureKind::None;
   if (statistics)
     ++statistics->tileModuleLoweringAttempts;
   mlir::FailureOr<InstrModuleLoweringResult> loweredInstrModules =
@@ -798,12 +797,12 @@ mlir::FailureOr<CardExecutableLoweringResult> lowerTileModulesToCardExecutable(
                                   executionConfig, failureKind, programData,
                                   tilePipelineParallelism);
   if (mlir::failed(loweredInstrModules) &&
-      failureKind == CardExecutableLoweringFailureKind::None)
-    return fail(CardExecutableLoweringFailureKind::Contract,
+      failureKind == ExecutableLoweringFailureKind::None)
+    return fail(ExecutableLoweringFailureKind::Contract,
                 "Tile Instr lowering failed without identifying "
                 "the failing operation");
   if (mlir::failed(loweredInstrModules)) {
-    CardExecutableLoweringFailure classified{failureKind, {}};
+    ExecutableLoweringFailure classified{failureKind, {}};
     std::string message = "Tile modules failed executable lowering step '" +
                           classified.getDiagnosticLabel().str() + "'";
     return fail(failureKind, message);
@@ -812,8 +811,8 @@ mlir::FailureOr<CardExecutableLoweringResult> lowerTileModulesToCardExecutable(
     ++statistics->tileModuleLoweringSuccesses;
 
   if (statistics)
-    ++statistics->cardExecutablesProduced;
-  return CardExecutableLoweringResult(
+    ++statistics->deviceExecutablesProduced;
+  return ExecutableLoweringResult(
       std::move(loweredInstrModules->tiles),
       std::move(loweredInstrModules->runtimeLaunchContract),
       std::move(loweredInstrModules->resourceCost));

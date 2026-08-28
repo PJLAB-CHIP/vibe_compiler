@@ -1,6 +1,6 @@
 # Wafer TileRegion IR 与事务物化
 
-本文定义`wafer.card.module`、`wafer.tile.module`和`wafer.tile.region`的selected actual IR边界，以及从
+本文定义`builtin.module`、`wafer.tile.module`和`wafer.tile.region`的selected actual IR边界，以及从
 card-local TensorProgram构造该IR的唯一transformation。Spatial/region/temporal choice归06号设计；compute/movement类型化
 lowering归10号设计；Instr、memory和communication分别归11–13。
 
@@ -20,13 +20,13 @@ TileRegion物化是确定性IR transformation，不是第二个optimizer。Basel
   temporal traversal参数；
 - 显式target configuration和本次rewrite可重算的analysis。
 
-它的输出是candidate-owned actual structural Card/TileRegion IR。不接收也不创建future physical value、storage object、event、
+它的输出是candidate-owned actual structural TileModule/TileRegion IR。不接收也不创建future physical value、storage object、event、
 schedule或completion plan。下游只从输出IR的operation、SSA、type、region、control flow和effect读取事实，并按08、10、11的
 固定顺序完成physical realization、execution structure和Instr。
 
 ```text
 post-attention bounded-normalized TensorProgram + structural choice
-  -> candidate-owned Card/TileRegion rewrite
+  -> candidate-owned TileModule/TileRegion rewrite
   -> compact temporal tile-and-fuse; attention remains one semantic op
   -> selected-attention lowering to actual Linalg/Tensor/SCF
   -> late remainder specialization and local slice/view cleanup
@@ -48,13 +48,13 @@ Pipeline position:
   collective和fixed FA/FD attention完整表达语义，不携带e-class或rewrite history。
   Baseline入口不额外接收search choice；search入口另接收closed spatial/region/temporal choice。
 - Current stage responsibility:
-  消费spatial/region/temporal choice，在新Card subtree中生成all-and-only TileModules、non-nested TileRegions、
+  消费spatial/region/temporal choice，在builtin module中生成all-and-only top-level TileModules和non-nested TileRegions、
   先从current producer/use生成canonical traversal loop和compute SSA；compact tile-and-fuse期间attention保持同一个semantic op。
   随后的独立selected-attention lowering才消费固定algorithm与剩余attention choice并生成canonical actual Linalg/Tensor/SCF、
   coupled state和loop-carried SSA。最后只specialize必要tail并清理本次产生的local slice/view。只生成structural IR，不选择或物化
   layout、movement、software pipeline、rotating storage、worker、order或completion。
 - Output IR / files:
-  verifier-valid structural `wafer.card.module`、`wafer.tile.module`、`wafer.tile.region`以及实际Linalg/Tensor/SCF或typed Tile compute。
+  verifier-valid structural `builtin.module`、`wafer.tile.module`、`wafer.tile.region`以及实际Linalg/Tensor/SCF或typed Tile compute。
 - Downstream consumer:
   current-IR layout/view/function-boundary与region-local bufferization；随后依次是movement/boundary closure、Tile execution structure、
   TileRegion-to-Instr/worker/order/completion与actual SPM/DDR/transport/target gate。
@@ -71,10 +71,11 @@ Pipeline position:
 
 ## 3. IR 层级
 
-### 3.1 `wafer.card.module`
+### 3.1 `builtin.module`
 
-CardModule拥有一个card的observable boundary、shared DDR declaration、all-and-only TileModules和跨Tile communication验证范围。
-它是candidate transaction的最小card-scoped owner，不存放candidate list或score。
+`builtin.module`拥有candidate的topology/mesh、shared DDR declarations和all-and-only top-level TileModules，是本次
+candidate transaction的共同owner，不存放candidate list或score。每个physical identity由TileModule上的
+`(card_id, tile_id)`表达；builtin module自身不复制该身份。
 
 ### 3.2 `wafer.tile.module`
 
@@ -94,7 +95,7 @@ TileRegion是一个Tile内selected execution与local storage ownership scope，�
 
 Structural和layout-resolved form不宣称SPM容量合法，也不允许SPM memref root直接作为region operand/result。Layout-resolved tensor
 boundary只能通过current SSA和标准bufferization/view operation绑定region内的实际endpoint；这种bridge不是跨region SPM alias许可，
-card-scoped stage check只允许它形成同一candidate内的直接TileRegion boundary chain，且下一直接consumer必须是movement
+module-stage check只允许它形成同一candidate内的直接TileRegion boundary chain，且下一直接consumer必须是movement
 transformation；它不能进入其它pass或accepted IR。该关系不能放入side table、名字或临时attribute。
 Movement stage必须消除所有未闭合的tensor boundary并形成physical form；不能先创建DDR donor再替换成peer路线。
 
@@ -133,9 +134,9 @@ Region formation必须覆盖fanout的每个use、reduction partial/merge、effec
 
 1. **只读preflight**：在第一次mutation前检查source op/interface、type/indexing、symbol closure和Tile domain。Baseline在本次
    调用中直接得到固定参数；search检查其closed spatial/region/temporal choice。临时C++对象不创建future SSA/buffer/event。
-2. **建立transaction**：controller为本次attempt提供唯一candidate owner。当前路径在source parent下新建CardModule和all-and-only
+2. **建立transaction**：controller为本次attempt提供唯一candidate owner。当前路径在source parent下新建TileModule set和all-and-only
    TileModules时，不再clone该owner；只有试行已有isolated owner且caller仍需保留原IR时，controller才clone最近的
-   `IsolatedFromAbove` scope。Source保持不变；failure只擦除新subtree。后续tile/fuse与attention lowering不得再clone Card/Tile owner。
+   `IsolatedFromAbove` scope。Source保持不变；failure只擦除新subtree。后续tile/fuse与attention lowering不得再clone TileModule owner。
 3. **创建TileRegion与traversal**：根据region membership和explicit replica创建non-nested regions及actual roots。Temporal domain只
    保存自由tile参数和dependence-legal loop order；可从current producer/consumer exact relation唯一推导的tile不是独立choice，
    non-unique/unsupported/indeterminate关系保留原自由参数与独立producer。FD可按explicit contribution/merge choice创建body仅含
@@ -151,7 +152,7 @@ Region formation必须覆盖fanout的每个use、reduction partial/merge、effec
 5. **独立lower selected attention**：调用05号唯一selected-attention transformation，读取current attention op、固定FA/FD及尚未消费的
    K1/K2、contribution/merge choice，一次性创建actual QK、scale/mask、Maximum/Sum/Accumulator、PV、combine/finalize、tensor slice与
    SCF state。FD需要同时创建多个TileModule/TileRegion中的contribution和selected merge，因此该transformation锚定在candidate
-   CardModule这一最近共同owner，不作为读取root sibling的TileRegion pass。它不重跑generic tile-and-fuse，不接收future
+   TileModule set这一最近共同owner，不作为读取root sibling的TileRegion pass。它不重跑generic tile-and-fuse，不接收future
    action/value/materialization ID，不创建Instr/join/wait，成功后attention op为零。
 6. **late remainder specialization**：对上述两种transformation产生的ragged loops按内到外只peel最后一个partial iteration，promote
    单次tail loop并运行bounded canonicalization、CSE和DCE；不peel first。`r`个ragged tiled axes最多产生`2^r`个static main/tail
@@ -202,7 +203,7 @@ Operation verifier只检查TileRegion自身和local operand/result/region关系�
 
 Structural stage拒绝physical allocation/movement；layout-resolved stage要求每个实际use具有current endpoint且没有route/staging；
 physical stage要求所有shaped boundary闭合为DDR或typed communication，并拒绝tensor boundary和跨region SPM alias。
-Card/Tile coverage、cross-region root/alias、communication totality和lifetime在最近common owner上运行stage check。不在verifier中重建
+TileModule/Tile coverage、cross-region root/alias、communication totality和lifetime在最近common owner上运行stage check。不在verifier中重建
 expected execution、future buffer或event inventory。
 
 所有precondition尽量在第一次mutation前检查。Mutation后失败擦除candidate owner并返回compiler error，不使用
@@ -239,7 +240,7 @@ fallback builder或partial result。Unsupported semantics、resource exhaustion�
   necessary tail或explicit replica解释；selected-attention lowering对每个actual occurrence恰运行一次；FA产生一个
   K2-owner的actual coupled-state recurrence；FD target Region shells逐显式choice存在且compact前后只有terminator，selected lowering后
   contributions、merge/finalize和跨Region current tensor boundary all-and-only，进入layout前attention op和未填充attention shell均为零；
-- structural candidate owner每attempt只新建或clone一次；tile/fuse和selected-attention lowering均不额外clone Card/Tile owner；
+- structural candidate owner每attempt只新建或clone一次；tile/fuse和selected-attention lowering均不额外clone TileModule owner；
 - exact/partial view、layout-compatible/incompatible、shared conversion、alias和explicit copy；
 - function result direct destination、region-local SPM reuse和真正cross-region DDR boundary；因output DPS缺失产生的冗余
   DDR→DDR publication copy为0，必要copy有SSA/alias/effect witness并在movement closure后成为typed movement；Instr

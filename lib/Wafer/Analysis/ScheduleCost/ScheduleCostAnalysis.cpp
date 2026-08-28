@@ -510,11 +510,12 @@ static void collectMinimumHopLinkByteDemand(
 
 } // namespace
 
-static CardInstructionProgramCost analyzeCardInstructionProgramCostImpl(
+static InstructionProgramAggregateCost
+analyzeInstructionProgramAggregateCostImpl(
     llvm::ArrayRef<TileInstructionProgram> tileModules,
     const TargetMemoryPolicy &policy,
     llvm::ArrayRef<llvm::DenseSet<mlir::Operation *>> includedOperations) {
-  CardInstructionProgramCost result;
+  InstructionProgramAggregateCost result;
   std::vector<InstructionProgramCost> tileCosts(tileModules.size());
   llvm::parallelFor(0, tileModules.size(), [&](size_t tileIndex) {
     tileCosts[tileIndex] =
@@ -588,13 +589,13 @@ static CardInstructionProgramCost analyzeCardInstructionProgramCostImpl(
   return result;
 }
 
-CardInstructionProgramCost analyzeCardInstructionProgramCost(
+InstructionProgramAggregateCost analyzeInstructionProgramAggregateCost(
     llvm::ArrayRef<TileInstructionProgram> tileModules,
     const TargetMemoryPolicy &policy) {
-  return analyzeCardInstructionProgramCostImpl(tileModules, policy, {});
+  return analyzeInstructionProgramAggregateCostImpl(tileModules, policy, {});
 }
 
-CardInstructionProgramCost analyzeCardInstructionProgramCostSlice(
+InstructionProgramAggregateCost analyzeInstructionProgramAggregateCostSlice(
     llvm::ArrayRef<TileInstructionProgramSlice> tileModules,
     const TargetMemoryPolicy &policy) {
   llvm::SmallVector<TileInstructionProgram, 16> programs;
@@ -606,8 +607,8 @@ CardInstructionProgramCost analyzeCardInstructionProgramCostSlice(
     includedOperations.emplace_back(slice.includedOperations.begin(),
                                     slice.includedOperations.end());
   }
-  return analyzeCardInstructionProgramCostImpl(programs, policy,
-                                               includedOperations);
+  return analyzeInstructionProgramAggregateCostImpl(programs, policy,
+                                                    includedOperations);
 }
 
 llvm::StringRef

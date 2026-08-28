@@ -53,6 +53,11 @@ verifyNoSchemaFreeSemanticAttributes(mlir::Operation *operation);
 /// direct consumer.
 mlir::LogicalResult verifyTileRegionStorageBoundaries(mlir::ModuleOp module);
 
+/// Verifies module-scoped Tile identity and shared DDR bindings. TileModule
+/// operation verification remains local and never inspects sibling modules or
+/// declarations.
+mlir::LogicalResult verifyTileModuleCollection(mlir::ModuleOp module);
+
 /// Verifies tensor-program collective partition IDs against the module-owned
 /// execution mesh. Collective operation verifiers check only their local
 /// groups, shapes, regions, and attributes.
@@ -81,11 +86,9 @@ namespace wafer {
 
 inline constexpr char kWaferSPMOffsetAttrName[] = "wafer.spm.offset";
 inline constexpr char kWaferDDROffsetAttrName[] = "wafer.ddr.offset";
-inline constexpr char kWaferCardDDRBindingAttrName[] = "wafer.card_ddr.binding";
-inline constexpr char kWaferCardDDRResourceAttrName[] =
-    "wafer.card_ddr.resource";
-inline constexpr char kWaferCardDDRMovementAttrName[] =
-    "wafer.card_ddr.movement";
+inline constexpr char kWaferDDRBindingAttrName[] = "wafer.ddr_binding";
+inline constexpr char kWaferDDRResourceAttrName[] = "wafer.ddr_resource";
+inline constexpr char kWaferDDRMovementAttrName[] = "wafer.ddr_movement";
 inline constexpr int64_t kWaferSPMBankLineBytes = 256;
 
 /// Typed parameter contract shared by instruction verification and consumers

@@ -9,7 +9,7 @@ IR 语义、memory、target、verification 和源码组织；本文不复制这�
 ```text
 Pipeline position:
 - Upstream IR / input:
-  verified StableHLO/Linalg/TensorProgram，以及已经选择并物化的 CardModule、TileModule、TileRegion、Instr；
+  verified StableHLO/Linalg/TensorProgram，以及已经选择并物化的top-level TileModule set、TileRegion、Instr；
   target topology、mesh、symbol/call relation 均由对应上游 output contract显式提供。
 - Current stage responsibility:
   让operation hierarchy成为真实的pass、analysis和rewrite作用域；用ODS、SSA、标准interface、
@@ -18,11 +18,11 @@ Pipeline position:
   pass 外 mutable side state 代替 MLIR 合同；明确普通pass、framework transaction、显式alternative/reducer/autotuning、
   IR-free planning、selected materialization与最终output fan-out各自的owner、失败语义和产物生命周期，删除没有对应语义边界的重复改写。
 - Output IR / files:
-  与 01–18 定义相同的 TensorProgram、CardModule/TileRegion、Instr、CardExecutable 和 target modules；每层 IR
+  与 01–18 定义相同的 TensorProgram、TileModule/TileRegion、Instr、DeviceExecutable 和 target modules；每层 IR
   自包含、可 roundtrip、可由 verifier 判定，pass pipeline 可打印并在相同输入上确定性重新运行。
 - Downstream consumer:
   frontend/StableHLO/SPMD、physical-dataflow mechanism/search、SPM/DDR、NCC required-join placement、
-  CardExecutable verification、target conversion、package
+  DeviceExecutable verification、target conversion、package
   writing，以及 wafer-opt focused testing 和 wafer-compile production driver。
 - User-level driver / named pipeline:
   wafer-compile仍是source-to-package唯一production入口；wafer-opt注册按输入/输出IR或稳定动作命名的
@@ -35,7 +35,7 @@ Pipeline position:
   强行替代 compiler 所需的 typed accepted/exact-rejection/indeterminate 结果。
 - Done criteria:
   semantic Location 和 schema 外 semantic attr 清零；标准 interface 与 alias/effect 合同闭合；local、function、
-  module/card scope各自只有一个实现事实源；production与named pipeline复用同一lowering；analysis可重算且
+  module/Tile scope各自只有一个实现事实源；production与named pipeline复用同一lowering；analysis可重算且
   invalidation 正确；pattern局部mutation安全且compiler失败结果不发布；active与dormant source中的IR duplication/materialization
   均有可复核的scope、owner、work上界和产物去向；fresh build、unit/lit、IR/source organization、代表
   source-to-package digest/oracle/no-card和真实执行点计数/耗时门禁通过。
@@ -55,10 +55,10 @@ Wafer不使用一条“是否clone”或“是否module pass”的统一规则�
 | explicit transaction | 最近的IsolatedFromAbove owner或明确的compiler output owner | 失败时销毁transaction result，不发布部分output |
 | analysis / dataflow | current operation和显式只读target facts | 不修改IR；相关mutation后失效并重算 |
 | pre-structural planning | immutable TensorProgram与spatial/region/temporal choice | 不构造IR，不保存Operation pointer、offset或hidden epoch；choice闭合后立即交给materializer |
-| policy-specific materialization | baseline从current TensorProgram/固定规则直接构造；search消费explicit structural choice；两者各有独立Card/Tile owner | 生成actual TileRegion IR；后续只在current IR上实施；rejected/loser销毁，Accepted owner不重建 |
+| policy-specific materialization | baseline从current TensorProgram/固定规则直接构造；search消费explicit structural choice；两者各有独立TileModule owner | 生成actual TileRegion IR；后续只在current IR上实施；rejected/loser销毁，Accepted owner不重建 |
 | current-IR physical/execution transforms | candidate-owned structural/physical TileRegion | layout stage一次完成function-boundary与region-local bufferization，随后movement和execution structure分别对current IR立即变换；每次mutation后旧analysis失效；不传future value/buffer/event plan |
 | actual memory/target leaf | completion-closed canonical Instr IR及current relations | 返回typed accepted/rejection/failure，不运行bufferization、completion reconstruction，也不选择或repair candidate |
-| output fan-out | 已accepted CardExecutable及明确请求的target/package variants | 每个真实output有唯一owner；只为真实consumer复制或转换 |
+| output fan-out | 已accepted DeviceExecutable及明确请求的target/package variants | 每个真实output有唯一owner；只为真实consumer复制或转换 |
 
 Operation verifier只检查自身、owned region结构及operand/result/attribute局部关系。Card/module topology、symbol closure、
 call graph、alias/lifetime、completion、resource和ABI由最近的共同parent或直接消费stage检查。Builder具体op数量、selector链、
@@ -120,7 +120,7 @@ Stable ODS schema至少覆盖：
 terminator interface。Wafer verifier 继续拥有 Tile-local SPM boundary、single-block 和 target-specific relation；
 通用 dataflow/inlining/forwarding 不再复制 op-name whitelist。
 
-CardModule/TileModule 的 symbol table、call target、topology 和 mesh 通过 `SymbolRefAttr`、`SymbolTableCollection` 与
+TileModule 的 symbol table、call target、topology 和 mesh 通过 `SymbolRefAttr`、`SymbolTableCollection` 与
 call interface 解析。CLI 可以提供默认 symbol 名，IR 合同不能依赖 `@default`、同类 sibling ordinal 或打印字符串 digest。
 
 ## 4. Operation scope 与 PassManager
@@ -129,12 +129,12 @@ call interface 解析。CLI 可以提供默认 symbol 名，IR 合同不能依�
 
 | Anchor | 应负责 | 不应负责 |
 | --- | --- | --- |
-| `ModuleOp` / card root | topology/mesh 与 symbol/call closure、function-boundary bufferization、card DDR/transport/resource/ABI verification、module fan-out、closed target conversion | 为每个 TileRegion 重跑 local conversion、local lifetime 或 local canonicalization |
-| `CardModuleOp` / `TileModuleOp` | card/tile all-and-only coverage、tile-level symbol boundary、独立Tile output preparation | 以全module walk恢复局部region对应 |
+| `ModuleOp` | topology/mesh、top-level Tile domain、symbol/call closure、function-boundary bufferization、shared DDR/transport/resource/ABI verification、module fan-out、closed target conversion | 为每个 TileRegion 重跑 local conversion、local lifetime 或 local canonicalization |
+| `TileModuleOp` | local region结构、typed `(card_id, tile_id)`、tile-level symbol boundary与独立Tile output preparation | 遍历siblings恢复complete Tile domain或跨Tile relation |
 | `func::FuncOp` | 跨TileRegion/loop的outstanding NCC access与required join、call-site boundary、function-local control/dataflow summary | 每个region建synthetic function再执行同一func pipeline |
-| `TileRegionOp` | Tile→Instr conversion、region canonicalization、local lifetime与SPM root conflicts/packing query | call graph、跨region pending state、function-boundary bufferization、card verification |
+| `TileRegionOp` | Tile→Instr conversion、region canonicalization、local lifetime与SPM root conflicts/packing query | call graph、跨region pending state、function-boundary bufferization、module verification |
 
-Module scope 本身不是问题。One-Shot function-boundary bufferization、card DDR 与 transport verification、跨函数 shared-arena
+Module scope 本身不是问题。One-Shot function-boundary bufferization、shared DDR 与 transport verification、跨函数 shared-arena
 legality、output writing 和 Target LLVM full conversion确实需要全局视图，必须保留。问题是把局部工作揉进这些
 pass，或为获得 ModuleOp anchor 人工包装已经 `IsolatedFromAbove` 的 TileRegion。
 
@@ -145,7 +145,7 @@ RegionBranch contract完成原子替换。不能为了“region-local”破坏 p
 ### 4.2 Pass 组织
 
 - 每个 pass 只拥有一个可命名 transformation 或 analysis-materialization boundary；需要“并且”连接两个 stage 时拆分。
-- 在 `Passes.td` 中按 operation anchor 声明 Module/Card/Tile/Func/TileRegion pass，并完整声明 dependent dialect、option 和
+- 在 `Passes.td` 中按 operation anchor 声明 Module/Tile/Func/TileRegion pass，并完整声明 dependent dialect、option 和
   statistics；pass object 不保存跨 invocation mutable compiler state。
 - pass declaration、factory、registration与pipeline builder按conversion、memory planning、target等稳定子系统组织；umbrella
   header/source只聚合注册，不重新实现stage逻辑。
@@ -212,7 +212,7 @@ PassManager/anchor IR epoch内有效，不能把`Analysis *`或其中的operatio
 
 同一IR-derived算法由policy-free typed builder实现：pass consumer可以用薄AnalysisManager wrapper缓存它；driver-level planning
 adapter则直接调用同一builder，建立session-owned结果，不在pass外构造第二个AnalysisManager，也不保留analysis引用。每个complete
-candidate物化Card/Tile subtree后进入独立IR epoch；candidate lowering在其current IR上重新取得所需analysis，结束后全部失效。
+candidate物化top-level TileModule subtrees后进入独立IR epoch；candidate lowering在其current IR上重新取得所需analysis，结束后全部失效。
 source IR与partial memo在session中保持immutable，但不得保存candidate pointer/relation/offset。这样共享的是query实现和typed schema，
 不是cache或lifetime。
 
@@ -303,10 +303,10 @@ Wafer中的root duplication只允许以下明确类别：
 
 | 类别 | owner与产物命运 | 约束 |
 | --- | --- | --- |
-| policy-specific actual candidate | baseline或search各自复制所需局部source operation，形成独立Card/Tile owner | baseline attempt直接物化一次；search structural choice物化一次；后续只作用于current IR；失败/loser销毁，Accepted不重建；两条policy不共享materializer |
+| policy-specific actual candidate | baseline或search各自复制所需局部source operation，形成独立TileModule owner | baseline attempt直接物化一次；search structural choice物化一次；后续只作用于current IR；失败/loser销毁，Accepted不重建；两条policy不共享materializer |
 | Card→Tile output fan-out | 大型Tile bodymove到唯一output；每个output都需要的小型declaration按IRMapping复制 | 每份copy有真实下游consumer，按Tile/launch identity稳定汇合 |
 | external helper projection | transaction从source投影helper所需Module并序列化 | helper input是明确output，失败随transaction销毁，不回灌隐藏state |
-| target/package variant | accepted CardExecutable按明确请求构造ordinary/profile等私有target output | 每个真实variant完整lower一次；不提前构造后丢弃，也不从另一variant恢复语义 |
+| target/package variant | accepted DeviceExecutable按明确请求构造ordinary/profile等私有target output | 每个真实variant完整lower一次；不提前构造后丢弃，也不从另一variant恢复语义 |
 | reducer/debug | 显式tool mode复制isolated root并产生诊断或reproducer | 普通compile默认不执行，产物不进入candidate identity或下一次编译 |
 
 Pre-structural planning不复制或物化IR；structural choice闭合后只产生一份candidate-owned TileRegion IR。局部SPM probe、

@@ -84,7 +84,7 @@ struct ProfileStaticCostMetric {
 };
 
 struct ProfileStaticCostRates {
-  uint64_t cardDDRBytesPerSecond = 0;
+  uint64_t ddrBytesPerSecond = 0;
   uint64_t directionalNoCBytesPerSecond = 0;
   uint64_t f16Bf16NPULogicalOpsPerSecondPerTile = 0;
   uint64_t f16Bf16VectorLogicalOpsPerSecondPerTile = 0;

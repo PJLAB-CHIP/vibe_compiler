@@ -3,9 +3,9 @@
 #ifndef WAFER_MODEL_TARGETMODELINVOCATION_H
 #define WAFER_MODEL_TARGETMODELINVOCATION_H
 
+#include "Wafer/Model/Core/TargetModelMemory.h"
 #include "Wafer/Program/ProgramInvocation.h"
 #include "Wafer/Target/Execution/TargetCallExecution.h"
-#include "Wafer/Model/Core/TargetModelMemory.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -70,7 +70,7 @@ public:
 
 private:
   friend llvm::Expected<PreparedTargetModelInvocation>
-  prepareTargetModelInvocation(const compiler::CardExecutable &,
+  prepareTargetModelInvocation(const compiler::DeviceExecutable &,
                                const compiler::TargetLLVMModules &,
                                llvm::ArrayRef<compiler::ProgramTileInvocation>);
 
@@ -95,10 +95,11 @@ decodeTargetModelProgramTensor(const compiler::TileEntryArgument &slot,
                                llvm::ArrayRef<uint8_t> physicalBytes);
 
 /// Exact card binding from the accepted source invocation to the target
-/// LLVM fixed ABI. Every non-output program resource and every tile entry argument
-/// is consumed exactly once before host JIT materialization is returned.
+/// LLVM fixed ABI. Every non-output program resource and every tile entry
+/// argument is consumed exactly once before host JIT materialization is
+/// returned.
 llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
-    const compiler::CardExecutable &cardExecutable,
+    const compiler::DeviceExecutable &deviceExecutable,
     const compiler::TargetLLVMModules &targetLLVMModules,
     llvm::ArrayRef<compiler::ProgramTileInvocation> programInvocations);
 

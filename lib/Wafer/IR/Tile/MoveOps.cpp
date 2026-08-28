@@ -111,7 +111,7 @@ mlir::LogicalResult MoveExtractSliceOp::verify() {
 }
 
 mlir::LogicalResult MoveInsertSliceOp::verify() {
-  if (CardDDRResourceAttr resource = getCardDdrResourceAttr())
+  if (DDRResourceAttr resource = getDdrResourceAttr())
     if (resource.getResourceId() < 0)
       return emitOpError("card DDR movement resource must be non-negative");
   mlir::RankedTensorType sourceTensor;
@@ -131,7 +131,7 @@ mlir::LogicalResult MoveInsertSliceOp::verify() {
 }
 
 mlir::LogicalResult MoveCopyOp::verify() {
-  if (CardDDRResourceAttr resource = getCardDdrResourceAttr())
+  if (DDRResourceAttr resource = getDdrResourceAttr())
     if (resource.getResourceId() < 0)
       return emitOpError("card DDR movement resource must be non-negative");
   mlir::RankedTensorType sourceTensor;

@@ -7,7 +7,8 @@ verified package。仓库同时提供 no-card validation 和 repo-owned TargetCa
 用于在真实板卡接入前验证 compiler、ABI、memory、transport 和数值语义。
 
 logical card partition 和 Tile 是两个不同的 domain：`num_partitions` 只属于 GSPMD/global tensor
-boundary，card-local MPMD 由 `wafer.card.module` 和 16 个 `wafer.tile.module` 显式表示。current package schema
+boundary，card-local MPMD 由builtin module中的16个top-level
+`wafer.tile.module(card_id, tile_id)`显式表示。current package schema
 只包含 all-and-only Tile executable 和 card resource/launch 合同；不再存在 logical rank 直接绑定
 Tile、single-Tile entry ABI 或兼容 reader。
 
@@ -19,10 +20,11 @@ PyTorch/XLA StableHLO program directory
   -> Shardy/XLA SPMD partitioning (logical card partitions)
   -> card-local Linalg/Tensor/SCF structured DAG
   -> bounded structured-DAG spatial/temporal/dataflow search
-  -> wafer.card.module -> all physical wafer.tile.module bodies
+  -> top-level wafer.tile.module(card_id, tile_id)*
+  -> per-Tile module fan-out
   -> Tile IR -> Instr IR + completion + SPM/DDR + Direct-DTE gates
-  -> card verification and candidate selection
-  -> CardExecutable
+  -> module/executable verification and candidate selection
+  -> DeviceExecutable
        ├─ same-lowering Target LLVM -> TargetCall/SystemC
        └─ device link -> typed manifest -> verified package
                             ├─ no-card RuntimeSession
@@ -41,12 +43,12 @@ analysis 和 rejected state 都是 query-local compiler state，不进入 IR 或
 - **物理实现**：支持 Tensor/Cx/NCx physical encoding、metadata view、compact/mapped DMA、SPM gather/scatter、
   relation-backed resident transfer 和 fixed-capacity SPM/DDR packing。
 - **Topology-aware 通信**：cross-Tile edge 从 current SSA/indexing relation 推导 exact demanded domain，只传输 placement
-  中缺失的部分；selected CardModule 内使用显式 peer send/receive/wait。collective lowering 同样由 current
+  中缺失的部分；selected Tile modules内使用显式peer send/receive/wait。collective lowering同样由current
   topology 和实际 Tile group 验证。
 - **Typed target capability**：覆盖 mapped RDMA/WDMA offset、physical-footprint fill、GEMM/batched GEMM 和 versioned
   oriented GEMM ABI。
 - **原子输出**：完整 Tile set 通过 DDR、NoC、instruction、event、ABI、device-link、manifest 和 readback gate 后，
-  才写入 `CardExecutable`、Target LLVM modules 和 verified package。
+  才写入 `DeviceExecutable`、Target LLVM modules 和 verified package。
 - **功能数值验证**：同一 target lowering 可由 TargetCall/SystemC model 消费，并与独立 CPU expected 比较完整输出。
 - **板端 runtime**：`wafer-run`对整个 verified package 建立 typed kernel/model session，执行
   allocation/H2D/load/submit/completion/status/D2H/cleanup；不提供选单个 Tile entry 的入口。
@@ -132,8 +134,8 @@ build/bin/wafer-compile \
   --optimization-policy search
 ```
 
-`search`和`none`是两个独立controller，分别构造自己的current Card/Tile/Instr IR，只在policy-complete后消费同一个actual
-memory/target leaf，二者不能互相调用或fallback。当前这两条controller尚未重新接通，会在CardExecutable边界明确返回
+`search`和`none`是两个独立controller，分别构造自己的current TileModule/TileRegion/Instr IR，只在policy-complete后消费同一个actual
+memory/target leaf，二者不能互相调用或fallback。当前这两条controller尚未重新接通，会在DeviceExecutable边界明确返回
 `operation_not_supported`，不会发布package；状态与恢复顺序以`tasks/progress.md`为准。编译成功当且仅当package已原子提交并readback
 验证：CLI 退出 0 时目标 package 必然可见，退出非 0 时本次目标 package 不可见。`--profile` 时输出目录是
 共同 delivery root，一次 rename 发布 `<output>/package` 与 `<output>/package.profile`，runtime 的

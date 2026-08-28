@@ -278,7 +278,7 @@ InstrGatherScatterOp createGatherScatter(
       loc, source, dest, dynamicSourceOffset, dynamicDestOffset,
       destDescriptor.byteCount, destDescriptor.innerBytes, sourceOffset,
       destOffset, sourceDescriptor.strides, sourceDescriptor.iterations,
-      destDescriptor.strides, destDescriptor.iterations, CardDDRResourceAttr{},
+      destDescriptor.strides, destDescriptor.iterations, DDRResourceAttr{},
       NCCWorker::Worker0);
 }
 

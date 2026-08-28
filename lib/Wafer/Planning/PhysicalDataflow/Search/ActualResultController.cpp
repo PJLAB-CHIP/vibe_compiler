@@ -43,7 +43,7 @@ std::optional<uint64_t> timeForWork(uint64_t work, uint64_t rate) {
 
 template <typename Accessor>
 std::optional<uint64_t>
-maximumTileMetric(const analysis::CardInstructionProgramCost &cost,
+maximumTileMetric(const analysis::InstructionProgramAggregateCost &cost,
                   Accessor accessor,
                   const analysis::ScheduleCostMetric &aggregate) {
   if (cost.tileCosts.empty())
@@ -74,7 +74,7 @@ std::array<uint64_t, 9> asArray(const SearchResourceDurations &durations) {
 bool hasSPMCapacityRejection(const ActualCandidateResult &result) {
   return result.compilation &&
          llvm::any_of(result.compilation->tileFailures,
-                      [](const CardExecutableTileFailure &failure) {
+                      [](const ExecutableTileFailure &failure) {
                         return isProvenExactTileMemoryPlanningFailure(
                             failure.memoryPlanning);
                       });
@@ -86,7 +86,7 @@ mlir::FailureOr<SearchCostCohort>
 SearchCostCohort::create(const SearchCostPolicy &policy,
                          std::string *failureReason) {
   const std::array<uint64_t, 12> rates{
-      policy.cardDDRNominalBytesPerSecond,
+      policy.ddrNominalBytesPerSecond,
       policy.directionalNoCBytesPerSecond,
       policy.dteEndpointBytesPerSecondEstimate,
       policy.dteMessageStartupPicosecondsEstimate,
@@ -108,7 +108,7 @@ SearchCostCohort::create(const SearchCostPolicy &policy,
 }
 
 SearchObjective
-deriveSearchObjective(const analysis::CardInstructionProgramCost &cost,
+deriveSearchObjective(const analysis::InstructionProgramAggregateCost &cost,
                       const std::optional<SearchCostCohort> &cohort) {
   if (!cohort)
     return UnknownSearchObjective{SearchObjectiveUnknownReason::NoCohort};
@@ -205,7 +205,7 @@ deriveSearchObjective(const analysis::CardInstructionProgramCost &cost,
                   durations.vectorF16Bf16Picoseconds) ||
       !assignTime(*vectorF32, policy.f32VectorLogicalOpsPerSecondPerTile,
                   durations.vectorF32Picoseconds) ||
-      !assignTime(ddrBytes, policy.cardDDRNominalBytesPerSecond,
+      !assignTime(ddrBytes, policy.ddrNominalBytesPerSecond,
                   durations.ddrPicoseconds) ||
       !assignTime(nocBytes, policy.directionalNoCBytesPerSecond,
                   durations.nocPicoseconds) ||

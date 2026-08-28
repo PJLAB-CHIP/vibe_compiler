@@ -4,7 +4,7 @@
 // ProgramDataSource owns an immutable transaction-private copy of one payload
 // file; ProgramDataRange describes the checked byte region one program tensor
 // consumes; ProgramDataHandoff owns the live set for the lifetime of a
-// CardExecutable. Tile bindings reference identity and range only; they never
+// DeviceExecutable. Tile bindings reference identity and range only; they never
 // copy payload bytes.
 //
 //===----------------------------------------------------------------------===//
@@ -193,7 +193,7 @@ private:
   /// reads on this handle and never reopen the owned path.
   llvm::sys::fs::file_t ownedFile = llvm::sys::fs::kInvalidFile;
   /// Shared with the move-only handoff so reads remain accountable after the
-  /// handoff itself moves into a CardExecutable.
+  /// handoff itself moves into a DeviceExecutable.
   std::shared_ptr<ProgramDataIOStatistics> statistics;
 };
 
@@ -315,9 +315,9 @@ struct ProgramDataIOStatistics {
 };
 
 /// Move-only reader for one consumer-declared range materialization. Creation
-/// accounts exactly one materialization event; any number of bounded reads through the
-/// reader remain part of that same materialization. The reader is valid only
-/// while its ProgramDataHandoff remains alive and unmoved.
+/// accounts exactly one materialization event; any number of bounded reads
+/// through the reader remain part of that same materialization. The reader is
+/// valid only while its ProgramDataHandoff remains alive and unmoved.
 class ProgramDataRangeMaterialization {
 public:
   ProgramDataRangeMaterialization(ProgramDataRangeMaterialization &&) noexcept;
@@ -351,7 +351,7 @@ llvm::Expected<std::string> computePayloadRegionDigest(
     llvm::ArrayRef<int64_t> sizes, ProgramDataFailure *failure = nullptr);
 
 /// Move-only owner of all-and-only live payload sources and ranges of one
-/// compilation transaction. It lives with the CardExecutable until the target
+/// compilation transaction. It lives with the DeviceExecutable until the target
 /// package stage has consumed the data. Owned files are stored under the unique
 /// storage directory the handoff owns through RAII.
 class ProgramDataHandoff {
@@ -389,7 +389,7 @@ public:
 
   /// Drops every helper candidate that was not adopted as a live source.
   /// This is called after the final tensor-program verification and before
-  /// the handoff is moved into a CardExecutable.
+  /// the handoff is moved into a DeviceExecutable.
   void discardUnadoptedCandidates();
 
   /// Returns the source or candidate carrying `locator`, or nullptr. Used by
@@ -412,8 +412,8 @@ public:
 
   /// Begins one consumer-owned materialization of the identified range and
   /// accounts it exactly once. An unknown identity is rejected without
-  /// changing the optional statistics. The package writer creates one reader per selected
-  /// TargetTensor representation.
+  /// changing the optional statistics. The package writer creates one reader
+  /// per selected TargetTensor representation.
   llvm::Expected<ProgramDataRangeMaterialization>
   beginRangeMaterialization(ProgramTensorId tensorId) const;
 

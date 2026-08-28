@@ -11,11 +11,11 @@ add_executable(WaferUnitTests
   Analysis/ScheduleCost/ScheduleCostAnalysisTest.cpp
   Driver/CompilationOutputTest.cpp
   Driver/CompilationTest.cpp
-  TestSupport/CodeGen/CardExecutableTestSupport.cpp
+  TestSupport/CodeGen/ExecutableTestSupport.cpp
   TestSupport/Planning/SpatialDemandTestSupport.cpp
   TestSupport/Planning/SpatialPlanReference.cpp
-  CodeGen/Executable/CardExecutableCompilationTest.cpp
-  CodeGen/Executable/CardExecutableLoweringTest.cpp
+  CodeGen/Executable/ExecutableCompilationTest.cpp
+  CodeGen/Executable/ExecutableLoweringTest.cpp
   CodeGen/Executable/SearchRoutingTest.cpp
   Transforms/Transport/DirectDTETransportTest.cpp
   Program/ProgramTensorComparisonTest.cpp
@@ -46,7 +46,7 @@ add_executable(WaferUnitTests
   Conversion/StructuredGraphNormalizationTest.cpp
   Conversion/StructuredTilingTest.cpp
   Conversion/RequiredNCCJoinPlacementTest.cpp
-  Conversion/WaferCardModuleToTileModulesTest.cpp
+  Conversion/WaferTileModuleFanoutTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
   Dialect/Wafer/TargetTopologyTest.cpp
@@ -99,7 +99,7 @@ target_link_libraries(WaferUnitTests
   WaferStableHLOPipelines
   WaferTileRegionPipelines
   WaferStructuredTiling
-  WaferCardModuleToTileModules
+  WaferTileModuleFanout
   WaferTransforms
   MLIRAsyncDialect
   MLIRArithDialect

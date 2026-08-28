@@ -36,7 +36,7 @@ set(WAFER_COMPILATION_ANALYSIS_SOURCES
   Analysis/Executable/ExecutableCallClosure.cpp
   Analysis/Executable/ProgramResourceVerification.cpp
   Analysis/PhysicalDataflow/StructuredDemandAnalysis.cpp
-  Analysis/Structured/CardProgramAnalysis.cpp
+  Analysis/Structured/StructuredProgramAnalysis.cpp
   Analysis/Structured/StructuredBufferRelations.cpp
   Analysis/Structured/StructuredNodeUseIndex.cpp
   PARENT_SCOPE)

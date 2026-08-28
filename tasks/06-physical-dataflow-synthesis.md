@@ -1,6 +1,6 @@
 # Card 内 Physical Dataflow Search 与执行构造
 
-本文是`TensorProgram -> CardModule -> TileRegion -> Instr -> CardExecutable`主线中card-level physical dataflow的
+本文是`TensorProgram -> TileModule set -> TileRegion -> Instr -> DeviceExecutable`主线中card-level physical dataflow的
 唯一设计owner。当前任务状态和施工顺序只看`tasks/progress.md`与
 `tasks/plans/physical-dataflow-synthesis.md`。历史plan和archive只作审计背景，不定义current pipeline。
 
@@ -50,14 +50,14 @@ Pipeline position:
   verifier-valid card-local TensorProgram。SSA、structured iterator、canonical indexing relation、region、effect、type、shape和
   dtype已完整；尚未绑定Tile，且不携带e-class、rewrite history或提取side table。
 - Current stage responsibility:
-  none由baseline-owned materializer从current TensorProgram和固定规则直接构造actual Card/TileRegion IR，不创建search choice/domain/state；
+  none由baseline-owned materializer从current TensorProgram和固定规则直接构造actual TileModule/TileRegion IR，不创建search choice/domain/state；
   search才枚举spatial/region/temporal transformation choice并交给search-owned structural materializer。两条policy随后各自只在
   current IR上先完成compact temporal tile-and-fuse；该stage保持attention semantic op opaque。独立selected-attention lowering随后
   消费剩余attention choice并生成actual Linalg/Tensor/SCF，之后依次完成layout/view/bufferization、movement、execution structure、
   TileRegion-to-Instr、worker/order/completion，再以completion-closed Instr进入共同actual leaf。
 - Output IR / files:
-  policy-complete、verifier-valid的CardModule/TileModule/TileRegion/Instr IR，以及由同一accepted owner形成的
-  CardExecutable和ExecutablePackage。
+  policy-complete、verifier-valid的TileModule/TileRegion/Instr IR，以及由同一accepted owner形成的
+  DeviceExecutable和ExecutablePackage。
 - Downstream consumer:
   target conversion、device link、package emission和runtime launch。
 - User-level driver / named pipeline:
@@ -75,15 +75,16 @@ Pipeline position:
 
 ## 3. 稳定 IR 边界
 
-### 3.1 `wafer.card.module`
+### 3.1 `builtin.module`
 
-`wafer.card.module`是一个`card_id`的完整MPMD verifier范围，拥有card-local observable inputs/outputs、
-shared DDR boundary、all-and-only Tile modules以及跨Tile communication/completion检查范围。它不保存
-candidate set、score、rejected alternative或side table。
+`builtin.module`是selected candidate的共同transaction、symbol和module-stage verification范围。它保留target
+topology、logical mesh、shared DDR declarations，以及top-level
+`wafer.tile.module(card_id=..., tile_id=...)`集合；自身不携带`card_id`，physical identity只存在于typed Tile modules和
+topology中。它不保存candidate set、score、rejected alternative或side table。
 
 ### 3.2 `wafer.tile.module`
 
-`wafer.tile.module`绑定唯一physical `tile_id`。不同Tile可以有不同op、loop、temporal shape、worker和执行长度。
+`wafer.tile.module`绑定唯一physical `(card_id, tile_id)`。不同Tile可以有不同op、loop、temporal shape、worker和执行长度。
 实际顺序、并发与依赖由body中的control flow、SSA、effect、token和Instr表达。SPM root或alias不跨
 TileModule传递。
 
@@ -103,12 +104,12 @@ physical form中的跨region shaped data必须由actual DDR store/completion/loa
 actual peer/collective send、recv、token/wait和destination staging表达。
 TileRegion boundary本身不是completion boundary。
 
-### 3.4 Instr、CardExecutable 与 package
+### 3.4 Instr、DeviceExecutable 与 package
 
 TileRegion-to-Instr转换产生candidate的current target-abstract instructions。Instr层显式表达engine issue、operand/result memref、
 effect、token和control flow；worker/order/completion必须在该IR上物化后才能进入memory planning。
 
-`CardExecutable`是已通过Instr、SPM/DDR、transport、resource、completion和ABI verification的唯一内存owner。
+`DeviceExecutable`是已通过Instr、SPM/DDR、transport、resource、completion和ABI verification的唯一内存owner。
 `ExecutablePackage`只序列化accepted executable与runtime必需数据，不序列化search状态或调度副本。
 
 ## 4. Search 输入、选择与candidate ownership
@@ -139,7 +140,7 @@ actual offset或materializer遍历顺序。
 
 每个candidate owner明确持有：
 
-- 本次新建或clone的最近`IsolatedFromAbove` Card/Tile scope；
+- 本次新建或clone的最近`IsolatedFromAbove` TileModule scope；
 - current IR epoch内的SSA、region、buffer relation和effect；
 - 可重算的analysis和本次rewrite使用的短生命期临时数据。
 
@@ -207,11 +208,11 @@ future delivery plan。相同consumer中的相同exact request由standard fusion
 Tile-and-fuse后只运行有界local canonicalization、CSE和DCE清理本次新建的slice/view恒等式，不重新运行全图e-graph；
 pinned接口暂时不能表达的exact reshape或`tensor.insert_slice` window只保留窄的current-SSA adapter。
 
-Candidate transaction的owner只由controller建立一次：已有candidate-owned IR时本stage直接rewrite，不再clone Card/Tile owner；只有试行
+Candidate transaction的owner只由controller建立一次：已有candidate-owned IR时本stage直接rewrite，不再clone TileModule owner；只有试行
 existing isolated owner上的alternative且caller仍需保留原IR时，controller才clone最近的`IsolatedFromAbove` scope。Standard tiling创建的
 tiled producer是最终actual IR，不是scratch owner clone。Baseline独占自己的IR，不进入search clone或frontier。
 
-Spatial、region和temporal choice闭合后，唯一structural materializer立即生成candidate-owned CardModule/TileModule/TileRegion、
+Spatial、region和temporal choice闭合后，唯一structural materializer立即生成candidate-owned TileModule/TileRegion、
 Linalg/Tensor/SCF或typed Tile work，并返回actual SSA。下游不消费未物化execution/value ID。
 
 ### 5.4 Attention
@@ -384,7 +385,7 @@ Allocator不返回retile、spill、layout、route或completion repair recipe。
 | accepted result | 第一个通过全部actual gate的candidate | 预算内的retained best-known actual owner |
 
 两者可共享policy-free source analysis、IndexRelation、single-op rewrite/conversion和actual memory/target leaf，但不共享complete
-candidate schema、Card/Tile materializer、controller、fallback或accepted owner。
+candidate schema、TileModule materializer、controller、fallback或accepted owner。
 
 ### 7.2 Baseline
 
@@ -451,11 +452,11 @@ Actual capacity rejection默认只对产生该current IR的完整choice有效。
 源码稳定职责为：
 
 - TensorProgram analysis：structured semantics、exact demand、spatial/region/temporal choice domain；
-- TensorProgram/Card/Tile transforms：structural materialization、compact temporal tile-and-fuse、selected attention lowering、
+- TensorProgram/TileModule/TileRegion transforms：structural materialization、compact temporal tile-and-fuse、selected attention lowering、
   layout/view/bufferization和movement；
 - TileRegion-to-Instr conversion：deterministic target-abstract lowering；
 - Instr analysis/transforms：worker/order、completion、lifetime和memory problem derivation；
-- actual memory/transport/target leaf：offset、range、resource、ABI和CardExecutable acceptance；
+- actual memory/transport/target leaf：offset、range、resource、ABI和DeviceExecutable acceptance；
 - compiler controller：choice exploration、typed feedback、budget与winner ownership。
 
 ## 9. 实现迁移
@@ -489,7 +490,7 @@ Current迁移必须遵守：
 - temporal domain只在exact total single-valued proof下删除派生参数；non-unique、unsupported和indeterminate case保留原自由维度或
   独立producer，Region candidate不因fusion无法证明而消失；
 - instrumentation on/off产生同一IR、candidate result和package；
-- 每个candidate的actual Card/TileRegion/Instr owner只物化一次，winner不重建；
+- 每个candidate的actual TileModule/TileRegion/Instr owner只物化一次，winner不重建；
 - 不存在代表future operation/value/buffer/event/schedule的跨stage状态或为其服务的parity verifier；
 - layout/view测试检查actual SSA alias和copy数，movement测试检查actual typed ops/effects；
 - schedule/completion测试从current Instr构造并检查位置、participant、token、动态次数和lifetime witness；
@@ -519,7 +520,7 @@ expected inventory。
 
 ### 10.4 End to end
 
-- baseline和search分别从同一current FP16/BF16 source形成policy-complete Instr、actual memory plan、CardExecutable和package；
+- baseline和search分别从同一current FP16/BF16 source形成policy-complete Instr、actual memory plan、DeviceExecutable和package；
 - 两条policy使用独立process、IR owner、ProgramData handoff和output directory，不互调或共享result；
 - 两者均实际经过MiniMalloc、DDR、transport、target、strict package readback和no-card；
 - timeout、OOM、skip、fallback或未进入actual planner不是通过；

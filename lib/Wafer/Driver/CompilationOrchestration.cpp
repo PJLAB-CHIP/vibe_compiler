@@ -43,7 +43,7 @@ mlir::LogicalResult runCompilationTransaction(
     CompilationOptions options, std::optional<int64_t> failAfterLaunchSlot,
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
-    std::optional<CardExecutable> *retainedCardExecutable,
+    std::optional<DeviceExecutable> *retainedDeviceExecutable,
     std::optional<TargetLLVMModules> *retainedTargetLLVMModules,
     std::optional<CompilationIRTrace> *retainedIRTrace,
     std::optional<ExecutablePackage> *retainedPackage,
@@ -59,7 +59,7 @@ mlir::LogicalResult runCompilationTransaction(
   (void)failAfterLaunchSlot;
   (void)failAfterTargetLaunchSlot;
   (void)failAfterPackageLaunchSlot;
-  (void)retainedCardExecutable;
+  (void)retainedDeviceExecutable;
   (void)retainedTargetLLVMModules;
   (void)retainedIRTrace;
   (void)retainedPackage;
@@ -220,7 +220,7 @@ mlir::LogicalResult runCompilationTransaction(
   // metadata/directory structure, open and verify each payload exactly once,
   // and pass content-stable files to the external SPMD helper boundary.
   // Program-data storage is a sibling of compilation staging and is owned by
-  // the handoff itself. A returned CardExecutable therefore remains readable
+  // the handoff itself. A returned DeviceExecutable therefore remains readable
   // after the transaction root is removed.
   ProgramDataHandoff programData(canonicalOutputParent.str().str(),
                                  options.shouldReportDetailedTiming());
@@ -704,7 +704,7 @@ mlir::LogicalResult runCompilationTransaction(
   auto targetCodeGenTiming =
       std::make_unique<wafer::support::ScopedCompileTimingSpan>(
           "stage", "source-to-package", "target-codegen");
-  std::optional<CardExecutable> cardExecutable;
+  std::optional<DeviceExecutable> deviceExecutable;
   std::optional<TargetLLVMModules> targetLLVMModules;
   CompilationIRTrace irTrace;
   ProfileInstrumentationIdentity profileIdentity;
@@ -713,20 +713,21 @@ mlir::LogicalResult runCompilationTransaction(
             tensorProgram, transactionRoot, request.getExecutionConfig(),
             options.getOptimizationConfig(), targetToolchain, diagnostics,
             failAfterLaunchSlot, failAfterTargetLaunchSlot,
-            failAfterPackageLaunchSlot, cardExecutable, targetLLVMModules,
+            failAfterPackageLaunchSlot, deviceExecutable, targetLLVMModules,
             programData, tensorResolver, irTrace, stages, profileIdentity)))
       return mlir::failure();
   } else if (mlir::failed(stageTargetPackage(
                  tensorProgram, transactionRoot, request.getExecutionConfig(),
                  options.getOptimizationConfig(), targetToolchain, diagnostics,
                  failAfterLaunchSlot, failAfterTargetLaunchSlot,
-                 failAfterPackageLaunchSlot, cardExecutable, targetLLVMModules,
-                 programData, tensorResolver, irTrace, stages))) {
+                 failAfterPackageLaunchSlot, deviceExecutable,
+                 targetLLVMModules, programData, tensorResolver, irTrace,
+                 stages))) {
     return mlir::failure();
   }
   if (timingSession) {
     diagnostics << "wafer-compile: program-data-io ";
-    cardExecutable->getProgramDataHandoff().getIOStatistics().print(
+    deviceExecutable->getProgramDataHandoff().getIOStatistics().print(
         diagnostics);
     diagnostics << "\n";
   }
@@ -866,8 +867,8 @@ mlir::LogicalResult runCompilationTransaction(
         std::move(publishedInstrumentationRootStorage),
         std::move(profileIdentity), std::move(*boundProfileInstrumentation)));
   }
-  if (retainedCardExecutable)
-    retainedCardExecutable->emplace(std::move(*cardExecutable));
+  if (retainedDeviceExecutable)
+    retainedDeviceExecutable->emplace(std::move(*deviceExecutable));
   if (retainedTargetLLVMModules)
     retainedTargetLLVMModules->emplace(std::move(*targetLLVMModules));
   if (retainedIRTrace)

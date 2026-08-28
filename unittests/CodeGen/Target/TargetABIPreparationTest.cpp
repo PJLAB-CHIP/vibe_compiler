@@ -4,7 +4,7 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 
-#include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
+#include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
 #include "Wafer/CodeGen/Target/TargetCodeGenInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Program/ProgramData.h"
@@ -64,7 +64,7 @@ module {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
   ASSERT_TRUE(static_cast<bool>(config));
   wafer::compiler::TileExecutable tile =
-      wafer::compiler::CardExecutableBuilder::makeTileExecutable(
+      wafer::compiler::DeviceExecutableBuilder::makeTileExecutable(
           wafer::CardId(0), wafer::TileId(0), wafer::LaunchSlotId(0),
           std::move(module), "main", {},
           wafer::compiler::TransportContract::None);

@@ -66,7 +66,7 @@ source program
   -> card-level GSPMD
   -> card-local structured DAG
   -> closed PhysicalDataflowPlan
-  -> selected wafer.card.module
+  -> selected top-level TileModule set
   -> all-and-only wafer.tile.module
   -> TileRegion
   -> Instr
@@ -142,12 +142,12 @@ source program
   single-valued exact relation可以把producer tile作为派生量；non-unique/unsupported/indeterminate保留自由参数、独立producer和Region
   candidate。Fanout默认共享一个actual producer，只有explicit replica choice才允许复制；effectful producer不进入replica choice。
   Region未闭合时public search不能越过到actual IR。
-- 每个进入actual gate的candidate CardModule只经过一次无策略CardExecutable compilation函数：Tile module splitting、Tile→Instr、fresh
+- 每个进入actual gate的candidate TileModule set只经过一次无策略DeviceExecutable compilation函数：Tile module splitting、Tile→Instr、fresh
   completion、SPM/DDR、transport/resource/ABI和final recost。seam返回accepted、proven exact rejection或indeterminate；
   actual result返回controller；lowering不能枚举、retile、spill、rebuffer或修candidate。带完整owner relation的actual rejection可关闭当前
   complete point；其它失败保持typed状态。
 - public optimization policy只使用`search`与`none`：`none`只materialize deterministic conservative baseline；
-  `search`启用compiler-owned搜索。二者分别完成policy-specific Card/Tile/Instr construction后，才调用相同actual memory/target leaf。
+  `search`启用compiler-owned搜索。二者分别完成policy-specific TileModule/TileRegion/Instr construction后，才调用相同actual memory/target leaf。
 - `none`的SPM legalization从完整per-Tile iterator tile开始；每个candidate实际物化并运行actual memory/target gate。只有actual capacity rejection且每个
   conflict demand都有current typed owner时，才按确定性规则生成下一smaller temporal candidate。不得用byte projection预测fit；Accepted
   owner直接下传且不重建。
@@ -176,7 +176,7 @@ source program
 - TX81 same-worker普通NCC链只保持SSA/effect/range要求的issue order；WDMA、unconditional loop、TileRegion exit和managed store/reload
   本身都不是join理由。cross-worker/domain crossing、actual release/reuse和observable terminal只在latest unavoidable位置完成真实pending
   participant。
-- 只有TileId、没有typed FU/engine identity的粗粒度Tile engine fact不是capacity-1 resource；它和没有channel/controller证明的CardDDR都只能
+- 只有TileId、没有typed FU/engine identity的粗粒度Tile engine fact不是capacity-1 resource；它和没有channel/controller证明的DDR都只能
   进入estimate/cost，不能生成issue-to-completion exclusive edge。exact NoC path只证明link usage；没有capacity/VC字段时也不能生成
   exclusive edge。真实Direct-DTE sender slot、receiver FSM和exact alias/effect另行处理。
 - Direct DTE issue与wait是独立程序点。matching send issue与receive preparation也没有固定先后；两侧completion才同时依赖两个issue。
@@ -184,7 +184,7 @@ source program
   constraints，但不推出所有endpoint都立即await。whole-card matching/wait graph以actual transport verifier为唯一证明，不在上层另猜一份。
 - loop backedge、branch merge、entry return、Direct-DTE exact event/wait和async resource reuse都必须闭合。
 - `ReturnAfterLocalDrain`表示该Tile entry返回前，本地发起且影响结果/reuse/status的work已收敛；它不是card-scoped barrier。
-- CardExecutable成功要求16个Tile entries和全部transport obligations完成。runtime不能用统一尾等待掩盖compiler缺失的local completion。
+- DeviceExecutable成功要求16个Tile entries和全部transport obligations完成。runtime不能用统一尾等待掩盖compiler缺失的local completion。
 - lifetime必须覆盖最后consumer和所有async use；release、SPM/DDR reuse、D2H都发生在相应completion证明之后。
 
 ## Theoretical cost
@@ -192,7 +192,7 @@ source program
 - hard legality/capacity与性能估计分离。hard failure拒绝candidate；性能参数缺失不改变legality。
 - 每个comparison cohort先统一确定enabled terms：有target/profile实值用实值，否则用明确理论值，完全不知道的项从
   全部candidate删除。不能candidate-local按零、无穷大或不可比较状态处理。
-- 基础work项包括per-Tile physical compute、card DDR bytes、endpoint/minimum-hop/cut NoC facts、per-Tile explicit SPM movement和
+- 基础work项包括per-Tile physical compute、shared DDR bytes、endpoint/minimum-hop/cut NoC facts、per-Tile explicit SPM movement和
   有参数的control work；只有target提供qualified exact route时才有directed-link load。
 - dependency phase相加；independent branch或disjoint Tile group取并发最大值；只有actual buffering/dataflow证明存在时才用
   prologue/II/epilogue overlap。
@@ -291,7 +291,7 @@ source program
 - 先用一句话说清对象表示什么，再命名；同步核对definition、constructor、consumer、verifier/lowering和
   pinned LLVM/MLIR同类概念，不从旧名做近义词替换。
 - 范围限定必须对应同一语义域内的真实对照；namespace、强类型、parent op、pass anchor或container已消除
-  歧义时不再重复。例如`TileExecutable`已由`TileId`和`CardExecutable`的ownership定位，无需再加
+  歧义时不再重复。例如`TileExecutable`已由`TileId`和`DeviceExecutable`的ownership定位，无需再加
   实现状态或范围前缀。
 - 真实对照应保留：logical rank与target Tile、logical layout与target encoding/storage、Card级与Tile级
   resource/cost都会影响legality或API overload；删掉限定反而会丢失语义。
@@ -316,11 +316,11 @@ source program
   pinned mmap阈值的同inode原地改写（保留header、改写payload区），不能只测rename replacement。
 - 会随public compile结果继续存活的数据目录不能放在transaction staging下。handoff在稳定output parent下创建唯一
   RAII目录，source持有move-safe只读handle；析构顺序固定为关闭handle、删除file、删除directory。helper candidate只服务
-  tensor verification，真实partition adopt后，CardExecutable签发前必须销毁全部未采用candidate。
+  tensor verification，真实partition adopt后，DeviceExecutable签发前必须销毁全部未采用candidate。
 - payload open/hash/read账本必须覆盖整条compiler-owned source-to-pipeline：`source_opens`只表示canonical/helper
   establishment分类，实际open另计`file_opens`，最低层positional read另计`read_windows`、`read_bytes`和
   `maximum_read_window_bytes`；header/digest/helper readback/range materialization/write字段解释这些I/O的目的。
-  tensor-phase verification、readback和CardExecutable边界都必须经resolver消费owned content，任何默认参数触发的
+  tensor-phase verification、readback和DeviceExecutable边界都必须经resolver消费owned content，任何默认参数触发的
   path reader都算重复I/O；外部helper进程内不可观测的syscall不能伪装成compiler精确计数。
 - `ProgramDataRange`携带显式来源合同：`OriginalSource`证明source shape==global shape，`MaterializedShard`
   证明source shape==local shape且slice从原点精确覆盖；相同byte count不能替代shape/layout证明。

@@ -43,9 +43,9 @@ enum class TileEntryArgumentKind {
   ExternalOutput,
   /// Entry-local compiler-managed default DDR arena.
   Workspace,
-  /// Card-shared compiler-managed DDR carrier. `resourceIndex` identifies the
+  /// Shared compiler-managed DDR carrier. `resourceIndex` identifies the
   /// same allocation across all Tile entries that reference it.
-  CardWorkspace,
+  SharedWorkspace,
   /// Entry-local profiler capture record.
   ProfileRecord,
   /// Entry-local Direct-DTE status.
@@ -216,7 +216,9 @@ public:
   CompiledProgram(const CompiledProgram &) = delete;
   CompiledProgram &operator=(const CompiledProgram &) = delete;
 
-  const CardExecutable &getCardExecutable() const { return cardExecutable; }
+  const DeviceExecutable &getDeviceExecutable() const {
+    return deviceExecutable;
+  }
   const TargetLLVMModules &getTargetLLVMModules() const {
     return targetLLVMModules;
   }
@@ -229,20 +231,20 @@ private:
       const TargetToolchain &targetToolchain, CompilationOptions options,
       llvm::raw_ostream &diagnostics);
 
-  CompiledProgram(CardExecutable cardExecutable,
+  CompiledProgram(DeviceExecutable deviceExecutable,
                   TargetLLVMModules targetLLVMModules,
                   CompilationIRTrace irTrace)
-      : cardExecutable(std::move(cardExecutable)),
+      : deviceExecutable(std::move(deviceExecutable)),
         targetLLVMModules(std::move(targetLLVMModules)),
         irTrace(std::move(irTrace)) {}
 
-  CardExecutable cardExecutable;
+  DeviceExecutable deviceExecutable;
   TargetLLVMModules targetLLVMModules;
   CompilationIRTrace irTrace;
 };
 
 /// Runs the same compilation transaction as compileProgram while
-/// retaining the owner-backed CardExecutable, the exact target LLVM modules
+/// retaining the owner-backed DeviceExecutable, the exact target LLVM modules
 /// used to create the linked target modules, and the IR trace. This is the
 /// internal qualification/debug entry; no second lowering is performed and
 /// the members never enter the ordinary public result.
@@ -256,9 +258,8 @@ llvm::Expected<CompiledProgram> compileProgramWithTargetLLVMModules(
 /// every accepted Tile before atomically returning an owner-backed
 /// LLVM modules. This function does not write target modules or a
 /// package.
-llvm::Expected<TargetLLVMModules>
-compileCardExecutableToTargetLLVMModules(const CardExecutable &cardExecutable,
-                                         llvm::raw_ostream &diagnostics);
+llvm::Expected<TargetLLVMModules> compileDeviceExecutableToTargetLLVMModules(
+    const DeviceExecutable &deviceExecutable, llvm::raw_ostream &diagnostics);
 
 /// Identifier for one linked target module. Physical
 /// Tile to payload coverage is represented only by VerifiedTargetTileInterface;

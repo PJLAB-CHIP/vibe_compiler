@@ -165,9 +165,9 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
                   json.attribute("bytes", int64_t(reference->bytes));
                   json.attribute("alignment", int64_t(reference->alignment));
                 } else if (const auto *reference =
-                               std::get_if<CardWorkspaceArgument>(
+                               std::get_if<SharedWorkspaceArgument>(
                                    &argument.reference)) {
-                  json.attribute("kind", "card_workspace");
+                  json.attribute("kind", "shared_workspace");
                   json.attribute("resource", int64_t(reference->resource));
                   json.attribute("bytes", int64_t(reference->bytes));
                   json.attribute("alignment", int64_t(reference->alignment));

@@ -1,7 +1,7 @@
 # Wafer Compiler Stack Architecture
 
 本文定义card-level GSPMD和card-scoped multi-Tile执行域上的稳定主线。编译output顺序固定为
-`TensorProgram -> physical-dataflow selection -> CardModule/TileRegion/Instr -> CardExecutable -> ExecutablePackage`。
+`TensorProgram -> physical-dataflow selection -> TileModule/TileRegion/Instr -> DeviceExecutable -> ExecutablePackage`。
 本文是compiler、target modules、package/runtime与target-model分支的主架构入口，
 只拥有稳定pipeline spine、IR/module/package graph、跨层不变量和职责索引。动态状态、blocked-by与完成记录只看
 `tasks/progress.md`；专题IR、ABI、算法和验证细节由对应编号文档拥有。
@@ -32,7 +32,7 @@
    只有改写后的operation、SSA、allocation与movement表达这些结果。
    region boundary不自动产生join，只要求仍访问其SPM roots的work完成；Tile entry completion闭合observable effects。
 5. **output原子形成。** 单Tile、单traversal、代表program或未覆盖card内all-and-only Tile modules的partial set
-   都不是可发布结果；全部Tile通过后才形成`CardExecutable`，所有package成员readback通过后才发布`ExecutablePackage`。
+   都不是可发布结果；全部Tile通过后才形成`DeviceExecutable`，所有package成员readback通过后才发布`ExecutablePackage`。
 6. **同一次target lowering服务两个consumer。** device link与repo-owned TargetCall/SystemC CModel消费同一owner-backed
    target module set，禁止为模型第二次lower或从package反向重建compiler output。
 7. **证据不越级。** verifier、no-card、target model、profile-scoped hardware behavior、exact package、board
@@ -48,7 +48,7 @@
     IR机制拥有；Wafer-specific interface只填补明确target gap，不能把current op已有字段重新收集成Demand、Info、
     Effect或Plan旁路对象。selected target事实进入typed Wafer IR，派生关系保持局部analysis。
 11. **编译成功与发布成功是同一事实。** source-to-package library的primary result是已readback且原子提交的
-    `ExecutablePackage`，不是中间`CardExecutable`。CLI成功状态与package可见性一一对应；target-model、IR dump和
+    `ExecutablePackage`，不是中间`DeviceExecutable`。CLI成功状态与package可见性一一对应；target-model、IR dump和
     board qualification是独立consumer，不能在package提交后改写production compile结果。
 12. **大参数所有权和layout逐层明确。** verified source给出logical parameter/constant identity以及transaction-owned
     `ProgramDataRange`；target ABI给出`TargetTensor`的dtype、shape、`MemLayout`、physical bytes与alignment；package writer再决定
@@ -69,16 +69,16 @@ Pipeline position:
   normalization形成`TensorProgram`。05号normalization从typed SSA证明attention语义并一次性归一为一个带fixed FA/FD algorithm的
   verifier-legal semantic op，`none`与`search`消费同一结果；physical-dataflow selection联合展开Tile placement、不同op并行、
   TileRegion membership、explicit replica、自由temporal tile、layout、DDR/NoC movement和overlap。Structural choice先物化为
-  `CardModule`及其中的TileModule/TileRegion，standard tile-and-fuse从current SSA决定actual fusion并保持attention opaque；独立
+  top-level TileModule/TileRegion，standard tile-and-fuse从current SSA决定actual fusion并保持attention opaque；独立
   selected-attention lowering随后形成actual Linalg/Tensor/SCF。Layout与movement闭合后，current Tile transformation物化software pipeline和rotating slot，
   随后投影并lower成per-Tile `Instr`，派生worker/order/completion，
-  闭合SPM/DDR/transport/target legality后原子形成`CardExecutable`。同一次target conversion产生owner-backed target
-  modules，分支给repo-owned CModel与device link；device-linked modules再与CardExecutable形成typed
+  闭合SPM/DDR/transport/target legality后原子形成`DeviceExecutable`。同一次target conversion产生owner-backed target
+  modules，分支给repo-owned CModel与device link；device-linked modules再与DeviceExecutable形成typed
   `ExecutablePackage`并原子写入。
 - Output IR / files:
   source-to-package library返回typed compilation result，其primary product是canonical、readback-verified且已提交的
   `ExecutablePackage`；`wafer-compile`只是该library的薄user driver。独立target-model/debug consumer可在同一compilation
-  transaction内持有原CardExecutable和实际用于device writing的owner-backed target modules；这些in-memory
+  transaction内持有原DeviceExecutable和实际用于device writing的owner-backed target modules；这些in-memory
   owners不进入普通public result，也不序列化成sidecar。
 - Downstream consumer:
   wafer-run/no-card RuntimeInvocationPlan、repo-owned TargetCall/SystemC functional-numeric model，以及configured board
@@ -91,12 +91,12 @@ Pipeline position:
   承诺dynamic-shape/online rescheduling、多卡transport、compute-time streamed weight、vendor-exact packet或cycle accuracy；
   compiler的bounded source reading与target-ready data materialization不属于这里的执行期streaming。
 - Done criteria:
-  card-level partition与Tile launch domain分离；CardModule、CardExecutable、atomic writing、typed package/no-card、
+  card-level partition与Tile launch domain分离；top-level TileModule set、DeviceExecutable、atomic writing、typed package/no-card、
   repo-owned CModel和configured board RuntimeProvider链保持有效。semantic algorithm先存在normalized TensorProgram中；spatial mapping、
   op-wave并行、temporal tile和TileRegion membership是被结构materializer消费的choice；encoding/view/buffer/movement在actual TileRegion SSA中表达；
   software pipeline/rotating slot在current physical TileRegion上表达，worker/order/completion在current Instr上应用和fresh重算；
-  completion-closed Instr进入不再修改completion的actual memory/target leaf。每个candidate的全部physical facts最终存在同一actual CardModule/Instr owner中并经过
-  card-scoped actual gates。rejected/loser销毁，winner保留原actual owner进入提交。
+  completion-closed Instr进入不再修改completion的actual memory/target leaf。每个candidate的全部physical facts最终存在同一actual TileModule set/Instr owner中并经过
+  module/device-scoped actual gates。rejected/loser销毁，winner保留原actual owner进入提交。
   winner capability projection只在真实package/runtime consumer需要时派生，model/board verification不参与candidate选择。
   新的profiling证据或multi-engine software pipeline只有通过自己的production vertical后才能扩展该基线。
 ```
@@ -120,19 +120,19 @@ Shardy/XLA SPMD -> verified card-local optimizer-ready TensorProgram
 fixed semantic roots + query-local physical-dataflow selection
         |
         v
-selected CardModule -> TileModule / TileRegion
+selected top-level TileModule / TileRegion
         |
         v
-CardModule splitting -> final placed/bound Instr programs
+TileModule fan-out -> final placed/bound Instr programs
         |
         v
-CardExecutable (all-and-only Tile executables)
+DeviceExecutable (all-and-only Tile executables)
   └─ target conversion -> owner-backed target module set
-                           ├─ with CardExecutable -> TargetCall/SystemC CModel
+                           ├─ with DeviceExecutable -> TargetCall/SystemC CModel
                            └─ device link -> verified target modules
                                                    |
                                                    v
-       CardExecutable + verified target modules + target-ready immutable data
+       DeviceExecutable + verified target modules + target-ready immutable data
             -> ExecutablePackage
             -> atomically installed package directory
             ├─ no-card RuntimeInvocationPlan
@@ -140,7 +140,7 @@ CardExecutable (all-and-only Tile executables)
             └─ future exact-package model
 ```
 
-target-model transaction container不是第三份program表示；它只维持同一CardExecutable与同次target modules的生命周期。
+target-model transaction container不是第三份program表示；它只维持同一DeviceExecutable与同次target modules的生命周期。
 verified target modules包含device-linked Tile modules及typed readback facts；`ExecutablePackage`包含已验证
 committed package root、manifest和exact member snapshots，execution configuration由外层`CompilationResult`持有；它不是
 另一份program或package外的sidecar。当前C++容器类型只是这些
@@ -155,11 +155,11 @@ output的实现索引，不能提升为额外架构层。
 | Topology/SPMD | `wafer.target.topology`、card-level logical partition mesh、post-SPMD StableHLO | global-to-card-local tensor partition | Tile mapping、SPM/DDR、physical transport |
 | TensorProgram | Linalg/Tensor/SCF/Arith/Math、typed logical collective与`wafer.linalg_ext.attention` | card-local数学DAG、iterator/indexing relation及effect/control；matched attention显式携带fixed FA/FD algorithm | target compute/movement lowering、Tile、offset、算法sidecar |
 | Physical-dataflow choice | query-local spatial/region/temporal transformation parameters以及从current TensorProgram可重算的`IndexRelation` | 选择partition、placement、TileRegion membership和temporal traversal；选择后立即交给candidate-owned materializer | future operation/SSA/buffer/movement/event/schedule、accepted事实、package字段 |
-| CardModule / TileRegion | `wafer.card.module`、per-`tile_id` `wafer.tile.module`、non-nested `wafer.tile.region`、SCF/SSA、typed layout/view/buffer/movement | actual MPMD与work coverage；structural/layout-resolved/physical form逐步闭合Tile-local storage、movement和执行依赖，只有physical form与late planner共同证明SPM residency；下游事实只从该current IR派生 | rejected choices、search score、shadow physical plan、runtime launch |
+| TileModule set / TileRegion | `builtin.module`、top-level `wafer.tile.module(card_id, tile_id)`、non-nested `wafer.tile.region`、SCF/SSA、typed layout/view/buffer/movement | actual MPMD与work coverage；structural/layout-resolved/physical form逐步闭合Tile-local storage、movement和执行依赖，只有physical form与late planner共同证明SPM residency；下游事实只从该current IR派生 | rejected choices、search score、shadow physical plan、runtime launch |
 | Instruction/memory program | `wafer.instr.*`、accepted SPM/DDR offsets、completion/Direct DTE | target-abstract invocation、physical geometry、range/lifetime/effect | raw host handle、package schedule |
-| CardExecutable | all-and-only Tile executable records | Tile modules、entry、program bindings、completion、transport和resource的card-scoped atomic acceptance | target object、runtime session、rejected choice |
+| DeviceExecutable | all-and-only Tile executable records | Tile modules、entry、program bindings、completion、transport和resource的device-scoped atomic acceptance | target object、runtime session、rejected choice |
 | Target modules/data preparation | 一次target conversion产生的owner-backed modules、device-linked verified modules、`TargetTensor` descriptor与`TileEntryArgument` | target dtype/layout/shape/bytes/alignment、entry argument relation、profile identity、module readback | source bytes ownership、package file placement、runtime allocation、CModel重新lowering |
-| ExecutablePackage / runtime | typed manifest、committed package root、exact member snapshots、target/launch、`data/program-data.bin`、ProgramTensor/TargetTensor/ports/modules/entries和`RuntimeInvocationPlan` | CardExecutable、target modules、program data range、Tile entry argument与runtime checked child range的all-and-only关系；delivery、content ownership与side-effect-free validation | source checkpoint解析、target repack、instruction schedule、provider执行、重新规划 |
+| ExecutablePackage / runtime | typed manifest、committed package root、exact member snapshots、target/launch、`data/program-data.bin`、ProgramTensor/TargetTensor/ports/modules/entries和`RuntimeInvocationPlan` | DeviceExecutable、target modules、program data range、Tile entry argument与runtime checked child range的all-and-only关系；delivery、content ownership与side-effect-free validation | source checkpoint解析、target repack、instruction schedule、provider执行、重新规划 |
 | Target-model result | invocation-local transaction/event/memory/result | supported profile内的untimed functional-numeric执行与完整output | compiler output、board/timing/packet claim |
 
 若未来target/package consumer需要`RequiredCapabilitySet`，它只能在post-selection阶段从winner实际Instr/TargetCall rows派生并
@@ -184,11 +184,11 @@ physical-dataflow selection直接通过Linalg/DPS/Tiling/MemoryEffect、Wafer Op
    立即物化actual TileRegion IR；layout/movement/transport、execution structure、buffer/slot和issue/event order不得作为future IR state跨stage传递；
 4. current theoretical cost只聚合comparison cohort统一enabled的numeric terms；有实际参数用实际值，其次用已有理论值，完全未知的term对
    整批候选删除。performance Unknown、proof/promotion margin不属于选择合同；
-5. Spatial/region/temporal choice闭合后立即构造一次actual CardModule/TileRegion；后续choice作用于current IR。Rejected/loser owner销毁，
+5. Spatial/region/temporal choice闭合后立即构造一次actual TileModule/TileRegion；后续choice作用于current IR。Rejected/loser owner销毁，
    allocator、completion、communication和cost owner均不产生repair；
-6. Candidate CardModule先在current physical TileRegion上物化execution structure/rotating slot，再投影为all-and-only Tile Instr programs，
+6. Candidate TileModule set先在current physical TileRegion上物化execution structure/rotating slot，再投影为all-and-only Tile Instr programs，
    在current Instr上应用worker/order并fresh重建completion；completion-closed Instr再经过actual SPM/DDR/transport/ABI gates，memory leaf不补join/wait；
-   Accepted results按actual cost与semantic tie-break比较，final winner保留首次accepted owner并原子形成CardExecutable/package publication。
+   Accepted results按actual cost与semantic tie-break比较，final winner保留首次accepted owner并原子形成DeviceExecutable/package publication。
 
 Attention由一个explicit `wafer.linalg_ext.attention`表示。Attention normalization从Linalg indexing map、iterator、scalar region、use-def、view和
 observable semantics证明完整Q/K/V关系，并从functional KV-cache append/return SSA确定FA或FD。Temporal planning选择K/V block，
@@ -243,13 +243,13 @@ compiler支持。formal/SystemC model coverage与board qualification是同一typ
 
 ## 8. Package、Runtime 与 Target Consumer 分支
 
-`ExecutablePackage`只有一份typed C++ semantic model；canonical JSON只是delivery projection。它连接CardExecutable、
+`ExecutablePackage`只有一份typed C++ semantic model；canonical JSON只是delivery projection。它连接DeviceExecutable、
 verified target modules、`ProgramTensor`、`TargetTensor`和target-ready `program-data.bin`，拥有
 `(card_id, tile_id, launch_slot)`、module/entry、ordered `TileEntryArgument`、program-data range和completion的双射，
 不包含instruction、candidate、provider allocation identity或per-command schedule。
 
 source-to-package transaction只有在manifest、module、data range、digest和all-and-only package tree完成readback并
-no-replace commit后才返回成功。普通compile result直接持有该verified package；CardExecutable、target LLVM modules与
+no-replace commit后才返回成功。普通compile result直接持有该verified package；DeviceExecutable、target LLVM modules与
 IR trace只属于内部或独立qualification lifetime。target-model与debug输出不得作为production compile的post-commit gate。
 
 consumer分为四条互不冒充的路径：
@@ -273,7 +273,7 @@ packet/MMIO provenance和timing calibration是额外证据分支，不是functio
 
 - parser/printer/verifier与negative legality；
 - card-scoped Tile resource、descriptor、completion、transport和ABI gate；
-- CardExecutable、target module和ExecutablePackage的原子writing与readback；
+- DeviceExecutable、target module和ExecutablePackage的原子writing与readback；
 - 独立source CPU expected到TargetCall/SystemC完整output differential；
 - configured board execution与board-output numeric correlation；
 - profile-scoped compiler-hardware behavior的`supported`/`board-observed`/`unknown`/`excluded`边界；
@@ -293,9 +293,9 @@ target-model是独立qualification consumer，其mismatch不改变已经验证�
 | source | 产品adapter与pre-exported input形成唯一static-ranked StableHLO source；card partition显式；logical data identity、checked range与transaction lifetime分离 |
 | decision | graph normalization产生fixed semantic roots；baseline从current TensorProgram和固定规则直接构造actual IR，不创建search choice state；search才拥有structural choice frontier和materializer；两者后续都只在各自current IR上变换，只有Accepted owner进入发布 |
 | value semantics | 算术operation和dtype语义由上游IR拥有；physical-dataflow只消费这些事实，不增加数值policy或search axis |
-| physical realization | CardModule、per-Tile TileModule/TileRegion、typed physical movement、Instr及actual lifetime-derived SPM/DDR offsets共同闭合 |
+| physical realization | top-level TileModule/TileRegion、typed physical movement、Instr及actual lifetime-derived SPM/DDR offsets共同闭合 |
 | communication | endpoint、payload、token、wait和completion来自current topology、selected movement及actual lifetime；不存在late route或同步repair |
-| output/runtime | all-and-only Tile CardExecutable、same-lowering target modules、target-ready immutable data、ExecutablePackage和side-effect-free no-card计划形成单一发布链 |
+| output/runtime | all-and-only Tile DeviceExecutable、same-lowering target modules、target-ready immutable data、ExecutablePackage和side-effect-free no-card计划形成单一发布链 |
 | evidence | hard legality/capacity与performance estimate分离；host、model、no-card、board correctness、packet和timing各自只签发本层结论 |
 
 本表不记录施工顺序、完成状态或外部门禁；这些只读`tasks/progress.md`与current实施计划。
@@ -308,8 +308,8 @@ target-model是独立qualification consumer，其mismatch不改变已经验证�
 | Shardy/XLA SPMD与card-level partition | 03 |
 | target topology、card partition与Tile domain | 04 |
 | local structured tensor normalization、attention graph algorithm与collective boundary | 05 |
-| physical-dataflow selection、candidate materialization与CardExecutable构造 | 06 |
-| selected CardModule/TileRegion materialization与SPM ownership/lifetime containment | 07 |
+| physical-dataflow selection、candidate materialization与DeviceExecutable构造 | 06 |
+| selected TileModule/TileRegion materialization与SPM ownership/lifetime containment | 07 |
 | physical encoding attr/type语义、view、transfer realizability analysis与descriptor cover | 08 |
 | SPM lifetime、allocation与accepted offsets | 09 |
 | source-op typed lowering interface/external model与selected compute/movement IR | 10 |

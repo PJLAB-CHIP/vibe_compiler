@@ -95,7 +95,7 @@ STATIC_COST_REASONS = (
     "arithmetic-overflow",
 )
 STATIC_COST_RATE_FIELDS = (
-    "card_ddr_bytes_per_second",
+    "ddr_bytes_per_second",
     "directional_noc_bytes_per_second",
     "f16_bf16_npu_logical_ops_per_second_per_tile",
     "f16_bf16_vector_logical_ops_per_second_per_tile",
@@ -1675,7 +1675,7 @@ def _hardware_cost_analysis(
         floor = (
             aggregate
             * 1_000_000_000
-            / int(rates["card_ddr_bytes_per_second"])
+            / int(rates["ddr_bytes_per_second"])
         )
         symmetric = len(set(values)) <= 1
         measured = _measured_engine_reference(engine_active_time, engine)

@@ -8,7 +8,7 @@
 ```text
 Pipeline position:
 - Upstream IR / input:
-  current frontend program directory、CardExecutable、target modules、runtime/device records、qualification inputs
+  current frontend program directory、DeviceExecutable、target modules、runtime/device records、qualification inputs
   以及同一源码树内生成的辅助metadata。
 - Current stage responsibility:
   区分仓库内同步演进接口与真实兼容边界；所有Wafer-owned边界只保留一种无编号current表示；

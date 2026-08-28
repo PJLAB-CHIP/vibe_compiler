@@ -38,7 +38,7 @@ llvm::Error validateControlAddresses(const compiler::TargetCommand &command,
           TargetModelKernelErrorCode::InvalidCommandField,
           "Direct DTE participant count differs from invocation");
     llvm::Expected<TargetModelResolvedRange> status = plan.resolve(
-        command.launchSlotId.getValue(), TargetModelAddressSpace::CardDDR,
+        command.launchSlotId.getValue(), TargetModelAddressSpace::DDR,
         TargetModelAccess::ReadWrite, begin->statusAddress,
         WAFER_TX81_DIRECT_DTE_STATUS_VALUE_BYTES,
         WAFER_TX81_DIRECT_DTE_STATUS_VALUE_BYTES);

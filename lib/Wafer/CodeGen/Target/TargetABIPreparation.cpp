@@ -75,7 +75,7 @@ TileEntryArgumentAccess getTileEntryArgumentAccess(TileEntryArgumentKind kind) {
   case TileEntryArgumentKind::ExternalOutput:
     return TileEntryArgumentAccess::WriteOnly;
   case TileEntryArgumentKind::Workspace:
-  case TileEntryArgumentKind::CardWorkspace:
+  case TileEntryArgumentKind::SharedWorkspace:
   case TileEntryArgumentKind::ProfileRecord:
   case TileEntryArgumentKind::TransportStatus:
     return TileEntryArgumentAccess::ReadWrite;
@@ -206,10 +206,10 @@ prepareTargetABI(const TileExecutable &tileExecutable,
   const unsigned resultCount = function.getFunctionType().getNumResults();
   std::vector<const ProgramResourceBinding *> argumentBindings(
       originalArgumentCount, nullptr);
-  std::vector<CardDDRBindingAttr> cardDDRBindings(originalArgumentCount);
+  std::vector<DDRBindingAttr> ddrBindings(originalArgumentCount);
   for (unsigned index = 0; index < originalArgumentCount; ++index)
-    cardDDRBindings[index] = function.getArgAttrOfType<CardDDRBindingAttr>(
-        index, kWaferCardDDRBindingAttrName);
+    ddrBindings[index] = function.getArgAttrOfType<DDRBindingAttr>(
+        index, kWaferDDRBindingAttrName);
   std::vector<const ProgramResourceBinding *> outputBindings(resultCount,
                                                              nullptr);
   for (const ProgramResourceBinding &binding :
@@ -220,7 +220,7 @@ prepareTargetABI(const TileExecutable &tileExecutable,
     if (binding.index < 0 ||
         binding.index >= static_cast<int64_t>(domain.size()) ||
         domain[binding.index] ||
-        (&domain == &argumentBindings && cardDDRBindings[binding.index])) {
+        (&domain == &argumentBindings && ddrBindings[binding.index])) {
       function.emitError()
           << "target_abi_mismatch: resource bindings do not form an exact "
              "function boundary";
@@ -230,7 +230,7 @@ prepareTargetABI(const TileExecutable &tileExecutable,
   }
   if (llvm::any_of(llvm::seq<unsigned>(0, originalArgumentCount),
                    [&](unsigned index) {
-                     return !argumentBindings[index] && !cardDDRBindings[index];
+                     return !argumentBindings[index] && !ddrBindings[index];
                    }) ||
       llvm::is_contained(outputBindings, nullptr)) {
     function.emitError()
@@ -298,14 +298,13 @@ prepareTargetABI(const TileExecutable &tileExecutable,
         return mlir::failure();
       continue;
     }
-    CardDDRBindingAttr binding = cardDDRBindings[index];
+    DDRBindingAttr binding = ddrBindings[index];
     auto declaration =
         mlir::SymbolTable::lookupNearestSymbolFrom<mlir::memref::GlobalOp>(
             function, binding.getResource());
-    auto resource = declaration
-                        ? declaration->getAttrOfType<CardDDRResourceAttr>(
-                              kWaferCardDDRResourceAttrName)
-                        : CardDDRResourceAttr{};
+    auto resource = declaration ? declaration->getAttrOfType<DDRResourceAttr>(
+                                      kWaferDDRResourceAttrName)
+                                : DDRResourceAttr{};
     auto memrefType =
         mlir::dyn_cast<mlir::MemRefType>(function.getArgument(index).getType());
     if (!declaration || !resource || !memrefType ||
@@ -328,17 +327,16 @@ prepareTargetABI(const TileExecutable &tileExecutable,
     if (mlir::failed(physical) || mlir::failed(alignment) ||
         mlir::failed(format))
       return mlir::failure();
-    TileEntryArgumentAccess access =
-        binding.getAccess() == CardDDRAccess::None
-            ? TileEntryArgumentAccess::None
-        : binding.getAccess() == CardDDRAccess::Read
-            ? TileEntryArgumentAccess::ReadOnly
-        : binding.getAccess() == CardDDRAccess::Write
-            ? TileEntryArgumentAccess::WriteOnly
-            : TileEntryArgumentAccess::ReadWrite;
+    TileEntryArgumentAccess access = binding.getAccess() == DDRAccess::None
+                                         ? TileEntryArgumentAccess::None
+                                     : binding.getAccess() == DDRAccess::Read
+                                         ? TileEntryArgumentAccess::ReadOnly
+                                     : binding.getAccess() == DDRAccess::Write
+                                         ? TileEntryArgumentAccess::WriteOnly
+                                         : TileEntryArgumentAccess::ReadWrite;
     prepared.slots.push_back(
         {static_cast<int64_t>(prepared.slots.size()),
-         TileEntryArgumentKind::CardWorkspace, resource.getResourceId(),
+         TileEntryArgumentKind::SharedWorkspace, resource.getResourceId(),
          binding.getResource().getValue().str(), *format, physical->layout,
          std::vector<int64_t>(memrefType.getShape().begin(),
                               memrefType.getShape().end()),
@@ -512,14 +510,14 @@ prepareTargetABI(const TileExecutable &tileExecutable,
   }
 
   for (unsigned index = 0; index < originalArgumentCount; ++index)
-    if (cardDDRBindings[index])
-      function.removeArgAttr(index, kWaferCardDDRBindingAttrName);
-  llvm::SmallVector<mlir::memref::GlobalOp, 4> cardDDRDeclarations;
+    if (ddrBindings[index])
+      function.removeArgAttr(index, kWaferDDRBindingAttrName);
+  llvm::SmallVector<mlir::memref::GlobalOp, 4> ddrDeclarations;
   for (mlir::memref::GlobalOp global :
        prepared.module->getOps<mlir::memref::GlobalOp>())
-    if (global->hasAttr(kWaferCardDDRResourceAttrName))
-      cardDDRDeclarations.push_back(global);
-  for (mlir::memref::GlobalOp global : cardDDRDeclarations)
+    if (global->hasAttr(kWaferDDRResourceAttrName))
+      ddrDeclarations.push_back(global);
+  for (mlir::memref::GlobalOp global : ddrDeclarations)
     global.erase();
 
   if (mlir::failed(mlir::verify(*prepared.module)))

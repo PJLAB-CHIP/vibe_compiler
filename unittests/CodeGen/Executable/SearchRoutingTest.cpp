@@ -1,6 +1,6 @@
 //===- SearchRoutingTest.cpp ------------------------------------------===//
 
-#include "TestSupport/CodeGen/CardExecutableTestSupport.h"
+#include "TestSupport/CodeGen/ExecutableTestSupport.h"
 #include "Wafer/Support/CompileTiming.h"
 
 #include "llvm/Support/Error.h"
@@ -33,7 +33,7 @@ void expectPolicyUnavailable(wafer::OptimizationConfig policy,
     timingActivation.emplace(timing);
   }
   wafer::compiler::ProgramDataHandoff programData;
-  auto executable = wafer::compiler::detail::buildCardExecutable(
+  auto executable = wafer::compiler::detail::buildDeviceExecutable(
       parsed.context, *parsed.module, programMetadata(), executionConfig(),
       policy, diagnostics, std::nullopt, programData);
   diagnostics.flush();
@@ -47,7 +47,7 @@ void expectPolicyUnavailable(wafer::OptimizationConfig policy,
       << diagnosticsText;
   EXPECT_EQ(diagnosticsText.find("analyze-card-program"), std::string::npos)
       << diagnosticsText;
-  EXPECT_EQ(diagnosticsText.find("deterministic-card-executable-baseline"),
+  EXPECT_EQ(diagnosticsText.find("deterministic-device-executable-baseline"),
             std::string::npos)
       << diagnosticsText;
   EXPECT_EQ(diagnosticsText.find("physical-search"), std::string::npos)

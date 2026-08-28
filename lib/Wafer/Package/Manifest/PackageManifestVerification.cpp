@@ -712,13 +712,13 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
 
   std::vector<uint64_t> targetTensorReferenceCounts(
       manifest.targetTensors.size(), 0);
-  struct CardWorkspaceUse {
+  struct SharedWorkspaceUse {
     uint64_t bytes = 0;
     uint64_t alignment = 0;
     bool read = false;
     bool write = false;
   };
-  std::map<uint64_t, CardWorkspaceUse> cardWorkspaces;
+  std::map<uint64_t, SharedWorkspaceUse> sharedWorkspaces;
   std::vector<uint64_t> inputReferenceCounts(manifest.inputs.size(), 0);
   std::vector<uint64_t> outputReferenceCounts(manifest.outputs.size(), 0);
 
@@ -744,10 +744,10 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
       return lhs.ordinal < rhs.ordinal;
     });
     for (auto [ordinal, argument] : llvm::enumerate(entry.arguments)) {
-      const bool cardWorkspace =
-          std::holds_alternative<CardWorkspaceArgument>(argument.reference);
+      const bool sharedWorkspace =
+          std::holds_alternative<SharedWorkspaceArgument>(argument.reference);
       if (!isValidAccess(argument.access) || argument.ordinal != ordinal ||
-          (!cardWorkspace &&
+          (!sharedWorkspace &&
            argument.access != expectedArgumentAccess(argument.reference)))
         return invalid("package entry arguments must be dense, zero-based "
                        "and access-consistent");
@@ -775,15 +775,15 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
         if (workspace.bytes == 0 || workspace.alignment == 0 ||
             !isPowerOfTwo(workspace.alignment))
           return invalid("package entry workspace requirement is invalid");
-      } else if (const auto *workspace =
-                     std::get_if<CardWorkspaceArgument>(&argument.reference)) {
+      } else if (const auto *workspace = std::get_if<SharedWorkspaceArgument>(
+                     &argument.reference)) {
         if (workspace->resource == std::numeric_limits<uint64_t>::max() ||
             workspace->bytes == 0 || workspace->alignment == 0 ||
             !isPowerOfTwo(workspace->alignment))
           return invalid("package entry card workspace requirement is invalid");
-        auto [use, inserted] = cardWorkspaces.try_emplace(
+        auto [use, inserted] = sharedWorkspaces.try_emplace(
             workspace->resource,
-            CardWorkspaceUse{workspace->bytes, workspace->alignment});
+            SharedWorkspaceUse{workspace->bytes, workspace->alignment});
         if (!inserted && (use->second.bytes != workspace->bytes ||
                           use->second.alignment != workspace->alignment))
           return invalid(
@@ -833,9 +833,9 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
         return invalid("package Direct DTE transport requirement is invalid");
     }
   }
-  uint64_t expectedCardWorkspace = 0;
-  for (const auto &[resource, use] : cardWorkspaces)
-    if (resource != expectedCardWorkspace++ || !use.read || !use.write)
+  uint64_t expectedSharedWorkspace = 0;
+  for (const auto &[resource, use] : sharedWorkspaces)
+    if (resource != expectedSharedWorkspace++ || !use.read || !use.write)
       return invalid("package card workspaces must be dense and have both "
                      "reader and writer entries");
   if (llvm::any_of(targetTensorReferenceCounts,

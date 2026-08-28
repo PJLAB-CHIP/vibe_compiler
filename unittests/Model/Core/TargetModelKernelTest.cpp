@@ -1035,16 +1035,15 @@ TEST(TargetModelKernelTest, FailedEffectDoesNotModifyBytesOrNumericFlags) {
   FormalNumericExceptionFlags flags;
   flags.inexact = true;
   TargetModelCommandEffect invalid{
-      {TargetModelByteWrite{
-          0, TargetModelAddressSpace::CardDDR, kDDRBase, 1, {9}}},
+      {TargetModelByteWrite{0, TargetModelAddressSpace::DDR, kDDRBase, 1, {9}}},
       flags,
       TargetModelControlAction::None};
   std::string error = expectError(
       applyTargetModelCommandEffect(memory, config, std::move(invalid)));
   EXPECT_NE(error.find("access-denied"), std::string::npos);
   EXPECT_FALSE(config.getAggregateFlags().any());
-  EXPECT_EQ(llvm::cantFail(memory.readSnapshot(
-                0, TargetModelAddressSpace::CardDDR, kDDRBase, 1, 1)),
+  EXPECT_EQ(llvm::cantFail(memory.readSnapshot(0, TargetModelAddressSpace::DDR,
+                                               kDDRBase, 1, 1)),
             (std::vector<uint8_t>{0}));
 }
 

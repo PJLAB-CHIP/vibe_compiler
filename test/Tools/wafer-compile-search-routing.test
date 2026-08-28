@@ -1,7 +1,7 @@
 # REQUIRES: stablehlo, shardy, xla-spmd-helper
 
 # During the current-IR cutover both product policies stop at the
-# CardExecutable boundary. Neither may enter old planning, actual memory or
+# DeviceExecutable boundary. Neither may enter old planning, actual memory or
 # package publication, and neither may fall back to the other policy.
 
 # RUN: rm -rf %t.source %t.search-package %t.none-package
@@ -15,15 +15,15 @@
 # RUN: test ! -e %t.none-package
 
 # SEARCH: wafer-compile: optimization-policy=search
-# SEARCH: wafer-compile: operation_not_supported: optimization-policy=search is unavailable while the current-IR Card pipeline is being rebuilt
+# SEARCH: wafer-compile: operation_not_supported: optimization-policy=search is unavailable while the current-IR executable pipeline is being rebuilt
 # SEARCH-NOT: physical-search
-# SEARCH-NOT: deterministic-card-executable-baseline
+# SEARCH-NOT: deterministic-device-executable-baseline
 # SEARCH-NOT: actual-memory-target
 # SEARCH-NOT: wrote verified package
 
 # NONE: wafer-compile: optimization-policy=none
-# NONE: wafer-compile: operation_not_supported: optimization-policy=none is unavailable while the current-IR Card pipeline is being rebuilt
+# NONE: wafer-compile: operation_not_supported: optimization-policy=none is unavailable while the current-IR executable pipeline is being rebuilt
 # NONE-NOT: physical-search
-# NONE-NOT: deterministic-card-executable-baseline
+# NONE-NOT: deterministic-device-executable-baseline
 # NONE-NOT: actual-memory-target
 # NONE-NOT: wrote verified package

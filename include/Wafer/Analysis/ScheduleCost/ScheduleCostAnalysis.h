@@ -203,13 +203,12 @@ struct ModeledNoCRouteCost {
   ScheduleCostMetric peakDirectedLinkByteDemand;
 };
 
-/// Exact card aggregation of independently lowered Tile
-/// instruction programs.
+/// Exact aggregation of independently lowered Tile instruction programs.
 /// Work and traffic dimensions are summed over the complete variant. SPM
 /// remains private to a Tile, so both the maximum per-Tile high-water and the
 /// sum of Tile-local high-waters are retained. No bandwidth-to-time conversion
 /// is performed here.
-struct CardInstructionProgramCost {
+struct InstructionProgramAggregateCost {
   llvm::SmallVector<InstructionProgramCost, 16> tileCosts;
 
   /// Sum and per-dimension Tile maximum of the same Tile-local work facts.
@@ -311,10 +310,11 @@ struct TileInstructionProgramSlice {
 };
 
 /// Recompute every explicitly identified Tile cost and aggregate the
-/// complete card variant. Unavailable, unsupported and overflow states
+/// complete Tile-program collection. Unavailable, unsupported and overflow
+/// states
 /// propagate independently for each raw metric instead of being replaced with
 /// estimates.
-CardInstructionProgramCost analyzeCardInstructionProgramCost(
+InstructionProgramAggregateCost analyzeInstructionProgramAggregateCost(
     llvm::ArrayRef<TileInstructionProgram> tileModules,
     const TargetMemoryPolicy &memory);
 
@@ -324,7 +324,7 @@ CardInstructionProgramCost analyzeCardInstructionProgramCost(
 /// source of multiplicity and NoC topology. Callers must prove that a cohort
 /// of slices is disjoint and conserves the unsliced raw costs before using it
 /// to claim schedule overlap.
-CardInstructionProgramCost analyzeCardInstructionProgramCostSlice(
+InstructionProgramAggregateCost analyzeInstructionProgramAggregateCostSlice(
     llvm::ArrayRef<TileInstructionProgramSlice> tileModules,
     const TargetMemoryPolicy &memory);
 

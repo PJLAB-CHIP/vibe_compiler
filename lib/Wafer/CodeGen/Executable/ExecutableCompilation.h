@@ -1,10 +1,10 @@
-//===- CardExecutableCompilation.h - Policy-free executable seam -*- C++
+//===- ExecutableCompilation.h - Policy-free executable seam -*- C++
 //-*-===//
 
-#ifndef WAFER_COMPILER_CARDEXECUTABLECOMPILATION_H
-#define WAFER_COMPILER_CARDEXECUTABLECOMPILATION_H
+#ifndef WAFER_COMPILER_EXECUTABLECOMPILATION_H
+#define WAFER_COMPILER_EXECUTABLECOMPILATION_H
 
-#include "Wafer/CodeGen/Executable/CardExecutableLowering.h"
+#include "Wafer/CodeGen/Executable/ExecutableLowering.h"
 #include "Wafer/CodeGen/Executable/TileMemoryPlanning.h"
 
 #include "Wafer/Frontend/Program/Program.h"
@@ -48,7 +48,7 @@ struct AcceptedOperationNodeRelation {
   uint32_t structuredNodeId = 0;
 };
 
-enum class CardExecutableCompilationStatus : uint8_t {
+enum class ExecutableCompilationStatus : uint8_t {
   Accepted,
   ProvenExactRejection,
   UnsupportedFailure,
@@ -56,7 +56,7 @@ enum class CardExecutableCompilationStatus : uint8_t {
   CompilerFailure,
 };
 
-struct CardExecutableTileFailure {
+struct ExecutableTileFailure {
   TileId tileId{0};
   std::string gate;
   std::string detail;
@@ -73,7 +73,7 @@ bool isProvenExactTileMemoryPlanningFailure(
 /// text. Only a proven capacity result is exact; deterministic search resource
 /// exhaustion remains indeterminate, unsupported lifetime is unsupported, and
 /// a missing completion or malformed leaf input is a compiler failure.
-CardExecutableCompilationStatus
+ExecutableCompilationStatus
 classifyTileMemoryPlanningFailure(const TileMemoryPlanningFailure &failure);
 
 /// Runs the unique exact full-buffer transfer cleanup on canonical Instr and
@@ -83,48 +83,47 @@ classifyTileMemoryPlanningFailure(const TileMemoryPlanningFailure &failure);
 mlir::FailureOr<unsigned> cleanupCanonicalInstructionTransfers(
     mlir::ModuleOp module, StructuredMaterializationRelations &relations);
 
-/// Move-only result of compiling one already selected CardModule.  An exact
+/// Move-only result of compiling one selected Tile-module collection. An exact
 /// rejection is backed by explicit capacity evidence in the returned per-Tile
 /// failures. Unsupported IR, resource exhaustion and compiler failures retain
 /// distinct typed classifications and cannot become a search no-good.
-struct CardExecutableCompilationResult {
-  CardExecutableCompilationStatus status =
-      CardExecutableCompilationStatus::IndeterminateFailure;
-  std::optional<CardExecutableLoweringResult> executable;
+struct ExecutableCompilationResult {
+  ExecutableCompilationStatus status =
+      ExecutableCompilationStatus::IndeterminateFailure;
+  std::optional<ExecutableLoweringResult> executable;
   std::string gate;
   std::string detail;
-  llvm::SmallVector<CardExecutableTileFailure, 4> tileFailures;
+  llvm::SmallVector<ExecutableTileFailure, 4> tileFailures;
   llvm::SmallVector<AcceptedOperationNodeRelation, 64> operationNodeRelations;
   /// Same-invocation diagnostic snapshots captured at the Tile dataflow to
   /// Instr boundary. They are not part of the accepted Tile modules.
   std::vector<std::string> tileDataflowIRTrace;
 
   bool isAccepted() const {
-    return status == CardExecutableCompilationStatus::Accepted;
+    return status == ExecutableCompilationStatus::Accepted;
   }
   bool isProvenExactRejection() const {
-    return status == CardExecutableCompilationStatus::ProvenExactRejection;
+    return status == ExecutableCompilationStatus::ProvenExactRejection;
   }
 
-  CardExecutableLoweringResult takeExecutable() {
-    return std::move(*executable);
-  }
+  ExecutableLoweringResult takeExecutable() { return std::move(*executable); }
 };
 
 /// Consumes all-and-only completion-closed canonical Instr modules for one
-/// selected Card candidate. This is the unique actual SPM/DDR/transport/target
-/// leaf shared by baseline and search. It does not bufferize, lower Tile
+/// selected device candidate. This is the unique actual
+/// SPM/DDR/transport/target leaf shared by baseline and search. It does not
+/// bufferize, lower Tile
 /// dataflow, choose worker/order, rebuild completion, repair memory pressure or
 /// construct another candidate.
-CardExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
+ExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
     std::vector<CanonicalInstructionTile> tiles, CardId expectedCardId,
     llvm::ArrayRef<TileId> expectedTileIds,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     ProgramDataHandoff &programData,
-    CardExecutableLoweringStatistics *statistics = nullptr,
+    ExecutableLoweringStatistics *statistics = nullptr,
     unsigned tilePipelineParallelism = 0);
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_CARDEXECUTABLECOMPILATION_H
+#endif // WAFER_COMPILER_EXECUTABLECOMPILATION_H

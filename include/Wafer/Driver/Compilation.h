@@ -174,7 +174,7 @@ enum class DDRAllocationContract { DefaultArenaRelativeOffsets };
 /// slice is copied from the frontend verifier's typed result; partition
 /// identity is never inferred from its payload locator. The stable program
 /// tensor identity resolves parameter/constant payload access through the
-/// CardExecutable's ProgramDataHandoff; the binding never carries payload
+/// DeviceExecutable's ProgramDataHandoff; the binding never carries payload
 /// bytes and the slice payload path is provenance only.
 struct ProgramResourceBinding {
   ProgramResourceRole role;
@@ -235,7 +235,7 @@ public:
   }
 
 private:
-  friend struct CardExecutableBuilder;
+  friend struct DeviceExecutableBuilder;
 
   TileExecutable(CardId cardId, TileId tileId, LaunchSlotId launchSlotId,
                  mlir::OwningOpRef<mlir::ModuleOp> module,
@@ -262,18 +262,18 @@ private:
   DDRAllocationContract ddrAllocationContract;
 };
 
-/// Owns the complete executable for one target card. The context is owned
+/// Owns the complete executable for the target device. The context is owned
 /// alongside all Tile modules and is destroyed only after them. The program
 /// data handoff owns all-and-only payload sources this compilation consumed;
 /// it lives exactly as long as the executable so target consumers read
 /// parameter/constant bytes from owned content instead of reopening paths.
-class CardExecutable {
+class DeviceExecutable {
 public:
-  CardExecutable(CardExecutable &&);
-  CardExecutable &operator=(CardExecutable &&);
-  CardExecutable(const CardExecutable &) = delete;
-  CardExecutable &operator=(const CardExecutable &) = delete;
-  ~CardExecutable();
+  DeviceExecutable(DeviceExecutable &&);
+  DeviceExecutable &operator=(DeviceExecutable &&);
+  DeviceExecutable(const DeviceExecutable &) = delete;
+  DeviceExecutable &operator=(const DeviceExecutable &) = delete;
+  ~DeviceExecutable();
 
   const ExecutionConfig &getExecutionConfig() const { return executionConfig; }
   const std::vector<TileExecutable> &getTileExecutables() const {
@@ -285,13 +285,13 @@ public:
   const ProgramDataHandoff &getProgramDataHandoff() const;
 
 private:
-  friend struct CardExecutableBuilder;
+  friend struct DeviceExecutableBuilder;
 
-  CardExecutable(ExecutionConfig executionConfig,
-                 RuntimeLaunchContract runtimeLaunchContract,
-                 std::shared_ptr<mlir::MLIRContext> context,
-                 std::vector<TileExecutable> tiles,
-                 std::unique_ptr<ProgramDataHandoff> programData);
+  DeviceExecutable(ExecutionConfig executionConfig,
+                   RuntimeLaunchContract runtimeLaunchContract,
+                   std::shared_ptr<mlir::MLIRContext> context,
+                   std::vector<TileExecutable> tiles,
+                   std::unique_ptr<ProgramDataHandoff> programData);
 
   ExecutionConfig executionConfig;
   RuntimeLaunchContract runtimeLaunchContract;

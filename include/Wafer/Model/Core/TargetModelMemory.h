@@ -18,7 +18,7 @@
 
 namespace wafer::model {
 
-enum class TargetModelAddressSpace : uint8_t { TileSPM, CardDDR };
+enum class TargetModelAddressSpace : uint8_t { TileSPM, DDR };
 enum class TargetModelAccess : uint8_t { Read, Write, ReadWrite };
 
 enum class TargetModelMemoryErrorCode : uint8_t {

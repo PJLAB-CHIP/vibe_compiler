@@ -1,6 +1,6 @@
-//===- CardExecutableCompilationTest.cpp -------------------------------===//
+//===- ExecutableCompilationTest.cpp -------------------------------===//
 
-#include "Wafer/CodeGen/Executable/CardExecutableCompilation.h"
+#include "Wafer/CodeGen/Executable/ExecutableCompilation.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Program/ProgramData.h"
@@ -23,9 +23,9 @@
 
 namespace {
 
-class CardExecutableCompilationTest : public ::testing::Test {
+class ExecutableCompilationTest : public ::testing::Test {
 protected:
-  CardExecutableCompilationTest() {
+  ExecutableCompilationTest() {
     wafer::compiler::detail::registerCompilationDialects(registry);
     context = std::make_unique<mlir::MLIRContext>(registry);
     context->loadAllAvailableDialects();
@@ -45,7 +45,7 @@ protected:
   }
 
   mlir::OwningOpRef<mlir::ModuleOp>
-  oversizedCardModule(bool addInvalidPeer = false) {
+  oversizedTileModuleCollection(bool addInvalidPeer = false) {
     std::string source;
     llvm::raw_string_ostream os(source);
     os << R"mlir(module {
@@ -54,10 +54,9 @@ protected:
        tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
   wafer.execution.mesh @default_mesh
       {axes = ["card"], shape = array<i64: 1>}
-  wafer.card.module card_id = 0 {
 )mlir";
     for (int64_t tile = 0; tile < 16; ++tile) {
-      os << "    wafer.tile.module tile_id = " << tile;
+      os << "  wafer.tile.module card_id = 0 tile_id = " << tile;
       if (tile != 0) {
         os << R"mlir( {
       func.func @main() {
@@ -100,8 +99,7 @@ protected:
     }
 )mlir";
     }
-    os << R"mlir(  }
-})mlir";
+    os << "}\n";
     os.flush();
     return mlir::parseSourceString<mlir::ModuleOp>(source, context.get());
   }
@@ -164,10 +162,10 @@ protected:
   std::unique_ptr<mlir::MLIRContext> context;
 };
 
-TEST(CardExecutableCompilationFailureTest,
+TEST(ExecutableCompilationFailureTest,
      PreservesTypedMemoryPlanningFailureClasses) {
   using wafer::SPMMemoryPlanningFailureKind;
-  using wafer::compiler::detail::CardExecutableCompilationStatus;
+  using wafer::compiler::detail::ExecutableCompilationStatus;
   using wafer::compiler::detail::TileMemoryPlanningFailure;
   using wafer::compiler::detail::TileMemoryPlanningFailureKind;
 
@@ -176,30 +174,30 @@ TEST(CardExecutableCompilationFailureTest,
   failure.spmPlanningFailureKind =
       SPMMemoryPlanningFailureKind::CapacityOverflow;
   EXPECT_EQ(wafer::compiler::detail::classifyTileMemoryPlanningFailure(failure),
-            CardExecutableCompilationStatus::ProvenExactRejection);
+            ExecutableCompilationStatus::ProvenExactRejection);
 
   failure.spmPlanningFailureKind =
       SPMMemoryPlanningFailureKind::ResourceExhausted;
   EXPECT_EQ(wafer::compiler::detail::classifyTileMemoryPlanningFailure(failure),
-            CardExecutableCompilationStatus::IndeterminateFailure);
+            ExecutableCompilationStatus::IndeterminateFailure);
 
   failure.spmPlanningFailureKind =
       SPMMemoryPlanningFailureKind::UnsupportedLifetime;
   EXPECT_EQ(wafer::compiler::detail::classifyTileMemoryPlanningFailure(failure),
-            CardExecutableCompilationStatus::UnsupportedFailure);
+            ExecutableCompilationStatus::UnsupportedFailure);
 
   failure.spmPlanningFailureKind =
       SPMMemoryPlanningFailureKind::MissingCompletion;
   EXPECT_EQ(wafer::compiler::detail::classifyTileMemoryPlanningFailure(failure),
-            CardExecutableCompilationStatus::CompilerFailure);
+            ExecutableCompilationStatus::CompilerFailure);
 
   failure.kind = TileMemoryPlanningFailureKind::Contract;
   failure.spmPlanningFailureKind = SPMMemoryPlanningFailureKind::None;
   EXPECT_EQ(wafer::compiler::detail::classifyTileMemoryPlanningFailure(failure),
-            CardExecutableCompilationStatus::CompilerFailure);
+            ExecutableCompilationStatus::CompilerFailure);
 }
 
-TEST_F(CardExecutableCompilationTest,
+TEST_F(ExecutableCompilationTest,
        ProductionTransferCleanupRetargetsCurrentRelationsAndFeedsMiniMalloc) {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
@@ -273,7 +271,7 @@ module {
       /*spmAlignment=*/16)));
 }
 
-TEST_F(CardExecutableCompilationTest,
+TEST_F(ExecutableCompilationTest,
        CanonicalInstrLeafOwnsActualMemoryTargetAndHighWater) {
   auto module = canonicalInstructionModule();
   ASSERT_TRUE(module);
@@ -282,7 +280,7 @@ TEST_F(CardExecutableCompilationTest,
   program.numPartitions = 1;
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  wafer::compiler::detail::CardExecutableLoweringStatistics statistics;
+  wafer::compiler::detail::ExecutableLoweringStatistics statistics;
   wafer::compiler::ProgramDataHandoff programData;
 
   auto result =
@@ -318,14 +316,14 @@ TEST_F(CardExecutableCompilationTest,
     ASSERT_TRUE(cost.compilerOwnedSPMBufferCount.isKnown());
     EXPECT_EQ(cost.compilerOwnedSPMBufferCount.value, 1u);
   }
-  EXPECT_EQ(statistics.cardModuleCompilationInvocations, 0u);
+  EXPECT_EQ(statistics.executableCompilationInvocations, 0u);
   EXPECT_EQ(statistics.actualMemoryTargetGateInvocations, 1u);
   EXPECT_EQ(statistics.tileModuleLoweringAttempts, 1u);
   EXPECT_EQ(statistics.tileModuleLoweringSuccesses, 1u);
-  EXPECT_EQ(statistics.cardExecutablesProduced, 1u);
+  EXPECT_EQ(statistics.deviceExecutablesProduced, 1u);
 }
 
-TEST_F(CardExecutableCompilationTest,
+TEST_F(ExecutableCompilationTest,
        CanonicalInstrLeafRejectsTensorBoundaryWithoutBufferizing) {
   auto module = canonicalInstructionModule(/*includeCompletion=*/true,
                                            /*tensorBoundary=*/true);
@@ -343,7 +341,7 @@ TEST_F(CardExecutableCompilationTest,
         os << "\n";
         return mlir::success();
       });
-  wafer::compiler::detail::CardExecutableLoweringStatistics statistics;
+  wafer::compiler::detail::ExecutableLoweringStatistics statistics;
   wafer::compiler::ProgramDataHandoff programData;
 
   auto result =
@@ -351,9 +349,9 @@ TEST_F(CardExecutableCompilationTest,
           makeCanonicalInstructionTiles(*module), wafer::CardId(0),
           expectedTileIds, program, executionConfig(), diagnostics, programData,
           &statistics, /*tilePipelineParallelism=*/1);
-  EXPECT_EQ(result.status,
-            wafer::compiler::detail::CardExecutableCompilationStatus::
-                CompilerFailure);
+  EXPECT_EQ(
+      result.status,
+      wafer::compiler::detail::ExecutableCompilationStatus::CompilerFailure);
   EXPECT_EQ(result.gate, "tile-memory-planning");
   ASSERT_EQ(result.tileFailures.size(), 16u);
   for (const auto &failure : result.tileFailures)
@@ -363,7 +361,7 @@ TEST_F(CardExecutableCompilationTest,
   EXPECT_EQ(statistics.tileModuleLoweringAttempts, 0u);
 }
 
-TEST_F(CardExecutableCompilationTest,
+TEST_F(ExecutableCompilationTest,
        CanonicalInstrLeafRejectsMissingCompletionWithoutRepair) {
   auto module = canonicalInstructionModule(/*includeCompletion=*/false);
   ASSERT_TRUE(module);
@@ -380,7 +378,7 @@ TEST_F(CardExecutableCompilationTest,
         os << "\n";
         return mlir::success();
       });
-  wafer::compiler::detail::CardExecutableLoweringStatistics statistics;
+  wafer::compiler::detail::ExecutableLoweringStatistics statistics;
   wafer::compiler::ProgramDataHandoff programData;
 
   auto result =
@@ -389,9 +387,9 @@ TEST_F(CardExecutableCompilationTest,
           expectedTileIds, program, executionConfig(), diagnostics, programData,
           &statistics, /*tilePipelineParallelism=*/1);
   diagnostics.flush();
-  EXPECT_EQ(result.status,
-            wafer::compiler::detail::CardExecutableCompilationStatus::
-                CompilerFailure);
+  EXPECT_EQ(
+      result.status,
+      wafer::compiler::detail::ExecutableCompilationStatus::CompilerFailure);
   EXPECT_EQ(result.gate, "spm-allocation");
   ASSERT_EQ(result.tileFailures.size(), 16u);
   for (const auto &failure : result.tileFailures)

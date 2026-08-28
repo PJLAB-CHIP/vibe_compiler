@@ -40,7 +40,7 @@ bool isInputRole(compiler::TileEntryArgumentKind kind) {
     return true;
   case compiler::TileEntryArgumentKind::ExternalOutput:
   case compiler::TileEntryArgumentKind::Workspace:
-  case compiler::TileEntryArgumentKind::CardWorkspace:
+  case compiler::TileEntryArgumentKind::SharedWorkspace:
   case compiler::TileEntryArgumentKind::ProfileRecord:
   case compiler::TileEntryArgumentKind::TransportStatus:
     return false;
@@ -57,7 +57,7 @@ bool permitsWrite(compiler::TileEntryArgumentKind kind) {
     return false;
   case compiler::TileEntryArgumentKind::ExternalOutput:
   case compiler::TileEntryArgumentKind::Workspace:
-  case compiler::TileEntryArgumentKind::CardWorkspace:
+  case compiler::TileEntryArgumentKind::SharedWorkspace:
   case compiler::TileEntryArgumentKind::ProfileRecord:
   case compiler::TileEntryArgumentKind::TransportStatus:
     return true;
@@ -359,14 +359,14 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
                          "model-owned resource cannot be prebound");
   }
   for (const ResourceFacts &resource : resources) {
-    const bool cardOwned = !resource.id.tileId.has_value();
-    const bool cardWorkspace =
-        resource.slot.kind == compiler::TileEntryArgumentKind::CardWorkspace;
-    if ((cardWorkspace && (resource.launchSlots.size() < 2 || !resource.read ||
-                           !resource.write)) ||
-        (cardOwned && !cardWorkspace &&
+    const bool sharedAcrossTiles = !resource.id.tileId.has_value();
+    const bool sharedWorkspace =
+        resource.slot.kind == compiler::TileEntryArgumentKind::SharedWorkspace;
+    if ((sharedWorkspace && (resource.launchSlots.size() < 2 ||
+                             !resource.read || !resource.write)) ||
+        (sharedAcrossTiles && !sharedWorkspace &&
          resource.launchSlots.size() != tileCount) ||
-        (!cardOwned && resource.launchSlots.size() != 1))
+        (!sharedAcrossTiles && resource.launchSlots.size() != 1))
       return memoryError(
           TargetModelMemoryErrorCode::InvalidSlot,
           "resource owner does not match its Tile reference domain");
@@ -454,7 +454,7 @@ llvm::Expected<TargetModelResolvedRange> InvocationAddressPlan::resolve(
                        "DDR range crosses its ABI slot resource boundary");
   if (!permitsAccess(containingStart->kind, access) ||
       (containingStart->kind ==
-           compiler::TileEntryArgumentKind::CardWorkspace &&
+           compiler::TileEntryArgumentKind::SharedWorkspace &&
        !permitsDeclaredAccess(containingStart->access, access)))
     return memoryError(
         TargetModelMemoryErrorCode::AccessDenied,

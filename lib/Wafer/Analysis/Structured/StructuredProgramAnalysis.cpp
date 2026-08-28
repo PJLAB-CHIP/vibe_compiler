@@ -1,6 +1,7 @@
-//===- CardProgramAnalysis.cpp ---------------------------------------===//
+//===- StructuredProgramAnalysis.cpp
+//---------------------------------------===//
 
-#include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
+#include "Wafer/Analysis/Structured/StructuredProgramAnalysis.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "llvm/ADT/STLExtras.h"
@@ -16,25 +17,25 @@ getStructuredProgram(mlir::ModuleOp module, std::string &failureReason) {
     if (function.isExternal())
       continue;
     if (program) {
-      failureReason =
-          "card program analysis requires exactly one defined tensor program";
+      failureReason = "structured program analysis requires exactly one "
+                      "defined tensor program";
       return mlir::failure();
     }
     program = function;
   }
   if (!program) {
-    failureReason =
-        "card program analysis requires exactly one defined tensor program";
+    failureReason = "structured program analysis requires exactly one "
+                    "defined tensor program";
     return mlir::failure();
   }
   return program;
 }
 
 mlir::FailureOr<StaticOutputDomains>
-getStaticOutputDomains(mlir::func::FuncOp program,
-                       std::string &failureReason) {
+getStaticOutputDomains(mlir::func::FuncOp program, std::string &failureReason) {
   if (program.getNumResults() == 0) {
-    failureReason = "card program analysis requires tensor output domains";
+    failureReason =
+        "structured program analysis requires tensor output domains";
     return mlir::failure();
   }
   StaticOutputDomains domains;
@@ -44,7 +45,8 @@ getStaticOutputDomains(mlir::func::FuncOp program,
     if (!ranked || !ranked.hasStaticShape() ||
         llvm::any_of(ranked.getShape(),
                      [](int64_t extent) { return extent <= 0; })) {
-      failureReason = "card program analysis requires static tensor output domains";
+      failureReason =
+          "structured program analysis requires static tensor output domains";
       return mlir::failure();
     }
     domains.emplace_back(ranked.getShape());
@@ -54,14 +56,15 @@ getStaticOutputDomains(mlir::func::FuncOp program,
 
 } // namespace
 
-mlir::FailureOr<std::unique_ptr<CardProgramAnalysis>> analyzeCardProgram(
+mlir::FailureOr<std::unique_ptr<StructuredProgramAnalysis>>
+analyzeStructuredProgram(
     mlir::ModuleOp tensorProgram,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics) {
   if (!tensorProgram || executionConfig.getNumPartitions() != 1 ||
       program.numPartitions != executionConfig.getNumPartitions()) {
-    diagnostics << "wafer-compile: card program analysis requires one logical "
-                   "card partition\n";
+    diagnostics << "wafer-compile: structured program analysis requires one "
+                   "logical card partition\n";
     return mlir::failure();
   }
 
@@ -93,7 +96,7 @@ mlir::FailureOr<std::unique_ptr<CardProgramAnalysis>> analyzeCardProgram(
   mlir::FailureOr<StructuredDAGAnalysis> dag =
       StructuredDAGAnalysis::create(*structuredProgram, &failureReason);
   if (mlir::failed(dag)) {
-    diagnostics << "wafer-compile: cannot derive card structured DAG: "
+    diagnostics << "wafer-compile: cannot derive structured DAG: "
                 << failureReason << '\n';
     return mlir::failure();
   }
@@ -110,7 +113,7 @@ mlir::FailureOr<std::unique_ptr<CardProgramAnalysis>> analyzeCardProgram(
     operationNodes.push_back({node.operation, node.id});
   llvm::SmallVector<TileId, 16> copiedTileIds(availableTileIds->begin(),
                                               availableTileIds->end());
-  return std::make_unique<CardProgramAnalysis>(
+  return std::make_unique<StructuredProgramAnalysis>(
       std::move(*topology), std::move(copiedTileIds), std::move(*dag),
       std::move(*outputDomains), std::move(operationNodes));
 }

@@ -53,7 +53,7 @@ TargetCall / physical codec / Compiler package / Package verifier
 ```text
 Pipeline position:
 - Upstream IR / input:
-  已通过Instr/target verifier的current TargetCall typed payload；accepted CardExecutable中的ProgramTensor、
+  已通过Instr/target verifier的current TargetCall typed payload；accepted DeviceExecutable中的ProgramTensor、
   已验证且在parser后立即类型化的source logical element type、selected TargetTensor descriptor与显式materialization action；
   same-invocation target LLVM owner；oneDNN qualification
   的concrete GEMM spec、physical payload和host environment。

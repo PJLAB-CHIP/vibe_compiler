@@ -10,18 +10,17 @@
 namespace wafer::compiler {
 
 TargetLLVMModule::TargetLLVMModule(
-    CardId cardId, TileId tileId,
-    LaunchSlotId launchSlotId, llvm::StringRef entrySymbol,
-    TargetIdentityId targetIdentity, KernelRuntimeABIId kernelRuntimeABI,
-    llvm::StringRef moduleFormat, std::vector<TileEntryArgument> tileEntryArguments,
+    CardId cardId, TileId tileId, LaunchSlotId launchSlotId,
+    llvm::StringRef entrySymbol, TargetIdentityId targetIdentity,
+    KernelRuntimeABIId kernelRuntimeABI, llvm::StringRef moduleFormat,
+    std::vector<TileEntryArgument> tileEntryArguments,
     std::unique_ptr<llvm::LLVMContext> context,
     std::unique_ptr<llvm::Module> module)
-    : cardId(cardId), tileId(tileId),
-      launchSlotId(launchSlotId), entrySymbol(entrySymbol.str()),
-      targetIdentity(targetIdentity), kernelRuntimeABI(kernelRuntimeABI),
-      moduleFormat(moduleFormat.str()),
-      tileEntryArguments(std::move(tileEntryArguments)), context(std::move(context)),
-      module(std::move(module)) {}
+    : cardId(cardId), tileId(tileId), launchSlotId(launchSlotId),
+      entrySymbol(entrySymbol.str()), targetIdentity(targetIdentity),
+      kernelRuntimeABI(kernelRuntimeABI), moduleFormat(moduleFormat.str()),
+      tileEntryArguments(std::move(tileEntryArguments)),
+      context(std::move(context)), module(std::move(module)) {}
 
 TargetLLVMModule::~TargetLLVMModule() = default;
 TargetLLVMModule::TargetLLVMModule(TargetLLVMModule &&) = default;
@@ -41,14 +40,11 @@ TargetLLVMModules::~TargetLLVMModules() = default;
 TargetLLVMModules::TargetLLVMModules(TargetLLVMModules &&) = default;
 TargetLLVMModules &TargetLLVMModules::operator=(TargetLLVMModules &&) = default;
 
-llvm::Expected<TargetToolchain>
-TargetToolchain::create(llvm::StringRef pythonExecutable,
-                        llvm::StringRef deviceLinkerScript,
-                        llvm::StringRef llvmClangXX,
-                        llvm::StringRef tx8DepsRoot,
-                        llvm::StringRef waferIncludeDir,
-                        llvm::StringRef waferCrtSource,
-                        llvm::StringRef waferCrtIncludeDir) {
+llvm::Expected<TargetToolchain> TargetToolchain::create(
+    llvm::StringRef pythonExecutable, llvm::StringRef deviceLinkerScript,
+    llvm::StringRef llvmClangXX, llvm::StringRef tx8DepsRoot,
+    llvm::StringRef waferIncludeDir, llvm::StringRef waferCrtSource,
+    llvm::StringRef waferCrtIncludeDir) {
   if (pythonExecutable.empty())
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "Python executable must not be empty");
@@ -76,12 +72,10 @@ TargetToolchain::create(llvm::StringRef pythonExecutable,
                          waferCrtIncludeDir);
 }
 
-llvm::Expected<TargetLLVMModules>
-compileCardExecutableToTargetLLVMModules(
-    const CardExecutable &cardExecutable,
-    llvm::raw_ostream &diagnostics) {
-  return detail::compileCardExecutableToTargetLLVMModulesImpl(
-      cardExecutable, diagnostics, std::nullopt);
+llvm::Expected<TargetLLVMModules> compileDeviceExecutableToTargetLLVMModules(
+    const DeviceExecutable &deviceExecutable, llvm::raw_ostream &diagnostics) {
+  return detail::compileDeviceExecutableToTargetLLVMModulesImpl(
+      deviceExecutable, diagnostics, std::nullopt);
 }
 
 } // namespace wafer::compiler

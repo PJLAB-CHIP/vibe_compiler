@@ -57,7 +57,7 @@ llvm::StringRef stringifyTileEntryArgumentKind(TileEntryArgumentKind kind) {
     return "external-output";
   case TileEntryArgumentKind::Workspace:
     return "workspace";
-  case TileEntryArgumentKind::CardWorkspace:
+  case TileEntryArgumentKind::SharedWorkspace:
     return "card-workspace";
   case TileEntryArgumentKind::ProfileRecord:
     return "profile-record";

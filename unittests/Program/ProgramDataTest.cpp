@@ -7,7 +7,7 @@
 
 #include "Wafer/Frontend/Program/Program.h"
 
-#include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
+#include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"

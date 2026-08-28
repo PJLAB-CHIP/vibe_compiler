@@ -10,7 +10,7 @@
 Pipeline position:
 - Upstream IR / input:
   spatial/region/temporal choice、compact tile-and-fuse及selected-attention lowering均已物化的candidate-owned structural
-  Card/TileRegion IR；attention op已经为零，current Linalg/Tensor/SCF、indexing maps、Tiling/DPS/Bufferizable interfaces、
+  TileModule/TileRegion IR；attention op已经为零，current Linalg/Tensor/SCF、indexing maps、Tiling/DPS/Bufferizable interfaces、
   SSA/view/control flow、dtype/shape/effect与target topology均可验证。
 - Current stage responsibility:
   从current IR派生logical IndexRelation、alias/root和shape bounds；由memref encoding解释footprint、alignment、
@@ -19,11 +19,11 @@ Pipeline position:
   产生layout-resolved TileRegion；第二个transformation只从这些current endpoint证明并物化local、DDR、peer/collective movement、
   temporary、staging、token和effect，产生physical TileRegion。Wait只在Instr completion stage生成。
 - Output IR / files:
-  query-local且随rewrite失效的analysis proof，以及candidate-owned layout-resolved或physical Card/TileRegion IR；accepted事实只存在于
+  query-local且随rewrite失效的analysis proof，以及candidate-owned layout-resolved或physical TileModule/TileRegion IR；accepted事实只存在于
   typed tensor/memref、SSA/view、wafer.tile.region、movement/event和必要typed attrs中。
 - Downstream consumer:
   current Tile execution-structure transformation；随后是per-Tile Tile-to-Instr conversion、fresh completion reconstruction、fixed-capacity SPM/DDR planning、
-  CardExecutable communication/resource verification、target conversion与package writing。
+  DeviceExecutable communication/resource verification、target conversion与package writing。
 - User-level driver / named pipeline:
   wafer-compile production pipeline；wafer-opt入口只用于parser/verifier/conversion leaf testing，不能组成第二条production路径。
 - Explicit non-goals:
@@ -33,7 +33,7 @@ Pipeline position:
 - Done criteria:
   每个accepted view/movement只凭current IR可重建exact logical/physical cover、range、effect和pending lifetime obligation；
   本层不创建completion，但下游可从这些current token/effect和actual execution structure推导completion；
-  cross-Tile movement显式指向Tile并经CardExecutable matching；rewrite后旧analysis不再使用，late exact gate
+  cross-Tile movement显式指向Tile并经DeviceExecutable matching；rewrite后旧analysis不再使用，late exact gate
   不需要search proposal即可验证和lower。
 ```
 
@@ -102,10 +102,10 @@ execution-structure和Instr scheduling前完成。现有Instr-only或test-only e
 | logical index relation与shape bounds | `IndexRelation`、Affine/Presburger/ValueBounds | current IR epoch |
 | physical footprint、valid/padding和bit mapping | Wafer physical encoding attr/type interface | typed IR |
 | metadata view / transfer feasibility | source+destination+relation+encoding helper | 单次proof |
-| selected route、temporary与event | actual typed view/movement/SSA IR | selected CardModule |
-| actual SPM residency | 单Tile actual roots、SSA/view、effect、order与completion | finalized CardModule IR epoch |
+| selected route、temporary与event | actual typed view/movement/SSA IR | selected TileModule set |
+| actual SPM residency | 单Tile actual roots、SSA/view、effect、order与completion | finalized TileModule set IR epoch |
 | SPM/DDR accepted offset | memory planning attr及fresh validator | accepted Instr IR |
-| cross-Tile sender/receiver和message | Tile communication ops | selected CardModule IR |
+| cross-Tile sender/receiver和message | Tile communication ops | selected TileModule set IR |
 
 ## 3. `IndexRelation`
 
@@ -172,7 +172,7 @@ choice；其它alternative从同一verified current scope试行，不依赖donor
 
 ### Boundary 与 local movement
 
-host-visible input/output的card DDR root保持current compact boundary合同。destination-style load/store直接消费既有
+host-visible input/output的shared DDR root保持current compact boundary合同。destination-style load/store直接消费既有
 destination，不创建隐藏storage。local layout change使用显式`wafer.tile.materialize_layout`或其它typed movement；
 只有composed physical mapping完全相同时才可canonicalize为metadata view。
 
@@ -187,18 +187,18 @@ wafer.tile.peer_recv %staging_spm {peer = <target tile_id>, ...}
 
 peer op携带fixed bytes与stable message identity；source/destination storage、encoding、valid domain和effect由operand
 及current IR解释。它不携带logical card-partition ID、runtime launch slot、raw route、FSM或cost。Tile-to-Instr
-conversion产生`wafer.instr.dte_send` / `dte_recv` / `dte_wait`；memory planning后，CardExecutable verification才提交
+conversion产生`wafer.instr.dte_send` / `dte_recv` / `dte_wait`；memory planning后，DeviceExecutable verification才提交
 sender无法从单Tile module重算的remote accepted-address/resource binding。
 
 相同bytes不证明相同logical region。合法peer transfer必须证明producer domain、consumer demanded domain、两端
 physical segment cover、sender readiness、receiver visibility和async lifetime。fanout需要多个显式messages或已闭合
 typed multicast capability；fanin/reduction必须显式包含receive、local compute和等待，不能藏在一个copy label里。
 
-## 6. CardModule、TileModule 与 TileRegion 集成
+## 6. Top-level Tile modules 与 TileRegion 集成
 
-`wafer.card.module`是CardModule verification scope，拥有all-and-only available `wafer.tile.module`。每个
-TileModule绑定一个physical `tile_id`，可以包含不同op、loop、temporal tile shape和执行长度。SPM value不能跨
-TileModule SSA传递；跨Tile依赖只能通过card DDR或explicit communication表达。
+`builtin.module`是top-level Tile module collection的共同scope；module/executable stage检查all-and-only available
+`wafer.tile.module(card_id, tile_id)`。每个TileModule绑定一个physical Tile，可以包含不同op、loop、temporal tile shape和执行长度。SPM value不能跨
+TileModule SSA传递；跨Tile依赖只能通过shared DDR或explicit communication表达。
 
 Structural和layout-resolved `wafer.tile.region`不签发SPM residency结论。Movement闭合后的physical TileRegion才表示一个Tile内的
 SPM ownership/lifetime domain。region内允许多个traversal和不同tile shape；
@@ -274,7 +274,7 @@ compile-time proof resource limit。planning query的typed结果可控制state�
 - same-layout/unused零materialization、1/2/15 uses共享conversion，以及full-transfer cleanup的on/off等价与唯一production caller；
 - invalid-lane fill/mask/segmented path及negative observation；
 - distinct Tile peer IDs、message matching、cross-Tile SPM SSA rejection；
-- actual CardModule拆成per-Tile modules后重放每Tile Instr、SPM/DDR和CardExecutable communication gate；
+- actual TileModule set拆成per-Tile modules后重放每Tile Instr、SPM/DDR和DeviceExecutable communication gate；
 - source-to-package integration实际执行，不以单op FileCheck代替。
 
 End-to-end search必须实际生成dependent producer/consumer remap、partial-overlap transfer和NoC-aware placement，

@@ -1,6 +1,6 @@
-//===- CardExecutableTestSupport.cpp - Compiler executable fixtures -------===//
+//===- ExecutableTestSupport.cpp - Compiler executable fixtures -------===//
 
-#include "CardExecutableTestSupport.h"
+#include "ExecutableTestSupport.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Diagnostics.h"
@@ -839,7 +839,7 @@ wafer::compiler::ExecutionConfig executionConfig() {
 }
 
 void expectCompleteTileDomain(
-    const wafer::compiler::detail::CardExecutableLoweringResult &executable,
+    const wafer::compiler::detail::ExecutableLoweringResult &executable,
     llvm::ArrayRef<std::string> tileDataflowIRTrace) {
   ASSERT_EQ(executable.tiles.size(), 16u);
   ASSERT_EQ(tileDataflowIRTrace.size(), executable.tiles.size());

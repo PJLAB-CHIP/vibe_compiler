@@ -11,7 +11,7 @@
 
 namespace wafer::compiler::detail {
 
-mlir::FailureOr<analysis::CardInstructionProgramCost>
+mlir::FailureOr<analysis::InstructionProgramAggregateCost>
 verifyProgramResources(llvm::ArrayRef<mlir::ModuleOp> inputModules,
                        llvm::ArrayRef<TileId> tileIds,
                        const ExecutionConfig &executionConfig) {
@@ -59,8 +59,8 @@ verifyProgramResources(llvm::ArrayRef<mlir::ModuleOp> inputModules,
              << llvm::toString(closure.takeError());
     programs.push_back({tileId, closure->entry.getOperation()});
   }
-  analysis::CardInstructionProgramCost cost =
-      analysis::analyzeCardInstructionProgramCost(programs, memory);
+  analysis::InstructionProgramAggregateCost cost =
+      analysis::analyzeInstructionProgramAggregateCost(programs, memory);
 
   const uint64_t perTileSPMCapacity =
       static_cast<uint64_t>(memory.spmLimit - memory.spmBase);
@@ -100,7 +100,7 @@ verifyProgramResources(llvm::ArrayRef<mlir::ModuleOp> inputModules,
 
 namespace wafer::compiler::testing {
 
-mlir::FailureOr<analysis::CardInstructionProgramCost>
+mlir::FailureOr<analysis::InstructionProgramAggregateCost>
 verifyProgramResources(llvm::ArrayRef<mlir::ModuleOp> tileModules,
                        llvm::ArrayRef<TileId> tileIds,
                        const ExecutionConfig &executionConfig) {

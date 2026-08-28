@@ -1,8 +1,8 @@
-add_mlir_conversion_library(WaferCardModuleToTileModules
-  WaferCardModuleToTileModules/WaferCardModuleToTileModules.cpp
+add_mlir_conversion_library(WaferTileModuleFanout
+  WaferTileModuleFanout/WaferTileModuleFanout.cpp
 
   ADDITIONAL_HEADER_DIRS
-  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/WaferCardModuleToTileModules
+  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/WaferTileModuleFanout
 
   LINK_LIBS PUBLIC
   WaferIR

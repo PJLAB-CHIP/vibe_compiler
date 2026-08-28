@@ -1,7 +1,6 @@
-//===- WaferCardModuleToTileModulesTest.cpp - Module splitting tests
-//----------===//
+//===- WaferTileModuleFanoutTest.cpp - Module fan-out tests -----------===//
 
-#include "Wafer/Conversion/WaferCardModuleToTileModules/WaferCardModuleToTileModules.h"
+#include "Wafer/Conversion/WaferTileModuleFanout/WaferTileModuleFanout.h"
 
 #include "Wafer/IR/WaferDialect.h"
 
@@ -53,7 +52,7 @@ collectIntegerConstants(mlir::ModuleOp module) {
   return values;
 }
 
-TEST(WaferCardModuleToTileModulesTest,
+TEST(WaferTileModuleFanoutTest,
      MovesStableTypedTileBodiesIntoStandaloneModules) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
@@ -65,15 +64,13 @@ module attributes {test.module_attribute = "preserved"} {
        unavailable_tiles = array<i64>}
   wafer.execution.mesh @logical
       {axes = ["card"], shape = array<i64: 1>}
-  wafer.card.module card_id = 0 {
-    memref.global "private" @shared
-        : memref<1xi32, #wafer.memory<ddr, tensor>>
-    wafer.tile.module tile_id = 1 {
-      %value = arith.constant 20 : i32
-    }
-    wafer.tile.module tile_id = 0 {
-      %value = arith.constant 10 : i32
-    }
+  memref.global "private" @shared
+      : memref<2x1024x64xf16, #wafer.memory<ddr, tensor>>
+  wafer.tile.module card_id = 0 tile_id = 1 {
+    %value = arith.constant 20 : i32
+  }
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    %value = arith.constant 10 : i32
   }
 }
 )mlir",
@@ -95,8 +92,8 @@ module attributes {test.module_attribute = "preserved"} {
   relations.operationEmissions = {{7, constantTen}, {9, constantTwenty}};
 
   std::string failureReason;
-  auto tileModules = wafer::splitCardModuleIntoTileModules(
-      std::move(source), &failureReason, &relations);
+  auto tileModules =
+      wafer::fanOutTileModules(std::move(source), &failureReason, &relations);
 
   ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
   ASSERT_EQ(tileModules->size(), 2u);
@@ -114,7 +111,6 @@ module attributes {test.module_attribute = "preserved"} {
     EXPECT_EQ(countOps<wafer::TargetTopologyOp>(*tile.module), 1u);
     EXPECT_EQ(countOps<wafer::ExecutionMeshOp>(*tile.module), 1u);
     EXPECT_EQ(countOps<mlir::memref::GlobalOp>(*tile.module), 1u);
-    EXPECT_EQ(countOps<wafer::CardModuleOp>(*tile.module), 0u);
     EXPECT_EQ(countOps<wafer::TileModuleOp>(*tile.module), 0u);
   }
 
@@ -144,21 +140,15 @@ module attributes {test.module_attribute = "preserved"} {
             9u);
 }
 
-TEST(WaferCardModuleToTileModulesTest, RequiresExactlyOneCardModule) {
+TEST(WaferTileModuleFanoutTest, RequiresAtLeastOneTileModule) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   wafer.target.topology @target
-      {card_grid = array<i64: 1, 2>,
+      {card_grid = array<i64: 1, 1>,
        card_interconnect = "mesh",
        tile_grid = array<i64: 1, 1>,
        unavailable_tiles = array<i64>}
-  wafer.card.module card_id = 0 {
-    wafer.tile.module tile_id = 0 {}
-  }
-  wafer.card.module card_id = 1 {
-    wafer.tile.module tile_id = 0 {}
-  }
 }
 )mlir",
                                                         context.get());
@@ -167,14 +157,41 @@ module {
 
   std::string failureReason;
   auto tileModules =
-      wafer::splitCardModuleIntoTileModules(std::move(source), &failureReason);
+      wafer::fanOutTileModules(std::move(source), &failureReason);
 
   EXPECT_TRUE(mlir::failed(tileModules));
   EXPECT_EQ(failureReason,
-            "expected exactly one direct wafer.card.module in source module");
+            "source module contains no top-level wafer.tile.module");
 }
 
-TEST(WaferCardModuleToTileModulesTest,
+TEST(WaferTileModuleFanoutTest, RejectsDuplicatePhysicalTileIdentity) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>,
+       card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 2>,
+       unavailable_tiles = array<i64>}
+  wafer.tile.module card_id = 0 tile_id = 0 {}
+  wafer.tile.module card_id = 0 tile_id = 0 {}
+}
+)mlir",
+                                                        context.get());
+  ASSERT_TRUE(source);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
+  mlir::ScopedDiagnosticHandler suppress(
+      context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
+
+  std::string failureReason;
+  auto tileModules =
+      wafer::fanOutTileModules(std::move(source), &failureReason);
+
+  EXPECT_TRUE(mlir::failed(tileModules));
+  EXPECT_EQ(failureReason, "source Tile module set is invalid");
+}
+
+TEST(WaferTileModuleFanoutTest,
      SplitsVerifierValidPartialTileDomainForCallerStageCheck) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
@@ -184,18 +201,16 @@ module {
        card_interconnect = "mesh",
        tile_grid = array<i64: 1, 2>,
        unavailable_tiles = array<i64>}
-  wafer.card.module card_id = 0 {
-    wafer.tile.module tile_id = 0 {}
-    wafer.tile.module tile_id = 1 {}
-  }
+  memref.global "private" @ragged_shared
+      : memref<2x1025x64xf16, #wafer.memory<ddr, tensor>>
+  wafer.tile.module card_id = 0 tile_id = 0 {}
+  wafer.tile.module card_id = 0 tile_id = 1 {}
 }
 )mlir",
                                                         context.get());
   ASSERT_TRUE(source);
-  wafer::CardModuleOp card = *source->getOps<wafer::CardModuleOp>().begin();
   wafer::TileModuleOp tileToErase;
-  for (wafer::TileModuleOp tile :
-       card.getBody().front().getOps<wafer::TileModuleOp>()) {
+  for (wafer::TileModuleOp tile : source->getOps<wafer::TileModuleOp>()) {
     if (tile.getTileIdAttr().getInt() == 1) {
       tileToErase = tile;
       break;
@@ -205,15 +220,15 @@ module {
   tileToErase.erase();
   std::string failureReason;
   auto tileModules =
-      wafer::splitCardModuleIntoTileModules(std::move(source), &failureReason);
+      wafer::fanOutTileModules(std::move(source), &failureReason);
 
   ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
   ASSERT_EQ(tileModules->size(), 1u);
   EXPECT_EQ(tileModules->front().tileId, wafer::TileId(0));
+  EXPECT_EQ(countOps<mlir::memref::GlobalOp>(*tileModules->front().module), 1u);
 }
 
-TEST(WaferCardModuleToTileModulesTest,
-     RejectsExecutableOperationOutsideTileModule) {
+TEST(WaferTileModuleFanoutTest, RejectsExecutableOperationOutsideTileModule) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
@@ -223,27 +238,25 @@ module {
        card_interconnect = "mesh",
        tile_grid = array<i64: 1, 1>,
        unavailable_tiles = array<i64>}
-  wafer.card.module card_id = 0 {
-    %value = arith.constant 1 : i32
-    wafer.tile.module tile_id = 0 {}
-  }
+  %value = arith.constant 1 : i32
+  wafer.tile.module card_id = 0 tile_id = 0 {}
 }
 )mlir",
       mlir::ParserConfig(context.get(), /*verifyAfterParse=*/false));
   ASSERT_TRUE(source);
-  mlir::ScopedDiagnosticHandler suppress(
-      context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
-  ASSERT_TRUE(mlir::failed(mlir::verify(*source)));
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
 
   std::string failureReason;
   auto tileModules =
-      wafer::splitCardModuleIntoTileModules(std::move(source), &failureReason);
+      wafer::fanOutTileModules(std::move(source), &failureReason);
 
   EXPECT_TRUE(mlir::failed(tileModules));
-  EXPECT_EQ(failureReason, "source module is not verifier-legal");
+  EXPECT_EQ(failureReason,
+            "source module contains a non-declaration operation outside a "
+            "wafer.tile.module");
 }
 
-TEST(WaferCardModuleToTileModulesTest, RejectsImplicitCrossTileSSA) {
+TEST(WaferTileModuleFanoutTest, RejectsImplicitCrossTileSSA) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
@@ -253,14 +266,12 @@ module {
        card_interconnect = "mesh",
        tile_grid = array<i64: 1, 2>,
        unavailable_tiles = array<i64>}
-  wafer.card.module card_id = 0 {
-    %implicitly_shared = arith.constant 1 : i32
-    wafer.tile.module tile_id = 0 {
-      %value = arith.addi %implicitly_shared, %implicitly_shared : i32
-    }
-    wafer.tile.module tile_id = 1 {
-      %value = arith.addi %implicitly_shared, %implicitly_shared : i32
-    }
+  %implicitly_shared = arith.constant 1 : i32
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    %value = arith.addi %implicitly_shared, %implicitly_shared : i32
+  }
+  wafer.tile.module card_id = 0 tile_id = 1 {
+    %value = arith.addi %implicitly_shared, %implicitly_shared : i32
   }
 }
 )mlir",
@@ -272,7 +283,7 @@ module {
 
   std::string failureReason;
   auto tileModules =
-      wafer::splitCardModuleIntoTileModules(std::move(source), &failureReason);
+      wafer::fanOutTileModules(std::move(source), &failureReason);
 
   EXPECT_TRUE(mlir::failed(tileModules));
   EXPECT_EQ(failureReason, "source module is not verifier-legal");

@@ -72,7 +72,7 @@ void retargetRelationValue(StructuredMaterializationRelations &relations,
   retarget(relations.operandBuffers);
   retarget(relations.scratchBuffers);
   retarget(relations.outputBuffers);
-  retarget(relations.cardDDRBuffers);
+  retarget(relations.ddrBuffers);
   retarget(relations.partialReductionContributions);
   retarget(relations.partialReductionMergeInputs);
 }

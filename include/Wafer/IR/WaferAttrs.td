@@ -40,30 +40,30 @@ def Wafer_AttentionAlgorithmAttr
   let assemblyFormat = "`<` $value `>`";
 }
 
-def Wafer_CardDDRAccessNone
+def Wafer_DDRAccessNone
     : I32EnumAttrCase<"None", 0, "none">;
-def Wafer_CardDDRAccessRead
+def Wafer_DDRAccessRead
     : I32EnumAttrCase<"Read", 1, "read">;
-def Wafer_CardDDRAccessWrite
+def Wafer_DDRAccessWrite
     : I32EnumAttrCase<"Write", 2, "write">;
-def Wafer_CardDDRAccessReadWrite
+def Wafer_DDRAccessReadWrite
     : I32EnumAttrCase<"ReadWrite", 3, "read_write">;
-def Wafer_CardDDRAccess
-    : I32EnumAttr<"CardDDRAccess", "card-shared DDR boundary access", [
-  Wafer_CardDDRAccessNone,
-  Wafer_CardDDRAccessRead,
-  Wafer_CardDDRAccessWrite,
-  Wafer_CardDDRAccessReadWrite
+def Wafer_DDRAccess
+    : I32EnumAttr<"DDRAccess", "shared DDR boundary access", [
+  Wafer_DDRAccessNone,
+  Wafer_DDRAccessRead,
+  Wafer_DDRAccessWrite,
+  Wafer_DDRAccessReadWrite
 ]> {
   let cppNamespace = "::wafer";
   let genSpecializedAttr = 0;
 }
 
-def Wafer_CardDDRBindingAttr : AttrDef<Wafer_Dialect, "CardDDRBinding"> {
-  let mnemonic = "card_ddr_binding";
-  let summary = "Tile entry binding to one card-shared DDR declaration";
+def Wafer_DDRBindingAttr : AttrDef<Wafer_Dialect, "DDRBinding"> {
+  let mnemonic = "ddr_binding";
+  let summary = "Tile entry binding to one shared DDR declaration";
   let description = [{
-    Identifies one card-owned DDR resource and this Tile entry's access to it.
+    Identifies one shared DDR resource and this Tile entry's access to it.
     The referenced declaration owns the resource identity and type. This
     attribute is attached only to a Tile entry argument and is consumed by
     target ABI preparation; it does not encode a physical address or offset.
@@ -71,17 +71,17 @@ def Wafer_CardDDRBindingAttr : AttrDef<Wafer_Dialect, "CardDDRBinding"> {
   let parameters = (ins
     "mlir::FlatSymbolRefAttr":$resource,
     "int64_t":$resourceId,
-    "wafer::CardDDRAccess":$access
+    "wafer::DDRAccess":$access
   );
   let assemblyFormat =
       "`<` $resource `,` `id` `=` $resourceId `,` $access `>`";
 }
 
-def Wafer_CardDDRResourceAttr : AttrDef<Wafer_Dialect, "CardDDRResource"> {
-  let mnemonic = "card_ddr_resource";
-  let summary = "Card-local shared DDR resource identity";
+def Wafer_DDRResourceAttr : AttrDef<Wafer_Dialect, "DDRResource"> {
+  let mnemonic = "ddr_resource";
+  let summary = "Shared DDR resource identity";
   let description = [{
-    Marks a card-owned external `memref.global` declaration with its stable
+    Marks an external `memref.global` declaration with its stable
     compiler-selected resource identity. The declaration's memref type defines
     the shared carrier shape, element type and physical layout. Physical
     storage is supplied by the runtime and is not serialized in this attribute.

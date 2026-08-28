@@ -173,9 +173,8 @@ struct TileEntryArgumentOrderDifference {
 };
 
 std::optional<TileEntryArgumentOrderDifference>
-findTileEntryArgumentOrderDifference(
-    llvm::ArrayRef<TileEntryArgument> lhs,
-    llvm::ArrayRef<TileEntryArgument> rhs);
+findTileEntryArgumentOrderDifference(llvm::ArrayRef<TileEntryArgument> lhs,
+                                     llvm::ArrayRef<TileEntryArgument> rhs);
 
 /// Invocation-local accounting for the retained per-Tile target output.
 /// Counts refer to calls that actually ran, including calls completed before
@@ -243,8 +242,9 @@ verifyTargetLLVMModuleForTesting(const TargetLLVMModule &targetModule);
 llvm::Error validateRuntimeLaunchContractDomainForTesting(
     const TargetLLVMModules &targetLLVMModules);
 
-llvm::Expected<TargetLLVMModules> compileCardExecutableToTargetLLVMModulesImpl(
-    const CardExecutable &cardExecutable, llvm::raw_ostream &diagnostics,
+llvm::Expected<TargetLLVMModules>
+compileDeviceExecutableToTargetLLVMModulesImpl(
+    const DeviceExecutable &deviceExecutable, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLaunchSlot,
     ProfileCaptureKind profileCapture = ProfileCaptureKind::None,
     TargetLLVMCompilationStatistics *statistics = nullptr);

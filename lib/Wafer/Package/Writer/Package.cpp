@@ -174,24 +174,24 @@ struct PackageAssembly {
   std::vector<TargetTensorJoin *> placement;
 };
 
-/// Card-level all-and-only join of the 16 Tile entry arguments with the
+/// Device-level all-and-only join of the 16 Tile entry arguments with the
 /// program boundary bindings and the Q58 owned data ranges. One
 /// ProgramTensor is formed per program tensor identity, one TargetTensor per
 /// selected target descriptor; entry arguments reference them explicitly.
 llvm::Expected<PackageAssembly>
-buildManifest(const CardExecutable &cardExecutable,
+buildManifest(const DeviceExecutable &deviceExecutable,
               const LinkedTargetModules &targetModules,
               llvm::raw_ostream &diagnostics) {
-  const ExecutionConfig &config = cardExecutable.getExecutionConfig();
-  if (cardExecutable.getRuntimeLaunchContract() !=
+  const ExecutionConfig &config = deviceExecutable.getExecutionConfig();
+  if (deviceExecutable.getRuntimeLaunchContract() !=
       targetModules.getRuntimeLaunchContract())
     return fail(diagnostics,
                 "package runtime launch contract does not match executable "
                 "and linked target modules");
   if (targetModules.getExecutionConfig() != config ||
-      cardExecutable.getTileExecutables().size() !=
+      deviceExecutable.getTileExecutables().size() !=
           targetModules.getTileInterfaces().size() ||
-      cardExecutable.getTileExecutables().size() !=
+      deviceExecutable.getTileExecutables().size() !=
           static_cast<size_t>(config.getTileCount()))
     return fail(diagnostics,
                 "package Tile domain does not match executable and "
@@ -211,12 +211,12 @@ buildManifest(const CardExecutable &cardExecutable,
     return fail(diagnostics, "package target module topology does not match "
                              "runtime launch contract");
 
-  const size_t tileCount = cardExecutable.getTileExecutables().size();
+  const size_t tileCount = deviceExecutable.getTileExecutables().size();
   std::vector<const TileExecutable *> tilesByLaunchSlot(tileCount, nullptr);
   std::vector<const VerifiedTargetTileInterface *> interfacesByLaunchSlot(
       tileCount, nullptr);
   std::set<int64_t> tileIds;
-  for (const TileExecutable &tile : cardExecutable.getTileExecutables()) {
+  for (const TileExecutable &tile : deviceExecutable.getTileExecutables()) {
     const int64_t launchSlot = tile.getLaunchSlotId().getValue();
     if (tile.getCardId() != CardId(0) || tile.getTileId().getValue() < 0 ||
         launchSlot < 0 || launchSlot >= static_cast<int64_t>(tileCount) ||
@@ -303,7 +303,7 @@ buildManifest(const CardExecutable &cardExecutable,
     manifest.modules.push_back(std::move(module));
   }
 
-  const ProgramDataHandoff &handoff = cardExecutable.getProgramDataHandoff();
+  const ProgramDataHandoff &handoff = deviceExecutable.getProgramDataHandoff();
 
   // Join state.
   std::map<ProgramTensorId, std::unique_ptr<ProgramTensorJoin>>
@@ -345,20 +345,20 @@ buildManifest(const CardExecutable &cardExecutable,
     return match;
   };
 
-  std::set<int64_t> compilerCardWorkspaceIds;
+  std::set<int64_t> compilerSharedWorkspaceIds;
   for (const VerifiedTargetTileInterface *tileInterface :
        interfacesByLaunchSlot)
     for (const TileEntryArgument &slot : tileInterface->getTileEntryArguments())
-      if (slot.kind == TileEntryArgumentKind::CardWorkspace) {
+      if (slot.kind == TileEntryArgumentKind::SharedWorkspace) {
         if (slot.resourceIndex < 0)
           return fail(diagnostics,
                       "package card workspace has a negative compiler ID");
-        compilerCardWorkspaceIds.insert(slot.resourceIndex);
+        compilerSharedWorkspaceIds.insert(slot.resourceIndex);
       }
-  std::map<int64_t, uint64_t> packageCardWorkspaceIds;
-  for (int64_t compilerId : compilerCardWorkspaceIds)
-    packageCardWorkspaceIds.emplace(
-        compilerId, static_cast<uint64_t>(packageCardWorkspaceIds.size()));
+  std::map<int64_t, uint64_t> packageSharedWorkspaceIds;
+  for (int64_t compilerId : compilerSharedWorkspaceIds)
+    packageSharedWorkspaceIds.emplace(
+        compilerId, static_cast<uint64_t>(packageSharedWorkspaceIds.size()));
 
   for (int64_t launchSlot = 0; launchSlot < static_cast<int64_t>(tileCount);
        ++launchSlot) {
@@ -578,17 +578,18 @@ buildManifest(const CardExecutable &cardExecutable,
         continue;
       }
 
-      if (slot.kind == TileEntryArgumentKind::CardWorkspace) {
+      if (slot.kind == TileEntryArgumentKind::SharedWorkspace) {
         if (!detail::isValidPackageCompilerManagedSlot(slot))
           return fail(diagnostics,
                       "package card workspace tile entry argument identity "
                       "is invalid");
         entry.arguments.push_back(
             {static_cast<uint64_t>(slot.ordinal),
-             runtime::TileEntryArgumentReference(runtime::CardWorkspaceArgument{
-                 packageCardWorkspaceIds.at(slot.resourceIndex),
-                 static_cast<uint64_t>(slot.byteSize),
-                 static_cast<uint64_t>(slot.alignment)}),
+             runtime::TileEntryArgumentReference(
+                 runtime::SharedWorkspaceArgument{
+                     packageSharedWorkspaceIds.at(slot.resourceIndex),
+                     static_cast<uint64_t>(slot.byteSize),
+                     static_cast<uint64_t>(slot.alignment)}),
              getAccess(slot.access)});
         continue;
       }
@@ -1104,7 +1105,7 @@ bool renameDirectoryNoReplace(llvm::StringRef source,
 
 llvm::Expected<runtime::VerifiedPackageManifest>
 detail::writePackage(llvm::StringRef tensorProgramDirectory,
-                     const CardExecutable &cardExecutable,
+                     const DeviceExecutable &deviceExecutable,
                      const LinkedTargetModules &targetModules,
                      llvm::StringRef outputDirectory,
                      llvm::raw_ostream &diagnostics,
@@ -1137,7 +1138,7 @@ detail::writePackage(llvm::StringRef tensorProgramDirectory,
     return std::move(error);
 
   llvm::Expected<PackageAssembly> assembly =
-      buildManifest(cardExecutable, targetModules, diagnostics);
+      buildManifest(deviceExecutable, targetModules, diagnostics);
   if (!assembly)
     return assembly.takeError();
 
@@ -1149,7 +1150,7 @@ detail::writePackage(llvm::StringRef tensorProgramDirectory,
   llvm::sys::path::append(programDataPath, "program-data.bin");
   llvm::Expected<std::string> programDataDigest =
       writeProgramData(programDataPath, *assembly,
-                       cardExecutable.getProgramDataHandoff(), diagnostics);
+                       deviceExecutable.getProgramDataHandoff(), diagnostics);
   if (!programDataDigest)
     return programDataDigest.takeError();
   assembly->manifest.programData.digest = std::move(*programDataDigest);
@@ -1170,7 +1171,8 @@ detail::writePackage(llvm::StringRef tensorProgramDirectory,
                                  llvm::toString(readback.takeError()));
   const runtime::PackageManifest &readbackManifest =
       readback->manifest.getManifest();
-  const ExecutionConfig &executionConfig = cardExecutable.getExecutionConfig();
+  const ExecutionConfig &executionConfig =
+      deviceExecutable.getExecutionConfig();
   const VerifiedTargetModule &targetReadback =
       targetModules.getModules().front();
   if (readbackManifest.cardCount != 1 ||
@@ -1209,7 +1211,7 @@ bool detail::doesPackageSlotMatchProgramBinding(
       return false;
     break;
   case TileEntryArgumentKind::Workspace:
-  case TileEntryArgumentKind::CardWorkspace:
+  case TileEntryArgumentKind::SharedWorkspace:
   case TileEntryArgumentKind::ProfileRecord:
   case TileEntryArgumentKind::TransportStatus:
     return false;
@@ -1225,7 +1227,7 @@ bool detail::isValidPackageCompilerManagedSlot(const TileEntryArgument &slot) {
   if (slot.kind == TileEntryArgumentKind::Workspace)
     return slot.resourceIndex == 0 && slot.dtype == LogicalFormat::U8 &&
            slot.shape.size() == 1 && slot.shape.front() == slot.byteSize;
-  if (slot.kind == TileEntryArgumentKind::CardWorkspace)
+  if (slot.kind == TileEntryArgumentKind::SharedWorkspace)
     return slot.resourceIndex >= 0 && !slot.shape.empty();
   if (slot.kind == TileEntryArgumentKind::ProfileRecord)
     return slot.resourceIndex == 0 && slot.dtype == LogicalFormat::U8 &&

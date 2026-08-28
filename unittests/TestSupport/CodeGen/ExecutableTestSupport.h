@@ -1,11 +1,11 @@
-//===- CardExecutableTestSupport.h - Compiler executable fixtures -*- C++
+//===- ExecutableTestSupport.h - Compiler executable fixtures -*- C++
 //-*-===//
 
-#ifndef WAFER_UNITTESTS_COMPILER_CARDEXECUTABLETESTSUPPORT_H
-#define WAFER_UNITTESTS_COMPILER_CARDEXECUTABLETESTSUPPORT_H
+#ifndef WAFER_UNITTESTS_COMPILER_EXECUTABLETESTSUPPORT_H
+#define WAFER_UNITTESTS_COMPILER_EXECUTABLETESTSUPPORT_H
 
-#include "Wafer/CodeGen/Executable/CardExecutableCompilation.h"
-#include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
+#include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
+#include "Wafer/CodeGen/Executable/ExecutableCompilation.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Program/ProgramData.h"
 
@@ -78,9 +78,9 @@ size_t countOccurrences(llvm::StringRef text, llvm::StringRef needle);
 ExecutionConfig executionConfig();
 
 void expectCompleteTileDomain(
-    const detail::CardExecutableLoweringResult &executable,
+    const detail::ExecutableLoweringResult &executable,
     llvm::ArrayRef<std::string> tileDataflowIRTrace);
 
 } // namespace wafer::compiler::testing
 
-#endif // WAFER_UNITTESTS_COMPILER_CARDEXECUTABLETESTSUPPORT_H
+#endif // WAFER_UNITTESTS_COMPILER_EXECUTABLETESTSUPPORT_H

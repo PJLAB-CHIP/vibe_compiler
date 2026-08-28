@@ -53,14 +53,14 @@ bool runTargetModelGate(
   }
 
   auto programInvocations = wafer::compiler::prepareProgramInvocations(
-      compiledProgram.getCardExecutable(), globalInputs);
+      compiledProgram.getDeviceExecutable(), globalInputs);
   if (!programInvocations) {
     llvm::errs() << "wafer-compile: "
                  << llvm::toString(programInvocations.takeError()) << "\n";
     return true;
   }
   auto invocation = wafer::model::prepareTargetModelInvocation(
-      compiledProgram.getCardExecutable(),
+      compiledProgram.getDeviceExecutable(),
       compiledProgram.getTargetLLVMModules(), *programInvocations);
   if (!invocation) {
     llvm::errs() << "wafer-compile: " << llvm::toString(invocation.takeError())
@@ -95,8 +95,8 @@ bool runTargetModelGate(
     return true;
   }
 
-  const auto &cardExecutable =
-      compiledProgram.getCardExecutable().getTileExecutables();
+  const auto &deviceExecutable =
+      compiledProgram.getDeviceExecutable().getTileExecutables();
   const auto &targetModules =
       compiledProgram.getTargetLLVMModules().getModules();
   const size_t expectedOutputCount = llvm::count_if(
@@ -105,7 +105,7 @@ bool runTargetModelGate(
                wafer::compiler::TileEntryArgumentKind::ExternalOutput;
       });
   if (result->completedTileCount !=
-          static_cast<int64_t>(cardExecutable.size()) ||
+          static_cast<int64_t>(deviceExecutable.size()) ||
       result->outputs.size() != expectedOutputCount) {
     llvm::errs() << "wafer-compile: target model output Tile domain is "
                     "incomplete\n";
@@ -147,7 +147,7 @@ bool runTargetModelGate(
                       "Kernel ABI\n";
       return true;
     }
-    const auto &tile = cardExecutable[static_cast<size_t>(launchSlot)];
+    const auto &tile = deviceExecutable[static_cast<size_t>(launchSlot)];
     const wafer::compiler::ProgramResourceBinding *binding = nullptr;
     for (const auto &candidate : tile.getProgramBindings())
       if (candidate.role == wafer::compiler::ProgramResourceRole::Output &&

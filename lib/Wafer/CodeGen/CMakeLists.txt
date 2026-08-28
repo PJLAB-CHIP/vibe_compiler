@@ -1,9 +1,9 @@
 set(WAFER_CODEGEN_SOURCES
-  CodeGen/Executable/CardExecutable.cpp
-  CodeGen/Executable/CardExecutableCompilation.cpp
-  CodeGen/Executable/CardExecutableLowering.cpp
+  CodeGen/Executable/DeviceExecutable.cpp
+  CodeGen/Executable/ExecutableCompilation.cpp
+  CodeGen/Executable/ExecutableLowering.cpp
   CodeGen/Executable/TileMemoryPlanning.cpp
-  CodeGen/Target/CompileCardExecutableLLVMModules.cpp
+  CodeGen/Target/CompileDeviceExecutableLLVMModules.cpp
   CodeGen/Target/TargetABIPreparation.cpp
   CodeGen/Target/TargetDeviceLink.cpp
   CodeGen/Target/TargetInstrumentation.cpp

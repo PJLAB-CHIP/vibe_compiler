@@ -49,7 +49,7 @@ def Wafer_MoveInsertSliceOp
     DenseI64ArrayAttr:$offsets,
     DenseI64ArrayAttr:$sizes,
     DenseI64ArrayAttr:$strides,
-    OptionalAttr<Wafer_CardDDRResourceAttr>:$card_ddr_resource
+    OptionalAttr<Wafer_DDRResourceAttr>:$ddr_resource
   );
   let extraClassDeclaration = [{
     ::mlir::MutableOperandRange getDpsInitsMutable() {
@@ -65,7 +65,7 @@ def Wafer_MoveCopyOp : Wafer_MoveOp<"tile.copy"> {
   let summary = "tile-local explicit same-shape copy movement";
   let arguments = (ins
     Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source,
-    OptionalAttr<Wafer_CardDDRResourceAttr>:$card_ddr_resource
+    OptionalAttr<Wafer_DDRResourceAttr>:$ddr_resource
   );
   let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;

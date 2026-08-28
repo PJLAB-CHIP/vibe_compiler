@@ -6,7 +6,7 @@ namespace wafer::compiler::detail {
 
 mlir::FailureOr<PhysicalDataflowPlanningProblem>
 PhysicalDataflowPlanningProblem::create(
-    const CardProgramAnalysis &program, CardId cardId,
+    const StructuredProgramAnalysis &program, CardId cardId,
     const analysis::IndexRelationLimits &relationLimits,
     std::string *failureReason) {
   SpatialPlanDomainResult spatial =

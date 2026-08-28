@@ -3,7 +3,7 @@
 状态：当前模型是 owner-backed target LLVM/TargetCall 上的 untimed functional-event model。它验证target语义、physical
 Tile交互和完整输出，不是accepted IR解释器、runtime ABI替代品或cycle model。动态任务状态只看
 `tasks/progress.md`；Q58已经闭合program-data ownership，Q56已把compiler/package侧target representation合同推进到
-`board-ready`；model仍是独立的typed invocation consumer，必须由current `CardExecutable` source vertical重新证明，不能沿用旧执行域
+`board-ready`；model仍是独立的typed invocation consumer，必须由current `DeviceExecutable` source vertical重新证明，不能沿用旧执行域
 结论或把package结果代签model能力。
 
 ## 1. Pipeline Contract
@@ -11,8 +11,8 @@ Tile交互和完整输出，不是accepted IR解释器、runtime ABI替代品或
 ```text
 Pipeline position:
 - Upstream IR / input:
-  同一次compiler transaction产生的`CardExecutable`、与其绑定的owner-backed target LLVM module set、typed program
-  invocation、Q58 `ProgramDataHandoff`、Q56 `TargetTensor`与独立CPU expected；`CardExecutable`覆盖single card的all-and-only 16 Tiles并保留
+  同一次compiler transaction产生的`DeviceExecutable`、与其绑定的owner-backed target LLVM module set、typed program
+  invocation、Q58 `ProgramDataHandoff`、Q56 `TargetTensor`与独立CPU expected；`DeviceExecutable`覆盖single card的all-and-only 16 Tiles并保留
   (card_id, tile_id, launch_slot)。
 - Current stage responsibility:
   将每个`TargetTensor`编码一次并绑定到exact `TileEntryArgument`；通过host JIT执行final target LLVM entries并解码closed TargetCall
@@ -38,13 +38,13 @@ Pipeline position:
 
 model只接受compiler保留的same-invocation owners：
 
-- `CardExecutable`提供program boundary bindings、Tile executable domain和completion/transport contract；
-- 与该`CardExecutable`绑定的target LLVM owner set提供target conversion真正发布所用的LLVM modules与typed
+- `DeviceExecutable`提供program boundary bindings、Tile executable domain和completion/transport contract；
+- 与该`DeviceExecutable`绑定的target LLVM owner set提供target conversion真正发布所用的LLVM modules与typed
   `TileEntryArgument`；
 - program invocation提供source tensor值，不复制target schema或猜测entry argument；
 - independent CPU expected只用于最终差分，不进入compiler IR/package。
 
-model输入边界就是`CardExecutable`及与其绑定的invocation-local target LLVM owner set，不定义额外稳定output层。
+model输入边界就是`DeviceExecutable`及与其绑定的invocation-local target LLVM owner set，不定义额外稳定output层。
 
 `prepareTargetModelInvocation`必须在JIT materialization前all-and-only消费每个非output program tensor和每个
 `TileEntryArgument`。它按显式program tensor identity、entry argument relation和target layout建立model-private memory：
@@ -187,7 +187,7 @@ NaN/Inf分类、shape、bytes与guard。
 
 Grid/Cluster target lowering可以把16个不同Tile body合成一个低层module；model对此不增加第二协议：
 
-- `CardExecutable`的Tile interfaces与其target LLVM owner set仍显式列出16个三元组和每Tile ABI；
+- `DeviceExecutable`的Tile interfaces与其target LLVM owner set仍显式列出16个三元组和每Tile ABI；
 - internal dispatch通过verified launch-slot relation选择body；
 - `tile_id`与`launch_slot`非恒等时结果必须保持一致；
 - module count不改变SC_THREAD count、memory ownership、transaction identity或completion gate。
@@ -198,7 +198,7 @@ Grid/Cluster target lowering可以把16个不同Tile body合成一个低层modul
 
 所有failure归因到明确stage和physical identity：
 
-- invalid CardExecutable/program binding/Tile entry argument在JIT前失败；
+- invalid DeviceExecutable/program binding/Tile entry argument在JIT前失败；
 - decoder/target transaction错误带card/tile/launch slot与issue ordinal；
 - address/alias/hazard在issue时失败；
 - deadlock/no-progress带pending event/resource摘要；
@@ -217,7 +217,7 @@ Unit/integration gate至少覆盖：
   package materialization逐字节一致；
 - descriptor registry的每个payload family、bad width/enum/range/format负例；
 - 一Tile一SC_THREAD、independent progress、event wait/wakeup、NoProgress和atomic abort；
-- local SPM isolation、card DDR sharing、cross-Tile Direct-DTE、worker/join与reuse hazard；
+- local SPM isolation、shared DDR sharing、cross-Tile Direct-DTE、worker/join与reuse hazard；
 - formal numeric、`WaferOneDNNBackend` qualification、完整output differential与environment provenance；
 - aggregate/nonaggregate module topology具有相同typed Tile interfaces和functional outputs。
 

@@ -16,7 +16,7 @@ namespace wafer::runtime {
 
 ProfileStaticCostRates getTargetProfileStaticCostRates() {
   ProfileStaticCostRates rates;
-  rates.cardDDRBytesPerSecond = 200'000'000'000ULL;
+  rates.ddrBytesPerSecond = 200'000'000'000ULL;
   rates.directionalNoCBytesPerSecond = 128'000'000'000ULL;
   rates.f16Bf16NPULogicalOpsPerSecondPerTile = 8'000'000'000'000ULL;
   rates.f16Bf16VectorLogicalOpsPerSecondPerTile = 64'000'000'000ULL;
@@ -70,8 +70,7 @@ void emitStaticCostModel(llvm::json::OStream &json,
     json.attribute("model", model.model);
     json.attribute("scope", model.scope);
     json.attributeObject("rates", [&] {
-      json.attribute("card_ddr_bytes_per_second",
-                     model.rates.cardDDRBytesPerSecond);
+      json.attribute("ddr_bytes_per_second", model.rates.ddrBytesPerSecond);
       json.attribute("directional_noc_bytes_per_second",
                      model.rates.directionalNoCBytesPerSecond);
       json.attribute("f16_bf16_npu_logical_ops_per_second_per_tile",

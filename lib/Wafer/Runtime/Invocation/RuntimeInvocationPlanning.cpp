@@ -174,12 +174,12 @@ llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
       return range.takeError();
     plan.outputRanges.push_back(*range);
   }
-  std::map<uint64_t, std::pair<uint64_t, uint64_t>> cardWorkspaceRequirements;
+  std::map<uint64_t, std::pair<uint64_t, uint64_t>> sharedWorkspaceRequirements;
   for (const PackageEntrypointRecord *entry : entriesByLaunchSlot)
     for (const TileEntryArgumentRecord &argument : entry->arguments)
       if (const auto *workspace =
-              std::get_if<CardWorkspaceArgument>(&argument.reference)) {
-        auto [requirement, inserted] = cardWorkspaceRequirements.try_emplace(
+              std::get_if<SharedWorkspaceArgument>(&argument.reference)) {
+        auto [requirement, inserted] = sharedWorkspaceRequirements.try_emplace(
             workspace->resource,
             std::make_pair(workspace->bytes, workspace->alignment));
         if (!inserted &&
@@ -187,16 +187,16 @@ llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
                 std::make_pair(workspace->bytes, workspace->alignment))
           return invalid("runtime card workspace requirements disagree");
       }
-  plan.cardWorkspaceRanges.reserve(cardWorkspaceRequirements.size());
-  uint64_t expectedCardWorkspace = 0;
-  for (const auto &[resource, requirement] : cardWorkspaceRequirements) {
-    if (resource != expectedCardWorkspace++)
+  plan.sharedWorkspaceRanges.reserve(sharedWorkspaceRequirements.size());
+  uint64_t expectedSharedWorkspace = 0;
+  for (const auto &[resource, requirement] : sharedWorkspaceRequirements) {
+    if (resource != expectedSharedWorkspace++)
       return invalid("runtime card workspace IDs are not dense");
     llvm::Expected<RuntimePlannedRange> range =
         placeRange(requirement.first, requirement.second);
     if (!range)
       return range.takeError();
-    plan.cardWorkspaceRanges.push_back(*range);
+    plan.sharedWorkspaceRanges.push_back(*range);
   }
   plan.tileRanges.reserve(entriesByLaunchSlot.size());
   for (const PackageEntrypointRecord *entry : entriesByLaunchSlot) {
@@ -300,13 +300,13 @@ llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
         session.argumentAddresses.push_back(
             {RuntimeArgumentAddressBase::Invocation,
              plan.tileRanges[launchSlot].workspace->offset});
-      } else if (const auto *workspace =
-                     std::get_if<CardWorkspaceArgument>(&argument.reference)) {
-        if (workspace->resource >= plan.cardWorkspaceRanges.size())
+      } else if (const auto *workspace = std::get_if<SharedWorkspaceArgument>(
+                     &argument.reference)) {
+        if (workspace->resource >= plan.sharedWorkspaceRanges.size())
           return invalid("runtime card workspace range is missing");
         session.argumentAddresses.push_back(
             {RuntimeArgumentAddressBase::Invocation,
-             plan.cardWorkspaceRanges[workspace->resource].offset});
+             plan.sharedWorkspaceRanges[workspace->resource].offset});
       } else if (std::holds_alternative<ProfileRecordArgument>(
                      argument.reference)) {
         if (!plan.tileRanges[launchSlot].profileRecord)

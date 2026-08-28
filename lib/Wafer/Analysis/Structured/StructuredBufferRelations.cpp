@@ -209,11 +209,11 @@ static StructuredBufferOwners collectBufferOwnersUsedByOperation(
                                : mlir::func::FuncOp{};
       if (!function || argument.getOwner() != &function.getBody().front())
         continue;
-      auto binding = function.getArgAttrOfType<CardDDRBindingAttr>(
-          argument.getArgNumber(), kWaferCardDDRBindingAttrName);
+      auto binding = function.getArgAttrOfType<DDRBindingAttr>(
+          argument.getArgNumber(), kWaferDDRBindingAttrName);
       if (!binding)
         continue;
-      for (const CardDDRTransferRelation &transfer : relations.cardDDRTransfers)
+      for (const DDRTransferRelation &transfer : relations.ddrTransfers)
         if (transfer.resourceId == binding.getResourceId()) {
           owners.nodes.push_back(transfer.producerNodeId);
         }
@@ -260,7 +260,7 @@ struct StructuredBufferReplacementListener::Impl {
     Operand,
     Scratch,
     Output,
-    CardDDR,
+    DDR,
   };
 
   struct RelationReference {
@@ -284,7 +284,7 @@ struct StructuredBufferReplacementListener::Impl {
     record(relations.operandBuffers, RelationKind::Operand);
     record(relations.scratchBuffers, RelationKind::Scratch);
     record(relations.outputBuffers, RelationKind::Output);
-    record(relations.cardDDRBuffers, RelationKind::CardDDR);
+    record(relations.ddrBuffers, RelationKind::DDR);
   }
 
   mlir::Value &getBuffer(const RelationReference &reference) {
@@ -297,8 +297,8 @@ struct StructuredBufferReplacementListener::Impl {
       return relations.scratchBuffers[reference.index].buffer;
     case RelationKind::Output:
       return relations.outputBuffers[reference.index].buffer;
-    case RelationKind::CardDDR:
-      return relations.cardDDRBuffers[reference.index].buffer;
+    case RelationKind::DDR:
+      return relations.ddrBuffers[reference.index].buffer;
     }
     llvm_unreachable("unknown structured buffer relation kind");
   }
@@ -448,7 +448,7 @@ bool StructuredBufferReplacementListener::finalizeAfterRewrite() {
   dropErased(impl->relations.operandBuffers);
   dropErased(impl->relations.scratchBuffers);
   dropErased(impl->relations.outputBuffers);
-  dropErased(impl->relations.cardDDRBuffers);
+  dropErased(impl->relations.ddrBuffers);
   return impl->preservedAll;
 }
 
@@ -485,12 +485,11 @@ mlir::LogicalResult checkStructuredBufferRelationsCurrent(
         return relation.operation &&
                liveOperations.contains(relation.operation);
       });
-  return mlir::success(currentOperations &&
-                       allCurrent(relations.operationResultBuffers) &&
-                       allCurrent(relations.operandBuffers) &&
-                       allCurrent(relations.scratchBuffers) &&
-                       allCurrent(relations.outputBuffers) &&
-                       allCurrent(relations.cardDDRBuffers));
+  return mlir::success(
+      currentOperations && allCurrent(relations.operationResultBuffers) &&
+      allCurrent(relations.operandBuffers) &&
+      allCurrent(relations.scratchBuffers) &&
+      allCurrent(relations.outputBuffers) && allCurrent(relations.ddrBuffers));
 }
 
 void retainCurrentStructuredBufferRelations(
@@ -517,7 +516,7 @@ void retainCurrentStructuredBufferRelations(
   retain(relations.operandBuffers);
   retain(relations.scratchBuffers);
   retain(relations.outputBuffers);
-  retain(relations.cardDDRBuffers);
+  retain(relations.ddrBuffers);
   retain(relations.partialReductionContributions);
   retain(relations.partialReductionMergeInputs);
   llvm::erase_if(relations.operationEmissions,
@@ -543,7 +542,7 @@ mlir::LogicalResult rebaseStructuredBufferRelationsToStorageRoots(
   return mlir::success(
       rebase(relations.operationResultBuffers) &&
       rebase(relations.operandBuffers) && rebase(relations.scratchBuffers) &&
-      rebase(relations.outputBuffers) && rebase(relations.cardDDRBuffers) &&
+      rebase(relations.outputBuffers) && rebase(relations.ddrBuffers) &&
       rebase(relations.partialReductionContributions) &&
       rebase(relations.partialReductionMergeInputs));
 }

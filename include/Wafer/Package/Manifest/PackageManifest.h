@@ -242,18 +242,18 @@ struct WorkspaceArgument {
     return !(lhs == rhs);
   }
 };
-/// Card-shared compiler-managed DDR carrier.
-struct CardWorkspaceArgument {
+/// Shared compiler-managed DDR carrier.
+struct SharedWorkspaceArgument {
   uint64_t resource = std::numeric_limits<uint64_t>::max();
   uint64_t bytes = 0;
   uint64_t alignment = 0;
-  friend bool operator==(const CardWorkspaceArgument &lhs,
-                         const CardWorkspaceArgument &rhs) {
+  friend bool operator==(const SharedWorkspaceArgument &lhs,
+                         const SharedWorkspaceArgument &rhs) {
     return lhs.resource == rhs.resource && lhs.bytes == rhs.bytes &&
            lhs.alignment == rhs.alignment;
   }
-  friend bool operator!=(const CardWorkspaceArgument &lhs,
-                         const CardWorkspaceArgument &rhs) {
+  friend bool operator!=(const SharedWorkspaceArgument &lhs,
+                         const SharedWorkspaceArgument &rhs) {
     return !(lhs == rhs);
   }
 };
@@ -291,7 +291,7 @@ struct TransportStatusArgument {
 using TileEntryArgumentReference =
     std::variant<ExternalInputArgument, TargetTensorArgument,
                  ExternalOutputArgument, WorkspaceArgument,
-                 CardWorkspaceArgument, ProfileRecordArgument,
+                 SharedWorkspaceArgument, ProfileRecordArgument,
                  TransportStatusArgument>;
 
 /// One ordered argument of one Tile target entry. Ordinals are dense and
@@ -594,8 +594,8 @@ struct RuntimeInvocationPlan {
   /// Input/output child ranges, indexed by PortId.
   std::vector<RuntimePlannedRange> inputRanges;
   std::vector<RuntimePlannedRange> outputRanges;
-  /// Card-shared DDR child ranges indexed by CardWorkspace resource id.
-  std::vector<RuntimePlannedRange> cardWorkspaceRanges;
+  /// Shared DDR child ranges indexed by SharedWorkspace resource id.
+  std::vector<RuntimePlannedRange> sharedWorkspaceRanges;
   /// Per-Tile entry-local ranges, indexed by launch slot.
   std::vector<RuntimeEntryLocalRanges> tileRanges;
   /// Per-Tile device pointer rows for the TileRowPointerTable entry ABI;

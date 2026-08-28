@@ -1,4 +1,5 @@
-//===- CardProgramAnalysis.h -------------------------------*- C++ -*-===//
+//===- StructuredProgramAnalysis.h -------------------------------*- C++
+//-*-===//
 
 #pragma once
 
@@ -25,8 +26,8 @@ using StaticOutputDomains = llvm::SmallVector<llvm::SmallVector<int64_t, 4>, 4>;
 
 /// Immutable current-IR facts shared by the baseline and search entrypoints.
 /// Construction performs no placement, tiling, materialization or selection.
-struct CardProgramAnalysis {
-  CardProgramAnalysis(
+struct StructuredProgramAnalysis {
+  StructuredProgramAnalysis(
       TargetTopology topology, llvm::SmallVector<TileId, 16> availableTileIds,
       StructuredDAGAnalysis dag, StaticOutputDomains outputDomains,
       llvm::SmallVector<StructuredOperationNodeMapping, 16> operationNodes)
@@ -42,10 +43,10 @@ struct CardProgramAnalysis {
   llvm::SmallVector<StructuredOperationNodeMapping, 16> operationNodes;
 };
 
-mlir::FailureOr<std::unique_ptr<CardProgramAnalysis>>
-analyzeCardProgram(mlir::ModuleOp tensorProgram,
-                   const frontend::FrontendProgramVerificationResult &program,
-                   const ExecutionConfig &executionConfig,
-                   llvm::raw_ostream &diagnostics);
+mlir::FailureOr<std::unique_ptr<StructuredProgramAnalysis>>
+analyzeStructuredProgram(
+    mlir::ModuleOp tensorProgram,
+    const frontend::FrontendProgramVerificationResult &program,
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics);
 
 } // namespace wafer::compiler::detail

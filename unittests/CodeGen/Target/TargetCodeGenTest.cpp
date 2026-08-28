@@ -1,6 +1,6 @@
 //===- TargetCodeGenTest.cpp - Target code generation tests -------------===//
 
-#include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
+#include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
 #include "Wafer/CodeGen/Target/TargetCodeGenInternal.h"
 #include "Wafer/Package/Writer/PackageInternal.h"
 #include "Wafer/Program/ProgramData.h"
@@ -334,9 +334,9 @@ makeProfileRuntimeLaunchModules(
       *config, std::move(launch), std::move(modules));
 }
 
-static llvm::Expected<wafer::compiler::CardExecutable>
-makeProfileCardExecutable(const wafer::RuntimeLaunchContract &launch,
-                          wafer::compiler::TransportContract transport) {
+static llvm::Expected<wafer::compiler::DeviceExecutable>
+makeProfileDeviceExecutable(const wafer::RuntimeLaunchContract &launch,
+                            wafer::compiler::TransportContract transport) {
   llvm::Expected<wafer::compiler::ExecutionConfig> config =
       wafer::compiler::ExecutionConfig::createForSingleCard(1);
   if (!config)
@@ -363,11 +363,13 @@ makeProfileCardExecutable(const wafer::RuntimeLaunchContract &launch,
     binding.slice.offsets = {0};
     binding.slice.sizes = {4};
     binding.slice.strides = {1};
-    tiles.push_back(wafer::compiler::CardExecutableBuilder::makeTileExecutable(
-        wafer::CardId(0), wafer::TileId(tileId), wafer::LaunchSlotId(tileId),
-        std::move(module), "main", {std::move(binding)}, transport));
+    tiles.push_back(
+        wafer::compiler::DeviceExecutableBuilder::makeTileExecutable(
+            wafer::CardId(0), wafer::TileId(tileId),
+            wafer::LaunchSlotId(tileId), std::move(module), "main",
+            {std::move(binding)}, transport));
   }
-  return wafer::compiler::CardExecutableBuilder::makeCardExecutable(
+  return wafer::compiler::DeviceExecutableBuilder::makeDeviceExecutable(
       *config, launch, std::move(context), std::move(tiles),
       std::make_unique<wafer::compiler::ProgramDataHandoff>());
 }
@@ -592,17 +594,18 @@ TEST(TargetCodeGenTest,
       binding.slice.strides.assign(shape.size(), 1);
       return binding;
     };
-    tiles.push_back(wafer::compiler::CardExecutableBuilder::makeTileExecutable(
-        wafer::CardId(0), wafer::TileId(tile), wafer::LaunchSlotId(tile),
-        std::move(module), "main",
-        {makeBinding(wafer::compiler::ProgramResourceRole::Parameter, 0, 0,
-                     wafer::ProgramElementType::F32, {4}),
-         makeBinding(wafer::compiler::ProgramResourceRole::Parameter, 1, 1,
-                     wafer::ProgramElementType::F16, {2})},
-        wafer::compiler::TransportContract::None));
+    tiles.push_back(
+        wafer::compiler::DeviceExecutableBuilder::makeTileExecutable(
+            wafer::CardId(0), wafer::TileId(tile), wafer::LaunchSlotId(tile),
+            std::move(module), "main",
+            {makeBinding(wafer::compiler::ProgramResourceRole::Parameter, 0, 0,
+                         wafer::ProgramElementType::F32, {4}),
+             makeBinding(wafer::compiler::ProgramResourceRole::Parameter, 1, 1,
+                         wafer::ProgramElementType::F16, {2})},
+            wafer::compiler::TransportContract::None));
   }
-  llvm::Expected<wafer::compiler::CardExecutable> executable =
-      wafer::compiler::CardExecutableBuilder::makeCardExecutable(
+  llvm::Expected<wafer::compiler::DeviceExecutable> executable =
+      wafer::compiler::DeviceExecutableBuilder::makeDeviceExecutable(
           *config, launch, std::move(context), std::move(tiles),
           std::move(handoff));
   ASSERT_TRUE(static_cast<bool>(executable))
@@ -1590,8 +1593,8 @@ TEST(TargetCodeGenTest,
               tileInterface.getTileEntryArguments(), capture)));
     }
 
-    llvm::Expected<wafer::compiler::CardExecutable> executable =
-        makeProfileCardExecutable(launch, scenario.transport);
+    llvm::Expected<wafer::compiler::DeviceExecutable> executable =
+        makeProfileDeviceExecutable(launch, scenario.transport);
     ASSERT_TRUE(static_cast<bool>(executable))
         << llvm::toString(executable.takeError());
     llvm::SmallString<256> packageDirectory = pathInDirectory(

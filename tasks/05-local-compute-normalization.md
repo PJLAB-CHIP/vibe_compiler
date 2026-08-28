@@ -26,7 +26,7 @@ Pipeline position:
   不保留e-graph、e-class ID、rewrite history或其它旁路表示。不产生文件、physical plan或runtime metadata。
 - Downstream consumer:
   physical-dataflow planning从normalized current graph的固定semantic roots构造spatial/region/temporal choice和exact
-  demand/coupled contribution/merge；choice闭合后先在candidate-owned Card subtree内形成Region和ordinary temporal
+  demand/coupled contribution/merge；choice闭合后先在candidate-owned top-level TileModule subtrees内形成Region和ordinary temporal
   tile-and-fuse，attention仍保持同一个semantic op。紧随其后的selected-attention lowering才消费尚未使用的K1/K2及
   contribution choice，把该op一次性改写为canonical actual Linalg/Tensor/SCF。后续layout、movement、bufferization、Instr、
   completion和memory只从该current IR生成或重算。
@@ -36,7 +36,7 @@ Pipeline position:
 - Explicit non-goals:
   不运行GSPMD，不决定card partition；不选择Tile、KV partition count、temporal block、layout、SPM/DDR、NoC/DTE、
   buffer、worker、schedule、launch slot或runtime binding；不把FA/FD做成physical search axis；不从symbol、operand位置、
-  shape模板或workload名称恢复attention；不物化候选CardModule。E-graph不修改scalar arithmetic region，不做算术结合、
+  shape模板或workload名称恢复attention；不物化候选TileModule set。E-graph不修改scalar arithmetic region，不做算术结合、
   分配、reduction重排、matmul chain reassociation、compute partition或target/layout选择，也不承担compiler correctness所需的legalization。
 - Done criteria:
   official conversion后无StableHLO/SDY residual；attention custom/generic form、verifier、standard interfaces与coupled-state
@@ -381,7 +381,7 @@ Spatial/region/temporal choice闭合后立即进入candidate transaction；不�
 ```text
 spatial/region/temporal choice
   -> validate current TensorProgram and recomputable attention semantic query
-  -> create one candidate-owned Card subtree
+  -> create one candidate-owned top-level TileModule subtrees
   -> materialize Region and compact temporal tile-and-fuse while attention remains one semantic op
   -> selected-attention lowering consumes fixed algorithm and remaining K1/K2/contribution choices
   -> create canonical selected linalg.matmul/generic/reduce, tensor slices, scf.for and coupled state SSA
@@ -390,7 +390,7 @@ spatial/region/temporal choice
   -> materialize actual movement on current SSA
   -> lower to Instr, then derive worker/order/completion from current Instr
   -> verify no attention or executable Linalg source remains
-  -> actual CardModule-to-CardExecutable memory/target gate
+  -> actual TileModule/Instr -> DeviceExecutable memory/target gate
 ```
 
 Compact temporal tile-and-fuse不得匹配attention内部的QK、PV、online state或merge，也不得调用selected-attention lowering。
@@ -405,12 +405,12 @@ generic tile-and-fuse，不根据未来action/value inventory重放IR，不clone
 无法表达selected attention lowering时返回typed candidate failure，不换FA/FD、不保留opaque attention进入layout，也不调用另一builder。
 
 compute先到Linalg而不是attention emitter直接创建`wafer.tile`，以复用Linalg indexing/verifier和10号通用structured-to-tile lowering；
-但该Linalg只存在于candidate Card subtree transaction内部，不是公开stop stage。Rejected/loser subtree整体销毁，final winner不重建。
+但该Linalg只存在于candidate top-level TileModule subtrees transaction内部，不是公开stop stage。Rejected/loser subtree整体销毁，final winner不重建。
 Movement、buffer和completion不属于Linalg；它们由直接stage读取current SSA/Instr后生成，不由attention prepared builder预建。
 
 进入actual memory/target gate前必须满足：
 
-- `wafer.linalg_ext.attention`在selected Card subtree中为零；
+- `wafer.linalg_ext.attention`在selected top-level TileModule subtrees中为零；
 - 可执行Linalg source op为零；
 - all-and-only actions、values、buffers、messages和events已在current IR中表达且可由直接stage verifier解释；
 - 每个actual allocation都有current typed owner relation，SPM/DDR/transport结果来自该candidate IR；
@@ -755,7 +755,7 @@ GSPMD输出可能含由constants和static tensor views完全决定的partition/m
 - normalization在首次mutation前收集完整proof，所有create/replace/erase通过同一个`IRRewriter`；不clone Module/Func/DAG；
 - algorithm classification缺decode proof只产生FA，不记录失败历史或候选；
 - op/interface无法描述selected spatial/temporal work时返回typed unsupported；current语义查询与显式choice矛盾是compiler contract error；
-- Selected-attention lowering、wafer.tile conversion或直接stage verifier失败擦除完整新Card subtree并终止该candidate，
+- Selected-attention lowering、wafer.tile conversion或直接stage verifier失败擦除完整新top-level TileModule subtrees并终止该candidate，
   不在materializer内换算法、layout、route或buffer；
 - `none`和`search`任一失败都不调用另一policy兜底。
 

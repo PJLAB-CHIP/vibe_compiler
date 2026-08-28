@@ -114,7 +114,7 @@
 
 - 现象：先固定Tile分配再选temporal tile/fusion，或先尽量融合再事后安排NoC，导致SPM放不下、Tile空闲或通信爆炸。
 - 根因：将互相决定resource和critical path的变量交给独立selector。
-- 修复模式：spatial/region/temporal作为联合structural choice，闭合后立即生成actual Card/TileRegion IR。Communication、buffering和
+- 修复模式：spatial/region/temporal作为联合structural choice，闭合后立即生成actual TileModule/TileRegion IR。Communication、buffering和
   overlap choice作用于current candidate IR并生成new verified IR；只有通过actual gate的owner参与winner比较。
 - 防复发：测试同时保留maximal local residency与cross-Tile operator pipeline、large-tile cut与small-tile overlap等对立候选。
 
@@ -151,7 +151,7 @@
 
 - 现象：每个Tile local return合法，却在其它Tile或transport尚未完成时发布output；或在每个entry尾插入全卡等待造成死锁。
 - 根因：混淆entry-local drain、cross-Tile message completion和card-scoped invocation success。
-- 修复模式：Tile entry只保证本地发起的observable/reuse/status work已收敛；CardExecutable/runtime owner另行等待16个entries与全部transport obligations。
+- 修复模式：Tile entry只保证本地发起的observable/reuse/status work已收敛；DeviceExecutable/runtime owner另行等待16个entries与全部transport obligations。
 - 防复发：一个Tile提前返回、另一个仍有Direct-DTE/event的正例；缺失global obligations和多余cycle分别失败。
 
 ## SPM packing只能求解actual fixed problem
@@ -160,7 +160,7 @@
   在planner/emitter内自行retile、spill、换layout或rebuffer。
 - 根因：没有先形成包含actual allocation、layout、alias/effect、completion、lifetime和alignment的current Instr problem，
   把性能估算、候选选择和fixed-capacity allocation混成一个owner。
-- 修复模式：pre-actual-memory stage的SPM状态保持unknown；每个candidate先实际构造Card/Tile/Instr及current owner relation，
+- 修复模式：pre-actual-memory stage的SPM状态保持unknown；每个candidate先实际构造TileModule/TileRegion/Instr及current owner relation，
   唯一PlanSPMMemory/MiniMalloc只返回validated offsets或带actual conflict demand的typed capacity rejection。外层controller决定
   是否构造下一candidate，planner和emitter不repair。
 - 防复发：用iteration-volume、operand-size和actual lifetime给出相反预测的GEMM/affine-window case，证明前两者不改变合法集合；
@@ -318,7 +318,7 @@
 
 ## 不得从函数参数位置或同型关系猜测output boundary
 
-- 现象：functional tensor program的最后一个真实input与result同型时，被CardModule lowering当作trailing output参数删除；
+- 现象：functional tensor program的最后一个真实input与result同型时，被TileModule set lowering当作trailing output参数删除；
   final Tile entry参数减少，但frontend resource binding仍完整，16个Tile统一在TargetABI exact-boundary gate失败。
 - 根因：把structured op内部的destination-style语义错误提升成source function ABI，并用
   `numArguments - numResults`恢复角色。
@@ -515,7 +515,7 @@
 
 ## 16 Tile不能把root公共分析和整图clone机械重复16次
 
-- 现象：structured roots较多时，旧baseline按root shard、Tile entry、完整CardModule三轮构造；仅root阶段就接近
+- 现象：structured roots较多时，旧baseline按root shard、Tile entry、完整TileModule set三轮构造；仅root阶段就接近
   `root数 × 16 Tile`次TensorProgram conversion。即使16个worker并发，CPU work、RSS和诊断仍是同一工作被放大16倍。
 - 根因：把Tile差异（offset/tail/peer endpoint）和root不变量（support relation、consumer access和structured identity）放在同一个
   per-Tile materializer里；materializer从output/edge endpoint无条件回溯SSA closure并clone scratch function，而不是从全部root
@@ -525,7 +525,7 @@
   对当前candidate一次性物化typed demand recipe要求的operation和endpoint，不建立公共SSA closure或materialized-IR cache。16个Tile实际构造可
   bounded并发并按Tile ID稳定归并，但并发不是work消重机制。
 - 防复发：显式test work counts检查relation construction、非空value/Tile demand、physical fragment和candidate Tile entry；每个
-  candidate CardModule/actual memory/target gate各一次，winner不重建。测试必须包含16 Tile demand不同的fanin/fanout，证明不是16次完整DAG walk。
+  candidate TileModule set/actual memory/target gate各一次，winner不重建。测试必须包含16 Tile demand不同的fanin/fanout，证明不是16次完整DAG walk。
   Pre-structural frontier只共享immutable analysis，不能按candidate/Tile缓存actual IR。
 
 ## exact-empty producer不能被support graph重建重新拉入
@@ -582,13 +582,13 @@
 
 ## 编译边界不能把typed allocator failure压成一个布尔值
 
-- 现象：CardModule编译入口只看到“SPM allocation failed”，会把unsupported lifetime误归为内部失败，或反过来把未分类的
+- 现象：TileModule set编译入口只看到“SPM allocation failed”，会把unsupported lifetime误归为内部失败，或反过来把未分类的
   allocator failure误当作candidate非法并从搜索域删除。
 - 根因：Tile memory planning跨边界时丢失了`SPMMemoryPlanningFailureKind`，上层只能从诊断文本或capacity布尔量猜taxonomy。
 - 修复模式：memory-planning failure保留typed SPM failure kind；capacity overflow与unsupported lifetime作为可验证exact rejection，
   resource exhaustion、未分类allocator/internal failure保持indeterminate。组装结果时先复制primary gate/detail，再move failure
   容器；不能依赖函数实参求值顺序同时引用元素和转移其owner。
-- 防复发：无策略CardExecutable seam直接测试同一CardModule的可重复exact rejection，并单测不完整/内部调用保持indeterminate；
+- 防复发：无策略DeviceExecutable seam直接测试同一TileModule set的可重复exact rejection，并单测不完整/内部调用保持indeterminate；
   caller遇到indeterminate必须终止当前编译，不能生成no-good或repair candidate。
 
 ## 跨region替换后保留旧Value relation会造成悬空引用
@@ -622,7 +622,7 @@
   之后
   TileRegion-to-Instr的所有replacement只由同一个listener跟踪。Current-Instr stage随后完成worker/order和completion；
   memory/target leaf在已有materialization relations的production路径不得再次运行bufferization或重建completion，缺失时直接拒绝。
-- 防复发：真实规模selected multi-root stored/direct与replica候选必须走完整CardModule→Instr→actual SPM gate；只验证TileRegion
+- 防复发：真实规模selected multi-root stored/direct与replica候选必须走完整TileModule set→Instr→actual SPM gate；只验证TileRegion
   或单root路径不能签发relation epoch正确性。
 
 ## PeerFragments的代表source不能代替逐fragment ownership
@@ -677,7 +677,7 @@
 
 ## Move-only结果不能引用先于结果销毁的staging文件
 
-- 现象：compiler成功返回`CardExecutable`，但返回后target consumer首次读取parameter就报文件不存在；同时byte-identical
+- 现象：compiler成功返回`DeviceExecutable`，但返回后target consumer首次读取parameter就报文件不存在；同时byte-identical
   helper shard虽未进入range identity，重复文件仍随结果存活，规模账本却显示open次数恒定。
 - 根因：handoff只保存transaction root下的path，外层scope cleanup在public compile返回时先删除root；source每次range/digest
   再按path打开，真实open/read没有进入只统计establishment的账本；未adopt candidate也没有明确的最后consumer边界。
@@ -716,7 +716,7 @@
 
 - 现象：Tools lit（不在默认CTest路径）一次出现8个失败，现象各异：`spm_planning_invocations`16→24、
   timing表stage改名、`emitOpError`输出丢失`[0]`、wafer-opt pipeline要求explicit mesh shape、XLA helper
-  INVALID_ARGUMENT、`buildCardExecutable`多出`ProgramDataHandoff&`形参后SystemC树编译失败、以及
+  INVALID_ARGUMENT、`buildDeviceExecutable`多出`ProgramDataHandoff&`形参后SystemC树编译失败、以及
   `StructuredDAGPlacementEnumerationTest.MultiOutputFanout...`单测100% CPU死循环。
 - 根因：这些测试不属于默认lit/ctest路径，repeated physical-dataflow refactors多次refactor后无人刷新期望；真实行为变化与测试更新在不同commit，
   且部分期望（如`emitOpError`带operand、旧package source copy）对应的是已经退役的表示。
@@ -841,14 +841,14 @@
 
 ## 局部capacity probe与complete-candidate gate会产生不同scope和witness
 
-- 现象：baseline先用root/region/function级scratch IR判断SPM，再重新构造完整CardModule；局部路径可能报告fit或要求扩大scope，
+- 现象：baseline先用root/region/function级scratch IR判断SPM，再重新构造完整TileModule set；局部路径可能报告fit或要求扩大scope，
   最终actual memory/target gate却在函数级packing失败。relation remap还可能在两次构造间省略或保留不同owner，使同一allocation得到不同归因。
 - 根因：把“调用相同pass/checker”误当成消费同一actual IR和同一current relation certificate。只要第一次IR被销毁、第二次重建，
   operation lifetime、buffer relation、region boundary和packing scope就已经是两个事实源；继续增加scope escalation只会扩张平行链。
-- 修复模式：删除baseline的root/Tile/function局部capacity probe。每个进入memory/target gate的candidate只产生一份完整CardModule；actual
+- 修复模式：删除baseline的root/Tile/function局部capacity probe。每个进入memory/target gate的candidate只产生一份完整TileModule set；actual
   planner demand通过candidate transaction的result/operand/output/movement/scratch relations归因，缺owner就是contract failure，不能按
   region恰有一个root猜owner。
-- 防复发：显式test work counts证明每个完整物理choice/IR epoch至多生成一份actual-gate CardModule，且
+- 防复发：显式test work counts证明每个完整物理choice/IR epoch至多生成一份actual-gate TileModule set，且
   `actualGateCandidates == actualGateInvocations`、accepted rematerialization为零；测试扰动
   每类relation并检查所有actual SPM demands有owner，不以Location、空relation或diagnostic字符串证明一致性。
 
@@ -906,7 +906,7 @@
   ownership intersections。empty demand显式表示无physical action；非空集合按可证明all-and-only的有限fragment分解，无法表达时
   只拒绝该physical assignment，不改写logical verdict。
 - 防复发：production gate至少包含一个strided support view和一个overwrite产生empty destinations的multi-piece relation，并证明
-  它们进入完整CardModule/CardExecutable gate；只测whole-edge query或只用连续concat piece不能覆盖这类重复恢复缺陷。
+  它们进入完整TileModule set/DeviceExecutable gate；只测whole-edge query或只用连续concat piece不能覆盖这类重复恢复缺陷。
 
 ## Pipeline合同切换必须同步非默认测试
 
@@ -970,7 +970,7 @@
   `materializeCandidateRootTileIntoDestination`直接写DDR；完成后seal为read-only并缓存exact slice。SPM只保留当前leaf/staging，
   不再出现full-shard assembly。
 - 防复发：overfull-to-fit case检查full candidate的actual allocations/lifetimes与typed rejection owner，再检查smaller candidate被
-  actual gate接受；compiler work同时计deterministic successor和candidate CardModule/actual memory/target gate，每个candidate恰一次。
+  actual gate接受；compiler work同时计deterministic successor和candidate TileModule set/actual memory/target gate，每个candidate恰一次。
 
 ## 扩展 FuncOp 参数必须同步 argument attrs
 
@@ -1088,7 +1088,7 @@
 
 ## Per-root TileRegion不等于可执行Tile entry
 
-- 现象：root-to-movement stages的CardModule包含正确private root/relay functions和TileRegions，局部tests全绿；首次由search送入actual memory/target gate时却因每Tile没有
+- 现象：root-to-movement stages的TileModule set包含正确private root/relay functions和TileRegions，局部tests全绿；首次由search送入actual memory/target gate时却因每Tile没有
   唯一public entry失败，临时用`func.call`组合又被DDR planner的跨call scope合同拒绝。
 - 根因：把“每个root已物化”误当成“每Tile program已闭合”，root function的source boundary/result对应关系没有作为同次construction
   typed结果保留，导致后续只能猜名字/顺序或遗漏entry。

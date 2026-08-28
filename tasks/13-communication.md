@@ -1,7 +1,7 @@
 # Wafer Tile Communication 与 Direct DTE
 
 本文拥有
-selected片内physical peer IR及memory-planned后的CardExecutable Direct DTE verification；不拥有
+selected片内physical peer IR及memory-planned后的DeviceExecutable Direct DTE verification；不拥有
 placement、communication winner或pipeline side plan。
 
 ## 1. Pipeline Contract
@@ -10,19 +10,19 @@ placement、communication winner或pipeline side plan。
 Pipeline position:
 - Upstream IR / input:
   GSPMD产生的card-local TensorProgram及card-partition collective semantics；physical-dataflow selection物化的
-  wafer.card.module包含all-and-only physical wafer.tile.module、selected per-Tile work和跨Tile data需求；若选择
+  builtin.module包含all-and-only top-level physical `wafer.tile.module(card_id, tile_id)`、selected per-Tile work和跨Tile data需求；若选择
   communication/computation流水，chunk、movement、physical/rotating buffer、order和completion必须已经进入actual Tile/Instr IR；
   target topology给出available Tile与片内邻接，launch slot尚不属于structured IR。
 - Current stage responsibility:
   将selected mapping差异显式物化为Tile peer ops、destination staging、local compute、async token和精确lifetime obligation；
   schedule owner在selected order/storage/control flow上放置wait，本stage不把issue位置当成默认wait位置；
   在SPM/DDR
-  offsets和completion确定后，对complete CardModule中的Tile modules原子匹配message、range、resource和transport binding。
+  offsets和completion确定后，对complete top-level TileModule set原子匹配message、range、resource和transport binding。
 - Output IR / files:
   每个TileModule中的typed wafer.tile.peer_*及其actual local work，或per-Tile wafer.instr.dte_send /
   dte_recv / dte_wait与accepted DirectDTEBindingAttr；算法proposal和route table不另存。
 - Downstream consumer:
-  final card-scoped resource/cost gate、target conversion、CardExecutable、typed package manifest、no-card/runtime、
+  final card-scoped resource/cost gate、target conversion、DeviceExecutable、typed package manifest、no-card/runtime、
   TargetCall/SystemC及configured board provider。
 - User-level driver / named pipeline:
   wafer-compile source-to-package pipeline；communication没有public selector、独立winner或手工pass链。
@@ -32,7 +32,7 @@ Pipeline position:
   推断overlap，不保存route/schedule/lane side plan，不把raw packet/register写进Tile IR。
 - Done criteria:
   selected cross-Tile edge具有显式physical endpoints、payload cover、staging、local work和completion；all-and-only
-  Tile modules经CardExecutable message/range/resource verification原子通过；package以
+  Tile modules经DeviceExecutable message/range/resource verification原子通过；package以
   `(card_id, tile_id, launch_slot)`发布，不依赖任何旧logical-execution-to-Tile映射。
 ```
 
@@ -41,10 +41,10 @@ Pipeline position:
 | 域 | ID与IR | owner | 当前边界 |
 | --- | --- | --- | --- |
 | card partition | `wafer.execution.mesh`及post-SPMD collective tensor semantics | GSPMD与05 | 单卡mesh product为1；non-singleton需要未来cross-card transport |
-| Tile | `CardId`、`TileId`、CardModule/TileModule、Tile/Instr communication ops | 06/07/13 | 单卡available Tile间NoC/Direct DTE |
+| Tile | `CardId`、`TileId`、TileModule、Tile/Instr communication ops | 06/07/13 | 单卡available Tile间NoC/Direct DTE |
 
 frontend collective group属于card partition。即使源op字段沿用StableHLO命名，也不能把其中的整数直接作为
-`tile_id`。当前CardModule materializer要求一个card partition，所以singleton collective可证明为identity；多卡collective
+`tile_id`。当前TileModule materializer要求一个card partition，所以singleton collective可证明为identity；多卡collective
 在cross-card transport未设计前fail closed。单卡内部的shard exchange、broadcast、gather和reduction由physical-dataflow spatial
 mapping另行生成Tile communication，而不是复用card-partition group冒充。
 
@@ -87,7 +87,7 @@ send/recv/token/wait。`TargetTopology`的Tile邻接可用于minimum-hop、cut b
 不透明，不能把canonical shortest path写成route、逐link resource或deadlock证明。future target若暴露programmable route，须先扩同一
 typed target/IR合同，再由route verifier和event scheduler消费。
 
-card-level LinalgExt collective只描述card partition语义；singleton group在CardModule materialization时成为identity，
+card-level LinalgExt collective只描述card partition语义；singleton group在TileModule set materialization时成为identity，
 non-singleton group在cross-card transport尚未实现时fail closed。单卡16个Tiles之间的数据重排不能把card partition
 ordinal当作Tile ID，也不能通过恢复旧的Tile collective op绕过physical-dataflow mapping。
 
@@ -107,7 +107,7 @@ wafer.instr.dte_recv(buffer, peer, bytes, message) -> async.token
 wafer.instr.dte_wait(tokens...)
 ```
 
-`peer`仍是physical `tile_id`。stable message key由current CardModule IR重建：
+`peer`仍是physical `tile_id`。stable message key由current TileModule set IR重建：
 
 ```text
 (source_tile_id, destination_tile_id,
@@ -124,10 +124,10 @@ block order和function return都不能替代未证明的completion。
 
 wait位置不是固定在issue之后。对每个dynamic token，合法区间由actual lifetime确定：recv wait不得晚于destination first read或
 receiver FSM/slot reuse，send wait不得晚于source/relay last release或sender resource reuse；在这些边界之前可以保留异步窗口。
-current CRT只有4个receiver FSM，CardExecutable verifier还必须证明任意structured trace中重叠receiver live range可在4个FSM内着色，
+current CRT只有4个receiver FSM，DeviceExecutable verifier还必须证明任意structured trace中重叠receiver live range可在4个FSM内着色，
 并且跨Tile wait graph无环。该resource/deadlock约束可以迫使某个wait更早，但不能推广成“每个send/recv都立即await”。
 
-## 5. CardExecutable Direct DTE Verification
+## 5. DeviceExecutable Direct DTE Verification
 
 verification只读取memory-planned、completion-complete的all-and-only Tile Instr modules，并在一次transaction中：
 
@@ -143,7 +143,7 @@ FSM以及absolute、source-relative或bounded selector-table remote address。ph
 拥有；local address仍来自receiver planned buffer。binding不是通信plan或route fallback。
 
 verification不能retile、insert staging、改worker/order、换algorithm或修补missing wait。失败只返回typed reason并丢弃
-本次未提交Card subtree；本文不创建candidate set、repair recipe或可重放transport plan，也不把失败返回planner重选。
+本次未提交top-level TileModule subtrees；本文不创建candidate set、repair recipe或可重放transport plan，也不把失败返回planner重选。
 
 ## 6. Target、Package 与 Runtime Boundary
 
@@ -165,9 +165,9 @@ package/runtime不重新选择peer、route、algorithm或memory placement。
 | gate | failure | result |
 | --- | --- | --- |
 | query-local movement/completion alternative | endpoint、payload cover或completion结构被typed verifier拒绝 | 只拒绝当前current-IR alternative；不发布partial IR |
-| candidate Tile IR/materialization | physical peer、encoding、cover、local compute或token与assignment不一致 | compiler bug；擦除未提交Card subtree |
+| candidate Tile IR/materialization | physical peer、encoding、cover、local compute或token与assignment不一致 | compiler bug；擦除未提交top-level TileModule subtrees |
 | candidate memory/completion | actual staging capacity rejection有完整owner witness | 返回当前complete candidate typed rejection；planner不repair |
-| CardExecutable verification | missing/duplicate peer、message/range/resource conflict | 返回verifier-owned typed result；不写partial binding |
+| DeviceExecutable verification | missing/duplicate peer、message/range/resource conflict | 返回verifier-owned typed result；不写partial binding |
 | target/package | typed call、status、identity或resource readback mismatch | 不发布部分output/package，终止compile |
 
 直接验证至少覆盖：
@@ -180,9 +180,9 @@ package/runtime不重新选择peer、route、algorithm或memory placement。
   lifetime约束的case不得被issue后立即await串行化；
 - different `tile_id`/`launch_slot` mapping仍按Tile正确通信；
 - package card/Tile resource scope、transport status和atomic readback；
-- source-to-CardModule-to-package真实链，而非只验证手写Instr fixture。
+- source→top-level TileModule set→package真实链，而非只验证手写Instr fixture。
 
-CardExecutable integration gate还必须证明general chain、branch、fanout/fanin和mapping-changing DAG的selected CardModule确实生成
+DeviceExecutable integration gate还必须证明general chain、branch、fanout/fanin和mapping-changing DAG的selected TileModule set确实生成
 这些communication ops，并在最终Instr中具备chunk、buffer、order和completion witness。当前已有lowering/verification能力
 不得被写成搜索已经完成；cross-card collective也继续是明确非目标，不能恢复partition-to-Tile旧接口绕过。
 

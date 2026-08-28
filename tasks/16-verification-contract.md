@@ -1,7 +1,7 @@
 # Wafer Compiler Verification Contract
 
 本文只定义当前架构的验证层级和完成证明，不保存任务动态状态或历史case台账。稳定验证链为
-`TensorProgram -> physical-dataflow selection -> CardModule/TileRegion/Instr -> CardExecutable -> ExecutablePackage`。
+`TensorProgram -> physical-dataflow selection -> TileModule/TileRegion/Instr -> DeviceExecutable -> ExecutablePackage`。
 host局部gate、package roundtrip或一次source compile都不能把production任务提升为`board-ready`；没有真实设备matched
 A/B改善时也不能标`done`。
 
@@ -10,8 +10,8 @@ A/B改善时也不能标`done`。
 ```text
 Pipeline position:
 - Upstream IR / input:
-  当前source program、card-level GSPMD输出、normalized TensorProgram、selected CardModule/TileModule/TileRegion、
-  final Instr、CardExecutable、target LLVM modules、linked ELF、target-ready immutable data、ExecutablePackage及其独立oracle。
+  当前source program、card-level GSPMD输出、normalized TensorProgram、selected TileModule/TileRegion、
+  final Instr、DeviceExecutable、target LLVM modules、linked ELF、target-ready immutable data、ExecutablePackage及其独立oracle。
 - Current stage responsibility:
   在每个IR/output边界验证语义、coverage、physical identity、resource、completion、ABI、writing与execution；
   建立host、data-scale、no-card、model和真实板端证据之间不可越级的完成层级。
@@ -35,7 +35,7 @@ Pipeline position:
 证据严格分层，低层不能代签高层：
 
 1. **Static/compile evidence**：编译、ODS/verifier、unit、lit、source organization和文本一致性检查。
-2. **Output evidence**：同一compile transaction生成并readback CardModule/Instr、CardExecutable、target module、
+2. **Output evidence**：同一compile transaction生成并readback TileModule set/Instr、DeviceExecutable、target module、
    ProgramDataHandoff、TargetTensor、target-ready program data和ExecutablePackage；记录source range reads、
    TargetTensor materialization与package byte closure。
 3. **No-card evidence**：真实package经strict loader与runtime validation形成完整16-Tile invocation plan，且无provider effect。
@@ -151,12 +151,12 @@ lit的`UNSUPPORTED`和skip只表示未执行。canonical build中的测试若因
 
 ## 4. IR 与 physical-dataflow gates
 
-### 4.1 CardModule / TileRegion / Instr
+### 4.1 TileModule set / TileRegion / Instr
 
 正例必须证明：
 
 - `num_partitions`只描述card-level GSPMD domain；single-card current path固定 `num_partitions=1`；
-- `wafer.card.module`拥有all-and-only 16个available `wafer.tile.module`；
+- `builtin.module`拥有all-and-only 16个available top-level `wafer.tile.module(card_id, tile_id)`；
 - distinct Tile modules可含不同op、loop、temporal tile、region和执行长度；
 - no-work Tile仍有合法entry并进入output/runtime domain；
 - `(card_id, tile_id)`唯一，Tile-local SPM root不跨Tile SSA alias。
@@ -208,7 +208,7 @@ position、Attention/decode/mask专用matcher或公共pass残留。
   state expansion前剪枝；SPM capacity没有plan-side early rejection；
 - footprint、working-set、shape公式、buffer-count、synthetic demand、预测lifetime或nominal bandwidth projection不能签发SPM
   packing、admission或temporal refinement；
-- production pre-structural state不物化IR；spatial/region/temporal choice闭合后各构造一个candidate CardModule/TileRegion，之后
+- production pre-structural state不物化IR；spatial/region/temporal choice闭合后各构造一个candidate TileModule/TileRegion，之后
   layout/bufferization、movement和execution structure依次在current Tile IR上实施，再执行Tile→Instr、fresh order/completion、
   completion-closed actual SPM/DDR、transport/resource/ABI和actual cost；
   rejected/loser owner销毁，winner不重建；
@@ -246,7 +246,7 @@ exact continuation和admissible bound表示时可为`feasible-with-bound`；obje
 
 - hard legality/capacity failure仍然fail closed；
 - 缺性能参数、dynamic multiplicity和arithmetic overflow产生typed Unknown/Incomparable，不按0或极大值比较；
-- per-Tile compute、card DDR、endpoint/minimum-hop/cut NoC、per-Tile explicit SPM movement和available control work保留各自knowledge；只有
+- per-Tile compute、shared DDR、endpoint/minimum-hop/cut NoC、per-Tile explicit SPM movement和available control work保留各自knowledge；只有
   qualified exact route才有directed-link work；
 - dependency phases相加，独立branch/资源取并发最大值，只有显式double/triple buffering才用steady-state II；
 - estimate只排priority，不剪枝；lower bound逐prefix与flat completion minimum比较不高估；raw work与term source不写入selected IR。
@@ -265,7 +265,7 @@ completion从final actual Instr的effects、worker issue domains、async tokens�
 - reuse不能跨未完成producer；
 - loop backedge、branch merge、entry return和Direct-DTE exact wait闭合；
 - `ReturnAfterLocalDrain`只声明Tile-local return条件，不冒充card-scoped barrier；
-- CardExecutable成功需要16个Tile entry及transport obligations全部完成。
+- DeviceExecutable成功需要16个Tile entry及transport obligations全部完成。
 
 current Instr completion transformation必须直接证明并物化completion；进入memory leaf的IR仍缺失completion是compiler bug并终止compile，
 不能由memory pass、runtime轮询、统一entry尾等待或返回planner重选掩盖。
@@ -301,7 +301,7 @@ current Instr completion transformation必须直接证明并物化completion；�
 
 - ordinary package manifest与profile activation分别严格检查自己的current top-level identity和exact field set；所有文件均拒绝额外/缺失field，不保留version branch或旧reader；
 - `card_count=1`、`tile_count=16`，entries覆盖all-and-only Tiles与dense launch slots；
-- target identity/runtime ABI/module format与kernel launch mode/entry ABI/ordered phases同CardExecutable和module readback逐项相等，
+- target identity/runtime ABI/module format与kernel launch mode/entry ABI/ordered phases同DeviceExecutable和module readback逐项相等，
   model launch kind或fallback输入必须拒绝；
 - program data、ProgramTensor、TargetTensor、inputs、outputs、modules、entries和arguments all-and-only covered，
   无悬空、重复ID、未引用文件或source NPY/tree；
@@ -410,7 +410,7 @@ current target容量、target-model能力或host预算不足，必须按stage报
 
 ### 10.1 Policy-specific construction
 
-- `none`与`search`从同一类verified TensorProgram输入分别建立独立controller、Card/Tile materializer、policy-specific Instr construction
+- `none`与`search`从同一类verified TensorProgram输入分别建立独立controller、TileModule materializer、policy-specific Instr construction
   和accepted result owner。Baseline直接消费current TensorProgram和固定规则，不创建search plan/domain/state；search才拥有explicit
   structural choice frontier。同一source identity不授权共享Module、analysis、ProgramData、
   candidate IR或package。
@@ -441,6 +441,6 @@ current target容量、target-model能力或host预算不足，必须按stage报
   partial/permuted/layout-changing/unknown-alias负例；cleanup on/off保持observable IR语义与actual accepted outcome，且真实规模case
   直接检查conversion/transfer/allocation数量，不以unit helper被调用代替production caller。
 - 同一product source的`none`和`search`端到端证据必须来自两次fresh独立transaction，各自产生current
-  CardExecutable、ExecutablePackage、strict readback和no-card结果。历史package、旧日志、skip或unsupported不能代签。
+  DeviceExecutable、ExecutablePackage、strict readback和no-card结果。历史package、旧日志、skip或unsupported不能代签。
 - `board-ready`要求source、inputs、expected、package、guard、continuation、deadline、runner和no-card全部在无设备环境闭合；
   它不是板端正确性或性能。真实设备结论只能由本轮单进程、逐case、无retry/reset/power的qualified session签发。

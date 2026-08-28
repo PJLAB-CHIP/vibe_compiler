@@ -29,7 +29,7 @@ namespace {
 TEST(ProfileInstrumentationModelTest, OwnsTargetReportingReferenceRates) {
   wafer::runtime::ProfileStaticCostRates rates =
       wafer::runtime::getTargetProfileStaticCostRates();
-  EXPECT_EQ(rates.cardDDRBytesPerSecond, UINT64_C(200000000000));
+  EXPECT_EQ(rates.ddrBytesPerSecond, UINT64_C(200000000000));
   EXPECT_EQ(rates.directionalNoCBytesPerSecond, UINT64_C(128000000000));
   EXPECT_EQ(rates.f16Bf16NPULogicalOpsPerSecondPerTile,
             UINT64_C(8000000000000));
@@ -130,7 +130,7 @@ protected:
     ProfileStaticCostModel model;
     model.model = kProfileStaticCostModelName.str();
     model.scope = kProfileStaticCostModelScope.str();
-    model.rates.cardDDRBytesPerSecond = UINT64_C(200000000000);
+    model.rates.ddrBytesPerSecond = UINT64_C(200000000000);
     model.rates.directionalNoCBytesPerSecond = UINT64_C(128000000000);
     model.rates.f16Bf16NPULogicalOpsPerSecondPerTile = UINT64_C(8000000000000);
     model.rates.f16Bf16VectorLogicalOpsPerSecondPerTile = UINT64_C(64000000000);

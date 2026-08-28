@@ -118,7 +118,7 @@ TEST(TargetModelMemoryTest, RequiresExactInputsAndOwnsPrivateSlotBytes) {
             std::vector<uint8_t>(16, 0));
 
   error = expectError(registry.applyAtomically({TargetModelByteWrite{
-      0, TargetModelAddressSpace::CardDDR, UINT64_C(0x100000), 1, {7}}}));
+      0, TargetModelAddressSpace::DDR, UINT64_C(0x100000), 1, {7}}}));
   EXPECT_NE(error.find("access-denied"), std::string::npos);
 }
 
@@ -147,13 +147,13 @@ TEST(TargetModelMemoryTest, TileSPMIsPrivateAndReservedRangesFailClosed) {
 }
 
 TEST(TargetModelMemoryTest,
-     CardResourcesAliasAcrossTilesWhileWorkspaceRemainsTileOwned) {
+     SharedResourcesAliasAcrossTilesWhileWorkspaceRemainsTileOwned) {
   InvocationMemoryRegistry registry = makeRegistry();
   const uint64_t output = UINT64_C(0x101000);
   ASSERT_FALSE(registry.applyAtomically({TargetModelByteWrite{
-      0, TargetModelAddressSpace::CardDDR, output, 1, {1, 2, 3, 4}}}));
+      0, TargetModelAddressSpace::DDR, output, 1, {1, 2, 3, 4}}}));
   EXPECT_EQ(llvm::cantFail(registry.readSnapshot(
-                1, TargetModelAddressSpace::CardDDR, output, 4, 1)),
+                1, TargetModelAddressSpace::DDR, output, 4, 1)),
             (std::vector<uint8_t>{1, 2, 3, 4}));
   EXPECT_EQ(llvm::cantFail(registry.readSlotSnapshot(0, 1)),
             llvm::cantFail(registry.readSlotSnapshot(1, 1)));
@@ -161,17 +161,17 @@ TEST(TargetModelMemoryTest,
   const uint64_t tile0Workspace = UINT64_C(0x102000);
   const uint64_t tile1Workspace = UINT64_C(0x112000);
   ASSERT_FALSE(registry.applyAtomically({TargetModelByteWrite{
-      0, TargetModelAddressSpace::CardDDR, tile0Workspace, 1, {9}}}));
+      0, TargetModelAddressSpace::DDR, tile0Workspace, 1, {9}}}));
   EXPECT_EQ(llvm::cantFail(registry.readSnapshot(
-                1, TargetModelAddressSpace::CardDDR, tile1Workspace, 1, 1)),
+                1, TargetModelAddressSpace::DDR, tile1Workspace, 1, 1)),
             (std::vector<uint8_t>{0}));
   std::string error = expectError(registry.readSnapshot(
-      1, TargetModelAddressSpace::CardDDR, tile0Workspace, 1, 1));
+      1, TargetModelAddressSpace::DDR, tile0Workspace, 1, 1));
   EXPECT_NE(error.find("unknown-resource"), std::string::npos);
 }
 
 TEST(TargetModelMemoryTest,
-     CardWorkspaceSharesStorageAndPreservesPerTileAccess) {
+     SharedWorkspaceSharesStorageAndPreservesPerTileAccess) {
   TargetCallInvocationDescriptor invocation = makeInvocation(3);
   const uint64_t shared = UINT64_C(0x130000);
   for (auto [tile, descriptor] : llvm::enumerate(invocation.tiles)) {
@@ -181,7 +181,7 @@ TEST(TargetModelMemoryTest,
                     : TileEntryArgumentAccess::None;
     descriptor.tileEntryArguments.push_back(
         {3,
-         TileEntryArgumentKind::CardWorkspace,
+         TileEntryArgumentKind::SharedWorkspace,
          0,
          "ignored-card-workspace-name",
          LogicalFormat::F32,
@@ -196,36 +196,34 @@ TEST(TargetModelMemoryTest,
       llvm::cantFail(InvocationMemoryRegistry::create(llvm::cantFail(
           InvocationAddressPlan::create(invocation, makeBindings(3)))));
   ASSERT_FALSE(registry.applyAtomically({TargetModelByteWrite{
-      0, TargetModelAddressSpace::CardDDR, shared, 1, {4, 3, 2, 1}}}));
+      0, TargetModelAddressSpace::DDR, shared, 1, {4, 3, 2, 1}}}));
   EXPECT_EQ(llvm::cantFail(registry.readSnapshot(
-                1, TargetModelAddressSpace::CardDDR, shared, 4, 1)),
+                1, TargetModelAddressSpace::DDR, shared, 4, 1)),
             (std::vector<uint8_t>{4, 3, 2, 1}));
   std::string writerRead = expectError(
-      registry.readSnapshot(0, TargetModelAddressSpace::CardDDR, shared, 1, 1));
+      registry.readSnapshot(0, TargetModelAddressSpace::DDR, shared, 1, 1));
   EXPECT_NE(writerRead.find("access-denied"), std::string::npos);
-  std::string readerWrite =
-      expectError(registry.applyAtomically({TargetModelByteWrite{
-          1, TargetModelAddressSpace::CardDDR, shared, 1, {0}}}));
+  std::string readerWrite = expectError(registry.applyAtomically(
+      {TargetModelByteWrite{1, TargetModelAddressSpace::DDR, shared, 1, {0}}}));
   EXPECT_NE(readerWrite.find("access-denied"), std::string::npos);
   std::string error = expectError(
-      registry.readSnapshot(2, TargetModelAddressSpace::CardDDR, shared, 1, 1));
+      registry.readSnapshot(2, TargetModelAddressSpace::DDR, shared, 1, 1));
   EXPECT_NE(error.find("access-denied"), std::string::npos);
 }
 
 TEST(TargetModelMemoryTest, ResolvesExactEndAndRejectsCrossResource) {
   InvocationMemoryRegistry registry = makeRegistry(1);
-  EXPECT_EQ(
-      llvm::cantFail(registry.readSnapshot(0, TargetModelAddressSpace::CardDDR,
-                                           UINT64_C(0x100000) + 8, 8, 1)),
-      std::vector<uint8_t>(8, 1));
+  EXPECT_EQ(llvm::cantFail(registry.readSnapshot(
+                0, TargetModelAddressSpace::DDR, UINT64_C(0x100000) + 8, 8, 1)),
+            std::vector<uint8_t>(8, 1));
   std::string error = expectError(registry.readSnapshot(
-      0, TargetModelAddressSpace::CardDDR, UINT64_C(0x100000) + 8, 9, 1));
+      0, TargetModelAddressSpace::DDR, UINT64_C(0x100000) + 8, 9, 1));
   EXPECT_NE(error.find("cross-resource"), std::string::npos);
-  error = expectError(registry.readSnapshot(0, TargetModelAddressSpace::CardDDR,
+  error = expectError(registry.readSnapshot(0, TargetModelAddressSpace::DDR,
                                             UINT64_C(0x100000), 1, 3));
   EXPECT_NE(error.find("address-misaligned"), std::string::npos);
   error = expectError(
-      registry.readSnapshot(0, TargetModelAddressSpace::CardDDR,
+      registry.readSnapshot(0, TargetModelAddressSpace::DDR,
                             std::numeric_limits<uint64_t>::max(), 2, 1));
   EXPECT_NE(error.find("address-overflow"), std::string::npos);
 }
@@ -236,7 +234,7 @@ TEST(TargetModelMemoryTest, PendingEffectValidationIsAtomic) {
   const uint64_t spmLimit = registry.getAddressPlan().getSPMLimit();
   std::string error = expectError(registry.applyAtomically(
       {TargetModelByteWrite{
-           0, TargetModelAddressSpace::CardDDR, output, 1, {9, 9, 9, 9}},
+           0, TargetModelAddressSpace::DDR, output, 1, {9, 9, 9, 9}},
        TargetModelByteWrite{
            0, TargetModelAddressSpace::TileSPM, spmLimit, 1, {8}}}));
   EXPECT_NE(error.find("reserved-spm"), std::string::npos);
@@ -244,10 +242,9 @@ TEST(TargetModelMemoryTest, PendingEffectValidationIsAtomic) {
             std::vector<uint8_t>(16, 0));
 
   error = expectError(registry.applyAtomically(
-      {TargetModelByteWrite{
-           0, TargetModelAddressSpace::CardDDR, output, 1, {1, 2}},
+      {TargetModelByteWrite{0, TargetModelAddressSpace::DDR, output, 1, {1, 2}},
        TargetModelByteWrite{
-           0, TargetModelAddressSpace::CardDDR, output + 1, 1, {3, 4}}}));
+           0, TargetModelAddressSpace::DDR, output + 1, 1, {3, 4}}}));
   EXPECT_NE(error.find("invalid-effect"), std::string::npos);
   EXPECT_EQ(llvm::cantFail(registry.readSlotSnapshot(0, 1)),
             std::vector<uint8_t>(16, 0));
@@ -262,19 +259,19 @@ TEST(TargetModelMemoryTest,
       2, {UINT32_C(0x1000), 0, 0}, {2, 1, 1}};
   ASSERT_FALSE(registry.applyAtomically(
       {TargetModelByteWrite{0,
-                            TargetModelAddressSpace::CardDDR,
+                            TargetModelAddressSpace::DDR,
                             output,
                             1,
                             {1, 2, 3, 4},
                             crossResource}}));
   EXPECT_EQ(llvm::cantFail(registry.readSnapshot(
-                0, TargetModelAddressSpace::CardDDR, output, 2, 1)),
+                0, TargetModelAddressSpace::DDR, output, 2, 1)),
             (std::vector<uint8_t>{1, 2}));
   EXPECT_EQ(llvm::cantFail(registry.readSnapshot(
-                0, TargetModelAddressSpace::CardDDR, workspace, 2, 1)),
+                0, TargetModelAddressSpace::DDR, workspace, 2, 1)),
             (std::vector<uint8_t>{3, 4}));
   EXPECT_EQ(llvm::cantFail(registry.readStridedSnapshot(
-                0, TargetModelAddressSpace::CardDDR, output, crossResource, 1)),
+                0, TargetModelAddressSpace::DDR, output, crossResource, 1)),
             (std::vector<uint8_t>{1, 2, 3, 4}));
 
   const uint64_t spm = registry.getAddressPlan().getSPMBase();
@@ -335,8 +332,8 @@ TEST(TargetModelMemoryTest,
   const uint64_t output = UINT64_C(0x101000);
   TargetModelStridedByteLayout overflowing{2, {4, 0, 0}, {2, 1, 1}};
   std::string error = expectError(registry.readStridedSnapshot(
-      0, TargetModelAddressSpace::CardDDR,
-      std::numeric_limits<uint64_t>::max() - 1, overflowing, 1));
+      0, TargetModelAddressSpace::DDR, std::numeric_limits<uint64_t>::max() - 1,
+      overflowing, 1));
   EXPECT_NE(error.find("address-overflow"), std::string::npos);
   TargetModelStridedByteLayout beyondHostVector{
       1,
@@ -344,11 +341,11 @@ TEST(TargetModelMemoryTest,
       {std::numeric_limits<uint32_t>::max(),
        std::numeric_limits<uint32_t>::max(), 1}};
   error = expectError(registry.readStridedSnapshot(
-      0, TargetModelAddressSpace::CardDDR, output, beyondHostVector, 1));
+      0, TargetModelAddressSpace::DDR, output, beyondHostVector, 1));
   EXPECT_NE(error.find("host vector capacity"), std::string::npos);
   error = expectError(registry.applyAtomically(
       {TargetModelByteWrite{0,
-                            TargetModelAddressSpace::CardDDR,
+                            TargetModelAddressSpace::DDR,
                             std::numeric_limits<uint64_t>::max() - 1,
                             1,
                             {1, 2, 3, 4},
@@ -364,9 +361,9 @@ TEST(TargetModelMemoryTest,
       2, {UINT32_C(0xf000), 0, 0}, {2, 1, 1}};
   error = expectError(registry.applyAtomically(
       {TargetModelByteWrite{
-           0, TargetModelAddressSpace::CardDDR, output + 4, 1, {9, 9}},
+           0, TargetModelAddressSpace::DDR, output + 4, 1, {9, 9}},
        TargetModelByteWrite{0,
-                            TargetModelAddressSpace::CardDDR,
+                            TargetModelAddressSpace::DDR,
                             output,
                             1,
                             {1, 2, 3, 4},

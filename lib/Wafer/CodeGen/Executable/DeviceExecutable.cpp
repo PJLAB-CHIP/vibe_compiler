@@ -1,6 +1,6 @@
-//===- CardExecutable.cpp - Card executable ownership ------------------===//
+//===- DeviceExecutable.cpp - Device executable ownership ----------------===//
 
-#include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
+#include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
 
 #include "Wafer/Support/CompileTiming.h"
 
@@ -18,26 +18,27 @@
 
 namespace wafer::compiler {
 
-CardExecutable::CardExecutable(CardExecutable &&) = default;
-CardExecutable &CardExecutable::operator=(CardExecutable &&) = default;
-CardExecutable::~CardExecutable() = default;
+DeviceExecutable::DeviceExecutable(DeviceExecutable &&) = default;
+DeviceExecutable &DeviceExecutable::operator=(DeviceExecutable &&) = default;
+DeviceExecutable::~DeviceExecutable() = default;
 
-CardExecutable::CardExecutable(ExecutionConfig executionConfig,
-                               RuntimeLaunchContract runtimeLaunchContract,
-                               std::shared_ptr<mlir::MLIRContext> context,
-                               std::vector<TileExecutable> tiles,
-                               std::unique_ptr<ProgramDataHandoff> programData)
+DeviceExecutable::DeviceExecutable(
+    ExecutionConfig executionConfig,
+    RuntimeLaunchContract runtimeLaunchContract,
+    std::shared_ptr<mlir::MLIRContext> context,
+    std::vector<TileExecutable> tiles,
+    std::unique_ptr<ProgramDataHandoff> programData)
     : executionConfig(executionConfig),
       runtimeLaunchContract(std::move(runtimeLaunchContract)),
       context(std::move(context)), tiles(std::move(tiles)),
       programData(std::move(programData)) {}
 
-const ProgramDataHandoff &CardExecutable::getProgramDataHandoff() const {
+const ProgramDataHandoff &DeviceExecutable::getProgramDataHandoff() const {
   return *programData;
 }
 
-static llvm::Expected<CardExecutable>
-compileTensorProgramModuleToCardExecutable(
+static llvm::Expected<DeviceExecutable>
+compileTensorProgramModuleToDeviceExecutable(
     std::shared_ptr<mlir::MLIRContext> &, mlir::ModuleOp,
     const frontend::FrontendProgramVerificationResult &,
     const ExecutionConfig &, OptimizationConfig optimizations,
@@ -46,58 +47,58 @@ compileTensorProgramModuleToCardExecutable(
   if (!optimizations.isNone() && !optimizations.isSearch())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "card executable compilation requires an optimization policy");
+        "device executable compilation requires an optimization policy");
 
   const llvm::StringRef policy = optimizations.isNone() ? "none" : "search";
   diagnostics << "wafer-compile: operation_not_supported: optimization-policy="
               << policy
-              << " is unavailable while the current-IR Card pipeline is "
+              << " is unavailable while the current-IR executable pipeline is "
                  "being rebuilt\n";
   return llvm::createStringError(
       std::errc::operation_not_supported,
       "operation_not_supported: optimization-policy=%s is unavailable while "
-      "the current-IR Card pipeline is being rebuilt",
+      "the current-IR executable pipeline is being rebuilt",
       policy.str().c_str());
 }
 
-static llvm::Expected<CardExecutable> buildCardExecutableImpl(
+static llvm::Expected<DeviceExecutable> buildDeviceExecutableImpl(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
     ProgramDataHandoff &programData, CompilationIRTrace &irTrace,
     bool requestTileIRTrace) {
-  wafer::support::ScopedCompileTimingSpan cardExecutableTiming(
-      "stage", "tensor-program-to-executable", "card-executable");
-  return compileTensorProgramModuleToCardExecutable(
+  wafer::support::ScopedCompileTimingSpan deviceExecutableTiming(
+      "stage", "tensor-program-to-executable", "device-executable");
+  return compileTensorProgramModuleToDeviceExecutable(
       context, tensorModule, program, executionConfig, optimizations,
       diagnostics, failAfterLaunchSlot, programData, irTrace,
       requestTileIRTrace);
 }
 
-llvm::Expected<CardExecutable> detail::buildCardExecutable(
+llvm::Expected<DeviceExecutable> detail::buildDeviceExecutable(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
     ProgramDataHandoff &programData) {
   CompilationIRTrace discardedTrace;
-  return buildCardExecutableImpl(context, tensorModule, std::move(program),
-                                 executionConfig, optimizations, diagnostics,
-                                 failAfterLaunchSlot, programData,
-                                 discardedTrace, /*requestTileIRTrace=*/false);
+  return buildDeviceExecutableImpl(
+      context, tensorModule, std::move(program), executionConfig, optimizations,
+      diagnostics, failAfterLaunchSlot, programData, discardedTrace,
+      /*requestTileIRTrace=*/false);
 }
 
-llvm::Expected<CardExecutable> detail::buildCardExecutableWithIRTrace(
+llvm::Expected<DeviceExecutable> detail::buildDeviceExecutableWithIRTrace(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
     ProgramDataHandoff &programData, CompilationIRTrace &irTrace) {
-  return buildCardExecutableImpl(context, tensorModule, std::move(program),
-                                 executionConfig, optimizations, diagnostics,
-                                 failAfterLaunchSlot, programData, irTrace,
-                                 /*requestTileIRTrace=*/true);
+  return buildDeviceExecutableImpl(context, tensorModule, std::move(program),
+                                   executionConfig, optimizations, diagnostics,
+                                   failAfterLaunchSlot, programData, irTrace,
+                                   /*requestTileIRTrace=*/true);
 }
 
 } // namespace wafer::compiler

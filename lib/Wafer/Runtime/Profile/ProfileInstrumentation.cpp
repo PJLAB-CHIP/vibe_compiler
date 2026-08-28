@@ -216,10 +216,9 @@ bool isLowercaseSHA256(llvm::StringRef digest);
 llvm::Expected<RawActivation>
 parseActivation(const llvm::json::Object &root,
                 const PackageParseLimits &limits) {
-  if (llvm::Error error =
-          requireFields(root, {"schema", "primary_manifest_sha256",
-                               "metadata_sha256"},
-                        {}, "profile activation"))
+  if (llvm::Error error = requireFields(
+          root, {"schema", "primary_manifest_sha256", "metadata_sha256"}, {},
+          "profile activation"))
     return std::move(error);
   if (llvm::Error error =
           verifyHeader(root, kActivationSchema, /*hasTopology=*/false, limits,
@@ -295,9 +294,8 @@ llvm::Expected<RawPlan> parsePlan(const llvm::json::Object &root,
            "site_key_contract", "static_cost_model", "capture_packages"},
           {}, "profile plan"))
     return std::move(error);
-  if (llvm::Error error =
-          verifyHeader(root, kPlanSchema, /*hasTopology=*/true, limits,
-                       "profile plan"))
+  if (llvm::Error error = verifyHeader(root, kPlanSchema, /*hasTopology=*/true,
+                                       limits, "profile plan"))
     return std::move(error);
 
   llvm::Expected<std::string> siteMap =
@@ -591,7 +589,7 @@ parseStaticCostRates(const llvm::json::Value &value, llvm::StringRef context) {
     return object.takeError();
   if (llvm::Error error = requireFields(
           **object,
-          {"card_ddr_bytes_per_second", "directional_noc_bytes_per_second",
+          {"ddr_bytes_per_second", "directional_noc_bytes_per_second",
            "f16_bf16_npu_logical_ops_per_second_per_tile",
            "f16_bf16_vector_logical_ops_per_second_per_tile",
            "f32_vector_logical_ops_per_second_per_tile",
@@ -608,7 +606,7 @@ parseStaticCostRates(const llvm::json::Value &value, llvm::StringRef context) {
       return rate.takeError();                                                 \
     result.MEMBER = *rate;                                                     \
   } while (false)
-  PARSE_STATIC_RATE("card_ddr_bytes_per_second", cardDDRBytesPerSecond);
+  PARSE_STATIC_RATE("ddr_bytes_per_second", ddrBytesPerSecond);
   PARSE_STATIC_RATE("directional_noc_bytes_per_second",
                     directionalNoCBytesPerSecond);
   PARSE_STATIC_RATE("f16_bf16_npu_logical_ops_per_second_per_tile",
@@ -1215,8 +1213,7 @@ llvm::Error verifyCapturePackageContract(const PackageManifest &execution,
       execution.programData.totalBytes != capture.programData.totalBytes ||
       execution.programData.baseAlignment !=
           capture.programData.baseAlignment ||
-      execution.programData.relativePath !=
-          capture.programData.relativePath)
+      execution.programData.relativePath != capture.programData.relativePath)
     return invalid("profile capture program data contract differs from its "
                    "execution package");
 
@@ -1247,8 +1244,7 @@ llvm::Error verifyCapturePackageContract(const PackageManifest &execution,
     }
     const ProfileRecordArgument *profile =
         findProfileRecordArgument(*captureEntry);
-    if (!profile ||
-        profile->recordABI != kProfileRecordABI ||
+    if (!profile || profile->recordABI != kProfileRecordABI ||
         profile->bytes != recordBytes ||
         profile->alignment != WAFER_TX81_PROFILER_BUFFER_ALIGNMENT ||
         captureEntry->arguments.back().access != PackageAccessMode::ReadWrite ||
@@ -1296,8 +1292,7 @@ llvm::Expected<ProfileCapturePackage> loadCapturePackage(
       loadExecutablePackage(*packageDirectory, limits);
   if (!package)
     return package.takeError();
-  if (digestOwnedBuffer(package->getManifestBuffer()) !=
-      capture.manifestDigest)
+  if (digestOwnedBuffer(package->getManifestBuffer()) != capture.manifestDigest)
     return invalid("profile capture manifest digest mismatch");
   if (llvm::Error error = verifyCapturePackageContract(
           profiledPackage.getPackage().getManifest(), package->getManifest(),
@@ -1310,10 +1305,12 @@ llvm::Expected<ProfileCapturePackage> loadCapturePackage(
 
 } // namespace
 
-ProfileCapturePackage::ProfileCapturePackage(
-    ProfileCaptureKind capture, std::string packageReference,
-    std::string manifestDigest, std::string recordABI, uint64_t recordBytes,
-    ExecutablePackage package)
+ProfileCapturePackage::ProfileCapturePackage(ProfileCaptureKind capture,
+                                             std::string packageReference,
+                                             std::string manifestDigest,
+                                             std::string recordABI,
+                                             uint64_t recordBytes,
+                                             ExecutablePackage package)
     : capture(capture), packageReference(std::move(packageReference)),
       manifestDigest(std::move(manifestDigest)),
       recordABI(std::move(recordABI)), recordBytes(recordBytes),
@@ -1338,7 +1335,8 @@ ProfiledPackage::ProfiledPackage(std::string manifestDigest,
                                  ProfileStaticCostModel staticCostModel,
                                  ExecutablePackage package)
     : manifestDigest(std::move(manifestDigest)),
-      staticCostModel(std::move(staticCostModel)), package(std::move(package)) {}
+      staticCostModel(std::move(staticCostModel)), package(std::move(package)) {
+}
 
 llvm::Expected<VerifiedProfileInstrumentation>
 loadVerifiedProfileInstrumentation(llvm::StringRef instrumentationRoot,

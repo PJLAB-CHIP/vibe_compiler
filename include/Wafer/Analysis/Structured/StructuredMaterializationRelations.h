@@ -41,12 +41,12 @@ struct SpatialOutputBufferRelation {
   mlir::Value buffer;
 };
 
-struct CardDDRBufferRelation {
+struct DDRBufferRelation {
   int64_t resourceId = -1;
   mlir::Value buffer;
 };
 
-struct CardDDRTransferRelation {
+struct DDRTransferRelation {
   uint32_t producerNodeId = 0;
   unsigned producerResult = 0;
   TileId producerTile{0};
@@ -79,8 +79,8 @@ struct StructuredMaterializationRelations {
   llvm::SmallVector<StructuredOperationBufferRelation, 16> operandBuffers;
   llvm::SmallVector<StructuredOperationBufferRelation, 16> scratchBuffers;
   llvm::SmallVector<SpatialOutputBufferRelation, 4> outputBuffers;
-  llvm::SmallVector<CardDDRBufferRelation, 8> cardDDRBuffers;
-  llvm::SmallVector<CardDDRTransferRelation, 8> cardDDRTransfers;
+  llvm::SmallVector<DDRBufferRelation, 8> ddrBuffers;
+  llvm::SmallVector<DDRTransferRelation, 8> ddrTransfers;
   llvm::SmallVector<PartialReductionContributionBufferRelation, 8>
       partialReductionContributions;
   llvm::SmallVector<PartialReductionMergeInputBufferRelation, 8>

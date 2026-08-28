@@ -4,7 +4,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningProfile.h"
 
-#include "TestSupport/CodeGen/CardExecutableTestSupport.h"
+#include "TestSupport/CodeGen/ExecutableTestSupport.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -22,7 +22,7 @@ using namespace wafer::compiler::detail;
 using namespace wafer::compiler::testing;
 
 struct SearchFixture {
-  std::unique_ptr<CardProgramAnalysis> analysis;
+  std::unique_ptr<StructuredProgramAnalysis> analysis;
   std::optional<PhysicalDataflowPlanningProblem> problem;
   std::unique_ptr<PhysicalDataflowPlanningSession> session;
 };
@@ -31,8 +31,8 @@ SearchFixture prepare(mlir::ModuleOp module, llvm::raw_ostream &diagnostics,
                       std::string &failureReason,
                       PlanningProfileSink *profile = nullptr) {
   SearchFixture result;
-  auto analysis = analyzeCardProgram(module, programMetadata(),
-                                     executionConfig(), diagnostics);
+  auto analysis = analyzeStructuredProgram(module, programMetadata(),
+                                           executionConfig(), diagnostics);
   if (mlir::failed(analysis))
     return result;
   result.analysis = std::move(*analysis);
@@ -57,10 +57,10 @@ class AcceptingEvaluator final : public StructuralCandidateEvaluator {
 public:
   StructuralCandidateEvaluation evaluate(const TemporalState &state) override {
     observed.push_back(StructuralCandidateKey::create(state));
-    CardInstructionProgramCost cost;
+    InstructionProgramAggregateCost cost;
     cost.aggregateInstructionCount.value = 1;
-    CardExecutableCompilationResult compilation;
-    compilation.status = CardExecutableCompilationStatus::Accepted;
+    ExecutableCompilationResult compilation;
+    compilation.status = ExecutableCompilationStatus::Accepted;
     compilation.executable.emplace(std::vector<compiler::TileExecutable>{},
                                    makeLaunch(), std::move(cost));
     ActualCandidateResult result;

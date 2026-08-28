@@ -1,10 +1,10 @@
 //===- Compilation.cpp - Typed Wafer compiler facade --------------------===//
 
 #include "Wafer/Driver/Compilation.h"
-#include "Wafer/Driver/CompilationResult.h"
 #include "Wafer/CodeGen/TargetCodeGen.h"
-#include "Wafer/TestSupport/CompilerTesting.h"
+#include "Wafer/Driver/CompilationResult.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/TestSupport/CompilerTesting.h"
 
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Package/Writer/PackageInternal.h"
@@ -76,8 +76,7 @@ llvm::Expected<CompilationOptions>
 CompilationOptions::profile(const ExecutionConfig &executionConfig,
                             OptimizationConfig optimizations,
                             CompilationTimingMode timing) {
-  if (executionConfig.getTileCount() !=
-      ExecutionConfig::kSingleCardTileCount)
+  if (executionConfig.getTileCount() != ExecutionConfig::kSingleCardTileCount)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "profile compilation requires a complete-card Tile kernel "
@@ -86,15 +85,15 @@ CompilationOptions::profile(const ExecutionConfig &executionConfig,
                             timing);
 }
 
-static llvm::Expected<CompilationResult> compileProgramImpl(
-    CompilationRequest request, llvm::StringRef outputDirectory,
-    llvm::StringRef xlaSpmdPartitionerHelper,
-    const TargetToolchain &targetToolchain, CompilationOptions options,
-    llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLaunchSlot,
-    std::optional<int64_t> failAfterTargetLaunchSlot,
-    std::optional<int64_t> failAfterPackageLaunchSlot,
-    detail::CommitFailureInjection commitFailureInjection) {
+static llvm::Expected<CompilationResult>
+compileProgramImpl(CompilationRequest request, llvm::StringRef outputDirectory,
+                   llvm::StringRef xlaSpmdPartitionerHelper,
+                   const TargetToolchain &targetToolchain,
+                   CompilationOptions options, llvm::raw_ostream &diagnostics,
+                   std::optional<int64_t> failAfterLaunchSlot,
+                   std::optional<int64_t> failAfterTargetLaunchSlot,
+                   std::optional<int64_t> failAfterPackageLaunchSlot,
+                   detail::CommitFailureInjection commitFailureInjection) {
   const ExecutionConfig executionConfig = request.getExecutionConfig();
   const bool profileRequested = options.shouldProduceProfileInstrumentation();
   std::optional<ExecutablePackage> retainedPackage;
@@ -112,22 +111,20 @@ static llvm::Expected<CompilationResult> compileProgramImpl(
   if (profileRequested && !retainedProfileProduct)
     llvm_unreachable(
         "successful transaction did not retain profile instrumentation");
-  return CompilationResultBuilder::make(
-      executionConfig, std::move(*retainedPackage),
-      std::move(retainedProfileProduct));
+  return CompilationResultBuilder::make(executionConfig,
+                                        std::move(*retainedPackage),
+                                        std::move(retainedProfileProduct));
 }
 
 llvm::Expected<CompilationResult>
-compileProgram(CompilationRequest request,
-               llvm::StringRef outputDirectory,
+compileProgram(CompilationRequest request, llvm::StringRef outputDirectory,
                llvm::StringRef xlaSpmdPartitionerHelper,
                const TargetToolchain &targetToolchain,
                CompilationOptions options, llvm::raw_ostream &diagnostics) {
   return compileProgramImpl(
       std::move(request), outputDirectory, xlaSpmdPartitionerHelper,
       targetToolchain, std::move(options), diagnostics, std::nullopt,
-      std::nullopt, std::nullopt,
-      detail::CommitFailureInjection::None);
+      std::nullopt, std::nullopt, detail::CommitFailureInjection::None);
 }
 
 llvm::Expected<CompiledProgram> compileProgramWithTargetLLVMModules(
@@ -140,21 +137,20 @@ llvm::Expected<CompiledProgram> compileProgramWithTargetLLVMModules(
         llvm::errc::invalid_argument,
         "the internal qualification entry does not support profile "
         "instrumentation; use compileProgram for the production entry");
-  std::optional<CardExecutable> retainedCardExecutable;
+  std::optional<DeviceExecutable> retainedDeviceExecutable;
   std::optional<TargetLLVMModules> retainedTargetLLVMModules;
   std::optional<CompilationIRTrace> retainedIRTrace;
   CompilationStage failureStage = CompilationStage::SourceVerification;
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics, options, std::nullopt, std::nullopt,
-          std::nullopt, &retainedCardExecutable,
-          &retainedTargetLLVMModules, &retainedIRTrace, nullptr, nullptr,
-          &failureStage)))
+          std::nullopt, &retainedDeviceExecutable, &retainedTargetLLVMModules,
+          &retainedIRTrace, nullptr, nullptr, &failureStage)))
     return llvm::make_error<CompilationFailure>(failureStage);
-  if (!retainedCardExecutable || !retainedTargetLLVMModules ||
+  if (!retainedDeviceExecutable || !retainedTargetLLVMModules ||
       !retainedIRTrace)
     llvm_unreachable("successful transaction did not retain compiled program");
-  return CompiledProgram(std::move(*retainedCardExecutable),
+  return CompiledProgram(std::move(*retainedDeviceExecutable),
                          std::move(*retainedTargetLLVMModules),
                          std::move(*retainedIRTrace));
 }
@@ -166,19 +162,18 @@ testing::compileProgramWithExecutableLaunchSlotFailure(
     const TargetToolchain &targetToolchain, int64_t failAfterLaunchSlot,
     llvm::raw_ostream &diagnostics) {
   if (failAfterLaunchSlot < 0 ||
-      failAfterLaunchSlot >=
-          request.getExecutionConfig().getTileCount()) {
+      failAfterLaunchSlot >= request.getExecutionConfig().getTileCount()) {
     detail::reject(diagnostics, "test-only executable launch slot is outside "
                                 "ExecutionConfig");
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "test-only executable launch slot is outside ExecutionConfig");
   }
-  return compileProgramImpl(
-      std::move(request), outputDirectory, xlaSpmdPartitionerHelper,
-      targetToolchain, CompilationOptions::standard(), diagnostics,
-      failAfterLaunchSlot, std::nullopt, std::nullopt,
-      detail::CommitFailureInjection::None);
+  return compileProgramImpl(std::move(request), outputDirectory,
+                            xlaSpmdPartitionerHelper, targetToolchain,
+                            CompilationOptions::standard(), diagnostics,
+                            failAfterLaunchSlot, std::nullopt, std::nullopt,
+                            detail::CommitFailureInjection::None);
 }
 
 llvm::Expected<CompilationResult>
@@ -188,19 +183,18 @@ testing::compileProgramWithTargetLaunchSlotFailure(
     const TargetToolchain &targetToolchain, int64_t failAfterLaunchSlot,
     llvm::raw_ostream &diagnostics) {
   if (failAfterLaunchSlot < 0 ||
-      failAfterLaunchSlot >=
-          request.getExecutionConfig().getTileCount()) {
+      failAfterLaunchSlot >= request.getExecutionConfig().getTileCount()) {
     detail::reject(diagnostics,
                    "test-only target launch slot is outside ExecutionConfig");
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "test-only target launch slot is outside ExecutionConfig");
   }
-  return compileProgramImpl(
-      std::move(request), outputDirectory, xlaSpmdPartitionerHelper,
-      targetToolchain, CompilationOptions::standard(), diagnostics,
-      std::nullopt, failAfterLaunchSlot, std::nullopt,
-      detail::CommitFailureInjection::None);
+  return compileProgramImpl(std::move(request), outputDirectory,
+                            xlaSpmdPartitionerHelper, targetToolchain,
+                            CompilationOptions::standard(), diagnostics,
+                            std::nullopt, failAfterLaunchSlot, std::nullopt,
+                            detail::CommitFailureInjection::None);
 }
 
 llvm::Expected<CompilationResult>
@@ -210,19 +204,18 @@ testing::compileProgramWithPackageLaunchSlotFailure(
     const TargetToolchain &targetToolchain, int64_t failAfterLaunchSlot,
     llvm::raw_ostream &diagnostics) {
   if (failAfterLaunchSlot < 0 ||
-      failAfterLaunchSlot >=
-          request.getExecutionConfig().getTileCount()) {
+      failAfterLaunchSlot >= request.getExecutionConfig().getTileCount()) {
     detail::reject(diagnostics,
                    "test-only package launch slot is outside ExecutionConfig");
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "test-only package launch slot is outside ExecutionConfig");
   }
-  return compileProgramImpl(
-      std::move(request), outputDirectory, xlaSpmdPartitionerHelper,
-      targetToolchain, CompilationOptions::standard(), diagnostics,
-      std::nullopt, std::nullopt, failAfterLaunchSlot,
-      detail::CommitFailureInjection::None);
+  return compileProgramImpl(std::move(request), outputDirectory,
+                            xlaSpmdPartitionerHelper, targetToolchain,
+                            CompilationOptions::standard(), diagnostics,
+                            std::nullopt, std::nullopt, failAfterLaunchSlot,
+                            detail::CommitFailureInjection::None);
 }
 
 llvm::Expected<CompilationResult>
@@ -261,11 +254,11 @@ testing::compileProgramWithProfileBindingFailure(
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "test-only profile binding failure requires profile instrumentation");
-  return compileProgramImpl(
-      std::move(request), outputDirectory, xlaSpmdPartitionerHelper,
-      targetToolchain, std::move(options), diagnostics, std::nullopt,
-      std::nullopt, std::nullopt,
-      detail::CommitFailureInjection::CorruptProfilePlan);
+  return compileProgramImpl(std::move(request), outputDirectory,
+                            xlaSpmdPartitionerHelper, targetToolchain,
+                            std::move(options), diagnostics, std::nullopt,
+                            std::nullopt, std::nullopt,
+                            detail::CommitFailureInjection::CorruptProfilePlan);
 }
 
 } // namespace wafer::compiler

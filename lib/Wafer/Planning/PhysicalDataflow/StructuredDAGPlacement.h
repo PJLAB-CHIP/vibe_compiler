@@ -13,7 +13,7 @@
 namespace wafer::compiler::detail {
 
 /// Query-local physical placement of one structured DAG node. Selected
-/// execution is represented by resulting Card/Tile IR, never by serializing
+/// execution is represented by resulting Tile IR, never by serializing
 /// this object.
 struct StructuredDAGNodePlacement {
   StructuredDAGNodeID node = 0;

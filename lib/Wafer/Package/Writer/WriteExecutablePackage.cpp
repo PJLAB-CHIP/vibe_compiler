@@ -1,7 +1,7 @@
 //===- WriteExecutablePackage.cpp - Write target modules and package ----===//
 
 #include "Wafer/Analysis/Executable/ExecutableCallClosure.h"
-#include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
+#include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
 #include "Wafer/CodeGen/Target/TargetCodeGenInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Driver/CompilationStatistics.h"
@@ -99,9 +99,9 @@ getPackageManifestDigest(llvm::StringRef packageDirectory) {
 
 static mlir::LogicalResult stageExecutablePackage(
     llvm::StringRef tensorProgramDirectory,
-    const CardExecutable &cardExecutable, llvm::StringRef stagedTargetModules,
-    llvm::StringRef stagedPackage, const TargetToolchain &targetToolchain,
-    llvm::raw_ostream &diagnostics,
+    const DeviceExecutable &deviceExecutable,
+    llvm::StringRef stagedTargetModules, llvm::StringRef stagedPackage,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<TargetLLVMModules> &retainedTargetLLVMModules,
@@ -117,8 +117,8 @@ static mlir::LogicalResult stageExecutablePackage(
           "stage", "executable-to-package", "target-ir-lowering");
   TargetLLVMCompilationStatistics targetCompilationStatistics;
   llvm::Expected<TargetLLVMModules> translatedModules =
-      compileCardExecutableToTargetLLVMModulesImpl(
-          cardExecutable, diagnostics, failAfterTargetLaunchSlot,
+      compileDeviceExecutableToTargetLLVMModulesImpl(
+          deviceExecutable, diagnostics, failAfterTargetLaunchSlot,
           profileCapture, &targetCompilationStatistics);
   if (!translatedModules) {
     llvm::consumeError(translatedModules.takeError());
@@ -146,7 +146,7 @@ static mlir::LogicalResult stageExecutablePackage(
           "stage", "executable-to-package", "package-assembly");
   stages.enter(CompilationStage::PackageAssembly);
   llvm::Expected<runtime::VerifiedPackageManifest> stagedReadback =
-      writePackage(tensorProgramDirectory, cardExecutable, *targetModules,
+      writePackage(tensorProgramDirectory, deviceExecutable, *targetModules,
                    stagedPackage, diagnostics, failAfterPackageLaunchSlot);
   if (!stagedReadback) {
     llvm::consumeError(stagedReadback.takeError());
@@ -179,7 +179,7 @@ static mlir::LogicalResult stageExecutablePackage(
                 << " peak_rss_kib=" << getCompilePeakRSSKiB()
                 << " capture=" << stringifyProfileCaptureKind(profileCapture)
                 << " tile_count="
-                << cardExecutable.getExecutionConfig().getTileCount() << "\n";
+                << deviceExecutable.getExecutionConfig().getTileCount() << "\n";
     diagnostics << "wafer-compile: compile-stats stage=target-package"
                 << " wall_ms=" << elapsedCompileMilliseconds(totalStart)
                 << " peak_rss_kib=" << getCompilePeakRSSKiB()
@@ -202,10 +202,10 @@ makeProfileStaticCostMetric(const analysis::ScheduleCostMetric &metric) {
 }
 
 static llvm::Expected<runtime::ProfileStaticCostModel>
-collectProfileStaticCostModel(const CardExecutable &cardExecutable) {
-  const auto &tiles = cardExecutable.getTileExecutables();
+collectProfileStaticCostModel(const DeviceExecutable &deviceExecutable) {
+  const auto &tiles = deviceExecutable.getTileExecutables();
   if (tiles.size() !=
-      static_cast<size_t>(cardExecutable.getExecutionConfig().getTileCount()))
+      static_cast<size_t>(deviceExecutable.getExecutionConfig().getTileCount()))
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "profile static cost Tile domain differs from execution "
@@ -245,8 +245,8 @@ collectProfileStaticCostModel(const CardExecutable &cardExecutable) {
   }
 
   const TargetMemoryPolicy memory = getTargetMemoryPolicy();
-  analysis::CardInstructionProgramCost cost =
-      analysis::analyzeCardInstructionProgramCost(tileModules, memory);
+  analysis::InstructionProgramAggregateCost cost =
+      analysis::analyzeInstructionProgramAggregateCost(tileModules, memory);
   if (cost.tileCosts.size() != tiles.size())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
@@ -393,7 +393,8 @@ static constexpr std::array<ProfileCaptureKind, 2> kProfileCaptures = {
 
 static mlir::LogicalResult stageCapturePackages(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
-    llvm::StringRef instrumentationRoot, const CardExecutable &cardExecutable,
+    llvm::StringRef instrumentationRoot,
+    const DeviceExecutable &deviceExecutable,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
     ProfileCapturePackages &metadata,
     std::optional<TargetLLVMModules> &traceTargetLLVM,
@@ -408,7 +409,7 @@ static mlir::LogicalResult stageCapturePackages(
                             stringifyProfileCaptureKind(capture));
     std::optional<TargetLLVMModules> targetLLVM;
     if (mlir::failed(stageExecutablePackage(
-            tensorProgramDirectory, cardExecutable, targetModulesDirectory,
+            tensorProgramDirectory, deviceExecutable, targetModulesDirectory,
             package, targetToolchain, diagnostics, std::nullopt, std::nullopt,
             targetLLVM, stages, capture)))
       return mlir::failure();
@@ -433,7 +434,7 @@ static mlir::LogicalResult stageCapturePackages(
 
 static mlir::LogicalResult writeProfileInstrumentation(
     llvm::StringRef instrumentationRoot, llvm::StringRef productionPackage,
-    const CardExecutable &productionExecutables,
+    const DeviceExecutable &productionExecutables,
     const TargetLLVMModules &productionTargetLLVM,
     const TargetLLVMModules &productionTraceTargetLLVM,
     const ProfileCapturePackages &productionCaptures,
@@ -821,7 +822,7 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<int64_t> failAfterLaunchSlot,
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
-    std::optional<CardExecutable> &cardExecutable,
+    std::optional<DeviceExecutable> &deviceExecutable,
     std::optional<TargetLLVMModules> &targetLLVMModules,
     ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
@@ -830,12 +831,12 @@ mlir::LogicalResult stageTargetPackage(
   wafer::support::ScopedCompileTimingSpan productTiming(
       "stage", "target-codegen", "executable-package");
   stages.enter(CompilationStage::ExecutableCompilation);
-  llvm::Expected<CardExecutable> compiledCardExecutable =
-      compileTensorProgramToCardExecutable(
+  llvm::Expected<DeviceExecutable> compiledDeviceExecutable =
+      compileTensorProgramToDeviceExecutable(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,
           failAfterLaunchSlot, programData, resolver, irTrace);
-  if (!compiledCardExecutable) {
-    llvm::consumeError(compiledCardExecutable.takeError());
+  if (!compiledDeviceExecutable) {
+    llvm::consumeError(compiledDeviceExecutable.takeError());
     return mlir::failure();
   }
 
@@ -844,13 +845,13 @@ mlir::LogicalResult stageTargetPackage(
   llvm::SmallString<256> stagedPackage(transactionRoot);
   llvm::sys::path::append(stagedPackage, "package");
   if (mlir::failed(stageExecutablePackage(
-          tensorProgramDirectory, *compiledCardExecutable, stagedTargetModules,
-          stagedPackage, targetToolchain, diagnostics,
+          tensorProgramDirectory, *compiledDeviceExecutable,
+          stagedTargetModules, stagedPackage, targetToolchain, diagnostics,
           failAfterTargetLaunchSlot, failAfterPackageLaunchSlot,
           targetLLVMModules, stages)))
     return mlir::failure();
 
-  cardExecutable.emplace(std::move(*compiledCardExecutable));
+  deviceExecutable.emplace(std::move(*compiledDeviceExecutable));
   if (wafer::support::getActiveCompileTimingSession())
     diagnostics << "wafer-compile: compile-stats stage=executable-package"
                 << " wall_ms=" << elapsedCompileMilliseconds(totalStart)
@@ -866,7 +867,7 @@ mlir::LogicalResult stageProfileTargetPackages(
     std::optional<int64_t> failAfterLaunchSlot,
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
-    std::optional<CardExecutable> &cardExecutable,
+    std::optional<DeviceExecutable> &deviceExecutable,
     std::optional<TargetLLVMModules> &targetLLVMModules,
     ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
@@ -876,8 +877,8 @@ mlir::LogicalResult stageProfileTargetPackages(
   wafer::support::ScopedCompileTimingSpan productTiming(
       "stage", "target-codegen", "profile-package");
   stages.enter(CompilationStage::ExecutableCompilation);
-  llvm::Expected<CardExecutable> compiled =
-      compileTensorProgramToCardExecutable(
+  llvm::Expected<DeviceExecutable> compiled =
+      compileTensorProgramToDeviceExecutable(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,
           failAfterLaunchSlot, programData, resolver, irTrace);
   if (!compiled) {
@@ -920,7 +921,7 @@ mlir::LogicalResult stageProfileTargetPackages(
           instrumentationRoot, diagnostics)))
     return mlir::failure();
 
-  cardExecutable.emplace(std::move(*compiled));
+  deviceExecutable.emplace(std::move(*compiled));
   targetLLVMModules.emplace(std::move(*productionTargetLLVM));
   if (wafer::support::getActiveCompileTimingSession())
     diagnostics << "wafer-compile: compile-stats stage=profile-package"

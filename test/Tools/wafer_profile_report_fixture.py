@@ -59,7 +59,7 @@ def _static_cost_model() -> dict[str, Any]:
         "model": "tx81-static-throughput-lower-bound",
         "scope": "complete-final-instruction-program-per-physical-tile",
         "rates": {
-            "card_ddr_bytes_per_second": 200_000_000_000,
+            "ddr_bytes_per_second": 200_000_000_000,
             "directional_noc_bytes_per_second": 128_000_000_000,
             "f16_bf16_npu_logical_ops_per_second_per_tile": (
                 8_000_000_000_000

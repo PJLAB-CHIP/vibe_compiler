@@ -33,75 +33,56 @@ Pipeline position:
 命名采用仓库pinned LLVM/MLIR的常见形式：type使用语义名词，function使用说明实际动作的动词短语，conversion说明
 源表示和目标表示，optimization说明实际算法。同一概念在ODS、C++、pass、文件和diagnostic中使用同一名称。
 
-## 最终批次：IR 层级与限定词
+## 当前命名边界
 
-本批继续处理第一轮后仍存在的范围型名称：
+- `builtin.module`是共同symbol/verifier scope；top-level `TileModuleOp`直接携带`card_id`和`tile_id`。
+- 单个Tile的cost为`InstructionProgramCost`，完整Tile集合的聚合结果为`InstructionProgramAggregateCost`。
+- `StructuredProgramAnalysis`只分析current structured program；`ExecutableLowering`和`ExecutableCompilation`只说明动作。
+- `DeviceExecutable`是all-and-only Tile executable与program data的最终内存owner。
+- `DDR*`表示所有Tile共享的DDR资源；`SharedWorkspace*`表示该DDR中的共享workspace allocation。
+- `CardId`、`CardCoordinate`、`card_id`和`card_count`只在确实表示物理身份或外部wire domain时保留。
 
-1. 核对`wafer.card.module`与`wafer.tile.module`的SymbolTable、`IsolatedFromAbove`、SSA ownership、split和lowering
-   consumer，按真实module层级统一ODS、C++和文本IR名称。
-2. 核对设备级candidate search/evaluation/selection、lowering、resource verification对象的输入输出；删除只说明遍历范围、
-   不说明compiler职责的前缀，混合职责不以改名掩盖。
-3. 限定词仅在同一API确有logical/target、virtual/register allocation或其它真实对照且强类型无法消歧时保留；已经由namespace、
-   ID type、parent op、anchor或容器确定的限定不进入type、function、文件和diagnostic。
-4. 沿parser/printer、verifier、conversion、named pipeline、public API、CMake、测试和current docs逐批迁移，不提供内部双名兼容层。
+## Device-scope terminology closure
 
-本批不改变placement、tiling、movement、memory planning、ABI或runtime语义，不改只读archive和外部API拼写，也不把所有
-`physical`、`whole`、`device`或`target`做机械替换。每个名称先通过定义与consumer审计，再决定保留、重命名或拆分。
+```text
+Pipeline position:
+- Upstream IR / input:
+  single-card TensorProgram、placed TileRegion/per-Tile modules、final instruction modules及current executable/package/runtime API。
+- Current stage responsibility:
+  让IR hierarchy、analysis、lowering与最终产物名称分别对应真实职责，删除没有独立语义的中间wrapper和范围限定。
+- Output IR / files:
+  builtin module中的top-level `wafer.tile.module(card_id, tile_id)`或后续直接fan-out的per-Tile builtin modules；
+  `StructuredProgramAnalysis`、`InstructionProgramCost`、`InstructionProgramAggregateCost`、`ExecutableLowering`、
+  `ExecutableCompilation`与`DeviceExecutable`。
+- Downstream consumer:
+  physical-dataflow materialization、Instr/memory/target lowering、package writer、model和runtime。
+- User-level driver / named pipeline:
+  current `wafer-compile` library entry及同实现的focused tests。
+- Explicit non-goals:
+  不删除真实physical identity `CardId`、`CardCoordinate`或外部schema `card_id/card_count`；
+  不用typedef、alias、wrapper或双reader保留旧名；不借重命名改变数值、memory或completion语义。
+- Completion criteria:
+  source/header/CMake/test/current docs只保留下表current形式；真实Card字段未改变；完整本地gate通过。
+```
 
-### 语义核对结果
+current形式：
 
-| 当前对象 | 收敛方向 | 依据 |
+| 概念 | current表示 | 理由 |
 | --- | --- | --- |
-| `CardModuleOp` / `TileModuleOp` | `CardModuleOp` / `TileModuleOp` | 两者都是`SymbolTable`、`IsolatedFromAbove`的module-like container；`card_id`和`tile_id`仍是target topology中的真实层级 |
-| `CardId` / `TileId`及coordinate/link | `CardId` / `TileId`及对应coordinate/link | 强类型已经与logical partition、launch slot分离，不需重复限定 |
-| `TargetTopology` | `TargetTopology` | analysis直接且只从`wafer.target.topology`派生 |
-| standalone Tile module/executable/trace | `TileModule` / `TileExecutable` / `TileIRTrace` | module、entry和typed `TileId`已经确定硬件绑定 |
-| Tile memory planning | Tile memory planning | anchor和输入已经是独立Tile module |
-| `CardDAG*` / `WholeDAG*` | `StructuredDAG*` | DAG从一个structured function的SSA派生；完整图由对象本身表示，不需要card/whole范围前缀 |
-| `TileMapping` | `TileMapping` | 对象实际描述structured work到Tile的placement、temporal tile和edge action输入 |
-| `WholeCardInstructionProgramCost` / `WholeCardResourceDurationEstimate` | `CardInstructionProgramCost` / `ProgramDurationEstimate` | instruction cost存在Card/Tile两个真实强类型层级；duration只有一个program范围，不重复限定 |
-| `PhysicalTileExecutables` / internal `WholeCardExecutable` | public `CardExecutable` / internal `CardExecutableLoweringResult` | public owner原子持有一个card的all-and-only `TileExecutable`；internal result只表示lowering结果，不再造第二个executable概念 |
-| `WholeCardExecutableLowering*` | `CardExecutableLowering*` | lowering边界产生一个`CardExecutable`；`whole`只重复容器已表达的范围 |
-| optional card rank sources | 由Q51.Core删除，不再重命名或恢复build | follow-up search review确认这些未构建source属于旧rank/coordinated链；仍被current合同需要的独有proof、verifier或test witness先迁入对应Q50/稳定owner，其余源码与marker test同批删除 |
+| shared module scope与Tile ownership | `builtin.module` + top-level `TileModuleOp(card_id, tile_id)` | builtin module已经提供共同scope；Tile op提供实际execution ownership |
+| per-Tile fan-out | `WaferTileModuleFanout` | 直接消费top-level Tile modules并按typed identity稳定排序 |
+| structured analysis | `StructuredProgramAnalysis` | 输入是current structured function、topology和Tile domain |
+| instruction cost | `InstructionProgramCost` / `InstructionProgramAggregateCost` | 分别表示单Tile program与完整Tile集合，类型边界明确 |
+| executable action | `ExecutableLowering*` / `ExecutableCompilation*` | namespace、输入和输出已经确定作用范围 |
+| final owner | `DeviceExecutable` | 唯一持有全部Tile executables与program data |
+| shared memory | `DDR*`、`SharedWorkspace*`、`shared_workspace` | DDR是memory space；workspace是其中的共享allocation role |
+| physical identity | `CardId`、`CardCoordinate`、external `card_id/card_count` | 确实表示物理Card或外部wire domain |
 
-`CardResourceScope`、`TileResourceScope`、card/Tile topology字段、logical-to-Tile placement边界以及logical range与target byte
-range的真实对照继续保留必要限定；它们不是本批要消除的重复范围词。
+覆盖矩阵：
 
-profile activation保留真实format version；correlation basis、static-cost scope和硬件校准claim key使用稳定语义名，
-不再把内部算法revision伪装成独立版本。新的
-type、function、pass option、pipeline timing和diagnostic均使用`Card`、`Tile`、`CardExecutable`等已由IR和强类型
-定义的名称。
-
-Q45的历史命名核对不赋予旧实现current身份。Q51.Core已确认退役的rank/coordinated/search对象直接删除，不得因为本计划曾记录
-过语义名称而保留source、compat symbol或回归路径。
-
-## 已完成批次
-
-本轮按定义和直接consumer逐项核对，不以关键词替换代替语义判断：
-
-| 范围 | 收敛结果 |
-| --- | --- |
-| compiler public API | target侧收敛为`CardExecutable`、`TargetLLVMModules`、`LinkedTargetModules`和`CompiledProgram`；函数名直接说明compile、link、readback或write package |
-| Tile lowering | 原来混合转换、bufferization和memory planning的入口拆成明确的Instr lowering、SPM/DDR assignment与resource verification；文件和测试使用同一职责名 |
-| whole-device selection | search、candidate evaluation、resource verification和selection分别命名；不再用含糊的协调、前沿或阶段结束术语代替实际动作 |
-| target/runtime | profile数据写入、运行参数构造、target command验证和模型执行分别命名；C/C++符号与diagnostic同步 |
-| MLIR source | verifier、target execution facts、instruction verification和StableHLO collective lowering按实际IR层命名；声明、实现、CMake和lit文件同步 |
-| tools/tests/docs | Python字段和函数使用file、record、evidence、write、validation等具体对象或动作；current tasks、memory和presentations同步到现有API |
-| profile与优化资格化 | runtime数据收集使用`WaferProfileCollection`；重复采样使用`PROFILE_MEASUREMENT_COUNT`；A/B用例和入口使用`OptimizationComparisonCases`与`PAIRED_COMPARISON_TEST` |
-
-没有为名称建立源码黑名单。dependency snapshot由repo内producer/consumer同步演进，不拥有独立版本线；
-上游StableHLO/PyTorch-XLA类名和环境变量属于外部API；archive不是current设计事实源。所有一手C++/Python抽象、
-文件名、diagnostic和current文档已经退出旧术语。
-
-## 已完成批次验证
-
-历史task命名build目录、按CTest ordinal记录的批次数字和feature-off link-absence gate不再是current完成证据；其施工记录由Git保留。
-current命名合同由canonical `host`完整增量build、host unit/model/lit/Tools、public-link、dependency/source/IR organization及旧名称
-残留扫描共同验证，具体完成入口见`tasks/archive/completed-task-index.md`。命名任务不执行真实板端测试。
-
-StructuredDAG placement enumeration和CardExecutable candidate synthesis属于Q49.P/Q52搜索行为，本批没有用
-长搜索代替命名合同验证；没有执行真实板端测试。
-
-未注册到CMake/CTest且依赖已退役实现的旧Board calibration、catalog和probe已经删除，不再作为后续任务的隐式入口。
-Q50.S若需要性能比较，必须从current compiler pipeline建立有生产实现、有CTest注册且可重放的测试入口，不能恢复旧catalog
-或用字符串匹配伪造compiler能力。
+| 输入等价类 | 结构 | failure | 精确断言 | 直接下游witness |
+| --- | --- | --- | --- | --- |
+| top-level Tile module set | 16个unique `(card_id=0,tile_id)`、顺序扰动、2x1024x64与2x1025x64 shared declarations、缺失/重复/负值 | local verifier只查自身；collection check拒绝duplicate；executable stage拒绝missing/foreign/unavailable Tile | fan-out按typed ID稳定排序；每个body只move一次；共享declaration复制一次；partial set保留给caller stage判定 | Executable lowering消费16个standalone modules |
+| whole-device final owner | ordinary/profile、program data empty/nonempty、target-model consumer | incomplete Tile/target module/argument closure保持原typed failure | `DeviceExecutable`唯一持有all-and-only Tile executables及program data | package writer、target modules、model/runtime |
+| shared DDR/workspace | DDR resource/binding/movement、shared workspace、package `card_id/card_count`、topology multi-card verifier | 任何字段丢失、scope改变或旧reader仍接受即失败 | DDR行为byte-equivalent；repo-owned workspace spelling只接受`shared_workspace`；physical card identity不变 | package strict readback与runtime invocation |
+| residual scan | source/header/CMake/test/current docs | 任一旧wrapper/API仍有current caller即失败 | 旧名0；archive不改 | source/IR organization、public link与完整build |

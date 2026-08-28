@@ -3,7 +3,7 @@
 #ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_ACTUALRESULTCONTROLLER_H
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_ACTUALRESULTCONTROLLER_H
 
-#include "Wafer/CodeGen/Executable/CardExecutableCompilation.h"
+#include "Wafer/CodeGen/Executable/ExecutableCompilation.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningState.h"
 
 #include "mlir/Support/LogicalResult.h"
@@ -24,7 +24,7 @@ namespace wafer::compiler::detail {
 /// Performance-only rates shared by one accepted-candidate comparison cohort.
 /// They never participate in IR legality or memory admission.
 struct SearchCostPolicy {
-  uint64_t cardDDRNominalBytesPerSecond = 150'000'000'000ULL;
+  uint64_t ddrNominalBytesPerSecond = 150'000'000'000ULL;
   uint64_t directionalNoCBytesPerSecond = 128'000'000'000ULL;
   uint64_t dteEndpointBytesPerSecondEstimate = 128'000'000'000ULL;
   uint64_t dteMessageStartupPicosecondsEstimate = 10'000'000ULL;
@@ -91,8 +91,7 @@ public:
                          const SearchCostCohort &rhs) {
     const auto &left = lhs.policy;
     const auto &right = rhs.policy;
-    return left.cardDDRNominalBytesPerSecond ==
-               right.cardDDRNominalBytesPerSecond &&
+    return left.ddrNominalBytesPerSecond == right.ddrNominalBytesPerSecond &&
            left.directionalNoCBytesPerSecond ==
                right.directionalNoCBytesPerSecond &&
            left.dteEndpointBytesPerSecondEstimate ==
@@ -172,7 +171,7 @@ using SearchObjective =
     std::variant<KnownSearchObjective, UnknownSearchObjective>;
 
 SearchObjective
-deriveSearchObjective(const analysis::CardInstructionProgramCost &cost,
+deriveSearchObjective(const analysis::InstructionProgramAggregateCost &cost,
                       const std::optional<SearchCostCohort> &cohort);
 
 enum class SearchObjectiveComparison : uint8_t {
@@ -224,11 +223,11 @@ enum class ActualCandidateStatus : uint8_t {
 };
 
 /// Result returned by the caller-owned current-IR actualizer. Accepted keeps
-/// the original actual Card/Instr owner; rejected results contain only typed
+/// the original actual Tile/Instr owner; rejected results contain only typed
 /// witness facts. No structural or downstream shadow plan enters this type.
 struct ActualCandidateResult {
   ActualCandidateStatus status = ActualCandidateStatus::CompilerBug;
-  std::optional<CardExecutableCompilationResult> compilation;
+  std::optional<ExecutableCompilationResult> compilation;
   std::vector<SemanticRootKey> causalRoots;
   std::string detail;
 
@@ -244,9 +243,9 @@ struct ActualCandidateResult {
 struct RetainedSearchCandidate {
   StructuralCandidateKey key;
   SearchObjective objective;
-  CardExecutableCompilationResult compilation;
+  ExecutableCompilationResult compilation;
 
-  CardExecutableLoweringResult takeExecutable() {
+  ExecutableLoweringResult takeExecutable() {
     return compilation.takeExecutable();
   }
 };

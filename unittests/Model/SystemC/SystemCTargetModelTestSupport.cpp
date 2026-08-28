@@ -280,7 +280,7 @@ llvm::Expected<DirectDTEInvocationData> buildDirectDTEInvocationData(
                static_cast<uint64_t>(tile) * UINT64_C(0x10000);
         break;
       case compiler::TileEntryArgumentKind::TargetTensor:
-      case compiler::TileEntryArgumentKind::CardWorkspace:
+      case compiler::TileEntryArgumentKind::SharedWorkspace:
       case compiler::TileEntryArgumentKind::Workspace:
       case compiler::TileEntryArgumentKind::ProfileRecord:
         return llvm::createStringError(

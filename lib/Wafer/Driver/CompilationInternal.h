@@ -3,11 +3,11 @@
 #ifndef WAFER_COMPILER_COMPILATIONINTERNAL_H
 #define WAFER_COMPILER_COMPILATIONINTERNAL_H
 
+#include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Driver/CompilationResult.h"
-#include "Wafer/Program/ProgramData.h"
-#include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Frontend/Program/Program.h"
+#include "Wafer/Program/ProgramData.h"
 
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Pass/PassManager.h"
@@ -87,7 +87,6 @@ bool renameDirectoryNoReplace(llvm::StringRef source,
                               llvm::StringRef destination,
                               llvm::raw_ostream &diagnostics);
 
-
 mlir::OwningOpRef<mlir::ModuleOp>
 parseProgramDirectoryModule(llvm::StringRef programDirectory,
                             mlir::MLIRContext &context);
@@ -119,12 +118,10 @@ mlir::LogicalResult runSpmdHelper(llvm::StringRef helper,
                                   const ExecutionConfig &config,
                                   llvm::raw_ostream &diagnostics);
 
-llvm::Expected<CardExecutable>
-compileTensorProgramToCardExecutable(
+llvm::Expected<DeviceExecutable> compileTensorProgramToDeviceExecutable(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLaunchSlot,
-    ProgramDataHandoff &programData,
+    std::optional<int64_t> failAfterLaunchSlot, ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
     CompilationIRTrace &irTrace);
 
@@ -135,7 +132,7 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<int64_t> failAfterLaunchSlot,
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
-    std::optional<CardExecutable> &cardExecutable,
+    std::optional<DeviceExecutable> &deviceExecutable,
     std::optional<TargetLLVMModules> &targetLLVMModules,
     ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
@@ -148,7 +145,7 @@ mlir::LogicalResult stageProfileTargetPackages(
     std::optional<int64_t> failAfterLaunchSlot,
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
-    std::optional<CardExecutable> &cardExecutable,
+    std::optional<DeviceExecutable> &deviceExecutable,
     std::optional<TargetLLVMModules> &targetLLVMModules,
     ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
@@ -162,7 +159,7 @@ mlir::LogicalResult runCompilationTransaction(
     CompilationOptions options, std::optional<int64_t> failAfterLaunchSlot,
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
-    std::optional<CardExecutable> *retainedCardExecutable,
+    std::optional<DeviceExecutable> *retainedDeviceExecutable,
     std::optional<TargetLLVMModules> *retainedTargetLLVMModules,
     std::optional<CompilationIRTrace> *retainedIRTrace = nullptr,
     std::optional<ExecutablePackage> *retainedPackage = nullptr,

@@ -1,6 +1,6 @@
-//===- CardExecutableCompilation.cpp - Policy-free executable seam ------===//
+//===- ExecutableCompilation.cpp - Policy-free executable seam ------===//
 
-#include "Wafer/CodeGen/Executable/CardExecutableCompilation.h"
+#include "Wafer/CodeGen/Executable/ExecutableCompilation.h"
 #include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
 #include "Wafer/Analysis/Structured/StructuredNodeUseIndex.h"
 #include "Wafer/Driver/CompilationInternal.h"
@@ -9,7 +9,6 @@
 #include "Wafer/CodeGen/Executable/BoundedTileExecutor.h"
 
 #include "Scheduling/RedundantTransferElimination.h"
-#include "Wafer/Conversion/WaferCardModuleToTileModules/WaferCardModuleToTileModules.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/MemoryPlanningPipelines.h"
@@ -55,7 +54,7 @@ retargetStructuredRelationValue(StructuredMaterializationRelations &relations,
   retarget(relations.operandBuffers);
   retarget(relations.scratchBuffers);
   retarget(relations.outputBuffers);
-  retarget(relations.cardDDRBuffers);
+  retarget(relations.ddrBuffers);
   retarget(relations.partialReductionContributions);
   retarget(relations.partialReductionMergeInputs);
 }
@@ -93,11 +92,11 @@ mlir::FailureOr<unsigned> cleanupCanonicalInstructionTransfers(
 
 namespace {
 
-static CardExecutableCompilationResult
-fail(CardExecutableCompilationStatus status, llvm::StringRef gate,
+static ExecutableCompilationResult
+fail(ExecutableCompilationStatus status, llvm::StringRef gate,
      llvm::StringRef detail,
-     llvm::SmallVector<CardExecutableTileFailure, 4> tileFailures = {}) {
-  CardExecutableCompilationResult result;
+     llvm::SmallVector<ExecutableTileFailure, 4> tileFailures = {}) {
+  ExecutableCompilationResult result;
   result.status = status;
   result.gate = gate.str();
   result.detail = detail.str();
@@ -105,45 +104,45 @@ fail(CardExecutableCompilationStatus status, llvm::StringRef gate,
   return result;
 }
 
-static CardExecutableCompilationStatus
+static ExecutableCompilationStatus
 classifyTileMemoryFailureImpl(const TileMemoryPlanningFailure &failure) {
   switch (failure.kind) {
   case TileMemoryPlanningFailureKind::None:
   case TileMemoryPlanningFailureKind::Contract:
   case TileMemoryPlanningFailureKind::PreexistingPlacementFacts:
   case TileMemoryPlanningFailureKind::Verification:
-    return CardExecutableCompilationStatus::CompilerFailure;
+    return ExecutableCompilationStatus::CompilerFailure;
   case TileMemoryPlanningFailureKind::SPMAllocation:
     switch (failure.spmPlanningFailureKind) {
     case SPMMemoryPlanningFailureKind::CapacityOverflow:
-      return CardExecutableCompilationStatus::ProvenExactRejection;
+      return ExecutableCompilationStatus::ProvenExactRejection;
     case SPMMemoryPlanningFailureKind::ResourceExhausted:
-      return CardExecutableCompilationStatus::IndeterminateFailure;
+      return ExecutableCompilationStatus::IndeterminateFailure;
     case SPMMemoryPlanningFailureKind::UnsupportedLifetime:
-      return CardExecutableCompilationStatus::UnsupportedFailure;
+      return ExecutableCompilationStatus::UnsupportedFailure;
     case SPMMemoryPlanningFailureKind::MissingCompletion:
     case SPMMemoryPlanningFailureKind::Other:
     case SPMMemoryPlanningFailureKind::None:
-      return CardExecutableCompilationStatus::CompilerFailure;
+      return ExecutableCompilationStatus::CompilerFailure;
     }
   }
-  return CardExecutableCompilationStatus::CompilerFailure;
+  return ExecutableCompilationStatus::CompilerFailure;
 }
 
-static CardExecutableCompilationStatus
-combineTileMemoryFailureStatus(CardExecutableCompilationStatus current,
-                               CardExecutableCompilationStatus next) {
-  auto priority = [](CardExecutableCompilationStatus status) {
+static ExecutableCompilationStatus
+combineTileMemoryFailureStatus(ExecutableCompilationStatus current,
+                               ExecutableCompilationStatus next) {
+  auto priority = [](ExecutableCompilationStatus status) {
     switch (status) {
-    case CardExecutableCompilationStatus::CompilerFailure:
+    case ExecutableCompilationStatus::CompilerFailure:
       return 4;
-    case CardExecutableCompilationStatus::IndeterminateFailure:
+    case ExecutableCompilationStatus::IndeterminateFailure:
       return 3;
-    case CardExecutableCompilationStatus::UnsupportedFailure:
+    case ExecutableCompilationStatus::UnsupportedFailure:
       return 2;
-    case CardExecutableCompilationStatus::ProvenExactRejection:
+    case ExecutableCompilationStatus::ProvenExactRejection:
       return 1;
-    case CardExecutableCompilationStatus::Accepted:
+    case ExecutableCompilationStatus::Accepted:
       return 0;
     }
     return 4;
@@ -153,30 +152,29 @@ combineTileMemoryFailureStatus(CardExecutableCompilationStatus current,
 
 } // namespace
 
-CardExecutableCompilationStatus
+ExecutableCompilationStatus
 classifyTileMemoryPlanningFailure(const TileMemoryPlanningFailure &failure) {
   return classifyTileMemoryFailureImpl(failure);
 }
 
-CardExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
+ExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
     std::vector<CanonicalInstructionTile> tiles, CardId expectedCardId,
     llvm::ArrayRef<TileId> expectedTileIds,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-    ProgramDataHandoff &programData,
-    CardExecutableLoweringStatistics *statistics,
+    ProgramDataHandoff &programData, ExecutableLoweringStatistics *statistics,
     unsigned tilePipelineParallelism) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
       "stage", "actual-memory-target-gate", "canonical-instr-to-executable");
   if (statistics)
     ++statistics->actualMemoryTargetGateInvocations;
-  auto failLeaf = [&](CardExecutableCompilationResult result) {
+  auto failLeaf = [&](ExecutableCompilationResult result) {
     totalTiming.markFailed();
     return result;
   };
 
   if (tiles.empty() || tiles.size() != expectedTileIds.size())
-    return failLeaf(fail(CardExecutableCompilationStatus::CompilerFailure,
+    return failLeaf(fail(ExecutableCompilationStatus::CompilerFailure,
                          "actual-memory-target-input",
                          "canonical Instr Tile domain is incomplete"));
 
@@ -185,7 +183,7 @@ CardExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
   for (auto [index, tile] : llvm::enumerate(tiles)) {
     if (!tile.module || tile.card != expectedCardId ||
         tile.tile != expectedTileIds[index])
-      return failLeaf(fail(CardExecutableCompilationStatus::CompilerFailure,
+      return failLeaf(fail(ExecutableCompilationStatus::CompilerFailure,
                            "actual-memory-target-input",
                            "canonical Instr Tile identity is inconsistent"));
     if (!context)
@@ -196,7 +194,7 @@ CardExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
         mlir::failed(checkStructuredBufferRelationsCurrent(
             tile.module->getOperation(), tile.relations)))
       return failLeaf(fail(
-          CardExecutableCompilationStatus::CompilerFailure,
+          ExecutableCompilationStatus::CompilerFailure,
           "actual-memory-target-input",
           "actual leaf requires verifier-legal canonical Instr and current "
           "buffer owner relations"));
@@ -227,16 +225,16 @@ CardExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
     statistics->maximumTilePipelineWorkers =
         std::max<uint64_t>(statistics->maximumTilePipelineWorkers, workers);
 
-  llvm::SmallVector<CardExecutableTileFailure, 4> tileFailures;
+  llvm::SmallVector<ExecutableTileFailure, 4> tileFailures;
   std::vector<mlir::OwningOpRef<mlir::ModuleOp>> instructionModules;
   std::vector<StructuredMaterializationRelations> tileRelations;
   instructionModules.reserve(loweringResults.size());
   tileRelations.reserve(loweringResults.size());
-  CardExecutableCompilationStatus failureStatus =
-      CardExecutableCompilationStatus::ProvenExactRejection;
+  ExecutableCompilationStatus failureStatus =
+      ExecutableCompilationStatus::ProvenExactRejection;
   for (auto [tileIndex, result] : llvm::enumerate(loweringResults)) {
     if (result.memoryPlanningFailed || !result.module) {
-      CardExecutableTileFailure failure;
+      ExecutableTileFailure failure;
       failure.tileId = expectedTileIds[tileIndex];
       failure.gate = result.memoryPlanning.kind ==
                              TileMemoryPlanningFailureKind::SPMAllocation
@@ -260,34 +258,34 @@ CardExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
                          std::move(tileFailures)));
   }
 
-  CardExecutableLoweringFailure loweringFailure;
-  mlir::FailureOr<CardExecutableLoweringResult> executable =
-      lowerTileModulesToCardExecutable(
+  ExecutableLoweringFailure loweringFailure;
+  mlir::FailureOr<ExecutableLoweringResult> executable =
+      lowerTileModulesToExecutable(
           std::move(instructionModules), program, executionConfig, diagnostics,
           loweringFailure, programData, statistics, tilePipelineParallelism);
   if (mlir::failed(executable))
     return failLeaf(
         fail(loweringFailure.isProvenExactRejection()
-                 ? CardExecutableCompilationStatus::ProvenExactRejection
-                 : CardExecutableCompilationStatus::IndeterminateFailure,
+                 ? ExecutableCompilationStatus::ProvenExactRejection
+                 : ExecutableCompilationStatus::IndeterminateFailure,
              loweringFailure.getDiagnosticLabel(),
              loweringFailure.detail.empty() ? "Tile module lowering failed"
                                             : loweringFailure.detail));
 
   if (executable->tiles.size() != expectedTileIds.size())
-    return failLeaf(fail(CardExecutableCompilationStatus::CompilerFailure,
-                         "card-executable-domain",
+    return failLeaf(fail(ExecutableCompilationStatus::CompilerFailure,
+                         "device-executable-domain",
                          "Tile executable domain is incomplete"));
   for (auto [index, tile] : llvm::enumerate(executable->tiles))
     if (tile.getCardId() != expectedCardId ||
         tile.getTileId() != expectedTileIds[index])
       return failLeaf(
-          fail(CardExecutableCompilationStatus::CompilerFailure,
-               "card-executable-domain",
+          fail(ExecutableCompilationStatus::CompilerFailure,
+               "device-executable-domain",
                "executable lowering changed the selected Tile identity"));
 
-  CardExecutableCompilationResult result;
-  result.status = CardExecutableCompilationStatus::Accepted;
+  ExecutableCompilationResult result;
+  result.status = ExecutableCompilationStatus::Accepted;
   result.executable.emplace(std::move(*executable));
   for (auto [tileIndex, tile] : llvm::enumerate(result.executable->tiles)) {
     const StructuredMaterializationRelations &relations =

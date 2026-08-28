@@ -72,7 +72,7 @@ TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
 /// verify the resulting Tile module. Selected execution structure, rotating
 /// storage, Tile-to-Instr conversion, worker/order and completion must already
 /// be present in the input IR. This leaf never runs those upstream mutations.
-/// Whole-Card candidate evaluation may suppress only the redundant per-Tile
+/// Whole-device candidate evaluation may suppress only the redundant per-Tile
 /// diagnostic for a typed capacity rejection; all other failures still emit
 /// their ordinary diagnostics and remain typed failures.
 /// Performance-cost availability is not a memory-planning requirement.

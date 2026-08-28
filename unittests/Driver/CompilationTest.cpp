@@ -69,9 +69,11 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
   static_assert(!std::is_copy_constructible_v<wafer::compiler::TileExecutable>);
   static_assert(std::is_move_constructible_v<wafer::compiler::TileExecutable>);
   static_assert(
-      !std::is_default_constructible_v<wafer::compiler::CardExecutable>);
-  static_assert(!std::is_copy_constructible_v<wafer::compiler::CardExecutable>);
-  static_assert(std::is_move_constructible_v<wafer::compiler::CardExecutable>);
+      !std::is_default_constructible_v<wafer::compiler::DeviceExecutable>);
+  static_assert(
+      !std::is_copy_constructible_v<wafer::compiler::DeviceExecutable>);
+  static_assert(
+      std::is_move_constructible_v<wafer::compiler::DeviceExecutable>);
   static_assert(
       !std::is_default_constructible_v<wafer::compiler::TargetLLVMModule>);
   static_assert(

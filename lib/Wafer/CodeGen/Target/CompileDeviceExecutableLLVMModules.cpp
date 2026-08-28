@@ -1,4 +1,4 @@
-//===- CompileCardExecutableLLVMModules.cpp - Compile Tile LLVM modules
+//===- CompileDeviceExecutableLLVMModules.cpp - Compile Tile LLVM modules
 //----===//
 
 #include "Wafer/CodeGen/Target/TargetCodeGenInternal.h"
@@ -24,16 +24,18 @@
 
 namespace wafer::compiler::detail {
 
-llvm::Expected<TargetLLVMModules> compileCardExecutableToTargetLLVMModulesImpl(
-    const CardExecutable &cardExecutable, llvm::raw_ostream &diagnostics,
+llvm::Expected<TargetLLVMModules>
+compileDeviceExecutableToTargetLLVMModulesImpl(
+    const DeviceExecutable &deviceExecutable, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLaunchSlot,
     ProfileCaptureKind profileCapture,
     TargetLLVMCompilationStatistics *statistics) {
   if (statistics)
     *statistics = {};
   const std::vector<TileExecutable> &tiles =
-      cardExecutable.getTileExecutables();
-  const ExecutionConfig &executionConfig = cardExecutable.getExecutionConfig();
+      deviceExecutable.getTileExecutables();
+  const ExecutionConfig &executionConfig =
+      deviceExecutable.getExecutionConfig();
   if (tiles.size() != static_cast<size_t>(executionConfig.getTileCount()))
     return fail(diagnostics, "target LLVM Tile domain is incomplete");
   if (profileCapture != ProfileCaptureKind::None &&
@@ -42,7 +44,7 @@ llvm::Expected<TargetLLVMModules> compileCardExecutableToTargetLLVMModulesImpl(
                 "profile target LLVM requires the complete 16-Tile domain");
 
   const RuntimeLaunchContract &runtimeLaunchContract =
-      cardExecutable.getRuntimeLaunchContract();
+      deviceExecutable.getRuntimeLaunchContract();
   const bool transportPreparedBeforeEntry = llvm::is_contained(
       runtimeLaunchContract.getPhases(), RuntimeLaunchPhaseRole::Prepare);
   std::set<int64_t> tileIds;

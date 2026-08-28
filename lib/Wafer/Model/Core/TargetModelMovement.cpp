@@ -63,7 +63,7 @@ executeMovement(const compiler::TargetCommand &command,
 
   if (value.direction == target::TargetDMADirection::Read) {
     llvm::Expected<std::vector<uint8_t>> payload = memory.readStridedSnapshot(
-        command.launchSlotId.getValue(), TargetModelAddressSpace::CardDDR,
+        command.launchSlotId.getValue(), TargetModelAddressSpace::DDR,
         value.source, layout, 1);
     if (!payload)
       return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,
@@ -76,7 +76,7 @@ executeMovement(const compiler::TargetCommand &command,
             {},
             TargetModelControlAction::None},
         {TargetModelByteRead{command.launchSlotId.getValue(),
-                             TargetModelAddressSpace::CardDDR, value.source,
+                             TargetModelAddressSpace::DDR, value.source,
                              value.byteCount, layout}});
   }
 
@@ -87,9 +87,9 @@ executeMovement(const compiler::TargetCommand &command,
     return payload.takeError();
   return withReads(
       TargetModelCommandEffect{
-          {TargetModelByteWrite{
-              command.launchSlotId.getValue(), TargetModelAddressSpace::CardDDR,
-              value.destination, 1, std::move(*payload), layout}},
+          {TargetModelByteWrite{command.launchSlotId.getValue(),
+                                TargetModelAddressSpace::DDR, value.destination,
+                                1, std::move(*payload), layout}},
           {},
           TargetModelControlAction::None},
       {TargetModelByteRead{command.launchSlotId.getValue(),

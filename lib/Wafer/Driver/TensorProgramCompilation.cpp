@@ -1,7 +1,7 @@
 //===- TensorProgramCompilation.cpp - Tensor-program compilation --------===//
 
+#include "Wafer/CodeGen/Executable/DeviceExecutableInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
-#include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
 
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
@@ -59,9 +59,9 @@ static llvm::Expected<ProductT> compileTensorProgram(
     return fail("input is not a verified structured tensor program");
 
   frontend::FrontendProgramVerificationResult program;
-  if (mlir::failed(verifyProgramDirectoryMetadata(
-          *tensorModule, tensorProgramDirectory, diagnostics, &program,
-          &resolver)))
+  if (mlir::failed(
+          verifyProgramDirectoryMetadata(*tensorModule, tensorProgramDirectory,
+                                         diagnostics, &program, &resolver)))
     return fail("tensor program metadata verification failed");
   if (program.numPartitions != executionConfig.getNumPartitions())
     return fail(
@@ -75,15 +75,13 @@ static llvm::Expected<ProductT> compileTensorProgram(
                  diagnostics, failAfterLaunchSlot);
 }
 
-llvm::Expected<CardExecutable>
-compileTensorProgramToCardExecutable(
+llvm::Expected<DeviceExecutable> compileTensorProgramToDeviceExecutable(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLaunchSlot,
-    ProgramDataHandoff &programData,
+    std::optional<int64_t> failAfterLaunchSlot, ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
     CompilationIRTrace &irTrace) {
-  return compileTensorProgram<CardExecutable>(
+  return compileTensorProgram<DeviceExecutable>(
       tensorProgramDirectory, executionConfig, diagnostics, failAfterLaunchSlot,
       resolver,
       [optimizations, &programData,
@@ -92,7 +90,7 @@ compileTensorProgramToCardExecutable(
                  frontend::FrontendProgramVerificationResult program,
                  ExecutionConfig config, llvm::raw_ostream &output,
                  std::optional<int64_t> failAfterLaunchSlot) {
-        return buildCardExecutableWithIRTrace(
+        return buildDeviceExecutableWithIRTrace(
             context, tensorModule, std::move(program), config, optimizations,
             output, failAfterLaunchSlot, programData, irTrace);
       });

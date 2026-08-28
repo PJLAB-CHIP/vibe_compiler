@@ -583,7 +583,7 @@ RotatingAllocationMaterializationResult materializeRotatingAllocations(
     findRelation(relations.operandBuffers);
     findRelation(relations.scratchBuffers);
     findRelation(relations.outputBuffers);
-    findRelation(relations.cardDDRBuffers);
+    findRelation(relations.ddrBuffers);
     findRelation(relations.partialReductionContributions);
     findRelation(relations.partialReductionMergeInputs);
     if (!hasRelation)
@@ -688,7 +688,7 @@ RotatingAllocationMaterializationResult materializeRotatingAllocations(
     expandRelations(relations.operandBuffers);
     expandRelations(relations.scratchBuffers);
     expandRelations(relations.outputBuffers);
-    expandRelations(relations.cardDDRBuffers);
+    expandRelations(relations.ddrBuffers);
     expandRelations(relations.partialReductionContributions);
     expandRelations(relations.partialReductionMergeInputs);
     result.slots.append(slots.begin(), slots.end());

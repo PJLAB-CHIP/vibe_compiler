@@ -1137,7 +1137,7 @@ TEST_F(BoardRuntimeTest,
 }
 
 TEST_F(BoardRuntimeTest,
-       CardSharedProgramResourcesUseOneAllocationAcrossAllTileRows) {
+       SharedProgramResourcesUseOneAllocationAcrossAllTileRows) {
   using namespace wafer::runtime;
   writeProgramDataFile({});
   llvm::Expected<ExecutablePackage> package =

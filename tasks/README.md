@@ -16,7 +16,7 @@
 | 03 | `tasks/03-shardy-spmd.md` | Shardy/XLA的card-level GSPMD output与`num_partitions`；不绑定片内Tile |
 | 04 | `tasks/04-topology-execution-mesh.md` | logical card partition mesh与独立target card/Tile topology |
 | 05 | `tasks/05-local-compute-normalization.md` | card-partition-local structured compute normalization、single attention op、graph-level FA/FD算法与tensor collective boundary |
-| 06 | `tasks/06-physical-dataflow-synthesis.md` | card-local TensorProgram的spatial/region/temporal choice、actual Card/TileRegion、current-IR layout/movement/execution-structure/Instr与actual admission；预算限制planning工作而不预先截断合法域 |
+| 06 | `tasks/06-physical-dataflow-synthesis.md` | card-local TensorProgram的spatial/region/temporal choice、actual TileModule/TileRegion、current-IR layout/movement/execution-structure/Instr与actual admission；预算限制planning工作而不预先截断合法域 |
 | 07 | `tasks/07-tile-region.md` | selected tile/dataflow structural IR物化以及structural、layout-resolved、physical TileRegion forms；SPM root不跨界，boundary不自动产生movement或join |
 | 08 | `tasks/08-physical-realization.md` | physical encoding attr/type语义、valid domain、view、transfer realizability analysis、descriptor cover和selected physical realization |
 | 09 | `tasks/09-spm-memory-planning.md` | SPM lifetime/coexistence、fixed-capacity MiniMalloc legality、all-root coverage、validated placement/headroom和accepted offsets；candidate choice仍由06拥有 |
@@ -24,10 +24,10 @@
 | 11 | `tasks/11-instruction-ir.md` | complete static Tile instruction program、current descriptor/geometry/range/narrowing legality及mapped/physical-fill/oriented typed extension |
 | 12 | `tasks/12-ddr-memory-planning.md` | 当前DDR demand/accepted offsets；多DDR分区、state和streaming延后 |
 | 13 | `tasks/13-communication.md` | selected Tile edge到typed p2p/staging/token/wait IR、Direct DTE card-scoped verification和completion；multi-card延后 |
-| 14 | `tasks/14-target-code-generation.md` | `CardExecutable`的current target identity/format、accepted immutable data preparation、structure-preserving conversion、CRT ABI和atomic target-module writing |
-| 15 | `tasks/15-launch-runtime-package.md` | `CardExecutable -> ExecutablePackage`、ProgramTensor/TargetTensor、program-data.bin、TileEntryArgument、runtime memory plan、no-card和board adapter边界 |
-| 16 | `tasks/16-verification-contract.md` | `TensorProgram -> CardModule/TileRegion/Instr -> CardExecutable -> ExecutablePackage`的target correctness、data/whole-program scale、CPU oracle、target-model、no-card和board分层gate |
-| 17 | `tasks/17-target-execution-model.md` | `CardExecutable`及其same-invocation target LLVM owner消费、multi-dtype `WaferTargetNumericBackend`、target-call/SystemC untimed CModel与板端numeric correlation边界 |
+| 14 | `tasks/14-target-code-generation.md` | `DeviceExecutable`的current target identity/format、accepted immutable data preparation、structure-preserving conversion、CRT ABI和atomic target-module writing |
+| 15 | `tasks/15-launch-runtime-package.md` | `DeviceExecutable -> ExecutablePackage`、ProgramTensor/TargetTensor、program-data.bin、TileEntryArgument、runtime memory plan、no-card和board adapter边界 |
+| 16 | `tasks/16-verification-contract.md` | `TensorProgram -> TileModule/TileRegion/Instr -> DeviceExecutable -> ExecutablePackage`的target correctness、data/whole-program scale、CPU oracle、target-model、no-card和board分层gate |
+| 17 | `tasks/17-target-execution-model.md` | `DeviceExecutable`及其same-invocation target LLVM owner消费、multi-dtype `WaferTargetNumericBackend`、target-call/SystemC untimed CModel与板端numeric correlation边界 |
 | 18 | `tasks/18-source-organization.md` | 跨pipeline的源码ownership、translation unit、compiler library/tool/install、构建依赖和测试镜像组织合同；不改变IR/output语义 |
 | 19 | `tasks/19-mlir-engineering.md` | 跨IR层的ODS、standard interface、operation-scoped pass/analysis、rewrite/conversion和named nested pipeline工程合同；不重定义01–18语义 |
 | 20 | `tasks/20-interface-evolution.md` | 跨compiler/runtime/tool的内部接口演进、持久化格式与ABI版本owner、集中兼容检查和current-only表示合同 |
@@ -42,12 +42,12 @@
 | pre-SPMD topology和execution mesh | 04 |
 | Shardy/SPMD card-partition output | 03 |
 | card-partition-local compute normalization、attention graph algorithm与collective boundary | 05；physical planning和selected decomposition分别由06、07、10消费，跨stage正确性证据由16约束 |
-| card-local multi-Tile physical-dataflow planning、selected Card/Tile MPMD materialization和physical encoding/transfer | 06、07、08；source implementation interface由10提供，instruction legality由11提供，exact resource/transport gate由09、12、13提供 |
+| card-local multi-Tile physical-dataflow planning、selected TileModule/TileRegion MPMD materialization和physical encoding/transfer | 06、07、08；source implementation interface由10提供，instruction legality由11提供，exact resource/transport gate由09、12、13提供 |
 | policy-free physical-dataflow rewrites | 06、07、08；upstream structured utility由05提供，source/direct typed lowering合同由10提供，源码ownership由18约束 |
 | source implementation interface、target-abstract compute/movement和instruction legality | 10、11；transfer realizability/descriptor cover只由08拥有 |
 | accepted SPM/DDR allocation、lifetime和offset | 09、12；shared lifetime analysis的源码ownership和测试镜像由18约束 |
 | Tile peer/collective materialization、Direct DTE completion、card-scoped acceptance与post-memory transport activation | 13；joint choice由06、target/package/verification consumer由14、15、16约束 |
-| card-local multi-Tile时空调度、MPMD executable构造和`CardExecutable` | 06；资源/lifetime边界由09、12、13共同约束 |
+| card-local multi-Tile时空调度、MPMD executable构造和`DeviceExecutable` | 06；资源/lifetime边界由09、12、13共同约束 |
 | target LLVM、accepted immutable data preparation、CRT/device link和staged target module | 14 |
 | target-ready data、typed manifest、RuntimeInvocationPlan和board launch | 15 |
 | 横跨上述边界的completion evidence | 16 |

@@ -13,15 +13,15 @@ Pipeline position:
   indexing map、DPS/Tiling/MemoryEffect interfaces、type和SSA完整表达。05号normalization已在policy分叉前把完整Q/K/V attention
   一次性归一为verifier-legal `wafer.linalg_ext.attention`，FA/FD是op上的固定graph fact；后续search只选择physical assignments。
 - Current stage responsibility:
-  消费已物化的candidate-owned Card/TileRegion IR。Attention在该transaction内展开selected Linalg/Tensor/SCF；
+  消费已物化的candidate-owned TileModule/TileRegion IR。Attention在该transaction内展开selected Linalg/Tensor/SCF；
   compute lowering只读current structured op/SSA，layout/view/bufferization和movement transformation只读current value/use并生成new IR；
   movement闭合后，execution-structure transformation在current Tile IR上物化actual serialized/pipelined loop与rotating slot；
   最后把每个structure-closed Tile module合法化为canonical/unplaced `wafer.instr.*`。
 - Output IR / files:
-  selected complete CardModule中的typed wafer.tile.*与Wafer-tagged memref，或projected per-Tile wafer.instr.*；
+  selected complete top-level TileModule set中的typed wafer.tile.*与Wafer-tagged memref，或projected per-Tile wafer.instr.*；
   compute form、geometry、movement、execution structure/rotating slot和effect事实全部在actual IR中，不保留候选side channel。
 - Downstream consumer:
-  fresh worker/order/completion reconstruction、fixed-capacity SPM/DDR planning、CardExecutable communication/resource
+  fresh worker/order/completion reconstruction、fixed-capacity SPM/DDR planning、DeviceExecutable communication/resource
   verification、target conversion、explicit `(card_id, tile_id, launch_slot)` output/package writing。
 - User-level driver / named pipeline:
   wafer-compile production pipeline；局部wafer-opt conversion只用于focused leaf testing。
@@ -72,7 +72,8 @@ physical planning；本层不为其预留generic algorithm axis。若某类sourc
 
 ## 3. Selected Tile IR
 
-selected physical dataflow存在于`wafer.card.module`内all-and-only `wafer.tile.module`。不同Tile可以有
+selected physical dataflow存在于`builtin.module`内all-and-only top-level
+`wafer.tile.module(card_id, tile_id)`。不同Tile可以有
 不同compute ops、loop nests、tile shapes和执行长度。Tile-local SPM residency由一个或多个non-nested
 `wafer.tile.region`表达；region内允许多个traversal，不要求统一tile size。
 
@@ -110,7 +111,7 @@ movement、独立或rotating buffer roots及slot relation、数据依赖和event
 `wafer.linalg_ext.attention`从normalized TensorProgram保持到candidate的compact temporal tile-and-fuse输出；该stage只读取其公开
 operand/result relation，不展开内部算法。紧随其后的selected-attention lowering从current op interfaces、fixed algorithm和显式
 K1/K2/contribution/merge choice读取iterator、operand-demand与coupled-component relation，不创建future action/value inventory。
-每个candidate在自己的Card owner中一次性生成selected `tensor.extract_slice`、compact `scf.for`和Linalg compute：
+每个candidate在自己的module owner中一次性生成selected `tensor.extract_slice`、compact `scf.for`和Linalg compute：
 
 ```text
 QK contraction
@@ -198,7 +199,7 @@ layout/memory-space materialization而必要的copy可以保留，但必须从cu
 SSA把后续use解释为读取旧值，One-Shot Bufferization为保留该旧值而生成DDR→DDR copy；这种copy是错误串接造成的publication copy，
 不是必要movement。
 
-同一source经多段view/broadcast/materialize组成的relation可以在candidate新Card subtree中合成一次direct movement，前提是
+同一source经多段view/broadcast/materialize组成的relation可以在candidate新top-level TileModule subtrees中合成一次direct movement，前提是
 relation exact、其它uses/effects/alias闭合且final destination cover可证明。cleanup只能删除fully proven same-root/same-map
 冗余，不能移动fusion cut、改变route或创造spill/recompute。
 
@@ -227,21 +228,21 @@ latest-necessary completion。DTE wait、NCC participant join和group barrier是
 
 ## 7. Exact Verification
 
-selected complete CardModule统一经过：
+selected complete top-level TileModule set统一经过：
 
 ```text
-selected CardModule
+selected top-level TileModule set
   -> structural-to-layout-resolved transformation
   -> movement and physical-boundary closure
   -> execution-structure/rotating-slot transformation
-  -> split into all Tile modules
+  -> WaferTileModuleFanout
   -> Tile-to-Instr conversion
   -> worker/order placement and fresh completion
   -> fixed-capacity SPM planning per Tile
-  -> CardModule DDR planning
+  -> per-Tile DDR planning
   -> physical peer/message/range/resource verification
   -> final instruction recost and target legality
-  -> atomic CardExecutable
+  -> atomic DeviceExecutable
 ```
 
 Target-abstract verifier至少检查shape/dtype与existing operation fields、GEMM orientation、convolution canonical geometry、
@@ -249,7 +250,7 @@ stride/dilation/pad/unpad、reduce/init、elementwise relation、
 memory space/encoding、valid lanes、temporary和movement effects。Instr verifier至少检查engine domains、descriptor
 bytes/stride/iterations/range/alignment/narrowing、effect-associated actual roots及token/wait closure。
 
-任何Tile失败都拒绝整个selected complete CardModule；不能发布partial Tile set，也不能在actual gate中retile、spill、换layout或
+任何Tile失败都拒绝整个selected complete TileModule set；不能发布partial Tile set，也不能在actual gate中retile、spill、换layout或
 换transport。`none`与`search`分别完成自己的policy-specific materialization，只有形成verifier-legal Instr和current relations后
 才调用相同的late memory/transport/target leaf。
 

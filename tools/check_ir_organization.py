@@ -87,9 +87,9 @@ IR_LAYERS = {
     "Common",
 }
 CONVERSION_LIBRARIES = {
-    "WaferCardModuleToTileModules": {
-        "include": "include/Wafer/Conversion/WaferCardModuleToTileModules/WaferCardModuleToTileModules.h",
-        "lib": "lib/Wafer/Conversion/WaferCardModuleToTileModules/WaferCardModuleToTileModules.cpp",
+    "WaferTileModuleFanout": {
+        "include": "include/Wafer/Conversion/WaferTileModuleFanout/WaferTileModuleFanout.h",
+        "lib": "lib/Wafer/Conversion/WaferTileModuleFanout/WaferTileModuleFanout.cpp",
     },
     "WaferStructuredTiling": {
         "include": "include/Wafer/Conversion/StructuredTiling.h",

@@ -81,7 +81,7 @@ RuntimeLaunchContract makeLaunch() {
 
 SearchCostPolicy unitCostPolicy() {
   SearchCostPolicy policy;
-  policy.cardDDRNominalBytesPerSecond = UINT64_C(1000000000000);
+  policy.ddrNominalBytesPerSecond = UINT64_C(1000000000000);
   policy.directionalNoCBytesPerSecond = UINT64_C(1000000000000);
   policy.dteEndpointBytesPerSecondEstimate = UINT64_C(1000000000000);
   policy.dteMessageStartupPicosecondsEstimate = 1;
@@ -98,7 +98,7 @@ SearchCostPolicy unitCostPolicy() {
 }
 
 ActualCandidateResult accepted(uint64_t instructions, bool known = true) {
-  CardInstructionProgramCost cost;
+  InstructionProgramAggregateCost cost;
   cost.aggregateInstructionCount.value = instructions;
   cost.aggregateDDRReadBytes.value = instructions * 2;
   cost.aggregateDDRWriteBytes.value = instructions * 3;
@@ -107,8 +107,8 @@ ActualCandidateResult accepted(uint64_t instructions, bool known = true) {
   if (!known)
     cost.aggregateInstructionCount.knowledge =
         ScheduleCostKnowledge::Unavailable;
-  CardExecutableCompilationResult compilation;
-  compilation.status = CardExecutableCompilationStatus::Accepted;
+  ExecutableCompilationResult compilation;
+  compilation.status = ExecutableCompilationStatus::Accepted;
   compilation.executable.emplace(std::vector<compiler::TileExecutable>{},
                                  makeLaunch(), std::move(cost));
   ActualCandidateResult result;
@@ -121,13 +121,13 @@ ActualCandidateResult exactRejected(uint32_t rootAnchor,
                                     bool spmCapacity = false) {
   ActualCandidateResult result;
   result.status = ActualCandidateStatus::ExactRejection;
-  CardExecutableCompilationResult compilation;
-  compilation.status = CardExecutableCompilationStatus::ProvenExactRejection;
+  ExecutableCompilationResult compilation;
+  compilation.status = ExecutableCompilationStatus::ProvenExactRejection;
   if (spmCapacity) {
     SemanticRootKey root;
     root.anchorIndex = rootAnchor;
     result.causalRoots.push_back(root);
-    CardExecutableTileFailure tile;
+    ExecutableTileFailure tile;
     tile.tileId = TileId(0);
     tile.memoryPlanning.kind = TileMemoryPlanningFailureKind::SPMAllocation;
     tile.memoryPlanning.spmPlanningFailureKind =
@@ -144,10 +144,10 @@ TEST(ActualResultControllerTest,
   SearchCostPolicy policy = unitCostPolicy();
   auto cohort = SearchCostCohort::create(policy, &failureReason);
   ASSERT_TRUE(mlir::succeeded(cohort)) << failureReason;
-  policy.cardDDRNominalBytesPerSecond = 0;
+  policy.ddrNominalBytesPerSecond = 0;
   EXPECT_TRUE(mlir::failed(SearchCostCohort::create(policy, &failureReason)));
 
-  CardInstructionProgramCost cost;
+  InstructionProgramAggregateCost cost;
   cost.aggregateInstructionCount.value = 1;
   cost.aggregateDDRReadBytes.value = 2;
   cost.aggregateDDRWriteBytes.value = 3;
@@ -239,7 +239,7 @@ TEST(ActualResultControllerTest,
      SameInstructionCountKeepsNEAndVectorTradeoffIncomparable) {
   auto cohort = *SearchCostCohort::create(unitCostPolicy());
   auto makeCost = [](uint64_t ne, uint64_t vector) {
-    CardInstructionProgramCost cost;
+    InstructionProgramAggregateCost cost;
     cost.aggregateInstructionCount.value = 10;
     cost.aggregateCompute.npuF16Bf16LogicalOps.value = ne;
     cost.aggregateCompute.vectorF16Bf16LogicalOps.value = vector;
@@ -359,8 +359,8 @@ TEST(ActualResultControllerTest,
   EXPECT_EQ(controller.reserve(second), CandidateReservation::Exhausted);
   ActualCandidateResult malformedAccepted;
   malformedAccepted.status = ActualCandidateStatus::Accepted;
-  CardExecutableCompilationResult compilation;
-  compilation.status = CardExecutableCompilationStatus::Accepted;
+  ExecutableCompilationResult compilation;
+  compilation.status = ExecutableCompilationStatus::Accepted;
   malformedAccepted.compilation.emplace(std::move(compilation));
   EXPECT_EQ(controller.record(first, std::move(malformedAccepted)),
             CandidateRecordOutcome::CompilerBug);

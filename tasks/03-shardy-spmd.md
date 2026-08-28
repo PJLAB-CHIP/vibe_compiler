@@ -21,14 +21,14 @@ Pipeline position:
   输出尚未绑定card_id、target tile_id、launch slot或runtime endpoint。
 - Downstream consumer:
   fixed target-independent structured optimization；随后physical-dataflow planning对每个card-local DAG
-  构造CardModule，并选择target tile_id。Tile module splitting只发生在selected CardModule之后。
+  构造top-level TileModule set，并选择target tile_id。Tile module fan-out只发生在该collection完成之后。
 - User-level driver / named pipeline:
   正式入口为
   `wafer-compile --input-program-dir=... --output-dir=... --num-partitions=N`；
   `num_partitions`是card-level logical partition数，不是单卡Tile数。wafer-opt和IR-local sharding pipeline只用于
   debug/test，不能形成第二条production入口。
 - Explicit non-goals:
-  不决定target card placement、单卡Tile work assignment、CardModule、SPM/DDR、NoC/DTE、target ABI或
+  不决定target card placement、单卡Tile work assignment、TileModule set、SPM/DDR、NoC/DTE、target ABI或
   runtime launch；不从strategy名、parameter名、文件名或side JSON恢复语义。
 - Done criteria:
   helper输出的partition domain、distributed boundary和parameter shards与num_partitions all-and-only一致；
@@ -121,7 +121,7 @@ tensor DAG。它不携带：
 
 本stage按`partition_id=0..N-1`发布card-local structured programs。每个program在进入physical-dataflow planning
 时仍是一张完整DAG；不能先按单卡Tile数clone、不能只取partition 0作为代表、也不能去重字节相同的logical card
-partitions。`tasks/06-physical-dataflow-synthesis.md`随后为每个card-local DAG选择CardModule；其
+partitions。`tasks/06-physical-dataflow-synthesis.md`随后为每个card-local DAG选择TileModule set；其
 `wafer.tile.module`数量由selected physical mapping与available Tile domain决定，与`num_partitions`无等式关系。
 
 ## 3. Workload 与 sharding 验证边界
@@ -178,7 +178,7 @@ Mandatory coverage：
 - data/column/row等helper case按card partition解释，unsupported helper形态fail closed；
 - duplicate/missing partition、metadata/IR不一致、helper late failure和final readback failure保持transaction atomicity；
 - 用户入口拒绝旧`--execution-ranks`以及把16解释为single-card Tile count的请求；
-- downstream boundary测试证明同一个single-CardModule可形成多个Tile modules，但该算法与正确性合同只在
+- downstream boundary测试证明同一个selected top-level TileModule set可形成多个standalone modules，但该算法与正确性合同只在
   `tasks/06-physical-dataflow-synthesis.md`定义。
 
 局部Shardy/IR tests只证明parse、propagation或partition relation，不证明program payload、card-local boundary或

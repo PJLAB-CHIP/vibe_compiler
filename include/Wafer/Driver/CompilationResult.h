@@ -3,8 +3,8 @@
 #ifndef WAFER_DRIVER_COMPILATIONRESULT_H
 #define WAFER_DRIVER_COMPILATIONRESULT_H
 
-#include "Wafer/Driver/Compilation.h"
 #include "Wafer/CodeGen/TargetCodeGen.h"
+#include "Wafer/Driver/Compilation.h"
 #include "Wafer/Package/Manifest/PackageManifest.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -34,10 +34,9 @@ using ExecutablePackage = runtime::ExecutablePackage;
 class ProfileInstrumentationProduct {
 public:
   ProfileInstrumentationProduct(ProfileInstrumentationProduct &&) = default;
-  ProfileInstrumentationProduct &operator=(ProfileInstrumentationProduct &&) =
-      default;
-  ProfileInstrumentationProduct(const ProfileInstrumentationProduct &) =
-      delete;
+  ProfileInstrumentationProduct &
+  operator=(ProfileInstrumentationProduct &&) = default;
+  ProfileInstrumentationProduct(const ProfileInstrumentationProduct &) = delete;
   ProfileInstrumentationProduct &
   operator=(const ProfileInstrumentationProduct &) = delete;
 
@@ -80,7 +79,7 @@ private:
 /// The complete typed product of one production compilation transaction. The
 /// ordinary package is always present; the profile instrumentation is present
 /// exactly when it was explicitly requested and was committed together with
-/// the ordinary package. CardExecutable, target LLVM modules and IR trace are
+/// the ordinary package. DeviceExecutable, target LLVM modules and IR trace are
 /// deliberately not part of this result; internal qualification consumers use
 /// compileProgramWithTargetLLVMModules.
 class CompilationResult {
@@ -92,22 +91,22 @@ public:
 
   const ExecutablePackage &getPackage() const { return package; }
   const ExecutionConfig &getExecutionConfig() const { return executionConfig; }
-  const std::optional<ProfileInstrumentationProduct>
-      &getProfileInstrumentation() const {
+  const std::optional<ProfileInstrumentationProduct> &
+  getProfileInstrumentation() const {
     return profileInstrumentation;
   }
 
 private:
   friend struct CompilationResultBuilder;
-  friend llvm::Expected<CompilationResult> compileProgram(
-      CompilationRequest request, llvm::StringRef outputDirectory,
-      llvm::StringRef xlaSpmdPartitionerHelper,
-      const TargetToolchain &targetToolchain, CompilationOptions options,
-      llvm::raw_ostream &diagnostics);
+  friend llvm::Expected<CompilationResult>
+  compileProgram(CompilationRequest request, llvm::StringRef outputDirectory,
+                 llvm::StringRef xlaSpmdPartitionerHelper,
+                 const TargetToolchain &targetToolchain,
+                 CompilationOptions options, llvm::raw_ostream &diagnostics);
 
-  CompilationResult(ExecutionConfig executionConfig, ExecutablePackage package,
-                    std::optional<ProfileInstrumentationProduct>
-                        profileInstrumentation)
+  CompilationResult(
+      ExecutionConfig executionConfig, ExecutablePackage package,
+      std::optional<ProfileInstrumentationProduct> profileInstrumentation)
       : executionConfig(executionConfig), package(std::move(package)),
         profileInstrumentation(std::move(profileInstrumentation)) {}
 
@@ -129,8 +128,7 @@ private:
 /// the caller-owned stream; the returned error classifies the failing
 /// transaction stage.
 llvm::Expected<CompilationResult>
-compileProgram(CompilationRequest request,
-               llvm::StringRef outputDirectory,
+compileProgram(CompilationRequest request, llvm::StringRef outputDirectory,
                llvm::StringRef xlaSpmdPartitionerHelper,
                const TargetToolchain &targetToolchain,
                CompilationOptions options, llvm::raw_ostream &diagnostics);

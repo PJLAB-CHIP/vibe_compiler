@@ -28,7 +28,7 @@ Pipeline position:
 - Current stage responsibility:
   在compiler transaction内打开并验证每个payload；建立稳定program identity、owned file和checked byte range；
   bounded解析header、hash和读取；让SPMD helper只消费transaction提供的内容；真实partition产生新owned file，
-  contiguous slice只产生新range；形成CardExecutable/target writer可消费的ProgramDataHandoff。
+  contiguous slice只产生新range；形成DeviceExecutable/target writer可消费的ProgramDataHandoff。
 - Output IR / files:
   不新增IR层或用户文件格式。输出一个move-only ProgramDataHandoff，拥有本次编译使用的文件，并按program tensor identity
   提供logical descriptor、source file identity、offset、bytes和digest；其lifetime覆盖Q56 target data写出。
@@ -92,7 +92,7 @@ ProgramDataRange:
 
 ### 3.3 ProgramDataHandoff
 
-`ProgramDataHandoff`拥有all-and-only live ProgramDataSource与ProgramDataRange，并与`CardExecutable`共同存活到Q56写完
+`ProgramDataHandoff`拥有all-and-only live ProgramDataSource与ProgramDataRange，并与`DeviceExecutable`共同存活到Q56写完
 target-ready data。Tile records只保存ProgramTensorId/slice reference，不复制payload，不持有悬空mapping。
 
 Q58不定义TargetTensor。TargetTensor由14号合同根据最终`TileEntryArgument`的selected target descriptor形成；
@@ -101,7 +101,7 @@ Q58不定义TargetTensor。TargetTensor由14号合同根据最终`TileEntryArgum
 ## 4. Q58 checkpoints
 
 1. **现状账本**（2026-08-15 完成盘点，以下为实施前基线）
-   - 逐项记录source verify、snapshot、SPMD input/output、CardExecutable binding和target consumer的open/read/hash/write/copy。
+   - 逐项记录source verify、snapshot、SPMD input/output、DeviceExecutable binding和target consumer的open/read/hash/write/copy。
    - 分开统计ProgramTensor、ProgramDataSource、ProgramDataRange、TargetTensor和package byte range，不能用一个resource计数。
 
    实施前一次source→package的payload I/O账本（num_partitions=1，每parameter全量复制路径）：
@@ -114,7 +114,7 @@ Q58不定义TargetTensor。TargetTensor由14号合同根据最终`TileEntryArgum
    | SPMD helper | 外部进程读`data/<param>` | helper进程内整NPY读入vector；写`parameter_shards/`；copy constants |
    | merge | `mergeMissingProgramMembers(source→tensorProgram)` | 整树复制#3：data/等缺失成员再次全量复制 |
    | tensor verify | `verifyProgramDirectoryMetadata(tensorProgram)` | shard逐文件header+extent再读一遍 |
-   | CardExecutable | `compileTensorProgramToCardExecutable` | 第三次`verifyProgramDirectoryMetadata`：同一批shard/constant文件再open/read |
+   | DeviceExecutable | `compileTensorProgramToDeviceExecutable` | 第三次`verifyProgramDirectoryMetadata`：同一批shard/constant文件再open/read |
    | package | `writePackage: copyDirectory(tensorProgram→package)` | 整树复制#4：全部payload进入package（Q56才改schema） |
    | target consumer | `prepareProgramInvocations(card, packageRoot, …)` | **每Tile**按`slice.payloadPath`重新打开package内NPY，16×全量读入host vector；`ProgramTensor::loadNpy`整文件mmap+copy |
    | target model | `prepareTargetModelInvocation` | 同一card-owned resource在16个Tile上各调用一次`encodeTargetModelProgramTensor`（codec重复16×，结果去重保留一份） |
@@ -127,7 +127,7 @@ Q58不定义TargetTensor。TargetTensor由14号合同根据最终`TileEntryArgum
      handle；最终dtype/shape/header offset/exact extent全部从owned descriptor重读，whole-file digest也从该handle按window
      重算并与复制流比对，全部通过后才发布source。
    - `ProgramDataHandoff`在稳定output parent下惰性创建`.wafer-program-data-*`唯一目录并move-own；compile staging删除
-     不影响returned `CardExecutable`，source/handoff析构按handle→file→directory顺序清理。用户path在establishment后
+     不影响returned `DeviceExecutable`，source/handoff析构按handle→file→directory顺序清理。用户path在establishment后
      不再打开；同inode原地写入回归fixture为32KiB payload，明确超过pinned LLVM 16KiB mmap阈值。
    - 失败分类`ProgramDataFailureKind`：MissingPayload、HeaderInvalid、UnsupportedEncoding、ShapeMismatch、
      DTypeMismatch、TruncatedPayload、TrailingPayload、SizeOverflow、DigestMismatch、MissingRange、
@@ -158,8 +158,8 @@ Q58不定义TargetTensor。TargetTensor由14号合同根据最终`TileEntryArgum
      可增长，source bytes不增长。
    - range携带显式来源合同：`OriginalSource`证明source shape==global shape，`MaterializedShard`证明
      source shape==local shape且slice从原点精确覆盖；同字节数不同shape被typed拒绝。
-   - `ProgramDataHandoff`由`CardExecutable`持有并与executable同lifetime；其RAII目录独立于compile staging，move后
-     source handle和共享账本地址稳定。tensor-program readback与CardExecutable边界验证经resolver消费owned content，
+   - `ProgramDataHandoff`由`DeviceExecutable`持有并与executable同lifetime；其RAII目录独立于compile staging，move后
+     source handle和共享账本地址稳定。tensor-program readback与DeviceExecutable边界验证经resolver消费owned content，
      不产生新owned-file open；
      `prepareProgramInvocations`不再接收packageRoot，target consumer按program identity和range读取。
    - Q56按`ProgramTensorId + range + selected target descriptor`建立TargetTensor并materialize，禁止按Tile重复。
@@ -168,7 +168,7 @@ Q58不定义TargetTensor。TargetTensor由14号合同根据最终`TileEntryArgum
      staging仍可读、析构删除owned file、Card边界candidate从1归零、candidate文件立即消失、32KiB同inode改写，以及
      2.8MB range分3个window且零新增open。Q58直接受影响的Npy、target memory、compilation/lowering/ABI/frontend filtered
      unit合计52/52通过。
-   - `wafer-compile-program-data-package.test` fresh通过：小型FP16 parameter从source→helper candidate/dedup→CardExecutable→
+   - `wafer-compile-program-data-package.test` fresh通过：小型FP16 parameter从source→helper candidate/dedup→DeviceExecutable→
      package并经16-Tile no-card，CLI返回后`.wafer-program-data-*`为零。实际账本为
      `source_opens=2 file_opens=8 read_windows=18 read_bytes=1568 maximum_read_window_bytes=160 header_reads=11
       digest_passes=7 helper_output_readbacks=1 range_materializations=0 materialized_file_writes=1`。
@@ -214,10 +214,10 @@ Pipeline position:
   Q60 current verified source、Q58 ProgramDataHandoff、Q53 board-ready的single-entry static-ranked single-card
   search|none pipeline和Q56 current ExecutablePackage。
 - Current stage responsibility:
-  重放source verify、SPMD、structured lowering、physical-dataflow search、CardExecutable、target data conversion、
+  重放source verify、SPMD、structured lowering、physical-dataflow search、DeviceExecutable、target data conversion、
   package write/readback；测量IR/candidate work、ProgramData I/O、wall、CPU、RSS和disk，删除whole-program重复工作。
 - Output:
-  与小程序完全相同的CardExecutable和ExecutablePackage，以及只用于qualification的measurement。
+  与小程序完全相同的DeviceExecutable和ExecutablePackage，以及只用于qualification的measurement。
 - Downstream consumer:
   compiler production qualification；不定义runtime或serving接口。
 - Non-goals:
@@ -236,7 +236,7 @@ Pipeline position:
 | Graph-heavy/data-light | branch、diamond、fanout、reduction、大量op/edge | 数据小，隔离IR/search成本 |
 | Data-heavy/graph-light | 大量ProgramTensor、少量大source、slice和多dtype | 沿用Q58完整byte gate |
 | Explicit-state recurrent | state作为普通entry input/output | 不声明runtime-owned state或alias |
-| Repeated-block whole program | 长依赖链、重复region、混合fanout | 完整graph进入同一search和CardExecutable |
+| Repeated-block whole program | 长依赖链、重复region、混合fanout | 完整graph进入同一search和DeviceExecutable |
 | 可选Llama witness | 完整静态graph和parameter inventory | 只作见证，不引入LLM ABI或serving policy |
 
 ### 7.2 Qualification requirements
@@ -253,6 +253,6 @@ Pipeline position:
 - Q58先完成transaction-owned program data seam，Q56只能消费该seam，不能重新打开source path；
 - logical ProgramTensor、source file/range、selected TargetTensor、package byte range和runtime device address是不同边界；
 - target layout只由compiler选择；package保存target-ready bytes；runtime不重新pack；
-- 一个package仍对应一个current CardExecutable；不预埋多个entry、模型族或specialization collection；
+- 一个package仍对应一个current DeviceExecutable；不预埋多个entry、模型族或specialization collection；
 - Llama只作可选scale witness；通用合同由stateless、graph-heavy、data-heavy、explicit-state和repeated-block共同签发；
 - frontend/CLI productization保持独立任务，只消费已经闭合的ProgramData与ExecutablePackage接口。

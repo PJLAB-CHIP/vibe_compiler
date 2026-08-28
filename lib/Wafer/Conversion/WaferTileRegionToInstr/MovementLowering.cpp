@@ -211,9 +211,9 @@ public:
     llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
         createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
                                        *dest, *descriptors);
-    if (CardDDRResourceAttr resource = op.getCardDdrResourceAttr())
+    if (DDRResourceAttr resource = op.getDdrResourceAttr())
       for (InstrGatherScatterOp operation : lowered)
-        operation.setCardDdrResourceAttr(resource);
+        operation.setDdrResourceAttr(resource);
     if (bufferRecorder)
       for (InstrGatherScatterOp operation : lowered)
         bufferRecorder->recordLoweredOperation(op, operation);
@@ -545,9 +545,9 @@ public:
     llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
         createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
                                        op.getDest(), **insertDescriptors);
-    if (CardDDRResourceAttr resource = op.getCardDdrResourceAttr())
+    if (DDRResourceAttr resource = op.getDdrResourceAttr())
       for (InstrGatherScatterOp operation : lowered)
-        operation.setCardDdrResourceAttr(resource);
+        operation.setDdrResourceAttr(resource);
     if (bufferRecorder)
       for (InstrGatherScatterOp operation : lowered)
         bufferRecorder->recordLoweredOperation(op, operation);

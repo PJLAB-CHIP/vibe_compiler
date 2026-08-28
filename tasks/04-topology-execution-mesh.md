@@ -2,7 +2,7 @@
 
 状态：2026-08-08 按logical card partition与Tile双域重置。本文拥有
 `wafer.target.topology`、card-level logical execution mesh以及两者的可重算基础事实；
-`tasks/06-physical-dataflow-synthesis.md`唯一拥有card-local physical-dataflow搜索与CardModule，tasks/14拥有current target identity。
+`tasks/06-physical-dataflow-synthesis.md`唯一拥有card-local physical-dataflow搜索与TileModule set，tasks/14拥有current target identity。
 实现状态看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
@@ -21,7 +21,7 @@ Pipeline position:
   logical card-partition domain。两者都不是sharding strategy、selected Tile mapping、per-Tile executable或runtime placement。
 - Downstream consumer:
   Shardy/XLA SPMD只消费logical card-partition mesh；physical-dataflow planning独立消费每个card-local DAG
-  和target topology的available tile_id domain，产生CardModule；target/package lowering再把selected
+  和target topology的available tile_id domain，产生TileModule set；target/package lowering再把selected
   `(card_id, tile_id)`投影为当前ABI launch slot。
 - User-level driver / named pipeline:
   正式入口为`wafer-compile --num-partitions=N`。topology/mesh materialization passes和
@@ -124,9 +124,9 @@ policy时，不从它伪造实际N/S/E/W route、per-link congestion、cycle或�
 multicast、gather/reduction的候选与选择属于communication/physical-dataflow owner；本层只提供合法physical graph
 query，不保存ring、tree、Tile participant order或selected path。
 
-logical mesh的analysis只提供partition coordinate与linear `partition_id`。它不查询Tile graph。只有下游已形成
-`wafer.card.module`及其selected `wafer.tile.module(tile_id=...)`后，communication analysis才用Tile set
-查询距离和邻接。
+logical mesh的analysis只提供partition coordinate与linear `partition_id`。它不查询Tile graph。只有下游已在
+`builtin.module`中形成selected top-level `wafer.tile.module(card_id=..., tile_id=...)`后，communication analysis才用
+Tile set查询距离和邻接。
 
 ## 4. Helper 与 structured-program 交接
 
@@ -146,18 +146,19 @@ topology/mesh不是helper必须保留的unknown op，也不是opaque sidecar。l
 physical topology可以在helper边界后fresh重建，因为helper不消费Tile语义。helper path、output path和pass名不
 进入`ExecutionConfig`或IR。
 
-## 5. CardModule MPMD 与 late Tile module splitting
+## 5. Top-level Tile modules 与 late fan-out
 
-对每个card-local structured DAG，下游产生一个`wafer.card.module(card_id=...)`，内部包含selected
-`wafer.tile.module(tile_id=...)`。不同Tile module可以包含不同op、loop和work domain；完整语义覆盖、跨Tile消息、
-SPM ownership和completion由CardModule verifier证明。具体搜索状态、候选生成、fusion和cost只在
+对每个card-local structured DAG，下游在现有`builtin.module`中产生selected top-level
+`wafer.tile.module(card_id=..., tile_id=...)`集合。不同Tile module可以包含不同op、loop和work domain；
+`TileModuleOp` verifier只检查自身parent、region和typed identity，完整Tile domain、topology、跨Tile消息、shared DDR、
+SPM ownership和completion由直接消费该集合的module/executable stages检查。具体搜索状态、候选生成、fusion和cost只在
 `tasks/06-physical-dataflow-synthesis.md`定义，本文不复制。
 
-selected CardModule之后才拆成Tile modules：
+selected Tile module collection随后由`WaferTileModuleFanout`拆成standalone modules：
 
 ```text
-wafer.card.module(card_id)
-  + wafer.tile.module(tile_id)*
+builtin.module
+  + wafer.tile.module(card_id, tile_id)*
   -> per-Tile instruction modules
   -> target lowering maps (card_id, tile_id) to ABI launch slot
 ```
@@ -183,4 +184,4 @@ launch slot一一对应。launch slot只是最低层ABI编码，不能反向进�
 
 任一frontend失败发生在transaction staging内，source和既有final output保持byte-identical。IR-local pass success只证明
 op或analysis合同；只有统一driver从真实program重放helper、metadata、structured program和final readback才完成
-frontend gate。CardModule、projection和package completion由各自owner的integration gate证明。
+frontend gate。Tile module collection、fan-out和package completion由各自owner的integration gate证明。

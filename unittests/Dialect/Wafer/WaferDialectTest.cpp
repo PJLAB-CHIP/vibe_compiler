@@ -128,10 +128,9 @@ SlowPhysicalLayout slowPhysicalLayout(const SlowLayoutCase &testCase) {
         llvm::ArrayRef<int64_t>(testCase.shape).drop_front().drop_back();
   result.blockOuterElements = slowProduct(blockOuterShape);
   result.outerElements = outerSliceCount * result.blockOuterElements;
-  result.outerSliceStrideElements = slowAlignUp(
-      result.blockOuterElements * result.alignedC, bankElements);
-  result.physicalElements =
-      outerSliceCount * result.outerSliceStrideElements;
+  result.outerSliceStrideElements =
+      slowAlignUp(result.blockOuterElements * result.alignedC, bankElements);
+  result.physicalElements = outerSliceCount * result.outerSliceStrideElements;
   return result;
 }
 
@@ -184,10 +183,8 @@ int64_t slowPhysicalElementOffset(const SlowLayoutCase &testCase,
         llvm::ArrayRef<int64_t>(testCase.shape).drop_front().drop_back();
     blockOuterIndices = indices.drop_front().drop_back();
   }
-  int64_t blockOuter =
-      slowRowMajorIndex(blockOuterShape, blockOuterIndices);
-  int64_t outerSliceBase =
-      outerSlice * layout.outerSliceStrideElements;
+  int64_t blockOuter = slowRowMajorIndex(blockOuterShape, blockOuterIndices);
+  int64_t outerSliceBase = outerSlice * layout.outerSliceStrideElements;
   if (isTail)
     return outerSliceBase +
            layout.fullBlocks * layout.blockOuterElements * layout.cBlock +
@@ -853,8 +850,7 @@ TEST(WaferDialectTest, ComputesBitpackedOffsetsWithoutGuessingBitOrder) {
   EXPECT_EQ(wafer::computeWaferPhysicalElementBitOffset(f16, {1, 2}), 80);
 }
 
-TEST(WaferDialectTest,
-     CardDDRBindingsRoundTripAndRequireAnEnclosingDeclaration) {
+TEST(WaferDialectTest, DDRBindingsRoundTripAndRequireAModuleDeclaration) {
   mlir::DialectRegistry registry;
   wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
@@ -866,17 +862,15 @@ module {
   wafer.target.topology @target
       {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
        tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
-  wafer.card.module card_id = 0 {
-    memref.global "private" @card_ddr_0
-        : memref<1x1024x64xf16, #wafer.memory<ddr, tensor>>
-        {wafer.card_ddr.resource = #wafer.card_ddr_resource<0>}
-    wafer.tile.module tile_id = 0 {
-      func.func @entry(
-          %arg0: tensor<1x1024x64xf16>
-              {wafer.card_ddr.binding =
-                  #wafer.card_ddr_binding<@card_ddr_0, id = 0, read_write>}) {
-        return
-      }
+  memref.global "private" @ddr_0
+      : memref<1x1024x64xf16, #wafer.memory<ddr, tensor>>
+      {wafer.ddr_resource = #wafer.ddr_resource<0>}
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(
+        %arg0: tensor<1x1024x64xf16>
+            {wafer.ddr_binding =
+                #wafer.ddr_binding<@ddr_0, id = 0, read_write>}) {
+      return
     }
   }
 }
@@ -885,6 +879,7 @@ module {
       valid, mlir::ParserConfig(&context));
   ASSERT_TRUE(module);
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  ASSERT_TRUE(mlir::succeeded(wafer::verifyTileModuleCollection(*module)));
   std::string printed;
   llvm::raw_string_ostream stream(printed);
   module->print(stream);
@@ -893,20 +888,19 @@ module {
       printed, mlir::ParserConfig(&context));
   ASSERT_TRUE(reparsed);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*reparsed)));
+  EXPECT_TRUE(mlir::succeeded(wafer::verifyTileModuleCollection(*reparsed)));
 
   constexpr llvm::StringLiteral orphan = R"mlir(
 module {
   wafer.target.topology @target
       {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
        tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
-  wafer.card.module card_id = 0 {
-    wafer.tile.module tile_id = 0 {
-      func.func @entry(
-          %arg0: tensor<1x1025x64xf16>
-              {wafer.card_ddr.binding =
-                  #wafer.card_ddr_binding<@missing, id = 0, read>}) {
-        return
-      }
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(
+        %arg0: tensor<1x1025x64xf16>
+            {wafer.ddr_binding =
+                #wafer.ddr_binding<@missing, id = 0, read>}) {
+      return
     }
   }
 }
@@ -916,7 +910,8 @@ module {
   ASSERT_TRUE(invalid);
   mlir::ScopedDiagnosticHandler suppress(
       &context, [](mlir::Diagnostic &) { return mlir::success(); });
-  EXPECT_TRUE(mlir::failed(mlir::verify(*invalid)));
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*invalid)));
+  EXPECT_TRUE(mlir::failed(wafer::verifyTileModuleCollection(*invalid)));
 }
 
 TEST(WaferDialectTest, CollectiveMeshBoundsAreCheckedAtModuleStage) {

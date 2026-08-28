@@ -279,17 +279,17 @@ decodeTargetModelProgramTensor(const compiler::TileEntryArgument &slot,
 }
 
 llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
-    const compiler::CardExecutable &cardExecutable,
+    const compiler::DeviceExecutable &deviceExecutable,
     const compiler::TargetLLVMModules &targetLLVMModules,
     llvm::ArrayRef<compiler::ProgramTileInvocation> programInvocations) {
-  const auto &tiles = cardExecutable.getTileExecutables();
+  const auto &tiles = deviceExecutable.getTileExecutables();
   const auto &modules = targetLLVMModules.getModules();
-  if (cardExecutable.getExecutionConfig() !=
+  if (deviceExecutable.getExecutionConfig() !=
           targetLLVMModules.getExecutionConfig() ||
       tiles.size() != modules.size() ||
       tiles.size() != programInvocations.size() ||
       tiles.size() != static_cast<size_t>(
-                          cardExecutable.getExecutionConfig().getTileCount()))
+                          deviceExecutable.getExecutionConfig().getTileCount()))
     return invocationError(TargetModelInvocationErrorCode::InvalidTileDomain,
                            "source, Tile executable, and target LLVM "
                            "launch domains are not identical");
@@ -428,9 +428,9 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
   }
 
   for (const Allocation &allocation : allocations) {
-    const bool cardOwned = !allocation.resource.tileId.has_value();
-    if ((cardOwned && allocation.launchSlots.size() != tiles.size()) ||
-        (!cardOwned && allocation.launchSlots.size() != 1))
+    const bool sharedAcrossTiles = !allocation.resource.tileId.has_value();
+    if ((sharedAcrossTiles && allocation.launchSlots.size() != tiles.size()) ||
+        (!sharedAcrossTiles && allocation.launchSlots.size() != 1))
       return invocationError(
           TargetModelInvocationErrorCode::InvalidTileEntryArgument,
           "physical resource owner disagrees with its Tile ABI domain");

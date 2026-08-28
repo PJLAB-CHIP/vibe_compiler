@@ -961,7 +961,7 @@ TEST_F(PackageManifestTest, RuntimeInvocationPlanningIsExactAndSideEffectFree) {
 }
 
 TEST_F(PackageManifestTest,
-       CardWorkspaceIsAllocatedOnceAndSharedByTypedReadersAndWriter) {
+       SharedWorkspaceIsAllocatedOnceAndSharedByTypedReadersAndWriter) {
   writeFullProgramData();
   PackageManifest manifest = makeManifest();
   for (PackageEntrypointRecord &entry : manifest.entries) {
@@ -971,8 +971,8 @@ TEST_F(PackageManifestTest,
     const bool writer = entry.tileId == wafer::TileId(1);
     entry.arguments.push_back(
         {static_cast<uint64_t>(entry.arguments.size()),
-         CardWorkspaceArgument{/*resource=*/0, /*bytes=*/1024,
-                               /*alignment=*/256},
+         SharedWorkspaceArgument{/*resource=*/0, /*bytes=*/1024,
+                                 /*alignment=*/256},
          writer ? PackageAccessMode::WriteOnly : PackageAccessMode::ReadOnly});
     workspace.ordinal = entry.arguments.size();
     entry.arguments.push_back(std::move(workspace));
@@ -986,9 +986,9 @@ TEST_F(PackageManifestTest,
       *verified, makeInputBindings(verified->getManifest()),
       makeEnvironment(1024 * 1024));
   ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
-  ASSERT_EQ(plan->cardWorkspaceRanges.size(), 1u);
-  EXPECT_EQ(plan->cardWorkspaceRanges.front().offset, 512u);
-  EXPECT_EQ(plan->cardWorkspaceRanges.front().bytes, 1024u);
+  ASSERT_EQ(plan->sharedWorkspaceRanges.size(), 1u);
+  EXPECT_EQ(plan->sharedWorkspaceRanges.front().offset, 512u);
+  EXPECT_EQ(plan->sharedWorkspaceRanges.front().bytes, 1024u);
   ASSERT_EQ(plan->tiles.size(), 16u);
   for (const RuntimeSessionPlan &tile : plan->tiles) {
     ASSERT_EQ(tile.argumentAddresses.size(), 6u);
@@ -1000,7 +1000,7 @@ TEST_F(PackageManifestTest,
   PackageManifest missingWriter = verified->getManifest();
   for (PackageEntrypointRecord &entry : missingWriter.entries)
     for (TileEntryArgumentRecord &argument : entry.arguments)
-      if (std::holds_alternative<CardWorkspaceArgument>(argument.reference))
+      if (std::holds_alternative<SharedWorkspaceArgument>(argument.reference))
         argument.access = PackageAccessMode::ReadOnly;
   llvm::Expected<VerifiedPackageManifest> rejected =
       verifyPackageManifest(std::move(missingWriter), root);

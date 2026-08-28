@@ -1,7 +1,7 @@
 # Wafer 源码与构建模块化
 
 本文定义current source ownership和依赖方向，不复制IR/ABI/schema语义。稳定编译边界为
-`TensorProgram -> physical-dataflow selection -> CardModule/TileRegion/Instr -> CardExecutable -> ExecutablePackage`。
+`TensorProgram -> physical-dataflow selection -> TileModule/TileRegion/Instr -> DeviceExecutable -> ExecutablePackage`。
 与新owner冲突的source、public header、CMake entry、test和兼容wrapper只有在负责该能力的current capability owner及替代测试闭合后才删除；
 不保留空stub或旧接口alias，也不把旧owner连同仍需能力直接清空。
 
@@ -10,7 +10,7 @@
 ```text
 Pipeline position:
 - Upstream IR / input:
-  当前frontend program、TensorProgram、CardModule/TileRegion、Instr、CardExecutable、target LLVM modules/linked ELF、
+  当前frontend program、TensorProgram、TileModule/TileRegion、Instr、DeviceExecutable、target LLVM modules/linked ELF、
   ExecutablePackage、runtime/model invocation及其CMake libraries。
 - Current stage responsibility:
   按稳定IR/output边界组织public API、internal helper、translation unit和build依赖；保证physical-dataflow selection、
@@ -86,11 +86,11 @@ single-card current path向physical-dataflow stage交付一个完整card-local T
 - graph normalization：从current TensorProgram typed SSA证明完整attention并创建一个fixed-algorithm semantic op；不构造
   algorithm points或isolated alternative；
 - physical-dataflow selection：从fixed TensorProgram roots构造query-local exact demand和typed spatial/region/temporal choices；
-- Spatial/Region CardModule materialization：消费closed spatial assignment、ExactDemand/RootWork和Region membership/explicit replica，
+- Spatial/Region TileModule set materialization：消费closed spatial assignment、ExactDemand/RootWork和Region membership/explicit replica，
   立即生成actual TileModules/TileRegions与ordinary op/SSA；attention保持opaque，不创建temporal/layout/movement事实；
 - compact temporal tile-and-fuse：消费actual Region与free temporal choice，从current SSA决定fusion；attention仍保持semantic op opaque，
   只处理接口可证明且不依赖内部use/replica推测的外部edge；
-- selected-attention lowering：在candidate Card owner中消费fixed FA/FD和尚未使用的K1/K2/contribution/merge choice，一次性生成actual
+- selected-attention lowering：在candidate module owner中消费fixed FA/FD和尚未使用的K1/K2/contribution/merge choice，一次性生成actual
   Linalg/Tensor/SCF与coupled state；不创建future action/value inventory，输出attention为零并直接交给physical realization；
 - current-IR physical realization：先一次完成function-boundary与region-local bufferization/layout/view，再应用movement choice；
   每次rewrite后验证并使旧analysis失效；
@@ -105,15 +105,15 @@ single-card current path向physical-dataflow stage交付一个完整card-local T
 - bounded candidate Tile executor：对每个candidate并行互不共享可写IR的per-Tile lowering work，并维持deterministic result order；
 - Instr construction and physical verification：structure-closed TileRegion-to-Instr后从current Instr重建dependence/resource graph，
   应用worker/order并fresh构造completion；completion-closed Instr随后进入不再修改completion的memory、transport和ABI leaf；
-- CardExecutable actual admission：返回Accepted或typed rejection/failure，不生成repair；rejected/loser owner销毁，final winner再进入target output。
+- DeviceExecutable actual admission：返回Accepted或typed rejection/failure，不生成repair；rejected/loser owner销毁，final winner再进入target output。
 
-现有类名或函数名只作为实现索引；长期合同仍是：TensorProgram → structural choice → actual CardModule/TileRegion → all-and-only
-Tile Instr → actual result → one retained CardExecutable winner。实现索引不得升级为output名或要求其它library读取search对象。
+现有类名或函数名只作为实现索引；长期合同仍是：TensorProgram → structural choice → actual TileModule/TileRegion → all-and-only
+Tile Instr → actual result → one retained DeviceExecutable winner。实现索引不得升级为output名或要求其它library读取search对象。
 
 禁止恢复：
 
 - GSPMD partition直接绑定Tile；
-- 每Tile独立winner再拼CardExecutable；
+- 每Tile独立winner再拼DeviceExecutable；
 - complete execution domain clone N、late NoC profitability或第二selector；
 - algorithm/model/shape/name matcher和拥有独立selection/public控制面的Flash/Decode pass；attention只允许05定义的typed SSA
   graph proof与单一current op，future semantic alternatives必须由自己的设计和consumer闭合；
@@ -126,20 +126,20 @@ conversion libraries按IR边界组织。稳定output流为：
 ```text
 TensorProgram
   -> physical-dataflow selection
-  -> CardModule / TileRegion
+  -> top-level TileModule set / TileRegion
   -> Instr
-  -> CardExecutable
+  -> DeviceExecutable
   -> target conversion
   -> ExecutablePackage
 ```
 
-- TensorProgram→CardModule materializes selected physical spatial mapping及coverage；
-- CardModule→Tile projection只从explicit Tile modules拆出ModuleOps并保留physical identity；
-- CardModule/TileModule内的TileRegion materialization使用structured tiling/reduction interfaces、DPS和IndexRelation，
+- TensorProgram→top-level TileModule set materializes selected physical spatial mapping及coverage；
+- `WaferTileModuleFanout`只从explicit top-level Tile modules拆出standalone ModuleOps并保留physical identity；
+- TileModule内的TileRegion materialization使用structured tiling/reduction interfaces、DPS和IndexRelation，
   负责Tile-local dataflow；
 - TileRegion→Instr lower actual compute/movement/communication，不做全局选择；
-- CardExecutable verification只消费all-and-only finalized Instr并原子验证；
-- target conversion和package writing分别消费CardExecutable与verified target modules，不恢复physical choice。
+- DeviceExecutable verification只消费all-and-only finalized Instr并原子验证；
+- target conversion和package writing分别消费DeviceExecutable与verified target modules，不恢复physical choice。
 
 不同output/op可拥有不同active Tile set与tile shape；projection不能假设common result tile vector。conversion failure返回
 candidate owner，不在内部反复缩tile或切换算法。
@@ -274,7 +274,7 @@ tool与CMake依赖边界。这里仅记录稳定library拓扑：
   显式profile时另持有compiler-owned `ProfileInstrumentationProduct`（root+identity digests+exact metadata/capture owners）；
   失败返回`CompilationFailure`并携带
   `CompilationStage`分类。`wafer-compile`只链接该target并负责参数解析、单一tool resolver构造、调用和diagnostic rendering；
-- `compileProgramWithTargetLLVMModules`（`llvm::Expected<CompiledProgram>`）保留CardExecutable/target modules/IR trace，只由
+- `compileProgramWithTargetLLVMModules`（`llvm::Expected<CompiledProgram>`）保留DeviceExecutable/target modules/IR trace，只由
   internal inspection consumer（`wafer-compile-test`的target-model gate与compiler IR dump）消费，不进入production CLI的
   post-commit控制流；production `wafer-compile`对`--target-model*`/`--dump-compiler-ir`及旧output flag报unknown
   argument；
@@ -329,7 +329,7 @@ source。删除功能时删除对应only-purpose fixture/golden/catalog；通用
 
 源码组织只证明实现owner、build registration和test registration，不代签算法、IR或端到端完成。Physical-dataflow迁移必须满足：
 
-- baseline和search分别只有一个policy-specific controller与Card/Tile materializer；允许共享的窄leaf位于其真实IR或
+- baseline和search分别只有一个policy-specific controller与TileModule materializer；允许共享的窄leaf位于其真实IR或
   lowering owner中，不以mode、nullable callback或plan variant形成shared complete facade；
 - 每个IR transformation只有一个active实现，named pipeline、focused工具和production driver调用同一builder或conversion；
 - 旧producer、consumer、public header、CMake source、test registration和only-purpose fixture在同一cutover删除，不保留

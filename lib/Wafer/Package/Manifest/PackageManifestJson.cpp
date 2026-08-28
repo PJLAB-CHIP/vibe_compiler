@@ -626,7 +626,7 @@ parseTileEntryArgumentReference(const llvm::json::Object &object,
       return alignment.takeError();
     return TileEntryArgumentReference{WorkspaceArgument{*bytes, *alignment}};
   }
-  if (*kind == "card_workspace") {
+  if (*kind == "shared_workspace") {
     if (llvm::Error error = requireExactFields(
             object,
             {"kind", "ordinal", "resource", "bytes", "alignment", "access"},
@@ -644,7 +644,7 @@ parseTileEntryArgumentReference(const llvm::json::Object &object,
     if (!alignment)
       return alignment.takeError();
     return TileEntryArgumentReference{
-        CardWorkspaceArgument{*resource, *bytes, *alignment}};
+        SharedWorkspaceArgument{*resource, *bytes, *alignment}};
   }
   if (*kind == "profile_record") {
     if (llvm::Error error = requireExactFields(
