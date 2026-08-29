@@ -17,12 +17,12 @@
 
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `search-scalability` | `doing` | Q52 / 06 | Q51 choice/domain donor、第12项structural materialization donor、current baseline regression、Q50.0 actual memory/target leaf | 当前先闭合重新打开的第12项`spatial-region-current-ir-materialization`：ordinary merge/output、attention online state以及plan-ID keyed handoff清零；随后线性执行第13--20项。none/search独立且无fallback；SPM只由actual MiniMalloc判定；同源LLaMA产品纵向通过 | `tasks/plans/physical-dataflow-synthesis.md` |
+| 1 | `search-scalability` | `doing` | Q52 / 06 | Q51 choice/domain donor、第12项actual structural TileModule/TileRegion owner、current baseline regression、Q50.0 actual memory/target leaf | 当前执行第13项`compact-temporal-tile-and-fuse`；完成后线性执行第14--20项。none/search独立且无fallback；SPM只由actual MiniMalloc判定；同源LLaMA产品纵向通过 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 2 | `production-host-readiness` | `queued` | Q53 / 16 | search scalability、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 
-Q52当前直接项是第12项current-input closure。直接consumer审计证明现有donor仍允许ordinary selected merge缺失observable output、FD
-only-terminator shell，并通过`RegionExecutionId -> TileRegion`交接到下游；这些不能作为第13项current-IR输入。Closure完成后，第13项只从
-actual TileRegion operations建立temporal domain，第14项只分解已tiled online-attention。此前的actual leaf、Instr completion、execution
+Q52当前直接项是第13项`compact-temporal-tile-and-fuse`。第12项已经形成ordinary contribution/merge/output、FA/FD per-Tile online state、
+selected FD merge/finalize和只连接actual endpoints的current relations；第13项只从这些live TileRegion operations建立temporal domain，
+第14项只分解已tiled online-attention。此前的actual leaf、Instr completion、execution
 structure、movement、structured logical normalization和legacy shadow-materializer retirement只作为输入，不在current队列重做。
 none和search在各自controller重启前均明确返回typed unavailable且不发布package。
 

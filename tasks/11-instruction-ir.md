@@ -1248,7 +1248,7 @@ solver或新的instruction semantics interface。
 
 05号normalization在physical mapping前把完整attention归一为一个verifier-legal TensorProgram semantic root并确定FA/FD；
 Physical search不选择graph algorithm，只选择physical plan。Spatial/Region materialization把graph attention转换为actual per-Tile
-online-attention state、FD endpoints与selected merge；current-op temporal stage以standard partial reduction切K2，随后decomposition在同一
+online-attention state、FD endpoints与selected merge；current-op temporal stage以stateful Tiling和三个DPS state切K2，随后decomposition在同一
 candidate owner中生成actual Linalg/Tensor/SCF，再由10号通用lowering转换为existing wafer.tile compute。该展开必须在layout、actual resource
 gate和winner比较之前完成；进入本文conversion前不得残留graph/online attention或
 可执行Linalg source。

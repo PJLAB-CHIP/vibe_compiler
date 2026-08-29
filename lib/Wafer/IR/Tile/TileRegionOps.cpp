@@ -340,8 +340,8 @@ mlir::LogicalResult wafer::verifyStructuralTileRegions(mlir::ModuleOp module) {
           dialect == "builtin" || dialect == "arith" || dialect == "math" ||
           dialect == "tensor" || dialect == "linalg" || dialect == "scf" ||
           dialect == "cf" || mlir::isa<mlir::func::CallOp>(operation) ||
-          mlir::isa<LinalgExtAttentionOp, LinalgExtCollectiveYieldOp>(
-              operation) ||
+          mlir::isa<LinalgExtAttentionOp, LinalgExtOnlineAttentionOp,
+                    LinalgExtCollectiveYieldOp>(operation) ||
           mlir::isa<WaferLinalgExtCollectiveOpInterface>(operation);
       if (!allowed) {
         operation->emitOpError("is not legal in structural TileRegion form");

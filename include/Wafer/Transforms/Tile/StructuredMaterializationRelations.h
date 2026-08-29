@@ -43,7 +43,6 @@ struct SpatialOutputBufferRelation {
 /// buffer-level output relation above.
 struct StructuredOutputRelation {
   unsigned outputIndex = 0;
-  TileId tile{0};
   mlir::Value endpoint;
 };
 
@@ -67,9 +66,6 @@ struct DDRTransferRelation {
 /// layout/bufferization. No route, buffer, storage, event or completion fact is
 /// represented here.
 struct StructuredBoundaryRelation {
-  compiler::detail::DemandFragmentId fragment;
-  TileId sourceTile{0};
-  TileId destinationTile{0};
   mlir::Value sourceEndpoint;
   mlir::Value destinationEndpoint;
 };

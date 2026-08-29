@@ -1,10 +1,10 @@
 # Physical Dataflow Current-IR实施计划
 
-本计划只保存Q52重新打开的第12项current-input closure、尚未完成的第13--20项和Q53 host qualification。动态状态只读`tasks/progress.md`；
+本计划只保存Q52尚未完成的第13--20项和Q53 host qualification。动态状态只读`tasks/progress.md`；
 第1--11项的施工、删除账本和验证记录见`tasks/archive/physical-dataflow-synthesis-q52-plan-history.md`。
 稳定语义由05--16号编号设计拥有。
 
-当前直接项：第12项`spatial-region-current-ir-materialization` closure；第13--20项保持pending。
+当前直接项：第13项`compact-temporal-tile-and-fuse`；第14--20项保持pending。
 
 ## Pipeline Contract
 
@@ -29,18 +29,18 @@ Pipeline position:
   不建立future-output IR、shadow operation/buffer/event/schedule plan、兼容双路径或plan/actual parity verifier；
   不用footprint estimate决定SPM合法性；不猜join/wait；不修改数值语义；本计划不运行真实设备。
 - Completion criteria:
-  第12--20项按下表顺序通过；两条policy互不调用或fallback；current IR是唯一事实源；同一current FP16
+  第12项已经闭合，第13--20项按下表顺序通过；两条policy互不调用或fallback；current IR是唯一事实源；同一current FP16
   LLaMA block的none与search分别在15分钟Release门限内生成package并通过strict readback和no-card；第12--20项
-  的输入等价类、typed failure、精确断言和direct witness全部按本计划逐项关闭，不能由archive或单一成功case代签。
+  的输入等价类、typed failure、精确断言和direct witness全部按对应current计划逐项关闭，不能由archive或单一成功case代签。
 ```
 
-## 已闭合前置与第12项donor
+## 已闭合前置
 
 | 前置 | 本计划消费的输出 | 不得恢复的历史行为 |
 | --- | --- | --- |
 | structured logical normalization | attention保持opaque；ordinary pure Tensor/Linalg graph已经过一次bounded e-graph normalization | candidate内部重跑e-graph或预构造rewrite recipe |
 | choice/domain algorithms | Spatial、ExactDemand、connected Region、free Temporal、PBQP solver和FA/FD semantic/spatial fixtures | future value、movement、storage、event或schedule record |
-| spatial/Region current-IR materialization donor | selected Spatial/Region choice已经形成TileModules、ordinary spatial ops/SSA和部分boundary relations；本计划第12项修正其standard reduction final output、attention online state与direct current-IR handoff | empty attention shell、missing merge output、`RegionExecutionId -> operation`映射、scratch Module/Func或future operation/buffer/movement/completion ID |
+| spatial/Region current-IR materialization | selected Spatial/Region choice已经形成all-and-only TileModules/TileRegions、ordinary contribution/merge/output、FA/FD per-Tile online state、selected FD merge/finalize和只连接actual endpoints的current relations | graph attention或empty shell残留、missing merge output、`RegionExecutionId -> operation`映射、scratch Module/Func或future operation/buffer/movement/completion ID |
 | atomic current-IR mechanics | movement cleanup、SCF execution rewrite、TileRegion-to-Instr、fresh completion和actual memory/target leaf | combined complete materializer、hidden repair或跨stage plan |
 | policy retirement | none与search在重启前均typed unavailable，不发布package | 旧route、cross-policy fallback或test-only product facade |
 
@@ -54,7 +54,7 @@ verified TensorProgram
   -> [12] spatial-region-current-ir-materialization
        ordinary contribution/merge + attention -> online state actual IR
   -> [13] compact-temporal-tile-and-fuse
-       ordinary/parallel TilingInterface + online K2 PartialReduction
+       ordinary/parallel/online K2 stateful TilingInterface
   -> [14] online-attention-decomposition
   -> [15] current-ir-layout-bufferization
   -> [16] current-ir-downstream-orchestration
@@ -96,10 +96,9 @@ LLVM/MLIR规范复审→更新状态并提交”。不得以全局原则替代�
 
 | 顺序 | Work item | 单一责任与输出 | 精确完成条件 | 本项固定执行流程 |
 | ---: | --- | --- | --- | --- |
-| 12 | `spatial-region-current-ir-materialization` | 修正现有donor的直接输出：ordinary standard reduction贡献、merge和observable output全部actual；graph attention按closed Spatial/Region choice直接形成per-Tile三结果online-attention、FD state endpoints、selected merge/finalize；`RegionPlan/RootWork/RegionExecutionId`在返回前全部消费 | 无ordinary missing output、FD empty shell或`regionExecutions`跨stage relation；FA每output piece一个K2 owner；FD contributions all-and-only且selected merge op的parent等于`mergeTile`、SSA operands等于全部state；source不变、failure atomic；输出可仅从current IR建立第13项domain | 读AGENTS/progress→读05--07/10/19及本项矩阵→调研IREE attention→online-attention、MLIR PartialReduction与structured distribution→查pinned DPS/Tiling/PartialReduction/IRMapping API→先实现stateful op/interfaces，再修正structural materializer和relations→fresh 1024/1025/1031 ordinary reduction、FA/FD、merge parent/SSA/output及第13项current-op witness→重读设计/完整diff/MLIR复审→更新并提交 |
-| 13 | `compact-temporal-tile-and-fuse` | 只从第12项actual structural current IR建立query-local complete temporal domain并立即apply；ordinary/parallel使用pinned SCF tile-and-fuse，online-attention K2使用pinned `PartialReductionOpInterface` reduction tiler | 不读取`RegionExecutionId`或pre-IR TemporalPlan；exact total single-valued relation才消除派生参数，non-unique/unsupported/indeterminate不缩减raw domain；一个traversal一个canonical loop nest；1024无remainder clone，1025/1031只有必要main/tail且不peel first；multi-use默认不clone；FA/FD local K2均形成actual三状态recurrence | 读AGENTS/progress→读05--07/10--11/19及本项矩阵→调研MLIR SCF tile/fuse、partial-reduction、loop peeling和成熟compiler fusion control→查pinned API→重做current-op temporal domain、ordinary tile/fuse、online K2 tiling、late remainder与窄exact adapters→fresh 1024/1025/1031 loop/state/producer/relation及第14项direct-input witness→重读设计/完整diff/MLIR复审→更新并提交 |
+| 13 | `compact-temporal-tile-and-fuse` | 只从第12项actual structural current IR建立query-local complete temporal domain并立即apply；ordinary/parallel和online-attention K2均使用pinned SCF `TilingInterface`，K2由三个DPS state形成serial recurrence | 不读取`RegionExecutionId`或pre-IR TemporalPlan；exact total single-valued relation才消除派生参数，non-unique/unsupported/indeterminate不缩减raw domain；一个traversal一个canonical loop nest；1024无remainder clone，1025/1031只有必要main/tail且不peel first；multi-use默认不clone；FA/FD local K2均形成actual三状态recurrence | 读AGENTS/progress→读05--07/10--11/19及本项矩阵→调研MLIR SCF tile/fuse、stateful reduction tiling、loop peeling和成熟compiler fusion control→查pinned API→重做current-op temporal domain、ordinary tile/fuse、online K2 tiling、late remainder与窄exact adapters→fresh 1024/1025/1031 loop/state/producer/relation及第14项direct-input witness→重读设计/完整diff/MLIR复审→更新并提交 |
 | 14 | `online-attention-decomposition` | 消费第13项已经完成parallel/K2 tiling的current online-attention；一个确定性transformation直接生成actual QK、scale/mask、Maximum/Sum/Accumulator update、PV与tensor slices并擦除该op | 不选择FA/FD、tile、Tile或merge owner，不新建loop/search轴，不重跑e-graph/generic tile-and-fuse；每个tiled online-attention只分解一次；layout入口graph/online attention均为0；不clone TileModule owner、不恢复future inventory/replay | 读AGENTS/progress→读05--07/10/19及本项矩阵→调研IREE AggregatedOp decomposition和MLIR structured decomposition→查pinned Linalg/Tensor API→实现单一current-op decomposition pattern→fresh 1024/1025/1031 FA/FD actual Linalg、failure atomicity、relation retarget及第15项layout-input witness→重读设计/完整diff/MLIR复审→更新并提交 |
-| 15 | `current-ir-layout-bufferization` | 消费第14项最终current SSA/use graph，唯一拥有完整value/use layout domain、op tuple constraints、query-local exact PBQP assignment/apply、IndexRelation+PhysicalLayoutRelation exact view、function-boundary/region-local bufferization和observable output DPS | solver与flat oracle一致；layout-polymorphic op传播assignment并只为不兼容edge创建materialization；exact view零allocation/copy；soft projection unknown时整组禁用；bufferization恰一次；冗余publication copy为0、必要copy有witness并typed；same-layout/unused为0、shared conversion一个SSA；relation全部retarget到layout-resolved actual endpoint；输出直接被第16项消费 | 读AGENTS/progress→读05--11/19及本项矩阵→调研PBQP、resource-aware projection、One-Shot Bufferization和MLIR layout/view实现→查pinned interfaces/API→补value/use domain、tuple factor、assignment apply、physical-map view和relation listener并复审已有DPS/copy实现→fresh solver oracle、layout/copy inventory及第16项direct-input witness→重读设计/完整diff/MLIR复审→更新并提交 |
+| 15 | `current-ir-layout-bufferization` | 消费第14项最终current SSA/use graph，唯一拥有完整value/use layout domain、op tuple constraints、query-local exact PBQP assignment/apply、IndexRelation+PhysicalLayoutRelation exact view、function-boundary/region-local bufferization和observable output DPS；删除legacy `structuredNodeId`-keyed buffer attribution | solver与flat oracle一致；layout-polymorphic op传播assignment并只为不兼容edge创建materialization；exact view零allocation/copy；soft projection unknown时整组禁用；bufferization恰一次；冗余publication copy为0、必要copy有witness并typed；same-layout/unused为0、shared conversion一个SSA；actual endpoint/operation/effect足以驱动layout与后续memory，无operation/node parity relation；输出直接被第16项消费 | 读AGENTS/progress→读05--11/19及本项矩阵→调研PBQP、resource-aware projection、One-Shot Bufferization和MLIR layout/view实现→查pinned interfaces/API→补value/use domain、tuple factor、assignment apply、physical-map view和relation listener，删除legacy node attribution并复审已有DPS/copy实现→fresh solver oracle、layout/copy/inventory及第16项direct-input witness→重读设计/完整diff/MLIR复审→更新并提交 |
 | 16 | `current-ir-downstream-orchestration` | 在不建立complete materializer的前提下，把第15项layout-resolved owner依次交给current movement/boundary、execution-structure immediate apply、TileRegion→Instr、worker/order/fresh completion、standalone Tile fanout和唯一`compileCanonicalInstructionTilesToExecutable` actual leaf；每个atomic stage仍由原owner实现，orchestration只固定current-IR调用与typed handoff | movement all-and-only消费external endpoint relation并形成physical TileRegion；local/DDR/peer、Serialized/pipelined、tail/rotating slot、Instr、join/wait硬件witness与actual MiniMalloc全部到达；standalone fanout只move body；legacy combined facade和`CompleteCandidatePreparation`为0；输入choice不枚举、失败不repair/fallback、Accepted owner不重建 | 读AGENTS/progress→读06--14/19及本项矩阵→读movement/completion/memory硬件事实→调研MLIR staged lowering与LLVM pass-pipeline ownership→查pinned conversion/SCF API→逐stage接唯一current transform并删除隐藏facade→fresh 1024/1025/1031 movement→execution→Instr→completion→fanout→leaf与typed failure验证→重读设计/完整diff/硬件/MLIR复审→更新并提交 |
 | 17 | `baseline-current-ir-integration` | 重新启用`none`：baseline controller产生固定Spatial/Region choice，第12项actualize后从current operations立即应用full-local temporal及后续固定choice，依次调用第12--16项atomic stages；actual capacity rejection创建新的完整attempt，其它typed状态停止 | baseline不调用search state/domain/materializer，不构造`CanonicalBaselinePlan`或shadow reclose；每region一semantic root；e-graph→spatial/region→online state→temporal tile/fuse→decomposition→layout→movement→execution→Instr/completion→leaf均到达；fresh current FP16 LLaMA none≤15分钟、package唯一、strict readback/no-card通过；按current pipeline重新建立并实际执行8个FP16/BF16产品case、24个calibration no-card case及`WaferTargetNumericBackend` source→model纵向，不恢复旧registration或协议 | 读AGENTS/progress→读05--17及本项矩阵→确认current baseline/source/package/target-model边界→读相关硬件/ABI事实→调研deterministic baseline current-IR controller→查pinned API→实现独立fixed-choice controller并重启none route→fresh focused矩阵、none package/no-card与configured target-model纵向→重读设计/MLIR复审→更新并提交 |
 | 18 | `search-current-ir-integration` | 重新启用`search`：保留Spatial/Region complete lazy controller；structural choice选中后由第12项actualize，再从该candidate current IR建立Temporal及layout/movement/execution/order raw choices并逐层立即apply；PBQP只作首proposal，Accepted current Instr actual result进入controller比较 | 不存在旧cutover/fallback/complete plan；e-graph只在policy分叉前一次；proposal开关不改各current-stage raw domain；pre-structural state无future operation/value/buffer/event或Temporal scope ID；每个complete point一次actual leaf；controller从Accepted current Instr比较resource-aware objective并保留同一owner；baseline路径不变 | 读AGENTS/progress→读05--17及本项矩阵→读NE/CT、overlap和target-profile事实→调研current-IR search transaction、resource-aware cost与nested raw-domain traversal→查pinned API→把controller接到第12--16项typed actualizer→fresh search全链、raw-domain on/off、engine-cost反例、actual feedback及baseline隔离验证→重读设计/完整diff/MLIR复审→更新并提交 |
@@ -113,8 +112,7 @@ LLVM/MLIR规范复审→更新状态并提交”。不得以全局原则替代�
 
 | Work item | Current设计authority | 本计划拥有的内容 |
 | --- | --- | --- |
-| 12 | 05号4--6、06号5.1/5.2/5.4、07号4/5 | ordinary reduction current output、attention→online state、merge parent/SSA及无ID交接closure |
-| 13 | 06号5.3、07号6/10及pinned MLIR Tiling/PartialReduction API | current-op temporal domain、exact query/apply、ordinary fusion、online K2和tail checkpoints |
+| 13 | 06号5.3、07号6/10及pinned MLIR Tiling API | current-op temporal domain、exact query/apply、ordinary fusion、online K2和tail checkpoints |
 | 14 | 05号4.4/6.3、06号5.4 | 已tiled online-attention到Linalg/Tensor/SCF的唯一decomposition与stage gate |
 | 15 | 06号6.1、08号physical relation、19号bufferization/MLIR规则 | value/use PBQP apply、exact view、一次bufferization与output DPS checkpoints |
 | 16 | 06号6.2--6.6、09--14号memory/movement/completion/target合同 | atomic stage orchestration、typed handoff、fanout和actual leaf reachability |
@@ -123,65 +121,16 @@ LLVM/MLIR规范复审→更新状态并提交”。不得以全局原则替代�
 | 19 | 06号10.3、19号instrumentation规则 | 只读inventory、work/wall/RSS和optimization on/off证据 |
 | 20 / Q53 | 06号10.4、15--17号package/runtime合同、本计划验收矩阵 | 同源双policy acceptance及host/no-card到board-ready的执行步骤 |
 
-### 12. Spatial/Region current-IR closure
-
-```text
-Pipeline position:
-- Upstream IR / input:
-  verified normalized TensorProgram、closed Spatial/Region choice、ExactDemand/RootWork以及fixed FA/FD graph attention。
-- Current stage responsibility:
-  创建all-and-only TileModules/TileRegions；ordinary spatial work、standard reduction contribution/merge/output以及attention online state
-  contribution/merge/finalize全部成为actual current IR；消费并丢弃全部pre-materialization identity。
-- Output IR / files:
-  verifier-valid structural candidate；graph attention、empty shell、missing observable output和execution-to-op relation均为零。
-- Downstream consumer:
-  第13项只遍历live current operations建立temporal domain。
-- User-level driver / named pipeline:
-  policy-free structural transformation；第17/18项分别提供fixed或searched Spatial/Region choice并调用同一实现。
-- Explicit non-goals:
-  不选择temporal tile、layout、movement、buffer、worker、completion或SPM结论；不创建future operation/value ID。
-- Completion criteria:
-  ordinary reduction final output、FA/FD online state、merge parent/SSA、endpoint totality、source不变、failure atomicity及第13项direct witness
-  按本项覆盖矩阵闭合。
-```
-
-现有第12项donor存在四项已由直接consumer审计证明的缺口，因此原`done`门禁撤回：
-
-1. `SpatialRegionExecutionRelation`只记录`RegionExecutionId -> TileRegion`；一个Region可有多个work，继续扩展这张表只会形成第二套IR映射。
-   新路径在返回前消费`RegionPlan/RootWork/RegionExecutionId`，不得把该relation交给第13项。
-2. Standard `RequiredMergeExecution`当前可以只留下空Region，observable result在存在selected merge时允许缺失。Closure必须让每个partial、
-   contribution endpoint、merge和final output成为actual SSA，init只在算法合同规定的位置消费一次。
-3. FD当前把opaque graph attention放在merge Region并给其它contribution留下only-terminator shell。Closure改为直接在每个selected
-   contribution Region创建覆盖本地K2 interval的三结果`online_attention`，在`mergeTile`所属Region创建actual coupled merge/finalize。
-4. `StructuredMaterializationRelations`仍向下游携带`structuredNodeId`、`DemandFragmentId`和重复Tile ID。Closure删除plan-ID keyed
-   operation/partial relation；same-Tile edge只留SSA，cross-Tile relation只留两个actual endpoint，observable output只保留外部output index和
-   actual endpoint。Parent chain可重算的Tile/Region不重复保存。
-
-`wafer.linalg_ext.online_attention`具有Accumulator、Maximum、Sum三个DPS init/result，并实现`TilingInterface`与
-`PartialReductionOpInterface`。Graph attention与online form不会同时表示同一occurrence。Remote FD state逐component建立source Region result与
-merge Region input；local state直接接SSA。Merge op不携带Tile ID：parent TileModule是位置事实，SSA operands是参与者事实。任何实现若需要
-`RegionExecutionId -> operation`、`merge ID -> TileId`、operation ordinal或empty shell回填，均为本项失败。
-
-实施checkpoints：
-
-1. 定义online-attention ODS、parser/printer、verifier、DPS/Tiling/PartialReduction及decomposition所需accessors；先以focused actual IR测试闭合。
-2. 修正ordinary standard reduction materialization，使贡献、merge、observable output和boundary relation all-and-only。
-3. 将FA/FD graph attention在structural construction中直接转换为per-Tile online state、state endpoints与selected merge/finalize。
-4. 删除`regionExecutions`及plan-ID keyed `operationEmissions`/partial public handoff；收窄cross-Tile/output endpoint relation并更新direct
-   layout/movement consumers。
-5. 保留choice仅作为本次builder输入，返回前失效；运行1024/1025/1031、rank 3--6、1/2/16 Tile、FA/FD/ordinary reduction矩阵并证明
-   第13项只读current IR即可启动。
-
 ### 13. Compact temporal tile-and-fuse实施设计
 
 ```text
 Pipeline position:
 - Upstream IR / input:
-  第12项提交并verify的candidate-owned structural TileModule/TileRegion、live structural output/boundary relations，以及ordinary
-  `TilingInterface`和stateful online-attention `PartialReductionOpInterface` operations；没有pre-IR scope ID或TemporalPlan。
+  第12项提交并verify的candidate-owned structural TileModule/TileRegion、live structural output/boundary relations，以及ordinary和
+  stateful online-attention `TilingInterface` operations；没有pre-IR scope ID或TemporalPlan。
 - Current stage responsibility:
   从live current operations建立complete query-local temporal domain并立即物化selected size/order；在selected Region内执行exact且不引入
-  隐式replica的producer fusion；online-attention K2形成三状态partial-reduction recurrence；形成必要static main/tail并清理局部slice/view。
+  隐式replica的producer fusion；online-attention K2形成三状态serial recurrence；形成必要static main/tail并清理局部slice/view。
 - Output IR / files:
   同一candidate owner中的verifier-valid structural TileModule/TileRegion；ordinary traversal的loop、producer occurrence、SSA和tail
   已是actual IR；online-attention的parallel/K2 tiling与Accumulator/Maximum/Sum recurrence已是actual IR。
@@ -205,8 +154,8 @@ live tileable root直接读取iteration ranges、iterator kinds、DPS ties和sta
 
 Current donor必须先从typed op/interface派生真实capability和dependence precedence，或逐类证明某op的全部size/order合法；不得像现有
 `buildTemporalDomain` donor那样把所有iterator默认标成`Tileable`且precedence留空。Domain query和apply使用同一facts，不能先枚举后用
-第二套规则late reject。普通op的scope来自`TilingInterface`；online-attention的parallel scope来自`TilingInterface`，K2 reduction scope来自
-`PartialReductionOpInterface`；K1在该层为full extent。
+第二套规则late reject。普通op与online-attention的parallel/K2 scope都来自`TilingInterface`；online K2由三个DPS state携带，K1在该层为
+full extent。
 
 Tileable轴的raw size域完整包含`1..localExtent`，FullExtentOnly轴只有`{localExtent}`，不要求整除。只有size小于extent的active轴进入
 order，order枚举precedence DAG的全部linear extensions。Query-local successor/contains定义同一确定性lazy raw domain；proposal、priority和
@@ -248,9 +197,9 @@ Fusion callback只接受同Region、current direct SSA、exact tile relation、d
 
 #### Actual SCF rewrite、tail与局部清理
 
-Ordinary/parallel apply使用pinned `scf::tileConsumerAndFuseProducersUsingSCF`和`TilingInterface`；online-attention K2 apply使用pinned
-`scf::tileReductionUsingScf`与`PartialReductionOpInterface`。每个traversal先形成一个canonical bounded loop nest；K2 loop通过三个DPS
-state iter args携带Accumulator/Maximum/Sum。Loop IV、exact upper bound和`min(tileSize, remaining)`表达统一main/remainder，不按trip count
+Ordinary/parallel apply使用pinned `scf::tileConsumerAndFuseProducersUsingSCF`和`TilingInterface`；online-attention K2同样使用pinned
+`scf::tileUsingSCF`，由三个DPS state iter args携带Accumulator/Maximum/Sum。每个traversal先形成一个canonical bounded loop nest；Loop IV、
+exact upper bound和`min(tileSize, remaining)`表达统一main/remainder，不按trip count
 复制body。
 
 只有直接下游static-shape合同需要时，才从内到外调用pinned `scf::peelForLoopAndSimplifyBounds`分离最后一个partial iteration，并调用
@@ -285,7 +234,7 @@ Unsupported、timeout和compiler error不得进入capacity refinement路径。
 1. 以current operation/interface重做query-local TemporalDomain、capability/precedence和query on/off oracle；删除active
    `TemporalScopeId = RegionExecutionId` handoff。
 2. 建立policy-free ordinary SCF tile API，闭合single-op aligned/ragged和selected order。
-3. 为online-attention接pinned SCF partial-reduction tiler，闭合FA local K2和FD per-contribution K2的三状态recurrence。
+3. 为online-attention接pinned SCF stateful tiler，闭合FA local K2和FD per-contribution K2的三状态recurrence。
 4. 接same-Region exact fusion、multi-use/replica规则及reduction/contraction/narrow-support正负例。
 5. 接late remainder与scoped cleanup，统计loop/body/producer/slice/state数量并关闭静态膨胀。
 6. 接relation listener、第14/15项direct witness及pre/post-mutation failure atomicity。
@@ -327,23 +276,14 @@ Accumulator/Maximum/Sum的state update。Scratch只覆盖该current M/output til
 output relation并擦除online op；不改写第12项spatial merge或第13项loop structure。Failure销毁candidate，不换algorithm、不退回graph attention
 或另一builder。Stage check要求layout入口`wafer.linalg_ext.attention`与`wafer.linalg_ext.online_attention`均为零。
 
-当前active source只有graph attention/interface、spatial/demand/Region donor和真实规模fixtures，没有online-attention op或第14项production
-decomposition。实现顺序为：
+当前active source已经包含第12项提交的online-attention ODS/interfaces、actual per-Tile state和focused tiling fixtures；第14项production
+decomposition尚未实现。实现顺序为：
 
-1. 在第12项先完成online-attention ODS/interfaces和focused roundtrip/verifier/partial-reduction tests；
-2. 实现一个current-op decomposition pattern并闭合QK/state/PV maps与bounded scratch；
-3. 接result/endpoint relation listener、attention-zero stage gate、第15项layout-input witness及failure atomicity；
-4. 扫描并拒绝`AttentionWorkDescription`、operation ordinal mapping、old prepared replay或第二个decomposition path重新进入active依赖。
+1. 实现一个current-op decomposition pattern并闭合QK/state/PV maps与bounded scratch；
+2. 接result/endpoint relation listener、attention-zero stage gate、第15项layout-input witness及failure atomicity；
+3. 扫描并拒绝`AttentionWorkDescription`、operation ordinal mapping、old prepared replay或第二个decomposition path重新进入active依赖。
 
 ## 逐项覆盖矩阵
-
-### 12. Spatial and Region current-IR closure
-
-| 输入等价类 | Shape / 结构 | Typed failure | 精确断言 | 下游witness |
-| --- | --- | --- | --- | --- |
-| ordinary reduction contribution/merge | reduction、contraction；rank 3--6；1024/1025/1031；1/2/16 Tile；local/remote merge owner | partial algebra、result map、contribution coverage或merge output不exact时typed unsupported；不得允许missing output继续 | contributions all-and-only；每个partial actual一次；selected merge parent等于`mergeTile`；init/final output exact；observable structural output恰一个；empty merge Region为0 | 第13项从actual partial/merge ops建立scope，不读取RequiredMergeExecution |
-| attention graph→online state | FA单K2 owner；FD至少两个K2 contributions；batch/head/M/K1/K2/N rank 4--6；1024/1025/1031 | mode、K2 coverage、state type/map、merge Tile或endpoint totality矛盾为typed failure；mutation失败销毁candidate | graph attention为0；FA每output piece一个online op；FD每contribution一个online op且K2 all-and-only；每个op恰有Accumulator/Maximum/Sum；selected merge parent/SSA exact；only-terminator shell为0 | 第13项直接看到Tiling/PartialReduction interfaces和live state relations |
-| handoff retirement | multi-root Region、replica、ordinary/attention混合、Region内多个tileable roots、same/cross-Tile edges | downstream需要plan ID定位operation/value/Tile即为contract failure | public result无`regionExecutions`及`structuredNodeId`/`DemandFragmentId` keyed operation/partial relation；same-Tile只用SSA；cross-Tile relation只有两个live endpoints；output relation只有ABI output index+endpoint；planning inputs返回前失效 | current-op TemporalDomain及movement focused API |
 
 ### 13. Compact temporal tile and fuse
 
@@ -353,7 +293,7 @@ decomposition。实现顺序为：
 | canonical SCF temporal loop | parallel/reduction/mixed iterator；rank 3--6，1024/1025/1031；aligned、单轴ragged、双轴ragged | pinned interface不能表达selected tile或static remainder不能闭合时typed unsupported，不回退旧builder | 1024一个shared body且无remainder；1025/1031只含必要main/remainder，不peel first；双ragged轴最多四种static组合，一般不超过`2^r`；loop/body数量不随trip count增长；reduction accumulator与loop-carried state exact | 第14项保持outer loops；第15项直接消费final loop/use graph |
 | current-IR producer fusion | same-region SSA、single/multi-use、chain/diamond/fanout、reduction/contraction、reshape/insert、collective | result-tile relation、dominance、effect或无隐式replica条件不能证明时保持未融合current producer | 未融合producer loop外一次；相同request scoped CSE后一个producer tile；多consumer默认不clone；只有actual explicit replica分别融合；除explicit replica外iteration tiles无重叠 | 第15项layout use-binding与第19项producer-occurrence inventory |
 | relation retarget | local/external boundary、producer result replacement、tail clone、CSE/DCE | replacement type/owner不一致或external endpoint丢失=`BrokenContract` | caller-owned relation只指向live current values；local SSA replacement和external endpoint一一更新；不按walk order、ordinal或name恢复 | 第15项relation current check与bufferization listener |
-| online-attention K2 partial reduction | FA单owner、FD per-Tile local contribution；batch/head/M/K2/N rank 4--6；1024/1025/1031；aligned/ragged | three-state DPS/partial map或pinned interface不能表达时typed unsupported；不得把K2 block当final output | parallel轴与K2均实际切分；Accumulator/Maximum/Sum同一loop-carried tuple；FA/FD local ranges exact；1024无tail，1025/1031必要tail；spatial merge parent/SSA不变；QK/PV尚未展开 | 第14项每个tiled online op一次decomposition |
+| online-attention K2 stateful tiling | FA单owner、FD per-Tile local contribution；batch/head/M/K2/N rank 4--6；1024/1025/1031；aligned/ragged | three-state DPS/result map或pinned Tiling不能表达时typed unsupported；不得把K2 block当final output | parallel轴与K2均实际切分；Accumulator/Maximum/Sum同一loop-carried tuple；FA/FD local ranges exact；1024无tail，1025/1031必要tail；spatial merge parent/SSA不变；QK/PV尚未展开 | 第14项每个tiled online op一次decomposition |
 
 ### 14. Online-attention decomposition
 

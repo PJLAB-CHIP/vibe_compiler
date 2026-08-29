@@ -56,7 +56,7 @@ Physical realization不是一个同时猜layout和route的builder：
 post-attention bounded logical normalization
   -> structural TileRegion
        attention -> online state contributions/merge
-  -> current-op temporal tile-and-fuse, including online K2 partial reduction
+  -> current-op temporal tile-and-fuse, including online K2 stateful tiling
   -> online-attention decomposition and final current SSA/use graph
   -> layout/view/function-boundary and region-local bufferization
   -> layout-resolved TileRegion

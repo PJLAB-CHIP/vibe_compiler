@@ -141,8 +141,7 @@ module {
   ASSERT_EQ(emptyOps.size(), 2u);
   wafer::StructuredMaterializationRelations relations;
   relations.boundaryRelations.push_back(
-      {/*fragment=*/{}, wafer::TileId(0), wafer::TileId(1),
-       emptyOps[0].getResult(), emptyOps[1].getResult()});
+      {emptyOps[0].getResult(), emptyOps[1].getResult()});
   wafer::compiler::detail::StructuredBufferReplacementListener listener(
       relations);
   mlir::IRRewriter rewriter(context.get(), &listener);
@@ -186,16 +185,17 @@ module {
   ASSERT_EQ(emptyOps.size(), 2u);
   wafer::StructuredMaterializationRelations relations;
   relations.boundaryRelations.push_back(
-      {/*fragment=*/{}, wafer::TileId(0), wafer::TileId(1),
-       emptyOps[0].getResult(), emptyOps[1].getResult()});
+      {emptyOps[0].getResult(), emptyOps[1].getResult()});
   EXPECT_TRUE(mlir::succeeded(
       wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
           module->getOperation(), relations)));
-  relations.boundaryRelations.front().sourceTile = wafer::TileId(1);
+  relations.boundaryRelations.front().destinationEndpoint =
+      emptyOps[0].getResult();
   EXPECT_TRUE(mlir::failed(
       wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
           module->getOperation(), relations)));
-  relations.boundaryRelations.front().sourceTile = wafer::TileId(0);
+  relations.boundaryRelations.front().destinationEndpoint =
+      emptyOps[1].getResult();
   relations.boundaryRelations.push_back(relations.boundaryRelations.front());
   EXPECT_TRUE(mlir::failed(
       wafer::compiler::detail::checkStructuredBufferRelationsCurrent(

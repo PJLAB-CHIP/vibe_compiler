@@ -1428,3 +1428,14 @@
   Physical位置由typed parent op表达，参与者由SSA表达。
 - 防复发：新增任何`plan ID -> operation/value/Tile`关系前，先检查producer能否直接物化缺失事实、consumer能否从current IR重算。
   如果答案是可以，删除mapping；如果确实需要跨stage保存，必须先有用户同意的authoritative typed IR，而不是扩充C++ side table。
+
+## IREE current PartialReduction实现不能直接复制到较旧pinned MLIR
+
+- 现象：按IREE current online-attention设计准备实现`PartialReductionOpInterface`时，仓库pinned接口没有
+  `getPartialResultTilePosition`；其SCF driver按完整iteration rank索引每个partial result，无法表示Accumulator的output map与Maximum/Sum的
+  row map这三种不同rank。
+- 根因：只核对了op/interface名称，没有比较pinned TableGen methods和driver如何计算result offsets/sizes；把upstream新接口能力误认为本仓已有。
+- 修复模式：保留`attention -> 三结果online_attention`的IR分层，但在当前pinned版本用stateful `TilingInterface`切K2：每个tile消费并
+  返回三个DPS state，`scf::tileUsingSCF`直接形成serial loop-carried recurrence；FD spatial merge由actual SSA/Linalg显式物化。
+- 防复发：采用外部compiler实现前同时核对op traits、interface TableGen和实际driver；文档不能只写“使用standard interface”。若升级pinned
+  LLVM，必须整体切换producer/consumer/tests并删除旧driver，不能维护版本分支。

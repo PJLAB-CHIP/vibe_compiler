@@ -124,6 +124,37 @@ inferAttentionIterationRoles(llvm::ArrayRef<mlir::AffineMap> maps,
 }
 
 mlir::FailureOr<llvm::SmallVector<int64_t, 8>>
+getStaticIterationExtents(llvm::ArrayRef<mlir::Value> values,
+                          llvm::ArrayRef<mlir::AffineMap> maps,
+                          int64_t iterationRank, bool requireStatic) {
+  if (values.size() != maps.size() || iterationRank <= 0)
+    return mlir::failure();
+  llvm::SmallVector<int64_t, 8> extents(iterationRank, -1);
+  for (auto [value, map] : llvm::zip_equal(values, maps)) {
+    auto shapedType = mlir::dyn_cast<mlir::ShapedType>(value.getType());
+    if (!shapedType || !shapedType.hasRank() ||
+        (requireStatic && !shapedType.hasStaticShape()) ||
+        map.getNumResults() != static_cast<unsigned>(shapedType.getRank()))
+      return mlir::failure();
+    for (auto [axis, expression] : llvm::enumerate(map.getResults())) {
+      auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+      const int64_t extent = shapedType.getDimSize(axis);
+      if (!dimension || extent == 0)
+        return mlir::failure();
+      if (mlir::ShapedType::isDynamic(extent))
+        continue;
+      int64_t &known = extents[dimension.getPosition()];
+      if (known != -1 && known != extent)
+        return mlir::failure();
+      known = extent;
+    }
+  }
+  if (requireStatic && llvm::is_contained(extents, int64_t{-1}))
+    return mlir::failure();
+  return extents;
+}
+
+mlir::FailureOr<llvm::SmallVector<int64_t, 8>>
 getStaticIterationExtents(LinalgExtAttentionOp op) {
   llvm::SmallVector<mlir::Value, 5> values{op.getQuery(), op.getKey(),
                                            op.getValue()};
@@ -135,27 +166,36 @@ getStaticIterationExtents(LinalgExtAttentionOp op) {
   }
   values.push_back(op.getOutput());
   maps.push_back(op.getOutputMap());
+  return getStaticIterationExtents(values, maps, op.getIterationDomainRank(),
+                                   /*requireStatic=*/true);
+}
 
-  llvm::SmallVector<int64_t, 8> extents(op.getIterationDomainRank(), -1);
-  for (auto [value, map] : llvm::zip_equal(values, maps)) {
-    auto shapedType = mlir::dyn_cast<mlir::ShapedType>(value.getType());
-    if (!shapedType || !shapedType.hasRank() || !shapedType.hasStaticShape() ||
-        map.getNumResults() != static_cast<unsigned>(shapedType.getRank()))
-      return mlir::failure();
-    for (auto [axis, expression] : llvm::enumerate(map.getResults())) {
-      auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
-      const int64_t extent = shapedType.getDimSize(axis);
-      if (!dimension || extent <= 0)
-        return mlir::failure();
-      int64_t &known = extents[dimension.getPosition()];
-      if (known != -1 && known != extent)
-        return mlir::failure();
-      known = extent;
-    }
+mlir::FailureOr<llvm::SmallVector<int64_t, 8>>
+getStaticIterationExtents(LinalgExtOnlineAttentionOp op,
+                          bool requireStatic = true) {
+  llvm::SmallVector<mlir::Value, 7> values{op.getQuery(), op.getKey(),
+                                           op.getValue()};
+  llvm::SmallVector<mlir::AffineMap, 7> maps{op.getQueryMap(), op.getKeyMap(),
+                                             op.getValueMap()};
+  if (op.getMask()) {
+    values.push_back(op.getMask());
+    maps.push_back(*op.getMaskMap());
   }
-  if (llvm::is_contained(extents, int64_t{-1}))
-    return mlir::failure();
-  return extents;
+  values.append({op.getAccumulator(), op.getMaximum(), op.getSum()});
+  maps.append({op.getAccumulatorMap(), op.getMaximumMap(), op.getSumMap()});
+  return getStaticIterationExtents(values, maps, op.getIterationDomainRank(),
+                                   requireStatic);
+}
+
+mlir::FailureOr<AttentionIterationRoles>
+inferAttentionIterationRoles(LinalgExtOnlineAttentionOp op) {
+  llvm::SmallVector<mlir::AffineMap, 6> semanticMaps{
+      op.getQueryMap(), op.getKeyMap(), op.getValueMap(), op.getScaleMap()};
+  if (op.getMask())
+    semanticMaps.push_back(*op.getMaskMap());
+  semanticMaps.push_back(op.getAccumulatorMap());
+  return inferAttentionIterationRoles(semanticMaps,
+                                      static_cast<bool>(op.getMask()));
 }
 
 mlir::FailureOr<mlir::Value>
@@ -496,5 +536,245 @@ LinalgExtAttentionOp::getCoupledReductionDescription() {
       {CoupledReductionComponentKind::Sum, rowMap, stateElementType});
   description.components.push_back({CoupledReductionComponentKind::Accumulator,
                                     getOutputMap(), accumulatorElementType});
+  return description;
+}
+
+mlir::MutableOperandRange LinalgExtOnlineAttentionOp::getDpsInitsMutable() {
+  return mlir::MutableOperandRange(getOperation(), getMask() ? 5 : 4, 3);
+}
+
+llvm::SmallVector<mlir::AffineMap, 8>
+LinalgExtOnlineAttentionOp::getIndexingMapsArray() {
+  llvm::SmallVector<mlir::AffineMap, 8> maps;
+  maps.reserve(getIndexingMaps().size());
+  for (mlir::Attribute attribute : getIndexingMaps())
+    maps.push_back(mlir::cast<mlir::AffineMapAttr>(attribute).getValue());
+  return maps;
+}
+
+llvm::SmallVector<int64_t> LinalgExtOnlineAttentionOp::getStaticLoopRanges() {
+  mlir::FailureOr<llvm::SmallVector<int64_t, 8>> extents =
+      getStaticIterationExtents(*this, /*requireStatic=*/false);
+  if (mlir::failed(extents))
+    return llvm::SmallVector<int64_t>(getIterationDomainRank(),
+                                      mlir::ShapedType::kDynamic);
+  return llvm::SmallVector<int64_t>(extents->begin(), extents->end());
+}
+
+mlir::FailureOr<AttentionIterationRoles>
+LinalgExtOnlineAttentionOp::getIterationRoles() {
+  return inferAttentionIterationRoles(*this);
+}
+
+mlir::LogicalResult LinalgExtOnlineAttentionOp::verify() {
+  const size_t expectedMapCount = getMask() ? 8 : 7;
+  if (getIndexingMaps().size() != expectedMapCount)
+    return emitOpError("requires one indexing map for each operand role");
+  for (mlir::Attribute attribute : getIndexingMaps())
+    if (!mlir::isa<mlir::AffineMapAttr>(attribute))
+      return emitOpError("indexing_maps must contain only affine maps");
+
+  mlir::FailureOr<AttentionIterationRoles> roles = getIterationRoles();
+  if (mlir::failed(roles))
+    return emitOpError(
+        "indexing maps must form complete B/M/K1/K2/N attention roles");
+  if (mlir::failed(getStaticIterationExtents(*this, /*requireStatic=*/false)))
+    return emitOpError(
+        "requires positive and mutually consistent known iterator extents");
+
+  llvm::SmallVector<mlir::AffineExpr, 4> rowExpressions;
+  for (mlir::AffineExpr expression : getAccumulatorMap().getResults()) {
+    unsigned dimension =
+        mlir::cast<mlir::AffineDimExpr>(expression).getPosition();
+    if (!contains(roles->valueOutput, dimension))
+      rowExpressions.push_back(expression);
+  }
+  mlir::AffineMap expectedRowMap = mlir::AffineMap::get(
+      getIterationDomainRank(), 0, rowExpressions, getContext());
+  if (getMaximumMap() != expectedRowMap || getSumMap() != expectedRowMap)
+    return emitOpError(
+        "maximum and sum maps must equal the accumulator row map");
+
+  mlir::Type storageElementType = getQuery().getType().getElementType();
+  if (!mlir::isa<mlir::FloatType>(storageElementType) ||
+      getKey().getType().getElementType() != storageElementType ||
+      getValue().getType().getElementType() != storageElementType ||
+      getAccumulator().getType().getElementType() != storageElementType ||
+      !mlir::isa<mlir::FloatType>(getScale().getType()) ||
+      getMaximum().getType().getElementType() != getScale().getType() ||
+      getSum().getType().getElementType() != getScale().getType() ||
+      (getMask() &&
+       !mlir::isa<mlir::FloatType>(getMask().getType().getElementType())))
+    return emitOpError(
+        "query, key, value, and accumulator must share one floating storage "
+        "type; maximum and sum must use the scale type; mask must be floating");
+
+  if (getUpdatedAccumulator().getType() != getAccumulator().getType() ||
+      getUpdatedMaximum().getType() != getMaximum().getType() ||
+      getUpdatedSum().getType() != getSum().getType())
+    return emitOpError(
+        "each result type must equal its destination state type");
+  return mlir::success();
+}
+
+void LinalgExtOnlineAttentionOp::getEffects(
+    llvm::SmallVectorImpl<mlir::MemoryEffects::EffectInstance> &effects) {
+  (void)effects;
+}
+
+llvm::SmallVector<mlir::Range>
+LinalgExtOnlineAttentionOp::getIterationDomain(mlir::OpBuilder &builder) {
+  mlir::FailureOr<llvm::SmallVector<int64_t, 8>> extents =
+      getStaticIterationExtents(*this);
+  if (mlir::failed(extents))
+    return {};
+  llvm::SmallVector<mlir::Range> domain;
+  domain.reserve(extents->size());
+  for (int64_t extent : *extents)
+    domain.push_back({builder.getIndexAttr(0), builder.getIndexAttr(extent),
+                      builder.getIndexAttr(1)});
+  return domain;
+}
+
+llvm::SmallVector<mlir::utils::IteratorType>
+LinalgExtOnlineAttentionOp::getLoopIteratorTypes() {
+  mlir::FailureOr<AttentionIterationRoles> roles = getIterationRoles();
+  if (mlir::failed(roles))
+    return {};
+  llvm::SmallVector<mlir::utils::IteratorType> iteratorTypes(
+      getIterationDomainRank(), mlir::utils::IteratorType::parallel);
+  for (unsigned dimension : roles->queryKeyReduction)
+    iteratorTypes[dimension] = mlir::utils::IteratorType::reduction;
+  for (unsigned dimension : roles->keyValueReduction)
+    iteratorTypes[dimension] = mlir::utils::IteratorType::reduction;
+  return iteratorTypes;
+}
+
+mlir::FailureOr<mlir::TilingResult>
+LinalgExtOnlineAttentionOp::getTiledImplementation(
+    mlir::OpBuilder &builder, llvm::ArrayRef<mlir::OpFoldResult> offsets,
+    llvm::ArrayRef<mlir::OpFoldResult> sizes) {
+  if (offsets.size() != static_cast<size_t>(getIterationDomainRank()) ||
+      sizes.size() != static_cast<size_t>(getIterationDomainRank()))
+    return mlir::failure();
+  mlir::FailureOr<AttentionIterationRoles> roles = getIterationRoles();
+  mlir::FailureOr<llvm::SmallVector<int64_t, 8>> extents =
+      getStaticIterationExtents(*this);
+  if (mlir::failed(roles) || mlir::failed(extents))
+    return mlir::failure();
+  for (unsigned dimension : roles->queryKeyReduction)
+    if (!isFullDimensionTile((*extents)[dimension], offsets[dimension],
+                             sizes[dimension]))
+      return mlir::failure();
+
+  llvm::SmallVector<mlir::Operation *> slices;
+  llvm::SmallVector<mlir::Value, 8> operands;
+  auto appendSlice = [&](mlir::Value value,
+                         mlir::AffineMap map) -> mlir::LogicalResult {
+    mlir::FailureOr<mlir::Value> slice =
+        buildSlice(builder, getLoc(), value, map, offsets, sizes, slices);
+    if (mlir::failed(slice))
+      return mlir::failure();
+    operands.push_back(*slice);
+    return mlir::success();
+  };
+  if (mlir::failed(appendSlice(getQuery(), getQueryMap())) ||
+      mlir::failed(appendSlice(getKey(), getKeyMap())) ||
+      mlir::failed(appendSlice(getValue(), getValueMap())))
+    return mlir::failure();
+  operands.push_back(getScale());
+  if (getMask() && mlir::failed(appendSlice(getMask(), *getMaskMap())))
+    return mlir::failure();
+  if (mlir::failed(appendSlice(getAccumulator(), getAccumulatorMap())) ||
+      mlir::failed(appendSlice(getMaximum(), getMaximumMap())) ||
+      mlir::failed(appendSlice(getSum(), getSumMap())))
+    return mlir::failure();
+
+  llvm::SmallVector<mlir::Type, 3> resultTypes{
+      operands[operands.size() - 3].getType(),
+      operands[operands.size() - 2].getType(),
+      operands[operands.size() - 1].getType()};
+  mlir::Operation *tiled =
+      mlir::clone(builder, getOperation(), resultTypes, operands);
+  return mlir::TilingResult{
+      {tiled}, llvm::SmallVector<mlir::Value>(tiled->getResults()), slices};
+}
+
+mlir::LogicalResult LinalgExtOnlineAttentionOp::getResultTilePosition(
+    mlir::OpBuilder &builder, unsigned resultNumber,
+    llvm::ArrayRef<mlir::OpFoldResult> offsets,
+    llvm::ArrayRef<mlir::OpFoldResult> sizes,
+    llvm::SmallVector<mlir::OpFoldResult> &resultOffsets,
+    llvm::SmallVector<mlir::OpFoldResult> &resultSizes) {
+  (void)builder;
+  if (offsets.size() != static_cast<size_t>(getIterationDomainRank()) ||
+      sizes.size() != static_cast<size_t>(getIterationDomainRank()))
+    return mlir::failure();
+  mlir::AffineMap resultMap;
+  switch (resultNumber) {
+  case 0:
+    resultMap = getAccumulatorMap();
+    break;
+  case 1:
+    resultMap = getMaximumMap();
+    break;
+  case 2:
+    resultMap = getSumMap();
+    break;
+  default:
+    return mlir::failure();
+  }
+  resultOffsets.clear();
+  resultSizes.clear();
+  for (mlir::AffineExpr expression : resultMap.getResults()) {
+    auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+    if (!dimension)
+      return mlir::failure();
+    resultOffsets.push_back(offsets[dimension.getPosition()]);
+    resultSizes.push_back(sizes[dimension.getPosition()]);
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult LinalgExtOnlineAttentionOp::reifyResultShapes(
+    mlir::OpBuilder &builder,
+    mlir::ReifiedRankedShapedTypeDims &reifiedReturnShapes) {
+  reifiedReturnShapes.clear();
+  for (mlir::Value destination : {getAccumulator(), getMaximum(), getSum()}) {
+    auto type = mlir::cast<mlir::RankedTensorType>(destination.getType());
+    llvm::SmallVector<mlir::OpFoldResult, 4> dimensions;
+    dimensions.reserve(type.getRank());
+    for (int64_t dimension = 0; dimension < type.getRank(); ++dimension) {
+      int64_t extent = type.getDimSize(dimension);
+      if (mlir::ShapedType::isDynamic(extent)) {
+        dimensions.push_back(
+            builder
+                .create<mlir::tensor::DimOp>(getLoc(), destination, dimension)
+                .getResult());
+      } else {
+        dimensions.push_back(builder.getIndexAttr(extent));
+      }
+    }
+    reifiedReturnShapes.push_back(std::move(dimensions));
+  }
+  return mlir::success();
+}
+
+CoupledReductionDescription
+LinalgExtOnlineAttentionOp::getCoupledReductionDescription() {
+  mlir::FailureOr<AttentionIterationRoles> roles = getIterationRoles();
+  assert(mlir::succeeded(roles) &&
+         "verifier-valid online attention roles expected");
+  CoupledReductionDescription description;
+  description.reductionIterators = roles->keyValueReduction;
+  description.components.push_back({CoupledReductionComponentKind::Maximum,
+                                    getMaximumMap(),
+                                    getMaximum().getType().getElementType()});
+  description.components.push_back({CoupledReductionComponentKind::Sum,
+                                    getSumMap(),
+                                    getSum().getType().getElementType()});
+  description.components.push_back(
+      {CoupledReductionComponentKind::Accumulator, getAccumulatorMap(),
+       getAccumulator().getType().getElementType()});
   return description;
 }

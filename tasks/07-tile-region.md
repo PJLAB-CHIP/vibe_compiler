@@ -23,7 +23,7 @@ schedule或completion plan。下游只从输出IR的operation、SSA、type、reg
 post-attention bounded-normalized TensorProgram + structural choice
   -> candidate-owned TileModule/TileRegion rewrite
        graph attention -> actual online-attention contributions + merge/finalize
-  -> current-op temporal tile-and-fuse, including K2 partial-reduction tiling
+  -> current-op temporal tile-and-fuse, including stateful K2 tiling
   -> tiled online-attention decomposition to actual Linalg/Tensor/SCF
   -> late remainder specialization and local slice/view cleanup
   -> verifier
@@ -56,7 +56,7 @@ Pipeline position:
 - Output IR / files:
   verifier-valid structural `builtin.module`、`wafer.tile.module`、`wafer.tile.region`，以及actual Linalg/Tensor/online-attention/state SSA。
 - Downstream consumer:
-  current-op temporal tile-and-fuse直接改写同一structural owner并通过`PartialReductionOpInterface`切online-attention K2；确定性
+  current-op temporal tile-and-fuse直接改写同一structural owner并通过三个DPS state的`TilingInterface`切online-attention K2；确定性
   decomposition随后将已tiled online-attention展开为Linalg/Tensor/SCF；再依次进入
   current-IR layout/view/bufferization、movement/boundary closure、Tile execution structure、TileRegion-to-Instr、
   worker/order/completion与actual SPM/DDR/transport/target gate。
@@ -186,8 +186,8 @@ epoch内存活，不能由planning session、analysis cache或全局side table�
 ## 6. 下游Physical与Execution Stages
 
 Temporal tile-and-fuse只消费上述structural owner和current relation。它从live current operation建立query-local choice，使用pinned SCF
-tiling/fusion生成canonical loops、producer SSA和必要main/tail；online-attention的parallel轴走`TilingInterface`，K2轴走
-`PartialReductionOpInterface`并以三个actual state作为loop-carried values。Choice apply后立即销毁，不携带`RegionExecutionId`。
+tiling/fusion生成canonical loops、producer SSA和必要main/tail；online-attention的parallel/K2轴走同一个`TilingInterface`，K2 tile以三个
+actual DPS state作为loop-carried values。Choice apply后立即销毁，不携带`RegionExecutionId`。
 
 随后online-attention decomposition只替换已经tiled的current op，生成actual QK、scale/mask、Maximum/Sum/Accumulator update、PV和slice；
 它不选择Tile、block或merge owner。两项都不从planning choice重建TileModule/TileRegion或candidate owner；若immutable op signature需要替换，

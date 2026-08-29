@@ -53,7 +53,7 @@ Pipeline position:
   none由baseline-owned materializer从current TensorProgram和固定规则直接构造actual TileModule/TileRegion IR，不创建search choice/domain/state；
   search才枚举Spatial/Region transformation choice并交给search-owned structural materializer。Materializer把selected graph attention
   直接变成每个actual Tile上的三结果online-attention、state endpoints和merge/finalize。两条policy随后从各自candidate current IR建立并
-  立即应用temporal tile-and-fuse；online-attention的K2使用standard partial-reduction tiling，之后确定性分解为Linalg/Tensor/SCF，再依次完成layout/view/bufferization、movement、execution structure、
+  立即应用temporal tile-and-fuse；online-attention的K2使用三个DPS state的stateful Tiling，之后确定性分解为Linalg/Tensor/SCF，再依次完成layout/view/bufferization、movement、execution structure、
   TileRegion-to-Instr、worker/order/completion，再以completion-closed Instr进入共同actual leaf。
 - Output IR / files:
   policy-complete、verifier-valid的TileModule/TileRegion/Instr IR，以及由同一accepted owner形成的
@@ -192,7 +192,7 @@ allocation/lifetime/offset证明。
 
 每个actual traversal选择complete temporal tile vector和loop order，不允许单一标量`tile_size`代替多轴语义。第12项输出后，
 `RegionPlan`、`RootRegionWork`、`RegionExecutionId`和pre-materialization `TemporalPlan`均已被消费，不能作为第13项的operation identity。
-Baseline和search分别从自己candidate内的live `TilingInterface`与`PartialReductionOpInterface` operation建立query-local domain；choice选中后
+Baseline和search分别从自己candidate内的live `TilingInterface` operation建立query-local domain；choice选中后
 立即rewrite同一owner并销毁domain。需要试行alternative时，controller clone最近的`IsolatedFromAbove` owner并用该次clone的
 `IRMapping`取得对应operation，不按名称、walk order或ordinal恢复。
 
@@ -219,7 +219,7 @@ DAG的全部linear extensions。当前ordinary `TilingInterface` scope默认使�
 typed interface/capability明确给出，不能从名称或shape恢复。Temporal successor按current scope、size vector和order确定性惰性遍历；
 interval proposal只改变先访问哪个size，不改变raw set。
 
-`online_attention`的parallel/output轴使用`TilingInterface`，K2轴使用`PartialReductionOpInterface`并携带actual
+`online_attention`的parallel/output/K2轴使用同一个`TilingInterface`，K2 tile以三个DPS result携带actual
 Accumulator/Maximum/Sum。FA在唯一spatial owner内形成K2 recurrence；FD的每个local contribution在自己的exact K2 interval内形成相同
 recurrence。K1在该层保持full extent，decomposition后成为QK Linalg contraction的普通reduction codegen问题。第14项不再选择K1/K2、
 contribution或merge Tile。
@@ -267,7 +267,7 @@ output/K2 partition、Tile embedding、Region membership和FD merge Tile。Struc
 - merge op不保存Tile ID；parent TileModule给出位置，SSA operands给出参与者。Spatial choice在成功物化后销毁。
 
 第13项在这些current ops上执行ordinary/parallel `TilingInterface` tile-and-fuse，并对online-attention K2调用pinned
-`PartialReductionOpInterface`的SCF reduction tiler。它不查看内部QK/PV，也不预构造score tensor。第14项随后只把已经tiled的
+stateful `TilingInterface` SCF tiler。它不查看内部QK/PV，也不预构造score tensor。第14项随后只把已经tiled的
 `online_attention`确定性分解成QK contraction、scale/mask、Maximum/Sum/Accumulator update、PV和tensor slices；不重新选择tile、
 contribution或merge owner，不接收future inventory，也不clone整个candidate owner。进入layout时两种attention op都必须为零。
 
@@ -531,7 +531,7 @@ Current迁移必须遵守：
 - structural materialization对每个FA owner或FD K2 contribution创建all-and-only一个三结果online-attention；selected merge Tile由parent
   TileModule证明，参与state由SSA证明，不存在empty shell、`RegionExecutionId -> operation`或`merge ID -> TileId`；
 - 第13项只从live current operations建立temporal domain；online-attention的parallel轴由`TilingInterface`处理、K2由
-  `PartialReductionOpInterface`处理。第14项只分解已tiled op；layout入口graph/online attention均为零；
+  三个DPS state处理K2。第14项只分解已tiled op；layout入口graph/online attention均为零；
 - temporal domain只在exact total single-valued proof下删除派生参数；non-unique、unsupported和indeterminate case保留原自由维度或
   独立producer，Region candidate不因fusion无法证明而消失；
 - instrumentation on/off产生同一IR、candidate result和package；

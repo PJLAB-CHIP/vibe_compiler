@@ -72,7 +72,7 @@ Pipeline position:
   verifier-legal semantic op，`none`与`search`消费同一结果；physical-dataflow selection联合展开Tile placement、不同op并行、
   TileRegion membership、explicit replica、layout、DDR/NoC movement和overlap。Structural choice先物化为top-level
   TileModule/TileRegion；graph attention同时转成三状态online-attention、FD contributions/merge和actual endpoints。Temporal domain从这些
-  current operations建立，standard Tiling/PartialReduction形成ordinary/parallel/K2 loops和actual fusion；online-attention decomposition随后
+  current operations建立，standard stateful Tiling形成ordinary/parallel/K2 loops和actual fusion；online-attention decomposition随后
   形成actual Linalg/Tensor/SCF。Layout与movement闭合后，current Tile transformation物化software pipeline和rotating slot，
   随后投影并lower成per-Tile `Instr`，派生worker/order/completion，
   闭合SPM/DDR/transport/target legality后原子形成`DeviceExecutable`。同一次target conversion产生owner-backed target
@@ -178,7 +178,7 @@ physical-dataflow selection直接通过Linalg/DPS/Tiling/MemoryEffect、Wafer Op
 
 1. 05号normalization只从typed SSA证明完整Q/K/V attention并产生一个`wafer.linalg_ext.attention`；FA/FD是op上的
    fixed graph fact，不进入physical search domain。K/V spatial partition由Spatial choice选择；materialization直接把graph op转换成
-   per-Tile三状态online-attention和selected merge/finalize。K/V local block由该current op的`PartialReductionOpInterface`选择并物化，
+   per-Tile三状态online-attention和selected merge/finalize。K/V local block由该current op的stateful `TilingInterface`选择并物化，
    随后确定性decomposition构造actual Linalg/Tensor/SCF implementation，再
    确定性转换为existing wafer.tile compute。未来若引入其它semantic optimization，
    必须由自己的设计定义表示与selection owner，不能复用attention attr充当registry；

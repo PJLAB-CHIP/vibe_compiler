@@ -545,15 +545,15 @@ mlir::LogicalResult checkStructuredBufferRelationsCurrent(
         TileModuleOp destinationOwner =
             getTileOwner(relation.destinationEndpoint);
         return sourceOwner && destinationOwner &&
-               sourceOwner.getTileIdAttr().getInt() ==
-                   relation.sourceTile.getValue() &&
-               destinationOwner.getTileIdAttr().getInt() ==
-                   relation.destinationTile.getValue();
+               sourceOwner != destinationOwner;
       });
-  std::set<DemandFragmentId> boundaryFragments;
+  std::set<std::pair<const void *, const void *>> boundaryEndpoints;
   const bool uniqueBoundaries =
       llvm::all_of(relations.boundaryRelations, [&](const auto &relation) {
-        return boundaryFragments.insert(relation.fragment).second;
+        return boundaryEndpoints
+            .insert({relation.sourceEndpoint.getAsOpaquePointer(),
+                     relation.destinationEndpoint.getAsOpaquePointer()})
+            .second;
       });
   const bool currentOutputs =
       llvm::all_of(relations.structuralOutputs, [&](const auto &relation) {
@@ -561,14 +561,16 @@ mlir::LogicalResult checkStructuredBufferRelationsCurrent(
             !liveValues.contains(relation.endpoint.getAsOpaquePointer()))
           return false;
         TileModuleOp owner = getTileOwner(relation.endpoint);
-        return owner &&
-               owner.getTileIdAttr().getInt() == relation.tile.getValue();
+        return static_cast<bool>(owner);
       });
   std::set<std::pair<unsigned, int64_t>> outputOwners;
   const bool uniqueOutputs =
       llvm::all_of(relations.structuralOutputs, [&](const auto &relation) {
+        TileModuleOp owner = getTileOwner(relation.endpoint);
+        if (!owner)
+          return false;
         return outputOwners
-            .insert({relation.outputIndex, relation.tile.getValue()})
+            .insert({relation.outputIndex, owner.getTileIdAttr().getInt()})
             .second;
       });
   return mlir::success(

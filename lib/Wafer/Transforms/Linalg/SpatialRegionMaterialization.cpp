@@ -2,11 +2,16 @@
 
 #include "Wafer/Transforms/Linalg/SpatialRegionMaterialization.h"
 
+#include "OnlineAttentionMaterialization.h"
+
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Linalg/StructuredTiling.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
@@ -17,8 +22,10 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -31,6 +38,10 @@ namespace {
 using compiler::detail::DemandFragmentId;
 using compiler::detail::ExecutionInstanceId;
 using compiler::detail::LocalUseBinding;
+using compiler::detail::materializeOnlineAttentionFinalize;
+using compiler::detail::materializeOnlineAttentionStateMerge;
+using compiler::detail::materializeOnlineAttentionTile;
+using compiler::detail::OnlineAttentionState;
 using compiler::detail::RegionExecutionId;
 using compiler::detail::RegionGroupPlan;
 using compiler::detail::ReplicaExecutionId;
@@ -100,13 +111,72 @@ struct GroupBoundaryInput {
   mlir::Value destination;
 };
 
+struct CoupledStateKey {
+  compiler::detail::ReductionGroupId group;
+  compiler::detail::LogicalShardId contribution;
+  CoupledReductionComponentKind component =
+      CoupledReductionComponentKind::Maximum;
+
+  friend bool operator<(const CoupledStateKey &lhs,
+                        const CoupledStateKey &rhs) {
+    return std::tie(lhs.group, lhs.contribution, lhs.component) <
+           std::tie(rhs.group, rhs.contribution, rhs.component);
+  }
+};
+
+struct CoupledStateBoundaryRequirement {
+  TileId sourceTile{0};
+  mlir::RankedTensorType type;
+};
+
+struct StandardPartialKey {
+  compiler::detail::ReductionGroupId group;
+  compiler::detail::LogicalShardId contribution;
+  unsigned result = 0;
+
+  friend bool operator<(const StandardPartialKey &lhs,
+                        const StandardPartialKey &rhs) {
+    return std::tie(lhs.group, lhs.contribution, lhs.result) <
+           std::tie(rhs.group, rhs.contribution, rhs.result);
+  }
+};
+
+struct StandardPartialBoundaryRequirement {
+  TileId sourceTile{0};
+  mlir::RankedTensorType type;
+};
+
+struct GroupStandardPartialResult {
+  StandardPartialKey key;
+  unsigned resultNumber = 0;
+};
+
+struct GroupStandardPartialInput {
+  StandardPartialKey key;
+  TileId sourceTile{0};
+  mlir::Value destination;
+};
+
+struct GroupCoupledStateResult {
+  CoupledStateKey key;
+  unsigned resultNumber = 0;
+};
+
+struct GroupCoupledStateInput {
+  CoupledStateKey key;
+  TileId sourceTile{0};
+  mlir::Value destination;
+};
+
 struct GroupArtifact {
   TileId tile{0};
   TileRegionOp region;
   llvm::SmallVector<GroupResult, 4> results;
   llvm::SmallVector<GroupBoundaryInput, 8> boundaryInputs;
-  llvm::SmallVector<StructuredOperationEmissionRelation, 8> emissions;
-  llvm::SmallVector<RegionExecutionId, 8> executions;
+  llvm::SmallVector<GroupCoupledStateResult, 8> coupledStateResults;
+  llvm::SmallVector<GroupCoupledStateInput, 8> coupledStateInputs;
+  llvm::SmallVector<GroupStandardPartialResult, 4> standardPartialResults;
+  llvm::SmallVector<GroupStandardPartialInput, 4> standardPartialInputs;
 };
 
 const analysis::RootRegionWork *
@@ -125,6 +195,18 @@ findExecution(const analysis::RootRegionWork &work,
     return execution.shard == shard;
   });
   return found == work.execution.end() ? nullptr : &*found;
+}
+
+mlir::FailureOr<mlir::RankedTensorType> getCoupledStateType(
+    const analysis::CoupledReductionComponentRequirement &component) {
+  auto normalized = analysis::normalizeFiniteExactIndexSet(component.domain);
+  if (mlir::failed(normalized) || normalized->getBoxes().size() != 1)
+    return mlir::failure();
+  auto box = normalized->getBoxes().front();
+  if (box.sizes.empty() ||
+      llvm::any_of(box.sizes, [](int64_t size) { return size <= 0; }))
+    return mlir::failure();
+  return mlir::RankedTensorType::get(box.sizes, component.elementType);
 }
 
 const compiler::detail::StructuredOperationNodeMapping *
@@ -479,10 +561,18 @@ struct GroupBuilder {
   llvm::ArrayRef<compiler::detail::StructuredOperationNodeMapping> nodes;
   llvm::ArrayRef<analysis::RootRegionWork> rootWorks;
   const std::map<DemandFragmentId, ProducedValueKey> &fragmentSources;
-  const std::set<DemandFragmentId> &coupledAttentionFragments;
   const std::map<ProducedValueKey, mlir::Value> &produced;
+  const std::map<CoupledStateKey, CoupledStateBoundaryRequirement>
+      &coupledStateBoundaryRequirements;
+  const std::map<CoupledStateKey, mlir::Value> &producedCoupledStates;
+  const std::map<StandardPartialKey, StandardPartialBoundaryRequirement>
+      &standardPartialBoundaryRequirements;
+  const std::map<StandardPartialKey, mlir::Value> &producedStandardPartials;
   std::map<SourceValueKey, mlir::BlockArgument> &entrySourceArguments;
   std::map<DemandFragmentId, mlir::BlockArgument> &entryExternalArguments;
+  std::map<CoupledStateKey, mlir::BlockArgument> &entryCoupledStateArguments;
+  std::map<StandardPartialKey, mlir::BlockArgument>
+      &entryStandardPartialArguments;
   SpatialRegionMaterializationFailure *failure = nullptr;
 
   mlir::Region regionBody;
@@ -491,12 +581,23 @@ struct GroupBuilder {
   mlir::IRMapping mapping;
   std::map<SourceValueKey, mlir::BlockArgument> boundaryArguments;
   std::map<DemandFragmentId, mlir::BlockArgument> fragmentArguments;
+  std::map<CoupledStateKey, mlir::BlockArgument> coupledStateArguments;
+  std::map<StandardPartialKey, mlir::BlockArgument> standardPartialArguments;
   llvm::SmallVector<mlir::Value, 8> regionInputs;
   llvm::SmallVector<GroupBoundaryInput, 8> boundaryInputs;
+  llvm::SmallVector<GroupCoupledStateInput, 8> coupledStateInputs;
+  llvm::SmallVector<GroupStandardPartialInput, 4> standardPartialInputs;
   llvm::SmallVector<GroupResult, 4> results;
-  llvm::SmallVector<StructuredOperationEmissionRelation, 8> emissions;
+  llvm::SmallVector<GroupCoupledStateResult, 8> coupledStateResults;
+  llvm::SmallVector<GroupStandardPartialResult, 4> standardPartialResults;
   std::map<RegionExecutionId, llvm::SmallVector<mlir::Value, 2>>
       executionResults;
+  std::map<RegionExecutionId,
+           llvm::SmallVector<std::pair<CoupledStateKey, mlir::Value>, 3>>
+      executionCoupledStates;
+  std::map<RegionExecutionId,
+           llvm::SmallVector<std::pair<StandardPartialKey, mlir::Value>, 2>>
+      executionStandardPartials;
 
   GroupBuilder(
       mlir::ModuleOp source, mlir::func::FuncOp sourceFunction,
@@ -505,18 +606,34 @@ struct GroupBuilder {
       llvm::ArrayRef<compiler::detail::StructuredOperationNodeMapping> nodes,
       llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
       const std::map<DemandFragmentId, ProducedValueKey> &fragmentSources,
-      const std::set<DemandFragmentId> &coupledAttentionFragments,
       const std::map<ProducedValueKey, mlir::Value> &produced,
+      const std::map<CoupledStateKey, CoupledStateBoundaryRequirement>
+          &coupledStateBoundaryRequirements,
+      const std::map<CoupledStateKey, mlir::Value> &producedCoupledStates,
+      const std::map<StandardPartialKey, StandardPartialBoundaryRequirement>
+          &standardPartialBoundaryRequirements,
+      const std::map<StandardPartialKey, mlir::Value> &producedStandardPartials,
       std::map<SourceValueKey, mlir::BlockArgument> &entrySourceArguments,
       std::map<DemandFragmentId, mlir::BlockArgument> &entryExternalArguments,
+      std::map<CoupledStateKey, mlir::BlockArgument>
+          &entryCoupledStateArguments,
+      std::map<StandardPartialKey, mlir::BlockArgument>
+          &entryStandardPartialArguments,
       SpatialRegionMaterializationFailure *failure)
       : source(source), sourceFunction(sourceFunction),
         entryFunction(entryFunction), entryBuilder(entryBuilder), group(group),
         nodes(nodes), rootWorks(rootWorks), fragmentSources(fragmentSources),
-        coupledAttentionFragments(coupledAttentionFragments),
-        produced(produced), entrySourceArguments(entrySourceArguments),
-        entryExternalArguments(entryExternalArguments), failure(failure),
-        builder(source.getContext()) {
+        produced(produced),
+        coupledStateBoundaryRequirements(coupledStateBoundaryRequirements),
+        producedCoupledStates(producedCoupledStates),
+        standardPartialBoundaryRequirements(
+            standardPartialBoundaryRequirements),
+        producedStandardPartials(producedStandardPartials),
+        entrySourceArguments(entrySourceArguments),
+        entryExternalArguments(entryExternalArguments),
+        entryCoupledStateArguments(entryCoupledStateArguments),
+        entryStandardPartialArguments(entryStandardPartialArguments),
+        failure(failure), builder(source.getContext()) {
     regionBody.push_back(new mlir::Block());
     body = &regionBody.front();
     builder.setInsertionPointToStart(body);
@@ -573,10 +690,47 @@ struct GroupBuilder {
       return found->second;
     std::optional<SourceValueKey> key =
         getSourceValueKey(sourceValue, sourceFunction, nodes);
-    if (!key)
+    if (!key) {
+      mlir::IRMapping supportMapping;
+      std::function<mlir::FailureOr<mlir::Value>(mlir::Value)> mapSupport =
+          [&](mlir::Value value) -> mlir::FailureOr<mlir::Value> {
+        if (mlir::Value mapped = supportMapping.lookupOrNull(value))
+          return mapped;
+        if (mlir::isa<mlir::BlockArgument>(value)) {
+          auto mapped = getOrCreateBoundary(value);
+          if (mlir::succeeded(mapped))
+            supportMapping.map(value, *mapped);
+          return mapped;
+        }
+        auto result = mlir::dyn_cast<mlir::OpResult>(value);
+        mlir::Operation *definition = result ? result.getOwner() : nullptr;
+        if (!definition || !mlir::isMemoryEffectFree(definition))
+          return mlir::failure();
+        if (findNode(nodes, definition)) {
+          auto mapped = getOrCreateFragmentBoundary(value, fragment);
+          if (mlir::succeeded(mapped))
+            supportMapping.map(value, *mapped);
+          return mapped;
+        }
+        for (mlir::Value operand : definition->getOperands()) {
+          auto mapped = mapSupport(operand);
+          if (mlir::failed(mapped))
+            return mlir::failure();
+          supportMapping.map(operand, *mapped);
+        }
+        mlir::Operation *cloned = builder.clone(*definition, supportMapping);
+        for (auto [oldResult, newResult] :
+             llvm::zip_equal(definition->getResults(), cloned->getResults()))
+          supportMapping.map(oldResult, newResult);
+        return supportMapping.lookup(value);
+      };
+      auto mapped = mapSupport(sourceValue);
+      if (mlir::succeeded(mapped))
+        return mapped;
       return fail<mlir::Value>(
           failure, SpatialRegionMaterializationFailureKind::BrokenContract,
-          "external fragment has no stable source identity");
+          "external fragment support chain cannot reach an actual endpoint");
+    }
 
     if (key->kind == SourceValueKey::Kind::FunctionArgument) {
       mlir::FailureOr<mlir::Value> argument = getOrCreateBoundary(sourceValue);
@@ -616,7 +770,120 @@ struct GroupBuilder {
     }
     mlir::BlockArgument argument = addRegionInput(actualInput);
     fragmentArguments.emplace(fragment, argument);
-    boundaryInputs.push_back({fragment, planned->second.tile, argument});
+    if (planned->second.tile != group.tile)
+      boundaryInputs.push_back({fragment, planned->second.tile, argument});
+    return argument;
+  }
+
+  mlir::FailureOr<mlir::Value>
+  getOrCreateCoupledStateBoundary(const CoupledStateKey &key) {
+    auto existing = coupledStateArguments.find(key);
+    if (existing != coupledStateArguments.end())
+      return existing->second;
+    auto required = coupledStateBoundaryRequirements.find(key);
+    if (required == coupledStateBoundaryRequirements.end() ||
+        !required->second.type)
+      return fail<mlir::Value>(
+          failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+          "coupled state has no required boundary type");
+
+    mlir::Value actualInput;
+    if (required->second.sourceTile == group.tile) {
+      bool definedInCurrentRegion = false;
+      for (const auto &[execution, states] : executionCoupledStates) {
+        (void)execution;
+        auto local = llvm::find_if(states, [&](const auto &entry) {
+          return !(entry.first < key) && !(key < entry.first);
+        });
+        if (local != states.end()) {
+          actualInput = local->second;
+          definedInCurrentRegion = true;
+          break;
+        }
+      }
+      if (definedInCurrentRegion)
+        return actualInput;
+      auto current = producedCoupledStates.find(key);
+      if (!actualInput && current != producedCoupledStates.end())
+        actualInput = current->second;
+      if (!actualInput)
+        return fail<mlir::Value>(
+            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+            "same-Tile coupled state was materialized before its producer");
+    } else {
+      auto external = entryCoupledStateArguments.find(key);
+      if (external == entryCoupledStateArguments.end()) {
+        unsigned index = entryFunction.getNumArguments();
+        entryFunction.insertArgument(index, required->second.type,
+                                     mlir::DictionaryAttr{}, source.getLoc());
+        external =
+            entryCoupledStateArguments
+                .emplace(key,
+                         entryFunction.getBody().front().getArgument(index))
+                .first;
+      }
+      actualInput = external->second;
+    }
+    mlir::BlockArgument argument = addRegionInput(actualInput);
+    coupledStateArguments.emplace(key, argument);
+    if (required->second.sourceTile != group.tile)
+      coupledStateInputs.push_back(
+          {key, required->second.sourceTile, argument});
+    return argument;
+  }
+
+  mlir::FailureOr<mlir::Value>
+  getOrCreateStandardPartialBoundary(const StandardPartialKey &key) {
+    auto existing = standardPartialArguments.find(key);
+    if (existing != standardPartialArguments.end())
+      return existing->second;
+    auto required = standardPartialBoundaryRequirements.find(key);
+    if (required == standardPartialBoundaryRequirements.end() ||
+        !required->second.type)
+      return fail<mlir::Value>(
+          failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+          "standard partial has no required boundary type");
+
+    mlir::Value actualInput;
+    if (required->second.sourceTile == group.tile) {
+      for (const auto &[execution, partials] : executionStandardPartials) {
+        (void)execution;
+        auto local = llvm::find_if(partials, [&](const auto &entry) {
+          return !(entry.first < key) && !(key < entry.first);
+        });
+        if (local != partials.end()) {
+          actualInput = local->second;
+          break;
+        }
+      }
+      if (actualInput)
+        return actualInput;
+      auto current = producedStandardPartials.find(key);
+      if (current != producedStandardPartials.end())
+        actualInput = current->second;
+      if (!actualInput)
+        return fail<mlir::Value>(
+            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+            "same-Tile standard partial was materialized before its producer");
+    } else {
+      auto external = entryStandardPartialArguments.find(key);
+      if (external == entryStandardPartialArguments.end()) {
+        unsigned index = entryFunction.getNumArguments();
+        entryFunction.insertArgument(index, required->second.type,
+                                     mlir::DictionaryAttr{}, source.getLoc());
+        external =
+            entryStandardPartialArguments
+                .emplace(key,
+                         entryFunction.getBody().front().getArgument(index))
+                .first;
+      }
+      actualInput = external->second;
+    }
+    mlir::BlockArgument argument = addRegionInput(actualInput);
+    standardPartialArguments.emplace(key, argument);
+    if (required->second.sourceTile != group.tile)
+      standardPartialInputs.push_back(
+          {key, required->second.sourceTile, argument});
     return argument;
   }
 
@@ -651,9 +918,68 @@ struct GroupBuilder {
     return owner == use->eligibleFinalOwners.end() ? nullptr : &owner->domain;
   }
 
+  mlir::FailureOr<mlir::Value> materializeSupportAfterFragmentAssembly(
+      mlir::Value value,
+      const llvm::SmallVector<DemandFragmentId, 4> &fragments,
+      mlir::IRMapping &supportMapping) {
+    if (mlir::Value mapped = supportMapping.lookupOrNull(value))
+      return mapped;
+    if (getSourceValueKey(value, sourceFunction, nodes)) {
+      auto mapped = assembleExternalFragments(value, fragments);
+      if (mlir::succeeded(mapped))
+        supportMapping.map(value, *mapped);
+      return mapped;
+    }
+    auto result = mlir::dyn_cast<mlir::OpResult>(value);
+    mlir::Operation *definition = result ? result.getOwner() : nullptr;
+    if (!definition || !mlir::isMemoryEffectFree(definition))
+      return mlir::failure();
+    mlir::Value fragmentSource;
+    for (mlir::Value operand : definition->getOperands()) {
+      if (!mlir::isa<mlir::ShapedType>(operand.getType()))
+        continue;
+      if (fragmentSource)
+        return mlir::failure();
+      fragmentSource = operand;
+    }
+    if (!fragmentSource)
+      return mlir::failure();
+    for (mlir::Value operand : definition->getOperands()) {
+      mlir::FailureOr<mlir::Value> mapped =
+          operand == fragmentSource ? materializeSupportAfterFragmentAssembly(
+                                          operand, fragments, supportMapping)
+                                    : mapSupportValue(operand, supportMapping);
+      if (mlir::failed(mapped))
+        return mlir::failure();
+      supportMapping.map(operand, *mapped);
+    }
+    mlir::Operation *cloned = builder.clone(*definition, supportMapping);
+    for (auto [oldResult, newResult] :
+         llvm::zip_equal(definition->getResults(), cloned->getResults()))
+      supportMapping.map(oldResult, newResult);
+    return supportMapping.lookup(value);
+  }
+
   mlir::FailureOr<mlir::Value>
   assembleExternalFragments(mlir::Value sourceValue,
                             llvm::SmallVector<DemandFragmentId, 4> fragments) {
+    if (!getSourceValueKey(sourceValue, sourceFunction, nodes)) {
+      auto sourceResult = mlir::dyn_cast<mlir::OpResult>(sourceValue);
+      mlir::Operation *definition =
+          sourceResult ? sourceResult.getOwner() : nullptr;
+      if (definition && mlir::isMemoryEffectFree(definition) &&
+          llvm::none_of(definition->getOperandTypes(),
+                        llvm::IsaPred<mlir::ShapedType>))
+        return mapSupportValue(sourceValue);
+      mlir::IRMapping supportMapping;
+      auto mapped = materializeSupportAfterFragmentAssembly(
+          sourceValue, fragments, supportMapping);
+      if (mlir::succeeded(mapped))
+        return mapped;
+      return fail<mlir::Value>(
+          failure, SpatialRegionMaterializationFailureKind::Unsupported,
+          "external support chain cannot be applied after fragment assembly");
+    }
     const bool hadFragments = !fragments.empty();
     llvm::erase_if(fragments, [&](const DemandFragmentId &fragment) {
       const analysis::ExactIndexSet *domain = findFragmentDomain(fragment);
@@ -889,195 +1215,395 @@ struct GroupBuilder {
   }
 
   mlir::FailureOr<llvm::SmallVector<mlir::Value, 2>>
-  materializeCoupledMergeExecution(const RequiredMergeExecution &execution) {
+  materializeActualStandardMergeExecution(
+      const RequiredMergeExecution &execution) {
     auto workAndMerge = getMergeWork(execution);
     if (mlir::failed(workAndMerge))
       return mlir::failure();
     const analysis::RootRegionWork &work = *workAndMerge->first;
     const analysis::ReductionMergeRequirement &merge = *workAndMerge->second;
-    if (!merge.coupledRule || merge.contributions.empty())
+    auto tiling =
+        mlir::dyn_cast_or_null<mlir::TilingInterface>(work.rootOperation);
+    auto partialInterface =
+        mlir::dyn_cast_or_null<mlir::PartialReductionOpInterface>(
+            work.rootOperation);
+    auto dps = mlir::dyn_cast_or_null<mlir::DestinationStyleOpInterface>(
+        work.rootOperation);
+    if (!tiling || !partialInterface || !dps || merge.coupledRule ||
+        merge.contributions.empty() || merge.results.empty() ||
+        dps.getNumDpsInits() != work.rootOperation->getNumResults() ||
+        merge.results.size() != work.rootOperation->getNumResults() ||
+        llvm::any_of(llvm::enumerate(merge.results), [](const auto &entry) {
+          return entry.value().result != entry.index();
+        }))
       return fail<llvm::SmallVector<mlir::Value, 2>>(
           failure, SpatialRegionMaterializationFailureKind::BrokenContract,
-          "coupled merge execution has no coupled contribution contract");
-    mlir::Operation *sourceRoot = work.rootOperation;
-    const auto *node = findNode(nodes, sourceRoot);
-    auto attention = mlir::dyn_cast_or_null<LinalgExtAttentionOp>(sourceRoot);
-    if (!node || !attention)
-      return fail<llvm::SmallVector<mlir::Value, 2>>(
-          failure, SpatialRegionMaterializationFailureKind::Unsupported,
-          "coupled structural merge requires an opaque attention operation");
+          "standard merge contract is incomplete");
 
-    mlir::IRMapping rootMapping;
-    for (mlir::OpOperand &operand : sourceRoot->getOpOperands()) {
-      llvm::SmallVector<std::pair<mlir::Value, std::set<DemandFragmentId>>, 4>
-          sourceFragments;
-      for (const analysis::ReductionContribution &contribution :
-           merge.contributions) {
-        const analysis::RootRegionWork *contributionWork =
-            findWork(rootWorks, {work.id.root, contribution.tile});
-        if (!contributionWork)
-          continue;
-        for (const analysis::RootBoundaryWork &boundary :
-             contributionWork->boundaries) {
-          auto use =
-              llvm::find_if(boundary.consumerUses, [&](const auto &candidate) {
-                return candidate.id.operand == operand.getOperandNumber() &&
-                       candidate.id.destinationShard == contribution.shard;
-              });
-          if (use == boundary.consumerUses.end())
-            continue;
-          auto source = llvm::find_if(sourceFragments, [&](const auto &entry) {
-            return entry.first == boundary.sourceValue;
-          });
-          if (source == sourceFragments.end()) {
-            sourceFragments.push_back({boundary.sourceValue, {}});
-            source = std::prev(sourceFragments.end());
-          }
-          if (use->eligibleFinalOwners.empty()) {
-            source->second.insert({boundary.id, use->id, std::nullopt,
-                                   std::nullopt, std::nullopt});
-            continue;
-          }
-          for (const analysis::OwnerIntersection &owner :
-               use->eligibleFinalOwners)
-            source->second.insert({boundary.id, use->id, owner.ownerShard,
-                                   owner.reductionGroup, owner.tile});
-        }
-      }
-      for (auto &[sourceValue, uniqueFragments] : sourceFragments) {
-        if (rootMapping.lookupOrNull(sourceValue))
-          continue;
-        mlir::FailureOr<mlir::Value> mappedSource = mlir::failure();
-        auto sourceResult = mlir::dyn_cast<mlir::OpResult>(sourceValue);
-        if (sourceResult && findNode(nodes, sourceResult.getOwner())) {
-          llvm::SmallVector<DemandFragmentId, 4> fragments(
-              uniqueFragments.begin(), uniqueFragments.end());
-          mappedSource =
-              assembleExternalFragments(sourceValue, std::move(fragments));
-        } else {
-          mappedSource = mapSupportValue(sourceValue, rootMapping);
-        }
-        if (mlir::failed(mappedSource))
-          return mlir::failure();
-        if (!rootMapping.lookupOrNull(sourceValue))
-          rootMapping.map(sourceValue, *mappedSource);
-      }
-      mlir::FailureOr<mlir::Value> mapped =
-          mapSupportValue(operand.get(), rootMapping);
-      if (mlir::failed(mapped))
-        return mlir::failure();
-      if (!rootMapping.lookupOrNull(operand.get()))
-        rootMapping.map(operand.get(), *mapped);
-    }
-    llvm::SetVector<mlir::Value> captures;
-    mlir::getUsedValuesDefinedAbove(sourceRoot->getRegions(), captures);
-    for (mlir::Value capture : captures) {
-      mlir::FailureOr<mlir::Value> mapped =
-          mapSupportValue(capture, rootMapping);
-      if (mlir::failed(mapped))
-        return mlir::failure();
-      if (!rootMapping.lookupOrNull(capture))
-        rootMapping.map(capture, *mapped);
-    }
-    mlir::Operation *adapter = builder.clone(*sourceRoot, rootMapping);
-    auto tiling = mlir::cast<mlir::TilingInterface>(adapter);
-    llvm::SmallVector<mlir::Range, 6> completeDomain =
-        tiling.getIterationDomain(builder);
     llvm::SmallVector<mlir::utils::IteratorType, 6> iteratorTypes =
         tiling.getLoopIteratorTypes();
-    const analysis::RootExecutionWork *firstContribution = nullptr;
+    llvm::SmallVector<int, 2> reductionDimensions;
+    for (auto [dimension, iteratorType] : llvm::enumerate(iteratorTypes))
+      if (iteratorType == mlir::utils::IteratorType::reduction)
+        reductionDimensions.push_back(static_cast<int>(dimension));
+    if (reductionDimensions.empty())
+      return fail<llvm::SmallVector<mlir::Value, 2>>(
+          failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+          "standard merge has no reduction dimension");
+
+    llvm::SmallVector<analysis::StaticRectangularIndexSet, 8> boxes;
     for (const analysis::ReductionContribution &contribution :
          merge.contributions) {
-      const analysis::RootRegionWork *candidateWork =
-          findWork(rootWorks, {work.id.root, contribution.tile});
-      const analysis::RootExecutionWork *candidate =
-          candidateWork ? findExecution(*candidateWork, contribution.shard)
-                        : nullptr;
-      if (!candidate ||
-          candidate->iterationDomain.size() != completeDomain.size()) {
-        if (adapter->use_empty())
-          adapter->erase();
+      auto normalized =
+          analysis::normalizeFiniteExactIndexSet(contribution.iterationDomain);
+      if (mlir::failed(normalized) || normalized->getBoxes().size() != 1)
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::Unsupported,
+            "standard contribution is not one exact iteration rectangle");
+      boxes.push_back(normalized->getBoxes().front());
+    }
+    const size_t rank = iteratorTypes.size();
+    if (boxes.empty() || boxes.front().offsets.size() != rank ||
+        boxes.front().sizes.size() != rank)
+      return fail<llvm::SmallVector<mlir::Value, 2>>(
+          failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+          "standard contribution rank does not match its operation");
+    llvm::SmallVector<int64_t, 6> globalOffsets(boxes.front().offsets.begin(),
+                                                boxes.front().offsets.end());
+    llvm::SmallVector<int64_t, 6> globalEnds(rank);
+    for (size_t dimension = 0; dimension < rank; ++dimension)
+      if (boxes.front().sizes[dimension] <= 0 ||
+          llvm::AddOverflow(boxes.front().offsets[dimension],
+                            boxes.front().sizes[dimension],
+                            globalEnds[dimension]))
         return fail<llvm::SmallVector<mlir::Value, 2>>(
             failure, SpatialRegionMaterializationFailureKind::BrokenContract,
-            "coupled merge contribution has no exact iteration interval");
-      }
-      if (!firstContribution) {
-        firstContribution = candidate;
-        continue;
-      }
-      for (auto [dimension, iteratorType] : llvm::enumerate(iteratorTypes))
-        if (iteratorType != mlir::utils::IteratorType::reduction &&
-            !(candidate->iterationDomain[dimension] ==
-              firstContribution->iterationDomain[dimension])) {
-          if (adapter->use_empty())
-            adapter->erase();
+            "standard contribution extent is invalid");
+    int64_t contributionVolume = 0;
+    for (auto [boxIndex, box] : llvm::enumerate(boxes)) {
+      if (box.offsets.size() != rank || box.sizes.size() != rank)
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+            "standard contribution rectangles have different ranks");
+      int64_t volume = 1;
+      for (size_t dimension = 0; dimension < rank; ++dimension) {
+        int64_t end = 0;
+        int64_t nextVolume = 0;
+        if (box.sizes[dimension] <= 0 ||
+            llvm::AddOverflow(box.offsets[dimension], box.sizes[dimension],
+                              end) ||
+            llvm::MulOverflow(volume, box.sizes[dimension], nextVolume))
           return fail<llvm::SmallVector<mlir::Value, 2>>(
               failure, SpatialRegionMaterializationFailureKind::BrokenContract,
-              "coupled merge contributions disagree on their output piece");
+              "standard contribution size is not representable");
+        volume = nextVolume;
+        if (iteratorTypes[dimension] != mlir::utils::IteratorType::reduction &&
+            (box.offsets[dimension] != boxes.front().offsets[dimension] ||
+             box.sizes[dimension] != boxes.front().sizes[dimension]))
+          return fail<llvm::SmallVector<mlir::Value, 2>>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "standard contributions disagree on parallel iteration work");
+        globalOffsets[dimension] =
+            std::min(globalOffsets[dimension], box.offsets[dimension]);
+        globalEnds[dimension] = std::max(globalEnds[dimension], end);
+      }
+      int64_t nextTotal = 0;
+      if (llvm::AddOverflow(contributionVolume, volume, nextTotal))
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+            "standard contribution volume is not representable");
+      contributionVolume = nextTotal;
+      for (size_t previous = 0; previous < boxIndex; ++previous) {
+        bool overlaps = true;
+        for (size_t dimension = 0; dimension < rank; ++dimension) {
+          int64_t previousEnd = boxes[previous].offsets[dimension] +
+                                boxes[previous].sizes[dimension];
+          int64_t currentEnd = box.offsets[dimension] + box.sizes[dimension];
+          overlaps &= boxes[previous].offsets[dimension] < currentEnd &&
+                      box.offsets[dimension] < previousEnd;
         }
+        if (overlaps)
+          return fail<llvm::SmallVector<mlir::Value, 2>>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "standard contribution rectangles overlap");
+      }
     }
-    if (!firstContribution || iteratorTypes.size() != completeDomain.size()) {
+    llvm::SmallVector<int64_t, 6> globalSizes(rank);
+    int64_t globalVolume = 1;
+    for (size_t dimension = 0; dimension < rank; ++dimension) {
+      globalSizes[dimension] = globalEnds[dimension] - globalOffsets[dimension];
+      int64_t nextVolume = 0;
+      if (globalSizes[dimension] <= 0 ||
+          llvm::MulOverflow(globalVolume, globalSizes[dimension], nextVolume))
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+            "standard merge rectangle is not representable");
+      globalVolume = nextVolume;
+    }
+    if (globalVolume != contributionVolume)
+      return fail<llvm::SmallVector<mlir::Value, 2>>(
+          failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+          "standard contributions do not exactly cover their merge rectangle");
+
+    llvm::SmallVector<mlir::Value, 2> assembledPartials;
+    for (const analysis::ReductionResultSlice &result : merge.results) {
+      if (result.result >= work.rootOperation->getNumResults())
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+            "standard merge result index is out of range");
+      auto resultType = mlir::cast<mlir::RankedTensorType>(
+          work.rootOperation->getResult(result.result).getType());
+      mlir::Value assembled = builder
+                                  .create<mlir::tensor::EmptyOp>(
+                                      work.rootOperation->getLoc(), globalSizes,
+                                      resultType.getElementType())
+                                  .getResult();
+      for (auto [contribution, box] :
+           llvm::zip_equal(merge.contributions, boxes)) {
+        StandardPartialKey key{merge.group, contribution.shard, result.result};
+        auto partial = getOrCreateStandardPartialBoundary(key);
+        if (mlir::failed(partial))
+          return mlir::failure();
+        llvm::SmallVector<mlir::OpFoldResult, 6> offsets;
+        llvm::SmallVector<mlir::OpFoldResult, 6> sizes;
+        llvm::SmallVector<mlir::OpFoldResult, 6> strides;
+        for (size_t dimension = 0; dimension < rank; ++dimension) {
+          offsets.push_back(builder.getIndexAttr(box.offsets[dimension] -
+                                                 globalOffsets[dimension]));
+          sizes.push_back(builder.getIndexAttr(box.sizes[dimension]));
+          strides.push_back(builder.getIndexAttr(1));
+        }
+        assembled = builder
+                        .create<mlir::tensor::InsertSliceOp>(
+                            work.rootOperation->getLoc(), *partial, assembled,
+                            offsets, sizes, strides)
+                        .getResult();
+      }
+      assembledPartials.push_back(assembled);
+    }
+
+    llvm::SmallVector<mlir::OpFoldResult, 6> iterationOffsets;
+    llvm::SmallVector<mlir::OpFoldResult, 6> iterationSizes;
+    for (size_t dimension = 0; dimension < rank; ++dimension) {
+      iterationOffsets.push_back(
+          builder.getIndexAttr(globalOffsets[dimension]));
+      iterationSizes.push_back(builder.getIndexAttr(globalSizes[dimension]));
+    }
+    llvm::SmallVector<mlir::Value, 2> resultDestinations;
+    for (const analysis::ReductionResultSlice &result : merge.results) {
+      mlir::Value sourceInit = dps.getDpsInitOperand(result.result)->get();
+      auto mappedInit = mapSupportValue(sourceInit);
+      llvm::SmallVector<mlir::OpFoldResult> resultOffsets;
+      llvm::SmallVector<mlir::OpFoldResult> resultSizes;
+      if (mlir::failed(mappedInit) ||
+          mlir::failed(tiling.getResultTilePosition(
+              builder, result.result, iterationOffsets, iterationSizes,
+              resultOffsets, resultSizes)))
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::Unsupported,
+            "standard merge cannot materialize its single destination init");
+      auto initType =
+          mlir::cast<mlir::RankedTensorType>((*mappedInit).getType());
+      llvm::SmallVector<mlir::OpFoldResult, 4> strides(initType.getRank(),
+                                                       builder.getIndexAttr(1));
+      resultDestinations.push_back(builder
+                                       .create<mlir::tensor::ExtractSliceOp>(
+                                           work.rootOperation->getLoc(),
+                                           *mappedInit, resultOffsets,
+                                           resultSizes, strides)
+                                       .getResult());
+    }
+
+    mlir::IRMapping adapterMapping;
+    llvm::SmallVector<mlir::Operation *, 4> placeholders;
+    for (mlir::OpOperand &operand : work.rootOperation->getOpOperands()) {
+      std::optional<unsigned> initIndex;
+      for (auto [index, value] : llvm::enumerate(dps.getDpsInits()))
+        if (value == operand.get()) {
+          initIndex = index;
+          break;
+        }
+      if (initIndex) {
+        adapterMapping.map(operand.get(), resultDestinations[*initIndex]);
+        continue;
+      }
+      auto type =
+          mlir::dyn_cast<mlir::RankedTensorType>(operand.get().getType());
+      if (type && type.hasStaticShape()) {
+        auto empty = builder.create<mlir::tensor::EmptyOp>(
+            work.rootOperation->getLoc(), type.getShape(),
+            type.getElementType());
+        placeholders.push_back(empty);
+        adapterMapping.map(operand.get(), empty.getResult());
+        continue;
+      }
+      auto mapped = mapSupportValue(operand.get());
+      if (mlir::failed(mapped))
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::Unsupported,
+            "standard merge cannot localize a non-tensor operand");
+      adapterMapping.map(operand.get(), *mapped);
+    }
+    mlir::Operation *adapter =
+        builder.clone(*work.rootOperation, adapterMapping);
+    for (auto [result, destination] :
+         llvm::zip_equal(adapter->getResults(), resultDestinations))
+      result.setType(destination.getType());
+    auto adapterPartial =
+        mlir::cast<mlir::PartialReductionOpInterface>(adapter);
+    auto merged =
+        adapterPartial.mergeReductions(builder, work.rootOperation->getLoc(),
+                                       assembledPartials, reductionDimensions);
+    if (mlir::failed(merged) ||
+        merged->replacements.size() != merge.results.size()) {
       if (adapter->use_empty())
         adapter->erase();
       return fail<llvm::SmallVector<mlir::Value, 2>>(
-          failure, SpatialRegionMaterializationFailureKind::BrokenContract,
-          "coupled merge has no complete opaque attention domain");
-    }
-
-    llvm::SmallVector<mlir::OpFoldResult, 6> offsets;
-    llvm::SmallVector<mlir::OpFoldResult, 6> sizes;
-    for (auto [dimension, iteratorType] : llvm::enumerate(iteratorTypes)) {
-      if (iteratorType == mlir::utils::IteratorType::reduction) {
-        offsets.push_back(completeDomain[dimension].offset);
-        sizes.push_back(completeDomain[dimension].size);
-        continue;
-      }
-      offsets.push_back(builder.getIndexAttr(
-          firstContribution->iterationDomain[dimension].offset));
-      sizes.push_back(builder.getIndexAttr(
-          firstContribution->iterationDomain[dimension].size));
-    }
-    std::string tilingFailure;
-    auto tiled = materializeOperationFromIterationTile(
-        adapter, builder, offsets, sizes, &tilingFailure);
-    if (mlir::failed(tiled)) {
-      if (adapter->use_empty())
-        adapter->erase();
-      if (failure) {
-        failure->kind = SpatialRegionMaterializationFailureKind::Unsupported;
-        failure->detail = std::move(tilingFailure);
-      }
-      return mlir::failure();
-    }
-
-    llvm::SmallVector<mlir::Value, 2> fullResults;
-    for (auto [resultNumber, tiledValue] :
-         llvm::enumerate(tiled->tiledValues)) {
-      auto fullType = mlir::dyn_cast<mlir::RankedTensorType>(
-          sourceRoot->getResult(resultNumber).getType());
-      if (!fullType || !fullType.hasStaticShape()) {
-        if (adapter->use_empty())
-          adapter->erase();
-        return fail<llvm::SmallVector<mlir::Value, 2>>(
-            failure, SpatialRegionMaterializationFailureKind::Unsupported,
-            "opaque attention result requires a static ranked tensor");
-      }
-      auto empty = builder.create<mlir::tensor::EmptyOp>(
-          sourceRoot->getLoc(), fullType.getShape(), fullType.getElementType());
-      llvm::SmallVector<mlir::OpFoldResult, 6> strides(fullType.getRank(),
-                                                       builder.getIndexAttr(1));
-      fullResults.push_back(builder
-                                .create<mlir::tensor::InsertSliceOp>(
-                                    sourceRoot->getLoc(), tiledValue,
-                                    empty.getResult(),
-                                    tiled->resultOffsets[resultNumber],
-                                    tiled->resultSizes[resultNumber], strides)
-                                .getResult());
+          failure, SpatialRegionMaterializationFailureKind::Unsupported,
+          "standard partials cannot form one actual merge");
     }
     if (adapter->use_empty())
       adapter->erase();
-    for (mlir::Operation *operation : tiled->tiledOperations)
-      emissions.push_back({node->structuredNodeId, operation});
+    for (mlir::Operation *placeholder : llvm::reverse(placeholders))
+      if (placeholder->use_empty())
+        placeholder->erase();
+
+    llvm::SmallVector<mlir::Value, 2> fullResults;
+    for (auto [result, mergedValue] :
+         llvm::zip_equal(merge.results, merged->replacements)) {
+      auto fullType = mlir::cast<mlir::RankedTensorType>(
+          work.rootOperation->getResult(result.result).getType());
+      auto normalizedResult =
+          analysis::normalizeFiniteExactIndexSet(result.domain);
+      if (mlir::failed(normalizedResult) ||
+          normalizedResult->getBoxes().size() != 1)
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::Unsupported,
+            "standard merge result is not one exact tensor tile");
+      auto box = normalizedResult->getBoxes().front();
+      llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
+      llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
+      llvm::SmallVector<mlir::OpFoldResult, 4> strides;
+      for (auto [offset, size] : llvm::zip_equal(box.offsets, box.sizes)) {
+        offsets.push_back(builder.getIndexAttr(offset));
+        sizes.push_back(builder.getIndexAttr(size));
+        strides.push_back(builder.getIndexAttr(1));
+      }
+      fullResults.push_back(
+          builder
+              .create<mlir::tensor::InsertSliceOp>(
+                  work.rootOperation->getLoc(), mergedValue,
+                  builder
+                      .create<mlir::tensor::EmptyOp>(
+                          work.rootOperation->getLoc(), fullType.getShape(),
+                          fullType.getElementType())
+                      .getResult(),
+                  offsets, sizes, strides)
+              .getResult());
+    }
+    executionResults.emplace(ExecutionInstanceId{execution}, fullResults);
+    return fullResults;
+  }
+
+  mlir::FailureOr<llvm::SmallVector<mlir::Value, 2>>
+  materializeActualCoupledMergeExecution(
+      const RequiredMergeExecution &execution) {
+    auto workAndMerge = getMergeWork(execution);
+    if (mlir::failed(workAndMerge))
+      return mlir::failure();
+    const analysis::RootRegionWork &work = *workAndMerge->first;
+    const analysis::ReductionMergeRequirement &merge = *workAndMerge->second;
+    auto attention =
+        mlir::dyn_cast_or_null<LinalgExtAttentionOp>(work.rootOperation);
+    if (!attention ||
+        attention.getAlgorithm() != AttentionAlgorithm::FlashDecoding ||
+        !merge.coupledRule || merge.contributions.size() < 2 ||
+        merge.components.size() != 3 || merge.results.size() != 1)
+      return fail<llvm::SmallVector<mlir::Value, 2>>(
+          failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+          "flash_decoding merge contract is incomplete");
+
+    llvm::SmallVector<OnlineAttentionState, 8> contributionStates;
+    for (const analysis::ReductionContribution &contribution :
+         merge.contributions) {
+      OnlineAttentionState state;
+      for (const analysis::CoupledReductionComponentRequirement &component :
+           merge.components) {
+        CoupledStateKey key{merge.group, contribution.shard, component.kind};
+        mlir::FailureOr<mlir::Value> value =
+            getOrCreateCoupledStateBoundary(key);
+        if (mlir::failed(value))
+          return mlir::failure();
+        switch (component.kind) {
+        case CoupledReductionComponentKind::Maximum:
+          state.maximum = *value;
+          break;
+        case CoupledReductionComponentKind::Sum:
+          state.sum = *value;
+          break;
+        case CoupledReductionComponentKind::Accumulator:
+          state.accumulator = *value;
+          break;
+        }
+      }
+      if (!state.accumulator || !state.maximum || !state.sum)
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+            "flash_decoding contribution is missing one coupled state");
+      contributionStates.push_back(state);
+    }
+
+    OnlineAttentionState merged = contributionStates.front();
+    for (const OnlineAttentionState &state :
+         llvm::ArrayRef(contributionStates).drop_front()) {
+      auto next = materializeOnlineAttentionStateMerge(attention, merged, state,
+                                                       builder);
+      if (mlir::failed(next))
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::Unsupported,
+            "flash_decoding states cannot form an actual coupled merge");
+      merged = *next;
+    }
+    mlir::FailureOr<mlir::Value> finalized =
+        materializeOnlineAttentionFinalize(attention, merged, builder);
+    auto normalized =
+        analysis::normalizeFiniteExactIndexSet(merge.results.front().domain);
+    if (mlir::failed(finalized) || mlir::failed(normalized) ||
+        normalized->getBoxes().size() != 1)
+      return fail<llvm::SmallVector<mlir::Value, 2>>(
+          failure, SpatialRegionMaterializationFailureKind::Unsupported,
+          "flash_decoding final result is not one exact tensor tile");
+    auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
+        work.rootOperation->getResult(merge.results.front().result).getType());
+    auto finalizedType =
+        mlir::dyn_cast<mlir::RankedTensorType>(finalized->getType());
+    auto resultBox = normalized->getBoxes().front();
+    if (!resultType || !resultType.hasStaticShape() || !finalizedType ||
+        finalizedType.getShape() != llvm::ArrayRef<int64_t>(resultBox.sizes))
+      return fail<llvm::SmallVector<mlir::Value, 2>>(
+          failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+          "flash_decoding final state does not match its output piece");
+    llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
+    llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
+    llvm::SmallVector<mlir::OpFoldResult, 4> strides;
+    for (auto [offset, size] :
+         llvm::zip_equal(resultBox.offsets, resultBox.sizes)) {
+      offsets.push_back(builder.getIndexAttr(offset));
+      sizes.push_back(builder.getIndexAttr(size));
+      strides.push_back(builder.getIndexAttr(1));
+    }
+    mlir::Value fullResult =
+        builder
+            .create<mlir::tensor::InsertSliceOp>(
+                attention.getLoc(), *finalized,
+                builder
+                    .create<mlir::tensor::EmptyOp>(attention.getLoc(),
+                                                   resultType.getShape(),
+                                                   resultType.getElementType())
+                    .getResult(),
+                offsets, sizes, strides)
+            .getResult();
+    llvm::SmallVector<mlir::Value, 2> fullResults{fullResult};
     executionResults.emplace(ExecutionInstanceId{execution}, fullResults);
     return fullResults;
   }
@@ -1090,29 +1616,51 @@ struct GroupBuilder {
     const analysis::RootRegionWork &work = *workAndPiece->first;
     const analysis::RootExecutionWork &piece = *workAndPiece->second;
     mlir::Operation *sourceRoot = work.rootOperation;
-    const auto *node = findNode(nodes, sourceRoot);
-    if (!node)
+    if (!findNode(nodes, sourceRoot))
       return fail<llvm::SmallVector<mlir::Value, 2>>(
           failure, SpatialRegionMaterializationFailureKind::BrokenContract,
           "root work has no structured node mapping");
 
-    // Flash-decoding/coupled-reduction contributions are intentionally empty
-    // structural shells at this boundary. Item 14 owns the only decomposition
-    // into QK/PV/state/merge operations and consumes regionExecutions to fill
-    // these exact selected shells. Cloning a full attention op into every K2
-    // contribution would misrepresent the current algorithm and duplicate
-    // work before the selected-attention transformation.
-    if (llvm::any_of(work.contributions, [&](const auto &contribution) {
-          return contribution.contribution.shard == piece.shard &&
-                 contribution.coupledRule.has_value();
-        })) {
-      llvm::SmallVector<mlir::Value, 2> noValues;
-      executionResults.emplace(execution, noValues);
-      return noValues;
-    }
+    const analysis::RootContributionWork *coupledContribution = nullptr;
+    for (const analysis::RootContributionWork &contribution :
+         work.contributions)
+      if (contribution.contribution.shard == piece.shard &&
+          contribution.coupledRule) {
+        coupledContribution = &contribution;
+        break;
+      }
+    const analysis::RootContributionWork *standardContribution = nullptr;
+    for (const analysis::RootContributionWork &contribution :
+         work.contributions)
+      if (contribution.contribution.shard == piece.shard &&
+          !contribution.coupledRule) {
+        standardContribution = &contribution;
+        break;
+      }
+    auto attention = mlir::dyn_cast<LinalgExtAttentionOp>(sourceRoot);
+    auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(sourceRoot);
 
     mlir::IRMapping rootMapping;
+    llvm::SmallVector<mlir::Operation *, 2> temporaryInitPlaceholders;
     for (mlir::OpOperand &operand : sourceRoot->getOpOperands()) {
+      bool isInit = false;
+      if (dps)
+        isInit = llvm::is_contained(dps.getDpsInits(), operand.get());
+      if (attention && isInit)
+        continue;
+      if (standardContribution && isInit) {
+        auto type =
+            mlir::dyn_cast<mlir::RankedTensorType>(operand.get().getType());
+        if (!type || !type.hasStaticShape())
+          return fail<llvm::SmallVector<mlir::Value, 2>>(
+              failure, SpatialRegionMaterializationFailureKind::Unsupported,
+              "standard contribution init requires a static tensor type");
+        auto placeholder = builder.create<mlir::tensor::EmptyOp>(
+            sourceRoot->getLoc(), type.getShape(), type.getElementType());
+        rootMapping.map(operand.get(), placeholder.getResult());
+        temporaryInitPlaceholders.push_back(placeholder);
+        continue;
+      }
       mlir::FailureOr<mlir::Value> mapped =
           mapExecutionOperand(execution, operand);
       if (mlir::failed(mapped))
@@ -1127,22 +1675,118 @@ struct GroupBuilder {
         return mlir::failure();
       rootMapping.map(capture, *mapped);
     }
-    mlir::Operation *adapter = builder.clone(*sourceRoot, rootMapping);
-
     llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
     llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
     for (const auto &interval : piece.iterationDomain) {
       offsets.push_back(builder.getIndexAttr(interval.offset));
       sizes.push_back(builder.getIndexAttr(interval.size));
     }
-    const analysis::RootContributionWork *standardContribution = nullptr;
-    for (const analysis::RootContributionWork &contribution :
-         work.contributions)
-      if (contribution.contribution.shard == piece.shard &&
-          !contribution.coupledRule) {
-        standardContribution = &contribution;
-        break;
+    if (attention &&
+        attention.getAlgorithm() == AttentionAlgorithm::FlashAttention) {
+      if (coupledContribution || !work.merges.empty())
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+            "flash_attention cannot have spatial K2 contributions or merge");
+      mlir::Value mappedMask =
+          attention.getMask() ? rootMapping.lookupOrNull(attention.getMask())
+                              : mlir::Value{};
+      auto state = materializeOnlineAttentionTile(
+          attention, rootMapping.lookupOrNull(attention.getQuery()),
+          rootMapping.lookupOrNull(attention.getKey()),
+          rootMapping.lookupOrNull(attention.getValue()),
+          rootMapping.lookupOrNull(attention.getScale()), mappedMask, offsets,
+          sizes, builder);
+      if (mlir::failed(state))
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::Unsupported,
+            "flash_attention spatial tile cannot form online state IR");
+      mlir::FailureOr<mlir::Value> finalized =
+          materializeOnlineAttentionFinalize(attention, *state, builder);
+      llvm::SmallVector<mlir::OpFoldResult> resultOffsets;
+      llvm::SmallVector<mlir::OpFoldResult> resultSizes;
+      if (mlir::failed(finalized) ||
+          mlir::failed(attention.getResultTilePosition(
+              builder, 0, offsets, sizes, resultOffsets, resultSizes)))
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::Unsupported,
+            "flash_attention spatial result tile cannot be finalized");
+      auto fullType = mlir::dyn_cast<mlir::RankedTensorType>(
+          sourceRoot->getResult(0).getType());
+      if (!fullType || !fullType.hasStaticShape())
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::Unsupported,
+            "flash_attention result requires a static ranked tensor");
+      mlir::Value empty = builder
+                              .create<mlir::tensor::EmptyOp>(
+                                  sourceRoot->getLoc(), fullType.getShape(),
+                                  fullType.getElementType())
+                              .getResult();
+      llvm::SmallVector<mlir::OpFoldResult, 6> strides(fullType.getRank(),
+                                                       builder.getIndexAttr(1));
+      mlir::Value fullResult = builder
+                                   .create<mlir::tensor::InsertSliceOp>(
+                                       sourceRoot->getLoc(), *finalized, empty,
+                                       resultOffsets, resultSizes, strides)
+                                   .getResult();
+      llvm::SmallVector<mlir::Value, 2> results{fullResult};
+      executionResults.emplace(execution, results);
+      return results;
+    }
+
+    if (attention && coupledContribution) {
+      if (attention.getAlgorithm() != AttentionAlgorithm::FlashDecoding)
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+            "only flash_decoding may have spatial coupled contributions");
+      mlir::Value mappedMask =
+          attention.getMask() ? rootMapping.lookupOrNull(attention.getMask())
+                              : mlir::Value{};
+      auto state = materializeOnlineAttentionTile(
+          attention, rootMapping.lookupOrNull(attention.getQuery()),
+          rootMapping.lookupOrNull(attention.getKey()),
+          rootMapping.lookupOrNull(attention.getValue()),
+          rootMapping.lookupOrNull(attention.getScale()), mappedMask, offsets,
+          sizes, builder);
+      if (mlir::failed(state))
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::Unsupported,
+            "flash_decoding contribution cannot form online state IR");
+      auto stateValue = [&](CoupledReductionComponentKind kind) -> mlir::Value {
+        switch (kind) {
+        case CoupledReductionComponentKind::Maximum:
+          return state->maximum;
+        case CoupledReductionComponentKind::Sum:
+          return state->sum;
+        case CoupledReductionComponentKind::Accumulator:
+          return state->accumulator;
+        }
+        return {};
+      };
+      llvm::SmallVector<std::pair<CoupledStateKey, mlir::Value>, 3> states;
+      for (const analysis::CoupledReductionComponentSlice &component :
+           coupledContribution->contribution.components) {
+        CoupledStateKey key{coupledContribution->group, piece.shard,
+                            component.kind};
+        mlir::Value value = stateValue(component.kind);
+        auto required = coupledStateBoundaryRequirements.find(key);
+        if (!value || required == coupledStateBoundaryRequirements.end() ||
+            required->second.type != value.getType())
+          return fail<llvm::SmallVector<mlir::Value, 2>>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "flash_decoding state does not match its actual endpoint");
+        states.push_back({key, value});
       }
+      if (states.size() != 3)
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+            "flash_decoding contribution does not contain three states");
+      executionCoupledStates.emplace(execution, std::move(states));
+      llvm::SmallVector<mlir::Value, 2> noValues;
+      executionResults.emplace(execution, noValues);
+      return noValues;
+    }
+
+    mlir::Operation *adapter = builder.clone(*sourceRoot, rootMapping);
     if (standardContribution) {
       std::string partialFailure;
       auto partial = materializePartialReductionTile(adapter, builder, offsets,
@@ -1169,41 +1813,48 @@ struct GroupBuilder {
             failure, SpatialRegionMaterializationFailureKind::Unsupported,
             "PartialReductionOpInterface produced an invalid noncanonical "
             "reduction tile");
-      auto tiling = mlir::cast<mlir::TilingInterface>(adapter);
-      llvm::SmallVector<mlir::Value, 2> fullResults;
-      for (auto [resultNumber, mergedValue] :
-           llvm::enumerate(partial->mergedValues)) {
-        auto fullType = mlir::dyn_cast<mlir::RankedTensorType>(
-            sourceRoot->getResult(resultNumber).getType());
-        llvm::SmallVector<mlir::OpFoldResult> resultOffsets;
-        llvm::SmallVector<mlir::OpFoldResult> resultSizes;
-        if (!fullType || !fullType.hasStaticShape() ||
-            mlir::failed(tiling.getResultTilePosition(
-                builder, resultNumber, offsets, sizes, resultOffsets,
-                resultSizes)))
+      llvm::SmallVector<std::pair<StandardPartialKey, mlir::Value>, 2>
+          partialValues;
+      for (const analysis::ReductionResultSlice &result :
+           standardContribution->contribution.results) {
+        if (result.result >= partial->partialValues.size())
           return fail<llvm::SmallVector<mlir::Value, 2>>(
-              failure, SpatialRegionMaterializationFailureKind::Unsupported,
-              "partial reduction cannot map its spatial result tile");
-        auto empty = builder.create<mlir::tensor::EmptyOp>(
-            sourceRoot->getLoc(), fullType.getShape(),
-            fullType.getElementType());
-        llvm::SmallVector<mlir::OpFoldResult, 4> strides(
-            fullType.getRank(), builder.getIndexAttr(1));
-        fullResults.push_back(builder
-                                  .create<mlir::tensor::InsertSliceOp>(
-                                      sourceRoot->getLoc(), mergedValue,
-                                      empty.getResult(), resultOffsets,
-                                      resultSizes, strides)
-                                  .getResult());
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "standard contribution result has no partial value");
+        StandardPartialKey key{standardContribution->group, piece.shard,
+                               result.result};
+        auto required = standardPartialBoundaryRequirements.find(key);
+        mlir::Value value = partial->partialValues[result.result];
+        if (required == standardPartialBoundaryRequirements.end() ||
+            required->second.type != value.getType())
+          return fail<llvm::SmallVector<mlir::Value, 2>>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "standard partial does not match its actual endpoint type");
+        partialValues.push_back({key, value});
+      }
+      for (mlir::Operation *operation :
+           llvm::reverse(partial->mergeOperations)) {
+        if (!operation->use_empty())
+          return fail<llvm::SmallVector<mlir::Value, 2>>(
+              failure, SpatialRegionMaterializationFailureKind::CompilerFailure,
+              "temporary standard merge unexpectedly has live users");
+        operation->erase();
       }
       if (adapter->use_empty())
         adapter->erase();
-      for (mlir::Operation *operation : partial->partialOperations)
-        emissions.push_back({node->structuredNodeId, operation});
-      for (mlir::Operation *operation : partial->mergeOperations)
-        emissions.push_back({node->structuredNodeId, operation});
-      executionResults.emplace(execution, fullResults);
-      return fullResults;
+      for (mlir::Operation *placeholder :
+           llvm::reverse(temporaryInitPlaceholders)) {
+        for (mlir::Operation *user :
+             llvm::make_early_inc_range(placeholder->getUsers()))
+          if (user->use_empty() && mlir::isMemoryEffectFree(user))
+            user->erase();
+        if (placeholder->use_empty())
+          placeholder->erase();
+      }
+      executionStandardPartials.emplace(execution, std::move(partialValues));
+      llvm::SmallVector<mlir::Value, 2> noValues;
+      executionResults.emplace(execution, noValues);
+      return noValues;
     }
     std::string tilingFailure;
     mlir::FailureOr<IterationTileMaterialization> tiled =
@@ -1241,8 +1892,6 @@ struct GroupBuilder {
     }
     if (adapter->use_empty())
       adapter->erase();
-    for (mlir::Operation *operation : tiled->tiledOperations)
-      emissions.push_back({node->structuredNodeId, operation});
     executionResults.emplace(execution, fullResults);
     return fullResults;
   }
@@ -1251,14 +1900,11 @@ struct GroupBuilder {
     auto executions = collectGroupExecutions(group, rootWorks, failure);
     if (mlir::failed(executions))
       return mlir::failure();
-    // Merge-only and selected-attention shells may not contain an operation
-    // yet, but every selected nonempty external fragment must already have an
-    // actual destination endpoint for the direct downstream transformation.
+    // Every selected nonempty external fragment must have an actual
+    // destination endpoint before the Region is committed.
     for (const auto &binding : group.externalBindings) {
       const DemandFragmentId &fragment = binding.fragment;
       if (fragment.source.kind != analysis::RootBoundaryKind::StructuredResult)
-        continue;
-      if (coupledAttentionFragments.count(fragment))
         continue;
       const analysis::ExactIndexSet *domain = findFragmentDomain(fragment);
       if (domain && domain->isEmpty())
@@ -1278,6 +1924,8 @@ struct GroupBuilder {
     }
     llvm::SmallVector<mlir::Value, 4> returned;
     std::set<ProducedValueKey> resultKeys;
+    std::set<CoupledStateKey> stateKeys;
+    std::set<StandardPartialKey> partialKeys;
     for (const RegionExecutionId &execution : *executions) {
       const auto *required = std::get_if<ExecutionInstanceId>(&execution);
       const auto *merge =
@@ -1292,9 +1940,9 @@ struct GroupBuilder {
         if (mlir::failed(workAndMerge))
           return mlir::failure();
         work = workAndMerge->first;
-        if (!workAndMerge->second->coupledRule)
-          continue;
-        values = materializeCoupledMergeExecution(*merge);
+        values = workAndMerge->second->coupledRule
+                     ? materializeActualCoupledMergeExecution(*merge)
+                     : materializeActualStandardMergeExecution(*merge);
       } else {
         auto workAndPiece = getExecutionWork(execution);
         if (mlir::failed(workAndPiece))
@@ -1305,6 +1953,32 @@ struct GroupBuilder {
       }
       if (mlir::failed(values))
         return mlir::failure();
+      auto stateValues = executionCoupledStates.find(execution);
+      if (stateValues != executionCoupledStates.end()) {
+        for (const auto &[key, value] : stateValues->second) {
+          if (!value || !stateKeys.insert(key).second)
+            return fail<GroupArtifact>(
+                failure,
+                SpatialRegionMaterializationFailureKind::BrokenContract,
+                "Region produces a duplicate or missing coupled state");
+          coupledStateResults.push_back(
+              {key, static_cast<unsigned>(returned.size())});
+          returned.push_back(value);
+        }
+      }
+      auto partialValues = executionStandardPartials.find(execution);
+      if (partialValues != executionStandardPartials.end()) {
+        for (const auto &[key, value] : partialValues->second) {
+          if (!value || !partialKeys.insert(key).second)
+            return fail<GroupArtifact>(
+                failure,
+                SpatialRegionMaterializationFailureKind::BrokenContract,
+                "Region produces a duplicate or missing standard partial");
+          standardPartialResults.push_back(
+              {key, static_cast<unsigned>(returned.size())});
+          returned.push_back(value);
+        }
+      }
       if (std::holds_alternative<ReplicaExecutionId>(execution))
         continue;
       for (const analysis::RootResultWork &result : work->results) {
@@ -1340,8 +2014,10 @@ struct GroupBuilder {
     artifact.region = region;
     artifact.results = std::move(results);
     artifact.boundaryInputs = std::move(boundaryInputs);
-    artifact.emissions = std::move(emissions);
-    artifact.executions = std::move(*executions);
+    artifact.coupledStateResults = std::move(coupledStateResults);
+    artifact.coupledStateInputs = std::move(coupledStateInputs);
+    artifact.standardPartialResults = std::move(standardPartialResults);
+    artifact.standardPartialInputs = std::move(standardPartialInputs);
     return artifact;
   }
 };
@@ -1419,6 +2095,43 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
           failure, SpatialRegionMaterializationFailureKind::BrokenContract,
           "root work is missing, duplicated, or assigned to an unavailable "
           "Tile");
+  llvm::DenseSet<mlir::Operation *> checkedAttentionRoots;
+  for (const analysis::RootRegionWork &work : rootWorks) {
+    auto attention =
+        mlir::dyn_cast_or_null<LinalgExtAttentionOp>(work.rootOperation);
+    if (!attention || !checkedAttentionRoots.insert(attention).second)
+      continue;
+    bool hasCoupledContribution = false;
+    bool hasCoupledMerge = false;
+    for (const analysis::RootRegionWork &candidate : rootWorks) {
+      if (candidate.id.root != work.id.root)
+        continue;
+      hasCoupledContribution |=
+          llvm::any_of(candidate.contributions, [](const auto &contribution) {
+            return contribution.coupledRule;
+          });
+      for (const analysis::ReductionMergeRequirement &merge :
+           candidate.merges) {
+        if (!merge.coupledRule)
+          continue;
+        hasCoupledMerge = true;
+        if (merge.contributions.size() < 2)
+          return fail<SpatialRegionMaterializationResult>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "flash_decoding requires at least two spatial K2 contributions");
+      }
+    }
+    if (attention.getAlgorithm() == AttentionAlgorithm::FlashAttention &&
+        (hasCoupledContribution || hasCoupledMerge))
+      return fail<SpatialRegionMaterializationResult>(
+          failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+          "flash_attention cannot consume a multi-contribution Spatial choice");
+    if (attention.getAlgorithm() == AttentionAlgorithm::FlashDecoding &&
+        (!hasCoupledContribution || !hasCoupledMerge))
+      return fail<SpatialRegionMaterializationResult>(
+          failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+          "flash_decoding requires contributions and one selected merge owner");
+  }
   std::set<analysis::RootRegionWorkId> groupedWorks;
   for (const RegionGroupPlan &group : regionPlan.groups) {
     if (!tileIds.count(group.tile.getValue()) || group.mandatoryRoots.empty())
@@ -1463,8 +2176,20 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
     TileId destinationTile{0};
     mlir::Value destination;
   };
+  struct PendingCoupledStateBoundary {
+    CoupledStateKey key;
+    mlir::Value destination;
+  };
+  struct PendingStandardPartialBoundary {
+    StandardPartialKey key;
+    mlir::Value destination;
+  };
   std::map<ProducedValueKey, mlir::Value> produced;
   llvm::SmallVector<PendingBoundary, 16> pendingBoundaries;
+  llvm::SmallVector<PendingCoupledStateBoundary, 16>
+      pendingCoupledStateBoundaries;
+  llvm::SmallVector<PendingStandardPartialBoundary, 16>
+      pendingStandardPartialBoundaries;
   std::set<ProducedValueKey> plannedResults;
   for (const RegionGroupPlan &group : regionPlan.groups) {
     auto executions = collectGroupExecutions(group, rootWorks, failure);
@@ -1500,8 +2225,6 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
         return fail<SpatialRegionMaterializationResult>(
             failure, SpatialRegionMaterializationFailureKind::BrokenContract,
             "Region execution has no selected merge work");
-      if (merge && !mergeWork->coupledRule)
-        continue;
       for (const analysis::RootResultWork &resultWork : work->results) {
         const bool owned = root
                                ? resultWork.ownerShard &&
@@ -1523,28 +2246,82 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
     }
   }
 
-  std::set<DemandFragmentId> coupledAttentionFragments;
+  std::map<CoupledStateKey, CoupledStateBoundaryRequirement>
+      coupledStateBoundaryRequirements;
   for (const analysis::RootRegionWork &work : rootWorks)
-    for (const analysis::RootContributionWork &contribution :
-         work.contributions) {
-      if (!contribution.coupledRule)
+    for (const analysis::ReductionMergeRequirement &merge : work.merges) {
+      if (!merge.coupledRule || merge.contributions.size() < 2 ||
+          merge.components.size() != 3)
         continue;
-      for (const analysis::RootBoundaryWork &boundary : work.boundaries)
-        for (const analysis::RootBoundaryUseWork &use : boundary.consumerUses) {
-          if (use.id.destinationShard != contribution.contribution.shard)
-            continue;
-          if (use.eligibleFinalOwners.empty()) {
-            coupledAttentionFragments.insert({boundary.id, use.id, std::nullopt,
-                                              std::nullopt, std::nullopt});
-            continue;
-          }
-          for (const analysis::OwnerIntersection &owner :
-               use.eligibleFinalOwners)
-            coupledAttentionFragments.insert(
-                {boundary.id, use.id, owner.ownerShard, owner.reductionGroup,
-                 owner.tile});
+      for (const analysis::ReductionContribution &contribution :
+           merge.contributions) {
+        for (const analysis::CoupledReductionComponentRequirement &component :
+             merge.components) {
+          auto type = getCoupledStateType(component);
+          CoupledStateKey key{merge.group, contribution.shard, component.kind};
+          if (mlir::failed(type) ||
+              !coupledStateBoundaryRequirements
+                   .emplace(key,
+                            CoupledStateBoundaryRequirement{contribution.tile,
+                                                            *type})
+                   .second)
+            return fail<SpatialRegionMaterializationResult>(
+                failure,
+                SpatialRegionMaterializationFailureKind::BrokenContract,
+                "coupled state endpoint is invalid or duplicated");
         }
+      }
     }
+  std::map<CoupledStateKey, mlir::Value> producedCoupledStates;
+  std::map<StandardPartialKey, StandardPartialBoundaryRequirement>
+      standardPartialBoundaryRequirements;
+  for (const analysis::RootRegionWork &work : rootWorks)
+    for (const analysis::ReductionMergeRequirement &merge : work.merges) {
+      if (merge.coupledRule || merge.contributions.empty())
+        continue;
+      for (const analysis::ReductionContribution &contribution :
+           merge.contributions) {
+        const analysis::RootRegionWork *contributionWork =
+            findWork(rootWorks, {work.id.root, contribution.tile});
+        const analysis::RootExecutionWork *piece =
+            contributionWork
+                ? findExecution(*contributionWork, contribution.shard)
+                : nullptr;
+        if (!piece || !contributionWork->rootOperation)
+          return fail<SpatialRegionMaterializationResult>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "standard partial has no selected contribution work");
+        llvm::SmallVector<int64_t, 6> shape;
+        for (const auto &interval : piece->iterationDomain)
+          shape.push_back(interval.size);
+        for (const analysis::ReductionResultSlice &result :
+             contribution.results) {
+          if (result.result >= contributionWork->rootOperation->getNumResults())
+            return fail<SpatialRegionMaterializationResult>(
+                failure,
+                SpatialRegionMaterializationFailureKind::BrokenContract,
+                "standard partial result index is out of range");
+          auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
+              contributionWork->rootOperation->getResult(result.result)
+                  .getType());
+          StandardPartialKey key{merge.group, contribution.shard,
+                                 result.result};
+          if (!resultType || shape.empty() ||
+              !standardPartialBoundaryRequirements
+                   .emplace(key,
+                            StandardPartialBoundaryRequirement{
+                                contribution.tile,
+                                mlir::RankedTensorType::get(
+                                    shape, resultType.getElementType())})
+                   .second)
+            return fail<SpatialRegionMaterializationResult>(
+                failure,
+                SpatialRegionMaterializationFailureKind::BrokenContract,
+                "standard partial endpoint is invalid or duplicated");
+        }
+      }
+    }
+  std::map<StandardPartialKey, mlir::Value> producedStandardPartials;
 
   std::map<DemandFragmentId, ProducedValueKey> fragmentSources;
   auto recordFragmentSource = [&](const DemandFragmentId &fragment) {
@@ -1557,9 +2334,6 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
     if (matched != plannedResults.end())
       fragmentSources.emplace(fragment, *matched);
   };
-  for (const DemandFragmentId &fragment : coupledAttentionFragments)
-    recordFragmentSource(fragment);
-
   std::set<DemandFragmentId> externalFragments;
   for (const RegionGroupPlan &group : regionPlan.groups)
     for (const auto &binding : group.externalBindings) {
@@ -1583,6 +2357,8 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
     mlir::OpBuilder entryBuilder(&entryBody, entryBody.end());
     std::map<SourceValueKey, mlir::BlockArgument> sourceArguments;
     std::map<DemandFragmentId, mlir::BlockArgument> externalArguments;
+    std::map<CoupledStateKey, mlir::BlockArgument> coupledStateArguments;
+    std::map<StandardPartialKey, mlir::BlockArgument> standardPartialArguments;
 
     llvm::SmallVector<size_t, 8> remaining;
     for (auto [index, group] : llvm::enumerate(regionPlan.groups))
@@ -1605,7 +2381,6 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
               produced.find(planned->second) == produced.end())
             return false;
         }
-        std::set<compiler::detail::SemanticRootKey> coupledMergeRoots;
         for (const auto &execution : group.executions) {
           const auto *merge =
               std::get_if<RequiredMergeExecution>(&execution.id.source);
@@ -1617,17 +2392,51 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
               llvm::find_if(work->merges, [&](const auto &candidate) {
                 return candidate.group == merge->group;
               });
-          if (requirement != work->merges.end() && requirement->coupledRule)
-            coupledMergeRoots.insert(work->id.root);
-        }
-        for (const DemandFragmentId &fragment : coupledAttentionFragments) {
-          if (!coupledMergeRoots.count(fragment.use.destinationShard.root))
-            continue;
-          auto planned = fragmentSources.find(fragment);
-          if (planned != fragmentSources.end() &&
-              planned->second.tile == tileId &&
-              produced.find(planned->second) == produced.end())
-            return false;
+          if (requirement != work->merges.end() && requirement->coupledRule) {
+            for (const analysis::ReductionContribution &contribution :
+                 requirement->contributions) {
+              if (contribution.tile != tileId)
+                continue;
+              const bool producedInCurrentGroup =
+                  llvm::any_of(group.executions, [&](const auto &candidate) {
+                    const auto *root = std::get_if<RequiredRootExecution>(
+                        &candidate.id.source);
+                    return root && root->shard == contribution.shard;
+                  });
+              if (producedInCurrentGroup)
+                continue;
+              for (const analysis::CoupledReductionComponentRequirement
+                       &component : requirement->components) {
+                CoupledStateKey key{requirement->group, contribution.shard,
+                                    component.kind};
+                if (producedCoupledStates.find(key) ==
+                    producedCoupledStates.end())
+                  return false;
+              }
+            }
+          } else if (requirement != work->merges.end()) {
+            for (const analysis::ReductionContribution &contribution :
+                 requirement->contributions) {
+              if (contribution.tile != tileId)
+                continue;
+              const bool producedInCurrentGroup =
+                  llvm::any_of(group.executions, [&](const auto &candidate) {
+                    const auto *root = std::get_if<RequiredRootExecution>(
+                        &candidate.id.source);
+                    return root && root->shard == contribution.shard;
+                  });
+              if (producedInCurrentGroup)
+                continue;
+              for (const analysis::ReductionResultSlice &result :
+                   contribution.results) {
+                StandardPartialKey key{requirement->group, contribution.shard,
+                                       result.result};
+                if (producedStandardPartials.find(key) ==
+                    producedStandardPartials.end())
+                  return false;
+              }
+            }
+          }
         }
         return true;
       });
@@ -1641,16 +2450,14 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
       const RegionGroupPlan &group = regionPlan.groups[groupIndex];
       GroupBuilder groupBuilder(
           source, *sourceFunction, entry, entryBuilder, group, operationNodes,
-          rootWorks, fragmentSources, coupledAttentionFragments, produced,
-          sourceArguments, externalArguments, failure);
+          rootWorks, fragmentSources, produced,
+          coupledStateBoundaryRequirements, producedCoupledStates,
+          standardPartialBoundaryRequirements, producedStandardPartials,
+          sourceArguments, externalArguments, coupledStateArguments,
+          standardPartialArguments, failure);
       auto artifact = groupBuilder.build();
       if (mlir::failed(artifact))
         return mlir::failure();
-      for (const RegionExecutionId &execution : artifact->executions)
-        result.regionExecutions.push_back(
-            {execution, tileId, artifact->region});
-      result.relations.operationEmissions.append(artifact->emissions.begin(),
-                                                 artifact->emissions.end());
       for (const GroupResult &groupResult : artifact->results) {
         if (groupResult.resultNumber >= artifact->region.getNumResults() ||
             !produced
@@ -1661,9 +2468,37 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
               failure, SpatialRegionMaterializationFailureKind::BrokenContract,
               "materialized Region result identity is duplicated");
       }
+      for (const GroupCoupledStateResult &state :
+           artifact->coupledStateResults) {
+        if (state.resultNumber >= artifact->region.getNumResults() ||
+            !producedCoupledStates
+                 .try_emplace(state.key,
+                              artifact->region.getResult(state.resultNumber))
+                 .second)
+          return fail<SpatialRegionMaterializationResult>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "materialized coupled state endpoint is duplicated");
+      }
+      for (const GroupStandardPartialResult &partial :
+           artifact->standardPartialResults) {
+        if (partial.resultNumber >= artifact->region.getNumResults() ||
+            !producedStandardPartials
+                 .try_emplace(partial.key,
+                              artifact->region.getResult(partial.resultNumber))
+                 .second)
+          return fail<SpatialRegionMaterializationResult>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "materialized standard partial endpoint is duplicated");
+      }
       for (const GroupBoundaryInput &boundary : artifact->boundaryInputs)
         pendingBoundaries.push_back({boundary.fragment, boundary.sourceTile,
                                      tileId, boundary.destination});
+      for (const GroupCoupledStateInput &state : artifact->coupledStateInputs)
+        pendingCoupledStateBoundaries.push_back({state.key, state.destination});
+      for (const GroupStandardPartialInput &partial :
+           artifact->standardPartialInputs)
+        pendingStandardPartialBoundaries.push_back(
+            {partial.key, partial.destination});
     }
     entryBuilder.setInsertionPointToEnd(&entryBody);
     entryBuilder.create<mlir::func::ReturnOp>(source.getLoc());
@@ -1684,8 +2519,29 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
           failure, SpatialRegionMaterializationFailureKind::BrokenContract,
           "cross-Tile Region relation has no actual producer endpoint");
     result.relations.boundaryRelations.push_back(
-        {pending.fragment, pending.sourceTile, pending.destinationTile,
-         sourceValue->second, pending.destination});
+        {sourceValue->second, pending.destination});
+  }
+
+  for (const PendingCoupledStateBoundary &pending :
+       pendingCoupledStateBoundaries) {
+    auto sourceValue = producedCoupledStates.find(pending.key);
+    if (sourceValue == producedCoupledStates.end())
+      return fail<SpatialRegionMaterializationResult>(
+          failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+          "cross-Tile coupled state has no actual producer endpoint");
+    result.relations.boundaryRelations.push_back(
+        {sourceValue->second, pending.destination});
+  }
+
+  for (const PendingStandardPartialBoundary &pending :
+       pendingStandardPartialBoundaries) {
+    auto sourceValue = producedStandardPartials.find(pending.key);
+    if (sourceValue == producedStandardPartials.end())
+      return fail<SpatialRegionMaterializationResult>(
+          failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+          "cross-Tile standard partial has no actual producer endpoint");
+    result.relations.boundaryRelations.push_back(
+        {sourceValue->second, pending.destination});
   }
 
   for (auto [outputIndex, output] :
@@ -1700,10 +2556,6 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
                           : rootWorks.end();
     if (sourceWork == rootWorks.end())
       continue;
-    const bool hasSelectedMerge =
-        llvm::any_of(rootWorks, [&](const auto &work) {
-          return work.id.root == sourceWork->id.root && !work.merges.empty();
-        });
     analysis::RootBoundaryId sourceId{
         analysis::RootBoundaryKind::StructuredResult, sourceWork->id.root,
         sourceResult.getResultNumber()};
@@ -1711,28 +2563,13 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
     for (const auto &[key, endpoint] : produced)
       if (key.source == sourceId) {
         result.relations.structuralOutputs.push_back(
-            {static_cast<unsigned>(outputIndex), key.tile, endpoint});
+            {static_cast<unsigned>(outputIndex), endpoint});
         foundOutput = true;
       }
-    if (hasSelectedMerge && !foundOutput)
-      continue;
     if (!foundOutput)
       return fail<SpatialRegionMaterializationResult>(
           failure, SpatialRegionMaterializationFailureKind::BrokenContract,
           "observable structured result has no selected Tile endpoint");
-  }
-
-  std::set<RegionExecutionId> materializedExecutions;
-  for (const SpatialRegionExecutionRelation &relation :
-       result.regionExecutions) {
-    TileModuleOp owner = relation.region
-                             ? relation.region->getParentOfType<TileModuleOp>()
-                             : TileModuleOp{};
-    if (!owner || owner.getTileIdAttr().getInt() != relation.tile.getValue() ||
-        !materializedExecutions.insert(relation.execution).second)
-      return fail<SpatialRegionMaterializationResult>(
-          failure, SpatialRegionMaterializationFailureKind::CompilerFailure,
-          "structural Region execution relation is stale or duplicated");
   }
 
   if (mlir::failed(mlir::verify(*result.module)) ||

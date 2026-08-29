@@ -13,8 +13,6 @@
 #include "mlir/Support/LogicalResult.h"
 
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/SmallVector.h"
-
 #include <cstdint>
 #include <string>
 
@@ -33,30 +31,21 @@ struct SpatialRegionMaterializationFailure {
   std::string detail;
 };
 
-/// Actual TileRegion selected for one or more current Region executions. This
-/// relation is consumed by compact tiling/selected-attention lowering and is
-/// invalidated if the TileRegion is replaced; it does not describe future
-/// operations inside the region.
-struct SpatialRegionExecutionRelation {
-  compiler::detail::RegionExecutionId execution;
-  TileId tile{0};
-  TileRegionOp region;
-};
-
 /// Move-only actual result of one selected Spatial/Region transformation.
 /// The source TensorProgram remains unchanged. Every relation refers only to
-/// values or operations owned by `module` and must be retargeted with the same
-/// rewrite transaction that changes them.
+/// values owned by `module`. At this boundary only observable outputs and
+/// cross-Tile endpoint pairs are populated; plan-ID keyed attribution is empty.
 struct SpatialRegionMaterializationResult {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   StructuredMaterializationRelations relations;
-  llvm::SmallVector<SpatialRegionExecutionRelation, 16> regionExecutions;
 };
 
 /// Materializes one closed Spatial/Region choice into all-and-only TileModules
-/// and non-nested structural TileRegions. This operation does not enumerate
-/// choices and does not generate temporal loops, fusion, attention
-/// decomposition, layout, buffers, movement, Instr or completion.
+/// and non-nested structural TileRegions. Graph attention is converted to
+/// actual per-Tile online state and selected spatial merge/finalize, while
+/// QK/PV decomposition remains downstream. This operation does not enumerate
+/// choices or generate temporal loops, fusion, layout, buffers, movement,
+/// Instr or completion.
 mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
     mlir::ModuleOp source, CardId cardId, llvm::ArrayRef<TileId> availableTiles,
     llvm::ArrayRef<compiler::detail::StructuredOperationNodeMapping>
