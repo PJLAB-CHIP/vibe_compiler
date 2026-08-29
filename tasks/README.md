@@ -91,6 +91,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 | 文档 | 原性质 |
 | --- | --- |
 | `tasks/archive/completed-task-index.md` | 已完成任务的历史边界与证据入口索引；不参与current调度 |
+| `tasks/archive/document-contract-recovery.md` | 纠正current plan过度压缩、恢复Q52第12--20项及Q53规范合同并核对Q57/Q61的定向恢复记录 |
 | `tasks/archive/document-authority-consolidation.md` | 已完成的current文档事实源、计划归档、README、编号设计、硬件事实和memory收敛记录 |
 | `tasks/archive/compiler-entry-productization.md` | 已完成Q59/Q60的compiler transaction与frontend产品入口实施记录；稳定合同只读01、02、15、18--20 |
 | `tasks/archive/compiler-terminology-and-naming.md` | 已完成的源码、IR和component命名整改记录；稳定命名规则只读18、19和AGENTS |

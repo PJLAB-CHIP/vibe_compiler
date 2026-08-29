@@ -140,9 +140,15 @@ actual offset或materializer遍历顺序。
 
 每个candidate owner明确持有：
 
-- 本次新建或clone的最近`IsolatedFromAbove` TileModule scope；
-- current IR epoch内的SSA、region、buffer relation和effect；
+- 本次新建或clone的最近`IsolatedFromAbove` candidate builtin module及其all-and-only TileModule set；
+- current IR epoch内的SSA、region、structural boundary/buffer relation和effect；
 - 可重算的analysis和本次rewrite使用的短生命期临时数据。
+
+Structural external relation只连接已经存在的source TileRegion result与destination TileRegion input，并携带对应
+`DemandFragmentId`/Tile identity；它是candidate transaction的current-epoch relation，不是planning state。Compact tile/fuse、
+selected-attention lowering和layout/bufferization必须随IR replacement同步retarget，movement all-and-only消费后清空。
+Relation不得携带future route、layout、buffer、storage、event、completion或offset，也不得进入search key、analysis cache、
+Instr或package。
 
 失败后不在candidate内retile、spill、换layout、换route或加同步。Controller销毁该owner，根据typed outcome决定
 是否生成下一组choice。Accepted owner不经rematerialization进入publication。
@@ -167,8 +173,9 @@ spill或future delivery。同region只选择共同local-storage scope，不证�
 traversal内、中间值由direct SSA使用且无独立DDR往返时才称为coupled traversal。
 
 Region choice只决定哪些actual operations进入同一TileRegion，不预先指定future producer delivery、nested placement或storage。
-05号access-relation e-graph已经在policy分叉前完成并且只运行一次；本stage不读取或重建e-graph。Materializer先生成保留真实
-producer/use关系的current SSA；attention此时仍是一个semantic op。随后由同一transaction中的SCF tile-and-fuse transformation依据
+05号access-relation e-graph已经在policy分叉前完成并且只运行一次；本stage不读取或重建e-graph。Structural materializer先生成
+all-and-only TileModules、non-nested TileRegions、actual spatial pieces、local SSA以及cross-boundary actual endpoint relations；
+attention此时仍是一个semantic op，且没有temporal loop。其直接consumer是同一transaction中的SCF tile-and-fuse transformation，后者依据
 current operation、use-def、indexing relation、effect和region boundary立即决定并执行fusion。Producer留在consumer loop外或
 进入loop内只能是rewrite后的actual IR结果，不能由`LocalUseDelivery`、布尔rewire或其它旁路计划声明。
 
@@ -212,8 +219,9 @@ Candidate transaction的owner只由controller建立一次：已有candidate-owne
 existing isolated owner上的alternative且caller仍需保留原IR时，controller才clone最近的`IsolatedFromAbove` scope。Standard tiling创建的
 tiled producer是最终actual IR，不是scratch owner clone。Baseline独占自己的IR，不进入search clone或frontier。
 
-Spatial、region和temporal choice闭合后，唯一structural materializer立即生成candidate-owned TileModule/TileRegion、
-Linalg/Tensor/SCF或typed Tile work，并返回actual SSA。下游不消费未物化execution/value ID。
+Spatial和region choice闭合后，唯一structural materializer立即生成candidate-owned TileModule/TileRegion、actual spatial
+Linalg/Tensor/SCF或typed Tile work，并返回actual SSA与current boundary relation。Free temporal choice随后由compact
+tile-and-fuse直接作用于该owner；下游不消费未物化execution/value ID，也不重建TileModule/TileRegion。
 
 ### 5.4 Attention
 
@@ -384,8 +392,9 @@ Allocator不返回retile、spill、layout、route或completion repair recipe。
 | feedback | 仅actual SPM capacity rejection生成确定smaller temporal successor | typed actual outcome返回frontier/controller |
 | accepted result | 第一个通过全部actual gate的candidate | 预算内的retained best-known actual owner |
 
-两者可共享policy-free source analysis、IndexRelation、single-op rewrite/conversion和actual memory/target leaf，但不共享complete
-candidate schema、TileModule materializer、controller、fallback或accepted owner。
+两者可共享policy-free source analysis、IndexRelation、single-op rewrite/conversion、structural transformation实现和actual
+memory/target leaf，但每次分别拥有自己的materializer invocation、candidate owner、controller、fallback和accepted result；不存在
+共享complete candidate schema或一条policy调用另一条policy的路径。
 
 ### 7.2 Baseline
 

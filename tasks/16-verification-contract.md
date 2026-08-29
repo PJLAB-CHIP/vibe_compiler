@@ -159,10 +159,15 @@ lit的`UNSUPPORTED`和skip只表示未执行。canonical build中的测试若因
 - `builtin.module`拥有all-and-only 16个available top-level `wafer.tile.module(card_id, tile_id)`；
 - distinct Tile modules可含不同op、loop、temporal tile、region和执行长度；
 - no-work Tile仍有合法entry并进入output/runtime domain；
-- `(card_id, tile_id)`唯一，Tile-local SPM root不跨Tile SSA alias。
+- `(card_id, tile_id)`唯一，Tile-local SPM root不跨Tile SSA alias；
+- structural TileRegion允许tensor boundary且没有layout/movement/allocation；layout-resolved form的每个actual endpoint、view/alias和
+  structural boundary relation均current；physical form没有logical tensor boundary且所有external relations已由movement消费；
+- 同一个candidate owner中的TileModule/TileRegion在structural→layout-resolved→physical过程中不重建；rewrite listener只通过
+  `IRMapping`/explicit replacement retarget actual endpoint relation。
 
 负例至少覆盖duplicate/unavailable/missing Tile、coverage hole/overlap、非法reduction overlap、cross-Tile SPM alias、
-mismatched send/recv、payload/domain/encoding mismatch、缺失wait和premature release。
+mismatched send/recv、payload/domain/encoding mismatch、duplicate/missing/stale external endpoint relation、structural form中的
+physical op、physical form中的tensor boundary、缺失wait和premature release。
 
 ### 4.2 Physical-dataflow selection
 
@@ -410,10 +415,10 @@ current target容量、target-model能力或host预算不足，必须按stage报
 
 ### 10.1 Policy-specific construction
 
-- `none`与`search`从同一类verified TensorProgram输入分别建立独立controller、TileModule materializer、policy-specific Instr construction
-  和accepted result owner。Baseline直接消费current TensorProgram和固定规则，不创建search plan/domain/state；search才拥有explicit
-  structural choice frontier。同一source identity不授权共享Module、analysis、ProgramData、
-  candidate IR或package。
+- `none`与`search`从同一类verified TensorProgram输入分别建立独立controller、candidate transaction、policy-specific Instr
+  construction和accepted result owner。Baseline直接消费current TensorProgram和固定规则，不创建search plan/domain/state；search才拥有
+  explicit structural choice frontier。两者可分别调用同一policy-free structural transformation实现，但不共享materializer invocation、
+  Module、analysis、ProgramData、candidate IR、fallback或package。
 - 两条路径只在各自形成policy-complete、verifier-legal Instr IR及current buffer/effect/completion relation后，调用共同的
   actual SPM/DDR/transport/target leaf。任一路径失败不得调用另一policy或旧实现。
 - 每个actual candidate只构造一次并调用一次actual memory/target gate；rejected/loser owner销毁，Accepted owner携带该次

@@ -7,6 +7,17 @@
 `completion`、`bufferization`、`package`、`runtime`、`CMake`和`ownership`。条目描述的是防复发模式；若与current
 编号设计或源码冲突，以current事实源为准并在同次修改中修正文档。
 
+## 归档完成历史不能带走未完成work item合同
+
+- 现象：current plan仍列出全部pending任务和顺序，但每项只剩一句摘要；输入等价类、typed failure、精确断言、直接
+  downstream witness和负例只存在于archive，后续实现必须读历史才能避免偏离。
+- 根因：按整份文件的“完成/历史”属性迁移内容，或者以缩短行数为目标压缩，而没有逐pending work item区分规范性合同与
+  已完成施工记录。任务名仍在会掩盖contract已经退化。
+- 修复模式：从archive按work item恢复仍约束未来实现的input/output/non-goal/failure/assertion/witness；只归档已完成阶段、
+  旧调用链、删除账本、动态数字和复盘。Stable编号设计拥有语义，current plan拥有逐项实施/覆盖门禁，progress只保存状态。
+- 防复发：归档前逐项建立“旧current条目→新current owner”映射；检查每个pending item在current事实源中恰出现一次且有独立
+  覆盖矩阵。任何规范只在archive命中即停止迁移；不能用总行数、任务名仍存在或链接可达代替authority检查。
+
 ## Card partition与Tile被混成一个domain
 
 - 现象：GSPMD的partition count直接决定单卡Tile程序数量，spatial mapping、不同op并行和cross-Tile communication搜索消失。
