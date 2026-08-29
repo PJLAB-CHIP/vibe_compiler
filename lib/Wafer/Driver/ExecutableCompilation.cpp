@@ -1,6 +1,7 @@
 //===- ExecutableCompilation.cpp - Policy-free executable seam ------===//
 
 #include "Wafer/Driver/ExecutableCompilation.h"
+#include "Wafer/Analysis/Tile/TileDataflowAnalysis.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/IR/Topology/TargetTopology.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
@@ -8,7 +9,6 @@
 
 #include "Wafer/Support/BoundedTilePipelines.h"
 
-#include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Instr/MemoryPlanningPipelines.h"
 #include "Wafer/Transforms/Instr/RedundantTransferElimination.h"
@@ -189,7 +189,7 @@ ExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
     if (!context)
       context = tile.module->getContext();
     if (tile.module->getContext() != context ||
-        containsTileDataflowOperations(tile.module->getOperation()) ||
+        analysis::containsTileDataflowOperations(tile.module->getOperation()) ||
         mlir::failed(mlir::verify(*tile.module)) ||
         mlir::failed(checkStructuredBufferRelationsCurrent(
             tile.module->getOperation(), tile.relations)))

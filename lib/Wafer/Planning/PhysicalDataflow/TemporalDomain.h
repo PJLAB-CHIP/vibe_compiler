@@ -1,7 +1,7 @@
 //===- TemporalDomain.h - Complete per-scope temporal domain -*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_TEMPORALDOMAIN_H
-#define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_TEMPORALDOMAIN_H
+#ifndef WAFER_PLANNING_PHYSICALDATAFLOW_TEMPORALDOMAIN_H
+#define WAFER_PLANNING_PHYSICALDATAFLOW_TEMPORALDOMAIN_H
 
 #include "Wafer/Planning/PhysicalDataflow/TemporalPlan.h"
 
@@ -220,4 +220,4 @@ mlir::FailureOr<bool> refineTemporalPlanFromActualSPMFeedback(
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_TEMPORALDOMAIN_H
+#endif // WAFER_PLANNING_PHYSICALDATAFLOW_TEMPORALDOMAIN_H

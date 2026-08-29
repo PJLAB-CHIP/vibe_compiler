@@ -1,7 +1,7 @@
 //===- LowerInstrToTargetLLVMInternal.h - Private target LLVM lowering ----===//
 
-#ifndef WAFER_TRANSFORMS_TARGET_LOWERINSTRTOTARGETLLVMINTERNAL_H
-#define WAFER_TRANSFORMS_TARGET_LOWERINSTRTOTARGETLLVMINTERNAL_H
+#ifndef WAFER_CONVERSION_INSTRTOLLVM_LOWERINSTRTOTARGETLLVMINTERNAL_H
+#define WAFER_CONVERSION_INSTRTOLLVM_LOWERINSTRTOTARGETLLVMINTERNAL_H
 
 #include "Wafer/Analysis/Module/DirectCallGraphAnalysis.h"
 #include "Wafer/IR/Topology/TargetTopology.h"
@@ -188,4 +188,4 @@ lowerModuleInPlace(mlir::ModuleOp moduleOp, bool transportPreparedBeforeEntry,
 
 } // namespace wafer::target_llvm_detail
 
-#endif // WAFER_TRANSFORMS_TARGET_LOWERINSTRTOTARGETLLVMINTERNAL_H
+#endif // WAFER_CONVERSION_INSTRTOLLVM_LOWERINSTRTOTARGETLLVMINTERNAL_H

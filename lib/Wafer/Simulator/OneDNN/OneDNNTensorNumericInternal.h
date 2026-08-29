@@ -1,8 +1,8 @@
 //===- OneDNNTensorNumericInternal.h - Qualification-only onednn seam -*- C++
 //-*-===//
 
-#ifndef WAFER_TARGET_ONEDNNTENSORNUMERICINTERNAL_H
-#define WAFER_TARGET_ONEDNNTENSORNUMERICINTERNAL_H
+#ifndef WAFER_SIMULATOR_ONEDNN_ONEDNNTENSORNUMERICINTERNAL_H
+#define WAFER_SIMULATOR_ONEDNN_ONEDNNTENSORNUMERICINTERNAL_H
 
 #include "Wafer/Simulator/OneDNN/OneDNNTensorNumeric.h"
 
@@ -54,4 +54,4 @@ executeOneDNN(const OneDNNExecutionEnvironment &environment,
 
 } // namespace wafer::onednn_detail
 
-#endif // WAFER_TARGET_ONEDNNTENSORNUMERICINTERNAL_H
+#endif // WAFER_SIMULATOR_ONEDNN_ONEDNNTENSORNUMERICINTERNAL_H

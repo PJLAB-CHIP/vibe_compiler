@@ -147,8 +147,8 @@ RegionBranch contract完成原子替换。不能为了“region-local”破坏 p
 - 每个 pass 只拥有一个可命名 transformation 或 analysis-materialization boundary；需要“并且”连接两个 stage 时拆分。
 - 在 `Passes.td` 中按 operation anchor 声明 Module/Tile/Func/TileRegion pass，并完整声明 dependent dialect、option 和
   statistics；pass object 不保存跨 invocation mutable compiler state。
-- pass declaration、factory、registration与pipeline builder按conversion、memory planning、target等稳定子系统组织；umbrella
-  header/source只聚合注册，不重新实现stage逻辑。
+- pass declaration、factory、registration与pipeline builder按conversion、transform、memory planning、target等稳定子系统组织；
+  Transforms和Conversion分别生成并注册自己的pass集合，混合pipeline显式组合两者；umbrella只聚合本组件注册，不重新实现stage逻辑。
 - production pipeline builder 使用 `OpPassManager::nest`/nested pass manager 表达真实 hierarchy。可并行的 isolated op
   由 PassManager 调度，不在 pass 内另造共享可写 IR 线程池。
 - canonicalizer、CSE、bufferization 等标准 pass 位于明确的 pre/result condition 之间；canonicalizer 只优化，不承担

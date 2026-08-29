@@ -1,5 +1,6 @@
 add_mlir_library(WaferCodeGen
   DeviceExecutable.cpp
+  ProgramElementTypeConversion.cpp
   LLVM/CompileDeviceExecutableLLVMModules.cpp
   LLVM/TargetABIPreparation.cpp
   LLVM/TargetDeviceLink.cpp
@@ -27,7 +28,6 @@ add_mlir_library(WaferCodeGen
   WaferPhysicalTensor
   WaferProgramData
   WaferTarget
-  WaferTransforms
   MLIRFuncDialect
   MLIRIR
   MLIRLLVMDialect

@@ -5,7 +5,7 @@
 #include "Internal.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Support/CompileWorkStatistics.h"
-#include "Wafer/Transforms/Passes.h"
+#include "Wafer/Conversion/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -26,7 +26,7 @@ using namespace wafer::tile_region_to_instr;
 namespace wafer {
 #define GEN_PASS_DEF_CONVERTTILEREGIONTOINSTRPASS
 #define GEN_PASS_DEF_CONVERTBUFFERIZATIONCOPIESTOINSTRPASS
-#include "Wafer/Transforms/WaferPasses.h.inc"
+#include "Wafer/Conversion/WaferConversionPasses.h.inc"
 } // namespace wafer
 
 namespace {
@@ -160,19 +160,6 @@ wafer::TileRegionToInstrLoweringSession::TileRegionToInstrLoweringSession(
 
 wafer::TileRegionToInstrLoweringSession::~TileRegionToInstrLoweringSession() =
     default;
-
-bool wafer::containsTileDataflowOperations(mlir::Operation *root) {
-  if (!root)
-    return false;
-  bool found = false;
-  root->walk([&](mlir::Operation *operation) {
-    if (!mlir::isa<WaferTileDataflowOpInterface>(operation))
-      return mlir::WalkResult::advance();
-    found = true;
-    return mlir::WalkResult::interrupt();
-  });
-  return found;
-}
 
 wafer::detail::StaticExecutableOperationCountStatus
 wafer::detail::countStaticExecutableOperations(mlir::Operation *root,

@@ -1,7 +1,7 @@
 //===- CanonicalSpatialAssignment.h - Direct spatial coordinate -*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_CANONICALSPATIALASSIGNMENT_H
-#define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_CANONICALSPATIALASSIGNMENT_H
+#ifndef WAFER_PLANNING_PHYSICALDATAFLOW_CANONICALSPATIALASSIGNMENT_H
+#define WAFER_PLANNING_PHYSICALDATAFLOW_CANONICALSPATIALASSIGNMENT_H
 
 #include "Wafer/Analysis/Linalg/SemanticRootAnalysis.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"
@@ -31,4 +31,4 @@ buildCanonicalSpatialAssignment(const StructuredDAGAnalysis &dag,
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_CANONICALSPATIALASSIGNMENT_H
+#endif // WAFER_PLANNING_PHYSICALDATAFLOW_CANONICALSPATIALASSIGNMENT_H

@@ -1,7 +1,7 @@
 //===- SpatialDomain.h - Complete spatial plan domain --------*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SPATIALDOMAIN_H
-#define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SPATIALDOMAIN_H
+#ifndef WAFER_PLANNING_PHYSICALDATAFLOW_SPATIALDOMAIN_H
+#define WAFER_PLANNING_PHYSICALDATAFLOW_SPATIALDOMAIN_H
 
 #include "Wafer/Planning/PhysicalDataflow/StructuredDemandAnalysis.h"
 #include "Wafer/Analysis/Linalg/StructuredDAGAnalysis.h"
@@ -204,4 +204,4 @@ deriveSpatialReductionGroups(const SpatialRootDomainFacts &root,
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SPATIALDOMAIN_H
+#endif // WAFER_PLANNING_PHYSICALDATAFLOW_SPATIALDOMAIN_H

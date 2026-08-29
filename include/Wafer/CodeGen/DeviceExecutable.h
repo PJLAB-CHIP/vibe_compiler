@@ -8,6 +8,7 @@
 #include "Wafer/Target/RuntimeLaunchContract.h"
 #include "Wafer/Target/TargetIdentity.h"
 #include "Wafer/Target/TopologyIds.h"
+#include "Wafer/Target/TransportContract.h"
 
 #include "mlir/IR/BuiltinOps.h"
 
@@ -79,7 +80,6 @@ private:
 };
 
 enum class EntryLocalCompletionKind { ReturnAfterLocalDrain };
-enum class TransportContract { None, DirectDTE };
 enum class DDRAllocationContract { DefaultArenaRelativeOffsets };
 
 /// A verified program-boundary resource projected to one card partition.

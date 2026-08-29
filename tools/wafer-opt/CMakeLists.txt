@@ -3,6 +3,7 @@ add_executable(wafer-opt
   wafer-opt.cpp)
 target_link_libraries(wafer-opt
   PRIVATE
+  WaferConversionPasses
   WaferIR
   WaferStableHLOPipelines
   WaferTileToInstrPipelines

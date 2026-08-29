@@ -1,7 +1,7 @@
 //===- PlanningState.h - Closed structural planning prefixes -*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSTATE_H
-#define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSTATE_H
+#ifndef WAFER_PLANNING_PHYSICALDATAFLOW_PLANNINGSTATE_H
+#define WAFER_PLANNING_PHYSICALDATAFLOW_PLANNINGSTATE_H
 
 #include "Wafer/Planning/PhysicalDataflow/RegionPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"
@@ -100,4 +100,4 @@ private:
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSTATE_H
+#endif // WAFER_PLANNING_PHYSICALDATAFLOW_PLANNINGSTATE_H

@@ -1,7 +1,7 @@
 //===- StructuredGraphEGraph.h - Request-local egg adapter ----*- C++ -*-===//
 
-#ifndef WAFER_STRUCTURED_GRAPH_EGRAPH_H
-#define WAFER_STRUCTURED_GRAPH_EGRAPH_H
+#ifndef WAFER_TRANSFORMS_LINALG_STRUCTUREDGRAPHEGRAPH_H
+#define WAFER_TRANSFORMS_LINALG_STRUCTUREDGRAPHEGRAPH_H
 
 #include "StructuredGraphEGraphABI.h"
 
@@ -89,4 +89,4 @@ EGraphOutcome runEGraph(llvm::ArrayRef<EGraphNode> nodes, uint32_t rootNode,
 
 } // namespace wafer::structured_graph_normalization
 
-#endif // WAFER_STRUCTURED_GRAPH_EGRAPH_H
+#endif // WAFER_TRANSFORMS_LINALG_STRUCTUREDGRAPHEGRAPH_H

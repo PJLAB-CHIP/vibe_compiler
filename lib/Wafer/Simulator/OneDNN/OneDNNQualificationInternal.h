@@ -1,8 +1,8 @@
 //===- OneDNNQualificationInternal.h - Qualification collaboration -*- C++
 //-*-===//
 
-#ifndef WAFER_TARGET_ONEDNNQUALIFICATIONINTERNAL_H
-#define WAFER_TARGET_ONEDNNQUALIFICATIONINTERNAL_H
+#ifndef WAFER_SIMULATOR_ONEDNN_ONEDNNQUALIFICATIONINTERNAL_H
+#define WAFER_SIMULATOR_ONEDNN_ONEDNNQUALIFICATIONINTERNAL_H
 
 #include "Wafer/Simulator/OneDNN/OneDNNQualification.h"
 
@@ -109,4 +109,4 @@ runQualification(const OneDNNExecutionEnvironment &environment,
 
 } // namespace wafer::onednn_qualification_detail
 
-#endif // WAFER_TARGET_ONEDNNQUALIFICATIONINTERNAL_H
+#endif // WAFER_SIMULATOR_ONEDNN_ONEDNNQUALIFICATIONINTERNAL_H

@@ -20,6 +20,7 @@ add_mlir_library(WaferPackageWriter
   LLVMSupport
   WaferAnalysis
   WaferCodeGen
+  WaferFrontend
   WaferPackage
   WaferPhysicalTensor
   WaferProgramData

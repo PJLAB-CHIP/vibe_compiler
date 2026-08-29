@@ -1,8 +1,8 @@
 //===- TargetCodeGenInternal.h - Internal target code generation -*- C++
 //-*-===//
 
-#ifndef WAFER_COMPILER_TARGETCODEGENINTERNAL_H
-#define WAFER_COMPILER_TARGETCODEGENINTERNAL_H
+#ifndef WAFER_CODEGEN_LLVM_TARGETCODEGENINTERNAL_H
+#define WAFER_CODEGEN_LLVM_TARGETCODEGENINTERNAL_H
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
 #include "Wafer/CodeGen/TargetCodeGen.h"
@@ -257,4 +257,4 @@ llvm::Expected<LinkedTargetModules> linkTargetLLVMModulesImpl(
 } // namespace detail
 } // namespace wafer::compiler
 
-#endif // WAFER_COMPILER_TARGETCODEGENINTERNAL_H
+#endif // WAFER_CODEGEN_LLVM_TARGETCODEGENINTERNAL_H

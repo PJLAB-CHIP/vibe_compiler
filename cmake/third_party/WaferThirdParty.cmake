@@ -81,7 +81,8 @@ if(WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS)
   endif()
   if(EXISTS "${WAFER_IMPORTER_PYTHON_EXECUTABLE}")
     execute_process(
-      COMMAND "${WAFER_IMPORTER_PYTHON_EXECUTABLE}" -c
+      COMMAND "${CMAKE_COMMAND}" -E env "PYTHONDONTWRITEBYTECODE=1"
+              "${WAFER_IMPORTER_PYTHON_EXECUTABLE}" -B -c
               "import torch; import torch_xla; from torch_xla.stablehlo import exported_program_to_stablehlo"
       RESULT_VARIABLE WAFER_PYTORCH_XLA_IMPORTER_RESULT
       OUTPUT_QUIET
@@ -304,12 +305,12 @@ function(wafer_add_minimalloc)
 endfunction()
 
 function(wafer_add_structured_egraph)
-  if(TARGET WaferThirdPartyStructuredEGraph)
+  if(TARGET WaferStructuredEGraph)
     return()
   endif()
 
   set(_wafer_egraph_crate
-    "${CMAKE_SOURCE_DIR}/lib/Wafer/Transforms/Linalg/EGraphCore")
+    "${CMAKE_SOURCE_DIR}/lib/Wafer/Transforms/Linalg/StructuredEGraph")
   set(_wafer_egraph_manifest "${_wafer_egraph_crate}/Cargo.toml")
   set(_wafer_egraph_lock "${_wafer_egraph_crate}/Cargo.lock")
   set(_wafer_egraph_vendor_record
@@ -405,10 +406,10 @@ function(wafer_add_structured_egraph)
     VERBATIM)
   add_custom_target(WaferStructuredEGraphBuild
     DEPENDS "${_wafer_egraph_library}")
-  add_library(WaferThirdPartyStructuredEGraph STATIC IMPORTED GLOBAL)
-  set_target_properties(WaferThirdPartyStructuredEGraph PROPERTIES
+  add_library(WaferStructuredEGraph STATIC IMPORTED GLOBAL)
+  set_target_properties(WaferStructuredEGraph PROPERTIES
     IMPORTED_LOCATION "${_wafer_egraph_library}"
     INTERFACE_LINK_LIBRARIES
       "util;rt;pthread;m;${CMAKE_DL_LIBS}")
-  add_dependencies(WaferThirdPartyStructuredEGraph WaferStructuredEGraphBuild)
+  add_dependencies(WaferStructuredEGraph WaferStructuredEGraphBuild)
 endfunction()

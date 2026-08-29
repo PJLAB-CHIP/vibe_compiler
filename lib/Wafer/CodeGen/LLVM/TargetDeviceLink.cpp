@@ -66,6 +66,7 @@ llvm::Error runDeviceLink(const TargetToolchain &toolchain,
     loaderABI = "tx8-kcore-loader-cluster";
   llvm::SmallVector<llvm::StringRef, 26> arguments = {
       python,
+      "-B",
       script,
       "--llvm-ir",
       llvmIRStorage,

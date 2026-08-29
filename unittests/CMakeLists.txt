@@ -41,7 +41,9 @@ function(wafer_add_component_unit_test target)
     target_link_libraries(${target} PRIVATE StablehloRegister)
   endif()
   add_test(NAME ${target} COMMAND ${target})
-  set_tests_properties(${target} PROPERTIES LABELS "unit;component")
+  set_tests_properties(${target} PROPERTIES
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+    LABELS "unit;component")
   set(WAFER_COMPONENT_UNIT_TARGETS
     ${WAFER_COMPONENT_UNIT_TARGETS} ${target} PARENT_SCOPE)
 endfunction()
@@ -120,7 +122,7 @@ wafer_add_component_unit_test(WaferTransformsUnitTests
     Transforms/Instr/DirectDTETransportTest.cpp
     Transforms/Instr/TileMemoryPlanningTest.cpp
     Transforms/Tile/StructuredBufferRelationsTest.cpp
-    Transforms/Tile/CurrentIRLayoutOptimizationTest.cpp
+    Transforms/Tile/LayoutOptimizationTest.cpp
     Transforms/Tile/ExecutionStructureMaterializationTest.cpp
     Transforms/Linalg/AttentionNormalizationTest.cpp
     Transforms/Linalg/StructuredGraphEGraphTest.cpp

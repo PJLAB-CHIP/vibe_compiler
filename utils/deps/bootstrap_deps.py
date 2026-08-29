@@ -1635,7 +1635,7 @@ def prepare_egraph_sources(
         / "Wafer"
         / "Transforms"
         / "Linalg"
-        / "EGraphCore"
+        / "StructuredEGraph"
     )
     manifest = crate_root / "Cargo.toml"
     lock = crate_root / "Cargo.lock"

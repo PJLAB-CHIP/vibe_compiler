@@ -1,6 +1,7 @@
 //===- TileMemoryPlanningTest.cpp ---------------------------------===//
 
 #include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
+#include "Wafer/Analysis/Tile/TileDataflowAnalysis.h"
 #include "Wafer/Driver/CompilationInternal.h"
 
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
@@ -160,7 +161,8 @@ TEST_F(TileMemoryPlanningTest,
   mlir::OwningOpRef<mlir::ModuleOp> module =
       candidateWithSPMElements(/*elements=*/128);
   ASSERT_TRUE(module);
-  ASSERT_TRUE(wafer::containsTileDataflowOperations(module->getOperation()));
+  ASSERT_TRUE(
+      wafer::analysis::containsTileDataflowOperations(module->getOperation()));
 
   std::string diagnostics;
   mlir::ScopedDiagnosticHandler handler(
@@ -187,7 +189,8 @@ TEST_F(TileMemoryPlanningTest, ReportsSPMFailureForOwnedTileModule) {
       candidateWithSPMElements(/*elements=*/2'000'000);
   ASSERT_TRUE(module);
   ASSERT_TRUE(mlir::succeeded(lowerTileRegionModule(*module)));
-  ASSERT_FALSE(wafer::containsTileDataflowOperations(module->getOperation()));
+  ASSERT_FALSE(
+      wafer::analysis::containsTileDataflowOperations(module->getOperation()));
 
   std::string diagnostics;
   mlir::ScopedDiagnosticHandler handler(

@@ -1,7 +1,7 @@
 //===- Internal.h - Schedule cost analysis internals ----------*- C++ -*-===//
 
-#ifndef WAFER_ANALYSIS_SCHEDULECOST_INTERNAL_H
-#define WAFER_ANALYSIS_SCHEDULECOST_INTERNAL_H
+#ifndef WAFER_ANALYSIS_INSTR_INTERNAL_H
+#define WAFER_ANALYSIS_INSTR_INTERNAL_H
 
 #include "Wafer/Analysis/Instr/ScheduleCostAnalysis.h"
 
@@ -102,4 +102,4 @@ void collectDDRHighWater(
 
 } // namespace wafer::analysis::detail
 
-#endif // WAFER_ANALYSIS_SCHEDULECOST_INTERNAL_H
+#endif // WAFER_ANALYSIS_INSTR_INTERNAL_H

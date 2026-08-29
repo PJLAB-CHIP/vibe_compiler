@@ -1,7 +1,7 @@
 //===- RedundantTransferElimination.h - Exact storage coalescing -*- C++ -*-===//
 
-#ifndef WAFER_LIB_TRANSFORMS_SCHEDULING_REDUNDANTTRANSFERELIMINATION_H
-#define WAFER_LIB_TRANSFORMS_SCHEDULING_REDUNDANTTRANSFERELIMINATION_H
+#ifndef WAFER_TRANSFORMS_INSTR_REDUNDANTTRANSFERELIMINATION_H
+#define WAFER_TRANSFORMS_INSTR_REDUNDANTTRANSFERELIMINATION_H
 
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
@@ -24,4 +24,4 @@ unsigned elideRedundantFullBufferTransfers(
 
 } // namespace wafer::tensor_program_scheduling
 
-#endif // WAFER_LIB_TRANSFORMS_SCHEDULING_REDUNDANTTRANSFERELIMINATION_H
+#endif // WAFER_TRANSFORMS_INSTR_REDUNDANTTRANSFERELIMINATION_H

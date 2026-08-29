@@ -2,6 +2,7 @@
 
 #include "Wafer/Conversion/StableHLOToLinalg/Pipelines.h"
 
+#include "Wafer/Conversion/Passes.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"

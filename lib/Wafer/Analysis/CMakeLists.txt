@@ -6,6 +6,7 @@ add_mlir_library(WaferAnalysis
   Linalg/StructuredDAGAnalysis.cpp
   Tile/PhysicalAccessRelation.cpp
   Tile/PhysicalLayoutRelation.cpp
+  Tile/TileDataflowAnalysis.cpp
   Tile/TransferRealizability.cpp
   Instr/ExecutionCost.cpp
   Instr/DDRHighWater.cpp

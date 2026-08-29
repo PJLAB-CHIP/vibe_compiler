@@ -1,6 +1,6 @@
 //===- LowerInstrToTargetLLVM.cpp - Lower instr IR to target LLVM ---------===//
 
-#include "Wafer/Transforms/Passes.h"
+#include "Wafer/Conversion/Passes.h"
 
 #include "Wafer/Conversion/InstrToLLVM/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
@@ -16,7 +16,7 @@
 
 namespace wafer {
 #define GEN_PASS_DEF_LOWERINSTRTOTARGETLLVMPASS
-#include "Wafer/Transforms/WaferPasses.h.inc"
+#include "Wafer/Conversion/WaferConversionPasses.h.inc"
 
 namespace {
 

@@ -1,8 +1,8 @@
 //===- ExecutableLowering.h - Executable lowering ---------*- C++
 //-*-===//
 
-#ifndef WAFER_COMPILER_EXECUTABLELOWERING_H
-#define WAFER_COMPILER_EXECUTABLELOWERING_H
+#ifndef WAFER_DRIVER_EXECUTABLELOWERING_H
+#define WAFER_DRIVER_EXECUTABLELOWERING_H
 
 #include "Wafer/Analysis/Instr/ScheduleCostAnalysis.h"
 #include "Wafer/Driver/Compilation.h"
@@ -76,13 +76,13 @@ struct ExecutableLoweringStatistics {
   uint64_t tileModuleLoweringSuccesses = 0;
   uint64_t deviceExecutablesProduced = 0;
   uint64_t maximumTilePipelineWorkers = 1;
-  uint64_t currentIRLayoutOptimizationInvocations = 0;
-  uint64_t currentIRLayoutPBQPWork = 0;
-  uint64_t currentIRLayoutMaterializationsBefore = 0;
-  uint64_t currentIRLayoutMaterializationsAfter = 0;
-  uint64_t currentIRLayoutMaterializationsErased = 0;
-  uint64_t currentIRLayoutMaterializationsReused = 0;
-  uint64_t currentIRLayoutHardOnlyInvocations = 0;
+  uint64_t layoutOptimizationInvocations = 0;
+  uint64_t layoutOptimizationPBQPWork = 0;
+  uint64_t layoutMaterializationsBefore = 0;
+  uint64_t layoutMaterializationsAfter = 0;
+  uint64_t layoutMaterializationsErased = 0;
+  uint64_t layoutMaterializationsReused = 0;
+  uint64_t layoutOptimizationHardOnlyInvocations = 0;
   uint64_t redundantFullBufferTransfersEliminated = 0;
 };
 
@@ -107,4 +107,4 @@ bool hasBoundaryOnlyDDRMovementEvidence(const TileExecutable &tile);
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_EXECUTABLELOWERING_H
+#endif // WAFER_DRIVER_EXECUTABLELOWERING_H

@@ -1,7 +1,7 @@
 //===- StaticIndexRange.h - Static index range evaluation -------*- C++ -*-===//
 
-#ifndef WAFER_TRANSFORMS_MEMORYPLANNING_STATICINDEXRANGE_H
-#define WAFER_TRANSFORMS_MEMORYPLANNING_STATICINDEXRANGE_H
+#ifndef WAFER_ANALYSIS_INSTR_STATICINDEXRANGE_H
+#define WAFER_ANALYSIS_INSTR_STATICINDEXRANGE_H
 
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
@@ -50,4 +50,4 @@ evaluateNonNegativeStaticIndexRange(mlir::Value value,
 
 } // namespace wafer::memory_planning::detail
 
-#endif // WAFER_TRANSFORMS_MEMORYPLANNING_STATICINDEXRANGE_H
+#endif // WAFER_ANALYSIS_INSTR_STATICINDEXRANGE_H

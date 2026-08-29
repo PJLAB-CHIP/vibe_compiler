@@ -7,7 +7,7 @@ add_mlir_library(WaferLinalgTransforms
   StructuredTiling.cpp
 
   DEPENDS
-  WaferPassesIncGen
+  WaferTransformPassesIncGen
 
   LINK_LIBS PUBLIC
   WaferAnalysis
@@ -17,6 +17,7 @@ add_mlir_library(WaferLinalgTransforms
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
+  MLIRLinalgUtils
   MLIRMathDialect
   MLIRPass
   MLIRSideEffectInterfaces
@@ -30,5 +31,5 @@ target_include_directories(obj.WaferLinalgTransforms PRIVATE
 target_include_directories(WaferLinalgTransforms PRIVATE
   ${PROJECT_SOURCE_DIR}/lib)
 target_link_libraries(WaferLinalgTransforms PRIVATE
-  WaferThirdPartyStructuredEGraph)
+  WaferStructuredEGraph)
 add_dependencies(WaferLinalgTransforms WaferStructuredEGraphBuild)

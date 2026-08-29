@@ -1,7 +1,7 @@
 //===- RootWorkDomain.h - Complete root and Tile work domain -*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_ROOTWORKDOMAIN_H
-#define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_ROOTWORKDOMAIN_H
+#ifndef WAFER_PLANNING_PHYSICALDATAFLOW_ROOTWORKDOMAIN_H
+#define WAFER_PLANNING_PHYSICALDATAFLOW_ROOTWORKDOMAIN_H
 
 #include "Wafer/Planning/PhysicalDataflow/RootRegionWorkAnalysis.h"
 
@@ -144,4 +144,4 @@ RootWorkCollection *getRootWorkCollection(RootWorkCollectionOutcome &outcome);
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_ROOTWORKDOMAIN_H
+#endif // WAFER_PLANNING_PHYSICALDATAFLOW_ROOTWORKDOMAIN_H

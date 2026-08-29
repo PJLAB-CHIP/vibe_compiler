@@ -1,7 +1,7 @@
 //===- LifetimeAnalysis.h - Structured memory lifetime analysis -*- C++ -*-===//
 
-#ifndef WAFER_TRANSFORMS_MEMORYPLANNING_LIFETIMEANALYSIS_H
-#define WAFER_TRANSFORMS_MEMORYPLANNING_LIFETIMEANALYSIS_H
+#ifndef WAFER_TRANSFORMS_INSTR_LIFETIMEANALYSIS_H
+#define WAFER_TRANSFORMS_INSTR_LIFETIMEANALYSIS_H
 
 #include "Wafer/IR/WaferInterfaces.h"
 
@@ -383,4 +383,4 @@ bool lifetimesOverlap(const LifetimeDemand &lhs, const LifetimeDemand &rhs);
 
 } // namespace wafer::memory_planning::detail
 
-#endif // WAFER_TRANSFORMS_MEMORYPLANNING_LIFETIMEANALYSIS_H
+#endif // WAFER_TRANSFORMS_INSTR_LIFETIMEANALYSIS_H

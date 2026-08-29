@@ -608,7 +608,7 @@ mlir::LogicalResult foldConstantTensorOps(mlir::Operation *root) {
 } // namespace wafer::stablehlo_normalization
 namespace wafer {
 #define GEN_PASS_DEF_FOLDSTATICTENSOROPSPASS
-#include "Wafer/Transforms/WaferPasses.h.inc"
+#include "Wafer/Transforms/WaferTransformPasses.h.inc"
 
 namespace {
 

@@ -1,7 +1,7 @@
 //===- SemanticRootAnalysis.h - Observable semantic root keys -*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEMANTICROOTANALYSIS_H
-#define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEMANTICROOTANALYSIS_H
+#ifndef WAFER_ANALYSIS_LINALG_SEMANTICROOTANALYSIS_H
+#define WAFER_ANALYSIS_LINALG_SEMANTICROOTANALYSIS_H
 
 #include "Wafer/Analysis/Linalg/StructuredDAGAnalysis.h"
 #include "Wafer/Analysis/Linalg/SemanticRoot.h"
@@ -57,4 +57,4 @@ private:
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEMANTICROOTANALYSIS_H
+#endif // WAFER_ANALYSIS_LINALG_SEMANTICROOTANALYSIS_H

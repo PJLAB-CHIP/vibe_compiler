@@ -35,7 +35,8 @@ function(wafer_enable_numeric_model_deps)
   endif()
 
   execute_process(
-    COMMAND "${Python3_EXECUTABLE}"
+    COMMAND "${CMAKE_COMMAND}" -E env "PYTHONDONTWRITEBYTECODE=1"
+            "${Python3_EXECUTABLE}" -B
             "${CMAKE_SOURCE_DIR}/utils/checks/check_deps.py"
             --numeric-only
             --numeric-root "${WAFER_NUMERIC_MODEL_DEPS_ROOT}"

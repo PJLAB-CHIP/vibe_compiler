@@ -3,7 +3,8 @@ llvm_update_compile_flags(wafer-cmodel-qualify-onednn)
 target_link_libraries(wafer-cmodel-qualify-onednn
   PRIVATE
   LLVMSupport
+  WaferCodeGen
   WaferOneDNNBackend
-  WaferCompiler
+  WaferPhysicalTensor
   WaferSimulatorInvocation
 )

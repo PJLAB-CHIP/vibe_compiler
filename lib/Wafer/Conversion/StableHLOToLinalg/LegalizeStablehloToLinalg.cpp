@@ -1,6 +1,6 @@
 //===- LegalizeStablehloToLinalg.cpp - Official StableHLO legalization ----===//
 
-#include "Wafer/Transforms/Passes.h"
+#include "Wafer/Conversion/Passes.h"
 
 #include "mlir/IR/Operation.h"
 #include "mlir/Pass/Pass.h"

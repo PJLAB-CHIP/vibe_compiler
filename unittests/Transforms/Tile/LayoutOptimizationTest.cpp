@@ -1,6 +1,6 @@
-//===- CurrentIRLayoutOptimizationTest.cpp ----------------------------===//
+//===- LayoutOptimizationTest.cpp ----------------------------===//
 
-#include "Wafer/Transforms/Tile/CurrentIRLayoutOptimization.h"
+#include "Wafer/Transforms/Tile/LayoutOptimization.h"
 
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/IR/WaferDialect.h"
@@ -21,9 +21,9 @@ namespace {
 using namespace wafer;
 using namespace wafer::compiler::detail;
 
-class CurrentIRLayoutOptimizationTest : public ::testing::Test {
+class LayoutOptimizationTest : public ::testing::Test {
 protected:
-  CurrentIRLayoutOptimizationTest() {
+  LayoutOptimizationTest() {
     registerCompilationDialects(registry);
     context = std::make_unique<mlir::MLIRContext>(registry);
     context->loadAllAvailableDialects();
@@ -106,17 +106,16 @@ USERS
   std::unique_ptr<mlir::MLIRContext> context;
 };
 
-TEST_F(CurrentIRLayoutOptimizationTest,
+TEST_F(LayoutOptimizationTest,
        ReusesReadOnlyConversionsAndClosesDeadChainAtRealisticScale) {
   for (uint64_t extent : {UINT64_C(1024), UINT64_C(1025)}) {
     SCOPED_TRACE(extent);
     auto module = parse(extent, /*writableResults=*/false);
     ASSERT_TRUE(module);
     StructuredMaterializationRelations relations;
-    llvm::SmallVector<CurrentIRLayoutModule, 1> candidates{
-        CurrentIRLayoutModule{*module, &relations}};
-    CurrentIRLayoutOptimizationResult result =
-        optimizeCurrentIRLayouts(candidates);
+    llvm::SmallVector<LayoutOptimizationInput, 1> candidates{
+        LayoutOptimizationInput{*module, &relations}};
+    LayoutOptimizationResult result = optimizeTileLayouts(candidates);
     ASSERT_TRUE(result.succeeded()) << result.detail;
     EXPECT_EQ(result.statistics.invocations, 1u);
     EXPECT_EQ(result.statistics.hardOnlyInvocations, 1u);
@@ -128,17 +127,16 @@ TEST_F(CurrentIRLayoutOptimizationTest,
   }
 }
 
-TEST_F(CurrentIRLayoutOptimizationTest,
+TEST_F(LayoutOptimizationTest,
        DoesNotAliasIndependentlyWrittenMaterializations) {
   for (uint64_t extent : {UINT64_C(1024), UINT64_C(1025)}) {
     SCOPED_TRACE(extent);
     auto module = parse(extent, /*writableResults=*/true);
     ASSERT_TRUE(module);
     StructuredMaterializationRelations relations;
-    llvm::SmallVector<CurrentIRLayoutModule, 1> candidates{
-        CurrentIRLayoutModule{*module, &relations}};
-    CurrentIRLayoutOptimizationResult result =
-        optimizeCurrentIRLayouts(candidates);
+    llvm::SmallVector<LayoutOptimizationInput, 1> candidates{
+        LayoutOptimizationInput{*module, &relations}};
+    LayoutOptimizationResult result = optimizeTileLayouts(candidates);
     ASSERT_TRUE(result.succeeded()) << result.detail;
     EXPECT_EQ(result.statistics.sharedMaterializationsReused, 0u);
     EXPECT_EQ(result.statistics.unusedMaterializationsErased, 0u);
@@ -147,7 +145,7 @@ TEST_F(CurrentIRLayoutOptimizationTest,
   }
 }
 
-TEST_F(CurrentIRLayoutOptimizationTest,
+TEST_F(LayoutOptimizationTest,
        SharesOneExactReadOnlyConversionAcrossFifteenUses) {
   for (uint64_t extent : {UINT64_C(1024), UINT64_C(1025)}) {
     SCOPED_TRACE(extent);
@@ -155,10 +153,9 @@ TEST_F(CurrentIRLayoutOptimizationTest,
                                     /*writeSourceBeforeSecondUse=*/false);
     ASSERT_TRUE(module);
     StructuredMaterializationRelations relations;
-    llvm::SmallVector<CurrentIRLayoutModule, 1> candidates{
-        CurrentIRLayoutModule{*module, &relations}};
-    CurrentIRLayoutOptimizationResult result =
-        optimizeCurrentIRLayouts(candidates);
+    llvm::SmallVector<LayoutOptimizationInput, 1> candidates{
+        LayoutOptimizationInput{*module, &relations}};
+    LayoutOptimizationResult result = optimizeTileLayouts(candidates);
     ASSERT_TRUE(result.succeeded()) << result.detail;
     EXPECT_EQ(result.statistics.layoutMaterializationsBefore, 15u);
     EXPECT_EQ(result.statistics.sharedMaterializationsReused, 14u);
@@ -168,7 +165,7 @@ TEST_F(CurrentIRLayoutOptimizationTest,
   }
 }
 
-TEST_F(CurrentIRLayoutOptimizationTest,
+TEST_F(LayoutOptimizationTest,
        DoesNotReuseAConversionAcrossAnAliasingSourceWrite) {
   for (uint64_t extent : {UINT64_C(1024), UINT64_C(1025)}) {
     SCOPED_TRACE(extent);
@@ -176,10 +173,9 @@ TEST_F(CurrentIRLayoutOptimizationTest,
                                     /*writeSourceBeforeSecondUse=*/true);
     ASSERT_TRUE(module);
     StructuredMaterializationRelations relations;
-    llvm::SmallVector<CurrentIRLayoutModule, 1> candidates{
-        CurrentIRLayoutModule{*module, &relations}};
-    CurrentIRLayoutOptimizationResult result =
-        optimizeCurrentIRLayouts(candidates);
+    llvm::SmallVector<LayoutOptimizationInput, 1> candidates{
+        LayoutOptimizationInput{*module, &relations}};
+    LayoutOptimizationResult result = optimizeTileLayouts(candidates);
     ASSERT_TRUE(result.succeeded()) << result.detail;
     EXPECT_EQ(result.statistics.sharedMaterializationsReused, 0u);
     EXPECT_EQ(result.statistics.layoutMaterializationsAfter, 2u);

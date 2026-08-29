@@ -1,7 +1,7 @@
 //===- StructuredNodeUseIndex.h - Structured node use lookup -*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_TRANSFORMS_TILE_STRUCTUREDNODEUSEINDEX_H
-#define WAFER_COMPILER_TRANSFORMS_TILE_STRUCTUREDNODEUSEINDEX_H
+#ifndef WAFER_TRANSFORMS_TILE_STRUCTUREDNODEUSEINDEX_H
+#define WAFER_TRANSFORMS_TILE_STRUCTUREDNODEUSEINDEX_H
 
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
@@ -35,4 +35,4 @@ private:
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_TRANSFORMS_TILE_STRUCTUREDNODEUSEINDEX_H
+#endif // WAFER_TRANSFORMS_TILE_STRUCTUREDNODEUSEINDEX_H

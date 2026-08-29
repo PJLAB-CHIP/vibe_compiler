@@ -1121,7 +1121,7 @@ writeProfileReport(PendingProfileReportRun &reportRun,
   std::string evidenceArgument = evidencePath.str().str();
   std::string outputArgument = reportRun.stagingDirectory;
   llvm::SmallVector<llvm::StringRef, 6> arguments = {
-      reportRun.python, reportRun.reportScript, evidenceArgument,
+      reportRun.python, "-B", reportRun.reportScript, evidenceArgument,
       "--output-directory", outputArgument};
   std::array<std::optional<llvm::StringRef>, 3> redirects = {
       std::nullopt, llvm::StringRef("/dev/null"), std::nullopt};

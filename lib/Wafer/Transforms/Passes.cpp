@@ -8,7 +8,7 @@
 namespace wafer {
 
 #define GEN_PASS_REGISTRATION
-#include "Wafer/Transforms/WaferPasses.h.inc"
+#include "Wafer/Transforms/WaferTransformPasses.h.inc"
 
 void registerWaferTransformPasses() {
   static bool registered = [] {

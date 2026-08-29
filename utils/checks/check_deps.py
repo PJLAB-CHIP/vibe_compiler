@@ -82,6 +82,7 @@ STABLEHLO_API_ALLOWED_PREFIXES = [
     "lib/Wafer/Frontend",
     "lib/Wafer/Driver",
     "lib/Wafer/Conversion/StableHLOToLinalg",
+    "lib/Wafer/Transforms/StableHLO",
     "tools/wafer-opt",
     "tools/wafer-verify-program",
 ]
@@ -276,7 +277,7 @@ def check_cmake_target_visibility() -> None:
         )
     for needle in [
         "function(wafer_add_structured_egraph)",
-        "WaferThirdPartyStructuredEGraph",
+        "WaferStructuredEGraph",
         "--release --locked --offline",
     ]:
         check_text_contains(
@@ -350,20 +351,30 @@ def check_cmake_target_visibility() -> None:
 
     transforms_cmake_path = REPO_ROOT / "lib" / "Wafer" / "Transforms" / "CMakeLists.txt"
     transforms_cmake = transforms_cmake_path.read_text(encoding="utf-8")
+    for needle in ("StablehloOps", "ShardySdyDialect", "WAFER_ENABLE_SHARDY"):
+        if needle in transforms_cmake:
+            raise RuntimeError(f"WaferTransforms leaks {needle}")
+
+    stablehlo_transforms_cmake_path = (
+        REPO_ROOT / "lib" / "Wafer" / "Transforms" / "StableHLO" / "CMakeLists.txt"
+    )
+    stablehlo_transforms_cmake = stablehlo_transforms_cmake_path.read_text(
+        encoding="utf-8"
+    )
     if re.search(
-        r"target_link_libraries\(\s*WaferTransforms\s+PUBLIC\s+StablehloOps",
-        transforms_cmake,
+        r"target_link_libraries\(\s*WaferStableHLOTransforms\s+PUBLIC\s+StablehloOps",
+        stablehlo_transforms_cmake,
     ):
         raise RuntimeError(
-            "WaferTransforms must not expose StablehloOps as a PUBLIC dependency"
+            "WaferStableHLOTransforms must not expose StablehloOps as a PUBLIC dependency"
         )
-    if "StablehloOps" in transforms_cmake:
-        raise RuntimeError("WaferTransforms must not link StablehloOps")
     for needle in [
-        "target_compile_definitions(WaferTransforms PRIVATE WAFER_ENABLE_SHARDY=1)",
+        "target_link_libraries(WaferStableHLOTransforms PRIVATE StablehloOps)",
+        "target_compile_definitions(WaferStableHLOTransforms PRIVATE",
+        "WAFER_ENABLE_SHARDY=1",
         "ShardySdyDialect ShardySdyTransforms",
     ]:
-        check_text_contains(transforms_cmake_path, needle)
+        check_text_contains(stablehlo_transforms_cmake_path, needle)
 
     conversion_cmake_path = REPO_ROOT / "lib" / "Wafer" / "Conversion" / "CMakeLists.txt"
     conversion_cmake = conversion_cmake_path.read_text(encoding="utf-8")
@@ -407,7 +418,7 @@ def check_cmake_target_visibility() -> None:
         REPO_ROOT / "tools" / "wafer-opt" / "CMakeLists.txt",
     ]:
         text = cmake_path.read_text(encoding="utf-8")
-        if "WaferConversion" in text:
+        if re.search(r"\bWaferConversion\b", text):
             raise RuntimeError(f"{rel(cmake_path)} still links removed WaferConversion")
 
     wafer_opt_source_path = REPO_ROOT / "tools" / "wafer-opt" / "wafer-opt.cpp"
@@ -566,9 +577,17 @@ def check_cmake_target_visibility() -> None:
                 "wafer-verify-program must remain a frontend verifier, but "
                 f"its source includes {needle!r}"
             )
-    pipelines_cmake_path = REPO_ROOT / "lib" / "Wafer" / "Transforms" / "CMakeLists.txt"
+    pipelines_cmake_path = (
+        REPO_ROOT
+        / "lib"
+        / "Wafer"
+        / "Transforms"
+        / "StableHLO"
+        / "CMakeLists.txt"
+    )
     for needle in [
-        "target_compile_definitions(obj.WaferTransforms PRIVATE WAFER_ENABLE_SHARDY=1)",
+        "target_compile_definitions(obj.WaferStableHLOTransforms PRIVATE",
+        "WAFER_ENABLE_SHARDY=1",
         "ShardySdyDialect ShardySdyTransforms",
     ]:
         check_text_contains(pipelines_cmake_path, needle)
@@ -1064,7 +1083,7 @@ def check_egraph_sources(versions: dict[str, str]) -> None:
         / "Wafer"
         / "Transforms"
         / "Linalg"
-        / "EGraphCore"
+        / "StructuredEGraph"
     )
     lock = crate_root / "Cargo.lock"
     record_path = DEPS_ROOT / "rust-vendor" / "wafer-egraph-deps.json"

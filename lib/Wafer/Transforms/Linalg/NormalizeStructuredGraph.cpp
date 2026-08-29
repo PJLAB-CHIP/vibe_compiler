@@ -1,6 +1,6 @@
 //===- NormalizeStructuredGraph.cpp - Relation-driven normalization -----===//
 
-#include "Wafer/Conversion/StableHLOToLinalg/StructuredGraphNormalization.h"
+#include "Wafer/Transforms/Linalg/StructuredGraphNormalization.h"
 
 #include "StructuredGraphEGraph.h"
 #include "Wafer/Analysis/Linalg/IndexRelation.h"
@@ -38,7 +38,7 @@
 namespace wafer {
 
 #define GEN_PASS_DEF_NORMALIZESTRUCTUREDTENSORGRAPHPASS
-#include "Wafer/Transforms/WaferPasses.h.inc"
+#include "Wafer/Transforms/WaferTransformPasses.h.inc"
 
 namespace {
 

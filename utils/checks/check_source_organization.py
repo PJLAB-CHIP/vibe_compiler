@@ -80,7 +80,17 @@ RETIRED_PATHS = (
     "lib/Wafer/Conversion/StandaloneTileModules",
     "lib/Wafer/Conversion/StructuredTiling",
     "lib/Wafer/Conversion/WaferTileRegionToInstr",
+    "include/Wafer/Conversion/StableHLOToLinalg/StructuredGraphNormalization.h",
+    "lib/Wafer/Transforms/Linalg/EGraphCore",
+    "lib/Wafer/Transforms/Tile/CurrentIRLayoutOptimization.cpp",
+    "lib/Wafer/Transforms/Tile/CurrentIRLayoutOptimization.h",
     "runtime/wafer_crt",
+    "test/Board/Support/wafer_source_program_fixture.py",
+    "test/Tools/Inputs/hf/tiny-random-llama-fp16-config.json",
+    "test/Tools/Inputs/inspect_tx81_worker_calls.py",
+    "test/Tools/Inputs/minimal-profile-summary-target-kernel.ll",
+    "test/Tools/Inputs/wafer_pytorch_xla_row_sharded_model.py",
+    "unittests/Transforms/Tile/CurrentIRLayoutOptimizationTest.cpp",
     "unittests/Planning/Search",
 )
 
@@ -263,6 +273,195 @@ def check_component_cmake_ownership(root: Path, errors: list[str]) -> None:
         )
 
 
+def check_private_header_guards(root: Path, errors: list[str]) -> None:
+    private_root = root / "lib/Wafer"
+    for path in sorted(private_root.rglob("*.h")):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        guard = re.search(r"^#ifndef\s+(\w+)", text, re.M)
+        if not guard:
+            continue
+        expected = "WAFER_" + re.sub(
+            r"[^A-Za-z0-9]", "_", path.relative_to(private_root).as_posix()
+        ).upper()
+        if guard.group(1) != expected or f"#define {expected}" not in text:
+            errors.append(
+                "private header guard does not match current owner path: "
+                f"{path.relative_to(root)}"
+            )
+
+
+def source_text_files(root: Path, relative: str) -> list[Path]:
+    suffixes = {".h", ".hpp", ".c", ".cc", ".cpp", ".td"}
+    base = root / relative
+    if not base.is_dir():
+        return []
+    return sorted(
+        path for path in base.rglob("*") if path.is_file() and path.suffix in suffixes
+    )
+
+
+def check_forbidden_include_edges(root: Path, errors: list[str]) -> None:
+    boundaries = {
+        "Transforms": (
+            ("include/Wafer/Transforms", "lib/Wafer/Transforms"),
+            (
+                'Wafer/CodeGen/',
+                'Wafer/Conversion/',
+                'Wafer/Driver/',
+                'Wafer/Runtime/',
+                'Wafer/Simulator/',
+            ),
+        ),
+        "Target": (
+            ("include/Wafer/Target", "lib/Wafer/Target"),
+            (
+                'Wafer/Analysis/',
+                'Wafer/CodeGen/',
+                'Wafer/Conversion/',
+                'Wafer/Driver/',
+                'Wafer/Frontend/',
+                'Wafer/Planning/',
+                'Wafer/Runtime/',
+                'Wafer/Simulator/',
+                'Wafer/Transforms/',
+            ),
+        ),
+        "Analysis": (
+            ("include/Wafer/Analysis", "lib/Wafer/Analysis"),
+            (
+                'Wafer/CodeGen/',
+                'Wafer/Conversion/',
+                'Wafer/Driver/',
+                'Wafer/Planning/',
+                'Wafer/Runtime/',
+                'Wafer/Simulator/',
+                'Wafer/Transforms/',
+            ),
+        ),
+        "Planning": (
+            ("include/Wafer/Planning", "lib/Wafer/Planning"),
+            (
+                'Wafer/CodeGen/',
+                'Wafer/Conversion/',
+                'Wafer/Driver/',
+                'Wafer/Runtime/',
+                'Wafer/Simulator/',
+                'Wafer/Transforms/',
+            ),
+        ),
+    }
+    for owner, (directories, forbidden) in boundaries.items():
+        for directory in directories:
+            for path in source_text_files(root, directory):
+                text = path.read_text(encoding="utf-8", errors="ignore")
+                for edge in forbidden:
+                    if f'#include "{edge}' in text:
+                        errors.append(
+                            f"{owner} has a forbidden include edge {edge}: "
+                            f"{path.relative_to(root)}"
+                        )
+
+    exact_forbidden = {
+        "lib/Wafer/Package": ('Wafer/Driver/Compilation',),
+        "include/Wafer/Package": ('Wafer/Driver/Compilation',),
+        "lib/Wafer/Simulator/Memory": ('Wafer/Simulator/Invocation/',),
+        "include/Wafer/Simulator/Memory": ('Wafer/Simulator/Invocation/',),
+    }
+    for directory, forbidden in exact_forbidden.items():
+        for path in source_text_files(root, directory):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for edge in forbidden:
+                if edge in text:
+                    errors.append(
+                        f"forbidden component include {edge}: {path.relative_to(root)}"
+                    )
+
+    transform_cmake = (root / "lib/Wafer/Transforms/CMakeLists.txt").read_text(
+        encoding="utf-8"
+    )
+    for target in ("WaferStableHLOToLinalg", "WaferTileToInstr", "WaferInstrToLLVM"):
+        if target in transform_cmake:
+            errors.append(f"WaferTransforms links conversion target {target}")
+    qualification_cmake = (
+        root / "tools/wafer-cmodel-qualify-onednn/CMakeLists.txt"
+    ).read_text(encoding="utf-8")
+    if "WaferCompiler" in qualification_cmake:
+        errors.append("oneDNN qualification tool links the whole compiler")
+
+    required_cmake_edges = {
+        "lib/Wafer/Transforms/CMakeLists.txt": (
+            "WaferPlanning",
+            "WaferStableHLOTransforms",
+        ),
+        "lib/Wafer/Simulator/Memory/CMakeLists.txt": ("WaferCodeGen",),
+        "lib/Wafer/Package/CMakeLists.txt": ("WaferFrontend",),
+        "tools/wafer-cmodel-qualify-onednn/CMakeLists.txt": (
+            "WaferCodeGen",
+            "WaferPhysicalTensor",
+            "WaferSimulatorInvocation",
+        ),
+    }
+    for relative, required in required_cmake_edges.items():
+        text = (root / relative).read_text(encoding="utf-8")
+        for target in required:
+            if target not in text:
+                errors.append(f"{relative} is missing direct dependency {target}")
+
+
+def check_structured_egraph_owner(root: Path, errors: list[str]) -> None:
+    crate = root / "lib/Wafer/Transforms/Linalg/StructuredEGraph"
+    for relative in ("Cargo.toml", "Cargo.lock", "src/lib.rs"):
+        if not (crate / relative).is_file():
+            errors.append(f"structured e-graph crate is missing {relative}")
+    cmake_text = (
+        root / "cmake/third_party/WaferThirdParty.cmake"
+    ).read_text(encoding="utf-8")
+    if "WaferThirdPartyStructuredEGraph" in cmake_text:
+        errors.append("Wafer-owned structured e-graph retains a ThirdParty target")
+    if "lib/Wafer/Transforms/Linalg/StructuredEGraph" not in cmake_text:
+        errors.append("structured e-graph CMake owner does not name the current crate")
+
+
+def check_test_support_consumers(root: Path, errors: list[str]) -> None:
+    candidates = []
+    tools_inputs = root / "test/Tools/Inputs"
+    if tools_inputs.is_dir():
+        candidates.extend(
+            path
+            for path in tools_inputs.rglob("*")
+            if path.is_file()
+            and path.name != "README.md"
+            and path.suffix in {".c", ".h", ".json", ".ll", ".py"}
+        )
+    board_support = root / "test/Board/Support"
+    if board_support.is_dir():
+        candidates.extend(board_support.glob("*.py"))
+
+    test_text_files = [
+        path
+        for path in (root / "test").rglob("*")
+        if path.is_file()
+        and path.suffix in {".c", ".h", ".json", ".ll", ".mlir", ".py", ".test", ".txt"}
+    ]
+    test_text_files.extend(cmake_files(root))
+    texts = {
+        path: path.read_text(encoding="utf-8", errors="ignore")
+        for path in test_text_files
+    }
+    for candidate in sorted(set(candidates)):
+        tokens = (candidate.name, candidate.stem)
+        if any(
+            any(token in text for token in tokens)
+            for path, text in texts.items()
+            if path != candidate
+        ):
+            continue
+        errors.append(
+            "test support asset has no current consumer: "
+            f"{candidate.relative_to(root)}"
+        )
+
+
 def check_python_test_registration(root: Path, errors: list[str]) -> None:
     registration_files = [*cmake_files(root)]
     registration_files.extend((root / "test").rglob("*.test"))
@@ -290,6 +489,35 @@ def check_python_test_registration(root: Path, errors: list[str]) -> None:
 def check_source_tree_artifacts(root: Path, errors: list[str]) -> None:
     if (root / ".deps").exists():
         errors.append("legacy source-tree dependency artifact exists: .deps")
+    owned_directories = (
+        "cmake",
+        "docs",
+        "include",
+        "lib",
+        "memory",
+        "python",
+        "runtime",
+        "tasks",
+        "test",
+        "tools",
+        "unittests",
+        "utils",
+    )
+    for directory in owned_directories:
+        base = root / directory
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*"):
+            if path.is_dir() and path.name == "__pycache__":
+                errors.append(
+                    "source-tree Python cache exists: "
+                    f"{path.relative_to(root)}"
+                )
+            elif path.is_file() and path.suffix in {".pyc", ".pyo"}:
+                errors.append(
+                    "source-tree Python bytecode exists: "
+                    f"{path.relative_to(root)}"
+                )
 
 
 def main() -> int:
@@ -301,9 +529,13 @@ def main() -> int:
     check_directory_owners(root, errors)
     check_no_retired_includes(root, errors)
     check_component_cmake_ownership(root, errors)
+    check_private_header_guards(root, errors)
+    check_forbidden_include_edges(root, errors)
+    check_structured_egraph_owner(root, errors)
     check_library_sources(root, errors)
     check_unit_sources(root, errors)
     check_python_test_registration(root, errors)
+    check_test_support_consumers(root, errors)
     check_source_tree_artifacts(root, errors)
     if errors:
         for error in errors:

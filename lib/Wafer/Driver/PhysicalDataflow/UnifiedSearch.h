@@ -1,7 +1,7 @@
 //===- UnifiedSearch.h - Typed physical-dataflow traversal ---*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_UNIFIEDSEARCH_H
-#define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_UNIFIEDSEARCH_H
+#ifndef WAFER_DRIVER_PHYSICALDATAFLOW_UNIFIEDSEARCH_H
+#define WAFER_DRIVER_PHYSICALDATAFLOW_UNIFIEDSEARCH_H
 
 #include "Wafer/Driver/PhysicalDataflow/ActualResultController.h"
 #include "Wafer/Planning/PhysicalDataflow/PlanningSession.h"
@@ -125,4 +125,4 @@ UnifiedSearchResult runUnifiedSearch(PhysicalDataflowPlanningSession &session,
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_UNIFIEDSEARCH_H
+#endif // WAFER_DRIVER_PHYSICALDATAFLOW_UNIFIEDSEARCH_H

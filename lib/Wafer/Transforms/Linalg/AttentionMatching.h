@@ -1,7 +1,7 @@
 //===- AttentionMatching.h - Structured attention graph proof -*- C++ -*-===//
 
-#ifndef WAFER_CONVERSION_STABLEHLOTOLINALG_ATTENTIONMATCHING_H
-#define WAFER_CONVERSION_STABLEHLOTOLINALG_ATTENTIONMATCHING_H
+#ifndef WAFER_TRANSFORMS_LINALG_ATTENTIONMATCHING_H
+#define WAFER_TRANSFORMS_LINALG_ATTENTIONMATCHING_H
 
 #include "Wafer/IR/WaferDialect.h"
 
@@ -29,4 +29,4 @@ collectAttentionMatches(mlir::func::FuncOp function);
 
 } // namespace wafer::attention_normalization
 
-#endif // WAFER_CONVERSION_STABLEHLOTOLINALG_ATTENTIONMATCHING_H
+#endif // WAFER_TRANSFORMS_LINALG_ATTENTIONMATCHING_H

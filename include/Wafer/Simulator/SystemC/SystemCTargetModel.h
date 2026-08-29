@@ -3,6 +3,7 @@
 #ifndef WAFER_SIMULATOR_SYSTEMC_SYSTEMCTARGETMODEL_H
 #define WAFER_SIMULATOR_SYSTEMC_SYSTEMCTARGETMODEL_H
 
+#include "Wafer/Simulator/Invocation/TargetCallExecution.h"
 #include "Wafer/Simulator/Kernel/TargetModelKernel.h"
 
 #include "llvm/ADT/ArrayRef.h"

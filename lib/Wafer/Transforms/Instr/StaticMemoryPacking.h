@@ -1,7 +1,7 @@
 //===- StaticMemoryPacking.h - Static MiniMalloc contract -*- C++ -*-===//
 
-#ifndef WAFER_TRANSFORMS_MEMORYPLANNING_STATICMEMORYPACKING_H
-#define WAFER_TRANSFORMS_MEMORYPLANNING_STATICMEMORYPACKING_H
+#ifndef WAFER_TRANSFORMS_INSTR_STATICMEMORYPACKING_H
+#define WAFER_TRANSFORMS_INSTR_STATICMEMORYPACKING_H
 
 #include "Wafer/Transforms/Instr/LifetimeAnalysis.h"
 
@@ -116,4 +116,4 @@ packStaticMemory(llvm::ArrayRef<LifetimeDemand> demands, ArenaRange arena,
 
 } // namespace wafer::memory_planning::detail
 
-#endif // WAFER_TRANSFORMS_MEMORYPLANNING_STATICMEMORYPACKING_H
+#endif // WAFER_TRANSFORMS_INSTR_STATICMEMORYPACKING_H

@@ -1,10 +1,9 @@
 //===- TargetCallExecution.h - Host target-call execution ------*- C++ -*-===//
 
-#ifndef WAFER_TARGET_EXECUTION_TARGETCALLEXECUTION_H
-#define WAFER_TARGET_EXECUTION_TARGETCALLEXECUTION_H
+#ifndef WAFER_SIMULATOR_INVOCATION_TARGETCALLEXECUTION_H
+#define WAFER_SIMULATOR_INVOCATION_TARGETCALLEXECUTION_H
 
-#include "Wafer/CodeGen/TargetCodeGen.h"
-#include "Wafer/Target/TargetCall.h"
+#include "Wafer/Simulator/TargetCall.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -13,68 +12,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <vector>
 
 namespace wafer::compiler {
-
-struct TargetNCCIssueDomain {
-  TargetCallTSMEngine engine;
-  TargetNCCWorker worker;
-  TargetNCCCompletionBehavior completionBehavior;
-};
-
-/// One dynamic call effect. Physical identity and launch slot are explicitly
-/// bound by the JIT bridge. The ordinal is assigned monotonically inside that
-/// Tile context; none of these fields is recovered from a symbol spelling or
-/// OS thread.
-struct TargetCommand {
-  CardId cardId;
-  TileId tileId;
-  LaunchSlotId launchSlotId;
-  uint64_t issueOrdinal;
-  target::TargetCommandPayload payload;
-  std::optional<TargetNCCIssueDomain> nccIssueDomain = std::nullopt;
-};
-
-struct TargetCallTileDescriptor {
-  CardId cardId;
-  TileId tileId;
-  LaunchSlotId launchSlotId;
-  std::vector<TileEntryArgument> tileEntryArguments;
-  std::vector<uint64_t> slotValues;
-  TargetIdentityId targetIdentity;
-  KernelRuntimeABIId kernelRuntimeABI;
-};
-
-struct TargetCallInvocationDescriptor {
-  TargetIdentityId targetIdentity;
-  std::vector<TargetCallTileDescriptor> tiles;
-};
-
-struct TargetCallTileArguments {
-  CardId cardId;
-  TileId tileId;
-  LaunchSlotId launchSlotId;
-  std::vector<uint64_t> slots;
-};
-
-/// Synchronous invocation-local consumer. A successful issue result is used
-/// only by target calls whose exact ABI returns an opaque Direct-DTE event.
-/// `completeInvocation` validates the full invocation and makes its result
-/// available atomically. The sink must outlive a running executable.
-class TargetCommandSink {
-public:
-  virtual ~TargetCommandSink() = default;
-  virtual llvm::Error
-  begin(const TargetCallInvocationDescriptor &invocation) = 0;
-  virtual llvm::Expected<uint64_t> issue(const TargetCommand &command) = 0;
-  virtual llvm::Error completeTile(CardId cardId,
-                                   TileId tileId,
-                                   LaunchSlotId launchSlotId) = 0;
-  virtual llvm::Error completeInvocation() = 0;
-  virtual void abort(llvm::StringRef diagnostic) = 0;
-};
 
 struct TargetCallExecutionResult {
   int64_t completedTileCount;
@@ -125,9 +65,9 @@ createTargetCallExecutable(const TargetLLVMModules &targetLLVMModules,
 /// invoke executeTile from one SC_THREAD per Tile instead.
 llvm::Expected<TargetCallExecutionResult>
 executeTargetCalls(const TargetLLVMModules &targetLLVMModules,
-                          llvm::ArrayRef<TargetCallTileArguments> arguments,
-                          TargetCommandSink &sink);
+                   llvm::ArrayRef<TargetCallTileArguments> arguments,
+                   TargetCommandSink &sink);
 
 } // namespace wafer::compiler
 
-#endif // WAFER_TARGET_EXECUTION_TARGETCALLEXECUTION_H
+#endif // WAFER_SIMULATOR_INVOCATION_TARGETCALLEXECUTION_H

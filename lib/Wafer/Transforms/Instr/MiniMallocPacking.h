@@ -1,7 +1,7 @@
 //===- MiniMallocPacking.h - MiniMalloc adapter boundary --------*- C++ -*-===//
 
-#ifndef WAFER_TRANSFORMS_MEMORYPLANNING_MINIMALLOCPACKING_H
-#define WAFER_TRANSFORMS_MEMORYPLANNING_MINIMALLOCPACKING_H
+#ifndef WAFER_TRANSFORMS_INSTR_MINIMALLOCPACKING_H
+#define WAFER_TRANSFORMS_INSTR_MINIMALLOCPACKING_H
 
 #include "Wafer/Transforms/Instr/StaticMemoryPacking.h"
 
@@ -17,4 +17,4 @@ PackingResult solveWithMiniMalloc(const StaticPackingProblem &problem,
 
 } // namespace wafer::memory_planning::detail
 
-#endif // WAFER_TRANSFORMS_MEMORYPLANNING_MINIMALLOCPACKING_H
+#endif // WAFER_TRANSFORMS_INSTR_MINIMALLOCPACKING_H

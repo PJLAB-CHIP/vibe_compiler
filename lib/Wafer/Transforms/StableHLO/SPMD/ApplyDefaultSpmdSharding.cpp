@@ -30,7 +30,7 @@
 namespace wafer {
 
 #define GEN_PASS_DEF_APPLYDEFAULTSPMDSHARDINGPASS
-#include "Wafer/Transforms/WaferPasses.h.inc"
+#include "Wafer/Transforms/WaferTransformPasses.h.inc"
 
 namespace {
 

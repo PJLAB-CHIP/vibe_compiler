@@ -1,6 +1,6 @@
-//===- CurrentIRLayoutOptimization.cpp - Current layout cleanup -------===//
+//===- LayoutOptimization.cpp - Current layout cleanup -------===//
 
-#include "Wafer/Transforms/Tile/CurrentIRLayoutOptimization.h"
+#include "Wafer/Transforms/Tile/LayoutOptimization.h"
 
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
@@ -96,10 +96,10 @@ void preserveEmissionOwners(StructuredMaterializationRelations &relations,
 
 } // namespace
 
-CurrentIRLayoutOptimizationResult
-optimizeCurrentIRLayouts(llvm::MutableArrayRef<CurrentIRLayoutModule> modules,
-                         uint64_t workLimit) {
-  CurrentIRLayoutOptimizationResult result;
+LayoutOptimizationResult
+optimizeTileLayouts(llvm::MutableArrayRef<LayoutOptimizationInput> modules,
+                    uint64_t workLimit) {
+  LayoutOptimizationResult result;
   result.statistics.invocations = 1;
   result.statistics.hardOnlyInvocations = 1;
   if (modules.empty() || workLimit == 0) {
@@ -112,7 +112,7 @@ optimizeCurrentIRLayouts(llvm::MutableArrayRef<CurrentIRLayoutModule> modules,
 
   std::vector<LayoutChoice> choices;
   ExactPBQPProblem problem;
-  for (CurrentIRLayoutModule &candidate : modules) {
+  for (LayoutOptimizationInput &candidate : modules) {
     if (!candidate.module || !candidate.relations ||
         mlir::failed(mlir::verify(candidate.module)) ||
         mlir::failed(checkStructuredBufferRelationsCurrent(
@@ -218,7 +218,7 @@ optimizeCurrentIRLayouts(llvm::MutableArrayRef<CurrentIRLayoutModule> modules,
   // All failure-prone checks completed above. Each actual mutation is a
   // same-typed SSA replacement or dead-op erase and is performed through one
   // rewriter per owning module.
-  for (CurrentIRLayoutModule &candidate : modules) {
+  for (LayoutOptimizationInput &candidate : modules) {
     mlir::IRRewriter rewriter(candidate.module->getContext());
     for (auto [index, choice] : llvm::enumerate(choices)) {
       if (choice.operation->getParentOfType<mlir::ModuleOp>() !=

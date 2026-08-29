@@ -376,7 +376,7 @@ module {
         wafer::compiler::DeviceExecutableBuilder::makeTileExecutable(
             wafer::CardId(0), wafer::TileId(0), wafer::LaunchSlotId(0),
             std::move(module), "main",
-            /*programBindings=*/{}, wafer::compiler::TransportContract::None);
+            /*programBindings=*/{}, wafer::TransportContract::None);
     return wafer::compiler::detail::hasBoundaryOnlyDDRMovementEvidence(tile);
   };
 

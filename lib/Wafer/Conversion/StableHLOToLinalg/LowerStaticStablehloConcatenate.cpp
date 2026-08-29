@@ -1,6 +1,6 @@
 //===- LowerStaticStablehloConcatenate.cpp - Preserve concat semantics ---===//
 
-#include "Wafer/Transforms/Passes.h"
+#include "Wafer/Conversion/Passes.h"
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
@@ -16,7 +16,7 @@
 namespace wafer {
 
 #define GEN_PASS_DEF_LOWERSTATICSTABLEHLOCONCATENATEPASS
-#include "Wafer/Transforms/WaferPasses.h.inc"
+#include "Wafer/Conversion/WaferConversionPasses.h.inc"
 
 namespace {
 

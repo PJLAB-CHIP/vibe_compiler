@@ -1,7 +1,7 @@
 //===- ProgramInternal.h - Frontend program internals --------*- C++ -*-===//
 
-#ifndef WAFER_LIB_FRONTEND_PROGRAMINTERNAL_H
-#define WAFER_LIB_FRONTEND_PROGRAMINTERNAL_H
+#ifndef WAFER_FRONTEND_PROGRAMINTERNAL_H
+#define WAFER_FRONTEND_PROGRAMINTERNAL_H
 
 #include "Wafer/Frontend/Program.h"
 
@@ -129,4 +129,4 @@ bool verifyParameterShards(mlir::ModuleOp module, llvm::StringRef programDir,
 
 } // namespace wafer::frontend::program_detail
 
-#endif // WAFER_LIB_FRONTEND_PROGRAMINTERNAL_H
+#endif // WAFER_FRONTEND_PROGRAMINTERNAL_H

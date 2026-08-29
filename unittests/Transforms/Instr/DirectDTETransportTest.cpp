@@ -578,7 +578,7 @@ TEST_F(DirectDTETransportTest, MatchesCompleteDomainAndAttachesTypedBinding) {
   auto contract =
       wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
-  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+  EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
 
   wafer::InstrDTESendOp send;
   sendModule->walk([&](wafer::InstrDTESendOp operation) { send = operation; });
@@ -625,7 +625,7 @@ TEST_F(DirectDTETransportTest,
   auto contract =
       wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
-  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+  EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
 
   unsigned sendCount = 0;
   unsigned recvCount = 0;
@@ -693,7 +693,7 @@ TEST_F(DirectDTETransportTest,
   auto contract =
       wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
-  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+  EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
   sendModule->walk([](wafer::InstrDTESendOp operation) {
     EXPECT_TRUE(operation.getBinding());
   });
@@ -727,7 +727,7 @@ TEST_F(DirectDTETransportTest,
   auto contract =
       wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
-  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+  EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
   sendModule->walk([](wafer::InstrDTESendOp operation) {
     EXPECT_TRUE(operation.getBinding());
   });
@@ -753,7 +753,7 @@ TEST_F(DirectDTETransportTest, ReceivePreparationBreaksCrossTileSendWaitCycle) {
   auto contract =
       wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
-  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+  EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
 }
 
 TEST_F(DirectDTETransportTest,
@@ -804,7 +804,7 @@ module {
   auto contract =
       wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
-  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+  EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
 }
 
 TEST_F(DirectDTETransportTest, MutualSendBeforeReceiveWaitCycleFailsClosed) {
@@ -863,7 +863,7 @@ TEST_F(DirectDTETransportTest,
   auto contract =
       wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
-  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+  EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
 }
 
 TEST_F(DirectDTETransportTest, AcceptsOrderedSiblingLoopOccurrences) {
@@ -883,7 +883,7 @@ TEST_F(DirectDTETransportTest, AcceptsOrderedSiblingLoopOccurrences) {
   auto contract =
       wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
-  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+  EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
 }
 
 TEST_F(DirectDTETransportTest,
@@ -903,7 +903,7 @@ TEST_F(DirectDTETransportTest,
   auto contract =
       wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
-  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+  EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
 }
 
 TEST_F(DirectDTETransportTest,
@@ -920,7 +920,7 @@ TEST_F(DirectDTETransportTest,
   auto contract =
       wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
-  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+  EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
 }
 
 TEST_F(DirectDTETransportTest, CrossBlockWaitCycleFailsClosed) {
@@ -969,7 +969,7 @@ TEST_F(DirectDTETransportTest,
   auto contract =
       wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
-  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+  EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
 }
 
 TEST_F(DirectDTETransportTest, MismatchedHelperCallOccurrenceFailsClosed) {
@@ -1179,7 +1179,7 @@ TEST_F(DirectDTETransportTest,
   auto contract =
       wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
-  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+  EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
   sendModule->walk([](wafer::InstrDTESendOp operation) {
     EXPECT_TRUE(operation.getBinding());
   });
@@ -1309,7 +1309,7 @@ TEST_F(DirectDTETransportTest,
   auto contract =
       wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
-  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+  EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
 }
 
 TEST_F(DirectDTETransportTest, LoopEscapingIssueTokenFailsClosed) {
@@ -1359,7 +1359,7 @@ TEST_F(DirectDTETransportTest, InterveningSendSourceReadIsAccepted) {
   auto contract =
       wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
-  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+  EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
 }
 
 TEST_F(DirectDTETransportTest, InterveningReceiveDestinationReadFailsClosed) {

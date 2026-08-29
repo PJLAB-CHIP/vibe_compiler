@@ -1,7 +1,7 @@
 //===- ExecutableCallClosure.h - Executable call closure -------*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_EXECUTABLECALLCLOSURE_H
-#define WAFER_COMPILER_EXECUTABLECALLCLOSURE_H
+#ifndef WAFER_ANALYSIS_MODULE_EXECUTABLECALLCLOSURE_H
+#define WAFER_ANALYSIS_MODULE_EXECUTABLECALLCLOSURE_H
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -33,4 +33,4 @@ llvm::Expected<ExecutableCallClosure> analyzeExecutableCallClosure(
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_EXECUTABLECALLCLOSURE_H
+#endif // WAFER_ANALYSIS_MODULE_EXECUTABLECALLCLOSURE_H

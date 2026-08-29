@@ -1,9 +1,7 @@
 add_subdirectory(Linalg)
+add_subdirectory(StableHLO)
 
 add_mlir_library(WaferTransforms
-  StableHLO/FrontendVerification.cpp
-  StableHLO/SPMD/ApplyDefaultSpmdSharding.cpp
-  StableHLO/SPMD/Pipelines.cpp
   Module/MaterializeExecutionMesh.cpp
   Module/MaterializeTargetTopology.cpp
   Module/StripTargetMetadata.cpp
@@ -20,22 +18,20 @@ add_mlir_library(WaferTransforms
   Instr/StaticMemoryPacking.cpp
   Instr/TileMemoryPlanning.cpp
   Passes.cpp
-  Tile/CurrentIRLayoutOptimization.cpp
+  Tile/LayoutOptimization.cpp
   Tile/StructuredBufferRelations.cpp
   Tile/StructuredNodeUseIndex.cpp
 
   DEPENDS
-  WaferPassesIncGen
+  WaferTransformPassesIncGen
 
   LINK_LIBS PUBLIC
   WaferAnalysis
-  WaferFrontend
   WaferIR
-  WaferInstrToLLVM
   WaferLinalgTransforms
-  WaferStableHLOToLinalg
+  WaferPlanning
+  WaferStableHLOTransforms
   WaferTarget
-  WaferTileToInstr
   MLIRArithDialect
   MLIRAsyncDialect
   MLIRBufferizationDialect
@@ -66,12 +62,3 @@ target_include_directories(WaferTransforms PRIVATE
 
 target_link_libraries(obj.WaferTransforms PRIVATE WaferThirdPartyMiniMalloc)
 target_link_libraries(WaferTransforms PRIVATE WaferThirdPartyMiniMalloc)
-
-if(WAFER_ENABLE_SPMD_PARTITIONER_DEPS)
-  target_compile_definitions(obj.WaferTransforms PRIVATE WAFER_ENABLE_SHARDY=1)
-  target_compile_definitions(WaferTransforms PRIVATE WAFER_ENABLE_SHARDY=1)
-  target_link_libraries(obj.WaferTransforms PRIVATE
-    ShardySdyDialect ShardySdyTransforms)
-  target_link_libraries(WaferTransforms PRIVATE
-    ShardySdyDialect ShardySdyTransforms)
-endif()

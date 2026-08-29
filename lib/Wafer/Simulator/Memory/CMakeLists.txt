@@ -3,6 +3,7 @@ add_mlir_library(WaferSimulatorMemory
   TargetModelStridedMemory.cpp
 
   LINK_LIBS PUBLIC
+  WaferCodeGen
   WaferTarget
   LLVMSupport
   MLIRIR

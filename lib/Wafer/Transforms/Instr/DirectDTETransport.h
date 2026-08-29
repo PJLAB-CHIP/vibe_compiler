@@ -1,9 +1,12 @@
 //===- DirectDTETransport.h - Physical Direct DTE binding -----*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_DIRECTDTETRANSPORT_H
-#define WAFER_COMPILER_DIRECTDTETRANSPORT_H
+#ifndef WAFER_TRANSFORMS_INSTR_DIRECTDTETRANSPORT_H
+#define WAFER_TRANSFORMS_INSTR_DIRECTDTETRANSPORT_H
 
-#include "Wafer/Driver/Compilation.h"
+#include "Wafer/Target/TransportContract.h"
+
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/Support/LogicalResult.h"
 
 #include "llvm/ADT/ArrayRef.h"
 
@@ -12,8 +15,8 @@ namespace wafer::compiler::detail {
 /// Recomputes logical message matching, structured dynamic occurrences and the
 /// card Direct-DTE wait graph from the supplied Tile modules.
 /// This validation does not attach physical bindings or retain analysis state.
-mlir::LogicalResult verifyDirectDTETransportSchedule(
-    llvm::ArrayRef<mlir::ModuleOp> tileModules);
+mlir::LogicalResult
+verifyDirectDTETransportSchedule(llvm::ArrayRef<mlir::ModuleOp> tileModules);
 
 /// Matches and validates every logical Direct DTE issue across the supplied
 /// Tile domain, then writes typed physical bindings into the modules.
@@ -23,4 +26,4 @@ bindDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> tileModules);
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_DIRECTDTETRANSPORT_H
+#endif // WAFER_TRANSFORMS_INSTR_DIRECTDTETRANSPORT_H

@@ -2,6 +2,7 @@
 
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 #include "Wafer/Driver/CompilationInternal.h"
+#include "Wafer/Driver/PhysicalDataflow/StructuredBufferLoweringListener.h"
 #include "Wafer/Transforms/Tile/StructuredNodeUseIndex.h"
 
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
@@ -71,8 +72,7 @@ TEST_F(StructuredBufferRelationsTest,
       wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
           module->getOperation(), relations)));
 
-  wafer::compiler::detail::StructuredBufferReplacementListener listener(
-      relations);
+  wafer::compiler::detail::StructuredBufferLoweringListener listener(relations);
   wafer::TileRegionToInstrLoweringSession loweringSession(*context, &listener);
   mlir::func::FuncOp function = *module->getOps<mlir::func::FuncOp>().begin();
   wafer::TileRegionOp region = *function.getOps<wafer::TileRegionOp>().begin();
@@ -197,8 +197,7 @@ module {
   auto copy = *region.getBody().front().getOps<wafer::MoveCopyOp>().begin();
   relations.operationEmissions.push_back(
       {/*structuredNodeId=*/7, copy.getOperation()});
-  wafer::compiler::detail::StructuredBufferReplacementListener listener(
-      relations);
+  wafer::compiler::detail::StructuredBufferLoweringListener listener(relations);
   wafer::TileRegionToInstrLoweringSession loweringSession(*context, &listener);
   ASSERT_TRUE(mlir::succeeded(
       wafer::convertTileRegionToInstr(region, loweringSession, &listener)));
@@ -246,8 +245,7 @@ module {
   wafer::StructuredMaterializationRelations relations;
   relations.operandBuffers.push_back(
       {/*structuredNodeId=*/7, allocation.getResult()});
-  wafer::compiler::detail::StructuredBufferReplacementListener listener(
-      relations);
+  wafer::compiler::detail::StructuredBufferLoweringListener listener(relations);
   wafer::TileRegionToInstrLoweringSession loweringSession(*context, &listener);
   mlir::func::FuncOp function = *module->getOps<mlir::func::FuncOp>().begin();
   wafer::TileRegionOp region = *function.getOps<wafer::TileRegionOp>().begin();
@@ -351,8 +349,7 @@ TEST_F(StructuredBufferRelationsTest,
   wafer::StructuredMaterializationRelations relations;
   relations.operationResultBuffers.push_back(
       {/*structuredNodeId=*/7, /*resultIndex=*/0, first.getResult()});
-  wafer::compiler::detail::StructuredBufferReplacementListener listener(
-      relations);
+  wafer::compiler::detail::StructuredBufferLoweringListener listener(relations);
   listener.notifyOperationReplaced(first.getOperation(), second.getResult());
   EXPECT_EQ(relations.operationResultBuffers.front().buffer,
             second.getResult());

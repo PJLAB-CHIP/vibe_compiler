@@ -1,7 +1,7 @@
 //===- StructuredGraphEGraphABI.h - Rust e-graph C ABI ------*- C++ -*-===//
 
-#ifndef WAFER_STRUCTURED_GRAPH_EGRAPH_ABI_H
-#define WAFER_STRUCTURED_GRAPH_EGRAPH_ABI_H
+#ifndef WAFER_TRANSFORMS_LINALG_STRUCTUREDGRAPHEGRAPHABI_H
+#define WAFER_TRANSFORMS_LINALG_STRUCTUREDGRAPHEGRAPHABI_H
 
 #include <cstdint>
 
@@ -185,4 +185,4 @@ static_assert(sizeof(WaferEGraphNode) == 40, "Wafer e-graph node ABI changed");
 static_assert(sizeof(WaferEGraphRelationFacts) == 16,
               "Wafer e-graph relation facts ABI changed");
 
-#endif // WAFER_STRUCTURED_GRAPH_EGRAPH_ABI_H
+#endif // WAFER_TRANSFORMS_LINALG_STRUCTUREDGRAPHEGRAPHABI_H

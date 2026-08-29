@@ -1,25 +1,12 @@
 //===- PackageInternal.h - Internal package assembly -----------*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_PACKAGEINTERNAL_H
-#define WAFER_COMPILER_PACKAGEINTERNAL_H
+#ifndef WAFER_PACKAGE_WRITER_PACKAGEINTERNAL_H
+#define WAFER_PACKAGE_WRITER_PACKAGEINTERNAL_H
 
 #include "Wafer/CodeGen/TargetCodeGen.h"
-#include "Wafer/Driver/CompilationResult.h"
+#include "Wafer/Package/Manifest/PackageManifest.h"
 
 #include <optional>
-
-namespace wafer::compiler {
-
-struct CompilationResultBuilder {
-  static CompilationResult
-  make(ExecutionConfig executionConfig, ExecutablePackage package,
-       std::optional<ProfileInstrumentationProduct> profileInstrumentation) {
-    return CompilationResult(executionConfig, std::move(package),
-                             std::move(profileInstrumentation));
-  }
-};
-
-} // namespace wafer::compiler
 
 namespace wafer::compiler::detail {
 
@@ -42,4 +29,4 @@ writePackage(llvm::StringRef tensorProgramDirectory,
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_PACKAGEINTERNAL_H
+#endif // WAFER_PACKAGE_WRITER_PACKAGEINTERNAL_H

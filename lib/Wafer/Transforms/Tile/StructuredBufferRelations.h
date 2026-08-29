@@ -1,10 +1,9 @@
 //===- StructuredBufferRelations.h - Current-IR buffer queries -*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_TRANSFORMS_TILE_STRUCTUREDBUFFERRELATIONS_H
-#define WAFER_COMPILER_TRANSFORMS_TILE_STRUCTUREDBUFFERRELATIONS_H
+#ifndef WAFER_TRANSFORMS_TILE_STRUCTUREDBUFFERRELATIONS_H
+#define WAFER_TRANSFORMS_TILE_STRUCTUREDBUFFERRELATIONS_H
 
 #include "Wafer/Transforms/Tile/StructuredMaterializationRelations.h"
-#include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
@@ -20,21 +19,20 @@ namespace wafer::compiler::detail {
 /// Tracks result replacements performed by one successful rewrite driver and
 /// retargets the current-IR buffer relations in place. It owns no IR and
 /// must not outlive either the relations or the rewrite invocation.
-class StructuredBufferReplacementListener final
-    : public mlir::RewriterBase::Listener,
-      public TileRegionToInstrBufferRecorder {
+class StructuredBufferReplacementListener
+    : public mlir::RewriterBase::Listener {
 public:
   explicit StructuredBufferReplacementListener(
       StructuredMaterializationRelations &relations);
-  ~StructuredBufferReplacementListener() final;
+  ~StructuredBufferReplacementListener() override;
 
   void notifyOperationReplaced(mlir::Operation *operation,
                                mlir::ValueRange replacements) final;
   void notifyOperationErased(mlir::Operation *operation) final;
   void recordScratchAllocation(mlir::Operation *sourceOperation,
-                               mlir::Value allocation) final;
+                               mlir::Value allocation);
   void recordLoweredOperation(mlir::Operation *sourceOperation,
-                              mlir::Operation *loweredOperation) final;
+                              mlir::Operation *loweredOperation);
 
   /// Completes one rewrite epoch. Relations to explicitly erased dead private
   /// allocations are discarded because those buffers no longer contribute
@@ -85,4 +83,4 @@ private:
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_TRANSFORMS_TILE_STRUCTUREDBUFFERRELATIONS_H
+#endif // WAFER_TRANSFORMS_TILE_STRUCTUREDBUFFERRELATIONS_H

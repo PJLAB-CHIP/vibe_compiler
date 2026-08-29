@@ -67,7 +67,7 @@ module {
       wafer::compiler::DeviceExecutableBuilder::makeTileExecutable(
           wafer::CardId(0), wafer::TileId(0), wafer::LaunchSlotId(0),
           std::move(module), "main", {},
-          wafer::compiler::TransportContract::None);
+          wafer::TransportContract::None);
   mlir::func::FuncOp entry =
       tile.getModule().lookupSymbol<mlir::func::FuncOp>(tile.getEntrySymbol());
   ASSERT_TRUE(entry);

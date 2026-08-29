@@ -1,8 +1,8 @@
 //===- ProgramResourceVerification.h - Program resource verification -*-
 // C++ -*-===//
 
-#ifndef WAFER_COMPILER_PROGRAMRESOURCEVERIFICATION_H
-#define WAFER_COMPILER_PROGRAMRESOURCEVERIFICATION_H
+#ifndef WAFER_DRIVER_PROGRAMRESOURCEVERIFICATION_H
+#define WAFER_DRIVER_PROGRAMRESOURCEVERIFICATION_H
 
 #include "Wafer/Analysis/Instr/ScheduleCostAnalysis.h"
 #include "Wafer/Driver/Compilation.h"
@@ -22,4 +22,4 @@ verifyProgramResources(llvm::ArrayRef<mlir::ModuleOp> tileModules,
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_PROGRAMRESOURCEVERIFICATION_H
+#endif // WAFER_DRIVER_PROGRAMRESOURCEVERIFICATION_H

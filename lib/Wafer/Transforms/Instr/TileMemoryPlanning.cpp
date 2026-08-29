@@ -3,9 +3,9 @@
 #include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
+#include "Wafer/Analysis/Tile/TileDataflowAnalysis.h"
 #include "Wafer/Support/CompileTiming.h"
 
-#include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileWorkStatistics.h"
 #include "Wafer/Target/TargetIdentity.h"
@@ -67,8 +67,7 @@ static bool hasTensorValues(mlir::ModuleOp module) {
             found = true;
             break;
           }
-    return found ? mlir::WalkResult::interrupt()
-                 : mlir::WalkResult::advance();
+    return found ? mlir::WalkResult::interrupt() : mlir::WalkResult::advance();
   });
   return found;
 }
@@ -225,7 +224,7 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
                         << stage;
     return mlir::failure();
   };
-  if (containsTileDataflowOperations(module->getOperation())) {
+  if (analysis::containsTileDataflowOperations(module->getOperation())) {
     recordFailure(TileMemoryPlanningFailureKind::Contract);
     module->emitError()
         << "tile_memory_planning_requires_canonical_instr_ir: Tile "

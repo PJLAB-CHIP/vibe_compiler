@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-08-28
+更新时间：2026-08-29
 
 本文件是任务调度入口，只记录任务状态、前置关系、当前工作、完成门禁和设计/证据owner。具体设计、
 pipeline contract、实验结论、测试数字、失败修复过程和历史复盘不在这里重复；分别进入编号设计文档、
@@ -28,7 +28,8 @@ pipeline contract、实验结论、测试数字、失败修复过程和历史复
 当前执行队列只保留尚未完成的一次性work item，并按artifact producer/consumer关系排序。Q49–Q51各项的历史边界与
 证据已经移入`tasks/archive/completed-task-index.md`；详细施工记录位于
 `tasks/archive/physical-dataflow-synthesis-working-history.md`，不能覆盖current Q52重新发现的baseline回归、双materializer、
-IR膨胀、layout未接线和verifier职责问题。源码布局与component owner已经闭合，Q52只在18号current owner上继续实现。
+IR膨胀、layout未接线和verifier职责问题。源码布局与component owner已经闭合；Q52按06号语义设计以及18、19号源码/MLIR
+工程边界继续实现。
 
 每个work item都必须独立执行下面完整流程；表中逐行重复，不能用全局说明代替本项门禁：先读`AGENTS.md`和本表，再读编号设计及
 本项覆盖矩阵；随后调研与问题直接相关的论文、经典算法和成熟编译器实现，比较合法域完整性、复杂度、正确性依据、可维护性及本仓
@@ -40,7 +41,7 @@ IR膨胀、layout未接线和verifier职责问题。源码布局与component own
 
 | 顺序 | Work item | 状态 | 设计owner | 直接输入 | 完成输出 | 本项执行流程 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `search-scalability` | `next` | Q52 | 18号source/component gate、canonical build gate、Q51 search controller、structural choice与attention展开donor，current baseline regression，Q50.0 actual memory/target leaf | 按current plan的20个线性checkpoint施工：第6--11项已经闭合actual leaf、Instr completion、execution structure、movement、structured logical normalization和legacy shadow materializer retirement。下一直接项为第12项。第11项已经切断旧none/search产品caller，删除complete/shadow graph、旧TileModule/TileRegion construction、隐藏facade和无consumer接口，并把PBQP、SCF execution rewrite及current relation迁到直接owner；attention只保留semantic op、空间约束和fixtures，零consumer的旧Linalg builder不保留。两种policy在第17/18项重启前明确unavailable、互不fallback。第12项从保留的Spatial/ExactDemand/Region partition资产实际创建placed TileRegion；第13项compact tile/fuse；第14项selected attention lowering；第15项layout/bufferization；第16项显式重接movement→execution→Instr/completion→actual leaf并创建standalone per-Tile modules；第17、18项分别重启独立none和search；第19项闭合inventory；第20项同源LLaMA验收。SPM legality仍只由actual MiniMalloc决定 | 读AGENTS/progress→读05/06及本项20个矩阵→按每个semantic work item分别完成算法调研、pinned API确认、代码/测试、fresh验证和MLIR规范复审→更新状态并提交 |
+| 1 | `search-scalability` | `next` | Q52 | component-dependency-closure、canonical build gate、Q51 search controller、structural choice与attention展开donor，current baseline regression，Q50.0 actual memory/target leaf | 按current plan的20个线性checkpoint施工：第6--11项已经闭合actual leaf、Instr completion、execution structure、movement、structured logical normalization和legacy shadow materializer retirement。下一直接项为第12项。第11项已经切断旧none/search产品caller，删除complete/shadow graph、旧TileModule/TileRegion construction、隐藏facade和无consumer接口，并把PBQP、SCF execution rewrite及current relation迁到直接owner；attention只保留semantic op、空间约束和fixtures，零consumer的旧Linalg builder不保留。两种policy在第17/18项重启前明确unavailable、互不fallback。第12项从保留的Spatial/ExactDemand/Region partition资产实际创建placed TileRegion；第13项compact tile/fuse；第14项selected attention lowering；第15项layout/bufferization；第16项显式重接movement→execution→Instr/completion→actual leaf并创建standalone per-Tile modules；第17、18项分别重启独立none和search；第19项闭合inventory；第20项同源LLaMA验收。SPM legality仍只由actual MiniMalloc决定 | 读AGENTS/progress→读05/06及本项20个矩阵→按每个semantic work item分别完成算法调研、pinned API确认、代码/测试、fresh验证和MLIR规范复审→更新状态并提交 |
 | 2 | `production-host-readiness` | `queued` | Q53 | search-scalability、Q60产品入口、Q55 current interface、Q56 board-ready package/runtime | 从fresh产品source完成representative source/IR/package/oracle/runner/no-card矩阵并准备无需设备上临时补充的board cases；状态只到`board-ready`，真实板端不在当前目标 | 读AGENTS/progress→读02/06/14–16及本项矩阵→读hardware/runtime/ABI事实→调研成熟compiler的host qualification/board-ready实现→查官方及pinned API→改runner/测试→fresh host/no-card验证→按设计和MLIR/runtime规范复审→更新状态并提交 |
 失败留在当前work item修复；不跳过、不fallback，也不把owner整体状态提前标为完成。
 
@@ -57,7 +58,7 @@ IR膨胀、layout未接线和verifier职责问题。源码布局与component own
 
 | Owner | 状态 | 当前作用 | 证据入口 |
 | --- | --- | --- | --- |
-| 01、04、06、07、10、14、16、18–20 | `done` | device-scope terminology与source/component owner闭合；Q52只在current IR/Analysis/Planning/Transforms/Conversion/CodeGen/Driver边界施工 | 18、19；`tasks/archive/source-layout-consolidation.md` |
+| 01、04、06、07、10、14、16、18–20 | `done` | device-scope terminology与source/component owner闭合；Q52只在current IR/Analysis/Planning/Transforms/Conversion/CodeGen/Driver边界施工 | 18、19；`tasks/archive/source-layout-consolidation.md`、`tasks/archive/component-dependency-closure.md` |
 | 16 | `done` | checked-in `default` preset与唯一主工程`build/`；当前canonical build和已注册本地gate基线 | 16；`tasks/archive/completed-task-index.md` |
 | Q50.0 | `done` | 两条policy各自产生policy-complete Instr后共同消费的actual SPM/DDR/transport/target leaf；不拥有complete materializer | 06、09、12–14；历史见`tasks/archive/completed-task-index.md` |
 | Q51/Q50.S | `done` | current search controller、structural choice/domain算法donor和fixed FA/FD semantic/decomposition输入；旧physical-value/movement/storage/schedule domain不再作current事实源，也不能代签Q52 actual-IR pipeline | 05–06；历史见`tasks/archive/completed-task-index.md` |

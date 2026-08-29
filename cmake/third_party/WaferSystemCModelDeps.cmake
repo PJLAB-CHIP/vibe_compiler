@@ -25,7 +25,8 @@ function(wafer_enable_systemc_model_deps)
   endif()
 
   execute_process(
-    COMMAND "${Python3_EXECUTABLE}"
+    COMMAND "${CMAKE_COMMAND}" -E env "PYTHONDONTWRITEBYTECODE=1"
+            "${Python3_EXECUTABLE}" -B
             "${CMAKE_SOURCE_DIR}/utils/deps/systemc_deps.py"
             --root "${WAFER_SYSTEMC_MODEL_DEPS_ROOT}"
             --record "${WAFER_SYSTEMC_MODEL_DEPS_RECORD}"

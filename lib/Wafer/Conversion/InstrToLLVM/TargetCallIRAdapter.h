@@ -1,7 +1,7 @@
 //===- TargetCallIRAdapter.h - Instr IR to target protocol ----*- C++ -*-===//
 
-#ifndef WAFER_TRANSFORMS_TARGET_TARGETCALLIRADAPTER_H
-#define WAFER_TRANSFORMS_TARGET_TARGETCALLIRADAPTER_H
+#ifndef WAFER_CONVERSION_INSTRTOLLVM_TARGETCALLIRADAPTER_H
+#define WAFER_CONVERSION_INSTRTOLLVM_TARGETCALLIRADAPTER_H
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/TargetCall.h"
@@ -24,4 +24,4 @@ getTargetCallDescriptor(InstrPeripheralKind operation);
 
 } // namespace wafer
 
-#endif // WAFER_TRANSFORMS_TARGET_TARGETCALLIRADAPTER_H
+#endif // WAFER_CONVERSION_INSTRTOLLVM_TARGETCALLIRADAPTER_H

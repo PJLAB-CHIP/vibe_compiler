@@ -1,5 +1,6 @@
 //===- wafer-opt.cpp - Wafer optimizer driver ----------------------------===//
 
+#include "Wafer/Conversion/Passes.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Transforms/Passes.h"
 
@@ -77,6 +78,7 @@ int main(int argc, char **argv) {
   mlir::DialectRegistry registry;
   registerWaferOptDialects(registry);
   mlir::registerTransformsPasses();
+  wafer::registerWaferConversionPasses();
   wafer::registerWaferTransformPasses();
   registerWaferOptPipelines();
 #ifdef WAFER_ENABLE_SHARDY

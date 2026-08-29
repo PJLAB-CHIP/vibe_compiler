@@ -1,7 +1,7 @@
 //===- SpatialPlan.h - Compact spatial planning schema --------*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SPATIALPLAN_H
-#define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SPATIALPLAN_H
+#ifndef WAFER_PLANNING_PHYSICALDATAFLOW_SPATIALPLAN_H
+#define WAFER_PLANNING_PHYSICALDATAFLOW_SPATIALPLAN_H
 
 #include "Wafer/Planning/PhysicalDataflow/SpatialAssignment.h"
 #include "Wafer/Target/TopologyIds.h"
@@ -132,4 +132,4 @@ validateSpatialAssignmentStructure(const SpatialPlanningProblem &problem,
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SPATIALPLAN_H
+#endif // WAFER_PLANNING_PHYSICALDATAFLOW_SPATIALPLAN_H

@@ -7,6 +7,7 @@
 #include "Wafer/IR/WaferDialect.h"
 
 #include "Wafer/Driver/CompilationInternal.h"
+#include "Wafer/Driver/CompilationResultInternal.h"
 #include "Wafer/Package/Writer/PackageInternal.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"

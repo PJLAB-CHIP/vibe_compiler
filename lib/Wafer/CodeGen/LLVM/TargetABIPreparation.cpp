@@ -1,6 +1,7 @@
 //===- TargetABIPreparation.cpp - Tile ABI preparation --------===//
 
 #include "Wafer/CodeGen/LLVM/TargetCodeGenInternal.h"
+#include "Wafer/CodeGen/ProgramElementTypeConversion.h"
 
 #include "Wafer/Analysis/Module/ExecutableCallClosure.h"
 

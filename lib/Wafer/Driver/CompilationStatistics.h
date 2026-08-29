@@ -1,7 +1,7 @@
 //===- CompilationStatistics.h - Compile measurements --------*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_COMPILATIONSTATISTICS_H
-#define WAFER_COMPILER_COMPILATIONSTATISTICS_H
+#ifndef WAFER_DRIVER_COMPILATIONSTATISTICS_H
+#define WAFER_DRIVER_COMPILATIONSTATISTICS_H
 
 #include <chrono>
 #include <cstdint>
@@ -26,4 +26,4 @@ inline uint64_t getCompilePeakRSSKiB() {
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_COMPILATIONSTATISTICS_H
+#endif // WAFER_DRIVER_COMPILATIONSTATISTICS_H

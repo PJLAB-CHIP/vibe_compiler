@@ -18,6 +18,7 @@ path = os.pathsep.join(
     ]
 )
 config.environment["PATH"] = path
+config.environment["PYTHONDONTWRITEBYTECODE"] = "1"
 config.environment["PYTHONPATH"] = os.pathsep.join(
     value
     for value in [config.wafer_python_dir, config.environment.get("PYTHONPATH", "")]
@@ -25,7 +26,7 @@ config.environment["PYTHONPATH"] = os.pathsep.join(
 )
 if os.path.isdir(config.tx8_deps_root):
     config.environment["TX8_DEPS_ROOT"] = config.tx8_deps_root
-config.substitutions.append(("%python", config.python_executable))
+config.substitutions.append(("%python", config.python_executable + " -B"))
 config.substitutions.append(("%wafer_obj_root", config.wafer_obj_root))
 config.substitutions.append(("%wafer_compile_test", config.wafer_compile_test))
 config.substitutions.append(("%wafer_onednn_qualify", config.wafer_onednn_qualify))
@@ -42,7 +43,9 @@ config.xla_spmd_partitioner_helper = lit_config.params.get(
     "xla_spmd_partitioner_helper",
     getattr(config, "xla_spmd_partitioner_helper", ""),
 )
-config.substitutions.append(("%importer_python", config.importer_python_executable))
+config.substitutions.append(
+    ("%importer_python", config.importer_python_executable + " -B")
+)
 config.substitutions.append(("%wafer_src_root", config.wafer_src_root))
 config.substitutions.append(
     ("%xla_spmd_partitioner_helper", config.xla_spmd_partitioner_helper)

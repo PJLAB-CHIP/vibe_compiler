@@ -6,7 +6,7 @@ find_program(WAFER_BOARD_CLANGXX
 
 function(wafer_add_board_python_contract test_name script)
   add_test(NAME ${test_name}
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/${script}
+    COMMAND ${WAFER_PYTHON_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/${script}
   )
   set_tests_properties(${test_name} PROPERTIES
     ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Support:${CMAKE_CURRENT_SOURCE_DIR}/Cases"
@@ -82,7 +82,7 @@ set_tests_properties(wafer-ncc-hazard-relation-contract PROPERTIES
 if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
   function(wafer_add_current_board_probe test_name script)
     add_test(NAME ${test_name}
-      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/${script}
+      COMMAND ${WAFER_PYTHON_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/${script}
         --repo-root ${CMAKE_SOURCE_DIR}
         --wafer-compile $<TARGET_FILE:wafer-compile>
         --wafer-run $<TARGET_FILE:wafer-run>
@@ -108,7 +108,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
 
   function(wafer_add_current_source_board_case test_name script)
     add_test(NAME ${test_name}
-      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/${script}
+      COMMAND ${WAFER_PYTHON_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/${script}
         --wafer-compile $<TARGET_FILE:wafer-compile>
         --wafer-run $<TARGET_FILE:wafer-run>
         --work-dir ${CMAKE_CURRENT_BINARY_DIR}/${test_name}

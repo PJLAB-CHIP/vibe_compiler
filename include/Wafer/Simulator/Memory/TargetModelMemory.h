@@ -1,9 +1,9 @@
-//===- TargetModelMemory.h - Private target model memory ------*- C++ -*-===//
+//===- TargetModelMemory.h - Target model memory --------------*- C++ -*-===//
 
 #ifndef WAFER_SIMULATOR_MEMORY_TARGETMODELMEMORY_H
 #define WAFER_SIMULATOR_MEMORY_TARGETMODELMEMORY_H
 
-#include "Wafer/Simulator/Invocation/TargetCallExecution.h"
+#include "Wafer/Simulator/TargetCall.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"

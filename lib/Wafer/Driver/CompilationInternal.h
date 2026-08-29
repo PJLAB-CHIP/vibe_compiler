@@ -1,7 +1,7 @@
 //===- CompilationInternal.h - Compiler orchestration internals -*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_COMPILATIONINTERNAL_H
-#define WAFER_COMPILER_COMPILATIONINTERNAL_H
+#ifndef WAFER_DRIVER_COMPILATIONINTERNAL_H
+#define WAFER_DRIVER_COMPILATIONINTERNAL_H
 
 #include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Driver/Compilation.h"
@@ -205,4 +205,4 @@ struct ProfileInstrumentationProductBuilder {
 
 } // namespace wafer::compiler
 
-#endif // WAFER_COMPILER_COMPILATIONINTERNAL_H
+#endif // WAFER_DRIVER_COMPILATIONINTERNAL_H

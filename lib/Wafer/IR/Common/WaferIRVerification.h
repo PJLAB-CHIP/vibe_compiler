@@ -1,7 +1,7 @@
 //===- WaferIRVerification.h - Shared Wafer IR verification -*- C++ -*-===//
 
-#ifndef WAFER_LIB_IR_COMMON_WAFERIRVERIFICATION_H
-#define WAFER_LIB_IR_COMMON_WAFERIRVERIFICATION_H
+#ifndef WAFER_IR_COMMON_WAFERIRVERIFICATION_H
+#define WAFER_IR_COMMON_WAFERIRVERIFICATION_H
 
 #include "Wafer/IR/WaferDialect.h"
 
@@ -89,4 +89,4 @@ mlir::LogicalResult verifyCanonicalConv2DGeometry(
 
 } // namespace wafer::detail
 
-#endif // WAFER_LIB_IR_COMMON_WAFERIRVERIFICATION_H
+#endif // WAFER_IR_COMMON_WAFERIRVERIFICATION_H

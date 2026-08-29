@@ -1,7 +1,7 @@
 //===- Internal.h - Tile-region to instr implementation --------*- C++ -*-===//
 
-#ifndef WAFER_LIB_CONVERSION_WAFERTILEREGIONTOINSTR_INTERNAL_H
-#define WAFER_LIB_CONVERSION_WAFERTILEREGIONTOINSTR_INTERNAL_H
+#ifndef WAFER_CONVERSION_TILETOINSTR_INTERNAL_H
+#define WAFER_CONVERSION_TILETOINSTR_INTERNAL_H
 
 #include "Wafer/Analysis/Linalg/IndexRelation.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
@@ -202,4 +202,4 @@ void populatePeerLoweringPatterns(mlir::RewritePatternSet &patterns);
 
 } // namespace wafer::tile_region_to_instr
 
-#endif // WAFER_LIB_CONVERSION_WAFERTILEREGIONTOINSTR_INTERNAL_H
+#endif // WAFER_CONVERSION_TILETOINSTR_INTERNAL_H

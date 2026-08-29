@@ -34,12 +34,6 @@ countStaticExecutableOperations(mlir::Operation *root,
 
 } // namespace detail
 
-/// Returns true when `root` contains a typed Tile dataflow operation consumed
-/// by Tile-region-to-Instr conversion. TileRegionOp and TileYieldOp are
-/// structural boundaries and therefore do not by themselves require
-/// instruction lowering.
-bool containsTileDataflowOperations(mlir::Operation *root);
-
 /// Caller-owned sink for actual SPM allocations created while lowering one
 /// source Tile operation. Implementations must derive ownership from current
 /// typed relations of `sourceOperation`; operation names, locations, shapes

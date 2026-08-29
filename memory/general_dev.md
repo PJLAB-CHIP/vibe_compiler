@@ -282,6 +282,8 @@ source program
   `PARTIAL_SOURCES_INTENDED`整体关闭漏列检查。fresh CMake configure必须能发现新source未归属的问题。
 - CMake显式列source；删除功能时同批删除header/source/CMake/test/fixture，不保留empty target或compatibility alias。
 - tests按Dialect、Analysis、Conversion、Pipeline/Tool、Runtime、Model、Board边界组织；fixture不能成为第二schema/ABI实现。
+- configure、CTest、lit和产品内Python子进程使用`-B`并传递`PYTHONDONTWRITEBYTECODE=1`；测试结束后organization gate确认
+  Wafer-owned源码目录没有`__pycache__`、`.pyc`或`.pyo`。managed dependency/build目录由各自cache owner管理。
 - internal low-level aggregate module或JIT bridge可保留，但长期合同仍由explicit Tile interfaces、`TileEntryArgument`和current ABI定义。
 - 文档先写边界和通用方法，再用case示例；case shape、模型名、参数顺序和某次winner不成为协议。
 

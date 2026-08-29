@@ -2,9 +2,10 @@
 
 #include "Wafer/Simulator/Invocation/TargetModelInvocation.h"
 
+#include "Wafer/CodeGen/ProgramElementTypeConversion.h"
+#include "Wafer/Simulator/Reference/FormalOperations.h"
 #include "Wafer/Target/PhysicalTensor/PhysicalTensorCodec.h"
 #include "Wafer/Target/PhysicalTensor/TargetTensorMaterialization.h"
-#include "Wafer/Simulator/Reference/FormalOperations.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"

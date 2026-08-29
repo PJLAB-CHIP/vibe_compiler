@@ -3,21 +3,14 @@
 #ifndef WAFER_TARGET_TARGETTENSORMATERIALIZATION_H
 #define WAFER_TARGET_TARGETTENSORMATERIALIZATION_H
 
-#include "Wafer/Frontend/ProgramElementType.h"
-#include "Wafer/Target/TargetOperation.h"
 #include "Wafer/Target/PhysicalTensor/NumericCodec.h"
+#include "Wafer/Target/TargetOperation.h"
 
 #include "llvm/Support/Error.h"
 
 #include <optional>
 
 namespace wafer {
-
-/// Explicit relation between parsed program element types and current target
-/// logical formats. Program/source code does not depend on target protocol
-/// headers merely to carry its own closed type.
-std::optional<LogicalFormat> getTargetLogicalFormat(ProgramElementType type);
-ProgramElementType getProgramElementType(LogicalFormat format);
 
 enum class TargetTensorMaterializationKind : uint8_t {
   Identity,

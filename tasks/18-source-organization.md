@@ -74,7 +74,7 @@ Pipeline position:
 
 `include/Wafer/`只保存跨library稳定typed API和IR declaration。query-local state、solver内部结构、staging builder、failure
 bookkeeping及单library helper留在`lib/Wafer/...`的private header。`include/Wafer`与`lib/Wafer`在稳定component层镜像，
-不要求每个private helper都有public对应物。
+不要求每个private helper都有public对应物。已有include guard按当前owner相对路径命名，目录迁移不能保留旧owner或旧stage路径。
 
 目录和target使用稳定语义名称，不含任务号、TX81目录、`V2`、`Current`、`Legacy`、`Facade`或实现状态。外部ABI文件中的
 TX81 spelling保持原协议。重命名必须同步定义、直接consumer、verifier/lowering、CMake、测试和current文档。
@@ -170,6 +170,10 @@ loser销毁。任何旧planning source若保存future operation/value/buffer/mov
 `createStandaloneTileModules`改变compiler output multiplicity并由outer owner持有结果，属于`Driver`的module拆分边界，
 不是DialectConversion。Structured tiling/reduction interface helper属于`Transforms/Linalg`。
 
+Transforms与Conversion分别拥有自己的`Passes.td`、generated declaration和registration。混合pipeline显式include并链接两边，
+不能让`WaferTransforms`聚合或反向链接Conversion。StableHLO同层rewrite由`WaferStableHLOTransforms`拥有，optional
+StableHLO/Shardy依赖不进入通用Transforms target。
+
 ### 4.3 Conversion与CodeGen
 
 - StableHLO legalization只在`Conversion/StableHLOToLinalg`；conversion前后的同层normalization分别回到
@@ -180,6 +184,8 @@ loser销毁。任何旧planning source若保存future operation/value/buffer/mov
   `CodeGen/LLVM`。
 - `DeviceExecutable`及target LLVM module typed owner位于`CodeGen`根目录。candidate admission、memory planning和pipeline
   orchestration分别归Transforms或Driver，不进入CodeGen。
+- `ProgramElementType`与target `LogicalFormat`的映射是Frontend→Target schema bridge，位于CodeGen；Target physical tensor
+  library不依赖Frontend。
 
 ### 4.4 Target与Simulator
 
@@ -196,6 +202,8 @@ TargetTensor materialization action。这里的layout是target physical format�
 - `SystemC`只保存SystemC process/event scheduling和bridge。
 
 Simulator不反向依赖compiler planning/Driver，不成为package schema owner。Target基础library不得反向链接Reference、OneDNN或SystemC。
+Simulator共享的TargetCall command、invocation descriptor和sink合同位于`Simulator`根目录；JIT executable属于`Invocation`。
+`Memory`消费共享合同并直接声明所需CodeGen schema依赖，不通过`Invocation`取得传递依赖。
 
 ### 4.5 Frontend、Package、Runtime与Support
 
@@ -203,6 +211,7 @@ Simulator不反向依赖compiler planning/Driver，不成为package schema owner
   `Driver/ProgramData`；Simulator invocation/comparison属于`Simulator/Invocation`；共享element/physical format属于Target或package
   owner。
 - `Package`继续唯一拥有manifest、parse/serialize/readback和writer；`Driver`只拥有publication transaction。
+- `CompilationResult`构造器和friend helper属于Driver private API；Package writer不能定义或include Driver结果构造逻辑。
 - `Runtime`只消费verified package并拥有no-card/board invocation lifecycle；compiler和Simulator不依赖Board runtime。
 - `Support`只保存可由任意component复用且不携带IR/target/schema语义的utility。
 
@@ -228,6 +237,8 @@ memory/        稳定开发经验
 
 `tools/`不保存`test_*.py`。产品工具自身的private source与对应tool同目录；build/bootstrap/organization scripts进入`utils/`，
 其测试进入`test/Tools`。Python `__pycache__`、Rust `target/`和其它generated output只允许位于ignored build/cache边界。
+Wafer-owned structured e-graph crate位于`Transforms/Linalg/StructuredEGraph`并使用`WaferStructuredEGraph` target；只有pinned
+`third_party/egg`及其vendor source属于third party。
 
 lit测试按`Dialect/Wafer`、`Analysis`、`Transforms`、`Conversion`、`CodeGen`、`Pipelines`、`Tools`、`Runtime`、`Simulator`和
 `Board`组织。C++ unit目录镜像被测library。Board support/helper与执行case分开，helper文件不使用`*_test.py`名称；每个test必须
@@ -273,6 +284,7 @@ CMake为稳定component建立真实library target并显式列出source、generat
 - filesystem中每个Wafer-owned C/C++ translation unit和test恰有一个active owner或明确current dormant disposition；
 - `include/Wafer` public header自包含，component link closure通过；
 - current source、test和current docs只使用本文件定义的owner；
+- test helper和fixture必须有current textual/import/CMake consumer；source-tree `__pycache__`、`.pyc`和`.pyo`为错误；
 - 所有registered tests实际执行，无新增unsupported、skip或未注册case；Board helper不使用`*_test.py`；
 - canonical build第二次运行为Ninja no-op；
 - `git diff --check`、source/IR organization、dependency layering及完整diff复审通过。

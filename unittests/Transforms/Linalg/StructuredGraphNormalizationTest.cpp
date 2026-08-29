@@ -1,6 +1,6 @@
 //===- StructuredGraphNormalizationTest.cpp -----------------------------===//
 
-#include "Wafer/Conversion/StableHLOToLinalg/StructuredGraphNormalization.h"
+#include "Wafer/Transforms/Linalg/StructuredGraphNormalization.h"
 #include "Wafer/Analysis/Linalg/IndexRelation.h"
 #include "Wafer/Analysis/Linalg/StructuredDAGAnalysis.h"
 #include "Wafer/Transforms/Linalg/StructuredTiling.h"

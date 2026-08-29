@@ -1,8 +1,8 @@
 //===- DeviceExecutableInternal.h - Internal construction -*- C++
 //-*-===//
 
-#ifndef WAFER_COMPILER_DEVICEEXECUTABLEINTERNAL_H
-#define WAFER_COMPILER_DEVICEEXECUTABLEINTERNAL_H
+#ifndef WAFER_CODEGEN_DEVICEEXECUTABLEINTERNAL_H
+#define WAFER_CODEGEN_DEVICEEXECUTABLEINTERNAL_H
 
 #include "Wafer/CodeGen/DeviceExecutable.h"
 #include "Wafer/Driver/ProgramData/ProgramData.h"
@@ -66,4 +66,4 @@ llvm::Expected<DeviceExecutable> buildDeviceExecutableWithIRTrace(
 } // namespace detail
 } // namespace wafer::compiler
 
-#endif // WAFER_COMPILER_DEVICEEXECUTABLEINTERNAL_H
+#endif // WAFER_CODEGEN_DEVICEEXECUTABLEINTERNAL_H

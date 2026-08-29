@@ -1,10 +1,10 @@
 //===- wafer-cmodel-qualify-onednn.cpp - Offline onednn qualification
 //-------===//
 
+#include "Wafer/CodeGen/ProgramElementTypeConversion.h"
 #include "Wafer/CodeGen/TargetCodeGen.h"
-#include "Wafer/Simulator/Invocation/TargetModelInvocation.h"
 #include "Wafer/Simulator/Invocation/ProgramInvocation.h"
-#include "Wafer/Target/PhysicalTensor/TargetTensorMaterialization.h"
+#include "Wafer/Simulator/Invocation/TargetModelInvocation.h"
 #include "Wafer/Simulator/OneDNN/OneDNNQualification.h"
 
 #include "llvm/ADT/StringRef.h"

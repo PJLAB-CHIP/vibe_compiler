@@ -171,6 +171,7 @@ wafer_add_structured_egraph()
 
 add_subdirectory(include/Wafer/IR)
 add_subdirectory(include/Wafer/Transforms)
+add_subdirectory(include/Wafer/Conversion)
 add_subdirectory(lib/Wafer)
 add_subdirectory(tools/wafer-opt)
 add_subdirectory(tools/wafer-compile)

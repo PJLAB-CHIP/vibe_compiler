@@ -1,7 +1,7 @@
 //===- PlanningSession.h - Structural planning frontier -----*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSESSION_H
-#define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSESSION_H
+#ifndef WAFER_PLANNING_PHYSICALDATAFLOW_PLANNINGSESSION_H
+#define WAFER_PLANNING_PHYSICALDATAFLOW_PLANNINGSESSION_H
 
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/PlanningMemo.h"
@@ -221,4 +221,4 @@ private:
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSESSION_H
+#endif // WAFER_PLANNING_PHYSICALDATAFLOW_PLANNINGSESSION_H

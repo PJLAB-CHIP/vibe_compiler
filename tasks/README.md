@@ -91,6 +91,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 | 文档 | 原性质 |
 | --- | --- |
 | `tasks/archive/completed-task-index.md` | 已完成任务的历史边界与证据入口索引；不参与current调度 |
+| `tasks/archive/component-dependency-closure.md` | 已完成的pass owner、component依赖、tool link、fixture/cache与组织门禁闭合；稳定规则只读18、19 |
 | `tasks/archive/source-layout-consolidation.md` | 已完成的源码目录、component target、test mirror、tools/runtime路径与current文档收敛计划；稳定规则只读18、19 |
 | `tasks/archive/target-numeric-contract-reconstruction.md` | 已完成Q62的Target数值合同拆分记录；稳定语义只读01、11、14、16–18 |
 | `tasks/archive/ncc-synchronization-contract-layering.md` | 已完成Q63的NCC completion合同分层记录；稳定语义只读11、13、17、19 |

@@ -4,8 +4,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef WAFER_LIB_IR_INSTR_INSTRUCTIONVERIFICATION_H
-#define WAFER_LIB_IR_INSTR_INSTRUCTIONVERIFICATION_H
+#ifndef WAFER_IR_INSTR_INSTRUCTIONVERIFICATION_H
+#define WAFER_IR_INSTR_INSTRUCTIONVERIFICATION_H
 
 #include "Wafer/IR/WaferDialect.h"
 
@@ -73,4 +73,4 @@ mlir::LogicalResult verifyOptionalRoundingMode(mlir::Operation *op,
                                                llvm::StringRef name);
 } // namespace wafer::instr_detail
 
-#endif // WAFER_LIB_IR_INSTR_INSTRUCTIONVERIFICATION_H
+#endif // WAFER_IR_INSTR_INSTRUCTIONVERIFICATION_H

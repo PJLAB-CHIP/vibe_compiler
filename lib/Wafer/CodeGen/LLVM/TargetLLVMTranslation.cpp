@@ -7,7 +7,6 @@
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Support/PassPipeline.h"
 #include "Wafer/Target/TargetMemory.h"
-#include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Pass/Pass.h"

@@ -15,9 +15,7 @@ namespace wafer {
 struct SPMMemoryPlanningFailure;
 
 #define GEN_PASS_DECL
-#include "Wafer/Transforms/WaferPasses.h.inc"
-
-std::unique_ptr<mlir::Pass> createLegalizeStablehloToLinalgPass();
+#include "Wafer/Transforms/WaferTransformPasses.h.inc"
 
 /// Compiler-adapter form of the SPM assignment pass. It executes through the
 /// PassManager/AnalysisManager path while returning typed rejection evidence

@@ -85,15 +85,15 @@ static wafer::RuntimeLaunchContract makeKernelLaunch(
 
 struct SharedKernelTransportScenario {
   wafer::KernelLaunchForm form;
-  wafer::compiler::TransportContract transport;
+  wafer::TransportContract transport;
 };
 
 constexpr std::array<SharedKernelTransportScenario, 2>
     kOrthogonalSharedKernelTransportScenarios = {{
         {wafer::KernelLaunchForm::Grid,
-         wafer::compiler::TransportContract::DirectDTE},
+         wafer::TransportContract::DirectDTE},
         {wafer::KernelLaunchForm::Cluster,
-         wafer::compiler::TransportContract::None},
+         wafer::TransportContract::None},
     }};
 
 static llvm::SmallString<256> pathInDirectory(llvm::StringRef directory,
@@ -111,7 +111,7 @@ static int linkTargetModule(llvm::StringRef inputPath,
   std::string output = outputPath.str();
   std::string clang = WAFER_TEST_LLVM_CLANGXX;
   llvm::SmallVector<llvm::StringRef, 10> arguments = {
-      python,     script, "--llvm-ir",      input,
+      python,     "-B", script, "--llvm-ir", input,
       "--output", output, "--llvm-clangxx", clang};
   return llvm::sys::ExecuteAndWait(python, arguments);
 }
@@ -169,8 +169,8 @@ makeSlot(int64_t ordinal, wafer::compiler::TileEntryArgumentKind role,
 static llvm::Expected<wafer::compiler::TargetLLVMModules>
 makeRuntimeLaunchModules(
     wafer::RuntimeLaunchContract launch,
-    wafer::compiler::TransportContract transport =
-        wafer::compiler::TransportContract::None,
+    wafer::TransportContract transport =
+        wafer::TransportContract::None,
     std::optional<int64_t> mismatchedSchemaTile = std::nullopt,
     std::optional<int64_t> mismatchedBodyTile = std::nullopt,
     size_t slotCount = 2, bool withCollidingClosure = false,
@@ -191,7 +191,7 @@ makeRuntimeLaunchModules(
       wafer::compiler::TileEntryArgumentKind role =
           variableWorkspace && slot + 1 == slotCount
               ? wafer::compiler::TileEntryArgumentKind::Workspace
-          : transport == wafer::compiler::TransportContract::DirectDTE &&
+          : transport == wafer::TransportContract::DirectDTE &&
                   slot + 1 == slotCount
               ? wafer::compiler::TileEntryArgumentKind::TransportStatus
           : slot + 1 == slotCount
@@ -291,7 +291,7 @@ static llvm::Expected<wafer::compiler::TargetLLVMModules>
 makeProfileRuntimeLaunchModules(
     wafer::RuntimeLaunchContract launch,
     wafer::compiler::detail::ProfileCaptureKind capture,
-    wafer::compiler::TransportContract transport) {
+    wafer::TransportContract transport) {
   llvm::Expected<wafer::compiler::ExecutionConfig> config =
       wafer::compiler::ExecutionConfig::createForSingleCard(1);
   if (!config)
@@ -302,7 +302,7 @@ makeProfileRuntimeLaunchModules(
     std::vector<wafer::compiler::TileEntryArgument> slots;
     slots.push_back(makeSlot(
         0, wafer::compiler::TileEntryArgumentKind::ExternalInput, "input"));
-    if (transport == wafer::compiler::TransportContract::DirectDTE)
+    if (transport == wafer::TransportContract::DirectDTE)
       slots.push_back(
           makeSlot(1, wafer::compiler::TileEntryArgumentKind::TransportStatus,
                    "direct_dte_status"));
@@ -336,7 +336,7 @@ makeProfileRuntimeLaunchModules(
 
 static llvm::Expected<wafer::compiler::DeviceExecutable>
 makeProfileDeviceExecutable(const wafer::RuntimeLaunchContract &launch,
-                            wafer::compiler::TransportContract transport) {
+                            wafer::TransportContract transport) {
   llvm::Expected<wafer::compiler::ExecutionConfig> config =
       wafer::compiler::ExecutionConfig::createForSingleCard(1);
   if (!config)
@@ -602,7 +602,7 @@ TEST(TargetCodeGenTest,
                          wafer::ProgramElementType::F32, {4}),
              makeBinding(wafer::compiler::ProgramResourceRole::Parameter, 1, 1,
                          wafer::ProgramElementType::F16, {2})},
-            wafer::compiler::TransportContract::None));
+            wafer::TransportContract::None));
   }
   llvm::Expected<wafer::compiler::DeviceExecutable> executable =
       wafer::compiler::DeviceExecutableBuilder::makeDeviceExecutable(
@@ -1097,7 +1097,7 @@ TEST(TargetCodeGenTest,
 TEST(TargetCodeGenTest, MultiTileLaunchValidationRejectsMismatchedSchemas) {
   llvm::Expected<wafer::compiler::TargetLLVMModules> mismatchedSchema =
       makeRuntimeLaunchModules(makeKernelLaunch(wafer::KernelLaunchForm::Grid),
-                               wafer::compiler::TransportContract::None,
+                               wafer::TransportContract::None,
                                /*mismatchedSchemaTile=*/7);
   ASSERT_TRUE(static_cast<bool>(mismatchedSchema))
       << llvm::toString(mismatchedSchema.takeError());
@@ -1114,7 +1114,7 @@ TEST(TargetCodeGenTest,
      MultiTileLaunchValidationAcceptsTileLocalWorkspaceCapacity) {
   llvm::Expected<wafer::compiler::TargetLLVMModules> modules =
       makeRuntimeLaunchModules(makeKernelLaunch(wafer::KernelLaunchForm::Grid),
-                               wafer::compiler::TransportContract::None,
+                               wafer::TransportContract::None,
                                std::nullopt, std::nullopt,
                                /*slotCount=*/2,
                                /*withCollidingClosure=*/false,
@@ -1132,7 +1132,7 @@ TEST(TargetCodeGenTest,
      RuntimeLaunchContractAndTransportSlotsRemainIndependentRecords) {
   llvm::Expected<wafer::compiler::TargetLLVMModules> gridWithTransport =
       makeRuntimeLaunchModules(makeKernelLaunch(wafer::KernelLaunchForm::Grid),
-                               wafer::compiler::TransportContract::DirectDTE);
+                               wafer::TransportContract::DirectDTE);
   ASSERT_TRUE(static_cast<bool>(gridWithTransport))
       << llvm::toString(gridWithTransport.takeError());
   EXPECT_FALSE(static_cast<bool>(
@@ -1150,7 +1150,7 @@ TEST(TargetCodeGenTest,
   llvm::Expected<wafer::compiler::TargetLLVMModules> clusterWithoutTransport =
       makeRuntimeLaunchModules(
           makeKernelLaunch(wafer::KernelLaunchForm::Cluster),
-          wafer::compiler::TransportContract::None);
+          wafer::TransportContract::None);
   ASSERT_TRUE(static_cast<bool>(clusterWithoutTransport))
       << llvm::toString(clusterWithoutTransport.takeError());
   EXPECT_FALSE(static_cast<bool>(
@@ -1173,7 +1173,7 @@ TEST(TargetCodeGenTest, KernelArgumentPacketLimitIsCheckedBeforeDeviceLink) {
                             size_t slotCount) {
     llvm::Expected<wafer::compiler::TargetLLVMModules> targetLLVMModules =
         makeRuntimeLaunchModules(std::move(launch),
-                                 wafer::compiler::TransportContract::None,
+                                 wafer::TransportContract::None,
                                  std::nullopt, std::nullopt, slotCount);
     EXPECT_TRUE(static_cast<bool>(targetLLVMModules));
     if (!targetLLVMModules)
@@ -1225,7 +1225,7 @@ TEST(TargetCodeGenTest,
       makeRuntimeLaunchModules(
           makeKernelLaunch(wafer::KernelLaunchForm::Grid,
                            wafer::KernelEntryABI::TileRowPointerTable),
-          wafer::compiler::TransportContract::None, std::nullopt, std::nullopt,
+          wafer::TransportContract::None, std::nullopt, std::nullopt,
           /*slotCount=*/18);
   ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
       << llvm::toString(targetLLVMModules.takeError());
@@ -1258,7 +1258,7 @@ TEST(TargetCodeGenTest, KernelAggregationDispatchesTileToExplicitLaunchSlot) {
       makeRuntimeLaunchModules(
           makeKernelLaunch(wafer::KernelLaunchForm::Grid,
                            wafer::KernelEntryABI::TileRowPointerTable),
-          wafer::compiler::TransportContract::None, std::nullopt, std::nullopt,
+          wafer::TransportContract::None, std::nullopt, std::nullopt,
           /*slotCount=*/2,
           /*withCollidingClosure=*/false,
           /*withUnsupportedInlineAsm=*/false, /*renamedSlotTile=*/std::nullopt,
@@ -1295,7 +1295,7 @@ TEST(TargetCodeGenTest,
   llvm::Expected<wafer::compiler::TargetLLVMModules> targetLLVMModules =
       makeRuntimeLaunchModules(
           makeKernelLaunch(wafer::KernelLaunchForm::Cluster),
-          wafer::compiler::TransportContract::DirectDTE, std::nullopt,
+          wafer::TransportContract::DirectDTE, std::nullopt,
           std::nullopt, /*slotCount=*/2, /*withCollidingClosure=*/true,
           /*withUnsupportedInlineAsm=*/false,
           /*renamedSlotTile=*/7);
@@ -1404,7 +1404,7 @@ TEST(TargetCodeGenTest, KernelAggregationRejectsUnsupportedLinkConstructs) {
   llvm::Expected<wafer::compiler::TargetLLVMModules> targetLLVMModules =
       makeRuntimeLaunchModules(
           makeKernelLaunch(wafer::KernelLaunchForm::Cluster),
-          wafer::compiler::TransportContract::DirectDTE, std::nullopt,
+          wafer::TransportContract::DirectDTE, std::nullopt,
           std::nullopt, /*slotCount=*/2, /*withCollidingClosure=*/false,
           /*withUnsupportedInlineAsm=*/true);
   ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
@@ -1421,7 +1421,7 @@ TEST(TargetCodeGenTest, KernelAggregationRejectsUnsupportedLinkConstructs) {
 TEST(TargetCodeGenTest, KernelGridLinkingAcceptsTileSpecializedModules) {
   llvm::Expected<wafer::compiler::TargetLLVMModules> targetLLVMModules =
       makeRuntimeLaunchModules(makeKernelLaunch(wafer::KernelLaunchForm::Grid),
-                               wafer::compiler::TransportContract::None,
+                               wafer::TransportContract::None,
                                std::nullopt,
                                /*mismatchedBodyTile=*/1);
   ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
@@ -1477,7 +1477,7 @@ TEST(TargetCodeGenTest,
     wafer::RuntimeLaunchContract launch = makeKernelLaunch(scenario.form);
     SCOPED_TRACE(
         (wafer::stringifyKernelLaunchForm(scenario.form) + ":" +
-         (scenario.transport == wafer::compiler::TransportContract::DirectDTE
+         (scenario.transport == wafer::TransportContract::DirectDTE
               ? "direct-dte"
               : "none"))
             .str());
@@ -1558,7 +1558,7 @@ TEST(TargetCodeGenTest,
     wafer::RuntimeLaunchContract launch = makeKernelLaunch(scenario.form);
     SCOPED_TRACE(
         (wafer::stringifyKernelLaunchForm(scenario.form) + ":" +
-         (scenario.transport == wafer::compiler::TransportContract::DirectDTE
+         (scenario.transport == wafer::TransportContract::DirectDTE
               ? "direct-dte"
               : "none"))
             .str());
@@ -1624,7 +1624,7 @@ TEST(TargetCodeGenTest,
     noCardEnvironment.supportedKernelLaunchForms = {kernel.form};
     noCardEnvironment.supportedKernelEntryABIs = {kernel.entryABI};
     noCardEnvironment.supportsDirectDTE =
-        scenario.transport == wafer::compiler::TransportContract::DirectDTE;
+        scenario.transport == wafer::TransportContract::DirectDTE;
     noCardEnvironment.directDTEStatusABI =
         wafer::runtime::kDirectDTEStatusABI.str();
     noCardEnvironment.supportsHostWatchdog = true;
@@ -1670,7 +1670,7 @@ TEST(TargetCodeGenTest,
       EXPECT_EQ(
           std::holds_alternative<
               wafer::runtime::DirectDTETransportRequirements>(entry.transport),
-          scenario.transport == wafer::compiler::TransportContract::DirectDTE);
+          scenario.transport == wafer::TransportContract::DirectDTE);
     }
   }
 }

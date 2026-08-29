@@ -31,7 +31,7 @@ using namespace wafer;
 namespace wafer {
 #define GEN_PASS_DEF_PLACEREQUIREDNCCJOINSPASS
 #define GEN_PASS_DEF_REBUILDREQUIREDNCCJOINSPASS
-#include "Wafer/Transforms/WaferPasses.h.inc"
+#include "Wafer/Transforms/WaferTransformPasses.h.inc"
 } // namespace wafer
 
 namespace {

@@ -1,7 +1,7 @@
 //===- RegionDomain.h - Region execution and use domain ------*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_REGIONDOMAIN_H
-#define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_REGIONDOMAIN_H
+#ifndef WAFER_PLANNING_PHYSICALDATAFLOW_REGIONDOMAIN_H
+#define WAFER_PLANNING_PHYSICALDATAFLOW_REGIONDOMAIN_H
 
 #include "Wafer/Planning/PhysicalDataflow/CanonicalRegionPlan.h"
 
@@ -112,4 +112,4 @@ private:
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_REGIONDOMAIN_H
+#endif // WAFER_PLANNING_PHYSICALDATAFLOW_REGIONDOMAIN_H

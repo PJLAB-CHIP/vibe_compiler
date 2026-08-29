@@ -1,8 +1,8 @@
 //===- ExecutableCompilation.h - Policy-free executable seam -*- C++
 //-*-===//
 
-#ifndef WAFER_COMPILER_EXECUTABLECOMPILATION_H
-#define WAFER_COMPILER_EXECUTABLECOMPILATION_H
+#ifndef WAFER_DRIVER_EXECUTABLECOMPILATION_H
+#define WAFER_DRIVER_EXECUTABLECOMPILATION_H
 
 #include "Wafer/Driver/ExecutableLowering.h"
 #include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
@@ -126,4 +126,4 @@ ExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_EXECUTABLECOMPILATION_H
+#endif // WAFER_DRIVER_EXECUTABLECOMPILATION_H

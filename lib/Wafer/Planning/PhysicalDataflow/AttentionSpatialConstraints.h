@@ -1,7 +1,7 @@
 //===- AttentionSpatialConstraints.h - Attention spatial constraints ----===//
 
-#ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_ATTENTIONSPATIALCONSTRAINTS_H
-#define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_ATTENTIONSPATIALCONSTRAINTS_H
+#ifndef WAFER_PLANNING_PHYSICALDATAFLOW_ATTENTIONSPATIALCONSTRAINTS_H
+#define WAFER_PLANNING_PHYSICALDATAFLOW_ATTENTIONSPATIALCONSTRAINTS_H
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"
@@ -44,4 +44,4 @@ checkAttentionSpatialConstraints(const AttentionSpatialConstraints &constraints,
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_ATTENTIONSPATIALCONSTRAINTS_H
+#endif // WAFER_PLANNING_PHYSICALDATAFLOW_ATTENTIONSPATIALCONSTRAINTS_H

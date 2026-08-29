@@ -1,7 +1,7 @@
 //===- FormalNumericInternal.h - Formal numeric collaboration -*- C++ -*-===//
 
-#ifndef WAFER_TARGET_FORMALNUMERICINTERNAL_H
-#define WAFER_TARGET_FORMALNUMERICINTERNAL_H
+#ifndef WAFER_SIMULATOR_REFERENCE_FORMAL_FORMALNUMERICINTERNAL_H
+#define WAFER_SIMULATOR_REFERENCE_FORMAL_FORMALNUMERICINTERNAL_H
 
 #include "Wafer/Simulator/Reference/FormalNumeric.h"
 #include "Wafer/Target/PhysicalTensor/TargetFloatArithmetic.h"
@@ -55,4 +55,4 @@ validateFormalReduceOperation(const FormalReduceOperation &operation);
 
 } // namespace wafer::formal_detail
 
-#endif // WAFER_TARGET_FORMALNUMERICINTERNAL_H
+#endif // WAFER_SIMULATOR_REFERENCE_FORMAL_FORMALNUMERICINTERNAL_H

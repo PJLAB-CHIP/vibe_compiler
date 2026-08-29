@@ -2,6 +2,7 @@
 
 #include "Wafer/Conversion/TileToInstr/Pipelines.h"
 
+#include "Wafer/Conversion/Passes.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Passes.h"
 

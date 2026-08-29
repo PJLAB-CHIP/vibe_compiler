@@ -13,7 +13,7 @@ add_mlir_conversion_library(WaferTileToInstr
   ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/TileToInstr
 
   DEPENDS
-  WaferPassesIncGen
+  WaferConversionPassesIncGen
   WaferTileToInstrPatternsIncGen
 
   LINK_LIBS PUBLIC
@@ -51,7 +51,7 @@ add_mlir_conversion_library(WaferInstrToLLVM
   ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/InstrToLLVM
 
   DEPENDS
-  WaferPassesIncGen
+  WaferConversionPassesIncGen
 
   LINK_LIBS PUBLIC
   WaferAnalysis
@@ -87,7 +87,7 @@ add_mlir_conversion_library(WaferStableHLOToLinalg
   StableHLOToLinalg/NormalizeStablehloCollectives.cpp
 
   DEPENDS
-  WaferPassesIncGen
+  WaferConversionPassesIncGen
 
   LINK_LIBS PUBLIC
   WaferAnalysis
@@ -114,6 +114,13 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
   target_link_libraries(WaferStableHLOToLinalg PRIVATE StablehloOps)
   target_link_libraries(WaferStableHLOToLinalg PRIVATE StablehloLinalgTransforms)
 endif()
+
+add_library(WaferConversionPasses INTERFACE)
+target_link_libraries(WaferConversionPasses INTERFACE
+  WaferInstrToLLVM
+  WaferStableHLOToLinalg
+  WaferTileToInstr
+)
 
 add_mlir_library(WaferStableHLOPipelines
   StableHLOToLinalg/Pipelines.cpp

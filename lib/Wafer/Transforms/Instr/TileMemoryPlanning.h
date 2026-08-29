@@ -1,7 +1,7 @@
 //===- TileMemoryPlanning.h - Tile memory planning -*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_TILEMEMORYPLANNING_H
-#define WAFER_COMPILER_TILEMEMORYPLANNING_H
+#ifndef WAFER_TRANSFORMS_INSTR_TILEMEMORYPLANNING_H
+#define WAFER_TRANSFORMS_INSTR_TILEMEMORYPLANNING_H
 
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
@@ -84,4 +84,4 @@ mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> planTileMemory(
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_TILEMEMORYPLANNING_H
+#endif // WAFER_TRANSFORMS_INSTR_TILEMEMORYPLANNING_H

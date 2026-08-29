@@ -25,7 +25,8 @@ function(wafer_enable_onednn_backend)
   endif()
 
   execute_process(
-    COMMAND "${Python3_EXECUTABLE}"
+    COMMAND "${CMAKE_COMMAND}" -E env "PYTHONDONTWRITEBYTECODE=1"
+            "${Python3_EXECUTABLE}" -B
             "${CMAKE_SOURCE_DIR}/utils/deps/onednn_deps.py"
             --root "${WAFER_ONEDNN_DEPS_ROOT}"
             --record "${WAFER_ONEDNN_DEPS_RECORD}"
