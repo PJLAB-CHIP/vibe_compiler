@@ -160,10 +160,10 @@ lit的`UNSUPPORTED`和skip只表示未执行。canonical build中的测试若因
 - distinct Tile modules可含不同op、loop、temporal tile、region和执行长度；
 - no-work Tile仍有合法entry并进入output/runtime domain；
 - `(card_id, tile_id)`唯一，Tile-local SPM root不跨Tile SSA alias；
-- structural TileRegion允许tensor boundary且没有layout/movement/allocation；layout-resolved form的每个actual endpoint、view/alias和
-  structural boundary relation均current；physical form没有logical tensor boundary且所有external relations已由movement消费；
-- 同一个candidate owner中的TileModule/TileRegion在structural→layout-resolved→physical过程中不重建；rewrite listener只通过
-  `IRMapping`/explicit replacement retarget actual endpoint relation。
+- structural TileRegion允许tensor boundary且没有layout/movement/allocation；same-Tile edge由SSA表达，cross-Tile relation只连接两个actual
+  endpoints；layout-resolved form的每个endpoint、view/alias均current；physical form没有logical tensor boundary且所有external relations已消费；
+- 同一个candidate owner和semantic Region在structural→layout-resolved→physical过程中不从choice重建；immutable signature变化需要替换op时由
+  parent anchor执行，rewrite listener只通过`IRMapping`/explicit replacement retarget actual endpoint relation。
 
 负例至少覆盖duplicate/unavailable/missing Tile、coverage hole/overlap、非法reduction overlap、cross-Tile SPM alias、
 mismatched send/recv、payload/domain/encoding mismatch、duplicate/missing/stale external endpoint relation、structural form中的
@@ -213,8 +213,8 @@ position、Attention/decode/mask专用matcher或公共pass残留。
   state expansion前剪枝；SPM capacity没有plan-side early rejection；
 - footprint、working-set、shape公式、buffer-count、synthetic demand、预测lifetime或nominal bandwidth projection不能签发SPM
   packing、admission或temporal refinement；
-- production pre-structural state不物化IR；spatial/region/temporal choice闭合后各构造一个candidate TileModule/TileRegion，之后
-  layout/bufferization、movement和execution structure依次在current Tile IR上实施，再执行Tile→Instr、fresh order/completion、
+- production pre-structural state不物化IR；Spatial/Region choice闭合后构造一个candidate TileModule/TileRegion并消费planning identity；
+  Temporal choice从该candidate的live operations建立并立即apply，之后layout/bufferization、movement和execution structure依次在current Tile IR上实施，再执行Tile→Instr、fresh order/completion、
   completion-closed actual SPM/DDR、transport/resource/ABI和actual cost；
   rejected/loser owner销毁，winner不重建；
 - actual proven exact failure只拒绝生成当前IR的完整显式choice；只有verifier直接提供extension-closed typed proof时才能拒绝更宽prefix。

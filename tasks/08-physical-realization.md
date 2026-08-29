@@ -9,8 +9,8 @@
 ```text
 Pipeline position:
 - Upstream IR / input:
-  spatial/region/temporal choice、compact tile-and-fuse及selected-attention lowering均已物化的candidate-owned structural
-  TileModule/TileRegion IR；attention op已经为零，current Linalg/Tensor/SCF、indexing maps、Tiling/DPS/Bufferizable interfaces、
+  Spatial/Region materialization、current-op temporal tile-and-fuse及online-attention decomposition均已完成的candidate-owned structural
+  TileModule/TileRegion IR；graph/online attention均为零，current Linalg/Tensor/SCF、indexing maps、Tiling/DPS/Bufferizable interfaces、
   SSA/view/control flow、dtype/shape/effect与target topology均可验证。
 - Current stage responsibility:
   从current IR派生logical IndexRelation、alias/root和shape bounds；由memref encoding解释footprint、alignment、
@@ -55,8 +55,9 @@ Physical realization不是一个同时猜layout和route的builder：
 ```text
 post-attention bounded logical normalization
   -> structural TileRegion
-  -> compact temporal tile-and-fuse; attention remains opaque
-  -> selected-attention lowering and final current SSA/use graph
+       attention -> online state contributions/merge
+  -> current-op temporal tile-and-fuse, including online K2 partial reduction
+  -> online-attention decomposition and final current SSA/use graph
   -> layout/view/function-boundary and region-local bufferization
   -> layout-resolved TileRegion
   -> movement/staging/boundary closure
@@ -263,7 +264,7 @@ compile-time proof resource limit。planning query的typed结果可控制state�
 
 验证必须覆盖：
 
-- layout入口拒绝任何`wafer.linalg_ext.attention` residual，并接受selected-attention lowering产生的actual Linalg/Tensor/SCF、
+- layout入口拒绝任何`wafer.linalg_ext.attention`或`wafer.linalg_ext.online_attention` residual，并接受decomposition产生的actual Linalg/Tensor/SCF、
   coupled state和cross-Region tensor boundary；
 - structural→layout-resolved→physical TileRegion的逐stage positive/negative transition，wrong-form输入在直接stage拒绝；
 - exact PBQP对flat layout oracle的cost/tie/status一致性，以及baseline一次apply、search首proposal+完整raw域；

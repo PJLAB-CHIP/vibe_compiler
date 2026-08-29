@@ -1247,9 +1247,10 @@ solver或新的instruction semantics interface。
 ## 14. Graph Algorithm 与 Instr 边界
 
 05号normalization在physical mapping前把完整attention归一为一个verifier-legal TensorProgram semantic root并确定FA/FD；
-Physical search不选择graph algorithm，只选择physical plan。每个candidate的compact temporal tile-and-fuse保持attention opaque；
-紧随其后的selected-attention lowering在同一candidate module owner中一次性生成actual Linalg/Tensor/SCF，再由10号通用lowering转换为existing
-wafer.tile compute。该展开必须在layout、actual resource gate和winner比较之前完成；进入本文conversion前不得残留attention或
+Physical search不选择graph algorithm，只选择physical plan。Spatial/Region materialization把graph attention转换为actual per-Tile
+online-attention state、FD endpoints与selected merge；current-op temporal stage以standard partial reduction切K2，随后decomposition在同一
+candidate owner中生成actual Linalg/Tensor/SCF，再由10号通用lowering转换为existing wafer.tile compute。该展开必须在layout、actual resource
+gate和winner比较之前完成；进入本文conversion前不得残留graph/online attention或
 可执行Linalg source。
 未来若引入其它semantic optimization，必须由其current TensorProgram表示和owner闭合，不能在TileModule set或Instr形成后
 启动第二个plan selector。只与target Instr encoding有关的canonicalization由本文及14的deterministic lowering owner负责，

@@ -53,3 +53,20 @@ Pipeline position:
   未恢复已完成Q56/Q58施工记录。
 - Current Markdown链接、20份编号Pipeline Contract、Q52九项work row/九项coverage section、source/IR organization和
   `git diff --check`通过；纯文档修复未运行无关build。
+
+## 后续纠正
+
+后续在第13项开工前复核发现，本项“第12--20项已经完整恢复、无需依赖archive”的表述过强：当时恢复了work-item责任、typed failure、
+exact assertion、direct witness和覆盖矩阵，也补回06/07稳定边界，但收缩前对仍未完成第13、14项的展开实施设计仍只保留在
+`physical-dataflow-synthesis-q52-plan-history.md`中。Archive不能作为current实现authority，因此仅有矩阵不能证明实施合同已经完整恢复。
+
+Current follow-up已把仍有效且不依赖旧shadow schema的内容重新收敛到06号Temporal choice设计和current Q52 plan：包括
+TemporalScope/domain、scope到actual Region的handoff、fusion不是额外search轴、exact query不改变actual候选集合、pinned SCF apply/tail、
+relation/transaction/SPM feedback，以及selected-attention lowering的opaque occurrence、FD shell和relation retarget合同。旧materializer、
+future inventory、历史施工数字和第1--11项日志继续只留archive。
+
+继续对照current实现和IREE/pinned MLIR后，follow-up中的“scope到actual Region handoff”仍然错误：它把`RegionExecutionId`延伸成了
+planning identity到current operation的第二套映射；FD empty shell同样要求后续按该映射回填。最终current设计不保留这两项：第12项重新打开，
+在Spatial/Region choice仍由本次transformation持有时直接创建ordinary merge/output、三结果online-attention、FD state endpoints和selected
+merge/finalize；第13项只从live operations建立并立即应用TemporalDomain，第14项只分解已tiled online-attention。当前合同以05--07号和
+Q52 plan为准，本归档只记录纠正过程。

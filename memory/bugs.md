@@ -1403,3 +1403,28 @@
   `Access`不变而canonical `Concat`数量严格下降；没有结构下降则按transformation contract failure停止，不用固定轮数或历史rewrite记录。
 - 防复发：1024/1025/1031矩阵同时保留异构fanout正例、会被同轮其它rewrite删除的暂时DPS-init use、持续存在的observable use barrier和
   第二次运行byte-equivalent检查。不能通过把暂时use写成永久barrier、重复调用产品pipeline或增加whole-graph clone掩盖phase order。
+
+## 未完成设计不能因文档去重而只剩archive矩阵
+
+- 现象：current plan保留了未完成work item的任务行和覆盖矩阵，但展开的choice domain、current-IR handoff、query/apply顺序、failure
+  ownership和直接consumer只存在于archive；实现前必须重新读历史才能回答既定设计。
+- 根因：文档收缩把“与编号稳定设计部分重复”当成“已经是历史”，验收只检查Pipeline Contract、任务行和矩阵是否存在，没有逐项证明
+  current authority可以在不读archive的情况下独立实施。随后恢复又把矩阵完整误当成实施合同完整。
+- 修复模式：对每个未完成item建立authority ledger，分别核对编号设计拥有的稳定语义和current plan拥有的实施步骤；current组合起来必须
+  明确输入、显式choice/raw domain、derived facts、actual apply、typed failure/transaction、输出和direct witness。Archive只用于diff审计，
+  有效内容恢复后删除其current依赖，不整体复制旧实现或shadow schema。
+- 防复发：归档或压缩混合计划时，以“新agent不读archive能否正确实现”为门禁；逐item对比收缩前后的规范性段落，而不是比较总行数或标题。
+  完成声明必须列出被归档的每个pending implementation section及其current owner；只恢复work row、状态和coverage table不能标记合同恢复完成。
+
+## Planning identity不能通过映射表延长成current IR identity
+
+- 现象：Spatial materialization返回`RegionExecutionId -> TileRegion`，后续Temporal stage发现一个Region含多个work，又准备增加
+  `execution -> operation`映射；FD同时依赖empty Region shell和同一ID在后续回填attention state。映射越补越完整，但current IR仍不能独立说明
+  哪个operation、state和merge真实存在。
+- 根因：pre-materialization choice在actual rewrite后没有被消费，而是被当成跨stage operation identity。空shell和missing output进一步迫使
+  下游按plan重建future work，形成一套与SSA/parent关系并行的事实源。
+- 修复模式：产生actual IR的transformation在返回前消费全部planning identity；ordinary contribution/merge/output以及attention state
+  contribution/merge直接物化。下一stage从live operation/interface建立query-local choice并立即apply；clone只使用该次`IRMapping`。
+  Physical位置由typed parent op表达，参与者由SSA表达。
+- 防复发：新增任何`plan ID -> operation/value/Tile`关系前，先检查producer能否直接物化缺失事实、consumer能否从current IR重算。
+  如果答案是可以，删除mapping；如果确实需要跨stage保存，必须先有用户同意的authoritative typed IR，而不是扩充C++ side table。

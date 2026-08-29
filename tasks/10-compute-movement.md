@@ -106,12 +106,11 @@ movement、独立或rotating buffer roots及slot relation、数据依赖和event
 
 ## 4. Compute Contracts
 
-### Attention selected lowering
+### Attention structured decomposition
 
-`wafer.linalg_ext.attention`从normalized TensorProgram保持到candidate的compact temporal tile-and-fuse输出；该stage只读取其公开
-operand/result relation，不展开内部算法。紧随其后的selected-attention lowering从current op interfaces、fixed algorithm和显式
-K1/K2/contribution/merge choice读取iterator、operand-demand与coupled-component relation，不创建future action/value inventory。
-每个candidate在自己的module owner中一次性生成selected `tensor.extract_slice`、compact `scf.for`和Linalg compute：
+`wafer.linalg_ext.attention`只存在于normalized TensorProgram。Spatial/Region materialization把它破坏性转换为per-Tile三结果
+`wafer.linalg_ext.online_attention`、FD state endpoints和selected merge/finalize；temporal stage再从current interfaces物化parallel/K2
+loops。紧随其后的decomposition不接收planning choice，只在既有loop和Accumulator/Maximum/Sum SSA上生成`tensor.extract_slice`与Linalg compute：
 
 ```text
 QK contraction
@@ -122,12 +121,12 @@ QK contraction
   -> final divide
 ```
 
-这些Linalg ops使用已选择的output piece、K1/K2 tile、tail和FD contribution；它们不得重新选择block、partition、merge
-owner或loop order。展开后的layout、view、buffer、movement和event只能由直接stage从current SSA/Instr生成。
+这些Linalg ops使用current output piece、K2 tile/tail和FD contribution state；它们不得重新选择block、partition、merge owner或loop order。
+展开后的layout、view、buffer、movement和event只能由直接stage从current SSA/Instr生成。
 随后同一transaction调用普通structured-to-tile lowering，把compute确定性变成existing `wafer.tile.gemm`、
 `wafer.tile.reduce`和`wafer.tile.elementwise`。Linalg中间态不是公开IR层、candidate cache或第二production pipeline。
 
-进入Tile-to-Instr前，attention op和可执行Linalg source必须全部消失。Scratch、state、conversion、movement和event必须是
+进入Tile-to-Instr前，graph/online attention和可执行Linalg source必须全部消失。Scratch、state、conversion、movement和event必须是
 current IR中有current SSA owner和typed effect的actual objects；不能由lowering临时猜测或补齐。本文不定义`wafer.tile.attention`或
 `wafer.instr.attention`。
 

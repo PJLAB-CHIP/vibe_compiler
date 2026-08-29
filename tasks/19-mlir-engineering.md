@@ -54,8 +54,9 @@ Wafer不使用一条“是否clone”或“是否module pass”的统一规则�
 | ordinary pass / rewrite | 完成变换所需的最小operation anchor；mutation经PatternRewriter、DialectConversion或pass API | 按framework合同处理；caller不能自行假设root回滚 |
 | explicit transaction | 最近的IsolatedFromAbove owner或明确的compiler output owner | 失败时销毁transaction result，不发布部分output |
 | analysis / dataflow | current operation和显式只读target facts | 不修改IR；相关mutation后失效并重算 |
-| pre-structural planning | immutable TensorProgram与spatial/region/temporal choice | 不构造IR，不保存Operation pointer、offset或hidden epoch；choice闭合后立即交给materializer |
-| policy-specific materialization | baseline从current TensorProgram/固定规则直接构造；search消费explicit structural choice；两者各有独立TileModule owner | 生成actual TileRegion IR；后续只在current IR上实施；rejected/loser销毁，Accepted owner不重建 |
+| pre-structural planning | immutable TensorProgram与Spatial/Region choice | 不构造IR，不保存Operation pointer、offset或hidden epoch；choice闭合后立即交给materializer |
+| policy-specific materialization | baseline从current TensorProgram/固定规则直接构造；search消费explicit Spatial/Region choice；两者各有独立TileModule owner | 生成ordinary及attention online-state actual TileRegion IR并消费planning identity；Temporal及后续stage只读current IR；rejected/loser销毁，Accepted owner不重建 |
+| current-IR choice query | candidate-owned live operation、standard interfaces与显式只读target facts | 不修改或拥有IR；query-local handle只活到selected choice立即apply，mutation后domain/analysis全部失效 |
 | current-IR physical/execution transforms | candidate-owned structural/physical TileRegion | layout stage一次完成function-boundary与region-local bufferization，随后movement和execution structure分别对current IR立即变换；每次mutation后旧analysis失效；不传future value/buffer/event plan |
 | actual memory/target leaf | completion-closed canonical Instr IR及current relations | 返回typed accepted/rejection/failure，不运行bufferization、completion reconstruction，也不选择或repair candidate |
 | output fan-out | 已accepted DeviceExecutable及明确请求的target/package variants | 每个真实output有唯一owner；只为真实consumer复制或转换 |

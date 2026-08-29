@@ -155,10 +155,10 @@ Physical-dataflow不能整体塞入CodeGen，也不能继续把analysis、choice
 - current Linalg/Tensor SSA、IndexRelation、DAG、SemanticRoot和choice-independent source relation进入`Analysis/Linalg`；
 - Tile physical access/layout/transfer relation进入`Analysis/Tile`；
 - Instr lifetime、completion、cost和resource analysis进入`Analysis/Instr`；
-- explicit SpatialAssignment、choice-dependent ExactDemand/RootRegionWork、spatial/region/temporal domain、PBQP assignment和
-  search traversal留在`Planning/PhysicalDataflow`，其对象仅在当前planning调用中存活；
+- explicit SpatialAssignment、choice-dependent ExactDemand/RootRegionWork、Spatial/Region domain，以及从candidate live operations建立的
+  query-local TemporalDomain/PBQP assignment和search traversal留在`Planning/PhysicalDataflow`；它们不拥有IR，choice apply后立即销毁；
 - closed spatial/region choice到actual TileModule/TileRegion的原子物化属于`Transforms/Linalg`；
-- compact tile/fuse、selected attention lowering、layout/view/movement和execution structure按其真实输入进入
+- selected temporal choice apply、compact tile/fuse、online-attention decomposition、layout/view/movement和execution structure按其真实输入进入
   `Transforms/Linalg`或`Transforms/Tile`；
 - candidate-owned current materialization relation、replacement listener和buffer relation query进入`Transforms/Tile`，由caller-owned
   transaction传递且不跨IR epoch；

@@ -13,18 +13,20 @@
 1. **source semantics只有一个owner。** 数学语义来自verified program与structured tensor IR；compiler不从op、buffer、
    parameter、symbol、文件名或workload名字恢复语义。
 2. **analysis、choice、actual candidate和publication分离。** Analysis从current source/candidate IR和immutable target facts重算；
-   pre-structural state只保存spatial/region/temporal choice。这些choice闭合后立即在独立transaction中物化actual TileRegion IR；
-   compact tile-and-fuse保持attention opaque，独立selected-attention lowering随后形成actual Linalg/Tensor/SCF；再后的
+   pre-structural state只保存Spatial/Region choice。这些choice闭合后立即在独立transaction中物化actual TileRegion IR；graph attention
+   同时成为per-Tile三状态online-attention及actual merge/endpoints。Temporal choice随后只从live candidate operations建立并立即apply；
+   online-attention decomposition形成actual Linalg/Tensor/SCF；再后的
    layout/bufferization、movement、execution structure、Instr/order/completion和memory只读各自current IR。Rejected/loser owner销毁，
    final winner不重建并只发布一次。
 3. **graph algorithm与physical-dataflow decision分层。** 05号normalization在policy分叉前把已证明的完整Q/K/V attention一次性归一为
    一个自包含semantic op并确定FA或FD；physical-dataflow search不重新选择graph algorithm，只展开Tile placement、不同op/branch/wave并行、
-   TileRegion membership、explicit replica以及自由temporal tile/loop order。这些structural choice闭合后立即进入actual IR；fusion再由
+   TileRegion membership和explicit replica。Structural choice闭合后立即进入actual IR；自由temporal tile/loop order再由live op interfaces
+   生成并立即apply，fusion由
    current SSA、indexing relation和effect决定。Physical encoding、
    storage、communication、movement和buffered overlap均在current candidate IR上实施。下游不得late fallback、reselection或repair。
    只有通过共同actual gate的owner进入winner比较和publication。
-4. **spatial mapping、TileRegion membership和自由temporal tiling必须先闭合，再由current IR决定fusion。** Fusion不是独立
-   delivery/placement choice；Region和temporal参数物化后，standard tile-and-fuse只从current SSA、indexing relation和effect决定actual
+4. **spatial mapping和TileRegion membership先物化，自由temporal tiling再从current IR闭合。** Fusion不是独立
+   delivery/placement choice；Region materialization后，standard tile-and-fuse只从current SSA、op interfaces、indexing relation和effect决定actual
    loop内/外producer。`tile.region`先表示一个Tile内的selected execution/local-storage scope；只有movement闭合后的physical form才表示
    SPM ownership/lifetime domain。current `tile.module`可有一个或多个non-nested regions。
    region内部可以有多个actual traversal/loop nest、不同tile shape、逐root lifetime、explicit replica及typed movement；
@@ -68,9 +70,10 @@ Pipeline position:
   在transaction-owned source snapshot上完成frontend verification；调用pinned XLA helper完成card级Shardy/XLA SPMD并重新验证；
   normalization形成`TensorProgram`。05号normalization从typed SSA证明attention语义并一次性归一为一个带fixed FA/FD algorithm的
   verifier-legal semantic op，`none`与`search`消费同一结果；physical-dataflow selection联合展开Tile placement、不同op并行、
-  TileRegion membership、explicit replica、自由temporal tile、layout、DDR/NoC movement和overlap。Structural choice先物化为
-  top-level TileModule/TileRegion，standard tile-and-fuse从current SSA决定actual fusion并保持attention opaque；独立
-  selected-attention lowering随后形成actual Linalg/Tensor/SCF。Layout与movement闭合后，current Tile transformation物化software pipeline和rotating slot，
+  TileRegion membership、explicit replica、layout、DDR/NoC movement和overlap。Structural choice先物化为top-level
+  TileModule/TileRegion；graph attention同时转成三状态online-attention、FD contributions/merge和actual endpoints。Temporal domain从这些
+  current operations建立，standard Tiling/PartialReduction形成ordinary/parallel/K2 loops和actual fusion；online-attention decomposition随后
+  形成actual Linalg/Tensor/SCF。Layout与movement闭合后，current Tile transformation物化software pipeline和rotating slot，
   随后投影并lower成per-Tile `Instr`，派生worker/order/completion，
   闭合SPM/DDR/transport/target legality后原子形成`DeviceExecutable`。同一次target conversion产生owner-backed target
   modules，分支给repo-owned CModel与device link；device-linked modules再与DeviceExecutable形成typed
@@ -174,36 +177,37 @@ physical-dataflow selection直接通过Linalg/DPS/Tiling/MemoryEffect、Wafer Op
 责任严格分层：
 
 1. 05号normalization只从typed SSA证明完整Q/K/V attention并产生一个`wafer.linalg_ext.attention`；FA/FD是op上的
-   fixed graph fact，不进入physical search domain。K/V block与partition分别归temporal/spatial轴；每个structural candidate先在
-   compact tile-and-fuse中保持该op opaque，再由独立selected-attention lowering构造actual Linalg/Tensor/SCF implementation，随后
+   fixed graph fact，不进入physical search domain。K/V spatial partition由Spatial choice选择；materialization直接把graph op转换成
+   per-Tile三状态online-attention和selected merge/finalize。K/V local block由该current op的`PartialReductionOpInterface`选择并物化，
+   随后确定性decomposition构造actual Linalg/Tensor/SCF implementation，再
    确定性转换为existing wafer.tile compute。未来若引入其它semantic optimization，
    必须由自己的设计定义表示与selection owner，不能复用attention attr充当registry；
 2. Query-local analysis从current source或candidate IR形成exact demand、ready/live set、`IndexRelation`、liveness/lifetime和
    resource/dependence graph；这些结果可失效、可重算，不跨IR mutation或进入accepted output；
-3. Pre-structural state只保存Tile/work assignment、自由temporal tile/order、TileRegion membership和explicit replica choice。选择闭合后
-   立即物化actual TileRegion IR；layout/movement/transport、execution structure、buffer/slot和issue/event order不得作为future IR state跨stage传递；
+3. Pre-structural state只保存Tile/work assignment、TileRegion membership和explicit replica choice。选择闭合后立即物化actual TileRegion IR；
+   Temporal及layout/movement/transport、execution structure、buffer/slot和issue/event order从各自current IR生成并立即apply，不得作为
+   future IR state跨stage传递；
 4. current theoretical cost只聚合comparison cohort统一enabled的numeric terms；有实际参数用实际值，其次用已有理论值，完全未知的term对
    整批候选删除。performance Unknown、proof/promotion margin不属于选择合同；
-5. Spatial/region/temporal choice闭合后立即构造一次actual TileModule/TileRegion；后续choice作用于current IR。Rejected/loser owner销毁，
+5. Spatial/Region choice闭合后立即构造一次actual TileModule/TileRegion；Temporal及后续choice作用于current IR。Rejected/loser owner销毁，
    allocator、completion、communication和cost owner均不产生repair；
 6. Candidate TileModule set先在current physical TileRegion上物化execution structure/rotating slot，再投影为all-and-only Tile Instr programs，
    在current Instr上应用worker/order并fresh重建completion；completion-closed Instr再经过actual SPM/DDR/transport/ABI gates，memory leaf不补join/wait；
    Accepted results按actual cost与semantic tie-break比较，final winner保留首次accepted owner并原子形成DeviceExecutable/package publication。
 
-Attention由一个explicit `wafer.linalg_ext.attention`表示。Attention normalization从Linalg indexing map、iterator、scalar region、use-def、view和
-observable semantics证明完整Q/K/V关系，并从functional KV-cache append/return SSA确定FA或FD。Temporal planning选择K/V block，
-spatial planning选择physical partition，exact-demand analysis证明coupled partial/merge；physical search只联合这些physical坐标，不构造algorithm alternatives。
-每个structural candidate先以attention保持opaque的方式完成compact temporal tile-and-fuse；独立selected-attention lowering随后直接从
-current op和显式choice一次性生成actual Linalg/Tensor/SCF，再经layout/movement与通用wafer.tile lowering进入actual gate。该过程不保存
-future action/value/materialization inventory，final winner不重建。KV cache继续是普通tensor SSA/function-result语义，不进入runtime-owned
-cache或名字/参数matcher。
+Graph attention由一个explicit `wafer.linalg_ext.attention`表示。Normalization从Linalg indexing map、iterator、scalar region、use-def、view和
+observable semantics证明完整Q/K/V关系，并从functional KV-cache append/return SSA确定FA或FD。Spatial planning选择physical K2 partition和
+merge Tile，exact-demand analysis证明coupled partial/merge；physical search不构造algorithm alternatives。Structural materialization直接创建
+per-Tile `wafer.linalg_ext.online_attention`的Accumulator/Maximum/Sum、remote endpoints和selected merge/finalize。随后Temporal stage从live
+interfaces切parallel/K2，decomposition再生成actual Linalg/Tensor/SCF；整个过程不保存future inventory或plan-ID mapping，final winner不重建。
+KV cache继续是普通tensor SSA/function-result语义，不进入runtime-owned cache或名字/参数matcher。
 
 合法候选域使用event dispatch和finite semantic breakpoints惰性生成。exact coverage、topology symmetry、canonical
 dedup和已证明的performance bound可以在不删除合法最优解时剪枝；SPM capacity只由current candidate actual planning决定。beam、候选cap、随机启发式或其它
 可能损失最优性的trade-off只能在实际负载profiling后启用并持续用小图完整枚举oracle校准。`none`保留同pipeline
 deterministic baseline；driver/process cancellation终止整个transaction且不发布partial output。
 
-详细算法由06拥有；selected MPMD与TileRegion materialization、physical realization和direct target-abstract lowering分别由07、08和10拥有。
+详细算法由05/06拥有；selected MPMD与TileRegion materialization、physical realization和direct target-abstract lowering分别由07、08和10拥有。
 
 ## 6. Selected Execution、Memory、Communication 与 Completion
 

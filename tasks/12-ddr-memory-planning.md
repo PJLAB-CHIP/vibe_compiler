@@ -405,8 +405,8 @@ transfer进入current consumer要求的actual encoded buffer；这不需要ident
 
 ### 9.3 与 Physical-Dataflow Planning 的边界
 
-physical-dataflow planning由tasks/06拥有；spatial/region/temporal choice闭合后物化candidate TileModule set，之后layout/movement/bufferization在
-current IR上实施。Spatial placement、region partition、temporal tile/loop、retention/release/materialization、
+physical-dataflow planning由tasks/06拥有；Spatial/Region choice闭合后物化candidate TileModule set，Temporal及之后的
+layout/movement/bufferization choice均从各自current IR生成并立即实施。Spatial placement、region partition、temporal tile/loop、retention/release/materialization、
 explicit spill、mapped/staged movement与completion都必须已经在current IR显式；typed opaque SPM clobber输入拒绝，DDR
 planner不创建或改变boundary。DDR owner不知道scope policy、output kind、
 plan ordinal或生成历史，只执行exact demand、lifetime、range、capacity与offset gate。Pre-DDR stages不形成DDR problem/proof；
