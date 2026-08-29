@@ -19,10 +19,23 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <optional>
+#include <set>
 #include <string>
+#include <utility>
 
 namespace wafer::compiler::detail {
 namespace {
+
+static TileModuleOp getTileOwner(mlir::Value value) {
+  mlir::Operation *operation = nullptr;
+  if (auto result = mlir::dyn_cast<mlir::OpResult>(value))
+    operation = result.getOwner();
+  else if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value))
+    operation =
+        argument.getOwner() ? argument.getOwner()->getParentOp() : nullptr;
+  return operation ? operation->getParentOfType<TileModuleOp>()
+                   : TileModuleOp{};
+}
 
 static bool
 collectStoragePredecessors(mlir::Value value,
@@ -262,6 +275,9 @@ struct StructuredBufferReplacementListener::Impl {
     Scratch,
     Output,
     DDR,
+    StructuralOutput,
+    BoundarySource,
+    BoundaryDestination,
   };
 
   struct RelationReference {
@@ -286,6 +302,26 @@ struct StructuredBufferReplacementListener::Impl {
     record(relations.scratchBuffers, RelationKind::Scratch);
     record(relations.outputBuffers, RelationKind::Output);
     record(relations.ddrBuffers, RelationKind::DDR);
+    for (auto [index, entry] : llvm::enumerate(relations.structuralOutputs)) {
+      auto result = mlir::dyn_cast<mlir::OpResult>(entry.endpoint);
+      if (!result)
+        continue;
+      references[result.getOwner()].push_back(RelationReference{
+          RelationKind::StructuralOutput, static_cast<unsigned>(index),
+          result.getResultNumber()});
+    }
+    for (auto [index, entry] : llvm::enumerate(relations.boundaryRelations)) {
+      auto recordEndpoint = [&](mlir::Value endpoint, RelationKind kind) {
+        auto result = mlir::dyn_cast<mlir::OpResult>(endpoint);
+        if (!result)
+          return;
+        references[result.getOwner()].push_back(RelationReference{
+            kind, static_cast<unsigned>(index), result.getResultNumber()});
+      };
+      recordEndpoint(entry.sourceEndpoint, RelationKind::BoundarySource);
+      recordEndpoint(entry.destinationEndpoint,
+                     RelationKind::BoundaryDestination);
+    }
   }
 
   mlir::Value &getBuffer(const RelationReference &reference) {
@@ -300,6 +336,12 @@ struct StructuredBufferReplacementListener::Impl {
       return relations.outputBuffers[reference.index].buffer;
     case RelationKind::DDR:
       return relations.ddrBuffers[reference.index].buffer;
+    case RelationKind::StructuralOutput:
+      return relations.structuralOutputs[reference.index].endpoint;
+    case RelationKind::BoundarySource:
+      return relations.boundaryRelations[reference.index].sourceEndpoint;
+    case RelationKind::BoundaryDestination:
+      return relations.boundaryRelations[reference.index].destinationEndpoint;
     }
     llvm_unreachable("unknown structured buffer relation kind");
   }
@@ -450,6 +492,11 @@ bool StructuredBufferReplacementListener::finalizeAfterRewrite() {
   dropErased(impl->relations.scratchBuffers);
   dropErased(impl->relations.outputBuffers);
   dropErased(impl->relations.ddrBuffers);
+  llvm::erase_if(impl->relations.structuralOutputs,
+                 [](const auto &entry) { return !entry.endpoint; });
+  llvm::erase_if(impl->relations.boundaryRelations, [](const auto &entry) {
+    return !entry.sourceEndpoint || !entry.destinationEndpoint;
+  });
   return impl->preservedAll;
 }
 
@@ -486,11 +533,50 @@ mlir::LogicalResult checkStructuredBufferRelationsCurrent(
         return relation.operation &&
                liveOperations.contains(relation.operation);
       });
+  const bool currentBoundaries =
+      llvm::all_of(relations.boundaryRelations, [&](const auto &relation) {
+        if (!relation.sourceEndpoint || !relation.destinationEndpoint ||
+            !liveValues.contains(
+                relation.sourceEndpoint.getAsOpaquePointer()) ||
+            !liveValues.contains(
+                relation.destinationEndpoint.getAsOpaquePointer()))
+          return false;
+        TileModuleOp sourceOwner = getTileOwner(relation.sourceEndpoint);
+        TileModuleOp destinationOwner =
+            getTileOwner(relation.destinationEndpoint);
+        return sourceOwner && destinationOwner &&
+               sourceOwner.getTileIdAttr().getInt() ==
+                   relation.sourceTile.getValue() &&
+               destinationOwner.getTileIdAttr().getInt() ==
+                   relation.destinationTile.getValue();
+      });
+  std::set<DemandFragmentId> boundaryFragments;
+  const bool uniqueBoundaries =
+      llvm::all_of(relations.boundaryRelations, [&](const auto &relation) {
+        return boundaryFragments.insert(relation.fragment).second;
+      });
+  const bool currentOutputs =
+      llvm::all_of(relations.structuralOutputs, [&](const auto &relation) {
+        if (!relation.endpoint ||
+            !liveValues.contains(relation.endpoint.getAsOpaquePointer()))
+          return false;
+        TileModuleOp owner = getTileOwner(relation.endpoint);
+        return owner &&
+               owner.getTileIdAttr().getInt() == relation.tile.getValue();
+      });
+  std::set<std::pair<unsigned, int64_t>> outputOwners;
+  const bool uniqueOutputs =
+      llvm::all_of(relations.structuralOutputs, [&](const auto &relation) {
+        return outputOwners
+            .insert({relation.outputIndex, relation.tile.getValue()})
+            .second;
+      });
   return mlir::success(
       currentOperations && allCurrent(relations.operationResultBuffers) &&
       allCurrent(relations.operandBuffers) &&
       allCurrent(relations.scratchBuffers) &&
-      allCurrent(relations.outputBuffers) && allCurrent(relations.ddrBuffers));
+      allCurrent(relations.outputBuffers) && allCurrent(relations.ddrBuffers) &&
+      currentBoundaries && uniqueBoundaries && currentOutputs && uniqueOutputs);
 }
 
 void retainCurrentStructuredBufferRelations(
@@ -520,6 +606,16 @@ void retainCurrentStructuredBufferRelations(
   retain(relations.ddrBuffers);
   retain(relations.partialReductionContributions);
   retain(relations.partialReductionMergeInputs);
+  llvm::erase_if(relations.structuralOutputs, [&](const auto &relation) {
+    return !relation.endpoint ||
+           !liveValues.contains(relation.endpoint.getAsOpaquePointer());
+  });
+  llvm::erase_if(relations.boundaryRelations, [&](const auto &relation) {
+    return !relation.sourceEndpoint || !relation.destinationEndpoint ||
+           !liveValues.contains(relation.sourceEndpoint.getAsOpaquePointer()) ||
+           !liveValues.contains(
+               relation.destinationEndpoint.getAsOpaquePointer());
+  });
   llvm::erase_if(relations.operationEmissions,
                  [&](const StructuredOperationEmissionRelation &relation) {
                    return !relation.operation ||

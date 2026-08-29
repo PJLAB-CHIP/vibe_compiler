@@ -6,6 +6,7 @@
 #include "WaferIRVerification.h"
 
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
@@ -54,6 +55,10 @@ static bool isShapedDataType(mlir::Type type) {
 static bool isDDRDataType(mlir::Type type) {
   auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
   return memrefType && hasWaferMemorySpace(memrefType, wafer::MemorySpace::DDR);
+}
+
+static bool isStructuralOrPhysicalBoundaryType(mlir::Type type) {
+  return mlir::isa<mlir::RankedTensorType>(type) || isDDRDataType(type);
 }
 
 /// Traces the storage roots of a value crossing a tile-region boundary.
@@ -218,20 +223,22 @@ void TileRegionOp::getRegionInvocationBounds(
 
 mlir::LogicalResult TileRegionOp::verify() {
   if (getOperation()->getParentOfType<TileRegionOp>())
-    return emitOpError("must be an outer, non-nested SPM residency region");
+    return emitOpError("must be an outer, non-nested Tile execution region");
 
   for (auto [index, input] : llvm::enumerate(getInputs())) {
     if (!isShapedDataType(input.getType()))
       continue;
-    if (!isDDRDataType(input.getType()))
+    if (!isStructuralOrPhysicalBoundaryType(input.getType()))
       return emitOpError("shaped data input at index ")
-             << index << " must be a Wafer DDR memref, got " << input.getType();
+             << index << " must be a ranked tensor or Wafer DDR memref, got "
+             << input.getType();
   }
 
   for (auto [index, result] : llvm::enumerate(getResults())) {
-    if (isShapedDataType(result.getType()) && !isDDRDataType(result.getType()))
+    if (isShapedDataType(result.getType()) &&
+        !isStructuralOrPhysicalBoundaryType(result.getType()))
       return emitOpError("shaped data result at index ")
-             << index << " must be a Wafer DDR memref, got "
+             << index << " must be a ranked tensor or Wafer DDR memref, got "
              << result.getType();
   }
   return mlir::success();
@@ -287,6 +294,67 @@ mlir::LogicalResult TileRegionOp::verifyRegions() {
   return mlir::success();
 }
 
+mlir::LogicalResult wafer::verifyStructuralTileRegions(mlir::ModuleOp module) {
+  if (!module)
+    return mlir::failure();
+  mlir::WalkResult result = module.walk([&](TileRegionOp region) {
+    if (!region->getParentOfType<TileModuleOp>()) {
+      region.emitOpError(
+          "structural TileRegion must be nested in one TileModule");
+      return mlir::WalkResult::interrupt();
+    }
+    for (auto [index, value] : llvm::enumerate(region.getInputs())) {
+      if (mlir::isa<mlir::ShapedType>(value.getType()) &&
+          !mlir::isa<mlir::RankedTensorType>(value.getType())) {
+        region.emitOpError("structural shaped input at index ")
+            << index << " must be a ranked tensor";
+        return mlir::WalkResult::interrupt();
+      }
+    }
+    for (auto [index, value] : llvm::enumerate(region.getResults())) {
+      if (mlir::isa<mlir::ShapedType>(value.getType()) &&
+          !mlir::isa<mlir::RankedTensorType>(value.getType())) {
+        region.emitOpError("structural shaped result at index ")
+            << index << " must be a ranked tensor";
+        return mlir::WalkResult::interrupt();
+      }
+    }
+    mlir::WalkResult body = region.walk([&](mlir::Operation *operation) {
+      if (operation == region.getOperation() ||
+          mlir::isa<TileYieldOp>(operation))
+        return mlir::WalkResult::advance();
+      for (mlir::Type type : operation->getOperandTypes())
+        if (mlir::isa<mlir::MemRefType>(type)) {
+          operation->emitOpError(
+              "is not legal in structural TileRegion: memref operand");
+          return mlir::WalkResult::interrupt();
+        }
+      for (mlir::Type type : operation->getResultTypes())
+        if (mlir::isa<mlir::MemRefType>(type)) {
+          operation->emitOpError(
+              "is not legal in structural TileRegion: memref result");
+          return mlir::WalkResult::interrupt();
+        }
+      llvm::StringRef dialect = operation->getName().getDialectNamespace();
+      const bool allowed =
+          dialect == "builtin" || dialect == "arith" || dialect == "math" ||
+          dialect == "tensor" || dialect == "linalg" || dialect == "scf" ||
+          dialect == "cf" || mlir::isa<mlir::func::CallOp>(operation) ||
+          mlir::isa<LinalgExtAttentionOp, LinalgExtCollectiveYieldOp>(
+              operation) ||
+          mlir::isa<WaferLinalgExtCollectiveOpInterface>(operation);
+      if (!allowed) {
+        operation->emitOpError("is not legal in structural TileRegion form");
+        return mlir::WalkResult::interrupt();
+      }
+      return mlir::WalkResult::advance();
+    });
+    return body.wasInterrupted() ? mlir::WalkResult::interrupt()
+                                 : mlir::WalkResult::advance();
+  });
+  return result.wasInterrupted() ? mlir::failure() : mlir::success();
+}
+
 mlir::LogicalResult
 wafer::verifyTileRegionStorageBoundaries(mlir::ModuleOp module) {
   mlir::WalkResult result = module.walk([&](TileRegionOp region) {
@@ -294,6 +362,11 @@ wafer::verifyTileRegionStorageBoundaries(mlir::ModuleOp module) {
     for (auto [index, input] : llvm::enumerate(region.getInputs())) {
       if (!isShapedDataType(input.getType()))
         continue;
+      if (!isDDRDataType(input.getType())) {
+        region.emitOpError("physical shaped input at index ")
+            << index << " must be a Wafer DDR memref";
+        return mlir::WalkResult::interrupt();
+      }
       llvm::DenseSet<mlir::Value> active;
       StorageTrace trace =
           traceSPMStorage(input, region, active, inputTraceMemo);
@@ -313,6 +386,11 @@ wafer::verifyTileRegionStorageBoundaries(mlir::ModuleOp module) {
     for (auto [index, yielded] : llvm::enumerate(yield.getValues())) {
       if (!isShapedDataType(yielded.getType()))
         continue;
+      if (!isDDRDataType(yielded.getType())) {
+        region.emitOpError("physical shaped result at index ")
+            << index << " must be a Wafer DDR memref";
+        return mlir::WalkResult::interrupt();
+      }
       llvm::DenseSet<mlir::Value> active;
       StorageTrace trace =
           traceSPMStorage(yielded, region, active, resultTraceMemo);

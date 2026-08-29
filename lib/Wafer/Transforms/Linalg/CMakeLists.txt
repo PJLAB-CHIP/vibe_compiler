@@ -3,6 +3,7 @@ add_mlir_library(WaferLinalgTransforms
   ConstantTensorFolding.cpp
   NormalizeAttention.cpp
   NormalizeStructuredGraph.cpp
+  SpatialRegionMaterialization.cpp
   StructuredGraphEGraph.cpp
   StructuredTiling.cpp
 
@@ -12,6 +13,7 @@ add_mlir_library(WaferLinalgTransforms
   LINK_LIBS PUBLIC
   WaferAnalysis
   WaferIR
+  WaferPlanning
   MLIRArithDialect
   MLIRDialectUtils
   MLIRFuncDialect

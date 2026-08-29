@@ -12,15 +12,19 @@ def Wafer_TileRegionOp : Wafer_Op<"tile.region", [
   ]> {
   let summary = "tile-local Wafer execution region";
   let description = [{
-    `wafer.tile.region` is a target-abstract device-side execution scope for
-    tile-local storage values, layout materialization, movement, target-abstract
-    compute, communication, and sync/effect ordering. It does not store
-    scheduling search state, raw packets, runtime buffer handles, or target CRT
-    calls. Shaped data operands and results are explicit DDR boundaries. SPM
-    roots and aliases are owned by one outer, non-nested region and cannot cross
-    its boundary; selected cross-region dataflow must materialize a DDR
-    store/completion/load edge. Scalar, event, and control values may cross the
-    boundary according to their typed contracts.
+    `wafer.tile.region` is a target-abstract device-side execution scope for one
+    selected Tile-local region group. The same operation evolves in place from
+    structural tensor IR, through layout-resolved IR, to physical local-storage
+    and movement IR. It does not store scheduling search state, raw packets,
+    runtime buffer handles, or target CRT calls.
+
+    Structural shaped operands/results are ranked tensors. Physical shaped
+    operands/results are explicit Wafer DDR memrefs. SPM roots and aliases are
+    always owned inside one outer, non-nested region and cannot cross its
+    boundary. Stage-scoped checks enforce the structural/layout-resolved/
+    physical forms; the operation verifier only checks their common local
+    operand/result/region contract. Scalar, event, and control values may cross
+    the boundary according to their typed contracts.
   }];
 
   let arguments = (ins Variadic<AnyType>:$inputs);

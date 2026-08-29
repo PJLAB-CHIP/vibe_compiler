@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
@@ -110,6 +111,93 @@ TEST_F(StructuredBufferRelationsTest,
             wafer::createPlaceRequiredNCCJoinsPass());
       })));
   EXPECT_TRUE(mlir::succeeded(
+      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
+          module->getOperation(), relations)));
+}
+
+TEST_F(StructuredBufferRelationsTest,
+       ReplacementListenerRetargetsStructuralBoundaryEndpoint) {
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry() {
+      %source = tensor.empty() : tensor<2x1025x128xf16>
+      return
+    }
+  }
+  wafer.tile.module card_id = 0 tile_id = 1 {
+    func.func @entry() {
+      %destination = tensor.empty() : tensor<2x1025x128xf16>
+      return
+    }
+  }
+}
+)mlir",
+                                              context.get());
+  ASSERT_TRUE(module);
+  llvm::SmallVector<mlir::tensor::EmptyOp, 2> emptyOps;
+  module->walk([&](mlir::tensor::EmptyOp empty) { emptyOps.push_back(empty); });
+  ASSERT_EQ(emptyOps.size(), 2u);
+  wafer::StructuredMaterializationRelations relations;
+  relations.boundaryRelations.push_back(
+      {/*fragment=*/{}, wafer::TileId(0), wafer::TileId(1),
+       emptyOps[0].getResult(), emptyOps[1].getResult()});
+  wafer::compiler::detail::StructuredBufferReplacementListener listener(
+      relations);
+  mlir::IRRewriter rewriter(context.get(), &listener);
+  rewriter.setInsertionPointAfter(emptyOps[0]);
+  auto replacement = rewriter.create<mlir::tensor::EmptyOp>(
+      emptyOps[0].getLoc(), llvm::ArrayRef<int64_t>({2, 1025, 128}),
+      rewriter.getF16Type());
+  rewriter.replaceOp(emptyOps[0], replacement.getResult());
+  EXPECT_TRUE(listener.finalizeAfterRewrite());
+  ASSERT_EQ(relations.boundaryRelations.size(), 1u);
+  EXPECT_EQ(relations.boundaryRelations.front().sourceEndpoint,
+            replacement.getResult());
+  EXPECT_TRUE(mlir::succeeded(
+      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
+          module->getOperation(), relations)));
+}
+
+TEST_F(StructuredBufferRelationsTest,
+       CurrentCheckRejectsMismatchedTileOwnerAndDuplicateBoundary) {
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry() {
+      %source = tensor.empty() : tensor<2x1025x128xf16>
+      return
+    }
+  }
+  wafer.tile.module card_id = 0 tile_id = 1 {
+    func.func @entry() {
+      %destination = tensor.empty() : tensor<2x1025x128xf16>
+      return
+    }
+  }
+}
+)mlir",
+                                              context.get());
+  ASSERT_TRUE(module);
+  llvm::SmallVector<mlir::tensor::EmptyOp, 2> emptyOps;
+  module->walk([&](mlir::tensor::EmptyOp empty) { emptyOps.push_back(empty); });
+  ASSERT_EQ(emptyOps.size(), 2u);
+  wafer::StructuredMaterializationRelations relations;
+  relations.boundaryRelations.push_back(
+      {/*fragment=*/{}, wafer::TileId(0), wafer::TileId(1),
+       emptyOps[0].getResult(), emptyOps[1].getResult()});
+  EXPECT_TRUE(mlir::succeeded(
+      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
+          module->getOperation(), relations)));
+  relations.boundaryRelations.front().sourceTile = wafer::TileId(1);
+  EXPECT_TRUE(mlir::failed(
+      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
+          module->getOperation(), relations)));
+  relations.boundaryRelations.front().sourceTile = wafer::TileId(0);
+  relations.boundaryRelations.push_back(relations.boundaryRelations.front());
+  EXPECT_TRUE(mlir::failed(
       wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
           module->getOperation(), relations)));
 }

@@ -763,6 +763,28 @@ work item删除旧owner；第12–18项不得重新引入：
 范围，但必须在IR mutation后失效，不能成为下一stage的事实源。Exact tile-relation结果只能减少已证明唯一的参数自由度，不能保存
 future tile occurrence或签发SPM/resource结论。
 
+## 第12项 Spatial/Region current-IR materialization完成记录
+
+第12项消费closed Spatial/Region choice，在一个move-only candidate owner中直接建立all-and-only TileModules、non-nested structural
+TileRegions、actual fixed spatial operations/SSA以及observable output/external endpoint relations。Region body只接入最终TileRegion一次；
+不存在scratch Module/Func、Region clone/replay、temporal loop、layout、buffer、movement、completion或future operation ID。Same-Region
+local binding直接接SSA；cross-Region same-Tile的nonempty fragment继续使用direct SSA并登记actual endpoint relation；cross-Tile登记两个actual endpoint但不跨
+`IsolatedFromAbove`接SSA。FD每个selected output merge owner保留一个full-K1/K2 opaque occurrence，其余contribution shell为空，QK/PV/state
+仍由后续selected-attention lowering拥有；来自ordinary structured producer的Q/K/V exact fragments先连接该opaque owner的actual
+destination endpoints，第14项填充各contribution shell时必须同步retarget。
+
+| 输入等价类 | Fresh覆盖 | 精确断言与结果 |
+| --- | --- | --- |
+| spatial piece | rank 3--6；1024/1025/1031；1/2/16 selected work；balanced/uniform、single/multi-axis | all-16 TileModule identity；actual piece/tail all-and-only；无temporal loop、memref或scratch owner |
+| Region membership | single/multi-root、chain、connected local、explicit replica、diamond、2/15-use fanout与joint fanin | 每个selected execution实际一次；local binding为SSA；Region non-nested；plan group输入顺序不改变输出IR |
+| external boundary | same-Tile、cross-Tile、unequal partition的multi-fragment fanin | 每个nonempty fragment一个live source/destination endpoint；exact-empty不造endpoint；Tile owner与fragment唯一；relation不含route/layout/buffer/event |
+| compute | elementwise、batch contraction、trailing/non-trailing standard reduction | pinned Tiling/PartialReduction interface实际生成verifier-valid op；非尾部partial init map按current tensor维序原位修正 |
+| attention | FA与FD；1024/1025/1031；ordinary producer→FD→ordinary consumer | FA/FD保持opaque；FD contribution/merge choice all-and-only；每merge owner一个full-K1/K2 occurrence；structured producer fragments连接actual endpoint；QK/PV/state为零 |
+| ownership/failure | program input、constant/capture、实际调用的helper symbol closure、no-work Tile、residual observable support、pre/post-mutation failure | source byte-identical；非direct shaped output typed Unsupported且不静默丢语义；失败candidate整体销毁；无临时Func命名或candidate IR诊断转储；第13项可直接调用pinned TilingInterface |
+
+实现和fresh验证入口记录在`tasks/archive/completed-task-index.md`的同名work item；本节只保存已经退出current plan的覆盖合同，不覆盖
+05--07、10、19号current设计。
+
 ## Search scalability
 
 只有`search-current-ir-integration`完成后才重新解释profile和优化search工作：

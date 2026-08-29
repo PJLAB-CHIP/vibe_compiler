@@ -75,6 +75,15 @@ void retargetRelationValue(StructuredMaterializationRelations &relations,
   retarget(relations.ddrBuffers);
   retarget(relations.partialReductionContributions);
   retarget(relations.partialReductionMergeInputs);
+  for (auto &entry : relations.structuralOutputs)
+    if (entry.endpoint == oldValue)
+      entry.endpoint = newValue;
+  for (auto &entry : relations.boundaryRelations) {
+    if (entry.sourceEndpoint == oldValue)
+      entry.sourceEndpoint = newValue;
+    if (entry.destinationEndpoint == oldValue)
+      entry.destinationEndpoint = newValue;
+  }
 }
 
 void preserveEmissionOwners(StructuredMaterializationRelations &relations,

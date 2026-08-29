@@ -14,4 +14,4 @@ module {
   }
 }
 
-// CHECK: shaped data result at index 0 must be a Wafer DDR memref
+// CHECK: shaped data result at index 0 must be a ranked tensor or Wafer DDR memref

@@ -36,6 +36,24 @@ struct PartialReductionTileMaterialization {
   llvm::SmallVector<mlir::Value, 2> mergedValues;
 };
 
+/// One actual fixed iteration-domain tile. This is spatial materialization,
+/// not temporal loop generation: callers provide a single exact offset/size
+/// vector and own all returned operations in their current IR transaction.
+struct IterationTileMaterialization {
+  llvm::SmallVector<mlir::Operation *, 2> tiledOperations;
+  llvm::SmallVector<mlir::Value, 2> tiledValues;
+  llvm::SmallVector<mlir::Operation *, 4> generatedSlices;
+  llvm::SmallVector<llvm::SmallVector<mlir::OpFoldResult, 4>, 2> resultOffsets;
+  llvm::SmallVector<llvm::SmallVector<mlir::OpFoldResult, 4>, 2> resultSizes;
+};
+
+mlir::FailureOr<IterationTileMaterialization>
+materializeOperationFromIterationTile(
+    mlir::Operation *operation, mlir::OpBuilder &builder,
+    llvm::ArrayRef<mlir::OpFoldResult> iterationOffsets,
+    llvm::ArrayRef<mlir::OpFoldResult> iterationSizes,
+    std::string *failureReason = nullptr);
+
 mlir::FailureOr<OperandTileMaterialization> materializeConsumerFromOperandTile(
     mlir::Operation *consumer, mlir::OpBuilder &builder, unsigned operandNumber,
     llvm::ArrayRef<mlir::OpFoldResult> offsets,

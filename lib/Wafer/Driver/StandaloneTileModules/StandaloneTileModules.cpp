@@ -120,6 +120,12 @@ createStandaloneTileModules(
     return failCreate(failureReason, "source module is not verifier-legal");
   if (mlir::failed(verifyTileModuleCollection(sourceModule)))
     return failCreate(failureReason, "source Tile module set is invalid");
+  if (materializationRelations &&
+      (!materializationRelations->boundaryRelations.empty() ||
+       !materializationRelations->structuralOutputs.empty()))
+    return failCreate(
+        failureReason,
+        "standalone Tile fanout requires movement-closed boundaries");
 
   for (mlir::Operation &operation :
        sourceModule.getBody()->without_terminator()) {

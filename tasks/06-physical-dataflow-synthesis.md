@@ -175,7 +175,8 @@ traversal内、中间值由direct SSA使用且无独立DDR往返时才称为coup
 Region choice只决定哪些actual operations进入同一TileRegion，不预先指定future producer delivery、nested placement或storage。
 05号access-relation e-graph已经在policy分叉前完成并且只运行一次；本stage不读取或重建e-graph。Structural materializer先生成
 all-and-only TileModules、non-nested TileRegions、actual spatial pieces、local SSA以及cross-boundary actual endpoint relations；
-attention此时仍是一个semantic op，且没有temporal loop。其直接consumer是同一transaction中的SCF tile-and-fuse transformation，后者依据
+attention此时仍是同一种opaque semantic op，每个actual occurrence只对应selected output piece或FD merge owner，且没有temporal loop。
+其直接consumer是同一transaction中的SCF tile-and-fuse transformation，后者依据
 current operation、use-def、indexing relation、effect和region boundary立即决定并执行fusion。Producer留在consumer loop外或
 进入loop内只能是rewrite后的actual IR结果，不能由`LocalUseDelivery`、布尔rewire或其它旁路计划声明。
 
@@ -227,7 +228,7 @@ tile-and-fuse直接作用于该owner；下游不消费未物化execution/value I
 
 Normalized TensorProgram中的`wafer.linalg_ext.attention`已将`flash_attention`或`flash_decoding`固定为graph fact。Search只选择
 Q/K/V的spatial partition、K/V block、temporal traversal、region membership和movement。5.2/5.3形成Region与ordinary temporal
-tile-and-fuse时attention保持同一个semantic op；generic fusion不得查看或规划其QK、PV、online state和merge。它只能通过attention
+tile-and-fuse时attention保持同一种opaque semantic op；generic fusion不得查看或规划其QK、PV、online state和merge。它只能通过attention
 当前`TilingInterface`保持K1/K2完整地处理output/parallel tile，以及无需推测内部use/replica即可由公开relation精确证明的外部edge；
 其它attention edge保持barrier。
 

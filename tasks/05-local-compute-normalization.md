@@ -27,7 +27,8 @@ Pipeline position:
 - Downstream consumer:
   physical-dataflow planning从normalized current graph的固定semantic roots构造spatial/region/temporal choice和exact
   demand/coupled contribution/merge；choice闭合后先在candidate-owned top-level TileModule subtrees内形成Region和ordinary temporal
-  tile-and-fuse，attention仍保持同一个semantic op。紧随其后的selected-attention lowering才消费尚未使用的K1/K2及
+  tile-and-fuse，attention仍保持同一种opaque semantic op；每个actual occurrence只对应selected output piece或FD merge owner。
+  紧随其后的selected-attention lowering才消费尚未使用的K1/K2及
   contribution choice，把该op一次性改写为canonical actual Linalg/Tensor/SCF。后续layout、movement、bufferization、Instr、
   completion和memory只从该current IR生成或重算。
 - User-level driver / named pipeline:
@@ -382,7 +383,7 @@ Spatial/region/temporal choice闭合后立即进入candidate transaction；不�
 spatial/region/temporal choice
   -> validate current TensorProgram and recomputable attention semantic query
   -> create one candidate-owned top-level TileModule subtrees
-  -> materialize Region and compact temporal tile-and-fuse while attention remains one semantic op
+  -> materialize Region and compact temporal tile-and-fuse while attention remains the same opaque semantic op kind
   -> selected-attention lowering consumes fixed algorithm and remaining K1/K2/contribution choices
   -> create canonical selected linalg.matmul/generic/reduce, tensor slices, scf.for and coupled state SSA
   -> build/apply current-SSA layout assignment, exact views and bufferization

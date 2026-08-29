@@ -47,11 +47,19 @@ namespace wafer {
 mlir::LogicalResult
 verifyNoSchemaFreeSemanticAttributes(mlir::Operation *operation);
 
-/// Verifies cross-operation SPM ownership at the Instr-memory stage. The
-/// TileRegion operation verifier remains local; this check may follow
-/// ViewLike/control-flow def-use chains because actual memory planning is its
-/// direct consumer.
+/// Verifies the physical TileRegion boundary and cross-operation SPM
+/// ownership at the Instr-memory stage. Every shaped boundary must already be
+/// a Wafer DDR memref. The TileRegion operation verifier remains local; this
+/// check may follow ViewLike/control-flow def-use chains because actual memory
+/// planning is its direct consumer.
 mlir::LogicalResult verifyTileRegionStorageBoundaries(mlir::ModuleOp module);
+
+/// Verifies the structural TileRegion form immediately after selected
+/// Spatial/Region materialization. Tensor boundaries are required for shaped
+/// values; layout, movement, allocation, Instr and completion operations are
+/// rejected. This check is module-scoped because it also validates parent
+/// TileModule ownership and the complete collection form.
+mlir::LogicalResult verifyStructuralTileRegions(mlir::ModuleOp module);
 
 /// Verifies module-scoped Tile identity and shared DDR bindings. TileModule
 /// operation verification remains local and never inspects sibling modules or

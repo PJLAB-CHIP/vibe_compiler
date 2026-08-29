@@ -4,6 +4,7 @@
 
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/IR/PatternMatch.h"
+#include "llvm/ADT/DenseSet.h"
 
 using namespace wafer;
 
@@ -86,6 +87,68 @@ mlir::FailureOr<OperandTileIterationDomain> mapOperandTileToIterationDomain(
 }
 
 } // namespace
+
+mlir::FailureOr<wafer::IterationTileMaterialization>
+wafer::materializeOperationFromIterationTile(
+    mlir::Operation *operation, mlir::OpBuilder &builder,
+    llvm::ArrayRef<mlir::OpFoldResult> iterationOffsets,
+    llvm::ArrayRef<mlir::OpFoldResult> iterationSizes,
+    std::string *failureReason) {
+  if (failureReason)
+    failureReason->clear();
+  auto tiling = mlir::dyn_cast_or_null<mlir::TilingInterface>(operation);
+  if (!tiling) {
+    setFailureReason(
+        failureReason,
+        "fixed iteration tile requires an operation with TilingInterface");
+    return mlir::failure();
+  }
+  if (iterationOffsets.size() != iterationSizes.size() ||
+      iterationOffsets.size() != tiling.getLoopIteratorTypes().size()) {
+    setFailureReason(
+        failureReason,
+        "fixed iteration tile rank does not match the operation iterator "
+        "domain");
+    return mlir::failure();
+  }
+  IterationTileMaterialization result;
+  for (unsigned resultNumber = 0; resultNumber < operation->getNumResults();
+       ++resultNumber) {
+    llvm::SmallVector<mlir::OpFoldResult> offsets;
+    llvm::SmallVector<mlir::OpFoldResult> sizes;
+    if (mlir::failed(tiling.getResultTilePosition(
+            builder, resultNumber, iterationOffsets, iterationSizes, offsets,
+            sizes))) {
+      setFailureReason(failureReason,
+                       "TilingInterface cannot map one fixed result tile");
+      return mlir::failure();
+    }
+    result.resultOffsets.push_back(std::move(offsets));
+    result.resultSizes.push_back(std::move(sizes));
+  }
+  mlir::FailureOr<mlir::TilingResult> tiled =
+      tiling.getTiledImplementation(builder, iterationOffsets, iterationSizes);
+  if (mlir::failed(tiled) || tiled->tiledOps.empty() ||
+      tiled->tiledValues.size() != operation->getNumResults()) {
+    if (mlir::succeeded(tiled)) {
+      for (mlir::Operation *tiledOperation : llvm::reverse(tiled->tiledOps))
+        if (tiledOperation->use_empty())
+          tiledOperation->erase();
+      for (mlir::Operation *slice : llvm::reverse(tiled->generatedSlices))
+        if (slice->use_empty())
+          slice->erase();
+    }
+    setFailureReason(failureReason,
+                     "TilingInterface rejected the fixed iteration tile");
+    return mlir::failure();
+  }
+  result.tiledOperations.assign(tiled->tiledOps.begin(), tiled->tiledOps.end());
+  result.tiledValues.assign(tiled->tiledValues.begin(),
+                            tiled->tiledValues.end());
+  result.generatedSlices.assign(tiled->generatedSlices.begin(),
+                                tiled->generatedSlices.end());
+  return result;
+}
 
 mlir::FailureOr<wafer::OperandTileMaterialization>
 wafer::materializeConsumerFromOperandTile(
@@ -292,6 +355,90 @@ wafer::materializePartialReductionTile(
                               partialTiling->tiledValues.end());
   result.generatedSlices.assign(partialTiling->generatedSlices.begin(),
                                 partialTiling->generatedSlices.end());
+
+  // The pinned Linalg external model appends each reduction dimension to an
+  // init indexing map, while generateInitialTensorForPartialReduction inserts
+  // the corresponding tensor dimension at its original iterator position.
+  // Those two choices coincide for trailing reductions but produce invalid IR
+  // for a legal non-trailing reduction. Rebuild only the just-created actual
+  // partial generic with the same tiled inputs, current identity tensors and
+  // a map whose result order matches those tensors. This remains one local
+  // current-IR transformation; no future operation or replay record is kept.
+  auto sourceLinalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(reduction);
+  if (sourceLinalg && result.partialOperations.size() == 1) {
+    auto partialGeneric =
+        mlir::dyn_cast<mlir::linalg::GenericOp>(result.partialOperations[0]);
+    if (!partialGeneric) {
+      interfaceOperation->erase();
+      setFailureReason(failureReason,
+                       "Linalg partial reduction did not produce a generic");
+      return mlir::failure();
+    }
+    llvm::SmallVector<mlir::AffineMap, 4> maps =
+        partialGeneric.getIndexingMapsArray();
+    llvm::DenseSet<int> reductionDimensionSet(
+        result.reductionDimensions.begin(), result.reductionDimensions.end());
+    for (unsigned initIndex = 0; initIndex < sourceLinalg.getNumDpsInits();
+         ++initIndex) {
+      mlir::AffineMap original = sourceLinalg.getMatchingIndexingMap(
+          sourceLinalg.getDpsInitOperand(initIndex));
+      llvm::SmallVector<mlir::AffineExpr, 4> orderedResults;
+      unsigned originalResult = 0;
+      const unsigned partialRank =
+          original.getNumResults() + result.reductionDimensions.size();
+      for (unsigned position = 0; position < partialRank; ++position) {
+        if (reductionDimensionSet.contains(position)) {
+          orderedResults.push_back(builder.getAffineDimExpr(position));
+          continue;
+        }
+        if (originalResult >= original.getNumResults()) {
+          interfaceOperation->erase();
+          setFailureReason(
+              failureReason,
+              "partial-reduction init map cannot preserve iterator order");
+          return mlir::failure();
+        }
+        orderedResults.push_back(original.getResult(originalResult++));
+      }
+      if (originalResult != original.getNumResults()) {
+        interfaceOperation->erase();
+        setFailureReason(
+            failureReason,
+            "partial-reduction init map does not cover its output dimensions");
+        return mlir::failure();
+      }
+      mlir::OpOperand *partialInit =
+          partialGeneric.getDpsInitOperand(initIndex);
+      auto partialLinalg =
+          mlir::cast<mlir::linalg::LinalgOp>(partialGeneric.getOperation());
+      maps[partialLinalg.getIndexingMapIndex(partialInit)] =
+          mlir::AffineMap::get(original.getNumDims(), original.getNumSymbols(),
+                               orderedResults, original.getContext());
+    }
+
+    mlir::OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPoint(partialGeneric);
+    auto rebuilt = builder.create<mlir::linalg::GenericOp>(
+        loc, mlir::ValueRange(result.initialValues).getTypes(),
+        partialGeneric.getDpsInputs(), result.initialValues, maps,
+        partialGeneric.getIteratorTypesArray());
+    mlir::IRMapping mapping;
+    partialGeneric.getRegion().cloneInto(&rebuilt.getRegion(),
+                                         rebuilt.getRegion().begin(), mapping);
+    partialGeneric.erase();
+    result.partialOperations.assign(1, rebuilt.getOperation());
+    result.partialValues.assign(rebuilt->getResults().begin(),
+                                rebuilt->getResults().end());
+    llvm::SmallVector<mlir::Operation *, 4> liveSlices;
+    for (mlir::Operation *slice : result.generatedSlices) {
+      if (slice->use_empty()) {
+        slice->erase();
+        continue;
+      }
+      liveSlices.push_back(slice);
+    }
+    result.generatedSlices = std::move(liveSlices);
+  }
 
   mlir::FailureOr<mlir::MergeResult> merged = interface.mergeReductions(
       builder, loc, result.partialValues, result.reductionDimensions);

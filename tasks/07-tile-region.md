@@ -22,7 +22,7 @@ schedule或completion plan。下游只从输出IR的operation、SSA、type、reg
 ```text
 post-attention bounded-normalized TensorProgram + structural choice
   -> candidate-owned TileModule/TileRegion rewrite
-  -> compact temporal tile-and-fuse; attention remains one semantic op
+  -> compact temporal tile-and-fuse; attention occurrences remain the same opaque semantic op kind
   -> selected-attention lowering to actual Linalg/Tensor/SCF
   -> late remainder specialization and local slice/view cleanup
   -> verifier
@@ -46,7 +46,10 @@ Pipeline position:
 - Current stage responsibility:
   消费closed spatial/region choice，在builtin module中生成all-and-only top-level TileModules和non-nested structural TileRegions；
   根据RootRegionWork物化ordinary spatial pieces、region inputs/results、direct local SSA和cross-boundary actual endpoints。
-  Attention保持同一个opaque semantic op。本stage不生成temporal loop，不执行fusion或attention decomposition，也不选择或物化
+  Shaped program output必须已经是normalization后的direct structured result；残留observable support chain返回typed Unsupported，不能静默
+  丢失output transform或把producer endpoint冒充最终output。
+  Attention保持同一种opaque semantic op；每个actual occurrence只对应selected output piece或FD merge owner。本stage不生成temporal
+  loop，不执行fusion或attention decomposition，也不选择或物化
   layout、buffer、movement、software pipeline、rotating storage、worker、order或completion。
 - Output IR / files:
   verifier-valid structural `builtin.module`、`wafer.tile.module`、`wafer.tile.region`以及实际Linalg/Tensor/SCF或typed Tile compute。
@@ -129,11 +132,14 @@ Region formation必须覆盖fanout的每个use、reduction partial/merge、effec
 ### 4.1 Boundary endpoint relation
 
 - Same-Region local binding在structural materialization中直接成为SSA use-def，不建立relation record。
-- Cross-Region same-Tile和cross-Tile external binding分别创建source TileRegion result与destination TileRegion input两个actual
+- Cross-Region same-Tile和cross-Tile的nonempty external binding分别创建source TileRegion result与destination TileRegion input两个actual
   endpoint。TileModule的`IsolatedFromAbove`禁止cross-Tile SSA capture，因此cross-Tile两端不直接接线。
 - Candidate transaction返回的named materialization result同时拥有IR owner与typed boundary relations。每条relation只包含
   `DemandFragmentId`、source/destination Tile/Region identity以及两个已存在current values；不得包含route、layout、buffer、
   storage、event、order、completion或offset。
+- FD contribution shell尚为空时，其structured operand fragment先由同一output piece的opaque merge occurrence持有actual destination
+  endpoint；第14项在填充contribution shell的同一次rewrite中把relation显式retarget到新建current argument/use。不能提前为shell
+  发明QK/PV/state value，也不能让relation继续指向已擦除的opaque occurrence。
 - 第13--15项的rewriter listener用`IRMapping`或显式replacement同步retarget；无法映射、duplicate或stale endpoint立即成为
   compiler contract failure，不能按type、位置、ordinal、Location或名称恢复。
 - 第16项movement是唯一consumer：它从layout-resolved actual endpoints和current effect生成local、DDR或peer movement，
@@ -154,9 +160,12 @@ epoch内存活，不能由planning session、analysis cache或全局side table�
    每个TileModule只接收selected placement属于该Tile的work，不从module/vector ordinal反推identity。
 4. **创建structural TileRegions**：每个`RegionGroupPlan`在其selected TileModule内创建一个non-nested TileRegion；ordinary root、
    support closure、reduction contribution/merge shell和explicit replica按RootRegionWork逐项形成actual operation/SSA。Attention只创建
-   opaque semantic occurrence或empty selected shell，不展开QK/PV/state。
-5. **连接boundary**：local binding直接接SSA；external binding创建source result和destination input actual endpoints并登记4.1节的
-   typed current relation。每个source/use/fragment all-and-only，不能建立stored/direct/nested delivery或future value ID。
+   opaque semantic occurrence或empty selected shell，不展开QK/PV/state。Region body先作为本次op构造所需的detached region建立，
+   再一次接入最终TileRegion；不创建scratch Module/Func，也不clone已经形成的TileRegion。FD的每个selected output merge owner保留一个
+   full-K1/K2 opaque semantic occurrence，未承载该occurrence的contribution shell只有terminator。
+5. **连接boundary**：local binding直接接SSA；nonempty external binding创建source result和destination input actual endpoints并登记4.1节的
+   typed current relation。Exact-empty binding不创建endpoint或relation。每个source/use/fragment all-and-only，不能建立
+   stored/direct/nested delivery或future value ID。
 6. **验证与handoff**：运行MLIR verifier、Tile domain/Region membership/structural-form stage check和relation current check，直接断言
    spatial interval coverage、无重叠、owner、replica、boundary totality、attention opacity及source不变。Success后同一owner与relations
    直接交给compact temporal tile-and-fuse；本stage不生成temporal loop，也不顺带调用attention、layout或movement。
@@ -244,8 +253,9 @@ fallback builder或partial result。Unsupported semantics、resource exhaustion�
   位于consumer loop外且每selected execution只物化一次，融合producer只位于对应consumer traversal内；
 - compact tile-and-fuse的每个attention occurrence保持op kind、algorithm、type和opaque内部语义；新增occurrence逐一由outer tile、
   necessary tail或explicit replica解释；selected-attention lowering对每个actual occurrence恰运行一次；FA产生一个
-  K2-owner的actual coupled-state recurrence；FD target Region shells逐显式choice存在且compact前后只有terminator，selected lowering后
-  contributions、merge/finalize和跨Region current tensor boundary all-and-only，进入layout前attention op和未填充attention shell均为零；
+  K2-owner的actual coupled-state recurrence；FD每个output merge owner在compact前后保留一个full-K1/K2 opaque occurrence，
+  其它contribution shell只有terminator；selected lowering后contributions、merge/finalize和跨Region current tensor boundary
+  all-and-only，进入layout前attention op和未填充attention shell均为零；
 - structural candidate owner每attempt只新建或clone一次；tile/fuse和selected-attention lowering均不额外clone TileModule owner；
 - exact/partial view、layout-compatible/incompatible、shared conversion、alias和explicit copy；
 - function result direct destination、region-local SPM reuse和真正cross-region DDR boundary；因output DPS缺失产生的冗余
