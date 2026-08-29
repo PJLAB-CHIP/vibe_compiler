@@ -1,6 +1,6 @@
 # Wafer Frontend 与 StableHLO Program Directory 设计
 
-状态：2026-08-19已完成portable StableHLO与产品frontend current cutover。本文只拥有StableHLO program directory、
+本文只拥有StableHLO program directory、
 metadata/payload和frontend verification合同；`num_partitions`描述card partition，不描述单卡16个Tile。
 typed model/state/resource graph与Tile级physical-dataflow planning属于下游，不是frontend事实。实现状态看`tasks/progress.md`。
 
@@ -28,7 +28,7 @@ Pipeline position:
   形成top-level TileModule set并联合搜索spatial placement、temporal tiling、TileRegion/融合与communication。
 - User-level driver / named pipeline:
   `wafer-verify-program --program-dir`只做program-directory advisory verification；继续编译只经
-  当前`wafer-compile --input-program-dir=... --output-dir=... --num-partitions=1`；
+  当前`wafer-compile --input-program-dir=... --output-dir=... --num-partitions=1 --optimization-policy=search|none`；
   source-to-package optimization policy只为`search|none`，current target identity由compiler固定提供，不是用户选择。
   `wafer-opt`的`wafer-frontend-verification` named pipeline只处理显式IR，不拥有program-directory I/O。
 - Explicit non-goals:
@@ -98,12 +98,12 @@ source snapshot只需要隔离IR、metadata和目录结构事实。大payload通
 shard建立新的`ProgramDataSource`；replication或contiguous slice引用已有source和新range，不能同时保留original data和
 byte-identical shard来暗示sharing。
 
-SPMD helper是外部进程边界，不是一个可继续传裸C++引用的pass。Q58必须让helper消费transaction-owned、content-stable的
+SPMD helper是外部进程边界，不是一个可继续传裸C++引用的pass。Compiler transaction必须让helper消费transaction-owned、content-stable的
 all-and-only IR/metadata/ProgramDataRange，并把真正产生的新shard作为`ProgramDataSource` readback接管；helper不能重新打开原source path、整树复制
 或整NPY读入host vector。current product compiler只接受`num_partitions=1`，多partition shard只在frontend/helper isolated gate中
 证明，不冒充source→DeviceExecutable完整产品路径。
 
-该边界由Q58原位替换current复制实现。它不定义checkpoint registry、framework adapter、target packing、package schema、
+该边界不定义checkpoint registry、framework adapter、target packing、package schema、
 device residency或compute-time weight streaming。
 
 ### 2.2 产品 frontend 与外部 StableHLO 边界
@@ -120,8 +120,8 @@ optimization policy都留在adapter之外。
 mutation复用的“verified path”。旧测试generator调用产品export/save policy，只保留case、oracle与corpus职责。
 
 产品adapter和source verifier必须复用同一ingestion实现；advisory verifier只报告当前路径是否通过检查，compiler仍在自己的
-transaction中重新打开、拥有并验证全部输入。参数内容的`ProgramDataSource`/`ProgramDataRange`生命周期由Q58负责，
-不在Q60重建参数管理层或plugin registry。
+transaction中重新打开、拥有并验证全部输入。参数内容的`ProgramDataSource`/`ProgramDataRange`生命周期由本文件2.1节负责；
+产品adapter不重建参数管理层或plugin registry。
 
 ## 3. Frontend Verification
 
@@ -227,33 +227,14 @@ name与版本workaround只留在adapter或诊断中。
 - 从exporter metadata/payload取得parameter与constant，不在后端按名字重新配对；
 - 保存exporter产生的`mhlo.sharding`，不提前转成target Tile或Wafer私有strategy。
 
-Q5.C的source-backed corpus由
-`test/Tools/Inputs/workloads/single-card-vertical.json`和真实capture generator拥有。当前固定case是
-linear-residual MLP与tiny Llama decoder block；spec记录source revision、config、seed、dtype、shape和payload/
-reference digest。独立NumPy oracle、framework CPU交叉检查与重复export canonical-equivalence只证明source
-verification，不证明compiler、runtime或board完成。Q20/Q21必须直接消费这些admitted program，不能换成手写
-task/instruction fixture。
-
-Q28另以`test/Tools/Inputs/workloads/llama-2-7b-block.json`固定标准Llama-2 7B单block配置：H=4096、
-I=11008、32 heads、head dimension 128、FP16、batch 1、sequence 16。generator直接分块填充最终FP16 parameter
-allocation，避免为90M-element projection额外建立全尺寸临时数组；最终`expected.npy`必须由同一parameter/input的
-PyTorch eager CPU完整block执行产生，手写NumPy路径只作诊断。scale payload使用显式SplitMix64 counter映射：
-global row-major index、固定seed和彼此独立的parameter stream共同形成长周期、FP16-exact值，避免matrix axis短周期重复及
-跨projection系统性相关；input、全部parameter和expected在digest及output writing前逐项检查finite。重复export必须
-得到canonical-equivalent program和固定digest，既有tiny corpus保持冻结而不随scale算法迁移。该case的shape、seed和
-payload算法是corpus参数，不进入frontend output协议。
-
-Q31 numeric characterization没有修改上述冻结case的seed、digest或verification。repository test-input generator可以从一个
-固定base case显式生成不同seed的diagnostic variant，但必须记录base case、实际seed、动态input/parameter/expected/program
-digest和`verification=false`；variant不能写回workload spec、复用固定digest字段或被`--emit-workload-corpus`当作正式case。
-variant仍由同一PyTorch eager block产生expected、由同一真实exporter产生program，并进入同一production compiler pipeline；
-因此它只扩充有限tested payload domain，不改变frontend program directory、dtype、shape、sharding或参数绑定协议。Q31的两个
-variant seed和原固定seed全部通过后，scale case只把source/model comparator policy收紧为`atol=0.004, rtol=0.002`；该字段
-不进入source/config/payload/program digest，也不把variant提升为corpus verification。
+Source-backed corpus至少包含普通multi-op图、attention/decode和parameter-heavy完整block。每个正式case记录source
+revision、config、seed、dtype、shape及payload/reference digest，并由同一framework eager执行产生用户级expected。
+重复export必须得到canonical-equivalent program；diagnostic variant显式记录实际seed和`verification=false`，不能改写
+正式corpus。具体case、shape、payload生成和历史characterization属于测试资产或archive，不进入frontend协议。
 
 旧TP16/rank-as-Tile资格只作历史背景，不属于current frontend合同。当前GEMM、HuggingFace attention、
 KV-cache decode与Llama-2 7B block都从真实framework module和原始dtype tensor导出
-`num_partitions=1`的card-local program；source IR不携带物理Tile mesh或卡内TP标记。Q52 `none`与`search`随后
+`num_partitions=1`的card-local program；source IR不携带物理Tile mesh或卡内TP标记。Physical-dataflow stage随后
 从同一structured DAG决定16个Tile上的spatial mapping、temporal tiling、TileRegion/融合与通信。不得用手写
 StableHLO/MLIR、parameter name或测试fixture把这些卡内决定提前编码进frontend。
 同一组tensor先在PyTorch eager CPU执行形成唯一用户级expected；NumPy不得参与expected生成或最终结果比较。
@@ -286,11 +267,11 @@ target context或writing authority。
 
 source-to-package driver在parse前建立transaction ownership：IR、metadata和目录结构进入私有snapshot，大payload由
 content-stable且完成extent/digest校验的`ProgramDataSource`/`ProgramDataRange`持有；后续frontend verify、helper和IR transforms只消费该transaction
-拥有的事实。当前整目录复制以及propagated/original/shard多份payload是Q58必须删除的实现差距，不能成为长期隔离机制。
+拥有的事实。整目录复制或同时保留propagated/original/byte-identical shard payload不是合法隔离机制。
 source不得被原地补metadata、topology或shards。compiler transaction最终发布重新parse/verify过的card-partition-local
 structured program state；local compute normalization与fixed structured optimization随后建立`TensorProgram` boundary，之后
 physical-dataflow synthesis从单卡partition output构造一个top-level TileModule set，其中all-and-only available Tiles
-各有独立`wafer.tile.module`。每个Tile可有不同op、loop和temporal tile shape；Q52 search owner选择
+各有独立`wafer.tile.module`。每个Tile可有不同op、loop和temporal tile shape；physical-dataflow owner选择
 placement、tiling和TileRegion membership并立即生成actual IR，随后在current IR上物化NoC/DDR movement，exact gates通过后形成`DeviceExecutable`，再由target与
 package阶段发布`ExecutablePackage`。`TensorProgram`是该planning阶段的唯一输入output；已删除的`wafer.group`
 formation/selector没有兼容、debug或发布旁路。

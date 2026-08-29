@@ -1,5 +1,8 @@
 # Program data package 与设备常驻执行实施计划
 
+> 归档说明：本文保留Q56完成记录和Q57早期设计。Q57 current计划只读
+> `tasks/plans/resident-static-execution.md`，package/runtime稳定合同只读15--17号设计。
+
 设计合同由`tasks/14-target-code-generation.md`、`tasks/15-launch-runtime-package.md`和
 `tasks/16-verification-contract.md`拥有，状态只看`tasks/progress.md`。本计划只拆施工顺序，不建立第二套总体架构。
 

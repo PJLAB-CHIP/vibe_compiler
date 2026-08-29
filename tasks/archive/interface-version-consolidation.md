@@ -1,5 +1,7 @@
 # Q55 接口版本收敛实施计划
 
+> 归档说明：Q55已经完成。Current接口演进合同只读20号及各格式owner；本文只保留迁移记录。
+
 设计合同见`tasks/20-interface-evolution.md`，状态只看`tasks/progress.md`。本计划不重新定义package、runtime、
 profiler、frontend或target语义。
 

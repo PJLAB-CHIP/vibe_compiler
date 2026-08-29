@@ -3,6 +3,10 @@
 本文件记录可复用的现象、根因、修复和防复发模式。一次性case状态、历史输出、临时workaround和已经退役接口不在
 这里保存；具体任务证据归编号设计、progress或原始测试记录。
 
+只按当前问题读取相关条目，不把本文件从头到尾作为开工前置。常用检索词包括`current IR`、`search`、`SPM`、
+`completion`、`bufferization`、`package`、`runtime`、`CMake`和`ownership`。条目描述的是防复发模式；若与current
+编号设计或源码冲突，以current事实源为准并在同次修改中修正文档。
+
 ## Card partition与Tile被混成一个domain
 
 - 现象：GSPMD的partition count直接决定单卡Tile程序数量，spatial mapping、不同op并行和cross-Tile communication搜索消失。
@@ -1000,7 +1004,7 @@
   root集合。独立stage又只在已有global materialization cache entry时更新value，cache miss时没有插入sealed result。
 - 修复模式：策略只要当前component实际拥有producer endpoint或consumer endpoint之一就保留；独立consumer stage完成后对共同
   `materialized` cache执行insert-or-update，子窗口从sealed DDR view派生。source-only destination traversal还必须传递当前clone的
-  structured node mapping，否则BodyEmitter无法形成result-buffer relation。
+  structured node mapping，否则current structural materializer无法形成result-buffer relation。
 - 防复发：用多输出transpose→consumer的16-Tile source-to-package/no-card gate，同时由内部postcondition拒绝zero-root/multi-root；
   单纯的小型single-output fixture不足以覆盖remote endpoint裁剪和outgoing cache复用。
 
@@ -1201,7 +1205,7 @@
 - 现象：attention每个K2 block更新后固定join worker0；external/cache copy按全1 tile为每个element执行load、store、join和dealloc；
   TileRegion exit及managed WDMA store/reload又自动join；peer send/recv则在issue后立即await。小shape和只检查最终结果的测试全部通过，
   真实shape下join/DMA数量却随block或element数线性增长，异步窗口被静默清空。
-- 根因：algorithm decomposition、BodyEmitter和lowering把operation类别、region/materialization结构及“保守同步”当成硬件completion
+- 根因：algorithm decomposition、legacy materializer和lowering把operation类别、region/materialization结构及“保守同步”当成硬件completion
   proof，在worker/order/storage/lifetime尚未关闭前选择participant和insertion point。测试只断言存在completion或程序成功，没有检查
   dynamic work、位置和直接lifetime witness。只把任意后继same-worker issue当成“worker已完成”同样错误：busytable可以在后续
   同worker物理复用时按实际地址排序，但不能让更晚的不同worker、Kcore或DTE在没有join时复用仍在飞行的地址。
@@ -1226,7 +1230,7 @@
   失效。operation/value地址只能在当前IR epoch做局部lookup，也不能替代relation identity。
 - 修复模式：listener只保存`{relation kind, index, result number}`等typed reference，每次访问由caller-owned
   `StructuredMaterializationRelations`解析current元素。Tile emission、selected DDR stage、output insert和Tile-to-Instr scratch都由父
-  transaction追加relation；BodyEmitter/lowering只报告实际buffer事实，不拥有全局关系表。full conversion后清除已经失效的source
+  transaction追加relation；current materializer/lowering只报告实际buffer事实，不拥有全局关系表。full conversion后清除已经失效的source
   operation emission，保留已重接到current storage roots的relation。
 - 防复发：测试在多次append和多跳replacement后核对每个relation仍指向current IR；support copy→typed store、output source、scratch及
   missing/duplicate/unknown semantic root group分别有正负例。每个actual SPM allocation没有typed owner时必须compiler-contract failure，

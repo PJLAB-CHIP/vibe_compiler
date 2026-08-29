@@ -312,7 +312,7 @@ creation共用`PhysicalLayoutRelation`/`TransferRealizability` proof，不保留
 Execution-structure choice只能从movement-closed physical TileRegion中的actual loop、compute、movement、SSA、effect和token重算。
 Serialized choice不修改IR；software-pipelined choice由唯一current-IR transformation立即创建prefix/steady/tail、chunk control、
 actual stage occurrence、rotating allocation roots、slot selection和loop-carried SSA。它不使用future event/buffer ID、预测lifetime或
-SPM footprint，也不把`ExecutionStructurePlan`或buffer multiplicity传给下游。
+SPM footprint，也不把cross-stage execution plan或buffer multiplicity传给下游。
 
 无法证明recurrence、effect、slot reuse、external observation，或无法用current SSA/effect/token表达下游必须闭合的completion
 obligation时返回typed unknown/unsupported；不在本stage
@@ -359,7 +359,7 @@ Allocator不返回retile、spill、layout、route或completion repair recipe。
 | selected attention algorithm lowering | 05号selected-attention transformation；输入保持opaque的current attention op与尚未消费的显式choice，输出actual Linalg/Tensor/SCF且attention为零 | compact tile-and-fuse、layout PBQP、Instr lowering或winner阶段 |
 | function-boundary与region-local bufferization、view/alias、materializing allocation | 6.1 layout/bufferization transformation；输出layout-resolved、function-boundary-bufferized current IR | actual memory/target leaf、SPM/DDR planner |
 | 普通layout/bufferization allocation的创建位置 | 创建该allocation的6.1 transformation；allocation在current IR中的dominance/effect位置就是memory input事实 | MiniMalloc前的generic first-use sinking或lifetime改写 |
-| software pipeline/rotating allocation root、slot selection和loop-carried SSA | 6.3 execution-structure transformation；输出actual loop与allocation roots | BodyEmitter旁路buffer plan、SPM planner按queue depth补建 |
+| software pipeline/rotating allocation root、slot selection和loop-carried SSA | 6.3 execution-structure transformation；输出actual loop与allocation roots | lowering旁路buffer plan、SPM planner按queue depth补建 |
 | TileRegion-to-Instr、worker/order和minimum completion | 6.4/6.5 current-Instr transformation；输出completion-closed canonical Instr | bufferization、movement、execution-structure或memory planner |
 | SPM lifetime/demand、MiniMalloc offset和accepted high-water/headroom | 6.6 actual SPM leaf，从上述current Instr fresh重算 | candidate proposal、footprint estimate或上游shape规则 |
 | DDR offset/high-water、transport/resource与target acceptance | 6.6 actual leaf依次调用12、13、14定义的唯一kernel | layout/search shadow state或runtime重新planning |

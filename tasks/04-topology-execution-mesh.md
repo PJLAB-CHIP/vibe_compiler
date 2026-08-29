@@ -1,6 +1,6 @@
 # Wafer Target Topology 与 Card-Partition Mesh 设计
 
-状态：2026-08-08 按logical card partition与Tile双域重置。本文拥有
+本文拥有
 `wafer.target.topology`、card-level logical execution mesh以及两者的可重算基础事实；
 `tasks/06-physical-dataflow-synthesis.md`唯一拥有card-local physical-dataflow搜索与TileModule set，tasks/14拥有current target identity。
 实现状态看`tasks/progress.md`。

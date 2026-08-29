@@ -1,7 +1,7 @@
 # Wafer ExecutablePackage、Runtime Invocation Planning 与 Board Launch
 
-状态：本文是current `ExecutablePackage`、target-ready program data和runtime launch的唯一现行设计合同；
-Q58/Q56/Q57实施状态只看`tasks/progress.md`。本文按当前single-card、all-and-only 16 Tiles、static-ranked entry和
+本文是current `ExecutablePackage`、target-ready program data和runtime launch的唯一现行设计合同。本文按
+single-card、all-and-only 16 Tiles、static-ranked entry和
 `txLaunchKernel` family收口，不预埋model launch、multi-entry、跨卡或serving协议。
 
 ## 1. Pipeline contract
@@ -9,7 +9,7 @@ Q58/Q56/Q57实施状态只看`tasks/progress.md`。本文按当前single-card、
 ```text
 Pipeline position:
 - Upstream IR / input:
-  Q58 ProgramDataHandoff、final verified DeviceExecutable、同次target lowering产生的owner-backed modules、
+  ProgramDataHandoff、final verified DeviceExecutable、同次target lowering产生的owner-backed modules、
   16个TileEntryArgument[]与TargetTensor descriptors。
 - Current stage responsibility:
   为package-owned TargetTensor确定program-data.bin中的deterministic offset/span/alignment并只转换一次；
@@ -20,7 +20,7 @@ Pipeline position:
   一个ExecutablePackage：manifest.json、modules/下all-and-only target modules、data/program-data.bin；
   runtime产生RuntimeInvocationPlan与typed invocation result。
 - Downstream consumer:
-  wafer-run、Q49.P/Q53 qualification、profile和Q57 PreparedExecution。
+  wafer-run、production qualification、profile和PreparedExecution。
 - User-level driver / named pipeline:
   wafer-compile search|none写package；wafer-run --no-card|--board消费同一current合同。
 - Explicit non-goals:
@@ -92,7 +92,7 @@ ProgramTensorRecord:
   partition/slice identity
 ```
 
-identity来自verified source和Q58 handoff，不从name/path/shape/digest推导。Package不保存source path。
+identity来自verified source和ProgramDataHandoff，不从name/path/shape/digest推导。Package不保存source path。
 typed package model中的logical dtype是closed value；manifest JSON只在serializer/parser边界使用canonical external spelling，
 parser一次性类型化并拒绝unknown/alias spelling，runtime/compiler不得再次按字符串恢复语义。
 
@@ -194,7 +194,7 @@ Module ID/path/vector位置不承担Tile identity。
 Compiler assembly顺序：
 
 1. 验证ExecutionConfig、target identity、runtime ABI、launch contract、module format和16 Tile domain；
-2. 对Q58 ProgramDataRange与16个TileEntryArgument做all-and-only join，建立ProgramTensor/TargetTensor；
+2. 对ProgramDataRange与16个TileEntryArgument做all-and-only join，建立ProgramTensor/TargetTensor；
 3. 按TargetTensor stable identity、physical bytes/alignment预排program-data offset和total bytes；
 4. 使用bounded source window和existing physical tensor codec，按offset流式写`program-data.bin`，每个TargetTensor转换一次；
 5. 写canonical zero padding并增量计算whole-file digest；
@@ -284,7 +284,7 @@ runtime identity和exact Tile domain，并同时返回session capability；不�
 后续`executeBoardInvocationInSession`要求相同device与qualification，并继续对每个package执行完整pre-effect validation，但不重复
 device enumeration、selection或inventory查询。
 
-session只拥有已确认的device/driver identity和sticky usable/poisoned状态，不等于Q57 `PreparedExecution`：不同package仍分别完成
+session只拥有已确认的device/driver identity和sticky usable/poisoned状态，不等于`PreparedExecution`：不同package仍分别完成
 自己的allocation、H2D、module load、submission、D2H和cleanup，不共享program data、module handle、pointer row或output buffer。
 一个owner在host侧串行调用session；任何timeout、不可信terminal或provider poison使其永久不可继续，destructor不执行reset、power或
 恢复。
@@ -293,13 +293,13 @@ session只拥有已确认的device/driver identity和sticky usable/poisoned状�
 不定义Tile间串行语义；provider可用多个queues，实际并发由compiler生成的data/effect/resource/completion关系决定。host测试串行
 不应退化成16个per-Tile进程或per-Tile invocation。
 
-Q53 matched runner复用这一current session API，在同一qualified device上交错执行独立`none`/`search` package。A/B order、重复次数和
+Matched qualification runner复用这一current session API，在同一qualified device上交错执行独立`none`/`search` package。A/B order、重复次数和
 结果比较属于显式test harness，不进入普通`wafer-run`、package或runtime default；runtime只返回每次invocation的typed lifecycle、
 outputs、launch-to-completion、host-submit、optional device timing和completion observation resolution。
 
-## 7. Q57 PreparedExecution
+## 7. PreparedExecution
 
-Q57只延长Q56已经验证的对象lifetime：
+PreparedExecution只延长one-shot合同中已经验证的对象lifetime：
 
 ```text
 PreparedExecution owns:
@@ -350,7 +350,7 @@ Host/no-card至少覆盖：
 - current kernel pointer-row与`TileEntryArgument` schema双射，package/runtime不接受model BootParam分支或fallback。
 
 板端case使用FP16/BF16，fresh生成完整package并先通过no-card；单进程串行launch、bounded timeout、output/guard和正常lifecycle。
-代码或环境未变化时不重复历史case。Q56达到`board-ready`需要case/oracle/runner完整且实际生成新package；
+代码或环境未变化时不重复历史case。Package/runtime达到`board-ready`需要case/oracle/runner完整且实际生成新package；
 真实板测通过前不标`done`。
 
 ## 10. 参考工程采用边界

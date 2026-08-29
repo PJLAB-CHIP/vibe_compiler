@@ -238,8 +238,9 @@ current physical-dataflow spatial/temporal/fusion selection。current 路径必�
 
 - `docs/tx81-compiler-hardware-calibration.md`
 - `tasks/06-physical-dataflow-synthesis.md`
-- `tasks/plans/multi-engine-software-pipelining.md`
-- `tasks/plans/noc-resident-tile-dataflow.md`
+- `tasks/07-tile-region.md`
+- `tasks/13-communication.md`
+- `tasks/16-verification-contract.md`
 - 对应的当前测试和 lowering 代码
 
 本导读只重排已经确认的事实，不替代校准矩阵或 ABI 合同。板卡、固件、runtime profile、描述符格式或

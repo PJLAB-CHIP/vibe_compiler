@@ -1,6 +1,6 @@
 # Wafer Shardy / Card-Level SPMD 设计
 
-状态：2026-08-13按card-level GSPMD与card-local physical-dataflow分层同步。本文只拥有frontend sharding、
+本文只拥有frontend sharding、
 global-to-card-local partition 和 post-SPMD structured-program boundary；单卡 Tile 的 spatial mapping、
 temporal tiling、融合、驻留和通信由 `tasks/06-physical-dataflow-synthesis.md` 唯一拥有。实现状态看
 `tasks/progress.md`。

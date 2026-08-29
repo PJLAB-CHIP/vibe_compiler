@@ -55,8 +55,8 @@ event wait直接推导endpoint/resource/completion输入。它不是另一层buf
   `dst_dtype` 表达任意转换。
 - `wafer.instr.*` op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset或raw
   packet field。普通NCC issue显式携带typed worker identity；instruction lowering先形成canonical worker0/
-  unplaced current Instr；schedule planning从SSA、effects和ranges派生`DisjointComponents` worker alternatives，selected
-  `ScheduleEmitter`一次写入actual worker attrs。统一completion owner随后删除全部`wafer.instr.ncc_join`并从selected current IR fresh重建
+  unplaced current Instr；schedule stage从current SSA、effects和ranges构造query-local dependence/resource choices，
+  selected rewrite一次写入actual worker attrs。统一completion owner随后删除全部`wafer.instr.ncc_join`并从selected current IR fresh重建
   latest-necessary completion。已有nonzero assignment不原地
   重写。current worker-aware ABI接受`worker0/worker1/worker2`，并lower到统一ordinary symbols，
   exact ABI在末尾携带`i32 worker`；没有worker0 fallback或旧symbol。
@@ -83,7 +83,7 @@ event wait直接推导endpoint/resource/completion输入。它不是另一层buf
   legalize 这些 region body 内的 executable target-abstract op，并保留 `scf` container；是否选择
   硬件 branch/loop、predication 或 unroll 不是 instruction-level IR 的当前职责。
 - software pipeline、prefix/steady/tail、chunk occurrence、rotating allocation root和slot SSA必须已由上游current Tile
-  execution-structure transformation物化。TileRegion→Instr只保持这些actual结构，不接收或构造`ExecutionStructurePlan`、
+  execution-structure transformation物化。TileRegion→Instr只保持这些actual结构，不接收或构造cross-stage execution plan、
   buffer multiplicity或预测lifetime。
 
 `wafer.tile.region`在本层仍严格表示单个Tile的SPM residency domain，不是可跨Tile或跨region的pipeline

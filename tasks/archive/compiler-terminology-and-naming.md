@@ -1,5 +1,7 @@
 # Compiler 命名整改计划
 
+> 归档说明：本计划已经完成。Current命名与源码组织规则只读18、19号设计和`AGENTS.md`。
+
 状态：`done`。
 
 ## Pipeline Contract

@@ -1,18 +1,17 @@
 # Wafer Target Code Generation 与 TargetCall
 
-状态：本文是target conversion、target-ready program data、LLVM module、device link、readback与TargetCall的唯一现行设计合同；
-Q58/Q56的数据代码实施状态只看`tasks/progress.md`。单卡编译边界固定覆盖16个available Tiles；Q52的
-none/search只将各自final accepted `DeviceExecutable`接入这条边界。现有host/model
-验证不能代替Q53的fresh package/no-card和真实板端matched A/B gate。
+本文是target conversion、target-ready program data、LLVM module、device link、readback与TargetCall的唯一现行设计合同。
+单卡边界固定覆盖16个available Tiles；none/search只将各自final accepted `DeviceExecutable`接入本层。
+Host/model验证不能代替fresh package/no-card或真实板端qualification。
 
 ## 1. Pipeline Contract
 
 ```text
 Pipeline position:
 - Upstream IR / input:
-  Q52 `none`或`search`产生的accepted `DeviceExecutable`；其中all-and-only `wafer.tile.module`已投影为16个
+  none或search产生的accepted `DeviceExecutable`；其中all-and-only `wafer.tile.module`已投影为16个
   Tile ModuleOp，并完成TileRegion→Instr、fresh completion、SPM/DDR placement、transport与executable verification；
-  Tile entry携带typed program binding，Q58 `ProgramDataHandoff`稳定拥有对应parameter/external captured-constant文件与checked range。
+  Tile entry携带typed program binding，`ProgramDataHandoff`稳定拥有对应parameter/external captured-constant文件与checked range。
 - Current stage responsibility:
   对每个 Tile 做 current target ABI preparation、Instr→Target LLVM conversion、LLVM translation、
   target-call legality、device link、ELF/readback验证；同时将logical bindings、ProgramDataRange与16 Tile entry arguments做一次
@@ -34,7 +33,7 @@ Pipeline position:
   package file offset或device address写回Instr IR。
 - Done criteria:
   16 个 Tile interfaces all-and-only、物理三元组唯一且关系一致；每个 target module 的 current
-  metadata/ABI/exports/digest fresh readback；任一 Tile 失败时无部分 output 可见；Q53 source→package/no-card
+  metadata/ABI/exports/digest fresh readback；任一 Tile 失败时无部分 output 可见；production source→package/no-card
   重放通过，并在真实板端gate完成前保持`board-ready`而非`done`。
 ```
 
@@ -61,9 +60,9 @@ post-selection wrapper定义第二层长期output。
 
 ### 2.2 Program data 与 TargetTensor
 
-Q58 `ProgramDataHandoff`为每个parameter/constant提供稳定`ProgramTensorId`、logical descriptor、owned file和
+`ProgramDataHandoff`为每个parameter/constant提供稳定`ProgramTensorId`、logical descriptor、owned file和
 checked `ProgramDataRange`；`DeviceExecutable`的Tile bindings只引用这些identity/slice，不携带payload。
-Q62把source parser之后仍以`std::string dtype`传播的实现原位切为closed typed logical element value；本层只消费该typed
+Source parser之后只传播closed typed logical element value；本层消费该typed
 descriptor，不能重新解析NPY/JSON spelling或维护第二份element-byte/floating分类表。
 
 target ABI preparation将16个Tile的program bindings与最终entry argument types做一次device-scoped join，验证all-and-only覆盖并形成：
@@ -71,7 +70,7 @@ target ABI preparation将16个Tile的program bindings与最终entry argument typ
 - 每个selected `TargetTensor`的ProgramTensor/ProgramDataRange来源；
 - exact target dtype、`MemLayout`、logical shape、physical span、alignment和转换identity；
 - 引用该TargetTensor的all-and-only(card, tile, launch slot, argument ordinal)集合；
-- Q56 package writer所需的bounded source reader和target codec动作。
+- package writer所需的bounded source reader和target codec动作。
 
 ProgramTensor、ProgramDataRange和TargetTensor是不同identity。同一个ProgramDataRange可因accepted current IR中不同actual encoding/conversion形成多个
 TargetTensor；只有显式引用同一TargetTensor的entry arguments才能共享target bytes。不同ProgramTensor即使path、shape、bytes或
@@ -137,7 +136,7 @@ profile或capability registry。缺少必要参数的selected representation在�
 共同调用这一实现。CodeGen不链接formal model，formal wrapper只把同一conversion result/error/flags映射到model API。
 
 这一阶段不决定device base或provider allocation；它给15号package owner提供确定的ProgramDataRange、TargetTensor descriptor、
-exact byte count和可流式写入的转换动作。Q56为这些TargetTensor预排`program-data.bin` offset并计算whole-file digest。
+exact byte count和可流式写入的转换动作。Package owner为这些TargetTensor预排`program-data.bin` offset并计算whole-file digest。
 target model与profile writing必须复用同一physical descriptor、codec和materialization实现，不得重新打开source path、按Tile重复转换，
 也不得通过model-only arithmetic dispatcher重建另一条静态数据转换路径。
 
@@ -231,6 +230,6 @@ Host gates至少覆盖：
 - 同一组owner-backed target LLVM modules被`ExecutablePackage` assembly、TargetCall frontend和SystemC直接消费，
   无第二次lowering。
 
-Q53完成还必须由current source重新生成generic DAG、HF prefill/decode与Llama package，fresh no-card后达到
+Production host qualification还必须由current source重新生成generic DAG、HF prefill/decode与Llama package，fresh no-card后达到
 `board-ready`；真实设备上 Llama 和一个 prefill/decode代表做同源 matched A/B、exact output/guard并获得可重复改善后
 才能标 `done`。历史 target/module通过记录不能代签这一门禁。

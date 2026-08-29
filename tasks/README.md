@@ -64,8 +64,8 @@
 | 当前或later范围 | 实施计划 | 稳定设计owner |
 | --- | --- | --- |
 | Q52 search scalability与Q53 production host readiness | `tasks/plans/physical-dataflow-synthesis.md` | 06；直接下游07–16 |
-| Q57 resident static execution | `tasks/plans/executable-package-and-resident-runtime.md` | 15–17 |
-| Q61 whole-program scale readiness | `tasks/plans/program-data-and-whole-program-scale.md` | 01–02、06、14–18 |
+| Q57 resident static execution | `tasks/plans/resident-static-execution.md` | 15–17 |
+| Q61 whole-program scale readiness | `tasks/plans/whole-program-scale-readiness.md` | 01–02、06、14–18 |
 | Q48 semantic superoptimization | `tasks/plans/semantic-superoptimization.md` | 05–08、10–11、16–18 |
 
 Q52当前同时处理baseline回归、两条policy各自的IR膨胀、verifier职责、actual-IR materialization boundary、
@@ -91,6 +91,15 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 | 文档 | 原性质 |
 | --- | --- |
 | `tasks/archive/completed-task-index.md` | 已完成任务的历史边界与证据入口索引；不参与current调度 |
+| `tasks/archive/document-authority-consolidation.md` | 已完成的current文档事实源、计划归档、README、编号设计、硬件事实和memory收敛记录 |
+| `tasks/archive/compiler-entry-productization.md` | 已完成Q59/Q60的compiler transaction与frontend产品入口实施记录；稳定合同只读01、02、15、18--20 |
+| `tasks/archive/compiler-terminology-and-naming.md` | 已完成的源码、IR和component命名整改记录；稳定命名规则只读18、19和AGENTS |
+| `tasks/archive/interface-version-consolidation.md` | 已完成Q55的current-only接口版本收敛记录；稳定接口规则只读20及各格式owner |
+| `tasks/archive/executable-package-and-resident-runtime.md` | 已完成Q56 package/runtime闭合及Q57早期设想；Q57 current计划只读`tasks/plans/resident-static-execution.md` |
+| `tasks/archive/program-data-and-whole-program-scale.md` | 已完成Q58 program-data ownership及Q61早期设想；Q61 current计划只读`tasks/plans/whole-program-scale-readiness.md` |
+| `tasks/archive/physical-dataflow-synthesis-q52-plan-history.md` | Q52第1--11项、旧路径删除账本和早期第12--20项展开；current顺序和矩阵只读`tasks/plans/physical-dataflow-synthesis.md` |
+| `tasks/archive/mlir-engineering-reference-snapshot.md` | 19号MLIR工程合同收敛前的代表实现对照、pinned commit和完整调研链接；不作为current规则 |
+| `tasks/archive/general-development-reference-snapshot.md` | `memory/general_dev.md`收敛前的完整开发经验和历史架构说明；current方法只读memory，设计只读编号文档 |
 | `tasks/archive/component-dependency-closure.md` | 已完成的pass owner、component依赖、tool link、fixture/cache与组织门禁闭合；稳定规则只读18、19 |
 | `tasks/archive/source-layout-consolidation.md` | 已完成的源码目录、component target、test mirror、tools/runtime路径与current文档收敛计划；稳定规则只读18、19 |
 | `tasks/archive/target-numeric-contract-reconstruction.md` | 已完成Q62的Target数值合同拆分记录；稳定语义只读01、11、14、16–18 |

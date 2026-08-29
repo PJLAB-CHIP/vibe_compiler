@@ -1,9 +1,8 @@
 # Wafer Target Execution Model
 
-状态：当前模型是 owner-backed target LLVM/TargetCall 上的 untimed functional-event model。它验证target语义、physical
-Tile交互和完整输出，不是accepted IR解释器、runtime ABI替代品或cycle model。动态任务状态只看
-`tasks/progress.md`；Q58已经闭合program-data ownership，Q56已把compiler/package侧target representation合同推进到
-`board-ready`；model仍是独立的typed invocation consumer，必须由current `DeviceExecutable` source vertical重新证明，不能沿用旧执行域
+当前模型是owner-backed target LLVM/TargetCall上的untimed functional-event model。它验证target语义、physical
+Tile交互和完整输出，不是accepted IR解释器、runtime ABI替代品或cycle model。Model是独立typed invocation consumer，
+必须由current `DeviceExecutable` source vertical重新证明，不能沿用旧执行域
 结论或把package结果代签model能力。
 
 ## 1. Pipeline Contract
@@ -12,7 +11,7 @@ Tile交互和完整输出，不是accepted IR解释器、runtime ABI替代品或
 Pipeline position:
 - Upstream IR / input:
   同一次compiler transaction产生的`DeviceExecutable`、与其绑定的owner-backed target LLVM module set、typed program
-  invocation、Q58 `ProgramDataHandoff`、Q56 `TargetTensor`与独立CPU expected；`DeviceExecutable`覆盖single card的all-and-only 16 Tiles并保留
+  invocation、`ProgramDataHandoff`、`TargetTensor`与独立CPU expected；`DeviceExecutable`覆盖single card的all-and-only 16 Tiles并保留
   (card_id, tile_id, launch_slot)。
 - Current stage responsibility:
   将每个`TargetTensor`编码一次并绑定到exact `TileEntryArgument`；通过host JIT执行final target LLVM entries并解码closed TargetCall
@@ -21,7 +20,7 @@ Pipeline position:
   TargetModelResult：target identity、model implementation/evidence、card-scoped completion统计、numeric flags、typed outputs及诊断；
   不产生可被compiler或runtime消费的schedule sidecar。
 - Downstream consumer:
-  source/model differential、target command qualification、Q53无卡验证，以及后续独立board numeric correlation。
+  source/model differential、target command qualification、production无卡验证，以及后续独立board correlation。
 - User-level driver / named pipeline:
   wafer-compile `search|none`的target-model执行路径和configured model integration tests；model不增加第三种optimization policy。
 - Explicit non-goals:
@@ -29,7 +28,7 @@ Pipeline position:
   bandwidth或board performance；不从symbol、OS thread、ordinal或container position恢复Tile身份。
 - Done criteria:
   current target-call registry、memory/effect/event/numeric正负例通过；同源source的16-Tile完整output与CPU expected
-  比较；Q53 matrix fresh重放。真实设备相关结论仍由独立board gate签发。
+  比较；production qualification matrix fresh重放。真实设备相关结论仍由独立board gate签发。
 ```
 
 ## 2. 稳定边界
@@ -52,7 +51,7 @@ card级`TargetTensor`、input/output由card共享，workspace/status由Tile独�
 16个Tile entry arguments绑定同一base；input physical bytes与argument values由prepared invocation拥有，不alias source
 NPY storage。这里的model-private memory只服务functional model，不定义package中的provider allocation identity。
 
-Q58/Q56 current合同下，parameter/external captured-constant不得经per-Tile invocation重新打开或读取。当前model先从同一
+Current program-data/package合同下，parameter/external captured-constant不得经per-Tile invocation重新打开或读取。当前model先从同一
 `ProgramDataHandoff`形成typed `ProgramTileInvocation`，再按explicit `TileEntryArgument`建立model-private bytes；它不得读取package
 文件或重新解释manifest。后续若让model与package共享materialization owner，必须保持每个selected representation一次转换和
 bounded window合同；相同digest仍不能合并不同`ProgramTensor`或不同target representation。
@@ -144,8 +143,8 @@ target numeric command、physical tensor、formal arithmetic和backend evidence�
 - `WaferTargetNumericBackend`拥有model-facing host numeric dispatch；其中`WaferOneDNNBackend`只实现qualified GEMM/reorder。
   oneDNN qualification只绑定concrete problem、payload、comparator、backend和environment，不记录semantic profile或resolution digest。
 
-compiler/ABI legality不读取formal/target numeric backend support；model support和board correlation也不能反向签发compiler legality。Q22.N时期的
-`NumericSemantics` aggregate、model profile、capability pattern和resolved command不是current合同，按Q62计划原位退役且不保留
+compiler/ABI legality不读取formal/target numeric backend support；model support和board correlation也不能反向签发compiler legality。
+历史`NumericSemantics` aggregate、model profile、capability pattern和resolved command不是current合同，也不保留
 compatibility surface。
 
 ### 5.1 Physical codec
@@ -221,11 +220,11 @@ Unit/integration gate至少覆盖：
 - formal numeric、`WaferOneDNNBackend` qualification、完整output differential与environment provenance；
 - aggregate/nonaggregate module topology具有相同typed Tile interfaces和functional outputs。
 
-Q53 source/model gate必须重新执行generic mixed DAG、HF prefill、functional two-step decode和Llama block的current
+Production source/model gate必须重新执行generic mixed DAG、HF prefill、functional two-step decode和Llama block的current
 FP16/BF16输入。通过只证明current target functional semantics与CPU expected一致；current package exact-provider、真实board
 correctness和performance仍是独立gate。
 
-Q61 whole-program scale默认只要求compiler/package/no-card闭合；只有model capability与host budget明确覆盖完整大图时，
+Whole-program scale默认只要求compiler/package/no-card闭合；只有model capability与host budget明确覆盖完整大图时，
 才运行完整target-model differential。因budget或unsupported target call拒绝必须作为typed model limitation记录，不能把
 单block model通过写成完整模型证据。
 
@@ -235,5 +234,4 @@ Q61 whole-program scale默认只要求compiler/package/no-card闭合；只有mod
 - SystemC event ordering不证明vendor queue实现相同，只证明typed dependency合同自洽。
 - target-call成功不证明current loader/provider可执行同一module；exact package execution另行验证。
 - model与board相关性必须使用current source/config/payload/ABI和held-out cases，不能读取历史raw重新签发。
-- Q53在fresh package/no-card前保持`doing`；达到无卡完整矩阵后才可`board-ready`；真实matched A/B改善前不得
-  标`done`。
+- Host qualification在fresh package/no-card完整矩阵通过后只能到`board-ready`；真实matched A/B通过前不得标`done`。

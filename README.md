@@ -1,10 +1,13 @@
 # Wafer AI Compiler
 
-Wafer AI Compiler 是面向 Wafer/TX81 单卡目标的 MLIR 编译器与 runtime。当前主线接收
-PyTorch/XLA 导出的 StableHLO program directory，在 card-level GSPMD 边界之后对整张 structured DAG 联合选择
-Tile spatial mapping、temporal tiling、fusion/SPM residency 和 NoC 数据流，生成一个完整的 card
-verified package。仓库同时提供 no-card validation 和 repo-owned TargetCall/SystemC untimed functional model，
-用于在真实板卡接入前验证 compiler、ABI、memory、transport 和数值语义。
+Wafer AI Compiler 是面向 Wafer/TX81 单卡目标的 MLIR 编译器与runtime。产品输入是PyTorch/XLA导出的
+StableHLO program directory；目标流水线在card-level GSPMD之后形成card-local structured IR，选择并物化
+multi-Tile dataflow，再生成`DeviceExecutable`和verified package。仓库同时包含no-card validation以及
+TargetCall/SystemC untimed functional model，用于分层验证compiler、ABI、memory和transport合同。
+
+当前源码正在重建physical-dataflow的current-IR链。`none`和`search`两个产品policy目前都会明确返回
+`operation_not_supported`，不会发布package；可用组件、恢复顺序和完成门禁只以
+[`tasks/progress.md`](tasks/progress.md)为准。下面的流水线描述目标架构，不表示每个产品stage当前均已接通。
 
 logical card partition 和 Tile 是两个不同的 domain：`num_partitions` 只属于 GSPMD/global tensor
 boundary，card-local MPMD 由builtin module中的16个top-level
@@ -12,58 +15,42 @@ boundary，card-local MPMD 由builtin module中的16个top-level
 只包含 all-and-only Tile executable 和 card resource/launch 合同；不再存在 logical rank 直接绑定
 Tile、single-Tile entry ABI 或兼容 reader。
 
-## 编译流水线
+## 目标编译流水线
 
 ```text
 PyTorch/XLA StableHLO program directory
   -> frontend verification
   -> Shardy/XLA SPMD partitioning (logical card partitions)
   -> card-local Linalg/Tensor/SCF structured DAG
-  -> bounded structured-DAG spatial/temporal/dataflow search
+  -> policy-owned spatial/region/temporal choices
+  -> actual TileRegion materialization and current-IR transformations
   -> top-level wafer.tile.module(card_id, tile_id)*
   -> standalone per-Tile modules
   -> Tile IR -> Instr IR + completion + SPM/DDR + Direct-DTE gates
-  -> module/executable verification and candidate selection
+  -> module/executable verification and policy acceptance
   -> DeviceExecutable
        ├─ same-lowering Target LLVM -> TargetCall/SystemC
        └─ device link -> typed manifest -> verified package
-                            ├─ no-card RuntimeSession
+                            ├─ no-card package validation
                             └─ configured TX81 RuntimeProvider
 ```
 
-最终 IR、target modules 和 package 只保留 accepted typed IR、binding、offset、completion 和 transport 事实。候选集、cost、ordinal、
-analysis 和 rejected state 都是 query-local compiler state，不进入 IR 或 package。
+最终IR、target modules和package只保留accepted typed IR、binding、offset、completion和transport事实。
+Choice、cost、analysis和rejected candidate state都是query-local compiler state，不进入IR或package。
 
-## 当前能力
+## 当前仓库边界
 
-- **Frontend/SPMD**：验证 StableHLO program directory、typed inputs/parameters 和 card-level Shardy/XLA SPMD；单卡当前
-  `num_partitions=1`。
-- **Structured-DAG 选择**：通过 TilingInterface、SSA use-def、Affine/Presburger relation 和 physical topology 联合选择
-  per-op Tile placement、finite temporal tile、local residency 与显式 peer movement；只对有界 shortlist 物化 actual clones。
-- **物理实现**：支持 Tensor/Cx/NCx physical encoding、metadata view、compact/mapped DMA、SPM gather/scatter、
-  relation-backed resident transfer 和 fixed-capacity SPM/DDR packing。
-- **Topology-aware 通信**：cross-Tile edge 从 current SSA/indexing relation 推导 exact demanded domain，只传输 placement
-  中缺失的部分；selected Tile modules内使用显式peer send/receive/wait。collective lowering同样由current
-  topology 和实际 Tile group 验证。
-- **Typed target capability**：覆盖 mapped RDMA/WDMA offset、physical-footprint fill、GEMM/batched GEMM 和 versioned
-  oriented GEMM ABI。
-- **原子输出**：完整 Tile set 通过 DDR、NoC、instruction、event、ABI、device-link、manifest 和 readback gate 后，
-  才写入 `DeviceExecutable`、Target LLVM modules 和 verified package。
-- **功能数值验证**：同一 target lowering 可由 TargetCall/SystemC model 消费，并与独立 CPU expected 比较完整输出。
-- **板端 runtime**：`wafer-run`对整个 verified package 建立 typed kernel/model session，执行
-  allocation/H2D/load/submit/completion/status/D2H/cleanup；不提供选单个 Tile entry 的入口。
-- **硬件能力边界**：当前 TX81 profile 对 compiler-sensitive 行为使用
-  `supported`/`board-observed`/`unknown`/`excluded`分级；Unknown 不会被猜成 latency、bank、route 或更宽能力。
+- Frontend、StableHLO program验证、Shardy/XLA adapter、Wafer dialect及各atomic transformation/conversion以独立
+  library和registered pipeline存在。
+- Structured logical normalization、physical relation、layout assignment、movement、execution structure、Instr、
+  SPM/DDR、transport、target module、package和runtime分别有明确owner；它们不能代替尚未接通的产品纵向。
+- `wafer-opt`用于局部IR调试和registered pipeline验证；它不拥有另一套产品candidate selector。
+- TargetCall和SystemC是target-lowering的功能模型入口，不是`wafer-compile`的替代成功路径。
+- `wafer-run --no-card`验证已经存在的current package；它不能把历史package或fixture代签为本轮compile结果。
+- TX81事实按`supported`、`board-observed`、`unknown`和`excluded`分级；unknown不会被推测成合法性或同步行为。
 
-当前完成状态和精确边界以 [`tasks/progress.md`](tasks/progress.md) 为准；Q32 physical-dataflow synthesis 的集成证据见
-[`tasks/archive/physical-dataflow-synthesis-completion-audit.md`](tasks/archive/physical-dataflow-synthesis-completion-audit.md)。
-
-## 当前演进
-
-当前 owner 是06号physical-dataflow主线：Q49.P先从正常上游IR闭合deterministic `none`，Q51再通过Q50各轴把
-spatial mapping、temporal tiling、fusion/SPM residency、NoC和compute/communication overlap纳入唯一共同搜索。
-旧rank==Tile、late selector、single-entry ABI和专用workload shortcut不再是current owner。动态状态、前置和完成门禁只看 [`tasks/progress.md`](tasks/progress.md)；README
-不复制实施日志或历史性能结论。
+当前主线是06号设计拥有的physical-dataflow current-IR materialization。动态状态、线性顺序和完成门禁只看
+[`tasks/progress.md`](tasks/progress.md)；README不复制实施日志或历史性能结论。
 
 ## 仓库结构
 
@@ -136,14 +123,14 @@ build/bin/wafer-compile \
   --optimization-policy search
 ```
 
-`search`和`none`是两个独立controller，分别构造自己的current TileModule/TileRegion/Instr IR，只在policy-complete后消费同一个actual
-memory/target leaf，二者不能互相调用或fallback。当前这两条controller尚未重新接通，会在DeviceExecutable边界明确返回
-`operation_not_supported`，不会发布package；状态与恢复顺序以`tasks/progress.md`为准。编译成功当且仅当package已原子提交并readback
-验证：CLI 退出 0 时目标 package 必然可见，退出非 0 时本次目标 package 不可见。`--profile` 时输出目录是
-共同 delivery root，一次 rename 发布 `<output>/package` 与 `<output>/package.profile`，runtime 的
-`<package-root>.profile` sibling 规则不变。target-model 与 compiler IR dump 只属于 internal/test 入口
-（`wafer-compile-test`），不进入 production compile status。普通模式的`<output-dir>`就是package root；`--profile`模式下
-它是共同delivery root，package root为`<output-dir>/package`。package可先做无板卡validation：
+`search`和`none`是两个独立controller；恢复后它们分别拥有自己的current TileModule/TileRegion/Instr IR，
+policy-complete后才共同消费actual memory/target leaf，不能互相调用或fallback。当前二者均在
+DeviceExecutable边界返回`operation_not_supported`，所以以上命令不会发布package。
+
+`--compile-timing`、`--dump-compiler-ir <dir>`和`--profile`是产品CLI的显式诊断选项；使用它们不改变成功定义。
+流水线恢复后，编译成功当且仅当package完成原子提交和strict readback：退出0时本次package可见，非0时不可见。
+普通模式的`<output-dir>`是package root；profile模式使用共同delivery root发布`package`及其profile sibling。
+已经存在的current package可做无板卡validation：
 
 ```bash
 build/bin/wafer-run \
@@ -161,16 +148,13 @@ script/CRT/ABI 资源位于可执行文件旁的 install 目录，`python3`/`cla
 
 ## 当前边界
 
-- 当前 production domain 是单卡、一个 logical card partition 和 card-local 16-Tile MPMD；cross-card、dynamic
+- 目标production domain是单卡、一个logical card partition和card-local 16-Tile MPMD；cross-card、dynamic
   shape/state、MoE 和持久化权重缓存尚未进入主线。card 可以为不同 op/分支生成不同 Tile module，
   这不等于 GSPMD partition。
-- 数学变换只能从 current structured semantics 和显式 proof 合法产生；不授权任意 fast-math、未证明的
-  FMA contraction，也不放宽 special value、index、layout、guard 或 physical-span 检查。
 - SystemC 是 untimed functional-event model，不证明 vendor packet、RISC-V ELF exact execution、板端性能或 cycle accuracy。
-- 历史板端证据只证明当时 profile、shape、dtype、payload、ABI 和 runtime identity 下的能力；Q49.P/Q53 的
-  current package 和性能结论必须用新 pipeline fresh 产生，不回放旧输出代签。
-- card 理论 cost 只使用 cohort 内全部候选共有的已知 term；不知的硬件参数不进入比较，不产生
-  候选局部缺项或候选局部零值；raw collector的`unavailable`只作诊断，不进入最终数值makespan。
+- 历史板端证据只证明当时profile、shape、dtype、payload、ABI和runtime identity下的能力；current package和
+  性能结论必须由恢复后的产品pipeline fresh产生，不回放旧输出代签。
+- Search选择不替代current IR上的legality、actual SPM规划或completion验证。
 
 ## 文档与协作
 

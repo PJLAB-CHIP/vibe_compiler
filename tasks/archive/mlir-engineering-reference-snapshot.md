@@ -1,4 +1,7 @@
-# MLIR 工程化合同
+# MLIR工程调研与参考实现快照
+
+本文件保存2026-08-29文档收敛前的完整MLIR工程设计、代表实现对照和pinned源码链接。稳定current合同只读
+`tasks/19-mlir-engineering.md`；本快照只用于追溯调研依据。
 
 本文定义横跨 Wafer 各 IR 层的 MLIR 基础设施使用合同，拥有 operation/region scope、ODS、标准 interface、
 pass/analysis manager、rewrite/conversion、canonicalization、symbol 与 location 的工程边界。01–18 仍分别拥有架构、
@@ -280,9 +283,21 @@ verifier，不能把unknown全legal的`applyFullConversion`当作闭合证明。
 
 ### 7.1 代表实现对照
 
-代表实现的逐项对照、pinned commit和源码链接见
-`tasks/archive/mlir-engineering-reference-snapshot.md`。Current合同不从某个项目是否clone推导；review必须具体判断
-decision representation、最窄scope、owner、失败语义、artifact命运和work数量。
+下面记录的是具体实现机制，不把其中任意一行单独提升成所有compiler都必须遵守的规则。版本基线分别为仓库pinned
+`llvm-project@f0b3287297`、`xla@32ebd694c4d0`，以及参考实现
+`tvm@f792a1d1aa63`、`iree@1e43d5458e33`。
+
+| 场景与代表实现 | decision representation | clone / materialization | 失败与产物命运 | 对Wafer的直接启示 |
+| --- | --- | --- | --- | --- |
+| MLIR普通pass、XLA `HloPassPipeline` | current IR和pass-local analysis | 通常直接改当前IR；pass manager会clone可变pass executor用于并发，但不是clone IR | 失败停止后续pipeline；普通pass没有统一的root rollback承诺 | 不能仅为“pass失败后入口IR字节不变”机械套Module snapshot；先看caller是否还需要失败IR |
+| MLIR DialectConversion与PatternRewriter局部修改事务 | rewrite log、conversion legality、pattern state | conversion driver记录mutation并能`undoRewrites`；`applyAnalysisConversion`运行legalization搜索但不提交变换 | rollback是framework语义的一部分，范围是该driver管理的rewrite | 能直接使用framework transaction时不另造root snapshot；也不能把framework rollback描述成所有pass都无事务 |
+| Transform dialect `alternatives` | 显式alternative region | 对每个alternative复制`IsolatedFromAbove` scope，失败副本销毁，首个成功副本替换原scope | 多个真实IR可依次存在，复制是该operation语义 | 只有显式使用这项IR语义时才适用；current attention normalization使用一个fixed-algorithm op，不据此复制whole program |
+| MLIR reducer / crash-reproducer | interestingness、size、reproducer config | reducer clone整个Module并运行待测pipeline；debug快照也可clone root | 这是显式工具模式，不是production pass惯例 | reducer/debug clone列为独立模式，不能用它论证普通lowering snapshot，也不能把它误删 |
+| LLVM LoopVectorize/SLP/FunctionSpecialization/AMDGPU split proposal | VPlan、tree/cost、specialization record、`SplitProposal` | 多数选择先比较轻量plan，选中后执行；specialization和module split只复制最终保留的函数/partition | selected copy成为最终CFG或output | Wafer只对spatial/region/temporal等明确structural choice借鉴轻量枚举，并在choice闭合后立即物化actual TileRegion IR。不仿照VPlan在C++ struct中模拟future SSA/buffer/event；SPM legality仅来自current Instr |
+| XLA GPU autotuning | backend config、isolated HLO module、compiled executable、`AutotuneResult` | 各config可并发extract/compile/profile；winner config写回原HLO，完整程序随后按集成上下文再编译 | candidate executable是测量对象；失败分类、结果cache和确定顺序均为显式合同 | compile-and-measure允许多actual artifact和后续集成编译；必须与普通analytic search分开建模 |
+| TVM MetaSchedule | base workload、`Trace`、Schedule/IRModule、builder artifact、measurement record | 每worker持有base module copy，trace可并行replay成多个schedule；database query也会重放trace | replay是持久化tuning record的定义，不要求winner沿用第一次内存中的IR对象 | rematerialization本身不是错误；需要稳定trace/base/version合同、确定性和测得的memory/work取舍 |
+| LLVM `SplitModule`、AMDGPU split、IREE executable variants | partition/target assignment和稳定output identity | 选择后clone多个最终Module/variant；独立output可并发lower/codegen并按identity汇合 | clone均被下游消费，不是rollback snapshot | Card→16 Tile与target/profile variants首先按output fan-out审查，不应与discarded validation混为一谈 |
+| inliner、unroll、tiling、fusion | 变换自身的CFG/region语义 | clone局部block/op/region并保留在最终IR | clone就是变换结果 | local semantic duplication按变换语义和`IRMapping`审查，不受whole-root transaction讨论替代 |
 
 ### 7.2 Wafer分类
 
@@ -343,14 +358,46 @@ IR/analysis/rewrite/conversion/pipeline正例默认rank至少3、主要迭代维
 - [Pass Management](https://mlir.llvm.org/docs/PassManagement/)
 - [Pattern Rewriting](https://mlir.llvm.org/docs/PatternRewriter/)
 - [Dialect Conversion](https://mlir.llvm.org/docs/DialectConversion/)
+- [LLVM New Pass Manager](https://llvm.org/docs/NewPassManager.html)
+- [LLVM VPlan vectorization workflow](https://llvm.org/docs/VectorizationPlan.html#vectorization-workflow)
+- [XLA HLO pass interface](https://github.com/openxla/xla/blob/main/xla/hlo/pass/hlo_pass_interface.h)
+- [TVM MetaSchedule](https://tvm.apache.org/docs/deep_dive/tensor_ir/tutorials/meta_schedule.html)
 - [Interfaces](https://mlir.llvm.org/docs/Interfaces/)
 - [Data Flow Analysis](https://mlir.llvm.org/docs/Tutorials/DataFlowAnalysis/)
 - [Operation Definition Specification](https://mlir.llvm.org/docs/DefiningDialects/Operations/)
 - [Bufferization](https://mlir.llvm.org/docs/Bufferization/)
+- [Canonicalization](https://mlir.llvm.org/docs/Canonicalization/)
+- [Declarative Rewrites](https://mlir.llvm.org/docs/DeclarativeRewrites/)
+- [PDLL](https://mlir.llvm.org/docs/PDLL/)
+- [Symbols and Symbol Tables](https://mlir.llvm.org/docs/SymbolsAndSymbolTables/)
+- [Builtin Location](https://mlir.llvm.org/docs/Dialects/Builtin/)
 - [Transform Dialect](https://mlir.llvm.org/docs/Dialects/Transform/)
+- [MLIR Developer Guide](https://mlir.llvm.org/getting_started/DeveloperGuide/)
 - [MLIR Testing Guide](https://mlir.llvm.org/getting_started/TestingGuide/)
+- [MLIR Rationale](https://mlir.llvm.org/docs/Rationale/Rationale/)
 - [LLVM Coding Standards](https://llvm.org/docs/CodingStandards.html)
+- [LLVM Programmer's Manual](https://llvm.org/docs/ProgrammersManual.html)
+- [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines)
 
-采用基础设施的标准是让IR语义更显式、scope更准确、analysis可重算、rewrite可验证，或删除重复实现；API存在本身
-不构成采用理由。具体接口以仓库pinned LLVM/MLIR源码和测试为准。跨项目实现对照及固定commit链接保存在
-`tasks/archive/mlir-engineering-reference-snapshot.md`，不作为current状态或独立规范。
+采用上述基础设施的标准是：它能让 IR 语义更显式、scope 更准确、analysis 可重算、rewrite 可验证，或删除重复
+实现/旁路；“MLIR 提供了该功能”本身不构成采用理由。
+
+对仓库pinned `llvm-project@f0b3287297`的实现核对给出的是一组并存事实：`Pass::signalPassFailure`允许当前IR无效，
+大量production pass直接改`getOperation()`；DialectConversion同时维护rewrite log并在conversion失败或analysis mode下
+`undoRewrites`；Transform `alternatives`明确clone isolated scope；Reducer又明确clone整个Module。LLVM LoopVectorize以VPlan
+比较多数候选后执行best plan，但XLA autotuner会为多个config构造并发compiled executable，TVM MetaSchedule会重放trace，
+LLVM/IREE会为最终partition/target clone多个output。因此本仓库不能用“上游也clone”或“上游从不clone”替代具体审查；
+必须比较decision representation、scope、owner、失败语义、artifact命运和work数量。
+
+第7节使用的实现链接固定到核对commit：[MLIR Pass failure](https://github.com/llvm/llvm-project/blob/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/mlir/include/mlir/Pass/Pass.h)、
+[DialectConversion](https://github.com/llvm/llvm-project/blob/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/mlir/lib/Transforms/Utils/DialectConversion.cpp)、
+[Transform alternatives](https://github.com/llvm/llvm-project/blob/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/mlir/lib/Dialect/Transform/IR/TransformOps.cpp)、
+[MLIR reducer](https://github.com/llvm/llvm-project/blob/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/mlir/lib/Reducer/OptReductionPass.cpp)、
+[LLVM LoopVectorize](https://github.com/llvm/llvm-project/blob/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/llvm/lib/Transforms/Vectorize/LoopVectorize.cpp)、
+[XLA GemmFusion autotuner](https://github.com/openxla/xla/blob/32ebd694c4d0442e241d76324ff1a721831366b4/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc)、
+[TVM evolutionary search](https://github.com/apache/tvm/blob/f792a1d1aa631ee8498600d0398d219df40d816c/src/s_tir/meta_schedule/search_strategy/evolutionary_search.cc)和
+[IREE executable interface materialization](https://github.com/iree-org/iree/blob/1e43d5458e3342e7644bc3b9b4ef61c38a17da7a/compiler/src/iree/compiler/Dialect/HAL/Transforms/MaterializeInterfaces.cpp)。
+
+C++ Core Guidelines只提供通用设计判据；与本仓库pinned MLIR/LLVM惯例冲突时，以pinned API、LLVM no-exception/no-RTTI
+错误模型和现有MLIR接口约定为准。例如，多结果优先named typed result，但MLIR惯用的非空caller-owned输出引用不是违规；
+raw pointer/reference可以表示当前IR owner/epoch内的non-owning handle，但不能跨clone、erase、异步或长期cache充当稳定身份。

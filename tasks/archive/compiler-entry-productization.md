@@ -1,5 +1,8 @@
 # Compiler Entry 与 Frontend 产品化实施计划
 
+> 归档说明：Q59/Q60已经完成。本文保留施工与验证记录；current frontend/driver合同只读编号设计，
+> 动态状态只读`tasks/progress.md`。
+
 设计合同由 `tasks/01-architecture.md`、`tasks/02-frontend-stablehlo-program.md`、
 `tasks/15-launch-runtime-package.md`、`tasks/18-source-organization.md`、`tasks/19-mlir-engineering.md`
 和 `tasks/20-interface-evolution.md` 分别拥有，任务状态与动态前置只看 `tasks/progress.md`。本计划仅拆解

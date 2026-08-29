@@ -173,7 +173,7 @@ future value ID或donor scan恢复movement。Cleanup只删除current IR上已证
 
 Movement闭合后，execution-structure transformation才可依据current physical TileRegion选择并立即物化Serialized或software-pipelined
 结构。Pipelined结果必须显式包含prefix/steady/tail、chunk control、rotating allocation roots、slot SSA选择以及实际movement/compute
-occurrence和下游必须闭合的reuse/observation obligation；不能把`ExecutionStructurePlan`、buffer multiplicity或预测lifetime带到
+occurrence和下游必须闭合的reuse/observation obligation；不能把cross-stage execution plan、buffer multiplicity或预测lifetime带到
 Instr或memory stage。
 
 Current transformation入口只接收同一IR epoch的actual `scf.for`、top-level operation groups、stage assignment和可选的

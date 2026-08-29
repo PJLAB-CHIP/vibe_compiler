@@ -1,5 +1,8 @@
 # Program data ownership 与whole-program scale实施计划
 
+> 归档说明：本文保留Q58完成记录和Q61早期设计。Q61 current计划只读
+> `tasks/plans/whole-program-scale-readiness.md`，program-data稳定合同只读02、14--16号设计。
+
 稳定边界由`tasks/02-frontend-stablehlo-program.md`、`tasks/14-target-code-generation.md`、
 `tasks/15-launch-runtime-package.md`和`tasks/16-verification-contract.md`拥有。本计划只拆Q58与Q61施工步骤。
 Frontend/CLI产品入口由`tasks/plans/compiler-entry-productization.md`单独负责，不与parameter/constant数据链混成一个任务。

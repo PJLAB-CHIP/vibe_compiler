@@ -74,56 +74,19 @@ Pipeline position:
 
 ### 2.1 Shared Recomputable Analysis Boundary
 
-DDR与SPM共用从当前structured IR重算的path condition、operation timeline、query-time provenance closure、generic
-async task identity/completion、live segment overlap、typed NCC ordered-pending/participant completion，以及默认MiniMalloc fixed-capacity
-canonical search。精确pairwise conflict graph通过已验证的deterministic edge-clique cover适配，nonzero base使用
-component-local fixed prefix；共享policy使用宽松确定的全局node budget且不设wall-clock timeout。`ResourceExhausted`原样传播，
-不运行first-fit、best-fit或其它fallback。typed outcome和独立placement validator也由该共享边界拥有。
-shared `MemoryPlanning` fixed-capacity primitive在类型上可复用同一owner-independent DDR problem，且不认识SPM/DDR、workload或
-op名。DDR在TileModule set后置stage对每个candidate IR执行原子actual placement，逐Tile重建current explicit
-arena/placement-domain problems并将all-and-only roots/Tile结果原子汇总，
-不构造cross-card shared arena。每个validated placement提交对应Tile的`wafer.ddr.offset`；actual high-water/headroom从placement
-重算，作为capacity/resource diagnostic，不通过缩小capacity重复probe，也不替代06按TileModule set aggregate movement
-bytes/executions计算的DDR主成本。placement只有在fresh
-complete candidate TileModule set上原子apply，并重新运行post-memory transport binding、range/ABI等全部
-offset-dependent gate后才可接受。DDR owner不选择plan、不返回repair、不发布proof schema或跨invocation cache，已写DDR
-offset的IR也不返回planning worklist。
-compiler-managed allocation使用指向packing demand的`RootRef`；caller-owned/external memref
-使用path-qualified `ValueOriginRef`；async handle另携带所访问root与独立task identity，三者不能互相替代。
-`rootsAt`/`originsAt`在查询点沿`ViewLikeOpInterface`、`SelectLikeOpInterface`、`scf.if` yield和`scf.for`
-init/iter-arg/backedge/result递归闭包；loop fixed-point发布时去掉repeatable branch decision，防止一次前向映射遗漏
-后续iteration可能出现的root。该owner-private analysis不携带memory-space结论，不写入IR或跨pass side table。
+Path condition、operation timeline、provenance closure、async identity/completion、live-overlap、typed NCC pending
+和MiniMalloc fixed-capacity primitive的共同算法由09号“shared recomputable analysis”合同拥有。DDR owner调用同一
+owner-independent primitive，但必须从自己的current IR重新建立problem；不得复用SPM结果、跨invocation cache或旁路proof。
 
-两侧都把loop body建模为may-zero-trip path；这不会放松普通DDR lifetime overlap，也不会允许loop body中的
-participant join覆盖zero-trip路径。same-worker exact RAW/WAR/WAW issue可把ordered-pending责任带过backedge；
-不同worker、DTE/Kcore observer、unknown alias或unsafe reuse仍必须在backedge/reuse前由覆盖participant的join
-闭合。loop-local `scf.if`每次iteration可重新选择，故相反branch只对单次执行互斥，不能作为whole-execution
-packing exclusion；loop body allocation通过memref或async handle跨backedge携带时也不能把一个静态offset冒充
-多个动态instance。
+DDR专属职责是解析TileRegion DDR boundary、external root/descriptor range、default arena、largest-contiguous、
+high-water、exact movement bytes并原子提交`wafer.ddr.offset`。Compiler-managed allocation、caller-owned origin和async
+task identity保持不同typed引用。所有DDR read/write effect必须活到current IR证明的completion或same-worker exact
+successor；Region data I/O不得携带SPM alias。Generic async、loop和call的支持范围沿用09号共同分析规则；缺少
+interprocedural arena/resource summary时fail closed。
 
-generic `async.call`的token/value必须由path-covering `async.await`完成；direct `async.create_group` handle可以经
-`async.add_to_group`收集task并由`async.await_all`完成。mutable group alias、loop body动态task加入captured group、
-SelectLike合并不同task identity和非identity-preserving `scf.for`均以`unsupported_async_completion_flow`拒绝；
-entry terminal仍有pending task以`missing_async_completion`拒绝。`scf.if`只有task origin局限在对应branch path时，
-result await才覆盖该task；分支前已发起的不同task不能靠选择其中一个handle完成另一个。
-
-DDR owner仍独占tile-region DDR boundary/root解析、external root与descriptor range、default-arena capacity、
-largest-contiguous、high-water和exact movement-byte统计，以及`wafer.ddr.offset`提交。任何带DDR read/write effect的异步
-local issue都必须在共享path/root analysis上把compiler-managed root lifetime延长到matching participant join，或
-延长到可证明接管该root的same-worker exact RAW/WAR/WAW后继；即使root由runtime外部绑定，也必须证明所有可达路径
-  在真实observer/root reuse或entry terminal前完成。region所有data I/O只允许DDR，且不能携带SPM alias；DDR不能依赖SPM
-pass已运行来间接获得这项证明。
-共享root/task dataflow不拥有SPM DTE token/wait legality；DDR function scope可接受identity-preserving generic async
-handle flow，SPM owner仍以exact DTE wait证明通信completion并保守拒绝所有loop-carried async token。
-
-同步跨函数边界当前只接受defined private pure alias helper：callee不得有嵌套call、allocation、memory/resource
-side effect，tracked或擦成tensor/generic的storage result必须能沿return/structured alias SSA解析回caller actual。
-call result在caller timeline中保留原RootRef/ValueOriginRef；不能把callee formal或type-erased result升级成新external
-root。其它DDR-relevant direct call、module含DDR demand时的external/unresolved direct/async call，以及任何indirect call
-均因缺少interprocedural arena/resource summary而fail closed。defined `async.func`可以通过显式handle传播caller-owned
-root，但其body须独立提供可验证effect/token relation，最终pending completion由caller真实observer/root release或entry terminal验证；带Wafer DDR
-descriptor/resource effect的async callee在没有call-aware
-  descriptor/resource summary时拒绝。
+Validated placement只在fresh complete TileModule set上原子apply；随后重新运行transport、range和ABI等所有
+offset-dependent gate。High-water/headroom只从accepted placement重算并用于诊断，不通过反复缩小capacity探测，
+不替代physical-dataflow cost，也不产生repair或下一candidate。
 
 ## 3. Core Model
 

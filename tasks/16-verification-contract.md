@@ -98,7 +98,7 @@ Pipeline position:
 - Output IR / files:
   `build/`中的current binaries、完整本地test registry和install components；它们是构建产物，不进入compiler IR或package语义。
 - Downstream consumer:
-  每个work item的定向测试、Q52/Q53 build gate及Compiler/Runtime安装验证。
+  每个work item的定向测试、physical-dataflow/host-qualification build gate及Compiler/Runtime安装验证。
 - User-level driver / named pipeline:
   checked-in CMake configure/build/test preset `default`；完整增量构建不指定target。
 - Explicit non-goals:
@@ -145,7 +145,7 @@ lit的`UNSUPPORTED`和skip只表示未执行。canonical build中的测试若因
 | 首次配置与重复增量构建 | valid pinned LLVM/importer/SPMD/numeric/oneDNN/SystemC；同一checkout | record、digest、toolchain或helper失配在configure失败 | binary dir直接为`build/`；全部本地feature为ON、board执行为OFF；第二次无变更build为no-op | base/model tools及tests使用同一site config |
 | target numeric backend命名闭合 | formal oracle、oneDNN GEMM/reorder、qualification record、model dispatch、SystemC consumer | 任一旧`bulk` API/option/record kind仍被current producer或consumer接受即失败 | overall target为`WaferTargetNumericBackend`，具体实现为`WaferOneDNNBackend`；formal和SystemC边界不变；旧名称current source残留为0 | qualification CLI、model unit、SystemC link与configured dependency record从同一新接口执行 |
 | source/CMake/public header修改 | library、tool、unit、generated source和link closure | 任一default target编译或链接失败即work item失败 | 无target完整构建实际到达全部启用default target；无Wafer warning；不复用其它build object | 受影响unit/lit/CTest随后从同一build运行 |
-| 定向与聚合测试 | 全部本地registered CTest、base/model unit、Dialect/Frontend/Pipelines/Spmd/Transforms/Tools lit | FAIL、XPASS、UNRESOLVED、TIMEOUT及意外UNSUPPORTED均失败 | focused case可单独运行；`ctest --preset default`不按label过滤；`check-wafer`实际运行聚合suite且零意外skip | work item完成与Q52/Q53 build gate |
+| 定向与聚合测试 | 全部本地registered CTest、base/model unit、Dialect/Frontend/Pipelines/Spmd/Transforms/Tools lit | FAIL、XPASS、UNRESOLVED、TIMEOUT及意外UNSUPPORTED均失败 | focused case可单独运行；`ctest --preset default`不按label过滤；`check-wafer`实际运行聚合suite且零意外skip | work item完成与physical-dataflow/host-qualification gate |
 | product install | full、`Compiler`、`Runtime` component | 缺文件、跨component泄漏、build绝对路径或不可执行资源失败 | full含compiler/runtime；Compiler含compiler/helper/frontend资源且无runtime tool；Runtime含run/loader资源且无compiler | install-tree smoke及package/runtime consumer |
 | 特殊配置 | board SDK、sanitizer、debug | 未满足外部前置时不创建或typed停止 | 不在repo内建立第二CMake tree，不代签canonical build gate | 对应board或诊断owner |
 

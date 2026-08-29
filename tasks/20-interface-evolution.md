@@ -1,6 +1,6 @@
 # Wafer 接口演进与格式兼容边界
 
-状态：2026-08-15继续收敛 active compiler、runtime、tool 和测试中的current接口。本文件只拥有兼容边界、
+本文件只拥有active compiler、runtime、tool和测试的兼容边界、
 兼容策略和跨层一致性要求；各 IR、package、runtime、profiler 和 qualification 字段语义仍由原编号文档拥有。
 
 ## 1. Pipeline Contract
@@ -73,38 +73,6 @@ vendor规范版本是外部事实，继续精确记录，
 6. CLI flag、tool action和library result同样只有一种current合同；语义修正时原位替换producer/tests/docs，不保留旧flag alias
    或让build-tree/install-tree走不同入口。
 
-## 5. 当前实现
-
-- frontend distributed boundary和parameter shard metadata不再携带nested版本；current parser对退役字段fail closed。
-- profile activation、plan、site map和evidence不携带编号字段；device record由共享C ABI header中的magic、size、offset和guard
-  定义唯一current布局。
-- target lowering metadata、dependency records、workload corpus、model/policy/hash-domain名称只保留current语义，相关
-  producer和consumer同批迁移，不存在兼容reader或双写路径。
-- package manifest、target runtime ABI、TX81 profiler record、Direct-DTE status以及独立保存的profiling/qualification
-  evidence在各自parser或ABI入口检查唯一current identity、exact fields、size、layout和digest，不检查Wafer自定义版本号。
-- Board calibration保留可复用的硬件观测方法、输入生成、host oracle和结果校验，并迁移到唯一current package、runtime、
-  status和qualification接口。可以直接生成current package的raw probe必须通过current no-card入口；依赖尚未闭合的
-  global lowering的source case保留current global source和oracle，但不得注册成可执行的no-card或板端结论。
-- Board CTest只注册current接口能够实际执行的合同与probe；不恢复旧reader、旧CLI、旧manifest字段、旧SPMD carrier或
-  已退役的多版本路径，也不把历史板端输出作为current测试输入。
-
-## 6. Board calibration迁移边界
-
-Board calibration按其真实编译边界迁移，不按旧runner或历史case名称整批保留：
-
-| 类型 | current处理 | 完成证明 |
-| --- | --- | --- |
-| raw device probe | 保留device source、request/record布局、输入构造、oracle、guard和lifecycle校验；统一生成current package并使用current Tile resource/status合同 | 22个`current-interface` no-card CTest覆盖transport、NCC、barrier、DDR、SPM、worker、CT、NE、datamove、cache和instruction family |
-| current global source可直接lower的case | complete-Tile add保留完整f16 output oracle、重复完成和profile Primary/Count/Trace校验；普通与profile路径分别生成current package | 2个额外`current-interface` no-card CTest和1个profile host contract通过 |
-| 可直接执行的板端入口 | CMake只登记真实存在的driver与精确参数；统一runner串行调用，不在runner复制case catalog | 10个Board CTest对应10个runner step；无板环境不执行它们 |
-| 依赖未闭合global lowering的source case | 保留current global StableHLO source、deterministic input和host oracle；不构造退役SPMD carrier或package | optimizer comparison的11个source case包含full-4096 K-tiled GEMM与M-tiled profile合同；collective algorithm和collective traffic各有独立host source contract并显式记录阻塞条件 |
-| 重复旧executor | 先把独有source、shape、dtype、oracle和校验迁入current source contract或current driver，再删除只服务退役接口的执行器 | CMake、inventory和source-organization检查不再引用旧executor |
-
-Inventory中的`host_ctests`、`no_card_ctests`和`board_ctests`只能列CMake真实注册名称。catalog拥有case语义；一个代表性
-no-card CTest证明driver能经current接口生成完整package，不等价于该catalog全部case已经取得板端结论。
-
-具体迁移结果：complete-Tile add、complete-Tile barrier、K-tiled GEMM和DDR active-Tile contention使用Tile/current命名；
-K-tiled current-source实测因SPM lifetime/capacity约束无法生成package，故只保留受测source/oracle和待lowering runner；M-tiled
-profile的package equality、full-output与Primary/Count/Trace要求进入optimizer catalog，并由current global-source runner保留
-完整编译、no-card、板端输出和profile校验路径；当前global lowering失败时该runner直接fail closed，不登记成可执行CTest。
-两个collective carrier的source与oracle进入current source contract后删除carrier，不保留旁路执行接口。
+当前接口收敛的实施记录、迁移数量和Board calibration inventory见
+`tasks/archive/interface-version-consolidation.md`。这些历史结果不扩展本文件的稳定兼容合同；current注册状态由CMake和
+本轮测试结果确认。

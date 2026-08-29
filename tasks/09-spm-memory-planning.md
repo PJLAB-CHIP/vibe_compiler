@@ -1,57 +1,18 @@
 # Wafer SPM Memory Planning Design
 
-本文定义actual-candidate admission中的MiniMalloc-only packing、per-Tile LiveSPM和SPM1 fixed-problem分配合同，覆盖每个
-physical `tile.module`的instruction IR上SPM lifetime/range planning；async issue的全部read/write resource必须活到可信
-completion。进入本stage的physical `wafer.tile.region`表达一个单Tile内的SPM residency domain；每个有assigned work的Tile module
-可有一个或多个non-nested regions。spatial placement、region partition、temporal tile shape、selective
-spill/recompute和cross-region/cross-Tile materialization由06/07的transformation在candidate-owned IR中物化；每个进入本stage的candidate已是actual IR；typed opaque SPM
-clobber仍拒绝。
-nested/async/parallel scope和缺少arena/resource summary的调用保持fail closed。
-accepted fact为offset-only `wafer.spm.offset`；size、alignment和SPM1
-bank phase均由memref type、layout、accepted offset和target policy重算。Allocator对每个candidate产生的
-finalized complete TileModule set Instr IR，逐Tile从全部roots、control-flow coexistence与pairwise conflict派生
-all-and-only fixed allocation problems，并用每Tile 3 MiB MiniMalloc与独立validator求解。已证明不重叠的regions/roots可复用地址，
-可能重叠的regions必须联合满足容量；allocator不识别或改变TileRegion、retention/release或materialization策略，lifetime只从actual IR重算。problem/query数量只作work diagnostic，
-不与Tile module或region数量绑定。
-actual high-water只作capacity/headroom诊断，不触发反复收紧query，也不作为06的主Pareto维度。bank phase只允许进入
-hard-valid placement间的soft preference；不得改变hard feasible set或新增dataflow/relocation分支。
+本文拥有`#wafer.memory<spm, *>`的Tile-local lifetime、fixed-capacity MiniMalloc placement和accepted offset合同。
+输入是completion-closed、function-boundary-bufferized的current Instr IR；planner逐Tile从actual allocation roots、SSA use-def、
+control flow、effects和completion重建all-and-only fixed problems。它不选择placement、tiling、fusion、layout、movement、
+spill或worker/order，也不修改candidate来修复失败。
 
-旧C1-C6在rank==Tile架构上形成的decision point、packing和board-ready记录只作历史mechanics证据，不证明current
-physical-dataflow主线。Pre-memory stages不构造SPM problem或proof。每个candidate的completion-closed actual Instr进入本allocator取得offset或typed
-rejection；`ProvenInfeasible`是当前candidate的actual capacity rejection，可由外层controller消费，`ResourceExhausted`等其它状态不得
-伪装成该结果。不得复用failed/loser Instr或partial offset，也不由allocator修改placement、tiling、fusion或spill。
-完成状态只看`tasks/progress.md`，本文不把迁移中实现写成已闭合。
+Passing candidate只增加offset-only `wafer.spm.offset`；size、alignment、range、bank span、lifetime和alias均从current IR、
+layout、accepted offset和target policy重算。只有实际MiniMalloc及独立placement validator成功才能认定合法；actual capacity
+rejection可以反馈controller，`ResourceExhausted`、unsupported和compiler failure保持原typed状态。High-water/headroom和
+bank preference只作accepted placement的诊断或soft ordering，不参与legality。
 
-本文定义Wafer Tile-local allocation和storage verification。Tensor-to-memref bufferization已在上游current-IR stage完成；本stage消费
-candidate TileModule set的fixed actual
-problem，并在每个Tile module上统一验证SPM residency regions、structured loop和SSA data
-edge的memory space、range、lifetime、coexistence和completion effect。进入本stage的physical `wafer.tile.region`不是私有physical arena、launch或
-solver query；planner从对应Tile current IR派生allocation domains，只在证明lifetime不重叠时复用physical offset。region边界
-不得携带SPM memref/root/alias；任何跨region shaped value都必须经过显式DDR store/completion/load，所有shaped data
-argument/result必须是DDR。边界本身不插movement或join，只验证没有仍访问被释放
-SPM roots的pending work，entry terminal另行闭合observable completion。
-SPM memory planning 的 instruction-level 输入合同由
-`tasks/11-instruction-ir.md` 定义；本文只消费该层暴露的
-Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op。
-
-本文只负责 `#wafer.memory<spm, *>` 的Tile-local address-domain planning：
-
-- 消费 instruction-level `wafer.instr.*` IR 和 unplaced
-  `memref<..., #wafer.memory<spm, layout>>`，并从 memref use-def、effects、queue 和 async policy
-  构造 allocation input。
-- 对 instruction-level IR 做 SPM memory planning、range/end-address/alignment/bank-span verification 和 failure
-  feedback。
-- SPM owner从current IR构造`StaticPackingProblem`并消费shared `MemoryPlanning` owner-private library提供的
-  fixed-capacity query和validated placement；09只负责SPM evaluate/range gate/atomic offset apply，不据此自行改写或排序候选。
-- 为DeviceExecutable verification前的typed Tile executable validation提供accepted offset fact；range/lifetime/alias在selected IR中
-  重算并参与typed C++ DeviceExecutable materialization，不作为独立attr。target/package/runtime不从SPM IR重新
-  恢复resource semantics。
-
-本文不分配DDR，不选择physical layout，不决定task/dataflow cut，不选择compute/communication
-instruction selection，也不生成 runtime package。DDR source/destination range、capacity、largest-contiguous和alignment是
-hard legality；exact transferred bytes/pressure只进入cost，未校准bandwidth不构成legality fact；DDR declared arena/placement-domain resource 的主设计见
-`tasks/12-ddr-memory-planning.md`。SPM allocation 的失败 trace、搜索顺序和
-rejected/temporary offset 都是 analysis，不写进长期 IR。
+Physical `wafer.tile.region`是单Tile residency boundary，不是arena或solver query。SPM root/alias不能跨Region；跨Region
+shaped value必须通过已物化的DDR store/completion/load。本文只消费11号定义的Wafer-tagged memref、`wafer.instr.*`
+和effects，不重复定义instruction op；DDR planning由12号拥有。
 
 ## 1. 核心结论
 
@@ -201,8 +162,8 @@ preparation pipeline，也不移动allocation来制造更短lifetime。Register-
 - selected emitter在该subtree中显式物化的implementation、physical encoding、transfer、residency、layout和movement demand。
 - instruction legalization / selection 产生的 concrete memref value、operand/result/temp/workspace/
   accumulator/psum/staging 分类、instruction family、effect event 和 async policy。
-- `WaferCommOpInterface` 或后续 communication instruction selection 提供的 source/destination buffer、byte count、
-  token/wait 和 staging storage。
+- current typed communication instruction、standard memory effects和token operands/results提供的source/destination
+  buffer、byte count、wait relation和staging storage。
 - target policy：SPM range、reserved range、alignment和bank-phase soft preference。
 - 完整entry内的structured control-flow、SPM SSA/alias relation、op effect、token、participant join/exact wait/barrier，
   以及root release、真实observer、entry completion和complete candidate TileModule set中all-and-only Tile coverage。普通traversal/loop/spill/region
