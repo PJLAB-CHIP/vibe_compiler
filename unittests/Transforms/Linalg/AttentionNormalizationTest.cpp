@@ -47,8 +47,8 @@ protected:
   mlir::OwningOpRef<mlir::ModuleOp>
   parseRepresentativeDecodeProgram(bool aligned) {
     std::string path = std::string(WAFER_TEST_SOURCE_DIR) +
-                       "/unittests/Planning/Search/Inputs/"
-                       "functional-decode-representative.mlir";
+                       "/test/Transforms/Linalg/Inputs/"
+                       "attention-decode-representative.mlir";
     auto buffer = llvm::MemoryBuffer::getFile(path);
     if (!buffer)
       return {};

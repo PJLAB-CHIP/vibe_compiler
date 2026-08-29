@@ -37,6 +37,7 @@ DORMANT_UNIT_SOURCES = {
 }
 
 RETIRED_PATHS = (
+    "CLAUDE.md",
     "include/Wafer/Compiler",
     "include/Wafer/Pipelines",
     "lib/Wafer/Compiler",
@@ -80,6 +81,7 @@ RETIRED_PATHS = (
     "lib/Wafer/Conversion/StructuredTiling",
     "lib/Wafer/Conversion/WaferTileRegionToInstr",
     "runtime/wafer_crt",
+    "unittests/Planning/Search",
 )
 
 ALLOWED_LIBRARY_DIRECTORIES = {

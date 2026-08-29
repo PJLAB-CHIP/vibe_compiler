@@ -111,7 +111,8 @@ Wafer compiler和runtime的设计、IR、pass、工具和测试会一起演进�
 - `tasks/archive/`：历史审计、恢复和已完成任务。只作为背景材料。
 - `docs/`：硬件、runtime、ABI和逆向资料。
 - `docs/tx8-deps-reverse-engineering/`：依赖、runtime、firmware和接口事实。
-- `tools/`：辅助工具和检查脚本。
+- `tools/`：安装或直接供用户调用的产品工具。
+- `utils/`：依赖准备、源码/IR/ABI检查和hardware calibration编排等开发脚本。
 - `memory/general_dev.md`：稳定的构建、测试和调试方法。
 - `memory/bugs.md`：问题现象、根因、修复和防复发方法。
 
