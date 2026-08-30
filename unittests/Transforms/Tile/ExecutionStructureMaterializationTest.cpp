@@ -248,8 +248,8 @@ TEST(ExecutionStructureMaterializationTest,
       loc, regionBuilder.getFloatAttr(regionBuilder.getF16Type(), 0.0));
   auto loop = regionBuilder.create<mlir::scf::ForOp>(loc, lower, upper, step);
   mlir::OpBuilder loopBuilder = mlir::OpBuilder::atBlockBegin(loop.getBody());
-  loopBuilder.create<InstrFillOp>(loc, allocation.getResult(), zero,
-                                  FillDomainAttr(), NCCWorker::Worker0);
+  auto fill = loopBuilder.create<InstrFillOp>(
+      loc, allocation.getResult(), zero, FillDomainAttr(), NCCWorker::Worker0);
   regionBuilder.setInsertionPointAfter(loop);
   regionBuilder.create<mlir::memref::DeallocOp>(loc, allocation);
   regionBuilder.create<TileYieldOp>(loc);
@@ -258,14 +258,15 @@ TEST(ExecutionStructureMaterializationTest,
   ASSERT_TRUE(mlir::succeeded(mlir::verify(module)));
 
   StructuredMaterializationRelations relations;
-  relations.scratchBuffers.push_back({0, allocation});
+  relations.buffers.push_back(
+      {fill, allocation, MaterializedBufferRole::Scratch});
   mlir::OwningOpRef<mlir::ModuleOp> owned(module);
   auto rotated = materializeRotatingAllocations(
       std::move(owned), {{allocation, loop, /*multiplicity=*/2}}, relations);
   ASSERT_TRUE(rotated.succeeded())
       << (rotated.failure ? rotated.failure->detail : "");
   ASSERT_EQ(rotated.materialized->slots.size(), 2u);
-  EXPECT_EQ(relations.scratchBuffers.size(), 2u);
+  EXPECT_EQ(relations.buffers.size(), 2u);
   ASSERT_TRUE(mlir::succeeded(
       wafer::rebuildRequiredNCCJoins(*rotated.materialized->module)));
   ASSERT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(

@@ -65,7 +65,7 @@ Operation verifier只检查自身、owned region结构及operand/result/attribut
 call graph、alias/lifetime、completion、resource和ABI由最近的共同parent或直接消费stage检查。Builder具体op数量、selector链、
 canonical/default形状和plan replay属于定向测试，不得进入production verifier。
 
-StableHLO normalization、TileRegion-to-Instr、memory planning和target conversion使用注册的atomic pass/named pipeline；
+StableHLO normalization、current layout/bufferization、TileRegion-to-Instr、memory planning和target conversion使用注册的atomic pass/named pipeline；
 production driver与focused工具不得维护第二条直接IR修改路径。Physical-dataflow search仍由compiler driver负责，不改造成
 PassManager state。
 ## 3. IR 与 ODS 合同
@@ -178,8 +178,8 @@ verifier-legal的IR边界内组合这些pass并提供唯一builder；compiler dr
 compiler adapter。pass wrapper把普通失败映射为diagnostic/signal pass failure；compiler adapter保留
 accepted/exact-rejection/indeterminate等rich result。两者消费同一query/apply实现，而不是共享名字但各写一套逻辑。
 
-named subpipeline按稳定语义层命名并覆盖前后半程：StableHLO normalization/legalization、TileRegion→Instr、function级
-outstanding NCC access/required join、function-boundary bufferization、SPM/DDR planning与Instr→target LLVM。调用者需要typed
+named subpipeline按稳定语义层命名并覆盖前后半程：StableHLO normalization/legalization、current value/use layout加一次
+function/TileRegion bufferization、TileRegion→Instr、function级outstanding NCC access/required join、SPM/DDR planning与Instr→target LLVM。调用者需要typed
 `accepted`、`proven exact rejection`、`indeterminate`时，使用包裹同一pipeline implementation的compiler API，不能维护
 另一套direct mutation流程。名称必须描述输入/输出IR或执行动作，不能以含糊阶段标签或`local-fit`等历史
 代替实际合同。

@@ -40,11 +40,8 @@ struct TileMemoryPlanningFailure {
     mlir::Type type;
     uint64_t bytes = 0;
     llvm::SmallVector<mlir::LocationAttr, 4> userLocations;
-    /// Diagnostic-only; semantic attribution uses the typed relations below.
+    /// Diagnostic-only; control flow never parses these names.
     llvm::SmallVector<mlir::OperationName, 4> userOperationNames;
-    llvm::SmallVector<uint32_t, 2> operationResultNodes;
-    llvm::SmallVector<uint32_t, 2> operandDemandNodes;
-    llvm::SmallVector<uint32_t, 2> scratchNodes;
     llvm::SmallVector<unsigned, 2> outputIndices;
   };
   llvm::SmallVector<SPMDemandEvidence, 4> spmLargestDemands;
@@ -57,11 +54,10 @@ struct TileMemoryPlanningFailure {
   llvm::SmallVector<SPMDemandEvidence, 8> spmIndividuallyOversizedDemands;
 };
 
-/// Converts one raw SPM planning failure into Tile-local planning evidence,
-/// attributing every demand to structured operation nodes, operand-demand
-/// nodes and output indices through the materialization relations of the IR
-/// the failure was produced on. The relation buffers must be current values
-/// of that IR; a probe may therefore call this with clone-remapped relations.
+/// Converts one raw SPM planning failure into Tile-local planning evidence.
+/// Actual allocation/user/type/location evidence comes directly from the SPM
+/// planner. Observable output attribution is joined only through current
+/// output endpoints; no source-node parity relation is reconstructed.
 TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
     const SPMMemoryPlanningFailure &spmFailure,
     const StructuredMaterializationRelations &relations);

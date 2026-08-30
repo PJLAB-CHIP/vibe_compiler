@@ -31,6 +31,20 @@ factor(uint32_t lhs, uint32_t rhs, uint32_t states,
   return result;
 }
 
+ExactPBQPBinaryFactor
+rectFactor(uint32_t lhs, uint32_t rhs, uint32_t lhsStates, uint32_t rhsStates,
+           llvm::function_ref<ExactPBQPCost(uint32_t, uint32_t)> cost) {
+  ExactPBQPBinaryFactor result;
+  result.lhs = lhs;
+  result.rhs = rhs;
+  result.lhsStates = lhsStates;
+  result.rhsStates = rhsStates;
+  for (uint32_t i = 0; i < lhsStates; ++i)
+    for (uint32_t j = 0; j < rhsStates; ++j)
+      result.costs.push_back(cost(i, j));
+  return result;
+}
+
 std::optional<std::pair<ExactPBQPCost, std::vector<uint32_t>>>
 bruteForce(const ExactPBQPProblem &problem) {
   std::optional<std::pair<ExactPBQPCost, std::vector<uint32_t>>> best;
@@ -149,6 +163,61 @@ TEST(ExactPBQPSolverTest, NoSolutionBudgetAndMalformedProblemRemainDistinct) {
   malformed.factors.push_back(malformed.factors.front());
   EXPECT_EQ(solveExactPBQP(malformed, 1000).status,
             ExactPBQPStatus::BrokenContract);
+}
+
+TEST(ExactPBQPSolverTest,
+     DisconnectedComponentsPreserveGlobalCostAndAssignmentTie) {
+  ExactPBQPProblem problem = makeProblem(/*nodes=*/6, /*states=*/2);
+  problem.factors.push_back(factor(0, 1, 2, [](uint32_t lhs, uint32_t rhs) {
+    return lhs == rhs ? ExactPBQPCost{0} : ExactPBQPCost{3};
+  }));
+  problem.factors.push_back(factor(1, 2, 2, [](uint32_t lhs, uint32_t rhs) {
+    return lhs == rhs ? ExactPBQPCost{2} : ExactPBQPCost{0};
+  }));
+  problem.factors.push_back(factor(3, 4, 2, [](uint32_t lhs, uint32_t rhs) {
+    return lhs == rhs ? ExactPBQPCost{1} : ExactPBQPCost{0};
+  }));
+  problem.factors.push_back(factor(4, 5, 2, [](uint32_t lhs, uint32_t rhs) {
+    return lhs == rhs ? ExactPBQPCost{0} : ExactPBQPCost{4};
+  }));
+  expectOracle(problem);
+}
+
+TEST(ExactPBQPSolverTest, OneStateHubReducesAtArbitraryDegree) {
+  ExactPBQPProblem problem;
+  problem.variables.push_back({{0}});
+  constexpr uint32_t leaves = 64;
+  for (uint32_t leaf = 0; leaf < leaves; ++leaf) {
+    problem.variables.push_back({{7, 5, 3, 1}});
+    problem.factors.push_back(
+        rectFactor(0, leaf + 1, 1, 4, [=](uint32_t, uint32_t state) {
+          return state == leaf % 4 ? ExactPBQPCost{0} : ExactPBQPCost{2};
+        }));
+  }
+  ExactPBQPResult solved = solveExactPBQP(problem, /*workLimit=*/10000,
+                                          /*semanticTieVariableCount=*/0);
+  ASSERT_EQ(solved.status, ExactPBQPStatus::Optimal);
+  ASSERT_EQ(solved.assignment.size(), leaves + 1);
+  EXPECT_EQ(solved.assignment.front(), 0u);
+  EXPECT_LT(solved.work, 10000u);
+}
+
+TEST(ExactPBQPSolverTest,
+     AuxiliaryVariablesRemainDeterministicOutsideSemanticTiePrefix) {
+  ExactPBQPProblem problem = makeProblem(/*nodes=*/2, /*states=*/2);
+  for (ExactPBQPVariable &variable : problem.variables)
+    std::fill(variable.unaryCosts.begin(), variable.unaryCosts.end(), 0);
+  problem.factors.push_back(factor(0, 1, 2, [](uint32_t lhs, uint32_t rhs) {
+    return lhs == rhs ? ExactPBQPCost{1} : ExactPBQPCost{0};
+  }));
+  ExactPBQPResult first = solveExactPBQP(problem, /*workLimit=*/1000,
+                                         /*semanticTieVariableCount=*/1);
+  ExactPBQPResult second = solveExactPBQP(problem, /*workLimit=*/1000,
+                                          /*semanticTieVariableCount=*/1);
+  ASSERT_EQ(first.status, ExactPBQPStatus::Optimal);
+  EXPECT_EQ(first.assignment.front(), 0u);
+  EXPECT_EQ(first.assignment, second.assignment);
+  EXPECT_EQ(first.cost, second.cost);
 }
 
 } // namespace

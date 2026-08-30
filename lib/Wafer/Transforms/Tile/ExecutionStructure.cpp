@@ -573,19 +573,10 @@ RotatingAllocationMaterializationResult materializeRotatingAllocations(
           ExecutionStructureFailureKind::BrokenContract,
           "rotating allocation requires a static pre-loop TileRegion root");
 
-    bool hasRelation = false;
-    auto findRelation = [&](const auto &entries) {
-      hasRelation |= llvm::any_of(entries, [&](const auto &entry) {
-        return entry.buffer == allocation.getResult();
-      });
-    };
-    findRelation(relations.operationResultBuffers);
-    findRelation(relations.operandBuffers);
-    findRelation(relations.scratchBuffers);
-    findRelation(relations.outputBuffers);
-    findRelation(relations.ddrBuffers);
-    findRelation(relations.partialReductionContributions);
-    findRelation(relations.partialReductionMergeInputs);
+    const bool hasRelation =
+        llvm::any_of(relations.buffers, [&](const auto &entry) {
+          return entry.buffer == allocation.getResult();
+        });
     if (!hasRelation)
       return rotationFailure(
           ExecutionStructureFailureKind::BrokenContract,
@@ -670,27 +661,17 @@ RotatingAllocationMaterializationResult materializeRotatingAllocations(
             rotation.deallocation.getLoc(), slot);
     }
 
-    auto expandRelations = [&](auto &entries) {
-      const size_t originalSize = entries.size();
-      for (size_t index = 0; index < originalSize; ++index) {
-        if (entries[index].buffer != allocation.getResult())
-          continue;
-        auto original = entries[index];
-        for (mlir::Value slot :
-             llvm::ArrayRef<mlir::Value>(slots).drop_front()) {
-          auto copy = original;
-          copy.buffer = slot;
-          entries.push_back(std::move(copy));
-        }
+    const size_t originalSize = relations.buffers.size();
+    for (size_t index = 0; index < originalSize; ++index) {
+      if (relations.buffers[index].buffer != allocation.getResult())
+        continue;
+      auto original = relations.buffers[index];
+      for (mlir::Value slot : llvm::ArrayRef<mlir::Value>(slots).drop_front()) {
+        auto copy = original;
+        copy.buffer = slot;
+        relations.buffers.push_back(std::move(copy));
       }
-    };
-    expandRelations(relations.operationResultBuffers);
-    expandRelations(relations.operandBuffers);
-    expandRelations(relations.scratchBuffers);
-    expandRelations(relations.outputBuffers);
-    expandRelations(relations.ddrBuffers);
-    expandRelations(relations.partialReductionContributions);
-    expandRelations(relations.partialReductionMergeInputs);
+    }
     result.slots.append(slots.begin(), slots.end());
   }
   if (mlir::failed(mlir::verify(*result.module)))

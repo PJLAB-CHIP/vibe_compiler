@@ -257,6 +257,23 @@ TEST_F(TileMemoryPlanningTest, ReportsSPMFailureForOwnedTileModule) {
       << diagnostics;
 }
 
+TEST_F(TileMemoryPlanningTest,
+       RejectsCurrentAllocationWithoutActualOwnerRelation) {
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      candidateWithSPMElements(/*elements=*/128);
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(lowerTileRegionModule(*module)));
+  wafer::StructuredMaterializationRelations relations;
+  wafer::compiler::detail::TileMemoryPlanningFailure failure;
+  mlir::ScopedDiagnosticHandler suppress(
+      context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
+  auto memoryPlanned = wafer::compiler::detail::planTileMemory(
+      std::move(module), &failure, &relations);
+  EXPECT_TRUE(mlir::failed(memoryPlanned));
+  EXPECT_EQ(failure.kind,
+            wafer::compiler::detail::TileMemoryPlanningFailureKind::Contract);
+}
+
 TEST_F(TileMemoryPlanningTest, RejectsCardPlacementBeforeTileMemoryPlanning) {
   mlir::OwningOpRef<mlir::ModuleOp> module = candidateWithDDRPlacement();
   ASSERT_TRUE(module);

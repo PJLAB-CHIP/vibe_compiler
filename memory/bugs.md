@@ -1450,3 +1450,27 @@
   result”的`tensor.cast`，按actual DPS init重建当前Linalg/online-attention op及result type，随后再次scoped canonicalize、CSE和DCE。
 - 防复发：ragged tiling测试同时检查bound和actual tiled op/operand/result type；只看到tail loop或constant `affine.min`不能证明下游获得了
   static shape。升级pinned MLIR后若upstream已修复，应删除本地窄refinement并保留同一测试。
+
+## One-Shot Bufferization失败不等于IR未修改
+
+- 现象：以`allowUnknownOps=false`对含自定义region boundary的module运行One-Shot Bufferization时，region内部Linalg/Tensor已经变成
+  memref，随后才因boundary op未实现`BufferizableOpInterface`报错；调用者若继续使用该module，会得到半bufferized IR。
+- 根因：把普通pass failure误当成事务回滚。One-Shot是两阶段analysis/rewrite，但其公开调用合同不保证失败时恢复调用前IR；unknown-op
+  legality检查可以发生在部分rewrite之后。
+- 修复模式：在candidate-owned transaction中先明确partial boundary，使用`allowUnknownOps=true`只保留该边界和标准
+  `to_memref/to_tensor` bridge；随后运行独立stage checker，拒绝其它tensor semantic residual。Production与named pass调用同一个kernel；
+  failure由controller销毁整个candidate，不读取半修改IR，也不换另一条bufferization路径。
+- 防复发：真实规模正例检查function boundary已bufferize、TileRegion tensor boundary仍显式且内部compute全为memref；unknown executable
+  tensor op负例和重复运行负例必须稳定失败。不能用一次pass failure后的IR做fallback输入或测试fixture。
+
+## PBQP全局tie-break必须先按connected component分解
+
+- 现象：16-Tile FA/FD layout factor graph的数值最优解很快得到，但为每个value variable固定字典序state并重求整个问题，单测从亚秒增长到
+  约49秒并耗尽默认work budget；各Tile component实际上互不连接。
+- 根因：R0/R1/R2只减少单次solve的图，却让semantic tie probe反复遍历所有disconnected component；one-state auxiliary hub还因degree大于2
+  留在residual core。
+- 修复模式：先按factor edge把问题确定性分解为connected components，共享一个checked work budget；每个component独立求numeric optimum与
+  semantic-variable tie，再按原variable index组合assignment/cost。任意度数的一状态变量直接把incident edge cost传播到neighbor unary，
+  auxiliary变量只确定性重建，不扩大外部semantic tie前缀。
+- 防复发：flat oracle覆盖disconnected cost/assignment，独立高degree fixed hub验证任意度消元，auxiliary-prefix测试验证重复求解确定；
+  16-Tile FA/FD纵向记录solver work和wall。不能用Top-k、跳过exact solve或提高timeout掩盖重复全图工作。

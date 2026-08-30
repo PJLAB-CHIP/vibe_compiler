@@ -53,39 +53,13 @@ createStandaloneTileModule(
   }
 
   if (sourceRelations) {
-    for (const StructuredOperationEmissionRelation &relation :
-         sourceRelations->operationEmissions) {
-      mlir::Operation *operation = relation.operation;
-      if (operation && (operation == sourceTileModule.getOperation() ||
-                        sourceTileModule->isProperAncestor(operation)))
-        tileRelations.operationEmissions.push_back(relation);
+    for (const MaterializedBufferRelation &relation :
+         sourceRelations->buffers) {
+      mlir::Operation *owner = relation.owner;
+      if (owner && (owner == sourceTileModule.getOperation() ||
+                    sourceTileModule->isProperAncestor(owner)))
+        tileRelations.buffers.push_back(relation);
     }
-    auto retain = [&](const auto &source, auto &destination) {
-      for (const auto &relation : source) {
-        mlir::Value buffer = relation.buffer;
-        mlir::Operation *parent =
-            buffer ? buffer.getParentRegion()->getParentOp() : nullptr;
-        const bool belongsToTile =
-            parent && (parent == sourceTileModule.getOperation() ||
-                       sourceTileModule->isProperAncestor(parent));
-        if (belongsToTile)
-          destination.push_back(relation);
-      }
-    };
-    retain(sourceRelations->operationResultBuffers,
-           tileRelations.operationResultBuffers);
-    retain(sourceRelations->operandBuffers, tileRelations.operandBuffers);
-    retain(sourceRelations->scratchBuffers, tileRelations.scratchBuffers);
-    retain(sourceRelations->outputBuffers, tileRelations.outputBuffers);
-    retain(sourceRelations->ddrBuffers, tileRelations.ddrBuffers);
-    TileId tileId(sourceTileModule.getTileIdAttr().getInt());
-    for (const DDRTransferRelation &relation : sourceRelations->ddrTransfers)
-      if (relation.producerTile == tileId || relation.consumerTile == tileId)
-        tileRelations.ddrTransfers.push_back(relation);
-    retain(sourceRelations->partialReductionContributions,
-           tileRelations.partialReductionContributions);
-    retain(sourceRelations->partialReductionMergeInputs,
-           tileRelations.partialReductionMergeInputs);
   }
 
   // TileModuleOp is IsolatedFromAbove, so its body owns a closed SSA graph.

@@ -1,11 +1,11 @@
 # Physical Dataflow Current-IR实施计划
 
-本计划只保存Q52尚未完成的第15--20项和Q53 host qualification。动态状态只读`tasks/progress.md`；
-第1--11项的施工、删除账本和验证记录见`tasks/archive/physical-dataflow-synthesis-q52-plan-history.md`；第12--14项的完成边界见
+本计划只保存Q52尚未完成的第16--20项和Q53 host qualification。动态状态只读`tasks/progress.md`；
+第1--11项的施工、删除账本和验证记录见`tasks/archive/physical-dataflow-synthesis-q52-plan-history.md`；第12--15项的完成边界见
 `tasks/archive/completed-task-index.md`。
 稳定语义由05--16号编号设计拥有。
 
-当前直接项：第15项`current-ir-layout-bufferization`；第16--20项保持pending。
+当前直接项：第16项`current-ir-downstream-orchestration`；第17--20项保持pending。
 
 ## Pipeline Contract
 
@@ -30,7 +30,7 @@ Pipeline position:
   不建立future-output IR、shadow operation/buffer/event/schedule plan、兼容双路径或plan/actual parity verifier；
   不用footprint estimate决定SPM合法性；不猜join/wait；不修改数值语义；本计划不运行真实设备。
 - Completion criteria:
-  第12--14项已经闭合，第15--20项按下表顺序通过；两条policy互不调用或fallback；current IR是唯一事实源；同一current FP16
+  第12--15项已经闭合，第16--20项按下表顺序通过；两条policy互不调用或fallback；current IR是唯一事实源；同一current FP16
   LLaMA block的none与search分别在15分钟Release门限内生成package并通过strict readback和no-card；第12--20项
   的输入等价类、typed failure、精确断言和direct witness全部按对应current计划逐项关闭，不能由archive或单一成功case代签。
 ```
@@ -44,6 +44,7 @@ Pipeline position:
 | spatial/Region current-IR materialization | selected Spatial/Region choice已经形成all-and-only TileModules/TileRegions、ordinary contribution/merge/output、FA/FD per-Tile online state、selected FD merge/finalize和只连接actual endpoints的current relations | graph attention或empty shell残留、missing merge output、`RegionExecutionId -> operation`映射、scratch Module/Func或future operation/buffer/movement/completion ID |
 | current-op temporal tile-and-fuse | 每个TileRegion的domain只借用live operation；selected choice已经形成ordinary/online-attention的actual SCF loop、exact fusion、three-state recurrence和static main/tail，relations保持current | `TemporalPlan/TemporalState/TemporalScopeId`、静态wave清单、按ordinal恢复operation、multi-use隐式clone或基于SPM causal root的预测性retile |
 | online-attention decomposition | current module只保留actual QK、scale/mask、row max/sum、state scale、PV及既有SCF/spatial merge/endpoint；layout入口graph/online attention均为零 | 重新分类FA/FD、新建loop/Tile/merge owner、数值选择、future action/value inventory或第二条decomposition path |
+| current layout与bufferization | value/use/op-tuple exact PBQP canonical assignment已经立即apply；shared conversion、output DDR subview、cross-Tile source piece、一次One-Shot function/region-local bufferization和current operation/buffer relations均在同一owner中，冗余DDR publication copy为零；performance descriptor projection因shared query尚未抽取而明确hard-only | `structuredNodeId` buffer attribution、accepted operation/node relation、第二条Instr bufferization pass、估算descriptor cost或重复bufferization |
 | atomic current-IR mechanics | movement cleanup、SCF execution rewrite、TileRegion-to-Instr、fresh completion和actual memory/target leaf | combined complete materializer、hidden repair或跨stage plan |
 | policy retirement | none与search在重启前均typed unavailable，不发布package | 旧route、cross-policy fallback或test-only product facade |
 
@@ -99,8 +100,7 @@ LLVM/MLIR规范复审→更新状态并提交”。不得以全局原则替代�
 
 | 顺序 | Work item | 单一责任与输出 | 精确完成条件 | 本项固定执行流程 |
 | ---: | --- | --- | --- | --- |
-| 15 | `current-ir-layout-bufferization` | 消费第14项最终current SSA/use graph，唯一拥有完整value/use layout domain、op tuple constraints、query-local exact PBQP assignment/apply、IndexRelation+PhysicalLayoutRelation exact view、function-boundary/region-local bufferization和observable output DPS；删除legacy `structuredNodeId`-keyed buffer attribution | solver与flat oracle一致；layout-polymorphic op传播assignment并只为不兼容edge创建materialization；exact view零allocation/copy；soft projection unknown时整组禁用；bufferization恰一次；冗余publication copy为0、必要copy有witness并typed；same-layout/unused为0、shared conversion一个SSA；actual endpoint/operation/effect足以驱动layout与后续memory，无operation/node parity relation；输出直接被第16项消费 | 读AGENTS/progress→读05--11/19及本项矩阵→调研PBQP、resource-aware projection、One-Shot Bufferization和MLIR layout/view实现→查pinned interfaces/API→补value/use domain、tuple factor、assignment apply、physical-map view和relation listener，删除legacy node attribution并复审已有DPS/copy实现→fresh solver oracle、layout/copy/inventory及第16项direct-input witness→重读设计/完整diff/MLIR复审→更新并提交 |
-| 16 | `current-ir-downstream-orchestration` | 在不建立complete materializer的前提下，把第15项layout-resolved owner依次交给current movement/boundary、execution-structure immediate apply、TileRegion→Instr、worker/order/fresh completion、standalone Tile fanout和唯一`compileCanonicalInstructionTilesToExecutable` actual leaf；每个atomic stage仍由原owner实现，orchestration只固定current-IR调用与typed handoff | movement all-and-only消费external endpoint relation并形成physical TileRegion；local/DDR/peer、Serialized/pipelined、tail/rotating slot、Instr、join/wait硬件witness与actual MiniMalloc全部到达；standalone fanout只move body；legacy combined facade和`CompleteCandidatePreparation`为0；输入choice不枚举、失败不repair/fallback、Accepted owner不重建 | 读AGENTS/progress→读06--14/19及本项矩阵→读movement/completion/memory硬件事实→调研MLIR staged lowering与LLVM pass-pipeline ownership→查pinned conversion/SCF API→逐stage接唯一current transform并删除隐藏facade→fresh 1024/1025/1031 movement→execution→Instr→completion→fanout→leaf与typed failure验证→重读设计/完整diff/硬件/MLIR复审→更新并提交 |
+| 16 | `current-ir-downstream-orchestration` | 在不建立complete materializer的前提下，把第15项layout-resolved owner依次交给deterministic structured-to-Tile、current movement/boundary、execution-structure immediate apply、TileRegion→Instr、worker/order/fresh completion、standalone Tile fanout和唯一`compileCanonicalInstructionTilesToExecutable` actual leaf；把Tile-to-Instr私有的只读descriptor query抽到shared analysis并接回第15项PBQP resource projection；每个atomic stage仍由原owner实现，orchestration只固定current-IR调用与typed handoff | structured compute和movement all-and-only消费current memref/endpoint relation并形成physical TileRegion；descriptor query与actual lowering逐项一致且不保存plan；local/DDR/peer、Serialized/pipelined、tail/rotating slot、Instr、join/wait硬件witness与actual MiniMalloc全部到达；standalone fanout只move body；legacy combined facade和`CompleteCandidatePreparation`为0；输入choice不枚举、失败不repair/fallback、Accepted owner不重建 | 读AGENTS/progress→读06--14/19及本项矩阵→读movement/completion/memory硬件事实→调研MLIR staged lowering与LLVM pass-pipeline ownership→查pinned conversion/SCF API→抽取shared descriptor query并逐stage接唯一current transform、删除隐藏facade→fresh 1024/1025/1031 layout projection→movement→execution→Instr→completion→fanout→leaf与typed failure验证→重读设计/完整diff/硬件/MLIR复审→更新并提交 |
 | 17 | `baseline-current-ir-integration` | 重新启用`none`：baseline controller产生固定Spatial/Region choice，第12项actualize后从current operations立即应用full-local temporal及后续固定choice，依次调用第12--16项atomic stages；actual capacity rejection创建新的完整attempt，其它typed状态停止 | baseline不调用search state/domain/materializer，不构造`CanonicalBaselinePlan`或shadow reclose；每region一semantic root；e-graph→spatial/region→online state→temporal tile/fuse→decomposition→layout→movement→execution→Instr/completion→leaf均到达；fresh current FP16 LLaMA none≤15分钟、package唯一、strict readback/no-card通过；按current pipeline重新建立并实际执行8个FP16/BF16产品case、24个calibration no-card case及`WaferTargetNumericBackend` source→model纵向，不恢复旧registration或协议 | 读AGENTS/progress→读05--17及本项矩阵→确认current baseline/source/package/target-model边界→读相关硬件/ABI事实→调研deterministic baseline current-IR controller→查pinned API→实现独立fixed-choice controller并重启none route→fresh focused矩阵、none package/no-card与configured target-model纵向→重读设计/MLIR复审→更新并提交 |
 | 18 | `search-current-ir-integration` | 重新启用`search`：保留Spatial/Region complete lazy controller；structural choice选中后由第12项actualize，再从该candidate current IR建立Temporal及layout/movement/execution/order raw choices并逐层立即apply；PBQP只作首proposal，Accepted current Instr actual result进入controller比较 | 不存在旧cutover/fallback/complete plan；e-graph只在policy分叉前一次；proposal开关不改各current-stage raw domain；pre-structural state无future operation/value/buffer/event或Temporal scope ID；每个complete point一次actual leaf；controller从Accepted current Instr比较resource-aware objective并保留同一owner；baseline路径不变 | 读AGENTS/progress→读05--17及本项矩阵→读NE/CT、overlap和target-profile事实→调研current-IR search transaction、resource-aware cost与nested raw-domain traversal→查pinned API→把controller接到第12--16项typed actualizer→fresh search全链、raw-domain on/off、engine-cost反例、actual feedback及baseline隔离验证→重读设计/完整diff/MLIR复审→更新并提交 |
 | 19 | `scale-regression-and-inventory` | 在新actual-IR pipeline上profile并仅保留有证据的e-graph、PBQP、memo、priority、DP和LNS，补齐logical transform、spatial/Region actualization、fusion、attention、copy、layout conversion、transfer elimination与Instr只读汇总 | 完整e-node/e-class/match/budget、logical transform before/after、Tile/TileRegion/current SSA edge/producer-occurrence/attention actual decomposition/copy/layout-conversion/buffer/movement/execution-structure/Instr/target inventory；e-graph on/off保持exact语义和downstream reachability；proposal/PBQP on/off保持raw domains/accepted set；instrumentation on/off等价；actual MiniMalloc到达 | 读AGENTS/progress→读05/06及本项矩阵→调研search/equality-saturation scalability和PBQP proposal算法→查pinned MLIR/LLVM→改instrumentation/tests→fresh真实规模验证→重读设计/MLIR复审→更新并提交 |
@@ -113,7 +113,6 @@ LLVM/MLIR规范复审→更新状态并提交”。不得以全局原则替代�
 
 | Work item | Current设计authority | 本计划拥有的内容 |
 | --- | --- | --- |
-| 15 | 06号6.1、08号physical relation、19号bufferization/MLIR规则 | value/use PBQP apply、exact view、一次bufferization与output DPS checkpoints |
 | 16 | 06号6.2--6.6、09--14号memory/movement/completion/target合同 | atomic stage orchestration、typed handoff、fanout和actual leaf reachability |
 | 17 | 06号7.1/7.2、16号产品验证合同 | 独立baseline controller重启和current产品矩阵 |
 | 18 | 06号7.1/7.3/7.4、Spatial/Region PlanningSession和各current-IR query-local domain | 独立search controller、proposal/raw traversal、actual objective与winner handoff |
@@ -122,21 +121,11 @@ LLVM/MLIR规范复审→更新状态并提交”。不得以全局原则替代�
 
 ## 逐项覆盖矩阵
 
-### 15. Current-IR layout and bufferization
-
-| 输入等价类 | Shape / 结构 | Typed failure | 精确断言 | 下游witness |
-| --- | --- | --- | --- | --- |
-| final tile/fuse current SSA的function boundary与primary/shared/alias/use-local需求 | 1/2/15 uses；Tensor/NTensor/Cx/NCx；rank 3--6，1024/1025/1031 | relation或bufferization不能证明时保留explicit materialization或typed unsupported，不建立alias | function boundary与region-local bufferization只运行一次；shared layout一个SSA definition；alias同storage；allocation dominance/effect正确；无unused conversion；每个logical boundary有current endpoint；不消费PhysicalVersion | 第16项直接消费layout-resolved endpoint |
-| value/use layout domain与op tuple factor | elementwise/convert flexible chain、GEMM/reduce fixed tuple、chain/fanout/attention | tuple unsupported=`NoSolution`；budget/overflow=`Indeterminate`；malformed=`BrokenContract` | 每个current value/use all-and-only一个变量/binding；assignment直接改actual types/uses；只为不兼容edge创建materialization；proposal开关不改raw domain | movement transformation和layout-resolved stage verifier |
-| exact logical/physical view | reshape/transpose/broadcast/concat residual；same/different physical map | physical-map、valid/padding、alias或write safety不exact时保留materialization | `Psource(R(i)) == Pdest(i)`时同storage view且零copy/allocation；否则actual movement显式 | movement count与第19项layout-conversion inventory |
-| observable output DPS与copy regression | single/multi-result、loop-carried result、chain/fanout；rank 3--6，1024/1025/1031；16 Tile | output无法绑定唯一destination或copy必要性缺少SSA/alias/effect witness时stage失败 | 每个result直接写唯一destination；冗余DDR publication copy为0；必要copy all-and-only且movement后typed；Instr不创建copy-only Region | 第16项movement→leaf与第17项baseline integration |
-| exact PBQP solver与soft projection | flat oracle R0/R1/R2/residual；NE/Vector/movement/control trade-off；真实rank 3--6 | relevant work/rate/multiplicity unknown时整组soft term禁用；hard infinity/overflow/无解分类保持 | optimal cost/tie与oracle一致；unique conversion descriptor只计一次；projected term与apply后fresh actual analysis一致；不得退回flat instruction cost | 第18项final objective、第19项projected-vs-actual报告 |
-| relation与cleanup回归 | same-layout、unused、1/2/15共享use、intervening alias write、necessary copy、external endpoint bridge | stale endpoint、alias/effect不exact或listener无法retarget时stage失败/保留独立conversion | same-layout/unused为0；shared一个SSA；source write阻止复用；necessary copy不误删；all structural relations指向live layout-resolved endpoint且无duplicate/missing | 第16项movement all-and-only消费relation，current movement/instruction inventory |
-
 ### 16. Current-IR downstream orchestration
 
 | 输入等价类 | Shape / 结构 | Typed failure | 精确断言 | 下游witness |
 | --- | --- | --- | --- | --- |
+| layout-resolved Linalg/memref与第15项hard-only PBQP state | elementwise/convert、GEMM/reduce、attention state；Tensor/NTensor/Cx/NCx；rank 2--6，1024/1025/1031 | source scalar/combiner、layout tuple或descriptor relation不能精确lower时typed unsupported；query work/overflow保持indeterminate | deterministic structured-to-Tile all-and-only消费Linalg；只读descriptor query与actual RDMA/WDMA/GS command count/bytes/multiplicity逐项一致；接回PBQP后known cohort启用resource soft projection，unknown cohort仍整体hard-only；无future Instr inventory | movement transformation直接读取current Tile/memref，PBQP projected-vs-actual由第19项汇总 |
 | layout-resolved→physical movement | local、DDR、peer/relay/collective、partial overlap；rank 3--6，1024/1025/1031 | endpoint/relation/route/effect unknown保持typed unsupported，不猜carrier或改layout | actual movement/staging/token/effect all-and-only；compatible local edge零DDR；necessary copy typed；all external endpoint relations恰消费一次；physical TileRegion无logical tensor boundary | execution-structure direct transform读取同一current owner |
 | execution structure immediate apply | Serialized、multi-wave pipeline、prefix/steady/tail、rotating slots；1024/1025/1031 | recurrence/slot/reuse obligation无法从current SSA/effect表达时typed unsupported | Serialized byte-equivalent；pipelined chunk、loop、root、slot SSA、reuse obligation all-and-only；不创建join/offset | TileRegion→Instr直接消费rewritten current IR |
 | Instr/order/completion | straight-line、loop/tail、cross-worker、DTE token、observable terminal | hardware/ABI证据unknown、token/effect malformed和order overflow分类保持 | TileRegion→Instr一次；worker/order applied后fresh构造minimum/latest join/wait；无证steady-state join为0；DTE wait不与NCC join混用 | completion-closed Instr直接进入fanout/actual leaf |

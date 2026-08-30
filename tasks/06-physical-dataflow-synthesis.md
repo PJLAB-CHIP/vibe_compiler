@@ -342,11 +342,49 @@ term时，PBQP只在hard-feasible assignment间使用全局semantic tie-break，
 illegal；finite cost的加法、乘法和work-to-time换算使用checked arithmetic，任一影响比较的overflow返回`Indeterminate`，不能转成
 infinity或`NoSolution`。
 
-Solver必须区分`Optimal`、`NoSolution`、`Indeterminate`和`BrokenContract`，R0/R1/R2与residual core均受同一work budget约束；
+Solver必须区分`Optimal`、`NoSolution`、`Indeterminate`和`BrokenContract`。Factor graph先按stable variable index分解connected
+components；一状态变量可在任意degree精确传播，随后R0/R1/R2与residual core均受同一checked work budget约束；
 全assignment tie-break必须与独立flat oracle一致。Baseline只接受`Optimal`结果；`NoSolution`、`Indeterminate`和`BrokenContract`
 分别成为typed unsupported、resource failure和compiler error，不fallback canonical layout。Search的PBQP `Indeterminate`只表示首个proposal
 不可用，不能删除raw合法域或形成no-good。Assignment选中后立即在各自candidate owner上创建actual
 view/alias/allocation/layout materialization，随后销毁factor graph和assignment；下游不读取solver对象。
+
+Current实现以buffer-equivalent SSA value group、每个实际consumer use和op layout tuple为query-local变量。DPS result/destination、
+SCF iter-arg/yield/result以及已证明的alias view只共享同一value-group变量；不能用source structured node、operation ordinal或
+bufferization后的反查恢复对应。多operand tuple用一个只枚举该op当前interface明确支持tuple的auxiliary variable编码，auxiliary
+state通过binary infinity factor约束各value/use，不能把不支持的tuple变成finite penalty。
+
+同一source的多个read-only use可以共享一个actual conversion，但PBQP不能按use重复计价。每个可共享的dominance/effect cohort和
+目标layout使用一个三态activation variable：`inactive`、`source-is-target`、`materialized`。Source-layout factor只允许与当前
+primary layout一致的第二态；use factor要求选择该layout的use对应第二或第三态；只有第三态承担一次conversion cost。不同block、
+存在intervening alias write/free或dominance不能覆盖全部use时建立不同cohort。Apply必须与activation一一对应创建一个SSA
+materialization；same-layout、inactive和没有use的activation不创建operation。
+
+Soft projection只在每个可能的`materialized` state都能从current type/relation得到exact movement bytes、target descriptor数量、
+static execution multiplicity及显式profile rate时整体启用。它使用与后续movement lowering相同的只读descriptor query；任一候选
+state为unknown、unsupported或overflow时，本次solve禁用全部performance soft costs，仅保留hard legality和完整semantic tie-break，
+不能混用一部分可计算term制造不可比较的winner。Apply后从new current IR fresh重算conversion/descriptor/work并与本次投影逐项一致；
+不保存descriptor plan或future Instr inventory。
+
+当前第15项落地时，exact descriptor query仍由后续Tile-to-Instr owner私有，不能在不形成反向library依赖或复制算法的情况下对全部
+layout state精确调用；因此current layout solve明确走上述hard-only分支。PBQP仍以exact unique materialization count选择canonical
+assignment，但该计数不是performance soft cost，也不宣称performance optimal。第16项把同一只读descriptor query提到shared analysis后，
+才可在不改变raw layout域、hard legality或apply路径的前提下启用对应resource projection；在此之前禁止用descriptor estimate代替。
+
+#### 6.1.2 Output DPS 与一次bufferization
+
+每个`StructuredOutputRelation`在bufferization前从其current TileRegion yield证明actual output piece。Canonical full-tensor
+`insert_slice(piece, tensor.empty)`只是一种可消除的structural wrapper：layout transformation把piece作为TileRegion actual endpoint，
+并在所属entry function增加对应program output的DDR memref destination及exact static subview；随后使用
+`bufferization.materialize_in_destination`把piece绑定到该subview。Offset/size来自current insert/extract relation，不来自Spatial plan
+或output名称。无法证明唯一piece、完整subview range或destination ownership时在首次mutation前返回typed unsupported。
+
+同一module只运行一次function-boundary加region-local One-Shot Bufferization。`func.func` tensor boundary转换为compact DDR memref；
+`wafer.tile.region`保持显式tensor boundary，内部通过标准`bufferization.to_memref/to_tensor`连接已经选定layout的actual memref
+endpoint。除TileRegion boundary及这些标准bridge外，Linalg/Tensor/SCF必须全部bufferized；unknown executable tensor op不是允许的
+partial boundary。Bufferization产生的SPM→DDR output copy是下一movement stage的typed input；同一DDR logical result从临时buffer
+再次发布到designated output的DDR→DDR copy为合同错误。因真实old-value read、alias conflict或out-of-place语义产生的copy保留其
+SSA/effect witness，不能按copy数量一律删除。
 
 ### 6.2 Movement
 

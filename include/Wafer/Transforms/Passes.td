@@ -8,6 +8,7 @@ include "mlir/Pass/PassBase.td"
 include "Wafer/Transforms/StableHLO/Passes.td"
 include "Wafer/Transforms/Linalg/Passes.td"
 include "Wafer/Transforms/Module/Passes.td"
+include "Wafer/Transforms/Tile/Passes.td"
 include "Wafer/Transforms/Instr/Passes.td"
 
 #endif // WAFER_TRANSFORMS_PASSES_TD

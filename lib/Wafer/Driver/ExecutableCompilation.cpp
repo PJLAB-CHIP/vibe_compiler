@@ -5,12 +5,10 @@
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/IR/Topology/TargetTopology.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
-#include "Wafer/Transforms/Tile/StructuredNodeUseIndex.h"
 
 #include "Wafer/Support/BoundedTilePipelines.h"
 
 #include "Wafer/Support/CompileTiming.h"
-#include "Wafer/Transforms/Instr/MemoryPlanningPipelines.h"
 #include "Wafer/Transforms/Instr/RedundantTransferElimination.h"
 #include "Wafer/Transforms/Passes.h"
 
@@ -45,18 +43,12 @@ retargetStructuredRelationValue(StructuredMaterializationRelations &relations,
                                 mlir::Value oldValue, mlir::Value newValue) {
   if (!oldValue || !newValue || oldValue.getType() != newValue.getType())
     return;
-  auto retarget = [&](auto &entries) {
-    for (auto &entry : entries)
-      if (entry.buffer == oldValue)
-        entry.buffer = newValue;
-  };
-  retarget(relations.operationResultBuffers);
-  retarget(relations.operandBuffers);
-  retarget(relations.scratchBuffers);
-  retarget(relations.outputBuffers);
-  retarget(relations.ddrBuffers);
-  retarget(relations.partialReductionContributions);
-  retarget(relations.partialReductionMergeInputs);
+  for (MaterializedBufferRelation &entry : relations.buffers)
+    if (entry.buffer == oldValue)
+      entry.buffer = newValue;
+  for (StructuredOutputRelation &entry : relations.structuralOutputs)
+    if (entry.endpoint == oldValue)
+      entry.endpoint = newValue;
 }
 
 static mlir::FailureOr<unsigned> cleanupCanonicalInstructionTransfersImpl(
@@ -228,9 +220,7 @@ ExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
 
   llvm::SmallVector<ExecutableTileFailure, 4> tileFailures;
   std::vector<mlir::OwningOpRef<mlir::ModuleOp>> instructionModules;
-  std::vector<StructuredMaterializationRelations> tileRelations;
   instructionModules.reserve(loweringResults.size());
-  tileRelations.reserve(loweringResults.size());
   ExecutableCompilationStatus failureStatus =
       ExecutableCompilationStatus::ProvenExactRejection;
   for (auto [tileIndex, result] : llvm::enumerate(loweringResults)) {
@@ -250,7 +240,6 @@ ExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
       continue;
     }
     instructionModules.push_back(std::move(result.module));
-    tileRelations.push_back(std::move(result.materializationRelations));
   }
   if (!tileFailures.empty()) {
     const std::string primaryGate = tileFailures.front().gate;
@@ -288,15 +277,6 @@ ExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
   ExecutableCompilationResult result;
   result.status = ExecutableCompilationStatus::Accepted;
   result.executable.emplace(std::move(*executable));
-  for (auto [tileIndex, tile] : llvm::enumerate(result.executable->tiles)) {
-    const StructuredMaterializationRelations &relations =
-        tileRelations[tileIndex];
-    StructuredNodeUseIndex nodeUses(relations);
-    tile.getModule().walk([&](mlir::Operation *operation) {
-      for (uint32_t node : nodeUses.collectNodesUsedBy(operation))
-        result.operationNodeRelations.push_back({operation, node});
-    });
-  }
   return result;
 }
 

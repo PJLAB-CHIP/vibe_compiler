@@ -4,8 +4,10 @@
 #include "Wafer/Transforms/Linalg/OnlineAttentionDecomposition.h"
 #include "Wafer/Transforms/Linalg/StructuredTiling.h"
 #include "Wafer/Transforms/Linalg/TemporalTiling.h"
+#include "Wafer/Transforms/Tile/LayoutOptimization.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
+#include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalRegionPlan.h"
@@ -38,11 +40,7 @@ namespace {
 
 std::unique_ptr<mlir::MLIRContext> createContext() {
   mlir::DialectRegistry registry;
-  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
-                  mlir::linalg::LinalgDialect, mlir::memref::MemRefDialect,
-                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
-  wafer::registerWaferCoreDialects(registry);
-  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  wafer::compiler::detail::registerCompilationDialects(registry);
   auto context = std::make_unique<mlir::MLIRContext>(registry);
   context->loadAllAvailableDialects();
   return context;
@@ -431,7 +429,6 @@ module {
         0u);
     EXPECT_TRUE(materialized->relations.boundaryRelations.empty());
     EXPECT_EQ(materialized->relations.structuralOutputs.size(), 16u);
-    EXPECT_TRUE(materialized->relations.operationEmissions.empty());
     EXPECT_EQ(
         countOps<mlir::linalg::GenericOp>(materialized->module->getOperation()),
         16u);
@@ -507,7 +504,6 @@ TEST(SpatialRegionMaterializationTest,
     EXPECT_EQ(
         countOps<wafer::TileModuleOp>(materialized->module->getOperation()),
         16u);
-    EXPECT_TRUE(materialized->relations.operationEmissions.empty());
     unsigned tileableOperations = 0;
     materialized->module->walk([&](mlir::TilingInterface tiling) {
       if (!tiling->getParentOfType<wafer::TileRegionOp>())
@@ -615,7 +611,6 @@ TEST(SpatialRegionMaterializationTest,
     EXPECT_EQ(
         countOps<wafer::TileRegionOp>(materialized->module->getOperation()),
         selectedPieces);
-    EXPECT_TRUE(materialized->relations.operationEmissions.empty());
     EXPECT_EQ(
         countOps<mlir::linalg::GenericOp>(materialized->module->getOperation()),
         selectedPieces);
@@ -821,7 +816,6 @@ module {
     EXPECT_EQ(
         countOps<wafer::TileRegionOp>(materialized->module->getOperation()),
         selected->groups.size());
-    EXPECT_TRUE(materialized->relations.operationEmissions.empty());
     EXPECT_EQ(
         countOps<mlir::linalg::GenericOp>(materialized->module->getOperation()),
         32u);
@@ -840,7 +834,6 @@ module {
     size_t selectedOccurrences = 0;
     for (const auto &group : replicaPlan->groups)
       selectedOccurrences += group.executions.size() + group.replicas.size();
-    EXPECT_TRUE(replicated->relations.operationEmissions.empty());
     EXPECT_EQ(
         countOps<mlir::linalg::GenericOp>(replicated->module->getOperation()),
         selectedOccurrences);
@@ -1015,7 +1008,6 @@ module {
       },
       failureReason);
   ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
-  EXPECT_TRUE(materialized->relations.operationEmissions.empty());
   EXPECT_EQ(
       countOps<mlir::linalg::GenericOp>(materialized->module->getOperation()),
       17u);
@@ -1242,6 +1234,19 @@ TEST(SpatialRegionMaterializationTest,
     EXPECT_TRUE(mlir::succeeded(
         wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
             materialized->module->getOperation(), materialized->relations)));
+    wafer::compiler::detail::LayoutOptimizationResult layout =
+        wafer::compiler::detail::resolveCurrentLayoutsAndBufferize(
+            *materialized->module, materialized->relations);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    EXPECT_EQ(layout.statistics.bufferizationInvocations, 1u);
+    EXPECT_EQ(layout.statistics.redundantPublicationCopies, 0u);
+    EXPECT_TRUE(mlir::succeeded(
+        wafer::compiler::detail::verifyLayoutResolvedTileRegions(
+            *materialized->module)));
+    EXPECT_EQ(materialized->relations.boundaryRelations.size(), boundaryCount);
+    EXPECT_EQ(materialized->relations.structuralOutputs.size(), outputCount);
+    for (const auto &relation : materialized->relations.structuralOutputs)
+      EXPECT_TRUE(wafer::isWaferDDRMemRefType(relation.endpoint.getType()));
   }
 }
 
@@ -1460,7 +1465,6 @@ module {
   EXPECT_EQ(materializationFailure.kind,
             wafer::SpatialRegionMaterializationFailureKind::None);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*materialized->module)));
-  EXPECT_TRUE(materialized->relations.operationEmissions.empty());
   std::string after;
   llvm::raw_string_ostream afterStream(after);
   source->print(afterStream);
@@ -1723,7 +1727,6 @@ module {
   std::string failureReason;
   auto materialized = materializeCanonical(*source, failureReason);
   ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
-  EXPECT_TRUE(materialized->relations.operationEmissions.empty());
   EXPECT_GT(materialized->relations.boundaryRelations.size(), 0u);
   for (const auto &relation : materialized->relations.boundaryRelations) {
     EXPECT_TRUE(relation.sourceEndpoint);
@@ -1800,7 +1803,6 @@ module {
   std::string failureReason;
   auto materialized = materializeCanonical(*source, failureReason);
   ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
-  EXPECT_TRUE(materialized->relations.operationEmissions.empty());
   EXPECT_EQ(
       countOps<mlir::linalg::GenericOp>(materialized->module->getOperation()),
       48u);
@@ -1888,7 +1890,6 @@ module {
   std::string failureReason;
   auto materialized = materializeCanonical(*source, failureReason);
   ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
-  EXPECT_TRUE(materialized->relations.operationEmissions.empty());
   EXPECT_EQ(
       countOps<mlir::linalg::GenericOp>(materialized->module->getOperation()),
       272u);

@@ -1,4 +1,4 @@
-// RUN: wafer-opt --verify-each=true --pass-pipeline='builtin.module(wafer-bufferize-instr-functions)' %s | FileCheck %s
+// RUN: wafer-opt --verify-each=true --pass-pipeline='builtin.module(wafer-resolve-layouts-and-bufferize)' %s | FileCheck %s
 
 #id = affine_map<(b, m, n) -> (b, m, n)>
 
@@ -35,7 +35,7 @@ func.func @aligned_output(
 
 // CHECK-LABEL: func.func @aligned_output(
 // CHECK-SAME: memref<2x1024x64xf16, #wafer.memory<ddr, tensor>>
-// CHECK-SAME: memref<2x1024x64xf16, #wafer.memory<ddr, tensor>>) {
+// CHECK-SAME: memref<2x1024x64xf16, #wafer.memory<ddr, tensor>>) -> memref<2x1024x64xf16, #wafer.memory<ddr, tensor>> {
 // CHECK-NOT: memref.copy
 // CHECK: scf.for
 // CHECK: return
@@ -109,7 +109,7 @@ func.func @ragged_output(
 
 // CHECK-LABEL: func.func @ragged_output(
 // CHECK-SAME: memref<2x1025x64xf16, #wafer.memory<ddr, tensor>>
-// CHECK-SAME: memref<2x1025x64xf16, #wafer.memory<ddr, tensor>>) {
+// CHECK-SAME: memref<2x1025x64xf16, #wafer.memory<ddr, tensor>>) -> memref<2x1025x64xf16, #wafer.memory<ddr, tensor>> {
 // CHECK-NOT: memref.copy
 // CHECK: scf.for
 // CHECK: return

@@ -77,19 +77,7 @@ module attributes {test.module_attribute = "preserved"} {
                                                         context.get());
   ASSERT_TRUE(source);
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
-  mlir::Operation *constantTen = nullptr;
-  mlir::Operation *constantTwenty = nullptr;
-  source->walk([&](mlir::arith::ConstantOp constant) {
-    auto value = mlir::dyn_cast<mlir::IntegerAttr>(constant.getValue());
-    if (value && value.getInt() == 10)
-      constantTen = constant.getOperation();
-    if (value && value.getInt() == 20)
-      constantTwenty = constant.getOperation();
-  });
-  ASSERT_NE(constantTen, nullptr);
-  ASSERT_NE(constantTwenty, nullptr);
   wafer::StructuredMaterializationRelations relations;
-  relations.operationEmissions = {{7, constantTen}, {9, constantTwenty}};
 
   std::string failureReason;
   auto standaloneModules = wafer::createStandaloneTileModules(
@@ -122,24 +110,10 @@ module attributes {test.module_attribute = "preserved"} {
   ASSERT_EQ(tileOneConstants.size(), 1u);
   EXPECT_EQ(tileZeroConstants.front(), 10);
   EXPECT_EQ(tileOneConstants.front(), 20);
-  EXPECT_TRUE((*standaloneModules)[0].module->getOperation()->isProperAncestor(
-      constantTen));
-  EXPECT_TRUE((*standaloneModules)[1].module->getOperation()->isProperAncestor(
-      constantTwenty));
-  ASSERT_EQ((*standaloneModules)[0]
-                .materializationRelations.operationEmissions.size(),
-            1u);
-  ASSERT_EQ((*standaloneModules)[1]
-                .materializationRelations.operationEmissions.size(),
-            1u);
-  EXPECT_EQ((*standaloneModules)[0]
-                .materializationRelations.operationEmissions.front()
-                .structuredNodeId,
-            7u);
-  EXPECT_EQ((*standaloneModules)[1]
-                .materializationRelations.operationEmissions.front()
-                .structuredNodeId,
-            9u);
+  EXPECT_TRUE(
+      (*standaloneModules)[0].materializationRelations.buffers.empty());
+  EXPECT_TRUE(
+      (*standaloneModules)[1].materializationRelations.buffers.empty());
 }
 
 TEST(StandaloneTileModulesTest, RequiresAtLeastOneTileModule) {

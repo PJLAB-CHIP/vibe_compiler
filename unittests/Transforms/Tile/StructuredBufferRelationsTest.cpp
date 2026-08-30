@@ -1,23 +1,14 @@
 //===- StructuredBufferRelationsTest.cpp -------------------------------===//
 
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
-#include "Wafer/Driver/CompilationInternal.h"
-#include "Wafer/Driver/PhysicalDataflow/StructuredBufferLoweringListener.h"
-#include "Wafer/Transforms/Tile/StructuredNodeUseIndex.h"
 
-#include "Wafer/Conversion/TileToInstr/TileToInstr.h"
+#include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Support/CompileWorkStatistics.h"
-#include "Wafer/Support/PassPipeline.h"
-#include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
-#include "mlir/Pass/Pass.h"
 
 #include "gtest/gtest.h"
 
@@ -25,33 +16,20 @@
 
 namespace {
 
+using namespace wafer;
+using namespace wafer::compiler::detail;
+
 class StructuredBufferRelationsTest : public ::testing::Test {
 protected:
   StructuredBufferRelationsTest() {
-    wafer::compiler::detail::registerCompilationDialects(registry);
+    registerCompilationDialects(registry);
     context = std::make_unique<mlir::MLIRContext>(registry);
     context->loadAllAvailableDialects();
   }
 
-  mlir::OwningOpRef<mlir::ModuleOp> createModule() {
-    return mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
-module {
-  func.func @main() {
-    %token = arith.constant false
-    %unused = wafer.tile.region(%token : i1) -> (i1) {
-    ^bb0(%tile_token: i1):
-      %source = memref.alloc()
-          : memref<4xf16, #wafer.memory<spm, tensor>>
-      %copy = wafer.tile.copy %source
-          : memref<4xf16, #wafer.memory<spm, tensor>>
-         -> memref<4xf16, #wafer.memory<spm, tensor>>
-      wafer.tile.yield %tile_token : i1
-    }
-    return
-  }
-}
-)mlir",
-                                                   context.get());
+  mlir::OwningOpRef<mlir::ModuleOp> parse(llvm::StringRef text) {
+    return mlir::parseSourceString<mlir::ModuleOp>(
+        text, mlir::ParserConfig(context.get()));
   }
 
   mlir::DialectRegistry registry;
@@ -59,441 +37,175 @@ module {
 };
 
 TEST_F(StructuredBufferRelationsTest,
-       ConversionListenerRetargetsCurrentIRBuffer) {
-  mlir::OwningOpRef<mlir::ModuleOp> module = createModule();
-  ASSERT_TRUE(module);
-  wafer::MoveCopyOp copy;
-  module->walk([&](wafer::MoveCopyOp operation) { copy = operation; });
-  ASSERT_TRUE(copy);
-
-  wafer::StructuredMaterializationRelations relations;
-  relations.operationResultBuffers.push_back(
-      {/*structuredNodeId=*/7, /*resultIndex=*/0, copy.getResult()});
-  ASSERT_TRUE(mlir::succeeded(
-      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
-          module->getOperation(), relations)));
-
-  wafer::compiler::detail::StructuredBufferLoweringListener listener(relations);
-  wafer::TileRegionToInstrLoweringSession loweringSession(*context, &listener);
-  mlir::func::FuncOp function = *module->getOps<mlir::func::FuncOp>().begin();
-  wafer::TileRegionOp region = *function.getOps<wafer::TileRegionOp>().begin();
-  ASSERT_TRUE(mlir::succeeded(
-      wafer::convertTileRegionToInstr(region, loweringSession, &listener)));
-  EXPECT_TRUE(listener.finalizeAfterRewrite());
-  ASSERT_TRUE(mlir::succeeded(
-      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
-          module->getOperation(), relations)));
-  EXPECT_FALSE(mlir::isa_and_nonnull<wafer::MoveCopyOp>(
-      relations.operationResultBuffers.front().buffer.getDefiningOp()));
-  EXPECT_TRUE(llvm::any_of(
-      relations.scratchBuffers,
-      [](const wafer::StructuredOperationBufferRelation &relation) {
-        return relation.structuredNodeId == 7 &&
-               mlir::isa_and_nonnull<mlir::memref::AllocOp>(
-                   relation.buffer.getDefiningOp());
-      }));
-  auto emitted = llvm::find_if(
-      relations.operationEmissions,
-      [](const wafer::StructuredOperationEmissionRelation &relation) {
-        return relation.structuredNodeId == 7 &&
-               mlir::isa_and_nonnull<wafer::InstrGatherScatterOp>(
-                   relation.operation);
-      });
-  ASSERT_NE(emitted, relations.operationEmissions.end());
-  wafer::compiler::detail::StructuredNodeUseIndex nodeUses(relations);
-  EXPECT_EQ(nodeUses.collectNodesUsedBy(emitted->operation),
-            (llvm::SmallVector<uint32_t, 4>{7}));
-
-  ASSERT_TRUE(mlir::succeeded(wafer::support::runPassPipeline(
-      *module, "test-required-ncc-join-placement",
-      [](mlir::OpPassManager &manager) {
-        manager.nest<mlir::func::FuncOp>().addPass(
-            wafer::createPlaceRequiredNCCJoinsPass());
-      })));
-  EXPECT_TRUE(mlir::succeeded(
-      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
-          module->getOperation(), relations)));
-}
-
-TEST_F(StructuredBufferRelationsTest,
-       ReplacementListenerRetargetsStructuralBoundaryEndpoint) {
-  mlir::OwningOpRef<mlir::ModuleOp> module =
-      mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+       ListenerRetargetsActualValueWithoutSourceNodeParity) {
+  auto module = parse(R"mlir(
 module {
   wafer.tile.module card_id = 0 tile_id = 0 {
     func.func @entry() {
-      %source = tensor.empty() : tensor<2x1025x128xf16>
-      return
-    }
-  }
-  wafer.tile.module card_id = 0 tile_id = 1 {
-    func.func @entry() {
-      %destination = tensor.empty() : tensor<2x1025x128xf16>
-      return
-    }
-  }
-}
-)mlir",
-                                              context.get());
-  ASSERT_TRUE(module);
-  llvm::SmallVector<mlir::tensor::EmptyOp, 2> emptyOps;
-  module->walk([&](mlir::tensor::EmptyOp empty) { emptyOps.push_back(empty); });
-  ASSERT_EQ(emptyOps.size(), 2u);
-  wafer::StructuredMaterializationRelations relations;
-  relations.boundaryRelations.push_back(
-      {emptyOps[0].getResult(), emptyOps[1].getResult()});
-  wafer::compiler::detail::StructuredBufferReplacementListener listener(
-      relations);
-  mlir::IRRewriter rewriter(context.get(), &listener);
-  rewriter.setInsertionPointAfter(emptyOps[0]);
-  auto replacement = rewriter.create<mlir::tensor::EmptyOp>(
-      emptyOps[0].getLoc(), llvm::ArrayRef<int64_t>({2, 1025, 128}),
-      rewriter.getF16Type());
-  rewriter.replaceOp(emptyOps[0], replacement.getResult());
-  EXPECT_TRUE(listener.finalizeAfterRewrite());
-  ASSERT_EQ(relations.boundaryRelations.size(), 1u);
-  EXPECT_EQ(relations.boundaryRelations.front().sourceEndpoint,
-            replacement.getResult());
-  EXPECT_TRUE(mlir::succeeded(
-      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
-          module->getOperation(), relations)));
-}
-
-TEST_F(StructuredBufferRelationsTest,
-       CurrentCheckRejectsMismatchedTileOwnerAndDuplicateBoundary) {
-  mlir::OwningOpRef<mlir::ModuleOp> module =
-      mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
-module {
-  wafer.tile.module card_id = 0 tile_id = 0 {
-    func.func @entry() {
-      %source = tensor.empty() : tensor<2x1025x128xf16>
-      return
-    }
-  }
-  wafer.tile.module card_id = 0 tile_id = 1 {
-    func.func @entry() {
-      %destination = tensor.empty() : tensor<2x1025x128xf16>
-      return
-    }
-  }
-}
-)mlir",
-                                              context.get());
-  ASSERT_TRUE(module);
-  llvm::SmallVector<mlir::tensor::EmptyOp, 2> emptyOps;
-  module->walk([&](mlir::tensor::EmptyOp empty) { emptyOps.push_back(empty); });
-  ASSERT_EQ(emptyOps.size(), 2u);
-  wafer::StructuredMaterializationRelations relations;
-  relations.boundaryRelations.push_back(
-      {emptyOps[0].getResult(), emptyOps[1].getResult()});
-  EXPECT_TRUE(mlir::succeeded(
-      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
-          module->getOperation(), relations)));
-  relations.boundaryRelations.front().destinationEndpoint =
-      emptyOps[0].getResult();
-  EXPECT_TRUE(mlir::failed(
-      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
-          module->getOperation(), relations)));
-  relations.boundaryRelations.front().destinationEndpoint =
-      emptyOps[1].getResult();
-  relations.boundaryRelations.push_back(relations.boundaryRelations.front());
-  EXPECT_TRUE(mlir::failed(
-      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
-          module->getOperation(), relations)));
-}
-
-TEST_F(StructuredBufferRelationsTest,
-       ReusesFrequentlyRepeatedExactDescriptorPlansWithinOneRequest) {
-  mlir::OwningOpRef<mlir::ModuleOp> module =
-      mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
-module {
-  func.func @main() {
-    %token = arith.constant false
-    %unused = wafer.tile.region(%token : i1) -> (i1) {
-    ^bb0(%tile_token: i1):
       %source = memref.alloc()
-          : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
+          : memref<2x1024x64xf16, #wafer.memory<spm, tensor>>
       %first = wafer.tile.materialize_layout %source
-          : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
-         -> memref<2x1025x64xf16, #wafer.memory<spm, ncx>>
-      %second = wafer.tile.materialize_layout %source
-          : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
-         -> memref<2x1025x64xf16, #wafer.memory<spm, ncx>>
-      %third = wafer.tile.materialize_layout %source
-          : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
-         -> memref<2x1025x64xf16, #wafer.memory<spm, ncx>>
-      %fourth = wafer.tile.materialize_layout %source
-          : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
-         -> memref<2x1025x64xf16, #wafer.memory<spm, ncx>>
-      wafer.tile.yield %tile_token : i1
+          : memref<2x1024x64xf16, #wafer.memory<spm, tensor>>
+         -> memref<2x1024x64xf16, #wafer.memory<spm, ncx>>
+      %second = wafer.tile.materialize_layout %first
+          : memref<2x1024x64xf16, #wafer.memory<spm, ncx>>
+         -> memref<2x1024x64xf16, #wafer.memory<spm, tensor>>
+      %c0 = arith.constant 0 : index
+      %value = memref.load %second[%c0, %c0, %c0]
+          : memref<2x1024x64xf16, #wafer.memory<spm, tensor>>
+      return
     }
-    return
   }
 }
-)mlir",
-                                              context.get());
+)mlir");
   ASSERT_TRUE(module);
-  auto work = std::make_shared<wafer::support::CompileWorkStatisticsSession>();
-  wafer::support::ScopedCompileWorkStatisticsActivation activation(work);
-  wafer::TileRegionToInstrLoweringSession loweringSession(*context);
-  wafer::TileRegionOp region;
-  module->walk([&](wafer::TileRegionOp candidate) { region = candidate; });
-  ASSERT_TRUE(region);
-  ASSERT_TRUE(mlir::succeeded(
-      wafer::convertTileRegionToInstr(region, loweringSession)));
-  wafer::support::CompileWorkStatistics counts = work->snapshot();
-  EXPECT_EQ(counts.tileToInstructionLowerings, 1u);
-  EXPECT_EQ(counts.relationDescriptorPlannings, 3u);
-}
+  llvm::SmallVector<LayoutMaterializeOp, 2> layouts;
+  module->walk([&](LayoutMaterializeOp op) { layouts.push_back(op); });
+  ASSERT_EQ(layouts.size(), 2u);
+  mlir::memref::LoadOp load;
+  module->walk([&](mlir::memref::LoadOp op) { load = op; });
+  ASSERT_TRUE(load);
 
-TEST_F(StructuredBufferRelationsTest,
-       ConversionListenerOwnsSupportCopyFromExplicitEmission) {
-  mlir::OwningOpRef<mlir::ModuleOp> module =
-      mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
-module {
-  func.func @main(
-      %dest: memref<1x2x1024xf16, #wafer.memory<ddr, tensor>>) {
-    %token = arith.constant false
-    %unused = wafer.tile.region(
-        %token, %dest : i1,
-        memref<1x2x1024xf16, #wafer.memory<ddr, tensor>>) -> (i1) {
-    ^bb0(%tile_token: i1,
-         %tile_dest: memref<1x2x1024xf16,
-             #wafer.memory<ddr, tensor>>):
-      %source = memref.alloc()
-          : memref<1x2x1024xf16, #wafer.memory<spm, tensor>>
-      %copy = wafer.tile.copy %source
-          : memref<1x2x1024xf16, #wafer.memory<spm, tensor>>
-         -> memref<1x2x1024xf16, #wafer.memory<spm, tensor>>
-      wafer.tile.store %copy, %tile_dest
-          : memref<1x2x1024xf16, #wafer.memory<spm, tensor>>
-         -> memref<1x2x1024xf16, #wafer.memory<ddr, tensor>>
-      wafer.tile.yield %tile_token : i1
-    }
-    return
-  }
-}
-)mlir",
-                                              context.get());
-  ASSERT_TRUE(module);
-  mlir::func::FuncOp function = *module->getOps<mlir::func::FuncOp>().begin();
-  wafer::TileRegionOp region = *function.getOps<wafer::TileRegionOp>().begin();
-
-  wafer::StructuredMaterializationRelations relations;
-  relations.operationResultBuffers.push_back(
-      {/*structuredNodeId=*/7, /*resultIndex=*/0, function.getArgument(0)});
-  auto copy = *region.getBody().front().getOps<wafer::MoveCopyOp>().begin();
-  relations.operationEmissions.push_back(
-      {/*structuredNodeId=*/7, copy.getOperation()});
-  wafer::compiler::detail::StructuredBufferLoweringListener listener(relations);
-  wafer::TileRegionToInstrLoweringSession loweringSession(*context, &listener);
-  ASSERT_TRUE(mlir::succeeded(
-      wafer::convertTileRegionToInstr(region, loweringSession, &listener)));
-  ASSERT_TRUE(listener.finalizeAfterRewrite())
-      << listener.getFailureReason().str();
-  EXPECT_TRUE(llvm::any_of(
-      relations.scratchBuffers,
-      [](const wafer::StructuredOperationBufferRelation &relation) {
-        return relation.structuredNodeId == 7 &&
-               mlir::isa_and_nonnull<mlir::memref::AllocOp>(
-                   relation.buffer.getDefiningOp());
-      }));
-  EXPECT_TRUE(mlir::succeeded(
-      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
-          module->getOperation(), relations)));
-}
-
-TEST_F(StructuredBufferRelationsTest,
-       ConversionListenerDropsOnlyAnExplicitlyErasedDeadAllocationRelation) {
-  mlir::OwningOpRef<mlir::ModuleOp> module =
-      mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
-module {
-  func.func @main() {
-    %token = arith.constant false
-    %unused = wafer.tile.region(%token : i1) -> (i1) {
-    ^bb0(%tile_token: i1):
-      %dead = memref.alloc()
-          : memref<4xf16, #wafer.memory<spm, tensor>>
-      %zero = arith.constant 0.0 : f16
-      wafer.tile.fill %dead, %zero
-          : memref<4xf16, #wafer.memory<spm, tensor>>, f16
-      wafer.tile.yield %tile_token : i1
-    }
-    return
-  }
-}
-)mlir",
-                                              context.get());
-  ASSERT_TRUE(module);
-  mlir::memref::AllocOp allocation;
-  module->walk(
-      [&](mlir::memref::AllocOp operation) { allocation = operation; });
-  ASSERT_TRUE(allocation);
-
-  wafer::StructuredMaterializationRelations relations;
-  relations.operandBuffers.push_back(
-      {/*structuredNodeId=*/7, allocation.getResult()});
-  wafer::compiler::detail::StructuredBufferLoweringListener listener(relations);
-  wafer::TileRegionToInstrLoweringSession loweringSession(*context, &listener);
-  mlir::func::FuncOp function = *module->getOps<mlir::func::FuncOp>().begin();
-  wafer::TileRegionOp region = *function.getOps<wafer::TileRegionOp>().begin();
-  ASSERT_TRUE(mlir::succeeded(
-      wafer::convertTileRegionToInstr(region, loweringSession, &listener)));
+  StructuredMaterializationRelations relations;
+  relations.buffers.push_back(
+      {load, layouts.front().getResult(), MaterializedBufferRole::Operand});
+  StructuredBufferReplacementListener listener(relations);
+  listener.notifyOperationReplaced(layouts.front(), layouts.back().getResult());
   EXPECT_TRUE(listener.finalizeAfterRewrite());
-  EXPECT_TRUE(relations.operandBuffers.empty());
-  EXPECT_EQ(module->getOperation()->getNumRegions(), 1u);
+  ASSERT_EQ(relations.buffers.size(), 1u);
+  EXPECT_EQ(relations.buffers.front().buffer, layouts.back().getResult());
   EXPECT_TRUE(mlir::succeeded(
-      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
-          module->getOperation(), relations)));
+      checkStructuredBufferRelationsCurrent(*module, relations)));
 }
 
 TEST_F(StructuredBufferRelationsTest,
-       CurrentIRCheckRejectsUntrackedReplacementWithoutDereference) {
-  mlir::OwningOpRef<mlir::ModuleOp> module = createModule();
-  ASSERT_TRUE(module);
-  wafer::MoveCopyOp copy;
-  module->walk([&](wafer::MoveCopyOp operation) { copy = operation; });
-  ASSERT_TRUE(copy);
-
-  wafer::StructuredMaterializationRelations relations;
-  relations.operationResultBuffers.push_back(
-      {/*structuredNodeId=*/7, /*resultIndex=*/0, copy.getResult()});
-  mlir::func::FuncOp function = *module->getOps<mlir::func::FuncOp>().begin();
-  wafer::TileRegionOp region = *function.getOps<wafer::TileRegionOp>().begin();
-  wafer::TileRegionToInstrLoweringSession loweringSession(*context);
-  ASSERT_TRUE(mlir::succeeded(
-      wafer::convertTileRegionToInstr(region, loweringSession)));
-
-  EXPECT_TRUE(mlir::failed(
-      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
-          module->getOperation(), relations)));
-
-  // The check itself has no silent retain: a relation whose buffer left the
-  // current IR stays a typed failure until the caller explicitly completes a
-  // cleanup epoch.
-  EXPECT_EQ(relations.operationResultBuffers.size(), 1u);
-  EXPECT_TRUE(mlir::failed(
-      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
-          module->getOperation(), relations)));
-  wafer::compiler::detail::retainCurrentStructuredBufferRelations(
-      module->getOperation(), relations);
-  EXPECT_TRUE(relations.operationResultBuffers.empty());
-  EXPECT_TRUE(mlir::succeeded(
-      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
-          module->getOperation(), relations)));
-}
-
-TEST_F(StructuredBufferRelationsTest,
-       AttributionRelationsRebaseToOneCurrentStorageRoot) {
-  mlir::OwningOpRef<mlir::ModuleOp> module =
-      mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+       LoweringRecorderTransfersScratchToLiveActualOperation) {
+  auto module = parse(R"mlir(
 module {
-  func.func @main() {
-    %storage = memref.alloc()
-        : memref<1024xf16, #wafer.memory<spm, tensor>>
-    %view = memref.subview %storage[0] [1024] [1]
-        : memref<1024xf16, #wafer.memory<spm, tensor>>
-          to memref<1024xf16, strided<[1]>, #wafer.memory<spm, tensor>>
-    return
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry() {
+      %zero = arith.constant 0.000000e+00 : f16
+      %buffer = memref.alloc()
+          : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
+      wafer.tile.fill %buffer, %zero
+          : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>, f16
+      wafer.instr.fill %buffer, %zero
+          : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>, f16
+      return
+    }
   }
 }
-)mlir",
-                                              context.get());
+)mlir");
+  ASSERT_TRUE(module);
+  ComputeFillOp source;
+  InstrFillOp lowered;
+  mlir::memref::AllocOp allocation;
+  module->walk([&](ComputeFillOp op) { source = op; });
+  module->walk([&](InstrFillOp op) { lowered = op; });
+  module->walk([&](mlir::memref::AllocOp op) { allocation = op; });
+  ASSERT_TRUE(source && lowered && allocation);
+
+  StructuredMaterializationRelations relations;
+  StructuredBufferReplacementListener listener(relations);
+  listener.recordScratchAllocation(source, allocation);
+  listener.recordLoweredOperation(source, lowered);
+  EXPECT_TRUE(listener.finalizeAfterRewrite())
+      << listener.getFailureReason().str();
+  EXPECT_TRUE(llvm::any_of(relations.buffers, [&](const auto &relation) {
+    return relation.owner == lowered && relation.buffer == allocation &&
+           relation.role == MaterializedBufferRole::Scratch;
+  }));
+  EXPECT_TRUE(mlir::succeeded(
+      checkStructuredBufferRelationsCurrent(*module, relations)));
+}
+
+TEST_F(StructuredBufferRelationsTest,
+       StorageRootRebaseUsesCurrentViewAndFailsOnStaleOwner) {
+  auto module = parse(R"mlir(
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry() {
+      %buffer = memref.alloc()
+          : memref<2x1031x64xf16, #wafer.memory<spm, tensor>>
+      %view = memref.subview %buffer[0, 0, 0] [1, 1031, 64] [1, 1, 1]
+          : memref<2x1031x64xf16, #wafer.memory<spm, tensor>>
+            to memref<1x1031x64xf16, strided<[65984, 64, 1]>,
+                      #wafer.memory<spm, tensor>>
+      %c0 = arith.constant 0 : index
+      %value = memref.load %view[%c0, %c0, %c0]
+          : memref<1x1031x64xf16, strided<[65984, 64, 1]>,
+                   #wafer.memory<spm, tensor>>
+      return
+    }
+  }
+}
+)mlir");
   ASSERT_TRUE(module);
   mlir::memref::AllocOp allocation;
   mlir::memref::SubViewOp view;
-  module->walk(
-      [&](mlir::memref::AllocOp operation) { allocation = operation; });
-  module->walk([&](mlir::memref::SubViewOp operation) { view = operation; });
-  ASSERT_TRUE(allocation && view);
+  mlir::memref::LoadOp load;
+  module->walk([&](mlir::memref::AllocOp op) { allocation = op; });
+  module->walk([&](mlir::memref::SubViewOp op) { view = op; });
+  module->walk([&](mlir::memref::LoadOp op) { load = op; });
+  ASSERT_TRUE(allocation && view && load);
 
-  wafer::StructuredMaterializationRelations relations;
-  relations.operationResultBuffers.push_back(
-      {/*structuredNodeId=*/7, /*resultIndex=*/0, view.getResult()});
-  relations.operandBuffers.push_back(
-      {/*structuredNodeId=*/3, view.getResult()});
-  relations.outputBuffers.push_back({/*outputIndex=*/0, view.getResult()});
-  ASSERT_TRUE(mlir::succeeded(
-      wafer::compiler::detail::rebaseStructuredBufferRelationsToStorageRoots(
-          relations)));
-  EXPECT_EQ(relations.operationResultBuffers.front().buffer,
-            allocation.getResult());
-  EXPECT_EQ(relations.operandBuffers.front().buffer, allocation.getResult());
-  EXPECT_EQ(relations.outputBuffers.front().buffer, allocation.getResult());
+  StructuredMaterializationRelations relations;
+  relations.buffers.push_back(
+      {load, view.getResult(), MaterializedBufferRole::Operand});
+  EXPECT_TRUE(mlir::succeeded(
+      rebaseStructuredBufferRelationsToStorageRoots(relations)));
+  EXPECT_EQ(relations.buffers.front().buffer, allocation.getResult());
+  EXPECT_TRUE(mlir::succeeded(
+      checkStructuredBufferRelationsCurrent(*module, relations)));
+
+  load->erase();
+  EXPECT_TRUE(
+      mlir::failed(checkStructuredBufferRelationsCurrent(*module, relations)));
+  retainCurrentStructuredBufferRelations(*module, relations);
+  EXPECT_TRUE(relations.buffers.empty());
 }
 
 TEST_F(StructuredBufferRelationsTest,
-       ReplacementListenerTracksMultipleReplacementHops) {
-  mlir::OwningOpRef<mlir::ModuleOp> module = createModule();
-  ASSERT_TRUE(module);
-  mlir::func::FuncOp function = *module->getOps<mlir::func::FuncOp>().begin();
-  auto first = *function.getOps<mlir::arith::ConstantOp>().begin();
-  mlir::OpBuilder builder(function.getBody().front().getTerminator());
-  auto second = builder.create<mlir::arith::ConstantIntOp>(
-      first.getLoc(), /*value=*/true, /*width=*/1);
-  auto third = builder.create<mlir::arith::ConstantIntOp>(
-      first.getLoc(), /*value=*/false, /*width=*/1);
-
-  wafer::StructuredMaterializationRelations relations;
-  relations.operationResultBuffers.push_back(
-      {/*structuredNodeId=*/7, /*resultIndex=*/0, first.getResult()});
-  wafer::compiler::detail::StructuredBufferLoweringListener listener(relations);
-  listener.notifyOperationReplaced(first.getOperation(), second.getResult());
-  EXPECT_EQ(relations.operationResultBuffers.front().buffer,
-            second.getResult());
-  listener.notifyOperationReplaced(second.getOperation(), third.getResult());
-  EXPECT_EQ(relations.operationResultBuffers.front().buffer, third.getResult());
-  EXPECT_TRUE(listener.finalizeAfterRewrite());
-}
-
-TEST_F(StructuredBufferRelationsTest,
-       StructuredNodeUseIndexMatchesSharedStorageRoots) {
-  mlir::OwningOpRef<mlir::ModuleOp> module = createModule();
-  ASSERT_TRUE(module);
-  wafer::MoveCopyOp copy;
-  module->walk([&](wafer::MoveCopyOp operation) { copy = operation; });
-  ASSERT_TRUE(copy);
-
-  wafer::StructuredMaterializationRelations relations;
-  relations.operationResultBuffers.push_back(
-      {/*structuredNodeId=*/7, /*resultIndex=*/0, copy.getResult()});
-  relations.operandBuffers.push_back(
-      {/*structuredNodeId=*/3, copy.getSource()});
-
-  wafer::compiler::detail::StructuredNodeUseIndex nodeUses(relations);
-  EXPECT_EQ(nodeUses.collectNodesUsedBy(copy.getOperation()),
-            (llvm::SmallVector<uint32_t, 4>{3, 7}));
-}
-
-TEST_F(StructuredBufferRelationsTest,
-       StructuredNodeUseIndexMemoizesLongSharedViewPrefixes) {
-  mlir::OwningOpRef<mlir::ModuleOp> module =
-      mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+       CrossTileAndOutputEndpointsMustRemainLiveAndUnique) {
+  auto module = parse(R"mlir(
 module {
-  func.func @main(%buffer: memref<4xf16, #wafer.memory<spm, tensor>>) {
-    return
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(%input: tensor<2x1024x64xf16>) {
+      %source = wafer.tile.region(
+          %input : tensor<2x1024x64xf16>)
+          -> (tensor<2x1024x64xf16>) {
+      ^bb0(%arg0: tensor<2x1024x64xf16>):
+        wafer.tile.yield %arg0 : tensor<2x1024x64xf16>
+      }
+      return
+    }
+  }
+  wafer.tile.module card_id = 0 tile_id = 1 {
+    func.func @entry(%input: tensor<2x1024x64xf16>) {
+      %result = wafer.tile.region(
+          %input : tensor<2x1024x64xf16>)
+          -> (tensor<2x1024x64xf16>) {
+      ^bb0(%arg0: tensor<2x1024x64xf16>):
+        wafer.tile.yield %arg0 : tensor<2x1024x64xf16>
+      }
+      return
+    }
   }
 }
-)mlir",
-                                              context.get());
+)mlir");
   ASSERT_TRUE(module);
-  mlir::func::FuncOp function = *module->getOps<mlir::func::FuncOp>().begin();
-  mlir::Block &body = function.getBody().front();
-  mlir::OpBuilder builder(body.getTerminator());
-  mlir::Value value = function.getArgument(0);
-  wafer::StructuredMaterializationRelations relations;
-  mlir::memref::CastOp last;
-  for (unsigned index = 0; index < 1024; ++index) {
-    last = builder.create<mlir::memref::CastOp>(function.getLoc(),
-                                                value.getType(), value);
-    value = last.getResult();
-    relations.operationResultBuffers.push_back(
-        {/*structuredNodeId=*/9, /*resultIndex=*/0, value});
-  }
-
-  wafer::compiler::detail::StructuredNodeUseIndex nodeUses(relations);
-  EXPECT_EQ(nodeUses.collectNodesUsedBy(last.getOperation()),
-            (llvm::SmallVector<uint32_t, 4>{9}));
+  llvm::SmallVector<TileRegionOp, 2> regions;
+  module->walk([&](TileRegionOp op) { regions.push_back(op); });
+  ASSERT_EQ(regions.size(), 2u);
+  StructuredMaterializationRelations relations;
+  relations.boundaryRelations.push_back(
+      {regions[0].getResult(0), regions[1].getBody().getArgument(0)});
+  relations.structuralOutputs.push_back({0, regions[1].getResult(0)});
+  EXPECT_TRUE(mlir::succeeded(
+      checkStructuredBufferRelationsCurrent(*module, relations)));
+  relations.boundaryRelations.push_back(relations.boundaryRelations.front());
+  EXPECT_TRUE(
+      mlir::failed(checkStructuredBufferRelationsCurrent(*module, relations)));
 }
 
 } // namespace

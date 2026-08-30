@@ -93,6 +93,19 @@ view绑定原storage，多个use共享同一`(source, target layout)` conversion
 共享还必须证明canonical conversion支配全部新use、两端consumer只读，并且两次materialization之间没有对source或其alias的write/free；
 不同block、未知effect或alias不确定时保留各自conversion。Transformation成功后solver graph、state index和assignment立即销毁。
 
+Value/use assignment采用current SSA buffer-equivalence group、consumer-use和op-tuple auxiliary factor；不使用structured-node ID或
+bufferization后的operation parity。Shared conversion通过每个dominance/effect cohort的三态activation factor只计一次，并由apply创建
+恰好一个actual SSA result。Performance soft cost只有在同一只读descriptor query能对所有可能materialization给出exact bytes、command
+count、multiplicity和rate时才启用；否则整次PBQP hard-only，不能用估算descriptor、统一instruction权重或缺项的局部cost排序。
+Current第15项因该query仍在Tile-to-Instr私有实现中而全部hard-only；exact materialization count只确定canonical assignment。Shared
+descriptor analysis在直接下游抽取并接回前，不声明PBQP performance optimal。
+
+Observable output在本stage先从current TileRegion yield中的exact piece relation绑定到entry function的DDR destination subview，再运行
+一次One-Shot Bufferization。TileRegion tensor boundary是明确保留的partial boundary；内部compute use、view/alias、allocation和copy必须
+已经成为actual memref IR。`structuredNodeId` keyed result/operand/scratch attribution、accepted operation/node relation及其memory-failure
+回填不属于current合同；actual allocation owner由当前operation、SSA use-def和effect表达，跨Tile endpoint与program output index继续由
+candidate-owned current relation保存。
+
 Movement transformation完成后，以同一relation/physical-map/alias/effect/lifetime proof运行一次full-transfer cleanup；该cleanup必须在
 execution-structure和Instr scheduling前完成。现有Instr-only或test-only eliminator的独有正负资产迁移到这一owner后删除旧实现，
 不能并存两个production cleanup路径。

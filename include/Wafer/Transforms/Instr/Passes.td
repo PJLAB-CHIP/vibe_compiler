@@ -3,19 +3,6 @@
 #ifndef WAFER_TRANSFORMS_INSTR_PASSES_TD
 #define WAFER_TRANSFORMS_INSTR_PASSES_TD
 
-def BufferizeInstrFunctionBoundariesPass
-    : Pass<"wafer-bufferize-instr-function-boundaries", "mlir::ModuleOp"> {
-  let summary =
-      "Bufferize Instr functions with the fixed Wafer function-boundary contract";
-  let dependentDialects = ["mlir::arith::ArithDialect",
-                           "mlir::bufferization::BufferizationDialect",
-                           "mlir::func::FuncDialect",
-                           "mlir::memref::MemRefDialect",
-                           "mlir::scf::SCFDialect",
-                           "mlir::tensor::TensorDialect",
-                           "wafer::WaferDialect"];
-}
-
 def PlanSPMMemoryPass
     : Pass<"wafer-plan-spm-memory", "mlir::ModuleOp"> {
   let summary =

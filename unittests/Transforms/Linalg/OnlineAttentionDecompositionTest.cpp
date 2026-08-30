@@ -2,7 +2,9 @@
 
 #include "Wafer/Transforms/Linalg/OnlineAttentionDecomposition.h"
 #include "Wafer/Transforms/Linalg/TemporalTiling.h"
+#include "Wafer/Transforms/Tile/LayoutOptimization.h"
 
+#include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
@@ -30,12 +32,7 @@ using namespace wafer::compiler::detail;
 
 std::unique_ptr<mlir::MLIRContext> createContext() {
   mlir::DialectRegistry registry;
-  registry.insert<mlir::affine::AffineDialect, mlir::arith::ArithDialect,
-                  mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
-                  mlir::math::MathDialect, mlir::scf::SCFDialect,
-                  mlir::tensor::TensorDialect>();
-  wafer::registerWaferCoreDialects(registry);
-  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  registerCompilationDialects(registry);
   auto context = std::make_unique<mlir::MLIRContext>(registry);
   context->loadAllAvailableDialects();
   return context;
@@ -252,6 +249,15 @@ TEST(OnlineAttentionDecompositionTest,
         mlir::succeeded(verifyOnlineAttentionDecompositionComplete(*module)));
     EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
         module->getOperation(), relations)));
+    LayoutOptimizationResult layout =
+        resolveCurrentLayoutsAndBufferize(*module, relations);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    EXPECT_EQ(layout.statistics.bufferizationInvocations, 1u);
+    EXPECT_EQ(layout.statistics.redundantPublicationCopies, 0u);
+    EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*module)));
+    ASSERT_EQ(relations.structuralOutputs.size(), 1u);
+    EXPECT_TRUE(isWaferDDRMemRefType(
+        relations.structuralOutputs.front().endpoint.getType()));
   }
 }
 
@@ -288,6 +294,10 @@ TEST(OnlineAttentionDecompositionTest,
     });
     EXPECT_EQ(maskConsumers, withMask ? onlineBefore : 0u);
     EXPECT_EQ(countOps<LinalgExtOnlineAttentionOp>(module->getOperation()), 0u);
+    LayoutOptimizationResult layout =
+        resolveCurrentLayoutsAndBufferize(*module, relations);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    EXPECT_EQ(layout.statistics.redundantPublicationCopies, 0u);
   }
 }
 
@@ -328,6 +338,9 @@ module {
       mlir::failed(decomposeOnlineAttention(*module, relations, &failure)));
   EXPECT_EQ(failure.kind,
             OnlineAttentionDecompositionFailureKind::BrokenContract);
+  LayoutOptimizationResult layout =
+      resolveCurrentLayoutsAndBufferize(*module, relations);
+  EXPECT_EQ(layout.status, ExactPBQPStatus::BrokenContract);
   std::string after;
   llvm::raw_string_ostream afterStream(after);
   module->print(afterStream);

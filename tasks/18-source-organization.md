@@ -158,10 +158,10 @@ Physical-dataflow不能整体塞入CodeGen，也不能继续把analysis、choice
 - explicit SpatialAssignment、choice-dependent ExactDemand/RootRegionWork、Spatial/Region domain，以及从candidate live operations建立的
   query-local TemporalDomain/PBQP assignment和search traversal留在`Planning/PhysicalDataflow`；它们不拥有IR，choice apply后立即销毁；
 - closed spatial/region choice到actual TileModule/TileRegion的原子物化属于`Transforms/Linalg`；
-- selected temporal choice apply、compact tile/fuse、online-attention decomposition、layout/view/movement和execution structure按其真实输入进入
+- selected temporal choice apply、compact tile/fuse、online-attention decomposition、layout/view/bufferization、movement和execution structure按其真实输入进入
   `Transforms/Linalg`或`Transforms/Tile`；
-- candidate-owned current materialization relation、replacement listener和buffer relation query进入`Transforms/Tile`，由caller-owned
-  transaction传递且不跨IR epoch；
+- candidate-owned current endpoint/materialized-operation-buffer relation、replacement listener和buffer relation query进入`Transforms/Tile`，
+  由caller-owned transaction传递且不跨IR epoch；source structured-node attribution不进入该component；
 - completion-closed Instr上的memory、transfer和transport rewrite进入`Transforms/Instr`。
 
 Planning不拥有candidate IR。Driver连接planning session与candidate-owned materializer，accepted owner原样交给下游；失败或
@@ -175,7 +175,8 @@ Transforms与Conversion分别拥有自己的`Passes.td`、generated declaration�
 StableHLO/Shardy依赖不进入通用Transforms target。
 
 `WaferLinalgTransforms`与`WaferTileTransforms`是同层独立library：前者拥有structured/attention rewrite，后者拥有current relation listener、
-layout cleanup和execution-structure mechanics。Linalg需要retarget relation时只依赖`WaferTileTransforms`，二者都不反向依赖umbrella
+value/use layout assignment、output DPS、唯一One-Shot Bufferization、layout cleanup和execution-structure mechanics。Linalg需要retarget
+relation时只依赖`WaferTileTransforms`，二者都不反向依赖umbrella
 `WaferTransforms`；umbrella只组合公开transform components和Instr/Module passes，不能用static archive链接顺序掩盖component cycle。
 
 ### 4.3 Conversion与CodeGen

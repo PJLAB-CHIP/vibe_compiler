@@ -6,8 +6,8 @@
 #include "Wafer/CodeGen/DeviceExecutableInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Driver/ProgramData/ProgramData.h"
-#include "Wafer/Transforms/Instr/MemoryPlanningPipelines.h"
 #include "Wafer/Transforms/Passes.h"
+#include "Wafer/Transforms/Tile/Pipelines.h"
 #include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
@@ -46,41 +46,33 @@ TEST(PipelinesTest, TileLoweringBuilderUsesTheProductionNestedStructure) {
             std::string::npos);
 }
 
-TEST(PipelinesTest, InstrFunctionBufferizationExposesLeafAndAssignsNoOffsets) {
+TEST(PipelinesTest, CurrentLayoutBufferizationExposesOneAtomicPass) {
   mlir::MLIRContext context;
   mlir::PassManager manager(&context);
-  wafer::buildBufferizeInstrFunctionsPipeline(manager);
+  wafer::buildResolveLayoutsAndBufferizePipeline(manager);
 
   std::string pipeline;
   llvm::raw_string_ostream os(pipeline);
   manager.printAsTextualPipeline(os);
   os.flush();
 
-  EXPECT_NE(pipeline.find("wafer-bufferize-instr-function-boundaries"),
+  EXPECT_NE(pipeline.find("wafer-resolve-current-layouts-and-bufferize"),
             std::string::npos)
       << pipeline;
-  EXPECT_NE(pipeline.find("drop-equivalent-buffer-results"), std::string::npos)
-      << pipeline;
-  const size_t firstCanonicalize = pipeline.find("canonicalize");
-  const size_t cse = pipeline.find("cse", firstCanonicalize);
-  const size_t secondCanonicalize = pipeline.find("canonicalize", cse);
-  EXPECT_NE(firstCanonicalize, std::string::npos) << pipeline;
-  EXPECT_NE(cse, std::string::npos) << pipeline;
-  EXPECT_NE(secondCanonicalize, std::string::npos) << pipeline;
-  EXPECT_LT(firstCanonicalize, cse) << pipeline;
-  EXPECT_LT(cse, secondCanonicalize) << pipeline;
+  EXPECT_EQ(pipeline.find("canonicalize"), std::string::npos) << pipeline;
+  EXPECT_EQ(pipeline.find("cse"), std::string::npos) << pipeline;
   EXPECT_EQ(pipeline.find("wafer-plan-spm-memory"), std::string::npos)
       << pipeline;
   EXPECT_EQ(pipeline.find("wafer-plan-ddr-memory"), std::string::npos)
       << pipeline;
 
   mlir::PassManager leafManager(&context);
-  leafManager.addPass(wafer::createBufferizeInstrFunctionBoundariesPass());
+  leafManager.addPass(wafer::createResolveCurrentLayoutsAndBufferizePass());
   std::string leafPipeline;
   llvm::raw_string_ostream leafStream(leafPipeline);
   leafManager.printAsTextualPipeline(leafStream);
   leafStream.flush();
-  EXPECT_NE(leafPipeline.find("wafer-bufferize-instr-function-boundaries"),
+  EXPECT_NE(leafPipeline.find("wafer-resolve-current-layouts-and-bufferize"),
             std::string::npos)
       << leafPipeline;
   EXPECT_EQ(leafPipeline.find("canonicalize"), std::string::npos)

@@ -4,10 +4,10 @@
 
 #include "Wafer/Conversion/StableHLOToLinalg/Pipelines.h"
 #include "Wafer/Conversion/TileToInstr/Pipelines.h"
-#include "Wafer/Transforms/Instr/MemoryPlanningPipelines.h"
 #include "Wafer/Transforms/Linalg/Pipelines.h"
 #include "Wafer/Transforms/StableHLO/FrontendVerification.h"
 #include "Wafer/Transforms/StableHLO/SpmdPipelines.h"
+#include "Wafer/Transforms/Tile/Pipelines.h"
 
 #include "mlir/Pass/PassRegistry.h"
 
@@ -61,10 +61,10 @@ void registerWaferOptPipelines() {
         wafer::buildLowerTileRegionToInstrPipeline(pm);
       });
   mlir::PassPipelineRegistration<>(
-      "wafer-bufferize-instr-functions",
-      "Canonicalize and function-boundary bufferize Instr functions",
+      "wafer-resolve-layouts-and-bufferize",
+      "Resolve current layouts and bufferize function/TileRegion compute",
       [](mlir::OpPassManager &pm) {
-        wafer::buildBufferizeInstrFunctionsPipeline(pm);
+        wafer::buildResolveLayoutsAndBufferizePipeline(pm);
       });
 #ifdef WAFER_ENABLE_SHARDY
   mlir::PassPipelineRegistration<>(

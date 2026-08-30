@@ -37,8 +37,8 @@ public:
   /// Completes one rewrite epoch. Relations to explicitly erased dead private
   /// allocations are discarded because those buffers no longer contribute
   /// executable work; every other untracked erasure remains a failure. Source
-  /// Erased Tile operation-emission pointers are replaced by explicit live
-  /// Instr operation owners recorded by the lowering patterns.
+  /// operation owners are replaced by explicit live operations recorded by
+  /// the lowering patterns.
   bool finalizeAfterRewrite();
   llvm::StringRef getFailureReason() const;
 

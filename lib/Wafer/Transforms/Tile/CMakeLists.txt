@@ -1,8 +1,11 @@
 add_mlir_library(WaferTileTransforms
   ExecutionStructure.cpp
   LayoutOptimization.cpp
+  Pipelines.cpp
   StructuredBufferRelations.cpp
-  StructuredNodeUseIndex.cpp
+
+  DEPENDS
+  WaferTransformPassesIncGen
 
   LINK_LIBS PUBLIC
   LLVMSupport
@@ -13,13 +16,17 @@ add_mlir_library(WaferTileTransforms
   MLIRArithDialect
   MLIRAsyncDialect
   MLIRBufferizationDialect
+  MLIRBufferizationTransforms
   MLIRFuncDialect
   MLIRIR
+  MLIRLinalgDialect
   MLIRMemRefDialect
+  MLIRPass
   MLIRSCFDialect
   MLIRSCFTransforms
   MLIRSideEffectInterfaces
   MLIRSupport
+  MLIRTensorDialect
   MLIRViewLikeInterface
 )
 

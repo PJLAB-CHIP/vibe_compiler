@@ -6,12 +6,10 @@ add_mlir_library(WaferTransforms
   Module/MaterializeExecutionMesh.cpp
   Module/MaterializeTargetTopology.cpp
   Module/StripTargetMetadata.cpp
-  Instr/BufferizeInstrFunctionBoundaries.cpp
   Instr/DirectDTETransport.cpp
   Instr/LifetimeAnalysis.cpp
   Instr/MiniMallocPacking.cpp
   Instr/NCCJoinPlacement.cpp
-  Instr/Pipelines.cpp
   Instr/PlanDDRMemory.cpp
   Instr/PlanSPMMemory.cpp
   Instr/RedundantTransferElimination.cpp
@@ -33,7 +31,6 @@ add_mlir_library(WaferTransforms
   MLIRArithDialect
   MLIRAsyncDialect
   MLIRBufferizationDialect
-  MLIRBufferizationTransforms
   MLIRControlFlowDialect
   MLIRFuncDialect
   MLIRIR

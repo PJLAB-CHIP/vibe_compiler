@@ -2,8 +2,8 @@
 
 #include "Wafer/Driver/ExecutableCompilation.h"
 #include "Wafer/Driver/CompilationInternal.h"
-#include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Driver/ProgramData/ProgramData.h"
+#include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/TargetMemory.h"
 #include "Wafer/Transforms/Instr/MemoryPlanning.h"
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
@@ -150,12 +150,17 @@ protected:
   makeCanonicalInstructionTiles(mlir::ModuleOp source) {
     std::vector<wafer::compiler::detail::CanonicalInstructionTile> result;
     result.reserve(16);
-    for (int64_t tile = 0; tile < 16; ++tile)
-      result.push_back({wafer::CardId(0),
-                        wafer::TileId(tile),
-                        mlir::OwningOpRef<mlir::ModuleOp>(
-                            mlir::cast<mlir::ModuleOp>(source->clone())),
-                        {}});
+    for (int64_t tile = 0; tile < 16; ++tile) {
+      mlir::OwningOpRef<mlir::ModuleOp> module(
+          mlir::cast<mlir::ModuleOp>(source->clone()));
+      wafer::StructuredMaterializationRelations relations;
+      module->walk([&](mlir::memref::AllocOp allocation) {
+        relations.buffers.push_back({allocation, allocation.getResult(),
+                                     wafer::MaterializedBufferRole::Scratch});
+      });
+      result.push_back({wafer::CardId(0), wafer::TileId(tile),
+                        std::move(module), std::move(relations)});
+    }
     return result;
   }
 
@@ -247,9 +252,10 @@ module {
       [&](wafer::InstrGatherScatterOp operation) { gather = operation; });
   ASSERT_TRUE(source && dest && gather);
   wafer::StructuredMaterializationRelations relations;
-  relations.scratchBuffers.push_back({0, source});
-  relations.scratchBuffers.push_back({0, dest});
-  relations.operationEmissions.push_back({0, gather.getOperation()});
+  relations.buffers.push_back(
+      {gather, source, wafer::MaterializedBufferRole::Operand});
+  relations.buffers.push_back(
+      {gather, dest, wafer::MaterializedBufferRole::Result});
 
   mlir::FailureOr<unsigned> eliminated =
       wafer::compiler::detail::cleanupCanonicalInstructionTransfers(*module,
@@ -262,10 +268,7 @@ module {
   module->walk([&](mlir::memref::AllocOp) { ++allocations; });
   EXPECT_EQ(gathers, 0u);
   EXPECT_EQ(allocations, 1u);
-  ASSERT_EQ(relations.scratchBuffers.size(), 2u);
-  EXPECT_EQ(relations.scratchBuffers[0].buffer,
-            relations.scratchBuffers[1].buffer);
-  EXPECT_TRUE(relations.operationEmissions.empty());
+  EXPECT_TRUE(relations.buffers.empty());
   ASSERT_TRUE(mlir::succeeded(wafer::rebuildRequiredNCCJoins(*module)));
   EXPECT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(
       *module, /*spmBase=*/0, /*spmLimit=*/3 * 1024 * 1024,

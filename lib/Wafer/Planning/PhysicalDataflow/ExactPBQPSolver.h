@@ -46,11 +46,17 @@ struct ExactPBQPResult {
   uint64_t work = 0;
 };
 
-/// Applies exact degree-0/1/2 PBQP reductions, then exhaustively solves the
-/// residual core with stable semantic tie-breaking. `workLimit` is a compiler
-/// resource bound: exhaustion returns Indeterminate and never NoSolution.
-ExactPBQPResult solveExactPBQP(const ExactPBQPProblem &problem,
-                               uint64_t workLimit);
+/// Splits disconnected components, propagates one-state variables at any
+/// degree, applies exact degree-0/1/2 PBQP reductions, then exhaustively solves
+/// each residual core with stable semantic tie-breaking. `workLimit` is a
+/// compiler resource bound: exhaustion returns Indeterminate and never
+/// NoSolution.
+/// `semanticTieVariableCount` limits the lexicographic tie to the leading
+/// externally meaningful variables; trailing auxiliary-factor variables are
+/// reconstructed deterministically but do not consume semantic tie probes.
+ExactPBQPResult solveExactPBQP(
+    const ExactPBQPProblem &problem, uint64_t workLimit,
+    uint32_t semanticTieVariableCount = std::numeric_limits<uint32_t>::max());
 
 } // namespace wafer::compiler::detail
 

@@ -3,6 +3,7 @@
 #include "Wafer/Planning/PhysicalDataflow/ExactPBQPSolver.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -103,6 +104,7 @@ struct ReductionRecord {
   uint32_t node = 0;
   llvm::SmallVector<uint32_t, 2> neighbors;
   std::vector<uint32_t> choices;
+  bool fixedState = false;
 };
 
 bool validateAndBuild(const ExactPBQPProblem &problem, Graph &graph) {
@@ -171,6 +173,48 @@ std::optional<ExactPBQPCost> evaluate(const ExactPBQPProblem &problem,
 
 } // namespace
 
+static std::optional<std::vector<std::vector<uint32_t>>>
+getConnectedComponents(const ExactPBQPProblem &problem) {
+  if (problem.variables.empty() ||
+      llvm::any_of(problem.variables, [](const ExactPBQPVariable &variable) {
+        return variable.unaryCosts.empty();
+      }))
+    return std::nullopt;
+  std::vector<std::vector<uint32_t>> adjacency(problem.variables.size());
+  for (const ExactPBQPBinaryFactor &factor : problem.factors) {
+    if (factor.lhs >= problem.variables.size() ||
+        factor.rhs >= problem.variables.size() || factor.lhs == factor.rhs)
+      return std::nullopt;
+    adjacency[factor.lhs].push_back(factor.rhs);
+    adjacency[factor.rhs].push_back(factor.lhs);
+  }
+  std::vector<bool> visited(problem.variables.size(), false);
+  std::vector<std::vector<uint32_t>> components;
+  for (uint32_t start = 0; start < problem.variables.size(); ++start) {
+    if (visited[start])
+      continue;
+    std::vector<uint32_t> component;
+    llvm::SmallVector<uint32_t, 16> pending{start};
+    visited[start] = true;
+    while (!pending.empty()) {
+      uint32_t node = pending.pop_back_val();
+      component.push_back(node);
+      llvm::sort(adjacency[node]);
+      for (uint32_t neighbor : adjacency[node])
+        if (!visited[neighbor]) {
+          visited[neighbor] = true;
+          pending.push_back(neighbor);
+        }
+    }
+    llvm::sort(component);
+    components.push_back(std::move(component));
+  }
+  llvm::sort(components, [](const auto &lhs, const auto &rhs) {
+    return lhs.front() < rhs.front();
+  });
+  return components;
+}
+
 static ExactPBQPResult solveNumericExactPBQP(const ExactPBQPProblem &problem,
                                              Budget &budget) {
   ExactPBQPResult result;
@@ -184,9 +228,15 @@ static ExactPBQPResult solveNumericExactPBQP(const ExactPBQPProblem &problem,
   while (true) {
     std::optional<uint32_t> selected;
     llvm::SmallVector<uint32_t, 2> adjacent;
+    bool fixedState = false;
     for (uint32_t node = 0; node < graph.nodes.size(); ++node) {
       if (!active[node])
         continue;
+      if (graph.nodes[node].size() == 1) {
+        selected = node;
+        fixedState = true;
+        break;
+      }
       llvm::SmallVector<uint32_t, 4> current = neighbors(graph, active, node);
       if (current.size() <= 2) {
         selected = node;
@@ -200,7 +250,42 @@ static ExactPBQPResult solveNumericExactPBQP(const ExactPBQPProblem &problem,
     ReductionRecord record;
     record.node = *selected;
     record.neighbors = adjacent;
-    if (adjacent.empty()) {
+    record.fixedState = fixedState;
+    if (fixedState) {
+      if (!budget.consume() ||
+          graph.nodes[*selected].front() == kExactPBQPInfinity) {
+        exhausted = budget.used >= budget.limit;
+        if (!exhausted) {
+          result.status = ExactPBQPStatus::NoSolution;
+          result.work = budget.used;
+          return result;
+        }
+        break;
+      }
+      record.choices.push_back(0);
+      // A one-state node can be removed at any degree. Its unary cost is a
+      // constant and is recovered by final evaluation; each incident edge is
+      // propagated exactly into the neighboring unary vector.
+      for (const Edge &edge : graph.edges) {
+        if (!edge.active || (edge.lhs != *selected && edge.rhs != *selected))
+          continue;
+        uint32_t neighbor = edge.lhs == *selected ? edge.rhs : edge.lhs;
+        if (!active[neighbor])
+          continue;
+        for (uint32_t state = 0; state < graph.nodes[neighbor].size();
+             ++state) {
+          if (!budget.consume()) {
+            exhausted = true;
+            break;
+          }
+          graph.nodes[neighbor][state] =
+              addCost(graph.nodes[neighbor][state],
+                      edgeCost(edge, *selected, 0, neighbor, state));
+        }
+        if (exhausted)
+          break;
+      }
+    } else if (adjacent.empty()) {
       std::optional<uint32_t> state =
           minimumState(graph.nodes[*selected], budget);
       if (!state) {
@@ -354,7 +439,7 @@ static ExactPBQPResult solveNumericExactPBQP(const ExactPBQPProblem &problem,
   std::vector<uint32_t> bestAssignment;
   auto reconstruct = [&](std::vector<uint32_t> candidate) {
     for (const ReductionRecord &record : llvm::reverse(records)) {
-      if (record.neighbors.empty())
+      if (record.fixedState || record.neighbors.empty())
         candidate[record.node] = record.choices.front();
       else if (record.neighbors.size() == 1)
         candidate[record.node] =
@@ -429,8 +514,99 @@ static ExactPBQPResult solveNumericExactPBQP(const ExactPBQPProblem &problem,
 }
 
 ExactPBQPResult solveExactPBQP(const ExactPBQPProblem &problem,
-                               uint64_t workLimit) {
-  Budget budget{workLimit, 0};
+                               uint64_t workLimit,
+                               uint32_t semanticTieVariableCount) {
+  const uint64_t variableWork = problem.variables.size();
+  const uint64_t factorCount = problem.factors.size();
+  if (factorCount > (std::numeric_limits<uint64_t>::max() - variableWork) / 2) {
+    ExactPBQPResult exhausted;
+    exhausted.status = ExactPBQPStatus::Indeterminate;
+    exhausted.work = workLimit;
+    return exhausted;
+  }
+  const uint64_t structuralWork = variableWork + factorCount * 2;
+  if (structuralWork > workLimit) {
+    ExactPBQPResult exhausted;
+    exhausted.status = ExactPBQPStatus::Indeterminate;
+    exhausted.work = workLimit;
+    return exhausted;
+  }
+  std::optional<std::vector<std::vector<uint32_t>>> components =
+      getConnectedComponents(problem);
+  if (!components) {
+    ExactPBQPResult broken;
+    return broken;
+  }
+  if (components->size() > 1) {
+    ExactPBQPResult combined;
+    combined.status = ExactPBQPStatus::Optimal;
+    combined.assignment.resize(problem.variables.size());
+    combined.cost = 0;
+    combined.lowerBound = 0;
+    uint64_t used = structuralWork;
+    for (const std::vector<uint32_t> &component : *components) {
+      if (used >= workLimit) {
+        combined.status = ExactPBQPStatus::Indeterminate;
+        combined.assignment.clear();
+        combined.cost.reset();
+        combined.work = used;
+        return combined;
+      }
+      ExactPBQPProblem local;
+      local.variables.reserve(component.size());
+      llvm::DenseMap<uint32_t, uint32_t> localIndex;
+      uint32_t localSemanticVariables = 0;
+      for (uint32_t original : component) {
+        localIndex.try_emplace(original, local.variables.size());
+        local.variables.push_back(problem.variables[original]);
+        localSemanticVariables += original < semanticTieVariableCount;
+      }
+      for (const ExactPBQPBinaryFactor &factor : problem.factors) {
+        auto lhs = localIndex.find(factor.lhs);
+        if (lhs == localIndex.end())
+          continue;
+        auto rhs = localIndex.find(factor.rhs);
+        if (rhs == localIndex.end()) {
+          combined.status = ExactPBQPStatus::BrokenContract;
+          combined.assignment.clear();
+          combined.cost.reset();
+          combined.work = used;
+          return combined;
+        }
+        ExactPBQPBinaryFactor remapped = factor;
+        remapped.lhs = lhs->second;
+        remapped.rhs = rhs->second;
+        local.factors.push_back(std::move(remapped));
+      }
+      ExactPBQPResult solved =
+          solveExactPBQP(local, workLimit - used, localSemanticVariables);
+      used += solved.work;
+      if (solved.status != ExactPBQPStatus::Optimal || !solved.cost ||
+          solved.assignment.size() != component.size()) {
+        solved.work = used;
+        return solved;
+      }
+      ExactPBQPCost nextCost = addCost(*combined.cost, *solved.cost);
+      ExactPBQPCost nextLowerBound =
+          addCost(combined.lowerBound, solved.lowerBound);
+      if (nextCost == kExactPBQPInfinity ||
+          nextLowerBound == kExactPBQPInfinity) {
+        combined.status = ExactPBQPStatus::Indeterminate;
+        combined.assignment.clear();
+        combined.cost.reset();
+        combined.work = used;
+        return combined;
+      }
+      combined.cost = nextCost;
+      combined.lowerBound = nextLowerBound;
+      for (auto [localVariable, original] : llvm::enumerate(component))
+        combined.assignment[original] = solved.assignment[localVariable];
+    }
+    combined.work = used;
+    return combined;
+  }
+
+  Budget budget{workLimit, structuralWork};
   ExactPBQPResult optimum = solveNumericExactPBQP(problem, budget);
   if (optimum.status != ExactPBQPStatus::Optimal)
     return optimum;
@@ -444,8 +620,9 @@ ExactPBQPResult solveExactPBQP(const ExactPBQPProblem &problem,
   const ExactPBQPCost targetCost = *optimum.cost;
   ExactPBQPProblem constrained = problem;
   ExactPBQPResult selected = optimum;
-  for (uint32_t variable = 0; variable < constrained.variables.size();
-       ++variable) {
+  const uint32_t tieVariables = std::min<uint32_t>(
+      semanticTieVariableCount, constrained.variables.size());
+  for (uint32_t variable = 0; variable < tieVariables; ++variable) {
     const uint32_t stateCount = static_cast<uint32_t>(
         constrained.variables[variable].unaryCosts.size());
     if (selected.assignment.size() != constrained.variables.size() ||

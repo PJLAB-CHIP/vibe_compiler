@@ -39,15 +39,6 @@ struct CanonicalInstructionTile {
   StructuredMaterializationRelations relations;
 };
 
-/// Query-local relation from one operation in an accepted Instr module to a
-/// structured DAG node whose materialized buffer it reads, writes or forwards.
-/// The operation pointer is valid only while the returned executable remains
-/// unchanged.
-struct AcceptedOperationNodeRelation {
-  mlir::Operation *operation = nullptr;
-  uint32_t structuredNodeId = 0;
-};
-
 enum class ExecutableCompilationStatus : uint8_t {
   Accepted,
   ProvenExactRejection,
@@ -94,7 +85,6 @@ struct ExecutableCompilationResult {
   std::string gate;
   std::string detail;
   llvm::SmallVector<ExecutableTileFailure, 4> tileFailures;
-  llvm::SmallVector<AcceptedOperationNodeRelation, 64> operationNodeRelations;
   /// Same-invocation diagnostic snapshots captured at the Tile dataflow to
   /// Instr boundary. They are not part of the accepted Tile modules.
   std::vector<std::string> tileDataflowIRTrace;
