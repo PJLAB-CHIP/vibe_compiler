@@ -219,6 +219,13 @@ source IR与partial memo在session中保持immutable，但不得保存candidate 
 
 ### 5.3 DataFlow 与 interface-driven traversal
 
+同一static tensor support relation被Spatial demand和Temporal fusion消费时，使用Analysis/Linalg中的一个policy-free typed builder。
+Builder读取current `WaferTensorIndexingOpInterface`和`IndexRelation`并返回exact/unsupported/resource/broken分类；不为不同consumer复制
+operation-specific reshape/slice规则，也不把operation/value handle缓存到下一IR epoch。是否执行view-transparent fusion由该只读proof决定，
+实际IR构造复用pinned tensor subset/reshape pattern与`TilingInterface`，随后经同一`PatternRewriter`、relation listener和verifier提交。
+只读relation/interface preflight无法证明requested tile可表示时保持独立producer；已经签发exact-derived并开始rewrite后，pinned mechanics失败是
+candidate compiler failure，销毁该transaction，不以bounding box、完整producer fallback或后端容量推测补写IR。
+
 RegionBranch、Call、MemoryEffect、ViewLike/alias 和 structured op interface 提供通用 flow edge。MLIR DataFlowSolver 可以
 承担可组合的 SSA/control-flow fixed point；Wafer custom lattice 只保留 path-sensitive异步命令完成条件、target resource 和
 SPM boundary 等标准 interface 无法表达的部分。

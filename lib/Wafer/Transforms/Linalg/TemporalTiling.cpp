@@ -4,10 +4,15 @@
 
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Tensor/Transforms/Transforms.h"
+#include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -18,6 +23,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/MathExtras.h"
 
 namespace wafer {
 namespace {
@@ -33,26 +39,350 @@ mlir::FailureOr<T> fail(TemporalTilingFailure *failure,
   return mlir::failure();
 }
 
-mlir::FailureOr<llvm::DenseSet<mlir::Value>>
+struct ExactFusionInventory {
+  llvm::DenseSet<mlir::Value> directEdges;
+  llvm::SmallVector<compiler::detail::TemporalFusionPathResult, 8> viewPaths;
+};
+
+mlir::FailureOr<ExactFusionInventory>
 collectExactFusionEdges(TileRegionOp region, TemporalTilingFailure *failure) {
-  llvm::DenseSet<mlir::Value> exact;
+  ExactFusionInventory inventory;
   for (mlir::Operation &operation :
        region.getBody().front().without_terminator()) {
     for (mlir::OpResult result : operation.getResults()) {
-      for (mlir::OpOperand &use : result.getUses()) {
-        compiler::detail::TemporalFusionQueryResult query =
-            compiler::detail::queryTemporalProducerFusion(result, use);
-        if (query.kind ==
-            compiler::detail::TemporalFusionQueryKind::BrokenContract)
-          return fail<llvm::DenseSet<mlir::Value>>(
-              failure, TemporalTilingFailureKind::BrokenContract, query.detail);
-        if (query.kind ==
-            compiler::detail::TemporalFusionQueryKind::ExactDerived)
-          exact.insert(result);
-      }
+      compiler::detail::TemporalFusionPathResult query =
+          compiler::detail::queryTemporalProducerFusionPath(result);
+      if (query.kind ==
+          compiler::detail::TemporalFusionQueryKind::BrokenContract)
+        return fail<ExactFusionInventory>(
+            failure, TemporalTilingFailureKind::BrokenContract, query.detail);
+      if (!query.isExact())
+        continue;
+      if (!query.viewTransparent)
+        inventory.directEdges.insert(result);
+      else
+        inventory.viewPaths.push_back(std::move(query));
     }
   }
-  return exact;
+  return inventory;
+}
+
+mlir::FailureOr<mlir::Value> reshapeTile(mlir::IRRewriter &rewriter,
+                                         mlir::Location location,
+                                         mlir::Value source,
+                                         mlir::RankedTensorType targetType) {
+  auto sourceType = mlir::dyn_cast<mlir::RankedTensorType>(source.getType());
+  if (!sourceType || sourceType.getElementType() != targetType.getElementType())
+    return mlir::failure();
+  if (sourceType == targetType)
+    return source;
+  if (mlir::tensor::CastOp::areCastCompatible(sourceType, targetType))
+    return rewriter.create<mlir::tensor::CastOp>(location, targetType, source)
+        .getResult();
+  if (!sourceType.hasStaticShape() || !targetType.hasStaticShape() ||
+      sourceType.getNumElements() != targetType.getNumElements() ||
+      sourceType.getRank() == 0 || targetType.getRank() == 0)
+    return mlir::failure();
+
+  auto reshape =
+      [&](mlir::Value value,
+          mlir::RankedTensorType resultType) -> mlir::FailureOr<mlir::Value> {
+    auto valueType = mlir::cast<mlir::RankedTensorType>(value.getType());
+    auto reassociation =
+        mlir::getReassociationIndicesForReshape(valueType, resultType);
+    if (!reassociation)
+      return mlir::failure();
+    if (valueType.getRank() > resultType.getRank())
+      return rewriter
+          .create<mlir::tensor::CollapseShapeOp>(location, resultType, value,
+                                                 *reassociation)
+          .getResult();
+    if (valueType.getRank() < resultType.getRank())
+      return rewriter
+          .create<mlir::tensor::ExpandShapeOp>(location, resultType, value,
+                                               *reassociation)
+          .getResult();
+    return mlir::failure();
+  };
+
+  return reshape(source, targetType);
+}
+
+mlir::OpFoldResult addConstantOffset(mlir::IRRewriter &rewriter,
+                                     mlir::Location location,
+                                     mlir::OpFoldResult base, int64_t offset) {
+  if (offset == 0)
+    return base;
+  if (std::optional<int64_t> constant = mlir::getConstantIntValue(base)) {
+    int64_t sum = 0;
+    if (!llvm::AddOverflow(*constant, offset, sum))
+      return rewriter.getIndexAttr(sum);
+  }
+  mlir::AffineExpr dimension = mlir::getAffineDimExpr(0, rewriter.getContext());
+  mlir::AffineMap map =
+      mlir::AffineMap::get(1, 0, dimension + offset, rewriter.getContext());
+  return mlir::affine::makeComposedFoldedAffineApply(rewriter, location, map,
+                                                     {base});
+}
+
+struct ViewFusionRequest {
+  mlir::OpResult producer;
+  mlir::Value finalView;
+  llvm::SmallVector<compiler::detail::TemporalViewDimensionMapping, 4>
+      producerDimensions;
+};
+
+struct ConcatFusionRequest {
+  mlir::Value assembledValue;
+  llvm::SmallVector<compiler::detail::TemporalConcatSegment, 4> segments;
+};
+
+mlir::LogicalResult
+fuseViewProducerSlices(mlir::IRRewriter &rewriter, TileRegionOp region,
+                       llvm::ArrayRef<ViewFusionRequest> requests,
+                       TemporalTilingStatistics &statistics) {
+  for (const ViewFusionRequest &request : requests) {
+    llvm::SmallVector<mlir::tensor::ExtractSliceOp, 4> slices;
+    region.walk([&](mlir::tensor::ExtractSliceOp slice) {
+      if (slice.getSource() == request.finalView)
+        slices.push_back(slice);
+    });
+    if (slices.empty())
+      return mlir::failure();
+    for (mlir::tensor::ExtractSliceOp slice : slices) {
+      if (!slice || !slice->getBlock())
+        return mlir::failure();
+      rewriter.setInsertionPoint(slice);
+      llvm::SmallVector<mlir::OpFoldResult, 4> viewOffsets =
+          slice.getMixedOffsets();
+      llvm::SmallVector<mlir::OpFoldResult, 4> viewSizes =
+          slice.getMixedSizes();
+      llvm::SmallVector<mlir::OpFoldResult, 4> producerOffsets;
+      llvm::SmallVector<mlir::OpFoldResult, 4> producerSizes;
+      for (const auto &mapping : request.producerDimensions) {
+        if (mapping.viewDimension < 0) {
+          producerOffsets.push_back(rewriter.getIndexAttr(mapping.offset));
+          producerSizes.push_back(rewriter.getIndexAttr(1));
+          continue;
+        }
+        const unsigned dimension = static_cast<unsigned>(mapping.viewDimension);
+        if (dimension >= viewOffsets.size() || dimension >= viewSizes.size())
+          return mlir::failure();
+        producerOffsets.push_back(addConstantOffset(
+            rewriter, slice.getLoc(), viewOffsets[dimension], mapping.offset));
+        producerSizes.push_back(viewSizes[dimension]);
+      }
+      auto producerType =
+          mlir::dyn_cast<mlir::RankedTensorType>(request.producer.getType());
+      auto targetType = mlir::dyn_cast<mlir::RankedTensorType>(slice.getType());
+      if (!producerType || !targetType ||
+          producerOffsets.size() != static_cast<size_t>(producerType.getRank()))
+        return mlir::failure();
+      llvm::SmallVector<mlir::OpFoldResult, 4> strides(
+          producerType.getRank(), rewriter.getIndexAttr(1));
+      auto requestSlice = rewriter.create<mlir::tensor::ExtractSliceOp>(
+          slice.getLoc(), request.producer, producerOffsets, producerSizes,
+          strides);
+      mlir::FailureOr<mlir::TilingResult> tiled =
+          mlir::tensor::replaceExtractSliceWithTiledProducer(
+              rewriter, requestSlice, request.producer);
+      if (mlir::failed(tiled) || tiled->tiledValues.empty()) {
+        rewriter.eraseOp(requestSlice);
+        return mlir::failure();
+      }
+      mlir::FailureOr<mlir::Value> replacement = reshapeTile(
+          rewriter, slice.getLoc(), tiled->tiledValues.front(), targetType);
+      rewriter.eraseOp(requestSlice);
+      if (mlir::failed(replacement))
+        return mlir::failure();
+      rewriter.replaceOp(slice, *replacement);
+    }
+    ++statistics.fusedProducers;
+    ++statistics.viewTransparentProducers;
+  }
+  return mlir::success();
+}
+
+mlir::Value asIndexValue(mlir::IRRewriter &rewriter, mlir::Location location,
+                         mlir::OpFoldResult value) {
+  return mlir::getValueOrCreateConstantIndexOp(rewriter, location, value);
+}
+
+mlir::LogicalResult
+fuseConcatSlices(mlir::IRRewriter &rewriter, TileRegionOp region,
+                 llvm::ArrayRef<ConcatFusionRequest> requests,
+                 TemporalTilingStatistics &statistics) {
+  for (const ConcatFusionRequest &request : requests) {
+    llvm::DenseSet<mlir::Operation *> fusedProducerOwners;
+    llvm::SmallVector<mlir::tensor::ExtractSliceOp, 4> slices;
+    region.walk([&](mlir::tensor::ExtractSliceOp slice) {
+      if (slice.getSource() == request.assembledValue)
+        slices.push_back(slice);
+    });
+    if (slices.empty())
+      return mlir::failure();
+    for (mlir::tensor::ExtractSliceOp slice : slices) {
+      auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(slice.getType());
+      if (!resultType)
+        return mlir::failure();
+      rewriter.setInsertionPoint(slice);
+      llvm::SmallVector<mlir::OpFoldResult, 4> requestOffsets =
+          slice.getMixedOffsets();
+      llvm::SmallVector<mlir::OpFoldResult, 4> requestSizes =
+          slice.getMixedSizes();
+      mlir::Value assembled = rewriter.create<mlir::tensor::EmptyOp>(
+          slice.getLoc(), requestSizes, resultType.getElementType());
+      for (const auto &segment : request.segments) {
+        auto sourceType =
+            mlir::dyn_cast<mlir::RankedTensorType>(segment.source.getType());
+        if (!sourceType ||
+            segment.offsets.size() !=
+                static_cast<size_t>(sourceType.getRank()) ||
+            segment.sizes.size() != static_cast<size_t>(sourceType.getRank()))
+          return mlir::failure();
+        llvm::SmallVector<mlir::OpFoldResult, 4> sourceOffsets;
+        llvm::SmallVector<mlir::OpFoldResult, 4> destinationOffsets;
+        llvm::SmallVector<mlir::OpFoldResult, 4> intersectionSizes;
+        mlir::Value overlaps =
+            rewriter.create<mlir::arith::ConstantIntOp>(slice.getLoc(), 1, 1);
+        for (auto [requestOffset, requestSize, segmentOffset, segmentSize] :
+             llvm::zip_equal(requestOffsets, requestSizes, segment.offsets,
+                             segment.sizes)) {
+          mlir::Value requestBegin =
+              asIndexValue(rewriter, slice.getLoc(), requestOffset);
+          mlir::Value requestLength =
+              asIndexValue(rewriter, slice.getLoc(), requestSize);
+          mlir::Value requestEnd = rewriter.create<mlir::arith::AddIOp>(
+              slice.getLoc(), requestBegin, requestLength);
+          mlir::Value segmentBegin =
+              rewriter.create<mlir::arith::ConstantIndexOp>(slice.getLoc(),
+                                                            segmentOffset);
+          mlir::Value segmentEnd =
+              rewriter.create<mlir::arith::ConstantIndexOp>(
+                  slice.getLoc(), segmentOffset + segmentSize);
+          mlir::Value begin = rewriter.create<mlir::arith::MaxSIOp>(
+              slice.getLoc(), requestBegin, segmentBegin);
+          mlir::Value end = rewriter.create<mlir::arith::MinSIOp>(
+              slice.getLoc(), requestEnd, segmentEnd);
+          mlir::Value dimensionOverlaps = rewriter.create<mlir::arith::CmpIOp>(
+              slice.getLoc(), mlir::arith::CmpIPredicate::slt, begin, end);
+          overlaps = rewriter.create<mlir::arith::AndIOp>(
+              slice.getLoc(), overlaps, dimensionOverlaps);
+          sourceOffsets.push_back(rewriter
+                                      .create<mlir::arith::SubIOp>(
+                                          slice.getLoc(), begin, segmentBegin)
+                                      .getResult());
+          destinationOffsets.push_back(
+              rewriter
+                  .create<mlir::arith::SubIOp>(slice.getLoc(), begin,
+                                               requestBegin)
+                  .getResult());
+          intersectionSizes.push_back(
+              rewriter.create<mlir::arith::SubIOp>(slice.getLoc(), end, begin)
+                  .getResult());
+        }
+        llvm::SmallVector<mlir::OpFoldResult, 4> strides(
+            sourceType.getRank(), rewriter.getIndexAttr(1));
+        auto select = rewriter.create<mlir::scf::IfOp>(
+            slice.getLoc(), mlir::TypeRange{assembled.getType()}, overlaps,
+            /*withElseRegion=*/true);
+        rewriter.setInsertionPointToStart(&select.getThenRegion().front());
+        auto sourceSlice = rewriter.create<mlir::tensor::ExtractSliceOp>(
+            slice.getLoc(), segment.source, sourceOffsets, intersectionSizes,
+            strides);
+        mlir::Value sourcePiece = sourceSlice;
+        if (segment.derivedProducer) {
+          mlir::FailureOr<mlir::TilingResult> tiled =
+              mlir::tensor::replaceExtractSliceWithTiledProducer(
+                  rewriter, sourceSlice, *segment.derivedProducer);
+          if (mlir::failed(tiled) || tiled->tiledValues.empty())
+            return mlir::failure();
+          sourcePiece = tiled->tiledValues.front();
+          rewriter.eraseOp(sourceSlice);
+          fusedProducerOwners.insert(segment.derivedProducer->getOwner());
+        }
+        mlir::Value inserted = rewriter.create<mlir::tensor::InsertSliceOp>(
+            slice.getLoc(), sourcePiece, assembled, destinationOffsets,
+            intersectionSizes, strides);
+        rewriter.create<mlir::scf::YieldOp>(slice.getLoc(), inserted);
+        rewriter.setInsertionPointToStart(&select.getElseRegion().front());
+        rewriter.create<mlir::scf::YieldOp>(slice.getLoc(), assembled);
+        assembled = select.getResult(0);
+        rewriter.setInsertionPointAfter(select);
+        ++statistics.assembledSegments;
+      }
+      mlir::FailureOr<mlir::Value> replacement =
+          reshapeTile(rewriter, slice.getLoc(), assembled, resultType);
+      if (mlir::failed(replacement))
+        return mlir::failure();
+      rewriter.replaceOp(slice, *replacement);
+      ++statistics.tileLocalAssemblies;
+    }
+    statistics.fusedProducers += fusedProducerOwners.size();
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult lowerConstantPads(mlir::IRRewriter &rewriter,
+                                      TileRegionOp region,
+                                      TemporalTilingStatistics &statistics) {
+  llvm::SmallVector<mlir::tensor::PadOp, 4> pads;
+  region.walk([&](mlir::tensor::PadOp pad) { pads.push_back(pad); });
+  for (mlir::tensor::PadOp pad : pads) {
+    mlir::Value padding = pad.getConstantPaddingValue();
+    auto resultType = pad.getResultType();
+    if (!padding || !resultType.hasStaticShape())
+      continue;
+    rewriter.setInsertionPoint(pad);
+    mlir::Value empty = rewriter.create<mlir::tensor::EmptyOp>(
+        pad.getLoc(), resultType.getShape(), resultType.getElementType());
+    mlir::Value filled =
+        rewriter.create<mlir::linalg::FillOp>(pad.getLoc(), padding, empty)
+            .getResult(0);
+    llvm::SmallVector<mlir::OpFoldResult, 4> sourceSizes =
+        mlir::tensor::getMixedSizes(rewriter, pad.getLoc(), pad.getSource());
+    llvm::SmallVector<mlir::OpFoldResult, 4> strides(resultType.getRank(),
+                                                     rewriter.getIndexAttr(1));
+    mlir::Value inserted = rewriter.create<mlir::tensor::InsertSliceOp>(
+        pad.getLoc(), pad.getSource(), filled, pad.getMixedLowPad(),
+        sourceSizes, strides);
+    rewriter.replaceOp(pad, inserted);
+    ++statistics.decomposedPads;
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult
+lowerConstantGenerates(mlir::IRRewriter &rewriter, TileRegionOp region,
+                       TemporalTilingStatistics &statistics) {
+  llvm::SmallVector<mlir::tensor::GenerateOp, 4> operations;
+  region.walk([&](mlir::tensor::GenerateOp operation) {
+    operations.push_back(operation);
+  });
+  for (mlir::tensor::GenerateOp operation : operations) {
+    auto resultType = operation.getResult().getType();
+    auto yield = mlir::dyn_cast<mlir::tensor::YieldOp>(
+        operation.getBody().front().getTerminator());
+    if (!resultType.hasStaticShape() || !yield)
+      continue;
+    mlir::Value value = yield.getValue();
+    if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+      if (argument.getOwner() == &operation.getBody().front())
+        continue;
+    } else if (mlir::Operation *definition = value.getDefiningOp()) {
+      if (definition->getParentRegion() == &operation.getRegion())
+        continue;
+    }
+    rewriter.setInsertionPoint(operation);
+    mlir::Value empty = rewriter.create<mlir::tensor::EmptyOp>(
+        operation.getLoc(), resultType.getShape(), resultType.getElementType());
+    mlir::Value filled =
+        rewriter.create<mlir::linalg::FillOp>(operation.getLoc(), value, empty)
+            .getResult(0);
+    rewriter.replaceOp(operation, filled);
+    ++statistics.decomposedConstantGenerates;
+  }
+  return mlir::success();
 }
 
 llvm::SmallVector<int64_t, 6>
@@ -138,10 +468,17 @@ void eraseDeadOperations(mlir::IRRewriter &rewriter, TileRegionOp region) {
 
 mlir::LogicalResult
 canonicalizeTiledRegion(TileRegionOp region,
-                        mlir::RewriterBase::Listener *listener) {
+                        mlir::RewriterBase::Listener *listener,
+                        bool simplifyPackAndUnpack = false) {
   mlir::RewritePatternSet patterns =
       mlir::linalg::getLinalgTilingCanonicalizationPatterns(
           region.getContext());
+  mlir::tensor::populateMergeConsecutiveInsertExtractSlicePatterns(patterns);
+  mlir::tensor::populateReassociativeReshapeFoldingPatterns(patterns);
+  mlir::tensor::populateFoldTensorEmptyPatterns(patterns,
+                                                /*foldSingleUseOnly=*/false);
+  if (simplifyPackAndUnpack)
+    mlir::tensor::populateSimplifyPackAndUnpackPatterns(patterns);
   mlir::GreedyRewriteConfig config;
   config.useTopDownTraversal = true;
   config.maxIterations = 10;
@@ -186,6 +523,79 @@ mlir::LogicalResult refineOnlineAttentionStaticTypes(mlir::IRRewriter &rewriter,
     rewriter.setInsertionPoint(operation);
     mlir::Operation *replacement =
         mlir::clone(rewriter, operation.getOperation(), resultTypes, operands);
+    rewriter.replaceOp(operation, replacement->getResults());
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult refinePackUnPackStaticTypes(mlir::IRRewriter &rewriter,
+                                                TileRegionOp region) {
+  llvm::SmallVector<mlir::Operation *, 8> operations;
+  region.walk([&](mlir::Operation *operation) {
+    if (mlir::isa<mlir::tensor::PackOp, mlir::tensor::UnPackOp>(operation))
+      operations.push_back(operation);
+  });
+  for (mlir::Operation *operation : operations) {
+    auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(operation);
+    if (!dps || dps.getNumDpsInits() != operation->getNumResults())
+      return mlir::failure();
+    llvm::SmallVector<mlir::Value, 8> operands(operation->getOperands());
+    bool changed = false;
+    for (mlir::Value &operand : operands) {
+      auto cast = operand.getDefiningOp<mlir::tensor::CastOp>();
+      auto sourceType = cast ? mlir::dyn_cast<mlir::RankedTensorType>(
+                                   cast.getSource().getType())
+                             : mlir::RankedTensorType{};
+      auto resultType =
+          cast ? mlir::dyn_cast<mlir::RankedTensorType>(cast.getType())
+               : mlir::RankedTensorType{};
+      if (!cast || !sourceType || !resultType || !sourceType.hasStaticShape() ||
+          resultType.hasStaticShape())
+        continue;
+      operand = cast.getSource();
+      changed = true;
+    }
+    llvm::SmallVector<mlir::Type, 2> resultTypes;
+    for (unsigned index = 0; index < dps.getNumDpsInits(); ++index) {
+      mlir::OpResult result = operation->getResult(index);
+      mlir::OpOperand *init = dps.getDpsInitOperand(index);
+      mlir::Type resultType = result.getType();
+      for (mlir::Operation *user : result.getUsers())
+        if (auto cast = mlir::dyn_cast<mlir::tensor::CastOp>(user)) {
+          auto castType =
+              mlir::dyn_cast<mlir::RankedTensorType>(cast.getType());
+          if (castType && castType.hasStaticShape()) {
+            resultType = castType;
+            break;
+          }
+        }
+      mlir::Value &initValue = operands[init->getOperandNumber()];
+      auto initType =
+          mlir::dyn_cast<mlir::RankedTensorType>(initValue.getType());
+      auto desiredType = mlir::dyn_cast<mlir::RankedTensorType>(resultType);
+      if (desiredType && !desiredType.hasStaticShape() && initType &&
+          initType.hasStaticShape())
+        desiredType = initType;
+      if (!desiredType || !initType)
+        return mlir::failure();
+      resultTypes.push_back(desiredType);
+      if (initType == desiredType)
+        continue;
+      if (!mlir::tensor::CastOp::areCastCompatible(initType, desiredType))
+        return mlir::failure();
+      rewriter.setInsertionPoint(operation);
+      initValue = rewriter.create<mlir::tensor::CastOp>(operation->getLoc(),
+                                                        desiredType, initValue);
+      changed = true;
+    }
+    if (!changed && llvm::equal(operation->getResultTypes(), resultTypes))
+      continue;
+    // Pack/UnPack result types are immutable. Replace the one current
+    // occurrence after peeling has proved static slice types; the old op is
+    // erased immediately and no extra traversal remains.
+    rewriter.setInsertionPoint(operation);
+    mlir::Operation *replacement =
+        mlir::clone(rewriter, operation, resultTypes, operands);
     rewriter.replaceOp(operation, replacement->getResults());
   }
   return mlir::success();
@@ -297,10 +707,30 @@ applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
       return fail<TemporalTilingStatistics>(
           failure, TemporalTilingFailureKind::BrokenContract,
           "temporal traversal lost TilingInterface before apply");
-    mlir::FailureOr<llvm::DenseSet<mlir::Value>> exactFusionEdges =
+    mlir::FailureOr<ExactFusionInventory> exactFusionEdges =
         collectExactFusionEdges(region, failure);
     if (mlir::failed(exactFusionEdges))
       return mlir::failure();
+    llvm::SmallVector<ViewFusionRequest, 4> viewFusionRequests;
+    for (const auto &path : exactFusionEdges->viewPaths) {
+      if (!path.consumerOperand ||
+          path.consumerOperand->getOwner() != scope.operation)
+        continue;
+      viewFusionRequests.push_back({path.producer, path.consumerOperand->get(),
+                                    path.producerDimensions});
+    }
+    llvm::SmallVector<ConcatFusionRequest, 2> concatFusionRequests;
+    for (mlir::OpOperand &operand : scope.operation->getOpOperands()) {
+      compiler::detail::TemporalConcatQueryResult concat =
+          compiler::detail::queryTemporalConcatAssembly(operand);
+      if (concat.kind ==
+          compiler::detail::TemporalConcatQueryKind::BrokenContract)
+        return fail<TemporalTilingStatistics>(
+            failure, TemporalTilingFailureKind::BrokenContract, concat.detail);
+      if (concat.isExact())
+        concatFusionRequests.push_back(
+            {concat.assembledValue, std::move(concat.segments)});
+    }
     mlir::scf::SCFTilingOptions tilingOptions;
     tilingOptions.setTileSizes(tileSizes);
     tilingOptions.setInterchange(buildInterchange(descriptor, scope));
@@ -311,7 +741,8 @@ applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
             bool isDestinationOperand)
             -> std::optional<
                 mlir::scf::SCFTileAndFuseOptions::ControlFnResult> {
-          if (isDestinationOperand || !exactFusionEdges->contains(producer))
+          if (isDestinationOperand ||
+              !exactFusionEdges->directEdges.contains(producer))
             return std::nullopt;
           return mlir::scf::SCFTileAndFuseOptions::ControlFnResult{
               /*yieldProducerReplacement=*/false};
@@ -353,11 +784,28 @@ applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
       return fail<TemporalTilingStatistics>(
           failure, TemporalTilingFailureKind::CompilerFailure,
           "ragged temporal loop could not form one static tail");
+    if (mlir::failed(fuseViewProducerSlices(rewriter, region,
+                                            viewFusionRequests, statistics)))
+      return fail<TemporalTilingStatistics>(
+          failure, TemporalTilingFailureKind::CompilerFailure,
+          "exact view-derived producer could not be tiled into its consumer");
+    if (mlir::failed(fuseConcatSlices(rewriter, region, concatFusionRequests,
+                                      statistics)))
+      return fail<TemporalTilingStatistics>(
+          failure, TemporalTilingFailureKind::CompilerFailure,
+          "exact insert assembly could not form one tile-local value");
   }
 
   if (mlir::failed(canonicalizeTiledRegion(region, &listener)) ||
       mlir::failed(refineLinalgStaticTypes(rewriter, region)) ||
       mlir::failed(refineOnlineAttentionStaticTypes(rewriter, region)) ||
+      mlir::failed(refinePackUnPackStaticTypes(rewriter, region)) ||
+      mlir::failed(canonicalizeTiledRegion(region, &listener,
+                                           /*simplifyPackAndUnpack=*/true)) ||
+      mlir::failed(refineLinalgStaticTypes(rewriter, region)) ||
+      mlir::failed(refineOnlineAttentionStaticTypes(rewriter, region)) ||
+      mlir::failed(lowerConstantPads(rewriter, region, statistics)) ||
+      mlir::failed(lowerConstantGenerates(rewriter, region, statistics)) ||
       mlir::failed(canonicalizeTiledRegion(region, &listener)))
     return fail<TemporalTilingStatistics>(
         failure, TemporalTilingFailureKind::CompilerFailure,

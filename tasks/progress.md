@@ -21,8 +21,10 @@
 | 2 | `production-host-readiness` | `queued` | Q53 / 16 | search scalability、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 
 Q52当前直接项是第16项`current-ir-downstream-orchestration`。第12项已经形成ordinary contribution/merge/output、FA/FD per-Tile online state、
-selected FD merge/finalize和只连接actual endpoints的current relations；第13项已经只从live TileRegion operations建立并立即消费temporal
-choice，形成ordinary/online K2的actual SCF loop、exact fusion、three-state recurrence和static main/tail。第14项已经将每个current
+selected FD merge/finalize和只连接actual endpoints的current relations；第13项已经从live TileRegion operations建立并立即消费temporal
+choice，形成ordinary/online K2 actual SCF loop、direct及view-transparent exact fusion、bounded tile-local concat、constant pad和
+pack/unpack materialization、three-state recurrence与static main/tail；Spatial与Temporal共用同一static tensor indexing query，covered
+producer在第15项后无完整intermediate allocation/copy。第14项已经将每个current
 online-attention确定性分解为QK、scale/mask、row max/sum、state scale和PV的actual Linalg/Tensor/arith/math，保留既有loop、spatial merge和
 endpoint，layout入口graph/online attention为零。第15项已经从current value/use/op tuple求解并立即应用exact PBQP canonical layout，
 形成shared actual conversion、observable DDR subview、cross-Tile source piece及一次function/region-local bufferization；旧node-ID buffer

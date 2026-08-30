@@ -239,7 +239,7 @@ func.func @spm_tensor_cannot_escape(
   return
 }
 
-// SPM-YIELD: shaped data result at index 0 must be a Wafer DDR memref, got 'tensor<128xf16>'
+// SPM-YIELD: physical shaped result at index 0 must be a Wafer DDR memref
 
 //--- spm-async-region.mlir
 async.func @async_owned_region(

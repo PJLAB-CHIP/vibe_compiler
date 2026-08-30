@@ -19,6 +19,7 @@ add_mlir_library(WaferLinalgTransforms
   WaferIR
   WaferPlanning
   WaferTileTransforms
+  MLIRAffineDialect
   MLIRArithDialect
   MLIRDialectUtils
   MLIRFuncDialect
@@ -32,6 +33,7 @@ add_mlir_library(WaferLinalgTransforms
   MLIRSideEffectInterfaces
   MLIRSupport
   MLIRTensorDialect
+  MLIRTensorTransforms
   MLIRTilingInterface
   MLIRTransforms
 )

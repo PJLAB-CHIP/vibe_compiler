@@ -122,11 +122,77 @@ struct TemporalFusionQueryResult {
   std::string detail;
 };
 
+struct TemporalViewDimensionMapping {
+  int32_t viewDimension = -1;
+  int64_t offset = 0;
+};
+
+/// One current exact producer-to-consumer path. `viewTransparent` distinguishes
+/// a direct SSA edge from a path through one or more current tensor support
+/// operations. All handles are borrowed from one unchanged TileRegion.
+struct TemporalFusionPathResult {
+  TemporalFusionQueryKind kind = TemporalFusionQueryKind::BrokenContract;
+  mlir::OpResult producer;
+  mlir::OpOperand *consumerOperand = nullptr;
+  bool viewTransparent = false;
+  llvm::SmallVector<TemporalViewDimensionMapping, 4> producerDimensions;
+  llvm::SmallVector<uint32_t, 2> forcedFullExtentConsumerDimensions;
+  std::string detail;
+
+  bool isExact() const {
+    return kind == TemporalFusionQueryKind::ExactDerived && producer &&
+           consumerOperand;
+  }
+};
+
+enum class TemporalConcatQueryKind : uint8_t {
+  Exact,
+  NotConcat,
+  NonUnique,
+  Unsupported,
+  ResourceExhausted,
+  BrokenContract,
+};
+
+struct TemporalConcatSegment {
+  mlir::Value source;
+  llvm::SmallVector<int64_t, 4> offsets;
+  llvm::SmallVector<int64_t, 4> sizes;
+  std::optional<mlir::OpResult> derivedProducer;
+};
+
+/// One current all-and-only static insert_slice assembly consumed by a single
+/// temporal traversal. The query result borrows all handles from the current
+/// unchanged TileRegion and is consumed by the immediate apply call.
+struct TemporalConcatQueryResult {
+  TemporalConcatQueryKind kind = TemporalConcatQueryKind::NotConcat;
+  mlir::Value assembledValue;
+  mlir::OpOperand *consumerOperand = nullptr;
+  llvm::SmallVector<TemporalConcatSegment, 4> segments;
+  std::string detail;
+
+  bool isExact() const {
+    return kind == TemporalConcatQueryKind::Exact && assembledValue &&
+           consumerOperand && !segments.empty();
+  }
+};
+
 /// Determines whether one current producer result is uniquely determined by
 /// its only current consumer traversal for every legal tile of that traversal.
 TemporalFusionQueryResult
 queryTemporalProducerFusion(mlir::OpResult producer,
                             mlir::OpOperand &consumerOperand);
+
+/// Follows a pure all-result-single-use static tensor support chain and
+/// returns the final current consumer when the complete edge is an exact
+/// derived temporal producer relation.
+TemporalFusionPathResult
+queryTemporalProducerFusionPath(mlir::OpResult producer);
+
+/// Recognizes a static, unit-stride, nonoverlapping insert_slice chain rooted
+/// in tensor.empty whose source rectangles exactly cover the assembled value.
+TemporalConcatQueryResult
+queryTemporalConcatAssembly(mlir::OpOperand &consumerOperand);
 
 enum class TemporalDomainFailureKind : uint8_t {
   BrokenContract,

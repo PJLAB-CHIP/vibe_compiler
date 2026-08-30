@@ -2,6 +2,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/StructuredDemandAnalysis.h"
 
+#include "Wafer/Analysis/Linalg/TensorResultIndexing.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"
 
@@ -577,27 +578,11 @@ deriveStructuredOperationFact(const SemanticRootBinding &binding,
   return fact;
 }
 
-struct SupportOperandFact {
-  uint32_t operand = 0;
-  wafer::TensorIndexingOperandRole role =
-      wafer::TensorIndexingOperandRole::Source;
-  llvm::SmallVector<int64_t, 4> offsets;
-  llvm::SmallVector<int64_t, 4> strides;
-  IndexRelation resultToOperand;
-};
-
-struct SupportTransferFact {
-  mlir::Operation *operation = nullptr;
-  uint32_t result = 0;
-  TensorTransformKind kind = TensorTransformKind::Cast;
-  llvm::SmallVector<SupportOperandFact, 2> operands;
-};
-
 struct ResultRelationFact {
   explicit ResultRelationFact(mlir::OpResult result) : result(result) {}
 
   mlir::OpResult result;
-  std::optional<SupportTransferFact> transfer;
+  std::optional<analysis::TensorResultIndexing> transfer;
   std::optional<DemandFailure> failure;
 };
 
@@ -620,155 +605,8 @@ getTensorTransformKind(wafer::TensorIndexingTransformKind kind) {
   return std::nullopt;
 }
 
-DemandResult<SupportTransferFact>
-deriveSupportTransfer(mlir::OpResult result,
-                      const IndexRelationLimits &limits) {
-  mlir::Operation *operation = result.getOwner();
-  if (!operation || !mlir::isMemoryEffectFree(operation))
-    return asResult<SupportTransferFact>(unsupported(
-        UnsupportedDemandReason::MissingTensorTransfer,
-        RelationOperationKind::BuildRelationGraph,
-        "tensor support result lacks a pure exact transfer contract"));
-  auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(result.getType());
-  if (!resultType || !resultType.hasStaticShape())
-    return asResult<SupportTransferFact>(
-        unsupported(UnsupportedDemandReason::DynamicShape,
-                    RelationOperationKind::BuildRelationGraph,
-                    "tensor support result requires a static ranked tensor"));
-
-  SupportTransferFact transfer;
-  transfer.operation = operation;
-  auto indexing =
-      mlir::dyn_cast<wafer::WaferTensorIndexingOpInterface>(operation);
-  if (!indexing)
-    return asResult<SupportTransferFact>(
-        unsupported(UnsupportedDemandReason::MissingTensorTransfer,
-                    RelationOperationKind::BuildRelationGraph,
-                    (llvm::Twine("tensor support operation ") +
-                     operation->getName().getStringRef() +
-                     " has no exact indexing interface")
-                        .str()));
-  mlir::FailureOr<wafer::TensorIndexingDescription> description =
-      indexing.getTensorIndexingDescription(result.getResultNumber());
-  if (mlir::failed(description))
-    return asResult<SupportTransferFact>(unsupported(
-        UnsupportedDemandReason::MissingTensorTransfer,
-        RelationOperationKind::BuildRelationGraph,
-        "tensor indexing interface has no static exact description"));
-  std::optional<TensorTransformKind> transformKind =
-      getTensorTransformKind(description->kind);
-  if (!transformKind || description->result != result.getResultNumber() ||
-      description->operands.empty() ||
-      !llvm::is_sorted(description->operands,
-                       [](const auto &lhs, const auto &rhs) {
-                         return lhs.operand < rhs.operand;
-                       }))
-    return asResult<SupportTransferFact>(
-        broken(BrokenDemandContractReason::InterfaceContradiction,
-               RelationOperationKind::BuildRelationGraph,
-               "tensor indexing interface returned a malformed description"));
-  transfer.result = description->result;
-  transfer.kind = *transformKind;
-
-  const size_t sourceCount =
-      llvm::count_if(description->operands, [](const auto &operand) {
-        return operand.role == wafer::TensorIndexingOperandRole::Source;
-      });
-  const size_t destinationCount =
-      llvm::count_if(description->operands, [](const auto &operand) {
-        return operand.role == wafer::TensorIndexingOperandRole::Destination;
-      });
-  const bool isInsert =
-      description->kind == wafer::TensorIndexingTransformKind::InsertSlice;
-  if (sourceCount != 1 || destinationCount != (isInsert ? 1u : 0u) ||
-      description->operands.size() != (isInsert ? 2u : 1u))
-    return asResult<SupportTransferFact>(
-        broken(BrokenDemandContractReason::InterfaceContradiction,
-               RelationOperationKind::BuildRelationGraph,
-               "tensor indexing interface returned invalid operand roles"));
-
-  llvm::SmallBitVector seenOperands(operation->getNumOperands());
-  auto addRelation =
-      [&](const wafer::TensorIndexingOperandDescription &operand,
-          IndexRelationResult relation) -> std::optional<DemandFailure> {
-    if (operand.operand >= operation->getNumOperands() ||
-        seenOperands.test(operand.operand))
-      return broken(BrokenDemandContractReason::InterfaceContradiction,
-                    RelationOperationKind::ConstructRelation,
-                    "tensor indexing interface returned invalid operands");
-    seenOperands.set(operand.operand);
-    if (!relation.isExact()) {
-      if (relation.status == IndexRelationStatus::ResourceExhausted)
-        return workLimit(RelationOperationKind::ConstructRelation,
-                         limits.maxRectangularPieces + 1,
-                         limits.maxRectangularPieces, relation.reason);
-      return unsupported(UnsupportedDemandReason::MissingTensorTransfer,
-                         RelationOperationKind::ConstructRelation,
-                         relation.reason);
-    }
-    transfer.operands.push_back({operand.operand, operand.role, operand.offsets,
-                                 operand.strides,
-                                 std::move(*relation.relation)});
-    return std::nullopt;
-  };
-
-  for (const wafer::TensorIndexingOperandDescription &operand :
-       description->operands) {
-    if (operand.operand >= operation->getNumOperands())
-      return asResult<SupportTransferFact>(
-          broken(BrokenDemandContractReason::InterfaceContradiction,
-                 RelationOperationKind::ConstructRelation,
-                 "tensor indexing interface returned an out-of-range operand"));
-    auto operandType = mlir::dyn_cast<mlir::RankedTensorType>(
-        operation->getOperand(operand.operand).getType());
-    if (!operandType || !operandType.hasStaticShape())
-      return asResult<SupportTransferFact>(unsupported(
-          UnsupportedDemandReason::DynamicShape,
-          RelationOperationKind::ConstructRelation,
-          "tensor indexing operand requires a static ranked tensor"));
-
-    IndexRelationResult relation;
-    switch (description->kind) {
-    case wafer::TensorIndexingTransformKind::ExpandShape:
-    case wafer::TensorIndexingTransformKind::CollapseShape:
-    case wafer::TensorIndexingTransformKind::Cast:
-      relation = IndexRelation::staticReshape(resultType.getShape(),
-                                              operandType.getShape(), limits);
-      break;
-    case wafer::TensorIndexingTransformKind::ExtractSlice:
-      relation = IndexRelation::staticSlice(
-          resultType.getShape(), operandType.getShape(), operand.offsets,
-          operand.strides, limits);
-      break;
-    case wafer::TensorIndexingTransformKind::InsertSlice:
-      if (operand.role == wafer::TensorIndexingOperandRole::Destination) {
-        relation = IndexRelation::identity(operandType.getShape(), limits);
-      } else {
-        if (!llvm::all_of(operand.strides,
-                          [](int64_t stride) { return stride == 1; }))
-          return asResult<SupportTransferFact>(
-              unsupported(UnsupportedDemandReason::MissingTensorTransfer,
-                          RelationOperationKind::ConstructRelation,
-                          "insert_slice requires unit-stride exact semantics"));
-        relation = IndexRelation::staticInsertSlice(resultType.getShape(),
-                                                    operandType.getShape(),
-                                                    operand.offsets, limits);
-      }
-      break;
-    case wafer::TensorIndexingTransformKind::Pad:
-      relation = IndexRelation::staticInsertSlice(resultType.getShape(),
-                                                  operandType.getShape(),
-                                                  operand.offsets, limits);
-      break;
-    }
-    if (auto failure = addRelation(operand, std::move(relation)))
-      return asResult<SupportTransferFact>(std::move(*failure));
-  }
-  return transfer;
-}
-
 DemandResult<ExactIndexSet>
-imageInsertDestination(const SupportTransferFact &transfer,
+imageInsertDestination(const analysis::TensorResultIndexing &transfer,
                        const ExactIndexSet &demand,
                        const IndexRelationLimits &limits) {
   mlir::FailureOr<ExactIndexSet> normalized =
@@ -782,13 +620,13 @@ imageInsertDestination(const SupportTransferFact &transfer,
     return operand.role == wafer::TensorIndexingOperandRole::Source;
   });
   if (source == transfer.operands.end() ||
-      source->operand >= transfer.operation->getNumOperands())
+      source->operand >= transfer.result.getOwner()->getNumOperands())
     return asResult<ExactIndexSet>(
         broken(BrokenDemandContractReason::InterfaceContradiction,
                RelationOperationKind::Image,
                "insert_slice transfer has no source operand"));
   auto sourceType = mlir::dyn_cast<mlir::RankedTensorType>(
-      transfer.operation->getOperand(source->operand).getType());
+      transfer.result.getOwner()->getOperand(source->operand).getType());
   if (!sourceType || !sourceType.hasStaticShape() ||
       source->offsets.size() != static_cast<size_t>(sourceType.getRank()))
     return asResult<ExactIndexSet>(
@@ -841,10 +679,12 @@ imageInsertDestination(const SupportTransferFact &transfer,
                       RelationOperationKind::Image);
 }
 
-DemandResult<ExactIndexSet> imageSupportOperand(
-    const SupportTransferFact &transfer, const SupportOperandFact &operand,
-    const ExactIndexSet &demand, const IndexRelationLimits &limits) {
-  if (transfer.kind == TensorTransformKind::InsertSlice &&
+DemandResult<ExactIndexSet>
+imageSupportOperand(const analysis::TensorResultIndexing &transfer,
+                    const analysis::TensorOperandIndexing &operand,
+                    const ExactIndexSet &demand,
+                    const IndexRelationLimits &limits) {
+  if (transfer.kind == wafer::TensorIndexingTransformKind::InsertSlice &&
       operand.role == wafer::TensorIndexingOperandRole::Destination)
     return imageInsertDestination(transfer, demand, limits);
   return imageExactSet(operand.resultToOperand, demand, limits,
@@ -1355,14 +1195,38 @@ StructuredRelationFacts::create(const StructuredDAGAnalysis &dag,
         operation->hasTrait<mlir::OpTrait::ConstantLike>() ||
         mlir::isa<mlir::tensor::EmptyOp>(operation))
       continue;
-    DemandResult<SupportTransferFact> transfer =
-        deriveSupportTransfer(result, limits);
-    if (getValue(transfer)) {
-      relation.transfer.emplace(std::move(*getValue(transfer)));
-      for (const SupportOperandFact &operand : relation.transfer->operands)
+    analysis::TensorResultIndexingResult transfer =
+        analysis::deriveTensorResultIndexing(result, limits);
+    if (transfer.isExact()) {
+      relation.transfer.emplace(std::move(*transfer.indexing));
+      for (const analysis::TensorOperandIndexing &operand :
+           relation.transfer->operands)
         worklist.push_back(operation->getOperand(operand.operand));
     } else {
-      relation.failure.emplace(getFailure(std::move(transfer)));
+      switch (transfer.status) {
+      case analysis::TensorResultIndexingStatus::Exact:
+        relation.failure.emplace(
+            broken(BrokenDemandContractReason::InterfaceContradiction,
+                   RelationOperationKind::BuildRelationGraph,
+                   "exact tensor indexing result omitted its relation"));
+        break;
+      case analysis::TensorResultIndexingStatus::Unsupported:
+        relation.failure.emplace(unsupported(
+            UnsupportedDemandReason::MissingTensorTransfer,
+            RelationOperationKind::BuildRelationGraph, transfer.detail));
+        break;
+      case analysis::TensorResultIndexingStatus::ResourceExhausted:
+        relation.failure.emplace(
+            workLimit(RelationOperationKind::ConstructRelation,
+                      limits.maxRectangularPieces + 1,
+                      limits.maxRectangularPieces, transfer.detail));
+        break;
+      case analysis::TensorResultIndexingStatus::BrokenContract:
+        relation.failure.emplace(
+            broken(BrokenDemandContractReason::InterfaceContradiction,
+                   RelationOperationKind::BuildRelationGraph, transfer.detail));
+        break;
+      }
     }
   }
 
@@ -1551,14 +1415,24 @@ deriveExactDemand(const StructuredRelationFacts &facts,
                             std::nullopt, std::nullopt,
                             RelationOperationKind::BuildRelationGraph},
           "relation fact has neither a boundary nor a transfer"};
-    const SupportTransferFact &transfer = *relation.transfer;
+    const analysis::TensorResultIndexing &transfer = *relation.transfer;
     for (auto &[key, demand] : currentState.demands) {
       TensorTransform step;
       step.operation = &operation;
       step.result = static_cast<uint32_t>(result.getResultNumber());
-      step.kind = transfer.kind;
+      std::optional<TensorTransformKind> transformKind =
+          getTensorTransformKind(transfer.kind);
+      if (!transformKind)
+        return BrokenDemandContract{
+            BrokenDemandContractReason::InterfaceContradiction,
+            DemandFailureSite{std::nullopt,
+                              static_cast<uint32_t>(result.getResultNumber()),
+                              std::nullopt, std::nullopt,
+                              RelationOperationKind::BuildRelationGraph},
+            "tensor indexing transform has no demand representation"};
+      step.kind = *transformKind;
       step.outputDemand = demand;
-      for (const SupportOperandFact &operand : transfer.operands) {
+      for (const analysis::TensorOperandIndexing &operand : transfer.operands) {
         DemandResult<ExactIndexSet> mapped =
             imageSupportOperand(transfer, operand, demand, limits);
         if (!getValue(mapped))

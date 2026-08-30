@@ -242,6 +242,24 @@ tile；producer result未覆盖的iterator只能是full reduction fiber或unit e
 cross-Region和unsupported map都保留独立producer traversal，不通过late fusion失败改变domain。`online_attention`始终是独立root，不作为
 ordinary producer被复制进finalize或其它consumer traversal。
 
+Direct edge不是完整边界。Spatial exact-demand已经通过`WaferTensorIndexingOpInterface`和`IndexRelation`解释static pure
+`tensor.cast`、`extract_slice`、`insert_slice`、`expand_shape`、`collapse_shape`和`pad`；该current-op relation构造必须抽为
+Analysis/Linalg中的一个共享只读typed builder，Spatial demand与Temporal fusion调用同一实现。TemporalDomain可以沿same-Region、pure、
+all-result single-use support chain寻找最近current producer，逐段组合result-to-operand relation；只有组合结果为exact、total、single-valued，
+且selected consumer tile可由pinned tensor/tiling mechanics实际形成支持的dense rectangle或有限exact pieces时，producer才成为derived
+traversal。Relation unknown、unsupported、work limit、multi-use、effect、DPS destination或不可表示reshape只关闭本次fusion，保留producer
+独立traversal，不把bounding box、完整shape或预测buffer当作tile。
+
+Apply先用pinned SCF mechanics生成consumer loop及actual `tensor.extract_slice`，再在该actual slice上使用pinned
+`replaceExtractSliceWithTiledProducer`、reshape/subset helper和producer `TilingInterface`向上穿透support chain，并在loop内重建局部view。
+成功后删除dead完整producer/view链；失败由candidate transaction处理，不恢复shadow recipe。`tensor.pad`、`pack`和`unpack`已经有pinned
+`TilingInterface`，在static pure tensor合同下可作为explicit traversal或derived producer；`insert_slice`/concat只对requested tile与source
+segments的有限exact交集做tile-local assembly。Constant Pad的非零padding轴必须在derived consumer scope保持full extent，避免把static
+source变成无法被直接下游消费的dynamic padded tile；其局部Pad及pinned mechanics产生的constant `tensor.generate`在本stage确定性降为
+tile-local Linalg fill/insert。Pack/UnPack在main/tail type收紧后使用pinned simplify pattern降为local reshape；fused producer的
+`tensor.empty` destination折成tile-local empty，不能保留完整intermediate allocation。`linalg.fill`继续作为DPS destination初始化，不增加
+独立search axis。collective、nonconstant Pad与dynamic shape不在本项范围。
+
 Temporal materialization以一个canonical SCF loop nest承载同一traversal。完整块和remainder先共享同一个current loop body；
 offset与bounded tile size由loop IV和exact upper bound计算。不得在结构层递归生成`first / steady / tail`的多维笛卡尔积，
 也不得按wave trip count复制compute closure。当前Instr只接受static shaped buffer时，先形成上述canonical loop，再在直接
@@ -593,6 +611,9 @@ Current迁移必须遵守：
   三个DPS state处理K2。第14项只分解已tiled op；layout入口graph/online attention均为零；
 - temporal domain只在exact total single-valued proof下删除派生参数；non-unique、unsupported和indeterminate case保留原自由维度或
   独立producer，Region candidate不因fusion无法证明而消失；
+- Spatial与Temporal共用同一static tensor indexing relation builder；covered single-use view chain在第13项后原完整producer为零，
+  第15项后对应完整intermediate allocation/copy为零；unsupported reshape保持actual独立buffer并由后续MiniMalloc判断，不转换成
+  SPM估算结论；
 - instrumentation on/off产生同一IR、candidate result和package；
 - 每个candidate的actual TileModule/TileRegion/Instr owner只物化一次，winner不重建；
 - 不存在代表future operation/value/buffer/event/schedule的跨stage状态或为其服务的parity verifier；

@@ -42,7 +42,7 @@ Pipeline position:
 | structured logical normalization | attention保持opaque；ordinary pure Tensor/Linalg graph已经过一次bounded e-graph normalization | candidate内部重跑e-graph或预构造rewrite recipe |
 | choice/domain algorithms | Spatial、ExactDemand、connected Region、free Temporal、PBQP solver和FA/FD semantic/spatial fixtures | future value、movement、storage、event或schedule record |
 | spatial/Region current-IR materialization | selected Spatial/Region choice已经形成all-and-only TileModules/TileRegions、ordinary contribution/merge/output、FA/FD per-Tile online state、selected FD merge/finalize和只连接actual endpoints的current relations | graph attention或empty shell残留、missing merge output、`RegionExecutionId -> operation`映射、scratch Module/Func或future operation/buffer/movement/completion ID |
-| current-op temporal tile-and-fuse | 每个TileRegion的domain只借用live operation；selected choice已经形成ordinary/online-attention的actual SCF loop、exact fusion、three-state recurrence和static main/tail，relations保持current | `TemporalPlan/TemporalState/TemporalScopeId`、静态wave清单、按ordinal恢复operation、multi-use隐式clone或基于SPM causal root的预测性retile |
+| current-op temporal tile-and-fuse | 每个TileRegion的domain只借用live operation；selected choice已经形成ordinary/online-attention的actual SCF loop、direct及view-transparent exact fusion、tile-local concat/pad/pack/unpack、three-state recurrence和static main/tail，relations保持current；covered producer的完整intermediate在第15项后为零 | `TemporalPlan/TemporalState/TemporalScopeId`、静态wave清单、按ordinal恢复operation、multi-use隐式clone、bounding-box view或基于SPM causal root的预测性retile |
 | online-attention decomposition | current module只保留actual QK、scale/mask、row max/sum、state scale、PV及既有SCF/spatial merge/endpoint；layout入口graph/online attention均为零 | 重新分类FA/FD、新建loop/Tile/merge owner、数值选择、future action/value inventory或第二条decomposition path |
 | current layout与bufferization | value/use/op-tuple exact PBQP canonical assignment已经立即apply；shared conversion、output DDR subview、cross-Tile source piece、一次One-Shot function/region-local bufferization和current operation/buffer relations均在同一owner中，冗余DDR publication copy为零；performance descriptor projection因shared query尚未抽取而明确hard-only | `structuredNodeId` buffer attribution、accepted operation/node relation、第二条Instr bufferization pass、估算descriptor cost或重复bufferization |
 | atomic current-IR mechanics | movement cleanup、SCF execution rewrite、TileRegion-to-Instr、fresh completion和actual memory/target leaf | combined complete materializer、hidden repair或跨stage plan |
@@ -59,6 +59,7 @@ verified TensorProgram
        ordinary contribution/merge + attention -> online state actual IR
   -> [13] compact-temporal-tile-and-fuse
        ordinary/parallel/online K2 stateful TilingInterface
+       + exact view-transparent producer tiling
   -> [14] online-attention-decomposition
   -> [15] current-ir-layout-bufferization
   -> [16] current-ir-downstream-orchestration

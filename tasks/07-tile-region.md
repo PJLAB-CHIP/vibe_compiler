@@ -194,6 +194,15 @@ single-use producer可以随consumer slice实际融合；multi-use、broadcast�
 traversal。Ragged loop只peel最后一次迭代，随后在本Region内收紧actual slice/Linalg/online-attention static type；不创建静态wave清单或
 跨Region traversal ID。
 
+Producer与consumer之间允许存在static pure support chain。Spatial demand与Temporal fusion共用06号定义的current-op tensor indexing
+relation builder；Temporal只在same-Region、all-result single-use且组合relation exact/total/single-valued时，把
+`cast/extract_slice/expand_shape/collapse_shape`作为view-transparent edge。Apply先生成consumer的actual slice，再用pinned tensor
+reshape/subset与`TilingInterface` mechanics形成producer tile和loop-local view；不为view创建独立TileRegion、temporal scope或future recipe。
+Constant `pad`按pinned interface实际tile且非零padding轴在derived consumer保持full extent，随后与constant `tensor.generate`一起降为
+local Linalg fill/insert；`pack/unpack`在static main/tail type收紧后降为local reshape。Concat/insert链只组装requested tile的有限exact
+pieces，fused producer的empty destination也必须缩为tile-local empty。不能证明或不能实际构造的chain保持独立traversal，其完整buffer必须
+在后续current IR中显式存在，不能在本stage按SPM估算强制fusion。
+
 随后online-attention decomposition只替换已经tiled的current op，生成actual QK、scale/mask、Maximum/Sum/Accumulator update、PV和slice；
 它不选择Tile、block或merge owner。两项都不从planning choice重建TileModule/TileRegion或candidate owner；若immutable op signature需要替换，
 由parent anchor执行并在同一rewrite中retarget actual endpoints。

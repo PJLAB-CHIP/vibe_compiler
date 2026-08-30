@@ -29,6 +29,11 @@ struct TemporalTilingStatistics {
   uint64_t loops = 0;
   uint64_t specializedTails = 0;
   uint64_t fusedProducers = 0;
+  uint64_t viewTransparentProducers = 0;
+  uint64_t tileLocalAssemblies = 0;
+  uint64_t assembledSegments = 0;
+  uint64_t decomposedPads = 0;
+  uint64_t decomposedConstantGenerates = 0;
 };
 
 /// Immediately applies one query-local temporal choice to the same unchanged

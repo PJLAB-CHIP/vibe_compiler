@@ -482,22 +482,35 @@ preflightOutputPieces(StructuredMaterializationRelations &relations,
     llvm::SmallVector<int64_t, 4> sizes(fullType.getShape());
     if (auto insert = yielded.getDefiningOp<mlir::tensor::InsertSliceOp>()) {
       auto empty = insert.getDest().getDefiningOp<mlir::tensor::EmptyOp>();
-      auto staticOffsets = getStaticValues(insert.getMixedOffsets());
-      auto staticSizes = getStaticValues(insert.getMixedSizes());
-      auto staticStrides = getStaticValues(insert.getMixedStrides());
-      auto pieceType =
-          mlir::dyn_cast<mlir::RankedTensorType>(insert.getSourceType());
-      if (!empty || empty.getType() != fullType || !staticOffsets ||
-          !staticSizes || !staticStrides || !pieceType ||
-          llvm::any_of(*staticStrides,
-                       [](int64_t stride) { return stride != 1; }) ||
-          llvm::ArrayRef<int64_t>(*staticSizes) != pieceType.getShape()) {
-        detail = "observable insert_slice is not one exact static output piece";
+      // Only an insert into a fresh empty tensor is a structural publication
+      // shell that can be narrowed to its source piece. A temporal loop or
+      // peeled tail may yield an insert into an actual loop-carried result;
+      // that value is already the complete observable tensor and must remain
+      // intact for DPS binding.
+      if (!empty && !insert.getDest().getDefiningOp<mlir::scf::ForOp>()) {
+        detail = "observable insert_slice is neither one exact static output "
+                 "piece nor one temporal loop result";
         return mlir::failure();
       }
-      offsets = std::move(*staticOffsets);
-      sizes = std::move(*staticSizes);
-      piece = insert.getSource();
+      if (empty) {
+        auto staticOffsets = getStaticValues(insert.getMixedOffsets());
+        auto staticSizes = getStaticValues(insert.getMixedSizes());
+        auto staticStrides = getStaticValues(insert.getMixedStrides());
+        auto pieceType =
+            mlir::dyn_cast<mlir::RankedTensorType>(insert.getSourceType());
+        if (empty.getType() != fullType || !staticOffsets || !staticSizes ||
+            !staticStrides || !pieceType ||
+            llvm::any_of(*staticStrides,
+                         [](int64_t stride) { return stride != 1; }) ||
+            llvm::ArrayRef<int64_t>(*staticSizes) != pieceType.getShape()) {
+          detail =
+              "observable insert_slice is not one exact static output piece";
+          return mlir::failure();
+        }
+        offsets = std::move(*staticOffsets);
+        sizes = std::move(*staticSizes);
+        piece = insert.getSource();
+      }
     }
     for (auto [offset, size, extent] :
          llvm::zip_equal(offsets, sizes, fullType.getShape()))

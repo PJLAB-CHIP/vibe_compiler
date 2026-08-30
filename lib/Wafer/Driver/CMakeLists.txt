@@ -65,6 +65,7 @@ add_mlir_library(WaferCompiler
   MLIRSCFTransforms
   MLIRSupport
   MLIRTensorDialect
+  MLIRTensorInferTypeOpInterfaceImpl
   MLIRTensorTransforms
   MLIRTargetLLVMIRExport
   MLIRLLVMToLLVMIRTranslation

@@ -245,6 +245,159 @@ TEST(TemporalDomainTest,
   EXPECT_EQ(fanoutDomain.domain->getScopeDescriptors().size(), 2u);
 }
 
+TEST(TemporalDomainTest,
+     GeneralFlattenViewIsTypedUnsupportedAndRemainsIndependent) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto module = parse(*context,
+                      R"mlir(
+        %producer_empty = tensor.empty() : tensor<2x1025x128xf16>
+        %producer = linalg.generic {
+            indexing_maps = [affine_map<(b, m, n) -> (b, m, n)>,
+                             affine_map<(b, m, n) -> (b, m, n)>],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%arg : tensor<2x1025x128xf16>)
+            outs(%producer_empty : tensor<2x1025x128xf16>) {
+          ^bb0(%element: f16, %old: f16):
+            linalg.yield %element : f16
+        } -> tensor<2x1025x128xf16>
+        %flattened = tensor.collapse_shape %producer [[0, 1], [2]]
+            : tensor<2x1025x128xf16> into tensor<2050x128xf16>
+        %consumer_empty = tensor.empty() : tensor<2050x128xf16>
+        %value = linalg.generic {
+            indexing_maps = [affine_map<(m, n) -> (m, n)>,
+                             affine_map<(m, n) -> (m, n)>],
+            iterator_types = ["parallel", "parallel"]}
+            ins(%flattened : tensor<2050x128xf16>)
+            outs(%consumer_empty : tensor<2050x128xf16>) {
+          ^bb0(%element: f16, %old: f16):
+            linalg.yield %element : f16
+        } -> tensor<2050x128xf16>)mlir",
+                      "tensor<2x1025x128xf16>", "tensor<2050x128xf16>");
+  ASSERT_TRUE(module);
+  TileRegionOp region;
+  module->walk([&](TileRegionOp operation) { region = operation; });
+  llvm::SmallVector<mlir::linalg::GenericOp, 2> operations;
+  region.walk([&](mlir::linalg::GenericOp operation) {
+    operations.push_back(operation);
+  });
+  ASSERT_EQ(operations.size(), 2u);
+  TemporalFusionPathResult path = queryTemporalProducerFusionPath(
+      mlir::cast<mlir::OpResult>(operations.front().getResult(0)));
+  EXPECT_EQ(path.kind, TemporalFusionQueryKind::Unsupported);
+  EXPECT_FALSE(path.detail.empty());
+  TemporalDomainResult domain = buildTemporalDomain(region);
+  ASSERT_TRUE(domain.succeeded());
+  EXPECT_EQ(domain.domain->getScopeDescriptors().size(), 2u);
+}
+
+TEST(TemporalDomainTest, MultiUseViewResultDoesNotCloneOrDeriveItsProducer) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto module = parse(*context,
+                      R"mlir(
+        %producer_empty = tensor.empty() : tensor<2x1031x128xf16>
+        %producer = linalg.generic {
+            indexing_maps = [affine_map<(b, m, n) -> (b, m, n)>,
+                             affine_map<(b, m, n) -> (b, m, n)>],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%arg : tensor<2x1031x128xf16>)
+            outs(%producer_empty : tensor<2x1031x128xf16>) {
+          ^bb0(%element: f16, %old: f16):
+            linalg.yield %element : f16
+        } -> tensor<2x1031x128xf16>
+        %view = tensor.extract_slice %producer[0, 0, 0] [2, 1025, 128]
+            [1, 1, 1] : tensor<2x1031x128xf16> to tensor<2x1025x128xf16>
+        %left_empty = tensor.empty() : tensor<2x1025x128xf16>
+        %left = linalg.generic {
+            indexing_maps = [affine_map<(b, m, n) -> (b, m, n)>,
+                             affine_map<(b, m, n) -> (b, m, n)>],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%view : tensor<2x1025x128xf16>)
+            outs(%left_empty : tensor<2x1025x128xf16>) {
+          ^bb0(%element: f16, %old: f16):
+            linalg.yield %element : f16
+        } -> tensor<2x1025x128xf16>
+        %right_empty = tensor.empty() : tensor<2x1025x128xf16>
+        %right = linalg.generic {
+            indexing_maps = [affine_map<(b, m, n) -> (b, m, n)>,
+                             affine_map<(b, m, n) -> (b, m, n)>],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%view : tensor<2x1025x128xf16>)
+            outs(%right_empty : tensor<2x1025x128xf16>) {
+          ^bb0(%element: f16, %old: f16):
+            linalg.yield %element : f16
+        } -> tensor<2x1025x128xf16>
+        %sum_empty = tensor.empty() : tensor<2x1025x128xf16>
+        %value = linalg.generic {
+            indexing_maps = [affine_map<(b, m, n) -> (b, m, n)>,
+                             affine_map<(b, m, n) -> (b, m, n)>,
+                             affine_map<(b, m, n) -> (b, m, n)>],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%left, %right : tensor<2x1025x128xf16>,
+                  tensor<2x1025x128xf16>)
+            outs(%sum_empty : tensor<2x1025x128xf16>) {
+          ^bb0(%lhs: f16, %rhs: f16, %old: f16):
+            %sum = arith.addf %lhs, %rhs : f16
+            linalg.yield %sum : f16
+        } -> tensor<2x1025x128xf16>)mlir",
+                      "tensor<2x1031x128xf16>", "tensor<2x1025x128xf16>");
+  ASSERT_TRUE(module);
+  TileRegionOp region;
+  module->walk([&](TileRegionOp operation) { region = operation; });
+  llvm::SmallVector<mlir::linalg::GenericOp, 4> operations;
+  region.walk([&](mlir::linalg::GenericOp operation) {
+    operations.push_back(operation);
+  });
+  ASSERT_EQ(operations.size(), 4u);
+  TemporalFusionPathResult path = queryTemporalProducerFusionPath(
+      mlir::cast<mlir::OpResult>(operations.front().getResult(0)));
+  EXPECT_EQ(path.kind, TemporalFusionQueryKind::NonUnique);
+  TemporalDomainResult domain = buildTemporalDomain(region);
+  ASSERT_TRUE(domain.succeeded());
+  EXPECT_EQ(domain.domain->getScopeDescriptors().size(), 2u);
+}
+
+TEST(TemporalDomainTest,
+     IncompleteInsertAssemblyIsUnsupportedWithoutRejectingTheRegion) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto module = parse(*context,
+                      R"mlir(
+        %left = tensor.extract_slice %arg[0, 0, 0] [2, 1025, 63]
+            [1, 1, 1] : tensor<2x1025x128xf16> to tensor<2x1025x63xf16>
+        %right = tensor.extract_slice %arg[0, 0, 64] [2, 1025, 64]
+            [1, 1, 1] : tensor<2x1025x128xf16> to tensor<2x1025x64xf16>
+        %assembly_empty = tensor.empty() : tensor<2x1025x128xf16>
+        %with_left = tensor.insert_slice %left into
+            %assembly_empty[0, 0, 0] [2, 1025, 63] [1, 1, 1]
+            : tensor<2x1025x63xf16> into tensor<2x1025x128xf16>
+        %joined = tensor.insert_slice %right into
+            %with_left[0, 0, 64] [2, 1025, 64] [1, 1, 1]
+            : tensor<2x1025x64xf16> into tensor<2x1025x128xf16>
+        %result_empty = tensor.empty() : tensor<2x1025x128xf16>
+        %value = linalg.generic {
+            indexing_maps = [affine_map<(b, m, n) -> (b, m, n)>,
+                             affine_map<(b, m, n) -> (b, m, n)>],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%joined : tensor<2x1025x128xf16>)
+            outs(%result_empty : tensor<2x1025x128xf16>) {
+          ^bb0(%element: f16, %old: f16):
+            linalg.yield %element : f16
+        } -> tensor<2x1025x128xf16>)mlir",
+                      "tensor<2x1025x128xf16>", "tensor<2x1025x128xf16>");
+  ASSERT_TRUE(module);
+  TileRegionOp region;
+  module->walk([&](TileRegionOp operation) { region = operation; });
+  mlir::linalg::GenericOp consumer;
+  region.walk([&](mlir::linalg::GenericOp operation) { consumer = operation; });
+  ASSERT_TRUE(consumer);
+  TemporalConcatQueryResult concat =
+      queryTemporalConcatAssembly(consumer->getOpOperand(0));
+  EXPECT_EQ(concat.kind, TemporalConcatQueryKind::Unsupported);
+  EXPECT_FALSE(concat.detail.empty());
+  TemporalDomainResult domain = buildTemporalDomain(region);
+  ASSERT_TRUE(domain.succeeded());
+  EXPECT_EQ(domain.domain->getScopeDescriptors().size(), 1u);
+}
+
 TEST(TemporalDomainTest, BroadcastEdgeKeepsAnIndependentProducerTraversal) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto module = parse(*context,

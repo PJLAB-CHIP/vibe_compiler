@@ -28,6 +28,7 @@ target_link_libraries(wafer-opt
   MLIRSCFDialect
   MLIRSCFTransforms
   MLIRTensorDialect
+  MLIRTensorInferTypeOpInterfaceImpl
   MLIRTensorTransforms
   MLIRTransforms
 )

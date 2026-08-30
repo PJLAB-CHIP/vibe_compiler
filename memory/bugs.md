@@ -1474,3 +1474,21 @@
   auxiliary变量只确定性重建，不扩大外部semantic tie前缀。
 - 防复发：flat oracle覆盖disconnected cost/assignment，独立高degree fixed hub验证任意度消元，auxiliary-prefix测试验证重复求解确定；
   16-Tile FA/FD纵向记录solver work和wall。不能用Top-k、跳过exact solve或提高timeout掩盖重复全图工作。
+
+## Metadata view可以零copy但仍阻断producer tile propagation
+
+- 现象：`collapse/expand/cast/extract_slice`最终bufferize为alias或subview，IR中却仍出现完整producer allocation；缩小consumer temporal
+  tile不能降低该buffer。`pad/pack/unpack`具有pinned `TilingInterface`，但直接加入domain后又分别暴露padded-axis动态tile、constant
+  `tensor.generate`自定义memory-space bufferization以及Pack/UnPack缺少bufferization model。
+- 根因：Spatial exact-demand已经通过typed tensor indexing relation穿透support chain，Temporal fusion却只接受direct Linalg edge；第15项只能
+  消除view copy，不能在bufferization后重新把producer放进consumer loop。仅检查“op有TilingInterface”还遗漏了tile result staticization和
+  直接下游bufferization合同。初版rewrite还把`getMixedOffsets/getMixedSizes`返回的临时vector绑定成`ArrayRef`并跨语句使用，单case偶然通过，
+  连续创建第二个MLIRContext后稳定触发use-after-free。
+- 修复模式：抽取一个Spatial/Temporal共用的static `TensorResultIndexing` query；只有pure、single-use、exact dense offset projection才用
+  pinned slice-driven producer tiling实际rewrite current IR。Concat从actual insert chain建立bounded tile-local segment assembly；constant pad的
+  padded consumer axis保持full extent，局部Pad/Generate在bufferization前确定性降为Linalg fill/insert；Pack/UnPack先按main/tail收紧类型，
+  再用pinned simplify pattern降为局部reshape。融合producer的`tensor.empty` destination也必须折成tile-local empty。所有mixed
+  offset/size accessor结果先拥有在局部`SmallVector`中，再构造`ArrayRef`或`zip`。
+- 防复发：1024/1025/1031、rank 3以上分别覆盖view chain、pad、unpack→compute→pack、单segment/跨segment concat和multi-use/unsupported
+  barrier；第13项断言完整producer occurrence为0，第15项断言对应完整intermediate allocation/copy为0。Actual MiniMalloc仍是唯一SPM
+  合法性owner；不得用view类型、shape或buffer估算提前签发容量结论。
