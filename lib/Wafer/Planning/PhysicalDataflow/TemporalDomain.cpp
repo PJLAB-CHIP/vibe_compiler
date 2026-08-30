@@ -5,6 +5,7 @@
 #include "Wafer/Analysis/Linalg/TensorResultIndexing.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -118,6 +119,13 @@ bool containsScopeChoice(const TemporalScopeDescriptor &descriptor,
     if (size <= 0 || size > extent ||
         (capability == IteratorTilingCapability::FullExtentOnly &&
          size != extent))
+      return false;
+  for (uint32_t dimension : descriptor.exactReshapeDimensions)
+    if (dimension >= choice.iteratorTileSizes.size() ||
+        (choice.iteratorTileSizes[dimension] !=
+             descriptor.iterationExtents[dimension] &&
+         choice.iteratorTileSizes[dimension] <=
+             descriptor.iterationExtents[dimension] / 2))
       return false;
   llvm::SmallVector<uint32_t, 4> active =
       getActiveIterators(descriptor, choice.iteratorTileSizes);
@@ -456,9 +464,10 @@ TemporalFusionPathResult pathFailure(TemporalFusionQueryKind kind,
 
 } // namespace
 
-TemporalFusionQueryResult
-queryTemporalProducerFusion(mlir::OpResult producer,
-                            mlir::OpOperand &consumerOperand) {
+static TemporalFusionQueryResult
+queryTemporalProducerFusionImpl(mlir::OpResult producer,
+                                mlir::OpOperand &consumerOperand,
+                                bool requireUniqueUse) {
   mlir::Operation *producerOperation = producer.getOwner();
   mlir::Operation *consumerOperation = consumerOperand.getOwner();
   if (!producerOperation || !consumerOperation ||
@@ -475,11 +484,13 @@ queryTemporalProducerFusion(mlir::OpResult producer,
       !producerOperation->isBeforeInBlock(consumerOperation))
     return {TemporalFusionQueryKind::NonUnique,
             "producer and consumer are not one ordered same-Region edge"};
-  std::optional<mlir::OpOperand *> onlyUse =
-      getOnlyOperationUse(producerOperation);
-  if (!onlyUse || *onlyUse != &consumerOperand)
-    return {TemporalFusionQueryKind::NonUnique,
-            "producer has multiple current uses or results"};
+  if (requireUniqueUse) {
+    std::optional<mlir::OpOperand *> onlyUse =
+        getOnlyOperationUse(producerOperation);
+    if (!onlyUse || *onlyUse != &consumerOperand)
+      return {TemporalFusionQueryKind::NonUnique,
+              "producer has multiple current uses or results"};
+  }
   if (!mlir::isMemoryEffectFree(producerOperation))
     return {TemporalFusionQueryKind::NonUnique,
             "effectful producer cannot be implicitly replicated"};
@@ -565,6 +576,13 @@ queryTemporalProducerFusion(mlir::OpResult producer,
   return {TemporalFusionQueryKind::ExactDerived, {}};
 }
 
+TemporalFusionQueryResult
+queryTemporalProducerFusion(mlir::OpResult producer,
+                            mlir::OpOperand &consumerOperand) {
+  return queryTemporalProducerFusionImpl(producer, consumerOperand,
+                                         /*requireUniqueUse=*/true);
+}
+
 TemporalFusionPathResult
 queryTemporalProducerFusionPath(mlir::OpResult producer) {
   mlir::Operation *producerOperation = producer ? producer.getOwner() : nullptr;
@@ -632,6 +650,8 @@ queryTemporalProducerFusionPath(mlir::OpResult producer) {
   }
 
   std::optional<mlir::AffineMap> projectedViewToProducer;
+  std::optional<analysis::IndexRelation> exactViewToProducer;
+  bool affinePath = true;
   bool crossedSupportOperation = false;
   mlir::Operation *currentOperation = nextUse->getOwner();
   while (currentOperation && !isTemporalCandidate(currentOperation)) {
@@ -669,21 +689,36 @@ queryTemporalProducerFusionPath(mlir::OpResult producer) {
           "tensor support path is not one transparent unary source relation");
     const analysis::IndexRelation &step =
         indexing.indexing->operands.front().resultToOperand;
+    if (!exactViewToProducer) {
+      exactViewToProducer = step;
+    } else {
+      analysis::IndexRelationResult composed =
+          step.compose(*exactViewToProducer);
+      if (!composed.isExact()) {
+        TemporalFusionQueryKind kind =
+            composed.status == analysis::IndexRelationStatus::ResourceExhausted
+                ? TemporalFusionQueryKind::Indeterminate
+            : composed.status == analysis::IndexRelationStatus::Invalid
+                ? TemporalFusionQueryKind::BrokenContract
+                : TemporalFusionQueryKind::Unsupported;
+        return pathFailure(kind, producer, composed.reason);
+      }
+      exactViewToProducer = std::move(*composed.get());
+    }
     std::optional<mlir::AffineMap> projectedStep =
         step.getProjectedAffineMap(producer.getContext());
     if (!projectedStep)
       projectedStep = getUnitReshapeProjection(*indexing.indexing);
-    if (!projectedStep)
-      return pathFailure(TemporalFusionQueryKind::Unsupported, producer,
-                         (llvm::Twine("view chain step ") +
-                          currentOperation->getName().getStringRef() +
-                          " has no dense affine tile map")
-                             .str());
-    if (!projectedViewToProducer) {
-      projectedViewToProducer = projectedStep;
-    } else {
-      projectedViewToProducer = mlir::simplifyAffineMap(
-          projectedViewToProducer->compose(*projectedStep));
+    if (!projectedStep) {
+      affinePath = false;
+      projectedViewToProducer.reset();
+    } else if (affinePath) {
+      if (!projectedViewToProducer) {
+        projectedViewToProducer = projectedStep;
+      } else {
+        projectedViewToProducer = mlir::simplifyAffineMap(
+            projectedViewToProducer->compose(*projectedStep));
+      }
     }
     crossedSupportOperation = true;
     onlyUse = getOnlyOperationUse(currentOperation);
@@ -694,7 +729,8 @@ queryTemporalProducerFusionPath(mlir::OpResult producer) {
     nextUse = *onlyUse;
     currentOperation = nextUse->getOwner();
   }
-  if (!currentOperation || !projectedViewToProducer || !crossedSupportOperation)
+  if (!currentOperation || (!projectedViewToProducer && !exactViewToProducer) ||
+      !crossedSupportOperation)
     return pathFailure(TemporalFusionQueryKind::Unsupported, producer,
                        "tensor support path has no temporal consumer");
 
@@ -747,30 +783,37 @@ queryTemporalProducerFusionPath(mlir::OpResult producer) {
         TemporalFusionQueryKind::Unsupported, producer,
         "view fusion requires supported static producer/consumer maps");
 
-  std::optional<mlir::AffineMap> viewMap = projectedViewToProducer;
   llvm::SmallVector<TemporalViewDimensionMapping, 4> producerTileDimensions;
-  if (!viewMap)
-    return pathFailure(TemporalFusionQueryKind::Unsupported, producer,
-                       "view chain is exact but has no affine tile projection");
-  if (viewMap->getNumDims() != viewType.getRank() ||
-      viewMap->getNumResults() != producerType.getRank() ||
-      !isDenseOffsetProjection(*viewMap, &producerTileDimensions)) {
+  bool generalReshape = false;
+  if (projectedViewToProducer &&
+      projectedViewToProducer->getNumDims() == viewType.getRank() &&
+      projectedViewToProducer->getNumResults() == producerType.getRank() &&
+      isDenseOffsetProjection(*projectedViewToProducer,
+                              &producerTileDimensions)) {
+    llvm::SmallBitVector usedViewDimensions(viewType.getRank());
+    for (const TemporalViewDimensionMapping &mapping : producerTileDimensions)
+      if (mapping.viewDimension >= 0)
+        usedViewDimensions.set(static_cast<unsigned>(mapping.viewDimension));
+    for (auto [dimension, extent] : llvm::enumerate(viewType.getShape()))
+      if (!usedViewDimensions.test(dimension) && extent != 1)
+        return pathFailure(
+            TemporalFusionQueryKind::NonUnique, producer,
+            "view chain projects a non-unit consumer coordinate");
+  } else if (exactViewToProducer &&
+             exactViewToProducer->hasCanonicalRowMajorReshapeConstruction()) {
+    generalReshape = true;
+  } else {
     std::string mapText;
     llvm::raw_string_ostream stream(mapText);
-    stream << *viewMap;
+    if (projectedViewToProducer)
+      stream << *projectedViewToProducer;
+    else
+      stream << "<non-affine>";
     stream.flush();
-    return pathFailure(TemporalFusionQueryKind::Unsupported, producer,
-                       "view chain affine projection is not one dense tile: " +
-                           mapText);
+    return pathFailure(
+        TemporalFusionQueryKind::Unsupported, producer,
+        "view chain relation has no exact tile materialization: " + mapText);
   }
-  llvm::SmallBitVector usedViewDimensions(viewType.getRank());
-  for (const TemporalViewDimensionMapping &mapping : producerTileDimensions)
-    if (mapping.viewDimension >= 0)
-      usedViewDimensions.set(static_cast<unsigned>(mapping.viewDimension));
-  for (auto [dimension, extent] : llvm::enumerate(viewType.getShape()))
-    if (!usedViewDimensions.test(dimension) && extent != 1)
-      return pathFailure(TemporalFusionQueryKind::NonUnique, producer,
-                         "view chain projects a non-unit consumer coordinate");
 
   llvm::SmallBitVector consumerDimensions = getUsedDimensions(*consumerMap);
   for (auto [dimension, capability] :
@@ -799,6 +842,45 @@ queryTemporalProducerFusionPath(mlir::OpResult producer) {
   result.consumerOperand = nextUse;
   result.viewTransparent = true;
   result.producerDimensions = std::move(producerTileDimensions);
+  if (generalReshape) {
+    std::optional<llvm::SmallVector<mlir::ReassociationIndices>> reassociation =
+        mlir::getReassociationIndicesForReshape(producerType, viewType);
+    if (!reassociation)
+      return pathFailure(TemporalFusionQueryKind::Unsupported, producer,
+                         "general reshape chain is not one standard static "
+                         "reassociation");
+    llvm::SmallVector<unsigned, 4> fullViewDimensions;
+    if (producerType.getRank() > viewType.getRank()) {
+      for (auto [viewDimension, producerDimensions] :
+           llvm::enumerate(*reassociation))
+        if (producerDimensions.size() > 1)
+          fullViewDimensions.push_back(viewDimension);
+    } else {
+      for (llvm::ArrayRef<int64_t> viewDimensions : *reassociation)
+        if (viewDimensions.size() > 1)
+          for (int64_t viewDimension : viewDimensions)
+            fullViewDimensions.push_back(viewDimension);
+    }
+    for (unsigned viewDimension : fullViewDimensions) {
+      if (viewDimension >= consumerMap->getNumResults())
+        return pathFailure(
+            TemporalFusionQueryKind::BrokenContract, producer,
+            "reshape view dimension is outside the consumer map");
+      auto iterator = mlir::dyn_cast<mlir::AffineDimExpr>(
+          consumerMap->getResult(viewDimension));
+      if (!iterator)
+        return pathFailure(
+            TemporalFusionQueryKind::Unsupported, producer,
+            "reshape view dimension is not one consumer iterator");
+      result.generalReshapeConsumerDimensions.push_back(iterator.getPosition());
+    }
+    llvm::sort(result.generalReshapeConsumerDimensions);
+    result.generalReshapeConsumerDimensions.erase(
+        std::unique(result.generalReshapeConsumerDimensions.begin(),
+                    result.generalReshapeConsumerDimensions.end()),
+        result.generalReshapeConsumerDimensions.end());
+    result.consumerViewToProducer = std::move(exactViewToProducer);
+  }
   return result;
 }
 
@@ -998,16 +1080,20 @@ bool TemporalDomain::advanceScopeChoice(const TemporalScopeDescriptor &scope,
 }
 
 TemporalDomain::Completion TemporalDomain::completeChoice(
+    TemporalTraversalKind kind,
     llvm::ArrayRef<TemporalScopeChoice> prefix) const {
   Completion completion;
   completion.kind = TemporalSuccessorKind::Choice;
-  if (prefix.size() > scopes.size()) {
+  llvm::ArrayRef<TemporalScopeDescriptor> descriptors =
+      getScopeDescriptors(kind);
+  if (prefix.size() > descriptors.size()) {
     completion.kind = TemporalSuccessorKind::CompilerBug;
     completion.detail = "temporal prefix has an unexpected extra scope";
     return completion;
   }
   completion.choice.emplace();
-  for (auto [index, descriptor] : llvm::enumerate(scopes)) {
+  completion.choice->kind = kind;
+  for (auto [index, descriptor] : llvm::enumerate(descriptors)) {
     if (index < prefix.size()) {
       if (!containsScopeChoice(descriptor, prefix[index])) {
         completion.kind = TemporalSuccessorKind::CompilerBug;
@@ -1028,9 +1114,15 @@ TemporalSuccessor TemporalDomain::getFirstChoice() const {
   return completePrefix(TemporalChoice{});
 }
 
+TemporalSuccessor TemporalDomain::getFirstIndependentChoice() const {
+  TemporalChoice prefix;
+  prefix.kind = TemporalTraversalKind::Independent;
+  return completePrefix(prefix);
+}
+
 TemporalSuccessor
 TemporalDomain::completePrefix(const TemporalChoice &prefix) const {
-  Completion completed = completeChoice(prefix.scopes);
+  Completion completed = completeChoice(prefix.kind, prefix.scopes);
   if (completed.kind != TemporalSuccessorKind::Choice || !completed.choice)
     return {completed.kind, {}, {}, std::move(completed.detail)};
   TemporalCursor cursor;
@@ -1041,35 +1133,134 @@ TemporalDomain::completePrefix(const TemporalChoice &prefix) const {
 
 TemporalSuccessor
 TemporalDomain::getNextChoice(const TemporalCursor &cursor) const {
-  Completion current = completeChoice(cursor.choice.scopes);
+  Completion current = completeChoice(cursor.choice.kind, cursor.choice.scopes);
   if (current.kind != TemporalSuccessorKind::Choice || !current.choice ||
       !(*current.choice == cursor.choice))
     return {TemporalSuccessorKind::CompilerBug,
             {},
             {},
             "temporal cursor is stale for the current operation domain"};
-  for (size_t reverse = 0; reverse < scopes.size(); ++reverse) {
-    const size_t index = scopes.size() - reverse - 1;
-    TemporalChoice prefix;
-    prefix.scopes.assign(cursor.choice.scopes.begin(),
-                         cursor.choice.scopes.begin() + index + 1);
-    if (!advanceScopeChoice(scopes[index], prefix.scopes.back()))
+  llvm::ArrayRef<TemporalScopeDescriptor> descriptors =
+      getScopeDescriptors(cursor.choice.kind);
+  TemporalChoice currentChoice = cursor.choice;
+  while (true) {
+    std::optional<TemporalChoice> nextChoice;
+    for (size_t reverse = 0; reverse < descriptors.size(); ++reverse) {
+      const size_t index = descriptors.size() - reverse - 1;
+      TemporalChoice prefix;
+      prefix.kind = cursor.choice.kind;
+      prefix.scopes.assign(currentChoice.scopes.begin(),
+                           currentChoice.scopes.begin() + index + 1);
+      bool advanced = false;
+      while (advanceScopeChoice(descriptors[index], prefix.scopes.back())) {
+        if (containsScopeChoice(descriptors[index], prefix.scopes.back())) {
+          advanced = true;
+          break;
+        }
+      }
+      if (!advanced)
+        continue;
+      Completion next = completeChoice(prefix.kind, prefix.scopes);
+      if (next.kind != TemporalSuccessorKind::Choice || !next.choice)
+        return {next.kind, {}, {}, std::move(next.detail)};
+      nextChoice = std::move(*next.choice);
+      break;
+    }
+    if (!nextChoice)
+      break;
+    if (nextChoice->kind == TemporalTraversalKind::Joint &&
+        !isJointChoiceCompatible(*nextChoice)) {
+      currentChoice = std::move(*nextChoice);
       continue;
-    Completion next = completeChoice(prefix.scopes);
-    if (next.kind != TemporalSuccessorKind::Choice || !next.choice)
-      return {next.kind, {}, {}, std::move(next.detail)};
+    }
     TemporalCursor nextCursor;
-    nextCursor.choice = *next.choice;
-    return {TemporalSuccessorKind::Choice, std::move(next.choice),
+    nextCursor.choice = *nextChoice;
+    return {TemporalSuccessorKind::Choice, std::move(nextChoice),
             std::move(nextCursor)};
   }
+  if (cursor.choice.kind == TemporalTraversalKind::Joint)
+    return getFirstIndependentChoice();
   return {TemporalSuccessorKind::End};
 }
 
+bool TemporalDomain::isJointChoiceCompatible(
+    const TemporalChoice &choice) const {
+  if (choice.kind != TemporalTraversalKind::Joint)
+    return true;
+  llvm::DenseMap<mlir::Operation *, const TemporalScopeChoice *> byOperation;
+  for (const TemporalScopeChoice &scope : choice.scopes)
+    byOperation.try_emplace(scope.operation, &scope);
+  for (const TemporalJointProducerGroup &group : jointProducerGroups) {
+    llvm::SmallVector<mlir::Operation *, 8> consumers;
+    for (mlir::OpOperand *operand : group.consumerOperands)
+      if (operand && !llvm::is_contained(consumers, operand->getOwner()))
+        consumers.push_back(operand->getOwner());
+    llvm::SmallVector<const TemporalScopeChoice *, 8> selected;
+    for (mlir::Operation *consumer : consumers)
+      if (auto found = byOperation.find(consumer); found != byOperation.end())
+        selected.push_back(found->second);
+    if (!selected.empty() && selected.size() != consumers.size())
+      return false;
+    if (selected.size() < 2)
+      continue;
+    for (const TemporalScopeChoice *scope : llvm::drop_begin(selected))
+      if (scope->iteratorTileSizes != selected.front()->iteratorTileSizes ||
+          scope->loopOrder != selected.front()->loopOrder)
+        return false;
+  }
+  return true;
+}
+
 bool TemporalDomain::contains(const TemporalChoice &choice) const {
-  Completion completed = completeChoice(choice.scopes);
+  Completion completed = completeChoice(choice.kind, choice.scopes);
   return completed.kind == TemporalSuccessorKind::Choice && completed.choice &&
-         *completed.choice == choice;
+         *completed.choice == choice && isJointChoiceCompatible(choice);
+}
+
+static std::optional<TemporalJointProducerGroup>
+queryAllUseDirectFusionGroup(mlir::Operation *producerOperation) {
+  if (!producerOperation || producerOperation->getNumResults() != 1 ||
+      !isTemporalCandidate(producerOperation) ||
+      !mlir::isa<mlir::linalg::LinalgOp>(producerOperation) ||
+      !mlir::isMemoryEffectFree(producerOperation))
+    return std::nullopt;
+  auto producer =
+      mlir::dyn_cast<mlir::OpResult>(producerOperation->getResult(0));
+  if (!producer || llvm::range_size(producer.getUses()) < 2)
+    return std::nullopt;
+  mlir::FailureOr<mlir::AffineMap> producerMap = getProducerResultMap(producer);
+  mlir::FailureOr<TemporalScopeDescriptor> producerDescriptor =
+      buildDescriptor(producerOperation);
+  if (mlir::failed(producerMap) || mlir::failed(producerDescriptor))
+    return std::nullopt;
+
+  TemporalJointProducerGroup group;
+  group.producer = producer;
+  for (mlir::OpOperand &use : producer.getUses()) {
+    if (!mlir::isa<mlir::linalg::LinalgOp>(use.getOwner()))
+      return std::nullopt;
+    TemporalFusionQueryResult query = queryTemporalProducerFusionImpl(
+        producer, use, /*requireUniqueUse=*/false);
+    mlir::FailureOr<mlir::AffineMap> consumerMap = getConsumerOperandMap(use);
+    mlir::FailureOr<TemporalScopeDescriptor> consumerDescriptor =
+        buildDescriptor(use.getOwner());
+    if (query.kind != TemporalFusionQueryKind::ExactDerived ||
+        mlir::failed(consumerMap) || mlir::failed(consumerDescriptor) ||
+        *consumerMap != *producerMap ||
+        consumerDescriptor->iterationExtents !=
+            producerDescriptor->iterationExtents ||
+        consumerDescriptor->iteratorCapabilities !=
+            producerDescriptor->iteratorCapabilities)
+      return std::nullopt;
+    group.consumerOperands.push_back(&use);
+  }
+  llvm::sort(group.consumerOperands,
+             [](mlir::OpOperand *left, mlir::OpOperand *right) {
+               if (left->getOwner() == right->getOwner())
+                 return left->getOperandNumber() < right->getOperandNumber();
+               return left->getOwner()->isBeforeInBlock(right->getOwner());
+             });
+  return group;
 }
 
 TemporalDomainResult buildTemporalDomain(TileRegionOp region) {
@@ -1082,9 +1273,26 @@ TemporalDomainResult buildTemporalDomain(TileRegionOp region) {
     if (isTemporalCandidate(&operation))
       candidates.push_back(&operation);
 
+  std::vector<TemporalScopeDescriptor> independentScopes;
+  for (mlir::Operation *operation : candidates) {
+    mlir::FailureOr<TemporalScopeDescriptor> descriptor =
+        buildDescriptor(operation);
+    if (mlir::succeeded(descriptor))
+      independentScopes.push_back(std::move(*descriptor));
+  }
+
   llvm::SmallPtrSet<mlir::Operation *, 16> derivedProducers;
+  std::vector<TemporalJointProducerGroup> jointProducerGroups;
+  for (mlir::Operation *producer : candidates)
+    if (std::optional<TemporalJointProducerGroup> group =
+            queryAllUseDirectFusionGroup(producer)) {
+      derivedProducers.insert(producer);
+      jointProducerGroups.push_back(std::move(*group));
+    }
   llvm::DenseMap<mlir::Operation *, llvm::SmallVector<uint32_t, 2>>
       forcedFullExtentDimensions;
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<uint32_t, 2>>
+      generalReshapeDimensions;
   for (mlir::Operation *producer : candidates) {
     if (mlir::isa<LinalgExtOnlineAttentionOp>(producer))
       continue;
@@ -1104,6 +1312,10 @@ TemporalDomainResult buildTemporalDomain(TileRegionOp region) {
         llvm::append_range(
             forcedFullExtentDimensions[query.consumerOperand->getOwner()],
             query.forcedFullExtentConsumerDimensions);
+      if (query.consumerOperand)
+        llvm::append_range(
+            generalReshapeDimensions[query.consumerOperand->getOwner()],
+            query.generalReshapeConsumerDimensions);
     }
   }
   for (mlir::Operation *consumer : candidates) {
@@ -1119,7 +1331,7 @@ TemporalDomainResult buildTemporalDomain(TileRegionOp region) {
     }
   }
 
-  std::vector<TemporalScopeDescriptor> scopes;
+  std::vector<TemporalScopeDescriptor> jointScopes;
   for (mlir::Operation *operation : candidates) {
     if (derivedProducers.contains(operation))
       continue;
@@ -1136,9 +1348,25 @@ TemporalDomainResult buildTemporalDomain(TileRegionOp region) {
         descriptor->iteratorCapabilities[dimension] =
             IteratorTilingCapability::FullExtentOnly;
       }
-    scopes.push_back(std::move(*descriptor));
+    auto reshape = generalReshapeDimensions.find(operation);
+    if (reshape != generalReshapeDimensions.end()) {
+      llvm::sort(reshape->second);
+      reshape->second.erase(
+          std::unique(reshape->second.begin(), reshape->second.end()),
+          reshape->second.end());
+      for (uint32_t dimension : reshape->second) {
+        if (dimension >= descriptor->iteratorCapabilities.size())
+          return failed(TemporalDomainFailureKind::BrokenContract,
+                        "reshape dimension is outside its temporal scope");
+        descriptor->exactReshapeDimensions.push_back(dimension);
+      }
+    }
+    jointScopes.push_back(std::move(*descriptor));
   }
-  return {TemporalDomain(region, std::move(scopes)), {}};
+  return {TemporalDomain(region, std::move(jointScopes),
+                         std::move(independentScopes),
+                         std::move(jointProducerGroups)),
+          {}};
 }
 
 mlir::FailureOr<TemporalIntervalChildren>

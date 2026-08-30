@@ -534,6 +534,121 @@ module {
 }
 
 TEST_F(LayoutOptimizationTest,
+       CompatibleOuterReshapeCarriesCxDirectlyIntoContraction) {
+  constexpr llvm::StringLiteral text = R"mlir(
+#id3 = affine_map<(b, m, n) -> (b, m, n)>
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(%input: tensor<2x1025x128xf16>,
+                     %rhs: tensor<128x64xf16>) {
+      %result = wafer.tile.region(
+          %input, %rhs : tensor<2x1025x128xf16>, tensor<128x64xf16>)
+          -> (tensor<2050x64xf16>) {
+      ^bb0(%local_input: tensor<2x1025x128xf16>,
+           %local_rhs: tensor<128x64xf16>):
+        %producer_empty = tensor.empty() : tensor<2x1025x128xf16>
+        %producer = linalg.generic {
+            indexing_maps = [#id3, #id3],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%local_input : tensor<2x1025x128xf16>)
+            outs(%producer_empty : tensor<2x1025x128xf16>) {
+          ^bb1(%value: f16, %old: f16):
+            %next = arith.addf %value, %value : f16
+            linalg.yield %next : f16
+        } -> tensor<2x1025x128xf16>
+        %collapsed = tensor.collapse_shape %producer [[0, 1], [2]] :
+            tensor<2x1025x128xf16> into tensor<2050x128xf16>
+        %output = tensor.empty() : tensor<2050x64xf16>
+        %matmul = linalg.matmul
+            ins(%collapsed, %local_rhs :
+                tensor<2050x128xf16>, tensor<128x64xf16>)
+            outs(%output : tensor<2050x64xf16>) -> tensor<2050x64xf16>
+        wafer.tile.yield %matmul : tensor<2050x64xf16>
+      }
+      return
+    }
+  }
+}
+)mlir";
+  auto module = parse(text);
+  ASSERT_TRUE(module);
+  StructuredMaterializationRelations relations = outputRelation(*module);
+  LayoutOptimizationResult result =
+      resolveCurrentLayoutsAndBufferize(*module, relations);
+  ASSERT_TRUE(result.succeeded()) << result.detail;
+  EXPECT_EQ(result.statistics.layoutMaterializationsAfter, 0u);
+  mlir::memref::CollapseShapeOp collapse;
+  module->walk(
+      [&](mlir::memref::CollapseShapeOp operation) { collapse = operation; });
+  ASSERT_TRUE(collapse);
+  MemoryAttr sourceMemory = getWaferMemoryAttr(
+      mlir::cast<mlir::MemRefType>(collapse.getSrc().getType()));
+  MemoryAttr resultMemory = getWaferMemoryAttr(collapse.getResultType());
+  ASSERT_TRUE(sourceMemory);
+  ASSERT_TRUE(resultMemory);
+  EXPECT_EQ(sourceMemory.getLayout(), MemLayout::Cx);
+  EXPECT_EQ(resultMemory.getLayout(), MemLayout::Cx);
+}
+
+TEST_F(LayoutOptimizationTest,
+       ChannelChangingReshapeRequiresOneActualCxMaterialization) {
+  constexpr llvm::StringLiteral text = R"mlir(
+#id3 = affine_map<(b, m, n) -> (b, m, n)>
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(%input: tensor<2x1025x128xf16>,
+                     %rhs: tensor<131200x64xf16>) {
+      %result = wafer.tile.region(
+          %input, %rhs : tensor<2x1025x128xf16>, tensor<131200x64xf16>)
+          -> (tensor<2x64xf16>) {
+      ^bb0(%local_input: tensor<2x1025x128xf16>,
+           %local_rhs: tensor<131200x64xf16>):
+        %producer_empty = tensor.empty() : tensor<2x1025x128xf16>
+        %producer = linalg.generic {
+            indexing_maps = [#id3, #id3],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%local_input : tensor<2x1025x128xf16>)
+            outs(%producer_empty : tensor<2x1025x128xf16>) {
+          ^bb1(%value: f16, %old: f16):
+            %next = arith.addf %value, %value : f16
+            linalg.yield %next : f16
+        } -> tensor<2x1025x128xf16>
+        %collapsed = tensor.collapse_shape %producer [[0], [1, 2]] :
+            tensor<2x1025x128xf16> into tensor<2x131200xf16>
+        %output = tensor.empty() : tensor<2x64xf16>
+        %matmul = linalg.matmul
+            ins(%collapsed, %local_rhs :
+                tensor<2x131200xf16>, tensor<131200x64xf16>)
+            outs(%output : tensor<2x64xf16>) -> tensor<2x64xf16>
+        wafer.tile.yield %matmul : tensor<2x64xf16>
+      }
+      return
+    }
+  }
+}
+)mlir";
+  auto module = parse(text);
+  ASSERT_TRUE(module);
+  StructuredMaterializationRelations relations = outputRelation(*module);
+  LayoutOptimizationResult result =
+      resolveCurrentLayoutsAndBufferize(*module, relations);
+  ASSERT_TRUE(result.succeeded()) << result.detail;
+  EXPECT_EQ(result.statistics.layoutMaterializationsAfter, 1u);
+  EXPECT_EQ(countOps<LayoutMaterializeOp>(module->getOperation()), 1u);
+  mlir::memref::CollapseShapeOp collapse;
+  module->walk(
+      [&](mlir::memref::CollapseShapeOp operation) { collapse = operation; });
+  ASSERT_TRUE(collapse);
+  MemoryAttr sourceMemory = getWaferMemoryAttr(
+      mlir::cast<mlir::MemRefType>(collapse.getSrc().getType()));
+  MemoryAttr resultMemory = getWaferMemoryAttr(collapse.getResultType());
+  ASSERT_TRUE(sourceMemory);
+  ASSERT_TRUE(resultMemory);
+  EXPECT_NE(sourceMemory.getLayout(), MemLayout::Cx);
+  EXPECT_NE(resultMemory.getLayout(), MemLayout::Cx);
+}
+
+TEST_F(LayoutOptimizationTest,
        CalledTensorHelperUsesSPMWhileUncalledEntryUsesDDR) {
   constexpr llvm::StringLiteral text = R"mlir(
 #id = affine_map<(b, m, n) -> (b, m, n)>

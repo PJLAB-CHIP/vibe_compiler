@@ -61,6 +61,7 @@ struct EGraphStatistics {
   uint64_t computeAbsorptionApplications = 0;
   uint64_t concatApplications = 0;
   uint64_t resultReindexApplications = 0;
+  uint64_t reshapeThroughComputeApplications = 0;
   uint64_t inputRecords = 0;
   uint64_t outputRecords = 0;
   uint64_t inputBytes = 0;
@@ -78,11 +79,12 @@ enum class EGraphOutcomeKind {
 struct EGraphOutcome {
   EGraphOutcomeKind kind = EGraphOutcomeKind::InternalError;
   llvm::SmallVector<EGraphNode, 16> expression;
-  uint32_t rootNode = 0;
+  llvm::SmallVector<uint32_t, 4> rootNodes;
   EGraphStatistics statistics;
 };
 
-EGraphOutcome runEGraph(llvm::ArrayRef<EGraphNode> nodes, uint32_t rootNode,
+EGraphOutcome runEGraph(llvm::ArrayRef<EGraphNode> nodes,
+                        llvm::ArrayRef<uint32_t> rootNodes,
                         EGraphWorkBudget budget,
                         WaferEGraphRelationService relationService,
                         bool forcePanicForTesting = false);

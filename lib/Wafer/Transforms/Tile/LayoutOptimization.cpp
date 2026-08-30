@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
 
 #include "Wafer/Analysis/Linalg/IndexRelation.h"
+#include "Wafer/Analysis/Tile/PhysicalLayoutRelation.h"
 #include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Passes.h"
@@ -29,6 +30,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
@@ -200,26 +202,16 @@ static bool isTensorViewOperation(mlir::Operation *operation) {
                    mlir::tensor::InsertOp>(operation);
 }
 
-static bool touchesTensorView(mlir::Value value) {
-  if (auto result = mlir::dyn_cast<mlir::OpResult>(value))
-    if (isTensorViewOperation(result.getOwner()))
-      return true;
-  return llvm::any_of(value.getUsers(), isTensorViewOperation);
-}
-
 static llvm::SmallVector<MemLayout, 4>
-getLayoutDomain(mlir::RankedTensorType type, bool compactOnly,
-                bool externalBoundary) {
+getLayoutDomain(mlir::RankedTensorType type, bool externalBoundary) {
   llvm::SmallVector<MemLayout, 4> result{MemLayout::Tensor};
   if (externalBoundary || type.getRank() == 0)
     return result;
   if (type.getRank() >= 2)
     result.push_back(MemLayout::NTensor);
-  if (!compactOnly) {
-    result.push_back(MemLayout::Cx);
-    if (type.getRank() >= 3)
-      result.push_back(MemLayout::NCx);
-  }
+  result.push_back(MemLayout::Cx);
+  if (type.getRank() >= 3)
+    result.push_back(MemLayout::NCx);
   return result;
 }
 
@@ -250,6 +242,116 @@ static mlir::MemRefType getMemRefType(mlir::RankedTensorType tensor,
       tensor.getShape(), tensor.getElementType(),
       mlir::MemRefLayoutAttrInterface{},
       MemoryAttr::get(tensor.getContext(), space, layout));
+}
+
+static bool proveReshapeLayoutAlias(mlir::RankedTensorType source,
+                                    mlir::RankedTensorType result,
+                                    MemLayout layout) {
+  if (!source || !result || !source.hasStaticShape() ||
+      !result.hasStaticShape() ||
+      source.getElementType() != result.getElementType() ||
+      source.getEncoding() != result.getEncoding())
+    return false;
+  analysis::IndexRelationResult resultToSource =
+      source.getShape() == result.getShape()
+          ? analysis::IndexRelation::identity(result.getShape())
+          : analysis::IndexRelation::staticReshape(result.getShape(),
+                                                   source.getShape());
+  analysis::IndexRelationResult resultIdentity =
+      analysis::IndexRelation::identity(result.getShape());
+  if (!resultToSource.isExact() || !resultIdentity.isExact() ||
+      (!resultToSource.get()->hasCanonicalRowMajorReshapeConstruction() &&
+       source.getShape() != result.getShape()))
+    return false;
+  mlir::MemRefType sourceMemref =
+      getMemRefType(source, MemorySpace::SPM, layout);
+  mlir::MemRefType resultMemref =
+      getMemRefType(result, MemorySpace::SPM, layout);
+  mlir::FailureOr<analysis::PhysicalLayoutRelation> sourcePhysical =
+      analysis::PhysicalLayoutRelation::create(sourceMemref);
+  mlir::FailureOr<analysis::PhysicalLayoutRelation> resultPhysical =
+      analysis::PhysicalLayoutRelation::create(resultMemref);
+  if (mlir::failed(sourcePhysical) || mlir::failed(resultPhysical))
+    return false;
+  bool sameCoordinates = false;
+  switch (layout) {
+  case MemLayout::Tensor:
+  case MemLayout::NTensor:
+    sameCoordinates = true;
+    break;
+  case MemLayout::Cx:
+    sameCoordinates = !source.getShape().empty() &&
+                      !result.getShape().empty() &&
+                      source.getShape().back() == result.getShape().back();
+    break;
+  case MemLayout::NCx:
+    sameCoordinates = source.getRank() >= 3 && result.getRank() >= 3 &&
+                      source.getShape().front() == result.getShape().front() &&
+                      source.getShape().back() == result.getShape().back();
+    break;
+  }
+  return sameCoordinates &&
+         sourcePhysical->getPhysicalFootprintBytes() ==
+             resultPhysical->getPhysicalFootprintBytes() &&
+         sourcePhysical->getMinimumAlignmentBytes() ==
+             resultPhysical->getMinimumAlignmentBytes() &&
+         sourcePhysical->getValidElementCount() ==
+             resultPhysical->getValidElementCount() &&
+         sourcePhysical->getPaddingElementCount() ==
+             resultPhysical->getPaddingElementCount();
+}
+
+static bool viewGroupSupportsLayout(llvm::ArrayRef<mlir::Value> values,
+                                    MemLayout layout) {
+  llvm::SmallPtrSet<mlir::Operation *, 8> checked;
+  auto check = [&](mlir::Operation *operation) {
+    if (!operation || !isTensorViewOperation(operation) ||
+        !checked.insert(operation).second)
+      return true;
+    mlir::Value source;
+    mlir::Value result;
+    bool tensorCast = false;
+    if (auto collapse =
+            mlir::dyn_cast<mlir::tensor::CollapseShapeOp>(operation)) {
+      source = collapse.getSrc();
+      result = collapse.getResult();
+    } else if (auto expand =
+                   mlir::dyn_cast<mlir::tensor::ExpandShapeOp>(operation)) {
+      source = expand.getSrc();
+      result = expand.getResult();
+    } else if (auto cast = mlir::dyn_cast<mlir::tensor::CastOp>(operation)) {
+      source = cast.getSource();
+      result = cast.getDest();
+      tensorCast = true;
+    } else if (mlir::isa<mlir::tensor::InsertSliceOp, mlir::tensor::InsertOp,
+                         mlir::tensor::ExtractOp>(operation)) {
+      // Insert destination/result pairs have identical full-tensor physical
+      // coordinates; the inserted source is a separate buffer/use and is not
+      // part of this alias group. Scalar extract/insert likewise does not
+      // introduce a second tensor view type.
+      return true;
+    } else {
+      // extract_slice needs a separate base-offset/range alias proof. Keep it
+      // on standard-view layouts until that proof exists.
+      return layout == MemLayout::Tensor || layout == MemLayout::NTensor;
+    }
+    auto sourceType = mlir::dyn_cast<mlir::RankedTensorType>(source.getType());
+    auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(result.getType());
+    if (tensorCast && sourceType && resultType &&
+        (!sourceType.hasStaticShape() || !resultType.hasStaticShape()))
+      return (layout == MemLayout::Tensor || layout == MemLayout::NTensor) &&
+             mlir::tensor::CastOp::areCastCompatible(sourceType, resultType);
+    return proveReshapeLayoutAlias(sourceType, resultType, layout);
+  };
+  for (mlir::Value value : values) {
+    if (auto result = mlir::dyn_cast<mlir::OpResult>(value))
+      if (!check(result.getOwner()))
+        return false;
+    for (mlir::Operation *user : value.getUsers())
+      if (!check(user))
+        return false;
+  }
+  return true;
 }
 
 static void retargetRelationValue(StructuredMaterializationRelations &relations,
@@ -696,6 +798,14 @@ buildBufferEquivalence(mlir::ModuleOp module,
       unions.unite(lhsIt->second, rhsIt->second);
   };
   module.walk([&](mlir::Operation *operation) {
+    if (auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(operation))
+      for (unsigned index = 0;
+           index < dps.getNumDpsInits() && index < operation->getNumResults();
+           ++index)
+        if (isTensorValue(dps.getDpsInitOperand(index)->get()) &&
+            isTensorValue(operation->getResult(index)))
+          unite(dps.getDpsInitOperand(index)->get(),
+                operation->getResult(index));
     if (auto insert = mlir::dyn_cast<mlir::tensor::InsertSliceOp>(operation))
       unite(insert.getDest(), insert.getResult());
     if (auto insert = mlir::dyn_cast<mlir::tensor::InsertOp>(operation))
@@ -763,13 +873,11 @@ static mlir::FailureOr<llvm::SmallVector<ValueGroup, 32>> buildValueGroups(
   }
   for (ValueGroup &group : groups) {
     bool external = llvm::any_of(group.values, isFunctionEntryArgument);
-    bool compactOnly = llvm::any_of(group.values, touchesTensorView);
     std::optional<llvm::SmallVector<MemLayout, 4>> intersection;
     std::optional<MemLayout> explicitLayout;
     for (mlir::Value value : group.values) {
       auto type = mlir::cast<mlir::RankedTensorType>(value.getType());
-      llvm::SmallVector<MemLayout, 4> current =
-          getLayoutDomain(type, compactOnly, external);
+      llvm::SmallVector<MemLayout, 4> current = getLayoutDomain(type, external);
       if (!intersection) {
         intersection = std::move(current);
       } else {
@@ -791,8 +899,26 @@ static mlir::FailureOr<llvm::SmallVector<ValueGroup, 32>> buildValueGroups(
       llvm::erase_if(*intersection, [&](MemLayout layout) {
         return layout != *explicitLayout;
       });
+    if (intersection)
+      llvm::erase_if(*intersection, [&](MemLayout layout) {
+        return !viewGroupSupportsLayout(group.values, layout);
+      });
     if (!intersection || intersection->empty()) {
-      detail = "one buffer-equivalent tensor group has no common layout";
+      std::string groupSummary;
+      llvm::raw_string_ostream stream(groupSummary);
+      stream << "one buffer-equivalent tensor group has no common layout:";
+      for (mlir::Value value : group.values) {
+        stream << " [";
+        value.getType().print(stream);
+        stream << " from ";
+        if (mlir::Operation *owner = value.getDefiningOp())
+          stream << owner->getName();
+        else
+          stream << "block-argument";
+        stream << "]";
+      }
+      stream.flush();
+      detail = std::move(groupSummary);
       return mlir::failure();
     }
     group.layouts = std::move(*intersection);
@@ -837,8 +963,7 @@ buildUseBindings(mlir::ModuleOp module,
       use.source = operand.get();
       use.sourceGroup = group->second;
       auto tensor = mlir::cast<mlir::RankedTensorType>(operand.get().getType());
-      use.layouts = getLayoutDomain(tensor, /*compactOnly=*/false,
-                                    /*externalBoundary=*/false);
+      use.layouts = getLayoutDomain(tensor, /*externalBoundary=*/false);
       if (isFixedComputeLayoutOp(operation)) {
         MemLayout required =
             mlir::isa<mlir::linalg::FillOp>(operation.getOperation())

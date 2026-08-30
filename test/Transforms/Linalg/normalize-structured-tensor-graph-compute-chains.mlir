@@ -471,6 +471,26 @@ module {
         outs(%result_empty : tensor<2x128x64xf32>) permutation = [0, 2, 1]
     return %result : tensor<2x128x64xf32>
   }
+
+  func.func @ragged_general_reshape_elementwise(
+      %input: tensor<2x4x1025x128xf32>) -> tensor<2x4x1025x128xf32> {
+    %flat = tensor.collapse_shape %input [[0, 1], [2], [3]] :
+        tensor<2x4x1025x128xf32> into tensor<8x1025x128xf32>
+    %init = tensor.empty() : tensor<8x1025x128xf32>
+    %computed = linalg.generic {
+        indexing_maps = [#identity3, #identity3],
+        iterator_types = ["parallel", "parallel", "parallel"]}
+        ins(%flat : tensor<8x1025x128xf32>)
+        outs(%init : tensor<8x1025x128xf32>) {
+      ^bb0(%element: f32, %output: f32):
+        %negated = arith.negf %element : f32
+        linalg.yield %negated : f32
+    } -> tensor<8x1025x128xf32>
+    %expanded = tensor.expand_shape %computed [[0, 1], [2], [3]]
+        output_shape [2, 4, 1025, 128] :
+        tensor<8x1025x128xf32> into tensor<2x4x1025x128xf32>
+    return %expanded : tensor<2x4x1025x128xf32>
+  }
 }
 
 // CHECK-LABEL: func.func @ragged_long_alternating_chain
@@ -587,8 +607,18 @@ module {
 // CHECK: arith.negf
 // CHECK: return %{{.*}} : tensor<2x128x64xf32>
 
+// CHECK-LABEL: func.func @ragged_general_reshape_elementwise
+// CHECK-NOT: tensor.collapse_shape
+// CHECK-NOT: tensor.expand_shape
+// CHECK: linalg.generic
+// CHECK-SAME: iterator_types = ["parallel", "parallel", "parallel", "parallel"]
+// CHECK-SAME: ins(%arg0 : tensor<2x4x1025x128xf32>)
+// CHECK: arith.negf
+// CHECK: return %{{.*}} : tensor<2x4x1025x128xf32>
+
 // STATS-DAG: (S) {{0+}} budget-exhausted-components
 // STATS-DAG: (S) {{[1-9][0-9]*}} changed-components
 // STATS-DAG: (S) {{[1-9][0-9]*}} multi-rule-changed-components
-// STATS-DAG: (S) {{[1-9][0-9]*}} multi-use-access-propagations
+// STATS-DAG: (S) {{[1-9][0-9]*}} multi-root-components
 // STATS-DAG: (S) {{[1-9][0-9]*}} access-transforms-removed
+// STATS-DAG: (S) {{[1-9][0-9]*}} reshape-through-compute-applications

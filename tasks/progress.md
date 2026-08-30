@@ -17,10 +17,15 @@
 
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `search-scalability` | `doing` | Q52 / 06 | Q51 choice/domain donor、第12项actual structural owner、第13项actual SCF/SSA tile-and-fuse owner、第14项final Linalg/Tensor/SCF owner、第15项layout-resolved/bufferized current owner、current baseline regression、Q50.0 actual memory/target leaf | 当前执行第16项`current-ir-downstream-orchestration`；完成后线性执行第17--20项。none/search独立且无fallback；SPM只由actual MiniMalloc判定；同源LLaMA产品纵向通过 | `tasks/plans/physical-dataflow-synthesis.md` |
+| 1 | `search-scalability` | `doing` | Q52 / 06 | Q51 choice/domain donor、第12项actual structural owner、已闭合的C1 multi-root e-graph、C2 independent/joint Temporal与C3 physical layout relation consumer、第14项final Linalg/Tensor/SCF owner、第15项layout-resolved/bufferized current owner、current baseline regression、Q50.0 actual memory/target leaf | 当前直接项为第16项`current-ir-downstream-orchestration`，随后执行第17--20项。none/search独立且无fallback；SPM只由actual MiniMalloc判定；同源LLaMA产品纵向通过 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 2 | `production-host-readiness` | `queued` | Q53 / 16 | search scalability、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 
-Q52当前直接项是第16项`current-ir-downstream-orchestration`。第12项已经形成ordinary contribution/merge/output、FA/FD per-Tile online state、
+Q52当前直接项是第16项`current-ir-downstream-orchestration`。C1已经形成ordered multi-root egg ABI、共享DAG extraction及唯一
+reshape-through-compute rule，parallel-only和reduction-only flatten/unflatten双向闭合，mixed-kind group保持current IR。C2显式保留
+independent与all-use joint choice，general reshape actual rectangle/有限pieces、2/15 observable roots common SCF、main/tail一次producer tile及
+第15项后无完整intermediate allocation/copy已经闭合。C3删除`compactOnly`降级，以DPS/view actual alias group和canonical
+`IndexRelation`+`PhysicalLayoutRelation`过滤layout state；compatible outer reshape保持Cx zero-copy，channel-changing reshape形成一个actual
+materialization；movement production caller无需新增旁路。第12项已经形成ordinary contribution/merge/output、FA/FD per-Tile online state、
 selected FD merge/finalize和只连接actual endpoints的current relations；第13项已经从live TileRegion operations建立并立即消费temporal
 choice，形成ordinary/online K2 actual SCF loop、direct及view-transparent exact fusion、bounded tile-local concat、constant pad和
 pack/unpack materialization、three-state recurrence与static main/tail；Spatial与Temporal共用同一static tensor indexing query，covered

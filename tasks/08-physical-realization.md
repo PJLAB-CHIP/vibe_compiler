@@ -93,6 +93,17 @@ view绑定原storage，多个use共享同一`(source, target layout)` conversion
 共享还必须证明canonical conversion支配全部新use、两端consumer只读，并且两次materialization之间没有对source或其alias的write/free；
 不同block、未知effect或alias不确定时保留各自conversion。Transformation成功后solver graph、state index和assignment立即销毁。
 
+C3先按production caller审计现有relation consumer，不以API存在推定缺口。已确认的layout降级是tensor view邻接值被机械并入一个
+`compactOnly` domain。One-Shot必然alias的DPS init/result及reshape/cast source/result现在进入同一个PBQP value group；每个候选layout由
+canonical logical `IndexRelation`和两端`PhysicalLayoutRelation`现场证明physical element mapping、footprint、alignment、padding与write
+injectivity一致。Compatible outer reshape可直接保持Cx/NCx类blocked mapping；改变channel/N blocked coordinate的reshape不能伪装zero-copy，
+fixed-layout use通过既有activation创建恰一个actual materialization。Range-changing slice/insert缺少base-offset、range、alias或effect proof时
+继续只允许standard view layout并fail closed。证明不跨IR mutation保存，One-Shot Bufferization只消费selected actual tensor SSA。
+
+Movement caller审计确认`getRelationMovementDescriptors`已经从current endpoint type和完整logical relation建立`PhysicalAccessRelation`，并按
+encoding pieces生成actual descriptor；target descriptor只能表达projected-affine coordinate时返回typed failure属于target encoding边界，
+不是把general relation猜成identity或compact copy。本项没有发现需要扩展的production movement API，因此不新增旁路consumer。
+
 Value/use assignment采用current SSA buffer-equivalence group、consumer-use和op-tuple auxiliary factor；不使用structured-node ID或
 bufferization后的operation parity。Shared conversion通过每个dominance/effect cohort的三态activation factor只计一次，并由apply创建
 恰好一个actual SSA result。Performance soft cost只有在同一只读descriptor query能对所有可能materialization给出exact bytes、command
@@ -109,6 +120,9 @@ candidate-owned current relation保存。
 Movement transformation完成后，以同一relation/physical-map/alias/effect/lifetime proof运行一次full-transfer cleanup；该cleanup必须在
 execution-structure和Instr scheduling前完成。现有Instr-only或test-only eliminator的独有正负资产迁移到这一owner后删除旧实现，
 不能并存两个production cleanup路径。
+
+Movement、descriptor和late cleanup只有在caller审计证明仍把general relation退化为identity、layout枚举或逐元素公式时才修改；已经使用
+`PhysicalAccessRelation`和symbolic descriptor cover的路径保持原owner。无production caller的API可以删除，但不能为了“发挥能力”建立新调用。
 
 | 事实 | owner | 生命周期 |
 | --- | --- | --- |
@@ -283,9 +297,11 @@ compile-time proof resource limit。planning query的typed结果可控制state�
 - exact PBQP对flat layout oracle的cost/tie/status一致性，以及baseline一次apply、search首proposal+完整raw域；
 - encoding interface的Tensor/NTensor/Cx/NCx、dtype、full/tail/padding与checked arithmetic；
 - relation的identity/permutation/reshape/broadcast/slice/concat/composition及rewrite invalidation；
-- metadata view正负例、alias/range/lifetime与physical-map equality；
+- metadata view正负例、alias/range/lifetime与physical-map equality；reshape/cast对Tensor/NTensor/Cx/NCx的source/result pair逐项hard
+  factor，compatible pair零allocation/copy，不兼容pair恰一个actual shared materialization；
 - direct/mapped/staged/local movement和one/multi-descriptor cover；
-- same-layout/unused零materialization、1/2/15 uses共享conversion，以及full-transfer cleanup的on/off等价与唯一production caller；
+- same-layout/unused零materialization、1/2/15 uses共享conversion、intervening write拆cohort，以及full-transfer cleanup的on/off等价与唯一
+  production caller；全部IndexRelation caller分类为完整consumer、实际降级或死API；
 - invalid-lane fill/mask/segmented path及negative observation；
 - distinct Tile peer IDs、message matching、cross-Tile SPM SSA rejection；
 - actual TileModule set拆成per-Tile modules后重放每Tile Instr、SPM/DDR和DeviceExecutable communication gate；

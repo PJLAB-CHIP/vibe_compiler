@@ -36,6 +36,12 @@ struct FakeRelationService {
   uint32_t reindexInputRelation = 0;
   llvm::SmallVector<uint32_t, 4> reindexedRelations;
   bool reindexReadInit = false;
+  uint32_t reshapeComputeInputRelation = 0;
+  uint32_t reshapeComputeInnerResultType = 0;
+  uint32_t reshapeComputeOuterRelation = 0;
+  llvm::SmallVector<uint32_t, 4> reshapeComputeRelations;
+  llvm::SmallVector<uint32_t, 4> reshapeOperandAccessRelations;
+  llvm::SmallVector<uint32_t, 4> reshapeOperandAccessTypes;
 
   WaferEGraphRelationService getABI() {
     return WaferEGraphRelationService{
@@ -106,6 +112,28 @@ struct FakeRelationService {
         [](void *, uint32_t, uint32_t, uint32_t, uint32_t, const uint32_t *,
            uint64_t, uint32_t, uint32_t *, uint32_t *, uint32_t *) -> uint32_t {
           return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+        },
+        [](void *context, uint32_t, uint32_t, uint32_t, uint32_t,
+           uint32_t accessRelation, const uint32_t *, uint64_t relationCount,
+           uint32_t, uint32_t *innerResultType, uint32_t *outerRelation,
+           uint32_t *computeRelations, uint32_t *operandAccessRelations,
+           uint32_t *operandAccessTypes) -> uint32_t {
+          auto *service = static_cast<FakeRelationService *>(context);
+          if (accessRelation != service->reshapeComputeInputRelation ||
+              relationCount != service->reshapeComputeRelations.size() ||
+              relationCount != service->reshapeOperandAccessRelations.size() ||
+              relationCount != service->reshapeOperandAccessTypes.size() ||
+              !innerResultType || !outerRelation ||
+              (relationCount && (!computeRelations || !operandAccessRelations ||
+                                 !operandAccessTypes)))
+            return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+          *innerResultType = service->reshapeComputeInnerResultType;
+          *outerRelation = service->reshapeComputeOuterRelation;
+          llvm::copy(service->reshapeComputeRelations, computeRelations);
+          llvm::copy(service->reshapeOperandAccessRelations,
+                     operandAccessRelations);
+          llvm::copy(service->reshapeOperandAccessTypes, operandAccessTypes);
+          return WAFER_EGRAPH_CALLBACK_EXACT;
         },
         [](void *, uint32_t resultTypeId, int32_t axis,
            const uint32_t *inputTypeIds, uint64_t inputCount) -> uint32_t {
@@ -208,17 +236,39 @@ TEST(StructuredGraphEGraphTest,
   nodes.push_back(access(1, 1, 2, 3));
 
   EGraphOutcome outcome =
-      runEGraph(nodes, /*rootNode=*/2, budget(), service.getABI());
+      runEGraph(nodes, /*rootNodes=*/{2}, budget(), service.getABI());
   ASSERT_EQ(outcome.kind, EGraphOutcomeKind::Changed);
   ASSERT_EQ(outcome.expression.size(), 1u);
+  EXPECT_EQ(outcome.rootNodes, (llvm::SmallVector<uint32_t>{0}));
   EXPECT_EQ(outcome.expression.front().kind, EGraphNodeKind::Input);
   EXPECT_EQ(outcome.statistics.inputAccessOccurrences, 2u);
   EXPECT_EQ(outcome.statistics.outputAccessOccurrences, 0u);
-  EXPECT_EQ(outcome.statistics.inputRecords, 7u);
-  EXPECT_EQ(outcome.statistics.outputRecords, 1u);
+  EXPECT_EQ(outcome.statistics.inputRecords, 8u);
+  EXPECT_EQ(outcome.statistics.outputRecords, 2u);
   EXPECT_GT(outcome.statistics.inputBytes, outcome.statistics.outputBytes);
   EXPECT_GE(outcome.statistics.compositionApplications, 1u);
   EXPECT_GE(outcome.statistics.identityApplications, 1u);
+}
+
+TEST(StructuredGraphEGraphTest, OrderedMultiRootsExtractOneSharedDagNode) {
+  FakeRelationService service = makeInverseAccessService();
+  llvm::SmallVector<EGraphNode, 4> nodes;
+  nodes.push_back(input(1, 1, 1));
+  nodes.push_back(access(2, 0, 1, 2));
+  nodes.push_back(access(1, 1, 2, 3));
+  nodes.push_back(access(1, 1, 2, 4));
+
+  EGraphOutcome outcome =
+      runEGraph(nodes, /*rootNodes=*/{2, 3}, budget(), service.getABI());
+  ASSERT_EQ(outcome.kind, EGraphOutcomeKind::Changed);
+  ASSERT_EQ(outcome.expression.size(), 1u);
+  EXPECT_EQ(outcome.expression.front().kind, EGraphNodeKind::Input);
+  EXPECT_EQ(outcome.rootNodes, (llvm::SmallVector<uint32_t>{0, 0}));
+  EXPECT_EQ(outcome.statistics.inputAccessOccurrences, 3u);
+  EXPECT_EQ(outcome.statistics.outputAccessOccurrences, 0u);
+  EXPECT_EQ(outcome.statistics.outputNodes, 1u);
+  EXPECT_EQ(outcome.statistics.inputRecords, 12u);
+  EXPECT_EQ(outcome.statistics.outputRecords, 3u);
 }
 
 TEST(StructuredGraphEGraphTest,
@@ -247,7 +297,7 @@ TEST(StructuredGraphEGraphTest,
   nodes.push_back(access(4, 4, 7, 6));
 
   EGraphOutcome outcome =
-      runEGraph(nodes, /*rootNode=*/5, budget(), service.getABI());
+      runEGraph(nodes, /*rootNodes=*/{5}, budget(), service.getABI());
   ASSERT_EQ(outcome.kind, EGraphOutcomeKind::Changed);
   ASSERT_EQ(outcome.expression.size(), 3u);
   EXPECT_EQ(outcome.expression.back().kind, EGraphNodeKind::Concat);
@@ -265,7 +315,7 @@ TEST(StructuredGraphEGraphTest, SingleInputConcatExtractsItsInput) {
   nodes.push_back(concat(1, {0}, /*axis=*/0, 2));
 
   EGraphOutcome outcome =
-      runEGraph(nodes, /*rootNode=*/1, budget(), service.getABI());
+      runEGraph(nodes, /*rootNodes=*/{1}, budget(), service.getABI());
   ASSERT_EQ(outcome.kind, EGraphOutcomeKind::Changed);
   ASSERT_EQ(outcome.expression.size(), 1u);
   EXPECT_EQ(outcome.expression.front().kind, EGraphNodeKind::Input);
@@ -290,7 +340,7 @@ TEST(StructuredGraphEGraphTest,
                           /*dataInputCount=*/1, 4));
 
   EGraphOutcome outcome =
-      runEGraph(nodes, /*rootNode=*/3, budget(), service.getABI());
+      runEGraph(nodes, /*rootNodes=*/{3}, budget(), service.getABI());
   ASSERT_EQ(outcome.kind, EGraphOutcomeKind::Changed);
   ASSERT_EQ(outcome.expression.back().kind, EGraphNodeKind::Elementwise);
   EXPECT_EQ(outcome.expression.back().semanticId, 17u);
@@ -298,6 +348,53 @@ TEST(StructuredGraphEGraphTest,
   EXPECT_EQ(outcome.statistics.outputComputeOccurrences, 1u);
   EXPECT_EQ(outcome.statistics.outputAccessOccurrences, 0u);
   EXPECT_GE(outcome.statistics.computeAbsorptionApplications, 1u);
+}
+
+TEST(StructuredGraphEGraphTest,
+     ReshapeThroughComputeExposesAndCancelsInverseResultReshape) {
+  FakeRelationService service;
+  constexpr uint32_t kCanonicalReshape =
+      kMaterializable | WAFER_EGRAPH_RELATION_BIJECTIVE |
+      WAFER_EGRAPH_RELATION_CANONICAL_RESHAPE;
+  service.relations.emplace(1, FakeRelation{2, 1, kCanonicalReshape});
+  service.relations.emplace(2, FakeRelation{1, 2, kCanonicalReshape});
+  service.relations.emplace(
+      3, FakeRelation{1, 1,
+                      kMaterializable | WAFER_EGRAPH_RELATION_IDENTITY |
+                          WAFER_EGRAPH_RELATION_INJECTIVE |
+                          WAFER_EGRAPH_RELATION_BIJECTIVE});
+  service.relations.emplace(4, FakeRelation{9, 2, kMaterializable});
+  service.relations.emplace(5, FakeRelation{10, 1, kMaterializable});
+  service.compositions.emplace(std::pair{2u, 1u}, 3);
+  service.reshapeComputeInputRelation = 1;
+  service.reshapeComputeInnerResultType = 1;
+  service.reshapeComputeOuterRelation = 1;
+  service.reshapeComputeRelations = {5, 5};
+  service.reshapeOperandAccessRelations = {0, 0};
+  service.reshapeOperandAccessTypes = {0, 0};
+
+  llvm::SmallVector<EGraphNode, 5> nodes;
+  nodes.push_back(input(1, 1, 1));
+  nodes.push_back(access(2, 0, 1, 2));
+  nodes.push_back(input(2, 2, 3));
+  nodes.push_back(compute(EGraphNodeKind::Elementwise, /*semanticId=*/37,
+                          /*typeId=*/2, {1, 2}, {4, 4},
+                          /*dataInputCount=*/1, 4));
+  nodes.push_back(access(1, 3, 2, 5));
+
+  EGraphOutcome outcome =
+      runEGraph(nodes, /*rootNodes=*/{4}, budget(), service.getABI());
+  ASSERT_EQ(outcome.kind, EGraphOutcomeKind::Changed);
+  ASSERT_EQ(outcome.expression.back().kind, EGraphNodeKind::Elementwise);
+  EXPECT_EQ(outcome.expression.back().semanticId, 37u);
+  EXPECT_EQ(outcome.expression.back().typeId, 1u);
+  EXPECT_EQ(outcome.statistics.inputComputeOccurrences, 1u);
+  EXPECT_EQ(outcome.statistics.outputComputeOccurrences, 1u);
+  EXPECT_EQ(outcome.statistics.inputAccessOccurrences, 2u);
+  EXPECT_EQ(outcome.statistics.outputAccessOccurrences, 0u);
+  EXPECT_GE(outcome.statistics.reshapeThroughComputeApplications, 1u);
+  EXPECT_GE(outcome.statistics.compositionApplications, 1u);
+  EXPECT_GE(outcome.statistics.identityApplications, 1u);
 }
 
 TEST(StructuredGraphEGraphTest, ResultReindexRemovesOnlyTheOuterAccess) {
@@ -321,7 +418,7 @@ TEST(StructuredGraphEGraphTest, ResultReindexRemovesOnlyTheOuterAccess) {
   nodes.push_back(access(3, 2, 12, 4));
 
   EGraphOutcome outcome =
-      runEGraph(nodes, /*rootNode=*/3, budget(), service.getABI());
+      runEGraph(nodes, /*rootNodes=*/{3}, budget(), service.getABI());
   ASSERT_EQ(outcome.kind, EGraphOutcomeKind::Changed);
   EXPECT_EQ(outcome.expression.back().kind, EGraphNodeKind::Elementwise);
   EXPECT_EQ(outcome.expression.back().semanticId, 23u);
@@ -354,7 +451,7 @@ TEST(StructuredGraphEGraphTest,
   nodes.push_back(access(3, 2, 12, 4));
 
   EGraphOutcome outcome =
-      runEGraph(nodes, /*rootNode=*/3, budget(), service.getABI());
+      runEGraph(nodes, /*rootNodes=*/{3}, budget(), service.getABI());
   EXPECT_EQ(outcome.kind, EGraphOutcomeKind::Unchanged);
   EXPECT_TRUE(outcome.expression.empty());
   EXPECT_GE(outcome.statistics.resultReindexApplications, 1u);
@@ -370,7 +467,7 @@ TEST(StructuredGraphEGraphTest, MatchBudgetExhaustionHasNoPartialExpression) {
   exhausted.maximumMatches = 1;
 
   EGraphOutcome outcome =
-      runEGraph(nodes, /*rootNode=*/2, exhausted, service.getABI());
+      runEGraph(nodes, /*rootNodes=*/{2}, exhausted, service.getABI());
   EXPECT_EQ(outcome.kind, EGraphOutcomeKind::BudgetExhausted);
   EXPECT_TRUE(outcome.expression.empty());
 }
@@ -384,7 +481,7 @@ TEST(StructuredGraphEGraphTest, TypedRelationWorkLimitStopsTheRequest) {
   nodes.push_back(access(1, 1, 2));
 
   EGraphOutcome outcome =
-      runEGraph(nodes, /*rootNode=*/2, budget(), service.getABI());
+      runEGraph(nodes, /*rootNodes=*/{2}, budget(), service.getABI());
   EXPECT_EQ(outcome.kind, EGraphOutcomeKind::BudgetExhausted);
   EXPECT_TRUE(outcome.expression.empty());
 }
@@ -398,7 +495,7 @@ TEST(StructuredGraphEGraphTest, TypedRelationInternalErrorStopsTheRequest) {
   nodes.push_back(access(1, 1, 2));
 
   EGraphOutcome outcome =
-      runEGraph(nodes, /*rootNode=*/2, budget(), service.getABI());
+      runEGraph(nodes, /*rootNodes=*/{2}, budget(), service.getABI());
   EXPECT_EQ(outcome.kind, EGraphOutcomeKind::InternalError);
   EXPECT_TRUE(outcome.expression.empty());
 }
@@ -410,7 +507,7 @@ TEST(StructuredGraphEGraphTest, RepeatedAndConcurrentRequestsAreDeterministic) {
     nodes.push_back(input(1, 1, 1));
     nodes.push_back(access(2, 0, 1, 2));
     nodes.push_back(access(1, 1, 2, 3));
-    return runEGraph(nodes, /*rootNode=*/2, budget(), service.getABI());
+    return runEGraph(nodes, /*rootNodes=*/{2}, budget(), service.getABI());
   };
   EGraphOutcome reference = run();
   ASSERT_EQ(reference.kind, EGraphOutcomeKind::Changed);
@@ -434,7 +531,7 @@ TEST(StructuredGraphEGraphTest, RustPanicIsContainedAtTheCABI) {
   llvm::SmallVector<EGraphNode, 1> nodes;
   nodes.push_back(input(1, 1));
   EGraphOutcome outcome =
-      runEGraph(nodes, /*rootNode=*/0, budget(), service.getABI(),
+      runEGraph(nodes, /*rootNodes=*/{0}, budget(), service.getABI(),
                 /*forcePanicForTesting=*/true);
   EXPECT_EQ(outcome.kind, EGraphOutcomeKind::InternalError);
   EXPECT_TRUE(outcome.expression.empty());
@@ -452,6 +549,7 @@ TEST(StructuredGraphEGraphTest, RejectsMalformedRawABIRecords) {
                        /*dataInputCount=*/0,
                        /*axis=*/-1,
                        /*sourceOrder=*/0};
+  uint32_t root = 0;
   WaferEGraphRequest request{/*schemaVersion=*/WAFER_EGRAPH_SCHEMA_VERSION,
                              /*flags=*/0,
                              /*nodes=*/&node,
@@ -460,7 +558,8 @@ TEST(StructuredGraphEGraphTest, RejectsMalformedRawABIRecords) {
                              /*childCount=*/0,
                              /*relations=*/nullptr,
                              /*relationCount=*/0,
-                             /*rootNode=*/0,
+                             /*rootNodes=*/&root,
+                             /*rootCount=*/1,
                              /*maximumIterations=*/2,
                              /*maximumENodes=*/16,
                              /*maximumMatches=*/16,
@@ -472,6 +571,26 @@ TEST(StructuredGraphEGraphTest, RejectsMalformedRawABIRecords) {
 
   node.kind = WAFER_EGRAPH_INPUT;
   node.semanticId = 0;
+  result = waferRunStructuredEGraph(&request);
+  ASSERT_NE(result, nullptr);
+  EXPECT_EQ(result->status, WAFER_EGRAPH_INVALID_INPUT);
+  waferFreeStructuredEGraphResult(result);
+
+  node.semanticId = 1;
+  root = 1;
+  result = waferRunStructuredEGraph(&request);
+  ASSERT_NE(result, nullptr);
+  EXPECT_EQ(result->status, WAFER_EGRAPH_INVALID_INPUT);
+  waferFreeStructuredEGraphResult(result);
+
+  root = 0;
+  request.rootNodes = nullptr;
+  result = waferRunStructuredEGraph(&request);
+  ASSERT_NE(result, nullptr);
+  EXPECT_EQ(result->status, WAFER_EGRAPH_INVALID_INPUT);
+  waferFreeStructuredEGraphResult(result);
+
+  request.rootCount = 0;
   result = waferRunStructuredEGraph(&request);
   ASSERT_NE(result, nullptr);
   EXPECT_EQ(result->status, WAFER_EGRAPH_INVALID_INPUT);

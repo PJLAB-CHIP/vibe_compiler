@@ -482,7 +482,7 @@ TEST_F(StructuredGraphNormalizationTest,
       wafer::normalizeStructuredTensorGraph(function, {}, &statistics);
   ASSERT_TRUE(mlir::succeeded(outcome));
   EXPECT_EQ(*outcome, wafer::StructuredGraphNormalizationOutcome::Changed);
-  EXPECT_EQ(statistics.multiUseAccessPropagations, 1u);
+  EXPECT_EQ(statistics.multiRootComponents, 1u);
   EXPECT_EQ(statistics.accessTransformsRemoved, 1u);
   EXPECT_EQ(count<mlir::linalg::TransposeOp>(function), 0u);
   EXPECT_EQ(count<mlir::linalg::GenericOp>(function), 2u);
@@ -620,11 +620,510 @@ TEST_F(StructuredGraphNormalizationTest,
       wafer::normalizeStructuredTensorGraph(function, {}, &statistics);
   ASSERT_TRUE(mlir::succeeded(outcome));
   EXPECT_EQ(*outcome, wafer::StructuredGraphNormalizationOutcome::Changed);
-  EXPECT_GE(statistics.multiUseAccessPropagations, 1u);
+  EXPECT_GE(statistics.multiRootComponents, 1u);
   EXPECT_EQ(statistics.accessTransformsRemoved, 2u);
   EXPECT_EQ(count<mlir::linalg::TransposeOp>(function), 0u);
   EXPECT_EQ(count<mlir::linalg::GenericOp>(function), 15u);
   EXPECT_EQ(count<mlir::arith::NegFOp>(function), 15u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+}
+
+TEST_F(StructuredGraphNormalizationTest,
+       GeneralReshapeCrossesSharedElementwiseFanoutAndCancelsAtEveryRoot) {
+  const std::pair<unsigned, unsigned> cases[]{{1024, 2}, {1025, 15}};
+  for (auto [extent, useCount] : cases) {
+    SCOPED_TRACE("extent=" + std::to_string(extent) +
+                 ", use-count=" + std::to_string(useCount));
+    const std::string fullType =
+        "tensor<2x4x" + std::to_string(extent) + "x128xf32>";
+    const std::string flatType =
+        "tensor<8x" + std::to_string(extent) + "x128xf32>";
+    std::string source;
+    llvm::raw_string_ostream stream(source);
+    stream << R"mlir(
+    #identity = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
+    module {
+      func.func @reshape_fanout_)mlir"
+           << extent << "(%arg0: " << fullType << ") -> (";
+    for (unsigned index = 0; index < useCount; ++index) {
+      if (index)
+        stream << ", ";
+      stream << fullType;
+    }
+    stream << R"mlir() {
+        %collapsed = tensor.collapse_shape %arg0 [[0, 1], [2], [3]] : )mlir"
+           << fullType << " into " << flatType << "\n";
+    for (unsigned index = 0; index < useCount; ++index) {
+      stream << "        %empty" << index << " = tensor.empty() : " << flatType
+             << "\n";
+      stream << "        %compute" << index << R"mlir( = linalg.generic {
+            indexing_maps = [#identity, #identity],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%collapsed : )mlir"
+             << flatType << ") outs(%empty" << index << " : " << flatType
+             << R"mlir() {
+          ^bb0(%input: f32, %output: f32):
+            %negated = arith.negf %input : f32
+            linalg.yield %negated : f32
+        } -> )mlir"
+             << flatType << "\n";
+      stream << "        %expanded" << index
+             << " = tensor.expand_shape %compute" << index
+             << " [[0, 1], [2], [3]] output_shape [2, 4, " << extent
+             << ", 128] : " << flatType << " into " << fullType << "\n";
+    }
+    stream << "        return ";
+    for (unsigned index = 0; index < useCount; ++index) {
+      if (index)
+        stream << ", ";
+      stream << "%expanded" << index;
+    }
+    stream << " : ";
+    for (unsigned index = 0; index < useCount; ++index) {
+      if (index)
+        stream << ", ";
+      stream << fullType;
+    }
+    stream << R"mlir(
+      }
+    }
+  )mlir";
+    stream.flush();
+
+    mlir::OwningOpRef<mlir::ModuleOp> module = parse(source);
+    ASSERT_TRUE(module) << source;
+    auto function = module->lookupSymbol<mlir::func::FuncOp>(
+        "reshape_fanout_" + std::to_string(extent));
+    ASSERT_TRUE(function);
+    ASSERT_EQ(count<mlir::tensor::CollapseShapeOp>(function), 1u);
+    ASSERT_EQ(count<mlir::tensor::ExpandShapeOp>(function), useCount);
+
+    wafer::StructuredGraphNormalizationStatistics statistics;
+    mlir::FailureOr<wafer::StructuredGraphNormalizationOutcome> outcome =
+        wafer::normalizeStructuredTensorGraph(function, {}, &statistics);
+    ASSERT_TRUE(mlir::succeeded(outcome));
+    EXPECT_EQ(*outcome, wafer::StructuredGraphNormalizationOutcome::Changed);
+    EXPECT_GE(statistics.multiRootComponents, 1u);
+    EXPECT_GE(statistics.reshapeThroughComputeApplications, useCount);
+    EXPECT_EQ(statistics.accessTransformsRemoved, useCount + 1u);
+    EXPECT_EQ(count<mlir::tensor::CollapseShapeOp>(function), 0u);
+    EXPECT_EQ(count<mlir::tensor::ExpandShapeOp>(function), 0u);
+    EXPECT_EQ(count<mlir::linalg::GenericOp>(function), useCount);
+    EXPECT_EQ(count<mlir::arith::NegFOp>(function), useCount);
+    function.walk([&](mlir::linalg::GenericOp operation) {
+      EXPECT_EQ(operation.getDpsInputs().front(), function.getArgument(0));
+      EXPECT_EQ(operation.getResult(0).getType(),
+                function.getArgument(0).getType());
+      EXPECT_EQ(operation.getNumLoops(), 4u);
+      EXPECT_TRUE(llvm::all_of(operation.getIteratorTypesArray(),
+                               [](mlir::utils::IteratorType iterator) {
+                                 return iterator ==
+                                        mlir::utils::IteratorType::parallel;
+                               }));
+    });
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  }
+}
+
+TEST_F(StructuredGraphNormalizationTest,
+       GeneralBatchReshapePreservesReductionAndContractionAxes) {
+  mlir::OwningOpRef<mlir::ModuleOp> module = parse(R"mlir(
+    #identity3 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
+    #reduce3 = affine_map<(d0, d1, d2) -> (d0, d1)>
+    #lhs4 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d3)>
+    #rhs4 = affine_map<(d0, d1, d2, d3) -> (d0, d3, d2)>
+    #out4 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2)>
+    module {
+      func.func @reshape_reduction(
+          %input: tensor<2x4x1025x128xf32>,
+          %init: tensor<2x4x1025xf32>) -> tensor<2x4x1025xf32> {
+        %flat = tensor.collapse_shape %input [[0, 1], [2], [3]] :
+            tensor<2x4x1025x128xf32> into tensor<8x1025x128xf32>
+        %init_flat = tensor.collapse_shape %init [[0, 1], [2]] :
+            tensor<2x4x1025xf32> into tensor<8x1025xf32>
+        %reduced = linalg.generic {
+            indexing_maps = [#identity3, #reduce3],
+            iterator_types = ["parallel", "parallel", "reduction"]}
+            ins(%flat : tensor<8x1025x128xf32>)
+            outs(%init_flat : tensor<8x1025xf32>) {
+          ^bb0(%element: f32, %accumulator: f32):
+            %sum = arith.addf %accumulator, %element : f32
+            linalg.yield %sum : f32
+        } -> tensor<8x1025xf32>
+        %expanded = tensor.expand_shape %reduced [[0, 1], [2]]
+            output_shape [2, 4, 1025] :
+            tensor<8x1025xf32> into tensor<2x4x1025xf32>
+        return %expanded : tensor<2x4x1025xf32>
+      }
+
+      func.func @reshape_contraction(
+          %lhs: tensor<2x4x64x1031xf32>,
+          %rhs: tensor<2x4x1031x128xf32>,
+          %init: tensor<2x4x64x128xf32>) -> tensor<2x4x64x128xf32> {
+        %lhs_flat = tensor.collapse_shape %lhs [[0, 1], [2], [3]] :
+            tensor<2x4x64x1031xf32> into tensor<8x64x1031xf32>
+        %rhs_flat = tensor.collapse_shape %rhs [[0, 1], [2], [3]] :
+            tensor<2x4x1031x128xf32> into tensor<8x1031x128xf32>
+        %init_flat = tensor.collapse_shape %init [[0, 1], [2], [3]] :
+            tensor<2x4x64x128xf32> into tensor<8x64x128xf32>
+        %contracted = linalg.generic {
+            indexing_maps = [#lhs4, #rhs4, #out4],
+            iterator_types = ["parallel", "parallel", "parallel",
+                              "reduction"]}
+            ins(%lhs_flat, %rhs_flat :
+                tensor<8x64x1031xf32>, tensor<8x1031x128xf32>)
+            outs(%init_flat : tensor<8x64x128xf32>) {
+          ^bb0(%left: f32, %right: f32, %accumulator: f32):
+            %product = arith.mulf %left, %right : f32
+            %sum = arith.addf %accumulator, %product : f32
+            linalg.yield %sum : f32
+        } -> tensor<8x64x128xf32>
+        %expanded = tensor.expand_shape %contracted [[0, 1], [2], [3]]
+            output_shape [2, 4, 64, 128] :
+            tensor<8x64x128xf32> into tensor<2x4x64x128xf32>
+        return %expanded : tensor<2x4x64x128xf32>
+      }
+    }
+  )mlir");
+  ASSERT_TRUE(module);
+
+  auto reductionFunction =
+      module->lookupSymbol<mlir::func::FuncOp>("reshape_reduction");
+  auto contractionFunction =
+      module->lookupSymbol<mlir::func::FuncOp>("reshape_contraction");
+  ASSERT_TRUE(reductionFunction);
+  ASSERT_TRUE(contractionFunction);
+  wafer::StructuredGraphNormalizationStatistics reductionStatistics;
+  wafer::StructuredGraphNormalizationStatistics contractionStatistics;
+  ASSERT_TRUE(mlir::succeeded(wafer::normalizeStructuredTensorGraph(
+      reductionFunction, {}, &reductionStatistics)));
+  ASSERT_TRUE(mlir::succeeded(wafer::normalizeStructuredTensorGraph(
+      contractionFunction, {}, &contractionStatistics)));
+
+  EXPECT_GE(reductionStatistics.reshapeThroughComputeApplications, 1u);
+  EXPECT_GE(contractionStatistics.reshapeThroughComputeApplications, 1u);
+  EXPECT_EQ(count<mlir::tensor::CollapseShapeOp>(reductionFunction), 0u);
+  EXPECT_EQ(count<mlir::tensor::ExpandShapeOp>(reductionFunction), 0u)
+      << print(reductionFunction);
+  EXPECT_EQ(count<mlir::tensor::CollapseShapeOp>(contractionFunction), 0u);
+  EXPECT_EQ(count<mlir::tensor::ExpandShapeOp>(contractionFunction), 0u)
+      << print(contractionFunction);
+
+  mlir::linalg::GenericOp reduction;
+  reductionFunction.walk(
+      [&](mlir::linalg::GenericOp operation) { reduction = operation; });
+  ASSERT_TRUE(reduction);
+  EXPECT_EQ(reduction.getNumLoops(), 4u);
+  EXPECT_TRUE(llvm::equal(reduction.getIteratorTypesArray(),
+                          llvm::ArrayRef<mlir::utils::IteratorType>{
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::reduction}));
+  EXPECT_EQ(reduction.getDpsInputs().front(), reductionFunction.getArgument(0));
+
+  mlir::linalg::GenericOp contraction;
+  contractionFunction.walk(
+      [&](mlir::linalg::GenericOp operation) { contraction = operation; });
+  ASSERT_TRUE(contraction);
+  EXPECT_EQ(contraction.getNumLoops(), 5u);
+  EXPECT_TRUE(llvm::equal(contraction.getIteratorTypesArray(),
+                          llvm::ArrayRef<mlir::utils::IteratorType>{
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::reduction}));
+  EXPECT_EQ(contraction.getDpsInputs()[0], contractionFunction.getArgument(0));
+  EXPECT_EQ(contraction.getDpsInputs()[1], contractionFunction.getArgument(1));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  std::string failureReason;
+  mlir::OpBuilder reductionBuilder(reduction);
+  llvm::SmallVector<mlir::OpFoldResult, 4> reductionOffsets(
+      4, reductionBuilder.getIndexAttr(0));
+  llvm::SmallVector<mlir::OpFoldResult, 4> reductionSizes{
+      reductionBuilder.getIndexAttr(2), reductionBuilder.getIndexAttr(4),
+      reductionBuilder.getIndexAttr(1025), reductionBuilder.getIndexAttr(64)};
+  mlir::FailureOr<wafer::PartialReductionTileMaterialization> tiledReduction =
+      wafer::materializePartialReductionTile(reduction.getOperation(),
+                                             reductionBuilder, reductionOffsets,
+                                             reductionSizes, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(tiledReduction)) << failureReason;
+  EXPECT_EQ(tiledReduction->reductionDimensions,
+            (llvm::SmallVector<int, 2>{3}));
+
+  mlir::OpBuilder contractionBuilder(contraction);
+  llvm::SmallVector<mlir::OpFoldResult, 5> contractionOffsets(
+      5, contractionBuilder.getIndexAttr(0));
+  llvm::SmallVector<mlir::OpFoldResult, 5> contractionSizes{
+      contractionBuilder.getIndexAttr(2), contractionBuilder.getIndexAttr(4),
+      contractionBuilder.getIndexAttr(64), contractionBuilder.getIndexAttr(128),
+      contractionBuilder.getIndexAttr(1024)};
+  mlir::FailureOr<wafer::PartialReductionTileMaterialization> tiledContraction =
+      wafer::materializePartialReductionTile(
+          contraction.getOperation(), contractionBuilder, contractionOffsets,
+          contractionSizes, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(tiledContraction)) << failureReason;
+  EXPECT_EQ(tiledContraction->reductionDimensions,
+            (llvm::SmallVector<int, 2>{4}));
+}
+
+TEST_F(StructuredGraphNormalizationTest,
+       ParallelFlattenCrossesElementwiseButMixedReductionFlattenDoesNot) {
+  mlir::OwningOpRef<mlir::ModuleOp> module = parse(R"mlir(
+    #identity4 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
+    #identity3 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
+    #reduce4 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2)>
+    #reduce2 = affine_map<(d0, d1, d2, d3) -> (d0, d1)>
+    #reduce2_3 = affine_map<(d0, d1, d2) -> (d0, d1)>
+    #lhs4 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d3)>
+    #rhs4 = affine_map<(d0, d1, d2, d3) -> (d0, d3, d2)>
+    #out4 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2)>
+    #lhs5 = affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d3, d4)>
+    #rhs5 = affine_map<(d0, d1, d2, d3, d4) -> (d0, d3, d4, d2)>
+    #out5 = affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2)>
+    module {
+      func.func @parallel_flatten(
+          %input: tensor<8x1025x128xf32>) -> tensor<8x1025x128xf32> {
+        %expanded = tensor.expand_shape %input [[0, 1], [2], [3]]
+            output_shape [2, 4, 1025, 128] :
+            tensor<8x1025x128xf32> into tensor<2x4x1025x128xf32>
+        %init = tensor.empty() : tensor<2x4x1025x128xf32>
+        %computed = linalg.generic {
+            indexing_maps = [#identity4, #identity4],
+            iterator_types = ["parallel", "parallel", "parallel",
+                              "parallel"]}
+            ins(%expanded : tensor<2x4x1025x128xf32>)
+            outs(%init : tensor<2x4x1025x128xf32>) {
+          ^bb0(%element: f32, %output: f32):
+            %negated = arith.negf %element : f32
+            linalg.yield %negated : f32
+        } -> tensor<2x4x1025x128xf32>
+        %flat = tensor.collapse_shape %computed [[0, 1], [2], [3]] :
+            tensor<2x4x1025x128xf32> into tensor<8x1025x128xf32>
+        return %flat : tensor<8x1025x128xf32>
+      }
+
+      func.func @mixed_reduction_flatten(
+          %input: tensor<2x4x131200xf32>,
+          %init: tensor<2x4x1025xf32>) -> tensor<2x4x1025xf32> {
+        %expanded = tensor.expand_shape %input [[0], [1], [2, 3]]
+            output_shape [2, 4, 1025, 128] :
+            tensor<2x4x131200xf32> into tensor<2x4x1025x128xf32>
+        %reduced = linalg.generic {
+            indexing_maps = [#identity4, #reduce4],
+            iterator_types = ["parallel", "parallel", "parallel",
+                              "reduction"]}
+            ins(%expanded : tensor<2x4x1025x128xf32>)
+            outs(%init : tensor<2x4x1025xf32>) {
+          ^bb0(%element: f32, %accumulator: f32):
+            %sum = arith.addf %accumulator, %element : f32
+            linalg.yield %sum : f32
+        } -> tensor<2x4x1025xf32>
+        return %reduced : tensor<2x4x1025xf32>
+      }
+
+      func.func @reduction_only_flatten(
+          %input: tensor<2x4x131200xf32>,
+          %init: tensor<2x4xf32>) -> tensor<2x4xf32> {
+        %expanded = tensor.expand_shape %input [[0], [1], [2, 3]]
+            output_shape [2, 4, 1025, 128] :
+            tensor<2x4x131200xf32> into tensor<2x4x1025x128xf32>
+        %reduced = linalg.generic {
+            indexing_maps = [#identity4, #reduce2],
+            iterator_types = ["parallel", "parallel", "reduction",
+                              "reduction"]}
+            ins(%expanded : tensor<2x4x1025x128xf32>)
+            outs(%init : tensor<2x4xf32>) {
+          ^bb0(%element: f32, %accumulator: f32):
+            %sum = arith.addf %accumulator, %element : f32
+            linalg.yield %sum : f32
+        } -> tensor<2x4xf32>
+        return %reduced : tensor<2x4xf32>
+      }
+
+      func.func @contraction_reduction_flatten(
+          %lhs: tensor<2x64x8248xf32>, %rhs: tensor<2x8248x128xf32>,
+          %init: tensor<2x64x128xf32>) -> tensor<2x64x128xf32> {
+        %lhs_expanded = tensor.expand_shape %lhs [[0], [1], [2, 3]]
+            output_shape [2, 64, 1031, 8] :
+            tensor<2x64x8248xf32> into tensor<2x64x1031x8xf32>
+        %rhs_expanded = tensor.expand_shape %rhs [[0], [1, 2], [3]]
+            output_shape [2, 1031, 8, 128] :
+            tensor<2x8248x128xf32> into tensor<2x1031x8x128xf32>
+        %contracted = linalg.generic {
+            indexing_maps = [#lhs5, #rhs5, #out5],
+            iterator_types = ["parallel", "parallel", "parallel",
+                              "reduction", "reduction"]}
+            ins(%lhs_expanded, %rhs_expanded :
+                tensor<2x64x1031x8xf32>, tensor<2x1031x8x128xf32>)
+            outs(%init : tensor<2x64x128xf32>) {
+          ^bb0(%left: f32, %right: f32, %accumulator: f32):
+            %product = arith.mulf %left, %right : f32
+            %sum = arith.addf %accumulator, %product : f32
+            linalg.yield %sum : f32
+        } -> tensor<2x64x128xf32>
+        return %contracted : tensor<2x64x128xf32>
+      }
+
+      func.func @reduction_only_unflatten(
+          %input: tensor<2x4x1025x128xf32>,
+          %init: tensor<2x4xf32>) -> tensor<2x4xf32> {
+        %flat = tensor.collapse_shape %input [[0], [1], [2, 3]] :
+            tensor<2x4x1025x128xf32> into tensor<2x4x131200xf32>
+        %reduced = linalg.generic {
+            indexing_maps = [#identity3, #reduce2_3],
+            iterator_types = ["parallel", "parallel", "reduction"]}
+            ins(%flat : tensor<2x4x131200xf32>)
+            outs(%init : tensor<2x4xf32>) {
+          ^bb0(%element: f32, %accumulator: f32):
+            %sum = arith.addf %accumulator, %element : f32
+            linalg.yield %sum : f32
+        } -> tensor<2x4xf32>
+        return %reduced : tensor<2x4xf32>
+      }
+
+      func.func @contraction_reduction_unflatten(
+          %lhs: tensor<2x64x1031x8xf32>,
+          %rhs: tensor<2x1031x8x128xf32>,
+          %init: tensor<2x64x128xf32>) -> tensor<2x64x128xf32> {
+        %lhs_flat = tensor.collapse_shape %lhs [[0], [1], [2, 3]] :
+            tensor<2x64x1031x8xf32> into tensor<2x64x8248xf32>
+        %rhs_flat = tensor.collapse_shape %rhs [[0], [1, 2], [3]] :
+            tensor<2x1031x8x128xf32> into tensor<2x8248x128xf32>
+        %contracted = linalg.generic {
+            indexing_maps = [#lhs4, #rhs4, #out4],
+            iterator_types = ["parallel", "parallel", "parallel",
+                              "reduction"]}
+            ins(%lhs_flat, %rhs_flat :
+                tensor<2x64x8248xf32>, tensor<2x8248x128xf32>)
+            outs(%init : tensor<2x64x128xf32>) {
+          ^bb0(%left: f32, %right: f32, %accumulator: f32):
+            %product = arith.mulf %left, %right : f32
+            %sum = arith.addf %accumulator, %product : f32
+            linalg.yield %sum : f32
+        } -> tensor<2x64x128xf32>
+        return %contracted : tensor<2x64x128xf32>
+      }
+    }
+  )mlir");
+  ASSERT_TRUE(module);
+  auto parallel = module->lookupSymbol<mlir::func::FuncOp>("parallel_flatten");
+  auto mixed =
+      module->lookupSymbol<mlir::func::FuncOp>("mixed_reduction_flatten");
+  auto reductionOnly =
+      module->lookupSymbol<mlir::func::FuncOp>("reduction_only_flatten");
+  auto contraction =
+      module->lookupSymbol<mlir::func::FuncOp>("contraction_reduction_flatten");
+  auto reductionUnflatten =
+      module->lookupSymbol<mlir::func::FuncOp>("reduction_only_unflatten");
+  auto contractionUnflatten = module->lookupSymbol<mlir::func::FuncOp>(
+      "contraction_reduction_unflatten");
+  ASSERT_TRUE(parallel);
+  ASSERT_TRUE(mixed);
+  ASSERT_TRUE(reductionOnly);
+  ASSERT_TRUE(contraction);
+  ASSERT_TRUE(reductionUnflatten);
+  ASSERT_TRUE(contractionUnflatten);
+
+  wafer::StructuredGraphNormalizationStatistics parallelStatistics;
+  mlir::FailureOr<wafer::StructuredGraphNormalizationOutcome> parallelOutcome =
+      wafer::normalizeStructuredTensorGraph(parallel, {}, &parallelStatistics);
+  ASSERT_TRUE(mlir::succeeded(parallelOutcome));
+  EXPECT_EQ(*parallelOutcome,
+            wafer::StructuredGraphNormalizationOutcome::Changed);
+  EXPECT_GE(parallelStatistics.reshapeThroughComputeApplications, 1u);
+  EXPECT_EQ(count<mlir::tensor::ExpandShapeOp>(parallel), 0u);
+  EXPECT_EQ(count<mlir::tensor::CollapseShapeOp>(parallel), 0u);
+  mlir::linalg::GenericOp parallelCompute;
+  parallel.walk(
+      [&](mlir::linalg::GenericOp operation) { parallelCompute = operation; });
+  ASSERT_TRUE(parallelCompute);
+  EXPECT_EQ(parallelCompute.getNumLoops(), 3u);
+  EXPECT_EQ(parallelCompute.getDpsInputs().front(), parallel.getArgument(0));
+
+  wafer::StructuredGraphNormalizationStatistics mixedStatistics;
+  mlir::FailureOr<wafer::StructuredGraphNormalizationOutcome> mixedOutcome =
+      wafer::normalizeStructuredTensorGraph(mixed, {}, &mixedStatistics);
+  ASSERT_TRUE(mlir::succeeded(mixedOutcome));
+  EXPECT_EQ(*mixedOutcome,
+            wafer::StructuredGraphNormalizationOutcome::Unchanged);
+  EXPECT_EQ(mixedStatistics.reshapeThroughComputeApplications, 0u);
+  EXPECT_EQ(count<mlir::tensor::ExpandShapeOp>(mixed), 1u);
+  EXPECT_EQ(count<mlir::linalg::GenericOp>(mixed), 1u);
+
+  wafer::StructuredGraphNormalizationStatistics reductionStatistics;
+  ASSERT_TRUE(mlir::succeeded(wafer::normalizeStructuredTensorGraph(
+      reductionOnly, {}, &reductionStatistics)));
+  EXPECT_GE(reductionStatistics.reshapeThroughComputeApplications, 1u);
+  EXPECT_EQ(count<mlir::tensor::ExpandShapeOp>(reductionOnly), 0u);
+  mlir::linalg::GenericOp reduced;
+  reductionOnly.walk(
+      [&](mlir::linalg::GenericOp operation) { reduced = operation; });
+  ASSERT_TRUE(reduced);
+  EXPECT_EQ(reduced.getNumLoops(), 3u);
+  EXPECT_TRUE(llvm::equal(reduced.getIteratorTypesArray(),
+                          llvm::ArrayRef<mlir::utils::IteratorType>{
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::reduction}));
+
+  wafer::StructuredGraphNormalizationStatistics contractionStatistics;
+  ASSERT_TRUE(mlir::succeeded(wafer::normalizeStructuredTensorGraph(
+      contraction, {}, &contractionStatistics)));
+  EXPECT_GE(contractionStatistics.reshapeThroughComputeApplications, 1u);
+  EXPECT_EQ(count<mlir::tensor::ExpandShapeOp>(contraction), 0u);
+  llvm::SmallVector<mlir::linalg::LinalgOp, 2> contractions;
+  contraction.walk([&](mlir::linalg::LinalgOp operation) {
+    contractions.push_back(operation);
+  });
+  ASSERT_EQ(contractions.size(), 1u);
+  EXPECT_EQ(contractions.front().getNumLoops(), 4u);
+  EXPECT_TRUE(llvm::equal(contractions.front().getIteratorTypesArray(),
+                          llvm::ArrayRef<mlir::utils::IteratorType>{
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::reduction}));
+
+  wafer::StructuredGraphNormalizationStatistics reductionUnflattenStatistics;
+  ASSERT_TRUE(mlir::succeeded(wafer::normalizeStructuredTensorGraph(
+      reductionUnflatten, {}, &reductionUnflattenStatistics)));
+  EXPECT_GE(reductionUnflattenStatistics.reshapeThroughComputeApplications, 1u);
+  EXPECT_EQ(count<mlir::tensor::CollapseShapeOp>(reductionUnflatten), 0u);
+  mlir::linalg::GenericOp expandedReduction;
+  reductionUnflatten.walk([&](mlir::linalg::GenericOp operation) {
+    expandedReduction = operation;
+  });
+  ASSERT_TRUE(expandedReduction);
+  EXPECT_EQ(expandedReduction.getNumLoops(), 4u);
+  EXPECT_TRUE(llvm::equal(expandedReduction.getIteratorTypesArray(),
+                          llvm::ArrayRef<mlir::utils::IteratorType>{
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::reduction,
+                              mlir::utils::IteratorType::reduction}));
+
+  wafer::StructuredGraphNormalizationStatistics contractionUnflattenStatistics;
+  ASSERT_TRUE(mlir::succeeded(wafer::normalizeStructuredTensorGraph(
+      contractionUnflatten, {}, &contractionUnflattenStatistics)));
+  EXPECT_GE(contractionUnflattenStatistics.reshapeThroughComputeApplications,
+            1u);
+  EXPECT_EQ(count<mlir::tensor::CollapseShapeOp>(contractionUnflatten), 0u);
+  llvm::SmallVector<mlir::linalg::LinalgOp, 2> expandedContractions;
+  contractionUnflatten.walk([&](mlir::linalg::LinalgOp operation) {
+    expandedContractions.push_back(operation);
+  });
+  ASSERT_EQ(expandedContractions.size(), 1u);
+  EXPECT_EQ(expandedContractions.front().getNumLoops(), 5u);
+  EXPECT_TRUE(llvm::equal(expandedContractions.front().getIteratorTypesArray(),
+                          llvm::ArrayRef<mlir::utils::IteratorType>{
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::parallel,
+                              mlir::utils::IteratorType::reduction,
+                              mlir::utils::IteratorType::reduction}));
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
 }
 

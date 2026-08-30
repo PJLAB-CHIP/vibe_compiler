@@ -31,7 +31,7 @@ struct StructuredGraphNormalizationStatistics {
   uint64_t inputOperations = 0;
   uint64_t outputOperations = 0;
   uint64_t accessTransformsRemoved = 0;
-  uint64_t multiUseAccessPropagations = 0;
+  uint64_t multiRootComponents = 0;
   uint64_t concatTransformsRemoved = 0;
   uint64_t relationQueries = 0;
   uint64_t eNodes = 0;
@@ -46,6 +46,7 @@ struct StructuredGraphNormalizationStatistics {
   uint64_t computeAbsorptionApplications = 0;
   uint64_t concatApplications = 0;
   uint64_t resultReindexApplications = 0;
+  uint64_t reshapeThroughComputeApplications = 0;
   uint64_t abiInputRecords = 0;
   uint64_t abiOutputRecords = 0;
   uint64_t abiInputBytes = 0;

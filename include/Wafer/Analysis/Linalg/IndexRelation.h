@@ -206,6 +206,12 @@ public:
     return totalBoundedAffineMapByConstruction;
   }
 
+  /// True when construction proves that destination and source coordinates
+  /// have the same row-major linear ordinal over their complete static boxes.
+  /// This is the exact canonical static-reshape relation and does not invoke a
+  /// generic Presburger equivalence query.
+  bool hasCanonicalRowMajorReshapeConstruction() const;
+
 private:
   struct RowMajorRectangleMapping {
     llvm::SmallVector<unsigned, 4> destinationDimensions;
@@ -231,6 +237,7 @@ private:
   /// functionality query returns proven-true without running the generic
   /// self-composition proof for such relations.
   bool functionalByConstruction = false;
+  bool canonicalRowMajorOrderByConstruction = false;
   /// True only for an affine construction whose source bounds cannot clip
   /// any point in the complete destination box.
   bool totalBoundedAffineMapByConstruction = false;

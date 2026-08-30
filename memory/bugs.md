@@ -1394,15 +1394,16 @@
 - 防复发：同时保留1024/1025/1031的reshape/broadcast/concat与elementwise/reduction/contraction连续链，以及4个以上Compute交替Access
   深链；记录budget、e-node、relation query、match和before/after op。发现低work图exhaustion时先按callback种类归因，不能直接提高budget。
 
-## Fanout boundary变化必须在同一次normalization中闭合
+## Fanout等价变换必须进入同一个multi-root e-graph request
 
-- 现象：共享Access最初同时作为Compute data operand和另一个passthrough op的DPS init，all-users preflight正确保持整组；随后e-graph删除
-  passthrough旁支，Access只剩一个可吸收use，但旧实现要第二次运行同一pass才删除它，破坏idempotence。
-- 根因：把multi-use boundary rewrite和single-root equality saturation各运行一次，默认后者不会改变前者观察到的current use集合。
-- 修复模式：在一次pass invocation内交替运行两者，直到本轮没有修改。每个成功轮次必须从实际current IR证明`Access`数量严格下降，或
-  `Access`不变而canonical `Concat`数量严格下降；没有结构下降则按transformation contract failure停止，不用固定轮数或历史rewrite记录。
-- 防复发：1024/1025/1031矩阵同时保留异构fanout正例、会被同轮其它rewrite删除的暂时DPS-init use、持续存在的observable use barrier和
-  第二次运行byte-equivalent检查。不能通过把暂时use写成永久barrier、重复调用产品pipeline或增加whole-graph clone掩盖phase order。
+- 现象：共享Access同时服务多个Compute或observable root时，single-root e-graph无法看到完整fanout；在egg外补all-users C++ rewrite后，
+  一次pass内的两个owner会观察到不同use集合，出现第二次运行才闭合、producer复制或phase-order差异。
+- 根因：把multi-use边界当成独立pattern问题，而不是同一pure component的多root等价提取问题；C++旁路和egg分别拥有部分等价规则。
+- 修复模式：一次request导入ordered observable roots和共享SSA DAG，egg在同一e-graph中创建全部等价式，提取时按统一e-class choice
+  hash-cons为一个共享输出DAG，全部roots一次preflight和原子替换。C++ importer/materializer只解释current MLIR，不再直接改写等价图。
+- 防复发：1024/1025/1031矩阵覆盖2/15 roots、异构fanout、暂时DPS-init use、observable barrier和第二次运行byte-equivalent；检查旧
+  all-users rewrite caller为零、input/output producer node各一次。不能用交替运行两个rewrite owner、重复产品pipeline或whole-graph clone
+  掩盖phase order。
 
 ## 未完成设计不能因文档去重而只剩archive矩阵
 
@@ -1484,11 +1485,35 @@
   消除view copy，不能在bufferization后重新把producer放进consumer loop。仅检查“op有TilingInterface”还遗漏了tile result staticization和
   直接下游bufferization合同。初版rewrite还把`getMixedOffsets/getMixedSizes`返回的临时vector绑定成`ArrayRef`并跨语句使用，单case偶然通过，
   连续创建第二个MLIRContext后稳定触发use-after-free。
-- 修复模式：抽取一个Spatial/Temporal共用的static `TensorResultIndexing` query；只有pure、single-use、exact dense offset projection才用
-  pinned slice-driven producer tiling实际rewrite current IR。Concat从actual insert chain建立bounded tile-local segment assembly；constant pad的
-  padded consumer axis保持full extent，局部Pad/Generate在bufferization前确定性降为Linalg fill/insert；Pack/UnPack先按main/tail收紧类型，
-  再用pinned simplify pattern降为局部reshape。融合producer的`tensor.empty` destination也必须折成tile-local empty。所有mixed
-  offset/size accessor结果先拥有在局部`SmallVector`中，再构造`ArrayRef`或`zip`。
-- 防复发：1024/1025/1031、rank 3以上分别覆盖view chain、pad、unpack→compute→pack、单segment/跨segment concat和multi-use/unsupported
-  barrier；第13项断言完整producer occurrence为0，第15项断言对应完整intermediate allocation/copy为0。Actual MiniMalloc仍是唯一SPM
-  合法性owner；不得用view类型、shape或buffer估算提前签发容量结论。
+- 修复模式：抽取Spatial/Temporal共用的static `TensorResultIndexing` query；Temporal显式保留independent与joint choice。Exact direct/dense
+  view使用pinned slice-driven producer tiling；general row-major reshape从actual consumer slice恢复parametric rectangle或bounded static
+  pieces；all-use multi-root在一个common SCF loop内共享producer tile。Concat从actual insert chain建立bounded tile-local assembly；constant
+  pad的padded axis保持full extent，Pad/Generate在bufferization前降为Linalg fill/insert；Pack/UnPack按main/tail收紧后降为local reshape。
+  所有mixed offset/size accessor结果先拥有在局部`SmallVector`中，再构造`ArrayRef`或`zip`。
+- 防复发：1024/1025/1031、rank 3以上覆盖view chain、general flatten/unflatten rectangle/pieces、pad、unpack→compute→pack、单segment/
+  跨segment concat、2/15 roots、independent和unsupported barrier；joint断言producer只随main/tail/piece增加而不随use数增加，第15项断言
+  对应完整intermediate allocation/copy为0。Actual MiniMalloc仍是唯一SPM合法性owner；不得用view类型、shape或buffer估算签发容量结论。
+
+## Canonical reshape的inverse必须保留rectangle construction proof
+
+- 现象：正向general reshape的exact rectangle pieces可在常数时间恢复；取inverse后，同一个piece查询丢失fast-path metadata并进入
+  Presburger set subtraction，在1025级shape上持续满核运行。
+- 根因：`IndexRelation::inverse`交换了Presburger domain/range和shape，却没有把每个row-major mapping的source/destination dimension group
+  对调；relation仍标记canonical，但rectangle consumer看不到construction proof。
+- 修复模式：inverse同时反转shape和每个row-major mapping group，保留functional、total、canonical flags；正反向piece query都只使用
+  bounded arithmetic decomposition。通用Presburger equality只处理没有construction proof的关系。
+- 防复发：用跨boundary的1500/550 rectangle检查正向两piece、inverse每个piece恢复唯一consumer rectangle并记录亚毫秒级work；不能通过
+  增大solver budget或timeout掩盖metadata丢失。
+
+## Layout PBQP的buffer-equivalence必须包含DPS init/result
+
+- 现象：PBQP为Linalg result选中Cx，但One-Shot实际给其`tensor.empty` destination分配Tensor；reshape后的fixed contraction直接读取Tensor，
+  solver assignment与actual buffer layout不一致。机械`compactOnly`又会阻止合法outer reshape保持Cx。
+- 根因：value union只合并view/SCF/TileRegion关系，没有合并DPS init/result；同时把“邻接任意tensor view”当成整个alias group的layout限制，
+  没有检查实际physical mapping。
+- 修复模式：将每个tensor DPS init与对应result纳入同一actual alias group；枚举完整layout交集后，以canonical `IndexRelation`和两端
+  `PhysicalLayoutRelation`逐state验证mapping、footprint、alignment、padding与injectivity。Blocked layout只允许保持N/channel coordinate的
+  reshape；不兼容fixed use沿activation创建一个actual materialization。Dynamic cast和缺base-offset证明的extract_slice保持standard layout。
+- 防复发：1024/1025/1031覆盖compatible outer reshape零materialization并保持Cx、channel-changing reshape恰一个materialization、DPS
+  allocation实际layout与assignment一致、concat main/tail bufferization和15-use conversion sharing；不要用solver state或result type代替查看
+  actual alloc/view/use。

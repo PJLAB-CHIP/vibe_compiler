@@ -82,8 +82,8 @@ def NormalizeStructuredTensorGraphPass
               "Number of serialized C ABI output bytes">,
     Statistic<"numAccessTransformsRemoved", "access-transforms-removed",
               "Number of explicit access-transform occurrences removed">,
-    Statistic<"numMultiUseAccessPropagations", "multi-use-access-propagations",
-              "Number of shared projected accesses propagated to all supported Linalg data users">,
+    Statistic<"numMultiRootComponents", "multi-root-components",
+              "Number of pure e-graph components with multiple observable roots">,
     Statistic<"numConcatTransformsRemoved", "concat-transforms-removed",
               "Number of concat assembly occurrences removed">,
     Statistic<"numRelationQueries", "relation-queries",
@@ -97,7 +97,9 @@ def NormalizeStructuredTensorGraphPass
     Statistic<"numConcatApplications", "concat-applications",
               "Number of Concat normalization rule applications">,
     Statistic<"numResultReindexApplications", "result-reindex-applications",
-              "Number of restricted Compute result reindex applications">
+              "Number of restricted Compute result reindex applications">,
+    Statistic<"numReshapeThroughComputeApplications", "reshape-through-compute-applications",
+              "Number of exact general reshape through Compute applications">
   ];
 }
 

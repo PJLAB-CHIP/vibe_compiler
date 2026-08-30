@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
@@ -23,7 +24,10 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/MathExtras.h"
+
+#include <functional>
 
 namespace wafer {
 namespace {
@@ -108,6 +112,88 @@ mlir::FailureOr<mlir::Value> reshapeTile(mlir::IRRewriter &rewriter,
   return reshape(source, targetType);
 }
 
+std::optional<int64_t> resolveStaticIndex(mlir::OpFoldResult value) {
+  if (auto attribute = llvm::dyn_cast_if_present<mlir::IntegerAttr>(
+          value.dyn_cast<mlir::Attribute>()))
+    return attribute.getInt();
+  mlir::Value dynamic = value.dyn_cast<mlir::Value>();
+  if (!dynamic || !dynamic.getType().isIndex())
+    return std::nullopt;
+  std::function<std::optional<int64_t>(mlir::Value, unsigned)> resolve =
+      [&](mlir::Value current, unsigned depth) -> std::optional<int64_t> {
+    if (!current || depth > 8)
+      return std::nullopt;
+    if (std::optional<int64_t> constant = mlir::getConstantIntValue(current))
+      return constant;
+    if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(current)) {
+      auto loop = argument.getOwner()
+                      ? mlir::dyn_cast_or_null<mlir::scf::ForOp>(
+                            argument.getOwner()->getParentOp())
+                      : mlir::scf::ForOp{};
+      if (!loop || argument != loop.getInductionVar())
+        return std::nullopt;
+      std::optional<int64_t> lower =
+          mlir::getConstantIntValue(loop.getLowerBound());
+      std::optional<int64_t> upper =
+          mlir::getConstantIntValue(loop.getUpperBound());
+      std::optional<int64_t> step = mlir::getConstantIntValue(loop.getStep());
+      if (!lower || !upper || !step || *step <= 0 || *upper <= *lower ||
+          *upper - *lower > *step)
+        return std::nullopt;
+      return lower;
+    }
+    mlir::Operation *definition = current.getDefiningOp();
+    mlir::AffineMap map;
+    mlir::ValueRange operands;
+    bool takeMinimum = false;
+    bool takeMaximum = false;
+    if (auto apply =
+            mlir::dyn_cast_or_null<mlir::affine::AffineApplyOp>(definition)) {
+      map = apply.getAffineMap();
+      operands = apply.getMapOperands();
+    } else if (auto minimum = mlir::dyn_cast_or_null<mlir::affine::AffineMinOp>(
+                   definition)) {
+      map = minimum.getAffineMap();
+      operands = minimum.getMapOperands();
+      takeMinimum = true;
+    } else if (auto maximum = mlir::dyn_cast_or_null<mlir::affine::AffineMaxOp>(
+                   definition)) {
+      map = maximum.getAffineMap();
+      operands = maximum.getMapOperands();
+      takeMaximum = true;
+    } else {
+      return std::nullopt;
+    }
+    llvm::SmallVector<mlir::Attribute, 4> attributes;
+    for (mlir::Value operand : operands) {
+      std::optional<int64_t> operandValue = resolve(operand, depth + 1);
+      if (!operandValue)
+        return std::nullopt;
+      attributes.push_back(mlir::IntegerAttr::get(
+          mlir::IndexType::get(current.getContext()), *operandValue));
+    }
+    llvm::SmallVector<mlir::Attribute, 4> folded;
+    if (mlir::failed(map.constantFold(attributes, folded)) || folded.empty())
+      return std::nullopt;
+    std::optional<int64_t> result;
+    for (mlir::Attribute attribute : folded) {
+      auto integer = mlir::dyn_cast<mlir::IntegerAttr>(attribute);
+      if (!integer)
+        return std::nullopt;
+      if (!result)
+        result = integer.getInt();
+      else if (takeMinimum)
+        result = std::min(*result, integer.getInt());
+      else if (takeMaximum)
+        result = std::max(*result, integer.getInt());
+      else
+        return std::nullopt;
+    }
+    return result;
+  };
+  return resolve(dynamic, 0);
+}
+
 mlir::OpFoldResult addConstantOffset(mlir::IRRewriter &rewriter,
                                      mlir::Location location,
                                      mlir::OpFoldResult base, int64_t offset) {
@@ -130,6 +216,7 @@ struct ViewFusionRequest {
   mlir::Value finalView;
   llvm::SmallVector<compiler::detail::TemporalViewDimensionMapping, 4>
       producerDimensions;
+  const analysis::IndexRelation *generalReshapeRelation = nullptr;
 };
 
 struct ConcatFusionRequest {
@@ -159,23 +246,178 @@ fuseViewProducerSlices(mlir::IRRewriter &rewriter, TileRegionOp region,
           slice.getMixedSizes();
       llvm::SmallVector<mlir::OpFoldResult, 4> producerOffsets;
       llvm::SmallVector<mlir::OpFoldResult, 4> producerSizes;
-      for (const auto &mapping : request.producerDimensions) {
-        if (mapping.viewDimension < 0) {
-          producerOffsets.push_back(rewriter.getIndexAttr(mapping.offset));
-          producerSizes.push_back(rewriter.getIndexAttr(1));
-          continue;
-        }
-        const unsigned dimension = static_cast<unsigned>(mapping.viewDimension);
-        if (dimension >= viewOffsets.size() || dimension >= viewSizes.size())
-          return mlir::failure();
-        producerOffsets.push_back(addConstantOffset(
-            rewriter, slice.getLoc(), viewOffsets[dimension], mapping.offset));
-        producerSizes.push_back(viewSizes[dimension]);
-      }
       auto producerType =
           mlir::dyn_cast<mlir::RankedTensorType>(request.producer.getType());
+      auto viewType =
+          mlir::dyn_cast<mlir::RankedTensorType>(request.finalView.getType());
       auto targetType = mlir::dyn_cast<mlir::RankedTensorType>(slice.getType());
-      if (!producerType || !targetType ||
+      if (!producerType || !viewType || !targetType)
+        return mlir::failure();
+      if (request.generalReshapeRelation) {
+        if (!request.generalReshapeRelation
+                 ->hasCanonicalRowMajorReshapeConstruction())
+          return mlir::failure();
+        std::optional<llvm::SmallVector<mlir::ReassociationIndices>>
+            reassociation =
+                mlir::getReassociationIndicesForReshape(producerType, viewType);
+        if (!reassociation)
+          return mlir::failure();
+        llvm::SmallVector<int64_t, 6> staticViewOffsets;
+        llvm::SmallVector<int64_t, 6> staticViewSizes;
+        for (mlir::OpFoldResult offset : viewOffsets) {
+          std::optional<int64_t> constant = resolveStaticIndex(offset);
+          if (!constant) {
+            staticViewOffsets.clear();
+            break;
+          }
+          staticViewOffsets.push_back(*constant);
+        }
+        if (!staticViewOffsets.empty())
+          for (mlir::OpFoldResult size : viewSizes) {
+            std::optional<int64_t> constant = resolveStaticIndex(size);
+            if (!constant) {
+              staticViewSizes.clear();
+              break;
+            }
+            staticViewSizes.push_back(*constant);
+          }
+        if (staticViewOffsets.size() == viewOffsets.size() &&
+            staticViewSizes.size() == viewSizes.size()) {
+          analysis::StaticRectangularIndexSetPiecesResult sourcePieces =
+              request.generalReshapeRelation
+                  ->getExactStaticRectangularImagePieces(staticViewOffsets,
+                                                         staticViewSizes);
+          analysis::IndexRelationResult inverse =
+              request.generalReshapeRelation->inverse();
+          if (!sourcePieces.isExact() || sourcePieces.domains.empty() ||
+              !inverse.isExact())
+            return mlir::failure();
+          auto assembledType = mlir::RankedTensorType::get(
+              staticViewSizes, targetType.getElementType(),
+              targetType.getEncoding());
+          mlir::Value assembled = rewriter.create<mlir::tensor::EmptyOp>(
+              slice.getLoc(), staticViewSizes, targetType.getElementType());
+          for (const analysis::StaticRectangularIndexSet &sourcePiece :
+               sourcePieces.domains) {
+            analysis::StaticRectangularIndexSetPiecesResult viewPieces =
+                inverse.get()->getExactStaticRectangularImagePieces(
+                    sourcePiece.offsets, sourcePiece.sizes);
+            if (!viewPieces.isExact() || viewPieces.domains.size() != 1)
+              return mlir::failure();
+            const analysis::StaticRectangularIndexSet &viewPiece =
+                viewPieces.domains.front();
+            llvm::SmallVector<int64_t, 6> localOffsets;
+            for (auto [pieceOffset, requestOffset, pieceSize, requestSize] :
+                 llvm::zip_equal(viewPiece.offsets, staticViewOffsets,
+                                 viewPiece.sizes, staticViewSizes)) {
+              if (pieceOffset < requestOffset || pieceSize <= 0 ||
+                  pieceOffset - requestOffset > requestSize - pieceSize)
+                return mlir::failure();
+              localOffsets.push_back(pieceOffset - requestOffset);
+            }
+            llvm::SmallVector<mlir::OpFoldResult, 6> sourceOffsets;
+            llvm::SmallVector<mlir::OpFoldResult, 6> sourceSizes;
+            llvm::SmallVector<mlir::OpFoldResult, 6> sourceStrides(
+                sourcePiece.offsets.size(), rewriter.getIndexAttr(1));
+            for (int64_t offset : sourcePiece.offsets)
+              sourceOffsets.push_back(rewriter.getIndexAttr(offset));
+            for (int64_t size : sourcePiece.sizes)
+              sourceSizes.push_back(rewriter.getIndexAttr(size));
+            auto sourceSlice = rewriter.create<mlir::tensor::ExtractSliceOp>(
+                slice.getLoc(), request.producer, sourceOffsets, sourceSizes,
+                sourceStrides);
+            mlir::FailureOr<mlir::TilingResult> tiled =
+                mlir::tensor::replaceExtractSliceWithTiledProducer(
+                    rewriter, sourceSlice, request.producer);
+            if (mlir::failed(tiled) || tiled->tiledValues.size() != 1)
+              return mlir::failure();
+            rewriter.eraseOp(sourceSlice);
+            auto viewPieceType = mlir::RankedTensorType::get(
+                viewPiece.sizes, targetType.getElementType(),
+                targetType.getEncoding());
+            mlir::FailureOr<mlir::Value> viewValue =
+                reshapeTile(rewriter, slice.getLoc(),
+                            tiled->tiledValues.front(), viewPieceType);
+            if (mlir::failed(viewValue))
+              return mlir::failure();
+            llvm::SmallVector<mlir::OpFoldResult, 6> insertOffsets;
+            llvm::SmallVector<mlir::OpFoldResult, 6> insertSizes;
+            llvm::SmallVector<mlir::OpFoldResult, 6> insertStrides(
+                localOffsets.size(), rewriter.getIndexAttr(1));
+            for (int64_t offset : localOffsets)
+              insertOffsets.push_back(rewriter.getIndexAttr(offset));
+            for (int64_t size : viewPiece.sizes)
+              insertSizes.push_back(rewriter.getIndexAttr(size));
+            assembled = rewriter.create<mlir::tensor::InsertSliceOp>(
+                slice.getLoc(), *viewValue, assembled, insertOffsets,
+                insertSizes, insertStrides);
+          }
+          mlir::FailureOr<mlir::Value> replacement =
+              reshapeTile(rewriter, slice.getLoc(), assembled, targetType);
+          if (mlir::failed(replacement) || assembled.getType() != assembledType)
+            return mlir::failure();
+          rewriter.replaceOp(slice, *replacement);
+          continue;
+        }
+        auto requireFullViewDimension = [&](unsigned dimension) {
+          return dimension < viewOffsets.size() &&
+                 dimension < viewSizes.size() &&
+                 mlir::isConstantIntValue(viewOffsets[dimension], 0) &&
+                 mlir::isConstantIntValue(viewSizes[dimension],
+                                          viewType.getDimSize(dimension));
+        };
+        if (producerType.getRank() > viewType.getRank()) {
+          for (auto [viewDimension, producerDimensions] :
+               llvm::enumerate(*reassociation)) {
+            if (producerDimensions.size() == 1) {
+              producerOffsets.push_back(viewOffsets[viewDimension]);
+              producerSizes.push_back(viewSizes[viewDimension]);
+              continue;
+            }
+            if (!requireFullViewDimension(viewDimension))
+              return mlir::failure();
+            for (int64_t producerDimension : producerDimensions) {
+              producerOffsets.push_back(rewriter.getIndexAttr(0));
+              producerSizes.push_back(rewriter.getIndexAttr(
+                  producerType.getDimSize(producerDimension)));
+            }
+          }
+        } else {
+          for (auto [producerDimension, viewDimensions] :
+               llvm::enumerate(*reassociation)) {
+            if (viewDimensions.size() == 1) {
+              const unsigned viewDimension = viewDimensions.front();
+              producerOffsets.push_back(viewOffsets[viewDimension]);
+              producerSizes.push_back(viewSizes[viewDimension]);
+              continue;
+            }
+            if (llvm::any_of(viewDimensions, [&](int64_t viewDimension) {
+                  return !requireFullViewDimension(viewDimension);
+                }))
+              return mlir::failure();
+            producerOffsets.push_back(rewriter.getIndexAttr(0));
+            producerSizes.push_back(rewriter.getIndexAttr(
+                producerType.getDimSize(producerDimension)));
+          }
+        }
+      } else {
+        for (const auto &mapping : request.producerDimensions) {
+          if (mapping.viewDimension < 0) {
+            producerOffsets.push_back(rewriter.getIndexAttr(mapping.offset));
+            producerSizes.push_back(rewriter.getIndexAttr(1));
+            continue;
+          }
+          const unsigned dimension =
+              static_cast<unsigned>(mapping.viewDimension);
+          if (dimension >= viewOffsets.size() || dimension >= viewSizes.size())
+            return mlir::failure();
+          producerOffsets.push_back(addConstantOffset(rewriter, slice.getLoc(),
+                                                      viewOffsets[dimension],
+                                                      mapping.offset));
+          producerSizes.push_back(viewSizes[dimension]);
+        }
+      }
+      if (!producerType ||
           producerOffsets.size() != static_cast<size_t>(producerType.getRank()))
         return mlir::failure();
       llvm::SmallVector<mlir::OpFoldResult, 4> strides(
@@ -190,8 +432,74 @@ fuseViewProducerSlices(mlir::IRRewriter &rewriter, TileRegionOp region,
         rewriter.eraseOp(requestSlice);
         return mlir::failure();
       }
-      mlir::FailureOr<mlir::Value> replacement = reshapeTile(
-          rewriter, slice.getLoc(), tiled->tiledValues.front(), targetType);
+      mlir::FailureOr<mlir::Value> replacement = mlir::failure();
+      if (request.generalReshapeRelation) {
+        auto reassociation =
+            mlir::getReassociationIndicesForReshape(producerType, viewType);
+        if (!reassociation)
+          return mlir::failure();
+        mlir::Value tiledValue = tiled->tiledValues.front();
+        llvm::SmallVector<int64_t, 6> preciseShape(targetType.getShape());
+        for (auto [dimension, size] : llvm::enumerate(viewSizes))
+          if (std::optional<int64_t> constant = mlir::getConstantIntValue(size))
+            preciseShape[dimension] = *constant;
+        if (producerType.getRank() > viewType.getRank()) {
+          auto tiledType =
+              mlir::dyn_cast<mlir::RankedTensorType>(tiledValue.getType());
+          if (!tiledType)
+            return mlir::failure();
+          preciseShape.clear();
+          for (llvm::ArrayRef<int64_t> group : *reassociation) {
+            int64_t extent = 1;
+            for (int64_t dimension : group) {
+              int64_t current = tiledType.getDimSize(dimension);
+              if (mlir::ShapedType::isDynamic(current)) {
+                extent = mlir::ShapedType::kDynamic;
+                break;
+              }
+              if (llvm::MulOverflow(extent, current, extent))
+                return mlir::failure();
+            }
+            preciseShape.push_back(extent);
+          }
+        } else {
+          auto tiledType =
+              mlir::dyn_cast<mlir::RankedTensorType>(tiledValue.getType());
+          if (!tiledType)
+            return mlir::failure();
+          for (auto [producerDimension, viewDimensions] :
+               llvm::enumerate(*reassociation)) {
+            if (viewDimensions.size() == 1) {
+              preciseShape[viewDimensions.front()] =
+                  tiledType.getDimSize(producerDimension);
+              continue;
+            }
+            for (int64_t viewDimension : viewDimensions)
+              preciseShape[viewDimension] = viewType.getDimSize(viewDimension);
+          }
+        }
+        auto preciseType = mlir::RankedTensorType::get(
+            preciseShape, targetType.getElementType(),
+            targetType.getEncoding());
+        mlir::Value preciseValue;
+        if (producerType.getRank() > viewType.getRank())
+          preciseValue =
+              rewriter
+                  .create<mlir::tensor::CollapseShapeOp>(
+                      slice.getLoc(), preciseType, tiledValue, *reassociation)
+                  .getResult();
+        else
+          preciseValue =
+              rewriter
+                  .create<mlir::tensor::ExpandShapeOp>(
+                      slice.getLoc(), preciseType, tiledValue, *reassociation)
+                  .getResult();
+        replacement =
+            reshapeTile(rewriter, slice.getLoc(), preciseValue, targetType);
+      } else {
+        replacement = reshapeTile(rewriter, slice.getLoc(),
+                                  tiled->tiledValues.front(), targetType);
+      }
       rewriter.eraseOp(requestSlice);
       if (mlir::failed(replacement))
         return mlir::failure();
@@ -199,6 +507,84 @@ fuseViewProducerSlices(mlir::IRRewriter &rewriter, TileRegionOp region,
     }
     ++statistics.fusedProducers;
     ++statistics.viewTransparentProducers;
+  }
+  return mlir::success();
+}
+
+bool sameSliceRequest(mlir::tensor::ExtractSliceOp left,
+                      mlir::tensor::ExtractSliceOp right) {
+  return left.getType() == right.getType() &&
+         left.getMixedOffsets() == right.getMixedOffsets() &&
+         left.getMixedSizes() == right.getMixedSizes() &&
+         left.getMixedStrides() == right.getMixedStrides();
+}
+
+mlir::LogicalResult fuseJointProducerSlices(
+    mlir::IRRewriter &rewriter, TileRegionOp region,
+    llvm::ArrayRef<compiler::detail::TemporalJointProducerGroup> groups,
+    TemporalTilingStatistics &statistics, std::string &detail) {
+  auto reject = [&](llvm::StringRef message) {
+    detail = message.str();
+    return mlir::failure();
+  };
+  for (const auto &group : groups) {
+    if (!group.producer || !group.producer.getOwner()->getBlock())
+      return reject("joint producer is no longer current");
+    llvm::SmallVector<mlir::tensor::ExtractSliceOp, 8> slices;
+    region.walk([&](mlir::tensor::ExtractSliceOp slice) {
+      if (slice.getSource() == group.producer)
+        slices.push_back(slice);
+    });
+    if (slices.empty())
+      return reject("joint producer has no tiled consumer slice");
+
+    llvm::SmallVector<llvm::SmallVector<mlir::tensor::ExtractSliceOp, 4>, 2>
+        equivalentRequests;
+    for (mlir::tensor::ExtractSliceOp slice : slices) {
+      auto found = llvm::find_if(equivalentRequests, [&](const auto &current) {
+        return sameSliceRequest(current.front(), slice);
+      });
+      if (found == equivalentRequests.end())
+        equivalentRequests.push_back({slice});
+      else
+        found->push_back(slice);
+    }
+    for (const auto &requestGroup : equivalentRequests) {
+      mlir::tensor::ExtractSliceOp representative = requestGroup.front();
+      rewriter.setInsertionPoint(representative);
+      auto request = rewriter.create<mlir::tensor::ExtractSliceOp>(
+          representative.getLoc(), group.producer,
+          representative.getMixedOffsets(), representative.getMixedSizes(),
+          representative.getMixedStrides());
+      mlir::FailureOr<mlir::TilingResult> tiled =
+          mlir::tensor::replaceExtractSliceWithTiledProducer(rewriter, request,
+                                                             group.producer);
+      if (mlir::failed(tiled) || tiled->tiledValues.size() != 1) {
+        rewriter.eraseOp(request);
+        return reject(
+            "joint producer TilingInterface rejected the common slice");
+      }
+      mlir::Value sharedTile = tiled->tiledValues.front();
+      rewriter.eraseOp(request);
+      auto requestedType =
+          mlir::dyn_cast<mlir::RankedTensorType>(representative.getType());
+      if (!requestedType)
+        return reject("joint producer common slice is not a ranked tensor");
+      mlir::FailureOr<mlir::Value> replacement = reshapeTile(
+          rewriter, representative.getLoc(), sharedTile, requestedType);
+      if (mlir::failed(replacement))
+        return reject(
+            "joint producer tile cannot match the consumer slice type");
+      for (mlir::tensor::ExtractSliceOp slice : requestGroup) {
+        if (slice.getType() != (*replacement).getType())
+          return reject("joint producer slice types differ across consumers");
+        rewriter.replaceOp(slice, *replacement);
+      }
+    }
+    if (!group.producer.use_empty())
+      return reject("joint producer still has an unfused current use");
+    rewriter.eraseOp(group.producer.getOwner());
+    ++statistics.fusedProducers;
   }
   return mlir::success();
 }
@@ -454,6 +840,168 @@ mlir::LogicalResult specializeRaggedTails(
   return mlir::success();
 }
 
+struct JointConsumerTilingResult {
+  llvm::SmallVector<mlir::LoopLikeOpInterface, 6> loops;
+  unsigned tiledConsumers = 0;
+};
+
+mlir::FailureOr<JointConsumerTilingResult> tileJointConsumers(
+    mlir::IRRewriter &rewriter, llvm::ArrayRef<mlir::Operation *> consumers,
+    llvm::ArrayRef<const compiler::detail::TemporalScopeDescriptor *>
+        descriptors,
+    llvm::ArrayRef<const compiler::detail::TemporalScopeChoice *> choices) {
+  if (consumers.size() < 2 || consumers.size() != descriptors.size() ||
+      consumers.size() != choices.size())
+    return mlir::failure();
+  const auto &descriptor = *descriptors.front();
+  const auto &choice = *choices.front();
+  for (auto [operation, currentDescriptor, currentChoice] :
+       llvm::zip_equal(consumers, descriptors, choices)) {
+    if (!operation || !mlir::isa<mlir::linalg::LinalgOp>(operation) ||
+        currentDescriptor->iterationExtents != descriptor.iterationExtents ||
+        currentChoice->iteratorTileSizes != choice.iteratorTileSizes ||
+        currentChoice->loopOrder != choice.loopOrder)
+      return mlir::failure();
+  }
+
+  llvm::SmallVector<mlir::Value, 8> destinations;
+  llvm::SmallVector<unsigned, 8> destinationOffsets;
+  for (mlir::Operation *operation : consumers) {
+    auto tiling = mlir::cast<mlir::TilingInterface>(operation);
+    llvm::SmallVector<mlir::Value> current;
+    if (mlir::failed(mlir::tensor::getOrCreateDestinations(
+            rewriter, operation->getLoc(), tiling, current)) ||
+        current.size() != operation->getNumResults())
+      return mlir::failure();
+    destinationOffsets.push_back(destinations.size());
+    llvm::append_range(destinations, current);
+  }
+
+  mlir::Location location = consumers.front()->getLoc();
+  // Every DPS destination must dominate the common loop. Consumer-local
+  // tensor.empty operations are interleaved with the original consumers, so
+  // insert immediately before the last consumer and erase all originals only
+  // after the replacement loop is complete.
+  rewriter.setInsertionPoint(consumers.back());
+  llvm::SmallVector<mlir::Value, 6> inductionValues(
+      descriptor.iterationExtents.size());
+  llvm::SmallVector<mlir::scf::ForOp, 6> loops;
+  llvm::SmallVector<mlir::Value, 8> currentDestinations = destinations;
+  for (uint32_t dimension : choice.loopOrder) {
+    if (dimension >= descriptor.iterationExtents.size() ||
+        choice.iteratorTileSizes[dimension] >=
+            descriptor.iterationExtents[dimension])
+      return mlir::failure();
+    mlir::Value lower =
+        rewriter.create<mlir::arith::ConstantIndexOp>(location, 0);
+    mlir::Value upper = rewriter.create<mlir::arith::ConstantIndexOp>(
+        location, descriptor.iterationExtents[dimension]);
+    mlir::Value step = rewriter.create<mlir::arith::ConstantIndexOp>(
+        location, choice.iteratorTileSizes[dimension]);
+    auto loop = rewriter.create<mlir::scf::ForOp>(
+        location, lower, upper, step, currentDestinations,
+        [](mlir::OpBuilder &builder, mlir::Location nestedLocation, mlir::Value,
+           mlir::ValueRange iterArgs) {
+          builder.create<mlir::scf::YieldOp>(nestedLocation, iterArgs);
+        });
+    loops.push_back(loop);
+    inductionValues[dimension] = loop.getInductionVar();
+    currentDestinations.assign(loop.getRegionIterArgs().begin(),
+                               loop.getRegionIterArgs().end());
+    rewriter.setInsertionPoint(loop.getBody()->getTerminator());
+  }
+  if (loops.empty())
+    return mlir::failure();
+
+  llvm::SmallVector<mlir::OpFoldResult, 6> tileOffsets;
+  llvm::SmallVector<mlir::OpFoldResult, 6> tileSizes;
+  for (unsigned dimension = 0; dimension < descriptor.iterationExtents.size();
+       ++dimension) {
+    const int64_t extent = descriptor.iterationExtents[dimension];
+    const int64_t size = choice.iteratorTileSizes[dimension];
+    if (size >= extent) {
+      tileOffsets.push_back(rewriter.getIndexAttr(0));
+      tileSizes.push_back(rewriter.getIndexAttr(extent));
+      continue;
+    }
+    mlir::Value induction = inductionValues[dimension];
+    if (!induction)
+      return mlir::failure();
+    tileOffsets.push_back(induction);
+    mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, rewriter.getContext());
+    mlir::AffineMap bounded = mlir::AffineMap::get(
+        1, 0,
+        {mlir::getAffineConstantExpr(size, rewriter.getContext()),
+         mlir::getAffineConstantExpr(extent, rewriter.getContext()) - d0},
+        rewriter.getContext());
+    tileSizes.push_back(mlir::affine::makeComposedFoldedAffineMin(
+        rewriter, location, bounded, {induction}));
+  }
+
+  llvm::SmallVector<mlir::Value, 8> yielded = currentDestinations;
+  for (auto [consumerIndex, operation] : llvm::enumerate(consumers)) {
+    auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(operation);
+    auto originalTiling = mlir::cast<mlir::TilingInterface>(operation);
+    if (!dps || dps.getNumDpsInits() != operation->getNumResults())
+      return mlir::failure();
+    mlir::IRMapping mapping;
+    const unsigned destinationOffset = destinationOffsets[consumerIndex];
+    for (unsigned result = 0; result < operation->getNumResults(); ++result)
+      mapping.map(dps.getDpsInitOperand(result)->get(),
+                  currentDestinations[destinationOffset + result]);
+    mlir::Operation *cloned = rewriter.clone(*operation, mapping);
+    auto clonedTiling = mlir::cast<mlir::TilingInterface>(cloned);
+    mlir::FailureOr<mlir::TilingResult> tiled =
+        clonedTiling.getTiledImplementation(rewriter, tileOffsets, tileSizes);
+    rewriter.eraseOp(cloned);
+    if (mlir::failed(tiled) ||
+        tiled->tiledValues.size() != operation->getNumResults())
+      return mlir::failure();
+    for (auto [resultNumber, tiledValue] :
+         llvm::enumerate(tiled->tiledValues)) {
+      llvm::SmallVector<mlir::OpFoldResult> resultOffsets;
+      llvm::SmallVector<mlir::OpFoldResult> resultSizes;
+      if (mlir::failed(originalTiling.getResultTilePosition(
+              rewriter, resultNumber, tileOffsets, tileSizes, resultOffsets,
+              resultSizes)))
+        return mlir::failure();
+      llvm::SmallVector<mlir::OpFoldResult, 4> strides(
+          resultOffsets.size(), rewriter.getIndexAttr(1));
+      yielded[destinationOffset + resultNumber] =
+          rewriter.create<mlir::tensor::InsertSliceOp>(
+              location, tiledValue,
+              currentDestinations[destinationOffset + resultNumber],
+              resultOffsets, resultSizes, strides);
+    }
+  }
+
+  auto innermostYield =
+      mlir::cast<mlir::scf::YieldOp>(loops.back().getBody()->getTerminator());
+  rewriter.setInsertionPoint(innermostYield);
+  rewriter.replaceOpWithNewOp<mlir::scf::YieldOp>(innermostYield, yielded);
+  for (size_t reverse = 1; reverse < loops.size(); ++reverse) {
+    const size_t outerIndex = loops.size() - reverse - 1;
+    auto outerYield = mlir::cast<mlir::scf::YieldOp>(
+        loops[outerIndex].getBody()->getTerminator());
+    rewriter.setInsertionPoint(outerYield);
+    rewriter.replaceOpWithNewOp<mlir::scf::YieldOp>(
+        outerYield, loops[outerIndex + 1].getResults());
+  }
+
+  mlir::ValueRange replacements = loops.front().getResults();
+  for (auto [consumerIndex, operation] : llvm::enumerate(consumers)) {
+    const unsigned offset = destinationOffsets[consumerIndex];
+    rewriter.replaceOp(operation,
+                       replacements.slice(offset, operation->getNumResults()));
+  }
+  JointConsumerTilingResult result;
+  for (mlir::scf::ForOp loop : loops)
+    result.loops.push_back(
+        mlir::cast<mlir::LoopLikeOpInterface>(loop.getOperation()));
+  result.tiledConsumers = consumers.size();
+  return result;
+}
+
 void eraseDeadOperations(mlir::IRRewriter &rewriter, TileRegionOp region) {
   llvm::SmallVector<mlir::Operation *, 32> operations;
   region.walk<mlir::WalkOrder::PostOrder>([&](mlir::Operation *operation) {
@@ -664,7 +1212,7 @@ applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
   llvm::DenseMap<mlir::Operation *,
                  const compiler::detail::TemporalScopeDescriptor *>
       descriptors;
-  for (const auto &descriptor : domain.getScopeDescriptors())
+  for (const auto &descriptor : domain.getScopeDescriptors(choice.kind))
     descriptors.try_emplace(descriptor.operation, &descriptor);
   for (const auto &scope : choice.scopes) {
     auto descriptor = descriptors.find(scope.operation);
@@ -689,7 +1237,67 @@ applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
   compiler::detail::StructuredBufferReplacementListener listener(relations);
   mlir::IRRewriter rewriter(region.getContext(), &listener);
   TemporalTilingStatistics statistics;
+  llvm::DenseMap<mlir::Operation *,
+                 const compiler::detail::TemporalScopeChoice *>
+      choicesByOperation;
+  for (const auto &scope : choice.scopes)
+    choicesByOperation.try_emplace(scope.operation, &scope);
+  llvm::SmallPtrSet<mlir::Operation *, 8> commonLoopConsumers;
+  if (choice.kind == compiler::detail::TemporalTraversalKind::Joint) {
+    for (const auto &group : domain.getJointProducerGroups()) {
+      llvm::SmallVector<mlir::Operation *, 8> consumers;
+      for (mlir::OpOperand *operand : group.consumerOperands)
+        if (operand && !llvm::is_contained(consumers, operand->getOwner()))
+          consumers.push_back(operand->getOwner());
+      if (consumers.size() < 2 ||
+          llvm::any_of(consumers, [&](mlir::Operation *operation) {
+            return !descriptors.count(operation) ||
+                   !choicesByOperation.count(operation);
+          }))
+        continue;
+      const bool anyAlreadyGrouped =
+          llvm::any_of(consumers, [&](mlir::Operation *operation) {
+            return commonLoopConsumers.contains(operation);
+          });
+      const bool allAlreadyGrouped =
+          llvm::all_of(consumers, [&](mlir::Operation *operation) {
+            return commonLoopConsumers.contains(operation);
+          });
+      if (anyAlreadyGrouped && !allAlreadyGrouped)
+        return fail<TemporalTilingStatistics>(
+            failure, TemporalTilingFailureKind::BrokenContract,
+            "joint producer groups overlap only part of a consumer set");
+      if (allAlreadyGrouped)
+        continue;
+      llvm::SmallVector<const compiler::detail::TemporalScopeDescriptor *, 8>
+          groupDescriptors;
+      llvm::SmallVector<const compiler::detail::TemporalScopeChoice *, 8>
+          groupChoices;
+      for (mlir::Operation *operation : consumers) {
+        groupDescriptors.push_back(descriptors.lookup(operation));
+        groupChoices.push_back(choicesByOperation.lookup(operation));
+      }
+      mlir::FailureOr<JointConsumerTilingResult> tiled = tileJointConsumers(
+          rewriter, consumers, groupDescriptors, groupChoices);
+      if (mlir::failed(tiled))
+        return fail<TemporalTilingStatistics>(
+            failure, TemporalTilingFailureKind::CompilerFailure,
+            "compatible joint consumers could not form one common SCF loop");
+      for (mlir::Operation *operation : consumers)
+        commonLoopConsumers.insert(operation);
+      statistics.tiledTraversals += tiled->tiledConsumers;
+      statistics.loops += tiled->loops.size();
+      if (mlir::failed(specializeRaggedTails(
+              rewriter, *groupDescriptors.front(), *groupChoices.front(),
+              tiled->loops, statistics)))
+        return fail<TemporalTilingStatistics>(
+            failure, TemporalTilingFailureKind::CompilerFailure,
+            "joint consumer loop could not form its static tail");
+    }
+  }
   for (const auto &scope : llvm::reverse(choice.scopes)) {
+    if (commonLoopConsumers.contains(scope.operation))
+      continue;
     const auto &descriptor = *descriptors.find(scope.operation)->second;
     llvm::SmallVector<mlir::OpFoldResult, 6> tileSizes;
     bool hasActiveDimension = false;
@@ -707,8 +1315,12 @@ applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
       return fail<TemporalTilingStatistics>(
           failure, TemporalTilingFailureKind::BrokenContract,
           "temporal traversal lost TilingInterface before apply");
+    ExactFusionInventory independentInventory;
     mlir::FailureOr<ExactFusionInventory> exactFusionEdges =
-        collectExactFusionEdges(region, failure);
+        choice.kind == compiler::detail::TemporalTraversalKind::Joint
+            ? collectExactFusionEdges(region, failure)
+            : mlir::FailureOr<ExactFusionInventory>(
+                  std::move(independentInventory));
     if (mlir::failed(exactFusionEdges))
       return mlir::failure();
     llvm::SmallVector<ViewFusionRequest, 4> viewFusionRequests;
@@ -716,21 +1328,25 @@ applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
       if (!path.consumerOperand ||
           path.consumerOperand->getOwner() != scope.operation)
         continue;
-      viewFusionRequests.push_back({path.producer, path.consumerOperand->get(),
-                                    path.producerDimensions});
+      viewFusionRequests.push_back(
+          {path.producer, path.consumerOperand->get(), path.producerDimensions,
+           path.consumerViewToProducer ? &*path.consumerViewToProducer
+                                       : nullptr});
     }
     llvm::SmallVector<ConcatFusionRequest, 2> concatFusionRequests;
-    for (mlir::OpOperand &operand : scope.operation->getOpOperands()) {
-      compiler::detail::TemporalConcatQueryResult concat =
-          compiler::detail::queryTemporalConcatAssembly(operand);
-      if (concat.kind ==
-          compiler::detail::TemporalConcatQueryKind::BrokenContract)
-        return fail<TemporalTilingStatistics>(
-            failure, TemporalTilingFailureKind::BrokenContract, concat.detail);
-      if (concat.isExact())
-        concatFusionRequests.push_back(
-            {concat.assembledValue, std::move(concat.segments)});
-    }
+    if (choice.kind == compiler::detail::TemporalTraversalKind::Joint)
+      for (mlir::OpOperand &operand : scope.operation->getOpOperands()) {
+        compiler::detail::TemporalConcatQueryResult concat =
+            compiler::detail::queryTemporalConcatAssembly(operand);
+        if (concat.kind ==
+            compiler::detail::TemporalConcatQueryKind::BrokenContract)
+          return fail<TemporalTilingStatistics>(
+              failure, TemporalTilingFailureKind::BrokenContract,
+              concat.detail);
+        if (concat.isExact())
+          concatFusionRequests.push_back(
+              {concat.assembledValue, std::move(concat.segments)});
+      }
     mlir::scf::SCFTilingOptions tilingOptions;
     tilingOptions.setTileSizes(tileSizes);
     tilingOptions.setInterchange(buildInterchange(descriptor, scope));
@@ -796,6 +1412,19 @@ applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
           "exact insert assembly could not form one tile-local value");
   }
 
+  if (choice.kind == compiler::detail::TemporalTraversalKind::Joint &&
+      !domain.getJointProducerGroups().empty()) {
+    std::string jointFailure;
+    if (mlir::failed(fuseJointProducerSlices(rewriter, region,
+                                             domain.getJointProducerGroups(),
+                                             statistics, jointFailure)))
+      return fail<TemporalTilingStatistics>(
+          failure, TemporalTilingFailureKind::CompilerFailure,
+          "all-use joint producer did not materialize once in its common "
+          "loop: " +
+              jointFailure);
+  }
+
   if (mlir::failed(canonicalizeTiledRegion(region, &listener)) ||
       mlir::failed(refineLinalgStaticTypes(rewriter, region)) ||
       mlir::failed(refineOnlineAttentionStaticTypes(rewriter, region)) ||
@@ -810,6 +1439,11 @@ applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
     return fail<TemporalTilingStatistics>(
         failure, TemporalTilingFailureKind::CompilerFailure,
         "bounded temporal canonicalization did not converge");
+  if (mlir::failed(mlir::verify(region)))
+    return fail<TemporalTilingStatistics>(
+        failure, TemporalTilingFailureKind::CompilerFailure,
+        "temporal tiling was invalid before final common-subexpression "
+        "elimination");
   mlir::DominanceInfo dominance(region);
   mlir::eliminateCommonSubExpressions(rewriter, dominance, region);
   eraseDeadOperations(rewriter, region);

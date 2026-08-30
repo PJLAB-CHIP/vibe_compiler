@@ -25,6 +25,7 @@ using wafer::analysis::IndexRelationStatus;
 using wafer::analysis::IndexSetResult;
 using wafer::analysis::PhysicalAccessRelation;
 using wafer::analysis::PhysicalLayoutRelation;
+using wafer::analysis::StaticRectangularIndexSet;
 using wafer::analysis::StaticRectangularIndexSetPiecesResult;
 using wafer::analysis::StaticRectangularIndexSetResult;
 using wafer::analysis::TransferRealizability;
@@ -219,6 +220,38 @@ TEST(IndexRelationTest,
             llvm::SmallVector<int64_t>({0, 0, 2, 0}));
   EXPECT_EQ(reductionShard.domain->sizes,
             llvm::SmallVector<int64_t>({1, 16, 2, 128}));
+}
+
+TEST(IndexRelationTest,
+     InverseCanonicalReshapeRetainsBoundedRectangleDecomposition) {
+  IndexRelationResult flatten =
+      IndexRelation::staticReshape(/*destinationShape=*/{2050, 128},
+                                   /*sourceShape=*/{2, 1025, 128});
+  ASSERT_TRUE(flatten.isExact());
+  StaticRectangularIndexSetPiecesResult sourcePieces =
+      flatten.get()->getExactStaticRectangularImagePieces(
+          /*destinationOffsets=*/{0, 0},
+          /*destinationSizes=*/{1500, 128});
+  ASSERT_TRUE(sourcePieces.isExact()) << sourcePieces.reason;
+  ASSERT_EQ(sourcePieces.domains.size(), 2u);
+
+  IndexRelationResult unflatten = flatten.get()->inverse();
+  ASSERT_TRUE(unflatten.isExact());
+  for (const StaticRectangularIndexSet &sourcePiece : sourcePieces.domains) {
+    StaticRectangularIndexSetPiecesResult viewPieces =
+        unflatten.get()->getExactStaticRectangularImagePieces(
+            sourcePiece.offsets, sourcePiece.sizes);
+    ASSERT_TRUE(viewPieces.isExact()) << viewPieces.reason;
+    ASSERT_EQ(viewPieces.domains.size(), 1u);
+  }
+  EXPECT_EQ(sourcePieces.domains[0].offsets,
+            (llvm::SmallVector<int64_t>{0, 0, 0}));
+  EXPECT_EQ(sourcePieces.domains[0].sizes,
+            (llvm::SmallVector<int64_t>{1, 1025, 128}));
+  EXPECT_EQ(sourcePieces.domains[1].offsets,
+            (llvm::SmallVector<int64_t>{1, 0, 0}));
+  EXPECT_EQ(sourcePieces.domains[1].sizes,
+            (llvm::SmallVector<int64_t>{1, 475, 128}));
 }
 
 TEST(PhysicalAccessRelationTest,
@@ -447,6 +480,49 @@ TEST(IndexRelationTest, ProjectedAffineMapIsDerivedAndFailsClosed) {
                                    /*sourceShape=*/{2, 3});
   ASSERT_TRUE(reshape.isExact());
   EXPECT_FALSE(reshape.get()->getProjectedAffineMap(&context));
+}
+
+TEST(IndexRelationTest,
+     CanonicalRowMajorConstructionComposesMixedUnitReshapeAndPermutation) {
+  mlir::MLIRContext context;
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+  mlir::AffineExpr d1 = mlir::getAffineDimExpr(1, &context);
+  mlir::AffineExpr d2 = mlir::getAffineDimExpr(2, &context);
+  mlir::AffineExpr d3 = mlir::getAffineDimExpr(3, &context);
+  IndexRelationResult expand = IndexRelation::staticReshape(
+      /*destinationShape=*/{2, 1, 1025, 128},
+      /*sourceShape=*/{2, 1025, 128});
+  IndexRelationResult moveUnit = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(4, 0, {d0, d2, d1, d3}, &context),
+      /*destinationShape=*/{2, 1025, 1, 128},
+      /*sourceShape=*/{2, 1, 1025, 128});
+  IndexRelationResult collapse = IndexRelation::staticReshape(
+      /*destinationShape=*/{2, 1025, 128},
+      /*sourceShape=*/{2, 1025, 1, 128});
+  ASSERT_TRUE(expand.isExact());
+  ASSERT_TRUE(moveUnit.isExact());
+  ASSERT_TRUE(collapse.isExact());
+  EXPECT_TRUE(expand.get()->hasCanonicalRowMajorReshapeConstruction());
+  EXPECT_TRUE(moveUnit.get()->hasCanonicalRowMajorReshapeConstruction());
+  EXPECT_TRUE(collapse.get()->hasCanonicalRowMajorReshapeConstruction());
+
+  IndexRelationResult composed = moveUnit.get()->compose(*expand.get());
+  ASSERT_TRUE(composed.isExact());
+  EXPECT_TRUE(composed.get()->hasCanonicalRowMajorReshapeConstruction());
+  composed = collapse.get()->compose(*composed.get());
+  ASSERT_TRUE(composed.isExact());
+  EXPECT_TRUE(composed.get()->hasCanonicalRowMajorReshapeConstruction());
+
+  IndexRelationResult transpose = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(2, 0, {d1, d0}, &context),
+      /*destinationShape=*/{32, 16}, /*sourceShape=*/{16, 32});
+  ASSERT_TRUE(transpose.isExact());
+  EXPECT_FALSE(transpose.get()->hasCanonicalRowMajorReshapeConstruction());
+  IndexRelationResult clipped = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(1, 0, {d0}, &context),
+      /*destinationShape=*/{8}, /*sourceShape=*/{4});
+  ASSERT_TRUE(clipped.isExact());
+  EXPECT_FALSE(clipped.get()->hasCanonicalRowMajorReshapeConstruction());
 }
 
 TEST(IndexRelationTest, ComposesSliceAndReshapePointwise) {

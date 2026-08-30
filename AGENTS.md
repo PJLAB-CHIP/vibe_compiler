@@ -180,6 +180,8 @@ Pipeline position:
 - `OperationPass`不得读取root sibling，不得修改root operand或parent block，也不得替换/删除自己的root。
 - Pass不在多次`runOnOperation`间保留可变状态，不使用可变全局状态；创建新dialect对象时声明dependent dialect。
 - Analysis只读current IR和显式只读target facts。IR mutation后默认失效；只有确实保持有效时才preserve。
+- 共享analysis的表达能力不决定transformation归属。只有selected tile、region、layout或其它下游choice可见后才能判断的改写留在该下游stage；
+  不能仅因上游也能调用同一analysis就提前决定。
 - 只有被多个pass重复消费且可安全失效的事实进入`AnalysisManager`；一次性validation、choice和跨clone工作数据留在当前调用。
 - atomic pass完成一个可验证变换；pipeline只组合稳定IR边界。搜索、module fan-out、外部工具和目录提交由compiler driver负责。
 
@@ -194,6 +196,9 @@ Pipeline position:
 - 试运行只clone最近的`IsolatedFromAbove` owner，外部operand映射到scratch自有value；scratch不得引用或增加原IR use。
   不为取得anchor构造临时ModuleOp/FuncOp。为最终output、外部工具或reducer生成的clone必须说明owner、失败命运和下游消费者。
 - `fold`只做便宜、局部、确定的恒等式；canonicalizer只优化，不承担correctness legalization。Greedy rewrite限制root和工作量。
+- 当前设计已将某类ordinary pure graph等价探索交给e-graph时，该语言内新增的relation-driven等价式必须作为e-graph rule和只读callback实现；
+  不在e-graph入口前、extractor旁或materializer后增加同义greedy/DRR/C++旁路。Multi-use需要扩展同一request的root/shared-DAG合同，
+  不能以逐consumer pattern代替。
 
 ### C++、错误与确定性
 

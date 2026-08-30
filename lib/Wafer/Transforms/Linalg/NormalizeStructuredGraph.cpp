@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <optional>
 #include <utility>
 
@@ -104,6 +105,7 @@ struct RelationRecord {
   bool injective = false;
   bool bijective = false;
   bool identity = false;
+  llvm::SmallVector<uint32_t, 4> compositionFactors;
 };
 
 class RelationStore {
@@ -179,6 +181,7 @@ public:
           destination.getNumElements() == source.getNumElements();
     }
     records.push_back(std::move(record));
+    records.back().compositionFactors.push_back(records.size());
     return records.size();
   }
 
@@ -221,6 +224,9 @@ public:
       flags |= WAFER_EGRAPH_RELATION_BIJECTIVE;
     if (record->materialization != RelationMaterialization::None)
       flags |= WAFER_EGRAPH_RELATION_MATERIALIZABLE;
+    if (record->materialization == RelationMaterialization::Reshape &&
+        record->relation.hasCanonicalRowMajorReshapeConstruction())
+      flags |= WAFER_EGRAPH_RELATION_CANONICAL_RESHAPE;
     *facts = WaferEGraphRelationFacts{record->destinationTypeId,
                                       record->sourceTypeId, flags, 0};
     return WAFER_EGRAPH_CALLBACK_EXACT;
@@ -254,70 +260,127 @@ public:
       return WAFER_EGRAPH_CALLBACK_EXACT;
     }
 
-    std::optional<uint32_t> id;
-    if (outer->materialization == RelationMaterialization::Reshape &&
-        inner->materialization == RelationMaterialization::Reshape) {
-      auto destination = types.lookupRankedTensor(outer->destinationTypeId);
-      auto source = types.lookupRankedTensor(inner->sourceTypeId);
-      if (destination && source) {
-        IndexRelationResult reshape = IndexRelation::staticReshape(
-            destination.getShape(), source.getShape());
-        if (reshape.isExact()) {
-          const RelationMaterialization materialization =
-              outer->destinationTypeId == inner->sourceTypeId ||
-                      canMaterializeStaticReshape(source, destination)
-                  ? RelationMaterialization::Reshape
-                  : RelationMaterialization::None;
-          id = intern(std::move(*reshape.get()), outer->destinationTypeId,
-                      inner->sourceTypeId, std::nullopt, materialization,
-                      /*total=*/true);
+    std::vector<uint32_t> factors(outer->compositionFactors.begin(),
+                                  outer->compositionFactors.end());
+    factors.insert(factors.end(), inner->compositionFactors.begin(),
+                   inner->compositionFactors.end());
+    bool reducedFactors = false;
+    while (factors.size() >= 2) {
+      bool removed = false;
+      for (size_t length = factors.size(); length >= 2 && !removed; --length)
+        for (size_t begin = 0; begin + length <= factors.size(); ++begin) {
+          std::vector<uint32_t> candidate(factors.begin() + begin,
+                                          factors.begin() + begin + length);
+          auto found = compositionByFactors.find(candidate);
+          const RelationRecord *record = found == compositionByFactors.end()
+                                             ? nullptr
+                                             : lookup(found->second);
+          if (!record || !record->identity)
+            continue;
+          factors.erase(factors.begin() + begin,
+                        factors.begin() + begin + length);
+          reducedFactors = removed = true;
+          break;
         }
-      }
-    } else if (outer->materialization == RelationMaterialization::Reshape ||
-               inner->materialization == RelationMaterialization::Reshape) {
-      // A projected map composed with a general row-major reshape normally
-      // has no single Tensor/Linalg materialization form.  Do not invoke the
-      // generic Presburger composition for this optional alternative: an
-      // adjacent reshape pair can still close to identity in its own e-class,
-      // after which congruence exposes the useful projected-map rewrite.
+      if (!removed)
+        break;
+    }
+    if (auto found = compositionByFactors.find(factors);
+        found != compositionByFactors.end()) {
+      compositionCache.try_emplace(cacheKey, found->second);
+      *resultId = found->second;
+      return WAFER_EGRAPH_CALLBACK_EXACT;
+    }
+
+    auto destination = types.lookupRankedTensor(outer->destinationTypeId);
+    auto source = types.lookupRankedTensor(inner->sourceTypeId);
+    if (!destination || !source) {
       compositionCache.try_emplace(cacheKey, 0);
       return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
-    } else {
-      IndexRelationResult composed = outer->relation.compose(inner->relation);
-      if (!composed.isExact()) {
+    }
+    IndexRelationResult composed;
+    if (factors.empty() && outer->destinationTypeId == inner->sourceTypeId) {
+      composed = IndexRelation::identity(destination.getShape());
+    } else if (factors.size() == 1) {
+      const RelationRecord *record = lookup(factors.front());
+      if (!record || record->destinationTypeId != outer->destinationTypeId ||
+          record->sourceTypeId != inner->sourceTypeId) {
         compositionCache.try_emplace(cacheKey, 0);
-        return statusFor(composed.status);
+        return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
       }
-      std::optional<mlir::AffineMap> projected;
+      compositionCache.try_emplace(cacheKey, factors.front());
+      compositionByFactors.try_emplace(factors, factors.front());
+      *resultId = factors.front();
+      return WAFER_EGRAPH_CALLBACK_EXACT;
+    } else if (reducedFactors) {
+      const RelationRecord *first = lookup(factors[0]);
+      const RelationRecord *second = lookup(factors[1]);
+      if (!first || !second) {
+        compositionCache.try_emplace(cacheKey, 0);
+        return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+      }
+      composed = first->relation.compose(second->relation);
+      for (size_t index = 2; composed.isExact() && index < factors.size();
+           ++index) {
+        const RelationRecord *next = lookup(factors[index]);
+        if (!next) {
+          compositionCache.try_emplace(cacheKey, 0);
+          return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+        }
+        composed = composed.get()->compose(next->relation);
+      }
+    } else if (outer->materialization == RelationMaterialization::Reshape &&
+               inner->materialization == RelationMaterialization::Reshape) {
+      composed = IndexRelation::staticReshape(destination.getShape(),
+                                              source.getShape());
+    } else {
+      composed = outer->relation.compose(inner->relation);
+    }
+    if (!composed.isExact()) {
+      compositionCache.try_emplace(cacheKey, 0);
+      return statusFor(composed.status);
+    }
+
+    std::optional<uint32_t> id;
+    if (composed.get()->hasCanonicalRowMajorReshapeConstruction() &&
+        (outer->destinationTypeId == inner->sourceTypeId ||
+         canMaterializeStaticReshape(source, destination)))
+      id = intern(std::move(*composed.get()), outer->destinationTypeId,
+                  inner->sourceTypeId, std::nullopt,
+                  RelationMaterialization::Reshape, /*total=*/true);
+
+    std::optional<mlir::AffineMap> projected;
+    if (!id) {
       if (outer->projectedMap && inner->projectedMap)
         projected = inner->projectedMap->compose(*outer->projectedMap);
       else
         projected = composed.get()->getProjectedAffineMap(context);
-      if (projected) {
-        auto destination = types.lookupRankedTensor(outer->destinationTypeId);
-        auto source = types.lookupRankedTensor(inner->sourceTypeId);
-        if (destination && source) {
-          IndexRelationResult canonical = IndexRelation::fromAffineMap(
-              *projected, destination.getShape(), source.getShape());
-          if (canonical.isExact() &&
-              canonical.get()->hasTotalBoundedAffineMapConstruction())
-            id = intern(std::move(*canonical.get()), outer->destinationTypeId,
-                        inner->sourceTypeId, projected,
-                        RelationMaterialization::ProjectedMap,
-                        /*total=*/true);
-        }
-      }
-      if (!id && !workLimitReached)
-        id = intern(std::move(*composed.get()), outer->destinationTypeId,
-                    inner->sourceTypeId, std::nullopt,
-                    RelationMaterialization::None, /*total=*/true);
     }
+    if (!id && projected) {
+      IndexRelationResult canonical = IndexRelation::fromAffineMap(
+          *projected, destination.getShape(), source.getShape());
+      if (canonical.isExact() &&
+          canonical.get()->hasTotalBoundedAffineMapConstruction())
+        id = intern(std::move(*canonical.get()), outer->destinationTypeId,
+                    inner->sourceTypeId, projected,
+                    RelationMaterialization::ProjectedMap, /*total=*/true);
+    }
+    if (!id && !workLimitReached)
+      id = intern(std::move(*composed.get()), outer->destinationTypeId,
+                  inner->sourceTypeId, std::nullopt,
+                  RelationMaterialization::None, /*total=*/true);
     if (!id)
       compositionCache.try_emplace(cacheKey, 0);
     if (!id)
       return workLimitReached ? WAFER_EGRAPH_CALLBACK_WORK_LIMIT
                               : WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
     compositionCache.try_emplace(cacheKey, *id);
+    compositionByFactors.try_emplace(factors, *id);
+    if (RelationRecord *record = lookup(*id);
+        record && record->compositionFactors.size() == 1 &&
+        record->compositionFactors.front() == *id &&
+        record->materialization == RelationMaterialization::None)
+      record->compositionFactors.assign(factors.begin(), factors.end());
     *resultId = *id;
     return WAFER_EGRAPH_CALLBACK_EXACT;
   }
@@ -345,6 +408,7 @@ private:
   bool workLimitReached = false;
   llvm::SmallVector<RelationRecord, 32> records;
   llvm::DenseMap<uint64_t, uint32_t> compositionCache;
+  std::map<std::vector<uint32_t>, uint32_t> compositionByFactors;
 };
 
 struct AccessDescription {
@@ -805,169 +869,18 @@ mlir::Operation *createMatmulVariant(mlir::RewriterBase &rewriter,
   return nullptr;
 }
 
-struct MultiUseConsumerUpdate {
-  mlir::linalg::LinalgOp operation;
-  llvm::SmallVector<mlir::AffineMap, 4> maps;
-  llvm::SmallVector<unsigned, 2> operands;
-  MatmulVariant contractionVariant = MatmulVariant::None;
-};
-
-mlir::LogicalResult tryPropagateMultiUseProjectedAccess(
-    mlir::Operation *operation, mlir::IRRewriter &rewriter,
-    StructuredGraphNormalizationStatistics &statistics, bool &changed) {
-  changed = false;
-  std::optional<AccessDescription> access = getAccessDescription(operation);
-  if (!access || !access->projectedMap || operation->getNumResults() != 1 ||
-      llvm::range_size(operation->getResult(0).getUses()) < 2)
-    return mlir::success();
-  auto sourceType =
-      mlir::dyn_cast<mlir::RankedTensorType>(access->source.getType());
-  if (!sourceType || !sourceType.hasStaticShape())
-    return mlir::success();
-
-  llvm::SmallVector<MultiUseConsumerUpdate, 4> updates;
-  llvm::DenseMap<mlir::Operation *, unsigned> updateIndices;
-  for (mlir::OpOperand &use : operation->getResult(0).getUses()) {
-    auto consumer = mlir::dyn_cast<mlir::linalg::LinalgOp>(use.getOwner());
-    if (!consumer || !isSupportedCompute(consumer) ||
-        use.getOperandNumber() >= consumer.getNumDpsInputs())
-      return mlir::success();
-    EGraphNodeKind kind = classifyLinalg(consumer);
-    if (kind != EGraphNodeKind::Contraction &&
-        !mlir::isa<mlir::linalg::GenericOp>(consumer))
-      return mlir::success();
-    unsigned updateIndex = 0;
-    auto found = updateIndices.find(consumer.getOperation());
-    if (found == updateIndices.end()) {
-      updateIndex = updates.size();
-      updateIndices.try_emplace(consumer.getOperation(), updateIndex);
-      updates.push_back(MultiUseConsumerUpdate{
-          consumer, consumer.getIndexingMapsArray(), {}, MatmulVariant::None});
-    } else {
-      updateIndex = found->second;
-    }
-    MultiUseConsumerUpdate &update = updates[updateIndex];
-    unsigned operandNumber = use.getOperandNumber();
-    mlir::AffineMap newMap =
-        access->projectedMap->compose(update.maps[operandNumber]);
-    llvm::SmallVector<int64_t, 4> loopShape = consumer.getStaticLoopRanges();
-    IndexRelationResult relation =
-        IndexRelation::fromAffineMap(newMap, loopShape, sourceType.getShape());
-    if (!relation.isExact() ||
-        !relation.get()->hasTotalBoundedAffineMapConstruction())
-      return mlir::success();
-    update.maps[operandNumber] = newMap;
-    update.operands.push_back(operandNumber);
-  }
-
-  for (MultiUseConsumerUpdate &update : updates) {
-    if (!mlir::inversePermutation(mlir::concatAffineMaps(update.maps)))
-      return mlir::success();
-    if (classifyLinalg(update.operation) != EGraphNodeKind::Contraction)
-      continue;
-    if (!hasCanonicalContractionPayload(update.operation))
-      return mlir::success();
-    auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
-        update.operation->getResult(0).getType());
-    if (!resultType)
-      return mlir::success();
-    update.contractionVariant = classifyMatmulMaps(
-        update.maps, update.operation.getIteratorTypesArray(),
-        resultType.getRank());
-    if (update.contractionVariant == MatmulVariant::None)
-      return mlir::success();
-  }
-
-  llvm::SmallVector<mlir::Operation *, 4> oldProducers;
-  for (mlir::Value operand : operation->getOperands())
-    if (mlir::Operation *producer = operand.getDefiningOp())
-      oldProducers.push_back(producer);
-
-  llvm::SmallVector<std::pair<mlir::Operation *, mlir::Operation *>, 2>
-      contractionReplacements;
-  for (MultiUseConsumerUpdate &update : updates) {
-    if (update.contractionVariant == MatmulVariant::None)
-      continue;
-    llvm::SmallVector<mlir::Value, 4> operands(
-        update.operation->getOperands().begin(),
-        update.operation->getOperands().end());
-    for (unsigned operandNumber : update.operands)
-      operands[operandNumber] = access->source;
-    rewriter.setInsertionPoint(update.operation);
-    mlir::Operation *replacement = createMatmulVariant(
-        rewriter, update.operation.getLoc(), update.contractionVariant,
-        llvm::ArrayRef(operands).take_front(update.operation.getNumDpsInputs()),
-        llvm::ArrayRef(operands).drop_front(
-            update.operation.getNumDpsInputs()));
-    if (!replacement) {
-      for (auto &inserted : llvm::reverse(contractionReplacements))
-        rewriter.eraseOp(inserted.second);
-      return mlir::failure();
-    }
-    llvm::SmallVector<mlir::NamedAttribute, 4> attributes;
-    for (mlir::NamedAttribute attribute :
-         update.operation->getDiscardableAttrs())
-      if (attribute.getName() !=
-          mlir::linalg::LinalgDialect::kMemoizedIndexingMapsAttrName)
-        attributes.push_back(attribute);
-    replacement->setDiscardableAttrs(attributes);
-    contractionReplacements.emplace_back(update.operation, replacement);
-  }
-
-  for (MultiUseConsumerUpdate &update : updates) {
-    if (update.contractionVariant != MatmulVariant::None)
-      continue;
-    auto generic = mlir::cast<mlir::linalg::GenericOp>(update.operation);
-    rewriter.modifyOpInPlace(generic, [&] {
-      for (unsigned operandNumber : update.operands)
-        generic->setOperand(operandNumber, access->source);
-      generic.setIndexingMapsAttr(rewriter.getAffineMapArrayAttr(update.maps));
-      generic->removeDiscardableAttr(
-          mlir::linalg::LinalgDialect::kMemoizedIndexingMapsAttrName);
-    });
-  }
-  for (auto [oldOperation, replacement] : contractionReplacements)
-    rewriter.replaceOp(oldOperation, replacement->getResults());
-
-  rewriter.eraseOp(operation);
-  eraseDeadProducerClosure(rewriter, oldProducers);
-  ++statistics.accessTransformsRemoved;
-  ++statistics.multiUseAccessPropagations;
-  changed = true;
-  return mlir::success();
-}
-
-mlir::LogicalResult propagateMultiUseProjectedAccesses(
-    mlir::func::FuncOp function, mlir::IRRewriter &rewriter,
-    StructuredGraphNormalizationStatistics &statistics) {
-  while (true) {
-    llvm::SmallVector<mlir::Operation *, 8> candidates;
-    function.walk([&](mlir::Operation *operation) {
-      if (operation->getNumResults() == 1 &&
-          llvm::range_size(operation->getResult(0).getUses()) >= 2 &&
-          getAccessDescription(operation))
-        candidates.push_back(operation);
-    });
-    bool changed = false;
-    for (mlir::Operation *candidate : candidates) {
-      if (mlir::failed(tryPropagateMultiUseProjectedAccess(
-              candidate, rewriter, statistics, changed)))
-        return mlir::failure();
-      if (changed)
-        break;
-    }
-    if (!changed)
-      return mlir::success();
-  }
-}
-
 class ComponentExpression {
 public:
-  ComponentExpression(mlir::Value root,
+  ComponentExpression(llvm::ArrayRef<mlir::Value> componentRoots,
+                      llvm::ArrayRef<mlir::Operation *> componentOperations,
+                      mlir::Operation *anchor,
                       const StructuredGraphNormalizationOptions &options)
-      : root(root), options(options),
-        relations(types, root.getContext(), options.maximumRelationQueries) {
-    mlir::Operation *parent = root.getParentBlock()->getParentOp();
+      : roots(componentRoots.begin(), componentRoots.end()), anchor(anchor),
+        options(options), relations(types, roots.front().getContext(),
+                                    options.maximumRelationQueries) {
+    for (mlir::Operation *operation : componentOperations)
+      this->componentOperations.insert(operation);
+    mlir::Operation *parent = roots.front().getParentBlock()->getParentOp();
     uint32_t order = 1;
     parent->walk([&](mlir::Operation *operation) {
       sourceOrder.try_emplace(operation, order++);
@@ -977,7 +890,9 @@ public:
   mlir::FailureOr<StructuredGraphNormalizationOutcome>
   apply(mlir::RewriterBase &rewriter,
         StructuredGraphNormalizationStatistics &statistics) {
-    uint32_t rootNode = import(root, /*allowProducer=*/true);
+    llvm::SmallVector<uint32_t, 4> rootNodes;
+    for (mlir::Value root : roots)
+      rootNodes.push_back(import(root, /*allowProducer=*/true));
     if (relations.hasWorkLimitReached()) {
       ++statistics.components;
       ++statistics.budgetExhaustedComponents;
@@ -986,8 +901,9 @@ public:
     if (nodes.size() == 1 || !hasPotentialRewrite)
       return StructuredGraphNormalizationOutcome::Unchanged;
     ++statistics.components;
+    statistics.multiRootComponents += roots.size() > 1;
     EGraphOutcome result = structured_graph_normalization::runEGraph(
-        nodes, rootNode,
+        nodes, rootNodes,
         EGraphWorkBudget{options.maximumENodes, options.maximumMatches,
                          options.maximumIterations},
         getRelationService());
@@ -1002,33 +918,46 @@ public:
     }
     if (result.kind != EGraphOutcomeKind::Changed)
       return mlir::failure();
-    if (mlir::failed(validateExtraction(result.expression, result.rootNode)))
+    if (mlir::failed(validateExtraction(result.expression, result.rootNodes)))
       return mlir::failure();
 
     llvm::SmallVector<mlir::Operation *, 16> insertedOperations;
-    mlir::FailureOr<mlir::Value> replacement = mlir::failure();
+    mlir::FailureOr<llvm::SmallVector<mlir::Value, 4>> replacements =
+        mlir::failure();
     {
       mlir::OpBuilder::Listener *previousListener = rewriter.getListener();
-      InsertedOperationRecorder recorder(root.getParentBlock(),
+      InsertedOperationRecorder recorder(roots.front().getParentBlock(),
                                          previousListener, insertedOperations);
       rewriter.setListener(&recorder);
       auto restoreListener = llvm::make_scope_exit(
           [&] { rewriter.setListener(previousListener); });
-      replacement = materialize(rewriter, result.expression, result.rootNode);
+      replacements = materialize(rewriter, result.expression, result.rootNodes);
     }
-    if (mlir::failed(replacement) || replacement->getType() != root.getType() ||
-        *replacement == root) {
+    if (mlir::failed(replacements) || replacements->size() != roots.size() ||
+        llvm::any_of(llvm::zip_equal(roots, *replacements),
+                     [](auto values) {
+                       auto [root, replacement] = values;
+                       return root.getType() != replacement.getType();
+                     }) ||
+        llvm::all_of(llvm::zip_equal(roots, *replacements), [](auto values) {
+          return std::get<0>(values) == std::get<1>(values);
+        })) {
       for (mlir::Operation *operation : llvm::reverse(insertedOperations))
         rewriter.eraseOp(operation);
       return mlir::failure();
     }
-    mlir::Operation *oldRoot = root.getDefiningOp();
-    llvm::SmallVector<mlir::Operation *, 4> oldProducers;
-    for (mlir::Value operand : oldRoot->getOperands())
-      if (mlir::Operation *producer = operand.getDefiningOp())
-        oldProducers.push_back(producer);
-    rewriter.replaceOp(oldRoot, *replacement);
-    eraseDeadProducerClosure(rewriter, oldProducers);
+    llvm::SmallVector<mlir::Operation *, 16> oldClosure;
+    for (mlir::Value root : roots) {
+      mlir::Operation *owner = root.getDefiningOp();
+      oldClosure.push_back(owner);
+      for (mlir::Value operand : owner->getOperands())
+        if (mlir::Operation *producer = operand.getDefiningOp())
+          oldClosure.push_back(producer);
+    }
+    for (auto [root, replacement] : llvm::zip_equal(roots, *replacements))
+      if (root != replacement)
+        rewriter.replaceAllUsesWith(root, replacement);
+    eraseDeadProducerClosure(rewriter, oldClosure);
     if (result.statistics.inputAccessOccurrences >=
         result.statistics.outputAccessOccurrences)
       statistics.accessTransformsRemoved +=
@@ -1046,6 +975,8 @@ public:
     appliedRuleKinds += result.statistics.computeAbsorptionApplications != 0;
     appliedRuleKinds += result.statistics.concatApplications != 0;
     appliedRuleKinds += result.statistics.resultReindexApplications != 0;
+    appliedRuleKinds +=
+        result.statistics.reshapeThroughComputeApplications != 0;
     if (appliedRuleKinds >= 2)
       ++statistics.multiRuleChangedComponents;
     return StructuredGraphNormalizationOutcome::Changed;
@@ -1071,7 +1002,7 @@ private:
       return found->second;
     mlir::Operation *operation = value.getDefiningOp();
     if (!allowProducer || !operation || !isSupportedProducer(operation) ||
-        (value != root && !value.hasOneUse())) {
+        !componentOperations.contains(operation)) {
       uint32_t node = addInput(value);
       imported.try_emplace(value, node);
       return node;
@@ -1130,7 +1061,7 @@ private:
 
     llvm::SmallVector<int64_t, 4> loopShape = linalg.getStaticLoopRanges();
     mlir::Type iterationType = mlir::RankedTensorType::get(
-        loopShape, mlir::IntegerType::get(root.getContext(), 1));
+        loopShape, mlir::IntegerType::get(roots.front().getContext(), 1));
     uint32_t iterationTypeId = types.intern(iterationType);
     llvm::SmallVector<mlir::AffineMap, 4> maps = linalg.getIndexingMapsArray();
     for (auto [operand, map] : llvm::zip(operation->getOperands(), maps)) {
@@ -1191,6 +1122,71 @@ private:
     return true;
   }
 
+  bool getEffectiveIteratorTypes(
+      const ComputeRecipe &recipe, llvm::ArrayRef<mlir::AffineMap> maps,
+      mlir::RankedTensorType iterationType,
+      llvm::SmallVectorImpl<mlir::utils::IteratorType> &iteratorTypes) const {
+    iteratorTypes.clear();
+    if (!iterationType || maps.empty() ||
+        maps.size() != recipe.originalMaps.size())
+      return false;
+    if (iterationType.getRank() ==
+        static_cast<int64_t>(recipe.iteratorTypes.size())) {
+      llvm::append_range(iteratorTypes, recipe.iteratorTypes);
+      return true;
+    }
+
+    auto inferFromDpsResults =
+        [&](llvm::ArrayRef<mlir::AffineMap> candidate, unsigned rank,
+            llvm::SmallVectorImpl<mlir::utils::IteratorType> &result) {
+          llvm::SmallVector<bool, 6> resultAxes(rank, false);
+          for (mlir::AffineMap map :
+               candidate.drop_front(recipe.dataInputCount)) {
+            if (map.getNumDims() != rank)
+              return false;
+            for (mlir::AffineExpr expression : map.getResults()) {
+              auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+              if (!dimension || dimension.getPosition() >= rank)
+                return false;
+              resultAxes[dimension.getPosition()] = true;
+            }
+          }
+          result.clear();
+          for (bool appearsInResult : resultAxes)
+            result.push_back(appearsInResult
+                                 ? mlir::utils::IteratorType::parallel
+                                 : mlir::utils::IteratorType::reduction);
+          return true;
+        };
+
+    auto originalIterationType =
+        types.lookupRankedTensor(recipe.iterationTypeId);
+    llvm::SmallVector<mlir::utils::IteratorType, 6> inferredOriginal;
+    if (!originalIterationType ||
+        !inferFromDpsResults(recipe.originalMaps,
+                             originalIterationType.getRank(),
+                             inferredOriginal) ||
+        !llvm::equal(inferredOriginal, recipe.iteratorTypes) ||
+        !inferFromDpsResults(maps, iterationType.getRank(), iteratorTypes))
+      return false;
+
+    int64_t originalReductionElements = 1;
+    int64_t newReductionElements = 1;
+    for (auto [extent, iterator] : llvm::zip_equal(
+             originalIterationType.getShape(), recipe.iteratorTypes))
+      if (iterator == mlir::utils::IteratorType::reduction &&
+          (extent <= 0 || llvm::MulOverflow(originalReductionElements, extent,
+                                            originalReductionElements)))
+        return false;
+    for (auto [extent, iterator] :
+         llvm::zip_equal(iterationType.getShape(), iteratorTypes))
+      if (iterator == mlir::utils::IteratorType::reduction &&
+          (extent <= 0 || llvm::MulOverflow(newReductionElements, extent,
+                                            newReductionElements)))
+        return false;
+    return originalReductionElements == newReductionElements;
+  }
+
   bool validateCompute(uint32_t semanticId, uint32_t kind,
                        uint32_t resultTypeId,
                        llvm::ArrayRef<uint32_t> relationIds,
@@ -1224,13 +1220,14 @@ private:
       maps.push_back(*relation->projectedMap);
     }
     auto iterationType = types.lookupRankedTensor(iterationTypeId);
-    if (!iterationType ||
-        iterationType.getRank() !=
-            static_cast<int64_t>(recipe->iteratorTypes.size()) ||
-        maps.empty() || maps.back().getNumResults() != resultType.getRank())
+    if (!iterationType || maps.empty() ||
+        maps.back().getNumResults() != resultType.getRank())
+      return false;
+    llvm::SmallVector<mlir::utils::IteratorType, 6> iteratorTypes;
+    if (!getEffectiveIteratorTypes(*recipe, maps, iterationType, iteratorTypes))
       return false;
     for (mlir::AffineMap map : maps)
-      if (map.getNumDims() != recipe->iteratorTypes.size() ||
+      if (map.getNumDims() != static_cast<unsigned>(iterationType.getRank()) ||
           !map.isProjectedPermutation(/*allowZeroInResults=*/true))
         return false;
     // Generic Linalg verification requires the concatenated operand maps to
@@ -1248,8 +1245,9 @@ private:
       if (!recipe->hasCanonicalContractionPayload)
         return false;
       MatmulVariant variant =
-          classifyMatmulMaps(maps, recipe->iteratorTypes, resultType.getRank());
-      return variant != MatmulVariant::None;
+          classifyMatmulMaps(maps, iteratorTypes, resultType.getRank());
+      return variant != MatmulVariant::None ||
+             iteratorTypes.size() != recipe->iteratorTypes.size();
     }
     return mlir::isa<mlir::linalg::GenericOp>(recipe->operation) ||
            recipe->kind != EGraphNodeKind::Contraction;
@@ -1482,10 +1480,10 @@ private:
 
     mlir::AffineMap newToOldIteration = outputToIteration.compose(resultMap);
     mlir::AffineMap identity = mlir::AffineMap::getMultiDimIdentityMap(
-        destinationResultType.getRank(), root.getContext());
+        destinationResultType.getRank(), roots.front().getContext());
     auto iterationType = mlir::RankedTensorType::get(
         destinationResultType.getShape(),
-        mlir::IntegerType::get(root.getContext(), 1));
+        mlir::IntegerType::get(roots.front().getContext(), 1));
     uint32_t iterationTypeId = types.intern(iterationType);
     auto internProjected =
         [&](mlir::AffineMap map, uint32_t destinationTypeId,
@@ -1547,6 +1545,363 @@ private:
         outputOperandAccessTypeIds[index] = 0;
       }
     }
+    return WAFER_EGRAPH_CALLBACK_EXACT;
+  }
+
+  uint32_t reparameterizeReshapeCompute(
+      uint32_t semanticId, uint32_t kind, uint32_t resultTypeId,
+      uint32_t accessOperand, uint32_t accessRelationId,
+      llvm::ArrayRef<uint32_t> inputRelationIds, uint32_t dataInputCount,
+      uint32_t *innerResultTypeId, uint32_t *outerResultRelationId,
+      llvm::MutableArrayRef<uint32_t> outputComputeRelationIds,
+      llvm::MutableArrayRef<uint32_t> outputOperandAccessRelationIds,
+      llvm::MutableArrayRef<uint32_t> outputOperandAccessTypeIds) {
+    const ComputeRecipe *recipe = getRecipe(semanticId);
+    const RelationRecord *accessRelation = relations.lookup(accessRelationId);
+    auto oldResultType = types.lookupRankedTensor(resultTypeId);
+    if (!recipe || kind != static_cast<uint32_t>(recipe->kind) ||
+        recipe->operation->getNumResults() != 1 || !oldResultType ||
+        !accessRelation ||
+        !accessRelation->relation.hasCanonicalRowMajorReshapeConstruction() ||
+        accessRelation->materialization != RelationMaterialization::Reshape ||
+        accessOperand >= dataInputCount ||
+        inputRelationIds.size() != recipe->originalMaps.size() ||
+        inputRelationIds.size() != outputComputeRelationIds.size() ||
+        inputRelationIds.size() != outputOperandAccessRelationIds.size() ||
+        inputRelationIds.size() != outputOperandAccessTypeIds.size() ||
+        dataInputCount != recipe->dataInputCount || !innerResultTypeId ||
+        !outerResultRelationId || inputRelationIds.size() != dataInputCount + 1)
+      return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+    auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(recipe->operation);
+    if (!linalg || linalg.hasIndexSemantics())
+      return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+
+    llvm::SmallVector<mlir::AffineMap, 4> maps;
+    if (!getMaps(inputRelationIds, maps) || maps.empty())
+      return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+    const RelationRecord *selectedRelation =
+        relations.lookup(inputRelationIds[accessOperand]);
+    auto accessType =
+        types.lookupRankedTensor(accessRelation->destinationTypeId);
+    auto sourceType = types.lookupRankedTensor(accessRelation->sourceTypeId);
+    auto oldIterationType =
+        selectedRelation
+            ? types.lookupRankedTensor(selectedRelation->destinationTypeId)
+            : mlir::RankedTensorType{};
+    if (!selectedRelation || !accessType || !sourceType || !oldIterationType ||
+        selectedRelation->sourceTypeId != accessRelation->destinationTypeId ||
+        sourceType.getRank() == accessType.getRank() ||
+        sourceType.getElementType() != accessType.getElementType() ||
+        sourceType.getEncoding() != accessType.getEncoding() ||
+        oldIterationType.getRank() !=
+            static_cast<int64_t>(recipe->iteratorTypes.size()) ||
+        maps[accessOperand].getNumResults() != accessType.getRank() ||
+        !canMaterializeStaticReshape(sourceType, accessType))
+      return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+
+    llvm::SmallVector<unsigned, 6> operandToOldIterator;
+    llvm::SmallVector<bool, 6> seenOldIterator(oldIterationType.getRank(),
+                                               false);
+    for (mlir::AffineExpr expression : maps[accessOperand].getResults()) {
+      auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+      if (!dimension || dimension.getPosition() >= seenOldIterator.size() ||
+          seenOldIterator[dimension.getPosition()])
+        return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+      seenOldIterator[dimension.getPosition()] = true;
+      operandToOldIterator.push_back(dimension.getPosition());
+    }
+    std::optional<llvm::SmallVector<mlir::ReassociationIndices>> reassociation =
+        mlir::getReassociationIndicesForReshape(sourceType, accessType);
+    if (!reassociation)
+      return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+
+    llvm::SmallVector<llvm::SmallVector<unsigned, 2>, 6> oldToNew(
+        oldIterationType.getRank());
+    llvm::SmallVector<llvm::SmallVector<unsigned, 2>, 6> newToOld;
+    llvm::SmallVector<int64_t, 6> newIterationShape;
+    llvm::SmallVector<mlir::utils::IteratorType, 6> newIteratorTypes;
+    auto addIterator = [&](int64_t extent, mlir::utils::IteratorType iterator,
+                           llvm::ArrayRef<unsigned> oldAxes) {
+      unsigned newAxis = newIterationShape.size();
+      newIterationShape.push_back(extent);
+      newIteratorTypes.push_back(iterator);
+      newToOld.emplace_back(oldAxes.begin(), oldAxes.end());
+      for (unsigned oldAxis : oldAxes)
+        oldToNew[oldAxis].push_back(newAxis);
+    };
+
+    if (sourceType.getRank() > accessType.getRank()) {
+      if (reassociation->size() != static_cast<size_t>(accessType.getRank()))
+        return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+      llvm::SmallVector<int, 6> oldIteratorToOperand(oldIterationType.getRank(),
+                                                     -1);
+      for (auto [operandAxis, oldIterator] :
+           llvm::enumerate(operandToOldIterator))
+        oldIteratorToOperand[oldIterator] = operandAxis;
+      for (unsigned oldIterator = 0;
+           oldIterator < static_cast<unsigned>(oldIterationType.getRank());
+           ++oldIterator) {
+        int operandAxis = oldIteratorToOperand[oldIterator];
+        if (operandAxis < 0) {
+          addIterator(oldIterationType.getDimSize(oldIterator),
+                      recipe->iteratorTypes[oldIterator], {oldIterator});
+          continue;
+        }
+        llvm::ArrayRef<int64_t> sourceAxes = (*reassociation)[operandAxis];
+        if (sourceAxes.empty())
+          return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+        for (int64_t sourceAxis : sourceAxes) {
+          if (sourceAxis < 0 || sourceAxis >= sourceType.getRank())
+            return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+          addIterator(sourceType.getDimSize(sourceAxis),
+                      recipe->iteratorTypes[oldIterator], {oldIterator});
+        }
+      }
+    } else {
+      if (reassociation->size() != static_cast<size_t>(sourceType.getRank()))
+        return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+      llvm::SmallVector<int, 6> groupAtOldIterator(oldIterationType.getRank(),
+                                                   -1);
+      llvm::SmallVector<bool, 6> consumed(oldIterationType.getRank(), false);
+      llvm::SmallVector<llvm::SmallVector<unsigned, 2>, 6> groupOldIterators;
+      for (auto [sourceAxis, operandAxes] : llvm::enumerate(*reassociation)) {
+        llvm::SmallVector<unsigned, 2> oldIterators;
+        for (int64_t operandAxis : operandAxes) {
+          if (operandAxis < 0 ||
+              operandAxis >= static_cast<int64_t>(operandToOldIterator.size()))
+            return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+          oldIterators.push_back(operandToOldIterator[operandAxis]);
+        }
+        bool consecutive = true;
+        for (auto pair :
+             llvm::zip(oldIterators, llvm::drop_begin(oldIterators)))
+          consecutive &= std::get<1>(pair) == std::get<0>(pair) + 1;
+        if (oldIterators.empty() || !llvm::is_sorted(oldIterators) ||
+            !consecutive ||
+            llvm::any_of(llvm::drop_begin(oldIterators),
+                         [&](unsigned oldIterator) {
+                           return recipe->iteratorTypes[oldIterator] !=
+                                  recipe->iteratorTypes[oldIterators.front()];
+                         }))
+          return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+        unsigned group = groupOldIterators.size();
+        for (unsigned oldIterator : oldIterators) {
+          if (consumed[oldIterator])
+            return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+          consumed[oldIterator] = true;
+        }
+        groupAtOldIterator[oldIterators.front()] = group;
+        groupOldIterators.push_back(std::move(oldIterators));
+        (void)sourceAxis;
+      }
+      for (unsigned oldIterator = 0;
+           oldIterator < static_cast<unsigned>(oldIterationType.getRank());
+           ++oldIterator) {
+        int group = groupAtOldIterator[oldIterator];
+        if (group >= 0) {
+          llvm::ArrayRef<unsigned> oldIterators = groupOldIterators[group];
+          addIterator(sourceType.getDimSize(group),
+                      recipe->iteratorTypes[oldIterator], oldIterators);
+          oldIterator = oldIterators.back();
+          continue;
+        }
+        if (consumed[oldIterator])
+          return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+        addIterator(oldIterationType.getDimSize(oldIterator),
+                    recipe->iteratorTypes[oldIterator], {oldIterator});
+      }
+    }
+
+    int64_t oldReductionElements = 1;
+    int64_t newReductionElements = 1;
+    for (auto [extent, iterator] :
+         llvm::zip_equal(oldIterationType.getShape(), recipe->iteratorTypes))
+      if (iterator == mlir::utils::IteratorType::reduction &&
+          (extent <= 0 || llvm::MulOverflow(oldReductionElements, extent,
+                                            oldReductionElements)))
+        return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+    for (auto [extent, iterator] :
+         llvm::zip_equal(newIterationShape, newIteratorTypes))
+      if (iterator == mlir::utils::IteratorType::reduction &&
+          (extent <= 0 || llvm::MulOverflow(newReductionElements, extent,
+                                            newReductionElements)))
+        return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+    if (oldReductionElements != newReductionElements)
+      return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+
+    struct ReparameterizedOperand {
+      mlir::RankedTensorType oldType;
+      mlir::RankedTensorType newType;
+      mlir::AffineMap map;
+    };
+    llvm::SmallVector<ReparameterizedOperand, 4> reparameterized;
+    for (auto [relationId, oldMap] : llvm::zip_equal(inputRelationIds, maps)) {
+      const RelationRecord *oldRelation = relations.lookup(relationId);
+      auto oldOperandType =
+          oldRelation ? types.lookupRankedTensor(oldRelation->sourceTypeId)
+                      : mlir::RankedTensorType{};
+      if (!oldOperandType || oldMap.getNumResults() != oldOperandType.getRank())
+        return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+      llvm::SmallVector<int64_t, 6> newShape;
+      llvm::SmallVector<mlir::AffineExpr, 6> newResults;
+      for (unsigned operandAxis = 0;
+           operandAxis < static_cast<unsigned>(oldOperandType.getRank());) {
+        mlir::AffineExpr expression = oldMap.getResult(operandAxis);
+        if (auto constant =
+                mlir::dyn_cast<mlir::AffineConstantExpr>(expression)) {
+          if (constant.getValue() != 0)
+            return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+          newShape.push_back(oldOperandType.getDimSize(operandAxis));
+          newResults.push_back(
+              mlir::getAffineConstantExpr(0, roots.front().getContext()));
+          ++operandAxis;
+          continue;
+        }
+        auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+        if (!dimension || dimension.getPosition() >= oldToNew.size())
+          return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+        unsigned oldIterator = dimension.getPosition();
+        if (oldToNew[oldIterator].empty())
+          return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+        unsigned newIterator = oldToNew[oldIterator].front();
+        llvm::ArrayRef<unsigned> collapsedOld = newToOld[newIterator];
+        if (collapsedOld.size() > 1) {
+          if (oldIterator != collapsedOld.front() ||
+              operandAxis + collapsedOld.size() >
+                  static_cast<unsigned>(oldOperandType.getRank()))
+            return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+          for (auto [offset, requiredOldIterator] :
+               llvm::enumerate(collapsedOld)) {
+            auto groupedDimension = mlir::dyn_cast<mlir::AffineDimExpr>(
+                oldMap.getResult(operandAxis + offset));
+            if (!groupedDimension ||
+                groupedDimension.getPosition() != requiredOldIterator)
+              return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+          }
+          newShape.push_back(newIterationShape[newIterator]);
+          newResults.push_back(
+              mlir::getAffineDimExpr(newIterator, roots.front().getContext()));
+          operandAxis += collapsedOld.size();
+          continue;
+        }
+        if (oldToNew[oldIterator].size() == 1) {
+          newShape.push_back(oldOperandType.getDimSize(operandAxis));
+          newResults.push_back(
+              mlir::getAffineDimExpr(newIterator, roots.front().getContext()));
+          ++operandAxis;
+          continue;
+        }
+        for (unsigned splitIterator : oldToNew[oldIterator]) {
+          newShape.push_back(newIterationShape[splitIterator]);
+          newResults.push_back(mlir::getAffineDimExpr(
+              splitIterator, roots.front().getContext()));
+        }
+        ++operandAxis;
+      }
+      auto newOperandType =
+          mlir::RankedTensorType::get(newShape, oldOperandType.getElementType(),
+                                      oldOperandType.getEncoding());
+      if (newOperandType != oldOperandType &&
+          !canMaterializeStaticReshape(oldOperandType, newOperandType))
+        return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+      reparameterized.push_back(ReparameterizedOperand{
+          oldOperandType, newOperandType,
+          mlir::AffineMap::get(newIterationShape.size(), 0, newResults,
+                               roots.front().getContext())});
+    }
+    if (reparameterized[accessOperand].newType != sourceType ||
+        reparameterized.back().oldType != oldResultType)
+      return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+
+    auto newResultType = reparameterized.back().newType;
+    auto newIterationType = mlir::RankedTensorType::get(
+        newIterationShape,
+        mlir::IntegerType::get(roots.front().getContext(), 1));
+    uint32_t newResultTypeId = types.intern(newResultType);
+    uint32_t newIterationTypeId = types.intern(newIterationType);
+    auto internProjected =
+        [&](mlir::AffineMap map, uint32_t sourceTypeId,
+            llvm::ArrayRef<int64_t> sourceShape) -> std::optional<uint32_t> {
+      IndexRelationResult relation =
+          IndexRelation::fromAffineMap(map, newIterationShape, sourceShape);
+      if (!relation.isExact() ||
+          !relation.get()->hasTotalBoundedAffineMapConstruction())
+        return std::nullopt;
+      return relations.intern(std::move(*relation.get()), newIterationTypeId,
+                              sourceTypeId, map,
+                              RelationMaterialization::ProjectedMap,
+                              /*total=*/true);
+    };
+    auto internReshape =
+        [&](uint32_t destinationTypeId, mlir::RankedTensorType destinationType,
+            uint32_t sourceTypeId, mlir::RankedTensorType sourceTensorType)
+        -> std::optional<uint32_t> {
+      if (destinationTypeId == sourceTypeId &&
+          destinationType == sourceTensorType) {
+        IndexRelationResult relation =
+            IndexRelation::identity(destinationType.getShape());
+        if (!relation.isExact())
+          return std::nullopt;
+        mlir::AffineMap identity = mlir::AffineMap::getMultiDimIdentityMap(
+            destinationType.getRank(), roots.front().getContext());
+        return relations.intern(std::move(*relation.get()), destinationTypeId,
+                                sourceTypeId, identity,
+                                RelationMaterialization::ProjectedMap,
+                                /*total=*/true);
+      }
+      IndexRelationResult relation = IndexRelation::staticReshape(
+          destinationType.getShape(), sourceTensorType.getShape());
+      if (!relation.isExact() ||
+          !canMaterializeStaticReshape(sourceTensorType, destinationType))
+        return std::nullopt;
+      return relations.intern(std::move(*relation.get()), destinationTypeId,
+                              sourceTypeId, std::nullopt,
+                              RelationMaterialization::Reshape,
+                              /*total=*/true);
+    };
+
+    for (unsigned index = 0; index < inputRelationIds.size(); ++index) {
+      const RelationRecord *oldRelation =
+          relations.lookup(inputRelationIds[index]);
+      if (!oldRelation)
+        return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+      mlir::RankedTensorType oldOperandType = reparameterized[index].oldType;
+      mlir::RankedTensorType newOperandType = reparameterized[index].newType;
+      uint32_t newOperandTypeId = types.intern(newOperandType);
+      std::optional<uint32_t> computeRelation =
+          internProjected(reparameterized[index].map, newOperandTypeId,
+                          newOperandType.getShape());
+      if (!computeRelation)
+        return relations.hasWorkLimitReached()
+                   ? WAFER_EGRAPH_CALLBACK_WORK_LIMIT
+                   : WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+      outputComputeRelationIds[index] = *computeRelation;
+      const bool selectedInput = index == accessOperand;
+      const bool unreadInit = index >= dataInputCount && !recipe->initIsRead;
+      if (selectedInput || unreadInit || newOperandType == oldOperandType) {
+        outputOperandAccessRelationIds[index] = 0;
+        outputOperandAccessTypeIds[index] = 0;
+        continue;
+      }
+      std::optional<uint32_t> operandAccess =
+          internReshape(newOperandTypeId, newOperandType,
+                        oldRelation->sourceTypeId, oldOperandType);
+      if (!operandAccess)
+        return relations.hasWorkLimitReached()
+                   ? WAFER_EGRAPH_CALLBACK_WORK_LIMIT
+                   : WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+      outputOperandAccessRelationIds[index] = *operandAccess;
+      outputOperandAccessTypeIds[index] = newOperandTypeId;
+    }
+
+    std::optional<uint32_t> outerRelation = internReshape(
+        resultTypeId, oldResultType, newResultTypeId, newResultType);
+    if (!outerRelation)
+      return relations.hasWorkLimitReached()
+                 ? WAFER_EGRAPH_CALLBACK_WORK_LIMIT
+                 : WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+    *innerResultTypeId = newResultTypeId;
+    *outerResultRelationId = *outerRelation;
     return WAFER_EGRAPH_CALLBACK_EXACT;
   }
 
@@ -1622,6 +1977,32 @@ private:
                                     relationCount),
               llvm::MutableArrayRef(outputOperandAccessTypeIds, relationCount));
         },
+        [](void *context, uint32_t semanticId, uint32_t kind,
+           uint32_t resultTypeId, uint32_t accessOperand,
+           uint32_t accessRelationId, const uint32_t *inputRelations,
+           uint64_t relationCount, uint32_t dataInputCount,
+           uint32_t *innerResultTypeId, uint32_t *outerResultRelationId,
+           uint32_t *outputComputeRelations,
+           uint32_t *outputOperandAccessRelations,
+           uint32_t *outputOperandAccessTypeIds) -> uint32_t {
+          if ((relationCount && (!inputRelations || !outputComputeRelations ||
+                                 !outputOperandAccessRelations ||
+                                 !outputOperandAccessTypeIds)) ||
+              relationCount > UINT32_MAX || !innerResultTypeId ||
+              !outerResultRelationId)
+            return WAFER_EGRAPH_CALLBACK_INTERNAL_ERROR;
+          auto *component = static_cast<ComponentExpression *>(context);
+          if (!component->relations.consumeQuery())
+            return WAFER_EGRAPH_CALLBACK_WORK_LIMIT;
+          return component->reparameterizeReshapeCompute(
+              semanticId, kind, resultTypeId, accessOperand, accessRelationId,
+              llvm::ArrayRef(inputRelations, relationCount), dataInputCount,
+              innerResultTypeId, outerResultRelationId,
+              llvm::MutableArrayRef(outputComputeRelations, relationCount),
+              llvm::MutableArrayRef(outputOperandAccessRelations,
+                                    relationCount),
+              llvm::MutableArrayRef(outputOperandAccessTypeIds, relationCount));
+        },
         [](void *context, uint32_t resultTypeId, int32_t axis,
            const uint32_t *inputTypeIds, uint64_t inputCount) -> uint32_t {
           if ((inputCount && !inputTypeIds) || inputCount > UINT32_MAX)
@@ -1653,10 +2034,15 @@ private:
         }};
   }
 
-  mlir::LogicalResult validateExtraction(llvm::ArrayRef<EGraphNode> expression,
-                                         uint32_t rootNode) const {
-    if (expression.empty() || rootNode >= expression.size() ||
-        types.lookup(expression[rootNode].typeId) != root.getType())
+  mlir::LogicalResult
+  validateExtraction(llvm::ArrayRef<EGraphNode> expression,
+                     llvm::ArrayRef<uint32_t> rootNodes) const {
+    if (expression.empty() || rootNodes.size() != roots.size() ||
+        llvm::any_of(llvm::zip_equal(roots, rootNodes), [&](auto values) {
+          auto [root, rootNode] = values;
+          return rootNode >= expression.size() ||
+                 types.lookup(expression[rootNode].typeId) != root.getType();
+        }))
       return mlir::failure();
     for (auto [index, node] : llvm::enumerate(expression)) {
       if (!types.lookup(node.typeId))
@@ -1702,10 +2088,13 @@ private:
     return mlir::success();
   }
 
-  mlir::FailureOr<mlir::Value>
+  mlir::FailureOr<llvm::SmallVector<mlir::Value, 4>>
   materialize(mlir::RewriterBase &rewriter,
-              llvm::ArrayRef<EGraphNode> expression, uint32_t rootNode) {
-    if (expression.empty() || rootNode >= expression.size())
+              llvm::ArrayRef<EGraphNode> expression,
+              llvm::ArrayRef<uint32_t> rootNodes) {
+    if (expression.empty() || rootNodes.size() != roots.size() ||
+        llvm::any_of(rootNodes,
+                     [&](uint32_t root) { return root >= expression.size(); }))
       return mlir::failure();
     llvm::SmallVector<mlir::Value, 16> values;
     for (auto [index, node] : llvm::enumerate(expression)) {
@@ -1721,7 +2110,10 @@ private:
         return mlir::failure();
       values.push_back(*value);
     }
-    return values[rootNode];
+    llvm::SmallVector<mlir::Value, 4> results;
+    for (uint32_t rootNode : rootNodes)
+      results.push_back(values[rootNode]);
+    return results;
   }
 
   mlir::FailureOr<mlir::Value>
@@ -1756,8 +2148,8 @@ private:
       return mlir::failure();
     if (relation->materialization == RelationMaterialization::Identity)
       return operands.front();
-    rewriter.setInsertionPoint(root.getDefiningOp());
-    mlir::Location location = root.getLoc();
+    rewriter.setInsertionPoint(anchor);
+    mlir::Location location = anchor->getLoc();
     if (relation->materialization == RelationMaterialization::Reshape) {
       auto sourceType =
           mlir::cast<mlir::RankedTensorType>(operands.front().getType());
@@ -1809,8 +2201,8 @@ private:
     if (!validateConcat(node.typeId, node.axis, operandTypes))
       return mlir::failure();
     auto resultType = types.lookupRankedTensor(node.typeId);
-    rewriter.setInsertionPoint(root.getDefiningOp());
-    mlir::Location location = root.getLoc();
+    rewriter.setInsertionPoint(anchor);
+    mlir::Location location = anchor->getLoc();
     mlir::Value result =
         rewriter
             .create<mlir::tensor::EmptyOp>(location, resultType.getShape(),
@@ -1852,6 +2244,16 @@ private:
     llvm::SmallVector<mlir::AffineMap, 4> maps;
     if (!getMaps(node.relations, maps))
       return mlir::failure();
+    const RelationRecord *firstRelation =
+        node.relations.empty() ? nullptr
+                               : relations.lookup(node.relations.front());
+    auto iterationType =
+        firstRelation
+            ? types.lookupRankedTensor(firstRelation->destinationTypeId)
+            : mlir::RankedTensorType{};
+    llvm::SmallVector<mlir::utils::IteratorType, 6> iteratorTypes;
+    if (!getEffectiveIteratorTypes(*recipe, maps, iterationType, iteratorTypes))
+      return mlir::failure();
     if (node.typeId == recipe->resultTypeId &&
         llvm::equal(operands, recipe->operation->getOperands()) &&
         llvm::equal(maps, recipe->originalMaps))
@@ -1863,14 +2265,14 @@ private:
     llvm::SmallVector<mlir::Value, 2> outputs(
         operands.drop_front(node.dataInputCount).begin(),
         operands.drop_front(node.dataInputCount).end());
-    rewriter.setInsertionPoint(root.getDefiningOp());
+    rewriter.setInsertionPoint(anchor);
     if (node.typeId != recipe->resultTypeId) {
       if (outputs.size() != 1)
         return mlir::failure();
       if (!recipe->initIsRead)
         outputs.front() = rewriter
                               .create<mlir::tensor::EmptyOp>(
-                                  root.getLoc(), resultType.getShape(),
+                                  anchor->getLoc(), resultType.getShape(),
                                   resultType.getElementType())
                               .getResult();
     }
@@ -1883,11 +2285,11 @@ private:
         attributes.push_back(attribute);
 
     MatmulVariant variant =
-        classifyMatmulMaps(maps, recipe->iteratorTypes, resultType.getRank());
+        classifyMatmulMaps(maps, iteratorTypes, resultType.getRank());
     if (recipe->kind == EGraphNodeKind::Contraction &&
         recipe->hasCanonicalContractionPayload &&
         variant != MatmulVariant::None) {
-      mlir::Operation *created = createMatmulVariant(rewriter, root.getLoc(),
+      mlir::Operation *created = createMatmulVariant(rewriter, anchor->getLoc(),
                                                      variant, inputs, outputs);
       if (created) {
         created->setDiscardableAttrs(attributes);
@@ -1897,8 +2299,7 @@ private:
 
     auto generic = rewriter.create<mlir::linalg::GenericOp>(
         recipe->operation->getLoc(), mlir::TypeRange{resultType}, inputs,
-        outputs, maps, recipe->iteratorTypes, /*bodyBuild=*/nullptr,
-        attributes);
+        outputs, maps, iteratorTypes, /*bodyBuild=*/nullptr, attributes);
     rewriter.cloneRegionBefore(recipe->operation->getRegion(0),
                                generic.getRegion(),
                                generic.getRegion().begin());
@@ -1922,13 +2323,17 @@ private:
         source.computeAbsorptionApplications;
     target.concatApplications += source.concatApplications;
     target.resultReindexApplications += source.resultReindexApplications;
+    target.reshapeThroughComputeApplications +=
+        source.reshapeThroughComputeApplications;
     target.abiInputRecords += source.inputRecords;
     target.abiOutputRecords += source.outputRecords;
     target.abiInputBytes += source.inputBytes;
     target.abiOutputBytes += source.outputBytes;
   }
 
-  mlir::Value root;
+  llvm::SmallVector<mlir::Value, 4> roots;
+  llvm::DenseSet<mlir::Operation *> componentOperations;
+  mlir::Operation *anchor = nullptr;
   const StructuredGraphNormalizationOptions &options;
   TypeStore types;
   RelationStore relations;
@@ -1940,45 +2345,108 @@ private:
   bool hasPotentialRewrite = false;
 };
 
-llvm::SmallVector<mlir::Value, 16>
-collectComponentRoots(mlir::func::FuncOp function) {
-  llvm::SmallVector<mlir::Value, 16> roots;
+struct StructuredComponent {
+  llvm::SmallVector<mlir::Operation *, 16> operations;
+  llvm::SmallVector<mlir::Value, 4> roots;
+  mlir::Operation *anchor = nullptr;
+};
+
+llvm::SmallVector<StructuredComponent, 8>
+collectStructuredComponents(mlir::func::FuncOp function) {
+  llvm::SmallVector<mlir::Operation *, 32> operations;
   function.walk([&](mlir::Operation *operation) {
-    if (!isSupportedProducer(operation))
-      return;
-    mlir::Value result = operation->getResult(0);
-    if (!result.hasOneUse() || !isSupportedProducer(*result.getUsers().begin()))
-      roots.push_back(result);
+    if (isSupportedProducer(operation))
+      operations.push_back(operation);
   });
-  return roots;
+  llvm::DenseMap<mlir::Operation *, unsigned> indices;
+  llvm::SmallVector<unsigned, 32> parents;
+  for (auto [index, operation] : llvm::enumerate(operations)) {
+    indices.try_emplace(operation, index);
+    parents.push_back(index);
+  }
+  auto find = [&](unsigned value) {
+    unsigned root = value;
+    while (parents[root] != root)
+      root = parents[root];
+    while (parents[value] != value) {
+      unsigned next = parents[value];
+      parents[value] = root;
+      value = next;
+    }
+    return root;
+  };
+  auto unite = [&](unsigned lhs, unsigned rhs) {
+    lhs = find(lhs);
+    rhs = find(rhs);
+    if (lhs == rhs)
+      return;
+    if (lhs > rhs)
+      std::swap(lhs, rhs);
+    parents[rhs] = lhs;
+  };
+  for (auto [index, operation] : llvm::enumerate(operations))
+    for (mlir::Value operand : operation->getOperands()) {
+      mlir::Operation *definition = operand.getDefiningOp();
+      auto found = indices.find(definition);
+      if (found != indices.end() &&
+          definition->getBlock() == operation->getBlock())
+        unite(index, found->second);
+    }
+
+  llvm::DenseMap<unsigned, unsigned> componentByRoot;
+  llvm::SmallVector<StructuredComponent, 8> components;
+  for (auto [index, operation] : llvm::enumerate(operations)) {
+    unsigned root = find(index);
+    auto [entry, inserted] =
+        componentByRoot.try_emplace(root, components.size());
+    if (inserted)
+      components.emplace_back();
+    components[entry->second].operations.push_back(operation);
+  }
+
+  llvm::SmallVector<StructuredComponent, 8> result;
+  for (StructuredComponent &component : components) {
+    if (component.operations.empty())
+      continue;
+    mlir::Block *block = component.operations.front()->getBlock();
+    llvm::DenseSet<mlir::Operation *> members;
+    bool oneBlock = true;
+    for (mlir::Operation *operation : component.operations) {
+      oneBlock &= operation->getBlock() == block;
+      members.insert(operation);
+      if (!component.anchor || component.anchor->isBeforeInBlock(operation))
+        component.anchor = operation;
+    }
+    if (!oneBlock || !component.anchor)
+      continue;
+    for (mlir::Operation *operation : component.operations) {
+      mlir::Value value = operation->getResult(0);
+      if (value.use_empty() || llvm::any_of(value.getUsers(), [&](auto *user) {
+            return !members.contains(user);
+          }))
+        component.roots.push_back(value);
+    }
+    if (component.roots.empty())
+      continue;
+    bool hasLegalCommitPoint = true;
+    for (mlir::Value root : component.roots)
+      for (mlir::Operation *user : root.getUsers())
+        if (!members.contains(user) &&
+            (user->getBlock() != block ||
+             !component.anchor->isBeforeInBlock(user))) {
+          hasLegalCommitPoint = false;
+          break;
+        }
+    if (hasLegalCommitPoint)
+      result.push_back(std::move(component));
+  }
+  return result;
 }
 
 uint64_t countOperations(mlir::Operation *root) {
   uint64_t count = 0;
   root->walk([&](mlir::Operation *) { ++count; });
   return count;
-}
-
-struct LogicalTransformCount {
-  uint64_t accesses = 0;
-  uint64_t concats = 0;
-};
-
-LogicalTransformCount countLogicalTransforms(mlir::func::FuncOp function) {
-  LogicalTransformCount count;
-  function.walk([&](mlir::Operation *operation) {
-    if (getAccessDescription(operation))
-      ++count.accesses;
-    if (getConcatDescription(operation))
-      ++count.concats;
-  });
-  return count;
-}
-
-bool isStrictlyBetter(LogicalTransformCount after,
-                      LogicalTransformCount before) {
-  return after.accesses < before.accesses ||
-         (after.accesses == before.accesses && after.concats < before.concats);
 }
 
 mlir::FailureOr<StructuredGraphNormalizationOutcome>
@@ -1988,32 +2456,18 @@ normalizeFunction(mlir::func::FuncOp function,
   mlir::IRRewriter rewriter(function.getContext());
   bool changed = false;
   bool exhausted = false;
-  while (true) {
-    LogicalTransformCount before = countLogicalTransforms(function);
-    bool roundChanged = false;
-    const uint64_t initialMultiUsePropagations =
-        statistics.multiUseAccessPropagations;
-    if (mlir::failed(
-            propagateMultiUseProjectedAccesses(function, rewriter, statistics)))
+  llvm::SmallVector<StructuredComponent, 8> components =
+      collectStructuredComponents(function);
+  for (const StructuredComponent &description : components) {
+    ComponentExpression component(description.roots, description.operations,
+                                  description.anchor, options);
+    mlir::FailureOr<StructuredGraphNormalizationOutcome> outcome =
+        component.apply(rewriter, statistics);
+    if (mlir::failed(outcome))
       return mlir::failure();
-    roundChanged |=
-        statistics.multiUseAccessPropagations != initialMultiUsePropagations;
-    for (mlir::Value root : collectComponentRoots(function)) {
-      ComponentExpression component(root, options);
-      mlir::FailureOr<StructuredGraphNormalizationOutcome> outcome =
-          component.apply(rewriter, statistics);
-      if (mlir::failed(outcome))
-        return mlir::failure();
-      roundChanged |= *outcome == StructuredGraphNormalizationOutcome::Changed;
-      exhausted |=
-          *outcome == StructuredGraphNormalizationOutcome::BudgetExhausted;
-    }
-    if (!roundChanged)
-      break;
-    LogicalTransformCount after = countLogicalTransforms(function);
-    if (!isStrictlyBetter(after, before))
-      return mlir::failure();
-    changed = true;
+    changed |= *outcome == StructuredGraphNormalizationOutcome::Changed;
+    exhausted |=
+        *outcome == StructuredGraphNormalizationOutcome::BudgetExhausted;
   }
   if (changed)
     return StructuredGraphNormalizationOutcome::Changed;
@@ -2059,7 +2513,7 @@ struct NormalizeStructuredTensorGraphPass final
     numIterations += statistics.iterations;
     numExtractionWork += statistics.extractionWork;
     numAccessTransformsRemoved += statistics.accessTransformsRemoved;
-    numMultiUseAccessPropagations += statistics.multiUseAccessPropagations;
+    numMultiRootComponents += statistics.multiRootComponents;
     numConcatTransformsRemoved += statistics.concatTransformsRemoved;
     numRelationQueries += statistics.relationQueries;
     numIdentityApplications += statistics.identityApplications;
@@ -2068,6 +2522,8 @@ struct NormalizeStructuredTensorGraphPass final
         statistics.computeAbsorptionApplications;
     numConcatApplications += statistics.concatApplications;
     numResultReindexApplications += statistics.resultReindexApplications;
+    numReshapeThroughComputeApplications +=
+        statistics.reshapeThroughComputeApplications;
     numABIInputRecords += statistics.abiInputRecords;
     numABIOutputRecords += statistics.abiOutputRecords;
     numABIInputBytes += statistics.abiInputBytes;

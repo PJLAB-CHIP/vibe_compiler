@@ -226,6 +226,15 @@ operation-specific reshape/slice规则，也不把operation/value handle缓存�
 只读relation/interface preflight无法证明requested tile可表示时保持独立producer；已经签发exact-derived并开始rewrite后，pinned mechanics失败是
 candidate compiler failure，销毁该transaction，不以bounding box、完整producer fallback或后端容量推测补写IR。
 
+Logical e-graph对ordinary pure connected component使用ordered multi-root request，不在MLIR中创建tuple/super-root op。Importer对同一current
+SSA只建立一个e-node；Rust对多个runner roots使用同一e-class选择，并把结果deterministic hash-cons为共享DAG。C++先验证全部root
+replacement及unique computeId/semantic facts，再按一个transaction物化每个unique node一次并原子替换全部roots。任一root失败擦除本轮全部
+new ops，不能部分提交其它branch。General reshape through compute必须是egg dynamic rule和只读relation callback，不得在pass入口、extractor
+之前或materializer之后增加同义greedy/DRR/C++ pattern；现有egg外all-users Access rewrite在C1删除。
+
+Temporal multi-use不是上述logical DAG extraction。它只在Spatial/Region已经物化、完整temporal choice可见后建立query-local independent/joint
+choice；joint materializer直接构造common SCF loop并调用current roots的`TilingInterface`，不回头运行e-graph或先合并成临时Linalg graph。
+
 RegionBranch、Call、MemoryEffect、ViewLike/alias 和 structured op interface 提供通用 flow edge。MLIR DataFlowSolver 可以
 承担可组合的 SSA/control-flow fixed point；Wafer custom lattice 只保留 path-sensitive异步命令完成条件、target resource 和
 SPM boundary 等标准 interface 无法表达的部分。
@@ -278,9 +287,10 @@ verifier，不能把unknown全legal的`applyFullConversion`当作闭合证明。
 - 常量时间、局部、总能保持 canonical form 的代数恒等式放 `fold`；跨 op、可能昂贵或只在特定 pipeline 合法的变换放
   pattern/pass。
 - correctness-required rewrite是 legalization pass，不依赖 best-effort canonicalizer恰好触发。
-- DRR 优先承载简单 typed 一对一/少量 op rewrite，例如 Fill 和无复杂规划的 peer send/recv；descriptor、layout、
-  index-relation、multi-root ordering、region inline 等复杂逻辑继续使用 C++ pattern。迁移收益是 typed boilerplate 和审查
-  清晰度，不作为性能或完成数量指标。
+- DRR 优先承载简单 typed 一对一/少量 op rewrite，例如 Fill 和无复杂规划的 peer send/recv；descriptor、physical layout、
+  temporal multi-root loop construction和region inline等choice-dependent逻辑继续使用C++ transformation。05号ordinary pure logical graph
+  中的index-relation等价探索只进入其bounded e-graph rule/callback，不增加同义C++ pattern。迁移收益是typed boilerplate和审查清晰度，
+  不作为性能或完成数量指标。
 - 多 op 声明式规则形成重复族后才引入 PDLL。Transform dialect只在未来出现外部 schedule/control-plane consumer 时作为
   handle-based 控制层；它不替代 pass、pattern 或 physical-dataflow candidate selection。
 

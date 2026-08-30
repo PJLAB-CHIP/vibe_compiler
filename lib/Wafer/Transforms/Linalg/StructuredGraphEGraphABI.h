@@ -8,7 +8,7 @@
 extern "C" {
 
 enum : uint32_t {
-  WAFER_EGRAPH_SCHEMA_VERSION = 1,
+  WAFER_EGRAPH_SCHEMA_VERSION = 2,
   WAFER_EGRAPH_FLAG_FORCE_PANIC = 1u << 0,
 };
 
@@ -43,6 +43,7 @@ enum WaferEGraphRelationFlag : uint32_t {
   WAFER_EGRAPH_RELATION_INJECTIVE = 1u << 3,
   WAFER_EGRAPH_RELATION_BIJECTIVE = 1u << 4,
   WAFER_EGRAPH_RELATION_MATERIALIZABLE = 1u << 5,
+  WAFER_EGRAPH_RELATION_CANONICAL_RESHAPE = 1u << 6,
 };
 
 struct WaferEGraphNode {
@@ -93,6 +94,15 @@ using WaferEGraphReparameterizeElementwiseFn = uint32_t (*)(
     uint32_t *outputOperandAccessRelations,
     uint32_t *outputOperandAccessTypeIds);
 
+using WaferEGraphReparameterizeReshapeComputeFn = uint32_t (*)(
+    void *context, uint32_t semanticId, uint32_t kind, uint32_t resultTypeId,
+    uint32_t accessOperand, uint32_t accessRelationId,
+    const uint32_t *inputRelations, uint64_t relationCount,
+    uint32_t dataInputCount, uint32_t *innerResultTypeId,
+    uint32_t *outerResultRelationId, uint32_t *outputComputeRelations,
+    uint32_t *outputOperandAccessRelations,
+    uint32_t *outputOperandAccessTypeIds);
+
 using WaferEGraphValidateConcatFn = uint32_t (*)(void *context,
                                                  uint32_t resultTypeId,
                                                  int32_t axis,
@@ -112,6 +122,7 @@ struct WaferEGraphRelationService {
   WaferEGraphValidateComputeFn validateCompute;
   WaferEGraphReindexComputeFn reindexCompute;
   WaferEGraphReparameterizeElementwiseFn reparameterizeElementwise;
+  WaferEGraphReparameterizeReshapeComputeFn reparameterizeReshapeCompute;
   WaferEGraphValidateConcatFn validateConcat;
   WaferEGraphFactorConcatFn factorConcat;
 };
@@ -125,7 +136,8 @@ struct WaferEGraphRequest {
   uint64_t childCount;
   const uint32_t *relations;
   uint64_t relationCount;
-  uint32_t rootNode;
+  const uint32_t *rootNodes;
+  uint64_t rootCount;
   uint32_t maximumIterations;
   uint64_t maximumENodes;
   uint64_t maximumMatches;
@@ -155,6 +167,7 @@ struct WaferEGraphStatistics {
   uint64_t computeAbsorptionApplications;
   uint64_t concatApplications;
   uint64_t resultReindexApplications;
+  uint64_t reshapeThroughComputeApplications;
   uint64_t inputRecords;
   uint64_t outputRecords;
   uint64_t inputBytes;
@@ -170,8 +183,8 @@ struct WaferEGraphResult {
   uint64_t childCount;
   uint32_t *relations;
   uint64_t relationCount;
-  uint32_t rootNode;
-  uint32_t reserved2;
+  uint32_t *rootNodes;
+  uint64_t rootCount;
   WaferEGraphStatistics statistics;
 };
 

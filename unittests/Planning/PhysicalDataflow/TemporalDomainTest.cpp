@@ -104,21 +104,32 @@ TEST(TemporalDomainTest,
       << (built.failure ? built.failure->detail : "");
   auto choices = enumerate(*built.domain);
   ASSERT_TRUE(choices);
-  EXPECT_EQ(choices->size(), 8u);
+  EXPECT_EQ(choices->size(), 16u);
 
-  std::set<std::pair<std::vector<int64_t>, std::vector<uint32_t>>> observed;
+  std::set<std::tuple<TemporalTraversalKind, std::vector<int64_t>,
+                      std::vector<uint32_t>>>
+      observed;
+  unsigned jointChoices = 0;
+  unsigned independentChoices = 0;
   for (const TemporalChoice &choice : *choices) {
     ASSERT_EQ(choice.scopes.size(), 1u);
     EXPECT_TRUE(built.domain->contains(choice));
+    if (choice.kind == TemporalTraversalKind::Joint)
+      ++jointChoices;
+    else
+      ++independentChoices;
     const TemporalScopeChoice &scope = choice.scopes.front();
     EXPECT_TRUE(
         observed
-            .insert({std::vector<int64_t>(scope.iteratorTileSizes.begin(),
+            .insert({choice.kind,
+                     std::vector<int64_t>(scope.iteratorTileSizes.begin(),
                                           scope.iteratorTileSizes.end()),
                      std::vector<uint32_t>(scope.loopOrder.begin(),
                                            scope.loopOrder.end())})
             .second);
   }
+  EXPECT_EQ(jointChoices, 8u);
+  EXPECT_EQ(independentChoices, 8u);
 }
 
 TEST(TemporalDomainTest, PrecedenceDiamondEnumeratesOnlyLinearExtensions) {
@@ -240,13 +251,18 @@ TEST(TemporalDomainTest,
   fanout->walk([&](TileRegionOp operation) { fanoutRegion = operation; });
   TemporalDomainResult fanoutDomain = buildTemporalDomain(fanoutRegion);
   ASSERT_TRUE(fanoutDomain.succeeded());
-  // The shared producer remains a root; the two single-use branches are exact
-  // derived producers of the final consumer.
-  EXPECT_EQ(fanoutDomain.domain->getScopeDescriptors().size(), 2u);
+  // Joint traversal derives the shared all-use producer and both branches;
+  // the independent domain still exposes every original traversal.
+  EXPECT_EQ(fanoutDomain.domain->getScopeDescriptors().size(), 1u);
+  EXPECT_EQ(fanoutDomain.domain
+                ->getScopeDescriptors(TemporalTraversalKind::Independent)
+                .size(),
+            4u);
+  EXPECT_EQ(fanoutDomain.domain->getJointProducerGroups().size(), 1u);
 }
 
 TEST(TemporalDomainTest,
-     GeneralFlattenViewIsTypedUnsupportedAndRemainsIndependent) {
+     GeneralFlattenViewHasJointAndIndependentTemporalChoices) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto module = parse(*context,
                       R"mlir(
@@ -283,11 +299,17 @@ TEST(TemporalDomainTest,
   ASSERT_EQ(operations.size(), 2u);
   TemporalFusionPathResult path = queryTemporalProducerFusionPath(
       mlir::cast<mlir::OpResult>(operations.front().getResult(0)));
-  EXPECT_EQ(path.kind, TemporalFusionQueryKind::Unsupported);
-  EXPECT_FALSE(path.detail.empty());
+  EXPECT_EQ(path.kind, TemporalFusionQueryKind::ExactDerived) << path.detail;
+  EXPECT_TRUE(path.consumerViewToProducer.has_value());
+  EXPECT_EQ(path.generalReshapeConsumerDimensions,
+            (llvm::SmallVector<uint32_t, 2>{0}));
   TemporalDomainResult domain = buildTemporalDomain(region);
   ASSERT_TRUE(domain.succeeded());
-  EXPECT_EQ(domain.domain->getScopeDescriptors().size(), 2u);
+  EXPECT_EQ(domain.domain->getScopeDescriptors().size(), 1u);
+  EXPECT_EQ(
+      domain.domain->getScopeDescriptors(TemporalTraversalKind::Independent)
+          .size(),
+      2u);
 }
 
 TEST(TemporalDomainTest, MultiUseViewResultDoesNotCloneOrDeriveItsProducer) {

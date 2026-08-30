@@ -33,6 +33,7 @@ EGraphStatistics convertStatistics(const WaferEGraphStatistics &statistics) {
                           statistics.computeAbsorptionApplications,
                           statistics.concatApplications,
                           statistics.resultReindexApplications,
+                          statistics.reshapeThroughComputeApplications,
                           statistics.inputRecords,
                           statistics.outputRecords,
                           statistics.inputBytes,
@@ -82,19 +83,23 @@ bool validateNodeShape(const EGraphNode &node) {
 
 } // namespace
 
-EGraphOutcome runEGraph(llvm::ArrayRef<EGraphNode> nodes, uint32_t rootNode,
+EGraphOutcome runEGraph(llvm::ArrayRef<EGraphNode> nodes,
+                        llvm::ArrayRef<uint32_t> rootNodes,
                         EGraphWorkBudget budget,
                         WaferEGraphRelationService relationService,
                         bool forcePanicForTesting) {
   EGraphOutcome invalid;
   invalid.kind = EGraphOutcomeKind::InvalidInput;
   if (nodes.size() > std::numeric_limits<uint32_t>::max() ||
-      rootNode >= nodes.size() || budget.maximumENodes == 0 ||
-      budget.maximumMatches == 0 || budget.maximumIterations == 0 ||
-      !relationService.context || !relationService.getRelationFacts ||
-      !relationService.composeRelations || !relationService.validateCompute ||
-      !relationService.reindexCompute ||
+      rootNodes.empty() ||
+      llvm::any_of(rootNodes,
+                   [&](uint32_t root) { return root >= nodes.size(); }) ||
+      budget.maximumENodes == 0 || budget.maximumMatches == 0 ||
+      budget.maximumIterations == 0 || !relationService.context ||
+      !relationService.getRelationFacts || !relationService.composeRelations ||
+      !relationService.validateCompute || !relationService.reindexCompute ||
       !relationService.reparameterizeElementwise ||
+      !relationService.reparameterizeReshapeCompute ||
       !relationService.validateConcat || !relationService.factorConcat)
     return invalid;
 
@@ -136,7 +141,8 @@ EGraphOutcome runEGraph(llvm::ArrayRef<EGraphNode> nodes, uint32_t rootNode,
       children.size(),
       relations.data(),
       relations.size(),
-      rootNode,
+      rootNodes.data(),
+      rootNodes.size(),
       budget.maximumIterations,
       budget.maximumENodes,
       budget.maximumMatches,
@@ -153,7 +159,8 @@ EGraphOutcome runEGraph(llvm::ArrayRef<EGraphNode> nodes, uint32_t rootNode,
   if (outcome.kind != EGraphOutcomeKind::Changed)
     return outcome;
   if (!result->nodes || result->nodeCount == 0 ||
-      result->nodeCount > UINT32_MAX || result->rootNode >= result->nodeCount ||
+      result->nodeCount > UINT32_MAX || !result->rootNodes ||
+      result->rootCount == 0 || result->rootCount > UINT32_MAX ||
       (result->childCount != 0 && !result->children) ||
       (result->relationCount != 0 && !result->relations))
     return EGraphOutcome{EGraphOutcomeKind::InternalError};
@@ -162,6 +169,10 @@ EGraphOutcome runEGraph(llvm::ArrayRef<EGraphNode> nodes, uint32_t rootNode,
   llvm::ArrayRef<uint32_t> resultChildren(result->children, result->childCount);
   llvm::ArrayRef<uint32_t> resultRelations(result->relations,
                                            result->relationCount);
+  llvm::ArrayRef<uint32_t> resultRoots(result->rootNodes, result->rootCount);
+  if (llvm::any_of(resultRoots,
+                   [&](uint32_t root) { return root >= result->nodeCount; }))
+    return EGraphOutcome{EGraphOutcomeKind::InternalError};
   outcome.expression.reserve(resultNodes.size());
   for (auto [index, node] : llvm::enumerate(resultNodes)) {
     uint64_t childEnd =
@@ -191,7 +202,7 @@ EGraphOutcome runEGraph(llvm::ArrayRef<EGraphNode> nodes, uint32_t rootNode,
       return EGraphOutcome{EGraphOutcomeKind::InternalError};
     outcome.expression.push_back(std::move(converted));
   }
-  outcome.rootNode = result->rootNode;
+  outcome.rootNodes.append(resultRoots.begin(), resultRoots.end());
   return outcome;
 }
 

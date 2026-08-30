@@ -117,11 +117,15 @@ mlir::FailureOr<PhysicalAccessRelation> PhysicalAccessRelation::create(
           .value_or(mlir::AffineMap{});
   bool canonicalLinearOrder = false;
   if (!projectedAffineMap) {
-    IndexRelationResult canonical =
-        IndexRelation::staticReshape(iterationShape, endpointType.getShape());
-    if (canonical.isExact())
-      canonicalLinearOrder =
-          iterationToLogical.isEquivalentTo(*canonical.get()).isProvenTrue();
+    canonicalLinearOrder =
+        iterationToLogical.hasCanonicalRowMajorReshapeConstruction();
+    if (!canonicalLinearOrder) {
+      IndexRelationResult canonical =
+          IndexRelation::staticReshape(iterationShape, endpointType.getShape());
+      if (canonical.isExact())
+        canonicalLinearOrder =
+            iterationToLogical.isEquivalentTo(*canonical.get()).isProvenTrue();
+    }
   }
 
   const int64_t footprint = physicalLayout->getPhysicalFootprintBytes();
@@ -260,6 +264,45 @@ IndexRelationQueryResult PhysicalAccessRelation::hasSamePhysicalElementMapping(
   if (physicalLayout.getElementBitWidth() !=
       other.physicalLayout.getElementBitWidth())
     return IndexRelationQueryResult{IndexRelationStatus::Exact, false, {}};
+  const bool thisCanonical =
+      canonicalLinearOrder ||
+      (projectedAffineMap && projectedAffineMap.isIdentity() &&
+       llvm::equal(iterationShape, endpointType.getShape()));
+  const bool otherCanonical =
+      other.canonicalLinearOrder ||
+      (other.projectedAffineMap && other.projectedAffineMap.isIdentity() &&
+       llvm::equal(other.iterationShape, other.endpointType.getShape()));
+  MemoryAttr thisMemory = getWaferMemoryAttr(endpointType);
+  MemoryAttr otherMemory = getWaferMemoryAttr(other.endpointType);
+  if (thisCanonical && otherCanonical &&
+      endpointType.getLayout().isIdentity() &&
+      other.endpointType.getLayout().isIdentity() && thisMemory &&
+      otherMemory && thisMemory.getLayout() == otherMemory.getLayout()) {
+    if (physicalFootprintBytes != other.physicalFootprintBytes ||
+        minimumAlignmentBytes != other.minimumAlignmentBytes ||
+        validElementCount != other.validElementCount ||
+        paddingElementCount != other.paddingElementCount)
+      return IndexRelationQueryResult{IndexRelationStatus::Exact, false, {}};
+    auto sameBlockedCoordinates = [&](MemLayout layout) {
+      llvm::ArrayRef<int64_t> lhs = endpointType.getShape();
+      llvm::ArrayRef<int64_t> rhs = other.endpointType.getShape();
+      switch (layout) {
+      case MemLayout::Tensor:
+      case MemLayout::NTensor:
+        return true;
+      case MemLayout::Cx:
+        return !lhs.empty() && !rhs.empty() && lhs.back() == rhs.back();
+      case MemLayout::NCx:
+        return lhs.size() >= 3 && rhs.size() >= 3 &&
+               lhs.front() == rhs.front() && lhs.back() == rhs.back();
+      }
+      return false;
+    };
+    return IndexRelationQueryResult{
+        IndexRelationStatus::Exact,
+        sameBlockedCoordinates(thisMemory.getLayout()),
+        {}};
+  }
   IndexRelationQueryResult materialized = materializePhysicalRelations();
   if (!materialized.isProvenTrue())
     return materialized;

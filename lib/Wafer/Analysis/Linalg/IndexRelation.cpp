@@ -275,6 +275,13 @@ bool IndexRelation::contains(llvm::ArrayRef<int64_t> destination,
   return relation.containsPoint(point);
 }
 
+bool IndexRelation::hasCanonicalRowMajorReshapeConstruction() const {
+  return status == IndexRelationStatus::Exact &&
+         canonicalRowMajorOrderByConstruction &&
+         totalBoundedAffineMapByConstruction && rectangleDestinationShape &&
+         rectangleSourceShape;
+}
+
 std::optional<AffineMap>
 IndexRelation::getProjectedAffineMap(MLIRContext *context) const {
   if (!context || status != IndexRelationStatus::Exact)
@@ -344,8 +351,8 @@ IndexRelation::getProjectedAffineMap(MLIRContext *context) const {
 
 IndexRelationResult IndexRelation::identity(llvm::ArrayRef<int64_t> shape,
                                             const IndexRelationLimits &limits) {
-  if (!isShapeValid(shape) || exceedsVariableLimit(shape.size(), shape.size(),
-                                                    limits))
+  if (!isShapeValid(shape) ||
+      exceedsVariableLimit(shape.size(), shape.size(), limits))
     return fail(IndexRelationStatus::Invalid,
                 "identity relation rank or shape is invalid");
   IntegerRelation identity(
@@ -362,6 +369,7 @@ IndexRelationResult IndexRelation::identity(llvm::ArrayRef<int64_t> shape,
   if (!result.isExact())
     return result;
   result.relation->functionalByConstruction = true;
+  result.relation->canonicalRowMajorOrderByConstruction = true;
   result.relation->totalBoundedAffineMapByConstruction = true;
   llvm::SmallVector<int64_t, 4> pattern;
   pattern.reserve(shape.size());
@@ -370,8 +378,7 @@ IndexRelationResult IndexRelation::identity(llvm::ArrayRef<int64_t> shape,
   result.relation->projectedRectanglePattern = std::move(pattern);
   result.relation->rectangleDestinationShape =
       llvm::SmallVector<int64_t, 4>(shape);
-  result.relation->rectangleSourceShape =
-      llvm::SmallVector<int64_t, 4>(shape);
+  result.relation->rectangleSourceShape = llvm::SmallVector<int64_t, 4>(shape);
   return result;
 }
 
@@ -516,6 +523,51 @@ IndexRelationResult IndexRelation::fromAffineMap(
     }
     result.relation->totalBoundedAffineMapByConstruction = totalAndBounded;
   }
+  if (result.relation->totalBoundedAffineMapByConstruction &&
+      map.isProjectedPermutation(/*allowZeroInResults=*/true) &&
+      !hasDynamicDim(destinationShape) && !hasDynamicDim(sourceShape)) {
+    std::optional<int64_t> destinationElements =
+        getStaticElementCount(destinationShape);
+    std::optional<int64_t> sourceElements = getStaticElementCount(sourceShape);
+    std::optional<llvm::SmallVector<int64_t, 4>> destinationStrides =
+        getRowMajorStrides(destinationShape);
+    std::optional<llvm::SmallVector<int64_t, 4>> sourceStrides =
+        getRowMajorStrides(sourceShape);
+    bool sameOrder = destinationElements && sourceElements &&
+                     *destinationElements == *sourceElements &&
+                     destinationStrides && sourceStrides;
+    llvm::SmallVector<int64_t, 4> coefficients(destinationShape.size(), 0);
+    if (sameOrder) {
+      for (auto [sourceDimension, expression] :
+           llvm::enumerate(map.getResults())) {
+        if (auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression)) {
+          int64_t coefficient = 0;
+          if (llvm::AddOverflow(coefficients[dimension.getPosition()],
+                                (*sourceStrides)[sourceDimension],
+                                coefficient)) {
+            sameOrder = false;
+            break;
+          }
+          coefficients[dimension.getPosition()] = coefficient;
+          continue;
+        }
+        auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
+        if (!constant || constant.getValue() != 0) {
+          sameOrder = false;
+          break;
+        }
+      }
+    }
+    if (sameOrder)
+      for (unsigned dimension = 0; dimension < destinationShape.size();
+           ++dimension)
+        if (destinationShape[dimension] != 1 &&
+            coefficients[dimension] != (*destinationStrides)[dimension]) {
+          sameOrder = false;
+          break;
+        }
+    result.relation->canonicalRowMajorOrderByConstruction = sameOrder;
+  }
   return result;
 }
 
@@ -572,6 +624,8 @@ IndexRelationResult IndexRelation::fromCommonIterationDomain(
               llvm::SmallVector<int64_t, 4>(destinationShape);
           result.relation->rectangleSourceShape =
               llvm::SmallVector<int64_t, 4>(sourceShape);
+          result.relation->canonicalRowMajorOrderByConstruction =
+              projectedRelation.relation->canonicalRowMajorOrderByConstruction;
           result.relation->totalBoundedAffineMapByConstruction =
               projectedRelation.relation->totalBoundedAffineMapByConstruction;
         }
@@ -826,6 +880,7 @@ IndexRelation::staticReshape(llvm::ArrayRef<int64_t> destinationShape,
           llvm::SmallVector<int64_t, 4>(destinationShape);
       result.relation->rectangleSourceShape =
           llvm::SmallVector<int64_t, 4>(sourceShape);
+      result.relation->canonicalRowMajorOrderByConstruction = true;
       result.relation->totalBoundedAffineMapByConstruction = true;
       return result;
     }
@@ -849,6 +904,7 @@ IndexRelation::staticReshape(llvm::ArrayRef<int64_t> destinationShape,
     result.relation->rectangleSourceShape =
         llvm::SmallVector<int64_t, 4>(sourceShape);
     result.relation->functionalByConstruction = true;
+    result.relation->canonicalRowMajorOrderByConstruction = true;
     result.relation->totalBoundedAffineMapByConstruction = true;
   }
   return result;
@@ -1104,6 +1160,14 @@ IndexRelation::compose(const IndexRelation &next,
   // bound may clip the apparent map.
   std::optional<llvm::SmallVector<RowMajorRectangleMapping, 4>>
       composedMappings;
+  const bool composedCanonicalRowMajorOrder =
+      status == IndexRelationStatus::Exact &&
+      next.status == IndexRelationStatus::Exact &&
+      canonicalRowMajorOrderByConstruction &&
+      next.canonicalRowMajorOrderByConstruction && rectangleDestinationShape &&
+      rectangleSourceShape && next.rectangleDestinationShape &&
+      next.rectangleSourceShape &&
+      *rectangleSourceShape == *next.rectangleDestinationShape;
   if (status == IndexRelationStatus::Exact &&
       next.status == IndexRelationStatus::Exact &&
       totalBoundedAffineMapByConstruction &&
@@ -1170,6 +1234,14 @@ IndexRelation::compose(const IndexRelation &next,
     result.relation->functionalByConstruction = true;
     result.relation->totalBoundedAffineMapByConstruction = true;
   }
+  if (composedStatus == IndexRelationStatus::Exact &&
+      composedCanonicalRowMajorOrder) {
+    result.relation->rectangleDestinationShape = rectangleDestinationShape;
+    result.relation->rectangleSourceShape = next.rectangleSourceShape;
+    result.relation->functionalByConstruction = true;
+    result.relation->canonicalRowMajorOrderByConstruction = true;
+    result.relation->totalBoundedAffineMapByConstruction = true;
+  }
   return result;
 }
 
@@ -1180,8 +1252,25 @@ IndexRelation::inverse(const IndexRelationLimits &limits) const {
   if (exceedsRelationLimits(inverted, limits))
     return fail(IndexRelationStatus::ResourceExhausted,
                 "inverse index relation exceeds variable or disjunct budget");
-  return IndexRelationResult{
+  IndexRelationResult result{
       status, IndexRelation(std::move(inverted), status), {}};
+  if (status == IndexRelationStatus::Exact &&
+      canonicalRowMajorOrderByConstruction && rectangleDestinationShape &&
+      rectangleSourceShape) {
+    result.relation->rectangleDestinationShape = rectangleSourceShape;
+    result.relation->rectangleSourceShape = rectangleDestinationShape;
+    if (rowMajorRectangleMappings) {
+      llvm::SmallVector<RowMajorRectangleMapping, 4> invertedMappings;
+      for (const RowMajorRectangleMapping &mapping : *rowMajorRectangleMappings)
+        invertedMappings.push_back(RowMajorRectangleMapping{
+            mapping.sourceDimensions, mapping.destinationDimensions});
+      result.relation->rowMajorRectangleMappings = std::move(invertedMappings);
+    }
+    result.relation->functionalByConstruction = true;
+    result.relation->canonicalRowMajorOrderByConstruction = true;
+    result.relation->totalBoundedAffineMapByConstruction = true;
+  }
+  return result;
 }
 
 IndexRelationResult IndexRelation::intersectDestinationDomain(
@@ -1212,6 +1301,8 @@ IndexRelationResult IndexRelation::intersectDestinationDomain(
       restrictedRelation.rowMajorRectangleMappings = rowMajorRectangleMappings;
       restrictedRelation.rectangleDestinationShape = rectangleDestinationShape;
       restrictedRelation.rectangleSourceShape = rectangleSourceShape;
+      restrictedRelation.canonicalRowMajorOrderByConstruction =
+          canonicalRowMajorOrderByConstruction;
       restrictedRelation.totalBoundedAffineMapByConstruction =
           totalBoundedAffineMapByConstruction;
     }
@@ -1247,6 +1338,8 @@ IndexRelation::intersectSourceDomain(const PresburgerSet &domain,
       restrictedRelation.rowMajorRectangleMappings = rowMajorRectangleMappings;
       restrictedRelation.rectangleDestinationShape = rectangleDestinationShape;
       restrictedRelation.rectangleSourceShape = rectangleSourceShape;
+      restrictedRelation.canonicalRowMajorOrderByConstruction =
+          canonicalRowMajorOrderByConstruction;
       restrictedRelation.totalBoundedAffineMapByConstruction =
           totalBoundedAffineMapByConstruction;
     }

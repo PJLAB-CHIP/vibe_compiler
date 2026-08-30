@@ -3,6 +3,7 @@
 #ifndef WAFER_PLANNING_PHYSICALDATAFLOW_TEMPORALDOMAIN_H
 #define WAFER_PLANNING_PHYSICALDATAFLOW_TEMPORALDOMAIN_H
 
+#include "Wafer/Analysis/Linalg/IndexRelation.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/IR/Operation.h"
@@ -76,13 +77,15 @@ struct TemporalScopeDescriptor {
   llvm::SmallVector<int64_t, 4> iterationExtents;
   llvm::SmallVector<IteratorTilingCapability, 4> iteratorCapabilities;
   llvm::SmallVector<TemporalPrecedenceEdge, 4> precedence;
+  llvm::SmallVector<uint32_t, 2> exactReshapeDimensions;
 
   friend bool operator==(const TemporalScopeDescriptor &lhs,
                          const TemporalScopeDescriptor &rhs) {
     return lhs.operation == rhs.operation &&
            lhs.iterationExtents == rhs.iterationExtents &&
            lhs.iteratorCapabilities == rhs.iteratorCapabilities &&
-           lhs.precedence == rhs.precedence;
+           lhs.precedence == rhs.precedence &&
+           lhs.exactReshapeDimensions == rhs.exactReshapeDimensions;
   }
 };
 
@@ -101,11 +104,17 @@ struct TemporalScopeChoice {
   }
 };
 
+enum class TemporalTraversalKind : uint8_t {
+  Joint,
+  Independent,
+};
+
 struct TemporalChoice {
+  TemporalTraversalKind kind = TemporalTraversalKind::Joint;
   std::vector<TemporalScopeChoice> scopes;
 
   friend bool operator==(const TemporalChoice &lhs, const TemporalChoice &rhs) {
-    return lhs.scopes == rhs.scopes;
+    return lhs.kind == rhs.kind && lhs.scopes == rhs.scopes;
   }
 };
 
@@ -136,13 +145,23 @@ struct TemporalFusionPathResult {
   mlir::OpOperand *consumerOperand = nullptr;
   bool viewTransparent = false;
   llvm::SmallVector<TemporalViewDimensionMapping, 4> producerDimensions;
+  std::optional<analysis::IndexRelation> consumerViewToProducer;
   llvm::SmallVector<uint32_t, 2> forcedFullExtentConsumerDimensions;
+  llvm::SmallVector<uint32_t, 2> generalReshapeConsumerDimensions;
   std::string detail;
 
   bool isExact() const {
     return kind == TemporalFusionQueryKind::ExactDerived && producer &&
            consumerOperand;
   }
+};
+
+/// One all-use direct producer group that may be materialized once in a
+/// common joint traversal. The producer and consumer operands are borrowed
+/// from the same unchanged TileRegion.
+struct TemporalJointProducerGroup {
+  mlir::OpResult producer;
+  llvm::SmallVector<mlir::OpOperand *, 4> consumerOperands;
 };
 
 enum class TemporalConcatQueryKind : uint8_t {
@@ -251,30 +270,44 @@ private:
 class TemporalDomain {
 public:
   TemporalSuccessor getFirstChoice() const;
+  TemporalSuccessor getFirstIndependentChoice() const;
   TemporalSuccessor getNextChoice(const TemporalCursor &cursor) const;
   TemporalSuccessor completePrefix(const TemporalChoice &prefix) const;
   bool contains(const TemporalChoice &choice) const;
 
   TileRegionOp getRegion() const { return region; }
-  llvm::ArrayRef<TemporalScopeDescriptor> getScopeDescriptors() const {
-    return scopes;
+  llvm::ArrayRef<TemporalScopeDescriptor> getScopeDescriptors(
+      TemporalTraversalKind kind = TemporalTraversalKind::Joint) const {
+    return kind == TemporalTraversalKind::Joint ? jointScopes
+                                                : independentScopes;
+  }
+  llvm::ArrayRef<TemporalJointProducerGroup> getJointProducerGroups() const {
+    return jointProducerGroups;
   }
 
 private:
   struct Completion;
 
   TemporalDomain(TileRegionOp region,
-                 std::vector<TemporalScopeDescriptor> scopes)
-      : region(region), scopes(std::move(scopes)) {}
+                 std::vector<TemporalScopeDescriptor> jointScopes,
+                 std::vector<TemporalScopeDescriptor> independentScopes,
+                 std::vector<TemporalJointProducerGroup> jointProducerGroups)
+      : region(region), jointScopes(std::move(jointScopes)),
+        independentScopes(std::move(independentScopes)),
+        jointProducerGroups(std::move(jointProducerGroups)) {}
 
   static TemporalScopeChoice
   getFirstScopeChoice(const TemporalScopeDescriptor &scope);
   static bool advanceScopeChoice(const TemporalScopeDescriptor &scope,
                                  TemporalScopeChoice &choice);
-  Completion completeChoice(llvm::ArrayRef<TemporalScopeChoice> prefix) const;
+  Completion completeChoice(TemporalTraversalKind kind,
+                            llvm::ArrayRef<TemporalScopeChoice> prefix) const;
+  bool isJointChoiceCompatible(const TemporalChoice &choice) const;
 
   TileRegionOp region;
-  std::vector<TemporalScopeDescriptor> scopes;
+  std::vector<TemporalScopeDescriptor> jointScopes;
+  std::vector<TemporalScopeDescriptor> independentScopes;
+  std::vector<TemporalJointProducerGroup> jointProducerGroups;
 
   friend struct TemporalDomainResult;
   friend TemporalDomainResult buildTemporalDomain(TileRegionOp);

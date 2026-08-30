@@ -4,7 +4,7 @@ use egg::{
 };
 use std::cell::Cell;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::c_void;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -16,7 +16,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 const FLAG_FORCE_PANIC: u32 = 1;
 
 const NODE_INPUT: u32 = 1;
@@ -39,6 +39,7 @@ const CALLBACK_INTERNAL_ERROR: u32 = 3;
 
 const RELATION_IDENTITY: u32 = 1 << 0;
 const RELATION_MATERIALIZABLE: u32 = 1 << 5;
+const RELATION_CANONICAL_RESHAPE: u32 = 1 << 6;
 
 const RUNTIME_RUNNING: u32 = 0;
 const RUNTIME_BUDGET: u32 = 1;
@@ -100,6 +101,22 @@ type ReparameterizeElementwiseFn = unsafe extern "C" fn(
     *mut u32,
     *mut u32,
 ) -> u32;
+type ReparameterizeReshapeComputeFn = unsafe extern "C" fn(
+    *mut c_void,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    *const u32,
+    u64,
+    u32,
+    *mut u32,
+    *mut u32,
+    *mut u32,
+    *mut u32,
+    *mut u32,
+) -> u32;
 type ValidateConcatFn = unsafe extern "C" fn(*mut c_void, u32, i32, *const u32, u64) -> u32;
 type FactorConcatFn = unsafe extern "C" fn(
     *mut c_void,
@@ -122,6 +139,7 @@ pub struct WaferEGraphRelationService {
     validate_compute: Option<ValidateComputeFn>,
     reindex_compute: Option<ReindexComputeFn>,
     reparameterize_elementwise: Option<ReparameterizeElementwiseFn>,
+    reparameterize_reshape_compute: Option<ReparameterizeReshapeComputeFn>,
     validate_concat: Option<ValidateConcatFn>,
     factor_concat: Option<FactorConcatFn>,
 }
@@ -136,7 +154,8 @@ pub struct WaferEGraphRequest {
     child_count: u64,
     relations: *const u32,
     relation_count: u64,
-    root_node: u32,
+    root_nodes: *const u32,
+    root_count: u64,
     maximum_iterations: u32,
     maximum_e_nodes: u64,
     maximum_matches: u64,
@@ -168,6 +187,7 @@ pub struct WaferEGraphStatistics {
     compute_absorption_applications: u64,
     concat_applications: u64,
     result_reindex_applications: u64,
+    reshape_through_compute_applications: u64,
     input_records: u64,
     output_records: u64,
     input_bytes: u64,
@@ -184,8 +204,8 @@ pub struct WaferEGraphResult {
     child_count: u64,
     relations: *mut u32,
     relation_count: u64,
-    root_node: u32,
-    reserved2: u32,
+    root_nodes: *mut u32,
+    root_count: u64,
     statistics: WaferEGraphStatistics,
 }
 
@@ -200,8 +220,8 @@ impl WaferEGraphResult {
             child_count: 0,
             relations: std::ptr::null_mut(),
             relation_count: 0,
-            root_node: 0,
-            reserved2: 0,
+            root_nodes: std::ptr::null_mut(),
+            root_count: 0,
             statistics: WaferEGraphStatistics::default(),
         }
     }
@@ -330,6 +350,17 @@ struct ReindexKey {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ReshapeComputeKey {
+    semantic_id: u32,
+    kind: u32,
+    result_type: u32,
+    access_operand: u32,
+    access_relation: u32,
+    input_relations: Vec<u32>,
+    data_input_count: u32,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct ConcatValidationKey {
     result_type: u32,
     axis: i32,
@@ -345,6 +376,7 @@ struct ConcatFactorKey {
 }
 
 type ReparameterizationValue = (Vec<u32>, Vec<u32>, Vec<u32>);
+type ReshapeComputeValue = (u32, u32, Vec<u32>, Vec<u32>, Vec<u32>);
 
 #[derive(Default)]
 struct RuntimeState {
@@ -355,11 +387,13 @@ struct RuntimeState {
     compute_absorption_applications: AtomicU64,
     concat_applications: AtomicU64,
     result_reindex_applications: AtomicU64,
+    reshape_through_compute_applications: AtomicU64,
     relation_facts_cache: Mutex<BTreeMap<u32, Option<WaferEGraphRelationFacts>>>,
     composition_cache: Mutex<BTreeMap<(u32, u32), Option<u32>>>,
     compute_validation_cache: Mutex<BTreeMap<ComputeValidationKey, bool>>,
     reindex_cache: Mutex<BTreeMap<ReindexKey, Option<(Vec<u32>, bool)>>>,
     reparameterization_cache: Mutex<BTreeMap<ReindexKey, Option<ReparameterizationValue>>>,
+    reshape_compute_cache: Mutex<BTreeMap<ReshapeComputeKey, Option<ReshapeComputeValue>>>,
     concat_validation_cache: Mutex<BTreeMap<ConcatValidationKey, bool>>,
     concat_factor_cache: Mutex<BTreeMap<ConcatFactorKey, Option<(u32, u32, i32)>>>,
 }
@@ -410,6 +444,7 @@ struct RelationService {
     validate_compute_fn: ValidateComputeFn,
     reindex_compute_fn: ReindexComputeFn,
     reparameterize_elementwise_fn: ReparameterizeElementwiseFn,
+    reparameterize_reshape_compute_fn: ReparameterizeReshapeComputeFn,
     validate_concat_fn: ValidateConcatFn,
     factor_concat_fn: FactorConcatFn,
 }
@@ -426,6 +461,7 @@ impl RelationService {
             validate_compute_fn: raw.validate_compute?,
             reindex_compute_fn: raw.reindex_compute?,
             reparameterize_elementwise_fn: raw.reparameterize_elementwise?,
+            reparameterize_reshape_compute_fn: raw.reparameterize_reshape_compute?,
             validate_concat_fn: raw.validate_concat?,
             factor_concat_fn: raw.factor_concat?,
         })
@@ -828,6 +864,95 @@ impl RelationService {
         }
         value
     }
+
+    fn reparameterize_reshape_compute(
+        &self,
+        compute: &GraphLanguage,
+        access_operand: usize,
+        access_relation: u32,
+        runtime: &RuntimeState,
+    ) -> Option<ReshapeComputeValue> {
+        if !runtime.is_running()
+            || access_operand >= compute.data_input_count as usize
+            || access_operand >= compute.relations.len()
+        {
+            return None;
+        }
+        let key = ReshapeComputeKey {
+            semantic_id: compute.semantic_id,
+            kind: compute.kind,
+            result_type: compute.type_id,
+            access_operand: access_operand as u32,
+            access_relation,
+            input_relations: compute.relations.to_vec(),
+            data_input_count: compute.data_input_count,
+        };
+        match runtime.reshape_compute_cache.lock() {
+            Ok(cache) => {
+                if let Some(cached) = cache.get(&key) {
+                    return cached.clone();
+                }
+            }
+            Err(_) => {
+                runtime.set_status(RUNTIME_INTERNAL_ERROR);
+                return None;
+            }
+        }
+        let mut inner_result_type = 0;
+        let mut outer_result_relation = 0;
+        let mut compute_relations = vec![0; compute.relations.len()];
+        let mut access_relations = vec![0; compute.relations.len()];
+        let mut access_types = vec![0; compute.relations.len()];
+        let status = unsafe {
+            (self.reparameterize_reshape_compute_fn)(
+                self.context(),
+                compute.semantic_id,
+                compute.kind,
+                compute.type_id,
+                access_operand as u32,
+                access_relation,
+                compute.relations.as_ptr(),
+                compute.relations.len() as u64,
+                compute.data_input_count,
+                &mut inner_result_type,
+                &mut outer_result_relation,
+                compute_relations.as_mut_ptr(),
+                access_relations.as_mut_ptr(),
+                access_types.as_mut_ptr(),
+            )
+        };
+        let value = if runtime.record_callback_status(status)
+            && inner_result_type != 0
+            && outer_result_relation != 0
+            && compute_relations.iter().all(|id| *id != 0)
+            && access_relations
+                .iter()
+                .zip(&access_types)
+                .all(|(relation, ty)| (*relation == 0) == (*ty == 0))
+        {
+            Some((
+                inner_result_type,
+                outer_result_relation,
+                compute_relations,
+                access_relations,
+                access_types,
+            ))
+        } else {
+            if status == CALLBACK_EXACT {
+                runtime.set_status(RUNTIME_INTERNAL_ERROR);
+            }
+            None
+        };
+        if runtime.is_running() {
+            match runtime.reshape_compute_cache.lock() {
+                Ok(mut cache) => {
+                    cache.insert(key, value.clone());
+                }
+                Err(_) => runtime.set_status(RUNTIME_INTERNAL_ERROR),
+            }
+        }
+        value
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -968,6 +1093,7 @@ enum RuleKind {
     ComputeAbsorption,
     Concat,
     ResultReindex,
+    ReshapeThroughCompute,
 }
 
 impl RuleKind {
@@ -978,12 +1104,15 @@ impl RuleKind {
             Self::ComputeAbsorption => "wafer-compute-operand-access",
             Self::Concat => "wafer-concat-normalization",
             Self::ResultReindex => "wafer-compute-result-reindex",
+            Self::ReshapeThroughCompute => "wafer-reshape-through-compute",
         }
     }
 }
 
 struct DynamicSearcher {
     kind: RuleKind,
+    service: RelationService,
+    runtime: Arc<RuntimeState>,
 }
 
 impl DynamicSearcher {
@@ -1022,6 +1151,24 @@ impl DynamicSearcher {
                         .any(|node| is_compute_kind(node.kind))
                     {
                         return true;
+                    }
+                }
+                RuleKind::ReshapeThroughCompute if is_compute_kind(node.kind) => {
+                    for child in node.children.iter().take(node.data_input_count as usize) {
+                        let child = egraph.find(*child);
+                        for access in egraph[child]
+                            .nodes
+                            .iter()
+                            .filter(|node| node.kind == NODE_ACCESS)
+                        {
+                            if self
+                                .service
+                                .facts(access.relations[0], &self.runtime)
+                                .is_some_and(|facts| facts.flags & RELATION_CANONICAL_RESHAPE != 0)
+                            {
+                                return true;
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -1103,6 +1250,9 @@ impl DynamicApplier {
                 RuleKind::Concat => RuntimeState::increment(&self.runtime.concat_applications),
                 RuleKind::ResultReindex => {
                     RuntimeState::increment(&self.runtime.result_reindex_applications)
+                }
+                RuleKind::ReshapeThroughCompute => {
+                    RuntimeState::increment(&self.runtime.reshape_through_compute_applications)
                 }
             }
             true
@@ -1412,6 +1562,72 @@ impl DynamicApplier {
         }
         applied
     }
+
+    fn apply_reshape_through_compute(&self, egraph: &mut Graph, eclass: Id) -> Vec<Id> {
+        let nodes = egraph[eclass].nodes.clone();
+        let mut applied = Vec::new();
+        for compute in nodes.into_iter().filter(|node| is_compute_kind(node.kind)) {
+            for operand in 0..compute.data_input_count as usize {
+                let child_class = egraph.find(compute.children[operand]);
+                let accesses = egraph[child_class].nodes.clone();
+                for access in accesses.into_iter().filter(|node| node.kind == NODE_ACCESS) {
+                    let Some((
+                        inner_result_type,
+                        outer_result_relation,
+                        compute_relations,
+                        operand_access_relations,
+                        operand_access_types,
+                    )) = self.service.reparameterize_reshape_compute(
+                        &compute,
+                        operand,
+                        access.relations[0],
+                        &self.runtime,
+                    )
+                    else {
+                        continue;
+                    };
+                    let mut inner = compute.clone();
+                    inner.type_id = inner_result_type;
+                    inner.relations = compute_relations.into_boxed_slice();
+                    inner.children[operand] = egraph.find(access.children[0]);
+                    for index in 0..inner.children.len() {
+                        if index == operand || operand_access_relations[index] == 0 {
+                            continue;
+                        }
+                        let value = egraph.add(GraphLanguage {
+                            kind: NODE_ACCESS,
+                            semantic_id: 0,
+                            type_id: operand_access_types[index],
+                            relations: vec![operand_access_relations[index]].into_boxed_slice(),
+                            data_input_count: 0,
+                            axis: -1,
+                            source_order: 0,
+                            children: vec![egraph.find(inner.children[index])].into_boxed_slice(),
+                        });
+                        inner.children[index] = value;
+                    }
+                    if !self.service.validate_compute(&inner, egraph, &self.runtime) {
+                        continue;
+                    }
+                    let inner = egraph.add(inner);
+                    let target = egraph.add(GraphLanguage {
+                        kind: NODE_ACCESS,
+                        semantic_id: 0,
+                        type_id: compute.type_id,
+                        relations: vec![outer_result_relation].into_boxed_slice(),
+                        data_input_count: 0,
+                        axis: -1,
+                        source_order: compute.source_order,
+                        children: vec![inner].into_boxed_slice(),
+                    });
+                    if self.merge_target(egraph, eclass, target) {
+                        applied.push(target);
+                    }
+                }
+            }
+        }
+        applied
+    }
 }
 
 impl Applier<GraphLanguage, GraphAnalysis> for DynamicApplier {
@@ -1432,6 +1648,7 @@ impl Applier<GraphLanguage, GraphAnalysis> for DynamicApplier {
             RuleKind::ComputeAbsorption => self.apply_compute_absorption(egraph, eclass),
             RuleKind::Concat => self.apply_concat(egraph, eclass),
             RuleKind::ResultReindex => self.apply_result_reindex(egraph, eclass),
+            RuleKind::ReshapeThroughCompute => self.apply_reshape_through_compute(egraph, eclass),
         }
     }
 
@@ -1520,43 +1737,81 @@ unsafe fn required_slice<'a, T>(pointer: *const T, count: usize) -> Result<&'a [
     Ok(slice::from_raw_parts(pointer, count))
 }
 
-fn raw_node_cost(
-    index: usize,
+fn raw_graph_cost(
+    roots: &[u32],
     nodes: &[WaferEGraphNode],
     children: &[u32],
     relations: &[u32],
     service: RelationService,
     runtime: &RuntimeState,
-    memo: &mut [Option<GraphCost>],
 ) -> Result<GraphCost, u32> {
-    if let Some(cost) = &memo[index] {
-        return Ok(cost.clone());
-    }
-    let node = nodes[index];
-    let child_begin = node.child_offset as usize;
-    let child_end = child_begin
-        .checked_add(node.child_count as usize)
-        .ok_or(STATUS_INVALID_INPUT)?;
-    let relation_begin = node.relation_offset as usize;
-    let relation_end = relation_begin
-        .checked_add(node.relation_count as usize)
-        .ok_or(STATUS_INVALID_INPUT)?;
-    if child_end > children.len() || relation_end > relations.len() {
+    if roots.is_empty() {
         return Err(STATUS_INVALID_INPUT);
     }
-    let node_relations = &relations[relation_begin..relation_end];
+    let mut reachable = vec![false; nodes.len()];
+    let mut worklist: Vec<usize> = roots.iter().map(|root| *root as usize).collect();
+    while let Some(index) = worklist.pop() {
+        if index >= nodes.len() {
+            return Err(STATUS_INVALID_INPUT);
+        }
+        if std::mem::replace(&mut reachable[index], true) {
+            continue;
+        }
+        let node = nodes[index];
+        let child_begin = node.child_offset as usize;
+        let child_end = child_begin
+            .checked_add(node.child_count as usize)
+            .ok_or(STATUS_INVALID_INPUT)?;
+        if child_end > children.len() {
+            return Err(STATUS_INVALID_INPUT);
+        }
+        for child in &children[child_begin..child_end] {
+            if *child as usize >= index {
+                return Err(STATUS_INVALID_INPUT);
+            }
+            worklist.push(*child as usize);
+        }
+    }
+
     let mut cost = GraphCost {
         invalid: 0,
-        compute_occurrences: u64::from(is_compute_kind(node.kind)),
-        compute_ids: if is_compute_kind(node.kind) {
-            vec![node.semantic_id]
-        } else {
-            Vec::new()
-        },
-        access_occurrences: u64::from(node.kind == NODE_ACCESS),
-        concat_occurrences: u64::from(node.kind == NODE_CONCAT),
-        nodes: 1,
-        canonical_key: vec![
+        compute_occurrences: 0,
+        compute_ids: Vec::new(),
+        access_occurrences: 0,
+        concat_occurrences: 0,
+        nodes: 0,
+        canonical_key: roots.to_vec(),
+    };
+    for (index, node) in nodes.iter().copied().enumerate() {
+        if !reachable[index] {
+            continue;
+        }
+        let child_begin = node.child_offset as usize;
+        let child_end = child_begin
+            .checked_add(node.child_count as usize)
+            .ok_or(STATUS_INVALID_INPUT)?;
+        let relation_begin = node.relation_offset as usize;
+        let relation_end = relation_begin
+            .checked_add(node.relation_count as usize)
+            .ok_or(STATUS_INVALID_INPUT)?;
+        if child_end > children.len() || relation_end > relations.len() {
+            return Err(STATUS_INVALID_INPUT);
+        }
+        let node_relations = &relations[relation_begin..relation_end];
+        cost.nodes = cost.nodes.saturating_add(1);
+        cost.compute_occurrences = cost
+            .compute_occurrences
+            .saturating_add(u64::from(is_compute_kind(node.kind)));
+        if is_compute_kind(node.kind) {
+            cost.compute_ids.push(node.semantic_id);
+        }
+        cost.access_occurrences = cost
+            .access_occurrences
+            .saturating_add(u64::from(node.kind == NODE_ACCESS));
+        cost.concat_occurrences = cost
+            .concat_occurrences
+            .saturating_add(u64::from(node.kind == NODE_CONCAT));
+        cost.canonical_key.extend([
             node.kind,
             node.semantic_id,
             node.type_id,
@@ -1565,37 +1820,18 @@ fn raw_node_cost(
             node.source_order,
             node.child_count,
             node.relation_count,
-        ],
-    };
-    cost.canonical_key.extend(node_relations.iter().copied());
-    if node.kind == NODE_ACCESS {
-        match service.facts(node_relations[0], runtime) {
-            Some(facts) if facts.flags & RELATION_MATERIALIZABLE != 0 => {}
-            _ => cost.invalid = 1,
+        ]);
+        cost.canonical_key
+            .extend(children[child_begin..child_end].iter().copied());
+        cost.canonical_key.extend(node_relations.iter().copied());
+        if node.kind == NODE_ACCESS {
+            match service.facts(node_relations[0], runtime) {
+                Some(facts) if facts.flags & RELATION_MATERIALIZABLE != 0 => {}
+                _ => cost.invalid = cost.invalid.saturating_add(1),
+            }
         }
-    }
-    for child in &children[child_begin..child_end] {
-        let child = *child as usize;
-        if child >= index {
-            return Err(STATUS_INVALID_INPUT);
-        }
-        let child_cost = raw_node_cost(child, nodes, children, relations, service, runtime, memo)?;
-        cost.invalid = cost.invalid.saturating_add(child_cost.invalid);
-        cost.compute_occurrences = cost
-            .compute_occurrences
-            .saturating_add(child_cost.compute_occurrences);
-        cost.compute_ids.extend(child_cost.compute_ids);
-        cost.access_occurrences = cost
-            .access_occurrences
-            .saturating_add(child_cost.access_occurrences);
-        cost.concat_occurrences = cost
-            .concat_occurrences
-            .saturating_add(child_cost.concat_occurrences);
-        cost.nodes = cost.nodes.saturating_add(child_cost.nodes);
-        cost.canonical_key.extend(child_cost.canonical_key);
     }
     cost.compute_ids.sort_unstable();
-    memo[index] = Some(cost.clone());
     Ok(cost)
 }
 
@@ -1634,11 +1870,14 @@ unsafe fn run(request: &WaferEGraphRequest) -> Result<WaferEGraphResult, u32> {
     let node_count = checked_count(request.node_count)?;
     let child_count = checked_count(request.child_count)?;
     let relation_count = checked_count(request.relation_count)?;
+    let root_count = checked_count(request.root_count)?;
     let nodes = required_slice(request.nodes, node_count)?;
     let children = required_slice(request.children, child_count)?;
     let relations = required_slice(request.relations, relation_count)?;
+    let roots = required_slice(request.root_nodes, root_count)?;
     if node_count == 0
-        || request.root_node as usize >= node_count
+        || roots.is_empty()
+        || roots.iter().any(|root| *root as usize >= node_count)
         || request.maximum_iterations == 0
         || request.maximum_e_nodes == 0
         || request.maximum_matches == 0
@@ -1647,15 +1886,7 @@ unsafe fn run(request: &WaferEGraphRequest) -> Result<WaferEGraphResult, u32> {
     }
 
     let runtime = Arc::new(RuntimeState::default());
-    let original_cost = raw_node_cost(
-        request.root_node as usize,
-        nodes,
-        children,
-        relations,
-        service,
-        &runtime,
-        &mut vec![None; node_count],
-    )?;
+    let original_cost = raw_graph_cost(roots, nodes, children, relations, service, &runtime)?;
     if runtime.status() == RUNTIME_BUDGET {
         return Ok(WaferEGraphResult::status(STATUS_BUDGET_EXHAUSTED));
     }
@@ -1750,6 +1981,7 @@ unsafe fn run(request: &WaferEGraphRequest) -> Result<WaferEGraphResult, u32> {
         RuleKind::ComputeAbsorption,
         RuleKind::Concat,
         RuleKind::ResultReindex,
+        RuleKind::ReshapeThroughCompute,
     ];
     let rules: Vec<Rewrite<GraphLanguage, GraphAnalysis>> = rule_kinds
         .iter()
@@ -1757,7 +1989,11 @@ unsafe fn run(request: &WaferEGraphRequest) -> Result<WaferEGraphResult, u32> {
         .map(|kind| {
             Rewrite::new(
                 kind.name(),
-                DynamicSearcher { kind },
+                DynamicSearcher {
+                    kind,
+                    service,
+                    runtime: runtime.clone(),
+                },
                 DynamicApplier {
                     kind,
                     service,
@@ -1787,7 +2023,9 @@ unsafe fn run(request: &WaferEGraphRequest) -> Result<WaferEGraphResult, u32> {
                 Err("wafer relation service stopped equality saturation".to_string())
             }
         });
-    runner.roots.push(ids[request.root_node as usize]);
+    runner
+        .roots
+        .extend(roots.iter().map(|root| ids[*root as usize]));
     let runner = runner.run(rules.iter());
 
     let mut result = WaferEGraphResult::status(STATUS_UNCHANGED);
@@ -1796,7 +2034,8 @@ unsafe fn run(request: &WaferEGraphRequest) -> Result<WaferEGraphResult, u32> {
     result.statistics.input_records = request
         .node_count
         .saturating_add(request.child_count)
-        .saturating_add(request.relation_count);
+        .saturating_add(request.relation_count)
+        .saturating_add(request.root_count);
     result.statistics.input_bytes = request
         .node_count
         .saturating_mul(std::mem::size_of::<WaferEGraphNode>() as u64)
@@ -1804,6 +2043,7 @@ unsafe fn run(request: &WaferEGraphRequest) -> Result<WaferEGraphResult, u32> {
             request
                 .child_count
                 .saturating_add(request.relation_count)
+                .saturating_add(request.root_count)
                 .saturating_mul(std::mem::size_of::<u32>() as u64),
         );
     result.statistics.relation_queries = runtime.relation_queries.load(AtomicOrdering::Relaxed);
@@ -1833,6 +2073,9 @@ unsafe fn run(request: &WaferEGraphRequest) -> Result<WaferEGraphResult, u32> {
     result.statistics.result_reindex_applications = runtime
         .result_reindex_applications
         .load(AtomicOrdering::Relaxed);
+    result.statistics.reshape_through_compute_applications = runtime
+        .reshape_through_compute_applications
+        .load(AtomicOrdering::Relaxed);
 
     let stop_reason = runner.stop_reason.as_ref().ok_or(STATUS_INTERNAL_ERROR)?;
     if counters.exhausted.get() || budget_stop(stop_reason) || runtime.status() == RUNTIME_BUDGET {
@@ -1855,7 +2098,94 @@ unsafe fn run(request: &WaferEGraphRequest) -> Result<WaferEGraphResult, u32> {
             calls: extraction_calls.clone(),
         },
     );
-    let (best_cost, expression) = extractor.find_best(runner.roots[0]);
+    let mut selected_nodes: Vec<GraphLanguage> = Vec::new();
+    let mut selected_node_ids: BTreeMap<GraphLanguage, u32> = BTreeMap::new();
+    let mut output_roots = Vec::with_capacity(runner.roots.len());
+    for root in &runner.roots {
+        let (_root_cost, expression) = extractor.find_best(*root);
+        let mut local_to_output = Vec::with_capacity(expression.as_ref().len());
+        for node in expression.as_ref() {
+            let mut canonical = node.clone();
+            let mut canonical_children = Vec::with_capacity(node.children.len());
+            for child in node.children.iter().copied() {
+                let local = usize::from(child);
+                let output = *local_to_output.get(local).ok_or(STATUS_INTERNAL_ERROR)?;
+                canonical_children.push(Id::from(output as usize));
+            }
+            canonical.children = canonical_children.into_boxed_slice();
+            let output = if let Some(existing) = selected_node_ids.get(&canonical) {
+                *existing
+            } else {
+                let index =
+                    u32::try_from(selected_nodes.len()).map_err(|_| STATUS_INTERNAL_ERROR)?;
+                selected_node_ids.insert(canonical.clone(), index);
+                selected_nodes.push(canonical);
+                index
+            };
+            local_to_output.push(output);
+        }
+        output_roots.push(*local_to_output.last().ok_or(STATUS_INTERNAL_ERROR)?);
+    }
+
+    // The extractor's RecExpr order is topological but does not preserve the
+    // source order of independent pure operations.  Re-establish the semantic
+    // source-order tie-break while retaining every def-before-use edge.
+    let mut dependents = vec![Vec::<usize>::new(); selected_nodes.len()];
+    let mut remaining_children = Vec::with_capacity(selected_nodes.len());
+    for (parent, node) in selected_nodes.iter().enumerate() {
+        remaining_children.push(node.children.len());
+        for child in node.children.iter().copied() {
+            let child = usize::from(child);
+            if child >= selected_nodes.len() {
+                return Err(STATUS_INTERNAL_ERROR);
+            }
+            dependents[child].push(parent);
+        }
+    }
+    let mut ready = BTreeSet::new();
+    for (index, node) in selected_nodes.iter().enumerate() {
+        if remaining_children[index] == 0 {
+            ready.insert((node.source_order, node.kind, node.semantic_id, index));
+        }
+    }
+    let mut order = Vec::with_capacity(selected_nodes.len());
+    while let Some(key) = ready.pop_first() {
+        let index = key.3;
+        order.push(index);
+        for dependent in &dependents[index] {
+            remaining_children[*dependent] = remaining_children[*dependent]
+                .checked_sub(1)
+                .ok_or(STATUS_INTERNAL_ERROR)?;
+            if remaining_children[*dependent] == 0 {
+                let node = &selected_nodes[*dependent];
+                ready.insert((node.source_order, node.kind, node.semantic_id, *dependent));
+            }
+        }
+    }
+    if order.len() != selected_nodes.len() {
+        return Err(STATUS_INTERNAL_ERROR);
+    }
+    let mut old_to_new = vec![u32::MAX; selected_nodes.len()];
+    for (new_index, old_index) in order.iter().copied().enumerate() {
+        old_to_new[old_index] = u32::try_from(new_index).map_err(|_| STATUS_INTERNAL_ERROR)?;
+    }
+    let mut reordered = Vec::with_capacity(selected_nodes.len());
+    for old_index in order {
+        let mut node = selected_nodes[old_index].clone();
+        node.children = node
+            .children
+            .iter()
+            .map(|child| old_to_new[usize::from(*child)])
+            .map(|child| Id::from(child as usize))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        reordered.push(node);
+    }
+    for root in &mut output_roots {
+        *root = old_to_new[*root as usize];
+    }
+    selected_nodes = reordered;
+
     result.statistics.extraction_work = extraction_calls.get();
     result.statistics.relation_queries = runtime.relation_queries.load(AtomicOrdering::Relaxed);
     if runtime.status() == RUNTIME_BUDGET {
@@ -1865,14 +2195,10 @@ unsafe fn run(request: &WaferEGraphRequest) -> Result<WaferEGraphResult, u32> {
     if !runtime.is_running() {
         return Err(STATUS_INTERNAL_ERROR);
     }
-    if !is_strictly_better(&best_cost, &original_cost) {
-        return Ok(result);
-    }
-
-    let mut output_nodes = Vec::with_capacity(expression.as_ref().len());
+    let mut output_nodes = Vec::with_capacity(selected_nodes.len());
     let mut output_children = Vec::new();
     let mut output_relations = Vec::new();
-    for node in expression.as_ref() {
+    for node in &selected_nodes {
         let child_offset =
             u32::try_from(output_children.len()).map_err(|_| STATUS_INTERNAL_ERROR)?;
         let relation_offset =
@@ -1896,19 +2222,33 @@ unsafe fn run(request: &WaferEGraphRequest) -> Result<WaferEGraphResult, u32> {
             source_order: node.source_order,
         });
     }
+    let output_cost = raw_graph_cost(
+        &output_roots,
+        &output_nodes,
+        &output_children,
+        &output_relations,
+        service,
+        &runtime,
+    )?;
+    if !is_strictly_better(&output_cost, &original_cost) {
+        return Ok(result);
+    }
+
     let node_box = output_nodes.into_boxed_slice();
     let child_box = output_children.into_boxed_slice();
     let relation_box = output_relations.into_boxed_slice();
+    let root_box = output_roots.into_boxed_slice();
     result.status = STATUS_CHANGED;
     result.node_count = node_box.len() as u64;
     result.child_count = child_box.len() as u64;
     result.relation_count = relation_box.len() as u64;
-    result.root_node = u32::try_from(node_box.len() - 1).map_err(|_| STATUS_INTERNAL_ERROR)?;
+    result.root_count = root_box.len() as u64;
     result.statistics.output_nodes = result.node_count;
     result.statistics.output_records = result
         .node_count
         .saturating_add(result.child_count)
-        .saturating_add(result.relation_count);
+        .saturating_add(result.relation_count)
+        .saturating_add(result.root_count);
     result.statistics.output_bytes = result
         .node_count
         .saturating_mul(std::mem::size_of::<WaferEGraphNode>() as u64)
@@ -1916,14 +2256,16 @@ unsafe fn run(request: &WaferEGraphRequest) -> Result<WaferEGraphResult, u32> {
             result
                 .child_count
                 .saturating_add(result.relation_count)
+                .saturating_add(result.root_count)
                 .saturating_mul(std::mem::size_of::<u32>() as u64),
         );
-    result.statistics.output_compute_occurrences = best_cost.compute_occurrences;
-    result.statistics.output_access_occurrences = best_cost.access_occurrences;
-    result.statistics.output_concat_occurrences = best_cost.concat_occurrences;
+    result.statistics.output_compute_occurrences = output_cost.compute_occurrences;
+    result.statistics.output_access_occurrences = output_cost.access_occurrences;
+    result.statistics.output_concat_occurrences = output_cost.concat_occurrences;
     result.nodes = Box::into_raw(node_box) as *mut WaferEGraphNode;
     result.children = Box::into_raw(child_box) as *mut u32;
     result.relations = Box::into_raw(relation_box) as *mut u32;
+    result.root_nodes = Box::into_raw(root_box) as *mut u32;
     Ok(result)
 }
 
@@ -1962,6 +2304,11 @@ pub unsafe extern "C" fn waferFreeStructuredEGraphResult(result: *mut WaferEGrap
     if !result.relations.is_null() {
         let length = usize::try_from(result.relation_count).unwrap_or(0);
         let slice = std::ptr::slice_from_raw_parts_mut(result.relations, length);
+        drop(Box::from_raw(slice));
+    }
+    if !result.root_nodes.is_null() {
+        let length = usize::try_from(result.root_count).unwrap_or(0);
+        let slice = std::ptr::slice_from_raw_parts_mut(result.root_nodes, length);
         drop(Box::from_raw(slice));
     }
 }

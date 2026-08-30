@@ -189,15 +189,19 @@ Temporal tile-and-fuse只消费上述structural owner和current relation。它�
 tiling/fusion生成canonical loops、producer SSA和必要main/tail；online-attention的parallel/K2轴走同一个`TilingInterface`，K2 tile以三个
 actual DPS state作为loop-carried values。Choice apply后立即销毁，不携带`RegionExecutionId`。
 
-Domain与apply都锚定当前TileRegion：domain只借用live operation handle，full-local choice不修改IR，active choice立即替换同一owner。Exact
-single-use producer可以随consumer slice实际融合；multi-use、broadcast重复request、DPS destination、effectful或unsupported relation保持独立
-traversal。Ragged loop只peel最后一次迭代，随后在本Region内收紧actual slice/Linalg/online-attention static type；不创建静态wave清单或
+Domain与apply都锚定当前TileRegion：domain只借用live operation handle，full-local choice不修改IR，active choice立即替换同一owner。
+历史完成边界只支持exact single-use direct及dense-offset`cast/extract_slice/unit-reshape` producer fusion；general reshape、broadcast和
+multi-use当时保持独立，因此第13项不能继续视为完整闭合。C2保留每个root原有size/order raw domain，并为可证明的all-use component增加
+independent/joint typed choice；active choice立即物化同一owner。Ragged loop只peel最后一次迭代，随后在本Region内收紧actual
+slice/Linalg/online-attention static type；不创建静态wave清单或
 跨Region traversal ID。
 
 Producer与consumer之间允许存在static pure support chain。Spatial demand与Temporal fusion共用06号定义的current-op tensor indexing
-relation builder；Temporal只在same-Region、all-result single-use且组合relation exact/total/single-valued时，把
-`cast/extract_slice/expand_shape/collapse_shape`作为view-transparent edge。Apply先生成consumer的actual slice，再用pinned tensor
-reshape/subset与`TilingInterface` mechanics形成producer tile和loop-local view；不为view创建独立TileRegion、temporal scope或future recipe。
+relation builder；query结果保留完整composed `IndexRelation`和borrowed current endpoints，不能降级成私有`dimension+offset`协议。
+Single-root或joint Apply先生成actual consumer slices，再计算它们到producer的exact image；一个parametric rectangle或work-bounded、互斥、
+static-shape pieces使用pinned tensor reshape/subset与producer `TilingInterface`形成loop-local tile。Joint choice还要求全部current uses具有
+相同domain/tile/order和exact demand，并在一个common SCF loop中顺序消费一次producer tile。不为view创建独立TileRegion、跨stage
+temporal scope或future recipe，也不为不兼容use部分融合或clone producer。
 Constant `pad`按pinned interface实际tile且非零padding轴在derived consumer保持full extent，随后与constant `tensor.generate`一起降为
 local Linalg fill/insert；`pack/unpack`在static main/tail type收紧后降为local reshape。Concat/insert链只组装requested tile的有限exact
 pieces，fused producer的empty destination也必须缩为tile-local empty。不能证明或不能实际构造的chain保持独立traversal，其完整buffer必须
@@ -277,10 +281,13 @@ fallback builder或partial result。Unsupported semantics、resource exhaustion�
   replica；
 - 1024整除时每个traversal只有一个shared loop body；1025/1031只含必要的main/remainder static form，不含front peel，
   不随wave trip count复制compute closure；两个ragged tiled axes覆盖四种main/tail static组合，一般`r`轴不超过`2^r`；
-- exact unique producer tile从temporal free domain移除但物化IR集合不变；non-unique、unsupported和indeterminate保留自由参数、
-  独立producer及Region candidate，proposal顺序开关不改变raw domain；
-- 每个source structured op的actual iteration tiles并集等于selected work且除explicit replica外两两不重叠；未融合producer
-  位于consumer loop外且每selected execution只物化一次，融合producer只位于对应consumer traversal内；
+- 每个producer的independent choice保留原temporal raw参数；joint choice只在all-use exact compatibility下存在，proposal顺序开关不改变
+  independent/joint合法集合；unsupported和indeterminate不删除独立producer或Region candidate；
+- general reshape main/tail的actual producer rectangle/pieces并集与consumer tile image完全相等且互斥，piece count受work bound，
+  不生成逐元素loop或dynamic-piece fallback；
+- 每个source structured op的actual iteration tiles并集等于selected work且除explicit replica外两两不重叠；independent producer
+  位于consumer loop外且每selected execution只物化一次，joint producer对每个exact demand piece只在common traversal内物化一次并被
+  全部roots直接使用；
 - same-Tile Region edge只由SSA表达；cross-Tile relation恰有两个live endpoints且不含DemandFragment/structured-node/Tile identity；
   endpoint parent与producer/consumer可重算owner、payload和destination use；
 - graph attention对每个selected owner破坏性转换一次；FA一个K2 spatial owner，FD的K2 contributions all-and-only覆盖且各自产生

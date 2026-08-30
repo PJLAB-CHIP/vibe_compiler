@@ -528,9 +528,9 @@ Pipeline position:
   attention semantic recognition完成后的verified static-ranked Tensor/Linalg/Arith/Math graph。前序已经运行仓库pinned MLIR
   实际提供的canonicalization、CSE、elementwise/reshape folds；`wafer.linalg_ext.attention`保持未展开。
 - Current stage responsibility:
-  将剩余ordinary pure single-root component编码为有界access-relation e-graph；Rust `egg`中的固定dynamic rules在rebuild后的
+  将剩余ordinary pure connected component及其ordered observable roots编码为一个有界access-relation e-graph；Rust `egg`中的固定dynamic rules在rebuild后的
   新e-class上继续匹配，C++ request-local `IndexRelation`服务只计算和证明relation composition/map reindex，不预构造最终graph
-  candidate。提取保持compute occurrence、scalar/combiner、dtype和iterator语义，并通过一次`IRRewriter`直接修改current IR；不复制
+  candidate。提取形成共享DAG，保持compute occurrence、scalar/combiner、dtype和iterator语义，并通过一次`IRRewriter`原子修改全部roots；不复制
   `ModuleOp`、`FuncOp`或component owner。
 - Output IR / files:
   dialect集合不变的verified Tensor/Linalg current IR；支持的reshape、transpose、broadcast、concat和structured compute access
@@ -548,7 +548,7 @@ Pipeline position:
 - Completion criteria:
   C++ importer只导入current原始节点；至少一个真实phase-order case由两条以上egg rules连续创建中间e-node后闭合，不能由
   `build...Alternatives`或candidate recipe代签。支持的每条rewrite由exact relation/type/iterator proof签发；budgeted exploration确定
-  且有界，超预算保持输入component不变；extraction不复制compute/producer occurrence、不破坏fanout/DPS/effect；输出通过verifier
+  且有界，超预算保持输入component不变；multi-root extraction不复制compute/producer occurrence、不破坏fanout/DPS/effect；输出通过verifier
   并由现有StructuredDAG和exact-demand直接消费；真实规模on/off矩阵记录work、wall、RSS、IR变化和下游stage reachability。
 ```
 
@@ -559,8 +559,9 @@ component可以把attention data operand rewiring到同type、exact等价的新S
 ### 7.2 Component、expression与e-class facts
 
 E-graph只是本pass内部的query-local scratch representation，不是新IR stage或future-output plan。每个request处理一个ordinary pure
-single-root component：multi-use producer value可以作为root统一替换一次，各consumer分支把该value视为`Input`；首批不做跨observable
-root joint extraction或ILP。Importer只导入current IR中已经存在的原始节点：
+connected component及其按current source order排列的全部observable roots。Importer对同一current SSA value只建立一个节点，fanout分支共享
+该节点；attention、collective、call、SCF、effect或unsupported op切断component。Request直接携带ordered root node数组，不为它们创建
+MLIR tuple op、伪type或future result record。Importer只导入current IR中已经存在的原始节点：
 
 ```text
 Input(valueId, typeId)
@@ -597,13 +598,10 @@ request仍存活时映射到query-local input ID；地址不进入observable排�
 单一axis、unit stride、ordered non-overlap、完整coverage、base全部覆盖且中间result无额外observable use时，才导入N-ary `Concat`。
 Extract仍生成标准Tensor IR，不新增Wafer concat op。
 
-Single-root request之前允许一个窄的multi-use boundary rewrite：若同一projected `Access`的全部uses都是ordinary pure、single-result
-Linalg data operands，而且每个elementwise、reduction或contraction consumer的operand-map composition均exact、total，组合后的完整
-indexing-map集合仍能推导全部loop bounds，并且current直接下游已经接受所得signature，则一次preflight后把所有consumer原地改为读取
-Access source并同步更新各自indexing map，最后删除唯一Access。Contraction只有在组合后仍可表示为current支持的canonical
-matmul/batch-matmul signature时才接受。任一use不满足即整组不改；不复制Compute、不改变iterator、scalar/combiner、DPS init或result，
-也不建立tuple root或multi-output extractor。这是对current fanout cut的all-users Access propagation，不扩大为通用joint multi-output
-equality saturation。
+Multi-use Access传播不再由egg外C++ rewrite处理。相同的identity/composition/compute rule在共享component的各root e-class中自然生效；
+只有全部ordered roots都完成type/relation/materialization preflight后才提交MLIR mutation。某个分支保持原表达不阻止其它分支在egg中探索，
+但C++不得先原地改写一部分consumer再继续运行其它root。Extractor只保留原computeId集合及共享SSA DAG，不增加elementwise fusion、
+compute合并、复制或删除规则。
 
 ### 7.3 `egg`、C ABI与request-local relation service
 
@@ -614,7 +612,8 @@ bootstrap准备Cargo directory source，CMake只运行`cargo build --locked --of
 外部optimizer或临时文件。
 
 C++ importer不生成equivalence edge、最终candidate或candidate-specific recipe。它只导出原始tagged e-node、ordered children、typed
-records和一个同步request期间有效的relation-service ABI：
+records、ordered root node数组和一个同步request期间有效的relation-service ABI。ABI只保留这一种multi-root schema，旧`rootNode`
+单值形式同步删除：
 
 ```text
 getRelationFacts(relationId)
@@ -640,8 +639,9 @@ Rust固定注册下面第7.4节的dynamic rules。Searcher只匹配e-node/e-clas
 phase-order闭合发生在`egg`内，而不是C++提前计算最终结果。跨ABI buffer由Rust统一分配和释放；panic在Rust入口转成typed
 `InternalError`，不得跨C ABI。`egg`、relation service、memo和extractor在component结束后全部销毁。
 
-本项不采用`egglog`、外部solver或TENSAT ILP/multi-output extraction；这些机制不属于single-root logical access normalization，并会
-扩大状态和scalability风险。
+Rust runner把全部roots加入同一个e-graph。每个root使用同一e-class最优选择，随后按selected e-node和children做deterministic hash-cons，
+形成一次共享输出DAG；全component hard check按unique DAG node计算computeId、Access、Concat和node数，不按每root树重复计数。这里不采用
+`egglog`、外部solver或TENSAT ILP；不求任意multi-output全局ILP最优，只接受由同一e-class选择得到且对原component严格结构下降的共享DAG。
 
 ### 7.4 固定dynamic rule集合
 
@@ -679,7 +679,29 @@ Compute(id, kind, type, iterators,
 scalar/combiner region、result、init和compute occurrence不变。`Access`必须exact、total、single-valued，组合map必须能由current Linalg
 表示且已被当前直接下游支持。Broadcast进入reduction不按operation种类禁止：只要上述proof成立，原reduction loop domain保持不变，
 multiplicity仍由current iterator domain表达。General row-major reshape若不能恢复成Linalg AffineMap，可以继续参与access composition，
-但不能通过本rule消除。
+但不能假装成projected map通过本rule消除；它由下一条rule处理。
+
+#### General reshape through compute
+
+```text
+Compute(id, kind, resultType, iterators,
+        maps,
+        [..., Access(Rreshape, x), ...],
+        init)
+  =>
+Access(Rresult,
+       Compute(id, kind, reindexedType, reindexedIterators,
+               reindexedMaps,
+               [..., x, ...],
+               reindexedInit))
+```
+
+这是一类dynamic egg rule，不按flatten/unflatten rank或op名称展开多个pattern。Applier调用relation service，只在`Rreshape`为exact static
+row-major relation、每个reassociation group只含同一种iterator kind、其它operand/init/result可同步重参数化且current下游接受新Linalg signature时
+创建RHS。Elementwise、generic reduction和contraction共用同一rule；连续`parallel`轴和连续`reduction`轴都可分别collapse/expand，后者必须保持
+row-major reduction线性次序和总domain。一个group混合`parallel`与`reduction`时不改，因为单个Linalg iterator不能同时具有两种kind。
+Scalar/combiner region保持不变，contraction仍须恢复为当前支持的generic或named signature。`Rresult`可以暂时不可物化并继续参与composition；最终extract时仍必须
+成为identity、standard reshape或其它已有标准materialization。Callback只返回type/relation ID和typed status，不创建或修改MLIR。
 
 #### Concat normalization
 
@@ -714,11 +736,11 @@ signature时返回`Exact`。Broadcast、projection、slice和涉及reduction axi
 `linalg.matmul`/`linalg.batch_matmul`及transpose-input named variant的exact contraction均走同一rule；其它contraction signature由
 当前直接下游能力检查返回`Unsupported`，不要求后端新增形式。
 
-对于single-use producer chain中的all-parallel elementwise，Applier还可创建同一等价式的第二种RHS：把iteration domain重参数化到新
+对于pure producer chain中的all-parallel elementwise，Applier还可创建同一等价式的第二种RHS：把iteration domain重参数化到新
 result coordinates，将每个data operand map物化为显式exact `Access`，并让elementwise自身使用identity maps。该RHS不融合、复制或
 交换Compute；禁止用于含`linalg.index`语义的region。它只用于让后续rule看见`Access(R, producer Compute)`并继续做producer result
-reindex；如果不能继续消除，新增Access使结构cost不下降，extractor不会选择。Multi-use producer仍由single-root component boundary阻止
-这种传播；共享projected Access的异构consumer只由上面的原子all-users fanout rewrite处理。
+reindex；如果不能继续消除，新增Access使结构cost不下降，extractor不会选择。Multi-use producer由multi-root component中的共享node保持
+一次，所有分支仍只经过egg rule和统一extraction，不再调用egg外all-users rewrite。
 
 首批不注册elementwise fusion、scalar algebra、matmul associativity/distributivity、reduction domain拆分/合并、concat向matmul/reduce
 分配或multi-pattern rewrite；前序pinned MLIR已经拥有的fold/fusion继续由其标准实现负责。Attention、collective、call、SCF、effectful
@@ -729,10 +751,9 @@ op、general unsupported slice/insert、pad、gather/scatter和unsupported multi
 E-graph只接收前序pinned MLIR folds之后仍有非相邻或rewrite-order冲突的ordinary pure component。Rule以固定semantic顺序注册，但
 输出不依赖rule遍历、hash table、地址或并行完成顺序；pinned `egg` deterministic runner与完整semantic tie-break共同保证可观察确定性。
 
-一次pass invocation在current function内交替运行all-users fanout rewrite与single-root request，直到本轮没有修改。每个成功轮次都必须使
-实际current IR中可识别的`Access`数量严格减少，或在`Access`数量不变时使canonical `Concat`数量严格减少；否则作为transformation
-contract failure停止。这个定点只闭合“前一改写删除旁支后暴露新的single-use/fanout机会”，不增加egg rule、future candidate或固定轮数，
-第二次运行同一pass必须byte-equivalent。
+一次pass invocation按ordinary pure connected component各运行一个multi-root egg request；没有egg外fanout rewrite，也不因某个root先成功而
+重跑同一component。一个成功request必须使共享输出DAG的unique `Access`数量严格减少，或在`Access`不变时使canonical `Concat`及总node数
+按既定结构顺序严格下降；否则保持原component。第二次运行同一pass必须byte-equivalent。
 
 预算使用确定性work而不是wall-clock控制输出。Request直接限制relation service call、e-node、rewrite match和iteration；这些有限
 container与iteration同时给e-class merge、rebuild和extraction建立上界，并分别报告实际计数。ABI node/child/relation记录在C++与Rust
@@ -756,10 +777,10 @@ program、physical rejection或candidate feedback。
 标准MLIR pass statistics记录上述work、input/output op和rule application；fresh qualification另用host profile记录wall/RSS。Timing和RSS
 只用于诊断，不进入输出选择。
 
-Single-root extractor先执行hard constraints：
+Multi-root extractor先执行hard constraints：
 
-- root type、dtype和observable result relation相同；
-- `computeId` multiset、compute occurrence、scalar/combiner region、iterator domain/order和DPS init语义完全相同；
+- ordered root数量、每个root type/dtype和observable result relation相同；
+- 共享DAG的unique `computeId`集合、compute occurrence、scalar/combiner region、iterator domain/order和DPS init语义完全相同；
 - 每个extracted `Access`都有标准Tensor/Linalg materialization form；
 - 每个extracted `Compute` signature/map已被当前直接下游支持。
 
@@ -770,12 +791,12 @@ Single-root extractor先执行hard constraints：
 - Tensor/Linalg operation数量最少；
 - semantic tie-break只依赖canonical expression、source order和typed fields。
 
-只有前三项结构cost至少一项严格下降时才改IR；canonical tie-break只在多个同cost最优表达之间选择，不能单独触发rewrite。
+只有前三项unique-DAG结构cost至少一项严格下降时才改IR；canonical tie-break只在多个同cost最优表达之间选择，不能单独触发rewrite。
 
 Extractor不读取target、layout、SPM/DDR、movement、instruction或runtime cost，不接受compute复制换transform减少的trade-off。C++收到
-extracted generic expression后，在首次修改前检查全部type/relation/map/iterator和materialization；随后按extracted拓扑顺序把完整新
-Tensor/Linalg subgraph统一插在旧root之前，不能把Compute插回旧recipe位置而让较晚Access反向供给。旧root在创建期间保持不变；新建失败
-只擦除本component本轮插入的op，完整后一次`replaceOp`，再删除component内新死且effect-free的旧support op并verify`func::FuncOp`。
+extracted shared DAG和ordered roots后，在首次修改前检查全部type/relation/map/iterator和materialization；随后按DAG拓扑顺序把每个unique
+Tensor/Linalg node只创建一次，并收集全部root replacement。旧roots在创建期间保持不变；任一root失败只擦除本component本轮插入的op，
+全部成功后按current dominance一次替换所有roots，再删除component内新死且effect-free的旧support op并verify`func::FuncOp`。
 这里直接rewrite current IR，不clone `ModuleOp`、`FuncOp`或DAG。成功mutation使旧analysis全部失效；不把input/output operation对应关系
 发布给下一stage。
 
@@ -803,13 +824,13 @@ actual Linalg；若它产生冗余IR，应修正该emitter或其本地canonicali
 | 输入等价类 | shape/结构 | typed/optimization failure | 精确断言 | 直接下游witness |
 | --- | --- | --- | --- | --- |
 | multi-rule phase ordering | rank 3--6；1024/1025/1031；`Compute(Access(T, Concat(Access(T,a), Access(T,b))))`及长链不同排列 | 任一composition unknown或work limit时整个component不变 | common-access extraction→nested composition→identity elimination由不同egg rules连续产生；C++最终candidate builder为0；result type/relation相同 | StructuredDAG与exact-demand直接消费最终Concat/Compute SSA |
-| continuous mixed Access/Compute chain | 1024/1025/1031；inverse reshape→transpose→elementwise→transpose、common-access concat→elementwise→transpose、broadcast→elementwise→transpose、reshape/transpose→reduction或contraction→result transpose | general reshape不能恢复AffineMap、broadcast会丢失唯一loop-bound map、concat gap/overlap或named contraction payload不匹配时只应用仍可证明的子链，其余保持current IR | 对每条链精确检查各Access前后数量、有效rule种类、最终input/output maps、computeId/scalar/iterator/init不变和第二次运行byte-equivalent；不能用fresh长图汇总计数代签focused chain | elementwise形成单一StructuredDAG node；reduction/contraction分别直接通过pinned partial-reduction tiler和既有named lowering |
+| continuous mixed Access/Compute chain | 1024/1025/1031；inverse reshape→transpose→elementwise→transpose、common-access concat→elementwise→transpose、broadcast→elementwise→transpose、general reshape/transpose→reduction或contraction→result reshape | general reshape的一个reassociation group混合parallel/reduction、broadcast会丢失唯一loop-bound map、concat gap/overlap或contraction signature不被下游接受时只应用仍可证明的子链，其余保持current IR | general reshape through compute由一类egg rule实际应用；分别检查parallel-only与reduction-only flatten/unflatten，后者保持row-major reduction线性次序和总domain；混合kind负例不改；每条链精确检查Access数、最终maps、computeId/scalar/init和第二次运行byte-equivalent | elementwise形成单一StructuredDAG node；reduction/contraction分别直接通过pinned partial-reduction tiler和既有generic/named lowering |
 | generic compute operand absorption | elementwise、matmul/batch-matmul、generic contraction/reduction；1/2/15 inputs/uses；aligned/ragged | relation非total/single-valued、map不可表示、DPS init或downstream unsupported时不rewrite | iteration domain、iterator order、`computeId`、scalar/combiner、init、result和compute occurrence完全不变；只减少Access | current structured consumer及已有tiling/lowering在不改后端时成功 |
 | restricted compute result reindex | elementwise/contraction/reduction的parallel result transpose/reassociation；1024/1025/1031 | non-bijective、projection、slice、涉及reduction axis或任一map/init不可同步转换时不rewrite | exact iteration bijection；全部operand/result maps同步；reduction axes/domain不变；compute occurrence不变 | StructuredDAG、reduction tiling和现有direct consumer可消费 |
 | canonical concat assembly | N-ary/nested concat；common reshape/transpose/broadcast Access；1024/1025 segment及tail | overlap、gap、partial coverage、dynamic、axis被投影或intermediate external use时不恢复/提取 | ordered pieces all-and-only cover；common relation与axis remap exact；extract回标准Tensor IR | exact-demand piece propagation与consumer maps |
-| fanout boundary | producer root的1/2/15 uses、chain/diamond；elementwise、reduction和contraction同构及混合uses；暂时DPS-init use与observable use；1024/1025/1031 | 任一use不是pure single-result Linalg data operand、map不可组合、完整maps无法恢复loop bounds、contraction signature不被current下游接受或需要改变iterator/result时整组保持；observable use持续阻挡 | projected Access由一次all-users propagation从全部consumer删除；每个consumer直接读取同一source SSA，operand/result maps、iterator、scalar/combiner、DPS init和compute occurrence精确检查；不复制Compute；被其它rewrite删除的暂时use在同一次pass内暴露并闭合，第二次运行byte-equivalent；observable barrier逐op保持 | StructuredDAG edge、partial-reduction tiler、named contraction lowering和producer occurrence inventory一致 |
+| fanout boundary | component的1/2/15 observable roots、chain/diamond；elementwise、reduction和contraction同构及混合uses；DPS-init与barrier use；1024/1025/1031 | 任一root越过barrier、relation/map不可组合、完整maps无法恢复loop bounds或signature不被下游接受时对应e-class保持原表达；整个request仍须原子materialize | projected/general reshape Access只经egg rules从全部可改写分支消除；shared producer在input/output DAG各一次；每个root maps、iterator、scalar/combiner、DPS init和computeId集合精确检查；无`propagateMultiUseProjectedAccesses`；第二次运行byte-equivalent | StructuredDAG edge、partial-reduction tiler、named contraction lowering和producer occurrence一致 |
 | attention/collective/effect barriers | ordinary DAG邻接attention、collective、SCF/call和effect | rule不得同时匹配barrier两侧；malformed输入由原verifier失败 | attention op数量、类型、result type、attributes、algorithm和region逐项不变；只允许data operand被exact同type SSA正常rewire | physical planning看到相同attention semantic roots |
-| pinned `egg` relation-service C ABI与ownership | empty/single/dense records；连续/并行compiler context；malformed tag/length/relation/callback result及forced Rust panic | configure/build缺依赖直接失败；callback typed Unsupported/WorkLimit/InternalError不发布partial rewrite | importer只含原始e-nodes；dynamic Applier实际创建RHS；无MLIR对象跨ABI；handle同步且不逃逸；allocator/deallocator all-and-only | named/driver同一pass和adapter |
+| pinned `egg` multi-root relation-service C ABI与ownership | 1/2/15 roots；empty/single/dense records；连续/并行compiler context；malformed root/tag/length/relation/callback result及forced Rust panic | configure/build缺依赖直接失败；callback typed Unsupported/WorkLimit/InternalError不发布partial rewrite | importer只含原始e-nodes和ordered root indices；dynamic Applier实际创建RHS；output hash-cons共享DAG；无MLIR对象跨ABI；handle同步且不逃逸；allocator/deallocator all-and-only；旧single-root字段/caller为0 | named/driver同一pass和adapter |
 | deterministic budget与真实规模 | tiny independent e-class oracle；fresh PyTorch/HF/LLaMA dense ordinary component | relation/e-node/match/rebuild/extraction limit保持原component，不进入legality或candidate feedback | 相同budget产生相同IR/diagnostic；至少一个fresh真实component由两条以上rules产生非零有效变换；记录relation/e-node/e-class/match/iteration/extraction/wall/RSS | physical-dataflow scale inventory与产品pipeline reachability |
 
 小shape只用于独立e-class congruence和extractor oracle；所有production rewrite family仍须由表中真实规模case覆盖。
@@ -932,7 +953,8 @@ consumer，不能仅因某篇实现使用另一个op名就复制接口。
 - [TENSAT](https://proceedings.mlsys.org/paper_files/paper/2021/file/cc427d934a7f6c0663e5923f49eba531-Paper.pdf)及其
   [rules实现](https://github.com/uwplse/tensat/blob/master/src/rewrites.rs)证明tensor DAG equality saturation能缓解rewrite phase ordering，
   并展示shape-checked custom Applier、transpose/elementwise和concat/transpose等规则；其multi-pattern增长、cycle和DAG-aware ILP
-  extraction不适合本项single-root logical access pass，因此明确排除。
+  extraction不适合本项有界确定性pass，因此明确排除。Wafer只使用ordered multi-root、per-eclass extraction和deterministic hash-cons
+  恢复共享DAG，不引入ILP或全局代价求解。
 - [Glenside](https://arxiv.org/abs/2105.09377)展示将pure access pattern与compute分离、再以通用reshape/transpose/compute rules组合
   多步变换的可行性；Wafer复用已有`IndexRelation`与Linalg per-operand indexing map实现更通用的operand access absorption，不新增
   公开access-pattern dialect或逐operation复制transpose规则。
