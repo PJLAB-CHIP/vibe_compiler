@@ -206,9 +206,9 @@ position、Attention/decode/mask专用matcher或公共pass残留。
   `BrokenContract`；至少覆盖R0/R1/R2、degree>=3 residual、disconnected/asymmetric states、matrix orientation、hard infinity、finite
   arithmetic overflow和exact budget boundary。Overflow必须是`Indeterminate`，不能成为`NoSolution`。Tiny oracle之外，同一solver必须由
   1024/1025/1031 actual baseline与search layout stage直接调用；
-- baseline每个actual attempt只调用一次共享PBQP并立即apply，不建立layout frontier；search以相同assignment为首proposal但仍枚举
-  完整raw layout域。PBQP on/off和solver budget不得改变raw legal域或exhaustive actual accepted set；
-  whole-search budget导致的访问顺序/best-found差异必须保持partial/budgeted coverage并显式报告；
+- baseline和search每个actual attempt都只调用一次共享PBQP并立即apply，不建立layout frontier或枚举其它layout；两条policy必须得到
+  同一materialization-minimal assignment。PBQP非`Optimal`时保持typed停止，不fallback canonical layout；solver budget只影响是否得到
+  `Optimal`，不能产生best-found layout或partial layout coverage；
 - cheap structural legality、exact coverage、topology symmetry、canonical dedup和已证明performance bound只有在不删除合法最优解时才能在
   state expansion前剪枝；SPM capacity没有plan-side early rejection；
 - footprint、working-set、shape公式、buffer-count、synthetic demand、预测lifetime或nominal bandwidth projection不能签发SPM

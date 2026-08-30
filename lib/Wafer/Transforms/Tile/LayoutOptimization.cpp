@@ -1357,7 +1357,8 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
   // strictly dominated by every relevant layout available to that group. If
   // no relevant layout is available, every state has the same objective and
   // the first canonical state is sufficient. This reduction changes only the
-  // query-local PBQP proposal domain, not the raw legal layout domain.
+  // query-local objective-equivalent PBQP domain; it is not persisted as a
+  // separate layout frontier or search axis.
   for (auto [groupIndex, group] : llvm::enumerate(groups)) {
     if (group.layouts.empty()) {
       result.status = ExactPBQPStatus::BrokenContract;

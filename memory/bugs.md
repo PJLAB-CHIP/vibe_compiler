@@ -1525,7 +1525,7 @@
 - 根因：fixed-compute的dead result仍承担publication cost；value group还保留既不是任何live compute publication layout、也不是任何fixed
   use目标layout的state。这些state不可能减少actual materialization，却扩大numeric solve和每个semantic tie probe。
 - 修复模式：dead result不建立publication binding；对query-local PBQP按当前唯一目标删除严格支配state，只保留group domain与live
-  compute/use目标的交集；没有live目标时保留原domain第一个canonical state。该约简不修改current IR或search raw合法layout域。
+  compute/use目标的交集；没有live目标时保留原domain第一个canonical state。该约简不修改current IR、原始合法性证明或最终最优结果。
 - 防复发：真实`1025x128x128` rank-3 case覆盖32个diamond、99个contraction、4组compatible reshape和write-split cohort；精确断言两次
   actual materialization、metadata view、PBQP variables/factors/work、重复输出和一次bufferization。Zero budget必须byte-identical
   `Indeterminate`，不能用更高timeout、beam或Top-k代替exact reduction。

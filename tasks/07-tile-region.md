@@ -43,8 +43,8 @@ Pipeline position:
 - Upstream IR / input:
   05号bounded access-relation e-graph normalization完成的card-local TensorProgram；Linalg/Tensor/SCF/Arith/Math、typed
   collective和fixed FA/FD attention完整表达语义，不携带e-class或rewrite history。
-  Baseline入口不额外接收search choice；search入口另接收closed spatial/region choice。Free temporal、attention、layout和
-  movement choice尚未消费。
+  Baseline入口不额外接收search choice；search入口另接收closed spatial/region choice。Free temporal、attention和movement choice尚未
+  消费；layout assignment由后续current IR上的唯一exact PBQP求解，不是search choice。
 - Current stage responsibility:
   消费closed spatial/region choice，在builtin module中生成all-and-only top-level TileModules和non-nested structural TileRegions；
   根据RootRegionWork物化ordinary spatial pieces、region inputs/results、direct local SSA和cross-boundary actual endpoints。

@@ -346,12 +346,12 @@ destination mutation、view/alias与materializing copy必须已经是actual IR�
 Redundant full-buffer transfer normalization只在current IR上使用exact logical relation、physical map、SSA root、effect和
 use/lifetime证明删除；partial、permuted、layout-changing或alias-unknown transfer保留。
 
-#### 6.1.1 Layout domain 与 PBQP proposal
+#### 6.1.1 Layout assignment 与 exact PBQP
 
 Layout合法域直接从current structural TileRegion的SSA value/use、consumer interface、exact `IndexRelation`和可验证encoding构造。
 Baseline与search都调用同一个query-local PBQP layout optimizer；它不是search state，也不共享两条policy的candidate owner。
-Baseline对每个actual attempt求解并应用一次确定性assignment，不枚举layout frontier；search把同一assignment作为首个proposal，
-随后仍可遍历完整raw layout域。PBQP不是合法性owner，也不决定最终search winner。
+Baseline与search对每个actual attempt都只求解并应用一次确定性`Optimal` assignment；layout不是search axis，不建立layout frontier或
+raw layout枚举。PBQP只决定当前IR上unique actual materialization最少的layout；最终search winner仍由物化后的其它choice和actual objective决定。
 
 C3不因某value邻接view就把整个buffer-equivalent group机械降为`compactOnly`。One-Shot必然alias的DPS init/result和reshape/cast
 source/result先合并为一个PBQP value group；它们不是两个可独立选择的buffer变量。该group枚举完整layout交集，但每个state必须由canonical
@@ -378,14 +378,14 @@ activation计0。同一dominance/effect cohort中的shared conversion只计一�
 
 Query-local PBQP可以删除对该目标严格支配的group state：若某layout既不是该group任一live fixed-compute result的publication layout，也不是
 任一current fixed use要求的layout，选择它只会保留或增加materialization数量；有可用relevant state时删除该state不改变最优集合。若该group
-没有任何live compute/use target，则所有state目标相同，只保留原domain中的第一个canonical state。该约简不修改current IR、raw合法layout域
-或search的后续枚举；无use result不产生publication cost，因为apply也不会为它创建actual materialization。
+没有任何live compute/use target，则所有state目标相同，只保留原domain中的第一个canonical state。该约简不修改current IR或原始合法性
+证明；无use result不产生publication cost，因为apply也不会为它创建actual materialization。
 
 Solver必须区分`Optimal`、`NoSolution`、`Indeterminate`和`BrokenContract`。Factor graph先按stable variable index分解connected
 components；一状态变量可在任意degree精确传播，随后R0/R1/R2与residual core均受同一checked work budget约束；
-全assignment tie-break必须与独立flat oracle一致。Baseline只接受`Optimal`结果；`NoSolution`、`Indeterminate`和`BrokenContract`
-分别成为typed unsupported、resource failure和compiler error，不fallback canonical layout。Search的PBQP `Indeterminate`只表示首个proposal
-不可用，不能删除raw合法域或形成no-good。Assignment选中后立即在各自candidate owner上创建actual
+全assignment tie-break必须与独立flat oracle一致。Baseline和search都只接受`Optimal`结果；`NoSolution`、`Indeterminate`和
+`BrokenContract`分别成为typed unsupported、resource failure和compiler error，不fallback canonical layout或枚举其它layout。
+Assignment选中后立即在各自candidate owner上创建actual
 view/alias/allocation/layout materialization，随后销毁factor graph和assignment；下游不读取solver对象。
 
 Current实现以buffer-equivalent SSA value group、每个实际consumer use和op layout tuple为query-local变量。DPS result/destination、
@@ -565,8 +565,8 @@ incomparable。只有后续硬件文档和matched profile明确证明的并发�
 
 同一次winner比较的所有candidate必须使用同一target profile和同一组enabled terms。某个实际出现的NE/Vector work、所需rate、
 schedule multiplicity或算术结果为unknown/unsupported/overflow时，该objective保持typed incomparable，controller只能报告
-`FeasibleUnranked`或其它准确coverage；不得退回统一instruction cost，也不得把semantic tie-break伪装成cost winner。PBQP只使用上述
-objective的choice-local精确投影来安排proposal，最终仍以物化后的actual objective比较。
+`FeasibleUnranked`或其它准确coverage；不得退回统一instruction cost，也不得把semantic tie-break伪装成cost winner。Layout PBQP不读取
+该objective，也不参与frontier ordering；controller只对layout已经唯一确定的candidate继续枚举其它choice，并以物化后的actual objective比较。
 
 本修改复用final Instr的现有work collector和duration analysis，删除search controller中的flat instruction objective；不新增operation、
 attribute、Wafer-specific interface或legality verifier。Cost和duration仍是mutation后失效、可从current IR fresh重算的analysis结果。
@@ -586,7 +586,8 @@ Actual capacity rejection默认只对产生该current IR的完整choice有效。
 源码稳定职责为：
 
 - TensorProgram analysis：structured semantics、exact demand和Spatial/Region choice domain；
-- current-candidate planning：从live operation/interfaces建立query-local Temporal/layout等choice，selected apply后立即失效；
+- current-candidate planning：从live operation/interfaces建立query-local Temporal等search choice；layout由一次query-local exact PBQP唯一确定并
+  立即apply，二者均在mutation后失效；
 - TensorProgram/TileModule/TileRegion transforms：structural materialization、selected temporal tile-and-fuse apply、online-attention decomposition、
   layout/view/bufferization和movement；
 - TileRegion-to-Instr conversion：deterministic target-abstract lowering；

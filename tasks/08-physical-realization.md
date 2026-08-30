@@ -67,8 +67,9 @@ post-attention bounded logical normalization
 Layout transformation先闭合function boundary，再为每个current compute use建立实际endpoint，但保留显式TileRegion logical tensor
 boundary；它不重新移动/融合reshape、transpose、broadcast、concat或compute graph，不创建route、message或DDR donor。若input仍含
 可由05号logical normalizer严格支配的graph form，属于上游stage未闭合，不能在PBQP里恢复另一套e-graph。
-Movement transformation只能读取这些current endpoint和exact relation，不能反向改compute layout。某条route需要另一种endpoint layout时，
-当前alternative返回typed failure，由outer controller在另一个candidate owner上先应用另一layout choice；movement内部不fallback。
+Movement transformation只能读取这些current endpoint和exact relation，不能反向改compute layout。某条route与唯一PBQP assignment产生的
+endpoint layout不兼容时，当前candidate返回typed failure；outer controller只能改变其它显式choice并在new current IR上重新运行PBQP，
+不能直接指定另一layout或在movement内部fallback。
 
 三种TileRegion form的局部和stage verifier合同由07定义。两项transformation必须各自使用唯一registered实现；baseline先逐项接入同一实现，
 search integration只增加独立choice/controller owner，不增加第二套rewrite。
@@ -77,8 +78,8 @@ search integration只增加独立choice/controller owner，不增加第二套rew
 
 Layout domain builder只读current structural TileRegion，为每个SSA value、consumer use、exact alias和op layout tuple枚举合法
 `MemLayout` label。Baseline与search调用同一个query-local exact PBQP optimizer，PBQP结果不进入IR、candidate key或下一stage。
-Baseline每个attempt只求解并应用一次，不建立layout frontier；search先访问同一assignment，再保留完整raw合法域。
-PBQP budget exhaustion对baseline是typed resource failure，对search只表示proposal unavailable，均不产生layout legality结论。
+Baseline与search每个attempt都只求解并应用一次`Optimal` assignment；layout不是search axis，不建立layout frontier或raw layout枚举。
+PBQP budget exhaustion对两条policy都是typed resource failure，不fallback或尝试其它layout。
 
 PBQP hard factor只表达current interface和physical encoding能够证明的合法性。Finite objective只计最终实际创建的unique layout
 materialization：同一dominance/effect cohort中的shared conversion计一次，per-use conversion、不同target layout及fixed-compute result
@@ -86,9 +87,9 @@ publication分别计数，same-layout、metadata view和alias为0。等materiali
 PBQP不读取NE/Vector/CT throughput、descriptor、instruction、DDR/NoC、SPM movement或capacity；这些信息只由物化后的current IR下游
 分析和最终candidate objective消费。Checked materialization count overflow返回`Indeterminate`，不能与hard infinity混合。
 
-只在query-local首proposal中删除materialization-objective严格支配的layout state：保留每个live fixed-compute publication和fixed-use实际
+只在query-local exact solve中删除materialization-objective严格支配的layout state：保留每个live fixed-compute publication和fixed-use实际
 要求的layout；从未被current compute/use要求的state不能减少任何activation/publication，因而可删除。无live target的group只保留原domain
-第一个canonical state。Raw layout legality和search enumeration不使用该约简后的domain。
+第一个canonical state。该约简保留materialization-count optimum和stable tie结果，不改变current IR合法性。
 
 Solver output在mutation前重新验证，然后由唯一layout transformation立即创建或复用actual SSA：same-layout不建op，exact metadata
 view绑定原storage，多个use共享同一`(source, target layout)` conversion，per-use conversion保持独立，unused conversion不生成。
@@ -275,7 +276,7 @@ IR中显式fill/mask/segmented movement。host-visible output不得把padding发
 
 Cleanup只删除可由exact proof确认的冗余：same-root/same-map metadata view、dead无effect movement、完整等价
 same-space copy和不延长lifetime的duplicate materialization。它不能移动fusion cut、改变encoding/route、创造spill、
-重排execution或替search选择另一layout/movement alternative。
+重排execution、重新求解layout或替search选择另一movement alternative。
 
 唯一production cleanup在canonical Instr形成后、fresh completion前运行现有exact full-buffer kernel；这是current movement rewrite的
 直接consumer位置，不构成第二种movement selection。Kernel每次replacement通过invocation-local callback同步retarget caller-owned
@@ -294,7 +295,7 @@ compile-time proof resource limit。planning query的typed结果可控制state�
 - layout入口拒绝任何`wafer.linalg_ext.attention`或`wafer.linalg_ext.online_attention` residual，并接受decomposition产生的actual Linalg/Tensor/SCF、
   coupled state和cross-Region tensor boundary；
 - structural→layout-resolved→physical TileRegion的逐stage positive/negative transition，wrong-form输入在直接stage拒绝；
-- exact PBQP对flat layout oracle的cost/tie/status一致性，以及baseline一次apply、search首proposal+完整raw域；
+- exact PBQP对flat layout oracle的cost/tie/status一致性，以及baseline/search各自恰一次solve+apply、非Optimal typed停止和无layout枚举；
 - encoding interface的Tensor/NTensor/Cx/NCx、dtype、full/tail/padding与checked arithmetic；
 - relation的identity/permutation/reshape/broadcast/slice/concat/composition及rewrite invalidation；
 - metadata view正负例、alias/range/lifetime与physical-map equality；reshape/cast对Tensor/NTensor/Cx/NCx的source/result pair逐项hard
