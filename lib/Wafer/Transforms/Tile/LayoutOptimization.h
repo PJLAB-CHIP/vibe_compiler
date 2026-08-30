@@ -16,7 +16,10 @@ namespace wafer::compiler::detail {
 struct LayoutOptimizationStatistics {
   uint64_t invocations = 0;
   uint64_t solverWork = 0;
+  uint64_t pbqpVariables = 0;
+  uint64_t pbqpFactors = 0;
   uint64_t valueGroups = 0;
+  uint64_t dominatedLayoutStatesPruned = 0;
   uint64_t useBindings = 0;
   uint64_t tupleVariables = 0;
   uint64_t conversionActivations = 0;

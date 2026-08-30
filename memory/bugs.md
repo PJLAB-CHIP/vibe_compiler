@@ -1517,3 +1517,15 @@
 - 防复发：1024/1025/1031覆盖compatible outer reshape零materialization并保持Cx、channel-changing reshape恰一个materialization、DPS
   allocation实际layout与assignment一致、concat main/tail bufferization和15-use conversion sharing；不要用solver state或result type代替查看
   actual alloc/view/use。
+
+## Materialization-only PBQP必须删除目标严格支配的query-local state
+
+- 现象：32个diamond、99个contraction的单一connected layout图在默认`1048576` work budget下约20秒后返回`Indeterminate`；缩到8个
+  diamond仍耗尽预算，而4个diamond才能闭合。提高预算只会掩盖规模问题。
+- 根因：fixed-compute的dead result仍承担publication cost；value group还保留既不是任何live compute publication layout、也不是任何fixed
+  use目标layout的state。这些state不可能减少actual materialization，却扩大numeric solve和每个semantic tie probe。
+- 修复模式：dead result不建立publication binding；对query-local PBQP按当前唯一目标删除严格支配state，只保留group domain与live
+  compute/use目标的交集；没有live目标时保留原domain第一个canonical state。该约简不修改current IR或search raw合法layout域。
+- 防复发：真实`1025x128x128` rank-3 case覆盖32个diamond、99个contraction、4组compatible reshape和write-split cohort；精确断言两次
+  actual materialization、metadata view、PBQP variables/factors/work、重复输出和一次bufferization。Zero budget必须byte-identical
+  `Indeterminate`，不能用更高timeout、beam或Top-k代替exact reduction。

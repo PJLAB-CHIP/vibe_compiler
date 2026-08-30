@@ -376,6 +376,11 @@ activation计0。同一dominance/effect cohort中的shared conversion只计一�
 返回`Indeterminate`，不能转成infinity或`NoSolution`。PBQP的`Optimal`只表示在当前合法layout域内materialization数量最少，不表示
 最终硬件性能最优。
 
+Query-local PBQP可以删除对该目标严格支配的group state：若某layout既不是该group任一live fixed-compute result的publication layout，也不是
+任一current fixed use要求的layout，选择它只会保留或增加materialization数量；有可用relevant state时删除该state不改变最优集合。若该group
+没有任何live compute/use target，则所有state目标相同，只保留原domain中的第一个canonical state。该约简不修改current IR、raw合法layout域
+或search的后续枚举；无use result不产生publication cost，因为apply也不会为它创建actual materialization。
+
 Solver必须区分`Optimal`、`NoSolution`、`Indeterminate`和`BrokenContract`。Factor graph先按stable variable index分解connected
 components；一状态变量可在任意degree精确传播，随后R0/R1/R2与residual core均受同一checked work budget约束；
 全assignment tie-break必须与独立flat oracle一致。Baseline只接受`Optimal`结果；`NoSolution`、`Indeterminate`和`BrokenContract`

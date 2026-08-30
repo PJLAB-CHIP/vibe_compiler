@@ -990,7 +990,8 @@ buildResultBindings(mlir::ModuleOp module,
       auto result = mlir::dyn_cast<mlir::OpResult>(value);
       auto tensor = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
       auto group = groupByValue.find(value);
-      if (!result || !tensor || group == groupByValue.end())
+      if (!result || result.use_empty() || !tensor ||
+          group == groupByValue.end())
         continue;
       results.push_back(
           {result, group->second,
@@ -1351,6 +1352,42 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
   result.statistics.valueGroups = groups.size();
   result.statistics.useBindings = uses.size();
 
+  // For the materialization-count objective, a group layout that is neither a
+  // current fixed-compute publication layout nor a current fixed-use layout is
+  // strictly dominated by every relevant layout available to that group. If
+  // no relevant layout is available, every state has the same objective and
+  // the first canonical state is sufficient. This reduction changes only the
+  // query-local PBQP proposal domain, not the raw legal layout domain.
+  for (auto [groupIndex, group] : llvm::enumerate(groups)) {
+    if (group.layouts.empty()) {
+      result.status = ExactPBQPStatus::BrokenContract;
+      result.detail = "current value group has no legal layout state";
+      return result;
+    }
+    llvm::SmallVector<MemLayout, 4> relevantLayouts;
+    for (const ResultBinding &binding : resultBindings)
+      if (binding.publishedGroup == groupIndex &&
+          !llvm::is_contained(relevantLayouts, binding.computeLayout))
+        relevantLayouts.push_back(binding.computeLayout);
+    for (const UseBinding &use : uses)
+      if (use.sourceGroup == groupIndex)
+        for (MemLayout layout : use.layouts)
+          if (!llvm::is_contained(relevantLayouts, layout))
+            relevantLayouts.push_back(layout);
+    const size_t oldSize = group.layouts.size();
+    const MemLayout canonicalLayout = group.layouts.front();
+    group.layouts.erase(llvm::remove_if(group.layouts,
+                                        [&](MemLayout layout) {
+                                          return !llvm::is_contained(
+                                              relevantLayouts, layout);
+                                        }),
+                        group.layouts.end());
+    if (group.layouts.empty())
+      group.layouts.push_back(canonicalLayout);
+    result.statistics.dominatedLayoutStatesPruned +=
+        oldSize - group.layouts.size();
+  }
+
   ExactPBQPProblem problem;
   for (auto [groupIndex, group] : llvm::enumerate(groups)) {
     group.variable = problem.variables.size();
@@ -1508,6 +1545,8 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
   }
   result.statistics.conversionActivations = activations.size();
   factors.appendTo(problem);
+  result.statistics.pbqpVariables = problem.variables.size();
+  result.statistics.pbqpFactors = problem.factors.size();
 
   ExactPBQPResult solved =
       solveExactPBQP(problem, workLimit, static_cast<uint32_t>(groups.size()));

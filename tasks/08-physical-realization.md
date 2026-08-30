@@ -86,6 +86,10 @@ publication分别计数，same-layout、metadata view和alias为0。等materiali
 PBQP不读取NE/Vector/CT throughput、descriptor、instruction、DDR/NoC、SPM movement或capacity；这些信息只由物化后的current IR下游
 分析和最终candidate objective消费。Checked materialization count overflow返回`Indeterminate`，不能与hard infinity混合。
 
+只在query-local首proposal中删除materialization-objective严格支配的layout state：保留每个live fixed-compute publication和fixed-use实际
+要求的layout；从未被current compute/use要求的state不能减少任何activation/publication，因而可删除。无live target的group只保留原domain
+第一个canonical state。Raw layout legality和search enumeration不使用该约简后的domain。
+
 Solver output在mutation前重新验证，然后由唯一layout transformation立即创建或复用actual SSA：same-layout不建op，exact metadata
 view绑定原storage，多个use共享同一`(source, target layout)` conversion，per-use conversion保持独立，unused conversion不生成。
 共享还必须证明canonical conversion支配全部新use、两端consumer只读，并且两次materialization之间没有对source或其alias的write/free；

@@ -18,6 +18,7 @@
 
 #include "gtest/gtest.h"
 
+#include <chrono>
 #include <memory>
 #include <string>
 
@@ -164,6 +165,92 @@ module {
            << "    }\n"
            << "  }\n"
            << "}\n";
+    return text;
+  }
+
+  static std::string makeLargeConnectedLayoutSource(int64_t extent,
+                                                    unsigned diamondCount) {
+    const std::string type =
+        "tensor<" + std::to_string(extent) + "x128x128xf16>";
+    const std::string expandedType =
+        "tensor<" + std::to_string(extent) + "x1x128x128xf16>";
+    std::string text;
+    llvm::raw_string_ostream stream(text);
+    stream << "module {\n"
+           << "  wafer.tile.module card_id = 0 tile_id = 0 {\n"
+           << "    func.func @entry(%input: " << type << ", %pre_rhs0: " << type
+           << ", %pre_rhs1: " << type << ", %post_rhs: " << type;
+    for (unsigned index = 0; index < diamondCount; ++index)
+      stream << ", %left_rhs" << index << ": " << type << ", %right_rhs"
+             << index << ": " << type;
+    stream << ") {\n"
+           << "      %result = wafer.tile.region(%input, %pre_rhs0, "
+              "%pre_rhs1, %post_rhs";
+    for (unsigned index = 0; index < diamondCount; ++index)
+      stream << ", %left_rhs" << index << ", %right_rhs" << index;
+    stream << " : " << type << ", " << type << ", " << type << ", " << type;
+    for (unsigned index = 0; index < diamondCount; ++index)
+      stream << ", " << type << ", " << type;
+    stream << ") -> (" << type << ") {\n"
+           << "      ^bb0(%local_input: " << type
+           << ", %local_pre_rhs0: " << type << ", %local_pre_rhs1: " << type
+           << ", %local_post_rhs: " << type;
+    for (unsigned index = 0; index < diamondCount; ++index)
+      stream << ", %local_left_rhs" << index << ": " << type
+             << ", %local_right_rhs" << index << ": " << type;
+    stream << "):\n"
+           << "        %view = tensor.extract_slice %local_input[0, 0, 0] ["
+           << extent << ", 128, 128] [1, 1, 1] : " << type << " to " << type
+           << "\n";
+
+    auto emitMatmul = [&](llvm::StringRef name, llvm::StringRef lhs,
+                          llvm::StringRef rhs) {
+      stream << "        %empty_" << name << " = tensor.empty() : " << type
+             << "\n"
+             << "        %" << name << " = linalg.batch_matmul ins(" << lhs
+             << ", " << rhs << " : " << type << ", " << type << ") outs(%empty_"
+             << name << " : " << type << ") -> " << type << "\n";
+    };
+    emitMatmul("pre0", "%view", "%local_pre_rhs0");
+    emitMatmul("pre1", "%view", "%local_pre_rhs1");
+    stream << "        %view_buffer = bufferization.to_memref %view : memref<"
+           << extent
+           << "x128x128xf16, #wafer.memory<spm, tensor>>\n"
+              "        %c0 = arith.constant 0 : index\n"
+              "        %zero = arith.constant 0.000000e+00 : f16\n"
+              "        memref.store %zero, %view_buffer[%c0, %c0, %c0] : "
+              "memref<"
+           << extent << "x128x128xf16, #wafer.memory<spm, tensor>>\n";
+    emitMatmul("post", "%view", "%local_post_rhs");
+
+    std::string current = "%post";
+    for (unsigned index = 0; index < diamondCount; ++index) {
+      const std::string left = "left" + std::to_string(index);
+      const std::string right = "right" + std::to_string(index);
+      const std::string join = "join" + std::to_string(index);
+      emitMatmul(left, current, "%local_left_rhs" + std::to_string(index));
+      emitMatmul(right, current, "%local_right_rhs" + std::to_string(index));
+      emitMatmul(join, "%" + left, "%" + right);
+      current = "%" + join;
+      if ((index + 1) % 8 != 0)
+        continue;
+      const std::string expanded = "expanded" + std::to_string(index);
+      const std::string collapsed = "collapsed" + std::to_string(index);
+      stream << "        %" << expanded << " = tensor.expand_shape " << current
+             << " [[0], [1, 2], [3]] output_shape [" << extent
+             << ", 1, 128, 128] : " << type << " into " << expandedType << "\n"
+             << "        %" << collapsed << " = tensor.collapse_shape %"
+             << expanded << " [[0], [1, 2], [3]] : " << expandedType << " into "
+             << type << "\n";
+      current = "%" + collapsed;
+    }
+    stream << "        wafer.tile.yield " << current << " : " << type
+           << "\n"
+              "      }\n"
+              "      return\n"
+              "    }\n"
+              "  }\n"
+              "}\n";
     return text;
   }
 
@@ -406,6 +493,101 @@ TEST_F(LayoutOptimizationTest,
   EXPECT_EQ(firstText, secondText);
   EXPECT_EQ(firstResult.statistics.solverWork,
             secondResult.statistics.solverWork);
+}
+
+TEST_F(LayoutOptimizationTest,
+       LargeConnectedDiamondGraphMinimizesActualMaterializations) {
+  constexpr int64_t extent = 1025;
+  constexpr unsigned diamondCount = 32;
+  constexpr unsigned expectedContractions = 3 + diamondCount * 3;
+  constexpr unsigned expectedViews = diamondCount / 8;
+  const std::string source =
+      makeLargeConnectedLayoutSource(extent, diamondCount);
+
+  auto exhausted = parse(source);
+  ASSERT_TRUE(exhausted);
+  std::string before;
+  llvm::raw_string_ostream beforeStream(before);
+  exhausted->print(beforeStream);
+  beforeStream.flush();
+  StructuredMaterializationRelations exhaustedRelations =
+      outputRelation(*exhausted);
+  LayoutOptimizationResult exhaustedResult = resolveCurrentLayoutsAndBufferize(
+      *exhausted, exhaustedRelations, /*workLimit=*/0);
+  EXPECT_EQ(exhaustedResult.status, ExactPBQPStatus::Indeterminate);
+  std::string after;
+  llvm::raw_string_ostream afterStream(after);
+  exhausted->print(afterStream);
+  afterStream.flush();
+  EXPECT_EQ(after, before);
+
+  auto first = parse(source);
+  auto second = parse(source);
+  ASSERT_TRUE(first && second);
+  EXPECT_EQ(countOps<mlir::linalg::BatchMatmulOp>(first->getOperation()),
+            expectedContractions);
+  StructuredMaterializationRelations firstRelations = outputRelation(*first);
+  StructuredMaterializationRelations secondRelations = outputRelation(*second);
+  auto start = std::chrono::steady_clock::now();
+  LayoutOptimizationResult firstResult =
+      resolveCurrentLayoutsAndBufferize(*first, firstRelations);
+  const auto wallMilliseconds =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - start)
+          .count();
+  LayoutOptimizationResult secondResult =
+      resolveCurrentLayoutsAndBufferize(*second, secondRelations);
+  ASSERT_TRUE(firstResult.succeeded()) << firstResult.detail;
+  ASSERT_TRUE(secondResult.succeeded()) << secondResult.detail;
+
+  EXPECT_EQ(firstResult.statistics.tupleVariables, expectedContractions);
+  EXPECT_GE(firstResult.statistics.valueGroups, expectedContractions);
+  EXPECT_GE(firstResult.statistics.useBindings, expectedContractions * 2);
+  EXPECT_GT(firstResult.statistics.pbqpVariables,
+            firstResult.statistics.valueGroups);
+  EXPECT_GT(firstResult.statistics.pbqpFactors,
+            firstResult.statistics.tupleVariables);
+  EXPECT_GT(firstResult.statistics.solverWork, 0u);
+  EXPECT_GT(firstResult.statistics.dominatedLayoutStatesPruned, 0u);
+  EXPECT_EQ(firstResult.statistics.selectedMaterializations, 2u);
+  EXPECT_EQ(firstResult.statistics.layoutMaterializationsAfter, 2u);
+  EXPECT_EQ(countOps<LayoutMaterializeOp>(first->getOperation()), 2u);
+  EXPECT_EQ(countOps<mlir::memref::ExpandShapeOp>(first->getOperation()),
+            expectedViews);
+  EXPECT_EQ(countOps<mlir::memref::CollapseShapeOp>(first->getOperation()),
+            expectedViews);
+  EXPECT_EQ(firstResult.statistics.bufferizationInvocations, 1u);
+  EXPECT_EQ(firstResult.statistics.redundantPublicationCopies, 0u);
+  EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*first)));
+  EXPECT_TRUE(mlir::succeeded(
+      checkStructuredBufferRelationsCurrent(*first, firstRelations)));
+
+  std::string firstText;
+  llvm::raw_string_ostream firstStream(firstText);
+  first->print(firstStream);
+  firstStream.flush();
+  std::string secondText;
+  llvm::raw_string_ostream secondStream(secondText);
+  second->print(secondStream);
+  secondStream.flush();
+  EXPECT_EQ(secondText, firstText);
+  EXPECT_EQ(secondResult.statistics.pbqpVariables,
+            firstResult.statistics.pbqpVariables);
+  EXPECT_EQ(secondResult.statistics.pbqpFactors,
+            firstResult.statistics.pbqpFactors);
+  EXPECT_EQ(secondResult.statistics.solverWork,
+            firstResult.statistics.solverWork);
+
+  RecordProperty("layout_pbqp_variables",
+                 static_cast<int>(firstResult.statistics.pbqpVariables));
+  RecordProperty("layout_pbqp_factors",
+                 static_cast<int>(firstResult.statistics.pbqpFactors));
+  RecordProperty("layout_pbqp_solver_work",
+                 static_cast<int>(firstResult.statistics.solverWork));
+  RecordProperty(
+      "layout_dominated_states_pruned",
+      static_cast<int>(firstResult.statistics.dominatedLayoutStatesPruned));
+  RecordProperty("layout_wall_ms", static_cast<int>(wallMilliseconds));
 }
 
 TEST_F(LayoutOptimizationTest,
