@@ -213,6 +213,11 @@ Operation handle只是拥有该current IR的同步调用期间有效的引用，
 traversal，每个current root分别建立scope；merge-only Linalg/state combine没有可tile的source interface时不伪造scope。Local extent必须来自
 该operation的actual iteration domain，不能使用同一source node跨Tile的ceil maximum或bounding box。
 
+TemporalDomain按一个未修改的current TileRegion建立并借用其中的live operation handle；descriptor、cursor和choice都必须在第一次apply或其它
+IR mutation前销毁。它不提供稳定排序key，也不进入PlanningSession memo、UnifiedSearch prefix或ActualResultController key。Structural controller
+只保留Spatial/Region choice；materialization后才在candidate owner上建立temporal domain并立即消费。一个structural key下只有在全部current-IR
+inner choices已经闭合时，才允许把actual rejection提升为该key的exact rejection；单个temporal candidate失败不能剪掉整个structural choice。
+
 对local extent`L_i`，typed `Tileable`轴的raw size域完整包含`1..L_i`，不要求整除，也不按native geometry、preferred size、SPM容量或
 估算bytes删点；typed `FullExtentOnly`轴只有`{L_i}`。只有`tileSize_i < L_i`的active轴进入loop-order choice，order必须覆盖precedence
 DAG的全部linear extensions。当前ordinary `TilingInterface` scope默认使用其完整iterator域；若某op只能full-extent遍历，必须由current
@@ -231,12 +236,24 @@ tiling builder，也不把offset、extent、operation或SSA保存到跨stage pla
 查询结果区分exact、unsupported、indeterminate和broken contract；unsupported/indeterminate只关闭本次fusion机会，不签发resource结论，
 broken contract终止该candidate。
 
+当前exact-derived边界要求producer/consumer位于同一Region和block、producer pure且all-result use总数为一、edge不是DPS destination、两端
+使用symbol-free projected-permutation map，并且consumer operand map覆盖每个可分块iterator。这样每个consumer wave只请求一个不重复的producer
+tile；producer result未覆盖的iterator只能是full reduction fiber或unit extent。Multi-use、broadcast遗漏可分块轴、destination init、effectful、
+cross-Region和unsupported map都保留独立producer traversal，不通过late fusion失败改变domain。`online_attention`始终是独立root，不作为
+ordinary producer被复制进finalize或其它consumer traversal。
+
 Temporal materialization以一个canonical SCF loop nest承载同一traversal。完整块和remainder先共享同一个current loop body；
 offset与bounded tile size由loop IV和exact upper bound计算。不得在结构层递归生成`first / steady / tail`的多维笛卡尔积，
 也不得按wave trip count复制compute closure。当前Instr只接受static shaped buffer时，先形成上述canonical loop，再在直接
 需要static shape的边界按内到外peel每个ragged loop的最后一个partial iteration，promote单次tail loop并canonicalize其bound；
 不peel first iteration，不让tail specialization提前复制无关producer closure。若有`r`个非整除tiled axes，静态main/tail
 组合最多为`2^r`，不能恢复三段式`3^r`展开。
+
+Apply把full-extent size转成zero tile size，因此domain的第一个full-local choice保持IR byte-identical。其它choice以完整interchange permutation
+调用pinned SCF tile-and-fuse，先用loop result替换原current op，再从内到外peel ragged last iteration；这样relation listener继续追踪最终SSA。
+Peel后运行bounded Region-local Linalg tiling canonicalization，并只剥离static slice到更dynamic type的冗余`tensor.cast`，按actual DPS init
+重建当前Linalg/online-attention type。该refinement不改变indexing map、payload或算术语义；其目的是让main/tail的`128`与`1/7`等actual static
+shape直接被第14/15项读取。Domain不生成wave列表，也不按trip count展开body。
 
 实现使用pinned MLIR的`TilingInterface`、SCF tiling和producer-fusion API作为loop/fusion的唯一mechanics owner。
 Fusion control直接读取current SSA：producer必须位于同一actual Region、tile relation exact、effect允许移动，且不会因multi-use、

@@ -18,7 +18,6 @@ enum class PlanningMemoKind : unsigned {
   SpatialProposals,
   RootWork,
   RegionDomain,
-  TemporalDomain,
   Count,
 };
 

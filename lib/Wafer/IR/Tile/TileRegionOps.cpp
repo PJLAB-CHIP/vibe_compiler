@@ -337,9 +337,10 @@ mlir::LogicalResult wafer::verifyStructuralTileRegions(mlir::ModuleOp module) {
         }
       llvm::StringRef dialect = operation->getName().getDialectNamespace();
       const bool allowed =
-          dialect == "builtin" || dialect == "arith" || dialect == "math" ||
-          dialect == "tensor" || dialect == "linalg" || dialect == "scf" ||
-          dialect == "cf" || mlir::isa<mlir::func::CallOp>(operation) ||
+          dialect == "builtin" || dialect == "affine" || dialect == "arith" ||
+          dialect == "math" || dialect == "tensor" || dialect == "linalg" ||
+          dialect == "scf" || dialect == "cf" ||
+          mlir::isa<mlir::func::CallOp>(operation) ||
           mlir::isa<LinalgExtAttentionOp, LinalgExtOnlineAttentionOp,
                     LinalgExtCollectiveYieldOp>(operation) ||
           mlir::isa<WaferLinalgExtCollectiveOpInterface>(operation);

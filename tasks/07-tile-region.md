@@ -189,6 +189,11 @@ Temporal tile-and-fuse只消费上述structural owner和current relation。它�
 tiling/fusion生成canonical loops、producer SSA和必要main/tail；online-attention的parallel/K2轴走同一个`TilingInterface`，K2 tile以三个
 actual DPS state作为loop-carried values。Choice apply后立即销毁，不携带`RegionExecutionId`。
 
+Domain与apply都锚定当前TileRegion：domain只借用live operation handle，full-local choice不修改IR，active choice立即替换同一owner。Exact
+single-use producer可以随consumer slice实际融合；multi-use、broadcast重复request、DPS destination、effectful或unsupported relation保持独立
+traversal。Ragged loop只peel最后一次迭代，随后在本Region内收紧actual slice/Linalg/online-attention static type；不创建静态wave清单或
+跨Region traversal ID。
+
 随后online-attention decomposition只替换已经tiled的current op，生成actual QK、scale/mask、Maximum/Sum/Accumulator update、PV和slice；
 它不选择Tile、block或merge owner。两项都不从planning choice重建TileModule/TileRegion或candidate owner；若immutable op signature需要替换，
 由parent anchor执行并在同一rewrite中retarget actual endpoints。

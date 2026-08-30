@@ -31,14 +31,12 @@ struct UnifiedSearchOptions {
 struct UnifiedSearchWork {
   uint64_t resumeCalls = 0;
   uint64_t successorSteps = 0;
-  uint64_t scheduledStatesVisited = 0;
   uint64_t structuralStatesActualized = 0;
   uint64_t candidateActualizations = 0;
   uint64_t duplicateCompleteKeys = 0;
 };
 
-using UnifiedSearchPrefixKey =
-    std::variant<SpatialState, RegionState, TemporalState>;
+using UnifiedSearchPrefixKey = std::variant<SpatialState, RegionState>;
 
 struct UnifiedSearchCandidateTrace {
   StructuralCandidateKey key;
@@ -64,13 +62,16 @@ struct StructuralCandidateEvaluation {
 };
 
 /// Caller-owned synchronous current-IR actualizer. Implementations materialize
-/// and verify one TemporalState in their own transaction; this search core
-/// never owns IR or a complete/shadow materializer.
+/// one RegionState, build and immediately consume temporal choices from that
+/// actual IR, and return one typed aggregate outcome. This structural search
+/// core never owns candidate IR or a complete/shadow materializer. Because the
+/// controller key ends at RegionState, ExactRejection is valid only after the
+/// evaluator has closed every relevant current-IR inner choice; one temporal
+/// candidate rejection cannot be lifted to the structural key.
 class StructuralCandidateEvaluator {
 public:
   virtual ~StructuralCandidateEvaluator() = default;
-  virtual StructuralCandidateEvaluation
-  evaluate(const TemporalState &state) = 0;
+  virtual StructuralCandidateEvaluation evaluate(const RegionState &state) = 0;
 };
 
 enum class UnifiedSearchResumeStatus : uint8_t {

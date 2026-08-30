@@ -5,7 +5,6 @@
 
 #include "Wafer/Planning/PhysicalDataflow/RegionPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"
-#include "Wafer/Planning/PhysicalDataflow/TemporalPlan.h"
 
 #include "mlir/Support/LogicalResult.h"
 
@@ -16,7 +15,6 @@ namespace wafer::compiler::detail {
 
 class PhysicalDataflowPlanningProblem;
 class RegionDomain;
-class TemporalDomain;
 
 class SpatialState {
 public:
@@ -64,38 +62,6 @@ private:
 
   SpatialState spatial;
   RegionPlan regions;
-};
-
-class TemporalState {
-public:
-  static mlir::FailureOr<TemporalState>
-  create(const TemporalDomain &domain, RegionState region,
-         TemporalPlan temporal, std::string *failureReason = nullptr);
-
-  const RegionState &getRegionState() const { return region; }
-  const SpatialState &getSpatialState() const {
-    return region.getSpatialState();
-  }
-  const SpatialPlan &getSpatialPlan() const { return region.getSpatialPlan(); }
-  const RegionPlan &getRegionPlan() const { return region.getRegionPlan(); }
-  const TemporalPlan &getTemporalPlan() const { return temporal; }
-  friend bool operator==(const TemporalState &lhs, const TemporalState &rhs) {
-    return lhs.region == rhs.region && lhs.temporal == rhs.temporal;
-  }
-  friend bool operator<(const TemporalState &lhs, const TemporalState &rhs) {
-    if (lhs.region < rhs.region)
-      return true;
-    if (rhs.region < lhs.region)
-      return false;
-    return lhs.temporal < rhs.temporal;
-  }
-
-private:
-  TemporalState(RegionState region, TemporalPlan temporal)
-      : region(std::move(region)), temporal(std::move(temporal)) {}
-
-  RegionState region;
-  TemporalPlan temporal;
 };
 
 } // namespace wafer::compiler::detail

@@ -1439,3 +1439,14 @@
   返回三个DPS state，`scf::tileUsingSCF`直接形成serial loop-carried recurrence；FD spatial merge由actual SSA/Linalg显式物化。
 - 防复发：采用外部compiler实现前同时核对op traits、interface TableGen和实际driver；文档不能只写“使用standard interface”。若升级pinned
   LLVM，必须整体切换producer/consumer/tests并删除旧driver，不能维护版本分支。
+
+## Ragged loop peel后需要原位收紧tiled op type
+
+- 现象：`scf::peelForLoopAndSimplifyBounds`已经把tail中的`affine.min`化为常量，但pinned Linalg canonicalizer仍让reduction input保留
+  `tensor<...x?>`；后续static-shape stage看不到实际已经固定为`128`或`7`的tile。
+- 根因：pinned `InferStaticShapeOfOperands::populateMap`读取了`tensor.cast`的static source shape，随后却用cast result type的dynamic bit跳过
+  该维，正好漏掉需要收紧的维度。Loop peeling只负责bound，不负责重建所有consumer op type。
+- 修复模式：先运行scoped Linalg tiling canonicalization，把constant size重建为static `extract_slice`；再只剥离“static source到更dynamic
+  result”的`tensor.cast`，按actual DPS init重建当前Linalg/online-attention op及result type，随后再次scoped canonicalize、CSE和DCE。
+- 防复发：ragged tiling测试同时检查bound和actual tiled op/operand/result type；只看到tail loop或constant `affine.min`不能证明下游获得了
+  static shape。升级pinned MLIR后若upstream已修复，应删除本地窄refinement并保留同一测试。

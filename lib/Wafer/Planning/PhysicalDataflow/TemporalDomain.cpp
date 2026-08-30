@@ -1,32 +1,31 @@
-//===- TemporalDomain.cpp - Complete free temporal domain -------------===//
+//===- TemporalDomain.cpp - Live-operation temporal choices -----------===//
 
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
 
-#include "Wafer/IR/WaferDialect.h"
-
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallBitVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 
-#include <algorithm>
-#include <limits>
-#include <map>
 #include <set>
 
 namespace wafer::compiler::detail {
 
 struct TemporalDomain::Completion {
   TemporalSuccessorKind kind = TemporalSuccessorKind::CompilerBug;
-  std::optional<TemporalPlan> plan;
+  std::optional<TemporalChoice> choice;
   std::string detail;
 };
 
 namespace {
 
 TemporalDomainResult failed(TemporalDomainFailureKind kind,
-                            llvm::StringRef detail,
-                            std::optional<TemporalScopeId> scope = {}) {
-  return {{}, TemporalDomainFailure{kind, std::move(scope), detail.str()}};
+                            llvm::StringRef detail) {
+  return {{}, TemporalDomainFailure{kind, detail.str()}};
 }
 
 bool isAcyclic(unsigned rank,
@@ -82,9 +81,11 @@ bool isTopologicalOrder(const TemporalScopeDescriptor &scope,
                         llvm::ArrayRef<uint32_t> order) {
   if (active.size() != order.size())
     return false;
-  llvm::SmallVector<uint32_t, 4> sorted(order.begin(), order.end());
-  llvm::sort(sorted);
-  if (sorted != active)
+  llvm::SmallVector<uint32_t, 4> sortedOrder(order.begin(), order.end());
+  llvm::SmallVector<uint32_t, 4> sortedActive(active.begin(), active.end());
+  llvm::sort(sortedOrder);
+  llvm::sort(sortedActive);
+  if (sortedOrder != sortedActive)
     return false;
   const unsigned rank = scope.iterationExtents.size();
   llvm::SmallVector<uint8_t, 64> reachability =
@@ -100,21 +101,21 @@ bool isTopologicalOrder(const TemporalScopeDescriptor &scope,
   return true;
 }
 
-bool containsScopePlan(const TemporalScopeDescriptor &descriptor,
-                       const TemporalScopePlan &scope) {
-  if (!(descriptor.id == scope.id) ||
-      scope.iteratorTileSizes.size() != descriptor.iterationExtents.size())
+bool containsScopeChoice(const TemporalScopeDescriptor &descriptor,
+                         const TemporalScopeChoice &choice) {
+  if (descriptor.operation != choice.operation ||
+      choice.iteratorTileSizes.size() != descriptor.iterationExtents.size())
     return false;
   for (auto [size, extent, capability] :
-       llvm::zip_equal(scope.iteratorTileSizes, descriptor.iterationExtents,
+       llvm::zip_equal(choice.iteratorTileSizes, descriptor.iterationExtents,
                        descriptor.iteratorCapabilities))
     if (size <= 0 || size > extent ||
         (capability == IteratorTilingCapability::FullExtentOnly &&
          size != extent))
       return false;
   llvm::SmallVector<uint32_t, 4> active =
-      getActiveIterators(descriptor, scope.iteratorTileSizes);
-  return isTopologicalOrder(descriptor, active, scope.waveLoopOrder);
+      getActiveIterators(descriptor, choice.iteratorTileSizes);
+  return isTopologicalOrder(descriptor, active, choice.loopOrder);
 }
 
 std::optional<llvm::SmallVector<uint32_t, 4>>
@@ -188,251 +189,359 @@ getNextTopologicalOrder(const TemporalScopeDescriptor &scope,
   return std::nullopt;
 }
 
-const analysis::RootExecutionWork *
-findExecution(const analysis::RootRegionWork &work,
-              const RequiredRootExecution &required) {
-  auto found = llvm::find_if(work.execution,
-                             [&](const analysis::RootExecutionWork &candidate) {
-                               return candidate.shard == required.shard;
-                             });
-  return found == work.execution.end() ? nullptr : &*found;
+bool isTemporalCandidate(mlir::Operation *operation) {
+  if (mlir::isa<LinalgExtOnlineAttentionOp>(operation))
+    return true;
+  auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(operation);
+  return linalg && linalg.hasPureTensorSemantics() &&
+         operation->getNumResults() != 0 &&
+         !mlir::isa<mlir::linalg::FillOp>(operation);
 }
 
-std::optional<TemporalScopeDescriptor>
-makeDescriptor(const RegionExecutionId &id,
-               const analysis::RootRegionWork &work,
-               const analysis::RootExecutionWork &execution,
-               TemporalDomainFailure &failure) {
-  TemporalScopeDescriptor descriptor;
-  descriptor.id.execution = id;
-  for (const IteratorInterval &interval : execution.iterationDomain) {
-    if (interval.size <= 0) {
-      failure = {TemporalDomainFailureKind::BrokenContract, descriptor.id,
-                 "temporal execution has a non-positive local extent"};
-      return std::nullopt;
+mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
+getStaticIterationExtents(mlir::Operation *operation) {
+  llvm::SmallVector<int64_t, 4> extents;
+  if (auto online = mlir::dyn_cast<LinalgExtOnlineAttentionOp>(operation)) {
+    llvm::append_range(extents, online.getStaticLoopRanges());
+  } else if (auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(operation)) {
+    llvm::append_range(extents, linalg.getStaticLoopRanges());
+  } else {
+    return mlir::failure();
+  }
+  if (extents.empty() || llvm::any_of(extents, [](int64_t extent) {
+        return extent <= 0 || mlir::ShapedType::isDynamic(extent);
+      }))
+    return mlir::failure();
+  return extents;
+}
+
+mlir::FailureOr<llvm::SmallVector<IteratorTilingCapability, 4>>
+getIteratorCapabilities(mlir::Operation *operation, unsigned rank) {
+  llvm::SmallVector<IteratorTilingCapability, 4> capabilities(
+      rank, IteratorTilingCapability::Tileable);
+  if (auto online = mlir::dyn_cast<LinalgExtOnlineAttentionOp>(operation)) {
+    mlir::FailureOr<AttentionIterationRoles> roles = online.getIterationRoles();
+    if (mlir::failed(roles))
+      return mlir::failure();
+    for (unsigned dimension : roles->queryKeyReduction) {
+      if (dimension >= rank)
+        return mlir::failure();
+      capabilities[dimension] = IteratorTilingCapability::FullExtentOnly;
     }
-    descriptor.iterationOffsets.push_back(interval.offset);
-    descriptor.iterationExtents.push_back(interval.size);
   }
-  auto tiling =
-      mlir::dyn_cast_or_null<mlir::TilingInterface>(work.rootOperation);
-  if (!tiling || tiling.getLoopIteratorTypes().size() !=
-                     descriptor.iterationExtents.size()) {
-    failure = {TemporalDomainFailureKind::UnsupportedSemantics, descriptor.id,
-               "temporal execution lacks a matching typed iterator domain"};
-    return std::nullopt;
-  }
-  descriptor.iteratorCapabilities.assign(descriptor.iterationExtents.size(),
-                                         IteratorTilingCapability::Tileable);
+  return capabilities;
+}
+
+mlir::FailureOr<TemporalScopeDescriptor>
+buildDescriptor(mlir::Operation *operation) {
+  auto tiling = mlir::dyn_cast_or_null<mlir::TilingInterface>(operation);
+  if (!tiling)
+    return mlir::failure();
+  mlir::FailureOr<llvm::SmallVector<int64_t, 4>> extents =
+      getStaticIterationExtents(operation);
+  if (mlir::failed(extents) ||
+      tiling.getLoopIteratorTypes().size() != extents->size())
+    return mlir::failure();
+  mlir::FailureOr<llvm::SmallVector<IteratorTilingCapability, 4>> capabilities =
+      getIteratorCapabilities(operation, extents->size());
+  if (mlir::failed(capabilities))
+    return mlir::failure();
+  TemporalScopeDescriptor descriptor;
+  descriptor.operation = operation;
+  descriptor.iterationExtents = std::move(*extents);
+  descriptor.iteratorCapabilities = std::move(*capabilities);
   return descriptor;
+}
+
+mlir::FailureOr<mlir::AffineMap> getProducerResultMap(mlir::OpResult result) {
+  auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(result.getOwner());
+  if (!linalg || result.getResultNumber() >= linalg.getNumDpsInits())
+    return mlir::failure();
+  return linalg.getMatchingIndexingMap(
+      linalg.getDpsInitOperand(result.getResultNumber()));
+}
+
+mlir::FailureOr<mlir::AffineMap>
+getConsumerOperandMap(mlir::OpOperand &operand) {
+  if (auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(operand.getOwner()))
+    return linalg.getMatchingIndexingMap(&operand);
+  if (auto online =
+          mlir::dyn_cast<LinalgExtOnlineAttentionOp>(operand.getOwner())) {
+    llvm::SmallVector<mlir::AffineMap, 8> maps = online.getIndexingMapsArray();
+    if (operand.getOperandNumber() >= maps.size())
+      return mlir::failure();
+    return maps[operand.getOperandNumber()];
+  }
+  return mlir::failure();
+}
+
+llvm::SmallBitVector getUsedDimensions(mlir::AffineMap map) {
+  llvm::SmallBitVector result(map.getNumDims(), false);
+  for (mlir::AffineExpr expression : map.getResults())
+    if (auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression))
+      result.set(dimension.getPosition());
+  return result;
+}
+
+std::optional<mlir::OpOperand *> getOnlyOperationUse(mlir::Operation *op) {
+  mlir::OpOperand *onlyUse = nullptr;
+  for (mlir::OpResult result : op->getResults())
+    for (mlir::OpOperand &use : result.getUses()) {
+      if (onlyUse)
+        return std::nullopt;
+      onlyUse = &use;
+    }
+  return onlyUse ? std::optional<mlir::OpOperand *>(onlyUse) : std::nullopt;
 }
 
 } // namespace
 
-TemporalScopePlan
-TemporalDomain::getFirstScopePlan(const TemporalScopeDescriptor &scope) {
-  TemporalScopePlan result;
-  result.id = scope.id;
+TemporalFusionQueryResult
+queryTemporalProducerFusion(mlir::OpResult producer,
+                            mlir::OpOperand &consumerOperand) {
+  mlir::Operation *producerOperation = producer.getOwner();
+  mlir::Operation *consumerOperation = consumerOperand.getOwner();
+  if (!producerOperation || !consumerOperation ||
+      consumerOperand.get() != producer)
+    return {TemporalFusionQueryKind::BrokenContract,
+            "producer result and consumer operand do not form a current SSA "
+            "edge"};
+  if (mlir::isa<LinalgExtOnlineAttentionOp>(producerOperation))
+    return {TemporalFusionQueryKind::NonUnique,
+            "online attention state remains an independent traversal root"};
+  if (producerOperation->getBlock() != consumerOperation->getBlock() ||
+      producerOperation->getParentOfType<TileRegionOp>() !=
+          consumerOperation->getParentOfType<TileRegionOp>() ||
+      !producerOperation->isBeforeInBlock(consumerOperation))
+    return {TemporalFusionQueryKind::NonUnique,
+            "producer and consumer are not one ordered same-Region edge"};
+  std::optional<mlir::OpOperand *> onlyUse =
+      getOnlyOperationUse(producerOperation);
+  if (!onlyUse || *onlyUse != &consumerOperand)
+    return {TemporalFusionQueryKind::NonUnique,
+            "producer has multiple current uses or results"};
+  if (!mlir::isMemoryEffectFree(producerOperation))
+    return {TemporalFusionQueryKind::NonUnique,
+            "effectful producer cannot be implicitly replicated"};
+  auto consumerDps =
+      mlir::dyn_cast<mlir::DestinationStyleOpInterface>(consumerOperation);
+  if (consumerDps && consumerDps.isDpsInit(&consumerOperand))
+    return {TemporalFusionQueryKind::NonUnique,
+            "destination producer remains outside reduction traversal"};
+  if (!isTemporalCandidate(producerOperation) ||
+      !isTemporalCandidate(consumerOperation))
+    return {TemporalFusionQueryKind::Unsupported,
+            "producer or consumer has no supported static temporal contract"};
+
+  mlir::FailureOr<TemporalScopeDescriptor> producerDescriptor =
+      buildDescriptor(producerOperation);
+  mlir::FailureOr<TemporalScopeDescriptor> consumerDescriptor =
+      buildDescriptor(consumerOperation);
+  mlir::FailureOr<mlir::AffineMap> producerMap = getProducerResultMap(producer);
+  mlir::FailureOr<mlir::AffineMap> consumerMap =
+      getConsumerOperandMap(consumerOperand);
+  if (mlir::failed(producerDescriptor) || mlir::failed(consumerDescriptor) ||
+      mlir::failed(producerMap) || mlir::failed(consumerMap))
+    return {TemporalFusionQueryKind::Unsupported,
+            "current interfaces cannot expose an exact tile relation"};
+  if (producerMap->getNumSymbols() != 0 || consumerMap->getNumSymbols() != 0 ||
+      !producerMap->isProjectedPermutation() ||
+      !consumerMap->isProjectedPermutation())
+    return {TemporalFusionQueryKind::Unsupported,
+            "fusion requires symbol-free projected-permutation maps"};
+  auto producerType =
+      mlir::dyn_cast<mlir::RankedTensorType>(producer.getType());
+  auto consumerType =
+      mlir::dyn_cast<mlir::RankedTensorType>(consumerOperand.get().getType());
+  if (!producerType || !consumerType)
+    return {TemporalFusionQueryKind::Unsupported,
+            "fusion requires ranked tensor endpoints"};
+  if (producerMap->getNumDims() !=
+          producerDescriptor->iterationExtents.size() ||
+      consumerMap->getNumDims() !=
+          consumerDescriptor->iterationExtents.size() ||
+      producerMap->getNumResults() != producerType.getRank() ||
+      consumerMap->getNumResults() != consumerType.getRank())
+    return {TemporalFusionQueryKind::BrokenContract,
+            "fusion indexing map ranks do not match current tensor types"};
+
+  llvm::SmallBitVector consumerDimensions = getUsedDimensions(*consumerMap);
+  for (auto [dimension, capability] :
+       llvm::enumerate(consumerDescriptor->iteratorCapabilities))
+    if (capability == IteratorTilingCapability::Tileable &&
+        !consumerDimensions.test(dimension))
+      return {TemporalFusionQueryKind::NonUnique,
+              "consumer tiling can request the same producer tile more than "
+              "once"};
+
+  llvm::SmallBitVector producerDimensions = getUsedDimensions(*producerMap);
+  auto producerTiling = mlir::cast<mlir::TilingInterface>(producerOperation);
+  llvm::SmallVector<mlir::utils::IteratorType, 4> producerIterators =
+      producerTiling.getLoopIteratorTypes();
+  for (unsigned dimension = 0; dimension < producerDimensions.size();
+       ++dimension)
+    if (!producerDimensions.test(dimension) &&
+        producerDescriptor->iterationExtents[dimension] != 1 &&
+        producerIterators[dimension] != mlir::utils::IteratorType::reduction)
+      return {TemporalFusionQueryKind::NonUnique,
+              "producer result does not uniquely determine a parallel "
+              "iterator"};
+  return {TemporalFusionQueryKind::ExactDerived, {}};
+}
+
+TemporalScopeChoice
+TemporalDomain::getFirstScopeChoice(const TemporalScopeDescriptor &scope) {
+  TemporalScopeChoice result;
+  result.operation = scope.operation;
   result.iteratorTileSizes = scope.iterationExtents;
   return result;
 }
 
-bool TemporalDomain::advanceScopePlan(const TemporalScopeDescriptor &scope,
-                                      TemporalScopePlan &plan) {
+bool TemporalDomain::advanceScopeChoice(const TemporalScopeDescriptor &scope,
+                                        TemporalScopeChoice &choice) {
   llvm::SmallVector<uint32_t, 4> active =
-      getActiveIterators(scope, plan.iteratorTileSizes);
-  if (auto next = getNextTopologicalOrder(scope, active, plan.waveLoopOrder)) {
-    plan.waveLoopOrder = std::move(*next);
+      getActiveIterators(scope, choice.iteratorTileSizes);
+  if (auto next = getNextTopologicalOrder(scope, active, choice.loopOrder)) {
+    choice.loopOrder = std::move(*next);
     return true;
   }
   for (size_t reverse = 0; reverse < scope.iterationExtents.size(); ++reverse) {
     const size_t dimension = scope.iterationExtents.size() - reverse - 1;
     if (scope.iteratorCapabilities[dimension] ==
             IteratorTilingCapability::FullExtentOnly ||
-        plan.iteratorTileSizes[dimension] <= 1)
+        choice.iteratorTileSizes[dimension] <= 1)
       continue;
-    --plan.iteratorTileSizes[dimension];
+    --choice.iteratorTileSizes[dimension];
     for (size_t reset = dimension + 1; reset < scope.iterationExtents.size();
          ++reset)
-      plan.iteratorTileSizes[reset] = scope.iterationExtents[reset];
-    active = getActiveIterators(scope, plan.iteratorTileSizes);
+      choice.iteratorTileSizes[reset] = scope.iterationExtents[reset];
+    active = getActiveIterators(scope, choice.iteratorTileSizes);
     auto first = getFirstTopologicalOrder(scope, active);
     if (!first)
       return false;
-    plan.waveLoopOrder = std::move(*first);
+    choice.loopOrder = std::move(*first);
     return true;
   }
   return false;
 }
 
-TemporalDomain::Completion
-TemporalDomain::completePlan(llvm::ArrayRef<TemporalScopePlan> prefix) const {
+TemporalDomain::Completion TemporalDomain::completeChoice(
+    llvm::ArrayRef<TemporalScopeChoice> prefix) const {
   Completion completion;
-  completion.kind = TemporalSuccessorKind::Plan;
+  completion.kind = TemporalSuccessorKind::Choice;
   if (prefix.size() > scopes.size()) {
     completion.kind = TemporalSuccessorKind::CompilerBug;
     completion.detail = "temporal prefix has an unexpected extra scope";
     return completion;
   }
-  completion.plan.emplace();
+  completion.choice.emplace();
   for (auto [index, descriptor] : llvm::enumerate(scopes)) {
     if (index < prefix.size()) {
-      if (!containsScopePlan(descriptor, prefix[index])) {
+      if (!containsScopeChoice(descriptor, prefix[index])) {
         completion.kind = TemporalSuccessorKind::CompilerBug;
         completion.detail =
-            "temporal prefix does not match its scope descriptor";
-        completion.plan.reset();
+            "temporal prefix does not match its live scope descriptor";
+        completion.choice.reset();
         return completion;
       }
-      completion.plan->scopes.push_back(prefix[index]);
+      completion.choice->scopes.push_back(prefix[index]);
     } else {
-      completion.plan->scopes.push_back(getFirstScopePlan(descriptor));
+      completion.choice->scopes.push_back(getFirstScopeChoice(descriptor));
     }
   }
   return completion;
 }
 
-TemporalSuccessor TemporalDomain::getFirstPlan() const {
-  return completePrefix(TemporalPlan{});
+TemporalSuccessor TemporalDomain::getFirstChoice() const {
+  return completePrefix(TemporalChoice{});
 }
 
 TemporalSuccessor
-TemporalDomain::completePrefix(const TemporalPlan &prefix) const {
-  Completion completed = completePlan(prefix.scopes);
-  if (completed.kind != TemporalSuccessorKind::Plan || !completed.plan)
+TemporalDomain::completePrefix(const TemporalChoice &prefix) const {
+  Completion completed = completeChoice(prefix.scopes);
+  if (completed.kind != TemporalSuccessorKind::Choice || !completed.choice)
     return {completed.kind, {}, {}, std::move(completed.detail)};
   TemporalCursor cursor;
-  cursor.plan = *completed.plan;
-  return {TemporalSuccessorKind::Plan, std::move(completed.plan),
+  cursor.choice = *completed.choice;
+  return {TemporalSuccessorKind::Choice, std::move(completed.choice),
           std::move(cursor)};
 }
 
 TemporalSuccessor
-TemporalDomain::getNextPlan(const TemporalCursor &cursor) const {
-  Completion current = completePlan(cursor.plan.scopes);
-  if (current.kind != TemporalSuccessorKind::Plan || !current.plan ||
-      !(*current.plan == cursor.plan))
+TemporalDomain::getNextChoice(const TemporalCursor &cursor) const {
+  Completion current = completeChoice(cursor.choice.scopes);
+  if (current.kind != TemporalSuccessorKind::Choice || !current.choice ||
+      !(*current.choice == cursor.choice))
     return {TemporalSuccessorKind::CompilerBug,
             {},
             {},
-            "temporal cursor cannot be replayed from current facts"};
+            "temporal cursor is stale for the current operation domain"};
   for (size_t reverse = 0; reverse < scopes.size(); ++reverse) {
     const size_t index = scopes.size() - reverse - 1;
-    TemporalPlan prefix;
-    prefix.scopes.assign(cursor.plan.scopes.begin(),
-                         cursor.plan.scopes.begin() + index + 1);
-    if (!advanceScopePlan(scopes[index], prefix.scopes.back()))
+    TemporalChoice prefix;
+    prefix.scopes.assign(cursor.choice.scopes.begin(),
+                         cursor.choice.scopes.begin() + index + 1);
+    if (!advanceScopeChoice(scopes[index], prefix.scopes.back()))
       continue;
-    Completion next = completePlan(prefix.scopes);
-    if (next.kind != TemporalSuccessorKind::Plan || !next.plan)
+    Completion next = completeChoice(prefix.scopes);
+    if (next.kind != TemporalSuccessorKind::Choice || !next.choice)
       return {next.kind, {}, {}, std::move(next.detail)};
     TemporalCursor nextCursor;
-    nextCursor.plan = *next.plan;
-    return {TemporalSuccessorKind::Plan, std::move(next.plan),
+    nextCursor.choice = *next.choice;
+    return {TemporalSuccessorKind::Choice, std::move(next.choice),
             std::move(nextCursor)};
   }
   return {TemporalSuccessorKind::End};
 }
 
-bool TemporalDomain::contains(const TemporalPlan &plan) const {
-  Completion completed = completePlan(plan.scopes);
-  return completed.kind == TemporalSuccessorKind::Plan && completed.plan &&
-         *completed.plan == plan;
+bool TemporalDomain::contains(const TemporalChoice &choice) const {
+  Completion completed = completeChoice(choice.scopes);
+  return completed.kind == TemporalSuccessorKind::Choice && completed.choice &&
+         *completed.choice == choice;
 }
 
-TemporalDomainResult
-buildTemporalDomain(llvm::ArrayRef<TemporalScopeDescriptor> input) {
-  std::vector<TemporalScopeDescriptor> scopes(input.begin(), input.end());
-  std::map<TemporalScopeId, size_t> original;
-  for (auto [index, scope] : llvm::enumerate(scopes)) {
-    if (!original.try_emplace(scope.id, index).second)
-      return failed(TemporalDomainFailureKind::BrokenContract,
-                    "temporal domain has a duplicate execution scope",
-                    scope.id);
-    const size_t rank = scope.iterationExtents.size();
-    if (rank == 0 || scope.iterationOffsets.size() != rank ||
-        scope.iteratorCapabilities.size() != rank)
-      return failed(TemporalDomainFailureKind::BrokenContract,
-                    "temporal scope descriptor ranks do not agree", scope.id);
-    if (llvm::any_of(scope.iterationExtents,
-                     [](int64_t extent) { return extent <= 0; }))
-      return failed(TemporalDomainFailureKind::BrokenContract,
-                    "temporal scope has a non-positive extent", scope.id);
-    llvm::sort(scope.precedence);
-    if (std::adjacent_find(scope.precedence.begin(), scope.precedence.end()) !=
-        scope.precedence.end())
-      return failed(TemporalDomainFailureKind::BrokenContract,
-                    "temporal precedence has a duplicate edge", scope.id);
-    for (const TemporalPrecedenceEdge &edge : scope.precedence)
-      if (edge.before >= rank || edge.after >= rank ||
-          edge.before == edge.after)
-        return failed(TemporalDomainFailureKind::BrokenContract,
-                      "temporal precedence edge is outside iterator rank",
-                      scope.id);
-    if (!isAcyclic(rank, scope.precedence))
-      return failed(TemporalDomainFailureKind::BrokenContract,
-                    "temporal precedence graph has a cycle", scope.id);
-  }
-  llvm::sort(scopes, [](const TemporalScopeDescriptor &lhs,
-                        const TemporalScopeDescriptor &rhs) {
-    return lhs.id < rhs.id;
-  });
-  return {TemporalDomain(std::move(scopes)), {}};
-}
-
-TemporalDomainResult
-buildTemporalDomain(const RegionPlan &regions,
-                    llvm::ArrayRef<analysis::RootRegionWork> rootWorks) {
-  if (regions.groups.empty() || rootWorks.empty())
+TemporalDomainResult buildTemporalDomain(TileRegionOp region) {
+  if (!region || mlir::failed(mlir::verify(region)))
     return failed(TemporalDomainFailureKind::BrokenContract,
-                  "temporal input requires region and root work");
-  std::map<analysis::RootRegionWorkId, const analysis::RootRegionWork *> works;
-  for (const analysis::RootRegionWork &work : rootWorks)
-    if (!works.try_emplace(work.id, &work).second)
+                  "temporal domain requires a verifier-valid TileRegion");
+  mlir::Block &body = region.getBody().front();
+  llvm::SmallVector<mlir::Operation *, 16> candidates;
+  for (mlir::Operation &operation : body.without_terminator())
+    if (isTemporalCandidate(&operation))
+      candidates.push_back(&operation);
+
+  llvm::SmallPtrSet<mlir::Operation *, 16> candidateSet(candidates.begin(),
+                                                        candidates.end());
+  llvm::SmallPtrSet<mlir::Operation *, 16> derivedProducers;
+  for (mlir::Operation *producer : candidates) {
+    if (mlir::isa<LinalgExtOnlineAttentionOp>(producer))
+      continue;
+    std::optional<mlir::OpOperand *> onlyUse = getOnlyOperationUse(producer);
+    if (!onlyUse || !candidateSet.contains((*onlyUse)->getOwner()))
+      continue;
+    auto result = mlir::dyn_cast<mlir::OpResult>((*onlyUse)->get());
+    if (!result || result.getOwner() != producer)
       return failed(TemporalDomainFailureKind::BrokenContract,
-                    "temporal input has duplicate root work");
+                    "temporal producer use is not owned by its current result");
+    TemporalFusionQueryResult query =
+        queryTemporalProducerFusion(result, **onlyUse);
+    if (query.kind == TemporalFusionQueryKind::BrokenContract)
+      return failed(TemporalDomainFailureKind::BrokenContract, query.detail);
+    if (query.kind == TemporalFusionQueryKind::ExactDerived)
+      derivedProducers.insert(producer);
+  }
 
   std::vector<TemporalScopeDescriptor> scopes;
-  std::set<RegionExecutionId> observed;
-  auto append = [&](RegionExecutionId id, const RequiredRootExecution &required)
-      -> std::optional<TemporalDomainFailure> {
-    if (!observed.insert(id).second)
-      return TemporalDomainFailure{TemporalDomainFailureKind::BrokenContract,
-                                   TemporalScopeId{id},
-                                   "temporal input has a duplicate execution"};
-    auto work = works.find(required.work);
-    const analysis::RootExecutionWork *piece =
-        work == works.end() ? nullptr : findExecution(*work->second, required);
-    if (!piece)
-      return TemporalDomainFailure{TemporalDomainFailureKind::BrokenContract,
-                                   TemporalScopeId{id},
-                                   "temporal execution has no exact root work"};
-    TemporalDomainFailure failure;
-    auto descriptor = makeDescriptor(id, *work->second, *piece, failure);
-    if (!descriptor)
-      return failure;
+  for (mlir::Operation *operation : candidates) {
+    if (derivedProducers.contains(operation))
+      continue;
+    mlir::FailureOr<TemporalScopeDescriptor> descriptor =
+        buildDescriptor(operation);
+    if (mlir::failed(descriptor))
+      continue;
     scopes.push_back(std::move(*descriptor));
-    return std::nullopt;
-  };
-
-  for (const RegionGroupPlan &group : regions.groups) {
-    for (const ExecutionInstancePlan &execution : group.executions) {
-      const auto *required =
-          std::get_if<RequiredRootExecution>(&execution.id.source);
-      if (!required)
-        continue;
-      if (auto failure = append(RegionExecutionId{execution.id}, *required))
-        return {{}, std::move(*failure)};
-    }
-    for (const ReplicaExecutionPlan &replica : group.replicas)
-      if (auto failure =
-              append(RegionExecutionId{replica.id}, replica.id.producer))
-        return {{}, std::move(*failure)};
   }
-  if (scopes.empty())
-    return failed(TemporalDomainFailureKind::BrokenContract,
-                  "temporal input has no tileable execution");
-  return buildTemporalDomain(scopes);
+  return {TemporalDomain(region, std::move(scopes)), {}};
 }
 
 mlir::FailureOr<TemporalIntervalChildren>
@@ -458,11 +567,11 @@ splitTemporalSizeInterval(TemporalSizeInterval interval,
   return result;
 }
 
-mlir::FailureOr<llvm::SmallVector<uint32_t, 4>> buildFirstTemporalWaveLoopOrder(
-    llvm::ArrayRef<int64_t> iteratorExtents,
-    llvm::ArrayRef<int64_t> iteratorTileSizes,
-    llvm::ArrayRef<TemporalPrecedenceEdge> precedence,
-    std::string *failureReason) {
+mlir::FailureOr<llvm::SmallVector<uint32_t, 4>>
+buildFirstTemporalLoopOrder(llvm::ArrayRef<int64_t> iteratorExtents,
+                            llvm::ArrayRef<int64_t> iteratorTileSizes,
+                            llvm::ArrayRef<TemporalPrecedenceEdge> precedence,
+                            std::string *failureReason) {
   if (iteratorExtents.size() != iteratorTileSizes.size() ||
       llvm::any_of(llvm::zip_equal(iteratorExtents, iteratorTileSizes),
                    [](auto values) {
@@ -499,168 +608,6 @@ mlir::FailureOr<llvm::SmallVector<uint32_t, 4>> buildFirstTemporalWaveLoopOrder(
     return mlir::failure();
   }
   return std::move(*order);
-}
-
-mlir::FailureOr<llvm::SmallVector<IteratorInterval, 8>>
-buildTemporalAxisWaves(IteratorInterval interval, int64_t tileSize,
-                       std::string *failureReason) {
-  if (interval.size <= 0 || tileSize <= 0 || tileSize > interval.size) {
-    if (failureReason)
-      *failureReason = "temporal wave request has an invalid extent or size";
-    return mlir::failure();
-  }
-  const __int128 end = static_cast<__int128>(interval.offset) + interval.size;
-  if (end < std::numeric_limits<int64_t>::min() ||
-      end > std::numeric_limits<int64_t>::max()) {
-    if (failureReason)
-      *failureReason = "temporal wave interval overflows index range";
-    return mlir::failure();
-  }
-  llvm::SmallVector<IteratorInterval, 8> waves;
-  int64_t consumed = 0;
-  while (consumed < interval.size) {
-    const int64_t size = std::min(tileSize, interval.size - consumed);
-    const __int128 offset = static_cast<__int128>(interval.offset) + consumed;
-    if (offset < std::numeric_limits<int64_t>::min() ||
-        offset > std::numeric_limits<int64_t>::max()) {
-      if (failureReason)
-        *failureReason = "temporal wave offset overflows index range";
-      return mlir::failure();
-    }
-    waves.push_back({static_cast<int64_t>(offset), size});
-    consumed += size;
-  }
-  return waves;
-}
-
-mlir::FailureOr<bool> refineTemporalPlanFromActualSPMFeedback(
-    TemporalPlan &temporal, llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
-    llvm::ArrayRef<SemanticRootKey> affectedRoots, std::string *failureReason,
-    bool preferReductionAxes) {
-  if (affectedRoots.empty()) {
-    if (failureReason)
-      *failureReason = "actual SPM rejection has no attributed semantic root";
-    return mlir::failure();
-  }
-  auto workOf = [](const RegionExecutionId &execution)
-      -> std::optional<analysis::RootRegionWorkId> {
-    if (const auto *required = std::get_if<ExecutionInstanceId>(&execution))
-      return std::visit([](const auto &source) { return source.work; },
-                        required->source);
-    return std::get<ReplicaExecutionId>(execution).producer.work;
-  };
-  auto rootExecution =
-      [](const RegionExecutionId &execution) -> const RequiredRootExecution * {
-    if (const auto *required = std::get_if<ExecutionInstanceId>(&execution))
-      return std::get_if<RequiredRootExecution>(&required->source);
-    return &std::get<ReplicaExecutionId>(execution).producer;
-  };
-
-  std::set<SemanticRootKey> uniqueRoots(affectedRoots.begin(),
-                                        affectedRoots.end());
-  std::map<analysis::RootRegionWorkId, const analysis::RootRegionWork *> works;
-  for (const analysis::RootRegionWork &work : rootWorks)
-    works.try_emplace(work.id, &work);
-
-  TemporalPlan candidate = temporal;
-  bool changed = false;
-  for (const SemanticRootKey &root : uniqueRoots) {
-    mlir::Operation *operation = nullptr;
-    for (const analysis::RootRegionWork &work : rootWorks)
-      if (work.id.root == root && work.rootOperation) {
-        operation = work.rootOperation;
-        break;
-      }
-    if (!operation) {
-      if (failureReason)
-        *failureReason = "actual SPM rejection names an unknown root";
-      return mlir::failure();
-    }
-
-    llvm::SmallVector<unsigned, 4> allowedAxes;
-    if (auto attention = mlir::dyn_cast<LinalgExtAttentionOp>(operation)) {
-      mlir::FailureOr<AttentionIterationRoles> roles =
-          attention.getIterationRoles();
-      if (mlir::failed(roles))
-        return mlir::failure();
-      allowedAxes.assign(roles->keyValueReduction.begin(),
-                         roles->keyValueReduction.end());
-    } else {
-      auto tiling = mlir::dyn_cast<mlir::TilingInterface>(operation);
-      if (!tiling) {
-        if (failureReason)
-          *failureReason =
-              "actual SPM rejection root is not temporally tileable";
-        return mlir::failure();
-      }
-      llvm::SmallVector<mlir::utils::IteratorType, 4> iteratorTypes =
-          tiling.getLoopIteratorTypes();
-      if (preferReductionAxes)
-        for (auto [axis, iteratorType] : llvm::enumerate(iteratorTypes))
-          if (iteratorType == mlir::utils::IteratorType::reduction)
-            allowedAxes.push_back(static_cast<unsigned>(axis));
-      if (allowedAxes.empty())
-        for (unsigned axis = 0; axis < iteratorTypes.size(); ++axis)
-          allowedAxes.push_back(axis);
-    }
-
-    std::optional<unsigned> selectedAxis;
-    int64_t largestCurrent = 1;
-    for (unsigned axis : allowedAxes)
-      for (const TemporalScopePlan &scope : candidate.scopes) {
-        std::optional<analysis::RootRegionWorkId> work =
-            workOf(scope.id.execution);
-        if (!work || work->root != root ||
-            axis >= scope.iteratorTileSizes.size())
-          continue;
-        if (scope.iteratorTileSizes[axis] > largestCurrent) {
-          largestCurrent = scope.iteratorTileSizes[axis];
-          selectedAxis = axis;
-        }
-      }
-    if (!selectedAxis)
-      continue;
-
-    for (TemporalScopePlan &scope : candidate.scopes) {
-      std::optional<analysis::RootRegionWorkId> workId =
-          workOf(scope.id.execution);
-      const RequiredRootExecution *required = rootExecution(scope.id.execution);
-      if (!workId || !required)
-        return mlir::failure();
-      if (workId->root != root ||
-          *selectedAxis >= scope.iteratorTileSizes.size())
-        continue;
-      auto work = works.find(*workId);
-      if (work == works.end())
-        return mlir::failure();
-      auto execution =
-          llvm::find_if(work->second->execution,
-                        [&](const analysis::RootExecutionWork &entry) {
-                          return entry.shard == required->shard;
-                        });
-      if (execution == work->second->execution.end() ||
-          *selectedAxis >= execution->iterationDomain.size())
-        return mlir::failure();
-      const int64_t current = scope.iteratorTileSizes[*selectedAxis];
-      if (current <= 1)
-        continue;
-      llvm::SmallVector<int64_t, 4> candidateSizes = scope.iteratorTileSizes;
-      candidateSizes[*selectedAxis] = (current + 1) / 2;
-      llvm::SmallVector<int64_t, 4> extents;
-      for (const IteratorInterval &interval : execution->iterationDomain)
-        extents.push_back(interval.size);
-      auto order = buildFirstTemporalWaveLoopOrder(extents, candidateSizes, {},
-                                                   failureReason);
-      if (mlir::failed(order))
-        return mlir::failure();
-      scope.iteratorTileSizes = std::move(candidateSizes);
-      scope.waveLoopOrder = std::move(*order);
-      changed = true;
-    }
-  }
-  if (changed)
-    temporal = std::move(candidate);
-  return changed;
 }
 
 } // namespace wafer::compiler::detail

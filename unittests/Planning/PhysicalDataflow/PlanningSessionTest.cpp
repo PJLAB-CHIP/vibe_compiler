@@ -116,7 +116,7 @@ module {
 };
 
 TEST_F(PlanningSessionTest,
-       RealScaleStructuralPrefixStopsAtCurrentIRMaterializationBoundary) {
+       RealScalePlanningStopsAtRegionChoiceBeforeCurrentIRMaterialization) {
   for (uint64_t extent : {uint64_t{1024}, uint64_t{1025}, uint64_t{1031}}) {
     SCOPED_TRACE(extent);
     auto module = parse(extent);
@@ -137,20 +137,10 @@ TEST_F(PlanningSessionTest,
     auto regionState = session.resumeRegion(region, &failureReason);
     ASSERT_TRUE(mlir::succeeded(regionState)) << failureReason;
     ASSERT_TRUE(*regionState);
-    TemporalContinuation temporal =
-        session.createTemporalContinuation(std::move(**regionState));
-    TemporalExpansionResult temporalResult = session.resumeTemporal(temporal);
-    ASSERT_EQ(temporalResult.getKind(), TemporalExpansionKind::State)
-        << temporalResult.getDetail().str();
-    std::optional<TemporalState> state = temporalResult.takeState();
-    ASSERT_TRUE(state);
-    ASSERT_FALSE(state->getTemporalPlan().scopes.empty());
-    for (const TemporalScopePlan &scope : state->getTemporalPlan().scopes)
-      EXPECT_FALSE(scope.iteratorTileSizes.empty());
+    EXPECT_FALSE((*regionState)->getRegionPlan().groups.empty());
     EXPECT_EQ(print(module->getOperation()), before);
     EXPECT_GT(session.getWork().spatialDemandQueries, 0u);
     EXPECT_GT(session.getWork().regionStatesQueued, 0u);
-    EXPECT_GT(session.getWork().temporalStatesQueued, 0u);
   }
 }
 
@@ -166,7 +156,7 @@ TEST_F(PlanningSessionTest,
   ASSERT_TRUE(mlir::succeeded(problem)) << failureReason;
 
   auto firstChoice = [&](PhysicalDataflowPlanningSession &session)
-      -> std::optional<TemporalState> {
+      -> std::optional<RegionState> {
     std::optional<SpatialState> spatial = takeFirstSpatial(session);
     if (!spatial)
       return std::nullopt;
@@ -175,17 +165,13 @@ TEST_F(PlanningSessionTest,
     auto regionState = session.resumeRegion(region, &failureReason);
     if (mlir::failed(regionState) || !*regionState)
       return std::nullopt;
-    TemporalContinuation temporal =
-        session.createTemporalContinuation(std::move(**regionState));
-    TemporalExpansionResult result = session.resumeTemporal(temporal);
-    return result.getKind() == TemporalExpansionKind::State ? result.takeState()
-                                                            : std::nullopt;
+    return std::move(**regionState);
   };
 
   PhysicalDataflowPlanningSession first(*problem);
   PhysicalDataflowPlanningSession second(*problem);
-  std::optional<TemporalState> lhs = firstChoice(first);
-  std::optional<TemporalState> rhs = firstChoice(second);
+  std::optional<RegionState> lhs = firstChoice(first);
+  std::optional<RegionState> rhs = firstChoice(second);
   ASSERT_TRUE(lhs);
   ASSERT_TRUE(rhs);
   EXPECT_EQ(*lhs, *rhs);

@@ -2,6 +2,7 @@
 
 #include "Wafer/Transforms/Linalg/SpatialRegionMaterialization.h"
 #include "Wafer/Transforms/Linalg/StructuredTiling.h"
+#include "Wafer/Transforms/Linalg/TemporalTiling.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
 #include "Wafer/IR/WaferDialect.h"
@@ -1090,6 +1091,119 @@ module {
     EXPECT_EQ(keyType.getShape()[1], 1031);
   });
   EXPECT_EQ(countOps<wafer::LinalgExtAttentionOp>(source->getOperation()), 1u);
+}
+
+TEST(SpatialRegionMaterializationTest,
+     MaterializedFAAndFDFeedOnlyCurrentOperationTemporalTiling) {
+  for (llvm::StringRef algorithm : {llvm::StringRef("flash_attention"),
+                                    llvm::StringRef("flash_decoding")}) {
+    SCOPED_TRACE(algorithm.str());
+    std::unique_ptr<mlir::MLIRContext> context = createContext();
+    auto source = mlir::parseSourceString<mlir::ModuleOp>(
+        makeAttentionSource(algorithm), mlir::ParserConfig(context.get()));
+    ASSERT_TRUE(source);
+    std::string failureReason;
+    auto materialized = materializeCanonical(*source, failureReason);
+    ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
+    const unsigned onlineBefore = countOps<wafer::LinalgExtOnlineAttentionOp>(
+        materialized->module->getOperation());
+    ASSERT_GT(onlineBefore, 0u);
+    const size_t boundaryCount =
+        materialized->relations.boundaryRelations.size();
+    const size_t outputCount = materialized->relations.structuralOutputs.size();
+    llvm::SmallVector<std::pair<void *, void *>, 16> boundaryEndpoints;
+    for (const auto &relation : materialized->relations.boundaryRelations)
+      boundaryEndpoints.push_back(
+          {relation.sourceEndpoint.getAsOpaquePointer(),
+           relation.destinationEndpoint.getAsOpaquePointer()});
+    llvm::SmallVector<void *, 16> outputEndpoints;
+    for (const auto &relation : materialized->relations.structuralOutputs)
+      outputEndpoints.push_back(relation.endpoint.getAsOpaquePointer());
+
+    llvm::SmallVector<wafer::TileRegionOp, 32> regions;
+    materialized->module->walk(
+        [&](wafer::TileRegionOp region) { regions.push_back(region); });
+    uint64_t tiledOnlineScopes = 0;
+    uint64_t createdLoops = 0;
+    for (wafer::TileRegionOp region : regions) {
+      auto domain = wafer::compiler::detail::buildTemporalDomain(region);
+      ASSERT_TRUE(domain.succeeded())
+          << (domain.failure ? domain.failure->detail : "");
+      auto first = domain.domain->getFirstChoice();
+      ASSERT_EQ(first.getKind(),
+                wafer::compiler::detail::TemporalSuccessorKind::Choice);
+      ASSERT_NE(first.getChoice(), nullptr);
+      wafer::compiler::detail::TemporalChoice choice = *first.getChoice();
+      llvm::ArrayRef<wafer::compiler::detail::TemporalScopeDescriptor>
+          descriptors = domain.domain->getScopeDescriptors();
+      bool selectedOnline = false;
+      for (auto [scope, descriptor] :
+           llvm::zip_equal(choice.scopes, descriptors)) {
+        auto online = mlir::dyn_cast<wafer::LinalgExtOnlineAttentionOp>(
+            descriptor.operation);
+        if (!online)
+          continue;
+        auto roles = online.getIterationRoles();
+        ASSERT_TRUE(mlir::succeeded(roles));
+        for (unsigned dimension : roles->keyValueReduction) {
+          const int64_t extent = descriptor.iterationExtents[dimension];
+          if (extent <= 1)
+            continue;
+          scope.iteratorTileSizes[dimension] = std::min<int64_t>(32, extent);
+          selectedOnline |= scope.iteratorTileSizes[dimension] < extent;
+        }
+        auto order = wafer::compiler::detail::buildFirstTemporalLoopOrder(
+            descriptor.iterationExtents, scope.iteratorTileSizes,
+            descriptor.precedence);
+        ASSERT_TRUE(mlir::succeeded(order));
+        scope.loopOrder = std::move(*order);
+        ++tiledOnlineScopes;
+      }
+      if (!selectedOnline)
+        continue;
+      ASSERT_TRUE(domain.domain->contains(choice));
+      wafer::TemporalTilingFailure failure;
+      auto tiled = wafer::applyTemporalTiling(
+          *domain.domain, choice, materialized->relations, &failure);
+      ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
+      createdLoops += tiled->loops;
+    }
+
+    EXPECT_EQ(tiledOnlineScopes, onlineBefore);
+    EXPECT_GE(createdLoops, onlineBefore);
+    EXPECT_EQ(countOps<wafer::LinalgExtAttentionOp>(
+                  materialized->module->getOperation()),
+              0u);
+    EXPECT_GE(countOps<wafer::LinalgExtOnlineAttentionOp>(
+                  materialized->module->getOperation()),
+              onlineBefore);
+    EXPECT_EQ(
+        countOps<mlir::linalg::MatmulOp>(materialized->module->getOperation()),
+        0u);
+    unsigned onlineLoops = 0;
+    materialized->module->walk([&](mlir::scf::ForOp loop) {
+      if (loop.getBody()->getOps<wafer::LinalgExtOnlineAttentionOp>().empty())
+        return;
+      ++onlineLoops;
+      EXPECT_EQ(loop.getNumRegionIterArgs(), 3u);
+    });
+    EXPECT_GE(onlineLoops, onlineBefore);
+    EXPECT_EQ(materialized->relations.boundaryRelations.size(), boundaryCount);
+    EXPECT_EQ(materialized->relations.structuralOutputs.size(), outputCount);
+    for (auto [index, relation] :
+         llvm::enumerate(materialized->relations.boundaryRelations))
+      EXPECT_EQ(
+          std::make_pair(relation.sourceEndpoint.getAsOpaquePointer(),
+                         relation.destinationEndpoint.getAsOpaquePointer()),
+          boundaryEndpoints[index]);
+    for (auto [index, relation] :
+         llvm::enumerate(materialized->relations.structuralOutputs))
+      EXPECT_EQ(relation.endpoint.getAsOpaquePointer(), outputEndpoints[index]);
+    EXPECT_TRUE(mlir::succeeded(
+        wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
+            materialized->module->getOperation(), materialized->relations)));
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*materialized->module)));
+  }
 }
 
 TEST(SpatialRegionMaterializationTest,

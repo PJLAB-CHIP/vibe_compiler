@@ -7,6 +7,7 @@ add_mlir_library(WaferLinalgTransforms
   SpatialRegionMaterialization.cpp
   StructuredGraphEGraph.cpp
   StructuredTiling.cpp
+  TemporalTiling.cpp
 
   DEPENDS
   WaferTransformPassesIncGen
@@ -23,10 +24,13 @@ add_mlir_library(WaferLinalgTransforms
   MLIRLinalgUtils
   MLIRMathDialect
   MLIRPass
+  MLIRSCFDialect
+  MLIRSCFTransforms
   MLIRSideEffectInterfaces
   MLIRSupport
   MLIRTensorDialect
   MLIRTilingInterface
+  MLIRTransforms
 )
 
 target_include_directories(obj.WaferLinalgTransforms PRIVATE

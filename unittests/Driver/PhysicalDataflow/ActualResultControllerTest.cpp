@@ -30,10 +30,9 @@ ExecutionInstanceId makeExecution(uint32_t anchor) {
 struct KeyParts {
   SpatialPlan spatial;
   RegionPlan regions;
-  TemporalPlan temporal;
 };
 
-KeyParts makeKeyParts(uint32_t anchor, int64_t extent = 1024) {
+KeyParts makeKeyParts(uint32_t anchor) {
   KeyParts parts;
   ExecutionInstanceId execution = makeExecution(anchor);
   const auto &rootExecution = std::get<RequiredRootExecution>(execution.source);
@@ -52,18 +51,13 @@ KeyParts makeKeyParts(uint32_t anchor, int64_t extent = 1024) {
   region.executions.push_back({execution});
   parts.regions.groups.push_back(std::move(region));
 
-  parts.temporal.scopes.push_back(
-      {TemporalScopeId{RegionExecutionId(execution)},
-       {2, extent, 128},
-       {0, 1, 2}});
   return parts;
 }
 
-StructuralCandidateKey makeKey(uint32_t anchor, int64_t extent = 1024) {
-  KeyParts parts = makeKeyParts(anchor, extent);
+StructuralCandidateKey makeKey(uint32_t anchor) {
+  KeyParts parts = makeKeyParts(anchor);
   return StructuralCandidateKey::create(std::move(parts.spatial),
-                                        std::move(parts.regions),
-                                        std::move(parts.temporal));
+                                        std::move(parts.regions));
 }
 
 ActualResultController makeController(
@@ -199,7 +193,7 @@ TEST(ActualResultControllerTest,
 TEST(ActualResultControllerTest,
      TwoToSevenAcceptedResultsMatchIndependentWinnerOracleInAnyOrder) {
   // Two-to-seven is intentionally a bounded independent controller oracle;
-  // the same mechanism has real-scale 1024/1025 keys in the other tests.
+  // real-scale IR coverage belongs to the caller-owned actualizer tests.
   auto cohort = *SearchCostCohort::create(unitCostPolicy());
   for (unsigned count = 2; count <= 7; ++count) {
     SCOPED_TRACE(count);
@@ -211,7 +205,7 @@ TEST(ActualResultControllerTest,
     std::vector<Record> records;
     for (uint32_t index = 0; index < count; ++index)
       records.push_back(
-          {makeKey(index, index % 2 ? 1025 : 1024),
+          {makeKey(index),
            1 + (static_cast<uint64_t>(index) * 5 + 3) % (count + 1)});
     const Record *expected = &records.front();
     for (const Record &record : records)
@@ -282,12 +276,12 @@ TEST(ActualResultControllerTest,
 }
 
 TEST(ActualResultControllerTest,
-     ExactFeedbackDoesNotMatchACompleteKeyWithTheSameSchedule) {
-  StructuralCandidateKey rejected = makeKey(0, 1025);
-  StructuralCandidateKey sibling = makeKey(1, 1025);
+     ExactFeedbackDoesNotMatchASiblingStructuralChoice) {
+  StructuralCandidateKey rejected = makeKey(0);
+  StructuralCandidateKey sibling = makeKey(1);
   ActualResultController controller = makeController(4);
-  StructuralCandidateKey unsupported = makeKey(2, 1025);
-  StructuralCandidateKey indeterminate = makeKey(3, 1025);
+  StructuralCandidateKey unsupported = makeKey(2);
+  StructuralCandidateKey indeterminate = makeKey(3);
   for (const StructuralCandidateKey *key :
        {&rejected, &sibling, &unsupported, &indeterminate})
     ASSERT_EQ(controller.reserve(*key), CandidateReservation::Granted);
@@ -328,8 +322,8 @@ TEST(ActualResultControllerTest,
        {ExactRejectionCachePolicy::Enabled,
         ExactRejectionCachePolicy::Disabled}) {
     ActualResultController controller = makeController(2, std::nullopt, policy);
-    StructuralCandidateKey rejected = makeKey(0, 1024);
-    StructuralCandidateKey acceptedKey = makeKey(1, 1025);
+    StructuralCandidateKey rejected = makeKey(0);
+    StructuralCandidateKey acceptedKey = makeKey(1);
     ASSERT_EQ(controller.reserve(rejected), CandidateReservation::Granted);
     ASSERT_EQ(controller.record(rejected, exactRejected(0)),
               CandidateRecordOutcome::ExactRejection);
@@ -387,7 +381,7 @@ TEST(ActualResultControllerTest,
   EXPECT_EQ(exhausted.coverage, SearchControllerCoverage::NoFeasible);
 
   ActualResultController typedBug = makeController(1);
-  StructuralCandidateKey bugKey = makeKey(4, 1025);
+  StructuralCandidateKey bugKey = makeKey(4);
   ASSERT_EQ(typedBug.reserve(bugKey), CandidateReservation::Granted);
   ActualCandidateResult compilerBug;
   compilerBug.status = ActualCandidateStatus::CompilerBug;
@@ -397,13 +391,13 @@ TEST(ActualResultControllerTest,
             SearchControllerCoverage::Failed);
 
   ActualResultController unreserved = makeController(1);
-  StructuralCandidateKey unreservedKey = makeKey(5, 1025);
+  StructuralCandidateKey unreservedKey = makeKey(5);
   EXPECT_EQ(unreserved.record(unreservedKey, accepted(1)),
             CandidateRecordOutcome::CompilerBug);
   EXPECT_EQ(unreserved.getStatistics().compilerBugs, 1u);
 
   ActualResultController inFlight = makeController(1);
-  StructuralCandidateKey inFlightKey = makeKey(6, 1025);
+  StructuralCandidateKey inFlightKey = makeKey(6);
   ASSERT_EQ(inFlight.reserve(inFlightKey), CandidateReservation::Granted);
   EXPECT_EQ(inFlight.finish(SearchFrontierStatus::Exhausted).coverage,
             SearchControllerCoverage::Failed);

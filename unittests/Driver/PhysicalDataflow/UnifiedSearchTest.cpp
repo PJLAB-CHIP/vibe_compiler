@@ -56,7 +56,7 @@ RuntimeLaunchContract makeLaunch() {
 
 class AcceptingEvaluator final : public StructuralCandidateEvaluator {
 public:
-  StructuralCandidateEvaluation evaluate(const TemporalState &state) override {
+  StructuralCandidateEvaluation evaluate(const RegionState &state) override {
     observed.push_back(StructuralCandidateKey::create(state));
     InstructionProgramAggregateCost cost;
     cost.aggregateInstructionCount.value = 1;

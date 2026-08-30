@@ -2,10 +2,21 @@
 
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
 
+#include "Wafer/IR/WaferDialect.h"
+#include "Wafer/InitWaferDialects.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Parser/Parser.h"
+
 #include "gtest/gtest.h"
 
+#include <memory>
 #include <set>
-#include <tuple>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -13,151 +24,356 @@ namespace {
 using namespace wafer;
 using namespace wafer::compiler::detail;
 
-TemporalScopeId makeScope(uint32_t rootIndex, int64_t tile) {
-  SemanticRootKey root;
-  root.anchorIndex = rootIndex;
-  analysis::RootRegionWorkId work{root, TileId(tile)};
-  LogicalShardId shard{root, {rootIndex}};
-  ExecutionInstanceId execution{RequiredRootExecution{work, shard}};
-  return TemporalScopeId{RegionExecutionId{execution}};
+std::unique_ptr<mlir::MLIRContext> createContext() {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::linalg::LinalgDialect, mlir::tensor::TensorDialect>();
+  wafer::registerWaferCoreDialects(registry);
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  auto context = std::make_unique<mlir::MLIRContext>(registry);
+  context->loadAllAvailableDialects();
+  return context;
 }
 
-TemporalScopeDescriptor makeDescriptor(TemporalScopeId id,
-                                       llvm::ArrayRef<int64_t> offsets,
-                                       llvm::ArrayRef<int64_t> extents) {
-  TemporalScopeDescriptor descriptor;
-  descriptor.id = std::move(id);
-  descriptor.iterationOffsets.assign(offsets.begin(), offsets.end());
-  descriptor.iterationExtents.assign(extents.begin(), extents.end());
-  descriptor.iteratorCapabilities.assign(extents.size(),
-                                         IteratorTilingCapability::Tileable);
-  return descriptor;
+mlir::OwningOpRef<mlir::ModuleOp> parse(mlir::MLIRContext &context,
+                                        llvm::StringRef body,
+                                        llvm::StringRef argumentType,
+                                        llvm::StringRef resultType) {
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  stream << "module {\n"
+            "  wafer.tile.module card_id = 0 tile_id = 0 {\n"
+            "    func.func @entry(%input: "
+         << argumentType << ") -> " << resultType
+         << " {\n"
+            "      %result = wafer.tile.region(%input : "
+         << argumentType << ") -> (" << resultType
+         << ") {\n"
+            "      ^bb0(%arg: "
+         << argumentType << "):\n"
+         << body << "\n        wafer.tile.yield %value : " << resultType
+         << "\n      }\n"
+            "      return %result : "
+         << resultType
+         << "\n    }\n"
+            "  }\n"
+            "}\n";
+  return mlir::parseSourceString<mlir::ModuleOp>(stream.str(),
+                                                 mlir::ParserConfig(&context));
 }
 
-std::optional<std::vector<TemporalPlan>> enumerate(const TemporalDomain &domain,
-                                                   size_t limit = 100000) {
-  std::vector<TemporalPlan> plans;
-  TemporalSuccessor current = domain.getFirstPlan();
-  while (current.getKind() == TemporalSuccessorKind::Plan) {
-    if (!current.getPlan() || !current.getCursor() || plans.size() >= limit)
+std::optional<std::vector<TemporalChoice>>
+enumerate(const TemporalDomain &domain, size_t limit = 100000) {
+  std::vector<TemporalChoice> choices;
+  TemporalSuccessor current = domain.getFirstChoice();
+  while (current.getKind() == TemporalSuccessorKind::Choice) {
+    if (!current.getChoice() || !current.getCursor() || choices.size() >= limit)
       return std::nullopt;
-    plans.push_back(*current.getPlan());
-    current = domain.getNextPlan(*current.getCursor());
+    choices.push_back(*current.getChoice());
+    current = domain.getNextChoice(*current.getCursor());
   }
   return current.getKind() == TemporalSuccessorKind::End
-             ? std::optional<std::vector<TemporalPlan>>(std::move(plans))
+             ? std::optional<std::vector<TemporalChoice>>(std::move(choices))
              : std::nullopt;
 }
 
 TEST(TemporalDomainTest,
-     EveryPositiveSizeAndActiveOrderMatchesIndependentOracle) {
-  TemporalScopeDescriptor descriptor =
-      makeDescriptor(makeScope(0, 0), {17, 29}, {2, 3});
-  TemporalDomainResult built = buildTemporalDomain({descriptor});
+     EveryPositiveSizeAndActiveOrderMatchesIndependentBoundedOracle) {
+  // The 1x2x3 shape intentionally bounds exhaustive enumeration. Item 13's
+  // transformation behavior is covered separately at 1024/1025/1031 scale.
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto module = parse(*context,
+                      R"mlir(
+        %empty = tensor.empty() : tensor<1x2x3xf16>
+        %value = linalg.generic {
+            indexing_maps = [affine_map<(b, m, n) -> (b, m, n)>,
+                             affine_map<(b, m, n) -> (b, m, n)>],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%arg : tensor<1x2x3xf16>)
+            outs(%empty : tensor<1x2x3xf16>) {
+          ^bb0(%element: f16, %old: f16):
+            linalg.yield %element : f16
+        } -> tensor<1x2x3xf16>)mlir",
+                      "tensor<1x2x3xf16>", "tensor<1x2x3xf16>");
+  ASSERT_TRUE(module);
+  TileRegionOp region;
+  module->walk([&](TileRegionOp operation) { region = operation; });
+  ASSERT_TRUE(region);
+  TemporalDomainResult built = buildTemporalDomain(region);
   ASSERT_TRUE(built.succeeded())
       << (built.failure ? built.failure->detail : "");
-  auto plans = enumerate(*built.domain);
-  ASSERT_TRUE(plans);
-  EXPECT_EQ(plans->size(), 8u);
+  auto choices = enumerate(*built.domain);
+  ASSERT_TRUE(choices);
+  EXPECT_EQ(choices->size(), 8u);
 
   std::set<std::pair<std::vector<int64_t>, std::vector<uint32_t>>> observed;
-  for (const TemporalPlan &plan : *plans) {
-    ASSERT_EQ(plan.scopes.size(), 1u);
-    const TemporalScopePlan &scope = plan.scopes.front();
-    EXPECT_TRUE(built.domain->contains(plan));
+  for (const TemporalChoice &choice : *choices) {
+    ASSERT_EQ(choice.scopes.size(), 1u);
+    EXPECT_TRUE(built.domain->contains(choice));
+    const TemporalScopeChoice &scope = choice.scopes.front();
     EXPECT_TRUE(
         observed
             .insert({std::vector<int64_t>(scope.iteratorTileSizes.begin(),
                                           scope.iteratorTileSizes.end()),
-                     std::vector<uint32_t>(scope.waveLoopOrder.begin(),
-                                           scope.waveLoopOrder.end())})
+                     std::vector<uint32_t>(scope.loopOrder.begin(),
+                                           scope.loopOrder.end())})
             .second);
   }
 }
 
 TEST(TemporalDomainTest, PrecedenceDiamondEnumeratesOnlyLinearExtensions) {
-  TemporalScopeDescriptor descriptor =
-      makeDescriptor(makeScope(0, 0), {0, 0, 0, 0}, {2, 2, 2, 2});
-  descriptor.precedence = {{0, 1}, {0, 2}, {1, 3}, {2, 3}};
-  TemporalDomainResult built = buildTemporalDomain({descriptor});
-  ASSERT_TRUE(built.succeeded());
-  TemporalPlan prefix;
-  prefix.scopes.push_back({descriptor.id, {1, 1, 1, 1}, {0, 1, 2, 3}});
-  TemporalSuccessor first = built.domain->completePrefix(prefix);
-  ASSERT_EQ(first.getKind(), TemporalSuccessorKind::Plan);
-  EXPECT_TRUE(built.domain->contains(*first.getPlan()));
-  EXPECT_EQ(first.getPlan()->scopes.front().waveLoopOrder,
-            (llvm::SmallVector<uint32_t, 4>{0, 1, 2, 3}));
+  llvm::SmallVector<int64_t, 4> extents{2, 2, 2, 2};
+  llvm::SmallVector<int64_t, 4> sizes{1, 1, 1, 1};
+  llvm::SmallVector<TemporalPrecedenceEdge, 4> precedence{
+      {0, 1}, {0, 2}, {1, 3}, {2, 3}};
+  auto first = buildFirstTemporalLoopOrder(extents, sizes, precedence);
+  ASSERT_TRUE(mlir::succeeded(first));
+  EXPECT_EQ(*first, (llvm::SmallVector<uint32_t, 4>{0, 1, 2, 3}));
 
-  TemporalPlan secondPrefix = prefix;
-  secondPrefix.scopes.front().waveLoopOrder = {0, 2, 1, 3};
-  EXPECT_TRUE(built.domain->contains(secondPrefix));
-  TemporalPlan invalid = prefix;
-  invalid.scopes.front().waveLoopOrder = {1, 0, 2, 3};
-  EXPECT_FALSE(built.domain->contains(invalid));
+  llvm::SmallVector<TemporalPrecedenceEdge, 2> cyclic{{0, 1}, {1, 0}};
+  EXPECT_TRUE(
+      mlir::failed(buildFirstTemporalLoopOrder({2, 2}, {1, 1}, cyclic)));
 }
 
 TEST(TemporalDomainTest,
-     RankSixRealScaleChoiceKeepsAllAxesInOneExplicitVector) {
-  TemporalScopeDescriptor descriptor = makeDescriptor(
-      makeScope(0, 0), {0, 0, 0, 0, 0, 0}, {2, 4, 1024, 64, 1031, 128});
-  TemporalDomainResult built = buildTemporalDomain({descriptor});
+     ExactSingleUseChainHasOneRootWhileMultiUseRemainsIndependent) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  constexpr llvm::StringLiteral chainBody = R"mlir(
+        %first_empty = tensor.empty() : tensor<2x1025x128xf16>
+        %first = linalg.generic {
+            indexing_maps = [affine_map<(b, m, n) -> (b, m, n)>,
+                             affine_map<(b, m, n) -> (b, m, n)>],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%arg : tensor<2x1025x128xf16>)
+            outs(%first_empty : tensor<2x1025x128xf16>) {
+          ^bb0(%element: f16, %old: f16):
+            linalg.yield %element : f16
+        } -> tensor<2x1025x128xf16>
+        %second_empty = tensor.empty() : tensor<2x1025x128xf16>
+        %value = linalg.generic {
+            indexing_maps = [affine_map<(b, m, n) -> (b, m, n)>,
+                             affine_map<(b, m, n) -> (b, m, n)>],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%first : tensor<2x1025x128xf16>)
+            outs(%second_empty : tensor<2x1025x128xf16>) {
+          ^bb0(%element: f16, %old: f16):
+            linalg.yield %element : f16
+        } -> tensor<2x1025x128xf16>)mlir";
+  auto chain = parse(*context, chainBody, "tensor<2x1025x128xf16>",
+                     "tensor<2x1025x128xf16>");
+  ASSERT_TRUE(chain);
+  std::string chainBefore;
+  llvm::raw_string_ostream chainBeforeStream(chainBefore);
+  chain->print(chainBeforeStream);
+  chainBeforeStream.flush();
+  TileRegionOp chainRegion;
+  chain->walk([&](TileRegionOp operation) { chainRegion = operation; });
+  TemporalDomainResult chainDomain = buildTemporalDomain(chainRegion);
+  ASSERT_TRUE(chainDomain.succeeded());
+  ASSERT_EQ(chainDomain.domain->getScopeDescriptors().size(), 1u);
+  llvm::SmallVector<mlir::linalg::GenericOp, 2> chainOps;
+  chainRegion.walk([&](mlir::linalg::GenericOp operation) {
+    chainOps.push_back(operation);
+  });
+  ASSERT_EQ(chainOps.size(), 2u);
+  ASSERT_TRUE(chainOps.front()->getResult(0).hasOneUse());
+  auto query = queryTemporalProducerFusion(
+      chainOps.front()->getResult(0),
+      *chainOps.front()->getResult(0).getUses().begin());
+  EXPECT_EQ(query.kind, TemporalFusionQueryKind::ExactDerived);
+  EXPECT_EQ(chainDomain.domain->getScopeDescriptors().front().operation,
+            chainOps.back().getOperation());
+  std::string chainAfter;
+  llvm::raw_string_ostream chainAfterStream(chainAfter);
+  chain->print(chainAfterStream);
+  chainAfterStream.flush();
+  EXPECT_EQ(chainAfter, chainBefore);
+
+  constexpr llvm::StringLiteral fanoutBody = R"mlir(
+        %producer_empty = tensor.empty() : tensor<2x1025x128xf16>
+        %producer = linalg.generic {
+            indexing_maps = [affine_map<(b, m, n) -> (b, m, n)>,
+                             affine_map<(b, m, n) -> (b, m, n)>],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%arg : tensor<2x1025x128xf16>)
+            outs(%producer_empty : tensor<2x1025x128xf16>) {
+          ^bb0(%element: f16, %old: f16):
+            linalg.yield %element : f16
+        } -> tensor<2x1025x128xf16>
+        %left_empty = tensor.empty() : tensor<2x1025x128xf16>
+        %left = linalg.generic {
+            indexing_maps = [affine_map<(b, m, n) -> (b, m, n)>,
+                             affine_map<(b, m, n) -> (b, m, n)>],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%producer : tensor<2x1025x128xf16>)
+            outs(%left_empty : tensor<2x1025x128xf16>) {
+          ^bb0(%element: f16, %old: f16):
+            linalg.yield %element : f16
+        } -> tensor<2x1025x128xf16>
+        %right_empty = tensor.empty() : tensor<2x1025x128xf16>
+        %right = linalg.generic {
+            indexing_maps = [affine_map<(b, m, n) -> (b, m, n)>,
+                             affine_map<(b, m, n) -> (b, m, n)>],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%producer : tensor<2x1025x128xf16>)
+            outs(%right_empty : tensor<2x1025x128xf16>) {
+          ^bb0(%element: f16, %old: f16):
+            linalg.yield %element : f16
+        } -> tensor<2x1025x128xf16>
+        %sum_empty = tensor.empty() : tensor<2x1025x128xf16>
+        %value = linalg.generic {
+            indexing_maps = [affine_map<(b, m, n) -> (b, m, n)>,
+                             affine_map<(b, m, n) -> (b, m, n)>,
+                             affine_map<(b, m, n) -> (b, m, n)>],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%left, %right : tensor<2x1025x128xf16>,
+                  tensor<2x1025x128xf16>)
+            outs(%sum_empty : tensor<2x1025x128xf16>) {
+          ^bb0(%lhs: f16, %rhs: f16, %old: f16):
+            %sum = arith.addf %lhs, %rhs : f16
+            linalg.yield %sum : f16
+        } -> tensor<2x1025x128xf16>)mlir";
+  auto fanout = parse(*context, fanoutBody, "tensor<2x1025x128xf16>",
+                      "tensor<2x1025x128xf16>");
+  ASSERT_TRUE(fanout);
+  TileRegionOp fanoutRegion;
+  fanout->walk([&](TileRegionOp operation) { fanoutRegion = operation; });
+  TemporalDomainResult fanoutDomain = buildTemporalDomain(fanoutRegion);
+  ASSERT_TRUE(fanoutDomain.succeeded());
+  // The shared producer remains a root; the two single-use branches are exact
+  // derived producers of the final consumer.
+  EXPECT_EQ(fanoutDomain.domain->getScopeDescriptors().size(), 2u);
+}
+
+TEST(TemporalDomainTest, BroadcastEdgeKeepsAnIndependentProducerTraversal) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto module = parse(*context,
+                      R"mlir(
+        %producer_empty = tensor.empty() : tensor<2x1025xf16>
+        %producer = linalg.generic {
+            indexing_maps = [affine_map<(b, m) -> (b, m)>,
+                             affine_map<(b, m) -> (b, m)>],
+            iterator_types = ["parallel", "parallel"]}
+            ins(%arg : tensor<2x1025xf16>)
+            outs(%producer_empty : tensor<2x1025xf16>) {
+          ^bb0(%element: f16, %old: f16):
+            %next = arith.addf %element, %element : f16
+            linalg.yield %next : f16
+        } -> tensor<2x1025xf16>
+        %consumer_empty = tensor.empty() : tensor<2x1025x128xf16>
+        %value = linalg.generic {
+            indexing_maps = [affine_map<(b, m, n) -> (b, m)>,
+                             affine_map<(b, m, n) -> (b, m, n)>],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%producer : tensor<2x1025xf16>)
+            outs(%consumer_empty : tensor<2x1025x128xf16>) {
+          ^bb0(%element: f16, %old: f16):
+            linalg.yield %element : f16
+        } -> tensor<2x1025x128xf16>)mlir",
+                      "tensor<2x1025xf16>", "tensor<2x1025x128xf16>");
+  ASSERT_TRUE(module);
+  TileRegionOp region;
+  module->walk([&](TileRegionOp operation) { region = operation; });
+  llvm::SmallVector<mlir::linalg::GenericOp, 2> operations;
+  region.walk([&](mlir::linalg::GenericOp operation) {
+    operations.push_back(operation);
+  });
+  ASSERT_EQ(operations.size(), 2u);
+  auto query = queryTemporalProducerFusion(
+      operations.front()->getResult(0),
+      *operations.front()->getResult(0).getUses().begin());
+  EXPECT_EQ(query.kind, TemporalFusionQueryKind::NonUnique);
+  TemporalDomainResult domain = buildTemporalDomain(region);
+  ASSERT_TRUE(domain.succeeded());
+  EXPECT_EQ(domain.domain->getScopeDescriptors().size(), 2u);
+}
+
+TEST(TemporalDomainTest, RankSixOnlineAttentionKeepsK1FullAndK2InTheRawDomain) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto module = parse(*context,
+                      R"mlir(
+        %key = tensor.empty() : tensor<2x4x1031x64xf16>
+        %value_input = tensor.empty() : tensor<2x4x1031x128xf16>
+        %scale = arith.constant 1.0 : f32
+        %accumulator = tensor.empty() : tensor<2x4x1025x128xf16>
+        %maximum = tensor.empty() : tensor<2x4x1025xf32>
+        %sum = tensor.empty() : tensor<2x4x1025xf32>
+        %value, %next_maximum, %next_sum =
+            wafer.linalg_ext.online_attention
+            ins(%arg, %key, %value_input, %scale : tensor<2x4x1025x64xf16>,
+                tensor<2x4x1031x64xf16>, tensor<2x4x1031x128xf16>, f32)
+            outs(%accumulator, %maximum, %sum : tensor<2x4x1025x128xf16>,
+                tensor<2x4x1025xf32>, tensor<2x4x1025xf32>)
+            indexing_maps = [
+              affine_map<(b, h, m, k1, k2, n) -> (b, h, m, k1)>,
+              affine_map<(b, h, m, k1, k2, n) -> (b, h, k2, k1)>,
+              affine_map<(b, h, m, k1, k2, n) -> (b, h, k2, n)>,
+              affine_map<(b, h, m, k1, k2, n) -> ()>,
+              affine_map<(b, h, m, k1, k2, n) -> (b, h, m, n)>,
+              affine_map<(b, h, m, k1, k2, n) -> (b, h, m)>,
+              affine_map<(b, h, m, k1, k2, n) -> (b, h, m)>]
+            -> (tensor<2x4x1025x128xf16>, tensor<2x4x1025xf32>,
+                tensor<2x4x1025xf32>))mlir",
+                      "tensor<2x4x1025x64xf16>", "tensor<2x4x1025x128xf16>");
+  ASSERT_TRUE(module);
+  TileRegionOp region;
+  module->walk([&](TileRegionOp operation) { region = operation; });
+  TemporalDomainResult built = buildTemporalDomain(region);
+  ASSERT_TRUE(built.succeeded())
+      << (built.failure ? built.failure->detail : "");
+  ASSERT_EQ(built.domain->getScopeDescriptors().size(), 1u);
+  llvm::ArrayRef<TemporalScopeDescriptor> descriptors =
+      built.domain->getScopeDescriptors();
+  const TemporalScopeDescriptor &descriptor = descriptors.front();
+  ASSERT_EQ(descriptor.iterationExtents.size(), 6u);
+  EXPECT_EQ(descriptor.iteratorCapabilities[3],
+            IteratorTilingCapability::FullExtentOnly);
+  EXPECT_EQ(descriptor.iteratorCapabilities[4],
+            IteratorTilingCapability::Tileable);
+
+  TemporalChoice choice = *built.domain->getFirstChoice().getChoice();
+  choice.scopes.front().iteratorTileSizes[3] = 32;
+  choice.scopes.front().loopOrder = {3};
+  EXPECT_FALSE(built.domain->contains(choice));
+  choice = *built.domain->getFirstChoice().getChoice();
+  choice.scopes.front().iteratorTileSizes[4] = 128;
+  choice.scopes.front().loopOrder = {4};
+  EXPECT_TRUE(built.domain->contains(choice));
+}
+
+TEST(TemporalDomainTest, DynamicTraversalStaysFullExtentWithoutChangingIR) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto module = parse(*context,
+                      R"mlir(
+        %value = linalg.generic {
+            indexing_maps = [affine_map<(b, m, n) -> (b, m, n)>,
+                             affine_map<(b, m, n) -> (b, m, n)>],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%arg : tensor<2x?x128xf16>)
+            outs(%arg : tensor<2x?x128xf16>) {
+          ^bb0(%element: f16, %old: f16):
+            linalg.yield %element : f16
+        } -> tensor<2x?x128xf16>)mlir",
+                      "tensor<2x?x128xf16>", "tensor<2x?x128xf16>");
+  ASSERT_TRUE(module);
+  TileRegionOp region;
+  module->walk([&](TileRegionOp operation) { region = operation; });
+  std::string before;
+  llvm::raw_string_ostream beforeStream(before);
+  module->print(beforeStream);
+  beforeStream.flush();
+  TemporalDomainResult built = buildTemporalDomain(region);
   ASSERT_TRUE(built.succeeded());
-  TemporalSuccessor first = built.domain->getFirstPlan();
-  ASSERT_EQ(first.getKind(), TemporalSuccessorKind::Plan);
-  ASSERT_EQ(first.getPlan()->scopes.size(), 1u);
-  EXPECT_EQ(first.getPlan()->scopes.front().iteratorTileSizes,
-            descriptor.iterationExtents);
-
-  TemporalPlan prefix = *first.getPlan();
-  prefix.scopes.front().iteratorTileSizes = {2, 4, 128, 64, 128, 128};
-  auto order = buildFirstTemporalWaveLoopOrder(
-      descriptor.iterationExtents, prefix.scopes.front().iteratorTileSizes);
-  ASSERT_TRUE(mlir::succeeded(order));
-  prefix.scopes.front().waveLoopOrder = *order;
-  EXPECT_TRUE(built.domain->contains(prefix));
-}
-
-TEST(TemporalDomainTest, AxisWavesCoverAlignedRaggedAndNonzeroOffsetExactly) {
-  for (auto [extent, expectedCount, expectedTail] :
-       {std::tuple<int64_t, size_t, int64_t>{1024, 8, 128},
-        std::tuple<int64_t, size_t, int64_t>{1025, 9, 1},
-        std::tuple<int64_t, size_t, int64_t>{1031, 9, 7}}) {
-    SCOPED_TRACE(extent);
-    auto waves = buildTemporalAxisWaves({17, extent}, 128);
-    ASSERT_TRUE(mlir::succeeded(waves));
-    ASSERT_EQ(waves->size(), expectedCount);
-    EXPECT_EQ(waves->front().offset, 17);
-    EXPECT_EQ(waves->back().size, expectedTail);
-    int64_t next = 17;
-    int64_t covered = 0;
-    for (const IteratorInterval &wave : *waves) {
-      EXPECT_EQ(wave.offset, next);
-      next += wave.size;
-      covered += wave.size;
-    }
-    EXPECT_EQ(covered, extent);
-  }
-}
-
-TEST(TemporalDomainTest, MalformedRanksAndPrecedenceCyclesFailTyped) {
-  TemporalScopeDescriptor malformed =
-      makeDescriptor(makeScope(0, 0), {0, 0}, {1024, 128});
-  malformed.iteratorCapabilities.pop_back();
-  TemporalDomainResult rankFailure = buildTemporalDomain({malformed});
-  ASSERT_FALSE(rankFailure.succeeded());
-  ASSERT_TRUE(rankFailure.failure);
-  EXPECT_EQ(rankFailure.failure->kind,
-            TemporalDomainFailureKind::BrokenContract);
-
-  TemporalScopeDescriptor cyclic =
-      makeDescriptor(makeScope(1, 0), {0, 0}, {1025, 128});
-  cyclic.precedence = {{0, 1}, {1, 0}};
-  TemporalDomainResult cycleFailure = buildTemporalDomain({cyclic});
-  ASSERT_FALSE(cycleFailure.succeeded());
-  ASSERT_TRUE(cycleFailure.failure);
-  EXPECT_EQ(cycleFailure.failure->kind,
-            TemporalDomainFailureKind::BrokenContract);
+  EXPECT_TRUE(built.domain->getScopeDescriptors().empty());
+  TemporalSuccessor first = built.domain->getFirstChoice();
+  ASSERT_EQ(first.getKind(), TemporalSuccessorKind::Choice);
+  ASSERT_TRUE(first.getChoice());
+  EXPECT_TRUE(first.getChoice()->scopes.empty());
+  std::string after;
+  llvm::raw_string_ostream afterStream(after);
+  module->print(afterStream);
+  afterStream.flush();
+  EXPECT_EQ(after, before);
 }
 
 TEST(TemporalDomainTest, IntervalSplitPreservesEveryPoint) {

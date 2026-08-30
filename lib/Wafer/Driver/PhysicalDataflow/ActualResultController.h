@@ -44,40 +44,34 @@ struct SearchCostPolicy {
 /// offsets) cannot enter this key.
 class StructuralCandidateKey {
 public:
-  static StructuralCandidateKey create(const TemporalState &state) {
-    return StructuralCandidateKey(state.getSpatialPlan(), state.getRegionPlan(),
-                                  state.getTemporalPlan());
+  static StructuralCandidateKey create(const RegionState &state) {
+    return StructuralCandidateKey(state.getSpatialPlan(),
+                                  state.getRegionPlan());
   }
-  static StructuralCandidateKey create(SpatialPlan spatial, RegionPlan regions,
-                                       TemporalPlan temporal) {
-    return StructuralCandidateKey(std::move(spatial), std::move(regions),
-                                  std::move(temporal));
+  static StructuralCandidateKey create(SpatialPlan spatial,
+                                       RegionPlan regions) {
+    return StructuralCandidateKey(std::move(spatial), std::move(regions));
   }
 
   const SpatialPlan &getSpatialPlan() const { return spatial; }
   const RegionPlan &getRegionPlan() const { return regions; }
-  const TemporalPlan &getTemporalPlan() const { return temporal; }
-
   friend bool operator==(const StructuralCandidateKey &lhs,
                          const StructuralCandidateKey &rhs) {
-    return std::tie(lhs.spatial, lhs.regions, lhs.temporal) ==
-           std::tie(rhs.spatial, rhs.regions, rhs.temporal);
+    return std::tie(lhs.spatial, lhs.regions) ==
+           std::tie(rhs.spatial, rhs.regions);
   }
   friend bool operator<(const StructuralCandidateKey &lhs,
                         const StructuralCandidateKey &rhs) {
-    return std::tie(lhs.spatial, lhs.regions, lhs.temporal) <
-           std::tie(rhs.spatial, rhs.regions, rhs.temporal);
+    return std::tie(lhs.spatial, lhs.regions) <
+           std::tie(rhs.spatial, rhs.regions);
   }
 
 private:
-  StructuralCandidateKey(SpatialPlan spatial, RegionPlan regions,
-                         TemporalPlan temporal)
-      : spatial(std::move(spatial)), regions(std::move(regions)),
-        temporal(std::move(temporal)) {}
+  StructuralCandidateKey(SpatialPlan spatial, RegionPlan regions)
+      : spatial(std::move(spatial)), regions(std::move(regions)) {}
 
   SpatialPlan spatial;
   RegionPlan regions;
-  TemporalPlan temporal;
 };
 
 class SearchCostCohort {
