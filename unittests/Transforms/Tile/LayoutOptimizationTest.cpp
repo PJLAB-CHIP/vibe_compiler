@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Verifier.h"
@@ -168,8 +169,9 @@ module {
     return text;
   }
 
-  static std::string makeLargeConnectedLayoutSource(int64_t extent,
-                                                    unsigned diamondCount) {
+  static std::string
+  makeLargeConnectedLayoutSource(int64_t extent, unsigned diamondCount,
+                                 bool mixedOperators = false) {
     const std::string type =
         "tensor<" + std::to_string(extent) + "x128x128xf16>";
     const std::string expandedType =
@@ -183,14 +185,21 @@ module {
     for (unsigned index = 0; index < diamondCount; ++index)
       stream << ", %left_rhs" << index << ": " << type << ", %right_rhs"
              << index << ": " << type;
+    if (mixedOperators)
+      stream << ", %matrix_rhs: tensor<128x128xf16>, "
+                "%channel_rhs: tensor<16384x128xf16>";
     stream << ") {\n"
            << "      %result = wafer.tile.region(%input, %pre_rhs0, "
               "%pre_rhs1, %post_rhs";
     for (unsigned index = 0; index < diamondCount; ++index)
       stream << ", %left_rhs" << index << ", %right_rhs" << index;
+    if (mixedOperators)
+      stream << ", %matrix_rhs, %channel_rhs";
     stream << " : " << type << ", " << type << ", " << type << ", " << type;
     for (unsigned index = 0; index < diamondCount; ++index)
       stream << ", " << type << ", " << type;
+    if (mixedOperators)
+      stream << ", tensor<128x128xf16>, tensor<16384x128xf16>";
     stream << ") -> (" << type << ") {\n"
            << "      ^bb0(%local_input: " << type
            << ", %local_pre_rhs0: " << type << ", %local_pre_rhs1: " << type
@@ -198,6 +207,9 @@ module {
     for (unsigned index = 0; index < diamondCount; ++index)
       stream << ", %local_left_rhs" << index << ": " << type
              << ", %local_right_rhs" << index << ": " << type;
+    if (mixedOperators)
+      stream << ", %local_matrix_rhs: tensor<128x128xf16>, "
+                "%local_channel_rhs: tensor<16384x128xf16>";
     stream << "):\n"
            << "        %view = tensor.extract_slice %local_input[0, 0, 0] ["
            << extent << ", 128, 128] [1, 1, 1] : " << type << " to " << type
@@ -222,6 +234,15 @@ module {
               "memref<"
            << extent << "x128x128xf16, #wafer.memory<spm, tensor>>\n";
     emitMatmul("post", "%view", "%local_post_rhs");
+    if (mixedOperators) {
+      stream << "        %mixed_fill_empty = tensor.empty() : " << type
+             << "\n"
+                "        %mixed_fill = linalg.fill ins(%zero : f16) "
+                "outs(%mixed_fill_empty : "
+             << type << ") -> " << type << "\n";
+      emitMatmul("mixed_fill_left", "%mixed_fill", "%local_pre_rhs0");
+      emitMatmul("mixed_fill_right", "%mixed_fill", "%local_pre_rhs1");
+    }
 
     std::string current = "%post";
     for (unsigned index = 0; index < diamondCount; ++index) {
@@ -232,6 +253,33 @@ module {
       emitMatmul(right, current, "%local_right_rhs" + std::to_string(index));
       emitMatmul(join, "%" + left, "%" + right);
       current = "%" + join;
+      if (mixedOperators && (index + 1) % 4 == 0) {
+        const std::string empty = "elementwise_empty" + std::to_string(index);
+        const std::string elementwise = "elementwise" + std::to_string(index);
+        stream << "        %" << empty << " = tensor.empty() : " << type << "\n"
+               << "        %" << elementwise << " = linalg.generic {\n"
+               << "            indexing_maps = ["
+                  "affine_map<(b, m, n) -> (b, m, n)>, "
+                  "affine_map<(b, m, n) -> (b, m, n)>],\n"
+               << "            iterator_types = [\"parallel\", "
+                  "\"parallel\", \"parallel\"]}\n"
+               << "            ins(" << current << " : " << type << ") outs(%"
+               << empty << " : " << type << ") {\n"
+               << "          ^bb1(%value: f16, %old: f16):\n"
+               << "            %next = arith.addf %value, %value : f16\n"
+               << "            linalg.yield %next : f16\n"
+               << "        } -> " << type << "\n";
+        current = "%" + elementwise;
+      }
+      if (mixedOperators && (index + 1) % 8 == 0) {
+        const std::string empty = "transpose_empty" + std::to_string(index);
+        const std::string transpose = "transpose" + std::to_string(index);
+        stream << "        %" << empty << " = tensor.empty() : " << type << "\n"
+               << "        %" << transpose << " = linalg.transpose ins("
+               << current << " : " << type << ") outs(%" << empty << " : "
+               << type << ") permutation = [0, 2, 1]\n";
+        current = "%" + transpose;
+      }
       if ((index + 1) % 8 != 0)
         continue;
       const std::string expanded = "expanded" + std::to_string(index);
@@ -243,6 +291,214 @@ module {
              << expanded << " [[0], [1, 2], [3]] : " << expandedType << " into "
              << type << "\n";
       current = "%" + collapsed;
+      if (!mixedOperators || index != 7)
+        continue;
+
+      const std::string scoreType =
+          "tensor<" + std::to_string(extent) + "x128x128xf32>";
+      const std::string rowType =
+          "tensor<" + std::to_string(extent) + "x128xf32>";
+      stream
+          << "        %attn_zero = arith.constant 0.000000e+00 : f32\n"
+             "        %attn_one = arith.constant 1.000000e+00 : f32\n"
+             "        %attn_neg_inf = arith.constant 0xFF800000 : f32\n"
+          << "        %attn_score_empty = tensor.empty() : " << scoreType
+          << "\n"
+          << "        %attn_score_zero = linalg.fill ins(%attn_zero : f32) "
+             "outs(%attn_score_empty : "
+          << scoreType << ") -> " << scoreType << "\n"
+          << "        %attn_score = linalg.generic {\n"
+          << "            indexing_maps = ["
+             "affine_map<(b, m, k1, k2) -> (b, m, k1)>, "
+             "affine_map<(b, m, k1, k2) -> (b, k2, k1)>, "
+             "affine_map<(b, m, k1, k2) -> (b, m, k2)>],\n"
+          << "            iterator_types = [\"parallel\", \"parallel\", "
+             "\"reduction\", \"parallel\"]}\n"
+          << "            ins(" << current << ", %local_left_rhs7 : " << type
+          << ", " << type << ") outs(%attn_score_zero : " << scoreType
+          << ") {\n"
+          << "          ^bb1(%query: f16, %key: f16, %acc: f32):\n"
+          << "            %query_f32 = arith.extf %query : f16 to f32\n"
+          << "            %key_f32 = arith.extf %key : f16 to f32\n"
+          << "            %qk = arith.mulf %query_f32, %key_f32 : f32\n"
+          << "            %qk_acc = arith.addf %qk, %acc : f32\n"
+          << "            linalg.yield %qk_acc : f32\n"
+          << "        } -> " << scoreType << "\n"
+          << "        %attn_scaled = linalg.generic {\n"
+          << "            indexing_maps = ["
+             "affine_map<(b, m, k2) -> (b, m, k2)>, "
+             "affine_map<(b, m, k2) -> ()>, "
+             "affine_map<(b, m, k2) -> (b, m, k2)>],\n"
+          << "            iterator_types = [\"parallel\", \"parallel\", "
+             "\"parallel\"]}\n"
+          << "            ins(%attn_score, %attn_one : " << scoreType
+          << ", f32) outs(%attn_score : " << scoreType << ") {\n"
+          << "          ^bb1(%score: f32, %scale: f32, %old: f32):\n"
+          << "            %scaled = arith.mulf %score, %scale : f32\n"
+          << "            linalg.yield %scaled : f32\n"
+          << "        } -> " << scoreType << "\n"
+          << "        %attn_max_empty = tensor.empty() : " << rowType << "\n"
+          << "        %attn_old_max = linalg.fill ins(%attn_neg_inf : f32) "
+             "outs(%attn_max_empty : "
+          << rowType << ") -> " << rowType << "\n"
+          << "        %attn_new_max = linalg.generic {\n"
+          << "            indexing_maps = ["
+             "affine_map<(b, m, k2) -> (b, m, k2)>, "
+             "affine_map<(b, m, k2) -> (b, m)>],\n"
+          << "            iterator_types = [\"parallel\", \"parallel\", "
+             "\"reduction\"]}\n"
+          << "            ins(%attn_scaled : " << scoreType
+          << ") outs(%attn_old_max : " << rowType << ") {\n"
+          << "          ^bb1(%score: f32, %old: f32):\n"
+          << "            %maximum = arith.maximumf %score, %old : f32\n"
+          << "            linalg.yield %maximum : f32\n"
+          << "        } -> " << rowType << "\n"
+          << "        %attn_norm = linalg.generic {\n"
+          << "            indexing_maps = ["
+             "affine_map<(b, m) -> (b, m)>, "
+             "affine_map<(b, m) -> (b, m)>, "
+             "affine_map<(b, m) -> (b, m)>],\n"
+          << "            iterator_types = [\"parallel\", \"parallel\"]}\n"
+          << "            ins(%attn_old_max, %attn_new_max : " << rowType
+          << ", " << rowType << ") outs(%attn_old_max : " << rowType << ") {\n"
+          << "          ^bb1(%old_max: f32, %new_max: f32, %old: f32):\n"
+          << "            %delta = arith.subf %old_max, %new_max : f32\n"
+          << "            %factor = math.exp %delta : f32\n"
+          << "            linalg.yield %factor : f32\n"
+          << "        } -> " << rowType << "\n"
+          << "        %attn_sum_empty = tensor.empty() : " << rowType << "\n"
+          << "        %attn_old_sum = linalg.fill ins(%attn_zero : f32) "
+             "outs(%attn_sum_empty : "
+          << rowType << ") -> " << rowType << "\n"
+          << "        %attn_scaled_sum = linalg.generic {\n"
+          << "            indexing_maps = ["
+             "affine_map<(b, m) -> (b, m)>, "
+             "affine_map<(b, m) -> (b, m)>, "
+             "affine_map<(b, m) -> (b, m)>],\n"
+          << "            iterator_types = [\"parallel\", \"parallel\"]}\n"
+          << "            ins(%attn_old_sum, %attn_norm : " << rowType << ", "
+          << rowType << ") outs(%attn_old_sum : " << rowType << ") {\n"
+          << "          ^bb1(%sum: f32, %factor: f32, %old: f32):\n"
+          << "            %scaled_sum = arith.mulf %sum, %factor : f32\n"
+          << "            linalg.yield %scaled_sum : f32\n"
+          << "        } -> " << rowType << "\n"
+          << "        %attn_probability = linalg.generic {\n"
+          << "            indexing_maps = ["
+             "affine_map<(b, m, k2) -> (b, m, k2)>, "
+             "affine_map<(b, m, k2) -> (b, m)>, "
+             "affine_map<(b, m, k2) -> (b, m, k2)>],\n"
+          << "            iterator_types = [\"parallel\", \"parallel\", "
+             "\"parallel\"]}\n"
+          << "            ins(%attn_scaled, %attn_new_max : " << scoreType
+          << ", " << rowType << ") outs(%attn_scaled : " << scoreType << ") {\n"
+          << "          ^bb1(%score: f32, %maximum: f32, %old: f32):\n"
+          << "            %delta = arith.subf %score, %maximum : f32\n"
+          << "            %probability = math.exp %delta : f32\n"
+          << "            linalg.yield %probability : f32\n"
+          << "        } -> " << scoreType << "\n"
+          << "        %attn_new_sum = linalg.generic {\n"
+          << "            indexing_maps = ["
+             "affine_map<(b, m, k2) -> (b, m, k2)>, "
+             "affine_map<(b, m, k2) -> (b, m)>],\n"
+          << "            iterator_types = [\"parallel\", \"parallel\", "
+             "\"reduction\"]}\n"
+          << "            ins(%attn_probability : " << scoreType
+          << ") outs(%attn_scaled_sum : " << rowType << ") {\n"
+          << "          ^bb1(%probability: f32, %sum: f32):\n"
+          << "            %next_sum = arith.addf %probability, %sum : f32\n"
+          << "            linalg.yield %next_sum : f32\n"
+          << "        } -> " << rowType << "\n"
+          << "        %attn_acc_empty = tensor.empty() : " << type << "\n"
+          << "        %attn_old_acc = linalg.fill ins(%zero : f16) "
+             "outs(%attn_acc_empty : "
+          << type << ") -> " << type << "\n"
+          << "        %attn_scaled_acc = linalg.generic {\n"
+          << "            indexing_maps = ["
+             "affine_map<(b, m, n) -> (b, m, n)>, "
+             "affine_map<(b, m, n) -> (b, m)>, "
+             "affine_map<(b, m, n) -> (b, m, n)>],\n"
+          << "            iterator_types = [\"parallel\", \"parallel\", "
+             "\"parallel\"]}\n"
+          << "            ins(%attn_old_acc, %attn_norm : " << type << ", "
+          << rowType << ") outs(%attn_old_acc : " << type << ") {\n"
+          << "          ^bb1(%acc: f16, %factor: f32, %old: f16):\n"
+          << "            %factor_f16 = arith.truncf %factor : f32 to f16\n"
+          << "            %scaled_acc = arith.mulf %acc, %factor_f16 : f16\n"
+          << "            linalg.yield %scaled_acc : f16\n"
+          << "        } -> " << type << "\n"
+          << "        %attn_pv = linalg.generic {\n"
+          << "            indexing_maps = ["
+             "affine_map<(b, m, k2, n) -> (b, m, k2)>, "
+             "affine_map<(b, m, k2, n) -> (b, k2, n)>, "
+             "affine_map<(b, m, k2, n) -> (b, m, n)>],\n"
+          << "            iterator_types = [\"parallel\", \"parallel\", "
+             "\"reduction\", \"parallel\"]}\n"
+          << "            ins(%attn_probability, %local_right_rhs7 : "
+          << scoreType << ", " << type << ") outs(%attn_scaled_acc : " << type
+          << ") {\n"
+          << "          ^bb1(%probability: f32, %value: f16, %acc: f16):\n"
+          << "            %probability_f16 = arith.truncf %probability : f32 "
+             "to f16\n"
+          << "            %weighted = arith.mulf %probability_f16, %value : "
+             "f16\n"
+          << "            %next_acc = arith.addf %weighted, %acc : f16\n"
+          << "            linalg.yield %next_acc : f16\n"
+          << "        } -> " << type << "\n"
+          << "        %attn_finalized = linalg.generic {\n"
+          << "            indexing_maps = ["
+             "affine_map<(b, m, n) -> (b, m, n)>, "
+             "affine_map<(b, m, n) -> (b, m)>, "
+             "affine_map<(b, m, n) -> (b, m, n)>],\n"
+          << "            iterator_types = [\"parallel\", \"parallel\", "
+             "\"parallel\"]}\n"
+          << "            ins(%attn_pv, %attn_new_sum : " << type << ", "
+          << rowType << ") outs(%attn_pv : " << type << ") {\n"
+          << "          ^bb1(%acc: f16, %sum: f32, %old: f16):\n"
+          << "            %acc_f32 = arith.extf %acc : f16 to f32\n"
+          << "            %normalized = arith.divf %acc_f32, %sum : f32\n"
+          << "            %result = arith.truncf %normalized : f32 to f16\n"
+          << "            linalg.yield %result : f16\n"
+          << "        } -> " << type << "\n";
+      current = "%attn_finalized";
+    }
+    if (mixedOperators) {
+      const std::string matrixType =
+          "tensor<" + std::to_string(extent) + "x128xf16>";
+      const std::string channelType =
+          "tensor<" + std::to_string(extent) + "x16384xf16>";
+      stream << "        %mixed_reduce_empty = tensor.empty() : " << matrixType
+             << "\n"
+                "        %mixed_reduce_init = linalg.fill ins(%zero : f16) "
+                "outs(%mixed_reduce_empty : "
+             << matrixType << ") -> " << matrixType << "\n"
+             << "        %mixed_reduced = linalg.generic {\n"
+             << "            indexing_maps = ["
+                "affine_map<(b, m, k) -> (b, m, k)>, "
+                "affine_map<(b, m, k) -> (b, m)>],\n"
+             << "            iterator_types = [\"parallel\", \"parallel\", "
+                "\"reduction\"]}\n"
+             << "            ins(" << current << " : " << type
+             << ") outs(%mixed_reduce_init : " << matrixType << ") {\n"
+             << "          ^bb1(%value: f16, %sum: f16):\n"
+             << "            %next = arith.addf %value, %sum : f16\n"
+             << "            linalg.yield %next : f16\n"
+             << "        } -> " << matrixType << "\n"
+             << "        %mixed_matrix_empty = tensor.empty() : " << matrixType
+             << "\n"
+             << "        %mixed_matrix = linalg.matmul "
+                "ins(%mixed_reduced, %local_matrix_rhs : "
+             << matrixType << ", tensor<128x128xf16>) "
+             << "outs(%mixed_matrix_empty : " << matrixType << ") -> "
+             << matrixType << "\n"
+             << "        %mixed_channel = tensor.collapse_shape %mixed_fill"
+             << " [[0], [1, 2]] : " << type << " into " << channelType << "\n"
+             << "        %mixed_channel_empty = tensor.empty() : " << matrixType
+             << "\n"
+             << "        %mixed_channel_matmul = linalg.matmul "
+                "ins(%mixed_channel, %local_channel_rhs : "
+             << channelType << ", tensor<16384x128xf16>) "
+             << "outs(%mixed_channel_empty : " << matrixType << ") -> "
+             << matrixType << "\n";
     }
     stream << "        wafer.tile.yield " << current << " : " << type
            << "\n"
@@ -588,6 +844,111 @@ TEST_F(LayoutOptimizationTest,
       "layout_dominated_states_pruned",
       static_cast<int>(firstResult.statistics.dominatedLayoutStatesPruned));
   RecordProperty("layout_wall_ms", static_cast<int>(wallMilliseconds));
+}
+
+TEST_F(LayoutOptimizationTest,
+       MixedOperatorGraphConsumesDecomposedAttentionWithoutSemanticOps) {
+  constexpr int64_t extent = 1025;
+  constexpr unsigned diamondCount = 16;
+  const std::string source = makeLargeConnectedLayoutSource(
+      extent, diamondCount, /*mixedOperators=*/true);
+  auto exhausted = parse(source);
+  ASSERT_TRUE(exhausted);
+  std::string before;
+  llvm::raw_string_ostream beforeStream(before);
+  exhausted->print(beforeStream);
+  beforeStream.flush();
+  StructuredMaterializationRelations exhaustedRelations =
+      outputRelation(*exhausted);
+  LayoutOptimizationResult exhaustedResult = resolveCurrentLayoutsAndBufferize(
+      *exhausted, exhaustedRelations, /*workLimit=*/0);
+  EXPECT_EQ(exhaustedResult.status, ExactPBQPStatus::Indeterminate);
+  std::string after;
+  llvm::raw_string_ostream afterStream(after);
+  exhausted->print(afterStream);
+  afterStream.flush();
+  EXPECT_EQ(after, before);
+
+  auto first = parse(source);
+  auto second = parse(source);
+  ASSERT_TRUE(first && second) << source;
+
+  EXPECT_EQ(countOps<mlir::linalg::BatchMatmulOp>(first->getOperation()), 53u);
+  EXPECT_EQ(countOps<mlir::linalg::MatmulOp>(first->getOperation()), 2u);
+  EXPECT_EQ(countOps<mlir::linalg::GenericOp>(first->getOperation()), 15u);
+  EXPECT_EQ(countOps<mlir::linalg::FillOp>(first->getOperation()), 6u);
+  EXPECT_EQ(countOps<mlir::linalg::TransposeOp>(first->getOperation()), 2u);
+  EXPECT_EQ(countOps<mlir::math::ExpOp>(first->getOperation()), 2u);
+  EXPECT_EQ(countOps<LinalgExtAttentionOp>(first->getOperation()), 0u);
+  EXPECT_EQ(countOps<LinalgExtOnlineAttentionOp>(first->getOperation()), 0u);
+
+  StructuredMaterializationRelations firstRelations = outputRelation(*first);
+  StructuredMaterializationRelations secondRelations = outputRelation(*second);
+  auto start = std::chrono::steady_clock::now();
+  LayoutOptimizationResult firstResult =
+      resolveCurrentLayoutsAndBufferize(*first, firstRelations);
+  const auto wallMilliseconds =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - start)
+          .count();
+  LayoutOptimizationResult secondResult =
+      resolveCurrentLayoutsAndBufferize(*second, secondRelations);
+  ASSERT_TRUE(firstResult.succeeded()) << firstResult.detail;
+  ASSERT_TRUE(secondResult.succeeded()) << secondResult.detail;
+
+  EXPECT_EQ(firstResult.statistics.selectedMaterializations, 14u);
+  EXPECT_EQ(firstResult.statistics.layoutMaterializationsAfter, 14u);
+  EXPECT_EQ(countOps<LayoutMaterializeOp>(first->getOperation()), 14u);
+  unsigned tensorToNCx = 0;
+  unsigned nCxToTensor = 0;
+  unsigned tensorToCx = 0;
+  unsigned cxToTensor = 0;
+  first->walk([&](LayoutMaterializeOp operation) {
+    auto source = getWaferMemoryAttr(
+        mlir::cast<mlir::MemRefType>(operation.getSource().getType()));
+    auto result = getWaferMemoryAttr(
+        mlir::cast<mlir::MemRefType>(operation.getResult().getType()));
+    ASSERT_TRUE(source && result);
+    tensorToNCx += source.getLayout() == MemLayout::Tensor &&
+                   result.getLayout() == MemLayout::NCx;
+    nCxToTensor += source.getLayout() == MemLayout::NCx &&
+                   result.getLayout() == MemLayout::Tensor;
+    tensorToCx += source.getLayout() == MemLayout::Tensor &&
+                  result.getLayout() == MemLayout::Cx;
+    cxToTensor += source.getLayout() == MemLayout::Cx &&
+                  result.getLayout() == MemLayout::Tensor;
+  });
+  EXPECT_EQ(tensorToNCx, 5u);
+  EXPECT_EQ(nCxToTensor, 2u);
+  EXPECT_EQ(tensorToCx, 4u);
+  EXPECT_EQ(cxToTensor, 3u);
+  EXPECT_EQ(countOps<mlir::memref::ExpandShapeOp>(first->getOperation()), 2u);
+  EXPECT_EQ(countOps<mlir::memref::CollapseShapeOp>(first->getOperation()), 3u);
+  EXPECT_EQ(firstResult.statistics.bufferizationInvocations, 1u);
+  EXPECT_EQ(firstResult.statistics.redundantPublicationCopies, 0u);
+  EXPECT_GT(firstResult.statistics.dominatedLayoutStatesPruned, 0u);
+  EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*first)));
+  EXPECT_TRUE(mlir::succeeded(
+      checkStructuredBufferRelationsCurrent(*first, firstRelations)));
+
+  std::string firstText;
+  llvm::raw_string_ostream firstStream(firstText);
+  first->print(firstStream);
+  firstStream.flush();
+  std::string secondText;
+  llvm::raw_string_ostream secondStream(secondText);
+  second->print(secondStream);
+  secondStream.flush();
+  EXPECT_EQ(secondText, firstText);
+  EXPECT_EQ(secondResult.statistics.solverWork,
+            firstResult.statistics.solverWork);
+  RecordProperty("mixed_layout_pbqp_variables",
+                 static_cast<int>(firstResult.statistics.pbqpVariables));
+  RecordProperty("mixed_layout_pbqp_factors",
+                 static_cast<int>(firstResult.statistics.pbqpFactors));
+  RecordProperty("mixed_layout_pbqp_solver_work",
+                 static_cast<int>(firstResult.statistics.solverWork));
+  RecordProperty("mixed_layout_wall_ms", static_cast<int>(wallMilliseconds));
 }
 
 TEST_F(LayoutOptimizationTest,
