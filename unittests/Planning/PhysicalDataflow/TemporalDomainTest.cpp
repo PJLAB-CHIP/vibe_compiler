@@ -312,7 +312,7 @@ TEST(TemporalDomainTest,
       2u);
 }
 
-TEST(TemporalDomainTest, MultiUseViewResultDoesNotCloneOrDeriveItsProducer) {
+TEST(TemporalDomainTest, MultiUseViewResultFormsOneAllUseJointProducerGroup) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto module = parse(*context,
                       R"mlir(
@@ -375,7 +375,19 @@ TEST(TemporalDomainTest, MultiUseViewResultDoesNotCloneOrDeriveItsProducer) {
   EXPECT_EQ(path.kind, TemporalFusionQueryKind::NonUnique);
   TemporalDomainResult domain = buildTemporalDomain(region);
   ASSERT_TRUE(domain.succeeded());
-  EXPECT_EQ(domain.domain->getScopeDescriptors().size(), 2u);
+  EXPECT_EQ(domain.domain->getScopeDescriptors().size(), 1u);
+  llvm::ArrayRef<TemporalJointProducerGroup> groups =
+      domain.domain->getJointProducerGroups();
+  ASSERT_EQ(groups.size(), 1u);
+  const TemporalJointProducerGroup &group = groups.front();
+  EXPECT_TRUE(group.isViewTransparent());
+  EXPECT_EQ(group.consumerOperands.size(), 2u);
+  EXPECT_EQ(group.consumerValue.getDefiningOp(),
+            operations.front()->getNextNode());
+  EXPECT_EQ(
+      domain.domain->getScopeDescriptors(TemporalTraversalKind::Independent)
+          .size(),
+      4u);
 }
 
 TEST(TemporalDomainTest,
@@ -420,32 +432,34 @@ TEST(TemporalDomainTest,
   EXPECT_EQ(domain.domain->getScopeDescriptors().size(), 1u);
 }
 
-TEST(TemporalDomainTest, BroadcastEdgeKeepsAnIndependentProducerTraversal) {
+TEST(TemporalDomainTest,
+     BroadcastJointRequiresDependentLoopsBeforeInvariantLoops) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto module = parse(*context,
                       R"mlir(
-        %producer_empty = tensor.empty() : tensor<2x1025xf16>
+        %producer_empty = tensor.empty() : tensor<2x4x1025xf16>
         %producer = linalg.generic {
-            indexing_maps = [affine_map<(b, m) -> (b, m)>,
-                             affine_map<(b, m) -> (b, m)>],
-            iterator_types = ["parallel", "parallel"]}
-            ins(%arg : tensor<2x1025xf16>)
-            outs(%producer_empty : tensor<2x1025xf16>) {
+            indexing_maps = [affine_map<(g, b, m) -> (g, b, m)>,
+                             affine_map<(g, b, m) -> (g, b, m)>],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%arg : tensor<2x4x1025xf16>)
+            outs(%producer_empty : tensor<2x4x1025xf16>) {
           ^bb0(%element: f16, %old: f16):
             %next = arith.addf %element, %element : f16
             linalg.yield %next : f16
-        } -> tensor<2x1025xf16>
-        %consumer_empty = tensor.empty() : tensor<2x1025x128xf16>
+        } -> tensor<2x4x1025xf16>
+        %consumer_empty = tensor.empty() : tensor<2x4x1025x128xf16>
         %value = linalg.generic {
-            indexing_maps = [affine_map<(b, m, n) -> (b, m)>,
-                             affine_map<(b, m, n) -> (b, m, n)>],
-            iterator_types = ["parallel", "parallel", "parallel"]}
-            ins(%producer : tensor<2x1025xf16>)
-            outs(%consumer_empty : tensor<2x1025x128xf16>) {
+            indexing_maps = [affine_map<(g, b, m, n) -> (g, b, m)>,
+                             affine_map<(g, b, m, n) -> (g, b, m, n)>],
+            iterator_types = ["parallel", "parallel", "parallel",
+                              "parallel"]}
+            ins(%producer : tensor<2x4x1025xf16>)
+            outs(%consumer_empty : tensor<2x4x1025x128xf16>) {
           ^bb0(%element: f16, %old: f16):
             linalg.yield %element : f16
-        } -> tensor<2x1025x128xf16>)mlir",
-                      "tensor<2x1025xf16>", "tensor<2x1025x128xf16>");
+        } -> tensor<2x4x1025x128xf16>)mlir",
+                      "tensor<2x4x1025xf16>", "tensor<2x4x1025x128xf16>");
   ASSERT_TRUE(module);
   TileRegionOp region;
   module->walk([&](TileRegionOp operation) { region = operation; });
@@ -460,7 +474,93 @@ TEST(TemporalDomainTest, BroadcastEdgeKeepsAnIndependentProducerTraversal) {
   EXPECT_EQ(query.kind, TemporalFusionQueryKind::NonUnique);
   TemporalDomainResult domain = buildTemporalDomain(region);
   ASSERT_TRUE(domain.succeeded());
-  EXPECT_EQ(domain.domain->getScopeDescriptors().size(), 2u);
+  EXPECT_EQ(domain.domain->getScopeDescriptors().size(), 1u);
+  ASSERT_EQ(domain.domain->getBroadcastFusions().size(), 1u);
+  EXPECT_EQ(
+      domain.domain->getBroadcastFusions().front().invariantConsumerDimensions,
+      (llvm::SmallVector<uint32_t, 2>{3}));
+  EXPECT_EQ(
+      domain.domain->getScopeDescriptors(TemporalTraversalKind::Independent)
+          .size(),
+      2u);
+  TemporalChoice joint = *domain.domain->getFirstChoice().getChoice();
+  ASSERT_EQ(joint.scopes.size(), 1u);
+  joint.scopes.front().iteratorTileSizes = {2, 4, 128, 64};
+  joint.scopes.front().loopOrder = {2, 3};
+  EXPECT_TRUE(domain.domain->contains(joint));
+  joint.scopes.front().loopOrder = {3, 2};
+  EXPECT_FALSE(domain.domain->contains(joint));
+}
+
+TEST(TemporalDomainTest,
+     WindowJointAcceptsDisjointDemandAndRejectsOverlappingHalo) {
+  for (bool disjoint : {true, false}) {
+    SCOPED_TRACE(disjoint ? "disjoint" : "overlap");
+    std::unique_ptr<mlir::MLIRContext> context = createContext();
+    const int64_t inputExtent = disjoint ? 3075 : 1027;
+    std::string body;
+    llvm::raw_string_ostream stream(body);
+    stream
+        << "        %producer_empty = tensor.empty() : tensor<2x" << inputExtent
+        << "x129xf16>\n"
+           "        %producer = linalg.generic {\n"
+           "            indexing_maps = [affine_map<(b, q, n) -> (b, q, n)>,\n"
+           "                             affine_map<(b, q, n) -> (b, q, n)>],\n"
+           "            iterator_types = [\"parallel\", \"parallel\", "
+           "\"parallel\"]}\n"
+           "            ins(%arg : tensor<2x"
+        << inputExtent
+        << "x129xf16>)\n"
+           "            outs(%producer_empty : tensor<2x"
+        << inputExtent
+        << "x129xf16>) {\n"
+           "          ^bb0(%element: f16, %old: f16):\n"
+           "            linalg.yield %element : f16\n"
+           "        } -> tensor<2x"
+        << inputExtent
+        << "x129xf16>\n"
+           "        %kernel = tensor.empty() : tensor<3xf16>\n"
+           "        %consumer_empty = tensor.empty() : "
+           "tensor<2x1025x129xf16>\n"
+           "        %value = linalg.generic {\n"
+           "            indexing_maps = [affine_map<(b, m, k, n) -> "
+        << (disjoint ? "(b, m * 3 + k, n)>" : "(b, m + k, n)>")
+        << ",\n"
+           "                             affine_map<(b, m, k, n) -> (k)>,\n"
+           "                             affine_map<(b, m, k, n) -> (b, m, "
+           "n)>],\n"
+           "            iterator_types = [\"parallel\", \"parallel\", "
+           "\"reduction\", \"parallel\"]}\n"
+           "            ins(%producer, %kernel : tensor<2x"
+        << inputExtent
+        << "x129xf16>, tensor<3xf16>)\n"
+           "            outs(%consumer_empty : tensor<2x1025x129xf16>) {\n"
+           "          ^bb0(%window_input: f16, %weight: f16, %acc: f16):\n"
+           "            %product = arith.mulf %window_input, %weight : f16\n"
+           "            %sum = arith.addf %product, %acc : f16\n"
+           "            linalg.yield %sum : f16\n"
+           "        } -> tensor<2x1025x129xf16>";
+    auto module = parse(*context, stream.str(),
+                        "tensor<2x" + std::to_string(inputExtent) + "x129xf16>",
+                        "tensor<2x1025x129xf16>");
+    ASSERT_TRUE(module);
+    TileRegionOp region;
+    module->walk([&](TileRegionOp operation) { region = operation; });
+    TemporalDomainResult domain = buildTemporalDomain(region);
+    ASSERT_TRUE(domain.succeeded())
+        << (domain.failure ? domain.failure->detail : "");
+    ASSERT_EQ(domain.domain->getWindowFusions().size(), 1u);
+    ASSERT_EQ(domain.domain->getScopeDescriptors().size(), 1u);
+    TemporalChoice joint = *domain.domain->getFirstChoice().getChoice();
+    ASSERT_EQ(joint.scopes.size(), 1u);
+    joint.scopes.front().iteratorTileSizes = {2, 128, 3, 64};
+    joint.scopes.front().loopOrder = {1, 3};
+    EXPECT_EQ(domain.domain->contains(joint), disjoint);
+    EXPECT_EQ(
+        domain.domain->getScopeDescriptors(TemporalTraversalKind::Independent)
+            .size(),
+        2u);
+  }
 }
 
 TEST(TemporalDomainTest, RankSixOnlineAttentionKeepsK1FullAndK2InTheRawDomain) {

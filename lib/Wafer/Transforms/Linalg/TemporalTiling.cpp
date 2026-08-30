@@ -24,6 +24,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -528,13 +529,16 @@ mlir::LogicalResult fuseJointProducerSlices(
     return mlir::failure();
   };
   for (const auto &group : groups) {
-    if (!group.producer || !group.producer.getOwner()->getBlock())
+    if (!group.producer || !group.consumerValue ||
+        !group.producer.getOwner()->getBlock())
       return reject("joint producer is no longer current");
     llvm::SmallVector<mlir::tensor::ExtractSliceOp, 8> slices;
     region.walk([&](mlir::tensor::ExtractSliceOp slice) {
-      if (slice.getSource() == group.producer)
+      if (slice.getSource() == group.consumerValue)
         slices.push_back(slice);
     });
+    if (slices.empty() && !group.consumerValue.use_empty())
+      continue;
     if (slices.empty())
       return reject("joint producer has no tiled consumer slice");
 
@@ -548,6 +552,23 @@ mlir::LogicalResult fuseJointProducerSlices(
         equivalentRequests.push_back({slice});
       else
         found->push_back(slice);
+    }
+    if (group.isViewTransparent()) {
+      for (const auto &requestGroup : equivalentRequests) {
+        mlir::tensor::ExtractSliceOp representative = requestGroup.front();
+        for (mlir::tensor::ExtractSliceOp duplicate :
+             llvm::drop_begin(requestGroup))
+          rewriter.replaceOp(duplicate, representative.getResult());
+      }
+      ViewFusionRequest request{
+          group.producer, group.consumerValue, group.producerDimensions,
+          group.consumerViewToProducer ? &*group.consumerViewToProducer
+                                       : nullptr};
+      if (mlir::failed(
+              fuseViewProducerSlices(rewriter, region, {request}, statistics)))
+        return reject(
+            "joint view producer could not materialize its common slices");
+      continue;
     }
     for (const auto &requestGroup : equivalentRequests) {
       mlir::tensor::ExtractSliceOp representative = requestGroup.front();
@@ -850,7 +871,7 @@ mlir::FailureOr<JointConsumerTilingResult> tileJointConsumers(
     llvm::ArrayRef<const compiler::detail::TemporalScopeDescriptor *>
         descriptors,
     llvm::ArrayRef<const compiler::detail::TemporalScopeChoice *> choices) {
-  if (consumers.size() < 2 || consumers.size() != descriptors.size() ||
+  if (consumers.empty() || consumers.size() != descriptors.size() ||
       consumers.size() != choices.size())
     return mlir::failure();
   const auto &descriptor = *descriptors.front();
@@ -1000,6 +1021,136 @@ mlir::FailureOr<JointConsumerTilingResult> tileJointConsumers(
         mlir::cast<mlir::LoopLikeOpInterface>(loop.getOperation()));
   result.tiledConsumers = consumers.size();
   return result;
+}
+
+mlir::LogicalResult materializeBroadcastProducer(
+    mlir::IRRewriter &rewriter, TileRegionOp region,
+    const compiler::detail::TemporalBroadcastFusion &fusion,
+    const compiler::detail::TemporalScopeDescriptor &descriptor,
+    const compiler::detail::TemporalScopeChoice &choice,
+    llvm::ArrayRef<mlir::LoopLikeOpInterface> loops,
+    TemporalTilingStatistics &statistics, std::string &detail) {
+  auto reject = [&](llvm::StringRef message) {
+    detail = message.str();
+    return mlir::failure();
+  };
+  if (!fusion.producer || loops.empty() ||
+      choice.loopOrder.size() != loops.size())
+    return reject("broadcast fusion no longer matches its current traversal");
+  llvm::SmallVector<mlir::tensor::ExtractSliceOp, 4> consumerSlices;
+  region.walk([&](mlir::tensor::ExtractSliceOp slice) {
+    if (slice.getSource() == fusion.producer)
+      consumerSlices.push_back(slice);
+  });
+  if (consumerSlices.empty())
+    return reject("broadcast consumer emitted no producer slice");
+
+  llvm::SmallBitVector invariant(descriptor.iterationExtents.size(), false);
+  for (uint32_t dimension : fusion.invariantConsumerDimensions) {
+    if (dimension >= invariant.size())
+      return reject("broadcast invariant dimension is outside its traversal");
+    invariant.set(dimension);
+  }
+  size_t firstInvariantLoop = loops.size();
+  for (auto [position, dimension] : llvm::enumerate(choice.loopOrder))
+    if (invariant.test(dimension)) {
+      firstInvariantLoop = position;
+      break;
+    }
+  if (firstInvariantLoop < loops.size()) {
+    mlir::LoopLikeOpInterface insertionLoop = loops[firstInvariantLoop];
+    rewriter.setInsertionPoint(insertionLoop.getOperation());
+  } else {
+    rewriter.setInsertionPoint(consumerSlices.front());
+  }
+
+  llvm::SmallVector<mlir::OpFoldResult, 4> producerOffsets;
+  llvm::SmallVector<mlir::OpFoldResult, 4> producerSizes;
+  mlir::Location location = fusion.producer.getLoc();
+  for (mlir::AffineExpr expression : fusion.consumerOperandMap.getResults()) {
+    auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+    if (!dimension ||
+        dimension.getPosition() >= descriptor.iterationExtents.size())
+      return reject("broadcast operand map is no longer a projection");
+    const unsigned iterator = dimension.getPosition();
+    const int64_t extent = descriptor.iterationExtents[iterator];
+    const int64_t tileSize = choice.iteratorTileSizes[iterator];
+    if (tileSize >= extent) {
+      producerOffsets.push_back(rewriter.getIndexAttr(0));
+      producerSizes.push_back(rewriter.getIndexAttr(extent));
+      continue;
+    }
+    auto found = llvm::find(choice.loopOrder, iterator);
+    if (found == choice.loopOrder.end())
+      return reject("broadcast dependent iterator has no materialized loop");
+    const size_t loopPosition = found - choice.loopOrder.begin();
+    if (loopPosition >= firstInvariantLoop)
+      return reject("broadcast producer would be placed above a dependency");
+    mlir::LoopLikeOpInterface loopInterface = loops[loopPosition];
+    auto loop = mlir::dyn_cast<mlir::scf::ForOp>(loopInterface.getOperation());
+    if (!loop)
+      return reject("broadcast fusion requires the selected SCF loop");
+    mlir::Value induction = loop.getInductionVar();
+    producerOffsets.push_back(induction);
+    mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, rewriter.getContext());
+    mlir::AffineMap bounded = mlir::AffineMap::get(
+        1, 0,
+        {mlir::getAffineConstantExpr(tileSize, rewriter.getContext()),
+         mlir::getAffineConstantExpr(extent, rewriter.getContext()) - d0},
+        rewriter.getContext());
+    producerSizes.push_back(mlir::affine::makeComposedFoldedAffineMin(
+        rewriter, location, bounded, {induction}));
+  }
+  auto producerType =
+      mlir::dyn_cast<mlir::RankedTensorType>(fusion.producer.getType());
+  if (!producerType ||
+      producerOffsets.size() != static_cast<size_t>(producerType.getRank()))
+    return reject("broadcast producer rank no longer matches its operand map");
+  llvm::SmallVector<mlir::OpFoldResult, 4> strides(producerType.getRank(),
+                                                   rewriter.getIndexAttr(1));
+  auto request = rewriter.create<mlir::tensor::ExtractSliceOp>(
+      location, fusion.producer, producerOffsets, producerSizes, strides);
+  mlir::FailureOr<mlir::TilingResult> tiled =
+      mlir::tensor::replaceExtractSliceWithTiledProducer(rewriter, request,
+                                                         fusion.producer);
+  if (mlir::failed(tiled) || tiled->tiledValues.size() != 1) {
+    rewriter.eraseOp(request);
+    return reject("broadcast producer rejected its exact projected tile");
+  }
+  mlir::Value sharedTile = tiled->tiledValues.front();
+  rewriter.eraseOp(request);
+  for (mlir::tensor::ExtractSliceOp slice : consumerSlices) {
+    auto targetType = mlir::dyn_cast<mlir::RankedTensorType>(slice.getType());
+    if (!targetType)
+      return reject("broadcast consumer slice is not a ranked tensor");
+    mlir::FailureOr<mlir::Value> replacement =
+        reshapeTile(rewriter, slice.getLoc(), sharedTile, targetType);
+    if (mlir::failed(replacement))
+      return reject("broadcast producer tile does not match its consumer");
+    rewriter.replaceOp(slice, *replacement);
+  }
+  if (!fusion.producer.use_empty())
+    return reject("broadcast producer still has an unfused current use");
+  rewriter.eraseOp(fusion.producer.getOwner());
+  ++statistics.fusedProducers;
+  return mlir::success();
+}
+
+mlir::LogicalResult materializeWindowProducers(
+    mlir::IRRewriter &rewriter, TileRegionOp region,
+    llvm::ArrayRef<const compiler::detail::TemporalWindowFusion *> fusions,
+    TemporalTilingStatistics &statistics, std::string &detail) {
+  for (const compiler::detail::TemporalWindowFusion *fusion : fusions) {
+    if (!fusion || !fusion->producer)
+      return mlir::failure();
+    compiler::detail::TemporalJointProducerGroup group;
+    group.producer = fusion->producer;
+    group.consumerValue = fusion->producer;
+    if (mlir::failed(fuseJointProducerSlices(rewriter, region, {group},
+                                             statistics, detail)))
+      return mlir::failure();
+  }
+  return mlir::success();
 }
 
 void eraseDeadOperations(mlir::IRRewriter &rewriter, TileRegionOp region) {
@@ -1242,18 +1393,122 @@ applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
       choicesByOperation;
   for (const auto &scope : choice.scopes)
     choicesByOperation.try_emplace(scope.operation, &scope);
+  llvm::DenseMap<
+      mlir::Operation *,
+      llvm::SmallVector<const compiler::detail::TemporalBroadcastFusion *, 2>>
+      broadcastByConsumer;
+  llvm::DenseMap<
+      mlir::Operation *,
+      llvm::SmallVector<const compiler::detail::TemporalWindowFusion *, 2>>
+      windowByConsumer;
+  if (choice.kind == compiler::detail::TemporalTraversalKind::Joint) {
+    for (const auto &fusion : domain.getBroadcastFusions()) {
+      if (!fusion.consumerOperand)
+        return fail<TemporalTilingStatistics>(
+            failure, TemporalTilingFailureKind::BrokenContract,
+            "broadcast fusion lost its current consumer operand");
+      broadcastByConsumer[fusion.consumerOperand->getOwner()].push_back(
+          &fusion);
+    }
+    for (const auto &fusion : domain.getWindowFusions()) {
+      if (!fusion.consumerOperand)
+        return fail<TemporalTilingStatistics>(
+            failure, TemporalTilingFailureKind::BrokenContract,
+            "window fusion lost its current consumer operand");
+      windowByConsumer[fusion.consumerOperand->getOwner()].push_back(&fusion);
+    }
+  }
   llvm::SmallPtrSet<mlir::Operation *, 8> commonLoopConsumers;
   if (choice.kind == compiler::detail::TemporalTraversalKind::Joint) {
+    std::string manualFailure;
+    auto hasActiveDimension = [&](mlir::Operation *operation) {
+      const auto *descriptor = descriptors.lookup(operation);
+      const auto *scopeChoice = choicesByOperation.lookup(operation);
+      return descriptor && scopeChoice &&
+             llvm::any_of(llvm::zip_equal(descriptor->iterationExtents,
+                                          scopeChoice->iteratorTileSizes),
+                          [](auto values) {
+                            return std::get<1>(values) < std::get<0>(values);
+                          });
+    };
+    auto tileManualConsumers = [&](llvm::ArrayRef<mlir::Operation *> consumers)
+        -> mlir::LogicalResult {
+      llvm::SmallVector<const compiler::detail::TemporalScopeDescriptor *, 8>
+          groupDescriptors;
+      llvm::SmallVector<const compiler::detail::TemporalScopeChoice *, 8>
+          groupChoices;
+      struct BroadcastApply {
+        const compiler::detail::TemporalBroadcastFusion *fusion = nullptr;
+        const compiler::detail::TemporalScopeDescriptor *descriptor = nullptr;
+        const compiler::detail::TemporalScopeChoice *choice = nullptr;
+      };
+      llvm::SmallVector<BroadcastApply, 4> broadcastFusions;
+      llvm::SmallVector<const compiler::detail::TemporalWindowFusion *, 4>
+          windowFusions;
+      for (mlir::Operation *operation : consumers) {
+        const auto *descriptor = descriptors.lookup(operation);
+        const auto *scopeChoice = choicesByOperation.lookup(operation);
+        if (!descriptor || !scopeChoice) {
+          manualFailure =
+              "manual joint consumer is absent from the current choice";
+          return mlir::failure();
+        }
+        groupDescriptors.push_back(descriptor);
+        groupChoices.push_back(scopeChoice);
+        for (const auto *fusion : broadcastByConsumer.lookup(operation))
+          broadcastFusions.push_back({fusion, descriptor, scopeChoice});
+        llvm::append_range(windowFusions, windowByConsumer.lookup(operation));
+      }
+      mlir::FailureOr<JointConsumerTilingResult> tiled = tileJointConsumers(
+          rewriter, consumers, groupDescriptors, groupChoices);
+      if (mlir::failed(tiled)) {
+        manualFailure =
+            "compatible joint consumers could not form one common SCF loop";
+        return mlir::failure();
+      }
+      statistics.tiledTraversals += tiled->tiledConsumers;
+      statistics.loops += tiled->loops.size();
+      for (const BroadcastApply &broadcast : broadcastFusions) {
+        std::string detail;
+        if (mlir::failed(materializeBroadcastProducer(
+                rewriter, region, *broadcast.fusion, *broadcast.descriptor,
+                *broadcast.choice, tiled->loops, statistics, detail))) {
+          manualFailure =
+              "broadcast producer could not be placed outside its invariant "
+              "loops: " +
+              detail;
+          return mlir::failure();
+        }
+      }
+      if (!windowFusions.empty()) {
+        std::string detail;
+        if (mlir::failed(materializeWindowProducers(
+                rewriter, region, windowFusions, statistics, detail))) {
+          manualFailure =
+              "disjoint window producer did not materialize from its actual "
+              "consumer slices: " +
+              detail;
+          return mlir::failure();
+        }
+      }
+      if (mlir::failed(specializeRaggedTails(
+              rewriter, *groupDescriptors.front(), *groupChoices.front(),
+              tiled->loops, statistics))) {
+        manualFailure = "joint consumer loop could not form its static tail";
+        return mlir::failure();
+      }
+      return mlir::success();
+    };
+
     for (const auto &group : domain.getJointProducerGroups()) {
       llvm::SmallVector<mlir::Operation *, 8> consumers;
       for (mlir::OpOperand *operand : group.consumerOperands)
-        if (operand && !llvm::is_contained(consumers, operand->getOwner()))
+        if (operand && choicesByOperation.count(operand->getOwner()) &&
+            !llvm::is_contained(consumers, operand->getOwner()))
           consumers.push_back(operand->getOwner());
-      if (consumers.size() < 2 ||
-          llvm::any_of(consumers, [&](mlir::Operation *operation) {
-            return !descriptors.count(operation) ||
-                   !choicesByOperation.count(operation);
-          }))
+      if (consumers.size() < 2)
+        continue;
+      if (!llvm::any_of(consumers, hasActiveDimension))
         continue;
       const bool anyAlreadyGrouped =
           llvm::any_of(consumers, [&](mlir::Operation *operation) {
@@ -1269,30 +1524,27 @@ applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
             "joint producer groups overlap only part of a consumer set");
       if (allAlreadyGrouped)
         continue;
-      llvm::SmallVector<const compiler::detail::TemporalScopeDescriptor *, 8>
-          groupDescriptors;
-      llvm::SmallVector<const compiler::detail::TemporalScopeChoice *, 8>
-          groupChoices;
-      for (mlir::Operation *operation : consumers) {
-        groupDescriptors.push_back(descriptors.lookup(operation));
-        groupChoices.push_back(choicesByOperation.lookup(operation));
-      }
-      mlir::FailureOr<JointConsumerTilingResult> tiled = tileJointConsumers(
-          rewriter, consumers, groupDescriptors, groupChoices);
-      if (mlir::failed(tiled))
+      if (mlir::failed(tileManualConsumers(consumers)))
         return fail<TemporalTilingStatistics>(
             failure, TemporalTilingFailureKind::CompilerFailure,
-            "compatible joint consumers could not form one common SCF loop");
+            "all-use producer group: " + manualFailure);
       for (mlir::Operation *operation : consumers)
         commonLoopConsumers.insert(operation);
-      statistics.tiledTraversals += tiled->tiledConsumers;
-      statistics.loops += tiled->loops.size();
-      if (mlir::failed(specializeRaggedTails(
-              rewriter, *groupDescriptors.front(), *groupChoices.front(),
-              tiled->loops, statistics)))
+    }
+    for (const auto &scope : choice.scopes) {
+      mlir::Operation *consumer = scope.operation;
+      if (!broadcastByConsumer.count(consumer))
+        continue;
+      if (commonLoopConsumers.contains(consumer))
+        continue;
+      if (!hasActiveDimension(consumer))
+        continue;
+      llvm::SmallVector<mlir::Operation *, 1> singleton{consumer};
+      if (mlir::failed(tileManualConsumers(singleton)))
         return fail<TemporalTilingStatistics>(
             failure, TemporalTilingFailureKind::CompilerFailure,
-            "joint consumer loop could not form its static tail");
+            "broadcast consumer: " + manualFailure);
+      commonLoopConsumers.insert(consumer);
     }
   }
   for (const auto &scope : llvm::reverse(choice.scopes)) {
@@ -1323,6 +1575,10 @@ applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
                   std::move(independentInventory));
     if (mlir::failed(exactFusionEdges))
       return mlir::failure();
+    if (choice.kind == compiler::detail::TemporalTraversalKind::Joint)
+      for (const auto *fusion : windowByConsumer.lookup(scope.operation))
+        if (fusion->producer && fusion->producer.getOwner()->getBlock())
+          exactFusionEdges->directEdges.insert(fusion->producer);
     llvm::SmallVector<ViewFusionRequest, 4> viewFusionRequests;
     for (const auto &path : exactFusionEdges->viewPaths) {
       if (!path.consumerOperand ||

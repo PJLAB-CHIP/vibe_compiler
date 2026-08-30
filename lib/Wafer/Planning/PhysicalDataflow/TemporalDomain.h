@@ -6,6 +6,7 @@
 #include "Wafer/Analysis/Linalg/IndexRelation.h"
 #include "Wafer/IR/WaferDialect.h"
 
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LogicalResult.h"
 
@@ -156,12 +157,38 @@ struct TemporalFusionPathResult {
   }
 };
 
-/// One all-use direct producer group that may be materialized once in a
-/// common joint traversal. The producer and consumer operands are borrowed
-/// from the same unchanged TileRegion.
+/// One all-use producer group that may be materialized once in a common joint
+/// traversal. `consumerValue` is either the producer itself or the final value
+/// of one exact transparent view chain. All IR handles are borrowed from the
+/// same unchanged TileRegion.
 struct TemporalJointProducerGroup {
   mlir::OpResult producer;
+  mlir::Value consumerValue;
   llvm::SmallVector<mlir::OpOperand *, 4> consumerOperands;
+  llvm::SmallVector<TemporalViewDimensionMapping, 4> producerDimensions;
+  std::optional<analysis::IndexRelation> consumerViewToProducer;
+  llvm::SmallVector<uint32_t, 2> generalReshapeConsumerDimensions;
+
+  bool isViewTransparent() const { return consumerValue != producer; }
+};
+
+/// A direct producer whose result demand is invariant over one or more
+/// consumer iteration dimensions. Joint apply places the producer tile after
+/// every active mapped dimension and before the first active invariant loop.
+struct TemporalBroadcastFusion {
+  mlir::OpResult producer;
+  mlir::OpOperand *consumerOperand = nullptr;
+  mlir::AffineMap consumerOperandMap;
+  llvm::SmallVector<uint32_t, 2> invariantConsumerDimensions;
+};
+
+/// A direct producer feeding a separable affine window operand. The selected
+/// joint choice must prove every dynamic producer request rectangle disjoint;
+/// overlapping choices remain independent.
+struct TemporalWindowFusion {
+  mlir::OpResult producer;
+  mlir::OpOperand *consumerOperand = nullptr;
+  mlir::AffineMap consumerOperandMap;
 };
 
 enum class TemporalConcatQueryKind : uint8_t {
@@ -284,6 +311,12 @@ public:
   llvm::ArrayRef<TemporalJointProducerGroup> getJointProducerGroups() const {
     return jointProducerGroups;
   }
+  llvm::ArrayRef<TemporalBroadcastFusion> getBroadcastFusions() const {
+    return broadcastFusions;
+  }
+  llvm::ArrayRef<TemporalWindowFusion> getWindowFusions() const {
+    return windowFusions;
+  }
 
 private:
   struct Completion;
@@ -291,10 +324,14 @@ private:
   TemporalDomain(TileRegionOp region,
                  std::vector<TemporalScopeDescriptor> jointScopes,
                  std::vector<TemporalScopeDescriptor> independentScopes,
-                 std::vector<TemporalJointProducerGroup> jointProducerGroups)
+                 std::vector<TemporalJointProducerGroup> jointProducerGroups,
+                 std::vector<TemporalBroadcastFusion> broadcastFusions,
+                 std::vector<TemporalWindowFusion> windowFusions)
       : region(region), jointScopes(std::move(jointScopes)),
         independentScopes(std::move(independentScopes)),
-        jointProducerGroups(std::move(jointProducerGroups)) {}
+        jointProducerGroups(std::move(jointProducerGroups)),
+        broadcastFusions(std::move(broadcastFusions)),
+        windowFusions(std::move(windowFusions)) {}
 
   static TemporalScopeChoice
   getFirstScopeChoice(const TemporalScopeDescriptor &scope);
@@ -308,6 +345,8 @@ private:
   std::vector<TemporalScopeDescriptor> jointScopes;
   std::vector<TemporalScopeDescriptor> independentScopes;
   std::vector<TemporalJointProducerGroup> jointProducerGroups;
+  std::vector<TemporalBroadcastFusion> broadcastFusions;
+  std::vector<TemporalWindowFusion> windowFusions;
 
   friend struct TemporalDomainResult;
   friend TemporalDomainResult buildTemporalDomain(TileRegionOp);

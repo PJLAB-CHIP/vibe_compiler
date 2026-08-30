@@ -24,6 +24,7 @@ add_mlir_library(WaferPlanning
   WaferAnalysis
   WaferIR
   WaferTarget
+  MLIRAnalysis
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect

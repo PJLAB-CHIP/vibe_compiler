@@ -237,11 +237,10 @@ tiling builder，也不把offset、extent、operation或SSA保存到跨stage pla
 查询结果区分exact、unsupported、indeterminate和broken contract；unsupported/indeterminate只关闭本次fusion机会，不签发resource结论，
 broken contract终止该candidate。
 
-此前第13项完成证据只覆盖以下exact-derived边界：producer/consumer位于同一Region和block、producer pure且all-result use总数为一、edge不是DPS destination、两端
-使用symbol-free projected-permutation map，并且consumer operand map覆盖每个可分块iterator。这样每个consumer wave只请求一个不重复的producer
-tile；producer result未覆盖的iterator只能是full reduction fiber或unit extent。Multi-use、broadcast遗漏可分块轴、destination init、effectful、
-cross-Region和general reshape都保留独立producer traversal。该边界不能继续代签本节完整合同；C2重新打开general reshape、broadcast/window
-及compatible multi-use，但`online_attention`仍是独立root，不作为ordinary producer被复制进finalize或其它consumer traversal。
+当前exact-derived边界要求producer/consumer位于同一Region和block、producer pure、edge不是DPS destination，并由current indexing map或
+composed `IndexRelation`证明实际tile demand。Single-use direct/projected chain、general reshape rectangle/有限pieces以及all-use compatible
+direct/view chain均可形成Joint；未捕获use、effect、DPS destination、cross-Region或relation失败保持Independent。Broadcast和window遵循下述
+额外门禁。`online_attention`始终是独立root，不作为ordinary producer被复制进finalize或其它consumer traversal。
 
 Direct edge不是完整边界。Spatial exact-demand已经通过`WaferTensorIndexingOpInterface`和`IndexRelation`解释static pure
 `tensor.cast`、`extract_slice`、`insert_slice`、`expand_shape`、`collapse_shape`和`pad`；该current-op relation构造必须抽为
@@ -292,6 +291,16 @@ loop外producer，joint choice只在all-use exact条件下把producer tile放入
 不作为统一barrier：标准interface与all-and-only、无重叠result tile relation均可证明时参与fusion；其余保持current producer独立。
 Tile-and-fuse后只运行有界local canonicalization、CSE和DCE清理本次新建的slice/view恒等式，不重新运行全图e-graph；
 pinned接口暂时不能表达的exact reshape或`tensor.insert_slice` window只保留窄的current-SSA adapter。
+
+Broadcast Joint不要求producer与consumer具有相同rank。对projected-permutation result/operand maps，query建立producer-result维度到consumer
+iterator的exact映射；consumer中未参与该operand的active轴是broadcast-only轴。只有全部producer-dependent active轴在selected loop order中
+构成prefix时，producer result tile才在该prefix之后、首个broadcast-only loop之前物化，并由内层consumer tiles直接共享。反向order或任一
+all-use映射不一致只关闭Joint，不改变Independent raw domain。
+
+Window/conv Joint从selected consumer iteration rectangle和operand affine map计算exact operand rectangle。当前闭包只接受symbol-free、
+separable、非负线性表达式，且每个source coordinate的离散image经系数覆盖证明为连续区间。每个active consumer轴必须映射到唯一source
+coordinate，并满足相邻tile的物理offset shift不小于该coordinate demand span，证明不同iteration的producer demand互斥后才逐tile融合。
+Halo overlap时保持Independent，让完整current producer作为实际共享值；不引入预测halo buffer、rolling cache或隐式重算choice。
 
 Candidate transaction的owner只由controller建立一次：已有candidate-owned IR时本stage直接rewrite，不再clone TileModule owner；只有试行
 existing isolated owner上的alternative且caller仍需保留原IR时，controller才clone最近的`IsolatedFromAbove` scope。Standard tiling创建的
@@ -628,9 +637,9 @@ Current迁移必须遵守：
   三个DPS state处理K2。第14项只分解已tiled op；layout入口graph/online attention均为零；
 - temporal domain只在exact total single-valued proof下删除派生参数；non-unique、unsupported和indeterminate case保留原自由维度或
   独立producer，Region candidate不因fusion无法证明而消失；
-- Spatial与Temporal共用同一static tensor indexing relation builder；历史第13项只对covered single-use dense-offset/unit-reshape chain
-  证明原完整producer为零。C2必须对general reshape和all-use joint choice补齐同等证据，并在第15项后断言对应完整intermediate
-  allocation/copy为零；unsupported choice保持actual独立buffer并由后续MiniMalloc判断，不转换成SPM估算结论；
+- Spatial与Temporal共用同一static tensor indexing relation builder；single-use dense-offset/unit-reshape、general reshape、all-use direct/view、
+  broadcast hoist和互斥window成功case均证明原完整producer及第15项对应完整intermediate allocation/copy为零；overlap/unsupported choice
+  保持actual独立buffer并由后续MiniMalloc判断，不转换成SPM估算结论；
 - instrumentation on/off产生同一IR、candidate result和package；
 - 每个candidate的actual TileModule/TileRegion/Instr owner只物化一次，winner不重建；
 - 不存在代表future operation/value/buffer/event/schedule的跨stage状态或为其服务的parity verifier；
