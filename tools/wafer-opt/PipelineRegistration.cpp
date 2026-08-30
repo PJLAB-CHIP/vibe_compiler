@@ -5,6 +5,7 @@
 #include "Wafer/Conversion/StableHLOToLinalg/Pipelines.h"
 #include "Wafer/Conversion/TileToInstr/Pipelines.h"
 #include "Wafer/Transforms/Instr/MemoryPlanningPipelines.h"
+#include "Wafer/Transforms/Linalg/Pipelines.h"
 #include "Wafer/Transforms/StableHLO/FrontendVerification.h"
 #include "Wafer/Transforms/StableHLO/SpmdPipelines.h"
 
@@ -40,6 +41,12 @@ void registerWaferOptPipelines() {
       "Form self-contained attention semantics in structured tensor IR",
       [](mlir::OpPassManager &pm) {
         wafer::buildNormalizeAttentionPipeline(pm);
+      });
+  mlir::PassPipelineRegistration<>(
+      "wafer-decompose-online-attention",
+      "Decompose current online attention into Linalg tensor operations",
+      [](mlir::OpPassManager &pm) {
+        wafer::buildDecomposeOnlineAttentionPipeline(pm);
       });
   mlir::PassPipelineRegistration<>(
       "wafer-lower-stablehlo-to-linalg",

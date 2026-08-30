@@ -17,13 +17,14 @@
 
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `search-scalability` | `doing` | Q52 / 06 | Q51 choice/domain donor、第12项actual structural owner、第13项actual SCF/SSA tile-and-fuse owner、current baseline regression、Q50.0 actual memory/target leaf | 当前执行第14项`online-attention-decomposition`；完成后线性执行第15--20项。none/search独立且无fallback；SPM只由actual MiniMalloc判定；同源LLaMA产品纵向通过 | `tasks/plans/physical-dataflow-synthesis.md` |
+| 1 | `search-scalability` | `doing` | Q52 / 06 | Q51 choice/domain donor、第12项actual structural owner、第13项actual SCF/SSA tile-and-fuse owner、第14项final Linalg/Tensor/SCF owner、current baseline regression、Q50.0 actual memory/target leaf | 当前执行第15项`current-ir-layout-bufferization`；完成后线性执行第16--20项。none/search独立且无fallback；SPM只由actual MiniMalloc判定；同源LLaMA产品纵向通过 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 2 | `production-host-readiness` | `queued` | Q53 / 16 | search scalability、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 
-Q52当前直接项是第14项`online-attention-decomposition`。第12项已经形成ordinary contribution/merge/output、FA/FD per-Tile online state、
+Q52当前直接项是第15项`current-ir-layout-bufferization`。第12项已经形成ordinary contribution/merge/output、FA/FD per-Tile online state、
 selected FD merge/finalize和只连接actual endpoints的current relations；第13项已经只从live TileRegion operations建立并立即消费temporal
-choice，形成ordinary/online K2的actual SCF loop、exact fusion、three-state recurrence和static main/tail。第14项只分解这些已tiled
-online-attention。此前的actual leaf、Instr completion、execution
+choice，形成ordinary/online K2的actual SCF loop、exact fusion、three-state recurrence和static main/tail。第14项已经将每个current
+online-attention确定性分解为QK、scale/mask、row max/sum、state scale和PV的actual Linalg/Tensor/arith/math，保留既有loop、spatial merge和
+endpoint，layout入口graph/online attention为零。此前的actual leaf、Instr completion、execution
 structure、movement、structured logical normalization和legacy shadow-materializer retirement只作为输入，不在current队列重做。
 none和search在各自controller重启前均明确返回typed unavailable且不发布package。
 

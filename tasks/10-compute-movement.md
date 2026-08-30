@@ -123,6 +123,10 @@ QK contraction
 
 这些Linalg ops使用current output piece、K2 tile/tail和FD contribution state；它们不得重新选择block、partition、merge owner或loop order。
 展开后的layout、view、buffer、movement和event只能由直接stage从current SSA/Instr生成。
+
+固定展开顺序为QK(K1 reduction)→scale→optional additive mask→row maximum→old-state normalization→probability→row sum→PV(K2
+reduction)。Score/probability destination只覆盖current M tile×K2 block及batch/head coordinates；QK/PV和state update使用普通DPS
+Linalg，保留既有SCF iter args；current arithmetic和dtype语义不变。
 随后同一transaction调用普通structured-to-tile lowering，把compute确定性变成existing `wafer.tile.gemm`、
 `wafer.tile.reduce`和`wafer.tile.elementwise`。Linalg中间态不是公开IR层、candidate cache或第二production pipeline。
 

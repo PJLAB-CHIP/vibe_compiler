@@ -2,6 +2,8 @@
 
 #include "OnlineAttentionMaterialization.h"
 
+#include "AttentionMath.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -77,26 +79,6 @@ mlir::Value createFilledTensor(mlir::Location location,
                           .getResult();
   return builder.create<mlir::linalg::FillOp>(location, scalar, empty)
       .getResult(0);
-}
-
-mlir::Value castFloatScalar(mlir::Value value, mlir::Type targetType,
-                            mlir::OpBuilder &builder, mlir::Location location) {
-  if (value.getType() == targetType)
-    return value;
-  auto sourceType = mlir::dyn_cast<mlir::FloatType>(value.getType());
-  auto destinationType = mlir::dyn_cast<mlir::FloatType>(targetType);
-  if (!sourceType || !destinationType)
-    return {};
-  if (sourceType.getWidth() < destinationType.getWidth())
-    return builder.create<mlir::arith::ExtFOp>(location, targetType, value);
-  if (sourceType.getWidth() > destinationType.getWidth())
-    return builder.create<mlir::arith::TruncFOp>(location, targetType, value);
-  mlir::Type intermediateType = builder.getF32Type();
-  if (sourceType.getWidth() >= 32)
-    intermediateType = builder.getF64Type();
-  mlir::Value extended =
-      builder.create<mlir::arith::ExtFOp>(location, intermediateType, value);
-  return builder.create<mlir::arith::TruncFOp>(location, targetType, extended);
 }
 
 } // namespace
@@ -219,16 +201,17 @@ materializeOnlineAttentionFinalize(LinalgExtAttentionOp source,
       mlir::ValueRange{state.accumulator}, maps, iteratorTypes,
       [&](mlir::OpBuilder &nestedBuilder, mlir::Location location,
           mlir::ValueRange arguments) {
-        mlir::Value accumulator = castFloatScalar(
+        mlir::Value accumulator = castAttentionFloatScalar(
             arguments[0], arguments[1].getType(), nestedBuilder, location);
         mlir::Value normalized =
             accumulator ? nestedBuilder.create<mlir::arith::DivFOp>(
                               location, accumulator, arguments[1])
                         : mlir::Value{};
         mlir::Value result =
-            normalized ? castFloatScalar(normalized, arguments[2].getType(),
-                                         nestedBuilder, location)
-                       : mlir::Value{};
+            normalized
+                ? castAttentionFloatScalar(normalized, arguments[2].getType(),
+                                           nestedBuilder, location)
+                : mlir::Value{};
         if (!result)
           result = arguments[2];
         nestedBuilder.create<mlir::linalg::YieldOp>(location, result);
@@ -330,11 +313,11 @@ mlir::FailureOr<OnlineAttentionState> materializeOnlineAttentionStateMerge(
       [&](mlir::OpBuilder &nestedBuilder, mlir::Location nestedLocation,
           mlir::ValueRange arguments) {
         mlir::Value leftWeight =
-            castFloatScalar(arguments[2], arguments[0].getType(), nestedBuilder,
-                            nestedLocation);
+            castAttentionFloatScalar(arguments[2], arguments[0].getType(),
+                                     nestedBuilder, nestedLocation);
         mlir::Value rightWeight =
-            castFloatScalar(arguments[3], arguments[1].getType(), nestedBuilder,
-                            nestedLocation);
+            castAttentionFloatScalar(arguments[3], arguments[1].getType(),
+                                     nestedBuilder, nestedLocation);
         mlir::Value scaledLeft = nestedBuilder.create<mlir::arith::MulFOp>(
             nestedLocation, arguments[0], leftWeight);
         mlir::Value scaledRight = nestedBuilder.create<mlir::arith::MulFOp>(

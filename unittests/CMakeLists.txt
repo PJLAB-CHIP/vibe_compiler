@@ -125,6 +125,7 @@ wafer_add_component_unit_test(WaferTransformsUnitTests
     Transforms/Tile/LayoutOptimizationTest.cpp
     Transforms/Tile/ExecutionStructureMaterializationTest.cpp
     Transforms/Linalg/AttentionNormalizationTest.cpp
+    Transforms/Linalg/OnlineAttentionDecompositionTest.cpp
     Transforms/Linalg/StructuredGraphEGraphTest.cpp
     Transforms/Linalg/StructuredGraphNormalizationTest.cpp
     Transforms/Linalg/SpatialRegionMaterializationTest.cpp

@@ -1,11 +1,11 @@
 # Physical Dataflow Current-IR实施计划
 
-本计划只保存Q52尚未完成的第14--20项和Q53 host qualification。动态状态只读`tasks/progress.md`；
-第1--11项的施工、删除账本和验证记录见`tasks/archive/physical-dataflow-synthesis-q52-plan-history.md`；第12--13项的完成边界见
+本计划只保存Q52尚未完成的第15--20项和Q53 host qualification。动态状态只读`tasks/progress.md`；
+第1--11项的施工、删除账本和验证记录见`tasks/archive/physical-dataflow-synthesis-q52-plan-history.md`；第12--14项的完成边界见
 `tasks/archive/completed-task-index.md`。
 稳定语义由05--16号编号设计拥有。
 
-当前直接项：第14项`online-attention-decomposition`；第15--20项保持pending。
+当前直接项：第15项`current-ir-layout-bufferization`；第16--20项保持pending。
 
 ## Pipeline Contract
 
@@ -30,7 +30,7 @@ Pipeline position:
   不建立future-output IR、shadow operation/buffer/event/schedule plan、兼容双路径或plan/actual parity verifier；
   不用footprint estimate决定SPM合法性；不猜join/wait；不修改数值语义；本计划不运行真实设备。
 - Completion criteria:
-  第12--13项已经闭合，第14--20项按下表顺序通过；两条policy互不调用或fallback；current IR是唯一事实源；同一current FP16
+  第12--14项已经闭合，第15--20项按下表顺序通过；两条policy互不调用或fallback；current IR是唯一事实源；同一current FP16
   LLaMA block的none与search分别在15分钟Release门限内生成package并通过strict readback和no-card；第12--20项
   的输入等价类、typed failure、精确断言和direct witness全部按对应current计划逐项关闭，不能由archive或单一成功case代签。
 ```
@@ -43,6 +43,7 @@ Pipeline position:
 | choice/domain algorithms | Spatial、ExactDemand、connected Region、free Temporal、PBQP solver和FA/FD semantic/spatial fixtures | future value、movement、storage、event或schedule record |
 | spatial/Region current-IR materialization | selected Spatial/Region choice已经形成all-and-only TileModules/TileRegions、ordinary contribution/merge/output、FA/FD per-Tile online state、selected FD merge/finalize和只连接actual endpoints的current relations | graph attention或empty shell残留、missing merge output、`RegionExecutionId -> operation`映射、scratch Module/Func或future operation/buffer/movement/completion ID |
 | current-op temporal tile-and-fuse | 每个TileRegion的domain只借用live operation；selected choice已经形成ordinary/online-attention的actual SCF loop、exact fusion、three-state recurrence和static main/tail，relations保持current | `TemporalPlan/TemporalState/TemporalScopeId`、静态wave清单、按ordinal恢复operation、multi-use隐式clone或基于SPM causal root的预测性retile |
+| online-attention decomposition | current module只保留actual QK、scale/mask、row max/sum、state scale、PV及既有SCF/spatial merge/endpoint；layout入口graph/online attention均为零 | 重新分类FA/FD、新建loop/Tile/merge owner、数值选择、future action/value inventory或第二条decomposition path |
 | atomic current-IR mechanics | movement cleanup、SCF execution rewrite、TileRegion-to-Instr、fresh completion和actual memory/target leaf | combined complete materializer、hidden repair或跨stage plan |
 | policy retirement | none与search在重启前均typed unavailable，不发布package | 旧route、cross-policy fallback或test-only product facade |
 
@@ -98,7 +99,6 @@ LLVM/MLIR规范复审→更新状态并提交”。不得以全局原则替代�
 
 | 顺序 | Work item | 单一责任与输出 | 精确完成条件 | 本项固定执行流程 |
 | ---: | --- | --- | --- | --- |
-| 14 | `online-attention-decomposition` | 消费第13项已经完成parallel/K2 tiling的current online-attention；一个确定性transformation直接生成actual QK、scale/mask、Maximum/Sum/Accumulator update、PV与tensor slices并擦除该op | 不选择FA/FD、tile、Tile或merge owner，不新建loop/search轴，不重跑e-graph/generic tile-and-fuse；每个tiled online-attention只分解一次；layout入口graph/online attention均为0；不clone TileModule owner、不恢复future inventory/replay | 读AGENTS/progress→读05--07/10/19及本项矩阵→调研IREE AggregatedOp decomposition和MLIR structured decomposition→查pinned Linalg/Tensor API→实现单一current-op decomposition pattern→fresh 1024/1025/1031 FA/FD actual Linalg、failure atomicity、relation retarget及第15项layout-input witness→重读设计/完整diff/MLIR复审→更新并提交 |
 | 15 | `current-ir-layout-bufferization` | 消费第14项最终current SSA/use graph，唯一拥有完整value/use layout domain、op tuple constraints、query-local exact PBQP assignment/apply、IndexRelation+PhysicalLayoutRelation exact view、function-boundary/region-local bufferization和observable output DPS；删除legacy `structuredNodeId`-keyed buffer attribution | solver与flat oracle一致；layout-polymorphic op传播assignment并只为不兼容edge创建materialization；exact view零allocation/copy；soft projection unknown时整组禁用；bufferization恰一次；冗余publication copy为0、必要copy有witness并typed；same-layout/unused为0、shared conversion一个SSA；actual endpoint/operation/effect足以驱动layout与后续memory，无operation/node parity relation；输出直接被第16项消费 | 读AGENTS/progress→读05--11/19及本项矩阵→调研PBQP、resource-aware projection、One-Shot Bufferization和MLIR layout/view实现→查pinned interfaces/API→补value/use domain、tuple factor、assignment apply、physical-map view和relation listener，删除legacy node attribution并复审已有DPS/copy实现→fresh solver oracle、layout/copy/inventory及第16项direct-input witness→重读设计/完整diff/MLIR复审→更新并提交 |
 | 16 | `current-ir-downstream-orchestration` | 在不建立complete materializer的前提下，把第15项layout-resolved owner依次交给current movement/boundary、execution-structure immediate apply、TileRegion→Instr、worker/order/fresh completion、standalone Tile fanout和唯一`compileCanonicalInstructionTilesToExecutable` actual leaf；每个atomic stage仍由原owner实现，orchestration只固定current-IR调用与typed handoff | movement all-and-only消费external endpoint relation并形成physical TileRegion；local/DDR/peer、Serialized/pipelined、tail/rotating slot、Instr、join/wait硬件witness与actual MiniMalloc全部到达；standalone fanout只move body；legacy combined facade和`CompleteCandidatePreparation`为0；输入choice不枚举、失败不repair/fallback、Accepted owner不重建 | 读AGENTS/progress→读06--14/19及本项矩阵→读movement/completion/memory硬件事实→调研MLIR staged lowering与LLVM pass-pipeline ownership→查pinned conversion/SCF API→逐stage接唯一current transform并删除隐藏facade→fresh 1024/1025/1031 movement→execution→Instr→completion→fanout→leaf与typed failure验证→重读设计/完整diff/硬件/MLIR复审→更新并提交 |
 | 17 | `baseline-current-ir-integration` | 重新启用`none`：baseline controller产生固定Spatial/Region choice，第12项actualize后从current operations立即应用full-local temporal及后续固定choice，依次调用第12--16项atomic stages；actual capacity rejection创建新的完整attempt，其它typed状态停止 | baseline不调用search state/domain/materializer，不构造`CanonicalBaselinePlan`或shadow reclose；每region一semantic root；e-graph→spatial/region→online state→temporal tile/fuse→decomposition→layout→movement→execution→Instr/completion→leaf均到达；fresh current FP16 LLaMA none≤15分钟、package唯一、strict readback/no-card通过；按current pipeline重新建立并实际执行8个FP16/BF16产品case、24个calibration no-card case及`WaferTargetNumericBackend` source→model纵向，不恢复旧registration或协议 | 读AGENTS/progress→读05--17及本项矩阵→确认current baseline/source/package/target-model边界→读相关硬件/ABI事实→调研deterministic baseline current-IR controller→查pinned API→实现独立fixed-choice controller并重启none route→fresh focused矩阵、none package/no-card与configured target-model纵向→重读设计/MLIR复审→更新并提交 |
@@ -113,7 +113,6 @@ LLVM/MLIR规范复审→更新状态并提交”。不得以全局原则替代�
 
 | Work item | Current设计authority | 本计划拥有的内容 |
 | --- | --- | --- |
-| 14 | 05号4.4/6.3、06号5.4 | 已tiled online-attention到Linalg/Tensor/SCF的唯一decomposition与stage gate |
 | 15 | 06号6.1、08号physical relation、19号bufferization/MLIR规则 | value/use PBQP apply、exact view、一次bufferization与output DPS checkpoints |
 | 16 | 06号6.2--6.6、09--14号memory/movement/completion/target合同 | atomic stage orchestration、typed handoff、fanout和actual leaf reachability |
 | 17 | 06号7.1/7.2、16号产品验证合同 | 独立baseline controller重启和current产品矩阵 |
@@ -121,59 +120,7 @@ LLVM/MLIR规范复审→更新状态并提交”。不得以全局原则替代�
 | 19 | 06号10.3、19号instrumentation规则 | 只读inventory、work/wall/RSS和optimization on/off证据 |
 | 20 / Q53 | 06号10.4、15--17号package/runtime合同、本计划验收矩阵 | 同源双policy acceptance及host/no-card到board-ready的执行步骤 |
 
-### 14. Online-attention decomposition实施设计
-
-```text
-Pipeline position:
-- Upstream IR / input:
-  第13项输出的同一candidate owner；parallel/K2 tiling、main/tail和三状态recurrence均已由actual SCF/SSA表达的current
-  `wafer.linalg_ext.online_attention`，以及live endpoint relations。
-- Current stage responsibility:
-  对每个current online-attention一次性生成actual QK contraction、scale/mask、Maximum/Sum/Accumulator update、PV和tensor slices，随后
-  擦除该op；保留第13项既有loop/state和第12项既有spatial merge/endpoints。
-- Output IR / files:
-  verifier-valid structural TileModule/TileRegion；graph/online attention均为零，QK/PV、state update、spatial contribution、merge和
-  finalize均由actual Linalg/Tensor/SCF/SSA表达；没有layout、movement、Instr或completion。
-- Downstream consumer:
-  第15项current-IR layout/view/bufferization。
-- User-level driver / named pipeline:
-  05号算法owner提供一个policy-free atomic decomposition；focused pipeline和第17/18项调用同一实现。
-- Explicit non-goals:
-  不重新识别或改选FA/FD，不选择或创建tile/loop/contribution/merge Tile，不重跑generic tile-and-fuse/e-graph，不选择layout、route、
-  worker或completion，不创建attention-specific Tile/Instr op，不恢复future inventory。
-- Completion criteria:
-  每个tiled occurrence一次分解、state/result maps、bounded scratch、relation retarget、attention-zero stage gate、failure atomicity和第15项
-  direct witness按本项矩阵闭合。
-```
-
-Preflight只检查current online-attention自身的Q/K/V/scale/mask与三个DPS state types、indexing maps、tiled K2 range和已有SCF state ties。
-Spatial contribution、merge Tile和temporal size/order已由current parent/SSA/control flow表达，不作为本项参数，也不通过planning identity恢复。
-Malformed state/result map、缺失DPS tie、K2 slice与current op domain矛盾或endpoint stale为typed contract failure；preflight不创建IR。
-
-Decomposition在每个online-attention当前位置创建QK contraction、scale/mask、block maximum/exp/sum、PV和对已有
-Accumulator/Maximum/Sum的state update。Scratch只覆盖该current M/output tile与K2 block，不创建完整score/probability tensor。FA/FD使用
-同一pattern；二者差异已经体现在第12项的Tile placement/merge SSA和第13项的local loops中。
-
-首次mutation后全部create/replace/erase使用同一rewriter/listener。Success以decomposed values替换三个op results、retarget live boundary/
-output relation并擦除online op；不改写第12项spatial merge或第13项loop structure。Failure销毁candidate，不换algorithm、不退回graph attention
-或另一builder。Stage check要求layout入口`wafer.linalg_ext.attention`与`wafer.linalg_ext.online_attention`均为零。
-
-当前active source已经包含第12项提交的online-attention ODS/interfaces和actual per-Tile state，以及第13项提交的current-op
-parallel/K2 loops、three-state recurrence、main/tail和exact fusion；第14项production decomposition尚未实现。实现顺序为：
-
-1. 实现一个current-op decomposition pattern并闭合QK/state/PV maps与bounded scratch；
-2. 接result/endpoint relation listener、attention-zero stage gate、第15项layout-input witness及failure atomicity；
-3. 扫描并拒绝`AttentionWorkDescription`、operation ordinal mapping、old prepared replay或第二个decomposition path重新进入active依赖。
-
 ## 逐项覆盖矩阵
-
-### 14. Online-attention decomposition
-
-| 输入等价类 | Shape / 结构 | Typed failure | 精确断言 | 下游witness |
-| --- | --- | --- | --- | --- |
-| tiled FA/FD local state step | FP16/BF16；batch/head/M/K1/K2/N rank 4--6；K2 block来自第13项1024/1025/1031 main/tail | current op/state/map无法形成完整QK/state/PV decomposition时typed unsupported；mutation失败销毁candidate | 每个online op一次；QK、scale/mask、Maximum/Sum/Accumulator update、PV all-and-only；使用既有three-state SSA和loop，不新建loop；scratch不超过current M tile×K2 block；无完整score/probability tensor | 第15项为actual operand/state/scratch建立layout domain |
-| current-IR stage boundary | attention邻接ordinary producer/consumer、single/multi-use、multi-root、FD remote state、call/collective barrier | 第13项失败保持其typed状态；decomposition失败不运行layout | 不重跑e-graph/generic fusion、不clone TileModule owner；spatial merge与SCF loop不变；external SSA/endpoint relation同步rewire；layout入口graph/online attention均为0 | 第15项stage verifier接受actual Linalg/Tensor/SCF并拒绝任何residual |
-| deleted-inventory non-recurrence | generic/FA/FD与第11项保留的semantic interface、空间约束和fixtures | new lowering需要future action/value/materialization ID即为contract failure | active source不恢复`AttentionWorkDescription`、prepared replay、nested invocation、operation ordinal mapping或零consumer Linalg builder；coupled semantic query只返回current maps/grouping | fresh build、05号interface/fixture及第15项direct consumer |
 
 ### 15. Current-IR layout and bufferization
 

@@ -1,6 +1,7 @@
 //===- SpatialRegionMaterializationTest.cpp ---------------------------===//
 
 #include "Wafer/Transforms/Linalg/SpatialRegionMaterialization.h"
+#include "Wafer/Transforms/Linalg/OnlineAttentionDecomposition.h"
 #include "Wafer/Transforms/Linalg/StructuredTiling.h"
 #include "Wafer/Transforms/Linalg/TemporalTiling.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
@@ -1094,7 +1095,7 @@ module {
 }
 
 TEST(SpatialRegionMaterializationTest,
-     MaterializedFAAndFDFeedOnlyCurrentOperationTemporalTiling) {
+     MaterializedFAAndFDFeedTemporalTilingAndModeNeutralDecomposition) {
   for (llvm::StringRef algorithm : {llvm::StringRef("flash_attention"),
                                     llvm::StringRef("flash_decoding")}) {
     SCOPED_TRACE(algorithm.str());
@@ -1203,6 +1204,44 @@ TEST(SpatialRegionMaterializationTest,
         wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
             materialized->module->getOperation(), materialized->relations)));
     EXPECT_TRUE(mlir::succeeded(mlir::verify(*materialized->module)));
+
+    const unsigned onlineAfterTiling =
+        countOps<wafer::LinalgExtOnlineAttentionOp>(
+            materialized->module->getOperation());
+    const unsigned loopsBeforeDecomposition =
+        countOps<mlir::scf::ForOp>(materialized->module->getOperation());
+    wafer::OnlineAttentionDecompositionFailure decompositionFailure;
+    auto decomposed = wafer::decomposeOnlineAttention(
+        *materialized->module, materialized->relations, &decompositionFailure);
+    ASSERT_TRUE(mlir::succeeded(decomposed)) << decompositionFailure.detail;
+    EXPECT_EQ(decomposed->decomposedOperations, onlineAfterTiling);
+    EXPECT_EQ(decomposed->qkContractions, onlineAfterTiling);
+    EXPECT_EQ(decomposed->pvContractions, onlineAfterTiling);
+    EXPECT_EQ(countOps<wafer::LinalgExtAttentionOp>(
+                  materialized->module->getOperation()),
+              0u);
+    EXPECT_EQ(countOps<wafer::LinalgExtOnlineAttentionOp>(
+                  materialized->module->getOperation()),
+              0u);
+    EXPECT_EQ(countOps<mlir::scf::ForOp>(materialized->module->getOperation()),
+              loopsBeforeDecomposition);
+    EXPECT_EQ(materialized->relations.boundaryRelations.size(), boundaryCount);
+    EXPECT_EQ(materialized->relations.structuralOutputs.size(), outputCount);
+    for (auto [index, relation] :
+         llvm::enumerate(materialized->relations.boundaryRelations))
+      EXPECT_EQ(
+          std::make_pair(relation.sourceEndpoint.getAsOpaquePointer(),
+                         relation.destinationEndpoint.getAsOpaquePointer()),
+          boundaryEndpoints[index]);
+    for (auto [index, relation] :
+         llvm::enumerate(materialized->relations.structuralOutputs))
+      EXPECT_EQ(relation.endpoint.getAsOpaquePointer(), outputEndpoints[index]);
+    EXPECT_TRUE(
+        mlir::succeeded(wafer::verifyOnlineAttentionDecompositionComplete(
+            *materialized->module)));
+    EXPECT_TRUE(mlir::succeeded(
+        wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
+            materialized->module->getOperation(), materialized->relations)));
   }
 }
 

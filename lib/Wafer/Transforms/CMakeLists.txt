@@ -1,3 +1,4 @@
+add_subdirectory(Tile)
 add_subdirectory(Linalg)
 add_subdirectory(StableHLO)
 
@@ -5,7 +6,6 @@ add_mlir_library(WaferTransforms
   Module/MaterializeExecutionMesh.cpp
   Module/MaterializeTargetTopology.cpp
   Module/StripTargetMetadata.cpp
-  Tile/ExecutionStructure.cpp
   Instr/BufferizeInstrFunctionBoundaries.cpp
   Instr/DirectDTETransport.cpp
   Instr/LifetimeAnalysis.cpp
@@ -18,9 +18,6 @@ add_mlir_library(WaferTransforms
   Instr/StaticMemoryPacking.cpp
   Instr/TileMemoryPlanning.cpp
   Passes.cpp
-  Tile/LayoutOptimization.cpp
-  Tile/StructuredBufferRelations.cpp
-  Tile/StructuredNodeUseIndex.cpp
 
   DEPENDS
   WaferTransformPassesIncGen
@@ -31,6 +28,7 @@ add_mlir_library(WaferTransforms
   WaferLinalgTransforms
   WaferPlanning
   WaferStableHLOTransforms
+  WaferTileTransforms
   WaferTarget
   MLIRArithDialect
   MLIRAsyncDialect

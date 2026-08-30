@@ -174,6 +174,10 @@ Transforms与Conversion分别拥有自己的`Passes.td`、generated declaration�
 不能让`WaferTransforms`聚合或反向链接Conversion。StableHLO同层rewrite由`WaferStableHLOTransforms`拥有，optional
 StableHLO/Shardy依赖不进入通用Transforms target。
 
+`WaferLinalgTransforms`与`WaferTileTransforms`是同层独立library：前者拥有structured/attention rewrite，后者拥有current relation listener、
+layout cleanup和execution-structure mechanics。Linalg需要retarget relation时只依赖`WaferTileTransforms`，二者都不反向依赖umbrella
+`WaferTransforms`；umbrella只组合公开transform components和Instr/Module passes，不能用static archive链接顺序掩盖component cycle。
+
 ### 4.3 Conversion与CodeGen
 
 - StableHLO legalization只在`Conversion/StableHLOToLinalg`；conversion前后的同层normalization分别回到

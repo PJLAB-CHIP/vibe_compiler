@@ -1,8 +1,10 @@
 add_mlir_library(WaferLinalgTransforms
+  AttentionMath.cpp
   AttentionMatching.cpp
   ConstantTensorFolding.cpp
   NormalizeAttention.cpp
   NormalizeStructuredGraph.cpp
+  OnlineAttentionDecomposition.cpp
   OnlineAttentionMaterialization.cpp
   SpatialRegionMaterialization.cpp
   StructuredGraphEGraph.cpp
@@ -16,6 +18,7 @@ add_mlir_library(WaferLinalgTransforms
   WaferAnalysis
   WaferIR
   WaferPlanning
+  WaferTileTransforms
   MLIRArithDialect
   MLIRDialectUtils
   MLIRFuncDialect

@@ -101,4 +101,15 @@ def NormalizeStructuredTensorGraphPass
   ];
 }
 
+def DecomposeOnlineAttentionOpsPass
+    : Pass<"wafer-decompose-online-attention-ops", "mlir::ModuleOp"> {
+  let summary =
+      "Decompose current online attention into Linalg tensor operations";
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::linalg::LinalgDialect",
+                           "mlir::math::MathDialect",
+                           "mlir::tensor::TensorDialect",
+                           "wafer::WaferDialect"];
+}
+
 #endif // WAFER_TRANSFORMS_LINALG_PASSES_TD

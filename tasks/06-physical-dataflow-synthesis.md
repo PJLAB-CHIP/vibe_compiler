@@ -288,6 +288,10 @@ stateful `TilingInterface` SCF tiler。它不查看内部QK/PV，也不预构造
 `online_attention`确定性分解成QK contraction、scale/mask、Maximum/Sum/Accumulator update、PV和tensor slices；不重新选择tile、
 contribution或merge owner，不接收future inventory，也不clone整个candidate owner。进入layout时两种attention op都必须为零。
 
+Decomposition使用一个module-level preflight/apply kernel：score map只包含current B/M/K2 coordinates，QK reduction K1，row max/sum和PV
+reduction K2；scale、mask、`math.exp`与三个DPS state按05号固定dataflow形成actual Linalg/Tensor/arith/math。它不新增loop或finalize，
+FA/FD共享同一实现；既有SCF loop、FD endpoint和selected merge只由current parent/SSA保留。Named pipeline与controller adapter复用该kernel。
+
 ## 6. Current IR 上的 physical realization
 
 ### 6.1 Layout、view 与 bufferization

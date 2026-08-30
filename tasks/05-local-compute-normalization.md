@@ -270,6 +270,12 @@ completion字段：FA/FD差异已经由graph op验证并由actual contribution c
 `online_attention`完成spatial/temporal tiling后由一个确定性decomposition pattern展开为QK、scale/mask、online state update和PV；该pattern
 不选择tile、Tile、layout、movement、worker或completion。
 
+Decomposition从current maps构造score map`(B, M, K2)`：QK只reduction K1，随后按current op顺序应用scale和optional additive mask；
+Maximum/Sum只reduction K2，Accumulator由probability与V的K2 contraction更新。Old Maximum/Sum/Accumulator分别通过
+`exp(oldMaximum - newMaximum)`缩放后作为本block的DPS init，因此已有SCF loop自然承载running state。Score/probability复用一个
+current tensor destination，shape只含本次actual batch/head、M tile和K2 block，不含K1或N。该变换保持current `math.exp`、scale/mask
+顺序和dtype语义；数值选择不属于本stage。
+
 ## 5. Attention Algorithms
 
 ### 5.1 共同 online state
@@ -492,6 +498,10 @@ Temporal tiling不读取`RegionExecutionId`或pre-materialization `TemporalPlan`
 Online-attention decomposition只读取已经tiled的current op和三个DPS state，创建actual QK、scale/mask、Maximum/Sum/Accumulator update、PV
 以及必要tensor slices，然后擦除该op。它不重跑全图e-graph或generic tile-and-fuse，不根据future inventory重放IR，不clone整个candidate
 owner，也不创建worker、Instr、join或wait。无法分解时销毁candidate，不保留online-attention进入layout，也不调用另一builder。
+
+Module-level transformation在首次mutation前验证全部online op的static tile type、roles和maps；成功后用同一rewriter/listener逐op替换，
+不创建或改写SCF loop、TileRegion signature、spatial merge/finalize或boundary endpoint。Named pipeline与compiler adapter调用同一kernel；
+layout handoff verifier要求graph/online attention均为零。
 
 compute先到Linalg而不是attention emitter直接创建`wafer.tile`，以复用Linalg indexing/verifier和10号通用structured-to-tile lowering；
 但该Linalg只存在于candidate top-level TileModule subtrees transaction内部，不是公开stop stage。Rejected/loser subtree整体销毁，final winner不重建。
