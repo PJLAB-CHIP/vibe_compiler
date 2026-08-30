@@ -388,6 +388,10 @@ components；一状态变量可在任意degree精确传播，随后R0/R1/R2与re
 Assignment选中后立即在各自candidate owner上创建actual
 view/alias/allocation/layout materialization，随后销毁factor graph和assignment；下游不读取solver对象。
 
+第17、18项的每个accepted product attempt必须恰调用一次PBQP并得到`Optimal`；记录variables、factors、solver work和wall以及apply后的
+actual materialization数。任一规定产品case返回`Indeterminate`都不能完成对应work item，也不能通过提高timeout、放宽work budget、greedy
+assignment或layout fallback掩盖；应优化exact factor formulation、connected-component reduction或有证明的dominated-state约简。
+
 Current实现以buffer-equivalent SSA value group、每个实际consumer use和op layout tuple为query-local变量。DPS result/destination、
 SCF iter-arg/yield/result以及已证明的alias view只共享同一value-group变量；不能用source structured node、operation ordinal或
 bufferization后的反查恢复对应。多operand tuple用一个只枚举该op当前interface明确支持tuple的auxiliary variable编码，auxiliary
