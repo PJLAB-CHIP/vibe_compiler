@@ -207,7 +207,7 @@ position、Attention/decode/mask专用matcher或公共pass残留。
   arithmetic overflow和exact budget boundary。Overflow必须是`Indeterminate`，不能成为`NoSolution`。Tiny oracle之外，同一solver必须由
   1024/1025/1031 actual baseline与search layout stage直接调用；
 - baseline每个actual attempt只调用一次共享PBQP并立即apply，不建立layout frontier；search以相同assignment为首proposal但仍枚举
-  完整raw layout域。PBQP on/off、solver budget和soft-cost availability不得改变raw legal域或exhaustive actual accepted set；
+  完整raw layout域。PBQP on/off和solver budget不得改变raw legal域或exhaustive actual accepted set；
   whole-search budget导致的访问顺序/best-found差异必须保持partial/budgeted coverage并显式报告；
 - cheap structural legality、exact coverage、topology symmetry、canonical dedup和已证明performance bound只有在不删除合法最优解时才能在
   state expansion前剪枝；SPM capacity没有plan-side early rejection；
@@ -255,10 +255,10 @@ exact continuation和admissible bound表示时可为`feasible-with-bound`；obje
   qualified exact route才有directed-link work；
 - dependency phases相加，独立branch/资源取并发最大值，只有显式double/triple buffering才用steady-state II；
 - estimate只排priority，不剪枝；lower bound逐prefix与flat completion minimum比较不高估；raw work与term source不写入selected IR。
-- PBQP hard factor只表达current interface/encoding的exact legality；soft factor只使用同一cohort内完整可比较的actual-derived terms。
-  当前layout cost只能是`instruction_tick × (exact layout-dependent compute instructions + exact unique conversion descriptors)`；
-  shared conversion只计一次。Unknown term不能按0或任意权重混入；local-SPM bytes、DDR/NoC和SPM capacity不得提前进入；无soft cohort时
-  只声明hard-feasible canonical assignment，不声明performance optimal。Apply后actual新增Instr必须与PBQP projection一致；
+- PBQP hard factor只表达current interface/encoding的exact legality；finite objective只计unique actual layout materialization，shared
+  conversion在同一dominance/effect cohort内只计一次，fixed-compute result publication按实际materialization计数。Descriptor、engine、
+  instruction、local-SPM、DDR/NoC和SPM capacity不进入layout PBQP；等materialization assignment只做稳定semantic tie-break。
+  Apply后的actual descriptor和engine work由下游cost model独立读取，PBQP不声明硬件performance optimal；
 
 ## 5. Completion、memory 与 transport gates
 

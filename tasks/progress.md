@@ -34,7 +34,8 @@ producer在第15项后无完整intermediate allocation/copy。第14项已经将�
 online-attention确定性分解为QK、scale/mask、row max/sum、state scale和PV的actual Linalg/Tensor/arith/math，保留既有loop、spatial merge和
 endpoint，layout入口graph/online attention为零。第15项已经从current value/use/op tuple求解并立即应用exact PBQP canonical layout，
 形成shared actual conversion、observable DDR subview、cross-Tile source piece及一次function/region-local bufferization；旧node-ID buffer
-attribution和第二条Instr bufferization入口已经删除，performance descriptor projection在第16项抽取shared exact query前明确hard-only。
+attribution和第二条Instr bufferization入口已经删除；PBQP唯一有限目标是最少unique actual materialization。第16项抽取的shared exact
+descriptor query只服务actual lowering、inventory和最终candidate cost，不反向参与layout assignment。
 此前的actual leaf、Instr completion、execution
 structure、movement、structured logical normalization和legacy shadow-materializer retirement只作为输入，不在current队列重做。
 none和search在各自controller重启前均明确返回typed unavailable且不发布package。

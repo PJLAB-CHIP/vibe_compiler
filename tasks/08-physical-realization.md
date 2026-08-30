@@ -80,13 +80,11 @@ Layout domain builder只读current structural TileRegion，为每个SSA value、
 Baseline每个attempt只求解并应用一次，不建立layout frontier；search先访问同一assignment，再保留完整raw合法域。
 PBQP budget exhaustion对baseline是typed resource failure，对search只表示proposal unavailable，均不产生layout legality结论。
 
-PBQP hard factor只表达current interface和physical encoding能够证明的合法性。Soft factor只能使用final objective在本stage可精确
-投影的NE FP16/BF16、Vector/CT FP16/BF16、Vector/CT F32、SPM movement和instruction-control work，并分别使用显式target
-performance profile中的对应rate；不能退回统一instruction权重。Shared conversion的actual descriptor和dynamic execution只计一次，
-same-layout、metadata view和alias为0。若current IR尚不能精确给出layout-dependent work、execution multiplicity或descriptor count，
-则整个soft term set禁用，PBQP只使用全assignment semantic tie-break，并明确不宣称performance optimal。DDR/NoC只有在current
-endpoint能够精确投影时才进入；SPM capacity始终留给MiniMalloc。Unknown term不能按0参与比较，checked arithmetic overflow返回
-`Indeterminate`，不能与hard infinity混合。
+PBQP hard factor只表达current interface和physical encoding能够证明的合法性。Finite objective只计最终实际创建的unique layout
+materialization：同一dominance/effect cohort中的shared conversion计一次，per-use conversion、不同target layout及fixed-compute result
+publication分别计数，same-layout、metadata view和alias为0。等materialization数的assignment使用stable semantic tie-break。
+PBQP不读取NE/Vector/CT throughput、descriptor、instruction、DDR/NoC、SPM movement或capacity；这些信息只由物化后的current IR下游
+分析和最终candidate objective消费。Checked materialization count overflow返回`Indeterminate`，不能与hard infinity混合。
 
 Solver output在mutation前重新验证，然后由唯一layout transformation立即创建或复用actual SSA：same-layout不建op，exact metadata
 view绑定原storage，多个use共享同一`(source, target layout)` conversion，per-use conversion保持独立，unused conversion不生成。
@@ -106,10 +104,8 @@ encoding pieces生成actual descriptor；target descriptor只能表达projected-
 
 Value/use assignment采用current SSA buffer-equivalence group、consumer-use和op-tuple auxiliary factor；不使用structured-node ID或
 bufferization后的operation parity。Shared conversion通过每个dominance/effect cohort的三态activation factor只计一次，并由apply创建
-恰好一个actual SSA result。Performance soft cost只有在同一只读descriptor query能对所有可能materialization给出exact bytes、command
-count、multiplicity和rate时才启用；否则整次PBQP hard-only，不能用估算descriptor、统一instruction权重或缺项的局部cost排序。
-Current第15项因该query仍在Tile-to-Instr私有实现中而全部hard-only；exact materialization count只确定canonical assignment。Shared
-descriptor analysis在直接下游抽取并接回前，不声明PBQP performance optimal。
+恰好一个actual SSA result。Descriptor analysis即使在直接下游抽为shared query，也只服务actual lowering、inventory和最终winner cost，
+不接回layout PBQP。PBQP的`Optimal`只表示unique actual materialization数量最少。
 
 Observable output在本stage先从current TileRegion yield中的exact piece relation绑定到entry function的DDR destination subview，再运行
 一次One-Shot Bufferization。TileRegion tensor boundary是明确保留的partial boundary；内部compute use、view/alias、allocation和copy必须

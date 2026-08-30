@@ -1268,7 +1268,6 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
                                   uint64_t workLimit) {
   LayoutOptimizationResult result;
   result.statistics.invocations = 1;
-  result.statistics.hardOnlyInvocations = 1;
   if (!module || workLimit == 0) {
     result.status = workLimit == 0 ? ExactPBQPStatus::Indeterminate
                                    : ExactPBQPStatus::BrokenContract;

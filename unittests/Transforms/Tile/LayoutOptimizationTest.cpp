@@ -216,8 +216,8 @@ TEST_F(LayoutOptimizationTest,
     LayoutOptimizationResult result =
         resolveCurrentLayoutsAndBufferize(*module, relations);
     ASSERT_TRUE(result.succeeded()) << result.detail;
+    EXPECT_EQ(result.statistics.invocations, 1u);
     EXPECT_EQ(result.statistics.bufferizationInvocations, 1u);
-    EXPECT_EQ(result.statistics.hardOnlyInvocations, 1u);
     EXPECT_GE(result.statistics.valueGroups, 1u);
     EXPECT_GE(result.statistics.useBindings, 1u);
     EXPECT_EQ(result.statistics.selectedMaterializations, 1u);

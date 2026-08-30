@@ -361,30 +361,20 @@ materialization；缺少base-offset/range/alias/effect proof的slice/insert继�
 不进入PBQP之后的side table。
 
 PBQP factor graph只在一次query内存在：value/use是当前SSA的局部变量，op tuple constraint通过auxiliary factor表达；hard factor以
-显式infinity拒绝不支持的layout tuple、alias或use binding。Soft cost必须是final actual objective在layout stage的精确投影，不能用
-统一的instruction权重代替不同engine的工作：
+显式infinity拒绝不支持的layout tuple、alias或use binding。唯一优化目标是本次assignment实际创建的layout materialization数量：
 
 ```text
-layout_cost_ps =
-    time(exact layout-dependent NE FP16/BF16 logical ops, NE throughput)
-  + time(exact layout-dependent Vector FP16/BF16 logical ops, Vector FP16/BF16 throughput)
-  + time(exact layout-dependent Vector F32 logical ops, Vector F32 throughput)
-  + time(exact layout-conversion SPM movement bytes, SPM service rate)
-  + exact layout-dependent instruction executions * instruction_issue_ps
+layout_cost =
+    unique shared/per-use conversion materializations
+  + fixed-compute-result publication materializations
 ```
 
-这里的Vector work最终由CT family执行；instruction term只表示发射/控制开销，不能替代NE或Vector执行时间。一个shared
-conversion的actual descriptor及其dynamic execution只计一次，per-use conversion分别计；same-layout、exact metadata view和alias计0。
-Layout conversion同时产生的Vector或SPM movement work必须进入各自term，不能只计descriptor。DDR/NoC work只有在current endpoint和
-choice-local transformation contract能够精确投影时才进入PBQP；否则留给第9项物化后的actual movement和最终candidate objective。
-SPM footprint/capacity仍只由MiniMalloc判断，任何duration term都不参与legality。
-
-吞吐率和每instruction发射开销来自baseline/search共享的显式target performance profile，并携带其证据边界；它们不是IR语义或
-legality事实。某项layout-dependent work、static execution multiplicity或对应rate不能从current IR、current interface和显式profile
-精确取得时，该soft term对整个solve禁用，不能把单个unknown按0、统一`instruction_tick`、极大值或任意权重参与。没有可比较soft
-term时，PBQP只在hard-feasible assignment间使用全局semantic tie-break，并明确不宣称performance optimal。Hard infinity只表示已证明
-illegal；finite cost的加法、乘法和work-to-time换算使用checked arithmetic，任一影响比较的overflow返回`Indeterminate`，不能转成
-infinity或`NoSolution`。
+每个最终会创建一个actual `bufferization.alloc_tensor` layout copy的选择计1；same-layout、exact metadata view、alias和inactive
+activation计0。同一dominance/effect cohort中的shared conversion只计一次，不能按use重复计价；不同cohort或不同target layout分别计数。
+该目标不按tensor bytes加权，也不读取NE/Vector throughput、descriptor、instruction、DDR/NoC、SPM duration或其它硬件性能信息。
+等materialization数的assignment使用完整stable semantic tie-break。Hard infinity只表示已证明illegal；finite materialization count溢出
+返回`Indeterminate`，不能转成infinity或`NoSolution`。PBQP的`Optimal`只表示在当前合法layout域内materialization数量最少，不表示
+最终硬件性能最优。
 
 Solver必须区分`Optimal`、`NoSolution`、`Indeterminate`和`BrokenContract`。Factor graph先按stable variable index分解connected
 components；一状态变量可在任意degree精确传播，随后R0/R1/R2与residual core均受同一checked work budget约束；
@@ -404,16 +394,9 @@ primary layout一致的第二态；use factor要求选择该layout的use对应�
 存在intervening alias write/free或dominance不能覆盖全部use时建立不同cohort。Apply必须与activation一一对应创建一个SSA
 materialization；same-layout、inactive和没有use的activation不创建operation。
 
-Soft projection只在每个可能的`materialized` state都能从current type/relation得到exact movement bytes、target descriptor数量、
-static execution multiplicity及显式profile rate时整体启用。它使用与后续movement lowering相同的只读descriptor query；任一候选
-state为unknown、unsupported或overflow时，本次solve禁用全部performance soft costs，仅保留hard legality和完整semantic tie-break，
-不能混用一部分可计算term制造不可比较的winner。Apply后从new current IR fresh重算conversion/descriptor/work并与本次投影逐项一致；
-不保存descriptor plan或future Instr inventory。
-
-当前第15项落地时，exact descriptor query仍由后续Tile-to-Instr owner私有，不能在不形成反向library依赖或复制算法的情况下对全部
-layout state精确调用；因此current layout solve明确走上述hard-only分支。PBQP仍以exact unique materialization count选择canonical
-assignment，但该计数不是performance soft cost，也不宣称performance optimal。第16项把同一只读descriptor query提到shared analysis后，
-才可在不改变raw layout域、hard legality或apply路径的前提下启用对应resource projection；在此之前禁止用descriptor estimate代替。
+Target descriptor query不进入layout PBQP。第16项可以把该query抽为shared只读analysis，服务actual lowering、inventory和最终candidate
+cost/winner比较，但不能改变第15项的layout合法域或materialization-count objective。PBQP apply后，下游只从new current IR fresh计算
+descriptor、engine work和movement；不保存descriptor plan或future Instr inventory，也不把这些性能信息反向写入layout assignment。
 
 #### 6.1.2 Output DPS 与一次bufferization
 

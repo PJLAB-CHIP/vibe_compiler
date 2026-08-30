@@ -31,7 +31,6 @@ struct LayoutOptimizationStatistics {
   uint64_t boundarySourceViewsElided = 0;
   uint64_t necessaryCopies = 0;
   uint64_t redundantPublicationCopies = 0;
-  uint64_t hardOnlyInvocations = 0;
 };
 
 struct LayoutOptimizationResult {
@@ -47,11 +46,9 @@ struct LayoutOptimizationResult {
 /// region-local One-Shot Bufferization exactly once.  The supplied relations
 /// are retargeted in the same transaction and never refer to source graph IDs.
 ///
-/// The current implementation deliberately runs PBQP without performance soft
-/// costs: the exact target descriptor query is not yet available at this IR
-/// boundary.  It still minimizes the exact number of unique actual layout
-/// materializations and reports the invocation as hard-only; it never claims a
-/// performance-optimal assignment.
+/// PBQP minimizes the exact number of unique actual layout materializations.
+/// Target descriptor, engine and execution costs belong to downstream actual
+/// IR analysis and never participate in layout assignment.
 LayoutOptimizationResult
 resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
                                   StructuredMaterializationRelations &relations,
