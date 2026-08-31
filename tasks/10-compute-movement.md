@@ -213,7 +213,9 @@ relation exact、其它uses/effects/alias闭合且final destination cover可证�
 Current实现由`lowerStructuredComputeToTile`直接消费bufferized Linalg current IR。Named与generic contraction从iterator、maps和exact
 multiply-accumulate region得到M/K/N；多batch/head维按current maps显式transpose并压成target rank-3 GEMM，结果再恢复source logical
 order。`reshape`只有通过`TransferRealizability::proveStaticReshapeMetadataView`才成为alias；否则立即物化`reshape_copy`。Reduction、scalar
-expression、dtype convert与ordinary convolution同样只读current region/type/maps。转换前完成全module preflight，转换后可执行Linalg必须为0，
+expression、dtype convert与ordinary convolution同样只读current region/type/maps。Parallel elementwise若使用可逆result permutation，
+conversion先用inverse把所有operand maps同步换到result coordinates，再生成identity-result Tile elementwise；不可逆或非permutation result
+map typed fail。转换前完成全module preflight，转换后可执行Linalg必须为0，
 不保留op ordinal、buffer version或source-node attribution。
 
 `materializeTileBoundaryMovement`消费每个current tensor/memref bridge及`StructuredBoundaryRelation`恰一次：外部和同Tile跨Region值变成
@@ -252,6 +254,13 @@ route或staging sequence。
 dependency，并生成对应issue op；最终worker/issue order和latest-necessary completion在11定义的actual Instr sibling上
 物化，不能携带pipeline recipe或shadow schedule跨过本边界。输入没有显式execution structure时，conversion不得自行选择
 pipeline、复制buffer或构造rotating slot。
+
+Execution-structure closure还负责把可证明dead-at-write的loop-carried destination显式化：若一个functional Tile result只由同一
+`scf.for`的对应`scf.yield`消费、result与iter_arg类型相同，并且旧iter_arg的全部actual use都严格位于该operation之前，则map-free
+elementwise、layout materialization和same-shape copy改写为已有的destination-style Tile op并直接写入iter_arg；elementwise还允许旧
+iter_arg由该operation自身读取，因为`elementwise_into`明确支持destination同时作为input。任何更晚的use、不同类型、
+mapped elementwise或无法证明的control flow都保持原IR；Tile-to-Instr lowering不得重新查看users后临时决定alias或复用，也不得为已经显式
+loop-carried的结果创建body-local allocation。
 
 fresh completion owner在worker/order确定后，从actual SSA、effects、ranges、control-flow path和observable obligations重建
 latest-necessary completion。DTE wait、NCC participant join和group barrier是不同resource语义，不能互相替代。

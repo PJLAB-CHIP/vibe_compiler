@@ -443,6 +443,14 @@ movement、execution structure、standalone fanout、per-Tile Instr/cleanup/fres
 `bufferization.materialize_in_destination`把piece绑定到该subview。Offset/size来自current insert/extract relation，不来自Spatial plan
 或output名称。无法证明唯一piece、完整subview range或destination ownership时在首次mutation前返回typed unsupported。
 
+同一种canonical wrapper也不能跨same-Tile TileRegion边界变成真实storage。若producer只把
+`insert_slice(piece, tensor.empty)`结果交给same-Tile consumer，并且每个consumer block argument都只由offset、size和stride逐项相同的
+static `tensor.extract_slice`读取，layout transformation在PBQP和bufferization前同时把producer result、consumer operand和block
+argument收窄为`piece`，删除成对的insert/extract wrapper。若存在observable full result、未匹配的use、不同rectangle、非unit stride或真实
+assembly语义，则保留current full tensor；不得按shape、operation名称或预期SPM收益猜测收窄。Cross-Tile canonical piece仍由同一stage的
+actual boundary-source rewrite形成compact endpoint。这样bufferization只为actual compact value分配storage，不为结构占位壳创建full-shape
+SPM allocation、store或reload。
+
 同一module只运行一次function-boundary加region-local One-Shot Bufferization。`func.func` tensor boundary转换为compact DDR memref；
 `wafer.tile.region`保持显式tensor boundary，内部通过标准`bufferization.to_memref/to_tensor`连接已经选定layout的actual memref
 endpoint。除TileRegion boundary及这些标准bridge外，Linalg/Tensor/SCF必须全部bufferized；unknown executable tensor op不是允许的
@@ -455,6 +463,13 @@ SSA/effect witness，不能按copy数量一律删除。
 Movement choice以current producer value、consumer operand、exact demanded domain和physical layout为输入，选择local view/copy、
 DDR store/load、Direct DTE、software relay或已定义collective。选择由唯一movement transformation立即创建actual typed ops、
 staging buffer、token和effect。
+
+多个独立communication component仍受每个Tile上actual TileRegion顺序约束。Movement preflight从component实际涉及的source/destination
+Region建立precedence graph；同一Tile同一block中的先后顺序直接形成有向边，不同entry block没有顺序证明时同时保留两种可能顺序。若该图
+有环，Direct DTE不存在一个与所有Tile current Region顺序一致的component phase order：preflight只在该actual cycle内选择总payload bytes
+最小的一个component形成typed shared-DDR boundary，移除该component后fresh重算，直到剩余图无环。bytes相同时按stable component order
+tie-break。该选择发生在任何movement mutation之前；不在Direct DTE verifier失败后fallback，不插wait打断环，也不建立旁路phase plan。
+无环component及单向fanout继续使用其actual topology ring/tree/sparse realization。
 
 Function/TileRegion observable result在bufferization前通过DPS/out-parameter绑定唯一actual destination。Bufferization可以因
 actual alias conflict、保留旧值、out-of-place语义或明确layout/memory-space materialization产生必要copy；这些copy必须由current

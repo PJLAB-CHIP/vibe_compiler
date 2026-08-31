@@ -197,6 +197,171 @@ TEST(ExecutionStructureMaterializationTest,
 }
 
 TEST(ExecutionStructureMaterializationTest,
+     LoopCarriedElementwiseUsesExplicitExistingDestination) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto context = createContext();
+    mlir::Location loc = mlir::UnknownLoc::get(context.get());
+    auto module = mlir::ModuleOp::create(loc);
+    mlir::OpBuilder moduleBuilder(module.getBodyRegion());
+    auto function = moduleBuilder.create<mlir::func::FuncOp>(
+        loc, "main",
+        moduleBuilder.getFunctionType(mlir::TypeRange{}, mlir::TypeRange{}));
+    mlir::Block *entry = function.addEntryBlock();
+    mlir::OpBuilder builder = mlir::OpBuilder::atBlockBegin(entry);
+    auto region = builder.create<TileRegionOp>(loc, mlir::TypeRange{},
+                                               mlir::ValueRange{});
+    region.getBody().push_back(new mlir::Block());
+    mlir::OpBuilder regionBuilder =
+        mlir::OpBuilder::atBlockBegin(&region.getBody().front());
+    auto type = mlir::MemRefType::get(
+        {2, extent, 128}, regionBuilder.getF32Type(),
+        mlir::MemRefLayoutAttrInterface{},
+        MemoryAttr::get(context.get(), MemorySpace::SPM, MemLayout::NCx));
+    auto state = regionBuilder.create<mlir::memref::AllocOp>(loc, type);
+    auto input = regionBuilder.create<mlir::memref::AllocOp>(loc, type);
+    auto lower = regionBuilder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+    auto upper = regionBuilder.create<mlir::arith::ConstantIndexOp>(loc, 7);
+    auto step = regionBuilder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+    auto loop = regionBuilder.create<mlir::scf::ForOp>(loc, lower, upper, step,
+                                                       mlir::ValueRange{state});
+    if (!loop.getBody()->empty() &&
+        mlir::isa<mlir::scf::YieldOp>(loop.getBody()->back()))
+      loop.getBody()->back().erase();
+    mlir::OpBuilder loopBuilder = mlir::OpBuilder::atBlockEnd(loop.getBody());
+    mlir::AffineMap identity =
+        mlir::AffineMap::getMultiDimIdentityMap(type.getRank(), context.get());
+    auto maps =
+        loopBuilder.getAffineMapArrayAttr({identity, identity, identity});
+    auto next = loopBuilder.create<ComputeElementwiseOp>(
+        loc, type, ComputeElementwiseKind::Add,
+        mlir::ValueRange{loop.getRegionIterArgs().front(), input}, maps);
+    loopBuilder.create<mlir::scf::YieldOp>(loc, next.getResult());
+    regionBuilder.setInsertionPointAfter(loop);
+    regionBuilder.create<TileYieldOp>(loc);
+    builder.setInsertionPointAfter(region);
+    builder.create<mlir::func::ReturnOp>(loc);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(module)));
+
+    auto prepared = prepareTileExecutionStructure(module, {});
+    ASSERT_TRUE(prepared.succeeded());
+    mlir::OwningOpRef<mlir::ModuleOp> owned(module);
+    auto materialized = materializeExecutionStructure(
+        std::move(owned), std::move(*prepared.prepared));
+    ASSERT_TRUE(materialized.succeeded())
+        << (materialized.failure ? materialized.failure->detail : "");
+    EXPECT_EQ(countLoops(materialized.materialized->module->getOperation()),
+              1u);
+    unsigned functional = 0;
+    ComputeElementwiseIntoOp update;
+    materialized.materialized->module->walk(
+        [&](ComputeElementwiseOp) { ++functional; });
+    materialized.materialized->module->walk(
+        [&](ComputeElementwiseIntoOp operation) { update = operation; });
+    EXPECT_EQ(functional, 0u);
+    ASSERT_TRUE(update);
+    auto currentLoop = update->getParentOfType<mlir::scf::ForOp>();
+    ASSERT_TRUE(currentLoop);
+    EXPECT_EQ(update.getDest(), currentLoop.getRegionIterArgs().front());
+    EXPECT_EQ(update.getInputs().front(), update.getDest());
+    EXPECT_EQ(
+        mlir::cast<mlir::scf::YieldOp>(currentLoop.getBody()->getTerminator())
+            .getOperand(0),
+        update.getDest());
+    unsigned loopAllocations = 0;
+    currentLoop.walk([&](mlir::memref::AllocOp) { ++loopAllocations; });
+    EXPECT_EQ(loopAllocations, 0u);
+    EXPECT_TRUE(
+        mlir::succeeded(mlir::verify(*materialized.materialized->module)));
+  }
+}
+
+TEST(ExecutionStructureMaterializationTest,
+     LoopCarriedLayoutChangeUsesExplicitExistingDestination) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto context = createContext();
+    mlir::Location loc = mlir::UnknownLoc::get(context.get());
+    auto module = mlir::ModuleOp::create(loc);
+    mlir::OpBuilder moduleBuilder(module.getBodyRegion());
+    auto function = moduleBuilder.create<mlir::func::FuncOp>(
+        loc, "main",
+        moduleBuilder.getFunctionType(mlir::TypeRange{}, mlir::TypeRange{}));
+    mlir::Block *entry = function.addEntryBlock();
+    mlir::OpBuilder builder = mlir::OpBuilder::atBlockBegin(entry);
+    auto region = builder.create<TileRegionOp>(loc, mlir::TypeRange{},
+                                               mlir::ValueRange{});
+    region.getBody().push_back(new mlir::Block());
+    mlir::OpBuilder regionBuilder =
+        mlir::OpBuilder::atBlockBegin(&region.getBody().front());
+    auto tensorType = mlir::MemRefType::get(
+        {2, extent, 128}, regionBuilder.getF16Type(),
+        mlir::MemRefLayoutAttrInterface{},
+        MemoryAttr::get(context.get(), MemorySpace::SPM, MemLayout::Tensor));
+    auto cxType = mlir::MemRefType::get(
+        {2, extent, 128}, regionBuilder.getF16Type(),
+        mlir::MemRefLayoutAttrInterface{},
+        MemoryAttr::get(context.get(), MemorySpace::SPM, MemLayout::Cx));
+    auto source = regionBuilder.create<mlir::memref::AllocOp>(loc, tensorType);
+    auto state = regionBuilder.create<mlir::memref::AllocOp>(loc, cxType);
+    auto lower = regionBuilder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+    auto upper = regionBuilder.create<mlir::arith::ConstantIndexOp>(loc, 7);
+    auto step = regionBuilder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+    auto loop = regionBuilder.create<mlir::scf::ForOp>(loc, lower, upper, step,
+                                                       mlir::ValueRange{state});
+    if (!loop.getBody()->empty() &&
+        mlir::isa<mlir::scf::YieldOp>(loop.getBody()->back()))
+      loop.getBody()->back().erase();
+    mlir::OpBuilder loopBuilder = mlir::OpBuilder::atBlockEnd(loop.getBody());
+    auto next = loopBuilder.create<LayoutMaterializeOp>(loc, cxType, source);
+    loopBuilder.create<mlir::scf::YieldOp>(loc, next.getResult());
+    regionBuilder.setInsertionPointAfter(loop);
+    regionBuilder.create<TileYieldOp>(loc);
+    builder.setInsertionPointAfter(region);
+    builder.create<mlir::func::ReturnOp>(loc);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(module)));
+
+    auto prepared = prepareTileExecutionStructure(module, {});
+    ASSERT_TRUE(prepared.succeeded());
+    mlir::OwningOpRef<mlir::ModuleOp> owned(module);
+    auto materialized = materializeExecutionStructure(
+        std::move(owned), std::move(*prepared.prepared));
+    ASSERT_TRUE(materialized.succeeded())
+        << (materialized.failure ? materialized.failure->detail : "");
+    EXPECT_EQ(countLoops(materialized.materialized->module->getOperation()),
+              1u);
+    unsigned functional = 0;
+    MoveCopyIntoOp update;
+    materialized.materialized->module->walk(
+        [&](LayoutMaterializeOp) { ++functional; });
+    materialized.materialized->module->walk(
+        [&](MoveCopyIntoOp operation) { update = operation; });
+    EXPECT_EQ(functional, 0u);
+    ASSERT_TRUE(update);
+    auto currentLoop = update->getParentOfType<mlir::scf::ForOp>();
+    ASSERT_TRUE(currentLoop);
+    EXPECT_EQ(update.getDest(), currentLoop.getRegionIterArgs().front());
+    EXPECT_EQ(getWaferMemoryAttr(
+                  mlir::cast<mlir::MemRefType>(update.getSource().getType()))
+                  .getLayout(),
+              MemLayout::Tensor);
+    EXPECT_EQ(getWaferMemoryAttr(
+                  mlir::cast<mlir::MemRefType>(update.getDest().getType()))
+                  .getLayout(),
+              MemLayout::Cx);
+    EXPECT_EQ(
+        mlir::cast<mlir::scf::YieldOp>(currentLoop.getBody()->getTerminator())
+            .getOperand(0),
+        update.getDest());
+    unsigned loopAllocations = 0;
+    currentLoop.walk([&](mlir::memref::AllocOp) { ++loopAllocations; });
+    EXPECT_EQ(loopAllocations, 0u);
+    EXPECT_TRUE(
+        mlir::succeeded(mlir::verify(*materialized.materialized->module)));
+  }
+}
+
+TEST(ExecutionStructureMaterializationTest,
      PreflightRejectsIncompleteAndDependenceReversingChoices) {
   auto context = createContext();
   PipelineInput incomplete = makeDistanceOneInput(*context, 1025);

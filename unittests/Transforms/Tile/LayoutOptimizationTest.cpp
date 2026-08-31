@@ -1405,6 +1405,77 @@ module {
 }
 
 TEST_F(LayoutOptimizationTest,
+       SameTileExactInsertExtractBoundaryUsesOnlyCompactStorage) {
+  constexpr llvm::StringLiteral text = R"mlir(
+#id = affine_map<(b, m, n) -> (b, m, n)>
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(%input: tensor<2x1025x64xf16>) {
+      %published = wafer.tile.region(
+          %input : tensor<2x1025x64xf16>)
+          -> (tensor<2x1025x64xf16>) {
+      ^bb0(%local: tensor<2x1025x64xf16>):
+        %piece = tensor.extract_slice %local[1, 0, 0] [1, 1025, 64]
+            [1, 1, 1] : tensor<2x1025x64xf16> to tensor<1x1025x64xf16>
+        %empty = tensor.empty() : tensor<2x1025x64xf16>
+        %full = tensor.insert_slice %piece into %empty[1, 0, 0]
+            [1, 1025, 64] [1, 1, 1]
+            : tensor<1x1025x64xf16> into tensor<2x1025x64xf16>
+        wafer.tile.yield %full : tensor<2x1025x64xf16>
+      }
+      %result = wafer.tile.region(
+          %published : tensor<2x1025x64xf16>)
+          -> (tensor<2x1025x64xf16>) {
+      ^bb0(%external: tensor<2x1025x64xf16>):
+        %piece = tensor.extract_slice %external[1, 0, 0] [1, 1025, 64]
+            [1, 1, 1] : tensor<2x1025x64xf16> to tensor<1x1025x64xf16>
+        %mapped_empty = tensor.empty() : tensor<1x1025x64xf16>
+        %mapped = linalg.generic {
+            indexing_maps = [#id, #id],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%piece : tensor<1x1025x64xf16>)
+            outs(%mapped_empty : tensor<1x1025x64xf16>) {
+          ^bb1(%value: f16, %old: f16):
+            %next = arith.addf %value, %value : f16
+            linalg.yield %next : f16
+        } -> tensor<1x1025x64xf16>
+        %empty = tensor.empty() : tensor<2x1025x64xf16>
+        %full = tensor.insert_slice %mapped into %empty[1, 0, 0]
+            [1, 1025, 64] [1, 1, 1]
+            : tensor<1x1025x64xf16> into tensor<2x1025x64xf16>
+        wafer.tile.yield %full : tensor<2x1025x64xf16>
+      }
+      return
+    }
+  }
+}
+)mlir";
+  auto module = parse(text);
+  ASSERT_TRUE(module);
+  llvm::SmallVector<TileRegionOp, 2> regions;
+  module->walk([&](TileRegionOp region) { regions.push_back(region); });
+  ASSERT_EQ(regions.size(), 2u);
+  StructuredMaterializationRelations relations;
+  relations.structuralOutputs.push_back({0, regions[1].getResult(0)});
+  LayoutOptimizationResult result =
+      resolveCurrentLayoutsAndBufferize(*module, relations);
+  ASSERT_TRUE(result.succeeded()) << result.detail;
+  EXPECT_GE(result.statistics.boundarySourceViewsElided, 1u);
+  EXPECT_EQ(countOps<mlir::tensor::InsertSliceOp>(module->getOperation()), 0u);
+  unsigned fullSPMAllocations = 0;
+  module->walk([&](mlir::memref::AllocOp allocation) {
+    if (isWaferSPMMemRefType(allocation.getType()) &&
+        allocation.getType().getShape() ==
+            llvm::ArrayRef<int64_t>({2, 1025, 64}))
+      ++fullSPMAllocations;
+  });
+  EXPECT_EQ(fullSPMAllocations, 0u);
+  EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*module)));
+  EXPECT_TRUE(mlir::succeeded(
+      checkStructuredBufferRelationsCurrent(*module, relations)));
+}
+
+TEST_F(LayoutOptimizationTest,
        NonPieceOutputFailsBeforeMutationRegardlessOfSolverBudget) {
   constexpr llvm::StringLiteral malformed = R"mlir(
 module {

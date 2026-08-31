@@ -158,10 +158,6 @@ mlir::LogicalResult MoveCopyIntoOp::verify() {
       mlir::failed(getSPMBufferTensor(getOperation(), getDest().getType(),
                                       "copy_into dest", destTensor)))
     return mlir::failure();
-  if (mlir::failed(verifySameElementLayoutAndSpace(
-          getOperation(), getSource().getType(), sourceTensor,
-          getDest().getType(), destTensor, "copy_into")))
-    return mlir::failure();
   if (sourceTensor != destTensor)
     return emitOpError("copy_into source and dest tensor types must match");
   return mlir::success();

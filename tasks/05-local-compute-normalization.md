@@ -700,10 +700,16 @@ Access(Rresult,
 
 这是一类dynamic egg rule，不按flatten/unflatten rank或op名称展开多个pattern。Applier调用relation service，只在`Rreshape`为exact static
 row-major relation、每个reassociation group只含同一种iterator kind、其它operand/init/result可同步重参数化且current下游接受新Linalg signature时
-创建RHS。Elementwise、generic reduction和contraction共用同一rule；连续`parallel`轴和连续`reduction`轴都可分别collapse/expand，后者必须保持
-row-major reduction线性次序和总domain。一个group混合`parallel`与`reduction`时不改，因为单个Linalg iterator不能同时具有两种kind。
+创建RHS。Elementwise和generic reduction可对连续`parallel`轴及连续`reduction`轴分别collapse/expand，后者必须保持row-major
+reduction线性次序和总domain。Contraction只有重参数化后仍能恢复为current rank-2 named matmul或rank-3 named batch-matmul
+signature时才创建RHS；额外batch iterator或多个K iterator虽然是verifier-valid Linalg，当前target descriptor链尚未证明可直接消费，不能由
+e-graph提前生成后再让Tile lowering猜测扁平化。
+一个group混合`parallel`与`reduction`时不改，因为单个Linalg iterator不能同时具有两种kind。
 Scalar/combiner region保持不变，contraction仍须恢复为当前支持的generic或named signature。`Rresult`可以暂时不可物化并继续参与composition；最终extract时仍必须
-成为identity、standard reshape或其它已有标准materialization。Callback只返回type/relation ID和typed status，不创建或修改MLIR。
+成为identity、standard reshape或其它已有标准materialization。Parallel elementwise可以保留由exact result permutation得到的
+non-identity result map；direct Tile lowering以其inverse把全部operand maps同步改写到result coordinates，并把Tile result map规范为
+identity。不能只改result map或把任意projected map当成可逆。Reduction和contraction继续使用各自standard projected result map合同。
+Callback只返回type/relation ID和typed status，不创建或修改MLIR。
 
 #### Concat normalization
 

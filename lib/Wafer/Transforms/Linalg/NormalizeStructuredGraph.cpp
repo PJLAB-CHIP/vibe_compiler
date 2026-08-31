@@ -27,6 +27,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -1251,8 +1252,7 @@ private:
         return false;
       MatmulVariant variant =
           classifyMatmulMaps(maps, iteratorTypes, resultType.getRank());
-      return variant != MatmulVariant::None ||
-             iteratorTypes.size() != recipe->iteratorTypes.size();
+      return variant != MatmulVariant::None;
     }
     return mlir::isa<mlir::linalg::GenericOp>(recipe->operation) ||
            recipe->kind != EGraphNodeKind::Contraction;
@@ -2470,19 +2470,38 @@ collectStructuredComponents(mlir::func::FuncOp function) {
       continue;
     }
 
+    llvm::DenseSet<mlir::Value> originalRoots(component.roots.begin(),
+                                              component.roots.end());
+    llvm::SmallVector<mlir::Value, 16> fallbackRoots;
+    for (mlir::Operation *operation : component.operations) {
+      mlir::Value value = operation->getResult(0);
+      llvm::SmallPtrSet<mlir::Operation *, 4> semanticUsers;
+      for (mlir::Operation *user : value.getUsers()) {
+        auto owner = concatImplementationOwner.find(user);
+        semanticUsers.insert(
+            owner == concatImplementationOwner.end() ? user : owner->second);
+      }
+      if (originalRoots.contains(value) || semanticUsers.size() > 1)
+        fallbackRoots.push_back(value);
+    }
+
     llvm::DenseSet<mlir::Value> coveredRoots;
-    for (mlir::Value selectedRoot : component.roots) {
+    llvm::DenseSet<mlir::Operation *> assignedMembers;
+    for (mlir::Value selectedRoot : fallbackRoots) {
       if (coveredRoots.contains(selectedRoot))
         continue;
       mlir::Operation *selectedOwner = selectedRoot.getDefiningOp();
-      if (!selectedOwner || !members.contains(selectedOwner))
+      if (!selectedOwner || !members.contains(selectedOwner) ||
+          assignedMembers.contains(selectedOwner))
         continue;
 
       llvm::DenseSet<mlir::Operation *> ancestors;
       llvm::SmallVector<mlir::Operation *, 16> worklist{selectedOwner};
       while (!worklist.empty()) {
         mlir::Operation *operation = worklist.pop_back_val();
-        if (!members.contains(operation) || !ancestors.insert(operation).second)
+        if (!members.contains(operation) ||
+            assignedMembers.contains(operation) ||
+            !ancestors.insert(operation).second)
           continue;
         llvm::SmallVector<mlir::Value, 8> semanticOperands;
         if (std::optional<ConcatDescription> concat =
@@ -2497,10 +2516,9 @@ collectStructuredComponents(mlir::func::FuncOp function) {
       }
 
       llvm::DenseSet<mlir::Operation *> sliceMembers;
-      worklist.push_back(selectedOwner);
-      while (!worklist.empty()) {
-        mlir::Operation *operation = worklist.pop_back_val();
-        if (!ancestors.contains(operation) || sliceMembers.contains(operation))
+      for (mlir::Operation *operation : llvm::reverse(component.operations)) {
+        if (!ancestors.contains(operation) ||
+            assignedMembers.contains(operation))
           continue;
         const bool sharedWithAnotherSlice =
             operation != selectedOwner &&
@@ -2509,22 +2527,11 @@ collectStructuredComponents(mlir::func::FuncOp function) {
               mlir::Operation *semanticUser =
                   owner == concatImplementationOwner.end() ? user
                                                            : owner->second;
-              return members.contains(semanticUser) &&
-                     !ancestors.contains(semanticUser);
+              return !sliceMembers.contains(semanticUser);
             });
         if (sharedWithAnotherSlice)
           continue;
         sliceMembers.insert(operation);
-        llvm::SmallVector<mlir::Value, 8> semanticOperands;
-        if (std::optional<ConcatDescription> concat =
-                getConcatDescription(operation))
-          semanticOperands.append(concat->inputs.begin(), concat->inputs.end());
-        else
-          semanticOperands.append(operation->operand_begin(),
-                                  operation->operand_end());
-        for (mlir::Value operand : semanticOperands)
-          if (mlir::Operation *producer = operand.getDefiningOp())
-            worklist.push_back(producer);
       }
 
       StructuredComponent slice;
@@ -2558,6 +2565,7 @@ collectStructuredComponents(mlir::func::FuncOp function) {
         continue;
       for (mlir::Value root : slice.roots)
         coveredRoots.insert(root);
+      assignedMembers.insert(sliceMembers.begin(), sliceMembers.end());
       result.push_back(std::move(slice));
     }
   }
@@ -2797,6 +2805,11 @@ normalizeStructuredTensorGraph(
   if (mlir::failed(mlir::verify(function)))
     return mlir::failure();
   local.outputOperations = countOperations(function);
+  if (*outcome == StructuredGraphNormalizationOutcome::Changed &&
+      !retainedOutputTransformation &&
+      local.inputOperations == local.outputOperations &&
+      local.accessTransformsRemoved == 0 && local.concatTransformsRemoved == 0)
+    outcome = StructuredGraphNormalizationOutcome::Unchanged;
   if (outputStatistics)
     *outputStatistics = local;
   return outcome;

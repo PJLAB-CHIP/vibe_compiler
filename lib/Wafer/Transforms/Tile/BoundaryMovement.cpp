@@ -234,6 +234,116 @@ buildCommunicationComponents(llvm::ArrayRef<PayloadGroup> groups,
   return components;
 }
 
+static bool componentUsesSharedDDR(const CommunicationComponent &component,
+                                   llvm::ArrayRef<PayloadGroup> groups,
+                                   llvm::ArrayRef<PeerPlan> peers) {
+  return llvm::all_of(component.groups, [&](unsigned groupIndex) {
+    return llvm::all_of(groups[groupIndex].peers, [&](unsigned peerIndex) {
+      return peers[peerIndex].useSharedDDR;
+    });
+  });
+}
+
+static mlir::LogicalResult breakCrossComponentRegionOrderCycles(
+    llvm::ArrayRef<CommunicationComponent> components,
+    llvm::ArrayRef<PayloadGroup> groups, llvm::MutableArrayRef<PeerPlan> peers,
+    BoundaryMovementStatistics &statistics) {
+  const unsigned count = static_cast<unsigned>(components.size());
+  llvm::SmallVector<llvm::DenseSet<unsigned>, 8> successors(count);
+  llvm::SmallVector<llvm::SmallVector<TileRegionOp, 8>, 8> regions(count);
+  for (auto [componentIndex, component] : llvm::enumerate(components))
+    for (unsigned groupIndex : component.groups)
+      for (unsigned peerIndex : groups[groupIndex].peers)
+        for (TileRegionOp region : {peers[peerIndex].sourceRegion,
+                                    peers[peerIndex].destinationRegion})
+          if (!llvm::is_contained(regions[componentIndex], region))
+            regions[componentIndex].push_back(region);
+
+  for (unsigned lhs = 0; lhs < count; ++lhs)
+    for (unsigned rhs = lhs + 1; rhs < count; ++rhs)
+      for (TileRegionOp lhsRegion : regions[lhs])
+        for (TileRegionOp rhsRegion : regions[rhs]) {
+          auto lhsTile = lhsRegion->getParentOfType<TileModuleOp>();
+          auto rhsTile = rhsRegion->getParentOfType<TileModuleOp>();
+          if (!lhsTile || lhsTile != rhsTile || lhsRegion == rhsRegion)
+            continue;
+          if (lhsRegion->getBlock() != rhsRegion->getBlock()) {
+            // There is no current-IR ordering proof across different entry
+            // blocks on one Tile. Treat both phase orders as possible so one
+            // component is materialized through an explicit DDR boundary.
+            successors[lhs].insert(rhs);
+            successors[rhs].insert(lhs);
+            continue;
+          }
+          (lhsRegion->isBeforeInBlock(rhsRegion) ? successors[lhs]
+                                                 : successors[rhs])
+              .insert(lhsRegion->isBeforeInBlock(rhsRegion) ? rhs : lhs);
+        }
+
+  auto findCycle = [&]() -> llvm::SmallVector<unsigned, 8> {
+    llvm::SmallVector<uint8_t, 8> state(count, 0);
+    llvm::SmallVector<unsigned, 8> stack;
+    llvm::SmallVector<int64_t, 8> position(count, -1);
+    llvm::SmallVector<unsigned, 8> cycle;
+    std::function<bool(unsigned)> visit = [&](unsigned node) {
+      state[node] = 1;
+      position[node] = static_cast<int64_t>(stack.size());
+      stack.push_back(node);
+      llvm::SmallVector<unsigned, 8> ordered(successors[node].begin(),
+                                             successors[node].end());
+      llvm::sort(ordered);
+      for (unsigned next : ordered) {
+        if (componentUsesSharedDDR(components[next], groups, peers))
+          continue;
+        if (state[next] == 0) {
+          if (visit(next))
+            return true;
+          continue;
+        }
+        if (state[next] == 1) {
+          cycle.append(stack.begin() + position[next], stack.end());
+          return true;
+        }
+      }
+      stack.pop_back();
+      position[node] = -1;
+      state[node] = 2;
+      return false;
+    };
+    for (unsigned node = 0; node < count; ++node)
+      if (!componentUsesSharedDDR(components[node], groups, peers) &&
+          state[node] == 0 && visit(node))
+        break;
+    return cycle;
+  };
+
+  while (true) {
+    llvm::SmallVector<unsigned, 8> cycle = findCycle();
+    if (cycle.empty())
+      return mlir::success();
+    auto bytes = [&](unsigned componentIndex) {
+      uint64_t total = 0;
+      for (unsigned groupIndex : components[componentIndex].groups)
+        for (unsigned peerIndex : groups[groupIndex].peers)
+          if (peers[peerIndex].bytes >
+              std::numeric_limits<uint64_t>::max() - total)
+            return std::numeric_limits<uint64_t>::max();
+          else
+            total += peers[peerIndex].bytes;
+      return total;
+    };
+    unsigned selected =
+        *llvm::min_element(cycle, [&](unsigned lhs, unsigned rhs) {
+          return std::make_tuple(bytes(lhs), lhs) <
+                 std::make_tuple(bytes(rhs), rhs);
+        });
+    for (unsigned groupIndex : components[selected].groups)
+      for (unsigned peerIndex : groups[groupIndex].peers)
+        peers[peerIndex].useSharedDDR = true;
+    ++statistics.noCutDDRComponents;
+  }
+}
+
 static mlir::FailureOr<llvm::SmallVector<uint64_t, 16>>
 buildMinimumHopRing(const TargetTopology &topology,
                     llvm::ArrayRef<uint64_t> participants) {
@@ -706,7 +816,14 @@ static mlir::LogicalResult buildTopologyFanoutChoices(
         "peer movement requires current target topology: " + topologyFailure;
     return mlir::failure();
   }
+  if (mlir::failed(breakCrossComponentRegionOrderCycles(components, groups,
+                                                        peers, statistics))) {
+    detail = "communication component Region order cannot be closed";
+    return mlir::failure();
+  }
   for (auto [componentIndex, component] : llvm::enumerate(components)) {
+    if (componentUsesSharedDDR(component, groups, peers))
+      continue;
     if (component.groups.size() == 1)
       continue;
     if (std::optional<unsigned> lanes =

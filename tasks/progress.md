@@ -43,10 +43,12 @@ Instr，16 Tile/no-work纵向恰调用一次actual MiniMalloc/DDR/target leaf。
 此前的actual leaf、Instr completion、execution
 structure、movement、structured logical normalization和legacy shadow-materializer retirement只作为输入，不在current队列重做。
 none已经由独立current-IR baseline controller重新接入：FP16/BF16 prefill及FP16 two-step decode均fresh生成16-Tile package并通过
-no-card；complete exchange的actual ring、split-Region closure和bidirectional no-cut DDR boundary已闭合。当前FP16 LLaMA在
-`power(x, splat<2.0>)`到`SquareVV`后已经越过structured-to-Tile和boundary movement，并进入actual SPM planner；当前由
-loop-body `memref<1x1xf32>`经`scf.yield`/GatherScatter形成的loop-carried alias返回`unsupported_lifetime_alias`，因此第17项仍为
-`doing`。search controller仍明确返回typed unavailable且不发布package。
+no-card；complete exchange的actual ring、split-Region closure、bidirectional no-cut及cross-component Region-order DDR cut已闭合。
+FP16 LLaMA当前source已经在none路径完成graph normalization、Spatial/Temporal、layout/bufferization、movement、Instr/completion、actual
+MiniMalloc/DDR/Direct-DTE/target，fresh生成16-Tile package并通过strict no-card；MLP weight transpose直接吸收到named contraction，
+same-Tile structural shell不再形成full-shape SPM allocation，loop-carried state在Instr前已有explicit destination。第17项仍为`doing`，
+因为current registered产品/calibration/target-model矩阵和canonical全门禁尚须按本轮代码重新执行；search controller仍明确返回typed
+unavailable且不发布package。
 
 ## 已满足的直接前置
 

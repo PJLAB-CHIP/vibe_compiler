@@ -236,6 +236,109 @@ void clearTemporaryAttributes(mlir::Operation *root,
   });
 }
 
+static mlir::BlockArgument
+getDeadLoopCarriedDestination(mlir::Operation *operation, mlir::Value result,
+                              bool allowCurrentOperationRead = false) {
+  auto loop = operation->getParentOfType<mlir::scf::ForOp>();
+  if (!loop || operation->getBlock() != loop.getBody())
+    return {};
+  auto yield =
+      mlir::dyn_cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
+  if (!yield || !result.hasOneUse() ||
+      *result.user_begin() != yield.getOperation())
+    return {};
+  auto yielded = llvm::find(yield.getOperands(), result);
+  if (yielded == yield.getOperands().end())
+    return {};
+  unsigned index = static_cast<unsigned>(
+      std::distance(yield.getOperands().begin(), yielded));
+  if (index >= loop.getRegionIterArgs().size())
+    return {};
+  mlir::BlockArgument destination = loop.getRegionIterArgs()[index];
+  if (destination.getType() != result.getType())
+    return {};
+  for (mlir::Operation *user : destination.getUsers()) {
+    mlir::Operation *anchor = getTopLevelOwner(user, loop.getBody());
+    if (!anchor ||
+        (anchor != operation && !anchor->isBeforeInBlock(operation)) ||
+        (anchor == operation && !allowCurrentOperationRead))
+      return {};
+  }
+  return destination;
+}
+
+static mlir::LogicalResult
+materializeLoopCarriedDestinations(mlir::ModuleOp module,
+                                   mlir::IRRewriter &rewriter) {
+  auto hasMapFreeEquivalent = [](ComputeElementwiseOp elementwise) {
+    mlir::Type resultType = elementwise.getResult().getType();
+    if (llvm::any_of(elementwise.getInputs(), [&](mlir::Value input) {
+          return input.getType() != resultType;
+        }))
+      return false;
+    mlir::ArrayAttr maps = elementwise.getIndexingMapsAttr();
+    if (!maps)
+      return true;
+    auto resultMemref = mlir::dyn_cast<mlir::MemRefType>(resultType);
+    if (!resultMemref || maps.size() != elementwise.getInputs().size() + 1)
+      return false;
+    return llvm::all_of(maps, [&](mlir::Attribute attribute) {
+      auto map = mlir::dyn_cast<mlir::AffineMapAttr>(attribute);
+      return map && map.getValue().getNumDims() == resultMemref.getRank() &&
+             map.getValue().getNumSymbols() == 0 && map.getValue().isIdentity();
+    });
+  };
+  struct Rewrite {
+    mlir::Operation *operation = nullptr;
+    mlir::Value destination;
+  };
+  llvm::SmallVector<Rewrite, 8> rewrites;
+  module.walk([&](mlir::Operation *operation) {
+    mlir::Value result;
+    if (auto elementwise = mlir::dyn_cast<ComputeElementwiseOp>(operation)) {
+      if (!hasMapFreeEquivalent(elementwise))
+        return;
+      result = elementwise.getResult();
+    } else if (auto materialize =
+                   mlir::dyn_cast<LayoutMaterializeOp>(operation)) {
+      result = materialize.getResult();
+    } else if (auto copy = mlir::dyn_cast<MoveCopyOp>(operation)) {
+      if (copy.getDdrResourceAttr())
+        return;
+      result = copy.getResult();
+    } else {
+      return;
+    }
+    const bool allowCurrentOperationRead =
+        mlir::isa<ComputeElementwiseOp>(operation);
+    if (mlir::BlockArgument destination = getDeadLoopCarriedDestination(
+            operation, result, allowCurrentOperationRead))
+      rewrites.push_back({operation, destination});
+  });
+
+  for (const Rewrite &rewrite : rewrites) {
+    rewriter.setInsertionPoint(rewrite.operation);
+    if (auto elementwise =
+            mlir::dyn_cast<ComputeElementwiseOp>(rewrite.operation)) {
+      rewriter.create<ComputeElementwiseIntoOp>(
+          elementwise.getLoc(), elementwise.getKindAttr(),
+          elementwise.getInputs(), rewrite.destination);
+      rewriter.replaceOp(elementwise, rewrite.destination);
+      continue;
+    }
+    mlir::Value source;
+    if (auto materialize =
+            mlir::dyn_cast<LayoutMaterializeOp>(rewrite.operation))
+      source = materialize.getSource();
+    else
+      source = mlir::cast<MoveCopyOp>(rewrite.operation).getSource();
+    rewriter.create<MoveCopyIntoOp>(rewrite.operation->getLoc(), source,
+                                    rewrite.destination);
+    rewriter.replaceOp(rewrite.operation, rewrite.destination);
+  }
+  return mlir::verify(module);
+}
+
 mlir::LogicalResult verifyMaterializedExecutionStructure(
     const MaterializedExecutionStructure &materialized,
     std::string *failureReason);
@@ -493,6 +596,11 @@ materializeExecutionStructure(mlir::OwningOpRef<mlir::ModuleOp> module,
     return materializationFailure(
         ExecutionStructureFailureKind::CompilerBug,
         "materialized execution structure retained private attributes");
+  if (mlir::failed(materializeLoopCarriedDestinations(*module, rewriter)))
+    return materializationFailure(
+        ExecutionStructureFailureKind::CompilerBug,
+        "execution structure produced an invalid explicit loop-carried "
+        "destination");
   result.module = std::move(module);
   std::string failureReason;
   if (mlir::failed(

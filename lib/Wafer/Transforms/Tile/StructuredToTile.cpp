@@ -303,17 +303,38 @@ getScalarElementwiseKind(mlir::Operation *operation) {
   return std::nullopt;
 }
 
-static bool isSupportedElementwiseBody(mlir::linalg::LinalgOp operation) {
-  if (!operation || operation.getNumDpsInits() != 1 ||
-      !hasOnlyParallelIterators(operation) || operation->getNumRegions() != 1 ||
-      operation->getRegion(0).empty())
-    return false;
+static std::optional<llvm::SmallVector<mlir::AffineMap, 4>>
+getCanonicalElementwiseMaps(mlir::linalg::LinalgOp operation) {
+  if (!operation || operation.getNumDpsInits() != 1)
+    return std::nullopt;
   llvm::SmallVector<mlir::AffineMap, 4> maps = operation.getIndexingMapsArray();
   mlir::MemRefType resultType = getMemRef(operation.getDpsInits().front());
   if (!resultType ||
       maps.size() != static_cast<size_t>(operation.getNumDpsInputs() + 1) ||
       maps.back().getNumDims() != resultType.getRank() ||
-      !maps.back().isIdentity())
+      maps.back().getNumSymbols() != 0 || !maps.back().isPermutation())
+    return std::nullopt;
+  if (maps.back().isIdentity())
+    return maps;
+  mlir::AffineMap resultToIteration = mlir::inversePermutation(maps.back());
+  if (!resultToIteration)
+    return std::nullopt;
+  for (mlir::AffineMap &map : maps) {
+    map = map.compose(resultToIteration);
+    if (map.getNumDims() != resultType.getRank() || map.getNumSymbols() != 0 ||
+        !map.isProjectedPermutation(/*allowZeroInResults=*/true))
+      return std::nullopt;
+  }
+  maps.back() = mlir::AffineMap::getMultiDimIdentityMap(resultType.getRank(),
+                                                        operation.getContext());
+  return maps;
+}
+
+static bool isSupportedElementwiseBody(mlir::linalg::LinalgOp operation) {
+  if (!operation || operation.getNumDpsInits() != 1 ||
+      !hasOnlyParallelIterators(operation) || operation->getNumRegions() != 1 ||
+      operation->getRegion(0).empty() ||
+      !getCanonicalElementwiseMaps(operation))
     return false;
   mlir::Block &body = operation->getRegion(0).front();
   auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(body.getTerminator());
@@ -712,7 +733,17 @@ static mlir::LogicalResult preflight(mlir::ModuleOp module,
     if (hasReductionIterator(operation)) {
       if (!getReductionKind(operation) ||
           mlir::failed(getReductionInputDimensions(operation))) {
-        detail = "reduction Linalg operation has no exact Tile reduce form";
+        llvm::raw_string_ostream stream(detail);
+        stream << "reduction Linalg operation has no exact Tile reduce form: "
+               << operation->getName() << " operand_types=[";
+        llvm::interleaveComma(operation->getOperandTypes(), stream);
+        stream << "] result_types=[";
+        llvm::interleaveComma(operation->getResultTypes(), stream);
+        stream << "] maps=[";
+        llvm::interleaveComma(operation.getIndexingMapsArray(), stream);
+        stream << "] iterators=[";
+        llvm::interleaveComma(operation.getIteratorTypesArray(), stream);
+        stream << ']';
         failed = true;
         return mlir::WalkResult::interrupt();
       }
@@ -720,7 +751,15 @@ static mlir::LogicalResult preflight(mlir::ModuleOp module,
       return mlir::WalkResult::advance();
     }
     if (!isSupportedElementwiseBody(operation)) {
-      detail = "parallel Linalg operation has no exact Tile expression form";
+      llvm::raw_string_ostream stream(detail);
+      stream << "parallel Linalg operation has no exact Tile expression form: "
+             << operation->getName() << " operand_types=[";
+      llvm::interleaveComma(operation->getOperandTypes(), stream);
+      stream << "] result_types=[";
+      llvm::interleaveComma(operation->getResultTypes(), stream);
+      stream << "] maps=[";
+      llvm::interleaveComma(operation.getIndexingMapsArray(), stream);
+      stream << ']';
       if (operation->getNumRegions() == 1 && !operation->getRegion(0).empty())
         for (mlir::Operation &nested :
              operation->getRegion(0).front().without_terminator())
@@ -728,8 +767,7 @@ static mlir::LogicalResult preflight(mlir::ModuleOp module,
                          mlir::arith::TruncFOp>(nested) &&
               !mlir::isOpTriviallyDead(&nested) &&
               !getScalarElementwiseKind(&nested)) {
-            detail += ": unsupported scalar op " +
-                      nested.getName().getStringRef().str();
+            stream << ": unsupported scalar op " << nested.getName();
             break;
           }
       failed = true;
@@ -1440,7 +1478,10 @@ lowerElementwise(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
   if (!destinationType)
     return mlir::failure();
   mlir::MemRefType resultType = getOwnedType(destinationType);
-  llvm::SmallVector<mlir::AffineMap, 4> maps = operation.getIndexingMapsArray();
+  auto canonicalMaps = getCanonicalElementwiseMaps(operation);
+  if (!canonicalMaps)
+    return mlir::failure();
+  llvm::SmallVector<mlir::AffineMap, 4> maps = std::move(*canonicalMaps);
   mlir::Block &body = operation->getRegion(0).front();
   if (body.getNumArguments() != operation.getNumDpsInputs() + 1 ||
       maps.size() != body.getNumArguments())

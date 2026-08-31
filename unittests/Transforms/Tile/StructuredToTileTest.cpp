@@ -879,6 +879,37 @@ TEST_F(StructuredToTileTest, CrossTileRelationBecomesOneMatchedPeerTransfer) {
     EXPECT_EQ(countOps<CommPeerSendOp>(module->getOperation()), 1u);
     EXPECT_EQ(countOps<CommPeerRecvOp>(module->getOperation()), 1u);
     EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+
+    std::string standaloneFailure;
+    auto standalone = createStandaloneTileModules(
+        std::move(module), &standaloneFailure, &relations);
+    ASSERT_TRUE(mlir::succeeded(standalone)) << standaloneFailure;
+    llvm::SmallVector<mlir::ModuleOp, 2> instructionModules;
+    for (StandaloneTileModule &tile : *standalone) {
+      llvm::SmallVector<TileRegionOp, 2> tileRegions;
+      tile.module->walk(
+          [&](TileRegionOp region) { tileRegions.push_back(region); });
+      TileRegionToInstrLoweringSession session(*tile.module->getContext());
+      for (TileRegionOp region : tileRegions)
+        ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+      ASSERT_TRUE(mlir::succeeded(
+          convertBufferizationCopiesToInstr(*tile.module, session)));
+      instructionModules.push_back(*tile.module);
+    }
+    DirectDTECompletionResult completion =
+        rebuildRequiredDirectDTEWaits(instructionModules);
+    ASSERT_TRUE(completion.succeeded()) << completion.detail;
+    instructionModules.clear();
+    for (StandaloneTileModule &tile : *standalone) {
+      ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+      TileMemoryPlanningFailure memoryFailure;
+      auto planned = planTileMemory(std::move(tile.module), &memoryFailure);
+      ASSERT_TRUE(mlir::succeeded(planned));
+      tile.module = std::move(*planned);
+      instructionModules.push_back(*tile.module);
+    }
+    EXPECT_TRUE(
+        mlir::succeeded(verifyDirectDTETransportSchedule(instructionModules)));
   }
 }
 
@@ -1008,6 +1039,62 @@ TEST_F(StructuredToTileTest, ExactPowerTwoLowersToUnarySquareInstruction) {
     EXPECT_EQ(rejected.failure, StructuredToTileFailureKind::Unsupported);
     EXPECT_EQ(countOps<mlir::math::PowFOp>(unsupported->getOperation()), 1u);
   }
+}
+
+TEST_F(StructuredToTileTest,
+       PermutedElementwiseResultIsCanonicalizedToResultCoordinates) {
+  constexpr llvm::StringLiteral text = R"mlir(
+#swap = affine_map<(d0, d1, d2) -> (d0, d2, d1)>
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(%input: tensor<2x64x1025xf16>) {
+      %result = wafer.tile.region(
+          %input : tensor<2x64x1025xf16>)
+          -> (tensor<2x64x1025xf16>) {
+      ^bb0(%local: tensor<2x64x1025xf16>):
+        %empty = tensor.empty() : tensor<2x64x1025xf16>
+        %mapped = linalg.generic {
+            indexing_maps = [#swap, #swap],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%local : tensor<2x64x1025xf16>)
+            outs(%empty : tensor<2x64x1025xf16>) {
+          ^bb1(%value: f16, %old: f16):
+            %next = arith.negf %value : f16
+            linalg.yield %next : f16
+        } -> tensor<2x64x1025xf16>
+        wafer.tile.yield %mapped : tensor<2x64x1025xf16>
+      }
+      return
+    }
+  }
+}
+)mlir";
+  auto module = parse(text);
+  ASSERT_TRUE(module);
+  TileRegionOp region;
+  module->walk([&](TileRegionOp current) { region = current; });
+  ASSERT_TRUE(region);
+  StructuredMaterializationRelations relations;
+  relations.structuralOutputs.push_back({0, region.getResult(0)});
+  LayoutOptimizationResult layout =
+      resolveCurrentLayoutsAndBufferize(*module, relations);
+  ASSERT_TRUE(layout.succeeded()) << layout.detail;
+  StructuredToTileResult lowered =
+      lowerStructuredComputeToTile(*module, relations);
+  ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+  ComputeElementwiseOp elementwise;
+  module->walk(
+      [&](ComputeElementwiseOp operation) { elementwise = operation; });
+  ASSERT_TRUE(elementwise);
+  mlir::ArrayAttr maps = elementwise.getIndexingMapsAttr();
+  ASSERT_TRUE(maps);
+  ASSERT_EQ(maps.size(), 2u);
+  for (mlir::Attribute attribute : maps) {
+    auto map = mlir::cast<mlir::AffineMapAttr>(attribute).getValue();
+    EXPECT_TRUE(map.isIdentity());
+  }
+  EXPECT_EQ(countOps<mlir::linalg::LinalgOp>(module->getOperation()), 0u);
+  EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
 }
 
 TEST_F(StructuredToTileTest,
@@ -1207,6 +1294,77 @@ TEST_F(StructuredToTileTest, SplitExchangeRegionsCloseBeforeOneRingRound) {
     EXPECT_EQ(movement.statistics.peerSends, 2u);
     EXPECT_EQ(movement.statistics.peerReceives, 2u);
     EXPECT_EQ(movement.statistics.crossTileDDRStages, 0u);
+  }
+}
+
+TEST_F(StructuredToTileTest,
+       CrossComponentRegionOrderCycleUsesOnePreflightDDRBoundary) {
+  for (int64_t extent : {1024, 1025}) {
+    SCOPED_TRACE(extent);
+    auto module = parse(makeSplitTwoTileExchangeSource(extent));
+    ASSERT_TRUE(module);
+    llvm::SmallVector<llvm::SmallVector<TileRegionOp, 2>, 2> regions(2);
+    for (TileModuleOp tile : module->getOps<TileModuleOp>())
+      tile.walk([&](TileRegionOp region) {
+        regions[tile.getTileIdAttr().getInt()].push_back(region);
+      });
+    ASSERT_EQ(regions[0].size(), 2u);
+    ASSERT_EQ(regions[1].size(), 2u);
+    StructuredMaterializationRelations relations;
+    relations.boundaryRelations.push_back(
+        {regions[0][0].getResult(0), regions[1][1].getBody().getArgument(0)});
+    relations.boundaryRelations.push_back(
+        {regions[1][0].getResult(0), regions[0][1].getBody().getArgument(0)});
+    relations.structuralOutputs.push_back({0, regions[0][1].getResult(0)});
+    relations.structuralOutputs.push_back({0, regions[1][1].getResult(0)});
+
+    LayoutOptimizationResult layout =
+        resolveCurrentLayoutsAndBufferize(*module, relations);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    StructuredToTileResult lowered =
+        lowerStructuredComputeToTile(*module, relations);
+    ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+    BoundaryMovementResult movement =
+        materializeTileBoundaryMovement(*module, relations);
+    ASSERT_TRUE(movement.succeeded()) << movement.detail;
+    EXPECT_EQ(movement.statistics.noCutDDRComponents, 1u);
+    EXPECT_EQ(movement.statistics.peerSends, 1u);
+    EXPECT_EQ(movement.statistics.peerReceives, 1u);
+    EXPECT_EQ(movement.statistics.crossTileDDRStages, 1u);
+    EXPECT_EQ(countOps<CommPeerSendOp>(module->getOperation()), 1u);
+    EXPECT_EQ(countOps<CommPeerRecvOp>(module->getOperation()), 1u);
+    EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+
+    std::string standaloneFailure;
+    auto standalone = createStandaloneTileModules(
+        std::move(module), &standaloneFailure, &relations);
+    ASSERT_TRUE(mlir::succeeded(standalone)) << standaloneFailure;
+    llvm::SmallVector<mlir::ModuleOp, 2> instructionModules;
+    for (StandaloneTileModule &tile : *standalone) {
+      llvm::SmallVector<TileRegionOp, 2> tileRegions;
+      tile.module->walk(
+          [&](TileRegionOp region) { tileRegions.push_back(region); });
+      TileRegionToInstrLoweringSession session(*tile.module->getContext());
+      for (TileRegionOp region : tileRegions)
+        ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+      ASSERT_TRUE(mlir::succeeded(
+          convertBufferizationCopiesToInstr(*tile.module, session)));
+      instructionModules.push_back(*tile.module);
+    }
+    DirectDTECompletionResult completion =
+        rebuildRequiredDirectDTEWaits(instructionModules);
+    ASSERT_TRUE(completion.succeeded()) << completion.detail;
+    instructionModules.clear();
+    for (StandaloneTileModule &tile : *standalone) {
+      ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+      TileMemoryPlanningFailure memoryFailure;
+      auto planned = planTileMemory(std::move(tile.module), &memoryFailure);
+      ASSERT_TRUE(mlir::succeeded(planned));
+      tile.module = std::move(*planned);
+      instructionModules.push_back(*tile.module);
+    }
+    EXPECT_TRUE(
+        mlir::succeeded(verifyDirectDTETransportSchedule(instructionModules)));
   }
 }
 

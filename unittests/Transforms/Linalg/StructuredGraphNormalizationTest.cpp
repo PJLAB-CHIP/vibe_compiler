@@ -253,6 +253,66 @@ TEST_F(StructuredGraphNormalizationTest,
 }
 
 TEST_F(StructuredGraphNormalizationTest,
+       EarlyBarrierFanoutPartitionsRequestsAndAbsorbsLaterWeightTranspose) {
+  mlir::OwningOpRef<mlir::ModuleOp> module = parse(R"mlir(
+    #id3 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
+    module {
+      func.func @barrier_fanout(
+          %lhs: tensor<2x64x1025xf32>,
+          %weight: tensor<2x128x1025xf32>,
+          %init: tensor<2x64x128xf32>)
+          -> (tensor<1x64x1025xf32>, tensor<2x64x128xf32>) {
+        %shared_empty = tensor.empty() : tensor<2x64x1025xf32>
+        %shared = linalg.generic {
+            indexing_maps = [#id3, #id3],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%lhs : tensor<2x64x1025xf32>)
+            outs(%shared_empty : tensor<2x64x1025xf32>) {
+          ^bb0(%value: f32, %old: f32):
+            %next = arith.negf %value : f32
+            linalg.yield %next : f32
+        } -> tensor<2x64x1025xf32>
+        %early = tensor.extract_slice %shared[0, 0, 0] [1, 64, 1025]
+            [1, 1, 1] : tensor<2x64x1025xf32> to tensor<1x64x1025xf32>
+        %transpose_empty = tensor.empty() : tensor<2x1025x128xf32>
+        %transposed = linalg.transpose
+            ins(%weight : tensor<2x128x1025xf32>)
+            outs(%transpose_empty : tensor<2x1025x128xf32>)
+            permutation = [0, 2, 1]
+        %result = linalg.batch_matmul
+            ins(%shared, %transposed : tensor<2x64x1025xf32>,
+                tensor<2x1025x128xf32>)
+            outs(%init : tensor<2x64x128xf32>) -> tensor<2x64x128xf32>
+        return %early, %result : tensor<1x64x1025xf32>,
+            tensor<2x64x128xf32>
+      }
+    }
+  )mlir");
+  ASSERT_TRUE(module);
+  auto function = module->lookupSymbol<mlir::func::FuncOp>("barrier_fanout");
+  ASSERT_TRUE(function);
+
+  wafer::StructuredGraphNormalizationStatistics statistics;
+  auto outcome =
+      wafer::normalizeStructuredTensorGraph(function, {}, &statistics);
+  ASSERT_TRUE(mlir::succeeded(outcome));
+  EXPECT_EQ(*outcome, wafer::StructuredGraphNormalizationOutcome::Changed);
+  EXPECT_EQ(statistics.budgetExhaustedComponents, 0u);
+  EXPECT_GE(statistics.components, 2u);
+  EXPECT_GE(statistics.computeAbsorptionApplications, 1u);
+  EXPECT_EQ(count<mlir::linalg::TransposeOp>(function), 0u);
+  EXPECT_EQ(count<mlir::linalg::BatchMatmulTransposeBOp>(function), 1u);
+  EXPECT_EQ(count<mlir::tensor::ExtractSliceOp>(function), 1u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  const std::string once = print(function);
+  auto repeated = wafer::normalizeStructuredTensorGraph(function);
+  ASSERT_TRUE(mlir::succeeded(repeated));
+  EXPECT_EQ(*repeated, wafer::StructuredGraphNormalizationOutcome::Unchanged);
+  EXPECT_EQ(print(function), once);
+}
+
+TEST_F(StructuredGraphNormalizationTest,
        RaggedReductionResultReindexFeedsPinnedReductionTiling) {
   mlir::OwningOpRef<mlir::ModuleOp> module = parse(R"mlir(
     #identity = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
@@ -728,7 +788,7 @@ TEST_F(StructuredGraphNormalizationTest,
 }
 
 TEST_F(StructuredGraphNormalizationTest,
-       GeneralBatchReshapePreservesReductionAndContractionAxes) {
+       GeneralBatchReshapePreservesReductionAndDefersContractionReindex) {
   mlir::OwningOpRef<mlir::ModuleOp> module = parse(R"mlir(
     #identity3 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
     #reduce3 = affine_map<(d0, d1, d2) -> (d0, d1)>
@@ -803,13 +863,12 @@ TEST_F(StructuredGraphNormalizationTest,
       contractionFunction, {}, &contractionStatistics)));
 
   EXPECT_GE(reductionStatistics.reshapeThroughComputeApplications, 1u);
-  EXPECT_GE(contractionStatistics.reshapeThroughComputeApplications, 1u);
+  EXPECT_EQ(contractionStatistics.reshapeThroughComputeApplications, 0u);
   EXPECT_EQ(count<mlir::tensor::CollapseShapeOp>(reductionFunction), 0u);
   EXPECT_EQ(count<mlir::tensor::ExpandShapeOp>(reductionFunction), 0u)
       << print(reductionFunction);
-  EXPECT_EQ(count<mlir::tensor::CollapseShapeOp>(contractionFunction), 0u);
-  EXPECT_EQ(count<mlir::tensor::ExpandShapeOp>(contractionFunction), 0u)
-      << print(contractionFunction);
+  EXPECT_EQ(count<mlir::tensor::CollapseShapeOp>(contractionFunction), 3u);
+  EXPECT_EQ(count<mlir::tensor::ExpandShapeOp>(contractionFunction), 1u);
 
   mlir::linalg::GenericOp reduction;
   reductionFunction.walk(
@@ -824,20 +883,21 @@ TEST_F(StructuredGraphNormalizationTest,
                               mlir::utils::IteratorType::reduction}));
   EXPECT_EQ(reduction.getDpsInputs().front(), reductionFunction.getArgument(0));
 
-  mlir::linalg::GenericOp contraction;
+  mlir::linalg::BatchMatmulOp contraction;
   contractionFunction.walk(
-      [&](mlir::linalg::GenericOp operation) { contraction = operation; });
+      [&](mlir::linalg::BatchMatmulOp operation) { contraction = operation; });
   ASSERT_TRUE(contraction);
-  EXPECT_EQ(contraction.getNumLoops(), 5u);
+  EXPECT_EQ(contraction.getNumLoops(), 4u);
   EXPECT_TRUE(llvm::equal(contraction.getIteratorTypesArray(),
                           llvm::ArrayRef<mlir::utils::IteratorType>{
                               mlir::utils::IteratorType::parallel,
                               mlir::utils::IteratorType::parallel,
                               mlir::utils::IteratorType::parallel,
-                              mlir::utils::IteratorType::parallel,
                               mlir::utils::IteratorType::reduction}));
-  EXPECT_EQ(contraction.getDpsInputs()[0], contractionFunction.getArgument(0));
-  EXPECT_EQ(contraction.getDpsInputs()[1], contractionFunction.getArgument(1));
+  EXPECT_TRUE(contraction.getDpsInputs()[0]
+                  .getDefiningOp<mlir::tensor::CollapseShapeOp>());
+  EXPECT_TRUE(contraction.getDpsInputs()[1]
+                  .getDefiningOp<mlir::tensor::CollapseShapeOp>());
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
 
   std::string failureReason;
@@ -856,11 +916,11 @@ TEST_F(StructuredGraphNormalizationTest,
             (llvm::SmallVector<int, 2>{3}));
 
   mlir::OpBuilder contractionBuilder(contraction);
-  llvm::SmallVector<mlir::OpFoldResult, 5> contractionOffsets(
-      5, contractionBuilder.getIndexAttr(0));
-  llvm::SmallVector<mlir::OpFoldResult, 5> contractionSizes{
-      contractionBuilder.getIndexAttr(2), contractionBuilder.getIndexAttr(4),
-      contractionBuilder.getIndexAttr(64), contractionBuilder.getIndexAttr(128),
+  llvm::SmallVector<mlir::OpFoldResult, 4> contractionOffsets(
+      4, contractionBuilder.getIndexAttr(0));
+  llvm::SmallVector<mlir::OpFoldResult, 4> contractionSizes{
+      contractionBuilder.getIndexAttr(8), contractionBuilder.getIndexAttr(64),
+      contractionBuilder.getIndexAttr(128),
       contractionBuilder.getIndexAttr(1024)};
   mlir::FailureOr<wafer::PartialReductionTileMaterialization> tiledContraction =
       wafer::materializePartialReductionTile(
@@ -868,7 +928,7 @@ TEST_F(StructuredGraphNormalizationTest,
           contractionSizes, &failureReason);
   ASSERT_TRUE(mlir::succeeded(tiledContraction)) << failureReason;
   EXPECT_EQ(tiledContraction->reductionDimensions,
-            (llvm::SmallVector<int, 2>{4}));
+            (llvm::SmallVector<int, 2>{3}));
 }
 
 TEST_F(StructuredGraphNormalizationTest,
@@ -1110,21 +1170,20 @@ TEST_F(StructuredGraphNormalizationTest,
   wafer::StructuredGraphNormalizationStatistics contractionUnflattenStatistics;
   ASSERT_TRUE(mlir::succeeded(wafer::normalizeStructuredTensorGraph(
       contractionUnflatten, {}, &contractionUnflattenStatistics)));
-  EXPECT_GE(contractionUnflattenStatistics.reshapeThroughComputeApplications,
-            1u);
-  EXPECT_EQ(count<mlir::tensor::CollapseShapeOp>(contractionUnflatten), 0u);
+  EXPECT_EQ(contractionUnflattenStatistics.reshapeThroughComputeApplications,
+            0u);
+  EXPECT_EQ(count<mlir::tensor::CollapseShapeOp>(contractionUnflatten), 2u);
   llvm::SmallVector<mlir::linalg::LinalgOp, 2> expandedContractions;
   contractionUnflatten.walk([&](mlir::linalg::LinalgOp operation) {
     expandedContractions.push_back(operation);
   });
   ASSERT_EQ(expandedContractions.size(), 1u);
-  EXPECT_EQ(expandedContractions.front().getNumLoops(), 5u);
+  EXPECT_EQ(expandedContractions.front().getNumLoops(), 4u);
   EXPECT_TRUE(llvm::equal(expandedContractions.front().getIteratorTypesArray(),
                           llvm::ArrayRef<mlir::utils::IteratorType>{
                               mlir::utils::IteratorType::parallel,
                               mlir::utils::IteratorType::parallel,
                               mlir::utils::IteratorType::parallel,
-                              mlir::utils::IteratorType::reduction,
                               mlir::utils::IteratorType::reduction}));
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
 }

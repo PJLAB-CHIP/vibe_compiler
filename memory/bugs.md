@@ -1562,3 +1562,45 @@
 - 防复发：真实`1025x128x128` rank-3 case覆盖32个diamond、99个contraction、4组compatible reshape和write-split cohort；精确断言两次
   actual materialization、metadata view、PBQP variables/factors/work、重复输出和一次bufferization。Zero budget必须byte-identical
   `Indeterminate`，不能用更高timeout、beam或Top-k代替exact reduction。
+
+## Structural full-tensor shell必须在bufferization前收窄
+
+- 现象：producer只计算`256x11008` piece，却以`insert_slice(piece, tensor.empty<4096x11008>)`跨same-Tile Region传递；consumer立即
+  `extract_slice`同一rectangle。One-Shot把这个结构壳变成90MB SPM allocation、copy/store和后续layout conversion，temporal refinement
+  缩小consumer也无法删除base allocation。
+- 根因：layout stage只收窄observable output与cross-Tile source，漏掉same-Tile Region result/input；把tensor-level占位形状误当成actual
+  storage合同。
+- 修复模式：在PBQP/bufferization前从current insert/extract逐项证明offset、size、unit stride和唯一use，同时改写producer result、consumer
+  operand和block argument为compact piece；存在full use、不同rectangle或真实assembly时保持原IR。Lowering不按allocation大小猜测修复。
+- 防复发：1024/1025/1031 rank-3正例检查insert/extract wrapper为0、full-shape SPM allocation为0且layout/movement直接消费compact SSA；
+  unmatched rectangle负例保持full current IR。
+
+## E-graph barrier fallback必须形成互不重叠的拓扑request
+
+- 现象：一个119-op component有早期barrier root和最终root，单一late anchor不能支配早期use。旧fallback为最终root重新纳入113个operation，
+  既与早期slice重叠，又在LLaMA上耗尽e-node/match budget，导致weight transpose未吸收到matmul。
+- 根因：fallback只按ancestor集合判断shared producer，忽略已分配slice和不在当前slice的ancestor user；一次DFS顺序不能保证downstream-closed。
+- 修复模式：非法单锚点component按source-order fanout/root建立fallback roots；从后向前只纳入全部semantic users已在当前slice的operation，
+  已签发operation不进入后续request；这些互不重叠request在同一pass内按拓扑顺序各执行一次。Output closure被原样剥离且没有保留任何
+  Access/Concat/node变化时，结果仍报告`Unchanged`，不靠重复运行e-graph追认完成。
+- 防复发：真实规模early `extract_slice` barrier与later transpose→contraction同图测试必须无budget exhaustion、保留barrier、消除transpose且
+  第二次运行byte-equivalent；长链与multi-root共享DAG原有覆盖继续通过。
+
+## Loop-carried storage复用必须在Instr lowering前显式化
+
+- 现象：functional Tile elementwise/layout result直接由`scf.yield`携带，Tile-to-Instr为每次迭代创建body-local allocation，actual lifetime
+  planner正确拒绝该allocation跨backedge。
+- 根因：alias/allocation choice拖到lowering并通过users临时决定，Tile IR没有表达旧iter_arg在写点之后已死亡以及destination可复用。
+- 修复模式：execution-structure closure从current SSA证明result唯一yield、类型相同及旧iter_arg没有更晚use，改写为已有
+  `elementwise_into`/`copy_into`并直接写iter_arg；elementwise只按其typed合同允许destination同时作为input。Lowering只发射explicit dest。
+- 防复发：1024/1025/1031 elementwise与跨layout movement检查loop内functional result和allocation为0、destination恰为iter_arg；额外晚use
+  负例不得复用。
+
+## 独立communication component也必须服从全Tile Region偏序
+
+- 现象：每个ring/tree单独合法，但不同Tile上的component顺序相反，whole-program Direct-DTE wait graph形成跨component环。
+- 根因：component只按共享Region合组，未把各Tile actual Region order纳入全局phase legality；后端wait verifier才首次看到矛盾。
+- 修复模式：movement mutation前从component实际source/destination Region建立偏序图；对actual cycle选择总payload bytes最小的component形成
+  typed shared-DDR boundary并fresh重算，剩余无环component继续使用ring/tree/sparse。不得靠新增wait断环或在verifier失败后fallback。
+- 防复发：两Tile两Region反向component正例精确断言一个DDR cut、一个Direct-DTE pair，并继续通过completion、MiniMalloc和whole-program
+  transport verifier；完整LLaMA no-card必须使用同一actual路径。
