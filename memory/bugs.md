@@ -1370,6 +1370,16 @@
   1/2/15-use layout case覆盖只读共享，并用intervening alias write反例证明不复用。不能用CSE、copy lowering或copy-only TileRegion掩盖
   错误的current-value串接。
 
+## 改变view source layout时必须重建nested subview
+
+- 现象：把DDR outer subview加载到compact SPM allocation后直接替换其uses；下一层`memref.subview`仍保留旧source的stride/offset
+  result type，直到大型LLaMA boundary movement结束才由verifier批量报layout mismatch。
+- 根因：把memref value替换误当成普通SSA同类型替换；outer view与compact allocation逻辑shape相同，但physical layout不同，nested
+  subview的推导类型因此已经失效。
+- 修复模式：在发生layout-changing view replacement的原rewrite边界，按原mixed offsets/sizes/strides递归重建nested subview，让MLIR从
+  new source重新推导result type；非view consumer再接compact allocation。不能在stage末尾改result type修补invalid IR。
+- 防复发：真实规模nested static/dynamic subview覆盖非零offset与tail，并在replacement后立即运行verifier；只测单层subview不能覆盖。
+
 ## Structured component重建必须使用一个拓扑一致的insertion boundary
 
 - 现象：小型reshape/transpose case通过，但fresh HF component在rewrite后出现前序`linalg.generic`读取后面才定义的Access；e-graph

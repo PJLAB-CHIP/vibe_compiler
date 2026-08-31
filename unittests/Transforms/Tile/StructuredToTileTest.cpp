@@ -17,6 +17,7 @@
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
@@ -698,6 +699,53 @@ module {
     return text;
   }
 
+  static std::string makeSquareSource(int64_t extent, int64_t exponent) {
+    std::string text;
+    llvm::raw_string_ostream stream(text);
+    stream << R"mlir(
+#id = affine_map<(b, m, n) -> (b, m, n)>
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(%input: tensor<1x)mlir"
+           << extent << R"mlir(x64xf32>) -> tensor<1x)mlir" << extent
+           << R"mlir(x64xf32> {
+      %result = wafer.tile.region(
+          %input : tensor<1x)mlir"
+           << extent << R"mlir(x64xf32>) -> (tensor<1x)mlir" << extent
+           << R"mlir(x64xf32>) {
+      ^bb0(%local: tensor<1x)mlir"
+           << extent << R"mlir(x64xf32>):
+        %empty = tensor.empty() : tensor<1x)mlir"
+           << extent << R"mlir(x64xf32>
+        %mapped = linalg.generic {
+            indexing_maps = [#id, #id],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%local : tensor<1x)mlir"
+           << extent << R"mlir(x64xf32>)
+            outs(%empty : tensor<1x)mlir"
+           << extent << R"mlir(x64xf32>) {
+          ^bb1(%value: f32, %old: f32):
+            %exponent = arith.constant )mlir"
+           << exponent << R"mlir(.000000e+00 : f32
+            %powered = math.powf %value, %exponent : f32
+            linalg.yield %powered : f32
+        } -> tensor<1x)mlir"
+           << extent << R"mlir(x64xf32>
+        wafer.tile.yield %mapped : tensor<1x)mlir"
+           << extent << R"mlir(x64xf32>
+      }
+      return %result : tensor<1x)mlir"
+           << extent << R"mlir(x64xf32>
+    }
+  }
+}
+)mlir";
+    return text;
+  }
+
   mlir::DialectRegistry registry;
   std::unique_ptr<mlir::MLIRContext> context;
 };
@@ -903,6 +951,62 @@ TEST_F(StructuredToTileTest,
               movement.statistics.peerRelaySends);
     EXPECT_EQ(sourceSends + relaysWithActualReceiveStorage, 5u);
     EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+  }
+}
+
+TEST_F(StructuredToTileTest, ExactPowerTwoLowersToUnarySquareInstruction) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto module = parse(makeSquareSource(extent, 2));
+    ASSERT_TRUE(module);
+    TileRegionOp region;
+    module->walk([&](TileRegionOp current) { region = current; });
+    ASSERT_TRUE(region);
+    StructuredMaterializationRelations relations;
+    relations.structuralOutputs.push_back({0, region.getResult(0)});
+    LayoutOptimizationResult layout =
+        resolveCurrentLayoutsAndBufferize(*module, relations);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    StructuredToTileResult lowered =
+        lowerStructuredComputeToTile(*module, relations);
+    ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+    unsigned tileSquares = 0;
+    module->walk([&](ComputeElementwiseOp operation) {
+      if (operation.getKind() == ComputeElementwiseKind::Square) {
+        ++tileSquares;
+        EXPECT_EQ(operation.getInputs().size(), 1u);
+      }
+    });
+    EXPECT_EQ(tileSquares, 1u);
+    BoundaryMovementResult movement =
+        materializeTileBoundaryMovement(*module, relations);
+    ASSERT_TRUE(movement.succeeded()) << movement.detail;
+    llvm::SmallVector<TileRegionOp, 2> regions;
+    module->walk([&](TileRegionOp current) { regions.push_back(current); });
+    TileRegionToInstrLoweringSession session(*module->getContext());
+    for (TileRegionOp current : regions)
+      ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(current, session)));
+    unsigned instructionSquares = 0;
+    module->walk([&](InstrElementwiseOp operation) {
+      instructionSquares += operation.getKind() == InstrElementwiseKind::Square;
+    });
+    EXPECT_EQ(instructionSquares, 1u);
+
+    auto unsupported = parse(makeSquareSource(extent, 3));
+    ASSERT_TRUE(unsupported);
+    TileRegionOp unsupportedRegion;
+    unsupported->walk(
+        [&](TileRegionOp current) { unsupportedRegion = current; });
+    StructuredMaterializationRelations unsupportedRelations;
+    unsupportedRelations.structuralOutputs.push_back(
+        {0, unsupportedRegion.getResult(0)});
+    LayoutOptimizationResult unsupportedLayout =
+        resolveCurrentLayoutsAndBufferize(*unsupported, unsupportedRelations);
+    ASSERT_TRUE(unsupportedLayout.succeeded()) << unsupportedLayout.detail;
+    StructuredToTileResult rejected =
+        lowerStructuredComputeToTile(*unsupported, unsupportedRelations);
+    EXPECT_EQ(rejected.failure, StructuredToTileFailureKind::Unsupported);
+    EXPECT_EQ(countOps<mlir::math::PowFOp>(unsupported->getOperation()), 1u);
   }
 }
 

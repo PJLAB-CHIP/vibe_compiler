@@ -346,6 +346,8 @@ toComputeElementwiseKind(InstrElementwiseKind kind) {
     return ComputeElementwiseKind::Neg;
   case InstrElementwiseKind::Recip:
     return ComputeElementwiseKind::Recip;
+  case InstrElementwiseKind::Square:
+    return ComputeElementwiseKind::Square;
   case InstrElementwiseKind::Sqrt:
     return ComputeElementwiseKind::Sqrt;
   case InstrElementwiseKind::Rsqrt:
@@ -369,7 +371,6 @@ toComputeElementwiseKind(InstrElementwiseKind kind) {
   case InstrElementwiseKind::Ge:
     return ComputeElementwiseKind::Ge;
   case InstrElementwiseKind::Abs:
-  case InstrElementwiseKind::Square:
   case InstrElementwiseKind::Log2:
   case InstrElementwiseKind::Pow2:
   case InstrElementwiseKind::ExpLp:

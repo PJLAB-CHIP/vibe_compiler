@@ -932,6 +932,24 @@ static bool hasOnlySubviewUses(mlir::Value value) {
          });
 }
 
+static void retargetSubviewUsers(mlir::Value oldValue, mlir::Value newValue,
+                                 mlir::IRRewriter &rewriter) {
+  for (mlir::OpOperand &use : llvm::make_early_inc_range(oldValue.getUses())) {
+    auto subview = mlir::dyn_cast<mlir::memref::SubViewOp>(use.getOwner());
+    if (!subview || use.getOperandNumber() != 0) {
+      use.set(newValue);
+      continue;
+    }
+    rewriter.setInsertionPoint(subview);
+    auto replacement = rewriter.create<mlir::memref::SubViewOp>(
+        subview.getLoc(), newValue, subview.getMixedOffsets(),
+        subview.getMixedSizes(), subview.getMixedStrides());
+    retargetSubviewUsers(subview.getResult(), replacement.getResult(),
+                         rewriter);
+    rewriter.eraseOp(subview);
+  }
+}
+
 static mlir::LogicalResult materializeSubviewLoads(
     mlir::bufferization::ToMemrefOp bridge, mlir::BlockArgument ddrArgument,
     mlir::IRRewriter &rewriter, BoundaryMovementStatistics &statistics) {
@@ -948,9 +966,7 @@ static mlir::LogicalResult materializeSubviewLoads(
         subview.getLoc(), getOwnedSPMType(oldType));
     rewriter.create<StorageLoadOp>(subview.getLoc(), ddrSubview.getResult(),
                                    allocation.getResult());
-    for (mlir::OpOperand &use :
-         llvm::make_early_inc_range(subview.getResult().getUses()))
-      use.set(allocation.getResult());
+    retargetSubviewUsers(subview.getResult(), allocation.getResult(), rewriter);
     rewriter.eraseOp(subview);
     ++statistics.ddrLoads;
   }

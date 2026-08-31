@@ -285,6 +285,15 @@ getScalarElementwiseKind(mlir::Operation *operation) {
     return ComputeElementwiseKind::Rsqrt;
   if (mlir::isa<mlir::math::TanhOp>(operation))
     return ComputeElementwiseKind::Tanh;
+  if (auto power = mlir::dyn_cast<mlir::math::PowFOp>(operation)) {
+    auto constant = power.getRhs().getDefiningOp<mlir::arith::ConstantOp>();
+    auto attribute = constant
+                         ? mlir::dyn_cast<mlir::FloatAttr>(constant.getValue())
+                         : mlir::FloatAttr{};
+    if (attribute && attribute.getValue().isExactlyValue(2.0))
+      return ComputeElementwiseKind::Square;
+    return std::nullopt;
+  }
   if (auto compare = mlir::dyn_cast<mlir::arith::CmpFOp>(operation))
     return getFloatCompareKind(compare.getPredicate());
   if (auto compare = mlir::dyn_cast<mlir::arith::CmpIOp>(operation))
@@ -1512,7 +1521,10 @@ lowerElementwise(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
     if (!kind)
       return mlir::failure();
     llvm::SmallVector<ExprValue, 3> operands;
-    for (mlir::Value operand : nested.getOperands()) {
+    mlir::ValueRange scalarOperands = nested.getOperands();
+    if (*kind == ComputeElementwiseKind::Square)
+      scalarOperands = scalarOperands.take_front(1);
+    for (mlir::Value operand : scalarOperands) {
       mlir::FailureOr<ExprValue> value = lookupExpr(operand, values);
       if (mlir::failed(value))
         return mlir::failure();

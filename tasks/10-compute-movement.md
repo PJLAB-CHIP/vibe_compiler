@@ -159,6 +159,10 @@ low/high/value保持原始语义。Tile-to-Instr conversion只把已验证的can
 transcendental。没有indexing relation时shape一致；存在broadcast/permutation时必须由current indexing/relation proof
 支持。relation result保持logical i1，bitpacking只由encoding与Instr lowering决定。
 
+StableHLO `power`只有在current Tensor/Linalg IR证明exponent为exact floating-point splat `2.0`时收窄为unary
+`wafer.tile.elementwise<square>`，并确定性lower到`InstrElementwiseKind::Square`/`SquareVV`。证明在splat constant仍可见时写入scalar
+body；一般`math.powf`不匹配，也不通过buffer名称、shape或allocation位置恢复exponent。
+
 `wafer.tile.compute.convert`显式改变dtype，其参数由既有target operation合同拥有，不能由target call名字恢复。不同dtype block
 geometry无法direct traversal时保留显式movement。
 

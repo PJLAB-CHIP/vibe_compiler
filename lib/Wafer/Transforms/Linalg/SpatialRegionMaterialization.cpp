@@ -595,6 +595,52 @@ mlir::LogicalResult materializeTileLocalSplatConstants(mlir::ModuleOp module) {
     auto scalarValue = value.getSplatValue<mlir::TypedAttr>();
     if (!scalarValue || scalarValue.getType() != type.getElementType())
       return mlir::failure();
+    auto floatValue = mlir::dyn_cast<mlir::FloatAttr>(scalarValue);
+    if (floatValue && floatValue.getValue().isExactlyValue(2.0)) {
+      llvm::SmallVector<mlir::Value, 8> worklist{constant.getResult()};
+      llvm::DenseSet<mlir::Value> visited;
+      while (!worklist.empty()) {
+        mlir::Value current = worklist.pop_back_val();
+        if (!visited.insert(current).second)
+          continue;
+        for (mlir::OpOperand &use : current.getUses()) {
+          mlir::Operation *user = use.getOwner();
+          if (mlir::isa<mlir::tensor::ExtractSliceOp,
+                        mlir::tensor::ExpandShapeOp,
+                        mlir::tensor::CollapseShapeOp, mlir::tensor::CastOp>(
+                  user)) {
+            for (mlir::Value result : user->getResults())
+              worklist.push_back(result);
+            continue;
+          }
+          auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(user);
+          if (!linalg)
+            continue;
+          auto indexedInputs = llvm::enumerate(linalg.getDpsInputOperands());
+          auto input = llvm::find_if(indexedInputs, [&](auto indexed) {
+            return indexed.value() == &use;
+          });
+          if (input == indexedInputs.end())
+            continue;
+          auto indexedInput = *input;
+          if (indexedInput.index() >= linalg.getRegionInputArgs().size())
+            continue;
+          mlir::BlockArgument exponent =
+              linalg.getRegionInputArgs()[indexedInput.index()];
+          llvm::SmallVector<mlir::math::PowFOp, 2> powers;
+          linalg->walk([&](mlir::math::PowFOp power) {
+            if (power.getRhs() == exponent)
+              powers.push_back(power);
+          });
+          for (mlir::math::PowFOp power : powers) {
+            rewriter.setInsertionPoint(power);
+            mlir::Value two = rewriter.create<mlir::arith::ConstantOp>(
+                power.getLoc(), scalarValue);
+            power->setOperand(1, two);
+          }
+        }
+      }
+    }
     rewriter.setInsertionPoint(constant);
     mlir::Value scalar = rewriter.create<mlir::arith::ConstantOp>(
         constant.getLoc(), scalarValue);

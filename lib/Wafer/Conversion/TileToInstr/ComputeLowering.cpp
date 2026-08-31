@@ -1403,6 +1403,8 @@ getInstrElementwiseKindAttr(mlir::PatternRewriter &rewriter,
     return makeKind(InstrElementwiseKind::Neg);
   case ComputeElementwiseKind::Recip:
     return makeKind(InstrElementwiseKind::Recip);
+  case ComputeElementwiseKind::Square:
+    return makeKind(InstrElementwiseKind::Square);
   case ComputeElementwiseKind::Sqrt:
     return makeKind(InstrElementwiseKind::Sqrt);
   case ComputeElementwiseKind::Rsqrt:
