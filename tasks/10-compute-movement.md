@@ -206,6 +206,17 @@ SSA把后续use解释为读取旧值，One-Shot Bufferization为保留该旧值�
 relation exact、其它uses/effects/alias闭合且final destination cover可证明。cleanup只能删除fully proven same-root/same-map
 冗余，不能移动fusion cut、改变route或创造spill/recompute。
 
+Current实现由`lowerStructuredComputeToTile`直接消费bufferized Linalg current IR。Named与generic contraction从iterator、maps和exact
+multiply-accumulate region得到M/K/N；多batch/head维按current maps显式transpose并压成target rank-3 GEMM，结果再恢复source logical
+order。`reshape`只有通过`TransferRealizability::proveStaticReshapeMetadataView`才成为alias；否则立即物化`reshape_copy`。Reduction、scalar
+expression、dtype convert与ordinary convolution同样只读current region/type/maps。转换前完成全module preflight，转换后可执行Linalg必须为0，
+不保留op ordinal、buffer version或source-node attribution。
+
+`materializeTileBoundaryMovement`消费每个current tensor/memref bridge及`StructuredBoundaryRelation`恰一次：外部和同Tile跨Region值变成
+destination-style DDR load/store，跨Tile值变成matching peer send/recv与其dynamic token wait；unused logical input被删除，observable output
+直接绑定第15项建立的DDR destination。Entry return若与同一actual output endpoint重复，只删除重复return bridge，不创建第二次publication。
+转换后TileRegion shaped boundary全部是DDR memref，SPM root不跨Region，relation只剩current operation/buffer owner。
+
 ## 6. Tile-to-Instr Conversion
 
 conversion按concrete typed op class使用DialectConversion/RewritePattern，生成：
@@ -214,6 +225,11 @@ conversion按concrete typed op class使用DialectConversion/RewritePattern，生
 - GEMM、ordinary 2-D convolution、elementwise、convert、reduce、fill及其它已闭合NCC instructions；
 - Direct DTE send/recv/wait；
 - explicit temporaries、descriptors、tokens和effect-bearing control flow。
+
+Descriptor planning是compute与movement lowering共用的request-local只读kernel。Tensor↔Cx/NCx的tail-free规则性映射按typed physical
+geometry压成至多三层descriptor，超出三层时只沿明确logical axis拆成有限commands；broadcast使用同一projected affine map。
+`memref.subview`的static/dynamic offset从base strides精确形成byte-offset SSA，不能从shape或loop ordinal猜测。Query结果只在本次
+Tile-to-Instr调用内使用；actual Instr command count/bytes是inventory和candidate cost的唯一事实。
 
 per-Tile conversion输出canonical/unplaced Instr：Wafer-tagged memref尚未带runtime address，但instruction kind、
 geometry、descriptor relation、worker-independent effects/ranges和async obligations完整。conversion不选择Tile placement、

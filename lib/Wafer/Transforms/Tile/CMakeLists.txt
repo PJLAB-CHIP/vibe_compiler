@@ -1,7 +1,9 @@
 add_mlir_library(WaferTileTransforms
+  BoundaryMovement.cpp
   ExecutionStructure.cpp
   LayoutOptimization.cpp
   Pipelines.cpp
+  StructuredToTile.cpp
   StructuredBufferRelations.cpp
 
   DEPENDS
@@ -20,6 +22,7 @@ add_mlir_library(WaferTileTransforms
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
+  MLIRMathDialect
   MLIRMemRefDialect
   MLIRPass
   MLIRSCFDialect

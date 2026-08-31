@@ -320,6 +320,7 @@ public:
     mlir::Value source;
     mlir::MemRefType materializedType;
     llvm::SmallVector<MovementDescriptorPair> descriptors;
+    std::optional<DynamicSubviewDescriptor> dynamicSubview;
   };
 
   ElementwiseLowering(mlir::MLIRContext *context,
@@ -469,6 +470,12 @@ public:
       inputRewrite.materializedType = mlir::MemRefType::get(
           resultType.getShape(), sourceType.getElementType(),
           resultType.getLayout(), resultType.getMemorySpace());
+      inputRewrite.dynamicSubview =
+          getDynamicSubviewDescriptor(input, op.getOperation());
+      mlir::MemRefType descriptorSourceType =
+          inputRewrite.dynamicSubview
+              ? inputRewrite.dynamicSubview->relativeType
+              : sourceType;
       analysis::IndexRelationResult sourceRelation =
           analysis::IndexRelation::fromAffineMap(
               inputMap, resultType.getShape(), sourceType.getShape());
@@ -477,16 +484,22 @@ public:
       if (!sourceRelation.isExact() || !destRelation.isExact())
         return failPattern(rewriter, op,
                            "tile.elementwise indexing relation is not exact");
-      mlir::FailureOr<SharedMovementDescriptorPlan> descriptors =
-          descriptorCache->getOrCreate(
-              rewriter, op, sourceType, inputRewrite.materializedType,
-              resultType.getShape(), *sourceRelation.get(), *destRelation.get(),
-              MovementEngine::GatherScatter,
-              "tile.elementwise indexing map materialization");
-      if (mlir::failed(descriptors))
-        return mlir::failure();
-      inputRewrite.descriptors.assign((*descriptors)->begin(),
-                                      (*descriptors)->end());
+      if (auto direct = getExactTensorToBlockedDescriptors(
+              descriptorSourceType, inputRewrite.materializedType, inputMap)) {
+        inputRewrite.descriptors.assign(direct->begin(), direct->end());
+      } else {
+        mlir::FailureOr<SharedMovementDescriptorPlan> descriptors =
+            descriptorCache->getOrCreate(
+                rewriter, op, descriptorSourceType,
+                inputRewrite.materializedType, resultType.getShape(),
+                *sourceRelation.get(), *destRelation.get(),
+                MovementEngine::GatherScatter,
+                "tile.elementwise indexing map materialization");
+        if (mlir::failed(descriptors))
+          return mlir::failure();
+        inputRewrite.descriptors.assign((*descriptors)->begin(),
+                                        (*descriptors)->end());
+      }
       if (mlir::failed(proveIdentityPhysicalTraversal(
               rewriter, op, inputRewrite.materializedType, resultType,
               descriptorCache, "materialized tile.elementwise operand")))
@@ -539,10 +552,31 @@ public:
                           op, bufferRecorder);
       if (mlir::failed(materialized))
         return mlir::failure();
-      llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
-          createGatherScatterDescriptors(rewriter, op.getLoc(),
-                                         inputRewrite.source, *materialized,
-                                         inputRewrite.descriptors);
+      llvm::SmallVector<InstrGatherScatterOp, 4> lowered;
+      if (inputRewrite.dynamicSubview) {
+        mlir::Value dynamicOffset = materializeDynamicSubviewByteOffset(
+            *inputRewrite.dynamicSubview, rewriter, op.getLoc());
+        if (!dynamicOffset)
+          return mlir::failure();
+        for (MovementDescriptorPair descriptor : inputRewrite.descriptors) {
+          mlir::Value sourceOffset = dynamicOffset;
+          if (descriptor.source.byteOffset != 0) {
+            mlir::Value staticOffset =
+                rewriter.create<mlir::arith::ConstantIndexOp>(
+                    op.getLoc(), descriptor.source.byteOffset);
+            sourceOffset = rewriter.create<mlir::arith::AddIOp>(
+                op.getLoc(), sourceOffset, staticOffset);
+            descriptor.source.byteOffset = 0;
+          }
+          lowered.push_back(createGatherScatter(
+              rewriter, op.getLoc(), inputRewrite.dynamicSubview->sourceBase,
+              *materialized, descriptor.source, descriptor.dest, sourceOffset));
+        }
+      } else {
+        lowered = createGatherScatterDescriptors(
+            rewriter, op.getLoc(), inputRewrite.source, *materialized,
+            inputRewrite.descriptors);
+      }
       if (bufferRecorder)
         for (InstrGatherScatterOp operation : lowered)
           bufferRecorder->recordLoweredOperation(op, operation);

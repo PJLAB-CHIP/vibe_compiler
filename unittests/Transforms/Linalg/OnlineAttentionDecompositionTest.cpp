@@ -2,12 +2,17 @@
 
 #include "Wafer/Transforms/Linalg/OnlineAttentionDecomposition.h"
 #include "Wafer/Transforms/Linalg/TemporalTiling.h"
+#include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
 
+#include "Wafer/Analysis/Tile/TileDataflowAnalysis.h"
+#include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
+#include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
+#include "Wafer/Transforms/Tile/StructuredToTile.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -135,6 +140,20 @@ template <typename Op> unsigned countOps(mlir::Operation *root) {
   return count;
 }
 
+mlir::LogicalResult lowerPhysicalToInstr(mlir::ModuleOp module) {
+  llvm::SmallVector<TileRegionOp, 8> regions;
+  module.walk([&](TileRegionOp region) { regions.push_back(region); });
+  TileRegionToInstrLoweringSession session(*module.getContext());
+  for (TileRegionOp region : regions)
+    if (mlir::failed(convertTileRegionToInstr(region, session)))
+      return mlir::failure();
+  if (mlir::failed(convertBufferizationCopiesToInstr(module, session)) ||
+      mlir::failed(rebuildRequiredNCCJoins(module)) ||
+      analysis::containsTileDataflowOperations(module.getOperation()))
+    return mlir::failure();
+  return mlir::verify(module);
+}
+
 TemporalChoice selectK2Tile(const TemporalDomain &domain, int64_t tileSize) {
   TemporalSuccessor first = domain.getFirstChoice();
   EXPECT_EQ(first.getKind(), TemporalSuccessorKind::Choice);
@@ -258,6 +277,24 @@ TEST(OnlineAttentionDecompositionTest,
     ASSERT_EQ(relations.structuralOutputs.size(), 1u);
     EXPECT_TRUE(isWaferDDRMemRefType(
         relations.structuralOutputs.front().endpoint.getType()));
+    StructuredToTileResult tileLowering =
+        lowerStructuredComputeToTile(*module, relations);
+    ASSERT_TRUE(tileLowering.succeeded()) << tileLowering.detail;
+    EXPECT_EQ(countOps<mlir::linalg::LinalgOp>(module->getOperation()), 0u);
+    EXPECT_EQ(tileLowering.statistics.contractions, onlineBefore * 2);
+    EXPECT_EQ(tileLowering.statistics.reductions, onlineBefore * 2);
+    EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
+    EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
+        module->getOperation(), relations)));
+    BoundaryMovementResult movement =
+        materializeTileBoundaryMovement(*module, relations);
+    ASSERT_TRUE(movement.succeeded()) << movement.detail;
+    EXPECT_GT(movement.statistics.ddrLoads, 0u);
+    EXPECT_EQ(movement.statistics.ddrStores, 1u);
+    EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+    EXPECT_TRUE(mlir::succeeded(lowerPhysicalToInstr(*module)));
+    EXPECT_LT(countOps<InstrGatherScatterOp>(module->getOperation()), 256u);
+    EXPECT_LT(countOps<SyncNCCJoinOp>(module->getOperation()), 16u);
   }
 }
 
@@ -298,6 +335,20 @@ TEST(OnlineAttentionDecompositionTest,
         resolveCurrentLayoutsAndBufferize(*module, relations);
     ASSERT_TRUE(layout.succeeded()) << layout.detail;
     EXPECT_EQ(layout.statistics.redundantPublicationCopies, 0u);
+    StructuredToTileResult tileLowering =
+        lowerStructuredComputeToTile(*module, relations);
+    ASSERT_TRUE(tileLowering.succeeded()) << tileLowering.detail;
+    EXPECT_EQ(tileLowering.statistics.contractions, onlineBefore * 2);
+    EXPECT_EQ(tileLowering.statistics.reductions, onlineBefore * 2);
+    EXPECT_EQ(countOps<mlir::linalg::LinalgOp>(module->getOperation()), 0u);
+    BoundaryMovementResult movement =
+        materializeTileBoundaryMovement(*module, relations);
+    ASSERT_TRUE(movement.succeeded()) << movement.detail;
+    EXPECT_GT(movement.statistics.ddrLoads, 0u);
+    EXPECT_EQ(movement.statistics.ddrStores, 1u);
+    EXPECT_TRUE(mlir::succeeded(lowerPhysicalToInstr(*module)));
+    EXPECT_LT(countOps<InstrGatherScatterOp>(module->getOperation()), 256u);
+    EXPECT_LT(countOps<SyncNCCJoinOp>(module->getOperation()), 16u);
   }
 }
 

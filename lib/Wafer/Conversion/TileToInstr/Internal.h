@@ -51,6 +51,15 @@ struct MovementDescriptorPair {
   MovementDescriptor dest;
 };
 
+struct DynamicSubviewDescriptor {
+  mlir::memref::SubViewOp subview;
+  mlir::Value sourceBase;
+  mlir::MemRefType relativeType;
+  llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
+  llvm::SmallVector<int64_t, 4> byteCoefficients;
+  int64_t staticByteOffset = 0;
+};
+
 using MovementDescriptorPlan = llvm::SmallVector<MovementDescriptorPair>;
 using SharedMovementDescriptorPlan =
     std::shared_ptr<const MovementDescriptorPlan>;
@@ -106,6 +115,27 @@ std::optional<int64_t>
 getStaticPositiveElementCount(llvm::ArrayRef<int64_t> shape);
 std::optional<int64_t> checkedMulI64(int64_t lhs, int64_t rhs);
 
+/// Returns one exact compact descriptor cover for a Tensor-layout source and
+/// a tail-free Cx/NCx destination when the target's three descriptor loops can
+/// encode it. Leading axes are deterministically split into multiple commands
+/// when necessary. A null result means the typed layouts require the general
+/// relation path.
+std::optional<llvm::SmallVector<MovementDescriptorPair, 4>>
+getExactTensorToBlockedDescriptors(mlir::MemRefType sourceType,
+                                   mlir::MemRefType destType,
+                                   mlir::AffineMap destToSource);
+
+std::optional<llvm::SmallVector<MovementDescriptorPair, 4>>
+getExactBlockedToTensorDescriptors(mlir::MemRefType sourceType,
+                                   mlir::MemRefType destType);
+
+std::optional<DynamicSubviewDescriptor>
+getDynamicSubviewDescriptor(mlir::Value source, mlir::Operation *operation);
+mlir::Value
+materializeDynamicSubviewByteOffset(const DynamicSubviewDescriptor &descriptor,
+                                    mlir::PatternRewriter &rewriter,
+                                    mlir::Location location);
+
 mlir::LogicalResult failPattern(mlir::PatternRewriter &rewriter,
                                 mlir::Operation *op, llvm::StringRef reason);
 
@@ -156,12 +186,14 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
 llvm::SmallVector<InstrGatherScatterOp, 4> createGatherScatterDescriptors(
     mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
     mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors);
-llvm::SmallVector<InstrRDMAOp, 4> createMappedRDMADescriptors(
-    mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
-    mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors);
-llvm::SmallVector<InstrWDMAOp, 4> createMappedWDMADescriptors(
-    mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
-    mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors);
+llvm::SmallVector<InstrRDMAOp, 4>
+createMappedRDMADescriptors(mlir::PatternRewriter &rewriter, mlir::Location loc,
+                            mlir::Value source, mlir::Value dest,
+                            llvm::ArrayRef<MovementDescriptorPair> descriptors);
+llvm::SmallVector<InstrWDMAOp, 4>
+createMappedWDMADescriptors(mlir::PatternRewriter &rewriter, mlir::Location loc,
+                            mlir::Value source, mlir::Value dest,
+                            llvm::ArrayRef<MovementDescriptorPair> descriptors);
 mlir::IntegerAttr getI64Attr(mlir::PatternRewriter &rewriter, int64_t value);
 mlir::FailureOr<int64_t> readRequiredI64Attr(mlir::PatternRewriter &rewriter,
                                              mlir::Operation *op,

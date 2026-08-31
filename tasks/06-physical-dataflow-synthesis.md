@@ -413,6 +413,11 @@ Target descriptor query不进入layout PBQP。第16项可以把该query抽为sha
 cost/winner比较，但不能改变第15项的layout合法域或materialization-count objective。PBQP apply后，下游只从new current IR fresh计算
 descriptor、engine work和movement；不保存descriptor plan或future Instr inventory，也不把这些性能信息反向写入layout assignment。
 
+Current shared query位于Tile-to-Instr request-local lowering support，由layout movement与mapped elementwise/broadcast共同调用；它只接收
+current memref type、projected relation和可选typed subview offset。规则性Tensor↔Cx/NCx cover直接生成有限descriptor，general relation仍走
+`PhysicalAccessRelation`；二者均产生actual Instr并由同一inventory计数。第16项orchestration依次执行structured-to-Tile、boundary
+movement、execution structure、standalone fanout、per-Tile Instr/cleanup/fresh completion和唯一actual leaf，不保存query结果跨stage。
+
 #### 6.1.2 Output DPS 与一次bufferization
 
 每个`StructuredOutputRelation`在bufferization前从其current TileRegion yield证明actual output piece。Canonical full-tensor

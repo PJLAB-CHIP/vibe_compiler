@@ -3,6 +3,7 @@
 #include "Internal.h"
 
 #include "Wafer/Analysis/Tile/TransferRealizability.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -145,22 +146,62 @@ public:
           rewriter, op,
           "layout materialization gather/scatter is not exactly realizable");
 
-    mlir::FailureOr<SharedMovementDescriptorPlan> descriptors =
-        descriptorCache->getOrCreate(
-            rewriter, op, sourceType, resultType, resultType.getShape(),
-            *relation.get(), *relation.get(), MovementEngine::GatherScatter,
-            "layout materialize lowering");
-    if (mlir::failed(descriptors))
-      return mlir::failure();
+    std::optional<DynamicSubviewDescriptor> dynamicSubview =
+        getDynamicSubviewDescriptor(op.getSource(), op);
+    mlir::MemRefType descriptorSourceType =
+        dynamicSubview ? dynamicSubview->relativeType : sourceType;
+    SharedMovementDescriptorPlan descriptorPlan;
+    std::optional<llvm::SmallVector<MovementDescriptorPair, 4>> direct =
+        getExactTensorToBlockedDescriptors(
+            descriptorSourceType, resultType,
+            mlir::AffineMap::getMultiDimIdentityMap(resultType.getRank(),
+                                                    rewriter.getContext()));
+    if (!direct)
+      direct =
+          getExactBlockedToTensorDescriptors(descriptorSourceType, resultType);
+    if (direct) {
+      descriptorPlan =
+          std::make_shared<MovementDescriptorPlan>(std::move(*direct));
+    } else {
+      mlir::FailureOr<SharedMovementDescriptorPlan> descriptors =
+          descriptorCache->getOrCreate(
+              rewriter, op, descriptorSourceType, resultType,
+              resultType.getShape(), *relation.get(), *relation.get(),
+              MovementEngine::GatherScatter, "layout materialize lowering");
+      if (mlir::failed(descriptors))
+        return mlir::failure();
+      descriptorPlan = *descriptors;
+    }
 
     mlir::FailureOr<mlir::Value> dest = createDestAlloc(
         op.getLoc(), op.getResult().getType(), rewriter, op, bufferRecorder);
     if (mlir::failed(dest))
       return mlir::failure();
 
-    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
-        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
-                                       *dest, **descriptors);
+    llvm::SmallVector<InstrGatherScatterOp, 4> lowered;
+    if (dynamicSubview) {
+      mlir::Value dynamicSourceOffset = materializeDynamicSubviewByteOffset(
+          *dynamicSubview, rewriter, op.getLoc());
+      if (!dynamicSourceOffset)
+        return mlir::failure();
+      for (MovementDescriptorPair descriptor : *descriptorPlan) {
+        mlir::Value sourceOffset = dynamicSourceOffset;
+        if (descriptor.source.byteOffset != 0) {
+          mlir::Value staticOffset =
+              rewriter.create<mlir::arith::ConstantIndexOp>(
+                  op.getLoc(), descriptor.source.byteOffset);
+          sourceOffset = rewriter.create<mlir::arith::AddIOp>(
+              op.getLoc(), sourceOffset, staticOffset);
+          descriptor.source.byteOffset = 0;
+        }
+        lowered.push_back(createGatherScatter(
+            rewriter, op.getLoc(), dynamicSubview->sourceBase, *dest,
+            descriptor.source, descriptor.dest, sourceOffset));
+      }
+    } else {
+      lowered = createGatherScatterDescriptors(
+          rewriter, op.getLoc(), op.getSource(), *dest, *descriptorPlan);
+    }
     if (bufferRecorder)
       for (InstrGatherScatterOp operation : lowered)
         bufferRecorder->recordLoweredOperation(op, operation);

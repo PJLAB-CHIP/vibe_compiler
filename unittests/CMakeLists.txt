@@ -124,6 +124,7 @@ wafer_add_component_unit_test(WaferTransformsUnitTests
     Transforms/Instr/TileMemoryPlanningTest.cpp
     Transforms/Tile/StructuredBufferRelationsTest.cpp
     Transforms/Tile/LayoutOptimizationTest.cpp
+    Transforms/Tile/StructuredToTileTest.cpp
     Transforms/Tile/ExecutionStructureMaterializationTest.cpp
     Transforms/Linalg/AttentionNormalizationTest.cpp
     Transforms/Linalg/OnlineAttentionDecompositionTest.cpp

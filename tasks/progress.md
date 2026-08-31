@@ -17,10 +17,10 @@
 
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `search-scalability` | `doing` | Q52 / 06 | Q51 choice/domain donor、第12项actual structural owner、已闭合的C1 multi-root e-graph、C2 Temporal relation consumer和C3 physical layout relation consumer、第14项final Linalg/Tensor/SCF owner、第15项layout-resolved/bufferized current owner、current baseline regression、Q50.0 actual memory/target leaf | 当前直接项为第16项`current-ir-downstream-orchestration`，随后执行第17--20项。none/search独立且无fallback；SPM只由actual MiniMalloc判定；同源LLaMA产品纵向通过 | `tasks/plans/physical-dataflow-synthesis.md` |
+| 1 | `search-scalability` | `doing` | Q52 / 06 | Q51 choice/domain donor、第12项actual structural owner、已闭合的C1 multi-root e-graph、C2 Temporal relation consumer和C3 physical layout relation consumer、第14项final Linalg/Tensor/SCF owner、第15项layout-resolved/bufferized current owner、第16项current-IR downstream mechanics、current baseline regression、Q50.0 actual memory/target leaf | 当前直接项为第17项`baseline-current-ir-integration`，随后执行第18--20项。none/search独立且无fallback；SPM只由actual MiniMalloc判定；同源LLaMA产品纵向通过 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 2 | `production-host-readiness` | `queued` | Q53 / 16 | search scalability、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 
-Q52当前直接项是第16项`current-ir-downstream-orchestration`。C1已经形成ordered multi-root egg ABI、共享DAG extraction及唯一
+Q52当前直接项是第17项`baseline-current-ir-integration`。C1已经形成ordered multi-root egg ABI、共享DAG extraction及唯一
 reshape-through-compute rule，parallel-only和reduction-only flatten/unflatten双向闭合，mixed-kind group保持current IR。C2显式保留
 Independent与all-use Joint choice，general reshape actual rectangle/有限pieces、2/15 direct及`cast/extract_slice/reshape` view uses共享、
 broadcast producer的dependent-prefix hoist、互斥affine window exact fusion和overlap-halo Independent均已闭合；1024/1025/1031 main/tail
@@ -35,8 +35,11 @@ online-attention确定性分解为QK、scale/mask、row max/sum、state scale和
 endpoint，layout入口graph/online attention为零。第15项已经从current value/use/op tuple求解并立即应用exact PBQP canonical layout，
 形成shared actual conversion、observable DDR subview、cross-Tile source piece及一次function/region-local bufferization；旧node-ID buffer
 attribution和第二条Instr bufferization入口已经删除；PBQP唯一有限目标是最少unique actual materialization，canonical factor-valid
-assignment保证budget不足时仍可由同一apply路径完成layout，`Optimal`只表示最优性证明。第16项抽取的shared exact
-descriptor query只服务actual lowering、inventory和最终candidate cost，不反向参与layout assignment。
+assignment保证budget不足时仍可由同一apply路径完成layout，`Optimal`只表示最优性证明。第16项已经将layout-resolved Linalg/memref
+确定性转换为existing Tile compute/movement，按current endpoint relation闭合DDR或peer boundary，直接应用execution structure并先move
+standalone Tile body，再逐Tile完成Instr、exact transfer cleanup和fresh completion；Tensor↔Cx/NCx及broadcast descriptor query由compute/
+movement lowering共享，dynamic subview使用typed byte-offset operand，1024/1025/1031 ordinary、conv、FA/FD main/tail、mask和BF16均到达
+Instr，16 Tile/no-work纵向恰调用一次actual MiniMalloc/DDR/target leaf。该query不反向参与layout assignment。
 此前的actual leaf、Instr completion、execution
 structure、movement、structured logical normalization和legacy shadow-materializer retirement只作为输入，不在current队列重做。
 none和search在各自controller重启前均明确返回typed unavailable且不发布package。

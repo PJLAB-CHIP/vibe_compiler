@@ -5,6 +5,7 @@ add_mlir_library(WaferCompiler
   Compilation.cpp
   CompilationOrchestration.cpp
   CompilationStages.cpp
+  CurrentIRExecutablePipeline.cpp
   ExecutableCompilation.cpp
   ExecutableLowering.cpp
   PackageAssembly.cpp

@@ -2,11 +2,13 @@
 
 #include "Wafer/Driver/ExecutableCompilation.h"
 #include "Wafer/Driver/CompilationInternal.h"
+#include "Wafer/Driver/CurrentIRExecutablePipeline.h"
 #include "Wafer/Driver/ProgramData/ProgramData.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/TargetMemory.h"
 #include "Wafer/Transforms/Instr/MemoryPlanning.h"
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
+#include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/MLIRContext.h"
@@ -140,6 +142,48 @@ protected:
     return
   }
 )mlir";
+    }
+    os << "}\n";
+    os.flush();
+    return mlir::parseSourceString<mlir::ModuleOp>(source, context.get());
+  }
+
+  mlir::OwningOpRef<mlir::ModuleOp> physicalTileModuleCollection() {
+    std::string source;
+    llvm::raw_string_ostream os(source);
+    os << R"mlir(module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {axes = ["card"], shape = array<i64: 1>}
+)mlir";
+    for (int64_t tile = 0; tile < 16; ++tile) {
+      os << "  wafer.tile.module card_id = 0 tile_id = " << tile << " {\n";
+      if (tile == 0) {
+        os << R"mlir(    func.func @main() {
+      %c0 = arith.constant 0 : index
+      %unused = wafer.tile.region(%c0 : index) -> (index) {
+      ^bb0(%index: index):
+        %zero = arith.constant 0.000000e+00 : f16
+        %buffer = memref.alloc()
+            : memref<2x1024x64xf16, #wafer.memory<spm, tensor>>
+        wafer.tile.fill %buffer, %zero
+            : memref<2x1024x64xf16, #wafer.memory<spm, tensor>>, f16
+        %value = memref.load %buffer[%index, %index, %index]
+            : memref<2x1024x64xf16, #wafer.memory<spm, tensor>>
+        wafer.tile.yield %index : index
+      }
+      return
+    }
+)mlir";
+      } else {
+        os << R"mlir(    func.func @main() {
+      return
+    }
+)mlir";
+      }
+      os << "  }\n";
     }
     os << "}\n";
     os.flush();
@@ -325,6 +369,43 @@ TEST_F(ExecutableCompilationTest,
   EXPECT_EQ(statistics.tileModuleLoweringAttempts, 1u);
   EXPECT_EQ(statistics.tileModuleLoweringSuccesses, 1u);
   EXPECT_EQ(statistics.deviceExecutablesProduced, 1u);
+}
+
+TEST_F(ExecutableCompilationTest,
+       CurrentIRDownstreamReachesInstrMemoryAndExecutableExactlyOnce) {
+  auto module = physicalTileModuleCollection();
+  ASSERT_TRUE(module);
+  wafer::StructuredMaterializationRelations relations;
+  wafer::compiler::detail::rebuildCurrentBufferOwnerRelations(
+      module->getOperation(), relations);
+  auto expectedTileIds = tileIds();
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.numPartitions = 1;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::ProgramDataHandoff programData;
+  wafer::compiler::detail::CurrentIRDownstreamOptions options;
+  options.captureTileDataflowIR = true;
+  options.tilePipelineParallelism = 1;
+  wafer::compiler::detail::CurrentIRDownstreamStatistics downstream;
+  wafer::compiler::detail::ExecutableLoweringStatistics executable;
+
+  auto result = wafer::compiler::detail::compileCurrentIRCandidateToExecutable(
+      std::move(module), std::move(relations), wafer::CardId(0),
+      expectedTileIds, program, executionConfig(), diagnostics, programData,
+      options, &downstream, &executable);
+  diagnostics.flush();
+  ASSERT_TRUE(result.isAccepted())
+      << result.gate << ": " << result.detail << "\n"
+      << diagnosticText;
+  ASSERT_TRUE(result.executable);
+  EXPECT_EQ(result.executable->tiles.size(), 16u);
+  EXPECT_EQ(result.tileDataflowIRTrace.size(), 16u);
+  EXPECT_EQ(downstream.tileRegionsLowered, 1u);
+  EXPECT_GE(downstream.instructionOperations, 1u);
+  EXPECT_GE(downstream.nccJoinOperations, 1u);
+  EXPECT_EQ(executable.actualMemoryTargetGateInvocations, 1u);
+  EXPECT_EQ(executable.deviceExecutablesProduced, 1u);
 }
 
 TEST_F(ExecutableCompilationTest,

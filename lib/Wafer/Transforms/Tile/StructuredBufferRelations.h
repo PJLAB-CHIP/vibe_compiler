@@ -60,6 +60,14 @@ mlir::LogicalResult checkStructuredBufferRelationsCurrent(
 void retainCurrentStructuredBufferRelations(
     mlir::Operation *root, StructuredMaterializationRelations &relations);
 
+/// Recomputes every operation/buffer ownership edge from one unchanged
+/// current-IR root while preserving the caller-owned structural output and
+/// cross-Tile endpoint relations. This is used after a destructive stage
+/// rewrite whose source operation owners no longer exist; it never invents a
+/// buffer or follows a source-graph identifier.
+void rebuildCurrentBufferOwnerRelations(
+    mlir::Operation *root, StructuredMaterializationRelations &relations);
+
 /// Rebinds attribution-only buffer relations to their unique current-IR
 /// storage root before a pass pipeline may fold intermediate views. A value
 /// with zero or multiple typed roots fails closed.

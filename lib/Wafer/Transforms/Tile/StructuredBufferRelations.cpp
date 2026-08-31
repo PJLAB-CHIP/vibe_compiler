@@ -7,6 +7,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -447,6 +448,35 @@ void retainCurrentStructuredBufferRelations(
            !liveValues.contains(relation.sourceEndpoint.getAsOpaquePointer()) ||
            !liveValues.contains(
                relation.destinationEndpoint.getAsOpaquePointer());
+  });
+}
+
+void rebuildCurrentBufferOwnerRelations(
+    mlir::Operation *root, StructuredMaterializationRelations &relations) {
+  relations.buffers.clear();
+  if (!root)
+    return;
+  auto isMovement = [](mlir::Operation *operation) {
+    return mlir::isa<LayoutMaterializeOp, MoveExtractSliceOp, MoveInsertSliceOp,
+                     MoveCopyOp, MoveCopyIntoOp, MoveReshapeOp, MoveTransposeOp,
+                     MoveBroadcastOp, StorageLoadOp, StorageStoreOp,
+                     CommPeerSendOp, CommPeerRecvOp, mlir::memref::CopyOp>(
+        operation);
+  };
+  root->walk([&](mlir::Operation *operation) {
+    if (mlir::isa<mlir::ModuleOp, TileModuleOp, TileRegionOp,
+                  mlir::func::FuncOp>(operation))
+      return;
+    for (mlir::Value operand : operation->getOperands())
+      appendBufferRelation(relations, operation, operand,
+                           isMovement(operation)
+                               ? MaterializedBufferRole::Movement
+                               : MaterializedBufferRole::Operand);
+    for (mlir::Value result : operation->getResults())
+      appendBufferRelation(relations, operation, result,
+                           mlir::isa<mlir::memref::AllocOp>(operation)
+                               ? MaterializedBufferRole::Scratch
+                               : MaterializedBufferRole::Result);
   });
 }
 

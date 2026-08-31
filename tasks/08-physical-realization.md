@@ -108,6 +108,12 @@ Movement caller审计确认`getRelationMovementDescriptors`已经从current endp
 encoding pieces生成actual descriptor；target descriptor只能表达projected-affine coordinate时返回typed failure属于target encoding边界，
 不是把general relation猜成identity或compact copy。本项没有发现需要扩展的production movement API，因此不新增旁路consumer。
 
+Current boundary transformation在layout-resolved owner上直接消费logical bridge与cross-Tile endpoint relation，生成DDR load/store、peer
+token/wait和必要layout/reshape movement；同Tile跨Region使用一个actual DDR staging SSA，compatible region-local edge不额外经过DDR。
+Tensor↔Cx/NCx与broadcast descriptor cover由Tile-to-Instr compute/movement共享的typed query生成；static/dynamic subview offset进入既有
+Instr offset operand，commands随encoding axis/decomposition增长，不随logical element数展开。Standalone fanout在physical boundary与
+execution structure闭合后先move Tile body，再逐Tile运行conversion、cleanup和fresh completion。
+
 Value/use assignment采用current SSA buffer-equivalence group、consumer-use和op-tuple auxiliary factor；不使用structured-node ID或
 bufferization后的operation parity。Shared conversion通过每个dominance/effect cohort的三态activation factor只计一次，并由apply创建
 恰好一个actual SSA result。Descriptor analysis即使在直接下游抽为shared query，也只服务actual lowering、inventory和最终winner cost，

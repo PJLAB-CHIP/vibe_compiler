@@ -7,6 +7,7 @@
 #include "Wafer/Support/CompileWorkStatistics.h"
 
 #include "mlir/Analysis/FlatLinearValueConstraints.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -52,6 +53,312 @@ std::optional<int64_t> checkedMulI64(int64_t lhs, int64_t rhs) {
   if (lhs != 0 && rhs > std::numeric_limits<int64_t>::max() / lhs)
     return std::nullopt;
   return lhs * rhs;
+}
+
+std::optional<llvm::SmallVector<MovementDescriptorPair, 4>>
+getExactTensorToBlockedDescriptors(mlir::MemRefType sourceType,
+                                   mlir::MemRefType destType,
+                                   mlir::AffineMap destToSource) {
+  MemoryAttr sourceMemory = getWaferMemoryAttr(sourceType);
+  MemoryAttr destMemory = getWaferMemoryAttr(destType);
+  std::optional<WaferPhysicalTensorInfo> sourceInfo =
+      computeWaferPhysicalTensorInfo(sourceType);
+  std::optional<WaferPhysicalTensorInfo> destInfo =
+      computeWaferPhysicalTensorInfo(destType);
+  if (!sourceMemory || !destMemory || !sourceInfo || !destInfo ||
+      sourceMemory.getSpace() != MemorySpace::SPM ||
+      destMemory.getSpace() != MemorySpace::SPM ||
+      sourceMemory.getLayout() != MemLayout::Tensor ||
+      (destMemory.getLayout() != MemLayout::Cx &&
+       destMemory.getLayout() != MemLayout::NCx) ||
+      sourceType.getElementType() != destType.getElementType() ||
+      sourceInfo->elementBytes <= 0 ||
+      sourceInfo->elementBytes != destInfo->elementBytes ||
+      destInfo->cBlock <= 0 || destInfo->cxBlocks <= 0 ||
+      destInfo->blockOuterElements <= 0 ||
+      destInfo->outerSliceStrideElements <= 0 || sourceInfo->bitPackedElement ||
+      destInfo->bitPackedElement || destType.getRank() < 2 ||
+      !sourceType.hasStaticShape() || !destType.hasStaticShape() ||
+      !destToSource || destToSource.getNumDims() != destType.getRank() ||
+      destToSource.getNumResults() != sourceType.getRank() ||
+      destToSource.getNumSymbols() != 0 ||
+      !destToSource.isProjectedPermutation())
+    return std::nullopt;
+  const int64_t logicalChannels = destType.getShape().back();
+  if (logicalChannels != destInfo->cxBlocks * destInfo->cBlock)
+    return std::nullopt;
+
+  llvm::SmallVector<int64_t, 6> sourceDimensionForDest(destType.getRank(), -1);
+  for (auto [sourceDimension, expression] :
+       llvm::enumerate(destToSource.getResults())) {
+    auto dim = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+    if (!dim || dim.getPosition() >= sourceDimensionForDest.size() ||
+        sourceDimensionForDest[dim.getPosition()] != -1 ||
+        sourceType.getDimSize(sourceDimension) !=
+            destType.getDimSize(dim.getPosition()))
+      return std::nullopt;
+    sourceDimensionForDest[dim.getPosition()] = sourceDimension;
+  }
+
+  llvm::SmallVector<int64_t, 6> sourceElementStrides;
+  int64_t sourceElementOffset = 0;
+  if (mlir::failed(mlir::getStridesAndOffset(sourceType, sourceElementStrides,
+                                             sourceElementOffset)) ||
+      sourceElementOffset != 0 ||
+      llvm::is_contained(sourceElementStrides, mlir::ShapedType::kDynamic))
+    return std::nullopt;
+
+  struct Axis {
+    int64_t count = 1;
+    int64_t sourceStrideBytes = 0;
+    int64_t destStrideBytes = 0;
+  };
+  llvm::SmallVector<Axis, 6> axes;
+  const int64_t channelDimension = destType.getRank() - 1;
+  const int64_t sourceChannelDimension =
+      sourceDimensionForDest[channelDimension];
+  if (sourceChannelDimension < 0)
+    return std::nullopt;
+  const int64_t firstOuterDimension =
+      destMemory.getLayout() == MemLayout::NCx ? 1 : 0;
+  int64_t laterOuterElements = 1;
+  llvm::SmallVector<Axis, 6> reversedOuter;
+  for (int64_t dimension = channelDimension - 1;
+       dimension >= firstOuterDimension; --dimension) {
+    int64_t extent = destType.getDimSize(dimension);
+    if (extent > 1) {
+      int64_t sourceDimension = sourceDimensionForDest[dimension];
+      std::optional<int64_t> sourceStride =
+          sourceDimension < 0
+              ? std::optional<int64_t>(0)
+              : checkedMulI64(sourceElementStrides[sourceDimension],
+                              sourceInfo->elementBytes);
+      std::optional<int64_t> destElements =
+          checkedMulI64(laterOuterElements, destInfo->cBlock);
+      std::optional<int64_t> destStride =
+          destElements ? checkedMulI64(*destElements, destInfo->elementBytes)
+                       : std::nullopt;
+      if (!sourceStride || !destStride)
+        return std::nullopt;
+      reversedOuter.push_back({extent, *sourceStride, *destStride});
+    }
+    std::optional<int64_t> next = checkedMulI64(laterOuterElements, extent);
+    if (!next)
+      return std::nullopt;
+    laterOuterElements = *next;
+  }
+  axes.append(reversedOuter.rbegin(), reversedOuter.rend());
+  if (destInfo->cxBlocks > 1) {
+    std::optional<int64_t> channelBlockElements = checkedMulI64(
+        sourceElementStrides[sourceChannelDimension], destInfo->cBlock);
+    std::optional<int64_t> channelBlockStride =
+        channelBlockElements
+            ? checkedMulI64(*channelBlockElements, sourceInfo->elementBytes)
+            : std::nullopt;
+    std::optional<int64_t> destBlockElements =
+        checkedMulI64(destInfo->blockOuterElements, destInfo->cBlock);
+    std::optional<int64_t> destBlockStride =
+        destBlockElements
+            ? checkedMulI64(*destBlockElements, destInfo->elementBytes)
+            : std::nullopt;
+    if (!channelBlockStride || !destBlockStride)
+      return std::nullopt;
+    axes.push_back({destInfo->cxBlocks, *channelBlockStride, *destBlockStride});
+  }
+  if (destMemory.getLayout() == MemLayout::NCx && destType.getDimSize(0) > 1) {
+    int64_t sourceBatchDimension = sourceDimensionForDest[0];
+    std::optional<int64_t> sourceSliceStride =
+        sourceBatchDimension < 0
+            ? std::optional<int64_t>(0)
+            : checkedMulI64(sourceElementStrides[sourceBatchDimension],
+                            sourceInfo->elementBytes);
+    std::optional<int64_t> destSliceStride = checkedMulI64(
+        destInfo->outerSliceStrideElements, destInfo->elementBytes);
+    if (!sourceSliceStride || !destSliceStride)
+      return std::nullopt;
+    axes.push_back(
+        {destType.getDimSize(0), *sourceSliceStride, *destSliceStride});
+  }
+
+  const size_t encodedAxes = std::min<size_t>(3, axes.size());
+  const size_t splitAxes = axes.size() - encodedAxes;
+  int64_t commandCount = 1;
+  for (Axis axis : llvm::ArrayRef(axes).take_front(splitAxes)) {
+    std::optional<int64_t> next = checkedMulI64(commandCount, axis.count);
+    if (!next || *next > 4096)
+      return std::nullopt;
+    commandCount = *next;
+  }
+  std::optional<int64_t> innerBytes =
+      checkedMulI64(destInfo->cBlock, destInfo->elementBytes);
+  if (!innerBytes || *innerBytes <= 0)
+    return std::nullopt;
+  int64_t bytesPerCommand = *innerBytes;
+  for (Axis axis : llvm::ArrayRef(axes).drop_front(splitAxes)) {
+    std::optional<int64_t> next = checkedMulI64(bytesPerCommand, axis.count);
+    if (!next)
+      return std::nullopt;
+    bytesPerCommand = *next;
+  }
+  if (static_cast<uint64_t>(bytesPerCommand) >
+          std::numeric_limits<uint32_t>::max() ||
+      static_cast<uint64_t>(*innerBytes) > std::numeric_limits<uint32_t>::max())
+    return std::nullopt;
+
+  llvm::SmallVector<MovementDescriptorPair, 4> descriptors;
+  descriptors.reserve(commandCount);
+  std::function<bool(size_t, int64_t, int64_t)> emit = [&](size_t axisIndex,
+                                                           int64_t sourceBase,
+                                                           int64_t destBase) {
+    if (axisIndex != splitAxes) {
+      const Axis &axis = axes[axisIndex];
+      for (int64_t iteration = 0; iteration < axis.count; ++iteration) {
+        __int128 source =
+            static_cast<__int128>(sourceBase) +
+            static_cast<__int128>(iteration) * axis.sourceStrideBytes;
+        __int128 dest = static_cast<__int128>(destBase) +
+                        static_cast<__int128>(iteration) * axis.destStrideBytes;
+        if (source < 0 || dest < 0 ||
+            source > std::numeric_limits<int64_t>::max() ||
+            dest > std::numeric_limits<int64_t>::max() ||
+            !emit(axisIndex + 1, static_cast<int64_t>(source),
+                  static_cast<int64_t>(dest)))
+          return false;
+      }
+      return true;
+    }
+    MovementDescriptorPair descriptor;
+    descriptor.source.byteCount = bytesPerCommand;
+    descriptor.dest.byteCount = bytesPerCommand;
+    descriptor.source.innerBytes = *innerBytes;
+    descriptor.dest.innerBytes = *innerBytes;
+    descriptor.source.byteOffset = sourceBase;
+    descriptor.dest.byteOffset = destBase;
+    descriptor.source.strides.assign({0, 0, 0});
+    descriptor.dest.strides.assign({0, 0, 0});
+    descriptor.source.iterations.assign({1, 1, 1});
+    descriptor.dest.iterations.assign({1, 1, 1});
+    for (auto [index, axis] :
+         llvm::enumerate(llvm::ArrayRef(axes).drop_front(splitAxes))) {
+      descriptor.source.strides[index] = axis.sourceStrideBytes;
+      descriptor.dest.strides[index] = axis.destStrideBytes;
+      descriptor.source.iterations[index] = axis.count;
+      descriptor.dest.iterations[index] = axis.count;
+    }
+    descriptors.push_back(std::move(descriptor));
+    return true;
+  };
+  if (!emit(0, 0, 0))
+    return std::nullopt;
+  std::optional<int64_t> covered = checkedMulI64(bytesPerCommand, commandCount);
+  std::optional<int64_t> expectedElements =
+      getStaticPositiveElementCount(destType.getShape());
+  std::optional<int64_t> expected =
+      expectedElements
+          ? checkedMulI64(*expectedElements, sourceInfo->elementBytes)
+          : std::nullopt;
+  if (!covered || !expected || *covered != *expected)
+    return std::nullopt;
+  return descriptors;
+}
+
+std::optional<llvm::SmallVector<MovementDescriptorPair, 4>>
+getExactBlockedToTensorDescriptors(mlir::MemRefType sourceType,
+                                   mlir::MemRefType destType) {
+  auto reverse = getExactTensorToBlockedDescriptors(
+      destType, sourceType,
+      mlir::AffineMap::getMultiDimIdentityMap(sourceType.getRank(),
+                                              sourceType.getContext()));
+  if (!reverse)
+    return std::nullopt;
+  for (MovementDescriptorPair &descriptor : *reverse)
+    std::swap(descriptor.source, descriptor.dest);
+  return reverse;
+}
+
+std::optional<DynamicSubviewDescriptor>
+getDynamicSubviewDescriptor(mlir::Value source, mlir::Operation *operation) {
+  auto subview = source.getDefiningOp<mlir::memref::SubViewOp>();
+  if (!subview)
+    return std::nullopt;
+  auto baseType = mlir::dyn_cast<mlir::MemRefType>(subview.getSourceType());
+  auto viewType = mlir::dyn_cast<mlir::MemRefType>(subview.getType());
+  MemoryAttr baseMemory =
+      baseType ? getWaferMemoryAttr(baseType) : MemoryAttr{};
+  std::optional<WaferPhysicalTensorInfo> basePhysical =
+      baseType ? computeWaferPhysicalTensorInfo(baseType) : std::nullopt;
+  if (!baseType || !viewType || !baseMemory ||
+      baseMemory.getLayout() != MemLayout::Tensor || !basePhysical ||
+      basePhysical->elementBytes <= 0)
+    return std::nullopt;
+  llvm::SmallVector<int64_t, 4> baseStrides;
+  int64_t baseOffset = 0;
+  llvm::SmallVector<int64_t, 4> viewStrides;
+  int64_t viewOffset = 0;
+  if (mlir::failed(
+          mlir::getStridesAndOffset(baseType, baseStrides, baseOffset)) ||
+      mlir::failed(
+          mlir::getStridesAndOffset(viewType, viewStrides, viewOffset)) ||
+      baseOffset == mlir::ShapedType::kDynamic ||
+      baseStrides.size() != subview.getMixedOffsets().size() ||
+      llvm::is_contained(baseStrides, mlir::ShapedType::kDynamic) ||
+      llvm::is_contained(viewStrides, mlir::ShapedType::kDynamic))
+    return std::nullopt;
+
+  DynamicSubviewDescriptor descriptor;
+  descriptor.subview = subview;
+  descriptor.sourceBase = subview.getSource();
+  descriptor.relativeType = mlir::MemRefType::get(
+      viewType.getShape(), viewType.getElementType(),
+      mlir::StridedLayoutAttr::get(operation->getContext(), /*offset=*/0,
+                                   viewStrides),
+      viewType.getMemorySpace());
+  descriptor.offsets = subview.getMixedOffsets();
+  descriptor.byteCoefficients.reserve(baseStrides.size());
+  if (baseOffset >
+      std::numeric_limits<int64_t>::max() / basePhysical->elementBytes)
+    return std::nullopt;
+  descriptor.staticByteOffset = baseOffset * basePhysical->elementBytes;
+  for (auto [offset, stride] :
+       llvm::zip_equal(subview.getMixedOffsets(), baseStrides)) {
+    if (stride >
+        std::numeric_limits<int64_t>::max() / basePhysical->elementBytes)
+      return std::nullopt;
+    int64_t coefficient = stride * basePhysical->elementBytes;
+    descriptor.byteCoefficients.push_back(coefficient);
+    std::optional<int64_t> constant = mlir::getConstantIntValue(offset);
+    if (!constant)
+      continue;
+    __int128 next = static_cast<__int128>(descriptor.staticByteOffset) +
+                    static_cast<__int128>(*constant) * coefficient;
+    if (next < 0 || next > std::numeric_limits<int64_t>::max())
+      return std::nullopt;
+    descriptor.staticByteOffset = static_cast<int64_t>(next);
+  }
+  return descriptor;
+}
+
+mlir::Value
+materializeDynamicSubviewByteOffset(const DynamicSubviewDescriptor &descriptor,
+                                    mlir::PatternRewriter &rewriter,
+                                    mlir::Location location) {
+  mlir::Value result = rewriter.create<mlir::arith::ConstantIndexOp>(
+      location, descriptor.staticByteOffset);
+  for (auto [offset, coefficient] :
+       llvm::zip_equal(descriptor.offsets, descriptor.byteCoefficients)) {
+    if (mlir::getConstantIntValue(offset))
+      continue;
+    auto dynamic = mlir::dyn_cast<mlir::Value>(offset);
+    if (!dynamic)
+      return {};
+    mlir::Value scale =
+        rewriter.create<mlir::arith::ConstantIndexOp>(location, coefficient);
+    mlir::Value contribution =
+        rewriter.create<mlir::arith::MulIOp>(location, dynamic, scale);
+    result =
+        rewriter.create<mlir::arith::AddIOp>(location, result, contribution);
+  }
+  return result;
 }
 
 namespace {} // namespace
