@@ -1,4 +1,5 @@
-//===- TileModuleOps.cpp - Wafer target module verification ------------------===//
+//===- TileModuleOps.cpp - Wafer target module verification
+//------------------===//
 
 #include "Wafer/IR/WaferDialect.h"
 
@@ -93,12 +94,14 @@ mlir::LogicalResult wafer::verifyTileModuleCollection(mlir::ModuleOp module) {
         auto resource = resources.find(binding.getResourceId());
         mlir::Operation *declaration =
             mlir::SymbolTable::lookupSymbolIn(module, binding.getResource());
-        auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(
+        auto shapedType = mlir::dyn_cast<mlir::ShapedType>(
             function.getArgument(argument).getType());
         if (resource == resources.end() ||
-            declaration != resource->second.getOperation() || !tensorType ||
-            tensorType.getShape() != resource->second.getType().getShape() ||
-            tensorType.getElementType() !=
+            declaration != resource->second.getOperation() || !shapedType ||
+            (!mlir::isa<mlir::RankedTensorType, mlir::MemRefType>(
+                shapedType)) ||
+            shapedType.getShape() != resource->second.getType().getShape() ||
+            shapedType.getElementType() !=
                 resource->second.getType().getElementType() ||
             ++bindings[binding.getResourceId()] != 1) {
           function.emitOpError(

@@ -204,6 +204,18 @@
 - 修复模式：IR显式保存physical source/destination、message identity、domain、encoding与bytes；topology analysis只读current typed topology。
 - 防复发：non-identity topology、partial overlap mapping、fanout/fanin、mismatched payload和missing recv负例。
 
+## 相同participant不能代替communication phase
+
+- 现象：多个先后发生的cross-Tile payload仅因participant、shape和dtype相同就被合成一个all-gather；Tile层消息数量看似正确，
+  但actual sender-slot wait依赖较晚Region中的receive preparation，最终形成whole-card wait cycle。
+- 根因：component builder忽略current TileRegion endpoints和producer/consumer顺序，把拓扑集合误当成执行阶段；或者先生成ring，
+  再期待completion/transport verifier修复不可能的issue顺序。
+- 修复模式：component connectivity来自actual source/destination Region endpoints。Complete exchange只有在每个Tile都证明
+  `last local producer < first remote consumer`且Region合并保持SSA dominance/effect时才闭合；随后在该cut直接物化每轮recv和send。
+  Bidirectional no-cut graph不是同轮exchange，使用显式causal DDR boundary或typed rejection，不能伪造round。
+- 防复发：同时覆盖same-Region、split-Region、连续同participant phase和bidirectional no-cut；测试必须下沉到Instr completion、
+  actual SPM planning及whole-card Direct DTE wait-graph verifier，不能只统计Tile层send/recv。
+
 ## Program tensor、target representation和device memory不能共用一个identity
 
 - 现象：每个Tile重复保存或上传同一parameter，或者package file offset被直接当成`txMalloc` handle；相反，多个Tile的
@@ -1404,6 +1416,17 @@
 - 防复发：1024/1025/1031矩阵覆盖2/15 roots、异构fanout、暂时DPS-init use、observable barrier和第二次运行byte-equivalent；检查旧
   all-users rewrite caller为零、input/output producer node各一次。不能用交替运行两个rewrite owner、重复产品pipeline或whole-graph clone
   掩盖phase order。
+
+## E-graph commit scaffold必须在同一次request内产生和清除
+
+- 现象：第一次normalization只在function return前增加identity `linalg.generic`，第二次运行才继续消除transpose/concat；pass不再
+  byte-idempotent，StableHLO直返constant/concat也残留无意义compute。多输入Concat还可能只消除最后一个piece的Access。
+- 根因：output commit scaffold在component extraction结束后才创建；同时component connectivity沿raw `insert_slice` operands/users，
+  没把已验证的完整insert chain视为一个N-ary Concat semantic producer。
+- 修复模式：临时DPS output closure在component收集前创建，同一调用结束前精确移除或由extraction消费，并从logical transform统计中
+  排除。Validated Concat的component edge和internal-user判断使用其N-ary inputs与完整implementation chain，最终仍物化标准Tensor IR。
+- 防复发：一次/两次pass输出逐byte一致；constant、nested concat、transpose→concat→elementwise/reduction长链同时覆盖；断言所有
+  piece的Access一起消除、scaffold attr和identity wrapper输出为0，不能通过放宽FileCheck掩盖第二次运行才闭合。
 
 ## 未完成设计不能因文档去重而只剩archive矩阵
 

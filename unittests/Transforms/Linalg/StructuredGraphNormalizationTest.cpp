@@ -12,6 +12,8 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/DestinationStyleOpInterface.h"
+#include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Support/LLVM.h"
 
@@ -1219,6 +1221,33 @@ TEST_F(StructuredGraphNormalizationTest,
     EXPECT_EQ(print(function), once);
     EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
   }
+}
+
+TEST_F(StructuredGraphNormalizationTest,
+       StructuredProgramOutputClosureIsDirectAndIdempotent) {
+  mlir::OwningOpRef<mlir::ModuleOp> module = parse(R"mlir(
+    module {
+      func.func @output_support(%arg0: tensor<1x1025x64xf32>)
+          -> tensor<1x1x1025x64xf32> {
+        %expanded = tensor.expand_shape %arg0 [[0, 1], [2], [3]]
+            output_shape [1, 1, 1025, 64] :
+            tensor<1x1025x64xf32> into tensor<1x1x1025x64xf32>
+        return %expanded : tensor<1x1x1025x64xf32>
+      }
+    }
+  )mlir");
+  ASSERT_TRUE(module);
+  auto function = module->lookupSymbol<mlir::func::FuncOp>("output_support");
+  ASSERT_TRUE(function);
+  ASSERT_TRUE(mlir::succeeded(wafer::closeStructuredProgramOutputs(function)));
+  ASSERT_TRUE(mlir::succeeded(wafer::closeStructuredProgramOutputs(function)));
+  EXPECT_EQ(count<mlir::linalg::GenericOp>(function), 1u);
+  auto returnOp = mlir::cast<mlir::func::ReturnOp>(
+      function.getBody().front().getTerminator());
+  mlir::Operation *owner = returnOp.getOperand(0).getDefiningOp();
+  EXPECT_TRUE(mlir::isa<mlir::DestinationStyleOpInterface>(owner));
+  EXPECT_TRUE(mlir::isa<mlir::TilingInterface>(owner));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
 }
 
 } // namespace

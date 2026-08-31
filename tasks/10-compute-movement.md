@@ -228,8 +228,15 @@ conversion按concrete typed op class使用DialectConversion/RewritePattern，生
 
 Descriptor planning是compute与movement lowering共用的request-local只读kernel。Tensor↔Cx/NCx的tail-free规则性映射按typed physical
 geometry压成至多三层descriptor，超出三层时只沿明确logical axis拆成有限commands；broadcast使用同一projected affine map。
-`memref.subview`的static/dynamic offset从base strides精确形成byte-offset SSA，不能从shape或loop ordinal猜测。Query结果只在本次
-Tile-to-Instr调用内使用；actual Instr command count/bytes是inventory和candidate cost的唯一事实。
+`memref.subview`的static offset/stride先形成从view logical index到base logical index的exact `IndexRelation`，再与base的
+`PhysicalLayoutRelation`组合；descriptor offset始终相对current base allocation。不能把Cx/NCx view的strided memref type解释成
+blocked physical stride，也不能从shape或loop ordinal猜测offset。只有physical byte offset对dynamic index可证明为线性式时才物化
+byte-offset SSA；当前标准Tensor view由base strides提供该证明，不能证明的dynamic blocked view返回typed unsupported。Query结果只在
+本次Tile-to-Instr调用内使用；actual Instr command count/bytes是inventory和candidate cost的唯一事实。
+
+上述组合同时适用于movement source和destination。`StorageStore`的static Cx/NCx source subview必须把view-to-base relation组合进
+WDMA descriptor，并让actual Instr引用base allocation；被该store唯一消费的dead subview在rewrite中删除。全部Tile-to-Instr pattern
+完成后统一删除其它`use_empty()` pure subview，full target conversion不靠unknown-op规则放过dead view。
 
 per-Tile conversion输出canonical/unplaced Instr：Wafer-tagged memref尚未带runtime address，但instruction kind、
 geometry、descriptor relation、worker-independent effects/ranges和async obligations完整。conversion不选择Tile placement、

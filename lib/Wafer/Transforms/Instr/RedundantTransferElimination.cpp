@@ -2,11 +2,11 @@
 
 #include "Wafer/Transforms/Instr/RedundantTransferElimination.h"
 
-#include "Wafer/Transforms/Instr/LifetimeAnalysis.h"
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Transforms/Instr/LifetimeAnalysis.h"
 
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -518,9 +518,9 @@ static void eraseCreatedReplacement(mlir::Value replacement,
     definition->erase();
 }
 
-static bool tryElide(
-    InstrGatherScatterOp gather, const mp::StructuredTimeline &timeline,
-    llvm::function_ref<void(mlir::Value, mlir::Value)> notifyReplacement) {
+static bool
+tryElide(InstrGatherScatterOp gather, const mp::StructuredTimeline &timeline,
+         llvm::function_ref<void(mlir::Value, mlir::Value)> notifyReplacement) {
   wafer::support::ScopedCompileTimingSpan totalTiming("optimization-phase",
                                                       "tryElide", "total");
   auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
@@ -818,8 +818,8 @@ unsigned elideRedundantFullBufferTransfers(
 }
 
 unsigned elideRedundantFullBufferTransfers(mlir::ModuleOp module) {
-  return elideRedundantFullBufferTransfers(
-      module, [](mlir::Value, mlir::Value) {});
+  return elideRedundantFullBufferTransfers(module,
+                                           [](mlir::Value, mlir::Value) {});
 }
 
 } // namespace wafer::tensor_program_scheduling

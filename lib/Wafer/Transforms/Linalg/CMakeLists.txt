@@ -1,6 +1,7 @@
 add_mlir_library(WaferLinalgTransforms
   AttentionMath.cpp
   AttentionMatching.cpp
+  CommunicationRegionClosure.cpp
   ConstantTensorFolding.cpp
   NormalizeAttention.cpp
   NormalizeStructuredGraph.cpp

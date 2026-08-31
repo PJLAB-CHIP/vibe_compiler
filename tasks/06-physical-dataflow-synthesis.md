@@ -177,6 +177,9 @@ Region choice只决定哪些actual operations进入同一TileRegion，不预先�
 05号access-relation e-graph已经在policy分叉前对每个ordinary pure component及其ordered roots完成一次multi-root共享DAG extraction；
 multi-use Access propagation不存在egg外rewrite。本stage不读取或重建e-graph。Structural materializer生成
 all-and-only TileModules、non-nested TileRegions、actual spatial pieces、local SSA以及cross-boundary actual endpoint relations。
+进入Spatial analysis前，policy controller对仍由reshape/concat等support chain返回的static shaped结果运行一次
+`closeStructuredProgramOutputs`，形成direct DPS/Tiling output producer。它是verifier-visible current IR legalization，不是e-graph rule、
+output名称约定或旁路映射；analysis和materializer直接消费该op，source TensorProgram随后整体由candidate transaction替代。
 普通reduction contribution/merge必须已经是actual IR。Graph attention在这里被破坏性转换：FA每个output piece形成一个
 `online_attention`；FD每个selected K2 contribution形成一个local `online_attention`，selected merge Tile形成actual state
 merge/finalize和三个state endpoints。Candidate中不保留graph attention或empty shell。
@@ -184,10 +187,21 @@ merge/finalize和三个state endpoints。Candidate中不保留graph attention或
 current operation、use-def、indexing relation、effect和region boundary立即决定并执行fusion。Producer留在consumer loop外或
 进入loop内只能是rewrite后的actual IR结果，不能由`LocalUseDelivery`、布尔rewire或其它旁路计划声明。
 
+Static function input只被一个exact requested rectangle消费时，structural materializer在entry tensor boundary创建该rectangle的
+`tensor.extract_slice`，并把compact slice作为TileRegion input。Full source argument仍是DDR程序边界，但不能先生成full-shape SPM carrier再在
+Region内subview；否则即使compute只消费compact tile，actual allocator仍会看到完整input allocation。多个不同rectangle分别形成typed
+boundary slice，相同source/offset/size在同一Region复用；offset/size只来自current exact demand。
+
 Region choice必须覆盖fanout的每个use、reduction partial/merge、effect order和observable output。完全无依赖的
 components不为扩大region而合并。Spatial choice中的`mergeTile`只在本次materialization中决定merge op所属的TileModule；物化后
 merge位置由parent TileModule、参与者由actual SSA operands表达，choice立即失效。SPM residency不是独立上层choice，只能由最终actual
 allocation/lifetime/offset证明。
+
+RegionPlan的跨group dependency先形成一个全局确定性拓扑序，各Tile只发射该序在本Tile上的投影，不能再次按Tile局部排序而改变
+actual execution order。local binding不能把producer tile result直接塞给consumer；必须用同一`IRMapping`将actual producer代入
+current pure tensor support chain，保持reshape/slice/insert等typed indexing语义。Spatial materializer新增的cross-Tile
+external/coupled/partial entry placeholder使用stage-local argument attr标记；movement消费对应actual relation并删除无use placeholder，
+该attr不能越过physical movement closure。
 
 ### 5.3 Temporal tiling
 
@@ -262,7 +276,10 @@ value，按root source order调用其`TilingInterface`形成actual tiles；共�
 每个piece通过producer `TilingInterface`实际物化，不枚举element或wave；其它tile size只关闭joint，independent保持原reshape和raw domain。
 成功后删除dead完整producer/view链；失败由candidate transaction处理，不恢复shadow recipe。`tensor.pad`、`pack`和`unpack`已经有pinned
 `TilingInterface`，在static pure tensor合同下可作为explicit traversal或derived producer；`insert_slice`/concat只对requested tile与source
-segments的有限exact交集做tile-local assembly。Constant Pad的非零padding轴必须在derived consumer scope保持full extent，避免把static
+segments的有限exact交集做tile-local assembly。Static segment边界落在一个完整tile内部时，materialization按segment边界形成互斥的
+full-interior与boundary cases；每个case的extract/insert size必须是由static interval和canonical loop grid算出的常量，offset可以继续使用
+current loop IV。Case数量随segment边界而不是loop trip count增长，不能用`arith.min/max/sub`结果作为shaped op的dynamic size，也不能把
+static concat降成dynamic tensor。Constant Pad的非零padding轴必须在derived consumer scope保持full extent，避免把static
 source变成无法被直接下游消费的dynamic padded tile；其局部Pad及pinned mechanics产生的constant `tensor.generate`在本stage确定性降为
 tile-local Linalg fill/insert。Pack/UnPack在main/tail type收紧后使用pinned simplify pattern降为local reshape；fused producer的
 `tensor.empty` destination折成tile-local empty，不能保留完整intermediate allocation。`linalg.fill`继续作为DPS destination初始化，不增加
@@ -449,6 +466,42 @@ TileRegion掩盖错误。
 Movement不从shape、value名或future version ID恢复source/destination，也不先创建donor movement再替换。不同realization
 使用同一transformation实现；每个alternative作用于自己的candidate transaction。跨region或跨Tile的每个非空domain
 必须all-and-only覆盖，且每个movement op必须有current SSA owner和effect。
+
+同一个current source endpoint向多个Tile提供完全相同的payload时，movement把这些actual endpoint relations视为一个纯复制
+fanout。单destination仍直接传输；多destination从current `TargetTopology`和available participant Tiles构造确定性的
+topology-aware spreading tree：每轮每个已经持有payload的Tile至多向一个尚未持有payload的Tile发送，候选先均衡已用sender轮次，
+再按最短hop和physical Tile ID稳定选择。全部group共用从current boundary relations和同Tile Region执行顺序得到的确定性拓扑序，
+relay parent必须早于child；原关系图已有环或没有满足该序的传播edge时typed failure，不能让各group独立选树后再靠wait修环。
+每条tree edge在同一次transformation中立即成为actual receive staging、send/recv token和relay use；
+relay只转发已经收到的同一typed buffer，不创建future buffer，也不改变payload或算术。不同payload、不同window/layout、同Tile
+不同Region residency以及typed reduction/fanin不得错误合组；后两者只有current IR已经具有明确local combine语义时才能另行选择
+对应算法，本项不重排reduction/contraction。
+
+多个payload group只有在current endpoints属于同一个communication phase时才能组成component；participant集合、shape或dtype相同
+不足以合组。Phase connectivity由实际TileRegion source/destination endpoints确定。这样连续的两个exchange不会因为使用同一组Tile而
+被错误地合成一个round序列。
+
+Temporal tiling完成后、attention decomposition和layout之前，communication closure只处理current IR能够证明的complete exchange。
+Complete exchange要求每个participant都有相同lane数的local payload group，每个group到其它participant各有一个exact destination；
+它不要求不同Tile的payload数值相同。对每个participating Tile，closure从actual Region顺序和body def-use计算最后一个local producer与
+第一个remote consumer。只有严格存在`last producer < first consumer`的共同cut时，才合并该exchange涉及的TileRegion并立即retarget
+live relations；合并还必须在最近parent block中保持现有SSA dominance和effect顺序。任一Tile无法满足这些条件时，整个component保持
+原current IR，不进行部分合并，也不把顺序不同的阶段冒充all-gather。
+
+Movement在layout/bufferization后从live endpoints fresh重建component。Closed complete exchange使用topology-aware Ring All-Gather；
+每个lane精确执行`P-1`轮。能够在一个actual cut上发 issue 的稀疏exchange使用sender容量1、receiver容量4的确定性round matching。
+每轮在同一次transformation中直接形成actual recv prepare、send、SSA token和control-flow order；临时ring/matching choice随调用销毁。
+若bidirectional causal component不存在共同cut，单sender slot下不能把它伪装成同轮peer exchange；baseline在mutation前选择一个exact
+shared-DDR store/load boundary。它是从current Region因果顺序得到的显式movement realization，不是transport verifier失败后的fallback。
+Closed complete exchange和已证明round-safe的sparse exchange不得改走DDR。
+
+不存在`RoundOp`、round side plan或winner replay。无法形成exact payload、topology ring/matching或显式causal boundary时返回typed
+unsupported。传播树、ring、matching和DDR realization均由同一个movement transformation一次性物化；下游只读取actual IR。
+
+传播树的parent、child和round只是在一次movement调用内立即消费的typed choice。调用返回前必须全部物化，临时容器随调用销毁；
+不得把edge/action/message/buffer/event清单交给后续stage，也不得在winner上重放。后续只从actual peer ops、SSA token、buffer
+effect和control flow重算completion与memory。无法从current topology连接participant、无法证明payload完全一致或物化后stage
+verifier失败时，当前candidate返回typed failure，不退回flat direct fanout或DDR donor。
 
 Movement形成后运行一次current-IR exact cleanup。只有full payload、same storage、same physical map且alias/effect/lifetime安全时
 才删除transfer；partial、permuted、真正layout-changing、unknown ownership或不受支持的control flow全部保留。Cleanup与layout

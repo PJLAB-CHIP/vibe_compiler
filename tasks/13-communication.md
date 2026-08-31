@@ -81,17 +81,56 @@ pipeline/rotating slot；TileRegion-to-Instr后，schedule/completion owner再�
 替换，不由movement emitter立即await，也不用future physical value/buffer/event代签actual IR。Rejected transaction销毁，
 final winner不重建。
 
-planner中的通信对象是exact chunk初始/目标state和transfer/combine action DAG，不是`Ring/Tree`算法attr。经典ring、tree、recursive
-exchange、row/column及aggregate/pairwise方案只负责提出checked DAG；actual Tile/Instr IR最终只保留这些DAG展开后的local work、
-send/recv/token/wait。`TargetTopology`的Tile邻接可用于minimum-hop、cut bound与software relay proposal，但current Direct DTE内部route
-不透明，不能把canonical shortest path写成route、逐link resource或deadlock证明。future target若暴露programmable route，须先扩同一
-typed target/IR合同，再由route verifier和event scheduler消费。
+Communication query只允许为current endpoints产生本次rewrite立即消费的parent、child、payload slice和protocol round choice，
+不是跨stage保存的action DAG。经典ring、tree、recursive exchange、row/column及aggregate/pairwise算法只能提出这种有限typed
+choice；同一调用必须把它展开成actual local work、send/recv和token，随后销毁choice。wait由Instr completion owner从展开后的
+current IR fresh构造。不得保留future message/buffer/event/action清单、按该清单重建winner或用plan/actual parity检查补救。
+`TargetTopology`的Tile邻接可用于minimum-hop、cut bound与software relay choice，但current Direct DTE内部route不透明，不能把
+canonical shortest path写成route、逐link resource或deadlock证明。future target若暴露programmable route，须先扩同一typed
+target/IR合同，再由route verifier和event scheduler消费。
+
+对同一个actual source value和完全相同的payload window/layout，单destination使用一条direct edge；多destination使用
+topology-aware spreading tree。初始只有source Tile持有payload；每轮每个已持有payload的participant至多向一个未持有payload的
+participant发送，先均衡participant已经承担的sender轮次，再按current topology最短hop和physical Tile ID确定性选择。收到payload的consumer Tile可以用其actual receive
+staging继续relay，因而source不再直接承担全部fanout。每条edge都必须有actual sender、receiver、token和buffer effect；relay send
+必须在matching receive完成后，且在该buffer可能被in-place consumer改写前读取原payload。不同payload/window/layout、同Tile不同
+Region residency不能合并。该变换只复制bitwise相同payload，不调整reduction/contraction的participant或运算次序；fanin只有current
+IR已显式表达typed local combine时才能使用相应collective算法。
+
+多个fanout group不能各自独立选树。Communication transformation先从current original boundary relations与同Tile Region执行顺序
+建立一个确定性Region拓扑序；每个direct或relay edge都必须从较早Region指向较晚Region。该序只证明actual program dependency，
+不表示NoC route或future schedule。原图有环、relay候选违反该序或没有可连接participant时在首次mutation前typed failure；禁止先
+物化有环tree，再通过提前wait、全局drain或transport verifier repair。
+
+多个group只有在actual source/destination TileRegion endpoints连接同一个communication phase时才组成component；不能仅因
+participant、shape或dtype相同就跨阶段合组。Temporal tiling之后的closure从current Region顺序和body def-use证明每个Tile都存在
+`last local producer < first remote consumer`的共同cut，并且只合并满足该条件的complete exchange Region。Movement随后从retarget后的
+live endpoints重新构造component。合并前还要证明parent-block SSA dominance和effect顺序不变；任一Tile不满足时整个component不修改。
+Closure不保存route、round或buffer对象。
+
+若每个participant均有相同lane数的source payload group，并且每个group的destination集合恰为其它全部participant，则该component是
+typed complete exchange，使用minimum-hop Ring All-Gather；不同participant的payload只要求各自的exact typed representation和cover，
+不要求数值相同。每个lane在`P-1`轮中让每个Tile各有一个recv和一个send，第`r`轮转发上一轮收到的actual staging。稀疏component在
+participant没有双向依赖，或current IR同样证明共同cut时，使用确定性round matching：每轮每个sender至多一个edge、每个receiver至多
+四个edge，优先minimum-hop并使用physical Tile ID完成tie-break。
+
+硬件证据强度保持分层：`docs/tx81-compiler-hardware-calibration.md`中的16-Tile FP16 Ring All-Gather属于
+`board-observed`；4-Tile、其它dtype和其它payload只在本任务中作为compiler结构、resource和message-matching覆盖，不能由host测试升级为
+板端资格。
+
+Ring和matching只产生request-local parent/peer/round choice，同一次transformation必须把每轮展开成existing peer ops、SSA token及
+current control flow，随后销毁choice。`DTEMessageAttr.round`只参与消息身份；actual op order才是执行轮次。在共同cut内先物化该轮
+receive prepare，再物化root/relay send。Closed complete exchange和round-safe sparse component不得改走shared DDR。
+
+一个bidirectional causal component若没有共同cut，就不是可安全执行的同轮peer exchange。Baseline在首次mutation前为它选择显式
+shared-DDR store/load boundary；该选择来自current Region因果顺序，并进入actual DDR/SPM planner，不是Direct DTE verifier失败后的
+fallback。无法物化ring、matching或这一明确causal boundary时typed unsupported。
 
 card-level LinalgExt collective只描述card partition语义；singleton group在TileModule set materialization时成为identity，
 non-singleton group在cross-card transport尚未实现时fail closed。单卡16个Tiles之间的数据重排不能把card partition
 ordinal当作Tile ID，也不能通过恢复旧的Tile collective op绕过physical-dataflow mapping。
 
-fanout必须显式产生多个send，fanin必须显式产生每个receive、local combine和发布顺序；combiner与运算顺序由typed local compute
+fanout必须按传播树edge显式产生all-and-only send/receive，fanin必须显式产生每个receive、local combine和发布顺序；combiner与运算顺序由typed local compute
 表达，DTE不暗含算术。padding lane不得当作logical payload。NoC/compute/DDR overlap只有actual
 chunk control flow、independent或rotating buffers、movement issue、compute issue order和matching completion存在时才进入理论cost；
 stage数量、pipeline flag、估算window或IR外resource plan都不能证明流水。unknown性能项不参与比较，但message/range/resource legality
@@ -126,6 +165,10 @@ wait位置不是固定在issue之后。对每个dynamic token，合法区间由a
 receiver FSM/slot reuse，send wait不得晚于source/relay last release或sender resource reuse；在这些边界之前可以保留异步窗口。
 current CRT只有4个receiver FSM，DeviceExecutable verifier还必须证明任意structured trace中重叠receiver live range可在4个FSM内着色，
 并且跨Tile wait graph无环。该resource/deadlock约束可以迫使某个wait更早，但不能推广成“每个send/recv都立即await”。
+Movement只创建actual token及其buffer/effect关系，不决定wait位置。全部Tile完成Instr lowering后，card-scoped completion
+transformation先删除compiler-derived旧DTE wait，再从current issue、token、alias/effect、structured control和硬件sender/FSM限制
+fresh放置：recv在first read或receiver FSM复用前，send在下一sender slot复用、source/relay首次改写、释放或terminal前。
+无法形成同block唯一wait或全card wait graph有环时返回typed failure，不由movement、MiniMalloc或transport verifier插repair wait。
 
 ## 5. DeviceExecutable Direct DTE Verification
 
@@ -134,7 +177,7 @@ verification只读取memory-planned、completion-complete的all-and-only Tile In
 1. 解析每个send/recv/wait及structured occurrence；
 2. 按physical source/destination与message key建立一一匹配；
 3. 核对bytes、buffer encoding、accepted SPM ranges和dynamic rotating-slot pattern；
-4. 验证receive preparation早于匹配send issue，wait覆盖每个dynamic occurrence；
+4. 验证每个wait覆盖对应send issue和matching receive preparation；send issue本身不要求remote receive已经执行；
 5. 检查receiver range、FSM/endpoint resource、status/completion和冲突；
 6. 对所有op都成功时统一写入`DirectDTEBindingAttr`，否则不修改任何module。
 
@@ -175,6 +218,13 @@ package/runtime不重新选择peer、route、algorithm或memory placement。
 - unavailable/duplicate Tile及peer self/range；
 - send/recv/message/bytes正反向唯一匹配及negative missing/duplicate cases；
 - general chain、branch、fanout/fanin的explicit edge cover和local compute；
+- 4×4 mesh及带unavailable Tile的connected topology上，1024/1025/1031 rank-3以上同payload fanout形成确定性spreading tree；
+  每个destination恰receive一次、relay只读actual receive staging、source send数小于flat fanout、每轮每Tile至多一个send；disconnected
+  participant为typed failure；不同window/layout和同Tile不同Region不合组；
+- complete exchange覆盖4/16 Tile、1024/1025/1031及unavailable topology：精确`P-1`轮，每轮每Tile一个send/recv，payload origin
+  all-and-only到达其它Tile，sender/FSM上界和whole-card wait graph无环；
+- sparse multi-group覆盖chain/diamond/不规则destination集合：round-safe case由matching精确覆盖每条edge一次，不增加relay或DDR；
+  bidirectional no-cut case形成一个explicit shared-DDR boundary且不生成伪round；
 - rotating SPM slots、source-relative/selector-table binding、range conflict与exact wait；
 - token-only issue window、recv first-read、send/relay last-release、4-FSM live-range上界和跨Tile无环wait graph；没有实际resource/
   lifetime约束的case不得被issue后立即await串行化；

@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -23,6 +24,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <functional>
@@ -31,6 +33,7 @@
 #include <set>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 namespace wafer {
 namespace {
@@ -81,6 +84,17 @@ struct SourceValueKey {
   friend bool operator==(const SourceValueKey &lhs, const SourceValueKey &rhs) {
     return lhs.kind == rhs.kind && lhs.owner == rhs.owner &&
            lhs.result == rhs.result;
+  }
+};
+
+struct SourceSliceKey {
+  SourceValueKey source;
+  std::vector<int64_t> offsets;
+  std::vector<int64_t> sizes;
+
+  friend bool operator<(const SourceSliceKey &lhs, const SourceSliceKey &rhs) {
+    return std::tie(lhs.source, lhs.offsets, lhs.sizes) <
+           std::tie(rhs.source, rhs.offsets, rhs.sizes);
   }
 };
 
@@ -215,6 +229,19 @@ findNode(llvm::ArrayRef<compiler::detail::StructuredOperationNodeMapping> nodes,
   auto found = llvm::find_if(
       nodes, [&](const auto &node) { return node.operation == operation; });
   return found == nodes.end() ? nullptr : &*found;
+}
+
+std::optional<llvm::SmallVector<int64_t, 6>>
+getStaticValues(llvm::ArrayRef<mlir::OpFoldResult> values) {
+  llvm::SmallVector<int64_t, 6> result;
+  result.reserve(values.size());
+  for (mlir::OpFoldResult value : values) {
+    std::optional<int64_t> constant = mlir::getConstantIntValue(value);
+    if (!constant)
+      return std::nullopt;
+    result.push_back(*constant);
+  }
+  return result;
 }
 
 std::optional<SourceValueKey> getSourceValueKey(
@@ -552,7 +579,43 @@ validateRegionChoice(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
   return mlir::success();
 }
 
+mlir::LogicalResult materializeTileLocalSplatConstants(mlir::ModuleOp module) {
+  llvm::SmallVector<mlir::arith::ConstantOp, 8> constants;
+  module.walk([&](mlir::arith::ConstantOp constant) {
+    auto type = mlir::dyn_cast<mlir::RankedTensorType>(constant.getType());
+    auto value = mlir::dyn_cast<mlir::DenseElementsAttr>(constant.getValue());
+    if (type && type.hasStaticShape() && value && value.isSplat() &&
+        constant->getParentOfType<TileRegionOp>())
+      constants.push_back(constant);
+  });
+  mlir::IRRewriter rewriter(module.getContext());
+  for (mlir::arith::ConstantOp constant : constants) {
+    auto type = mlir::cast<mlir::RankedTensorType>(constant.getType());
+    auto value = mlir::cast<mlir::DenseElementsAttr>(constant.getValue());
+    auto scalarValue = value.getSplatValue<mlir::TypedAttr>();
+    if (!scalarValue || scalarValue.getType() != type.getElementType())
+      return mlir::failure();
+    rewriter.setInsertionPoint(constant);
+    mlir::Value scalar = rewriter.create<mlir::arith::ConstantOp>(
+        constant.getLoc(), scalarValue);
+    mlir::Value empty = rewriter.create<mlir::tensor::EmptyOp>(
+        constant.getLoc(), type.getShape(), type.getElementType(),
+        type.getEncoding());
+    mlir::Value fill =
+        rewriter.create<mlir::linalg::FillOp>(constant.getLoc(), scalar, empty)
+            .getResult(0);
+    rewriter.replaceOp(constant, fill);
+  }
+  return mlir::success();
+}
+
 struct GroupBuilder {
+  struct CompactSupportTile {
+    mlir::Value value;
+    llvm::SmallVector<int64_t, 4> offsets;
+    llvm::SmallVector<int64_t, 4> sizes;
+  };
+
   mlir::ModuleOp source;
   mlir::func::FuncOp sourceFunction;
   mlir::func::FuncOp entryFunction;
@@ -580,6 +643,7 @@ struct GroupBuilder {
   mlir::OpBuilder builder;
   mlir::IRMapping mapping;
   std::map<SourceValueKey, mlir::BlockArgument> boundaryArguments;
+  std::map<SourceSliceKey, mlir::BlockArgument> slicedBoundaryArguments;
   std::map<DemandFragmentId, mlir::BlockArgument> fragmentArguments;
   std::map<CoupledStateKey, mlir::BlockArgument> coupledStateArguments;
   std::map<StandardPartialKey, mlir::BlockArgument> standardPartialArguments;
@@ -598,6 +662,7 @@ struct GroupBuilder {
   std::map<RegionExecutionId,
            llvm::SmallVector<std::pair<StandardPartialKey, mlir::Value>, 2>>
       executionStandardPartials;
+  llvm::DenseMap<mlir::Value, CompactSupportTile> compactSupportTiles;
 
   GroupBuilder(
       mlir::ModuleOp source, mlir::func::FuncOp sourceFunction,
@@ -679,6 +744,54 @@ struct GroupBuilder {
     return argument;
   }
 
+  mlir::FailureOr<mlir::Value> getOrCreateSlicedBoundary(
+      mlir::Value sourceValue,
+      const analysis::StaticRectangularIndexSet &requested) {
+    std::optional<SourceValueKey> sourceKey =
+        getSourceValueKey(sourceValue, sourceFunction, nodes);
+    auto sourceType =
+        mlir::dyn_cast<mlir::RankedTensorType>(sourceValue.getType());
+    if (!sourceKey ||
+        sourceKey->kind != SourceValueKey::Kind::FunctionArgument ||
+        !sourceType || !sourceType.hasStaticShape() ||
+        requested.offsets.size() != static_cast<size_t>(sourceType.getRank()) ||
+        requested.sizes.size() != static_cast<size_t>(sourceType.getRank()))
+      return mlir::failure();
+    for (auto [offset, size, extent] : llvm::zip_equal(
+             requested.offsets, requested.sizes, sourceType.getShape())) {
+      int64_t end = 0;
+      if (offset < 0 || size <= 0 || llvm::AddOverflow(offset, size, end) ||
+          end > extent)
+        return mlir::failure();
+    }
+
+    SourceSliceKey key{
+        *sourceKey,
+        std::vector<int64_t>(requested.offsets.begin(),
+                             requested.offsets.end()),
+        std::vector<int64_t>(requested.sizes.begin(), requested.sizes.end())};
+    auto found = slicedBoundaryArguments.find(key);
+    if (found != slicedBoundaryArguments.end())
+      return found->second;
+
+    mlir::Value entryArgument = getOrCreateEntrySourceArgument(
+        *sourceKey, sourceType, sourceValue.getLoc());
+    llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
+    llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
+    llvm::SmallVector<mlir::OpFoldResult, 4> strides;
+    for (auto [offset, size] :
+         llvm::zip_equal(requested.offsets, requested.sizes)) {
+      offsets.push_back(entryBuilder.getIndexAttr(offset));
+      sizes.push_back(entryBuilder.getIndexAttr(size));
+      strides.push_back(entryBuilder.getIndexAttr(1));
+    }
+    auto slice = entryBuilder.create<mlir::tensor::ExtractSliceOp>(
+        sourceValue.getLoc(), entryArgument, offsets, sizes, strides);
+    mlir::BlockArgument argument = addRegionInput(slice.getResult());
+    slicedBoundaryArguments.emplace(std::move(key), argument);
+    return argument;
+  }
+
   mlir::FailureOr<mlir::Value>
   getOrCreateFragmentBoundary(mlir::Value sourceValue,
                               const DemandFragmentId &fragment) {
@@ -757,8 +870,11 @@ struct GroupBuilder {
       auto external = entryExternalArguments.find(fragment);
       if (external == entryExternalArguments.end()) {
         unsigned index = entryFunction.getNumArguments();
-        entryFunction.insertArgument(index, sourceValue.getType(),
-                                     mlir::DictionaryAttr{},
+        auto attrs = mlir::DictionaryAttr::get(
+            builder.getContext(),
+            {builder.getNamedAttr(kWaferCrossTilePlaceholderAttrName,
+                                  builder.getUnitAttr())});
+        entryFunction.insertArgument(index, sourceValue.getType(), attrs,
                                      sourceValue.getLoc());
         external =
             entryExternalArguments
@@ -814,8 +930,12 @@ struct GroupBuilder {
       auto external = entryCoupledStateArguments.find(key);
       if (external == entryCoupledStateArguments.end()) {
         unsigned index = entryFunction.getNumArguments();
-        entryFunction.insertArgument(index, required->second.type,
-                                     mlir::DictionaryAttr{}, source.getLoc());
+        auto attrs = mlir::DictionaryAttr::get(
+            builder.getContext(),
+            {builder.getNamedAttr(kWaferCrossTilePlaceholderAttrName,
+                                  builder.getUnitAttr())});
+        entryFunction.insertArgument(index, required->second.type, attrs,
+                                     source.getLoc());
         external =
             entryCoupledStateArguments
                 .emplace(key,
@@ -869,8 +989,12 @@ struct GroupBuilder {
       auto external = entryStandardPartialArguments.find(key);
       if (external == entryStandardPartialArguments.end()) {
         unsigned index = entryFunction.getNumArguments();
-        entryFunction.insertArgument(index, required->second.type,
-                                     mlir::DictionaryAttr{}, source.getLoc());
+        auto attrs = mlir::DictionaryAttr::get(
+            builder.getContext(),
+            {builder.getNamedAttr(kWaferCrossTilePlaceholderAttrName,
+                                  builder.getUnitAttr())});
+        entryFunction.insertArgument(index, required->second.type, attrs,
+                                     source.getLoc());
         external =
             entryStandardPartialArguments
                 .emplace(key,
@@ -915,7 +1039,9 @@ struct GroupBuilder {
                  entry.reductionGroup == fragment.reductionGroup &&
                  (!fragment.ownerTile || entry.tile == *fragment.ownerTile);
         });
-    return owner == use->eligibleFinalOwners.end() ? nullptr : &owner->domain;
+    if (owner == use->eligibleFinalOwners.end())
+      return nullptr;
+    return &owner->domain;
   }
 
   mlir::FailureOr<mlir::Value> materializeSupportAfterFragmentAssembly(
@@ -924,8 +1050,29 @@ struct GroupBuilder {
       mlir::IRMapping &supportMapping) {
     if (mlir::Value mapped = supportMapping.lookupOrNull(value))
       return mapped;
-    if (getSourceValueKey(value, sourceFunction, nodes)) {
-      auto mapped = assembleExternalFragments(value, fragments);
+    if (std::optional<SourceValueKey> key =
+            getSourceValueKey(value, sourceFunction, nodes)) {
+      mlir::FailureOr<mlir::Value> mapped = mlir::failure();
+      if (key->kind == SourceValueKey::Kind::FunctionArgument) {
+        mapped = getOrCreateBoundary(value);
+      } else {
+        llvm::SmallVector<DemandFragmentId, 4> matchingFragments;
+        for (const DemandFragmentId &fragment : fragments)
+          for (const analysis::RootRegionWork &work : rootWorks) {
+            auto boundary =
+                llvm::find_if(work.boundaries,
+                              [&](const analysis::RootBoundaryWork &candidate) {
+                                return candidate.id == fragment.source &&
+                                       candidate.sourceValue == value;
+                              });
+            if (boundary != work.boundaries.end()) {
+              matchingFragments.push_back(fragment);
+              break;
+            }
+          }
+        if (!matchingFragments.empty())
+          mapped = assembleExternalFragments(value, matchingFragments);
+      }
       if (mlir::succeeded(mapped))
         supportMapping.map(value, *mapped);
       return mapped;
@@ -934,30 +1081,75 @@ struct GroupBuilder {
     mlir::Operation *definition = result ? result.getOwner() : nullptr;
     if (!definition || !mlir::isMemoryEffectFree(definition))
       return mlir::failure();
-    mlir::Value fragmentSource;
-    for (mlir::Value operand : definition->getOperands()) {
-      if (!mlir::isa<mlir::ShapedType>(operand.getType()))
-        continue;
-      if (fragmentSource)
-        return mlir::failure();
-      fragmentSource = operand;
-    }
-    if (!fragmentSource)
-      return mlir::failure();
+    bool hasShapedOperand = false;
     for (mlir::Value operand : definition->getOperands()) {
       mlir::FailureOr<mlir::Value> mapped =
-          operand == fragmentSource ? materializeSupportAfterFragmentAssembly(
-                                          operand, fragments, supportMapping)
-                                    : mapSupportValue(operand, supportMapping);
+          mlir::isa<mlir::ShapedType>(operand.getType())
+              ? materializeSupportAfterFragmentAssembly(operand, fragments,
+                                                        supportMapping)
+              : mapSupportValue(operand, supportMapping);
       if (mlir::failed(mapped))
         return mlir::failure();
+      hasShapedOperand |= mlir::isa<mlir::ShapedType>(operand.getType());
       supportMapping.map(operand, *mapped);
     }
+    if (!hasShapedOperand)
+      return mapSupportValue(value, supportMapping);
+    llvm::SetVector<mlir::Value> captures;
+    mlir::getUsedValuesDefinedAbove(definition->getRegions(), captures);
+    for (mlir::Value capture : captures)
+      if (mlir::failed(mapSupportValue(capture, supportMapping)))
+        return mlir::failure();
     mlir::Operation *cloned = builder.clone(*definition, supportMapping);
     for (auto [oldResult, newResult] :
          llvm::zip_equal(definition->getResults(), cloned->getResults()))
       supportMapping.map(oldResult, newResult);
     return supportMapping.lookup(value);
+  }
+
+  mlir::FailureOr<mlir::Value>
+  materializeLocalTensorSupport(mlir::Value value,
+                                mlir::IRMapping &localMapping) {
+    if (mlir::Value mapped = localMapping.lookupOrNull(value))
+      return mapped;
+    if (mlir::isa<mlir::BlockArgument>(value)) {
+      auto mapped = mapSupportValue(value);
+      if (mlir::succeeded(mapped))
+        localMapping.map(value, *mapped);
+      return mapped;
+    }
+    auto result = mlir::dyn_cast<mlir::OpResult>(value);
+    mlir::Operation *definition = result ? result.getOwner() : nullptr;
+    if (!definition || !mlir::isMemoryEffectFree(definition))
+      return mlir::failure();
+
+    const bool hasShapedOperand = llvm::any_of(definition->getOperandTypes(),
+                                               llvm::IsaPred<mlir::ShapedType>);
+    if (hasShapedOperand &&
+        !mlir::isa<WaferTensorIndexingOpInterface>(definition))
+      return mlir::failure();
+    for (mlir::Value operand : definition->getOperands()) {
+      mlir::FailureOr<mlir::Value> mapped =
+          mlir::isa<mlir::ShapedType>(operand.getType())
+              ? materializeLocalTensorSupport(operand, localMapping)
+              : mapSupportValue(operand);
+      if (mlir::failed(mapped))
+        return mlir::failure();
+      localMapping.map(operand, *mapped);
+    }
+    llvm::SetVector<mlir::Value> captures;
+    mlir::getUsedValuesDefinedAbove(definition->getRegions(), captures);
+    for (mlir::Value capture : captures) {
+      auto mapped = mapSupportValue(capture);
+      if (mlir::failed(mapped))
+        return mlir::failure();
+      localMapping.map(capture, *mapped);
+    }
+    mlir::Operation *cloned = builder.clone(*definition, localMapping);
+    for (auto [oldResult, newResult] :
+         llvm::zip_equal(definition->getResults(), cloned->getResults()))
+      localMapping.map(oldResult, newResult);
+    return localMapping.lookup(value);
   }
 
   mlir::FailureOr<mlir::Value>
@@ -976,9 +1168,13 @@ struct GroupBuilder {
           sourceValue, fragments, supportMapping);
       if (mlir::succeeded(mapped))
         return mapped;
+      std::string detail =
+          "external support chain cannot be applied after fragment assembly";
+      if (mlir::Operation *definition = sourceValue.getDefiningOp())
+        detail += ": " + definition->getName().getStringRef().str();
       return fail<mlir::Value>(
           failure, SpatialRegionMaterializationFailureKind::Unsupported,
-          "external support chain cannot be applied after fragment assembly");
+          detail);
     }
     const bool hadFragments = !fragments.empty();
     llvm::erase_if(fragments, [&](const DemandFragmentId &fragment) {
@@ -1014,10 +1210,15 @@ struct GroupBuilder {
     mlir::Value assembled = empty.getResult();
     for (const DemandFragmentId &fragment : fragments) {
       const analysis::ExactIndexSet *domain = findFragmentDomain(fragment);
-      if (!domain)
+      if (!domain) {
+        std::string detail =
+            "external fragment has no exact current demand domain";
+        if (mlir::Operation *definition = sourceValue.getDefiningOp())
+          detail += ": " + definition->getName().getStringRef().str();
         return fail<mlir::Value>(
             failure, SpatialRegionMaterializationFailureKind::BrokenContract,
-            "external fragment has no exact current demand domain");
+            detail);
+      }
       auto normalized = analysis::normalizeFiniteExactIndexSet(*domain);
       if (mlir::failed(normalized) || normalized->getBoxes().empty())
         return fail<mlir::Value>(
@@ -1099,8 +1300,9 @@ struct GroupBuilder {
     return mapSupportValue(value, mapping);
   }
 
-  const LocalUseBinding *findLocalBinding(const RegionExecutionId &consumer,
-                                          unsigned operandNumber) const {
+  llvm::SmallVector<const LocalUseBinding *, 2>
+  findLocalBindings(const RegionExecutionId &consumer,
+                    unsigned operandNumber) const {
     const compiler::detail::LogicalShardId *shard = nullptr;
     if (const auto *required = std::get_if<ExecutionInstanceId>(&consumer)) {
       const auto *root = std::get_if<RequiredRootExecution>(&required->source);
@@ -1109,17 +1311,18 @@ struct GroupBuilder {
       shard = &std::get<ReplicaExecutionId>(consumer).producer.shard;
     }
     if (!shard)
-      return nullptr;
-    auto found = llvm::find_if(group.localBindings, [&](const auto &binding) {
-      return binding.fragment.use.operand == operandNumber &&
-             binding.fragment.use.destinationShard == *shard;
-    });
-    return found == group.localBindings.end() ? nullptr : &*found;
+      return {};
+    llvm::SmallVector<const LocalUseBinding *, 2> bindings;
+    for (const LocalUseBinding &binding : group.localBindings)
+      if (binding.fragment.use.operand == operandNumber &&
+          binding.fragment.use.destinationShard == *shard)
+        bindings.push_back(&binding);
+    return bindings;
   }
 
   llvm::SmallVector<const DemandFragmentId *, 2>
   findExternalBindings(const RegionExecutionId &consumer,
-                       unsigned operandNumber) const {
+                       unsigned operandNumber, mlir::Value operandValue) const {
     const compiler::detail::LogicalShardId *shard = nullptr;
     if (const auto *required = std::get_if<ExecutionInstanceId>(&consumer)) {
       const auto *root = std::get_if<RequiredRootExecution>(&required->source);
@@ -1130,35 +1333,356 @@ struct GroupBuilder {
     llvm::SmallVector<const DemandFragmentId *, 2> result;
     if (!shard)
       return result;
-    for (const auto &binding : group.externalBindings)
-      if (binding.fragment.use.operand == operandNumber &&
-          binding.fragment.use.destinationShard == *shard)
-        result.push_back(&binding.fragment);
+    const bool directSource =
+        getSourceValueKey(operandValue, sourceFunction, nodes).has_value();
+    for (const auto &binding : group.externalBindings) {
+      const DemandFragmentId &fragment = binding.fragment;
+      if (fragment.use.operand != operandNumber ||
+          fragment.use.destinationShard != *shard)
+        continue;
+      if (directSource) {
+        bool sameCurrentSource = false;
+        for (const analysis::RootRegionWork &work : rootWorks) {
+          auto boundary =
+              llvm::find_if(work.boundaries,
+                            [&](const analysis::RootBoundaryWork &candidate) {
+                              return candidate.id == fragment.source &&
+                                     candidate.sourceValue == operandValue;
+                            });
+          if (boundary != work.boundaries.end()) {
+            sameCurrentSource = true;
+            break;
+          }
+        }
+        if (!sameCurrentSource)
+          continue;
+      }
+      result.push_back(&fragment);
+    }
     return result;
+  }
+
+  mlir::FailureOr<mlir::Value> materializeCompactSupportTile(
+      mlir::Value value, const analysis::StaticRectangularIndexSet &requested,
+      llvm::ArrayRef<DemandFragmentId> fragments) {
+    auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+    if (!type || !type.hasStaticShape() ||
+        requested.offsets.size() != static_cast<size_t>(type.getRank()) ||
+        requested.sizes.size() != static_cast<size_t>(type.getRank()))
+      return mlir::failure();
+    for (auto [offset, size, extent] :
+         llvm::zip_equal(requested.offsets, requested.sizes, type.getShape())) {
+      int64_t end = 0;
+      if (offset < 0 || size <= 0 || llvm::AddOverflow(offset, size, end) ||
+          end > extent)
+        return mlir::failure();
+    }
+
+    if (value.getDefiningOp<mlir::tensor::EmptyOp>())
+      return builder
+          .create<mlir::tensor::EmptyOp>(value.getLoc(), requested.sizes,
+                                         type.getElementType(),
+                                         type.getEncoding())
+          .getResult();
+
+    if (auto inserted = value.getDefiningOp<mlir::tensor::InsertSliceOp>()) {
+      auto staticOffsets = getStaticValues(inserted.getMixedOffsets());
+      auto staticSizes = getStaticValues(inserted.getMixedSizes());
+      auto staticStrides = getStaticValues(inserted.getMixedStrides());
+      auto sourceType = mlir::dyn_cast<mlir::RankedTensorType>(
+          inserted.getSource().getType());
+      if (!staticOffsets || !staticSizes || !staticStrides || !sourceType ||
+          sourceType.getRank() != type.getRank() ||
+          !llvm::equal(*staticSizes, sourceType.getShape()) ||
+          !llvm::all_of(*staticStrides,
+                        [](int64_t stride) { return stride == 1; }))
+        return mlir::failure();
+      mlir::FailureOr<mlir::Value> compact = materializeCompactSupportTile(
+          inserted.getDest(), requested, fragments);
+      if (mlir::failed(compact))
+        return mlir::failure();
+
+      analysis::StaticRectangularIndexSet sourceRequest;
+      llvm::SmallVector<int64_t, 4> compactOffsets;
+      bool intersects = true;
+      for (auto [requestedOffset, requestedSize, insertedOffset, insertedSize] :
+           llvm::zip_equal(requested.offsets, requested.sizes, *staticOffsets,
+                           *staticSizes)) {
+        int64_t requestedEnd = requestedOffset + requestedSize;
+        int64_t insertedEnd = insertedOffset + insertedSize;
+        int64_t begin = std::max(requestedOffset, insertedOffset);
+        int64_t end = std::min(requestedEnd, insertedEnd);
+        if (begin >= end) {
+          intersects = false;
+          break;
+        }
+        sourceRequest.offsets.push_back(begin - insertedOffset);
+        sourceRequest.sizes.push_back(end - begin);
+        compactOffsets.push_back(begin - requestedOffset);
+      }
+      if (!intersects)
+        return compact;
+      mlir::FailureOr<mlir::Value> sourceTile = materializeCompactSupportTile(
+          inserted.getSource(), sourceRequest, fragments);
+      if (mlir::failed(sourceTile))
+        return mlir::failure();
+      llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
+      llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
+      llvm::SmallVector<mlir::OpFoldResult, 4> strides;
+      for (int64_t offset : compactOffsets)
+        offsets.push_back(builder.getIndexAttr(offset));
+      for (int64_t size : sourceRequest.sizes)
+        sizes.push_back(builder.getIndexAttr(size));
+      for (int64_t dimension = 0; dimension < type.getRank(); ++dimension)
+        strides.push_back(builder.getIndexAttr(1));
+      return builder
+          .create<mlir::tensor::InsertSliceOp>(
+              value.getLoc(), *sourceTile, *compact, offsets, sizes, strides)
+          .getResult();
+    }
+
+    mlir::Value full;
+    if (std::optional<SourceValueKey> key =
+            getSourceValueKey(value, sourceFunction, nodes)) {
+      if (key->kind == SourceValueKey::Kind::FunctionArgument) {
+        return getOrCreateSlicedBoundary(value, requested);
+      } else {
+        llvm::SmallVector<DemandFragmentId, 4> matching;
+        for (const DemandFragmentId &fragment : fragments)
+          for (const analysis::RootRegionWork &work : rootWorks) {
+            auto boundary =
+                llvm::find_if(work.boundaries,
+                              [&](const analysis::RootBoundaryWork &candidate) {
+                                return candidate.id == fragment.source &&
+                                       candidate.sourceValue == value;
+                              });
+            if (boundary != work.boundaries.end()) {
+              matching.push_back(fragment);
+              break;
+            }
+          }
+        if (matching.empty())
+          return mlir::failure();
+        auto assembled = assembleExternalFragments(value, matching);
+        if (mlir::failed(assembled))
+          return mlir::failure();
+        full = *assembled;
+      }
+    } else {
+      llvm::SmallVector<DemandFragmentId, 4> selectedFragments(
+          fragments.begin(), fragments.end());
+      mlir::IRMapping supportMapping;
+      auto mapped = materializeSupportAfterFragmentAssembly(
+          value, selectedFragments, supportMapping);
+      if (mlir::failed(mapped))
+        mapped = mapSupportValue(value);
+      if (mlir::failed(mapped))
+        return mlir::failure();
+      full = *mapped;
+    }
+    llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
+    llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
+    llvm::SmallVector<mlir::OpFoldResult, 4> strides;
+    for (int64_t offset : requested.offsets)
+      offsets.push_back(builder.getIndexAttr(offset));
+    for (int64_t size : requested.sizes)
+      sizes.push_back(builder.getIndexAttr(size));
+    for (int64_t dimension = 0; dimension < type.getRank(); ++dimension)
+      strides.push_back(builder.getIndexAttr(1));
+    return builder
+        .create<mlir::tensor::ExtractSliceOp>(value.getLoc(), full, offsets,
+                                              sizes, strides)
+        .getResult();
   }
 
   mlir::FailureOr<mlir::Value>
   mapExecutionOperand(const RegionExecutionId &consumer,
                       mlir::OpOperand &operand) {
-    if (const LocalUseBinding *local =
-            findLocalBinding(consumer, operand.getOperandNumber())) {
-      auto produced = executionResults.find(local->producer);
-      if (produced == executionResults.end() ||
-          local->fragment.source.index >= produced->second.size())
+    llvm::SmallVector<const LocalUseBinding *, 2> localBindings =
+        findLocalBindings(consumer, operand.getOperandNumber());
+    if (!localBindings.empty()) {
+      mlir::IRMapping localMapping;
+      for (const LocalUseBinding *local : localBindings) {
+        auto produced = executionResults.find(local->producer);
+        if (produced == executionResults.end() ||
+            local->fragment.source.index >= produced->second.size())
+          return fail<mlir::Value>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "local Region binding has no materialized producer value");
+        mlir::Value actualProducer =
+            produced->second[local->fragment.source.index];
+        mlir::Value sourceValue;
+        for (const analysis::RootRegionWork &work : rootWorks) {
+          auto boundary =
+              llvm::find_if(work.boundaries,
+                            [&](const analysis::RootBoundaryWork &candidate) {
+                              return candidate.id == local->fragment.source;
+                            });
+          if (boundary == work.boundaries.end())
+            continue;
+          if (sourceValue && sourceValue != boundary->sourceValue)
+            return fail<mlir::Value>(
+                failure,
+                SpatialRegionMaterializationFailureKind::BrokenContract,
+                "local Region binding has multiple source values");
+          sourceValue = boundary->sourceValue;
+        }
+        if (!sourceValue || sourceValue.getType() != actualProducer.getType())
+          return fail<mlir::Value>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "local Region binding producer type does not match its source");
+        if (mlir::Value previous = localMapping.lookupOrNull(sourceValue)) {
+          if (previous != actualProducer)
+            return fail<mlir::Value>(
+                failure,
+                SpatialRegionMaterializationFailureKind::BrokenContract,
+                "local Region binding maps one source more than once");
+        } else {
+          localMapping.map(sourceValue, actualProducer);
+        }
+      }
+      mlir::FailureOr<mlir::Value> mapped =
+          materializeLocalTensorSupport(operand.get(), localMapping);
+      if (mlir::failed(mapped) ||
+          (*mapped).getType() != operand.get().getType()) {
+        std::string detail;
+        llvm::raw_string_ostream stream(detail);
+        stream << "local Region support chain cannot be applied to the "
+                  "current producer value: local_fragment_count="
+               << localBindings.size()
+               << " operand_type=" << operand.get().getType()
+               << " operand_definition=";
+        if (mlir::Operation *definition = operand.get().getDefiningOp())
+          stream << definition->getName();
+        else
+          stream << "block_argument";
+        if (mlir::succeeded(mapped))
+          stream << " mapped_type=" << (*mapped).getType();
         return fail<mlir::Value>(
-            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
-            "local Region binding has no materialized producer value");
-      return produced->second[local->fragment.source.index];
+            failure, SpatialRegionMaterializationFailureKind::Unsupported,
+            detail);
+      }
+      return mapped;
     }
     llvm::SmallVector<const DemandFragmentId *, 2> external =
-        findExternalBindings(consumer, operand.getOperandNumber());
-    if (!external.empty()) {
-      llvm::SmallVector<DemandFragmentId, 4> fragments;
-      for (const DemandFragmentId *fragment : external)
-        fragments.push_back(*fragment);
-      return assembleExternalFragments(operand.get(), std::move(fragments));
+        findExternalBindings(consumer, operand.getOperandNumber(),
+                             operand.get());
+    llvm::SmallVector<DemandFragmentId, 4> fragments;
+    for (const DemandFragmentId *fragment : external)
+      fragments.push_back(*fragment);
+    const compiler::detail::LogicalShardId *destinationShard = nullptr;
+    if (const auto *required = std::get_if<ExecutionInstanceId>(&consumer)) {
+      const auto *root = std::get_if<RequiredRootExecution>(&required->source);
+      destinationShard = root ? &root->shard : nullptr;
+    } else {
+      destinationShard = &std::get<ReplicaExecutionId>(consumer).producer.shard;
     }
+    if (destinationShard &&
+        operand.get().getDefiningOp<mlir::tensor::InsertSliceOp>()) {
+      const analysis::RootRegionWork *work =
+          findWork(rootWorks, analysis::RootRegionWorkId{destinationShard->root,
+                                                         group.tile});
+      auto operandWork =
+          work ? llvm::find_if(work->operands,
+                               [&](const auto &candidate) {
+                                 return candidate.operand ==
+                                        operand.getOperandNumber();
+                               })
+               : std::vector<analysis::RootOperandWork>::const_iterator{};
+      if (work && operandWork != work->operands.end()) {
+        auto use = llvm::find_if(operandWork->uses, [&](const auto &candidate) {
+          return candidate.id.operand == operand.getOperandNumber() &&
+                 candidate.id.destinationShard == *destinationShard;
+        });
+        if (use != operandWork->uses.end()) {
+          auto normalized =
+              analysis::normalizeFiniteExactIndexSet(use->operandDemand);
+          if (mlir::succeeded(normalized) &&
+              normalized->getBoxes().size() == 1) {
+            const auto box = normalized->getBoxes().front();
+            mlir::FailureOr<mlir::Value> compact =
+                materializeCompactSupportTile(operand.get(), box, fragments);
+            if (mlir::succeeded(compact)) {
+              auto fullType =
+                  mlir::cast<mlir::RankedTensorType>(operand.get().getType());
+              mlir::Value empty = builder.create<mlir::tensor::EmptyOp>(
+                  operand.get().getLoc(), fullType.getShape(),
+                  fullType.getElementType(), fullType.getEncoding());
+              llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
+              llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
+              llvm::SmallVector<mlir::OpFoldResult, 4> strides;
+              for (int64_t offset : box.offsets)
+                offsets.push_back(builder.getIndexAttr(offset));
+              for (int64_t size : box.sizes)
+                sizes.push_back(builder.getIndexAttr(size));
+              for (int64_t dimension = 0; dimension < fullType.getRank();
+                   ++dimension)
+                strides.push_back(builder.getIndexAttr(1));
+              mlir::Value full = builder
+                                     .create<mlir::tensor::InsertSliceOp>(
+                                         operand.get().getLoc(), *compact,
+                                         empty, offsets, sizes, strides)
+                                     .getResult();
+              compactSupportTiles.try_emplace(
+                  full, CompactSupportTile{*compact, box.offsets, box.sizes});
+              return full;
+            }
+          }
+        }
+      }
+    }
+    if (!external.empty())
+      return assembleExternalFragments(operand.get(), std::move(fragments));
     return mapSupportValue(operand.get());
+  }
+
+  mlir::LogicalResult applyCompactSupportTiles() {
+    for (auto &[full, compact] : compactSupportTiles) {
+      llvm::SmallVector<mlir::tensor::ExtractSliceOp, 4> slices;
+      for (mlir::Operation *user : full.getUsers())
+        if (auto slice = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(user))
+          slices.push_back(slice);
+      for (mlir::tensor::ExtractSliceOp slice : slices) {
+        auto offsets = getStaticValues(slice.getMixedOffsets());
+        auto sizes = getStaticValues(slice.getMixedSizes());
+        auto strides = getStaticValues(slice.getMixedStrides());
+        if (!offsets || !sizes || !strides || *offsets != compact.offsets ||
+            *sizes != compact.sizes ||
+            !llvm::all_of(*strides, [](int64_t stride) { return stride == 1; }))
+          continue;
+        if (slice.getType() != compact.value.getType())
+          return mlir::failure();
+        slice.getResult().replaceAllUsesWith(compact.value);
+        slice.erase();
+      }
+    }
+    return mlir::success();
+  }
+
+  void eraseDeadCompactSupportWrappers() {
+    llvm::SmallVector<mlir::Value, 4> completed;
+    for (auto &[full, compact] : compactSupportTiles) {
+      (void)compact;
+      if (!full.use_empty())
+        continue;
+      llvm::SmallVector<mlir::Operation *, 8> worklist;
+      if (mlir::Operation *definition = full.getDefiningOp())
+        worklist.push_back(definition);
+      while (!worklist.empty()) {
+        mlir::Operation *operation = worklist.pop_back_val();
+        if (!operation->getBlock() || !mlir::isOpTriviallyDead(operation))
+          continue;
+        llvm::SmallVector<mlir::Operation *, 4> producers;
+        for (mlir::Value operand : operation->getOperands())
+          if (mlir::Operation *producer = operand.getDefiningOp())
+            producers.push_back(producer);
+        operation->erase();
+        llvm::append_range(worklist, producers);
+      }
+      completed.push_back(full);
+    }
+    for (mlir::Value full : completed)
+      compactSupportTiles.erase(full);
   }
 
   mlir::FailureOr<std::pair<const analysis::RootRegionWork *,
@@ -1700,6 +2224,11 @@ struct GroupBuilder {
         return fail<llvm::SmallVector<mlir::Value, 2>>(
             failure, SpatialRegionMaterializationFailureKind::Unsupported,
             "flash_attention spatial tile cannot form online state IR");
+      if (mlir::failed(applyCompactSupportTiles()))
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::CompilerFailure,
+            "flash_attention compact support tile replacement failed");
+      eraseDeadCompactSupportWrappers();
       mlir::FailureOr<mlir::Value> finalized =
           materializeOnlineAttentionFinalize(attention, *state, builder);
       llvm::SmallVector<mlir::OpFoldResult> resultOffsets;
@@ -1751,6 +2280,11 @@ struct GroupBuilder {
         return fail<llvm::SmallVector<mlir::Value, 2>>(
             failure, SpatialRegionMaterializationFailureKind::Unsupported,
             "flash_decoding contribution cannot form online state IR");
+      if (mlir::failed(applyCompactSupportTiles()))
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::CompilerFailure,
+            "flash_decoding compact support tile replacement failed");
+      eraseDeadCompactSupportWrappers();
       auto stateValue = [&](CoupledReductionComponentKind kind) -> mlir::Value {
         switch (kind) {
         case CoupledReductionComponentKind::Maximum:
@@ -1800,6 +2334,10 @@ struct GroupBuilder {
           adapter->erase();
         return mlir::failure();
       }
+      if (mlir::failed(applyCompactSupportTiles()))
+        return fail<llvm::SmallVector<mlir::Value, 2>>(
+            failure, SpatialRegionMaterializationFailureKind::CompilerFailure,
+            "partial reduction compact support tile replacement failed");
       if (llvm::any_of(partial->partialOperations,
                        [](mlir::Operation *operation) {
                          return !operation ||
@@ -1842,6 +2380,7 @@ struct GroupBuilder {
       }
       if (adapter->use_empty())
         adapter->erase();
+      eraseDeadCompactSupportWrappers();
       for (mlir::Operation *placeholder :
            llvm::reverse(temporaryInitPlaceholders)) {
         for (mlir::Operation *user :
@@ -1869,6 +2408,10 @@ struct GroupBuilder {
         adapter->erase();
       return mlir::failure();
     }
+    if (mlir::failed(applyCompactSupportTiles()))
+      return fail<llvm::SmallVector<mlir::Value, 2>>(
+          failure, SpatialRegionMaterializationFailureKind::CompilerFailure,
+          "spatial compact support tile replacement failed");
 
     llvm::SmallVector<mlir::Value, 2> fullResults;
     fullResults.reserve(tiled->tiledValues.size());
@@ -1892,6 +2435,7 @@ struct GroupBuilder {
     }
     if (adapter->use_empty())
       adapter->erase();
+    eraseDeadCompactSupportWrappers();
     executionResults.emplace(execution, fullResults);
     return fullResults;
   }
@@ -2068,11 +2612,31 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
     if (!mlir::isa<mlir::ShapedType>(output.getType()))
       continue;
     auto result = mlir::dyn_cast<mlir::OpResult>(output);
-    if (!result || !findNode(operationNodes, result.getOwner()))
+    if (!result || !findNode(operationNodes, result.getOwner())) {
+      std::string detail;
+      llvm::raw_string_ostream stream(detail);
+      stream << "structural materialization requires each shaped program "
+                "output to be a direct structured result; owner=";
+      if (mlir::Operation *owner = output.getDefiningOp())
+        stream << owner->getName() << " output_type=" << output.getType()
+               << " operands=[";
+      if (mlir::Operation *owner = output.getDefiningOp())
+        llvm::interleaveComma(
+            owner->getOperands(), stream, [&](mlir::Value operand) {
+              if (mlir::Operation *definition = operand.getDefiningOp())
+                stream << definition->getName();
+              else
+                stream << "block_argument";
+              stream << ':' << operand.getType();
+            });
+      if (output.getDefiningOp())
+        stream << ']';
+      else
+        stream << "block_argument";
       return fail<SpatialRegionMaterializationResult>(
           failure, SpatialRegionMaterializationFailureKind::Unsupported,
-          "structural materialization requires each shaped program output to "
-          "be a direct structured result");
+          detail);
+    }
   }
 
   std::set<int64_t> tileIds;
@@ -2191,7 +2755,8 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
   llvm::SmallVector<PendingStandardPartialBoundary, 16>
       pendingStandardPartialBoundaries;
   std::set<ProducedValueKey> plannedResults;
-  for (const RegionGroupPlan &group : regionPlan.groups) {
+  std::map<ProducedValueKey, size_t> plannedResultGroups;
+  for (auto [groupIndex, group] : llvm::enumerate(regionPlan.groups)) {
     auto executions = collectGroupExecutions(group, rootWorks, failure);
     if (mlir::failed(executions))
       return mlir::failure();
@@ -2238,7 +2803,8 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
                                  work->id.root, resultWork.result},
                              resultWork.ownerShard, resultWork.reductionGroup,
                              group.tile};
-        if (!plannedResults.insert(key).second)
+        if (!plannedResults.insert(key).second ||
+            !plannedResultGroups.emplace(key, groupIndex).second)
           return fail<SpatialRegionMaterializationResult>(
               failure, SpatialRegionMaterializationFailureKind::BrokenContract,
               "RegionPlan assigns one structured result endpoint twice");
@@ -2345,17 +2911,117 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
       recordFragmentSource(fragment);
     }
 
+  std::vector<std::set<size_t>> groupSuccessors(regionPlan.groups.size());
+  std::vector<size_t> groupIndegrees(regionPlan.groups.size(), 0);
+  std::map<compiler::detail::LogicalShardId, size_t> shardExecutionGroups;
+  std::map<compiler::detail::ReductionGroupId, size_t> mergeExecutionGroups;
+  for (auto [groupIndex, group] : llvm::enumerate(regionPlan.groups))
+    for (const compiler::detail::ExecutionInstancePlan &execution :
+         group.executions) {
+      if (const auto *root =
+              std::get_if<RequiredRootExecution>(&execution.id.source)) {
+        if (!shardExecutionGroups.emplace(root->shard, groupIndex).second)
+          return fail<SpatialRegionMaterializationResult>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "RegionPlan assigns one shard execution to multiple groups");
+      } else {
+        const auto &merge =
+            std::get<RequiredMergeExecution>(execution.id.source);
+        if (!mergeExecutionGroups.emplace(merge.group, groupIndex).second)
+          return fail<SpatialRegionMaterializationResult>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "RegionPlan assigns one merge execution to multiple groups");
+      }
+    }
+  auto addGroupEdge = [&](size_t producer, size_t consumer) {
+    if (producer == consumer)
+      return;
+    if (groupSuccessors[producer].insert(consumer).second)
+      ++groupIndegrees[consumer];
+  };
+  for (auto [consumerIndex, group] : llvm::enumerate(regionPlan.groups)) {
+    for (const auto &binding : group.externalBindings) {
+      if (binding.fragment.source.kind !=
+          analysis::RootBoundaryKind::StructuredResult)
+        continue;
+      auto source = fragmentSources.find(binding.fragment);
+      if (source == fragmentSources.end())
+        continue;
+      auto producer = plannedResultGroups.find(source->second);
+      if (producer == plannedResultGroups.end())
+        return fail<SpatialRegionMaterializationResult>(
+            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+            "RegionPlan external binding has no producer group");
+      if (producer->second == consumerIndex)
+        return fail<SpatialRegionMaterializationResult>(
+            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+            "RegionPlan retains a local structured result as an external "
+            "binding");
+      addGroupEdge(producer->second, consumerIndex);
+    }
+  }
+  for (const auto &[key, requirement] : coupledStateBoundaryRequirements) {
+    (void)requirement;
+    auto producer = shardExecutionGroups.find(key.contribution);
+    auto consumer = mergeExecutionGroups.find(key.group);
+    if (producer == shardExecutionGroups.end() ||
+        consumer == mergeExecutionGroups.end())
+      return fail<SpatialRegionMaterializationResult>(
+          failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+          "coupled state boundary has no producer or merge group");
+    addGroupEdge(producer->second, consumer->second);
+  }
+  for (const auto &[key, requirement] : standardPartialBoundaryRequirements) {
+    (void)requirement;
+    auto producer = shardExecutionGroups.find(key.contribution);
+    auto consumer = mergeExecutionGroups.find(key.group);
+    if (producer == shardExecutionGroups.end() ||
+        consumer == mergeExecutionGroups.end())
+      return fail<SpatialRegionMaterializationResult>(
+          failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+          "standard partial boundary has no producer or merge group");
+    addGroupEdge(producer->second, consumer->second);
+  }
+  llvm::SmallVector<size_t, 64> readyGroups;
+  for (auto [groupIndex, indegree] : llvm::enumerate(groupIndegrees))
+    if (indegree == 0)
+      readyGroups.push_back(groupIndex);
+  llvm::SmallVector<unsigned, 64> groupRanks(regionPlan.groups.size(), 0);
+  unsigned nextGroupRank = 0;
+  while (!readyGroups.empty()) {
+    auto next = llvm::min_element(readyGroups, [&](size_t lhs, size_t rhs) {
+      return regionPlan.groups[lhs] < regionPlan.groups[rhs];
+    });
+    size_t groupIndex = *next;
+    readyGroups.erase(next);
+    groupRanks[groupIndex] = nextGroupRank++;
+    for (size_t successor : groupSuccessors[groupIndex])
+      if (--groupIndegrees[successor] == 0)
+        readyGroups.push_back(successor);
+  }
+  if (nextGroupRank != regionPlan.groups.size())
+    return fail<SpatialRegionMaterializationResult>(
+        failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+        "RegionPlan external dependency graph is cyclic");
+
   for (TileId tileId : sortedTiles) {
     TileModuleOp tile = tileModules[tileId.getValue()];
     mlir::Block &tileBody = tile.getBody().front();
     mlir::OpBuilder tileBuilder(&tileBody, tileBody.begin());
     auto entry = tileBuilder.create<mlir::func::FuncOp>(
         source.getLoc(), "entry",
-        tileBuilder.getFunctionType(/*inputs=*/{}, /*results=*/{}));
+        tileBuilder.getFunctionType(sourceFunction->getArgumentTypes(),
+                                    /*results=*/{}));
     entry.addEntryBlock();
     mlir::Block &entryBody = entry.getBody().front();
     mlir::OpBuilder entryBuilder(&entryBody, entryBody.end());
     std::map<SourceValueKey, mlir::BlockArgument> sourceArguments;
+    for (auto [index, argument] :
+         llvm::enumerate(sourceFunction->getArguments()))
+      sourceArguments.emplace(
+          SourceValueKey{SourceValueKey::Kind::FunctionArgument,
+                         static_cast<uint32_t>(index), 0},
+          entry.getArgument(index));
     std::map<DemandFragmentId, mlir::BlockArgument> externalArguments;
     std::map<CoupledStateKey, mlir::BlockArgument> coupledStateArguments;
     std::map<StandardPartialKey, mlir::BlockArgument> standardPartialArguments;
@@ -2365,7 +3031,8 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
       if (group.tile == tileId)
         remaining.push_back(index);
     llvm::sort(remaining, [&](size_t lhs, size_t rhs) {
-      return regionPlan.groups[lhs] < regionPlan.groups[rhs];
+      return std::tie(groupRanks[lhs], regionPlan.groups[lhs]) <
+             std::tie(groupRanks[rhs], regionPlan.groups[rhs]);
     });
     while (!remaining.empty()) {
       auto ready = llvm::find_if(remaining, [&](size_t index) {
@@ -2572,7 +3239,8 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
           "observable structured result has no selected Tile endpoint");
   }
 
-  if (mlir::failed(mlir::verify(*result.module)) ||
+  if (mlir::failed(materializeTileLocalSplatConstants(*result.module)) ||
+      mlir::failed(mlir::verify(*result.module)) ||
       mlir::failed(verifyTileModuleCollection(*result.module)) ||
       mlir::failed(verifyStructuralTileRegions(*result.module)) ||
       mlir::failed(compiler::detail::checkStructuredBufferRelationsCurrent(

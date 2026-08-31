@@ -6,10 +6,12 @@ add_mlir_library(WaferCompiler
   CompilationOrchestration.cpp
   CompilationStages.cpp
   CurrentIRExecutablePipeline.cpp
+  DeviceExecutableConstruction.cpp
   ExecutableCompilation.cpp
   ExecutableLowering.cpp
   PackageAssembly.cpp
   PhysicalDataflow/ActualResultController.cpp
+  PhysicalDataflow/BaselineCurrentIR.cpp
   PhysicalDataflow/StructuredProgramAnalysis.cpp
   PhysicalDataflow/UnifiedSearch.cpp
   ProgramDirectoryTransaction.cpp

@@ -16,9 +16,11 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Transforms/RegionUtils.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -32,6 +34,7 @@ namespace {
 
 enum class LoweringKind : uint8_t {
   Fill,
+  CapturedFill,
   Contraction,
   Convolution,
   Reduction,
@@ -65,6 +68,12 @@ static mlir::MemRefType changeElementType(mlir::MemRefType source,
                                           mlir::Type elementType) {
   return mlir::MemRefType::get(source.getShape(), elementType,
                                source.getLayout(), source.getMemorySpace());
+}
+
+static mlir::MemRefType getOwnedType(mlir::MemRefType source) {
+  return mlir::MemRefType::get(source.getShape(), source.getElementType(),
+                               mlir::MemRefLayoutAttrInterface{},
+                               source.getMemorySpace());
 }
 
 static mlir::MemRefType changeShapeAndElementType(mlir::MemRefType source,
@@ -301,7 +310,15 @@ static bool isSupportedElementwiseBody(mlir::linalg::LinalgOp operation) {
   auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(body.getTerminator());
   if (!yield || yield.getValues().size() != 1)
     return false;
+  llvm::SetVector<mlir::Value> captures;
+  mlir::getUsedValuesDefinedAbove(operation->getRegion(0), captures);
+  if (llvm::any_of(captures, [](mlir::Value value) {
+        return mlir::isa<mlir::ShapedType>(value.getType());
+      }))
+    return false;
   for (mlir::Operation &nested : body.without_terminator()) {
+    if (mlir::isOpTriviallyDead(&nested))
+      continue;
     if (mlir::isa<mlir::arith::ConstantOp, mlir::arith::ExtFOp,
                   mlir::arith::TruncFOp>(nested))
       continue;
@@ -309,6 +326,29 @@ static bool isSupportedElementwiseBody(mlir::linalg::LinalgOp operation) {
       return false;
   }
   return true;
+}
+
+static mlir::Value getCapturedFillValue(mlir::linalg::LinalgOp operation) {
+  if (!operation || operation.getNumDpsInputs() != 0 ||
+      operation.getNumDpsInits() != 1 || !hasOnlyParallelIterators(operation) ||
+      operation->getNumRegions() != 1 || operation->getRegion(0).empty())
+    return {};
+  mlir::Block &body = operation->getRegion(0).front();
+  auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(body.getTerminator());
+  if (!yield || yield.getValues().size() != 1 ||
+      mlir::isa<mlir::ShapedType>(yield.getValues().front().getType()) ||
+      llvm::any_of(body.without_terminator(), [](mlir::Operation &nested) {
+        return !mlir::isOpTriviallyDead(&nested);
+      }))
+    return {};
+  mlir::Value value = yield.getValues().front();
+  if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value))
+    if (argument.getOwner() == &body)
+      return {};
+  if (mlir::Operation *definition = value.getDefiningOp())
+    if (definition->getBlock() == &body)
+      return {};
+  return value;
 }
 
 struct GemmDescriptor {
@@ -648,6 +688,10 @@ static mlir::LogicalResult preflight(mlir::ModuleOp module,
       plans.push_back({operation, LoweringKind::Fill});
       return mlir::WalkResult::advance();
     }
+    if (getCapturedFillValue(operation)) {
+      plans.push_back({operation, LoweringKind::CapturedFill});
+      return mlir::WalkResult::advance();
+    }
     if (mlir::succeeded(buildGemmDescriptor(operation))) {
       plans.push_back({operation, LoweringKind::Contraction});
       return mlir::WalkResult::advance();
@@ -668,6 +712,17 @@ static mlir::LogicalResult preflight(mlir::ModuleOp module,
     }
     if (!isSupportedElementwiseBody(operation)) {
       detail = "parallel Linalg operation has no exact Tile expression form";
+      if (operation->getNumRegions() == 1 && !operation->getRegion(0).empty())
+        for (mlir::Operation &nested :
+             operation->getRegion(0).front().without_terminator())
+          if (!mlir::isa<mlir::arith::ConstantOp, mlir::arith::ExtFOp,
+                         mlir::arith::TruncFOp>(nested) &&
+              !mlir::isOpTriviallyDead(&nested) &&
+              !getScalarElementwiseKind(&nested)) {
+            detail += ": unsupported scalar op " +
+                      nested.getName().getStringRef().str();
+            break;
+          }
       failed = true;
       return mlir::WalkResult::interrupt();
     }
@@ -697,6 +752,21 @@ findLastFillBefore(mlir::Value destination, mlir::Operation *operation,
   if (materialize && visited.insert(materialize).second)
     return findLastFillBefore(materialize.getSource(), operation, visited);
   return selected;
+}
+
+static mlir::LogicalResult
+lowerCapturedFill(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
+                  StructuredToTileStatistics &statistics) {
+  mlir::Value value = getCapturedFillValue(operation);
+  mlir::Value destination = operation.getDpsInits().front();
+  if (!value || !getMemRef(destination))
+    return mlir::failure();
+  rewriter.setInsertionPoint(operation);
+  rewriter.create<ComputeFillOp>(operation.getLoc(), destination, value,
+                                 FillDomainAttr{});
+  rewriter.eraseOp(operation);
+  ++statistics.fills;
+  return mlir::success();
 }
 
 static ComputeFillOp findLastFillBefore(mlir::Value destination,
@@ -729,6 +799,28 @@ static void replaceDominatedUses(mlir::ModuleOp module, mlir::Value oldValue,
       replacements.push_back(&use);
   for (mlir::OpOperand *use : replacements)
     use->set(newValue);
+}
+
+static mlir::Value
+publishComputedValue(mlir::ModuleOp module, mlir::Operation *sourceOperation,
+                     mlir::Value destination, mlir::Value computed,
+                     mlir::IRRewriter &rewriter,
+                     StructuredToTileStatistics &statistics) {
+  if (destination.getType() == computed.getType()) {
+    replaceDominatedUses(module, destination, computed, sourceOperation);
+    return computed;
+  }
+  mlir::MemRefType destinationType = getMemRef(destination);
+  mlir::MemRefType computedType = getMemRef(computed);
+  if (!destinationType || !computedType ||
+      destinationType.getShape() != computedType.getShape() ||
+      destinationType.getElementType() != computedType.getElementType() ||
+      destinationType.getMemorySpace() != computedType.getMemorySpace())
+    return {};
+  rewriter.create<MoveCopyIntoOp>(sourceOperation->getLoc(), computed,
+                                  destination);
+  ++statistics.passthroughMovements;
+  return destination;
 }
 
 static mlir::ArrayAttr
@@ -872,6 +964,33 @@ materializeExprMap(ExprValue value, mlir::MemRefType targetShapeType,
 }
 
 static mlir::FailureOr<mlir::Value>
+materializeBufferAs(mlir::Value source, mlir::MemRefType targetType,
+                    mlir::IRRewriter &rewriter, mlir::Location location,
+                    StructuredToTileStatistics &statistics) {
+  mlir::MemRefType sourceType = getMemRef(source);
+  MemoryAttr sourceMemory =
+      sourceType ? getWaferMemoryAttr(sourceType) : MemoryAttr{};
+  MemoryAttr targetMemory =
+      targetType ? getWaferMemoryAttr(targetType) : MemoryAttr{};
+  if (!sourceType || !targetType || !sourceMemory || !targetMemory ||
+      sourceType.getShape() != targetType.getShape() ||
+      sourceType.getElementType() != targetType.getElementType() ||
+      sourceMemory.getSpace() != targetMemory.getSpace())
+    return mlir::failure();
+  if (sourceType == targetType)
+    return source;
+  mlir::Value result;
+  if (sourceMemory.getLayout() == targetMemory.getLayout())
+    result =
+        rewriter.create<MoveCopyOp>(location, targetType, source).getResult();
+  else
+    result = rewriter.create<LayoutMaterializeOp>(location, targetType, source)
+                 .getResult();
+  ++statistics.passthroughMovements;
+  return result;
+}
+
+static mlir::FailureOr<mlir::Value>
 materializeExprAs(ExprValue value, mlir::MemRefType targetType,
                   mlir::IRRewriter &rewriter, mlir::Location location,
                   StructuredToTileStatistics &statistics) {
@@ -882,15 +1001,8 @@ materializeExprAs(ExprValue value, mlir::MemRefType targetType,
   mlir::Value result = mapped->buffer;
   if (result.getType() == targetType)
     return result;
-  mlir::MemRefType resultType = getMemRef(result);
-  if (!resultType || resultType.getShape() != targetType.getShape() ||
-      resultType.getElementType() != targetType.getElementType() ||
-      resultType.getMemorySpace() != targetType.getMemorySpace())
-    return mlir::failure();
-  auto materialize =
-      rewriter.create<LayoutMaterializeOp>(location, targetType, result);
-  ++statistics.passthroughMovements;
-  return materialize.getResult();
+  return materializeBufferAs(result, targetType, rewriter, location,
+                             statistics);
 }
 
 static mlir::FailureOr<mlir::Value>
@@ -926,21 +1038,19 @@ createConvert(mlir::Value source, mlir::MemRefType resultType,
   mlir::MemRefType tensorResultType = tensorType(resultType);
   mlir::Value tensorSource = source;
   if (sourceType != tensorSourceType) {
-    tensorSource = rewriter
-                       .create<LayoutMaterializeOp>(location, tensorSourceType,
-                                                    tensorSource)
-                       .getResult();
-    ++statistics.passthroughMovements;
+    mlir::FailureOr<mlir::Value> materialized = materializeBufferAs(
+        tensorSource, tensorSourceType, rewriter, location, statistics);
+    if (mlir::failed(materialized))
+      return mlir::failure();
+    tensorSource = *materialized;
   }
   auto converted = rewriter.create<ComputeConvertOp>(location, tensorResultType,
                                                      tensorSource);
   ++statistics.converts;
   if (tensorResultType == resultType)
     return converted.getResult();
-  auto materialized = rewriter.create<LayoutMaterializeOp>(
-      location, resultType, converted.getResult());
-  ++statistics.passthroughMovements;
-  return materialized.getResult();
+  return materializeBufferAs(converted.getResult(), resultType, rewriter,
+                             location, statistics);
 }
 
 static mlir::FailureOr<ExprValue>
@@ -1009,9 +1119,10 @@ lowerContraction(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
   mlir::Value lhs = operation.getDpsInputs()[0];
   mlir::Value rhs = operation.getDpsInputs()[1];
   mlir::Value destination = operation.getDpsInits()[0];
-  mlir::MemRefType resultType = getMemRef(destination);
-  if (!resultType)
+  mlir::MemRefType destinationType = getMemRef(destination);
+  if (!destinationType)
     return mlir::failure();
+  mlir::MemRefType resultType = getOwnedType(destinationType);
   rewriter.setInsertionPoint(operation);
   for (mlir::Value *input : {&lhs, &rhs}) {
     mlir::MemRefType inputType = getMemRef(*input);
@@ -1132,11 +1243,18 @@ lowerContraction(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
         operation.getLoc(), resultType,
         ComputeElementwiseKindAttr::get(rewriter.getContext(),
                                         ComputeElementwiseKind::Add),
-        mlir::ValueRange{destination, replacement}, mlir::ArrayAttr{});
+        mlir::ValueRange{destination, replacement},
+        getIndexingMapsAttr(
+            rewriter,
+            {getIdentityMap(rewriter.getContext(), resultType.getRank()),
+             getIdentityMap(rewriter.getContext(), resultType.getRank()),
+             getIdentityMap(rewriter.getContext(), resultType.getRank())}));
     replacement = combined.getResult();
     ++statistics.elementwiseOperations;
   }
-  replaceDominatedUses(module, destination, replacement, operation);
+  if (!publishComputedValue(module, operation, destination, replacement,
+                            rewriter, statistics))
+    return mlir::failure();
   rewriter.eraseOp(operation);
   ++statistics.contractions;
   return mlir::success();
@@ -1152,13 +1270,14 @@ lowerConvolution(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
   mlir::Value input = operation.getDpsInputs()[0];
   mlir::Value weight = operation.getDpsInputs()[1];
   mlir::Value destination = operation.getDpsInits()[0];
-  mlir::MemRefType resultType = getMemRef(destination);
+  mlir::MemRefType destinationType = getMemRef(destination);
   mlir::MemRefType inputType = getMemRef(input);
   mlir::MemRefType weightType = getMemRef(weight);
-  if (!resultType || !inputType || !weightType ||
+  if (!destinationType || !inputType || !weightType ||
       inputType.getElementType() != weightType.getElementType() ||
-      inputType.getElementType() != resultType.getElementType())
+      inputType.getElementType() != destinationType.getElementType())
     return mlir::failure();
+  mlir::MemRefType resultType = getOwnedType(destinationType);
   rewriter.setInsertionPoint(operation);
   mlir::FailureOr<mlir::Value> canonicalInput = permuteBuffer(
       input, descriptor->inputToNHWC, rewriter, operation.getLoc(), statistics);
@@ -1189,11 +1308,18 @@ lowerConvolution(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
         operation.getLoc(), resultType,
         ComputeElementwiseKindAttr::get(rewriter.getContext(),
                                         ComputeElementwiseKind::Add),
-        mlir::ValueRange{destination, replacement}, mlir::ArrayAttr{});
+        mlir::ValueRange{destination, replacement},
+        getIndexingMapsAttr(
+            rewriter,
+            {getIdentityMap(rewriter.getContext(), resultType.getRank()),
+             getIdentityMap(rewriter.getContext(), resultType.getRank()),
+             getIdentityMap(rewriter.getContext(), resultType.getRank())}));
     replacement = combined.getResult();
     ++statistics.elementwiseOperations;
   }
-  replaceDominatedUses(module, destination, replacement, operation);
+  if (!publishComputedValue(module, operation, destination, replacement,
+                            rewriter, statistics))
+    return mlir::failure();
   rewriter.eraseOp(operation);
   ++statistics.convolutions;
   return mlir::success();
@@ -1248,10 +1374,11 @@ lowerReduction(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
     return mlir::failure();
   mlir::Value input = operation.getDpsInputs().front();
   mlir::Value destination = operation.getDpsInits().front();
-  mlir::MemRefType resultType = getMemRef(destination);
+  mlir::MemRefType destinationType = getMemRef(destination);
   mlir::MemRefType inputType = getMemRef(input);
-  if (!resultType || !inputType)
+  if (!destinationType || !inputType)
     return mlir::failure();
+  mlir::MemRefType resultType = getOwnedType(destinationType);
   rewriter.setInsertionPoint(operation);
   ComputeFillOp fill = findLastFillBefore(destination, operation);
   mlir::Value init =
@@ -1270,11 +1397,18 @@ lowerReduction(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
         operation.getLoc(), resultType,
         ComputeElementwiseKindAttr::get(rewriter.getContext(),
                                         getAccumulatorElementwiseKind(*kind)),
-        mlir::ValueRange{destination, replacement}, mlir::ArrayAttr{});
+        mlir::ValueRange{destination, replacement},
+        getIndexingMapsAttr(
+            rewriter,
+            {getIdentityMap(rewriter.getContext(), resultType.getRank()),
+             getIdentityMap(rewriter.getContext(), resultType.getRank()),
+             getIdentityMap(rewriter.getContext(), resultType.getRank())}));
     replacement = combined.getResult();
     ++statistics.elementwiseOperations;
   }
-  replaceDominatedUses(module, destination, replacement, operation);
+  if (!publishComputedValue(module, operation, destination, replacement,
+                            rewriter, statistics))
+    return mlir::failure();
   rewriter.eraseOp(operation);
   ++statistics.reductions;
   return mlir::success();
@@ -1293,9 +1427,10 @@ lowerElementwise(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
                  mlir::IRRewriter &rewriter,
                  StructuredToTileStatistics &statistics) {
   mlir::Value destination = operation.getDpsInits().front();
-  mlir::MemRefType resultType = getMemRef(destination);
-  if (!resultType)
+  mlir::MemRefType destinationType = getMemRef(destination);
+  if (!destinationType)
     return mlir::failure();
+  mlir::MemRefType resultType = getOwnedType(destinationType);
   llvm::SmallVector<mlir::AffineMap, 4> maps = operation.getIndexingMapsArray();
   mlir::Block &body = operation->getRegion(0).front();
   if (body.getNumArguments() != operation.getNumDpsInputs() + 1 ||
@@ -1320,8 +1455,21 @@ lowerElementwise(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
   }
   values.try_emplace(body.getArgument(argumentIndex),
                      ExprValue{destination, maps[argumentIndex]});
+  llvm::SetVector<mlir::Value> captures;
+  mlir::getUsedValuesDefinedAbove(operation->getRegion(0), captures);
+  for (mlir::Value capture : captures) {
+    if (mlir::isa<mlir::ShapedType>(capture.getType()))
+      return mlir::failure();
+    mlir::FailureOr<ExprValue> filled = createScalarFill(
+        capture, resultType, rewriter, operation.getLoc(), statistics);
+    if (mlir::failed(filled))
+      return mlir::failure();
+    values.try_emplace(capture, *filled);
+  }
 
   for (mlir::Operation &nested : body.without_terminator()) {
+    if (mlir::isOpTriviallyDead(&nested))
+      continue;
     mlir::Location location = mlir::FusedLoc::get(
         rewriter.getContext(), {operation.getLoc(), nested.getLoc()});
     if (auto constant = mlir::dyn_cast<mlir::arith::ConstantOp>(nested)) {
@@ -1389,7 +1537,9 @@ lowerElementwise(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
       *yielded, resultType, rewriter, operation.getLoc(), statistics);
   if (mlir::failed(replacement))
     return mlir::failure();
-  replaceDominatedUses(module, destination, *replacement, operation);
+  if (!publishComputedValue(module, operation, destination, *replacement,
+                            rewriter, statistics))
+    return mlir::failure();
   rewriter.eraseOp(operation);
   ++statistics.elementwiseExpressions;
   return mlir::success();
@@ -1488,6 +1638,9 @@ lowerStructuredComputeToTile(mlir::ModuleOp module,
     case LoweringKind::Fill:
       lowered = lowerFill(plan.operation, rewriter, result.statistics);
       break;
+    case LoweringKind::CapturedFill:
+      lowered = lowerCapturedFill(plan.operation, rewriter, result.statistics);
+      break;
     case LoweringKind::Contraction:
       lowered =
           lowerContraction(module, plan.operation, rewriter, result.statistics);
@@ -1505,10 +1658,46 @@ lowerStructuredComputeToTile(mlir::ModuleOp module,
           lowerElementwise(module, plan.operation, rewriter, result.statistics);
       break;
     }
-    if (mlir::failed(lowered))
-      return fail(StructuredToTileFailureKind::CompilerFailure,
-                  "preflighted structured-to-Tile lowering failed while "
-                  "rewriting current IR");
+    if (mlir::failed(lowered)) {
+      llvm::StringRef kind;
+      switch (plan.kind) {
+      case LoweringKind::Fill:
+        kind = "fill";
+        break;
+      case LoweringKind::CapturedFill:
+        kind = "captured fill";
+        break;
+      case LoweringKind::Contraction:
+        kind = "contraction";
+        break;
+      case LoweringKind::Convolution:
+        kind = "convolution";
+        break;
+      case LoweringKind::Reduction:
+        kind = "reduction";
+        break;
+      case LoweringKind::Elementwise:
+        kind = "elementwise";
+        break;
+      }
+      std::string failureDetail =
+          ("preflighted structured-to-Tile lowering failed while rewriting "
+           "current " +
+           kind + " IR")
+              .str();
+      if (plan.kind == LoweringKind::Elementwise &&
+          plan.operation->getNumRegions() == 1 &&
+          !plan.operation->getRegion(0).empty()) {
+        failureDetail += "; scalar body=";
+        llvm::interleave(
+            plan.operation->getRegion(0).front().without_terminator(),
+            [&](mlir::Operation &nested) {
+              failureDetail += nested.getName().getStringRef().str();
+            },
+            [&] { failureDetail += ","; });
+      }
+      return fail(StructuredToTileFailureKind::CompilerFailure, failureDetail);
+    }
   }
   eraseDeadPrivateStorage(module);
   rebuildCurrentBufferOwnerRelations(module, relations);

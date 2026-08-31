@@ -1,6 +1,12 @@
 //===- StructuredToTileTest.cpp ---------------------------------------===//
 
 #include "Wafer/Transforms/Tile/StructuredToTile.h"
+#include "Wafer/Conversion/TileToInstr/TileToInstr.h"
+#include "Wafer/Driver/StandaloneTileModules/StandaloneTileModules.h"
+#include "Wafer/Transforms/Instr/DirectDTETransport.h"
+#include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
+#include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
+#include "Wafer/Transforms/Linalg/CommunicationRegionClosure.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
@@ -8,7 +14,10 @@
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/IR/WaferDialect.h"
 
+#include "mlir/Dialect/Async/IR/Async.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 
@@ -52,7 +61,10 @@ protected:
 module {
   wafer.tile.module card_id = 0 tile_id = 0 {
     func.func @entry(%lhs: tensor<2x)mlir"
-           << extent << R"mlir(x64xf16>, %rhs: tensor<2x64x32xf16>) {
+           << extent
+           << R"mlir(x64xf16>, %rhs: tensor<2x64x32xf16>) -> (tensor<2x)mlir"
+           << extent << R"mlir(x32xf16>, tensor<2x)mlir" << extent
+           << R"mlir(xf16>) {
       %result, %row_result = wafer.tile.region(
           %lhs, %rhs : tensor<2x)mlir"
            << extent << R"mlir(x64xf16>, tensor<2x64x32xf16>)
@@ -113,7 +125,9 @@ module {
            << extent << R"mlir(x32xf16>, tensor<2x)mlir" << extent
            << R"mlir(xf16>
       }
-      return
+      return %result, %row_result : tensor<2x)mlir"
+           << extent << R"mlir(x32xf16>, tensor<2x)mlir" << extent
+           << R"mlir(xf16>
     }
   }
 }
@@ -124,37 +138,40 @@ module {
   static std::string makeConvSource(int64_t extent) {
     std::string text;
     llvm::raw_string_ostream stream(text);
-    stream << R"mlir(
+    stream
+        << R"mlir(
 module {
   wafer.tile.module card_id = 0 tile_id = 0 {
     func.func @entry(%input: tensor<1x)mlir"
-           << extent + 2
-           << R"mlir(x66x16xf16>, %weight: tensor<3x3x16x32xf16>) {
+        << extent + 2
+        << R"mlir(x66x16xf16>, %weight: tensor<3x3x16x32xf16>) -> tensor<1x)mlir"
+        << extent << R"mlir(x64x32xf16> {
       %result = wafer.tile.region(
           %input, %weight : tensor<1x)mlir"
-           << extent + 2 << R"mlir(x66x16xf16>, tensor<3x3x16x32xf16>)
+        << extent + 2 << R"mlir(x66x16xf16>, tensor<3x3x16x32xf16>)
           -> (tensor<1x)mlir"
-           << extent << R"mlir(x64x32xf16>) {
+        << extent << R"mlir(x64x32xf16>) {
       ^bb0(%local_input: tensor<1x)mlir"
-           << extent + 2
-           << R"mlir(x66x16xf16>, %local_weight: tensor<3x3x16x32xf16>):
+        << extent + 2
+        << R"mlir(x66x16xf16>, %local_weight: tensor<3x3x16x32xf16>):
         %zero = arith.constant 0.000000e+00 : f16
         %empty = tensor.empty() : tensor<1x)mlir"
-           << extent << R"mlir(x64x32xf16>
+        << extent << R"mlir(x64x32xf16>
         %init = linalg.fill ins(%zero : f16)
             outs(%empty : tensor<1x)mlir"
-           << extent << R"mlir(x64x32xf16>) -> tensor<1x)mlir" << extent
-           << R"mlir(x64x32xf16>
+        << extent << R"mlir(x64x32xf16>) -> tensor<1x)mlir" << extent
+        << R"mlir(x64x32xf16>
         %conv = linalg.conv_2d_nhwc_hwcf
             ins(%local_input, %local_weight : tensor<1x)mlir"
-           << extent + 2 << R"mlir(x66x16xf16>, tensor<3x3x16x32xf16>)
+        << extent + 2 << R"mlir(x66x16xf16>, tensor<3x3x16x32xf16>)
             outs(%init : tensor<1x)mlir"
-           << extent << R"mlir(x64x32xf16>) -> tensor<1x)mlir" << extent
-           << R"mlir(x64x32xf16>
+        << extent << R"mlir(x64x32xf16>) -> tensor<1x)mlir" << extent
+        << R"mlir(x64x32xf16>
         wafer.tile.yield %conv : tensor<1x)mlir"
-           << extent << R"mlir(x64x32xf16>
+        << extent << R"mlir(x64x32xf16>
       }
-      return
+      return %result : tensor<1x)mlir"
+        << extent << R"mlir(x64x32xf16>
     }
   }
 }
@@ -168,9 +185,15 @@ module {
     stream << R"mlir(
 #id = affine_map<(b, m, n) -> (b, m, n)>
 module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
   wafer.tile.module card_id = 0 tile_id = 0 {
     func.func @source(%input: tensor<1x)mlir"
-           << extent << R"mlir(x64xf16>) {
+           << extent << "x64xf16>)";
+    if (!crossTile)
+      stream << " -> tensor<1x" << extent << "x64xf16>";
+    stream << R"mlir( {
       %first = wafer.tile.region(
           %input : tensor<1x)mlir"
            << extent << R"mlir(x64xf16>) -> (tensor<1x)mlir" << extent
@@ -187,8 +210,7 @@ module {
             outs(%empty : tensor<1x)mlir"
            << extent << R"mlir(x64xf16>) {
           ^bb1(%value: f16, %old: f16):
-            %next = arith.addf %value, %value : f16
-            linalg.yield %next : f16
+            linalg.yield %value : f16
         } -> tensor<1x)mlir"
            << extent << R"mlir(x64xf16>
         wafer.tile.yield %mapped : tensor<1x)mlir"
@@ -221,14 +243,19 @@ module {
       }
 )mlir";
     }
-    stream << R"mlir(      return
-    }
+    if (crossTile)
+      stream << R"mlir(      return
+)mlir";
+    else
+      stream << "      return %second : tensor<1x" << extent << "x64xf16>\n";
+    stream << R"mlir(    }
   }
 )mlir";
     if (crossTile) {
       stream << R"mlir(  wafer.tile.module card_id = 0 tile_id = 1 {
     func.func @destination(%placeholder: tensor<1x)mlir"
-             << extent << R"mlir(x64xf16>) {
+             << extent << R"mlir(x64xf16>) -> tensor<1x)mlir" << extent
+             << R"mlir(x64xf16> {
       %second = wafer.tile.region(
           %placeholder : tensor<1x)mlir"
              << extent << R"mlir(x64xf16>) -> (tensor<1x)mlir" << extent
@@ -252,7 +279,417 @@ module {
         wafer.tile.yield %mapped : tensor<1x)mlir"
              << extent << R"mlir(x64xf16>
       }
+      return %second : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+    }
+  }
+)mlir";
+    }
+    stream << "}\n";
+    return text;
+  }
+
+  static std::string makeFanoutSource(int64_t extent,
+                                      llvm::ArrayRef<int64_t> destinations) {
+    std::string text;
+    llvm::raw_string_ostream stream(text);
+    stream << R"mlir(
+#id = affine_map<(b, m, n) -> (b, m, n)>
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>,
+       unavailable_tiles = array<i64: 0, 0, 1, 2>}
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @source(%input: tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>) {
+      %result = wafer.tile.region(
+          %input : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>) -> (tensor<1x)mlir" << extent
+           << R"mlir(x64xf16>) {
+      ^bb0(%local: tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>):
+        %empty = tensor.empty() : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>
+        %mapped = linalg.generic {
+            indexing_maps = [#id, #id],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%local : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>)
+            outs(%empty : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>) {
+          ^bb1(%value: f16, %old: f16):
+            %next = arith.addf %value, %value : f16
+            linalg.yield %next : f16
+        } -> tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>
+        wafer.tile.yield %mapped : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>
+      }
       return
+    }
+  }
+)mlir";
+    for (int64_t tile : destinations) {
+      stream << "  wafer.tile.module card_id = 0 tile_id = " << tile
+             << R"mlir( {
+    func.func @destination(%placeholder: tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>) -> tensor<1x)mlir" << extent
+             << R"mlir(x64xf16> {
+      %result = wafer.tile.region(
+          %placeholder : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>) -> (tensor<1x)mlir" << extent
+             << R"mlir(x64xf16>) {
+      ^bb0(%local: tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>):
+        %empty = tensor.empty() : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+        %mapped = linalg.generic {
+            indexing_maps = [#id, #id],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%local : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>)
+            outs(%empty : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>) {
+          ^bb1(%value: f16, %old: f16):
+            %next = arith.mulf %value, %value : f16
+            linalg.yield %next : f16
+        } -> tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+        wafer.tile.yield %mapped : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+      }
+      return %result : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+    }
+  }
+)mlir";
+    }
+    stream << "}\n";
+    return text;
+  }
+
+  static std::string makeInterferingFanoutsSource(int64_t extent) {
+    std::string text;
+    llvm::raw_string_ostream stream(text);
+    stream << R"mlir(
+#id = affine_map<(b, m, n) -> (b, m, n)>
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(%input: tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>) {
+      %first, %second = wafer.tile.region(
+          %input : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>) -> (tensor<1x)mlir" << extent
+           << R"mlir(x64xf16>, tensor<1x)mlir" << extent << R"mlir(x64xf16>) {
+      ^bb0(%local: tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>):
+        %empty0 = tensor.empty() : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>
+        %empty1 = tensor.empty() : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>
+        %mapped0 = linalg.generic {
+            indexing_maps = [#id, #id],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%local : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>)
+            outs(%empty0 : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>) {
+          ^bb1(%value: f16, %old: f16):
+            %next = arith.addf %value, %value : f16
+            linalg.yield %next : f16
+        } -> tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>
+        %mapped1 = linalg.generic {
+            indexing_maps = [#id, #id],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%local : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>)
+            outs(%empty1 : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>) {
+          ^bb1(%value: f16, %old: f16):
+            %twice = arith.addf %value, %value : f16
+            linalg.yield %twice : f16
+        } -> tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>
+        wafer.tile.yield %mapped0, %mapped1 : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>, tensor<1x)mlir" << extent
+           << R"mlir(x64xf16>
+      }
+      return
+    }
+  }
+)mlir";
+    for (int64_t tile : {1, 2})
+      stream
+          << "  wafer.tile.module card_id = 0 tile_id = " << tile << R"mlir( {
+    func.func @entry(%left: tensor<1x)mlir"
+          << extent << R"mlir(x64xf16> {wafer.cross_tile_placeholder},
+                     %right: tensor<1x)mlir"
+          << extent
+          << R"mlir(x64xf16> {wafer.cross_tile_placeholder}) -> tensor<1x)mlir"
+          << extent << R"mlir(x64xf16> {
+      %result = wafer.tile.region(
+          %left, %right : tensor<1x)mlir"
+          << extent << R"mlir(x64xf16>, tensor<1x)mlir" << extent
+          << R"mlir(x64xf16>) -> (tensor<1x)mlir" << extent
+          << R"mlir(x64xf16>) {
+      ^bb0(%local_left: tensor<1x)mlir"
+          << extent << R"mlir(x64xf16>, %local_right: tensor<1x)mlir" << extent
+          << R"mlir(x64xf16>):
+        %empty = tensor.empty() : tensor<1x)mlir"
+          << extent << R"mlir(x64xf16>
+        %mapped = linalg.generic {
+            indexing_maps = [#id, #id, #id],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%local_left, %local_right : tensor<1x)mlir"
+          << extent << R"mlir(x64xf16>, tensor<1x)mlir" << extent
+          << R"mlir(x64xf16>)
+            outs(%empty : tensor<1x)mlir"
+          << extent << R"mlir(x64xf16>) {
+          ^bb1(%lhs: f16, %rhs: f16, %old: f16):
+            %sum = arith.addf %lhs, %rhs : f16
+            linalg.yield %sum : f16
+        } -> tensor<1x)mlir"
+          << extent << R"mlir(x64xf16>
+        wafer.tile.yield %mapped : tensor<1x)mlir"
+          << extent << R"mlir(x64xf16>
+      }
+      return %result : tensor<1x)mlir"
+          << extent << R"mlir(x64xf16>
+    }
+  }
+)mlir";
+    stream << "}\n";
+    return text;
+  }
+
+  static std::string makeCompleteExchangeSource(int64_t extent) {
+    std::string text;
+    llvm::raw_string_ostream stream(text);
+    stream << R"mlir(
+#id = affine_map<(b, m, n) -> (b, m, n)>
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+)mlir";
+    for (int64_t tile = 0; tile < 4; ++tile) {
+      stream << "  wafer.tile.module card_id = 0 tile_id = " << tile
+             << R"mlir( {
+    func.func @entry(%local: tensor<1x)mlir"
+             << extent << "x64xf16>";
+      for (int64_t source = 0; source < 4; ++source) {
+        if (source == tile)
+          continue;
+        stream << ", %from" << source << ": tensor<1x" << extent
+               << "x64xf16> {wafer.cross_tile_placeholder}";
+      }
+      stream << ") -> tensor<1x" << extent << R"mlir(x64xf16> {
+      %source, %output = wafer.tile.region(%local)mlir";
+      for (int64_t source = 0; source < 4; ++source)
+        if (source != tile)
+          stream << ", %from" << source;
+      stream << " : tensor<1x" << extent << "x64xf16>";
+      for (int64_t source = 0; source < 4; ++source)
+        if (source != tile)
+          stream << ", tensor<1x" << extent << "x64xf16>";
+      stream << ") -> (tensor<1x" << extent << "x64xf16>, tensor<1x" << extent
+             << R"mlir(x64xf16>) {
+      ^bb0(%local_arg: tensor<1x)mlir"
+             << extent << "x64xf16>";
+      for (int64_t source = 0; source < 4; ++source)
+        if (source != tile)
+          stream << ", %from" << source << "_arg: tensor<1x" << extent
+                 << "x64xf16>";
+      stream << R"mlir():
+        %source_empty = tensor.empty() : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+        %local_source = linalg.generic {
+            indexing_maps = [#id, #id],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%local_arg : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>)
+            outs(%source_empty : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>) {
+          ^bb1(%value: f16, %old: f16):
+            linalg.yield %value : f16
+        } -> tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+        %output_empty = tensor.empty() : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+        %combined = linalg.generic {
+            indexing_maps = [#id, #id, #id, #id],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins()mlir";
+      bool first = true;
+      for (int64_t source = 0; source < 4; ++source) {
+        if (source == tile)
+          continue;
+        stream << (first ? "" : ", ") << "%from" << source << "_arg";
+        first = false;
+      }
+      stream << " : tensor<1x" << extent << "x64xf16>, tensor<1x" << extent
+             << "x64xf16>, tensor<1x" << extent << R"mlir(x64xf16>)
+            outs(%output_empty : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>) {
+          ^bb1(%a: f16, %b: f16, %c: f16, %old: f16):
+            %ab = arith.addf %a, %b : f16
+            %abc = arith.addf %ab, %c : f16
+            linalg.yield %abc : f16
+        } -> tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+        wafer.tile.yield %local_source, %combined
+            : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>, tensor<1x)mlir" << extent
+             << R"mlir(x64xf16>
+      }
+      return %output : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+    }
+  }
+)mlir";
+    }
+    stream << "}\n";
+    return text;
+  }
+
+  static std::string makeSplitTwoTileExchangeSource(int64_t extent) {
+    std::string text;
+    llvm::raw_string_ostream stream(text);
+    stream << R"mlir(
+#id = affine_map<(b, m, n) -> (b, m, n)>
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+)mlir";
+    for (int64_t tile = 0; tile < 2; ++tile) {
+      stream << "  wafer.tile.module card_id = 0 tile_id = " << tile
+             << R"mlir( {
+    func.func @entry(%local: tensor<1x)mlir"
+             << extent << "x64xf16>, %remote: tensor<1x" << extent
+             << R"mlir(x64xf16> {wafer.cross_tile_placeholder})
+        -> tensor<1x)mlir"
+             << extent << R"mlir(x64xf16> {
+      %source = wafer.tile.region(
+          %local : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>) -> (tensor<1x)mlir" << extent
+             << R"mlir(x64xf16>) {
+      ^bb0(%local_arg: tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>):
+        %empty = tensor.empty() : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+        %mapped = linalg.generic {
+            indexing_maps = [#id, #id],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%local_arg : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>)
+            outs(%empty : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>) {
+          ^bb1(%value: f16, %old: f16):
+            linalg.yield %value : f16
+        } -> tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+        wafer.tile.yield %mapped : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+      }
+      %output = wafer.tile.region(
+          %remote : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>) -> (tensor<1x)mlir" << extent
+             << R"mlir(x64xf16>) {
+      ^bb0(%remote_arg: tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>):
+        %empty = tensor.empty() : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+        %mapped = linalg.generic {
+            indexing_maps = [#id, #id],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%remote_arg : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>)
+            outs(%empty : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>) {
+          ^bb1(%value: f16, %old: f16):
+            %next = arith.mulf %value, %value : f16
+            linalg.yield %next : f16
+        } -> tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+        wafer.tile.yield %mapped : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+      }
+      return %output : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+    }
+  }
+)mlir";
+    }
+    stream << "}\n";
+    return text;
+  }
+
+  static std::string makeCausalTwoTileExchangeSource(int64_t extent) {
+    std::string text;
+    llvm::raw_string_ostream stream(text);
+    stream << R"mlir(
+#id = affine_map<(b, m, n) -> (b, m, n)>
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+)mlir";
+    for (int64_t tile = 0; tile < 2; ++tile) {
+      stream << "  wafer.tile.module card_id = 0 tile_id = " << tile
+             << R"mlir( {
+    func.func @entry(%local: tensor<1x)mlir"
+             << extent << "x64xf16>, %remote: tensor<1x" << extent
+             << R"mlir(x64xf16> {wafer.cross_tile_placeholder})
+        -> tensor<1x)mlir"
+             << extent << R"mlir(x64xf16> {
+      %source, %output = wafer.tile.region(
+          %local, %remote : tensor<1x)mlir"
+             << extent << "x64xf16>, tensor<1x" << extent
+             << R"mlir(x64xf16>) -> (tensor<1x)mlir" << extent
+             << "x64xf16>, tensor<1x" << extent << R"mlir(x64xf16>) {
+      ^bb0(%local_arg: tensor<1x)mlir"
+             << extent << "x64xf16>, %remote_arg: tensor<1x" << extent
+             << R"mlir(x64xf16>):
+        %remote_empty = tensor.empty() : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+        %remote_value = linalg.generic {
+            indexing_maps = [#id, #id],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%remote_arg : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>)
+            outs(%remote_empty : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>) {
+          ^bb1(%value: f16, %old: f16):
+            %next = arith.mulf %value, %value : f16
+            linalg.yield %next : f16
+        } -> tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+        %local_empty = tensor.empty() : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+        %local_value = linalg.generic {
+            indexing_maps = [#id, #id],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%local_arg : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>)
+            outs(%local_empty : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>) {
+          ^bb1(%value: f16, %old: f16):
+            %next = arith.addf %value, %value : f16
+            linalg.yield %next : f16
+        } -> tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
+        wafer.tile.yield %local_value, %remote_value
+            : tensor<1x)mlir"
+             << extent << "x64xf16>, tensor<1x" << extent << R"mlir(x64xf16>
+      }
+      return %output : tensor<1x)mlir"
+             << extent << R"mlir(x64xf16>
     }
   }
 )mlir";
@@ -391,10 +828,329 @@ TEST_F(StructuredToTileTest, CrossTileRelationBecomesOneMatchedPeerTransfer) {
     EXPECT_EQ(movement.statistics.ddrStores, 1u);
     EXPECT_EQ(movement.statistics.peerSends, 1u);
     EXPECT_EQ(movement.statistics.peerReceives, 1u);
-    EXPECT_EQ(movement.statistics.peerWaits, 2u);
     EXPECT_EQ(countOps<CommPeerSendOp>(module->getOperation()), 1u);
     EXPECT_EQ(countOps<CommPeerRecvOp>(module->getOperation()), 1u);
     EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+  }
+}
+
+TEST_F(StructuredToTileTest,
+       SamePayloadFanoutBecomesTopologyAwareActualRelayTree) {
+  constexpr int64_t destinations[] = {1, 2, 3, 4, 5};
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto module = parse(makeFanoutSource(extent, destinations));
+    ASSERT_TRUE(module);
+    llvm::SmallVector<std::pair<int64_t, TileRegionOp>, 8> regions;
+    for (TileModuleOp tile : module->getOps<TileModuleOp>())
+      tile.walk([&](TileRegionOp region) {
+        regions.push_back({tile.getTileIdAttr().getInt(), region});
+      });
+    llvm::sort(regions, [](const auto &lhs, const auto &rhs) {
+      return lhs.first < rhs.first;
+    });
+    ASSERT_EQ(regions.size(), 6u);
+
+    StructuredMaterializationRelations relations;
+    for (unsigned index = 1; index < regions.size(); ++index) {
+      relations.boundaryRelations.push_back(
+          {regions.front().second.getResult(0),
+           regions[index].second.getBody().getArgument(0)});
+      relations.structuralOutputs.push_back(
+          {0, regions[index].second.getResult(0)});
+    }
+    LayoutOptimizationResult layout =
+        resolveCurrentLayoutsAndBufferize(*module, relations);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    StructuredToTileResult lowered =
+        lowerStructuredComputeToTile(*module, relations);
+    ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+    BoundaryMovementResult movement =
+        materializeTileBoundaryMovement(*module, relations);
+    ASSERT_TRUE(movement.succeeded()) << movement.detail;
+
+    EXPECT_EQ(movement.statistics.peerSends, 5u);
+    EXPECT_EQ(movement.statistics.peerReceives, 5u);
+    EXPECT_GT(movement.statistics.peerRelaySends, 0u);
+    EXPECT_EQ(movement.statistics.topologyFanoutGroups, 1u);
+    EXPECT_EQ(movement.statistics.topologyFanoutRounds, 3u);
+    EXPECT_EQ(countOps<CommPeerSendOp>(module->getOperation()), 5u);
+    EXPECT_EQ(countOps<CommPeerRecvOp>(module->getOperation()), 5u);
+    EXPECT_EQ(countOps<mlir::async::AwaitOp>(module->getOperation()), 0u);
+
+    unsigned sourceSends = 0;
+    unsigned relaysWithActualReceiveStorage = 0;
+    for (TileModuleOp tile : module->getOps<TileModuleOp>()) {
+      unsigned receives = 0;
+      tile.walk([&](CommPeerRecvOp) { ++receives; });
+      tile.walk([&](CommPeerSendOp send) {
+        if (tile.getTileIdAttr().getInt() == 0) {
+          ++sourceSends;
+          return;
+        }
+        bool sharesReceiveStorage = false;
+        tile.walk([&](CommPeerRecvOp receive) {
+          sharesReceiveStorage |= receive.getBuffer() == send.getBuffer();
+        });
+        relaysWithActualReceiveStorage += sharesReceiveStorage;
+      });
+      if (tile.getTileIdAttr().getInt() != 0) {
+        EXPECT_EQ(receives, 1u);
+      }
+    }
+    EXPECT_LT(sourceSends, 5u);
+    EXPECT_EQ(relaysWithActualReceiveStorage,
+              movement.statistics.peerRelaySends);
+    EXPECT_EQ(sourceSends + relaysWithActualReceiveStorage, 5u);
+    EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+  }
+}
+
+TEST_F(StructuredToTileTest,
+       InterferingFanoutsBecomeActualSparseRoundsWithoutDDR) {
+  for (int64_t extent : {1024, 1025}) {
+    SCOPED_TRACE(extent);
+    auto module = parse(makeInterferingFanoutsSource(extent));
+    ASSERT_TRUE(module);
+    llvm::SmallVector<std::pair<int64_t, TileRegionOp>, 4> regions;
+    for (TileModuleOp tile : module->getOps<TileModuleOp>())
+      tile.walk([&](TileRegionOp region) {
+        regions.push_back({tile.getTileIdAttr().getInt(), region});
+      });
+    llvm::sort(regions, [](const auto &lhs, const auto &rhs) {
+      return lhs.first < rhs.first;
+    });
+    ASSERT_EQ(regions.size(), 3u);
+    StructuredMaterializationRelations relations;
+    for (unsigned destination = 1; destination < regions.size();
+         ++destination) {
+      relations.boundaryRelations.push_back(
+          {regions[0].second.getResult(0),
+           regions[destination].second.getBody().getArgument(0)});
+      relations.boundaryRelations.push_back(
+          {regions[0].second.getResult(1),
+           regions[destination].second.getBody().getArgument(1)});
+      relations.structuralOutputs.push_back(
+          {0, regions[destination].second.getResult(0)});
+    }
+    LayoutOptimizationResult layout =
+        resolveCurrentLayoutsAndBufferize(*module, relations);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    StructuredToTileResult lowered =
+        lowerStructuredComputeToTile(*module, relations);
+    ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+    BoundaryMovementResult movement =
+        materializeTileBoundaryMovement(*module, relations);
+    ASSERT_TRUE(movement.succeeded()) << movement.detail;
+    EXPECT_EQ(movement.statistics.peerSends, 4u);
+    EXPECT_EQ(movement.statistics.peerReceives, 4u);
+    EXPECT_EQ(movement.statistics.sparseRoundComponents, 1u);
+    EXPECT_EQ(movement.statistics.sparseRounds, 4u);
+    EXPECT_EQ(movement.statistics.crossTileDDRStages, 0u);
+    EXPECT_EQ(countOps<CommPeerSendOp>(module->getOperation()), 4u);
+    EXPECT_EQ(countOps<CommPeerRecvOp>(module->getOperation()), 4u);
+
+    unsigned resources = 0;
+    for (mlir::memref::GlobalOp global :
+         module->getOps<mlir::memref::GlobalOp>())
+      resources += static_cast<bool>(
+          global->getAttrOfType<DDRResourceAttr>(kWaferDDRResourceAttrName));
+    EXPECT_EQ(resources, 0u);
+    for (TileModuleOp tile : module->getOps<TileModuleOp>()) {
+      mlir::func::FuncOp entry = *tile.getOps<mlir::func::FuncOp>().begin();
+      unsigned bindings = 0;
+      for (unsigned index = 0; index < entry.getNumArguments(); ++index)
+        bindings += static_cast<bool>(entry.getArgAttrOfType<DDRBindingAttr>(
+            index, kWaferDDRBindingAttrName));
+      EXPECT_EQ(bindings, 0u);
+      EXPECT_EQ(entry.getNumArguments(),
+                tile.getTileIdAttr().getInt() == 0 ? 1u : 0u);
+    }
+  }
+}
+
+TEST_F(StructuredToTileTest, CompleteExchangeBecomesThreeTopologyRingRounds) {
+  for (int64_t extent : {1024, 1025}) {
+    SCOPED_TRACE(extent);
+    auto module = parse(makeCompleteExchangeSource(extent));
+    ASSERT_TRUE(module);
+    llvm::SmallVector<std::pair<int64_t, TileRegionOp>, 4> regions;
+    for (TileModuleOp tile : module->getOps<TileModuleOp>())
+      tile.walk([&](TileRegionOp region) {
+        regions.push_back({tile.getTileIdAttr().getInt(), region});
+      });
+    llvm::sort(regions, [](const auto &lhs, const auto &rhs) {
+      return lhs.first < rhs.first;
+    });
+    ASSERT_EQ(regions.size(), 4u);
+    StructuredMaterializationRelations relations;
+    for (unsigned source = 0; source < regions.size(); ++source)
+      for (unsigned destination = 0; destination < regions.size();
+           ++destination) {
+        if (source == destination)
+          continue;
+        unsigned argument = 1;
+        for (unsigned candidate = 0; candidate < source; ++candidate)
+          argument += candidate != destination;
+        relations.boundaryRelations.push_back(
+            {regions[source].second.getResult(0),
+             regions[destination].second.getBody().getArgument(argument)});
+      }
+    for (auto &[tile, region] : regions) {
+      (void)tile;
+      relations.structuralOutputs.push_back({0, region.getResult(1)});
+    }
+    LayoutOptimizationResult layout =
+        resolveCurrentLayoutsAndBufferize(*module, relations);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    StructuredToTileResult lowered =
+        lowerStructuredComputeToTile(*module, relations);
+    ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+    BoundaryMovementResult movement =
+        materializeTileBoundaryMovement(*module, relations);
+    ASSERT_TRUE(movement.succeeded()) << movement.detail;
+    EXPECT_EQ(movement.statistics.ringComponents, 1u);
+    EXPECT_EQ(movement.statistics.ringRounds, 3u);
+    EXPECT_EQ(movement.statistics.sparseRoundComponents, 0u);
+    EXPECT_EQ(movement.statistics.peerSends, 12u);
+    EXPECT_EQ(movement.statistics.peerReceives, 12u);
+    EXPECT_EQ(movement.statistics.crossTileDDRStages, 0u);
+    for (TileModuleOp tile : module->getOps<TileModuleOp>()) {
+      llvm::SmallVector<unsigned, 3> sends(3, 0);
+      llvm::SmallVector<unsigned, 3> receives(3, 0);
+      tile.walk([&](CommPeerSendOp send) {
+        ++sends[send.getMessageAttr().getRound()];
+      });
+      tile.walk([&](CommPeerRecvOp receive) {
+        ++receives[receive.getMessageAttr().getRound()];
+      });
+      EXPECT_EQ(sends, (llvm::SmallVector<unsigned, 3>{1, 1, 1}));
+      EXPECT_EQ(receives, (llvm::SmallVector<unsigned, 3>{1, 1, 1}));
+    }
+
+    std::string standaloneFailure;
+    auto standalone = createStandaloneTileModules(
+        std::move(module), &standaloneFailure, &relations);
+    ASSERT_TRUE(mlir::succeeded(standalone)) << standaloneFailure;
+    llvm::SmallVector<mlir::ModuleOp, 4> instructionModules;
+    for (StandaloneTileModule &tile : *standalone) {
+      llvm::SmallVector<TileRegionOp, 2> tileRegions;
+      tile.module->walk(
+          [&](TileRegionOp region) { tileRegions.push_back(region); });
+      TileRegionToInstrLoweringSession session(*tile.module->getContext());
+      for (TileRegionOp region : tileRegions)
+        ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+      ASSERT_TRUE(mlir::succeeded(
+          convertBufferizationCopiesToInstr(*tile.module, session)));
+      instructionModules.push_back(*tile.module);
+    }
+    DirectDTECompletionResult completion =
+        rebuildRequiredDirectDTEWaits(instructionModules);
+    ASSERT_TRUE(completion.succeeded()) << completion.detail;
+    instructionModules.clear();
+    for (StandaloneTileModule &tile : *standalone) {
+      ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+      TileMemoryPlanningFailure memoryFailure;
+      auto planned = planTileMemory(std::move(tile.module), &memoryFailure);
+      ASSERT_TRUE(mlir::succeeded(planned));
+      tile.module = std::move(*planned);
+      instructionModules.push_back(*tile.module);
+    }
+    EXPECT_TRUE(
+        mlir::succeeded(verifyDirectDTETransportSchedule(instructionModules)));
+  }
+}
+
+TEST_F(StructuredToTileTest, SplitExchangeRegionsCloseBeforeOneRingRound) {
+  for (int64_t extent : {1024, 1025}) {
+    SCOPED_TRACE(extent);
+    auto module = parse(makeSplitTwoTileExchangeSource(extent));
+    ASSERT_TRUE(module);
+    llvm::SmallVector<llvm::SmallVector<TileRegionOp, 2>, 2> regions(2);
+    for (TileModuleOp tile : module->getOps<TileModuleOp>())
+      tile.walk([&](TileRegionOp region) {
+        regions[tile.getTileIdAttr().getInt()].push_back(region);
+      });
+    ASSERT_EQ(regions[0].size(), 2u);
+    ASSERT_EQ(regions[1].size(), 2u);
+    StructuredMaterializationRelations relations;
+    relations.boundaryRelations.push_back(
+        {regions[0][0].getResult(0), regions[1][1].getBody().getArgument(0)});
+    relations.boundaryRelations.push_back(
+        {regions[1][0].getResult(0), regions[0][1].getBody().getArgument(0)});
+    relations.structuralOutputs.push_back({0, regions[0][1].getResult(0)});
+    relations.structuralOutputs.push_back({0, regions[1][1].getResult(0)});
+    CommunicationRegionClosureStatistics closure;
+    SpatialRegionMaterializationFailure closureFailure;
+    ASSERT_TRUE(mlir::succeeded(closeCrossTileCommunicationRegions(
+        *module, relations, &closure, &closureFailure)))
+        << closureFailure.detail;
+    EXPECT_EQ(closure.closedExchangeComponents, 1u);
+    EXPECT_EQ(closure.mergedTileScopes, 2u);
+    EXPECT_EQ(closure.mergedRegions, 4u);
+    EXPECT_EQ(countOps<TileRegionOp>(module->getOperation()), 2u);
+    LayoutOptimizationResult layout =
+        resolveCurrentLayoutsAndBufferize(*module, relations);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    StructuredToTileResult lowered =
+        lowerStructuredComputeToTile(*module, relations);
+    ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+    BoundaryMovementResult movement =
+        materializeTileBoundaryMovement(*module, relations);
+    ASSERT_TRUE(movement.succeeded()) << movement.detail;
+    EXPECT_EQ(movement.statistics.ringComponents, 1u);
+    EXPECT_EQ(movement.statistics.ringRounds, 1u);
+    EXPECT_EQ(movement.statistics.peerSends, 2u);
+    EXPECT_EQ(movement.statistics.peerReceives, 2u);
+    EXPECT_EQ(movement.statistics.crossTileDDRStages, 0u);
+  }
+}
+
+TEST_F(StructuredToTileTest,
+       BidirectionalNoCutUsesOneExplicitCausalDDRBoundary) {
+  for (int64_t extent : {1024, 1025}) {
+    SCOPED_TRACE(extent);
+    auto module = parse(makeCausalTwoTileExchangeSource(extent));
+    ASSERT_TRUE(module);
+    llvm::SmallVector<std::pair<int64_t, TileRegionOp>, 2> regions;
+    for (TileModuleOp tile : module->getOps<TileModuleOp>())
+      tile.walk([&](TileRegionOp region) {
+        regions.push_back({tile.getTileIdAttr().getInt(), region});
+      });
+    llvm::sort(regions, [](const auto &lhs, const auto &rhs) {
+      return lhs.first < rhs.first;
+    });
+    ASSERT_EQ(regions.size(), 2u);
+    StructuredMaterializationRelations relations;
+    relations.boundaryRelations.push_back(
+        {regions[0].second.getResult(0),
+         regions[1].second.getBody().getArgument(1)});
+    relations.boundaryRelations.push_back(
+        {regions[1].second.getResult(0),
+         regions[0].second.getBody().getArgument(1)});
+    relations.structuralOutputs.push_back({0, regions[0].second.getResult(1)});
+    relations.structuralOutputs.push_back({0, regions[1].second.getResult(1)});
+
+    CommunicationRegionClosureStatistics closure;
+    SpatialRegionMaterializationFailure closureFailure;
+    ASSERT_TRUE(mlir::succeeded(closeCrossTileCommunicationRegions(
+        *module, relations, &closure, &closureFailure)))
+        << closureFailure.detail;
+    EXPECT_EQ(closure.closedExchangeComponents, 0u);
+    LayoutOptimizationResult layout =
+        resolveCurrentLayoutsAndBufferize(*module, relations);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    StructuredToTileResult lowered =
+        lowerStructuredComputeToTile(*module, relations);
+    ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+    BoundaryMovementResult movement =
+        materializeTileBoundaryMovement(*module, relations);
+    ASSERT_TRUE(movement.succeeded()) << movement.detail;
+    EXPECT_EQ(movement.statistics.noCutDDRComponents, 1u);
+    EXPECT_EQ(movement.statistics.ringComponents, 0u);
+    EXPECT_EQ(movement.statistics.peerSends, 0u);
+    EXPECT_EQ(movement.statistics.peerReceives, 0u);
+    EXPECT_EQ(movement.statistics.crossTileDDRStages, 2u);
   }
 }
 

@@ -457,9 +457,13 @@ public:
 
       if (inputMap.isIdentity() &&
           sourceType.getShape() == resultType.getShape()) {
+        MemoryAttr sourceMemory = getWaferMemoryAttr(sourceType);
+        MemoryAttr resultMemory = getWaferMemoryAttr(resultType);
         analysis::IndexRelationResult identity =
             analysis::IndexRelation::identity(resultType.getShape());
-        if (identity.isExact() &&
+        if (sourceMemory && resultMemory &&
+            sourceMemory.getLayout() == resultMemory.getLayout() &&
+            identity.isExact() &&
             descriptorCache->hasOrProveIdentityPhysicalTraversal(sourceType,
                                                                  resultType)) {
           inputRewrites.push_back(std::move(inputRewrite));

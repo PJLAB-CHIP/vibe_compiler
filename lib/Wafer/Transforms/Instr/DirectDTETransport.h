@@ -10,7 +10,43 @@
 
 #include "llvm/ADT/ArrayRef.h"
 
+#include <cstdint>
+#include <string>
+
 namespace wafer::compiler::detail {
+
+enum class DirectDTECompletionFailureKind : uint8_t {
+  None,
+  Unsupported,
+  BrokenContract,
+  CompilerFailure,
+};
+
+struct DirectDTECompletionStatistics {
+  uint64_t sends = 0;
+  uint64_t receives = 0;
+  uint64_t waitsErased = 0;
+  uint64_t waitsPlaced = 0;
+  uint64_t senderSlotReuseWaits = 0;
+  uint64_t receiverFSMReuseWaits = 0;
+};
+
+struct DirectDTECompletionResult {
+  DirectDTECompletionFailureKind failure = DirectDTECompletionFailureKind::None;
+  DirectDTECompletionStatistics statistics;
+  std::string detail;
+
+  bool succeeded() const {
+    return failure == DirectDTECompletionFailureKind::None;
+  }
+};
+
+/// Erases compiler-derived Direct-DTE waits and rebuilds them from the actual
+/// Instr issues, SSA tokens, buffer effects and current target sender/FSM
+/// limits. The request-local placement choices are consumed in this call and
+/// are never retained as a schedule plan.
+DirectDTECompletionResult
+rebuildRequiredDirectDTEWaits(llvm::ArrayRef<mlir::ModuleOp> tileModules);
 
 /// Recomputes logical message matching, structured dynamic occurrences and the
 /// card Direct-DTE wait graph from the supplied Tile modules.

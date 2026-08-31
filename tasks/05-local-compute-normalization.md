@@ -596,7 +596,9 @@ request仍存活时映射到query-local input ID；地址不进入observable排�
 不同result type、compute facts、effect或boundary不能合并；unknown relation和downstream capability不是finite cost，而是rule不应用。
 当前StableHLO concat在official conversion前被规范化为`tensor.empty`加ordered `tensor.insert_slice`链；只有static同rank/同dtype、
 单一axis、unit stride、ordered non-overlap、完整coverage、base全部覆盖且中间result无额外observable use时，才导入N-ary `Concat`。
-Extract仍生成标准Tensor IR，不新增Wafer concat op。
+用于实现该Concat的`tensor.empty`/`tensor.insert_slice`链在本次request中属于同一个semantic producer：component connectivity、root/use
+判断和提取都读取N-ary inputs，不能把链内的raw `insert_slice` user误判成component外观察者。Extract仍生成标准Tensor IR，不新增Wafer
+concat op。
 
 Multi-use Access传播不再由egg外C++ rewrite处理。相同的identity/composition/compute rule在共享component的各root e-class中自然生效；
 只有全部ordered roots都完成type/relation/materialization preflight后才提交MLIR mutation。某个分支保持原表达不阻止其它分支在egg中探索，
@@ -754,6 +756,13 @@ E-graph只接收前序pinned MLIR folds之后仍有非相邻或rewrite-order冲�
 一次pass invocation按ordinary pure connected component各运行一个multi-root egg request；没有egg外fanout rewrite，也不因某个root先成功而
 重跑同一component。一个成功request必须使共享输出DAG的unique `Access`数量严格减少，或在`Access`不变时使canonical `Concat`及总node数
 按既定结构顺序严格下降；否则保持原component。第二次运行同一pass必须byte-equivalent。
+
+函数返回的static shaped value若不是当前DPS/Tiling producer，可以在同一次调用内临时包一层identity DPS output closure作为合法commit
+point；该closure必须在component收集前创建，并在request结束前精确移除或被提取结果消费。它不进入输出IR，也不计入logical
+Access-removal统计。禁止在normalization结束后留下closure，让第二次pass才看到新的component。
+
+该request-local scaffold与06号physical-dataflow入口的`closeStructuredProgramOutputs`不是同一对象：后者在本pass完成后由policy
+controller显式物化为current structured output producer，服务Spatial materialization的直接输入合同；本pass不拥有或隐藏该legalization。
 
 预算使用确定性work而不是wall-clock控制输出。Request直接限制relation service call、e-node、rewrite match和iteration；这些有限
 container与iteration同时给e-class merge、rebuild和extraction建立上界，并分别报告实际计数。ABI node/child/relation记录在C++与Rust

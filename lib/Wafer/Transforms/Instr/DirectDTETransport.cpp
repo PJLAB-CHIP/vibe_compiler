@@ -15,6 +15,8 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 
@@ -452,6 +454,9 @@ static mlir::LogicalResult verifyIssueBufferIsolation(mlir::Operation *issue,
     if (!operation)
       llvm_unreachable("same-block ordered wait must be reachable from issue");
 
+    if (operation->getNumRegions() == 0 &&
+        mlir::isa<mlir::ViewLikeOpInterface>(operation))
+      continue;
     bool hasRootOperand = false;
     operation->walk([&](mlir::Operation *nested) {
       hasRootOperand |=
@@ -478,9 +483,10 @@ static mlir::LogicalResult verifyIssueBufferIsolation(mlir::Operation *issue,
           return value && getRootViewSource(value) == root;
         });
     if (hasRootOperand && !hasRootValueEffect)
-      return operation->emitError(
-          "direct_dte_binding: issue buffer has no value-specific memory "
-          "effect before its matching wait");
+      return operation->emitError("direct_dte_binding: issue buffer has no "
+                                  "value-specific memory "
+                                  "effect before its matching wait: operation=")
+             << operation->getName();
 
     llvm::StringRef conflictingEffect;
     bool conflicts = llvm::any_of(instances, [&](const auto &effect) {
@@ -1617,7 +1623,360 @@ analyzeDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> tileModules,
   return mlir::success();
 }
 
+enum class RootAccessKind : uint8_t {
+  None,
+  ReadOnly,
+  Mutating,
+  Unknown,
+};
+
+static RootAccessKind classifyRootAccess(mlir::Operation *operation,
+                                         mlir::Value root) {
+  if (!operation || mlir::isa<InstrDTEWaitOp>(operation))
+    return RootAccessKind::None;
+  if (operation->getNumRegions() == 0 &&
+      mlir::isa<mlir::ViewLikeOpInterface>(operation))
+    return RootAccessKind::None;
+
+  bool hasRootOperand = false;
+  operation->walk([&](mlir::Operation *nested) {
+    hasRootOperand |=
+        llvm::any_of(nested->getOperands(), [&](mlir::Value value) {
+          return mlir::isa<mlir::BaseMemRefType>(value.getType()) &&
+                 getRootViewSource(value) == root;
+        });
+  });
+
+  std::optional<llvm::SmallVector<mlir::MemoryEffects::EffectInstance>>
+      effects = mlir::getEffectsRecursively(operation);
+  if (!effects)
+    return hasRootOperand ? RootAccessKind::Unknown : RootAccessKind::None;
+
+  bool reads = false;
+  bool mutates = false;
+  bool hasRootEffect = false;
+  for (const mlir::MemoryEffects::EffectInstance &effect : *effects) {
+    mlir::Value value = effect.getValue();
+    if (!value || !mlir::isa<mlir::BaseMemRefType>(value.getType()) ||
+        getRootViewSource(value) != root)
+      continue;
+    hasRootEffect = true;
+    reads |= llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect());
+    mutates |=
+        !llvm::isa<mlir::MemoryEffects::Read, mlir::MemoryEffects::Allocate>(
+            effect.getEffect());
+  }
+  if (hasRootOperand && !hasRootEffect)
+    return RootAccessKind::Unknown;
+  if (mutates)
+    return RootAccessKind::Mutating;
+  return reads ? RootAccessKind::ReadOnly : RootAccessKind::None;
+}
+
+struct DirectDTEWaitChoice {
+  mlir::Operation *issue = nullptr;
+  mlir::Operation *anchor = nullptr;
+  bool insertAfter = false;
+  bool receive = false;
+  bool senderSlotReuse = false;
+  bool receiverFSMReuse = false;
+};
+
+static DirectDTECompletionResult
+completionFailure(DirectDTECompletionFailureKind kind, llvm::StringRef detail,
+                  DirectDTECompletionStatistics statistics = {}) {
+  DirectDTECompletionResult result;
+  result.failure = kind;
+  result.statistics = statistics;
+  result.detail = detail.str();
+  return result;
+}
+
+static mlir::LogicalResult buildBlockWaitChoices(
+    mlir::Block &block, llvm::SmallVectorImpl<DirectDTEWaitChoice> &choices,
+    DirectDTECompletionStatistics &statistics, std::string &detail) {
+  llvm::SmallVector<mlir::Operation *, 64> operations;
+  llvm::DenseMap<mlir::Operation *, unsigned> operationIndices;
+  for (auto [index, operation] : llvm::enumerate(block)) {
+    operations.push_back(&operation);
+    operationIndices.try_emplace(&operation, static_cast<unsigned>(index));
+  }
+
+  llvm::DenseMap<mlir::Operation *, unsigned> receiveChoices;
+  for (auto [operationIndex, operation] : llvm::enumerate(operations)) {
+    auto send = mlir::dyn_cast<InstrDTESendOp>(operation);
+    auto receive = mlir::dyn_cast<InstrDTERecvOp>(operation);
+    if (!send && !receive)
+      continue;
+
+    mlir::Value buffer = send ? send.getBuffer() : receive.getBuffer();
+    mlir::Value root = getRootViewSource(buffer);
+    if (!root || !mlir::isa<mlir::BaseMemRefType>(root.getType())) {
+      detail = "Direct DTE issue has no current memref storage root";
+      return mlir::failure();
+    }
+
+    DirectDTEWaitChoice choice;
+    choice.issue = operation;
+    choice.receive = static_cast<bool>(receive);
+    if (receive) {
+      ++statistics.receives;
+      for (mlir::Operation *candidate :
+           llvm::drop_begin(operations, operationIndex + 1)) {
+        if (mlir::isa<InstrDTEWaitOp>(candidate))
+          continue;
+        RootAccessKind access = classifyRootAccess(candidate, root);
+        if (access == RootAccessKind::Unknown) {
+          detail = "Direct DTE receive has an untyped buffer access before "
+                   "its first proven consumer";
+          return mlir::failure();
+        }
+        if (access != RootAccessKind::None) {
+          choice.anchor = candidate;
+          break;
+        }
+      }
+      if (!choice.anchor)
+        choice.anchor = block.getTerminator();
+      receiveChoices.try_emplace(operation,
+                                 static_cast<unsigned>(choices.size()));
+      choices.push_back(choice);
+      continue;
+    }
+
+    ++statistics.sends;
+    mlir::Operation *lastRead = operation;
+    for (mlir::Operation *candidate :
+         llvm::drop_begin(operations, operationIndex + 1)) {
+      if (mlir::isa<InstrDTEWaitOp>(candidate))
+        continue;
+      if (mlir::isa<InstrDTESendOp>(candidate)) {
+        choice.anchor = candidate;
+        choice.senderSlotReuse = true;
+        break;
+      }
+      RootAccessKind access = classifyRootAccess(candidate, root);
+      if (access == RootAccessKind::Unknown) {
+        detail = "Direct DTE send has an untyped source-buffer access before "
+                 "completion";
+        return mlir::failure();
+      }
+      if (access == RootAccessKind::Mutating) {
+        choice.anchor = candidate;
+        break;
+      }
+      if (access == RootAccessKind::ReadOnly)
+        lastRead = candidate;
+    }
+    if (!choice.anchor) {
+      choice.anchor = lastRead;
+      choice.insertAfter = true;
+    }
+    choices.push_back(choice);
+  }
+
+  llvm::SmallVector<unsigned, 8> pendingReceives;
+  for (mlir::Operation *operation : operations) {
+    pendingReceives.erase(std::remove_if(pendingReceives.begin(),
+                                         pendingReceives.end(),
+                                         [&](unsigned choiceIndex) {
+                                           const DirectDTEWaitChoice &choice =
+                                               choices[choiceIndex];
+                                           return !choice.insertAfter &&
+                                                  choice.anchor == operation;
+                                         }),
+                          pendingReceives.end());
+    auto receive = mlir::dyn_cast<InstrDTERecvOp>(operation);
+    if (!receive)
+      continue;
+    if (pendingReceives.size() >=
+        TargetDirectDTEResourceLimits::receiverFSMsPerTile) {
+      DirectDTEWaitChoice &reuse = choices[pendingReceives.front()];
+      reuse.anchor = operation;
+      reuse.insertAfter = false;
+      reuse.receiverFSMReuse = true;
+      pendingReceives.erase(pendingReceives.begin());
+    }
+    auto choice = receiveChoices.find(operation);
+    if (choice == receiveChoices.end()) {
+      detail = "Direct DTE receive has no completion choice";
+      return mlir::failure();
+    }
+    pendingReceives.push_back(choice->second);
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+verifyLocalWaitPlacement(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
+  for (mlir::ModuleOp module : tileModules) {
+    mlir::LogicalResult valid = mlir::success();
+    module.walk([&](mlir::Block *block) {
+      if (mlir::failed(valid))
+        return;
+      llvm::DenseMap<mlir::Operation *, unsigned> operationIndices;
+      for (auto [index, operation] : llvm::enumerate(*block))
+        operationIndices.try_emplace(&operation, static_cast<unsigned>(index));
+      unsigned liveSenders = 0;
+      unsigned liveReceivers = 0;
+      for (mlir::Operation &operation : *block) {
+        if (auto send = mlir::dyn_cast<InstrDTESendOp>(operation)) {
+          if (++liveSenders >
+              TargetDirectDTEResourceLimits::senderSlotsPerTile) {
+            send.emitError("Direct DTE completion leaves overlapping sender "
+                           "slots in one Tile block");
+            valid = mlir::failure();
+            return;
+          }
+        } else if (auto receive = mlir::dyn_cast<InstrDTERecvOp>(operation)) {
+          if (++liveReceivers >
+              TargetDirectDTEResourceLimits::receiverFSMsPerTile) {
+            receive.emitError("Direct DTE completion leaves overlapping "
+                              "receiver FSMs in one Tile block");
+            valid = mlir::failure();
+            return;
+          }
+        } else if (auto wait = mlir::dyn_cast<InstrDTEWaitOp>(operation)) {
+          for (mlir::Value token : wait.getTokens()) {
+            if (token.getDefiningOp<InstrDTESendOp>()) {
+              if (liveSenders == 0) {
+                wait.emitError("Direct DTE send wait precedes its issue");
+                valid = mlir::failure();
+                return;
+              }
+              --liveSenders;
+            } else if (token.getDefiningOp<InstrDTERecvOp>()) {
+              if (liveReceivers == 0) {
+                wait.emitError("Direct DTE receive wait precedes its issue");
+                valid = mlir::failure();
+                return;
+              }
+              --liveReceivers;
+            }
+          }
+        }
+      }
+      if (liveSenders != 0 || liveReceivers != 0) {
+        block->getParentOp()->emitError(
+            "Direct DTE completion leaves a live issue at block exit");
+        valid = mlir::failure();
+        return;
+      }
+      for (mlir::Operation &operation : *block) {
+        auto send = mlir::dyn_cast<InstrDTESendOp>(operation);
+        auto receive = mlir::dyn_cast<InstrDTERecvOp>(operation);
+        if (!send && !receive)
+          continue;
+        mlir::Value token = send ? send.getToken() : receive.getToken();
+        if (!token.hasOneUse()) {
+          operation.emitError(
+              "Direct DTE issue must have exactly one rebuilt wait");
+          valid = mlir::failure();
+          return;
+        }
+        mlir::Operation *wait = token.use_begin()->getOwner();
+        if (!mlir::isa<InstrDTEWaitOp>(wait) || wait->getBlock() != block ||
+            operationIndices.lookup(&operation) >=
+                operationIndices.lookup(wait) ||
+            mlir::failed(verifyIssueBufferIsolation(
+                &operation, wait,
+                send ? send.getBuffer() : receive.getBuffer()))) {
+          valid = mlir::failure();
+          return;
+        }
+      }
+    });
+    if (mlir::failed(valid) || mlir::failed(mlir::verify(module)))
+      return mlir::failure();
+  }
+  return mlir::success();
+}
+
 } // namespace
+
+DirectDTECompletionResult
+rebuildRequiredDirectDTEWaits(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
+  DirectDTECompletionStatistics statistics;
+  if (tileModules.empty()) {
+    DirectDTECompletionResult result;
+    result.statistics = statistics;
+    return result;
+  }
+  llvm::SmallVector<InstrDTEWaitOp, 32> oldWaits;
+  llvm::SmallVector<DirectDTEWaitChoice, 64> choices;
+  std::string detail;
+
+  for (mlir::ModuleOp module : tileModules) {
+    if (!module || mlir::failed(mlir::verify(module)))
+      return completionFailure(
+          DirectDTECompletionFailureKind::BrokenContract,
+          "Direct DTE completion requires verifier-valid Instr modules",
+          statistics);
+    mlir::LogicalResult valid = mlir::success();
+    module.walk([&](InstrDTEWaitOp wait) {
+      oldWaits.push_back(wait);
+      for (mlir::Value token : wait.getTokens())
+        if (!token.getDefiningOp<InstrDTESendOp>() &&
+            !token.getDefiningOp<InstrDTERecvOp>()) {
+          wait.emitError("compiler-derived Direct DTE wait has a non-DTE "
+                         "token");
+          valid = mlir::failure();
+        }
+    });
+    module.walk([&](mlir::Operation *operation) {
+      if (!mlir::isa<InstrDTESendOp, InstrDTERecvOp>(operation))
+        return;
+      for (mlir::OpOperand &use : operation->getResult(0).getUses())
+        if (!mlir::isa<InstrDTEWaitOp>(use.getOwner())) {
+          operation->emitError("Direct DTE token escapes the completion owner");
+          valid = mlir::failure();
+        }
+    });
+    if (mlir::failed(valid))
+      return completionFailure(
+          DirectDTECompletionFailureKind::BrokenContract,
+          "Direct DTE completion input has malformed token uses", statistics);
+    module.walk([&](mlir::Block *block) {
+      if (mlir::succeeded(valid) && mlir::failed(buildBlockWaitChoices(
+                                        *block, choices, statistics, detail)))
+        valid = mlir::failure();
+    });
+    if (mlir::failed(valid))
+      return completionFailure(
+          DirectDTECompletionFailureKind::Unsupported,
+          detail.empty() ? "Direct DTE completion placement is unsupported"
+                         : detail,
+          statistics);
+  }
+
+  mlir::ModuleOp firstModule = tileModules.front();
+  mlir::IRRewriter rewriter(firstModule.getContext());
+  for (InstrDTEWaitOp wait : llvm::reverse(oldWaits)) {
+    rewriter.eraseOp(wait);
+    ++statistics.waitsErased;
+  }
+  for (const DirectDTEWaitChoice &choice : choices) {
+    if (choice.insertAfter)
+      rewriter.setInsertionPointAfter(choice.anchor);
+    else
+      rewriter.setInsertionPoint(choice.anchor);
+    rewriter.create<InstrDTEWaitOp>(
+        choice.issue->getLoc(), mlir::ValueRange{choice.issue->getResult(0)});
+    ++statistics.waitsPlaced;
+    statistics.senderSlotReuseWaits += choice.senderSlotReuse;
+    statistics.receiverFSMReuseWaits += choice.receiverFSMReuse;
+  }
+
+  if (mlir::failed(verifyLocalWaitPlacement(tileModules)))
+    return completionFailure(
+        DirectDTECompletionFailureKind::CompilerFailure,
+        "rebuilt Direct DTE waits failed current-IR lifetime/resource "
+        "verification",
+        statistics);
+  DirectDTECompletionResult result;
+  result.statistics = statistics;
+  return result;
+}
 
 mlir::LogicalResult
 verifyDirectDTETransportSchedule(llvm::ArrayRef<mlir::ModuleOp> tileModules) {

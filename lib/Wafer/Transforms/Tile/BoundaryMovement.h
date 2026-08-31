@@ -24,7 +24,15 @@ struct BoundaryMovementStatistics {
   uint64_t ddrStores = 0;
   uint64_t peerSends = 0;
   uint64_t peerReceives = 0;
-  uint64_t peerWaits = 0;
+  uint64_t peerRelaySends = 0;
+  uint64_t topologyFanoutGroups = 0;
+  uint64_t topologyFanoutRounds = 0;
+  uint64_t ringComponents = 0;
+  uint64_t ringRounds = 0;
+  uint64_t sparseRoundComponents = 0;
+  uint64_t sparseRounds = 0;
+  uint64_t noCutDDRComponents = 0;
+  uint64_t crossTileDDRStages = 0;
   uint64_t interRegionDDRStages = 0;
   uint64_t outputCopiesRemoved = 0;
   uint64_t tensorBridgesRemoved = 0;
@@ -42,10 +50,14 @@ struct BoundaryMovementResult {
 
 /// Converts logical TileRegion tensor boundaries to actual physical movement.
 /// External and same-Tile inter-region values use explicit DDR load/store;
-/// cross-Tile endpoint relations become matching peer send/recv tokens and
-/// waits. The supplied current endpoint relations are consumed exactly once.
-/// This transformation does not choose layout, execution structure, worker,
-/// NCC completion or memory offsets.
+/// cross-Tile endpoint relations become a topology-aware relay tree, a
+/// cut-closed ring/matched peer round, or an explicit causal DDR boundary.
+/// Every selected realization is immediately materialized; no route, round or
+/// action plan survives this call. Instr completion later places waits from
+/// the actual tokens, aliases, effects and target resources. The supplied
+/// current endpoint relations are consumed exactly once. This transformation
+/// does not choose layout, execution structure, worker, completion placement
+/// or memory offsets.
 BoundaryMovementResult
 materializeTileBoundaryMovement(mlir::ModuleOp module,
                                 StructuredMaterializationRelations &relations);

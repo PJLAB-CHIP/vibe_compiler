@@ -68,6 +68,12 @@ normalizeStructuredTensorGraph(
     const StructuredGraphNormalizationOptions &options = {},
     StructuredGraphNormalizationStatistics *statistics = nullptr);
 
+/// Makes every static shaped function result a direct DPS/Tiling producer for
+/// the physical-dataflow boundary. This is a policy-free current-IR
+/// legalization performed after graph normalization; it is not an e-graph
+/// rule or a persistent side plan.
+mlir::LogicalResult closeStructuredProgramOutputs(mlir::func::FuncOp function);
+
 } // namespace wafer
 
 #endif // WAFER_TRANSFORMS_LINALG_STRUCTUREDGRAPHNORMALIZATION_H

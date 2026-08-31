@@ -68,9 +68,24 @@ TEST(SearchRoutingTest, SearchIsUnavailableBeforeCandidateAnalysis) {
                           /*enableTiming=*/true);
 }
 
-TEST(SearchRoutingTest, NoneIsUnavailableBeforeCandidateAnalysis) {
-  expectPolicyUnavailable(wafer::OptimizationConfig::none(), "none",
-                          /*enableTiming=*/false);
+TEST(SearchRoutingTest, NoneBuildsOneCurrentIRDeviceExecutable) {
+  ParsedProgram parsed = parseProgram();
+  ASSERT_TRUE(parsed.module);
+  std::string diagnosticsText;
+  llvm::raw_string_ostream diagnostics(diagnosticsText);
+  wafer::compiler::ProgramDataHandoff programData;
+  auto executable = wafer::compiler::detail::buildDeviceExecutable(
+      parsed.context, *parsed.module, programMetadata(), executionConfig(),
+      wafer::OptimizationConfig::none(), diagnostics, std::nullopt,
+      programData);
+  diagnostics.flush();
+  if (!executable) {
+    const std::string error = llvm::toString(executable.takeError());
+    FAIL() << diagnosticsText << error;
+  }
+  EXPECT_EQ(executable->getTileExecutables().size(), 16u);
+  EXPECT_EQ(diagnosticsText.find("operation_not_supported"), std::string::npos)
+      << diagnosticsText;
 }
 
 } // namespace

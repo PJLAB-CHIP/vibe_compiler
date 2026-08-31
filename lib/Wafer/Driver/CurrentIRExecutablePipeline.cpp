@@ -2,14 +2,16 @@
 
 #include "CurrentIRExecutablePipeline.h"
 
-#include "PhysicalDataflow/StructuredBufferLoweringListener.h"
 #include "Wafer/Analysis/Tile/TileDataflowAnalysis.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/Driver/StandaloneTileModules/StandaloneTileModules.h"
+#include "Wafer/Transforms/Instr/DirectDTETransport.h"
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -54,6 +56,25 @@ collectInstructionStatistics(mlir::ModuleOp module,
     statistics.dteWaitOperations += mlir::isa<InstrDTEWaitOp>(operation);
     statistics.nccJoinOperations += mlir::isa<SyncNCCJoinOp>(operation);
   });
+}
+
+static void eraseDeadSubviewOperations(mlir::ModuleOp module) {
+  mlir::IRRewriter rewriter(module.getContext());
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    llvm::SmallVector<mlir::memref::SubViewOp, 16> dead;
+    module.walk([&](mlir::memref::SubViewOp subview) {
+      if (subview->use_empty())
+        dead.push_back(subview);
+    });
+    for (mlir::memref::SubViewOp subview : llvm::reverse(dead)) {
+      if (!subview->use_empty())
+        continue;
+      rewriter.eraseOp(subview);
+      changed = true;
+    }
+  }
 }
 
 } // namespace
@@ -123,32 +144,55 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
     if (downstreamStatistics)
       downstreamStatistics->tileRegionsLowered += regions.size();
 
-    StructuredBufferLoweringListener listener(tile.materializationRelations);
-    TileRegionToInstrLoweringSession session(*tile.module->getContext(),
-                                             &listener);
+    TileRegionToInstrLoweringSession session(*tile.module->getContext());
     for (TileRegionOp region : regions)
-      if (mlir::failed(convertTileRegionToInstr(region, session, &listener)))
+      if (mlir::failed(convertTileRegionToInstr(region, session)))
         return fail(ExecutableCompilationStatus::UnsupportedFailure,
                     "tile-to-instr",
                     "one physical TileRegion has no exact Instr lowering");
-    if (mlir::failed(convertBufferizationCopiesToInstr(*tile.module, session,
-                                                       &listener)) ||
-        !listener.finalizeAfterRewrite())
+    if (mlir::failed(convertBufferizationCopiesToInstr(*tile.module, session)))
       return fail(ExecutableCompilationStatus::CompilerFailure,
                   "tile-to-instr-relations",
-                  listener.getFailureReason().empty()
-                      ? "Tile-to-Instr left invalid current buffer relations"
-                      : listener.getFailureReason());
+                  "Tile-to-Instr left an unclassified current movement");
+    eraseDeadSubviewOperations(*tile.module);
+  }
 
+  llvm::SmallVector<mlir::ModuleOp, 16> instructionModules;
+  for (StandaloneTileModule &tile : *standalone)
+    instructionModules.push_back(*tile.module);
+  DirectDTECompletionResult initialDTECompletion =
+      rebuildRequiredDirectDTEWaits(instructionModules);
+  if (!initialDTECompletion.succeeded())
+    return fail(initialDTECompletion.failure ==
+                        DirectDTECompletionFailureKind::Unsupported
+                    ? ExecutableCompilationStatus::UnsupportedFailure
+                    : ExecutableCompilationStatus::CompilerFailure,
+                "direct-dte-completion", initialDTECompletion.detail);
+
+  for (StandaloneTileModule &tile : *standalone) {
     rebuildCurrentBufferOwnerRelations(tile.module->getOperation(),
                                        tile.materializationRelations);
     mlir::FailureOr<unsigned> eliminated = cleanupCanonicalInstructionTransfers(
         *tile.module, tile.materializationRelations);
-    if (mlir::failed(eliminated) ||
-        mlir::failed(rebuildRequiredNCCJoins(*tile.module)))
+    if (mlir::failed(eliminated))
       return fail(ExecutableCompilationStatus::CompilerFailure,
-                  "instr-completion",
-                  "canonical Instr cleanup or fresh completion failed");
+                  "instr-transfer-cleanup",
+                  "canonical Instr transfer cleanup failed");
+  }
+
+  DirectDTECompletionResult finalDTECompletion =
+      rebuildRequiredDirectDTEWaits(instructionModules);
+  if (!finalDTECompletion.succeeded())
+    return fail(finalDTECompletion.failure ==
+                        DirectDTECompletionFailureKind::Unsupported
+                    ? ExecutableCompilationStatus::UnsupportedFailure
+                    : ExecutableCompilationStatus::CompilerFailure,
+                "direct-dte-completion", finalDTECompletion.detail);
+
+  for (StandaloneTileModule &tile : *standalone) {
+    if (mlir::failed(rebuildRequiredNCCJoins(*tile.module)))
+      return fail(ExecutableCompilationStatus::CompilerFailure,
+                  "instr-completion", "fresh NCC completion placement failed");
     rebuildCurrentBufferOwnerRelations(tile.module->getOperation(),
                                        tile.materializationRelations);
     if (analysis::containsTileDataflowOperations(tile.module->getOperation()) ||

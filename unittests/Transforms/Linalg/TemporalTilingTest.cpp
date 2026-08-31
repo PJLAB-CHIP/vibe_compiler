@@ -1000,7 +1000,7 @@ TEST(TemporalTilingTest, ConcatInsertChainBuildsOnlyRequestedConsumerTile) {
     EXPECT_EQ(tiled->fusedProducers, 1u);
     EXPECT_EQ(tiled->tileLocalAssemblies, variants);
     EXPECT_EQ(tiled->assembledSegments, variants * 2);
-    EXPECT_EQ(countOps<mlir::scf::IfOp>(module->getOperation()), variants * 2);
+    EXPECT_EQ(countOps<mlir::scf::IfOp>(module->getOperation()), 0u);
     module->walk([&](mlir::tensor::InsertSliceOp insert) {
       auto destinationType =
           mlir::cast<mlir::RankedTensorType>(insert.getDest().getType());
@@ -1024,6 +1024,113 @@ TEST(TemporalTilingTest, ConcatInsertChainBuildsOnlyRequestedConsumerTile) {
       EXPECT_EQ(layout.statistics.redundantPublicationCopies, 0u);
     }
   }
+}
+
+TEST(TemporalTilingTest,
+     UnalignedStaticConcatBoundaryKeepsEveryExecutableTileStatic) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto module = parseModule(
+      *context,
+      R"mlir(
+        %past = tensor.extract_slice %arg[0, 0, 0, 0]
+            [1, 4, 1023, 128] [1, 1, 1, 1]
+            : tensor<1x4x1024x128xf16> to tensor<1x4x1023x128xf16>
+        %token = tensor.extract_slice %arg[0, 0, 1023, 0]
+            [1, 4, 1, 128] [1, 1, 1, 1]
+            : tensor<1x4x1024x128xf16> to tensor<1x4x1x128xf16>
+        %assembly_empty = tensor.empty() : tensor<1x4x1024x128xf16>
+        %with_past = tensor.insert_slice %past into %assembly_empty
+            [0, 0, 0, 0] [1, 4, 1023, 128] [1, 1, 1, 1]
+            : tensor<1x4x1023x128xf16> into tensor<1x4x1024x128xf16>
+        %joined = tensor.insert_slice %token into %with_past
+            [0, 0, 1023, 0] [1, 4, 1, 128] [1, 1, 1, 1]
+            : tensor<1x4x1x128xf16> into tensor<1x4x1024x128xf16>
+        %result_empty = tensor.empty() : tensor<1x4x1024x128xf16>
+        %value = linalg.generic {
+            indexing_maps = [affine_map<(b, h, s, d) -> (b, h, s, d)>,
+                             affine_map<(b, h, s, d) -> (b, h, s, d)>],
+            iterator_types = ["parallel", "parallel", "parallel",
+                              "parallel"]}
+            ins(%joined : tensor<1x4x1024x128xf16>)
+            outs(%result_empty : tensor<1x4x1024x128xf16>) {
+          ^bb0(%element: f16, %old: f16):
+            %next = arith.addf %element, %element : f16
+            linalg.yield %next : f16
+        } -> tensor<1x4x1024x128xf16>)mlir",
+      "tensor<1x4x1024x128xf16>", "tensor<1x4x1024x128xf16>");
+  ASSERT_TRUE(module);
+  TileRegionOp region = findRegion(*module);
+  mlir::linalg::GenericOp consumer;
+  region.walk(
+      [&](mlir::linalg::GenericOp operation) { consumer = operation; });
+  ASSERT_TRUE(consumer);
+  TemporalConcatQueryResult concat =
+      queryTemporalConcatAssembly(consumer->getOpOperand(0));
+  ASSERT_TRUE(concat.isExact()) << concat.detail;
+  ASSERT_EQ(concat.segments.size(), 2u);
+
+  TemporalDomainResult domain = buildTemporalDomain(region);
+  ASSERT_TRUE(domain.succeeded())
+      << (domain.failure ? domain.failure->detail : "");
+  TemporalChoice choice =
+      selectTileSizes(*domain.domain, {1, 2, 512, 128});
+  StructuredMaterializationRelations relations;
+  relations.structuralOutputs.push_back({0, region.getResult(0)});
+  TemporalTilingFailure failure;
+  auto tiled = applyTemporalTiling(*domain.domain, choice, relations, &failure);
+  ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
+  EXPECT_EQ(tiled->tileLocalAssemblies, 2u);
+  EXPECT_EQ(tiled->assembledSegments, 3u);
+  EXPECT_EQ(tiled->specializedConcatBoundaries, 1u);
+  EXPECT_EQ(countOps<mlir::scf::IfOp>(module->getOperation()), 0u);
+
+  std::set<int64_t> insertedSequenceSizes;
+  std::set<int64_t> extractedSequenceSizes;
+  module->walk([&](mlir::tensor::InsertSliceOp insert) {
+    auto sourceType = insert.getSourceType();
+    auto destinationType = mlir::dyn_cast<mlir::RankedTensorType>(
+        insert.getDest().getType());
+    if (sourceType.getRank() == 4 && destinationType &&
+        destinationType.getDimSize(2) == 512)
+      insertedSequenceSizes.insert(sourceType.getDimSize(2));
+  });
+  module->walk([&](mlir::tensor::ExtractSliceOp extract) {
+    auto type = extract.getType();
+    if (type.getRank() == 4)
+      extractedSequenceSizes.insert(type.getDimSize(2));
+  });
+  EXPECT_EQ(insertedSequenceSizes, (std::set<int64_t>{1, 511}));
+  EXPECT_EQ(extractedSequenceSizes.count(512), 1u);
+
+  module->walk([&](mlir::Operation *operation) {
+    for (mlir::Type type : operation->getOperandTypes()) {
+      if (auto shaped = mlir::dyn_cast<mlir::ShapedType>(type); shaped &&
+          shaped.hasRank()) {
+        EXPECT_TRUE(shaped.hasStaticShape())
+            << operation->getName().getStringRef().str();
+      }
+    }
+    for (mlir::Type type : operation->getResultTypes()) {
+      if (auto shaped = mlir::dyn_cast<mlir::ShapedType>(type); shaped &&
+          shaped.hasRank()) {
+        EXPECT_TRUE(shaped.hasStaticShape())
+            << operation->getName().getStringRef().str();
+      }
+    }
+    for (mlir::Region &nested : operation->getRegions())
+      for (mlir::Block &block : nested)
+        for (mlir::BlockArgument argument : block.getArguments()) {
+          if (auto shaped = mlir::dyn_cast<mlir::ShapedType>(argument.getType());
+              shaped && shaped.hasRank()) {
+            EXPECT_TRUE(shaped.hasStaticShape())
+                << operation->getName().getStringRef().str();
+          }
+        }
+  });
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  LayoutOptimizationResult layout =
+      resolveCurrentLayoutsAndBufferize(*module, relations);
+  EXPECT_TRUE(layout.succeeded()) << layout.detail;
 }
 
 TEST(TemporalTilingTest,

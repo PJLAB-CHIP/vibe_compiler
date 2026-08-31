@@ -1,15 +1,15 @@
 //===- Target LLVM lowering implementation -------------------------------===//
 
-#include "Wafer/Analysis/Instr/StaticIndexRange.h"
-#include "Wafer/Conversion/InstrToLLVM/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
+#include "Wafer/Analysis/Instr/StaticIndexRange.h"
 #include "Wafer/Analysis/Tile/TransferRealizability.h"
+#include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
+#include "Wafer/Conversion/InstrToLLVM/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/TargetFormat.h"
 #include "Wafer/Target/TargetMemory.h"
-#include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
@@ -167,9 +167,20 @@ mlir::FailureOr<int64_t> getStaticViewOffsetBytes(mlir::Operation *op,
 
   std::optional<WaferPhysicalTensorInfo> info =
       computeWaferPhysicalTensorInfo(viewType);
-  if (!info)
-    return op->emitError() << "unsupported_target_address: " << role
-                           << " operand must be a Wafer memref";
+  if (!info) {
+    auto diagnostic = op->emitError() << "unsupported_target_address: " << role
+                                      << " operand must be a Wafer memref, got "
+                                      << viewType << " users=[";
+    bool first = true;
+    for (mlir::Operation *user : op->getUsers()) {
+      if (!first)
+        diagnostic << ',';
+      first = false;
+      diagnostic << user->getName();
+    }
+    diagnostic << ']';
+    return mlir::failure();
+  }
 
   if (info->layout == MemLayout::Cx || info->layout == MemLayout::NCx) {
     if (offsetElements != 0)

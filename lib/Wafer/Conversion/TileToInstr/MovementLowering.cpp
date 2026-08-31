@@ -90,7 +90,37 @@ public:
       return failPattern(rewriter, op,
                          "tile.store identity relation is not exact");
 
-    if (mlir::succeeded(analysis::TransferRealizability::proveCompactDma(
+    mlir::Value descriptorSource = op.getSource();
+    mlir::MemRefType descriptorSourceType = sourceType;
+    const analysis::IndexRelation *descriptorSourceRelation = relation.get();
+    std::optional<analysis::IndexRelation> staticSubviewRelation;
+    mlir::memref::SubViewOp sourceSubview =
+        op.getSource().getDefiningOp<mlir::memref::SubViewOp>();
+    const bool eraseSourceSubview =
+        sourceSubview && sourceSubview->hasOneUse() &&
+        sourceSubview->use_begin()->getOwner() == op.getOperation();
+    if (sourceSubview) {
+      mlir::memref::SubViewOp subview = sourceSubview;
+      auto baseType = mlir::dyn_cast<mlir::MemRefType>(subview.getSourceType());
+      if (!baseType)
+        return failPattern(rewriter, op,
+                           "tile.store subview base must be a memref");
+      analysis::IndexRelationResult viewToBase = analysis::IndexRelation::slice(
+          sourceType.getShape(), baseType.getShape(), subview.getMixedOffsets(),
+          subview.getMixedStrides());
+      if (!viewToBase.isExact())
+        return failPattern(
+            rewriter, op,
+            "tile.store source subview requires an exact static slice "
+            "relation");
+      staticSubviewRelation = std::move(*viewToBase.relation);
+      descriptorSource = subview.getSource();
+      descriptorSourceType = baseType;
+      descriptorSourceRelation = &*staticSubviewRelation;
+    }
+
+    if (descriptorSource == op.getSource() &&
+        mlir::succeeded(analysis::TransferRealizability::proveCompactDma(
             sourceType, destType, *relation.get()))) {
       mlir::FailureOr<MovementDescriptor> descriptor =
           getStridedTensorDescriptor(rewriter, op, op.getDest().getType(),
@@ -101,17 +131,19 @@ public:
                  *descriptor);
     } else {
       mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
-          getRelationMovementDescriptors(rewriter, op, sourceType, destType,
-                                         destType.getShape(), *relation.get(),
-                                         *relation.get(), MovementEngine::WDMA,
-                                         "tile.store");
+          getRelationMovementDescriptors(
+              rewriter, op, descriptorSourceType, destType, destType.getShape(),
+              *descriptorSourceRelation, *relation.get(), MovementEngine::WDMA,
+              "tile.store");
       if (mlir::failed(descriptors))
         return mlir::failure();
-      createMappedWDMADescriptors(rewriter, op.getLoc(), op.getSource(),
+      createMappedWDMADescriptors(rewriter, op.getLoc(), descriptorSource,
                                   op.getDest(), *descriptors);
     }
 
     rewriter.eraseOp(op);
+    if (eraseSourceSubview)
+      rewriter.eraseOp(sourceSubview);
     return mlir::success();
   }
 };
@@ -285,17 +317,70 @@ public:
     if (!relation.isExact())
       return failPattern(rewriter, op,
                          "tile.copy_into identity relation is not exact");
+
+    mlir::Value descriptorDest = op.getDest();
+    mlir::MemRefType descriptorDestType = destType;
+    const analysis::IndexRelation *descriptorDestRelation = relation.get();
+    std::optional<analysis::IndexRelation> staticSubviewRelation;
+    std::optional<DynamicSubviewDescriptor> dynamicDest;
+    if (auto subview = op.getDest().getDefiningOp<mlir::memref::SubViewOp>()) {
+      auto baseType = mlir::dyn_cast<mlir::MemRefType>(subview.getSourceType());
+      if (!baseType)
+        return failPattern(rewriter, op,
+                           "tile.copy_into subview base must be a memref");
+      analysis::IndexRelationResult viewToBase = analysis::IndexRelation::slice(
+          destType.getShape(), baseType.getShape(), subview.getMixedOffsets(),
+          subview.getMixedStrides());
+      if (viewToBase.isExact()) {
+        staticSubviewRelation = std::move(*viewToBase.relation);
+        descriptorDest = subview.getSource();
+        descriptorDestType = baseType;
+        descriptorDestRelation = &*staticSubviewRelation;
+      } else {
+        dynamicDest =
+            getDynamicSubviewDescriptor(op.getDest(), op.getOperation());
+        if (!dynamicDest)
+          return failPattern(
+              rewriter, op,
+              "tile.copy_into subview requires an exact static slice relation "
+              "or a supported dynamic Tensor-layout byte offset");
+        descriptorDest = dynamicDest->sourceBase;
+        descriptorDestType = dynamicDest->relativeType;
+      }
+    }
     mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
         getRelationMovementDescriptors(
-            rewriter, op, sourceType, destType, destType.getShape(),
-            *relation.get(), *relation.get(), MovementEngine::GatherScatter,
-            "tile.copy_into lowering");
+            rewriter, op, sourceType, descriptorDestType, destType.getShape(),
+            *relation.get(), *descriptorDestRelation,
+            MovementEngine::GatherScatter, "tile.copy_into lowering");
     if (mlir::failed(descriptors))
       return mlir::failure();
 
-    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
-        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
-                                       op.getDest(), *descriptors);
+    llvm::SmallVector<InstrGatherScatterOp, 4> lowered;
+    if (dynamicDest) {
+      mlir::Value dynamicOffset = materializeDynamicSubviewByteOffset(
+          *dynamicDest, rewriter, op.getLoc());
+      if (!dynamicOffset)
+        return mlir::failure();
+      for (MovementDescriptorPair descriptor : *descriptors) {
+        mlir::Value destOffset = dynamicOffset;
+        if (descriptor.dest.byteOffset != 0) {
+          mlir::Value staticOffset =
+              rewriter.create<mlir::arith::ConstantIndexOp>(
+                  op.getLoc(), descriptor.dest.byteOffset);
+          destOffset = rewriter.create<mlir::arith::AddIOp>(
+              op.getLoc(), destOffset, staticOffset);
+          descriptor.dest.byteOffset = 0;
+        }
+        lowered.push_back(createGatherScatter(
+            rewriter, op.getLoc(), op.getSource(), descriptorDest,
+            descriptor.source, descriptor.dest, /*dynamicSourceOffset=*/{},
+            destOffset));
+      }
+    } else {
+      lowered = createGatherScatterDescriptors(
+          rewriter, op.getLoc(), op.getSource(), descriptorDest, *descriptors);
+    }
     if (bufferRecorder)
       for (InstrGatherScatterOp operation : lowered)
         bufferRecorder->recordLoweredOperation(op, operation);

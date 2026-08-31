@@ -163,12 +163,46 @@ mlir::Value createZeroTensor(mlir::Location location,
       .getResult(0);
 }
 
+mlir::Value convertTensorElementType(mlir::Location location,
+                                     mlir::Value source,
+                                     mlir::Type targetElementType,
+                                     mlir::OpBuilder &builder) {
+  auto sourceType = mlir::cast<mlir::RankedTensorType>(source.getType());
+  if (sourceType.getElementType() == targetElementType)
+    return source;
+  auto resultType = mlir::RankedTensorType::get(
+      sourceType.getShape(), targetElementType, sourceType.getEncoding());
+  mlir::Value empty = builder.create<mlir::tensor::EmptyOp>(
+      location, resultType.getShape(), resultType.getElementType(),
+      resultType.getEncoding());
+  mlir::AffineMap identity = mlir::AffineMap::getMultiDimIdentityMap(
+      resultType.getRank(), builder.getContext());
+  return builder
+      .create<mlir::linalg::GenericOp>(
+          location, mlir::TypeRange{resultType}, mlir::ValueRange{source},
+          mlir::ValueRange{empty},
+          llvm::ArrayRef<mlir::AffineMap>{identity, identity},
+          getParallelIteratorTypes(resultType.getRank()),
+          [&](mlir::OpBuilder &nestedBuilder, mlir::Location nestedLocation,
+              mlir::ValueRange arguments) {
+            mlir::Value converted = compiler::detail::castAttentionFloatScalar(
+                arguments[0], targetElementType, nestedBuilder, nestedLocation);
+            nestedBuilder.create<mlir::linalg::YieldOp>(nestedLocation,
+                                                        converted);
+          })
+      .getResult(0);
+}
+
 mlir::Value createQK(const DecompositionDescriptor &descriptor,
                      mlir::OpBuilder &builder) {
   LinalgExtOnlineAttentionOp operation = descriptor.operation;
   mlir::Location location = operation.getLoc();
-  auto scoreType = mlir::RankedTensorType::get(
-      descriptor.scoreShape, operation.getMaximum().getType().getElementType());
+  auto queryType =
+      mlir::cast<mlir::RankedTensorType>(operation.getQuery().getType());
+  auto maximumType =
+      mlir::cast<mlir::RankedTensorType>(operation.getMaximum().getType());
+  auto scoreType = mlir::RankedTensorType::get(descriptor.scoreShape,
+                                               queryType.getElementType());
   mlir::Value score = createZeroTensor(location, scoreType, builder);
   llvm::SmallVector<mlir::AffineMap, 3> maps = mlir::compressUnusedDims(
       {operation.getQueryMap(), operation.getKeyMap(), descriptor.scoreMap});
@@ -178,19 +212,14 @@ mlir::Value createQK(const DecompositionDescriptor &descriptor,
       mlir::ValueRange{score}, maps, getReductionIteratorTypes(maps.back()),
       [&](mlir::OpBuilder &nestedBuilder, mlir::Location nestedLocation,
           mlir::ValueRange arguments) {
-        mlir::Value query = compiler::detail::castAttentionFloatScalar(
-            arguments[0], arguments[2].getType(), nestedBuilder,
-            nestedLocation);
-        mlir::Value key = compiler::detail::castAttentionFloatScalar(
-            arguments[1], arguments[2].getType(), nestedBuilder,
-            nestedLocation);
         mlir::Value product = nestedBuilder.create<mlir::arith::MulFOp>(
-            nestedLocation, query, key);
+            nestedLocation, arguments[0], arguments[1]);
         mlir::Value result = nestedBuilder.create<mlir::arith::AddFOp>(
             nestedLocation, product, arguments[2]);
         nestedBuilder.create<mlir::linalg::YieldOp>(nestedLocation, result);
       });
-  return contraction.getResult(0);
+  return convertTensorElementType(location, contraction.getResult(0),
+                                  maximumType.getElementType(), builder);
 }
 
 mlir::Value applyScale(const DecompositionDescriptor &descriptor,

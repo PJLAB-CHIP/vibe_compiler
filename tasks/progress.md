@@ -42,7 +42,10 @@ movement lowering共享，dynamic subview使用typed byte-offset operand，1024/
 Instr，16 Tile/no-work纵向恰调用一次actual MiniMalloc/DDR/target leaf。该query不反向参与layout assignment。
 此前的actual leaf、Instr completion、execution
 structure、movement、structured logical normalization和legacy shadow-materializer retirement只作为输入，不在current队列重做。
-none和search在各自controller重启前均明确返回typed unavailable且不发布package。
+none已经由独立current-IR baseline controller重新接入：FP16/BF16 prefill及FP16 two-step decode均fresh生成16-Tile package并通过
+no-card；complete exchange的actual ring、split-Region closure和bidirectional no-cut DDR boundary已闭合。当前FP16 LLaMA在
+structured-to-Tile处因`math.powf`没有exact Tile expression form而typed停止，因此第17项仍为`doing`。search controller仍明确返回
+typed unavailable且不发布package。
 
 ## 已满足的直接前置
 

@@ -12,6 +12,9 @@
 
 namespace wafer {
 
+inline constexpr char kWaferCrossTilePlaceholderAttrName[] =
+    "wafer.cross_tile_placeholder";
+
 enum class MaterializedBufferRole : uint8_t {
   Operand,
   Result,

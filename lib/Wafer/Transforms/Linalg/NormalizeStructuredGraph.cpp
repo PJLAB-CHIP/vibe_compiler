@@ -19,7 +19,9 @@
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/DestinationStyleOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -422,6 +424,7 @@ struct ConcatDescription {
   mlir::RankedTensorType resultType;
   int64_t axis = 0;
   llvm::SmallVector<mlir::Value, 4> inputs;
+  llvm::SmallVector<mlir::Operation *, 4> implementation;
 };
 
 struct ComputeRecipe {
@@ -581,6 +584,7 @@ getConcatDescription(mlir::Operation *operation) {
     return std::nullopt;
 
   struct Piece {
+    mlir::Operation *operation = nullptr;
     mlir::Value source;
     llvm::SmallVector<int64_t, 6> offsets;
     llvm::SmallVector<int64_t, 6> sizes;
@@ -611,8 +615,8 @@ getConcatDescription(mlir::Operation *operation) {
         !llvm::all_of(*strides, [](int64_t stride) { return stride == 1; }) ||
         !llvm::equal(*sizes, sourceType.getShape()))
       return std::nullopt;
-    reversePieces.push_back(
-        Piece{current.getSource(), std::move(*offsets), std::move(*sizes)});
+    reversePieces.push_back(Piece{current.getOperation(), current.getSource(),
+                                  std::move(*offsets), std::move(*sizes)});
 
     mlir::Value destination = current.getDest();
     if (auto previous =
@@ -643,7 +647,7 @@ getConcatDescription(mlir::Operation *operation) {
   if (!axis)
     axis = 0;
 
-  ConcatDescription result{resultType, *axis, {}};
+  ConcatDescription result{resultType, *axis, {}, {}};
   int64_t nextOffset = 0;
   for (const Piece &piece : reversePieces) {
     for (int64_t dimension = 0; dimension < resultType.getRank(); ++dimension) {
@@ -660,6 +664,7 @@ getConcatDescription(mlir::Operation *operation) {
       }
     }
     result.inputs.push_back(piece.source);
+    result.implementation.push_back(piece.operation);
   }
   if (nextOffset != resultType.getDimSize(*axis))
     return std::nullopt;
@@ -1226,6 +1231,10 @@ private:
     llvm::SmallVector<mlir::utils::IteratorType, 6> iteratorTypes;
     if (!getEffectiveIteratorTypes(*recipe, maps, iterationType, iteratorTypes))
       return false;
+    bool mapsUnchanged = resultTypeId == recipe->resultTypeId &&
+                         llvm::equal(maps, recipe->originalMaps);
+    if (mapsUnchanged)
+      return true;
     for (mlir::AffineMap map : maps)
       if (map.getNumDims() != static_cast<unsigned>(iterationType.getRank()) ||
           !map.isProjectedPermutation(/*allowZeroInResults=*/true))
@@ -1237,10 +1246,6 @@ private:
     if (!mlir::inversePermutation(mlir::concatAffineMaps(maps)))
       return false;
 
-    bool mapsUnchanged = resultTypeId == recipe->resultTypeId &&
-                         llvm::equal(maps, recipe->originalMaps);
-    if (mapsUnchanged)
-      return true;
     if (recipe->kind == EGraphNodeKind::Contraction) {
       if (!recipe->hasCanonicalContractionPayload)
         return false;
@@ -2359,10 +2364,16 @@ collectStructuredComponents(mlir::func::FuncOp function) {
       operations.push_back(operation);
   });
   llvm::DenseMap<mlir::Operation *, unsigned> indices;
+  llvm::DenseMap<mlir::Operation *, mlir::Operation *>
+      concatImplementationOwner;
   llvm::SmallVector<unsigned, 32> parents;
   for (auto [index, operation] : llvm::enumerate(operations)) {
     indices.try_emplace(operation, index);
     parents.push_back(index);
+    if (std::optional<ConcatDescription> concat =
+            getConcatDescription(operation))
+      for (mlir::Operation *implementation : concat->implementation)
+        concatImplementationOwner.try_emplace(implementation, operation);
   }
   auto find = [&](unsigned value) {
     unsigned root = value;
@@ -2384,14 +2395,22 @@ collectStructuredComponents(mlir::func::FuncOp function) {
       std::swap(lhs, rhs);
     parents[rhs] = lhs;
   };
-  for (auto [index, operation] : llvm::enumerate(operations))
-    for (mlir::Value operand : operation->getOperands()) {
+  for (auto [index, operation] : llvm::enumerate(operations)) {
+    llvm::SmallVector<mlir::Value, 8> semanticOperands;
+    if (std::optional<ConcatDescription> concat =
+            getConcatDescription(operation))
+      semanticOperands.append(concat->inputs.begin(), concat->inputs.end());
+    else
+      semanticOperands.append(operation->operand_begin(),
+                              operation->operand_end());
+    for (mlir::Value operand : semanticOperands) {
       mlir::Operation *definition = operand.getDefiningOp();
       auto found = indices.find(definition);
       if (found != indices.end() &&
           definition->getBlock() == operation->getBlock())
         unite(index, found->second);
     }
+  }
 
   llvm::DenseMap<unsigned, unsigned> componentByRoot;
   llvm::SmallVector<StructuredComponent, 8> components;
@@ -2419,10 +2438,19 @@ collectStructuredComponents(mlir::func::FuncOp function) {
     }
     if (!oneBlock || !component.anchor)
       continue;
+    auto isComponentUser =
+        [&](mlir::Operation *user,
+            const llvm::DenseSet<mlir::Operation *> &componentMembers) {
+          if (componentMembers.contains(user))
+            return true;
+          auto owner = concatImplementationOwner.find(user);
+          return owner != concatImplementationOwner.end() &&
+                 componentMembers.contains(owner->second);
+        };
     for (mlir::Operation *operation : component.operations) {
       mlir::Value value = operation->getResult(0);
       if (value.use_empty() || llvm::any_of(value.getUsers(), [&](auto *user) {
-            return !members.contains(user);
+            return !isComponentUser(user, members);
           }))
         component.roots.push_back(value);
     }
@@ -2431,14 +2459,107 @@ collectStructuredComponents(mlir::func::FuncOp function) {
     bool hasLegalCommitPoint = true;
     for (mlir::Value root : component.roots)
       for (mlir::Operation *user : root.getUsers())
-        if (!members.contains(user) &&
+        if (!isComponentUser(user, members) &&
             (user->getBlock() != block ||
              !component.anchor->isBeforeInBlock(user))) {
           hasLegalCommitPoint = false;
           break;
         }
-    if (hasLegalCommitPoint)
+    if (hasLegalCommitPoint) {
       result.push_back(std::move(component));
+      continue;
+    }
+
+    llvm::DenseSet<mlir::Value> coveredRoots;
+    for (mlir::Value selectedRoot : component.roots) {
+      if (coveredRoots.contains(selectedRoot))
+        continue;
+      mlir::Operation *selectedOwner = selectedRoot.getDefiningOp();
+      if (!selectedOwner || !members.contains(selectedOwner))
+        continue;
+
+      llvm::DenseSet<mlir::Operation *> ancestors;
+      llvm::SmallVector<mlir::Operation *, 16> worklist{selectedOwner};
+      while (!worklist.empty()) {
+        mlir::Operation *operation = worklist.pop_back_val();
+        if (!members.contains(operation) || !ancestors.insert(operation).second)
+          continue;
+        llvm::SmallVector<mlir::Value, 8> semanticOperands;
+        if (std::optional<ConcatDescription> concat =
+                getConcatDescription(operation))
+          semanticOperands.append(concat->inputs.begin(), concat->inputs.end());
+        else
+          semanticOperands.append(operation->operand_begin(),
+                                  operation->operand_end());
+        for (mlir::Value operand : semanticOperands)
+          if (mlir::Operation *producer = operand.getDefiningOp())
+            worklist.push_back(producer);
+      }
+
+      llvm::DenseSet<mlir::Operation *> sliceMembers;
+      worklist.push_back(selectedOwner);
+      while (!worklist.empty()) {
+        mlir::Operation *operation = worklist.pop_back_val();
+        if (!ancestors.contains(operation) || sliceMembers.contains(operation))
+          continue;
+        const bool sharedWithAnotherSlice =
+            operation != selectedOwner &&
+            llvm::any_of(operation->getUsers(), [&](mlir::Operation *user) {
+              auto owner = concatImplementationOwner.find(user);
+              mlir::Operation *semanticUser =
+                  owner == concatImplementationOwner.end() ? user
+                                                           : owner->second;
+              return members.contains(semanticUser) &&
+                     !ancestors.contains(semanticUser);
+            });
+        if (sharedWithAnotherSlice)
+          continue;
+        sliceMembers.insert(operation);
+        llvm::SmallVector<mlir::Value, 8> semanticOperands;
+        if (std::optional<ConcatDescription> concat =
+                getConcatDescription(operation))
+          semanticOperands.append(concat->inputs.begin(), concat->inputs.end());
+        else
+          semanticOperands.append(operation->operand_begin(),
+                                  operation->operand_end());
+        for (mlir::Value operand : semanticOperands)
+          if (mlir::Operation *producer = operand.getDefiningOp())
+            worklist.push_back(producer);
+      }
+
+      StructuredComponent slice;
+      for (mlir::Operation *operation : component.operations)
+        if (sliceMembers.contains(operation)) {
+          slice.operations.push_back(operation);
+          if (!slice.anchor || slice.anchor->isBeforeInBlock(operation))
+            slice.anchor = operation;
+        }
+      if (slice.operations.empty() || !slice.anchor)
+        continue;
+      for (mlir::Operation *operation : slice.operations) {
+        mlir::Value value = operation->getResult(0);
+        if (value.use_empty() ||
+            llvm::any_of(value.getUsers(), [&](auto *user) {
+              return !isComponentUser(user, sliceMembers);
+            }))
+          slice.roots.push_back(value);
+      }
+      if (!llvm::is_contained(slice.roots, selectedRoot))
+        continue;
+      const bool sliceHasLegalCommitPoint =
+          llvm::all_of(slice.roots, [&](mlir::Value root) {
+            return llvm::all_of(root.getUsers(), [&](mlir::Operation *user) {
+              return isComponentUser(user, sliceMembers) ||
+                     (user->getBlock() == block &&
+                      slice.anchor->isBeforeInBlock(user));
+            });
+          });
+      if (!sliceHasLegalCommitPoint)
+        continue;
+      for (mlir::Value root : slice.roots)
+        coveredRoots.insert(root);
+      result.push_back(std::move(slice));
+    }
   }
   return result;
 }
@@ -2447,6 +2568,115 @@ uint64_t countOperations(mlir::Operation *root) {
   uint64_t count = 0;
   root->walk([&](mlir::Operation *) { ++count; });
   return count;
+}
+
+inline constexpr llvm::StringLiteral kOutputClosureAttr =
+    "wafer.normalization_output_closure";
+
+uint64_t closeShapedFunctionOutputs(mlir::func::FuncOp function,
+                                    llvm::StringRef marker) {
+  if (!function.getBody().hasOneBlock())
+    return 0;
+  auto returnOp = mlir::dyn_cast<mlir::func::ReturnOp>(
+      function.getBody().front().getTerminator());
+  if (!returnOp)
+    return 0;
+  mlir::OpBuilder builder(returnOp);
+  llvm::SmallVector<mlir::Value, 4> outputs(returnOp.getOperands().begin(),
+                                            returnOp.getOperands().end());
+  uint64_t closureCount = 0;
+  for (auto [index, output] : llvm::enumerate(outputs)) {
+    auto type = mlir::dyn_cast<mlir::RankedTensorType>(output.getType());
+    mlir::Operation *definition = output.getDefiningOp();
+    if (!type || !type.hasStaticShape() ||
+        (definition &&
+         mlir::isa<mlir::DestinationStyleOpInterface>(definition) &&
+         mlir::isa<mlir::TilingInterface>(definition)))
+      continue;
+    mlir::Value empty = builder.create<mlir::tensor::EmptyOp>(
+        output.getLoc(), type.getShape(), type.getElementType(),
+        type.getEncoding());
+    mlir::AffineMap identity = mlir::AffineMap::getMultiDimIdentityMap(
+        type.getRank(), function.getContext());
+    llvm::SmallVector<mlir::utils::IteratorType, 6> iterators(
+        type.getRank(), mlir::utils::IteratorType::parallel);
+    auto closure = builder.create<mlir::linalg::GenericOp>(
+        output.getLoc(), mlir::TypeRange{type}, mlir::ValueRange{output},
+        mlir::ValueRange{empty},
+        llvm::ArrayRef<mlir::AffineMap>{identity, identity}, iterators,
+        [&](mlir::OpBuilder &nestedBuilder, mlir::Location nestedLocation,
+            mlir::ValueRange arguments) {
+          nestedBuilder.create<mlir::linalg::YieldOp>(nestedLocation,
+                                                      arguments.front());
+        });
+    if (!marker.empty())
+      closure->setAttr(marker, builder.getUnitAttr());
+    outputs[index] = closure.getResult(0);
+    ++closureCount;
+  }
+  if (closureCount != 0)
+    returnOp.getOperandsMutable().assign(outputs);
+  return closureCount;
+}
+
+uint64_t removeShapedFunctionOutputClosures(mlir::func::FuncOp function,
+                                            bool &retainedTransformation) {
+  retainedTransformation = false;
+  if (!function.getBody().hasOneBlock())
+    return 0;
+  auto returnOp = mlir::dyn_cast<mlir::func::ReturnOp>(
+      function.getBody().front().getTerminator());
+  if (!returnOp)
+    return 0;
+  llvm::SmallVector<mlir::Value, 4> outputs(returnOp.getOperands().begin(),
+                                            returnOp.getOperands().end());
+  llvm::SmallVector<mlir::Operation *, 4> dead;
+  uint64_t removedClosures = 0;
+  for (auto [index, output] : llvm::enumerate(outputs)) {
+    auto generic = output.getDefiningOp<mlir::linalg::GenericOp>();
+    if (!generic || !generic->hasAttr(kOutputClosureAttr))
+      continue;
+    generic->removeAttr(kOutputClosureAttr);
+    llvm::SmallVector<mlir::AffineMap, 2> maps(generic.getIndexingMapsArray());
+    mlir::Block &body = generic.getRegion().front();
+    auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(body.getTerminator());
+    bool exactIdentity =
+        generic.getNumResults() == 1 && generic.getNumDpsInputs() == 1 &&
+        generic.getNumDpsInits() == 1 && maps.size() == 2 &&
+        maps[0].isIdentity() && maps[1].isIdentity() &&
+        llvm::all_of(generic.getIteratorTypesArray(),
+                     [](auto iterator) {
+                       return iterator == mlir::utils::IteratorType::parallel;
+                     }) &&
+        body.without_terminator().empty() && yield &&
+        yield.getValues().size() == 1 &&
+        yield.getValues().front() == body.getArgument(0) &&
+        generic.getDpsInits().front().getDefiningOp<mlir::tensor::EmptyOp>();
+    if (!exactIdentity) {
+      retainedTransformation = true;
+      continue;
+    }
+    outputs[index] = generic.getDpsInputs().front();
+    dead.push_back(generic.getOperation());
+    ++removedClosures;
+  }
+  if (removedClosures != 0)
+    returnOp.getOperandsMutable().assign(outputs);
+  for (mlir::Operation *operation : llvm::reverse(dead)) {
+    auto generic = mlir::cast<mlir::linalg::GenericOp>(operation);
+    mlir::Value init = generic.getDpsInits().front();
+    generic.erase();
+    if (mlir::Operation *definition = init.getDefiningOp();
+        definition && definition->use_empty())
+      definition->erase();
+  }
+  function.walk([&](mlir::Operation *operation) {
+    if (!operation->hasAttr(kOutputClosureAttr))
+      return;
+    operation->removeAttr(kOutputClosureAttr);
+    retainedTransformation = true;
+  });
+  return removedClosures;
 }
 
 mlir::FailureOr<StructuredGraphNormalizationOutcome>
@@ -2544,14 +2774,39 @@ normalizeStructuredTensorGraph(
     return mlir::failure();
   StructuredGraphNormalizationStatistics local;
   local.inputOperations = countOperations(function);
+  const uint64_t addedOutputClosures =
+      closeShapedFunctionOutputs(function, kOutputClosureAttr);
   mlir::FailureOr<StructuredGraphNormalizationOutcome> outcome =
       normalizeFunction(function, options, local);
-  if (mlir::failed(outcome) || mlir::failed(mlir::verify(function)))
+  if (mlir::failed(outcome)) {
+    bool retainedTransformation = false;
+    removeShapedFunctionOutputClosures(function, retainedTransformation);
+    return mlir::failure();
+  }
+  bool retainedOutputTransformation = false;
+  uint64_t strippedOutputClosures = removeShapedFunctionOutputClosures(
+      function, retainedOutputTransformation);
+  uint64_t consumedOutputClosures =
+      addedOutputClosures - strippedOutputClosures;
+  if (local.accessTransformsRemoved < consumedOutputClosures)
+    return mlir::failure();
+  local.accessTransformsRemoved -= consumedOutputClosures;
+  if (addedOutputClosures != 0 && retainedOutputTransformation &&
+      *outcome == StructuredGraphNormalizationOutcome::Unchanged)
+    outcome = StructuredGraphNormalizationOutcome::Changed;
+  if (mlir::failed(mlir::verify(function)))
     return mlir::failure();
   local.outputOperations = countOperations(function);
   if (outputStatistics)
     *outputStatistics = local;
   return outcome;
+}
+
+mlir::LogicalResult closeStructuredProgramOutputs(mlir::func::FuncOp function) {
+  if (!function || mlir::failed(mlir::verify(function)))
+    return mlir::failure();
+  closeShapedFunctionOutputs(function, /*marker=*/{});
+  return mlir::verify(function);
 }
 
 } // namespace wafer

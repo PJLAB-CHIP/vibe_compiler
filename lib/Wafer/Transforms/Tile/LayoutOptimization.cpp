@@ -32,6 +32,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <limits>
@@ -1091,29 +1092,80 @@ static mlir::LogicalResult convertLayoutCopies(
         mlir::dyn_cast<mlir::MemRefType>(copy.getSource().getType());
     auto destType =
         mlir::dyn_cast<mlir::MemRefType>(copy.getTarget().getType());
-    auto allocation = copy.getTarget().getDefiningOp<mlir::memref::AllocOp>();
     if (!sourceType || !destType || !isWaferSPMMemRefType(sourceType) ||
         !isWaferSPMMemRefType(destType) ||
         sourceType.getShape() != destType.getShape() ||
         sourceType.getElementType() != destType.getElementType() ||
-        getLayout(sourceType) == getLayout(destType) || !allocation ||
-        allocation->getBlock() != copy->getBlock() ||
+        getLayout(sourceType) == getLayout(destType))
+      continue;
+    analysis::IndexRelationResult identity =
+        analysis::IndexRelation::identity(destType.getShape());
+    mlir::MemRefType ownedDestType = mlir::MemRefType::get(
+        destType.getShape(), destType.getElementType(),
+        mlir::MemRefLayoutAttrInterface{}, destType.getMemorySpace());
+    if (!identity.isExact() ||
+        mlir::failed(analysis::TransferRealizability::proveGatherScatter(
+            sourceType, ownedDestType, *identity.get()))) {
+      llvm::raw_string_ostream detailStream(detail);
+      detailStream
+          << "selected layout conversion has no exact GatherScatter proof: "
+             "source=";
+      sourceType.print(detailStream);
+      detailStream << ", destination=";
+      ownedDestType.print(detailStream);
+      detailStream << ", source_owner=";
+      if (mlir::Operation *owner = copy.getSource().getDefiningOp())
+        detailStream << owner->getName().getStringRef();
+      else
+        detailStream << "block_argument";
+      detailStream << ", destination_owner=";
+      if (mlir::Operation *owner = copy.getTarget().getDefiningOp())
+        detailStream << owner->getName().getStringRef();
+      else
+        detailStream << "block_argument";
+      return mlir::failure();
+    }
+    if (auto subview =
+            copy.getTarget().getDefiningOp<mlir::memref::SubViewOp>()) {
+      rewriter.setInsertionPoint(copy);
+      auto materialize = rewriter.create<LayoutMaterializeOp>(
+          copy.getLoc(), ownedDestType, copy.getSource());
+      mlir::Value destination = copy.getTarget();
+      auto baseType = mlir::dyn_cast<mlir::MemRefType>(subview.getSourceType());
+      const bool fullSubview =
+          baseType && baseType.getShape() == destType.getShape() &&
+          llvm::all_of(subview.getMixedOffsets(),
+                       [](mlir::OpFoldResult value) {
+                         return mlir::getConstantIntValue(value) == 0;
+                       }) &&
+          llvm::all_of(
+              llvm::zip_equal(subview.getMixedSizes(), baseType.getShape()),
+              [](auto valueAndExtent) {
+                return mlir::getConstantIntValue(std::get<0>(valueAndExtent)) ==
+                       std::get<1>(valueAndExtent);
+              }) &&
+          llvm::all_of(subview.getMixedStrides(), [](mlir::OpFoldResult value) {
+            return mlir::getConstantIntValue(value) == 1;
+          });
+      if (fullSubview)
+        destination = subview.getSource();
+      rewriter.create<MoveCopyIntoOp>(copy.getLoc(), materialize.getResult(),
+                                      destination);
+      rewriter.eraseOp(copy);
+      if (subview.getResult().use_empty())
+        rewriter.eraseOp(subview);
+      continue;
+    }
+    auto allocation = copy.getTarget().getDefiningOp<mlir::memref::AllocOp>();
+    if (!allocation || allocation->getBlock() != copy->getBlock() ||
         !allocation->isBeforeInBlock(copy) ||
         !llvm::all_of(copy.getTarget().getUsers(), [&](mlir::Operation *user) {
           return user == copy || copyDominance.properlyDominates(copy, user);
         }))
       continue;
-    analysis::IndexRelationResult identity =
-        analysis::IndexRelation::identity(destType.getShape());
-    if (!identity.isExact() ||
-        mlir::failed(analysis::TransferRealizability::proveGatherScatter(
-            sourceType, destType, *identity.get()))) {
-      detail = "selected layout conversion has no exact GatherScatter proof";
-      return mlir::failure();
-    }
     rewriter.setInsertionPoint(copy);
     auto materialize = rewriter.create<LayoutMaterializeOp>(
-        copy.getLoc(), destType, copy.getSource());
+        copy.getLoc(), ownedDestType, copy.getSource());
     mlir::Value oldTarget = copy.getTarget();
     retargetRelationValue(relations, oldTarget, materialize.getResult());
     rewriter.replaceAllUsesWith(oldTarget, materialize.getResult());
@@ -1200,6 +1252,61 @@ recordCurrentBuffers(mlir::ModuleOp module,
       for (mlir::Value operand : operation->getOperands())
         append(operation, operand, MaterializedBufferRole::Movement);
   });
+}
+
+static mlir::LogicalResult localizeBufferizationGlobals(mlir::ModuleOp module,
+                                                        std::string &detail) {
+  llvm::DenseMap<mlir::StringAttr, mlir::memref::GlobalOp> moduleGlobals;
+  for (mlir::memref::GlobalOp global :
+       module.getBody()->getOps<mlir::memref::GlobalOp>())
+    if (!moduleGlobals.try_emplace(global.getSymNameAttr(), global).second) {
+      detail = "bufferization created duplicate module globals";
+      return mlir::failure();
+    }
+
+  llvm::DenseSet<mlir::StringAttr> localizedNames;
+  for (TileModuleOp tile : module.getOps<TileModuleOp>()) {
+    llvm::SmallVector<mlir::StringAttr, 4> required;
+    tile.walk([&](mlir::memref::GetGlobalOp getGlobal) {
+      mlir::StringAttr name = getGlobal.getNameAttr().getAttr();
+      if (!llvm::is_contained(required, name))
+        required.push_back(name);
+    });
+    llvm::sort(required, [](mlir::StringAttr lhs, mlir::StringAttr rhs) {
+      return lhs.getValue() < rhs.getValue();
+    });
+    mlir::OpBuilder builder(&tile.getBody().front(),
+                            tile.getBody().front().begin());
+    for (mlir::StringAttr name : required) {
+      mlir::memref::GlobalOp source = moduleGlobals.lookup(name);
+      if (!source) {
+        detail = "bufferized Tile references an unknown memref.global";
+        return mlir::failure();
+      }
+      mlir::Operation *existing =
+          mlir::SymbolTable::lookupSymbolIn(tile, name.getValue());
+      if (existing) {
+        auto local = mlir::dyn_cast<mlir::memref::GlobalOp>(existing);
+        if (!local || local.getType() != source.getType()) {
+          detail = "Tile symbol conflicts with a bufferization global";
+          return mlir::failure();
+        }
+      } else {
+        builder.clone(*source);
+      }
+      localizedNames.insert(name);
+    }
+  }
+
+  llvm::DenseSet<mlir::StringAttr> externallyReferenced;
+  module.walk([&](mlir::memref::GetGlobalOp getGlobal) {
+    if (!getGlobal->getParentOfType<TileModuleOp>())
+      externallyReferenced.insert(getGlobal.getNameAttr().getAttr());
+  });
+  for (mlir::StringAttr name : localizedNames)
+    if (!externallyReferenced.contains(name))
+      moduleGlobals.lookup(name).erase();
+  return mlir::success();
 }
 
 static bool
@@ -1776,6 +1883,11 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
         missingLayout
             ? "One-Shot Bufferization requested an unassigned tensor value"
             : "One-Shot Bufferization failed on selected current layouts";
+    return result;
+  }
+  if (mlir::failed(localizeBufferizationGlobals(module, detail))) {
+    result.status = ExactPBQPStatus::BrokenContract;
+    result.detail = std::move(detail);
     return result;
   }
 

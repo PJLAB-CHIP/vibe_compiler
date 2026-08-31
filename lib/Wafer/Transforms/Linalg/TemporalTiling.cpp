@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
+#include "mlir/Dialect/SCF/Utils/AffineCanonicalizationUtils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/Transforms/Transforms.h"
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
@@ -18,6 +19,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "mlir/Transforms/CSE.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -120,6 +122,12 @@ std::optional<int64_t> resolveStaticIndex(mlir::OpFoldResult value) {
   mlir::Value dynamic = value.dyn_cast<mlir::Value>();
   if (!dynamic || !dynamic.getType().isIndex())
     return std::nullopt;
+  mlir::FailureOr<int64_t> constant =
+      mlir::ValueBoundsConstraintSet::computeConstantBound(
+          mlir::presburger::BoundType::EQ,
+          mlir::ValueBoundsConstraintSet::Variable(dynamic));
+  if (mlir::succeeded(constant))
+    return *constant;
   std::function<std::optional<int64_t>(mlir::Value, unsigned)> resolve =
       [&](mlir::Value current, unsigned depth) -> std::optional<int64_t> {
     if (!current || depth > 8)
@@ -610,9 +618,224 @@ mlir::LogicalResult fuseJointProducerSlices(
   return mlir::success();
 }
 
-mlir::Value asIndexValue(mlir::IRRewriter &rewriter, mlir::Location location,
-                         mlir::OpFoldResult value) {
-  return mlir::getValueOrCreateConstantIndexOp(rewriter, location, value);
+struct CanonicalLoopGrid {
+  mlir::Value induction;
+  int64_t lower = 0;
+  int64_t upper = 0;
+  int64_t step = 0;
+};
+
+std::optional<CanonicalLoopGrid>
+getCanonicalLoopGrid(mlir::OpFoldResult offset) {
+  auto value = mlir::dyn_cast<mlir::Value>(offset);
+  auto argument = value ? mlir::dyn_cast<mlir::BlockArgument>(value)
+                        : mlir::BlockArgument{};
+  auto loop = argument && argument.getOwner()
+                  ? mlir::dyn_cast_or_null<mlir::scf::ForOp>(
+                        argument.getOwner()->getParentOp())
+                  : mlir::scf::ForOp{};
+  if (!loop || argument != loop.getInductionVar())
+    return std::nullopt;
+  std::optional<int64_t> lower =
+      mlir::getConstantIntValue(loop.getLowerBound());
+  std::optional<int64_t> upper =
+      mlir::getConstantIntValue(loop.getUpperBound());
+  std::optional<int64_t> step = mlir::getConstantIntValue(loop.getStep());
+  if (!lower || !upper || !step || *lower < 0 || *upper <= *lower ||
+      *step <= 0)
+    return std::nullopt;
+  return CanonicalLoopGrid{value, *lower, *upper, *step};
+}
+
+std::optional<int64_t> getGridFloor(const CanonicalLoopGrid &grid,
+                                    int64_t coordinate) {
+  if (coordinate < grid.lower || coordinate >= grid.upper)
+    return std::nullopt;
+  int64_t delta = coordinate - grid.lower;
+  int64_t multiple = 0;
+  int64_t value = 0;
+  if (llvm::MulOverflow(delta / grid.step, grid.step, multiple) ||
+      llvm::AddOverflow(grid.lower, multiple, value) || value < grid.lower ||
+      value >= grid.upper)
+    return std::nullopt;
+  return value;
+}
+
+std::optional<int64_t> getGridCeil(const CanonicalLoopGrid &grid,
+                                   int64_t coordinate) {
+  if (coordinate <= grid.lower)
+    return grid.lower;
+  if (coordinate >= grid.upper)
+    return std::nullopt;
+  int64_t delta = coordinate - grid.lower;
+  int64_t rounded = 0;
+  int64_t multiple = 0;
+  int64_t value = 0;
+  if (llvm::AddOverflow(delta, grid.step - 1, rounded) ||
+      llvm::MulOverflow(rounded / grid.step, grid.step, multiple) ||
+      llvm::AddOverflow(grid.lower, multiple, value) || value >= grid.upper)
+    return std::nullopt;
+  return value;
+}
+
+std::optional<unsigned> getConcatPartitionDimension(
+    mlir::RankedTensorType assembledType,
+    llvm::ArrayRef<compiler::detail::TemporalConcatSegment> segments) {
+  if (!assembledType || !assembledType.hasStaticShape() || segments.size() < 2)
+    return std::nullopt;
+  std::optional<unsigned> partitionDimension;
+  for (const auto &segment : segments) {
+    if (segment.offsets.size() != static_cast<size_t>(assembledType.getRank()) ||
+        segment.sizes.size() != static_cast<size_t>(assembledType.getRank()))
+      return std::nullopt;
+    for (unsigned dimension = 0; dimension < assembledType.getRank();
+         ++dimension) {
+      const bool full = segment.offsets[dimension] == 0 &&
+                        segment.sizes[dimension] ==
+                            assembledType.getDimSize(dimension);
+      if (full)
+        continue;
+      if (partitionDimension && *partitionDimension != dimension)
+        return std::nullopt;
+      partitionDimension = dimension;
+    }
+  }
+  if (!partitionDimension)
+    return std::nullopt;
+  llvm::SmallVector<std::pair<int64_t, int64_t>, 4> intervals;
+  for (const auto &segment : segments) {
+    int64_t begin = segment.offsets[*partitionDimension];
+    int64_t end = 0;
+    if (begin < 0 || segment.sizes[*partitionDimension] <= 0 ||
+        llvm::AddOverflow(begin, segment.sizes[*partitionDimension], end))
+      return std::nullopt;
+    intervals.push_back({begin, end});
+  }
+  llvm::sort(intervals);
+  int64_t covered = 0;
+  for (auto [begin, end] : intervals) {
+    if (begin != covered || end <= begin)
+      return std::nullopt;
+    covered = end;
+  }
+  if (covered != assembledType.getDimSize(*partitionDimension))
+    return std::nullopt;
+  return partitionDimension;
+}
+
+mlir::FailureOr<mlir::scf::ForOp>
+splitForLoopAt(mlir::IRRewriter &rewriter, mlir::scf::ForOp loop,
+               int64_t split) {
+  std::optional<int64_t> lower =
+      mlir::getConstantIntValue(loop.getLowerBound());
+  std::optional<int64_t> upper =
+      mlir::getConstantIntValue(loop.getUpperBound());
+  std::optional<int64_t> step = mlir::getConstantIntValue(loop.getStep());
+  if (!lower || !upper || !step || *step <= 0 || split <= *lower ||
+      split >= *upper || (split - *lower) % *step != 0)
+    return mlir::failure();
+
+  mlir::RewriterBase::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(loop);
+  mlir::Value splitValue = rewriter.create<mlir::arith::ConstantIndexOp>(
+      loop.getLoc(), split);
+  rewriter.setInsertionPointAfter(loop);
+  auto suffix = mlir::cast<mlir::scf::ForOp>(rewriter.clone(*loop));
+  rewriter.modifyOpInPlace(
+      suffix, [&] { suffix.getLowerBoundMutable().assign(splitValue); });
+  rewriter.replaceAllUsesWith(loop.getResults(), suffix.getResults());
+  rewriter.modifyOpInPlace(suffix, [&] {
+    suffix.getInitArgsMutable().assign(loop.getResults());
+  });
+  rewriter.modifyOpInPlace(
+      loop, [&] { loop.getUpperBoundMutable().assign(splitValue); });
+  return suffix;
+}
+
+mlir::LogicalResult specializeConcatLoopBoundaries(
+    mlir::IRRewriter &rewriter, TileRegionOp region,
+    llvm::ArrayRef<ConcatFusionRequest> requests,
+    TemporalTilingStatistics &statistics) {
+  for (const ConcatFusionRequest &request : requests) {
+    auto assembledType = mlir::dyn_cast<mlir::RankedTensorType>(
+        request.assembledValue.getType());
+    std::optional<unsigned> partitionDimension =
+        getConcatPartitionDimension(assembledType, request.segments);
+    if (!partitionDimension)
+      return mlir::failure();
+    llvm::SmallVector<int64_t, 4> boundaries;
+    for (const auto &segment : request.segments) {
+      int64_t end = 0;
+      if (llvm::AddOverflow(segment.offsets[*partitionDimension],
+                            segment.sizes[*partitionDimension], end))
+        return mlir::failure();
+      if (end != assembledType.getDimSize(*partitionDimension))
+        boundaries.push_back(end);
+    }
+    llvm::sort(boundaries);
+    boundaries.erase(std::unique(boundaries.begin(), boundaries.end()),
+                     boundaries.end());
+
+    llvm::SmallVector<mlir::tensor::ExtractSliceOp, 4> slices;
+    region.walk([&](mlir::tensor::ExtractSliceOp slice) {
+      if (slice.getSource() == request.assembledValue)
+        slices.push_back(slice);
+    });
+    for (mlir::tensor::ExtractSliceOp slice : slices) {
+      llvm::SmallVector<mlir::OpFoldResult, 4> offsets =
+          slice.getMixedOffsets();
+      llvm::SmallVector<mlir::OpFoldResult, 4> sizes = slice.getMixedSizes();
+      if (*partitionDimension >= offsets.size() ||
+          *partitionDimension >= sizes.size())
+        return mlir::failure();
+      if (resolveStaticIndex(offsets[*partitionDimension]))
+        continue;
+      std::optional<int64_t> requestLength =
+          resolveStaticIndex(sizes[*partitionDimension]);
+      std::optional<CanonicalLoopGrid> grid =
+          getCanonicalLoopGrid(offsets[*partitionDimension]);
+      if (!requestLength || *requestLength <= 0 || !grid ||
+          grid->step != *requestLength)
+        return mlir::failure();
+
+      llvm::SmallVector<int64_t, 4> splitPoints;
+      for (int64_t boundary : boundaries) {
+        if (boundary <= grid->lower || boundary >= grid->upper)
+          continue;
+        if ((boundary - grid->lower) % grid->step == 0) {
+          splitPoints.push_back(boundary);
+          continue;
+        }
+        std::optional<int64_t> boundaryTile = getGridFloor(*grid, boundary);
+        if (!boundaryTile)
+          return mlir::failure();
+        if (*boundaryTile > grid->lower)
+          splitPoints.push_back(*boundaryTile);
+        int64_t afterBoundaryTile = 0;
+        if (llvm::AddOverflow(*boundaryTile, grid->step, afterBoundaryTile))
+          return mlir::failure();
+        if (afterBoundaryTile < grid->upper)
+          splitPoints.push_back(afterBoundaryTile);
+      }
+      llvm::sort(splitPoints);
+      splitPoints.erase(std::unique(splitPoints.begin(), splitPoints.end()),
+                        splitPoints.end());
+      mlir::scf::ForOp current = mlir::cast<mlir::scf::ForOp>(
+          mlir::cast<mlir::BlockArgument>(grid->induction)
+              .getOwner()
+              ->getParentOp());
+      for (int64_t split : splitPoints) {
+        mlir::FailureOr<mlir::scf::ForOp> suffix =
+            splitForLoopAt(rewriter, current, split);
+        if (mlir::failed(suffix))
+          return mlir::failure();
+        current = *suffix;
+        ++statistics.loops;
+        ++statistics.specializedConcatBoundaries;
+      }
+    }
+  }
+  return mlir::success();
 }
 
 mlir::LogicalResult
@@ -620,6 +843,12 @@ fuseConcatSlices(mlir::IRRewriter &rewriter, TileRegionOp region,
                  llvm::ArrayRef<ConcatFusionRequest> requests,
                  TemporalTilingStatistics &statistics) {
   for (const ConcatFusionRequest &request : requests) {
+    auto assembledType = mlir::dyn_cast<mlir::RankedTensorType>(
+        request.assembledValue.getType());
+    std::optional<unsigned> partitionDimension =
+        getConcatPartitionDimension(assembledType, request.segments);
+    if (!partitionDimension)
+      return mlir::failure();
     llvm::DenseSet<mlir::Operation *> fusedProducerOwners;
     llvm::SmallVector<mlir::tensor::ExtractSliceOp, 4> slices;
     region.walk([&](mlir::tensor::ExtractSliceOp slice) {
@@ -637,66 +866,90 @@ fuseConcatSlices(mlir::IRRewriter &rewriter, TileRegionOp region,
           slice.getMixedOffsets();
       llvm::SmallVector<mlir::OpFoldResult, 4> requestSizes =
           slice.getMixedSizes();
-      mlir::Value assembled = rewriter.create<mlir::tensor::EmptyOp>(
-          slice.getLoc(), requestSizes, resultType.getElementType());
-      for (const auto &segment : request.segments) {
-        auto sourceType =
-            mlir::dyn_cast<mlir::RankedTensorType>(segment.source.getType());
-        if (!sourceType ||
-            segment.offsets.size() !=
-                static_cast<size_t>(sourceType.getRank()) ||
-            segment.sizes.size() != static_cast<size_t>(sourceType.getRank()))
+      llvm::SmallVector<int64_t, 4> staticRequestSizes;
+      for (mlir::OpFoldResult size : requestSizes) {
+        std::optional<int64_t> constant = resolveStaticIndex(size);
+        if (!constant || *constant <= 0)
           return mlir::failure();
+        staticRequestSizes.push_back(*constant);
+      }
+      if (staticRequestSizes.size() != requestOffsets.size() ||
+          staticRequestSizes.size() !=
+              static_cast<size_t>(resultType.getRank()))
+        return mlir::failure();
+      auto empty = rewriter.create<mlir::tensor::EmptyOp>(
+          slice.getLoc(), staticRequestSizes, resultType.getElementType(),
+          resultType.getEncoding());
+      mlir::Value assembled = empty;
+      auto staticResultType = empty.getType();
+
+      const unsigned axis = *partitionDimension;
+      const int64_t requestLength = staticRequestSizes[axis];
+      std::optional<int64_t> constantRequestBegin =
+          resolveStaticIndex(requestOffsets[axis]);
+      std::optional<CanonicalLoopGrid> grid;
+      if (!constantRequestBegin) {
+        grid = getCanonicalLoopGrid(requestOffsets[axis]);
+        if (!grid || grid->step != requestLength)
+          return mlir::failure();
+      }
+
+      auto createConditionForExactBegin = [&](int64_t begin) {
+        mlir::Value expected = rewriter.create<mlir::arith::ConstantIndexOp>(
+            slice.getLoc(), begin);
+        return rewriter.create<mlir::arith::CmpIOp>(
+            slice.getLoc(), mlir::arith::CmpIPredicate::eq, grid->induction,
+            expected);
+      };
+      auto createConditionForRange = [&](int64_t first, int64_t last) {
+        if (first == last)
+          return createConditionForExactBegin(first).getResult();
+        mlir::Value lower = rewriter.create<mlir::arith::ConstantIndexOp>(
+            slice.getLoc(), first);
+        mlir::Value upper = rewriter.create<mlir::arith::ConstantIndexOp>(
+            slice.getLoc(), last);
+        mlir::Value atLeast = rewriter.create<mlir::arith::CmpIOp>(
+            slice.getLoc(), mlir::arith::CmpIPredicate::sge, grid->induction,
+            lower);
+        mlir::Value atMost = rewriter.create<mlir::arith::CmpIOp>(
+            slice.getLoc(), mlir::arith::CmpIPredicate::sle, grid->induction,
+            upper);
+        return rewriter.create<mlir::arith::AndIOp>(slice.getLoc(), atLeast,
+                                                    atMost)
+            .getResult();
+      };
+
+      auto emitPiece =
+          [&](const compiler::detail::TemporalConcatSegment &segment,
+              mlir::OpFoldResult sourceAxisOffset,
+              mlir::OpFoldResult destinationAxisOffset, int64_t axisSize,
+              mlir::Value condition) -> mlir::LogicalResult {
         llvm::SmallVector<mlir::OpFoldResult, 4> sourceOffsets;
         llvm::SmallVector<mlir::OpFoldResult, 4> destinationOffsets;
-        llvm::SmallVector<mlir::OpFoldResult, 4> intersectionSizes;
-        mlir::Value overlaps =
-            rewriter.create<mlir::arith::ConstantIntOp>(slice.getLoc(), 1, 1);
-        for (auto [requestOffset, requestSize, segmentOffset, segmentSize] :
-             llvm::zip_equal(requestOffsets, requestSizes, segment.offsets,
-                             segment.sizes)) {
-          mlir::Value requestBegin =
-              asIndexValue(rewriter, slice.getLoc(), requestOffset);
-          mlir::Value requestLength =
-              asIndexValue(rewriter, slice.getLoc(), requestSize);
-          mlir::Value requestEnd = rewriter.create<mlir::arith::AddIOp>(
-              slice.getLoc(), requestBegin, requestLength);
-          mlir::Value segmentBegin =
-              rewriter.create<mlir::arith::ConstantIndexOp>(slice.getLoc(),
-                                                            segmentOffset);
-          mlir::Value segmentEnd =
-              rewriter.create<mlir::arith::ConstantIndexOp>(
-                  slice.getLoc(), segmentOffset + segmentSize);
-          mlir::Value begin = rewriter.create<mlir::arith::MaxSIOp>(
-              slice.getLoc(), requestBegin, segmentBegin);
-          mlir::Value end = rewriter.create<mlir::arith::MinSIOp>(
-              slice.getLoc(), requestEnd, segmentEnd);
-          mlir::Value dimensionOverlaps = rewriter.create<mlir::arith::CmpIOp>(
-              slice.getLoc(), mlir::arith::CmpIPredicate::slt, begin, end);
-          overlaps = rewriter.create<mlir::arith::AndIOp>(
-              slice.getLoc(), overlaps, dimensionOverlaps);
-          sourceOffsets.push_back(rewriter
-                                      .create<mlir::arith::SubIOp>(
-                                          slice.getLoc(), begin, segmentBegin)
-                                      .getResult());
+        llvm::SmallVector<mlir::OpFoldResult, 4> pieceSizes;
+        for (unsigned dimension = 0; dimension < staticRequestSizes.size();
+             ++dimension) {
+          sourceOffsets.push_back(dimension == axis
+                                      ? sourceAxisOffset
+                                      : requestOffsets[dimension]);
           destinationOffsets.push_back(
-              rewriter
-                  .create<mlir::arith::SubIOp>(slice.getLoc(), begin,
-                                               requestBegin)
-                  .getResult());
-          intersectionSizes.push_back(
-              rewriter.create<mlir::arith::SubIOp>(slice.getLoc(), end, begin)
-                  .getResult());
+              dimension == axis ? destinationAxisOffset
+                                : rewriter.getIndexAttr(0));
+          pieceSizes.push_back(rewriter.getIndexAttr(
+              dimension == axis ? axisSize : staticRequestSizes[dimension]));
         }
         llvm::SmallVector<mlir::OpFoldResult, 4> strides(
-            sourceType.getRank(), rewriter.getIndexAttr(1));
-        auto select = rewriter.create<mlir::scf::IfOp>(
-            slice.getLoc(), mlir::TypeRange{assembled.getType()}, overlaps,
-            /*withElseRegion=*/true);
-        rewriter.setInsertionPointToStart(&select.getThenRegion().front());
+            staticRequestSizes.size(), rewriter.getIndexAttr(1));
+        mlir::Value current = assembled;
+        mlir::scf::IfOp select;
+        if (condition) {
+          select = rewriter.create<mlir::scf::IfOp>(
+              slice.getLoc(), mlir::TypeRange{staticResultType}, condition,
+              /*withElseRegion=*/true);
+          rewriter.setInsertionPointToStart(&select.getThenRegion().front());
+        }
         auto sourceSlice = rewriter.create<mlir::tensor::ExtractSliceOp>(
-            slice.getLoc(), segment.source, sourceOffsets, intersectionSizes,
-            strides);
+            slice.getLoc(), segment.source, sourceOffsets, pieceSizes, strides);
         mlir::Value sourcePiece = sourceSlice;
         if (segment.derivedProducer) {
           mlir::FailureOr<mlir::TilingResult> tiled =
@@ -709,14 +962,112 @@ fuseConcatSlices(mlir::IRRewriter &rewriter, TileRegionOp region,
           fusedProducerOwners.insert(segment.derivedProducer->getOwner());
         }
         mlir::Value inserted = rewriter.create<mlir::tensor::InsertSliceOp>(
-            slice.getLoc(), sourcePiece, assembled, destinationOffsets,
-            intersectionSizes, strides);
-        rewriter.create<mlir::scf::YieldOp>(slice.getLoc(), inserted);
-        rewriter.setInsertionPointToStart(&select.getElseRegion().front());
-        rewriter.create<mlir::scf::YieldOp>(slice.getLoc(), assembled);
-        assembled = select.getResult(0);
-        rewriter.setInsertionPointAfter(select);
+            slice.getLoc(), sourcePiece, current, destinationOffsets,
+            pieceSizes, strides);
+        if (!condition) {
+          assembled = inserted;
+        } else {
+          rewriter.create<mlir::scf::YieldOp>(slice.getLoc(), inserted);
+          rewriter.setInsertionPointToStart(&select.getElseRegion().front());
+          rewriter.create<mlir::scf::YieldOp>(slice.getLoc(), current);
+          assembled = select.getResult(0);
+          rewriter.setInsertionPointAfter(select);
+        }
         ++statistics.assembledSegments;
+        return mlir::success();
+      };
+
+      for (const auto &segment : request.segments) {
+        auto sourceType =
+            mlir::dyn_cast<mlir::RankedTensorType>(segment.source.getType());
+        if (!sourceType ||
+            segment.offsets.size() !=
+                static_cast<size_t>(sourceType.getRank()) ||
+            segment.sizes.size() != static_cast<size_t>(sourceType.getRank()))
+          return mlir::failure();
+        const int64_t segmentBegin = segment.offsets[axis];
+        int64_t segmentEnd = 0;
+        if (llvm::AddOverflow(segmentBegin, segment.sizes[axis], segmentEnd))
+          return mlir::failure();
+        if (constantRequestBegin) {
+          int64_t requestEnd = 0;
+          if (llvm::AddOverflow(*constantRequestBegin, requestLength,
+                                requestEnd))
+            return mlir::failure();
+          const int64_t begin = std::max(*constantRequestBegin, segmentBegin);
+          const int64_t end = std::min(requestEnd, segmentEnd);
+          if (begin < end &&
+              mlir::failed(emitPiece(
+                  segment, rewriter.getIndexAttr(begin - segmentBegin),
+                  rewriter.getIndexAttr(begin - *constantRequestBegin),
+                  end - begin, {})))
+            return mlir::failure();
+          continue;
+        }
+
+        std::optional<int64_t> firstFull = getGridCeil(*grid, segmentBegin);
+        const int64_t lastFullCoordinate = segmentEnd - requestLength;
+        std::optional<int64_t> lastFull =
+            lastFullCoordinate >= grid->lower
+                ? getGridFloor(*grid, std::min(lastFullCoordinate,
+                                               grid->upper - 1))
+                : std::nullopt;
+        const bool hasFullRange = firstFull.has_value() &&
+                                  lastFull.has_value() &&
+                                  firstFull.value_or(0) <= lastFull.value_or(0);
+        const int64_t firstFullValue = firstFull.value_or(0);
+        const int64_t lastFullValue = lastFull.value_or(0);
+        if (hasFullRange) {
+          std::optional<int64_t> lastGridValue =
+              getGridFloor(*grid, grid->upper - 1);
+          const bool coversCompleteLoop =
+              firstFullValue == grid->lower && lastGridValue &&
+              lastFullValue == *lastGridValue;
+          mlir::Value condition =
+              coversCompleteLoop
+                  ? mlir::Value{}
+                  : createConditionForRange(firstFullValue, lastFullValue);
+          mlir::OpFoldResult sourceOffset =
+              firstFullValue == lastFullValue && !coversCompleteLoop
+                  ? mlir::OpFoldResult(
+                        rewriter.getIndexAttr(firstFullValue - segmentBegin))
+                  : addConstantOffset(rewriter, slice.getLoc(),
+                                      grid->induction, -segmentBegin);
+          if (mlir::failed(emitPiece(segment, sourceOffset,
+                                     rewriter.getIndexAttr(0), requestLength,
+                                     condition)))
+            return mlir::failure();
+        }
+
+        llvm::SmallVector<int64_t, 2> boundaryBegins;
+        if (std::optional<int64_t> begin = getGridFloor(*grid, segmentBegin))
+          boundaryBegins.push_back(*begin);
+        if (std::optional<int64_t> begin =
+                getGridFloor(*grid, segmentEnd - 1))
+          boundaryBegins.push_back(*begin);
+        llvm::sort(boundaryBegins);
+        boundaryBegins.erase(
+            std::unique(boundaryBegins.begin(), boundaryBegins.end()),
+            boundaryBegins.end());
+        for (int64_t requestBegin : boundaryBegins) {
+          if (hasFullRange && requestBegin >= firstFullValue &&
+              requestBegin <= lastFullValue)
+            continue;
+          int64_t requestEnd = 0;
+          if (llvm::AddOverflow(requestBegin, requestLength, requestEnd))
+            return mlir::failure();
+          const int64_t begin = std::max(requestBegin, segmentBegin);
+          const int64_t end = std::min(requestEnd, segmentEnd);
+          if (begin >= end)
+            continue;
+          mlir::Value condition =
+              createConditionForExactBegin(requestBegin);
+          if (mlir::failed(emitPiece(
+                  segment, rewriter.getIndexAttr(begin - segmentBegin),
+                  rewriter.getIndexAttr(begin - requestBegin), end - begin,
+                  condition)))
+            return mlir::failure();
+        }
       }
       mlir::FailureOr<mlir::Value> replacement =
           reshapeTile(rewriter, slice.getLoc(), assembled, resultType);
@@ -859,6 +1210,20 @@ mlir::LogicalResult specializeRaggedTails(
     ++statistics.specializedTails;
   }
   return mlir::success();
+}
+
+void canonicalizeLoopBoundMinMax(mlir::IRRewriter &rewriter,
+                                 TileRegionOp region) {
+  llvm::SmallVector<mlir::Operation *, 16> operations;
+  region.walk([&](mlir::Operation *operation) {
+    if (mlir::isa<mlir::affine::AffineMinOp, mlir::affine::AffineMaxOp>(
+            operation))
+      operations.push_back(operation);
+  });
+  for (mlir::Operation *operation : operations)
+    if (operation->getBlock())
+      (void)mlir::scf::canonicalizeMinMaxOpInLoop(rewriter, operation,
+                                                  mlir::scf::matchForLikeLoop);
 }
 
 struct JointConsumerTilingResult {
@@ -1656,6 +2021,12 @@ applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
       return fail<TemporalTilingStatistics>(
           failure, TemporalTilingFailureKind::CompilerFailure,
           "ragged temporal loop could not form one static tail");
+    canonicalizeLoopBoundMinMax(rewriter, region);
+    if (mlir::failed(specializeConcatLoopBoundaries(
+            rewriter, region, concatFusionRequests, statistics)))
+      return fail<TemporalTilingStatistics>(
+          failure, TemporalTilingFailureKind::CompilerFailure,
+          "static concat boundary could not specialize its canonical loop");
     if (mlir::failed(fuseViewProducerSlices(rewriter, region,
                                             viewFusionRequests, statistics)))
       return fail<TemporalTilingStatistics>(
@@ -1681,6 +2052,7 @@ applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
               jointFailure);
   }
 
+  canonicalizeLoopBoundMinMax(rewriter, region);
   if (mlir::failed(canonicalizeTiledRegion(region, &listener)) ||
       mlir::failed(refineLinalgStaticTypes(rewriter, region)) ||
       mlir::failed(refineOnlineAttentionStaticTypes(rewriter, region)) ||

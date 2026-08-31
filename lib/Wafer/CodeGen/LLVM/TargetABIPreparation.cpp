@@ -224,7 +224,18 @@ prepareTargetABI(const TileExecutable &tileExecutable,
         (&domain == &argumentBindings && ddrBindings[binding.index])) {
       function.emitError()
           << "target_abi_mismatch: resource bindings do not form an exact "
-             "function boundary";
+             "function boundary: index="
+          << binding.index << " argument_count=" << originalArgumentCount
+          << " duplicate_program_binding="
+          << static_cast<bool>(binding.index >= 0 &&
+                               binding.index <
+                                   static_cast<int64_t>(domain.size()) &&
+                               domain[binding.index])
+          << " has_ddr_binding="
+          << static_cast<bool>(
+                 &domain == &argumentBindings && binding.index >= 0 &&
+                 binding.index < static_cast<int64_t>(ddrBindings.size()) &&
+                 ddrBindings[binding.index]);
       return mlir::failure();
     }
     domain[binding.index] = &binding;
@@ -234,9 +245,19 @@ prepareTargetABI(const TileExecutable &tileExecutable,
                      return !argumentBindings[index] && !ddrBindings[index];
                    }) ||
       llvm::is_contained(outputBindings, nullptr)) {
-    function.emitError()
-        << "target_abi_mismatch: resource bindings do not cover every "
-           "argument and result";
+    auto diagnostic = function.emitError()
+                      << "target_abi_mismatch: resource bindings do not cover "
+                         "every argument and result: uncovered_arguments=[";
+    bool first = true;
+    for (unsigned index = 0; index < originalArgumentCount; ++index) {
+      if (argumentBindings[index] || ddrBindings[index])
+        continue;
+      if (!first)
+        diagnostic << ',';
+      first = false;
+      diagnostic << index;
+    }
+    diagnostic << "] argument_count=" << originalArgumentCount;
     return mlir::failure();
   }
 

@@ -3,6 +3,7 @@
 #include "Wafer/Driver/ExecutableCompilation.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Driver/CurrentIRExecutablePipeline.h"
+#include "Wafer/Driver/PhysicalDataflow/BaselineCurrentIR.h"
 #include "Wafer/Driver/ProgramData/ProgramData.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/TargetMemory.h"
@@ -19,6 +20,8 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
+
+#include "TestSupport/CodeGen/ExecutableTestSupport.h"
 
 #include <memory>
 #include <string>
@@ -406,6 +409,68 @@ TEST_F(ExecutableCompilationTest,
   EXPECT_GE(downstream.nccJoinOperations, 1u);
   EXPECT_EQ(executable.actualMemoryTargetGateInvocations, 1u);
   EXPECT_EQ(executable.deviceExecutablesProduced, 1u);
+}
+
+TEST(ExecutableCompilationPolicyTest,
+     DeterministicBaselineTraversesEveryCurrentIRStageWithoutSearchState) {
+  wafer::compiler::testing::ParsedProgram parsed =
+      wafer::compiler::testing::parseProgram();
+  ASSERT_TRUE(parsed.module);
+  auto program = wafer::compiler::testing::programMetadata();
+  wafer::compiler::ProgramDataHandoff programData;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::detail::BaselineCurrentIROptions options;
+  options.downstream.captureTileDataflowIR = true;
+  options.downstream.tilePipelineParallelism = 1;
+  wafer::compiler::detail::BaselineCurrentIRStatistics baseline;
+  wafer::compiler::detail::ExecutableLoweringStatistics executable;
+
+  auto result = wafer::compiler::detail::compileBaselineCurrentIR(
+      *parsed.module, program, wafer::compiler::testing::executionConfig(),
+      diagnostics, programData, options, &baseline, &executable);
+  diagnostics.flush();
+  ASSERT_TRUE(result.isAccepted())
+      << result.gate << ": " << result.detail << "\n"
+      << diagnosticText;
+  ASSERT_TRUE(result.executable);
+  EXPECT_EQ(result.executable->tiles.size(), 16u);
+  EXPECT_EQ(result.tileDataflowIRTrace.size(), 16u);
+  EXPECT_EQ(baseline.attempts, 1u);
+  EXPECT_EQ(baseline.spatialMaterializations, 1u);
+  EXPECT_GT(baseline.temporalApplications, 0u);
+  EXPECT_EQ(baseline.layoutInvocations, 1u);
+  EXPECT_EQ(executable.actualMemoryTargetGateInvocations, 1u);
+}
+
+TEST(ExecutableCompilationPolicyTest,
+     BaselineRefinesOnlyAfterActualSPMCapacityRejection) {
+  wafer::compiler::testing::ParsedProgram parsed =
+      wafer::compiler::testing::parseLargeTemporalProgram();
+  ASSERT_TRUE(parsed.module);
+  auto program = wafer::compiler::testing::largeTemporalProgramMetadata();
+  wafer::compiler::ProgramDataHandoff programData;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::detail::BaselineCurrentIROptions options;
+  options.maximumCapacityAttempts = 16;
+  options.downstream.tilePipelineParallelism = 1;
+  wafer::compiler::detail::BaselineCurrentIRStatistics baseline;
+  wafer::compiler::detail::ExecutableLoweringStatistics executable;
+
+  auto result = wafer::compiler::detail::compileBaselineCurrentIR(
+      *parsed.module, program, wafer::compiler::testing::executionConfig(),
+      diagnostics, programData, options, &baseline, &executable);
+  diagnostics.flush();
+  ASSERT_TRUE(result.isAccepted())
+      << result.gate << ": " << result.detail << "\n"
+      << diagnosticText << " attempts=" << baseline.attempts
+      << " refinements=" << baseline.capacityRefinements;
+  EXPECT_GT(baseline.attempts, 1u);
+  EXPECT_EQ(baseline.capacityRefinements, baseline.attempts - 1);
+  EXPECT_EQ(baseline.spatialMaterializations, baseline.attempts);
+  EXPECT_EQ(baseline.layoutInvocations, baseline.attempts);
+  EXPECT_EQ(executable.actualMemoryTargetGateInvocations, baseline.attempts);
 }
 
 TEST_F(ExecutableCompilationTest,
