@@ -381,16 +381,22 @@ Query-local PBQP可以删除对该目标严格支配的group state：若某layou
 没有任何live compute/use target，则所有state目标相同，只保留原domain中的第一个canonical state。该约简不修改current IR或原始合法性
 证明；无use result不产生publication cost，因为apply也不会为它创建actual materialization。
 
-Solver必须区分`Optimal`、`NoSolution`、`Indeterminate`和`BrokenContract`。Factor graph先按stable variable index分解connected
-components；一状态变量可在任意degree精确传播，随后R0/R1/R2与residual core均受同一checked work budget约束；
-全assignment tie-break必须与独立flat oracle一致。Baseline和search都只接受`Optimal`结果；`NoSolution`、`Indeterminate`和
-`BrokenContract`分别成为typed unsupported、resource failure和compiler error，不fallback canonical layout或枚举其它layout。
+Solver必须区分`Optimal`、`Feasible`、`NoSolution`、`Indeterminate`和`BrokenContract`。Layout transformation先从同一current
+value group、use domain、op tuple和conversion activation构造一个完整canonical feasible assignment；普通value选择domain中的
+canonical state，fixed compute use选择其typed required state，不一致处选择actual materialization activation。该assignment必须先通过
+PBQP自身的unary/factor检查，再作为exact solver的incumbent。Factor graph先按stable variable index分解connected components；一状态
+变量可在任意degree精确传播，随后R0/R1/R2与residual core均受同一checked work budget约束；全assignment tie-break必须与独立flat
+oracle一致。Exact search完成时返回`Optimal`；预算耗尽但incumbent仍合法时返回携带完整assignment的`Feasible`。两种成功状态使用同一
+assignment类型和唯一apply实现，不建立第二条layout lowering。`NoSolution`与已验证incumbent并存是`BrokenContract`；没有合法canonical
+assignment的source在mutation前按typed unsupported停止，不能猜测layout或把问题推给下游。
 Assignment选中后立即在各自candidate owner上创建actual
 view/alias/allocation/layout materialization，随后销毁factor graph和assignment；下游不读取solver对象。
 
-第17、18项的每个accepted product attempt必须恰调用一次PBQP并得到`Optimal`；记录variables、factors、solver work和wall以及apply后的
-actual materialization数。任一规定产品case返回`Indeterminate`都不能完成对应work item，也不能通过提高timeout、放宽work budget、greedy
-assignment或layout fallback掩盖；应优化exact factor formulation、connected-component reduction或有证明的dominated-state约简。
+第17、18项的每个accepted product attempt必须恰调用一次PBQP并得到`Optimal`或`Feasible`，且两者都携带完整、factor-valid并已apply的
+assignment；记录status、variables、factors、solver work、wall以及apply后的actual materialization数。`Feasible`只表示本次没有完成
+最优性证明，不得称为materialization-minimal。`Indeterminate`只允许在没有合法incumbent时返回，并阻止规定产品case完成；不能通过提高
+timeout、放宽work budget或下游layout repair掩盖。性能工作继续优化exact factor formulation、connected-component reduction或有证明的
+dominated-state约简，但不影响编译正确性所需的canonical assignment。
 
 Current实现以buffer-equivalent SSA value group、每个实际consumer use和op layout tuple为query-local变量。DPS result/destination、
 SCF iter-arg/yield/result以及已证明的alias view只共享同一value-group变量；不能用source structured node、operation ordinal或

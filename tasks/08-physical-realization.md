@@ -78,8 +78,9 @@ search integration只增加独立choice/controller owner，不增加第二套rew
 
 Layout domain builder只读current structural TileRegion，为每个SSA value、consumer use、exact alias和op layout tuple枚举合法
 `MemLayout` label。Baseline与search调用同一个query-local exact PBQP optimizer，PBQP结果不进入IR、candidate key或下一stage。
-Baseline与search每个attempt都只求解并应用一次`Optimal` assignment；layout不是search axis，不建立layout frontier或raw layout枚举。
-PBQP budget exhaustion对两条policy都是typed resource failure，不fallback或尝试其它layout。
+Baseline与search每个attempt都只调用一次solver并应用一次完整assignment；layout不是search axis，不建立layout frontier或raw layout枚举。
+Exact optimization完成时结果为`Optimal`；budget exhaustion时使用solver已验证的canonical incumbent并标记`Feasible`。二者共用同一
+assignment和apply实现；没有合法incumbent才是typed failure，不由movement或其它下游stage补layout。
 
 PBQP hard factor只表达current interface和physical encoding能够证明的合法性。Finite objective只计最终实际创建的unique layout
 materialization：同一dominance/effect cohort中的shared conversion计一次，per-use conversion、不同target layout及fixed-compute result
@@ -295,7 +296,8 @@ compile-time proof resource limit。planning query的typed结果可控制state�
 - layout入口拒绝任何`wafer.linalg_ext.attention`或`wafer.linalg_ext.online_attention` residual，并接受decomposition产生的actual Linalg/Tensor/SCF、
   coupled state和cross-Region tensor boundary；
 - structural→layout-resolved→physical TileRegion的逐stage positive/negative transition，wrong-form输入在直接stage拒绝；
-- exact PBQP对flat layout oracle的cost/tie/status一致性，以及baseline/search各自恰一次solve+apply、非Optimal typed停止和无layout枚举；
+- exact PBQP对flat layout oracle的cost/tie/status一致性，以及canonical feasible incumbent在零/不足budget下仍产生完整factor-valid
+  assignment；baseline/search各自恰一次solve+apply，`Optimal`与`Feasible`共用唯一apply且无layout枚举；
 - encoding interface的Tensor/NTensor/Cx/NCx、dtype、full/tail/padding与checked arithmetic；
 - relation的identity/permutation/reshape/broadcast/slice/concat/composition及rewrite invalidation；
 - metadata view正负例、alias/range/lifetime与physical-map equality；reshape/cast对Tensor/NTensor/Cx/NCx的source/result pair逐项hard

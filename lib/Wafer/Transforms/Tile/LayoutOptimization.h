@@ -23,6 +23,8 @@ struct LayoutOptimizationStatistics {
   uint64_t useBindings = 0;
   uint64_t tupleVariables = 0;
   uint64_t conversionActivations = 0;
+  uint64_t canonicalAssignmentsBuilt = 0;
+  uint64_t canonicalAssignmentFallbacks = 0;
   uint64_t selectedMaterializations = 0;
   uint64_t layoutMaterializationsBefore = 0;
   uint64_t layoutMaterializationsAfter = 0;
@@ -41,7 +43,10 @@ struct LayoutOptimizationResult {
   LayoutOptimizationStatistics statistics;
   std::string detail;
 
-  bool succeeded() const { return status == ExactPBQPStatus::Optimal; }
+  bool succeeded() const {
+    return status == ExactPBQPStatus::Optimal ||
+           status == ExactPBQPStatus::Feasible;
+  }
 };
 
 /// Resolves layouts directly on one candidate's current SSA/use graph, binds
@@ -49,9 +54,12 @@ struct LayoutOptimizationResult {
 /// region-local One-Shot Bufferization exactly once.  The supplied relations
 /// are retargeted in the same transaction and never refer to source graph IDs.
 ///
-/// PBQP minimizes the exact number of unique actual layout materializations.
-/// Target descriptor, engine and execution costs belong to downstream actual
-/// IR analysis and never participate in layout assignment.
+/// A canonical factor-valid assignment guarantees a complete legal result;
+/// PBQP attempts to minimize the exact number of unique actual layout
+/// materializations and returns Feasible rather than claiming optimality when
+/// its work budget is exhausted. Target descriptor, engine and execution costs
+/// belong to downstream actual IR analysis and never participate in layout
+/// assignment.
 LayoutOptimizationResult
 resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
                                   StructuredMaterializationRelations &relations,

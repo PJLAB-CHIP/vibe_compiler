@@ -202,14 +202,15 @@ position、Attention/decode/mask专用matcher或公共pass残留。
   真实规模整除/非整除正例；
 - independent flat reference composer证明pre-structural choice set；independent runner从fresh source逐choice调用与production相同的
   structural materializer和后续current-IR transformations/actual gates，以实际结果形成accepted/rejected truth set；
-- layout PBQP使用独立flat assignment oracle检查optimal cost、全assignment semantic tie、`NoSolution`、`Indeterminate`和
+- layout PBQP使用独立flat assignment oracle检查optimal cost、全assignment semantic tie、`Feasible`、`NoSolution`、`Indeterminate`和
   `BrokenContract`；至少覆盖R0/R1/R2、degree>=3 residual、disconnected/asymmetric states、matrix orientation、hard infinity、finite
   arithmetic overflow和exact budget boundary。Overflow必须是`Indeterminate`，不能成为`NoSolution`。Tiny oracle之外，同一solver必须由
   1024/1025/1031 actual baseline与search layout stage直接调用；
-- baseline和search每个actual attempt都只调用一次共享PBQP并立即apply，不建立layout frontier或枚举其它layout；两条policy必须得到
-  同一materialization-minimal assignment。PBQP非`Optimal`时保持typed停止，不fallback canonical layout；solver budget只影响是否得到
-  `Optimal`，不能产生best-found layout或partial layout coverage；所有accepted product attempt必须记录variables、factors、solver work、
-  wall和actual materialization，并证明恰一次solve+apply；规定case出现`Indeterminate`时对应work item不能完成；
+- baseline和search每个actual attempt都只调用一次共享PBQP并立即apply，不建立layout frontier或枚举其它layout；同一current IR必须构造
+  同一canonical feasible incumbent。PBQP返回`Optimal`时两条policy得到同一materialization-minimal assignment；budget不足时返回
+  `Feasible`并应用完整factor-valid incumbent，不能返回partial/best-found assignment，也不能由下游repair。所有accepted product attempt
+  必须记录status、variables、factors、solver work、wall和actual materialization，并证明恰一次solve+apply；没有合法incumbent而出现
+  `Indeterminate`时对应work item不能完成；
 - cheap structural legality、exact coverage、topology symmetry、canonical dedup和已证明performance bound只有在不删除合法最优解时才能在
   state expansion前剪枝；SPM capacity没有plan-side early rejection；
 - footprint、working-set、shape公式、buffer-count、synthetic demand、预测lifetime或nominal bandwidth projection不能签发SPM

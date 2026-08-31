@@ -513,9 +513,9 @@ static ExactPBQPResult solveNumericExactPBQP(const ExactPBQPProblem &problem,
   return result;
 }
 
-ExactPBQPResult solveExactPBQP(const ExactPBQPProblem &problem,
-                               uint64_t workLimit,
-                               uint32_t semanticTieVariableCount) {
+static ExactPBQPResult solveExactPBQPImpl(const ExactPBQPProblem &problem,
+                                          uint64_t workLimit,
+                                          uint32_t semanticTieVariableCount) {
   const uint64_t variableWork = problem.variables.size();
   const uint64_t factorCount = problem.factors.size();
   if (factorCount > (std::numeric_limits<uint64_t>::max() - variableWork) / 2) {
@@ -579,7 +579,7 @@ ExactPBQPResult solveExactPBQP(const ExactPBQPProblem &problem,
         local.factors.push_back(std::move(remapped));
       }
       ExactPBQPResult solved =
-          solveExactPBQP(local, workLimit - used, localSemanticVariables);
+          solveExactPBQPImpl(local, workLimit - used, localSemanticVariables);
       used += solved.work;
       if (solved.status != ExactPBQPStatus::Optimal || !solved.cost ||
           solved.assignment.size() != component.size()) {
@@ -669,6 +669,38 @@ ExactPBQPResult solveExactPBQP(const ExactPBQPProblem &problem,
 
   selected.work = budget.used;
   return selected;
+}
+
+ExactPBQPResult solveExactPBQP(const ExactPBQPProblem &problem,
+                               const ExactPBQPSolveOptions &options) {
+  std::optional<ExactPBQPCost> feasibleCost;
+  if (options.initialFeasibleAssignment) {
+    feasibleCost = evaluate(problem, *options.initialFeasibleAssignment);
+    if (!feasibleCost) {
+      ExactPBQPResult broken;
+      broken.status = ExactPBQPStatus::BrokenContract;
+      return broken;
+    }
+  }
+
+  ExactPBQPResult result = solveExactPBQPImpl(problem, options.workLimit,
+                                              options.semanticTieVariableCount);
+  if (result.status == ExactPBQPStatus::NoSolution && feasibleCost) {
+    result.status = ExactPBQPStatus::BrokenContract;
+    result.assignment.clear();
+    result.cost.reset();
+    return result;
+  }
+  if (result.status != ExactPBQPStatus::Indeterminate || !feasibleCost)
+    return result;
+
+  result.status = ExactPBQPStatus::Feasible;
+  result.assignment = *options.initialFeasibleAssignment;
+  result.cost = *feasibleCost;
+  // All PBQP costs are non-negative, so zero remains a valid lower bound when
+  // exact optimization did not finish.
+  result.lowerBound = 0;
+  return result;
 }
 
 } // namespace wafer::compiler::detail

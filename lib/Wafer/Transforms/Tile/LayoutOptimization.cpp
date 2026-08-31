@@ -1269,11 +1269,9 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
                                   uint64_t workLimit) {
   LayoutOptimizationResult result;
   result.statistics.invocations = 1;
-  if (!module || workLimit == 0) {
-    result.status = workLimit == 0 ? ExactPBQPStatus::Indeterminate
-                                   : ExactPBQPStatus::BrokenContract;
-    result.detail = module ? "current layout PBQP has no work budget"
-                           : "current layout transformation has no module";
+  if (!module) {
+    result.status = ExactPBQPStatus::BrokenContract;
+    result.detail = "current layout transformation has no module";
     return result;
   }
   if (mlir::failed(mlir::verify(module)) ||
@@ -1413,6 +1411,7 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
   for (auto [index, use] : llvm::enumerate(uses))
     usesByOp[use.owner].push_back(index);
   llvm::SmallVector<TupleVariable, 16> tuples;
+  bool exactTupleDomainBounded = true;
   module.walk([&](mlir::linalg::LinalgOp operation) {
     if (!isFixedComputeLayoutOp(operation))
       return;
@@ -1455,10 +1454,11 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
       return result;
     }
     if (tuple.states.size() > kMaximumLayoutTupleStates) {
-      result.status = ExactPBQPStatus::Indeterminate;
-      result.detail =
-          "one current Linalg layout tuple domain exceeded work bounds";
-      return result;
+      // The first legal tuple remains a complete typed assignment witness.
+      // Keep the bounded prefix only for factor validation and force the
+      // solver to return that witness as Feasible; never claim optimality over
+      // a truncated tuple domain.
+      exactTupleDomainBounded = false;
     }
     tuple.variable = problem.variables.size();
     problem.variables.push_back(
@@ -1549,13 +1549,72 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
   result.statistics.pbqpVariables = problem.variables.size();
   result.statistics.pbqpFactors = problem.factors.size();
 
-  ExactPBQPResult solved =
-      solveExactPBQP(problem, workLimit, static_cast<uint32_t>(groups.size()));
+  constexpr uint32_t unassigned = std::numeric_limits<uint32_t>::max();
+  std::vector<uint32_t> canonicalAssignment(problem.variables.size(),
+                                            unassigned);
+  for (const ValueGroup &group : groups)
+    canonicalAssignment[group.variable] = 0;
+  for (const TupleVariable &tuple : tuples) {
+    canonicalAssignment[tuple.variable] = 0;
+    for (auto [coordinate, variable] : llvm::enumerate(tuple.coordinates)) {
+      uint32_t state = tuple.states.front()[coordinate];
+      uint32_t &selected = canonicalAssignment[variable];
+      if (selected != unassigned && selected != state) {
+        result.status = ExactPBQPStatus::BrokenContract;
+        result.detail =
+            "canonical layout assignment has conflicting op tuple states";
+        return result;
+      }
+      selected = state;
+    }
+  }
+  for (const UseBinding &use : uses)
+    if (canonicalAssignment[use.variable] == unassigned)
+      canonicalAssignment[use.variable] = 0;
+  for (const ConversionActivation &activation : activations) {
+    const UseCohort &cohort = cohorts[activation.cohort];
+    const ValueGroup &sourceGroup = groups[cohort.sourceGroup];
+    uint32_t sourceState = canonicalAssignment[sourceGroup.variable];
+    if (sourceState >= sourceGroup.layouts.size()) {
+      result.status = ExactPBQPStatus::BrokenContract;
+      result.detail =
+          "canonical layout assignment selected an invalid group state";
+      return result;
+    }
+    const bool needed = llvm::any_of(cohort.uses, [&](unsigned useIndex) {
+      const UseBinding &use = uses[useIndex];
+      uint32_t useState = canonicalAssignment[use.variable];
+      return useState < use.layouts.size() &&
+             use.layouts[useState] == activation.layout;
+    });
+    ActivationState state = ActivationState::Inactive;
+    if (needed)
+      state = sourceGroup.layouts[sourceState] == activation.layout
+                  ? ActivationState::SourceIsTarget
+                  : ActivationState::Materialized;
+    canonicalAssignment[activation.variable] = static_cast<uint32_t>(state);
+  }
+  if (llvm::is_contained(canonicalAssignment, unassigned)) {
+    result.status = ExactPBQPStatus::BrokenContract;
+    result.detail = "canonical layout assignment did not cover every variable";
+    return result;
+  }
+  ++result.statistics.canonicalAssignmentsBuilt;
+
+  ExactPBQPSolveOptions solveOptions;
+  solveOptions.workLimit = exactTupleDomainBounded ? workLimit : 0;
+  solveOptions.semanticTieVariableCount = static_cast<uint32_t>(groups.size());
+  solveOptions.initialFeasibleAssignment = std::move(canonicalAssignment);
+  ExactPBQPResult solved = solveExactPBQP(problem, solveOptions);
   result.status = solved.status;
   result.statistics.solverWork = solved.work;
-  if (solved.status != ExactPBQPStatus::Optimal) {
+  if (solved.status == ExactPBQPStatus::Feasible)
+    ++result.statistics.canonicalAssignmentFallbacks;
+  if (solved.status != ExactPBQPStatus::Optimal &&
+      solved.status != ExactPBQPStatus::Feasible) {
     result.detail =
-        "current value/use layout PBQP did not produce an Optimal assignment; "
+        "current value/use layout PBQP did not produce a complete legal "
+        "assignment; "
         "status=" +
         std::to_string(static_cast<unsigned>(solved.status)) +
         ", work=" + std::to_string(solved.work);
@@ -1759,7 +1818,11 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
         "layout/bufferization produced invalid current IR or relations";
     return result;
   }
-  result.status = ExactPBQPStatus::Optimal;
+  result.status = solved.status;
+  if (solved.status == ExactPBQPStatus::Feasible)
+    result.detail =
+        "exact layout optimization did not complete; applied the factor-valid "
+        "canonical assignment";
   return result;
 }
 

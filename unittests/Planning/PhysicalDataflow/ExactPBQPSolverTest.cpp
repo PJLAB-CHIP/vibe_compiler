@@ -93,10 +93,22 @@ ExactPBQPProblem makeProblem(unsigned nodes, unsigned states) {
   return problem;
 }
 
+ExactPBQPResult
+solve(const ExactPBQPProblem &problem, uint64_t workLimit,
+      uint32_t semanticTieVariableCount = std::numeric_limits<uint32_t>::max(),
+      std::optional<std::vector<uint32_t>> initialFeasibleAssignment =
+          std::nullopt) {
+  ExactPBQPSolveOptions options;
+  options.workLimit = workLimit;
+  options.semanticTieVariableCount = semanticTieVariableCount;
+  options.initialFeasibleAssignment = std::move(initialFeasibleAssignment);
+  return solveExactPBQP(problem, options);
+}
+
 void expectOracle(const ExactPBQPProblem &problem) {
   auto expected = bruteForce(problem);
   ASSERT_TRUE(expected);
-  ExactPBQPResult actual = solveExactPBQP(problem, /*workLimit=*/1000000);
+  ExactPBQPResult actual = solve(problem, /*workLimit=*/1000000);
   ASSERT_EQ(actual.status, ExactPBQPStatus::Optimal);
   ASSERT_TRUE(actual.cost);
   EXPECT_EQ(*actual.cost, expected->first);
@@ -142,7 +154,7 @@ TEST(ExactPBQPSolverTest,
   problem.factors.push_back(factor(0, 1, 2, [](uint32_t lhs, uint32_t rhs) {
     return lhs == rhs ? ExactPBQPCost{1} : ExactPBQPCost{0};
   }));
-  ExactPBQPResult solved = solveExactPBQP(problem, /*workLimit=*/1000);
+  ExactPBQPResult solved = solve(problem, /*workLimit=*/1000);
   ASSERT_EQ(solved.status, ExactPBQPStatus::Optimal);
   EXPECT_EQ(solved.cost, 0u);
   EXPECT_EQ(solved.assignment, (std::vector<uint32_t>{0, 1}));
@@ -152,16 +164,47 @@ TEST(ExactPBQPSolverTest, NoSolutionBudgetAndMalformedProblemRemainDistinct) {
   ExactPBQPProblem noSolution = makeProblem(/*nodes=*/2, /*states=*/2);
   noSolution.factors.push_back(
       factor(0, 1, 2, [](uint32_t, uint32_t) { return kExactPBQPInfinity; }));
-  EXPECT_EQ(solveExactPBQP(noSolution, 1000).status,
-            ExactPBQPStatus::NoSolution);
-  EXPECT_EQ(solveExactPBQP(makeProblem(5, 4), 1).status,
-            ExactPBQPStatus::Indeterminate);
+  EXPECT_EQ(solve(noSolution, 1000).status, ExactPBQPStatus::NoSolution);
+  EXPECT_EQ(solve(makeProblem(5, 4), 1).status, ExactPBQPStatus::Indeterminate);
 
   ExactPBQPProblem malformed = makeProblem(2, 2);
   malformed.factors.push_back(
       factor(0, 1, 2, [](uint32_t, uint32_t) { return 0; }));
   malformed.factors.push_back(malformed.factors.front());
-  EXPECT_EQ(solveExactPBQP(malformed, 1000).status,
+  EXPECT_EQ(solve(malformed, 1000).status, ExactPBQPStatus::BrokenContract);
+}
+
+TEST(ExactPBQPSolverTest,
+     ValidIncumbentSurvivesBudgetExhaustionWithoutClaimingOptimality) {
+  ExactPBQPProblem problem = makeProblem(/*nodes=*/5, /*states=*/4);
+  std::vector<uint32_t> incumbent{3, 2, 1, 0, 3};
+  ExactPBQPResult fallback =
+      solve(problem, /*workLimit=*/0, std::numeric_limits<uint32_t>::max(),
+            incumbent);
+  ASSERT_EQ(fallback.status, ExactPBQPStatus::Feasible);
+  EXPECT_EQ(fallback.assignment, incumbent);
+  ASSERT_TRUE(fallback.cost);
+  EXPECT_EQ(fallback.lowerBound, 0u);
+
+  auto expected = bruteForce(problem);
+  ASSERT_TRUE(expected);
+  ExactPBQPResult optimized =
+      solve(problem, /*workLimit=*/1000000,
+            std::numeric_limits<uint32_t>::max(), incumbent);
+  ASSERT_EQ(optimized.status, ExactPBQPStatus::Optimal);
+  EXPECT_EQ(optimized.assignment, expected->second);
+  EXPECT_EQ(optimized.cost, expected->first);
+}
+
+TEST(ExactPBQPSolverTest, InvalidIncumbentIsABrokenCallerContract) {
+  ExactPBQPProblem problem = makeProblem(/*nodes=*/2, /*states=*/2);
+  problem.factors.push_back(factor(0, 1, 2, [](uint32_t lhs, uint32_t rhs) {
+    return lhs == rhs ? kExactPBQPInfinity : ExactPBQPCost{0};
+  }));
+  EXPECT_EQ(solve(problem, /*workLimit=*/0,
+                  std::numeric_limits<uint32_t>::max(),
+                  std::vector<uint32_t>{0, 0})
+                .status,
             ExactPBQPStatus::BrokenContract);
 }
 
@@ -194,8 +237,8 @@ TEST(ExactPBQPSolverTest, OneStateHubReducesAtArbitraryDegree) {
           return state == leaf % 4 ? ExactPBQPCost{0} : ExactPBQPCost{2};
         }));
   }
-  ExactPBQPResult solved = solveExactPBQP(problem, /*workLimit=*/10000,
-                                          /*semanticTieVariableCount=*/0);
+  ExactPBQPResult solved = solve(problem, /*workLimit=*/10000,
+                                 /*semanticTieVariableCount=*/0);
   ASSERT_EQ(solved.status, ExactPBQPStatus::Optimal);
   ASSERT_EQ(solved.assignment.size(), leaves + 1);
   EXPECT_EQ(solved.assignment.front(), 0u);
@@ -210,10 +253,10 @@ TEST(ExactPBQPSolverTest,
   problem.factors.push_back(factor(0, 1, 2, [](uint32_t lhs, uint32_t rhs) {
     return lhs == rhs ? ExactPBQPCost{1} : ExactPBQPCost{0};
   }));
-  ExactPBQPResult first = solveExactPBQP(problem, /*workLimit=*/1000,
-                                         /*semanticTieVariableCount=*/1);
-  ExactPBQPResult second = solveExactPBQP(problem, /*workLimit=*/1000,
-                                          /*semanticTieVariableCount=*/1);
+  ExactPBQPResult first = solve(problem, /*workLimit=*/1000,
+                                /*semanticTieVariableCount=*/1);
+  ExactPBQPResult second = solve(problem, /*workLimit=*/1000,
+                                 /*semanticTieVariableCount=*/1);
   ASSERT_EQ(first.status, ExactPBQPStatus::Optimal);
   EXPECT_EQ(first.assignment.front(), 0u);
   EXPECT_EQ(first.assignment, second.assignment);

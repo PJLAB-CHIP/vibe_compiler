@@ -595,6 +595,31 @@ TEST_F(LayoutOptimizationTest,
 }
 
 TEST_F(LayoutOptimizationTest,
+       CanonicalAssignmentClosesAlignedAndRaggedInsufficientBudgetCases) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (uint64_t workLimit : {UINT64_C(0), UINT64_C(1)}) {
+      SCOPED_TRACE(::testing::Message() << extent << "/" << workLimit);
+      auto module = parse(makeFanoutContractionSource(extent, /*useCount=*/15));
+      ASSERT_TRUE(module);
+      StructuredMaterializationRelations relations = outputRelation(*module);
+      LayoutOptimizationResult result =
+          resolveCurrentLayoutsAndBufferize(*module, relations, workLimit);
+      ASSERT_EQ(result.status, ExactPBQPStatus::Feasible) << result.detail;
+      EXPECT_EQ(result.statistics.canonicalAssignmentsBuilt, 1u);
+      EXPECT_EQ(result.statistics.canonicalAssignmentFallbacks, 1u);
+      EXPECT_EQ(result.statistics.bufferizationInvocations, 1u);
+      EXPECT_GT(result.statistics.pbqpVariables, 0u);
+      EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*module)));
+      EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
+          module->getOperation(), relations)));
+      ASSERT_EQ(relations.structuralOutputs.size(), 1u);
+      EXPECT_TRUE(isWaferDDRMemRefType(
+          relations.structuralOutputs.front().endpoint.getType()));
+    }
+  }
+}
+
+TEST_F(LayoutOptimizationTest,
        RankFiveAndSixCurrentValuesBufferizeWithoutShapeSpecialCases) {
   struct Case {
     llvm::StringRef map;
@@ -762,20 +787,18 @@ TEST_F(LayoutOptimizationTest,
 
   auto exhausted = parse(source);
   ASSERT_TRUE(exhausted);
-  std::string before;
-  llvm::raw_string_ostream beforeStream(before);
-  exhausted->print(beforeStream);
-  beforeStream.flush();
   StructuredMaterializationRelations exhaustedRelations =
       outputRelation(*exhausted);
   LayoutOptimizationResult exhaustedResult = resolveCurrentLayoutsAndBufferize(
       *exhausted, exhaustedRelations, /*workLimit=*/0);
-  EXPECT_EQ(exhaustedResult.status, ExactPBQPStatus::Indeterminate);
-  std::string after;
-  llvm::raw_string_ostream afterStream(after);
-  exhausted->print(afterStream);
-  afterStream.flush();
-  EXPECT_EQ(after, before);
+  ASSERT_EQ(exhaustedResult.status, ExactPBQPStatus::Feasible)
+      << exhaustedResult.detail;
+  EXPECT_EQ(exhaustedResult.statistics.canonicalAssignmentsBuilt, 1u);
+  EXPECT_EQ(exhaustedResult.statistics.canonicalAssignmentFallbacks, 1u);
+  EXPECT_EQ(exhaustedResult.statistics.bufferizationInvocations, 1u);
+  EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*exhausted)));
+  EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
+      exhausted->getOperation(), exhaustedRelations)));
 
   auto first = parse(source);
   auto second = parse(source);
@@ -854,20 +877,18 @@ TEST_F(LayoutOptimizationTest,
       extent, diamondCount, /*mixedOperators=*/true);
   auto exhausted = parse(source);
   ASSERT_TRUE(exhausted);
-  std::string before;
-  llvm::raw_string_ostream beforeStream(before);
-  exhausted->print(beforeStream);
-  beforeStream.flush();
   StructuredMaterializationRelations exhaustedRelations =
       outputRelation(*exhausted);
   LayoutOptimizationResult exhaustedResult = resolveCurrentLayoutsAndBufferize(
       *exhausted, exhaustedRelations, /*workLimit=*/0);
-  EXPECT_EQ(exhaustedResult.status, ExactPBQPStatus::Indeterminate);
-  std::string after;
-  llvm::raw_string_ostream afterStream(after);
-  exhausted->print(afterStream);
-  afterStream.flush();
-  EXPECT_EQ(after, before);
+  ASSERT_EQ(exhaustedResult.status, ExactPBQPStatus::Feasible)
+      << exhaustedResult.detail;
+  EXPECT_EQ(exhaustedResult.statistics.canonicalAssignmentsBuilt, 1u);
+  EXPECT_EQ(exhaustedResult.statistics.canonicalAssignmentFallbacks, 1u);
+  EXPECT_EQ(exhaustedResult.statistics.bufferizationInvocations, 1u);
+  EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*exhausted)));
+  EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
+      exhausted->getOperation(), exhaustedRelations)));
 
   auto first = parse(source);
   auto second = parse(source);
@@ -1383,7 +1404,8 @@ module {
       checkStructuredBufferRelationsCurrent(*module, relations)));
 }
 
-TEST_F(LayoutOptimizationTest, ZeroBudgetAndNonPieceOutputFailBeforeMutation) {
+TEST_F(LayoutOptimizationTest,
+       NonPieceOutputFailsBeforeMutationRegardlessOfSolverBudget) {
   constexpr llvm::StringLiteral malformed = R"mlir(
 module {
   wafer.tile.module card_id = 0 tile_id = 0 {
@@ -1413,7 +1435,7 @@ module {
   beforeStream.flush();
   LayoutOptimizationResult noBudget =
       resolveCurrentLayoutsAndBufferize(*module, relations, /*workLimit=*/0);
-  EXPECT_EQ(noBudget.status, ExactPBQPStatus::Indeterminate);
+  EXPECT_EQ(noBudget.status, ExactPBQPStatus::NoSolution);
   LayoutOptimizationResult unsupported =
       resolveCurrentLayoutsAndBufferize(*module, relations);
   EXPECT_EQ(unsupported.status, ExactPBQPStatus::NoSolution);
