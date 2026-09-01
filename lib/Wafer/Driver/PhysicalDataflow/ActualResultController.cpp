@@ -315,16 +315,19 @@ ActualResultController::record(const StructuralCandidateKey &key,
     if (!result.compilation || !result.compilation->isProvenExactRejection())
       return failCompilerBug();
     const bool spmCapacity = hasSPMCapacityRejection(result);
-    if (spmCapacity && result.causalRoots.empty())
+    if (spmCapacity &&
+        exactRejectionCache == ExactRejectionCachePolicy::Enabled &&
+        result.causalRoots.empty())
       return failCompilerBug();
     ExactCompleteRejection rejection{
         key,
         spmCapacity ? ExactCompleteRejectionKind::SPMCapacity
                     : ExactCompleteRejectionKind::ExecutableGate,
         std::move(result.causalRoots)};
-    if (exactRejectionCache == ExactRejectionCachePolicy::Enabled &&
-        !forbidden.insert(std::move(rejection)).second)
-      return failCompilerBug();
+    if (exactRejectionCache == ExactRejectionCachePolicy::Enabled) {
+      if (!forbidden.insert(std::move(rejection)).second)
+        return failCompilerBug();
+    }
     ++statistics.exactRejected;
     return CandidateRecordOutcome::ExactRejection;
   }

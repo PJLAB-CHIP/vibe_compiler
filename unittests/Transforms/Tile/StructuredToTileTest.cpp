@@ -15,6 +15,7 @@
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -746,6 +747,55 @@ module {
     return text;
   }
 
+  static std::string makeAliasedResultSource(int64_t extent) {
+    std::string text;
+    llvm::raw_string_ostream stream(text);
+    stream << R"mlir(
+#id = affine_map<(b, m, n) -> (b, m, n)>
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(%input: tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>)
+        -> (tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>, tensor<1x)mlir" << extent
+           << R"mlir(x64xf16>) {
+      %first, %second = wafer.tile.region(
+          %input : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>)
+          -> (tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>, tensor<1x)mlir" << extent
+           << R"mlir(x64xf16>) {
+      ^bb0(%local: tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>):
+        %empty = tensor.empty() : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>
+        %mapped = linalg.generic {
+            indexing_maps = [#id, #id],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%local : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>)
+            outs(%empty : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>) {
+          ^bb1(%value: f16, %old: f16):
+            %next = arith.addf %value, %value : f16
+            linalg.yield %next : f16
+        } -> tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>
+        wafer.tile.yield %mapped, %mapped
+            : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>, tensor<1x)mlir" << extent
+           << R"mlir(x64xf16>
+      }
+      return %first, %second : tensor<1x)mlir"
+           << extent << R"mlir(x64xf16>, tensor<1x)mlir" << extent
+           << R"mlir(x64xf16>
+    }
+  }
+}
+)mlir";
+    return text;
+  }
+
   mlir::DialectRegistry registry;
   std::unique_ptr<mlir::MLIRContext> context;
 };
@@ -788,6 +838,36 @@ TEST_F(StructuredToTileTest,
     EXPECT_EQ(movement.statistics.outputCopiesRemoved, 2u);
     EXPECT_TRUE(relations.structuralOutputs.empty());
     EXPECT_TRUE(relations.boundaryRelations.empty());
+    EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+    EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
+        module->getOperation(), relations)));
+  }
+}
+
+TEST_F(StructuredToTileTest,
+       BoundaryMovementErasesSharedResultBridgeExactlyOnce) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto module = parse(makeAliasedResultSource(extent));
+    ASSERT_TRUE(module);
+    TileRegionOp region;
+    module->walk([&](TileRegionOp current) { region = current; });
+    ASSERT_TRUE(region);
+    StructuredMaterializationRelations relations;
+    relations.structuralOutputs.push_back({0, region.getResult(0)});
+    relations.structuralOutputs.push_back({1, region.getResult(1)});
+    LayoutOptimizationResult layout =
+        resolveCurrentLayoutsAndBufferize(*module, relations);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    StructuredToTileResult lowered =
+        lowerStructuredComputeToTile(*module, relations);
+    ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+    BoundaryMovementResult movement =
+        materializeTileBoundaryMovement(*module, relations);
+    ASSERT_TRUE(movement.succeeded()) << movement.detail;
+    EXPECT_EQ(movement.statistics.outputCopiesRemoved, 2u);
+    EXPECT_EQ(countOps<mlir::bufferization::ToTensorOp>(module->getOperation()),
+              0u);
     EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
     EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
         module->getOperation(), relations)));

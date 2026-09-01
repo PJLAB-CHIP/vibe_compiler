@@ -4,6 +4,7 @@
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Driver/CurrentIRExecutablePipeline.h"
 #include "Wafer/Driver/PhysicalDataflow/BaselineCurrentIR.h"
+#include "Wafer/Driver/PhysicalDataflow/SearchCurrentIR.h"
 #include "Wafer/Driver/ProgramData/ProgramData.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/TargetMemory.h"
@@ -441,6 +442,78 @@ TEST(ExecutableCompilationPolicyTest,
   EXPECT_GT(baseline.temporalApplications, 0u);
   EXPECT_EQ(baseline.layoutInvocations, 1u);
   EXPECT_EQ(executable.actualMemoryTargetGateInvocations, 1u);
+}
+
+TEST(ExecutableCompilationPolicyTest,
+     SearchActualizesCurrentIRAndRetainsTheAcceptedOwner) {
+  wafer::compiler::testing::ParsedProgram parsed =
+      wafer::compiler::testing::parseProgram();
+  ASSERT_TRUE(parsed.module);
+  auto program = wafer::compiler::testing::programMetadata();
+  wafer::compiler::ProgramDataHandoff programData;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::detail::SearchCurrentIROptions options;
+  options.maximumTemporalCandidatesPerStructuralState = 2;
+  options.termination =
+      wafer::compiler::detail::SearchTerminationPolicy::FirstAccepted;
+  options.downstream.captureTileDataflowIR = true;
+  options.downstream.tilePipelineParallelism = 1;
+  wafer::compiler::detail::SearchCurrentIRStatistics search;
+  wafer::compiler::detail::ExecutableLoweringStatistics executable;
+
+  auto result = wafer::compiler::detail::compileSearchCurrentIR(
+      *parsed.module, program, wafer::compiler::testing::executionConfig(),
+      diagnostics, programData, options, &search, &executable);
+  diagnostics.flush();
+  ASSERT_TRUE(result.isAccepted())
+      << result.gate << ": " << result.detail << "\n"
+      << diagnosticText;
+  ASSERT_TRUE(result.executable);
+  EXPECT_EQ(result.executable->tiles.size(), 16u);
+  EXPECT_EQ(result.tileDataflowIRTrace.size(), 16u);
+  EXPECT_EQ(search.structuralMaterializations, 1u);
+  EXPECT_GE(search.temporalCandidateActualizations, 1u);
+  EXPECT_LE(search.temporalCandidateActualizations, 2u);
+  EXPECT_EQ(search.layoutInvocations, search.temporalCandidateActualizations);
+  EXPECT_GE(search.acceptedTemporalCandidates, 1u);
+  EXPECT_EQ(search.controller.accepted, 1u);
+  EXPECT_EQ(search.coverage,
+            wafer::compiler::detail::SearchControllerCoverage::FeasiblePartial);
+  EXPECT_EQ(executable.actualMemoryTargetGateInvocations,
+            search.temporalCandidateActualizations);
+}
+
+TEST(ExecutableCompilationPolicyTest,
+     SearchRefinesTemporalChoiceOnlyAfterActualSPMCapacityRejection) {
+  wafer::compiler::testing::ParsedProgram parsed =
+      wafer::compiler::testing::parseLargeTemporalProgram();
+  ASSERT_TRUE(parsed.module);
+  auto program = wafer::compiler::testing::largeTemporalProgramMetadata();
+  wafer::compiler::ProgramDataHandoff programData;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::detail::SearchCurrentIROptions options;
+  options.maximumTemporalCandidatesPerStructuralState = 16;
+  options.termination =
+      wafer::compiler::detail::SearchTerminationPolicy::FirstAccepted;
+  options.downstream.tilePipelineParallelism = 1;
+  wafer::compiler::detail::SearchCurrentIRStatistics search;
+  wafer::compiler::detail::ExecutableLoweringStatistics executable;
+
+  auto result = wafer::compiler::detail::compileSearchCurrentIR(
+      *parsed.module, program, wafer::compiler::testing::executionConfig(),
+      diagnostics, programData, options, &search, &executable);
+  diagnostics.flush();
+  ASSERT_TRUE(result.isAccepted())
+      << result.gate << ": " << result.detail << "\n"
+      << diagnosticText;
+  EXPECT_GT(search.exactRejectedTemporalCandidates, 0u);
+  EXPECT_EQ(search.acceptedTemporalCandidates, 1u);
+  EXPECT_EQ(search.temporalCandidateActualizations,
+            search.exactRejectedTemporalCandidates + 1);
+  EXPECT_EQ(executable.actualMemoryTargetGateInvocations,
+            search.temporalCandidateActualizations);
 }
 
 TEST(ExecutableCompilationPolicyTest,

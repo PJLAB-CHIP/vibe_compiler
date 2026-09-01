@@ -1,25 +1,25 @@
 # REQUIRES: stablehlo, shardy, xla-spmd-helper
 
-# The deterministic none policy uses the current-IR baseline and publishes one
-# verified package. Search remains unavailable until its independent
-# controller is connected; neither policy may fall back to the other.
+# Search and none independently consume the same current portable source and
+# each publishes its own verified package; neither policy falls back to the
+# other.
 
 # RUN: rm -rf %t.source %t.search-package %t.none-package
 # RUN: mkdir -p %t.source/functions
 # RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<2x1025x128xf16>, %%rhs: tensor<2x1025x128xf16>) -> tensor<2x1025x128xf16> {\n    %%result = stablehlo.add %%lhs, %%rhs : tensor<2x1025x128xf16>\n    return %%result : tensor<2x1025x128xf16>\n  }\n}\n' > %t.source/functions/forward.mlir
 # RUN: %stablehlo_translate --serialize --target=1.7.1 %t.source/functions/forward.mlir -o %t.source/functions/forward.stablehlo.bc && rm %t.source/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[2,1025,128],"dtype":"float16","dynamic_dims":[]},{"shape":[2,1025,128],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[2,1025,128],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.source/functions/forward.meta
-# RUN: not wafer-compile --input-program-dir %t.source --output-dir %t.search-package --num-partitions=1 --optimization-policy=search --compile-timing 2>&1 | FileCheck %s --check-prefix=SEARCH
-# RUN: test ! -e %t.search-package
+# RUN: wafer-compile --input-program-dir %t.source --output-dir %t.search-package --num-partitions=1 --optimization-policy=search --compile-timing 2>&1 | FileCheck %s --check-prefix=SEARCH
+# RUN: test -d %t.search-package
 # RUN: wafer-compile --input-program-dir %t.source --output-dir %t.none-package --num-partitions=1 --optimization-policy=none 2>&1 | FileCheck %s --check-prefix=NONE
 # RUN: test -d %t.none-package
 
 # SEARCH: wafer-compile: optimization-policy=search
-# SEARCH: wafer-compile: operation_not_supported: optimization-policy=search is unavailable while its current-IR controller is being connected
-# SEARCH-NOT: physical-search
+# SEARCH: wafer-compile: search-current-ir coverage=feasible-partial
+# SEARCH: physical-search
+# SEARCH: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
 # SEARCH-NOT: deterministic-device-executable-baseline
-# SEARCH-NOT: actual-memory-target
-# SEARCH-NOT: wrote verified package
+# SEARCH-NOT: operation_not_supported
 
 # NONE: wafer-compile: optimization-policy=none
 # NONE: wafer-compile: wrote verified package with num-partitions=1 tiles=16:

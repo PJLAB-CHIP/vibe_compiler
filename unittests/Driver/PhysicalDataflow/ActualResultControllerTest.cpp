@@ -314,6 +314,24 @@ TEST(ActualResultControllerTest,
 }
 
 TEST(ActualResultControllerTest,
+     DisabledExactCacheKeepsActualCapacityTypedWithoutGuessingCausalRoots) {
+  ActualResultController controller =
+      makeController(1, std::nullopt, ExactRejectionCachePolicy::Disabled);
+  StructuralCandidateKey key = makeKey(0);
+  ASSERT_EQ(controller.reserve(key), CandidateReservation::Granted);
+  ActualCandidateResult rejection = exactRejected(0, /*spmCapacity=*/true);
+  rejection.causalRoots.clear();
+  EXPECT_EQ(controller.record(key, std::move(rejection)),
+            CandidateRecordOutcome::ExactRejection);
+  EXPECT_FALSE(controller.isForbidden(key));
+  SearchControllerResult result =
+      controller.finish(SearchFrontierStatus::Exhausted);
+  EXPECT_EQ(result.coverage, SearchControllerCoverage::NoFeasible);
+  EXPECT_EQ(result.statistics.exactRejected, 1u);
+  EXPECT_EQ(result.exactCompleteRejections, 0u);
+}
+
+TEST(ActualResultControllerTest,
      ExactCachePolicyDoesNotChangeAcceptedSetOrWinner) {
   std::vector<StructuralCandidateKey> winners;
   std::vector<SearchControllerCoverage> coverage;

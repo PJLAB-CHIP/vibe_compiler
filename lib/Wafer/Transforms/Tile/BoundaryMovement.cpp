@@ -1792,6 +1792,7 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
       functionOutputs;
   llvm::DenseMap<mlir::Operation *, llvm::SmallVector<unsigned, 2>>
       outputArguments;
+  llvm::DenseSet<mlir::Operation *> erasedCleanupOperations;
 
   for (const RegionPlan &plan : regions) {
     mlir::func::FuncOp function =
@@ -2292,25 +2293,47 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
     }
     for (ResultPlan &result : plan.results) {
       if (result.outputCopy) {
-        rewriter.eraseOp(result.outputCopy);
-        ++statistics.outputCopiesRemoved;
+        mlir::Operation *operation = result.outputCopy.getOperation();
+        if (erasedCleanupOperations.insert(operation).second) {
+          rewriter.eraseOp(operation);
+          ++statistics.outputCopiesRemoved;
+        }
       }
-      if (result.publicationBridge &&
-          result.publicationBridge.getMemref().use_empty()) {
-        rewriter.eraseOp(result.publicationBridge);
-        ++statistics.tensorBridgesRemoved;
+      if (result.publicationBridge) {
+        mlir::Operation *operation = result.publicationBridge.getOperation();
+        if (!erasedCleanupOperations.contains(operation) &&
+            result.publicationBridge.getMemref().use_empty() &&
+            erasedCleanupOperations.insert(operation).second) {
+          rewriter.eraseOp(operation);
+          ++statistics.tensorBridgesRemoved;
+        }
       }
-      if (result.returnBridge && result.returnBridge.getMemref().use_empty()) {
-        rewriter.eraseOp(result.returnBridge);
-        ++statistics.tensorBridgesRemoved;
+      if (result.returnBridge) {
+        mlir::Operation *operation = result.returnBridge.getOperation();
+        if (!erasedCleanupOperations.contains(operation) &&
+            result.returnBridge.getMemref().use_empty() &&
+            erasedCleanupOperations.insert(operation).second) {
+          rewriter.eraseOp(operation);
+          ++statistics.tensorBridgesRemoved;
+        }
       }
-      if (result.bridge && result.bridge->getResult(0).use_empty()) {
-        rewriter.eraseOp(result.bridge);
-        ++statistics.tensorBridgesRemoved;
+      if (result.bridge) {
+        mlir::Operation *operation = result.bridge.getOperation();
+        if (!erasedCleanupOperations.contains(operation) &&
+            result.bridge->getResult(0).use_empty() &&
+            erasedCleanupOperations.insert(operation).second) {
+          rewriter.eraseOp(operation);
+          ++statistics.tensorBridgesRemoved;
+        }
       }
-      if (result.obsoleteOutputSubview &&
-          result.obsoleteOutputSubview.getResult().use_empty())
-        rewriter.eraseOp(result.obsoleteOutputSubview);
+      if (result.obsoleteOutputSubview) {
+        mlir::Operation *operation =
+            result.obsoleteOutputSubview.getOperation();
+        if (!erasedCleanupOperations.contains(operation) &&
+            result.obsoleteOutputSubview.getResult().use_empty() &&
+            erasedCleanupOperations.insert(operation).second)
+          rewriter.eraseOp(operation);
+      }
     }
   }
 

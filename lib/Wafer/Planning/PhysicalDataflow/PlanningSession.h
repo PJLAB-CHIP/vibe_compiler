@@ -114,6 +114,9 @@ public:
   mlir::FailureOr<std::optional<RegionState>>
   resumeRegion(RegionContinuation &continuation,
                std::string *failureReason = nullptr);
+  mlir::FailureOr<llvm::ArrayRef<analysis::RootRegionWork>>
+  getCurrentRootWorks(const SpatialState &spatial,
+                      std::string *failureReason = nullptr);
 
   const PhysicalDataflowPlanningProblem &getProblem() const { return problem; }
   const PlanningWorkCounts &getWork() const { return work; }

@@ -1604,3 +1604,13 @@
   typed shared-DDR boundary并fresh重算，剩余无环component继续使用ring/tree/sparse。不得靠新增wait断环或在verifier失败后fallback。
 - 防复发：两Tile两Region反向component正例精确断言一个DDR cut、一个Direct-DTE pair，并继续通过completion、MiniMalloc和whole-program
   transport verifier；完整LLaMA no-card必须使用同一actual路径。
+
+## Boundary movement cleanup必须按actual operation去重
+
+- 现象：一个TileRegion把同一bufferized tensor bridge作为多个result返回时，movement preflight的多个`ResultPlan`会合法地引用同一个
+  `to_tensor`或相关cleanup op；逐result调用`eraseOp`会在后续actual Temporal candidate触发double free。
+- 根因：cleanup按plan字段出现次数执行，而operation ownership仍由current IR唯一决定；plan multiplicity不能当成operation multiplicity。
+- 修复模式：同一次movement transaction用request-local operation集合记录已经实际擦除的cleanup op；每个output copy、publication/return/
+  yield bridge和obsolete subview在任何解引用前先检查该集合，只对第一次实际擦除计数。该集合不跨stage保存，也不参与legality或choice。
+- 防复发：1024/1025/1031 rank-3 fixture让两个observable result共享同一个yield bridge，断言两个publication copy均移除、bridge只擦除一次、
+  physical Tile IR和buffer relation均有效；多次actual capacity refinement的LLaMA search必须无crash并继续到accepted MiniMalloc结果。

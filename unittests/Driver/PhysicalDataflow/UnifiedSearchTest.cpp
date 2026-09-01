@@ -73,6 +73,24 @@ public:
   std::vector<StructuralCandidateKey> observed;
 };
 
+class FirstInnerDomainIncompleteEvaluator final
+    : public StructuralCandidateEvaluator {
+public:
+  StructuralCandidateEvaluation evaluate(const RegionState &state) override {
+    observed.push_back(StructuralCandidateKey::create(state));
+    if (observed.size() == 1) {
+      ActualCandidateResult result;
+      result.status = ActualCandidateStatus::Indeterminate;
+      result.detail = "bounded inner current-IR traversal";
+      return {std::move(result), 2, false};
+    }
+    AcceptingEvaluator accepting;
+    return accepting.evaluate(state);
+  }
+
+  std::vector<StructuralCandidateKey> observed;
+};
+
 std::string print(mlir::Operation *operation) {
   std::string text;
   llvm::raw_string_ostream stream(text);
@@ -102,6 +120,12 @@ TEST(UnifiedSearchTest,
   ASSERT_EQ(evaluator.observed.size(), 1u);
   ASSERT_EQ(trace.candidates.size(), 0u);
   EXPECT_EQ(result.control.winner->key, evaluator.observed.front());
+  EXPECT_TRUE(llvm::all_of(result.control.winner->key.getRegionPlan().groups,
+                           [](const RegionGroupPlan &group) {
+                             return group.mandatoryRoots.size() == 1 &&
+                                    group.replicas.empty() &&
+                                    group.localBindings.empty();
+                           }));
   EXPECT_EQ(result.work.structuralStatesActualized, 1u);
   EXPECT_EQ(result.work.candidateActualizations, 1u);
   EXPECT_EQ(result.control.statistics.accepted, 1u);
@@ -156,6 +180,28 @@ TEST(UnifiedSearchTest,
   EXPECT_EQ(result.control.coverage,
             SearchControllerCoverage::IncompleteNoCandidate);
   EXPECT_TRUE(evaluator.observed.empty());
+}
+
+TEST(UnifiedSearchTest,
+     IncompleteInnerDomainDoesNotDiscardTheRemainingStructuralFrontier) {
+  ParsedProgram parsed = parseProgram();
+  ASSERT_TRUE(parsed.module);
+  std::string diagnosticsText;
+  llvm::raw_string_ostream diagnostics(diagnosticsText);
+  std::string failureReason;
+  SearchFixture fixture = prepare(*parsed.module, diagnostics, failureReason);
+  ASSERT_TRUE(fixture.session) << failureReason;
+  FirstInnerDomainIncompleteEvaluator evaluator;
+  UnifiedSearchOptions options;
+  options.termination = SearchTerminationPolicy::FirstAccepted;
+  UnifiedSearchResult result =
+      runUnifiedSearch(*fixture.session, evaluator, options);
+  ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
+  EXPECT_EQ(evaluator.observed.size(), 2u);
+  EXPECT_EQ(result.work.incompleteInnerDomains, 1u);
+  EXPECT_EQ(result.control.statistics.indeterminate, 1u);
+  EXPECT_EQ(result.control.statistics.accepted, 1u);
+  EXPECT_EQ(result.control.coverage, SearchControllerCoverage::FeasiblePartial);
 }
 
 TEST(UnifiedSearchTest, OptionalProfileDoesNotChangeTheFirstStructuralChoice) {

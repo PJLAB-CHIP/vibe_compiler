@@ -3,6 +3,7 @@
 #include "Wafer/CodeGen/DeviceExecutableInternal.h"
 
 #include "PhysicalDataflow/BaselineCurrentIR.h"
+#include "PhysicalDataflow/SearchCurrentIR.h"
 #include "Wafer/Support/CompileTiming.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -29,23 +30,23 @@ static llvm::Expected<DeviceExecutable> compileCurrentPolicy(
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "device executable compilation requires an optimization policy");
-  if (optimizations.isSearch()) {
-    diagnostics << "wafer-compile: operation_not_supported: "
-                   "optimization-policy=search is unavailable while its "
-                   "current-IR controller is being connected\n";
-    return llvm::createStringError(
-        std::errc::operation_not_supported,
-        "operation_not_supported: optimization-policy=search is unavailable "
-        "while its current-IR controller is being connected");
-  }
-
-  BaselineCurrentIROptions options;
-  options.downstream.captureTileDataflowIR = irTrace != nullptr;
   ExecutableLoweringStatistics executableStatistics;
-  BaselineCurrentIRStatistics baselineStatistics;
-  ExecutableCompilationResult compiled = compileBaselineCurrentIR(
-      tensorModule, program, executionConfig, diagnostics, programData, options,
-      &baselineStatistics, &executableStatistics);
+  ExecutableCompilationResult compiled;
+  if (optimizations.isSearch()) {
+    SearchCurrentIROptions options;
+    options.downstream.captureTileDataflowIR = irTrace != nullptr;
+    SearchCurrentIRStatistics searchStatistics;
+    compiled = compileSearchCurrentIR(tensorModule, program, executionConfig,
+                                      diagnostics, programData, options,
+                                      &searchStatistics, &executableStatistics);
+  } else {
+    BaselineCurrentIROptions options;
+    options.downstream.captureTileDataflowIR = irTrace != nullptr;
+    BaselineCurrentIRStatistics baselineStatistics;
+    compiled = compileBaselineCurrentIR(
+        tensorModule, program, executionConfig, diagnostics, programData,
+        options, &baselineStatistics, &executableStatistics);
+  }
   if (!compiled.isAccepted()) {
     diagnostics << "wafer-compile: " << compiled.gate << ": " << compiled.detail
                 << "\n";

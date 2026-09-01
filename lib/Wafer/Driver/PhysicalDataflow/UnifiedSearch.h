@@ -25,6 +25,8 @@ struct UnifiedSearchOptions {
   uint64_t planningCredits = std::numeric_limits<uint64_t>::max();
   SearchTerminationPolicy termination = SearchTerminationPolicy::Exhaustive;
   std::optional<SearchCostCohort> costCohort;
+  ExactRejectionCachePolicy exactRejectionCache =
+      ExactRejectionCachePolicy::Enabled;
   PlanningProfileSink *profile = nullptr;
 };
 
@@ -34,6 +36,7 @@ struct UnifiedSearchWork {
   uint64_t structuralStatesActualized = 0;
   uint64_t candidateActualizations = 0;
   uint64_t duplicateCompleteKeys = 0;
+  uint64_t incompleteInnerDomains = 0;
 };
 
 using UnifiedSearchPrefixKey = std::variant<SpatialState, RegionState>;
@@ -59,6 +62,7 @@ struct UnifiedSearchTrace {
 struct StructuralCandidateEvaluation {
   ActualCandidateResult result;
   uint64_t actualizations = 0;
+  bool domainExhausted = true;
 };
 
 /// Caller-owned synchronous current-IR actualizer. Implementations materialize

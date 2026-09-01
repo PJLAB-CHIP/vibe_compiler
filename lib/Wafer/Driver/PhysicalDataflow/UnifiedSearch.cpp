@@ -37,7 +37,7 @@ struct UnifiedSearchSession::Impl {
         termination(options.termination),
         controller(ActualResultControllerOptions{
             std::numeric_limits<uint64_t>::max(), options.costCohort,
-            ExactRejectionCachePolicy::Enabled}),
+            options.exactRejectionCache}),
         profile(options.profile), trace(trace) {
     frontier.emplace_back(SpatialFrame{});
     if (profile) {
@@ -125,6 +125,10 @@ struct UnifiedSearchSession::Impl {
     }
     StructuralCandidateEvaluation evaluation = evaluator.evaluate(state);
     work.candidateActualizations += evaluation.actualizations;
+    if (!evaluation.domainExhausted) {
+      sawIncompleteInnerDomain = true;
+      ++work.incompleteInnerDomains;
+    }
     const ActualCandidateStatus actualStatus = evaluation.result.status;
     if (profile)
       profile->recordCandidateActualization(
@@ -140,6 +144,8 @@ struct UnifiedSearchSession::Impl {
       return;
     }
     if (recorded == CandidateRecordOutcome::Indeterminate) {
+      if (!evaluation.domainExhausted)
+        return;
       pauseIndeterminate(actualDetail.empty()
                              ? "complete candidate actualization is unknown"
                              : actualDetail);
@@ -207,7 +213,7 @@ struct UnifiedSearchSession::Impl {
       controller.markCompilerBug();
     const bool exactExhaustion =
         status == UnifiedSearchResumeStatus::FrontierExhausted &&
-        !sawUnsupportedPrefix;
+        !sawUnsupportedPrefix && !sawIncompleteInnerDomain;
     UnifiedSearchResult result;
     result.control =
         controller.finish(exactExhaustion ? SearchFrontierStatus::Exhausted
@@ -238,6 +244,7 @@ struct UnifiedSearchSession::Impl {
   UnifiedSearchWork work;
   UnifiedSearchResumeStatus status = UnifiedSearchResumeStatus::Paused;
   bool sawUnsupportedPrefix = false;
+  bool sawIncompleteInnerDomain = false;
   bool finalized = false;
   std::string failureDetail;
 };

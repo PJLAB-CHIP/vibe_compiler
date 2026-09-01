@@ -17,10 +17,10 @@
 
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `search-scalability` | `doing` | Q52 / 06 | Q51 choice/domain donor、第12项actual structural owner、已闭合的C1 multi-root e-graph、C2 Temporal relation consumer和C3 physical layout relation consumer、第14项final Linalg/Tensor/SCF owner、第15项layout-resolved/bufferized current owner、第16项current-IR downstream mechanics、current baseline regression、Q50.0 actual memory/target leaf | 当前直接项为第17项`baseline-current-ir-integration`，随后执行第18--20项。none/search独立且无fallback；SPM只由actual MiniMalloc判定；同源LLaMA产品纵向通过 | `tasks/plans/physical-dataflow-synthesis.md` |
+| 1 | `search-scalability` | `doing` | Q52 / 06 | Q51 choice/domain donor、第12项actual structural owner、已闭合的C1 multi-root e-graph、C2 Temporal relation consumer和C3 physical layout relation consumer、第14项final Linalg/Tensor/SCF owner、第15项layout-resolved/bufferized current owner、第16项current-IR downstream mechanics、已闭合的第17项current baseline和第18项current search、Q50.0 actual memory/target leaf | 当前直接项为第19项`scale-regression-and-inventory`，随后执行第20项。none/search独立且无fallback；SPM只由actual MiniMalloc判定；同源LLaMA产品纵向通过 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 2 | `production-host-readiness` | `queued` | Q53 / 16 | search scalability、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 
-Q52当前直接项是第17项`baseline-current-ir-integration`。C1已经形成ordered multi-root egg ABI、共享DAG extraction及唯一
+Q52当前直接项是第19项`scale-regression-and-inventory`。C1已经形成ordered multi-root egg ABI、共享DAG extraction及唯一
 reshape-through-compute rule，parallel-only和reduction-only flatten/unflatten双向闭合，mixed-kind group保持current IR。C2显式保留
 Independent与all-use Joint choice，general reshape actual rectangle/有限pieces、2/15 direct及`cast/extract_slice/reshape` view uses共享、
 broadcast producer的dependent-prefix hoist、互斥affine window exact fusion和overlap-halo Independent均已闭合；1024/1025/1031 main/tail
@@ -46,9 +46,11 @@ none已经由独立current-IR baseline controller重新接入：FP16/BF16 prefil
 no-card；complete exchange的actual ring、split-Region closure、bidirectional no-cut及cross-component Region-order DDR cut已闭合。
 FP16 LLaMA当前source已经在none路径完成graph normalization、Spatial/Temporal、layout/bufferization、movement、Instr/completion、actual
 MiniMalloc/DDR/Direct-DTE/target，fresh生成16-Tile package并通过strict no-card；MLP weight transpose直接吸收到named contraction，
-same-Tile structural shell不再形成full-shape SPM allocation，loop-carried state在Instr前已有explicit destination。第17项仍为`doing`，
-因为current registered产品/calibration/target-model矩阵和canonical全门禁尚须按本轮代码重新执行；search controller仍明确返回typed
-unavailable且不发布package。
+same-Tile structural shell不再形成full-shape SPM allocation，loop-carried state在Instr前已有explicit destination。第17项据此闭合；
+产品/calibration/target-model完整资格矩阵属于Q53 host readiness，不再阻塞search接通。第18项已由独立search controller接入完整
+Spatial/Region frontier；singleton feasibility proposal只调整访问顺序、不删除其它proposal，Temporal choice从current Region建立并立即
+apply，actual SPM capacity rejection才触发下一次typed refinement，每个actual candidate恰一次PBQP和actual leaf。当前LLaMA search以
+`FeasiblePartial`保留同一accepted owner，fresh生成16-Tile package并通过strict no-card；none路径未调用search或fallback。
 
 ## 已满足的直接前置
 

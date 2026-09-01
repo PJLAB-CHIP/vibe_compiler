@@ -5,6 +5,8 @@
 #include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
 #include "Wafer/Support/CompileTiming.h"
 
+#include "llvm/ADT/STLExtras.h"
+
 #include <type_traits>
 #include <variant>
 
@@ -252,6 +254,19 @@ PhysicalDataflowPlanningSession::takeNextSpatialState() {
   return state;
 }
 
+mlir::FailureOr<llvm::ArrayRef<analysis::RootRegionWork>>
+PhysicalDataflowPlanningSession::getCurrentRootWorks(
+    const SpatialState &spatial, std::string *failureReason) {
+  auto found = rootWorkCache.find(spatial.getPlan());
+  if (found == rootWorkCache.end()) {
+    if (failureReason)
+      *failureReason =
+          "current SpatialState has no session-owned exact root work";
+    return mlir::failure();
+  }
+  return llvm::ArrayRef<analysis::RootRegionWork>(found->second);
+}
+
 mlir::FailureOr<RegionDomain *>
 PhysicalDataflowPlanningSession::getOrCreateRegionDomain(
     const SpatialState &spatial, std::string *failureReason) {
@@ -346,6 +361,20 @@ PhysicalDataflowPlanningSession::resumeRegion(RegionContinuation &continuation,
                                                      "build-region-proposals");
       return (*regionDomain)->getProposals();
     }();
+    // Priority only: the complete proposal set remains unchanged. A singleton
+    // Region proposal is the current deterministic feasibility anchor, so
+    // visit it before more strongly fused proposals and obtain an actual
+    // incumbent without claiming that the later proposals are illegal.
+    llvm::stable_sort(continuation.proposals, [](const RegionPlan &left,
+                                                 const RegionPlan &right) {
+      auto isSingleton = [](const RegionPlan &plan) {
+        return llvm::all_of(plan.groups, [](const RegionGroupPlan &group) {
+          return group.mandatoryRoots.size() == 1 && group.replicas.empty() &&
+                 group.localBindings.empty();
+        });
+      };
+      return isSingleton(left) && !isSingleton(right);
+    });
     continuation.proposalsInitialized = true;
   }
   auto makeState = [&](const RegionPlan &plan)
