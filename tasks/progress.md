@@ -17,12 +17,13 @@
 
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `region-fusion-quality` | `doing` | Q52 / 06 | 完整RegionDomain、graph-coherent proposal donor、actual MiniMalloc feedback和final actual objective | Region proposal形成`P0/P1/P2/Pk`整图multilevel coarsening；同源LLaMA在≤15分钟内实际访问四层，至少一个P1/P2 candidate通过actual leaf，winner相对P0在enabled actual objective上Pareto更好并以DDR/instruction下降解释整图Region/cut消除；两条policy通过strict no-card | `tasks/plans/physical-dataflow-synthesis.md` |
+| 1 | `region-fusion-quality` | `doing` | Q52 / 06 | 完整RegionDomain、graph-coherent proposal donor、actual MiniMalloc feedback和final actual objective | Region proposal形成一条dynamic maximum-gain coherent merge序列，并以4个slots访问0/约1/3/约2/3/full prefixes；同源LLaMA在≤15分钟内至少一个中间prefix通过actual leaf，winner相对P0在enabled actual objective上Pareto更好并以DDR/instruction下降解释整图Region/cut消除；两条policy通过strict no-card | `tasks/plans/physical-dataflow-synthesis.md` |
 | 2 | `production-host-readiness` | `queued` | Q53 / 16 | region fusion quality、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 
 Q52因fusion quality验收错误重新打开。提交`6221d9a8`只让4个structural slots访问singleton和三个单edge sibling，LLaMA winner从
 1360个Region降到1359个；这只能证明单edge机制可达，不能证明proposal实现了“能融合则尽量融合”。Current修正恢复graph-coherent endpoint，
-并用整图multilevel coarsening在低融合与endpoint之间生成少量实际可评估的中间plan；SPM合法性和winner仍只来自actual IR。Q53保持queued。
+并用同一dynamic maximum-gain merge序列的bounded prefixes在低融合与endpoint之间生成少量实际可评估的中间plan；SPM合法性和winner仍只
+来自actual IR。Q53保持queued。
 
 ## 已满足的直接前置
 

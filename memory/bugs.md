@@ -114,10 +114,10 @@
   siblings用完，最终winner只有1359个Region；测试仍因“非singleton”而错误通过。
 - 根因：把partition lattice的breadth-first merge distance当成quality progress。大图在level-1已有大量siblings，而一次actual candidate需要完整
   Temporal、layout、movement、MiniMalloc和target leaf，有限budget不可能靠逐edge枚举达到有效融合深度。
-- 修复模式：proposal使用整图multilevel coarsening。每层在所有component内运行到结构group cap下的maximal合法fixed point，形成少量nested
-  complete RegionPlans；batch保留singleton、早期coarse levels和graph-coherent endpoint。Edge cut/payload只排priority，所有plan仍经actual IR和
-  MiniMalloc判定，capacity failure不跨level剪枝。
-- 防复发：真实规模chain/fanout断言P1/P2同时合并多个Tile和多个semantic edges，proposal allowance不会饿死coherent endpoint；LLaMA完成
+- 修复模式：proposal只构造一条dynamic maximum-gain graph-coherent merge序列，按本次新增local exact payload/bindings排序并在merge后更新
+  incident gain；固定whole-program slots只物化该序列的singleton、均匀merge-distance prefixes和coherent endpoint，不限制group root数，也不
+  枚举partition lattice。所有snapshot仍经actual IR和MiniMalloc判定，capacity failure不跨prefix剪枝。
+- 防复发：真实规模chain/fanout断言中间prefix同时合并多个Tile和多个semantic edges，proposal allowance不会饿死coherent endpoint；LLaMA完成
   不能再以Region减少1或“存在local binding”签发，必须由整图Region收缩、actual DDR store/load与Instr减少以及final objective共同证明。
 
 ## Frontend不得为了compiler命中改写模型语义
