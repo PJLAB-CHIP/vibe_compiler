@@ -17,43 +17,11 @@
 
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `search-scalability` | `doing` | Q52 / 06 | Q51 choice/domain donor、第12项actual structural owner、已闭合的C1 multi-root e-graph、C2 Temporal relation consumer和C3 physical layout relation consumer、第14项final Linalg/Tensor/SCF owner、第15项layout-resolved/bufferized current owner、第16项current-IR downstream mechanics、已闭合的第17项current baseline、第18项current search和第19项scale/inventory、Q50.0 actual memory/target leaf | 当前直接项为第20项`llama-baseline-search-acceptance`。none/search独立且无fallback；SPM只由actual MiniMalloc判定；同源LLaMA产品纵向通过 | `tasks/plans/physical-dataflow-synthesis.md` |
-| 2 | `production-host-readiness` | `queued` | Q53 / 16 | search scalability、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
+| 1 | `production-host-readiness` | `next` | Q53 / 16 | search scalability、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 
-Q52当前直接项是第20项`llama-baseline-search-acceptance`。C1已经形成ordered multi-root egg ABI、共享DAG extraction及唯一
-reshape-through-compute rule，parallel-only和reduction-only flatten/unflatten双向闭合，mixed-kind group保持current IR。C2显式保留
-Independent与all-use Joint choice，general reshape actual rectangle/有限pieces、2/15 direct及`cast/extract_slice/reshape` view uses共享、
-broadcast producer的dependent-prefix hoist、互斥affine window exact fusion和overlap-halo Independent均已闭合；1024/1025/1031 main/tail
-以及第15项后无对应完整intermediate allocation/copy已有直接证据。C3删除`compactOnly`降级，以DPS/view actual alias group和canonical
-`IndexRelation`+`PhysicalLayoutRelation`过滤layout state；compatible outer reshape保持Cx zero-copy，channel-changing reshape形成一个actual
-materialization；movement production caller无需新增旁路。第12项已经形成ordinary contribution/merge/output、FA/FD per-Tile online state、
-selected FD merge/finalize和只连接actual endpoints的current relations；第13项已经从live TileRegion operations建立并立即消费temporal
-choice，形成ordinary/online K2 actual SCF loop、direct及view-transparent exact fusion、bounded tile-local concat、constant pad和
-pack/unpack materialization、three-state recurrence与static main/tail；Spatial与Temporal共用同一static tensor indexing query，covered
-producer在第15项后无完整intermediate allocation/copy。第14项已经将每个current
-online-attention确定性分解为QK、scale/mask、row max/sum、state scale和PV的actual Linalg/Tensor/arith/math，保留既有loop、spatial merge和
-endpoint，layout入口graph/online attention为零。第15项已经从current value/use/op tuple求解并立即应用exact PBQP canonical layout，
-形成shared actual conversion、observable DDR subview、cross-Tile source piece及一次function/region-local bufferization；旧node-ID buffer
-attribution和第二条Instr bufferization入口已经删除；PBQP唯一有限目标是最少unique actual materialization，canonical factor-valid
-assignment保证budget不足时仍可由同一apply路径完成layout，`Optimal`只表示最优性证明。第16项已经将layout-resolved Linalg/memref
-确定性转换为existing Tile compute/movement，按current endpoint relation闭合DDR或peer boundary，直接应用execution structure并先move
-standalone Tile body，再逐Tile完成Instr、exact transfer cleanup和fresh completion；Tensor↔Cx/NCx及broadcast descriptor query由compute/
-movement lowering共享，dynamic subview使用typed byte-offset operand，1024/1025/1031 ordinary、conv、FA/FD main/tail、mask和BF16均到达
-Instr，16 Tile/no-work纵向恰调用一次actual MiniMalloc/DDR/target leaf。该query不反向参与layout assignment。
-此前的actual leaf、Instr completion、execution
-structure、movement、structured logical normalization和legacy shadow-materializer retirement只作为输入，不在current队列重做。
-none已经由独立current-IR baseline controller重新接入：FP16/BF16 prefill及FP16 two-step decode均fresh生成16-Tile package并通过
-no-card；complete exchange的actual ring、split-Region closure、bidirectional no-cut及cross-component Region-order DDR cut已闭合。
-FP16 LLaMA当前source已经在none路径完成graph normalization、Spatial/Temporal、layout/bufferization、movement、Instr/completion、actual
-MiniMalloc/DDR/Direct-DTE/target，fresh生成16-Tile package并通过strict no-card；MLP weight transpose直接吸收到named contraction，
-same-Tile structural shell不再形成full-shape SPM allocation，loop-carried state在Instr前已有explicit destination。第17项据此闭合；
-产品/calibration/target-model完整资格矩阵属于Q53 host readiness，不再阻塞search接通。第18项已由独立search controller接入完整
-Spatial/Region frontier；singleton feasibility proposal只调整访问顺序、不删除其它proposal，Temporal choice从current Region建立并立即
-apply，actual SPM capacity rejection才触发下一次typed refinement，每个actual candidate恰一次PBQP和actual leaf。当前LLaMA search以
-`FeasiblePartial`保留同一accepted owner，fresh生成16-Tile package并通过strict no-card；none路径未调用search或fallback。
-第19项已经以固定bounded counter补齐e-graph、search work、actual PBQP/layout、movement、accepted TileRegion与final Instr分类；
-unknown/overflow显式保留，instrumentation on/off产生byte-identical package，多个accepted candidate只统计controller最终保留的winner。
-Large connected PBQP、mixed decomposed-attention及真实LLaMA scale均由同一current实现到达actual leaf。
+Q52已经退出current queue，完整边界和fresh证据见`tasks/archive/completed-task-index.md`。它向Q53签发独立的current `none`与
+`search` source→package路径、唯一actual memory/target leaf及bounded winner-only inventory；`search`覆盖为`FeasiblePartial`，不声明
+未穷尽frontier的全局最优。Q53为下一项且尚未启动。
 
 ## 已满足的直接前置
 

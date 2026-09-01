@@ -1,11 +1,11 @@
 # Physical Dataflow Current-IR实施计划
 
-本计划只保存Q52尚未完成的第16--20项和Q53 host qualification。动态状态只读`tasks/progress.md`；
+Q52第16--20项已经闭合；本计划当前只继续拥有Q53 host qualification。动态状态只读`tasks/progress.md`；
 第1--11项的施工、删除账本和验证记录见`tasks/archive/physical-dataflow-synthesis-q52-plan-history.md`；第12--15项的完成边界见
 `tasks/archive/completed-task-index.md`。
 稳定语义由05--16号编号设计拥有。
 
-当前直接项：第20项`llama-baseline-search-acceptance`。
+当前下一项：Q53 `production-host-readiness`，尚未启动。
 
 ## Pipeline Contract
 
