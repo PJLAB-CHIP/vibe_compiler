@@ -263,6 +263,48 @@ Primary references：
 `--compile-timing`增加固定上限的per-candidate summary及16 Tile逐TileRegion数、root-count histogram、actual status、Temporal actualization、
 DDR/NoC/SPM/Instr和objective classification。它不逐Region打印，不构造expected inventory，不参与proposal、legality或winner。
 
+### Public search limits
+
+```text
+Pipeline position:
+- Upstream IR / input: production compiler invocation和typed OptimizationConfig。
+- Current stage responsibility: 将可选search width/trials验证为正整数，并作为同一search controller的work limits。
+- Output IR / files: 不新增IR或package字段；diagnostic记录实际生效的limits。
+- Downstream consumer: SearchCurrentIR、PlanningSession和UnifiedSearch的现有credit accounting。
+- User-level driver / named pipeline: wafer-compile --optimization-policy=search --search-width=<N> --search-trials=<N>。
+- Explicit non-goals: 不暴露initial/refinement/per-candidate调度数；不提供wall-time budget；不修改IR legality或cost。
+- Completion criteria: 默认8/42不变；单独override任一limit可复现；none拒绝search limits；CLI与public C++ API到达同一search实现。
+```
+
+Public C++ API使用`SearchLimits{width, trials}`，并且只能通过`OptimizationConfig::search(limits)`携带。
+CLI的`--search-width`和`--search-trials`都是可选项，未给定时分别使用8和42；接受`--option value`和
+`--option=value`两种形式，拒绝零、非整数、溢出和重复参数。未显式选择search或选择none时携带任一limit，
+在source读取前返回配置错误，不静默忽略。
+
+`width`只限制实际访问的structural choices总数。Internal incumbent-refinement reserve由width唯一推导：
+`reserve = min(2, max(width - 2, 0))`，`initial = width - reserve`；因此默认width 8仍为6 initial + 2 refinement。
+单candidate的8次Temporal上限是内部fairness规则，不是public option。`trials`是全局actual compilation credit；用完后继续精确
+报告`FeasiblePartial`或对应typed failure。两个limit只影响访问范围和compile work，不进入shape识别、SPM legality或winner objective。
+
+| 输入等价类 | Shape / 结构 | Typed failure | 精确断言 | 下游witness |
+| --- | --- | --- | --- | --- |
+| default与partial override | rank-3 1024/1025 elementwise及dependent chain；16 Tile | 无 | 默认8/42；只设width或trials时另一项保持默认；effective diagnostic与compile counters一致 | 受限search仍生成唯一verified package |
+| minimal bounded search | rank-3 1024整除与1025非整除；width=1、trials=1 | 没有accepted owner时typed incomplete/failure | structural actualization<=1、actual trials<=1；不进入refinement；不访问第二candidate | actual Instr/MiniMalloc或准确typed结果 |
+| invalid CLI / policy | zero、text、uint64 overflow、duplicate；implicit none和explicit none | source读取前配置失败 | 诊断指向原option；无output directory/package | 没有compiler transaction side effect |
+| public C++ API | default/custom SearchLimits；none | zero limit由search-input gate拒绝 | equality/getter保留width/trials；none不返回search limits | DeviceExecutableConstruction将limits一次写入SearchCurrentIROptions |
+
+2026-09-01 current实现将`SearchLimits`作为`OptimizationConfig::search`的typed value贯通到唯一SearchCurrentIR入口，
+`SearchCurrentIROptions`不再分别存储structural、initial、refinement和global actualization四个public-like fields。Width 1/2/3/4/8/16
+精确推导的initial/refinement分配为1+0、2+0、2+1、2+2、6+2、14+2。Rank-3 1024/1025实际search在width 2下只访问
+singleton和coherent endpoint；1024的public API与1025的production CLI在width 1/trials 1下均只进行1次actual compilation。
+前者生成16-Tile DeviceExecutable，后者生成16-Tile verified package；该package通过显式Direct-DTE status ABI和host-watchdog的strict no-card，输出
+`board_execution: false`。
+
+CLI默认、只设width、只设trials和同时设置的effective diagnostic分别为8/42、1/42、8/1和1/1；
+`--option value`与`--option=value`均实际执行。Zero、text、uint64 overflow、duplicate、implicit none和explicit none均在source
+事务前拒绝。Fresh canonical build、Driver 83/83、261/261 configured lit、全部13个component unit targets、42个Board-IO、
+61个formal numeric、19个target numeric backend、13个SystemC和public-link gates通过，无skip或unsupported。本扩展不运行真实板端。
+
 ### 实施顺序
 
 1. 保留raw successor、RegionPlan和唯一materializer；先扩展逐Tile read-only instrumentation及全局actual credit，证明它们不改变choice/result。

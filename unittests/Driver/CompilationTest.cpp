@@ -166,6 +166,8 @@ TEST(CompilationTest, ProfileOptionsRequireCompleteTileKernelDomain) {
 
 TEST(CompilationTest, OptimizationConfigHasExactlySearchAndNonePolicies) {
   wafer::OptimizationConfig search = wafer::OptimizationConfig::search();
+  wafer::OptimizationConfig limited =
+      wafer::OptimizationConfig::search(wafer::SearchLimits{3, 7});
   wafer::OptimizationConfig none = wafer::OptimizationConfig::none();
 
   EXPECT_TRUE(search.isSearch());
@@ -173,6 +175,12 @@ TEST(CompilationTest, OptimizationConfigHasExactlySearchAndNonePolicies) {
   EXPECT_FALSE(none.isSearch());
   EXPECT_TRUE(none.isNone());
   EXPECT_NE(search, none);
+  ASSERT_TRUE(search.getSearchLimits());
+  EXPECT_EQ(*search.getSearchLimits(), (wafer::SearchLimits{8, 42}));
+  ASSERT_TRUE(limited.getSearchLimits());
+  EXPECT_EQ(*limited.getSearchLimits(), (wafer::SearchLimits{3, 7}));
+  EXPECT_NE(search, limited);
+  EXPECT_FALSE(none.getSearchLimits());
 
   wafer::compiler::CompilationOptions options =
       wafer::compiler::CompilationOptions::standard(none);

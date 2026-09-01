@@ -8,6 +8,12 @@
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --compile-timing --compile-timing 2>&1 | FileCheck %s --check-prefix=DUPLICATE-TIMING
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --optimization-policy=production 2>&1 | FileCheck %s --check-prefix=RETIRED-POLICY
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --optimization-policy=search --search-max-candidate-evaluations=2 2>&1 | FileCheck %s --check-prefix=RETIRED-SEARCH-BUDGET
+# RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --optimization-policy=search --search-width=0 2>&1 | FileCheck %s --check-prefix=INVALID-SEARCH-WIDTH
+# RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --optimization-policy=search --search-trials=text 2>&1 | FileCheck %s --check-prefix=INVALID-SEARCH-TRIALS
+# RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --optimization-policy=search --search-trials=18446744073709551616 2>&1 | FileCheck %s --check-prefix=OVERFLOW-SEARCH-TRIALS
+# RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --optimization-policy=search --search-width=1 --search-width 2 2>&1 | FileCheck %s --check-prefix=DUPLICATE-SEARCH-WIDTH
+# RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --optimization-policy=none --search-width=1 2>&1 | FileCheck %s --check-prefix=NONE-SEARCH-WIDTH
+# RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --search-trials=1 2>&1 | FileCheck %s --check-prefix=NONE-SEARCH-TRIALS
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --output-dir %t.output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-OUTPUT
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-PARTITIONS
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --profile --profile 2>&1 | FileCheck %s --check-prefix=DUPLICATE-PROFILE-PRODUCT
@@ -32,6 +38,12 @@
 # DUPLICATE-TIMING: wafer-compile: duplicate option: --compile-timing
 # RETIRED-POLICY: wafer-compile: invalid --optimization-policy value: production (expected search or none)
 # RETIRED-SEARCH-BUDGET: wafer-compile: unknown argument: --search-max-candidate-evaluations=2
+# INVALID-SEARCH-WIDTH: wafer-compile: invalid --search-width value: 0
+# INVALID-SEARCH-TRIALS: wafer-compile: invalid --search-trials value: text
+# OVERFLOW-SEARCH-TRIALS: wafer-compile: invalid --search-trials value: 18446744073709551616
+# DUPLICATE-SEARCH-WIDTH: wafer-compile: duplicate option: --search-width
+# NONE-SEARCH-WIDTH: wafer-compile: --search-width requires --optimization-policy=search
+# NONE-SEARCH-TRIALS: wafer-compile: --search-trials requires --optimization-policy=search
 # DUPLICATE-OUTPUT: wafer-compile: duplicate option: --output-dir
 # DUPLICATE-PARTITIONS: wafer-compile: duplicate option: --num-partitions
 # DUPLICATE-PROFILE-PRODUCT: wafer-compile: duplicate option: --profile

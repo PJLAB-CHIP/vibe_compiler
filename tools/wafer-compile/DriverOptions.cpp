@@ -20,6 +20,7 @@ void printHelp() {
   llvm::outs() << "usage: wafer-compile --input-program-dir <dir> "
                   "--output-dir <dir> --num-partitions <1> "
                   "[--optimization-policy <search|none>] "
+                  "[--search-width <count>] [--search-trials <count>] "
                   "[--compile-timing] "
                   "[--dump-compiler-ir <dir>] "
                   "[--profile]\n";
@@ -175,6 +176,18 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         arg.starts_with("--optimization-policy=")) {
       if (parseValueOption(argc, argv, index, arg, "--optimization-policy",
                            options.optimizationPolicy))
+        return false;
+      continue;
+    }
+    if (arg == "--search-width" || arg.starts_with("--search-width=")) {
+      if (parseValueOption(argc, argv, index, arg, "--search-width",
+                           options.searchWidth))
+        return false;
+      continue;
+    }
+    if (arg == "--search-trials" || arg.starts_with("--search-trials=")) {
+      if (parseValueOption(argc, argv, index, arg, "--search-trials",
+                           options.searchTrials))
         return false;
       continue;
     }
@@ -515,9 +528,24 @@ std::optional<OptimizationConfig>
 parseOptimizationConfig(const CommandLineOptions &options) {
   OptimizationConfig config = OptimizationConfig::none();
   if (options.optimizationPolicy) {
-    if (*options.optimizationPolicy == "search")
-      config = OptimizationConfig::search();
-    else if (*options.optimizationPolicy == "none")
+    if (*options.optimizationPolicy == "search") {
+      SearchLimits limits;
+      if (options.searchWidth) {
+        std::optional<uint64_t> width =
+            parsePositiveCount(options.searchWidth, "--search-width");
+        if (!width)
+          return std::nullopt;
+        limits.width = *width;
+      }
+      if (options.searchTrials) {
+        std::optional<uint64_t> trials =
+            parsePositiveCount(options.searchTrials, "--search-trials");
+        if (!trials)
+          return std::nullopt;
+        limits.trials = *trials;
+      }
+      config = OptimizationConfig::search(limits);
+    } else if (*options.optimizationPolicy == "none")
       config = OptimizationConfig::none();
     else {
       llvm::errs() << "wafer-compile: invalid --optimization-policy value: "
@@ -525,6 +553,14 @@ parseOptimizationConfig(const CommandLineOptions &options) {
                    << " (expected search or none)\n";
       return std::nullopt;
     }
+  }
+
+  if ((options.searchWidth || options.searchTrials) && !config.isSearch()) {
+    llvm::StringRef option =
+        options.searchWidth ? "--search-width" : "--search-trials";
+    llvm::errs() << "wafer-compile: " << option
+                 << " requires --optimization-policy=search\n";
+    return std::nullopt;
   }
 
   return config;

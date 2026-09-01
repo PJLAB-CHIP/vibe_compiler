@@ -34,7 +34,11 @@ namespace wafer::compiler::detail {
 static void printOptimizationConfig(OptimizationConfig config,
                                     llvm::raw_ostream &diagnostics) {
   diagnostics << "wafer-compile: optimization-policy="
-              << (config.isSearch() ? "search" : "none") << '\n';
+              << (config.isSearch() ? "search" : "none");
+  if (std::optional<SearchLimits> limits = config.getSearchLimits())
+    diagnostics << " search-width=" << limits->width
+                << " search-trials=" << limits->trials;
+  diagnostics << '\n';
 }
 
 mlir::LogicalResult runCompilationTransaction(

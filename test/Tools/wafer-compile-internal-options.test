@@ -14,6 +14,8 @@
 # OLD-FLAG: wafer-compile: unknown argument: --output-program-dir
 # OLD-PACKAGE-FLAG: wafer-compile: unknown argument: --output-package-dir
 # HELP: --output-dir
+# HELP: --search-width
+# HELP: --search-trials
 # HELP: --dump-compiler-ir
 # HELP-NOT: --target-model
 # HELP-NOT: --output-program-dir

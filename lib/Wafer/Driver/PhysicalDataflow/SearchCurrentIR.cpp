@@ -632,17 +632,14 @@ ExecutableCompilationResult compileSearchCurrentIR(
     ExecutableLoweringStatistics *executableStatistics) {
   if (!tensorProgram || options.layoutWorkLimit == 0 ||
       options.maximumTemporalCandidatesPerStructuralState == 0 ||
-      options.maximumCandidateActualizations == 0 ||
-      options.maximumStructuralCandidates == 0 ||
-      options.maximumInitialRegionProposals == 0 ||
-      options.maximumInitialRegionProposals >
-          options.maximumStructuralCandidates ||
-      options.maximumRegionRefinementCandidates >
-          options.maximumStructuralCandidates -
-              options.maximumInitialRegionProposals)
+      options.limits.width == 0 || options.limits.trials == 0)
     return fail(ExecutableCompilationStatus::CompilerFailure, "search-input",
                 "search requires current TensorProgram and positive work "
                 "limits");
+  const uint64_t maximumRegionRefinementCandidates =
+      options.getRefinementLimit();
+  const uint64_t maximumInitialRegionProposals =
+      options.getInitialProposalLimit();
   mlir::FailureOr<mlir::func::FuncOp> function =
       getProgramFunction(tensorProgram);
   if (mlir::failed(function))
@@ -668,8 +665,8 @@ ExecutableCompilationResult compileSearchCurrentIR(
   if (mlir::failed(problem))
     return fail(ExecutableCompilationStatus::CompilerFailure,
                 "search-planning-problem", detail);
-  PhysicalDataflowPlanningSession planning(
-      *problem, options.maximumInitialRegionProposals);
+  PhysicalDataflowPlanningSession planning(*problem,
+                                           maximumInitialRegionProposals);
 
   auto cohort = SearchCostCohort::create(SearchCostPolicy{}, &detail);
   if (mlir::failed(cohort))
@@ -683,11 +680,10 @@ ExecutableCompilationResult compileSearchCurrentIR(
 
   UnifiedSearchOptions traversal;
   traversal.planningCredits = options.planningCredits;
-  traversal.structuralCandidateCredits = options.maximumStructuralCandidates;
-  traversal.candidateActualizationCredits =
-      options.maximumCandidateActualizations;
+  traversal.structuralCandidateCredits = options.limits.width;
+  traversal.candidateActualizationCredits = options.limits.trials;
   traversal.maximumRegionRefinementCandidates =
-      options.maximumRegionRefinementCandidates;
+      maximumRegionRefinementCandidates;
   traversal.termination = options.termination;
   traversal.costCohort = currentCohort;
   // Actual capacity remains typed, but it is not generalized to a structural
@@ -713,11 +709,11 @@ ExecutableCompilationResult compileSearchCurrentIR(
   searchCounter("structural-states", searched.work.structuralStatesActualized);
   searchCounter("candidate-actualizations",
                 searched.work.candidateActualizations);
-  searchCounter("candidate-actualization-credit-limit",
-                options.maximumCandidateActualizations);
-  searchCounter("candidate-actualization-credits-remaining",
-                options.maximumCandidateActualizations -
-                    searched.work.candidateActualizations);
+  searchCounter("width", options.limits.width);
+  searchCounter("trials", options.limits.trials);
+  searchCounter("trials-used", searched.work.candidateActualizations);
+  searchCounter("trials-remaining",
+                options.limits.trials - searched.work.candidateActualizations);
   searchCounter("incomplete-inner-domains",
                 searched.work.incompleteInnerDomains);
   searchCounter("accepted-structural-states",

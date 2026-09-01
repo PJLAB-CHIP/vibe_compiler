@@ -26,9 +26,30 @@
 
 #include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace {
+
+TEST(SearchCurrentIROptionsTest, WidthUniquelyDeterminesInternalAllocation) {
+  wafer::compiler::detail::SearchCurrentIROptions options;
+  EXPECT_EQ(options.getInitialProposalLimit(), 6u);
+  EXPECT_EQ(options.getRefinementLimit(), 2u);
+
+  for (auto [width, initial, refinements] : {
+           std::tuple<uint64_t, uint64_t, uint64_t>{1, 1, 0},
+           {2, 2, 0},
+           {3, 2, 1},
+           {4, 2, 2},
+           {8, 6, 2},
+           {16, 14, 2},
+       }) {
+    options.limits.width = width;
+    EXPECT_EQ(options.getInitialProposalLimit(), initial);
+    EXPECT_EQ(options.getRefinementLimit(), refinements);
+    EXPECT_EQ(initial + refinements, width);
+  }
+}
 
 class ExecutableCompilationTest : public ::testing::Test {
 protected:
@@ -527,7 +548,7 @@ TEST(ExecutableCompilationPolicyTest,
 }
 
 TEST(ExecutableCompilationPolicyTest,
-     SearchSelectsTheFirstLegalProgressivelyFusedRegionPlan) {
+     SearchSelectsTheCoherentEndpointWithinConfiguredLimits) {
   for (int64_t extent : {1024, 1025}) {
     SCOPED_TRACE(extent);
     wafer::compiler::testing::ParsedProgram parsed =
@@ -539,9 +560,7 @@ TEST(ExecutableCompilationPolicyTest,
     std::string diagnosticText;
     llvm::raw_string_ostream diagnostics(diagnosticText);
     wafer::compiler::detail::SearchCurrentIROptions options;
-    options.maximumStructuralCandidates = 4;
-    options.maximumInitialRegionProposals = 4;
-    options.maximumRegionRefinementCandidates = 0;
+    options.limits = wafer::SearchLimits{2, 32};
     options.maximumTemporalCandidatesPerStructuralState = 16;
     options.termination =
         wafer::compiler::detail::SearchTerminationPolicy::Exhaustive;
@@ -557,12 +576,12 @@ TEST(ExecutableCompilationPolicyTest,
         << result.gate << ": " << result.detail << "\n"
         << diagnosticText;
     ASSERT_TRUE(result.physicalIRInventory);
-    EXPECT_EQ(search.structuralMaterializations, 4u);
-    EXPECT_EQ(search.controller.accepted, 4u);
+    EXPECT_EQ(search.structuralMaterializations, 2u);
+    EXPECT_EQ(search.controller.accepted, 2u);
     EXPECT_EQ(result.physicalIRInventory->tileModules, 16u);
-    // The singleton has two Regions on every Tile (32 total). Four proposal
-    // slots actualize the 0/approximately-1/3/approximately-2/3/full prefixes;
-    // the coherent endpoint merges the pair independently on all 16 Tiles.
+    // The singleton has two Regions on every Tile (32 total). Width two
+    // evaluates exactly the singleton and coherent endpoint; the endpoint
+    // merges the pair independently on all 16 Tiles.
     EXPECT_EQ(result.physicalIRInventory->tileRegions, 16u);
     ASSERT_EQ(result.physicalIRInventory->tiles.size(), 16u);
     for (const auto &tile : result.physicalIRInventory->tiles)

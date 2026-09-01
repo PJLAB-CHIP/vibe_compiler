@@ -68,7 +68,8 @@
 | Q61 whole-program scale readiness | `tasks/plans/whole-program-scale-readiness.md` | 01–02、06、14–18 |
 | Q48 semantic superoptimization | `tasks/plans/semantic-superoptimization.md` | 05–08、10–11、16–18 |
 
-Q52已闭合baseline/search current-IR mechanics及只使用现有RegionPlan的bounded partition refinement；未恢复历史Q51 shadow planning state。
+Q52已闭合baseline/search current-IR mechanics、只使用现有RegionPlan的bounded partition refinement及public deterministic
+search width/trials；未恢复历史Q51 shadow planning state。
 Q53形成fresh host/package/no-card与board-ready输入，不运行真实设备。
 Q49–Q51详细施工与原Q53板端设想位于
 `tasks/archive/physical-dataflow-synthesis-working-history.md`，Q54历史整改位于

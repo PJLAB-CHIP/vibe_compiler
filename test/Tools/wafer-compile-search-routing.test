@@ -4,7 +4,7 @@
 # each publishes its own verified package; neither policy falls back to the
 # other.
 
-# RUN: rm -rf %t.source %t.search-package %t.search-package-plain %t.none-package
+# RUN: rm -rf %t.source %t.search-package %t.search-package-plain %t.width-package %t.trials-package %t.limited-package %t.none-package
 # RUN: mkdir -p %t.source/functions
 # RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<2x1025x128xf16>, %%rhs: tensor<2x1025x128xf16>) -> tensor<2x1025x128xf16> {\n    %%result = stablehlo.add %%lhs, %%rhs : tensor<2x1025x128xf16>\n    return %%result : tensor<2x1025x128xf16>\n  }\n}\n' > %t.source/functions/forward.mlir
 # RUN: %stablehlo_translate --serialize --target=1.7.1 %t.source/functions/forward.mlir -o %t.source/functions/forward.stablehlo.bc && rm %t.source/functions/forward.mlir
@@ -13,10 +13,15 @@
 # RUN: test -d %t.search-package
 # RUN: wafer-compile --input-program-dir %t.source --output-dir %t.search-package-plain --num-partitions=1 --optimization-policy=search
 # RUN: diff -r %t.search-package %t.search-package-plain
+# RUN: wafer-compile --input-program-dir %t.source --output-dir %t.width-package --num-partitions=1 --optimization-policy=search --search-width=1 2>&1 | FileCheck %s --check-prefix=WIDTH
+# RUN: wafer-compile --input-program-dir %t.source --output-dir %t.trials-package --num-partitions=1 --optimization-policy=search --search-trials=1 2>&1 | FileCheck %s --check-prefix=TRIALS
+# RUN: wafer-compile --input-program-dir %t.source --output-dir %t.limited-package --num-partitions=1 --optimization-policy=search --search-width 1 --search-trials=1 --compile-timing 2>&1 | FileCheck %s --check-prefix=LIMITED
+# RUN: test -d %t.limited-package
+# RUN: wafer-run --package-dir %t.limited-package --no-card --direct-dte-status-abi wafer-direct-dte-status --supports-host-watchdog | FileCheck %s --check-prefix=NO-CARD
 # RUN: wafer-compile --input-program-dir %t.source --output-dir %t.none-package --num-partitions=1 --optimization-policy=none 2>&1 | FileCheck %s --check-prefix=NONE
 # RUN: test -d %t.none-package
 
-# SEARCH: wafer-compile: optimization-policy=search
+# SEARCH: wafer-compile: optimization-policy=search search-width=8 search-trials=42
 # SEARCH: wafer-compile: search-current-ir coverage=feasible-partial
 # SEARCH: physical-search
 # SEARCH: compile-counter category=accepted-instr name=instructions-executions
@@ -28,6 +33,26 @@
 # SEARCH: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
 # SEARCH-NOT: deterministic-device-executable-baseline
 # SEARCH-NOT: operation_not_supported
+
+# WIDTH: wafer-compile: optimization-policy=search search-width=1 search-trials=42
+# WIDTH: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
+# WIDTH-NOT: operation_not_supported
+
+# TRIALS: wafer-compile: optimization-policy=search search-width=8 search-trials=1
+# TRIALS: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
+# TRIALS-NOT: operation_not_supported
+
+# LIMITED: wafer-compile: optimization-policy=search search-width=1 search-trials=1
+# LIMITED: wafer-compile: search-current-ir coverage=feasible-partial structural=1 actual=1 accepted=1
+# LIMITED: compile-counter category=search name=trials value=1
+# LIMITED: compile-counter category=search name=trials-remaining value=0
+# LIMITED: compile-counter category=search name=trials-used value=1
+# LIMITED: compile-counter category=search name=width value=1
+# LIMITED: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
+# LIMITED-NOT: operation_not_supported
+
+# NO-CARD: invocation_tiles: 16
+# NO-CARD: board_execution: false
 
 # NONE: wafer-compile: optimization-policy=none
 # NONE: wafer-compile: wrote verified package with num-partitions=1 tiles=16:

@@ -653,6 +653,12 @@ Search最多actualize 8个structural candidates，并共享42次Temporal actual-
 group数选择delivery owner，数量相同再用complete key。该选择仍报告`FeasibleUnranked`，不宣称runtime优劣；任何相对reference存在actual term回退的
 candidate都不能凭Region更少覆盖safe incumbent。Unknown objective不进入此规则。
 
+Public search work limit只有`width`和`trials`。`width`是可访问的structural choices总数，`trials`是全局actual
+compilation次数；默认分别为8和42。正式CLI使用`--search-width`与`--search-trials`，public C++ API使用
+`OptimizationConfig::search(SearchLimits)`。Initial/refinement slots和单candidate Temporal上限是内部调度，不对外暴露。
+Search limit不是shape、legality、cost或wall-time policy；none不接受它，缺省参数保持现有结果。Effective limits在
+compiler diagnostic和compile counters中记录，相同source、target、policy和limits保持确定性。
+
 Candidate形成`TileExecutable`前必须调用target ABI preparation共用的exact program/DDR function-boundary verifier；argument/result binding不完整的
 Spatial/Region candidate在controller admission前返回typed failure，不能先作为Accepted winner保留、再由最终target codegen首次发现错误。
 

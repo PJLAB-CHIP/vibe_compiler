@@ -35,6 +35,12 @@ static llvm::Expected<DeviceExecutable> compileCurrentPolicy(
   ExecutableCompilationResult compiled;
   if (optimizations.isSearch()) {
     SearchCurrentIROptions options;
+    std::optional<SearchLimits> limits = optimizations.getSearchLimits();
+    if (!limits)
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "search optimization policy omitted its work limits");
+    options.limits = *limits;
     options.downstream.captureTileDataflowIR = irTrace != nullptr;
     SearchCurrentIRStatistics searchStatistics;
     compiled = compileSearchCurrentIR(tensorModule, program, executionConfig,

@@ -5,20 +5,29 @@
 
 #include "Wafer/Driver/CurrentIRExecutablePipeline.h"
 #include "Wafer/Driver/PhysicalDataflow/UnifiedSearch.h"
+#include "Wafer/Support/OptimizationConfig.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <limits>
 
 namespace wafer::compiler::detail {
 
 struct SearchCurrentIROptions {
   uint64_t layoutWorkLimit = UINT64_C(1048576);
   uint64_t maximumTemporalCandidatesPerStructuralState = 8;
-  uint64_t maximumCandidateActualizations = 42;
+  SearchLimits limits;
   bool stopTemporalAfterFirstAccepted = true;
   uint64_t planningCredits = std::numeric_limits<uint64_t>::max();
-  uint64_t maximumStructuralCandidates = 8;
-  uint64_t maximumInitialRegionProposals = 6;
-  uint64_t maximumRegionRefinementCandidates = 2;
   SearchTerminationPolicy termination = SearchTerminationPolicy::Exhaustive;
   CurrentIRDownstreamOptions downstream;
+
+  uint64_t getRefinementLimit() const {
+    return limits.width > 2 ? std::min<uint64_t>(2, limits.width - 2) : 0;
+  }
+  uint64_t getInitialProposalLimit() const {
+    return limits.width - getRefinementLimit();
+  }
 };
 
 struct SearchCurrentIRStatistics {
