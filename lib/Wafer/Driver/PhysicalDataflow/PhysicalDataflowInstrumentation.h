@@ -8,6 +8,8 @@
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
 
+#include "llvm/Support/FormatVariadic.h"
+
 #include <algorithm>
 #include <limits>
 
@@ -46,6 +48,15 @@ inline void recordAcceptedPhysicalDataflowInstrumentation(
                   inventory.maximumTileDataflowOperations);
   physicalCounter("singleton-dataflow-regions",
                   inventory.singletonDataflowRegions);
+  for (const PhysicalTileIRInventory &tile : inventory.tiles) {
+    const int64_t tileId = tile.tile.getValue();
+    physicalCounter(llvm::formatv("tile-{0}-regions", tileId).str(),
+                    tile.regions);
+    physicalCounter(llvm::formatv("tile-{0}-nested-operations", tileId).str(),
+                    tile.nestedOperations);
+    physicalCounter(llvm::formatv("tile-{0}-dataflow-operations", tileId).str(),
+                    tile.tileDataflowOperations);
+  }
 
   wafer::support::addCompileCounter("accepted-instr", "tiles",
                                     cost.tileCosts.size());

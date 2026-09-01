@@ -19,11 +19,14 @@
 #include "gtest/gtest.h"
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -693,6 +696,249 @@ module {
   EXPECT_EQ(domain->getProposalMetrics(proposals[1]).maximumRootsPerRegion, 2u);
   EXPECT_EQ(domain->getProposalMetrics(proposals[2]).maximumRootsPerRegion, 2u);
   EXPECT_EQ(domain->getProposalMetrics(proposals[3]).maximumRootsPerRegion, 4u);
+}
+
+TEST_F(RegionDomainTest,
+       FixedRegionCountRefinementEscapesTheGreedyCoarseningPath) {
+  // This intentionally tiny graph is an independently bounded partition
+  // oracle. Real-scale aligned/ragged coverage is provided by the neighboring
+  // RegionDomain tests over the same proposal mechanism.
+  std::string source;
+  llvm::raw_string_ostream os(source);
+  constexpr llvm::StringLiteral tensorType = "tensor<1x1x2xf16>";
+  auto emitMap = [&](llvm::StringRef result, llvm::StringRef empty,
+                     llvm::ArrayRef<llvm::StringRef> operands) {
+    os << "    " << empty << " = tensor.empty() : " << tensorType << "\n";
+    os << "    " << result << " = linalg.map ins(";
+    llvm::interleaveComma(operands, os);
+    os << " : ";
+    llvm::interleaveComma(operands, os,
+                          [&](llvm::StringRef) { os << tensorType; });
+    os << ") outs(" << empty << " : " << tensorType << ") (";
+    for (size_t index = 0; index < operands.size(); ++index) {
+      if (index != 0)
+        os << ", ";
+      os << "%v" << index << ": f16";
+    }
+    os << ") {\n";
+    std::string accumulated = "%v0";
+    for (size_t index = 1; index < operands.size(); ++index) {
+      os << "      %sum" << index << " = arith.addf " << accumulated << ", %v"
+         << index << " : f16\n";
+      accumulated = "%sum" + std::to_string(index);
+    }
+    if (operands.size() == 1) {
+      os << "      linalg.yield %v0 : f16\n";
+    } else {
+      os << "      linalg.yield %sum" << operands.size() - 1 << " : f16\n";
+    }
+    os << "    }\n";
+  };
+  os << "module {\n"
+        "  func.func @main(%x0: "
+     << tensorType << ", %x1: " << tensorType << ") -> " << tensorType
+     << " {\n";
+  emitMap("%a", "%e0", {"%x0"});
+  emitMap("%b", "%e1", {"%x1"});
+  llvm::SmallVector<llvm::StringRef, 24> inputs;
+  inputs.append(3, "%a");
+  inputs.append(3, "%b");
+  emitMap("%c", "%e2", inputs);
+  inputs.clear();
+  inputs.append(3, "%a");
+  inputs.append(13, "%b");
+  inputs.append(5, "%c");
+  emitMap("%d", "%e3", inputs);
+  inputs.clear();
+  inputs.append(8, "%b");
+  inputs.append(2, "%c");
+  inputs.append(2, "%d");
+  emitMap("%result", "%e4", inputs);
+  os << "    return %result : " << tensorType << "\n  }\n}\n";
+  os.flush();
+
+  auto module = parse(source);
+  ASSERT_TRUE(module) << source;
+  std::string failureReason;
+  auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+  auto works = buildWorks(*dag, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(works)) << failureReason;
+  auto domain = RegionDomain::create(*works, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
+  std::vector<RegionPlan> proposals = domain->getProposals(4);
+  ASSERT_EQ(proposals.size(), 4u);
+  RegionProposalMetrics refined = domain->getProposalMetrics(proposals[1]);
+  EXPECT_EQ(refined.regions, 3u);
+  EXPECT_EQ(refined.fusionMerges, 2u);
+  // The unrefined maximum-gain matching seed internalizes 16 uses. The
+  // fixed-count refinement crosses that local optimum without changing the
+  // number of Regions.
+  EXPECT_EQ(refined.localBindings, 21u);
+  EXPECT_TRUE(refined.exactLogicalBytesKnown);
+  EXPECT_EQ(refined.exactLogicalBytes, 84u);
+
+  struct WeightedEdge {
+    size_t producer;
+    size_t consumer;
+    uint64_t uses;
+  };
+  constexpr std::array<WeightedEdge, 8> edges{{
+      {0, 2, 3},
+      {1, 2, 3},
+      {0, 3, 3},
+      {1, 3, 13},
+      {2, 3, 5},
+      {1, 4, 8},
+      {2, 4, 2},
+      {3, 4, 2},
+  }};
+  auto isConnected = [&](llvm::ArrayRef<uint32_t> labels) {
+    for (uint32_t group = 0; group < 3; ++group) {
+      auto first = llvm::find(labels, group);
+      if (first == labels.end())
+        return false;
+      std::array<uint8_t, 5> reached{};
+      llvm::SmallVector<size_t, 5> worklist{
+          static_cast<size_t>(std::distance(labels.begin(), first))};
+      reached[worklist.front()] = 1;
+      while (!worklist.empty()) {
+        const size_t current = worklist.pop_back_val();
+        for (const WeightedEdge &edge : edges) {
+          size_t next = 5;
+          if (edge.producer == current)
+            next = edge.consumer;
+          else if (edge.consumer == current)
+            next = edge.producer;
+          if (next == 5 || labels[next] != group || reached[next])
+            continue;
+          reached[next] = 1;
+          worklist.push_back(next);
+        }
+      }
+      for (size_t vertex = 0; vertex < labels.size(); ++vertex)
+        if (labels[vertex] == group && !reached[vertex])
+          return false;
+    }
+    return true;
+  };
+  auto isAcyclic = [&](llvm::ArrayRef<uint32_t> labels) {
+    bool quotient[3][3]{};
+    std::array<uint32_t, 3> indegree{};
+    for (const WeightedEdge &edge : edges) {
+      const uint32_t source = labels[edge.producer];
+      const uint32_t destination = labels[edge.consumer];
+      if (source == destination || quotient[source][destination])
+        continue;
+      quotient[source][destination] = true;
+      ++indegree[destination];
+    }
+    llvm::SmallVector<uint32_t, 3> ready;
+    for (uint32_t group = 0; group < 3; ++group)
+      if (indegree[group] == 0)
+        ready.push_back(group);
+    uint32_t visited = 0;
+    while (!ready.empty()) {
+      const uint32_t source = ready.pop_back_val();
+      ++visited;
+      for (uint32_t destination = 0; destination < 3; ++destination)
+        if (quotient[source][destination] && --indegree[destination] == 0)
+          ready.push_back(destination);
+    }
+    return visited == 3;
+  };
+  uint64_t optimalLocalBindings = 0;
+  llvm::SmallVector<uint32_t, 5> labels(5, 0);
+  auto enumeratePartitions = [&](auto &&self, size_t vertex,
+                                 uint32_t groupCount) -> void {
+    if (vertex == labels.size()) {
+      if (groupCount != 3 || !isConnected(labels) || !isAcyclic(labels))
+        return;
+      uint64_t score = 0;
+      for (const WeightedEdge &edge : edges)
+        if (labels[edge.producer] == labels[edge.consumer])
+          score += edge.uses;
+      optimalLocalBindings = std::max(optimalLocalBindings, score);
+      return;
+    }
+    for (uint32_t group = 0; group <= groupCount && group < 3; ++group) {
+      labels[vertex] = group;
+      self(self, vertex + 1, std::max(groupCount, group + 1));
+    }
+  };
+  enumeratePartitions(enumeratePartitions, 1, 1);
+
+  std::array<size_t, edges.size()> edgeOrder{};
+  std::iota(edgeOrder.begin(), edgeOrder.end(), 0);
+  llvm::sort(edgeOrder, [&](size_t lhs, size_t rhs) {
+    return std::tie(edges[lhs].uses, edges[lhs].producer, edges[lhs].consumer) >
+           std::tie(edges[rhs].uses, edges[rhs].producer, edges[rhs].consumer);
+  });
+  std::array<uint8_t, 5> matched{};
+  uint64_t greedyMatchingBindings = 0;
+  for (size_t index : edgeOrder) {
+    const WeightedEdge &edge = edges[index];
+    if (matched[edge.producer] || matched[edge.consumer])
+      continue;
+    matched[edge.producer] = 1;
+    matched[edge.consumer] = 1;
+    greedyMatchingBindings += edge.uses;
+  }
+  EXPECT_EQ(greedyMatchingBindings, 16u);
+  EXPECT_EQ(optimalLocalBindings, 21u);
+  EXPECT_GT(refined.localBindings, greedyMatchingBindings);
+  EXPECT_EQ(refined.localBindings, optimalLocalBindings);
+  EXPECT_EQ(refined.exactLogicalBytes, optimalLocalBindings * 4);
+}
+
+TEST_F(RegionDomainTest,
+       IncumbentRefinementReturnsOnlyDifferentRawDomainMembers) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(%input: tensor<2x1025x128xf16>)
+      -> tensor<2x1025x128xf16> {
+    %e0 = tensor.empty() : tensor<2x1025x128xf16>
+    %a = linalg.map ins(%input : tensor<2x1025x128xf16>)
+        outs(%e0 : tensor<2x1025x128xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    %e1 = tensor.empty() : tensor<2x1025x128xf16>
+    %b = linalg.map ins(%a : tensor<2x1025x128xf16>)
+        outs(%e1 : tensor<2x1025x128xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    %e2 = tensor.empty() : tensor<2x1025x128xf16>
+    %c = linalg.map ins(%b : tensor<2x1025x128xf16>)
+        outs(%e2 : tensor<2x1025x128xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    return %c : tensor<2x1025x128xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  std::string failureReason;
+  auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+  auto works = buildWorks(*dag, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(works)) << failureReason;
+  auto domain = RegionDomain::create(*works, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
+  std::vector<RegionPlan> initial = domain->getProposals(3);
+  ASSERT_EQ(initial.size(), 3u);
+  std::vector<RegionPlan> refinements =
+      domain->getRefinementProposals(initial[1], 2);
+  EXPECT_LE(refinements.size(), 2u);
+  for (const RegionPlan &plan : refinements) {
+    EXPECT_TRUE(domain->contains(plan));
+    EXPECT_FALSE(plan == initial[1]);
+  }
+  EXPECT_TRUE(domain->getRefinementProposals(RegionPlan{}, 2).empty());
+
+  std::reverse(works->begin(), works->end());
+  auto reordered = RegionDomain::create(*works, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(reordered)) << failureReason;
+  std::vector<RegionPlan> reorderedInitial = reordered->getProposals(3);
+  ASSERT_EQ(reorderedInitial, initial);
+  EXPECT_EQ(reordered->getRefinementProposals(reorderedInitial[1], 2),
+            refinements);
 }
 
 TEST_F(RegionDomainTest, ExactLogicalPayloadOrdersTheCoherentMergeSequence) {

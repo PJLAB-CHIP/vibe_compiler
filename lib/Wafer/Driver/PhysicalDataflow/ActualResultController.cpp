@@ -80,6 +80,18 @@ bool hasSPMCapacityRejection(const ActualCandidateResult &result) {
                       });
 }
 
+uint64_t getSelectedRegionCount(const RetainedSearchCandidate &candidate) {
+  return candidate.key.getRegionPlan().groups.size();
+}
+
+bool isNoWorseThanReference(const SearchObjective &objective,
+                            const SearchObjective &reference) {
+  SearchObjectiveComparison comparison =
+      compareSearchObjectives(objective, reference);
+  return comparison == SearchObjectiveComparison::Better ||
+         comparison == SearchObjectiveComparison::Equivalent;
+}
+
 } // namespace
 
 mlir::FailureOr<SearchCostCohort>
@@ -284,6 +296,8 @@ ActualResultController::record(const StructuralCandidateKey &key,
         result.compilation->executable->resourceCost, cohort);
     RetainedSearchCandidate candidate{key, objective,
                                       std::move(*result.compilation)};
+    if (!referenceObjective)
+      referenceObjective = candidate.objective;
     bool replace = !incumbent;
     if (incumbent) {
       SearchObjectiveComparison comparison =
@@ -300,6 +314,25 @@ ActualResultController::record(const StructuralCandidateKey &key,
         break;
       case SearchObjectiveComparison::Incomparable:
         sawUnknownOrIncomparable = true;
+        if (referenceObjective) {
+          const bool candidateQualified =
+              isNoWorseThanReference(candidate.objective, *referenceObjective);
+          const bool incumbentQualified =
+              isNoWorseThanReference(incumbent->objective, *referenceObjective);
+          if (candidateQualified != incumbentQualified) {
+            replace = candidateQualified;
+            break;
+          }
+          if (candidateQualified) {
+            const uint64_t candidateRegions = getSelectedRegionCount(candidate);
+            const uint64_t incumbentRegions =
+                getSelectedRegionCount(*incumbent);
+            if (candidateRegions != incumbentRegions) {
+              replace = candidateRegions < incumbentRegions;
+              break;
+            }
+          }
+        }
         replace = candidate.key < incumbent->key;
         break;
       }

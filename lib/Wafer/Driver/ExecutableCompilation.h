@@ -66,6 +66,13 @@ struct ExecutableTileFailure {
 /// Bounded read-only summary of the accepted movement-closed physical IR.
 /// It contains no operation/value handles and is never consulted by search,
 /// legality, memory planning, target lowering or package serialization.
+struct PhysicalTileIRInventory {
+  TileId tile{0};
+  uint64_t regions = 0;
+  uint64_t nestedOperations = 0;
+  uint64_t tileDataflowOperations = 0;
+};
+
 struct PhysicalDataflowIRInventory {
   uint64_t tileModules = 0;
   uint64_t tileRegions = 0;
@@ -76,6 +83,7 @@ struct PhysicalDataflowIRInventory {
   uint64_t minimumTileDataflowOperations = 0;
   uint64_t maximumTileDataflowOperations = 0;
   uint64_t singletonDataflowRegions = 0;
+  std::vector<PhysicalTileIRInventory> tiles;
 };
 
 /// Returns true only when Tile memory planning carries an explicit SPM

@@ -30,7 +30,8 @@ struct SearchFixture {
 
 SearchFixture prepare(mlir::ModuleOp module, llvm::raw_ostream &diagnostics,
                       std::string &failureReason,
-                      PlanningProfileSink *profile = nullptr) {
+                      PlanningProfileSink *profile = nullptr,
+                      uint64_t maximumRegionProposals = 16) {
   SearchFixture result;
   auto analysis = analyzeStructuredProgram(module, programMetadata(),
                                            executionConfig(), diagnostics);
@@ -44,7 +45,7 @@ SearchFixture prepare(mlir::ModuleOp module, llvm::raw_ostream &diagnostics,
     return result;
   result.problem.emplace(std::move(*problem));
   result.session = std::make_unique<PhysicalDataflowPlanningSession>(
-      *result.problem, 16, profile);
+      *result.problem, maximumRegionProposals, profile);
   return result;
 }
 
@@ -56,7 +57,9 @@ RuntimeLaunchContract makeLaunch() {
 
 class AcceptingEvaluator final : public StructuralCandidateEvaluator {
 public:
-  StructuralCandidateEvaluation evaluate(const RegionState &state) override {
+  StructuralCandidateEvaluation
+  evaluate(const RegionState &state, uint64_t actualizationCredits) override {
+    EXPECT_GT(actualizationCredits, 0u);
     observed.push_back(StructuralCandidateKey::create(state));
     InstructionProgramAggregateCost cost;
     cost.aggregateInstructionCount.value = 1;
@@ -76,7 +79,9 @@ public:
 class FirstInnerDomainIncompleteEvaluator final
     : public StructuralCandidateEvaluator {
 public:
-  StructuralCandidateEvaluation evaluate(const RegionState &state) override {
+  StructuralCandidateEvaluation
+  evaluate(const RegionState &state, uint64_t actualizationCredits) override {
+    EXPECT_GT(actualizationCredits, 0u);
     observed.push_back(StructuralCandidateKey::create(state));
     if (observed.size() == 1) {
       ActualCandidateResult result;
@@ -85,7 +90,27 @@ public:
       return {std::move(result), 2, false};
     }
     AcceptingEvaluator accepting;
-    return accepting.evaluate(state);
+    return accepting.evaluate(state, actualizationCredits);
+  }
+
+  std::vector<StructuralCandidateKey> observed;
+};
+
+class FirstAcceptingThenUnsupportedEvaluator final
+    : public StructuralCandidateEvaluator {
+public:
+  StructuralCandidateEvaluation
+  evaluate(const RegionState &state, uint64_t actualizationCredits) override {
+    EXPECT_GT(actualizationCredits, 0u);
+    observed.push_back(StructuralCandidateKey::create(state));
+    if (observed.size() == 1) {
+      AcceptingEvaluator accepting;
+      return accepting.evaluate(state, actualizationCredits);
+    }
+    ActualCandidateResult result;
+    result.status = ActualCandidateStatus::Unsupported;
+    result.detail = "test structural candidate is unsupported";
+    return {std::move(result), 1, true};
   }
 
   std::vector<StructuralCandidateKey> observed;
@@ -203,6 +228,58 @@ TEST(UnifiedSearchTest,
   EXPECT_EQ(result.control.coverage, SearchControllerCoverage::FeasiblePartial);
   EXPECT_EQ(result.control.statistics.accepted, 1u);
   EXPECT_EQ(result.control.statistics.exhaustedReservations, 1u);
+}
+
+TEST(UnifiedSearchTest,
+     ActualizationBudgetRetainsTheActualIncumbentWithoutStartingAnotherLeaf) {
+  ParsedProgram parsed = parseProgram();
+  ASSERT_TRUE(parsed.module);
+  std::string diagnosticsText;
+  llvm::raw_string_ostream diagnostics(diagnosticsText);
+  std::string failureReason;
+  SearchFixture fixture = prepare(*parsed.module, diagnostics, failureReason);
+  ASSERT_TRUE(fixture.session) << failureReason;
+  AcceptingEvaluator evaluator;
+  UnifiedSearchOptions options;
+  options.structuralCandidateCredits = 4;
+  options.candidateActualizationCredits = 1;
+  UnifiedSearchResult result =
+      runUnifiedSearch(*fixture.session, evaluator, options);
+  ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
+  EXPECT_EQ(evaluator.observed.size(), 1u);
+  EXPECT_EQ(result.work.structuralStatesActualized, 1u);
+  EXPECT_EQ(result.work.candidateActualizations, 1u);
+  EXPECT_FALSE(result.frontierExhausted);
+  EXPECT_EQ(result.control.coverage, SearchControllerCoverage::FeasiblePartial);
+  EXPECT_EQ(result.control.statistics.accepted, 1u);
+}
+
+TEST(UnifiedSearchTest,
+     InitialProposalsAppendBoundedNeighborsAroundTheActualIncumbent) {
+  ParsedProgram parsed = parseThreeStageDependentProgram();
+  ASSERT_TRUE(parsed.module);
+  std::string diagnosticsText;
+  llvm::raw_string_ostream diagnostics(diagnosticsText);
+  std::string failureReason;
+  SearchFixture fixture =
+      prepare(*parsed.module, diagnostics, failureReason, nullptr, 2);
+  ASSERT_TRUE(fixture.session) << failureReason;
+  FirstAcceptingThenUnsupportedEvaluator evaluator;
+  UnifiedSearchOptions options;
+  options.structuralCandidateCredits = 3;
+  options.candidateActualizationCredits = 3;
+  options.maximumRegionRefinementCandidates = 1;
+  UnifiedSearchResult result =
+      runUnifiedSearch(*fixture.session, evaluator, options);
+  ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
+  ASSERT_EQ(evaluator.observed.size(), 3u);
+  EXPECT_EQ(evaluator.observed[0].getRegionPlan().groups.size(), 48u);
+  EXPECT_EQ(evaluator.observed[1].getRegionPlan().groups.size(), 47u);
+  EXPECT_EQ(evaluator.observed[2].getRegionPlan().groups.size(), 16u);
+  EXPECT_EQ(result.work.structuralStatesActualized, 3u);
+  EXPECT_EQ(result.work.candidateActualizations, 3u);
+  EXPECT_EQ(result.control.statistics.accepted, 1u);
+  EXPECT_EQ(result.control.statistics.unsupported, 2u);
 }
 
 TEST(UnifiedSearchTest,

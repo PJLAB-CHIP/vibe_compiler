@@ -60,6 +60,8 @@ TEST(SearchRoutingTest, SearchBuildsOneCurrentIRDeviceExecutable) {
       << diagnosticsText;
   for (llvm::StringRef counter : {
            "compile-counter category=accepted-physical-ir name=tile-regions",
+           "compile-counter category=accepted-physical-ir "
+           "name=tile-0-regions value=1",
            "compile-counter category=accepted-instr "
            "name=instructions-executions",
            "compile-counter category=accepted-instr name=tiles value=16",
@@ -76,11 +78,11 @@ TEST(SearchRoutingTest, SearchBuildsOneCurrentIRDeviceExecutable) {
            "compile-counter category=search "
            "name=region-candidate-0-objective-known value=1",
            "compile-counter category=search "
-           "name=candidate-actualizations value=4",
+           "name=candidate-actualizations value=8",
            "compile-counter category=search "
            "name=accepted-structural-states value=1",
            "compile-counter category=search "
-           "name=unsupported-structural-states value=3",
+           "name=unsupported-structural-states value=7",
        })
     EXPECT_NE(diagnosticsText.find(counter.str()), std::string::npos)
         << counter.str() << "\n"
@@ -104,6 +106,10 @@ TEST(SearchRoutingTest, NoneBuildsOneCurrentIRDeviceExecutable) {
   }
   EXPECT_EQ(executable->getTileExecutables().size(), 16u);
   EXPECT_EQ(diagnosticsText.find("operation_not_supported"), std::string::npos)
+      << diagnosticsText;
+  EXPECT_EQ(diagnosticsText.find("search-current-ir"), std::string::npos)
+      << diagnosticsText;
+  EXPECT_EQ(diagnosticsText.find("name=region-refinement"), std::string::npos)
       << diagnosticsText;
 }
 

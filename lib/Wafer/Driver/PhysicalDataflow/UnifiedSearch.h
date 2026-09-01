@@ -24,6 +24,8 @@ enum class SearchTerminationPolicy : uint8_t {
 struct UnifiedSearchOptions {
   uint64_t planningCredits = std::numeric_limits<uint64_t>::max();
   uint64_t structuralCandidateCredits = std::numeric_limits<uint64_t>::max();
+  uint64_t candidateActualizationCredits = std::numeric_limits<uint64_t>::max();
+  uint64_t maximumRegionRefinementCandidates = 0;
   SearchTerminationPolicy termination = SearchTerminationPolicy::Exhaustive;
   std::optional<SearchCostCohort> costCohort;
   ExactRejectionCachePolicy exactRejectionCache =
@@ -76,7 +78,8 @@ struct StructuralCandidateEvaluation {
 class StructuralCandidateEvaluator {
 public:
   virtual ~StructuralCandidateEvaluator() = default;
-  virtual StructuralCandidateEvaluation evaluate(const RegionState &state) = 0;
+  virtual StructuralCandidateEvaluation
+  evaluate(const RegionState &state, uint64_t actualizationCredits) = 0;
 };
 
 enum class UnifiedSearchResumeStatus : uint8_t {

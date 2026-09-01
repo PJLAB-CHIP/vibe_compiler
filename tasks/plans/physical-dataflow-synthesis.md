@@ -1,6 +1,7 @@
 # Physical Dataflow Current-IR实施计划
 
-Q52 current-IR mechanics和Region fusion quality均已闭合；Q53尚未启动。动态状态只读`tasks/progress.md`；
+Q52 current-IR mechanics和Region partition refinement均已闭合；Q53尚未启动。
+动态状态只读`tasks/progress.md`；
 第1--11项的施工、删除账本和验证记录见`tasks/archive/physical-dataflow-synthesis-q52-plan-history.md`；第12--15项的完成边界见
 `tasks/archive/completed-task-index.md`。
 稳定语义由05--16号编号设计拥有。
@@ -30,8 +31,8 @@ Pipeline position:
   不建立future-output IR、shadow operation/buffer/event/schedule plan、兼容双路径或plan/actual parity verifier；
   不用footprint estimate决定SPM合法性；不猜join/wait；不修改数值语义；本计划不运行真实设备。
 - Completion criteria:
-  Q52第12--20项及Region fusion quality已经闭合，两条policy互不调用或fallback，current IR是唯一事实源。当前Q53完成要求
-  fresh host/package/oracle/runner/no-card矩阵实际执行并达到`board-ready`；不能由Q52的单一LLaMA成功case或archive代签。
+  Q52第12--20项mechanics与Region refinement均已闭合，current IR继续是唯一事实源。当前Q53完成要求fresh
+  host/package/oracle/runner/no-card矩阵实际执行并达到`board-ready`；不能由Q52的LLaMA成功case或archive代签。
 ```
 
 ## 已闭合前置
@@ -169,24 +170,28 @@ LLVM/MLIR规范复审→更新状态并提交”。不得以全局原则替代�
 | --- | --- | --- | --- | --- |
 | same-source two-policy acceptance | current FP16 LLaMA block；两个独立process、ProgramData和output directory | timeout/OOM/skip/fallback/未进actual planner均失败 | 每次≤15分钟；source identity相同；IR/result不共享；package唯一；冗余DDR→DDR publication copy为0；必要copy在movement closure后typed且Instr无copy-only Region；search temporal feedback不产生静态body倍增；两条policy均实际进入Instr、MiniMalloc、DDR和target | strict loader、host reference、no-card |
 
-## Q52 Region Fusion Quality Closure（已闭合）
+## Q52 Region Partition Refinement（已闭合）
 
 ### 问题与pipeline边界
 
 ```text
 Pipeline position:
 - Upstream IR / input: immutable TensorProgram、closed SpatialState、RootRegionWork和完整RegionDomain。
-- Current stage responsibility: 生成少量、整图、由低融合到graph-coherent的普通RegionPlan proposals，并把每个plan交给现有actual candidate transaction。
-- Output IR / files: 无新IR或side file；输出仍是一个retained actual winner或typed failure，显式timing只增加bounded per-snapshot汇总。
+- Current stage responsibility: 直接在完整RegionDomain上生成多粒度RegionPlan seed，在相同Region数量下移动合法boundary root以改善完整partition，
+  保留结构Pareto候选并把每个plan交给现有actual candidate transaction；第一轮结束后只围绕actual incumbent的RegionPlan再生成至多两个邻域候选。
+- Output IR / files: 不新增IR、schema、side file或partition类型；输出仍是一个retained actual winner或typed failure，显式timing增加bounded per-candidate和逐Tile汇总。
 - Downstream consumer: current structural materializer、Temporal tile-and-fuse、layout/movement/completion和actual memory/target leaf。
 - User-level driver / named pipeline: public optimization-policy=search的同一PlanningSession/UnifiedSearch入口。
-- Explicit non-goals: 不修改raw RegionDomain，不预测SPM合法性，不建立future buffer/event plan，不按Region数强制winner，不增加用户可选fusion模式。
-- Completion criteria: P0/P1/P2/Pk均可达并actualize；真实规模整图coarsening、actual movement消除、SPM反馈、winner quality和15分钟LLaMA门禁同时闭合。
+- Explicit non-goals: 不修改raw RegionDomain集合；不新增Graph/Hypergraph、MergeForest、PartitionPlan、RegionPlanV2或其它持久表示；不预测SPM合法性，
+  不建立future operation/buffer/event plan，不按Region数强制winner，不增加用户可选fusion模式，不根据wall time改变搜索结果。
+- Completion criteria: 最多6个initial和2个incumbent-neighborhood RegionPlan、全局最多42次actual attempts；真实规模partition refinement、
+  actual movement消除、typed SPM反馈、逐Tile Region统计、winner quality和20分钟LLaMA门禁同时闭合。
 ```
 
-现有证据说明问题不是RegionDomain缺少融合能力，而是proposal batch错误：同一LLaMA的singleton `P0`有1360个Region并可行；旧
-graph-coherent proposal只有112个Region，但在其Temporal预算内被actual SPM拒绝；提交`6221d9a8`又把4个slots全部用于`P0`和三个
-单edge sibling，最终winner为1359个Region。前者缺少可行中间点，后者没有融合深度，两者都不能作为quality closure。
+2026-09-01 checkpoint证明coherent-prefix实现已经从无融合提升到pair fusion，但仍只访问一条coarsening path：actual winner的
+RegionPlan为997个Region、maximum roots为2，最终actual TileRegion为965；下一prefix有554个Region但在进入Temporal actualization前
+typed Unsupported，endpoint在8次actual attempts后仍Indeterminate。当前算法因此没有访问相同Region数量下的其它boundary placement，
+也没有访问浅层winner与下一prefix之间的component-mixed partition。
 
 ### 算法选择
 
@@ -195,70 +200,78 @@ graph-coherent proposal只有112个Region，但在其Temporal预算内被actual 
 | singleton后直接coherent/maximal | 拒绝；只有一个高压资源点，失败后没有中间partition。 |
 | 按全局merge count breadth-first | 拒绝；LLaMA level-1即有大量siblings，固定budget永远到不了有意义的深度。 |
 | 用capacity rejection对merge count二分或剪枝 | 拒绝；融合既可能延长lifetime也可能删除buffer，SPM可行性不随Region数单调。 |
-| 动态最大收益greedy matching rounds + bounded prefix snapshots | 采用；只建立一条高质量coherent路径，每轮先把收益高且互不相交的merge分布到整图，再用固定actual slots覆盖该路径；不枚举partition lattice或限制group大小。 |
+| 单一maximum-gain matching path加更多prefix | 拒绝；增加的候选仍共享早期greedy决定，不能改善相同Region数量下的partition。 |
+| 按operator kind、shape、group-size或预测SPM拆分 | 拒绝；这是case规则或猜测resource legality。 |
+| exact ILP/DP枚举完整partition | 拒绝；general DAG空间指数级，并要求可分解的预测cost或future plan。 |
+| multilevel seed + bounded boundary refinement + actual selection | 采用；coarsening只提供不同粒度seed，FM-style move在同一Region数量下改善完整partition，
+  structural metric只负责候选排序，最终仍由actual current IR签发。 |
 
 实现参考只借用成熟方法的边界，不照搬其硬件假设：IREE `FormDispatchRegions`从root出发形成完整fusion groups，并将loop-map、dominance、
 operand/bufferization限制与region construction放在同一流程；XLA GPU priority fusion把“emitter能否支持”与“融合是否有收益”分开，并在每次merge后
-更新priority；Halide autoscheduler的coarse-to-fine结果说明把budget耗在大量同类微小变体上会损失long-range decision diversity。Wafer只采用
-“完整group、动态marginal-gain priority和coherent-path diversity”，所有resource legality仍由actual MiniMalloc/target leaf签发。
+更新priority；acyclic multilevel partitioning以feasible matching形成coarse seed，再通过uncoarsening/FM move保持quotient DAG无环；
+Halide coarse-to-fine结果说明扩大候选数而不保留顶层结构diversity没有价值；Apollo说明下游无法消费某个group时，上游必须能生成另一partition。
+Wafer只采用这些算法边界，不采用operator rule table、预测resource weight、learned footprint或持久fusion-plan IR。
 
 Primary references：
 
 - IREE `FormDispatchRegions.cpp`：<https://github.com/iree-org/iree/blob/main/compiler/src/iree/compiler/DispatchCreation/FormDispatchRegions.cpp>
 - XLA GPU `priority_fusion.h/.cc`：<https://github.com/openxla/xla/tree/main/xla/backends/gpu/transforms>
+- Acyclic multilevel DAG partitioning：<https://people.bordeaux.inria.fr/julien.herrmann/pub/conf/ccgrid2017.pdf>
 - Halide coarse-to-fine autoscheduling：<https://halide-lang.org/papers/autoscheduler2019.html>
+- Apollo downstream partition feedback：<https://proceedings.mlsys.org/paper_files/paper/2022/file/e175e8a86d28d935be4f43719651f86d-Paper.pdf>
 
-### Coherent merge sequence与prefix snapshots
+### 唯一表示与算法
 
-1. 对每个Tile component建立query-local quotient graph。Vertex是current group；edge只来自已经证明`allowsRequiredLocal`的actual root-use
-   relation。Cannot-link、connected group、internal binding totality和contracted DAG acyclicity继续调用RegionDomain的同一规则。
-2. 每个合法merge的marginal gain只计算本次由external转为local的distinct bindings。对应ExactIndexSet和dtype均能给出exact static payload时形成
-   `KnownExactGain(bytes, bindingCount)`；否则形成`BindingOnlyGain(bindingCount)`，unknown bytes不转换成0。Priority kind先KnownExact后
-   BindingOnly，两类内部按gain降序，最后使用semantic root pair、Tile component和稳定RootRegionWork key确定tie。Fanout仍在group外的uses不计入gain；不读取预测layout、
-   SPM footprint、lifetime或future instruction。
-3. 从singleton执行确定性的greedy matching rounds。每轮从尚未参与本轮的current groups之间反复选择最大gain合法merge；一个group在
-   本轮union后不再参与其它merge，直到下一轮才重新进入候选集合。这样第一批merge优先覆盖整图中的独立producer-consumer边，而不是让
-   一条局部chain先长到endpoint。轮次不是`group <= 2/4`之类的合法性或大小限制：下一轮可以继续扩大同一个group，直到整图没有合法merge。
-   每次union后按current labels重算marginal gain。Query-local merge history只记录本次proposal计算中的root-group union choice，snapshot通过
-   该序列取得labels；它在`getProposals()`返回后销毁，不表示future operation、buffer、lifetime、movement或SPM事实。Component-maximal
-   partition只有本身属于raw domain时才可作为相同endpoint。
-4. 设成功merge总数为`M`、allowance为`K`。`P0`取0-prefix、`Pk`取M-prefix；中间第`i`个snapshot取
-   `ceil(i*M/(K-1))` prefix。`K=4`时得到singleton、约1/3、约2/3和coherent四个完整plan。Snapshot不限制group root数；group大小完全由
-   graph和merge order自然产生。去重后有空slot才加入explicit-replica proposal。Raw cursor独立保留完整domain。
-5. 不为每次merge构造whole-program RegionPlan，也不保存全部prefix。只对K个snapshot调用完整construction和`contains`。Proposal query对象在
-   返回batch后销毁，不成为candidate/actual双事实源。
+1. `RegionDomain`继续是完整lazy choice domain，`RegionPlan`继续是唯一partition choice。现有components和local fragments继续为raw domain服务；
+   本项只增加当前调用内的normalized labels、edge index、candidate move和score，不增加public Graph/Hypergraph或merge-history类型。
+   任何proposal必须经同一个`buildPlan`和`contains`。
+2. 现有maximum-gain feasible matching只负责生成不同Region数量的seed。Production allowance至少为2时，P0和graph-coherent endpoint始终保留；其余seed按成功merge距离覆盖
+   coarsening过程，但不直接视为最终候选。
+3. 每个中间seed在固定Region数量下执行bounded FM-style boundary refinement。一次move只把一个current boundary root从source group移到相邻
+   destination group；source和destination均须connected、cannot-link和binding totality成立，contracted dependency graph仍acyclic。每个root在一轮
+   refinement中至多移动一次；算法可以经过非改善move，但只发布该轮访问过的最佳完整partition。Move priority依次比较
+   known exact localized bytes、local binding数和unknown localized binding数；unknown bytes不按零处理，所有tie使用RootRegionWork semantic key。
+4. Structural metric只读取现有LocalFragment relation：分别记录known exact localized-use bytes、unknown localized binding数、
+   Region数和external binding数。本项不对publication closure打分，不预测store；仍在group外的relation保持external，由actual
+   materialization和movement根据current IR决定。候选只在相同Region数量内按这些独立维度做Pareto过滤；不同Region数量继续作为
+   structural diversity保留，不把unknown改成0，也不把Region数变成普通winner cost。
+5. 第一轮最多输出6个完整RegionPlan：P0、endpoint及至多4个不同Region数量的refined non-dominated seed。当剩余两个initial slots时，
+   controller把当前incumbent已有的RegionPlan交回同一个query，并把至多2个合法邻域RegionPlan插到剩余深seed之前；query在枚举过程中只保留确定top-2，
+   不累积所有move的labels，不读取incumbent的future buffer/layout事实，
+   不从failure diagnostic推断merge原因。
+6. Search最多actualize 8个structural candidates，并使用全局42次Temporal actual-attempt credits。Credit exhaustion返回准确partial coverage；
+   compiler不按wall time停止，外部LLaMA验收门禁为20分钟。每个RegionPlan独立物化，Accepted owner直接保留，winner不重建。
+7. 第一个Accepted objective是no-regression reference。互相incomparable的known candidates只有都Pareto不差于reference时，才以现有
+   StructuralCandidateKey中的RegionPlan group数选择delivery owner并保持`FeasibleUnranked`；Region更少不能覆盖任何actual term相对reference回退的incumbent。
 
-复杂度边界：构造quotient graph为`O(V+E)`；当前直接实现对至多`V-C`次union重建cross-group edge，并对候选调用完整DAG legality，保守
-worst case为`O(V*E*(V+E))`，各Tile component独立；K个snapshot的完整plan construction为`O(K*(V+E))`，总空间为
-`O(K*(V+E))`。本项记录work/wall/RSS并消除“每merge一次buildPlan”这类重复工作；只有profile证明proposal query仍是热点时才引入
-incremental adjacency/reachability，不能用缩短merge序列或遗漏endpoint换性能。
-General DAG不声明全局最优；quality必须由tiny exhaustive oracle、maximum-spanning-forest baseline、真实规模cut gain及final actual objective共同证明。
-
-每个snapshot都由自己的candidate transaction实际物化。Actual capacity rejection只作用于该complete Region/Temporal tuple，不能删除其它
-prefix；Pk失败时P1/P2仍可成为winner。Winner继续使用final current Instr的resource objective；merge count、logical cut gain和snapshot位置只作
-coverage与diagnostic。
+复杂度边界：设root-work数为`V`、eligible relation数为`E`、seed数为`S<=6`。Coarsening沿现有实现保守为
+`O(V*E*(V+E))`；每个component的boundary refinement将每个root锁定一次，并重算exact component score与完整DAG legality检查候选，
+保守为`O(S*V*E*(V+E))`，空间只保存最多8个普通RegionPlan及`O(V+E)` query work。实现记录proposal/refinement数量、query wall和RSS；
+不得通过跳过endpoint、缩小raw domain或预测SPM换取性能。General DAG不声明全局最优，quality由tiny independent exhaustive fixed-region-count oracle、
+真实规模cut gain和final actual objective共同约束。
 
 ### 覆盖矩阵与验收
 
 | 输入等价类 | Shape / 结构 | Typed failure | 精确断言 | 下游witness |
 | --- | --- | --- | --- | --- |
-| merge sequence与raw-domain独立性 | chain、diamond、fanout/fanin、reduction；rank 3--6；1024/1025/1031；1/16 Tile | proposal work结束只降低priority coverage，不返回empty domain | snapshot均`contains`；每个distinct snapshot严格coarsen前一项；Pk始终存在；关闭/反转proposal后raw plan集合不变 | PlanningSession按P0/P1/P2/Pk次序交给同一materializer |
-| proposal quality | 长chain、star fanout、多component、cannot-link；rank 3--6；1024/1025/1031 | 某merge破坏binding totality或DAG时只跳过该merge，不能丢其它合法edge | gain按新增local exact bytes/bindings动态更新；tiny可穷举case按相同merge数对照完整RegionDomain最优cut；同轮group不重复参与但后续轮可继续增长；P1/P2跨多个Tile/semantic edges | actual TileRegion/local/external binding数与snapshot逐项一致 |
-| actual quality与容量非单调 | P0/P1/P2/Pk分别accepted/rejected组合；1024/1025 | capacity、unsupported、indeterminate、compiler error保持typed区分 | 无基于Region数的pruning；每plan只materialize一次；accepted candidate记录actual DDR read/write、Instr和objective；winner不重建 | retained owner进入唯一target/package路径 |
-| LLaMA acceptance | 同一current FP16 LLaMA source，16 Tile | timeout/OOM/skip/fallback/未到actual leaf均失败 | ≤15分钟实际访问0/约1/3/约2/3/full prefixes；中间snapshot跨多个Tile/semantic edges且至少一个Accepted；相对P0，winner在enabled objective上Pareto更好，Region下降由local binding和actual DDR store/load消除共同解释 | 两policy独立package、strict readback/no-card；不声明板端性能 |
+| raw-domain与唯一表示 | chain、diamond、fanout/fanin、reduction；rank 3--6；1024/1025/1031；1/16 Tile | proposal/refinement work limit只降低priority coverage，不返回empty raw domain | 每个candidate均`contains`；proposal query前后raw plan集合、输入IR和RegionPlan schema不变；source order扰动得到同一结果 | PlanningSession只收到现有RegionPlan，materializer API不变 |
+| fixed-count boundary refinement | 长chain、diamond、reconvergent fanout/fanin、cannot-link；tiny oracle加1024/1025 | move导致source/destination断连、binding hole或quotient cycle时只拒绝该move | 同Region数量下refined known bytes/local bindings不差于seed；tiny独立穷举所有connected/acyclic合法partition并量化最优gap，已知greedy trap必须严格改善；FM best-prefix和semantic tie确定 | refined plan实际materialize并保持all-and-only roots/bindings |
+| structural Pareto与incumbent邻域 | 1/2/16 Tile、多个独立component、known/unknown exact domain | unknown bytes不转0；无incumbent时不伪造refinement source | initial<=6、neighborhood<=2、总candidate<=8；P0/endpoint不可饥饿；被保留candidate互不重复，所有observable排序稳定 | UnifiedSearch逐一actualize普通RegionState，raw successor仍可继续 |
+| actual quality与全局work budget | aligned/ragged chain、fanout、reduction、attention；1024/1025/1031 | capacity、unsupported、indeterminate、credit exhaustion和compiler error保持typed区分 | 全局actual attempts<=42；无基于Region数/SPM估算的pruning；accepted candidate记录逐Tile Region、DDR/NoC/SPM/Instr和9项objective；winner不重建 | retained owner进入唯一target/package路径 |
+| LLaMA acceptance | 同一current FP16 LLaMA source，16 Tile | timeout/OOM/skip/fallback/未进actual planner均失败 | search<=20分钟；winner相对2026-09-01基线在enabled actual objective上严格更好，逐Tile Region总和等于actual inventory；none路径及结果不变 | 两policy独立package、strict readback/no-card；不声明板端性能 |
 
-`--compile-timing`增加固定上限的per-snapshot summary：prefix merge count、cumulative exact cut gain、Region/local/external binding数、actual status、Temporal actualization数及
-Accepted后的DDR read/write、Instr sites和objective classification。它不逐Region打印，不构造expected inventory，不参与proposal、legality或winner。
+`--compile-timing`增加固定上限的per-candidate summary及16 Tile逐TileRegion数、root-count histogram、actual status、Temporal actualization、
+DDR/NoC/SPM/Instr和objective classification。它不逐Region打印，不构造expected inventory，不参与proposal、legality或winner。
 
 ### 实施顺序
 
-1. 保留当前raw successor和RegionPlan materializer，替换错误的single-edge BFS proposal builder；恢复graph-coherent endpoint不可饥饿合同。
-2. 实现dynamic maximum-gain greedy matching sequence及bounded prefix snapshots，先证明plan membership、nested partition、quality oracle和work bound。
-3. 接入PlanningSession allowance与bounded instrumentation，验证proposal关闭不改变raw domain和candidate key。
-4. 运行aligned/ragged actual chain、diamond、fanout及capacity组合，核对Region→Temporal→layout/movement→MiniMalloc→objective完整链。
-5. 使用同一LLaMA source执行planning inventory后再做一次最终search/none package与strict no-card；只有上述quality门禁全部满足才重新关闭Q52。
+1. 保留raw successor、RegionPlan和唯一materializer；先扩展逐Tile read-only instrumentation及全局actual credit，证明它们不改变choice/result。
+2. 将现有coarsening输出改为最多6个seed，并实现fixed-count boundary refinement、structural metrics、Pareto去重和tiny exhaustive oracle。
+3. 在initial proposals还剩两个slots时，以controller incumbent已有RegionPlan调用同一query插入至多2个邻域candidate；无incumbent时继续剩余seed和raw traversal。
+4. 运行aligned/ragged chain、diamond、fanout、reduction、attention及typed budget/failure纵向，核对Region→Temporal→layout/movement→MiniMalloc→objective。
+5. 使用同一LLaMA source执行最终search/none package与strict no-card；只有逐Tile统计、actual objective提升和20分钟门禁同时满足才关闭Q52。
 
-### Q52闭合证据
+### 2026-09-01 previous checkpoint（本轮比较基线）
 
 2026-09-01使用同一只读FP16 LLaMA-2 7B decoder block source分别启动独立`none`和`search`事务。`search`访问的4个
 普通`RegionPlan`依次为：
@@ -283,6 +296,44 @@ Direct-DTE status ABI和host-watchdog能力的strict no-card，均形成`board_e
 5次actual attempt和4次actual capacity refinement，未进入search/proposal入口。Fresh canonical完整增量build、Planning 96/96、
 Driver 76/76、Transforms 290/290以及`check-wafer`通过；后者实际执行261个lit和全部configured component/runtime/model/link
 gates，无skip或unsupported。真实板端未执行，也不由本项声明性能。
+
+### 2026-09-01 Region refinement闭合证据
+
+同一只读FP16 LLaMA-2 7B decoder block在current实现中访问8个structural candidates，结果为：
+
+| Candidate | RegionPlan merges / Regions | Actual TileRegions | Actual result |
+| --- | --- | --- | --- |
+| P0 | 0 / 1440 | 1344 | 5次actual attempts后Accepted |
+| refined seed 1 | 266 / 1174 | 1110 | 5次后Accepted |
+| refined seed 2 | 532 / 908 | 844 | 5次后Accepted |
+| refined seed 3 | 797 / 643 | 627 | 5次后Accepted |
+| incumbent neighbor 0 | 798 / 642 | 626 | 5次后Accepted |
+| incumbent neighbor 1 | 798 / 642 | 626 | 5次后Accepted |
+| deep seed | 1063 / 377 | 未到Accepted | 8次后Indeterminate |
+| coherent endpoint | 1328 / 112 | 未到Accepted | 剩余4次credits后Indeterminate |
+
+42次global actual credits全部由上述完整candidate消费，产生6个Accepted owner；capacity refinement为34次，unsupported为0。
+Delivery owner是其中一个798-merge incumbent neighbor，coverage保持准确的`FeasiblePartial`。它相对previous checkpoint winner的NE、Vector
+F16/BF16和Vector F32 terms相等；DDR、NoC、SPM movement、instruction control、DTE wait和NCC wait objective terms分别从
+`44857469440/30720000/3258713750/227362000/60000/3000`严格降到
+`44672098134/0/3252033719/222573000/0/1000`。因此Region delivery tie只在两个都不差于first-Accepted reference的known
+incomparable owners间生效；最终owner的compute terms与旧winner相等，其余enabled terms不差且至少一项严格更好，
+因此构成strict Pareto improvement。
+
+Actual TileRegion从旧winner的965降到626，下降339个（35.1%）；逐Tile exact分布为：Tile 0为38，Tile 1--12各39，
+Tile 13--15各40，总和626。Actual Tile dataflow operations为7908，Instr sites为13012，Instr executions从3632149降到
+3554482。DDR read从6590948096增到6625057792、write从137672320降到75756928，read+write总量净减27805696 bytes；
+NoC transmit/receive均为0。该分解保留read回升事实，不用净值掩盖单项变化。
+
+Initial proposal query为11153ms，incumbent refinement query为1444ms；完整search transaction为1071779ms（17.86分钟），
+peak RSS 1956736KiB，低于20分钟门禁。
+Fresh search package通过显式Direct-DTE status ABI与host-watchdog的strict no-card。独立none transaction为181598ms、
+5次actual attempts和4次capacity refinement，生成自己的16-Tile package并通过同一no-card；none不进入search/refinement，相关零值
+search counter已从通用RegionDomain移回policy owner并由routing negative assertion覆盖。
+
+Fresh canonical build完成且二次Ninja为no-op；Planning 98/98、Driver 80/80、Transforms 290/290及`check-wafer`通过，后者实际执行
+261个configured lit、全部13个component unit targets、42个Board-IO、61个formal numeric、19个target numeric backend、13个SystemC及
+public-link gates，无skip或unsupported。真实板端未执行，也不由本项声明runtime性能。
 
 ## Q53 Production Host Readiness
 

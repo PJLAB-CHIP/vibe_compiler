@@ -63,14 +63,13 @@
 
 | 当前或later范围 | 实施计划 | 稳定设计owner |
 | --- | --- | --- |
-| Q53 production host readiness；保留Q52闭合证据作为直接输入 | `tasks/plans/physical-dataflow-synthesis.md` | 06；直接下游07–16 |
+| Q53 production host readiness；保留Q52 refinement闭合证据作为直接输入 | `tasks/plans/physical-dataflow-synthesis.md` | 06；直接下游07–16 |
 | Q57 resident static execution | `tasks/plans/resident-static-execution.md` | 15–17 |
 | Q61 whole-program scale readiness | `tasks/plans/whole-program-scale-readiness.md` | 01–02、06、14–18 |
 | Q48 semantic superoptimization | `tasks/plans/semantic-superoptimization.md` | 05–08、10–11、16–18 |
 
-Q52已闭合baseline/search独立current-IR路径、IR膨胀、verifier职责、materialization boundary、layout/movement、Tile execution
-structure、actual memory feedback和Region fusion quality；历史Q51 shadow planning state不是current设计。Q53只形成fresh
-host/package/no-card与board-ready输入，不运行真实设备。
+Q52已闭合baseline/search current-IR mechanics及只使用现有RegionPlan的bounded partition refinement；未恢复历史Q51 shadow planning state。
+Q53形成fresh host/package/no-card与board-ready输入，不运行真实设备。
 Q49–Q51详细施工与原Q53板端设想位于
 `tasks/archive/physical-dataflow-synthesis-working-history.md`，Q54历史整改位于
 `tasks/archive/mlir-engineering-remediation.md`。

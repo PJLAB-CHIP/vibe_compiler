@@ -6,8 +6,8 @@
 #include "Wafer/Support/CompileTiming.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/FormatVariadic.h"
 
-#include <array>
 #include <type_traits>
 #include <variant>
 
@@ -30,52 +30,43 @@ std::string getRootWorkFailureDetail(const RootWorkDomainFailure &failure) {
   return std::visit([](const auto &value) { return value.detail; }, failure);
 }
 
-void recordRegionProposalMetrics(const RegionDomain &domain,
-                                 llvm::ArrayRef<RegionPlan> proposals) {
-  wafer::support::addCompileCounter("search", "region-proposal-count",
-                                    proposals.size());
-  constexpr std::array<llvm::StringLiteral, 4> mergeNames{
-      "region-proposal-0-merges", "region-proposal-1-merges",
-      "region-proposal-2-merges", "region-proposal-3-merges"};
-  constexpr std::array<llvm::StringLiteral, 4> regionNames{
-      "region-proposal-0-regions", "region-proposal-1-regions",
-      "region-proposal-2-regions", "region-proposal-3-regions"};
-  constexpr std::array<llvm::StringLiteral, 4> maximumRootNames{
-      "region-proposal-0-maximum-roots", "region-proposal-1-maximum-roots",
-      "region-proposal-2-maximum-roots", "region-proposal-3-maximum-roots"};
-  constexpr std::array<llvm::StringLiteral, 4> localNames{
-      "region-proposal-0-local-bindings", "region-proposal-1-local-bindings",
-      "region-proposal-2-local-bindings", "region-proposal-3-local-bindings"};
-  constexpr std::array<llvm::StringLiteral, 4> externalNames{
-      "region-proposal-0-external-bindings",
-      "region-proposal-1-external-bindings",
-      "region-proposal-2-external-bindings",
-      "region-proposal-3-external-bindings"};
-  constexpr std::array<llvm::StringLiteral, 4> byteKnownNames{
-      "region-proposal-0-exact-bytes-known",
-      "region-proposal-1-exact-bytes-known",
-      "region-proposal-2-exact-bytes-known",
-      "region-proposal-3-exact-bytes-known"};
-  constexpr std::array<llvm::StringLiteral, 4> byteNames{
-      "region-proposal-0-exact-bytes", "region-proposal-1-exact-bytes",
-      "region-proposal-2-exact-bytes", "region-proposal-3-exact-bytes"};
-  for (size_t index = 0; index < std::min<size_t>(proposals.size(), 4);
-       ++index) {
-    RegionProposalMetrics metrics = domain.getProposalMetrics(proposals[index]);
-    wafer::support::addCompileCounter("search", mergeNames[index],
-                                      metrics.fusionMerges);
-    wafer::support::addCompileCounter("search", regionNames[index],
-                                      metrics.regions);
-    wafer::support::addCompileCounter("search", maximumRootNames[index],
-                                      metrics.maximumRootsPerRegion);
-    wafer::support::addCompileCounter("search", localNames[index],
-                                      metrics.localBindings);
-    wafer::support::addCompileCounter("search", externalNames[index],
-                                      metrics.externalBindings);
-    wafer::support::addCompileCounter("search", byteKnownNames[index],
-                                      metrics.exactLogicalBytesKnown);
-    wafer::support::addCompileCounter("search", byteNames[index],
-                                      metrics.exactLogicalBytes);
+void recordRegionPlanMetrics(const RegionDomain &domain,
+                             llvm::ArrayRef<RegionPlan> plans,
+                             llvm::StringRef prefix) {
+  wafer::support::addCompileCounter(
+      "search", llvm::formatv("{0}-count", prefix).str(), plans.size());
+  for (auto [index, plan] : llvm::enumerate(plans)) {
+    auto counter = [&](llvm::StringRef metric, uint64_t value) {
+      wafer::support::addCompileCounter(
+          "search", llvm::formatv("{0}-{1}-{2}", prefix, index, metric).str(),
+          value);
+    };
+    RegionProposalMetrics metrics = domain.getProposalMetrics(plan);
+    counter("merges", metrics.fusionMerges);
+    counter("regions", metrics.regions);
+    counter("maximum-roots", metrics.maximumRootsPerRegion);
+    counter("local-bindings", metrics.localBindings);
+    counter("external-bindings", metrics.externalBindings);
+    counter("exact-bytes-known", metrics.exactLogicalBytesKnown);
+    counter("exact-bytes", metrics.exactLogicalBytes);
+    uint64_t roots1 = 0;
+    uint64_t roots2 = 0;
+    uint64_t roots3To4 = 0;
+    uint64_t roots5To8 = 0;
+    uint64_t roots9Plus = 0;
+    for (const RegionGroupPlan &group : plan.groups) {
+      const size_t roots = group.mandatoryRoots.size();
+      roots1 += roots == 1;
+      roots2 += roots == 2;
+      roots3To4 += roots >= 3 && roots <= 4;
+      roots5To8 += roots >= 5 && roots <= 8;
+      roots9Plus += roots >= 9;
+    }
+    counter("roots-1-regions", roots1);
+    counter("roots-2-regions", roots2);
+    counter("roots-3-to-4-regions", roots3To4);
+    counter("roots-5-to-8-regions", roots5To8);
+    counter("roots-9-plus-regions", roots9Plus);
   }
 }
 
@@ -412,9 +403,11 @@ PhysicalDataflowPlanningSession::resumeRegion(RegionContinuation &continuation,
       return (*regionDomain)->getProposals(maximumRegionProposals);
     }();
     if (!regionProposalMetricsRecorded) {
-      recordRegionProposalMetrics(**regionDomain, continuation.proposals);
+      recordRegionPlanMetrics(**regionDomain, continuation.proposals,
+                              "region-proposal");
       regionProposalMetricsRecorded = true;
     }
+    continuation.initialProposalCount = continuation.proposals.size();
     continuation.proposalsInitialized = true;
   }
   auto makeState = [&](const RegionPlan &plan)
@@ -464,6 +457,51 @@ PhysicalDataflowPlanningSession::resumeRegion(RegionContinuation &continuation,
       continue;
     return makeState(*next.getPlan());
   }
+}
+
+mlir::LogicalResult
+PhysicalDataflowPlanningSession::addRegionRefinementProposals(
+    RegionContinuation &continuation, const RegionPlan &center,
+    uint64_t maximumProposals, std::string *failureReason) {
+  if (!continuation.needsRefinementProposals(maximumProposals)) {
+    if (failureReason)
+      *failureReason = "Region refinement was requested outside its boundary";
+    return mlir::failure();
+  }
+  auto regionDomain =
+      getOrCreateRegionDomain(continuation.parent, failureReason);
+  if (mlir::failed(regionDomain))
+    return mlir::failure();
+  if (!(*regionDomain)->contains(center)) {
+    if (failureReason)
+      *failureReason = "Region refinement center is outside the current domain";
+    return mlir::failure();
+  }
+  std::vector<RegionPlan> refinements = [&]() {
+    wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
+                                                   "build-region-refinements");
+    return (*regionDomain)->getRefinementProposals(center, maximumProposals);
+  }();
+  if (!regionRefinementMetricsRecorded) {
+    recordRegionPlanMetrics(**regionDomain, refinements, "region-refinement");
+    regionRefinementMetricsRecorded = true;
+  }
+  auto insertion = continuation.proposals.begin() + continuation.nextProposal;
+  for (RegionPlan &plan : refinements) {
+    if (continuation.emitted.count(plan) ||
+        llvm::is_contained(continuation.proposals, plan))
+      continue;
+    insertion = continuation.proposals.insert(insertion, std::move(plan)) + 1;
+  }
+  continuation.refinementProposalsInitialized = true;
+  return mlir::success();
+}
+
+void PhysicalDataflowPlanningSession::skipRegionRefinementProposals(
+    RegionContinuation &continuation) const {
+  if (continuation.proposalsInitialized &&
+      !continuation.refinementProposalsInitialized)
+    continuation.refinementProposalsInitialized = true;
 }
 
 bool PhysicalDataflowPlanningSession::hasRemainingSpatialWork() const {

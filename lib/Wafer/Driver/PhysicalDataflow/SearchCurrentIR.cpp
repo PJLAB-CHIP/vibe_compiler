@@ -315,7 +315,8 @@ public:
         cohort(cohort), statistics(statistics),
         executableStatistics(executableStatistics) {}
 
-  StructuralCandidateEvaluation evaluate(const RegionState &state) override {
+  StructuralCandidateEvaluation
+  evaluate(const RegionState &state, uint64_t actualizationCredits) override {
     std::string detail;
     auto rootWorks =
         planning.getCurrentRootWorks(state.getSpatialState(), &detail);
@@ -371,6 +372,9 @@ public:
     bool domainExhausted = false;
     bool compilerBug = false;
     std::optional<std::vector<TemporalChoice>> feedbackChoices;
+    const uint64_t actualizationLimit =
+        std::min(options.maximumTemporalCandidatesPerStructuralState,
+                 actualizationCredits);
     do {
       ++actualizations;
       if (statistics)
@@ -489,7 +493,7 @@ public:
         break;
       }
 
-      if (actualizations >= options.maximumTemporalCandidatesPerStructuralState)
+      if (actualizations >= actualizationLimit)
         break;
       if (capacityRejected) {
         auto refined = refineTemporalChoices(axes, selectedChoices, detail);
@@ -628,7 +632,14 @@ ExecutableCompilationResult compileSearchCurrentIR(
     ExecutableLoweringStatistics *executableStatistics) {
   if (!tensorProgram || options.layoutWorkLimit == 0 ||
       options.maximumTemporalCandidatesPerStructuralState == 0 ||
-      options.maximumStructuralCandidates == 0)
+      options.maximumCandidateActualizations == 0 ||
+      options.maximumStructuralCandidates == 0 ||
+      options.maximumInitialRegionProposals == 0 ||
+      options.maximumInitialRegionProposals >
+          options.maximumStructuralCandidates ||
+      options.maximumRegionRefinementCandidates >
+          options.maximumStructuralCandidates -
+              options.maximumInitialRegionProposals)
     return fail(ExecutableCompilationStatus::CompilerFailure, "search-input",
                 "search requires current TensorProgram and positive work "
                 "limits");
@@ -657,8 +668,8 @@ ExecutableCompilationResult compileSearchCurrentIR(
   if (mlir::failed(problem))
     return fail(ExecutableCompilationStatus::CompilerFailure,
                 "search-planning-problem", detail);
-  PhysicalDataflowPlanningSession planning(*problem,
-                                           options.maximumStructuralCandidates);
+  PhysicalDataflowPlanningSession planning(
+      *problem, options.maximumInitialRegionProposals);
 
   auto cohort = SearchCostCohort::create(SearchCostPolicy{}, &detail);
   if (mlir::failed(cohort))
@@ -673,6 +684,10 @@ ExecutableCompilationResult compileSearchCurrentIR(
   UnifiedSearchOptions traversal;
   traversal.planningCredits = options.planningCredits;
   traversal.structuralCandidateCredits = options.maximumStructuralCandidates;
+  traversal.candidateActualizationCredits =
+      options.maximumCandidateActualizations;
+  traversal.maximumRegionRefinementCandidates =
+      options.maximumRegionRefinementCandidates;
   traversal.termination = options.termination;
   traversal.costCohort = currentCohort;
   // Actual capacity remains typed, but it is not generalized to a structural
@@ -698,6 +713,11 @@ ExecutableCompilationResult compileSearchCurrentIR(
   searchCounter("structural-states", searched.work.structuralStatesActualized);
   searchCounter("candidate-actualizations",
                 searched.work.candidateActualizations);
+  searchCounter("candidate-actualization-credit-limit",
+                options.maximumCandidateActualizations);
+  searchCounter("candidate-actualization-credits-remaining",
+                options.maximumCandidateActualizations -
+                    searched.work.candidateActualizations);
   searchCounter("incomplete-inner-domains",
                 searched.work.incompleteInnerDomains);
   searchCounter("accepted-structural-states",

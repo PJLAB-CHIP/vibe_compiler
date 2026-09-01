@@ -406,6 +406,11 @@ TEST_F(ExecutableCompilationTest,
   ASSERT_TRUE(result.physicalIRInventory);
   EXPECT_EQ(result.physicalIRInventory->tileModules, 16u);
   EXPECT_GT(result.physicalIRInventory->tileRegions, 0u);
+  ASSERT_EQ(result.physicalIRInventory->tiles.size(), 16u);
+  EXPECT_EQ(result.physicalIRInventory->tiles.front().tile, wafer::TileId(0));
+  EXPECT_EQ(result.physicalIRInventory->tiles.front().regions, 1u);
+  for (const auto &tile : llvm::drop_begin(result.physicalIRInventory->tiles))
+    EXPECT_EQ(tile.regions, 0u);
   EXPECT_EQ(result.executable->tiles.size(), 16u);
   EXPECT_EQ(result.tileDataflowIRTrace.size(), 16u);
   EXPECT_EQ(downstream.tileRegionsLowered, 1u);
@@ -535,6 +540,8 @@ TEST(ExecutableCompilationPolicyTest,
     llvm::raw_string_ostream diagnostics(diagnosticText);
     wafer::compiler::detail::SearchCurrentIROptions options;
     options.maximumStructuralCandidates = 4;
+    options.maximumInitialRegionProposals = 4;
+    options.maximumRegionRefinementCandidates = 0;
     options.maximumTemporalCandidatesPerStructuralState = 16;
     options.termination =
         wafer::compiler::detail::SearchTerminationPolicy::Exhaustive;
@@ -557,6 +564,9 @@ TEST(ExecutableCompilationPolicyTest,
     // slots actualize the 0/approximately-1/3/approximately-2/3/full prefixes;
     // the coherent endpoint merges the pair independently on all 16 Tiles.
     EXPECT_EQ(result.physicalIRInventory->tileRegions, 16u);
+    ASSERT_EQ(result.physicalIRInventory->tiles.size(), 16u);
+    for (const auto &tile : result.physicalIRInventory->tiles)
+      EXPECT_EQ(tile.regions, 1u);
   }
 }
 

@@ -40,7 +40,7 @@ void recordStructuralCandidateMetrics(
     size_t index, const RegionPlan &plan,
     const StructuralCandidateEvaluation &evaluation,
     const std::optional<SearchCostCohort> &cohort) {
-  if (index >= 4)
+  if (index >= 8)
     return;
 
   uint64_t fusionMerges = 0;
@@ -65,6 +65,17 @@ void recordStructuralCandidateMetrics(
     return;
   const analysis::InstructionProgramAggregateCost &cost =
       evaluation.result.compilation->executable->resourceCost;
+  if (evaluation.result.compilation->physicalIRInventory) {
+    const PhysicalDataflowIRInventory &inventory =
+        *evaluation.result.compilation->physicalIRInventory;
+    recordRegionCandidateCounter(index, "actual-tile-regions",
+                                 inventory.tileRegions);
+    for (const PhysicalTileIRInventory &tile : inventory.tiles)
+      recordRegionCandidateCounter(
+          index,
+          llvm::formatv("actual-tile-{0}-regions", tile.tile.getValue()).str(),
+          tile.regions);
+  }
   recordRegionCandidateCounter(index, "ddr-read-bytes-known",
                                cost.aggregateDDRReadBytes.isKnown());
   recordRegionCandidateCounter(index, "ddr-write-bytes-known",
@@ -115,6 +126,9 @@ struct UnifiedSearchSession::Impl {
        const UnifiedSearchOptions &options, UnifiedSearchTrace *trace)
       : planningSession(planningSession), evaluator(evaluator),
         termination(options.termination), costCohort(options.costCohort),
+        remainingActualizationCredits(options.candidateActualizationCredits),
+        maximumRegionRefinementCandidates(
+            options.maximumRegionRefinementCandidates),
         controller(ActualResultControllerOptions{
             options.structuralCandidateCredits, options.costCohort,
             options.exactRejectionCache}),
@@ -189,6 +203,10 @@ struct UnifiedSearchSession::Impl {
   }
 
   void stepCandidate(StructuralCandidateFrame frame) {
+    if (remainingActualizationCredits == 0) {
+      status = UnifiedSearchResumeStatus::CandidateBudgetExhausted;
+      return;
+    }
     RegionState state = std::move(frame.state);
     StructuralCandidateKey key = StructuralCandidateKey::create(state);
     CandidateReservation reservation = controller.reserve(key);
@@ -205,7 +223,13 @@ struct UnifiedSearchSession::Impl {
       return;
     }
     ++work.structuralStatesActualized;
-    StructuralCandidateEvaluation evaluation = evaluator.evaluate(state);
+    StructuralCandidateEvaluation evaluation =
+        evaluator.evaluate(state, remainingActualizationCredits);
+    if (evaluation.actualizations > remainingActualizationCredits) {
+      fail("structural evaluator exceeded its actualization credits");
+      return;
+    }
+    remainingActualizationCredits -= evaluation.actualizations;
     recordStructuralCandidateMetrics(work.structuralStatesActualized - 1,
                                      state.getRegionPlan(), evaluation,
                                      costCohort);
@@ -230,6 +254,30 @@ struct UnifiedSearchSession::Impl {
                : actualDetail);
       return;
     }
+    if (!frontier.empty())
+      if (auto *continuation =
+              std::get_if<RegionContinuation>(&frontier.back())) {
+        if (continuation->needsRefinementProposals(
+                maximumRegionRefinementCandidates)) {
+          const StructuralCandidateKey *incumbent =
+              controller.getIncumbentKey();
+          if (!incumbent || maximumRegionRefinementCandidates == 0 ||
+              !(incumbent->getSpatialPlan() ==
+                continuation->getParent().getPlan())) {
+            planningSession.skipRegionRefinementProposals(*continuation);
+          } else {
+            std::string refinementDetail;
+            if (mlir::failed(planningSession.addRegionRefinementProposals(
+                    *continuation, incumbent->getRegionPlan(),
+                    maximumRegionRefinementCandidates, &refinementDetail))) {
+              fail(refinementDetail.empty()
+                       ? "Region incumbent refinement failed"
+                       : refinementDetail);
+              return;
+            }
+          }
+        }
+      }
     if (recorded == CandidateRecordOutcome::Indeterminate) {
       if (!evaluation.domainExhausted)
         return;
@@ -325,6 +373,8 @@ struct UnifiedSearchSession::Impl {
   StructuralCandidateEvaluator &evaluator;
   SearchTerminationPolicy termination;
   std::optional<SearchCostCohort> costCohort;
+  uint64_t remainingActualizationCredits;
+  uint64_t maximumRegionRefinementCandidates;
   ActualResultController controller;
   PlanningProfileSink *profile = nullptr;
   UnifiedSearchTrace *trace = nullptr;

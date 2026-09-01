@@ -71,6 +71,11 @@ class RegionContinuation {
 public:
   const SpatialState &getParent() const { return parent; }
   bool isExhausted() const { return exhausted; }
+  bool needsRefinementProposals(uint64_t reservedProposals) const {
+    return proposalsInitialized && !refinementProposalsInitialized &&
+           nextProposal <= initialProposalCount &&
+           initialProposalCount - nextProposal <= reservedProposals;
+  }
 
 private:
   explicit RegionContinuation(SpatialState parent)
@@ -81,7 +86,9 @@ private:
   std::vector<RegionPlan> proposals;
   std::set<RegionPlan> emitted;
   size_t nextProposal = 0;
+  size_t initialProposalCount = 0;
   bool proposalsInitialized = false;
+  bool refinementProposalsInitialized = false;
   bool rawStarted = false;
   bool exhausted = false;
 
@@ -115,6 +122,10 @@ public:
   mlir::FailureOr<std::optional<RegionState>>
   resumeRegion(RegionContinuation &continuation,
                std::string *failureReason = nullptr);
+  mlir::LogicalResult addRegionRefinementProposals(
+      RegionContinuation &continuation, const RegionPlan &center,
+      uint64_t maximumProposals, std::string *failureReason = nullptr);
+  void skipRegionRefinementProposals(RegionContinuation &continuation) const;
   mlir::FailureOr<llvm::ArrayRef<analysis::RootRegionWork>>
   getCurrentRootWorks(const SpatialState &spatial,
                       std::string *failureReason = nullptr);
@@ -149,6 +160,7 @@ private:
   PlanningMemo<SpatialPlan, RegionDomain> regionDomainCache;
   uint64_t maximumRegionProposals;
   bool regionProposalMetricsRecorded = false;
+  bool regionRefinementMetricsRecorded = false;
   PlanningWorkCounts work;
 };
 

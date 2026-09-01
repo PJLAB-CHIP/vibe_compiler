@@ -81,39 +81,50 @@ static void eraseDeadSubviewOperations(mlir::ModuleOp module) {
 static PhysicalDataflowIRInventory
 collectPhysicalCandidateInventory(mlir::ModuleOp module) {
   PhysicalDataflowIRInventory inventory;
-  inventory.tileModules =
-      static_cast<uint64_t>(llvm::range_size(module.getOps<TileModuleOp>()));
   bool first = true;
-  module.walk([&](TileRegionOp region) {
-    uint64_t nested = 0;
-    uint64_t dataflow = 0;
-    region->walk([&](mlir::Operation *operation) {
-      if (operation == region.getOperation())
-        return;
-      ++nested;
-      dataflow += mlir::isa<WaferTileDataflowOpInterface>(operation);
+  for (TileModuleOp tile : module.getOps<TileModuleOp>()) {
+    PhysicalTileIRInventory tileInventory;
+    tileInventory.tile = TileId(tile.getTileIdAttr().getInt());
+    tile.walk([&](TileRegionOp region) {
+      uint64_t nested = 0;
+      uint64_t dataflow = 0;
+      region->walk([&](mlir::Operation *operation) {
+        if (operation == region.getOperation())
+          return;
+        ++nested;
+        dataflow += mlir::isa<WaferTileDataflowOpInterface>(operation);
+      });
+      ++inventory.tileRegions;
+      inventory.nestedOperations += nested;
+      inventory.tileDataflowOperations += dataflow;
+      ++tileInventory.regions;
+      tileInventory.nestedOperations += nested;
+      tileInventory.tileDataflowOperations += dataflow;
+      if (first) {
+        inventory.minimumNestedOperations = nested;
+        inventory.maximumNestedOperations = nested;
+        inventory.minimumTileDataflowOperations = dataflow;
+        inventory.maximumTileDataflowOperations = dataflow;
+        first = false;
+      } else {
+        inventory.minimumNestedOperations =
+            std::min(inventory.minimumNestedOperations, nested);
+        inventory.maximumNestedOperations =
+            std::max(inventory.maximumNestedOperations, nested);
+        inventory.minimumTileDataflowOperations =
+            std::min(inventory.minimumTileDataflowOperations, dataflow);
+        inventory.maximumTileDataflowOperations =
+            std::max(inventory.maximumTileDataflowOperations, dataflow);
+      }
+      inventory.singletonDataflowRegions += dataflow == 1;
     });
-    ++inventory.tileRegions;
-    inventory.nestedOperations += nested;
-    inventory.tileDataflowOperations += dataflow;
-    if (first) {
-      inventory.minimumNestedOperations = nested;
-      inventory.maximumNestedOperations = nested;
-      inventory.minimumTileDataflowOperations = dataflow;
-      inventory.maximumTileDataflowOperations = dataflow;
-      first = false;
-    } else {
-      inventory.minimumNestedOperations =
-          std::min(inventory.minimumNestedOperations, nested);
-      inventory.maximumNestedOperations =
-          std::max(inventory.maximumNestedOperations, nested);
-      inventory.minimumTileDataflowOperations =
-          std::min(inventory.minimumTileDataflowOperations, dataflow);
-      inventory.maximumTileDataflowOperations =
-          std::max(inventory.maximumTileDataflowOperations, dataflow);
-    }
-    inventory.singletonDataflowRegions += dataflow == 1;
+    inventory.tiles.push_back(tileInventory);
+  }
+  llvm::sort(inventory.tiles, [](const PhysicalTileIRInventory &lhs,
+                                 const PhysicalTileIRInventory &rhs) {
+    return lhs.tile.getValue() < rhs.tile.getValue();
   });
+  inventory.tileModules = inventory.tiles.size();
   return inventory;
 }
 

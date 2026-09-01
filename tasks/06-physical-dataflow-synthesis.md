@@ -624,38 +624,34 @@ optimization，不形成baseline frontier或fallback。
 Search frontier保存显式choice key、work/budget accounting和move-only accepted incumbent。合法域由typed transformation capability
 与current-IR verifier定义，不由workload名、shape特例或materializer fallback定义。
 
-Region proposal的目标不是产生“至少一个merge”，而是在少量actualization内覆盖从独立Region到graph-coherent融合的有意义整图分区。
-每个Tile component以current `RootRegionWork`为vertex、`allowsRequiredLocal`的producer-consumer relation为edge建立query-local quotient graph；
-cannot-link、group connectivity、use-binding totality和contracted dependency DAG仍由`RegionDomain`的同一合法性实现检查。Proposal query只保存
-当前调用中的group labels、edge priority和union工作数据，不表示future operation、buffer、lifetime或SPM事实。
+Region proposal的目标是在有界actualization内提供不同Region数量且boundary placement经过改善的完整partition，而不是沿一条merge path增加更多
+prefix。每个Tile component继续直接使用current `RootRegionWork`和`allowsRequiredLocal` relation；cannot-link、group connectivity、use-binding
+totality和contracted dependency DAG只由`RegionDomain`现有合法性检查。不得增加持久Graph/Hypergraph、MergeForest、PartitionPlan或其它
+RegionPlan平行表示。
 
-Builder从singleton出发只构造一条确定性的graph-coherent merge序列。对当前quotient graph中的每个合法group pair计算本次merge新
-internalize的distinct external bindings；对应demand和dtype均为exact static时形成`KnownExactGain(bytes, bindingCount)`，否则形成
-`BindingOnlyGain(bindingCount)`；priority kind稳定地先访问KnownExact，随后访问BindingOnly，两种typed priority不把unknown bytes改写为0，
-最后按semantic root pair、Tile component和稳定RootRegionWork key确定tie。选择采用greedy matching rounds：一轮内按上述priority反复选择当前最大gain且互不相交的合法group pair；
-已经参与本轮union的group到下一轮才重新进入候选集合。每轮结束后从current labels重算quotient edges和gain，继续到没有合法merge，得到
-graph-coherent endpoint。这使浅层snapshot先覆盖整图中的独立边，但不是group大小合同；同一group可以在后续轮继续增长。Fanout只计算本次
-真正转为local的uses，仍需external publication的其它uses不能计入gain。Priority不包含预测SPM、future layout或estimated lifetime。
+Builder先用maximum-gain feasible matching生成不同Region数量的seed，再在固定Region数量下执行bounded FM-style refinement。一次move只把一个
+boundary root移到相邻group，且移动前后source/destination connected、binding totality、cannot-link和quotient acyclicity全部成立。每个root在一轮
+refinement中最多移动一次；可以经过结构metric暂时不改善的move，但只发布本轮best-prefix对应的完整RegionPlan。Move priority依次比较
+known exact localized bytes、local binding数和unknown localized binding数；unknown bytes不按零处理。所有query labels、candidate move和temporary score
+在当前调用结束时销毁，下游从不读取它们。
 
-若序列共有`M`次成功merge、proposal allowance为`K`，只在同一序列上构造最多`K`份完整RegionPlan：`P0`取0次merge，`Pk`取全部
-`M`次merge；其余第`i`个snapshot取`ceil(i*M/(K-1))`次merge的prefix并去重。当前production `K=4`时顺序是singleton、约1/3 prefix、
-约2/3 prefix和graph-coherent endpoint。该均匀merge-distance sampling是在固定whole-program actualization budget下覆盖同一coherent路径，
-不限制任何group的root数量。Explicit-replica proposal只在这些snapshot去重后仍有空slot时进入priority batch；完整connected-partition/use-form
-集合继续由raw lazy successor拥有。改变allowance、priority或关闭proposal provider不得改变raw domain。
+Structural metric分别保留Region数、external/local binding数、known exact localized-use bytes和unknown binding数，不用任意权重压成legality。
+本项不对publication closure打分；仍在group外的relation继续作为external binding，直到actual materialization和movement根据current IR决定其实现。
+Structural Pareto只淘汰相同Region数量下被支配的plan，不跨Region数量删除diversity；它只决定最多6个initial proposal的
+访问顺序，P0和graph-coherent endpoint不可饥饿。当initial proposal
+还剩两个slots时，proposal owner只接受controller incumbent已有的RegionPlan作为现有choice，并将至多2个邻域RegionPlan排在剩余深seed之前；不读取或复制incumbent的actual
+buffer/layout/movement/lifetime事实。
 
-Proposal builder不保存全部prefix，也不为每次merge构造RegionPlan。Merge history只是一次query中的root-group union choices，在proposal batch
-返回后销毁，不表示future operation、buffer、allocation、lifetime、movement或SPM结果。设root-work vertex数为`V`、eligible edges为`E`、
-actual slots为`K`：quotient graph和merge history占`O(V+E)`内存；当前直接实现对至多`V-C`次union重建cross-group candidates并运行完整DAG
-legality，保守worst-case work为`O(V*E*(V+E))`，每个Tile component独立，
-只对选中的`K`个snapshot执行`O(K*(V+E))`的完整plan construction/contains复核，总空间为`O(K*(V+E))`。实现必须记录proposal work/wall/RSS；若profile要求优化，
-再用incremental quotient adjacency或reachability降低work，不能通过少访问coherent路径或降低actual quality规避复杂度。
-General DAG上的constrained connected partition不声明全局最优；proposal quality由tiny完整RegionDomain oracle、maximum-spanning-forest baseline、
-真实规模cut gain和final actual objective共同约束，coverage继续准确报告为bounded partial。
+Search最多actualize 8个structural candidates，并共享42次Temporal actual-attempt credits。每个proposal都是普通`RegionPlan`并独立进入
+`current IR → actual transformation → verifier → fresh analysis`。Actual capacity rejection只描述该complete Region/Temporal tuple，不泛化到
+其它partition；credit exhaustion报告bounded partial。Winner只由final actual objective决定，Accepted owner直接保留，不按query labels重建。
+改变proposal/refinement或关闭它们不得改变raw lazy successor集合。General DAG不声明全局最优，quality由tiny fixed-region-count独立穷举oracle
+量化optimality gap并要求已知greedy trap严格改善，再由真实规模cut gain和final actual objective共同约束。
 
-每个proposal都是普通`RegionPlan`并独立进入`current IR → actual transformation → verifier → fresh analysis`。Actual SPM rejection只描述该
-Region/Temporal完整tuple；Region融合可能减少中间buffer，也可能延长lifetime，因此不同prefix之间不存在可用于pruning的容量单调性。
-Controller必须继续访问预算内其余snapshot。Winner只由final actual objective决定；Region数和logical cut weight只用于proposal coverage与diagnostic，
-不能强迫高融合candidate覆盖actual cost更好的低融合candidate。
+第一个Accepted actual objective作为本次search的no-regression reference。普通Better/Worse/Equivalent仍完全由九项actual objective的Pareto比较
+决定；两个known objective互相incomparable时，只有二者都相对reference为Better或Equivalent，才以现有StructuralCandidateKey中的RegionPlan
+group数选择delivery owner，数量相同再用complete key。该选择仍报告`FeasibleUnranked`，不宣称runtime优劣；任何相对reference存在actual term回退的
+candidate都不能凭Region更少覆盖safe incumbent。Unknown objective不进入此规则。
 
 Candidate形成`TileExecutable`前必须调用target ABI preparation共用的exact program/DDR function-boundary verifier；argument/result binding不完整的
 Spatial/Region candidate在controller admission前返回typed failure，不能先作为Accepted winner保留、再由最终target codegen首次发现错误。

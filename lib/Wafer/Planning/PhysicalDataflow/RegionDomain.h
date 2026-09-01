@@ -77,6 +77,11 @@ public:
   /// ordinary member of the exact domain; disabling or reordering proposals
   /// cannot remove a raw successor.
   std::vector<RegionPlan> getProposals(uint64_t maximumPlans) const;
+  /// Produces bounded neighboring RegionPlan choices around an already
+  /// evaluated plan. The input and every result are ordinary members of this
+  /// domain; no materialized-IR fact participates in this query.
+  std::vector<RegionPlan> getRefinementProposals(const RegionPlan &plan,
+                                                 uint64_t maximumPlans) const;
   /// Bounded read-only proposal diagnostics. These values never participate in
   /// Region membership, actual legality, SPM feedback, or winner selection.
   RegionProposalMetrics getProposalMetrics(const RegionPlan &plan) const;
@@ -118,6 +123,9 @@ private:
                       llvm::SmallVectorImpl<uint8_t> &choices) const;
   RegionSuccessor findPlan(RegionCursor cursor, bool advanceCurrent) const;
   std::optional<RegionCursor> getCursor(const RegionPlan &plan) const;
+  std::vector<RegionPlan>
+  buildRefinedProposals(uint64_t maximumPlans,
+                        const RegionPlan *neighborhoodCenter) const;
 
   std::vector<RegionGroupPlan> baseGroups;
   llvm::SmallVector<Component, 16> components;

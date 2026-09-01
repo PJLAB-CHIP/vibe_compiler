@@ -17,13 +17,13 @@
 
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `production-host-readiness` | `next` | Q53 / 16 | Q52 region fusion quality、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
+| 1 | `production-host-readiness` | `next` | Q53 / 16 | Q52 region partition refinement、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 
 ## 已满足的直接前置
 
 | Owner | 状态 | Current作用 | 证据入口 |
 | --- | --- | --- | --- |
-| Q52 | `done` | none/search独立current-IR路径、bounded Region fusion proposals、actual MiniMalloc feedback和final actual objective | 06；`tasks/plans/physical-dataflow-synthesis.md`；`tasks/archive/completed-task-index.md` |
+| Q52 | `done` | none/search独立current-IR路径、bounded RegionPlan refinement、42-credit actual feedback、safe incomparable delivery和逐Tile actual inventory | 06；`tasks/plans/physical-dataflow-synthesis.md`；`tasks/archive/completed-task-index.md` |
 | 01、04、06、07、10、14、16、18--20 | `done` | 架构、device-scope术语、源码/component边界和canonical build | 编号设计；`tasks/archive/completed-task-index.md` |
 | Q50.0 | `done` | policy-complete Instr共同消费的actual SPM/DDR/transport/target leaf | 06、09、12--14 |
 | Q51/Q50.S | `done` | structural choice/domain算法和attention semantic/decomposition donor；不作为current事实源 | 05、06；历史见completed index |

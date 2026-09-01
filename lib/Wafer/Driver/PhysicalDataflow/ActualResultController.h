@@ -314,6 +314,9 @@ public:
   bool canPrune(const SearchLowerBound &lowerBound) const;
   void markCompilerBug();
   uint64_t getRemainingCredits() const { return remainingCredits; }
+  const StructuralCandidateKey *getIncumbentKey() const {
+    return incumbent ? &incumbent->key : nullptr;
+  }
   const SearchControllerStatistics &getStatistics() const { return statistics; }
   size_t getExactCompleteRejectionCount() const { return forbidden.size(); }
 
@@ -329,6 +332,7 @@ private:
   std::set<StructuralCandidateKey> completed;
   std::set<ExactCompleteRejection> forbidden;
   std::optional<RetainedSearchCandidate> incumbent;
+  std::optional<SearchObjective> referenceObjective;
   SearchControllerStatistics statistics;
   bool sawUnknownOrIncomparable = false;
   bool poisoned = false;

@@ -9,6 +9,7 @@
 #include "gtest/gtest.h"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <set>
 #include <vector>
@@ -54,8 +55,19 @@ KeyParts makeKeyParts(uint32_t anchor) {
   return parts;
 }
 
-StructuralCandidateKey makeKey(uint32_t anchor) {
+StructuralCandidateKey makeKey(uint32_t anchor, uint64_t regionCount = 1) {
   KeyParts parts = makeKeyParts(anchor);
+  for (uint64_t index = 1; index < regionCount; ++index) {
+    ExecutionInstanceId execution =
+        makeExecution(anchor + static_cast<uint32_t>(index));
+    const auto &root = std::get<RequiredRootExecution>(execution.source);
+    RegionGroupPlan region;
+    region.tile = TileId(0);
+    region.mandatoryRoots.push_back(root.work);
+    region.executions.push_back({execution});
+    parts.regions.groups.push_back(std::move(region));
+  }
+  llvm::sort(parts.regions.groups);
   return StructuralCandidateKey::create(std::move(parts.spatial),
                                         std::move(parts.regions));
 }
@@ -101,6 +113,17 @@ ActualCandidateResult accepted(uint64_t instructions, bool known = true) {
   if (!known)
     cost.aggregateInstructionCount.knowledge =
         ScheduleCostKnowledge::Unavailable;
+  ExecutableCompilationResult compilation;
+  compilation.status = ExecutableCompilationStatus::Accepted;
+  compilation.executable.emplace(std::vector<compiler::TileExecutable>{},
+                                 makeLaunch(), std::move(cost));
+  ActualCandidateResult result;
+  result.status = ActualCandidateStatus::Accepted;
+  result.compilation.emplace(std::move(compilation));
+  return result;
+}
+
+ActualCandidateResult acceptedWithCost(InstructionProgramAggregateCost cost) {
   ExecutableCompilationResult compilation;
   compilation.status = ExecutableCompilationStatus::Accepted;
   compilation.executable.emplace(std::vector<compiler::TileExecutable>{},
@@ -257,6 +280,66 @@ TEST(ActualResultControllerTest,
   EXPECT_EQ(known->durations.neF16Bf16Picoseconds, 1024u);
   EXPECT_EQ(known->durations.vectorF16Bf16Picoseconds, 1024u);
   EXPECT_EQ(known->durations.instructionControlPicoseconds, 10u);
+}
+
+TEST(ActualResultControllerTest,
+     IncomparableSafeRefinementsPreferFewerSelectedRegionGroups) {
+  auto cohort = *SearchCostCohort::create(unitCostPolicy());
+  auto makeCost = [](uint64_t ne, uint64_t vector) {
+    InstructionProgramAggregateCost cost;
+    cost.aggregateInstructionCount.value = 10;
+    cost.aggregateCompute.npuF16Bf16LogicalOps.value = ne;
+    cost.aggregateCompute.vectorF16Bf16LogicalOps.value = vector;
+    cost.aggregateDDRReadBytes.value = 100;
+    cost.aggregateDDRWriteBytes.value = 100;
+    cost.aggregateSPMMovementBytes.value = 100;
+    return cost;
+  };
+  ActualResultController controller = makeController(3, cohort);
+  for (auto [key, result] : llvm::zip_equal(
+           std::array{makeKey(0, 12), makeKey(1, 10), makeKey(2, 5)},
+           std::array{acceptedWithCost(makeCost(100, 100)),
+                      acceptedWithCost(makeCost(50, 100)),
+                      acceptedWithCost(makeCost(100, 50))})) {
+    ASSERT_EQ(controller.reserve(key), CandidateReservation::Granted);
+    ASSERT_EQ(controller.record(key, std::move(result)),
+              CandidateRecordOutcome::Accepted);
+  }
+  SearchControllerResult result =
+      controller.finish(SearchFrontierStatus::Exhausted);
+  ASSERT_TRUE(result.winner);
+  EXPECT_EQ(result.winner->key, makeKey(2, 5));
+  EXPECT_EQ(result.coverage, SearchControllerCoverage::FeasibleUnranked);
+}
+
+TEST(ActualResultControllerTest,
+     FewerRegionGroupsCannotOverrideAReferenceRegression) {
+  auto cohort = *SearchCostCohort::create(unitCostPolicy());
+  auto makeCost = [](uint64_t ne, uint64_t vector) {
+    InstructionProgramAggregateCost cost;
+    cost.aggregateInstructionCount.value = 10;
+    cost.aggregateCompute.npuF16Bf16LogicalOps.value = ne;
+    cost.aggregateCompute.vectorF16Bf16LogicalOps.value = vector;
+    cost.aggregateDDRReadBytes.value = 100;
+    cost.aggregateDDRWriteBytes.value = 100;
+    cost.aggregateSPMMovementBytes.value = 100;
+    return cost;
+  };
+  ActualResultController controller = makeController(3, cohort);
+  for (auto [key, result] : llvm::zip_equal(
+           std::array{makeKey(0, 12), makeKey(1, 10), makeKey(2, 1)},
+           std::array{acceptedWithCost(makeCost(100, 100)),
+                      acceptedWithCost(makeCost(50, 100)),
+                      acceptedWithCost(makeCost(150, 50))})) {
+    ASSERT_EQ(controller.reserve(key), CandidateReservation::Granted);
+    ASSERT_EQ(controller.record(key, std::move(result)),
+              CandidateRecordOutcome::Accepted);
+  }
+  SearchControllerResult result =
+      controller.finish(SearchFrontierStatus::Exhausted);
+  ASSERT_TRUE(result.winner);
+  EXPECT_EQ(result.winner->key, makeKey(1, 10));
+  EXPECT_EQ(result.coverage, SearchControllerCoverage::FeasibleUnranked);
 }
 
 TEST(ActualResultControllerTest,

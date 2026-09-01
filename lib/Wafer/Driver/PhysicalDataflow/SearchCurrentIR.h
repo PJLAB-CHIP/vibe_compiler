@@ -11,9 +11,12 @@ namespace wafer::compiler::detail {
 struct SearchCurrentIROptions {
   uint64_t layoutWorkLimit = UINT64_C(1048576);
   uint64_t maximumTemporalCandidatesPerStructuralState = 8;
+  uint64_t maximumCandidateActualizations = 42;
   bool stopTemporalAfterFirstAccepted = true;
   uint64_t planningCredits = std::numeric_limits<uint64_t>::max();
-  uint64_t maximumStructuralCandidates = 4;
+  uint64_t maximumStructuralCandidates = 8;
+  uint64_t maximumInitialRegionProposals = 6;
+  uint64_t maximumRegionRefinementCandidates = 2;
   SearchTerminationPolicy termination = SearchTerminationPolicy::Exhaustive;
   CurrentIRDownstreamOptions downstream;
 };
