@@ -148,6 +148,7 @@ private:
       rootWorkCache;
   PlanningMemo<SpatialPlan, RegionDomain> regionDomainCache;
   uint64_t maximumRegionProposals;
+  bool regionProposalMetricsRecorded = false;
   PlanningWorkCounts work;
 };
 

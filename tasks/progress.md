@@ -17,18 +17,13 @@
 
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `region-fusion-quality` | `doing` | Q52 / 06 | 完整RegionDomain、graph-coherent proposal donor、actual MiniMalloc feedback和final actual objective | Region proposal形成一条dynamic maximum-gain coherent merge序列，并以4个slots访问0/约1/3/约2/3/full prefixes；同源LLaMA在≤15分钟内至少一个中间prefix通过actual leaf，winner相对P0在enabled actual objective上Pareto更好并以DDR/instruction下降解释整图Region/cut消除；两条policy通过strict no-card | `tasks/plans/physical-dataflow-synthesis.md` |
-| 2 | `production-host-readiness` | `queued` | Q53 / 16 | region fusion quality、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
-
-Q52因fusion quality验收错误重新打开。提交`6221d9a8`只让4个structural slots访问singleton和三个单edge sibling，LLaMA winner从
-1360个Region降到1359个；这只能证明单edge机制可达，不能证明proposal实现了“能融合则尽量融合”。Current修正恢复graph-coherent endpoint，
-并用同一dynamic maximum-gain merge序列的bounded prefixes在低融合与endpoint之间生成少量实际可评估的中间plan；SPM合法性和winner仍只
-来自actual IR。Q53保持queued。
+| 1 | `production-host-readiness` | `next` | Q53 / 16 | Q52 region fusion quality、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 
 ## 已满足的直接前置
 
 | Owner | 状态 | Current作用 | 证据入口 |
 | --- | --- | --- | --- |
+| Q52 | `done` | none/search独立current-IR路径、bounded Region fusion proposals、actual MiniMalloc feedback和final actual objective | 06；`tasks/plans/physical-dataflow-synthesis.md`；`tasks/archive/completed-task-index.md` |
 | 01、04、06、07、10、14、16、18--20 | `done` | 架构、device-scope术语、源码/component边界和canonical build | 编号设计；`tasks/archive/completed-task-index.md` |
 | Q50.0 | `done` | policy-complete Instr共同消费的actual SPM/DDR/transport/target leaf | 06、09、12--14 |
 | Q51/Q50.S | `done` | structural choice/domain算法和attention semantic/decomposition donor；不作为current事实源 | 05、06；历史见completed index |

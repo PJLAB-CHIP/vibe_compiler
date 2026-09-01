@@ -2,13 +2,13 @@
 
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
-#include <deque>
 #include <limits>
 #include <map>
 #include <set>
@@ -308,6 +308,64 @@ bool isRootExecution(const ExecutionInstanceId &id) {
   return std::holds_alternative<RequiredRootExecution>(id.source);
 }
 
+std::optional<uint64_t> getLogicalElementByteWidth(mlir::Type type) {
+  if (auto shaped = mlir::dyn_cast<mlir::ShapedType>(type))
+    type = shaped.getElementType();
+  unsigned bitWidth = 0;
+  if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type))
+    bitWidth = integer.getWidth();
+  else if (auto floating = mlir::dyn_cast<mlir::FloatType>(type))
+    bitWidth = floating.getWidth();
+  if (bitWidth == 0 || bitWidth % 8 != 0)
+    return std::nullopt;
+  return bitWidth / 8;
+}
+
+std::optional<uint64_t>
+getExactLogicalBytes(const analysis::RootRegionWork &consumerWork,
+                     const DemandFragmentId &fragment) {
+  auto boundary = llvm::find_if(consumerWork.boundaries,
+                                [&](const analysis::RootBoundaryWork &work) {
+                                  return work.id == fragment.source;
+                                });
+  if (boundary == consumerWork.boundaries.end() || !boundary->sourceValue)
+    return std::nullopt;
+  auto use = llvm::find_if(boundary->consumerUses,
+                           [&](const analysis::RootBoundaryUseWork &work) {
+                             return work.id == fragment.use;
+                           });
+  if (use == boundary->consumerUses.end() || !use->requiredDomain)
+    return std::nullopt;
+  const analysis::ExactIndexSet &domain = *use->requiredDomain;
+  if (domain.isEmpty())
+    return uint64_t{0};
+  if (domain.getForm() != analysis::ExactIndexSetForm::BoxUnion ||
+      domain.getBoxes().empty())
+    return std::nullopt;
+  std::optional<uint64_t> elementBytes =
+      getLogicalElementByteWidth(boundary->sourceValue.getType());
+  if (!elementBytes)
+    return std::nullopt;
+  uint64_t elements = 0;
+  for (const analysis::StaticRectangularIndexSet &box : domain.getBoxes()) {
+    uint64_t volume = 1;
+    for (int64_t size : box.sizes) {
+      if (size < 0 ||
+          (size != 0 && volume > std::numeric_limits<uint64_t>::max() /
+                                     static_cast<uint64_t>(size)))
+        return std::nullopt;
+      volume *= static_cast<uint64_t>(size);
+    }
+    if (volume > std::numeric_limits<uint64_t>::max() - elements)
+      return std::nullopt;
+    elements += volume;
+  }
+  if (*elementBytes != 0 &&
+      elements > std::numeric_limits<uint64_t>::max() / *elementBytes)
+    return std::nullopt;
+  return elements * *elementBytes;
+}
+
 } // namespace
 
 mlir::FailureOr<RegionDomain>
@@ -404,10 +462,14 @@ RegionDomain::create(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
                                  replicaAllowedByWork[producer->first];
       if (!allowsRequiredLocal && !allowsReplica)
         continue;
+      std::optional<uint64_t> exactLogicalBytes;
+      if (allowsRequiredLocal && consumerWork)
+        exactLogicalBytes =
+            getExactLogicalBytes(*consumerWork, external.fragment);
       fragments.push_back({external.fragment, producer->first,
                            consumer->second.first, producer->second,
                            consumer->second.second, allowsRequiredLocal,
-                           allowsReplica});
+                           allowsReplica, exactLogicalBytes});
     }
   }
   llvm::sort(fragments, [](const LocalFragment &lhs, const LocalFragment &rhs) {
@@ -895,6 +957,40 @@ bool RegionDomain::contains(const RegionPlan &plan) const {
   return getCursor(plan).has_value();
 }
 
+RegionProposalMetrics
+RegionDomain::getProposalMetrics(const RegionPlan &plan) const {
+  RegionProposalMetrics metrics;
+  metrics.regions = plan.groups.size();
+  for (const RegionGroupPlan &group : plan.groups) {
+    metrics.maximumRootsPerRegion = std::max<uint64_t>(
+        metrics.maximumRootsPerRegion, group.mandatoryRoots.size());
+    metrics.fusionMerges += group.mandatoryRoots.size() - 1;
+    metrics.localBindings += group.localBindings.size();
+    metrics.externalBindings += group.externalBindings.size();
+    for (const LocalUseBinding &binding : group.localBindings) {
+      const LocalFragment *fragment = nullptr;
+      if (const auto *required =
+              std::get_if<ExecutionInstanceId>(&binding.producer)) {
+        auto found = llvm::find_if(localFragments, [&](const LocalFragment &f) {
+          return f.fragment == binding.fragment && f.producer == *required;
+        });
+        if (found != localFragments.end())
+          fragment = &*found;
+      }
+      if (!fragment || !fragment->exactLogicalBytes ||
+          *fragment->exactLogicalBytes > std::numeric_limits<uint64_t>::max() -
+                                             metrics.exactLogicalBytes) {
+        metrics.exactLogicalBytesKnown = false;
+        metrics.exactLogicalBytes = 0;
+        continue;
+      }
+      if (metrics.exactLogicalBytesKnown)
+        metrics.exactLogicalBytes += *fragment->exactLogicalBytes;
+    }
+  }
+  return metrics;
+}
+
 std::vector<RegionPlan>
 RegionDomain::getProposals(uint64_t maximumPlans) const {
   std::vector<RegionPlan> proposals;
@@ -949,15 +1045,22 @@ RegionDomain::getProposals(uint64_t maximumPlans) const {
   if (proposals.size() >= maximumPlans)
     return proposals;
 
-  // Traverse a bounded breadth-first prefix of connected coarsenings. Every
-  // edge adds one union to its parent, but siblings remain independent, so an
-  // actual rejection of one merge is not carried into the next proposal. This
-  // is proposal priority only: the canonical raw successor remains the
-  // complete domain.
+  // Build one deterministic maximum-gain sequence from singleton to a
+  // graph-coherent fixed point. A group participates at most once in each
+  // greedy matching round, so shallow prefixes cover independent edges before
+  // later rounds grow those groups again. This is proposal ordering, not a
+  // group-size or legality rule. Only a bounded number of prefixes become
+  // RegionPlans; the union history is query-local work destroyed before any
+  // candidate IR exists. The canonical raw successor remains complete.
   struct ProgressiveComponentState {
+    struct FragmentEdge {
+      size_t producer = 0;
+      size_t consumer = 0;
+      const LocalFragment *fragment = nullptr;
+    };
     llvm::SmallVector<std::pair<size_t, size_t>, 8> cannotLink;
     llvm::SmallVector<std::pair<size_t, size_t>, 32> directedEdges;
-    llvm::SmallVector<std::pair<size_t, size_t>, 32> candidateEdges;
+    llvm::SmallVector<FragmentEdge, 32> fragmentEdges;
   };
   std::map<DemandFragmentId, size_t> localRealizations;
   for (const LocalFragment &fragment : localFragments)
@@ -966,11 +1069,6 @@ RegionDomain::getProposals(uint64_t maximumPlans) const {
   std::vector<ProgressiveComponentState> progressive(components.size());
   for (auto [componentIndex, component] : llvm::enumerate(components)) {
     ProgressiveComponentState &state = progressive[componentIndex];
-    const size_t count = component.works.size();
-    for (size_t lhs = 0; lhs < count; ++lhs)
-      for (size_t rhs = lhs + 1; rhs < count; ++rhs)
-        if (component.potentialEdges[lhs * count + rhs])
-          state.candidateEdges.emplace_back(lhs, rhs);
     auto findWorkIndex =
         [&](const analysis::RootRegionWorkId &work) -> std::optional<size_t> {
       auto found = llvm::find(component.works, work);
@@ -982,10 +1080,13 @@ RegionDomain::getProposals(uint64_t maximumPlans) const {
     for (const LocalFragment &fragment : localFragments) {
       std::optional<size_t> producer = findWorkIndex(fragment.producerWork);
       std::optional<size_t> consumer = findWorkIndex(fragment.consumerWork);
-      if (producer && consumer && *producer != *consumer &&
-          !llvm::is_contained(state.directedEdges,
+      if (!producer || !consumer || *producer == *consumer)
+        continue;
+      if (!llvm::is_contained(state.directedEdges,
                               std::make_pair(*producer, *consumer)))
         state.directedEdges.emplace_back(*producer, *consumer);
+      if (fragment.allowsRequiredLocal)
+        state.fragmentEdges.push_back({*producer, *consumer, &fragment});
     }
     for (const RegionGroupPlan &base : baseGroups) {
       if (base.tile != component.tile || base.mandatoryRoots.size() != 1)
@@ -1053,81 +1154,172 @@ RegionDomain::getProposals(uint64_t maximumPlans) const {
     size_t component = 0;
     size_t lhs = 0;
     size_t rhs = 0;
+    bool exactBytesKnown = false;
+    uint64_t exactBytes = 0;
+    uint64_t bindingCount = 0;
   };
-  using SemanticEdge = std::pair<SemanticRootKey, SemanticRootKey>;
-  std::map<SemanticEdge, std::vector<MergeStep>> stepsBySemanticEdge;
-  for (auto [componentIndex, state] : llvm::enumerate(progressive))
-    for (const auto &[lhs, rhs] : state.candidateEdges) {
-      SemanticRootKey lhsRoot = components[componentIndex].works[lhs].root;
-      SemanticRootKey rhsRoot = components[componentIndex].works[rhs].root;
-      if (rhsRoot < lhsRoot)
-        std::swap(lhsRoot, rhsRoot);
-      stepsBySemanticEdge[{lhsRoot, rhsRoot}].push_back(
-          {componentIndex, lhs, rhs});
-    }
-  size_t maximumOccurrences = 0;
-  for (auto &[semanticEdge, steps] : stepsBySemanticEdge) {
-    (void)semanticEdge;
-    llvm::sort(steps, [](const MergeStep &lhs, const MergeStep &rhs) {
-      return std::tie(lhs.component, lhs.lhs, lhs.rhs) <
-             std::tie(rhs.component, rhs.lhs, rhs.rhs);
-    });
-    maximumOccurrences = std::max(maximumOccurrences, steps.size());
-  }
-  std::vector<MergeStep> mergeSteps;
-  // Visit one representative of every semantic edge before repeating the
-  // same edge on another Tile. This keeps a small prefix structurally diverse
-  // without using shape, estimated storage, or a predicted legality score.
-  for (size_t occurrence = 0; occurrence < maximumOccurrences; ++occurrence)
-    for (const auto &[semanticEdge, steps] : stepsBySemanticEdge) {
-      (void)semanticEdge;
-      if (occurrence < steps.size())
-        mergeSteps.push_back(steps[occurrence]);
-    }
-
   using ProposalLabels = llvm::SmallVector<llvm::SmallVector<uint32_t, 8>, 8>;
-  std::deque<ProposalLabels> frontier;
-  std::set<ProposalLabels> reached;
-  frontier.push_back(singleton);
-  reached.insert(singleton);
-  while (!frontier.empty()) {
-    ProposalLabels parent = std::move(frontier.front());
-    frontier.pop_front();
-    for (const MergeStep &step : mergeSteps) {
-      const ProgressiveComponentState &state = progressive[step.component];
-      if (parent[step.component][step.lhs] == parent[step.component][step.rhs])
-        continue;
-      ProposalLabels child = parent;
-      llvm::SmallVector<uint32_t, 8> &labels = child[step.component];
-      const uint32_t kept = labels[step.lhs];
-      const uint32_t removed = labels[step.rhs];
-      for (uint32_t &label : labels)
-        if (label == removed)
-          label = kept;
-      std::map<uint32_t, uint32_t> normalized;
-      for (uint32_t &label : labels) {
-        auto [entry, inserted] = normalized.try_emplace(
-            label, static_cast<uint32_t>(normalized.size()));
-        (void)inserted;
-        label = entry->second;
+  auto mergeLabels = [](llvm::SmallVectorImpl<uint32_t> &labels, size_t lhs,
+                        size_t rhs) {
+    const uint32_t kept = labels[lhs];
+    const uint32_t removed = labels[rhs];
+    for (uint32_t &label : labels)
+      if (label == removed)
+        label = kept;
+    std::map<uint32_t, uint32_t> normalized;
+    for (uint32_t &label : labels) {
+      auto [entry, inserted] = normalized.try_emplace(
+          label, static_cast<uint32_t>(normalized.size()));
+      (void)inserted;
+      label = entry->second;
+    }
+  };
+
+  struct MergeCandidate {
+    MergeStep step;
+    analysis::RootRegionWorkId lhsRepresentative;
+    analysis::RootRegionWorkId rhsRepresentative;
+  };
+  auto isBetterCandidate = [](const MergeCandidate &lhs,
+                              const MergeCandidate &rhs) {
+    if (lhs.step.exactBytesKnown != rhs.step.exactBytesKnown)
+      return lhs.step.exactBytesKnown;
+    if (lhs.step.exactBytesKnown && lhs.step.exactBytes != rhs.step.exactBytes)
+      return lhs.step.exactBytes > rhs.step.exactBytes;
+    if (lhs.step.bindingCount != rhs.step.bindingCount)
+      return lhs.step.bindingCount > rhs.step.bindingCount;
+    return std::tie(lhs.lhsRepresentative.root, lhs.rhsRepresentative.root,
+                    lhs.step.component, lhs.step.lhs, lhs.step.rhs) <
+           std::tie(rhs.lhsRepresentative.root, rhs.rhsRepresentative.root,
+                    rhs.step.component, rhs.step.lhs, rhs.step.rhs);
+  };
+
+  ProposalLabels coherent = singleton;
+  std::vector<MergeStep> mergeHistory;
+  while (true) {
+    std::vector<llvm::SmallVector<uint8_t, 8>> matched;
+    matched.reserve(components.size());
+    for (const Component &component : components)
+      matched.emplace_back(component.works.size(), 0);
+    bool roundChanged = false;
+    while (true) {
+      std::optional<MergeCandidate> best;
+      for (auto [componentIndex, state] : llvm::enumerate(progressive)) {
+        using LabelPair = std::pair<uint32_t, uint32_t>;
+        struct GainAccumulator {
+          std::map<DemandFragmentId, std::optional<uint64_t>> fragments;
+          size_t lhs = 0;
+          size_t rhs = 0;
+        };
+        std::map<LabelPair, GainAccumulator> candidates;
+        llvm::ArrayRef<uint32_t> labels = coherent[componentIndex];
+        auto groupMatched = [&](uint32_t label) {
+          for (auto [vertex, current] : llvm::enumerate(labels))
+            if (current == label && matched[componentIndex][vertex])
+              return true;
+          return false;
+        };
+        for (const ProgressiveComponentState::FragmentEdge &edge :
+             state.fragmentEdges) {
+          uint32_t lhsLabel = labels[edge.producer];
+          uint32_t rhsLabel = labels[edge.consumer];
+          if (lhsLabel == rhsLabel || groupMatched(lhsLabel) ||
+              groupMatched(rhsLabel))
+            continue;
+          if (rhsLabel < lhsLabel)
+            std::swap(lhsLabel, rhsLabel);
+          GainAccumulator &candidate = candidates[{lhsLabel, rhsLabel}];
+          if (candidate.fragments.empty()) {
+            candidate.lhs = edge.producer;
+            candidate.rhs = edge.consumer;
+          }
+          candidate.fragments.try_emplace(edge.fragment->fragment,
+                                          edge.fragment->exactLogicalBytes);
+        }
+
+        for (const auto &[groupPair, gain] : candidates) {
+          (void)groupPair;
+          llvm::SmallVector<uint32_t, 8> trial = coherent[componentIndex];
+          mergeLabels(trial, gain.lhs, gain.rhs);
+          if (llvm::any_of(state.cannotLink,
+                           [&](const auto &edge) {
+                             return trial[edge.first] == trial[edge.second];
+                           }) ||
+              !isAcyclic(state, trial))
+            continue;
+
+          uint64_t bytes = 0;
+          bool bytesKnown = true;
+          for (const auto &[fragment, fragmentBytes] : gain.fragments) {
+            (void)fragment;
+            if (!fragmentBytes ||
+                *fragmentBytes > std::numeric_limits<uint64_t>::max() - bytes) {
+              bytesKnown = false;
+              bytes = 0;
+              break;
+            }
+            bytes += *fragmentBytes;
+          }
+          auto findRepresentative = [&](uint32_t label) {
+            auto found = llvm::find(coherent[componentIndex], label);
+            assert(found != coherent[componentIndex].end());
+            return std::distance(coherent[componentIndex].begin(), found);
+          };
+          size_t lhs = findRepresentative(labels[gain.lhs]);
+          size_t rhs = findRepresentative(labels[gain.rhs]);
+          if (components[componentIndex].works[rhs] <
+              components[componentIndex].works[lhs])
+            std::swap(lhs, rhs);
+          MergeCandidate candidate{
+              {componentIndex, lhs, rhs, bytesKnown, bytes,
+               static_cast<uint64_t>(gain.fragments.size())},
+              components[componentIndex].works[lhs],
+              components[componentIndex].works[rhs]};
+          if (!best || isBetterCandidate(candidate, *best))
+            best = std::move(candidate);
+        }
       }
-      if (llvm::any_of(state.cannotLink,
-                       [&](const auto &edge) {
-                         return labels[edge.first] == labels[edge.second];
-                       }) ||
-          !isAcyclic(state, labels) || !reached.insert(child).second)
+      if (!best)
+        break;
+      llvm::ArrayRef<uint32_t> labels = coherent[best->step.component];
+      const uint32_t lhsLabel = labels[best->step.lhs];
+      const uint32_t rhsLabel = labels[best->step.rhs];
+      for (auto [vertex, label] : llvm::enumerate(labels))
+        if (label == lhsLabel || label == rhsLabel)
+          matched[best->step.component][vertex] = 1;
+      mergeLabels(coherent[best->step.component], best->step.lhs,
+                  best->step.rhs);
+      mergeHistory.push_back(best->step);
+      roundChanged = true;
+    }
+    if (!roundChanged)
+      break;
+  }
+
+  const uint64_t snapshotCount =
+      std::min<uint64_t>(maximumPlans, mergeHistory.size() + 1);
+  if (snapshotCount > 1) {
+    ProposalLabels snapshot = singleton;
+    size_t applied = 0;
+    uint64_t previousTarget = 0;
+    for (uint64_t index = 1; index < snapshotCount; ++index) {
+      const unsigned __int128 numerator =
+          static_cast<unsigned __int128>(index) * mergeHistory.size();
+      const uint64_t target = static_cast<uint64_t>(
+          (numerator + snapshotCount - 2) / (snapshotCount - 1));
+      if (target == previousTarget)
         continue;
-      std::optional<RegionPlan> plan =
-          buildPlan(child, makeChoices(child, /*local once=*/1));
-      if (!plan)
-        continue;
-      frontier.push_back(child);
-      append(std::move(plan));
-      if (proposals.size() >= maximumPlans)
-        return proposals;
+      while (applied < target) {
+        const MergeStep &step = mergeHistory[applied++];
+        mergeLabels(snapshot[step.component], step.lhs, step.rhs);
+      }
+      append(buildPlan(snapshot, makeChoices(snapshot, /*local once=*/1)));
+      previousTarget = target;
     }
   }
 
+  if (proposals.size() >= maximumPlans)
+    return proposals;
   append(buildPlan(maximal, makeChoices(maximal, /*local once=*/1)));
   if (proposals.size() >= maximumPlans)
     return proposals;

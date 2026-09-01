@@ -3,8 +3,10 @@
 #include "Wafer/Driver/PhysicalDataflow/UnifiedSearch.h"
 
 #include "Wafer/Planning/PhysicalDataflow/PlanningProfile.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/FormatVariadic.h"
 
 #include <limits>
 #include <utility>
@@ -27,6 +29,84 @@ bool isTerminal(UnifiedSearchResumeStatus status) {
   return status != UnifiedSearchResumeStatus::Paused;
 }
 
+void recordRegionCandidateCounter(size_t index, llvm::StringRef metric,
+                                  uint64_t value) {
+  std::string name =
+      llvm::formatv("region-candidate-{0}-{1}", index, metric).str();
+  wafer::support::addCompileCounter("search", name, value);
+}
+
+void recordStructuralCandidateMetrics(
+    size_t index, const RegionPlan &plan,
+    const StructuralCandidateEvaluation &evaluation,
+    const std::optional<SearchCostCohort> &cohort) {
+  if (index >= 4)
+    return;
+
+  uint64_t fusionMerges = 0;
+  for (const RegionGroupPlan &group : plan.groups)
+    fusionMerges += group.mandatoryRoots.size() - 1;
+  recordRegionCandidateCounter(index, "actualizations",
+                               evaluation.actualizations);
+  recordRegionCandidateCounter(index, "merges", fusionMerges);
+  const ActualCandidateStatus status = evaluation.result.status;
+  recordRegionCandidateCounter(index, "accepted",
+                               status == ActualCandidateStatus::Accepted);
+  recordRegionCandidateCounter(index, "exact-rejected",
+                               status == ActualCandidateStatus::ExactRejection);
+  recordRegionCandidateCounter(index, "unsupported",
+                               status == ActualCandidateStatus::Unsupported);
+  recordRegionCandidateCounter(index, "indeterminate",
+                               status == ActualCandidateStatus::Indeterminate);
+
+  if (status != ActualCandidateStatus::Accepted ||
+      !evaluation.result.compilation ||
+      !evaluation.result.compilation->executable)
+    return;
+  const analysis::InstructionProgramAggregateCost &cost =
+      evaluation.result.compilation->executable->resourceCost;
+  recordRegionCandidateCounter(index, "ddr-read-bytes-known",
+                               cost.aggregateDDRReadBytes.isKnown());
+  recordRegionCandidateCounter(index, "ddr-write-bytes-known",
+                               cost.aggregateDDRWriteBytes.isKnown());
+  recordRegionCandidateCounter(index, "instruction-count-known",
+                               cost.aggregateInstructionCount.isKnown());
+  if (cost.aggregateDDRReadBytes.isKnown())
+    recordRegionCandidateCounter(index, "ddr-read-bytes",
+                                 cost.aggregateDDRReadBytes.value);
+  if (cost.aggregateDDRWriteBytes.isKnown())
+    recordRegionCandidateCounter(index, "ddr-write-bytes",
+                                 cost.aggregateDDRWriteBytes.value);
+  if (cost.aggregateInstructionCount.isKnown())
+    recordRegionCandidateCounter(index, "instruction-count",
+                                 cost.aggregateInstructionCount.value);
+
+  SearchObjective objective = deriveSearchObjective(cost, cohort);
+  const auto *known = std::get_if<KnownSearchObjective>(&objective);
+  recordRegionCandidateCounter(index, "objective-known", known != nullptr);
+  if (!known)
+    return;
+  const SearchResourceDurations &durations = known->durations;
+  recordRegionCandidateCounter(index, "objective-ne-picoseconds",
+                               durations.neF16Bf16Picoseconds);
+  recordRegionCandidateCounter(index, "objective-vector-f16-picoseconds",
+                               durations.vectorF16Bf16Picoseconds);
+  recordRegionCandidateCounter(index, "objective-vector-f32-picoseconds",
+                               durations.vectorF32Picoseconds);
+  recordRegionCandidateCounter(index, "objective-ddr-picoseconds",
+                               durations.ddrPicoseconds);
+  recordRegionCandidateCounter(index, "objective-noc-picoseconds",
+                               durations.nocPicoseconds);
+  recordRegionCandidateCounter(index, "objective-spm-picoseconds",
+                               durations.spmMovementPicoseconds);
+  recordRegionCandidateCounter(index, "objective-instruction-picoseconds",
+                               durations.instructionControlPicoseconds);
+  recordRegionCandidateCounter(index, "objective-dte-wait-picoseconds",
+                               durations.dteWaitControlPicoseconds);
+  recordRegionCandidateCounter(index, "objective-ncc-wait-picoseconds",
+                               durations.nccWaitControlPicoseconds);
+}
+
 } // namespace
 
 struct UnifiedSearchSession::Impl {
@@ -34,7 +114,7 @@ struct UnifiedSearchSession::Impl {
        StructuralCandidateEvaluator &evaluator,
        const UnifiedSearchOptions &options, UnifiedSearchTrace *trace)
       : planningSession(planningSession), evaluator(evaluator),
-        termination(options.termination),
+        termination(options.termination), costCohort(options.costCohort),
         controller(ActualResultControllerOptions{
             options.structuralCandidateCredits, options.costCohort,
             options.exactRejectionCache}),
@@ -126,6 +206,9 @@ struct UnifiedSearchSession::Impl {
     }
     ++work.structuralStatesActualized;
     StructuralCandidateEvaluation evaluation = evaluator.evaluate(state);
+    recordStructuralCandidateMetrics(work.structuralStatesActualized - 1,
+                                     state.getRegionPlan(), evaluation,
+                                     costCohort);
     work.candidateActualizations += evaluation.actualizations;
     if (!evaluation.domainExhausted) {
       sawIncompleteInnerDomain = true;
@@ -241,6 +324,7 @@ struct UnifiedSearchSession::Impl {
   PhysicalDataflowPlanningSession &planningSession;
   StructuralCandidateEvaluator &evaluator;
   SearchTerminationPolicy termination;
+  std::optional<SearchCostCohort> costCohort;
   ActualResultController controller;
   PlanningProfileSink *profile = nullptr;
   UnifiedSearchTrace *trace = nullptr;

@@ -63,15 +63,14 @@
 
 | 当前或later范围 | 实施计划 | 稳定设计owner |
 | --- | --- | --- |
-| Q52 search scalability与Q53 production host readiness | `tasks/plans/physical-dataflow-synthesis.md` | 06；直接下游07–16 |
+| Q53 production host readiness；保留Q52闭合证据作为直接输入 | `tasks/plans/physical-dataflow-synthesis.md` | 06；直接下游07–16 |
 | Q57 resident static execution | `tasks/plans/resident-static-execution.md` | 15–17 |
 | Q61 whole-program scale readiness | `tasks/plans/whole-program-scale-readiness.md` | 01–02、06、14–18 |
 | Q48 semantic superoptimization | `tasks/plans/semantic-superoptimization.md` | 05–08、10–11、16–18 |
 
-Q52当前同时处理baseline回归、两条policy各自的IR膨胀、verifier职责、actual-IR materialization boundary、
-layout/movement、current Tile execution structure/rotating storage和后续search scalability；历史Q51 shadow planning state只作
-donor/删除输入，不是current设计。Q53只形成
-fresh host/package/no-card与board-ready输入，不运行真实设备。
+Q52已闭合baseline/search独立current-IR路径、IR膨胀、verifier职责、materialization boundary、layout/movement、Tile execution
+structure、actual memory feedback和Region fusion quality；历史Q51 shadow planning state不是current设计。Q53只形成fresh
+host/package/no-card与board-ready输入，不运行真实设备。
 Q49–Q51详细施工与原Q53板端设想位于
 `tasks/archive/physical-dataflow-synthesis-working-history.md`，Q54历史整改位于
 `tasks/archive/mlir-engineering-remediation.md`。
@@ -107,7 +106,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 | `tasks/archive/ncc-synchronization-contract-layering.md` | 已完成Q63的NCC completion合同分层记录；稳定语义只读11、13、17、19 |
 | `tasks/archive/source-registration-truth-closure.md` | 已完成Q64的repo-wide source/test registration mirror与旧一轮owner迁移记录；其中目录分类已由current 18号设计替代 |
 | `tasks/archive/physical-dataflow-synthesis-working-history.md` | 截至2026-08-25的Q49–Q51详细施工、Q52重基线审计和原Q53板端设想；current Q52/Q53计划已重写，禁止从本文件恢复旧顺序或shared materializer |
-| `tasks/archive/mlir-engineering-remediation.md` | 已完成Q54的审计、checkpoint和验证记录；current verifier cleanup由Q52拥有，稳定规则由19和AGENTS拥有 |
+| `tasks/archive/mlir-engineering-remediation.md` | 已完成Q54的审计、checkpoint和验证记录；verifier cleanup已由Q52闭合，稳定规则由19和AGENTS拥有 |
 | `tasks/archive/whole-card-tile-dataflow-synthesis.md` | 2026-08-11至08-13的旧Q49/Q50完整施工计划；旧任务拆法、shortlist和owner合同不再有效 |
 | `tasks/archive/whole-rank-tile-dataflow-synthesis.md` | 2026-08-08的structured-DAG/card历史施工计划；已由current physical-dataflow计划替代，旧public policy与bounded candidate set不再有效 |
 | `tasks/archive/whole-variant-search-throughput.md` | 已完成Q32.C的passing-ordinal early stop、bounded persistent candidate executor、accepted-module owner import、exact attempt-plan selective parse和fully-gated Pareto前置late ABI/LLVM，并记录优化后Release单次实测 |

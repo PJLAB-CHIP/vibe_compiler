@@ -77,6 +77,40 @@ protected:
     return std::move(collection->works);
   }
 
+  static mlir::FailureOr<std::vector<analysis::RootRegionWork>>
+  buildWorksOnTiles(const StructuredDAGAnalysis &dag,
+                    llvm::ArrayRef<TileId> tiles, std::string *failureReason) {
+    if (tiles.empty())
+      return mlir::failure();
+    llvm::SmallVector<StructuredDAGNodePlacement, 8> placements;
+    for (const StructuredDAGNode &node : dag.getNodes()) {
+      auto tiling = mlir::cast<mlir::TilingInterface>(node.operation);
+      llvm::SmallVector<uint32_t, 4> factors(
+          tiling.getLoopIteratorTypes().size(), 1);
+      if (tiles.size() > 1) {
+        if (factors.empty())
+          return mlir::failure();
+        factors.front() = tiles.size();
+      }
+      placements.push_back(StructuredDAGNodePlacement{
+          node.id, std::move(factors),
+          llvm::SmallVector<TileId, 4>(tiles.begin(), tiles.end())});
+    }
+    auto closed =
+        wafer::test::buildTestSpatialDemand(dag, placements, failureReason);
+    if (mlir::failed(closed))
+      return mlir::failure();
+    auto domain = RootWorkDomain::create(dag, closed->spatial, closed->demand,
+                                         tiles, failureReason);
+    if (mlir::failed(domain))
+      return mlir::failure();
+    RootWorkCollectionOutcome outcome = collectRootWorks(*domain);
+    RootWorkCollection *collection = getRootWorkCollection(outcome);
+    if (!collection)
+      return mlir::failure();
+    return std::move(collection->works);
+  }
+
   static std::optional<std::vector<RegionPlan>>
   enumerate(const RegionDomain &domain, size_t limit = 100000) {
     std::vector<RegionPlan> plans;
@@ -506,6 +540,20 @@ module { func.func @main(%x: tensor<2xf16>, %y: tensor<2xf16>)
               plans->size());
     for (const RegionPlan &plan : *plans)
       EXPECT_TRUE(domain->contains(plan));
+
+    const std::set<RegionPlan> rawPlans(plans->begin(), plans->end());
+    std::vector<RegionPlan> proposals = domain->getProposals(4);
+    EXPECT_GT(proposals.size(), 0u);
+    EXPECT_LE(proposals.size(), 4u);
+    EXPECT_EQ(std::set<RegionPlan>(proposals.begin(), proposals.end()).size(),
+              proposals.size());
+    for (const RegionPlan &proposal : proposals) {
+      EXPECT_TRUE(domain->contains(proposal));
+      EXPECT_EQ(rawPlans.count(proposal), 1u);
+    }
+    auto plansAfterProposalQuery = enumerate(*domain);
+    ASSERT_TRUE(plansAfterProposalQuery);
+    EXPECT_EQ(*plansAfterProposalQuery, *plans);
   }
 }
 
@@ -541,8 +589,7 @@ module {
   EXPECT_EQ(print(module->getOperation()), before);
 }
 
-TEST_F(RegionDomainTest,
-       RaggedChainProposalsVisitIndependentLowestFusionSiblingsFirst) {
+TEST_F(RegionDomainTest, RaggedChainProposalsSampleOneCoherentMergeSequence) {
   auto module = parse(R"mlir(
 module {
   func.func @main(%input: tensor<2x1025x128xf16>)
@@ -591,7 +638,214 @@ module {
   ASSERT_EQ(fusionLevels.size(), 4u);
   EXPECT_EQ(
       std::vector<uint64_t>(fusionLevels.begin(), fusionLevels.begin() + 4),
-      (std::vector<uint64_t>{0, 1, 1, 1}));
+      (std::vector<uint64_t>{0, 1, 2, 3}));
+
+  std::reverse(works->begin(), works->end());
+  auto reordered = RegionDomain::create(*works, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(reordered)) << failureReason;
+  EXPECT_EQ(reordered->getProposals(4), proposals);
+}
+
+TEST_F(RegionDomainTest,
+       EqualSemanticMergesAdvanceAcrossTilesBeforeGrowingOneTileAgain) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(%input: tensor<2x1025x128xf16>)
+      -> tensor<2x1025x128xf16> {
+    %e0 = tensor.empty() : tensor<2x1025x128xf16>
+    %a = linalg.map ins(%input : tensor<2x1025x128xf16>)
+        outs(%e0 : tensor<2x1025x128xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    %e1 = tensor.empty() : tensor<2x1025x128xf16>
+    %b = linalg.map ins(%a : tensor<2x1025x128xf16>)
+        outs(%e1 : tensor<2x1025x128xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    %e2 = tensor.empty() : tensor<2x1025x128xf16>
+    %c = linalg.map ins(%b : tensor<2x1025x128xf16>)
+        outs(%e2 : tensor<2x1025x128xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    %e3 = tensor.empty() : tensor<2x1025x128xf16>
+    %d = linalg.map ins(%c : tensor<2x1025x128xf16>)
+        outs(%e3 : tensor<2x1025x128xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    return %d : tensor<2x1025x128xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  std::string failureReason;
+  auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+  llvm::SmallVector<TileId, 2> tiles{TileId(0), TileId(1)};
+  auto works = buildWorksOnTiles(*dag, tiles, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(works)) << failureReason;
+  auto domain = RegionDomain::create(*works, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
+  std::vector<RegionPlan> proposals = domain->getProposals(4);
+  ASSERT_EQ(proposals.size(), 4u);
+
+  std::set<int64_t> tilesWithFusedGroup;
+  for (const RegionGroupPlan &group : proposals[1].groups)
+    if (group.mandatoryRoots.size() > 1)
+      tilesWithFusedGroup.insert(group.tile.getValue());
+  EXPECT_EQ(tilesWithFusedGroup, (std::set<int64_t>{0, 1}));
+  EXPECT_EQ(domain->getProposalMetrics(proposals[1]).fusionMerges, 2u);
+  EXPECT_EQ(domain->getProposalMetrics(proposals[1]).maximumRootsPerRegion, 2u);
+  EXPECT_EQ(domain->getProposalMetrics(proposals[2]).maximumRootsPerRegion, 2u);
+  EXPECT_EQ(domain->getProposalMetrics(proposals[3]).maximumRootsPerRegion, 4u);
+}
+
+TEST_F(RegionDomainTest, ExactLogicalPayloadOrdersTheCoherentMergeSequence) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(%small: tensor<2x1024x16xf16>,
+                  %large: tensor<2x1024x128xf16>)
+      -> (tensor<2x1024x16xf16>, tensor<2x1024x128xf16>) {
+    %small_e0 = tensor.empty() : tensor<2x1024x16xf16>
+    %small_p = linalg.map ins(%small : tensor<2x1024x16xf16>)
+        outs(%small_e0 : tensor<2x1024x16xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    %small_e1 = tensor.empty() : tensor<2x1024x16xf16>
+    %small_c = linalg.map ins(%small_p : tensor<2x1024x16xf16>)
+        outs(%small_e1 : tensor<2x1024x16xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    %large_e0 = tensor.empty() : tensor<2x1024x128xf16>
+    %large_p = linalg.map ins(%large : tensor<2x1024x128xf16>)
+        outs(%large_e0 : tensor<2x1024x128xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    %large_e1 = tensor.empty() : tensor<2x1024x128xf16>
+    %large_c = linalg.map ins(%large_p : tensor<2x1024x128xf16>)
+        outs(%large_e1 : tensor<2x1024x128xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    return %small_c, %large_c
+        : tensor<2x1024x16xf16>, tensor<2x1024x128xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  std::string failureReason;
+  auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+  auto works = buildWorks(*dag, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(works)) << failureReason;
+  std::map<analysis::RootRegionWorkId, int64_t> trailingExtent;
+  for (const analysis::RootRegionWork &work : *works) {
+    auto type = work.rootOperation
+                    ? mlir::dyn_cast<mlir::RankedTensorType>(
+                          work.rootOperation->getResult(0).getType())
+                    : mlir::RankedTensorType{};
+    ASSERT_TRUE(type);
+    trailingExtent.emplace(work.id, type.getShape().back());
+  }
+  auto domain = RegionDomain::create(*works, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
+  std::vector<RegionPlan> proposals = domain->getProposals(3);
+  ASSERT_EQ(proposals.size(), 3u);
+
+  auto fusedGroups = [](const RegionPlan &plan) {
+    std::vector<RegionGroupPlan> result;
+    for (const RegionGroupPlan &group : plan.groups)
+      if (group.mandatoryRoots.size() > 1)
+        result.push_back(group);
+    return result;
+  };
+  std::vector<RegionGroupPlan> firstFused = fusedGroups(proposals[1]);
+  ASSERT_EQ(firstFused.size(), 1u);
+  ASSERT_EQ(firstFused.front().mandatoryRoots.size(), 2u);
+  EXPECT_TRUE(llvm::all_of(firstFused.front().mandatoryRoots,
+                           [&](const analysis::RootRegionWorkId &work) {
+                             return trailingExtent.at(work) == 128;
+                           }));
+  EXPECT_EQ(fusedGroups(proposals[2]).size(), 2u);
+
+  auto allPlans = enumerate(*domain);
+  ASSERT_TRUE(allPlans);
+  for (const RegionPlan &proposal : proposals) {
+    RegionProposalMetrics selected = domain->getProposalMetrics(proposal);
+    ASSERT_TRUE(selected.exactLogicalBytesKnown);
+    uint64_t bestExactBytes = 0;
+    for (const RegionPlan &plan : *allPlans) {
+      RegionProposalMetrics candidate = domain->getProposalMetrics(plan);
+      if (candidate.fusionMerges == selected.fusionMerges &&
+          candidate.exactLogicalBytesKnown)
+        bestExactBytes = std::max(bestExactBytes, candidate.exactLogicalBytes);
+    }
+    EXPECT_EQ(selected.exactLogicalBytes, bestExactBytes);
+  }
+}
+
+TEST_F(RegionDomainTest, FanoutGainCountsOnlyTheUseThatBecomesLocal) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(%fanout: tensor<2x1025x128xf16>,
+                  %independent: tensor<2x1025x192xf16>)
+      -> (tensor<2x1025x128xf16>, tensor<2x1025x128xf16>,
+          tensor<2x1025x192xf16>) {
+    %fanout_e = tensor.empty() : tensor<2x1025x128xf16>
+    %producer = linalg.map ins(%fanout : tensor<2x1025x128xf16>)
+        outs(%fanout_e : tensor<2x1025x128xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    %left_e = tensor.empty() : tensor<2x1025x128xf16>
+    %left = linalg.map ins(%producer : tensor<2x1025x128xf16>)
+        outs(%left_e : tensor<2x1025x128xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    %right_e = tensor.empty() : tensor<2x1025x128xf16>
+    %right = linalg.map ins(%producer : tensor<2x1025x128xf16>)
+        outs(%right_e : tensor<2x1025x128xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    %independent_e0 = tensor.empty() : tensor<2x1025x192xf16>
+    %independent_p = linalg.map
+        ins(%independent : tensor<2x1025x192xf16>)
+        outs(%independent_e0 : tensor<2x1025x192xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    %independent_e1 = tensor.empty() : tensor<2x1025x192xf16>
+    %independent_c = linalg.map
+        ins(%independent_p : tensor<2x1025x192xf16>)
+        outs(%independent_e1 : tensor<2x1025x192xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    return %left, %right, %independent_c
+        : tensor<2x1025x128xf16>, tensor<2x1025x128xf16>,
+          tensor<2x1025x192xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  std::string failureReason;
+  auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+  auto works = buildWorks(*dag, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(works)) << failureReason;
+  std::map<analysis::RootRegionWorkId, int64_t> trailingExtent;
+  for (const analysis::RootRegionWork &work : *works) {
+    auto type = mlir::cast<mlir::RankedTensorType>(
+        work.rootOperation->getResult(0).getType());
+    trailingExtent.emplace(work.id, type.getShape().back());
+  }
+  auto domain = RegionDomain::create(*works, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
+  std::vector<RegionPlan> proposals = domain->getProposals(4);
+  ASSERT_EQ(proposals.size(), 4u);
+  auto firstFused =
+      llvm::find_if(proposals[1].groups, [](const RegionGroupPlan &group) {
+        return group.mandatoryRoots.size() > 1;
+      });
+  ASSERT_NE(firstFused, proposals[1].groups.end());
+  EXPECT_TRUE(llvm::all_of(firstFused->mandatoryRoots,
+                           [&](const analysis::RootRegionWorkId &work) {
+                             return trailingExtent.at(work) == 192;
+                           }));
+  auto allPlans = enumerate(*domain);
+  ASSERT_TRUE(allPlans);
+  RegionProposalMetrics selected = domain->getProposalMetrics(proposals[1]);
+  ASSERT_TRUE(selected.exactLogicalBytesKnown);
+  uint64_t bestExactBytes = 0;
+  for (const RegionPlan &plan : *allPlans) {
+    RegionProposalMetrics candidate = domain->getProposalMetrics(plan);
+    if (candidate.fusionMerges == selected.fusionMerges &&
+        candidate.exactLogicalBytesKnown)
+      bestExactBytes = std::max(bestExactBytes, candidate.exactLogicalBytes);
+  }
+  EXPECT_EQ(selected.exactLogicalBytes, bestExactBytes);
 }
 
 } // namespace

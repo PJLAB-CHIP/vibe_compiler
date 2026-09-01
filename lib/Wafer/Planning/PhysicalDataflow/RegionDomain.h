@@ -21,6 +21,16 @@ namespace wafer::compiler::detail {
 
 enum class RegionSuccessorKind : uint8_t { Plan, End, CompilerBug };
 
+struct RegionProposalMetrics {
+  uint64_t fusionMerges = 0;
+  uint64_t regions = 0;
+  uint64_t maximumRootsPerRegion = 0;
+  uint64_t localBindings = 0;
+  uint64_t externalBindings = 0;
+  bool exactLogicalBytesKnown = true;
+  uint64_t exactLogicalBytes = 0;
+};
+
 class RegionCursor {
 private:
   llvm::SmallVector<llvm::SmallVector<uint32_t, 8>, 8> labels;
@@ -67,6 +77,9 @@ public:
   /// ordinary member of the exact domain; disabling or reordering proposals
   /// cannot remove a raw successor.
   std::vector<RegionPlan> getProposals(uint64_t maximumPlans) const;
+  /// Bounded read-only proposal diagnostics. These values never participate in
+  /// Region membership, actual legality, SPM feedback, or winner selection.
+  RegionProposalMetrics getProposalMetrics(const RegionPlan &plan) const;
 
 private:
   struct Component {
@@ -83,6 +96,7 @@ private:
     ExecutionInstanceId consumer;
     bool allowsRequiredLocal = false;
     bool allowsReplica = false;
+    std::optional<uint64_t> exactLogicalBytes;
   };
 
   RegionDomain(std::vector<RegionGroupPlan> baseGroups,

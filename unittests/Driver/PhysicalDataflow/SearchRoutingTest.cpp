@@ -66,6 +66,16 @@ TEST(SearchRoutingTest, SearchBuildsOneCurrentIRDeviceExecutable) {
            "compile-counter category=layout name=solver-work",
            "compile-counter category=movement name=ddr-loads",
            "compile-counter category=search "
+           "name=region-proposal-count value=1",
+           "compile-counter category=search "
+           "name=region-proposal-0-merges value=0",
+           "compile-counter category=search "
+           "name=region-proposal-0-regions value=16",
+           "compile-counter category=search "
+           "name=region-proposal-0-maximum-roots value=1",
+           "compile-counter category=search "
+           "name=region-candidate-0-objective-known value=1",
+           "compile-counter category=search "
            "name=candidate-actualizations value=4",
            "compile-counter category=search "
            "name=accepted-structural-states value=1",

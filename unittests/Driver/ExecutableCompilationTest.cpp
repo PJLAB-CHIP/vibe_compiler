@@ -534,7 +534,7 @@ TEST(ExecutableCompilationPolicyTest,
     std::string diagnosticText;
     llvm::raw_string_ostream diagnostics(diagnosticText);
     wafer::compiler::detail::SearchCurrentIROptions options;
-    options.maximumStructuralCandidates = 2;
+    options.maximumStructuralCandidates = 4;
     options.maximumTemporalCandidatesPerStructuralState = 16;
     options.termination =
         wafer::compiler::detail::SearchTerminationPolicy::Exhaustive;
@@ -550,12 +550,13 @@ TEST(ExecutableCompilationPolicyTest,
         << result.gate << ": " << result.detail << "\n"
         << diagnosticText;
     ASSERT_TRUE(result.physicalIRInventory);
-    EXPECT_EQ(search.structuralMaterializations, 2u);
-    EXPECT_EQ(search.controller.accepted, 2u);
+    EXPECT_EQ(search.structuralMaterializations, 4u);
+    EXPECT_EQ(search.controller.accepted, 4u);
     EXPECT_EQ(result.physicalIRInventory->tileModules, 16u);
-    // The singleton has two Regions on every Tile (32 total). The second
-    // structural candidate performs exactly one Region merge globally.
-    EXPECT_EQ(result.physicalIRInventory->tileRegions, 31u);
+    // The singleton has two Regions on every Tile (32 total). Four proposal
+    // slots actualize the 0/approximately-1/3/approximately-2/3/full prefixes;
+    // the coherent endpoint merges the pair independently on all 16 Tiles.
+    EXPECT_EQ(result.physicalIRInventory->tileRegions, 16u);
   }
 }
 

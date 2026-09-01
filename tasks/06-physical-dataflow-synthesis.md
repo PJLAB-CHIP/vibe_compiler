@@ -632,9 +632,10 @@ cannot-link、group connectivity、use-binding totality和contracted dependency 
 Builder从singleton出发只构造一条确定性的graph-coherent merge序列。对当前quotient graph中的每个合法group pair计算本次merge新
 internalize的distinct external bindings；对应demand和dtype均为exact static时形成`KnownExactGain(bytes, bindingCount)`，否则形成
 `BindingOnlyGain(bindingCount)`；priority kind稳定地先访问KnownExact，随后访问BindingOnly，两种typed priority不把unknown bytes改写为0，
-最后按完整semantic key确定tie。选择当前最大gain merge后更新group labels，并只重建
-与新group相邻的quotient edges和priority；继续到没有合法merge，得到graph-coherent endpoint。Fanout只计算本次真正转为local的uses，仍需
-external publication的其它uses不能计入gain。Priority不包含预测SPM、future layout或estimated lifetime。
+最后按semantic root pair、Tile component和稳定RootRegionWork key确定tie。选择采用greedy matching rounds：一轮内按上述priority反复选择当前最大gain且互不相交的合法group pair；
+已经参与本轮union的group到下一轮才重新进入候选集合。每轮结束后从current labels重算quotient edges和gain，继续到没有合法merge，得到
+graph-coherent endpoint。这使浅层snapshot先覆盖整图中的独立边，但不是group大小合同；同一group可以在后续轮继续增长。Fanout只计算本次
+真正转为local的uses，仍需external publication的其它uses不能计入gain。Priority不包含预测SPM、future layout或estimated lifetime。
 
 若序列共有`M`次成功merge、proposal allowance为`K`，只在同一序列上构造最多`K`份完整RegionPlan：`P0`取0次merge，`Pk`取全部
 `M`次merge；其余第`i`个snapshot取`ceil(i*M/(K-1))`次merge的prefix并去重。当前production `K=4`时顺序是singleton、约1/3 prefix、
@@ -642,9 +643,11 @@ external publication的其它uses不能计入gain。Priority不包含预测SPM�
 不限制任何group的root数量。Explicit-replica proposal只在这些snapshot去重后仍有空slot时进入priority batch；完整connected-partition/use-form
 集合继续由raw lazy successor拥有。改变allowance、priority或关闭proposal provider不得改变raw domain。
 
-Proposal builder不保存全部prefix，也不为每次merge构造RegionPlan。设root-work vertex数为`V`、eligible edges为`E`、actual slots为`K`：
-quotient graph和merge history占`O(V+E)`内存；使用当前完整DAG legality重算时worst-case work为`O(E*(V+E))`，每个Tile component独立，
-只对选中的`K`个snapshot执行`O(K*(V+E))`的完整plan construction/contains复核。实现必须记录proposal work/wall/RSS；若profile要求优化，
+Proposal builder不保存全部prefix，也不为每次merge构造RegionPlan。Merge history只是一次query中的root-group union choices，在proposal batch
+返回后销毁，不表示future operation、buffer、allocation、lifetime、movement或SPM结果。设root-work vertex数为`V`、eligible edges为`E`、
+actual slots为`K`：quotient graph和merge history占`O(V+E)`内存；当前直接实现对至多`V-C`次union重建cross-group candidates并运行完整DAG
+legality，保守worst-case work为`O(V*E*(V+E))`，每个Tile component独立，
+只对选中的`K`个snapshot执行`O(K*(V+E))`的完整plan construction/contains复核，总空间为`O(K*(V+E))`。实现必须记录proposal work/wall/RSS；若profile要求优化，
 再用incremental quotient adjacency或reachability降低work，不能通过少访问coherent路径或降低actual quality规避复杂度。
 General DAG上的constrained connected partition不声明全局最优；proposal quality由tiny完整RegionDomain oracle、maximum-spanning-forest baseline、
 真实规模cut gain和final actual objective共同约束，coverage继续准确报告为bounded partial。
