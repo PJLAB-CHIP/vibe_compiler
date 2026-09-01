@@ -1,5 +1,6 @@
 //===- TargetABIPreparation.cpp - Tile ABI preparation --------===//
 
+#include "Wafer/CodeGen/DeviceExecutableInternal.h"
 #include "Wafer/CodeGen/LLVM/TargetCodeGenInternal.h"
 #include "Wafer/CodeGen/ProgramElementTypeConversion.h"
 
@@ -166,7 +167,94 @@ mlir::Value resolveOutputAllocation(mlir::Value value) {
   return value;
 }
 
+struct ProgramResourceBoundary {
+  std::vector<const ProgramResourceBinding *> argumentBindings;
+  std::vector<DDRBindingAttr> ddrBindings;
+  std::vector<const ProgramResourceBinding *> outputBindings;
+};
+
+mlir::FailureOr<ProgramResourceBoundary> buildProgramResourceBoundary(
+    mlir::func::FuncOp function,
+    llvm::ArrayRef<ProgramResourceBinding> programBindings,
+    bool emitDiagnostics) {
+  const unsigned argumentCount = function.getNumArguments();
+  ProgramResourceBoundary boundary;
+  boundary.argumentBindings.assign(argumentCount, nullptr);
+  boundary.ddrBindings.resize(argumentCount);
+  for (unsigned index = 0; index < argumentCount; ++index)
+    boundary.ddrBindings[index] = function.getArgAttrOfType<DDRBindingAttr>(
+        index, kWaferDDRBindingAttrName);
+  boundary.outputBindings.assign(function.getFunctionType().getNumResults(),
+                                 nullptr);
+
+  for (const ProgramResourceBinding &binding : programBindings) {
+    std::vector<const ProgramResourceBinding *> &domain =
+        binding.role == ProgramResourceRole::Output ? boundary.outputBindings
+                                                    : boundary.argumentBindings;
+    if (binding.index < 0 ||
+        binding.index >= static_cast<int64_t>(domain.size()) ||
+        domain[binding.index] ||
+        (&domain == &boundary.argumentBindings &&
+         boundary.ddrBindings[binding.index])) {
+      if (emitDiagnostics)
+        function.emitError()
+            << "target_abi_mismatch: resource bindings do not form an exact "
+               "function boundary: index="
+            << binding.index << " argument_count=" << argumentCount
+            << " duplicate_program_binding="
+            << static_cast<bool>(binding.index >= 0 &&
+                                 binding.index <
+                                     static_cast<int64_t>(domain.size()) &&
+                                 domain[binding.index])
+            << " has_ddr_binding="
+            << static_cast<bool>(
+                   &domain == &boundary.argumentBindings &&
+                   binding.index >= 0 &&
+                   binding.index <
+                       static_cast<int64_t>(boundary.ddrBindings.size()) &&
+                   boundary.ddrBindings[binding.index]);
+      return mlir::failure();
+    }
+    domain[binding.index] = &binding;
+  }
+  if (llvm::any_of(llvm::seq<unsigned>(0, argumentCount),
+                   [&](unsigned index) {
+                     return !boundary.argumentBindings[index] &&
+                            !boundary.ddrBindings[index];
+                   }) ||
+      llvm::is_contained(boundary.outputBindings, nullptr)) {
+    if (emitDiagnostics) {
+      auto diagnostic = function.emitError()
+                        << "target_abi_mismatch: resource bindings do not "
+                           "cover every argument and result: "
+                           "uncovered_arguments=[";
+      bool first = true;
+      for (unsigned index = 0; index < argumentCount; ++index) {
+        if (boundary.argumentBindings[index] || boundary.ddrBindings[index])
+          continue;
+        if (!first)
+          diagnostic << ',';
+        first = false;
+        diagnostic << index;
+      }
+      diagnostic << "] argument_count=" << argumentCount;
+    }
+    return mlir::failure();
+  }
+  return boundary;
+}
+
 } // namespace
+
+mlir::LogicalResult verifyProgramResourceBoundary(
+    mlir::func::FuncOp function,
+    llvm::ArrayRef<ProgramResourceBinding> programBindings) {
+  return mlir::succeeded(
+             buildProgramResourceBoundary(function, programBindings,
+                                          /*emitDiagnostics=*/false))
+             ? mlir::success()
+             : mlir::failure();
+}
 
 mlir::FailureOr<PreparedTile>
 prepareTargetABI(const TileExecutable &tileExecutable,
@@ -203,63 +291,17 @@ prepareTargetABI(const TileExecutable &tileExecutable,
   }
   mlir::func::FuncOp function = closure->entry;
 
+  mlir::FailureOr<ProgramResourceBoundary> boundary =
+      buildProgramResourceBoundary(function,
+                                   tileExecutable.getProgramBindings(),
+                                   /*emitDiagnostics=*/true);
+  if (mlir::failed(boundary))
+    return mlir::failure();
   const unsigned originalArgumentCount = function.getNumArguments();
   const unsigned resultCount = function.getFunctionType().getNumResults();
-  std::vector<const ProgramResourceBinding *> argumentBindings(
-      originalArgumentCount, nullptr);
-  std::vector<DDRBindingAttr> ddrBindings(originalArgumentCount);
-  for (unsigned index = 0; index < originalArgumentCount; ++index)
-    ddrBindings[index] = function.getArgAttrOfType<DDRBindingAttr>(
-        index, kWaferDDRBindingAttrName);
-  std::vector<const ProgramResourceBinding *> outputBindings(resultCount,
-                                                             nullptr);
-  for (const ProgramResourceBinding &binding :
-       tileExecutable.getProgramBindings()) {
-    std::vector<const ProgramResourceBinding *> &domain =
-        binding.role == ProgramResourceRole::Output ? outputBindings
-                                                    : argumentBindings;
-    if (binding.index < 0 ||
-        binding.index >= static_cast<int64_t>(domain.size()) ||
-        domain[binding.index] ||
-        (&domain == &argumentBindings && ddrBindings[binding.index])) {
-      function.emitError()
-          << "target_abi_mismatch: resource bindings do not form an exact "
-             "function boundary: index="
-          << binding.index << " argument_count=" << originalArgumentCount
-          << " duplicate_program_binding="
-          << static_cast<bool>(binding.index >= 0 &&
-                               binding.index <
-                                   static_cast<int64_t>(domain.size()) &&
-                               domain[binding.index])
-          << " has_ddr_binding="
-          << static_cast<bool>(
-                 &domain == &argumentBindings && binding.index >= 0 &&
-                 binding.index < static_cast<int64_t>(ddrBindings.size()) &&
-                 ddrBindings[binding.index]);
-      return mlir::failure();
-    }
-    domain[binding.index] = &binding;
-  }
-  if (llvm::any_of(llvm::seq<unsigned>(0, originalArgumentCount),
-                   [&](unsigned index) {
-                     return !argumentBindings[index] && !ddrBindings[index];
-                   }) ||
-      llvm::is_contained(outputBindings, nullptr)) {
-    auto diagnostic = function.emitError()
-                      << "target_abi_mismatch: resource bindings do not cover "
-                         "every argument and result: uncovered_arguments=[";
-    bool first = true;
-    for (unsigned index = 0; index < originalArgumentCount; ++index) {
-      if (argumentBindings[index] || ddrBindings[index])
-        continue;
-      if (!first)
-        diagnostic << ',';
-      first = false;
-      diagnostic << index;
-    }
-    diagnostic << "] argument_count=" << originalArgumentCount;
-    return mlir::failure();
-  }
+  const auto &argumentBindings = boundary->argumentBindings;
+  const auto &ddrBindings = boundary->ddrBindings;
+  const auto &outputBindings = boundary->outputBindings;
 
   prepared.slots.reserve(originalArgumentCount + resultCount + 3);
   auto appendSlot = [&](const ProgramResourceBinding &binding, mlir::Type type,

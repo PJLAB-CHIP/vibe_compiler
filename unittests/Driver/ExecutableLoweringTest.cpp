@@ -178,7 +178,8 @@ TEST_F(ExecutableLoweringTest, DirectDDRKernelMatchesTheRegisteredPassAdapter) {
   EXPECT_EQ(directOffsets, passOffsets);
 }
 
-TEST_F(ExecutableLoweringTest, DefersTargetABIFailureToRetainedTargetOutput) {
+TEST_F(ExecutableLoweringTest,
+       RejectsIncompleteTargetABIBoundaryBeforeCandidateAcceptance) {
   auto module = parseTileModule(R"mlir(
   func.func @main(
       %input: memref<4xf32, #wafer.memory<ddr, tensor>>) {
@@ -199,34 +200,15 @@ TEST_F(ExecutableLoweringTest, DefersTargetABIFailureToRetainedTargetOutput) {
       std::move(tiles), emptyProgram(), *config, diagnostics, failure,
       programData, &statistics);
 
-  ASSERT_TRUE(mlir::succeeded(lowered)) << diagnosticText;
-  EXPECT_FALSE(failure);
+  ASSERT_TRUE(mlir::failed(lowered));
+  EXPECT_EQ(failure.kind,
+            wafer::compiler::detail::ExecutableLoweringFailureKind::
+                ProgramResourceBindings);
   EXPECT_EQ(statistics.tileModuleLoweringAttempts, 1u);
-  EXPECT_EQ(statistics.tileModuleLoweringSuccesses, 1u);
-  EXPECT_EQ(statistics.deviceExecutablesProduced, 1u);
-
-  wafer::compiler::DeviceExecutable executable =
-      wafer::compiler::DeviceExecutableBuilder::makeDeviceExecutable(
-          *config, std::move(lowered->runtimeLaunchContract), context,
-          std::move(lowered->tiles),
-          std::make_unique<wafer::compiler::ProgramDataHandoff>());
-  wafer::compiler::detail::TargetLLVMCompilationStatistics targetStats;
-  targetStats.targetABIPreparationAttempts = 99;
-  targetStats.targetLoweringAttempts = 99;
-  targetStats.targetTranslationAttempts = 99;
-  targetStats.maximumTilePipelineWorkers = 99;
-  llvm::Expected<wafer::compiler::TargetLLVMModules> targetModules =
-      wafer::compiler::detail::compileDeviceExecutableToTargetLLVMModulesImpl(
-          executable, diagnostics, std::nullopt,
-          wafer::compiler::detail::ProfileCaptureKind::None, &targetStats);
-  ASSERT_FALSE(static_cast<bool>(targetModules));
-  llvm::consumeError(targetModules.takeError());
-  EXPECT_NE(diagnosticText.find("target ABI preparation failed"),
-            std::string::npos)
+  EXPECT_EQ(statistics.tileModuleLoweringSuccesses, 0u);
+  EXPECT_EQ(statistics.deviceExecutablesProduced, 0u);
+  EXPECT_NE(diagnosticText.find("program-resource-bindings"), std::string::npos)
       << diagnosticText;
-  EXPECT_EQ(targetStats.targetABIPreparationAttempts, 16u);
-  EXPECT_EQ(targetStats.targetLoweringAttempts, 0u);
-  EXPECT_EQ(targetStats.targetTranslationAttempts, 0u);
 }
 
 TEST_F(ExecutableLoweringTest,

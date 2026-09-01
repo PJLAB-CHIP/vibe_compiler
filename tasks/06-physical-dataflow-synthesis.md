@@ -624,6 +624,16 @@ optimization，不形成baseline frontier或fallback。
 Search frontier保存显式choice key、work/budget accounting和move-only accepted incumbent。合法域由typed transformation capability
 与current-IR verifier定义，不由workload名、shape特例或materializer fallback定义。
 
+Region priority prefix从singleton开始，并按
+`sum(group.mandatoryRoots.size() - 1)`定义融合级别。Proposal按该级别breadth-first访问；每个child只在一个Tile component内合并一对由
+current potential edge连接的group，同级siblings彼此独立，任一actual rejection不会被携带到下一个同级choice。Tile component与edge使用
+稳定的交错顺序：先访问每种semantic-root edge的一个Tile实例，再重复相同semantic edge的其它Tile实例。Builder只生成本次structural
+candidate budget可消费的前缀；完整connected-partition及use-form集合仍由raw lazy successor拥有。
+Priority prefix、budget和actual rejection都不得从预测SPM footprint生成或删除Region choice。
+
+Candidate形成`TileExecutable`前必须调用target ABI preparation共用的exact program/DDR function-boundary verifier；argument/result binding不完整的
+Spatial/Region candidate在controller admission前返回typed failure，不能先作为Accepted winner保留、再由最终target codegen首次发现错误。
+
 DP、memo、priority、dominance和LNS可以改变choice访问顺序和搜索工作，但不得用推算的IR/buffer/instruction inventory
 代替actual result。一个choice只在物化为current IR并通过actual gate后才能成为accepted candidate。
 

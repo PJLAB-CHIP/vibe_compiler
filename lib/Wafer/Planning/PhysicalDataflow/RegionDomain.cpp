@@ -8,6 +8,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
+#include <deque>
 #include <limits>
 #include <map>
 #include <set>
@@ -894,8 +895,11 @@ bool RegionDomain::contains(const RegionPlan &plan) const {
   return getCursor(plan).has_value();
 }
 
-std::vector<RegionPlan> RegionDomain::getProposals() const {
+std::vector<RegionPlan>
+RegionDomain::getProposals(uint64_t maximumPlans) const {
   std::vector<RegionPlan> proposals;
+  if (maximumPlans == 0)
+    return proposals;
   std::set<RegionPlan> seen;
   auto append = [&](std::optional<RegionPlan> plan) {
     if (!plan || !contains(*plan) || !seen.insert(*plan).second)
@@ -940,20 +944,33 @@ std::vector<RegionPlan> RegionDomain::getProposals() const {
     return choices;
   };
 
-  // Grow connected groups from the singleton point. Each tentative union is
-  // accepted only when it does not place an unlocalizable structured boundary
-  // inside the group. Connectivity is preserved because unions follow a
-  // potential local edge; the complete RegionPlan is constructed and checked
-  // once after the incremental partition is closed.
-  llvm::SmallVector<llvm::SmallVector<uint32_t, 8>, 8> coherent = singleton;
-  for (auto [componentIndex, component] : llvm::enumerate(components)) {
-    const size_t count = component.works.size();
-    std::map<DemandFragmentId, size_t> localRealizations;
-    for (const LocalFragment &fragment : localFragments)
-      if (fragment.allowsRequiredLocal)
-        ++localRealizations[fragment.fragment];
+  append(buildPlan(singleton, llvm::SmallVector<uint8_t, 16>(
+                                  getChoiceFragments(singleton).size(), 0)));
+  if (proposals.size() >= maximumPlans)
+    return proposals;
+
+  // Traverse a bounded breadth-first prefix of connected coarsenings. Every
+  // edge adds one union to its parent, but siblings remain independent, so an
+  // actual rejection of one merge is not carried into the next proposal. This
+  // is proposal priority only: the canonical raw successor remains the
+  // complete domain.
+  struct ProgressiveComponentState {
     llvm::SmallVector<std::pair<size_t, size_t>, 8> cannotLink;
     llvm::SmallVector<std::pair<size_t, size_t>, 32> directedEdges;
+    llvm::SmallVector<std::pair<size_t, size_t>, 32> candidateEdges;
+  };
+  std::map<DemandFragmentId, size_t> localRealizations;
+  for (const LocalFragment &fragment : localFragments)
+    if (fragment.allowsRequiredLocal)
+      ++localRealizations[fragment.fragment];
+  std::vector<ProgressiveComponentState> progressive(components.size());
+  for (auto [componentIndex, component] : llvm::enumerate(components)) {
+    ProgressiveComponentState &state = progressive[componentIndex];
+    const size_t count = component.works.size();
+    for (size_t lhs = 0; lhs < count; ++lhs)
+      for (size_t rhs = lhs + 1; rhs < count; ++rhs)
+        if (component.potentialEdges[lhs * count + rhs])
+          state.candidateEdges.emplace_back(lhs, rhs);
     auto findWorkIndex =
         [&](const analysis::RootRegionWorkId &work) -> std::optional<size_t> {
       auto found = llvm::find(component.works, work);
@@ -966,9 +983,9 @@ std::vector<RegionPlan> RegionDomain::getProposals() const {
       std::optional<size_t> producer = findWorkIndex(fragment.producerWork);
       std::optional<size_t> consumer = findWorkIndex(fragment.consumerWork);
       if (producer && consumer && *producer != *consumer &&
-          !llvm::is_contained(directedEdges,
+          !llvm::is_contained(state.directedEdges,
                               std::make_pair(*producer, *consumer)))
-        directedEdges.emplace_back(*producer, *consumer);
+        state.directedEdges.emplace_back(*producer, *consumer);
     }
     for (const RegionGroupPlan &base : baseGroups) {
       if (base.tile != component.tile || base.mandatoryRoots.size() != 1)
@@ -991,75 +1008,129 @@ std::vector<RegionPlan> RegionDomain::getProposals() const {
         size_t rhs = std::distance(component.works.begin(), consumer);
         if (rhs < lhs)
           std::swap(lhs, rhs);
-        if (!llvm::is_contained(cannotLink, std::make_pair(lhs, rhs)))
-          cannotLink.emplace_back(lhs, rhs);
-        size_t producerIndex = std::distance(component.works.begin(), producer);
-        size_t consumerIndex = std::distance(component.works.begin(), consumer);
-        if (!llvm::is_contained(directedEdges,
+        if (!llvm::is_contained(state.cannotLink, std::make_pair(lhs, rhs)))
+          state.cannotLink.emplace_back(lhs, rhs);
+        const size_t producerIndex =
+            std::distance(component.works.begin(), producer);
+        const size_t consumerIndex =
+            std::distance(component.works.begin(), consumer);
+        if (!llvm::is_contained(state.directedEdges,
                                 std::make_pair(producerIndex, consumerIndex)))
-          directedEdges.emplace_back(producerIndex, consumerIndex);
-      }
-    }
-    auto isAcyclic = [&](llvm::ArrayRef<uint32_t> labels) {
-      const uint32_t groupCount = *llvm::max_element(labels) + 1;
-      std::vector<std::set<uint32_t>> successors(groupCount);
-      std::vector<uint32_t> indegree(groupCount, 0);
-      for (const auto &[producer, consumer] : directedEdges) {
-        uint32_t source = labels[producer];
-        uint32_t destination = labels[consumer];
-        if (source != destination &&
-            successors[source].insert(destination).second)
-          ++indegree[destination];
-      }
-      std::set<uint32_t> ready;
-      for (auto [group, degree] : llvm::enumerate(indegree))
-        if (degree == 0)
-          ready.insert(static_cast<uint32_t>(group));
-      uint32_t visited = 0;
-      while (!ready.empty()) {
-        uint32_t current = *ready.begin();
-        ready.erase(ready.begin());
-        ++visited;
-        for (uint32_t successor : successors[current])
-          if (--indegree[successor] == 0)
-            ready.insert(successor);
-      }
-      return visited == groupCount;
-    };
-    for (size_t lhs = 0; lhs < count; ++lhs) {
-      for (size_t rhs = lhs + 1; rhs < count; ++rhs) {
-        if (!component.potentialEdges[lhs * count + rhs] ||
-            coherent[componentIndex][lhs] == coherent[componentIndex][rhs])
-          continue;
-        auto trial = coherent;
-        const uint32_t kept = trial[componentIndex][lhs];
-        const uint32_t removed = trial[componentIndex][rhs];
-        for (uint32_t &label : trial[componentIndex])
-          if (label == removed)
-            label = kept;
-        std::map<uint32_t, uint32_t> normalized;
-        for (uint32_t &label : trial[componentIndex]) {
-          auto [entry, inserted] = normalized.try_emplace(
-              label, static_cast<uint32_t>(normalized.size()));
-          (void)inserted;
-          label = entry->second;
-        }
-        if (llvm::none_of(cannotLink,
-                          [&](const auto &edge) {
-                            return trial[componentIndex][edge.first] ==
-                                   trial[componentIndex][edge.second];
-                          }) &&
-            isAcyclic(trial[componentIndex]))
-          coherent = std::move(trial);
+          state.directedEdges.emplace_back(producerIndex, consumerIndex);
       }
     }
   }
 
-  append(buildPlan(coherent, makeChoices(coherent, /*local once=*/1)));
+  auto isAcyclic = [&](const ProgressiveComponentState &state,
+                       llvm::ArrayRef<uint32_t> labels) {
+    const uint32_t groupCount = *llvm::max_element(labels) + 1;
+    std::vector<std::set<uint32_t>> successors(groupCount);
+    std::vector<uint32_t> indegree(groupCount, 0);
+    for (const auto &[producer, consumer] : state.directedEdges) {
+      uint32_t source = labels[producer];
+      uint32_t destination = labels[consumer];
+      if (source != destination &&
+          successors[source].insert(destination).second)
+        ++indegree[destination];
+    }
+    std::set<uint32_t> ready;
+    for (auto [group, degree] : llvm::enumerate(indegree))
+      if (degree == 0)
+        ready.insert(static_cast<uint32_t>(group));
+    uint32_t visited = 0;
+    while (!ready.empty()) {
+      uint32_t current = *ready.begin();
+      ready.erase(ready.begin());
+      ++visited;
+      for (uint32_t successor : successors[current])
+        if (--indegree[successor] == 0)
+          ready.insert(successor);
+    }
+    return visited == groupCount;
+  };
+
+  struct MergeStep {
+    size_t component = 0;
+    size_t lhs = 0;
+    size_t rhs = 0;
+  };
+  using SemanticEdge = std::pair<SemanticRootKey, SemanticRootKey>;
+  std::map<SemanticEdge, std::vector<MergeStep>> stepsBySemanticEdge;
+  for (auto [componentIndex, state] : llvm::enumerate(progressive))
+    for (const auto &[lhs, rhs] : state.candidateEdges) {
+      SemanticRootKey lhsRoot = components[componentIndex].works[lhs].root;
+      SemanticRootKey rhsRoot = components[componentIndex].works[rhs].root;
+      if (rhsRoot < lhsRoot)
+        std::swap(lhsRoot, rhsRoot);
+      stepsBySemanticEdge[{lhsRoot, rhsRoot}].push_back(
+          {componentIndex, lhs, rhs});
+    }
+  size_t maximumOccurrences = 0;
+  for (auto &[semanticEdge, steps] : stepsBySemanticEdge) {
+    (void)semanticEdge;
+    llvm::sort(steps, [](const MergeStep &lhs, const MergeStep &rhs) {
+      return std::tie(lhs.component, lhs.lhs, lhs.rhs) <
+             std::tie(rhs.component, rhs.lhs, rhs.rhs);
+    });
+    maximumOccurrences = std::max(maximumOccurrences, steps.size());
+  }
+  std::vector<MergeStep> mergeSteps;
+  // Visit one representative of every semantic edge before repeating the
+  // same edge on another Tile. This keeps a small prefix structurally diverse
+  // without using shape, estimated storage, or a predicted legality score.
+  for (size_t occurrence = 0; occurrence < maximumOccurrences; ++occurrence)
+    for (const auto &[semanticEdge, steps] : stepsBySemanticEdge) {
+      (void)semanticEdge;
+      if (occurrence < steps.size())
+        mergeSteps.push_back(steps[occurrence]);
+    }
+
+  using ProposalLabels = llvm::SmallVector<llvm::SmallVector<uint32_t, 8>, 8>;
+  std::deque<ProposalLabels> frontier;
+  std::set<ProposalLabels> reached;
+  frontier.push_back(singleton);
+  reached.insert(singleton);
+  while (!frontier.empty()) {
+    ProposalLabels parent = std::move(frontier.front());
+    frontier.pop_front();
+    for (const MergeStep &step : mergeSteps) {
+      const ProgressiveComponentState &state = progressive[step.component];
+      if (parent[step.component][step.lhs] == parent[step.component][step.rhs])
+        continue;
+      ProposalLabels child = parent;
+      llvm::SmallVector<uint32_t, 8> &labels = child[step.component];
+      const uint32_t kept = labels[step.lhs];
+      const uint32_t removed = labels[step.rhs];
+      for (uint32_t &label : labels)
+        if (label == removed)
+          label = kept;
+      std::map<uint32_t, uint32_t> normalized;
+      for (uint32_t &label : labels) {
+        auto [entry, inserted] = normalized.try_emplace(
+            label, static_cast<uint32_t>(normalized.size()));
+        (void)inserted;
+        label = entry->second;
+      }
+      if (llvm::any_of(state.cannotLink,
+                       [&](const auto &edge) {
+                         return labels[edge.first] == labels[edge.second];
+                       }) ||
+          !isAcyclic(state, labels) || !reached.insert(child).second)
+        continue;
+      std::optional<RegionPlan> plan =
+          buildPlan(child, makeChoices(child, /*local once=*/1));
+      if (!plan)
+        continue;
+      frontier.push_back(child);
+      append(std::move(plan));
+      if (proposals.size() >= maximumPlans)
+        return proposals;
+    }
+  }
 
   append(buildPlan(maximal, makeChoices(maximal, /*local once=*/1)));
-  append(buildPlan(singleton, llvm::SmallVector<uint8_t, 16>(
-                                  getChoiceFragments(singleton).size(), 0)));
+  if (proposals.size() >= maximumPlans)
+    return proposals;
   append(buildPlan(singleton, makeChoices(singleton, /*explicit replicas=*/2)));
   return proposals;
 }

@@ -44,7 +44,7 @@ SearchFixture prepare(mlir::ModuleOp module, llvm::raw_ostream &diagnostics,
     return result;
   result.problem.emplace(std::move(*problem));
   result.session = std::make_unique<PhysicalDataflowPlanningSession>(
-      *result.problem, profile);
+      *result.problem, 16, profile);
   return result;
 }
 

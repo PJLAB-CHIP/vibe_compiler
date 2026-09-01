@@ -5,8 +5,8 @@
 #define WAFER_UNITTESTS_COMPILER_EXECUTABLETESTSUPPORT_H
 
 #include "Wafer/CodeGen/DeviceExecutableInternal.h"
-#include "Wafer/Driver/ExecutableCompilation.h"
 #include "Wafer/Driver/CompilationInternal.h"
+#include "Wafer/Driver/ExecutableCompilation.h"
 #include "Wafer/Driver/ProgramData/ProgramData.h"
 
 #include "Wafer/Driver/Compilation.h"
@@ -39,6 +39,8 @@ frontend::ProgramBoundaryBinding boundary(int64_t index,
 frontend::FrontendProgramVerificationResult programMetadata();
 frontend::FrontendProgramVerificationResult branchMetadata();
 frontend::FrontendProgramVerificationResult dependentProgramMetadata();
+frontend::FrontendProgramVerificationResult
+realScaleDependentProgramMetadata(int64_t extent);
 frontend::FrontendProgramVerificationResult largeTemporalProgramMetadata();
 frontend::FrontendProgramVerificationResult largeProducerStageProgramMetadata();
 frontend::FrontendProgramVerificationResult
@@ -61,6 +63,7 @@ struct ParsedProgram {
 ParsedProgram parseProgram();
 ParsedProgram parseBranchProgram();
 ParsedProgram parseDependentProgram();
+ParsedProgram parseRealScaleDependentProgram(int64_t extent);
 ParsedProgram parseThreeStageDependentProgram();
 ParsedProgram parseLargeTemporalProgram();
 ParsedProgram parseLargeProducerStageProgram();

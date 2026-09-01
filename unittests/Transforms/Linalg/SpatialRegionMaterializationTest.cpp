@@ -773,7 +773,7 @@ module {
     ASSERT_TRUE(mlir::succeeded(regionDomain)) << failureReason;
     std::optional<wafer::compiler::detail::RegionPlan> selected;
     std::optional<wafer::compiler::detail::RegionPlan> replicaPlan;
-    for (const auto &proposal : regionDomain->getProposals())
+    for (const auto &proposal : regionDomain->getProposals(64))
       if (!selected && llvm::any_of(proposal.groups, [](const auto &group) {
             return group.mandatoryRoots.size() == 2 &&
                    !group.localBindings.empty();
@@ -820,11 +820,21 @@ module {
         countOps<mlir::linalg::GenericOp>(materialized->module->getOperation()),
         32u);
     EXPECT_TRUE(materialized->relations.boundaryRelations.empty());
+    unsigned singletonRegions = 0;
+    unsigned fusedRegions = 0;
     materialized->module->walk([&](wafer::TileRegionOp region) {
       unsigned linalgCount = 0;
       region.walk([&](mlir::linalg::LinalgOp) { ++linalgCount; });
-      EXPECT_EQ(linalgCount, 2u);
+      if (linalgCount == 1)
+        ++singletonRegions;
+      else if (linalgCount == 2)
+        ++fusedRegions;
+      else
+        ADD_FAILURE() << "unexpected Linalg count in selected Region: "
+                      << linalgCount;
     });
+    EXPECT_EQ(singletonRegions, 30u);
+    EXPECT_EQ(fusedRegions, 1u);
     ASSERT_TRUE(replicaPlan.has_value());
     wafer::SpatialRegionMaterializationFailure replicaFailure;
     auto replicated = wafer::materializeSpatialRegions(

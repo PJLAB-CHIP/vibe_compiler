@@ -1,11 +1,11 @@
 # Physical Dataflow Current-IR实施计划
 
-Q52第16--20项已经闭合；本计划当前只继续拥有Q53 host qualification。动态状态只读`tasks/progress.md`；
+Q52第16--20项及Region proposal质量门禁已经闭合；Q53仍未启动。动态状态只读`tasks/progress.md`；
 第1--11项的施工、删除账本和验证记录见`tasks/archive/physical-dataflow-synthesis-q52-plan-history.md`；第12--15项的完成边界见
 `tasks/archive/completed-task-index.md`。
 稳定语义由05--16号编号设计拥有。
 
-当前下一项：Q53 `production-host-readiness`，尚未启动。
+当前直接项：Q53 `production-host-readiness`。
 
 ## Pipeline Contract
 
@@ -169,22 +169,6 @@ LLVM/MLIR规范复审→更新状态并提交”。不得以全局原则替代�
 | 输入等价类 | Shape / 结构 | Typed failure | 精确断言 | 下游witness |
 | --- | --- | --- | --- | --- |
 | same-source two-policy acceptance | current FP16 LLaMA block；两个独立process、ProgramData和output directory | timeout/OOM/skip/fallback/未进actual planner均失败 | 每次≤15分钟；source identity相同；IR/result不共享；package唯一；冗余DDR→DDR publication copy为0；必要copy在movement closure后typed且Instr无copy-only Region；search temporal feedback不产生静态body倍增；两条policy均实际进入Instr、MiniMalloc、DDR和target | strict loader、host reference、no-card |
-
-## Search scalability边界
-
-- 第18项只遍历current实现实际暴露的typed domain。Temporal已有完整lazy successor；movement、execution和order在没有注册多choice domain时
-  各自是现有deterministic transformation的singleton domain。Search不得为了扩大空间而发明route、pipeline、worker或completion choice；
-  后续只有先增加current-IR query及immediate apply合同，才能把对应singleton扩为多个raw choice。
-- PBQP为每个current candidate产生唯一完整合法layout assignment；`Optimal`表示unique actual materialization最少，`Feasible`表示
-  canonical factor-valid incumbent。layout不是search axis，不存在proposal开关、raw layout frontier、Top-k或best-found layout；两种
-  成功状态共用唯一apply，下游不repair或重新选择。
-- Memo只保存从immutable source IR或current candidate IR重算的pure typed query result，不保存IR owner、operation pointer、
-  current relation handle、offset或actual result。
-- Component DP只在current IR可证明separator关闭时使用，无证明时回到base traversal。
-- Priority、memo和safe bound只改变choice访问顺序或重复工作；fixed beam/Top-k/LNS-only等有损策略只能返回
-  `BudgetedFeasible`，不能宣称exact或optimal。
-- LNS只在已有actual Accepted incumbent后启动，每个repair alternative仍必须物化为actual candidate并运行普通第12--16项gate。
-- Inventory只统计actual current IR、live relations和accepted offsets；不预测future TileRegion、buffer、movement或instruction inventory。
 
 ## Q53 Production Host Readiness
 

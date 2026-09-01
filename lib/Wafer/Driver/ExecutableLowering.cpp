@@ -743,7 +743,8 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
     mlir::FailureOr<std::vector<ProgramResourceBinding>> bindings =
         buildProgramResourceBindings(program, kSingleCardPartitionId, module,
                                      programData);
-    if (mlir::failed(bindings)) {
+    if (mlir::failed(bindings) || mlir::failed(verifyProgramResourceBoundary(
+                                      closure->entry, *bindings))) {
       failureKind = ExecutableLoweringFailureKind::ProgramResourceBindings;
       return mlir::failure();
     }

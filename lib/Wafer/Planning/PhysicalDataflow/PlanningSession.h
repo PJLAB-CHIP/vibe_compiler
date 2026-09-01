@@ -94,11 +94,12 @@ class PhysicalDataflowPlanningSession {
 public:
   explicit PhysicalDataflowPlanningSession(
       const PhysicalDataflowPlanningProblem &problem,
-      PlanningProfileSink *profile = nullptr)
+      uint64_t maximumRegionProposals, PlanningProfileSink *profile = nullptr)
       : problem(problem),
         spatialProposalCache(PlanningMemoKind::SpatialProposals, profile),
         rootWorkCache(PlanningMemoKind::RootWork, profile),
-        regionDomainCache(PlanningMemoKind::RegionDomain, profile) {}
+        regionDomainCache(PlanningMemoKind::RegionDomain, profile),
+        maximumRegionProposals(maximumRegionProposals) {}
 
   PhysicalDataflowPlanningSession(const PhysicalDataflowPlanningSession &) =
       delete;
@@ -146,6 +147,7 @@ private:
   PlanningMemo<SpatialPlan, std::vector<analysis::RootRegionWork>>
       rootWorkCache;
   PlanningMemo<SpatialPlan, RegionDomain> regionDomainCache;
+  uint64_t maximumRegionProposals;
   PlanningWorkCounts work;
 };
 

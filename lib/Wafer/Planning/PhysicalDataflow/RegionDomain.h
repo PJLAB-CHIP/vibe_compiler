@@ -66,7 +66,7 @@ public:
   /// Deterministic checked seeds for search priority. Every proposal is an
   /// ordinary member of the exact domain; disabling or reordering proposals
   /// cannot remove a raw successor.
-  std::vector<RegionPlan> getProposals() const;
+  std::vector<RegionPlan> getProposals(uint64_t maximumPlans) const;
 
 private:
   struct Component {

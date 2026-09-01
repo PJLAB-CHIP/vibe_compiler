@@ -8,6 +8,10 @@
 #include "Wafer/Driver/ProgramData/ProgramData.h"
 #include "Wafer/Support/OptimizationConfig.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Support/LogicalResult.h"
+
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -44,6 +48,14 @@ struct DeviceExecutableBuilder {
 };
 
 namespace detail {
+
+/// Verifies the exact program/DDR binding coverage consumed by target ABI
+/// preparation. Candidate admission and final target lowering call this same
+/// implementation so a DeviceExecutable cannot be accepted and fail later at
+/// the unchanged ABI boundary.
+mlir::LogicalResult verifyProgramResourceBoundary(
+    mlir::func::FuncOp function,
+    llvm::ArrayRef<ProgramResourceBinding> programBindings);
 
 mlir::LogicalResult
 verifyExactExecutionConfig(mlir::ModuleOp module,

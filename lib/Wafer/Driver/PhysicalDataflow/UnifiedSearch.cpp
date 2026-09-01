@@ -142,7 +142,9 @@ struct UnifiedSearchSession::Impl {
     CandidateRecordOutcome recorded =
         controller.record(key, std::move(evaluation.result));
     if (recorded == CandidateRecordOutcome::CompilerBug) {
-      fail("actual-result controller rejected a typed actual result");
+      fail(actualDetail.empty()
+               ? "actual-result controller rejected a typed actual result"
+               : actualDetail);
       return;
     }
     if (recorded == CandidateRecordOutcome::Indeterminate) {

@@ -129,7 +129,7 @@ TEST_F(PlanningSessionTest,
         *program, CardId(0), analysis::IndexRelationLimits(), &failureReason);
     ASSERT_TRUE(mlir::succeeded(problem)) << failureReason;
 
-    PhysicalDataflowPlanningSession session(*problem);
+    PhysicalDataflowPlanningSession session(*problem, 16);
     std::optional<SpatialState> spatial = takeFirstSpatial(session);
     ASSERT_TRUE(spatial);
     RegionContinuation region =
@@ -168,8 +168,8 @@ TEST_F(PlanningSessionTest,
     return std::move(**regionState);
   };
 
-  PhysicalDataflowPlanningSession first(*problem);
-  PhysicalDataflowPlanningSession second(*problem);
+  PhysicalDataflowPlanningSession first(*problem, 16);
+  PhysicalDataflowPlanningSession second(*problem, 16);
   std::optional<RegionState> lhs = firstChoice(first);
   std::optional<RegionState> rhs = firstChoice(second);
   ASSERT_TRUE(lhs);

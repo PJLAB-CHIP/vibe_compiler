@@ -522,6 +522,44 @@ TEST(ExecutableCompilationPolicyTest,
 }
 
 TEST(ExecutableCompilationPolicyTest,
+     SearchSelectsTheFirstLegalProgressivelyFusedRegionPlan) {
+  for (int64_t extent : {1024, 1025}) {
+    SCOPED_TRACE(extent);
+    wafer::compiler::testing::ParsedProgram parsed =
+        wafer::compiler::testing::parseRealScaleDependentProgram(extent);
+    ASSERT_TRUE(parsed.module);
+    auto program =
+        wafer::compiler::testing::realScaleDependentProgramMetadata(extent);
+    wafer::compiler::ProgramDataHandoff programData;
+    std::string diagnosticText;
+    llvm::raw_string_ostream diagnostics(diagnosticText);
+    wafer::compiler::detail::SearchCurrentIROptions options;
+    options.maximumStructuralCandidates = 2;
+    options.maximumTemporalCandidatesPerStructuralState = 16;
+    options.termination =
+        wafer::compiler::detail::SearchTerminationPolicy::Exhaustive;
+    options.downstream.tilePipelineParallelism = 1;
+    wafer::compiler::detail::SearchCurrentIRStatistics search;
+    wafer::compiler::detail::ExecutableLoweringStatistics executable;
+
+    auto result = wafer::compiler::detail::compileSearchCurrentIR(
+        *parsed.module, program, wafer::compiler::testing::executionConfig(),
+        diagnostics, programData, options, &search, &executable);
+    diagnostics.flush();
+    ASSERT_TRUE(result.isAccepted())
+        << result.gate << ": " << result.detail << "\n"
+        << diagnosticText;
+    ASSERT_TRUE(result.physicalIRInventory);
+    EXPECT_EQ(search.structuralMaterializations, 2u);
+    EXPECT_EQ(search.controller.accepted, 2u);
+    EXPECT_EQ(result.physicalIRInventory->tileModules, 16u);
+    // The singleton has two Regions on every Tile (32 total). The second
+    // structural candidate performs exactly one Region merge globally.
+    EXPECT_EQ(result.physicalIRInventory->tileRegions, 31u);
+  }
+}
+
+TEST(ExecutableCompilationPolicyTest,
      BaselineRefinesOnlyAfterActualSPMCapacityRejection) {
   wafer::compiler::testing::ParsedProgram parsed =
       wafer::compiler::testing::parseLargeTemporalProgram();

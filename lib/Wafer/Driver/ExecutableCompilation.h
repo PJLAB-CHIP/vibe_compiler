@@ -47,6 +47,15 @@ enum class ExecutableCompilationStatus : uint8_t {
   CompilerFailure,
 };
 
+enum class ExecutableFailureScope : uint8_t {
+  /// Another Temporal choice over the same structural current IR may change
+  /// the result; no stronger conclusion is available.
+  TemporalChoiceMayChange,
+  /// The failure depends only on the closed Spatial/Region current IR and
+  /// remains unchanged for every Temporal choice in that structural domain.
+  StructuralChoiceInvariant,
+};
+
 struct ExecutableTileFailure {
   TileId tileId{0};
   std::string gate;
@@ -96,6 +105,8 @@ mlir::FailureOr<unsigned> cleanupCanonicalInstructionTransfers(
 struct ExecutableCompilationResult {
   ExecutableCompilationStatus status =
       ExecutableCompilationStatus::IndeterminateFailure;
+  ExecutableFailureScope failureScope =
+      ExecutableFailureScope::TemporalChoiceMayChange;
   std::optional<ExecutableLoweringResult> executable;
   std::string gate;
   std::string detail;

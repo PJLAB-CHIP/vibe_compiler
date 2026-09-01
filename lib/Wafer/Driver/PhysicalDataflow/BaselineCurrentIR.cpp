@@ -270,7 +270,7 @@ ExecutableCompilationResult compileBaselineCurrentIR(
   if (mlir::failed(regionDomain))
     return fail(ExecutableCompilationStatus::CompilerFailure,
                 "baseline-region-domain", detail);
-  std::vector<RegionPlan> regionProposals = regionDomain->getProposals();
+  std::vector<RegionPlan> regionProposals = regionDomain->getProposals(1);
   if (regionProposals.empty())
     return fail(ExecutableCompilationStatus::CompilerFailure, "baseline-region",
                 "baseline Region domain has no coherent fixed proposal");

@@ -1126,6 +1126,18 @@
   进入一次actual memory/target gate并通过DDR/call-closure/program-resource gate，最终只保留winner。private functions存在或局部verifier通过不能代签
   executable boundary。
 
+## Candidate admission与target ABI preparation必须共用boundary verifier
+
+- 现象：search保留的`DeviceExecutable`已经通过memory/resource gate，最终target codegen才发现某个Tile entry的program output binding落在
+  zero-result function上，整次compile在已有合法incumbent后失败。
+- 根因：candidate admission只检查binding数量一致，target ABI preparation另行检查argument/result与explicit DDR binding的exact coverage；
+  两个边界使用了不同合法性实现。结构不完整候选还被当成可由其它Temporal size修复，重复运行相同失败。
+- 修复模式：抽取唯一只读program/DDR function-boundary verifier，在`TileExecutable`构造前与target ABI preparation共同调用。该failure携带
+  typed `StructuralChoiceInvariant` scope，search只拒绝当前structural choice，不解析diagnostic、不重试其Temporal domain，也不影响已接受的
+  sibling incumbent。Rejected candidate验证不向成功compile发射error diagnostic。
+- 防复发：单op多Spatial choice覆盖合法incumbent加不完整siblings，断言最终package仍成功、每个invariant sibling只actualize一次；直接lowering
+  负例必须在`deviceExecutablesProduced`增加前返回`ProgramResourceBindings`，final target ABI保留同一verifier的独立负例。
+
 ## Baseline不能无条件构造search schedule domain
 
 - 现象：把schedule planning canonical query/apply直接放入共同`planTileMemory`后，baseline scalar case从约2秒退化到45秒；大block会承担O(n²)

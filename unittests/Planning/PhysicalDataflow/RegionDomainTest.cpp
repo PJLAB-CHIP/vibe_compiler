@@ -24,6 +24,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -230,7 +231,7 @@ TEST_F(RegionDomainTest, TwoNodeChainEnumeratesEveryCurrentUseForm) {
   auto plans = enumerate(*domain);
   ASSERT_TRUE(plans);
   ASSERT_EQ(plans->size(), 4u);
-  std::vector<RegionPlan> proposals = domain->getProposals();
+  std::vector<RegionPlan> proposals = domain->getProposals(4);
   EXPECT_GE(proposals.size(), 3u);
   EXPECT_EQ(std::set<RegionPlan>(proposals.begin(), proposals.end()).size(),
             proposals.size());
@@ -538,6 +539,59 @@ module {
   ASSERT_TRUE(plans);
   EXPECT_EQ(plans->size(), 4u);
   EXPECT_EQ(print(module->getOperation()), before);
+}
+
+TEST_F(RegionDomainTest,
+       RaggedChainProposalsVisitIndependentLowestFusionSiblingsFirst) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(%input: tensor<2x1025x128xf16>)
+      -> tensor<2x1025x128xf16> {
+    %e0 = tensor.empty() : tensor<2x1025x128xf16>
+    %a = linalg.map ins(%input : tensor<2x1025x128xf16>)
+        outs(%e0 : tensor<2x1025x128xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    %e1 = tensor.empty() : tensor<2x1025x128xf16>
+    %b = linalg.map ins(%a : tensor<2x1025x128xf16>)
+        outs(%e1 : tensor<2x1025x128xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    %e2 = tensor.empty() : tensor<2x1025x128xf16>
+    %c = linalg.map ins(%b : tensor<2x1025x128xf16>)
+        outs(%e2 : tensor<2x1025x128xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    %e3 = tensor.empty() : tensor<2x1025x128xf16>
+    %d = linalg.map ins(%c : tensor<2x1025x128xf16>)
+        outs(%e3 : tensor<2x1025x128xf16>) (%v: f16) {
+      linalg.yield %v : f16 }
+    return %d : tensor<2x1025x128xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  std::string failureReason;
+  auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+  auto works = buildWorks(*dag, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(works)) << failureReason;
+  auto domain = RegionDomain::create(*works, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
+  std::vector<RegionPlan> proposals = domain->getProposals(4);
+  std::vector<uint64_t> fusionLevels;
+  for (const RegionPlan &proposal : proposals) {
+    ASSERT_TRUE(domain->contains(proposal));
+    if (llvm::any_of(proposal.groups, [](const RegionGroupPlan &group) {
+          return !group.replicas.empty();
+        }))
+      continue;
+    uint64_t level = 0;
+    for (const RegionGroupPlan &group : proposal.groups)
+      level += group.mandatoryRoots.size() - 1;
+    fusionLevels.push_back(level);
+  }
+  ASSERT_EQ(fusionLevels.size(), 4u);
+  EXPECT_EQ(
+      std::vector<uint64_t>(fusionLevels.begin(), fusionLevels.begin() + 4),
+      (std::vector<uint64_t>{0, 1, 1, 1}));
 }
 
 } // namespace

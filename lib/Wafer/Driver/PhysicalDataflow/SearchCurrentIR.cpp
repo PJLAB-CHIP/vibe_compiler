@@ -434,6 +434,10 @@ public:
       const ActualCandidateStatus status =
           classifyActualStatus(compiled.status);
       const bool capacityRejected = hasActualSPMCapacityRejection(compiled);
+      const bool structuralChoiceInvariantFailure =
+          status != ActualCandidateStatus::Accepted &&
+          compiled.failureScope ==
+              ExecutableFailureScope::StructuralChoiceInvariant;
       switch (status) {
       case ActualCandidateStatus::Accepted: {
         SearchObjective objective =
@@ -478,6 +482,10 @@ public:
       if (status == ActualCandidateStatus::Accepted &&
           options.stopTemporalAfterFirstAccepted) {
         domainExhausted = false;
+        break;
+      }
+      if (structuralChoiceInvariantFailure) {
+        domainExhausted = true;
         break;
       }
 
@@ -649,7 +657,8 @@ ExecutableCompilationResult compileSearchCurrentIR(
   if (mlir::failed(problem))
     return fail(ExecutableCompilationStatus::CompilerFailure,
                 "search-planning-problem", detail);
-  PhysicalDataflowPlanningSession planning(*problem);
+  PhysicalDataflowPlanningSession planning(*problem,
+                                           options.maximumStructuralCandidates);
 
   auto cohort = SearchCostCohort::create(SearchCostPolicy{}, &detail);
   if (mlir::failed(cohort))

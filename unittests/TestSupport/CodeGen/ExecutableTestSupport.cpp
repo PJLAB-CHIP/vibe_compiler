@@ -71,6 +71,16 @@ wafer::frontend::FrontendProgramVerificationResult dependentProgramMetadata() {
 }
 
 wafer::frontend::FrontendProgramVerificationResult
+realScaleDependentProgramMetadata(int64_t extent) {
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.numPartitions = 1;
+  program.programUserInputCount = 1;
+  program.distributedInputs = {boundary(0, {2, extent, 128})};
+  program.distributedOutputs = {boundary(0, {2, extent, 128})};
+  return program;
+}
+
+wafer::frontend::FrontendProgramVerificationResult
 largeTemporalProgramMetadata() {
   wafer::frontend::FrontendProgramVerificationResult program;
   program.numPartitions = 1;
@@ -310,6 +320,62 @@ module {
 }
 )mlir",
       mlir::ParserConfig(context.get()));
+  return ParsedProgram{std::move(context), std::move(module)};
+}
+
+ParsedProgram parseRealScaleDependentProgram(int64_t extent) {
+  mlir::DialectRegistry registry;
+  wafer::compiler::detail::registerCompilationDialects(registry);
+  auto context = std::make_shared<mlir::MLIRContext>(registry);
+  context->loadAllAvailableDialects();
+
+  std::string source = R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @main(%input: tensor<2x__EXTENT__x128xf16>)
+      -> tensor<2x__EXTENT__x128xf16> {
+    %producer_init = tensor.empty() : tensor<2x__EXTENT__x128xf16>
+    %producer = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+                         affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+                         affine_map<(d0, d1, d2) -> (d0, d1, d2)>],
+        iterator_types = ["parallel", "parallel", "parallel"]
+      } ins(%input, %input : tensor<2x__EXTENT__x128xf16>,
+                             tensor<2x__EXTENT__x128xf16>)
+        outs(%producer_init : tensor<2x__EXTENT__x128xf16>) {
+      ^bb0(%lhs: f16, %rhs: f16, %old: f16):
+      %next = arith.addf %lhs, %rhs : f16
+      linalg.yield %next : f16
+    } -> tensor<2x__EXTENT__x128xf16>
+    %result_init = tensor.empty() : tensor<2x__EXTENT__x128xf16>
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+                         affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+                         affine_map<(d0, d1, d2) -> (d0, d1, d2)>],
+        iterator_types = ["parallel", "parallel", "parallel"]
+      } ins(%producer, %producer : tensor<2x__EXTENT__x128xf16>,
+                                   tensor<2x__EXTENT__x128xf16>)
+        outs(%result_init : tensor<2x__EXTENT__x128xf16>) {
+      ^bb0(%lhs: f16, %rhs: f16, %old: f16):
+      %next = arith.mulf %lhs, %rhs : f16
+      linalg.yield %next : f16
+    } -> tensor<2x__EXTENT__x128xf16>
+    return %result : tensor<2x__EXTENT__x128xf16>
+  }
+}
+)mlir";
+  constexpr llvm::StringLiteral placeholder = "__EXTENT__";
+  const std::string replacement = std::to_string(extent);
+  for (size_t position = source.find(placeholder.str());
+       position != std::string::npos;
+       position = source.find(placeholder.str(), position + replacement.size()))
+    source.replace(position, placeholder.size(), replacement);
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      source, mlir::ParserConfig(context.get()));
   return ParsedProgram{std::move(context), std::move(module)};
 }
 

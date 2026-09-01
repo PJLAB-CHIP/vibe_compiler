@@ -87,9 +87,12 @@ namespace {
 static ExecutableCompilationResult
 fail(ExecutableCompilationStatus status, llvm::StringRef gate,
      llvm::StringRef detail,
-     llvm::SmallVector<ExecutableTileFailure, 4> tileFailures = {}) {
+     llvm::SmallVector<ExecutableTileFailure, 4> tileFailures = {},
+     ExecutableFailureScope failureScope =
+         ExecutableFailureScope::TemporalChoiceMayChange) {
   ExecutableCompilationResult result;
   result.status = status;
+  result.failureScope = failureScope;
   result.gate = gate.str();
   result.detail = detail.str();
   result.tileFailures = std::move(tileFailures);
@@ -257,10 +260,18 @@ ExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
     return failLeaf(
         fail(loweringFailure.isProvenExactRejection()
                  ? ExecutableCompilationStatus::ProvenExactRejection
+             : loweringFailure.kind ==
+                     ExecutableLoweringFailureKind::ProgramResourceBindings
+                 ? ExecutableCompilationStatus::UnsupportedFailure
                  : ExecutableCompilationStatus::IndeterminateFailure,
              loweringFailure.getDiagnosticLabel(),
              loweringFailure.detail.empty() ? "Tile module lowering failed"
-                                            : loweringFailure.detail));
+                                            : loweringFailure.detail,
+             {},
+             loweringFailure.kind ==
+                     ExecutableLoweringFailureKind::ProgramResourceBindings
+                 ? ExecutableFailureScope::StructuralChoiceInvariant
+                 : ExecutableFailureScope::TemporalChoiceMayChange));
 
   if (executable->tiles.size() != expectedTileIds.size())
     return failLeaf(fail(ExecutableCompilationStatus::CompilerFailure,

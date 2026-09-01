@@ -359,22 +359,8 @@ PhysicalDataflowPlanningSession::resumeRegion(RegionContinuation &continuation,
     continuation.proposals = [&]() {
       wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
                                                      "build-region-proposals");
-      return (*regionDomain)->getProposals();
+      return (*regionDomain)->getProposals(maximumRegionProposals);
     }();
-    // Priority only: the complete proposal set remains unchanged. A singleton
-    // Region proposal is the current deterministic feasibility anchor, so
-    // visit it before more strongly fused proposals and obtain an actual
-    // incumbent without claiming that the later proposals are illegal.
-    llvm::stable_sort(continuation.proposals, [](const RegionPlan &left,
-                                                 const RegionPlan &right) {
-      auto isSingleton = [](const RegionPlan &plan) {
-        return llvm::all_of(plan.groups, [](const RegionGroupPlan &group) {
-          return group.mandatoryRoots.size() == 1 && group.replicas.empty() &&
-                 group.localBindings.empty();
-        });
-      };
-      return isSingleton(left) && !isSingleton(right);
-    });
     continuation.proposalsInitialized = true;
   }
   auto makeState = [&](const RegionPlan &plan)

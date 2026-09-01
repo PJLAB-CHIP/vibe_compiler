@@ -19,9 +19,9 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `production-host-readiness` | `next` | Q53 / 16 | search scalability、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 
-Q52已经退出current queue，完整边界和fresh证据见`tasks/archive/completed-task-index.md`。它向Q53签发独立的current `none`与
-`search` source→package路径、唯一actual memory/target leaf及bounded winner-only inventory；`search`覆盖为`FeasiblePartial`，不声明
-未穷尽frontier的全局最优。Q53为下一项且尚未启动。
+Q52已经退出current queue，完成边界和本轮fresh证据见`tasks/archive/completed-task-index.md`。它向Q53签发按fusion level
+breadth-first访问的Region proposal、actual SPM feedback、candidate-admission/target ABI共用boundary verifier，以及独立的current
+`none`与`search` source→package路径；`search`覆盖仍为`FeasiblePartial`，不声明未穷尽frontier的全局最优。Q53为下一项且尚未启动。
 
 ## 已满足的直接前置
 
