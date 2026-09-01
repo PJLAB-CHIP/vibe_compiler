@@ -16,6 +16,7 @@ import struct
 import subprocess
 import sys
 
+import wafer_board_source_program as source_program
 import wafer_runtime_launch_contract as runtime_launch
 
 
@@ -233,13 +234,8 @@ def write_source_program(work_dir: pathlib.Path) -> pathlib.Path:
     if work_dir.exists():
         shutil.rmtree(work_dir)
     source = work_dir / "source-program"
-    (source / "functions").mkdir(parents=True)
-    (source / "data").mkdir()
-    (source / "functions" / "forward.mlir").write_text(MODULE)
-    (source / "functions" / "forward.meta").write_text(
-        json.dumps(METADATA, separators=(",", ":")) + "\n"
-    )
-    return source
+    (source / "data").mkdir(parents=True)
+    return source_program.write_program(source, MODULE, METADATA)
 
 
 def compile_package(
@@ -449,7 +445,7 @@ def build_probe(
             f"-DWAFER_BARRIER_OUTPUT_SLOT={slot_layout.output_ordinal}",
             f"-DWAFER_BARRIER_STATUS_SLOT={slot_layout.status_ordinal}",
             f"-I{INPUT_DIR}",
-            f"-I{args.repo_root / 'runtime' / 'wafer_crt' / 'include'}",
+            f"-I{args.repo_root / 'runtime' / 'crt' / 'include'}",
             f"-I{args.repo_root / 'include'}",
             "-mcpu=c908",
             "-mabi=lp64d",

@@ -18,6 +18,7 @@ import sys
 import time
 
 import wafer_runtime_launch_contract as runtime_launch
+import wafer_board_source_program as source_program
 import wafer_transport_pmu_calibration_catalog as transport_catalog
 
 
@@ -342,12 +343,8 @@ def compile_package(
     source = args.work_dir / "source-program"
     if source.exists():
         shutil.rmtree(source)
-    (source / "functions").mkdir(parents=True)
-    (source / "data").mkdir()
-    (source / "functions" / "forward.mlir").write_text(MODULE)
-    (source / "functions" / "forward.meta").write_text(
-        json.dumps(METADATA, separators=(",", ":")) + "\n"
-    )
+    (source / "data").mkdir(parents=True)
+    source_program.write_program(source, MODULE, METADATA)
     package = args.work_dir / "package"
     if package.exists():
         shutil.rmtree(package)
@@ -541,7 +538,7 @@ def build_probe(
             "-Werror",
             "-DCONFIG_NO_PLATFORM_HOOK_H",
             "-DUSING_RISCV",
-            f"-I{args.repo_root / 'runtime' / 'wafer_crt' / 'include'}",
+            f"-I{args.repo_root / 'runtime' / 'crt' / 'include'}",
             f"-I{args.repo_root / 'include'}",
             f"-I{deps / 'include'}",
             f"-I{kcore_include}",

@@ -480,25 +480,4 @@ void rebuildCurrentBufferOwnerRelations(
   });
 }
 
-mlir::LogicalResult rebaseStructuredBufferRelationsToStorageRoots(
-    StructuredMaterializationRelations &relations) {
-  StorageRootMemo memo;
-  auto rebase = [&](mlir::Value &value) {
-    if (!value || !mlir::isa<mlir::BaseMemRefType>(value.getType()))
-      return false;
-    const llvm::DenseSet<mlir::Value> &roots = memo.getStorageRoots(value);
-    if (roots.size() != 1)
-      return false;
-    value = *roots.begin();
-    return true;
-  };
-  for (MaterializedBufferRelation &relation : relations.buffers)
-    if (!rebase(relation.buffer))
-      return mlir::failure();
-  for (StructuredOutputRelation &relation : relations.structuralOutputs)
-    if (!rebase(relation.endpoint))
-      return mlir::failure();
-  return mlir::success();
-}
-
 } // namespace wafer::compiler::detail

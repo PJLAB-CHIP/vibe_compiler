@@ -1,6 +1,7 @@
 # Physical Dataflow Current-IR实施计划
 
-Q52 current-IR mechanics和Region partition refinement均已闭合；Q53尚未启动。
+Q52 current-IR mechanics和Region partition refinement均已闭合；Q53 host/no-card矩阵已闭合并签发`board-ready`。
+本项不运行真实设备。
 动态状态只读`tasks/progress.md`；
 第1--11项的施工、删除账本和验证记录见`tasks/archive/physical-dataflow-synthesis-q52-plan-history.md`；第12--15项的完成边界见
 `tasks/archive/completed-task-index.md`。
@@ -435,8 +436,45 @@ Q53只消费Q52签发的current none与search路径，不改变search算法或ca
 | attention | HF prefill、functional two-step decode；1024/1025/1031；FP16/BF16 | unsupported/resource与compiler failure区分 | fixed FA/FD语义、actual physical IR和step continuation在同一policy内闭合；无cross-policy state | host oracle、package/no-card和board case binding |
 | representative model | current LLaMA block；FP16 mandatory | timeout/OOM/skip/fallback不计通过 | none和search分别fresh生成package；source identity相同但Module、analysis、ProgramData和package不共享 | strict readback、CPU reference、no-card |
 | board-case preparation | representative communication、attention/decode和LLaMA的两种policy | 缺package/input/oracle/guard/deadline即非board-ready | package、payload、all outputs、guard、continuation、timeout和固定串行顺序完整 | 后续board runner无需修改source或临时补oracle |
-| host qualification registry | conv mixed DAG、attention prefill/decode、LLaMA block的FP16/BF16 source/oracle/runner；24个calibration probe source/case/oracle；target numeric model input | 未注册、skip、旧source schema、旧CLI/reader或未到达current DeviceExecutable均失败 | 从Q52签发的current policy重新建立并实际执行8个产品no-card、24个calibration no-card CTest及`WaferTargetNumericBackend` source→model纵向；不恢复已删除的旧test文件、CLI或schema | 同一fresh package进入host oracle、strict loader/no-card和board-case preparation |
+| host qualification registry | conv mixed DAG、attention prefill/decode、LLaMA block的8个FP16/BF16逻辑workload；22个current calibration runner、2个明确host-only/excluded calibration记录；target numeric model input | 未注册、skip、旧source schema、旧CLI/reader或未到达current DeviceExecutable均失败 | 8个逻辑workload各自独立执行none/search，形成16个product CTest和20个package/no-card执行（decode每policy两步）；22个current calibration no-card CTest及`WaferTargetNumericBackend` source→model纵向实际执行；不恢复已删除的旧test文件、CLI或schema | 同一fresh package进入host oracle、strict loader/no-card和board-case preparation |
 
 Q53完成要求registered case实际执行且无skip/unsupported；每个case使用本轮source和package；strict loader验证canonical
 manifest/module/program-data和all-and-only 16 Tile entries；no-card在provider side effect前关闭resource、binding、transport和
 completion；host oracle与guard通过。完成只到`board-ready`，真实板测由后续明确任务逐case执行。
+
+### Q53 current registry audit
+
+2026-09-01 fresh audit initially发现：`SOURCE_NO_CARD_WORKLOADS`保留conv mixed DAG、attention prefill、functional two-step
+decode和LLaMA block的FP16/BF16 source/oracle，但policy只包含none且CMake显式断言未注册。本项已补齐两policy注册；Q53
+不把8个logical workload误写成8次执行，none/search使用独立process、work directory和package，因此是16个registered
+CTest。Decode每个policy有两个functional step，全矩阵实际生成20个package并各自no-card。
+
+Q55历史的24个`current-interface` calibration no-card由20个raw probe、complete-Tile add普通/profile、engine pipeline和
+DDR contention组成。Current source tree仍有22个可执行runner；旧DDR sparse-high-offset runner已删除且其scale责任由
+whole-program scale边界承接，CT VuVLoop只保留current catalog/protocol而没有current package runner。Q53不恢复两个旧文件，
+将它们分别记为later scale与host-only capability；`board-ready`只签发22个仍有current source/case/oracle/runner的calibration入口。
+
+| Q53 registry closure | 输入 | 精确断言 | 直接下游 |
+| --- | --- | --- | --- |
+| product matrix | 4 case x FP16/BF16 x none/search；decode two-step | 16 CTest、20 packages；source/eager expected/payload/package/no-card全部fresh；两policy零共享 | board-case work directory |
+| calibration matrix | 22 current runner representative cases | 22 CTest都进入current compile/package/runtime no-card；0 skip/unsupported；名称与inventory唯一 | 后续同runner armed board entry |
+| excluded historical assets | DDR sparse high offset、CT VuVLoop | 不注册不存在的runner；当前host catalog/scale owner可定位；不冒充no-card | later scale / capability design |
+| target model vertical | current product source、package TargetCall、raw input/expected | source→DeviceExecutable→TargetCall model实际执行；结果/guard与formal/qualified backend一致 | configured target backend CTest |
+
+### Q53 fresh execution evidence
+
+2026-09-01在canonical `build/`上完成本轮fresh host验证。每个CTest使用独立process、work directory和package；没有复用
+另一policy的Module、analysis、ProgramData或package。conv mixed DAG使用`[1,16,8,1024]`（FP16）和
+`[1,16,8,1025]`（BF16）：保留rank-4、1024/1025尾块和branch/fanin/reduction结构，同时使实际FP32 reduction
+allocation能够由目标SPM规划；此前`height=32`的3,145,728-byte allocation由实际MiniMalloc准确拒绝，未作为通过证据。
+
+| Matrix | Fresh result | Wall time | Exact witness |
+| --- | --- | ---: | --- |
+| Product: conv mixed DAG, attention prefill/decode, LLaMA block × FP16/BF16 × none/search | 16/16 passed | 2557.90s串行（decode两步；LLaMA search FP16 1082.74s、BF16 1074.94s） | source export、CPU oracle、strict package loader、16 Tile entries、no-card readback/guard；无skip/unsupported |
+| Calibration current runners | 22/22 passed | 33.87s（CTest并行，单runner进程） | current source→DeviceExecutable→package→no-card；0旧runner、0skip |
+| Target-model source vertical | 1/1 passed | 1.38s | rank-3`[2,1024,64]`FP16 source→TargetCall/SystemC，16 Tile entries，model output exact match |
+
+本轮还修复了两个由真实规模IR暴露的实现问题：多维 ordered reduce 将重复的`outer tuple × physical piece`循环收敛为经过
+逐descriptor affine验证的嵌套stream，并在同一`collectAccesses`调用内memoize SSA identity解析；structured buffer relation
+不再要求`scf.if`等合法多根值压成唯一storage root，而保留current SSA交由SPM planner按实际allocation分析。相关
+focused lowering、lifetime、relation unit和全261项lit均通过；本项没有真实板端执行，因此状态只能签发`board-ready`。

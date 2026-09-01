@@ -68,12 +68,6 @@ void retainCurrentStructuredBufferRelations(
 void rebuildCurrentBufferOwnerRelations(
     mlir::Operation *root, StructuredMaterializationRelations &relations);
 
-/// Rebinds attribution-only buffer relations to their unique current-IR
-/// storage root before a pass pipeline may fold intermediate views. A value
-/// with zero or multiple typed roots fails closed.
-mlir::LogicalResult rebaseStructuredBufferRelationsToStorageRoots(
-    StructuredMaterializationRelations &relations);
-
 /// Query-local memo of per-value storage roots. Values are only valid within
 /// one unchanged IR epoch; a caller constructs one memo per validation root
 /// and threads it through every buffer query in that scope, turning

@@ -209,6 +209,30 @@
 - 修复模式：数学work使用logical elements；allocation、address、ABI、movement与transport使用checked physical footprint。
 - 防复发：bitpacked、padding、non-unit stride、alignment和overflow正负例同时覆盖，byte size相等不推断layout。
 
+## Ordered multi-axis reduction不能按每个tuple生成并列循环
+
+- 现象：多维 ordered reduction按`outer tuple × physical piece`逐项生成独立`scf.for`，真实Tile上的循环数量和
+  lifetime backedge检查随tuple数增长；同一SSA accumulator identity还会在互换iter_arg链上重复展开，导致host编译
+  长时间停在completion analysis。
+- 根因：只在单一reduction轴上识别descriptor affine run，没有把完整词典序中的重复physical stream作为一个可验证的
+  nested loop；identity解析也没有在一次只读access query内记忆已完成的SSA结果。
+- 修复模式：先逐descriptor验证每个outer重复段的base、inner stride、outer stride和last descriptor，只有完全匹配时
+  才物化一个outer loop及每个physical segment的inner loop；不匹配则保留原有精确分段路径。`collectAccesses`使用调用
+  内identity memoization，active cycle仍返回unknown并fail closed。
+- 防复发：1024和1025的多轴reduce必须检查动态offset、词典序、tail以及loop数量；真实product timing同时记录
+  relation-descriptor planning和lifetime local-completion，不能仅以最终数值或小shape通过代替IR规模证据。
+
+## Conditional current SSA value可以有多个实际storage root
+
+- 现象：`scf.if`两分支各自分配并返回同类型buffer时，structured relation endpoint解析到两个current roots；旧的
+  memory-planning gate强制所有relation先rebase到唯一root，合法product因此被错误拒绝。
+- 根因：把“relation必须指向current IR值”误读成“每个值必须只有一个allocation root”，忽略了分支选择是current
+  SSA语义，SPM planner本来就按实际分支allocation和lifetime分析。
+- 修复模式：删除唯一-root rebase及其跨stageAPI，保留relation对当前`scf.if`/view/loop SSA值的引用；owner/live-value
+  检查继续使用storage-root集合进行精确share测试，capacity failure attribution从实际demand root收集witness。
+- 防复发：relation测试同时覆盖唯一view root和二分支多root；不以shape、名字、分支数量或“唯一allocation”补归因，
+  只有current SSA、typed owner和实际SPM结果才能决定合法性。
+
 ## Cross-Tile communication不能从编号或名字恢复
 
 - 现象：在identity topology上route正确，改变physical mapping后send/recv、collective tree或status resource错误。

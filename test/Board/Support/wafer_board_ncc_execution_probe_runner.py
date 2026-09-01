@@ -20,6 +20,7 @@ import sys
 from collections.abc import Iterable
 
 import wafer_ncc_probe_protocol as ncc_protocol
+import wafer_board_source_program as source_program
 import wafer_runtime_launch_contract as runtime_launch
 
 
@@ -97,13 +98,8 @@ def write_source_program(work_dir: pathlib.Path) -> pathlib.Path:
     if work_dir.exists():
         shutil.rmtree(work_dir)
     source = work_dir / "source-program"
-    (source / "functions").mkdir(parents=True)
-    (source / "data").mkdir()
-    (source / "functions" / "forward.mlir").write_text(MODULE)
-    (source / "functions" / "forward.meta").write_text(
-        json.dumps(METADATA, separators=(",", ":")) + "\n"
-    )
-    return source
+    (source / "data").mkdir(parents=True)
+    return source_program.write_program(source, MODULE, METADATA)
 
 
 def compile_seed_package(
@@ -158,7 +154,8 @@ def locate_probe_bindings(
         or entry.get("tile_id") != 0
         or entry.get("module") != module.get("id")
         or not isinstance(arguments, list)
-        or [argument.get("ordinal") for argument in arguments] != [0, 1, 2]
+        or [argument.get("ordinal") for argument in arguments[:3]]
+        != [0, 1, 2]
         or any(other.get("module") != module.get("id") for other in entries)
     ):
         raise RuntimeError("NCC probe pointer-table arguments are not canonical")
@@ -187,7 +184,7 @@ def locate_probe_bindings(
             raise RuntimeError(f"NCC probe port record is invalid: {record}")
         port_ids.append(record["id"])
     for argument, port_id, (table, kind, access) in zip(
-        arguments, port_ids, expected, strict=True
+        arguments[:3], port_ids, expected, strict=True
     ):
         if (
             not isinstance(argument, dict)
@@ -259,7 +256,7 @@ def build_probe(
             f"-DWAFER_NCC_SLOTS_PER_TILE={slots_per_tile}",
             "-DCONFIG_NO_PLATFORM_HOOK_H",
             "-DUSING_RISCV",
-            f"-I{args.repo_root / 'runtime' / 'wafer_crt' / 'include'}",
+            f"-I{args.repo_root / 'runtime' / 'crt' / 'include'}",
             f"-I{args.repo_root / 'include'}",
             f"-I{deps / 'include'}",
             f"-I{INPUT_DIR}",

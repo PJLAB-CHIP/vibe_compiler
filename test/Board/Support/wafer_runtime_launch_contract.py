@@ -48,7 +48,7 @@ KERNEL_PREPARE_EXPORT = {
     "role": "prepare",
     "symbol": "__wafer_kernel_prepare",
 }
-KERNEL_MAIN_EXPORT = {"role": "main", "symbol": "main"}
+KERNEL_MAIN_EXPORT = {"role": "main", "symbol": "entry"}
 
 
 @dataclasses.dataclass(frozen=True)

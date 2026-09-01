@@ -45,7 +45,7 @@ def valid_manifest() -> dict[str, object]:
                 ),
                 "format": "elf-riscv64",
                 "exports": [
-                    {"role": "main", "symbol": "main"},
+                    {"role": "main", "symbol": "entry"},
                 ],
             }
         ],

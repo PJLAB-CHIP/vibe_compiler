@@ -530,7 +530,7 @@ def build_probe(
             "-Werror",
             "-DCONFIG_NO_PLATFORM_HOOK_H",
             "-DUSING_RISCV",
-            f"-I{args.repo_root / 'runtime' / 'wafer_crt' / 'include'}",
+            f"-I{args.repo_root / 'runtime' / 'crt' / 'include'}",
             f"-I{args.repo_root / 'include'}",
             f"-I{deps / 'include'}",
             f"-I{INPUT_DIR}",

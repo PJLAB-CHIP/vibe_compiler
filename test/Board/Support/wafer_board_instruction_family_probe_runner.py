@@ -17,6 +17,7 @@ import sys
 from collections.abc import Iterable
 
 import wafer_instruction_family_catalog as catalog
+import wafer_board_source_program as source_program
 import wafer_runtime_launch_contract as runtime_launch
 
 
@@ -265,13 +266,8 @@ def select_cases(args: argparse.Namespace) -> tuple[catalog.InstructionCase, ...
 def write_source_program(args: argparse.Namespace) -> pathlib.Path:
     prepare_work_dir(args)
     source = args.work_dir / "source-program"
-    (source / "functions").mkdir(parents=True)
-    (source / "data").mkdir()
-    (source / "functions" / "forward.mlir").write_text(MODULE)
-    (source / "functions" / "forward.meta").write_text(
-        json.dumps(METADATA, separators=(",", ":")) + "\n"
-    )
-    return source
+    (source / "data").mkdir(parents=True)
+    return source_program.write_program(source, MODULE, METADATA)
 
 
 def compile_seed_package(
@@ -327,7 +323,7 @@ def locate_bindings(
     arguments = entry.get("arguments")
     if (
         entry.get("module") != module.get("id")
-        or module.get("exports") != [{"role": "main", "symbol": "main"}]
+        or module.get("exports") != [runtime_launch.KERNEL_MAIN_EXPORT]
         or not isinstance(arguments, list)
         or [argument.get("ordinal") for argument in arguments[:3]] != [0, 1, 2]
     ):
@@ -438,7 +434,7 @@ def build_probe(
             f"-DWAFER_IFP_SLOTS_PER_TILE={slots_per_tile}",
             "-DCONFIG_NO_PLATFORM_HOOK_H",
             "-DUSING_RISCV",
-            f"-I{args.repo_root / 'runtime' / 'wafer_crt' / 'include'}",
+            f"-I{args.repo_root / 'runtime' / 'crt' / 'include'}",
             f"-I{args.repo_root / 'include'}",
             f"-I{deps / 'include'}",
             f"-I{INPUT_DIR}",

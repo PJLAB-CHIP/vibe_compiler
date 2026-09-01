@@ -76,7 +76,8 @@ def validate_work_dir_cleanup_is_bounded() -> None:
         assert not stale.exists()
         assert not (managed / "raw").exists()
         assert external_file.read_text(encoding="utf-8") == "outside\n"
-        assert (source / "functions" / "forward.mlir").is_file()
+        assert (source / "functions" / "forward.stablehlo.bc").is_file()
+        assert not (source / "functions" / "forward.mlir").exists()
         assert (source / "functions" / "forward.meta").is_file()
 
 

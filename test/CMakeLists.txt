@@ -145,6 +145,55 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
     ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python;WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>"
     TIMEOUT 30
   )
+
+  function(wafer_add_pytorch_source_no_card_test
+      case_name dtype_name dtype_label optimization_policy)
+    set(_wafer_test_name
+      "wafer-runtime-pytorch-${case_name}-${dtype_label}-optimization-${optimization_policy}-no-card")
+    add_test(NAME ${_wafer_test_name}
+      COMMAND ${WAFER_IMPORTER_PYTHON_COMMAND}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
+        --case ${case_name}
+        --dtype ${dtype_name}
+        --seed 20260803
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/${_wafer_test_name}
+        --optimization-policy ${optimization_policy}
+        --no-card
+    )
+    set_tests_properties(${_wafer_test_name} PROPERTIES
+      LABELS "runtime;no-card;product;pytorch;source;board-ready;${dtype_label};optimization-${optimization_policy}"
+      ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
+      PROCESSORS 16
+      TIMEOUT 5400
+    )
+  endfunction()
+
+  foreach(_wafer_product_case IN ITEMS
+      conv-mixed-dag
+      attention-prefill
+      attention-decode-kv-cache
+      llama-2-7b-block)
+    foreach(_wafer_product_dtype IN ITEMS
+        "float16;fp16"
+        "bfloat16;bf16")
+      list(GET _wafer_product_dtype 0 _wafer_product_dtype_name)
+      list(GET _wafer_product_dtype 1 _wafer_product_dtype_label)
+      foreach(_wafer_product_policy IN ITEMS search none)
+        wafer_add_pytorch_source_no_card_test(
+          ${_wafer_product_case}
+          ${_wafer_product_dtype_name}
+          ${_wafer_product_dtype_label}
+          ${_wafer_product_policy})
+      endforeach()
+    endforeach()
+  endforeach()
+  unset(_wafer_product_case)
+  unset(_wafer_product_dtype)
+  unset(_wafer_product_dtype_name)
+  unset(_wafer_product_dtype_label)
+  unset(_wafer_product_policy)
 endif()
 
 if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
@@ -552,4 +601,19 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     PROPERTIES
       PASS_REGULAR_EXPRESSION "wafer-systemc-model-canonical-snapshot"
       LABELS "systemc-model;managed-dependencies")
+
+  if(WAFER_ENABLE_UNIT_TESTS)
+    add_test(NAME wafer-runtime-target-model-source-vertical-no-card
+      COMMAND ${WAFER_PYTHON_COMMAND}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/Support/wafer_target_model_source_runner.py
+        --wafer-compile $<TARGET_FILE:wafer-compile-test>
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/wafer-runtime-target-model-source-vertical-no-card)
+    set_tests_properties(wafer-runtime-target-model-source-vertical-no-card
+      PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Board/Support;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>"
+        LABELS "runtime;no-card;source;target-model;board-ready"
+        PROCESSORS 4
+        TIMEOUT 900)
+  endif()
 endif()

@@ -341,7 +341,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             ["wafer-run", "--package-dir", "package"],
         )
 
-    def test_source_no_card_matrix_is_retained_without_ctest_registration(
+    def test_source_no_card_matrix_is_registered_for_both_policies(
         self,
     ) -> None:
         expected = {
@@ -395,7 +395,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 entry.package_count
                 for entry in cases.SOURCE_NO_CARD_WORKLOADS
             ),
-            10,
+            20,
         )
 
         cmake = (
@@ -403,9 +403,14 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             / "test"
             / "CMakeLists.txt"
         ).read_text(encoding="utf-8")
-        self.assertNotIn("wafer_add_pytorch_source_no_card_test", cmake)
-        for entry in cases.SOURCE_NO_CARD_WORKLOADS:
-            self.assertNotIn(entry.ctest_name, cmake)
+        self.assertIn("wafer_add_pytorch_source_no_card_test", cmake)
+        for case_name in cases.PRODUCTION_SOURCE_CASES:
+            self.assertIn(case_name, cmake)
+        for dtype_name, dtype_label in cases.PRODUCTION_SOURCE_DTYPES:
+            self.assertIn(dtype_name, cmake)
+            self.assertIn(dtype_label, cmake)
+        for optimization_policy in cases.SOURCE_NO_CARD_OPTIMIZATION_POLICIES:
+            self.assertIn(optimization_policy, cmake)
 
         runner_source = inspect.getsource(board_runner.main)
         self.assertNotIn("torch_eager_reference=deferred", runner_source)
@@ -488,6 +493,16 @@ class PyTorchBoardCasesTest(unittest.TestCase):
         self.assertIn("stablehlo.maximum", stablehlo)
         self.assertIn("stablehlo.reduce", stablehlo)
         self.assertNotIn("wafer", stablehlo.lower())
+
+    def test_conv_mixed_dag_pairs_aligned_and_ragged_real_scale_widths(
+        self,
+    ) -> None:
+        fp16 = cases._conv_mixed_dag(torch.float16, seed=29)
+        bf16 = cases._conv_mixed_dag(torch.bfloat16, seed=29)
+        self.assertEqual(fp16.inputs[0].shape, (1, 16, 8, 1024))
+        self.assertEqual(bf16.inputs[0].shape, (1, 16, 8, 1025))
+        self.assertEqual(fp16.inputs[0].dtype, torch.float16)
+        self.assertEqual(bf16.inputs[0].dtype, torch.bfloat16)
 
     def test_bfloat16_export_preserves_parameter_and_buffer_storage(self) -> None:
         class StatefulBFloat16Module(torch.nn.Module):

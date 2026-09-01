@@ -49,17 +49,9 @@ func.func @sorted_multidim_lexicographic() {
 // CHECK-LABEL: func.func @sorted_multidim_lexicographic
 // CHECK-NOT: wafer.instr.reduce
 // CHECK: wafer.instr.fill
+// CHECK-COUNT-2: scf.for
 // CHECK: wafer.instr.gather_scatter
-// CHECK-NOT: src_offset
-// CHECK-NEXT: wafer.instr.elementwise <add>
-// CHECK: wafer.instr.gather_scatter
-// CHECK-SAME: src_offset = 4
-// CHECK-NEXT: wafer.instr.elementwise <add>
-// CHECK: wafer.instr.gather_scatter
-// CHECK-SAME: src_offset = 256
-// CHECK-NEXT: wafer.instr.elementwise <add>
-// CHECK: wafer.instr.gather_scatter
-// CHECK-SAME: src_offset = 260
+// CHECK-SAME: src_offset_value
 // CHECK-NEXT: wafer.instr.elementwise <add>
 // CHECK: wafer.instr.gather_scatter
 // CHECK: wafer.instr.ncc_join [0]
@@ -112,6 +104,29 @@ func.func @large_f16_identity_sum_uses_native_reduce() {
 // CHECK-NEXT: wafer.instr.ncc_join [0]
 // CHECK-NEXT: return
 // CHECK-NOT: wafer.instr.ncc_join [0]
+
+func.func @large_multidim_sum_keeps_inner_affine_runs() {
+  %token = arith.constant false
+  %unused = wafer.tile.region(%token : i1) -> (i1) {
+  ^bb0(%tile_token: i1):
+  %input = memref.alloc() : memref<1x24x32x1024xf16, #wafer.memory<spm, ncx>>
+  %result = wafer.tile.reduce #wafer.reduce_kind<sum> %input
+      {dimensions = array<i64: 2, 3>, init_value = -0.000000e+00 : f16}
+      : (memref<1x24x32x1024xf16, #wafer.memory<spm, ncx>>)
+     -> memref<1x24x1x1xf16, #wafer.memory<spm, ncx>>
+    wafer.tile.yield %tile_token : i1
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @large_multidim_sum_keeps_inner_affine_runs
+// CHECK-NOT: wafer.instr.reduce
+// CHECK: wafer.instr.fill
+// CHECK-COUNT-17: scf.for
+// CHECK: wafer.instr.gather_scatter
+// CHECK: wafer.instr.elementwise <add>
+// CHECK: wafer.instr.ncc_join [0]
+// CHECK: return
 
 func.func @ordered_max() {
   %token = arith.constant false

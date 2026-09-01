@@ -58,6 +58,34 @@ def resolve_binding(
 def main() -> int:
     repo = pathlib.Path(__file__).resolve().parents[3]
     board_cmake = (repo / "test/Board/CMakeLists.txt").read_text()
+    q53_no_card_ctests = {
+        "wafer-runtime-dte-ncc-execution-probe-no-card",
+        "wafer-runtime-complete-tile-barrier-probe-no-card",
+        "wafer-runtime-ddr-tile-offset-probe-no-card",
+        "wafer-runtime-worker-placement-probe-no-card",
+        "wafer-runtime-ncc-pmu-readonly-probe-no-card",
+        "wafer-runtime-ncc-execution-probe-no-card",
+        "wafer-runtime-instruction-family-probe-no-card",
+        "wafer-runtime-ct-vector-calibration-probe-no-card",
+        "wafer-runtime-ct-convert-calibration-probe-no-card",
+        "wafer-runtime-datamove-calibration-probe-no-card",
+        "wafer-runtime-datamove-extended-calibration-probe-no-card",
+        "wafer-runtime-ne-calibration-probe-no-card",
+        "wafer-runtime-spm-calibration-probe-no-card",
+        "wafer-runtime-cache-coherence-calibration-probe-no-card",
+        "wafer-runtime-memory-descriptor-calibration-probe-no-card",
+        "wafer-runtime-spm-sustained-probe-no-card",
+        "wafer-runtime-spm-cross-tile-conflict-probe-no-card",
+        "wafer-runtime-ne-tail-throughput-no-card",
+        "wafer-runtime-complete-tile-add-no-card",
+        "wafer-runtime-complete-tile-add-profile-no-card",
+        "wafer-runtime-engine-pipeline-characterization-no-card",
+        "wafer-runtime-ddr-active-tile-contention-no-card",
+    }
+    assert len(q53_no_card_ctests) == 22
+    assert all(name in board_cmake for name in q53_no_card_ctests)
+    assert "wafer-runtime-ddr-sparse-high-offset-probe-no-card" not in board_cmake
+    assert "wafer-runtime-ct-vuvloop-probe-no-card" not in board_cmake
     inventory.validate_inventory()
     cache: dict[str, object] = {}
     for family in inventory.FAMILIES:
@@ -81,14 +109,9 @@ def main() -> int:
         assert all(
             name in board_cmake for name in family.host_ctests
         ), f"{family.key}: host CTest is not registered"
-        if family.disposition == inventory.BLOCKED_CURRENT_PIPELINE:
-            assert all(
-                name not in board_cmake for name in family.no_card_ctests
-            ), f"{family.key}: blocked no-card CTest remains registered"
-        else:
-            assert all(
-                name in board_cmake for name in family.no_card_ctests
-            ), f"{family.key}: no-card CTest is not registered"
+        assert all(
+            name in board_cmake for name in family.no_card_ctests
+        ), f"{family.key}: no-card CTest is not registered"
         assert all(
             name in board_cmake for name in family.board_ctests
         ), f"{family.key}: Board CTest is not registered"
@@ -117,7 +140,7 @@ def main() -> int:
     raw_dte = inventory.FAMILIES_BY_KEY[
         "direct-dte-raw-multidestination-and-fanin"
     ]
-    assert raw_dte.disposition == inventory.BLOCKED_CURRENT_PIPELINE
+    assert raw_dte.disposition == inventory.PENDING_BOARD
     assert "wafer-runtime-dte-ncc-execution-probe-no-card" in (
         raw_dte.no_card_ctests
     )
@@ -133,12 +156,7 @@ def main() -> int:
         for family in inventory.FAMILIES
         if family.disposition == inventory.BLOCKED_EXTERNAL
     )
-    pipeline_blocked = tuple(
-        family
-        for family in inventory.FAMILIES
-        if family.disposition == inventory.BLOCKED_CURRENT_PIPELINE
-    )
-    assert not pending and pipeline_blocked and blocked
+    assert len(pending) == 14 and blocked
     assert all(family.no_card_ctests for family in pending)
     assert all(
         family.board_ctests
@@ -146,15 +164,11 @@ def main() -> int:
         if family.runner_batch is not None
     )
     assert all(family.blocker for family in blocked)
-    assert all(
-        family.blocker == inventory.CURRENT_PIPELINE_BLOCKER
-        for family in pipeline_blocked
-    )
     print(
         "calibration_inventory: "
         f"families={len(inventory.FAMILIES)} "
         f"board_pending={len(pending)} "
-        f"pipeline_blocked={len(pipeline_blocked)} "
+        "pipeline_blocked=0 "
         f"blocked={len(blocked)}"
     )
     return 0

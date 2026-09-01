@@ -17,6 +17,7 @@ import sys
 
 import numpy as np
 
+import wafer_board_source_program as source_program
 import wafer_runtime_launch_contract as runtime_launch
 
 
@@ -142,13 +143,8 @@ def write_source_program(work_dir: pathlib.Path) -> pathlib.Path:
     if work_dir.exists():
         shutil.rmtree(work_dir)
     source = work_dir / "source-program"
-    (source / "functions").mkdir(parents=True)
-    (source / "data").mkdir()
-    (source / "functions" / "forward.mlir").write_text(MODULE)
-    (source / "functions" / "forward.meta").write_text(
-        json.dumps(METADATA, separators=(",", ":")) + "\n"
-    )
-    return source
+    (source / "data").mkdir(parents=True)
+    return source_program.write_program(source, MODULE, METADATA)
 
 
 def compile_package(
@@ -248,9 +244,7 @@ def validate_manifest(
     if (
         not isinstance(module, dict)
         or not isinstance(module.get("id"), int)
-        or module.get("exports") != [
-            {"role": "main", "symbol": "main"}
-        ]
+        or module.get("exports") != [runtime_launch.KERNEL_MAIN_EXPORT]
     ):
         raise RuntimeError("package module export contract is invalid")
 

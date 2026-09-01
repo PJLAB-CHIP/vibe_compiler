@@ -17,7 +17,7 @@
 
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `production-host-readiness` | `next` | Q53 / 16 | Q52 region partition refinement、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
+| 1 | `production-host-readiness` | `board-ready` | Q53 / 16 | Q52 region partition refinement、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 
 ## 已满足的直接前置
 

@@ -9,7 +9,7 @@ function(wafer_add_board_python_contract test_name script)
     COMMAND ${WAFER_PYTHON_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/${script}
   )
   set_tests_properties(${test_name} PROPERTIES
-    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Support:${CMAKE_CURRENT_SOURCE_DIR}/Cases"
+    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Support:${CMAKE_CURRENT_SOURCE_DIR}/Cases;WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>"
     LABELS "board;host;calibration;contract"
     TIMEOUT 60
   )
@@ -79,6 +79,151 @@ set_tests_properties(wafer-ncc-hazard-relation-contract PROPERTIES
   LABELS "board;host;ncc;contract"
   TIMEOUT 30)
 
+function(wafer_add_current_calibration_no_card test_name script)
+  add_test(NAME ${test_name}
+    COMMAND ${WAFER_PYTHON_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/${script}
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${WAFER_BOARD_CLANGXX}
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/${test_name}
+      ${ARGN}
+      --no-card)
+  set_tests_properties(${test_name} PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Support:${CMAKE_CURRENT_SOURCE_DIR}/Cases;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>"
+    LABELS "runtime;no-card;calibration;current-interface;board-ready"
+    PROCESSORS 4
+    TIMEOUT 900)
+endfunction()
+
+wafer_add_current_calibration_no_card(
+  wafer-runtime-dte-ncc-execution-probe-no-card
+  Cases/wafer_board_dte_ncc_execution_probe_test.py
+  --mode 1 --payload-bytes 16 --total-timeout-seconds 420)
+wafer_add_current_calibration_no_card(
+  wafer-runtime-complete-tile-barrier-probe-no-card
+  Support/wafer_board_complete_tile_barrier_probe_runner.py
+  --participants 16)
+wafer_add_current_calibration_no_card(
+  wafer-runtime-ddr-tile-offset-probe-no-card
+  Support/wafer_board_ddr_tile_offset_probe_runner.py)
+wafer_add_current_calibration_no_card(
+  wafer-runtime-worker-placement-probe-no-card
+  Support/wafer_board_worker_placement_characterization_runner.py
+  --group worker-outstanding-ct-w0)
+wafer_add_current_calibration_no_card(
+  wafer-runtime-ncc-pmu-readonly-probe-no-card
+  Support/wafer_board_ncc_pmu_probe_runner.py)
+wafer_add_current_calibration_no_card(
+  wafer-runtime-ncc-execution-probe-no-card
+  Support/wafer_board_ncc_execution_probe_runner.py
+  --suite build-smoke)
+wafer_add_current_calibration_no_card(
+  wafer-runtime-instruction-family-probe-no-card
+  Support/wafer_board_instruction_family_probe_runner.py
+  --case ct-neg-f16)
+wafer_add_current_calibration_no_card(
+  wafer-runtime-ct-vector-calibration-probe-no-card
+  Support/wafer_board_ct_vector_calibration_probe_runner.py
+  --case ct-op000-arithop_v_v_abs-f16-main)
+wafer_add_current_calibration_no_card(
+  wafer-runtime-ct-convert-calibration-probe-no-card
+  Support/wafer_board_ct_convert_calibration_probe_runner.py
+  --case ct-op139-convert-int8-fp16-main)
+wafer_add_current_calibration_no_card(
+  wafer-runtime-datamove-calibration-probe-no-card
+  Support/wafer_board_datamove_calibration_probe_runner.py
+  --case datamove-transpose-37x53)
+wafer_add_current_calibration_no_card(
+  wafer-runtime-datamove-extended-calibration-probe-no-card
+  Support/wafer_board_datamove_extended_calibration_probe_runner.py
+  --case datamove-raw-concat-c-n2h7w9-c33-c32)
+wafer_add_current_calibration_no_card(
+  wafer-runtime-ne-calibration-probe-no-card
+  Support/wafer_board_ne_calibration_probe_runner.py
+  --case ne-f16-large-nn)
+wafer_add_current_calibration_no_card(
+  wafer-runtime-spm-calibration-probe-no-card
+  Support/wafer_board_spm_calibration_probe_runner.py
+  --case spm-lower-bound-256)
+wafer_add_current_calibration_no_card(
+  wafer-runtime-cache-coherence-calibration-probe-no-card
+  Support/wafer_board_cache_coherence_calibration_probe_runner.py
+  --case cache-host-h2d-to-kcore-read)
+wafer_add_current_calibration_no_card(
+  wafer-runtime-memory-descriptor-calibration-probe-no-card
+  Support/wafer_board_memory_descriptor_calibration_probe_runner.py
+  --case dma-src-offset256-dst-offset4096-tail4097-u8)
+wafer_add_current_calibration_no_card(
+  wafer-runtime-spm-sustained-probe-no-card
+  Support/wafer_board_spm_sustained_conflict_probe_runner.py
+  --case spm-conflict-pilot-4k-a-b)
+wafer_add_current_calibration_no_card(
+  wafer-runtime-spm-cross-tile-conflict-probe-no-card
+  Support/wafer_board_spm_cross_tile_conflict_probe_runner.py
+  --case spm-cross-tile-ct-rdma-translation-0-phase-0-bytes-256-a-b)
+wafer_add_current_calibration_no_card(
+  wafer-runtime-ne-tail-throughput-no-card
+  Support/wafer_board_ne_tail_throughput_runner.py
+  --group single-ne-tail)
+
+function(wafer_add_current_source_calibration_no_card test_name)
+  add_test(NAME ${test_name}
+    COMMAND ${WAFER_PYTHON_COMMAND}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Support/wafer_board_complete_tile_add_runner.py
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/${test_name}
+      ${ARGN}
+      --no-card)
+  set_tests_properties(${test_name} PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Support:${CMAKE_CURRENT_SOURCE_DIR}/Cases;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>"
+    LABELS "runtime;no-card;calibration;current-interface;board-ready"
+    PROCESSORS 4
+    TIMEOUT 900)
+endfunction()
+
+wafer_add_current_source_calibration_no_card(
+  wafer-runtime-complete-tile-add-no-card)
+wafer_add_current_source_calibration_no_card(
+  wafer-runtime-complete-tile-add-profile-no-card --profile)
+
+add_test(NAME wafer-runtime-engine-pipeline-characterization-no-card
+  COMMAND ${WAFER_PYTHON_COMMAND}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Support/wafer_board_engine_pipeline_characterization_runner.py
+    --mode no-card
+    --repo-root ${CMAKE_SOURCE_DIR}
+    --wafer-compile $<TARGET_FILE:wafer-compile>
+    --wafer-run $<TARGET_FILE:wafer-run>
+    --llvm-clangxx ${WAFER_BOARD_CLANGXX}
+    --work-dir
+      ${CMAKE_CURRENT_BINARY_DIR}/wafer-runtime-engine-pipeline-characterization-no-card
+    --cell single/ct/small)
+set_tests_properties(wafer-runtime-engine-pipeline-characterization-no-card
+  PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Support:${CMAKE_CURRENT_SOURCE_DIR}/Cases;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>"
+    LABELS "runtime;no-card;calibration;current-interface;board-ready"
+    PROCESSORS 4
+    TIMEOUT 900)
+
+add_test(NAME wafer-runtime-ddr-active-tile-contention-no-card
+  COMMAND ${WAFER_PYTHON_COMMAND}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Support/wafer_worker_memory_contention_characterization_driver.py
+    --mode no-card
+    --repo-root ${CMAKE_SOURCE_DIR}
+    --wafer-compile $<TARGET_FILE:wafer-compile>
+    --wafer-run $<TARGET_FILE:wafer-run>
+    --llvm-clangxx ${WAFER_BOARD_CLANGXX}
+    --work-dir
+      ${CMAKE_CURRENT_BINARY_DIR}/wafer-runtime-ddr-active-tile-contention-no-card
+    --case ddr-contention-rdma-only-4k-contiguous-active-1)
+set_tests_properties(wafer-runtime-ddr-active-tile-contention-no-card
+  PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Support:${CMAKE_CURRENT_SOURCE_DIR}/Cases;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>"
+    LABELS "runtime;no-card;calibration;current-interface;board-ready"
+    PROCESSORS 4
+    TIMEOUT 900)
+
 if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
   function(wafer_add_current_board_probe test_name script)
     add_test(NAME ${test_name}
@@ -98,7 +243,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
           ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_LIBRARY_SHA256}
     )
     set_tests_properties(${test_name} PROPERTIES
-      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Support:${CMAKE_CURRENT_SOURCE_DIR}/Cases;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_EXECUTE_HARDWARE_TESTS=1"
+      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Support:${CMAKE_CURRENT_SOURCE_DIR}/Cases;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>;WAFER_EXECUTE_HARDWARE_TESTS=1"
       LABELS "board;hardware;calibration;current-interface;pending"
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77
@@ -122,7 +267,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
           ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_LIBRARY_SHA256}
     )
     set_tests_properties(${test_name} PROPERTIES
-      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Support:${CMAKE_CURRENT_SOURCE_DIR}/Cases;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_EXECUTE_HARDWARE_TESTS=1"
+      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Support:${CMAKE_CURRENT_SOURCE_DIR}/Cases;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>;WAFER_EXECUTE_HARDWARE_TESTS=1"
       LABELS "board;hardware;calibration;current-interface;pending"
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77

@@ -2192,13 +2192,20 @@ LocalCompletionTracker::collectAccesses(mlir::Operation *op, ProgramPoint point,
   // results intentionally retain their own identity: two views of one root
   // are not an exact range proof merely because they share an allocation.
   llvm::DenseSet<mlir::Value> activeIdentities;
+  llvm::DenseMap<mlir::Value, mlir::Value> resolvedIdentities;
   std::function<mlir::Value(mlir::Value)> resolveIdentity =
       [&](mlir::Value value) -> mlir::Value {
     value = dataflow.normalize(value);
-    if (!value || !activeIdentities.insert(value).second)
+    if (!value)
+      return {};
+    auto cached = resolvedIdentities.find(value);
+    if (cached != resolvedIdentities.end())
+      return cached->second;
+    if (!activeIdentities.insert(value).second)
       return {};
     auto finish = [&](mlir::Value identity) {
       activeIdentities.erase(value);
+      resolvedIdentities.try_emplace(value, identity);
       return identity;
     };
     auto resolveSame = [&](mlir::Value lhs, mlir::Value rhs) -> mlir::Value {
@@ -2623,23 +2630,41 @@ mlir::LogicalResult LocalCompletionTracker::observe(mlir::Operation *op,
   }
 
   uint32_t workerMask = getNCCIssueWorkerMask(contract);
-  AccessCollection current = collectAccesses(op, *point, workerMask, dataflow);
-  if (mlir::failed(
-          verifyPendingObservers(op, *point, contract, current, failure)))
-    return mlir::failure();
+  AccessCollection current;
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "analysis-algorithm-phase", "local-completion", "collect-accesses");
+    current = collectAccesses(op, *point, workerMask, dataflow);
+  }
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "analysis-algorithm-phase", "local-completion",
+        "verify-pending-observers");
+    if (mlir::failed(
+            verifyPendingObservers(op, *point, contract, current, failure)))
+      return mlir::failure();
+  }
   if (contract.kind !=
           NCCCompletionKind::OrderedAsynchronousIssue ||
       !current.hasTrackedEffect)
     return mlir::success();
 
-  if (current.allResolved && !current.accesses.empty())
+  if (current.allResolved && !current.accesses.empty()) {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "analysis-algorithm-phase", "local-completion",
+        "process-ordered-successor");
     processOrderedWorkerSuccessor(*point, workerMask, dataflow);
+  }
 
-  pendingIssues.push_back(PendingIssue{
-      op, point->path, workerMask,
-      current.allResolved && !current.accesses.empty(), current.hasWrite});
-  for (PendingAccess access : current.accesses)
-    appendPendingAccess(std::move(access));
+  {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "analysis-algorithm-phase", "local-completion", "append-pending");
+    pendingIssues.push_back(PendingIssue{
+        op, point->path, workerMask,
+        current.allResolved && !current.accesses.empty(), current.hasWrite});
+    for (PendingAccess access : current.accesses)
+      appendPendingAccess(std::move(access));
+  }
   return mlir::success();
 }
 

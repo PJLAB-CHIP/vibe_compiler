@@ -16,6 +16,7 @@ import struct
 import subprocess
 import sys
 
+import wafer_board_source_program as source_program
 import wafer_runtime_launch_contract as runtime_launch
 
 
@@ -123,7 +124,7 @@ module {{
       %arg1: tensor<{LOCAL_ELEMENTS}xf16>)
       -> (tensor<{LOCAL_ELEMENTS}xf16>, tensor<{LOCAL_ELEMENTS}xf16>) {{
     %result0 = stablehlo.add %arg0, %arg1 : tensor<{LOCAL_ELEMENTS}xf16>
-    %result1 = stablehlo.add %arg1, %arg0 : tensor<{LOCAL_ELEMENTS}xf16>
+    %result1 = stablehlo.subtract %arg1, %arg0 : tensor<{LOCAL_ELEMENTS}xf16>
     return %result0, %result1 : tensor<{LOCAL_ELEMENTS}xf16>,
         tensor<{LOCAL_ELEMENTS}xf16>
   }}
@@ -456,13 +457,8 @@ def write_source_program(work_dir: pathlib.Path) -> pathlib.Path:
     if work_dir.exists():
         shutil.rmtree(work_dir)
     source = work_dir / "source-program"
-    (source / "functions").mkdir(parents=True)
-    (source / "data").mkdir()
-    (source / "functions" / "forward.mlir").write_text(MODULE)
-    (source / "functions" / "forward.meta").write_text(
-        json.dumps(METADATA, separators=(",", ":")) + "\n"
-    )
-    return source
+    (source / "data").mkdir(parents=True)
+    return source_program.write_program(source, MODULE, METADATA)
 
 
 def configure_manifest(
@@ -585,7 +581,7 @@ def build_probe(
             "-Wextra",
             "-Werror",
             f"-I{INPUT_DIR}",
-            f"-I{args.repo_root / 'runtime' / 'wafer_crt' / 'include'}",
+            f"-I{args.repo_root / 'runtime' / 'crt' / 'include'}",
             f"-I{args.repo_root / 'include'}",
             f"-I{deps / 'include'}",
             "-mcpu=c908",

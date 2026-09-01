@@ -269,15 +269,6 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
         "structured buffer relation omits a current Wafer allocation owner");
     return mlir::failure();
   }
-  if (materializationRelations &&
-      mlir::failed(rebaseStructuredBufferRelationsToStorageRoots(
-          *materializationRelations))) {
-    recordFailure(TileMemoryPlanningFailureKind::Contract);
-    module->emitError(
-        "structured buffer relation has no unique current storage root");
-    return mlir::failure();
-  }
-
   if (mlir::failed(requireCurrentBufferRelations("selected structure input"))) {
     recordFailure(TileMemoryPlanningFailureKind::Contract);
     return mlir::failure();

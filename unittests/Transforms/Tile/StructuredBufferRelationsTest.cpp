@@ -7,6 +7,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
@@ -120,7 +121,7 @@ module {
 }
 
 TEST_F(StructuredBufferRelationsTest,
-       StorageRootRebaseUsesCurrentViewAndFailsOnStaleOwner) {
+       CurrentViewRelationRemainsLiveAndFailsOnStaleOwner) {
   auto module = parse(R"mlir(
 module {
   wafer.tile.module card_id = 0 tile_id = 0 {
@@ -141,20 +142,16 @@ module {
 }
 )mlir");
   ASSERT_TRUE(module);
-  mlir::memref::AllocOp allocation;
   mlir::memref::SubViewOp view;
   mlir::memref::LoadOp load;
-  module->walk([&](mlir::memref::AllocOp op) { allocation = op; });
   module->walk([&](mlir::memref::SubViewOp op) { view = op; });
   module->walk([&](mlir::memref::LoadOp op) { load = op; });
-  ASSERT_TRUE(allocation && view && load);
+  ASSERT_TRUE(view && load);
 
   StructuredMaterializationRelations relations;
   relations.buffers.push_back(
       {load, view.getResult(), MaterializedBufferRole::Operand});
-  EXPECT_TRUE(mlir::succeeded(
-      rebaseStructuredBufferRelationsToStorageRoots(relations)));
-  EXPECT_EQ(relations.buffers.front().buffer, allocation.getResult());
+  EXPECT_EQ(relations.buffers.front().buffer, view.getResult());
   EXPECT_TRUE(mlir::succeeded(
       checkStructuredBufferRelationsCurrent(*module, relations)));
 
@@ -163,6 +160,50 @@ module {
       mlir::failed(checkStructuredBufferRelationsCurrent(*module, relations)));
   retainCurrentStructuredBufferRelations(*module, relations);
   EXPECT_TRUE(relations.buffers.empty());
+}
+
+TEST_F(StructuredBufferRelationsTest,
+       ConditionalBufferRelationRetainsAllCurrentStorageRoots) {
+  auto module = parse(R"mlir(
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(%condition: i1) {
+      %selected = scf.if %condition
+          -> (memref<2x1025x64xf16, #wafer.memory<spm, tensor>>) {
+        %then = memref.alloc()
+            : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
+        scf.yield %then
+            : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
+      } else {
+        %else = memref.alloc()
+            : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
+        scf.yield %else
+            : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
+      }
+      %c0 = arith.constant 0 : index
+      %value = memref.load %selected[%c0, %c0, %c0]
+          : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
+      return
+    }
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::scf::IfOp branch;
+  mlir::memref::LoadOp load;
+  module->walk([&](mlir::scf::IfOp op) { branch = op; });
+  module->walk([&](mlir::memref::LoadOp op) { load = op; });
+  ASSERT_TRUE(branch && load);
+
+  StructuredMaterializationRelations relations;
+  relations.buffers.push_back(
+      {load, branch.getResult(0), MaterializedBufferRole::Operand});
+  EXPECT_TRUE(mlir::succeeded(
+      checkStructuredBufferRelationsCurrent(*module, relations)));
+
+  StorageRootMemo roots;
+  EXPECT_EQ(roots.getStorageRoots(branch.getResult(0)).size(), 2u);
+  EXPECT_EQ(relations.buffers.front().buffer, branch.getResult(0));
 }
 
 TEST_F(StructuredBufferRelationsTest,

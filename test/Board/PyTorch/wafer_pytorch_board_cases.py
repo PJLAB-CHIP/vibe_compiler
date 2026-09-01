@@ -29,7 +29,7 @@ HF_LLAMA2_7B_COMPARISON = common.ComparisonPolicy(rtol=0.002, atol=0.004)
 ATTENTION_COMPARISON = common.ComparisonPolicy(rtol=0.006, atol=0.008)
 ATTENTION_HEAD_DIM = 64
 OPTIMIZATION_POLICIES = ("search", "none")
-SOURCE_NO_CARD_OPTIMIZATION_POLICIES = ("none",)
+SOURCE_NO_CARD_OPTIMIZATION_POLICIES = OPTIMIZATION_POLICIES
 
 
 @dataclasses.dataclass(frozen=True)
@@ -302,8 +302,9 @@ def _conv_mixed_dag(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
         raise RuntimeError("conv mixed DAG requires float16 or bfloat16")
 
     generator = torch.Generator(device="cpu").manual_seed(seed)
+    spatial_width = 1024 if dtype == torch.float16 else 1025
     input_tensor = _random_tensor(
-        (1, 16, 32, 32), dtype=dtype, generator=generator
+        (1, 16, 8, spatial_width), dtype=dtype, generator=generator
     ) * 0.125
     weight = _random_tensor(
         (24, 16, 3, 3), dtype=dtype, generator=generator
