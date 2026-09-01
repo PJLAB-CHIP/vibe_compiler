@@ -36,7 +36,7 @@ struct UnifiedSearchSession::Impl {
       : planningSession(planningSession), evaluator(evaluator),
         termination(options.termination),
         controller(ActualResultControllerOptions{
-            std::numeric_limits<uint64_t>::max(), options.costCohort,
+            options.structuralCandidateCredits, options.costCohort,
             options.exactRejectionCache}),
         profile(options.profile), trace(trace) {
     frontier.emplace_back(SpatialFrame{});
@@ -110,7 +110,6 @@ struct UnifiedSearchSession::Impl {
 
   void stepCandidate(StructuralCandidateFrame frame) {
     RegionState state = std::move(frame.state);
-    ++work.structuralStatesActualized;
     StructuralCandidateKey key = StructuralCandidateKey::create(state);
     CandidateReservation reservation = controller.reserve(key);
     if (reservation == CandidateReservation::Duplicate) {
@@ -118,11 +117,14 @@ struct UnifiedSearchSession::Impl {
       return;
     }
     if (reservation != CandidateReservation::Granted) {
-      fail(reservation == CandidateReservation::Exhausted
-               ? "actual-result controller exhausted unexpectedly"
-               : "actual-result controller rejected a unique complete key");
+      if (reservation == CandidateReservation::Exhausted) {
+        status = UnifiedSearchResumeStatus::CandidateBudgetExhausted;
+        return;
+      }
+      fail("actual-result controller rejected a unique complete key");
       return;
     }
+    ++work.structuralStatesActualized;
     StructuralCandidateEvaluation evaluation = evaluator.evaluate(state);
     work.candidateActualizations += evaluation.actualizations;
     if (!evaluation.domainExhausted) {

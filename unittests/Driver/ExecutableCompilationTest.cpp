@@ -403,6 +403,9 @@ TEST_F(ExecutableCompilationTest,
       << result.gate << ": " << result.detail << "\n"
       << diagnosticText;
   ASSERT_TRUE(result.executable);
+  ASSERT_TRUE(result.physicalIRInventory);
+  EXPECT_EQ(result.physicalIRInventory->tileModules, 16u);
+  EXPECT_GT(result.physicalIRInventory->tileRegions, 0u);
   EXPECT_EQ(result.executable->tiles.size(), 16u);
   EXPECT_EQ(result.tileDataflowIRTrace.size(), 16u);
   EXPECT_EQ(downstream.tileRegionsLowered, 1u);
@@ -508,10 +511,12 @@ TEST(ExecutableCompilationPolicyTest,
   ASSERT_TRUE(result.isAccepted())
       << result.gate << ": " << result.detail << "\n"
       << diagnosticText;
+  EXPECT_EQ(search.structuralMaterializations, 1u);
   EXPECT_GT(search.exactRejectedTemporalCandidates, 0u);
   EXPECT_EQ(search.acceptedTemporalCandidates, 1u);
   EXPECT_EQ(search.temporalCandidateActualizations,
             search.exactRejectedTemporalCandidates + 1);
+  EXPECT_EQ(search.layoutInvocations, search.temporalCandidateActualizations);
   EXPECT_EQ(executable.actualMemoryTargetGateInvocations,
             search.temporalCandidateActualizations);
 }

@@ -23,6 +23,7 @@ enum class SearchTerminationPolicy : uint8_t {
 
 struct UnifiedSearchOptions {
   uint64_t planningCredits = std::numeric_limits<uint64_t>::max();
+  uint64_t structuralCandidateCredits = std::numeric_limits<uint64_t>::max();
   SearchTerminationPolicy termination = SearchTerminationPolicy::Exhaustive;
   std::optional<SearchCostCohort> costCohort;
   ExactRejectionCachePolicy exactRejectionCache =
@@ -82,6 +83,7 @@ enum class UnifiedSearchResumeStatus : uint8_t {
   Paused,
   FrontierExhausted,
   AcceptedCheckpoint,
+  CandidateBudgetExhausted,
   Indeterminate,
   CompilerBug,
   Finished,

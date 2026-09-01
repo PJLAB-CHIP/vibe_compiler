@@ -183,6 +183,29 @@ TEST(UnifiedSearchTest,
 }
 
 TEST(UnifiedSearchTest,
+     StructuralCandidateBudgetRetainsTheActualIncumbentAsPartialCoverage) {
+  ParsedProgram parsed = parseProgram();
+  ASSERT_TRUE(parsed.module);
+  std::string diagnosticsText;
+  llvm::raw_string_ostream diagnostics(diagnosticsText);
+  std::string failureReason;
+  SearchFixture fixture = prepare(*parsed.module, diagnostics, failureReason);
+  ASSERT_TRUE(fixture.session) << failureReason;
+  AcceptingEvaluator evaluator;
+  UnifiedSearchOptions options;
+  options.structuralCandidateCredits = 1;
+  UnifiedSearchResult result =
+      runUnifiedSearch(*fixture.session, evaluator, options);
+  ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
+  EXPECT_EQ(evaluator.observed.size(), 1u);
+  EXPECT_EQ(result.work.structuralStatesActualized, 1u);
+  EXPECT_FALSE(result.frontierExhausted);
+  EXPECT_EQ(result.control.coverage, SearchControllerCoverage::FeasiblePartial);
+  EXPECT_EQ(result.control.statistics.accepted, 1u);
+  EXPECT_EQ(result.control.statistics.exhaustedReservations, 1u);
+}
+
+TEST(UnifiedSearchTest,
      IncompleteInnerDomainDoesNotDiscardTheRemainingStructuralFrontier) {
   ParsedProgram parsed = parseProgram();
   ASSERT_TRUE(parsed.module);

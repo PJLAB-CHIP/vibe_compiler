@@ -2,6 +2,7 @@
 
 #include "SearchCurrentIR.h"
 
+#include "PhysicalDataflowInstrumentation.h"
 #include "StructuredProgramAnalysis.h"
 #include "Wafer/Planning/PhysicalDataflow/PlanningProblem.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
@@ -490,6 +491,8 @@ public:
             ++statistics->actualCapacityRefinements;
           continue;
         }
+        if (statistics)
+          ++statistics->unavailableCapacityRefinements;
       }
       feedbackChoices.reset();
       const bool hasNext = advanceTemporalAxes(axes, detail, compilerBug);
@@ -556,6 +559,7 @@ private:
 
     LayoutOptimizationResult layout = resolveCurrentLayoutsAndBufferize(
         *candidate.module, candidate.relations, options.layoutWorkLimit);
+    recordLayoutInstrumentation(layout.statistics);
     if (statistics) {
       ++statistics->layoutInvocations;
       statistics->layoutFeasibleFallbacks +=
@@ -574,6 +578,7 @@ private:
                   "search-structured-to-tile", compute.detail);
     BoundaryMovementResult movement =
         materializeTileBoundaryMovement(*candidate.module, candidate.relations);
+    recordMovementInstrumentation(movement.statistics);
     if (!movement.succeeded())
       return fail(movement.failure == BoundaryMovementFailureKind::Unsupported
                       ? ExecutableCompilationStatus::UnsupportedFailure
@@ -614,7 +619,8 @@ ExecutableCompilationResult compileSearchCurrentIR(
     SearchCurrentIRStatistics *statistics,
     ExecutableLoweringStatistics *executableStatistics) {
   if (!tensorProgram || options.layoutWorkLimit == 0 ||
-      options.maximumTemporalCandidatesPerStructuralState == 0)
+      options.maximumTemporalCandidatesPerStructuralState == 0 ||
+      options.maximumStructuralCandidates == 0)
     return fail(ExecutableCompilationStatus::CompilerFailure, "search-input",
                 "search requires current TensorProgram and positive work "
                 "limits");
@@ -657,6 +663,7 @@ ExecutableCompilationResult compileSearchCurrentIR(
 
   UnifiedSearchOptions traversal;
   traversal.planningCredits = options.planningCredits;
+  traversal.structuralCandidateCredits = options.maximumStructuralCandidates;
   traversal.termination = options.termination;
   traversal.costCohort = currentCohort;
   // Actual capacity remains typed, but it is not generalized to a structural
@@ -664,6 +671,46 @@ ExecutableCompilationResult compileSearchCurrentIR(
   traversal.exactRejectionCache = ExactRejectionCachePolicy::Disabled;
   UnifiedSearchResult searched =
       runUnifiedSearch(planning, evaluator, traversal);
+  auto searchCounter = [&](llvm::StringRef name, uint64_t value) {
+    wafer::support::addCompileCounter("search", name, value);
+  };
+  searchCounter("spatial-successor-steps",
+                searched.planning.spatialSuccessorSteps);
+  searchCounter("spatial-demand-queries",
+                searched.planning.spatialDemandQueries);
+  searchCounter("spatial-states", searched.planning.spatialStatesQueued);
+  searchCounter("root-work-successor-steps",
+                searched.planning.rootWorkSuccessorSteps);
+  searchCounter("root-works", searched.planning.rootWorksValidated);
+  searchCounter("region-successor-steps",
+                searched.planning.regionSuccessorSteps);
+  searchCounter("region-states", searched.planning.regionStatesQueued);
+  searchCounter("successor-steps", searched.work.successorSteps);
+  searchCounter("structural-states", searched.work.structuralStatesActualized);
+  searchCounter("candidate-actualizations",
+                searched.work.candidateActualizations);
+  searchCounter("incomplete-inner-domains",
+                searched.work.incompleteInnerDomains);
+  searchCounter("accepted-structural-states",
+                searched.control.statistics.accepted);
+  searchCounter("exact-rejected-structural-states",
+                searched.control.statistics.exactRejected);
+  searchCounter("unsupported-structural-states",
+                searched.control.statistics.unsupported);
+  searchCounter("indeterminate-structural-states",
+                searched.control.statistics.indeterminate);
+  if (statistics) {
+    searchCounter("temporal-domains", statistics->temporalDomainsBuilt);
+    searchCounter("temporal-applications", statistics->temporalApplications);
+    searchCounter("accepted-temporal-candidates",
+                  statistics->acceptedTemporalCandidates);
+    searchCounter("exact-rejected-temporal-candidates",
+                  statistics->exactRejectedTemporalCandidates);
+    searchCounter("actual-capacity-refinements",
+                  statistics->actualCapacityRefinements);
+    searchCounter("unavailable-capacity-refinements",
+                  statistics->unavailableCapacityRefinements);
+  }
   if (statistics) {
     statistics->planning = searched.planning;
     statistics->traversal = searched.work;
@@ -680,6 +727,8 @@ ExecutableCompilationResult compileSearchCurrentIR(
                 << statistics->exactRejectedTemporalCandidates
                 << " capacity_refinements="
                 << statistics->actualCapacityRefinements
+                << " unavailable_refinements="
+                << statistics->unavailableCapacityRefinements
                 << " unsupported=" << statistics->unsupportedTemporalCandidates
                 << " indeterminate="
                 << statistics->indeterminateTemporalCandidates;

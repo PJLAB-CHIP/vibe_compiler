@@ -3,6 +3,7 @@
 #include "Wafer/CodeGen/DeviceExecutableInternal.h"
 
 #include "PhysicalDataflow/BaselineCurrentIR.h"
+#include "PhysicalDataflow/PhysicalDataflowInstrumentation.h"
 #include "PhysicalDataflow/SearchCurrentIR.h"
 #include "Wafer/Support/CompileTiming.h"
 
@@ -56,6 +57,10 @@ static llvm::Expected<DeviceExecutable> compileCurrentPolicy(
             : llvm::errc::invalid_argument,
         "%s: %s", compiled.gate.c_str(), compiled.detail.c_str());
   }
+
+  if (compiled.physicalIRInventory && compiled.executable)
+    recordAcceptedPhysicalDataflowInstrumentation(
+        *compiled.physicalIRInventory, compiled.executable->resourceCost);
 
   ExecutableLoweringResult lowered = compiled.takeExecutable();
   if (irTrace) {

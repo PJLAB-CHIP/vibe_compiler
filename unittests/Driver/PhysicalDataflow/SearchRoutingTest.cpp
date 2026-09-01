@@ -8,12 +8,27 @@
 
 #include "gtest/gtest.h"
 
+#include <limits>
 #include <memory>
 #include <optional>
 
 namespace {
 
 using namespace wafer::compiler::testing;
+
+TEST(SearchRoutingTest, CompileCountersRetainOverflowAsUnknownEvidence) {
+  std::string diagnosticsText;
+  llvm::raw_string_ostream diagnostics(diagnosticsText);
+  wafer::support::CompileTimingSession timing(diagnostics);
+  timing.addCounter("test", "work", std::numeric_limits<uint64_t>::max());
+  timing.addCounter("test", "work", 1);
+  timing.finishAndPrintSummary();
+  diagnostics.flush();
+  EXPECT_NE(diagnosticsText.find("compile-counter category=test name=work "
+                                 "value=18446744073709551615 overflow=true"),
+            std::string::npos)
+      << diagnosticsText;
+}
 
 TEST(SearchRoutingTest, SearchBuildsOneCurrentIRDeviceExecutable) {
   ParsedProgram parsed = parseProgram();
@@ -29,6 +44,7 @@ TEST(SearchRoutingTest, SearchBuildsOneCurrentIRDeviceExecutable) {
       parsed.context, *parsed.module, programMetadata(), executionConfig(),
       wafer::OptimizationConfig::search(), diagnostics, std::nullopt,
       programData);
+  timing->finishAndPrintSummary();
   diagnostics.flush();
   if (!executable) {
     const std::string error = llvm::toString(executable.takeError());
@@ -42,6 +58,20 @@ TEST(SearchRoutingTest, SearchBuildsOneCurrentIRDeviceExecutable) {
   EXPECT_EQ(diagnosticsText.find("deterministic-device-executable-baseline"),
             std::string::npos)
       << diagnosticsText;
+  for (llvm::StringRef counter : {
+           "compile-counter category=accepted-physical-ir name=tile-regions",
+           "compile-counter category=accepted-instr "
+           "name=instructions-executions",
+           "compile-counter category=accepted-instr name=tiles value=16",
+           "compile-counter category=layout name=solver-work",
+           "compile-counter category=movement name=ddr-loads",
+           "compile-counter category=search name=candidate-actualizations",
+           "compile-counter category=search "
+           "name=accepted-structural-states value=2",
+       })
+    EXPECT_NE(diagnosticsText.find(counter.str()), std::string::npos)
+        << counter.str() << "\n"
+        << diagnosticsText;
 }
 
 TEST(SearchRoutingTest, NoneBuildsOneCurrentIRDeviceExecutable) {

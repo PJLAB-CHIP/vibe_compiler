@@ -21,6 +21,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -115,6 +116,21 @@ public:
     token.id = 0;
   }
 
+  /// Adds one invocation-local diagnostic counter. Counters never affect IR,
+  /// candidate ordering or legality. Overflow is retained explicitly instead
+  /// of wrapping or saturating into a plausible value.
+  void addCounter(llvm::StringRef category, llvm::StringRef name,
+                  uint64_t value) {
+    std::lock_guard<std::mutex> lock(counterMutex);
+    Counter &counter = counters[{category.str(), name.str()}];
+    if (counter.overflow ||
+        value > std::numeric_limits<uint64_t>::max() - counter.value) {
+      counter.overflow = true;
+      return;
+    }
+    counter.value += value;
+  }
+
   /// Stops active-work reporting and emits one stable, wall-descending table.
   /// It is safe to call this more than once; only the first call prints.
   void finishAndPrintSummary() {
@@ -159,6 +175,13 @@ public:
                           microsecondsToMilliseconds(summary.maxWallUs))
          << " | " << summary.failures << " |\n";
     }
+    {
+      std::lock_guard<std::mutex> lock(counterMutex);
+      for (const auto &[key, counter] : counters)
+        os << "wafer-compile: compile-counter category=" << key.category
+           << " name=" << key.name << " value=" << counter.value
+           << " overflow=" << (counter.overflow ? "true" : "false") << '\n';
+    }
     os << "wafer-compile: compile-timing-summary-end transaction_wall_ms="
        << llvm::formatv("{0:F3}",
                         microsecondsToMilliseconds(
@@ -202,6 +225,20 @@ private:
     std::mutex mutex;
     std::map<uint64_t, ActiveRecord> active;
     std::map<SummaryKey, Summary> summaries;
+  };
+
+  struct CounterKey {
+    std::string category;
+    std::string name;
+
+    bool operator<(const CounterKey &other) const {
+      return std::tie(category, name) < std::tie(other.category, other.name);
+    }
+  };
+
+  struct Counter {
+    uint64_t value = 0;
+    bool overflow = false;
   };
 
   static constexpr size_t kTimingShardCount = 256;
@@ -349,6 +386,8 @@ private:
   std::array<TimingShard, kTimingShardCount> timingShards;
   std::mutex outputMutex;
   std::mutex monitorMutex;
+  std::mutex counterMutex;
+  std::map<CounterKey, Counter> counters;
   std::condition_variable monitorWake;
   bool monitorStopping = false;
   std::thread monitor;
@@ -359,6 +398,13 @@ inline thread_local std::shared_ptr<CompileTimingSession>
 
 inline std::shared_ptr<CompileTimingSession> getActiveCompileTimingSession() {
   return activeCompileTimingSession;
+}
+
+inline void addCompileCounter(llvm::StringRef category, llvm::StringRef name,
+                              uint64_t value) {
+  if (std::shared_ptr<CompileTimingSession> session =
+          getActiveCompileTimingSession())
+    session->addCounter(category, name, value);
 }
 
 /// Exact operation inventory for one explicitly profiled IR boundary. The

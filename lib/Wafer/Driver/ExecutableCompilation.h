@@ -54,6 +54,21 @@ struct ExecutableTileFailure {
   TileMemoryPlanningFailure memoryPlanning;
 };
 
+/// Bounded read-only summary of the accepted movement-closed physical IR.
+/// It contains no operation/value handles and is never consulted by search,
+/// legality, memory planning, target lowering or package serialization.
+struct PhysicalDataflowIRInventory {
+  uint64_t tileModules = 0;
+  uint64_t tileRegions = 0;
+  uint64_t nestedOperations = 0;
+  uint64_t minimumNestedOperations = 0;
+  uint64_t maximumNestedOperations = 0;
+  uint64_t tileDataflowOperations = 0;
+  uint64_t minimumTileDataflowOperations = 0;
+  uint64_t maximumTileDataflowOperations = 0;
+  uint64_t singletonDataflowRegions = 0;
+};
+
 /// Returns true only when Tile memory planning carries an explicit SPM
 /// capacity-overflow proof. Every other typed failure remains outside the
 /// exact-rejection class and therefore cannot become a candidate no-good.
@@ -85,6 +100,7 @@ struct ExecutableCompilationResult {
   std::string gate;
   std::string detail;
   llvm::SmallVector<ExecutableTileFailure, 4> tileFailures;
+  std::optional<PhysicalDataflowIRInventory> physicalIRInventory;
   /// Same-invocation diagnostic snapshots captured at the Tile dataflow to
   /// Instr boundary. They are not part of the accepted Tile modules.
   std::vector<std::string> tileDataflowIRTrace;

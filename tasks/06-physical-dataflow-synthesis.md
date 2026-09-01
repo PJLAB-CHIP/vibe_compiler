@@ -741,6 +741,13 @@ Current迁移必须遵守：
 该汇总不逐region打印日志，不把structured execution数与raw operation/Instr数混为一个指标，也不构造
 expected inventory。
 
+`--compile-timing`下的current实现使用固定、bounded的`compile-counter`类别输出该汇总：`structured-egraph`记录一次全局logical
+normalization work；`search`记录frontier/current actualization与actual-capacity refinement；`layout`和`movement`汇总所有实际运行的
+candidate work；`accepted-physical-ir`与`accepted-instr`只记录controller最终保留的同一actual owner。后两类分别给出TileModule/
+TileRegion、每Region nested/dataflow op的min/sum/max，以及final Instr的per-Tile min/sum/max、engine/transport/completion kind、logical work、
+movement bytes和accepted high-water。字段集合不随图规模增长；unknown或counter overflow必须显式标记，不能打印为可信零值。
+Instrumentation关闭时不创建counter，打开/关闭产生byte-identical package。
+
 ### 10.4 End to end
 
 - baseline和search分别从同一current FP16/BF16 source形成policy-complete Instr、actual memory plan、DeviceExecutable和package；

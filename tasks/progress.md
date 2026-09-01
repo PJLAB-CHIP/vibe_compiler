@@ -17,10 +17,10 @@
 
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `search-scalability` | `doing` | Q52 / 06 | Q51 choice/domain donor、第12项actual structural owner、已闭合的C1 multi-root e-graph、C2 Temporal relation consumer和C3 physical layout relation consumer、第14项final Linalg/Tensor/SCF owner、第15项layout-resolved/bufferized current owner、第16项current-IR downstream mechanics、已闭合的第17项current baseline和第18项current search、Q50.0 actual memory/target leaf | 当前直接项为第19项`scale-regression-and-inventory`，随后执行第20项。none/search独立且无fallback；SPM只由actual MiniMalloc判定；同源LLaMA产品纵向通过 | `tasks/plans/physical-dataflow-synthesis.md` |
+| 1 | `search-scalability` | `doing` | Q52 / 06 | Q51 choice/domain donor、第12项actual structural owner、已闭合的C1 multi-root e-graph、C2 Temporal relation consumer和C3 physical layout relation consumer、第14项final Linalg/Tensor/SCF owner、第15项layout-resolved/bufferized current owner、第16项current-IR downstream mechanics、已闭合的第17项current baseline、第18项current search和第19项scale/inventory、Q50.0 actual memory/target leaf | 当前直接项为第20项`llama-baseline-search-acceptance`。none/search独立且无fallback；SPM只由actual MiniMalloc判定；同源LLaMA产品纵向通过 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 2 | `production-host-readiness` | `queued` | Q53 / 16 | search scalability、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 
-Q52当前直接项是第19项`scale-regression-and-inventory`。C1已经形成ordered multi-root egg ABI、共享DAG extraction及唯一
+Q52当前直接项是第20项`llama-baseline-search-acceptance`。C1已经形成ordered multi-root egg ABI、共享DAG extraction及唯一
 reshape-through-compute rule，parallel-only和reduction-only flatten/unflatten双向闭合，mixed-kind group保持current IR。C2显式保留
 Independent与all-use Joint choice，general reshape actual rectangle/有限pieces、2/15 direct及`cast/extract_slice/reshape` view uses共享、
 broadcast producer的dependent-prefix hoist、互斥affine window exact fusion和overlap-halo Independent均已闭合；1024/1025/1031 main/tail
@@ -51,6 +51,9 @@ same-Tile structural shell不再形成full-shape SPM allocation，loop-carried s
 Spatial/Region frontier；singleton feasibility proposal只调整访问顺序、不删除其它proposal，Temporal choice从current Region建立并立即
 apply，actual SPM capacity rejection才触发下一次typed refinement，每个actual candidate恰一次PBQP和actual leaf。当前LLaMA search以
 `FeasiblePartial`保留同一accepted owner，fresh生成16-Tile package并通过strict no-card；none路径未调用search或fallback。
+第19项已经以固定bounded counter补齐e-graph、search work、actual PBQP/layout、movement、accepted TileRegion与final Instr分类；
+unknown/overflow显式保留，instrumentation on/off产生byte-identical package，多个accepted candidate只统计controller最终保留的winner。
+Large connected PBQP、mixed decomposed-attention及真实LLaMA scale均由同一current实现到达actual leaf。
 
 ## 已满足的直接前置
 

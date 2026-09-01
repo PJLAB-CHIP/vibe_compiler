@@ -13,7 +13,8 @@ struct SearchCurrentIROptions {
   uint64_t maximumTemporalCandidatesPerStructuralState = 16;
   bool stopTemporalAfterFirstAccepted = true;
   uint64_t planningCredits = std::numeric_limits<uint64_t>::max();
-  SearchTerminationPolicy termination = SearchTerminationPolicy::FirstAccepted;
+  uint64_t maximumStructuralCandidates = 2;
+  SearchTerminationPolicy termination = SearchTerminationPolicy::Exhaustive;
   CurrentIRDownstreamOptions downstream;
 };
 
@@ -28,6 +29,7 @@ struct SearchCurrentIRStatistics {
   uint64_t acceptedTemporalCandidates = 0;
   uint64_t exactRejectedTemporalCandidates = 0;
   uint64_t actualCapacityRefinements = 0;
+  uint64_t unavailableCapacityRefinements = 0;
   uint64_t unsupportedTemporalCandidates = 0;
   uint64_t indeterminateTemporalCandidates = 0;
   uint64_t incomparableTemporalObjectives = 0;

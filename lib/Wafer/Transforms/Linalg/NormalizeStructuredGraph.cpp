@@ -5,6 +5,7 @@
 #include "StructuredGraphEGraph.h"
 #include "Wafer/Analysis/Linalg/IndexRelation.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -2766,6 +2767,42 @@ struct NormalizeStructuredTensorGraphPass final
     numABIOutputRecords += statistics.abiOutputRecords;
     numABIInputBytes += statistics.abiInputBytes;
     numABIOutputBytes += statistics.abiOutputBytes;
+    auto counter = [&](llvm::StringRef name, uint64_t value) {
+      wafer::support::addCompileCounter("structured-egraph", name, value);
+    };
+    counter("components", statistics.components);
+    counter("changed-components", statistics.changedComponents);
+    counter("multi-rule-changed-components",
+            statistics.multiRuleChangedComponents);
+    counter("unchanged-components", statistics.unchangedComponents);
+    counter("budget-exhausted-components",
+            statistics.budgetExhaustedComponents);
+    counter("input-operations", statistics.inputOperations);
+    counter("output-operations", statistics.outputOperations);
+    counter("access-transforms-removed", statistics.accessTransformsRemoved);
+    counter("concat-transforms-removed", statistics.concatTransformsRemoved);
+    counter("multi-root-components", statistics.multiRootComponents);
+    counter("relation-queries", statistics.relationQueries);
+    counter("e-nodes", statistics.eNodes);
+    counter("e-classes", statistics.eClasses);
+    counter("rewrite-matches", statistics.rewriteMatches);
+    counter("e-class-merges", statistics.eClassMerges);
+    counter("rebuild-work", statistics.rebuildWork);
+    counter("iterations", statistics.iterations);
+    counter("extraction-work", statistics.extractionWork);
+    counter("identity-applications", statistics.identityApplications);
+    counter("composition-applications", statistics.compositionApplications);
+    counter("compute-absorption-applications",
+            statistics.computeAbsorptionApplications);
+    counter("concat-applications", statistics.concatApplications);
+    counter("result-reindex-applications",
+            statistics.resultReindexApplications);
+    counter("reshape-through-compute-applications",
+            statistics.reshapeThroughComputeApplications);
+    counter("abi-input-records", statistics.abiInputRecords);
+    counter("abi-output-records", statistics.abiOutputRecords);
+    counter("abi-input-bytes", statistics.abiInputBytes);
+    counter("abi-output-bytes", statistics.abiOutputBytes);
   }
 };
 

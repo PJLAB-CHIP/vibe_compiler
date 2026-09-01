@@ -2,6 +2,7 @@
 
 #include "BaselineCurrentIR.h"
 
+#include "PhysicalDataflowInstrumentation.h"
 #include "StructuredProgramAnalysis.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalRegionPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSpatialAssignment.h"
@@ -289,6 +290,7 @@ ExecutableCompilationResult compileBaselineCurrentIR(
   constexpr CardId cardId(0);
   for (uint32_t attempt = 0; attempt < options.maximumCapacityAttempts;
        ++attempt) {
+    wafer::support::addCompileCounter("baseline", "attempts", 1);
     if (statistics)
       ++statistics->attempts;
     SpatialRegionMaterializationFailure spatialFailure;
@@ -361,6 +363,7 @@ ExecutableCompilationResult compileBaselineCurrentIR(
 
     LayoutOptimizationResult layout = resolveCurrentLayoutsAndBufferize(
         *candidate->module, candidate->relations, options.layoutWorkLimit);
+    recordLayoutInstrumentation(layout.statistics);
     if (statistics) {
       ++statistics->layoutInvocations;
       statistics->layoutFeasibleFallbacks +=
@@ -378,6 +381,7 @@ ExecutableCompilationResult compileBaselineCurrentIR(
                   "baseline-structured-to-tile", compute.detail);
     BoundaryMovementResult movement = materializeTileBoundaryMovement(
         *candidate->module, candidate->relations);
+    recordMovementInstrumentation(movement.statistics);
     if (!movement.succeeded())
       return fail(movement.failure == BoundaryMovementFailureKind::Unsupported
                       ? ExecutableCompilationStatus::UnsupportedFailure
@@ -396,6 +400,7 @@ ExecutableCompilationResult compileBaselineCurrentIR(
     if (!result.isProvenExactRejection())
       return result;
     lastCapacityRejection = std::move(result);
+    wafer::support::addCompileCounter("baseline", "capacity-refinements", 1);
     if (statistics)
       ++statistics->capacityRefinements;
   }

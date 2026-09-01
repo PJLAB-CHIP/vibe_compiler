@@ -5,7 +5,7 @@
 `tasks/archive/completed-task-index.md`。
 稳定语义由05--16号编号设计拥有。
 
-当前直接项：第19项`scale-regression-and-inventory`；随后执行第20项。
+当前直接项：第20项`llama-baseline-search-acceptance`。
 
 ## Pipeline Contract
 
