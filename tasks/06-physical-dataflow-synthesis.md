@@ -624,12 +624,27 @@ optimization，不形成baseline frontier或fallback。
 Search frontier保存显式choice key、work/budget accounting和move-only accepted incumbent。合法域由typed transformation capability
 与current-IR verifier定义，不由workload名、shape特例或materializer fallback定义。
 
-Region priority prefix从singleton开始，并按
-`sum(group.mandatoryRoots.size() - 1)`定义融合级别。Proposal按该级别breadth-first访问；每个child只在一个Tile component内合并一对由
-current potential edge连接的group，同级siblings彼此独立，任一actual rejection不会被携带到下一个同级choice。Tile component与edge使用
-稳定的交错顺序：先访问每种semantic-root edge的一个Tile实例，再重复相同semantic edge的其它Tile实例。Builder只生成本次structural
-candidate budget可消费的前缀；完整connected-partition及use-form集合仍由raw lazy successor拥有。
-Priority prefix、budget和actual rejection都不得从预测SPM footprint生成或删除Region choice。
+Region proposal的目标不是产生“至少一个merge”，而是在少量actualization内覆盖从独立Region到graph-coherent融合的有意义整图分区。
+每个Tile component以current `RootRegionWork`为vertex、`allowsRequiredLocal`的producer-consumer relation为edge建立query-local quotient graph；
+cannot-link、group connectivity、use-binding totality和contracted dependency DAG仍由`RegionDomain`的同一合法性实现检查。Proposal hierarchy只保存
+当前调用中的group labels、edge priority和union工作数据，不表示future operation、buffer、lifetime或SPM事实。
+
+Hierarchy从singleton `P0`开始执行确定性multilevel coarsening。第`r`轮以`2^r`个mandatory roots作为group的结构上限，从上一层partition
+继续处理所有Tile component；每次选择能够internalize最多exact structured-result bindings的合法group pair，完整exact logical payload已知时只作
+priority tie-break，随后按semantic root key确定顺序。一次round持续到该group上限内再无合法merge，形成一个complete checked `RegionPlan`；
+因此一层会同时合并整图中的大量独立边，而不是为每条edge建立一个whole-program candidate。上限只定义coarsening granularity，不进入
+SPM legality或winner cost。最终取消group上限并运行到fixed point，得到graph-coherent `Pk`；component-maximal partition只有本身属于raw
+domain时才可成为同一endpoint。
+
+Proposal allowance必须覆盖hierarchy而不能使endpoint饥饿：一个slot时只给`P0`；两个及以上slot始终保留最后一个给`Pk`，其余slot按
+`P1, P2, ...`的低到高顺序填充并去重。当前production allowance为4时顺序固定为`P0, P1, P2, Pk`。Explicit-replica proposal只在
+coarsening hierarchy仍有空slot时进入priority batch；完整connected-partition/use-form集合继续由raw lazy successor拥有。改变allowance、priority
+或关闭proposal provider不得改变raw domain。
+
+每个proposal都是普通`RegionPlan`并独立进入`current IR → actual transformation → verifier → fresh analysis`。Actual SPM rejection只描述该
+Region/Temporal完整tuple；Region融合可能减少中间buffer，也可能延长lifetime，因此不同coarsening level之间不存在可用于pruning的容量单调性。
+Controller必须继续访问预算内其余level。Winner只由final actual objective决定；Region数和logical cut weight只用于proposal coverage与diagnostic，
+不能强迫高融合candidate覆盖actual cost更好的低融合candidate。
 
 Candidate形成`TileExecutable`前必须调用target ABI preparation共用的exact program/DDR function-boundary verifier；argument/result binding不完整的
 Spatial/Region candidate在controller admission前返回typed failure，不能先作为Accepted winner保留、再由最终target codegen首次发现错误。

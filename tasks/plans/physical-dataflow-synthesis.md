@@ -1,11 +1,11 @@
 # Physical Dataflow Current-IR实施计划
 
-Q52第16--20项及Region proposal质量门禁已经闭合；Q53仍未启动。动态状态只读`tasks/progress.md`；
+Q52第16--20项的mechanics保持闭合，但Region proposal quality因singleton-only结果重新打开；Q53尚未启动。动态状态只读`tasks/progress.md`；
 第1--11项的施工、删除账本和验证记录见`tasks/archive/physical-dataflow-synthesis-q52-plan-history.md`；第12--15项的完成边界见
 `tasks/archive/completed-task-index.md`。
 稳定语义由05--16号编号设计拥有。
 
-当前直接项：Q53 `production-host-readiness`。
+当前直接项：Q52 `region-fusion-quality`。
 
 ## Pipeline Contract
 
@@ -169,6 +169,86 @@ LLVM/MLIR规范复审→更新状态并提交”。不得以全局原则替代�
 | 输入等价类 | Shape / 结构 | Typed failure | 精确断言 | 下游witness |
 | --- | --- | --- | --- | --- |
 | same-source two-policy acceptance | current FP16 LLaMA block；两个独立process、ProgramData和output directory | timeout/OOM/skip/fallback/未进actual planner均失败 | 每次≤15分钟；source identity相同；IR/result不共享；package唯一；冗余DDR→DDR publication copy为0；必要copy在movement closure后typed且Instr无copy-only Region；search temporal feedback不产生静态body倍增；两条policy均实际进入Instr、MiniMalloc、DDR和target | strict loader、host reference、no-card |
+
+## Q52 Region Fusion Quality Closure
+
+### 问题与pipeline边界
+
+```text
+Pipeline position:
+- Upstream IR / input: immutable TensorProgram、closed SpatialState、RootRegionWork和完整RegionDomain。
+- Current stage responsibility: 生成少量、整图、由低融合到graph-coherent的普通RegionPlan proposals，并把每个plan交给现有actual candidate transaction。
+- Output IR / files: 无新IR或side file；输出仍是一个retained actual winner或typed failure，显式timing只增加bounded per-level汇总。
+- Downstream consumer: current structural materializer、Temporal tile-and-fuse、layout/movement/completion和actual memory/target leaf。
+- User-level driver / named pipeline: public optimization-policy=search的同一PlanningSession/UnifiedSearch入口。
+- Explicit non-goals: 不修改raw RegionDomain，不预测SPM合法性，不建立future buffer/event plan，不按Region数强制winner，不增加用户可选fusion模式。
+- Completion criteria: P0/P1/P2/Pk均可达并actualize；真实规模整图coarsening、actual movement消除、SPM反馈、winner quality和15分钟LLaMA门禁同时闭合。
+```
+
+现有证据说明问题不是RegionDomain缺少融合能力，而是proposal batch错误：同一LLaMA的singleton `P0`有1360个Region并可行；旧
+graph-coherent proposal只有112个Region，但在其Temporal预算内被actual SPM拒绝；提交`6221d9a8`又把4个slots全部用于`P0`和三个
+单edge sibling，最终winner为1359个Region。前者缺少可行中间点，后者没有融合深度，两者都不能作为quality closure。
+
+### 算法选择
+
+| 方案 | 判断 |
+| --- | --- |
+| singleton后直接coherent/maximal | 拒绝；只有一个高压资源点，失败后没有中间partition。 |
+| 按全局merge count breadth-first | 拒绝；LLaMA level-1即有大量siblings，固定budget永远到不了有意义的深度。 |
+| 用capacity rejection对merge count二分或剪枝 | 拒绝；融合既可能延长lifetime也可能删除buffer，SPM可行性不随Region数单调。 |
+| multilevel graph coarsening hierarchy | 采用；每层同时处理所有Tile component，在`O(log V)`个层级内从singleton覆盖到graph-coherent endpoint。 |
+
+实现参考只借用成熟方法的边界，不照搬其硬件假设：IREE `FormDispatchRegions`从root出发形成完整fusion groups，并将loop-map、dominance、
+operand/bufferization限制与region construction放在同一流程；XLA GPU priority fusion把“emitter能否支持”与“融合是否有收益”分开，并在每次merge后
+更新priority；METIS multilevel方法通过heavy-edge coarsening形成从fine graph到coarse graph的层次；Halide autoscheduler的coarse-to-fine
+结果说明把budget耗在大量同类微小变体上会损失long-range decision diversity。Wafer只采用“完整group、动态priority、多层coarsening和
+coarse-level diversity”，所有resource legality仍由actual MiniMalloc/target leaf签发。
+
+Primary references：
+
+- IREE `FormDispatchRegions.cpp`：<https://github.com/iree-org/iree/blob/main/compiler/src/iree/compiler/DispatchCreation/FormDispatchRegions.cpp>
+- XLA GPU `priority_fusion.h/.cc`：<https://github.com/openxla/xla/tree/main/xla/backends/gpu/transforms>
+- Karypis--Kumar multilevel graph partitioning：<https://doi.org/10.1137/S1064827595287997>
+- Halide coarse-to-fine autoscheduling：<https://halide-lang.org/papers/autoscheduler2019.html>
+
+### Proposal hierarchy
+
+1. 对每个Tile component建立query-local quotient graph。Vertex是current group；edge只来自已经证明`allowsRequiredLocal`的actual root-use
+   relation。Cannot-link、connected group、internal binding totality和contracted DAG acyclicity继续调用RegionDomain的同一规则。
+2. `P0`为singleton。第`r`个coarsening round把group mandatory-root上限设为`2^r`，从上一层partition继续运行到该上限内再无合法merge。
+   每次优先internalize最多distinct external bindings的group pair；exact logical payload可得时只作proposal priority，最后用完整semantic key
+   tie-break。每次merge后重建受影响quotient edges和priority。
+3. 一轮在所有Tile component上完成后才构造一个complete RegionPlan并用`contains`复核。这样P1会形成整图maximal pair coarsening，P2继续
+   形成最多4-root group；不是一个edge对应一个whole-program candidate。
+4. 取消group上限并运行到fixed point得到`Pk` graph-coherent endpoint。若component-maximal partition本身属于raw domain，则与Pk去重后作为
+   endpoint；否则不伪造合法性。
+5. Allowance为4时batch固定为`P0, P1, P2, Pk`。其它allowance始终先保留P0、再保留最后一个slot给Pk，中间按低到高取层级；hierarchy有
+   空slot时才加入explicit-replica proposal。Raw cursor独立保留完整domain。
+
+Hierarchy对象只活在一次proposal query中，包含group labels、edge priority和union工作数据；它不是plan/actual双事实源。每个发出的RegionPlan
+都由自己的candidate transaction实际物化。Actual capacity rejection只作用于该complete Region/Temporal tuple，不能删除其它level；Pk失败时
+P1/P2仍可成为winner。Winner继续使用final current Instr的resource objective；Region count、logical cut weight和proposal level只作coverage与
+diagnostic。
+
+### 覆盖矩阵与验收
+
+| 输入等价类 | Shape / 结构 | Typed failure | 精确断言 | 下游witness |
+| --- | --- | --- | --- | --- |
+| hierarchy与raw-domain独立性 | chain、diamond、fanout/fanin、reduction；rank 3--6；1024/1025/1031；1/16 Tile | proposal work结束只降低priority coverage，不返回empty domain | 每层plan均`contains`；partition严格nested；P1 group≤2、P2 group≤4；关闭/反转proposal后raw plan集合不变 | PlanningSession按P0/P1/P2/Pk次序交给同一materializer |
+| 整图coarsening | 长chain、star fanout、多component与cannot-link | 某merge破坏binding totality或DAG时只跳过该merge，不能丢整层合法siblings | 每个有eligible edge的Tile component均参与round；P1是cap-2 maximal coarsening，P2继续收缩；无单edge-only batch | actual TileRegion数/local/external binding数与plan逐项一致 |
+| actual quality与容量非单调 | P0/P1/P2/Pk分别accepted/rejected组合；1024/1025 | capacity、unsupported、indeterminate、compiler error保持typed区分 | 无基于Region数的pruning；每plan只materialize一次；accepted candidate记录actual DDR read/write、Instr和objective；winner不重建 | retained owner进入唯一target/package路径 |
+| LLaMA acceptance | 同一current FP16 LLaMA source，16 Tile | timeout/OOM/skip/fallback/未到actual leaf均失败 | ≤15分钟实际访问P0/P1/P2/Pk；P1/P2不是单merge且至少一个Accepted；相对P0，winner在enabled objective上Pareto更好，Region下降由local binding和actual DDR store/load消除共同解释 | 两policy独立package、strict readback/no-card；不声明板端性能 |
+
+`--compile-timing`增加固定上限的per-level summary：level、group cap、Region/local/external binding数、actual status、Temporal actualization数及
+Accepted后的DDR read/write、Instr sites和objective classification。它不逐Region打印，不构造expected inventory，不参与proposal、legality或winner。
+
+### 实施顺序
+
+1. 保留当前raw successor和RegionPlan materializer，替换错误的single-edge BFS proposal builder；恢复graph-coherent endpoint不可饥饿合同。
+2. 实现deterministic quotient-graph coarsening及P0/P1/P2/Pk unit oracle，先证明plan membership、nested partition和work bound。
+3. 接入PlanningSession allowance与bounded instrumentation，验证proposal关闭不改变raw domain和candidate key。
+4. 运行aligned/ragged actual chain、diamond、fanout及capacity组合，核对Region→Temporal→layout/movement→MiniMalloc→objective完整链。
+5. 使用同一LLaMA source执行planning inventory后再做一次最终search/none package与strict no-card；只有上述quality门禁全部满足才重新关闭Q52。
 
 ## Q53 Production Host Readiness
 

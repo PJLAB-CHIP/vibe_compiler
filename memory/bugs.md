@@ -108,6 +108,18 @@
 - 防复发：源码检查禁止framework/model/function/value-name和固定shape matcher；generic mixed DAG与真实HF/Llama走同一public
   pipeline，并以正负witness证明typed semantic builder既会命中合法图，也会保持near-miss原图。
 
+## Whole-program candidate budget不能耗在单edge fusion siblings上
+
+- 现象：RegionDomain有1360→112 Region的graph-coherent proposal，但4个whole-program actualization slots被singleton和三个单edge
+  siblings用完，最终winner只有1359个Region；测试仍因“非singleton”而错误通过。
+- 根因：把partition lattice的breadth-first merge distance当成quality progress。大图在level-1已有大量siblings，而一次actual candidate需要完整
+  Temporal、layout、movement、MiniMalloc和target leaf，有限budget不可能靠逐edge枚举达到有效融合深度。
+- 修复模式：proposal使用整图multilevel coarsening。每层在所有component内运行到结构group cap下的maximal合法fixed point，形成少量nested
+  complete RegionPlans；batch保留singleton、早期coarse levels和graph-coherent endpoint。Edge cut/payload只排priority，所有plan仍经actual IR和
+  MiniMalloc判定，capacity failure不跨level剪枝。
+- 防复发：真实规模chain/fanout断言P1/P2同时合并多个Tile和多个semantic edges，proposal allowance不会饿死coherent endpoint；LLaMA完成
+  不能再以Region减少1或“存在local binding”签发，必须由整图Region收缩、actual DDR store/load与Instr减少以及final objective共同证明。
+
 ## Frontend不得为了compiler命中改写模型语义
 
 - 现象：fixture手写mask、替换RoPE、预先计算state或重排参数后优化case通过，但真实framework export失败或数值不同。

@@ -17,11 +17,12 @@
 
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `production-host-readiness` | `next` | Q53 / 16 | search scalability、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
+| 1 | `region-fusion-quality` | `doing` | Q52 / 06 | 完整RegionDomain、graph-coherent proposal donor、actual MiniMalloc feedback和final actual objective | Region proposal形成`P0/P1/P2/Pk`整图multilevel coarsening；同源LLaMA在≤15分钟内实际访问四层，至少一个P1/P2 candidate通过actual leaf，winner相对P0在enabled actual objective上Pareto更好并以DDR/instruction下降解释整图Region/cut消除；两条policy通过strict no-card | `tasks/plans/physical-dataflow-synthesis.md` |
+| 2 | `production-host-readiness` | `queued` | Q53 / 16 | region fusion quality、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 
-Q52已经退出current queue，完成边界和本轮fresh证据见`tasks/archive/completed-task-index.md`。它向Q53签发按fusion level
-breadth-first访问的Region proposal、actual SPM feedback、candidate-admission/target ABI共用boundary verifier，以及独立的current
-`none`与`search` source→package路径；`search`覆盖仍为`FeasiblePartial`，不声明未穷尽frontier的全局最优。Q53为下一项且尚未启动。
+Q52因fusion quality验收错误重新打开。提交`6221d9a8`只让4个structural slots访问singleton和三个单edge sibling，LLaMA winner从
+1360个Region降到1359个；这只能证明单edge机制可达，不能证明proposal实现了“能融合则尽量融合”。Current修正恢复graph-coherent endpoint，
+并用整图multilevel coarsening在低融合与endpoint之间生成少量实际可评估的中间plan；SPM合法性和winner仍只来自actual IR。Q53保持queued。
 
 ## 已满足的直接前置
 
