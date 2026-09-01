@@ -305,6 +305,48 @@ CLI默认、只设width、只设trials和同时设置的effective diagnostic分�
 事务前拒绝。Fresh canonical build、Driver 83/83、261/261 configured lit、全部13个component unit targets、42个Board-IO、
 61个formal numeric、19个target numeric backend、13个SystemC和public-link gates通过，无skip或unsupported。本扩展不运行真实板端。
 
+### 2026-09-01 LLaMA search limit scaling证据
+
+同一current FP16 LLaMA-2 7B decoder block source分别使用默认`8/42`、`28/180`和`36/200`独立运行。
+每轮都重新读取source、建立candidate-owned current IR并只写出一个final package；candidate trial不写ELF或package。
+三份fresh 16-Tile package均通过显式Direct-DTE status ABI与host-watchdog的strict no-card，输出
+`board_execution: false`。真实板端未执行。
+
+| Limits | Transaction / peak RSS | Structural / trials | Typed result | Proposal query |
+| --- | --- | --- | --- | --- |
+| `8/42` | 1071779ms（17.86分钟）/ 1956736KiB | 8 / 42 | 6 Accepted；coverage=`FeasiblePartial` | initial 11153ms，refinement 1444ms |
+| `28/180` | 4211547ms（70.19分钟）/ 2541648KiB | 28 / 164，剩16 | 20 Accepted、8 Indeterminate、0 Unsupported；coverage=`FeasiblePartial` | initial 24376ms，refinement 1388ms |
+| `36/200` | 5207745ms（86.80分钟）/ 2702100KiB | 35/36 / 200，剩0 | 26 Accepted、9 Indeterminate、0 Unsupported；coverage=`FeasiblePartial` | initial 30409ms，refinement 1335ms |
+
+`28/180`产生26个initial proposals和2个refinement proposals；width先耗尽，因此剩16次trial。`36/200`产生
+34个initial proposals和2个refinement proposals；trials先耗尽，因此只actualize 35个structural choices。两轮的actual
+capacity refinement分别为136和165次；这些状态都来自实际Instr→MiniMalloc结果，未使用Region数或shape预测SPM合法性。
+
+| Final accepted current IR / work | `8/42` | `28/180` | `36/200` |
+| --- | ---: | ---: | ---: |
+| Actual TileRegion | 626 | 535 | 513 |
+| Nested operations | 35085 | 33977 | 33751 |
+| Tile dataflow operations | 7908 | 7652 | 7600 |
+| Instr sites | 13012 | 12820 | 12768 |
+| Instr executions | 3554482 | 3535038 | 3534656 |
+| DDR read bytes | 6625057792 | 6616719616 | 6614348032 |
+| DDR write bytes | 75756928 | 71072896 | 62991488 |
+| DDR read+write bytes | 6700814720 | 6687792512 | 6677339520 |
+| SPM movement bytes | 13319503232 | 13306481024 | 13296028032 |
+
+逐Tile Actual TileRegion分布分别为`38, 39x12, 40x3`、`32, 33x7, 34x8`和`31, 32x13, 33x2`。
+三轮的NE、Vector F16/BF16和Vector F32 logical work相同；NoC transmit/receive、DTE wait和steady-state/non-terminal
+NCC join均为0，terminal NCC join均为16。因此`28/180`相对`8/42`、`36/200`相对`28/180`都是
+final actual work上的strict Pareto improvement，但收益递减：`36/200`额外消耗16.61分钟，相对`28/180`再减少22个
+TileRegion（4.11%）、52个Instr site、10452992 bytes DDR总量和10452992 bytes SPM movement。
+
+在90分钟门禁下，`28/180`是当前更均衡的编译时间/质量点，`36/200`是当前已验证的高质量边界。
+继续增加width而不增加trials不会增加actual coverage；增加trials则按当前速率会超过90分钟。这些结论只描述
+compiler search quality和host/no-card产物，不声明板端runtime性能或全局最优。
+
+当前限制：per-candidate actual summary只记录前8个candidate；所有proposal structural metrics、aggregate coverage和最终accepted
+physical IR/Instr metrics完整，但结束日志无法将第9个及之后candidate的actual metrics逐项映射回具体proposal。
+
 ### 实施顺序
 
 1. 保留raw successor、RegionPlan和唯一materializer；先扩展逐Tile read-only instrumentation及全局actual credit，证明它们不改变choice/result。
