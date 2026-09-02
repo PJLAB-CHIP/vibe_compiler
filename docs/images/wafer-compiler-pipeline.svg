@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 430" role="img" aria-labelledby="title desc">
-  <title id="title">Wafer Compiler 编译流水线</title>
-  <desc id="desc">从 StableHLO 输入、经过 MLIR lowering 到 package 执行的流水线图。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 760" role="img" aria-labelledby="title desc">
+  <title id="title">Wafer Compiler 主线架构</title>
+  <desc id="desc">前端和 SPMD 生成 TensorProgram，随后分成 none 与 search 两条独立 current-IR transaction，最后共同进入 package 和 runtime 出口。</desc>
   <defs>
     <linearGradient id="header" x1="0" x2="1">
       <stop offset="0" stop-color="#0f172a"/>
@@ -12,54 +12,111 @@
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
       <path d="M0 0 10 5 0 10Z" fill="#64748b"/>
     </marker>
+    <marker id="arrow-accent" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0 0 10 5 0 10Z" fill="#0e7490"/>
+    </marker>
   </defs>
-  <rect width="1200" height="430" rx="22" fill="#f8fafc"/>
-  <rect width="1200" height="72" rx="22" fill="url(#header)"/>
-  <rect y="50" width="1200" height="22" fill="url(#header)"/>
-  <text x="48" y="45" fill="#e0f2fe" font-family="Inter,Arial,sans-serif" font-size="28" font-weight="700">Wafer Compiler</text>
-  <text x="1150" y="44" text-anchor="end" fill="#bae6fd" font-family="Inter,Arial,sans-serif" font-size="16">MLIR → 可执行 package</text>
+
+  <rect width="1500" height="760" rx="22" fill="#f8fafc"/>
+  <rect width="1500" height="78" rx="22" fill="url(#header)"/>
+  <rect y="54" width="1500" height="24" fill="url(#header)"/>
+  <text x="52" y="49" fill="#e0f2fe" font-family="Inter,Arial,sans-serif" font-size="29" font-weight="700">Wafer Compiler 主线架构</text>
+  <text x="1448" y="48" text-anchor="end" fill="#bae6fd" font-family="Inter,Arial,sans-serif" font-size="16">输入 IR → 物化 IR → package</text>
 
   <g font-family="Inter,Arial,sans-serif">
-    <text x="62" y="112" fill="#0f172a" font-size="16" font-weight="700">输入</text>
-    <text x="62" y="135" fill="#475569" font-size="14">框架导出与程序验证</text>
-    <text x="62" y="262" fill="#0f172a" font-size="16" font-weight="700">编译器</text>
-    <text x="62" y="285" fill="#475569" font-size="14">结构化 IR 与物理 lowering</text>
-    <text x="62" y="366" fill="#0f172a" font-size="16" font-weight="700">输出</text>
+    <text x="64" y="118" fill="#0f172a" font-size="16" font-weight="700">前端与结构化 IR</text>
+    <text x="64" y="142" fill="#475569" font-size="14">先验证输入，再形成 policy-independent 的 TensorProgram</text>
+    <text x="64" y="241" fill="#0f172a" font-size="16" font-weight="700">独立的 current-IR transaction</text>
+    <text x="64" y="265" fill="#475569" font-size="14">两条策略复用变换实现，但不共享 candidate state、actual IR 或 winner</text>
+    <text x="274" y="563" fill="#0f172a" font-size="16" font-weight="700">共同的 accepted 输出路径</text>
   </g>
 
   <g filter="url(#shadow)" font-family="Inter,Arial,sans-serif">
-    <rect x="62" y="153" width="170" height="76" rx="12" fill="#e0f2fe" stroke="#38bdf8" stroke-width="2"/>
-    <text x="147" y="184" text-anchor="middle" fill="#0c4a6e" font-size="17" font-weight="700">StableHLO</text>
-    <text x="147" y="207" text-anchor="middle" fill="#075985" font-size="13">程序目录</text>
-    <rect x="280" y="153" width="170" height="76" rx="12" fill="#e0f2fe" stroke="#38bdf8" stroke-width="2"/>
-    <text x="365" y="184" text-anchor="middle" fill="#0c4a6e" font-size="17" font-weight="700">SPMD</text>
-    <text x="365" y="207" text-anchor="middle" fill="#075985" font-size="13">卡内程序</text>
+    <rect x="64" y="164" width="205" height="62" rx="12" fill="#e0f2fe" stroke="#38bdf8" stroke-width="2"/>
+    <text x="166" y="201" text-anchor="middle" fill="#0c4a6e" font-size="17" font-weight="700">StableHLO program</text>
+    <text x="166" y="220" text-anchor="middle" fill="#075985" font-size="12">program directory</text>
+    <rect x="314" y="164" width="205" height="62" rx="12" fill="#e0f2fe" stroke="#38bdf8" stroke-width="2"/>
+    <text x="416" y="201" text-anchor="middle" fill="#0c4a6e" font-size="17" font-weight="700">前端验证 + SPMD</text>
+    <text x="416" y="220" text-anchor="middle" fill="#075985" font-size="12">card-local StableHLO</text>
+    <rect x="564" y="164" width="255" height="62" rx="12" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+    <text x="691" y="201" text-anchor="middle" fill="#166534" font-size="17" font-weight="700">verified TensorProgram</text>
+    <text x="691" y="220" text-anchor="middle" fill="#15803d" font-size="12">Linalg / Tensor / SCF + e-graph</text>
 
-    <rect x="500" y="300" width="180" height="76" rx="12" fill="#ecfccb" stroke="#84cc16" stroke-width="2"/>
-    <text x="590" y="331" text-anchor="middle" fill="#365314" font-size="17" font-weight="700">TensorProgram</text>
-    <text x="590" y="354" text-anchor="middle" fill="#3f6212" font-size="13">Linalg / Tensor IR</text>
-    <rect x="720" y="300" width="180" height="76" rx="12" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
-    <text x="810" y="331" text-anchor="middle" fill="#78350f" font-size="17" font-weight="700">none | search</text>
-    <text x="810" y="354" text-anchor="middle" fill="#92400e" font-size="13">物理数据流</text>
-    <rect x="940" y="300" width="180" height="76" rx="12" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
-    <text x="1030" y="331" text-anchor="middle" fill="#78350f" font-size="17" font-weight="700">TileRegion</text>
-    <text x="1030" y="354" text-anchor="middle" fill="#92400e" font-size="13">layout / movement / Instr</text>
+    <rect x="64" y="286" width="175" height="70" rx="12" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+    <text x="151" y="317" text-anchor="middle" fill="#78350f" font-size="19" font-weight="700">none</text>
+    <text x="151" y="340" text-anchor="middle" fill="#92400e" font-size="13">确定性 baseline</text>
+    <rect x="64" y="396" width="175" height="70" rx="12" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+    <text x="151" y="427" text-anchor="middle" fill="#78350f" font-size="19" font-weight="700">search</text>
+    <text x="151" y="450" text-anchor="middle" fill="#92400e" font-size="13">有界 search controller</text>
 
-    <rect x="500" y="153" width="180" height="76" rx="12" fill="#f1f5f9" stroke="#94a3b8" stroke-width="2"/>
-    <text x="590" y="184" text-anchor="middle" fill="#1e293b" font-size="17" font-weight="700">DeviceExecutable</text>
-    <text x="590" y="207" text-anchor="middle" fill="#475569" font-size="13">已验证的 Tile entry</text>
-    <rect x="720" y="153" width="180" height="76" rx="12" fill="#f1f5f9" stroke="#94a3b8" stroke-width="2"/>
-    <text x="810" y="184" text-anchor="middle" fill="#1e293b" font-size="17" font-weight="700">Package</text>
-    <text x="810" y="207" text-anchor="middle" fill="#475569" font-size="13">manifest、module 与 data</text>
-    <rect x="940" y="153" width="180" height="76" rx="12" fill="#f1f5f9" stroke="#94a3b8" stroke-width="2"/>
-    <text x="1030" y="184" text-anchor="middle" fill="#1e293b" font-size="17" font-weight="700">Runtime</text>
-    <text x="1030" y="207" text-anchor="middle" fill="#475569" font-size="13">no-card / board</text>
+    <rect x="274" y="286" width="190" height="70" rx="12" fill="#fff7ed" stroke="#fb923c" stroke-width="2"/>
+    <text x="369" y="317" text-anchor="middle" fill="#7c2d12" font-size="16" font-weight="700">Spatial / Region</text>
+    <text x="369" y="340" text-anchor="middle" fill="#9a3412" font-size="12">TileRegion + FA/FD state</text>
+    <rect x="494" y="286" width="190" height="70" rx="12" fill="#fff7ed" stroke="#fb923c" stroke-width="2"/>
+    <text x="589" y="317" text-anchor="middle" fill="#7c2d12" font-size="16" font-weight="700">Temporal tiling</text>
+    <text x="589" y="340" text-anchor="middle" fill="#9a3412" font-size="12">tile-and-fuse from live ops</text>
+    <rect x="714" y="286" width="190" height="70" rx="12" fill="#fff7ed" stroke="#fb923c" stroke-width="2"/>
+    <text x="809" y="317" text-anchor="middle" fill="#7c2d12" font-size="16" font-weight="700">Attention decomposition</text>
+    <text x="809" y="340" text-anchor="middle" fill="#9a3412" font-size="12">actual Linalg / Tensor / SCF</text>
+    <rect x="934" y="286" width="190" height="70" rx="12" fill="#fff7ed" stroke="#fb923c" stroke-width="2"/>
+    <text x="1029" y="317" text-anchor="middle" fill="#7c2d12" font-size="16" font-weight="700">Layout + bufferize</text>
+    <text x="1029" y="340" text-anchor="middle" fill="#9a3412" font-size="12">IndexRelation + PBQP</text>
+    <rect x="1154" y="286" width="250" height="70" rx="12" fill="#fff7ed" stroke="#fb923c" stroke-width="2"/>
+    <text x="1279" y="317" text-anchor="middle" fill="#7c2d12" font-size="16" font-weight="700">Movement + execution + Instr</text>
+    <text x="1279" y="340" text-anchor="middle" fill="#9a3412" font-size="12">completion-closed current IR</text>
+
+    <rect x="274" y="396" width="190" height="70" rx="12" fill="#fff7ed" stroke="#fb923c" stroke-width="2"/>
+    <text x="369" y="427" text-anchor="middle" fill="#7c2d12" font-size="16" font-weight="700">Spatial / Region</text>
+    <text x="369" y="450" text-anchor="middle" fill="#9a3412" font-size="12">独立 candidate owner</text>
+    <rect x="494" y="396" width="190" height="70" rx="12" fill="#fff7ed" stroke="#fb923c" stroke-width="2"/>
+    <text x="589" y="427" text-anchor="middle" fill="#7c2d12" font-size="16" font-weight="700">Temporal tiling</text>
+    <text x="589" y="450" text-anchor="middle" fill="#9a3412" font-size="12">actual capacity feedback</text>
+    <rect x="714" y="396" width="190" height="70" rx="12" fill="#fff7ed" stroke="#fb923c" stroke-width="2"/>
+    <text x="809" y="427" text-anchor="middle" fill="#7c2d12" font-size="16" font-weight="700">Attention decomposition</text>
+    <text x="809" y="450" text-anchor="middle" fill="#9a3412" font-size="12">同一 atomic 实现</text>
+    <rect x="934" y="396" width="190" height="70" rx="12" fill="#fff7ed" stroke="#fb923c" stroke-width="2"/>
+    <text x="1029" y="427" text-anchor="middle" fill="#7c2d12" font-size="16" font-weight="700">Layout + bufferize</text>
+    <text x="1029" y="450" text-anchor="middle" fill="#9a3412" font-size="12">独立 current IR</text>
+    <rect x="1154" y="396" width="250" height="70" rx="12" fill="#fff7ed" stroke="#fb923c" stroke-width="2"/>
+    <text x="1279" y="427" text-anchor="middle" fill="#7c2d12" font-size="16" font-weight="700">Movement + execution + Instr</text>
+    <text x="1279" y="450" text-anchor="middle" fill="#9a3412" font-size="12">accepted current IR</text>
+
+    <rect x="64" y="500" width="175" height="64" rx="12" fill="#f1f5f9" stroke="#94a3b8" stroke-width="2"/>
+    <text x="151" y="528" text-anchor="middle" fill="#1e293b" font-size="15" font-weight="700">Target topology</text>
+    <text x="151" y="549" text-anchor="middle" fill="#475569" font-size="12">Tile、mesh、target facts</text>
+    <rect x="64" y="594" width="175" height="64" rx="12" fill="#f1f5f9" stroke="#94a3b8" stroke-width="2"/>
+    <text x="151" y="622" text-anchor="middle" fill="#1e293b" font-size="15" font-weight="700">ProgramData</text>
+    <text x="151" y="643" text-anchor="middle" fill="#475569" font-size="12">payload、binding、range</text>
+
+    <rect x="274" y="594" width="235" height="72" rx="12" fill="#ecfeff" stroke="#0891b2" stroke-width="2"/>
+    <text x="391" y="625" text-anchor="middle" fill="#164e63" font-size="17" font-weight="700">实际 memory / target gate</text>
+    <text x="391" y="649" text-anchor="middle" fill="#155e75" font-size="12">SPM、DDR、transport、resource</text>
+    <rect x="539" y="594" width="235" height="72" rx="12" fill="#ecfeff" stroke="#0891b2" stroke-width="2"/>
+    <text x="656" y="625" text-anchor="middle" fill="#164e63" font-size="17" font-weight="700">DeviceExecutable</text>
+    <text x="656" y="649" text-anchor="middle" fill="#155e75" font-size="12">all-and-only Tile entries</text>
+    <rect x="804" y="594" width="235" height="72" rx="12" fill="#ecfeff" stroke="#0891b2" stroke-width="2"/>
+    <text x="921" y="625" text-anchor="middle" fill="#164e63" font-size="17" font-weight="700">Target module + package</text>
+    <text x="921" y="649" text-anchor="middle" fill="#155e75" font-size="12">manifest、modules、data</text>
+    <rect x="1069" y="594" width="235" height="72" rx="12" fill="#ecfeff" stroke="#0891b2" stroke-width="2"/>
+    <text x="1186" y="625" text-anchor="middle" fill="#164e63" font-size="17" font-weight="700">运行时</text>
+    <text x="1186" y="649" text-anchor="middle" fill="#155e75" font-size="12">no-card / board</text>
   </g>
 
   <g fill="none" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)">
-    <path d="M232 191h42"/><path d="M450 191h42"/>
-    <path d="M680 191h32"/><path d="M900 191h32"/>
-    <path d="M590 292v-56"/><path d="M810 292v-56"/><path d="M1030 292v-56"/>
+    <path d="M269 195h39"/><path d="M519 195h39"/>
+    <path d="M691 226v40H151v14"/><path d="M691 226v150H151v20"/>
+    <path d="M239 321h29"/><path d="M464 321h25"/><path d="M684 321h25"/><path d="M904 321h25"/><path d="M1124 321h25"/>
+    <path d="M239 431h29"/><path d="M464 431h25"/><path d="M684 431h25"/><path d="M904 431h25"/><path d="M1124 431h25"/>
+    <path d="M1279 356v218H509"/><path d="M1279 466v108H509"/>
+    <path d="M509 630h24"/><path d="M774 630h24"/><path d="M1039 630h24"/>
   </g>
-  <text x="62" y="407" fill="#64748b" font-family="Inter,Arial,sans-serif" font-size="13">每个阶段都消费前一阶段生成并验证的 IR。</text>
+  <g fill="none" stroke="#0e7490" stroke-width="2" stroke-dasharray="7 6" marker-end="url(#arrow-accent)">
+    <path d="M151 356v33"/><path d="M369 356v33"/><path d="M589 356v33"/><path d="M809 356v33"/><path d="M1029 356v33"/>
+    <path d="M239 520C258 520 250 321 269 321"/><path d="M239 548C258 548 250 431 269 431"/>
+    <path d="M239 532h690v54"/><path d="M239 626h565"/>
+  </g>
+  <g font-family="Inter,Arial,sans-serif" fill="#64748b" font-size="13">
+    <text x="64" y="704">实线表示各自 current IR 的实际数据流；虚线表示两条 policy 复用同一套 stage 实现。</text>
+    <text x="64" y="728">Topology、target facts 和 ProgramData 是显式输入，不能由名称、shape 或旁路 plan 推导。</text>
+  </g>
 </svg>
