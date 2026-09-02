@@ -105,6 +105,97 @@ func.func @large_f16_identity_sum_uses_native_reduce() {
 // CHECK-NEXT: return
 // CHECK-NOT: wafer.instr.ncc_join [0]
 
+func.func @large_multidim_identity_sum_uses_native_chain() {
+  %token = arith.constant false
+  %unused = wafer.tile.region(%token : i1) -> (i1) {
+  ^bb0(%tile_token: i1):
+  %input = memref.alloc() : memref<1x24x32x1024xf16, #wafer.memory<spm, ncx>>
+  %result = wafer.tile.reduce #wafer.reduce_kind<sum> %input
+      {dimensions = array<i64: 2, 3>, init_value = 0.000000e+00 : f16}
+      : (memref<1x24x32x1024xf16, #wafer.memory<spm, ncx>>)
+     -> memref<1x24xf16, #wafer.memory<spm, cx>>
+    wafer.tile.yield %tile_token : i1
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @large_multidim_identity_sum_uses_native_chain
+// CHECK-NOT: wafer.instr.fill
+// CHECK-NOT: scf.for
+// CHECK-NOT: wafer.instr.gather_scatter
+// CHECK: %[[TMP:.*]] = memref.alloc() : memref<1x24x32xf16, #wafer.memory<spm, ncx>>
+// CHECK: wafer.instr.reduce <sum> %{{.*}} into %[[TMP]]
+// CHECK-SAME: dim = 0 : i64
+// CHECK: %[[DEST:.*]] = memref.alloc() : memref<1x24xf16, #wafer.memory<spm, cx>>
+// CHECK: wafer.instr.reduce <sum> %[[TMP]] into %[[DEST]]
+// CHECK-SAME: dim = 0 : i64
+// CHECK-NEXT: wafer.tile.yield
+
+func.func @ragged_multidim_identity_sum_uses_native_chain() {
+  %token = arith.constant false
+  %unused = wafer.tile.region(%token : i1) -> (i1) {
+  ^bb0(%tile_token: i1):
+  %input = memref.alloc() : memref<1x24x32x1025xf16, #wafer.memory<spm, ncx>>
+  %result = wafer.tile.reduce #wafer.reduce_kind<sum> %input
+      {dimensions = array<i64: 2, 3>, init_value = 0.000000e+00 : f16}
+      : (memref<1x24x32x1025xf16, #wafer.memory<spm, ncx>>)
+     -> memref<1x24xf16, #wafer.memory<spm, cx>>
+    wafer.tile.yield %tile_token : i1
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @ragged_multidim_identity_sum_uses_native_chain
+// CHECK-NOT: wafer.instr.fill
+// CHECK-NOT: scf.for
+// CHECK-NOT: wafer.instr.gather_scatter
+// CHECK-COUNT-2: wafer.instr.reduce <sum>
+// CHECK: wafer.tile.yield
+
+func.func @large_single_axis_identity_sum_uses_native_reduce() {
+  %token = arith.constant false
+  %unused = wafer.tile.region(%token : i1) -> (i1) {
+  ^bb0(%tile_token: i1):
+  %input = memref.alloc() : memref<1x24x32x1024xf16, #wafer.memory<spm, ncx>>
+  %result = wafer.tile.reduce #wafer.reduce_kind<sum> %input
+      {dimensions = array<i64: 3>, init_value = 0.000000e+00 : f16}
+      : (memref<1x24x32x1024xf16, #wafer.memory<spm, ncx>>)
+     -> memref<1x24x32xf16, #wafer.memory<spm, ncx>>
+    wafer.tile.yield %tile_token : i1
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @large_single_axis_identity_sum_uses_native_reduce
+// CHECK-NOT: wafer.instr.fill
+// CHECK-NOT: scf.for
+// CHECK-NOT: wafer.instr.gather_scatter
+// CHECK: wafer.instr.reduce <sum>
+// CHECK-SAME: dim = 0 : i64
+// CHECK-NEXT: wafer.tile.yield
+
+func.func @ragged_single_axis_identity_sum_uses_native_reduce() {
+  %token = arith.constant false
+  %unused = wafer.tile.region(%token : i1) -> (i1) {
+  ^bb0(%tile_token: i1):
+  %input = memref.alloc() : memref<1x24x32x1025xf16, #wafer.memory<spm, ncx>>
+  %result = wafer.tile.reduce #wafer.reduce_kind<sum> %input
+      {dimensions = array<i64: 3>, init_value = 0.000000e+00 : f16}
+      : (memref<1x24x32x1025xf16, #wafer.memory<spm, ncx>>)
+     -> memref<1x24x32xf16, #wafer.memory<spm, ncx>>
+    wafer.tile.yield %tile_token : i1
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @ragged_single_axis_identity_sum_uses_native_reduce
+// CHECK-NOT: wafer.instr.fill
+// CHECK-NOT: scf.for
+// CHECK-NOT: wafer.instr.gather_scatter
+// CHECK: wafer.instr.reduce <sum>
+// CHECK-SAME: dim = 0 : i64
+// CHECK-NEXT: wafer.tile.yield
+
 func.func @large_multidim_sum_keeps_inner_affine_runs() {
   %token = arith.constant false
   %unused = wafer.tile.region(%token : i1) -> (i1) {
@@ -122,9 +213,36 @@ func.func @large_multidim_sum_keeps_inner_affine_runs() {
 // CHECK-LABEL: func.func @large_multidim_sum_keeps_inner_affine_runs
 // CHECK-NOT: wafer.instr.reduce
 // CHECK: wafer.instr.fill
-// CHECK-COUNT-17: scf.for
+// CHECK-COUNT-3: scf.for
 // CHECK: wafer.instr.gather_scatter
 // CHECK: wafer.instr.elementwise <add>
+// CHECK: wafer.instr.ncc_join [0]
+// CHECK: return
+
+func.func @ragged_multidim_sum_keeps_piece_loop_and_tail() {
+  %token = arith.constant false
+  %unused = wafer.tile.region(%token : i1) -> (i1) {
+  ^bb0(%tile_token: i1):
+  %input = memref.alloc() : memref<1x24x32x1025xf16, #wafer.memory<spm, ncx>>
+  %result = wafer.tile.reduce #wafer.reduce_kind<sum> %input
+      {dimensions = array<i64: 2, 3>, init_value = -0.000000e+00 : f16}
+      : (memref<1x24x32x1025xf16, #wafer.memory<spm, ncx>>)
+     -> memref<1x24x1x1xf16, #wafer.memory<spm, ncx>>
+    wafer.tile.yield %tile_token : i1
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @ragged_multidim_sum_keeps_piece_loop_and_tail
+// CHECK-NOT: wafer.instr.reduce
+// CHECK: wafer.instr.fill
+// CHECK-COUNT-3: scf.for
+// CHECK: wafer.instr.gather_scatter
+// CHECK: wafer.instr.elementwise <add>
+// CHECK: wafer.instr.gather_scatter
+// CHECK-SAME: src_strides = array<i64: 256, 0, 0>
+// CHECK-NEXT: wafer.instr.elementwise <add>
+// CHECK: wafer.instr.gather_scatter
 // CHECK: wafer.instr.ncc_join [0]
 // CHECK: return
 

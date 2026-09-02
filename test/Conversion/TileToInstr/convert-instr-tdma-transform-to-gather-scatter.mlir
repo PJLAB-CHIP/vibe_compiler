@@ -141,7 +141,8 @@ func.func @instr_tdma_mirror_materializes() {
 // CHECK: %[[MIRROR_SRC:.+]] = memref.alloc() : memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
 // CHECK: %[[MIRROR_DST:.+]] = memref.alloc() : memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
 // CHECK-NOT: wafer.instr.tdma_data_move
-// CHECK: wafer.instr.gather_scatter %[[MIRROR_SRC]] to %[[MIRROR_DST]]
+// CHECK-COUNT-1: scf.for
+// CHECK-COUNT-1: wafer.instr.gather_scatter %[[MIRROR_SRC]] to %[[MIRROR_DST]]
 // CHECK-NOT: wafer.instr.tdma_data_move
 
 func.func @instr_tdma_rotate90_materializes() {
@@ -189,7 +190,56 @@ func.func @instr_tdma_rotate180_materializes() {
 // CHECK: %[[ROTATE180_SRC:.+]] = memref.alloc() : memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
 // CHECK: %[[ROTATE180_DST:.+]] = memref.alloc() : memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
 // CHECK-NOT: wafer.instr.tdma_data_move
+// CHECK-COUNT-1: scf.for
 // CHECK: wafer.instr.gather_scatter %[[ROTATE180_SRC]] to %[[ROTATE180_DST]]
+// CHECK-NOT: wafer.instr.tdma_data_move
+
+func.func @instr_tdma_large_rotate180_uses_dynamic_offset_loop() {
+  %token = arith.constant false
+  %unused = wafer.tile.region(%token : i1) -> (i1) {
+  ^bb0(%tile_token: i1):
+  %src = memref.alloc() : memref<1x1x2x1024xf16, #wafer.memory<spm, tensor>>
+  %dst = memref.alloc() : memref<1x1x2x1024xf16, #wafer.memory<spm, tensor>>
+  wafer.instr.tdma_data_move #wafer.instr_data_move_kind<rotate180> %src into %dst
+      {source_shape = array<i64: 1, 1, 2, 1024>,
+       dest_shape = array<i64: 1, 1, 2, 1024>,
+       axes = array<i64: 2, 3>}
+      : memref<1x1x2x1024xf16, #wafer.memory<spm, tensor>>
+     to memref<1x1x2x1024xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.yield %tile_token : i1
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @instr_tdma_large_rotate180_uses_dynamic_offset_loop
+// CHECK-COUNT-1: scf.for
+// CHECK: wafer.instr.gather_scatter
+// CHECK-SAME: src_offset_value
+// CHECK-SAME: dst_offset_value
+// CHECK-NOT: wafer.instr.tdma_data_move
+
+func.func @instr_tdma_ragged_rotate180_uses_dynamic_offset_loop() {
+  %token = arith.constant false
+  %unused = wafer.tile.region(%token : i1) -> (i1) {
+  ^bb0(%tile_token: i1):
+  %src = memref.alloc() : memref<1x1x2x1025xf16, #wafer.memory<spm, tensor>>
+  %dst = memref.alloc() : memref<1x1x2x1025xf16, #wafer.memory<spm, tensor>>
+  wafer.instr.tdma_data_move #wafer.instr_data_move_kind<rotate180> %src into %dst
+      {source_shape = array<i64: 1, 1, 2, 1025>,
+       dest_shape = array<i64: 1, 1, 2, 1025>,
+       axes = array<i64: 2, 3>}
+      : memref<1x1x2x1025xf16, #wafer.memory<spm, tensor>>
+     to memref<1x1x2x1025xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.yield %tile_token : i1
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @instr_tdma_ragged_rotate180_uses_dynamic_offset_loop
+// CHECK-COUNT-1: scf.for
+// CHECK: wafer.instr.gather_scatter
+// CHECK-SAME: src_offset_value
+// CHECK-SAME: dst_offset_value
 // CHECK-NOT: wafer.instr.tdma_data_move
 
 func.func @instr_tdma_rotate270_materializes() {

@@ -1,13 +1,13 @@
 # Physical Dataflow Current-IR实施计划
 
-Q52 current-IR mechanics和Region partition refinement均已闭合；Q53 host/no-card矩阵已闭合并签发`board-ready`。
-本项不运行真实设备。
+Q52 current-IR mechanics和Region partition refinement均已闭合；Q53 reduce与movement descriptor loop复审、
+host/no-card矩阵均已闭合并重新签发`board-ready`。本项不运行真实设备。
 动态状态只读`tasks/progress.md`；
 第1--11项的施工、删除账本和验证记录见`tasks/archive/physical-dataflow-synthesis-q52-plan-history.md`；第12--15项的完成边界见
 `tasks/archive/completed-task-index.md`。
 稳定语义由05--16号编号设计拥有。
 
-当前直接项：Q53 `production-host-readiness`。
+当前直接项：Q53 `production-host-readiness`已达到`board-ready`。
 
 ## Pipeline Contract
 
@@ -470,11 +470,60 @@ allocation能够由目标SPM规划；此前`height=32`的3,145,728-byte allocati
 
 | Matrix | Fresh result | Wall time | Exact witness |
 | --- | --- | ---: | --- |
-| Product: conv mixed DAG, attention prefill/decode, LLaMA block × FP16/BF16 × none/search | 16/16 passed | 2557.90s串行（decode两步；LLaMA search FP16 1082.74s、BF16 1074.94s） | source export、CPU oracle、strict package loader、16 Tile entries、no-card readback/guard；无skip/unsupported |
-| Calibration current runners | 22/22 passed | 33.87s（CTest并行，单runner进程） | current source→DeviceExecutable→package→no-card；0旧runner、0skip |
-| Target-model source vertical | 1/1 passed | 1.38s | rank-3`[2,1024,64]`FP16 source→TargetCall/SystemC，16 Tile entries，model output exact match |
+| Product: conv mixed DAG, attention prefill/decode, LLaMA block × FP16/BF16 × none/search | 16/16 passed | 4164.78s（四组串行real time合计；decode两步；LLaMA search FP16 1000.57s、BF16 993.78s） | source export、CPU oracle、strict package loader、16 Tile entries、no-card readback/guard；无skip/unsupported |
+| Calibration current runners | 22/22 passed | 34.19s（CTest并行，单runner进程） | current source→DeviceExecutable→package→no-card；0旧runner、0skip |
+| Target-model source vertical | 1/1 passed | 1.34s | rank-3`[2,1024,64]`FP16 source→TargetCall/SystemC，16 Tile entries，model output exact match |
 
 本轮还修复了两个由真实规模IR暴露的实现问题：多维 ordered reduce 将重复的`outer tuple × physical piece`循环收敛为经过
 逐descriptor affine验证的嵌套stream，并在同一`collectAccesses`调用内memoize SSA identity解析；structured buffer relation
 不再要求`scf.if`等合法多根值压成唯一storage root，而保留current SSA交由SPM planner按实际allocation分析。相关
 focused lowering、lifetime、relation unit和全261项lit均通过；本项没有真实板端执行，因此状态只能签发`board-ready`。
+
+### Q53 reduce与movement descriptor loop复审闭环（本轮）
+
+Pipeline position:
+- Upstream IR / input: verified `wafer.tile.reduce`，static Wafer memref，显式constant init和完整logical reduction dimensions。
+- Current stage responsibility: 在进入逐slice movement fallback前，检查target `InstrReduceOp`能否精确表达整个dimensions；不能时，
+  对每个可表达的single-axis reduction建立实际中间memref和连续`InstrReduceOp`，仍不能表达时才构造ordered movement/accumulator IR。
+  对 G/S descriptor plan，只有同结构且 endpoint offset 可逐项 checked-affine 推导时才将静态 descriptor 序列改为带动态 offset 的
+  SCF loop；RDMA/WDMA 保持 current 静态 offset ABI，并尽量在三层 stride/iteration 内编码。
+- Output IR / files: 一个或多个current `wafer.instr.reduce`，经过精确descriptor验证的SCF+`wafer.instr.gather_scatter`+
+  `wafer.instr.elementwise`，或 ABI 合法的三层`wafer.instr.rdma`/`wafer.instr.wdma`；不产生旁路plan或未来指令记录。
+- Downstream consumer: Tile memory planning、completion rebuild、Instr-to-target lowering和target model。
+- User-level driver / named pipeline: `wafer-lower-tile-region-to-instr`及`wafer-compile`的同一Tile-to-Instr实现。
+- Explicit non-goals: 不修改数值语义，不把G/S当作reduce，不为不支持的init/layout强行选择native，不用descriptor循环替代accumulator
+  recurrence，不新增Wafer op或第二lowering路径。
+- Completion criteria: native single-axis、native multi-axis decomposition、ordered fallback三类均有1024/1025真实规模和
+  typed near-miss；每类检查实际Instr数量、目标dimension、intermediate owner、tail、下游verifier和SPM可消费性。
+
+覆盖矩阵：
+
+| 类别 | 输入 | 预期current IR | 精确断言/下游 witness |
+| --- | --- | --- | --- |
+| native single-axis | rank-4 NCx，`[1,24,32,1024]` / `[1,24,32,1025]`，identity sum，reduce W或H | 一个`InstrReduceOp` | target dim与输入/输出shape逐项匹配；无fill、无G/S；Instr verifier和target lowering通过 |
+| native multi-axis | 同上，identity sum，reduce H,W（先W后H） | 两个串联`InstrReduceOp`和一个current intermediate allocation | 中间shape/layout/owner实际存在；两个dim code顺序正确；无SCF slice loop；SPM planner成功 |
+| ordered fallback | rank-4 NCx，1024/1025，非identity或不支持的reduce signature | accumulator、规则piece循环、G/S和elementwise | reduction tuple coverage、tail、动态offset无重叠；不误报native；Instr/completion/SPM通过 |
+| G/S descriptor repetition | rank-4 transpose/rotate及layout/view，1024/1025，正向与反向 offset | 一个带动态 endpoint offset的SCF loop，或结构不匹配时静态 descriptors | source/dest descriptor结构、offset recurrence、non-negative bounded range和实际覆盖逐项相等；G/S verifier与target lowering通过 |
+| RDMA/WDMA descriptor packing | Tensor↔Cx/NCx，`1024` / `1025` leading extent，compact与padded tail | 一个三层 descriptor或必要的静态 command partition | current ODS只保留静态 offsets；三层iterations/strides、byte_count、端点范围和tail coverage exact；不生成伪动态 offset |
+| typed near-miss | `avg`、动态shape、错误layout或不匹配init | 保持typed failure或既有fallback | 不创建部分native IR；diagnostic类别稳定；不会静默unknown-op或改写输入 |
+
+G/S fallback的额外约束：descriptor最多三层`iterations/strides`只用于搬运；若physical piece的descriptor结构和base offset沿piece
+轴经checked affine proof一致，则用一个piece induction承载该轴，目标是把当前17个静态loop降为`H×piece×lane`的3层规则循环。证明失败
+仍保留逐piece loop；不能用一个destination stride-0 G/S伪造reduce，因为那会覆盖而不是累加。RDMA/WDMA不具备动态 offset SSA，
+因此只允许在其静态三层 descriptor 内合并连续轴，超出或端点不连续时保留多个实际 command。
+
+2026-09-02 fresh closure结果：
+
+| 机制 | 修改前 | Current结果 |
+| --- | --- | --- |
+| rank-4 H,W identity reduction | dimensions没有单一target code，直接进入ordered G/S fallback | 实际建立`[N,C,H]` NCx intermediate，依次发射W、H两个`InstrReduceOp`；无fill/G/S/SCF |
+| rank-4 ordered H,W fallback | 1个outer加16个并列physical-piece inner loops，共17个静态loop | checked outer/piece/lane offset分别为`128/98304/2`，形成3层SCF；1025 tail保持同一outer中的独立exact update |
+| single-axis ordered NCx fallback | 512/1024分别形成8/16个piece loops；1031另有tail | 512/1024均为piece×lane两层；1031为full piece×lane加一个tail lane，共3个静态loop |
+| G/S affine descriptor序列 | 每个descriptor静态发射一个G/S | 同结构且source/dest offset recurrence均exact时，一个SCF loop内发射一个dynamic-offset G/S；large rotate180从2048个静态command收敛为一个loop site |
+| RDMA/WDMA | current planner已使用三层字段，但缺少成对大尺寸回归 | 1024/1025 Tensor↔Cx均为单command，`iterations=[extent,64,1]`；不新增动态offset或SCF |
+
+Fresh product real time分别为conv 62.49s、prefill 128.99s、two-step decode 1604.66s和LLaMA 2368.63s。
+Conv search FP16/BF16由上一checkpoint约88/99s降为21.81/28.52s；LLaMA search由1082.74/1074.94s降为
+1000.57/993.78s。16/16 product、22/22 calibration和target-model source vertical均通过current package/no-card；
+canonical完整增量build、13个component unit、14个target numeric/SystemC tests、全量lit及source-organization均通过。
+本轮未运行真实设备，因此状态仍只到`board-ready`。

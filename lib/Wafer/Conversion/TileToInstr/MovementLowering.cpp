@@ -210,33 +210,22 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
-    llvm::SmallVector<InstrGatherScatterOp, 4> lowered;
     if (dynamicSubview) {
       mlir::Value dynamicSourceOffset = materializeDynamicSubviewByteOffset(
           *dynamicSubview, rewriter, op.getLoc());
       if (!dynamicSourceOffset)
         return mlir::failure();
-      for (MovementDescriptorPair descriptor : *descriptorPlan) {
-        mlir::Value sourceOffset = dynamicSourceOffset;
-        if (descriptor.source.byteOffset != 0) {
-          mlir::Value staticOffset =
-              rewriter.create<mlir::arith::ConstantIndexOp>(
-                  op.getLoc(), descriptor.source.byteOffset);
-          sourceOffset = rewriter.create<mlir::arith::AddIOp>(
-              op.getLoc(), sourceOffset, staticOffset);
-          descriptor.source.byteOffset = 0;
-        }
-        lowered.push_back(createGatherScatter(
-            rewriter, op.getLoc(), dynamicSubview->sourceBase, *dest,
-            descriptor.source, descriptor.dest, sourceOffset));
-      }
+      if (mlir::failed(emitGatherScatterDescriptorPlan(
+              rewriter, op.getLoc(), op, dynamicSubview->sourceBase, *dest,
+              *descriptorPlan, bufferRecorder, /*ddrResource=*/{},
+              dynamicSourceOffset)))
+        return mlir::failure();
     } else {
-      lowered = createGatherScatterDescriptors(
-          rewriter, op.getLoc(), op.getSource(), *dest, *descriptorPlan);
+      if (mlir::failed(emitGatherScatterDescriptorPlan(
+              rewriter, op.getLoc(), op, op.getSource(), *dest, *descriptorPlan,
+              bufferRecorder)))
+        return mlir::failure();
     }
-    if (bufferRecorder)
-      for (InstrGatherScatterOp operation : lowered)
-        bufferRecorder->recordLoweredOperation(op, operation);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -281,15 +270,10 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
-    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
-        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
-                                       *dest, *descriptors);
-    if (DDRResourceAttr resource = op.getDdrResourceAttr())
-      for (InstrGatherScatterOp operation : lowered)
-        operation.setDdrResourceAttr(resource);
-    if (bufferRecorder)
-      for (InstrGatherScatterOp operation : lowered)
-        bufferRecorder->recordLoweredOperation(op, operation);
+    if (mlir::failed(emitGatherScatterDescriptorPlan(
+            rewriter, op.getLoc(), op, op.getSource(), *dest, *descriptors,
+            bufferRecorder, op.getDdrResourceAttr())))
+      return mlir::failure();
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -356,34 +340,22 @@ public:
     if (mlir::failed(descriptors))
       return mlir::failure();
 
-    llvm::SmallVector<InstrGatherScatterOp, 4> lowered;
     if (dynamicDest) {
       mlir::Value dynamicOffset = materializeDynamicSubviewByteOffset(
           *dynamicDest, rewriter, op.getLoc());
       if (!dynamicOffset)
         return mlir::failure();
-      for (MovementDescriptorPair descriptor : *descriptors) {
-        mlir::Value destOffset = dynamicOffset;
-        if (descriptor.dest.byteOffset != 0) {
-          mlir::Value staticOffset =
-              rewriter.create<mlir::arith::ConstantIndexOp>(
-                  op.getLoc(), descriptor.dest.byteOffset);
-          destOffset = rewriter.create<mlir::arith::AddIOp>(
-              op.getLoc(), destOffset, staticOffset);
-          descriptor.dest.byteOffset = 0;
-        }
-        lowered.push_back(createGatherScatter(
-            rewriter, op.getLoc(), op.getSource(), descriptorDest,
-            descriptor.source, descriptor.dest, /*dynamicSourceOffset=*/{},
-            destOffset));
-      }
+      if (mlir::failed(emitGatherScatterDescriptorPlan(
+              rewriter, op.getLoc(), op, op.getSource(), descriptorDest,
+              *descriptors, bufferRecorder, /*ddrResource=*/{}, {},
+              dynamicOffset)))
+        return mlir::failure();
     } else {
-      lowered = createGatherScatterDescriptors(
-          rewriter, op.getLoc(), op.getSource(), descriptorDest, *descriptors);
+      if (mlir::failed(emitGatherScatterDescriptorPlan(
+              rewriter, op.getLoc(), op, op.getSource(), descriptorDest,
+              *descriptors, bufferRecorder)))
+        return mlir::failure();
     }
-    if (bufferRecorder)
-      for (InstrGatherScatterOp operation : lowered)
-        bufferRecorder->recordLoweredOperation(op, operation);
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -480,10 +452,10 @@ public:
           "memref.copy SPM");
       if (mlir::failed(descriptors))
         return mlir::failure();
-      for (InstrGatherScatterOp lowered :
-           createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
-                                          op.getTarget(), *descriptors))
-        record(lowered);
+      if (mlir::failed(emitGatherScatterDescriptorPlan(
+              rewriter, op.getLoc(), op, op.getSource(), op.getTarget(),
+              *descriptors, bufferRecorder)))
+        return mlir::failure();
     } else if (sourceMemory.getSpace() == MemorySpace::DDR &&
                destMemory.getSpace() == MemorySpace::DDR) {
       auto stagingType = mlir::MemRefType::get(
@@ -595,12 +567,10 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
-    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
-        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
-                                       *dest, *descriptors);
-    if (bufferRecorder)
-      for (InstrGatherScatterOp operation : lowered)
-        bufferRecorder->recordLoweredOperation(op, operation);
+    if (mlir::failed(emitGatherScatterDescriptorPlan(
+            rewriter, op.getLoc(), op, op.getSource(), *dest, *descriptors,
+            bufferRecorder)))
+      return mlir::failure();
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -668,15 +638,10 @@ public:
     if (mlir::failed(insertDescriptors))
       return mlir::failure();
 
-    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
-        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
-                                       op.getDest(), **insertDescriptors);
-    if (DDRResourceAttr resource = op.getDdrResourceAttr())
-      for (InstrGatherScatterOp operation : lowered)
-        operation.setDdrResourceAttr(resource);
-    if (bufferRecorder)
-      for (InstrGatherScatterOp operation : lowered)
-        bufferRecorder->recordLoweredOperation(op, operation);
+    if (mlir::failed(emitGatherScatterDescriptorPlan(
+            rewriter, op.getLoc(), op, op.getSource(), op.getDest(),
+            **insertDescriptors, bufferRecorder, op.getDdrResourceAttr())))
+      return mlir::failure();
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -743,12 +708,10 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
-    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
-        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
-                                       *dest, *descriptors);
-    if (bufferRecorder)
-      for (InstrGatherScatterOp operation : lowered)
-        bufferRecorder->recordLoweredOperation(op, operation);
+    if (mlir::failed(emitGatherScatterDescriptorPlan(
+            rewriter, op.getLoc(), op, op.getSource(), *dest, *descriptors,
+            bufferRecorder)))
+      return mlir::failure();
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -787,8 +750,10 @@ public:
     if (mlir::failed(descriptors))
       return mlir::failure();
 
-    createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
-                                   op.getDest(), *descriptors);
+    if (mlir::failed(emitGatherScatterDescriptorPlan(
+            rewriter, op.getLoc(), op, op.getSource(), op.getDest(),
+            *descriptors)))
+      return mlir::failure();
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -1025,12 +990,10 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
-    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
-        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
-                                       *dest, *descriptors);
-    if (bufferRecorder)
-      for (InstrGatherScatterOp operation : lowered)
-        bufferRecorder->recordLoweredOperation(op, operation);
+    if (mlir::failed(emitGatherScatterDescriptorPlan(
+            rewriter, op.getLoc(), op, op.getSource(), *dest, *descriptors,
+            bufferRecorder)))
+      return mlir::failure();
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -1140,12 +1103,10 @@ public:
         op.getLoc(), op.getResult().getType(), rewriter, op, bufferRecorder);
     if (mlir::failed(dest))
       return mlir::failure();
-    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
-        createGatherScatterDescriptors(rewriter, op.getLoc(), op.getSource(),
-                                       *dest, *descriptors);
-    if (bufferRecorder)
-      for (InstrGatherScatterOp operation : lowered)
-        bufferRecorder->recordLoweredOperation(op, operation);
+    if (mlir::failed(emitGatherScatterDescriptorPlan(
+            rewriter, op.getLoc(), op, op.getSource(), *dest, *descriptors,
+            bufferRecorder)))
+      return mlir::failure();
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }

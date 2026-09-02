@@ -16,13 +16,12 @@ func.func @ordered_trailing_tensor_sum() {
 }
 
 // CHECK-LABEL: func.func @ordered_trailing_tensor_sum
-// Eight exact 64-channel physical runs cover all 512 ordered tuples. The
-// body remains one gather followed by one accumulation, with both
-// accumulators carried and swapped across each loop iteration.
-// CHECK: scf.for
+// Eight exact 64-channel physical runs are represented by one piece loop and
+// one lane loop. The body remains one gather followed by one accumulation,
+// with both accumulators carried and swapped across each loop iteration.
+// CHECK-COUNT-2: scf.for
 // CHECK: src_offset_value(%{{.+}})
 // CHECK: scf.yield %{{.+}}, %{{.+}}
-// CHECK-COUNT-7: scf.for
 // CHECK: wafer.instr.gather_scatter %{{.+}} to %{{.+}}
 // CHECK-NOT: wafer.tile.reduce
 // CHECK: return
@@ -45,10 +44,9 @@ func.func @ordered_aligned_workload_reduction() {
 }
 
 // CHECK-LABEL: func.func @ordered_aligned_workload_reduction
-// CHECK: scf.for
+// CHECK-COUNT-2: scf.for
 // CHECK: src_offset_value(%{{.+}})
 // CHECK: scf.yield %{{.+}}, %{{.+}}
-// CHECK-COUNT-15: scf.for
 // CHECK-NOT: wafer.tile.reduce
 // CHECK: return
 
@@ -68,11 +66,10 @@ func.func @ordered_ragged_workload_reduction() {
 }
 
 // CHECK-LABEL: func.func @ordered_ragged_workload_reduction
-// Sixteen full physical blocks plus the seven-channel tail are separate exact
-// affine descriptor classes.
-// CHECK: scf.for
+// Sixteen full physical blocks share one piece loop; the seven-channel tail
+// remains a separate exact lane loop.
+// CHECK-COUNT-3: scf.for
 // CHECK: src_offset_value(%{{.+}})
 // CHECK: scf.yield %{{.+}}, %{{.+}}
-// CHECK-COUNT-16: scf.for
 // CHECK-NOT: wafer.tile.reduce
 // CHECK: return

@@ -183,9 +183,18 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
                                const analysis::IndexRelation &iterationToSource,
                                const analysis::IndexRelation &iterationToDest,
                                MovementEngine engine, llvm::StringRef opLabel);
-llvm::SmallVector<InstrGatherScatterOp, 4> createGatherScatterDescriptors(
-    mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
-    mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors);
+/// Emits a current GatherScatter descriptor plan. Adjacent descriptors with
+/// identical descriptor structure and checked-affine endpoint offsets are
+/// represented by one SCF induction loop and dynamic offset operands; all
+/// other descriptors remain one actual instruction each. The helper never
+/// changes descriptor coverage or introduces a movement/computation owner.
+mlir::LogicalResult emitGatherScatterDescriptorPlan(
+    mlir::PatternRewriter &rewriter, mlir::Location loc,
+    mlir::Operation *sourceOperation, mlir::Value source, mlir::Value dest,
+    llvm::ArrayRef<MovementDescriptorPair> descriptors,
+    TileRegionToInstrBufferRecorder *bufferRecorder = nullptr,
+    DDRResourceAttr ddrResource = {}, mlir::Value dynamicSourceOffset = {},
+    mlir::Value dynamicDestOffset = {});
 llvm::SmallVector<InstrRDMAOp, 4>
 createMappedRDMADescriptors(mlir::PatternRewriter &rewriter, mlir::Location loc,
                             mlir::Value source, mlir::Value dest,

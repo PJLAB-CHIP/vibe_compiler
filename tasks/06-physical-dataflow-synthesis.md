@@ -539,6 +539,12 @@ Conversion按actual typed Tile op使用DialectConversion/RewritePattern生成can
 execution structure、worker或completion，也不从上游plan恢复这些事实。输出Instr在每个Tile上显式保留actual loop/slot relation、
 compute/movement issue、memref use-def、effect、token和control flow。
 
+其中 movement descriptor 的循环层级由对应 Instr ABI 直接约束：RDMA/WDMA 使用最多三层静态 endpoint stride/iteration，
+没有动态 offset SSA；GatherScatter 在 descriptor 结构相同且 source/destination offset 通过 checked affine recurrence 可证明时，
+由一个 current SCF loop 携带动态 offset，不能把不可表达的端点或非 affine 序列强行合并。`tile.reduce` 先尝试单个或串联多个
+合法 `InstrReduceOp`，只有 native signature 不可表达时才使用 G/S + accumulator fallback；movement descriptor 的循环不能代替
+带数据依赖的 reduction recurrence。
+
 ### 6.5 Worker、order 与 completion
 
 Event/dependence graph只能作为从current Instr的operation、SSA、effect、range、token和control flow重算的query-local analysis。

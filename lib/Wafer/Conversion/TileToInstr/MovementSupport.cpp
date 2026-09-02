@@ -8,6 +8,7 @@
 
 #include "mlir/Analysis/FlatLinearValueConstraints.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -1199,6 +1200,11 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
       return lhs.destStride < rhs.destStride;
     });
 
+    // RDMA exposes only source stride/iteration and WDMA only destination
+    // stride/iteration in the current target ABI. The opposite endpoint is
+    // therefore required to advance as one contiguous payload; when a
+    // physical padding boundary breaks that property, retain separate static
+    // commands instead of inventing a dynamic endpoint offset form.
     if (engine != MovementEngine::GatherScatter) {
       int64_t expectedStride = elementBytes;
       for (size_t index = 0; index < axes.size(); ++index) {
@@ -1496,14 +1502,125 @@ MovementDescriptorCache::getOrCreate(
   return plan;
 }
 
-llvm::SmallVector<InstrGatherScatterOp, 4> createGatherScatterDescriptors(
-    mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
-    mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors) {
-  llvm::SmallVector<InstrGatherScatterOp, 4> operations;
-  for (const MovementDescriptorPair &descriptor : descriptors)
-    operations.push_back(createGatherScatter(
-        rewriter, loc, source, dest, descriptor.source, descriptor.dest));
-  return operations;
+mlir::LogicalResult emitGatherScatterDescriptorPlan(
+    mlir::PatternRewriter &rewriter, mlir::Location loc,
+    mlir::Operation *sourceOperation, mlir::Value source, mlir::Value dest,
+    llvm::ArrayRef<MovementDescriptorPair> descriptors,
+    TileRegionToInstrBufferRecorder *bufferRecorder,
+    DDRResourceAttr ddrResource, mlir::Value dynamicSourceOffset,
+    mlir::Value dynamicDestOffset) {
+  auto sameStructure = [](const MovementDescriptor &lhs,
+                          const MovementDescriptor &rhs) {
+    return lhs.byteCount == rhs.byteCount && lhs.innerBytes == rhs.innerBytes &&
+           lhs.strides == rhs.strides && lhs.iterations == rhs.iterations;
+  };
+
+  auto emitOne = [&](const MovementDescriptorPair &descriptor,
+                     mlir::Value induction, int64_t sourceStep,
+                     int64_t destStep) {
+    auto buildDynamicOffset = [&](int64_t staticOffset, int64_t offsetStep,
+                                  mlir::Value base) -> mlir::Value {
+      if (!base && !induction && offsetStep == 0)
+        return {};
+      mlir::Value result = base;
+      if (!result)
+        result = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 0);
+      if (staticOffset != 0) {
+        mlir::Value constant =
+            rewriter.create<mlir::arith::ConstantIndexOp>(loc, staticOffset);
+        result = rewriter.create<mlir::arith::AddIOp>(loc, result, constant);
+      }
+      if (induction && offsetStep != 0) {
+        mlir::Value constant =
+            rewriter.create<mlir::arith::ConstantIndexOp>(loc, offsetStep);
+        mlir::Value scaled =
+            rewriter.create<mlir::arith::MulIOp>(loc, induction, constant);
+        result = rewriter.create<mlir::arith::AddIOp>(loc, result, scaled);
+      }
+      return result;
+    };
+
+    MovementDescriptor sourceDescriptor = descriptor.source;
+    MovementDescriptor destDescriptor = descriptor.dest;
+    mlir::Value sourceOffset = buildDynamicOffset(
+        sourceDescriptor.byteOffset, sourceStep, dynamicSourceOffset);
+    mlir::Value destOffset = buildDynamicOffset(destDescriptor.byteOffset,
+                                                destStep, dynamicDestOffset);
+    if (sourceOffset)
+      sourceDescriptor.byteOffset = 0;
+    if (destOffset)
+      destDescriptor.byteOffset = 0;
+    InstrGatherScatterOp lowered =
+        createGatherScatter(rewriter, loc, source, dest, sourceDescriptor,
+                            destDescriptor, sourceOffset, destOffset);
+    if (ddrResource)
+      lowered.setDdrResourceAttr(ddrResource);
+    if (bufferRecorder && sourceOperation)
+      bufferRecorder->recordLoweredOperation(sourceOperation, lowered);
+  };
+
+  for (size_t begin = 0; begin < descriptors.size();) {
+    size_t count = 1;
+    int64_t sourceStep = 0;
+    int64_t destStep = 0;
+    bool hasAffineVariation = false;
+    if (begin + 1 < descriptors.size() &&
+        sameStructure(descriptors[begin].source,
+                      descriptors[begin + 1].source) &&
+        sameStructure(descriptors[begin].dest, descriptors[begin + 1].dest)) {
+      if (!llvm::SubOverflow(descriptors[begin + 1].source.byteOffset,
+                             descriptors[begin].source.byteOffset,
+                             sourceStep) &&
+          !llvm::SubOverflow(descriptors[begin + 1].dest.byteOffset,
+                             descriptors[begin].dest.byteOffset, destStep)) {
+        hasAffineVariation = sourceStep != 0 || destStep != 0;
+        count = 2;
+        while (begin + count < descriptors.size()) {
+          const MovementDescriptorPair &candidate = descriptors[begin + count];
+          if (!sameStructure(descriptors[begin].source, candidate.source) ||
+              !sameStructure(descriptors[begin].dest, candidate.dest))
+            break;
+          const int64_t relative = static_cast<int64_t>(count);
+          int64_t sourceDelta = 0;
+          int64_t destDelta = 0;
+          int64_t expectedSource = 0;
+          int64_t expectedDest = 0;
+          if (llvm::MulOverflow(sourceStep, relative, sourceDelta) ||
+              llvm::MulOverflow(destStep, relative, destDelta) ||
+              llvm::AddOverflow(descriptors[begin].source.byteOffset,
+                                sourceDelta, expectedSource) ||
+              llvm::AddOverflow(descriptors[begin].dest.byteOffset, destDelta,
+                                expectedDest) ||
+              expectedSource != candidate.source.byteOffset ||
+              expectedDest != candidate.dest.byteOffset)
+            break;
+          ++count;
+        }
+      }
+    }
+
+    if (count >= 2 && hasAffineVariation) {
+      auto lower = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 0);
+      auto upper = rewriter.create<mlir::arith::ConstantIndexOp>(
+          loc, static_cast<int64_t>(count));
+      auto step = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 1);
+      auto loop = rewriter.create<mlir::scf::ForOp>(loc, lower, upper, step);
+      if (!loop.getBody()->empty() &&
+          mlir::isa<mlir::scf::YieldOp>(loop.getBody()->back()))
+        rewriter.eraseOp(&loop.getBody()->back());
+      rewriter.setInsertionPointToStart(loop.getBody());
+      emitOne(descriptors[begin], loop.getInductionVar(), sourceStep, destStep);
+      rewriter.create<mlir::scf::YieldOp>(loc);
+      rewriter.setInsertionPointAfter(loop);
+      begin += count;
+      continue;
+    }
+
+    emitOne(descriptors[begin], /*induction=*/{}, /*sourceStep=*/0,
+            /*destStep=*/0);
+    ++begin;
+  }
+  return mlir::success();
 }
 
 llvm::SmallVector<InstrRDMAOp, 4> createMappedRDMADescriptors(

@@ -375,13 +375,10 @@ public:
           op.getLoc(), resultType, rewriter, op, bufferRecorder);
       if (mlir::failed(dest))
         return mlir::failure();
-      llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
-          createGatherScatterDescriptors(rewriter, op.getLoc(),
-                                         constantSelect->selectedInput, *dest,
-                                         **descriptors);
-      if (bufferRecorder)
-        for (InstrGatherScatterOp operation : lowered)
-          bufferRecorder->recordLoweredOperation(op, operation);
+      if (mlir::failed(emitGatherScatterDescriptorPlan(
+              rewriter, op.getLoc(), op, constantSelect->selectedInput, *dest,
+              **descriptors, bufferRecorder)))
+        return mlir::failure();
       rewriter.replaceOp(op, *dest);
       // In rollback-enabled dialect conversion, a source fill and its legal
       // replacement can temporarily coexist. Erase the replacement and let
@@ -556,34 +553,22 @@ public:
                           op, bufferRecorder);
       if (mlir::failed(materialized))
         return mlir::failure();
-      llvm::SmallVector<InstrGatherScatterOp, 4> lowered;
       if (inputRewrite.dynamicSubview) {
         mlir::Value dynamicOffset = materializeDynamicSubviewByteOffset(
             *inputRewrite.dynamicSubview, rewriter, op.getLoc());
         if (!dynamicOffset)
           return mlir::failure();
-        for (MovementDescriptorPair descriptor : inputRewrite.descriptors) {
-          mlir::Value sourceOffset = dynamicOffset;
-          if (descriptor.source.byteOffset != 0) {
-            mlir::Value staticOffset =
-                rewriter.create<mlir::arith::ConstantIndexOp>(
-                    op.getLoc(), descriptor.source.byteOffset);
-            sourceOffset = rewriter.create<mlir::arith::AddIOp>(
-                op.getLoc(), sourceOffset, staticOffset);
-            descriptor.source.byteOffset = 0;
-          }
-          lowered.push_back(createGatherScatter(
-              rewriter, op.getLoc(), inputRewrite.dynamicSubview->sourceBase,
-              *materialized, descriptor.source, descriptor.dest, sourceOffset));
-        }
+        if (mlir::failed(emitGatherScatterDescriptorPlan(
+                rewriter, op.getLoc(), op,
+                inputRewrite.dynamicSubview->sourceBase, *materialized,
+                inputRewrite.descriptors, bufferRecorder, {}, dynamicOffset)))
+          return mlir::failure();
       } else {
-        lowered = createGatherScatterDescriptors(
-            rewriter, op.getLoc(), inputRewrite.source, *materialized,
-            inputRewrite.descriptors);
+        if (mlir::failed(emitGatherScatterDescriptorPlan(
+                rewriter, op.getLoc(), op, inputRewrite.source, *materialized,
+                inputRewrite.descriptors, bufferRecorder)))
+          return mlir::failure();
       }
-      if (bufferRecorder)
-        for (InstrGatherScatterOp operation : lowered)
-          bufferRecorder->recordLoweredOperation(op, operation);
       inputs.push_back(*materialized);
     }
     mlir::FailureOr<mlir::Value> dest =
@@ -592,12 +577,10 @@ public:
       return mlir::failure();
 
     if (op.getKind() == ComputeElementwiseKind::Select) {
-      llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
-          createGatherScatterDescriptors(rewriter, op.getLoc(), inputs[2],
-                                         *dest, selectCopyDescriptors);
-      if (bufferRecorder)
-        for (InstrGatherScatterOp operation : lowered)
-          bufferRecorder->recordLoweredOperation(op, operation);
+      if (mlir::failed(emitGatherScatterDescriptorPlan(
+              rewriter, op.getLoc(), op, inputs[2], *dest,
+              selectCopyDescriptors, bufferRecorder)))
+        return mlir::failure();
       mlir::FailureOr<mlir::Value> mask = createDestAlloc(
           op.getLoc(), resultType, rewriter, op, bufferRecorder);
       if (mlir::failed(mask))
@@ -827,12 +810,13 @@ public:
     bool preferNativeReduction =
         resultType.getRank() != 0 &&
         tupleCount > (preferredMaximumOrderedReductionOperations - 4) / 4;
-    if (preferNativeReduction) {
+    if (preferNativeReduction && !extentOneBoundary) {
       // The native CT reduction encodes a complete logical reduction rather
       // than one scalar tuple at a time. Select it only when the source init
-      // is the exact identity, the logical dimensions have one typed target
-      // selector, and both layouts already satisfy that instruction's rank
-      // contract.
+      // is the exact identity and the layouts already satisfy that
+      // instruction's rank contract. A multi-axis source which has no single
+      // target selector is handled by a checked chain of single-axis native
+      // reductions before falling back to ordered movement.
       std::optional<int64_t> targetDim;
       for (int64_t candidate = 0; candidate <= 5; ++candidate) {
         llvm::SmallVector<int64_t, 3> candidateDims =
@@ -906,24 +890,101 @@ public:
               ? findTargetFormatEncoding(TargetFormatEngine::CT, *logicalFormat)
               : nullptr;
       const bool targetAllowsNativeReduce = reduceFormat != nullptr;
-      if (nativeKind && hasExactNativeIdentity && targetDim &&
+      const bool nativeLayoutContract =
           targetAllowsNativeReduce && inputMemory &&
           inputMemory.getLayout() == expectedInputLayout && resultMemory &&
-          resultMemory.getLayout() == expectedResultLayout) {
-        mlir::FailureOr<mlir::Value> dest = createDestAlloc(
-            op.getLoc(), resultType, rewriter, op, bufferRecorder);
-        if (mlir::failed(dest))
-          return mlir::failure();
+          resultMemory.getLayout() == expectedResultLayout;
+      if (nativeKind && hasExactNativeIdentity && nativeLayoutContract) {
         auto kind =
             InstrReduceKindAttr::get(rewriter.getContext(), *nativeKind);
-        auto instr = rewriter.create<InstrReduceOp>(
-            op.getLoc(), kind, op.getInput(), *dest,
-            getI64Attr(rewriter, *targetDim),
-            getDefaultNCCWorkerAttr(rewriter));
-        if (bufferRecorder)
-          bufferRecorder->recordLoweredOperation(op, instr);
-        rewriter.replaceOp(op, *dest);
-        return mlir::success();
+
+        if (targetDim) {
+          mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+              op.getLoc(), resultType, rewriter, op, bufferRecorder);
+          if (mlir::failed(dest))
+            return mlir::failure();
+          auto instr = rewriter.create<InstrReduceOp>(
+              op.getLoc(), kind, op.getInput(), *dest,
+              getI64Attr(rewriter, *targetDim),
+              getDefaultNCCWorkerAttr(rewriter));
+          if (bufferRecorder)
+            bufferRecorder->recordLoweredOperation(op, instr);
+          rewriter.replaceOp(op, *dest);
+          return mlir::success();
+        }
+
+        // The target encodes every individual logical axis. Reduce source
+        // dimensions in descending order so removing a higher dimension does
+        // not change the index of any remaining lower dimension. Build and
+        // validate every intermediate type before creating the first op.
+        llvm::SmallVector<int64_t, 4> descendingDims(reducedDims.begin(),
+                                                     reducedDims.end());
+        llvm::sort(descendingDims,
+                   [](int64_t lhs, int64_t rhs) { return lhs > rhs; });
+        llvm::SmallVector<int64_t, 4> currentShape(inputType.getShape().begin(),
+                                                   inputType.getShape().end());
+        llvm::SmallVector<int64_t, 4> singleTargetDims;
+        llvm::SmallVector<mlir::MemRefType, 4> nativeDestinationTypes;
+        bool canDecomposeNatively = true;
+        for (auto [stepIndex, sourceDim] : llvm::enumerate(descendingDims)) {
+          if (sourceDim < 0 ||
+              sourceDim >= static_cast<int64_t>(currentShape.size())) {
+            canDecomposeNatively = false;
+            break;
+          }
+          std::optional<int64_t> singleTargetDim;
+          for (int64_t candidate = 0; candidate <= 5; ++candidate) {
+            llvm::SmallVector<int64_t, 3> candidateDims =
+                wafer::getInstrReduceLogicalDims(
+                    candidate, static_cast<int64_t>(currentShape.size()));
+            if (candidateDims.size() == 1 &&
+                candidateDims.front() == sourceDim) {
+              singleTargetDim = candidate;
+              break;
+            }
+          }
+          if (!singleTargetDim) {
+            canDecomposeNatively = false;
+            break;
+          }
+          singleTargetDims.push_back(*singleTargetDim);
+          currentShape.erase(currentShape.begin() + sourceDim);
+          const bool isFinalStep = stepIndex + 1 == descendingDims.size();
+          if (isFinalStep) {
+            if (llvm::ArrayRef<int64_t>(currentShape) != resultType.getShape())
+              canDecomposeNatively = false;
+            else
+              nativeDestinationTypes.push_back(resultType);
+            break;
+          }
+          const MemLayout intermediateLayout =
+              currentShape.size() > 2 ? MemLayout::NCx : MemLayout::Cx;
+          nativeDestinationTypes.push_back(mlir::MemRefType::get(
+              currentShape, elementType, mlir::MemRefLayoutAttrInterface{},
+              MemoryAttr::get(rewriter.getContext(), MemorySpace::SPM,
+                              intermediateLayout)));
+        }
+
+        if (canDecomposeNatively &&
+            nativeDestinationTypes.size() == singleTargetDims.size()) {
+          mlir::Value currentInput = op.getInput();
+          for (auto [stepIndex, destinationType] :
+               llvm::enumerate(nativeDestinationTypes)) {
+            mlir::FailureOr<mlir::Value> destination = createDestAlloc(
+                op.getLoc(), destinationType, rewriter, op, bufferRecorder);
+            if (mlir::failed(destination))
+              return mlir::failure();
+            auto instr = rewriter.create<InstrReduceOp>(
+                op.getLoc(), kind, currentInput, *destination,
+                getI64Attr(rewriter, singleTargetDims[stepIndex]),
+                getDefaultNCCWorkerAttr(rewriter));
+            if (bufferRecorder)
+              bufferRecorder->recordLoweredOperation(op, instr);
+            currentInput = *destination;
+          }
+          rewriter.replaceOp(op, currentInput);
+          return mlir::success();
+        }
       }
     }
 
@@ -988,8 +1049,15 @@ public:
       llvm::SmallVector<llvm::SmallVector<int64_t, 2>, 8>
           sourceRepeatOffsetSteps;
     };
+    struct PieceSliceGroup {
+      int64_t firstRun = 0;
+      int64_t count = 1;
+      llvm::SmallVector<int64_t, 2> sourcePieceOffsetSteps;
+      llvm::SmallVector<int64_t, 2> sourceOuterOffsetSteps;
+    };
     llvm::SmallVector<SliceRun, 8> sliceRuns;
     std::optional<RepeatedSliceRuns> repeatedSliceRuns;
+    llvm::SmallVector<PieceSliceGroup, 8> pieceSliceGroups;
 
     auto initializeAffineRun =
         [&](int64_t begin, int64_t end, SharedMovementDescriptorPlan first,
@@ -1253,6 +1321,75 @@ public:
         if (isExactRepeatedStream)
           repeatedSliceRuns = std::move(candidate);
       }
+
+      // Factor a repeated physical-piece axis only when it is independent of
+      // the outer tuple axis.  This is a structural reduction of the SCF
+      // representation, not a new movement plan: every descriptor base and
+      // stride is checked against the actual materialized run list.
+      if (repeatedSliceRuns) {
+        const RepeatedSliceRuns &repeat = *repeatedSliceRuns;
+        for (int64_t firstRun = 0; firstRun < repeat.runsPerRepeat;) {
+          PieceSliceGroup group;
+          group.firstRun = firstRun;
+          group.sourceOuterOffsetSteps =
+              repeat.sourceRepeatOffsetSteps[firstRun];
+          int64_t count = 1;
+          while (firstRun + count < repeat.runsPerRepeat) {
+            const SliceRun &base = sliceRuns[firstRun];
+            const SliceRun &next = sliceRuns[firstRun + count];
+            if (!base.descriptors || !next.descriptors ||
+                base.size() != next.size() ||
+                base.sourceOffsetSteps != next.sourceOffsetSteps ||
+                !haveEqualSliceDescriptorStructure(*base.descriptors,
+                                                   *next.descriptors) ||
+                repeat.sourceRepeatOffsetSteps[firstRun + count] !=
+                    group.sourceOuterOffsetSteps)
+              break;
+
+            if (group.sourcePieceOffsetSteps.empty()) {
+              group.sourcePieceOffsetSteps.reserve(base.descriptors->size());
+              for (auto [baseDescriptor, nextDescriptor] :
+                   llvm::zip_equal(*base.descriptors, *next.descriptors)) {
+                int64_t step = 0;
+                if (llvm::SubOverflow(nextDescriptor.source.byteOffset,
+                                      baseDescriptor.source.byteOffset, step)) {
+                  group.sourcePieceOffsetSteps.clear();
+                  break;
+                }
+                group.sourcePieceOffsetSteps.push_back(step);
+              }
+              if (group.sourcePieceOffsetSteps.size() !=
+                  base.descriptors->size())
+                break;
+            }
+
+            bool exactPieceBase = true;
+            for (auto [descriptorIndex, descriptor] :
+                 llvm::enumerate(*next.descriptors)) {
+              int64_t delta = 0;
+              int64_t expected = 0;
+              if (llvm::MulOverflow(
+                      group.sourcePieceOffsetSteps[descriptorIndex], count,
+                      delta) ||
+                  llvm::AddOverflow(
+                      (*base.descriptors)[descriptorIndex].source.byteOffset,
+                      delta, expected) ||
+                  expected != descriptor.source.byteOffset) {
+                exactPieceBase = false;
+                break;
+              }
+            }
+            if (!exactPieceBase)
+              break;
+            ++count;
+          }
+          group.count = count;
+          if (group.count < 2)
+            group.sourcePieceOffsetSteps.clear();
+          pieceSliceGroups.push_back(std::move(group));
+          firstRun += count;
+        }
+      }
     }
 
     // Adjacent physical pieces may have been discovered independently (for
@@ -1280,6 +1417,61 @@ public:
         coalescedSliceRuns.push_back(std::move(run));
       }
       sliceRuns = std::move(coalescedSliceRuns);
+
+      for (int64_t firstRun = 0;
+           firstRun < static_cast<int64_t>(sliceRuns.size());) {
+        PieceSliceGroup group;
+        group.firstRun = firstRun;
+        int64_t count = 1;
+        while (firstRun + count < static_cast<int64_t>(sliceRuns.size())) {
+          const SliceRun &base = sliceRuns[firstRun];
+          const SliceRun &next = sliceRuns[firstRun + count];
+          if (!base.descriptors || !next.descriptors ||
+              base.size() != next.size() ||
+              base.sourceOffsetSteps != next.sourceOffsetSteps ||
+              !haveEqualSliceDescriptorStructure(*base.descriptors,
+                                                 *next.descriptors))
+            break;
+          if (group.sourcePieceOffsetSteps.empty()) {
+            group.sourcePieceOffsetSteps.reserve(base.descriptors->size());
+            for (auto [baseDescriptor, nextDescriptor] :
+                 llvm::zip_equal(*base.descriptors, *next.descriptors)) {
+              int64_t step = 0;
+              if (llvm::SubOverflow(nextDescriptor.source.byteOffset,
+                                    baseDescriptor.source.byteOffset, step)) {
+                group.sourcePieceOffsetSteps.clear();
+                break;
+              }
+              group.sourcePieceOffsetSteps.push_back(step);
+            }
+            if (group.sourcePieceOffsetSteps.size() != base.descriptors->size())
+              break;
+          }
+          bool exactPieceBase = true;
+          for (auto [descriptorIndex, descriptor] :
+               llvm::enumerate(*next.descriptors)) {
+            int64_t delta = 0;
+            int64_t expected = 0;
+            if (llvm::MulOverflow(group.sourcePieceOffsetSteps[descriptorIndex],
+                                  count, delta) ||
+                llvm::AddOverflow(
+                    (*base.descriptors)[descriptorIndex].source.byteOffset,
+                    delta, expected) ||
+                expected != descriptor.source.byteOffset) {
+              exactPieceBase = false;
+              break;
+            }
+          }
+          if (!exactPieceBase)
+            break;
+          ++count;
+        }
+        group.count = count;
+        if (group.count < 2)
+          group.sourcePieceOffsetSteps.clear();
+        pieceSliceGroups.push_back(std::move(group));
+        firstRun += count;
+      }
     }
 
     analysis::IndexRelationResult finalRelation =
@@ -1325,16 +1517,16 @@ public:
     mlir::Value nextAccumulator = *accumulatorB;
     auto emitSliceRun = [&](const SliceRun &run, mlir::Value outerInduction,
                             llvm::ArrayRef<int64_t> outerOffsetSteps,
+                            mlir::Value pieceInduction,
+                            llvm::ArrayRef<int64_t> pieceOffsetSteps,
                             mlir::Value &current,
                             mlir::Value &next) -> mlir::LogicalResult {
       const MovementDescriptorPlan &basePlan = *run.descriptors;
-      if (run.size() == 1 && !outerInduction) {
-        llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
-            createGatherScatterDescriptors(rewriter, op.getLoc(), op.getInput(),
-                                           *slice, basePlan);
-        if (bufferRecorder)
-          for (InstrGatherScatterOp operation : lowered)
-            bufferRecorder->recordLoweredOperation(op, operation);
+      if (run.size() == 1 && !outerInduction && !pieceInduction) {
+        if (mlir::failed(emitGatherScatterDescriptorPlan(
+                rewriter, op.getLoc(), op, op.getInput(), *slice, basePlan,
+                bufferRecorder)))
+          return mlir::failure();
         llvm::SmallVector<mlir::Value, 2> inputs{current, *slice};
         auto accumulate = rewriter.create<InstrElementwiseOp>(
             op.getLoc(), *accumulationKind, inputs, next,
@@ -1352,13 +1544,12 @@ public:
       if (run.size() > 1) {
         auto lower =
             rewriter.create<mlir::arith::ConstantIndexOp>(op.getLoc(), 0);
-        auto upper = rewriter.create<mlir::arith::ConstantIndexOp>(
-            op.getLoc(), run.size());
+        auto upper = rewriter.create<mlir::arith::ConstantIndexOp>(op.getLoc(),
+                                                                   run.size());
         auto step =
             rewriter.create<mlir::arith::ConstantIndexOp>(op.getLoc(), 1);
         loop = rewriter.create<mlir::scf::ForOp>(
-            op.getLoc(), lower, upper, step,
-            mlir::ValueRange{current, next});
+            op.getLoc(), lower, upper, step, mlir::ValueRange{current, next});
         if (!loop.getBody()->empty() &&
             mlir::isa<mlir::scf::YieldOp>(loop.getBody()->back()))
           rewriter.eraseOp(&loop.getBody()->back());
@@ -1385,8 +1576,9 @@ public:
               op.getLoc(), dynamicOffset, scaled);
         };
         if (outerInduction)
-          addScaledInduction(outerInduction,
-                             outerOffsetSteps[descriptorIndex]);
+          addScaledInduction(outerInduction, outerOffsetSteps[descriptorIndex]);
+        if (pieceInduction)
+          addScaledInduction(pieceInduction, pieceOffsetSteps[descriptorIndex]);
         if (innerInduction)
           addScaledInduction(innerInduction,
                              run.sourceOffsetSteps[descriptorIndex]);
@@ -1422,8 +1614,7 @@ public:
           rewriter.create<mlir::arith::ConstantIndexOp>(op.getLoc(), 0);
       auto upper = rewriter.create<mlir::arith::ConstantIndexOp>(
           op.getLoc(), repeatedSliceRuns->repeatCount);
-      auto step =
-          rewriter.create<mlir::arith::ConstantIndexOp>(op.getLoc(), 1);
+      auto step = rewriter.create<mlir::arith::ConstantIndexOp>(op.getLoc(), 1);
       auto outerLoop = rewriter.create<mlir::scf::ForOp>(
           op.getLoc(), lower, upper, step,
           mlir::ValueRange{currentAccumulator, nextAccumulator});
@@ -1433,32 +1624,89 @@ public:
       rewriter.setInsertionPointToStart(outerLoop.getBody());
       mlir::Value outerCurrent = outerLoop.getRegionIterArgs()[0];
       mlir::Value outerNext = outerLoop.getRegionIterArgs()[1];
-      for (int64_t runIndex = 0;
-           runIndex < repeatedSliceRuns->runsPerRepeat; ++runIndex)
+      for (const PieceSliceGroup &group : pieceSliceGroups) {
+        if (group.count == 1) {
+          if (mlir::failed(emitSliceRun(
+                  sliceRuns[group.firstRun], outerLoop.getInductionVar(),
+                  group.sourceOuterOffsetSteps, /*pieceInduction=*/{},
+                  /*pieceOffsetSteps=*/{}, outerCurrent, outerNext)))
+            return mlir::failure();
+          continue;
+        }
+
+        auto pieceLower =
+            rewriter.create<mlir::arith::ConstantIndexOp>(op.getLoc(), 0);
+        auto pieceUpper = rewriter.create<mlir::arith::ConstantIndexOp>(
+            op.getLoc(), group.count);
+        auto pieceStep =
+            rewriter.create<mlir::arith::ConstantIndexOp>(op.getLoc(), 1);
+        auto pieceLoop = rewriter.create<mlir::scf::ForOp>(
+            op.getLoc(), pieceLower, pieceUpper, pieceStep,
+            mlir::ValueRange{outerCurrent, outerNext});
+        if (!pieceLoop.getBody()->empty() &&
+            mlir::isa<mlir::scf::YieldOp>(pieceLoop.getBody()->back()))
+          rewriter.eraseOp(&pieceLoop.getBody()->back());
+        rewriter.setInsertionPointToStart(pieceLoop.getBody());
+        mlir::Value pieceCurrent = pieceLoop.getRegionIterArgs()[0];
+        mlir::Value pieceNext = pieceLoop.getRegionIterArgs()[1];
         if (mlir::failed(emitSliceRun(
-                sliceRuns[runIndex], outerLoop.getInductionVar(),
-                repeatedSliceRuns->sourceRepeatOffsetSteps[runIndex],
-                outerCurrent, outerNext)))
+                sliceRuns[group.firstRun], outerLoop.getInductionVar(),
+                group.sourceOuterOffsetSteps, pieceLoop.getInductionVar(),
+                group.sourcePieceOffsetSteps, pieceCurrent, pieceNext)))
           return mlir::failure();
+        rewriter.create<mlir::scf::YieldOp>(
+            op.getLoc(), mlir::ValueRange{pieceCurrent, pieceNext});
+        rewriter.setInsertionPointAfter(pieceLoop);
+        outerCurrent = pieceLoop.getResult(0);
+        outerNext = pieceLoop.getResult(1);
+      }
       rewriter.create<mlir::scf::YieldOp>(
           op.getLoc(), mlir::ValueRange{outerCurrent, outerNext});
       rewriter.setInsertionPointAfter(outerLoop);
       currentAccumulator = outerLoop.getResult(0);
       nextAccumulator = outerLoop.getResult(1);
     } else {
-      for (const SliceRun &run : sliceRuns)
-        if (mlir::failed(emitSliceRun(run, /*outerInduction=*/{},
-                                      /*outerOffsetSteps=*/{},
-                                      currentAccumulator, nextAccumulator)))
+      for (const PieceSliceGroup &group : pieceSliceGroups) {
+        if (group.count == 1) {
+          if (mlir::failed(
+                  emitSliceRun(sliceRuns[group.firstRun], /*outerInduction=*/{},
+                               /*outerOffsetSteps=*/{}, /*pieceInduction=*/{},
+                               /*pieceOffsetSteps=*/{}, currentAccumulator,
+                               nextAccumulator)))
+            return mlir::failure();
+          continue;
+        }
+        auto pieceLower =
+            rewriter.create<mlir::arith::ConstantIndexOp>(op.getLoc(), 0);
+        auto pieceUpper = rewriter.create<mlir::arith::ConstantIndexOp>(
+            op.getLoc(), group.count);
+        auto pieceStep =
+            rewriter.create<mlir::arith::ConstantIndexOp>(op.getLoc(), 1);
+        auto pieceLoop = rewriter.create<mlir::scf::ForOp>(
+            op.getLoc(), pieceLower, pieceUpper, pieceStep,
+            mlir::ValueRange{currentAccumulator, nextAccumulator});
+        if (!pieceLoop.getBody()->empty() &&
+            mlir::isa<mlir::scf::YieldOp>(pieceLoop.getBody()->back()))
+          rewriter.eraseOp(&pieceLoop.getBody()->back());
+        rewriter.setInsertionPointToStart(pieceLoop.getBody());
+        mlir::Value pieceCurrent = pieceLoop.getRegionIterArgs()[0];
+        mlir::Value pieceNext = pieceLoop.getRegionIterArgs()[1];
+        if (mlir::failed(emitSliceRun(
+                sliceRuns[group.firstRun], /*outerInduction=*/{},
+                /*outerOffsetSteps=*/{}, pieceLoop.getInductionVar(),
+                group.sourcePieceOffsetSteps, pieceCurrent, pieceNext)))
           return mlir::failure();
+        rewriter.create<mlir::scf::YieldOp>(
+            op.getLoc(), mlir::ValueRange{pieceCurrent, pieceNext});
+        rewriter.setInsertionPointAfter(pieceLoop);
+        currentAccumulator = pieceLoop.getResult(0);
+        nextAccumulator = pieceLoop.getResult(1);
+      }
     }
-    llvm::SmallVector<InstrGatherScatterOp, 4> lowered =
-        createGatherScatterDescriptors(rewriter, op.getLoc(),
-                                       currentAccumulator, *dest,
-                                       **finalDescriptors);
-    if (bufferRecorder)
-      for (InstrGatherScatterOp operation : lowered)
-        bufferRecorder->recordLoweredOperation(op, operation);
+    if (mlir::failed(emitGatherScatterDescriptorPlan(
+            rewriter, op.getLoc(), op, currentAccumulator, *dest,
+            **finalDescriptors, bufferRecorder)))
+      return mlir::failure();
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }

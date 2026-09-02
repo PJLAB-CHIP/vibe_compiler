@@ -216,8 +216,10 @@
   长时间停在completion analysis。
 - 根因：只在单一reduction轴上识别descriptor affine run，没有把完整词典序中的重复physical stream作为一个可验证的
   nested loop；identity解析也没有在一次只读access query内记忆已完成的SSA结果。
-- 修复模式：先逐descriptor验证每个outer重复段的base、inner stride、outer stride和last descriptor，只有完全匹配时
-  才物化一个outer loop及每个physical segment的inner loop；不匹配则保留原有精确分段路径。`collectAccesses`使用调用
+- 修复模式：先检查target `InstrReduceOp`能否直接覆盖dimensions；不能时，在identity/layout/shape满足合同的前提下按
+  descending logical dimensions建立实际的single-axis native chain。仍需ordered fallback时，再逐descriptor验证每个outer重复段的
+  base、inner stride、outer stride和last descriptor，只有完全匹配时才物化一个outer loop及每个physical segment的inner loop；
+  不匹配则保留原有精确分段路径。`collectAccesses`使用调用
   内identity memoization，active cycle仍返回unknown并fail closed。
 - 防复发：1024和1025的多轴reduce必须检查动态offset、词典序、tail以及loop数量；真实product timing同时记录
   relation-descriptor planning和lifetime local-completion，不能仅以最终数值或小shape通过代替IR规模证据。
@@ -232,6 +234,19 @@
   检查继续使用storage-root集合进行精确share测试，capacity failure attribution从实际demand root收集witness。
 - 防复发：relation测试同时覆盖唯一view root和二分支多root；不以shape、名字、分支数量或“唯一allocation”补归因，
   只有current SSA、typed owner和实际SPM结果才能决定合法性。
+
+## Movement descriptor的循环层级必须在对应engine边界判断
+
+- 现象：movement lowering在已经有`iterations/strides`的指令外再次按descriptor复制静态body，或者试图给RDMA/WDMA
+  引入未经ABI证明的动态offset循环；reduce和TDMA rotate因此出现大量重复IR。
+- 根因：把搬运descriptor的内部循环和SCF中的计算/累加依赖混为同一层。RDMA/WDMA current ODS只保存静态endpoint
+  offset与单侧三层stride/iteration；GatherScatter同时有双侧三层字段和动态offset operand。
+- 修复模式：RDMA/WDMA只在三层静态descriptor内合并连续轴，端点不连续时保留实际command。GatherScatter的同结构
+  descriptor序列可在offset recurrence逐项checked-affine且目标范围可证明时由一个SCF dynamic-offset loop承载；非规则
+  序列保持原分段。带accumulator依赖的reduce先尝试原生`InstrReduceOp`（必要时串联single-axis），再使用piece/lane
+  SCF循环，不能用destination stride-zero搬运伪造归约。
+- 防复发：每类engine同时覆盖1024/1025、三层descriptor正例、physical tail和非affine负例；检查实际descriptor/SCF
+  数量、byte coverage、range verifier和直接Instr/target下游，不以“有iterations字段”单独证明已经利用硬件能力。
 
 ## Cross-Tile communication不能从编号或名字恢复
 
