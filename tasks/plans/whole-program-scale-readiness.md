@@ -1,6 +1,7 @@
 # Whole-program规模资格实施计划
 
-状态：Q61 `whole-program-scale-readiness`为`later`。Q58 program-data ownership的已完成实施历史见
+状态：Q61 `whole-program-scale-readiness`为`later`（低优先级，重新立项前必须重审）。本文件是候选设计，不是当前实现授权。
+只有冻结完整程序输入、资源预算和验收owner后才重新核对本合同。Q58 program-data ownership的已完成实施历史见
 `tasks/archive/program-data-and-whole-program-scale.md`；稳定source、data、target和package合同由02、14--16号
 设计文档拥有。
 

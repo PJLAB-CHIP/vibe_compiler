@@ -8,6 +8,9 @@
 - current work item按artifact producer/consumer关系线性排列；同一item只出现一次，全局至多一个`doing`。
 - `next`表示直接前置已满足；`queued`表示等待表中前序；`later`表示不在当前主线；板端工作先到
   `board-ready`，真实板测通过后才是`done`。
+- `later`只表示保留一个可追溯的候选合同，不表示已经批准实现，也不表示它是当前item的下一步。
+  重新启动任何`later`项前，必须根据当前实现、产品调用者和本轮硬件/runtime事实重审其输入、输出、范围和覆盖矩阵；
+  旧计划不能直接作为施工授权。
 - 状态变化只改对应行。详细checkpoint、覆盖矩阵和失败修复进入current plan；完成后整个计划移入archive。
 - 每项开始前读`AGENTS.md`、本表、编号设计及本项覆盖矩阵；算法调研、pinned API确认、实现、fresh验证和
   设计/LLVM/MLIR规范复审均在本项内闭合。涉及hardware/runtime/ABI/completion/resource时先读对应事实源。
@@ -31,24 +34,30 @@
 | Q56 | `board-ready` | current package data与host/no-card合同；真实板端未执行 | `tasks/archive/executable-package-and-resident-runtime.md` |
 | Q60 | `done` | product frontend与portable StableHLO ingestion | `tasks/archive/compiler-entry-productization.md` |
 
-## Later / External Gates
+## 延后候选（重新立项前必须重审）
 
-以下工作不会随当前主线自动启动；启动时先建立或更新对应current plan的逐项覆盖矩阵。
+以下工作不会随当前主线自动启动。它们保留在队列中只是为了记录可能的后续方向；启动前必须重新确认当前产品
+调用者、硬件/runtime证据、实现边界和逐项覆盖矩阵。没有新的调用者或证据时，不为旧计划继续维护代码。
 
-| Tracking ID | Semantic key | 状态 | 启动条件 | 完成边界 | Owner / plan |
-| --- | --- | --- | --- | --- | --- |
-| Q57 | `resident-static-execution` | `later` | Q56和Q53均`board-ready` | 同一package的prepare/submit*/close；load-once、data H2D-once、稳定地址、typed completion和poison板端闭合 | 15--17；`tasks/plans/resident-static-execution.md` |
-| Q61 | `whole-program-scale-readiness` | `later` | Q53 `board-ready`、Q58、Q60 | 普通产品driver处理完整小模型、data-heavy和graph-heavy程序；work、I/O、wall、RSS、disk和package bytes可对账 | 01--02、06、14--18；`tasks/plans/whole-program-scale-readiness.md` |
-| Q48 | `semantic-superoptimization` | `later` | Q53 `board-ready`且current compiler/runtime可消费final Instr/TargetCall | actual structured MLIR alternatives经query-local等价证明后各自进入Q52 current-IR pipeline；只有accepted owner发布 | 05--08、10--11、16--18；`tasks/plans/semantic-superoptimization.md` |
-| Q47 | `target-abi-retirement` | `later` | current interface/package/transaction闭合并进入板端资格窗口 | current package定向重签ordinary与Direct-DTE host/no-card/board纵向；不回放历史package | 11、14--17、20 |
-| Q9.R | `profile-writing-overhead` | `later` | profiler writing进入排期 | raw evidence单一owner，report规模随事件数线性且通过size gate | 16 |
-| Q22.C | `target-model-numeric-correlation` | `later` | configured numeric corpus和板端环境 | 按具体target op、dtype/layout/parameter domain完成held-out board correlation | 16、17 |
-| Q22.E | `target-model-package-execution` | `later` | configured simulator/ISS | 原样执行verified package和all-and-only RISC-V ELF | 15--17 |
-| Q22.K | `target-model-packet-provenance` | `later` | owner-approved vendor package或公开规范 | 建立CRT/packet/MMIO provenance；缺失不阻塞functional CModel | 14、16、17 |
-| Q22.P | `target-model-timing-calibration` | `later` | validated PMU/timing environment | 有RTL/vendor-cycle证据后校准LT/AT；此前不声明cycle accuracy | 16、17 |
-| Q32.T | `compiler-transform-control` | `later` | 明确external control-plane consumer | 复用current rewrite/conversion；Transform IR不保存physical search state | 01、05--08、10、16、18 |
-| Q38.W | `multi-worker-production-promotion` | `later` | typed ABI和host/model资格闭合且有独立命令链收益假设 | matched board A/B证明非零worker相对worker0的明确收益 | 08、11、14--17 |
-| Q3.6 | `crt-writeback-scalar` | `later` | 明确Count predicate和wrapper/target/model evidence | typed instruction、effect/completion、ABI/CRT、model和必要readback闭合 | 11、14--17 |
+| Tracking ID | Semantic key | 状态 | 调度判断 | 重新启动条件 | 完成边界 | Owner / plan |
+| --- | --- | --- | --- | --- | --- | --- |
+| Q57 | `resident-static-execution` | `later` | 低优先级；只在确有常驻调用者时考虑 | Q56和Q53均`board-ready`，并且有明确的resident API调用者、板端窗口和fresh输入 | 同一package的prepare/submit*/close；load-once、data H2D-once、稳定地址、typed completion和poison板端闭合 | 15--17；`tasks/plans/resident-static-execution.md` |
+| Q61 | `whole-program-scale-readiness` | `later` | 低优先级；属于规模资格而非核心编译能力 | Q53 `board-ready`、Q58、Q60，并冻结完整程序输入、资源预算和验收owner | 普通产品driver处理完整小模型、data-heavy和graph-heavy程序；work、I/O、wall、RSS、disk和package bytes可对账 | 01--02、06、14--18；`tasks/plans/whole-program-scale-readiness.md` |
+| Q48 | `semantic-superoptimization` | `later` | 研究/可选方向；不属于FA/FD核心闭合 | 有明确的语义alternative消费者、收益假设和独立等价oracle；先重写TensorProgram表示和Q52 handoff合同 | actual structured MLIR alternatives经query-local等价证明后各自进入Q52 current-IR pipeline；只有accepted owner发布 | 05--08、10--11、16--18；`tasks/plans/semantic-superoptimization.md` |
+| Q47 | `target-abi-retirement` | `later` | 仅剩板端资格性质；不作为新的compiler开发项 | current interface/package/transaction已闭合且取得真实板端资格窗口；先核对archive中的旧完成边界与current ABI | current package定向重签ordinary与Direct-DTE host/no-card/board纵向；不回放历史package | 11、14--17、20 |
+
+## 外部证据/可选积压（不进入当前线性主线）
+
+以下条目没有当前产品调用者或本地可完成的证据闭环，统一保持`later`，不作为Q53之后的默认开发顺序。
+启动前必须先建立新的编号设计和完成门禁，不能直接沿用旧计划。
+
+| Tracking ID | Semantic key | 当前处置 |
+| --- | --- | --- |
+| Q9.R | `profile-writing-overhead` | 只有profiler写入成为明确瓶颈时重开 |
+| Q22.C/E/K/P | target-model qualification | 分别等待numeric corpus、simulator/ISS、vendor provenance或validated timing evidence |
+| Q32.T | `compiler-transform-control` | 只有出现明确external control-plane consumer时重开 |
+| Q38.W | `multi-worker-production-promotion` | 只有有独立命令链收益假设和matched board A/B时重开 |
+| Q3.6 | `crt-writeback-scalar` | 只有Count predicate、wrapper、target/model证据和readback需求明确时重开 |
 
 不在当前DAG中的distributed/executable dialect、MPMD rank class、跨卡coherent variant、WCRE/global registry、
 capability lease、跨model migration、shared-weight cache、segmented MoE及70B/100GB stress，恢复时必须先建立编号设计和完成门禁。

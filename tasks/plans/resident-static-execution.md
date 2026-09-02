@@ -1,6 +1,7 @@
 # 设备常驻静态执行实施计划
 
-状态：Q57 `resident-static-execution`为`later`。Q56 package/runtime闭合历史见
+状态：Q57 `resident-static-execution`为`later`（低优先级，重新立项前必须重审）。本文件是候选设计，不是当前实现授权。
+只有出现明确的resident API调用者、板端窗口和fresh输入后才重新核对本合同。Q56 package/runtime闭合历史见
 `tasks/archive/executable-package-and-resident-runtime.md`；稳定package、runtime和completion合同由
 15、16、17号设计文档拥有。
 
