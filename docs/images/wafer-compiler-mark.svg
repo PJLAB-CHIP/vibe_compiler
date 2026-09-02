@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 128" role="img" aria-labelledby="title desc">
-  <title id="title">Wafer Compiler mark</title>
-  <desc id="desc">A sixteen-node wafer grid connected to a compiler pipeline arrow.</desc>
+  <title id="title">Wafer Compiler 标识</title>
+  <desc id="desc">十六个节点组成的 Wafer 网格，以及指向编译流水线的箭头。</desc>
   <rect width="256" height="128" rx="18" fill="#111827"/>
   <g fill="#67e8f9" stroke="#cffafe" stroke-width="2">
     <circle cx="34" cy="28" r="7"/><circle cx="62" cy="28" r="7"/>
