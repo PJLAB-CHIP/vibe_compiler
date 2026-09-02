@@ -1,95 +1,42 @@
-# Wafer Compiler
+<p align="center">
+  <img src="docs/images/wafer-compiler-mark.svg" alt="Wafer Compiler" width="180">
+</p>
 
-Wafer Compiler 是面向 Wafer/TX81 单卡目标的 MLIR 编译器、目标代码生成器和运行时工具集。当前产品边界是一个
-logical card partition、卡内 16 个 Tile 和 static ranked 输入。产品输入来自 PyTorch/XLA exporter 生成的
-StableHLO program directory，也可以使用同一格式的 portable StableHLO fixture。
+<h1 align="center">Wafer Compiler</h1>
 
-当前生产入口支持两个相互独立的 optimization policy：`none` 使用确定性的 baseline，`search` 在 current IR 上搜索
-并比较实际候选。两条 policy 共享经过验证的下游 atomic stages，但不互相调用、fallback 或重建 winner。当前任务状态和
-板端资格以 [`tasks/progress.md`](tasks/progress.md) 为准；本 README 只说明稳定的入口和架构边界。
+Wafer Compiler 是一个基于 MLIR 的 Wafer 加速器编译器和运行时工具集。它把 PyTorch/XLA 导出的
+portable StableHLO program 转换为面向单卡 16-Tile 设备的可执行 package，并提供 host、no-card、
+功能模型和板端运行入口。
 
-## 端到端编译主线
+当前产品路径面向 static ranked、单 logical card partition 的程序。`none` 是确定性的 baseline，
+`search` 在同一套 current IR 上搜索并比较实际候选；两者使用同一组下游 lowering 和 package 代码，
+不会互相 fallback。当前任务状态和设备资格以 [`tasks/progress.md`](tasks/progress.md) 为准。
 
-```text
-PyTorch/XLA exporter / portable StableHLO program directory
-  -> source and payload verification
-  -> XLA SPMD partitioning (logical card partition)
-  -> post-SPMD StableHLO readback and shard verification
-  -> StableHLO -> Linalg/Tensor/SCF TensorProgram
-       - collective normalization and static cleanup
-       - one structured attention semantic op
-       - bounded structured-graph e-graph normalization
-  -> policy split: none | search
-  -> Spatial/Region actualization
-       - ordinary TileModule/TileRegion
-       - FA/FD online-attention state and selected merge endpoints
-  -> temporal tiling and fusion from live current operations
-  -> online-attention decomposition to actual Linalg/Tensor/SCF
-  -> current-IR layout assignment and bufferization
-  -> structured compute -> Tile IR
-  -> boundary movement and cross-Tile transport closure
-  -> execution structure and standalone Tile fanout
-  -> TileRegion -> Instr, transfer cleanup and fresh completion
-  -> actual MiniMalloc SPM planning, DDR offsets and Direct-DTE/resource gates
-  -> DeviceExecutable
-  -> Target LLVM conversion, link and readback
-  -> atomic ExecutablePackage publication
-  -> wafer-run --no-card or --board
+## Overview
+
+```mermaid
+flowchart LR
+  A[StableHLO program] --> B[Verify source and payload]
+  B --> C[Card-level SPMD]
+  C --> D[Structured TensorProgram]
+  D --> E{none | search}
+  E --> F[Spatial and temporal IR]
+  F --> G[Layout, movement, execution]
+  G --> H[Instr and memory planning]
+  H --> I[DeviceExecutable]
+  I --> J[Target module and package]
+  J --> K[no-card | board]
 ```
 
-Current IR 是每一阶段的唯一事实源。planning 只保存显式 transformation choice；operation、SSA、buffer、alias、
-lifetime、movement、event、order 和 completion 只有在 candidate-owned transaction 中物化并通过 verifier 后才存在。
-SPM 合法性只来自实际 MiniMalloc 结果，不由 footprint、shape 公式或其它预测性估算决定。
+Structured graph normalization使用 pinned `egg`，只处理能够从当前 Tensor/Linalg SSA、indexing relation
+和 effect 证明的等价变换。FA/FD 在 structured attention 语义已经归一后进入 physical-dataflow pipeline；
+后续 Tile、layout、movement、completion 和 target lowering 都只消费实际物化的 current IR。
 
-## 产品入口
+## Quick start
 
-`wafer-compile` 是唯一的 source-to-package production driver：
+### Dependencies
 
-```bash
-build/bin/wafer-compile \
-  --input-program-dir <stablehlo-program-dir> \
-  --output-dir <package-root> \
-  --num-partitions 1 \
-  --optimization-policy search
-```
-
-可选参数包括 `--optimization-policy none`、`--search-width <count>`、`--search-trials <count>`、
-`--compile-timing`、`--dump-compiler-ir <dir>` 和 `--profile`。`--dump-compiler-ir`、target-model qualification
-以及测试故障注入都复用同一个 compiler transaction，不形成第二条物理 lowering 路径。
-
-编译成功表示 package 已完成 target/module/manifest strict readback 并通过最后一次原子提交；失败时不会留下可见的
-partial package。已经生成的 package 可通过 no-card 入口检查：
-
-```bash
-build/bin/wafer-run \
-  --package-dir <package-root> \
-  --no-card
-```
-
-`wafer-opt` 只用于局部 IR 调试、registered pipeline 和 FileCheck replay；它复用相同的 pass/transform 实现，但不拥有
-产品 candidate selector。`wafer-verify-program` 只验证 source program directory，不代替 compiler transaction。
-
-## IR 和源码边界
-
-| 路径 | 责任 |
-| --- | --- |
-| `include/Wafer/IR`、`lib/Wafer/IR` | Wafer dialect、ODS、interface、局部 verifier 和 IR parser/printer |
-| `Analysis` | 从 current IR 和显式 target facts 重算的只读分析 |
-| `Planning` | Spatial/Region/Temporal choice、PBQP 和有界 search traversal；不拥有 actual IR |
-| `Transforms` | 同一主要表示层上的 current-IR rewrite、materialization、layout、movement 和 completion 变换 |
-| `Conversion` | 有明确 source/target 表示和 legality 合同的 StableHLO→Linalg、Tile→Instr、Instr→LLVM 转换 |
-| `CodeGen` | DeviceExecutable、Target LLVM、ABI preparation、link 和 artifact readback |
-| `Driver` | policy routing、candidate transaction、pipeline 编排、外部 helper 和 package publication |
-| `Target` | compiler/runtime/Simulator 共享的 target command、format、memory、identity 和 launch 合同 |
-| `Simulator` | TargetCall/SystemC/Reference/oneDNN 的同 invocation 功能模型 |
-| `Package`、`Runtime` | package schema/readback，以及 no-card/board invocation lifecycle |
-
-`num_partitions` 是 GSPMD 的 card-level 数量，不是 Tile 数量；`tile_id` 和 `launch_slot` 由物理 target/package 层独立
-表达。当前生产不覆盖 cross-card transport、dynamic-ranked program、resident execution、MoE 或 persistent weight cache。
-
-## 依赖和 canonical build
-
-固定版本和受管依赖位于 `third_party/`，细节见 [`third_party/README.md`](third_party/README.md)。首次准备依赖可按需执行：
+固定版本依赖位于 `third_party/`，准备方式见 [`third_party/README.md`](third_party/README.md)。首次 checkout 后：
 
 ```bash
 git submodule update --init --recursive
@@ -102,43 +49,115 @@ python3 utils/deps/bootstrap_deps.py --onednn-deps
 python3 utils/deps/bootstrap_deps.py --systemc-model-deps
 ```
 
-这些步骤按实际配置选择，不需要为每个任务建立新的 build。主工程只有一个 canonical binary directory：`build/`。
+按需准备已有的 pinned 依赖即可；不要为单个任务创建额外 build 目录。
+
+### Configure and build
+
+仓库使用一个 canonical Ninja build，binary directory 固定为 `build/`：
 
 ```bash
 cmake --preset default
 cmake --build --preset default -j"$(nproc)"
-ctest --preset default -j"$(nproc)"
 ```
 
-default preset 打开 compiler、importer、SPMD、numeric backend、SystemC 和本地测试，关闭外部 board SDK 与真实设备执行。
-Pinned egg 由 CMake 以 locked/offline 方式构建；compiler invocation 不启动 Cargo、rustc 或外部 optimizer 进程。
+default preset 打开 compiler、PyTorch/XLA importer、SPMD、target numeric backend、SystemC 和本地测试，
+关闭真实 board SDK 和设备执行。Pinned e-graph 依赖由 CMake 以 locked/offline 方式构建；编译器调用不会
+启动 Cargo、rustc 或外部 optimizer 进程。
 
-## 测试和证据层级
+### Compile a program
 
-常用检查入口：
+PyTorch 模型可以通过 `wafer.frontend.export_pytorch_program` 生成 program directory：
+
+```python
+from wafer.frontend import export_pytorch_program
+
+export_pytorch_program(module, example_inputs, output_directory)
+```
+
+然后使用唯一的 production driver：
 
 ```bash
+build/bin/wafer-compile \
+  --input-program-dir <program-directory> \
+  --output-dir <package-directory> \
+  --num-partitions 1 \
+  --optimization-policy search
+```
+
+`--optimization-policy none` 选择 baseline；`search` 还可以设置 `--search-width` 和 `--search-trials`。
+`--compile-timing`、`--dump-compiler-ir` 和 `--profile` 是诊断/资格选项，仍然复用同一个 compiler transaction。
+
+编译成功时，`--output-dir` 中会原子发布一个经过 strict readback 的 package；失败时不会留下可见的部分输出。
+
+## Run and verify a package
+
+无设备验证使用同一 package：
+
+```bash
+build/bin/wafer-run \
+  --package-dir <package-directory> \
+  --no-card
+```
+
+真实设备运行需要显式的 `--board`、设备身份、runtime digest、输入资源和 expected 输出。默认 build 不包含
+board runtime；板端测试只在显式配置并取得资格后注册。
+
+`wafer-opt` 用于局部 MLIR 调试和 registered pipeline replay；`wafer-verify-program` 用于检查 source
+program directory。它们都不是第二个 production compiler。
+
+## Repository layout
+
+| Directory | Contents |
+| --- | --- |
+| `include/Wafer/IR`, `lib/Wafer/IR` | Wafer dialect、ODS、interface 和 verifier |
+| `include/Wafer/Analysis`, `lib/Wafer/Analysis` | current IR 的只读分析 |
+| `include/Wafer/Planning`, `lib/Wafer/Planning` | physical-dataflow choice、PBQP 和 search traversal |
+| `lib/Wafer/Transforms` | structured、Tile、movement、layout、memory 和 completion 变换 |
+| `lib/Wafer/Conversion` | StableHLO→Linalg、Tile→Instr、Instr→LLVM 转换 |
+| `lib/Wafer/CodeGen`, `lib/Wafer/Target` | DeviceExecutable、Target LLVM、target ABI 和格式 |
+| `lib/Wafer/Frontend`, `lib/Wafer/Driver` | source ingestion、payload ownership 和 compiler transaction |
+| `lib/Wafer/Package`, `lib/Wafer/Runtime` | package schema、readback 和 invocation lifecycle |
+| `lib/Wafer/Simulator` | Reference、oneDNN 和 SystemC 功能模型 |
+| `tools/` | `wafer-compile`、`wafer-opt`、`wafer-run`、source verifier 和辅助工具 |
+| `test/`, `unittests/` | lit/FileCheck、integration、host/no-card、C++ unit 和 board contract tests |
+| `tasks/`, `docs/`, `memory/` | 设计合同、硬件事实和稳定开发方法 |
+
+`num_partitions` 是 card-level SPMD 数量，不是 Tile 数量；`tile_id` 和 `launch_slot` 在 physical target/package
+层独立表示。
+
+## Testing
+
+```bash
+ctest --preset default -j"$(nproc)"
 cmake --build --preset default --target check-wafer -j"$(nproc)"
-ctest --test-dir build -R 'Wafer.*UnitTests|wafer-lit' --output-on-failure -j"$(nproc)"
 python3 -B utils/checks/check_source_organization.py --root .
 python3 -B utils/checks/check_ir_organization.py --root .
 python3 -B utils/checks/check_deps.py
 ```
 
-IR 正例通常使用 rank≥3、主要维度≥1024，并成对覆盖 1024、1025 和 1031 的整除/非整除路径。测试必须检查实际
-coverage、owner、demand、merge、tail、copy、completion 或直接下游输出；`skip`、`unsupported`、未注册和旧日志不算通过。
+主线 IR 测试使用 rank≥3、主要维度≥1024 的 static shape，并覆盖 1024、1025、1031 的整除和非整除路径。
+正例需要检查实际 coverage、owner、demand、tail、copy、completion 或直接下游输出；skip、unsupported、
+未注册 case 和历史日志不算通过。
 
-证据按层级区分：host/IR 检查、package readback、no-card、功能模型、真实板端 correctness 和 matched board performance
-不能互相代签。SystemC 是 untimed functional model，不证明 vendor packet、cycle accuracy 或板端性能。
+测试证据按层级区分：compile/IR、package readback、no-card、功能模型、board correctness 和 board performance
+不能互相代签。SystemC 只提供 untimed functional evidence，不证明真实硬件时序或性能。
 
-## 文档入口
+## Current scope
 
-- [`AGENTS.md`](AGENTS.md)：仓库长期协作流程、Current-IR、SPM、completion、MLIR 和提交规则；
-- [`tasks/progress.md`](tasks/progress.md)：当前任务状态、顺序和直接前置的唯一入口；
-- [`tasks/README.md`](tasks/README.md)：编号设计、pipeline owner 和 archive 导航；
-- [`tasks/01-architecture.md`](tasks/01-architecture.md)：整体 pipeline 与 artifact ownership；
-- [`tasks/06-physical-dataflow-synthesis.md`](tasks/06-physical-dataflow-synthesis.md)：current-IR physical-dataflow 主合同；
-- [`tasks/16-verification-contract.md`](tasks/16-verification-contract.md)：分层验证和 board-ready 规则；
-- [`tasks/18-source-organization.md`](tasks/18-source-organization.md)、[`tasks/19-mlir-engineering.md`](tasks/19-mlir-engineering.md)：源码和 MLIR 工程边界；
-- [`docs/tx81-compiler-hardware-calibration.md`](docs/tx81-compiler-hardware-calibration.md)：硬件事实及外推限制；
-- [`memory/general_dev.md`](memory/general_dev.md)：canonical build、调试和验证方法。
+- 单卡、单 logical card partition、16 Tile、static ranked 输入；
+- PyTorch/XLA portable StableHLO ingestion；
+- structured graph normalization、FA/FD online-attention lowering、current-IR layout/bufferization、
+  movement、Instr、Target LLVM、package 和 no-card 验证；
+- cross-card transport、dynamic-ranked program、resident execution、MoE 和 persistent weight cache 不在当前产品范围内。
+
+## Documentation
+
+- [`AGENTS.md`](AGENTS.md)：协作流程、IR 事实源、MLIR 规则和提交约束；
+- [`tasks/progress.md`](tasks/progress.md)：任务状态、线性顺序和直接前置；
+- [`tasks/README.md`](tasks/README.md)：编号设计与 archive 导航；
+- [`tasks/01-architecture.md`](tasks/01-architecture.md)：整体 pipeline 和 artifact ownership；
+- [`tasks/06-physical-dataflow-synthesis.md`](tasks/06-physical-dataflow-synthesis.md)：physical-dataflow 主合同；
+- [`tasks/16-verification-contract.md`](tasks/16-verification-contract.md)：分层验证与 board-ready 规则；
+- [`tasks/18-source-organization.md`](tasks/18-source-organization.md)、[`tasks/19-mlir-engineering.md`](tasks/19-mlir-engineering.md)：源码和 MLIR 工程约束；
+- `docs/`：硬件事实和外推限制；
+- [`memory/general_dev.md`](memory/general_dev.md)：构建、调试和验证方法。

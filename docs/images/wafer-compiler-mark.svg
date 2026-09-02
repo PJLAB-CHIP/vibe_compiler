@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 128" role="img" aria-labelledby="title desc">
+  <title id="title">Wafer Compiler mark</title>
+  <desc id="desc">A sixteen-node wafer grid connected to a compiler pipeline arrow.</desc>
+  <rect width="256" height="128" rx="18" fill="#111827"/>
+  <g fill="#67e8f9" stroke="#cffafe" stroke-width="2">
+    <circle cx="34" cy="28" r="7"/><circle cx="62" cy="28" r="7"/>
+    <circle cx="90" cy="28" r="7"/><circle cx="118" cy="28" r="7"/>
+    <circle cx="34" cy="56" r="7"/><circle cx="62" cy="56" r="7"/>
+    <circle cx="90" cy="56" r="7"/><circle cx="118" cy="56" r="7"/>
+    <circle cx="34" cy="84" r="7"/><circle cx="62" cy="84" r="7"/>
+    <circle cx="90" cy="84" r="7"/><circle cx="118" cy="84" r="7"/>
+    <circle cx="34" cy="112" r="7"/><circle cx="62" cy="112" r="7"/>
+    <circle cx="90" cy="112" r="7"/><circle cx="118" cy="112" r="7"/>
+  </g>
+  <g stroke="#334155" stroke-width="2" opacity="0.9">
+    <path d="M34 28h84M34 56h84M34 84h84M34 112h84M34 28v84M62 28v84M90 28v84M118 28v84"/>
+  </g>
+  <path d="M143 64h72" stroke="#fbbf24" stroke-width="6" stroke-linecap="round"/>
+  <path d="m202 45 25 19-25 19" fill="none" stroke="#fbbf24" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="150" cy="64" r="6" fill="#fbbf24"/>
+</svg>
