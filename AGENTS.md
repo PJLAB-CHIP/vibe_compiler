@@ -79,11 +79,13 @@ Wafer compiler、runtime、工具、文档和测试共同演进。任何修改�
 
 - `tasks/progress.md`：唯一任务状态、顺序和直接前置。
 - `tasks/NN-*.md`：当前稳定设计和完成合同。
-- `tasks/plans/`：尚未完成的实施步骤；完成后移入`tasks/archive/`。
+- `tasks/plans/`：当前或延后的实施步骤；完成后移入`tasks/archive/`。`later`计划只是候选合同，重新启动前必须按当前实现、
+  产品调用者和事实源重新审查，不能直接作为施工授权。
 - `tasks/archive/`：历史背景，不能覆盖current设计或状态。
 - `docs/`：硬件、runtime、firmware和ABI事实；相关结论区分`supported`、`board-observed`、`unknown`和`excluded`。
 - `memory/general_dev.md`：稳定构建/调试方法；`memory/bugs.md`：可复用的问题根因和防复发方法。
 - pinned LLVM/MLIR源码和测试：具体API事实；官方文档：MLIR行为和工程原则。
+- `README.md`：仓库入口概览，不拥有任务状态、IR合同、硬件事实或实施顺序；发现冲突时以上述专门事实源为准。
 
 发现冲突时在同一修改中收敛，不能静默拼接两套协议。没有新的稳定经验时不修改`memory/`。
 
