@@ -19,7 +19,7 @@ Wafer Compiler 接收 PyTorch/XLA 导出的 portable StableHLO program，为单�
 
 ## 总览
 
-![Wafer Compiler 编译流水线](docs/images/wafer-compiler-pipeline.svg)
+![Wafer Compiler 编译流水线](docs/images/wafer-compiler-pipeline.png)
 
 图中的 `none` 和 `search` 是两个独立的 current-IR transaction：它们从同一个 verified TensorProgram 出发，分别物化和验证自己的
 TileRegion、Instr 和 DeviceExecutable，然后使用同一套 target/package 实现。Topology、target facts、ProgramData 和 bindings 是显式输入，
