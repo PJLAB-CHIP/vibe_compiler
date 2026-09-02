@@ -429,10 +429,10 @@ module {
       stream
           << "  wafer.tile.module card_id = 0 tile_id = " << tile << R"mlir( {
     func.func @entry(%left: tensor<1x)mlir"
-          << extent << R"mlir(x64xf16> {wafer.cross_tile_placeholder},
+          << extent << R"mlir(x64xf16> {wafer.cross_tile_boundary_input},
                      %right: tensor<1x)mlir"
           << extent
-          << R"mlir(x64xf16> {wafer.cross_tile_placeholder}) -> tensor<1x)mlir"
+          << R"mlir(x64xf16> {wafer.cross_tile_boundary_input}) -> tensor<1x)mlir"
           << extent << R"mlir(x64xf16> {
       %result = wafer.tile.region(
           %left, %right : tensor<1x)mlir"
@@ -488,7 +488,7 @@ module {
         if (source == tile)
           continue;
         stream << ", %from" << source << ": tensor<1x" << extent
-               << "x64xf16> {wafer.cross_tile_placeholder}";
+               << "x64xf16> {wafer.cross_tile_boundary_input}";
       }
       stream << ") -> tensor<1x" << extent << R"mlir(x64xf16> {
       %source, %output = wafer.tile.region(%local)mlir";
@@ -574,7 +574,7 @@ module {
              << R"mlir( {
     func.func @entry(%local: tensor<1x)mlir"
              << extent << "x64xf16>, %remote: tensor<1x" << extent
-             << R"mlir(x64xf16> {wafer.cross_tile_placeholder})
+             << R"mlir(x64xf16> {wafer.cross_tile_boundary_input})
         -> tensor<1x)mlir"
              << extent << R"mlir(x64xf16> {
       %source = wafer.tile.region(
@@ -647,7 +647,7 @@ module {
              << R"mlir( {
     func.func @entry(%local: tensor<1x)mlir"
              << extent << "x64xf16>, %remote: tensor<1x" << extent
-             << R"mlir(x64xf16> {wafer.cross_tile_placeholder})
+             << R"mlir(x64xf16> {wafer.cross_tile_boundary_input})
         -> tensor<1x)mlir"
              << extent << R"mlir(x64xf16> {
       %source, %output = wafer.tile.region(

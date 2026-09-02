@@ -1813,7 +1813,7 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
   for (TileModuleOp tile : module.getOps<TileModuleOp>())
     for (mlir::func::FuncOp function : tile.getOps<mlir::func::FuncOp>())
       for (unsigned index = 0; index < function.getNumArguments(); ++index)
-        if (function.getArgAttr(index, kWaferCrossTilePlaceholderAttrName))
+        if (function.getArgAttr(index, kWaferCrossTileBoundaryInputAttrName))
           outputArguments[function.getOperation()].push_back(index);
 
   for (RegionPlan &plan : regions) {
@@ -2376,7 +2376,7 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
       if (index >= function.getNumArguments() ||
           !function.getArgument(index).use_empty())
         return failApply(
-            "movement-closed function placeholder still has a live use");
+            "movement-closed cross-Tile boundary input still has a live use");
       function.eraseArgument(index);
     }
   }

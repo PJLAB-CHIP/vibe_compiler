@@ -97,10 +97,11 @@ Items 12--16是两条policy共享的atomic mechanics，但每个policy拥有自�
 - `createStandaloneTileModules`只在第16项physical form、execution structure与completion输入闭合后移动每个Tile body到独立module；
   它不重新选择placement、Region membership或movement，也不clone大型body。
 
-## Pending work items
+## 已闭合的Q52/Q53 work items
 
-每项必须完整执行“读规则和设计→算法/成熟实现调研→确认pinned API→实现与测试→fresh验证→重读设计和
-LLVM/MLIR规范复审→更新状态并提交”。不得以全局原则替代本项覆盖矩阵。
+以下表格保留Q52/Q53已经执行的责任、门禁和流程映射，动态状态只读`tasks/progress.md`；不得把本表重新解释为
+待办队列。各项均已完整执行“读规则和设计→算法/成熟实现调研→确认pinned API→实现与测试→fresh验证→重读设计和
+LLVM/MLIR规范复审→更新状态并提交”。
 
 | 顺序 | Work item | 单一责任与输出 | 精确完成条件 | 本项固定执行流程 |
 | ---: | --- | --- | --- | --- |
@@ -110,10 +111,10 @@ LLVM/MLIR规范复审→更新状态并提交”。不得以全局原则替代�
 | 19 | `scale-regression-and-inventory` | 在新actual-IR pipeline上profile并仅保留有证据的e-graph、exact PBQP、memo、priority、DP和LNS，补齐logical transform、spatial/Region actualization、fusion、attention、copy、layout conversion、transfer elimination与Instr只读汇总 | 完整e-node/e-class/match/budget、logical transform before/after、Tile/TileRegion/current SSA edge/producer-occurrence/attention actual decomposition/copy/layout-conversion/buffer/movement/execution-structure/Instr/target inventory；e-graph on/off保持exact语义和downstream reachability；baseline/search同IR的PBQP assignment和actual materialization一致；instrumentation on/off等价；actual MiniMalloc到达 | 读AGENTS/progress→读05/06及本项矩阵→调研search/equality-saturation与exact PBQP scalability→查pinned MLIR/LLVM→改instrumentation/tests→fresh真实规模验证→重读设计/MLIR复审→更新并提交 |
 | 20 | `llama-baseline-search-acceptance` | 同一current FP16 LLaMA source顺序运行独立none和search事务 | 每次Release≤15分钟；各自package strict readback/no-card；两条路径互不调用；e-graph实际到达且无budget-dependent nondeterminism；均进入Instr/MiniMalloc/DDR/target；冗余DDR copy和Instr copy-only Region为0，必要copy已typed；search没有静态body倍增 | 读AGENTS/progress→重读05/06/14--16及本项矩阵→确认current source/tool和runtime/ABI边界→fresh顺序运行→逐项核对设计与MLIR/runtime规范→更新状态并提交 |
 
-## 当前实施设计
+## 已闭合实施设计映射
 
-以下内容只定义尚未完成项的current实施合同。Stable IR、算法、memory、completion和runtime语义仍由编号设计拥有；archive只能用于
-核对历史，不是实现输入。
+以下内容记录已闭合work item与current设计authority的映射。Stable IR、算法、memory、completion和runtime语义仍由编号设计拥有；
+archive只能用于核对历史，不是实现输入。
 
 | Work item | Current设计authority | 本计划拥有的内容 |
 | --- | --- | --- |
@@ -123,7 +124,7 @@ LLVM/MLIR规范复审→更新状态并提交”。不得以全局原则替代�
 | 19 | 06号10.3、19号instrumentation规则 | 只读inventory、work/wall/RSS和optimization on/off证据 |
 | 20 / Q53 | 06号10.4、15--17号package/runtime合同、本计划验收矩阵 | 同源双policy acceptance及host/no-card到board-ready的执行步骤 |
 
-## 逐项覆盖矩阵
+## 已执行覆盖矩阵
 
 ### 16. Current-IR downstream orchestration
 

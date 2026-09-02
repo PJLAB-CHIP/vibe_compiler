@@ -918,7 +918,7 @@ struct GroupBuilder {
         unsigned index = entryFunction.getNumArguments();
         auto attrs = mlir::DictionaryAttr::get(
             builder.getContext(),
-            {builder.getNamedAttr(kWaferCrossTilePlaceholderAttrName,
+            {builder.getNamedAttr(kWaferCrossTileBoundaryInputAttrName,
                                   builder.getUnitAttr())});
         entryFunction.insertArgument(index, sourceValue.getType(), attrs,
                                      sourceValue.getLoc());
@@ -978,7 +978,7 @@ struct GroupBuilder {
         unsigned index = entryFunction.getNumArguments();
         auto attrs = mlir::DictionaryAttr::get(
             builder.getContext(),
-            {builder.getNamedAttr(kWaferCrossTilePlaceholderAttrName,
+            {builder.getNamedAttr(kWaferCrossTileBoundaryInputAttrName,
                                   builder.getUnitAttr())});
         entryFunction.insertArgument(index, required->second.type, attrs,
                                      source.getLoc());
@@ -1037,7 +1037,7 @@ struct GroupBuilder {
         unsigned index = entryFunction.getNumArguments();
         auto attrs = mlir::DictionaryAttr::get(
             builder.getContext(),
-            {builder.getNamedAttr(kWaferCrossTilePlaceholderAttrName,
+            {builder.getNamedAttr(kWaferCrossTileBoundaryInputAttrName,
                                   builder.getUnitAttr())});
         entryFunction.insertArgument(index, required->second.type, attrs,
                                      source.getLoc());

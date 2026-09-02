@@ -200,8 +200,8 @@ allocation/lifetime/offset证明。
 RegionPlan的跨group dependency先形成一个全局确定性拓扑序，各Tile只发射该序在本Tile上的投影，不能再次按Tile局部排序而改变
 actual execution order。local binding不能把producer tile result直接塞给consumer；必须用同一`IRMapping`将actual producer代入
 current pure tensor support chain，保持reshape/slice/insert等typed indexing语义。Spatial materializer新增的cross-Tile
-external/coupled/partial entry placeholder使用stage-local argument attr标记；movement消费对应actual relation并删除无use placeholder，
-该attr不能越过physical movement closure。
+external/coupled/partial entry argument使用stage-local `wafer.cross_tile_boundary_input`标记其actual structural boundary身份；
+movement消费对应actual relation并删除该argument，该attr不能越过physical movement closure，也不表示future buffer、route或movement。
 
 ### 5.3 Temporal tiling
 
