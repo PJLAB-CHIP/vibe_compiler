@@ -181,6 +181,13 @@ recordMovementInstrumentation(const BoundaryMovementStatistics &statistics) {
   counter("native-scatter-rounds", statistics.nativeScatterRounds);
   counter("ring-components", statistics.ringComponents);
   counter("ring-rounds", statistics.ringRounds);
+  counter("recursive-doubling-components",
+          statistics.recursiveDoublingComponents);
+  counter("recursive-doubling-rounds", statistics.recursiveDoublingRounds);
+  counter("recursive-doubling-seed-copies",
+          statistics.recursiveDoublingSeedCopies);
+  counter("recursive-doubling-seed-donations",
+          statistics.recursiveDoublingSeedDonations);
   counter("sparse-round-components", statistics.sparseRoundComponents);
   counter("sparse-rounds", statistics.sparseRounds);
   counter("no-cut-ddr-components", statistics.noCutDDRComponents);

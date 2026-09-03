@@ -87,8 +87,13 @@ struct PeerPlan {
   int64_t communicationId = 0;
   int64_t protocolRound = 0;
   int64_t scheduleComponent = -1;
+  int64_t payloadSlice = 0;
   bool useSharedDDR = false;
   bool scheduledPeer = false;
+  bool recursiveDoubling = false;
+  unsigned recursiveLane = 0;
+  unsigned recursiveOriginPosition = 0;
+  unsigned recursiveParticipantCount = 0;
   std::optional<unsigned> relaySourceRelation;
 };
 
@@ -883,6 +888,168 @@ static bool scheduleNativeAllToAll(const CommunicationComponent &component,
   return true;
 }
 
+static std::optional<mlir::MemRefType>
+getRecursiveAggregateType(mlir::MemRefType slotType, unsigned participantCount,
+                          uint64_t slotBytes) {
+  if (!slotType || slotType.getRank() == 0 || !slotType.hasStaticShape() ||
+      !slotType.getLayout().isIdentity() || participantCount < 2)
+    return std::nullopt;
+  MemoryAttr memory = getWaferMemoryAttr(slotType);
+  if (!memory || (memory.getLayout() != MemLayout::Tensor &&
+                  memory.getLayout() != MemLayout::NTensor))
+    return std::nullopt;
+  std::optional<WaferPhysicalTensorInfo> slotInfo =
+      computeWaferPhysicalTensorInfo(slotType);
+  if (!slotInfo || slotInfo->physicalBytes <= 0 ||
+      static_cast<uint64_t>(slotInfo->physicalBytes) != slotBytes)
+    return std::nullopt;
+  llvm::SmallVector<int64_t, 4> shape(slotType.getShape());
+  if (llvm::MulOverflow(shape.front(), static_cast<int64_t>(participantCount),
+                        shape.front()))
+    return std::nullopt;
+  auto aggregateType =
+      mlir::MemRefType::get(shape, slotType.getElementType(),
+                            slotType.getLayout(), slotType.getMemorySpace());
+  std::optional<WaferPhysicalTensorInfo> aggregateInfo =
+      computeWaferPhysicalTensorInfo(aggregateType);
+  if (slotBytes > std::numeric_limits<uint64_t>::max() / participantCount)
+    return std::nullopt;
+  uint64_t expectedBytes = slotBytes * participantCount;
+  if (!aggregateInfo || aggregateInfo->physicalBytes <= 0 ||
+      static_cast<uint64_t>(aggregateInfo->physicalBytes) != expectedBytes)
+    return std::nullopt;
+  return aggregateType;
+}
+
+static bool
+scheduleRecursiveDoublingComponent(const CommunicationComponent &component,
+                                   llvm::ArrayRef<PayloadGroup> groups,
+                                   llvm::MutableArrayRef<PeerPlan> peers,
+                                   unsigned laneCount, int64_t componentId,
+                                   BoundaryMovementStatistics &statistics) {
+  const unsigned participantCount = component.participants.size();
+  if (participantCount < 2 || participantCount > 16 ||
+      !llvm::isPowerOf2_64(participantCount) || laneCount == 0)
+    return false;
+  llvm::DenseMap<uint64_t, llvm::SmallVector<unsigned, 4>> groupsBySource;
+  for (unsigned groupIndex : component.groups)
+    groupsBySource[groups[groupIndex].sourceTile].push_back(groupIndex);
+  for (uint64_t source : component.participants) {
+    auto found = groupsBySource.find(source);
+    if (found == groupsBySource.end() || found->second.size() != laneCount)
+      return false;
+    llvm::sort(found->second, [&](unsigned lhs, unsigned rhs) {
+      const PeerPlan &left = peers[groups[lhs].peers.front()];
+      const PeerPlan &right = peers[groups[rhs].peers.front()];
+      if (left.sourceRegion != right.sourceRegion)
+        return left.sourceRegion->isBeforeInBlock(right.sourceRegion);
+      return std::tie(left.sourceResult, left.relationIndex) <
+             std::tie(right.sourceResult, right.relationIndex);
+    });
+  }
+
+  for (unsigned lane = 0; lane < laneCount; ++lane) {
+    const PayloadGroup &firstGroup =
+        groups[groupsBySource[component.participants.front()][lane]];
+    const PeerPlan &representative = peers[firstGroup.peers.front()];
+    if (!getRecursiveAggregateType(representative.destinationSPMType,
+                                   participantCount, representative.bytes))
+      return false;
+    for (uint64_t source : component.participants) {
+      const PayloadGroup &group = groups[groupsBySource[source][lane]];
+      if (group.peers.size() != participantCount - 1)
+        return false;
+      for (unsigned peerIndex : group.peers) {
+        const PeerPlan &peer = peers[peerIndex];
+        if (peer.bytes != representative.bytes ||
+            peer.destinationSPMType != representative.destinationSPMType ||
+            !peer.destinationSubviews.empty() ||
+            !peer.sourceWindowOffsets.empty())
+          return false;
+      }
+    }
+  }
+
+  unsigned rounds = llvm::Log2_64(participantCount);
+  struct Assignment {
+    unsigned peerIndex = 0;
+    uint64_t senderTile = 0;
+    unsigned communication = 0;
+    int64_t round = 0;
+    unsigned lane = 0;
+    unsigned originPosition = 0;
+    std::optional<unsigned> relayRelation;
+  };
+  llvm::SmallVector<Assignment, 64> assignments;
+  llvm::DenseSet<unsigned> assigned;
+  for (unsigned lane = 0; lane < laneCount; ++lane) {
+    unsigned communication = std::numeric_limits<unsigned>::max();
+    for (uint64_t source : component.participants)
+      for (unsigned peerIndex : groups[groupsBySource[source][lane]].peers)
+        communication = std::min(communication, peers[peerIndex].relationIndex);
+    for (unsigned round = 0; round < rounds; ++round) {
+      unsigned half = 1U << round;
+      for (unsigned senderPosition = 0; senderPosition < participantCount;
+           ++senderPosition) {
+        unsigned destinationPosition = senderPosition ^ half;
+        uint64_t senderTile = component.participants[senderPosition];
+        uint64_t destinationTile = component.participants[destinationPosition];
+        unsigned groupBase = senderPosition & ~(2U * half - 1U);
+        unsigned originBegin =
+            groupBase + ((senderPosition & half) != 0 ? half : 0U);
+        for (unsigned originPosition = originBegin;
+             originPosition < originBegin + half; ++originPosition) {
+          uint64_t originTile = component.participants[originPosition];
+          const PayloadGroup &originGroup =
+              groups[groupsBySource[originTile][lane]];
+          auto relation =
+              llvm::find_if(originGroup.peers, [&](unsigned peerIndex) {
+                return peers[peerIndex].destinationTile == destinationTile;
+              });
+          if (relation == originGroup.peers.end() ||
+              !assigned.insert(*relation).second)
+            return false;
+          std::optional<unsigned> relayRelation;
+          if (senderTile != originTile) {
+            auto relay =
+                llvm::find_if(originGroup.peers, [&](unsigned peerIndex) {
+                  return peers[peerIndex].destinationTile == senderTile;
+                });
+            if (relay == originGroup.peers.end())
+              return false;
+            relayRelation = peers[*relay].relationIndex;
+          }
+          assignments.push_back(
+              Assignment{*relation, senderTile, communication,
+                         static_cast<int64_t>(lane * rounds + round), lane,
+                         originPosition, relayRelation});
+        }
+      }
+    }
+  }
+  size_t expected = static_cast<size_t>(laneCount) * participantCount *
+                    (participantCount - 1);
+  if (assigned.size() != expected)
+    return false;
+  for (const Assignment &assignment : assignments) {
+    PeerPlan &peer = peers[assignment.peerIndex];
+    peer.scheduledPeer = true;
+    peer.transportSourceTile = assignment.senderTile;
+    peer.communicationId = assignment.communication;
+    peer.protocolRound = assignment.round;
+    peer.scheduleComponent = componentId;
+    peer.payloadSlice = assignment.originPosition;
+    peer.recursiveDoubling = true;
+    peer.recursiveLane = assignment.lane;
+    peer.recursiveOriginPosition = assignment.originPosition;
+    peer.recursiveParticipantCount = participantCount;
+    peer.relaySourceRelation = assignment.relayRelation;
+  }
+  ++statistics.recursiveDoublingComponents;
+  statistics.recursiveDoublingRounds += laneCount * rounds;
+  return true;
+}
+
 static mlir::LogicalResult scheduleRingComponent(
     const CommunicationComponent &component,
     llvm::ArrayRef<PayloadGroup> groups, llvm::MutableArrayRef<PeerPlan> peers,
@@ -1119,6 +1286,7 @@ static mlir::LogicalResult scheduleSparseComponent(
 
 static mlir::LogicalResult buildTopologyFanoutChoices(
     mlir::ModuleOp module, llvm::MutableArrayRef<PeerPlan> peers,
+    CompleteAllGatherAlgorithm allGatherAlgorithm,
     BoundaryMovementStatistics &statistics, std::string &detail) {
   if (peers.empty())
     return mlir::success();
@@ -1150,6 +1318,11 @@ static mlir::LogicalResult buildTopologyFanoutChoices(
       if (scheduleNativeCompleteExchange(component, groups, peers, *lanes,
                                          static_cast<int64_t>(componentIndex),
                                          statistics))
+        continue;
+      if (allGatherAlgorithm == CompleteAllGatherAlgorithm::RecursiveDoubling &&
+          scheduleRecursiveDoublingComponent(
+              component, groups, peers, *lanes,
+              static_cast<int64_t>(componentIndex), statistics))
         continue;
       if (mlir::failed(
               scheduleRingComponent(component, groups, peers, *lanes,
@@ -1853,7 +2026,7 @@ findRelayChildren(llvm::ArrayRef<PeerPlan> peers, unsigned relationIndex) {
 static DTEMessageAttr getMessage(mlir::MLIRContext *context,
                                  const PeerPlan &peer) {
   return DTEMessageAttr::get(context, peer.communicationId, peer.protocolRound,
-                             0);
+                             peer.payloadSlice);
 }
 
 struct SharedDDRPeerBinding {
@@ -2263,6 +2436,74 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
         oldRegion.getLoc(), scalarResultTypes, newInputs);
     newRegion.getBody().takeBody(oldRegion.getBody());
     mlir::Block &block = newRegion.getBody().front();
+    struct RecursiveAggregate {
+      mlir::MemRefType slotType;
+      unsigned participantCount = 0;
+      mlir::Value root;
+      llvm::SmallVector<mlir::Value, 16> slots;
+    };
+    std::map<std::pair<int64_t, unsigned>, RecursiveAggregate>
+        recursiveAggregates;
+    auto getRecursiveSlot =
+        [&](const PeerPlan &peer) -> mlir::FailureOr<mlir::Value> {
+      std::pair<int64_t, unsigned> key{peer.scheduleComponent,
+                                       peer.recursiveLane};
+      auto found = recursiveAggregates.find(key);
+      if (found == recursiveAggregates.end()) {
+        std::optional<mlir::MemRefType> aggregateType =
+            getRecursiveAggregateType(peer.destinationSPMType,
+                                      peer.recursiveParticipantCount,
+                                      peer.bytes);
+        if (!aggregateType) {
+          detail = "recursive doubling has no exact aggregate memref type";
+          return mlir::failure();
+        }
+        rewriter.setInsertionPointToStart(&block);
+        auto allocation = rewriter.create<mlir::memref::AllocOp>(
+            oldRegion.getLoc(), *aggregateType);
+        RecursiveAggregate aggregate;
+        aggregate.slotType = peer.destinationSPMType;
+        aggregate.participantCount = peer.recursiveParticipantCount;
+        aggregate.root = allocation.getResult();
+        rewriter.setInsertionPointAfter(allocation);
+        llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
+        llvm::SmallVector<mlir::OpFoldResult, 4> strides;
+        for (int64_t size : aggregate.slotType.getShape()) {
+          sizes.push_back(rewriter.getIndexAttr(size));
+          strides.push_back(rewriter.getIndexAttr(1));
+        }
+        for (unsigned position = 0; position < aggregate.participantCount;
+             ++position) {
+          llvm::SmallVector<mlir::OpFoldResult, 4> offsets(
+              aggregate.slotType.getRank(), rewriter.getIndexAttr(0));
+          int64_t firstOffset = 0;
+          if (llvm::MulOverflow(static_cast<int64_t>(position),
+                                aggregate.slotType.getDimSize(0),
+                                firstOffset)) {
+            detail = "recursive doubling slot offset overflows";
+            return mlir::failure();
+          }
+          offsets.front() = rewriter.getIndexAttr(firstOffset);
+          auto slot = rewriter.create<mlir::memref::SubViewOp>(
+              oldRegion.getLoc(), aggregate.root, offsets, sizes, strides);
+          if (!logicalTypesMatch(mlir::cast<mlir::MemRefType>(slot.getType()),
+                                 aggregate.slotType)) {
+            detail = "recursive doubling slot type changed logical payload";
+            return mlir::failure();
+          }
+          aggregate.slots.push_back(slot.getResult());
+        }
+        found =
+            recursiveAggregates.try_emplace(key, std::move(aggregate)).first;
+      }
+      if (found->second.slotType != peer.destinationSPMType ||
+          found->second.participantCount != peer.recursiveParticipantCount ||
+          peer.recursiveOriginPosition >= found->second.slots.size()) {
+        detail = "recursive doubling aggregate metadata is inconsistent";
+        return mlir::failure();
+      }
+      return found->second.slots[peer.recursiveOriginPosition];
+    };
     llvm::DenseMap<unsigned, mlir::BlockArgument> destinationArguments;
     for (unsigned resultIndex : destinationResultIndices) {
       mlir::Value destination = resultDestinations.lookup(resultIndex);
@@ -2294,32 +2535,40 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
         const PeerPlan *peer = findPeer(peers, *input.peerRelation);
         if (!peer || input.bridges.empty())
           return failApply("peer input has no exact movement buffer");
-        rewriter.setInsertionPointToStart(&block);
-        auto allocation = rewriter.create<mlir::memref::AllocOp>(
-            argument.getLoc(), peer->destinationSPMType);
+        mlir::Value allocation;
+        if (peer->recursiveDoubling) {
+          mlir::FailureOr<mlir::Value> slot = getRecursiveSlot(*peer);
+          if (mlir::failed(slot))
+            return mlir::failure();
+          allocation = *slot;
+        } else {
+          rewriter.setInsertionPointToStart(&block);
+          allocation = rewriter
+                           .create<mlir::memref::AllocOp>(
+                               argument.getLoc(), peer->destinationSPMType)
+                           .getResult();
+        }
         if (peer->useSharedDDR) {
           auto binding = sharedDDRBindings->find(peer->relationIndex);
           if (binding == sharedDDRBindings->end())
             return failApply("shared DDR peer input has no actual binding");
           argument.setType(binding->second.type);
           rewriter.create<StorageLoadOp>(argument.getLoc(), argument,
-                                         allocation.getResult());
+                                         allocation);
           ++statistics.ddrLoads;
           ++statistics.crossTileDDRStages;
         } else {
           erasedArguments.push_back(input.index);
           receivedPayloads.push_back(
-              ReceivedPayload{peer, allocation.getResult(), argument.getLoc()});
+              ReceivedPayload{peer, allocation, argument.getLoc()});
         }
         for (mlir::memref::SubViewOp subview : peer->destinationSubviews) {
-          rewriter.replaceAllUsesWith(subview.getResult(),
-                                      allocation.getResult());
+          rewriter.replaceAllUsesWith(subview.getResult(), allocation);
           rewriter.eraseOp(subview);
         }
         for (mlir::bufferization::ToMemrefOp bridge : input.bridges) {
           if (peer->destinationSubviews.empty())
-            rewriter.replaceAllUsesWith(bridge.getMemref(),
-                                        allocation.getResult());
+            rewriter.replaceAllUsesWith(bridge.getMemref(), allocation);
           if (!bridge.getMemref().use_empty())
             return failApply("peer destination carrier still has a live use");
           rewriter.eraseOp(bridge);
@@ -2398,12 +2647,34 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
       mlir::Value relaySource;
       mlir::Location location;
     };
+    struct RecursiveSeed {
+      const ResultPlan *result = nullptr;
+      const PeerPlan *peer = nullptr;
+      mlir::Value destination;
+    };
     llvm::SmallVector<PendingSend, 16> pendingSends;
+    llvm::SmallVector<RecursiveSeed, 4> recursiveSeeds;
+    llvm::SmallVector<std::pair<int64_t, unsigned>, 4> seededComponents;
     for (const ResultPlan &result : plan.results)
       for (unsigned relationIndex : result.peerRelations) {
         const PeerPlan *peer = findPeer(peers, relationIndex);
         if (!peer)
           return failApply("peer output has no prepared transfer");
+        if (peer->recursiveDoubling) {
+          mlir::FailureOr<mlir::Value> slot = getRecursiveSlot(*peer);
+          if (mlir::failed(slot))
+            return mlir::failure();
+          std::pair<int64_t, unsigned> key{peer->scheduleComponent,
+                                           peer->recursiveLane};
+          if (!llvm::is_contained(seededComponents, key)) {
+            seededComponents.push_back(key);
+            recursiveSeeds.push_back(RecursiveSeed{&result, peer, *slot});
+          }
+          if (!peer->relaySourceRelation)
+            pendingSends.push_back(PendingSend{nullptr, peer, *slot,
+                                               result.originalResult.getLoc()});
+          continue;
+        }
         if (!peer->useSharedDDR && !peer->relaySourceRelation)
           pendingSends.push_back(
               PendingSend{&result, peer, {}, result.originalResult.getLoc()});
@@ -2412,7 +2683,13 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
     for (const ReceivedPayload &received : receivedPayloads)
       for (const PeerPlan *child :
            findRelayChildren(peers, received.peer->relationIndex)) {
-        if (received.allocation.getType() != child->destinationSPMType)
+        bool compatible =
+            received.allocation.getType() == child->destinationSPMType;
+        if (child->recursiveDoubling)
+          compatible = logicalTypesMatch(
+              mlir::cast<mlir::MemRefType>(received.allocation.getType()),
+              child->destinationSPMType);
+        if (!compatible)
           return failApply("peer relay payload representation changed");
         pendingSends.push_back(PendingSend{nullptr, child, received.allocation,
                                            received.location});
@@ -2491,6 +2768,35 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
         if (send.peer->scheduleComponent == component)
           maximumRound = std::max(maximumRound, send.peer->protocolRound);
       rewriter.setInsertionPoint(firstConsumer);
+      for (const RecursiveSeed &seed : recursiveSeeds) {
+        if (seed.peer->scheduleComponent != component)
+          continue;
+        mlir::FailureOr<mlir::Value> source =
+            materializeTransferSource(*seed.result, *seed.peer);
+        if (mlir::failed(source))
+          return failApply("recursive doubling seed layout is not exact");
+        auto allocation = source->getDefiningOp<mlir::memref::AllocOp>();
+        bool canDonate =
+            allocation && allocation->getBlock() == &block &&
+            logicalTypesMatch(
+                mlir::cast<mlir::MemRefType>(source->getType()),
+                mlir::cast<mlir::MemRefType>(seed.destination.getType())) &&
+            llvm::none_of(source->getUsers(), [](mlir::Operation *user) {
+              return mlir::isa<mlir::memref::DeallocOp>(user);
+            });
+        if (canDonate) {
+          rewriter.replaceAllUsesWith(*source, seed.destination);
+          if (!allocation->use_empty())
+            return failApply(
+                "recursive doubling seed donation left a live allocation");
+          rewriter.eraseOp(allocation);
+          ++statistics.recursiveDoublingSeedDonations;
+          continue;
+        }
+        rewriter.create<mlir::memref::CopyOp>(
+            seed.result->originalResult.getLoc(), *source, seed.destination);
+        ++statistics.recursiveDoublingSeedCopies;
+      }
       for (int64_t round = 0; round <= maximumRound; ++round) {
         for (const ReceivedPayload &received : receivedPayloads) {
           if (received.peer->scheduleComponent != component ||
@@ -2751,9 +3057,116 @@ mlir::LogicalResult verifyPhysicalTileDataflow(mlir::ModuleOp module) {
   return mlir::success(!illegal);
 }
 
+RecursiveDoublingAvailability analyzeRecursiveDoublingAvailability(
+    mlir::ModuleOp module,
+    const StructuredMaterializationRelations &relations) {
+  RecursiveDoublingAvailability result;
+  struct EndpointGroup {
+    mlir::Value source;
+    uint64_t sourceTile = 0;
+    llvm::SmallVector<uint64_t, 16> participants;
+  };
+  llvm::SmallVector<EndpointGroup, 16> endpointGroups;
+  for (const StructuredBoundaryRelation &relation :
+       relations.boundaryRelations) {
+    TileRegionOp sourceRegion = getRegionOwner(relation.sourceEndpoint);
+    TileRegionOp destinationRegion =
+        getRegionOwner(relation.destinationEndpoint);
+    TileModuleOp sourceTile =
+        sourceRegion ? sourceRegion->getParentOfType<TileModuleOp>()
+                     : TileModuleOp{};
+    TileModuleOp destinationTile =
+        destinationRegion ? destinationRegion->getParentOfType<TileModuleOp>()
+                          : TileModuleOp{};
+    if (!sourceTile || !destinationTile)
+      continue;
+    uint64_t sourceId = sourceTile.getTileIdAttr().getInt();
+    uint64_t destinationId = destinationTile.getTileIdAttr().getInt();
+    auto found = llvm::find_if(endpointGroups, [&](const EndpointGroup &group) {
+      return group.source == relation.sourceEndpoint;
+    });
+    if (found == endpointGroups.end()) {
+      EndpointGroup group;
+      group.source = relation.sourceEndpoint;
+      group.sourceTile = sourceId;
+      group.participants.push_back(sourceId);
+      group.participants.push_back(destinationId);
+      endpointGroups.push_back(std::move(group));
+    } else if (!llvm::is_contained(found->participants, destinationId)) {
+      found->participants.push_back(destinationId);
+    }
+  }
+  for (EndpointGroup &group : endpointGroups)
+    llvm::sort(group.participants);
+  bool mayContainCompleteExchange =
+      llvm::any_of(endpointGroups, [&](const EndpointGroup &candidate) {
+        const size_t count = candidate.participants.size();
+        if (count < 2 || count > 16 || !llvm::isPowerOf2_64(count))
+          return false;
+        return llvm::all_of(candidate.participants, [&](uint64_t source) {
+          return llvm::any_of(endpointGroups, [&](const EndpointGroup &group) {
+            return group.sourceTile == source &&
+                   group.participants == candidate.participants;
+          });
+        });
+      });
+  if (!mayContainCompleteExchange) {
+    result.detail = "current endpoints contain no power-of-two complete "
+                    "AllGather relation domain";
+    return result;
+  }
+  if (!module || mlir::failed(verifyStructuredComputeLowered(module)) ||
+      mlir::failed(checkStructuredBufferRelationsCurrent(module, relations))) {
+    result.kind = RecursiveDoublingAvailabilityKind::BrokenContract;
+    result.detail = "recursive doubling availability requires current "
+                    "structured-compute-lowered IR and live relations";
+    return result;
+  }
+  StructuredMaterializationRelations copiedRelations = relations;
+  llvm::SmallVector<RegionPlan, 16> regions;
+  llvm::SmallVector<PeerPlan, 16> peers;
+  if (mlir::failed(
+          preflight(module, copiedRelations, regions, peers, result.detail)))
+    return result;
+  llvm::SmallVector<PayloadGroup, 16> groups = buildPayloadGroups(peers);
+  llvm::SmallVector<CommunicationComponent, 8> components =
+      buildCommunicationComponents(groups, peers);
+  BoundaryMovementStatistics statistics;
+  if (mlir::failed(breakCrossComponentRegionOrderCycles(components, groups,
+                                                        peers, statistics))) {
+    result.kind = RecursiveDoublingAvailabilityKind::BrokenContract;
+    result.detail = "recursive doubling availability cannot close current "
+                    "communication component order";
+    return result;
+  }
+  for (auto [componentIndex, component] : llvm::enumerate(components)) {
+    if (componentUsesSharedDDR(component, groups, peers))
+      continue;
+    std::optional<unsigned> lanes =
+        getCompleteExchangeLaneCount(component, groups, peers);
+    if (!lanes || !hasCurrentCommunicationCut(component, groups, peers))
+      continue;
+    if (llvm::all_of(component.groups, [&](unsigned groupIndex) {
+          return isQualifiedNativeBroadcastGroup(groups[groupIndex], peers);
+        }))
+      continue;
+    if (scheduleRecursiveDoublingComponent(component, groups, peers, *lanes,
+                                           static_cast<int64_t>(componentIndex),
+                                           statistics)) {
+      result.kind = RecursiveDoublingAvailabilityKind::Available;
+      result.detail.clear();
+      return result;
+    }
+  }
+  result.detail = "current IR has no non-native complete AllGather with an "
+                  "exact recursive-doubling aggregate representation";
+  return result;
+}
+
 BoundaryMovementResult
 materializeTileBoundaryMovement(mlir::ModuleOp module,
-                                StructuredMaterializationRelations &relations) {
+                                StructuredMaterializationRelations &relations,
+                                CompleteAllGatherAlgorithm allGatherAlgorithm) {
   if (!module || mlir::failed(verifyStructuredComputeLowered(module)) ||
       mlir::failed(checkStructuredBufferRelationsCurrent(module, relations)))
     return fail(BoundaryMovementFailureKind::BrokenContract,
@@ -2766,8 +3179,8 @@ materializeTileBoundaryMovement(mlir::ModuleOp module,
     return fail(BoundaryMovementFailureKind::Unsupported, detail);
 
   BoundaryMovementResult result;
-  if (mlir::failed(
-          buildTopologyFanoutChoices(module, peers, result.statistics, detail)))
+  if (mlir::failed(buildTopologyFanoutChoices(module, peers, allGatherAlgorithm,
+                                              result.statistics, detail)))
     return fail(BoundaryMovementFailureKind::Unsupported, detail);
   if (mlir::failed(apply(module, regions, peers, result.statistics, detail)))
     return fail(BoundaryMovementFailureKind::CompilerFailure,

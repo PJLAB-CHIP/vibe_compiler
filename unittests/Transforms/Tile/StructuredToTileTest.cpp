@@ -1,6 +1,7 @@
 //===- StructuredToTileTest.cpp ---------------------------------------===//
 
 #include "Wafer/Transforms/Tile/StructuredToTile.h"
+#include "TestSupport/Driver/CompilerTesting.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/Driver/StandaloneTileModules/StandaloneTileModules.h"
 #include "Wafer/Transforms/Instr/DirectDTETransport.h"
@@ -562,6 +563,119 @@ module {
 )mlir";
     }
     stream << "}\n";
+    return text;
+  }
+
+  static std::string makeDenseCompleteExchangeSource(int64_t extent,
+                                                     int64_t tileCount,
+                                                     bool bf16 = false) {
+    std::string text;
+    llvm::raw_string_ostream stream(text);
+    stream << R"mlir(
+#id = affine_map<(b, m, n) -> (b, m, n)>
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+)mlir";
+    for (int64_t tile = 0; tile < tileCount; ++tile) {
+      stream << "  wafer.tile.module card_id = 0 tile_id = " << tile
+             << " {\n    func.func @entry(%local: tensor<1x" << extent
+             << "x1xf16>";
+      for (int64_t source = 0; source < tileCount; ++source)
+        if (source != tile)
+          stream << ", %from" << source << ": tensor<1x" << extent
+                 << "x1xf16> {wafer.cross_tile_boundary_input}";
+      stream << ") -> tensor<1x" << extent
+             << "x1xf16> {\n      %source, %output = "
+                "wafer.tile.region(%local";
+      for (int64_t source = 0; source < tileCount; ++source)
+        if (source != tile)
+          stream << ", %from" << source;
+      stream << " : tensor<1x" << extent << "x1xf16>";
+      for (int64_t source = 0; source < tileCount; ++source)
+        if (source != tile)
+          stream << ", tensor<1x" << extent << "x1xf16>";
+      stream << ") -> (tensor<1x" << extent << "x1xf16>, tensor<1x" << extent
+             << "x1xf16>) {\n      ^bb0(%local_arg: tensor<1x" << extent
+             << "x1xf16>";
+      for (int64_t source = 0; source < tileCount; ++source)
+        if (source != tile)
+          stream << ", %from" << source << "_arg: tensor<1x" << extent
+                 << "x1xf16>";
+      stream << "):\n"
+                "        %source_empty = tensor.empty() : tensor<1x"
+             << extent << "x1xf16>\n"
+             << "        %local_source = linalg.generic {indexing_maps = "
+                "[#id, #id], iterator_types = [\"parallel\", \"parallel\", "
+                "\"parallel\"]} ins(%local_arg : tensor<1x"
+             << extent << "x1xf16>) outs(%source_empty : tensor<1x" << extent
+             << "x1xf16>) {\n"
+                "        ^bb1(%value: f16, %old: f16):\n"
+                "          linalg.yield %value : f16\n"
+                "        } -> tensor<1x"
+             << extent
+             << "x1xf16>\n"
+                "        %output_empty = tensor.empty() : tensor<1x"
+             << extent
+             << "x1xf16>\n"
+                "        %combined = linalg.generic {indexing_maps = [";
+      for (int64_t index = 0; index < tileCount; ++index)
+        stream << (index == 0 ? "" : ", ") << "#id";
+      stream << "], iterator_types = [\"parallel\", \"parallel\", "
+                "\"parallel\"]} ins(";
+      bool first = true;
+      for (int64_t source = 0; source < tileCount; ++source) {
+        if (source == tile)
+          continue;
+        stream << (first ? "" : ", ") << "%from" << source << "_arg";
+        first = false;
+      }
+      stream << " : ";
+      for (int64_t index = 0; index < tileCount - 1; ++index)
+        stream << (index == 0 ? "" : ", ") << "tensor<1x" << extent
+               << "x1xf16>";
+      stream << ") outs(%output_empty : tensor<1x" << extent
+             << "x1xf16>) {\n        ^bb1(";
+      for (int64_t source = 0; source < tileCount; ++source)
+        if (source != tile)
+          stream << "%value" << source << ": f16, ";
+      stream << "%old: f16):\n";
+      llvm::SmallVector<int64_t, 15> remoteSources;
+      for (int64_t source = 0; source < tileCount; ++source)
+        if (source != tile)
+          remoteSources.push_back(source);
+      int64_t firstSource = remoteSources[0];
+      int64_t secondSource = remoteSources[1];
+      stream << "          %sum0 = arith.addf %value" << firstSource
+             << ", %value" << secondSource << " : f16\n";
+      int64_t sumIndex = 0;
+      for (int64_t source = 0; source < tileCount; ++source) {
+        if (source == tile || source == firstSource || source == secondSource)
+          continue;
+        stream << "          %sum" << sumIndex + 1 << " = arith.addf %sum"
+               << sumIndex << ", %value" << source << " : f16\n";
+        ++sumIndex;
+      }
+      stream << "          linalg.yield %sum" << sumIndex
+             << " : f16\n"
+                "        } -> tensor<1x"
+             << extent
+             << "x1xf16>\n"
+                "        wafer.tile.yield %local_source, %combined : "
+                "tensor<1x"
+             << extent << "x1xf16>, tensor<1x" << extent
+             << "x1xf16>\n"
+                "      }\n"
+                "      return %output : tensor<1x"
+             << extent << "x1xf16>\n    }\n  }\n";
+    }
+    stream << "}\n";
+    if (bf16)
+      for (size_t offset = 0;
+           (offset = text.find("f16", offset)) != std::string::npos;
+           offset += 4)
+        text.replace(offset, 3, "bf16");
     return text;
   }
 
@@ -1217,8 +1331,8 @@ TEST_F(StructuredToTileTest,
   StructuredToTileResult lowered =
       lowerStructuredComputeToTile(*module, relations);
   ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
-  BoundaryMovementResult movement =
-      materializeTileBoundaryMovement(*module, relations);
+  BoundaryMovementResult movement = materializeTileBoundaryMovement(
+      *module, relations, CompleteAllGatherAlgorithm::RecursiveDoubling);
   ASSERT_TRUE(movement.succeeded()) << movement.detail;
   EXPECT_EQ(movement.statistics.nativeBroadcastGroups, 1u);
   EXPECT_EQ(movement.statistics.topologyFanoutGroups, 0u);
@@ -1580,6 +1694,203 @@ TEST_F(StructuredToTileTest, CompleteExchangeBecomesThreeTopologyRingRounds) {
     EXPECT_TRUE(
         mlir::succeeded(verifyDirectDTETransportSchedule(instructionModules)));
   }
+}
+
+TEST_F(StructuredToTileTest,
+       CompleteExchangeRecursiveDoublingUsesActualAggregateBuffers) {
+  for (int64_t tileCount : {4, 16}) {
+    for (int64_t extent : {1024, 1025, 1031}) {
+      for (bool bf16 : {false, true}) {
+        if (bf16 && extent != 1025)
+          continue;
+        SCOPED_TRACE((llvm::Twine("tiles=") + llvm::Twine(tileCount) +
+                      ", extent=" + llvm::Twine(extent) +
+                      ", dtype=" + (bf16 ? "bf16" : "f16"))
+                         .str());
+        int64_t channels = !bf16 && tileCount == 4 ? 64 : 1;
+        auto module = parse(
+            !bf16 && tileCount == 4
+                ? makeCompleteExchangeSource(extent)
+                : makeDenseCompleteExchangeSource(extent, tileCount, bf16));
+        ASSERT_TRUE(module);
+        llvm::SmallVector<std::pair<int64_t, TileRegionOp>, 4> regions;
+        for (TileModuleOp tile : module->getOps<TileModuleOp>())
+          tile.walk([&](TileRegionOp region) {
+            regions.push_back({tile.getTileIdAttr().getInt(), region});
+          });
+        llvm::sort(regions, [](const auto &lhs, const auto &rhs) {
+          return lhs.first < rhs.first;
+        });
+        ASSERT_EQ(regions.size(), static_cast<size_t>(tileCount));
+        StructuredMaterializationRelations relations;
+        for (unsigned source = 0; source < regions.size(); ++source)
+          for (unsigned destination = 0; destination < regions.size();
+               ++destination) {
+            if (source == destination)
+              continue;
+            unsigned argument = 1;
+            for (unsigned candidate = 0; candidate < source; ++candidate)
+              argument += candidate != destination;
+            relations.boundaryRelations.push_back(
+                {regions[source].second.getResult(0),
+                 regions[destination].second.getBody().getArgument(argument)});
+          }
+        for (auto &[tile, region] : regions) {
+          (void)tile;
+          relations.structuralOutputs.push_back({0, region.getResult(1)});
+        }
+        LayoutOptimizationResult layout =
+            resolveCurrentLayoutsAndBufferize(*module, relations);
+        ASSERT_TRUE(layout.succeeded()) << layout.detail;
+        StructuredToTileResult lowered =
+            lowerStructuredComputeToTile(*module, relations);
+        ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+        RecursiveDoublingAvailability availability =
+            analyzeRecursiveDoublingAvailability(*module, relations);
+        ASSERT_TRUE(availability.isAvailable()) << availability.detail;
+        BoundaryMovementResult movement = materializeTileBoundaryMovement(
+            *module, relations, CompleteAllGatherAlgorithm::RecursiveDoubling);
+        ASSERT_TRUE(movement.succeeded()) << movement.detail;
+        EXPECT_EQ(movement.statistics.recursiveDoublingComponents, 1u);
+        unsigned rounds = tileCount == 4 ? 2 : 4;
+        EXPECT_EQ(movement.statistics.recursiveDoublingRounds, rounds);
+        EXPECT_EQ(movement.statistics.recursiveDoublingSeedCopies, 0u);
+        EXPECT_EQ(movement.statistics.recursiveDoublingSeedDonations,
+                  static_cast<uint64_t>(tileCount));
+        EXPECT_EQ(movement.statistics.ringComponents, 0u);
+        uint64_t peerOperations = tileCount * (tileCount - 1);
+        EXPECT_EQ(movement.statistics.peerSends, peerOperations);
+        EXPECT_EQ(movement.statistics.peerReceives, peerOperations);
+        EXPECT_EQ(countOps<mlir::memref::CopyOp>(module->getOperation()), 0u);
+
+        for (TileModuleOp tile : module->getOps<TileModuleOp>()) {
+          unsigned aggregateAllocations = 0;
+          tile.walk([&](mlir::memref::AllocOp allocation) {
+            auto type = mlir::cast<mlir::MemRefType>(allocation.getType());
+            if (type.getRank() == 3 && type.getDimSize(0) == tileCount &&
+                type.getDimSize(1) == extent && type.getDimSize(2) == channels)
+              ++aggregateAllocations;
+          });
+          EXPECT_EQ(aggregateAllocations, 1u);
+        }
+
+        std::string standaloneFailure;
+        auto standalone = createStandaloneTileModules(
+            std::move(module), &standaloneFailure, &relations);
+        ASSERT_TRUE(mlir::succeeded(standalone)) << standaloneFailure;
+        llvm::SmallVector<mlir::ModuleOp, 16> instructionModules;
+        for (StandaloneTileModule &tile : *standalone) {
+          llvm::SmallVector<TileRegionOp, 2> tileRegions;
+          tile.module->walk(
+              [&](TileRegionOp region) { tileRegions.push_back(region); });
+          TileRegionToInstrLoweringSession session(*tile.module->getContext());
+          for (TileRegionOp region : tileRegions)
+            ASSERT_TRUE(
+                mlir::succeeded(convertTileRegionToInstr(region, session)));
+          ASSERT_TRUE(mlir::succeeded(
+              convertBufferizationCopiesToInstr(*tile.module, session)));
+          instructionModules.push_back(*tile.module);
+        }
+        auto coalesced = coalesceExactDirectDTETransfers(instructionModules);
+        ASSERT_TRUE(coalesced.succeeded()) << coalesced.detail;
+        EXPECT_EQ(coalesced.statistics.coalescedP2PTransfers,
+                  static_cast<uint64_t>(tileCount * (rounds - 1)));
+        unsigned sends = 0;
+        unsigned receives = 0;
+        for (mlir::ModuleOp tile : instructionModules) {
+          tile.walk([&](InstrDTESendOp) { ++sends; });
+          tile.walk([&](InstrDTERecvOp) { ++receives; });
+        }
+        EXPECT_EQ(sends, static_cast<unsigned>(tileCount * rounds));
+        EXPECT_EQ(receives, static_cast<unsigned>(tileCount * rounds));
+
+        DirectDTECompletionResult completion =
+            rebuildRequiredDirectDTEWaits(instructionModules);
+        ASSERT_TRUE(completion.succeeded()) << completion.detail;
+        instructionModules.clear();
+        for (StandaloneTileModule &tile : *standalone) {
+          ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+          TileMemoryPlanningFailure memoryFailure;
+          auto planned = planTileMemory(std::move(tile.module), &memoryFailure);
+          ASSERT_TRUE(mlir::succeeded(planned));
+          tile.module = std::move(*planned);
+          instructionModules.push_back(*tile.module);
+        }
+        EXPECT_TRUE(mlir::succeeded(
+            verifyDirectDTETransportSchedule(instructionModules)));
+        EXPECT_TRUE(
+            mlir::succeeded(bindDirectDTETransport(instructionModules)));
+        if (tileCount == 16) {
+          llvm::SmallVector<TileId, 16> tileIds;
+          for (int64_t tile = 0; tile < tileCount; ++tile)
+            tileIds.push_back(TileId(tile));
+          auto executionConfig =
+              wafer::compiler::ExecutionConfig::createForSingleCard(1);
+          ASSERT_TRUE(static_cast<bool>(executionConfig))
+              << llvm::toString(executionConfig.takeError());
+          auto cost = wafer::compiler::testing::verifyProgramResources(
+              instructionModules, tileIds, *executionConfig);
+          ASSERT_TRUE(mlir::succeeded(cost));
+          ASSERT_TRUE(cost->maximumTileNoCTransmitMessageCount.isKnown());
+          ASSERT_TRUE(cost->maximumTileNoCReceiveMessageCount.isKnown());
+          EXPECT_EQ(cost->maximumTileNoCTransmitMessageCount.value, rounds);
+          EXPECT_EQ(cost->maximumTileNoCReceiveMessageCount.value, rounds);
+        }
+      }
+    }
+  }
+}
+
+TEST_F(StructuredToTileTest,
+       NonPowerOfTwoCompleteExchangeKeepsRingRealization) {
+  constexpr int64_t tileCount = 3;
+  constexpr int64_t extent = 1025;
+  auto module = parse(makeDenseCompleteExchangeSource(extent, tileCount));
+  ASSERT_TRUE(module);
+  llvm::SmallVector<std::pair<int64_t, TileRegionOp>, 3> regions;
+  for (TileModuleOp tile : module->getOps<TileModuleOp>())
+    tile.walk([&](TileRegionOp region) {
+      regions.push_back({tile.getTileIdAttr().getInt(), region});
+    });
+  llvm::sort(regions, [](const auto &lhs, const auto &rhs) {
+    return lhs.first < rhs.first;
+  });
+  ASSERT_EQ(regions.size(), static_cast<size_t>(tileCount));
+  StructuredMaterializationRelations relations;
+  for (unsigned source = 0; source < regions.size(); ++source)
+    for (unsigned destination = 0; destination < regions.size();
+         ++destination) {
+      if (source == destination)
+        continue;
+      unsigned argument = 1;
+      for (unsigned candidate = 0; candidate < source; ++candidate)
+        argument += candidate != destination;
+      relations.boundaryRelations.push_back(
+          {regions[source].second.getResult(0),
+           regions[destination].second.getBody().getArgument(argument)});
+    }
+  for (auto &[tile, region] : regions) {
+    (void)tile;
+    relations.structuralOutputs.push_back({0, region.getResult(1)});
+  }
+  LayoutOptimizationResult layout =
+      resolveCurrentLayoutsAndBufferize(*module, relations);
+  ASSERT_TRUE(layout.succeeded()) << layout.detail;
+  StructuredToTileResult lowered =
+      lowerStructuredComputeToTile(*module, relations);
+  ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+  RecursiveDoublingAvailability availability =
+      analyzeRecursiveDoublingAvailability(*module, relations);
+  EXPECT_EQ(availability.kind, RecursiveDoublingAvailabilityKind::Unavailable);
+  BoundaryMovementResult movement = materializeTileBoundaryMovement(
+      *module, relations, CompleteAllGatherAlgorithm::RecursiveDoubling);
+  ASSERT_TRUE(movement.succeeded()) << movement.detail;
+  EXPECT_EQ(movement.statistics.recursiveDoublingComponents, 0u);
+  EXPECT_EQ(movement.statistics.recursiveDoublingSeedCopies, 0u);
+  EXPECT_EQ(movement.statistics.ringComponents, 1u);
+  EXPECT_EQ(movement.statistics.ringRounds, 2u);
+  EXPECT_EQ(movement.statistics.peerSends, 6u);
+  EXPECT_EQ(movement.statistics.peerReceives, 6u);
 }
 
 TEST_F(StructuredToTileTest, SplitExchangeRegionsCloseBeforeOneRingRound) {

@@ -302,6 +302,9 @@ current Instr completion transformation必须直接证明并物化completion；�
   相同输入重复得到同一round与peer顺序；
 - complete exchange分别验证native per-source broadcast与unicast Ring；All-to-All分别验证native per-source scatter与pairwise matching。
   native能力外的byte count、fanout、ragged segment、dynamic binding和alias必须保持普通算法或typed failure，不能扩展raw硬件合同。
+- recursive doubling只用于非native、power-of-two complete AllGather；验证actual aggregate allocation、producer donation/seed copy、slot
+  all-and-only cover、`log2(P)`个coalesced message、与Ring相同的endpoint bytes、独立MiniMalloc outcome和search actualization budget；
+  ineligible/native/baseline不得创建recursive downstream leaf。
 
 ## 6. Target、package 与 runtime gates
 

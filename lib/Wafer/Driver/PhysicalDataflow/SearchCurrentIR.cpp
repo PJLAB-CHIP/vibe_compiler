@@ -35,6 +35,11 @@ struct CurrentCandidate {
   StructuredMaterializationRelations relations;
 };
 
+struct FinishedCandidate {
+  ExecutableCompilationResult compilation;
+  uint64_t actualLeaves = 1;
+};
+
 struct TemporalAxis {
   TemporalDomain domain;
   TemporalSuccessor current;
@@ -436,8 +441,14 @@ public:
         return {actualFailure(ActualCandidateStatus::CompilerBug, detail),
                 actualizations, false};
 
-      ExecutableCompilationResult compiled =
-          finishCandidate(std::move(*candidate), detail);
+      FinishedCandidate finished = finishCandidate(
+          std::move(*candidate),
+          /*allowRecursiveDoubling=*/actualizations < actualizationLimit,
+          detail);
+      if (finished.actualLeaves > 1) {
+        actualizations += finished.actualLeaves - 1;
+      }
+      ExecutableCompilationResult compiled = std::move(finished.compilation);
       const ActualCandidateStatus status =
           classifyActualStatus(compiled.status);
       const bool capacityRejected = hasActualSPMCapacityRejection(compiled);
@@ -546,18 +557,20 @@ public:
   }
 
 private:
-  ExecutableCompilationResult finishCandidate(CurrentCandidate candidate,
-                                              std::string &detail) {
+  FinishedCandidate finishCandidate(CurrentCandidate candidate,
+                                    bool allowRecursiveDoubling,
+                                    std::string &detail) {
     SpatialRegionMaterializationFailure closureFailure;
     CommunicationRegionClosureStatistics closureStatistics;
     if (mlir::failed(closeCrossTileCommunicationRegions(
             *candidate.module, candidate.relations, &closureStatistics,
             &closureFailure)))
-      return fail(closureFailure.kind ==
-                          SpatialRegionMaterializationFailureKind::Unsupported
-                      ? ExecutableCompilationStatus::UnsupportedFailure
-                      : ExecutableCompilationStatus::CompilerFailure,
-                  "search-communication-region-closure", closureFailure.detail);
+      return {fail(closureFailure.kind ==
+                           SpatialRegionMaterializationFailureKind::Unsupported
+                       ? ExecutableCompilationStatus::UnsupportedFailure
+                       : ExecutableCompilationStatus::CompilerFailure,
+                   "search-communication-region-closure",
+                   closureFailure.detail)};
     if (statistics)
       statistics->communicationRegionClosures +=
           closureStatistics.closedExchangeComponents;
@@ -565,12 +578,12 @@ private:
     OnlineAttentionDecompositionFailure attentionFailure;
     if (mlir::failed(decomposeOnlineAttention(
             *candidate.module, candidate.relations, &attentionFailure)))
-      return fail(
+      return {fail(
           attentionFailure.kind ==
                   OnlineAttentionDecompositionFailureKind::UnsupportedSemantics
               ? ExecutableCompilationStatus::UnsupportedFailure
               : ExecutableCompilationStatus::CompilerFailure,
-          "search-attention-decomposition", attentionFailure.detail);
+          "search-attention-decomposition", attentionFailure.detail)};
 
     LayoutOptimizationResult layout = resolveCurrentLayoutsAndBufferize(
         *candidate.module, candidate.relations, options.layoutWorkLimit);
@@ -581,34 +594,129 @@ private:
           layout.status == ExactPBQPStatus::Feasible;
     }
     if (!layout.succeeded())
-      return fail(classifyLayoutFailure(layout.status), "search-layout",
-                  layout.detail);
+      return {fail(classifyLayoutFailure(layout.status), "search-layout",
+                   layout.detail)};
 
     StructuredToTileResult compute =
         lowerStructuredComputeToTile(*candidate.module, candidate.relations);
     if (!compute.succeeded())
-      return fail(compute.failure == StructuredToTileFailureKind::Unsupported
-                      ? ExecutableCompilationStatus::UnsupportedFailure
-                      : ExecutableCompilationStatus::CompilerFailure,
-                  "search-structured-to-tile", compute.detail);
-    BoundaryMovementResult movement =
-        materializeTileBoundaryMovement(*candidate.module, candidate.relations);
-    recordMovementInstrumentation(movement.statistics);
-    if (!movement.succeeded())
-      return fail(movement.failure == BoundaryMovementFailureKind::Unsupported
-                      ? ExecutableCompilationStatus::UnsupportedFailure
-                      : ExecutableCompilationStatus::CompilerFailure,
-                  "search-boundary-movement", movement.detail);
+      return {fail(compute.failure == StructuredToTileFailureKind::Unsupported
+                       ? ExecutableCompilationStatus::UnsupportedFailure
+                       : ExecutableCompilationStatus::CompilerFailure,
+                   "search-structured-to-tile", compute.detail)};
 
-    CurrentIRDownstreamStatistics downstream;
-    ExecutableCompilationResult result = compileCurrentIRCandidateToExecutable(
-        std::move(candidate.module), std::move(candidate.relations),
-        planning.getProblem().getCardId(), analysis.availableTileIds, program,
-        executionConfig, diagnostics, programData, options.downstream,
-        &downstream, executableStatistics);
-    if (statistics)
-      addDownstreamStatistics(statistics->downstream, downstream);
-    return result;
+    std::optional<CurrentCandidate> recursiveCandidate;
+    if (allowRecursiveDoubling) {
+      RecursiveDoublingAvailability availability =
+          analyzeRecursiveDoublingAvailability(*candidate.module,
+                                               candidate.relations);
+      if (availability.kind ==
+          RecursiveDoublingAvailabilityKind::BrokenContract)
+        return {fail(ExecutableCompilationStatus::CompilerFailure,
+                     "search-recursive-doubling-availability",
+                     availability.detail)};
+      if (availability.isAvailable()) {
+        mlir::IRMapping mapping;
+        auto cloned = cloneCandidate(*candidate.module, candidate.relations,
+                                     mapping, detail);
+        if (mlir::failed(cloned))
+          return {fail(ExecutableCompilationStatus::CompilerFailure,
+                       "search-recursive-doubling-clone", detail)};
+        recursiveCandidate = std::move(*cloned);
+      }
+    }
+
+    BoundaryMovementResult ringMovement =
+        materializeTileBoundaryMovement(*candidate.module, candidate.relations,
+                                        CompleteAllGatherAlgorithm::Ring);
+    recordMovementInstrumentation(ringMovement.statistics);
+    if (!ringMovement.succeeded())
+      return {
+          fail(ringMovement.failure == BoundaryMovementFailureKind::Unsupported
+                   ? ExecutableCompilationStatus::UnsupportedFailure
+                   : ExecutableCompilationStatus::CompilerFailure,
+               "search-boundary-movement-ring", ringMovement.detail)};
+
+    if (recursiveCandidate) {
+      BoundaryMovementResult recursiveMovement =
+          materializeTileBoundaryMovement(
+              *recursiveCandidate->module, recursiveCandidate->relations,
+              CompleteAllGatherAlgorithm::RecursiveDoubling);
+      if (!recursiveMovement.succeeded() ||
+          recursiveMovement.statistics.recursiveDoublingComponents == 0)
+        return {fail(ExecutableCompilationStatus::CompilerFailure,
+                     "search-boundary-movement-recursive-doubling",
+                     recursiveMovement.succeeded()
+                         ? "availability and recursive materialization disagree"
+                         : recursiveMovement.detail)};
+      recordMovementInstrumentation(recursiveMovement.statistics);
+      if (statistics)
+        ++statistics->recursiveDoublingCandidates;
+    }
+
+    auto compileMovementCandidate = [&](CurrentCandidate selected) {
+      CurrentIRDownstreamStatistics downstream;
+      ExecutableCompilationResult result =
+          compileCurrentIRCandidateToExecutable(
+              std::move(selected.module), std::move(selected.relations),
+              planning.getProblem().getCardId(), analysis.availableTileIds,
+              program, executionConfig, diagnostics, programData,
+              options.downstream, &downstream, executableStatistics);
+      if (statistics) {
+        ++statistics->movementCandidateActualizations;
+        addDownstreamStatistics(statistics->downstream, downstream);
+      }
+      return result;
+    };
+
+    ExecutableCompilationResult ring =
+        compileMovementCandidate(std::move(candidate));
+    if (!recursiveCandidate)
+      return {std::move(ring), 1};
+    ExecutableCompilationResult recursive =
+        compileMovementCandidate(std::move(*recursiveCandidate));
+    if (statistics && recursive.isAccepted())
+      ++statistics->recursiveDoublingAccepted;
+
+    auto compilerFailure = [](const ExecutableCompilationResult &result) {
+      return result.status == ExecutableCompilationStatus::CompilerFailure;
+    };
+    if (compilerFailure(ring))
+      return {std::move(ring), 2};
+    if (compilerFailure(recursive))
+      return {std::move(recursive), 2};
+    if (ring.isAccepted() && recursive.isAccepted()) {
+      SearchObjective ringObjective =
+          deriveSearchObjective(ring.executable->resourceCost, cohort);
+      SearchObjective recursiveObjective =
+          deriveSearchObjective(recursive.executable->resourceCost, cohort);
+      SearchObjectiveComparison comparison =
+          compareSearchObjectives(recursiveObjective, ringObjective);
+      if (comparison == SearchObjectiveComparison::Better) {
+        if (statistics)
+          ++statistics->recursiveDoublingWinners;
+        return {std::move(recursive), 2};
+      }
+      if (comparison == SearchObjectiveComparison::Incomparable && statistics)
+        ++statistics->incomparableMovementObjectives;
+      return {std::move(ring), 2};
+    }
+    if (recursive.isAccepted()) {
+      if (statistics)
+        ++statistics->recursiveDoublingWinners;
+      return {std::move(recursive), 2};
+    }
+    if (ring.isAccepted())
+      return {std::move(ring), 2};
+    if (ring.status == ExecutableCompilationStatus::IndeterminateFailure)
+      return {std::move(ring), 2};
+    if (recursive.status == ExecutableCompilationStatus::IndeterminateFailure)
+      return {std::move(recursive), 2};
+    if (ring.isProvenExactRejection())
+      return {std::move(ring), 2};
+    if (recursive.isProvenExactRejection())
+      return {std::move(recursive), 2};
+    return {std::move(ring), 2};
   }
 
   mlir::ModuleOp tensorProgram;
@@ -738,6 +846,14 @@ ExecutableCompilationResult compileSearchCurrentIR(
                   statistics->actualCapacityRefinements);
     searchCounter("unavailable-capacity-refinements",
                   statistics->unavailableCapacityRefinements);
+    searchCounter("movement-candidate-actualizations",
+                  statistics->movementCandidateActualizations);
+    searchCounter("recursive-doubling-candidates",
+                  statistics->recursiveDoublingCandidates);
+    searchCounter("recursive-doubling-accepted",
+                  statistics->recursiveDoublingAccepted);
+    searchCounter("recursive-doubling-winners",
+                  statistics->recursiveDoublingWinners);
   }
   if (statistics) {
     statistics->planning = searched.planning;

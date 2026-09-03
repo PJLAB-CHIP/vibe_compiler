@@ -38,6 +38,11 @@ struct SearchCurrentIRStatistics {
   uint64_t communicationRegionClosures = 0;
   uint64_t layoutInvocations = 0;
   uint64_t layoutFeasibleFallbacks = 0;
+  uint64_t movementCandidateActualizations = 0;
+  uint64_t recursiveDoublingCandidates = 0;
+  uint64_t recursiveDoublingAccepted = 0;
+  uint64_t recursiveDoublingWinners = 0;
+  uint64_t incomparableMovementObjectives = 0;
   uint64_t acceptedTemporalCandidates = 0;
   uint64_t exactRejectedTemporalCandidates = 0;
   uint64_t actualCapacityRefinements = 0;
@@ -54,9 +59,12 @@ struct SearchCurrentIRStatistics {
 
 /// Traverses explicit Spatial/Region choices and actualizes each selected
 /// structural state from current TensorProgram IR. Temporal alternatives are
-/// cloned once from that structural owner with IRMapping, immediately applied,
-/// and sent through the shared actual memory/target leaf. The retained winner
-/// is the same actual owner returned by the leaf; it is never rebuilt.
+/// cloned once from that structural owner with IRMapping and immediately
+/// applied. A non-native complete AllGather may then clone the post-layout
+/// owner once for Ring/recursive-doubling movement; both actual owners consume
+/// the shared memory/target leaf and count against actualization credits. The
+/// retained winner is the same actual owner returned by the leaf; it is never
+/// rebuilt.
 ExecutableCompilationResult compileSearchCurrentIR(
     mlir::ModuleOp tensorProgram,
     const frontend::FrontendProgramVerificationResult &program,

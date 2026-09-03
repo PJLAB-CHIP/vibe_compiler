@@ -19,6 +19,11 @@ enum class BoundaryMovementFailureKind : uint8_t {
   CompilerFailure,
 };
 
+enum class CompleteAllGatherAlgorithm : uint8_t {
+  Ring,
+  RecursiveDoubling,
+};
+
 struct BoundaryMovementStatistics {
   uint64_t ddrLoads = 0;
   uint64_t ddrStores = 0;
@@ -33,6 +38,10 @@ struct BoundaryMovementStatistics {
   uint64_t nativeScatterRounds = 0;
   uint64_t ringComponents = 0;
   uint64_t ringRounds = 0;
+  uint64_t recursiveDoublingComponents = 0;
+  uint64_t recursiveDoublingRounds = 0;
+  uint64_t recursiveDoublingSeedCopies = 0;
+  uint64_t recursiveDoublingSeedDonations = 0;
   uint64_t sparseRoundComponents = 0;
   uint64_t sparseRounds = 0;
   uint64_t noCutDDRComponents = 0;
@@ -52,10 +61,35 @@ struct BoundaryMovementResult {
   }
 };
 
+enum class RecursiveDoublingAvailabilityKind : uint8_t {
+  Available,
+  Unavailable,
+  BrokenContract,
+};
+
+struct RecursiveDoublingAvailability {
+  RecursiveDoublingAvailabilityKind kind =
+      RecursiveDoublingAvailabilityKind::Unavailable;
+  std::string detail;
+
+  bool isAvailable() const {
+    return kind == RecursiveDoublingAvailabilityKind::Available;
+  }
+};
+
+/// Recomputes whether current complete AllGather endpoints admit the
+/// recursive-doubling realization. The result is query-local and does not
+/// modify IR or retain allocation/message facts.
+RecursiveDoublingAvailability analyzeRecursiveDoublingAvailability(
+    mlir::ModuleOp module, const StructuredMaterializationRelations &relations);
+
 /// Converts logical TileRegion tensor boundaries to actual physical movement.
 /// External and same-Tile inter-region values use explicit DDR load/store;
 /// cross-Tile endpoint relations become a topology-aware relay tree, a
-/// cut-closed ring/matched peer round, or an explicit causal DDR boundary.
+/// cut-closed Ring/recursive-doubling/matched peer round, or an explicit
+/// causal DDR boundary. Recursive doubling creates its aggregate allocation
+/// and slots in this transaction; it never assumes separate buffers are
+/// contiguous.
 /// Every selected realization is immediately materialized; no route, round or
 /// action plan survives this call. Instr completion later places waits from
 /// the actual tokens, aliases, effects and target resources. The supplied
@@ -64,7 +98,9 @@ struct BoundaryMovementResult {
 /// or memory offsets.
 BoundaryMovementResult
 materializeTileBoundaryMovement(mlir::ModuleOp module,
-                                StructuredMaterializationRelations &relations);
+                                StructuredMaterializationRelations &relations,
+                                CompleteAllGatherAlgorithm allGatherAlgorithm =
+                                    CompleteAllGatherAlgorithm::Ring);
 
 /// Verifies that TileRegion shaped boundaries are Wafer DDR memrefs, no
 /// tensor/memref bridge remains, and no SPM root crosses a TileRegion.

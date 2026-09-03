@@ -8,7 +8,7 @@ mesh communication materialization及host/no-card矩阵均已闭合并重新签�
 稳定语义由05--16号编号设计拥有。
 
 当前直接项：`mesh-communication-materialization`和Q53 `production-host-readiness`均已达到`board-ready`；
-`recursive-doubling-feasibility`的host实验已闭合，不改变production算法。
+`recursive-doubling-feasibility`及其search production choice均已闭合；真实板端仍未执行。
 
 ## Pipeline Contract
 
@@ -526,6 +526,47 @@ may-alias处理。完整Transforms 302/302、264/264 lit、13/13 component unit�
 slot。后者会前移communication choice边界。当前controller也没有movement-algorithm axis，因此必须让Ring与recursive doubling各自在
 独立candidate owner上完成actual MiniMalloc和cost比较，不能按message数直接切换；板端crossover仍未知。本轮不增加driver选项、不恢复
 shadow plan，也不把feasibility写成production支持。
+
+## Recursive Doubling Production Choice
+
+```text
+Pipeline position:
+- Upstream IR / input: layout-resolved、structured-to-Tile complete AllGather current IR；native broadcast qualification已经确定。
+- Current stage responsibility: search在movement边界产生Ring与recursive doubling两个typed realization choice；每个choice在自己的
+  candidate owner中立即创建actual allocation/subview/seed movement/peer op，不保存future buffer或message plan。
+- Output IR / files: 一个actual Ring或recursive physical Tile IR candidate；两者分别进入completion、MiniMalloc、target和cost。
+- Downstream consumer: search objective保留actual winner owner；baseline固定Ring；qualified native只保留native actual IR。
+- User-level driver / named pipeline: `optimization-policy=search`；不增加新的public CLI或pipeline。
+- Explicit non-goals: 不实现Bruck、AllReduce/ReduceScatter专用算法或2D AllToAll重排；不猜SPM；不运行板端。
+- Completion criteria: 下列矩阵fresh通过，Ring/native/baseline没有行为回退，recursive失败不污染其它candidate。
+```
+
+| 输入 | Shape / 结构 | 精确断言 | Typed failure / 下游witness |
+| --- | --- | --- | --- |
+| eligible recursive AllGather | 4/16 Tile；rank 3--4 FP16/BF16；1024/1025/1031；static contiguous Tensor/NTensor；非native payload | aggregate allocation、P个typed slots、local producer exact donation或actual seed copy、`log2(P)`轮；每round每Tile一个coalesced send/recv；remote slot all-and-only；总bytes与Ring相同 | completion、MiniMalloc、transport、target和cost均读取actual IR |
+| Ring对照 | 同一source clone及participant/payload | `P-1`轮、无aggregate seed；两候选source identity相同但IR/relations/allocation不共享 | 任一candidate failure不修改另一owner；accepted winner不重建 |
+| native/ineligible | 256B qualified native；non-power-of-two、mixed layout/bytes、无common cut、non-contiguous source | native保持一个multi-send；ineligible只形成Ring，不创建空recursive clone的downstream leaf | typed eligibility来自current endpoints和target capability，不按名称/shape猜测 |
+| capacity与选择 | recursive aggregate容量成功/失败；message-startup占优与link/seed/SPM占优反例 | 只有actual MiniMalloc capacity rejection淘汰recursive；两者accepted时objective按actual Instr/bytes/link/SPM比较并稳定选择 | baseline调用recursive次数为0；search记录attempt/status/winner |
+
+算法只用于complete AllGather。AllReduce和ReduceScatter虽可由current contribution/merge/fanout语义出现，本项不把它们拆成新的collective
+pipeline；AllToAll仍保持native scatter或pairwise matching。TACCL说明collective质量依赖具体topology和link profile，NCCL也按collective与
+topology选择Ring/Tree等算法，而不是给所有payload固定一个实现。Wafer不引入TACCL的external solver/sketch IR；只采用“多个actual
+realization经相同downstream cost选择”的边界。
+
+2026-09-03 fresh closure：search在post-layout、structured-to-Tile owner上先做只读availability query；只有非native、power-of-two、
+common-cut complete AllGather且static Tensor/NTensor payload可形成exact aggregate type时，才用`IRMapping`克隆一次同一owner。Ring和
+recursive各自立即materialize并分别计入actualization credits；两者都Accepted时使用现有resource objective，strict better才替换，
+Equivalent/Incomparable稳定保留Ring。Baseline仍只调用默认Ring，native broadcast和non-power-of-two输入不创建第二个downstream leaf。
+
+4/16-Tile FP16的1024/1025/1031以及BF16的1025正例均形成每Tile一个aggregate allocation和P个slot；local producer allocation全部
+exact donation到own slot，因此seed copy为0。Tile层保留all-and-only `P(P-1)`条logical delivery edge；pre-completion exact coalescing后，
+4-Tile由每Tile3个Ring message变为2个recursive message，16-Tile由15个变为4个，总endpoint bytes不变。每个remote slot恰覆盖一次，
+fresh NCC/DTE completion、actual MiniMalloc、whole-card binding和resource cost均通过；16-Tile actual cost的per-Tile send/receive message
+maximum精确为4。3-Tile输入保持2轮Ring，qualified 256B fanout保持native，ordinary search统计recursive candidate为0。
+
+Fresh canonical build、Driver 83/83、Transforms 304/304、264/264 lit、13/13 component unit和15/15 SystemC通过；registered
+FP16 conv mixed-DAG search package/no-card在23.21s通过。真实板端未运行，因此本项只完成compiler production choice和host资格，不声明
+recursive doubling相对Ring的设备性能。
 
 ## Q53 Production Host Readiness
 

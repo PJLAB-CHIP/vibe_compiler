@@ -124,11 +124,12 @@ Native multi-destination合同不是raw register能力的无界开放。当前�
 排列的连续等长segments。其它byte count、fanout、ragged segment、dynamic remote selector或same-buffer alias保持unsupported native
 choice并继续使用已定义的unicast算法。该限制是target capability，不来自workload shape。
 
-本轮不引入Bruck或recursive-doubling production choice。两者需要把多个current payload重新pack为增长中的连续buffer；当current IR已经
-是不同allocation时不能假设未来offset连续，也不能为算法名称隐式增加copy。只有后续matched board profile给出相对Ring/pairwise的
-crossover，并且pack/unpack作为actual Instr和MiniMalloc input完整计价时，才从同一request-local choice入口扩展。
-Host feasibility可以用一个已经存在于current IR中的actual contiguous gather allocation验证recursive doubling的round、message、
-completion和MiniMalloc合同；这种测试不授权movement假设现有独立allocation连续，也不改变production Ring/native选择。
+Bruck仍不进入production：它需要增长中的pack/unpack，而current独立allocation不能被假定连续。Recursive doubling只作为search的
+complete AllGather movement choice：Ring和recursive各自在candidate-owned transaction中立即物化。Recursive candidate必须创建actual
+aggregate SPM allocation和typed subview；local producer allocation可exact donation时直接改接own slot，否则生成actual seed copy；remote
+consumer改接对应slot，再展开
+`log2(P)`轮；随后由fresh completion、MiniMalloc、transport、target和actual cost决定结果。Baseline继续使用Ring；qualified native
+broadcast不生成被其严格支配的recursive candidate。任一物化或capacity失败只淘汰该actual candidate，不在movement内部fallback。
 
 硬件证据强度保持分层：`docs/tx81-compiler-hardware-calibration.md`中的16-Tile FP16 Ring All-Gather属于
 `board-observed`；4-Tile、其它dtype和其它payload只在本任务中作为compiler结构、resource和message-matching覆盖，不能由host测试升级为
@@ -153,6 +154,21 @@ DeviceExecutable verifier为每个destination附加一个existing `DirectDTEBind
 Direct DTE completion按current buffer/view的exact physical range判断hazard。同一allocation中可证明连续且不相交的static
 Tensor/NTensor subview可以让receive prepare与另一区间的send issue并存；后续send首次读取该receive写入区间前仍必须wait。Dynamic、
 blocked、non-contiguous或无法恢复exact range的view继续按root-level may-alias处理，不能因共享root之外的推测删除wait。
+
+当前Tile mesh通信来源和处置如下：
+
+| current数据流 | 常见来源 | 当前实现 | 当前判断 |
+| --- | --- | --- | --- |
+| complete AllGather | 每个Tile的local shard被其它全部Tile消费 | qualified 256B native broadcast；否则search比较minimum-hop Ring与recursive doubling | 两者bytes相同；Ring偏大payload/短hop，recursive偏低message startup，必须actual比较 |
+| AllReduce形态 | spatial reduction/contraction contribution、merge结果被全部Tile消费 | typed local combine/fanin，再对merge result做fanout | 语义完整，但尚未形成reduce-scatter+allgather或tree/ring AllReduce choice |
+| ReduceScatter形态 | 每个output shard合并来自多个Tile的partial contribution | 每个merge owner的fanin和local combine，由sparse/resource schedule承载 | 语义完整，但没有专用ring/recursive-halving reduce-scatter materializer |
+| AllToAll形态 | redistribution、每source向每destination发送不同piece | 连续`2/4/8/15 × 256B`用native scatter；否则capacity-constrained pairwise matching | matching最小化round内总hop但未联合优化全局link pressure，不能称4×4 mesh最优 |
+| irregular permute/fanout | branch、shard consumer、非完整participant集合 | sparse matching或topology-aware spreading tree | 不冒充collective；按actual edge all-and-only实现 |
+
+典型payload不能由collective名字决定：tensor/data parallel的activation或gradient通常形成较大AllGather/AllReduce/ReduceScatter；MoE token
+dispatch和sequence redistribution更接近AllToAll，且可能ragged；attention的KV/head/sequence spatial split常形成partial contribution、
+merge或不完整fanout。识别只读current SSA、slice、combine和participant关系，不读取framework op名。4×4 mesh上的算法质量由actual
+message startup、bytes、shortest-hop/link-pressure model、SPM high-water、seed movement和completion共同决定。
 
 一个bidirectional causal component若没有共同cut，就不是可安全执行的同轮peer exchange。Baseline在首次mutation前为它选择显式
 shared-DDR store/load boundary；该选择来自current Region因果顺序，并进入actual DDR/SPM planner，不是Direct DTE verifier失败后的

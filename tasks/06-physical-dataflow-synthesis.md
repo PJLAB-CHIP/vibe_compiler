@@ -509,8 +509,10 @@ communication phase、source/destination Tile、encoding与root相同，而且so
 union时，多个message才能共享一个actual transfer；consumer继续通过current subview读取各自piece。不能用logical bounding box、padding
 传输或新建pack copy伪造连续性。coalescing只减少message/IR数量，不改变relation cover、alias、effect或consumer lifetime。
 
-Closed complete exchange保留topology-aware Ring All-Gather，并在已确认的native multi-destination合同内形成每source一次
-broadcast/scatter。当前native合同只接受每destination `256B`、fanout `2/4/8/15`：broadcast复制同一physical range，scatter按
+Closed complete exchange在已确认的native multi-destination合同内形成每source一次broadcast/scatter；其它AllGather由baseline使用
+topology-aware Ring，search还可把post-layout owner克隆一次并物化recursive doubling作为actual movement candidate。Recursive candidate
+创建aggregate SPM allocation和slot subview；local producer allocation能exact donation时直接改写到own slot，否则显式seed copy；remote
+consumer改接对应slot。当前native合同只接受每destination `256B`、fanout `2/4/8/15`：broadcast复制同一physical range，scatter按
 destination list把连续等长source segments一一分发。其它payload、fanout、ragged segment、dynamic binding或alias保持ordinary
 unicast/ring，不从raw register字段外推能力。能够在一个actual cut上发issue的其余稀疏exchange使用sender容量1、receiver容量4的
 capacity-constrained maximum matching分轮；相同最大edge coverage下按minimum-hop和stable relation identity选择。每轮在同一次
@@ -518,6 +520,10 @@ transformation中直接形成actual receive prepare、send、SSA token和control
 若bidirectional causal component不存在共同cut，单sender slot下不能把它伪装成同轮peer exchange；baseline在mutation前选择一个exact
 shared-DDR store/load boundary。它是从current Region因果顺序得到的显式movement realization，不是transport verifier失败后的fallback。
 Closed complete exchange和已证明round-safe的sparse exchange不得改走DDR。
+
+Ring和recursive doubling各自在自己的candidate transaction中进入fresh completion、actual MiniMalloc和target/cost；trial budget不足时
+只物化Ring。Qualified native、non-power-of-two participant、mixed/non-contiguous payload或没有共同cut时不创建recursive downstream leaf。
+Recursive candidate失败不触发movement内部fallback，也不修改Ring owner。
 
 不存在`RoundOp`、round side plan或winner replay。无法形成exact payload、topology ring/matching或显式causal boundary时返回typed
 unsupported。传播树、ring、matching和DDR realization均由同一个movement transformation一次性物化；下游只读取actual IR。
