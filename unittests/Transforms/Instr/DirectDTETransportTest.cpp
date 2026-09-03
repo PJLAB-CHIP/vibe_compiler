@@ -5,7 +5,9 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Target/TopologyIds.h"
+#include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
 #include "Wafer/Transforms/Instr/NativeDirectDTEMultiSend.h"
+#include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -1197,6 +1199,235 @@ TEST_F(DirectDTETransportTest,
     });
     EXPECT_EQ(broadcasts, 1u);
   }
+}
+
+TEST_F(DirectDTETransportTest,
+       RecursiveDoublingUsesActualContiguousGatherRanges) {
+  auto makeTile = [](int64_t participantCount, int64_t tile, int64_t extent) {
+    std::string text;
+    llvm::raw_string_ostream os(text);
+    os << "module {\n"
+          "  func.func @main(%boundary: memref<1xi8, "
+          "#wafer.memory<ddr, tensor>>) {\n"
+          "    %unused = wafer.tile.region(%boundary : memref<1xi8, "
+          "#wafer.memory<ddr, tensor>>) -> "
+          "(memref<1xi8, #wafer.memory<ddr, tensor>>) {\n"
+          "    ^bb0(%ddr: memref<1xi8, #wafer.memory<ddr, tensor>>):\n"
+          "    %gather = memref.alloc() : memref<"
+       << participantCount << "x1x" << extent
+       << "xf16, #wafer.memory<spm, tensor>>\n"
+       << "    %local = memref.subview %gather[" << tile << ", 0, 0] "
+       << "[1, 1, " << extent << "] [1, 1, 1] : memref<" << participantCount
+       << "x1x" << extent << "xf16, #wafer.memory<spm, tensor>> to memref<1x1x"
+       << extent << "xf16, strided<[" << extent << ", " << extent
+       << ", 1], offset: " << tile * extent
+       << ">, #wafer.memory<spm, tensor>>\n"
+          "    %zero = arith.constant 0.000000e+00 : f16\n"
+          "    wafer.instr.fill %local, %zero : memref<1x1x"
+       << extent << "xf16, strided<[" << extent << ", " << extent
+       << ", 1], offset: " << tile * extent
+       << ">, #wafer.memory<spm, tensor>>, f16\n";
+    for (int64_t half = 1, round = 0; half < participantCount;
+         half *= 2, ++round) {
+      int64_t groupBase = tile & ~(2 * half - 1);
+      bool upper = (tile & half) != 0;
+      int64_t sendStart = groupBase + (upper ? half : 0);
+      int64_t receiveStart = groupBase + (upper ? 0 : half);
+      int64_t peer = tile ^ half;
+      int64_t bytes = half * extent * 2;
+      os << "    %receive_view" << round << " = memref.subview %gather["
+         << receiveStart << ", 0, 0] [" << half << ", 1, " << extent
+         << "] [1, 1, 1] : memref<" << participantCount << "x1x" << extent
+         << "xf16, #wafer.memory<spm, tensor>> to memref<" << half << "x1x"
+         << extent << "xf16, strided<[" << extent << ", " << extent
+         << ", 1], offset: " << receiveStart * extent
+         << ">, #wafer.memory<spm, tensor>>\n"
+         << "    %send_view" << round << " = memref.subview %gather["
+         << sendStart << ", 0, 0] [" << half << ", 1, " << extent
+         << "] [1, 1, 1] : memref<" << participantCount << "x1x" << extent
+         << "xf16, #wafer.memory<spm, tensor>> to memref<" << half << "x1x"
+         << extent << "xf16, strided<[" << extent << ", " << extent
+         << ", 1], offset: " << sendStart * extent
+         << ">, #wafer.memory<spm, tensor>>\n"
+         << "    %receive" << round << " = wafer.instr.dte_recv %receive_view"
+         << round << " {peer = " << peer << " : i64, bytes = " << bytes
+         << " : i64, message = #wafer.dte_message<communication = 200, "
+            "round = "
+         << round << ", slice = " << receiveStart << ">} : memref<" << half
+         << "x1x" << extent << "xf16, strided<[" << extent << ", " << extent
+         << ", 1], offset: " << receiveStart * extent
+         << ">, #wafer.memory<spm, tensor>> -> !async.token\n"
+         << "    %send" << round << " = wafer.instr.dte_send %send_view"
+         << round << " {peer = " << peer << " : i64, bytes = " << bytes
+         << " : i64, message = #wafer.dte_message<communication = 200, "
+            "round = "
+         << round << ", slice = " << sendStart << ">} : memref<" << half
+         << "x1x" << extent << "xf16, strided<[" << extent << ", " << extent
+         << ", 1], offset: " << sendStart * extent
+         << ">, #wafer.memory<spm, tensor>> -> !async.token\n";
+    }
+    os << "    wafer.tile.yield %ddr : "
+          "memref<1xi8, #wafer.memory<ddr, tensor>>\n"
+          "    }\n"
+          "    return\n"
+          "  }\n"
+          "}\n";
+    return text;
+  };
+
+  for (int64_t participantCount : {4, 16}) {
+    for (int64_t extent : {1024, 1025, 1031}) {
+      SCOPED_TRACE((llvm::Twine("participants=") +
+                    llvm::Twine(participantCount) +
+                    ", extent=" + llvm::Twine(extent))
+                       .str());
+      llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> owners;
+      llvm::SmallVector<mlir::ModuleOp, 16> modules;
+      for (int64_t tile = 0; tile < participantCount; ++tile) {
+        owners.push_back(parse(makeTile(participantCount, tile, extent)));
+        ASSERT_TRUE(owners.back()) << "tile=" << tile;
+        modules.push_back(*owners.back());
+      }
+
+      for (auto &owner : owners)
+        ASSERT_TRUE(mlir::succeeded(wafer::rebuildRequiredNCCJoins(*owner)));
+      auto completion =
+          wafer::compiler::detail::rebuildRequiredDirectDTEWaits(modules);
+      ASSERT_TRUE(completion.succeeded()) << completion.detail;
+      modules.clear();
+      for (auto &owner : owners) {
+        wafer::compiler::detail::TileMemoryPlanningFailure failure;
+        auto planned = wafer::compiler::detail::planTileMemory(
+            std::move(owner), &failure,
+            /*materializationRelations=*/nullptr,
+            /*emitSPMCapacityDiagnostics=*/false);
+        ASSERT_TRUE(mlir::succeeded(planned));
+        owner = std::move(*planned);
+        modules.push_back(*owner);
+      }
+      auto contract = wafer::compiler::testing::bindDirectDTETransport(modules);
+      ASSERT_TRUE(mlir::succeeded(contract));
+      EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
+
+      int64_t expectedRounds = participantCount == 4 ? 2 : 4;
+      int64_t expectedBytes = (participantCount - 1) * extent * 2;
+      for (auto [tile, module] : llvm::enumerate(modules)) {
+        int64_t sends = 0;
+        int64_t receives = 0;
+        int64_t sendBytes = 0;
+        int64_t receiveBytes = 0;
+        llvm::SmallVector<unsigned, 16> covered(participantCount, 0);
+        covered[tile] = 1;
+        module.walk([&](wafer::InstrDTESendOp send) {
+          ++sends;
+          sendBytes += send.getBytesAttr().getInt();
+          int64_t round = send.getMessageAttr().getRound();
+          EXPECT_EQ(send.getPeerAttr().getInt(),
+                    static_cast<int64_t>(tile) ^ (int64_t{1} << round));
+          EXPECT_EQ(send.getBytesAttr().getInt(),
+                    (int64_t{1} << round) * extent * 2);
+        });
+        module.walk([&](wafer::InstrDTERecvOp receive) {
+          ++receives;
+          receiveBytes += receive.getBytesAttr().getInt();
+          int64_t round = receive.getMessageAttr().getRound();
+          EXPECT_EQ(receive.getPeerAttr().getInt(),
+                    static_cast<int64_t>(tile) ^ (int64_t{1} << round));
+          int64_t blockCount = int64_t{1} << round;
+          EXPECT_EQ(receive.getBytesAttr().getInt(), blockCount * extent * 2);
+          int64_t first = receive.getMessageAttr().getPayloadSlice();
+          for (int64_t block = 0; block < blockCount; ++block) {
+            ASSERT_GE(first + block, 0);
+            ASSERT_LT(first + block, participantCount);
+            ++covered[first + block];
+          }
+        });
+        EXPECT_EQ(sends, expectedRounds);
+        EXPECT_EQ(receives, expectedRounds);
+        EXPECT_EQ(sendBytes, expectedBytes);
+        EXPECT_EQ(receiveBytes, expectedBytes);
+        EXPECT_TRUE(
+            llvm::all_of(covered, [](unsigned count) { return count == 1; }));
+        unsigned allocations = 0;
+        module.walk([&](mlir::memref::AllocOp allocation) {
+          ++allocations;
+          EXPECT_TRUE(
+              static_cast<bool>(allocation->getAttrOfType<wafer::SPMOffsetAttr>(
+                  wafer::kWaferSPMOffsetAttrName)));
+        });
+        EXPECT_EQ(allocations, 1u);
+      }
+    }
+  }
+
+  auto oversized = parse(makeTile(/*participantCount=*/16, /*tile=*/0,
+                                  /*extent=*/196608));
+  ASSERT_TRUE(oversized);
+  llvm::SmallVector<mlir::ModuleOp, 1> oversizedModules{*oversized};
+  ASSERT_TRUE(mlir::succeeded(wafer::rebuildRequiredNCCJoins(*oversized)));
+  auto oversizedCompletion =
+      wafer::compiler::detail::rebuildRequiredDirectDTEWaits(oversizedModules);
+  ASSERT_TRUE(oversizedCompletion.succeeded()) << oversizedCompletion.detail;
+  wafer::compiler::detail::TileMemoryPlanningFailure capacityFailure;
+  auto rejected = wafer::compiler::detail::planTileMemory(
+      std::move(oversized), &capacityFailure,
+      /*materializationRelations=*/nullptr,
+      /*emitSPMCapacityDiagnostics=*/false);
+  EXPECT_TRUE(mlir::failed(rejected));
+  EXPECT_EQ(
+      capacityFailure.kind,
+      wafer::compiler::detail::TileMemoryPlanningFailureKind::SPMAllocation);
+  EXPECT_TRUE(capacityFailure.spmCapacityOverflow);
+}
+
+TEST_F(DirectDTETransportTest,
+       NonContiguousSubviewsKeepRootLevelCompletionConflict) {
+  constexpr llvm::StringLiteral kNonContiguous = R"mlir(
+module {
+  func.func @main() {
+    %buffer = memref.alloc()
+        : memref<1x1x1031xf16, #wafer.memory<spm, tensor>>
+    %receive_view = memref.subview %buffer[0, 0, 0] [1, 1, 516] [1, 1, 2]
+        : memref<1x1x1031xf16, #wafer.memory<spm, tensor>> to
+          memref<1x1x516xf16, strided<[1031, 1031, 2]>,
+                 #wafer.memory<spm, tensor>>
+    %send_view = memref.subview %buffer[0, 0, 1] [1, 1, 515] [1, 1, 2]
+        : memref<1x1x1031xf16, #wafer.memory<spm, tensor>> to
+          memref<1x1x515xf16, strided<[1031, 1031, 2], offset: 1>,
+                 #wafer.memory<spm, tensor>>
+    %receive = wafer.instr.dte_recv %receive_view
+        {peer = 1 : i64, bytes = 1032 : i64,
+         message = #wafer.dte_message<communication = 201, round = 0, slice = 0>}
+        : memref<1x1x516xf16, strided<[1031, 1031, 2]>,
+                 #wafer.memory<spm, tensor>> -> !async.token
+    %send = wafer.instr.dte_send %send_view
+        {peer = 1 : i64, bytes = 1030 : i64,
+         message = #wafer.dte_message<communication = 202, round = 0, slice = 0>}
+        : memref<1x1x515xf16, strided<[1031, 1031, 2], offset: 1>,
+                 #wafer.memory<spm, tensor>> -> !async.token
+    return
+  }
+})mlir";
+  auto module = parse(kNonContiguous);
+  ASSERT_TRUE(module);
+  llvm::SmallVector<mlir::ModuleOp, 1> modules{*module};
+  auto completion =
+      wafer::compiler::detail::rebuildRequiredDirectDTEWaits(modules);
+  ASSERT_TRUE(completion.succeeded()) << completion.detail;
+
+  llvm::SmallVector<mlir::Operation *, 4> transport;
+  mlir::func::FuncOp function;
+  module->walk([&](mlir::func::FuncOp current) { function = current; });
+  ASSERT_TRUE(function);
+  for (mlir::Operation &operation : function.getBody().front())
+    if (mlir::isa<wafer::InstrDTERecvOp, wafer::InstrDTESendOp,
+                  wafer::InstrDTEWaitOp>(operation))
+      transport.push_back(&operation);
+  ASSERT_EQ(transport.size(), 4u);
+  EXPECT_TRUE(mlir::isa<wafer::InstrDTERecvOp>(transport[0]));
+  EXPECT_TRUE(mlir::isa<wafer::InstrDTEWaitOp>(transport[1]));
+  EXPECT_TRUE(mlir::isa<wafer::InstrDTESendOp>(transport[2]));
+  EXPECT_TRUE(mlir::isa<wafer::InstrDTEWaitOp>(transport[3]));
 }
 
 TEST_F(DirectDTETransportTest,

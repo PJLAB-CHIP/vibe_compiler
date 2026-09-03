@@ -1677,3 +1677,14 @@
   yield bridge和obsolete subview在任何解引用前先检查该集合，只对第一次实际擦除计数。该集合不跨stage保存，也不参与legality或choice。
 - 防复发：1024/1025/1031 rank-3 fixture让两个observable result共享同一个yield bridge，断言两个publication copy均移除、bridge只擦除一次、
   physical Tile IR和buffer relation均有效；多次actual capacity refinement的LLaMA search必须无crash并继续到accepted MiniMalloc结果。
+
+## Direct DTE completion不能把同一root的disjoint subview当作hazard
+
+- 现象：recursive doubling的一个round先prepare aggregate gather buffer的remote half，再从local half发send。两者共享allocation但byte range
+  不相交；root-level completion仍把send当作receive的首次consumer，提前插wait后与对端形成whole-card cycle。
+- 根因：wait placement和binding-time isolation只比较storage root，没有消费static Tensor/NTensor subview已经明确给出的offset、shape、stride
+  和DTE byte span。
+- 修复模式：从current memref type和DTE op字段计算static contiguous relative byte range；同root且range disjoint时不构成当前hazard，首次
+  overlap read/write前仍插minimum wait。Dynamic、blocked、non-contiguous、overflow或无法恢复range时保持root-level may-alias。
+- 防复发：4/16-Tile、1024/1025/1031 recursive doubling检查receive-before-send、`log2(P)`轮、all-and-only slot cover、fresh completion、
+  actual MiniMalloc和transport binding；既有overlap read、unknown effect和mutual send-before-receive cycle负例必须继续拒绝。

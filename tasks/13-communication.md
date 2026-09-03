@@ -127,6 +127,8 @@ choice并继续使用已定义的unicast算法。该限制是target capability�
 本轮不引入Bruck或recursive-doubling production choice。两者需要把多个current payload重新pack为增长中的连续buffer；当current IR已经
 是不同allocation时不能假设未来offset连续，也不能为算法名称隐式增加copy。只有后续matched board profile给出相对Ring/pairwise的
 crossover，并且pack/unpack作为actual Instr和MiniMalloc input完整计价时，才从同一request-local choice入口扩展。
+Host feasibility可以用一个已经存在于current IR中的actual contiguous gather allocation验证recursive doubling的round、message、
+completion和MiniMalloc合同；这种测试不授权movement假设现有独立allocation连续，也不改变production Ring/native选择。
 
 硬件证据强度保持分层：`docs/tx81-compiler-hardware-calibration.md`中的16-Tile FP16 Ring All-Gather属于
 `board-observed`；4-Tile、其它dtype和其它payload只在本任务中作为compiler结构、resource和message-matching覆盖，不能由host测试升级为
@@ -147,6 +149,10 @@ physical segment递增顺序排列`peers`，两者都携带一一对应的`DTEMe
 `peers.size * bytes`。每个destination继续使用普通`wafer.instr.dte_recv`及自己的staging/token。memory/completion完成后，
 DeviceExecutable verifier为每个destination附加一个existing `DirectDTEBindingAttr`。一个multi-send sender token保护完整source span直到
 整个hardware issue完成，不能由任一单独receiver wait代替。
+
+Direct DTE completion按current buffer/view的exact physical range判断hazard。同一allocation中可证明连续且不相交的static
+Tensor/NTensor subview可以让receive prepare与另一区间的send issue并存；后续send首次读取该receive写入区间前仍必须wait。Dynamic、
+blocked、non-contiguous或无法恢复exact range的view继续按root-level may-alias处理，不能因共享root之外的推测删除wait。
 
 一个bidirectional causal component若没有共同cut，就不是可安全执行的同轮peer exchange。Baseline在首次mutation前为它选择显式
 shared-DDR store/load boundary；该选择来自current Region因果顺序，并进入actual DDR/SPM planner，不是Direct DTE verifier失败后的

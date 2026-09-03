@@ -193,6 +193,106 @@ static mlir::Value getRootViewSource(mlir::Value value) {
   return value;
 }
 
+struct StaticStorageRange {
+  mlir::Value root;
+  PhysicalRange bytes;
+};
+
+// Returns a root-relative range only for an unblocked static view whose
+// element strides prove one contiguous interval. Failure remains may-alias;
+// callers must not use it to discharge a completion obligation.
+static std::optional<StaticStorageRange> getStaticContiguousStorageRange(
+    mlir::Value value, int64_t accessOffset = 0,
+    std::optional<int64_t> accessBytes = std::nullopt) {
+  auto type = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+  if (!type || !type.hasStaticShape() || accessOffset < 0)
+    return std::nullopt;
+  MemoryAttr memory = getWaferMemoryAttr(type);
+  if (!memory || (memory.getLayout() != MemLayout::Tensor &&
+                  memory.getLayout() != MemLayout::NTensor))
+    return std::nullopt;
+  std::optional<WaferPhysicalTensorInfo> info =
+      computeWaferPhysicalTensorInfo(type);
+  if (!info || info->bitPackedElement || info->elementBytes <= 0)
+    return std::nullopt;
+
+  llvm::SmallVector<int64_t, 4> strides;
+  int64_t offsetElements = 0;
+  if (mlir::failed(mlir::getStridesAndOffset(type, strides, offsetElements)) ||
+      offsetElements == mlir::ShapedType::kDynamic || offsetElements < 0)
+    return std::nullopt;
+  int64_t expectedStride = 1;
+  int64_t elements = 1;
+  for (int64_t index = type.getRank() - 1; index >= 0; --index) {
+    int64_t dimension = type.getDimSize(index);
+    int64_t stride = strides[index];
+    if (dimension <= 0 || stride == mlir::ShapedType::kDynamic || stride < 0 ||
+        (dimension > 1 && stride != expectedStride) ||
+        !checkedMul(expectedStride, dimension, expectedStride) ||
+        !checkedMul(elements, dimension, elements))
+      return std::nullopt;
+  }
+  int64_t viewBytes = 0;
+  if (!checkedMul(elements, info->elementBytes, viewBytes))
+    return std::nullopt;
+  int64_t bytes = accessBytes.value_or(viewBytes - accessOffset);
+  int64_t accessEnd = 0;
+  int64_t viewStart = 0;
+  int64_t start = 0;
+  int64_t end = 0;
+  if (bytes <= 0 || !checkedAdd(accessOffset, bytes, accessEnd) ||
+      accessEnd > viewBytes ||
+      !checkedMul(offsetElements, info->elementBytes, viewStart) ||
+      !checkedAdd(viewStart, accessOffset, start) ||
+      !checkedAdd(start, bytes, end))
+    return std::nullopt;
+  return StaticStorageRange{getRootViewSource(value),
+                            PhysicalRange{start, end}};
+}
+
+static std::optional<StaticStorageRange>
+getStaticDTEIssueRange(mlir::Operation *operation) {
+  mlir::Value buffer;
+  int64_t offset = 0;
+  int64_t bytes = 0;
+  if (auto send = mlir::dyn_cast<InstrDTESendOp>(operation)) {
+    buffer = send.getBuffer();
+    offset = static_cast<int64_t>(send.getBufferOffset().value_or(0));
+    bytes = send.getBytesAttr().getInt();
+  } else if (auto receive = mlir::dyn_cast<InstrDTERecvOp>(operation)) {
+    buffer = receive.getBuffer();
+    offset = static_cast<int64_t>(receive.getBufferOffset().value_or(0));
+    bytes = receive.getBytesAttr().getInt();
+  } else if (auto broadcast = mlir::dyn_cast<InstrDTEBroadcastOp>(operation)) {
+    buffer = broadcast.getBuffer();
+    offset = broadcast.getSourceOffsetAttr().getInt();
+    bytes = broadcast.getBytesAttr().getInt();
+  } else if (auto scatter = mlir::dyn_cast<InstrDTEScatterOp>(operation)) {
+    buffer = scatter.getBuffer();
+    offset = scatter.getSourceOffsetAttr().getInt();
+    if (!checkedMul(scatter.getBytesAttr().getInt(),
+                    static_cast<int64_t>(scatter.getPeersAttr().size()), bytes))
+      return std::nullopt;
+  } else {
+    return std::nullopt;
+  }
+  return getStaticContiguousStorageRange(buffer, offset, bytes);
+}
+
+static bool rangesOverlap(PhysicalRange lhs, PhysicalRange rhs) {
+  return lhs.start < rhs.end && rhs.start < lhs.end;
+}
+
+static bool effectMayOverlapRange(mlir::Operation *operation,
+                                  mlir::Value effectValue,
+                                  const StaticStorageRange &target) {
+  std::optional<StaticStorageRange> access = getStaticDTEIssueRange(operation);
+  if (!access || access->root != getRootViewSource(effectValue))
+    access = getStaticContiguousStorageRange(effectValue);
+  return !access || access->root != target.root ||
+         rangesOverlap(access->bytes, target.bytes);
+}
+
 static mlir::FailureOr<int64_t>
 getStaticViewOffsetBytes(mlir::Operation *op, mlir::MemRefType viewType) {
   llvm::SmallVector<int64_t, 4> strides;
@@ -449,6 +549,7 @@ static mlir::LogicalResult verifyIssueBufferIsolation(mlir::Operation *issue,
                                                       mlir::Value buffer) {
   mlir::Value root = getRootViewSource(buffer);
   const bool issueWritesBuffer = mlir::isa<InstrDTERecvOp>(issue);
+  std::optional<StaticStorageRange> issueRange = getStaticDTEIssueRange(issue);
   for (mlir::Operation *operation = issue->getNextNode(); operation != wait;
        operation = operation->getNextNode()) {
     if (!operation)
@@ -495,6 +596,8 @@ static mlir::LogicalResult verifyIssueBufferIsolation(mlir::Operation *issue,
       // ComputeResource) rather than an operand range. Operand annotations
       // carry the concrete SPM accesses used for buffer isolation.
       if (!value || getRootViewSource(value) != root)
+        return false;
+      if (issueRange && !effectMayOverlapRange(operation, value, *issueRange))
         return false;
       // A send keeps reading its source until completion, so another read of
       // the exact source range is compatible. A receive owns a pending write
@@ -1795,8 +1898,9 @@ enum class RootAccessKind : uint8_t {
   Unknown,
 };
 
-static RootAccessKind classifyRootAccess(mlir::Operation *operation,
-                                         mlir::Value root) {
+static RootAccessKind classifyRootAccess(
+    mlir::Operation *operation, mlir::Value root,
+    const std::optional<StaticStorageRange> &targetRange = std::nullopt) {
   if (!operation || mlir::isa<InstrDTEWaitOp>(operation))
     return RootAccessKind::None;
   if (operation->getNumRegions() == 0 &&
@@ -1826,6 +1930,8 @@ static RootAccessKind classifyRootAccess(mlir::Operation *operation,
         getRootViewSource(value) != root)
       continue;
     hasRootEffect = true;
+    if (targetRange && !effectMayOverlapRange(operation, value, *targetRange))
+      continue;
     reads |= llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect());
     mutates |=
         !llvm::isa<mlir::MemoryEffects::Read, mlir::MemoryEffects::Allocate>(
@@ -1885,6 +1991,8 @@ static mlir::LogicalResult buildBlockWaitChoices(
       detail = "Direct DTE issue has no current memref storage root";
       return mlir::failure();
     }
+    std::optional<StaticStorageRange> issueRange =
+        getStaticDTEIssueRange(operation);
 
     DirectDTEWaitChoice choice;
     choice.issue = operation;
@@ -1895,7 +2003,7 @@ static mlir::LogicalResult buildBlockWaitChoices(
            llvm::drop_begin(operations, operationIndex + 1)) {
         if (mlir::isa<InstrDTEWaitOp>(candidate))
           continue;
-        RootAccessKind access = classifyRootAccess(candidate, root);
+        RootAccessKind access = classifyRootAccess(candidate, root, issueRange);
         if (access == RootAccessKind::Unknown) {
           detail = "Direct DTE receive has an untyped buffer access before "
                    "its first proven consumer";
@@ -1926,7 +2034,7 @@ static mlir::LogicalResult buildBlockWaitChoices(
         choice.senderSlotReuse = true;
         break;
       }
-      RootAccessKind access = classifyRootAccess(candidate, root);
+      RootAccessKind access = classifyRootAccess(candidate, root, issueRange);
       if (access == RootAccessKind::Unknown) {
         detail = "Direct DTE send has an untyped source-buffer access before "
                  "completion";

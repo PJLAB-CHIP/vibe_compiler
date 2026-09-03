@@ -296,6 +296,8 @@ current Instr completion transformation必须直接证明并物化completion；�
   destination subview、dynamic execution multiplicity和actual MiniMalloc owner一致；gap/overlap/layout变化保持独立message；
 - multi-destination broadcast/scatter只接受board-observed capability矩阵`fanout=2/4/8/15`、每destination `256B`、available Tile、
   static accepted binding；一个source op必须匹配all-and-only destination recv，source lifetime覆盖整个broadcast payload或scatter source span；
+- completion对同一SPM root的static contiguous subview使用exact byte range；disjoint range不得制造wait cycle，overlap、dynamic、blocked、
+  non-contiguous和unknown range仍fail closed；
 - sparse schedule按sender 1、receiver 4做capacity-constrained maximum matching；每轮edge不重复不遗漏，resource limit和Region order成立，
   相同输入重复得到同一round与peer顺序；
 - complete exchange分别验证native per-source broadcast与unicast Ring；All-to-All分别验证native per-source scatter与pairwise matching。

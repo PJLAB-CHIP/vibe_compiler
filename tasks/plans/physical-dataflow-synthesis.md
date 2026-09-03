@@ -7,7 +7,8 @@ mesh communication materialization及host/no-card矩阵均已闭合并重新签�
 `tasks/archive/completed-task-index.md`。
 稳定语义由05--16号编号设计拥有。
 
-当前直接项：`mesh-communication-materialization`和Q53 `production-host-readiness`均已达到`board-ready`。
+当前直接项：`mesh-communication-materialization`和Q53 `production-host-readiness`均已达到`board-ready`；
+`recursive-doubling-feasibility`的host实验已闭合，不改变production算法。
 
 ## Pipeline Contract
 
@@ -485,6 +486,46 @@ separate allocation及非合同fanout/byte count不合并，也不新建pack cop
 
 本轮没有运行真实设备，因此这些结果证明compiler、package和host model达到`board-ready`，不声明native multi-destination的新增
 板端correctness或性能数据；硬件准入范围仍只来自既有calibration记录。
+
+## Recursive Doubling Feasibility
+
+本项只回答recursive doubling能否由现有current Instr、completion、MiniMalloc和unicast DTE精确表达，不切换production算法。
+
+```text
+Pipeline position:
+- Upstream IR / input: power-of-two participant complete AllGather；每个Tile已有一个actual contiguous gather allocation，local payload
+  已位于按participant排序的本Tile slot；没有独立allocation连续性假设。
+- Current stage responsibility: 对round r选择xor(2^r) peer，并用一个actual contiguous subview发送/接收当前2^r个payload block。
+- Output IR / files: 每Tile log2(P)个send/recv及current async token；所有source/destination range均为同一actual gather root的subview。
+- Downstream consumer: fresh Direct DTE completion、actual MiniMalloc、whole-card transport binding/verifier和cost inventory。
+- User-level driver / named pipeline: 本轮仅使用与production相同的atomic downstream API做host feasibility；不增加driver选项或test-only product path。
+- Explicit non-goals: 不猜测或合并独立allocation；不隐式pack/unpack；不替换Ring/native；不运行板端或声明性能收益。
+- Completion criteria: 下列覆盖矩阵fresh通过，并据actual结果记录production接入需要的materialization与selection边界。
+```
+
+| 输入 | Shape / 结构 | 精确断言 | Typed near-miss / 下游witness |
+| --- | --- | --- | --- |
+| 4/16-Tile recursive doubling | rank-3 FP16 gather root；payload主维1024/1025/1031；participant按physical Tile排序 | rounds=`log2(P)`；每round每Tile恰一个send/recv；round r bytes=`2^r×payloadBytes`；每Tile总发送/接收均为`(P-1)×payloadBytes`；每个remote origin slot恰写一次 | 非power-of-two不构造该算法；range/message不匹配由transport verifier拒绝；actual root进入MiniMalloc并获得offset |
+| Ring/native对照 | 相同participant和payload | Ring为`P-1`次unicast、bytes相同；recursive doubling为`log2(P)`次unicast但需要actual gather root；256B qualified native仍是一条source multi-send | 不用消息数直接声明板端更快；production选择仍等待actual materialization和matched board crossover |
+
+2026-09-03 fresh结果：4-Tile的每Tile message数由Ring的3降为2，16-Tile由15降为4；两者每Tile总发送和接收bytes仍为
+`(P-1)×payloadBytes`。每个Tile先由actual `wafer.instr.fill`写自己的gather slot并经fresh NCC completion闭合；rank-3 FP16 gather
+root在payload主维1024/1025/1031时分别通过4/16-Tile全部round、message、slot cover、
+fresh completion、actual MiniMalloc offset和whole-card transport binding。每个remote source slot恰由一个receive覆盖；每round peer为
+`tile xor 2^r`，payload range为`2^r×payloadBytes`。一个`16×1×196608xf16` actual root由同一MiniMalloc返回typed capacity rejection，
+没有用shape估算替代合法性。
+
+实验首先暴露了completion的root-level假冲突：round内receive与send位于同一gather allocation但访问不相交subview，旧逻辑提前插入
+receive wait并形成双向cycle。修复只对static、contiguous Tensor/NTensor view计算exact relative byte range；overlap和无法证明的view仍按
+may-alias处理。完整Transforms 302/302、264/264 lit、13/13 component unit和15/15 SystemC通过；既有overlap、unknown和
+真实cycle负例保持拒绝。
+
+该结果证明通信核心可以由现有current IR表达，但还不能直接替换production Ring。Current movement的local producer和`P-1`个destination
+仍是独立allocation；要形成gather root，必须在candidate transaction中实际创建aggregate allocation、把remote consumer改接其subview，
+并选择以下一种明确物化：保留local source并增加一次seed copy和一个payload的SPM开销，或在layout/bufferization时让producer直接写own
+slot。后者会前移communication choice边界。当前controller也没有movement-algorithm axis，因此必须让Ring与recursive doubling各自在
+独立candidate owner上完成actual MiniMalloc和cost比较，不能按message数直接切换；板端crossover仍未知。本轮不增加driver选项、不恢复
+shadow plan，也不把feasibility写成production支持。
 
 ## Q53 Production Host Readiness
 
