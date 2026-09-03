@@ -42,6 +42,12 @@ struct SearchCurrentIRStatistics {
   uint64_t recursiveDoublingCandidates = 0;
   uint64_t recursiveDoublingAccepted = 0;
   uint64_t recursiveDoublingWinners = 0;
+  uint64_t dimensionOrderedAllToAllCandidates = 0;
+  uint64_t dimensionOrderedAllToAllAccepted = 0;
+  uint64_t dimensionOrderedAllToAllWinners = 0;
+  uint64_t distributedRingCandidates = 0;
+  uint64_t distributedRingAccepted = 0;
+  uint64_t distributedRingWinners = 0;
   uint64_t incomparableMovementObjectives = 0;
   uint64_t acceptedTemporalCandidates = 0;
   uint64_t exactRejectedTemporalCandidates = 0;
@@ -60,11 +66,12 @@ struct SearchCurrentIRStatistics {
 /// Traverses explicit Spatial/Region choices and actualizes each selected
 /// structural state from current TensorProgram IR. Temporal alternatives are
 /// cloned once from that structural owner with IRMapping and immediately
-/// applied. A non-native complete AllGather may then clone the post-layout
-/// owner once for Ring/recursive-doubling movement; both actual owners consume
-/// the shared memory/target leaf and count against actualization credits. The
-/// retained winner is the same actual owner returned by the leaf; it is never
-/// rebuilt.
+/// applied. Exact endpoint prefilters may then clone the post-layout owner for
+/// recursive-doubling AllGather, dimension-ordered AllToAll, distributed Ring
+/// reduction, or their bounded combinations. A specialized clone is discarded
+/// unless its requested current-IR rewrite actually occurs. Every retained
+/// owner consumes the same memory/target leaf and counts against actualization
+/// credits; the winner is returned directly and is never rebuilt.
 ExecutableCompilationResult compileSearchCurrentIR(
     mlir::ModuleOp tensorProgram,
     const frontend::FrontendProgramVerificationResult &program,

@@ -2,6 +2,7 @@
 
 #include "BoundaryMovement.h"
 
+#include "DistributedCollectiveMovement.h"
 #include "StructuredToTile.h"
 #include "Wafer/IR/Topology/TargetTopology.h"
 #include "Wafer/IR/WaferDialect.h"
@@ -204,11 +205,30 @@ buildCommunicationComponents(llvm::ArrayRef<PayloadGroup> groups,
   };
   for (unsigned lhs = 0; lhs < groups.size(); ++lhs)
     for (unsigned rhs = lhs + 1; rhs < groups.size(); ++rhs) {
-      bool sharesRegion =
-          llvm::any_of(groups[lhs].regions, [&](mlir::Operation *region) {
-            return llvm::is_contained(groups[rhs].regions, region);
+      const TileRegionOp lhsSource =
+          peers[groups[lhs].peers.front()].sourceRegion;
+      const TileRegionOp rhsSource =
+          peers[groups[rhs].peers.front()].sourceRegion;
+      llvm::SmallVector<TileRegionOp, 8> lhsDestinations;
+      llvm::SmallVector<TileRegionOp, 8> rhsDestinations;
+      for (unsigned peerIndex : groups[lhs].peers)
+        if (!llvm::is_contained(lhsDestinations,
+                                peers[peerIndex].destinationRegion))
+          lhsDestinations.push_back(peers[peerIndex].destinationRegion);
+      for (unsigned peerIndex : groups[rhs].peers)
+        if (!llvm::is_contained(rhsDestinations,
+                                peers[peerIndex].destinationRegion))
+          rhsDestinations.push_back(peers[peerIndex].destinationRegion);
+      const bool sharesSource = lhsSource == rhsSource;
+      const bool sharesDestination =
+          llvm::any_of(lhsDestinations, [&](TileRegionOp destination) {
+            return llvm::is_contained(rhsDestinations, destination);
           });
-      if (sharesRegion)
+      const bool mutualExchange =
+          lhsDestinations.size() == 1 && rhsDestinations.size() == 1 &&
+          llvm::is_contained(lhsDestinations, rhsSource) &&
+          llvm::is_contained(rhsDestinations, lhsSource);
+      if (sharesSource || sharesDestination || mutualExchange)
         unite(lhs, rhs);
     }
 
@@ -344,109 +364,6 @@ static mlir::LogicalResult breakCrossComponentRegionOrderCycles(
         peers[peerIndex].useSharedDDR = true;
     ++statistics.noCutDDRComponents;
   }
-}
-
-static mlir::FailureOr<llvm::SmallVector<uint64_t, 16>>
-buildMinimumHopRing(const TargetTopology &topology,
-                    llvm::ArrayRef<uint64_t> participants) {
-  if (participants.size() < 2 || participants.size() > 16)
-    return mlir::failure();
-  const size_t count = participants.size();
-  std::vector<std::vector<uint64_t>> distances(count,
-                                               std::vector<uint64_t>(count, 0));
-  for (size_t lhs = 0; lhs < count; ++lhs)
-    for (size_t rhs = 0; rhs < count; ++rhs) {
-      if (lhs == rhs)
-        continue;
-      std::optional<uint64_t> distance = topology.getOnCardShortestHopDistance(
-          CardId(0), TileId(participants[lhs]), TileId(participants[rhs]));
-      if (!distance)
-        return mlir::failure();
-      distances[lhs][rhs] = *distance;
-    }
-
-  const size_t movable = count - 1;
-  const size_t stateCount = size_t{1} << movable;
-  const uint64_t infinity = std::numeric_limits<uint64_t>::max();
-  std::vector<uint64_t> costs(stateCount * movable, infinity);
-  std::vector<int16_t> predecessors(stateCount * movable, -1);
-  auto cell = [&](size_t mask, size_t node) {
-    return mask * movable + node - 1;
-  };
-  for (size_t node = 1; node < count; ++node)
-    costs[cell(size_t{1} << (node - 1), node)] = distances[0][node];
-  for (size_t mask = 1; mask < stateCount; ++mask)
-    for (size_t node = 1; node < count; ++node) {
-      const size_t nodeBit = size_t{1} << (node - 1);
-      if ((mask & nodeBit) == 0)
-        continue;
-      const size_t previousMask = mask ^ nodeBit;
-      if (previousMask == 0)
-        continue;
-      for (size_t previous = 1; previous < count; ++previous) {
-        if ((previousMask & (size_t{1} << (previous - 1))) == 0)
-          continue;
-        uint64_t previousCost = costs[cell(previousMask, previous)];
-        if (previousCost == infinity ||
-            distances[previous][node] > infinity - previousCost)
-          continue;
-        uint64_t candidate = previousCost + distances[previous][node];
-        uint64_t &best = costs[cell(mask, node)];
-        int16_t &bestPrevious = predecessors[cell(mask, node)];
-        if (candidate < best ||
-            (candidate == best &&
-             (bestPrevious < 0 ||
-              participants[previous] <
-                  participants[static_cast<size_t>(bestPrevious)]))) {
-          best = candidate;
-          bestPrevious = static_cast<int16_t>(previous);
-        }
-      }
-    }
-  const size_t fullMask = stateCount - 1;
-  uint64_t bestCycle = infinity;
-  int16_t bestEnd = -1;
-  for (size_t node = 1; node < count; ++node) {
-    uint64_t path = costs[cell(fullMask, node)];
-    if (path == infinity || distances[node][0] > infinity - path)
-      continue;
-    uint64_t cycle = path + distances[node][0];
-    if (cycle < bestCycle ||
-        (cycle == bestCycle &&
-         (bestEnd < 0 ||
-          participants[node] < participants[static_cast<size_t>(bestEnd)]))) {
-      bestCycle = cycle;
-      bestEnd = static_cast<int16_t>(node);
-    }
-  }
-  if (bestEnd < 0)
-    return mlir::failure();
-
-  llvm::SmallVector<size_t, 16> indices(count);
-  indices.front() = 0;
-  size_t mask = fullMask;
-  int16_t current = bestEnd;
-  for (size_t position = count - 1; position > 0; --position) {
-    if (current <= 0)
-      return mlir::failure();
-    indices[position] = static_cast<size_t>(current);
-    int16_t previous = predecessors[cell(mask, static_cast<size_t>(current))];
-    mask ^= size_t{1} << (static_cast<size_t>(current) - 1);
-    current = previous;
-  }
-  if (mask != 0)
-    return mlir::failure();
-  llvm::SmallVector<uint64_t, 16> ring;
-  for (size_t index : indices)
-    ring.push_back(participants[index]);
-  llvm::SmallVector<uint64_t, 16> reversed(ring.size());
-  reversed.front() = ring.front();
-  for (size_t index = 1; index < ring.size(); ++index)
-    reversed[index] = ring[ring.size() - index];
-  if (std::lexicographical_compare(reversed.begin(), reversed.end(),
-                                   ring.begin(), ring.end()))
-    ring = std::move(reversed);
-  return ring;
 }
 
 static mlir::LogicalResult buildRegionTopologicalRanks(
@@ -1055,7 +972,7 @@ static mlir::LogicalResult scheduleRingComponent(
     llvm::ArrayRef<PayloadGroup> groups, llvm::MutableArrayRef<PeerPlan> peers,
     unsigned laneCount, int64_t componentId, const TargetTopology &topology,
     BoundaryMovementStatistics &statistics, std::string &detail) {
-  auto ring = buildMinimumHopRing(topology, component.participants);
+  auto ring = buildMinimumHopTileRing(topology, component.participants);
   if (mlir::failed(ring)) {
     detail = "complete exchange has no bounded minimum-hop ring";
     return mlir::failure();
@@ -1247,6 +1164,33 @@ selectSparseRound(llvm::ArrayRef<unsigned> remaining,
   return selected;
 }
 
+static bool isCompletePersonalizedComponent(
+    const CommunicationComponent &component,
+    llvm::ArrayRef<PayloadGroup> groups, llvm::ArrayRef<PeerPlan> peers,
+    llvm::SmallVectorImpl<unsigned> *componentPeers = nullptr) {
+  llvm::SmallVector<unsigned, 64> localPeers;
+  for (unsigned groupIndex : component.groups)
+    llvm::append_range(localPeers, groups[groupIndex].peers);
+  const size_t participantCount = component.participants.size();
+  if (participantCount < 2 ||
+      localPeers.size() != participantCount * (participantCount - 1))
+    return false;
+  llvm::DenseSet<std::pair<uint64_t, uint64_t>> edges;
+  for (unsigned peerIndex : localPeers) {
+    const PeerPlan &peer = peers[peerIndex];
+    if (peer.sourceTile == peer.destinationTile ||
+        !edges.insert({peer.sourceTile, peer.destinationTile}).second)
+      return false;
+  }
+  for (uint64_t source : component.participants)
+    for (uint64_t destination : component.participants)
+      if (source != destination && !edges.contains({source, destination}))
+        return false;
+  if (componentPeers)
+    componentPeers->assign(localPeers.begin(), localPeers.end());
+  return true;
+}
+
 static mlir::LogicalResult scheduleSparseComponent(
     const CommunicationComponent &component,
     llvm::ArrayRef<PayloadGroup> groups, llvm::MutableArrayRef<PeerPlan> peers,
@@ -1255,6 +1199,18 @@ static mlir::LogicalResult scheduleSparseComponent(
   llvm::SmallVector<unsigned, 64> remaining;
   for (unsigned groupIndex : component.groups)
     llvm::append_range(remaining, groups[groupIndex].peers);
+  const size_t participantCount = component.participants.size();
+  const bool completePersonalized =
+      isCompletePersonalizedComponent(component, groups, peers);
+  unsigned componentCommunication = std::numeric_limits<unsigned>::max();
+  if (completePersonalized)
+    for (unsigned peerIndex : remaining)
+      componentCommunication =
+          std::min(componentCommunication, peers[peerIndex].relationIndex);
+  llvm::DenseMap<uint64_t, unsigned> participantPositions;
+  for (auto [position, participant] : llvm::enumerate(component.participants))
+    participantPositions.try_emplace(participant,
+                                     static_cast<unsigned>(position));
   int64_t round = 0;
   while (!remaining.empty()) {
     mlir::FailureOr<llvm::SmallVector<unsigned, 16>> selected =
@@ -1267,9 +1223,14 @@ static mlir::LogicalResult scheduleSparseComponent(
       selectedSet.insert(peerIndex);
       peer.scheduledPeer = true;
       peer.transportSourceTile = peer.sourceTile;
-      peer.communicationId = peer.relationIndex;
+      peer.communicationId =
+          completePersonalized ? componentCommunication : peer.relationIndex;
       peer.protocolRound = round;
       peer.scheduleComponent = componentId;
+      if (completePersonalized)
+        peer.payloadSlice =
+            participantPositions.lookup(peer.sourceTile) * participantCount +
+            participantPositions.lookup(peer.destinationTile);
       peer.relaySourceRelation.reset();
     }
     remaining.erase(std::remove_if(remaining.begin(), remaining.end(),
@@ -3163,10 +3124,113 @@ RecursiveDoublingAvailability analyzeRecursiveDoublingAvailability(
   return result;
 }
 
+DistributedMovementAvailability analyzeDistributedMovementAvailability(
+    mlir::ModuleOp module,
+    const StructuredMaterializationRelations &relations) {
+  DistributedMovementAvailability result;
+  if (!module || mlir::failed(verifyStructuredComputeLowered(module)) ||
+      mlir::failed(checkStructuredBufferRelationsCurrent(module, relations))) {
+    result.brokenContract = true;
+    result.detail = "distributed movement availability requires current "
+                    "structured-compute-lowered IR and live relations";
+    return result;
+  }
+  StructuredMaterializationRelations copiedRelations = relations;
+  llvm::SmallVector<RegionPlan, 16> regions;
+  llvm::SmallVector<PeerPlan, 16> peers;
+  if (mlir::failed(
+          preflight(module, copiedRelations, regions, peers, result.detail)))
+    return result;
+  llvm::SmallVector<PayloadGroup, 16> groups = buildPayloadGroups(peers);
+  llvm::SmallVector<CommunicationComponent, 8> components =
+      buildCommunicationComponents(groups, peers);
+  BoundaryMovementStatistics statistics;
+  if (mlir::failed(breakCrossComponentRegionOrderCycles(components, groups,
+                                                        peers, statistics))) {
+    result.brokenContract = true;
+    result.detail = "distributed movement availability cannot close current "
+                    "communication component order";
+    return result;
+  }
+  std::string topologyFailure;
+  auto topology = TargetTopology::create(module, &topologyFailure);
+  if (mlir::failed(topology)) {
+    result.brokenContract = true;
+    result.detail = topologyFailure;
+    return result;
+  }
+
+  for (auto [componentIndex, component] : llvm::enumerate(components)) {
+    if (componentUsesSharedDDR(component, groups, peers) ||
+        !hasCurrentCommunicationCut(component, groups, peers) ||
+        !isCompletePersonalizedComponent(component, groups, peers))
+      continue;
+    result.distributedReduction = true;
+    llvm::SmallVector<int64_t, 4> rows;
+    llvm::SmallVector<int64_t, 4> columns;
+    bool rectangular = true;
+    for (uint64_t participant : component.participants) {
+      std::optional<TileCoordinate> coordinate =
+          topology->getTileCoordinate(TileId(participant));
+      if (!coordinate) {
+        rectangular = false;
+        break;
+      }
+      if (!llvm::is_contained(rows, coordinate->y))
+        rows.push_back(coordinate->y);
+      if (!llvm::is_contained(columns, coordinate->x))
+        columns.push_back(coordinate->x);
+    }
+    if (!rectangular || rows.size() < 2 || columns.size() < 2 ||
+        rows.size() * columns.size() != component.participants.size())
+      continue;
+    for (int64_t row : rows)
+      for (int64_t column : columns) {
+        std::optional<TileId> tile =
+            topology->getTileId(TileCoordinate{row, column});
+        if (!tile ||
+            !llvm::is_contained(component.participants,
+                                static_cast<uint64_t>(tile->getValue())))
+          rectangular = false;
+      }
+    if (!rectangular)
+      continue;
+    BoundaryMovementStatistics nativeStatistics;
+    llvm::SmallVector<PeerPlan, 32> nativePeers(peers.begin(), peers.end());
+    if (!scheduleNativeAllToAll(component, groups, nativePeers,
+                                static_cast<int64_t>(componentIndex),
+                                nativeStatistics))
+      result.dimensionOrderedAllToAll = true;
+  }
+
+  for (PeerPlan &rootPeer : peers) {
+    TileRegionOp root = rootPeer.destinationRegion;
+    uint64_t rootTile = rootPeer.destinationTile;
+    llvm::SmallVector<uint64_t, 16> incoming;
+    llvm::SmallVector<uint64_t, 16> outgoing;
+    for (const PeerPlan &peer : peers) {
+      if (peer.destinationRegion == root && peer.sourceTile != rootTile &&
+          !llvm::is_contained(incoming, peer.sourceTile))
+        incoming.push_back(peer.sourceTile);
+      if (peer.sourceRegion == root && peer.destinationTile != rootTile &&
+          !llvm::is_contained(outgoing, peer.destinationTile))
+        outgoing.push_back(peer.destinationTile);
+    }
+    llvm::sort(incoming);
+    llvm::sort(outgoing);
+    if (!incoming.empty() && incoming == outgoing) {
+      result.distributedReduction = true;
+      break;
+    }
+  }
+  result.detail.clear();
+  return result;
+}
+
 BoundaryMovementResult
 materializeTileBoundaryMovement(mlir::ModuleOp module,
                                 StructuredMaterializationRelations &relations,
-                                CompleteAllGatherAlgorithm allGatherAlgorithm) {
+                                BoundaryMovementOptions options) {
   if (!module || mlir::failed(verifyStructuredComputeLowered(module)) ||
       mlir::failed(checkStructuredBufferRelationsCurrent(module, relations)))
     return fail(BoundaryMovementFailureKind::BrokenContract,
@@ -3179,7 +3243,7 @@ materializeTileBoundaryMovement(mlir::ModuleOp module,
     return fail(BoundaryMovementFailureKind::Unsupported, detail);
 
   BoundaryMovementResult result;
-  if (mlir::failed(buildTopologyFanoutChoices(module, peers, allGatherAlgorithm,
+  if (mlir::failed(buildTopologyFanoutChoices(module, peers, options.allGather,
                                               result.statistics, detail)))
     return fail(BoundaryMovementFailureKind::Unsupported, detail);
   if (mlir::failed(apply(module, regions, peers, result.statistics, detail)))
@@ -3188,6 +3252,72 @@ materializeTileBoundaryMovement(mlir::ModuleOp module,
                     ? "preflighted boundary movement failed while rewriting "
                       "current IR"
                     : detail);
+  if (options.reduction == DistributedReductionAlgorithm::Ring) {
+    DistributedCollectiveMovementResult allReduce =
+        materializeRingAllReduce(module);
+    if (!allReduce.succeeded())
+      return fail(
+          allReduce.failure ==
+                  DistributedCollectiveMovementFailureKind::BrokenContract
+              ? BoundaryMovementFailureKind::BrokenContract
+              : BoundaryMovementFailureKind::CompilerFailure,
+          allReduce.detail);
+    DistributedCollectiveMovementResult reduction =
+        materializeRingReduceScatter(module);
+    if (!reduction.succeeded())
+      return fail(
+          reduction.failure ==
+                  DistributedCollectiveMovementFailureKind::BrokenContract
+              ? BoundaryMovementFailureKind::BrokenContract
+              : BoundaryMovementFailureKind::CompilerFailure,
+          reduction.detail);
+    const uint64_t removedSends =
+        allReduce.removedPeerSends + reduction.removedPeerSends;
+    const uint64_t removedReceives =
+        allReduce.removedPeerReceives + reduction.removedPeerReceives;
+    if (removedSends > result.statistics.peerSends ||
+        removedReceives > result.statistics.peerReceives)
+      return fail(BoundaryMovementFailureKind::CompilerFailure,
+                  "distributed Ring reduction operation accounting "
+                  "underflowed");
+    result.statistics.peerSends = result.statistics.peerSends - removedSends +
+                                  allReduce.createdPeerSends +
+                                  reduction.createdPeerSends;
+    result.statistics.peerReceives =
+        result.statistics.peerReceives - removedReceives +
+        allReduce.createdPeerReceives + reduction.createdPeerReceives;
+    result.statistics.ringReduceScatterComponents +=
+        reduction.reduceScatterComponents;
+    result.statistics.ringAllReduceComponents += allReduce.allReduceComponents;
+    result.statistics.distributedReductionCombines +=
+        allReduce.reductionCombines + reduction.reductionCombines;
+    result.statistics.distributedReductionResultCopies +=
+        allReduce.resultCopies;
+  }
+  if (options.allToAll == CompleteAllToAllAlgorithm::DimensionOrdered) {
+    DistributedCollectiveMovementResult allToAll =
+        materializeDimensionOrderedAllToAll(module);
+    if (!allToAll.succeeded())
+      return fail(
+          allToAll.failure ==
+                  DistributedCollectiveMovementFailureKind::BrokenContract
+              ? BoundaryMovementFailureKind::BrokenContract
+              : BoundaryMovementFailureKind::CompilerFailure,
+          allToAll.detail);
+    if (allToAll.removedPeerSends > result.statistics.peerSends ||
+        allToAll.removedPeerReceives > result.statistics.peerReceives)
+      return fail(BoundaryMovementFailureKind::CompilerFailure,
+                  "dimension-ordered AllToAll operation accounting "
+                  "underflowed");
+    result.statistics.peerSends = result.statistics.peerSends -
+                                  allToAll.removedPeerSends +
+                                  allToAll.createdPeerSends;
+    result.statistics.peerReceives = result.statistics.peerReceives -
+                                     allToAll.removedPeerReceives +
+                                     allToAll.createdPeerReceives;
+    result.statistics.dimensionOrderedAllToAllComponents += allToAll.components;
+    result.statistics.dimensionOrderedAllToAllPackCopies += allToAll.packCopies;
+  }
   relations.boundaryRelations.clear();
   relations.structuralOutputs.clear();
   rebuildCurrentBufferOwnerRelations(module, relations);

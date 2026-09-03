@@ -8,7 +8,9 @@ mesh communication materialization及host/no-card矩阵均已闭合并重新签�
 稳定语义由05--16号编号设计拥有。
 
 当前直接项：`mesh-communication-materialization`和Q53 `production-host-readiness`均已达到`board-ready`；
-`recursive-doubling-feasibility`及其search production choice均已闭合；真实板端仍未执行。
+`recursive-doubling-feasibility`及其search production choice均已闭合。Tile mesh通信alternative已经按
+`mesh-all-to-all-production-choice -> distributed-reduce-scatter-production-choice -> distributed-all-reduce-production-choice`
+完成current-IR与host/no-card闭合；真实板端仍未执行。
 
 ## Pipeline Contract
 
@@ -438,8 +440,8 @@ Pipeline position:
 - Downstream consumer: fresh completion、actual MiniMalloc/DDR、DeviceExecutable verification、target conversion、SystemC和runtime。
 - User-level driver / named pipeline: none/search共用同一atomic movement/Tile-to-Instr/target implementation；两policy仍独立拥有candidate。
 - Explicit non-goals: 不运行真实设备；不开放非256B或未验证fanout；不建立route/round/action side plan；不由shape或估算SPM决定
-  legality；不修改reduction/contraction数值顺序；不引入TACCL/MILP或第二条lowering；没有actual contiguous source与matched board
-  crossover前不加入Bruck/recursive-doubling或隐式pack copy。
+  legality；不引入TACCL/MILP、Tile collective op或第二条lowering。AllToAll pack、distributed combine和AllReduce chunk必须是
+  candidate-owned actual IR；没有完整current use-def proof时不按operation名称、shape或participant数量猜collective。
 - Completion criteria: 下列矩阵fresh通过；current Instr→Target LLVM→device link可消费新TargetCall，现行package/no-card矩阵无回退；
   板端correctness/performance留待后续窗口。
 
@@ -567,6 +569,101 @@ maximum精确为4。3-Tile输入保持2轮Ring，qualified 256B fanout保持nati
 Fresh canonical build、Driver 83/83、Transforms 304/304、264/264 lit、13/13 component unit和15/15 SystemC通过；registered
 FP16 conv mixed-DAG search package/no-card在23.21s通过。真实板端未运行，因此本项只完成compiler production choice和host资格，不声明
 recursive doubling相对Ring的设备性能。
+
+## Distributed Collective Movement Choices
+
+本节只补齐由current spatial dataflow自然形成的Tile-level通信形态。Card-partition LinalgExt collective仍由03/05号语义拥有，
+singleton在card边界折叠，不能把其group ordinal直接当作physical Tile。这里不新增collective op，也不从framework名称恢复语义。
+
+```text
+Pipeline position:
+- Upstream IR / input:
+  layout-resolved、structured-to-Tile current TileRegion；BoundaryMovement已经从live endpoint relation物化的actual source/receive
+  buffer、peer send/recv和closed local combine use-def；current target topology。
+- Current stage responsibility:
+  为exact complete personalized exchange、distributed reduction和replicated reduction提出有限typed movement choice，并在同一
+  candidate transaction中立即改写为actual allocation/subview/copy、peer op和local combine。
+- Output IR / files:
+  direct/native、dimension-ordered AllToAll、Ring ReduceScatter或ReduceScatter+AllGather AllReduce之一的physical Tile IR。
+- Downstream consumer:
+  execution structure、TileRegion-to-Instr、fresh DTE/NCC completion、actual MiniMalloc、transport、target和search objective。
+- User-level driver / named pipeline:
+  baseline保持现行deterministic realization；search对每个可用alternative独立clone最近current owner并走同一actual leaf。
+- Explicit non-goals:
+  不保留collective descriptor、route、round action DAG或future buffer；不从名字识别；不把消息数、hop estimate或buffer estimate当
+  legality/SPM结论；不实现cross-card collective；本项不运行真实设备。
+- Completion criteria:
+  下列三个work item依次fresh闭合；每个specialized candidate确实修改current IR并经完整下游，near-miss不创建空leaf；
+  baseline、native和irregular sparse/fanout结果不回退。
+```
+
+### 1. Mesh AllToAll
+
+识别条件是current peer edge组成一个complete personalized exchange：`P`个available participant中，每个source到每个其它destination
+恰有一个不同piece，所有piece具有同一static Tensor/NTensor logical/physical表示，且participant coordinates恰好形成至少2×2的
+rectangular submesh。识别读取matched send/recv、buffer type/range、TileRegion parent和`TargetTopology`坐标；不读取source op名称。
+
+现行direct/native candidate保持不变。Dimension-ordered candidate按physical coordinate分两段实际物化：source先把发往同一destination
+column的piece写入actual contiguous aggregate并沿row发送；中间Tile从actual received/local aggregate按destination row重排到新的actual
+aggregate，再沿column发送。最终consumer直接改接final aggregate的typed subview，删除被完全替代的direct send/recv和dead receive
+allocation，不生成unpack copy。对`R×C`完整mesh，每Tile peer message为`(C-1)+(R-1)`，model minimum-hop bytes等于每个piece的Manhattan
+minimum-hop总和；pack/repack、SPM high-water和completion开销全部保留在actual candidate，由现有objective比较，不能仅因消息更少获胜。
+
+| 输入等价类 | Shape / 结构 | Typed failure | 精确断言 | 直接下游witness |
+| --- | --- | --- | --- | --- |
+| complete personalized exchange | 2×2与4×4；rank 3--4 FP16/BF16；1024/1025/1031；Tensor/NTensor | participant非Cartesian、piece type/layout不同、dynamic或current cut不闭合 | 每个logical source→destination piece恰进入两个或更少actual legs；final subview cover all-and-only；4×4每Tile6个peer message、无unpack copy | completion、MiniMalloc、transport、actual cost |
+| direct/native对照 | 同一source clone；qualified `2/4/8/15×256B` scatter及普通pairwise | native合同外保持unicast；specialized不可用不是编译失败 | direct/native IR不变；两candidate bytes相同；search只以actual objective替换 | TargetCall/SystemC/no-card |
+| irregular/near-miss | sparse permute、ragged destination set、unavailable Tile、多个phase | 无exact component identity或aggregate representation | 不合组、不新增allocation/copy、不创建specialized downstream leaf | 现有sparse/fanout tests |
+
+### 2. Ring ReduceScatter
+
+输入不是“看起来像reduce”的消息集合，而是current Tile IR中的完整`P×P` contribution matrix：每个destination的`P-1`个remote receive
+和一个local contribution恰好构成一个closed `wafer.tile.elementwise` combine tree；内部结果只有该tree使用，root是原merge的唯一发布值，
+所有destination使用相同的`add/max/min`、identity indexing和piece type。该proof同时给出每个source/destination的actual contribution
+buffer。缺一项即不改写。
+
+Ring按`TargetTopology`生成minimum-hop Hamiltonian cycle。第`r`轮每Tile发送上一轮的actual partial，接收前驱partial，并用本Tile对应
+destination piece创建一个新的actual `wafer.tile.elementwise` combine；最后每个destination只保留自己output shard的complete reduction。
+原direct peer op和central merge tree在新ops全部建成且verify后原子删除。DTE不暗含算术，等待仍由fresh completion从recv-first-read、
+partial-forward和buffer reuse放置。
+
+| 输入等价类 | Shape / 结构 | Typed failure | 精确断言 | 直接下游witness |
+| --- | --- | --- | --- | --- |
+| complete distributed sum/max/min | 4/16 Tile；rank 3--4；1024/1025/1031；整除/非整除spatial output shard | missing/duplicate contribution、mixed kind/type/map、merge result额外use、无Hamiltonian cycle | `P-1`轮；每轮每Tile一send/recv和一combine；每output shard恰消费P个actual leaf；旧merge/direct op为0 | Tile-to-Instr、NCC/DTE completion、MiniMalloc |
+| ordinary fanin/irregular reduction | participant不完整、coupled attention state、non-associative scalar expression | proof不闭合 | 保留现行merge owner和peer movement，不把attention或任意elementwise冒充ReduceScatter | existing reduction/FD regression |
+
+### 3. Ring AllReduce
+
+AllReduce识别要求一个closed full-buffer combine tree消费每Tile一个同型local contribution，并且其root经complete same-payload fanout发布到
+全部participant。Candidate把每个actual contribution沿leading physical-contiguous axis划分为`P`个complete ragged chunk；随后调用与上节相同的
+Ring ReduceScatter kernel，再调用现有Ring AllGather mechanics把每个reduced chunk填入每Tile的actual full-result allocation。它不是另一套
+归约lowering。1025/1031通过ragged static subview表达，不padding、不丢element。
+
+| 输入等价类 | Shape / 结构 | Typed failure | 精确断言 | 直接下游witness |
+| --- | --- | --- | --- | --- |
+| replicated full-buffer sum/max/min | 4/16 Tile；rank至少3；总element 1024/1025/1031级且含ragged chunk | fanin/fanout不完整、source/result type不同、non-contiguous view、combine proof不闭合 | ReduceScatter与AllGather各`P-1`轮；每Tile final result逐chunk完整无重叠；每leaf贡献一次；旧central merge/fanout为0 | completion、actual SPM offset、transport、result consumer |
+| central merge+fanout对照 | 同一source clone | Ring candidate capacity/target rejection | baseline保持central；search分别物化并按actual objective比较；失败只淘汰Ring owner | package/no-card |
+
+固定实施顺序是AllToAll、ReduceScatter、AllReduce；后项可以复用前项已经闭合的aggregate/ring helper，但不能提前建立未来buffer或
+message表。每项仍逐一执行读规则/设计、成熟算法调研、pinned API核对、实现、fresh测试、重读设计与LLVM/MLIR复审。
+
+### 2026-09-03 closure
+
+三种alternative均从BoundaryMovement已物化的matched peer op、actual buffer和current combine use-def识别并在同一candidate中破坏性
+改写；未增加Tile collective op、route table、future buffer/message record或第二条lowering。Search先运行只读endpoint prefilter；只有
+可能存在相应形态时才clone post-layout owner，specialized rewrite实际为0的clone不进入downstream leaf。最多八个Ring/
+recursive/row-column组合仍受原`trials` actualization budget约束；baseline只使用默认direct/central realization。
+
+| Fresh focused矩阵 | Current-IR结果 | 直接下游结果 |
+| --- | --- | --- |
+| AllToAll：4/16 Tile × FP16 rank-3 × 1024/1025/1031，另含BF16 1025 | 2×2每Tile message `3→2`、全card `12→8`；4×4每Tile `15→6`、全card `240→96`；pack/repack copy分别24/480，final consumer直接读aggregate subview，unpack copy为0 | 每个case通过Tile-to-Instr、fresh DTE/NCC completion、actual MiniMalloc、whole-card transport verify/bind；16-Tile actual cost读到每Tile6个send/recv message |
+| ReduceScatter：4/16 Tile × FP16 rank-3 × 1024/1025/1031，另含BF16 1025；add/max/min | `P-1`轮，每轮每Tile恰一send/recv/combine；4/16 Tile分别12/240个actual combine；每个destination root的P个leaf all-and-only替换旧central tree | 八个case均通过actual completion、offset planning和transport；plain AllToAll没有P-leaf combine closure时不改写；16-Tile cost读到每Tile15个send/recv message |
+| AllReduce：4/16 Tile × FP16 rank-3 × leading extent 1024/1025/1031，另含BF16 1025；add/max/min | 同一Ring reduction kernel产生`P-1`轮，再以`P-1`轮AllGather填充每Tile full result；4/16 Tile分别24/480个send和recv、12/240个combine、4/16个result-slot copy；1025/1031为无padding ragged chunk | 八个case均通过actual completion、MiniMalloc和transport；旧central fanin、merge和fanout在candidate中为0；16-Tile cost读到每Tile30个send/recv message |
+
+完整增量build通过；`WaferTransformsUnitTests`为307/307、`WaferDriverUnitTests`为83/83；统一`check-wafer`实际执行264个lit、
+13个component unit targets、42个Board-IO、61个reference numeric、19个target numeric backend和15个SystemC，全部通过且无skip。
+registered FP16 conv mixed-DAG search no-card fresh通过，real time 23.25s；ordinary workload的availability prefilter没有增加空movement leaf。
+真实设备未运行，因此这里只完成compiler production choice与host/no-card闭合，不声明三种alternative的板端winner或性能。
 
 ## Q53 Production Host Readiness
 

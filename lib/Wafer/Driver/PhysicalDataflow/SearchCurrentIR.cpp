@@ -22,6 +22,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -441,10 +442,9 @@ public:
         return {actualFailure(ActualCandidateStatus::CompilerBug, detail),
                 actualizations, false};
 
-      FinishedCandidate finished = finishCandidate(
-          std::move(*candidate),
-          /*allowRecursiveDoubling=*/actualizations < actualizationLimit,
-          detail);
+      FinishedCandidate finished =
+          finishCandidate(std::move(*candidate),
+                          actualizationLimit - actualizations + 1, detail);
       if (finished.actualLeaves > 1) {
         actualizations += finished.actualLeaves - 1;
       }
@@ -558,7 +558,7 @@ public:
 
 private:
   FinishedCandidate finishCandidate(CurrentCandidate candidate,
-                                    bool allowRecursiveDoubling,
+                                    uint64_t maximumMovementLeaves,
                                     std::string &detail) {
     SpatialRegionMaterializationFailure closureFailure;
     CommunicationRegionClosureStatistics closureStatistics;
@@ -605,8 +605,9 @@ private:
                        : ExecutableCompilationStatus::CompilerFailure,
                    "search-structured-to-tile", compute.detail)};
 
-    std::optional<CurrentCandidate> recursiveCandidate;
-    if (allowRecursiveDoubling) {
+    bool recursiveAvailable = false;
+    DistributedMovementAvailability distributedAvailability;
+    if (maximumMovementLeaves > 1) {
       RecursiveDoublingAvailability availability =
           analyzeRecursiveDoublingAvailability(*candidate.module,
                                                candidate.relations);
@@ -615,43 +616,148 @@ private:
         return {fail(ExecutableCompilationStatus::CompilerFailure,
                      "search-recursive-doubling-availability",
                      availability.detail)};
-      if (availability.isAvailable()) {
-        mlir::IRMapping mapping;
-        auto cloned = cloneCandidate(*candidate.module, candidate.relations,
-                                     mapping, detail);
-        if (mlir::failed(cloned))
-          return {fail(ExecutableCompilationStatus::CompilerFailure,
-                       "search-recursive-doubling-clone", detail)};
-        recursiveCandidate = std::move(*cloned);
-      }
+      recursiveAvailable = availability.isAvailable();
+      distributedAvailability = analyzeDistributedMovementAvailability(
+          *candidate.module, candidate.relations);
+      if (distributedAvailability.brokenContract)
+        return {fail(ExecutableCompilationStatus::CompilerFailure,
+                     "search-distributed-movement-availability",
+                     distributedAvailability.detail)};
     }
 
-    BoundaryMovementResult ringMovement =
-        materializeTileBoundaryMovement(*candidate.module, candidate.relations,
-                                        CompleteAllGatherAlgorithm::Ring);
-    recordMovementInstrumentation(ringMovement.statistics);
-    if (!ringMovement.succeeded())
-      return {
-          fail(ringMovement.failure == BoundaryMovementFailureKind::Unsupported
-                   ? ExecutableCompilationStatus::UnsupportedFailure
-                   : ExecutableCompilationStatus::CompilerFailure,
-               "search-boundary-movement-ring", ringMovement.detail)};
+    struct PendingMovement {
+      CurrentCandidate candidate;
+      BoundaryMovementOptions options;
+      bool requiresRecursive = false;
+      bool requiresDimensionOrderedAllToAll = false;
+      bool requiresDistributedRing = false;
+    };
+    std::vector<PendingMovement> pending;
+    pending.push_back(
+        PendingMovement{std::move(candidate), BoundaryMovementOptions{}});
+    auto appendClone =
+        [&](BoundaryMovementOptions movementOptions, bool requiresRecursive,
+            bool requiresAllToAll,
+            bool requiresDistributedRing) -> mlir::LogicalResult {
+      if (pending.size() >= maximumMovementLeaves)
+        return mlir::success();
+      mlir::IRMapping mapping;
+      auto cloned =
+          cloneCandidate(*pending.front().candidate.module,
+                         pending.front().candidate.relations, mapping, detail);
+      if (mlir::failed(cloned))
+        return mlir::failure();
+      pending.push_back(PendingMovement{std::move(*cloned), movementOptions,
+                                        requiresRecursive, requiresAllToAll,
+                                        requiresDistributedRing});
+      return mlir::success();
+    };
+    if (recursiveAvailable &&
+        mlir::failed(appendClone(
+            BoundaryMovementOptions{
+                CompleteAllGatherAlgorithm::RecursiveDoubling,
+                CompleteAllToAllAlgorithm::Direct,
+                DistributedReductionAlgorithm::Centralized},
+            /*requiresRecursive=*/true, /*requiresAllToAll=*/false,
+            /*requiresDistributedRing=*/false)))
+      return {fail(ExecutableCompilationStatus::CompilerFailure,
+                   "search-recursive-doubling-clone", detail)};
+    if (distributedAvailability.dimensionOrderedAllToAll &&
+        mlir::failed(appendClone(
+            BoundaryMovementOptions{CompleteAllGatherAlgorithm::Ring,
+                                    CompleteAllToAllAlgorithm::DimensionOrdered,
+                                    DistributedReductionAlgorithm::Centralized},
+            /*requiresRecursive=*/false, /*requiresAllToAll=*/true,
+            /*requiresDistributedRing=*/false)))
+      return {fail(ExecutableCompilationStatus::CompilerFailure,
+                   "search-dimension-ordered-all-to-all-clone", detail)};
+    if (recursiveAvailable &&
+        distributedAvailability.dimensionOrderedAllToAll &&
+        mlir::failed(appendClone(
+            BoundaryMovementOptions{
+                CompleteAllGatherAlgorithm::RecursiveDoubling,
+                CompleteAllToAllAlgorithm::DimensionOrdered,
+                DistributedReductionAlgorithm::Centralized},
+            /*requiresRecursive=*/true, /*requiresAllToAll=*/true,
+            /*requiresDistributedRing=*/false)))
+      return {fail(ExecutableCompilationStatus::CompilerFailure,
+                   "search-combined-movement-clone", detail)};
+    if (distributedAvailability.distributedReduction &&
+        mlir::failed(appendClone(
+            BoundaryMovementOptions{CompleteAllGatherAlgorithm::Ring,
+                                    CompleteAllToAllAlgorithm::Direct,
+                                    DistributedReductionAlgorithm::Ring},
+            /*requiresRecursive=*/false, /*requiresAllToAll=*/false,
+            /*requiresDistributedRing=*/true)))
+      return {fail(ExecutableCompilationStatus::CompilerFailure,
+                   "search-distributed-ring-clone", detail)};
+    if (recursiveAvailable && distributedAvailability.distributedReduction &&
+        mlir::failed(appendClone(
+            BoundaryMovementOptions{
+                CompleteAllGatherAlgorithm::RecursiveDoubling,
+                CompleteAllToAllAlgorithm::Direct,
+                DistributedReductionAlgorithm::Ring},
+            /*requiresRecursive=*/true, /*requiresAllToAll=*/false,
+            /*requiresDistributedRing=*/true)))
+      return {fail(ExecutableCompilationStatus::CompilerFailure,
+                   "search-recursive-distributed-ring-clone", detail)};
+    if (distributedAvailability.dimensionOrderedAllToAll &&
+        distributedAvailability.distributedReduction &&
+        mlir::failed(appendClone(
+            BoundaryMovementOptions{CompleteAllGatherAlgorithm::Ring,
+                                    CompleteAllToAllAlgorithm::DimensionOrdered,
+                                    DistributedReductionAlgorithm::Ring},
+            /*requiresRecursive=*/false, /*requiresAllToAll=*/true,
+            /*requiresDistributedRing=*/true)))
+      return {fail(ExecutableCompilationStatus::CompilerFailure,
+                   "search-all-to-all-distributed-ring-clone", detail)};
+    if (recursiveAvailable &&
+        distributedAvailability.dimensionOrderedAllToAll &&
+        distributedAvailability.distributedReduction &&
+        mlir::failed(appendClone(
+            BoundaryMovementOptions{
+                CompleteAllGatherAlgorithm::RecursiveDoubling,
+                CompleteAllToAllAlgorithm::DimensionOrdered,
+                DistributedReductionAlgorithm::Ring},
+            /*requiresRecursive=*/true, /*requiresAllToAll=*/true,
+            /*requiresDistributedRing=*/true)))
+      return {fail(ExecutableCompilationStatus::CompilerFailure,
+                   "search-complete-movement-clone", detail)};
 
-    if (recursiveCandidate) {
-      BoundaryMovementResult recursiveMovement =
-          materializeTileBoundaryMovement(
-              *recursiveCandidate->module, recursiveCandidate->relations,
-              CompleteAllGatherAlgorithm::RecursiveDoubling);
-      if (!recursiveMovement.succeeded() ||
-          recursiveMovement.statistics.recursiveDoublingComponents == 0)
+    std::vector<PendingMovement> materialized;
+    materialized.reserve(pending.size());
+    for (PendingMovement &movementCandidate : pending) {
+      BoundaryMovementResult movement = materializeTileBoundaryMovement(
+          *movementCandidate.candidate.module,
+          movementCandidate.candidate.relations, movementCandidate.options);
+      recordMovementInstrumentation(movement.statistics);
+      if (!movement.succeeded())
+        return {
+            fail(movement.failure == BoundaryMovementFailureKind::Unsupported
+                     ? ExecutableCompilationStatus::UnsupportedFailure
+                     : ExecutableCompilationStatus::CompilerFailure,
+                 "search-boundary-movement", movement.detail)};
+      if (movementCandidate.requiresRecursive &&
+          movement.statistics.recursiveDoublingComponents == 0)
         return {fail(ExecutableCompilationStatus::CompilerFailure,
                      "search-boundary-movement-recursive-doubling",
-                     recursiveMovement.succeeded()
-                         ? "availability and recursive materialization disagree"
-                         : recursiveMovement.detail)};
-      recordMovementInstrumentation(recursiveMovement.statistics);
-      if (statistics)
-        ++statistics->recursiveDoublingCandidates;
+                     "availability and recursive materialization disagree")};
+      if (movementCandidate.requiresDimensionOrderedAllToAll &&
+          movement.statistics.dimensionOrderedAllToAllComponents == 0)
+        continue;
+      if (movementCandidate.requiresDistributedRing &&
+          movement.statistics.ringReduceScatterComponents == 0 &&
+          movement.statistics.ringAllReduceComponents == 0)
+        continue;
+      if (statistics) {
+        statistics->recursiveDoublingCandidates +=
+            movementCandidate.requiresRecursive;
+        statistics->dimensionOrderedAllToAllCandidates +=
+            movementCandidate.requiresDimensionOrderedAllToAll;
+        statistics->distributedRingCandidates +=
+            movementCandidate.requiresDistributedRing;
+      }
+      materialized.push_back(std::move(movementCandidate));
     }
 
     auto compileMovementCandidate = [&](CurrentCandidate selected) {
@@ -669,54 +775,79 @@ private:
       return result;
     };
 
-    ExecutableCompilationResult ring =
-        compileMovementCandidate(std::move(candidate));
-    if (!recursiveCandidate)
-      return {std::move(ring), 1};
-    ExecutableCompilationResult recursive =
-        compileMovementCandidate(std::move(*recursiveCandidate));
-    if (statistics && recursive.isAccepted())
-      ++statistics->recursiveDoublingAccepted;
-
-    auto compilerFailure = [](const ExecutableCompilationResult &result) {
-      return result.status == ExecutableCompilationStatus::CompilerFailure;
+    struct CompiledMovement {
+      ExecutableCompilationResult result;
+      bool recursive = false;
+      bool dimensionOrderedAllToAll = false;
+      bool distributedRing = false;
     };
-    if (compilerFailure(ring))
-      return {std::move(ring), 2};
-    if (compilerFailure(recursive))
-      return {std::move(recursive), 2};
-    if (ring.isAccepted() && recursive.isAccepted()) {
-      SearchObjective ringObjective =
-          deriveSearchObjective(ring.executable->resourceCost, cohort);
-      SearchObjective recursiveObjective =
-          deriveSearchObjective(recursive.executable->resourceCost, cohort);
-      SearchObjectiveComparison comparison =
-          compareSearchObjectives(recursiveObjective, ringObjective);
-      if (comparison == SearchObjectiveComparison::Better) {
-        if (statistics)
-          ++statistics->recursiveDoublingWinners;
-        return {std::move(recursive), 2};
+    std::vector<std::unique_ptr<CompiledMovement>> compiled;
+    compiled.reserve(materialized.size());
+    for (PendingMovement &movementCandidate : materialized) {
+      ExecutableCompilationResult result =
+          compileMovementCandidate(std::move(movementCandidate.candidate));
+      if (result.status == ExecutableCompilationStatus::CompilerFailure)
+        return {std::move(result), compiled.size() + 1};
+      if (statistics && result.isAccepted()) {
+        statistics->recursiveDoublingAccepted +=
+            movementCandidate.requiresRecursive;
+        statistics->dimensionOrderedAllToAllAccepted +=
+            movementCandidate.requiresDimensionOrderedAllToAll;
+        statistics->distributedRingAccepted +=
+            movementCandidate.requiresDistributedRing;
       }
-      if (comparison == SearchObjectiveComparison::Incomparable && statistics)
+      compiled.push_back(std::make_unique<CompiledMovement>(CompiledMovement{
+          std::move(result), movementCandidate.requiresRecursive,
+          movementCandidate.requiresDimensionOrderedAllToAll,
+          movementCandidate.requiresDistributedRing}));
+    }
+    if (compiled.empty())
+      return {fail(ExecutableCompilationStatus::CompilerFailure,
+                   "search-boundary-movement",
+                   "default movement candidate was not materialized"),
+              0};
+
+    std::optional<size_t> winner;
+    std::optional<SearchObjective> winnerObjective;
+    for (auto [index, candidateResult] : llvm::enumerate(compiled)) {
+      if (!candidateResult->result.isAccepted())
+        continue;
+      SearchObjective objective = deriveSearchObjective(
+          candidateResult->result.executable->resourceCost, cohort);
+      if (!winner) {
+        winner = index;
+        winnerObjective = std::move(objective);
+        continue;
+      }
+      SearchObjectiveComparison comparison =
+          compareSearchObjectives(objective, *winnerObjective);
+      if (comparison == SearchObjectiveComparison::Better) {
+        winner = index;
+        winnerObjective = std::move(objective);
+      } else if (comparison == SearchObjectiveComparison::Incomparable &&
+                 statistics) {
         ++statistics->incomparableMovementObjectives;
-      return {std::move(ring), 2};
+      }
     }
-    if (recursive.isAccepted()) {
-      if (statistics)
-        ++statistics->recursiveDoublingWinners;
-      return {std::move(recursive), 2};
+    const uint64_t actualLeaves = compiled.size();
+    if (winner) {
+      if (statistics) {
+        statistics->recursiveDoublingWinners += compiled[*winner]->recursive;
+        statistics->dimensionOrderedAllToAllWinners +=
+            compiled[*winner]->dimensionOrderedAllToAll;
+        statistics->distributedRingWinners +=
+            compiled[*winner]->distributedRing;
+      }
+      return {std::move(compiled[*winner]->result), actualLeaves};
     }
-    if (ring.isAccepted())
-      return {std::move(ring), 2};
-    if (ring.status == ExecutableCompilationStatus::IndeterminateFailure)
-      return {std::move(ring), 2};
-    if (recursive.status == ExecutableCompilationStatus::IndeterminateFailure)
-      return {std::move(recursive), 2};
-    if (ring.isProvenExactRejection())
-      return {std::move(ring), 2};
-    if (recursive.isProvenExactRejection())
-      return {std::move(recursive), 2};
-    return {std::move(ring), 2};
+    for (std::unique_ptr<CompiledMovement> &candidateResult : compiled)
+      if (candidateResult->result.status ==
+          ExecutableCompilationStatus::IndeterminateFailure)
+        return {std::move(candidateResult->result), actualLeaves};
+    for (std::unique_ptr<CompiledMovement> &candidateResult : compiled)
+      if (candidateResult->result.isProvenExactRejection())
+        return {std::move(candidateResult->result), actualLeaves};
+    return {std::move(compiled.front()->result), actualLeaves};
   }
 
   mlir::ModuleOp tensorProgram;
@@ -854,6 +985,18 @@ ExecutableCompilationResult compileSearchCurrentIR(
                   statistics->recursiveDoublingAccepted);
     searchCounter("recursive-doubling-winners",
                   statistics->recursiveDoublingWinners);
+    searchCounter("dimension-ordered-all-to-all-candidates",
+                  statistics->dimensionOrderedAllToAllCandidates);
+    searchCounter("dimension-ordered-all-to-all-accepted",
+                  statistics->dimensionOrderedAllToAllAccepted);
+    searchCounter("dimension-ordered-all-to-all-winners",
+                  statistics->dimensionOrderedAllToAllWinners);
+    searchCounter("distributed-ring-candidates",
+                  statistics->distributedRingCandidates);
+    searchCounter("distributed-ring-accepted",
+                  statistics->distributedRingAccepted);
+    searchCounter("distributed-ring-winners",
+                  statistics->distributedRingWinners);
   }
   if (statistics) {
     statistics->planning = searched.planning;

@@ -190,6 +190,17 @@ recordMovementInstrumentation(const BoundaryMovementStatistics &statistics) {
           statistics.recursiveDoublingSeedDonations);
   counter("sparse-round-components", statistics.sparseRoundComponents);
   counter("sparse-rounds", statistics.sparseRounds);
+  counter("dimension-ordered-all-to-all-components",
+          statistics.dimensionOrderedAllToAllComponents);
+  counter("dimension-ordered-all-to-all-pack-copies",
+          statistics.dimensionOrderedAllToAllPackCopies);
+  counter("ring-reduce-scatter-components",
+          statistics.ringReduceScatterComponents);
+  counter("ring-all-reduce-components", statistics.ringAllReduceComponents);
+  counter("distributed-reduction-combines",
+          statistics.distributedReductionCombines);
+  counter("distributed-reduction-result-copies",
+          statistics.distributedReductionResultCopies);
   counter("no-cut-ddr-components", statistics.noCutDDRComponents);
   counter("cross-tile-ddr-stages", statistics.crossTileDDRStages);
   counter("inter-region-ddr-stages", statistics.interRegionDDRStages);

@@ -300,8 +300,12 @@ current Instr completion transformation必须直接证明并物化completion；�
   non-contiguous和unknown range仍fail closed；
 - sparse schedule按sender 1、receiver 4做capacity-constrained maximum matching；每轮edge不重复不遗漏，resource limit和Region order成立，
   相同输入重复得到同一round与peer顺序；
-- complete exchange分别验证native per-source broadcast与unicast Ring；All-to-All分别验证native per-source scatter与pairwise matching。
-  native能力外的byte count、fanout、ragged segment、dynamic binding和alias必须保持普通算法或typed failure，不能扩展raw硬件合同。
+- complete exchange分别验证native per-source broadcast与unicast Ring；All-to-All分别验证native per-source scatter、pairwise matching与
+  Cartesian row/column aggregate，后者精确检查pack/repack、final subview、每Tile `(rows-1)+(columns-1)` message和actual SPM result；
+  native能力外的byte count、fanout、ragged segment、dynamic binding和alias必须保持普通算法或typed failure，不能扩展raw硬件合同；
+- ReduceScatter验证complete contribution matrix、closed `add/max/min` tree、每轮每Tile一个send/recv/actual combine和每output shard的
+  all-and-only leaf cover；AllReduce验证同一ReduceScatter kernel后接AllGather、leading-axis ragged chunk无hole/overlap、全部Tile完整result、
+  `2(P-1)`轮及central/Ring独立actual MiniMalloc/cost。Near-miss reduction和coupled attention不得被重写；
 - recursive doubling只用于非native、power-of-two complete AllGather；验证actual aggregate allocation、producer donation/seed copy、slot
   all-and-only cover、`log2(P)`个coalesced message、与Ring相同的endpoint bytes、独立MiniMalloc outcome和search actualization budget；
   ineligible/native/baseline不得创建recursive downstream leaf。

@@ -24,6 +24,23 @@ enum class CompleteAllGatherAlgorithm : uint8_t {
   RecursiveDoubling,
 };
 
+enum class CompleteAllToAllAlgorithm : uint8_t {
+  Direct,
+  DimensionOrdered,
+};
+
+enum class DistributedReductionAlgorithm : uint8_t {
+  Centralized,
+  Ring,
+};
+
+struct BoundaryMovementOptions {
+  CompleteAllGatherAlgorithm allGather = CompleteAllGatherAlgorithm::Ring;
+  CompleteAllToAllAlgorithm allToAll = CompleteAllToAllAlgorithm::Direct;
+  DistributedReductionAlgorithm reduction =
+      DistributedReductionAlgorithm::Centralized;
+};
+
 struct BoundaryMovementStatistics {
   uint64_t ddrLoads = 0;
   uint64_t ddrStores = 0;
@@ -44,6 +61,12 @@ struct BoundaryMovementStatistics {
   uint64_t recursiveDoublingSeedDonations = 0;
   uint64_t sparseRoundComponents = 0;
   uint64_t sparseRounds = 0;
+  uint64_t dimensionOrderedAllToAllComponents = 0;
+  uint64_t dimensionOrderedAllToAllPackCopies = 0;
+  uint64_t ringReduceScatterComponents = 0;
+  uint64_t ringAllReduceComponents = 0;
+  uint64_t distributedReductionCombines = 0;
+  uint64_t distributedReductionResultCopies = 0;
   uint64_t noCutDDRComponents = 0;
   uint64_t crossTileDDRStages = 0;
   uint64_t interRegionDDRStages = 0;
@@ -77,10 +100,23 @@ struct RecursiveDoublingAvailability {
   }
 };
 
+struct DistributedMovementAvailability {
+  bool dimensionOrderedAllToAll = false;
+  bool distributedReduction = false;
+  bool brokenContract = false;
+  std::string detail;
+};
+
 /// Recomputes whether current complete AllGather endpoints admit the
 /// recursive-doubling realization. The result is query-local and does not
 /// modify IR or retain allocation/message facts.
 RecursiveDoublingAvailability analyzeRecursiveDoublingAvailability(
+    mlir::ModuleOp module, const StructuredMaterializationRelations &relations);
+
+/// Cheap current-endpoint prefilter for specialized distributed movement.
+/// Positive answers are confirmed by actual materialization; negative answers
+/// avoid creating an unchanged candidate clone.
+DistributedMovementAvailability analyzeDistributedMovementAvailability(
     mlir::ModuleOp module, const StructuredMaterializationRelations &relations);
 
 /// Converts logical TileRegion tensor boundaries to actual physical movement.
@@ -99,8 +135,7 @@ RecursiveDoublingAvailability analyzeRecursiveDoublingAvailability(
 BoundaryMovementResult
 materializeTileBoundaryMovement(mlir::ModuleOp module,
                                 StructuredMaterializationRelations &relations,
-                                CompleteAllGatherAlgorithm allGatherAlgorithm =
-                                    CompleteAllGatherAlgorithm::Ring);
+                                BoundaryMovementOptions options = {});
 
 /// Verifies that TileRegion shaped boundaries are Wafer DDR memrefs, no
 /// tensor/memref bridge remains, and no SPM root crosses a TileRegion.

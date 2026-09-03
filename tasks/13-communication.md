@@ -160,15 +160,28 @@ blocked、non-contiguous或无法恢复exact range的view继续按root-level may
 | current数据流 | 常见来源 | 当前实现 | 当前判断 |
 | --- | --- | --- | --- |
 | complete AllGather | 每个Tile的local shard被其它全部Tile消费 | qualified 256B native broadcast；否则search比较minimum-hop Ring与recursive doubling | 两者bytes相同；Ring偏大payload/短hop，recursive偏低message startup，必须actual比较 |
-| AllReduce形态 | spatial reduction/contraction contribution、merge结果被全部Tile消费 | typed local combine/fanin，再对merge result做fanout | 语义完整，但尚未形成reduce-scatter+allgather或tree/ring AllReduce choice |
-| ReduceScatter形态 | 每个output shard合并来自多个Tile的partial contribution | 每个merge owner的fanin和local combine，由sparse/resource schedule承载 | 语义完整，但没有专用ring/recursive-halving reduce-scatter materializer |
-| AllToAll形态 | redistribution、每source向每destination发送不同piece | 连续`2/4/8/15 × 256B`用native scatter；否则capacity-constrained pairwise matching | matching最小化round内总hop但未联合优化全局link pressure，不能称4×4 mesh最优 |
+| AllReduce形态 | spatial reduction/contraction contribution、merge结果被全部Tile消费 | baseline使用typed local combine/fanin再fanout；search可物化Ring ReduceScatter+AllGather | Ring复用同一distributed reduction kernel；central与Ring分别走actual memory/target/cost |
+| ReduceScatter形态 | 每个output shard合并来自多个Tile的partial contribution | baseline使用merge owner；search对complete contribution matrix可物化minimum-hop Ring | 每轮actual recv、`tile.elementwise` combine和forward；不从名字推断 |
+| AllToAll形态 | redistribution、每source向每destination发送不同piece | qualified native scatter；普通pairwise；search对Cartesian complete exchange可物化二维row/column aggregate | 只降低message startup并显式承担pack/repack与SPM；由actual objective选择 |
 | irregular permute/fanout | branch、shard consumer、非完整participant集合 | sparse matching或topology-aware spreading tree | 不冒充collective；按actual edge all-and-only实现 |
 
 典型payload不能由collective名字决定：tensor/data parallel的activation或gradient通常形成较大AllGather/AllReduce/ReduceScatter；MoE token
 dispatch和sequence redistribution更接近AllToAll，且可能ragged；attention的KV/head/sequence spatial split常形成partial contribution、
 merge或不完整fanout。识别只读current SSA、slice、combine和participant关系，不读取framework op名。4×4 mesh上的算法质量由actual
 message startup、bytes、shortest-hop/link-pressure model、SPM high-water、seed movement和completion共同决定。
+
+专用distributed alternative的识别和物化边界如下：
+
+- AllToAll只认current matched peer edge形成的complete personalized exchange和完整Cartesian Tile coordinates。二维row/column算法的
+  aggregate、pack/repack和final subview全部是actual Tile IR；Direct DTE内部route仍不透明。算法只降低message startup，不减少logical
+  bytes，也不把canonical Manhattan path写成硬件route。
+- ReduceScatter只认complete source×destination contribution matrix以及每个destination current `wafer.tile.elementwise` use-def中闭合的
+  `add/max/min` combine tree。Ring每轮必须实际创建recv、partial combine和forward value；只改变message round而没有local combine不构成
+  ReduceScatter。
+- AllReduce只认full-buffer contribution merge加complete result fanout。Ring实现必须复用同一个ReduceScatter materializer，并在其actual
+  reduced chunks上使用AllGather；不能复制第二份归约算法或从上游collective名字直接生成Tile通信。
+- 以上specialized choice都在search candidate owner中完整物化后分别进入completion、MiniMalloc、transport和cost。Baseline继续使用现行
+  direct/central realization。缺失participant、piece、combiner、type、range、coordinate或current cut时保持原IR，不推测、不局部改写。
 
 一个bidirectional causal component若没有共同cut，就不是可安全执行的同轮peer exchange。Baseline在首次mutation前为它选择显式
 shared-DDR store/load boundary；该选择来自current Region因果顺序，并进入actual DDR/SPM planner，不是Direct DTE verifier失败后的
@@ -278,6 +291,13 @@ package/runtime不重新选择peer、route、algorithm或memory placement。
   减少message，relation cover、consumer subview和actual MiniMalloc owner不变；
 - sparse multi-group覆盖chain/diamond/不规则destination集合：round-safe case由matching精确覆盖每条edge一次，不增加relay或DDR；
   bidirectional no-cut case形成一个explicit shared-DDR boundary且不生成伪round；
+- complete personalized exchange覆盖2×2/4×4、1024/1025/1031和near-miss：row/column aggregate每Tile分别2/6个message，
+  每个source→destination piece经过exact pack/repack并由final typed subview消费，specialized candidate没有unpack copy；non-Cartesian、
+  mixed representation和native scatter保持现行realization；
+- Ring ReduceScatter覆盖4/16 Tile complete contribution matrix及`add/max/min` closure：`P-1`轮每Tile一send/recv/combine，全部leaf
+  恰消费一次；missing leaf、额外merge use、mixed kind/map/type和coupled attention不改写；
+- Ring AllReduce覆盖4/16 Tile full-buffer fanin/fanout和leading-axis 1024/1025/1031 ragged chunk：同一个ReduceScatter kernel后接
+  `P-1`轮AllGather，每Tile result chunk无hole/overlap，central与Ring各自进入actual MiniMalloc和cost；
 - rotating SPM slots、source-relative/selector-table binding、range conflict与exact wait；
 - token-only issue window、recv first-read、send/relay last-release、4-FSM live-range上界和跨Tile无环wait graph；没有实际resource/
   lifetime约束的case不得被issue后立即await串行化；

@@ -489,12 +489,15 @@ topology-aware spreading tree：每轮每个已经持有payload的Tile至多向�
 relay parent必须早于child；原关系图已有环或没有满足该序的传播edge时typed failure，不能让各group独立选树后再靠wait修环。
 每条tree edge在同一次transformation中立即成为actual receive staging、send/recv token和relay use；
 relay只转发已经收到的同一typed buffer，不创建future buffer，也不改变payload或算术。不同payload、不同window/layout、同Tile
-不同Region residency以及typed reduction/fanin不得错误合组；后两者只有current IR已经具有明确local combine语义时才能另行选择
-对应算法，本项不重排reduction/contraction。
+不同Region residency以及typed reduction/fanin不得错误合组。只有current IR同时证明complete contribution matrix或full-buffer
+fanin/fanout以及closed `add/max/min` combine use-def时，search才可在独立candidate中物化Ring ReduceScatter或
+ReduceScatter+AllGather AllReduce；每轮combine必须成为actual `wafer.tile.elementwise`，DTE不暗含算术。其余reduction/contraction
+保持现行merge owner和evaluation structure。
 
 多个payload group只有在current endpoints属于同一个communication phase时才能组成component；participant集合、shape或dtype相同
-不足以合组。Phase connectivity由实际TileRegion source/destination endpoints确定。这样连续的两个exchange不会因为使用同一组Tile而
-被错误地合成一个round序列。
+不足以合组。Phase connectivity由实际TileRegion source/destination role确定：共享source、共享destination或两个single-edge group互为
+source/destination才直接合组；一个Region先接收fanin、经actual compute再产生fanout时，两段是有SSA依赖的连续phase，不能仅因共享该
+Region而合并。这样AllReduce的central fanin/fanout和连续exchange不会被错误地合成一个同时发生的round序列。
 
 Temporal tiling完成后、attention decomposition和layout之前，communication closure只处理current IR能够证明的complete exchange。
 Complete exchange要求每个participant都有相同lane数的local payload group，每个group到其它participant各有一个exact destination；
