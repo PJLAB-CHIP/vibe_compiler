@@ -19,8 +19,8 @@ public:
     ScopedLoweringPatternTiming timing(op.getOperation());
     auto lowered = rewriter.create<InstrOp>(
         op.getLoc(), rewriter.getType<mlir::async::TokenType>(), op.getBuffer(),
-        mlir::Value(), op.getPeerAttr(), op.getBytesAttr(), op.getMessageAttr(),
-        DirectDTEBindingAttr());
+        mlir::Value(), mlir::IntegerAttr(), op.getPeerAttr(), op.getBytesAttr(),
+        op.getMessageAttr(), DirectDTEBindingAttr());
     rewriter.replaceOp(op, lowered.getToken());
     return mlir::success();
   }

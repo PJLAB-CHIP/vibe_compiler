@@ -220,6 +220,24 @@ struct TargetDirectDTESendCommand {
   uint32_t remoteFSM;
   bool highPerformance;
 };
+enum class TargetDirectDTEMultiSendKind : uint8_t {
+  Scatter = 1,
+  Broadcast = 2
+};
+struct TargetDirectDTEMultiSendCommand {
+  TargetDirectDTEMultiSendKind kind;
+  uint64_t source;
+  uint32_t bytesPerDestination;
+  uint32_t localTile;
+  uint32_t destinationCount;
+  bool highPerformance;
+};
+struct TargetDirectDTEMultiSendDestinationCommand {
+  uint64_t event;
+  uint64_t remoteDestination;
+  uint32_t remoteTile;
+  uint32_t remoteFSM;
+};
 struct TargetDirectDTESendIssueCommand {
   uint64_t event;
 };
@@ -244,7 +262,8 @@ using TargetCommandPayload = std::variant<
     TargetPeripheralBilinearCommand, TargetPeripheralLUTCommand,
     TargetPeripheralRandomCommand, TargetPeripheralElementMaskCommand,
     TargetNCCJoinCommand, TargetDirectDTEBeginCommand,
-    TargetDirectDTESendCommand, TargetDirectDTESendIssueCommand,
+    TargetDirectDTESendCommand, TargetDirectDTEMultiSendCommand,
+    TargetDirectDTEMultiSendDestinationCommand, TargetDirectDTESendIssueCommand,
     TargetDirectDTEReceiveCommand, TargetDirectDTEWaitCommand,
     TargetDirectDTEFinishCommand>;
 
@@ -266,6 +285,8 @@ enum class TargetCallBuiltin : uint8_t {
   DirectDTEBegin,
   DirectDTEBeginAfterPrepare,
   DirectDTESendPrepare,
+  DirectDTEMultiSendPrepare,
+  DirectDTEMultiSendAddDestination,
   DirectDTESendIssue,
   DirectDTERecvPrepare,
   DirectDTEWait,

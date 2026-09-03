@@ -29,6 +29,18 @@ llvm::Expected<compiler::TargetLLVMModules> compileDirectDTETargetModules(
 llvm::Expected<DirectDTEInvocationData> buildDirectDTEInvocationData(
     const compiler::TargetLLVMModules &targetLLVMModules);
 
+llvm::Expected<compiler::TargetLLVMModules>
+compileNativeBroadcastTargetModules(std::string &diagnosticText);
+
+llvm::Expected<compiler::TargetLLVMModules>
+compileNativeScatterTargetModules(std::string &diagnosticText);
+
+llvm::Expected<DirectDTEInvocationData> buildNativeBroadcastInvocationData(
+    const compiler::TargetLLVMModules &targetLLVMModules);
+
+llvm::Expected<DirectDTEInvocationData> buildNativeScatterInvocationData(
+    const compiler::TargetLLVMModules &targetLLVMModules);
+
 struct NCCJoinRewriteResult {
   size_t erasedJoinCount = 0;
   size_t insertedJoinCount = 0;

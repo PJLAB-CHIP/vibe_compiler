@@ -515,6 +515,24 @@ llvm::Error validatePayload(const target::TargetCommandPayload &payload) {
                                "Direct DTE byte_count must be positive");
           return llvm::Error::success();
         } else if constexpr (std::is_same_v<
+                                 T, target::TargetDirectDTEMultiSendCommand>) {
+          if (value.bytesPerDestination != 256 ||
+              (value.destinationCount != 2 && value.destinationCount != 4 &&
+               value.destinationCount != 8 && value.destinationCount != 15))
+            return kernelError(
+                TargetModelKernelErrorCode::InvalidCommandField,
+                "Direct DTE multi-send command is outside the qualified "
+                "count/byte domain");
+          return llvm::Error::success();
+        } else if constexpr (
+            std::is_same_v<
+                T, target::TargetDirectDTEMultiSendDestinationCommand>) {
+          if (value.event == 0 || value.remoteFSM >= 4)
+            return kernelError(
+                TargetModelKernelErrorCode::InvalidCommandField,
+                "Direct DTE multi-send destination is malformed");
+          return llvm::Error::success();
+        } else if constexpr (std::is_same_v<
                                  T, target::TargetDirectDTESendIssueCommand> ||
                              std::is_same_v<
                                  T, target::TargetDirectDTEWaitCommand>) {

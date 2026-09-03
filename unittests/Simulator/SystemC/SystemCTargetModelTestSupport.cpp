@@ -4,9 +4,9 @@
 
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
 #include "Wafer/CodeGen/LLVM/TargetCodeGenInternal.h"
+#include "Wafer/Target/PhysicalTensor/PhysicalTensorCodec.h"
 #include "Wafer/Target/RuntimeLaunchContract.h"
 #include "Wafer/Target/TargetFormat.h"
-#include "Wafer/Target/PhysicalTensor/PhysicalTensorCodec.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -73,9 +73,18 @@ llvm::CallInst *emitTargetCall(llvm::IRBuilder<> &builder,
 
 compiler::TileEntryArgument
 makeTensorSlot(int64_t ordinal, compiler::TileEntryArgumentKind kind,
-               compiler::TileEntryArgumentAccess access, llvm::StringRef name) {
-  return {ordinal,           kind, 0,      name.str(), LogicalFormat::F32,
-          MemLayout::Tensor, {64}, 64 * 4, 64,         access};
+               compiler::TileEntryArgumentAccess access, llvm::StringRef name,
+               int64_t elements = 64) {
+  return {ordinal,
+          kind,
+          0,
+          name.str(),
+          LogicalFormat::F32,
+          MemLayout::Tensor,
+          {elements},
+          elements * 4,
+          64,
+          access};
 }
 
 compiler::TileEntryArgument makeTransportStatusSlot(int64_t ordinal) {
@@ -217,6 +226,235 @@ compileDirectDTETargetModules(std::string &diagnosticText,
   }
   return compiler::TargetLLVMModulesBuilder::makeModules(
       *config, std::move(*launch), std::move(modules));
+}
+
+static llvm::Expected<compiler::TargetLLVMModules>
+compileNativeMultiSendTargetModules(
+    std::string &diagnosticText,
+    target::TargetDirectDTEMultiSendKind multiSendKind) {
+  diagnosticText.clear();
+  llvm::Expected<compiler::ExecutionConfig> config =
+      compiler::ExecutionConfig::createForSingleCard(1);
+  if (!config)
+    return config.takeError();
+  constexpr std::array phases{RuntimeLaunchPhaseRole::Main};
+  llvm::Expected<RuntimeLaunchContract> launch =
+      RuntimeLaunchContract::createKernel(KernelLaunchForm::Grid,
+                                          KernelEntryABI::TileMajorPointerTable,
+                                          phases);
+  if (!launch)
+    return launch.takeError();
+  const TargetDataFormatCodeRecord *format =
+      findTargetDataFormatCode(LogicalFormat::F32);
+  if (!format)
+    return llvm::createStringError("current target has no F32 format code");
+
+  const TargetCallDescriptor &begin =
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEBegin);
+  const TargetCallDescriptor &rdma =
+      getTargetCallDescriptor(TargetCallBuiltin::RDMA);
+  const TargetCallDescriptor &receive =
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTERecvPrepare);
+  const TargetCallDescriptor &multi =
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEMultiSendPrepare);
+  const TargetCallDescriptor &destination = getTargetCallDescriptor(
+      TargetCallBuiltin::DirectDTEMultiSendAddDestination);
+  const TargetCallDescriptor &issue =
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue);
+  const TargetCallDescriptor &wait =
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEWait);
+  const TargetCallDescriptor &join =
+      getTargetCallDescriptor(TargetCallBuiltin::NCCJoin);
+  const TargetCallDescriptor &wdma =
+      getTargetCallDescriptor(TargetCallBuiltin::WDMA);
+  const TargetCallDescriptor &finish =
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEFinish);
+
+  constexpr int64_t tileCount = 16;
+  constexpr uint32_t bytes = 256;
+  const bool scatter =
+      multiSendKind == target::TargetDirectDTEMultiSendKind::Scatter;
+  const uint32_t sourceBytes = scatter ? 512 : 256;
+  const int64_t tensorElements = scatter ? 128 : 64;
+  constexpr uint64_t sendAddress = UINT64_C(0x10000);
+  constexpr uint64_t receiveAddress = UINT64_C(0x11000);
+  constexpr uint32_t worker = static_cast<uint32_t>(TargetNCCWorker::Worker0);
+  constexpr uint32_t workerMask = uint32_t{1} << worker;
+  std::vector<compiler::TargetLLVMModule> modules;
+  modules.reserve(tileCount);
+  for (int64_t tile = 0; tile < tileCount; ++tile) {
+    std::vector<compiler::TileEntryArgument> slots;
+    slots.push_back(makeTensorSlot(
+        0, compiler::TileEntryArgumentKind::ExternalInput,
+        compiler::TileEntryArgumentAccess::ReadOnly, "input", tensorElements));
+    slots.push_back(
+        makeTensorSlot(1, compiler::TileEntryArgumentKind::ExternalOutput,
+                       compiler::TileEntryArgumentAccess::WriteOnly, "output",
+                       tensorElements));
+    slots.push_back(makeTransportStatusSlot(2));
+
+    auto context = std::make_unique<llvm::LLVMContext>();
+    auto module =
+        std::make_unique<llvm::Module>("native-broadcast-model", *context);
+    llvm::Type *i64 = llvm::Type::getInt64Ty(*context);
+    llvm::SmallVector<llvm::Type *, 3> entryArguments(slots.size(), i64);
+    llvm::Function *entry = llvm::Function::Create(
+        llvm::FunctionType::get(llvm::Type::getVoidTy(*context), entryArguments,
+                                /*isVarArg=*/false),
+        llvm::GlobalValue::ExternalLinkage, "main", *module);
+    entry->setCallingConv(llvm::CallingConv::C);
+    llvm::IRBuilder<> builder(
+        llvm::BasicBlock::Create(*context, "entry", entry));
+    emitTargetCall(builder, begin,
+                   {entry->getArg(2), builder.getInt32(tileCount)});
+    llvm::CallInst *receiveEvent = nullptr;
+    if (tile == 1 || tile == 2)
+      receiveEvent = emitTargetCall(
+          builder, receive,
+          {builder.getInt64(receiveAddress), builder.getInt32(bytes),
+           builder.getInt32(tile), builder.getInt32(0), builder.getInt32(0)});
+    if (tile == 0) {
+      emitTargetCall(
+          builder, rdma,
+          {entry->getArg(0), builder.getInt64(sendAddress),
+           builder.getInt32(sourceBytes), builder.getInt32(sourceBytes),
+           builder.getInt32(0), builder.getInt32(0), builder.getInt32(0),
+           builder.getInt32(1), builder.getInt32(1), builder.getInt32(1),
+           builder.getInt32(format->dataFormatCode), builder.getInt32(worker)});
+      emitTargetCall(builder, join, {builder.getInt32(workerMask)});
+      llvm::CallInst *event = emitTargetCall(
+          builder, multi,
+          {builder.getInt64(sendAddress), builder.getInt32(bytes),
+           builder.getInt32(0), builder.getInt32(2),
+           builder.getInt32(static_cast<uint32_t>(multiSendKind)),
+           builder.getInt32(0)});
+      emitTargetCall(builder, destination,
+                     {event, builder.getInt64(receiveAddress),
+                      builder.getInt32(1), builder.getInt32(0)});
+      emitTargetCall(builder, destination,
+                     {event, builder.getInt64(receiveAddress),
+                      builder.getInt32(2), builder.getInt32(0)});
+      emitTargetCall(builder, issue, {event});
+      emitTargetCall(builder, wait, {event});
+    }
+    if (receiveEvent)
+      emitTargetCall(builder, wait, {receiveEvent});
+    if ((!scatter && tile == 2) || (scatter && (tile == 1 || tile == 2))) {
+      llvm::Value *outputAddress = entry->getArg(1);
+      if (scatter && tile == 2)
+        outputAddress =
+            builder.CreateAdd(outputAddress, builder.getInt64(bytes));
+      emitTargetCall(
+          builder, wdma,
+          {builder.getInt64(receiveAddress), outputAddress,
+           builder.getInt32(bytes), builder.getInt32(bytes),
+           builder.getInt32(0), builder.getInt32(0), builder.getInt32(0),
+           builder.getInt32(1), builder.getInt32(1), builder.getInt32(1),
+           builder.getInt32(format->dataFormatCode), builder.getInt32(worker)});
+      emitTargetCall(builder, join, {builder.getInt32(workerMask)});
+    }
+    emitTargetCall(builder, finish, {});
+    builder.CreateRetVoid();
+
+    std::string verification;
+    llvm::raw_string_ostream stream(verification);
+    if (llvm::verifyModule(*module, &stream))
+      return llvm::createStringError(
+          "native broadcast model fixture produced invalid LLVM IR: " +
+          stream.str());
+    modules.push_back(compiler::TargetLLVMModulesBuilder::makeModule(
+        CardId(0), TileId(tile), LaunchSlotId(tile), "main",
+        TargetIdentityId::waferTx81SingleCard(), kCurrentKernelRuntimeABI,
+        kCurrentTargetModuleFormat, std::move(slots), std::move(context),
+        std::move(module)));
+  }
+  return compiler::TargetLLVMModulesBuilder::makeModules(
+      *config, std::move(*launch), std::move(modules));
+}
+
+llvm::Expected<compiler::TargetLLVMModules>
+compileNativeBroadcastTargetModules(std::string &diagnosticText) {
+  return compileNativeMultiSendTargetModules(
+      diagnosticText, target::TargetDirectDTEMultiSendKind::Broadcast);
+}
+
+llvm::Expected<compiler::TargetLLVMModules>
+compileNativeScatterTargetModules(std::string &diagnosticText) {
+  return compileNativeMultiSendTargetModules(
+      diagnosticText, target::TargetDirectDTEMultiSendKind::Scatter);
+}
+
+static llvm::Expected<DirectDTEInvocationData>
+buildNativeMultiSendInvocationData(
+    const compiler::TargetLLVMModules &targetLLVMModules, bool scatter) {
+  if (targetLLVMModules.getModules().size() != 16)
+    return llvm::createStringError(
+        "native broadcast fixture requires exactly 16 Tile modules");
+  const uint64_t elements = scatter ? 128 : 64;
+  PhysicalTensorDescriptor tensorKey =
+      llvm::cantFail(PhysicalTensorDescriptor::create(
+          LogicalFormat::F32, PhysicalTensorLayout::Tensor, {elements}));
+  std::vector<RawLogicalValue> values;
+  const int64_t contributingTiles = scatter ? 32 : 16;
+  for (int64_t tile = 0; tile < contributingTiles; ++tile) {
+    std::vector<RawLogicalValue> current = makeTileValues(tile);
+    values.insert(values.end(), current.begin(), current.end());
+  }
+  llvm::Expected<std::vector<uint8_t>> bytes =
+      packPhysicalTensorLogicalValues(tensorKey, values, UINT8_C(0));
+  if (!bytes)
+    return bytes.takeError();
+
+  DirectDTEInvocationData result;
+  result.expectedOutputBytes = *bytes;
+  for (const compiler::TargetLLVMModule &module :
+       targetLLVMModules.getModules()) {
+    const int64_t tile = module.getTileId().getValue();
+    compiler::TargetCallTileArguments arguments{
+        module.getCardId(), module.getTileId(), module.getLaunchSlotId(), {}};
+    for (const compiler::TileEntryArgument &slot :
+         module.getTileEntryArguments()) {
+      uint64_t address = 0;
+      switch (slot.kind) {
+      case compiler::TileEntryArgumentKind::ExternalInput:
+        address = UINT64_C(0x10000000);
+        if (tile == 0)
+          result.inputBindings.push_back(
+              {getTargetModelResourceId(module.getCardId(), module.getTileId(),
+                                        slot.kind, slot.resourceIndex),
+               *bytes});
+        break;
+      case compiler::TileEntryArgumentKind::ExternalOutput:
+        address = UINT64_C(0x10010000);
+        break;
+      case compiler::TileEntryArgumentKind::TransportStatus:
+        address = UINT64_C(0x20000000) +
+                  static_cast<uint64_t>(tile) * UINT64_C(0x10000);
+        break;
+      case compiler::TileEntryArgumentKind::TargetTensor:
+      case compiler::TileEntryArgumentKind::SharedWorkspace:
+      case compiler::TileEntryArgumentKind::Workspace:
+      case compiler::TileEntryArgumentKind::ProfileRecord:
+        return llvm::createStringError(
+            "native broadcast fixture has an unexpected ABI slot");
+      }
+      arguments.slots.push_back(address);
+    }
+    result.arguments.push_back(std::move(arguments));
+  }
+  return result;
+}
+
+llvm::Expected<DirectDTEInvocationData> buildNativeBroadcastInvocationData(
+    const compiler::TargetLLVMModules &targetLLVMModules) {
+  return buildNativeMultiSendInvocationData(targetLLVMModules,
+                                            /*scatter=*/false);
+}
+
+llvm::Expected<DirectDTEInvocationData> buildNativeScatterInvocationData(
+    const compiler::TargetLLVMModules &targetLLVMModules) {
+  return buildNativeMultiSendInvocationData(targetLLVMModules,
+                                            /*scatter=*/true);
 }
 
 llvm::Expected<DirectDTEInvocationData> buildDirectDTEInvocationData(

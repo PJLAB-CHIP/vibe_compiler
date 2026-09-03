@@ -18,6 +18,11 @@ getControlAction(const target::TargetCommandPayload &payload) {
     return TargetModelControlAction::DirectDTEBegin;
   if (std::holds_alternative<target::TargetDirectDTESendCommand>(payload))
     return TargetModelControlAction::DirectDTESendPrepare;
+  if (std::holds_alternative<target::TargetDirectDTEMultiSendCommand>(payload))
+    return TargetModelControlAction::DirectDTEMultiSendPrepare;
+  if (std::holds_alternative<
+          target::TargetDirectDTEMultiSendDestinationCommand>(payload))
+    return TargetModelControlAction::DirectDTEMultiSendDestination;
   if (std::holds_alternative<target::TargetDirectDTESendIssueCommand>(payload))
     return TargetModelControlAction::DirectDTESendIssue;
   if (std::holds_alternative<target::TargetDirectDTEReceiveCommand>(payload))
@@ -73,6 +78,48 @@ llvm::Error validateControlAddresses(const compiler::TargetCommand &command,
       return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,
                          llvm::toString(std::move(errors)));
     }
+  } else if (const auto *multi =
+                 std::get_if<target::TargetDirectDTEMultiSendCommand>(
+                     &command.payload)) {
+    if (multi->localTile > std::numeric_limits<uint16_t>::max() ||
+        multi->bytesPerDestination != 256 ||
+        (multi->destinationCount != 2 && multi->destinationCount != 4 &&
+         multi->destinationCount != 8 && multi->destinationCount != 15) ||
+        multi->highPerformance)
+      return kernelError(
+          TargetModelKernelErrorCode::InvalidCommandField,
+          "Direct DTE multi-send prepare is outside the accepted target "
+          "domain");
+    uint64_t sourceBytes = multi->bytesPerDestination;
+    if (multi->kind == target::TargetDirectDTEMultiSendKind::Scatter) {
+      if (multi->destinationCount >
+          std::numeric_limits<uint64_t>::max() / multi->bytesPerDestination)
+        return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
+                           "Direct DTE scatter source span overflows");
+      sourceBytes *= multi->destinationCount;
+    }
+    llvm::Expected<TargetModelResolvedRange> source = plan.resolve(
+        command.launchSlotId.getValue(), TargetModelAddressSpace::TileSPM,
+        TargetModelAccess::Read, multi->source, sourceBytes, 1);
+    if (!source)
+      return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,
+                         llvm::toString(source.takeError()));
+  } else if (const auto *destination = std::get_if<
+                 target::TargetDirectDTEMultiSendDestinationCommand>(
+                 &command.payload)) {
+    if (destination->event == 0 ||
+        destination->remoteTile > std::numeric_limits<uint16_t>::max() ||
+        destination->remoteFSM >= 4)
+      return kernelError(
+          TargetModelKernelErrorCode::InvalidCommandField,
+          "Direct DTE multi-send destination is outside the accepted target "
+          "domain");
+    llvm::Expected<TargetModelResolvedRange> remote = plan.resolve(
+        command.launchSlotId.getValue(), TargetModelAddressSpace::TileSPM,
+        TargetModelAccess::Write, destination->remoteDestination, 256, 1);
+    if (!remote)
+      return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,
+                         llvm::toString(remote.takeError()));
   } else if (const auto *receive =
                  std::get_if<target::TargetDirectDTEReceiveCommand>(
                      &command.payload)) {

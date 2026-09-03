@@ -13,7 +13,7 @@ prototype与repo-local实现分别查看`runtime/crt/include/wafer_tx81_crt.h`�
 - Repo-local observation：compiler target lowering以及`runtime/crt` public header/source中可直接
   读取的legality、ABI、wrapper调用、参数处理、wait/writeback和optional-feature配置。
 - 本表不因旧helper存在而授权新symbol，也不定义某个family的production状态。
-- 当前symbol checker从target lowering和Wafer enum registry推导出111个production symbol；这是当前
+- 当前symbol checker从target lowering和Wafer enum registry推导出114个production symbol；这是当前
   实现的可重放观察，closure事实源仍是checker，不由本表另建清单。
 
 ## Static Matrix
@@ -34,10 +34,11 @@ prototype与repo-local实现分别查看`runtime/crt/include/wafer_tx81_crt.h`�
 | Peripheral factorize | no matching old source file was found; public headers expose the wrapper entry point | repo-local CRT header/source不含factorize symbol；compiler target lowering将该IR kind显式判为`unsupported_target_operation`，不能进入production closure |
 | Peripheral elem-mask | no matching old source file was found; public headers expose the wrapper entry point | Wafer CRT contains the corresponding public-wrapper call |
 | Peripheral bilinear / LUT / random | `__Bilinear`, `__Lut16`, `__Lut32` and `__RandGen` provide direct wrapper evidence | Wafer CRT contains the corresponding public-wrapper calls; bilinear scale is computed from shapes |
-| Direct DTE | old source contains `__Send` and an empty `__Recv`; current public/Kcore headers and installed firmware additionally expose direct sync、FSM、async send/wait/release、tile-id和peer-SPM helpers | Wafer CRT implements typed begin/begin-after-prepare、send/recv prepare、wait和finish status lifecycle。sender source与receiver FSM使用raw local SPM offset，sender destination使用`get_tile_spm_addr_base(remote,4,4)+offset`；status以64-byte storage/alignment独占cache line，offset 0的`u32`写入cacheable DDR后执行C908 cache clean/invalidate |
+| Direct DTE | old source contains `__Send` and an empty `__Recv`; current public/Kcore headers and installed firmware additionally expose direct sync、FSM、async send/wait/release、tile-id和peer-SPM helpers；raw calibration已确认broadcast/scatter的`2/4/8/15 × 256B`destination合同 | Wafer CRT implements typed begin/begin-after-prepare、unicast send/recv prepare、native multi-send prepare/destination configure、single issue、wait和finish status lifecycle。Native path复用vendor attach/wait/release owner并按已确认合同写一个node的destination slots、`dest_num=count-1`和broadcast/scatter mode；sender source与receiver FSM使用raw local SPM offset，sender destination使用`get_tile_spm_addr_base(remote,4,4)+offset`；status以64-byte storage/alignment独占cache line，offset 0的`u32`写入cacheable DDR后执行C908 cache clean/invalidate |
 | Count / composite helpers | old source contains `__Count`, GELU, MXFP, reduce-mul and layout helpers | these helper names are not observed in the repo-local CRT source snapshot; the old source alone does not establish reusable Wafer IR / ABI or completion semantics |
 
-Direct DTE当前只消费compiler已经整卡验收的per-Tile binding、remote receiver offset、token/wait和typed status slot；
+Direct DTE当前只消费compiler已经整卡验收的per-Tile binding、remote receiver offset、token/wait和typed status slot；native
+multi-send还要求每个destination各有一个accepted static binding，并且source span已经由current Instr verifier闭合。
 target conversion/CRT不重新选择endpoint、FSM或route。cluster prepare先执行`init_tile_id(__get_pid(0),4)`，再执行
 `direct_sync_init(16)`；main不重复清ready slots。只有arena-relative offset、没有explicit arena base binding的
 compiler-managed DDR allocation仍会判为`unsupported_target_address`，不能由runtime或CRT补做语义恢复。

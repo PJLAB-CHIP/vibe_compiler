@@ -277,6 +277,10 @@ public:
       return processDTEBegin(command);
     case TargetModelControlAction::DirectDTESendPrepare:
       return processDTESendPrepare(command);
+    case TargetModelControlAction::DirectDTEMultiSendPrepare:
+      return processDTEMultiSendPrepare(command);
+    case TargetModelControlAction::DirectDTEMultiSendDestination:
+      return processDTEMultiSendDestination(command);
     case TargetModelControlAction::DirectDTESendIssue:
       return processDTESendIssue(command);
     case TargetModelControlAction::DirectDTEReceive:
@@ -416,7 +420,11 @@ private:
     uint64_t event = 0;
     int64_t ownerLaunchSlot = -1;
     uint64_t prepareOrdinal = 0;
-    target::TargetDirectDTESendCommand send;
+    std::optional<target::TargetDirectDTESendCommand> send;
+    std::optional<target::TargetDirectDTEMultiSendCommand> multiSend;
+    llvm::SmallVector<target::TargetDirectDTEMultiSendDestinationCommand, 16>
+        destinations;
+    uint32_t remainingEndpoints = 0;
     bool issued = false;
     bool released = false;
   };
@@ -611,10 +619,75 @@ private:
     llvm::Expected<uint64_t> event = allocateEvent();
     if (!event)
       return event.takeError();
-    preparedSends.push_back(
-        {*event, launchSlot, command.issueOrdinal, send, false, false});
+    PreparedDTESend prepared;
+    prepared.event = *event;
+    prepared.ownerLaunchSlot = launchSlot;
+    prepared.prepareOrdinal = command.issueOrdinal;
+    prepared.send = send;
+    prepared.remainingEndpoints = 1;
+    preparedSends.push_back(std::move(prepared));
     markOrdinalComplete(launchSlot, command.issueOrdinal);
     return *event;
+  }
+
+  llvm::Expected<uint64_t>
+  processDTEMultiSendPrepare(const compiler::TargetCommand &command) {
+    const int64_t launchSlot = command.launchSlotId.getValue();
+    if (dteStates[static_cast<size_t>(launchSlot)] != DTEState::Active) {
+      latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
+                   "dte-multisend-prepare", launchSlot, command.issueOrdinal,
+                   "Direct DTE multi-send prepare occurred outside "
+                   "begin/finish");
+      return currentFailureOrLifecycle("Direct DTE multi-send prepare failed");
+    }
+    const auto &multi =
+        std::get<target::TargetDirectDTEMultiSendCommand>(command.payload);
+    if (!validateCommandTile(command, multi.localTile, "dte-multisend-prepare"))
+      return currentFailureOrLifecycle("Direct DTE multi-send prepare failed");
+    for (const PreparedDTESend &prepared : preparedSends)
+      if (prepared.ownerLaunchSlot == launchSlot && !prepared.released) {
+        latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
+                     "dte-multisend-prepare", launchSlot, command.issueOrdinal,
+                     "Direct DTE sender already has a live prepared event");
+        return currentFailureOrLifecycle(
+            "Direct DTE multi-send prepare failed");
+      }
+    llvm::Expected<uint64_t> event = allocateEvent();
+    if (!event)
+      return event.takeError();
+    PreparedDTESend prepared;
+    prepared.event = *event;
+    prepared.ownerLaunchSlot = launchSlot;
+    prepared.prepareOrdinal = command.issueOrdinal;
+    prepared.multiSend = multi;
+    prepared.remainingEndpoints = multi.destinationCount;
+    preparedSends.push_back(std::move(prepared));
+    markOrdinalComplete(launchSlot, command.issueOrdinal);
+    return *event;
+  }
+
+  llvm::Expected<uint64_t>
+  processDTEMultiSendDestination(const compiler::TargetCommand &command) {
+    const int64_t launchSlot = command.launchSlotId.getValue();
+    const auto &destination =
+        std::get<target::TargetDirectDTEMultiSendDestinationCommand>(
+            command.payload);
+    PreparedDTESend *prepared = findPreparedSend(destination.event);
+    if (!prepared || prepared->ownerLaunchSlot != launchSlot ||
+        !prepared->multiSend || prepared->issued || prepared->released ||
+        prepared->destinations.size() >=
+            prepared->multiSend->destinationCount) {
+      latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
+                   "dte-multisend-destination", launchSlot,
+                   command.issueOrdinal,
+                   "Direct DTE multi-send destination names an invalid "
+                   "prepared event");
+      return currentFailureOrLifecycle(
+          "Direct DTE multi-send destination failed");
+    }
+    prepared->destinations.push_back(destination);
+    markOrdinalComplete(launchSlot, command.issueOrdinal);
+    return UINT64_C(0);
   }
 
   llvm::Expected<uint64_t>
@@ -647,37 +720,77 @@ private:
   llvm::Expected<DTEEndpoint *> issuePreparedDTESend(
       PreparedDTESend &prepared, std::optional<uint64_t> effectOrdinal,
       const compiler::TargetCommand &command, llvm::StringRef stage) {
-    detail::SystemCEvent *completion = detail::createSystemCEvent();
-    if (!completion) {
+    llvm::SmallVector<target::TargetDirectDTESendCommand, 16> sends;
+    if (prepared.send) {
+      sends.push_back(*prepared.send);
+    } else if (prepared.multiSend && prepared.destinations.size() ==
+                                         prepared.multiSend->destinationCount) {
+      for (auto [index, destination] : llvm::enumerate(prepared.destinations)) {
+        uint64_t source = prepared.multiSend->source;
+        if (prepared.multiSend->kind ==
+            target::TargetDirectDTEMultiSendKind::Scatter) {
+          uint64_t displacement = static_cast<uint64_t>(index) *
+                                  prepared.multiSend->bytesPerDestination;
+          if (!checkedAdd(source, displacement, source)) {
+            latchFailure(SystemCTargetModelErrorCode::InvocationFailure, stage,
+                         command.launchSlotId.getValue(), command.issueOrdinal,
+                         "Direct DTE scatter source address overflows");
+            return currentFailureOrLifecycle(
+                "Direct DTE multi-send issue failed");
+          }
+        }
+        sends.push_back(target::TargetDirectDTESendCommand{
+            source, destination.remoteDestination,
+            prepared.multiSend->bytesPerDestination,
+            prepared.multiSend->localTile, destination.remoteTile,
+            destination.remoteFSM, prepared.multiSend->highPerformance});
+      }
+    } else {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure, stage,
                    command.launchSlotId.getValue(), command.issueOrdinal,
-                   detail::getSystemCBridgeDiagnostic());
-      return currentFailureOrLifecycle("Direct DTE send event creation failed");
+                   "Direct DTE multi-send issue has incomplete destination "
+                   "configuration");
+      return currentFailureOrLifecycle("Direct DTE multi-send issue failed");
     }
-    detail::SystemCEvent *readiness = detail::createSystemCEvent();
-    if (!readiness) {
-      detail::destroySystemCEvent(completion);
-      latchFailure(SystemCTargetModelErrorCode::InvocationFailure, stage,
-                   command.launchSlotId.getValue(), command.issueOrdinal,
-                   detail::getSystemCBridgeDiagnostic());
-      return currentFailureOrLifecycle(
-          "Direct DTE send readiness event creation failed");
+
+    const size_t firstEndpoint = endpoints.size();
+    for (const target::TargetDirectDTESendCommand &send : sends) {
+      detail::SystemCEvent *completion = detail::createSystemCEvent();
+      if (!completion) {
+        latchFailure(SystemCTargetModelErrorCode::InvocationFailure, stage,
+                     command.launchSlotId.getValue(), command.issueOrdinal,
+                     detail::getSystemCBridgeDiagnostic());
+        return currentFailureOrLifecycle(
+            "Direct DTE send event creation failed");
+      }
+      detail::SystemCEvent *readiness = detail::createSystemCEvent();
+      if (!readiness) {
+        detail::destroySystemCEvent(completion);
+        latchFailure(SystemCTargetModelErrorCode::InvocationFailure, stage,
+                     command.launchSlotId.getValue(), command.issueOrdinal,
+                     detail::getSystemCBridgeDiagnostic());
+        return currentFailureOrLifecycle(
+            "Direct DTE send readiness event creation failed");
+      }
+      endpoints.push_back({prepared.event, EndpointKind::Send,
+                           prepared.ownerLaunchSlot, effectOrdinal, send,
+                           std::nullopt, completion, readiness, false, false,
+                           false, false});
     }
-    endpoints.push_back({prepared.event, EndpointKind::Send,
-                         prepared.ownerLaunchSlot, effectOrdinal, prepared.send,
-                         std::nullopt, completion, readiness, false, false,
-                         false, false});
     prepared.issued = true;
-    DTEEndpoint &endpoint = endpoints.back();
-    tryMatchEndpoint(endpoints.size() - 1);
-    while (!endpoint.peerReady && !failure) {
-      detail::waitSystemCEvent(endpoint.readinessEvent);
-      if (bridgeFailed(command, stage))
-        break;
+    for (size_t index = firstEndpoint; index < endpoints.size(); ++index)
+      tryMatchEndpoint(index);
+    for (size_t index = firstEndpoint; index < endpoints.size(); ++index) {
+      DTEEndpoint &endpoint = endpoints[index];
+      while (!endpoint.peerReady && !failure) {
+        detail::waitSystemCEvent(endpoint.readinessEvent);
+        if (bridgeFailed(command, stage))
+          break;
+      }
     }
     if (failure)
       return currentFailureOrLifecycle("Direct DTE match failed");
-    return &endpoint;
+    return &endpoints[firstEndpoint];
   }
 
   llvm::Expected<uint64_t>
@@ -725,23 +838,32 @@ private:
                    "Direct DTE wait names a prepared send that was not issued");
       return currentFailureOrLifecycle("Direct DTE wait failed");
     }
-    DTEEndpoint *endpoint = findEndpoint(wait.event);
-    if (!endpoint || endpoint->ownerLaunchSlot != launchSlot ||
-        endpoint->released) {
+    llvm::SmallVector<DTEEndpoint *, 16> waitedEndpoints;
+    for (DTEEndpoint &endpoint : endpoints)
+      if (endpoint.event == wait.event &&
+          endpoint.ownerLaunchSlot == launchSlot)
+        waitedEndpoints.push_back(&endpoint);
+    if (waitedEndpoints.empty() ||
+        llvm::any_of(waitedEndpoints, [](DTEEndpoint *endpoint) {
+          return endpoint->released;
+        })) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure, "dte-wait",
                    launchSlot, command.issueOrdinal,
                    "Direct DTE wait names an unknown, foreign, or already "
                    "released event");
       return currentFailureOrLifecycle("Direct DTE wait failed");
     }
-    while (!endpoint->complete && !failure) {
-      detail::waitSystemCEvent(endpoint->completionEvent);
-      if (bridgeFailed(command, "dte-wait"))
-        break;
+    for (DTEEndpoint *endpoint : waitedEndpoints) {
+      while (!endpoint->complete && !failure) {
+        detail::waitSystemCEvent(endpoint->completionEvent);
+        if (bridgeFailed(command, "dte-wait"))
+          break;
+      }
     }
     if (failure)
       return currentFailureOrLifecycle("Direct DTE wait failed");
-    endpoint->released = true;
+    for (DTEEndpoint *endpoint : waitedEndpoints)
+      endpoint->released = true;
     if (prepared)
       prepared->released = true;
     markOrdinalComplete(launchSlot, command.issueOrdinal);
@@ -785,13 +907,6 @@ private:
       return currentFailureOrLifecycle("event allocation failed");
     }
     return nextEvent++;
-  }
-
-  DTEEndpoint *findEndpoint(uint64_t event) {
-    for (DTEEndpoint &endpoint : endpoints)
-      if (endpoint.event == event)
-        return &endpoint;
-    return nullptr;
   }
 
   PreparedDTESend *findPreparedSend(uint64_t event) {
@@ -954,9 +1069,19 @@ private:
       }
       sendEndpoint.matched = sendEndpoint.complete = true;
       receiveEndpoint.matched = receiveEndpoint.complete = true;
-      if (sendEndpoint.effectOrdinal)
-        markOrdinalComplete(sendEndpoint.ownerLaunchSlot,
-                            *sendEndpoint.effectOrdinal);
+      if (sendEndpoint.effectOrdinal) {
+        PreparedDTESend *prepared = findPreparedSend(sendEndpoint.event);
+        if (!prepared || prepared->remainingEndpoints == 0) {
+          latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
+                       "dte-completion", sendEndpoint.ownerLaunchSlot,
+                       sendEndpoint.effectOrdinal,
+                       "Direct DTE sender completion count is malformed");
+          return;
+        }
+        if (--prepared->remainingEndpoints == 0)
+          markOrdinalComplete(sendEndpoint.ownerLaunchSlot,
+                              *sendEndpoint.effectOrdinal);
+      }
       if (receiveEndpoint.effectOrdinal)
         markOrdinalComplete(receiveEndpoint.ownerLaunchSlot,
                             *receiveEndpoint.effectOrdinal);

@@ -1,13 +1,13 @@
 # Physical Dataflow Current-IR实施计划
 
 Q52 current-IR mechanics和Region partition refinement均已闭合；Q53 reduce与movement descriptor loop复审、
-host/no-card矩阵均已闭合并重新签发`board-ready`。本项不运行真实设备。
+mesh communication materialization及host/no-card矩阵均已闭合并重新签发`board-ready`。本项不运行真实设备。
 动态状态只读`tasks/progress.md`；
 第1--11项的施工、删除账本和验证记录见`tasks/archive/physical-dataflow-synthesis-q52-plan-history.md`；第12--15项的完成边界见
 `tasks/archive/completed-task-index.md`。
 稳定语义由05--16号编号设计拥有。
 
-当前直接项：Q53 `production-host-readiness`已达到`board-ready`。
+当前直接项：`mesh-communication-materialization`和Q53 `production-host-readiness`均已达到`board-ready`。
 
 ## Pipeline Contract
 
@@ -420,6 +420,71 @@ search counter已从通用RegionDomain移回policy owner并由routing negative a
 Fresh canonical build完成且二次Ninja为no-op；Planning 98/98、Driver 80/80、Transforms 290/290及`check-wafer`通过，后者实际执行
 261个configured lit、全部13个component unit targets、42个Board-IO、61个formal numeric、19个target numeric backend、13个SystemC及
 public-link gates，无skip或unsupported。真实板端未执行，也不由本项声明runtime性能。
+
+## Mesh Communication Materialization
+
+本项在Q52 accepted current Tile IR与Q53 package/no-card之间闭合通信粒度、mesh调度和已确认raw DTE multi-destination能力。
+真实板端暂缓；host、TargetCall/SystemC和package/no-card完成后状态最多为`board-ready`。
+
+Pipeline position:
+- Upstream IR / input: layout-resolved、structured-compute-lowered TileRegion和live boundary relations；4×4 physical topology；
+  calibration确认的fanout `2/4/8/15`、每destination `256B` raw broadcast/scatter事实。
+- Current stage responsibility: exact physical-range coalescing；fanout mesh排序；sender1/receiver4 sparse matching；完整exchange的
+  Ring或native broadcast/scatter materialization；Tile unicast形成后、fresh completion前的typed Instr multi-send、transport binding、
+  TargetCall/CRT/SystemC。
+- Output IR / files: actual Tile peer ops与`wafer.instr.dte_broadcast/scatter`、accepted per-destination binding、current CRT TargetCall和
+  host/no-card package。
+- Downstream consumer: fresh completion、actual MiniMalloc/DDR、DeviceExecutable verification、target conversion、SystemC和runtime。
+- User-level driver / named pipeline: none/search共用同一atomic movement/Tile-to-Instr/target implementation；两policy仍独立拥有candidate。
+- Explicit non-goals: 不运行真实设备；不开放非256B或未验证fanout；不建立route/round/action side plan；不由shape或估算SPM决定
+  legality；不修改reduction/contraction数值顺序；不引入TACCL/MILP或第二条lowering；没有actual contiguous source与matched board
+  crossover前不加入Bruck/recursive-doubling或隐式pack copy。
+- Completion criteria: 下列矩阵fresh通过；current Instr→Target LLVM→device link可消费新TargetCall，现行package/no-card矩阵无回退；
+  板端correctness/performance留待后续窗口。
+
+| Work item | 单一责任与输出 | 完成条件 |
+| --- | --- | --- |
+| `mesh-fanout-and-sparse-scheduling` | 修正fanout性能排序；连续physical range coalescing；capacity-constrained maximum matching | source Tile不影响nearest-hop优先；每轮maximum edge cover且sender≤1/receiver≤4；coalescing无gap/overlap且不造copy |
+| `typed-native-multidestination-dte` | pre-completion Instr broadcast/scatter、per-destination message/binding、TargetCall/CRT/SystemC | 一个source issue匹配全部recv；broadcast同range、scatter连续等长segment；Tile层不新增重复op；不拆回unicast sender calls |
+| `complete-exchange-materialization` | complete All-Gather按qualified source group使用native broadcast，否则Ring；All-to-All按qualified source segments使用native scatter，否则pairwise | 16 Tile all-and-only payload；native source issue从`P(P-1)`降为`P`，fallback保持原exact semantics |
+| `communication-host-closure` | instrumentation、verifier、unit/lit、source/package/no-card和设计/MLIR复审 | fresh canonical build和无skip受影响测试；current package strict readback；不声明板端性能 |
+
+覆盖矩阵：
+
+| 输入等价类 | Shape / 结构 | Typed failure | 精确断言 | 直接下游witness |
+| --- | --- | --- | --- | --- |
+| fanout tree | rank 3--4、1024/1025/1031；source Tile 0/15；1/2/5/15 destinations；4×4与connected unavailable topology | disconnected participant、Region order无合法relay | all-and-only `D` edges；真实Region rank保持maximum spreading frontier且15 destinations为4轮；同frontier优先minimum hop；round sender≤1；relay读actual recv staging | completion和actual MiniMalloc |
+| exact coalescing | 同Tile pair连续、gap、overlap、不同encoding；1024/1025/1031 owner | physical union或alias/effect/lifetime无法证明 | 仅连续双侧range减少message；bytes union、subview use和owner exact；无pack copy | Instr dynamic count与SPM offsets |
+| sparse | chain/diamond/irregular/full pairwise；16 Tile | no matching progress、receiver需求超typed结构 | 每轮maximum edge cover、sender≤1、receiver≤4、stable tie；全部edge恰一次 | Direct DTE schedule verifier |
+| native broadcast | fanout 2/4/8/15、adjacent/interleaved、每destination 256B；rank 3、1024/1025/1031logical owner | 255/257B、fanout 1/3/5/16、duplicate/unavailable、dynamic selector | one broadcast sender op、N recv、同message family/range、single sender event | TargetCall/CRT/SystemC/package no-card |
+| native scatter/All-to-All | fanout 2/4/8/15、连续等长256B segments；16 source complete exchange | ragged/gap/overlap/span overflow/alias | one scatter sender op/source、ordered segment→destination、receiver wave≤4、all-and-only payload | TargetCall decode、SystemC result、MiniMalloc |
+| Ring/pairwise fallback | 非native payload/fanout、4/16 Tile、1024/1025/1031 | common cut或message matching失败 | 原Ring/pairwise exact edge cover、无shared-DDR late fallback、结果与native semantic oracle一致 | DeviceExecutable/package no-card |
+
+固定实施顺序为：设计/矩阵→fanout与sparse→coalescing→Tile/Instr schema→transport verifier/completion→TargetCall/CRT/SystemC→
+complete exchange接入→instrumentation与fresh host/no-card→设计/MLIR复审。每个choice只在一次movement调用中保存参数并立即物化；
+下游只读actual IR。
+
+### 2026-09-03 host closure
+
+本轮实现沿唯一current-IR链完成，没有新增Tile层collective或旁路通信plan。Movement从live Region和boundary relation生成
+topology-aware fanout、capacity-constrained maximum matching及complete-exchange choice；Tile-to-Instr后、fresh completion前，
+card-scoped transformation只对actual unicast op执行双侧连续range合并，并将符合已确认合同的source group替换为一个
+`wafer.instr.dte_broadcast`或`wafer.instr.dte_scatter`。Completion、MiniMalloc、binding、cost、TargetCall、CRT和SystemC均直接读取
+该Instr IR。broadcast的source offset和scatter的segment顺序由actual buffer/view range决定；不同communication phase、gap、
+separate allocation及非合同fanout/byte count不合并，也不新建pack copy。
+
+| Fresh验证 | 结果 | Exact witness |
+| --- | --- | --- |
+| native broadcast/scatter | `1024/1025/1031 × 2/4/8/15`全部通过 | 每组一个sender op和一个sender token；broadcast保留nonzero source offset；scatter按连续256B segment排序；每destination binding与recv一一对应 |
+| 非native与coalescing | fanout `1/3/5/16`、`255/257B`保持unicast；连续正例和gap/phase负例通过 | 连续的两个256B send/recv合为一个512B send/recv；gap或不同communication id不合并；无pack allocation/copy |
+| 16-Tile complete exchange | AllGather和AllToAll各通过 | 两类均将240个source-side unicast send替换为16个native sender op；240个destination recv保持all-and-only；completion与binding通过 |
+| mesh scheduling | 真实规模fanout、sparse和Ring回归通过 | Tile 15向15个destination的spreading tree为4轮；sparse round满足sender 1、receiver 4并精确覆盖全部edge；separate source allocation不伪造scatter |
+| target/CRT/model | target lowering、device link、114项typed TargetCall registry、CRT conformance/symbol和SystemC broadcast/scatter通过 | 一个prepare、N个destination configure、一个issue和一个wait；linked ELF不残留Wafer multi-send undefined symbol；`dest_num=N-1`；broadcast/scatter host model结果与source mapping一致 |
+| canonical host suite | build成功；264/264 lit、13/13 component unit、15/15 SystemC通过 | `WaferTransformsUnitTests`为300/300；受影响parser/verifier、conversion、cost、transport、model和public-link均由同一`build/`执行 |
+| registered board-ready no-card | 39/39通过，real time 1027.15s | 16个FP16/BF16产品none/search、22个current calibration及一个target-model vertical均无skip/unsupported；LLaMA search FP16/BF16分别1027.14s/1026.14s |
+
+本轮没有运行真实设备，因此这些结果证明compiler、package和host model达到`board-ready`，不声明native multi-destination的新增
+板端correctness或性能数据；硬件准入范围仍只来自既有calibration记录。
 
 ## Q53 Production Host Readiness
 

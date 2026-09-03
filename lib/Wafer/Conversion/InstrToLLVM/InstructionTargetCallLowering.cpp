@@ -78,7 +78,8 @@ lowerTargetInstruction(mlir::Operation *op, mlir::ValueRange operands,
                        mlir::ConversionPatternRewriter &rewriter,
                        const mlir::LLVMTypeConverter *converter,
                        const DirectDTEEndpointDomain *dteDomain) {
-  bool isDTE = mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(op);
+  bool isDTE = mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEBroadcastOp,
+                         InstrDTEScatterOp, InstrDTEWaitOp>(op);
   if (isDTE && !dteDomain)
     return op->emitError()
            << "unsupported_target_transport: DTE instruction requires an "
@@ -116,6 +117,22 @@ lowerTargetInstruction(mlir::Operation *op, mlir::ValueRange operands,
   if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(op)) {
     mlir::FailureOr<mlir::Value> event =
         lowering.lowerDTERecv(recv, *dteDomain);
+    if (mlir::failed(event))
+      return mlir::failure();
+    rewriter.replaceOp(op, *event);
+    return mlir::success();
+  }
+  if (auto broadcast = mlir::dyn_cast<InstrDTEBroadcastOp>(op)) {
+    mlir::FailureOr<mlir::Value> event =
+        lowering.lowerDTEBroadcast(broadcast, *dteDomain);
+    if (mlir::failed(event))
+      return mlir::failure();
+    rewriter.replaceOp(op, *event);
+    return mlir::success();
+  }
+  if (auto scatter = mlir::dyn_cast<InstrDTEScatterOp>(op)) {
+    mlir::FailureOr<mlir::Value> event =
+        lowering.lowerDTEScatter(scatter, *dteDomain);
     if (mlir::failed(event))
       return mlir::failure();
     rewriter.replaceOp(op, *event);

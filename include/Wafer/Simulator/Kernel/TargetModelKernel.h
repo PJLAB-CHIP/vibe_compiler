@@ -88,6 +88,8 @@ enum class TargetModelControlAction : uint8_t {
   NCCJoin,
   DirectDTEBegin,
   DirectDTESendPrepare,
+  DirectDTEMultiSendPrepare,
+  DirectDTEMultiSendDestination,
   DirectDTESendIssue,
   DirectDTEReceive,
   DirectDTEWait,

@@ -146,7 +146,8 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
 
   bool hasDirectDTEOps = false;
   moduleOp.walk([&](mlir::Operation *op) {
-    if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(op))
+    if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEBroadcastOp,
+                  InstrDTEScatterOp, InstrDTEWaitOp>(op))
       hasDirectDTEOps = true;
   });
   const bool hasDirectDTEContract = transportStatusArgumentIndex >= 0;

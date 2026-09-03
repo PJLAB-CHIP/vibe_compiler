@@ -423,6 +423,16 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     WaferSystemCSimulatorDTEIntegrationTest
     Simulator/SystemC/SystemCTargetModelDTEIntegrationTest.cpp)
   add_wafer_systemc_transport_test(
+    WaferSystemCSimulatorDTEBroadcastTest
+    Simulator/SystemC/SystemCTargetModelDTEMultiSendTest.cpp)
+  target_compile_definitions(WaferSystemCSimulatorDTEBroadcastTest PRIVATE
+    WAFER_TEST_DTE_MULTISEND_KIND=0)
+  add_wafer_systemc_transport_test(
+    WaferSystemCSimulatorDTEScatterTest
+    Simulator/SystemC/SystemCTargetModelDTEMultiSendTest.cpp)
+  target_compile_definitions(WaferSystemCSimulatorDTEScatterTest PRIVATE
+    WAFER_TEST_DTE_MULTISEND_KIND=1)
+  add_wafer_systemc_transport_test(
     WaferSystemCSimulatorDTEComputeDisjointTest
     Simulator/SystemC/SystemCTargetModelDTEComputeAccessTest.cpp)
   target_compile_definitions(WaferSystemCSimulatorDTEComputeDisjointTest PRIVATE

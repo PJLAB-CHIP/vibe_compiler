@@ -545,8 +545,8 @@ static int64_t getStructuredLoopSiblingOrdinal(mlir::scf::ForOp loop) {
       continue;
     bool containsTransport = false;
     siblingLoop.walk([&](mlir::Operation *operation) {
-      if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(
-              operation)) {
+      if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEBroadcastOp,
+                    InstrDTEScatterOp, InstrDTEWaitOp>(operation)) {
         containsTransport = true;
         return mlir::WalkResult::interrupt();
       }
@@ -619,7 +619,8 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> tileModules,
       if (auto wait = mlir::dyn_cast<InstrDTEWaitOp>(operation)) {
         for (mlir::Value token : wait.getTokens()) {
           mlir::Operation *def = token.getDefiningOp();
-          if (!def || !mlir::isa<InstrDTESendOp, InstrDTERecvOp>(def)) {
+          if (!def || !mlir::isa<InstrDTESendOp, InstrDTERecvOp,
+                                 InstrDTEBroadcastOp, InstrDTEScatterOp>(def)) {
             wait.emitError(
                 "direct_dte_binding: every wait token must be produced by "
                 "a Direct DTE issue");
@@ -630,8 +631,125 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> tileModules,
       }
       auto send = mlir::dyn_cast<InstrDTESendOp>(operation);
       auto recv = mlir::dyn_cast<InstrDTERecvOp>(operation);
-      if (!send && !recv)
+      auto broadcast = mlir::dyn_cast<InstrDTEBroadcastOp>(operation);
+      auto scatter = mlir::dyn_cast<InstrDTEScatterOp>(operation);
+      if (!send && !recv && !broadcast && !scatter)
         return mlir::WalkResult::advance();
+      if (broadcast || scatter) {
+        std::optional<mlir::ArrayAttr> bindings =
+            broadcast ? broadcast.getBindings() : scatter.getBindings();
+        if (bindings) {
+          operation->emitError(
+              "direct_dte_binding: DTE multi-send already has physical "
+              "bindings");
+          result = mlir::failure();
+          return mlir::WalkResult::interrupt();
+        }
+        mlir::Value buffer =
+            broadcast ? broadcast.getBuffer() : scatter.getBuffer();
+        mlir::Value token =
+            broadcast ? broadcast.getToken() : scatter.getToken();
+        llvm::ArrayRef<int64_t> peerValues =
+            broadcast ? broadcast.getPeersAttr().asArrayRef()
+                      : scatter.getPeersAttr().asArrayRef();
+        mlir::ArrayAttr messageValues =
+            broadcast ? broadcast.getMessagesAttr() : scatter.getMessagesAttr();
+        const int64_t bytes = broadcast ? broadcast.getBytesAttr().getInt()
+                                        : scatter.getBytesAttr().getInt();
+        int64_t sourceSpan = bytes;
+        if (scatter &&
+            !checkedMul(bytes, static_cast<int64_t>(peerValues.size()),
+                        sourceSpan)) {
+          operation->emitError(
+              "direct_dte_binding: DTE scatter source span overflows");
+          result = mlir::failure();
+          return mlir::WalkResult::interrupt();
+        }
+        int64_t sourceOffset = broadcast
+                                   ? broadcast.getSourceOffsetAttr().getInt()
+                                   : scatter.getSourceOffsetAttr().getInt();
+        int64_t sourceEnd = 0;
+        if (!checkedAdd(sourceOffset, sourceSpan, sourceEnd)) {
+          operation->emitError(
+              "direct_dte_binding: DTE multi-send source range overflows");
+          result = mlir::failure();
+          return mlir::WalkResult::interrupt();
+        }
+        mlir::FailureOr<llvm::SmallVector<StructuredLoopSite, 4>> loopSite =
+            getStructuredLoopSite(operation);
+        mlir::FailureOr<SPMRangePattern> sourceRange =
+            resolveSPMRanges(operation, buffer, sourceEnd);
+        mlir::FailureOr<mlir::Operation *> wait =
+            findUniqueSameBlockWait(operation, token, operationIndices);
+        if (mlir::failed(loopSite) || mlir::failed(sourceRange) ||
+            mlir::failed(wait) ||
+            mlir::failed(
+                verifyIssueBufferIsolation(operation, *wait, buffer))) {
+          result = mlir::failure();
+          return mlir::WalkResult::interrupt();
+        }
+        for (auto [destinationIndex, peerAndMessage] :
+             llvm::enumerate(llvm::zip_equal(peerValues, messageValues))) {
+          auto [peer, messageAttribute] = peerAndMessage;
+          if (peer < 0 || peer >= static_cast<int64_t>(tileModules.size())) {
+            operation->emitError(
+                "direct_dte_binding: multi-send peer is outside the supplied "
+                "physical Tile domain");
+            result = mlir::failure();
+            return mlir::WalkResult::interrupt();
+          }
+          SPMRangePattern range = *sourceRange;
+          for (PhysicalRange &current : range.ranges) {
+            int64_t start = 0;
+            int64_t end = 0;
+            if (!checkedAdd(current.start, sourceOffset, start) ||
+                !checkedAdd(start, sourceSpan, end) || end > current.end) {
+              operation->emitError(
+                  "direct_dte_binding: DTE multi-send source range is "
+                  "outside its actual buffer");
+              result = mlir::failure();
+              return mlir::WalkResult::interrupt();
+            }
+            current = PhysicalRange{start, end};
+          }
+          if (scatter) {
+            int64_t displacement = 0;
+            if (!checkedMul(static_cast<int64_t>(destinationIndex), bytes,
+                            displacement)) {
+              operation->emitError(
+                  "direct_dte_binding: scatter segment displacement "
+                  "overflows");
+              result = mlir::failure();
+              return mlir::WalkResult::interrupt();
+            }
+            for (PhysicalRange &current : range.ranges) {
+              int64_t start = 0;
+              int64_t end = 0;
+              if (!checkedAdd(current.start, displacement, start) ||
+                  !checkedAdd(start, bytes, end) || end > current.end) {
+                operation->emitError(
+                    "direct_dte_binding: scatter segment is outside its "
+                    "actual source range");
+                result = mlir::failure();
+                return mlir::WalkResult::interrupt();
+              }
+              current = PhysicalRange{start, end};
+            }
+          } else {
+            for (PhysicalRange &current : range.ranges)
+              current.end = current.start + bytes;
+          }
+          DTEMessageAttr message = mlir::cast<DTEMessageAttr>(messageAttribute);
+          issues.push_back(IssueRecord{
+              operation, *wait, operation->getBlock(),
+              static_cast<int64_t>(tileIndex),
+              makeMessageBaseKey(static_cast<int64_t>(tileIndex), peer, message,
+                                 /*isSend=*/true),
+              std::move(range), bytes, operationIndices.lookup(operation),
+              operationIndices.lookup(*wait), -1, true});
+        }
+        return mlir::WalkResult::advance();
+      }
       if ((send && send.getBindingAttr()) || (recv && recv.getBindingAttr())) {
         operation->emitError(
             "direct_dte_binding: DTE issue already has a physical binding");
@@ -652,6 +770,14 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> tileModules,
       }
       int64_t bytes =
           send ? send.getBytesAttr().getInt() : recv.getBytesAttr().getInt();
+      int64_t bufferOffset = send ? send.getBufferOffset().value_or(0)
+                                  : recv.getBufferOffset().value_or(0);
+      int64_t bufferEnd = 0;
+      if (!checkedAdd(bufferOffset, bytes, bufferEnd)) {
+        operation->emitError("direct_dte_binding: DTE buffer range overflows");
+        result = mlir::failure();
+        return mlir::WalkResult::interrupt();
+      }
       DTEMessageAttr message =
           send ? send.getMessageAttr() : recv.getMessageAttr();
       MessageBaseKey messageBase =
@@ -660,13 +786,26 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> tileModules,
       mlir::FailureOr<llvm::SmallVector<StructuredLoopSite, 4>> loopSite =
           getStructuredLoopSite(operation);
       mlir::FailureOr<SPMRangePattern> rangePattern =
-          resolveSPMRanges(operation, buffer, bytes);
+          resolveSPMRanges(operation, buffer, bufferEnd);
       mlir::FailureOr<mlir::Operation *> wait =
           findUniqueSameBlockWait(operation, token, operationIndices);
       if (mlir::failed(loopSite) || mlir::failed(rangePattern) ||
           mlir::failed(wait)) {
         result = mlir::failure();
         return mlir::WalkResult::interrupt();
+      }
+      for (PhysicalRange &range : rangePattern->ranges) {
+        int64_t start = 0;
+        int64_t end = 0;
+        if (!checkedAdd(range.start, bufferOffset, start) ||
+            !checkedAdd(start, bytes, end) || end > range.end) {
+          operation->emitError(
+              "direct_dte_binding: DTE buffer offset is outside its actual "
+              "SPM range");
+          result = mlir::failure();
+          return mlir::WalkResult::interrupt();
+        }
+        range = PhysicalRange{start, end};
       }
       if (mlir::failed(verifyIssueBufferIsolation(operation, *wait, buffer))) {
         result = mlir::failure();
@@ -704,22 +843,24 @@ static mlir::FailureOr<PhysicalRange> resolveDynamicRange(
 
 static mlir::LogicalResult appendDynamicIssues(
     mlir::Operation *operation, llvm::ArrayRef<IssueRecord> issues,
-    const llvm::DenseMap<mlir::Operation *, unsigned> &issueIndices,
+    const llvm::DenseMap<mlir::Operation *, llvm::SmallVector<unsigned, 4>>
+        &issueIndices,
     const llvm::DenseSet<mlir::Operation *> &issueAncestors,
     llvm::DenseMap<mlir::Operation *, uint64_t> &loopIterations,
     llvm::MutableArrayRef<uint64_t> occurrenceCounts,
     std::map<MessageBaseKey, DynamicMessageStream> &streams) {
   auto issue = issueIndices.find(operation);
   if (issue != issueIndices.end()) {
-    mlir::FailureOr<PhysicalRange> range =
-        resolveDynamicRange(issues[issue->second], loopIterations);
-    if (mlir::failed(range))
-      return mlir::failure();
-    DynamicMessageStream &stream = streams[issues[issue->second].message];
-    auto &instances =
-        issues[issue->second].isSend ? stream.sends : stream.recvs;
-    uint64_t selector = occurrenceCounts[issue->second]++;
-    instances.push_back(DynamicIssue{issue->second, *range, selector});
+    for (unsigned issueIndex : issue->second) {
+      mlir::FailureOr<PhysicalRange> range =
+          resolveDynamicRange(issues[issueIndex], loopIterations);
+      if (mlir::failed(range))
+        return mlir::failure();
+      DynamicMessageStream &stream = streams[issues[issueIndex].message];
+      auto &instances = issues[issueIndex].isSend ? stream.sends : stream.recvs;
+      uint64_t selector = occurrenceCounts[issueIndex]++;
+      instances.push_back(DynamicIssue{issueIndex, *range, selector});
+    }
   }
 
   if (!issueAncestors.contains(operation))
@@ -763,10 +904,11 @@ static mlir::LogicalResult buildDynamicMessageStreams(
     llvm::ArrayRef<mlir::ModuleOp> tileModules,
     llvm::ArrayRef<IssueRecord> issues,
     std::map<MessageBaseKey, DynamicMessageStream> &streams) {
-  llvm::DenseMap<mlir::Operation *, unsigned> issueIndices;
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<unsigned, 4>>
+      issueIndices;
   llvm::DenseSet<mlir::Operation *> issueAncestors;
   for (auto [index, issue] : llvm::enumerate(issues)) {
-    issueIndices.try_emplace(issue.operation, static_cast<unsigned>(index));
+    issueIndices[issue.operation].push_back(static_cast<unsigned>(index));
     for (mlir::Operation *ancestor = issue.operation->getParentOp(); ancestor;
          ancestor = ancestor->getParentOp())
       issueAncestors.insert(ancestor);
@@ -815,7 +957,8 @@ verifySenderResources(llvm::ArrayRef<IssueRecord> issues) {
     for (size_t rightIndex = leftIndex + 1; rightIndex < issues.size();
          ++rightIndex) {
       const IssueRecord &right = issues[rightIndex];
-      if (!right.isSend || left.block != right.block)
+      if (!right.isSend || left.block != right.block ||
+          left.operation == right.operation)
         continue;
       bool overlaps = left.issueIndex < right.waitIndex &&
                       right.issueIndex < left.waitIndex;
@@ -834,7 +977,8 @@ static bool operationContainsTransport(
     mlir::ModuleOp module) {
   bool containsTransport = false;
   operation->walk([&](mlir::Operation *nested) {
-    if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(nested)) {
+    if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEBroadcastOp,
+                  InstrDTEScatterOp, InstrDTEWaitOp>(nested)) {
       containsTransport = true;
       return mlir::WalkResult::interrupt();
     }
@@ -863,8 +1007,8 @@ findTransportFunctions(const ExecutableCallClosure &closure,
         continue;
       bool hasTransport = false;
       function.walk([&](mlir::Operation *operation) {
-        if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(
-                operation)) {
+        if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEBroadcastOp,
+                      InstrDTEScatterOp, InstrDTEWaitOp>(operation)) {
           hasTransport = true;
           return mlir::WalkResult::interrupt();
         }
@@ -893,11 +1037,13 @@ public:
       int64_t tileIndex, mlir::ModuleOp module,
       const ExecutableCallClosure &closure,
       const llvm::DenseSet<mlir::Operation *> &transportFunctions,
-      const llvm::DenseMap<mlir::Operation *, IssueRecord *> &issueByOperation,
+      const llvm::DenseMap<mlir::Operation *,
+                           llvm::SmallVector<IssueRecord *, 4>>
+          &issuesByOperation,
       StructuredTransportTrace &trace)
       : tileIndex(tileIndex), module(module), closure(closure),
         transportFunctions(transportFunctions),
-        issueByOperation(issueByOperation), trace(trace) {}
+        issuesByOperation(issuesByOperation), trace(trace) {}
 
   mlir::LogicalResult build() {
     if (mlir::failed(traceFunction(closure.entry)))
@@ -944,21 +1090,28 @@ private:
   }
 
   mlir::LogicalResult traceIssue(mlir::Operation *operation) {
-    auto recordIt = issueByOperation.find(operation);
-    if (recordIt == issueByOperation.end())
+    auto records = issuesByOperation.find(operation);
+    if (records == issuesByOperation.end() || records->second.empty())
       return operation->emitError(
           "direct_dte_binding: structured trace cannot resolve a DTE "
           "issue occurrence");
-    IssueRecord *record = recordIt->second;
-    if (pending.contains(record))
-      return operation->emitError(
-          "direct_dte_binding: one static DTE issue has overlapping dynamic "
-          "occurrences");
+    for (IssueRecord *record : records->second)
+      if (pending.contains(record))
+        return operation->emitError(
+            "direct_dte_binding: one static DTE issue has overlapping "
+            "dynamic occurrences");
 
-    if (record->isSend) {
+    const bool isSend = records->second.front()->isSend;
+    if (llvm::any_of(records->second, [&](IssueRecord *record) {
+          return record->isSend != isSend;
+        }))
+      return operation->emitError(
+          "direct_dte_binding: one physical operation mixes send and receive "
+          "records");
+    if (isSend) {
       for (const auto &[liveRecord, action] : pending) {
         (void)action;
-        if (liveRecord->isSend)
+        if (liveRecord->isSend && liveRecord->operation != operation)
           return operation->emitError(
               "direct_dte_binding: normal allocation profile permits at "
               "most one live sender per Tile structured occurrence");
@@ -967,19 +1120,22 @@ private:
       for (const auto &[liveRecord, action] : pending) {
         (void)action;
         if (!liveRecord->isSend)
-          trace.receiverConflicts.push_back({record, liveRecord});
+          for (IssueRecord *record : records->second)
+            trace.receiverConflicts.push_back({record, liveRecord});
       }
     }
 
-    unsigned action = appendAction(
-        TransportAction{operation,
-                        tileIndex,
-                        record->isSend ? TransportActionKind::SendIssue
-                                       : TransportActionKind::ReceivePrepare,
-                        record,
-                        {},
-                        {occurrencePath.begin(), occurrencePath.end()}});
-    pending[record] = action;
+    for (IssueRecord *record : records->second) {
+      unsigned action = appendAction(
+          TransportAction{operation,
+                          tileIndex,
+                          isSend ? TransportActionKind::SendIssue
+                                 : TransportActionKind::ReceivePrepare,
+                          record,
+                          {},
+                          {occurrencePath.begin(), occurrencePath.end()}});
+      pending[record] = action;
+    }
     return mlir::success();
   }
 
@@ -987,18 +1143,20 @@ private:
     llvm::SmallVector<unsigned, 4> waitedActions;
     for (mlir::Value token : wait.getTokens()) {
       mlir::Operation *definition = token.getDefiningOp();
-      auto recordIt = issueByOperation.find(definition);
-      if (recordIt == issueByOperation.end())
+      auto records = issuesByOperation.find(definition);
+      if (records == issuesByOperation.end() || records->second.empty())
         return wait.emitError(
             "direct_dte_binding: structured trace cannot resolve a DTE "
             "wait occurrence");
-      auto pendingIt = pending.find(recordIt->second);
-      if (pendingIt == pending.end())
-        return wait.emitError(
-            "direct_dte_binding: DTE wait has no live issue in this "
-            "structured occurrence");
-      waitedActions.push_back(pendingIt->second);
-      pending.erase(pendingIt);
+      for (IssueRecord *record : records->second) {
+        auto pendingIt = pending.find(record);
+        if (pendingIt == pending.end())
+          return wait.emitError(
+              "direct_dte_binding: DTE wait has no live issue in this "
+              "structured occurrence");
+        waitedActions.push_back(pendingIt->second);
+        pending.erase(pendingIt);
+      }
     }
     appendAction(TransportAction{wait.getOperation(), tileIndex,
                                  TransportActionKind::Wait, nullptr,
@@ -1034,7 +1192,8 @@ private:
   }
 
   mlir::LogicalResult traceOperation(mlir::Operation *operation) {
-    if (mlir::isa<InstrDTESendOp, InstrDTERecvOp>(operation))
+    if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEBroadcastOp,
+                  InstrDTEScatterOp>(operation))
       return traceIssue(operation);
     if (auto wait = mlir::dyn_cast<InstrDTEWaitOp>(operation))
       return traceWait(wait);
@@ -1105,7 +1264,8 @@ private:
   mlir::ModuleOp module;
   const ExecutableCallClosure &closure;
   const llvm::DenseSet<mlir::Operation *> &transportFunctions;
-  const llvm::DenseMap<mlir::Operation *, IssueRecord *> &issueByOperation;
+  const llvm::DenseMap<mlir::Operation *, llvm::SmallVector<IssueRecord *, 4>>
+      &issuesByOperation;
   StructuredTransportTrace &trace;
   llvm::SmallVector<StructuredExecutionFrame, 4> occurrencePath;
   llvm::DenseMap<IssueRecord *, unsigned> pending;
@@ -1328,6 +1488,10 @@ static mlir::LogicalResult matchDynamicMessages(
   for (auto &[operation, binding] : pendingBindings) {
     if (binding.getRemoteAddressMode() != DTERemoteAddressMode::SelectorTable)
       continue;
+    if (mlir::isa<InstrDTEBroadcastOp, InstrDTEScatterOp>(operation))
+      return operation->emitError(
+          "direct_dte_binding: native DTE multi-send requires static remote "
+          "bindings");
     mlir::FailureOr<mlir::Value> selector = materializeRouteSelector(operation);
     if (mlir::failed(selector))
       return mlir::failure();
@@ -1400,9 +1564,10 @@ static mlir::LogicalResult verifyStructuredTransportWaitGraph(
     llvm::SmallVectorImpl<IssueRecord> &issues,
     llvm::SmallVectorImpl<MatchedMessage> &messages,
     StructuredTransportTrace &trace) {
-  llvm::DenseMap<mlir::Operation *, IssueRecord *> issueByOperation;
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<IssueRecord *, 4>>
+      issuesByOperation;
   for (IssueRecord &issue : issues)
-    issueByOperation[issue.operation] = &issue;
+    issuesByOperation[issue.operation].push_back(&issue);
 
   for (size_t tileIndex = 0; tileIndex < tileModules.size(); ++tileIndex) {
     mlir::ModuleOp module = tileModules[tileIndex];
@@ -1420,7 +1585,7 @@ static mlir::LogicalResult verifyStructuredTransportWaitGraph(
         findTransportFunctions(*closure, module);
     StructuredTraceBuilder builder(static_cast<int64_t>(tileIndex), module,
                                    *closure, transportFunctions,
-                                   issueByOperation, trace);
+                                   issuesByOperation, trace);
     if (mlir::failed(builder.build()))
       return mlir::failure();
   }
@@ -1706,10 +1871,15 @@ static mlir::LogicalResult buildBlockWaitChoices(
   for (auto [operationIndex, operation] : llvm::enumerate(operations)) {
     auto send = mlir::dyn_cast<InstrDTESendOp>(operation);
     auto receive = mlir::dyn_cast<InstrDTERecvOp>(operation);
-    if (!send && !receive)
+    auto broadcast = mlir::dyn_cast<InstrDTEBroadcastOp>(operation);
+    auto scatter = mlir::dyn_cast<InstrDTEScatterOp>(operation);
+    if (!send && !receive && !broadcast && !scatter)
       continue;
 
-    mlir::Value buffer = send ? send.getBuffer() : receive.getBuffer();
+    mlir::Value buffer = send        ? send.getBuffer()
+                         : receive   ? receive.getBuffer()
+                         : broadcast ? broadcast.getBuffer()
+                                     : scatter.getBuffer();
     mlir::Value root = getRootViewSource(buffer);
     if (!root || !mlir::isa<mlir::BaseMemRefType>(root.getType())) {
       detail = "Direct DTE issue has no current memref storage root";
@@ -1750,7 +1920,8 @@ static mlir::LogicalResult buildBlockWaitChoices(
          llvm::drop_begin(operations, operationIndex + 1)) {
       if (mlir::isa<InstrDTEWaitOp>(candidate))
         continue;
-      if (mlir::isa<InstrDTESendOp>(candidate)) {
+      if (mlir::isa<InstrDTESendOp, InstrDTEBroadcastOp, InstrDTEScatterOp>(
+              candidate)) {
         choice.anchor = candidate;
         choice.senderSlotReuse = true;
         break;
@@ -1820,11 +1991,13 @@ verifyLocalWaitPlacement(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
       unsigned liveSenders = 0;
       unsigned liveReceivers = 0;
       for (mlir::Operation &operation : *block) {
-        if (auto send = mlir::dyn_cast<InstrDTESendOp>(operation)) {
+        if (mlir::isa<InstrDTESendOp, InstrDTEBroadcastOp, InstrDTEScatterOp>(
+                operation)) {
           if (++liveSenders >
               TargetDirectDTEResourceLimits::senderSlotsPerTile) {
-            send.emitError("Direct DTE completion leaves overlapping sender "
-                           "slots in one Tile block");
+            operation.emitError(
+                "Direct DTE completion leaves overlapping sender slots in "
+                "one Tile block");
             valid = mlir::failure();
             return;
           }
@@ -1838,7 +2011,9 @@ verifyLocalWaitPlacement(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
           }
         } else if (auto wait = mlir::dyn_cast<InstrDTEWaitOp>(operation)) {
           for (mlir::Value token : wait.getTokens()) {
-            if (token.getDefiningOp<InstrDTESendOp>()) {
+            if (mlir::isa_and_nonnull<InstrDTESendOp, InstrDTEBroadcastOp,
+                                      InstrDTEScatterOp>(
+                    token.getDefiningOp())) {
               if (liveSenders == 0) {
                 wait.emitError("Direct DTE send wait precedes its issue");
                 valid = mlir::failure();
@@ -1865,9 +2040,18 @@ verifyLocalWaitPlacement(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
       for (mlir::Operation &operation : *block) {
         auto send = mlir::dyn_cast<InstrDTESendOp>(operation);
         auto receive = mlir::dyn_cast<InstrDTERecvOp>(operation);
-        if (!send && !receive)
+        auto broadcast = mlir::dyn_cast<InstrDTEBroadcastOp>(operation);
+        auto scatter = mlir::dyn_cast<InstrDTEScatterOp>(operation);
+        if (!send && !receive && !broadcast && !scatter)
           continue;
-        mlir::Value token = send ? send.getToken() : receive.getToken();
+        mlir::Value token = send        ? send.getToken()
+                            : receive   ? receive.getToken()
+                            : broadcast ? broadcast.getToken()
+                                        : scatter.getToken();
+        mlir::Value buffer = send        ? send.getBuffer()
+                             : receive   ? receive.getBuffer()
+                             : broadcast ? broadcast.getBuffer()
+                                         : scatter.getBuffer();
         if (!token.hasOneUse()) {
           operation.emitError(
               "Direct DTE issue must have exactly one rebuilt wait");
@@ -1878,9 +2062,8 @@ verifyLocalWaitPlacement(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
         if (!mlir::isa<InstrDTEWaitOp>(wait) || wait->getBlock() != block ||
             operationIndices.lookup(&operation) >=
                 operationIndices.lookup(wait) ||
-            mlir::failed(verifyIssueBufferIsolation(
-                &operation, wait,
-                send ? send.getBuffer() : receive.getBuffer()))) {
+            mlir::failed(
+                verifyIssueBufferIsolation(&operation, wait, buffer))) {
           valid = mlir::failure();
           return;
         }
@@ -1917,14 +2100,17 @@ rebuildRequiredDirectDTEWaits(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
       oldWaits.push_back(wait);
       for (mlir::Value token : wait.getTokens())
         if (!token.getDefiningOp<InstrDTESendOp>() &&
-            !token.getDefiningOp<InstrDTERecvOp>()) {
+            !token.getDefiningOp<InstrDTERecvOp>() &&
+            !token.getDefiningOp<InstrDTEBroadcastOp>() &&
+            !token.getDefiningOp<InstrDTEScatterOp>()) {
           wait.emitError("compiler-derived Direct DTE wait has a non-DTE "
                          "token");
           valid = mlir::failure();
         }
     });
     module.walk([&](mlir::Operation *operation) {
-      if (!mlir::isa<InstrDTESendOp, InstrDTERecvOp>(operation))
+      if (!mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEBroadcastOp,
+                     InstrDTEScatterOp>(operation))
         return;
       for (mlir::OpOperand &use : operation->getResult(0).getUses())
         if (!mlir::isa<InstrDTEWaitOp>(use.getOwner())) {
@@ -2006,12 +2192,50 @@ bindDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
       pendingBindings;
   if (mlir::failed(matchDynamicMessages(issues, streams, pendingBindings)))
     return mlir::failure();
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<DirectDTEBindingAttr, 16>>
+      multiBindings;
+  for (auto &[operation, binding] : pendingBindings) {
+    if (mlir::isa<InstrDTESendOp, InstrDTERecvOp>(operation))
+      continue;
+    multiBindings[operation].push_back(binding);
+  }
+  llvm::DenseMap<mlir::Operation *, mlir::ArrayAttr> resolvedMultiBindings;
+  for (auto &[operation, bindings] : multiBindings) {
+    llvm::SmallVector<mlir::Attribute, 16> attributes(bindings.begin(),
+                                                      bindings.end());
+    mlir::ArrayAttr value =
+        mlir::ArrayAttr::get(operation->getContext(), attributes);
+    if (auto broadcast = mlir::dyn_cast<InstrDTEBroadcastOp>(operation)) {
+      if (bindings.size() !=
+          static_cast<size_t>(broadcast.getPeersAttr().size()))
+        return operation->emitError(
+            "direct_dte_binding: broadcast binding count does not match "
+            "destination count");
+      resolvedMultiBindings.try_emplace(operation, value);
+      continue;
+    }
+    auto scatter = mlir::dyn_cast<InstrDTEScatterOp>(operation);
+    if (!scatter ||
+        bindings.size() != static_cast<size_t>(scatter.getPeersAttr().size()))
+      return operation->emitError(
+          "direct_dte_binding: scatter binding count does not match "
+          "destination count");
+    resolvedMultiBindings.try_emplace(operation, value);
+  }
   for (auto &[operation, binding] : pendingBindings) {
     if (auto send = mlir::dyn_cast<InstrDTESendOp>(operation)) {
       send.setBindingAttr(binding);
       continue;
     }
-    mlir::cast<InstrDTERecvOp>(operation).setBindingAttr(binding);
+    if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(operation))
+      recv.setBindingAttr(binding);
+  }
+  for (auto &[operation, bindings] : resolvedMultiBindings) {
+    if (auto broadcast = mlir::dyn_cast<InstrDTEBroadcastOp>(operation)) {
+      broadcast.setBindingsAttr(bindings);
+      continue;
+    }
+    mlir::cast<InstrDTEScatterOp>(operation).setBindingsAttr(bindings);
   }
   return TransportContract::DirectDTE;
 }

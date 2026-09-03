@@ -40,7 +40,8 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
                     InstrRDMAOp, InstrWDMAOp, InstrGatherScatterOp, InstrFillOp,
                     InstrElementwiseOp, InstrBit2FpOp, InstrMaskMoveOp,
                     InstrReduceOp, InstrConvertOp, InstrGemmOp, InstrConvOp,
-                    InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>();
+                    InstrDTESendOp, InstrDTERecvOp, InstrDTEBroadcastOp,
+                    InstrDTEScatterOp, InstrDTEWaitOp>();
   target.addDynamicallyLegalOp<InstrTDMADataMoveOp>([](InstrTDMADataMoveOp op) {
     return !requiresGatherScatterMaterialization(op.getKindAttr().getValue());
   });

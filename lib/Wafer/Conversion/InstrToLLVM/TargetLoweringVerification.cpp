@@ -890,7 +890,8 @@ static mlir::LogicalResult verifyTargetInstructionFormat(mlir::Operation *op) {
         return verify(typedOp.getSource(), "wdma source");
       })
       .Case<InstrGatherScatterOp, InstrDTESendOp, InstrDTERecvOp,
-            InstrDTEWaitOp, SyncNCCJoinOp>(
+            InstrDTEBroadcastOp, InstrDTEScatterOp, InstrDTEWaitOp,
+            SyncNCCJoinOp>(
           [&](auto) { return mlir::success(); })
       .Case<InstrFillOp>(
           [&](auto typedOp) { return verify(typedOp.getDest(), "fill dest"); })

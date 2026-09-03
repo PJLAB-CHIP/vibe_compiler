@@ -294,6 +294,18 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
     case wafer::TargetCallBuiltin::DirectDTESendPrepare:
       arguments[6] = 1;
       break;
+    case wafer::TargetCallBuiltin::DirectDTEMultiSendPrepare:
+      arguments[1] = 256;
+      arguments[2] = 0;
+      arguments[3] = 4;
+      arguments[4] = static_cast<uint32_t>(
+          wafer::target::TargetDirectDTEMultiSendKind::Broadcast);
+      arguments[5] = 0;
+      break;
+    case wafer::TargetCallBuiltin::DirectDTEMultiSendAddDestination:
+      arguments[2] = 1;
+      arguments[3] = 0;
+      break;
     case wafer::TargetCallBuiltin::GatherScatter:
     case wafer::TargetCallBuiltin::NCCJoin:
     case wafer::TargetCallBuiltin::DirectDTESendIssue:
@@ -550,6 +562,32 @@ void expectPayloadFields(const wafer::TargetCallDescriptor &descriptor,
       EXPECT_EQ(value.remoteTile, u32(4));
       EXPECT_EQ(value.remoteFSM, u32(5));
       EXPECT_EQ(value.highPerformance, u32(6) != 0);
+      return;
+    }
+    case wafer::TargetCallBuiltin::DirectDTEMultiSendPrepare: {
+      ASSERT_TRUE(std::holds_alternative<
+                  wafer::target::TargetDirectDTEMultiSendCommand>(payload));
+      const auto &value =
+          std::get<wafer::target::TargetDirectDTEMultiSendCommand>(payload);
+      EXPECT_EQ(value.source, arguments[0]);
+      EXPECT_EQ(value.bytesPerDestination, u32(1));
+      EXPECT_EQ(value.localTile, u32(2));
+      EXPECT_EQ(value.destinationCount, u32(3));
+      EXPECT_EQ(static_cast<uint32_t>(value.kind), u32(4));
+      EXPECT_EQ(value.highPerformance, u32(5) != 0);
+      return;
+    }
+    case wafer::TargetCallBuiltin::DirectDTEMultiSendAddDestination: {
+      ASSERT_TRUE(std::holds_alternative<
+                  wafer::target::TargetDirectDTEMultiSendDestinationCommand>(
+          payload));
+      const auto &value =
+          std::get<wafer::target::TargetDirectDTEMultiSendDestinationCommand>(
+              payload);
+      EXPECT_EQ(value.event, arguments[0]);
+      EXPECT_EQ(value.remoteDestination, arguments[1]);
+      EXPECT_EQ(value.remoteTile, u32(2));
+      EXPECT_EQ(value.remoteFSM, u32(3));
       return;
     }
     case wafer::TargetCallBuiltin::DirectDTESendIssue: {
@@ -810,7 +848,7 @@ void expectPayloadFields(const wafer::TargetCallDescriptor &descriptor,
 TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   llvm::ArrayRef<wafer::TargetCallDescriptor> descriptors =
       wafer::getTargetCallDescriptors();
-  ASSERT_EQ(descriptors.size(), 112u);
+  ASSERT_EQ(descriptors.size(), 114u);
   llvm::DenseSet<llvm::StringRef> symbols;
   size_t issueDomainCount = 0;
   size_t nccIssueDomainCount = 0;
@@ -934,7 +972,7 @@ TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
     expectPayloadFields(descriptor, arguments, *payload);
     ++decoded;
   }
-  EXPECT_EQ(decoded, 112u);
+  EXPECT_EQ(decoded, 114u);
 }
 
 TEST(TargetCallRegistryTest, DecodesExplicitWorkerOneAndTwo) {

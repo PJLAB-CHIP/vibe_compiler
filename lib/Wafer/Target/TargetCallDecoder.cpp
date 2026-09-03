@@ -168,6 +168,30 @@ buildBuiltinCommand(const TargetCallDecodeConfig &config,
         arguments[0], arguments[1], argument32(arguments, 2),
         argument32(arguments, 3), argument32(arguments, 4),
         argument32(arguments, 5), argument32(arguments, 6) != 0}};
+  case TargetCallBuiltin::DirectDTEMultiSendPrepare: {
+    uint32_t bytes = argument32(arguments, 1);
+    uint32_t destinationCount = argument32(arguments, 3);
+    uint32_t kind = argument32(arguments, 4);
+    uint32_t highPerformance = argument32(arguments, 5);
+    if (bytes != 256 ||
+        (destinationCount != 2 && destinationCount != 4 &&
+         destinationCount != 8 && destinationCount != 15) ||
+        (kind !=
+             static_cast<uint32_t>(TargetDirectDTEMultiSendKind::Broadcast) &&
+         kind !=
+             static_cast<uint32_t>(TargetDirectDTEMultiSendKind::Scatter)) ||
+        highPerformance > 1)
+      return llvm::createStringError(
+          "Direct-DTE multi-send prepare carries an unsupported kind, "
+          "destination count, byte count, or high-performance flag");
+    return TargetCommandPayload{TargetDirectDTEMultiSendCommand{
+        static_cast<TargetDirectDTEMultiSendKind>(kind), arguments[0], bytes,
+        argument32(arguments, 2), destinationCount, highPerformance != 0}};
+  }
+  case TargetCallBuiltin::DirectDTEMultiSendAddDestination:
+    return TargetCommandPayload{TargetDirectDTEMultiSendDestinationCommand{
+        arguments[0], arguments[1], argument32(arguments, 2),
+        argument32(arguments, 3)}};
   case TargetCallBuiltin::DirectDTESendIssue:
     return TargetCommandPayload{TargetDirectDTESendIssueCommand{arguments[0]}};
   case TargetCallBuiltin::DirectDTERecvPrepare:

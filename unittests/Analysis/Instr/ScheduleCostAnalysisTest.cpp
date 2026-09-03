@@ -1391,6 +1391,45 @@ TEST_F(ScheduleCostAnalysisTest, AggregateNoCFreeProgramHasExactZeroWork) {
 }
 
 TEST_F(ScheduleCostAnalysisTest,
+       NativeBroadcastCountsOneIssueAndEveryMeshDestinationByte) {
+  auto broadcast = parse(R"mlir(
+module {
+  wafer.target.topology @topology
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  func.func @main() {
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<1x2x64xf16, #wafer.memory<spm, tensor>>
+    %sent = wafer.instr.dte_broadcast %buffer
+        {source_offset = 0 : i64, peers = array<i64: 1, 2>, bytes = 256 : i64,
+         messages = [#wafer.dte_message<communication = 70, round = 0, slice = 0>,
+                     #wafer.dte_message<communication = 70, round = 0, slice = 1>]}
+        : memref<1x2x64xf16, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.dte_wait %sent : !async.token
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(broadcast);
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 15> emptyOwners;
+  llvm::SmallVector<mlir::Operation *, 16> roots{broadcast->getOperation()};
+  for (int64_t tile = 1; tile < 16; ++tile) {
+    emptyOwners.push_back(makeDTETileModule("", ""));
+    ASSERT_TRUE(emptyOwners.back());
+    roots.push_back(emptyOwners.back()->getOperation());
+  }
+  auto cost = analyzeAggregateCost(roots, wafer::getTargetMemoryPolicy());
+  EXPECT_EQ(cost.aggregateWork.dteSendOperations.staticSites.value, 1u);
+  EXPECT_EQ(cost.aggregateWork.dteSendOperations.exactExecutions.value, 1u);
+  EXPECT_EQ(cost.aggregateNoC.transmitMessageCount.value, 1u);
+  EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.value, 512u);
+  EXPECT_EQ(cost.minimumHopLinkByteDemand.value, 768u);
+  EXPECT_EQ(cost.minimumHopMessageDemand.value, 3u);
+  EXPECT_EQ(cost.modeledNoCRoute.peakDirectedLinkByteDemand.value, 512u);
+  EXPECT_EQ(cost.maximumNoCHopCount.value, 2u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
        AggregateExactNoCWorkUsesStaticLoopMultiplicity) {
   constexpr llvm::StringLiteral repeatedSend = R"mlir(
     %c0 = arith.constant 0 : index

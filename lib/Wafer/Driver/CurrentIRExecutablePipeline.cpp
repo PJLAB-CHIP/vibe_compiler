@@ -5,8 +5,10 @@
 #include "Wafer/Analysis/Tile/TileDataflowAnalysis.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/Driver/StandaloneTileModules/StandaloneTileModules.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Instr/DirectDTETransport.h"
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
+#include "Wafer/Transforms/Instr/NativeDirectDTEMultiSend.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
@@ -52,7 +54,12 @@ collectInstructionStatistics(mlir::ModuleOp module,
     statistics.wdmaOperations += mlir::isa<InstrWDMAOp>(operation);
     statistics.gatherScatterOperations +=
         mlir::isa<InstrGatherScatterOp>(operation);
-    statistics.dteSendOperations += mlir::isa<InstrDTESendOp>(operation);
+    statistics.dteSendOperations +=
+        mlir::isa<InstrDTESendOp, InstrDTEBroadcastOp, InstrDTEScatterOp>(
+            operation);
+    statistics.dteBroadcastOperations +=
+        mlir::isa<InstrDTEBroadcastOp>(operation);
+    statistics.dteScatterOperations += mlir::isa<InstrDTEScatterOp>(operation);
     statistics.dteReceiveOperations += mlir::isa<InstrDTERecvOp>(operation);
     statistics.dteWaitOperations += mlir::isa<InstrDTEWaitOp>(operation);
     statistics.nccJoinOperations += mlir::isa<SyncNCCJoinOp>(operation);
@@ -214,6 +221,38 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
   llvm::SmallVector<mlir::ModuleOp, 16> instructionModules;
   for (StandaloneTileModule &tile : *standalone)
     instructionModules.push_back(*tile.module);
+  NativeDirectDTEMultiSendResult coalesced =
+      coalesceExactDirectDTETransfers(instructionModules);
+  if (!coalesced.succeeded())
+    return fail(ExecutableCompilationStatus::CompilerFailure,
+                "exact-direct-dte-coalescing", coalesced.detail);
+  wafer::support::addCompileCounter("communication", "coalesced-p2p-transfers",
+                                    coalesced.statistics.coalescedP2PTransfers);
+  wafer::support::addCompileCounter(
+      "communication", "coalesced-unicast-sends",
+      coalesced.statistics.unicastSendOperationsRemoved);
+  wafer::support::addCompileCounter(
+      "communication", "coalesced-unicast-receives",
+      coalesced.statistics.unicastReceiveOperationsRemoved);
+  for (StandaloneTileModule &tile : *standalone)
+    eraseDeadSubviewOperations(*tile.module);
+  NativeDirectDTEMultiSendResult multiSend =
+      materializeNativeDirectDTEMultiSends(instructionModules);
+  if (!multiSend.succeeded())
+    return fail(ExecutableCompilationStatus::CompilerFailure,
+                "native-direct-dte-multi-send", multiSend.detail);
+  for (StandaloneTileModule &tile : *standalone)
+    eraseDeadSubviewOperations(*tile.module);
+  wafer::support::addCompileCounter("communication",
+                                    "native-broadcast-operations",
+                                    multiSend.statistics.broadcastOperations);
+  wafer::support::addCompileCounter("communication",
+                                    "native-scatter-operations",
+                                    multiSend.statistics.scatterOperations);
+  if (downstreamStatistics)
+    downstreamStatistics->dteUnicastSendsCoalesced +=
+        coalesced.statistics.unicastSendOperationsRemoved +
+        multiSend.statistics.unicastSendOperationsRemoved;
   DirectDTECompletionResult initialDTECompletion =
       rebuildRequiredDirectDTEWaits(instructionModules);
   if (!initialDTECompletion.succeeded())

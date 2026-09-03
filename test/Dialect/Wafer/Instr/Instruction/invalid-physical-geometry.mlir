@@ -17,6 +17,18 @@ module {
 // -----
 
 module {
+  %buffer = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1xf16, #wafer.memory<spm, tensor>>
+  // expected-error @below {{Direct DTE buffer offset and byte count must name a static in-bounds physical range}}
+  %token = wafer.instr.dte_send %buffer
+      {buffer_offset = 1 : i64, peer = 1 : i64, bytes = 2 : i64,
+       message = #wafer.dte_message<communication = 0, round = 0, slice = 0>}
+      : memref<1xf16, #wafer.memory<spm, tensor>> -> !async.token
+}
+
+// -----
+
+module {
   %src = "builtin.unrealized_conversion_cast"()
       : () -> memref<8xf16, #wafer.memory<ddr, tensor>>
   %dst = "builtin.unrealized_conversion_cast"()

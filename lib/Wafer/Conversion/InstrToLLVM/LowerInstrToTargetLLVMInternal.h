@@ -126,6 +126,11 @@ struct FunctionLowering {
   mlir::FailureOr<mlir::Value>
   lowerDTESend(InstrDTESendOp op, const DirectDTEEndpointDomain &domain);
   mlir::FailureOr<mlir::Value>
+  lowerDTEBroadcast(InstrDTEBroadcastOp op,
+                    const DirectDTEEndpointDomain &domain);
+  mlir::FailureOr<mlir::Value>
+  lowerDTEScatter(InstrDTEScatterOp op, const DirectDTEEndpointDomain &domain);
+  mlir::FailureOr<mlir::Value>
   lowerDTERecv(InstrDTERecvOp op, const DirectDTEEndpointDomain &domain);
   mlir::LogicalResult lowerDTEWait(InstrDTEWaitOp op,
                                    llvm::ArrayRef<mlir::Value> events);

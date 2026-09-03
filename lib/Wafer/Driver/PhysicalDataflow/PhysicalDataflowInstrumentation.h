@@ -175,6 +175,10 @@ recordMovementInstrumentation(const BoundaryMovementStatistics &statistics) {
   counter("peer-relay-sends", statistics.peerRelaySends);
   counter("fanout-groups", statistics.topologyFanoutGroups);
   counter("fanout-rounds", statistics.topologyFanoutRounds);
+  counter("native-broadcast-groups", statistics.nativeBroadcastGroups);
+  counter("native-broadcast-rounds", statistics.nativeBroadcastRounds);
+  counter("native-scatter-groups", statistics.nativeScatterGroups);
+  counter("native-scatter-rounds", statistics.nativeScatterRounds);
   counter("ring-components", statistics.ringComponents);
   counter("ring-rounds", statistics.ringRounds);
   counter("sparse-round-components", statistics.sparseRoundComponents);

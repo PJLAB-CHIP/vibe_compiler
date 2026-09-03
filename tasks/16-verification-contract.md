@@ -292,6 +292,14 @@ current Instr completion transformation必须直接证明并物化completion；�
 - local overlap、Direct-DTE event与NCC completion使用typed effect/resource关系；
 - 不从logical partition、Tile编号算术、symbol名或容器顺序恢复route/algorithm；
 - communication cost与staging footprint进入同一physical-dataflow candidate，不存在late profitability selector。
+- exact coalescing只接受双侧physical range连续且alias/effect/lifetime相容的current relations；断言coalescing前后logical cover、
+  destination subview、dynamic execution multiplicity和actual MiniMalloc owner一致；gap/overlap/layout变化保持独立message；
+- multi-destination broadcast/scatter只接受board-observed capability矩阵`fanout=2/4/8/15`、每destination `256B`、available Tile、
+  static accepted binding；一个source op必须匹配all-and-only destination recv，source lifetime覆盖整个broadcast payload或scatter source span；
+- sparse schedule按sender 1、receiver 4做capacity-constrained maximum matching；每轮edge不重复不遗漏，resource limit和Region order成立，
+  相同输入重复得到同一round与peer顺序；
+- complete exchange分别验证native per-source broadcast与unicast Ring；All-to-All分别验证native per-source scatter与pairwise matching。
+  native能力外的byte count、fanout、ragged segment、dynamic binding和alias必须保持普通算法或typed failure，不能扩展raw硬件合同。
 
 ## 6. Target、package 与 runtime gates
 

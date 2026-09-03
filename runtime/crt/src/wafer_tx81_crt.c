@@ -13,6 +13,8 @@
 
 #include "instr_adapter.h"
 
+#include <stddef.h>
+
 extern int8_t *get_spm_memory_mapping(uint64_t offset);
 extern uint64_t get_tile_spm_addr_base(uint32_t tile_id_1d, int32_t tile_x,
                                        int32_t tile_y);
@@ -54,11 +56,62 @@ enum {
   WAFER_DIRECT_DTE_MAX_RECEIVERS = 4,
   WAFER_TX81_TILE_GRID_X = 4,
   WAFER_TX81_TILE_GRID_Y = 4,
+  WAFER_DIRECT_DTE_MULTISEND_SCATTER = 1,
+  WAFER_DIRECT_DTE_MULTISEND_BROADCAST = 2,
+  WAFER_DIRECT_DTE_MULTISEND_BYTES = 256,
+  WAFER_DIRECT_DTE_MAX_DESTINATIONS = 15,
+  WAFER_DIRECT_DTE_REGISTER_BASE = 0x400000,
+  WAFER_DIRECT_DTE_REGISTER_STRIDE = 0x200,
+  WAFER_DIRECT_DTE_REMOTE_SPM_STREAM_BASE = 60,
 };
+
+typedef struct {
+  uint64_t dst_addr;
+  uint32_t dst_id;
+  uint16_t dst_tile;
+  uint16_t padding;
+} WaferKuiperDTEDestination;
+
+typedef struct {
+  uint32_t alloc_stream_id;
+  int32_t state;
+  int32_t mode;
+  uint8_t dte_index;
+  uint8_t padding0[3];
+  uint64_t src_addr;
+  uint32_t data_len;
+  uint8_t dst_cnt;
+  uint8_t padding1[3];
+  WaferKuiperDTEDestination dst_cfg[32];
+  void *src_dim;
+  void *dest_dim;
+} WaferKuiperDTENode;
+
+_Static_assert(offsetof(WaferKuiperDTENode, dte_index) == 12U,
+               "native multi-send requires current Kuiper DTE node layout");
+_Static_assert(offsetof(WaferKuiperDTENode, src_addr) == 16U,
+               "native multi-send requires current Kuiper source layout");
+_Static_assert(offsetof(WaferKuiperDTENode, dst_cfg) == 32U,
+               "native multi-send requires current Kuiper destination layout");
+_Static_assert(sizeof(WaferKuiperDTEDestination) == 16U,
+               "native multi-send requires current destination entry layout");
+_Static_assert(offsetof(WaferKuiperDTENode, data_len) == 24U &&
+                   offsetof(WaferKuiperDTENode, dst_cnt) == 28U &&
+                   offsetof(WaferKuiperDTENode, src_dim) == 544U &&
+                   offsetof(WaferKuiperDTENode, dest_dim) == 552U &&
+                   sizeof(WaferKuiperDTENode) == 560U,
+               "native multi-send requires the complete current Kuiper DTE "
+               "node ABI");
 
 typedef struct {
   WaferDirectDTESendInfo info;
   uint32_t is_high_performance;
+  uint32_t multi_kind;
+  uint32_t destination_count;
+  uint32_t configured_destinations;
+  uint64_t remote_destinations[WAFER_DIRECT_DTE_MAX_DESTINATIONS];
+  uint16_t remote_tiles[WAFER_DIRECT_DTE_MAX_DESTINATIONS];
+  uint8_t remote_fsms[WAFER_DIRECT_DTE_MAX_DESTINATIONS];
   bool active;
   bool issued;
 } WaferDirectDTESenderState;
@@ -131,6 +184,9 @@ static void wafer_direct_dte_reset_state(uint64_t status_addr) {
   wafer_direct_dte_status = (volatile uint32_t *)(uintptr_t)status_addr;
   wafer_direct_dte_sender.active = false;
   wafer_direct_dte_sender.issued = false;
+  wafer_direct_dte_sender.multi_kind = 0;
+  wafer_direct_dte_sender.destination_count = 0;
+  wafer_direct_dte_sender.configured_destinations = 0;
   for (uint32_t index = 0; index < WAFER_DIRECT_DTE_MAX_RECEIVERS; ++index)
     wafer_direct_dte_receivers[index].active = false;
   wafer_direct_dte_write_status(WAFER_TX81_DIRECT_DTE_STATUS_PENDING);
@@ -176,9 +232,146 @@ uint64_t wafer_tx81_direct_dte_send_prepare(uint64_t src, uint64_t remote_dst,
   info.tile_this = (uint16_t)local_tile;
   wafer_direct_dte_sender.info = info;
   wafer_direct_dte_sender.is_high_performance = is_high_performance;
+  wafer_direct_dte_sender.multi_kind = 0;
+  wafer_direct_dte_sender.destination_count = 1;
+  wafer_direct_dte_sender.configured_destinations = 1;
   wafer_direct_dte_sender.active = true;
   wafer_direct_dte_sender.issued = false;
   return WAFER_DIRECT_DTE_SEND_EVENT;
+}
+
+uint64_t wafer_tx81_direct_dte_multisend_prepare(
+    uint64_t src, uint32_t bytes_per_destination, uint32_t local_tile,
+    uint32_t destination_count, uint32_t kind,
+    uint32_t is_high_performance) {
+  bool supported_count = destination_count == 2U || destination_count == 4U ||
+                         destination_count == 8U || destination_count == 15U;
+  if (wafer_direct_dte_sender.active ||
+      bytes_per_destination != WAFER_DIRECT_DTE_MULTISEND_BYTES ||
+      !supported_count ||
+      (kind != WAFER_DIRECT_DTE_MULTISEND_BROADCAST &&
+       kind != WAFER_DIRECT_DTE_MULTISEND_SCATTER) ||
+      local_tile > UINT16_MAX || is_high_performance > 1U) {
+    wafer_direct_dte_set_error();
+    return 0;
+  }
+  WaferDirectDTESendInfo info = {0};
+  info.src_addr = (uintptr_t)src;
+  info.length = bytes_per_destination;
+  info.mode = (uint8_t)kind;
+  info.tile_this = (uint16_t)local_tile;
+  wafer_direct_dte_sender.info = info;
+  wafer_direct_dte_sender.is_high_performance = is_high_performance;
+  wafer_direct_dte_sender.multi_kind = kind;
+  wafer_direct_dte_sender.destination_count = destination_count;
+  wafer_direct_dte_sender.configured_destinations = 0;
+  wafer_direct_dte_sender.active = true;
+  wafer_direct_dte_sender.issued = false;
+  return WAFER_DIRECT_DTE_SEND_EVENT;
+}
+
+void wafer_tx81_direct_dte_multisend_add_destination(
+    uint64_t event, uint64_t remote_dst, uint32_t remote_tile,
+    uint32_t remote_fsm_id) {
+  if (event != WAFER_DIRECT_DTE_SEND_EVENT ||
+      !wafer_direct_dte_sender.active || wafer_direct_dte_sender.issued ||
+      wafer_direct_dte_sender.multi_kind == 0 ||
+      wafer_direct_dte_sender.configured_destinations >=
+          wafer_direct_dte_sender.destination_count ||
+      remote_tile > UINT16_MAX || remote_fsm_id >= 4U) {
+    wafer_direct_dte_set_error();
+    return;
+  }
+  uint32_t index = wafer_direct_dte_sender.configured_destinations++;
+  wafer_direct_dte_sender.remote_destinations[index] = remote_dst;
+  wafer_direct_dte_sender.remote_tiles[index] = (uint16_t)remote_tile;
+  wafer_direct_dte_sender.remote_fsms[index] = (uint8_t)remote_fsm_id;
+}
+
+static void wafer_direct_dte_mmio_write32(uint64_t base, uint32_t offset,
+                                          uint32_t value) {
+  volatile uint32_t *address =
+      (volatile uint32_t *)(uintptr_t)(base + (uint64_t)offset);
+  *address = value;
+}
+
+static uint32_t wafer_direct_dte_remote_user_id(uint32_t receiver_fsm) {
+  uint32_t stream_id =
+      WAFER_DIRECT_DTE_REMOTE_SPM_STREAM_BASE + receiver_fsm;
+  return stream_id | (UINT32_C(1) << 6U) | (UINT32_C(1) << 7U) |
+         (UINT32_C(1) << 9U) | (UINT32_C(1) << 15U);
+}
+
+static uint64_t
+wafer_direct_dte_route_destination(uint64_t mapped_destination) {
+  return mapped_destination |
+         ((mapped_destination << 17U) & UINT64_C(0x00ffff0000000000));
+}
+
+static int wafer_direct_dte_issue_multisend(void *raw_node) {
+  WaferKuiperDTENode *node = (WaferKuiperDTENode *)raw_node;
+  WaferDirectDTESenderState *sender = &wafer_direct_dte_sender;
+  if (node == NULL || sender->configured_destinations !=
+                          sender->destination_count)
+    return -1;
+  uint64_t register_base = WAFER_DIRECT_DTE_REGISTER_BASE +
+                           (uint64_t)node->dte_index *
+                               WAFER_DIRECT_DTE_REGISTER_STRIDE;
+  node->mode = (int32_t)sender->multi_kind;
+  node->src_addr = sender->info.src_addr;
+  node->data_len = sender->info.length;
+  node->dst_cnt = (uint8_t)sender->destination_count;
+  node->src_dim = NULL;
+  node->dest_dim = NULL;
+
+  wafer_direct_dte_mmio_write32(register_base, GR_DTE_SRC_ADDR_LO,
+                                (uint32_t)sender->info.src_addr);
+  wafer_direct_dte_mmio_write32(register_base, GR_DTE_SRC_ADDR_HI,
+                                (uint32_t)(sender->info.src_addr >> 32U));
+  for (uint32_t index = 0; index < sender->destination_count; ++index) {
+    uint64_t remote_base = get_tile_spm_addr_base(
+        sender->remote_tiles[index], WAFER_TX81_TILE_GRID_X,
+        WAFER_TX81_TILE_GRID_Y);
+    if (sender->remote_destinations[index] > UINT64_MAX - remote_base)
+      return -1;
+    uint64_t destination =
+        remote_base + sender->remote_destinations[index];
+    destination = wafer_direct_dte_route_destination(destination);
+    uint32_t user_id =
+        wafer_direct_dte_remote_user_id(sender->remote_fsms[index]);
+    uint32_t address_offset = index == 0U
+                                  ? GR_DTE_DST_ADDR_LO_0
+                                  : GR_DTE_DST_ADDR_LO_1 + (index - 1U) * 8U;
+    uint32_t user_offset =
+        index == 0U ? GR_DTE_USER_ID_0
+                    : GR_DTE_USER_ID_1 + (index - 1U) * 4U;
+    node->dst_cfg[index].dst_addr = destination;
+    node->dst_cfg[index].dst_id = user_id;
+    node->dst_cfg[index].dst_tile = sender->remote_tiles[index];
+    wafer_direct_dte_mmio_write32(register_base, address_offset,
+                                  (uint32_t)destination);
+    wafer_direct_dte_mmio_write32(register_base, address_offset + 4U,
+                                  (uint32_t)(destination >> 32U));
+    wafer_direct_dte_mmio_write32(register_base, user_offset, user_id);
+  }
+  uint32_t mode = sender->multi_kind;
+  if (sender->multi_kind == WAFER_DIRECT_DTE_MULTISEND_SCATTER)
+    mode |= UINT32_C(1) << 8U;
+  wafer_direct_dte_mmio_write32(register_base, GR_DTE_MODE, mode);
+  wafer_direct_dte_mmio_write32(register_base, GR_DTE_LENGTH,
+                                sender->info.length);
+  wafer_direct_dte_mmio_write32(register_base, GR_DTE_DEST_NUM,
+                                sender->destination_count - 1U);
+  wafer_direct_dte_mmio_write32(register_base, GR_DTE_STRIDE0, 0U);
+  wafer_direct_dte_mmio_write32(register_base, GR_DTE_ITERATION0, 0U);
+  wafer_direct_dte_mmio_write32(register_base, GR_DTE_STRIDE1, 0U);
+  wafer_direct_dte_mmio_write32(register_base, GR_DTE_ITERATION1, 0U);
+  wafer_direct_dte_mmio_write32(register_base, GR_DTE_STRIDE2, 0U);
+  wafer_direct_dte_mmio_write32(register_base, GR_DTE_ITERATION2, 0U);
+  __asm__ volatile("fence iorw, iorw" ::: "memory");
+  wafer_direct_dte_mmio_write32(register_base, GR_DTE_CMD_VALID, 1U);
+  __asm__ volatile("fence iorw, iorw" ::: "memory");
+  return 0;
 }
 
 static bool wafer_direct_dte_issue_sender(uint64_t event) {
@@ -194,7 +387,14 @@ static bool wafer_direct_dte_issue_sender(uint64_t event) {
     uint32_t phase_event = wafer_profile_direct_dte_phase_begin(
         WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_PEER_READY_WAIT);
 #endif
-    direct_sync_wait(info->tile_this, info->dst_tile);
+    if (wafer_direct_dte_sender.multi_kind == 0) {
+      direct_sync_wait(info->tile_this, info->dst_tile);
+    } else {
+      for (uint32_t index = 0;
+           index < wafer_direct_dte_sender.destination_count; ++index)
+        direct_sync_wait(info->tile_this,
+                         wafer_direct_dte_sender.remote_tiles[index]);
+    }
 #ifdef WAFER_TX81_PROFILE_TRACE_CRT
     wafer_profile_direct_dte_phase_end(phase_event);
 #endif
@@ -208,8 +408,12 @@ static bool wafer_direct_dte_issue_sender(uint64_t event) {
 #endif
     info->dte_node =
         direct_dte_attach(wafer_direct_dte_sender.is_high_performance);
-    if (info->dte_node)
-      setup_result = direct_dte_send_async(info);
+    if (info->dte_node) {
+      if (wafer_direct_dte_sender.multi_kind == 0)
+        setup_result = direct_dte_send_async(info);
+      else
+        setup_result = wafer_direct_dte_issue_multisend(info->dte_node);
+    }
 #ifdef WAFER_TX81_PROFILE_TRACE_CRT
     wafer_profile_direct_dte_phase_end(phase_event);
 #endif

@@ -5,6 +5,7 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Target/TopologyIds.h"
+#include "Wafer/Transforms/Instr/NativeDirectDTEMultiSend.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -19,6 +20,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 
@@ -683,6 +685,518 @@ TEST_F(DirectDTETransportTest, MatchesCompleteDomainAndAttachesTypedBinding) {
   EXPECT_EQ(send.getBinding()->getRemoteReceiverAddress(), 65792);
   EXPECT_EQ(send.getBinding()->getCompletionProfile(),
             wafer::DTECompletionProfile::SenderWaitReceiverFSM);
+}
+
+TEST_F(DirectDTETransportTest,
+       NativeBroadcastReplacesSourceSendsAndKeepsExactReceivers) {
+  auto makeSource = [](int64_t extent, int64_t destinationCount) {
+    std::string source;
+    llvm::raw_string_ostream os(source);
+    int64_t row = extent - 1;
+    int64_t sourceOffset = row * 256;
+    os << "module {\n  func.func @main() {\n"
+          "    %buffer = memref.alloc() {wafer.spm.offset = "
+          "#wafer.spm_offset<65536>} : memref<1x"
+       << extent << "x128xf16, #wafer.memory<spm, tensor>>\n";
+    for (int64_t index = 0; index < destinationCount; ++index) {
+      os << "    %token" << index
+         << " = wafer.instr.dte_send %buffer {buffer_offset = " << sourceOffset
+         << " : i64, peer = " << index + 1
+         << " : i64, bytes = 256 : i64, message = "
+            "#wafer.dte_message<communication = 70, round = 0, slice = "
+         << index << ">} : memref<1x" << extent
+         << "x128xf16, #wafer.memory<spm, tensor>> -> !async.token\n";
+    }
+    os << "    return\n  }\n}\n";
+    return source;
+  };
+  auto makeReceiver = [](int64_t offset, int64_t slice) {
+    std::string source;
+    llvm::raw_string_ostream os(source);
+    os << "module {\n  func.func @main() {\n"
+          "    %buffer = memref.alloc() {wafer.spm.offset = "
+       << "#wafer.spm_offset<" << offset
+       << ">} : memref<1x2x64xf16, #wafer.memory<spm, tensor>>\n"
+          "    %token = wafer.instr.dte_recv %buffer {peer = 0 : i64, "
+          "bytes = 256 : i64, message = "
+          "#wafer.dte_message<communication = 70, round = 0, slice = "
+       << slice
+       << ">} : memref<1x2x64xf16, #wafer.memory<spm, tensor>> -> "
+          "!async.token\n"
+          "    return\n  }\n}\n";
+    return source;
+  };
+
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (int64_t destinationCount : {2, 4, 8, 15}) {
+      SCOPED_TRACE((llvm::Twine("extent=") + llvm::Twine(extent) +
+                    ", destinations=" + llvm::Twine(destinationCount))
+                       .str());
+      auto source = parse(makeSource(extent, destinationCount));
+      ASSERT_TRUE(source);
+      llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 15> receiverOwners;
+      llvm::SmallVector<mlir::ModuleOp, 16> modules{*source};
+      for (int64_t index = 0; index < destinationCount; ++index) {
+        receiverOwners.push_back(
+            parse(makeReceiver(393216 + index * 256, index)));
+        ASSERT_TRUE(receiverOwners.back());
+        modules.push_back(*receiverOwners.back());
+      }
+
+      auto grouped =
+          wafer::compiler::detail::materializeNativeDirectDTEMultiSends(
+              modules);
+      ASSERT_TRUE(grouped.succeeded()) << grouped.detail;
+      EXPECT_EQ(grouped.statistics.broadcastOperations, 1u);
+      EXPECT_EQ(grouped.statistics.unicastSendOperationsRemoved,
+                static_cast<unsigned>(destinationCount));
+      unsigned unicastSends = 0;
+      source->walk([&](wafer::InstrDTESendOp) { ++unicastSends; });
+      EXPECT_EQ(unicastSends, 0u);
+      wafer::InstrDTEBroadcastOp broadcast;
+      source->walk(
+          [&](wafer::InstrDTEBroadcastOp operation) { broadcast = operation; });
+      ASSERT_TRUE(broadcast);
+      EXPECT_EQ(broadcast.getSourceOffsetAttr().getInt(), (extent - 1) * 256);
+      ASSERT_EQ(broadcast.getPeersAttr().size(), destinationCount);
+      for (int64_t index = 0; index < destinationCount; ++index)
+        EXPECT_EQ(broadcast.getPeersAttr().asArrayRef()[index], index + 1);
+
+      auto completion =
+          wafer::compiler::detail::rebuildRequiredDirectDTEWaits(modules);
+      ASSERT_TRUE(completion.succeeded()) << completion.detail;
+      auto contract = wafer::compiler::testing::bindDirectDTETransport(modules);
+      ASSERT_TRUE(mlir::succeeded(contract));
+      EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
+      ASSERT_TRUE(broadcast.getBindings());
+      EXPECT_EQ(broadcast.getBindings()->size(),
+                static_cast<size_t>(destinationCount));
+      for (mlir::Attribute attribute : *broadcast.getBindings())
+        EXPECT_TRUE(mlir::isa<wafer::DirectDTEBindingAttr>(attribute));
+    }
+  }
+}
+
+TEST_F(DirectDTETransportTest,
+       NativeScatterUsesOneContiguousSourceAndOrderedDestinations) {
+  auto makeSource = [](int64_t extent, int64_t destinationCount) {
+    std::string text;
+    llvm::raw_string_ostream os(text);
+    int64_t stride = extent * 128;
+    os << "module {\n  func.func @main() {\n"
+          "    %buffer = memref.alloc() {wafer.spm.offset = "
+          "#wafer.spm_offset<65536>} : memref<1x"
+       << extent << "x128xf16, #wafer.memory<spm, tensor>>\n";
+    for (int64_t index = 0; index < destinationCount; ++index) {
+      os << "    %slice" << index << " = memref.subview %buffer[0, " << index
+         << ", 0] [1, 1, 128] [1, 1, 1] : memref<1x" << extent
+         << "x128xf16, #wafer.memory<spm, tensor>> to "
+            "memref<1x1x128xf16, strided<["
+         << stride << ", 128, 1], offset: " << index * 128
+         << ">, #wafer.memory<spm, tensor>>\n"
+         << "    %token" << index << " = wafer.instr.dte_send %slice" << index
+         << " {peer = " << index + 1
+         << " : i64, bytes = 256 : i64, message = "
+            "#wafer.dte_message<communication = 71, round = 0, slice = "
+         << index << ">} : memref<1x1x128xf16, strided<[" << stride
+         << ", 128, 1], offset: " << index * 128
+         << ">, #wafer.memory<spm, tensor>> -> !async.token\n";
+    }
+    os << "    return\n  }\n}\n";
+    return text;
+  };
+
+  auto makeReceiver = [](int64_t offset, int64_t slice) {
+    std::string text;
+    llvm::raw_string_ostream os(text);
+    os << "module {\n  func.func @main() {\n"
+          "    %buffer = memref.alloc() {wafer.spm.offset = "
+       << "#wafer.spm_offset<" << offset
+       << ">} : memref<1x2x64xf16, #wafer.memory<spm, tensor>>\n"
+          "    %token = wafer.instr.dte_recv %buffer {peer = 0 : i64, "
+          "bytes = 256 : i64, message = "
+          "#wafer.dte_message<communication = 71, round = 0, slice = "
+       << slice
+       << ">} : memref<1x2x64xf16, #wafer.memory<spm, tensor>> -> "
+          "!async.token\n"
+          "    return\n  }\n}\n";
+    return text;
+  };
+
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (int64_t destinationCount : {2, 4, 8, 15}) {
+      SCOPED_TRACE((llvm::Twine("extent=") + llvm::Twine(extent) +
+                    ", destinations=" + llvm::Twine(destinationCount))
+                       .str());
+      auto source = parse(makeSource(extent, destinationCount));
+      ASSERT_TRUE(source);
+      llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 15> receiverOwners;
+      llvm::SmallVector<mlir::ModuleOp, 16> modules{*source};
+      for (int64_t index = 0; index < destinationCount; ++index) {
+        receiverOwners.push_back(
+            parse(makeReceiver(393216 + index * 256, index)));
+        ASSERT_TRUE(receiverOwners.back());
+        modules.push_back(*receiverOwners.back());
+      }
+
+      auto grouped =
+          wafer::compiler::detail::materializeNativeDirectDTEMultiSends(
+              modules);
+      ASSERT_TRUE(grouped.succeeded()) << grouped.detail;
+      EXPECT_EQ(grouped.statistics.scatterOperations, 1u);
+      EXPECT_EQ(grouped.statistics.unicastSendOperationsRemoved,
+                static_cast<unsigned>(destinationCount));
+      wafer::InstrDTEScatterOp scatter;
+      source->walk(
+          [&](wafer::InstrDTEScatterOp operation) { scatter = operation; });
+      ASSERT_TRUE(scatter);
+      EXPECT_EQ(scatter.getSourceOffsetAttr().getInt(), 0);
+      ASSERT_EQ(scatter.getPeersAttr().size(), destinationCount);
+
+      auto completion =
+          wafer::compiler::detail::rebuildRequiredDirectDTEWaits(modules);
+      ASSERT_TRUE(completion.succeeded()) << completion.detail;
+      auto contract = wafer::compiler::testing::bindDirectDTETransport(modules);
+      ASSERT_TRUE(mlir::succeeded(contract));
+      EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
+      ASSERT_TRUE(scatter.getBindings());
+      EXPECT_EQ(scatter.getBindings()->size(),
+                static_cast<size_t>(destinationCount));
+    }
+  }
+}
+
+TEST_F(DirectDTETransportTest,
+       UnsupportedNativeParametersRemainOrdinaryUnicast) {
+  auto makeSource = [](int64_t destinationCount, int64_t bytes) {
+    std::string text;
+    llvm::raw_string_ostream os(text);
+    os << "module {\n  func.func @main() {\n"
+          "    %buffer = memref.alloc() {wafer.spm.offset = "
+          "#wafer.spm_offset<65536>} : "
+          "memref<1x1025x128xf16, #wafer.memory<spm, tensor>>\n";
+    for (int64_t index = 0; index < destinationCount; ++index) {
+      os << "    %token" << index
+         << " = wafer.instr.dte_send %buffer {peer = " << index + 1
+         << " : i64, bytes = " << bytes
+         << " : i64, message = "
+            "#wafer.dte_message<communication = 72, round = 0, slice = "
+         << index
+         << ">} : memref<1x1025x128xf16, "
+            "#wafer.memory<spm, tensor>> -> !async.token\n";
+    }
+    os << "    return\n  }\n}\n";
+    return text;
+  };
+
+  struct Case {
+    int64_t destinations;
+    int64_t bytes;
+  };
+  for (Case testCase : {Case{1, 256}, Case{3, 256}, Case{5, 256}, Case{16, 256},
+                        Case{2, 255}, Case{2, 257}}) {
+    SCOPED_TRACE((llvm::Twine("destinations=") +
+                  llvm::Twine(testCase.destinations) +
+                  ", bytes=" + llvm::Twine(testCase.bytes))
+                     .str());
+    auto source = parse(makeSource(testCase.destinations, testCase.bytes));
+    ASSERT_TRUE(source);
+    llvm::SmallVector<mlir::ModuleOp, 1> modules{*source};
+    auto grouped =
+        wafer::compiler::detail::materializeNativeDirectDTEMultiSends(modules);
+    ASSERT_TRUE(grouped.succeeded()) << grouped.detail;
+    EXPECT_EQ(grouped.statistics.broadcastOperations, 0u);
+    EXPECT_EQ(grouped.statistics.scatterOperations, 0u);
+    unsigned unicastSends = 0;
+    source->walk([&](wafer::InstrDTESendOp) { ++unicastSends; });
+    EXPECT_EQ(unicastSends, static_cast<unsigned>(testCase.destinations));
+  }
+}
+
+TEST_F(DirectDTETransportTest,
+       ExactP2PCoalescingRequiresContiguousSourceAndDestinationRanges) {
+  auto makeFragments = [](bool send, int64_t peer, int64_t allocationOffset,
+                          int64_t extent, int64_t rowBase, int64_t rowStep = 1,
+                          bool separateCommunications = false) {
+    std::string text;
+    llvm::raw_string_ostream os(text);
+    int64_t stride = extent * 128;
+    os << "module {\n  func.func @main() {\n"
+          "    %buffer = memref.alloc() {wafer.spm.offset = "
+       << "#wafer.spm_offset<" << allocationOffset << ">} : memref<1x" << extent
+       << "x128xf16, #wafer.memory<spm, tensor>>\n";
+    for (int64_t index = 0; index < 2; ++index) {
+      int64_t row = rowBase + index * rowStep;
+      os << "    %slice" << index << " = memref.subview %buffer[0, " << row
+         << ", 0] [1, 1, 128] [1, 1, 1] : memref<1x" << extent
+         << "x128xf16, #wafer.memory<spm, tensor>> to "
+            "memref<1x1x128xf16, strided<["
+         << stride << ", 128, 1], offset: " << row * 128
+         << ">, #wafer.memory<spm, tensor>>\n"
+         << "    %token" << index << " = wafer.instr.dte_"
+         << (send ? "send" : "recv") << " %slice" << index
+         << " {peer = " << peer
+         << " : i64, bytes = 256 : i64, message = "
+            "#wafer.dte_message<communication = "
+         << 80 + (separateCommunications ? index : 0)
+         << ", round = 0, slice = " << index
+         << ">} : memref<1x1x128xf16, strided<[" << stride
+         << ", 128, 1], offset: " << row * 128
+         << ">, #wafer.memory<spm, tensor>> -> !async.token\n";
+    }
+    os << "    return\n  }\n}\n";
+    return text;
+  };
+
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE((llvm::Twine("extent=") + llvm::Twine(extent)).str());
+    auto source = parse(makeFragments(/*send=*/true, /*peer=*/1,
+                                      /*allocationOffset=*/65536, extent,
+                                      /*rowBase=*/0));
+    auto destination = parse(makeFragments(/*send=*/false, /*peer=*/0,
+                                           /*allocationOffset=*/393216, extent,
+                                           /*rowBase=*/2));
+    ASSERT_TRUE(source);
+    ASSERT_TRUE(destination);
+    llvm::SmallVector<mlir::ModuleOp, 2> modules{*source, *destination};
+    auto coalesced =
+        wafer::compiler::detail::coalesceExactDirectDTETransfers(modules);
+    ASSERT_TRUE(coalesced.succeeded()) << coalesced.detail;
+    EXPECT_EQ(coalesced.statistics.coalescedP2PTransfers, 1u);
+    EXPECT_EQ(coalesced.statistics.unicastSendOperationsRemoved, 2u);
+    EXPECT_EQ(coalesced.statistics.unicastReceiveOperationsRemoved, 2u);
+
+    wafer::InstrDTESendOp send;
+    wafer::InstrDTERecvOp receive;
+    source->walk([&](wafer::InstrDTESendOp operation) { send = operation; });
+    destination->walk(
+        [&](wafer::InstrDTERecvOp operation) { receive = operation; });
+    ASSERT_TRUE(send);
+    ASSERT_TRUE(receive);
+    EXPECT_EQ(send.getBytesAttr().getInt(), 512);
+    EXPECT_EQ(receive.getBytesAttr().getInt(), 512);
+    ASSERT_TRUE(send.getBufferOffset());
+    ASSERT_TRUE(receive.getBufferOffset());
+    EXPECT_EQ(*send.getBufferOffset(), 0);
+    EXPECT_EQ(*receive.getBufferOffset(), 512);
+
+    auto completion =
+        wafer::compiler::detail::rebuildRequiredDirectDTEWaits(modules);
+    ASSERT_TRUE(completion.succeeded()) << completion.detail;
+    auto contract = wafer::compiler::testing::bindDirectDTETransport(modules);
+    ASSERT_TRUE(mlir::succeeded(contract));
+    EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
+  }
+
+  auto gapSource = parse(makeFragments(/*send=*/true, /*peer=*/1,
+                                       /*allocationOffset=*/65536,
+                                       /*extent=*/1025, /*rowBase=*/0,
+                                       /*rowStep=*/2));
+  auto gapDestination = parse(makeFragments(
+      /*send=*/false, /*peer=*/0, /*allocationOffset=*/393216,
+      /*extent=*/1025, /*rowBase=*/2, /*rowStep=*/2));
+  ASSERT_TRUE(gapSource);
+  ASSERT_TRUE(gapDestination);
+  llvm::SmallVector<mlir::ModuleOp, 2> gapModules{*gapSource, *gapDestination};
+  auto kept =
+      wafer::compiler::detail::coalesceExactDirectDTETransfers(gapModules);
+  ASSERT_TRUE(kept.succeeded()) << kept.detail;
+  EXPECT_EQ(kept.statistics.coalescedP2PTransfers, 0u);
+  unsigned remainingSends = 0;
+  gapSource->walk([&](wafer::InstrDTESendOp) { ++remainingSends; });
+  EXPECT_EQ(remainingSends, 2u);
+
+  auto phaseSource = parse(makeFragments(
+      /*send=*/true, /*peer=*/1, /*allocationOffset=*/65536,
+      /*extent=*/1025, /*rowBase=*/0, /*rowStep=*/1,
+      /*separateCommunications=*/true));
+  auto phaseDestination = parse(makeFragments(
+      /*send=*/false, /*peer=*/0, /*allocationOffset=*/393216,
+      /*extent=*/1025, /*rowBase=*/2, /*rowStep=*/1,
+      /*separateCommunications=*/true));
+  ASSERT_TRUE(phaseSource);
+  ASSERT_TRUE(phaseDestination);
+  llvm::SmallVector<mlir::ModuleOp, 2> phaseModules{*phaseSource,
+                                                    *phaseDestination};
+  auto phasesKept =
+      wafer::compiler::detail::coalesceExactDirectDTETransfers(phaseModules);
+  ASSERT_TRUE(phasesKept.succeeded()) << phasesKept.detail;
+  EXPECT_EQ(phasesKept.statistics.coalescedP2PTransfers, 0u);
+}
+
+TEST_F(DirectDTETransportTest,
+       FullCardAllToAllCoalescesToOneNativeScatterPerSource) {
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> owners;
+  llvm::SmallVector<mlir::ModuleOp, 16> modules;
+  for (int64_t tile = 0; tile < 16; ++tile) {
+    std::string text;
+    llvm::raw_string_ostream os(text);
+    os << "module {\n  func.func @main() {\n"
+          "    %send_buffer = memref.alloc() {wafer.spm.offset = "
+          "#wafer.spm_offset<65536>} : "
+          "memref<1x1025x128xf16, #wafer.memory<spm, tensor>>\n";
+    int64_t receiveOrdinal = 0;
+    int64_t sendOrdinal = 0;
+    for (int64_t round = 0; round < 4; ++round) {
+      for (int64_t source = round * 4;
+           source < std::min<int64_t>((round + 1) * 4, 16); ++source) {
+        if (source == tile)
+          continue;
+        int64_t payloadSlice = tile < source ? tile : tile - 1;
+        os << "    %receive_buffer" << receiveOrdinal
+           << " = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<"
+           << 393216 + receiveOrdinal * 512
+           << ">} : memref<1x2x64xf16, #wafer.memory<spm, tensor>>\n"
+           << "    %receive" << receiveOrdinal
+           << " = wafer.instr.dte_recv %receive_buffer" << receiveOrdinal
+           << " {peer = " << source
+           << " : i64, bytes = 256 : i64, message = "
+              "#wafer.dte_message<communication = "
+           << 100 + source << ", round = " << round
+           << ", slice = " << payloadSlice
+           << ">} : memref<1x2x64xf16, #wafer.memory<spm, tensor>> -> "
+              "!async.token\n";
+        ++receiveOrdinal;
+      }
+      if (tile / 4 != round)
+        continue;
+      for (int64_t destination = 0; destination < 16; ++destination) {
+        if (destination == tile)
+          continue;
+        int64_t segment = destination < tile ? destination : destination - 1;
+        os << "    %send_slice" << sendOrdinal
+           << " = memref.subview %send_buffer[0, " << segment
+           << ", 0] [1, 1, 128] [1, 1, 1] : "
+              "memref<1x1025x128xf16, #wafer.memory<spm, tensor>> to "
+              "memref<1x1x128xf16, strided<[131200, 128, 1], offset: "
+           << segment * 128 << ">, #wafer.memory<spm, tensor>>\n"
+           << "    %send" << sendOrdinal
+           << " = wafer.instr.dte_send %send_slice" << sendOrdinal
+           << " {peer = " << destination
+           << " : i64, bytes = 256 : i64, message = "
+              "#wafer.dte_message<communication = "
+           << 100 + tile << ", round = " << round << ", slice = " << segment
+           << ">} : memref<1x1x128xf16, "
+              "strided<[131200, 128, 1], offset: "
+           << segment * 128
+           << ">, #wafer.memory<spm, tensor>> -> !async.token\n";
+        ++sendOrdinal;
+      }
+    }
+    os << "    return\n  }\n}\n";
+    owners.push_back(parse(text));
+    ASSERT_TRUE(owners.back()) << "tile=" << tile;
+    modules.push_back(*owners.back());
+  }
+
+  auto grouped =
+      wafer::compiler::detail::materializeNativeDirectDTEMultiSends(modules);
+  ASSERT_TRUE(grouped.succeeded()) << grouped.detail;
+  EXPECT_EQ(grouped.statistics.scatterOperations, 16u);
+  EXPECT_EQ(grouped.statistics.unicastSendOperationsRemoved, 240u);
+  unsigned scatterCount = 0;
+  unsigned sendCount = 0;
+  for (mlir::ModuleOp module : modules) {
+    module.walk([&](wafer::InstrDTEScatterOp) { ++scatterCount; });
+    module.walk([&](wafer::InstrDTESendOp) { ++sendCount; });
+  }
+  EXPECT_EQ(scatterCount, 16u);
+  EXPECT_EQ(sendCount, 0u);
+
+  auto completion =
+      wafer::compiler::detail::rebuildRequiredDirectDTEWaits(modules);
+  ASSERT_TRUE(completion.succeeded()) << completion.detail;
+  auto contract = wafer::compiler::testing::bindDirectDTETransport(modules);
+  ASSERT_TRUE(mlir::succeeded(contract));
+  EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
+  for (mlir::ModuleOp module : modules) {
+    wafer::InstrDTEScatterOp scatter;
+    module.walk(
+        [&](wafer::InstrDTEScatterOp operation) { scatter = operation; });
+    ASSERT_TRUE(scatter);
+    ASSERT_TRUE(scatter.getBindings());
+    EXPECT_EQ(scatter.getBindings()->size(), 15u);
+  }
+}
+
+TEST_F(DirectDTETransportTest,
+       FullCardAllGatherCoalescesToOneNativeBroadcastPerSource) {
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> owners;
+  llvm::SmallVector<mlir::ModuleOp, 16> modules;
+  for (int64_t tile = 0; tile < 16; ++tile) {
+    std::string text;
+    llvm::raw_string_ostream os(text);
+    os << "module {\n  func.func @main() {\n"
+          "    %send_buffer = memref.alloc() {wafer.spm.offset = "
+          "#wafer.spm_offset<65536>} : "
+          "memref<1x2x64xf16, #wafer.memory<spm, tensor>>\n";
+    int64_t receiveOrdinal = 0;
+    int64_t sendOrdinal = 0;
+    for (int64_t round = 0; round < 4; ++round) {
+      for (int64_t source = round * 4;
+           source < std::min<int64_t>((round + 1) * 4, 16); ++source) {
+        if (source == tile)
+          continue;
+        int64_t payloadSlice = tile < source ? tile : tile - 1;
+        os << "    %receive_buffer" << receiveOrdinal
+           << " = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<"
+           << 393216 + receiveOrdinal * 512
+           << ">} : memref<1x2x64xf16, #wafer.memory<spm, tensor>>\n"
+           << "    %receive" << receiveOrdinal
+           << " = wafer.instr.dte_recv %receive_buffer" << receiveOrdinal
+           << " {peer = " << source
+           << " : i64, bytes = 256 : i64, message = "
+              "#wafer.dte_message<communication = "
+           << 200 + source << ", round = " << round
+           << ", slice = " << payloadSlice
+           << ">} : memref<1x2x64xf16, #wafer.memory<spm, tensor>> -> "
+              "!async.token\n";
+        ++receiveOrdinal;
+      }
+      if (tile / 4 != round)
+        continue;
+      for (int64_t destination = 0; destination < 16; ++destination) {
+        if (destination == tile)
+          continue;
+        int64_t payloadSlice =
+            destination < tile ? destination : destination - 1;
+        os << "    %send" << sendOrdinal
+           << " = wafer.instr.dte_send %send_buffer {peer = " << destination
+           << " : i64, bytes = 256 : i64, message = "
+              "#wafer.dte_message<communication = "
+           << 200 + tile << ", round = " << round
+           << ", slice = " << payloadSlice
+           << ">} : memref<1x2x64xf16, #wafer.memory<spm, tensor>> -> "
+              "!async.token\n";
+        ++sendOrdinal;
+      }
+    }
+    os << "    return\n  }\n}\n";
+    owners.push_back(parse(text));
+    ASSERT_TRUE(owners.back()) << "tile=" << tile;
+    modules.push_back(*owners.back());
+  }
+
+  auto grouped =
+      wafer::compiler::detail::materializeNativeDirectDTEMultiSends(modules);
+  ASSERT_TRUE(grouped.succeeded()) << grouped.detail;
+  EXPECT_EQ(grouped.statistics.broadcastOperations, 16u);
+  EXPECT_EQ(grouped.statistics.unicastSendOperationsRemoved, 240u);
+  auto completion =
+      wafer::compiler::detail::rebuildRequiredDirectDTEWaits(modules);
+  ASSERT_TRUE(completion.succeeded()) << completion.detail;
+  auto contract = wafer::compiler::testing::bindDirectDTETransport(modules);
+  ASSERT_TRUE(mlir::succeeded(contract));
+  EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
+  for (mlir::ModuleOp module : modules) {
+    unsigned broadcasts = 0;
+    module.walk([&](wafer::InstrDTEBroadcastOp operation) {
+      ++broadcasts;
+      ASSERT_TRUE(operation.getBindings());
+      EXPECT_EQ(operation.getBindings()->size(), 15u);
+    });
+    EXPECT_EQ(broadcasts, 1u);
+  }
 }
 
 TEST_F(DirectDTETransportTest,

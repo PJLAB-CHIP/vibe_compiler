@@ -258,9 +258,10 @@ configured-board matched `search`/`none` A/B由production qualification签发。
   pair与1个cross-worker placement key只证明对应行为边界，不建立独立profitability接口。未校准的performance term
   对整个cohort删除；candidate只能因proven legality失败被精确拒绝，未校准收益不得参与排序。Production实测前不预设
   bounded shortlist；若以后启用有损策略，结果必须明确标为`budgeted-feasible`。
-- Current Direct-DTE target/CRT合同已经把sender生命周期拆成显式prepare、issue和wait/release：TargetCall lowering在
-  `DirectDTESendPrepare`后立即发射`DirectDTESendIssue`，CRT issue路径执行peer-ready同步、attach和真实
-  `direct_dte_send_async`，wait路径只负责matching completion与release。该实现事实证明issue与wait是两个不同程序点，
+- Current Direct-DTE target/CRT合同已经把sender生命周期拆成显式prepare、issue和wait/release：unicast lowering在
+  `DirectDTESendPrepare`后发射`DirectDTESendIssue`；已确认的native broadcast/scatter使用一个multi-send prepare、逐destination
+  configure和同一个issue。CRT issue路径执行全部peer-ready同步、attach，并分别调用真实`direct_dte_send_async`或按本表既有
+  board-observed raw合同配置一个multi-destination node；wait路径只负责matching completion与release。该实现事实证明issue与wait是两个不同程序点，
   但不自动证明任意payload、buffer、worker或NCC组合都有收益。Completion与movement stage只能在typed token、
   first-read/last-release lifetime和current profile证据同时闭合后生成DTE+NCC overlap transition，再由selector选择；
   未校准组合的profitability保持unknown。

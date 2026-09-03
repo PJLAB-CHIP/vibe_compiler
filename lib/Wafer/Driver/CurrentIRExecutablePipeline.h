@@ -26,6 +26,9 @@ struct CurrentIRDownstreamStatistics {
   uint64_t wdmaOperations = 0;
   uint64_t gatherScatterOperations = 0;
   uint64_t dteSendOperations = 0;
+  uint64_t dteBroadcastOperations = 0;
+  uint64_t dteScatterOperations = 0;
+  uint64_t dteUnicastSendsCoalesced = 0;
   uint64_t dteReceiveOperations = 0;
   uint64_t dteWaitOperations = 0;
   uint64_t nccJoinOperations = 0;

@@ -90,6 +90,11 @@
 # RUN:   --output %t.direct-dte-address.so \
 # RUN:   --loader-abi tx8-kcore-loader
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm -u %t.direct-dte-address.so | FileCheck %s --check-prefix=DTE-ADDRESS
+# RUN: %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/direct-dte-multisend-target-kernel.ll \
+# RUN:   --output %t.direct-dte-multisend.so \
+# RUN:   --loader-abi tx8-kcore-loader
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm -u %t.direct-dte-multisend.so | FileCheck %s --check-prefix=DTE-MULTISEND
 
 # CHECK-LABEL: compile:
 # CHECK-SAME: /opt/llvm/bin/clang++
@@ -184,6 +189,8 @@
 # CLUSTER-TOPOLOGY-GRID: error: target_symbol_not_allowed: undefined symbols are not allowed by loader ABI tx8-kcore-loader-grid: init_tile_id
 
 # DTE-ADDRESS: U get_tile_spm_addr_base
+# DTE-MULTISEND: U direct_dte_attach
+# DTE-MULTISEND-NOT: wafer_tx81_direct_dte_multisend
 
 # COUNT-CAPTURE-LABEL: compile-crt:
 # COUNT-CAPTURE-SAME: -DWAFER_TX81_PROFILE_TRACE_CRT=1

@@ -3,9 +3,9 @@
 #include "Wafer/Simulator/Kernel/TargetModelKernel.h"
 
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
+#include "Wafer/Target/PhysicalTensor/PhysicalTensorCodec.h"
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/TargetFormat.h"
-#include "Wafer/Target/PhysicalTensor/PhysicalTensorCodec.h"
 
 #include "Wafer/Simulator/Kernel/TargetModelTileCommandTracker.h"
 
@@ -239,6 +239,18 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
     case TargetCallBuiltin::DirectDTESendPrepare:
       arguments[6] = 1;
       break;
+    case TargetCallBuiltin::DirectDTEMultiSendPrepare:
+      arguments[1] = 256;
+      arguments[2] = 0;
+      arguments[3] = 4;
+      arguments[4] =
+          static_cast<uint32_t>(TargetDirectDTEMultiSendKind::Broadcast);
+      arguments[5] = 0;
+      break;
+    case TargetCallBuiltin::DirectDTEMultiSendAddDestination:
+      arguments[2] = 1;
+      arguments[3] = 0;
+      break;
     case TargetCallBuiltin::NCCJoin:
     case TargetCallBuiltin::DirectDTESendIssue:
     case TargetCallBuiltin::DirectDTERecvPrepare:
@@ -327,7 +339,7 @@ TEST(TargetModelKernelTest, EveryTypedCallPayloadHasClosedFieldValidation) {
         << descriptor.symbol << ": " << llvm::toString(std::move(error));
     ++validated;
   }
-  EXPECT_EQ(validated, 112u);
+  EXPECT_EQ(validated, 114u);
 }
 
 TEST(TargetModelTileCommandTrackerTest,

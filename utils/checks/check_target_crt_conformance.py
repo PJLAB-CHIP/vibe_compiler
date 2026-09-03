@@ -512,6 +512,68 @@ def check_direct_dte_lifecycle(source_text: str) -> None:
             "Direct DTE send prepare must remain transport-effect free",
         )
 
+    multisend_prepare = function_body(
+        source_text, "wafer_tx81_direct_dte_multisend_prepare"
+    )
+    for needle in [
+        "bytes_per_destination != WAFER_DIRECT_DTE_MULTISEND_BYTES",
+        "destination_count == 2U",
+        "destination_count == 15U",
+        "kind != WAFER_DIRECT_DTE_MULTISEND_BROADCAST",
+        "kind != WAFER_DIRECT_DTE_MULTISEND_SCATTER",
+        "wafer_direct_dte_sender.destination_count = destination_count;",
+    ]:
+        require_contains(
+            multisend_prepare, needle, "native Direct DTE multi-send prepare"
+        )
+    for needle in ["direct_dte_attach(", "GR_DTE_CMD_VALID"]:
+        require_absent(
+            multisend_prepare,
+            needle,
+            "native Direct DTE multi-send prepare must remain effect free",
+        )
+
+    multisend_destination = function_body(
+        source_text, "wafer_tx81_direct_dte_multisend_add_destination"
+    )
+    require_in_order(
+        multisend_destination,
+        [
+            "wafer_direct_dte_sender.configured_destinations++",
+            "wafer_direct_dte_sender.remote_destinations[index] = remote_dst;",
+            "wafer_direct_dte_sender.remote_tiles[index] =",
+            "wafer_direct_dte_sender.remote_fsms[index] =",
+        ],
+        "native Direct DTE destination configuration",
+    )
+
+    raw_multisend = function_body(
+        source_text, "wafer_direct_dte_issue_multisend"
+    )
+    for needle in [
+        "WAFER_DIRECT_DTE_MULTISEND_SCATTER = 1",
+        "WAFER_DIRECT_DTE_MULTISEND_BROADCAST = 2",
+    ]:
+        require_contains(source_text, needle, "raw Direct DTE mode mapping")
+    require_in_order(
+        raw_multisend,
+        [
+            "GR_DTE_SRC_ADDR_LO",
+            "GR_DTE_DST_ADDR_LO_0",
+            "GR_DTE_MODE",
+            "GR_DTE_LENGTH",
+            "GR_DTE_DEST_NUM",
+            "sender->destination_count - 1U",
+            "GR_DTE_CMD_VALID",
+        ],
+        "native Direct DTE raw register programming",
+    )
+    require_contains(
+        raw_multisend,
+        "mode |= UINT32_C(1) << 8U;",
+        "native Direct DTE scatter sg_flag",
+    )
+
     issue_helper = function_body(source_text, "wafer_direct_dte_issue_sender")
     require_in_order(
         issue_helper,
@@ -833,6 +895,13 @@ def check_ncc_worker_command_abi(
             "uint64_t src, uint64_t remote_dst, uint32_t byte_count, "
             "uint32_t local_tile, uint32_t remote_tile, "
             "uint32_t remote_fsm_id, uint32_t is_high_performance",
+        "wafer_tx81_direct_dte_multisend_prepare":
+            "uint64_t src, uint32_t bytes_per_destination, "
+            "uint32_t local_tile, uint32_t destination_count, "
+            "uint32_t kind, uint32_t is_high_performance",
+        "wafer_tx81_direct_dte_multisend_add_destination":
+            "uint64_t event, uint64_t remote_dst, uint32_t remote_tile, "
+            "uint32_t remote_fsm_id",
         "wafer_tx81_direct_dte_recv_prepare":
             "uint64_t dst, uint32_t byte_count, uint32_t local_tile, "
             "uint32_t remote_tile, uint32_t local_fsm_id",
@@ -846,9 +915,9 @@ def check_ncc_worker_command_abi(
         header_text,
         re.DOTALL,
     )
-    if len(declarations) != 112:
+    if len(declarations) != 114:
         fail(
-            "runtime CRT worker ABI: expected 112 public declarations, found "
+            "runtime CRT worker ABI: expected 114 public declarations, found "
             f"{len(declarations)}"
         )
     signatures = {
@@ -919,7 +988,7 @@ def check_ncc_worker_command_abi(
         registry_text,
         r"addEnumSelectedCalls\(\);.*?"
         r'addVoid\("direct_dte_send_issue".*?'
-        r"assert\(result\.size\(\)\s*==\s*112",
+        r"assert\(result\.size\(\)\s*==\s*114",
         "target-call registry current-only closure",
     )
     require_pattern(

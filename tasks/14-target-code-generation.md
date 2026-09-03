@@ -154,6 +154,17 @@ Direct-DTE begin/send/issue/receive/wait/finish、NCC join以及各 compute/move
 
 TargetCall/CRT 是 current target ABI，不是 search IR，也不能把 target transaction倒灌到 structured层。
 
+`wafer.instr.dte_broadcast/scatter`各表示一次已经物化的raw multi-destination sender issue。TargetCall不把它拆回多个
+`direct_dte_send_prepare`：使用一个multi-send prepare、按IR顺序逐项配置destination，再由现有send issue/wait/release完成同一sender
+event。prepare保存kind、source、每destination bytes、local Tile和destination count；每个destination配置保存remote Tile、accepted
+remote SPM address和receiver FSM。CRT必须先等待all-and-only destination ready，再配置一个DTE node的全部destination register slots；
+任一字段失败使整个sender event进入transport error，不能发布部分destination。
+
+TargetCall descriptor继续是参数位置和宽度的唯一事实源。multi-send destination count只接受`2/4/8/15`，每destination bytes只接受
+`256`；scatter source span必须checked等于`count * 256`，broadcast source span为`256`。CRT按已确认合同写
+`dest_num = count - 1`、broadcast mode或scatter mode+`sg_flag`；其它mode、stride、iteration和raw destination slot不由本次开放。
+SystemC/TargetCall decoder消费相同prepare/configure/issue序列并执行broadcast copy或ordered equal-segment scatter，不从symbol名恢复kind。
+
 ### 3.4 Structure 与 completion
 
 conversion保留 source control-flow、SSA/effect与明确的异步 completion关系。entry 的
@@ -226,6 +237,8 @@ Host gates至少覆盖：
 - 每个package-owned TargetTensor一次bounded materialization，profile/model consumer不得触发per-Tile或
   per-capture重复转换；
 - unsupported target call、geometry、dtype、overflow、undefined symbol与digest mismatch负例；
+- native DTE broadcast/scatter的prepare→all destination configure→single issue→wait、`2/4/8/15 × 256B`字段窄化、
+  duplicate/unavailable destination、partial configure、wrong mode/count/span及TargetCall decoder/SystemC exact mapping；
 - transaction staging的原子失败；
 - 同一组owner-backed target LLVM modules被`ExecutablePackage` assembly、TargetCall frontend和SystemC直接消费，
   无第二次lowering。

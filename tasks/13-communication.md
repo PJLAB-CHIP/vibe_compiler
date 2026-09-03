@@ -89,9 +89,11 @@ current IR fresh构造。不得保留future message/buffer/event/action清单、
 canonical shortest path写成route、逐link resource或deadlock证明。future target若暴露programmable route，须先扩同一typed
 target/IR合同，再由route verifier和event scheduler消费。
 
-对同一个actual source value和完全相同的payload window/layout，单destination使用一条direct edge；多destination使用
-topology-aware spreading tree。初始只有source Tile持有payload；每轮每个已持有payload的participant至多向一个未持有payload的
-participant发送，先均衡participant已经承担的sender轮次，再按current topology最短hop和physical Tile ID确定性选择。收到payload的consumer Tile可以用其actual receive
+对同一个actual source value和完全相同的payload window/layout，单destination使用一条direct edge；多destination优先匹配已确认的
+native DTE broadcast合同，否则使用topology-aware spreading tree。初始只有source Tile持有payload；每轮每个已持有payload的
+participant至多向一个未持有payload的participant发送。Region拓扑序约束合法parent/child并优先保持maximum spreading frontier，
+不能用Tile ID代替order；同一frontier内的性能排序依次考虑sender负载、最短hop和physical Tile ID。model route不能写入IR或代替
+真实route证据。收到payload的consumer Tile可以用其actual receive
 staging继续relay，因而source不再直接承担全部fanout。每条edge都必须有actual sender、receiver、token和buffer effect；relay send
 必须在matching receive完成后，且在该buffer可能被in-place consumer改写前读取原payload。不同payload/window/layout、同Tile不同
 Region residency不能合并。该变换只复制bitwise相同payload，不调整reduction/contraction的participant或运算次序；fanin只有current
@@ -109,18 +111,42 @@ live endpoints重新构造component。合并前还要证明parent-block SSA domi
 Closure不保存route、round或buffer对象。
 
 若每个participant均有相同lane数的source payload group，并且每个group的destination集合恰为其它全部participant，则该component是
-typed complete exchange，使用minimum-hop Ring All-Gather；不同participant的payload只要求各自的exact typed representation和cover，
-不要求数值相同。每个lane在`P-1`轮中让每个Tile各有一个recv和一个send，第`r`轮转发上一轮收到的actual staging。稀疏component在
-participant没有双向依赖，或current IR同样证明共同cut时，使用确定性round matching：每轮每个sender至多一个edge、每个receiver至多
-四个edge，优先minimum-hop并使用physical Tile ID完成tie-break。
+typed complete exchange。每个source group满足native broadcast时使用一次multi-destination issue；否则使用minimum-hop Ring
+All-Gather。不同participant的payload只要求各自的exact typed representation和cover，不要求数值相同。Ring每个lane在`P-1`轮中让
+每个Tile各有一个recv和一个send，第`r`轮转发上一轮收到的actual staging。完整All-to-All若每source的destination pieces按typed
+destination list对应连续等长segments并满足native scatter合同，使用一次multi-destination scatter；否则仍是普通pairwise edges。
+其余稀疏component在participant没有双向依赖，或current IR同样证明共同cut时，使用capacity-constrained maximum matching分轮：
+每轮每个sender至多一个issue、每个receiver至多四个live source；先最大化covered edges，再优先minimum-hop并使用physical Tile ID和
+relation identity完成tie-break。
+
+Native multi-destination合同不是raw register能力的无界开放。当前只接受calibration已经真实执行的fanout `2/4/8/15`、每destination
+`256B`以及available physical Tile列表；broadcast要求所有destination收到同一source range，scatter要求source是按destination list
+排列的连续等长segments。其它byte count、fanout、ragged segment、dynamic remote selector或same-buffer alias保持unsupported native
+choice并继续使用已定义的unicast算法。该限制是target capability，不来自workload shape。
+
+本轮不引入Bruck或recursive-doubling production choice。两者需要把多个current payload重新pack为增长中的连续buffer；当current IR已经
+是不同allocation时不能假设未来offset连续，也不能为算法名称隐式增加copy。只有后续matched board profile给出相对Ring/pairwise的
+crossover，并且pack/unpack作为actual Instr和MiniMalloc input完整计价时，才从同一request-local choice入口扩展。
 
 硬件证据强度保持分层：`docs/tx81-compiler-hardware-calibration.md`中的16-Tile FP16 Ring All-Gather属于
 `board-observed`；4-Tile、其它dtype和其它payload只在本任务中作为compiler结构、resource和message-matching覆盖，不能由host测试升级为
 板端资格。
 
-Ring和matching只产生request-local parent/peer/round choice，同一次transformation必须把每轮展开成existing peer ops、SSA token及
-current control flow，随后销毁choice。`DTEMessageAttr.round`只参与消息身份；actual op order才是执行轮次。在共同cut内先物化该轮
+Ring、matching和multi-destination grouping只产生request-local parent/peer/round choice，同一次transformation必须把每轮展开成
+actual peer/multi-send ops、SSA token及current control flow，随后销毁choice。`DTEMessageAttr.round`只参与消息身份；actual op order
+才是执行轮次。在共同cut内先物化该轮
 receive prepare，再物化root/relay send。Closed complete exchange和round-safe sparse component不得改走shared DDR。
+
+Native grouping不在Tile层新增第二套communication op。Movement对eligible group保留从同一个actual source发出的普通
+`wafer.tile.peer_send`及每destination `peer_recv`；全部TileRegion转为current Instr、但fresh completion尚未生成时，card-scoped atomic
+transformation先按双侧actual buffer range合并同phase、同source/destination Tile的连续unicast send/recv，再从剩余actual unicast
+send/message/buffer关系建立并立即物化一个`wafer.instr.dte_broadcast`或
+`wafer.instr.dte_scatter`，删除被其完全覆盖的source-side unicast send。broadcast按physical Tile ID排列`peers`；scatter按source
+physical segment递增顺序排列`peers`，两者都携带一一对应的`DTEMessageAttr`且排序确定。broadcast的`bytes`是共同payload范围，scatter的
+`bytes`是每destination segment范围，source span严格为
+`peers.size * bytes`。每个destination继续使用普通`wafer.instr.dte_recv`及自己的staging/token。memory/completion完成后，
+DeviceExecutable verifier为每个destination附加一个existing `DirectDTEBindingAttr`。一个multi-send sender token保护完整source span直到
+整个hardware issue完成，不能由任一单独receiver wait代替。
 
 一个bidirectional causal component若没有共同cut，就不是可安全执行的同轮peer exchange。Baseline在首次mutation前为它选择显式
 shared-DDR store/load boundary；该选择来自current Region因果顺序，并进入actual DDR/SPM planner，不是Direct DTE verifier失败后的
@@ -223,6 +249,11 @@ package/runtime不重新选择peer、route、algorithm或memory placement。
   participant为typed failure；不同window/layout和同Tile不同Region不合组；
 - complete exchange覆盖4/16 Tile、1024/1025/1031及unavailable topology：精确`P-1`轮，每轮每Tile一个send/recv，payload origin
   all-and-only到达其它Tile，sender/FSM上界和whole-card wait graph无环；
+- native broadcast/scatter覆盖fanout `2/4/8/15`、adjacent/interleaved physical Tile顺序和每destination `256B`；分别断言one source
+  issue对all-and-only receive、broadcast同range、scatter连续segment mapping、`dest_num=fanout-1`、sender token与全部source span lifetime；
+  `255/257B`、fanout `1/3/5/16`、ragged segment、dynamic selector和alias按typed native rejection保留ordinary unicast结果；
+- exact coalescing覆盖同Tile pair的连续/有gap/overlap、相同/不同encoding及1024/1025/1031 logical owner；只在双侧physical union连续时
+  减少message，relation cover、consumer subview和actual MiniMalloc owner不变；
 - sparse multi-group覆盖chain/diamond/不规则destination集合：round-safe case由matching精确覆盖每条edge一次，不增加relay或DDR；
   bidirectional no-cut case形成一个explicit shared-DDR boundary且不生成伪round；
 - rotating SPM slots、source-relative/selector-table binding、range conflict与exact wait；

@@ -9,6 +9,7 @@ add_mlir_library(WaferTransforms
   Instr/DirectDTETransport.cpp
   Instr/LifetimeAnalysis.cpp
   Instr/MiniMallocPacking.cpp
+  Instr/NativeDirectDTEMultiSend.cpp
   Instr/NCCJoinPlacement.cpp
   Instr/PlanDDRMemory.cpp
   Instr/PlanSPMMemory.cpp

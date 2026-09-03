@@ -27,6 +27,10 @@ struct BoundaryMovementStatistics {
   uint64_t peerRelaySends = 0;
   uint64_t topologyFanoutGroups = 0;
   uint64_t topologyFanoutRounds = 0;
+  uint64_t nativeBroadcastGroups = 0;
+  uint64_t nativeBroadcastRounds = 0;
+  uint64_t nativeScatterGroups = 0;
+  uint64_t nativeScatterRounds = 0;
   uint64_t ringComponents = 0;
   uint64_t ringRounds = 0;
   uint64_t sparseRoundComponents = 0;

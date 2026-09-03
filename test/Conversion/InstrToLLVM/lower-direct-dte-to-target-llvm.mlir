@@ -10,20 +10,20 @@ module {
 
   func.func @main(%status: i64) {
     %src = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<4xf32, #wafer.memory<spm, tensor>>
+        : memref<8xf32, #wafer.memory<spm, tensor>>
     %dst = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
-        : memref<4xf32, #wafer.memory<spm, tensor>>
+        : memref<8xf32, #wafer.memory<spm, tensor>>
     %recv = wafer.instr.dte_recv %dst
-        {peer = 1 : i64, bytes = 16 : i64,
+        {buffer_offset = 16 : i64, peer = 1 : i64, bytes = 16 : i64,
          message = #wafer.dte_message<communication = 10, round = 0, slice = 0>,
-         binding = #wafer.direct_dte_binding<allocation = normal, receiver_fsm = 0, remote_address_mode = absolute, remote_receiver_address = 65792, route_bindings = [], completion = sender_wait_receiver_fsm>}
-        : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
+         binding = #wafer.direct_dte_binding<allocation = normal, receiver_fsm = 0, remote_address_mode = absolute, remote_receiver_address = 65808, route_bindings = [], completion = sender_wait_receiver_fsm>}
+        : memref<8xf32, #wafer.memory<spm, tensor>> -> !async.token
     %selector = arith.constant 1 : i64
     %send = wafer.instr.dte_send %src, %selector
-        {peer = 1 : i64, bytes = 16 : i64,
+        {buffer_offset = 16 : i64, peer = 1 : i64, bytes = 16 : i64,
          message = #wafer.dte_message<communication = 9, round = 0, slice = 0>,
          binding = #wafer.direct_dte_binding<allocation = normal, receiver_fsm = 0, remote_address_mode = selector_table, remote_receiver_address = 65792, route_bindings = [0, 65792, 0, 1, 66048, 1], completion = sender_wait_receiver_fsm>}
-        : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
+        : memref<8xf32, #wafer.memory<spm, tensor>> -> !async.token
     wafer.instr.dte_wait %send, %recv : !async.token, !async.token
     return
   }
@@ -31,8 +31,10 @@ module {
 
 // CURRENT-LABEL: llvm.func @main
 // CURRENT: llvm.call @wafer_tx81_direct_dte_begin
+// CURRENT: llvm.add
 // CURRENT: %[[RECV:.*]] = llvm.call @wafer_tx81_direct_dte_recv_prepare
 // CURRENT-SAME: : (i64, i32, i32, i32, i32) -> i64
+// CURRENT: llvm.add
 // CURRENT: llvm.urem
 // CURRENT: llvm.icmp "eq"
 // CURRENT: llvm.select

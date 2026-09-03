@@ -266,7 +266,8 @@ static void collectComputeCost(mlir::Operation *op,
   // Fill and movement/DTE instructions have no arithmetic logical-op cost.
   if (mlir::isa<InstrFillOp, InstrMaskMoveOp, InstrRDMAOp, InstrWDMAOp,
                 InstrGatherScatterOp, InstrTDMADataMoveOp, InstrDTESendOp,
-                InstrDTERecvOp, InstrDTEWaitOp>(op))
+                InstrDTEBroadcastOp, InstrDTEScatterOp, InstrDTERecvOp,
+                InstrDTEWaitOp>(op))
     return;
 
   auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(op);
@@ -287,6 +288,23 @@ static void collectNoCCost(mlir::Operation *op, InstructionProgramCost &cost,
     Quantity bytes{static_cast<uint64_t>(send.getBytes())};
     Quantity total = multiply(bytes, multiplicity);
     add(cost.noc.aggregateTransmitBytes, total);
+    markDirectionalNoCUnavailable(cost);
+    return;
+  }
+  if (auto broadcast = mlir::dyn_cast<InstrDTEBroadcastOp>(op)) {
+    Quantity bytes{static_cast<uint64_t>(broadcast.getBytes())};
+    Quantity destinations{
+        static_cast<uint64_t>(broadcast.getPeersAttr().size())};
+    add(cost.noc.aggregateTransmitBytes,
+        multiply(multiply(bytes, destinations), multiplicity));
+    markDirectionalNoCUnavailable(cost);
+    return;
+  }
+  if (auto scatter = mlir::dyn_cast<InstrDTEScatterOp>(op)) {
+    Quantity bytes{static_cast<uint64_t>(scatter.getBytes())};
+    Quantity destinations{static_cast<uint64_t>(scatter.getPeersAttr().size())};
+    add(cost.noc.aggregateTransmitBytes,
+        multiply(multiply(bytes, destinations), multiplicity));
     markDirectionalNoCUnavailable(cost);
     return;
   }
@@ -399,7 +417,7 @@ static void collectInstructionWork(mlir::Operation *op,
                       countStaticSite);
   if (mlir::isa<InstrDTEWaitOp>(op))
     addExecutionCount(work.dteWaitOperations, multiplicity, 1, countStaticSite);
-  if (mlir::isa<InstrDTESendOp>(op))
+  if (mlir::isa<InstrDTESendOp, InstrDTEBroadcastOp, InstrDTEScatterOp>(op))
     addExecutionCount(work.dteSendOperations, multiplicity, 1, countStaticSite);
   if (mlir::isa<InstrDTERecvOp>(op))
     addExecutionCount(work.dteReceiveOperations, multiplicity, 1,

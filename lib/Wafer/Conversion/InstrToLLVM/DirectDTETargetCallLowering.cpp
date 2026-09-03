@@ -90,6 +90,10 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
       materializeAddress(op, op.getBuffer(), "direct DTE send source");
   if (mlir::failed(source))
     return mlir::failure();
+  mlir::Value sourceValue = *source;
+  if (int64_t offset = op.getBufferOffset().value_or(0); offset != 0)
+    sourceValue = builder.create<mlir::LLVM::AddOp>(
+        op.getLoc(), *source, constantI64(op.getLoc(), offset));
 
   mlir::Value remoteDestination;
   mlir::Value remoteReceiverFsm =
@@ -111,7 +115,7 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
   }
   case DTERemoteAddressMode::SourceRelative:
     remoteDestination = builder.create<mlir::LLVM::AddOp>(
-        op.getLoc(), *source,
+        op.getLoc(), sourceValue,
         constantI64(op.getLoc(), binding.getRemoteReceiverAddress()));
     break;
   case DTERemoteAddressMode::SelectorTable: {
@@ -177,7 +181,7 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
   }
 
   llvm::SmallVector<mlir::Value, 8> args;
-  args.push_back(*source);
+  args.push_back(sourceValue);
   args.push_back(remoteDestination);
   appendI32(op.getLoc(), args, op.getBytesAttr().getInt());
   appendI32(op.getLoc(), args, domain.tileId.getValue());
@@ -191,6 +195,111 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
            getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue),
            mlir::ValueRange(event));
   return event;
+}
+
+template <typename MultiSendOp>
+static mlir::FailureOr<mlir::Value>
+lowerDTEMultiSend(FunctionLowering &lowering, MultiSendOp op,
+                  const DirectDTEEndpointDomain &domain, bool scatter) {
+  std::optional<mlir::ArrayAttr> bindings = op.getBindings();
+  if (!bindings ||
+      bindings->size() != static_cast<size_t>(op.getPeersAttr().size()))
+    return op.emitError(
+        "unsupported_target_transport: native DTE multi-send is missing "
+        "accepted per-destination bindings");
+  mlir::FailureOr<mlir::Value> source = lowering.materializeAddress(
+      op, op.getBuffer(), "native Direct DTE multi-send source");
+  if (mlir::failed(source))
+    return mlir::failure();
+  mlir::Value sourceValue = *source;
+  if (op.getSourceOffsetAttr().getInt() != 0)
+    sourceValue = lowering.builder.create<mlir::LLVM::AddOp>(
+        op.getLoc(), *source,
+        lowering.constantI64(op.getLoc(), op.getSourceOffsetAttr().getInt()));
+
+  llvm::SmallVector<mlir::Value, 8> prepare;
+  prepare.push_back(sourceValue);
+  lowering.appendI32(op.getLoc(), prepare, op.getBytesAttr().getInt());
+  lowering.appendI32(op.getLoc(), prepare, domain.tileId.getValue());
+  lowering.appendI32(op.getLoc(), prepare, op.getPeersAttr().size());
+  lowering.appendI32(
+      op.getLoc(), prepare,
+      scatter
+          ? static_cast<uint32_t>(target::TargetDirectDTEMultiSendKind::Scatter)
+          : static_cast<uint32_t>(
+                target::TargetDirectDTEMultiSendKind::Broadcast));
+  lowering.appendI32(op.getLoc(), prepare, /*isHighPerformance=*/0);
+  mlir::Value event = lowering.emitI64Call(
+      op.getLoc(),
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEMultiSendPrepare),
+      prepare);
+
+  const TargetMemoryPolicy targetMemory = getTargetMemoryPolicy();
+  for (auto [index, peerAndBinding] : llvm::enumerate(
+           llvm::zip_equal(op.getPeersAttr().asArrayRef(), *bindings))) {
+    auto [peer, bindingAttribute] = peerAndBinding;
+    auto binding = mlir::dyn_cast<DirectDTEBindingAttr>(bindingAttribute);
+    const TileId peerTile(peer);
+    if (!binding || peer < 0 ||
+        !llvm::is_contained(domain.availableTileIds, peerTile) ||
+        peerTile == domain.tileId ||
+        binding.getAllocationProfile() != DTEAllocationProfile::Normal ||
+        binding.getCompletionProfile() !=
+            DTECompletionProfile::SenderWaitReceiverFSM ||
+        binding.getRemoteAddressMode() == DTERemoteAddressMode::SelectorTable)
+      return op.emitError(
+          "unsupported_target_transport: native DTE multi-send has an "
+          "invalid peer or binding profile");
+
+    mlir::Value segmentSource = sourceValue;
+    if (scatter && index != 0)
+      segmentSource = lowering.builder.create<mlir::LLVM::AddOp>(
+          op.getLoc(), sourceValue,
+          lowering.constantI64(op.getLoc(), static_cast<int64_t>(index) *
+                                                op.getBytesAttr().getInt()));
+    mlir::Value remoteDestination;
+    if (binding.getRemoteAddressMode() == DTERemoteAddressMode::Absolute) {
+      int64_t remoteEnd = 0;
+      if (!checkedAdd(binding.getRemoteReceiverAddress(),
+                      op.getBytesAttr().getInt(), remoteEnd) ||
+          binding.getRemoteReceiverAddress() < targetMemory.spmBase ||
+          remoteEnd > targetMemory.spmLimit)
+        return op.emitError(
+            "unsupported_target_transport: native DTE multi-send remote "
+            "range is outside target SPM");
+      remoteDestination =
+          lowering.constantI64(op.getLoc(), binding.getRemoteReceiverAddress());
+    } else {
+      remoteDestination = lowering.builder.create<mlir::LLVM::AddOp>(
+          op.getLoc(), segmentSource,
+          lowering.constantI64(op.getLoc(),
+                               binding.getRemoteReceiverAddress()));
+    }
+    llvm::SmallVector<mlir::Value, 4> destination{
+        event, remoteDestination, lowering.constantI32(op.getLoc(), peer),
+        lowering.constantI32(op.getLoc(), binding.getReceiverFsmId())};
+    lowering.emitCall(op.getLoc(),
+                      getTargetCallDescriptor(
+                          TargetCallBuiltin::DirectDTEMultiSendAddDestination),
+                      destination);
+  }
+  lowering.emitCall(
+      op.getLoc(),
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue),
+      mlir::ValueRange(event));
+  return event;
+}
+
+mlir::FailureOr<mlir::Value>
+FunctionLowering::lowerDTEBroadcast(InstrDTEBroadcastOp op,
+                                    const DirectDTEEndpointDomain &domain) {
+  return lowerDTEMultiSend(*this, op, domain, /*scatter=*/false);
+}
+
+mlir::FailureOr<mlir::Value>
+FunctionLowering::lowerDTEScatter(InstrDTEScatterOp op,
+                                  const DirectDTEEndpointDomain &domain) {
+  return lowerDTEMultiSend(*this, op, domain, /*scatter=*/true);
 }
 
 mlir::FailureOr<mlir::Value>
@@ -224,9 +333,13 @@ FunctionLowering::lowerDTERecv(InstrDTERecvOp op,
       materializeAddress(op, op.getBuffer(), "direct DTE receive destination");
   if (mlir::failed(destination))
     return mlir::failure();
+  mlir::Value destinationValue = *destination;
+  if (int64_t offset = op.getBufferOffset().value_or(0); offset != 0)
+    destinationValue = builder.create<mlir::LLVM::AddOp>(
+        op.getLoc(), *destination, constantI64(op.getLoc(), offset));
 
   llvm::SmallVector<mlir::Value, 8> args;
-  args.push_back(*destination);
+  args.push_back(destinationValue);
   appendI32(op.getLoc(), args, op.getBytesAttr().getInt());
   appendI32(op.getLoc(), args, domain.tileId.getValue());
   appendI32(op.getLoc(), args, peerTileId.getValue());

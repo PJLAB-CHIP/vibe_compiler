@@ -275,6 +275,9 @@ addDownstreamStatistics(CurrentIRDownstreamStatistics &total,
   total.wdmaOperations += value.wdmaOperations;
   total.gatherScatterOperations += value.gatherScatterOperations;
   total.dteSendOperations += value.dteSendOperations;
+  total.dteBroadcastOperations += value.dteBroadcastOperations;
+  total.dteScatterOperations += value.dteScatterOperations;
+  total.dteUnicastSendsCoalesced += value.dteUnicastSendsCoalesced;
   total.dteReceiveOperations += value.dteReceiveOperations;
   total.dteWaitOperations += value.dteWaitOperations;
   total.nccJoinOperations += value.nccJoinOperations;

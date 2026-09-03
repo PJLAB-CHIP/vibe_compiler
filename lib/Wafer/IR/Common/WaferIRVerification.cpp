@@ -12,6 +12,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/STLExtras.h"
 
+#include <algorithm>
 #include <limits>
 
 namespace wafer::detail {
@@ -343,6 +344,83 @@ mlir::LogicalResult verifyDTEP2P(mlir::Operation *op, mlir::Value buffer,
     return op->emitOpError(
         "target_geometry_mismatch: DTE byte count exceeds buffer physical "
         "byte size");
+  return mlir::success();
+}
+
+mlir::LogicalResult verifyDTEMultiSend(mlir::Operation *op, mlir::Value buffer,
+                                       mlir::IntegerAttr sourceOffset,
+                                       mlir::DenseI64ArrayAttr peers,
+                                       mlir::IntegerAttr bytes,
+                                       mlir::ArrayAttr messages,
+                                       std::optional<mlir::ArrayAttr> bindings,
+                                       mlir::Type tokenType, bool scatter) {
+  if (!peers || peers.empty())
+    return op->emitOpError("native DTE multi-send requires destination peers");
+  const size_t count = peers.size();
+  if (count != 2 && count != 4 && count != 8 && count != 15)
+    return op->emitOpError(
+        "unsupported_target_transport: native DTE multi-send destination "
+        "count must be 2, 4, 8, or 15");
+  if (bytes.getInt() != 256)
+    return op->emitOpError(
+        "unsupported_target_transport: native DTE multi-send requires "
+        "exactly 256 bytes per destination");
+  if (!messages || messages.size() != count)
+    return op->emitOpError(
+        "native DTE multi-send peers and messages must have equal lengths");
+  llvm::SmallVector<int64_t, 16> sortedPeers(peers.asArrayRef());
+  llvm::sort(sortedPeers);
+  if (sortedPeers.front() < 0 ||
+      static_cast<uint64_t>(sortedPeers.back()) >
+          std::numeric_limits<uint32_t>::max() ||
+      std::adjacent_find(sortedPeers.begin(), sortedPeers.end()) !=
+          sortedPeers.end())
+    return op->emitOpError(
+        "native DTE multi-send peers must be unique non-negative uint32_t "
+        "values");
+  for (mlir::Attribute message : messages)
+    if (!mlir::isa<DTEMessageAttr>(message))
+      return op->emitOpError(
+          "native DTE multi-send messages must be dte_message attributes");
+  if (bindings) {
+    if ((*bindings).size() != count)
+      return op->emitOpError(
+          "native DTE multi-send bindings must match destination count");
+    for (mlir::Attribute binding : *bindings) {
+      auto current = mlir::dyn_cast<DirectDTEBindingAttr>(binding);
+      if (!current)
+        return op->emitOpError(
+            "native DTE multi-send bindings must be direct_dte_binding "
+            "attributes");
+      if (current.getRemoteAddressMode() == DTERemoteAddressMode::SelectorTable)
+        return op->emitOpError(
+            "unsupported_target_transport: native DTE multi-send does not "
+            "support dynamic selector-table bindings");
+    }
+  }
+  if (!getLogicalTensorType(buffer.getType()) ||
+      !hasWaferMemorySpace(buffer.getType(), MemorySpace::SPM))
+    return op->emitOpError(
+        "native DTE multi-send buffer must use Wafer SPM memory");
+  if (!mlir::isa<mlir::async::TokenType>(tokenType))
+    return op->emitOpError(
+        "native DTE multi-send result must be an async token");
+  auto memrefType = mlir::dyn_cast<mlir::MemRefType>(buffer.getType());
+  std::optional<WaferPhysicalTensorInfo> info =
+      memrefType ? computeWaferPhysicalTensorInfo(memrefType) : std::nullopt;
+  int64_t requiredBytes = bytes.getInt();
+  if (scatter &&
+      (!checkedMul(requiredBytes, static_cast<int64_t>(count), requiredBytes) ||
+       requiredBytes <= 0))
+    return op->emitOpError(
+        "target_abi_narrowing: native DTE scatter source span overflows");
+  int64_t requiredEnd = 0;
+  if (sourceOffset.getInt() < 0 ||
+      !checkedAdd(sourceOffset.getInt(), requiredBytes, requiredEnd) || !info ||
+      info->physicalBytes < requiredEnd)
+    return op->emitOpError(
+        "target_geometry_mismatch: native DTE multi-send source buffer is "
+        "smaller than its required physical span");
   return mlir::success();
 }
 

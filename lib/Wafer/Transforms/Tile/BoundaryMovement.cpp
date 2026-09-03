@@ -87,9 +87,6 @@ struct PeerPlan {
   int64_t communicationId = 0;
   int64_t protocolRound = 0;
   int64_t scheduleComponent = -1;
-  unsigned destinationRegionRank = 0;
-  unsigned sourceTileOrder = 0;
-  unsigned destinationTileOrder = 0;
   bool useSharedDDR = false;
   bool scheduledPeer = false;
   std::optional<unsigned> relaySourceRelation;
@@ -132,7 +129,7 @@ static mlir::Operation *getOperation(TileRegionOp operation) {
 
 struct FanoutHolder {
   uint64_t tile = 0;
-  unsigned tileOrder = 0;
+  unsigned regionRank = 0;
   TileRegionOp region;
   std::optional<unsigned> peerIndex;
   uint64_t sends = 0;
@@ -145,7 +142,7 @@ struct FanoutCandidate {
   uint64_t hops = 0;
   uint64_t sourceTile = 0;
   uint64_t destinationTile = 0;
-  unsigned destinationOrder = 0;
+  unsigned destinationRank = 0;
 };
 
 static llvm::SmallVector<PayloadGroup, 16>
@@ -504,8 +501,6 @@ static mlir::LogicalResult buildRegionTopologicalRanks(
   for (PeerPlan &peer : peers) {
     if (peer.useSharedDDR)
       continue;
-    peer.sourceTileOrder = 0;
-    peer.destinationTileOrder = static_cast<unsigned>(peer.destinationTile + 1);
     if (peer.scheduledPeer)
       continue;
     if (mlir::failed(addEdge(peer.sourceRegion, peer.destinationRegion))) {
@@ -666,6 +661,228 @@ static bool hasBidirectionalParticipant(const CommunicationComponent &component,
       sources, [&](uint64_t tile) { return destinations.contains(tile); });
 }
 
+static bool isQualifiedNativeBroadcastGroup(const PayloadGroup &group,
+                                            llvm::ArrayRef<PeerPlan> peers) {
+  const size_t destinations = group.peers.size();
+  if (destinations != 2 && destinations != 4 && destinations != 8 &&
+      destinations != 15)
+    return false;
+  return llvm::all_of(group.peers, [&](unsigned peerIndex) {
+    return peers[peerIndex].bytes == 256 &&
+           hasSameFanoutPayload(peers[group.peers.front()], peers[peerIndex]);
+  });
+}
+
+static void scheduleNativeBroadcastGroup(const PayloadGroup &group,
+                                         llvm::MutableArrayRef<PeerPlan> peers,
+                                         int64_t componentId, int64_t round) {
+  unsigned communication = peers[group.peers.front()].relationIndex;
+  for (unsigned peerIndex : llvm::drop_begin(group.peers))
+    communication = std::min(communication, peers[peerIndex].relationIndex);
+  for (unsigned peerIndex : group.peers) {
+    PeerPlan &peer = peers[peerIndex];
+    peer.scheduledPeer = true;
+    peer.transportSourceTile = peer.sourceTile;
+    peer.communicationId = communication;
+    peer.protocolRound = round;
+    peer.scheduleComponent = componentId;
+    peer.relaySourceRelation.reset();
+  }
+}
+
+static bool
+scheduleNativeCompleteExchange(const CommunicationComponent &component,
+                               llvm::ArrayRef<PayloadGroup> groups,
+                               llvm::MutableArrayRef<PeerPlan> peers,
+                               unsigned laneCount, int64_t componentId,
+                               BoundaryMovementStatistics &statistics) {
+  if (!llvm::all_of(component.groups, [&](unsigned groupIndex) {
+        return isQualifiedNativeBroadcastGroup(groups[groupIndex], peers);
+      }))
+    return false;
+  llvm::DenseMap<uint64_t, llvm::SmallVector<unsigned, 4>> groupsBySource;
+  for (unsigned groupIndex : component.groups)
+    groupsBySource[groups[groupIndex].sourceTile].push_back(groupIndex);
+  for (uint64_t source : component.participants) {
+    auto found = groupsBySource.find(source);
+    if (found == groupsBySource.end() || found->second.size() != laneCount)
+      return false;
+    llvm::sort(found->second, [&](unsigned lhs, unsigned rhs) {
+      const PeerPlan &left = peers[groups[lhs].peers.front()];
+      const PeerPlan &right = peers[groups[rhs].peers.front()];
+      if (left.sourceRegion != right.sourceRegion)
+        return left.sourceRegion->isBeforeInBlock(right.sourceRegion);
+      return std::tie(left.sourceResult, left.relationIndex) <
+             std::tie(right.sourceResult, right.relationIndex);
+    });
+  }
+  const uint64_t receiverCapacity =
+      TargetDirectDTEResourceLimits::receiverFSMsPerTile;
+  const uint64_t roundsPerLane =
+      (component.participants.size() + receiverCapacity - 1) / receiverCapacity;
+  for (unsigned lane = 0; lane < laneCount; ++lane)
+    for (auto [sourceIndex, source] : llvm::enumerate(component.participants)) {
+      const unsigned groupIndex = groupsBySource[source][lane];
+      const int64_t round = static_cast<int64_t>(
+          lane * roundsPerLane + sourceIndex / receiverCapacity);
+      scheduleNativeBroadcastGroup(groups[groupIndex], peers, componentId,
+                                   round);
+      ++statistics.nativeBroadcastGroups;
+    }
+  statistics.nativeBroadcastRounds += laneCount * roundsPerLane;
+  return true;
+}
+
+struct NativeScatterWindow {
+  unsigned peerIndex = 0;
+  mlir::Value root;
+  int64_t begin = 0;
+  int64_t end = 0;
+};
+
+static std::optional<NativeScatterWindow>
+getNativeScatterWindow(unsigned peerIndex, llvm::ArrayRef<PeerPlan> peers) {
+  const PeerPlan &peer = peers[peerIndex];
+  mlir::Value root = peer.sourceSPM;
+  auto type = mlir::dyn_cast<mlir::MemRefType>(root.getType());
+  if (!type || peer.bytes != 256)
+    return std::nullopt;
+  llvm::SmallVector<int64_t, 4> offsets;
+  llvm::SmallVector<int64_t, 4> sizes;
+  if (!peer.sourceWindowOffsets.empty()) {
+    if (peer.sourceWindowOffsets.size() !=
+            static_cast<size_t>(type.getRank()) ||
+        peer.sourceWindowSizes.size() != peer.sourceWindowOffsets.size() ||
+        peer.sourceWindowStrides.size() != peer.sourceWindowOffsets.size() ||
+        llvm::any_of(peer.sourceWindowStrides,
+                     [](int64_t stride) { return stride != 1; }))
+      return std::nullopt;
+    offsets.assign(peer.sourceWindowOffsets.begin(),
+                   peer.sourceWindowOffsets.end());
+    sizes.assign(peer.sourceWindowSizes.begin(), peer.sourceWindowSizes.end());
+  } else {
+    offsets.assign(type.getRank(), 0);
+    sizes.assign(type.getShape().begin(), type.getShape().end());
+    while (auto subview = root.getDefiningOp<mlir::memref::SubViewOp>()) {
+      auto sourceType =
+          mlir::dyn_cast<mlir::MemRefType>(subview.getSource().getType());
+      if (!sourceType || sourceType.getRank() != type.getRank() ||
+          llvm::any_of(subview.getStaticOffsets(),
+                       [](int64_t value) {
+                         return mlir::ShapedType::isDynamic(value) || value < 0;
+                       }) ||
+          llvm::any_of(subview.getStaticStrides(),
+                       [](int64_t value) { return value != 1; }))
+        return std::nullopt;
+      for (auto [index, addend] : llvm::enumerate(subview.getStaticOffsets()))
+        if (llvm::AddOverflow(offsets[index], addend, offsets[index]))
+          return std::nullopt;
+      root = subview.getSource();
+      type = sourceType;
+    }
+  }
+  MemoryAttr memory = getWaferMemoryAttr(type);
+  if (!memory || (memory.getLayout() != MemLayout::Tensor &&
+                  memory.getLayout() != MemLayout::NTensor))
+    return std::nullopt;
+  std::optional<WaferStaticPhysicalOffsetCalculator> calculator =
+      WaferStaticPhysicalOffsetCalculator::create(type);
+  if (!calculator || calculator->getInfo().bitPackedElement ||
+      calculator->getInfo().elementBytes <= 0)
+    return std::nullopt;
+  int64_t elements = 1;
+  llvm::SmallVector<int64_t, 4> last(offsets);
+  for (auto [index, size] : llvm::enumerate(sizes)) {
+    if (size <= 0 || llvm::MulOverflow(elements, size, elements) ||
+        llvm::AddOverflow(last[index], size - 1, last[index]))
+      return std::nullopt;
+  }
+  int64_t logicalBytes = 0;
+  if (llvm::MulOverflow(elements, calculator->getInfo().elementBytes,
+                        logicalBytes) ||
+      logicalBytes != static_cast<int64_t>(peer.bytes))
+    return std::nullopt;
+  std::optional<int64_t> begin = calculator->getByteOffset(offsets);
+  std::optional<int64_t> lastByte = calculator->getByteOffset(last);
+  int64_t end = 0;
+  if (!begin || !lastByte ||
+      llvm::AddOverflow(*lastByte, calculator->getInfo().elementBytes, end) ||
+      end - *begin != static_cast<int64_t>(peer.bytes))
+    return std::nullopt;
+  return NativeScatterWindow{peerIndex, root, *begin, end};
+}
+
+static bool scheduleNativeAllToAll(const CommunicationComponent &component,
+                                   llvm::ArrayRef<PayloadGroup> groups,
+                                   llvm::MutableArrayRef<PeerPlan> peers,
+                                   int64_t componentId,
+                                   BoundaryMovementStatistics &statistics) {
+  llvm::DenseMap<uint64_t, llvm::SmallVector<NativeScatterWindow, 16>> bySource;
+  for (unsigned groupIndex : component.groups)
+    for (unsigned peerIndex : groups[groupIndex].peers) {
+      std::optional<NativeScatterWindow> window =
+          getNativeScatterWindow(peerIndex, peers);
+      if (!window)
+        return false;
+      bySource[peers[peerIndex].sourceTile].push_back(*window);
+    }
+  if (bySource.size() != component.participants.size())
+    return false;
+  const size_t expectedDestinations = component.participants.size() - 1;
+  if (expectedDestinations != 2 && expectedDestinations != 4 &&
+      expectedDestinations != 8 && expectedDestinations != 15)
+    return false;
+  for (uint64_t source : component.participants) {
+    auto found = bySource.find(source);
+    if (found == bySource.end() || found->second.size() != expectedDestinations)
+      return false;
+    llvm::sort(found->second, [](const NativeScatterWindow &lhs,
+                                 const NativeScatterWindow &rhs) {
+      return std::tie(lhs.begin, lhs.peerIndex) <
+             std::tie(rhs.begin, rhs.peerIndex);
+    });
+    llvm::DenseSet<uint64_t> destinations;
+    const PeerPlan &first = peers[found->second.front().peerIndex];
+    mlir::Value firstRoot = found->second.front().root;
+    int64_t expectedBegin = found->second.front().begin;
+    for (const NativeScatterWindow &window : found->second) {
+      const PeerPlan &peer = peers[window.peerIndex];
+      if (peer.sourceRegion != first.sourceRegion || window.root != firstRoot ||
+          window.begin != expectedBegin ||
+          !destinations.insert(peer.destinationTile).second ||
+          llvm::AddOverflow(expectedBegin, int64_t{256}, expectedBegin))
+        return false;
+    }
+    for (uint64_t participant : component.participants)
+      if (participant != source && !destinations.contains(participant))
+        return false;
+  }
+
+  const uint64_t receiverCapacity =
+      TargetDirectDTEResourceLimits::receiverFSMsPerTile;
+  for (auto [sourceIndex, source] : llvm::enumerate(component.participants)) {
+    llvm::SmallVector<NativeScatterWindow, 16> &windows = bySource[source];
+    unsigned communication = peers[windows.front().peerIndex].relationIndex;
+    for (const NativeScatterWindow &window : llvm::drop_begin(windows))
+      communication =
+          std::min(communication, peers[window.peerIndex].relationIndex);
+    const int64_t round = static_cast<int64_t>(sourceIndex / receiverCapacity);
+    for (const NativeScatterWindow &window : windows) {
+      PeerPlan &peer = peers[window.peerIndex];
+      peer.scheduledPeer = true;
+      peer.transportSourceTile = source;
+      peer.communicationId = communication;
+      peer.protocolRound = round;
+      peer.scheduleComponent = componentId;
+      peer.relaySourceRelation.reset();
+    }
+    ++statistics.nativeScatterGroups;
+  }
+  statistics.nativeScatterRounds +=
+      (component.participants.size() + receiverCapacity - 1) / receiverCapacity;
+  return true;
+}
+
 static mlir::LogicalResult scheduleRingComponent(
     const CommunicationComponent &component,
     llvm::ArrayRef<PayloadGroup> groups, llvm::MutableArrayRef<PeerPlan> peers,
@@ -730,6 +947,139 @@ static mlir::LogicalResult scheduleRingComponent(
   return mlir::success();
 }
 
+/// Selects one maximum-cardinality sparse communication round.  The network
+/// is bipartite: every physical source Tile contributes capacity one and every
+/// destination Tile contributes the target's receiver-FSM capacity.  Among
+/// maximum-cardinality solutions, successive shortest augmenting paths
+/// minimize total modeled hop count.  The result is query-local and is
+/// consumed immediately by scheduleSparseComponent.
+static mlir::FailureOr<llvm::SmallVector<unsigned, 16>>
+selectSparseRound(llvm::ArrayRef<unsigned> remaining,
+                  llvm::ArrayRef<PeerPlan> peers,
+                  const TargetTopology &topology, std::string &detail) {
+  llvm::SmallVector<uint64_t, 16> sources;
+  llvm::SmallVector<uint64_t, 16> destinations;
+  for (unsigned peerIndex : remaining) {
+    const PeerPlan &peer = peers[peerIndex];
+    if (!llvm::is_contained(sources, peer.sourceTile))
+      sources.push_back(peer.sourceTile);
+    if (!llvm::is_contained(destinations, peer.destinationTile))
+      destinations.push_back(peer.destinationTile);
+  }
+  llvm::sort(sources);
+  llvm::sort(destinations);
+
+  const unsigned sourceBase = 1;
+  const unsigned destinationBase = sourceBase + sources.size();
+  const unsigned sink = destinationBase + destinations.size();
+  const unsigned nodeCount = sink + 1;
+  struct FlowEdge {
+    unsigned to = 0;
+    unsigned reverse = 0;
+    int capacity = 0;
+    int64_t cost = 0;
+    std::optional<unsigned> peerIndex;
+  };
+  llvm::SmallVector<llvm::SmallVector<FlowEdge, 16>, 34> graph(nodeCount);
+  auto addEdge = [&](unsigned from, unsigned to, int capacity, int64_t cost,
+                     std::optional<unsigned> peerIndex = std::nullopt) {
+    unsigned forward = graph[from].size();
+    unsigned reverse = graph[to].size();
+    graph[from].push_back(FlowEdge{to, reverse, capacity, cost, peerIndex});
+    graph[to].push_back(FlowEdge{from, forward, 0, -cost, std::nullopt});
+  };
+  for (unsigned source = 0; source < sources.size(); ++source)
+    addEdge(/*from=*/0, sourceBase + source, /*capacity=*/1, /*cost=*/0);
+  for (unsigned destination = 0; destination < destinations.size();
+       ++destination)
+    addEdge(destinationBase + destination, sink,
+            TargetDirectDTEResourceLimits::receiverFSMsPerTile, /*cost=*/0);
+
+  llvm::SmallVector<unsigned, 64> ordered(remaining.begin(), remaining.end());
+  llvm::sort(ordered, [&](unsigned lhs, unsigned rhs) {
+    const PeerPlan &left = peers[lhs];
+    const PeerPlan &right = peers[rhs];
+    return std::tie(left.sourceTile, left.destinationTile, left.relationIndex) <
+           std::tie(right.sourceTile, right.destinationTile,
+                    right.relationIndex);
+  });
+  for (unsigned peerIndex : ordered) {
+    const PeerPlan &peer = peers[peerIndex];
+    std::optional<uint64_t> hops = topology.getOnCardShortestHopDistance(
+        CardId(0), TileId(peer.sourceTile), TileId(peer.destinationTile));
+    if (!hops || *hops > static_cast<uint64_t>(INT64_MAX)) {
+      detail = "sparse exchange contains disconnected participants";
+      return mlir::failure();
+    }
+    unsigned source = static_cast<unsigned>(
+        llvm::find(sources, peer.sourceTile) - sources.begin());
+    unsigned destination = static_cast<unsigned>(
+        llvm::find(destinations, peer.destinationTile) - destinations.begin());
+    addEdge(sourceBase + source, destinationBase + destination,
+            /*capacity=*/1, static_cast<int64_t>(*hops), peerIndex);
+  }
+
+  constexpr int64_t infinity = std::numeric_limits<int64_t>::max();
+  while (true) {
+    llvm::SmallVector<int64_t, 34> distance(nodeCount, infinity);
+    llvm::SmallVector<int, 34> previousNode(nodeCount, -1);
+    llvm::SmallVector<int, 34> previousEdge(nodeCount, -1);
+    distance[0] = 0;
+    for (unsigned iteration = 1; iteration < nodeCount; ++iteration) {
+      bool changed = false;
+      for (unsigned node = 0; node < nodeCount; ++node) {
+        if (distance[node] == infinity)
+          continue;
+        for (auto [edgeIndex, edge] : llvm::enumerate(graph[node])) {
+          if (edge.capacity == 0 ||
+              (edge.cost > 0 && distance[node] > infinity - edge.cost) ||
+              (edge.cost < 0 &&
+               distance[node] <
+                   std::numeric_limits<int64_t>::min() - edge.cost))
+            continue;
+          int64_t candidate = distance[node] + edge.cost;
+          if (candidate >= distance[edge.to])
+            continue;
+          distance[edge.to] = candidate;
+          previousNode[edge.to] = static_cast<int>(node);
+          previousEdge[edge.to] = static_cast<int>(edgeIndex);
+          changed = true;
+        }
+      }
+      if (!changed)
+        break;
+    }
+    if (previousNode[sink] < 0)
+      break;
+    for (unsigned node = sink; node != 0;) {
+      unsigned from = static_cast<unsigned>(previousNode[node]);
+      unsigned edgeIndex = static_cast<unsigned>(previousEdge[node]);
+      FlowEdge &edge = graph[from][edgeIndex];
+      --edge.capacity;
+      ++graph[node][edge.reverse].capacity;
+      node = from;
+    }
+  }
+
+  llvm::SmallVector<unsigned, 16> selected;
+  for (unsigned source = 0; source < sources.size(); ++source)
+    for (const FlowEdge &edge : graph[sourceBase + source])
+      if (edge.peerIndex && edge.capacity == 0)
+        selected.push_back(*edge.peerIndex);
+  llvm::sort(selected, [&](unsigned lhs, unsigned rhs) {
+    const PeerPlan &left = peers[lhs];
+    const PeerPlan &right = peers[rhs];
+    return std::tie(left.sourceTile, left.destinationTile, left.relationIndex) <
+           std::tie(right.sourceTile, right.destinationTile,
+                    right.relationIndex);
+  });
+  if (selected.empty()) {
+    detail = "sparse exchange round matching made no progress";
+    return mlir::failure();
+  }
+  return selected;
+}
+
 static mlir::LogicalResult scheduleSparseComponent(
     const CommunicationComponent &component,
     llvm::ArrayRef<PayloadGroup> groups, llvm::MutableArrayRef<PeerPlan> peers,
@@ -740,42 +1090,14 @@ static mlir::LogicalResult scheduleSparseComponent(
     llvm::append_range(remaining, groups[groupIndex].peers);
   int64_t round = 0;
   while (!remaining.empty()) {
-    llvm::sort(remaining, [&](unsigned lhs, unsigned rhs) {
-      const PeerPlan &left = peers[lhs];
-      const PeerPlan &right = peers[rhs];
-      uint64_t leftHops =
-          topology
-              .getOnCardShortestHopDistance(CardId(0), TileId(left.sourceTile),
-                                            TileId(left.destinationTile))
-              .value_or(std::numeric_limits<uint64_t>::max());
-      uint64_t rightHops =
-          topology
-              .getOnCardShortestHopDistance(CardId(0), TileId(right.sourceTile),
-                                            TileId(right.destinationTile))
-              .value_or(std::numeric_limits<uint64_t>::max());
-      return std::tie(leftHops, left.sourceTile, left.destinationTile,
-                      left.relationIndex) <
-             std::tie(rightHops, right.sourceTile, right.destinationTile,
-                      right.relationIndex);
-    });
-    llvm::DenseSet<uint64_t> usedSources;
-    llvm::DenseMap<uint64_t, unsigned> receiverCounts;
-    llvm::DenseSet<unsigned> selected;
-    for (unsigned peerIndex : remaining) {
+    mlir::FailureOr<llvm::SmallVector<unsigned, 16>> selected =
+        selectSparseRound(remaining, peers, topology, detail);
+    if (mlir::failed(selected))
+      return mlir::failure();
+    llvm::DenseSet<unsigned> selectedSet;
+    for (unsigned peerIndex : *selected) {
       PeerPlan &peer = peers[peerIndex];
-      std::optional<uint64_t> hops = topology.getOnCardShortestHopDistance(
-          CardId(0), TileId(peer.sourceTile), TileId(peer.destinationTile));
-      if (!hops) {
-        detail = "sparse exchange contains disconnected participants";
-        return mlir::failure();
-      }
-      if (usedSources.contains(peer.sourceTile) ||
-          receiverCounts.lookup(peer.destinationTile) >=
-              TargetDirectDTEResourceLimits::receiverFSMsPerTile)
-        continue;
-      usedSources.insert(peer.sourceTile);
-      ++receiverCounts[peer.destinationTile];
-      selected.insert(peerIndex);
+      selectedSet.insert(peerIndex);
       peer.scheduledPeer = true;
       peer.transportSourceTile = peer.sourceTile;
       peer.communicationId = peer.relationIndex;
@@ -783,13 +1105,9 @@ static mlir::LogicalResult scheduleSparseComponent(
       peer.scheduleComponent = componentId;
       peer.relaySourceRelation.reset();
     }
-    if (selected.empty()) {
-      detail = "sparse exchange round matching made no progress";
-      return mlir::failure();
-    }
     remaining.erase(std::remove_if(remaining.begin(), remaining.end(),
                                    [&](unsigned peerIndex) {
-                                     return selected.contains(peerIndex);
+                                     return selectedSet.contains(peerIndex);
                                    }),
                     remaining.end());
     ++round;
@@ -829,6 +1147,10 @@ static mlir::LogicalResult buildTopologyFanoutChoices(
     if (std::optional<unsigned> lanes =
             getCompleteExchangeLaneCount(component, groups, peers);
         lanes && hasCurrentCommunicationCut(component, groups, peers)) {
+      if (scheduleNativeCompleteExchange(component, groups, peers, *lanes,
+                                         static_cast<int64_t>(componentIndex),
+                                         statistics))
+        continue;
       if (mlir::failed(
               scheduleRingComponent(component, groups, peers, *lanes,
                                     static_cast<int64_t>(componentIndex),
@@ -836,6 +1158,11 @@ static mlir::LogicalResult buildTopologyFanoutChoices(
         return mlir::failure();
       continue;
     }
+    if (hasCurrentCommunicationCut(component, groups, peers) &&
+        scheduleNativeAllToAll(component, groups, peers,
+                               static_cast<int64_t>(componentIndex),
+                               statistics))
+      continue;
     if (hasBidirectionalParticipant(component, groups, peers) &&
         !hasCurrentCommunicationCut(component, groups, peers)) {
       for (unsigned groupIndex : component.groups)
@@ -854,10 +1181,6 @@ static mlir::LogicalResult buildTopologyFanoutChoices(
   if (mlir::failed(
           buildRegionTopologicalRanks(module, peers, regionRanks, detail)))
     return mlir::failure();
-
-  for (PeerPlan &peer : peers)
-    peer.destinationRegionRank =
-        regionRanks.lookup(peer.destinationRegion.getOperation());
 
   constexpr CardId cardId(0);
   for (const PayloadGroup &payloadGroup : groups) {
@@ -884,12 +1207,25 @@ static mlir::LogicalResult buildTopologyFanoutChoices(
       }
     }
 
+    if (isQualifiedNativeBroadcastGroup(payloadGroup, peers)) {
+      scheduleNativeBroadcastGroup(payloadGroup, peers,
+                                   /*componentId=*/-1, /*round=*/0);
+      ++statistics.nativeBroadcastGroups;
+      ++statistics.nativeBroadcastRounds;
+      continue;
+    }
+
     unsigned firstRelation = peers[group.front()].relationIndex;
     for (unsigned peerIndex : llvm::drop_begin(group))
       firstRelation = std::min(firstRelation, peers[peerIndex].relationIndex);
     const int64_t communicationId = static_cast<int64_t>(firstRelation);
     llvm::SmallVector<FanoutHolder, 16> holders;
-    holders.push_back(FanoutHolder{root.sourceTile, root.sourceTileOrder,
+    auto rootRank = regionRanks.find(getOperation(root.sourceRegion));
+    if (rootRank == regionRanks.end()) {
+      detail = "same-payload fanout source has no current Region rank";
+      return mlir::failure();
+    }
+    holders.push_back(FanoutHolder{root.sourceTile, rootRank->second,
                                    root.sourceRegion, std::nullopt, 0});
     llvm::SmallVector<unsigned, 16> remaining(group.begin(), group.end());
     llvm::sort(remaining, [&](unsigned lhs, unsigned rhs) {
@@ -902,15 +1238,14 @@ static mlir::LogicalResult buildTopologyFanoutChoices(
       for (auto [holderIndex, holder] : llvm::enumerate(holders))
         for (unsigned peerIndex : remaining) {
           const PeerPlan &destination = peers[peerIndex];
-          if (holder.tileOrder >= destination.destinationTileOrder)
-            continue;
           auto sourceRank = regionRanks.find(holder.region.getOperation());
           TileRegionOp destinationRegion = destination.destinationRegion;
           auto destinationRank =
               regionRanks.find(destinationRegion.getOperation());
           if (sourceRank == regionRanks.end() ||
               destinationRank == regionRanks.end() ||
-              sourceRank->second >= destinationRank->second)
+              sourceRank->second >= destinationRank->second ||
+              holder.regionRank >= destinationRank->second)
             continue;
           std::optional<uint64_t> hops = topology->getOnCardShortestHopDistance(
               cardId, TileId(holder.tile), TileId(destination.destinationTile));
@@ -919,13 +1254,13 @@ static mlir::LogicalResult buildTopologyFanoutChoices(
           candidates.push_back(FanoutCandidate{
               static_cast<unsigned>(holderIndex), peerIndex, holder.sends,
               *hops, holder.tile, destination.destinationTile,
-              destination.destinationTileOrder});
+              destinationRank->second});
         }
       llvm::sort(candidates, [](const FanoutCandidate &lhs,
                                 const FanoutCandidate &rhs) {
-        return std::tie(lhs.senderLoad, lhs.destinationOrder, lhs.hops,
+        return std::tie(lhs.senderLoad, lhs.destinationRank, lhs.hops,
                         lhs.sourceTile, lhs.destinationTile) <
-               std::tie(rhs.senderLoad, rhs.destinationOrder, rhs.hops,
+               std::tie(rhs.senderLoad, rhs.destinationRank, rhs.hops,
                         rhs.sourceTile, rhs.destinationTile);
       });
 
@@ -969,8 +1304,7 @@ static mlir::LogicalResult buildTopologyFanoutChoices(
                       remaining.end());
       for (const FanoutCandidate &choice : selected)
         holders.push_back(FanoutHolder{
-            peers[choice.peerIndex].destinationTile,
-            peers[choice.peerIndex].destinationTileOrder,
+            peers[choice.peerIndex].destinationTile, choice.destinationRank,
             peers[choice.peerIndex].destinationRegion, choice.peerIndex, 0});
       ++round;
     }

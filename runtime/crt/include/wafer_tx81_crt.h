@@ -64,6 +64,13 @@ void wafer_tx81_direct_dte_begin_after_prepare(uint64_t status_addr,
 uint64_t wafer_tx81_direct_dte_send_prepare(
     uint64_t src, uint64_t remote_dst, uint32_t byte_count, uint32_t local_tile,
     uint32_t remote_tile, uint32_t remote_fsm_id, uint32_t is_high_performance);
+uint64_t wafer_tx81_direct_dte_multisend_prepare(
+    uint64_t src, uint32_t bytes_per_destination, uint32_t local_tile,
+    uint32_t destination_count, uint32_t kind, uint32_t is_high_performance);
+void wafer_tx81_direct_dte_multisend_add_destination(uint64_t event,
+                                                     uint64_t remote_dst,
+                                                     uint32_t remote_tile,
+                                                     uint32_t remote_fsm_id);
 void wafer_tx81_direct_dte_send_issue(uint64_t event);
 uint64_t wafer_tx81_direct_dte_recv_prepare(uint64_t dst, uint32_t byte_count,
                                             uint32_t local_tile,

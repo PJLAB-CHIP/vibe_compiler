@@ -787,12 +787,12 @@ TEST(TargetCodeGenTest, CurrentEngineRegistryIncludesDirectDTEIssueAndWait) {
             1);
   EXPECT_EQ(
       siteKindCount(wafer::runtime::ProfileTargetSiteKind::DirectDTEControl),
-      5);
+      7);
   EXPECT_EQ(
       siteKindCount(wafer::runtime::ProfileTargetSiteKind::DirectDTEIssue), 1);
   EXPECT_EQ(siteKindCount(wafer::runtime::ProfileTargetSiteKind::DirectDTEWait),
             1);
-  EXPECT_EQ(descriptors.size(), 112u);
+  EXPECT_EQ(descriptors.size(), 114u);
   EXPECT_EQ(wafer::getTargetCallTSMEngine(
                 getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA)),
             wafer::TargetCallTSMEngine::RDMA);

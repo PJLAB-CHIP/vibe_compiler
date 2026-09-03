@@ -218,10 +218,11 @@ def Wafer_DTEMessageAttr : AttrDef<Wafer_Dialect, "DTEMessage"> {
   let mnemonic = "dte_message";
   let summary = "Stable logical identity for a Direct DTE message";
   let description = [{
-    Identifies one logical fixed-size unicast message without relying on op
+    Identifies one logical fixed-size destination message without relying on op
     order, symbol names, buffers, or physical transport resources.
     `communication_id`, `round`, and `payload_slice` are assigned by the
-    selected physical peer-dataflow plan.
+    selected physical peer-dataflow transformation. A native multi-destination
+    sender carries one such identity for every destination.
     Physical endpoint, DTE allocation, FSM, and completion choices do not
     belong to this attribute.
   }];

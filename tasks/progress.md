@@ -20,7 +20,8 @@
 
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `production-host-readiness` | `board-ready` | Q53 / 16 | Q52 region partition refinement、current frontend、interface、package/runtime | fresh source/IR/package/oracle/runner/no-card矩阵通过并达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
+| 1 | `mesh-communication-materialization` | `board-ready` | 06、13、14、16 | layout-resolved current TileRegion、live boundary relations、4×4 target topology及已确认raw DTE broadcast/scatter合同 | exact fragment coalescing、mesh-aware fanout/sparse/complete-exchange算法和typed multi-destination DTE沿唯一current-IR链进入completion、actual MiniMalloc、TargetCall/SystemC/package/no-card；1024/1025/1031与2/4/8/15、16-Tile矩阵fresh通过；真实板端暂缓，因此最多签发`board-ready` | `tasks/plans/physical-dataflow-synthesis.md` |
+| 2 | `production-host-readiness` | `board-ready` | Q53 / 16 | Q52 region partition refinement及current mesh communication、frontend、interface、package/runtime | 通信修改后的fresh source/IR/package/oracle/runner/no-card矩阵通过并重新达到`board-ready`；本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 
 ## 已满足的直接前置
 

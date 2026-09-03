@@ -503,9 +503,18 @@ Complete exchange要求每个participant都有相同lane数的local payload grou
 live relations；合并还必须在最近parent block中保持现有SSA dominance和effect顺序。任一Tile无法满足这些条件时，整个component保持
 原current IR，不进行部分合并，也不把顺序不同的阶段冒充all-gather。
 
-Movement在layout/bufferization后从live endpoints fresh重建component。Closed complete exchange使用topology-aware Ring All-Gather；
-每个lane精确执行`P-1`轮。能够在一个actual cut上发 issue 的稀疏exchange使用sender容量1、receiver容量4的确定性round matching。
-每轮在同一次transformation中直接形成actual recv prepare、send、SSA token和control-flow order；临时ring/matching choice随调用销毁。
+Movement在layout/bufferization后从live endpoints fresh重建component，并物化ordinary peer transfer。全部TileRegion转为Instr、但fresh
+completion尚未生成时，card-scoped transformation从actual send/recv及其buffer/view range做exact physical-range coalescing。只有同一
+communication phase、source/destination Tile、encoding与root相同，而且source和destination物理区间分别构成无gap、无overlap的连续
+union时，多个message才能共享一个actual transfer；consumer继续通过current subview读取各自piece。不能用logical bounding box、padding
+传输或新建pack copy伪造连续性。coalescing只减少message/IR数量，不改变relation cover、alias、effect或consumer lifetime。
+
+Closed complete exchange保留topology-aware Ring All-Gather，并在已确认的native multi-destination合同内形成每source一次
+broadcast/scatter。当前native合同只接受每destination `256B`、fanout `2/4/8/15`：broadcast复制同一physical range，scatter按
+destination list把连续等长source segments一一分发。其它payload、fanout、ragged segment、dynamic binding或alias保持ordinary
+unicast/ring，不从raw register字段外推能力。能够在一个actual cut上发issue的其余稀疏exchange使用sender容量1、receiver容量4的
+capacity-constrained maximum matching分轮；相同最大edge coverage下按minimum-hop和stable relation identity选择。每轮在同一次
+transformation中直接形成actual receive prepare、send、SSA token和control-flow order；临时component/matching choice随调用销毁。
 若bidirectional causal component不存在共同cut，单sender slot下不能把它伪装成同轮peer exchange；baseline在mutation前选择一个exact
 shared-DDR store/load boundary。它是从current Region因果顺序得到的显式movement realization，不是transport verifier失败后的fallback。
 Closed complete exchange和已证明round-safe的sparse exchange不得改走DDR。
@@ -513,7 +522,10 @@ Closed complete exchange和已证明round-safe的sparse exchange不得改走DDR�
 不存在`RoundOp`、round side plan或winner replay。无法形成exact payload、topology ring/matching或显式causal boundary时返回typed
 unsupported。传播树、ring、matching和DDR realization均由同一个movement transformation一次性物化；下游只读取actual IR。
 
-传播树的parent、child和round只是在一次movement调用内立即消费的typed choice。调用返回前必须全部物化，临时容器随调用销毁；
+传播树的parent、child和round只是在一次movement调用内立即消费的typed choice。Region rank既约束relay legality，也先保证当前
+frontier能够最大传播而不延长必要round；同一rank frontier内再按sender负载、minimum hop和physical Tile ID排序。不能用Tile ID代替
+Region order。shortest-hop query只作performance ordering，
+不能成为route、completion或transport legality事实。调用返回前必须全部物化，临时容器随调用销毁；
 不得把edge/action/message/buffer/event清单交给后续stage，也不得在winner上重放。后续只从actual peer ops、SSA token、buffer
 effect和control flow重算completion与memory。无法从current topology连接participant、无法证明payload完全一致或物化后stage
 verifier失败时，当前candidate返回typed failure，不退回flat direct fanout或DDR donor。

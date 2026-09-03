@@ -50,6 +50,13 @@ verifyPartitionIdsWithinExecutionMesh(mlir::Operation *op,
 mlir::LogicalResult verifyDTEP2P(mlir::Operation *op, mlir::Value buffer,
                                  mlir::IntegerAttr peer,
                                  mlir::IntegerAttr bytes, mlir::Type tokenType);
+mlir::LogicalResult verifyDTEMultiSend(mlir::Operation *op, mlir::Value buffer,
+                                       mlir::IntegerAttr sourceOffset,
+                                       mlir::DenseI64ArrayAttr peers,
+                                       mlir::IntegerAttr bytes,
+                                       mlir::ArrayAttr messages,
+                                       std::optional<mlir::ArrayAttr> bindings,
+                                       mlir::Type tokenType, bool scatter);
 mlir::LogicalResult verifyDTEWaitTokens(mlir::Operation *op,
                                         mlir::OperandRange tokens);
 

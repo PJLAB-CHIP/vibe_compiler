@@ -388,9 +388,14 @@ static void collectMinimumHopLinkByteDemand(
           !includedOperations[tileIndex].contains(operation))
         return;
       auto send = mlir::dyn_cast<InstrDTESendOp>(operation);
-      if (!send)
+      auto broadcast = mlir::dyn_cast<InstrDTEBroadcastOp>(operation);
+      auto scatter = mlir::dyn_cast<InstrDTEScatterOp>(operation);
+      if (!send && !broadcast && !scatter)
         return;
-      detail::Quantity bytes{static_cast<uint64_t>(send.getBytes())};
+      int64_t byteValue = send        ? send.getBytes()
+                          : broadcast ? broadcast.getBytes()
+                                      : scatter.getBytes();
+      detail::Quantity bytes{static_cast<uint64_t>(byteValue)};
       detail::Quantity payload = detail::multiply(bytes, multiplicity);
       if (payload.knowledge != ScheduleCostKnowledge::Known) {
         detail::add(minimumHopLinkByteDemand, payload);
@@ -400,8 +405,16 @@ static void collectMinimumHopLinkByteDemand(
       if (multiplicity.knowledge == ScheduleCostKnowledge::Known &&
           multiplicity.value == 0)
         return;
-      transmits.push_back(
-          {program.tileId, send.getPeerAttr().getInt(), payload, multiplicity});
+      if (send) {
+        transmits.push_back({program.tileId, send.getPeerAttr().getInt(),
+                             payload, multiplicity});
+        return;
+      }
+      llvm::ArrayRef<int64_t> peers =
+          broadcast ? broadcast.getPeersAttr().asArrayRef()
+                    : scatter.getPeersAttr().asArrayRef();
+      for (int64_t peer : peers)
+        transmits.push_back({program.tileId, peer, payload, multiplicity});
     };
     auto markUnsupported = [&]() {
       detail::degrade(minimumHopLinkByteDemand,
