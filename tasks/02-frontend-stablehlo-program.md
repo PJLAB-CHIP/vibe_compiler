@@ -273,8 +273,8 @@ structured program state；local compute normalization与fixed structured optimi
 physical-dataflow synthesis从单卡partition output构造一个top-level TileModule set，其中all-and-only available Tiles
 各有独立`wafer.tile.module`。每个Tile可有不同op、loop和temporal tile shape；physical-dataflow owner选择
 placement、tiling和TileRegion membership并立即生成actual IR，随后在current IR上物化NoC/DDR movement，exact gates通过后形成`DeviceExecutable`，再由target与
-package阶段发布`ExecutablePackage`。`TensorProgram`是该planning阶段的唯一输入output；已删除的`wafer.group`
-formation/selector没有兼容、debug或发布旁路。
+package阶段发布`ExecutablePackage`。`TensorProgram`是该planning阶段的唯一输入 output；不会保留未物化的 group formation
+记录、selector 或兼容/debug/发布旁路。
 
 这种最小owner边界有意不保留历史讨论中的复合frontend/executable owner和model-interface registry链。若未来
 确需跨stage不可重算的owner，必须由真实consumer和lifetime bug证明后再引入，不能把未实现对象写成当前架构。

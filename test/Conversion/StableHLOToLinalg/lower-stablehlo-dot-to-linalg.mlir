@@ -1,6 +1,9 @@
 // REQUIRES: stablehlo
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %s | FileCheck %s
 
+// This compact fixture checks dot_general-to-matmul formation. Production-
+// scale batched contraction coverage is in lower-stablehlo-large-shapes.mlir.
+
 module {
   func.func @single_tile_lower_dot(
       %lhs: tensor<4x8xf16>,

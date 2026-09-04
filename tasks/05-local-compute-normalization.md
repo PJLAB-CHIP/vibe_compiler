@@ -490,7 +490,7 @@ Structural materialization直接消费fixed algorithm、K2 spatial contribution�
 TileModule中创建actual coupled merge/finalize。Merge op不携带Tile ID：其parent TileModule是唯一位置事实，其SSA operands是唯一参与者事实。
 本地state直接接SSA，remote state创建三个actual structural endpoints；后续movement只消费这些current values。
 
-Temporal tiling不读取`RegionExecutionId`或pre-materialization `TemporalPlan`。Baseline和search分别从自己candidate中的live
+Temporal tiling不读取规划阶段的 execution identity 或预物化 temporal 状态。Baseline和search分别从自己candidate中的live
 `TilingInterface` operation建立query-local complete domain，选择后立即rewrite并丢弃choice。FA的K2在一个Tile内
 形成multi-result SCF state recurrence；FD的每个local contribution可在自己的K2 interval上继续形成同样的recurrence。1024 aligned与
 1025/1031 tail遵守06号统一main/remainder合同。
@@ -785,10 +785,9 @@ extraction work
 ABI import/export records and bytes
 ```
 
-当前production默认值由同一FP16 HF Llama block的1024/1025 fresh profile确定为8192次relation call、4096个e-node、8192个match和
-8次iteration；shape不进入选择逻辑。达到任一budget、typed work limit、内部
-资源耗尽或没有strictly dominating extraction时，销毁request并保持原verified component不变；这不是compiler error、unsupported
-program、physical rejection或candidate feedback。
+Request budget由调用方通过typed pass options提供；它只限制本次relation query的确定性工作量，不是由某个workload profile固定的
+production常量，shape也不进入选择逻辑。达到任一budget、typed work limit、内部资源耗尽或没有strictly dominating extraction时，
+销毁request并保持原verified component不变；这不是compiler error、unsupported program、physical rejection或candidate feedback。
 标准MLIR pass statistics记录上述work、input/output op和rule application；fresh qualification另用host profile记录wall/RSS。Timing和RSS
 只用于诊断，不进入输出选择。
 

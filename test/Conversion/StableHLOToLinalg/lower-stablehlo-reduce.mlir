@@ -1,6 +1,9 @@
 // REQUIRES: stablehlo
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %s | FileCheck %s
 
+// These compact functions check the two reducer kinds and their init wiring.
+// Production-scale rank-3 coverage is in lower-stablehlo-large-shapes.mlir.
+
 module {
   func.func @lower_reduce_sum(%arg0: tensor<2x4xf32>,
                               %init: tensor<f32>) -> tensor<2xf32> {

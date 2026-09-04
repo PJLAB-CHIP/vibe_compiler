@@ -10,11 +10,13 @@
 #include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
 #include "Wafer/Transforms/Linalg/CommunicationRegionClosure.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
+#include "Wafer/Transforms/Tile/DistributedCollectiveMovement.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/IR/Topology/TargetTopology.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -30,6 +32,7 @@
 #include "gtest/gtest.h"
 
 #include <memory>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -2258,6 +2261,33 @@ TEST_F(StructuredToTileTest,
                 tile.getTileIdAttr().getInt() == 0 ? 1u : 0u);
     }
   }
+}
+
+TEST_F(StructuredToTileTest, RingRejectsDuplicateAndOutOfRangeParticipants) {
+  auto module = parse(R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 2, 2>, unavailable_tiles = array<i64>}
+}
+)mlir");
+  ASSERT_TRUE(module);
+  auto topology = TargetTopology::create(*module);
+  ASSERT_TRUE(mlir::succeeded(topology));
+
+  llvm::SmallVector<uint64_t, 4> validParticipants{0, 1, 2, 3};
+  EXPECT_TRUE(mlir::succeeded(
+      buildMinimumHopTileRing(*topology, validParticipants)));
+
+  llvm::SmallVector<uint64_t, 4> duplicateParticipants{0, 1, 1, 2};
+  EXPECT_TRUE(mlir::failed(
+      buildMinimumHopTileRing(*topology, duplicateParticipants)));
+
+  llvm::SmallVector<uint64_t, 4> outOfRangeParticipants{
+      0, 1, 2,
+      static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1};
+  EXPECT_TRUE(mlir::failed(
+      buildMinimumHopTileRing(*topology, outOfRangeParticipants)));
 }
 
 TEST_F(StructuredToTileTest, CompleteExchangeBecomesThreeTopologyRingRounds) {

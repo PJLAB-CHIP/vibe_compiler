@@ -425,7 +425,7 @@ bandwidth legality。12统计每个static descriptor site的exact bytes；static
 重算并验证：
 
 - 所有memref都有Wafer memory space，compiler-managed SPM/DDR alloc有accepted offset；
-- 完整Tile instruction program中不再残留`wafer.group`/Linalg/Tensor/Bufferization或target-abstract tile op；
+- 完整 Tile instruction program 中不再残留未物化的 logical group 记录、Linalg/Tensor/Bufferization 或 target-abstract tile op；
 - frontend verifier给出的external IO、parameter、constant role和card-partition slice与ExecutionConfig一致；
 - completion合同闭合，transport为`None`或已由DeviceExecutable cross-Tile matching与resource/status gate验证的
   `DirectDTE`；只有unsupported或未闭合的physical transport才拒绝。

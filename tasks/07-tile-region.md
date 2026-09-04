@@ -128,7 +128,7 @@ Same-region grouping不预先选择producer delivery、storage或nested placemen
 explicit-replica三种结构结果；其中local-once不预先决定它位于consumer loop内还是loop外。Materializer先在candidate-owned Region中创建
 actual operations及其current SSA use-def，再由SCF tile-and-fuse直接检查该IR并立即rewrite。未融合producer可以在同一Region内
 独立执行并由后续bufferization形成local reuse；它不因未融合自动变成DDR。融合后的producer实际位于consumer loop内。
-`LocalUseDelivery`、`DirectNestedValue`、`StoredRegionValue`、`ReconstructedRegionValue`和`rewireDirectSSA`不属于终态输入或IR。
+旁路 delivery carrier、隐式 rewire 记录和按 use 重放的 producer recipe 不属于终态输入或 IR。
 
 Region formation必须覆盖fanout的每个use、reduction partial/merge、effect order和observable output。不相关component不因
 “region更大”而合并。只有explicit replica允许产生额外producer execution；spill、storage和cut不在Region choice中，其结果若被
@@ -190,11 +190,10 @@ tiling/fusion生成canonical loops、producer SSA和必要main/tail；online-att
 actual DPS state作为loop-carried values。Choice apply后立即销毁，不携带`RegionExecutionId`。
 
 Domain与apply都锚定当前TileRegion：domain只借用live operation handle，full-local choice不修改IR，active choice立即替换同一owner。
-历史完成边界只支持exact single-use direct及dense-offset`cast/extract_slice/unit-reshape` producer fusion；general reshape、broadcast和
-multi-use当时保持独立，因此第13项不能继续视为完整闭合。C2保留每个root原有size/order raw domain，并为可证明的all-use component增加
-independent/joint typed choice；active choice立即物化同一owner。Ragged loop只peel最后一次迭代，随后在本Region内收紧actual
-slice/Linalg/online-attention static type；不创建静态wave清单或
-跨Region traversal ID。
+第13项从 live current operation 建立完整 temporal domain：general reshape、broadcast、multi-use view chain 和可证明的 affine
+window 都通过 exact relation 选择 independent 或 joint tiling。选择立即物化为同一 owner 上的 SCF/SSA；不创建静态 wave 清单、
+跨 Region traversal ID 或旁路 delivery 状态。Ragged loop 只 peel 最后一次迭代，并在本 Region 内收紧 actual slice、Linalg 和
+online-attention 的静态类型。
 
 Producer与consumer之间允许存在static pure support chain。Spatial demand与Temporal fusion共用06号定义的current-op tensor indexing
 relation builder；query结果保留完整composed `IndexRelation`和borrowed current endpoints，不能降级成私有`dimension+offset`协议。

@@ -289,7 +289,7 @@
 
 ## Tile entry argument不是runtime pointer-row slot
 
-- 现象：target entry argument被命名为`KernelABISlot`，后续设计误以为它拥有runtime pointer-row storage，
+- 现象：target entry argument曾使用含义不清的旧名称，后续设计误以为它拥有runtime pointer-row storage，
   或把argument identity与pointer-row child range混成一个对象。
 - 根因：用runtime carrier中的“slot”给compiler target entry argument命名。
 - 修复模式：稳定语义名为`TileEntryArgument`；它记录ordinal、closed kind、target descriptor、bytes/alignment和access，

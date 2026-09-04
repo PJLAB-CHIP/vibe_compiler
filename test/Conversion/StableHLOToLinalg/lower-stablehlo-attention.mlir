@@ -1,6 +1,9 @@
 // REQUIRES: stablehlo
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %s | FileCheck %s
 
+// The compact functions isolate attention matching and viewed-input wiring.
+// Production-scale FA coverage is in lower-stablehlo-large-shapes.mlir.
+
 module {
   func.func @scaled_masked_attention(
       %query: tensor<2x4xf16>, %key: tensor<5x4xf16>,

@@ -32,7 +32,7 @@
 
 | Owner | 状态 | Current作用 | 证据入口 |
 | --- | --- | --- | --- |
-| Q52 | `done` | none/search独立current-IR路径、bounded RegionPlan refinement、public search width/trials、actual feedback、safe incomparable delivery和逐Tile actual inventory | 06；`tasks/plans/physical-dataflow-synthesis.md`；`tasks/archive/completed-task-index.md` |
+| Q52 | `done` | none/search独立current-IR路径、bounded RegionPlan refinement、public search width/trials、actual feedback、safe incomparable delivery和逐Tile actual inventory | 06；`tasks/archive/physical-dataflow-synthesis-q52-plan-history.md`；`tasks/archive/completed-task-index.md` |
 | 01、04、06、07、10、14、16、18--20 | `done` | 架构、device-scope术语、源码/component边界和canonical build | 编号设计；`tasks/archive/completed-task-index.md` |
 | Q50.0 | `done` | policy-complete Instr共同消费的actual SPM/DDR/transport/target leaf | 06、09、12--14 |
 | Q51/Q50.S | `done` | structural choice/domain算法和attention semantic/decomposition donor；不作为current事实源 | 05、06；历史见completed index |

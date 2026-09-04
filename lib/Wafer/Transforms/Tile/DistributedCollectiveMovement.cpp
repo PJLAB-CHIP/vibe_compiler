@@ -25,6 +25,11 @@
 #include <utility>
 #include <vector>
 
+// MLIR FailureOr exposes LogicalResult conversion instead of optional's
+// bool/has_value API. Every dereference below is dominated by an explicit
+// presence check; clang-tidy cannot follow the MLIR conversion checks.
+// NOLINTBEGIN(bugprone-unchecked-optional-access)
+
 namespace wafer::compiler::detail {
 
 mlir::FailureOr<llvm::SmallVector<uint64_t, 16>>
@@ -32,6 +37,11 @@ buildMinimumHopTileRing(const TargetTopology &topology,
                         llvm::ArrayRef<uint64_t> participants) {
   if (participants.size() < 2 || participants.size() > 16)
     return mlir::failure();
+  std::set<uint64_t> uniqueParticipants;
+  for (uint64_t participant : participants)
+    if (participant > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+        !uniqueParticipants.insert(participant).second)
+      return mlir::failure();
   const size_t count = participants.size();
   std::vector<std::vector<uint64_t>> distances(count,
                                                std::vector<uint64_t>(count));
@@ -40,7 +50,8 @@ buildMinimumHopTileRing(const TargetTopology &topology,
       if (lhs == rhs)
         continue;
       std::optional<uint64_t> distance = topology.getOnCardShortestHopDistance(
-          CardId(0), TileId(participants[lhs]), TileId(participants[rhs]));
+          CardId(0), TileId(static_cast<int64_t>(participants[lhs])),
+          TileId(static_cast<int64_t>(participants[rhs])));
       if (!distance)
         return mlir::failure();
       distances[lhs][rhs] = *distance;
@@ -185,16 +196,16 @@ static std::optional<int64_t> getTileId(mlir::Operation *operation) {
   return tile.getTileIdAttr().getInt();
 }
 
-static MessageKey getKey(CommPeerSendOp operation) {
+static MessageKey getKey(CommPeerSendOp operation, int64_t tile) {
   DTEMessageAttr message = operation.getMessageAttr();
-  return MessageKey{*getTileId(operation), operation.getPeerAttr().getInt(),
+  return MessageKey{tile, operation.getPeerAttr().getInt(),
                     message.getCommunicationId(), message.getRound(),
                     message.getPayloadSlice()};
 }
 
-static MessageKey getKey(CommPeerRecvOp operation) {
+static MessageKey getKey(CommPeerRecvOp operation, int64_t tile) {
   DTEMessageAttr message = operation.getMessageAttr();
-  return MessageKey{operation.getPeerAttr().getInt(), *getTileId(operation),
+  return MessageKey{operation.getPeerAttr().getInt(), tile,
                     message.getCommunicationId(), message.getRound(),
                     message.getPayloadSlice()};
 }
@@ -311,12 +322,13 @@ collectMatchedPeerPairs(mlir::ModuleOp module) {
   bool malformed = false;
   module.walk([&](CommPeerSendOp operation) {
     std::optional<int64_t> tile = getTileId(operation);
-    if (!tile || !sends.emplace(getKey(operation), operation).second)
+    if (!tile || !sends.emplace(getKey(operation, *tile), operation).second)
       malformed = true;
   });
   module.walk([&](CommPeerRecvOp operation) {
     std::optional<int64_t> tile = getTileId(operation);
-    if (!tile || !receives.emplace(getKey(operation), operation).second)
+    if (!tile ||
+        !receives.emplace(getKey(operation, *tile), operation).second)
       malformed = true;
   });
   if (malformed || sends.size() != receives.size())
@@ -408,11 +420,12 @@ findCompletePersonalizedComponents(mlir::ModuleOp module,
         complete = false;
         break;
       }
-      physicalCoordinates.emplace(participant, *coordinate);
-      if (!llvm::is_contained(rows, coordinate->y))
-        rows.push_back(coordinate->y);
-      if (!llvm::is_contained(columns, coordinate->x))
-        columns.push_back(coordinate->x);
+      const TileCoordinate coordinateValue = *coordinate;
+      physicalCoordinates.emplace(participant, coordinateValue);
+      if (!llvm::is_contained(rows, coordinateValue.y))
+        rows.push_back(coordinateValue.y);
+      if (!llvm::is_contained(columns, coordinateValue.x))
+        columns.push_back(coordinateValue.x);
     }
     llvm::sort(rows);
     llvm::sort(columns);
@@ -872,6 +885,8 @@ static mlir::LogicalResult materializeReduceScatterComponent(
     kind = merge->kind;
     merges.emplace(destination, std::move(*merge));
   }
+  if (!kind)
+    return mlir::failure();
   llvm::SmallVector<uint64_t, 16> participantIds;
   for (int64_t participant : component.participants) {
     if (participant < 0)
@@ -1205,9 +1220,11 @@ materializeAllReduceComponent(RingAllReduceComponent &component,
       if (mlir::failed(contribution) || mlir::failed(resultChunk))
         return mlir::failure();
       contributionChunks.emplace(
-          std::make_pair(tile, static_cast<unsigned>(position)), *contribution);
+          std::make_pair(tile, static_cast<unsigned>(position)),
+          *contribution);
       resultChunks.emplace(
-          std::make_pair(tile, static_cast<unsigned>(position)), *resultChunk);
+          std::make_pair(tile, static_cast<unsigned>(position)),
+          *resultChunk);
     }
   }
 
@@ -1305,7 +1322,8 @@ materializeDimensionOrderedAllToAll(mlir::ModuleOp module) {
                 topologyFailure);
   std::string discoveryFailure;
   llvm::SmallVector<CompletePersonalizedComponent, 2> components =
-      findCompletePersonalizedComponents(module, *topology, discoveryFailure);
+      findCompletePersonalizedComponents(module, *topology,
+                                         discoveryFailure);
   if (!discoveryFailure.empty())
     return fail(DistributedCollectiveMovementFailureKind::BrokenContract,
                 discoveryFailure);
@@ -1336,7 +1354,8 @@ materializeRingReduceScatter(mlir::ModuleOp module) {
                 topologyFailure);
   std::string discoveryFailure;
   llvm::SmallVector<CompletePersonalizedComponent, 2> components =
-      findCompletePersonalizedComponents(module, *topology, discoveryFailure);
+      findCompletePersonalizedComponents(module, *topology,
+                                         discoveryFailure);
   if (!discoveryFailure.empty())
     return fail(DistributedCollectiveMovementFailureKind::BrokenContract,
                 discoveryFailure);
@@ -1350,7 +1369,8 @@ materializeRingReduceScatter(mlir::ModuleOp module) {
     if (!isReduction)
       continue;
     if (mlir::failed(
-            materializeReduceScatterComponent(component, *topology, result)))
+            materializeReduceScatterComponent(component, *topology,
+                                              result)))
       return fail(DistributedCollectiveMovementFailureKind::CompilerFailure,
                   "preflighted Ring ReduceScatter could not be materialized");
   }
@@ -1380,7 +1400,8 @@ materializeRingAllReduce(mlir::ModuleOp module) {
   llvm::SmallVector<RingAllReduceComponent, 2> components;
   llvm::DenseSet<mlir::Operation *> claimed;
   module.walk([&](ComputeElementwiseOp root) {
-    if (auto component = findRingAllReduceComponent(root, *pairs, claimed))
+    if (auto component = findRingAllReduceComponent(root, *pairs,
+                                                    claimed))
       components.push_back(std::move(*component));
   });
   DistributedCollectiveMovementResult result;
@@ -1396,3 +1417,5 @@ materializeRingAllReduce(mlir::ModuleOp module) {
 }
 
 } // namespace wafer::compiler::detail
+
+// NOLINTEND(bugprone-unchecked-optional-access)

@@ -119,7 +119,7 @@ def main() -> int:
     assert {case.participant_count for case in catalog.CASES} == {16}
     assert {case.element_type for case in catalog.CASES} == {"f16"}
     assert {case.disposition for case in catalog.CASES} == {
-        catalog.CharacterizationDisposition.SOURCE_COMPARISON_PENDING_LOWERING
+        catalog.CharacterizationDisposition.SOURCE_COMPARISON_PENDING_BOARD_EXECUTION
     }
     assert {case.performance_evidence for case in catalog.CASES} == {
         catalog.PerformanceEvidenceKind.NOT_COLLECTED

@@ -124,7 +124,8 @@ Target numeric本地执行采用按职责分层的唯一命名：
 
 - `WaferTargetNumericBackend`是整体功能与model-facing library。它消费decoded numeric request、target physical tensor bytes和显式budget，
   返回destination bytes、numeric flags与backend evidence；它不是compiler codegen backend，也不拥有command/event/memory时序。
-- `WaferFormalNumeric`是有界精确oracle和fallback，不属于oneDNN实现。
+- `WaferFormalNumeric`是有界精确oracle；只有具体的后端策略明确声明时才可作为该策略的 fallback，不属于 oneDNN 实现，也不拥有
+  通用 fallback 协议。
 - `WaferOneDNNBackend`是`WaferTargetNumericBackend`当前用于GEMM/reorder的具体host执行实现；oneDNN managed dependency、environment
   identity与qualification record由该层拥有。qualification使用formal oracle作比较，不会因此把formal实现改名为oneDNN。
 - `WaferSystemCSimulator`仍独立消费完整target command、memory、event与completion合同。它可以调用target numeric backend完成一个numeric

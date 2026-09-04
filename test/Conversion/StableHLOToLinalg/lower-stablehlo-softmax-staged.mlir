@@ -1,6 +1,9 @@
 // REQUIRES: stablehlo
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %s | FileCheck %s
 
+// This compact rank-2 fixture checks staged operation ordering. Production-
+// scale rank-3 and ragged coverage is in lower-stablehlo-large-shapes.mlir.
+
 module {
   func.func @softmax_staged(%scores: tensor<2x4xf32>) -> tensor<2x4xf32> {
     %neg_inf = stablehlo.constant dense<-3.40282347E+38> : tensor<f32>

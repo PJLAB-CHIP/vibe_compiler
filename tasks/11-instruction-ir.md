@@ -1092,7 +1092,7 @@ instr-lowering verifier checks only instruction legality:
   wait覆盖的task，unsupported flow和missing terminal分别稳定失败。
 
 DeviceExecutable instruction-set verifier还检查accepted Tile instruction modules覆盖all-and-only Tile domain及完整demanded domain，
-不含logical/scheduled `wafer.group`，只使用一套final layout/SPM/DDR facts，并匹配所有跨Tile
+不含未物化的 logical group 记录，只使用一套 final layout/SPM/DDR facts，并匹配所有跨 Tile
 transport send/recv/token relation。无法从 local IR 推导的 endpoint/channel/FSM facts 只在 late target
 binding boundary显式materialize，然后作为TileModule set relation验证，不能从名字或隐藏side table推断。
 module-level executable symbol可以引用per-Tile `func.func` entry symbols，但function body是

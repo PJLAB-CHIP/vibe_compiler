@@ -38,8 +38,8 @@ Pipeline position:
 
 ## 2. 已确认的Wafer执行事实
 
-- 每个Tile target entry消费一个有序参数表。旧实现名`KernelABISlot`并不准确：它描述Tile target entry参数，
-  不拥有kernel pointer-row storage；current名称是`TileEntryArgument`。current产品provider只把该参数表lower为
+- 每个 Tile target entry 消费一个有序参数表。参数记录只描述 entry 参数，
+  不拥有 kernel pointer-row storage；当前名称是`TileEntryArgument`。产品 provider 只把该参数表 lower 为
   `txLaunchKernel`所需的pointer row。`txLoadGraph`/`txLaunchModel`不进入本合同。
 - `TileEntryArgument`只描述某个Tile target entry的一个有序参数：ordinal、closed kind、恰一个typed reference
   （ProgramTensor/TargetTensor、external port或entry-local requirement）、`MemLayout`、shape、physical bytes、alignment和access。

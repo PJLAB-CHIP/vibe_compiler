@@ -185,7 +185,7 @@ output名称约定或旁路映射；analysis和materializer直接消费该op，s
 merge/finalize和三个state endpoints。Candidate中不保留graph attention或empty shell。
 其直接consumer是同一transaction中的SCF tile-and-fuse transformation，后者依据
 current operation、use-def、indexing relation、effect和region boundary立即决定并执行fusion。Producer留在consumer loop外或
-进入loop内只能是rewrite后的actual IR结果，不能由`LocalUseDelivery`、布尔rewire或其它旁路计划声明。
+进入loop内只能是rewrite后的actual IR结果，不能由旁路 delivery 记录、布尔 rewiring 或其它非 IR 状态声明。
 
 Static function input只被一个exact requested rectangle消费时，structural materializer在entry tensor boundary创建该rectangle的
 `tensor.extract_slice`，并把compact slice作为TileRegion input。Full source argument仍是DDR程序边界，但不能先生成full-shape SPM carrier再在
@@ -206,7 +206,7 @@ movement消费对应actual relation并删除该argument，该attr不能越过phy
 ### 5.3 Temporal tiling
 
 每个actual traversal选择complete temporal tile vector和loop order，不允许单一标量`tile_size`代替多轴语义。第12项输出后，
-`RegionPlan`、`RootRegionWork`、`RegionExecutionId`和pre-materialization `TemporalPlan`均已被消费，不能作为第13项的operation identity。
+规划阶段的 region/root 记录和预物化 temporal 状态均已在本边界消费，不能作为第13项的 operation identity。
 Baseline和search分别从自己candidate内的live `TilingInterface` operation建立query-local domain；choice选中后
 立即rewrite同一owner并销毁domain。需要试行alternative时，controller clone最近的`IsolatedFromAbove` owner并用该次clone的
 `IRMapping`取得对应operation，不按名称、walk order或ordinal恢复。
@@ -769,7 +769,7 @@ Current迁移必须遵守：
 - post-attention ordinary logical normalization只在policy分叉前运行一次；graph attention在该pass中保持opaque，candidate attention转换及
   后续stage不再调用e-graph；e-graph budget exhaustion保持对应current component不变且不进入candidate key或legality；
 - structural materialization对每个FA owner或FD K2 contribution创建all-and-only一个三结果online-attention；selected merge Tile由parent
-  TileModule证明，参与state由SSA证明，不存在empty shell、`RegionExecutionId -> operation`或`merge ID -> TileId`；
+  TileModule证明，参与 state 由 SSA 证明，不存在 empty shell、规划句柄到 operation 的映射或 `merge ID -> TileId`；
 - 第13项只从live current operations建立temporal domain；online-attention的parallel轴由`TilingInterface`处理、K2由
   三个DPS state处理K2。第14项只分解已tiled op；layout入口graph/online attention均为零；
 - temporal domain只在exact total single-valued proof下删除派生参数；non-unique、unsupported和indeterminate case保留原自由维度或

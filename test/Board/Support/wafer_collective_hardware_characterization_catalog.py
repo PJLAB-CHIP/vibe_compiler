@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Typed contract for collective algorithm source comparisons.
 
-The source and host oracle are current.  Algorithm alternatives remain pending
-until normal global lowering can select and execute both forms; no test-only
-compiler selector or historical board result is part of this contract.
+The production compiler and host oracle are current.  This catalog only checks
+source construction and host-side relations; board execution and performance
+evidence remain pending.  It does not provide a test-only compiler selector or
+consume historical board output.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ class CollectiveAlternative(str, enum.Enum):
     REDUCE_SCATTER_DIRECT = "reduce-scatter-direct"
     REDUCE_SCATTER_RING = "reduce-scatter-ring"
     ALL_REDUCE_RING = "all-reduce-ring"
+    # Synthetic traffic shape for characterization; not a production lowering.
     ALL_REDUCE_TREE = "all-reduce-tree"
 
     def __str__(self) -> str:
@@ -35,8 +37,8 @@ class CollectiveAlternative(str, enum.Enum):
 
 
 class CharacterizationDisposition(str, enum.Enum):
-    SOURCE_COMPARISON_PENDING_LOWERING = (
-        "source-comparison-pending-lowering"
+    SOURCE_COMPARISON_PENDING_BOARD_EXECUTION = (
+        "source-comparison-pending-board-execution"
     )
 
 
@@ -77,7 +79,7 @@ class CollectiveCharacterizationCase:
     participant_count: int = 16
     element_type: str = "f16"
     disposition: CharacterizationDisposition = (
-        CharacterizationDisposition.SOURCE_COMPARISON_PENDING_LOWERING
+        CharacterizationDisposition.SOURCE_COMPARISON_PENDING_BOARD_EXECUTION
     )
     numeric_oracle: NumericOracleKind = NumericOracleKind.FULL_OUTPUT_EXACT
     performance_evidence: PerformanceEvidenceKind = (
