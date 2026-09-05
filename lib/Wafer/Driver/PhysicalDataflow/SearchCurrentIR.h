@@ -8,8 +8,10 @@
 #include "Wafer/Support/OptimizationConfig.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <limits>
+#include <optional>
 
 namespace wafer::compiler::detail {
 
@@ -20,6 +22,9 @@ struct SearchCurrentIROptions {
   bool stopTemporalAfterFirstAccepted = true;
   uint64_t planningCredits = std::numeric_limits<uint64_t>::max();
   SearchTerminationPolicy termination = SearchTerminationPolicy::Exhaustive;
+  // Set by the production driver to bound one search session. Unit callers
+  // leave it empty when they intentionally exercise an unbounded domain.
+  std::optional<std::chrono::steady_clock::time_point> deadline;
   CurrentIRDownstreamOptions downstream;
 
   uint64_t getRefinementLimit() const {

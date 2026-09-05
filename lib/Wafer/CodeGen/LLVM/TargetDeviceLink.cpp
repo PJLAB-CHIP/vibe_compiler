@@ -1,6 +1,7 @@
 //===- TargetDeviceLink.cpp - Target LLVM emission and device link -------===//
 
 #include "Wafer/CodeGen/LLVM/TargetCodeGenInternal.h"
+#include "Wafer/Support/ExternalProcess.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -19,6 +20,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <system_error>
 
@@ -94,9 +96,14 @@ llvm::Error runDeviceLink(const TargetToolchain &toolchain,
     arguments.push_back("--profile-capture");
     arguments.push_back(captureStorage);
   }
-  int exitCode = llvm::sys::ExecuteAndWait(python, arguments);
+  int exitCode = llvm::sys::ExecuteAndWait(
+      python, arguments, std::nullopt, {},
+      wafer::support::kExternalProcessTimeoutSeconds);
   if (exitCode == 0)
     return llvm::Error::success();
+  if (exitCode == -2)
+    return llvm::createStringError(llvm::errc::resource_unavailable_try_again,
+                                   "device link timed out or crashed");
   return llvm::createStringError(
       llvm::errc::io_error, "device link failed with exit code %d", exitCode);
 }

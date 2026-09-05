@@ -1535,6 +1535,31 @@ static void retargetSubviewUsers(mlir::Value oldValue, mlir::Value newValue,
   }
 }
 
+static void normalizeSubviewResultTypes(mlir::ModuleOp module) {
+  if (!module)
+    return;
+  llvm::SmallVector<mlir::memref::SubViewOp, 32> subviews;
+  module.walk([&](mlir::memref::SubViewOp subview) {
+    subviews.push_back(subview);
+  });
+  mlir::IRRewriter rewriter(module.getContext());
+  for (mlir::memref::SubViewOp subview : subviews) {
+    auto sourceType = mlir::dyn_cast<mlir::MemRefType>(subview.getSourceType());
+    auto resultType = mlir::dyn_cast<mlir::MemRefType>(subview.getType());
+    if (!sourceType || !resultType)
+      continue;
+    auto expected = mlir::dyn_cast<mlir::MemRefType>(
+        mlir::memref::SubViewOp::inferResultType(
+            sourceType, subview.getMixedOffsets(), subview.getMixedSizes(),
+            subview.getMixedStrides()));
+    if (expected && expected.getRank() == resultType.getRank() &&
+        expected.getShape() == resultType.getShape() && expected != resultType)
+      rewriter.modifyOpInPlace(subview, [&] {
+        subview.getResult().setType(expected);
+      });
+  }
+}
+
 static mlir::LogicalResult materializeSubviewLoads(
     mlir::bufferization::ToMemrefOp bridge, mlir::BlockArgument ddrArgument,
     mlir::IRRewriter &rewriter, BoundaryMovementStatistics &statistics) {
@@ -2969,6 +2994,7 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
     rewriter.eraseOp(region);
   }
   eraseDeadBridges(module);
+  normalizeSubviewResultTypes(module);
   for (auto &[operation, indices] : outputArguments) {
     auto function = mlir::cast<mlir::func::FuncOp>(operation);
     llvm::sort(indices, std::greater<unsigned>());

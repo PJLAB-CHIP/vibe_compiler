@@ -385,6 +385,11 @@ public:
         std::min(options.maximumTemporalCandidatesPerStructuralState,
                  actualizationCredits);
     do {
+      if (options.deadline &&
+          std::chrono::steady_clock::now() >= *options.deadline)
+        return {actualFailure(ActualCandidateStatus::Indeterminate,
+                              "search wall-time budget exhausted"),
+                actualizations, false};
       ++actualizations;
       if (statistics)
         ++statistics->temporalCandidateActualizations;
@@ -878,6 +883,10 @@ ExecutableCompilationResult compileSearchCurrentIR(
     return fail(ExecutableCompilationStatus::CompilerFailure, "search-input",
                 "search requires current TensorProgram and positive work "
                 "limits");
+  if (options.deadline &&
+      std::chrono::steady_clock::now() >= *options.deadline)
+    return fail(ExecutableCompilationStatus::IndeterminateFailure,
+                "search-controller", "search wall-time budget exhausted");
   const uint64_t maximumRegionRefinementCandidates =
       options.getRefinementLimit();
   const uint64_t maximumInitialRegionProposals =

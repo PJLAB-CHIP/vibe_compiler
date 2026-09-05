@@ -215,3 +215,9 @@ Conv search FP16/BF16由上一checkpoint约88/99s降为21.81/28.52s；LLaMA sear
 1000.57/993.78s。16/16 product、22/22 calibration和target-model source vertical均通过current package/no-card；
 canonical完整增量build、13个component unit、14个target numeric/SystemC tests、全量lit及source-organization均通过。
 本轮未运行真实设备，因此状态仍只到`board-ready`。
+
+2026-09-05 current-IR修复复核：LLaMA block的FP16/BF16 `search` no-card在recursive-doubling aggregate slot替换后重新归一化
+嵌套`memref.subview`的composed layout；两个fresh CTest分别以816.18s和810.27s通过source→package→strict readback。SystemC
+managed-dependency CMake gate在关闭importer/SPMD target的隔离配置下也通过。search仍是分钟级编译路径，production driver已为search
+session及SPMD/target外部进程设置30分钟typed deadline；超时保持indeterminate，不得被解释成unsupported或compiler bug。本轮没有真实
+设备执行，状态仍只到`board-ready`。

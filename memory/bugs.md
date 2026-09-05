@@ -1688,3 +1688,13 @@
   overlap read/write前仍插minimum wait。Dynamic、blocked、non-contiguous、overflow或无法恢复range时保持root-level may-alias。
 - 防复发：4/16-Tile、1024/1025/1031 recursive doubling检查receive-before-send、`log2(P)`轮、all-and-only slot cover、fresh completion、
   actual MiniMalloc和transport binding；既有overlap read、unknown effect和mutual send-before-receive cycle负例必须继续拒绝。
+
+## Aggregate slot替换必须沿current view链更新composed layout
+
+- 现象：recursive-doubling把原始SPM allocation donation给带非零offset的aggregate slot后，嵌套`memref.subview`仍保留旧的zero-based
+  result layout；16-Tile LLaMA FP16/BF16 search在movement gate报`mismatch of result layout`，而none路径不触发该替换。
+- 根因：`replaceAllUsesWith`只替换SSA source，不会重算view result type；movement preflight还持有这些SubViewOp，直接删除并重建会造成悬空operation指针或double erase。
+- 修复模式：movement transaction完成所有root替换后，按current module中的实际SubViewOp source type逐项归一化同rank result的composed
+  offset/stride；保留operation identity，避免破坏仍被transaction消费的endpoint指针。替换外部工具和CMake环境也必须保持typed/可验证边界。
+- 防复发：recursive-doubling 4/16-Tile、1024/1025/1031矩阵在movement后立即`mlir::verify`，并检查带非零aggregate offset的嵌套subview；LLaMA
+  FP16/BF16 search fresh no-card必须完成package/readback，而不是只看到candidate不再crash。

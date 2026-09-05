@@ -3,10 +3,12 @@
 #include "Wafer/Driver/CompilationInternal.h"
 
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Support/ExternalProcess.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Program.h"
 
+#include <optional>
 #include <string>
 
 namespace wafer::compiler::detail {
@@ -33,13 +35,19 @@ mlir::LogicalResult runSpmdHelper(llvm::StringRef helper,
       "--num-partitions",
       partitionCountStorage,
   };
-  int exitCode = llvm::sys::ExecuteAndWait(helperStorage, arguments);
+  int exitCode = llvm::sys::ExecuteAndWait(
+      helperStorage, arguments, std::nullopt, {},
+      wafer::support::kExternalProcessTimeoutSeconds);
   if (exitCode == 0)
     return mlir::success();
   timing.markFailed();
   std::string message = "XLA SPMD partitioner helper failed";
   if (exitCode > 0)
     message += " with exit code " + std::to_string(exitCode);
+  else if (exitCode == -2)
+    message += " (timeout or process crash)";
+  else
+    message += " (could not execute)";
   reject(diagnostics, message);
   return mlir::failure();
 }
