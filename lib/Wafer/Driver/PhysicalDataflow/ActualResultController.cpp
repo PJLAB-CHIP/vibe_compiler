@@ -59,12 +59,15 @@ maximumTileMetric(const analysis::InstructionProgramAggregateCost &cost,
   return maximum;
 }
 
-std::array<uint64_t, 9> asArray(const SearchResourceDurations &durations) {
+std::array<uint64_t, 12> asArray(const SearchResourceDurations &durations) {
   return {durations.neF16Bf16Picoseconds,
           durations.vectorF16Bf16Picoseconds,
           durations.vectorF32Picoseconds,
           durations.ddrPicoseconds,
           durations.nocPicoseconds,
+          durations.dteEndpointPicoseconds,
+          durations.dteStartupPicoseconds,
+          durations.nocHopPicoseconds,
           durations.spmMovementPicoseconds,
           durations.instructionControlPicoseconds,
           durations.dteWaitControlPicoseconds,
@@ -203,6 +206,19 @@ deriveSearchObjective(const analysis::InstructionProgramAggregateCost &cost,
     nocBytes = cost.modeledNoCRoute.peakDirectedLinkByteDemand.value;
   }
 
+  const uint64_t dteEndpointBytes =
+      cost.maximumTileNoCTransmitBytes.isKnown()
+          ? cost.maximumTileNoCTransmitBytes.value
+          : 0;
+  const uint64_t dteMessageCount =
+      cost.maximumTileNoCTransmitMessageCount.isKnown()
+          ? cost.maximumTileNoCTransmitMessageCount.value
+          : 0;
+  const uint64_t hopMessageDemand =
+      cost.minimumHopMessageDemand.isKnown()
+          ? cost.minimumHopMessageDemand.value
+          : 0;
+
   SearchResourceDurations durations;
   auto assignTime = [&](uint64_t work, uint64_t rate, uint64_t &destination) {
     std::optional<uint64_t> duration = timeForWork(work, rate);
@@ -221,6 +237,13 @@ deriveSearchObjective(const analysis::InstructionProgramAggregateCost &cost,
                   durations.ddrPicoseconds) ||
       !assignTime(nocBytes, policy.directionalNoCBytesPerSecond,
                   durations.nocPicoseconds) ||
+      !assignTime(dteEndpointBytes, policy.dteEndpointBytesPerSecondEstimate,
+                  durations.dteEndpointPicoseconds) ||
+      !checkedMultiply(dteMessageCount,
+                       policy.dteMessageStartupPicosecondsEstimate,
+                       durations.dteStartupPicoseconds) ||
+      !checkedMultiply(hopMessageDemand, policy.noCHopPicosecondsEstimate,
+                       durations.nocHopPicoseconds) ||
       !assignTime(*spm, policy.spmExplicitMovementBytesPerSecondPerTileEstimate,
                   durations.spmMovementPicoseconds) ||
       !checkedMultiply(*instructions,
@@ -241,8 +264,8 @@ SearchObjectiveComparison compareSearchObjectives(const SearchObjective &lhs,
   const auto *right = std::get_if<KnownSearchObjective>(&rhs);
   if (!left || !right || !(left->cohort == right->cohort))
     return SearchObjectiveComparison::Incomparable;
-  const std::array<uint64_t, 9> leftTerms = asArray(left->durations);
-  const std::array<uint64_t, 9> rightTerms = asArray(right->durations);
+  const std::array<uint64_t, 12> leftTerms = asArray(left->durations);
+  const std::array<uint64_t, 12> rightTerms = asArray(right->durations);
   bool noWorse = true;
   bool noBetter = true;
   bool strictlyBetter = false;

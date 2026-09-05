@@ -170,12 +170,18 @@ TEST(ActualResultControllerTest,
   cost.aggregateDDRWriteBytes.value = 3;
   cost.aggregateNoC.staticIssueSiteCount.value = 1;
   cost.modeledNoCRoute.peakDirectedLinkByteDemand.value = 4;
+  cost.maximumTileNoCTransmitBytes.value = 10;
+  cost.maximumTileNoCTransmitMessageCount.value = 2;
+  cost.minimumHopMessageDemand.value = 3;
   SearchObjective known = deriveSearchObjective(cost, *cohort);
   const auto *knownValue = std::get_if<KnownSearchObjective>(&known);
   ASSERT_NE(knownValue, nullptr);
   EXPECT_EQ(knownValue->durations.instructionControlPicoseconds, 1u);
   EXPECT_EQ(knownValue->durations.ddrPicoseconds, 5u);
   EXPECT_EQ(knownValue->durations.nocPicoseconds, 4u);
+  EXPECT_EQ(knownValue->durations.dteEndpointPicoseconds, 10u);
+  EXPECT_EQ(knownValue->durations.dteStartupPicoseconds, 2u);
+  EXPECT_EQ(knownValue->durations.nocHopPicoseconds, 3u);
   EXPECT_TRUE(std::holds_alternative<UnknownSearchObjective>(
       deriveSearchObjective(cost, std::nullopt)));
   cost.aggregateInstructionCount.knowledge = ScheduleCostKnowledge::Unavailable;

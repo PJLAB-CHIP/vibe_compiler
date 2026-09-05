@@ -125,6 +125,9 @@ struct SearchResourceDurations {
   uint64_t vectorF32Picoseconds = 0;
   uint64_t ddrPicoseconds = 0;
   uint64_t nocPicoseconds = 0;
+  uint64_t dteEndpointPicoseconds = 0;
+  uint64_t dteStartupPicoseconds = 0;
+  uint64_t nocHopPicoseconds = 0;
   uint64_t spmMovementPicoseconds = 0;
   uint64_t instructionControlPicoseconds = 0;
   uint64_t dteWaitControlPicoseconds = 0;
@@ -135,11 +138,15 @@ struct SearchResourceDurations {
     return std::tie(
                lhs.neF16Bf16Picoseconds, lhs.vectorF16Bf16Picoseconds,
                lhs.vectorF32Picoseconds, lhs.ddrPicoseconds, lhs.nocPicoseconds,
+               lhs.dteEndpointPicoseconds, lhs.dteStartupPicoseconds,
+               lhs.nocHopPicoseconds,
                lhs.spmMovementPicoseconds, lhs.instructionControlPicoseconds,
                lhs.dteWaitControlPicoseconds, lhs.nccWaitControlPicoseconds) ==
            std::tie(
                rhs.neF16Bf16Picoseconds, rhs.vectorF16Bf16Picoseconds,
                rhs.vectorF32Picoseconds, rhs.ddrPicoseconds, rhs.nocPicoseconds,
+               rhs.dteEndpointPicoseconds, rhs.dteStartupPicoseconds,
+               rhs.nocHopPicoseconds,
                rhs.spmMovementPicoseconds, rhs.instructionControlPicoseconds,
                rhs.dteWaitControlPicoseconds, rhs.nccWaitControlPicoseconds);
   }

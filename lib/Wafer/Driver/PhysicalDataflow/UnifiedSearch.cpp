@@ -108,6 +108,12 @@ void recordStructuralCandidateMetrics(
                                durations.ddrPicoseconds);
   recordRegionCandidateCounter(index, "objective-noc-picoseconds",
                                durations.nocPicoseconds);
+  recordRegionCandidateCounter(index, "objective-dte-endpoint-picoseconds",
+                               durations.dteEndpointPicoseconds);
+  recordRegionCandidateCounter(index, "objective-dte-startup-picoseconds",
+                               durations.dteStartupPicoseconds);
+  recordRegionCandidateCounter(index, "objective-noc-hop-picoseconds",
+                               durations.nocHopPicoseconds);
   recordRegionCandidateCounter(index, "objective-spm-picoseconds",
                                durations.spmMovementPicoseconds);
   recordRegionCandidateCounter(index, "objective-instruction-picoseconds",

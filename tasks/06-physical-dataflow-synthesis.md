@@ -702,7 +702,7 @@ movement、completion和memory/target数据。推算结果不进入legality、SP
 
 - 每Tile的NE FP16/BF16 logical work及target-profile NE throughput；
 - 每Tile的Vector/CT FP16/BF16和F32 logical work及各自throughput；
-- instruction issue/control、wait、DDR、NoC和显式SPM movement的独立work与service term；
+- instruction issue/control、DTE endpoint bytes、DTE message startup、minimum-hop message demand、wait、DDR、NoC和显式SPM movement的独立work与service term；
 - current control flow、effect、token和已物化execution structure决定的有限schedule/makespan。
 
 NE与Vector的service time分别计算；instruction数量只额外计发射/控制开销。一条NE GEMM与一条Vector instruction即使instruction数相同，
@@ -715,6 +715,10 @@ incomparable。只有后续硬件文档和matched profile明确证明的并发�
 schedule multiplicity或算术结果为unknown/unsupported/overflow时，该objective保持typed incomparable，controller只能报告
 `FeasibleUnranked`或其它准确coverage；不得退回统一instruction cost，也不得把semantic tie-break伪装成cost winner。Layout PBQP不读取
 该objective，也不参与frontier ordering；controller只对layout已经唯一确定的candidate继续枚举其它choice，并以物化后的actual objective比较。
+
+当前实现的DTE endpoint、message startup和minimum-hop terms直接消费final Instr cost中的actual transmit bytes、message count和hop-demand；
+它们不能退化为固定instruction数量，也不能使用target-independent guessed route。rate必须来自同一target-profile cohort；未校准时保持
+`Unknown`/`Incomparable`，不能用默认零值继续排序。
 
 本修改复用final Instr的现有work collector和duration analysis，删除search controller中的flat instruction objective；不新增operation、
 attribute、Wafer-specific interface或legality verifier。Cost和duration仍是mutation后失效、可从current IR fresh重算的analysis结果。
