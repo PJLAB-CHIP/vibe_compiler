@@ -17,6 +17,7 @@
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/IR/Topology/TargetTopology.h"
+#include "Wafer/Planning/PhysicalDataflow/CollectiveAlgorithms.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -1231,6 +1232,17 @@ module {
   mlir::DialectRegistry registry;
   std::unique_ptr<mlir::MLIRContext> context;
 };
+
+TEST_F(StructuredToTileTest, GenericMinimumHopRingUsesAbstractDistanceOracle) {
+  const llvm::SmallVector<uint64_t, 4> participants{0, 1, 2, 3};
+  auto ring = buildMinimumHopRing(
+      participants, /*maximumParticipants=*/4,
+      [](uint64_t lhs, uint64_t rhs) -> std::optional<uint64_t> {
+        return lhs > rhs ? lhs - rhs : rhs - lhs;
+      });
+  ASSERT_TRUE(mlir::succeeded(ring));
+  EXPECT_EQ(*ring, (llvm::SmallVector<uint64_t, 4>{0, 1, 2, 3}));
+}
 
 TEST_F(StructuredToTileTest,
        LowersContractionExpressionAndReductionAtRealisticScale) {

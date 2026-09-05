@@ -1,5 +1,6 @@
 add_mlir_library(WaferPlanning
   PhysicalDataflow/AttentionSpatialConstraints.cpp
+  PhysicalDataflow/CollectiveAlgorithms.cpp
   PhysicalDataflow/CanonicalSpatialAssignment.cpp
   PhysicalDataflow/CanonicalRegionPlan.cpp
   PhysicalDataflow/ExactDemand.cpp

@@ -191,6 +191,20 @@ card-level LinalgExt collective只描述card partition语义；singleton group�
 non-singleton group在cross-card transport尚未实现时fail closed。单卡16个Tiles之间的数据重排不能把card partition
 ordinal当作Tile ID，也不能通过恢复旧的Tile collective op绕过physical-dataflow mapping。
 
+### 3.3 通用算法与TX81 transport边界
+
+Ring、Recursive Doubling、Dimension-Ordered AllToAll、ReduceScatter和AllReduce是target-independent collective algorithms。
+它们只消费current participant relation、payload fragments、abstract topology distance和typed local combine；算法选择一旦确定，
+在同一candidate transaction中直接物化actual `wafer.tile.peer_*`、local combine、payload staging和token，不建立future collective plan。
+
+TX81只拥有algorithm realization所需的target facts：available Tile、4×4 topology、Direct-DTE、native broadcast/scatter、receiver FSM、
+message limits、status ABI和calibrated cost。Transport/target stage可以拒绝某种realization或把generic peer IR降为ordinary DTE，
+但不能重新选择algorithm、retile、spill、换layout或修改combine semantics。Generic algorithm implementation不能依赖`CardId(0)`、
+16-Tile上限、DTE寄存器或launch slot；current single-card产品边界由target capability和`ExecutionConfig`在更低层验证。
+
+以上算法允许当前arithmetic contract定义的浮点reassociation；数值结合语义由compute/numeric owner与target model共同拥有，不在
+collective transport中另造一套IEEE顺序规则。未经该合同支持的dtype或combine保持typed unsupported。
+
 fanout必须按传播树edge显式产生all-and-only send/receive，fanin必须显式产生每个receive、local combine和发布顺序；combiner与运算顺序由typed local compute
 表达，DTE不暗含算术。padding lane不得当作logical payload。NoC/compute/DDR overlap只有actual
 chunk control flow、independent或rotating buffers、movement issue、compute issue order和matching completion存在时才进入理论cost；
