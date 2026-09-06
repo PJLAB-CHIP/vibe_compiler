@@ -52,6 +52,11 @@ Pipeline position:
 frontier、admission 或 exact rejection 规则。任何进一步的访问顺序或预算重分配必须先基于本轮 profile，仍从
 `current IR → actual transformation → verifier → fresh analysis` 产生证据后再单独立项。
 
+2026-09-06 observation-only checkpoint：FP16 conv search fresh profile 为 13.26s；
+`search-candidate/current-ir/finish-candidate` 累计 9.39s（14 次），movement candidate 累计 7.12s（14 次），
+SPM planning 224 次、DDR planning 128 次，8 个 structural candidate 均通过 actual gate。该证据将下一步问题
+限定为 current-IR actualization 的重复遍历/内存分析边界；不授权建立 pre-target shadow owner 或用估算结果剪枝。
+
 ### 验证顺序
 
 每轮改动先执行编译快的 unit/IR/transform/driver、再执行 FP16 conv/prefill 和 SystemC/target-model，
