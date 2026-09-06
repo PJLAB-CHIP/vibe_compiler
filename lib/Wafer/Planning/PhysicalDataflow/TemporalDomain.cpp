@@ -1957,4 +1957,109 @@ buildFirstTemporalLoopOrder(llvm::ArrayRef<int64_t> iteratorExtents,
   return std::move(*order);
 }
 
+mlir::FailureOr<TemporalDomain>
+remapTemporalDomain(const TemporalDomain &source, TileRegionOp mappedRegion,
+                    const mlir::IRMapping &mapping,
+                    std::string *failureReason) {
+  auto fail = [&](llvm::StringRef reason)
+      -> mlir::FailureOr<TemporalDomain> {
+    if (failureReason)
+      *failureReason = reason.str();
+    return mlir::failure();
+  };
+  if (!mappedRegion)
+    return fail("temporal domain remap has no mapped TileRegion");
+
+  auto mapOperation = [&](mlir::Operation *operation) -> mlir::Operation * {
+    return operation ? mapping.lookupOrNull(operation) : nullptr;
+  };
+  auto mapValue = [&](mlir::Value value) -> mlir::Value {
+    return value ? mapping.lookupOrNull(value) : mlir::Value{};
+  };
+  auto mapResult = [&](mlir::OpResult result) -> mlir::OpResult {
+    mlir::Value mapped = mapValue(result);
+    return mapped ? mlir::dyn_cast<mlir::OpResult>(mapped) : mlir::OpResult{};
+  };
+  auto mapOperand = [&](mlir::OpOperand *operand) -> mlir::OpOperand * {
+    if (!operand)
+      return nullptr;
+    mlir::Operation *owner = mapOperation(operand->getOwner());
+    if (!owner || operand->getOperandNumber() >= owner->getNumOperands())
+      return nullptr;
+    return &owner->getOpOperand(operand->getOperandNumber());
+  };
+  auto remapScopes = [&](llvm::ArrayRef<TemporalScopeDescriptor> scopes,
+                         std::vector<TemporalScopeDescriptor> &out)
+      -> bool {
+    for (const TemporalScopeDescriptor &scope : scopes) {
+      mlir::Operation *operation = mapOperation(scope.operation);
+      if (!operation)
+        return false;
+      TemporalScopeDescriptor mapped{operation, scope.iterationExtents,
+                                     scope.iteratorCapabilities,
+                                     scope.precedence,
+                                     scope.exactReshapeDimensions};
+      out.push_back(std::move(mapped));
+    }
+    return true;
+  };
+
+  std::vector<TemporalScopeDescriptor> jointScopes;
+  std::vector<TemporalScopeDescriptor> independentScopes;
+  if (!remapScopes(source.jointScopes, jointScopes) ||
+      !remapScopes(source.independentScopes, independentScopes))
+    return fail("temporal domain remap lost a scope operation");
+
+  std::vector<TemporalJointProducerGroup> producerGroups;
+  producerGroups.reserve(source.jointProducerGroups.size());
+  for (const TemporalJointProducerGroup &group : source.jointProducerGroups) {
+    mlir::OpResult producer = mapResult(group.producer);
+    mlir::Value consumerValue = mapValue(group.consumerValue);
+    if (!producer || !consumerValue)
+      return fail("temporal domain remap lost a producer value");
+    TemporalJointProducerGroup mapped;
+    mapped.producer = producer;
+    mapped.consumerValue = consumerValue;
+    mapped.producerDimensions = group.producerDimensions;
+    mapped.consumerViewToProducer = group.consumerViewToProducer;
+    mapped.generalReshapeConsumerDimensions =
+        group.generalReshapeConsumerDimensions;
+    for (mlir::OpOperand *operand : group.consumerOperands) {
+      mlir::OpOperand *mappedOperand = mapOperand(operand);
+      if (!mappedOperand)
+        return fail("temporal domain remap lost a consumer operand");
+      mapped.consumerOperands.push_back(mappedOperand);
+    }
+    producerGroups.push_back(std::move(mapped));
+  }
+
+  std::vector<TemporalBroadcastFusion> broadcastFusions;
+  broadcastFusions.reserve(source.broadcastFusions.size());
+  for (const TemporalBroadcastFusion &fusion : source.broadcastFusions) {
+    mlir::OpResult producer = mapResult(fusion.producer);
+    mlir::OpOperand *operand = mapOperand(fusion.consumerOperand);
+    if (!producer || !operand)
+      return fail("temporal domain remap lost a broadcast fusion");
+    broadcastFusions.push_back(
+        {producer, operand, fusion.consumerOperandMap,
+         fusion.invariantConsumerDimensions});
+  }
+
+  std::vector<TemporalWindowFusion> windowFusions;
+  windowFusions.reserve(source.windowFusions.size());
+  for (const TemporalWindowFusion &fusion : source.windowFusions) {
+    mlir::OpResult producer = mapResult(fusion.producer);
+    mlir::OpOperand *operand = mapOperand(fusion.consumerOperand);
+    if (!producer || !operand)
+      return fail("temporal domain remap lost a window fusion");
+    windowFusions.push_back({producer, operand, fusion.consumerOperandMap});
+  }
+
+  return TemporalDomain(mappedRegion, std::move(jointScopes),
+                        std::move(independentScopes),
+                        std::move(producerGroups),
+                        std::move(broadcastFusions),
+                        std::move(windowFusions));
+}
+
 } // namespace wafer::compiler::detail

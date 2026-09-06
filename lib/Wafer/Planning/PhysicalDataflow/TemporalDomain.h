@@ -7,6 +7,7 @@
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/IR/AffineMap.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LogicalResult.h"
 
@@ -350,6 +351,9 @@ private:
 
   friend struct TemporalDomainResult;
   friend TemporalDomainResult buildTemporalDomain(TileRegionOp);
+  friend mlir::FailureOr<TemporalDomain>
+  remapTemporalDomain(const TemporalDomain &, TileRegionOp,
+                      const mlir::IRMapping &, std::string *);
 };
 
 struct TemporalDomainResult {
@@ -362,6 +366,15 @@ struct TemporalDomainResult {
 /// Derives traversal roots, exact-derived producer edges, iterator extents and
 /// capabilities directly from one verifier-valid structural TileRegion.
 TemporalDomainResult buildTemporalDomain(TileRegionOp region);
+
+/// Remaps one immutable structural TemporalDomain onto a fresh clone of the
+/// same current TileRegion. This copies only query metadata and typed handles;
+/// it does not create IR or survive the candidate transaction. The caller must
+/// immediately apply the remapped choice before mutating the clone.
+mlir::FailureOr<TemporalDomain>
+remapTemporalDomain(const TemporalDomain &source, TileRegionOp mappedRegion,
+                    const mlir::IRMapping &mapping,
+                    std::string *failureReason = nullptr);
 
 } // namespace wafer::compiler::detail
 

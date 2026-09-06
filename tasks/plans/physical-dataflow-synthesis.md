@@ -57,6 +57,10 @@ frontier、admission 或 exact rejection 规则。任何进一步的访问顺序
 SPM planning 224 次、DDR planning 128 次，8 个 structural candidate 均通过 actual gate。该证据将下一步问题
 限定为 current-IR actualization 的重复遍历/内存分析边界；不授权建立 pre-target shadow owner 或用估算结果剪枝。
 
+已实现的首个复用只覆盖 immutable structural TemporalDomain：同一次 clone 的 `IRMapping` 映射全部 scope、producer、
+consumer operand、broadcast/window fusion handles，随后立即 apply；domain 不拥有 IR，也不跨 mutation 复用。
+FP16 conv profile 为 13.20s，与 13.26s 基线基本相同，证明该复用安全但不是当前主要性能瓶颈。
+
 ### 验证顺序
 
 每轮改动先执行编译快的 unit/IR/transform/driver、再执行 FP16 conv/prefill 和 SystemC/target-model，

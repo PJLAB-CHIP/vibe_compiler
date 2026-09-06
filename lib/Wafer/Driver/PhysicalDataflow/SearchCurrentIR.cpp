@@ -451,16 +451,18 @@ public:
           temporalFailed = true;
           break;
         }
-        TemporalDomainResult mappedDomain = buildTemporalDomain(mappedRegion);
-        if (!mappedDomain.succeeded()) {
-          detail = mappedDomain.failure->detail;
+        auto mappedDomain = remapTemporalDomain(axis.domain, mappedRegion,
+                                                mapping, &detail);
+        if (mlir::failed(mappedDomain)) {
+          if (detail.empty())
+            detail = "current candidate clone could not remap Temporal domain";
           temporalFailed = true;
           break;
         }
         auto mappedChoice =
             remapTemporalChoice(selectedChoice, mapping, detail);
         if (mlir::failed(mappedChoice) ||
-            !mappedDomain.domain->contains(*mappedChoice)) {
+            !mappedDomain->contains(*mappedChoice)) {
           if (detail.empty())
             detail = "remapped Temporal choice is outside current IR domain";
           temporalFailed = true;
@@ -468,7 +470,7 @@ public:
         }
         TemporalTilingFailure temporalFailure;
         if (mlir::failed(
-                applyTemporalTiling(*mappedDomain.domain, *mappedChoice,
+                applyTemporalTiling(*mappedDomain, *mappedChoice,
                                     candidate->relations, &temporalFailure))) {
           detail = temporalFailure.detail;
           temporalFailed = true;
