@@ -48,6 +48,10 @@ Pipeline position:
 | frontend helper | one public + private pure helper DAG；recursive/side-effect/indirect/dynamic boundary | source closure 验证，inline 后 TensorProgram 保持单 public entry 且无残余 call | typed source rejection；StableHLO ingestion、Tensor stage checker、真实 compile |
 | host/no-card/SystemC | structured、attention、LLaMA representative 以 FP16 为唯一主纵向 dtype；BF16 仅保留 dtype/ABI/conversion smoke | source→TensorProgram→Tile/Instr→actual target/package；SystemC 数值/完成；no-card 只验 package/plan | no-card 不伪造 arithmetic；package strict loader、guard、SystemC readback |
 
+本轮只落地 candidate-stage timing 与 actual storage dimensions 的观测/比较，不改变 temporal successor、structural
+frontier、admission 或 exact rejection 规则。任何进一步的访问顺序或预算重分配必须先基于本轮 profile，仍从
+`current IR → actual transformation → verifier → fresh analysis` 产生证据后再单独立项。
+
 ### 验证顺序
 
 每轮改动先执行编译快的 unit/IR/transform/driver、再执行 FP16 conv/prefill 和 SystemC/target-model，
