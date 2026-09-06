@@ -1262,6 +1262,25 @@ TEST_F(StructuredToTileTest,
 }
 
 TEST_F(StructuredToTileTest,
+       GenericDimensionOrderedAllToAllUsesLogicalMeshOnly) {
+  const llvm::SmallVector<uint64_t, 4> mesh{101, 203, 307, 401};
+  auto steps = buildDimensionOrderedAllToAll(mesh, /*rows=*/2, /*columns=*/2);
+  ASSERT_TRUE(mlir::succeeded(steps));
+  EXPECT_EQ(steps->size(), 16u);
+  for (const DimensionOrderedAllToAllStep &step : *steps) {
+    EXPECT_NE(step.source, step.destination);
+    EXPECT_TRUE(llvm::is_contained(mesh, step.source));
+    EXPECT_TRUE(llvm::is_contained(mesh, step.destination));
+    EXPECT_TRUE(llvm::is_contained(mesh, step.relay));
+    EXPECT_LE(step.dimension, 1u);
+  }
+  auto oneDimensional = buildDimensionOrderedAllToAll(mesh, /*rows=*/1,
+                                                       /*columns=*/4);
+  ASSERT_TRUE(mlir::succeeded(oneDimensional));
+  EXPECT_EQ(oneDimensional->size(), 12u);
+}
+
+TEST_F(StructuredToTileTest,
        LowersContractionExpressionAndReductionAtRealisticScale) {
   for (int64_t extent : {1024, 1025, 1031}) {
     SCOPED_TRACE(extent);

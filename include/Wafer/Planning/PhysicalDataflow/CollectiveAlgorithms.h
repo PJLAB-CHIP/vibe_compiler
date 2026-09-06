@@ -14,6 +14,30 @@
 
 namespace wafer::compiler::detail {
 
+struct DimensionOrderedAllToAllStep {
+  uint64_t source = 0;
+  uint64_t relay = 0;
+  uint64_t destination = 0;
+  uint32_t dimension = 0;
+  uint32_t round = 0;
+
+  friend bool operator==(const DimensionOrderedAllToAllStep &lhs,
+                         const DimensionOrderedAllToAllStep &rhs) {
+    return lhs.source == rhs.source && lhs.relay == rhs.relay &&
+           lhs.destination == rhs.destination &&
+           lhs.dimension == rhs.dimension && lhs.round == rhs.round;
+  }
+};
+
+/// Constructs a deterministic dimension-ordered personalized exchange over
+/// a row-major logical mesh. Participant IDs are opaque. A two-dimensional
+/// path uses the source-row/destination-column relay; a one-dimensional mesh
+/// degenerates to direct pairwise steps. No target topology, card ID, packet
+/// limit, or transport capability is consulted here.
+mlir::FailureOr<llvm::SmallVector<DimensionOrderedAllToAllStep, 64>>
+buildDimensionOrderedAllToAll(llvm::ArrayRef<uint64_t> rowMajorParticipants,
+                              uint64_t rows, uint64_t columns);
+
 /// Builds a deterministic minimum-cost Hamiltonian ring over participant IDs.
 /// Topology ownership stays with the caller through the distance oracle.
 mlir::FailureOr<llvm::SmallVector<uint64_t, 16>>

@@ -8,6 +8,46 @@
 
 namespace wafer::compiler::detail {
 
+mlir::FailureOr<llvm::SmallVector<DimensionOrderedAllToAllStep, 64>>
+buildDimensionOrderedAllToAll(llvm::ArrayRef<uint64_t> rowMajorParticipants,
+                              uint64_t rows, uint64_t columns) {
+  if (rows == 0 || columns == 0 || rows > std::numeric_limits<size_t>::max() /
+                                      columns ||
+      rowMajorParticipants.size() !=
+          static_cast<size_t>(rows * columns))
+    return mlir::failure();
+  llvm::SmallVector<uint64_t, 64> participants(rowMajorParticipants.begin(),
+                                               rowMajorParticipants.end());
+  std::sort(participants.begin(), participants.end());
+  if (std::adjacent_find(participants.begin(), participants.end()) !=
+      participants.end())
+    return mlir::failure();
+
+  llvm::SmallVector<DimensionOrderedAllToAllStep, 64> steps;
+  for (uint64_t sourceIndex = 0; sourceIndex < rows * columns;
+       ++sourceIndex) {
+    const uint64_t source = rowMajorParticipants[sourceIndex];
+    const uint64_t sourceRow = sourceIndex / columns;
+    for (uint64_t destinationIndex = 0; destinationIndex < rows * columns;
+         ++destinationIndex) {
+      if (sourceIndex == destinationIndex)
+        continue;
+      const uint64_t destination = rowMajorParticipants[destinationIndex];
+      const uint64_t destinationRow = destinationIndex / columns;
+      const uint64_t destinationColumn = destinationIndex % columns;
+      const uint64_t relayIndex = sourceRow * columns + destinationColumn;
+      const uint64_t relay = rowMajorParticipants[relayIndex];
+      if (relay != source)
+        steps.push_back({source, relay, relay, /*dimension=*/0,
+                         static_cast<uint32_t>(destinationColumn)});
+      if (relay != destination)
+        steps.push_back({relay, relay, destination, /*dimension=*/1,
+                         static_cast<uint32_t>(destinationRow)});
+    }
+  }
+  return steps;
+}
+
 mlir::FailureOr<llvm::SmallVector<uint64_t, 16>> buildMinimumHopRing(
     llvm::ArrayRef<uint64_t> participants, uint64_t maximumParticipants,
     llvm::function_ref<std::optional<uint64_t>(uint64_t, uint64_t)>
@@ -81,7 +121,7 @@ mlir::FailureOr<llvm::SmallVector<uint64_t, 16>> buildMinimumHopRing(
               orderedParticipants[previous] <
                   orderedParticipants[static_cast<size_t>(bestPrevious)]))) {
           best = candidate;
-          bestPrevious = static_cast<int16_t>(previous);
+          bestPrevious = static_cast<int32_t>(previous);
         }
       }
     }
@@ -100,7 +140,7 @@ mlir::FailureOr<llvm::SmallVector<uint64_t, 16>> buildMinimumHopRing(
           orderedParticipants[node] <
               orderedParticipants[static_cast<size_t>(bestEnd)]))) {
       bestCycle = cycle;
-      bestEnd = static_cast<int16_t>(node);
+      bestEnd = static_cast<int32_t>(node);
     }
   }
   if (bestEnd < 0)

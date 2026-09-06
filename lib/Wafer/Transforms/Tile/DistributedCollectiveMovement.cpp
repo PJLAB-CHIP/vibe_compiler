@@ -89,6 +89,7 @@ struct CompletePersonalizedComponent {
   llvm::SmallVector<int64_t, 4> columns;
   std::map<int64_t, CoordinateIndex> coordinates;
   std::map<std::pair<int64_t, int64_t>, PeerPair> pairs;
+  llvm::SmallVector<DimensionOrderedAllToAllStep, 64> orderedSteps;
   mlir::MemRefType pieceType;
   uint64_t pieceBytes = 0;
 };
@@ -258,7 +259,8 @@ collectMatchedPeerPairs(mlir::ModuleOp module) {
 static llvm::SmallVector<CompletePersonalizedComponent, 2>
 findCompletePersonalizedComponents(mlir::ModuleOp module,
                                    const TargetTopology &topology,
-                                   std::string &failureReason) {
+                                   std::string &failureReason,
+                                   bool requireCartesianGrid) {
   mlir::FailureOr<llvm::SmallVector<PeerPair, 64>> matched =
       collectMatchedPeerPairs(module);
   if (mlir::failed(matched)) {
@@ -287,7 +289,7 @@ findCompletePersonalizedComponents(mlir::ModuleOp module,
                .second;
     }
     const size_t participantCount = participantSet.size();
-    if (duplicate || participantCount < 4 ||
+    if (duplicate || participantCount < 2 ||
         pairMap.size() != participantCount * (participantCount - 1))
       continue;
     bool complete = true;
@@ -324,38 +326,42 @@ findCompletePersonalizedComponents(mlir::ModuleOp module,
     llvm::SmallVector<int64_t, 4> rows;
     llvm::SmallVector<int64_t, 4> columns;
     std::map<int64_t, TileCoordinate> physicalCoordinates;
-    for (int64_t participant : participantSet) {
-      std::optional<TileCoordinate> coordinate =
-          topology.getTileCoordinate(TileId(participant));
-      if (!coordinate ||
-          !topology.isTileAvailable(cardId, TileId(participant))) {
-        complete = false;
-        break;
+    if (requireCartesianGrid) {
+      for (int64_t participant : participantSet) {
+        std::optional<TileCoordinate> coordinate =
+            topology.getTileCoordinate(TileId(participant));
+        if (!coordinate ||
+            !topology.isTileAvailable(cardId, TileId(participant))) {
+          complete = false;
+          break;
+        }
+        const TileCoordinate coordinateValue = *coordinate;
+        physicalCoordinates.emplace(participant, coordinateValue);
+        if (!llvm::is_contained(rows, coordinateValue.y))
+          rows.push_back(coordinateValue.y);
+        if (!llvm::is_contained(columns, coordinateValue.x))
+          columns.push_back(coordinateValue.x);
       }
-      const TileCoordinate coordinateValue = *coordinate;
-      physicalCoordinates.emplace(participant, coordinateValue);
-      if (!llvm::is_contained(rows, coordinateValue.y))
-        rows.push_back(coordinateValue.y);
-      if (!llvm::is_contained(columns, coordinateValue.x))
-        columns.push_back(coordinateValue.x);
     }
     llvm::sort(rows);
     llvm::sort(columns);
-    if (!complete || rows.size() < 2 || columns.size() < 2 ||
-        rows.size() * columns.size() != participantCount)
+    if (!complete ||
+        (requireCartesianGrid &&
+         (rows.size() < 2 || columns.size() < 2 ||
+          rows.size() * columns.size() != participantCount)))
       continue;
-    for (int64_t row : rows)
-      for (int64_t column : columns) {
-        std::optional<TileId> tile =
-            topology.getTileId(TileCoordinate{row, column});
-        if (!tile || !participantSet.count(tile->getValue()))
-          complete = false;
-      }
-    if (!complete)
-      continue;
-    if (!getAggregateType(pieceType, rows.size(), pieceBytes) ||
-        !getAggregateType(pieceType, columns.size(), pieceBytes))
-      continue;
+    if (requireCartesianGrid) {
+      for (int64_t row : rows)
+        for (int64_t column : columns) {
+          std::optional<TileId> tile =
+              topology.getTileId(TileCoordinate{row, column});
+          if (!tile || !participantSet.count(tile->getValue()))
+            complete = false;
+        }
+      if (!complete || !getAggregateType(pieceType, rows.size(), pieceBytes) ||
+          !getAggregateType(pieceType, columns.size(), pieceBytes))
+        continue;
+    }
 
     CompletePersonalizedComponent component;
     component.communication = communication;
@@ -365,6 +371,25 @@ findCompletePersonalizedComponents(mlir::ModuleOp module,
     component.pairs = std::move(pairMap);
     component.pieceType = pieceType;
     component.pieceBytes = pieceBytes;
+    if (requireCartesianGrid) {
+      llvm::SmallVector<uint64_t, 16> rowMajor;
+      for (int64_t row : component.rows)
+        for (int64_t column : component.columns) {
+          std::optional<TileId> tile =
+              topology.getTileId(TileCoordinate{row, column});
+          if (!tile)
+            complete = false;
+          else
+            rowMajor.push_back(static_cast<uint64_t>(tile->getValue()));
+        }
+      if (!complete)
+        continue;
+      auto ordered = buildDimensionOrderedAllToAll(
+          rowMajor, component.rows.size(), component.columns.size());
+      if (mlir::failed(ordered))
+        continue;
+      component.orderedSteps = std::move(*ordered);
+    }
     for (const auto &[tile, coordinate] : physicalCoordinates) {
       auto row = llvm::find(component.rows, coordinate.y);
       auto column = llvm::find(component.columns, coordinate.x);
@@ -413,6 +438,11 @@ static int64_t getTileAt(const CompletePersonalizedComponent &component,
 static mlir::LogicalResult
 materializeComponent(CompletePersonalizedComponent &component,
                      DistributedCollectiveMovementResult &statistics) {
+  // The logical schedule is produced by the target-independent algorithm;
+  // this target adapter may only realize a current peer component after that
+  // schedule has proved every personalized edge has a row/column path.
+  if (component.orderedSteps.empty() && component.participants.size() > 1)
+    return mlir::failure();
   mlir::MLIRContext *context = component.pieceType.getContext();
   const unsigned rowCount = component.rows.size();
   const unsigned columnCount = component.columns.size();
@@ -1235,7 +1265,8 @@ materializeDimensionOrderedAllToAll(mlir::ModuleOp module) {
   std::string discoveryFailure;
   llvm::SmallVector<CompletePersonalizedComponent, 2> components =
       findCompletePersonalizedComponents(module, *topology,
-                                         discoveryFailure);
+                                         discoveryFailure,
+                                         /*requireCartesianGrid=*/true);
   if (!discoveryFailure.empty())
     return fail(DistributedCollectiveMovementFailureKind::BrokenContract,
                 discoveryFailure);
@@ -1267,7 +1298,8 @@ materializeRingReduceScatter(mlir::ModuleOp module) {
   std::string discoveryFailure;
   llvm::SmallVector<CompletePersonalizedComponent, 2> components =
       findCompletePersonalizedComponents(module, *topology,
-                                         discoveryFailure);
+                                         discoveryFailure,
+                                         /*requireCartesianGrid=*/false);
   if (!discoveryFailure.empty())
     return fail(DistributedCollectiveMovementFailureKind::BrokenContract,
                 discoveryFailure);

@@ -194,6 +194,8 @@ ordinal当作Tile ID，也不能通过恢复旧的Tile collective op绕过physic
 ### 3.3 通用算法与TX81 transport边界
 
 Ring、Recursive Doubling、Dimension-Ordered AllToAll、ReduceScatter和AllReduce是target-independent collective algorithms。
+当前实现中的`buildMinimumHopRing`与`buildDimensionOrderedAllToAll`是通用schedule builder：前者只消费opaque participant和directed distance oracle，
+后者只消费row-major logical mesh；TX81 component discovery仅把actual Tile坐标适配成这些输入，不把adapter schedule当作semantic source。
 它们只消费current participant relation、payload fragments、abstract topology distance和typed local combine；算法选择一旦确定，
 在同一candidate transaction中直接物化actual `wafer.tile.peer_*`、local combine、payload staging和token，不建立future collective plan。
 
@@ -305,10 +307,10 @@ package/runtime不重新选择peer、route、algorithm或memory placement。
   减少message，relation cover、consumer subview和actual MiniMalloc owner不变；
 - sparse multi-group覆盖chain/diamond/不规则destination集合：round-safe case由matching精确覆盖每条edge一次，不增加relay或DDR；
   bidirectional no-cut case形成一个explicit shared-DDR boundary且不生成伪round；
-- complete personalized exchange覆盖2×2/4×4、1024/1025/1031和near-miss：row/column aggregate每Tile分别2/6个message，
+- complete personalized exchange覆盖1D/2×2/4×4、1024/1025/1031和near-miss：row/column aggregate每Tile分别2/6个message，
   每个source→destination piece经过exact pack/repack并由final typed subview消费，specialized candidate没有unpack copy；non-Cartesian、
   mixed representation和native scatter保持现行realization；
-- Ring ReduceScatter覆盖4/16 Tile complete contribution matrix及`add/max/min` closure：`P-1`轮每Tile一send/recv/combine，全部leaf
+- Ring ReduceScatter覆盖2/4/16 Tile complete contribution matrix及`add/max/min` closure：`P-1`轮每Tile一send/recv/combine，全部leaf
   恰消费一次；missing leaf、额外merge use、mixed kind/map/type和coupled attention不改写；
 - Ring AllReduce覆盖4/16 Tile full-buffer fanin/fanout和leading-axis 1024/1025/1031 ragged chunk：同一个ReduceScatter kernel后接
   `P-1`轮AllGather，每Tile result chunk无hole/overlap，central与Ring各自进入actual MiniMalloc和cost；
