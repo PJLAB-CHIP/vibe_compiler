@@ -66,9 +66,9 @@ Q52 的历史 current-IR mechanics 保留为前置；Q53 和 mesh communication 
 `tasks/archive/completed-task-index.md`。
 稳定语义由05--16号编号设计拥有。
 
-当前直接项：`mesh-communication-materialization` 重新进入 `doing`，先完成本节架构收敛合同；
-Q53 `production-host-readiness` 等待该合同。recursive-doubling、AllToAll、ReduceScatter、
-AllReduce 的旧实现和测试是待重新审计的输入，不直接作为当前完成证据。
+当前直接项：`mesh-communication-materialization` 与 Q53 `production-host-readiness` 均达到
+`board-ready`；recursive-doubling、AllToAll、ReduceScatter、AllReduce 的 current-IR witness
+已重新审计并补齐通用 schedule boundary。真实板端仍未执行。
 
 ## Pipeline Contract
 
