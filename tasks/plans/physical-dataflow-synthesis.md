@@ -46,12 +46,13 @@ Pipeline position:
 | execution/residency | 同 Tile 同/异 execution region、cross-Tile boundary、SPM reuse/DDR boundary | execution grouping 与 SPM owner/lifetime/alias 分开；actual allocation、offset、wait | capacity/alias/lifetime/completion；MiniMalloc 和 current lifetime witness |
 | layout/bufferization | view、DPS、multi-use、padding、跨 Tile piece；静态 rank≥3 且主维 1024/1025/1031 | query-local alternatives 必须实际 materialize 后再 admission；禁止 copy-count-only PBQP | unsupported/invalid alias/capacity；One-Shot/Bufferizable verifier 与 Instr consumer |
 | frontend helper | one public + private pure helper DAG；recursive/side-effect/indirect/dynamic boundary | source closure 验证，inline 后 TensorProgram 保持单 public entry 且无残余 call | typed source rejection；StableHLO ingestion、Tensor stage checker、真实 compile |
-| host/no-card/SystemC | structured、attention、LLaMA representative，FP16/BF16；none/search 独立 source | source→TensorProgram→Tile/Instr→actual target/package；SystemC 数值/完成；no-card 只验 package/plan | no-card 不伪造 arithmetic；package strict loader、guard、SystemC readback |
+| host/no-card/SystemC | structured、attention、LLaMA representative 以 FP16 为唯一主纵向 dtype；BF16 仅保留 dtype/ABI/conversion smoke | source→TensorProgram→Tile/Instr→actual target/package；SystemC 数值/完成；no-card 只验 package/plan | no-card 不伪造 arithmetic；package strict loader、guard、SystemC readback |
 
 ### 验证顺序
 
-每轮改动先执行编译快的 unit/IR/transform/driver、再执行 conv/prefill 和 SystemC/target-model，
-最后才执行 LLaMA 或长 decode 的 search/none。重型 case 只在前层无失败时启动；失败时保留当前
+每轮改动先执行编译快的 unit/IR/transform/driver、再执行 FP16 conv/prefill 和 SystemC/target-model，
+最后才执行 FP16 LLaMA 或长 decode 的 search/none；BF16 只在明确的 dtype/ABI smoke 变更时执行。
+重型 case 只在前层无失败时启动；失败时保留当前
 case 的完整日志和 typed stage，不用提前终止或历史输出代替结果。
 
 下面的 Q52/Q53 段落是迁移所需的历史输入和既有 witness。凡是与本节算法分层、residency
