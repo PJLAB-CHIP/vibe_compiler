@@ -14,6 +14,7 @@
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
 #include "Wafer/Transforms/Tile/StructuredToTile.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/IRMapping.h"
@@ -480,6 +481,9 @@ public:
         return {actualFailure(ActualCandidateStatus::CompilerBug, detail),
                 actualizations, false};
 
+      wafer::support::ScopedCompileTimingSpan candidateTiming(
+          "search-candidate", "current-ir", "finish-candidate",
+          llvm::formatv("temporal={0}", actualizations).str());
       FinishedCandidate finished =
           finishCandidate(std::move(*candidate),
                           actualizationLimit - actualizations + 1, detail);
@@ -822,6 +826,8 @@ private:
     std::vector<std::unique_ptr<CompiledMovement>> compiled;
     compiled.reserve(materialized.size());
     for (PendingMovement &movementCandidate : materialized) {
+      wafer::support::ScopedCompileTimingSpan movementTiming(
+          "search-candidate", "movement", "compile-candidate");
       ExecutableCompilationResult result =
           compileMovementCandidate(std::move(movementCandidate.candidate));
       if (result.status == ExecutableCompilationStatus::CompilerFailure)

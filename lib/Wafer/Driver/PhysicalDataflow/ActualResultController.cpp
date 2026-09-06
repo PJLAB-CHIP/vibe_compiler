@@ -59,7 +59,8 @@ maximumTileMetric(const analysis::InstructionProgramAggregateCost &cost,
   return maximum;
 }
 
-std::array<uint64_t, 12> asArray(const SearchResourceDurations &durations) {
+std::array<uint64_t, 12> asServiceArray(
+    const SearchResourceDurations &durations) {
   return {durations.neF16Bf16Picoseconds,
           durations.vectorF16Bf16Picoseconds,
           durations.vectorF32Picoseconds,
@@ -72,6 +73,12 @@ std::array<uint64_t, 12> asArray(const SearchResourceDurations &durations) {
           durations.instructionControlPicoseconds,
           durations.dteWaitControlPicoseconds,
           durations.nccWaitControlPicoseconds};
+}
+
+std::array<uint64_t, 4> asStorageArray(
+    const SearchResourceDurations &durations) {
+  return {durations.spmHighWaterBytes, durations.ddrHighWaterBytes,
+          durations.spmBufferCount, durations.ddrBufferCount};
 }
 
 bool hasSPMCapacityRejection(const ActualCandidateResult &result) {
@@ -195,7 +202,11 @@ deriveSearchObjective(const analysis::InstructionProgramAggregateCost &cost,
       !cost.aggregateNoC.staticIssueSiteCount.isKnown() ||
       !cost.maximumTileNoCTransmitBytes.isKnown() ||
       !cost.maximumTileNoCTransmitMessageCount.isKnown() ||
-      !cost.minimumHopMessageDemand.isKnown())
+      !cost.minimumHopMessageDemand.isKnown() ||
+      !cost.maximumTileSPMHighWaterBytes.isKnown() ||
+      !cost.maximumTileDDRHighWaterBytes.isKnown() ||
+      !cost.aggregateCompilerOwnedSPMBufferCount.isKnown() ||
+      !cost.aggregateCompilerOwnedDDRBufferCount.isKnown())
     return UnknownSearchObjective{
         SearchObjectiveUnknownReason::MetricUnavailable};
 
@@ -253,6 +264,10 @@ deriveSearchObjective(const analysis::InstructionProgramAggregateCost &cost,
                        durations.nccWaitControlPicoseconds))
     return UnknownSearchObjective{
         SearchObjectiveUnknownReason::ArithmeticOverflow};
+  durations.spmHighWaterBytes = cost.maximumTileSPMHighWaterBytes.value;
+  durations.ddrHighWaterBytes = cost.maximumTileDDRHighWaterBytes.value;
+  durations.spmBufferCount = cost.aggregateCompilerOwnedSPMBufferCount.value;
+  durations.ddrBufferCount = cost.aggregateCompilerOwnedDDRBufferCount.value;
   return KnownSearchObjective{durations, *cohort};
 }
 
@@ -262,8 +277,10 @@ SearchObjectiveComparison compareSearchObjectives(const SearchObjective &lhs,
   const auto *right = std::get_if<KnownSearchObjective>(&rhs);
   if (!left || !right || !(left->cohort == right->cohort))
     return SearchObjectiveComparison::Incomparable;
-  const std::array<uint64_t, 12> leftTerms = asArray(left->durations);
-  const std::array<uint64_t, 12> rightTerms = asArray(right->durations);
+  const std::array<uint64_t, 12> leftTerms =
+      asServiceArray(left->durations);
+  const std::array<uint64_t, 12> rightTerms =
+      asServiceArray(right->durations);
   bool noWorse = true;
   bool noBetter = true;
   bool strictlyBetter = false;
@@ -278,8 +295,29 @@ SearchObjectiveComparison compareSearchObjectives(const SearchObjective &lhs,
     return SearchObjectiveComparison::Better;
   if (noBetter && strictlyWorse)
     return SearchObjectiveComparison::Worse;
-  return leftTerms == rightTerms ? SearchObjectiveComparison::Equivalent
-                                 : SearchObjectiveComparison::Incomparable;
+  if (leftTerms != rightTerms)
+    return SearchObjectiveComparison::Incomparable;
+  const std::array<uint64_t, 4> leftStorage =
+      asStorageArray(left->durations);
+  const std::array<uint64_t, 4> rightStorage =
+      asStorageArray(right->durations);
+  noWorse = true;
+  noBetter = true;
+  strictlyBetter = false;
+  strictlyWorse = false;
+  for (auto [leftTerm, rightTerm] :
+       llvm::zip_equal(leftStorage, rightStorage)) {
+    noWorse &= leftTerm <= rightTerm;
+    noBetter &= leftTerm >= rightTerm;
+    strictlyBetter |= leftTerm < rightTerm;
+    strictlyWorse |= leftTerm > rightTerm;
+  }
+  if (noWorse && strictlyBetter)
+    return SearchObjectiveComparison::Better;
+  if (noBetter && strictlyWorse)
+    return SearchObjectiveComparison::Worse;
+  return leftStorage == rightStorage ? SearchObjectiveComparison::Equivalent
+                                     : SearchObjectiveComparison::Incomparable;
 }
 
 CandidateReservation

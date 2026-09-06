@@ -129,6 +129,14 @@ void recordStructuralCandidateMetrics(
                                durations.dteWaitControlPicoseconds);
   recordRegionCandidateCounter(index, "objective-ncc-wait-picoseconds",
                                durations.nccWaitControlPicoseconds);
+  recordRegionCandidateCounter(index, "objective-spm-high-water-bytes",
+                               durations.spmHighWaterBytes);
+  recordRegionCandidateCounter(index, "objective-ddr-high-water-bytes",
+                               durations.ddrHighWaterBytes);
+  recordRegionCandidateCounter(index, "objective-spm-buffer-count",
+                               durations.spmBufferCount);
+  recordRegionCandidateCounter(index, "objective-ddr-buffer-count",
+                               durations.ddrBufferCount);
 }
 
 } // namespace

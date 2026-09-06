@@ -128,10 +128,11 @@ private:
   SearchCostPolicy policy;
 };
 
-/// Independently comparable service dimensions derived from the final actual
-/// Instr program. NE and Vector/CT are deliberately not collapsed into one
-/// compute number: without a proved inter-engine schedule, a trade-off between
-/// them has no total order.
+/// Independently comparable service and actual-storage dimensions derived from
+/// the final actual Instr program. NE and Vector/CT are deliberately not
+/// collapsed into one compute number: without a proved inter-engine schedule,
+/// a trade-off between them has no total order. Storage facts remain separate
+/// dimensions and never become a capacity admission substitute.
 struct SearchResourceDurations {
   uint64_t neF16Bf16Picoseconds = 0;
   uint64_t vectorF16Bf16Picoseconds = 0;
@@ -145,6 +146,12 @@ struct SearchResourceDurations {
   uint64_t instructionControlPicoseconds = 0;
   uint64_t dteWaitControlPicoseconds = 0;
   uint64_t nccWaitControlPicoseconds = 0;
+  /// Actual storage facts kept as independent comparison dimensions. They are
+  /// not converted to time and never stand in for a capacity admission.
+  uint64_t spmHighWaterBytes = 0;
+  uint64_t ddrHighWaterBytes = 0;
+  uint64_t spmBufferCount = 0;
+  uint64_t ddrBufferCount = 0;
 
   friend bool operator==(const SearchResourceDurations &lhs,
                          const SearchResourceDurations &rhs) {
@@ -154,14 +161,18 @@ struct SearchResourceDurations {
                lhs.dteEndpointPicoseconds, lhs.dteStartupPicoseconds,
                lhs.nocHopPicoseconds,
                lhs.spmMovementPicoseconds, lhs.instructionControlPicoseconds,
-               lhs.dteWaitControlPicoseconds, lhs.nccWaitControlPicoseconds) ==
+               lhs.dteWaitControlPicoseconds, lhs.nccWaitControlPicoseconds,
+               lhs.spmHighWaterBytes, lhs.ddrHighWaterBytes,
+               lhs.spmBufferCount, lhs.ddrBufferCount) ==
            std::tie(
                rhs.neF16Bf16Picoseconds, rhs.vectorF16Bf16Picoseconds,
                rhs.vectorF32Picoseconds, rhs.ddrPicoseconds, rhs.nocPicoseconds,
                rhs.dteEndpointPicoseconds, rhs.dteStartupPicoseconds,
                rhs.nocHopPicoseconds,
                rhs.spmMovementPicoseconds, rhs.instructionControlPicoseconds,
-               rhs.dteWaitControlPicoseconds, rhs.nccWaitControlPicoseconds);
+               rhs.dteWaitControlPicoseconds, rhs.nccWaitControlPicoseconds,
+               rhs.spmHighWaterBytes, rhs.ddrHighWaterBytes,
+               rhs.spmBufferCount, rhs.ddrBufferCount);
   }
 };
 
