@@ -99,6 +99,8 @@ def _pmu_tile(tile: int) -> dict[str, Any]:
         "card_id": 0,
         "tile_id": tile,
         "launch_slot": tile,
+        "ncc_pmu_restore_verified": True,
+        "dte_pmu_restore_verified": True,
         "aggregates": {
             "statistics_window": _counter(820 + tile),
             "fu": _counter(390 + tile),

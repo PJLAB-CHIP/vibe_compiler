@@ -135,6 +135,11 @@ def _test_program(module: object) -> None:
         and row["status"] == "Measured"
         for row in engine_active["by_engine"]
     )
+    assert all(len(tile["workers"]) == 3 for tile in final["tiles"])
+    assert first["validity"]["pmu_restore"]
+    worker_engine = final["tiles"][0]["workers"][0]["engines"][0]
+    assert worker_engine["instructions"]["delta"] == 1
+    assert worker_engine["blocking"]["delta"] == 0
     ct_summary = next(
         row for row in engine_active["by_engine"] if row["engine"] == "CT"
     )
@@ -1110,6 +1115,18 @@ def _test_validity(module: object) -> None:
     assert analysis["program"]["duration"]["status"] == "Invalid"
     assert not analysis["validity"]["output_equivalence"]
 
+    restore_failure = make_evidence()
+    restore_failure["experiment"]["pmu"]["tiles"][0][
+        "dte_pmu_restore_verified"
+    ] = False
+    analysis = module.analyze_evidence(restore_failure)
+    assert not analysis["validity"]["pmu_restore"]
+    assert not analysis["program"]["duration"]["qualified"]
+    assert any(
+        row["code"] == "pmu_restore_unverified" and row.get("tile") == 0
+        for row in analysis["diagnostics"]
+    )
+
     primary_failure = make_evidence()
     primary_failure["output_validation"]["resources"][0][
         "primary_output_validated"
@@ -1236,6 +1253,8 @@ def _test_validity(module: object) -> None:
     tile["entry_end_cycle"] = tile["entry_begin_cycle"] - 1
     analysis = module.analyze_evidence(reversed_trace)
     assert not analysis["validity"]["trace"]
+    assert not analysis["program"]["duration"]["qualified"]
+    assert not analysis["valid"]
     assert (
         analysis["program"]["tiles"][4]["trace_entry_cpu_cycles"]
         is None

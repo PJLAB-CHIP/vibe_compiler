@@ -996,10 +996,26 @@ def _validate_experiment(
         path = f"experiment.pmu.tiles[{index}]"
         _exact_keys(
             row,
-            {"card_id", "tile_id", "launch_slot", "aggregates", "workers"},
+            {
+                "card_id",
+                "tile_id",
+                "launch_slot",
+                "ncc_pmu_restore_verified",
+                "dte_pmu_restore_verified",
+                "aggregates",
+                "workers",
+            },
             path,
         )
         _validate_tile_binding(row, path, topology)
+        _boolean(
+            row["ncc_pmu_restore_verified"],
+            f"{path}.ncc_pmu_restore_verified",
+        )
+        _boolean(
+            row["dte_pmu_restore_verified"],
+            f"{path}.dte_pmu_restore_verified",
+        )
         aggregates = _mapping(row["aggregates"], f"{path}.aggregates")
         _exact_keys(aggregates, set(AGGREGATE_COUNTERS), f"{path}.aggregates")
         for name in AGGREGATE_COUNTERS:
@@ -1253,6 +1269,21 @@ def _counter_value(counter: Mapping[str, Any]) -> tuple[int | None, str | None]:
     if recovery != end:
         return None, "counter recovery does not match the terminal end value"
     return end - start, None
+
+
+def _analyze_counter(counter: Mapping[str, Any]) -> dict[str, Any]:
+    value, reason = _counter_value(counter)
+    return {
+        "start": int(counter["start"]),
+        "end": int(counter["end"]),
+        "recovery": int(counter["recovery"]),
+        "stable": bool(counter["stable"]),
+        "enabled": bool(counter["enabled"]),
+        "delta": value,
+        "valid": value is not None,
+        "status": "Measured" if value is not None else "Unavailable",
+        "reason": reason,
+    }
 
 
 def _engine_active_time_summary(
@@ -2233,7 +2264,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
             "but host completion observation is coarse relative to the host "
             "launch-to-completion envelope",
         )
-    qualified = bool(
+    source_qualified = bool(
         source_validity["environment"]
         and source_validity["profile_instrumentation"]
         and source_validity["measurement_basis"]
@@ -2257,6 +2288,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
     trace_all = bool(experiment["trace"]["complete"])
     accounting_all = True
     pmu_all = True
+    pmu_restore_all = True
 
     for tile in TILES:
         trace_row = trace[tile]
@@ -2277,6 +2309,19 @@ def analyze_evidence(value: object) -> dict[str, Any]:
             and [int(event["sequence"]) for event in trace_row["events"]]
             == list(range(len(trace_row["events"])))
         )
+        pmu_row = pmu[tile]
+        if not (
+            bool(pmu_row["ncc_pmu_restore_verified"])
+            and bool(pmu_row["dte_pmu_restore_verified"])
+        ):
+            pmu_restore_all = False
+            diagnose(
+                "error",
+                "pmu_restore_unverified",
+                "Trace PMU enable state was not verified after restoring the "
+                "pre-entry values",
+                tile=tile,
+            )
         if not protocol_ok:
             trace_all = False
             diagnose(
@@ -2763,7 +2808,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         )
         outside_overlay_cycles = overlay_cycles - inside_overlay_cycles
 
-        aggregate = pmu[tile]["aggregates"]
+        aggregate = pmu_row["aggregates"]
         statistics_window, statistics_reason = _counter_value(
             aggregate["statistics_window"]
         )
@@ -2910,6 +2955,26 @@ def analyze_evidence(value: object) -> dict[str, Any]:
                 ),
             }
         )
+        worker_rows: list[dict[str, Any]] = []
+        for worker in pmu_row["workers"]:
+            engine_rows_for_worker: list[dict[str, Any]] = []
+            for engine in worker["engines"]:
+                instructions = _analyze_counter(engine["instructions"])
+                blocking = _analyze_counter(engine["blocking"])
+                engine_rows_for_worker.append(
+                    {
+                        "engine": engine["engine"],
+                        "instructions": instructions,
+                        "blocking": blocking,
+                    }
+                )
+            worker_rows.append(
+                {
+                    "worker": int(worker["worker"]),
+                    "engines": engine_rows_for_worker,
+                }
+            )
+
         topology_row = topology[tile]
         clock_row = clocks[tile]
         clock_valid = bool(clock_row["valid"] and clock_row["monotonic"])
@@ -2935,6 +3000,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
                 "statistics_window_status": (
                     "Measured" if statistics_valid else "Unavailable"
                 ),
+                "workers": worker_rows,
                 "semantic_timeline_segments": semantic,
                 "semantic_partition": {
                     "entry_cycles": trace_axis,
@@ -3042,6 +3108,12 @@ def analyze_evidence(value: object) -> dict[str, Any]:
     hardware_cost_analysis = _hardware_cost_analysis(
         evidence["static_cost_model"], engine_active_time
     )
+    qualified = bool(
+        source_qualified
+        and trace_all
+        and accounting_all
+        and pmu_restore_all
+    )
     validity = {
         "program_contract": True,
         "output_equivalence": output_equivalence,
@@ -3053,6 +3125,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         "trace": trace_all,
         "cost_accounting": accounting_all,
         "pmu": pmu_all,
+        "pmu_restore": pmu_restore_all,
         "clock_alignment": clock_alignment,
     }
     return {
@@ -3503,6 +3576,7 @@ const TERMS={
     "trace":{label:"Trace 采集完整性",definition:"所有 tile 的 Trace 生命周期、容量、terminal 和区间关系闭合。",not:"不自动证明每个 PMU counter 都可归属。"},
     "cost_accounting":{label:"成本分项会计闭合",definition:"每个 tile 的语义分项排他并覆盖完整 Trace entry，Trace-only overlay 独立。",not:"不表示这些 Trace 数值可以从 Primary 直接相减。"},
     "pmu":{label:"PMU 计数资格",definition:"需要使用的 NCC/DTE/aggregate counter 读取稳定且生命周期闭合。",not:"PMU bound 仍不是精确 engine 起止。"},
+    "pmu_restore":{label:"PMU 状态恢复资格",definition:"Trace 临时启用的 NCC/DTE PMU 已在 entry 结束后写回并读回原始 enable 值。",not:"不代表 PMU counter 本身一定可归属。"},
     "clock_alignment":{label:"Tile-local 时钟有效",definition:"每个 tile 自己的 Kcore rdcycle 关系有效且单调。",not:"不建立不同 tile 之间的绝对时钟对齐。"}
   }
 };
@@ -3835,13 +3909,18 @@ function renderEngines(){
   q("#engineTile").value=String(state.tile);
   q("#engineTileMeta").innerHTML=`${statusBadge(tile.trace_status)} · trace ${number(tile.trace_entry_cpu_cycles)} Kcore CPU cycles · clock ${statusBadge(tile.clock_status)}`;
   const statisticsRow=`<tr><td><b>STATISTICS_WINDOW</b></td><td>Aggregate PMU window (raw ticks)</td><td class="num">${number(tile.statistics_window_raw_ticks)}</td><td class="num">—</td><td>${statusBadge(tile.statistics_window_status)}</td><td>Auxiliary raw PMU tick delta; not the rdcycle timeline axis and not elapsed time.</td></tr>`;
+  const workerRows=tile.workers.flatMap(worker=>worker.engines.map(engine=>{
+    const instructions=engine.instructions;
+    const blocking=engine.blocking;
+    return `<tr><td><b>worker ${worker.worker} · ${escapeHtml(engine.engine)}</b></td><td>Instructions / blocking</td><td class="num">${number(instructions.delta)} / ${number(blocking.delta)}</td><td class="num">—</td><td>${statusBadge(instructions.status)} / ${statusBadge(blocking.status)}</td><td>Worker-local PMU deltas；保留 raw start/end/recovery，不与 engine execution ns 或 Primary 相加。</td></tr>`;
+  })).join("");
   q("#engineRows").innerHTML=statisticsRow+tile.engines.map(engine=>{
     if(engine.engine==="DIRECT_DTE")return[
       `<tr><td><b>DIRECT_DTE</b></td><td>Wait / completion (Kcore CPU cycles)</td><td class="num">${number(engine.wait_window_cpu_cycles)}</td><td class="num">${engine.wait_window_count}</td><td>${statusBadge(engine.wait_window_status)}</td><td>Measured tile-local rdcycle interval; frequency conversion unavailable.</td></tr>`,
       `<tr><td></td><td>Raw PMU activity</td><td class="num">${number(engine.raw_pmu_activity)}</td><td class="num">${engine.activity_window_count}</td><td>${statusBadge(engine.raw_pmu_activity_status)}</td><td>Sampled and uncalibrated; never elapsed time.</td></tr>`
     ].join("");
     return `<tr><td>${termCell("engine",engine.engine)}</td><td>Per-tile engine active time (Trace PMU ns)</td><td class="num">${number(engine.engine_execution_time_ns)}</td><td class="num">${engine.activity_window_count}</td><td>${statusBadge(engine.engine_execution_time_status)}</td><td>来自另一轮Trace diagnostic的vendor PMU execution-time delta；没有精确起止坐标，不能与Primary包络相减。Activity windows: ${termValue("status",engine.activity_window_status)}；仅为Kcore rdcycle bounds。</td></tr>`;
-  }).join("");
+  }).join("")+workerRows;
 }
 
 function renderSites(){

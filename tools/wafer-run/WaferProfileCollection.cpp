@@ -622,6 +622,14 @@ void emitProfileExperiment(llvm::json::OStream &json,
             json.attribute("card_id", tile.cardId.getValue());
             json.attribute("tile_id", tile.tileId.getValue());
             json.attribute("launch_slot", tile.launchSlot.getValue());
+            json.attribute(
+                "ncc_pmu_restore_verified",
+                (header.summary_validity &
+                 WAFER_TX81_PROFILER_SUMMARY_NCC_PMU_RESTORE_VERIFIED) != 0);
+            json.attribute(
+                "dte_pmu_restore_verified",
+                (header.summary_validity &
+                 WAFER_TX81_PROFILER_SUMMARY_DTE_PMU_RESTORE_VERIFIED) != 0);
             json.attributeObject("aggregates", [&] {
               for (uint32_t index = 0;
                    index < WAFER_TX81_PROFILER_PMU64_COUNTERS; ++index) {

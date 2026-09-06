@@ -109,6 +109,10 @@ enum WaferTx81ProfilerSummaryValidity {
   WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_CAPTURED = UINT32_C(1) << 6,
   WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_STABLE = UINT32_C(1) << 7,
   WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERED = UINT32_C(1) << 8,
+  /* Trace temporarily enables both PMU blocks.  These bits are set only
+   * after the original enable values have been written back and read back. */
+  WAFER_TX81_PROFILER_SUMMARY_NCC_PMU_RESTORE_VERIFIED = UINT32_C(1) << 9,
+  WAFER_TX81_PROFILER_SUMMARY_DTE_PMU_RESTORE_VERIFIED = UINT32_C(1) << 10,
 };
 
 enum WaferTx81ProfilerEventMetadata {

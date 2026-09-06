@@ -465,19 +465,22 @@ void wafer_tx81_profile_entry_begin(uint64_t buffer_address,
     wafer_profile_dte_enable_owned = 1U;
   }
 
-  wafer_profile_snapshot(&wafer_profile_header->pmu_before);
-  wafer_profile_header->summary_validity |=
-      WAFER_TX81_PROFILER_SUMMARY_PMU_BEFORE_CAPTURED;
-  if (wafer_profile_header->pmu_before.stable_mask ==
-      (UINT32_C(1) << WAFER_TX81_PROFILER_PMU64_COUNTERS) - 1U)
+  if (wafer_profile_is_trace_capture()) {
+    wafer_profile_snapshot(&wafer_profile_header->pmu_before);
     wafer_profile_header->summary_validity |=
-        WAFER_TX81_PROFILER_SUMMARY_PMU_BEFORE_STABLE;
-  for (uint32_t engine = 0; engine < WAFER_PROFILE_NCC_ENGINE_COUNT; ++engine) {
-    wafer_profile_last_engine_counters[engine] =
-        wafer_profile_header->pmu_before.counters[engine + 2U];
-    if ((wafer_profile_header->pmu_before.stable_mask &
-         (UINT32_C(1) << (engine + 2U))) != 0U)
-      wafer_profile_last_engine_counter_valid_mask |= UINT32_C(1) << engine;
+        WAFER_TX81_PROFILER_SUMMARY_PMU_BEFORE_CAPTURED;
+    if (wafer_profile_header->pmu_before.stable_mask ==
+        (UINT32_C(1) << WAFER_TX81_PROFILER_PMU64_COUNTERS) - 1U)
+      wafer_profile_header->summary_validity |=
+          WAFER_TX81_PROFILER_SUMMARY_PMU_BEFORE_STABLE;
+    for (uint32_t engine = 0; engine < WAFER_PROFILE_NCC_ENGINE_COUNT;
+         ++engine) {
+      wafer_profile_last_engine_counters[engine] =
+          wafer_profile_header->pmu_before.counters[engine + 2U];
+      if ((wafer_profile_header->pmu_before.stable_mask &
+           (UINT32_C(1) << (engine + 2U))) != 0U)
+        wafer_profile_last_engine_counter_valid_mask |= UINT32_C(1) << engine;
+    }
   }
 
   if (wafer_profile_is_trace_capture()) {
@@ -1001,14 +1004,17 @@ void wafer_tx81_profile_entry_end(void) {
                             WAFER_TX81_PROFILER_RECORD_TRACE_ENABLED) != 0U &&
                            (wafer_profile_header->flags &
                             WAFER_TX81_PROFILER_RECORD_COUNT_ONLY) == 0U;
-  wafer_profile_snapshot(&wafer_profile_header->pmu_after);
   wafer_profile_header->summary_validity |=
-      WAFER_TX81_PROFILER_SUMMARY_ENTRY_CYCLES |
-      WAFER_TX81_PROFILER_SUMMARY_PMU_AFTER_CAPTURED;
-  if (wafer_profile_header->pmu_after.stable_mask ==
-      (UINT32_C(1) << WAFER_TX81_PROFILER_PMU64_COUNTERS) - 1U)
+      WAFER_TX81_PROFILER_SUMMARY_ENTRY_CYCLES;
+  if (trace_capture != 0U) {
+    wafer_profile_snapshot(&wafer_profile_header->pmu_after);
     wafer_profile_header->summary_validity |=
-        WAFER_TX81_PROFILER_SUMMARY_PMU_AFTER_STABLE;
+        WAFER_TX81_PROFILER_SUMMARY_PMU_AFTER_CAPTURED;
+    if (wafer_profile_header->pmu_after.stable_mask ==
+        (UINT32_C(1) << WAFER_TX81_PROFILER_PMU64_COUNTERS) - 1U)
+      wafer_profile_header->summary_validity |=
+          WAFER_TX81_PROFILER_SUMMARY_PMU_AFTER_STABLE;
+  }
 
   wafer_profile_header->flags |= WAFER_TX81_PROFILER_RECORD_ENTRY_ENDED |
                                  WAFER_TX81_PROFILER_RECORD_COMPLETE;
@@ -1029,42 +1035,64 @@ void wafer_tx81_profile_entry_end(void) {
    * the measured entry-cycle interval.  It does not create a fence event or
    * claim engine completion.  Equal end/recovery values merely qualify that
    * the aggregate counters stopped changing across this bounded observation.
+   * The explicit restore readback below is a separate lifecycle witness.
    */
-  wafer_profile_snapshot(&wafer_profile_header->pmu_recovery);
-  wafer_profile_header->summary_validity |=
-      WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_CAPTURED;
-  if (wafer_profile_header->pmu_recovery.stable_mask ==
-      (UINT32_C(1) << WAFER_TX81_PROFILER_PMU64_COUNTERS) - 1U)
+  if (trace_capture != 0U) {
+    wafer_profile_snapshot(&wafer_profile_header->pmu_recovery);
     wafer_profile_header->summary_validity |=
-        WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_STABLE;
+        WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_CAPTURED;
+    if (wafer_profile_header->pmu_recovery.stable_mask ==
+        (UINT32_C(1) << WAFER_TX81_PROFILER_PMU64_COUNTERS) - 1U)
+      wafer_profile_header->summary_validity |=
+          WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_STABLE;
+  }
 
-  uint32_t recovered = 1U;
-  for (uint32_t index = 0; index < WAFER_TX81_PROFILER_PMU64_COUNTERS; ++index)
-    if (wafer_profile_header->pmu_after.counters[index] !=
-        wafer_profile_header->pmu_recovery.counters[index])
-      recovered = 0U;
-  for (uint32_t worker = 0; worker < WAFER_TX81_PROFILER_WORKERS; ++worker)
-    for (uint32_t queue = 0; queue < WAFER_TX81_PROFILER_QUEUES; ++queue)
-      if (wafer_profile_header->pmu_after.instructions[worker][queue] !=
-              wafer_profile_header->pmu_recovery.instructions[worker][queue] ||
-          wafer_profile_header->pmu_after.blocking[worker][queue] !=
-              wafer_profile_header->pmu_recovery.blocking[worker][queue])
+  if (trace_capture != 0U) {
+    uint32_t recovered = 1U;
+    for (uint32_t index = 0;
+         index < WAFER_TX81_PROFILER_PMU64_COUNTERS; ++index)
+      if (wafer_profile_header->pmu_after.counters[index] !=
+          wafer_profile_header->pmu_recovery.counters[index])
         recovered = 0U;
-  if (recovered != 0U)
-    wafer_profile_header->summary_validity |=
-        WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERED;
-  if (wafer_profile_header->pmu_before.enable ==
-          wafer_profile_header->pmu_after.enable &&
-      wafer_profile_header->pmu_after.enable ==
-          wafer_profile_header->pmu_recovery.enable)
-    wafer_profile_header->summary_validity |=
-        WAFER_TX81_PROFILER_SUMMARY_PMU_ENABLE_UNCHANGED;
+    for (uint32_t worker = 0; worker < WAFER_TX81_PROFILER_WORKERS; ++worker)
+      for (uint32_t queue = 0; queue < WAFER_TX81_PROFILER_QUEUES; ++queue)
+        if (wafer_profile_header->pmu_after.instructions[worker][queue] !=
+                wafer_profile_header->pmu_recovery.instructions[worker][queue] ||
+            wafer_profile_header->pmu_after.blocking[worker][queue] !=
+                wafer_profile_header->pmu_recovery.blocking[worker][queue])
+          recovered = 0U;
+    if (recovered != 0U)
+      wafer_profile_header->summary_validity |=
+          WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERED;
+    if (wafer_profile_header->pmu_before.enable ==
+            wafer_profile_header->pmu_after.enable &&
+        wafer_profile_header->pmu_after.enable ==
+            wafer_profile_header->pmu_recovery.enable)
+      wafer_profile_header->summary_validity |=
+          WAFER_TX81_PROFILER_SUMMARY_PMU_ENABLE_UNCHANGED;
+  }
   if (wafer_profile_dte_enable_owned != 0U)
     *(volatile uint32_t *)(uintptr_t)(WAFER_PROFILE_DTE_PMU_BASE + DTE_PMU_EN) =
         wafer_profile_dte_enable_before;
   if (wafer_profile_ncc_enable_owned != 0U)
     *(volatile uint32_t *)(uintptr_t)(WAFER_PROFILE_PMU_BASE + GR_PMU_EN) =
         wafer_profile_ncc_enable_before;
+  if (trace_capture != 0U) {
+    __asm__ volatile("fence iorw, iorw" ::: "memory");
+    if (wafer_profile_ncc_enable_owned != 0U &&
+        wafer_profile_read_pmu32(GR_PMU_EN) == wafer_profile_ncc_enable_before)
+      wafer_profile_header->summary_validity |=
+          WAFER_TX81_PROFILER_SUMMARY_NCC_PMU_RESTORE_VERIFIED;
+    else
+      wafer_profile_mark_protocol_error();
+    if (wafer_profile_dte_enable_owned != 0U &&
+        wafer_profile_read_dte_pmu32(DTE_PMU_EN) ==
+            wafer_profile_dte_enable_before)
+      wafer_profile_header->summary_validity |=
+          WAFER_TX81_PROFILER_SUMMARY_DTE_PMU_RESTORE_VERIFIED;
+    else
+      wafer_profile_mark_protocol_error();
+  }
   if (trace_capture != 0U) {
     uint64_t teardown_end_cycle = wafer_profile_cycle();
     wafer_profile_add_cost(

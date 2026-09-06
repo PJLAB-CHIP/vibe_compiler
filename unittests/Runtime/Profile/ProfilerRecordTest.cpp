@@ -55,12 +55,16 @@ std::vector<uint8_t> makeRecord(uint32_t tile, bool trace = true) {
   header.entry_begin_cycle = 100;
   header.entry_end_cycle = 200;
   header.active_site_id = WAFER_TX81_PROFILER_INVALID_SITE_ID;
-  header.summary_validity = WAFER_TX81_PROFILER_SUMMARY_ENTRY_CYCLES |
-                            WAFER_TX81_PROFILER_SUMMARY_PMU_BEFORE_CAPTURED |
-                            WAFER_TX81_PROFILER_SUMMARY_PMU_AFTER_CAPTURED |
-                            WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_CAPTURED |
-                            WAFER_TX81_PROFILER_SUMMARY_PMU_ENABLE_UNCHANGED |
-                            WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERED;
+  header.summary_validity = WAFER_TX81_PROFILER_SUMMARY_ENTRY_CYCLES;
+  if (trace)
+    header.summary_validity |=
+        WAFER_TX81_PROFILER_SUMMARY_PMU_BEFORE_CAPTURED |
+        WAFER_TX81_PROFILER_SUMMARY_PMU_AFTER_CAPTURED |
+        WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_CAPTURED |
+        WAFER_TX81_PROFILER_SUMMARY_PMU_ENABLE_UNCHANGED |
+        WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERED |
+        WAFER_TX81_PROFILER_SUMMARY_NCC_PMU_RESTORE_VERIFIED |
+        WAFER_TX81_PROFILER_SUMMARY_DTE_PMU_RESTORE_VERIFIED;
   header.header_guard = WAFER_TX81_PROFILER_HEADER_GUARD;
   header.buffer_guard_offset =
       bytes.size() - WAFER_TX81_PROFILER_BUFFER_GUARD_BYTES;
@@ -613,6 +617,19 @@ TEST(ProfilerRecordTest, RejectsInconsistentPMUValidity) {
   auto decoded = wafer::runtime::decodeTx81ProfilerRecord(bytes);
   ASSERT_FALSE(static_cast<bool>(decoded));
   EXPECT_NE(llvm::toString(decoded.takeError()).find("PMU validity"),
+            std::string::npos);
+}
+
+TEST(ProfilerRecordTest, RequiresPMURestoreVerificationForTrace) {
+  std::vector<uint8_t> bytes = makeRecord(0);
+  auto *header =
+      reinterpret_cast<WaferTx81ProfilerRecordHeader *>(bytes.data());
+  header->summary_validity &=
+      ~(WAFER_TX81_PROFILER_SUMMARY_NCC_PMU_RESTORE_VERIFIED |
+        WAFER_TX81_PROFILER_SUMMARY_DTE_PMU_RESTORE_VERIFIED);
+  auto decoded = wafer::runtime::decodeTx81ProfilerRecord(bytes);
+  ASSERT_FALSE(static_cast<bool>(decoded));
+  EXPECT_NE(llvm::toString(decoded.takeError()).find("terminal lifecycle"),
             std::string::npos);
 }
 

@@ -49,7 +49,9 @@ constexpr uint32_t kKnownSummaryValidity =
     WAFER_TX81_PROFILER_SUMMARY_PMU_ENABLE_UNCHANGED |
     WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_CAPTURED |
     WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_STABLE |
-    WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERED;
+    WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERED |
+    WAFER_TX81_PROFILER_SUMMARY_NCC_PMU_RESTORE_VERIFIED |
+    WAFER_TX81_PROFILER_SUMMARY_DTE_PMU_RESTORE_VERIFIED;
 
 constexpr uint32_t kKnownEventMetadata =
     WAFER_TX81_PROFILER_EVENT_WORKER_MASK |
@@ -269,16 +271,28 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
   constexpr uint32_t terminalFlags = WAFER_TX81_PROFILER_RECORD_ENTRY_BEGUN |
                                      WAFER_TX81_PROFILER_RECORD_ENTRY_ENDED |
                                      WAFER_TX81_PROFILER_RECORD_COMPLETE;
+  const uint32_t pmuValidityBits =
+      WAFER_TX81_PROFILER_SUMMARY_PMU_BEFORE_CAPTURED |
+      WAFER_TX81_PROFILER_SUMMARY_PMU_AFTER_CAPTURED |
+      WAFER_TX81_PROFILER_SUMMARY_PMU_BEFORE_STABLE |
+      WAFER_TX81_PROFILER_SUMMARY_PMU_AFTER_STABLE |
+      WAFER_TX81_PROFILER_SUMMARY_PMU_ENABLE_UNCHANGED |
+      WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_CAPTURED |
+      WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_STABLE |
+      WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERED |
+      WAFER_TX81_PROFILER_SUMMARY_NCC_PMU_RESTORE_VERIFIED |
+      WAFER_TX81_PROFILER_SUMMARY_DTE_PMU_RESTORE_VERIFIED;
+  const uint32_t requiredSummary =
+      WAFER_TX81_PROFILER_SUMMARY_ENTRY_CYCLES |
+      (traceEnabled ? (WAFER_TX81_PROFILER_SUMMARY_PMU_BEFORE_CAPTURED |
+                       WAFER_TX81_PROFILER_SUMMARY_PMU_AFTER_CAPTURED |
+                       WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_CAPTURED |
+                       WAFER_TX81_PROFILER_SUMMARY_NCC_PMU_RESTORE_VERIFIED |
+                       WAFER_TX81_PROFILER_SUMMARY_DTE_PMU_RESTORE_VERIFIED)
+                    : 0U);
   if ((header.flags & terminalFlags) != terminalFlags ||
-      (header.summary_validity &
-       (WAFER_TX81_PROFILER_SUMMARY_ENTRY_CYCLES |
-        WAFER_TX81_PROFILER_SUMMARY_PMU_BEFORE_CAPTURED |
-        WAFER_TX81_PROFILER_SUMMARY_PMU_AFTER_CAPTURED |
-        WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_CAPTURED)) !=
-          (WAFER_TX81_PROFILER_SUMMARY_ENTRY_CYCLES |
-           WAFER_TX81_PROFILER_SUMMARY_PMU_BEFORE_CAPTURED |
-           WAFER_TX81_PROFILER_SUMMARY_PMU_AFTER_CAPTURED |
-           WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_CAPTURED) ||
+      (header.summary_validity & requiredSummary) != requiredSummary ||
+      (countOnly && (header.summary_validity & pmuValidityBits) != 0U) ||
       header.entry_end_cycle < header.entry_begin_cycle)
     return invalid("TX81 profiler record terminal lifecycle is incomplete");
   if (!entryCostSummaryFitsSpan(header.cost_summary,
@@ -286,28 +300,30 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
                                     header.entry_begin_cycle))
     return invalid(
         "TX81 profiler entry-internal cost summary exceeds the entry span");
-  if (!snapshotStableMaskIsValid(header.pmu_before) ||
-      !snapshotStableMaskIsValid(header.pmu_after) ||
-      !snapshotStableMaskIsValid(header.pmu_recovery))
-    return invalid("TX81 profiler PMU stable mask contains unknown bits");
-  constexpr uint32_t allStable =
-      (UINT32_C(1) << WAFER_TX81_PROFILER_PMU64_COUNTERS) - 1U;
-  if (((header.summary_validity &
-        WAFER_TX81_PROFILER_SUMMARY_PMU_BEFORE_STABLE) != 0) !=
-          (header.pmu_before.stable_mask == allStable) ||
-      ((header.summary_validity &
-        WAFER_TX81_PROFILER_SUMMARY_PMU_AFTER_STABLE) != 0) !=
-          (header.pmu_after.stable_mask == allStable) ||
-      ((header.summary_validity &
-        WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_STABLE) != 0) !=
-          (header.pmu_recovery.stable_mask == allStable) ||
-      ((header.summary_validity &
-        WAFER_TX81_PROFILER_SUMMARY_PMU_ENABLE_UNCHANGED) != 0) !=
-          (header.pmu_before.enable == header.pmu_after.enable &&
-           header.pmu_after.enable == header.pmu_recovery.enable) ||
-      ((header.summary_validity & WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERED) !=
-       0) != snapshotsRecovered(header.pmu_after, header.pmu_recovery))
-    return invalid("TX81 profiler PMU validity is inconsistent");
+  if (traceEnabled) {
+    if (!snapshotStableMaskIsValid(header.pmu_before) ||
+        !snapshotStableMaskIsValid(header.pmu_after) ||
+        !snapshotStableMaskIsValid(header.pmu_recovery))
+      return invalid("TX81 profiler PMU stable mask contains unknown bits");
+    constexpr uint32_t allStable =
+        (UINT32_C(1) << WAFER_TX81_PROFILER_PMU64_COUNTERS) - 1U;
+    if (((header.summary_validity &
+          WAFER_TX81_PROFILER_SUMMARY_PMU_BEFORE_STABLE) != 0) !=
+            (header.pmu_before.stable_mask == allStable) ||
+        ((header.summary_validity &
+          WAFER_TX81_PROFILER_SUMMARY_PMU_AFTER_STABLE) != 0) !=
+            (header.pmu_after.stable_mask == allStable) ||
+        ((header.summary_validity &
+          WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_STABLE) != 0) !=
+            (header.pmu_recovery.stable_mask == allStable) ||
+        ((header.summary_validity &
+          WAFER_TX81_PROFILER_SUMMARY_PMU_ENABLE_UNCHANGED) != 0) !=
+            (header.pmu_before.enable == header.pmu_after.enable &&
+             header.pmu_after.enable == header.pmu_recovery.enable) ||
+        ((header.summary_validity & WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERED) !=
+         0) != snapshotsRecovered(header.pmu_after, header.pmu_recovery))
+      return invalid("TX81 profiler PMU validity is inconsistent");
+  }
 
   const bool overflow =
       (header.flags & WAFER_TX81_PROFILER_RECORD_OVERFLOW) != 0;

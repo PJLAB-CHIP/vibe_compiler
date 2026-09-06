@@ -1221,7 +1221,15 @@
     "pmuTile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["card_id", "tile_id", "launch_slot", "aggregates", "workers"],
+      "required": [
+        "card_id",
+        "tile_id",
+        "launch_slot",
+        "ncc_pmu_restore_verified",
+        "dte_pmu_restore_verified",
+        "aggregates",
+        "workers"
+      ],
       "properties": {
         "card_id": {"const": 0},
         "tile_id": {
@@ -1229,6 +1237,12 @@
         },
         "launch_slot": {
           "$ref": "#/$defs/tile"
+        },
+        "ncc_pmu_restore_verified": {
+          "type": "boolean"
+        },
+        "dte_pmu_restore_verified": {
+          "type": "boolean"
         },
         "aggregates": {
           "$ref": "#/$defs/aggregateCounters"
