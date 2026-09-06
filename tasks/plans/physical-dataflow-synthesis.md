@@ -48,6 +48,11 @@ Pipeline position:
 | frontend helper | one public + private pure helper DAG；recursive/side-effect/indirect/dynamic boundary | source closure 验证，inline 后 TensorProgram 保持单 public entry 且无残余 call | typed source rejection；StableHLO ingestion、Tensor stage checker、真实 compile |
 | host/no-card/SystemC | structured、attention、LLaMA representative 以 FP16 为唯一主纵向 dtype；BF16 仅保留 dtype/ABI/conversion smoke | source→TensorProgram→Tile/Instr→actual target/package；SystemC 数值/完成；no-card 只验 package/plan | no-card 不伪造 arithmetic；package strict loader、guard、SystemC readback |
 
+Search 的 movement candidates 先经过 completion-closed canonical Instr、clone-local SPM planning 和
+`verifyProgramResources`，得到 actual aggregate cost（SPM high-water、DDR/NoC traffic、movement、
+instruction 与 wait/join work）；同一 structural state 内按该 cost 排序，只有前两个 finalists 进入
+target LLVM/ABI/package leaf。target failure 仍按 typed status 处理，不能把 pre-target cost 当作 executable。
+
 ### 验证顺序
 
 每轮改动先执行编译快的 unit/IR/transform/driver、再执行 FP16 conv/prefill 和 SystemC/target-model，

@@ -68,6 +68,8 @@ void recordStructuralCandidateMetrics(
   if (evaluation.result.compilation->physicalIRInventory) {
     const PhysicalDataflowIRInventory &inventory =
         *evaluation.result.compilation->physicalIRInventory;
+    wafer::support::addCompileCounter("accepted-physical-ir", "tile-regions",
+                                      inventory.tileRegions);
     recordRegionCandidateCounter(index, "actual-tile-regions",
                                  inventory.tileRegions);
     for (const PhysicalTileIRInventory &tile : inventory.tiles)

@@ -676,6 +676,10 @@ Search最多actualize 8个structural candidates，并共享42次Temporal actual-
 改变proposal/refinement或关闭它们不得改变raw lazy successor集合。General DAG不声明全局最优，quality由tiny fixed-region-count独立穷举oracle
 量化optimality gap并要求已知greedy trap严格改善，再由真实规模cut gain和final actual objective共同约束。
 
+每个 movement candidate 先在 clone-local owner 上完成 canonical Instr、completion 和实际 SPM/DDR resource analysis，
+只将 actual aggregate cost 交给同一 cohort 的 comparator；target LLVM/ABI/package lowering 默认只对排序前两个 finalists 执行。
+Finalist target failure 不会回写或修复 pre-target owner；候选失败后销毁，下一 finalist 仍从自己的 actual owner 进入唯一 target leaf。
+
 第一个Accepted actual objective作为本次search的no-regression reference。普通Better/Worse/Equivalent仍完全由九项actual objective的Pareto比较
 决定；两个known objective互相incomparable时，只有二者都相对reference为Better或Equivalent，才以现有StructuralCandidateKey中的RegionPlan
 group数选择delivery owner，数量相同再用complete key。该选择仍报告`FeasibleUnranked`，不宣称runtime优劣；任何相对reference存在actual term回退的

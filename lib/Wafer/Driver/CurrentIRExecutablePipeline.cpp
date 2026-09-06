@@ -5,14 +5,17 @@
 #include "Wafer/Analysis/Tile/TileDataflowAnalysis.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/Driver/StandaloneTileModules/StandaloneTileModules.h"
+#include "Wafer/Driver/ProgramResourceVerification.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Instr/DirectDTETransport.h"
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
 #include "Wafer/Transforms/Instr/NativeDirectDTEMultiSend.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
+#include "Wafer/Transforms/Instr/MemoryPlanning.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
 
@@ -300,6 +303,68 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
     canonicalTiles.push_back(CanonicalInstructionTile{
         tile.cardId, tile.tileId, std::move(tile.module),
         std::move(tile.materializationRelations)});
+  }
+
+  if (options.stopBeforeTarget) {
+    std::vector<mlir::OwningOpRef<mlir::ModuleOp>> plannedResourceModules;
+    llvm::SmallVector<mlir::ModuleOp, 16> resourceModules;
+    llvm::SmallVector<TileId, 16> resourceTiles;
+    plannedResourceModules.reserve(canonicalTiles.size());
+    resourceModules.reserve(canonicalTiles.size());
+    resourceTiles.reserve(canonicalTiles.size());
+    for (const CanonicalInstructionTile &tile : canonicalTiles) {
+      mlir::IRMapping mapping;
+      mlir::Operation *clone =
+          tile.module.get().getOperation()->clone(mapping);
+      auto clonedModule = mlir::dyn_cast<mlir::ModuleOp>(clone);
+      if (!clonedModule) {
+        if (clone)
+          clone->destroy();
+        return fail(ExecutableCompilationStatus::CompilerFailure,
+                    "pre-target-memory-planning",
+                    "canonical Instr clone did not produce a module");
+      }
+      TileMemoryPlanningFailure memoryFailure;
+      auto planned = planTileMemory(
+          mlir::OwningOpRef<mlir::ModuleOp>(clonedModule), &memoryFailure,
+          /*materializationRelations=*/nullptr,
+          /*emitSPMCapacityDiagnostics=*/false);
+      if (mlir::failed(planned)) {
+        if (memoryFailure.spmCapacityOverflow) {
+          ExecutableCompilationResult result;
+          result.status = ExecutableCompilationStatus::ProvenExactRejection;
+          result.failureScope =
+              ExecutableFailureScope::TemporalChoiceMayChange;
+          result.gate = "pre-target-memory-planning";
+          result.detail = "pre-target actual SPM capacity rejection";
+          result.tileFailures.push_back(
+              ExecutableTileFailure{tile.tile, result.gate, result.detail,
+                                    std::move(memoryFailure)});
+          return result;
+        }
+        return fail(ExecutableCompilationStatus::CompilerFailure,
+                    "pre-target-memory-planning",
+                    "actual canonical Instr memory analysis failed");
+      }
+      resourceModules.push_back(**planned);
+      plannedResourceModules.push_back(std::move(*planned));
+      resourceTiles.push_back(tile.tile);
+    }
+    auto preTargetCost = verifyProgramResources(resourceModules, resourceTiles,
+                                                executionConfig);
+    if (mlir::failed(preTargetCost))
+      return fail(ExecutableCompilationStatus::CompilerFailure,
+                  "pre-target-program-resources",
+                  "actual canonical Instr resource analysis failed");
+    ExecutableCompilationResult result;
+    result.status = ExecutableCompilationStatus::Accepted;
+    result.gate = "pre-target-canonical-instr";
+    result.preTargetCost = std::move(*preTargetCost);
+    result.canonicalTiles = std::move(canonicalTiles);
+    result.physicalIRInventory = physicalInventory;
+    if (options.captureTileDataflowIR)
+      result.tileDataflowIRTrace = std::move(tileDataflowTrace);
+    return result;
   }
 
   ExecutableCompilationResult result =

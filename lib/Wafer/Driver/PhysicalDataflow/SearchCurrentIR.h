@@ -18,6 +18,9 @@ namespace wafer::compiler::detail {
 struct SearchCurrentIROptions {
   uint64_t layoutWorkLimit = UINT64_C(1048576);
   uint64_t maximumTemporalCandidatesPerStructuralState = 8;
+  /// Number of target leaves after pre-target actual-cost ranking. This is an
+  /// internal finalist budget, not a legality or candidate-coverage limit.
+  uint64_t maximumTargetFinalistsPerStructuralState = 2;
   SearchLimits limits;
   bool stopTemporalAfterFirstAccepted = true;
   uint64_t planningCredits = std::numeric_limits<uint64_t>::max();
