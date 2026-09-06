@@ -155,15 +155,11 @@ getNCCIssueWorkerMask(const NCCOperationCompletion &completion) {
   return uint32_t{1} << worker;
 }
 
-static bool hasOnlyWitnessedRootlessStorageEffects(mlir::Operation *op) {
-  auto effectInterface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(op);
-  if (!effectInterface)
-    return false;
-
+static bool hasOnlyWitnessedRootlessStorageEffects(
+    mlir::Operation *op,
+    llvm::ArrayRef<mlir::MemoryEffects::EffectInstance> effects) {
   const bool hasTypedDTEBufferContract =
       mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(op);
-  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> effects;
-  effectInterface.getEffects(effects);
   for (const mlir::MemoryEffects::EffectInstance &effect : effects) {
     if (effect.getValue())
       continue;
@@ -212,6 +208,15 @@ static bool hasOnlyWitnessedRootlessStorageEffects(mlir::Operation *op) {
       return false;
   }
   return true;
+}
+
+static bool hasOnlyWitnessedRootlessStorageEffects(mlir::Operation *op) {
+  auto effectInterface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(op);
+  if (!effectInterface)
+    return false;
+  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> effects;
+  effectInterface.getEffects(effects);
+  return hasOnlyWitnessedRootlessStorageEffects(op, effects);
 }
 
 static constexpr unsigned kUnresolvedRootIndex =
@@ -2176,8 +2181,19 @@ LocalCompletionTracker::collectAccesses(mlir::Operation *op, ProgramPoint point,
                 mlir::bufferization::ToTensorOp>(op))
     return collected;
 
-  auto effectInterface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(op);
-  if (!effectInterface) {
+  auto [cacheIt, inserted] = effectCache.try_emplace(op);
+  if (inserted) {
+    auto effectInterface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(op);
+    cacheIt->second.hasInterface = static_cast<bool>(effectInterface);
+    if (effectInterface) {
+      effectInterface.getEffects(cacheIt->second.effects);
+      cacheIt->second.hasOnlyWitnessedRootlessStorageEffects =
+          hasOnlyWitnessedRootlessStorageEffects(op,
+                                                 cacheIt->second.effects);
+    }
+  }
+  CachedEffects &cachedEffects = cacheIt->second;
+  if (!cachedEffects.hasInterface) {
     collected.hasUnknownObserverEffect = !mlir::isMemoryEffectFree(op);
     return collected;
   }
@@ -2186,7 +2202,7 @@ LocalCompletionTracker::collectAccesses(mlir::Operation *op, ProgramPoint point,
   // effect witnesses the same Wafer memory domain and direction. Otherwise a
   // pending NCC access has no address proof against this observer.
   collected.hasUnknownObserverEffect =
-      !hasOnlyWitnessedRootlessStorageEffects(op);
+      !cachedEffects.hasOnlyWitnessedRootlessStorageEffects;
 
   // Keep only identity-preserving container edges transparent. View-like
   // results intentionally retain their own identity: two views of one root
@@ -2286,9 +2302,8 @@ LocalCompletionTracker::collectAccesses(mlir::Operation *op, ProgramPoint point,
     return finish(value);
   };
 
-  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> effects;
-  effectInterface.getEffects(effects);
-  for (const mlir::MemoryEffects::EffectInstance &effect : effects) {
+  for (const mlir::MemoryEffects::EffectInstance &effect :
+       cachedEffects.effects) {
     // Allocation and deallocation delimit compiler-owned storage lifetime but
     // do not execute a Kcore/host access. Actual reuse is ordered by the next
     // typed issue; treating memref.free as an observer would force a worker

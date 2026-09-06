@@ -61,6 +61,10 @@ SPM planning 224 次、DDR planning 128 次，8 个 structural candidate 均通�
 consumer operand、broadcast/window fusion handles，随后立即 apply；domain 不拥有 IR，也不跨 mutation 复用。
 FP16 conv profile 为 13.20s，与 13.26s 基线基本相同，证明该复用安全但不是当前主要性能瓶颈。
 
+随后补充的 lifetime effect cache 只缓存同一 immutable analysis run 内的 op-local `MemoryEffectOpInterface` 元数据；
+path-sensitive identity、alias、completion 和 lifetime facts 仍每次从 current IR fresh 计算。FP16 conv profile 为 13.08s，
+与基线处于同一波动范围，因此不据此宣称性能收益。
+
 ### 验证顺序
 
 每轮改动先执行编译快的 unit/IR/transform/driver、再执行 FP16 conv/prefill 和 SystemC/target-model，

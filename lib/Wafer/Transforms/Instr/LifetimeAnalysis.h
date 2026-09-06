@@ -8,6 +8,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -348,6 +349,12 @@ private:
     bool hasWrite = false;
   };
 
+  struct CachedEffects {
+    llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> effects;
+    bool hasInterface = false;
+    bool hasOnlyWitnessedRootlessStorageEffects = false;
+  };
+
   AccessCollection collectAccesses(mlir::Operation *op, ProgramPoint point,
                                    uint32_t workerMask,
                                    LifetimeDataflow &dataflow) const;
@@ -373,6 +380,10 @@ private:
   bool pendingWorkerMasksAgree = true;
   bool pendingAllHaveResolvedRoots = true;
   bool pendingAllHaveLogicalRoots = true;
+  /// Valid only for this immutable LifetimeDataflow/LocalCompletionTracker
+  /// run. It caches op-local effect metadata, never path-sensitive aliases or
+  /// lifetime facts, and is discarded with the tracker.
+  mutable llvm::DenseMap<mlir::Operation *, CachedEffects> effectCache;
 };
 
 /// Combines two independent byte-alignment divisibility requirements.
