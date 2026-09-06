@@ -189,7 +189,10 @@ deriveSearchObjective(const analysis::InstructionProgramAggregateCost &cost,
   if (!npu || !vectorF16 || !vectorF32 || !spm || !instructions || !dteWaits ||
       !nccWaits || !cost.aggregateDDRReadBytes.isKnown() ||
       !cost.aggregateDDRWriteBytes.isKnown() ||
-      !cost.aggregateNoC.staticIssueSiteCount.isKnown())
+      !cost.aggregateNoC.staticIssueSiteCount.isKnown() ||
+      !cost.maximumTileNoCTransmitBytes.isKnown() ||
+      !cost.maximumTileNoCTransmitMessageCount.isKnown() ||
+      !cost.minimumHopMessageDemand.isKnown())
     return UnknownSearchObjective{
         SearchObjectiveUnknownReason::MetricUnavailable};
 
@@ -206,18 +209,10 @@ deriveSearchObjective(const analysis::InstructionProgramAggregateCost &cost,
     nocBytes = cost.modeledNoCRoute.peakDirectedLinkByteDemand.value;
   }
 
-  const uint64_t dteEndpointBytes =
-      cost.maximumTileNoCTransmitBytes.isKnown()
-          ? cost.maximumTileNoCTransmitBytes.value
-          : 0;
+  const uint64_t dteEndpointBytes = cost.maximumTileNoCTransmitBytes.value;
   const uint64_t dteMessageCount =
-      cost.maximumTileNoCTransmitMessageCount.isKnown()
-          ? cost.maximumTileNoCTransmitMessageCount.value
-          : 0;
-  const uint64_t hopMessageDemand =
-      cost.minimumHopMessageDemand.isKnown()
-          ? cost.minimumHopMessageDemand.value
-          : 0;
+      cost.maximumTileNoCTransmitMessageCount.value;
+  const uint64_t hopMessageDemand = cost.minimumHopMessageDemand.value;
 
   SearchResourceDurations durations;
   auto assignTime = [&](uint64_t work, uint64_t rate, uint64_t &destination) {

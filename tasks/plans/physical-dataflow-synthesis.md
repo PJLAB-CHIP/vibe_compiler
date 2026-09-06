@@ -1,16 +1,67 @@
 # Physical Dataflow Current-IR实施计划
 
-Q52 current-IR mechanics和Region partition refinement均已闭合；Q53 reduce与movement descriptor loop复审、
-mesh communication materialization及host/no-card矩阵均已闭合并重新签发`board-ready`。本项不运行真实设备。
+## 2026-09 架构收敛施工合同（进行中）
+
+此前文档把若干实现结果过早写成“已闭合”，并将 FA/FD、Ring、AllToAll 等
+算法和 TX81 transport 混在同一层。本节是当前唯一有效的施工边界；旧的已闭合描述在对应
+实现和覆盖矩阵重新验证前只保留为历史索引。
+
+### Pipeline Contract
+
+```text
+Pipeline position:
+- Upstream IR / input:
+  verified card-local TensorProgram；collective 的 participant、payload、combine 和
+  completion 语义由 current Tensor/Tile IR 表达，浮点重结合由编译器数值合同允许。
+- Current stage responsibility:
+  先用 target-independent 的抽象 participant/topology oracle 构造并立即物化 actual
+  Tile peer/combine/token IR；再由 target transport 将 actual peer IR 映射到 TX81 DTE/NCC
+  与 ABI。execution region 与 residency、layout 与 bufferization、search cost 与 legality
+  各自只消费其边界内的 current IR/typed analysis。
+- Output IR / files:
+  verifier-valid TileRegion/TileModule、Instr/completion IR，以及同一路径产生的
+  DeviceExecutable/ExecutablePackage。
+- Downstream consumer:
+  TX81 transport/Instr lowering、actual MiniMalloc、SystemC/target model、package writer
+  和 no-card host runner。
+- User-level driver / named pipeline:
+  wafer-compile 的 none/search 入口与 registered Tile/Instr pipelines；二者调用同一
+  atomic materializer，不维护旁路计划重放。
+- Explicit non-goals:
+  当前只支持单卡 4×4 static partition；不在无卡环境声称板端完成；不强制 IEEE bitwise
+  reduction order；不把 target capability、DTE/FSM/launch slot、TX81 CardId(0) 写进通用算法。
+- Completion criteria:
+  每一项均有真实 current-IR 到直接下游的 witness、typed failure 和 1024/1025/1031
+  覆盖；算法/transport、execution/residency、layout/bufferization、frontend helper、
+  cost/search 与 host/no-card/SystemC 分项通过后才能将本 work item 标为 board-ready。
+```
+
+### 本轮覆盖矩阵
+
+| 轴 | 输入等价类 | 必须物化/验证的结果 | typed failure 与直接 witness |
+| --- | --- | --- | --- |
+| 通用 collective | 2/4/8/15/16 participants；Ring、recursive-doubling、1D/2D ordered AllToAll、RS/AR、sparse/tree | actual peer、combine、token、payload coverage；算法不读取 TX81 常量 | unsupported/overflow/unknown；Tile peer verifier、completion 与 Instr consumer |
+| target transport | 已物化 peer IR；native broadcast/scatter、unicast、mesh route | capability 只决定合法 lowering，不改变 semantic algorithm 或补造 peer | unsupported/capacity/ABI error 分离；DTE/NCC binding、TargetCall/SystemC |
+| cost/search | known/unknown/overflow profile；incomparable resource dimensions | 只从 final actual Instr/target-independent facts 排序；unknown 不得变零或进入 winner | typed unknown/overflow；accepted candidate 的 actual cost 与 fresh analysis |
+| execution/residency | 同 Tile 同/异 execution region、cross-Tile boundary、SPM reuse/DDR boundary | execution grouping 与 SPM owner/lifetime/alias 分开；actual allocation、offset、wait | capacity/alias/lifetime/completion；MiniMalloc 和 current lifetime witness |
+| layout/bufferization | view、DPS、multi-use、padding、跨 Tile piece；静态 rank≥3 且主维 1024/1025/1031 | query-local alternatives 必须实际 materialize 后再 admission；禁止 copy-count-only PBQP | unsupported/invalid alias/capacity；One-Shot/Bufferizable verifier 与 Instr consumer |
+| frontend helper | one public + private pure helper DAG；recursive/side-effect/indirect/dynamic boundary | source closure 验证，inline 后 TensorProgram 保持单 public entry 且无残余 call | typed source rejection；StableHLO ingestion、Tensor stage checker、真实 compile |
+| host/no-card/SystemC | structured、attention、LLaMA representative，FP16/BF16；none/search 独立 source | source→TensorProgram→Tile/Instr→actual target/package；SystemC 数值/完成；no-card 只验 package/plan | no-card 不伪造 arithmetic；package strict loader、guard、SystemC readback |
+
+下面的 Q52/Q53 段落是迁移所需的历史输入和既有 witness。凡是与本节算法分层、residency
+独立性、query-local layout 或 helper closure 冲突的表述，在对应实现重新物化并通过本矩阵前
+不得作为完成条件或 winner 合法性依据。
+
+Q52 的历史 current-IR mechanics 保留为前置；Q53 和 mesh communication 的原有
+`board-ready`标签在本轮架构复审中降级为待重新验证。真实设备仍不运行。
 动态状态只读`tasks/progress.md`；
 第1--11项的施工、删除账本和验证记录见`tasks/archive/physical-dataflow-synthesis-q52-plan-history.md`；第12--15项的完成边界见
 `tasks/archive/completed-task-index.md`。
 稳定语义由05--16号编号设计拥有。
 
-当前直接项：`mesh-communication-materialization`和Q53 `production-host-readiness`均已达到`board-ready`；
-`recursive-doubling-feasibility`及其search production choice均已闭合。Tile mesh通信alternative已经按
-`mesh-all-to-all-production-choice -> distributed-reduce-scatter-production-choice -> distributed-all-reduce-production-choice`
-完成current-IR与host/no-card闭合；真实板端仍未执行。
+当前直接项：`mesh-communication-materialization` 重新进入 `doing`，先完成本节架构收敛合同；
+Q53 `production-host-readiness` 等待该合同。recursive-doubling、AllToAll、ReduceScatter、
+AllReduce 的旧实现和测试是待重新审计的输入，不直接作为当前完成证据。
 
 ## Pipeline Contract
 
@@ -33,13 +84,14 @@ Pipeline position:
   wafer-compile的none与search入口；focused测试调用同一atomic transformation API或registered pipeline。
 - Explicit non-goals:
   不建立future-output IR、shadow operation/buffer/event/schedule plan、兼容双路径或plan/actual parity verifier；
-  不用footprint estimate决定SPM合法性；不猜join/wait；不修改数值语义；本计划不运行真实设备。
+  不用footprint estimate决定SPM合法性；不猜join/wait；允许数值合同授权的浮点重结合但不改变
+  dtype/算术语义；本计划不运行真实设备。
 - Completion criteria:
   Q52第12--20项mechanics与Region refinement均已闭合，current IR继续是唯一事实源。当前Q53完成要求fresh
   host/package/oracle/runner/no-card矩阵实际执行并达到`board-ready`；不能由Q52的LLaMA成功case或archive代签。
 ```
 
-## 已闭合前置
+## 历史前置（本轮必须重新验证）
 
 | 前置 | 本计划消费的输出 | 不得恢复的历史行为 |
 | --- | --- | --- |
@@ -100,7 +152,7 @@ Items 12--16是两条policy共享的atomic mechanics，但每个policy拥有自�
 - `createStandaloneTileModules`只在第16项physical form、execution structure与completion输入闭合后移动每个Tile body到独立module；
   它不重新选择placement、Region membership或movement，也不clone大型body。
 
-## 已闭合历史（仅作索引）
+## 历史实现与证据（仅作索引，不替代本轮证据）
 
 Q52 Region refinement、mesh communication、recursive doubling 和分布式 collective 的完成证据已归档，
 分别由编号设计、`tasks/archive/completed-task-index.md` 和 `tasks/archive/physical-dataflow-synthesis-q52-plan-history.md`
@@ -179,7 +231,7 @@ Pipeline position:
   `wafer.instr.elementwise`，或 ABI 合法的三层`wafer.instr.rdma`/`wafer.instr.wdma`；不产生旁路plan或未来指令记录。
 - Downstream consumer: Tile memory planning、completion rebuild、Instr-to-target lowering和target model。
 - User-level driver / named pipeline: `wafer-lower-tile-region-to-instr`及`wafer-compile`的同一Tile-to-Instr实现。
-- Explicit non-goals: 不修改数值语义，不把G/S当作reduce，不为不支持的init/layout强行选择native，不用descriptor循环替代accumulator
+- Explicit non-goals: 不改变 dtype/算术语义（浮点重结合由上层数值合同授权），不把G/S当作reduce，不为不支持的init/layout强行选择native，不用descriptor循环替代accumulator
   recurrence，不新增Wafer op或第二lowering路径。
 - Completion criteria: native single-axis、native multi-axis decomposition、ordered fallback三类均有1024/1025真实规模和
   typed near-miss；每类检查实际Instr数量、目标dimension、intermediate owner、tail、下游verifier和SPM可消费性。

@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <limits>
-#include <set>
 #include <vector>
 
 namespace wafer::compiler::detail {
@@ -13,17 +12,21 @@ mlir::FailureOr<llvm::SmallVector<uint64_t, 16>> buildMinimumHopRing(
     llvm::ArrayRef<uint64_t> participants, uint64_t maximumParticipants,
     llvm::function_ref<std::optional<uint64_t>(uint64_t, uint64_t)>
         distanceOracle) {
+  // Held--Karp is exact but exponential.  The bound is an algorithmic
+  // resource contract, not a target-card limit; larger collectives must use a
+  // different bounded algorithm rather than exhausting compiler memory.
+  constexpr size_t kMaximumExactParticipants = 20;
   if (participants.size() < 2 || participants.size() > maximumParticipants ||
-      participants.size() >= std::numeric_limits<size_t>::digits ||
-      !distanceOracle)
+      participants.size() > kMaximumExactParticipants || !distanceOracle)
     return mlir::failure();
-  std::set<uint64_t> uniqueParticipants;
-  for (uint64_t participant : participants)
-    if (participant > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
-        !uniqueParticipants.insert(participant).second)
-      return mlir::failure();
-
   const size_t count = participants.size();
+  llvm::SmallVector<uint64_t, 20> orderedParticipants(participants.begin(),
+                                                       participants.end());
+  std::sort(orderedParticipants.begin(), orderedParticipants.end());
+  if (std::adjacent_find(orderedParticipants.begin(),
+                         orderedParticipants.end()) !=
+      orderedParticipants.end())
+    return mlir::failure();
   std::vector<std::vector<uint64_t>> distances(count,
                                                std::vector<uint64_t>(count));
   for (size_t lhs = 0; lhs < count; ++lhs)
@@ -31,17 +34,24 @@ mlir::FailureOr<llvm::SmallVector<uint64_t, 16>> buildMinimumHopRing(
       if (lhs == rhs)
         continue;
       std::optional<uint64_t> distance =
-          distanceOracle(participants[lhs], participants[rhs]);
+          distanceOracle(orderedParticipants[lhs], orderedParticipants[rhs]);
       if (!distance)
         return mlir::failure();
       distances[lhs][rhs] = *distance;
     }
+  bool symmetric = true;
+  for (size_t lhs = 0; lhs < count && symmetric; ++lhs)
+    for (size_t rhs = lhs + 1; rhs < count; ++rhs)
+      if (distances[lhs][rhs] != distances[rhs][lhs]) {
+        symmetric = false;
+        break;
+      }
 
   const size_t movable = count - 1;
   const size_t stateCount = size_t{1} << movable;
   const uint64_t infinity = std::numeric_limits<uint64_t>::max();
   std::vector<uint64_t> costs(stateCount * movable, infinity);
-  std::vector<int16_t> predecessors(stateCount * movable, -1);
+  std::vector<int32_t> predecessors(stateCount * movable, -1);
   auto cell = [&](size_t mask, size_t node) {
     return mask * movable + node - 1;
   };
@@ -64,12 +74,12 @@ mlir::FailureOr<llvm::SmallVector<uint64_t, 16>> buildMinimumHopRing(
           continue;
         uint64_t candidate = previousCost + distances[previous][node];
         uint64_t &best = costs[cell(mask, node)];
-        int16_t &bestPrevious = predecessors[cell(mask, node)];
+        int32_t &bestPrevious = predecessors[cell(mask, node)];
         if (candidate < best ||
             (candidate == best &&
              (bestPrevious < 0 ||
-              participants[previous] <
-                  participants[static_cast<size_t>(bestPrevious)]))) {
+              orderedParticipants[previous] <
+                  orderedParticipants[static_cast<size_t>(bestPrevious)]))) {
           best = candidate;
           bestPrevious = static_cast<int16_t>(previous);
         }
@@ -78,7 +88,7 @@ mlir::FailureOr<llvm::SmallVector<uint64_t, 16>> buildMinimumHopRing(
 
   const size_t fullMask = stateCount - 1;
   uint64_t bestCycle = infinity;
-  int16_t bestEnd = -1;
+  int32_t bestEnd = -1;
   for (size_t node = 1; node < count; ++node) {
     uint64_t path = costs[cell(fullMask, node)];
     if (path == infinity || distances[node][0] > infinity - path)
@@ -87,7 +97,8 @@ mlir::FailureOr<llvm::SmallVector<uint64_t, 16>> buildMinimumHopRing(
     if (cycle < bestCycle ||
         (cycle == bestCycle &&
          (bestEnd < 0 ||
-          participants[node] < participants[static_cast<size_t>(bestEnd)]))) {
+          orderedParticipants[node] <
+              orderedParticipants[static_cast<size_t>(bestEnd)]))) {
       bestCycle = cycle;
       bestEnd = static_cast<int16_t>(node);
     }
@@ -98,12 +109,12 @@ mlir::FailureOr<llvm::SmallVector<uint64_t, 16>> buildMinimumHopRing(
   llvm::SmallVector<size_t, 16> indices(count);
   indices.front() = 0;
   size_t mask = fullMask;
-  int16_t current = bestEnd;
+  int32_t current = bestEnd;
   for (size_t position = count - 1; position > 0; --position) {
     if (current <= 0)
       return mlir::failure();
     indices[position] = static_cast<size_t>(current);
-    int16_t previous = predecessors[cell(mask, static_cast<size_t>(current))];
+    int32_t previous = predecessors[cell(mask, static_cast<size_t>(current))];
     mask ^= size_t{1} << (static_cast<size_t>(current) - 1);
     current = previous;
   }
@@ -112,14 +123,18 @@ mlir::FailureOr<llvm::SmallVector<uint64_t, 16>> buildMinimumHopRing(
 
   llvm::SmallVector<uint64_t, 16> ring;
   for (size_t index : indices)
-    ring.push_back(participants[index]);
-  llvm::SmallVector<uint64_t, 16> reversed(ring.size());
-  reversed.front() = ring.front();
-  for (size_t index = 1; index < ring.size(); ++index)
-    reversed[index] = ring[ring.size() - index];
-  if (std::lexicographical_compare(reversed.begin(), reversed.end(),
-                                   ring.begin(), ring.end()))
-    ring = std::move(reversed);
+    ring.push_back(orderedParticipants[index]);
+  // Reversing a directed cycle is generally a different cost.  It is only a
+  // valid canonicalization when the supplied oracle proved symmetry.
+  if (symmetric) {
+    llvm::SmallVector<uint64_t, 16> reversed(ring.size());
+    reversed.front() = ring.front();
+    for (size_t index = 1; index < ring.size(); ++index)
+      reversed[index] = ring[ring.size() - index];
+    if (std::lexicographical_compare(reversed.begin(), reversed.end(),
+                                     ring.begin(), ring.end()))
+      ring = std::move(reversed);
+  }
   return ring;
 }
 

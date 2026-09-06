@@ -36,14 +36,14 @@ function(wafer_add_component_unit_test target)
     MLIRSCFDialect
     MLIRTensorDialect
     GTest::gtest_main)
-  if(WAFER_ENABLE_IMPORTER_DEPS)
-    target_compile_definitions(${target} PRIVATE WAFER_ENABLE_STABLEHLO=1)
-    target_link_libraries(${target} PRIVATE StablehloRegister)
+if(WAFER_ENABLE_IMPORTER_DEPS)
+  target_compile_definitions(${target} PRIVATE WAFER_ENABLE_STABLEHLO=1)
+  target_link_libraries(${target} PRIVATE StablehloRegister)
   endif()
   add_test(NAME ${target} COMMAND ${target})
   set_tests_properties(${target} PROPERTIES
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
-    LABELS "unit;component")
+  LABELS "unit;component")
   set(WAFER_COMPONENT_UNIT_TARGETS
     ${WAFER_COMPONENT_UNIT_TARGETS} ${target} PARENT_SCOPE)
 endfunction()
@@ -163,6 +163,12 @@ wafer_add_component_unit_test(WaferConversionUnitTests
 wafer_add_component_unit_test(WaferFrontendUnitTests
   SOURCES Frontend/NpyPayloadTest.cpp
   LINK_LIBS WaferFrontend WaferIR)
+
+if(WAFER_ENABLE_IMPORTER_DEPS)
+  wafer_add_component_unit_test(WaferStableHLOFrontendUnitTests
+    SOURCES Frontend/ProgramIngestionTest.cpp
+    LINK_LIBS WaferFrontend WaferStableHLOProgram WaferIR)
+endif()
 
 wafer_add_component_unit_test(WaferSimulatorUnitTests
   SOURCES

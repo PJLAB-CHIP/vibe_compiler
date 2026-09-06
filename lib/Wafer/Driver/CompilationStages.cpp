@@ -250,6 +250,10 @@ bool isTensorProgramStageWaferOperation(mlir::Operation *operation) {
 mlir::LogicalResult verifyTensorProgramStageOperations(mlir::ModuleOp module) {
   mlir::Operation *illegal = nullptr;
   module.walk([&](mlir::Operation *operation) {
+    if (mlir::isa<mlir::func::CallOp>(operation)) {
+      illegal = operation;
+      return mlir::WalkResult::interrupt();
+    }
     llvm::StringRef dialect = operation->getName().getDialectNamespace();
     bool allowed =
         dialect == "builtin" || dialect == "func" || dialect == "arith" ||

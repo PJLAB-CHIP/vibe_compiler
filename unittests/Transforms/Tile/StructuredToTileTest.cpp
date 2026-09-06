@@ -1245,6 +1245,23 @@ TEST_F(StructuredToTileTest, GenericMinimumHopRingUsesAbstractDistanceOracle) {
 }
 
 TEST_F(StructuredToTileTest,
+       GenericMinimumHopRingPreservesDirectedCostAndOpaqueParticipantIds) {
+  const uint64_t a = std::numeric_limits<uint64_t>::max() - 2;
+  const uint64_t b = std::numeric_limits<uint64_t>::max() - 1;
+  const uint64_t c = std::numeric_limits<uint64_t>::max();
+  auto ring = buildMinimumHopRing(
+      {c, a, b}, /*maximumParticipants=*/4,
+      [=](uint64_t lhs, uint64_t rhs) -> std::optional<uint64_t> {
+        if ((lhs == a && rhs == b) || (lhs == b && rhs == c) ||
+            (lhs == c && rhs == a))
+          return 1;
+        return 100;
+      });
+  ASSERT_TRUE(mlir::succeeded(ring));
+  EXPECT_EQ(*ring, (llvm::SmallVector<uint64_t, 4>{a, b, c}));
+}
+
+TEST_F(StructuredToTileTest,
        LowersContractionExpressionAndReductionAtRealisticScale) {
   for (int64_t extent : {1024, 1025, 1031}) {
     SCOPED_TRACE(extent);

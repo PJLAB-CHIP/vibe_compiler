@@ -31,6 +31,10 @@ void buildNormalizeAttentionPipeline(mlir::OpPassManager &pm) {
 }
 
 void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
+  // The program contract permits private pure helpers behind one public
+  // entry. Inline them before StableHLO legalization so downstream Tensor IR
+  // and physical-dataflow stages retain their single-function boundary.
+  pm.addPass(mlir::createInlinerPass());
   buildNormalizeImportedStablehloPipeline(pm);
   buildLegalizeStablehloToStructuredTensorPipeline(pm);
   buildSimplifyStructuredTensorPipeline(pm);

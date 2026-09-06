@@ -184,6 +184,12 @@ TEST(ActualResultControllerTest,
   EXPECT_EQ(knownValue->durations.nocHopPicoseconds, 3u);
   EXPECT_TRUE(std::holds_alternative<UnknownSearchObjective>(
       deriveSearchObjective(cost, std::nullopt)));
+  cost.minimumHopMessageDemand.knowledge = ScheduleCostKnowledge::Unavailable;
+  EXPECT_EQ(std::get<UnknownSearchObjective>(
+                deriveSearchObjective(cost, *cohort))
+                .reason,
+            SearchObjectiveUnknownReason::MetricUnavailable);
+  cost.minimumHopMessageDemand.knowledge = ScheduleCostKnowledge::Known;
   cost.aggregateInstructionCount.knowledge = ScheduleCostKnowledge::Unavailable;
   EXPECT_EQ(
       std::get<UnknownSearchObjective>(deriveSearchObjective(cost, *cohort))
