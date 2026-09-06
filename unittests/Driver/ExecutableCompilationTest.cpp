@@ -509,9 +509,8 @@ TEST(ExecutableCompilationPolicyTest,
   EXPECT_EQ(search.controller.accepted, 1u);
   EXPECT_EQ(search.coverage,
             wafer::compiler::detail::SearchControllerCoverage::FeasiblePartial);
-  EXPECT_LE(executable.actualMemoryTargetGateInvocations,
+  EXPECT_EQ(executable.actualMemoryTargetGateInvocations,
             search.temporalCandidateActualizations);
-  EXPECT_GE(executable.actualMemoryTargetGateInvocations, 1u);
   EXPECT_EQ(search.movementCandidateActualizations,
             search.temporalCandidateActualizations);
   EXPECT_EQ(search.recursiveDoublingCandidates, 0u);
@@ -547,9 +546,8 @@ TEST(ExecutableCompilationPolicyTest,
   EXPECT_EQ(search.temporalCandidateActualizations,
             search.exactRejectedTemporalCandidates + 1);
   EXPECT_EQ(search.layoutInvocations, search.temporalCandidateActualizations);
-  EXPECT_LE(executable.actualMemoryTargetGateInvocations,
+  EXPECT_EQ(executable.actualMemoryTargetGateInvocations,
             search.temporalCandidateActualizations);
-  EXPECT_GE(executable.actualMemoryTargetGateInvocations, 1u);
   EXPECT_EQ(search.movementCandidateActualizations,
             search.temporalCandidateActualizations);
   EXPECT_EQ(search.recursiveDoublingCandidates, 0u);

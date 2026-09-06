@@ -16,15 +16,9 @@ struct CurrentIRDownstreamOptions {
   ExecutionStructureLimits executionLimits;
   unsigned tilePipelineParallelism = 0;
   bool captureTileDataflowIR = false;
-  /// Stop after completion-closed canonical Instr and actual resource
-  /// analysis. Search uses this leaf to rank candidates before target LLVM/ABI
-  /// lowering; baseline and finalization leave it false.
-  bool stopBeforeTarget = false;
 };
 
 struct CurrentIRDownstreamStatistics {
-  uint64_t preTargetResourceAnalyses = 0;
-  uint64_t targetFinalizations = 0;
   uint64_t materializedExecutionPipelines = 0;
   uint64_t tileRegionsLowered = 0;
   uint64_t instructionOperations = 0;

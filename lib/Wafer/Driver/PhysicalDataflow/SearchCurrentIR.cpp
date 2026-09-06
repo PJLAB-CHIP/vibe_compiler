@@ -23,7 +23,6 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <memory>
-#include <algorithm>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -308,8 +307,6 @@ static bool advanceTemporalAxes(std::vector<TemporalAxis> &axes,
 static void
 addDownstreamStatistics(CurrentIRDownstreamStatistics &total,
                         const CurrentIRDownstreamStatistics &value) {
-  total.preTargetResourceAnalyses += value.preTargetResourceAnalyses;
-  total.targetFinalizations += value.targetFinalizations;
   total.materializedExecutionPipelines += value.materializedExecutionPipelines;
   total.tileRegionsLowered += value.tileRegionsLowered;
   total.instructionOperations += value.instructionOperations;
@@ -803,17 +800,14 @@ private:
 
     auto compileMovementCandidate = [&](CurrentCandidate selected) {
       CurrentIRDownstreamStatistics downstream;
-      CurrentIRDownstreamOptions preTargetOptions = options.downstream;
-      preTargetOptions.stopBeforeTarget = true;
       ExecutableCompilationResult result =
           compileCurrentIRCandidateToExecutable(
               std::move(selected.module), std::move(selected.relations),
               planning.getProblem().getCardId(), analysis.availableTileIds,
               program, executionConfig, diagnostics, programData,
-              preTargetOptions, &downstream, executableStatistics);
+              options.downstream, &downstream, executableStatistics);
       if (statistics) {
         ++statistics->movementCandidateActualizations;
-        ++statistics->downstream.preTargetResourceAnalyses;
         addDownstreamStatistics(statistics->downstream, downstream);
       }
       return result;
@@ -851,76 +845,45 @@ private:
                    "default movement candidate was not materialized"),
               0};
 
-    const uint64_t actualLeaves = compiled.size();
-    llvm::SmallVector<size_t, 8> ranking;
-    for (size_t index = 0; index < compiled.size(); ++index)
-      if (compiled[index]->result.isAccepted())
-        ranking.push_back(index);
-    llvm::sort(ranking, [&](size_t lhs, size_t rhs) {
-      SearchObjective left =
-          compiled[lhs]->result.preTargetCost
-              ? deriveSearchObjective(*compiled[lhs]->result.preTargetCost,
-                                      cohort)
-              : SearchObjective{UnknownSearchObjective{
-                    SearchObjectiveUnknownReason::MetricUnavailable}};
-      SearchObjective right =
-          compiled[rhs]->result.preTargetCost
-              ? deriveSearchObjective(*compiled[rhs]->result.preTargetCost,
-                                      cohort)
-              : SearchObjective{UnknownSearchObjective{
-                    SearchObjectiveUnknownReason::MetricUnavailable}};
-      SearchObjectiveComparison comparison =
-          compareSearchObjectives(left, right);
-      if (comparison == SearchObjectiveComparison::Better)
-        return true;
-      if (comparison == SearchObjectiveComparison::Incomparable &&
-          statistics)
-        ++statistics->incomparableMovementObjectives;
-      return lhs < rhs;
-    });
-
-    std::optional<ExecutableCompilationResult> lastFinalizationFailure;
-    const size_t finalistLimit = std::max<size_t>(
-        1, static_cast<size_t>(options.maximumTargetFinalistsPerStructuralState));
-    size_t finalized = 0;
-    for (size_t index : ranking) {
-      if (finalized++ >= finalistLimit)
-        break;
-      CompiledMovement &candidate = *compiled[index];
-      if (!candidate.result.canonicalTiles)
+    std::optional<size_t> winner;
+    std::optional<SearchObjective> winnerObjective;
+    for (auto [index, candidateResult] : llvm::enumerate(compiled)) {
+      if (!candidateResult->result.isAccepted())
         continue;
-      ExecutableCompilationResult finalizedResult =
-          compileCanonicalInstructionTilesToExecutable(
-              std::move(*candidate.result.canonicalTiles),
-              planning.getProblem().getCardId(), analysis.availableTileIds,
-              program, executionConfig, diagnostics, programData,
-              executableStatistics, options.downstream.tilePipelineParallelism);
-      if (statistics)
-        ++statistics->downstream.targetFinalizations;
-      if (!finalizedResult.physicalIRInventory)
-        finalizedResult.physicalIRInventory =
-            std::move(candidate.result.physicalIRInventory);
-      if (finalizedResult.tileDataflowIRTrace.empty())
-        finalizedResult.tileDataflowIRTrace =
-            std::move(candidate.result.tileDataflowIRTrace);
-      if (finalizedResult.isAccepted()) {
-        if (statistics) {
-          statistics->recursiveDoublingWinners += candidate.recursive;
-          statistics->dimensionOrderedAllToAllWinners +=
-              candidate.dimensionOrderedAllToAll;
-          statistics->distributedRingWinners += candidate.distributedRing;
-        }
-        return {std::move(finalizedResult), actualLeaves};
+      SearchObjective objective = deriveSearchObjective(
+          candidateResult->result.executable->resourceCost, cohort);
+      if (!winner) {
+        winner = index;
+        winnerObjective = std::move(objective);
+        continue;
       }
-      if (finalizedResult.status == ExecutableCompilationStatus::CompilerFailure)
-        return {std::move(finalizedResult), actualLeaves};
-      lastFinalizationFailure = std::move(finalizedResult);
+      SearchObjectiveComparison comparison =
+          compareSearchObjectives(objective, *winnerObjective);
+      if (comparison == SearchObjectiveComparison::Better) {
+        winner = index;
+        winnerObjective = std::move(objective);
+      } else if (comparison == SearchObjectiveComparison::Incomparable &&
+                 statistics) {
+        ++statistics->incomparableMovementObjectives;
+      }
     }
-    if (lastFinalizationFailure)
-      return {std::move(*lastFinalizationFailure), actualLeaves};
+    const uint64_t actualLeaves = compiled.size();
+    if (winner) {
+      if (statistics) {
+        statistics->recursiveDoublingWinners += compiled[*winner]->recursive;
+        statistics->dimensionOrderedAllToAllWinners +=
+            compiled[*winner]->dimensionOrderedAllToAll;
+        statistics->distributedRingWinners +=
+            compiled[*winner]->distributedRing;
+      }
+      return {std::move(compiled[*winner]->result), actualLeaves};
+    }
     for (std::unique_ptr<CompiledMovement> &candidateResult : compiled)
       if (candidateResult->result.status ==
           ExecutableCompilationStatus::IndeterminateFailure)
+        return {std::move(candidateResult->result), actualLeaves};
+    for (std::unique_ptr<CompiledMovement> &candidateResult : compiled)
+      if (candidateResult->result.isProvenExactRejection())
         return {std::move(candidateResult->result), actualLeaves};
     return {std::move(compiled.front()->result), actualLeaves};
   }

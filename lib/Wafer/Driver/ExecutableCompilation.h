@@ -120,11 +120,6 @@ struct ExecutableCompilationResult {
   std::string detail;
   llvm::SmallVector<ExecutableTileFailure, 4> tileFailures;
   std::optional<PhysicalDataflowIRInventory> physicalIRInventory;
-  /// Search-only pre-target owner. When present, `executable` is intentionally
-  /// empty and the canonical modules remain authoritative until a finalist is
-  /// sent through compileCanonicalInstructionTilesToExecutable.
-  std::optional<std::vector<CanonicalInstructionTile>> canonicalTiles;
-  std::optional<analysis::InstructionProgramAggregateCost> preTargetCost;
   /// Same-invocation diagnostic snapshots captured at the Tile dataflow to
   /// Instr boundary. They are not part of the accepted Tile modules.
   std::vector<std::string> tileDataflowIRTrace;
