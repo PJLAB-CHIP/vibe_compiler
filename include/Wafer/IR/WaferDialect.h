@@ -97,6 +97,7 @@ inline constexpr char kWaferDDROffsetAttrName[] = "wafer.ddr.offset";
 inline constexpr char kWaferDDRBindingAttrName[] = "wafer.ddr_binding";
 inline constexpr char kWaferDDRResourceAttrName[] = "wafer.ddr_resource";
 inline constexpr char kWaferDDRMovementAttrName[] = "wafer.ddr_movement";
+inline constexpr char kWaferSPMResidentAttrName[] = "wafer.spm.resident";
 inline constexpr int64_t kWaferSPMBankLineBytes = 256;
 
 /// Typed parameter contract shared by instruction verification and consumers

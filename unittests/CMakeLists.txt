@@ -26,6 +26,7 @@ function(wafer_add_component_unit_test target)
     MLIRAsyncDialect
     MLIRArithDialect
     MLIRFuncDialect
+    MLIRFuncInlinerExtension
     MLIRIR
     MLIRLinalgDialect
     MLIRLinalgTransforms

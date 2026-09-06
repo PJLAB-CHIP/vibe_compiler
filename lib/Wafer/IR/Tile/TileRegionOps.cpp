@@ -57,6 +57,41 @@ static bool isDDRDataType(mlir::Type type) {
   return memrefType && hasWaferMemorySpace(memrefType, wafer::MemorySpace::DDR);
 }
 
+static bool isSPMDataType(mlir::Type type) {
+  auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
+  return memrefType && hasWaferMemorySpace(memrefType, wafer::MemorySpace::SPM);
+}
+
+static bool isResident(TileRegionOp region) {
+  return static_cast<bool>(region.getResidentAttr());
+}
+
+static bool isOwnedByTileModule(mlir::Value value, TileRegionOp region) {
+  if (auto toMemref = value.getDefiningOp<mlir::bufferization::ToMemrefOp>()) {
+    auto allocation = toMemref.getTensor().getDefiningOp<
+        mlir::bufferization::AllocTensorOp>();
+    TileModuleOp owner = region->getParentOfType<TileModuleOp>();
+    if (allocation && owner &&
+        allocation->getParentOfType<TileModuleOp>() == owner) {
+      auto memory = allocation.getMemorySpace();
+      return memory && isSPMDataType(toMemref.getMemref().getType()) &&
+             mlir::isa<MemoryAttr>(*memory) &&
+             mlir::cast<MemoryAttr>(*memory).getSpace() == MemorySpace::SPM;
+    }
+  }
+  while (mlir::Operation *producer = value.getDefiningOp()) {
+    if (auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(producer)) {
+      value = view.getViewSource();
+      continue;
+    }
+    break;
+  }
+  auto allocation = value.getDefiningOp<mlir::memref::AllocOp>();
+  TileModuleOp owner = region->getParentOfType<TileModuleOp>();
+  return allocation && owner &&
+         allocation->getParentOfType<TileModuleOp>() == owner;
+}
+
 static bool isStructuralOrPhysicalBoundaryType(mlir::Type type) {
   return mlir::isa<mlir::RankedTensorType>(type) || isDDRDataType(type);
 }
@@ -228,7 +263,8 @@ mlir::LogicalResult TileRegionOp::verify() {
   for (auto [index, input] : llvm::enumerate(getInputs())) {
     if (!isShapedDataType(input.getType()))
       continue;
-    if (!isStructuralOrPhysicalBoundaryType(input.getType()))
+    if (!isStructuralOrPhysicalBoundaryType(input.getType()) &&
+        !(isResident(*this) && isSPMDataType(input.getType())))
       return emitOpError("shaped data input at index ")
              << index << " must be a ranked tensor or Wafer DDR memref, got "
              << input.getType();
@@ -236,7 +272,8 @@ mlir::LogicalResult TileRegionOp::verify() {
 
   for (auto [index, result] : llvm::enumerate(getResults())) {
     if (isShapedDataType(result.getType()) &&
-        !isStructuralOrPhysicalBoundaryType(result.getType()))
+        !isStructuralOrPhysicalBoundaryType(result.getType()) &&
+        !(isResident(*this) && isSPMDataType(result.getType())))
       return emitOpError("shaped data result at index ")
              << index << " must be a ranked tensor or Wafer DDR memref, got "
              << result.getType();
@@ -363,7 +400,9 @@ wafer::verifyTileRegionStorageBoundaries(mlir::ModuleOp module) {
     for (auto [index, input] : llvm::enumerate(region.getInputs())) {
       if (!isShapedDataType(input.getType()))
         continue;
-      if (!isDDRDataType(input.getType())) {
+      if (!isDDRDataType(input.getType()) &&
+          !(isResident(region) && isSPMDataType(input.getType()) &&
+            isOwnedByTileModule(input, region))) {
         region.emitOpError("physical shaped input at index ")
             << index << " must be a Wafer DDR memref";
         return mlir::WalkResult::interrupt();
@@ -371,6 +410,8 @@ wafer::verifyTileRegionStorageBoundaries(mlir::ModuleOp module) {
       llvm::DenseSet<mlir::Value> active;
       StorageTrace trace =
           traceSPMStorage(input, region, active, inputTraceMemo);
+      if (!isDDRDataType(input.getType()) && isResident(region))
+        continue;
       if (!trace.valid || trace.hasSPMRoot) {
         region.emitOpError("shaped data input at index ")
             << index << " depends on SPM storage across the region boundary";
@@ -387,7 +428,9 @@ wafer::verifyTileRegionStorageBoundaries(mlir::ModuleOp module) {
     for (auto [index, yielded] : llvm::enumerate(yield.getValues())) {
       if (!isShapedDataType(yielded.getType()))
         continue;
-      if (!isDDRDataType(yielded.getType())) {
+      if (!isDDRDataType(yielded.getType()) &&
+          !(isResident(region) && isSPMDataType(yielded.getType()) &&
+            isOwnedByTileModule(yielded, region))) {
         region.emitOpError("physical shaped result at index ")
             << index << " must be a Wafer DDR memref";
         return mlir::WalkResult::interrupt();
@@ -395,6 +438,8 @@ wafer::verifyTileRegionStorageBoundaries(mlir::ModuleOp module) {
       llvm::DenseSet<mlir::Value> active;
       StorageTrace trace =
           traceSPMStorage(yielded, region, active, resultTraceMemo);
+      if (!isDDRDataType(yielded.getType()) && isResident(region))
+        continue;
       if (!trace.valid || trace.hasSPMRoot) {
         region.emitOpError("result at index ")
             << index

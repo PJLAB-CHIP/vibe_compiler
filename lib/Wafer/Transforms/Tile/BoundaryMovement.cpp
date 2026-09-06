@@ -59,6 +59,8 @@ struct ResultPlan {
   mlir::memref::CopyOp outputCopy;
   llvm::SmallVector<unsigned, 2> peerRelations;
   bool hasSameTileConsumer = false;
+  bool retainSPM = false;
+  bool hasCrossTileConsumer = false;
 };
 
 struct RegionPlan {
@@ -1730,8 +1732,15 @@ preflight(mlir::ModuleOp module, StructuredMaterializationRelations &relations,
                                         found->second.end());
 
       for (mlir::Operation *user : result.getUsers()) {
-        if (mlir::isa<TileRegionOp>(user)) {
+        if (auto consumer = mlir::dyn_cast<TileRegionOp>(user)) {
           resultPlan.hasSameTileConsumer = true;
+          if (consumer->getParentOfType<TileModuleOp>() ==
+              region->getParentOfType<TileModuleOp>())
+            resultPlan.retainSPM = true;
+          else {
+            resultPlan.retainSPM = false;
+            resultPlan.hasCrossTileConsumer = true;
+          }
           continue;
         }
         auto toMemref = mlir::dyn_cast<mlir::bufferization::ToMemrefOp>(user);
@@ -2313,6 +2322,7 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
     TileRegionOp oldRegion = plan.operation;
     oldRegions.push_back(oldRegion);
     llvm::DenseMap<unsigned, mlir::Value> resultDestinations;
+    bool residentBoundary = false;
     for (ResultPlan &result : plan.results) {
       if (result.ddrDestination) {
         auto oldSubview =
@@ -2346,6 +2356,47 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
       }
       if (!result.hasSameTileConsumer)
         continue;
+      if (result.retainSPM && !result.hasCrossTileConsumer) {
+        mlir::Value resident = result.spmValue;
+        mlir::memref::SubViewOp residentSubview;
+        if (auto subview = resident.getDefiningOp<mlir::memref::SubViewOp>()) {
+          residentSubview = subview;
+          resident = subview.getSource();
+        }
+        TileModuleOp tileOwner = oldRegion->getParentOfType<TileModuleOp>();
+        mlir::memref::AllocOp allocation;
+        bool owned = false;
+        if (tileOwner)
+          if (auto candidate =
+                  resident.getDefiningOp<mlir::memref::AllocOp>()) {
+            allocation = candidate;
+            owned = candidate->getParentOfType<TileModuleOp>() == tileOwner &&
+                    candidate->getParentOfType<TileRegionOp>() != oldRegion;
+          }
+        if (!owned)
+          if (auto toMemref =
+                  resident.getDefiningOp<mlir::bufferization::ToMemrefOp>()) {
+            auto tensorAllocation = toMemref.getTensor().getDefiningOp<
+                mlir::bufferization::AllocTensorOp>();
+            owned = tensorAllocation && tileOwner &&
+                    tensorAllocation->getParentOfType<TileModuleOp>() ==
+                        tileOwner &&
+                    tensorAllocation->getParentOfType<TileRegionOp>() !=
+                        oldRegion;
+            if (owned)
+              toMemref->moveBefore(oldRegion);
+          }
+        if (owned) {
+          if (allocation)
+            allocation->moveBefore(oldRegion);
+          if (residentSubview)
+            residentSubview->moveBefore(oldRegion);
+          resultDestinations.try_emplace(result.index, result.spmValue);
+          stagedResults.try_emplace(result.originalResult, result.spmValue);
+          residentBoundary = true;
+          continue;
+        }
+      }
       rewriter.setInsertionPoint(oldRegion);
       auto staging = rewriter.create<mlir::memref::AllocOp>(
           oldRegion.getLoc(),
@@ -2420,6 +2471,8 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
     rewriter.setInsertionPoint(oldRegion);
     auto newRegion = rewriter.create<TileRegionOp>(
         oldRegion.getLoc(), scalarResultTypes, newInputs);
+    if (residentBoundary)
+      newRegion.setResidentAttr(rewriter.getUnitAttr());
     newRegion.getBody().takeBody(oldRegion.getBody());
     mlir::Block &block = newRegion.getBody().front();
     struct RecursiveAggregate {
@@ -2565,6 +2618,17 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
             resolveDDRInput(input.originalOperand, stagedResults);
         if (mlir::failed(ddr))
           return failApply("local input has no current DDR source");
+        if (isWaferSPMMemRefType((*ddr).getType()) && residentBoundary) {
+          argument.setType((*ddr).getType());
+          for (mlir::bufferization::ToMemrefOp bridge : input.bridges) {
+            rewriter.replaceAllUsesWith(bridge.getMemref(), *ddr);
+            if (!bridge.getMemref().use_empty())
+              return failApply("resident SPM carrier still has a live use");
+            rewriter.eraseOp(bridge);
+            ++statistics.tensorBridgesRemoved;
+          }
+          continue;
+        }
         argument.setType((*ddr).getType());
         for (mlir::bufferization::ToMemrefOp bridge : input.bridges) {
           if (hasOnlySubviewUses(bridge.getMemref())) {
@@ -2896,6 +2960,8 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
     for (const ResultPlan &result : plan.results) {
       auto destination = destinationArguments.find(result.index);
       if (destination == destinationArguments.end())
+        continue;
+      if (residentBoundary && result.retainSPM && !result.hasCrossTileConsumer)
         continue;
       mlir::bufferization::ToTensorOp bridge = result.bridge;
       rewriter.create<StorageStoreOp>(result.originalResult.getLoc(),

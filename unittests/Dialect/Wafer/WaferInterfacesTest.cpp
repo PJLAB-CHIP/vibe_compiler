@@ -5,6 +5,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -1490,6 +1491,7 @@ TEST(WaferInterfacesTest, StablehloPipelineProducedCollectiveCanBeTiled) {
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
                   mlir::linalg::LinalgDialect, mlir::math::MathDialect,
                   mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
+  mlir::func::registerInlinerExtension(registry);
   wafer::registerWaferCoreDialects(registry);
   wafer::registerImporterDialects(registry);
 

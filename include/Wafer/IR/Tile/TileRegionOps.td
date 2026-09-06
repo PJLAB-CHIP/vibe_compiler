@@ -19,15 +19,18 @@ def Wafer_TileRegionOp : Wafer_Op<"tile.region", [
     runtime buffer handles, or target CRT calls.
 
     Structural shaped operands/results are ranked tensors. Physical shaped
-    operands/results are explicit Wafer DDR memrefs. SPM roots and aliases are
-    always owned inside one outer, non-nested region and cannot cross its
-    boundary. Stage-scoped checks enforce the structural/layout-resolved/
+    operands/results are explicit Wafer DDR memrefs. A physical region may
+    opt into an explicit `resident` boundary when a same-Tile producer/
+    consumer chain carries a current SPM allocation with a verified
+    lifetime/alias owner; this is residency, not an execution-region or fusion
+    decision. Stage-scoped checks enforce the structural/layout-resolved/
     physical forms; the operation verifier only checks their common local
     operand/result/region contract. Scalar, event, and control values may cross
     the boundary according to their typed contracts.
   }];
 
-  let arguments = (ins Variadic<AnyType>:$inputs);
+  let arguments = (ins Variadic<AnyType>:$inputs,
+                       OptionalAttr<UnitAttr>:$resident);
   let results = (outs Variadic<AnyType>:$results);
   let regions = (region SizedRegion<1>:$body);
 

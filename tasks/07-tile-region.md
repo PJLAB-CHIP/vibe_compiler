@@ -95,11 +95,12 @@ TileRegion是一个Tile内selected execution与local storage ownership scope，�
 | --- | --- | --- | --- |
 | structural | tensor SSA；scalar/control按原typed合同 | actual Linalg/Tensor/online-attention/SCF、traversal、tail和loop-carried state；没有physical allocation/movement | temporal/decomposition完成后由layout与region-local bufferization消费 |
 | layout-resolved | function boundary已经bufferize；logical TileRegion tensor boundary仍显式；每个实际compute use已有current memref endpoint、view/alias和encoding | actual region-local allocation与layout materialization；没有route、staging或跨boundary transfer | movement/boundary closure |
-| physical | shaped region I/O只允许Wafer DDR memref；peer/collective通过region内typed op/effect表达，不把SPM作为region result | actual local/DDR/peer/collective movement、staging、token和effect | execution-structure transformation |
+| physical | shaped region I/O 默认是Wafer DDR memref；同一 Tile 的 current SPM owner/lifetime 已证实时可带 `resident` schema attr 传递 SPM memref；peer/collective通过region内typed op/effect表达 | actual local/DDR/resident-SPM/peer/collective movement、staging、token和effect | execution-structure transformation与SPM planner |
 
-Structural和layout-resolved form不宣称SPM容量合法，也不允许SPM memref root直接作为region operand/result。Same-Tile
-layout-resolved tensor boundary通过current SSA和标准bufferization/view operation绑定region内实际endpoint；这种bridge不是跨region
-SPM alias许可。Cross-Tile不能使用SSA capture，只允许4.1节candidate-owned typed relation连接两端actual endpoint。它不是全局
+Structural和layout-resolved form不宣称SPM容量合法，也不允许未带显式 owner 的SPM memref root直接作为region operand/result。Same-Tile
+layout-resolved tensor boundary通过current SSA和标准bufferization/view operation绑定region内实际endpoint；physical form 只有在
+`resident` attr、同一 TileModule owner、current allocation/view 和 lifetime/completion witness 全部存在时才保留 SPM alias。
+Cross-Tile不能使用SSA capture，只允许4.1节candidate-owned typed relation连接两端actual endpoint。它不是全局
 side table、名字或临时attribute，不能进入其它pass、analysis cache或accepted IR。Module-stage check要求下一直接consumer是movement；
 movement必须消除全部未闭合tensor boundary和endpoint relation并形成physical form，不能先创建DDR donor再替换成peer路线。
 
@@ -246,11 +247,11 @@ Operation verifier只检查TileRegion自身和local operand/result/region关系�
 
 - parent TileModule和non-nested region形状；
 - region argument/result、tensor或DDR boundary type和local effect合同；
-- SPM value不作为region I/O、view/layout op的local关系；
+- 未带 `resident` owner/lifetime witness 的 SPM value 不作为region I/O；带 attr 的 SPM boundary 仍须 local view/alias 关系；
 - body terminator和control-flow结构。
 
 Structural stage拒绝physical allocation/movement；layout-resolved stage要求每个实际use具有current endpoint且没有route/staging；
-physical stage要求所有shaped boundary闭合为DDR或typed communication，并拒绝tensor boundary和跨region SPM alias。
+physical stage要求所有shaped boundary闭合为DDR、显式 resident SPM 或 typed communication，并拒绝无 owner/lifetime witness 的跨region SPM alias。
 TileModule/Tile coverage、cross-region root/alias、communication totality和lifetime在最近common owner上运行stage check。不在verifier中重建
 expected execution、future buffer或event inventory。
 
