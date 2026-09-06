@@ -25,6 +25,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -130,6 +131,14 @@ refineTemporalChoices(llvm::ArrayRef<TemporalAxis> axes,
   }
   std::vector<TemporalChoice> refined(current.begin(), current.end());
   bool changed = false;
+  // A proven capacity rejection does not identify every tileable axis as the
+  // cause. Shrinking all axes at once silently changes the search language and
+  // can discard legal choices. Refine one largest actual tile size per
+  // feedback step on each independent temporal axis; ties follow the typed
+  // domain order for determinism.
+  llvm::SmallVector<std::optional<std::tuple<size_t, size_t, int64_t>>, 16>
+      refinements(axes.size());
+  size_t axisIndex = 0;
   for (auto [axis, choice] : llvm::zip(axes, refined)) {
     llvm::ArrayRef<TemporalScopeDescriptor> descriptors =
         axis.domain.getScopeDescriptors(choice.kind);
@@ -137,15 +146,21 @@ refineTemporalChoices(llvm::ArrayRef<TemporalAxis> axes,
       detail = "Temporal refinement scope tuple differs from current domain";
       return std::nullopt;
     }
-    for (auto [descriptor, scope] : llvm::zip(descriptors, choice.scopes)) {
+    for (auto [descriptorIndex, descriptorAndScope] :
+             llvm::enumerate(llvm::zip(descriptors, choice.scopes))) {
+      const TemporalScopeDescriptor &descriptor =
+          std::get<0>(descriptorAndScope);
+      TemporalScopeChoice &scope = std::get<1>(descriptorAndScope);
       for (auto [dimension, capability] :
            llvm::enumerate(descriptor.iteratorCapabilities)) {
         if (capability != IteratorTilingCapability::Tileable ||
             scope.iteratorTileSizes[dimension] <= 1)
           continue;
-        int64_t &size = scope.iteratorTileSizes[dimension];
-        size = (size + 1) / 2;
-        changed = true;
+        auto &selected = refinements[axisIndex];
+        if (!selected ||
+            scope.iteratorTileSizes[dimension] > std::get<2>(*selected))
+          selected = std::make_tuple(
+              descriptorIndex, dimension, scope.iteratorTileSizes[dimension]);
       }
       auto loopOrder = buildFirstTemporalLoopOrder(
           descriptor.iterationExtents, scope.iteratorTileSizes,
@@ -159,6 +174,24 @@ refineTemporalChoices(llvm::ArrayRef<TemporalAxis> axes,
                "typed domain";
       return std::nullopt;
     }
+    ++axisIndex;
+  }
+  for (size_t index = 0; index < refinements.size(); ++index) {
+    if (!refinements[index])
+      continue;
+    const auto [scopeIndex, dimension, size] = *refinements[index];
+    refined[index].scopes[scopeIndex].iteratorTileSizes[dimension] =
+        (size + 1) / 2;
+    llvm::ArrayRef<TemporalScopeDescriptor> descriptors =
+        axes[index].domain.getScopeDescriptors(refined[index].kind);
+    auto loopOrder = buildFirstTemporalLoopOrder(
+        descriptors[scopeIndex].iterationExtents,
+        refined[index].scopes[scopeIndex].iteratorTileSizes,
+        descriptors[scopeIndex].precedence, &detail);
+    if (mlir::failed(loopOrder))
+      return std::nullopt;
+    refined[index].scopes[scopeIndex].loopOrder = std::move(*loopOrder);
+    changed = true;
   }
   if (!changed)
     return std::nullopt;

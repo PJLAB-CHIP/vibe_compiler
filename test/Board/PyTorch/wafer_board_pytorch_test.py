@@ -382,6 +382,9 @@ def read_single_card_continuation_outputs(
 def verify_no_card(stdout: str) -> None:
     required = {
         "package: id=0 cards=1 tiles=16",
+        "arithmetic_execution: false",
+        "completion_execution: false",
+        "numeric_readback: false",
         "board_execution: false",
     }
     if not required.issubset(set(stdout.splitlines())):
@@ -641,7 +644,8 @@ def main() -> int:
                 f"step={step_index + 1} "
                 f"optimization_policy={args.optimization_policy} "
                 "source_export=true torch_eager_reference=true "
-                "runtime_payload=true"
+                "runtime_payload=true numeric_execution=false "
+                "continuation_reference_reused=true"
             )
             print(result.stdout, end="")
             continuation_outputs = expected_outputs

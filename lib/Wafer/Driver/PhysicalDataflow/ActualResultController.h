@@ -21,9 +21,20 @@
 
 namespace wafer::compiler::detail {
 
+enum class SearchCostProfileProvenance : uint8_t {
+  BuiltInEstimate,
+  CalibratedTarget,
+};
+
 /// Performance-only rates shared by one accepted-candidate comparison cohort.
 /// They never participate in IR legality or memory admission.
 struct SearchCostPolicy {
+  /// Stable provenance is part of the comparison cohort. A candidate scored
+  /// with one profile can never silently outrank a candidate scored with
+  /// another profile.
+  uint64_t profileIdentity = 1;
+  SearchCostProfileProvenance profileProvenance =
+      SearchCostProfileProvenance::BuiltInEstimate;
   uint64_t ddrNominalBytesPerSecond = 150'000'000'000ULL;
   uint64_t directionalNoCBytesPerSecond = 128'000'000'000ULL;
   uint64_t dteEndpointBytesPerSecondEstimate = 128'000'000'000ULL;
@@ -85,7 +96,9 @@ public:
                          const SearchCostCohort &rhs) {
     const auto &left = lhs.policy;
     const auto &right = rhs.policy;
-    return left.ddrNominalBytesPerSecond == right.ddrNominalBytesPerSecond &&
+    return left.profileIdentity == right.profileIdentity &&
+           left.profileProvenance == right.profileProvenance &&
+           left.ddrNominalBytesPerSecond == right.ddrNominalBytesPerSecond &&
            left.directionalNoCBytesPerSecond ==
                right.directionalNoCBytesPerSecond &&
            left.dteEndpointBytesPerSecondEstimate ==

@@ -163,6 +163,9 @@ TEST(ActualResultControllerTest,
   ASSERT_TRUE(mlir::succeeded(cohort)) << failureReason;
   policy.ddrNominalBytesPerSecond = 0;
   EXPECT_TRUE(mlir::failed(SearchCostCohort::create(policy, &failureReason)));
+  policy = unitCostPolicy();
+  policy.profileIdentity = 0;
+  EXPECT_TRUE(mlir::failed(SearchCostCohort::create(policy, &failureReason)));
 
   InstructionProgramAggregateCost cost;
   cost.aggregateInstructionCount.value = 1;

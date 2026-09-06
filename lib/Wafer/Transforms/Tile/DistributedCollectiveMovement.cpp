@@ -36,6 +36,14 @@ namespace wafer::compiler::detail {
 mlir::FailureOr<llvm::SmallVector<uint64_t, 16>>
 buildMinimumHopTileRing(const TargetTopology &topology,
                         llvm::ArrayRef<uint64_t> participants) {
+  // This adapter is the target-owned boundary. The generic ring builder does
+  // not impose TileId's signed representation or a card identity; TX81's
+  // topology oracle does.
+  if (llvm::any_of(participants, [](uint64_t participant) {
+        return participant >
+               static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+      }))
+    return mlir::failure();
   return buildMinimumHopRing(
       participants, /*maximumParticipants=*/16,
       [&](uint64_t lhs, uint64_t rhs) {

@@ -113,10 +113,13 @@ SearchCostCohort::create(const SearchCostPolicy &policy,
       policy.f16Bf16VectorLogicalOpsPerSecondPerTile,
       policy.f32VectorLogicalOpsPerSecondPerTile,
       policy.spmExplicitMovementBytesPerSecondPerTileEstimate};
-  if (llvm::is_contained(rates, uint64_t{0})) {
+  if (policy.profileIdentity == 0 || llvm::is_contained(rates, uint64_t{0})) {
     if (failureReason)
-      *failureReason = "search cost cohort requires positive rates for every "
-                       "enabled resource term";
+      *failureReason = policy.profileIdentity == 0
+                           ? "search cost cohort requires a nonzero profile "
+                             "identity"
+                           : "search cost cohort requires positive rates for "
+                             "every enabled resource term";
     return mlir::failure();
   }
   return SearchCostCohort(policy);

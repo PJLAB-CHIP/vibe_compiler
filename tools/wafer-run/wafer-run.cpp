@@ -349,6 +349,12 @@ int runNoCard(
                  << " captures=" << profileInstrumentation->getCaptures().size()
                  << " target_call_sites="
                  << profileInstrumentation->getSiteCount() << "\n";
+  // No-card is an invocation/package contract check only. It does not run
+  // target arithmetic, device completion, or numeric readback; callers must
+  // not reuse these lines as a board result.
+  llvm::outs() << "arithmetic_execution: false\n"
+               << "completion_execution: false\n"
+               << "numeric_readback: false\n";
   llvm::outs() << "board_execution: false\n";
   return 0;
 }

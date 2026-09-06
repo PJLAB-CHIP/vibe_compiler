@@ -245,6 +245,27 @@ static mlir::MemRefType getMemRefType(mlir::RankedTensorType tensor,
       MemoryAttr::get(tensor.getContext(), space, layout));
 }
 
+static ExactPBQPCost getLayoutMaterializationCost(mlir::RankedTensorType type,
+                                                   MemLayout layout) {
+  if (!type || !type.hasStaticShape())
+    return kExactPBQPInfinity;
+  std::optional<WaferPhysicalTensorInfo> info =
+      computeWaferPhysicalTensorInfo(
+          getMemRefType(type, MemorySpace::SPM, layout));
+  if (!info || info->physicalBytes < 0)
+    return kExactPBQPInfinity;
+  // Keep one unit for the materialization itself and include the actual
+  // physical footprint (including layout padding). This remains a query-local
+  // ordering cost; legality and final SPM capacity still come only from the
+  // materialized current IR and MiniMalloc.
+  uint64_t bytes = static_cast<uint64_t>(info->physicalBytes);
+  if (bytes == std::numeric_limits<uint64_t>::max())
+    return kExactPBQPInfinity;
+  ++bytes;
+  return bytes > kExactPBQPInfinity ? kExactPBQPInfinity
+                                     : static_cast<ExactPBQPCost>(bytes);
+}
+
 static bool proveReshapeLayoutAlias(mlir::RankedTensorType source,
                                     mlir::RankedTensorType result,
                                     MemLayout layout) {
@@ -1717,7 +1738,11 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
         continue;
       for (auto [state, layout] : llvm::enumerate(group.layouts))
         if (layout != binding.computeLayout)
-          costs[state] = addCost(costs[state], 1);
+          costs[state] = addCost(
+              costs[state],
+              getLayoutMaterializationCost(
+                  mlir::cast<mlir::RankedTensorType>(binding.result.getType()),
+                  layout));
     }
     problem.variables.push_back(ExactPBQPVariable{std::move(costs)});
   }
@@ -1830,9 +1855,14 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
       activation.cohort = cohortIndex;
       activation.layout = layout;
       activation.variable = problem.variables.size();
-      // The unit cost is the exact number of unique current-IR
-      // materializations, not a target performance estimate.
-      problem.variables.push_back(ExactPBQPVariable{{0, 0, 1}});
+      const mlir::RankedTensorType sourceType =
+          mlir::cast<mlir::RankedTensorType>(cohort.source.getType());
+      const ExactPBQPCost materializationCost =
+          getLayoutMaterializationCost(sourceType, layout);
+      // The activation state remains an exact current-IR materialization
+      // decision, but its finite objective includes physical bytes/padding so
+      // a copy-count tie cannot prefer a much larger layout blindly.
+      problem.variables.push_back(ExactPBQPVariable{{0, 0, materializationCost}});
       activations.push_back(activation);
 
       const ValueGroup &sourceGroup = groups[cohort.sourceGroup];

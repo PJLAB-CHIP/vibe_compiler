@@ -368,7 +368,8 @@ use/lifetime证明删除；partial、permuted、layout-changing或alias-unknown 
 Layout合法域直接从current structural TileRegion的SSA value/use、consumer interface、exact `IndexRelation`和可验证encoding构造。
 Baseline与search都调用同一个query-local PBQP layout optimizer；它不是search state，也不共享两条policy的candidate owner。
 Baseline与search对每个actual attempt都只求解并应用一次确定性`Optimal` assignment；layout不是search axis，不建立layout frontier或
-raw layout枚举。PBQP只决定当前IR上unique actual materialization最少的layout；最终search winner仍由物化后的其它choice和actual objective决定。
+raw layout枚举。PBQP在当前IR上按实际 materialization 的 physical bytes（含 padding）与一次 materialization unit
+进行 query-local 排序；最终search winner仍由物化后的其它choice和actual objective决定。该排序不能替代实际 MiniMalloc。
 
 C3不因某value邻接view就把整个buffer-equivalent group机械降为`compactOnly`。One-Shot必然alias的DPS init/result和reshape/cast
 source/result先合并为一个PBQP value group；它们不是两个可独立选择的buffer变量。该group枚举完整layout交集，但每个state必须由canonical
@@ -378,23 +379,23 @@ materialization；缺少base-offset/range/alias/effect proof的slice/insert继�
 不进入PBQP之后的side table。
 
 PBQP factor graph只在一次query内存在：value/use是当前SSA的局部变量，op tuple constraint通过auxiliary factor表达；hard factor以
-显式infinity拒绝不支持的layout tuple、alias或use binding。唯一优化目标是本次assignment实际创建的layout materialization数量：
+显式infinity拒绝不支持的layout tuple、alias或use binding。优化目标是本次assignment实际创建的layout materialization
+physical bytes（含padding）加一次 materialization unit：
 
 ```text
 layout_cost =
-    unique shared/per-use conversion materializations
-  + fixed-compute-result publication materializations
+    Σ actual materialization (physical_bytes + 1)
 ```
 
-每个最终会创建一个actual `bufferization.alloc_tensor` layout copy的选择计1；same-layout、exact metadata view、alias和inactive
-activation计0。同一dominance/effect cohort中的shared conversion只计一次，不能按use重复计价；不同cohort或不同target layout分别计数。
-该目标不按tensor bytes加权，也不读取NE/Vector throughput、descriptor、instruction、DDR/NoC、SPM duration或其它硬件性能信息。
+每个最终会创建一个actual `bufferization.alloc_tensor` layout copy的选择计其 physical footprint 加1；same-layout、exact metadata view、alias和inactive
+activation计0。同一dominance/effect cohort中的shared conversion只计一次，不能按use重复计价；不同cohort或不同target layout分别计价。
+该目标不读取NE/Vector throughput、descriptor、instruction、DDR/NoC、SPM duration或其它硬件性能信息。
 等materialization数的assignment使用完整stable semantic tie-break。Hard infinity只表示已证明illegal；finite materialization count溢出
-返回`Indeterminate`，不能转成infinity或`NoSolution`。PBQP的`Optimal`只表示在当前合法layout域内materialization数量最少，不表示
+返回`Indeterminate`，不能转成infinity或`NoSolution`。PBQP的`Optimal`只表示在当前合法layout域内bytes/unit cost最小，不表示
 最终硬件性能最优。
 
-Query-local PBQP可以删除对该目标严格支配的group state：若某layout既不是该group任一live fixed-compute result的publication layout，也不是
-任一current fixed use要求的layout，选择它只会保留或增加materialization数量；有可用relevant state时删除该state不改变最优集合。若该group
+Query-local PBQP可以删除没有 live consumer 的group state：若某layout既不是该group任一live fixed-compute result的publication layout，也不是
+任一current fixed use要求的layout，选择它不会被实际 current use 消费；有可用relevant state时删除该state不改变可行assignment集合。若该group
 没有任何live compute/use target，则所有state目标相同，只保留原domain中的第一个canonical state。该约简不修改current IR或原始合法性
 证明；无use result不产生publication cost，因为apply也不会为它创建actual materialization。
 
@@ -427,7 +428,7 @@ primary layout一致的第二态；use factor要求选择该layout的use对应�
 materialization；same-layout、inactive和没有use的activation不创建operation。
 
 Target descriptor query不进入layout PBQP。第16项可以把该query抽为shared只读analysis，服务actual lowering、inventory和最终candidate
-cost/winner比较，但不能改变第15项的layout合法域或materialization-count objective。PBQP apply后，下游只从new current IR fresh计算
+cost/winner比较，但不能改变第15项的layout合法域或bytes/unit objective。PBQP apply后，下游只从new current IR fresh计算
 descriptor、engine work和movement；不保存descriptor plan或future Instr inventory，也不把这些性能信息反向写入layout assignment。
 
 Current shared query位于Tile-to-Instr request-local lowering support，由layout movement与mapped elementwise/broadcast共同调用；它只接收

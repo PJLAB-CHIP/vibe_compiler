@@ -98,6 +98,13 @@ void recordStructuralCandidateMetrics(
   if (!known)
     return;
   const SearchResourceDurations &durations = known->durations;
+  recordRegionCandidateCounter(
+      index, "objective-profile-identity",
+      known->cohort.getPolicy().profileIdentity);
+  recordRegionCandidateCounter(
+      index, "objective-profile-calibrated",
+      known->cohort.getPolicy().profileProvenance ==
+          SearchCostProfileProvenance::CalibratedTarget);
   recordRegionCandidateCounter(index, "objective-ne-picoseconds",
                                durations.neF16Bf16Picoseconds);
   recordRegionCandidateCounter(index, "objective-vector-f16-picoseconds",
