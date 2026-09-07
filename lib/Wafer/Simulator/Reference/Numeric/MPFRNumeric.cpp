@@ -255,6 +255,7 @@ void decodeFinite(const BinaryFormatParameters &parameters,
       mpfr_set_uj_2exp(result, static_cast<uintmax_t>(significand),
                        static_cast<mpfr_exp_t>(binaryExponent), MPFR_RNDN);
   assert(status == 0 && "raw logical input must be exactly representable");
+  (void)status;
   if (sign)
     mpfr_neg(result, result, MPFR_RNDN);
 }

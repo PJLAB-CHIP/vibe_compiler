@@ -25,6 +25,10 @@ Instr/memory/communication看11--13；target/package/model看14--17；源码与M
 - Structured e-graph依赖用`utils/deps/bootstrap_deps.py --egraph-sources`同步pinned source和vendor record；CMake只运行
   `cargo build --locked --offline`。缺source、Cargo/rustc或版本不匹配应在configure/build边界失败，compiler invocation
   不启动外部optimizer进程。
+- Release LLVM依赖在关闭assertion时需显式设置`LLVM_FORCE_ENABLE_STATS=ON`；否则`--mlir-pass-statistics`可能只有报告标题，
+  pass计数不会实际累加。检查安装的`llvm/Config/llvm-config.h`，修正后重建依赖并增量重建同一主工程，不放宽统计断言。
+- Shardy依赖检查使用Git ancestry验证已知base。浅克隆即使HEAD正确，也可能缺少ancestor而检查失败；确认缺少的是历史后，
+  补全该submodule历史并重新运行`utils/checks/check_deps.py`，不移动pinned HEAD或绕过检查。
 
 常用命令：
 

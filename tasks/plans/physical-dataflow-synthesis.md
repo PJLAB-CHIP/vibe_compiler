@@ -297,3 +297,15 @@ canonical完整增量build、13个component unit、14个target numeric/SystemC t
 managed-dependency CMake gate在关闭importer/SPMD target的隔离配置下也通过。search仍是分钟级编译路径，production driver已为search
 session及SPMD/target外部进程设置30分钟typed deadline；超时保持indeterminate，不得被解释成unsupported或compiler bug。本轮没有真实
 设备执行，状态仍只到`board-ready`。
+
+2026-09-08板机首次Release构建复核：使用repository-local工具与cache完成pinned依赖和canonical `default`构建，
+compiler、importer、SPMD、numeric、target numeric、SystemC与本地unit均开启，真实设备执行关闭。本次维护归入
+`production-host-readiness`和16号canonical build gate：MPFR的assertion-only状态显式消费，Rust searcher显式保留返回值借用
+lifetime，StableHLO pipeline结构测试同步current builder；Direct-DTE广播单测保存optional bindings再遍历，修复Release下临时
+optional销毁后的悬空range。生产通信算法和数值语义未变。
+
+本轮`check-wafer`实际通过265/265 lit、14/14 component unit executables、42/42 board I/O host unit、全部public-link smoke、
+61/61 reference numeric、19/19 target numeric和15/15 SystemC CTest，无skip/unsupported。LLVM Release依赖保留statistics后，
+三个pass work-count测试实际通过。Fresh FP16 conv mixed DAG的none/search与target-model source vertical共3/3 no-card通过，
+使用本轮binary、source与package；该smoke不代替完整product/calibration矩阵或真实板测，任务状态保持`board-ready`。
+收尾两次完整默认增量构建均为Ninja no-op；source organization、dependency consistency与`git diff --check`通过。

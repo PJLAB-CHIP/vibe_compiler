@@ -1184,7 +1184,7 @@ impl Searcher<GraphLanguage, GraphAnalysis> for DynamicSearcher {
         egraph: &Graph,
         eclass: Id,
         limit: usize,
-    ) -> Option<SearchMatches<GraphLanguage>> {
+    ) -> Option<SearchMatches<'_, GraphLanguage>> {
         if limit == 0 || !self.may_match(egraph, eclass) {
             return None;
         }

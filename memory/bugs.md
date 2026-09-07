@@ -790,6 +790,14 @@
   声明顺序保证。
 - 防复发：任何返回结构体只要含"视图指针"字段，先确认被视图对象本身由同一结构体拥有；禁止栈容器+outlived view模式。
 
+## Range-for解引用临时optional会留下悬空range
+
+- 现象：Release单测在遍历MLIR attribute时崩溃，前面的optional存在性和size断言均通过。
+- 根因：generated accessor返回`std::optional<mlir::ArrayAttr>`值；`for (... : *op.getBindings())`把range绑定到临时optional
+  的内部对象。当前C++17规则不延长该optional的生命周期，进入循环前引用已失效。
+- 修复模式：先保存accessor返回值，检查其存在性，再遍历`*bindings`，使optional覆盖整个循环生命周期。
+- 防复发：检查range表达式中返回值的owner，尤其是optional解引用和临时容器的view；Release测试仍须检查全部元素，不能删除循环。
+
 ## 非默认gate的lit期望静默过时
 
 - 现象：Tools lit（不在默认CTest路径）一次出现8个失败，现象各异：`spm_planning_invocations`16→24、

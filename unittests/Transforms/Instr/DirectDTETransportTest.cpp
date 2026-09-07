@@ -770,10 +770,10 @@ TEST_F(DirectDTETransportTest,
       auto contract = wafer::compiler::testing::bindDirectDTETransport(modules);
       ASSERT_TRUE(mlir::succeeded(contract));
       EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
-      ASSERT_TRUE(broadcast.getBindings());
-      EXPECT_EQ(broadcast.getBindings()->size(),
-                static_cast<size_t>(destinationCount));
-      for (mlir::Attribute attribute : *broadcast.getBindings())
+      auto bindings = broadcast.getBindings();
+      ASSERT_TRUE(bindings);
+      EXPECT_EQ(bindings->size(), static_cast<size_t>(destinationCount));
+      for (mlir::Attribute attribute : *bindings)
         EXPECT_TRUE(mlir::isa<wafer::DirectDTEBindingAttr>(attribute));
     }
   }

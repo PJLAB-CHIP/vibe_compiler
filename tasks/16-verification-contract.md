@@ -120,6 +120,9 @@ tracking。只有toolchain、preset、managed dependency identity或CMake配置�
 执行。产品安装只从该配置产生，并使用`Compiler`与`Runtime`组件选择交付内容；本仓当前不支持runtime-only build。依赖缺失或managed
 record失配在configure失败，不能自动关feature继续构建。
 
+Pinned LLVM/MLIR必须保留statistics支持，供lit验证实际pass work count。使用关闭assertion的Release依赖时，配置LLVM为
+`LLVM_FORCE_ENABLE_STATS=ON`，并让主工程使用同一安装的header和library；空statistics报告不能作为零work的证据，也不能跳过对应测试。
+
 Target numeric本地执行采用按职责分层的唯一命名：
 
 - `WaferTargetNumericBackend`是整体功能与model-facing library。它消费decoded numeric request、target physical tensor bytes和显式budget，
