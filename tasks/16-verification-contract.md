@@ -2,8 +2,8 @@
 
 本文只定义当前架构的验证层级和完成证明，不保存任务动态状态或历史case台账。稳定验证链为
 `TensorProgram -> physical-dataflow selection -> TileModule/TileRegion/Instr -> DeviceExecutable -> ExecutablePackage`。
-host局部gate、package roundtrip或一次source compile都不能把production任务提升为`board-ready`；没有真实设备matched
-A/B改善时也不能标`done`。
+host局部gate、package roundtrip或一次source compile都不能把production任务提升为`board-ready`。
+板端正确性任务的`done`要求其完整矩阵通过真实设备数值和生命周期验收；板端性能任务另外要求真实设备matched A/B证据。
 
 ## 1. Pipeline Contract
 
@@ -52,6 +52,11 @@ package并fresh no-card；职责已由后继接管时直接从current queue移�
 计时或codec mechanics写入current owner。历史只由Git和archive保留，不能继续授权历史板端批次，也不建立旧任务状态索引。
 
 ## 3. Freshness 与执行纪律
+
+板端正确性验收作为独立work item消费编译器实现和主机准备交付的产品产物。它拥有板测case、PyTorch reference、
+实际执行结果及覆盖完成判定；通信实现work item拥有current IR变换、legality、completion、lowering及相应主机回归。
+GEMM、卷积、attention等产品板测不归入通信实现的完成门禁。发现编译器或runtime缺陷时按对应设计修复，
+随后将新产物交回同一板测项复验；不能借此混用两个任务的状态，也不能由局部板测结果宣称编译器全项完成。
 
 - 每轮代码/测试改变后只使用本轮build和本轮输出；历史raw/log/report只作审计记录，不作为test input。
 - producer/consumer合同或runner失去current executable路径时，即使source与oracle仍存在，也不能沿用旧`board-ready`；

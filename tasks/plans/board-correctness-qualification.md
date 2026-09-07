@@ -1,9 +1,25 @@
 # 板端正确性验收计划
 
+## 独立任务边界
+
+本计划属于`tasks/progress.md`中的独立work item `board-correctness-qualification`，由16号验证合同管理。
+覆盖通信、GEMM及组合计算的真实板端正确性；`mesh-communication-materialization`负责编译器通信实现及主机验证，
+`production-host-readiness`负责产品主机准备，两者向本项提供已验证的产品产物。
+板测失败触发的代码修复仍遵守相应compiler/runtime设计；复验case、板端证据和覆盖进度由本项统一记录。
+
+Pipeline position:
+- Upstream IR / input: current compiler/runtime、PyTorch source与同一输入的eager reference、逐case通过fresh no-card的ExecutablePackage、可用设备会话。
+- Current stage responsibility: 补齐并登记板测覆盖矩阵，串行执行真实设备，检查完整数值、guard/status、completion与cleanup。
+- Output IR / files: 每个case的原样package、输入/reference/capture、误差及执行日志、与实际结果绑定的覆盖记录。
+- Downstream consumer: 产品板端正确性结论及后续独立性能验收。
+- User-level driver / named pipeline: `wafer-compile`、`wafer-run`、现有PyTorch board runner和基础CRT probe runner。
+- Explicit non-goals: 不在本项声明编译器全部架构收敛完成，不以单case代签整项，不将性能改善作为本项的正确性完成门禁。
+- Completion criteria: 下列第1--9项各自覆盖矩阵的生产路径、fresh no-card、真实板端完整PyTorch比较和正常完成全部通过；待补case、失败或仅no-card不能计作完成。
+
 ## 首批真实板端验收：Add与Direct-DTE
 
 用户本轮授权按Add→Direct-DTE顺序执行真实设备，并要求所有上板case的数值结果与PyTorch完整比较。
-本节承接`mesh-communication-materialization`的板端前置；既有Q53 host-only合同保持自身边界。
+本节记录本独立板测任务的设备与基础执行前置；既有Q53 host-only合同保持自身边界。
 
 Pipeline position:
 - Upstream IR / input: Add的PyTorch CPU输入、同一module导出的source program与current compiler；DTE基础验证使用已有current CRT探针及其FP16输入。
@@ -28,7 +44,7 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 
 ## 推进顺序
 
-以下编号是当前work item下的板测子项。Add与基础Direct-DTE已有实卡前置；下一项先补齐AllGather尾长，随后进入GEMM。
+以下编号是`board-correctness-qualification`内部的板测子项。Add与基础Direct-DTE已有实卡前置；下一项先补齐AllGather尾长，随后进入GEMM。
 每个子项按列出的覆盖范围验收，单个case通过不能代表整项完成。实现、输入或环境没有影响结论的变化时，不重复已通过的case。
 
 | 板测子项 | 具体范围 | 完成门禁与后续动作 |
@@ -42,7 +58,7 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 | 7. Attention prefill | 现有`attention-prefill`，FP16、序列长度1024 | fresh source/no-card，与同一输入的PyTorch eager attention完整比较 |
 | 8. KV cache decode | 现有`attention-decode-kv-cache`，连续两步 | 第二步消费第一步实际回读的KV；两步attention输出和完整KV cache均与PyTorch比较 |
 | 9. LLaMA block | 现有`llama-2-7b-block`，FP16 | 完整block输出对比PyTorch；此前局部算子通过不能代签本项 |
-| 10. 性能 | 已通过数值验收的同source、同输入none/search | 分别先通过PyTorch正确性，再做matched计时；准备阶段不提前启动性能批次 |
+| 后续独立性能验收 | 已通过数值验收的同source、同输入none/search | 正确性通过后另定matched计时合同；不计入本项正确性完成门禁，当前不启动 |
 
 执行规则：
 
