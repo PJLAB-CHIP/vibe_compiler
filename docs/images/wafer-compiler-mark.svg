@@ -1,32 +1,92 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="240" height="128" viewBox="0 0 240 128" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="192" viewBox="0 0 320 192" role="img" aria-labelledby="title desc">
   <title id="title">Wafer Compiler</title>
-  <desc id="desc">左侧代码括号经箭头映射到右侧四乘四 Tile 阵列，表示从程序到单卡执行。</desc>
-  <rect x="2" y="2" width="236" height="124" rx="26" fill="#f7fafc" stroke="#dce6ed" stroke-width="2"/>
-  <g fill="none" stroke="#16364b" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M35 47 18 64 35 81 M57 47 74 64 57 81"/>
-    <path d="m51 42-11 44" stroke-width="4"/>
+  <desc id="desc">带代码括号的程序卡片通过三条彩色数据流连接晶圆形 Tile 阵列。阵列的四组色块呼应 spatial 划分，表示从程序到单卡多 Tile 执行。</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#f5f9ff"/>
+      <stop offset="1" stop-color="#edf8f5"/>
+    </linearGradient>
+    <linearGradient id="silicon" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#fff"/>
+      <stop offset="1" stop-color="#d4e8ed"/>
+    </linearGradient>
+    <linearGradient id="teal" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#2cbaac"/>
+      <stop offset="1" stop-color="#078f84"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#66a8ef"/>
+      <stop offset="1" stop-color="#2a6fca"/>
+    </linearGradient>
+    <linearGradient id="slate" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#869acf"/>
+      <stop offset="1" stop-color="#536ca8"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#f5cc72"/>
+      <stop offset="1" stop-color="#e9aa38"/>
+    </linearGradient>
+    <marker id="blue-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 8 4 0 8Z" fill="#2a6fca"/>
+    </marker>
+    <marker id="teal-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 8 4 0 8Z" fill="#078f84"/>
+    </marker>
+    <marker id="gold-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 8 4 0 8Z" fill="#d99a29"/>
+    </marker>
+  </defs>
+
+  <rect x="2" y="2" width="316" height="188" rx="30" fill="url(#background)" stroke="#dce6ed" stroke-width="2"/>
+
+  <!-- 晶圆的平边与分区色块保留在小尺寸下可辨认的轮廓。 -->
+  <path d="M232 20A74 74 0 0 1 272.398 156H191.602A74 74 0 0 1 232 20Z" transform="translate(0 7)" fill="#16364b" opacity=".12"/>
+  <path d="M232 20A74 74 0 0 1 272.398 156H191.602A74 74 0 0 1 232 20Z" fill="url(#silicon)" stroke="#16364b" stroke-width="3"/>
+  <path d="M181 43h102M177 68h110M177 93h110M177 118h110M181 143h102M181 43v100M206 37v114M231 33v118M256 37v114M281 43v100" fill="none" stroke="#adc6d5" opacity=".55"/>
+
+  <g fill="none" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M104 74h16q10 0 10-10v-8h49" stroke="#2a6fca" marker-end="url(#blue-arrow)"/>
+    <path d="M104 94h75" stroke="#078f84" marker-end="url(#teal-arrow)"/>
+    <path d="M104 114h16q10 0 10 10v7h49" stroke="#d99a29" marker-end="url(#gold-arrow)"/>
   </g>
-  <path d="M87 64h28m-10-10 10 10-10 10" fill="none" stroke="#087f75" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="132" y="22" width="84" height="84" rx="13" fill="#fff" stroke="#16364b" stroke-width="4"/>
-  <g fill="none" stroke="#16364b" stroke-width="3" stroke-linecap="round">
-    <path d="M150 16v6m16-6v6m16-6v6m16-6v6M150 106v6m16-6v6m16-6v6m16-6v6M126 40h6m-6 16h6m-6 16h6m-6 16h6M216 40h6m-6 16h6m-6 16h6m-6 16h6"/>
+  <circle cx="130" cy="94" r="4" fill="#fff" stroke="#078f84" stroke-width="2.5"/>
+
+  <g stroke="#fff" stroke-opacity=".65" stroke-width="1">
+    <g fill="url(#teal)">
+      <rect x="184" y="46" width="20" height="20" rx="4"/>
+      <rect x="209" y="46" width="20" height="20" rx="4"/>
+      <rect x="184" y="71" width="20" height="20" rx="4"/>
+      <rect x="209" y="71" width="20" height="20" rx="4"/>
+    </g>
+    <g fill="url(#blue)">
+      <rect x="234" y="46" width="20" height="20" rx="4"/>
+      <rect x="259" y="46" width="20" height="20" rx="4"/>
+      <rect x="234" y="71" width="20" height="20" rx="4"/>
+      <rect x="259" y="71" width="20" height="20" rx="4"/>
+    </g>
+    <g fill="url(#slate)">
+      <rect x="184" y="96" width="20" height="20" rx="4"/>
+      <rect x="209" y="96" width="20" height="20" rx="4"/>
+      <rect x="184" y="121" width="20" height="20" rx="4"/>
+      <rect x="209" y="121" width="20" height="20" rx="4"/>
+    </g>
+    <g fill="url(#gold)">
+      <rect x="234" y="96" width="20" height="20" rx="4"/>
+      <rect x="259" y="96" width="20" height="20" rx="4"/>
+      <rect x="234" y="121" width="20" height="20" rx="4"/>
+      <rect x="259" y="121" width="20" height="20" rx="4"/>
+    </g>
   </g>
-  <g fill="#087f75">
-    <rect x="145" y="35" width="10" height="10" rx="2"/>
-    <rect x="161" y="35" width="10" height="10" rx="2"/>
-    <rect x="177" y="35" width="10" height="10" rx="2"/>
-    <rect x="193" y="35" width="10" height="10" rx="2"/>
-    <rect x="145" y="51" width="10" height="10" rx="2"/>
-    <rect x="161" y="51" width="10" height="10" rx="2"/>
-    <rect x="177" y="51" width="10" height="10" rx="2"/>
-    <rect x="193" y="51" width="10" height="10" rx="2"/>
-    <rect x="145" y="67" width="10" height="10" rx="2"/>
-    <rect x="161" y="67" width="10" height="10" rx="2"/>
-    <rect x="177" y="67" width="10" height="10" rx="2"/>
-    <rect x="193" y="67" width="10" height="10" rx="2"/>
-    <rect x="145" y="83" width="10" height="10" rx="2"/>
-    <rect x="161" y="83" width="10" height="10" rx="2"/>
-    <rect x="177" y="83" width="10" height="10" rx="2"/>
-    <rect x="193" y="83" width="10" height="10" rx="2"/>
+
+  <!-- 程序卡片与后层纸张，避免仅用抽象芯片符号表达编译器。 -->
+  <rect x="25" y="46" width="80" height="110" rx="11" fill="#d5e2ef" transform="rotate(-6 65 101)"/>
+  <rect x="16" y="36" width="88" height="112" rx="12" fill="#fff" stroke="#7898ae" stroke-width="2"/>
+  <path d="M17 61h86" stroke="#e1eaf1" stroke-width="2"/>
+  <circle cx="30" cy="49" r="3" fill="#078f84"/>
+  <circle cx="40" cy="49" r="3" fill="#2a6fca"/>
+  <circle cx="50" cy="49" r="3" fill="#e9aa38"/>
+  <g fill="none" stroke="#16364b" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m43 76-12 12 12 12m34-24 12 12-12 12m-12-27-10 30"/>
+    <path d="M31 117h24m9 0h13M31 128h37" stroke="#93aebe" stroke-width="3"/>
   </g>
 </svg>

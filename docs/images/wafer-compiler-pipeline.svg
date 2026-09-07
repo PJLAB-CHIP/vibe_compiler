@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="1260" viewBox="0 0 1160 1260" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="1420" viewBox="0 0 1160 1420" role="img" aria-labelledby="title desc">
   <title id="title">Wafer Compiler：从张量程序到单卡执行</title>
-  <desc id="desc">从上到下依次为 Portable StableHLO 输入、TensorProgram、实际 TileModule/TileRegion、Instr、DeviceExecutable、Target LLVM modules、ExecutablePackage；箭头标出各边界的变换。none 和 search 二选一，各自物化并持有独立 IR；target facts 只提供只读输入。TargetCall/SystemC 消费同次 lowering 的 modules。wafer-run 的 no-card 验证与真实板端执行分别消费 package，不重新做编译规划。详细合同由 tasks/01-architecture.md、tasks/06-physical-dataflow-synthesis.md、tasks/14-target-code-generation.md 和 tasks/15-launch-runtime-package.md 拥有。</desc>
+  <desc id="desc">从上到下依次为 Portable StableHLO 输入、TensorProgram、实际 TileModule/TileRegion、Instr、DeviceExecutable、Target LLVM modules、ExecutablePackage。Spatial 变换先划分迭代域、选择 Tile placement、算子并行和 region grouping，立即物化空间结构；temporal tiling/fusion 随后从实际 Tile IR 出发。虚线框中的分片到 Tile mesh 图仅作空间映射示意，不限定划分轴或具体 placement。none 和 search 二选一，各自持有独立 IR；target facts 只提供只读输入。TargetCall/SystemC 消费同次 lowering 的 modules。wafer-run 的 no-card 验证与真实板端执行分别消费 package。详细合同由 tasks/01-architecture.md、tasks/06-physical-dataflow-synthesis.md、tasks/14-target-code-generation.md 和 tasks/15-launch-runtime-package.md 拥有。</desc>
   <defs>
     <marker id="flow-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="userSpaceOnUse">
       <path d="m1 1 7 4-7 4" fill="none" stroke="#21475b" stroke-width="2" stroke-linejoin="round"/>
@@ -22,13 +22,13 @@
     </style>
   </defs>
 
-  <rect width="1160" height="1260" rx="18" fill="#fff"/>
+  <rect width="1160" height="1420" rx="18" fill="#fff"/>
   <text x="52" y="53" class="title">从张量程序到单卡执行</text>
   <text x="52" y="83" class="body" fill="#526a7a">Wafer Compiler · 用真实 IR 与交付产物串起编译、验证和运行</text>
   <rect x="854" y="29" width="278" height="34" rx="17" fill="#edf5f8"/>
-  <text x="993" y="52" text-anchor="middle" class="small">当前后端：TX81 · 单卡 16 Tile</text>
+  <text x="993" y="52" text-anchor="middle" class="small">当前实现：单卡 · 16 Tile</text>
 
-  <rect x="28" y="108" width="732" height="988" rx="16" fill="#f7f9fc" stroke="#dce5ed"/>
+  <rect x="28" y="108" width="732" height="1148" rx="16" fill="#f7f9fc" stroke="#dce5ed"/>
   <text x="52" y="133" class="label">wafer-compile / 主机编译</text>
 
   <!-- 方框是 IR / 产物，变换写在连接线上。 -->
@@ -47,15 +47,51 @@
     <text x="74" y="320" class="name">TensorProgram</text>
     <text x="74" y="345" class="body">Linalg · Tensor · SCF · attention / collectives</text>
   </g>
-  <path class="flow" d="M394 356v40"/>
-  <text x="412" y="382" class="small">Tile / region 选择 → 实际物化</text>
+  <path class="flow" d="M394 356v18"/>
+  <g id="spatial-transformation">
+    <rect x="52" y="374" width="684" height="158" rx="10" fill="#f8fbff" stroke="#89aecf" stroke-width="1.5" stroke-dasharray="6 4"/>
+    <text x="74" y="401" class="heading">Spatial / 空间划分与映射</text>
+    <g id="iteration-domain-partitions">
+      <rect x="84" y="419" width="33" height="33" rx="3" fill="#078f84"/>
+      <rect x="122" y="419" width="33" height="33" rx="3" fill="#2a6fca"/>
+      <rect x="84" y="457" width="33" height="33" rx="3" fill="#536ca8"/>
+      <rect x="122" y="457" width="33" height="33" rx="3" fill="#e9aa38"/>
+    </g>
+    <path class="flow" d="M170 454h66"/>
+    <g id="tile-placement-example">
+      <rect x="254" y="416" width="17" height="17" rx="3" fill="#078f84"/>
+      <rect x="275" y="416" width="17" height="17" rx="3" fill="#078f84"/>
+      <rect x="296" y="416" width="17" height="17" rx="3" fill="#2a6fca"/>
+      <rect x="317" y="416" width="17" height="17" rx="3" fill="#2a6fca"/>
+      <rect x="254" y="437" width="17" height="17" rx="3" fill="#078f84"/>
+      <rect x="275" y="437" width="17" height="17" rx="3" fill="#078f84"/>
+      <rect x="296" y="437" width="17" height="17" rx="3" fill="#2a6fca"/>
+      <rect x="317" y="437" width="17" height="17" rx="3" fill="#2a6fca"/>
+      <rect x="254" y="458" width="17" height="17" rx="3" fill="#536ca8"/>
+      <rect x="275" y="458" width="17" height="17" rx="3" fill="#536ca8"/>
+      <rect x="296" y="458" width="17" height="17" rx="3" fill="#e9aa38"/>
+      <rect x="317" y="458" width="17" height="17" rx="3" fill="#e9aa38"/>
+      <rect x="254" y="479" width="17" height="17" rx="3" fill="#536ca8"/>
+      <rect x="275" y="479" width="17" height="17" rx="3" fill="#536ca8"/>
+      <rect x="296" y="479" width="17" height="17" rx="3" fill="#e9aa38"/>
+      <rect x="317" y="479" width="17" height="17" rx="3" fill="#e9aa38"/>
+    </g>
+    <text x="119" y="518" text-anchor="middle" class="small">迭代域分片</text>
+    <text x="294" y="518" text-anchor="middle" class="small">Tile mesh</text>
+    <text x="370" y="429" class="body">迭代域划分 · Tile placement</text>
+    <text x="370" y="457" class="body">算子并行 / wave · region grouping</text>
+    <text x="370" y="485" class="body">选择后立即物化 TileModule / TileRegion</text>
+    <text x="370" y="518" class="small">映射示意；不限定划分轴或 placement</text>
+  </g>
+  <path class="flow" d="M394 532v24"/>
 
+  <g id="materialized-pipeline" transform="translate(0 160)">
   <g id="tile-ir">
     <rect x="52" y="396" width="684" height="128" rx="10" fill="#edfaf6" stroke="#91c9bb"/>
-    <text x="74" y="418" class="label">同一 CURRENT TILE IR 内逐步变换</text>
+    <text x="74" y="418" class="label">SPATIAL 已物化 / CURRENT TILE IR</text>
     <text x="74" y="447" class="name">TileModule / TileRegion</text>
-    <text x="74" y="474" class="body">Tile 布置、temporal tiling / fusion、FA/FD 分解</text>
-    <text x="74" y="500" class="body">layout / bufferization、peer movement、执行循环</text>
+    <text x="74" y="474" class="body">Temporal：Tile 内切块、循环遍历与 producer fusion</text>
+    <text x="74" y="500" class="body">FA/FD 分解 · layout / bufferization · movement / 执行结构</text>
   </g>
   <path class="flow" d="M394 524v44"/>
   <text x="412" y="551" class="small">Tile→Instr · worker / order · join / wait</text>
@@ -113,15 +149,18 @@
     <text x="428" y="1202" class="body">H2D → launch → wait → D2H</text>
     <text x="428" y="1225" class="small">校验结果、status 与 cleanup；不重新编译</text>
   </g>
+  </g>
 
   <!-- 侧栏不构成第二套 IR / planning pipeline。 -->
   <g id="legend">
-    <rect x="804" y="148" width="328" height="84" rx="10" fill="#fff" stroke="#dce5ed"/>
+    <rect x="804" y="148" width="328" height="108" rx="10" fill="#fff" stroke="#dce5ed"/>
     <text x="824" y="176" class="heading">如何读图</text>
     <path class="flow" d="M825 197h34"/>
     <text x="875" y="202" class="small">真实 IR / 产物传递</text>
     <path class="input" d="M825 219h34"/>
     <text x="875" y="224" class="small">选择参数 / 只读输入</text>
+    <rect x="825" y="237" width="34" height="12" rx="2" fill="#f8fbff" stroke="#89aecf" stroke-dasharray="4 3"/>
+    <text x="875" y="249" class="small">实际变换，不是额外 IR 层</text>
   </g>
   <g id="policies">
     <rect x="804" y="272" width="328" height="252" rx="10" fill="#fff" stroke="#c1d0da"/>
@@ -136,6 +175,7 @@
     <text x="824" y="511" class="small">复用后续实现；不互相 fallback</text>
   </g>
   <path class="input" d="M804 438H736"/>
+  <g id="downstream-context" transform="translate(0 160)">
   <g id="target-facts">
     <rect x="804" y="568" width="328" height="124" rx="10" fill="#fff" stroke="#c1d0da"/>
     <text x="824" y="599" class="heading">Target facts / 只读约束</text>
@@ -148,7 +188,7 @@
     <rect x="804" y="712" width="328" height="84" rx="10" fill="#edf8f5" stroke="#c1dfd6"/>
     <text x="824" y="740" class="heading">算法与硬件传输分层</text>
     <text x="824" y="765" class="body">collective → actual peer / combine IR</text>
-    <text x="824" y="787" class="small">TX81 transport 消费 IR，映射到 DTE / NCC</text>
+    <text x="824" y="787" class="small">target transport 消费 IR，映射到设备传输</text>
   </g>
   <g id="functional-model">
     <rect x="804" y="836" width="328" height="124" rx="10" fill="#eff5ff" stroke="#a9c4e8"/>
@@ -168,5 +208,6 @@
     <text x="824" y="1158" class="body mono">--profile</text>
     <text x="824" y="1182" class="small">板端 Primary → Count → Trace</text>
     <text x="824" y="1219" class="small">验证层级互不代签；使用方式见 README</text>
+  </g>
   </g>
 </svg>

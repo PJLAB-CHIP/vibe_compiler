@@ -6,12 +6,12 @@
 
 <p align="center">从张量程序到单卡多 Tile 执行的 MLIR 编译器</p>
 
-Wafer Compiler 接收 PyTorch/XLA 导出的 portable StableHLO program，完成图归一化、Tile 划分、切块与融合、
+Wafer Compiler 接收 PyTorch/XLA 导出的 portable StableHLO program，完成图归一化、spatial 空间划分与 Tile 映射、temporal 切块与融合、
 布局与数据搬运、指令生成和内存规划，最终交付经过验证的 `ExecutablePackage`。
-当前 production 后端面向 TX81 单卡 16-Tile 设备；仓库同时包含 package/runtime 工具、功能数值模型和板端 profiler。
+当前实现面向单卡 16-Tile 设备；仓库同时包含 package/runtime 工具、功能数值模型和板端 profiler。
 
 通用图算法与硬件传输分层：FA/FD 是 attention 算法，Ring、recursive doubling、dimension-ordered AllToAll 等是
-collective 的物化选择；TX81 DTE/NCC 和 runtime ABI 负责消费已经生成的指令与 peer 数据流，不定义上层算法语义。
+collective 的物化选择；目标后端的传输实现和 runtime ABI 消费已经生成的指令与 peer 数据流，不定义上层算法语义。
 
 生产编译入口提供两种策略：
 
@@ -25,12 +25,14 @@ collective 的物化选择；TX81 DTE/NCC 和 runtime ABI 负责消费已经生�
 
 [![Wafer Compiler 架构：真实 IR、编译产物与直接消费者](docs/images/wafer-compiler-pipeline.svg)](docs/images/wafer-compiler-pipeline.svg)
 
-从上往下读：方框是 IR 或产物，箭头旁是该边界执行的变换，右侧是选择、只读输入或独立消费者。
+从上往下读：实线方框是 IR 或产物，虚线框展开 spatial 变换，箭头旁标出其它边界变换；右侧是选择、只读输入或独立消费者。
 图的稳定合同见 [01 号架构设计](tasks/01-architecture.md) 和 [06 号 physical-dataflow 设计](tasks/06-physical-dataflow-synthesis.md)。
 
 - `num_partitions` 表示 card 级逻辑分区，当前为 `1`；不是把 Tile 数设为 `1`。
-- Tile 放置、执行 region、temporal tiling、layout/bufferization、movement 与 completion 各有边界；SPM 合法性只能由
-  actual IR 上的 allocation、alias、effect、lifetime 和实际 offset 规划确定。
+- Spatial 先划分迭代域，决定 Tile placement、算子并行与 region grouping，并物化 TileModule/TileRegion；
+  temporal 再从这些实际 op 出发，在 Tile 内切块、组织循环并融合 producer。
+- layout/bufferization、movement、completion 和内存规划继续消费各自的 current IR；SPM 合法性由实际 allocation、alias、effect、
+  lifetime 和 offset 规划确定。
 - `DeviceExecutable` 在 target codegen **之前**形成。成功候选保留同一 actual IR owner，不从旁路计划重建；search 状态不进入 package。
 - TargetCall/SystemC 功能模型消费同次 lowering 的 target modules；它不执行 package 内的 RISC-V ELF，也不证明板端性能。
 
