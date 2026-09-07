@@ -28,7 +28,32 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 
 ## 推进顺序
 
-### 第1项：生产AllGather端到端（板端验收完成）
+以下编号是当前work item下的板测子项。Add与基础Direct-DTE已有实卡前置；下一项先补齐AllGather尾长，随后进入GEMM。
+每个子项按列出的覆盖范围验收，单个case通过不能代表整项完成。实现、输入或环境没有影响结论的变化时，不重复已通过的case。
+
+| 板测子项 | 具体范围 | 完成门禁与后续动作 |
+| --- | --- | --- |
+| 1. FP16 Ring AllGather | L=1024、1025、1031；16 Tile、15轮、生产source到DTE | L=1024实卡已通过；先补1025、1031各一次实卡，完整PyTorch比较、全部Tile completion和正常清理通过后再结束本项 |
+| 2. FP16 GEMM | rank-3矩阵乘；整除与M/K/N尾部，覆盖主要维度1024/1025/1031 | 补齐下述source/no-card矩阵，再逐case实卡比较PyTorch；旧rank-2准备结果不代签该矩阵 |
+| 3. AllToAll | 普通计算加转置/重分布source，覆盖不同source到不同destination的piece | 先补生产source case并从actual IR证明完整exchange；PyTorch转置/重排reference与实卡完整输出一致 |
+| 4. ReduceScatter | 多Tile partial contribution合并到各destination shard | 先补生产source case；actual contribution coverage、combine与DTE闭合，再与PyTorch完整归约结果比较 |
+| 5. AllReduce | 多Tile partial contribution合并后供全部participant消费 | 先补生产source case；证明实际fanin/fanout或Ring路径，再与PyTorch完整归约及广播结果比较 |
+| 6. 卷积组合计算 | 现有`conv-mixed-dag`，FP16 | fresh source/no-card，完整检查两个PyTorch输出与正常完成 |
+| 7. Attention prefill | 现有`attention-prefill`，FP16、序列长度1024 | fresh source/no-card，与同一输入的PyTorch eager attention完整比较 |
+| 8. KV cache decode | 现有`attention-decode-kv-cache`，连续两步 | 第二步消费第一步实际回读的KV；两步attention输出和完整KV cache均与PyTorch比较 |
+| 9. LLaMA block | 现有`llama-2-7b-block`，FP16 | 完整block输出对比PyTorch；此前局部算子通过不能代签本项 |
+| 10. 性能 | 已通过数值验收的同source、同输入none/search | 分别先通过PyTorch正确性，再做matched计时；准备阶段不提前启动性能批次 |
+
+执行规则：
+
+- 每个新增case先完成真实source、输入、同module PyTorch eager reference、原样package和本轮no-card，再执行一次真实调用。
+- 第1项继续使用`none`；第2项先验收`none`。其它通信项先从actual IR确认被测路径；不能用DDR产物代签DTE，也不强制指定算法或修改ELF/manifest。
+- 第3--5项目前缺少对应的生产PyTorch板测case，需在主机补齐rank至少3、1024/1025/1031、matching/coverage及尾部负例。其逐项实卡清单在source路径确认后写明，不能把待准备项声称为board-ready。
+- 同一可用设备会话复用已确认身份。真实设备始终单进程、逐case；首次timeout或设备异常立即停止。用户已说明卡死后必须重启整机；重启恢复前不再发射Add或其它case。
+- 数值检查覆盖完整tensor，不抽样；记录dtype/shape、seed、容差、package身份、回读、误差和完成状态。保留现有PyTorch比较策略，失败后不通过放宽容差获得通过。
+- 超时的失效package、IR、raw按用户要求清理，仅保留必要错误摘要；成功产物保留用于审计，不作下一轮测试输入。
+
+### 第1项：生产AllGather端到端（部分通过，尾长实卡待补）
 
 Pipeline position:
 - Upstream IR / input: 同一PyTorch module的FP16 CPU输入及导出source；`lhs + (rhs + rhs).unsqueeze(0)`，rhs为`[16,1,L]`，lhs为`[16,16,1,L]`。
@@ -37,12 +62,12 @@ Pipeline position:
 - Downstream consumer: 现有PyTorch board runner、`wafer-run` no-card和单次真实板测。
 - User-level driver / named pipeline: `wafer_board_pytorch_test.py`的AllGather Add case与生产`wafer-compile`。
 - Explicit non-goals: 不修改ELF/manifest，不指定编译器通信算法，不代签CRT探针、GEMM、其它collective或性能。
-- Completion criteria: fresh no-card通过；实际16-Tile Ring的send/recv/wait、完整输出PyTorch比较、status和正常cleanup全部通过。
+- Completion criteria: L=1024、1025、1031分别完成fresh no-card和真实执行；实际16-Tile Ring的send/recv/wait、完整输出PyTorch比较、status和正常cleanup全部通过。
 
 | 输入等价类 | exact结构与失败检查 | 下游witness |
 | --- | --- | --- |
 | FP16 L=1024 | 16 Tile、15轮、每Tile15 send/recv及对应token wait，payload为2L bytes；跨Tile共享DDR为0 | fresh production source/package/no-card；单次板端完整262144元素对比，rtol=1e-3、atol=1e-5 |
-| FP16 L=1025/1031 | 同一实际生产路径、非整除payload与尾元素；缺send/recv/wait或纯DDR产物必须拒绝 | fresh source/package/no-card；本项不额外发射板端批次 |
+| FP16 L=1025/1031 | 同一实际生产路径、非整除payload与尾元素；缺send/recv/wait或纯DDR产物必须拒绝 | 各自fresh source/package/no-card和单次实卡；分别完整262400/263936元素对比PyTorch，容差同上 |
 | 数值错误 | 最后元素越阈值必须拒绝；所有expected由PyTorch eager生成 | 保留完整reference及逐tensor比较结果 |
 
 后续GEMM消费AllGather的定位输入目前仍生成DDR，不能由本case结果代签；其closure原因待独立定位。
@@ -58,11 +83,25 @@ Pipeline position:
 - 两次调用前均确认设备无其它进程占用，runtime/PCI/SDK身份与既有会话一致。超时本身不足以判定硬件故障或通信根因；
   下一次板测需先恢复并确认设备执行可用性，不能沿用此前Add通过结论代表当前状态。
 
-1. 接通board runtime，并完成Add和Direct-DTE的PyTorch reference、输出capture与fresh no-card。
-2. 单次真实执行16-Tile FP16 Add；通过后单次执行Direct-DTE。
-3. 承接13号通信矩阵，逐项绑定PyTorch reference、current算法路径与实际板端结果。
-4. 执行Q53准备的FP16 conv、prefill、two-step decode和LLaMA block，两种policy独立对比PyTorch。
-5. 正确性通过后执行matched性能A/B；每次仍保留PyTorch数值检查。
+### 第2项：FP16 GEMM准备与验收合同
+
+Pipeline position:
+- Upstream IR / input: 同一PyTorch `torch.matmul` module的rank-3 FP16输入与导出source；seed固定为20260803。
+- Current stage responsibility: 使用现有production `wafer-compile --optimization-policy=none --num-partitions=1`生成实际多Tile GEMM、package及完整输入/reference/capture。
+- Output IR / files: actual Tile/Instr/target LLVM、ExecutablePackage、本轮no-card及逐case实卡比较结果。
+- Downstream consumer: 组合计算板测与后续matched性能验收。
+- User-level driver / named pipeline: 现有`wafer_board_pytorch_test.py`与共享`Gemm` module，扩展同一case factory和CTest注册。
+- Explicit non-goals: 本项不验收GEMM消费AllGather、其它dtype、transpose组合或性能；不修改生产数值语义。
+- Completion criteria: 下列三个case均完成actual多Tile切分、block/wave及tail检查、fresh no-card和实卡完整PyTorch比较；输入、descriptor、payload和expected均为FP16。
+
+| 拟补齐的输入 | 结构与负例 | 数值验收 |
+| --- | --- | --- |
+| `[1,1024,256] @ [1,256,512]` | 整除基线；核对actual GEMM、完整output owner/coverage及直接下游package | 完整`[1,1024,512]`输出；rtol=1e-3、atol=1e-5、equal_nan=false |
+| `[1,1025,257] @ [1,257,513]` | M/K/N尾部；漏尾行、尾列或K贡献的负例必须失败 | 完整`[1,1025,513]`输出；同上容差 |
+| `[1,1031,263] @ [1,263,519]` | 第二组非整除与不同tail；必须从实际产物确认覆盖和合法性 | 完整`[1,1031,519]`输出；同上容差 |
+
+现有`single-card-gemm`的rank-2 `[256,256] @ [256,512]`只完成过本次无卡准备，尚未上板；正式覆盖矩阵需先补齐。
+上述shape属于待实现的测试输入，不代表已物化或已通过SPM规划。任何capacity、unsupported或compiler error先在主机定位，不能绕过后上板。
 
 每个case记录PyTorch版本、输入dtype/shape与seed、容差、package身份、完整回读、误差与完成状态。
 首个timeout或设备异常停止批次；全部新增环境与产物受用户目录范围限制。
@@ -111,8 +150,9 @@ Add和L=1024 AllGather重新从PyTorch source生成package、输入和eager refe
 | FP16 complete-Tile Add | 16 Tile、grid main完成；完整7340032个元素回读 | PyTorch 2.5.0+cpu，rtol=1e-3、atol=1e-5，最大绝对误差0；全部Tile completion与normal cleanup通过 |
 | FP16 production AllGather Add，L=1024、seed=20260803 | 16 Tile、15轮；actual IR为240 send、240 recv、480 wait，payload=2048 bytes，无shared-DDR边界；cluster prepare/main完成 | 完整262144个元素对比同一module的PyTorch eager，容差同上、最大绝对误差0；全部Tile completion、runtime状态检查与normal cleanup通过 |
 
-本轮两次调用均未timeout，没有追加retry/reset/power；结束后设备无占用。第1项指定的生产AllGather纵向已完成；
-1025/1031仍只有host/no-card资格，GEMM consumer、其它算法、dtype与性能不由本次结果代签，完整通信矩阵仍待推进。
+本轮两次调用均未timeout，没有追加retry/reset/power；结束后设备无占用。这里只完成了AllGather的L=1024实卡case，
+此前将整项标为完成的结论已纠正；1025/1031仍只有host/no-card资格，须补实卡后才能结束第1项。
+GEMM consumer、其它算法、dtype与性能不由本次结果代签，完整通信矩阵仍待推进。
 
 本轮身份与证据：
 
