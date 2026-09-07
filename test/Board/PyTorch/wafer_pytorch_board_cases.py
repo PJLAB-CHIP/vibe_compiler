@@ -42,6 +42,7 @@ class PyTorchBoardCase:
     export_program: Callable[[pathlib.Path], None]
     comparison_policy: common.ComparisonPolicy
     allgather_payload_elements: int | None = None
+    gemm_dimensions: tuple[int, int, int] | None = None
     continuation_factory: (
         Callable[[tuple[torch.Tensor, ...]], "PyTorchBoardCase"] | None
     ) = None
@@ -294,11 +295,13 @@ def _save_exported_program(
     capture._verify_program_dir_layout(program_dir)
 
 
-def _single_card_gemm(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
-    m, k, n = 256, 256, 512
+def _single_card_gemm(
+    dtype: torch.dtype, seed: int, *,
+    m: int = 1024, k: int = 256, n: int = 512,
+) -> PyTorchBoardCase:
     generator = torch.Generator(device="cpu").manual_seed(seed)
-    lhs = _random_tensor((m, k), dtype=dtype, generator=generator)
-    rhs = _random_tensor((k, n), dtype=dtype, generator=generator)
+    lhs = _random_tensor((1, m, k), dtype=dtype, generator=generator)
+    rhs = _random_tensor((1, k, n), dtype=dtype, generator=generator)
     module = Gemm().eval()
 
     def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
@@ -306,7 +309,7 @@ def _single_card_gemm(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
             return (module(lhs, rhs),)
 
     return PyTorchBoardCase(
-        name="single-card-gemm",
+        name=f"single-card-gemm-m{m}-k{k}-n{n}",
         num_partitions=1,
         dtype=dtype,
         inputs=(lhs, rhs),
@@ -315,6 +318,7 @@ def _single_card_gemm(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
             output, module, (lhs, rhs)
         ),
         comparison_policy=common.PYTORCH_DEFAULT,
+        gemm_dimensions=(m, k, n),
     )
 
 
@@ -834,6 +838,12 @@ CASE_FACTORIES: dict[
         dtype, seed, extent=1031
     ),
     "single-card-gemm": _single_card_gemm,
+    "single-card-gemm-tail-1025": lambda dtype, seed: _single_card_gemm(
+        dtype, seed, m=1025, k=257, n=513
+    ),
+    "single-card-gemm-tail-1031": lambda dtype, seed: _single_card_gemm(
+        dtype, seed, m=1031, k=263, n=519
+    ),
     "heterogeneous-tiling-dataflow": _heterogeneous_tiling_single_card,
     "conv-mixed-dag": _conv_mixed_dag,
     "attention-prefill": _attention_prefill,

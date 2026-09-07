@@ -177,6 +177,13 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
   endforeach()
   unset(_wafer_allgather_case)
 
+  foreach(_wafer_gemm_case IN ITEMS
+      single-card-gemm single-card-gemm-tail-1025 single-card-gemm-tail-1031)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_gemm_case} float16 fp16 none)
+  endforeach()
+  unset(_wafer_gemm_case)
+
   foreach(_wafer_product_case IN ITEMS
       conv-mixed-dag
       attention-prefill

@@ -41,6 +41,33 @@ def read_portable_stablehlo(program: pathlib.Path) -> str:
 
 
 class PyTorchBoardCasesTest(unittest.TestCase):
+    def test_gemm_reference_detects_missing_k_and_output_tails(self) -> None:
+        for name in ("single-card-gemm", "single-card-gemm-tail-1025",
+                     "single-card-gemm-tail-1031"):
+            case = cases.make_case(name, dtype=torch.float16, seed=20260803)
+            m, k, n = case.gemm_dimensions
+            self.assertGreaterEqual(m, 1024)
+            self.assertEqual(case.inputs[0].shape, (1, m, k))
+            self.assertEqual(case.inputs[1].shape, (1, k, n))
+            expected, = case.materialize_expected_outputs()
+            self.assertEqual(expected.shape, (1, m, n))
+            for fault in ("missing-k", "last-row", "last-column"):
+                if fault == "missing-k":
+                    actual = torch.matmul(
+                        case.inputs[0][..., :-1], case.inputs[1][..., :-1, :]
+                    )
+                else:
+                    actual = expected.clone()
+                    if fault == "last-row":
+                        actual[:, -1, :] = 0
+                    else:
+                        actual[:, :, -1] = 0
+                with self.assertRaises(AssertionError):
+                    cases.common.assert_tensor_matches(
+                        actual, expected, policy=case.comparison_policy,
+                        context=f"{name} {fault}",
+                    )
+
     def test_allgather_reference_detects_missing_shard_and_last_element(self) -> None:
         for extent in (1024, 1025, 1031):
             case = cases.make_allgather_add(torch.float16, 17, extent=extent)
@@ -243,6 +270,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
         case = types.SimpleNamespace(
             num_partitions=1,
             allgather_payload_elements=None,
+            gemm_dimensions=None,
             export_program=mock.Mock(),
             materialize_expected_outputs=mock.Mock(
                 return_value=(torch.zeros((1,), dtype=torch.float16),)

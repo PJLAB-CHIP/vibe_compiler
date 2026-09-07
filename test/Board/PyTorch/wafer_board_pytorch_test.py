@@ -481,6 +481,51 @@ def verify_ring_allgather(
     )
 
 
+def verify_row_sharded_gemm(
+    dump: pathlib.Path, dimensions: tuple[int, int, int], dtype: torch.dtype
+) -> None:
+    """Check the actual baseline GEMM and returned output slices on every Tile."""
+    m, k, n = dimensions
+    ir_dtype = next(name for name, value in common.MANIFEST_DTYPES.items()
+                    if value == dtype)
+    slices: list[tuple[int, int]] = []
+    for tile in range(PHYSICAL_TILE_COUNT):
+        ir = (dump / "instruction" / f"tile_{tile:05d}.mlir").read_text()
+        returned = re.findall(
+            rf"return (%[\w]+) : memref<1x{m}x{n}x{ir_dtype}, "
+            r"#wafer\.memory<ddr, tensor>>", ir,
+        )
+        if len(returned) != 1:
+            raise RuntimeError(f"GEMM Tile {tile} has no unique complete output")
+        views = re.findall(
+            rf"memref\.subview {re.escape(returned[0])}"
+            rf"\[0, (\d+), 0\] \[1, (\d+), {n}\] \[1, 1, 1\]", ir,
+        )
+        gemms = re.findall(r"wafer\.instr\.gemm .*?\{([^\n]+)\}", ir)
+        if len(views) != 1 or len(gemms) != 1:
+            raise RuntimeError(f"GEMM Tile {tile} must own one output slice and GEMM")
+        offset, extent = map(int, views[0])
+        fields = dict(re.findall(r"\b(batch_count|m|k|n) = (\d+) : i64", gemms[0]))
+        if fields != {"batch_count": "1", "m": str(extent),
+                      "k": str(k), "n": str(n)}:
+            raise RuntimeError(f"GEMM Tile {tile} does not cover its exact M/K/N")
+        if extent <= 0:
+            raise RuntimeError(f"GEMM Tile {tile} has an empty output slice")
+        slices.append((offset, extent))
+    end = 0
+    for offset, extent in sorted(slices):
+        if offset != end:
+            raise RuntimeError("GEMM output slices contain a gap or overlap")
+        end += extent
+    if end != m:
+        raise RuntimeError("GEMM output slices do not cover every row")
+    print(
+        f"production_gemm: tiles={PHYSICAL_TILE_COUNT} batch=1 "
+        f"m={m} k={k} n={n} exact_output_coverage=true "
+        f"local_m_sizes={sorted({extent for _, extent in slices})}"
+    )
+
+
 def prepare_case_step(
     args: argparse.Namespace,
     case: board_cases.PyTorchBoardCase,
@@ -587,6 +632,10 @@ def prepare_case_step(
             dump_compiler_ir,
             case.allgather_payload_elements * common.element_bytes(case.dtype),
         )
+    if case.gemm_dimensions is not None and args.optimization_policy == "none":
+        if dump_compiler_ir is None:
+            raise RuntimeError("GEMM qualification requires current compiler IR")
+        verify_row_sharded_gemm(dump_compiler_ir, case.gemm_dimensions, case.dtype)
     oracle_start_ns = time.monotonic_ns()
     expected_outputs = case.materialize_expected_outputs()
     print(
@@ -671,7 +720,10 @@ def main() -> int:
         dump_compiler_ir = args.dump_compiler_ir
         if (
             dump_compiler_ir is None
-            and current_case.allgather_payload_elements is not None
+            and (
+                current_case.allgather_payload_elements is not None
+                or current_case.gemm_dimensions is not None
+            )
         ):
             dump_compiler_ir = step_dir / "compiler-ir"
         if dump_compiler_ir is not None and is_chain:
