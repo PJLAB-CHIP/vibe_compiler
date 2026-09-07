@@ -644,13 +644,13 @@ CALIBRATION_DOMAINS = (
         positive=(
             "test/Board/Support/wafer_board_complete_tile_add_runner.py",
             "test/Board/Cases/wafer_board_single_op_add_test.py",
-            "test/Board/Support/wafer_board_direct_dte_collective_runner.py",
+            "test/Board/Cases/wafer_board_dte_ncc_execution_probe_test.py",
         ),
         negative=("test/Board/Cases/wafer_board_direct_dte_timeout_test.py",),
         tests=(
             "wafer-runtime-adapter-python",
-            "wafer-runtime-kernel-grid-add-no-card",
-            "wafer-runtime-cluster-direct-dte-no-card",
+            "wafer-runtime-complete-tile-add-no-card",
+            "wafer-runtime-dte-ncc-execution-probe-no-card",
         ),
     ),
     _domain(

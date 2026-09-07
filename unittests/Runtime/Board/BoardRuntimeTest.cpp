@@ -1,7 +1,8 @@
 //===- BoardRuntimeTest.cpp - Board provider lifecycle tests ------------===//
 
-#include "Wafer/Runtime/Board/BoardRuntime.h"
 #include "Wafer/ABI/Tx81ProfilerABI.h"
+#include "Wafer/Runtime/Board/BoardRuntime.h"
+#include "Wafer/Runtime/Board/TxTileInventory.h"
 #include "Wafer/Runtime/Profile/ProfileInstrumentation.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -28,6 +29,24 @@
 #include <vector>
 
 namespace {
+
+TEST(TxTileInventoryTest, DecodesPhysicalIdentityIndependentlyOfSubmissionIndex) {
+  for (uint16_t tile = 0; tile < 16; ++tile) {
+    // A permuted inventory proves that the provider does not infer TileId
+    // from the SDK's submission index or the array position.
+    uint16_t index = (tile + 5) % 16;
+    auto decoded = wafer::runtime::decodeTxTileInventory(
+        index, tile != 7, tile / 4, tile % 4);
+    ASSERT_TRUE(decoded);
+    EXPECT_EQ(decoded->tileId, wafer::TileId(tile));
+    EXPECT_EQ(decoded->launchSlot, wafer::runtime::LaunchSlotId(index));
+    EXPECT_EQ(decoded->available, tile != 7);
+    EXPECT_EQ(decoded->physicalX, tile / 4);
+    EXPECT_EQ(decoded->physicalY, tile % 4);
+  }
+  EXPECT_FALSE(wafer::runtime::decodeTxTileInventory(0, true, 4, 0));
+  EXPECT_FALSE(wafer::runtime::decodeTxTileInventory(0, true, 0, 4));
+}
 
 static_assert(!std::is_copy_constructible_v<
               wafer::runtime::QualifiedBoardRuntimeSession>);

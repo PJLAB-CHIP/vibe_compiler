@@ -46,6 +46,7 @@ if(WAFER_ENABLE_BOARD_RUNTIME)
   )
   target_include_directories(wafer-run PRIVATE
     "${WAFER_TX_RUNTIME_INCLUDE_DIR}"
+    "${CMAKE_SOURCE_DIR}/lib"
   )
   target_link_libraries(wafer-run PRIVATE ${CMAKE_DL_LIBS})
 endif()

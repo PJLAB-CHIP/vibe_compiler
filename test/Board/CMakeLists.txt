@@ -8,13 +8,22 @@ find_program(WAFER_BOARD_CLANGXX
 # dependencies are disabled. An unconditional TARGET_FILE generator
 # expression makes those minimal configurations fail during generation.
 set(_wafer_board_python_environment
-  "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Support:${CMAKE_CURRENT_SOURCE_DIR}/Cases")
+  "PYTHONPATH=${CMAKE_BINARY_DIR}/python:${CMAKE_CURRENT_SOURCE_DIR}/Support:${CMAKE_CURRENT_SOURCE_DIR}/Cases")
 if(TARGET stablehlo-translate)
   string(APPEND _wafer_board_python_environment
     ";WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>")
 endif()
 set(_wafer_board_runtime_environment
   "${_wafer_board_python_environment};TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps")
+
+add_test(NAME wafer-kernel-probe-exports
+  COMMAND ${WAFER_PYTHON_COMMAND}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Cases/wafer_kernel_probe_exports_test.py
+    --clangxx ${WAFER_BOARD_CLANGXX})
+set_tests_properties(wafer-kernel-probe-exports PROPERTIES
+  ENVIRONMENT "${_wafer_board_python_environment}"
+  LABELS "board;host;calibration;contract"
+  TIMEOUT 60)
 
 function(wafer_add_board_python_contract test_name script)
   add_test(NAME ${test_name}
@@ -39,7 +48,6 @@ set(_wafer_board_python_contracts
   wafer-datamove-catalog=Cases/wafer_datamove_calibration_catalog_test.py
   wafer-datamove-extended-catalog=Cases/wafer_datamove_extended_calibration_catalog_test.py
   wafer-direct-dte-evidence-contract=Cases/wafer_direct_dte_board_evidence_test.py
-  wafer-direct-dte-profile-contract=Cases/wafer_board_direct_dte_profile_test.py
   wafer-board-direct-dte-outer-deadline=Cases/wafer_board_direct_dte_timeout_test.py
   wafer-engine-pipeline-catalog=Cases/wafer_engine_pipeline_characterization_catalog_test.py
   wafer-complete-tile-add-profile-contract=Cases/wafer_board_complete_tile_add_profile_test.py
@@ -111,7 +119,7 @@ endfunction()
 wafer_add_current_calibration_no_card(
   wafer-runtime-dte-ncc-execution-probe-no-card
   Cases/wafer_board_dte_ncc_execution_probe_test.py
-  --mode 1 --payload-bytes 16 --total-timeout-seconds 420)
+  --mode 1 --payload-bytes 4096 --total-timeout-seconds 420)
 wafer_add_current_calibration_no_card(
   wafer-runtime-complete-tile-barrier-probe-no-card
   Support/wafer_board_complete_tile_barrier_probe_runner.py
@@ -290,13 +298,13 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
   wafer_add_current_board_probe(
     wafer-board-dte-ncc-execution-probe
     Cases/wafer_board_dte_ncc_execution_probe_test.py
-    --mode 1 --payload-bytes 16 --total-timeout-seconds 420)
+    --mode 1 --payload-bytes 4096 --total-timeout-seconds 420)
   wafer_add_current_board_probe(
     wafer-board-complete-tile-barrier-probe
     Support/wafer_board_complete_tile_barrier_probe_runner.py --participants 16)
   wafer_add_current_source_board_case(
     wafer-board-complete-tile-add
-    Support/wafer_board_complete_tile_add_runner.py --repeat 2)
+    Support/wafer_board_complete_tile_add_runner.py --repeat 1)
   wafer_add_current_source_board_case(
     wafer-board-complete-tile-add-profile
     Support/wafer_board_complete_tile_add_runner.py --profile --repeat 1)

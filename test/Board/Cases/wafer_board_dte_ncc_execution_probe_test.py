@@ -17,6 +17,13 @@ import subprocess
 import sys
 import time
 
+import torch
+
+PYTORCH_DIR = pathlib.Path(__file__).resolve().parents[1] / "PyTorch"
+if str(PYTORCH_DIR) not in sys.path:
+    sys.path.insert(0, str(PYTORCH_DIR))
+import wafer_pytorch_board_common as torch_common
+
 import wafer_runtime_launch_contract as runtime_launch
 import wafer_board_source_program as source_program
 import wafer_transport_pmu_calibration_catalog as transport_catalog
@@ -497,12 +504,14 @@ def build_probe(
     gcc = tool_bin / "riscv64-unknown-elf-gcc"
     objcopy = tool_bin / "riscv64-unknown-elf-objcopy"
     objdump = tool_bin / "riscv64-unknown-elf-objdump"
+    nm = tool_bin / "riscv64-unknown-elf-nm"
     device_linker = args.repo_root / "tools" / "wafer_device_link.py"
     pmu_register_header = kcore_include / "pmu" / "pmu_reg.h"
     required = (
         gcc,
         objcopy,
         objdump,
+        nm,
         device_linker,
         args.llvm_clangxx,
         PROBE_C,
@@ -568,6 +577,15 @@ def build_probe(
         ],
         timeout_seconds=120,
     )
+    symbols = run([
+        str(nm), "--dynamic", "--defined-only", "--format=posix", str(linked)
+    ]).stdout
+    runtime_launch.require_kernel_exports(
+        runtime_launch.CLUSTER_KERNEL_LAUNCH,
+        {line.split()[0] for line in symbols.splitlines() if line.split()},
+        context="DTE/NCC linked probe",
+    )
+    print("probe_elf_kernel_exports: verified")
     raw_program_disassembly = run(
         [
             str(objdump),
@@ -688,6 +706,8 @@ def write_probe_inputs(
         / "probe-raw"
         / f"mode-{mode}-bytes-{payload_bytes}-sample-{sample}"
     )
+    if raw.exists():
+        shutil.rmtree(raw)
     raw.mkdir(parents=True)
     input_blob = bytearray(TILE_COUNT * RESOURCE_BYTES)
     values = [f16_payload(tile_id) for tile_id in range(TILE_COUNT)]
@@ -740,6 +760,12 @@ def write_probe_inputs(
     input_path = raw / "input.raw"
     output_path = raw / "output.raw"
     input_path.write_bytes(input_blob)
+    # Materialize the eager reference before any device launch, including
+    # no-card qualification. Headers/status remain separate ABI evidence.
+    (raw / "expected-captures.raw").write_bytes(b"".join(
+        expected_capture_blob(mode, tile, payload_bytes)
+        for tile in range(TILE_COUNT)
+    ))
     return (
         [
             "--resource",
@@ -758,12 +784,12 @@ def packed_f16_slice(
     *,
     doubled: bool = False,
 ) -> bytes:
-    values = f16_payload(tile_id)[
+    values = torch.tensor(f16_payload(tile_id), dtype=torch.float16)[
         first_lane : first_lane + payload_bytes // 2
     ]
     if doubled:
-        values = [2.0 * value for value in values]
-    return struct.pack(f"<{len(values)}e", *values)
+        values = values + values
+    return torch_common.tensor_raw_bytes(values)
 
 
 def guarded_capture_slot(active: bytes, region_bytes: int) -> bytes:
@@ -1283,6 +1309,24 @@ def parse_probe_payload(
         raw_multidest = validate_raw_multidest_capture(payload, mode, tile_id)
     else:
         expected_readback = expected_capture_blob(mode, tile_id, payload_bytes)
+        if mode == 1:
+            # This launch witness uses exactly representable FP16 doubling.
+            # Compare every numeric slot with eager PyTorch as well as the
+            # existing byte-exact transport/guard evidence.
+            for slot in range(3):
+                begin = slot * HOST_SLOT_BYTES + SPM_GUARD_BYTES
+                actual = torch.frombuffer(bytearray(
+                    payload[HEADER_BYTES + begin:
+                            HEADER_BYTES + begin + payload_bytes]
+                ), dtype=torch.float16).clone()
+                expected = torch.frombuffer(bytearray(
+                    expected_readback[begin:begin + payload_bytes]
+                ), dtype=torch.float16).clone()
+                torch_common.assert_tensor_matches(
+                    actual, expected,
+                    policy=torch_common.ComparisonPolicy(rtol=1e-3, atol=1e-5),
+                    context=f"DTE producer/send Tile {tile_id} slot {slot}",
+                )
         if payload[HEADER_BYTES:] != expected_readback:
             raise RuntimeError(
                 f"tile_id {tile_id} mode {mode} guarded SPM readback is not exact"
@@ -1469,7 +1513,7 @@ def run_host_oracle_self_tests() -> None:
     ) -> None:
         try:
             parse_probe_payload(payload, mode, 0, payload_bytes)
-        except RuntimeError:
+        except (RuntimeError, AssertionError):
             return
         raise RuntimeError(
             f"DTE/NCC host oracle self-test accepted {message}"
@@ -1799,6 +1843,9 @@ def execute_probe_modes(
                     [*board_base_command(args, package), *resource_args],
                     timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
                 )
+                (output.parent / "runtime.log").write_text(
+                    result.stdout + result.stderr, encoding="utf-8"
+                )
                 if result.stdout.count("output_capture:") != 1:
                     raise RuntimeError(
                         f"{name} bytes {payload_bytes} sample {sample} omitted "
@@ -1820,6 +1867,12 @@ def execute_probe_modes(
                 ]
                 for observation in observations:
                     observation["sample"] = sample
+                if mode == 1:
+                    print(
+                        "pytorch_compare: case=dte-producer-send "
+                        f"tiles={TILE_COUNT} elements={3 * TILE_COUNT * payload_bytes // 2} "
+                        f"torch={torch.__version__} rtol=0.001 atol=1e-05 passed=true"
+                    )
                 raw_multidest_summary = (
                     summarize_raw_multidest_observations(mode, observations)
                     if mode in RAW_MULTIDEST_MODES
@@ -2164,6 +2217,12 @@ def main() -> int:
     build_probe(args, package, module_path)
     verify_no_card(args, package)
     print("probe_package_verification: passed")
+    if args.no_card:
+        for mode in selected_modes:
+            for payload_bytes in selected_payload_bytes:
+                if payload_bytes in MODE_PAYLOADS[mode]:
+                    write_probe_inputs(args.work_dir, bindings, mode, payload_bytes)
+        print("probe_inputs_and_pytorch_reference: prepared")
     if not args.no_card:
         if any(mode in ISOLATED_DTE_MODES for mode in selected_modes):
             execute_receiver_unprepared(args, package, bindings)

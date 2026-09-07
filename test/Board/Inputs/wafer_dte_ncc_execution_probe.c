@@ -994,6 +994,39 @@ static uint32_t wafer_probe_dte_invalid_fsm(uint32_t tile_id, uint64_t source_sp
   return evidence;
 }
 
+static void wafer_probe_flush_ddr(uint64_t base, uint32_t bytes) {
+  enum {
+    WAFER_TX81_SUPERVISOR_MODE = 1,
+    WAFER_TX81_MACHINE_MODE = 3,
+  };
+  uintptr_t mode_bits;
+  __asm__ volatile("fence" ::: "memory");
+  __asm__ volatile("sync" ::: "memory");
+  __asm__ volatile("csrr %0, mxstatus" : "=r"(mode_bits));
+  mode_bits = (mode_bits >> 30) & 3U;
+  for (uintptr_t address = base;
+       address < base + bytes;
+       address += WAFER_TX81_DIRECT_DTE_STATUS_CACHE_LINE_BYTES) {
+    if (mode_bits == WAFER_TX81_MACHINE_MODE)
+      __asm__ volatile("dcache.cipa %0" : : "r"(address) : "memory");
+    else if (mode_bits == WAFER_TX81_SUPERVISOR_MODE)
+      __asm__ volatile("dcache.civa %0" : : "r"(address) : "memory");
+  }
+  __asm__ volatile("sync.is" ::: "memory");
+  __asm__ volatile("fence" ::: "memory");
+  __asm__ volatile("sync" ::: "memory");
+}
+
+static void wafer_probe_initialize_output(uint64_t output_ddr) {
+  /* Output allocations have no initial-value contract. Seed every capture
+   * slot, including untouched padding, before RDMA consumes its canaries. */
+  volatile uint64_t *words = (volatile uint64_t *)(uintptr_t)output_ddr;
+  for (uint32_t word = 0; word < WAFER_PROBE_RESOURCE_BYTES / sizeof(uint64_t);
+       ++word)
+    words[word] = UINT64_C(0xa5a5a5a5a5a5a5a5);
+  wafer_probe_flush_ddr(output_ddr, WAFER_PROBE_RESOURCE_BYTES);
+}
+
 static void wafer_probe_write_header(uint64_t output_ddr, uint32_t tile_id,
                                      uint32_t mode, uint32_t payload_bytes,
                                      uint32_t status, uint32_t contract_status,
@@ -1003,10 +1036,6 @@ static void wafer_probe_write_header(uint64_t output_ddr, uint32_t tile_id,
                                      WaferProbeTransportPmu transport_after,
                                      WaferProbeOracle oracle,
                                      WaferProbeRawAsyncResult raw_dte) {
-  enum {
-    WAFER_TX81_SUPERVISOR_MODE = 1,
-    WAFER_TX81_MACHINE_MODE = 3,
-  };
   volatile uint64_t *record = (volatile uint64_t *)(uintptr_t)output_ddr;
   uint32_t stable_mask = before.stable_mask & after.stable_mask;
   uint32_t transport_stable_mask =
@@ -1037,7 +1066,6 @@ static void wafer_probe_write_header(uint64_t output_ddr, uint32_t tile_id,
        << 48) |
       ((uint64_t)wafer_probe_u8_saturated(oracle.compute_result_mismatches)
        << 56);
-  uintptr_t mode_bits;
 
   record[0] = WAFER_PROBE_MAGIC;
   record[1] = metadata;
@@ -1078,21 +1106,7 @@ static void wafer_probe_write_header(uint64_t output_ddr, uint32_t tile_id,
   record[15] =
       transport_after.spm_dte_t3_port8 - transport_before.spm_dte_t3_port8;
 
-  __asm__ volatile("fence" ::: "memory");
-  __asm__ volatile("sync" ::: "memory");
-  __asm__ volatile("csrr %0, mxstatus" : "=r"(mode_bits));
-  mode_bits = (mode_bits >> 30) & 3U;
-  for (uintptr_t address = output_ddr;
-       address < output_ddr + WAFER_PROBE_HEADER_BYTES;
-       address += WAFER_TX81_DIRECT_DTE_STATUS_CACHE_LINE_BYTES) {
-    if (mode_bits == WAFER_TX81_MACHINE_MODE)
-      __asm__ volatile("dcache.cipa %0" : : "r"(address) : "memory");
-    else if (mode_bits == WAFER_TX81_SUPERVISOR_MODE)
-      __asm__ volatile("dcache.civa %0" : : "r"(address) : "memory");
-  }
-  __asm__ volatile("sync.is" ::: "memory");
-  __asm__ volatile("fence" ::: "memory");
-  __asm__ volatile("sync" ::: "memory");
+  wafer_probe_flush_ddr(output_ddr, WAFER_PROBE_HEADER_BYTES);
 }
 
 static void wafer_probe_invalidate_input_header(uint64_t input_ddr) {
@@ -1153,6 +1167,7 @@ wafer_tx81_dte_ncc_execution_probe(uint32_t tile_id, uint64_t input_ddr,
               mode == WAFER_PROBE_DTE_REUSE_BEFORE_RECV_EVENT_ERROR
           ? output_ddr
           : status_ddr;
+  wafer_probe_initialize_output(output_ddr);
   wafer_tx81_direct_dte_begin_after_prepare(contract_status_ddr,
                                             WAFER_PROBE_TILE_COUNT);
   wafer_probe_seed_regions(input_ddr, output_ddr, mode);

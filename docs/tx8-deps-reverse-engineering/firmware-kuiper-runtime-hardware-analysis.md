@@ -545,6 +545,13 @@ and joins belong to the numbered topology/runtime designs.
 | C2C direction | east/west/south/north enum values 0..3. | Link direction, not rank or tile id. |
 | Rank | `txGet/SetSysPhyRank*`, TCCL/NCCL communicator rank. | Distributed process/device order. |
 
+当前 full-16 TX81 profile 的 `txGetDeviceAllTileInfo` 返回
+`index = phyTilex * 4 + phyTiley`，即 `(0,0)..(0,3),(1,0)..(3,3)`（`board-observed`）。
+Wafer topology 的 row/column 分别对应这里的 SDK physical X/Y；因此 runtime adapter 用
+`phyTilex * 4 + phyTiley` 恢复 `TileId`，同时独立保留 SDK `index` 为 `LaunchSlotId`。
+不能把 SDK 的字段名称当作 compiler Cartesian x/y，也不能从数组位置恢复物理身份。
+该结论只覆盖已资格确认的 full-16 profile；subset/PG 和重排映射不能由此推定。
+
 Header-confirmed limits:
 
 | constant | value |

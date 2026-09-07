@@ -51,6 +51,15 @@ KERNEL_PREPARE_EXPORT = {
 KERNEL_MAIN_EXPORT = {"role": "main", "symbol": "entry"}
 
 
+def require_kernel_exports(
+    launch: Mapping[str, Any], defined_symbols: set[str], *, context: str
+) -> None:
+    required = {item["symbol"] for item in expected_kernel_module_exports(launch)}
+    missing = sorted(required - defined_symbols)
+    if missing:
+        raise RuntimeError(f"{context}: ELF is missing kernel exports {missing}")
+
+
 @dataclasses.dataclass(frozen=True)
 class SharedBoundaryPortSpec:
     """One external program-boundary port shared by every Tile entry."""

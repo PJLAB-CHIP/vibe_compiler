@@ -41,6 +41,20 @@ def read_portable_stablehlo(program: pathlib.Path) -> str:
 
 
 class PyTorchBoardCasesTest(unittest.TestCase):
+    def test_launch_reference_checks_full_tensor_and_tail(self) -> None:
+        for length in (1024, 1025, 1031):
+            case = cases.make_launch_case("complete-tile-add", local_elements=length)
+            expected, = case.materialize_expected_outputs()
+            self.assertEqual(expected.shape, (16 * length,))
+            self.assertEqual(expected.dtype, torch.float16)
+            actual = expected.clone()
+            actual[-1] += 16
+            with self.assertRaises(AssertionError):
+                cases.common.assert_tensor_matches(
+                    actual, expected, policy=case.comparison_policy,
+                    context=f"fault at the last element, local length {length}",
+                )
+
     def test_no_card_runner_materializes_both_functional_decode_packages(
         self,
     ) -> None:

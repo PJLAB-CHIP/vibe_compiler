@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import dataclasses
 import math
 import pathlib
@@ -74,7 +75,9 @@ def tensor_raw_bytes(tensor: torch.Tensor) -> bytes:
         or tensor.untyped_storage().nbytes() != expected_bytes
     ):
         tensor = tensor.clone(memory_format=torch.contiguous_format)
-    raw = bytes(tensor.untyped_storage())
+    # The retained CPU-contiguous tensor owns exactly this checked byte span.
+    # Iterating UntypedStorage copies one Python element per byte.
+    raw = ctypes.string_at(tensor.data_ptr(), expected_bytes)
     if len(raw) != expected_bytes:
         raise RuntimeError(
             "torch storage contains bytes outside the logical tensor: "

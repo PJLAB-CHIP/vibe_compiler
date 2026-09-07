@@ -1,6 +1,7 @@
 //===- TxBoardRuntime.cpp - TX public-runtime board provider ------------===//
 
 #include "Wafer/Runtime/Board/TxBoardRuntime.h"
+#include "Wafer/Runtime/Board/TxTileInventory.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
@@ -232,15 +233,13 @@ public:
     info.runtimeLibraryDigest = runtimeLibraryDigest;
     info.tiles.reserve(NPU_TILE_COUNT_MAX);
     for (const tileFullInfo &tile : tileInfo.tilesFullInfo) {
-      if (tile.phyTilex >= 4 || tile.phyTiley >= 4)
+      auto decoded = decodeTxTileInventory(
+          tile.index, tile.isAvailable == 1, tile.phyTilex, tile.phyTiley);
+      if (!decoded)
         return llvm::createStringError(
             llvm::errc::invalid_argument,
             "TX inventory contains an out-of-range Tile coordinate");
-      const int64_t tileId =
-          static_cast<int64_t>(tile.phyTiley) * 4 + tile.phyTilex;
-      info.tiles.push_back({TileId(tileId),
-                            LaunchSlotId(tile.index), tile.isAvailable == 1,
-                            tile.phyTilex, tile.phyTiley});
+      info.tiles.push_back(*decoded);
     }
     return info;
   }

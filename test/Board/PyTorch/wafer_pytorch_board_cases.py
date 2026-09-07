@@ -105,6 +105,46 @@ class Gemm(torch.nn.Module):
         return torch.matmul(lhs, rhs)
 
 
+class CompleteTileAdd(torch.nn.Module):
+    def forward(self, lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
+        return lhs + rhs
+
+
+def make_launch_case(
+    name: str, *, local_elements: int | None = None
+) -> PyTorchBoardCase:
+    """Large launch ABI inputs; source and oracle share one PyTorch module."""
+    if local_elements is None:
+        local_elements = 458752
+    if local_elements <= 0:
+        raise ValueError("launch case requires positive local elements")
+    tile_count = 16
+    lanes = torch.arange(local_elements, dtype=torch.int32)
+    tiles = torch.arange(tile_count, dtype=torch.int32).unsqueeze(1)
+    if name == "complete-tile-add":
+        module = CompleteTileAdd().eval()
+        inputs = (
+            (tiles * 32 + lanes % 32).flatten().to(torch.float16),
+            (512 + tiles * 16 + lanes % 16).flatten().to(torch.float16),
+        )
+    else:
+        raise ValueError(f"unknown launch case: {name}")
+
+    def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
+        with torch.no_grad():
+            return (module(*inputs),)
+
+    return PyTorchBoardCase(
+        name=name,
+        num_partitions=1,
+        dtype=torch.float16,
+        inputs=inputs,
+        expected_outputs_factory=expected_outputs_factory,
+        export_program=lambda output: _save_exported_program(output, module, inputs),
+        comparison_policy=common.ComparisonPolicy(rtol=1e-3, atol=1e-5),
+    )
+
+
 class HeterogeneousTilingDataflow(torch.nn.Module):
     """Mixed-shape structured dataflow with no compiler-facing markers."""
 

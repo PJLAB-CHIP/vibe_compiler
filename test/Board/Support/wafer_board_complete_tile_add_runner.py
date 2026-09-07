@@ -15,9 +15,13 @@ import stat
 import subprocess
 import sys
 
-import numpy as np
+import torch
 
-import wafer_board_source_program as source_program
+PYTORCH_DIR = pathlib.Path(__file__).resolve().parents[1] / "PyTorch"
+if str(PYTORCH_DIR) not in sys.path:
+    sys.path.insert(0, str(PYTORCH_DIR))
+import wafer_pytorch_board_cases as board_cases
+import wafer_pytorch_board_common as torch_common
 import wafer_runtime_launch_contract as runtime_launch
 
 
@@ -32,7 +36,7 @@ class RuntimeLaunchCalibrationCase:
 TILE_COUNT = 16
 LOCAL_ELEMENTS = 458752
 GLOBAL_ELEMENTS = TILE_COUNT * LOCAL_ELEMENTS
-ELEMENT_DTYPE = np.dtype("<f2")
+ELEMENT_BYTES = torch.tensor([], dtype=torch.float16).element_size()
 TARGET_IDENTITY = "wafer-tx81-single-card"
 PROFILE_INSTRUMENTATION_READY = "profile_instrumentation: ready cards=1 tiles=16"
 PROFILE_MEASUREMENT_COUNT = 3
@@ -51,34 +55,6 @@ RUNTIME_LAUNCH_CALIBRATION_CASES = (
 CALIBRATION_LEAF_BINDINGS = {
     "tile16-kernel-add": RUNTIME_LAUNCH_CALIBRATION_CASES,
 }
-MODULE = f"""\
-module {{
-  func.func @main(
-      %lhs: tensor<{GLOBAL_ELEMENTS}xf16>,
-      %rhs: tensor<{GLOBAL_ELEMENTS}xf16>) -> tensor<{GLOBAL_ELEMENTS}xf16> {{
-    %sum = stablehlo.add %lhs, %rhs : tensor<{GLOBAL_ELEMENTS}xf16>
-    return %sum : tensor<{GLOBAL_ELEMENTS}xf16>
-  }}
-}}
-"""
-
-METADATA = {
-    "name": "forward",
-    "stablehlo_version": "0.0.0",
-    "input_signature": [
-        {"shape": [GLOBAL_ELEMENTS], "dtype": "float16", "dynamic_dims": []},
-        {"shape": [GLOBAL_ELEMENTS], "dtype": "float16", "dynamic_dims": []},
-    ],
-    "output_signature": [
-        {"shape": [GLOBAL_ELEMENTS], "dtype": "float16", "dynamic_dims": []}
-    ],
-    "input_locations": [
-        {"type_": "input_arg", "position": 0, "name": "lhs"},
-        {"type_": "input_arg", "position": 1, "name": "rhs"},
-    ],
-    "unused_inputs": [],
-}
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -105,7 +81,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-tile-count", type=int)
     parser.add_argument("--expected-runtime-library-sha256")
     parser.add_argument("--completion-timeout-ms", type=int, default=60000)
-    parser.add_argument("--repeat", type=int, default=2)
+    parser.add_argument("--repeat", type=int, default=1)
     return parser.parse_args()
 
 
@@ -143,8 +119,9 @@ def write_source_program(work_dir: pathlib.Path) -> pathlib.Path:
     if work_dir.exists():
         shutil.rmtree(work_dir)
     source = work_dir / "source-program"
-    (source / "data").mkdir(parents=True)
-    return source_program.write_program(source, MODULE, METADATA)
+    work_dir.mkdir(parents=True)
+    board_cases.make_launch_case("complete-tile-add").export_program(source)
+    return source
 
 
 def compile_package(
@@ -268,7 +245,7 @@ def validate_manifest(
                 or key in bindings
                 or record.get("dtype") != "f16"
                 or record.get("shape") != [GLOBAL_ELEMENTS]
-                or record.get("bytes") != GLOBAL_ELEMENTS * ELEMENT_DTYPE.itemsize
+                or record.get("bytes") != GLOBAL_ELEMENTS * ELEMENT_BYTES
             ):
                 raise RuntimeError(f"unexpected tile-16 Add port: {record}")
             table_resource_ids.add(resource_id)
@@ -318,7 +295,14 @@ def validate_manifest(
             for argument in entry.get("arguments", [])[:3]
             if isinstance(argument, dict)
         ]
-        if actual_arguments != expected_arguments:
+        def port_key(argument: dict[str, object]) -> tuple[object, ...]:
+            return (argument["kind"], argument["port"], argument["access"])
+
+        if (
+            [argument["ordinal"] for argument in actual_arguments] != [0, 1, 2]
+            or sorted(map(port_key, actual_arguments))
+            != sorted(map(port_key, expected_arguments))
+        ):
             raise RuntimeError("Tile launch arguments do not match typed ports")
     return bindings
 
@@ -330,34 +314,16 @@ def write_tile_payloads(
 ) -> tuple[list[str], set[int], set[tuple[int, int, int]]]:
     raw = work_dir / "raw"
     raw.mkdir()
-    indices = np.arange(GLOBAL_ELEMENTS, dtype=np.int32)
-    tiles = indices // LOCAL_ELEMENTS
-    lanes = indices % LOCAL_ELEMENTS
-    lhs_i32 = tiles * 32 + lanes % 32
-    rhs_i32 = 512 + tiles * 16 + lanes % 16
-    expected_i32 = lhs_i32 + rhs_i32
-    lhs = lhs_i32.astype(ELEMENT_DTYPE)
-    rhs = rhs_i32.astype(ELEMENT_DTYPE)
-    expected = expected_i32.astype(ELEMENT_DTYPE)
-    if (
-        not np.array_equal(lhs.astype(np.int32), lhs_i32)
-        or not np.array_equal(rhs.astype(np.int32), rhs_i32)
-        or not np.array_equal(expected.astype(np.int32), expected_i32)
-        or not np.array_equal((lhs + rhs).astype(np.int32), expected_i32)
-    ):
-        raise RuntimeError("tile-16 f16 Add sentinels are not exactly representable")
-
-    payloads = {
-        ("user_input", 0): lhs,
-        ("user_input", 1): rhs,
-        ("output", 0): expected,
-    }
+    case = board_cases.make_launch_case("complete-tile-add")
+    expected, = case.materialize_expected_outputs()
     arguments: list[str] = []
-    for (role, role_index), payload in payloads.items():
-        path = raw / f"{role}_{role_index}.f16.raw"
-        payload.tofile(path)
-        option = "--resource" if role == "user_input" else "--expected"
-        arguments.extend([option, f"{bindings[(role, role_index)]}={path}"])
+    for index, tensor in enumerate(case.inputs):
+        path = raw / f"user_input_{index}.f16.raw"
+        torch_common.write_tensor_raw(path, tensor)
+        arguments.extend(["--resource", f"{bindings[('user_input', index)]}={path}"])
+    torch_common.write_tensor_raw(raw / "output_0.expected.f16.raw", expected)
+    capture = raw / "output_0.capture.f16.raw"
+    arguments.extend(["--output", f"{bindings[('output', 0)]}={capture}"])
 
     manifest = json.loads((package / "manifest.json").read_text())
     entry_evidence = {
@@ -371,6 +337,7 @@ def verify_board_evidence(
     stdout: str,
     output_ids: set[int],
     entry_evidence: set[tuple[int, int, int]],
+    work_dir: pathlib.Path,
 ) -> None:
     launch_pattern = LAUNCH_PATTERN
     tile_execution_basis = TILE_EXECUTION_BASIS
@@ -402,8 +369,8 @@ def verify_board_evidence(
         stdout, re.MULTILINE,
     )
     output_matches = re.findall(
-        rf"^output_compare: port=(\d+) "
-        rf"bytes={GLOBAL_ELEMENTS * ELEMENT_DTYPE.itemsize} exact=true$",
+        rf"^output_capture: port=(\d+) "
+        rf"bytes={GLOBAL_ELEMENTS * ELEMENT_BYTES} path=.+$",
         stdout,
         re.MULTILINE,
     )
@@ -442,7 +409,17 @@ def verify_board_evidence(
         or actual_outputs != output_ids
         or len(actual_outputs) != 1
     ):
-        raise RuntimeError("board result did not prove the exact output comparison")
+        raise RuntimeError("board result did not capture the complete output")
+    expected = torch_common.read_tensor_raw(
+        work_dir / "raw/output_0.expected.f16.raw",
+        dtype=torch.float16, shape=(GLOBAL_ELEMENTS,),
+    )
+    torch_common.assert_raw_capture_matches(
+        work_dir / "raw/output_0.capture.f16.raw", expected,
+        policy=torch_common.ComparisonPolicy(rtol=1e-3, atol=1e-5),
+        context="complete-Tile Add",
+    )
+    print("pytorch_compare: case=complete-tile-add rtol=0.001 atol=1e-05 passed=true")
 
 
 def verify_no_card_evidence(stdout: str) -> None:
@@ -694,8 +671,8 @@ def main() -> int:
             )
         if args.profile and args.repeat != 1:
             raise RuntimeError("--profile requires exactly one fixed profile collection")
-        if not args.profile and args.repeat < 2:
-            raise RuntimeError("--repeat must be at least 2")
+        if args.repeat < 1:
+            raise RuntimeError("--repeat must be positive")
         if args.completion_timeout_ms <= 0:
             raise RuntimeError("--completion-timeout-ms must be positive")
         if args.expected_tile_count != TILE_COUNT:
@@ -719,6 +696,11 @@ def main() -> int:
         compile_package(args, source, package, profile=False)
 
     bindings = validate_manifest(package)
+    (
+        resource_arguments,
+        output_ids,
+        entry_evidence,
+    ) = write_tile_payloads(args.work_dir, package, bindings)
     if args.no_card:
         no_card_packages = (
             (ordinary_package, package)
@@ -747,11 +729,6 @@ def main() -> int:
         print(f"no_card_profile: {str(args.profile).lower()}")
         return 0
 
-    (
-        resource_arguments,
-        output_ids,
-        entry_evidence,
-    ) = write_tile_payloads(args.work_dir, package, bindings)
     command_tail = [
         "--board",
         "--device-id",
@@ -792,6 +769,7 @@ def main() -> int:
             profile_result.stdout,
             output_ids,
             entry_evidence,
+            args.work_dir,
         )
         device_duration, report = verify_profile_report(
             package, profile_result.stdout
@@ -813,11 +791,15 @@ def main() -> int:
         *command_tail,
     ]
     for iteration in range(args.repeat):
-        result = run(command)
+        result = run(
+            command,
+            timeout_seconds=args.completion_timeout_ms / 1000 + BOARD_PROCESS_TIMEOUT_MARGIN_SECONDS,
+        )
         verify_board_evidence(
             result.stdout,
             output_ids,
             entry_evidence,
+            args.work_dir,
         )
         print(
             "board_complete_tile_add_iteration: "

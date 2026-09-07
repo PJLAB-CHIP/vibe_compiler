@@ -13,9 +13,8 @@ import time
 
 def load_harness():
     path = (
-        pathlib.Path(__file__).resolve().parent.parent
-        / "Support"
-        / "wafer_board_direct_dte_collective_runner.py"
+        pathlib.Path(__file__).resolve().parent
+        / "wafer_board_dte_ncc_execution_probe_test.py"
     )
     spec = importlib.util.spec_from_file_location("wafer_direct_dte_harness", path)
     if spec is None or spec.loader is None:
@@ -56,7 +55,7 @@ def main() -> int:
         else:
             raise RuntimeError("outer deadline did not terminate the child process")
 
-        if "will not retry or invoke reset/power operations" not in diagnostic:
+        if "stops without retry, reset, or power operations" not in diagnostic:
             raise RuntimeError("outer deadline diagnostic omitted fail-stop policy")
         if forbidden_next_iteration.exists():
             raise RuntimeError("outer deadline continued to the next iteration")

@@ -7,6 +7,16 @@
 `completion`、`bufferization`、`package`、`runtime`、`CMake`和`ownership`。条目描述的是防复发模式；若与current
 编号设计或源码冲突，以current事实源为准并在同次修改中修正文档。
 
+## 板端probe的manifest通过不等于实际ELF和初始内存有效
+
+- 现象：no-card通过，但SDK在entry-resolve找不到kernel；或计算结果正确、guard整片不匹配。
+- 根因：替换probe ELF后只更新digest，遗漏current manifest要求的export；同时把新分配的output当作已有canary来源，
+  从未建立初始值。Host allocator残留数据会进入SPM并掩盖guard来源错误。
+- 修复模式：probe发布前从实际ELF的动态符号表核对manifest export；fixture入口与current runtime合同同步。
+  Probe自己初始化完整output与未触碰区；Kcore写入供DMA读取的cacheable DDR须走已验证的cache维护合同。
+- 防复发：编译current fixture并加入旧export的真实object负例；no-card准备本轮输入/reference，上板同时检查完整数值、
+  guard、status和正常cleanup。不要把mock profile通过、package digest或历史allocator内容当作设备资格。
+
 ## 归档完成历史不能带走未完成work item合同
 
 - 现象：current plan仍列出全部pending任务和顺序，但每项只剩一句摘要；输入等价类、typed failure、精确断言、直接

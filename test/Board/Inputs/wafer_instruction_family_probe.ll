@@ -5,7 +5,7 @@ declare i32 @__get_pid(i32)
 
 @wafer_ifp_slots_per_tile = external hidden constant i64
 
-define void @main(ptr %tile_major_slots) {
+define void @entry(ptr %tile_major_slots) {
 entry:
   %pid = call i32 @__get_pid(i32 0)
   %is_tile_zero = icmp eq i32 %pid, 0
