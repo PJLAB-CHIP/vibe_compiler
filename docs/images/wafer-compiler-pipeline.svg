@@ -1,0 +1,172 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="1260" viewBox="0 0 1160 1260" role="img" aria-labelledby="title desc">
+  <title id="title">Wafer Compiler：从张量程序到单卡执行</title>
+  <desc id="desc">从上到下依次为 Portable StableHLO 输入、TensorProgram、实际 TileModule/TileRegion、Instr、DeviceExecutable、Target LLVM modules、ExecutablePackage；箭头标出各边界的变换。none 和 search 二选一，各自物化并持有独立 IR；target facts 只提供只读输入。TargetCall/SystemC 消费同次 lowering 的 modules。wafer-run 的 no-card 验证与真实板端执行分别消费 package，不重新做编译规划。详细合同由 tasks/01-architecture.md、tasks/06-physical-dataflow-synthesis.md、tasks/14-target-code-generation.md 和 tasks/15-launch-runtime-package.md 拥有。</desc>
+  <defs>
+    <marker id="flow-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="m1 1 7 4-7 4" fill="none" stroke="#21475b" stroke-width="2" stroke-linejoin="round"/>
+    </marker>
+    <marker id="input-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="m1 1 7 4-7 4" fill="none" stroke="#758b99" stroke-width="2" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      text { font-family: "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; fill: #16364b; }
+      .title { font-size: 30px; font-weight: 700; }
+      .name { font-size: 23px; font-weight: 700; }
+      .heading { font-size: 18px; font-weight: 700; }
+      .body { font-size: 16px; }
+      .small { font-size: 14px; fill: #526a7a; }
+      .label { font-size: 13px; font-weight: 600; letter-spacing: 1px; fill: #526a7a; }
+      .mono { font-family: "DejaVu Sans Mono", Consolas, monospace; }
+      .flow { fill: none; stroke: #21475b; stroke-width: 2; stroke-linejoin: round; marker-end: url(#flow-arrow); }
+      .input { fill: none; stroke: #758b99; stroke-width: 1.8; stroke-dasharray: 5 5; stroke-linejoin: round; marker-end: url(#input-arrow); }
+    </style>
+  </defs>
+
+  <rect width="1160" height="1260" rx="18" fill="#fff"/>
+  <text x="52" y="53" class="title">从张量程序到单卡执行</text>
+  <text x="52" y="83" class="body" fill="#526a7a">Wafer Compiler · 用真实 IR 与交付产物串起编译、验证和运行</text>
+  <rect x="854" y="29" width="278" height="34" rx="17" fill="#edf5f8"/>
+  <text x="993" y="52" text-anchor="middle" class="small">当前后端：TX81 · 单卡 16 Tile</text>
+
+  <rect x="28" y="108" width="732" height="988" rx="16" fill="#f7f9fc" stroke="#dce5ed"/>
+  <text x="52" y="133" class="label">wafer-compile / 主机编译</text>
+
+  <!-- 方框是 IR / 产物，变换写在连接线上。 -->
+  <g id="source">
+    <rect x="52" y="148" width="684" height="84" rx="10" fill="#eff5ff" stroke="#a9c4e8"/>
+    <text x="74" y="169" class="label">输入程序</text>
+    <text x="74" y="196" class="name">Portable StableHLO</text>
+    <text x="74" y="221" class="body">metadata · tensor payload · static shape / dtype</text>
+  </g>
+  <path class="flow" d="M394 232v40"/>
+  <text x="412" y="257" class="small">前端校验 · card-level SPMD · 结构化归一</text>
+
+  <g id="tensor-program">
+    <rect x="52" y="272" width="684" height="84" rx="10" fill="#eff5ff" stroke="#a9c4e8"/>
+    <text x="74" y="293" class="label">已验证的 CARD-LOCAL 数学语义</text>
+    <text x="74" y="320" class="name">TensorProgram</text>
+    <text x="74" y="345" class="body">Linalg · Tensor · SCF · attention / collectives</text>
+  </g>
+  <path class="flow" d="M394 356v40"/>
+  <text x="412" y="382" class="small">Tile / region 选择 → 实际物化</text>
+
+  <g id="tile-ir">
+    <rect x="52" y="396" width="684" height="128" rx="10" fill="#edfaf6" stroke="#91c9bb"/>
+    <text x="74" y="418" class="label">同一 CURRENT TILE IR 内逐步变换</text>
+    <text x="74" y="447" class="name">TileModule / TileRegion</text>
+    <text x="74" y="474" class="body">Tile 布置、temporal tiling / fusion、FA/FD 分解</text>
+    <text x="74" y="500" class="body">layout / bufferization、peer movement、执行循环</text>
+  </g>
+  <path class="flow" d="M394 524v44"/>
+  <text x="412" y="551" class="small">Tile→Instr · worker / order · join / wait</text>
+
+  <g id="instruction-ir">
+    <rect x="52" y="568" width="684" height="84" rx="10" fill="#edfaf6" stroke="#91c9bb"/>
+    <text x="74" y="589" class="label">实际指令、依赖与完成关系</text>
+    <text x="74" y="616" class="name">Instr</text>
+    <text x="74" y="641" class="body">engine issue · memref / effect · token / join / wait</text>
+  </g>
+  <path class="flow" d="M394 652v60"/>
+  <text x="412" y="677" class="small">实际 SPM / DDR 规划</text>
+  <text x="412" y="699" class="small">transport / target ABI 验证</text>
+
+  <g id="device-executable">
+    <rect x="52" y="712" width="684" height="84" rx="10" fill="#fff" stroke="#087f75" stroke-width="2"/>
+    <text x="74" y="733" class="label">TARGET CODEGEN 之前的 ACCEPTED OWNER</text>
+    <text x="74" y="760" class="name">DeviceExecutable</text>
+    <text x="74" y="785" class="body">全部 16 Tile 通过共同校验；成功候选不重建 IR</text>
+  </g>
+  <path class="flow" d="M394 796v40"/>
+  <text x="412" y="822" class="small">同一次 target lowering</text>
+
+  <g id="target-modules">
+    <rect x="52" y="836" width="684" height="84" rx="10" fill="#fff" stroke="#a9bbc8"/>
+    <text x="74" y="857" class="label">TARGET REPRESENTATION</text>
+    <text x="74" y="884" class="name">Target LLVM modules</text>
+    <text x="74" y="909" class="body">typed TargetCall · target ABI · module set</text>
+  </g>
+  <path class="flow" d="M394 920v44"/>
+  <text x="412" y="947" class="small">device link · 数据物化 · package readback</text>
+
+  <g id="executable-package">
+    <rect x="52" y="964" width="684" height="108" rx="10" fill="#16364b"/>
+    <text x="74" y="987" class="label" style="fill:#b9d7e6">编译交付</text>
+    <text x="74" y="1016" class="name" style="fill:#fff">ExecutablePackage</text>
+    <text x="74" y="1041" class="body" style="fill:#e4eff6">manifest.json · modules/*.so · data/program-data.bin</text>
+    <text x="74" y="1063" class="small" style="fill:#b9d7e6">完整 readback 后原子发布，不携带 search state 或调度副本</text>
+  </g>
+
+  <!-- 两种 runtime consumer 均从 package 出发。 -->
+  <path d="M394 1072v36" fill="none" stroke="#21475b" stroke-width="2"/>
+  <path class="flow" d="M394 1108H217v36"/>
+  <path class="flow" d="M394 1108H571v36"/>
+  <text x="52" y="1128" class="label">wafer-run</text>
+  <g id="no-card">
+    <rect x="52" y="1144" width="330" height="90" rx="10" fill="#f4f7fa" stroke="#c1d0da"/>
+    <text x="74" y="1176" class="heading">no-card / 主机验证</text>
+    <text x="74" y="1202" class="body">package、bindings、invocation plan</text>
+    <text x="74" y="1225" class="small">不执行算术，不调用设备 provider</text>
+  </g>
+  <g id="board-runtime">
+    <rect x="406" y="1144" width="330" height="90" rx="10" fill="#edf8f5" stroke="#91c9bb"/>
+    <text x="428" y="1176" class="heading">board / 真实设备</text>
+    <text x="428" y="1202" class="body">H2D → launch → wait → D2H</text>
+    <text x="428" y="1225" class="small">校验结果、status 与 cleanup；不重新编译</text>
+  </g>
+
+  <!-- 侧栏不构成第二套 IR / planning pipeline。 -->
+  <g id="legend">
+    <rect x="804" y="148" width="328" height="84" rx="10" fill="#fff" stroke="#dce5ed"/>
+    <text x="824" y="176" class="heading">如何读图</text>
+    <path class="flow" d="M825 197h34"/>
+    <text x="875" y="202" class="small">真实 IR / 产物传递</text>
+    <path class="input" d="M825 219h34"/>
+    <text x="875" y="224" class="small">选择参数 / 只读输入</text>
+  </g>
+  <g id="policies">
+    <rect x="804" y="272" width="328" height="252" rx="10" fill="#fff" stroke="#c1d0da"/>
+    <text x="824" y="303" class="heading">策略二选一，各自持有 IR</text>
+    <rect x="824" y="319" width="288" height="70" rx="8" fill="#f4f7fa"/>
+    <text x="840" y="348" class="heading mono">none</text>
+    <text x="840" y="375" class="body">固定规则直接物化 baseline</text>
+    <rect x="824" y="399" width="288" height="87" rx="8" fill="#eff5ff"/>
+    <text x="840" y="428" class="heading mono">search</text>
+    <text x="840" y="454" class="body">候选 → actual IR → verifier</text>
+    <text x="840" y="477" class="body">→ fresh analysis / cost 比较</text>
+    <text x="824" y="511" class="small">复用后续实现；不互相 fallback</text>
+  </g>
+  <path class="input" d="M804 438H736"/>
+  <g id="target-facts">
+    <rect x="804" y="568" width="328" height="124" rx="10" fill="#fff" stroke="#c1d0da"/>
+    <text x="824" y="599" class="heading">Target facts / 只读约束</text>
+    <text x="824" y="626" class="body">拓扑、dtype、layout、ABI</text>
+    <text x="824" y="652" class="body">提供各阶段的 legality / cost 输入</text>
+    <text x="824" y="677" class="small">不把推算的 buffer 当成实际 allocation</text>
+  </g>
+  <path class="input" d="M804 630H772V682H736"/>
+  <g id="algorithm-boundary">
+    <rect x="804" y="712" width="328" height="84" rx="10" fill="#edf8f5" stroke="#c1dfd6"/>
+    <text x="824" y="740" class="heading">算法与硬件传输分层</text>
+    <text x="824" y="765" class="body">collective → actual peer / combine IR</text>
+    <text x="824" y="787" class="small">TX81 transport 消费 IR，映射到 DTE / NCC</text>
+  </g>
+  <g id="functional-model">
+    <rect x="804" y="836" width="328" height="124" rx="10" fill="#eff5ff" stroke="#a9c4e8"/>
+    <text x="824" y="868" class="heading">TargetCall / SystemC 模型</text>
+    <text x="824" y="896" class="body">消费同次 lowering 的 modules</text>
+    <text x="824" y="923" class="body">功能 / 数值验证</text>
+    <text x="824" y="948" class="small">不执行 RISC-V ELF，不证明板端耗时</text>
+  </g>
+  <path class="flow" d="M736 878H804"/>
+  <g id="diagnostics">
+    <rect x="804" y="984" width="328" height="250" rx="10" fill="#fff" stroke="#dce5ed"/>
+    <text x="824" y="1015" class="heading">诊断入口 / 不新增 IR 层</text>
+    <text x="824" y="1048" class="body mono">--compile-timing</text>
+    <text x="824" y="1072" class="small">主机编译耗时与 work count</text>
+    <text x="824" y="1103" class="body mono">--dump-compiler-ir</text>
+    <text x="824" y="1127" class="small">观察实际经过的 IR</text>
+    <text x="824" y="1158" class="body mono">--profile</text>
+    <text x="824" y="1182" class="small">板端 Primary → Count → Trace</text>
+    <text x="824" y="1219" class="small">验证层级互不代签；使用方式见 README</text>
+  </g>
+</svg>

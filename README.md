@@ -1,40 +1,38 @@
 <p align="center">
-  <img src="docs/images/wafer-compiler-mark.png" alt="Wafer Compiler" width="180">
+  <img src="docs/images/wafer-compiler-mark.svg" alt="Wafer Compiler：将程序映射到 Tile 阵列" width="200">
 </p>
 
 <h1 align="center">Wafer Compiler</h1>
 
-<p align="center">面向 Wafer 加速器程序的 MLIR 编译器和运行时工具集</p>
+<p align="center">从张量程序到单卡多 Tile 执行的 MLIR 编译器</p>
 
-Wafer Compiler 接收 PyTorch/XLA 导出的 portable StableHLO program，为单卡 16-Tile 设备生成经过验证的可执行 package。
-仓库包含编译器、目标代码生成、package 工具、主机验证、功能模型和板端运行时适配器。
+Wafer Compiler 接收 PyTorch/XLA 导出的 portable StableHLO program，完成图归一化、Tile 划分、切块与融合、
+布局与数据搬运、指令生成和内存规划，最终交付经过验证的 `ExecutablePackage`。
+当前 production 后端面向 TX81 单卡 16-Tile 设备；仓库同时包含 package/runtime 工具、功能数值模型和板端 profiler。
+
+通用图算法与硬件传输分层：FA/FD 是 attention 算法，Ring、recursive doubling、dimension-ordered AllToAll 等是
+collective 的物化选择；TX81 DTE/NCC 和 runtime ABI 负责消费已经生成的指令与 peer 数据流，不定义上层算法语义。
 
 生产编译入口提供两种策略：
 
-- `none`：运行确定性的 baseline；
-- `search`：基于 current IR 评估 physical-dataflow 候选。
+- `none`：按固定规则直接构造 baseline IR，不建立 search frontier；
+- `search`：将候选选择实际物化为 IR，验证并重新分析后再比较成本。
 
-两种策略使用同一套 lowering 和 package 路径，不互相 fallback。当前任务和设备资格状态记录在
+两种策略各自持有独立 IR，复用后续变换、lowering 和 package 实现，不互相 fallback。当前任务和设备资格状态记录在
 [`tasks/progress.md`](tasks/progress.md)，不在 README 中重复维护。
 
 ## 总览
 
-![Wafer Compiler 编译流水线](docs/images/wafer-compiler-pipeline.png)
+[![Wafer Compiler 架构：真实 IR、编译产物与直接消费者](docs/images/wafer-compiler-pipeline.svg)](docs/images/wafer-compiler-pipeline.svg)
 
-图中的 `none` 和 `search` 是两个独立的 current-IR transaction：它们从同一个 verified TensorProgram 出发，分别物化和验证自己的
-TileRegion、Instr 和 DeviceExecutable，然后使用同一套 target/package 实现。Topology、target facts、ProgramData 和 bindings 是显式输入，
-不是从名称、shape 或旁路 plan 推导出来的。
+从上往下读：方框是 IR 或产物，箭头旁是该边界执行的变换，右侧是选择、只读输入或独立消费者。
+图的稳定合同见 [01 号架构设计](tasks/01-architecture.md) 和 [06 号 physical-dataflow 设计](tasks/06-physical-dataflow-synthesis.md)。
 
-编译器按一组经过 verifier 检查的 IR 边界组织：
-
-1. 前端验证 program directory、metadata 和 payload。
-2. SPMD 阶段生成 card-local StableHLO program。
-3. StableHLO 合法化为结构化 Linalg/Tensor IR，并在此完成结构化图清理和 attention 归一化。
-4. `none` 或 `search` 物化 TileRegion IR，执行 temporal tiling/fusion、attention state lowering、layout resolution、movement 和 execution structure。
-5. TileRegion IR 转换为 Instr IR；在进入 target lowering 前检查 completion、SPM/DDR placement 和 transport。
-6. target 和 package 阶段生成一个 `DeviceExecutable` 以及一个严格验证的 `ExecutablePackage`。
-
-Transformation choice 与物化 IR 后才能确定的事实分开保存。Search state、cost 和被拒绝的候选不会写入 IR 或 package 文件。
+- `num_partitions` 表示 card 级逻辑分区，当前为 `1`；不是把 Tile 数设为 `1`。
+- Tile 放置、执行 region、temporal tiling、layout/bufferization、movement 与 completion 各有边界；SPM 合法性只能由
+  actual IR 上的 allocation、alias、effect、lifetime 和实际 offset 规划确定。
+- `DeviceExecutable` 在 target codegen **之前**形成。成功候选保留同一 actual IR owner，不从旁路计划重建；search 状态不进入 package。
+- TargetCall/SystemC 功能模型消费同次 lowering 的 target modules；它不执行 package 内的 RISC-V ELF，也不证明板端性能。
 
 ## 快速开始
 
@@ -44,9 +42,10 @@ Transformation choice 与物化 IR 后才能确定的事实分开保存。Search
 
 ```bash
 git submodule update --init --recursive
-python3 utils/deps/bootstrap_deps.py --all
+python3 -B utils/deps/bootstrap_deps.py --all
 ```
 
+PyTorch/XLA exporter 还需要按依赖文档构建并安装 pinned `torch_xla`；bootstrap 的 Python 依赖安装不替代该步骤。
 如果依赖已经准备好，可以直接配置仓库。
 
 ### 配置和构建
@@ -70,6 +69,9 @@ from wafer.frontend import export_pytorch_program
 export_pytorch_program(module, example_inputs, output_directory)
 ```
 
+这里的 `module` 是 `torch.nn.Module`，`example_inputs` 是静态形状输入，输出目录必须尚不存在。
+在源码 checkout 使用时，将 `python/` 加入 `PYTHONPATH`，以 `python3 -B` 运行导出脚本，避免在源码目录生成 Python cache。
+
 使用 production driver 编译：
 
 ```bash
@@ -80,8 +82,9 @@ build/bin/wafer-compile \
   --optimization-policy search
 ```
 
-使用 `--optimization-policy none` 选择 deterministic baseline。`search` 可以用 `--search-width` 和 `--search-trials` 限制搜索工作量。
-`--compile-timing`、`--dump-compiler-ir` 和 `--profile` 是诊断或资格选项，仍然复用同一个 compiler transaction。
+普通编译的 `<package-directory>` 就是交付 package；编译输出目录必须尚不存在。
+使用 `--optimization-policy none` 选择 deterministic baseline。`search` 可以用 `--search-width` 和 `--search-trials` 限制搜索工作量；
+有界搜索不承诺全局最优。
 
 ## 验证和运行 package
 
@@ -93,10 +96,21 @@ build/bin/wafer-run \
   --no-card
 ```
 
-board 执行使用同一个已验证 package，并要求显式设备资格、输入资源和 expected output。default build 不注册 board execution test。
+包含 Direct-DTE 的 package 还需给 no-card 指定对应能力：`--direct-dte-status-abi wafer-direct-dte-status --supports-host-watchdog`。
+这些参数只声明本次主机验证采用的 runtime 能力，不会开启设备执行。
+
+board 执行使用 `wafer-run --board`，需要显式设备资格、完整输入绑定以及已启用 board runtime 的构建。输入/输出 raw 文件按
+manifest 的 port、dtype、physical layout 和 byte count 绑定。参数见 `build/bin/wafer-run --help`，合同见
+[15 号 package/runtime 设计](tasks/15-launch-runtime-package.md)。default build 不执行真实设备。
 
 `wafer-opt` 用于本地 MLIR registered pipeline 和 FileCheck case。`wafer-verify-program` 用于验证 source program directory。
 两者都不是第二个 production compiler。
+
+## 诊断
+
+编译时用 `--compile-timing` 查看主机编译耗时，`--dump-compiler-ir <dir>` 导出各阶段实际 IR。
+`--profile` 生成板端诊断产物；此时运行入口为 `--package-dir <output-dir>/package`，成功板端采集后的报告位于
+`<output-dir>/package.profile/runs/current/index.html`。no-card 不进行性能采集。
 
 ## 目录结构
 
@@ -118,8 +132,13 @@ board 执行使用同一个已验证 package，并要求显式设备资格、输
 ## 测试
 
 ```bash
+# 按名称定向运行受影响测试
+ctest --preset default -j"$(nproc)" -R '<test-name>'
+
+# 完整本地主机测试（包含较重的模型 case）
 ctest --preset default -j"$(nproc)"
-cmake --build --preset default --target check-wafer -j"$(nproc)"
+
+# 文本与源码组织检查
 python3 -B utils/checks/check_source_organization.py --root .
 python3 -B utils/checks/check_ir_organization.py --root .
 python3 -B utils/checks/check_deps.py
@@ -127,6 +146,7 @@ python3 -B utils/checks/check_deps.py
 
 IR 变换测试使用接近生产的 static rank，并覆盖整除和 tail 维度。通过条件不仅是命令返回成功，还必须检查本阶段结果、owner
 和直接下游 witness；skip、unsupported 和未注册 case 不计入覆盖率。
+开发时先做定向回归，重型模型在前层通过后集中验证；具体流程见 [AGENTS.md](AGENTS.md)。
 
 ## 当前范围
 

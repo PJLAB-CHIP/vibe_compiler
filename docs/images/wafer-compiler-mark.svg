@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="128" viewBox="0 0 240 128" role="img" aria-labelledby="title desc">
+  <title id="title">Wafer Compiler</title>
+  <desc id="desc">左侧代码括号经箭头映射到右侧四乘四 Tile 阵列，表示从程序到单卡执行。</desc>
+  <rect x="2" y="2" width="236" height="124" rx="26" fill="#f7fafc" stroke="#dce6ed" stroke-width="2"/>
+  <g fill="none" stroke="#16364b" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M35 47 18 64 35 81 M57 47 74 64 57 81"/>
+    <path d="m51 42-11 44" stroke-width="4"/>
+  </g>
+  <path d="M87 64h28m-10-10 10 10-10 10" fill="none" stroke="#087f75" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="132" y="22" width="84" height="84" rx="13" fill="#fff" stroke="#16364b" stroke-width="4"/>
+  <g fill="none" stroke="#16364b" stroke-width="3" stroke-linecap="round">
+    <path d="M150 16v6m16-6v6m16-6v6m16-6v6M150 106v6m16-6v6m16-6v6m16-6v6M126 40h6m-6 16h6m-6 16h6m-6 16h6M216 40h6m-6 16h6m-6 16h6m-6 16h6"/>
+  </g>
+  <g fill="#087f75">
+    <rect x="145" y="35" width="10" height="10" rx="2"/>
+    <rect x="161" y="35" width="10" height="10" rx="2"/>
+    <rect x="177" y="35" width="10" height="10" rx="2"/>
+    <rect x="193" y="35" width="10" height="10" rx="2"/>
+    <rect x="145" y="51" width="10" height="10" rx="2"/>
+    <rect x="161" y="51" width="10" height="10" rx="2"/>
+    <rect x="177" y="51" width="10" height="10" rx="2"/>
+    <rect x="193" y="51" width="10" height="10" rx="2"/>
+    <rect x="145" y="67" width="10" height="10" rx="2"/>
+    <rect x="161" y="67" width="10" height="10" rx="2"/>
+    <rect x="177" y="67" width="10" height="10" rx="2"/>
+    <rect x="193" y="67" width="10" height="10" rx="2"/>
+    <rect x="145" y="83" width="10" height="10" rx="2"/>
+    <rect x="161" y="83" width="10" height="10" rx="2"/>
+    <rect x="177" y="83" width="10" height="10" rx="2"/>
+    <rect x="193" y="83" width="10" height="10" rx="2"/>
+  </g>
+</svg>
