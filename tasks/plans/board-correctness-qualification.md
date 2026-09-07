@@ -28,7 +28,7 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 
 ## 推进顺序
 
-### 当前第1项：生产AllGather端到端
+### 第1项：生产AllGather端到端（板端验收完成）
 
 Pipeline position:
 - Upstream IR / input: 同一PyTorch module的FP16 CPU输入及导出source；`lhs + (rhs + rhs).unsqueeze(0)`，rhs为`[16,1,L]`，lhs为`[16,16,1,L]`。
@@ -47,14 +47,14 @@ Pipeline position:
 
 后续GEMM消费AllGather的定位输入目前仍生成DDR，不能由本case结果代签；其closure原因待独立定位。
 
-本轮结果：
+修复前板测及主机定位结果：
 - 新增普通PyTorch AllGather Add及1025/1031尾长case；三个fresh source/package/no-card均通过。
   每个实际Instr产物为16 Tile、15轮、240 send、240 recv、480 exact-token wait，无shared-DDR通信边界。
   完整FP16 eager reference已保存；缺分片与末元素错误的PyTorch负例通过。
 - L=1024单次真实调用在`TX cluster:main`等待60秒后timeout，runtime标记context poisoned并退出；没有numeric capture，
-  没有PyTorch通过结论，也没有normal cleanup通过结论。第1项仍未完成，不能把三个no-card结果记作板端done。
+  没有PyTorch通过结论，也没有normal cleanup通过结论。当时第1项未完成，三个no-card结果不代表板端done。
 - 用户随后明确要求重跑Add。重新导出输入/source/reference并通过fresh no-card；单次真实Add同样在
-  `TX grid:main`等待60秒后timeout，没有回读。当前会话的基础执行可用性尚未重新建立；停止全部板端调用，未reset/power或自动retry。
+  `TX grid:main`等待60秒后timeout，没有回读。该会话的基础执行可用性未重新建立；随后停止全部板端调用，未reset/power或自动retry。
 - 两次调用前均确认设备无其它进程占用，runtime/PCI/SDK身份与既有会话一致。超时本身不足以判定硬件故障或通信根因；
   下一次板测需先恢复并确认设备执行可用性，不能沿用此前Add通过结论代表当前状态。
 
@@ -66,6 +66,7 @@ Pipeline position:
 
 每个case记录PyTorch版本、输入dtype/shape与seed、容差、package身份、完整回读、误差与完成状态。
 首个timeout或设备异常停止批次；全部新增环境与产物受用户目录范围限制。
+用户明确说明该机器板测卡死后需要重启整机；恢复前不再发射其它case，不能用卡死后的Add结果判断Add本身。
 
 ## 本轮检查点
 
@@ -78,7 +79,7 @@ Pipeline position:
 - Downstream consumer: actual SPM规划、target lowering、ExecutablePackage及上述PyTorch source/no-card。
 - User-level driver / named pipeline: 现有production `wafer-compile`及共享Direct-DTE completion/verification入口。
 - Explicit non-goals: 不更换Ring算法、不改数值、不新增IR或CRT协议、不reset或重新上板；独立peer保留异步窗口。
-- Completion criteria: 旧顺序的host回归先失败；修复后本轮actual IR、full transport/Tile tests及三个fresh PyTorch no-card通过；真实板端仍待设备恢复后重新验收。
+- Completion criteria: 旧顺序的host回归先失败；修复后本轮actual IR、full transport/Tile tests及三个fresh PyTorch no-card通过；真实板端在设备恢复后单列复验。
 
 | 输入等价类 | exact结果与负例 | 下游witness |
 | --- | --- | --- |
@@ -97,7 +98,29 @@ Pipeline position:
 - canonical完整增量构建与`check-wafer`通过：265个lit、14个component suite和15个SystemC case全部执行通过；
   PyTorch case/reference测试和缺分片、尾元素、缺send/recv/wait及DDR边界负例通过。
 - 用户要求清理的超时package、旧IR和raw数据已删除；定位依据保留在回归测试、协议事实及简短失败日志中。
-  当前只保留修复版source/no-card产物。设备没有重试、reset或power，实卡根因的最终闭环和数值通过仍待恢复后验收。
+  该检查点只保留修复版source/no-card产物；设备恢复前没有再次发射，真实设备完成和数值结果见下节。
+
+### 重启后复验（2026-09-08）
+
+用户确认已重启并授权继续。使用修复提交`1b629bae`及同一current board runner；canonical增量构建为Ninja no-op。
+Add和L=1024 AllGather重新从PyTorch source生成package、输入和eager reference，本轮两条no-card实际执行通过。
+随后按Add→AllGather串行各调用一次，同一个fresh package从no-card交给真实runtime；每次调用前设备均无其它进程占用。
+
+| Case | 本轮真实结果 | 数值与完成证据 |
+| --- | --- | --- |
+| FP16 complete-Tile Add | 16 Tile、grid main完成；完整7340032个元素回读 | PyTorch 2.5.0+cpu，rtol=1e-3、atol=1e-5，最大绝对误差0；全部Tile completion与normal cleanup通过 |
+| FP16 production AllGather Add，L=1024、seed=20260803 | 16 Tile、15轮；actual IR为240 send、240 recv、480 wait，payload=2048 bytes，无shared-DDR边界；cluster prepare/main完成 | 完整262144个元素对比同一module的PyTorch eager，容差同上、最大绝对误差0；全部Tile completion、runtime状态检查与normal cleanup通过 |
+
+本轮两次调用均未timeout，没有追加retry/reset/power；结束后设备无占用。第1项指定的生产AllGather纵向已完成；
+1025/1031仍只有host/no-card资格，GEMM consumer、其它算法、dtype与性能不由本次结果代签，完整通信矩阵仍待推进。
+
+本轮身份与证据：
+
+- boot ID为`1e83f33c-ff56-43ab-b524-57e25a3b522a`；device 0、PCI `0000:3b:00.0`、runtime `0x514`、16 Tile。
+- SDK SHA256为`b4f19d673e1767314f6cd900f7f66345e7d1d8c0545de83a7139d62596a6e12c`。
+- Add manifest SHA256为`7fe58cb9cfaa145d4e19cab6732e8f15118cb3c5fab03c37a770536756ea72de`；
+  AllGather为`c3f3ed4376ef2c3ac9fbc3c8a38b44a1be886657c02b4526f7b74a17cdf01ce2`。
+- 日志为`third_party/host-tools/logs/post-reboot-{no-card,add-board,allgather-board}.log`；本轮成功package、reference和capture保留在各case的既有生成目录。
 
 ### 基础板测已有检查
 

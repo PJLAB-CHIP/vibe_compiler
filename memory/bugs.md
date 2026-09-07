@@ -502,9 +502,10 @@
 - 根因：communication emitter自行用局部issue顺序和immediate await修补resource/deadlock，却没有统一的actual token lifetime、
   receiver FSM interval和card-scoped wait graph owner。把“立即等”写成协议虽然限制live recv为1，也会无条件丢失异步窗口。
 - 修复模式：从explicit communication identity、round、payload slice、endpoint kind和peer建立稳定message/event关系；movement只发射
-  matching token，storage/lifetime给出source/destination/relay release，schedule选择wait boundary并关闭plan-level 4-lane interval；actual memory/target gate在同一actual
-  whole-card candidate上唯一验证dynamic matching、receiver冲突和wait graph无环。matching send issue与receive preparation保持独立，只有
-  completion同时依赖两者。hard constraints确实要求时可以立即wait，但不能把它设为所有endpoint默认值。
+  matching token，storage/lifetime给出source/destination/relay release；最终completion从actual IR及sender/FSM/peer-ready资源事实选择wait boundary。
+  actual memory/target gate在同一actual whole-card candidate上验证dynamic matching、receiver冲突和wait graph无环。
+  current CRT的send issue会阻塞等待matching receive preparation发布ready，completion仍依赖两端；同peer的ready复用还要求前一次receive完成。
+  hard constraints确实要求时可以立即wait，但不能把它设为所有endpoint默认值。
 - 防复发：多源fanin测试同时检查最大live recv不超过4、send/recv/wait dynamic exact配对、first-read/last-release、全卡无环和
   Direct-DTE binding；另有至少一个token-only issue window证明没有被emitter立即串行化。source-to-package transpose及attention baseline
   必须产生fresh no-card package，不能只检查Tile IR文本。
