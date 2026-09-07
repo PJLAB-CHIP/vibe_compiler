@@ -3,7 +3,7 @@
 本文只定义当前架构的验证层级和完成证明，不保存任务动态状态或历史case台账。稳定验证链为
 `TensorProgram -> physical-dataflow selection -> TileModule/TileRegion/Instr -> DeviceExecutable -> ExecutablePackage`。
 host局部gate、package roundtrip或一次source compile都不能把production任务提升为`board-ready`。
-板端正确性任务的`done`要求其完整矩阵通过真实设备数值和生命周期验收；板端性能任务另外要求真实设备matched A/B证据。
+板测总任务的`done`要求计划矩阵全部完成：正确性由真实设备数值和生命周期验收证明，性能由真实设备matched测量证明。
 
 ## 1. Pipeline Contract
 
@@ -53,8 +53,9 @@ package并fresh no-card；职责已由后继接管时直接从current queue移�
 
 ## 3. Freshness 与执行纪律
 
-板端正确性验收作为独立work item消费编译器实现和主机准备交付的产品产物。它拥有板测case、PyTorch reference、
-实际执行结果及覆盖完成判定；通信实现work item拥有current IR变换、legality、completion、lowering及相应主机回归。
+所有板测由同一个总work item消费编译器实现和主机准备交付的产品产物，统一管理算子、通信、组合计算、模型和性能。
+正确性与性能是同一任务内的检查阶段，不再拆成多个板测任务。该任务拥有case、PyTorch reference、实际执行结果、
+性能记录及覆盖完成判定；通信实现work item拥有current IR变换、legality、completion、lowering及相应主机回归。
 GEMM、卷积、attention等产品板测不归入通信实现的完成门禁。发现编译器或runtime缺陷时按对应设计修复，
 随后将新产物交回同一板测项复验；不能借此混用两个任务的状态，也不能由局部板测结果宣称编译器全项完成。
 
