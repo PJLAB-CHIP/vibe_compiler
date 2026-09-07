@@ -139,7 +139,10 @@ struct LinearTransportSite {
 
 static std::string
 makeLinearTransportTileModule(llvm::ArrayRef<LinearTransportSite> sites,
-                              bool waitImmediately) {
+                              bool waitImmediately, int64_t extent = 0) {
+  const std::string tensorType =
+      extent ? "1x1x" + std::to_string(extent) + "xf16" : "4xf32";
+  const int64_t bytes = extent ? extent * 2 : 16;
   std::string source;
   llvm::raw_string_ostream os(source);
   os << "module {\n"
@@ -147,16 +150,17 @@ makeLinearTransportTileModule(llvm::ArrayRef<LinearTransportSite> sites,
   for (auto [index, site] : llvm::enumerate(sites))
     os << "    %buffer" << index
        << " = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<"
-       << site.spmOffset << ">} : memref<4xf32, #wafer.memory<spm, tensor>>\n";
+       << site.spmOffset << ">} : memref<" << tensorType
+       << ", #wafer.memory<spm, tensor>>\n";
   for (auto [index, site] : llvm::enumerate(sites)) {
     os << "    %token" << index << " = wafer.instr.dte_"
        << (site.isSend ? "send" : "recv") << " %buffer" << index
        << " {peer = " << site.peer
-       << " : i64, bytes = 16 : i64, message = "
+       << " : i64, bytes = " << bytes << " : i64, message = "
           "#wafer.dte_message<communication = "
        << site.communication
-       << ", round = 0, slice = 0>} : "
-          "memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token\n";
+       << ", round = 0, slice = 0>} : memref<" << tensorType
+       << ", #wafer.memory<spm, tensor>> -> !async.token\n";
     if (waitImmediately)
       os << "    wafer.instr.dte_wait %token" << index << " : !async.token\n";
   }
@@ -599,11 +603,12 @@ TEST_F(DirectDTETransportTest,
        CompletionRebuildUsesReceiverFSMCapacityOnDistinctBuffers) {
   llvm::SmallVector<LinearTransportSite, 5> sites;
   for (int64_t index = 0; index < 5; ++index)
-    sites.push_back(LinearTransportSite{/*isSend=*/false, /*peer=*/0,
-                                        /*spmOffset=*/65536 + index * 256,
+    sites.push_back(LinearTransportSite{/*isSend=*/false, /*peer=*/index,
+                                        /*spmOffset=*/65536 + index * 4096,
                                         /*communication=*/20 + index});
   auto module =
-      parse(makeLinearTransportTileModule(sites, /*waitImmediately=*/false));
+      parse(makeLinearTransportTileModule(sites, /*waitImmediately=*/false,
+                                          /*extent=*/1025));
   ASSERT_TRUE(module);
   llvm::SmallVector<mlir::ModuleOp, 1> modules{*module};
   auto result = wafer::compiler::detail::rebuildRequiredDirectDTEWaits(modules);
@@ -611,6 +616,87 @@ TEST_F(DirectDTETransportTest,
   EXPECT_EQ(result.statistics.receives, 5u);
   EXPECT_EQ(result.statistics.waitsPlaced, 5u);
   EXPECT_EQ(result.statistics.receiverFSMReuseWaits, 1u);
+  EXPECT_EQ(result.statistics.receiverReadySlotReuseWaits, 0u);
+  llvm::SmallVector<wafer::InstrDTERecvOp, 5> receives;
+  module->walk([&](wafer::InstrDTERecvOp recv) { receives.push_back(recv); });
+  for (unsigned index = 1; index < 4; ++index)
+    EXPECT_EQ(receives[index]->getPrevNode(), receives[index - 1].getOperation());
+}
+
+TEST_F(DirectDTETransportTest,
+       CompletionRebuildWaitsBeforeSamePeerReadySlotReuse) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto module = parse(makeLinearTransportTileModule(
+        {{false, 0, 65536, 20}, {false, 0, 69632, 21}},
+        /*waitImmediately=*/false, extent));
+    ASSERT_TRUE(module);
+    llvm::SmallVector<mlir::ModuleOp, 1> modules{*module};
+    auto result = wafer::compiler::detail::rebuildRequiredDirectDTEWaits(modules);
+    ASSERT_TRUE(result.succeeded()) << result.detail;
+    EXPECT_EQ(result.statistics.waitsPlaced, 2u);
+    EXPECT_EQ(result.statistics.receiverReadySlotReuseWaits, 1u);
+    llvm::SmallVector<wafer::InstrDTERecvOp, 2> receives;
+    module->walk([&](wafer::InstrDTERecvOp recv) { receives.push_back(recv); });
+    ASSERT_EQ(receives.size(), 2u);
+    auto wait = mlir::dyn_cast_or_null<wafer::InstrDTEWaitOp>(
+        receives[1]->getPrevNode());
+    ASSERT_TRUE(wait);
+    EXPECT_EQ(wait.getTokens().front(), receives[0].getToken());
+  }
+}
+
+TEST_F(DirectDTETransportTest, OverlappingSamePeerReadyPostsFailClosed) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto sender = parse(makeLinearTransportTileModule(
+        {{true, 1, 65536, 20}, {true, 1, 69632, 21}},
+        /*waitImmediately=*/true, extent));
+    auto receiver = parse(makeLinearTransportTileModule(
+        {{false, 0, 65536, 20}, {false, 0, 69632, 21}},
+        /*waitImmediately=*/false, extent));
+    ASSERT_TRUE(sender);
+    ASSERT_TRUE(receiver);
+    llvm::SmallVector<mlir::ModuleOp, 2> modules{*sender, *receiver};
+    mlir::ScopedDiagnosticHandler suppress(
+        context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
+    EXPECT_TRUE(mlir::failed(
+        wafer::compiler::testing::bindDirectDTETransport(modules)));
+    receiver->walk([](wafer::InstrDTERecvOp recv) {
+      EXPECT_FALSE(recv.getBinding());
+    });
+    auto rebuilt = wafer::compiler::detail::rebuildRequiredDirectDTEWaits(modules);
+    ASSERT_TRUE(rebuilt.succeeded()) << rebuilt.detail;
+    EXPECT_TRUE(mlir::succeeded(
+        wafer::compiler::testing::bindDirectDTETransport(modules)));
+  }
+}
+
+TEST_F(DirectDTETransportTest,
+       MutualSendIssueBeforeReceiveFailsWithDelayedWaits) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto tile0 = parse(makeLinearTransportTileModule(
+        {{true, 1, 65536, 30}, {false, 1, 69632, 31}},
+        /*waitImmediately=*/false, extent));
+    auto tile1 = parse(makeLinearTransportTileModule(
+        {{true, 0, 65536, 31}, {false, 0, 69632, 30}},
+        /*waitImmediately=*/false, extent));
+    ASSERT_TRUE(tile0);
+    ASSERT_TRUE(tile1);
+    llvm::SmallVector<mlir::ModuleOp, 2> modules{*tile0, *tile1};
+    std::string diagnosticText;
+    mlir::ScopedDiagnosticHandler handler(
+        context.get(), [&](mlir::Diagnostic &diagnostic) {
+          llvm::raw_string_ostream stream(diagnosticText);
+          diagnostic.print(stream);
+          return mlir::success();
+        });
+    EXPECT_TRUE(mlir::failed(
+        wafer::compiler::testing::bindDirectDTETransport(modules)));
+    EXPECT_NE(diagnosticText.find("wait graph contains a cyclic dependency"),
+              std::string::npos);
+  }
 }
 
 TEST_F(DirectDTETransportTest,
@@ -1926,7 +2012,7 @@ module {
 }
 
 TEST_F(DirectDTETransportTest,
-       MatchesEquivalentDynamicStreamAcrossDifferentStaticPlacement) {
+       ReceiveHoistedAcrossSamePeerLoopFailsReadySlotReuse) {
   constexpr llvm::StringLiteral kNestedPrefix = R"mlir(
     scf.for %outer = %c0 to %c8 step %c2 {
       scf.for %inner = %c0 to %c4 step %c2 {
@@ -1958,11 +2044,9 @@ TEST_F(DirectDTETransportTest,
   });
   ASSERT_TRUE(outerLoop);
   ASSERT_TRUE(staticTail);
-  // Move only the receive preparation.  Its wait remains after the loop, so
-  // the two Tiles keep an acyclic completion order while the matching logic
-  // must still pair equivalent dynamic occurrences rather than vector order.
-  // Give that preparation its own range so keeping it live across the loop is
-  // also a valid Direct-DTE buffer-isolation scenario.
+  // This bounded negative isolates a formerly accepted hoist: distinct ranges
+  // and an acyclic token-completion graph do not protect the peer ready slot.
+  // The hoisted receive and the first loop receive overwrite one notification.
   mlir::OpBuilder builder(outerLoop);
   auto tailBuffer = builder.create<mlir::memref::AllocOp>(
       staticTail.getLoc(),
@@ -1974,14 +2058,21 @@ TEST_F(DirectDTETransportTest,
   staticTail->moveBefore(outerLoop);
 
   llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule, *recvModule};
+  std::string diagnosticText;
+  mlir::ScopedDiagnosticHandler handler(
+      context.get(), [&](mlir::Diagnostic &diagnostic) {
+        llvm::raw_string_ostream stream(diagnosticText);
+        diagnostic.print(stream);
+        return mlir::success();
+      });
   auto contract = wafer::compiler::testing::bindDirectDTETransport(tileModules);
-  ASSERT_TRUE(mlir::succeeded(contract));
-  EXPECT_EQ(*contract, wafer::TransportContract::DirectDTE);
+  EXPECT_TRUE(mlir::failed(contract));
+  EXPECT_NE(diagnosticText.find("reuses a peer ready slot"), std::string::npos);
   sendModule->walk([](wafer::InstrDTESendOp operation) {
-    EXPECT_TRUE(operation.getBinding());
+    EXPECT_FALSE(operation.getBinding());
   });
   recvModule->walk([](wafer::InstrDTERecvOp operation) {
-    EXPECT_TRUE(operation.getBinding());
+    EXPECT_FALSE(operation.getBinding());
   });
 }
 

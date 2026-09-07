@@ -13,6 +13,8 @@ namespace wafer {
 struct TargetDirectDTEResourceLimits {
   static constexpr uint32_t senderSlotsPerTile = 1;
   static constexpr uint32_t receiverFSMsPerTile = 4;
+  // direct_sync_post/wait share one non-counting notification per peer pair.
+  static constexpr uint32_t receiverReadySlotsPerPeer = 1;
 };
 
 } // namespace wafer

@@ -351,6 +351,9 @@ def prepare_runtime_payloads(
         capture_path = raw / (
             f"card_00_output_{index}.capture.{manifest_dtype}.raw"
         )
+        common.write_tensor_raw(
+            raw / f"card_00_output_{index}.expected.{manifest_dtype}.raw", tensor
+        )
         arguments.extend(["--output", f"{port_id}={capture_path}"])
         captures[capture_path] = tensor
         result_capture_paths[index] = capture_path
@@ -420,6 +423,62 @@ def verify_board(
             policy=case.comparison_policy,
             context=f"{case.name} {capture.name}",
         )
+
+
+def verify_ring_allgather(
+    package: pathlib.Path, dump: pathlib.Path, payload_bytes: int
+) -> None:
+    manifest = json.loads((package / "manifest.json").read_text())
+    for entry in manifest["entries"]:
+        if not any(arg["kind"] == "transport_status" for arg in entry["arguments"]):
+            raise RuntimeError(
+                "AllGather requires actual Direct-DTE status on every Tile"
+            )
+        if any(arg["kind"] == "shared_workspace" for arg in entry["arguments"]):
+            raise RuntimeError("AllGather unexpectedly uses a shared DDR boundary")
+    for tile in range(PHYSICAL_TILE_COUNT):
+        ir = (dump / "instruction" / f"tile_{tile:05d}.mlir").read_text()
+        tokens: list[str] = []
+        for operation in ("send", "recv"):
+            issues = re.findall(
+                rf"(%[\w]+) = wafer\.instr\.dte_{operation} .*?"
+                r"bytes = (\d+) : i64, message = .*?round = (\d+),",
+                ir,
+            )
+            if (
+                len(issues) != 15
+                or sorted(int(round_) for _, _, round_ in issues) != list(range(15))
+                or any(int(size) != payload_bytes for _, size, _ in issues)
+            ):
+                raise RuntimeError(
+                    f"Tile {tile} lacks exact 15-round AllGather {operation}"
+                )
+            tokens.extend(token for token, _, _ in issues)
+        waits = re.findall(r"wafer\.instr\.dte_wait (%[\w]+) :", ir)
+        if sorted(waits) != sorted(tokens):
+            raise RuntimeError(f"Tile {tile} lacks exact AllGather token waits")
+        pending: dict[int, str] = {}
+        for line in ir.splitlines():
+            receive = re.search(
+                r"(%[\w]+) = wafer\.instr\.dte_recv .*peer = (\d+) : i64",
+                line,
+            )
+            if receive:
+                token, peer_text = receive.groups()
+                peer = int(peer_text)
+                if peer in pending:
+                    raise RuntimeError(f"Tile {tile} overwrites peer {peer} ready")
+                pending[peer] = token
+            wait = re.search(r"wafer\.instr\.dte_wait (%[\w]+) :", line)
+            if wait:
+                pending = {
+                    peer: token for peer, token in pending.items()
+                    if token != wait.group(1)
+                }
+    print(
+        "production_allgather: tiles=16 rounds=15 sends=240 receives=240 "
+        f"waits=480 payload_bytes={payload_bytes}"
+    )
 
 
 def prepare_case_step(
@@ -520,6 +579,14 @@ def prepare_case_step(
                     "compiler inactive Tile/dataflow evidence is not a "
                     "canonical selected pre-Instr IR"
                 )
+    if case.allgather_payload_elements is not None:
+        if dump_compiler_ir is None:
+            raise RuntimeError("AllGather qualification requires current compiler IR")
+        verify_ring_allgather(
+            package,
+            dump_compiler_ir,
+            case.allgather_payload_elements * common.element_bytes(case.dtype),
+        )
     oracle_start_ns = time.monotonic_ns()
     expected_outputs = case.materialize_expected_outputs()
     print(
@@ -602,6 +669,11 @@ def main() -> int:
             is_chain=is_chain,
         )
         dump_compiler_ir = args.dump_compiler_ir
+        if (
+            dump_compiler_ir is None
+            and current_case.allgather_payload_elements is not None
+        ):
+            dump_compiler_ir = step_dir / "compiler-ir"
         if dump_compiler_ir is not None and is_chain:
             dump_compiler_ir = (
                 dump_compiler_ir / f"step_{step_index + 1:02d}"

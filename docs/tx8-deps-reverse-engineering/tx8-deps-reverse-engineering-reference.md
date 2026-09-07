@@ -496,6 +496,10 @@ direct DTE helper：
 
 - `direct_sync_init` 清零 `0x2f0200` 附近 sync slots。
 - `direct_sync_wait` 等待 magic `0x12345678` 后清除。
+- `direct_sync_post`向对端SPM的`0x2f0200 + tile_this * 4`写该magic；`direct_sync_wait`读取本地
+  `0x2f0200 + tile_other * 4`并清零。repo `libkcorert.a(riscv_api.c.o)`与安装SDK的示例Kcore ELF反汇编一致：
+  这是每对peer的单slot通知，不是计数semaphore，未携带message、round或receiver FSM编号。两次post先于一次wait会丢失一次通知。
+  此为static binary-backed协议事实，不声称已经读取当前设备停住的PC。
 - 安装版Kcore动态module入口在调用entry前invalidate参数表，但entry返回路径不替module clean其写入的cacheable DDR。
   因此对`txMalloc` status地址的`volatile` scalar store不足以保证后续host D2H看到terminal值。firmware
   `rt_hw_cpu_dcache_ops(FLUSH)`反汇编使用64-byte cache line，并执行`fence; sync; mxstatus`后按当前mode选择

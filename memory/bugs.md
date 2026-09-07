@@ -1716,3 +1716,13 @@
   offset/stride；保留operation identity，避免破坏仍被transaction消费的endpoint指针。替换外部工具和CMake环境也必须保持typed/可验证边界。
 - 防复发：recursive-doubling 4/16-Tile、1024/1025/1031矩阵在movement后立即`mlir::verify`，并检查带非零aggregate offset的嵌套subview；LLaMA
   FP16/BF16 search fresh no-card必须完成package/readback，而不是只看到candidate不再crash。
+
+## Direct DTE的ready通知不能当作独立FSM队列
+
+- 现象：send/recv/token匹配和4-FSM着色均通过，连续同peer接收仍可能丢通知；双方send先于recv也可能在显式wait之前卡住。
+- 根因：vendor `direct_sync_post/wait`每对peer只读写一个magic slot，重复post不累计，且send issue内部阻塞等待ready。
+  只分析buffer/FSM lifetime和显式wait图会漏掉slot复用及issue本身的依赖。
+- 修复模式：将ready slot列入target资源事实；completion在同peer下一次recv prepare前完成已有recv token，作为本地可见的
+  通知已消费证明。Verifier独立拒绝重叠同peer通知，并把matching receive preparation加入send issue依赖；独立peer保持异步窗口。
+- 防复发：rank-3 FP16 1024/1025/1031覆盖同peer不同buffer、独立peer、延后wait的双向send及跨循环recv hoist；
+  生产PyTorch AllGather继续生成原有数量的send/recv/wait，并检查wait位置。主机协议复现不代签真实设备完成或数值结果。

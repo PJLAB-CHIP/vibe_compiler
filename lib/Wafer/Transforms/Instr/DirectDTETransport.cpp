@@ -1220,6 +1220,16 @@ private:
               "most one live sender per Tile structured occurrence");
       }
     } else {
+      const int64_t peer = std::get<0>(records->second.front()->message);
+      const auto liveReadySlots = llvm::count_if(pending, [&](const auto &live) {
+        return !live.first->isSend &&
+               std::get<0>(live.first->message) == peer;
+      });
+      if (liveReadySlots >=
+          TargetDirectDTEResourceLimits::receiverReadySlotsPerPeer)
+        return operation->emitError(
+            "direct_dte_binding: receive preparation reuses a peer ready "
+            "slot before the previous receive completes");
       for (const auto &[liveRecord, action] : pending) {
         (void)action;
         if (!liveRecord->isSend)
@@ -1770,6 +1780,10 @@ static mlir::LogicalResult verifyStructuredTransportWaitGraph(
       matchingSend[recvIndex] = sendIndex;
       matchingReceive[sendIndex] = recvIndex;
       matchingReceive[recvIndex] = recvIndex;
+      // The current CRT consumes the peer ready notification inside send
+      // issue, before attaching/programming the DTE. It can block there even
+      // when the explicit token wait is delayed.
+      addDependency(trace, sendIndex, recvIndex);
     }
   }
 
@@ -1799,12 +1813,8 @@ static mlir::LogicalResult verifyStructuredTransportWaitGraph(
         return action.operation->emitError(
             "direct_dte_binding: wait occurrence has no matched receive "
             "preparation");
-      // Programming a sender does not require the remote receiver FSM to have
-      // executed already; completion does. Keep the issue independently
-      // schedulable, then prove every send/receive wait occurs after both the
-      // local issue and the matched receive preparation. This distinction is
-      // essential when exact DDR cuts place the two endpoint preparations in
-      // different sequential TileRegions.
+      // Completion still requires both endpoints, independently of the ready
+      // dependency already attached to the matching sender issue.
       addDependency(trace, static_cast<unsigned>(actionIndex),
                     receiveIt->second);
     }
@@ -1951,6 +1961,7 @@ struct DirectDTEWaitChoice {
   bool receive = false;
   bool senderSlotReuse = false;
   bool receiverFSMReuse = false;
+  bool receiverReadySlotReuse = false;
 };
 
 static DirectDTECompletionResult
@@ -2068,6 +2079,22 @@ static mlir::LogicalResult buildBlockWaitChoices(
     auto receive = mlir::dyn_cast<InstrDTERecvOp>(operation);
     if (!receive)
       continue;
+    auto samePeer = [&](unsigned index) {
+      auto previous = mlir::cast<InstrDTERecvOp>(choices[index].issue);
+      return previous.getPeerAttr() == receive.getPeerAttr();
+    };
+    if (llvm::count_if(pendingReceives, samePeer) >=
+        TargetDirectDTEResourceLimits::receiverReadySlotsPerPeer) {
+      auto previous = llvm::find_if(pendingReceives, samePeer);
+      DirectDTEWaitChoice &reuse = choices[*previous];
+      // Receiving the previous payload proves its sender consumed ready.
+      // Publishing another ready before that proof can overwrite the single
+      // non-counting peer slot, even when distinct receiver FSMs are free.
+      reuse.anchor = operation;
+      reuse.insertAfter = false;
+      reuse.receiverReadySlotReuse = true;
+      pendingReceives.erase(previous);
+    }
     if (pendingReceives.size() >=
         TargetDirectDTEResourceLimits::receiverFSMsPerTile) {
       DirectDTEWaitChoice &reuse = choices[pendingReceives.front()];
@@ -2098,6 +2125,7 @@ verifyLocalWaitPlacement(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
         operationIndices.try_emplace(&operation, static_cast<unsigned>(index));
       unsigned liveSenders = 0;
       unsigned liveReceivers = 0;
+      llvm::DenseMap<int64_t, unsigned> liveReadySlots;
       for (mlir::Operation &operation : *block) {
         if (mlir::isa<InstrDTESendOp, InstrDTEBroadcastOp, InstrDTEScatterOp>(
                 operation)) {
@@ -2110,6 +2138,13 @@ verifyLocalWaitPlacement(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
             return;
           }
         } else if (auto receive = mlir::dyn_cast<InstrDTERecvOp>(operation)) {
+          if (++liveReadySlots[receive.getPeerAttr().getInt()] >
+              TargetDirectDTEResourceLimits::receiverReadySlotsPerPeer) {
+            receive.emitError("Direct DTE completion leaves overlapping "
+                              "ready notifications for one peer");
+            valid = mlir::failure();
+            return;
+          }
           if (++liveReceivers >
               TargetDirectDTEResourceLimits::receiverFSMsPerTile) {
             receive.emitError("Direct DTE completion leaves overlapping "
@@ -2128,13 +2163,14 @@ verifyLocalWaitPlacement(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
                 return;
               }
               --liveSenders;
-            } else if (token.getDefiningOp<InstrDTERecvOp>()) {
+            } else if (auto receive = token.getDefiningOp<InstrDTERecvOp>()) {
               if (liveReceivers == 0) {
                 wait.emitError("Direct DTE receive wait precedes its issue");
                 valid = mlir::failure();
                 return;
               }
               --liveReceivers;
+              --liveReadySlots[receive.getPeerAttr().getInt()];
             }
           }
         }
@@ -2259,6 +2295,7 @@ rebuildRequiredDirectDTEWaits(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
     ++statistics.waitsPlaced;
     statistics.senderSlotReuseWaits += choice.senderSlotReuse;
     statistics.receiverFSMReuseWaits += choice.receiverFSMReuse;
+    statistics.receiverReadySlotReuseWaits += choice.receiverReadySlotReuse;
   }
 
   if (mlir::failed(verifyLocalWaitPlacement(tileModules)))

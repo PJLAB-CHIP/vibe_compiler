@@ -41,6 +41,24 @@ def read_portable_stablehlo(program: pathlib.Path) -> str:
 
 
 class PyTorchBoardCasesTest(unittest.TestCase):
+    def test_allgather_reference_detects_missing_shard_and_last_element(self) -> None:
+        for extent in (1024, 1025, 1031):
+            case = cases.make_allgather_add(torch.float16, 17, extent=extent)
+            expected, = case.materialize_expected_outputs()
+            self.assertEqual(expected.shape, (16, 16, 1, extent))
+            self.assertEqual(case.allgather_payload_elements, extent)
+            for fault in ("missing-shard", "last-element"):
+                actual = expected.clone()
+                if fault == "missing-shard":
+                    actual[:, 15] = actual[:, 14]
+                else:
+                    actual[-1, -1, -1, -1] += 16
+                with self.assertRaises(AssertionError):
+                    cases.common.assert_tensor_matches(
+                        actual, expected, policy=case.comparison_policy,
+                        context=f"AllGather {extent} {fault}",
+                    )
+
     def test_launch_reference_checks_full_tensor_and_tail(self) -> None:
         for length in (1024, 1025, 1031):
             case = cases.make_launch_case("complete-tile-add", local_elements=length)
@@ -224,6 +242,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
 
         case = types.SimpleNamespace(
             num_partitions=1,
+            allgather_payload_elements=None,
             export_program=mock.Mock(),
             materialize_expected_outputs=mock.Mock(
                 return_value=(torch.zeros((1,), dtype=torch.float16),)

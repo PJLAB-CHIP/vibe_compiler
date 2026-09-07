@@ -240,11 +240,15 @@ block order和function return都不能替代未证明的completion。
 
 wait位置不是固定在issue之后。对每个dynamic token，合法区间由actual lifetime确定：recv wait不得晚于destination first read或
 receiver FSM/slot reuse，send wait不得晚于source/relay last release或sender resource reuse；在这些边界之前可以保留异步窗口。
-current CRT只有4个receiver FSM，DeviceExecutable verifier还必须证明任意structured trace中重叠receiver live range可在4个FSM内着色，
+current CRT只有4个receiver FSM；此外每对有向peer共享一个receiver-ready通知slot，`direct_sync_post`写入固定magic、
+sender issue中的`direct_sync_wait`消费后清零，slot没有message/round/FSM编号。前一次通知尚未消费时不能再post；
+当前completion以matching receive token完成作为本Tile可见的消费证明，同peer下一次recv prepare前必须完成前一次recv。
+不同peer仍可使用不同FSM异步准备，不增加全局drain或固定round barrier。
+DeviceExecutable verifier还必须证明任意structured trace中重叠receiver live range可在4个FSM内着色，
 并且跨Tile wait graph无环。该resource/deadlock约束可以迫使某个wait更早，但不能推广成“每个send/recv都立即await”。
 Movement只创建actual token及其buffer/effect关系，不决定wait位置。全部Tile完成Instr lowering后，card-scoped completion
 transformation先删除compiler-derived旧DTE wait，再从current issue、token、alias/effect、structured control和硬件sender/FSM限制
-fresh放置：recv在first read或receiver FSM复用前，send在下一sender slot复用、source/relay首次改写、释放或terminal前。
+fresh放置：recv在first read、同peer ready slot复用或receiver FSM复用前，send在下一sender slot复用、source/relay首次改写、释放或terminal前。
 无法形成同block唯一wait或全card wait graph有环时返回typed failure，不由movement、MiniMalloc或transport verifier插repair wait。
 
 ## 5. DeviceExecutable Direct DTE Verification
@@ -254,8 +258,8 @@ verification只读取memory-planned、completion-complete的all-and-only Tile In
 1. 解析每个send/recv/wait及structured occurrence；
 2. 按physical source/destination与message key建立一一匹配；
 3. 核对bytes、buffer encoding、accepted SPM ranges和dynamic rotating-slot pattern；
-4. 验证每个wait覆盖对应send issue和matching receive preparation；send issue本身不要求remote receive已经执行；
-5. 检查receiver range、FSM/endpoint resource、status/completion和冲突；
+4. 验证send issue依赖matching receive preparation，因为CRT在issue内阻塞等待ready；每个wait仍覆盖matching send/receive；
+5. 检查receiver range、FSM/endpoint resource、同peer ready slot的单次未消费通知、status/completion和冲突；
 6. 对所有op都成功时统一写入`DirectDTEBindingAttr`，否则不修改任何module。
 
 binding只保存单个Tile module无法重算但target lowering必须知道的accepted facts：allocation/completion profile、receiver

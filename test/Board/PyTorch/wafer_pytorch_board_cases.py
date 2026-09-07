@@ -41,6 +41,7 @@ class PyTorchBoardCase:
     expected_outputs_factory: Callable[[], tuple[torch.Tensor, ...]]
     export_program: Callable[[pathlib.Path], None]
     comparison_policy: common.ComparisonPolicy
+    allgather_payload_elements: int | None = None
     continuation_factory: (
         Callable[[tuple[torch.Tensor, ...]], "PyTorchBoardCase"] | None
     ) = None
@@ -108,6 +109,44 @@ class Gemm(torch.nn.Module):
 class CompleteTileAdd(torch.nn.Module):
     def forward(self, lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
         return lhs + rhs
+
+
+class AllGatherAdd(torch.nn.Module):
+    def forward(self, lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
+        return lhs + (rhs + rhs).unsqueeze(0)
+
+
+def make_allgather_add(
+    dtype: torch.dtype, seed: int, *, extent: int = 1024
+) -> PyTorchBoardCase:
+    """Ordinary broadcast dataflow requires every computed rhs shard."""
+    module = AllGatherAdd().eval()
+    lanes = torch.arange(extent, dtype=torch.int32)
+    tiles = torch.arange(16, dtype=torch.int32)
+    rhs = (tiles[:, None, None] * 8 + (lanes + seed) % 8).to(dtype)
+    lhs = (
+        tiles[:, None, None, None] * 4
+        + tiles[None, :, None, None]
+        + lanes[None, None, None, :] % 4
+    ).to(dtype)
+    inputs = (lhs, rhs)
+
+    def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
+        with torch.no_grad():
+            return (module(*inputs),)
+
+    return PyTorchBoardCase(
+        name=f"allgather-add-{extent}",
+        num_partitions=1,
+        dtype=dtype,
+        inputs=inputs,
+        expected_outputs_factory=expected_outputs_factory,
+        export_program=lambda output: _save_exported_program(
+            output, module, inputs
+        ),
+        comparison_policy=common.ComparisonPolicy(rtol=1e-3, atol=1e-5),
+        allgather_payload_elements=extent,
+    )
 
 
 def make_launch_case(
@@ -787,6 +826,13 @@ def _attention_decode_kv_cache(
 CASE_FACTORIES: dict[
     str, Callable[[torch.dtype, int], PyTorchBoardCase]
 ] = {
+    "allgather-add": make_allgather_add,
+    "allgather-add-tail-1025": lambda dtype, seed: make_allgather_add(
+        dtype, seed, extent=1025
+    ),
+    "allgather-add-tail-1031": lambda dtype, seed: make_allgather_add(
+        dtype, seed, extent=1031
+    ),
     "single-card-gemm": _single_card_gemm,
     "heterogeneous-tiling-dataflow": _heterogeneous_tiling_single_card,
     "conv-mixed-dag": _conv_mixed_dag,

@@ -28,6 +28,36 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 
 ## 推进顺序
 
+### 当前第1项：生产AllGather端到端
+
+Pipeline position:
+- Upstream IR / input: 同一PyTorch module的FP16 CPU输入及导出source；`lhs + (rhs + rhs).unsqueeze(0)`，rhs为`[16,1,L]`，lhs为`[16,16,1,L]`。
+- Current stage responsibility: 使用现有`wafer-compile --optimization-policy=none --num-partitions=1`；rhs计算按首维分片，广播consumer按新增首维分片，各Tile消费全部rhs分片。
+- Output IR / files: 生产Tile/Instr/LLVM dump、原样ExecutablePackage、fresh输入/eager reference/capture及runtime日志。
+- Downstream consumer: 现有PyTorch board runner、`wafer-run` no-card和单次真实板测。
+- User-level driver / named pipeline: `wafer_board_pytorch_test.py`的AllGather Add case与生产`wafer-compile`。
+- Explicit non-goals: 不修改ELF/manifest，不指定编译器通信算法，不代签CRT探针、GEMM、其它collective或性能。
+- Completion criteria: fresh no-card通过；实际16-Tile Ring的send/recv/wait、完整输出PyTorch比较、status和正常cleanup全部通过。
+
+| 输入等价类 | exact结构与失败检查 | 下游witness |
+| --- | --- | --- |
+| FP16 L=1024 | 16 Tile、15轮、每Tile15 send/recv及对应token wait，payload为2L bytes；跨Tile共享DDR为0 | fresh production source/package/no-card；单次板端完整262144元素对比，rtol=1e-3、atol=1e-5 |
+| FP16 L=1025/1031 | 同一实际生产路径、非整除payload与尾元素；缺send/recv/wait或纯DDR产物必须拒绝 | fresh source/package/no-card；本项不额外发射板端批次 |
+| 数值错误 | 最后元素越阈值必须拒绝；所有expected由PyTorch eager生成 | 保留完整reference及逐tensor比较结果 |
+
+后续GEMM消费AllGather的定位输入目前仍生成DDR，不能由本case结果代签；其closure原因待独立定位。
+
+本轮结果：
+- 新增普通PyTorch AllGather Add及1025/1031尾长case；三个fresh source/package/no-card均通过。
+  每个实际Instr产物为16 Tile、15轮、240 send、240 recv、480 exact-token wait，无shared-DDR通信边界。
+  完整FP16 eager reference已保存；缺分片与末元素错误的PyTorch负例通过。
+- L=1024单次真实调用在`TX cluster:main`等待60秒后timeout，runtime标记context poisoned并退出；没有numeric capture，
+  没有PyTorch通过结论，也没有normal cleanup通过结论。第1项仍未完成，不能把三个no-card结果记作板端done。
+- 用户随后明确要求重跑Add。重新导出输入/source/reference并通过fresh no-card；单次真实Add同样在
+  `TX grid:main`等待60秒后timeout，没有回读。当前会话的基础执行可用性尚未重新建立；停止全部板端调用，未reset/power或自动retry。
+- 两次调用前均确认设备无其它进程占用，runtime/PCI/SDK身份与既有会话一致。超时本身不足以判定硬件故障或通信根因；
+  下一次板测需先恢复并确认设备执行可用性，不能沿用此前Add通过结论代表当前状态。
+
 1. 接通board runtime，并完成Add和Direct-DTE的PyTorch reference、输出capture与fresh no-card。
 2. 单次真实执行16-Tile FP16 Add；通过后单次执行Direct-DTE。
 3. 承接13号通信矩阵，逐项绑定PyTorch reference、current算法路径与实际板端结果。
@@ -38,6 +68,38 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 首个timeout或设备异常停止批次；全部新增环境与产物受用户目录范围限制。
 
 ## 本轮检查点
+
+### DTE握手故障定位与修复
+
+Pipeline position:
+- Upstream IR / input: 已实际物化的Tile Instr send/recv/token、buffer effect和structured control；current CRT单peer ready slot事实。
+- Current stage responsibility: 最终completion owner在同peer ready slot复用前放置已有recv token的wait；transport verifier验证单slot及send issue的remote-ready依赖。
+- Output IR / files: 同一Instr IR上的精确wait和完整transport验证结果；失败不发布binding。
+- Downstream consumer: actual SPM规划、target lowering、ExecutablePackage及上述PyTorch source/no-card。
+- User-level driver / named pipeline: 现有production `wafer-compile`及共享Direct-DTE completion/verification入口。
+- Explicit non-goals: 不更换Ring算法、不改数值、不新增IR或CRT协议、不reset或重新上板；独立peer保留异步窗口。
+- Completion criteria: 旧顺序的host回归先失败；修复后本轮actual IR、full transport/Tile tests及三个fresh PyTorch no-card通过；真实板端仍待设备恢复后重新验收。
+
+| 输入等价类 | exact结果与负例 | 下游witness |
+| --- | --- | --- |
+| 同peer、不同buffer/FSM、连续recv | 前一token wait在下一recv前；缺失时verifier拒绝且不写binding | rank-3 FP16 1024/1025/1031；修复前失败、修复后通过 |
+| 不同peer、多receiver | 不因ready slot插入多余wait；第5个live receiver仍按4-FSM限制处理 | 既有resource gate与独立peer回归 |
+| 双向send先于recv、wait延后 | send issue的remote-ready依赖形成cycle，必须拒绝 | 两Tile真实规模current IR；recv先于send正例仍通过 |
+| 16-Tile Ring生产source | 每Tile15 recv/send、30 wait，前一同peer接收完成再发布下一通知；payload与tensor值不变 | 1024/1025/1031 fresh no-card及PyTorch reference，设备不重发 |
+
+本轮定位与验证：
+- 对照repo vendor archive和安装SDK示例Kcore ELF，确认ready为每对peer单个magic slot，重复post不累计；
+  当前CRT的send issue会先阻塞等待该ready。原completion只覆盖sender/FSM/buffer，verifier也漏掉issue自身的ready依赖。
+- 三条新增回归在修复前全部失败；修复后同peer复用必须先消费原recv token，独立peer保持4-FSM窗口。
+  旧的跨同peer循环提前recv正例实际不满足该协议，已替换成验证拒绝且不写binding的负例。
+- 三个fresh PyTorch source/no-card通过，完整reference已准备；实际产物保持240 send、240 recv、480 wait。
+  按各自actual target LLVM进行握手顺序模拟，三个长度均16/16完成、ready覆盖为0；该模拟不执行数值，不代签实卡结果。
+- canonical完整增量构建与`check-wafer`通过：265个lit、14个component suite和15个SystemC case全部执行通过；
+  PyTorch case/reference测试和缺分片、尾元素、缺send/recv/wait及DDR边界负例通过。
+- 用户要求清理的超时package、旧IR和raw数据已删除；定位依据保留在回归测试、协议事实及简短失败日志中。
+  当前只保留修复版source/no-card产物。设备没有重试、reset或power，实卡根因的最终闭环和数值通过仍待恢复后验收。
+
+### 基础板测已有检查
 
 - Add已改为同一个PyTorch module导出source和执行eager reference，fresh no-card已通过。
   第一次设备调用在qualification阶段拒绝Tile/launch-slot映射，context保持usable，未分配或发射kernel。

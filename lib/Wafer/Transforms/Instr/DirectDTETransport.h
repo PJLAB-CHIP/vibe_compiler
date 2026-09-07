@@ -29,6 +29,7 @@ struct DirectDTECompletionStatistics {
   uint64_t waitsPlaced = 0;
   uint64_t senderSlotReuseWaits = 0;
   uint64_t receiverFSMReuseWaits = 0;
+  uint64_t receiverReadySlotReuseWaits = 0;
 };
 
 struct DirectDTECompletionResult {
@@ -42,7 +43,7 @@ struct DirectDTECompletionResult {
 };
 
 /// Erases compiler-derived Direct-DTE waits and rebuilds them from the actual
-/// Instr issues, SSA tokens, buffer effects and current target sender/FSM
+/// Instr issues, SSA tokens, buffer effects and current target sender/FSM/ready
 /// limits. The request-local placement choices are consumed in this call and
 /// are never retained as a schedule plan.
 DirectDTECompletionResult

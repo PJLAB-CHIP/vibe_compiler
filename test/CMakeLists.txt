@@ -170,6 +170,13 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
     )
   endfunction()
 
+  foreach(_wafer_allgather_case IN ITEMS
+      allgather-add allgather-add-tail-1025 allgather-add-tail-1031)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_allgather_case} float16 fp16 none)
+  endforeach()
+  unset(_wafer_allgather_case)
+
   foreach(_wafer_product_case IN ITEMS
       conv-mixed-dag
       attention-prefill
