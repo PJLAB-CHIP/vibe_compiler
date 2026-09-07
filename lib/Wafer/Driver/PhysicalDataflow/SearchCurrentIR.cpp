@@ -605,20 +605,100 @@ private:
                                     uint64_t maximumMovementLeaves,
                                     std::string &detail) {
     SpatialRegionMaterializationFailure closureFailure;
+    auto availability = analyzeCommunicationRegionClosure(
+        *candidate.module, candidate.relations, &closureFailure);
+    if (mlir::failed(availability))
+      return {fail(ExecutableCompilationStatus::CompilerFailure,
+                   "search-communication-region-availability",
+                   closureFailure.detail)};
+    const bool canMerge =
+        *availability == CommunicationRegionClosureAvailability::Available;
+    if (!canMerge || maximumMovementLeaves < 2) {
+      FinishedCandidate result = finishRegionCandidate(
+          std::move(candidate), maximumMovementLeaves, detail);
+      if (canMerge && !result.compilation.isAccepted() &&
+          result.compilation.status !=
+              ExecutableCompilationStatus::CompilerFailure)
+        result.compilation =
+            fail(ExecutableCompilationStatus::IndeterminateFailure,
+                 "search-communication-region-budget",
+                 "current Region alternatives were not exhausted");
+      return result;
+    }
+
+    // The original owner remains a candidate. Only the second owner receives
+    // the optional rewrite; neither winner is replayed from a region plan.
+    mlir::IRMapping mapping;
+    auto merged =
+        cloneCandidate(*candidate.module, candidate.relations, mapping, detail);
+    if (mlir::failed(merged))
+      return {fail(ExecutableCompilationStatus::CompilerFailure,
+                   "search-communication-region-clone", detail)};
     CommunicationRegionClosureStatistics closureStatistics;
     if (mlir::failed(closeCrossTileCommunicationRegions(
-            *candidate.module, candidate.relations, &closureStatistics,
+            *merged->module, merged->relations, &closureStatistics,
             &closureFailure)))
-      return {fail(closureFailure.kind ==
-                           SpatialRegionMaterializationFailureKind::Unsupported
-                       ? ExecutableCompilationStatus::UnsupportedFailure
-                       : ExecutableCompilationStatus::CompilerFailure,
+      return {fail(ExecutableCompilationStatus::CompilerFailure,
                    "search-communication-region-closure",
                    closureFailure.detail)};
-    if (statistics)
+    if (statistics) {
       statistics->communicationRegionClosures +=
           closureStatistics.closedExchangeComponents;
+      ++statistics->regionPreservingCandidates;
+      ++statistics->mergedRegionCandidates;
+    }
+    const uint64_t preservingBudget = maximumMovementLeaves / 2;
+    FinishedCandidate preserving =
+        finishRegionCandidate(std::move(candidate), preservingBudget, detail);
+    if (preserving.compilation.status ==
+        ExecutableCompilationStatus::CompilerFailure)
+      return preserving;
+    FinishedCandidate fused = finishRegionCandidate(
+        std::move(*merged), maximumMovementLeaves - preserving.actualLeaves,
+        detail);
+    const uint64_t actualLeaves = preserving.actualLeaves + fused.actualLeaves;
+    if (fused.compilation.status ==
+        ExecutableCompilationStatus::CompilerFailure)
+      return {std::move(fused.compilation), actualLeaves};
+    if (statistics) {
+      statistics->regionPreservingAccepted +=
+          preserving.compilation.isAccepted();
+      statistics->mergedRegionAccepted += fused.compilation.isAccepted();
+    }
+    bool useMerged = fused.compilation.isAccepted();
+    if (preserving.compilation.isAccepted() && fused.compilation.isAccepted()) {
+      auto originalObjective = deriveSearchObjective(
+          preserving.compilation.executable->resourceCost, cohort);
+      auto mergedObjective = deriveSearchObjective(
+          fused.compilation.executable->resourceCost, cohort);
+      auto comparison =
+          compareSearchObjectives(mergedObjective, originalObjective);
+      useMerged = comparison == SearchObjectiveComparison::Better;
+      if (statistics && comparison == SearchObjectiveComparison::Incomparable)
+        ++statistics->incomparableMovementObjectives;
+    }
+    if (useMerged) {
+      if (statistics)
+        ++statistics->mergedRegionWinners;
+      return {std::move(fused.compilation), actualLeaves};
+    }
+    if (preserving.compilation.isAccepted())
+      return {std::move(preserving.compilation), actualLeaves};
+    // An unknown or unsupported alternative prevents lifting a capacity
+    // rejection to the common pre-merge owner.
+    for (auto status : {ExecutableCompilationStatus::IndeterminateFailure,
+                        ExecutableCompilationStatus::UnsupportedFailure}) {
+      if (preserving.compilation.status == status)
+        return {std::move(preserving.compilation), actualLeaves};
+      if (fused.compilation.status == status)
+        return {std::move(fused.compilation), actualLeaves};
+    }
+    return {std::move(preserving.compilation), actualLeaves};
+  }
 
+  FinishedCandidate finishRegionCandidate(CurrentCandidate candidate,
+                                          uint64_t maximumMovementLeaves,
+                                          std::string &detail) {
     OnlineAttentionDecompositionFailure attentionFailure;
     if (mlir::failed(decomposeOnlineAttention(
             *candidate.module, candidate.relations, &attentionFailure)))
@@ -651,7 +731,7 @@ private:
 
     bool recursiveAvailable = false;
     DistributedMovementAvailability distributedAvailability;
-    if (maximumMovementLeaves > 1) {
+    {
       RecursiveDoublingAvailability availability =
           analyzeRecursiveDoublingAvailability(*candidate.module,
                                                candidate.relations);
@@ -676,6 +756,7 @@ private:
       bool requiresDimensionOrderedAllToAll = false;
       bool requiresDistributedRing = false;
     };
+    bool movementDomainExhausted = true;
     std::vector<PendingMovement> pending;
     pending.push_back(
         PendingMovement{std::move(candidate), BoundaryMovementOptions{}});
@@ -683,8 +764,10 @@ private:
         [&](BoundaryMovementOptions movementOptions, bool requiresRecursive,
             bool requiresAllToAll,
             bool requiresDistributedRing) -> mlir::LogicalResult {
-      if (pending.size() >= maximumMovementLeaves)
+      if (pending.size() >= maximumMovementLeaves) {
+        movementDomainExhausted = false;
         return mlir::success();
+      }
       mlir::IRMapping mapping;
       auto cloned =
           cloneCandidate(*pending.front().candidate.module,
@@ -696,6 +779,16 @@ private:
                                         requiresDistributedRing});
       return mlir::success();
     };
+    if (distributedAvailability.sharedDDR &&
+        mlir::failed(appendClone(
+            BoundaryMovementOptions{CompleteAllGatherAlgorithm::Ring,
+                                    CompleteAllToAllAlgorithm::Direct,
+                                    DistributedReductionAlgorithm::Centralized,
+                                    BoundaryMovementTransport::SharedDDR},
+            /*requiresRecursive=*/false, /*requiresAllToAll=*/false,
+            /*requiresDistributedRing=*/false)))
+      return {fail(ExecutableCompilationStatus::CompilerFailure,
+                   "search-shared-ddr-clone", detail)};
     if (recursiveAvailable &&
         mlir::failed(appendClone(
             BoundaryMovementOptions{
@@ -770,29 +863,43 @@ private:
 
     std::vector<PendingMovement> materialized;
     materialized.reserve(pending.size());
+    uint64_t attemptedMovements = 0;
+    bool sawUnsupportedMovement = false;
     for (PendingMovement &movementCandidate : pending) {
+      ++attemptedMovements;
       BoundaryMovementResult movement = materializeTileBoundaryMovement(
           *movementCandidate.candidate.module,
           movementCandidate.candidate.relations, movementCandidate.options);
       recordMovementInstrumentation(movement.statistics);
-      if (!movement.succeeded())
-        return {
-            fail(movement.failure == BoundaryMovementFailureKind::Unsupported
-                     ? ExecutableCompilationStatus::UnsupportedFailure
-                     : ExecutableCompilationStatus::CompilerFailure,
-                 "search-boundary-movement", movement.detail)};
+      if (!movement.succeeded()) {
+        if (movement.failure == BoundaryMovementFailureKind::Unsupported) {
+          sawUnsupportedMovement = true;
+          continue;
+        }
+        return {fail(ExecutableCompilationStatus::CompilerFailure,
+                     "search-boundary-movement", movement.detail),
+                attemptedMovements};
+      }
+      if (statistics && movementCandidate.options.transport ==
+                            BoundaryMovementTransport::SharedDDR)
+        ++statistics->sharedDDRCandidates;
       if (movementCandidate.requiresRecursive &&
           movement.statistics.recursiveDoublingComponents == 0)
         return {fail(ExecutableCompilationStatus::CompilerFailure,
                      "search-boundary-movement-recursive-doubling",
-                     "availability and recursive materialization disagree")};
+                     "availability and recursive materialization disagree"),
+                attemptedMovements};
       if (movementCandidate.requiresDimensionOrderedAllToAll &&
-          movement.statistics.dimensionOrderedAllToAllComponents == 0)
+          movement.statistics.dimensionOrderedAllToAllComponents == 0) {
+        sawUnsupportedMovement = true;
         continue;
+      }
       if (movementCandidate.requiresDistributedRing &&
           movement.statistics.ringReduceScatterComponents == 0 &&
-          movement.statistics.ringAllReduceComponents == 0)
+          movement.statistics.ringAllReduceComponents == 0) {
+        sawUnsupportedMovement = true;
         continue;
+      }
       if (statistics) {
         statistics->recursiveDoublingCandidates +=
             movementCandidate.requiresRecursive;
@@ -824,6 +931,7 @@ private:
       bool recursive = false;
       bool dimensionOrderedAllToAll = false;
       bool distributedRing = false;
+      bool sharedDDR = false;
     };
     std::vector<std::unique_ptr<CompiledMovement>> compiled;
     compiled.reserve(materialized.size());
@@ -833,7 +941,7 @@ private:
       ExecutableCompilationResult result =
           compileMovementCandidate(std::move(movementCandidate.candidate));
       if (result.status == ExecutableCompilationStatus::CompilerFailure)
-        return {std::move(result), compiled.size() + 1};
+        return {std::move(result), attemptedMovements};
       if (statistics && result.isAccepted()) {
         statistics->recursiveDoublingAccepted +=
             movementCandidate.requiresRecursive;
@@ -841,17 +949,23 @@ private:
             movementCandidate.requiresDimensionOrderedAllToAll;
         statistics->distributedRingAccepted +=
             movementCandidate.requiresDistributedRing;
+        statistics->sharedDDRAccepted += movementCandidate.options.transport ==
+                                         BoundaryMovementTransport::SharedDDR;
       }
       compiled.push_back(std::make_unique<CompiledMovement>(CompiledMovement{
           std::move(result), movementCandidate.requiresRecursive,
           movementCandidate.requiresDimensionOrderedAllToAll,
-          movementCandidate.requiresDistributedRing}));
+          movementCandidate.requiresDistributedRing,
+          movementCandidate.options.transport ==
+              BoundaryMovementTransport::SharedDDR}));
     }
     if (compiled.empty())
-      return {fail(ExecutableCompilationStatus::CompilerFailure,
+      return {fail(movementDomainExhausted
+                       ? ExecutableCompilationStatus::UnsupportedFailure
+                       : ExecutableCompilationStatus::IndeterminateFailure,
                    "search-boundary-movement",
-                   "default movement candidate was not materialized"),
-              0};
+                   "no attempted movement candidate was materialized"),
+              attemptedMovements};
 
     std::optional<size_t> winner;
     std::optional<SearchObjective> winnerObjective;
@@ -875,7 +989,7 @@ private:
         ++statistics->incomparableMovementObjectives;
       }
     }
-    const uint64_t actualLeaves = compiled.size();
+    const uint64_t actualLeaves = attemptedMovements;
     if (winner) {
       if (statistics) {
         statistics->recursiveDoublingWinners += compiled[*winner]->recursive;
@@ -883,12 +997,27 @@ private:
             compiled[*winner]->dimensionOrderedAllToAll;
         statistics->distributedRingWinners +=
             compiled[*winner]->distributedRing;
+        statistics->sharedDDRWinners += compiled[*winner]->sharedDDR;
       }
       return {std::move(compiled[*winner]->result), actualLeaves};
     }
+    if (!movementDomainExhausted)
+      return {fail(ExecutableCompilationStatus::IndeterminateFailure,
+                   "search-movement-budget",
+                   "current movement alternatives were not exhausted"),
+              actualLeaves};
+    if (sawUnsupportedMovement)
+      return {fail(ExecutableCompilationStatus::UnsupportedFailure,
+                   "search-boundary-movement",
+                   "an actual movement alternative is unsupported"),
+              actualLeaves};
     for (std::unique_ptr<CompiledMovement> &candidateResult : compiled)
       if (candidateResult->result.status ==
           ExecutableCompilationStatus::IndeterminateFailure)
+        return {std::move(candidateResult->result), actualLeaves};
+    for (std::unique_ptr<CompiledMovement> &candidateResult : compiled)
+      if (candidateResult->result.status ==
+          ExecutableCompilationStatus::UnsupportedFailure)
         return {std::move(candidateResult->result), actualLeaves};
     for (std::unique_ptr<CompiledMovement> &candidateResult : compiled)
       if (candidateResult->result.isProvenExactRejection())
@@ -1047,6 +1176,17 @@ ExecutableCompilationResult compileSearchCurrentIR(
                   statistics->distributedRingAccepted);
     searchCounter("distributed-ring-winners",
                   statistics->distributedRingWinners);
+    searchCounter("region-preserving-candidates",
+                  statistics->regionPreservingCandidates);
+    searchCounter("region-preserving-accepted",
+                  statistics->regionPreservingAccepted);
+    searchCounter("merged-region-candidates",
+                  statistics->mergedRegionCandidates);
+    searchCounter("merged-region-accepted", statistics->mergedRegionAccepted);
+    searchCounter("merged-region-winners", statistics->mergedRegionWinners);
+    searchCounter("shared-ddr-candidates", statistics->sharedDDRCandidates);
+    searchCounter("shared-ddr-accepted", statistics->sharedDDRAccepted);
+    searchCounter("shared-ddr-winners", statistics->sharedDDRWinners);
   }
   if (statistics) {
     statistics->planning = searched.planning;

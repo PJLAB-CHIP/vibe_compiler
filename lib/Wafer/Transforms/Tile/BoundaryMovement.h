@@ -34,11 +34,17 @@ enum class DistributedReductionAlgorithm : uint8_t {
   Ring,
 };
 
+enum class BoundaryMovementTransport : uint8_t {
+  Peer,
+  SharedDDR,
+};
+
 struct BoundaryMovementOptions {
   CompleteAllGatherAlgorithm allGather = CompleteAllGatherAlgorithm::Ring;
   CompleteAllToAllAlgorithm allToAll = CompleteAllToAllAlgorithm::Direct;
   DistributedReductionAlgorithm reduction =
       DistributedReductionAlgorithm::Centralized;
+  BoundaryMovementTransport transport = BoundaryMovementTransport::Peer;
 };
 
 struct BoundaryMovementStatistics {
@@ -101,6 +107,7 @@ struct RecursiveDoublingAvailability {
 };
 
 struct DistributedMovementAvailability {
+  bool sharedDDR = false;
   bool dimensionOrderedAllToAll = false;
   bool distributedReduction = false;
   bool brokenContract = false;

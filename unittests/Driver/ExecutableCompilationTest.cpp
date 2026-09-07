@@ -19,6 +19,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
@@ -337,11 +338,75 @@ module {
   module->walk([&](mlir::memref::AllocOp) { ++allocations; });
   EXPECT_EQ(gathers, 0u);
   EXPECT_EQ(allocations, 1u);
-  EXPECT_TRUE(relations.buffers.empty());
+  EXPECT_FALSE(relations.buffers.empty());
+  EXPECT_TRUE(mlir::succeeded(
+      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
+          module->getOperation(), relations)));
   ASSERT_TRUE(mlir::succeeded(wafer::rebuildRequiredNCCJoins(*module)));
   EXPECT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(
       *module, /*spmBase=*/0, /*spmLimit=*/3 * 1024 * 1024,
       /*spmAlignment=*/16)));
+}
+
+TEST_F(ExecutableCompilationTest,
+       TransferCleanupRebuildsOwnersAfterCreatingReplacementViews) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    std::string body = llvm::formatv(R"mlir(
+      %c0 = arith.constant 0 : index
+      %zero = arith.constant 0.0 : f16
+      %source = memref.alloc()
+          : memref<2x{0}x4xf16, #wafer.memory<spm, tensor>>
+      %dest = memref.alloc()
+          : memref<{0}x2x4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.fill %source, %zero
+          : memref<2x{0}x4xf16, #wafer.memory<spm, tensor>>, f16
+      wafer.instr.ncc_join [0]
+      wafer.instr.gather_scatter %source to %dest
+          {{byte_count = {1} : i64, inner_bytes = {1} : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<2x{0}x4xf16, #wafer.memory<spm, tensor>>
+         to memref<{0}x2x4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.ncc_join [0]
+      %value = memref.load %dest[%c0, %c0, %c0]
+          : memref<{0}x2x4xf16, #wafer.memory<spm, tensor>>
+      wafer.tile.yield %arg0 : i1
+    )mlir",
+                                     extent, extent * 16)
+                           .str();
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(
+        "module { func.func @main() { %token = arith.constant false "
+        "%unused = wafer.tile.region(%token : i1) -> (i1) { ^bb0(%arg0: i1): " +
+            body + "} return } }",
+        context.get());
+    ASSERT_TRUE(module);
+    wafer::StructuredMaterializationRelations relations;
+    wafer::compiler::detail::rebuildCurrentBufferOwnerRelations(
+        module->getOperation(), relations);
+    auto eliminated =
+        wafer::compiler::detail::cleanupCanonicalInstructionTransfers(
+            *module, relations);
+    ASSERT_TRUE(mlir::succeeded(eliminated));
+    EXPECT_EQ(*eliminated, 1u);
+    unsigned views = 0;
+    module->walk([&](mlir::memref::ReinterpretCastOp view) {
+      ++views;
+      EXPECT_TRUE(llvm::any_of(relations.buffers, [&](const auto &relation) {
+        return relation.owner == view.getOperation() &&
+               relation.buffer == view.getResult();
+      }));
+    });
+    EXPECT_EQ(views, 1u);
+    EXPECT_TRUE(mlir::succeeded(
+        wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
+            module->getOperation(), relations)));
+    ASSERT_TRUE(mlir::succeeded(wafer::rebuildRequiredNCCJoins(*module)));
+    EXPECT_TRUE(mlir::succeeded(
+        wafer::planSPMMemoryModule(*module, 0, 3 * 1024 * 1024, 16)));
+  }
 }
 
 TEST_F(ExecutableCompilationTest,
@@ -471,6 +536,80 @@ TEST(ExecutableCompilationPolicyTest,
   EXPECT_GT(baseline.temporalApplications, 0u);
   EXPECT_EQ(baseline.layoutInvocations, 1u);
   EXPECT_EQ(executable.actualMemoryTargetGateInvocations, 1u);
+}
+
+TEST(ExecutableCompilationPolicyTest,
+     CommunicationClosurePreservesBaselineAndSearchDDRAlternatives) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto parsed = wafer::compiler::testing::parseProgram();
+    std::string body = llvm::formatv(R"mlir(
+      %empty = tensor.empty() : tensor<16x1x{0}xf16>
+      %produced = linalg.add
+          ins(%input, %input : tensor<16x1x{0}xf16>, tensor<16x1x{0}xf16>)
+          outs(%empty : tensor<16x1x{0}xf16>) -> tensor<16x1x{0}xf16>
+      %output = tensor.empty() : tensor<16x16x1x{0}xf16>
+      %expanded = linalg.broadcast ins(%produced : tensor<16x1x{0}xf16>)
+          outs(%output : tensor<16x16x1x{0}xf16>) dimensions = [0]
+      %result = linalg.add
+          ins(%lhs, %expanded : tensor<16x16x1x{0}xf16>, tensor<16x16x1x{0}xf16>)
+          outs(%output : tensor<16x16x1x{0}xf16>) -> tensor<16x16x1x{0}xf16>
+      return %result : tensor<16x16x1x{0}xf16>
+    )mlir",
+                                     extent)
+                           .str();
+    std::string source =
+        "module { wafer.target.topology @default "
+        "{card_grid = array<i64: 1, 1>, card_interconnect = \"mesh\", "
+        "tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>} "
+        "wafer.execution.mesh @default_mesh "
+        "{axes = [\"card\"], shape = array<i64: 1>} " +
+        llvm::formatv("func.func @main(%lhs: tensor<16x16x1x{0}xf16>, "
+                      "%input: tensor<16x1x{0}xf16>) -> "
+                      "tensor<16x16x1x{0}xf16> {{",
+                      extent)
+            .str() +
+        body + "} }";
+    parsed.module =
+        mlir::parseSourceString<mlir::ModuleOp>(source, parsed.context.get());
+    ASSERT_TRUE(parsed.module);
+    wafer::frontend::FrontendProgramVerificationResult program;
+    program.numPartitions = 1;
+    program.programUserInputCount = 2;
+    program.distributedInputs = {
+        wafer::compiler::testing::boundary(0, {16, 16, 1, extent}),
+        wafer::compiler::testing::boundary(1, {16, 1, extent})};
+    program.distributedOutputs = {
+        wafer::compiler::testing::boundary(0, {16, 16, 1, extent})};
+    std::string diagnosticText;
+    llvm::raw_string_ostream diagnostics(diagnosticText);
+    wafer::compiler::ProgramDataHandoff baselineData;
+    wafer::compiler::detail::BaselineCurrentIROptions baselineOptions;
+    baselineOptions.downstream.tilePipelineParallelism = 1;
+    wafer::compiler::detail::BaselineCurrentIRStatistics baseline;
+    auto baselineResult = wafer::compiler::detail::compileBaselineCurrentIR(
+        *parsed.module, program, wafer::compiler::testing::executionConfig(),
+        diagnostics, baselineData, baselineOptions, &baseline);
+    ASSERT_TRUE(baselineResult.isAccepted()) << baselineResult.detail;
+    EXPECT_EQ(baseline.communicationRegionClosures, 0u);
+    ASSERT_TRUE(baselineResult.physicalIRInventory);
+    EXPECT_GE(baselineResult.physicalIRInventory->tileRegions, 32u);
+
+    wafer::compiler::ProgramDataHandoff searchData;
+    wafer::compiler::detail::SearchCurrentIROptions options;
+    options.limits = wafer::SearchLimits{1, 16};
+    options.downstream.tilePipelineParallelism = 1;
+    wafer::compiler::detail::SearchCurrentIRStatistics search;
+    auto result = wafer::compiler::detail::compileSearchCurrentIR(
+        *parsed.module, program, wafer::compiler::testing::executionConfig(),
+        diagnostics, searchData, options, &search);
+    ASSERT_TRUE(result.isAccepted()) << result.detail << diagnosticText;
+    EXPECT_GT(search.regionPreservingAccepted, 0u);
+    EXPECT_GT(search.mergedRegionAccepted, 0u);
+    EXPECT_GT(search.sharedDDRAccepted, 0u);
+    EXPECT_LE(search.temporalCandidateActualizations, 16u);
+    EXPECT_EQ(result.executable->tiles.size(), 16u);
+  }
 }
 
 TEST(ExecutableCompilationPolicyTest,

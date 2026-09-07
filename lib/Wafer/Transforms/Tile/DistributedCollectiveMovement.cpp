@@ -413,16 +413,36 @@ static mlir::Operation *
 getInsertionAnchor(int64_t tile,
                    const CompletePersonalizedComponent &component) {
   mlir::Operation *anchor = nullptr;
+  // Source windows and their packs may be defined between the old peer
+  // issues. Place the new exchange before the first received-buffer use,
+  // after all local source definitions, rather than before the first issue.
   for (const auto &[edge, pair] : component.pairs) {
-    mlir::Operation *operation = nullptr;
-    if (edge.first == tile)
-      operation = pair.send;
-    else if (edge.second == tile)
-      operation = pair.receive;
-    if (!operation)
+    if (edge.second != tile)
       continue;
-    if (!anchor || operation->isBeforeInBlock(anchor))
-      anchor = operation;
+    auto receive = pair.receive;
+    for (mlir::Operation *user : receive.getBuffer().getUsers()) {
+      if (user == receive.getOperation())
+        continue;
+      if (user->getBlock() != pair.receive->getBlock())
+        return nullptr;
+      if (!anchor || user->isBeforeInBlock(anchor))
+        anchor = user;
+    }
+  }
+  if (!anchor)
+    return nullptr;
+  for (const auto &[edge, pair] : component.pairs) {
+    if (edge.first != tile)
+      continue;
+    if (!pair.send->isBeforeInBlock(anchor))
+      return nullptr;
+    auto send = pair.send;
+    mlir::Value source = send.getBuffer();
+    if (source.getParentBlock() != anchor->getBlock())
+      return nullptr;
+    if (mlir::Operation *definition = source.getDefiningOp();
+        definition && !definition->isBeforeInBlock(anchor))
+      return nullptr;
   }
   return anchor;
 }
@@ -616,7 +636,7 @@ materializeComponent(CompletePersonalizedComponent &component,
       finalAggregate = phaseTwoReceives.at(
           std::make_pair(edge.second, sourceCoordinate.row));
     }
-    rewriter.setInsertionPoint(pair.receive);
+    rewriter.setInsertionPointAfter(finalAggregate.getDefiningOp());
     mlir::FailureOr<mlir::Value> slot =
         createSlot(rewriter, pair.receive.getLoc(), finalAggregate,
                    component.pieceType, sourceCoordinate.column);
@@ -1272,11 +1292,16 @@ materializeDimensionOrderedAllToAll(mlir::ModuleOp module) {
                 discoveryFailure);
 
   DistributedCollectiveMovementResult result;
-  for (CompletePersonalizedComponent &component : components)
+  for (CompletePersonalizedComponent &component : components) {
+    if (llvm::any_of(component.participants, [&](int64_t tile) {
+          return !getInsertionAnchor(tile, component);
+        }))
+      continue;
     if (mlir::failed(materializeComponent(component, result)))
       return fail(DistributedCollectiveMovementFailureKind::CompilerFailure,
                   "preflighted dimension-ordered AllToAll could not be "
                   "materialized");
+  }
   if (mlir::failed(mlir::verify(module)))
     return fail(DistributedCollectiveMovementFailureKind::CompilerFailure,
                 "dimension-ordered AllToAll produced invalid current Tile "

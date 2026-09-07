@@ -826,7 +826,8 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<TargetLLVMModules> &targetLLVMModules,
     ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
-    CompilationIRTrace &irTrace, CompilationStageTracker &stages) {
+    CompilationIRTrace &irTrace, CompilationStageTracker &stages,
+    const CommunicationCandidateSelection *qualification) {
   const CompileClock::time_point totalStart = CompileClock::now();
   wafer::support::ScopedCompileTimingSpan productTiming(
       "stage", "target-codegen", "executable-package");
@@ -834,7 +835,7 @@ mlir::LogicalResult stageTargetPackage(
   llvm::Expected<DeviceExecutable> compiledDeviceExecutable =
       compileTensorProgramToDeviceExecutable(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,
-          failAfterLaunchSlot, programData, resolver, irTrace);
+          failAfterLaunchSlot, programData, resolver, irTrace, qualification);
   if (!compiledDeviceExecutable) {
     llvm::consumeError(compiledDeviceExecutable.takeError());
     return mlir::failure();

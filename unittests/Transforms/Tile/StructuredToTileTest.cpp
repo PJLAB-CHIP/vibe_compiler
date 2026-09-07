@@ -25,7 +25,9 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/Support/raw_ostream.h"
@@ -2793,6 +2795,150 @@ TEST_F(StructuredToTileTest,
     EXPECT_EQ(movement.statistics.peerSends, 0u);
     EXPECT_EQ(movement.statistics.peerReceives, 0u);
     EXPECT_EQ(movement.statistics.crossTileDDRStages, 2u);
+  }
+}
+
+TEST_F(StructuredToTileTest, RegionClosureIsOptionalAndDDRHasItsOwnOrderProof) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (bool merge : {false, true}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(merge);
+      auto module = parse(makeSplitTwoTileExchangeSource(extent));
+      ASSERT_TRUE(module);
+      llvm::SmallVector<llvm::SmallVector<TileRegionOp, 2>, 2> regions(2);
+      for (TileModuleOp tile : module->getOps<TileModuleOp>())
+        tile.walk([&](TileRegionOp region) {
+          regions[tile.getTileIdAttr().getInt()].push_back(region);
+        });
+      StructuredMaterializationRelations relations;
+      for (unsigned tile = 0; tile < 2; ++tile) {
+        relations.boundaryRelations.push_back(
+            {regions[tile][0].getResult(0),
+             regions[1 - tile][1].getBody().getArgument(0)});
+        relations.structuralOutputs.push_back(
+            {0, regions[tile][1].getResult(0)});
+      }
+      auto text = [&]() {
+        std::string result;
+        llvm::raw_string_ostream stream(result);
+        module->print(stream);
+        return result;
+      };
+      std::string before = text();
+      auto availability = analyzeCommunicationRegionClosure(*module, relations);
+      ASSERT_TRUE(mlir::succeeded(availability));
+      EXPECT_EQ(*availability,
+                CommunicationRegionClosureAvailability::Available);
+      EXPECT_EQ(text(), before);
+      EXPECT_EQ(countOps<TileRegionOp>(module->getOperation()), 4u);
+      if (merge) {
+        ASSERT_TRUE(mlir::succeeded(
+            closeCrossTileCommunicationRegions(*module, relations)));
+      }
+      EXPECT_EQ(countOps<TileRegionOp>(module->getOperation()),
+                merge ? 2u : 4u);
+      auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+      ASSERT_TRUE(layout.succeeded()) << layout.detail;
+      auto compute = lowerStructuredComputeToTile(*module, relations);
+      ASSERT_TRUE(compute.succeeded()) << compute.detail;
+      EXPECT_EQ(
+          analyzeDistributedMovementAvailability(*module, relations).sharedDDR,
+          !merge);
+      before = text();
+      BoundaryMovementOptions options;
+      options.transport = BoundaryMovementTransport::SharedDDR;
+      auto movement =
+          materializeTileBoundaryMovement(*module, relations, options);
+      if (merge) {
+        EXPECT_EQ(movement.failure, BoundaryMovementFailureKind::Unsupported);
+        EXPECT_EQ(text(), before);
+        continue;
+      }
+      ASSERT_TRUE(movement.succeeded()) << movement.detail;
+      EXPECT_EQ(movement.statistics.crossTileDDRStages, 2u);
+      EXPECT_EQ(movement.statistics.peerSends, 0u);
+      EXPECT_EQ(movement.statistics.peerReceives, 0u);
+      EXPECT_EQ(countOps<mlir::memref::GlobalOp>(module->getOperation()), 2u);
+      ASSERT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+      std::string detail;
+      auto standalone =
+          createStandaloneTileModules(std::move(module), &detail, &relations);
+      ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+      for (StandaloneTileModule &tile : *standalone) {
+        llvm::SmallVector<TileRegionOp, 2> scopes;
+        tile.module->walk(
+            [&](TileRegionOp region) { scopes.push_back(region); });
+        TileRegionToInstrLoweringSession session(*tile.module->getContext());
+        for (TileRegionOp region : scopes)
+          ASSERT_TRUE(
+              mlir::succeeded(convertTileRegionToInstr(region, session)));
+        ASSERT_TRUE(mlir::succeeded(
+            convertBufferizationCopiesToInstr(*tile.module, session)));
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+        TileMemoryPlanningFailure failure;
+        auto planned = planTileMemory(std::move(tile.module), &failure);
+        ASSERT_TRUE(mlir::succeeded(planned));
+        EXPECT_EQ(countOps<InstrDTESendOp>((*planned)->getOperation()), 0u);
+      }
+    }
+  }
+}
+
+TEST_F(StructuredToTileTest, RegionClosureIncludesOnlyPureLocalDependencies) {
+  for (bool effect : {false, true}) {
+    auto module = parse(makeSplitTwoTileExchangeSource(1031));
+    ASSERT_TRUE(module);
+    llvm::SmallVector<llvm::SmallVector<TileRegionOp, 2>, 2> regions(2);
+    for (TileModuleOp tile : module->getOps<TileModuleOp>())
+      tile.walk([&](TileRegionOp region) {
+        regions[tile.getTileIdAttr().getInt()].push_back(region);
+      });
+    StructuredMaterializationRelations relations;
+    for (unsigned tile = 0; tile < 2; ++tile) {
+      auto consumer = regions[tile][1];
+      auto empty =
+          *consumer.getBody().front().getOps<mlir::tensor::EmptyOp>().begin();
+      mlir::OpBuilder builder(consumer);
+      auto init = builder.create<TileRegionOp>(consumer.getLoc(),
+                                               mlir::TypeRange{empty.getType()},
+                                               mlir::ValueRange{});
+      init.getBody().push_back(new mlir::Block());
+      auto argument = consumer.getBody().front().addArgument(empty.getType(),
+                                                             empty.getLoc());
+      consumer.getInputsMutable().append(init.getResult(0));
+      empty.getResult().replaceAllUsesWith(argument);
+      empty->moveBefore(&init.getBody().front(), init.getBody().front().end());
+      builder.setInsertionPointToEnd(&init.getBody().front());
+      builder.create<TileYieldOp>(init.getLoc(), empty.getResult());
+      if (effect) {
+        auto function = consumer->getParentOfType<mlir::func::FuncOp>();
+        builder.setInsertionPoint(function);
+        auto external = builder.create<mlir::func::FuncOp>(
+            function.getLoc(), "observe", builder.getFunctionType({}, {}));
+        external.setPrivate();
+        builder.setInsertionPoint(consumer);
+        builder.create<mlir::func::CallOp>(consumer.getLoc(), "observe",
+                                           mlir::TypeRange{},
+                                           mlir::ValueRange{});
+      }
+      relations.boundaryRelations.push_back(
+          {regions[tile][0].getResult(0),
+           regions[1 - tile][1].getBody().getArgument(0)});
+      relations.structuralOutputs.push_back({0, consumer.getResult(0)});
+    }
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    auto availability = analyzeCommunicationRegionClosure(*module, relations);
+    ASSERT_TRUE(mlir::succeeded(availability));
+    EXPECT_EQ(*availability,
+              effect ? CommunicationRegionClosureAvailability::Unavailable
+                     : CommunicationRegionClosureAvailability::Available);
+    EXPECT_EQ(countOps<TileRegionOp>(module->getOperation()), 6u);
+    ASSERT_TRUE(mlir::succeeded(
+        closeCrossTileCommunicationRegions(*module, relations)));
+    EXPECT_EQ(countOps<TileRegionOp>(module->getOperation()), effect ? 6u : 2u);
+    EXPECT_EQ(countOps<mlir::func::CallOp>(module->getOperation()),
+              effect ? 2u : 0u);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
   }
 }
 

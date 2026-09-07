@@ -3,6 +3,7 @@
 #include "TestSupport/Driver/CompilerTesting.h"
 
 #include "Wafer/Driver/CompilationInternal.h"
+#include "Wafer/Driver/PhysicalDataflow/BaselineCurrentIR.h"
 #include "Wafer/Driver/ProgramResourceVerification.h"
 #include "Wafer/Transforms/Instr/DirectDTETransport.h"
 
@@ -13,6 +14,41 @@
 #include <utility>
 
 namespace wafer::compiler::testing {
+
+llvm::Expected<CompiledProgram> compileProgramWithCommunicationCandidate(
+    CompilationRequest request, llvm::StringRef outputDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, CompilationOptions options,
+    CommunicationCandidate candidate, llvm::raw_ostream &diagnostics) {
+  if (!options.getOptimizationConfig().isNone() ||
+      options.shouldProduceProfileInstrumentation())
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "explicit communication qualification requires none without profiling");
+  detail::CommunicationCandidateSelection selection;
+  switch (candidate) {
+  case CommunicationCandidate::Peer:
+    break;
+  case CommunicationCandidate::SharedDDR:
+    selection.mergeRegions = false;
+    selection.movement.transport = detail::BoundaryMovementTransport::SharedDDR;
+    break;
+  case CommunicationCandidate::RecursiveDoubling:
+    selection.movement.allGather =
+        detail::CompleteAllGatherAlgorithm::RecursiveDoubling;
+    break;
+  case CommunicationCandidate::DimensionOrderedAllToAll:
+    selection.movement.allToAll =
+        detail::CompleteAllToAllAlgorithm::DimensionOrdered;
+    break;
+  case CommunicationCandidate::RingReduction:
+    selection.movement.reduction = detail::DistributedReductionAlgorithm::Ring;
+    break;
+  }
+  return detail::compileProgramWithTargetLLVMModulesImpl(
+      std::move(request), outputDirectory, xlaSpmdPartitionerHelper,
+      targetToolchain, options, diagnostics, &selection);
+}
 
 mlir::FailureOr<TransportContract>
 bindDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> tileModules) {

@@ -54,7 +54,8 @@ mlir::LogicalResult runCompilationTransaction(
     std::optional<ExecutablePackage> *retainedPackage,
     std::optional<ProfileInstrumentationProduct> *retainedProfileProduct,
     CompilationStage *failureStage,
-    CommitFailureInjection commitFailureInjection) {
+    CommitFailureInjection commitFailureInjection,
+    const CommunicationCandidateSelection *qualification) {
 #if !defined(WAFER_ENABLE_STABLEHLO) || !defined(WAFER_ENABLE_SHARDY)
   (void)request;
   (void)outputDirectory;
@@ -70,6 +71,7 @@ mlir::LogicalResult runCompilationTransaction(
   (void)retainedPackage;
   (void)retainedProfileProduct;
   (void)commitFailureInjection;
+  (void)qualification;
   if (failureStage)
     *failureStage = CompilationStage::SourceVerification;
   reject(diagnostics,
@@ -728,7 +730,7 @@ mlir::LogicalResult runCompilationTransaction(
                  failAfterLaunchSlot, failAfterTargetLaunchSlot,
                  failAfterPackageLaunchSlot, deviceExecutable,
                  targetLLVMModules, programData, tensorResolver, irTrace,
-                 stages))) {
+                 stages, qualification))) {
     return mlir::failure();
   }
   if (timingSession) {

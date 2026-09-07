@@ -8,10 +8,27 @@
 #include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Driver/CompilationResult.h"
+#include "Wafer/Driver/CompiledProgram.h"
 
 #include "llvm/ADT/ArrayRef.h"
 
 namespace wafer::compiler::testing {
+
+enum class CommunicationCandidate {
+  Peer,
+  SharedDDR,
+  RecursiveDoubling,
+  DimensionOrderedAllToAll,
+  RingReduction,
+};
+
+/// Selects one realization for source-derived qualification. This adapter is
+/// linked only into test drivers; production none/search expose no selector.
+llvm::Expected<CompiledProgram> compileProgramWithCommunicationCandidate(
+    CompilationRequest request, llvm::StringRef outputDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, CompilationOptions options,
+    CommunicationCandidate candidate, llvm::raw_ostream &diagnostics);
 
 /// Test-only entry to card Direct DTE binding. Successful calls attach
 /// typed bindings; failed calls leave every issue unbound.

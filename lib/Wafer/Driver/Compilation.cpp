@@ -118,11 +118,31 @@ compileProgram(CompilationRequest request, llvm::StringRef outputDirectory,
       std::nullopt, std::nullopt, detail::CommitFailureInjection::None);
 }
 
+struct CompiledProgramBuilder {
+  static CompiledProgram make(DeviceExecutable executable,
+                              TargetLLVMModules target,
+                              CompilationIRTrace trace) {
+    return CompiledProgram(std::move(executable), std::move(target),
+                           std::move(trace));
+  }
+};
+
 llvm::Expected<CompiledProgram> compileProgramWithTargetLLVMModules(
     CompilationRequest request, llvm::StringRef outputDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, CompilationOptions options,
     llvm::raw_ostream &diagnostics) {
+  return detail::compileProgramWithTargetLLVMModulesImpl(
+      std::move(request), outputDirectory, xlaSpmdPartitionerHelper,
+      targetToolchain, options, diagnostics, nullptr);
+}
+
+llvm::Expected<CompiledProgram> detail::compileProgramWithTargetLLVMModulesImpl(
+    CompilationRequest request, llvm::StringRef outputDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, CompilationOptions options,
+    llvm::raw_ostream &diagnostics,
+    const CommunicationCandidateSelection *qualification) {
   if (options.shouldProduceProfileInstrumentation())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
@@ -136,14 +156,15 @@ llvm::Expected<CompiledProgram> compileProgramWithTargetLLVMModules(
           std::move(request), outputDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics, options, std::nullopt, std::nullopt,
           std::nullopt, &retainedDeviceExecutable, &retainedTargetLLVMModules,
-          &retainedIRTrace, nullptr, nullptr, &failureStage)))
+          &retainedIRTrace, nullptr, nullptr, &failureStage,
+          detail::CommitFailureInjection::None, qualification)))
     return llvm::make_error<CompilationFailure>(failureStage);
   if (!retainedDeviceExecutable || !retainedTargetLLVMModules ||
       !retainedIRTrace)
     llvm_unreachable("successful transaction did not retain compiled program");
-  return CompiledProgram(std::move(*retainedDeviceExecutable),
-                         std::move(*retainedTargetLLVMModules),
-                         std::move(*retainedIRTrace));
+  return CompiledProgramBuilder::make(std::move(*retainedDeviceExecutable),
+                                      std::move(*retainedTargetLLVMModules),
+                                      std::move(*retainedIRTrace));
 }
 
 } // namespace wafer::compiler

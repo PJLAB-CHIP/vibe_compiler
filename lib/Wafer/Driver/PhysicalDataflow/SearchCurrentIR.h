@@ -41,6 +41,14 @@ struct SearchCurrentIRStatistics {
   uint64_t temporalCandidateActualizations = 0;
   uint64_t temporalApplications = 0;
   uint64_t communicationRegionClosures = 0;
+  uint64_t regionPreservingCandidates = 0;
+  uint64_t regionPreservingAccepted = 0;
+  uint64_t mergedRegionCandidates = 0;
+  uint64_t mergedRegionAccepted = 0;
+  uint64_t mergedRegionWinners = 0;
+  uint64_t sharedDDRCandidates = 0;
+  uint64_t sharedDDRAccepted = 0;
+  uint64_t sharedDDRWinners = 0;
   uint64_t layoutInvocations = 0;
   uint64_t layoutFeasibleFallbacks = 0;
   uint64_t movementCandidateActualizations = 0;
@@ -71,9 +79,11 @@ struct SearchCurrentIRStatistics {
 /// Traverses explicit Spatial/Region choices and actualizes each selected
 /// structural state from current TensorProgram IR. Temporal alternatives are
 /// cloned once from that structural owner with IRMapping and immediately
-/// applied. Exact endpoint prefilters may then clone the post-layout owner for
-/// recursive-doubling AllGather, dimension-ordered AllToAll, distributed Ring
-/// reduction, or their bounded combinations. A specialized clone is discarded
+/// applied. Optional communication closure clones that owner while retaining
+/// the original Regions. Each Region choice may clone its post-layout owner
+/// for causally ordered shared DDR, recursive-doubling AllGather,
+/// dimension-ordered AllToAll, distributed Ring reduction, or their bounded
+/// combinations. A specialized clone is discarded
 /// unless its requested current-IR rewrite actually occurs. Every retained
 /// owner consumes the same memory/target leaf and counts against actualization
 /// credits; the winner is returned directly and is never rebuilt.

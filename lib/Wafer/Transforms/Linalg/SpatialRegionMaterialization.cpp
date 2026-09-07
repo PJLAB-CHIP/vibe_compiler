@@ -839,8 +839,27 @@ struct GroupBuilder {
   }
 
   mlir::FailureOr<mlir::Value>
-  getOrCreateFragmentBoundary(mlir::Value sourceValue,
-                              const DemandFragmentId &fragment) {
+  getOrCreateFragmentValue(mlir::Value sourceValue,
+                           const DemandFragmentId &fragment) {
+    auto local =
+        llvm::find_if(group.localBindings, [&](const LocalUseBinding &binding) {
+          return binding.fragment == fragment;
+        });
+    if (local != group.localBindings.end()) {
+      auto produced = executionResults.find(local->producer);
+      if (produced == executionResults.end() ||
+          fragment.source.index >= produced->second.size())
+        return fail<mlir::Value>(
+            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+            "local fragment has no actual producer value");
+      mlir::Value value = produced->second[fragment.source.index];
+      if (value.getType() != sourceValue.getType())
+        return fail<mlir::Value>(
+            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+            "local fragment producer type differs from its source");
+      return value;
+    }
+
     if (fragment.source.kind == analysis::RootBoundaryKind::Constant ||
         fragment.source.kind == analysis::RootBoundaryKind::CapturedValue)
       return mapSupportValue(sourceValue);
@@ -866,7 +885,7 @@ struct GroupBuilder {
         if (!definition || !mlir::isMemoryEffectFree(definition))
           return mlir::failure();
         if (findNode(nodes, definition)) {
-          auto mapped = getOrCreateFragmentBoundary(value, fragment);
+          auto mapped = getOrCreateFragmentValue(value, fragment);
           if (mlir::succeeded(mapped))
             supportMapping.map(value, *mapped);
           return mapped;
@@ -1117,7 +1136,7 @@ struct GroupBuilder {
             }
           }
         if (!matchingFragments.empty())
-          mapped = assembleExternalFragments(value, matchingFragments);
+          mapped = assembleFragments(value, matchingFragments);
       }
       if (mlir::succeeded(mapped))
         supportMapping.map(value, *mapped);
@@ -1154,53 +1173,8 @@ struct GroupBuilder {
   }
 
   mlir::FailureOr<mlir::Value>
-  materializeLocalTensorSupport(mlir::Value value,
-                                mlir::IRMapping &localMapping) {
-    if (mlir::Value mapped = localMapping.lookupOrNull(value))
-      return mapped;
-    if (mlir::isa<mlir::BlockArgument>(value)) {
-      auto mapped = mapSupportValue(value);
-      if (mlir::succeeded(mapped))
-        localMapping.map(value, *mapped);
-      return mapped;
-    }
-    auto result = mlir::dyn_cast<mlir::OpResult>(value);
-    mlir::Operation *definition = result ? result.getOwner() : nullptr;
-    if (!definition || !mlir::isMemoryEffectFree(definition))
-      return mlir::failure();
-
-    const bool hasShapedOperand = llvm::any_of(definition->getOperandTypes(),
-                                               llvm::IsaPred<mlir::ShapedType>);
-    if (hasShapedOperand &&
-        !mlir::isa<WaferTensorIndexingOpInterface>(definition))
-      return mlir::failure();
-    for (mlir::Value operand : definition->getOperands()) {
-      mlir::FailureOr<mlir::Value> mapped =
-          mlir::isa<mlir::ShapedType>(operand.getType())
-              ? materializeLocalTensorSupport(operand, localMapping)
-              : mapSupportValue(operand);
-      if (mlir::failed(mapped))
-        return mlir::failure();
-      localMapping.map(operand, *mapped);
-    }
-    llvm::SetVector<mlir::Value> captures;
-    mlir::getUsedValuesDefinedAbove(definition->getRegions(), captures);
-    for (mlir::Value capture : captures) {
-      auto mapped = mapSupportValue(capture);
-      if (mlir::failed(mapped))
-        return mlir::failure();
-      localMapping.map(capture, *mapped);
-    }
-    mlir::Operation *cloned = builder.clone(*definition, localMapping);
-    for (auto [oldResult, newResult] :
-         llvm::zip_equal(definition->getResults(), cloned->getResults()))
-      localMapping.map(oldResult, newResult);
-    return localMapping.lookup(value);
-  }
-
-  mlir::FailureOr<mlir::Value>
-  assembleExternalFragments(mlir::Value sourceValue,
-                            llvm::SmallVector<DemandFragmentId, 4> fragments) {
+  assembleFragments(mlir::Value sourceValue,
+                    llvm::SmallVector<DemandFragmentId, 4> fragments) {
     if (!getSourceValueKey(sourceValue, sourceFunction, nodes)) {
       auto sourceResult = mlir::dyn_cast<mlir::OpResult>(sourceValue);
       mlir::Operation *definition =
@@ -1241,7 +1215,7 @@ struct GroupBuilder {
           .getResult();
     }
     if (fragments.size() == 1)
-      return getOrCreateFragmentBoundary(sourceValue, fragments.front());
+      return getOrCreateFragmentValue(sourceValue, fragments.front());
     if (fragments.empty())
       return fail<mlir::Value>(
           failure, SpatialRegionMaterializationFailureKind::BrokenContract,
@@ -1271,7 +1245,7 @@ struct GroupBuilder {
             failure, SpatialRegionMaterializationFailureKind::Unsupported,
             "external fragment is not a finite rectangular union");
       mlir::FailureOr<mlir::Value> endpoint =
-          getOrCreateFragmentBoundary(sourceValue, fragment);
+          getOrCreateFragmentValue(sourceValue, fragment);
       if (mlir::failed(endpoint))
         return mlir::failure();
       for (const auto &box : normalized->getBoxes()) {
@@ -1509,7 +1483,7 @@ struct GroupBuilder {
           }
         if (matching.empty())
           return mlir::failure();
-        auto assembled = assembleExternalFragments(value, matching);
+        auto assembled = assembleFragments(value, matching);
         if (mlir::failed(assembled))
           return mlir::failure();
         full = *assembled;
@@ -1544,76 +1518,13 @@ struct GroupBuilder {
   mlir::FailureOr<mlir::Value>
   mapExecutionOperand(const RegionExecutionId &consumer,
                       mlir::OpOperand &operand) {
-    llvm::SmallVector<const LocalUseBinding *, 2> localBindings =
-        findLocalBindings(consumer, operand.getOperandNumber());
-    if (!localBindings.empty()) {
-      mlir::IRMapping localMapping;
-      for (const LocalUseBinding *local : localBindings) {
-        auto produced = executionResults.find(local->producer);
-        if (produced == executionResults.end() ||
-            local->fragment.source.index >= produced->second.size())
-          return fail<mlir::Value>(
-              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
-              "local Region binding has no materialized producer value");
-        mlir::Value actualProducer =
-            produced->second[local->fragment.source.index];
-        mlir::Value sourceValue;
-        for (const analysis::RootRegionWork &work : rootWorks) {
-          auto boundary =
-              llvm::find_if(work.boundaries,
-                            [&](const analysis::RootBoundaryWork &candidate) {
-                              return candidate.id == local->fragment.source;
-                            });
-          if (boundary == work.boundaries.end())
-            continue;
-          if (sourceValue && sourceValue != boundary->sourceValue)
-            return fail<mlir::Value>(
-                failure,
-                SpatialRegionMaterializationFailureKind::BrokenContract,
-                "local Region binding has multiple source values");
-          sourceValue = boundary->sourceValue;
-        }
-        if (!sourceValue || sourceValue.getType() != actualProducer.getType())
-          return fail<mlir::Value>(
-              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
-              "local Region binding producer type does not match its source");
-        if (mlir::Value previous = localMapping.lookupOrNull(sourceValue)) {
-          if (previous != actualProducer)
-            return fail<mlir::Value>(
-                failure,
-                SpatialRegionMaterializationFailureKind::BrokenContract,
-                "local Region binding maps one source more than once");
-        } else {
-          localMapping.map(sourceValue, actualProducer);
-        }
-      }
-      mlir::FailureOr<mlir::Value> mapped =
-          materializeLocalTensorSupport(operand.get(), localMapping);
-      if (mlir::failed(mapped) ||
-          (*mapped).getType() != operand.get().getType()) {
-        std::string detail;
-        llvm::raw_string_ostream stream(detail);
-        stream << "local Region support chain cannot be applied to the "
-                  "current producer value: local_fragment_count="
-               << localBindings.size()
-               << " operand_type=" << operand.get().getType()
-               << " operand_definition=";
-        if (mlir::Operation *definition = operand.get().getDefiningOp())
-          stream << definition->getName();
-        else
-          stream << "block_argument";
-        if (mlir::succeeded(mapped))
-          stream << " mapped_type=" << (*mapped).getType();
-        return fail<mlir::Value>(
-            failure, SpatialRegionMaterializationFailureKind::Unsupported,
-            detail);
-      }
-      return mapped;
-    }
     llvm::SmallVector<const DemandFragmentId *, 2> external =
         findExternalBindings(consumer, operand.getOperandNumber(),
                              operand.get());
     llvm::SmallVector<DemandFragmentId, 4> fragments;
+    for (const LocalUseBinding *binding :
+         findLocalBindings(consumer, operand.getOperandNumber()))
+      fragments.push_back(binding->fragment);
     for (const DemandFragmentId *fragment : external)
       fragments.push_back(*fragment);
     const compiler::detail::LogicalShardId *destinationShard = nullptr;
@@ -1677,8 +1588,8 @@ struct GroupBuilder {
         }
       }
     }
-    if (!external.empty())
-      return assembleExternalFragments(operand.get(), std::move(fragments));
+    if (!fragments.empty())
+      return assembleFragments(operand.get(), std::move(fragments));
     return mapSupportValue(operand.get());
   }
 
@@ -2507,7 +2418,7 @@ struct GroupBuilder {
         return fail<GroupArtifact>(
             failure, SpatialRegionMaterializationFailureKind::BrokenContract,
             "external Region fragment has no structured source operation");
-      if (mlir::failed(getOrCreateFragmentBoundary(
+      if (mlir::failed(getOrCreateFragmentValue(
               sourceWork->rootOperation->getResult(fragment.source.index),
               fragment)))
         return mlir::failure();

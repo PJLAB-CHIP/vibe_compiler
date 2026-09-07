@@ -89,6 +89,11 @@ current IR fresh构造。不得保留future message/buffer/event/action清单、
 canonical shortest path写成route、逐link resource或deadlock证明。future target若暴露programmable route，须先扩同一typed
 target/IR合同，再由route verifier和event scheduler消费。
 
+当相同完整carrier的接收端全部bridge只被同一个static Tensor subview消费时，payload取该current subview的精确窗口，
+不能仅凭source/carrier完整类型相同就发送整个carrier。Source和destination采用同一carrier坐标；source先实际创建对应subview，
+非连续窗口经owned allocation与memref.copy物化为紧凑传输buffer，destination用同shape紧凑allocation替换该view。
+分组和消息字节数只消费这些实际窗口与物化buffer；没有唯一窗口时保持current完整需求，不猜测最小范围。
+
 对同一个actual source value和完全相同的payload window/layout，单destination使用一条direct edge；多destination优先匹配已确认的
 native DTE broadcast合同，否则使用topology-aware spreading tree。初始只有source Tile持有payload；每轮每个已持有payload的
 participant至多向一个未持有payload的participant发送。Region拓扑序约束合法parent/child并优先保持maximum spreading frontier，
@@ -108,6 +113,11 @@ IR已显式表达typed local combine时才能使用相应collective算法。
 participant、shape或dtype相同就跨阶段合组。Temporal tiling之后的closure从current Region顺序和body def-use证明每个Tile都存在
 `last local producer < first remote consumer`的共同cut，并且只合并满足该条件的complete exchange Region。Movement随后从retarget后的
 live endpoints重新构造component。合并前还要证明parent-block SSA dominance和effect顺序不变；任一Tile不满足时整个component不修改。
+Closure是显式选择的可选变换，不是公共pipeline的必经合法化。只读availability不修改输入，也不证明SPM容量合法。
+`none`保留single-root Region，不调用该合并；`search`在合并前保留独立actual owner，只有预算允许且变换可用时才克隆并合并。
+Complete exchange的closure可按current relation中每对不同participant的完整、有相同正数重数的边集合判断，
+包括同payload fanout和逐destination不同piece；不以source result必须相同限制候选资格。
+合并输入实际依赖的本地纯tensor初始化region可以进入同一个候选，但不得携带另一跨Tile边界，且保持原block顺序、SSA dominance与effect规则。
 Closure不保存route、round或buffer对象。
 
 若每个participant均有相同lane数的source payload group，并且每个group的destination集合恰为其它全部participant，则该component是
@@ -128,7 +138,7 @@ Bruck仍不进入production：它需要增长中的pack/unpack，而current独�
 complete AllGather movement choice：Ring和recursive各自在candidate-owned transaction中立即物化。Recursive candidate必须创建actual
 aggregate SPM allocation和typed subview；local producer allocation可exact donation时直接改接own slot，否则生成actual seed copy；remote
 consumer改接对应slot，再展开
-`log2(P)`轮；随后由fresh completion、MiniMalloc、transport、target和actual cost决定结果。Baseline继续使用Ring；qualified native
+`log2(P)`轮；随后由fresh completion、MiniMalloc、transport、target和actual cost决定结果。固定Region下的peer基线继续使用Ring；此规则不要求none合并Region，且不排除search的DDR候选。qualified native
 broadcast不生成被其严格支配的recursive candidate。任一物化或capacity失败只淘汰该actual candidate，不在movement内部fallback。
 
 硬件证据强度保持分层：`docs/tx81-compiler-hardware-calibration.md`中的16-Tile FP16 Ring All-Gather属于
@@ -138,7 +148,20 @@ broadcast不生成被其严格支配的recursive candidate。任一物化或capa
 Ring、matching和multi-destination grouping只产生request-local parent/peer/round choice，同一次transformation必须把每轮展开成
 actual peer/multi-send ops、SSA token及current control flow，随后销毁choice。`DTEMessageAttr.round`只参与消息身份；actual op order
 才是执行轮次。在共同cut内先物化该轮
-receive prepare，再物化root/relay send。Closed complete exchange和round-safe sparse component不得改走shared DDR。
+receive prepare，再物化root/relay send。Complete exchange或round-safe只证明peer实现可用，不排除合法的shared-DDR实现。
+
+Shared-DDR是显式movement choice。当前实现的load位于destination Region入口、store位于source Region出口；只有current source/destination
+relation与同Tile Region顺序构成无环图时才可选择该实现，之后仍须通过actual completion/resource/target gate。
+已合并的双向exchange不能只切换transport标志改成DDR；本轮在合并前的owner上保留DDR候选，不发明跨区域同步或拆分未来Region。
+`none`保持原Region划分；`search`可以试行shared-DDR布局/传输候选。无环Region依赖只能证明存在一种安排，
+不能证明不同Tile已经按该顺序执行。候选还必须在current IR中表达writer实际完成后的跨Tile发布、reader读取前的获取以及重复执行的匹配/复用；
+同一actual memory/target leaf须验证这些事实后才可比较和发布。
+
+当前完成缺口：shared-DDR物化只有resource/binding和WDMA/RDMA，没有跨Tile release/acquire实现；runtime的共享allocation、
+grid launch顺序和Tile-local NCC join均不能补足。实卡已观察到新none AllGather数值失败，详见board-testing计划。
+因此此前仅凭Region DAG/host gate得出的DDR可执行结论不成立；完成合同未闭合前不能给这条路径签发board-ready/done。
+`hrt_barrier`的名字不构成hardware completion证明，不能用它补一个猜测的全卡同步。
+预算不足时报告有界搜索实际覆盖，不把未尝试或unsupported候选当作capacity rejection。
 
 Native grouping不在Tile层新增第二套communication op。Movement对eligible group保留从同一个actual source发出的普通
 `wafer.tile.peer_send`及每destination `peer_recv`；全部TileRegion转为current Instr、但fresh completion尚未生成时，card-scoped atomic
@@ -183,8 +206,8 @@ message startup、bytes、shortest-hop/link-pressure model、SPM high-water、se
 - 以上specialized choice都在search candidate owner中完整物化后分别进入completion、MiniMalloc、transport和cost。Baseline继续使用现行
   direct/central realization。缺失participant、piece、combiner、type、range、coordinate或current cut时保持原IR，不推测、不局部改写。
 
-一个bidirectional causal component若没有共同cut，就不是可安全执行的同轮peer exchange。Baseline在首次mutation前为它选择显式
-shared-DDR store/load boundary；该选择来自current Region因果顺序，并进入actual DDR/SPM planner，不是Direct DTE verifier失败后的
+一个bidirectional causal component若没有共同cut，就不是可安全执行的同轮peer exchange。物化器可在首次mutation前为它构造显式
+shared-DDR store/load候选；该选择来自current Region因果顺序，但仍须闭合上述跨Tile完成要求并进入actual DDR/SPM planner，不是Direct DTE verifier失败后的
 fallback。无法物化ring、matching或这一明确causal boundary时typed unsupported。
 
 card-level LinalgExt collective只描述card partition语义；singleton group在TileModule set materialization时成为identity，
@@ -285,6 +308,26 @@ no-card只做parse/semantic/binding/capability validation；board provider才执
 package/runtime不重新选择peer、route、algorithm或memory placement。
 
 ## 7. Failure、Atomicity 与 Verification
+
+### 区域与传输选择的覆盖合同
+
+输入是temporal物化后的structural TileRegion及live relations，输出是各自拥有实际Region、buffer、搬运和completion的候选；
+直接下游是同一memory/target leaf与actual objective。产品入口仍只有none/search；专项测试选择内部typed choice并调用同一变换，
+不能给生产入口增加case名、shape提示或测试环境开关。完成条件是以下覆盖及板测计划中的fresh PyTorch验收。
+
+| 输入等价类 | 分支和失败 | exact输出与直接下游witness |
+| --- | --- | --- |
+| rank≥3、1024/1025/1031，AllGather/AllToAll/ReduceScatter来源 | none保留原Region；search保留未合并和eligible合并候选 | 不同actual owner，完整输出/贡献coverage，实际memory/target与成本比较 |
+| 同payload与personalized完整交换 | 只读分析、显式合并；无peer/缺peer/无共同cut不可合并 | 分析不改IR；只合并选中区域，重建live endpoint，保留SSA/effect |
+| 本地纯tensor初始化依赖 | 可纳入合并；side effect/其它跨Tile边界阻止合并 | dominance和effect保持，失败输入不修改 |
+| current Region间无环DDR依赖 | peer与shared-DDR各自物化；双向循环拒绝DDR候选，缺少跨Tile完成时不能证明可执行 | exact存储范围、实际写后读顺序、DDR resource与completion闭合 |
+| 多fragment、SSA与清理 | 同一source的local/external fragments共同按actual demand组装；聚合交换位于全部source定义之后、首次receive消费之前 | 多分片source回归，verifier dominance，Instr拷贝消除后重建实际buffer owner并进入SPM规划 |
+| capacity/unsupported/预算不足 | 失败只属于当前候选；compiler bug终止 | actual SPM冲突见证；无未运行候选冒充拒绝，winner不重建 |
+| 专项与产品runner | 专项固定算法；产品none/search不读结构期望 | 同输入完整PyTorch，生产CLI拒绝专项选项，缺piece/错peer/tail负例 |
+
+方法比较：采用[OpenXLA PriorityFusion](https://openxla.org/xla/hlo_to_thunks)把可用融合与成本决策分开的原则，
+而非把识别成功当成必须融合；Wafer仍以actual IR上的SPM/completion决定合法性，不采用预测资源作为admission。
+重写遵循[MLIR PatternRewriter](https://mlir.llvm.org/docs/PatternRewriter/)的mutation边界，具体clone/mapping/effect API以pinned源码为准。
 
 | gate | failure | result |
 | --- | --- | --- |

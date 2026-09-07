@@ -20,6 +20,18 @@ struct CommunicationRegionClosureStatistics {
   uint64_t mergedRegions = 0;
 };
 
+enum class CommunicationRegionClosureAvailability : uint8_t {
+  Unavailable,
+  Available,
+};
+
+/// Read-only current-IR eligibility query. Availability permits an explicit
+/// rewrite; it does not choose it or prove downstream SPM capacity.
+mlir::FailureOr<CommunicationRegionClosureAvailability>
+analyzeCommunicationRegionClosure(
+    mlir::ModuleOp module, const StructuredMaterializationRelations &relations,
+    SpatialRegionMaterializationFailure *failure = nullptr);
+
 /// Closes only complete cross-Tile exchanges for which current structural IR
 /// proves one producer-before-consumer cut on every participating Tile. The
 /// transformation merges the Regions belonging to that exchange and retargets

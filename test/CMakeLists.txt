@@ -158,7 +158,7 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
         --seed 20260803
         --wafer-compile $<TARGET_FILE:wafer-compile>
         --wafer-run $<TARGET_FILE:wafer-run>
-        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/${_wafer_test_name}
+        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/pytorch-product/${_wafer_test_name}
         --optimization-policy ${optimization_policy}
         --no-card
     )
@@ -170,10 +170,32 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
     )
   endfunction()
 
+  function(wafer_add_pytorch_communication_no_card_test case_name qualification)
+    set(_wafer_test_name
+      "wafer-runtime-pytorch-${case_name}-communication-no-card")
+    add_test(NAME ${_wafer_test_name}
+      COMMAND ${WAFER_IMPORTER_PYTHON_COMMAND}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
+        --case ${case_name} --dtype float16 --seed 20260803
+        --wafer-compile $<TARGET_FILE:wafer-compile-test>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/${_wafer_test_name}
+        --optimization-policy none --qualify-communication ${qualification}
+        --no-card)
+    set_tests_properties(${_wafer_test_name} PROPERTIES
+      LABELS "runtime;no-card;pytorch;source;communication;qualification;fp16"
+      ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
+      PROCESSORS 16 TIMEOUT 5400)
+  endfunction()
+
   foreach(_wafer_allgather_case IN ITEMS
       allgather-add allgather-add-tail-1025 allgather-add-tail-1031)
     wafer_add_pytorch_source_no_card_test(
       ${_wafer_allgather_case} float16 fp16 none)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_allgather_case} float16 fp16 search)
+    wafer_add_pytorch_communication_no_card_test(
+      ${_wafer_allgather_case} ring-allgather)
   endforeach()
   unset(_wafer_allgather_case)
 
@@ -183,6 +205,28 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
       ${_wafer_gemm_case} float16 fp16 none)
   endforeach()
   unset(_wafer_gemm_case)
+
+  foreach(_wafer_alltoall_case IN ITEMS
+      alltoall-transpose alltoall-transpose-tail-1025 alltoall-transpose-tail-1031)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_alltoall_case} float16 fp16 none)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_alltoall_case} float16 fp16 search)
+    wafer_add_pytorch_communication_no_card_test(
+      ${_wafer_alltoall_case} direct-alltoall)
+  endforeach()
+  unset(_wafer_alltoall_case)
+
+  foreach(_wafer_reduce_scatter_case IN ITEMS
+      reduce-scatter-sum reduce-scatter-sum-tail-1025 reduce-scatter-sum-tail-1031)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_reduce_scatter_case} float16 fp16 none)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_reduce_scatter_case} float16 fp16 search)
+    wafer_add_pytorch_communication_no_card_test(
+      ${_wafer_reduce_scatter_case} direct-reduce-scatter)
+  endforeach()
+  unset(_wafer_reduce_scatter_case)
 
   foreach(_wafer_product_case IN ITEMS
       conv-mixed-dag

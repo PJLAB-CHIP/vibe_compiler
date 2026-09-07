@@ -41,6 +41,9 @@ verified current IR
 搜索可以克隆最近的`IsolatedFromAbove` candidate owner试行alternative。失败的transaction整体擦除；
 Accepted owner原样交给下游和最终publication，不重建IR或offset。
 
+跨Tile shared-DDR的Region DAG并不提供实际执行同步。13号记录了现有release/acquire完成缺口；
+其协议及actual downstream验证闭合前，搜索物化和主机编译通过不能证明该候选板端正确。
+
 ## 2. Pipeline Contract
 
 ```text
@@ -500,12 +503,13 @@ ReduceScatter+AllGather AllReduce；每轮combine必须成为actual `wafer.tile.
 source/destination才直接合组；一个Region先接收fanin、经actual compute再产生fanout时，两段是有SSA依赖的连续phase，不能仅因共享该
 Region而合并。这样AllReduce的central fanin/fanout和连续exchange不会被错误地合成一个同时发生的round序列。
 
-Temporal tiling完成后、attention decomposition和layout之前，communication closure只处理current IR能够证明的complete exchange。
-Complete exchange要求每个participant都有相同lane数的local payload group，每个group到其它participant各有一个exact destination；
-它不要求不同Tile的payload数值相同。对每个participating Tile，closure从actual Region顺序和body def-use计算最后一个local producer与
+Temporal tiling完成后、attention decomposition和layout之前，search可显式选择communication closure；none不运行可选Region合并。
+只读availability按current relation证明complete participant-pair coverage，不要求各destination收到同一个source result或相同数值。
+对每个participating Tile，closure从actual Region顺序和body def-use计算最后一个local producer与
 第一个remote consumer。只有严格存在`last producer < first consumer`的共同cut时，才合并该exchange涉及的TileRegion并立即retarget
 live relations；合并还必须在最近parent block中保持现有SSA dominance和effect顺序。任一Tile无法满足这些条件时，整个component保持
-原current IR，不进行部分合并，也不把顺序不同的阶段冒充all-gather。
+原current IR，不进行部分合并，也不把顺序不同的阶段冒充all-gather。Search必须保留未合并owner，合并只发生在自己的candidate transaction；
+两者分别经过layout、movement、completion、actual memory/target和成本比较。候选资格不决定winner。
 
 Movement在layout/bufferization后从live endpoints fresh重建component，并物化ordinary peer transfer。全部TileRegion转为Instr、但fresh
 completion尚未生成时，card-scoped transformation从actual send/recv及其buffer/view range做exact physical-range coalescing。只有同一
@@ -513,8 +517,8 @@ communication phase、source/destination Tile、encoding与root相同，而且so
 union时，多个message才能共享一个actual transfer；consumer继续通过current subview读取各自piece。不能用logical bounding box、padding
 传输或新建pack copy伪造连续性。coalescing只减少message/IR数量，不改变relation cover、alias、effect或consumer lifetime。
 
-Closed complete exchange在已确认的native multi-destination合同内形成每source一次broadcast/scatter；其它AllGather由baseline使用
-topology-aware Ring，search还可把post-layout owner克隆一次并物化recursive doubling作为actual movement candidate。Recursive candidate
+选择peer实现的complete exchange在已确认的native multi-destination合同内形成每source一次broadcast/scatter；其它AllGather默认使用
+topology-aware Ring，search还可把post-layout owner克隆并物化recursive doubling作为actual movement candidate。Recursive candidate
 创建aggregate SPM allocation和slot subview；local producer allocation能exact donation时直接改写到own slot，否则显式seed copy；remote
 consumer改接对应slot。当前native合同只接受每destination `256B`、fanout `2/4/8/15`：broadcast复制同一physical range，scatter按
 destination list把连续等长source segments一一分发。其它payload、fanout、ragged segment、dynamic binding或alias保持ordinary
@@ -523,7 +527,9 @@ capacity-constrained maximum matching分轮；相同最大edge coverage下按min
 transformation中直接形成actual receive prepare、send、SSA token和control-flow order；临时component/matching choice随调用销毁。
 若bidirectional causal component不存在共同cut，单sender slot下不能把它伪装成同轮peer exchange；baseline在mutation前选择一个exact
 shared-DDR store/load boundary。它是从current Region因果顺序得到的显式movement realization，不是transport verifier失败后的fallback。
-Closed complete exchange和已证明round-safe的sparse exchange不得改走DDR。
+Complete exchange和round-safe只证明peer候选可用，不禁止合法DDR候选。Search可对current source/destination Region和同Tile顺序组成
+无环图的边界显式物化shared DDR；入口load/出口store的当前实现不能直接套在已合并的双向exchange上。合并前的actual owner提供独立
+DDR候选，不用future split或推测同步补齐合法性。
 
 Ring和recursive doubling各自在自己的candidate transaction中进入fresh completion、actual MiniMalloc和target/cost；trial budget不足时
 只物化Ring。Qualified native、non-power-of-two participant、mixed/non-contiguous payload或没有共同cut时不创建recursive downstream leaf。
@@ -635,7 +641,8 @@ memory/target leaf，但每次分别拥有自己的materializer invocation、can
 ### 7.2 Baseline
 
 Baseline的functional contract是：每个compute TileRegion恰有一个semantic root，跨root shaped dependency显式经DDR或已定义
-peer boundary，单buffer、deterministic order和完整observable output。这些事实必须存在于baseline actual IR，不是
+peer boundary，单buffer、deterministic order和完整observable output。Baseline不因识别到collective而额外合并Region；
+已有基本peer/causal DDR物化规则只消费固定Region中的actual需求，不读取测试期望。这些事实必须存在于baseline actual IR，不是
 baseline plan的声明。
 
 Baseline不构造Spatial/Region/Temporal search state、frontier、domain或complete-choice key。Baseline materializer在一次调用内从

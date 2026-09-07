@@ -34,11 +34,7 @@ public:
   const CompilationIRTrace &getIRTrace() const { return irTrace; }
 
 private:
-  friend llvm::Expected<CompiledProgram> compileProgramWithTargetLLVMModules(
-      CompilationRequest request, llvm::StringRef outputDirectory,
-      llvm::StringRef xlaSpmdPartitionerHelper,
-      const TargetToolchain &targetToolchain, CompilationOptions options,
-      llvm::raw_ostream &diagnostics);
+  friend struct CompiledProgramBuilder;
 
   CompiledProgram(DeviceExecutable deviceExecutable,
                   TargetLLVMModules targetLLVMModules,

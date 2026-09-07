@@ -26,6 +26,9 @@ void printHelp() {
                   "[--profile]\n";
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
   llvm::outs() << "test-only internal entry also accepts: "
+                  "[--test-communication-candidate "
+                  "<peer|shared-ddr|recursive-doubling|dimension-ordered|ring-"
+                  "reduction>] "
                   "[--target-model "
                   "--model-input <index>=<npy> "
                   "--model-expected <index>=<npy> "
@@ -220,6 +223,14 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       }
       options.targetModel = true;
+      continue;
+    }
+    if (arg == "--test-communication-candidate" ||
+        arg.starts_with("--test-communication-candidate=")) {
+      if (parseValueOption(argc, argv, index, arg,
+                           "--test-communication-candidate",
+                           options.testCommunicationCandidate))
+        return false;
       continue;
     }
     if (arg == "--model-report-numeric-statistics") {

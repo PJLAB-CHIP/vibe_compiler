@@ -306,12 +306,38 @@ int main(int argc, char **argv) {
       return reportCompilationFailure(injectionResult.takeError());
     return reportSuccess(*injectionResult, numPartitions);
   }
-  if (options.targetModel || options.compilerIRDumpDirectory) {
-    llvm::Expected<wafer::compiler::CompiledProgram> compiledProgram =
-        wafer::compiler::compileProgramWithTargetLLVMModules(
+  if (options.targetModel || options.compilerIRDumpDirectory ||
+      options.testCommunicationCandidate) {
+    auto compileInspection =
+        [&]() -> llvm::Expected<wafer::compiler::CompiledProgram> {
+      if (!options.testCommunicationCandidate)
+        return wafer::compiler::compileProgramWithTargetLLVMModules(
             std::move(*request), *options.outputDirectory,
             toolFacts->spmdPartitionerHelper, *targetToolchain,
             compilationOptions, llvm::errs());
+      using wafer::compiler::testing::CommunicationCandidate;
+      const auto &name = *options.testCommunicationCandidate;
+      std::optional<CommunicationCandidate> selected;
+      if (name == "peer")
+        selected = CommunicationCandidate::Peer;
+      else if (name == "shared-ddr")
+        selected = CommunicationCandidate::SharedDDR;
+      else if (name == "recursive-doubling")
+        selected = CommunicationCandidate::RecursiveDoubling;
+      else if (name == "dimension-ordered")
+        selected = CommunicationCandidate::DimensionOrderedAllToAll;
+      else if (name == "ring-reduction")
+        selected = CommunicationCandidate::RingReduction;
+      if (!selected)
+        return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       "unknown test communication candidate");
+      return wafer::compiler::testing::compileProgramWithCommunicationCandidate(
+          std::move(*request), *options.outputDirectory,
+          toolFacts->spmdPartitionerHelper, *targetToolchain,
+          compilationOptions, *selected, llvm::errs());
+    };
+    llvm::Expected<wafer::compiler::CompiledProgram> compiledProgram =
+        compileInspection();
     if (!compiledProgram)
       return reportCompilationFailure(compiledProgram.takeError());
     if (options.compilerIRDumpDirectory) {

@@ -336,20 +336,17 @@ ExecutableCompilationResult compileBaselineCurrentIR(
       return std::move(*lastCapacityRejection);
     }
 
-    SpatialRegionMaterializationFailure closureFailure;
-    CommunicationRegionClosureStatistics closureStatistics;
-    if (mlir::failed(closeCrossTileCommunicationRegions(
-            *candidate->module, candidate->relations, &closureStatistics,
-            &closureFailure)))
-      return fail(closureFailure.kind ==
-                          SpatialRegionMaterializationFailureKind::Unsupported
-                      ? ExecutableCompilationStatus::UnsupportedFailure
-                      : ExecutableCompilationStatus::CompilerFailure,
-                  "baseline-communication-region-closure",
-                  closureFailure.detail);
-    if (statistics)
-      statistics->communicationRegionClosures +=
-          closureStatistics.closedExchangeComponents;
+    if (options.qualification && options.qualification->mergeRegions) {
+      SpatialRegionMaterializationFailure failure;
+      CommunicationRegionClosureStatistics closure;
+      if (mlir::failed(closeCrossTileCommunicationRegions(
+              *candidate->module, candidate->relations, &closure, &failure)))
+        return fail(ExecutableCompilationStatus::CompilerFailure,
+                    "communication-region-closure", failure.detail);
+      if (statistics)
+        statistics->communicationRegionClosures +=
+            closure.closedExchangeComponents;
+    }
 
     OnlineAttentionDecompositionFailure attentionFailure;
     if (mlir::failed(decomposeOnlineAttention(
@@ -380,7 +377,9 @@ ExecutableCompilationResult compileBaselineCurrentIR(
                       : ExecutableCompilationStatus::CompilerFailure,
                   "baseline-structured-to-tile", compute.detail);
     BoundaryMovementResult movement = materializeTileBoundaryMovement(
-        *candidate->module, candidate->relations);
+        *candidate->module, candidate->relations,
+        options.qualification ? options.qualification->movement
+                              : BoundaryMovementOptions{});
     recordMovementInstrumentation(movement.statistics);
     if (!movement.succeeded())
       return fail(movement.failure == BoundaryMovementFailureKind::Unsupported

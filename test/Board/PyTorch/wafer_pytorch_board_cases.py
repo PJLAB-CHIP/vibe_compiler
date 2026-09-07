@@ -43,6 +43,8 @@ class PyTorchBoardCase:
     comparison_policy: common.ComparisonPolicy
     allgather_payload_elements: int | None = None
     gemm_dimensions: tuple[int, int, int] | None = None
+    alltoall_extent: int | None = None
+    reduce_scatter_extent: int | None = None
     continuation_factory: (
         Callable[[tuple[torch.Tensor, ...]], "PyTorchBoardCase"] | None
     ) = None
@@ -293,6 +295,73 @@ def _save_exported_program(
         with payload.open("wb") as stream:
             numpy_module.save(stream, value, allow_pickle=False)
     capture._verify_program_dir_layout(program_dir)
+
+
+def make_reduce_scatter_sum(
+    dtype: torch.dtype, seed: int, *, extent: int = 1024
+) -> PyTorchBoardCase:
+    if dtype != torch.float16:
+        raise RuntimeError("ReduceScatter qualification currently requires FP16")
+
+    class Reduction(torch.nn.Module):
+        def forward(self, rhs: torch.Tensor) -> torch.Tensor:
+            return (rhs + rhs).sum(dim=0, keepdim=True)
+
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    shape = (16, extent, 1)
+    # Exact binary contributions isolate missing/duplicated transport and merge
+    # values while retaining a full-size PyTorch sum with both signs.
+    rhs = torch.randint(1, 9, shape, generator=generator).to(dtype) / 16
+    rhs *= torch.randint(0, 2, shape, generator=generator).to(dtype) * 2 - 1
+    module = Reduction().eval()
+
+    def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
+        with torch.no_grad():
+            return (module(rhs),)
+
+    return PyTorchBoardCase(
+        name=f"reduce-scatter-sum-l{extent}",
+        num_partitions=1,
+        dtype=dtype,
+        inputs=(rhs,),
+        expected_outputs_factory=expected_outputs_factory,
+        export_program=lambda output: _save_exported_program(output, module, (rhs,)),
+        comparison_policy=common.PYTORCH_DEFAULT,
+        reduce_scatter_extent=extent,
+    )
+
+
+def make_alltoall_transpose(
+    dtype: torch.dtype, seed: int, *, extent: int = 1024
+) -> PyTorchBoardCase:
+    if dtype != torch.float16:
+        raise RuntimeError("AllToAll qualification currently requires FP16")
+
+    class Exchange(torch.nn.Module):
+        def forward(self, lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
+            return lhs + (rhs + rhs).transpose(0, 1)
+
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    inputs = (
+        _random_tensor((extent, 16, 1), dtype=dtype, generator=generator),
+        _random_tensor((16, extent, 1), dtype=dtype, generator=generator),
+    )
+    module = Exchange().eval()
+
+    def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
+        with torch.no_grad():
+            return (module(*inputs),)
+
+    return PyTorchBoardCase(
+        name=f"alltoall-transpose-l{extent}",
+        num_partitions=1,
+        dtype=dtype,
+        inputs=inputs,
+        expected_outputs_factory=expected_outputs_factory,
+        export_program=lambda output: _save_exported_program(output, module, inputs),
+        comparison_policy=common.PYTORCH_DEFAULT,
+        alltoall_extent=extent,
+    )
 
 
 def _single_card_gemm(
@@ -838,6 +907,20 @@ CASE_FACTORIES: dict[
         dtype, seed, extent=1031
     ),
     "single-card-gemm": _single_card_gemm,
+    "alltoall-transpose": make_alltoall_transpose,
+    "reduce-scatter-sum": make_reduce_scatter_sum,
+    "reduce-scatter-sum-tail-1025": lambda dtype, seed: make_reduce_scatter_sum(
+        dtype, seed, extent=1025
+    ),
+    "reduce-scatter-sum-tail-1031": lambda dtype, seed: make_reduce_scatter_sum(
+        dtype, seed, extent=1031
+    ),
+    "alltoall-transpose-tail-1025": lambda dtype, seed: make_alltoall_transpose(
+        dtype, seed, extent=1025
+    ),
+    "alltoall-transpose-tail-1031": lambda dtype, seed: make_alltoall_transpose(
+        dtype, seed, extent=1031
+    ),
     "single-card-gemm-tail-1025": lambda dtype, seed: _single_card_gemm(
         dtype, seed, m=1025, k=257, n=513
     ),

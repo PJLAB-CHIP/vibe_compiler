@@ -1327,6 +1327,14 @@
   NCC→Kcore/DTE/host、terminal join、DTE first-read/last-release、4-FSM和无环wait graph。测试通过但期望per-block/per-element/
   structural completion时，测试合同本身必须修正，不能作为回归依据。
 
+## 拷贝消除后不能用地址存活过滤保留旧owner关系
+
+- 现象：多次消除完整拷贝并创建reinterpret view后，buffer relation仍指向与owner不共享storage的值，canonical Instr清理失败。
+- 根因：跨erase/create沿用旧operation/Value关系；扫描current IR得到的地址集合不能证明旧owner identity仍然存活，且新建view缺少关系。
+- 修复模式：结构输出和跨Tile边界在实际替换点显式重接；可完全从Instr operand/result/effect重算的buffer owner关系在变换后重新建立，
+  不让旧关系跨越这一IR epoch。随后验证current relation，再做completion与SPM规划。
+- 防复发：rank-3、1024/1025/1031完整reshape-copy消除必须记录新view的实际owner并通过MiniMalloc；真实source search覆盖多次清理。
+
 ## Current buffer relation引用不能指向可扩容容器元素
 
 - 现象：TileRegion emission记录result/operand/output/scratch relation后继续追加同类relation，早先保存的vector元素指针失效；后续

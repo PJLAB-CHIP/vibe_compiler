@@ -379,13 +379,15 @@ mlir::LogicalResult checkStructuredBufferRelationsCurrent(
     if (!relation.owner || !relation.buffer ||
         !liveOperations.contains(relation.owner) ||
         !liveValues.contains(relation.buffer.getAsOpaquePointer()))
-      return mlir::failure();
+      return root->emitError("buffer relation has no live owner or endpoint");
     llvm::SmallVector<mlir::Value, 8> owned =
         collectOperationBufferValues(relation.owner);
     if (!llvm::any_of(owned, [&](mlir::Value value) {
           return shareStorage(value, relation.buffer, storageRoots);
         }))
-      return mlir::failure();
+      return relation.owner->emitOpError("buffer relation endpoint does not "
+                                         "share storage with its owner: ")
+             << relation.buffer;
   }
 
   std::set<std::pair<const void *, const void *>> boundaryEndpoints;
@@ -394,7 +396,7 @@ mlir::LogicalResult checkStructuredBufferRelationsCurrent(
     if (!relation.sourceEndpoint || !relation.destinationEndpoint ||
         !liveValues.contains(relation.sourceEndpoint.getAsOpaquePointer()) ||
         !liveValues.contains(relation.destinationEndpoint.getAsOpaquePointer()))
-      return mlir::failure();
+      return root->emitError("boundary relation has no live endpoint");
     TileModuleOp sourceOwner = getTileOwner(relation.sourceEndpoint);
     TileModuleOp destinationOwner = getTileOwner(relation.destinationEndpoint);
     if (!sourceOwner || !destinationOwner || sourceOwner == destinationOwner ||
@@ -402,20 +404,22 @@ mlir::LogicalResult checkStructuredBufferRelationsCurrent(
              .insert({relation.sourceEndpoint.getAsOpaquePointer(),
                       relation.destinationEndpoint.getAsOpaquePointer()})
              .second)
-      return mlir::failure();
+      return root->emitError(
+          "boundary relation has invalid or duplicate Tile endpoints");
   }
 
   std::set<std::pair<unsigned, int64_t>> outputOwners;
   for (const StructuredOutputRelation &relation : relations.structuralOutputs) {
     if (!relation.endpoint ||
         !liveValues.contains(relation.endpoint.getAsOpaquePointer()))
-      return mlir::failure();
+      return root->emitError("output relation has no live endpoint");
     TileModuleOp owner = getTileOwner(relation.endpoint);
     if (!owner ||
         !outputOwners
              .insert({relation.outputIndex, owner.getTileIdAttr().getInt()})
              .second)
-      return mlir::failure();
+      return root->emitError(
+          "output relation has an invalid or duplicate Tile owner");
   }
   return mlir::success();
 }

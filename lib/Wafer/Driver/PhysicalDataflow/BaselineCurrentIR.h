@@ -8,10 +8,18 @@
 
 namespace wafer::compiler::detail {
 
+// Internal qualification choice. Ordinary none/search product callers never
+// supply it; test drivers select a realization using the same transformations.
+struct CommunicationCandidateSelection {
+  bool mergeRegions = true;
+  BoundaryMovementOptions movement;
+};
+
 struct BaselineCurrentIROptions {
   uint64_t layoutWorkLimit = UINT64_C(1048576);
   uint32_t maximumCapacityAttempts = 16;
   CurrentIRDownstreamOptions downstream;
+  const CommunicationCandidateSelection *qualification = nullptr;
 };
 
 struct BaselineCurrentIRStatistics {

@@ -41,6 +41,39 @@ def read_portable_stablehlo(program: pathlib.Path) -> str:
 
 
 class PyTorchBoardCasesTest(unittest.TestCase):
+    def test_alltoall_reference_detects_wrong_source_and_output_tail(self) -> None:
+        for extent in (1024, 1025, 1031):
+            case = cases.make_alltoall_transpose(torch.float16, 20260803, extent=extent)
+            lhs, rhs = case.inputs
+            expected, = case.materialize_expected_outputs()
+            self.assertEqual(lhs.shape, (extent, 16, 1))
+            self.assertEqual(rhs.shape, (16, extent, 1))
+            wrong_source = lhs + (rhs + rhs).roll(1, dims=0).transpose(0, 1)
+            missing_tail = expected.clone()
+            missing_tail[-1, -1, 0] += 1
+            for actual in (wrong_source, missing_tail):
+                with self.assertRaises(AssertionError):
+                    cases.common.assert_tensor_matches(
+                        actual, expected, policy=case.comparison_policy,
+                        context=f"AllToAll L={extent}",
+                    )
+
+    def test_reduce_scatter_reference_detects_missing_source_and_tail(self) -> None:
+        for extent in (1024, 1025, 1031):
+            case = cases.make_reduce_scatter_sum(torch.float16, 20260803, extent=extent)
+            rhs, = case.inputs
+            expected, = case.materialize_expected_outputs()
+            self.assertEqual(expected.shape, (1, extent, 1))
+            missing_source = (rhs[:-1] + rhs[:-1]).sum(dim=0, keepdim=True)
+            wrong_tail = expected.clone()
+            wrong_tail[0, -1, 0] += 1
+            for actual in (missing_source, wrong_tail):
+                with self.assertRaises(AssertionError):
+                    cases.common.assert_tensor_matches(
+                        actual, expected, policy=case.comparison_policy,
+                        context=f"ReduceScatter L={extent}",
+                    )
+
     def test_gemm_reference_detects_missing_k_and_output_tails(self) -> None:
         for name in ("single-card-gemm", "single-card-gemm-tail-1025",
                      "single-card-gemm-tail-1031"):
@@ -149,6 +182,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             dump_compiler_ir=None,
             compile_timing=False,
             optimization_policy="none",
+            qualify_communication=None,
             no_card=True,
             device_id=0,
             expected_runtime_version=None,
@@ -271,6 +305,8 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             num_partitions=1,
             allgather_payload_elements=None,
             gemm_dimensions=None,
+            alltoall_extent=None,
+            reduce_scatter_extent=None,
             export_program=mock.Mock(),
             materialize_expected_outputs=mock.Mock(
                 return_value=(torch.zeros((1,), dtype=torch.float16),)
@@ -280,6 +316,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             wafer_compile=pathlib.Path("wafer-compile"),
             compile_timing=False,
             optimization_policy="none",
+            qualify_communication=None,
         )
         with (
             mock.patch.object(
@@ -314,6 +351,46 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             [arg for arg in compile_command if arg.startswith("--optimization-")],
             ["--optimization-policy=none"],
         )
+
+    def test_product_policies_ignore_communication_expectations(self) -> None:
+        case = types.SimpleNamespace(
+            num_partitions=1, allgather_payload_elements=1024,
+            alltoall_extent=1024, reduce_scatter_extent=1024,
+            gemm_dimensions=None, export_program=mock.Mock(),
+            materialize_expected_outputs=mock.Mock(return_value=(torch.zeros(1),)),
+        )
+        for policy in ("none", "search"):
+            args = types.SimpleNamespace(
+                wafer_compile=pathlib.Path("wafer-compile"), compile_timing=False,
+                optimization_policy=policy, qualify_communication=None,
+            )
+            with (
+                mock.patch.object(board_runner, "run", return_value=types.SimpleNamespace(
+                    stdout="wrote verified package with num-partitions=1 tiles=16", stderr=""
+                )) as command,
+                mock.patch.object(board_runner, "prepare_runtime_payloads",
+                                  return_value=([], {}, set(), {})),
+                mock.patch.object(board_runner, "verify_ring_allgather") as gather,
+                mock.patch.object(board_runner, "verify_personalized_exchange") as exchange,
+            ):
+                board_runner.prepare_case_step(
+                    args, case, step_index=0, step_dir=pathlib.Path("step"),
+                    source=pathlib.Path("source"), package=pathlib.Path("package"),
+                    dump_compiler_ir=None,
+                )
+                gather.assert_not_called()
+                exchange.assert_not_called()
+                self.assertFalse(any("test-communication" in arg for arg in command.call_args.args[0]))
+            args.qualify_communication = "ring-allgather"
+            args.optimization_policy = "search"
+            with mock.patch.object(board_runner, "run") as command:
+                with self.assertRaisesRegex(RuntimeError, "cannot run search"):
+                    board_runner.prepare_case_step(
+                        args, case, step_index=0, step_dir=pathlib.Path("step"),
+                        source=pathlib.Path("source"), package=pathlib.Path("package"),
+                        dump_compiler_ir=None,
+                    )
+                command.assert_not_called()
 
     def test_board_continuation_reads_the_step_one_captures(self) -> None:
         expected = (

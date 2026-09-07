@@ -25,6 +25,7 @@ add_mlir_library(WaferTileTransforms
   MLIRLinalgDialect
   MLIRMathDialect
   MLIRMemRefDialect
+  MLIRMemRefUtils
   MLIRPass
   MLIRSCFDialect
   MLIRSCFTransforms

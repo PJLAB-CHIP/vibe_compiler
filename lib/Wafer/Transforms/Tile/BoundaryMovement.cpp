@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/MemRef/Utils/MemRefUtils.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -1634,6 +1635,23 @@ static mlir::memref::SubViewOp getCurrentSourceWindow(mlir::Value source) {
   return result;
 }
 
+static llvm::SmallVector<mlir::memref::SubViewOp, 2> getCommonStaticSubviewUses(
+    llvm::ArrayRef<mlir::bufferization::ToMemrefOp> bridges) {
+  llvm::SmallVector<mlir::memref::SubViewOp, 2> views;
+  for (mlir::bufferization::ToMemrefOp bridge : bridges) {
+    if (bridge.getMemref().use_empty())
+      return {};
+    for (mlir::Operation *user : bridge.getMemref().getUsers()) {
+      auto view = mlir::dyn_cast<mlir::memref::SubViewOp>(user);
+      if (!view || view.getType().getRank() != view.getSourceType().getRank() ||
+          !sameStaticSubview(views.empty() ? view : views.front(), view))
+        return {};
+      views.push_back(view);
+    }
+  }
+  return views;
+}
+
 static std::optional<MemLayout> getLayout(mlir::Type type) {
   auto memref = mlir::dyn_cast<mlir::MemRefType>(type);
   MemoryAttr memory = memref ? getWaferMemoryAttr(memref) : MemoryAttr{};
@@ -1965,6 +1983,23 @@ preflight(mlir::ModuleOp module, StructuredMaterializationRelations &relations,
       destinationType = getOwnedSPMType(destinationSubviewType);
     } else {
       destinationType = getOwnedSPMType(destinationType);
+      if (getLayout(sourceType) == MemLayout::Tensor &&
+          getLayout(destinationType) == MemLayout::Tensor) {
+        destinationSubviews = getCommonStaticSubviewUses(destinationBridges);
+        if (!destinationSubviews.empty()) {
+          // Equal carriers share coordinates, but their consumers may demand
+          // different actual windows. Preserve those windows before grouping
+          // fanout payloads, rather than communicating the whole carrier.
+          auto window = destinationSubviews.front();
+          sourceWindowOffsets.assign(window.getStaticOffsets().begin(),
+                                     window.getStaticOffsets().end());
+          sourceWindowSizes.assign(window.getStaticSizes().begin(),
+                                   window.getStaticSizes().end());
+          sourceWindowStrides.assign(window.getStaticStrides().begin(),
+                                     window.getStaticStrides().end());
+          destinationType = getOwnedSPMType(window.getType());
+        }
+      }
     }
     std::optional<WaferPhysicalTensorInfo> destinationPhysical =
         computeWaferPhysicalTensorInfo(destinationType);
@@ -2688,6 +2723,15 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
                 .create<LayoutMaterializeOp>(result.originalResult.getLoc(),
                                              peer.destinationSPMType, source)
                 .getResult();
+      else if (getLayout(source.getType()) == MemLayout::Tensor &&
+               !mlir::memref::isStaticShapeAndContiguousRowMajor(
+                   mlir::cast<mlir::MemRefType>(source.getType()))) {
+        auto packed = rewriter.create<mlir::memref::AllocOp>(
+            result.originalResult.getLoc(), peer.destinationSPMType);
+        rewriter.create<mlir::memref::CopyOp>(result.originalResult.getLoc(),
+                                              source, packed.getResult());
+        source = packed.getResult();
+      }
       return source;
     };
 
@@ -3233,6 +3277,13 @@ DistributedMovementAvailability analyzeDistributedMovementAvailability(
   if (mlir::failed(
           preflight(module, copiedRelations, regions, peers, result.detail)))
     return result;
+  // All raw edges participate: DDR loads execute at Region entry and stores
+  // at Region exit. Peer rounds must not hide a cycle in that actual order.
+  llvm::DenseMap<mlir::Operation *, unsigned> ddrRanks;
+  std::string ddrDetail;
+  result.sharedDDR =
+      !peers.empty() && mlir::succeeded(buildRegionTopologicalRanks(
+                            module, peers, ddrRanks, ddrDetail));
   llvm::SmallVector<PayloadGroup, 16> groups = buildPayloadGroups(peers);
   llvm::SmallVector<CommunicationComponent, 8> components =
       buildCommunicationComponents(groups, peers);
@@ -3335,8 +3386,19 @@ materializeTileBoundaryMovement(mlir::ModuleOp module,
     return fail(BoundaryMovementFailureKind::Unsupported, detail);
 
   BoundaryMovementResult result;
-  if (mlir::failed(buildTopologyFanoutChoices(module, peers, options.allGather,
-                                              result.statistics, detail)))
+  if (options.transport == BoundaryMovementTransport::SharedDDR) {
+    if (options.allGather != CompleteAllGatherAlgorithm::Ring ||
+        options.allToAll != CompleteAllToAllAlgorithm::Direct ||
+        options.reduction != DistributedReductionAlgorithm::Centralized)
+      return fail(BoundaryMovementFailureKind::BrokenContract,
+                  "shared DDR cannot request a peer collective algorithm");
+    llvm::DenseMap<mlir::Operation *, unsigned> ranks;
+    if (mlir::failed(buildRegionTopologicalRanks(module, peers, ranks, detail)))
+      return fail(BoundaryMovementFailureKind::Unsupported, detail);
+    for (PeerPlan &peer : peers)
+      peer.useSharedDDR = true;
+  } else if (mlir::failed(buildTopologyFanoutChoices(
+                 module, peers, options.allGather, result.statistics, detail)))
     return fail(BoundaryMovementFailureKind::Unsupported, detail);
   if (mlir::failed(apply(module, regions, peers, result.statistics, detail)))
     return fail(BoundaryMovementFailureKind::CompilerFailure,

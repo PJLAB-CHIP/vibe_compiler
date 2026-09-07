@@ -183,38 +183,30 @@ buildExchangeComponents(llvm::ArrayRef<PayloadGroup> groups,
 }
 
 static std::optional<unsigned>
-getCompleteExchangeLaneCount(const ExchangeComponent &component,
-                             llvm::ArrayRef<PayloadGroup> groups,
-                             llvm::ArrayRef<RelationInfo> relationInfo) {
+getCompleteExchangeMultiplicity(const ExchangeComponent &component,
+                                llvm::ArrayRef<PayloadGroup> groups,
+                                llvm::ArrayRef<RelationInfo> relationInfo) {
   if (component.participants.size() < 2)
     return std::nullopt;
-  llvm::DenseMap<uint64_t, unsigned> sourceCounts;
-  for (unsigned groupIndex : component.groups) {
-    const PayloadGroup &group = groups[groupIndex];
-    if (group.participants != component.participants ||
-        group.relations.size() + 1 != component.participants.size())
-      return std::nullopt;
-    ++sourceCounts[group.sourceTile];
-    llvm::DenseSet<uint64_t> destinations;
-    for (unsigned relationIndex : group.relations) {
+  llvm::DenseMap<std::pair<uint64_t, uint64_t>, unsigned> counts;
+  for (unsigned groupIndex : component.groups)
+    for (unsigned relationIndex : groups[groupIndex].relations) {
       const RelationInfo &relation = relationInfo[relationIndex];
-      if (relation.sourceTile != group.sourceTile ||
-          !destinations.insert(relation.destinationTile).second)
+      if (relation.sourceTile == relation.destinationTile)
         return std::nullopt;
+      ++counts[{relation.sourceTile, relation.destinationTile}];
     }
-    for (uint64_t participant : component.participants)
-      if (participant != group.sourceTile &&
-          !destinations.contains(participant))
+  unsigned multiplicity = 0;
+  for (uint64_t source : component.participants)
+    for (uint64_t destination : component.participants) {
+      if (source == destination)
+        continue;
+      unsigned count = counts.lookup({source, destination});
+      if (!count || (multiplicity && count != multiplicity))
         return std::nullopt;
-  }
-  unsigned lanes = 0;
-  for (uint64_t participant : component.participants) {
-    unsigned count = sourceCounts.lookup(participant);
-    if (count == 0 || (lanes != 0 && count != lanes))
-      return std::nullopt;
-    lanes = count;
-  }
-  return lanes;
+      multiplicity = count;
+    }
+  return multiplicity;
 }
 
 struct Position {
@@ -347,6 +339,50 @@ struct TileMergeSet {
   llvm::SmallVector<TileRegionOp, 16> regions;
 };
 
+// Keep initialization dependencies in the same actual rewrite. Never absorb
+// another cross-Tile phase or move an effect across the selected region span.
+static bool includeLocalTensorDependencies(
+    TileMergeSet &set, llvm::ArrayRef<StructuredBoundaryRelation> relations) {
+  if (set.regions.empty())
+    return false;
+  TileRegionOp anchor = set.regions.front();
+  for (size_t index = 0; index < set.regions.size(); ++index) {
+    TileRegionOp region = set.regions[index];
+    if (region->getBlock() != anchor->getBlock() ||
+        !mlir::isMemoryEffectFree(region))
+      return false;
+    for (mlir::Value input : region.getInputs()) {
+      auto dependency = input.getDefiningOp<TileRegionOp>();
+      if (!dependency || llvm::is_contained(set.regions, dependency) ||
+          (dependency->getBlock() == anchor->getBlock() &&
+           dependency->isBeforeInBlock(anchor)))
+        continue;
+      if (dependency->getBlock() != anchor->getBlock() ||
+          !dependency->isBeforeInBlock(region) ||
+          !mlir::isMemoryEffectFree(dependency) ||
+          llvm::any_of(dependency.getResultTypes(),
+                       [](mlir::Type type) {
+                         return !mlir::isa<mlir::RankedTensorType>(type);
+                       }) ||
+          llvm::any_of(relations, [&](const StructuredBoundaryRelation &edge) {
+            return getRegionOwner(edge.sourceEndpoint) == dependency ||
+                   getRegionOwner(edge.destinationEndpoint) == dependency;
+          }))
+        return false;
+      set.regions.push_back(dependency);
+    }
+  }
+  llvm::sort(set.regions, [](TileRegionOp lhs, TileRegionOp rhs) {
+    return lhs->isBeforeInBlock(rhs);
+  });
+  for (mlir::Operation *operation = anchor.getOperation();
+       operation != set.regions.back().getOperation();
+       operation = operation->getNextNode())
+    if (!operation || !mlir::isMemoryEffectFree(operation))
+      return false;
+  return true;
+}
+
 struct MergeBuilder {
   explicit MergeBuilder(mlir::MLIRContext *context) : builder(context) {
     body.push_back(new mlir::Block());
@@ -478,11 +514,9 @@ mergeTileRegions(TileMergeSet &set,
   return replacement;
 }
 
-} // namespace
-
-mlir::LogicalResult closeCrossTileCommunicationRegions(
-    mlir::ModuleOp module, StructuredMaterializationRelations &relations,
-    CommunicationRegionClosureStatistics *statistics,
+static mlir::FailureOr<llvm::SmallVector<TileMergeSet, 16>>
+prepareCommunicationRegionClosure(
+    mlir::ModuleOp module, const StructuredMaterializationRelations &relations,
     SpatialRegionMaterializationFailure *failure) {
   if (failure)
     *failure = {};
@@ -494,7 +528,7 @@ mlir::LogicalResult closeCrossTileCommunicationRegions(
                 SpatialRegionMaterializationFailureKind::BrokenContract,
                 "communication closure requires current structural Tile IR");
   if (relations.boundaryRelations.empty())
-    return mlir::success();
+    return llvm::SmallVector<TileMergeSet, 16>{};
 
   llvm::SmallVector<RelationInfo, 32> relationInfo;
   for (auto [index, relation] : llvm::enumerate(relations.boundaryRelations)) {
@@ -518,7 +552,7 @@ mlir::LogicalResult closeCrossTileCommunicationRegions(
   llvm::SmallVector<TileMergeSet, 16> sets;
   llvm::SmallVector<unsigned, 8> candidateComponents;
   for (auto [componentIndex, component] : llvm::enumerate(components)) {
-    if (!getCompleteExchangeLaneCount(component, groups, relationInfo) ||
+    if (!getCompleteExchangeMultiplicity(component, groups, relationInfo) ||
         !hasCommonCut(component, groups, relationInfo,
                       relations.boundaryRelations))
       continue;
@@ -564,23 +598,47 @@ mlir::LogicalResult closeCrossTileCommunicationRegions(
   for (unsigned component : candidateComponents) {
     bool closable = true;
     for (TileMergeSet &set : sets)
-      if (set.component == component && !canMergeTileRegions(set)) {
+      if (set.component == component &&
+          (!includeLocalTensorDependencies(set, relations.boundaryRelations) ||
+           !canMergeTileRegions(set))) {
         closable = false;
         break;
       }
     if (!closable)
       continue;
     closableComponents.insert(component);
-    if (statistics)
-      ++statistics->closedExchangeComponents;
   }
+  llvm::erase_if(sets, [&](const TileMergeSet &set) {
+    return !closableComponents.contains(set.component) ||
+           set.regions.size() < 2;
+  });
+  return sets;
+}
 
+} // namespace
+
+mlir::FailureOr<CommunicationRegionClosureAvailability>
+analyzeCommunicationRegionClosure(
+    mlir::ModuleOp module, const StructuredMaterializationRelations &relations,
+    SpatialRegionMaterializationFailure *failure) {
+  auto sets = prepareCommunicationRegionClosure(module, relations, failure);
+  if (mlir::failed(sets))
+    return mlir::failure();
+  return sets->empty() ? CommunicationRegionClosureAvailability::Unavailable
+                       : CommunicationRegionClosureAvailability::Available;
+}
+
+mlir::LogicalResult closeCrossTileCommunicationRegions(
+    mlir::ModuleOp module, StructuredMaterializationRelations &relations,
+    CommunicationRegionClosureStatistics *statistics,
+    SpatialRegionMaterializationFailure *failure) {
+  auto prepared = prepareCommunicationRegionClosure(module, relations, failure);
+  if (mlir::failed(prepared))
+    return mlir::failure();
+  llvm::DenseSet<unsigned> closedComponents;
   llvm::DenseMap<mlir::Value, mlir::Value> replacements;
-  for (TileMergeSet &set : sets) {
-    if (!closableComponents.contains(set.component))
-      continue;
-    if (set.regions.size() < 2)
-      continue;
+  for (TileMergeSet &set : *prepared) {
+    closedComponents.insert(set.component);
     uint64_t regionCount = set.regions.size();
     if (mlir::failed(mergeTileRegions(set, replacements)))
       return fail(failure,
@@ -592,6 +650,9 @@ mlir::LogicalResult closeCrossTileCommunicationRegions(
       statistics->mergedRegions += regionCount;
     }
   }
+
+  if (statistics)
+    statistics->closedExchangeComponents += closedComponents.size();
 
   auto retarget = [&](mlir::Value &value) {
     if (auto found = replacements.find(value); found != replacements.end())

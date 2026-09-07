@@ -23,7 +23,13 @@
 #include <string>
 #include <vector>
 
+namespace wafer::compiler {
+class CompiledProgram;
+}
+
 namespace wafer::compiler::detail {
+
+struct CommunicationCandidateSelection;
 
 bool reject(llvm::raw_ostream &diagnostics, llvm::StringRef message);
 
@@ -129,7 +135,8 @@ llvm::Expected<DeviceExecutable> compileTensorProgramToDeviceExecutable(
     OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLaunchSlot, ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
-    CompilationIRTrace &irTrace);
+    CompilationIRTrace &irTrace,
+    const CommunicationCandidateSelection *qualification = nullptr);
 
 mlir::LogicalResult stageTargetPackage(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
@@ -142,7 +149,8 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<TargetLLVMModules> &targetLLVMModules,
     ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
-    CompilationIRTrace &irTrace, CompilationStageTracker &stages);
+    CompilationIRTrace &irTrace, CompilationStageTracker &stages,
+    const CommunicationCandidateSelection *qualification = nullptr);
 
 mlir::LogicalResult stageProfileTargetPackages(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
@@ -173,7 +181,15 @@ mlir::LogicalResult runCompilationTransaction(
         nullptr,
     CompilationStage *failureStage = nullptr,
     CommitFailureInjection commitFailureInjection =
-        CommitFailureInjection::None);
+        CommitFailureInjection::None,
+    const CommunicationCandidateSelection *qualification = nullptr);
+
+llvm::Expected<CompiledProgram> compileProgramWithTargetLLVMModulesImpl(
+    CompilationRequest request, llvm::StringRef outputDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, CompilationOptions options,
+    llvm::raw_ostream &diagnostics,
+    const CommunicationCandidateSelection *qualification);
 
 /// Binds the all-and-only staged instrumentation resources and checks their
 /// actual bytes against the writer identity. Capture packages are strictly

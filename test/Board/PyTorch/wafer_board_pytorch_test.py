@@ -38,6 +38,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dump-compiler-ir", type=pathlib.Path)
     parser.add_argument("--compile-timing", action="store_true")
     parser.add_argument(
+        "--qualify-communication",
+        choices=("ring-allgather", "direct-alltoall", "direct-reduce-scatter"),
+        help="explicit implementation qualification using wafer-compile-test",
+    )
+    parser.add_argument(
         "--optimization-policy",
         choices=board_cases.OPTIMIZATION_POLICIES,
         default="none",
@@ -476,8 +481,147 @@ def verify_ring_allgather(
                     if token != wait.group(1)
                 }
     print(
-        "production_allgather: tiles=16 rounds=15 sends=240 receives=240 "
+        "qualified_allgather: tiles=16 rounds=15 sends=240 receives=240 "
         f"waits=480 payload_bytes={payload_bytes}"
+    )
+
+
+
+def verify_reduce_scatter_contributions(
+    ir: str, tile: int, extent: int, output_shard: tuple[int, int]
+) -> None:
+    """Follow the actual receive buffers into the selected sum's input slots."""
+    regions: list[str] = []
+    lines: list[str] = []
+    depth = 0
+    for line in ir.splitlines():
+        if not lines and "wafer.tile.region(" not in line:
+            continue
+        lines.append(line)
+        depth += line.count("{") - line.count("}")
+        if depth == 0:
+            region = "\n".join(lines)
+            if "wafer.tile.peer_recv " in region:
+                regions.append(region)
+            lines = []
+    if len(regions) != 1:
+        raise RuntimeError("ReduceScatter requires one actual contribution exchange region")
+    body = regions[0]
+    views = {
+        result: (source, tuple(map(int, offsets.split(", "))),
+                 tuple(map(int, sizes.split(", "))))
+        for result, source, offsets, sizes in re.findall(
+            r"(%[\w]+) = memref\.subview (%[\w]+)\[([\d, ]+)\] "
+            r"\[([\d, ]+)\] \[1, 1, 1\]", body
+        )
+    }
+    layouts = dict(re.findall(
+        r"(%[\w]+) = wafer\.tile\.materialize_layout (%[\w]+) :", body
+    ))
+    reductions = re.findall(
+        r"wafer\.tile\.reduce <sum> (%[\w]+), %\w+ "
+        r"\{dimensions = array<i64: 0>\} : \(memref<16x(\d+)x1xf16,", body
+    )
+    if len(reductions) != 1 or int(reductions[0][1]) != output_shard[1]:
+        raise RuntimeError("ReduceScatter lacks the full 16-source sum")
+    reduced_view = views.get(layouts.get(reductions[0][0], ""))
+    offset, size = output_shard
+    if reduced_view is None or reduced_view[1:] != ((0, offset, 0), (16, size, 1)):
+        raise RuntimeError("ReduceScatter sum consumes the wrong shard")
+    assembled = reduced_view[0]
+    receives = {
+        buffer: int(peer) for buffer, peer in re.findall(
+            r"wafer\.tile\.peer_recv (%[\w]+) \{.*?peer = (\d+) : i64", body
+        )
+    }
+    contributions: dict[int, str] = {}
+    for source, destination in re.findall(r"memref\.copy (%[\w]+), (%[\w]+) :", body):
+        view = views.get(destination)
+        if view is None or view[0] != assembled:
+            continue
+        participant, column, last = view[1]
+        if (column, last) != (offset, 0) or view[2] != (1, size, 1):
+            raise RuntimeError("ReduceScatter contribution has the wrong window")
+        if participant in contributions:
+            raise RuntimeError("ReduceScatter duplicates a contribution")
+        if participant != tile and receives.get(source) != participant:
+            raise RuntimeError("ReduceScatter places a receive in the wrong source slot")
+        if participant == tile:
+            local = views.get(source)
+            if local is None or local[1:] != ((tile, offset, 0), (1, size, 1)):
+                raise RuntimeError("ReduceScatter omits its local source contribution")
+        contributions[participant] = source
+    if sorted(contributions) != list(range(PHYSICAL_TILE_COUNT)):
+        raise RuntimeError("ReduceScatter does not consume every source exactly once")
+
+def verify_personalized_exchange(
+    package: pathlib.Path, dump: pathlib.Path, extent: int, *, reduce_scatter: bool = False
+) -> None:
+    manifest = json.loads((package / "manifest.json").read_text())
+    for entry in manifest["entries"]:
+        kinds = {argument["kind"] for argument in entry["arguments"]}
+        if "transport_status" not in kinds or "shared_workspace" in kinds:
+            raise RuntimeError("AllToAll requires Direct DTE without shared DDR")
+    rows: dict[int, tuple[int, int]] = {}
+    instructions: dict[int, str] = {}
+    for tile in range(PHYSICAL_TILE_COUNT):
+        ir = (dump / "instruction" / f"tile_{tile:05d}.mlir").read_text()
+        instructions[tile] = ir
+        output_shape = f"1x{extent}x1" if reduce_scatter else f"{extent}x16x1"
+        returned = re.findall(rf"return (%[\w]+) : memref<{output_shape}xf16,", ir)
+        if len(returned) != 1:
+            raise RuntimeError(f"AllToAll Tile {tile} lacks a unique output")
+        slice_pattern = (
+            r"\[0, (\d+), 0\] \[1, (\d+), 1\] \[1, 1, 1\]"
+            if reduce_scatter else
+            r"\[(\d+), 0, 0\] \[(\d+), 16, 1\] \[1, 1, 1\]"
+        )
+        views = re.findall(
+            rf"memref\.subview {re.escape(returned[0])}"
+            + slice_pattern, ir
+        )
+        if len(views) != 1:
+            raise RuntimeError(f"AllToAll Tile {tile} lacks one output shard")
+        rows[tile] = tuple(map(int, views[0]))
+    end = 0
+    for offset, size in sorted(rows.values()):
+        if offset != end or size <= 0:
+            raise RuntimeError("AllToAll output has a gap or overlapping shard")
+        end += size
+    if end != extent:
+        raise RuntimeError("AllToAll output does not cover every row")
+    sends: dict[tuple[int, int, str], int] = {}
+    receives: dict[tuple[int, int, str], int] = {}
+    for tile, ir in instructions.items():
+        if reduce_scatter:
+            tile_ir = (dump / "tile-dataflow" / f"tile_{tile:05d}.mlir").read_text()
+            verify_reduce_scatter_contributions(tile_ir, tile, extent, rows[tile])
+        tokens = []
+        for operation in ("send", "recv"):
+            issues = re.findall(
+                rf"(%[\w]+) = wafer\.instr\.dte_{operation} .*?"
+                r"bytes = (\d+) : i64, message = (#wafer\.dte_message<[^>]+>), "
+                r"peer = (\d+) : i64", ir
+            )
+            peers = [int(peer) for _, _, _, peer in issues]
+            if sorted(peers) != [peer for peer in rows if peer != tile]:
+                raise RuntimeError(f"AllToAll Tile {tile} lacks exact personalized {operation} peers")
+            for token, size_text, message, peer_text in issues:
+                peer, size = int(peer_text), int(size_text)
+                source, destination = (tile, peer) if operation == "send" else (peer, tile)
+                if size != rows[destination][1] * 2:
+                    raise RuntimeError("AllToAll transfers a whole carrier or wrong piece")
+                records = sends if operation == "send" else receives
+                records[(source, destination, message)] = size
+                tokens.append(token)
+        if sorted(re.findall(r"wafer\.instr\.dte_wait (%[\w]+) :", ir)) != sorted(tokens):
+            raise RuntimeError(f"AllToAll Tile {tile} lacks exact token completion")
+    if sends != receives:
+        raise RuntimeError("AllToAll send/receive messages do not match")
+    kind = "reduce_scatter" if reduce_scatter else "alltoall"
+    print(
+        f"qualified_{kind}: extent={extent} tiles=16 sends=240 receives=240 "
+        "waits=480 exact_output_coverage=true personalized_payload=true"
     )
 
 
@@ -559,6 +703,10 @@ def prepare_case_step(
         f"--num-partitions={case.num_partitions}",
         f"--optimization-policy={args.optimization_policy}",
     ]
+    if args.qualify_communication is not None:
+        if args.optimization_policy != "none":
+            raise RuntimeError("explicit communication qualification cannot run search")
+        compile_command.append("--test-communication-candidate=peer")
     if args.compile_timing:
         compile_command.append("--compile-timing")
     if dump_compiler_ir is not None:
@@ -624,7 +772,9 @@ def prepare_case_step(
                     "compiler inactive Tile/dataflow evidence is not a "
                     "canonical selected pre-Instr IR"
                 )
-    if case.allgather_payload_elements is not None:
+    if args.qualify_communication == "ring-allgather":
+        if case.allgather_payload_elements is None:
+            raise RuntimeError("Ring AllGather qualification requires an AllGather source")
         if dump_compiler_ir is None:
             raise RuntimeError("AllGather qualification requires current compiler IR")
         verify_ring_allgather(
@@ -636,6 +786,20 @@ def prepare_case_step(
         if dump_compiler_ir is None:
             raise RuntimeError("GEMM qualification requires current compiler IR")
         verify_row_sharded_gemm(dump_compiler_ir, case.gemm_dimensions, case.dtype)
+    if args.qualify_communication == "direct-alltoall":
+        if case.alltoall_extent is None:
+            raise RuntimeError("direct AllToAll qualification requires an AllToAll source")
+        if dump_compiler_ir is None:
+            raise RuntimeError("AllToAll qualification requires current compiler IR")
+        verify_personalized_exchange(package, dump_compiler_ir, case.alltoall_extent)
+    if args.qualify_communication == "direct-reduce-scatter":
+        if case.reduce_scatter_extent is None:
+            raise RuntimeError("ReduceScatter qualification requires a reduction source")
+        if dump_compiler_ir is None:
+            raise RuntimeError("ReduceScatter qualification requires current compiler IR")
+        verify_personalized_exchange(
+            package, dump_compiler_ir, case.reduce_scatter_extent, reduce_scatter=True
+        )
     oracle_start_ns = time.monotonic_ns()
     expected_outputs = case.materialize_expected_outputs()
     print(
@@ -723,6 +887,8 @@ def main() -> int:
             and (
                 current_case.allgather_payload_elements is not None
                 or current_case.gemm_dimensions is not None
+                or current_case.alltoall_extent is not None
+                or current_case.reduce_scatter_extent is not None
             )
         ):
             dump_compiler_ir = step_dir / "compiler-ir"

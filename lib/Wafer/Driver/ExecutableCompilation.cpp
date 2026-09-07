@@ -41,25 +41,35 @@ struct TileLoweringResult {
 static void
 retargetStructuredRelationValue(StructuredMaterializationRelations &relations,
                                 mlir::Value oldValue, mlir::Value newValue) {
-  if (!oldValue || !newValue || oldValue.getType() != newValue.getType())
+  if (!oldValue || !newValue)
     return;
-  for (MaterializedBufferRelation &entry : relations.buffers)
-    if (entry.buffer == oldValue)
-      entry.buffer = newValue;
   for (StructuredOutputRelation &entry : relations.structuralOutputs)
     if (entry.endpoint == oldValue)
       entry.endpoint = newValue;
+  for (StructuredBoundaryRelation &entry : relations.boundaryRelations) {
+    if (entry.sourceEndpoint == oldValue)
+      entry.sourceEndpoint = newValue;
+    if (entry.destinationEndpoint == oldValue)
+      entry.destinationEndpoint = newValue;
+  }
 }
 
 static mlir::FailureOr<unsigned> cleanupCanonicalInstructionTransfersImpl(
     mlir::ModuleOp module, StructuredMaterializationRelations &relations) {
   if (!module)
     return mlir::failure();
+  // Transfer elimination can erase owners and create views repeatedly. An
+  // address-only liveness filter cannot preserve owner relations across those
+  // mutations: a newly created operation may reuse an erased owner's address.
+  // Keep endpoint replacements explicit and rebuild buffer owners from the
+  // resulting current IR, as at the entry to the canonical Instr leaf.
+  relations.buffers.clear();
   const unsigned eliminated =
       wafer::tensor_program_scheduling::elideRedundantFullBufferTransfers(
           module, [&](mlir::Value oldValue, mlir::Value newValue) {
             retargetStructuredRelationValue(relations, oldValue, newValue);
           });
+  rebuildCurrentBufferOwnerRelations(module.getOperation(), relations);
   retainCurrentStructuredBufferRelations(module.getOperation(), relations);
   if (mlir::failed(checkStructuredBufferRelationsCurrent(module.getOperation(),
                                                          relations)) ||

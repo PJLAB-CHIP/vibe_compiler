@@ -4,12 +4,14 @@
 // Retired program-directory spellings remain rejected.
 
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --target-model 2>&1 | FileCheck %s --check-prefix=MODEL
+# RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --test-communication-candidate=peer 2>&1 | FileCheck %s --check-prefix=COMMUNICATION
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --model-input 0=%t.input.npy 2>&1 | FileCheck %s --check-prefix=MODEL-INPUT
 # RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=OLD-FLAG
 # RUN: not wafer-compile --input-program-dir %t.input --output-package-dir %t.output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=OLD-PACKAGE-FLAG
 # RUN: wafer-compile --help | FileCheck %s --check-prefix=HELP
 
 # MODEL: wafer-compile: unknown argument: --target-model
+# COMMUNICATION: wafer-compile: unknown argument: --test-communication-candidate=peer
 # MODEL-INPUT: wafer-compile: unknown argument: --model-input
 # OLD-FLAG: wafer-compile: unknown argument: --output-program-dir
 # OLD-PACKAGE-FLAG: wafer-compile: unknown argument: --output-package-dir
@@ -18,5 +20,6 @@
 # HELP: --search-trials
 # HELP: --dump-compiler-ir
 # HELP-NOT: --target-model
+# HELP-NOT: --test-communication-candidate
 # HELP-NOT: --output-program-dir
 # HELP-NOT: --output-package-dir

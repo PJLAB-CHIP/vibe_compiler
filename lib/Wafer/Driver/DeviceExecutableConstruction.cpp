@@ -27,11 +27,15 @@ static llvm::Expected<DeviceExecutable> compileCurrentPolicy(
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, ProgramDataHandoff &programData,
-    CompilationIRTrace *irTrace) {
+    CompilationIRTrace *irTrace,
+    const CommunicationCandidateSelection *qualification) {
   if (!optimizations.isNone() && !optimizations.isSearch())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "device executable compilation requires an optimization policy");
+  if (qualification && !optimizations.isNone())
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "explicit qualification cannot run search");
   ExecutableLoweringStatistics executableStatistics;
   ExecutableCompilationResult compiled;
   if (optimizations.isSearch()) {
@@ -52,6 +56,7 @@ static llvm::Expected<DeviceExecutable> compileCurrentPolicy(
                                       &searchStatistics, &executableStatistics);
   } else {
     BaselineCurrentIROptions options;
+    options.qualification = qualification;
     options.downstream.captureTileDataflowIR = irTrace != nullptr;
     BaselineCurrentIRStatistics baselineStatistics;
     compiled = compileBaselineCurrentIR(
@@ -98,13 +103,14 @@ static llvm::Expected<DeviceExecutable> buildDeviceExecutableImpl(
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
-    ProgramDataHandoff &programData, CompilationIRTrace *irTrace) {
+    ProgramDataHandoff &programData, CompilationIRTrace *irTrace,
+    const CommunicationCandidateSelection *qualification) {
   (void)failAfterLaunchSlot;
   wafer::support::ScopedCompileTimingSpan timing(
       "stage", "tensor-program-to-executable", "device-executable");
-  llvm::Expected<DeviceExecutable> result =
-      compileCurrentPolicy(context, tensorModule, program, executionConfig,
-                           optimizations, diagnostics, programData, irTrace);
+  llvm::Expected<DeviceExecutable> result = compileCurrentPolicy(
+      context, tensorModule, program, executionConfig, optimizations,
+      diagnostics, programData, irTrace, qualification);
   if (!result)
     timing.markFailed();
   return result;
@@ -120,7 +126,8 @@ llvm::Expected<DeviceExecutable> buildDeviceExecutable(
     ProgramDataHandoff &programData) {
   return buildDeviceExecutableImpl(
       context, tensorModule, std::move(program), executionConfig, optimizations,
-      diagnostics, failAfterLaunchSlot, programData, /*irTrace=*/nullptr);
+      diagnostics, failAfterLaunchSlot, programData, /*irTrace=*/nullptr,
+      /*qualification=*/nullptr);
 }
 
 llvm::Expected<DeviceExecutable> buildDeviceExecutableWithIRTrace(
@@ -128,10 +135,11 @@ llvm::Expected<DeviceExecutable> buildDeviceExecutableWithIRTrace(
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
-    ProgramDataHandoff &programData, CompilationIRTrace &irTrace) {
-  return buildDeviceExecutableImpl(context, tensorModule, std::move(program),
-                                   executionConfig, optimizations, diagnostics,
-                                   failAfterLaunchSlot, programData, &irTrace);
+    ProgramDataHandoff &programData, CompilationIRTrace &irTrace,
+    const CommunicationCandidateSelection *qualification) {
+  return buildDeviceExecutableImpl(
+      context, tensorModule, std::move(program), executionConfig, optimizations,
+      diagnostics, failAfterLaunchSlot, programData, &irTrace, qualification);
 }
 
 } // namespace wafer::compiler::detail
