@@ -873,7 +873,8 @@ mlir::LogicalResult stageProfileTargetPackages(
     ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
     CompilationIRTrace &irTrace, CompilationStageTracker &stages,
-    ProfileInstrumentationIdentity &profileIdentity) {
+    ProfileInstrumentationIdentity &profileIdentity,
+    const CommunicationCandidateSelection *qualification) {
   const CompileClock::time_point totalStart = CompileClock::now();
   wafer::support::ScopedCompileTimingSpan productTiming(
       "stage", "target-codegen", "profile-package");
@@ -881,7 +882,7 @@ mlir::LogicalResult stageProfileTargetPackages(
   llvm::Expected<DeviceExecutable> compiled =
       compileTensorProgramToDeviceExecutable(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,
-          failAfterLaunchSlot, programData, resolver, irTrace);
+          failAfterLaunchSlot, programData, resolver, irTrace, qualification);
   if (!compiled) {
     llvm::consumeError(compiled.takeError());
     return mlir::failure();

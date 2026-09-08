@@ -1346,6 +1346,23 @@ def _test_rejections(module: object) -> None:
     )
     _must_reject(module, legacy_output, "unknown keys")
 
+    legacy_scope = make_evidence()
+    resource = legacy_scope["output_validation"]["resources"][0]
+    resource.pop("port")
+    resource.update(scope={"kind": "card", "card_id": 0}, role="output")
+    _must_reject(module, legacy_scope, "unknown keys")
+
+    duplicate_port = make_evidence()
+    resources = duplicate_port["output_validation"]["resources"]
+    resources[1]["port"] = resources[0]["port"]
+    resources[1]["role_index"] = 7
+    _must_reject(module, duplicate_port, "duplicate output port")
+
+    for port in (-1, 1 << 64, True):
+        invalid_port = make_evidence()
+        invalid_port["output_validation"]["resources"][0]["port"] = port
+        _must_reject(module, invalid_port, ".port")
+
     stale_summary = make_evidence()
     stale_summary["experiment"]["summary"] = {"tiles": []}
     _must_reject(module, stale_summary, "unknown keys")
@@ -1538,6 +1555,8 @@ def _test_report_files(repo: pathlib.Path, module: object) -> None:
     assert sample["device_timer_kind"]["const"] == "tx-stream-events"
     assert sample["host_submit_ns"]["minimum"] == 0
     output_resource = schema["$defs"]["outputValidationResource"]
+    assert "port" in output_resource["required"]
+    assert not {"scope", "role"} & output_resource["properties"].keys()
     assert "primary_output_validated" in output_resource["required"]
     assert "diagnostic_captures_match_primary" in output_resource["required"]
     assert "legacy_output_flag" not in output_resource["properties"]

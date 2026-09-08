@@ -7,6 +7,14 @@
 `completion`、`bufferization`、`package`、`runtime`、`CMake`和`ownership`。条目描述的是防复发模式；若与current
 编号设计或源码冲突，以current事实源为准并在同次修改中修正文档。
 
+## Runtime身份迁移必须同时覆盖profiler报告reader
+
+- 现象：普通package/no-card与设备采集都完成，最终报告生成却拒绝output validation字段。
+- 根因：C++已按external output PortId写evidence，Python reader/schema和手写fixture仍使用旧resource scope/role；
+  fixture与reader互相验证通过，未覆盖真实producer输出。
+- 修复模式：reader/schema/fixture统一消费current port，重复身份只按port判定，旧字段明确拒绝，不保留双reader。
+- 防复发：身份迁移沿manifest、C++ evidence、schema、reader和真实report生成闭合；手写fixture不能代签producer/consumer边界。
+
 ## Functional buffer结果缺少allocation effect会阻断安全写回消除
 
 - 现象：计算结果只由相邻copy写入既有destination，最终Instr仍多一次搬运和临时allocation；标准alias分析不能证明两个独立结果NoAlias。

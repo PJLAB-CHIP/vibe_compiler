@@ -461,15 +461,14 @@ def _validate_output(evidence: Mapping[str, Any]) -> None:
     )
     if not rows:
         _fail("output_validation.resources", "must not be empty")
-    keys: set[tuple[str, int, int | None, str, int]] = set()
+    ports: set[int] = set()
     comparisons: list[str | None] = []
     for index, row in enumerate(rows):
         path = f"output_validation.resources[{index}]"
         _exact_keys(
             row,
             {
-                "scope",
-                "role",
+                "port",
                 "role_index",
                 "bytes",
                 "reference_sha256",
@@ -479,41 +478,11 @@ def _validate_output(evidence: Mapping[str, Any]) -> None:
             },
             path,
         )
-        scope = _mapping(row["scope"], f"{path}.scope")
-        scope_kind = _string(scope.get("kind"), f"{path}.scope.kind")
-        expected_scope_keys = (
-            {"kind", "card_id"}
-            if scope_kind == "card"
-            else {"kind", "card_id", "tile_id"}
-            if scope_kind == "tile"
-            else set()
-        )
-        if not expected_scope_keys:
-            _fail(f"{path}.scope.kind", "must be 'card' or 'tile'")
-        _exact_keys(scope, expected_scope_keys, f"{path}.scope")
-        card_id = _integer(scope["card_id"], f"{path}.scope.card_id")
-        if card_id != 0:
-            _fail(f"{path}.scope.card_id", "must be 0")
-        tile_id = (
-            _integer(
-                scope["tile_id"],
-                f"{path}.scope.tile_id",
-                minimum=0,
-                maximum=15,
-            )
-            if scope_kind == "tile"
-            else None
-        )
-        key = (
-            scope_kind,
-            card_id,
-            tile_id,
-            _string(row["role"], f"{path}.role"),
-            _integer(row["role_index"], f"{path}.role_index", minimum=0),
-        )
-        if key in keys:
-            _fail(path, f"duplicate semantic output key {key}")
-        keys.add(key)
+        port = _integer(row["port"], f"{path}.port", minimum=0, maximum=UINT64_MAX)
+        if port in ports:
+            _fail(path, f"duplicate output port {port}")
+        ports.add(port)
+        _integer(row["role_index"], f"{path}.role_index", minimum=0)
         _integer(
             row["bytes"],
             f"{path}.bytes",

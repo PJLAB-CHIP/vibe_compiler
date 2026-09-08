@@ -525,16 +525,15 @@ def make_evidence(*, permute_bindings: bool = False) -> dict[str, Any]:
             "mode": "external-expected",
             "resources": [
                 {
-                    "scope": {"kind": "tile", "card_id": 0, "tile_id": tile},
-                    "role": "output",
-                    "role_index": 0,
+                    "port": port,
+                    "role_index": port,
                     "bytes": 4096,
-                    "reference_sha256": "sha256:" + f"{tile + 1:064x}",
+                    "reference_sha256": "sha256:" + f"{port + 1:064x}",
                     "external_expected_comparison": "exact",
                     "primary_output_validated": True,
                     "diagnostic_captures_match_primary": True,
                 }
-                for tile in range(16)
+                for port in range(16)
             ],
         },
         "sites": _sites(),

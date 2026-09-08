@@ -345,6 +345,14 @@ Profile instrumentation必须复用同一个DeviceExecutable、TargetTensor mate
 - activation/site map使用独立typed合同，不成为普通执行manifest字段；
 - stale/malformed profile在provider effect前失败。
 
+IR inspection和内部通信候选资格入口可请求同一profile transaction；显式choice传到
+DeviceExecutable物化点，Primary与Count/Trace共用这一个actual owner。测试choice仍只存在于内部driver，
+不能为取profile重新运行默认选路或把它暴露为生产选路参数。
+
+Profile output validation使用ordinary manifest的external output `PortId`作为唯一身份，
+evidence中的`port`由C++ producer、JSON schema和报告reader共同消费；`role_index`只描述输出序号，
+不再恢复旧resource的`scope/role`身份。重复port、旧字段和非法整数在报告输入边界拒绝。
+
 ## 9. Verification
 
 Host/no-card至少覆盖：

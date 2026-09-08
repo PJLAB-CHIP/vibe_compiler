@@ -191,6 +191,77 @@ AllReduce专项还断言Tile和最终Instr均直接写local sum destination，�
 完整source、input/reference、package、IR、capture、board log和manifest digest位于
 `build/test/board-audit/elementwise-writeback/`，只作审计。本次写回优化与实卡复验完成，继续第8项两步KV cache decode。
 
+### 第10项：cost参数的实卡测量
+
+用户要求在继续decode修复期间先利用当前实卡改进cost model的不确定参数。本项仍属于同一board-testing。
+按用户最新要求，新增采集只覆盖缺证据的DTE消息阶段与DDR搬运，用同源AllGather手写IR的2/8 KiB payload，
+分别选择已有peer/DDR测试候选。停止新增CT、NE、F32与transpose测量，不扩建硬件测试。
+整段耗时不能分离的wait/hop/单指令latency保留估计，不能拟合成实测参数。
+按用户纠正，校准以现有`--profile`的engine execution、typed site、submit/wait及DTE phase为主；
+整段StreamEvents只作交叉验证。曾试用整段时间/IR计数回归的instruction=5us、DTE=14us草稿已撤回，未构建或启用。
+不把混合残差写入单指令默认成本。
+用户进一步明确：本项纯性能case可以直接手写IR，不需要PyTorch source或数值结果对比。
+先用最小StableHLO IR经生产pipeline/profile，按actual engine/site计时，不为计时增加模型层。
+不生成expected/reference；只检查实际执行、profiler完整性、有效counter、completion/status与正常cleanup。
+这项例外只用于性能测量，普通正确性板测仍保持原PyTorch合同。
+
+Pipeline position:
+- Upstream IR / input: 手写static StableHLO IR、固定非零输入、同一生产pipeline生成的fresh profile package、final Instr工作量与已资格化设备。
+- Current stage responsibility: 用现有Primary/Count/Trace profiler读取五类NCC engine执行时间与typed site/submit/wait/DTE phase，按真实工作量归因；检查执行、正常清理与counter validity，不做数值oracle比较。未插桩StreamEvents作为整段交叉验证。
+- Output IR / files: 现有evidence.json/analysis.json/index.html、actual bytes/messages与逐engine/site观察；只有计时域明确、可辨识且复验支持的参数进入统一cost cohort。
+- Downstream consumer: 06号actual候选评分和第8项decode选路；不得影响SPM或completion合法性。
+- User-level driver / named pipeline: 内部wafer-compile-test已有communication candidate与--profile组合、原wafer-run --board；只补同一profile stage的显式choice传递。Primary/Count/Trace均由同一个actual DeviceExecutable产生；生产选路不变。
+- Explicit non-goals: 不把host wall time或DTE PMU raw当延迟，不更改共享系统配置，不把整段固定开销冒充单消息startup，不按case名或固定payload阈值选路。
+- Completion criteria: 两种payload的fresh IR→profile package→no-card→实际执行闭合；完整动态counter/site有效、完成与cleanup正常；无法辨识的项明确保留未知，绝对参数回写仍需计时域与重复测量资格；受影响测试与canonical build/no-op通过。
+
+| 输入等价类 | 实际测量与exact要求 | 下游witness |
+| --- | --- | --- |
+| 手写IR AllGather FP16，L=1024/4096×peer/DDR | peer每Tile15 send/recv及精确token wait；DDR候选DTE事件为0；actual payload与profile有效事件匹配 | 无数值reference；DTE阶段cycles与DDR engine ns分别记录 |
+| Profile和显式communication choice组合 | 同一actual候选只物化一次；ordinary/profile Primary包逐字节相同；生产入口拒绝test choice | no-card、actual Instr与profile site map，不能静默丢失choice |
+| 计时域、事件缺失与运行异常 | PMU ns与本地cycles分开；actual Instr与动态事件数量一致；无效counter/未完成时拒绝样本，device异常停止批次 | 真实报告reader、每Tile阶段检查，不放宽gate |
+
+方法参考[Open MPI benchmark实践](https://docs.open-mpi.org/en/v6.0.x-pre-release/tuning-apps/benchmarking.html)的计时作用域、重复和标注，
+以及[implementation-derived collective model](https://arxiv.org/abs/2004.11062)对实际实现和算法分别校准的要求。
+共享服务器不按benchmark建议关闭服务或改全局affinity；仅使用本仓产物并检查设备是否空闲。
+
+本轮checkpoint：
+
+- 已撤回整段回归参数、独立拟合/采样脚本和临时`--device-timing` CLI，cost policy保持原值；统一使用原有profiler。
+- Profiler的C++ producer已使用external output port，但Python reader/schema及手写fixture仍使用旧scope/role，
+  导致第一次Add采集在主机报告生成阶段失败。已统一为port，补旧字段、重复port及整数边界负例；没有设备timeout或reset。
+- 修复后Add、GEMM整除、GEMM尾部、AllGather none/search五次完整Primary/Count/Trace均成功，共15次实际launch；
+  原始PyTorch source/reference与完整Primary回读比较通过，Count/Trace与Primary逐字节一致，全部16 Tile的五类NCC PMU有效。
+  PyTorch验收由外层harness执行；报告内未传external expected的semantic_correctness仍为unknown，不伪造其字段。
+- GEMM整除/尾部NE PMU的Tile中位数分别为2285/2623 ns；Tile 0 NCC提交次数10/144，submit区间合计22116/38164本地cycles。
+  这些计时域和Trace扰动不能混算为每条指令5us。现有CT/NE throughput仍是nominal prior，不由单轮观察改成通用实测值。
+- AllGather none/search两份实际profile都没有DTE事件，说明本次均选中DDR；不计作DTE测量。
+- 报告host test、两项focused lit、canonical完整增量构建和后续Ninja no-op通过。
+
+本轮profiler报告分别在`build/test/board-audit/cost-profiler-public/`与`build/test/board-audit/cost-profiler-communication/`，
+采集通过既有生产`--profile`完成；报告中的PMU ns、Trace本地cycle和Primary stream ns分别解释。
+
+收窄后的四组采集已完成，不再扩测：手写AllGather FP16，L=1024/4096×peer/shared-ddr。
+脚本为`test/Board/Support/wafer_board_communication_performance.py`；每组一次Primary/Count/Trace，共12次串行launch。
+没有PyTorch导出、expected或外部数值对比；runner要求的output capture完成后删除。
+每组actual Instr、16 Tile PMU、完整动态DTE阶段、completion/status和cleanup通过，无timeout/reset。
+peer每组240 send、240 recv和480 wait；shared-ddr的DTE事件为0。
+
+| 观察量（中位数） | 2 KiB payload | 8 KiB payload | 单位与范围 |
+| --- | --- | --- | --- |
+| DTE peer-ready wait | 248 | 245 | Trace本地cycles，240条send |
+| DTE setup/issue | 502.5 | 513.5 | Trace本地cycles，240条send |
+| DTE send completion wait | 859.5 | 859.5 | Trace本地cycles，240条send |
+| DTE receive completion wait | 843.5 | 828.5 | Trace本地cycles，240条recv |
+| DDR路径RDMA执行 | 6805.5 | 26895.5 | PMU ns，16 Tile中位数 |
+| DDR路径WDMA执行 | 1611.5 | 12763.5 | PMU ns，16 Tile中位数 |
+
+DTE setup中位数对这两个payload变化不大，但peer-ready/receive wait有长尾；这些是插桩时本地控制阶段，
+没有qualified cycle→ns映射，不能称为DTE本征latency或直接写成固定10us。DDR值包含该候选全部读写，
+不把多Tile中位数倒数当作整卡带宽。四组采样已闭合；统一评分及参数回写未完成，cost常量保持原值，decode仍阻塞。
+报告在`build/test/board-audit/communication-performance/`。新增lit覆盖整除/尾部、DDR/DTE选择与
+ordinary/profile Primary逐字节相同，替代旧的“内部入口必须拒绝profile”unit；生产test-choice拒绝仍通过。
+最终4项focused lit、10项compiler unit、本轮四份报告的动态phase复核与完整canonical增量构建通过；后续Ninja no-op。
+
 ### 第1项：AllGather source到Ring专项（旧入口三个长度已通过）
 
 Pipeline position:

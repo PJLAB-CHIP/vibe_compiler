@@ -143,11 +143,6 @@ llvm::Expected<CompiledProgram> detail::compileProgramWithTargetLLVMModulesImpl(
     const TargetToolchain &targetToolchain, CompilationOptions options,
     llvm::raw_ostream &diagnostics,
     const CommunicationCandidateSelection *qualification) {
-  if (options.shouldProduceProfileInstrumentation())
-    return llvm::createStringError(
-        llvm::errc::invalid_argument,
-        "the internal qualification entry does not support profile "
-        "instrumentation; use compileProgram for the production entry");
   std::optional<DeviceExecutable> retainedDeviceExecutable;
   std::optional<TargetLLVMModules> retainedTargetLLVMModules;
   std::optional<CompilationIRTrace> retainedIRTrace;

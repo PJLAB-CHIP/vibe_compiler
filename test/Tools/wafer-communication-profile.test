@@ -1,0 +1,16 @@
+# REQUIRES: stablehlo, shardy, xla-spmd-helper
+
+# Source-derived choices must survive profile packaging, with exact messages
+# and payloads checked against final Instr. The tail exercises ragged lowering.
+# RUN: rm -rf %t.peer %t.ddr %t.tail %t.ordinary
+# RUN: %python %S/../Board/Support/wafer_board_communication_performance.py --transport peer --extent 1024 --work-dir %t.peer --wafer-compile %wafer_compile_test --wafer-run %wafer_obj_root/bin/wafer-run --no-card | FileCheck %s --check-prefix=PEER
+# RUN: %python %S/../Board/Support/wafer_board_communication_performance.py --transport shared-ddr --extent 1024 --work-dir %t.ddr --wafer-compile %wafer_compile_test --wafer-run %wafer_obj_root/bin/wafer-run --no-card | FileCheck %s --check-prefix=DDR
+# RUN: %python %S/../Board/Support/wafer_board_communication_performance.py --transport peer --extent 1025 --work-dir %t.tail --wafer-compile %wafer_compile_test --wafer-run %wafer_obj_root/bin/wafer-run --no-card | FileCheck %s --check-prefix=TAIL
+# RUN: %wafer_compile_test --input-program-dir %t.peer/source --output-dir %t.ordinary --num-partitions=1 --optimization-policy=none --test-communication-candidate=peer
+# RUN: diff -r %t.ordinary %t.peer/delivery/package
+# RUN: not %wafer_compile_test --input-program-dir %t.peer/source --output-dir %t.invalid --num-partitions=1 --optimization-policy=search --test-communication-candidate=peer --profile 2>&1 | FileCheck %s --check-prefix=INVALID
+
+# PEER: performance_no_card: peer extent=1024 sends_per_tile=15 profile_ready=true numeric_reference=false
+# DDR: performance_no_card: shared-ddr extent=1024 sends_per_tile=0 profile_ready=true numeric_reference=false
+# TAIL: performance_no_card: peer extent=1025 sends_per_tile=15 profile_ready=true numeric_reference=false
+# INVALID: explicit communication qualification requires none

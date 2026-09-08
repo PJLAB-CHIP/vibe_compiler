@@ -3,7 +3,6 @@
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Driver/CompilationResult.h"
-#include "Wafer/Driver/CompiledProgram.h"
 #include "Wafer/Package/Manifest/PackageManifest.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Target/RuntimeLaunchContract.h"
@@ -232,30 +231,6 @@ TEST(CompilationTest, DetailedTimingAggregatesInvocationLocalSpans) {
       output.find("| analysis | test-worker | sharded-parallel-item | 1024 |"),
       std::string::npos);
   EXPECT_NE(output.find("compile-timing-summary-end transaction_wall_ms="),
-            std::string::npos);
-}
-
-TEST(CompilationTest, InternalEntryRejectsProfileOptionsBeforeTransaction) {
-  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
-  ASSERT_TRUE(static_cast<bool>(config));
-  auto request = wafer::compiler::CompilationRequest::create(
-      "/tmp/never-touched.program", std::move(*config));
-  ASSERT_TRUE(static_cast<bool>(request));
-  auto toolchain = wafer::compiler::TargetToolchain::create(
-      "python3", "wafer_device_link.py", "clang++",
-      "/tmp/never-touched-tx8-deps", "/tmp/never-touched-include",
-      "/tmp/never-touched-crt.c", "/tmp/never-touched-crt-include");
-  ASSERT_TRUE(static_cast<bool>(toolchain))
-      << llvm::toString(toolchain.takeError());
-  auto profileOptions = wafer::compiler::CompilationOptions::profile(
-      request->getExecutionConfig());
-  ASSERT_TRUE(static_cast<bool>(profileOptions));
-  llvm::Expected<wafer::compiler::CompiledProgram> rejected =
-      wafer::compiler::compileProgramWithTargetLLVMModules(
-          std::move(*request), "/tmp/never-touched-output", "helper",
-          *toolchain, *profileOptions, llvm::errs());
-  ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(llvm::toString(rejected.takeError()).find("profile"),
             std::string::npos);
 }
 

@@ -722,7 +722,8 @@ mlir::LogicalResult runCompilationTransaction(
             options.getOptimizationConfig(), targetToolchain, diagnostics,
             failAfterLaunchSlot, failAfterTargetLaunchSlot,
             failAfterPackageLaunchSlot, deviceExecutable, targetLLVMModules,
-            programData, tensorResolver, irTrace, stages, profileIdentity)))
+            programData, tensorResolver, irTrace, stages, profileIdentity,
+            qualification)))
       return mlir::failure();
   } else if (mlir::failed(stageTargetPackage(
                  tensorProgram, transactionRoot, request.getExecutionConfig(),

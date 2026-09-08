@@ -428,8 +428,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "scope",
-        "role",
+        "port",
         "role_index",
         "bytes",
         "reference_sha256",
@@ -438,31 +437,10 @@
         "diagnostic_captures_match_primary"
       ],
       "properties": {
-        "scope": {
-          "oneOf": [
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["kind", "card_id"],
-              "properties": {
-                "kind": {"const": "card"},
-                "card_id": {"const": 0}
-              }
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["kind", "card_id", "tile_id"],
-              "properties": {
-                "kind": {"const": "tile"},
-                "card_id": {"const": 0},
-                "tile_id": {"$ref": "#/$defs/tile"}
-              }
-            }
-          ]
-        },
-        "role": {
-          "$ref": "#/$defs/nonEmptyString"
+        "port": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
         },
         "role_index": {
           "type": "integer",

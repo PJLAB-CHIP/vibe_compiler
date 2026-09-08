@@ -20,11 +20,10 @@ llvm::Expected<CompiledProgram> compileProgramWithCommunicationCandidate(
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, CompilationOptions options,
     CommunicationCandidate candidate, llvm::raw_ostream &diagnostics) {
-  if (!options.getOptimizationConfig().isNone() ||
-      options.shouldProduceProfileInstrumentation())
+  if (!options.getOptimizationConfig().isNone())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "explicit communication qualification requires none without profiling");
+        "explicit communication qualification requires none");
   detail::CommunicationCandidateSelection selection;
   switch (candidate) {
   case CommunicationCandidate::Peer:

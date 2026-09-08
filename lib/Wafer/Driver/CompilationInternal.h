@@ -164,7 +164,8 @@ mlir::LogicalResult stageProfileTargetPackages(
     ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
     CompilationIRTrace &irTrace, CompilationStageTracker &stages,
-    ProfileInstrumentationIdentity &profileIdentity);
+    ProfileInstrumentationIdentity &profileIdentity,
+    const CommunicationCandidateSelection *qualification = nullptr);
 
 mlir::LogicalResult runCompilationTransaction(
     CompilationRequest request, llvm::StringRef outputDirectory,
