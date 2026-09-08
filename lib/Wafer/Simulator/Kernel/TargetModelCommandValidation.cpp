@@ -340,6 +340,13 @@ llvm::Error validatePayload(const target::TargetCommandPayload &payload) {
               static_cast<uint32_t>(TargetReduceDimension::Trailing2And1And0))
             return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                                "reduce dimension has an unknown selector");
+          if (value.dimension ==
+                  static_cast<uint32_t>(TargetReduceDimension::Trailing3) ||
+              value.dimension == static_cast<uint32_t>(
+                                     TargetReduceDimension::Trailing2And1And0))
+            return kernelError(
+                TargetModelKernelErrorCode::InvalidCommandField,
+                "reduce N/HWC axes have no supported target contract");
           if (llvm::Error error = validateDataShape(value.nhwc, "reduce shape"))
             return error;
           return requireEngineFormat(value.format, TargetFormatEngine::CT,

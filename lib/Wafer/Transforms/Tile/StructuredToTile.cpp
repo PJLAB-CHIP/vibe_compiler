@@ -399,7 +399,7 @@ struct GemmDescriptor {
 
 struct ConvDescriptor {
   llvm::SmallVector<int64_t, 4> inputToNHWC;
-  llvm::SmallVector<int64_t, 4> weightToXYOI;
+  llvm::SmallVector<int64_t, 4> weightToHWOI;
   llvm::SmallVector<int64_t, 4> outputToNHWC;
   llvm::SmallVector<int64_t, 4> outputFromNHWC;
   llvm::SmallVector<int64_t, 4> pads;
@@ -524,8 +524,8 @@ buildConvDescriptor(mlir::linalg::LinalgOp operation) {
                             static_cast<int64_t>(inputSpatial[0]),
                             static_cast<int64_t>(inputSpatial[1]),
                             static_cast<int64_t>(*inputChannel)};
-  descriptor.weightToXYOI = {static_cast<int64_t>(weightSpatial[1]),
-                             static_cast<int64_t>(weightSpatial[0]),
+  descriptor.weightToHWOI = {static_cast<int64_t>(weightSpatial[0]),
+                             static_cast<int64_t>(weightSpatial[1]),
                              static_cast<int64_t>(*weightOutputChannel),
                              static_cast<int64_t>(*weightInputChannel)};
   descriptor.outputToNHWC = {static_cast<int64_t>(*outputBatch),
@@ -533,7 +533,7 @@ buildConvDescriptor(mlir::linalg::LinalgOp operation) {
                              static_cast<int64_t>(outputSpatial[1]),
                              static_cast<int64_t>(*outputChannel)};
   if (!isPermutation(descriptor.inputToNHWC, 4) ||
-      !isPermutation(descriptor.weightToXYOI, 4) ||
+      !isPermutation(descriptor.weightToHWOI, 4) ||
       !isPermutation(descriptor.outputToNHWC, 4))
     return mlir::failure();
   descriptor.outputFromNHWC.assign(4, -1);
@@ -554,7 +554,7 @@ buildConvDescriptor(mlir::linalg::LinalgOp operation) {
   llvm::SmallVector<int64_t, 4> inputShape =
       permutedShape(input, descriptor.inputToNHWC);
   llvm::SmallVector<int64_t, 4> weightShape =
-      permutedShape(weight, descriptor.weightToXYOI);
+      permutedShape(weight, descriptor.weightToHWOI);
   llvm::SmallVector<int64_t, 4> outputShape =
       permutedShape(output, descriptor.outputToNHWC);
   auto validOutput = [](int64_t inputExtent, int64_t kernel, int64_t stride,
@@ -568,10 +568,10 @@ buildConvDescriptor(mlir::linalg::LinalgOp operation) {
     return (inputExtent - effectiveKernel) / stride + 1;
   };
   std::optional<int64_t> expectedH =
-      validOutput(inputShape[1], weightShape[1], descriptor.strides[0],
+      validOutput(inputShape[1], weightShape[0], descriptor.strides[0],
                   descriptor.dilations[0]);
   std::optional<int64_t> expectedW =
-      validOutput(inputShape[2], weightShape[0], descriptor.strides[1],
+      validOutput(inputShape[2], weightShape[1], descriptor.strides[1],
                   descriptor.dilations[1]);
   if (!expectedH || !expectedW || outputShape[0] != inputShape[0] ||
       inputShape[3] != weightShape[3] || outputShape[3] != weightShape[2] ||
@@ -1329,7 +1329,7 @@ lowerConvolution(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
   mlir::FailureOr<mlir::Value> canonicalInput = permuteBuffer(
       input, descriptor->inputToNHWC, rewriter, operation.getLoc(), statistics);
   mlir::FailureOr<mlir::Value> canonicalWeight =
-      permuteBuffer(weight, descriptor->weightToXYOI, rewriter,
+      permuteBuffer(weight, descriptor->weightToHWOI, rewriter,
                     operation.getLoc(), statistics);
   if (mlir::failed(canonicalInput) || mlir::failed(canonicalWeight))
     return mlir::failure();

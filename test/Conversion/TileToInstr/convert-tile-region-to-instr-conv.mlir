@@ -7,14 +7,14 @@ func.func @ordinary_conv() {
   %tile_input = memref.alloc()
       : memref<1x7x11x5xf16, #wafer.memory<spm, ncx>>
   %tile_weight = memref.alloc()
-      : memref<3x2x7x5xf16, #wafer.memory<spm, ncx>>
+      : memref<2x3x7x5xf16, #wafer.memory<spm, cx>>
   %result = wafer.tile.conv %tile_input, %tile_weight
       {pads = array<i64: 1, 0, 2, 1>,
        unpads = array<i64: 0, 0, 0, 0>,
        strides = array<i64: 3, 2>,
        dilations = array<i64: 1, 2>}
       : (memref<1x7x11x5xf16, #wafer.memory<spm, ncx>>,
-         memref<3x2x7x5xf16, #wafer.memory<spm, ncx>>)
+         memref<2x3x7x5xf16, #wafer.memory<spm, cx>>)
      -> memref<1x3x5x7xf16, #wafer.memory<spm, ncx>>
     wafer.tile.yield %tile_token : i1
   }
@@ -29,4 +29,4 @@ func.func @ordinary_conv() {
 // CHECK-SAME: kernel_strides = array<i64: 3, 2, 2, 3>
 // CHECK-SAME: output_shape = array<i64: 1, 3, 5, 7>
 // CHECK-SAME: pads = array<i64: 1, 0, 2, 1>
-// CHECK-SAME: weight_shape = array<i64: 3, 2, 7, 5>
+// CHECK-SAME: weight_shape = array<i64: 2, 3, 7, 5>

@@ -1044,6 +1044,10 @@ instr-lowering verifier checks only instruction legality:
   permutation/broadcast/identity maps must already have been materialized/stripped. `wafer.instr.elementwise` /
   `wafer.instr.reduce` use instr-level target kind attrs only；generic
   `#wafer.elementwise_kind` / `#wafer.reduce_kind` on instruction ops is verifier-illegal.
+- `wafer.instr.reduce`的destination保留input rank，归约轴extent为1，其它轴不变；input/destination使用同一rank对应的
+  Cx/NCx布局。Native C/W/H/HW轴的physical结果不能被直接解释为降rank的逻辑tensor，N/HWC仍不属于已验证的安全轴。
+  Tile→Instr保留既有归约轴顺序，逐次物化同rank的native allocation；最后用08号exact relation和现有GatherScatter
+  产生Tile层要求的逻辑输出。新allocation、effect及consumer进入同一actual Instr/SPM/completion路径，不能用reshape替代搬运证明。
 - `wafer.instr.convert` uses `#wafer.instr_convert_kind` only；source/dest dtype is derived from the
   convert kind and checked against memref element types. It does not accept free-form `src_dtype` /
   `dst_dtype` attrs as instruction semantics. Kind-specific `zero_point` / `rounding_mode` attrs are
@@ -1052,7 +1056,7 @@ instr-lowering verifier checks only instruction legality:
   exactly match the three memref shapes, and an exact operator relation. Current production accepts only
   ordinary conv；depthwise/backward conv remain `unsupported_target_geometry` until their distinct
   channel/group and output equations are defined. Ordinary Conv的vendor-visible weight shape固定为
-  `[Kx, Ky, O, I]`，`kernel_strides=[Kx, Ky, Sx, Sy]`，`dilations=[Dx, Dy]`；NHWC input/output的
+  `[Ky, Kx, O, I]`（logical HWOI、physical Cx），`kernel_strides=[Kx, Ky, Sx, Sy]`，`dilations=[Dx, Dy]`；NHWC input/output的
   H关系使用`Ky/Sy/Dy`与top/bottom pad/unpad，W关系使用`Kx/Sx/Dx`与left/right pad/unpad，
   input C匹配weight I，output C匹配weight O。不能把常见`[Kh,Kw,I,O]`直接当作该target wrapper ABI。
 - `wafer.instr.pool` / `wafer.instr.unpool` require aligned SPM operands, matching value element type,

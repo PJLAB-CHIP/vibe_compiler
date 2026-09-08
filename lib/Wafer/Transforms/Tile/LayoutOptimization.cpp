@@ -237,6 +237,18 @@ static MemLayout getComputeLayout(mlir::RankedTensorType type) {
   return type.getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
 }
 
+static MemLayout getComputeOperandLayout(mlir::linalg::LinalgOp operation,
+                                         mlir::OpOperand &operand,
+                                         mlir::RankedTensorType type) {
+  // The convolution interface identifies RHS as the filter from current
+  // indexing maps. Its canonical HWOI storage is one Cx volume, not one
+  // independently aligned NCx slice per kernel row.
+  if (operand.getOperandNumber() == 1 &&
+      mlir::linalg::isaConvolutionOpInterface(operation))
+    return MemLayout::Cx;
+  return getComputeLayout(type);
+}
+
 static mlir::MemRefType getMemRefType(mlir::RankedTensorType tensor,
                                       MemorySpace space, MemLayout layout) {
   return mlir::MemRefType::get(
@@ -1199,7 +1211,7 @@ buildUseBindings(mlir::ModuleOp module,
         MemLayout required =
             mlir::isa<mlir::linalg::FillOp>(operation.getOperation())
                 ? MemLayout::Tensor
-                : getComputeLayout(tensor);
+                : getComputeOperandLayout(operation, operand, tensor);
         use.layouts.assign({required});
       }
       uses.push_back(std::move(use));
@@ -1273,9 +1285,16 @@ tupleStateIsLegal(mlir::linalg::LinalgOp operation,
   if (mlir::isa<mlir::linalg::FillOp>(operation.getOperation()))
     return llvm::all_of(
         layouts, [](MemLayout layout) { return layout == MemLayout::Tensor; });
-  for (auto [type, layout] : llvm::zip_equal(coordinateTypes, layouts))
-    if (layout != getComputeLayout(type))
+  unsigned coordinate = 0;
+  for (mlir::OpOperand &operand : operation->getOpOperands()) {
+    if (!isTensorValue(operand.get()))
+      continue;
+    if (layouts[coordinate] !=
+        getComputeOperandLayout(operation, operand,
+                                coordinateTypes[coordinate]))
       return false;
+    ++coordinate;
+  }
   return true;
 }
 

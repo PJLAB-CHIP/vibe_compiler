@@ -144,7 +144,7 @@ operand名字或常见Transformer shape都不构成GEMM语义。本任务只处�
 
 ### Ordinary 2-D convolution
 
-`wafer.tile.conv`使用canonical logical input/result NHWC与weight XYOI；stride/dilation按H/W表达，pad/unpad按
+`wafer.tile.conv`使用canonical logical input/result NHWC与weight HWOI（Cx physical storage；input/result为NCx）；stride/dilation按H/W表达，pad/unpad按
 H-before/H-after/W-before/W-after表达。source任意维度顺序只有在current affine indexing maps能完整证明batch、两维
 output image、两维filter loop、input/output channel及window relation时，才通过显式transpose归一到该合同。
 

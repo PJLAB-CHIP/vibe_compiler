@@ -407,7 +407,7 @@ TEST(FormalTensorNumericTest,
   PhysicalTensorDescriptor reduceInput =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2, 2});
   PhysicalTensorDescriptor reduceDestination =
-      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2});
+      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2, 1});
   auto reduce = llvm::cantFail(createFormalReduceOperation(
       TargetReduceOperation::Sum, std::move(reduceInput),
       std::move(reduceDestination), TargetReduceDimension::Trailing0));

@@ -523,11 +523,11 @@ TEST(TargetFormatTest,
 module {
   func.func @main() {
     %input = memref.alloc() : memref<2x3xf16, #wafer.memory<spm, cx>>
-    %dest = memref.alloc() : memref<2xf16, #wafer.memory<spm, cx>>
+    %dest = memref.alloc() : memref<2x1xf16, #wafer.memory<spm, cx>>
     wafer.instr.reduce #wafer.instr_reduce_kind<sum> %input into %dest
         {dim = 0 : i64}
         : memref<2x3xf16, #wafer.memory<spm, cx>>
-      into memref<2xf16, #wafer.memory<spm, cx>>
+      into memref<2x1xf16, #wafer.memory<spm, cx>>
     return
   }
 }

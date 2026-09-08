@@ -181,7 +181,7 @@ def Wafer_InstrReduceOp : Wafer_NCCInstrOp<"instr.reduce", [
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
   ]> {
-  let summary = "instruction-level CT local reduce";
+  let summary = "instruction-level CT local reduce with retained dimensions";
   let arguments = (ins
     Wafer_InstrReduceKindAttr:$kind,
     Arg<AnyMemRef, "", [MemRead]>:$input,

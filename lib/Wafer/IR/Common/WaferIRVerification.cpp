@@ -256,7 +256,7 @@ mlir::LogicalResult verifyCanonicalConv2DGeometry(
     return error("ordinary convolution dimensions and stride/dilation must be "
                  "positive and pad/unpad must be non-negative");
 
-  // Canonical storage is input/output NHWC and weight XYOI.
+  // Canonical storage is input/output NHWC and weight HWOI.
   if (output.getDimSize(0) != input.getDimSize(0))
     return error("convolution batch dimensions must match");
   if (input.getDimSize(3) != weight.getDimSize(3))
@@ -298,10 +298,10 @@ mlir::LogicalResult verifyCanonicalConv2DGeometry(
   };
 
   mlir::FailureOr<int64_t> expectedH = inferOutput(
-      input.getDimSize(1), weight.getDimSize(1), strides[0], dilations[0],
+      input.getDimSize(1), weight.getDimSize(0), strides[0], dilations[0],
       pads[0], pads[1], unpads[0], unpads[1], "height");
   mlir::FailureOr<int64_t> expectedW = inferOutput(
-      input.getDimSize(2), weight.getDimSize(0), strides[1], dilations[1],
+      input.getDimSize(2), weight.getDimSize(1), strides[1], dilations[1],
       pads[2], pads[3], unpads[2], unpads[3], "width");
   if (mlir::failed(expectedH) || mlir::failed(expectedW))
     return mlir::failure();

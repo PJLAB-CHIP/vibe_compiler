@@ -4,7 +4,7 @@ module {
   %act = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x8x8x64xf16, #wafer.memory<spm, tensor>>
   %weight = "builtin.unrealized_conversion_cast"()
-      : () -> memref<3x3x64x64xf16, #wafer.memory<spm, ncx>>
+      : () -> memref<3x3x64x64xf16, #wafer.memory<spm, cx>>
   %out = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
 
@@ -17,7 +17,7 @@ module {
        kernel_strides = array<i64: 3, 3, 1, 1>,
        dilations = array<i64: 1, 1>}
       : memref<1x8x8x64xf16, #wafer.memory<spm, tensor>>,
-        memref<3x3x64x64xf16, #wafer.memory<spm, ncx>>
+        memref<3x3x64x64xf16, #wafer.memory<spm, cx>>
     into memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
 }
 

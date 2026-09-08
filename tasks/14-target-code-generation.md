@@ -154,6 +154,10 @@ Direct-DTE begin/send/issue/receive/wait/finish、NCC join以及各 compute/move
 
 TargetCall/CRT 是 current target ABI，不是 search IR，也不能把 target transaction倒灌到 structured层。
 
+Native Reduce的CRT只接收input shape和axis，不接收destination shape。Target lowering验证11号保留维度的destination合同，
+target model及formal operation也按input中归约轴extent=1推导physical结果；逻辑降rank由上游显式movement完成。
+Model不能从logical element count重建紧凑结果，或与compiler共同假定删除轴不改变Cx/NCx stride。
+
 `wafer.instr.dte_broadcast/scatter`各表示一次已经物化的raw multi-destination sender issue。TargetCall不把它拆回多个
 `direct_dte_send_prepare`：使用一个multi-send prepare、按IR顺序逐项配置destination，再由现有send issue/wait/release完成同一sender
 event。prepare保存kind、source、每destination bytes、local Tile和destination count；每个destination配置保存remote Tile、accepted

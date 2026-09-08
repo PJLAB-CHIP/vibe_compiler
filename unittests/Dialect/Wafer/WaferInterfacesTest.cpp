@@ -597,7 +597,7 @@ module {
   %cx = "builtin.unrealized_conversion_cast"()
       : () -> memref<4x8xf16, #wafer.memory<spm, cx>>
   %reduce_out = "builtin.unrealized_conversion_cast"()
-      : () -> memref<4xf16, #wafer.memory<spm, cx>>
+      : () -> memref<4x1xf16, #wafer.memory<spm, cx>>
   %lhs = "builtin.unrealized_conversion_cast"()
       : () -> memref<4x8xf16, #wafer.memory<spm, cx>>
   %rhs = "builtin.unrealized_conversion_cast"()
@@ -634,7 +634,7 @@ module {
   wafer.instr.reduce #wafer.instr_reduce_kind<sum> %cx into %reduce_out
       {dim = 0 : i64}
       : memref<4x8xf16, #wafer.memory<spm, cx>>
-    into memref<4xf16, #wafer.memory<spm, cx>>
+    into memref<4x1xf16, #wafer.memory<spm, cx>>
   wafer.instr.convert #wafer.instr_convert_kind<fp16_fp32> %tensor into %converted
       : memref<4x8xf16, #wafer.memory<spm, tensor>>
      to memref<4x8xf32, #wafer.memory<spm, tensor>>

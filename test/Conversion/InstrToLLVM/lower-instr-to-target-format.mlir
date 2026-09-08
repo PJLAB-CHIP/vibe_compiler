@@ -201,11 +201,11 @@ module {
     %input = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
         : memref<4x64xf32, #wafer.memory<spm, cx>>
     %output = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66560>}
-        : memref<64xf32, #wafer.memory<spm, cx>>
+        : memref<1x64xf32, #wafer.memory<spm, cx>>
     wafer.instr.reduce #wafer.instr_reduce_kind<sum> %input into %output
         {dim = 1 : i64}
         : memref<4x64xf32, #wafer.memory<spm, cx>>
-      into memref<64xf32, #wafer.memory<spm, cx>>
+      into memref<1x64xf32, #wafer.memory<spm, cx>>
     return
   }
 }

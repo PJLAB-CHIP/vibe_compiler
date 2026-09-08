@@ -154,17 +154,17 @@ module {
 module {
   wafer.tile.module card_id = 0 tile_id = 0 {
     func.func @entry(%input: tensor<1x)mlir"
-        << extent + 2
-        << R"mlir(x66x16xf16>, %weight: tensor<3x3x16x32xf16>) -> tensor<1x)mlir"
+        << extent + 1
+        << R"mlir(x66x16xf16>, %weight: tensor<2x3x16x32xf16>) -> tensor<1x)mlir"
         << extent << R"mlir(x64x32xf16> {
       %result = wafer.tile.region(
           %input, %weight : tensor<1x)mlir"
-        << extent + 2 << R"mlir(x66x16xf16>, tensor<3x3x16x32xf16>)
+        << extent + 1 << R"mlir(x66x16xf16>, tensor<2x3x16x32xf16>)
           -> (tensor<1x)mlir"
         << extent << R"mlir(x64x32xf16>) {
       ^bb0(%local_input: tensor<1x)mlir"
-        << extent + 2
-        << R"mlir(x66x16xf16>, %local_weight: tensor<3x3x16x32xf16>):
+        << extent + 1
+        << R"mlir(x66x16xf16>, %local_weight: tensor<2x3x16x32xf16>):
         %zero = arith.constant 0.000000e+00 : f16
         %empty = tensor.empty() : tensor<1x)mlir"
         << extent << R"mlir(x64x32xf16>
@@ -174,7 +174,7 @@ module {
         << R"mlir(x64x32xf16>
         %conv = linalg.conv_2d_nhwc_hwcf
             ins(%local_input, %local_weight : tensor<1x)mlir"
-        << extent + 2 << R"mlir(x66x16xf16>, tensor<3x3x16x32xf16>)
+        << extent + 1 << R"mlir(x66x16xf16>, tensor<2x3x16x32xf16>)
             outs(%init : tensor<1x)mlir"
         << extent << R"mlir(x64x32xf16>) -> tensor<1x)mlir" << extent
         << R"mlir(x64x32xf16>
@@ -1424,7 +1424,7 @@ TEST_F(StructuredToTileTest,
 
 TEST_F(StructuredToTileTest,
        LowersOrdinaryConvolutionFromCurrentMapsWithoutShapeNames) {
-  for (int64_t extent : {1024, 1025}) {
+  for (int64_t extent : {1024, 1025, 1031}) {
     SCOPED_TRACE(extent);
     auto module = parse(makeConvSource(extent));
     ASSERT_TRUE(module);
@@ -1441,6 +1441,16 @@ TEST_F(StructuredToTileTest,
     ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
     EXPECT_EQ(lowered.statistics.convolutions, 1u);
     EXPECT_EQ(countOps<ComputeConvOp>(module->getOperation()), 1u);
+    module->walk([&](ComputeConvOp convolution) {
+      auto weight =
+          mlir::cast<mlir::MemRefType>(convolution.getWeight().getType());
+      EXPECT_EQ(weight.getShape(), (llvm::ArrayRef<int64_t>{2, 3, 32, 16}));
+      EXPECT_EQ(getWaferMemoryAttr(weight).getLayout(), MemLayout::Cx);
+      auto transpose = convolution.getWeight().getDefiningOp<MoveTransposeOp>();
+      ASSERT_TRUE(transpose);
+      EXPECT_EQ(transpose.getPermutation(),
+                (llvm::ArrayRef<int64_t>{0, 1, 3, 2}));
+    });
     EXPECT_EQ(countOps<mlir::linalg::LinalgOp>(module->getOperation()), 0u);
     EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
     BoundaryMovementResult movement =

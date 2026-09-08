@@ -75,6 +75,7 @@ func.func @large_identity_sum_uses_native_reduce() {
 // CHECK-NOT: wafer.instr.fill
 // CHECK: wafer.instr.reduce <sum>
 // CHECK-SAME: dim = 1 : i64
+// CHECK: wafer.instr.gather_scatter
 // CHECK-NEXT: wafer.tile.yield
 // CHECK: }
 // CHECK-NEXT: wafer.instr.ncc_join [0]
@@ -99,6 +100,7 @@ func.func @large_f16_identity_sum_uses_native_reduce() {
 // CHECK-NOT: wafer.instr.fill
 // CHECK: wafer.instr.reduce <sum>
 // CHECK-SAME: dim = 1 : i64
+// CHECK: wafer.instr.gather_scatter
 // CHECK-NEXT: wafer.tile.yield
 // CHECK: }
 // CHECK-NEXT: wafer.instr.ncc_join [0]
@@ -122,13 +124,16 @@ func.func @large_multidim_identity_sum_uses_native_chain() {
 // CHECK-LABEL: func.func @large_multidim_identity_sum_uses_native_chain
 // CHECK-NOT: wafer.instr.fill
 // CHECK-NOT: scf.for
-// CHECK-NOT: wafer.instr.gather_scatter
-// CHECK: %[[TMP:.*]] = memref.alloc() : memref<1x24x32xf16, #wafer.memory<spm, ncx>>
+// CHECK: %[[TMP:.*]] = memref.alloc() : memref<1x24x32x1xf16, #wafer.memory<spm, ncx>>
 // CHECK: wafer.instr.reduce <sum> %{{.*}} into %[[TMP]]
 // CHECK-SAME: dim = 0 : i64
-// CHECK: %[[DEST:.*]] = memref.alloc() : memref<1x24xf16, #wafer.memory<spm, cx>>
+// CHECK: %[[DEST:.*]] = memref.alloc() : memref<1x24x1x1xf16, #wafer.memory<spm, ncx>>
 // CHECK: wafer.instr.reduce <sum> %[[TMP]] into %[[DEST]]
-// CHECK-SAME: dim = 0 : i64
+// CHECK-SAME: dim = 1 : i64
+// CHECK: wafer.instr.gather_scatter
+// CHECK-SAME: byte_count = 48 : i64
+// CHECK-SAME: dst_strides = array<i64: 2, 0, 0>
+// CHECK-SAME: src_strides = array<i64: 8, 0, 0>
 // CHECK-NEXT: wafer.tile.yield
 
 func.func @ragged_multidim_identity_sum_uses_native_chain() {
@@ -148,9 +153,12 @@ func.func @ragged_multidim_identity_sum_uses_native_chain() {
 // CHECK-LABEL: func.func @ragged_multidim_identity_sum_uses_native_chain
 // CHECK-NOT: wafer.instr.fill
 // CHECK-NOT: scf.for
-// CHECK-NOT: wafer.instr.gather_scatter
 // CHECK-COUNT-2: wafer.instr.reduce <sum>
-// CHECK: wafer.tile.yield
+// CHECK: wafer.instr.gather_scatter
+// CHECK-SAME: byte_count = 48 : i64
+// CHECK-SAME: dst_strides = array<i64: 2, 0, 0>
+// CHECK-SAME: src_strides = array<i64: 8, 0, 0>
+// CHECK-NEXT: wafer.tile.yield
 
 func.func @large_single_axis_identity_sum_uses_native_reduce() {
   %token = arith.constant false
@@ -169,9 +177,12 @@ func.func @large_single_axis_identity_sum_uses_native_reduce() {
 // CHECK-LABEL: func.func @large_single_axis_identity_sum_uses_native_reduce
 // CHECK-NOT: wafer.instr.fill
 // CHECK-NOT: scf.for
-// CHECK-NOT: wafer.instr.gather_scatter
 // CHECK: wafer.instr.reduce <sum>
 // CHECK-SAME: dim = 0 : i64
+// CHECK: wafer.instr.gather_scatter
+// CHECK-SAME: byte_count = 1536 : i64
+// CHECK-SAME: inner_bytes = 2 : i64
+// CHECK-SAME: src_strides = array<i64: 8, 0, 0>
 // CHECK-NEXT: wafer.tile.yield
 
 func.func @ragged_single_axis_identity_sum_uses_native_reduce() {
@@ -191,9 +202,12 @@ func.func @ragged_single_axis_identity_sum_uses_native_reduce() {
 // CHECK-LABEL: func.func @ragged_single_axis_identity_sum_uses_native_reduce
 // CHECK-NOT: wafer.instr.fill
 // CHECK-NOT: scf.for
-// CHECK-NOT: wafer.instr.gather_scatter
 // CHECK: wafer.instr.reduce <sum>
 // CHECK-SAME: dim = 0 : i64
+// CHECK: wafer.instr.gather_scatter
+// CHECK-SAME: byte_count = 1536 : i64
+// CHECK-SAME: inner_bytes = 2 : i64
+// CHECK-SAME: src_strides = array<i64: 8, 0, 0>
 // CHECK-NEXT: wafer.tile.yield
 
 func.func @large_multidim_sum_keeps_inner_affine_runs() {

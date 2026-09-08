@@ -203,6 +203,73 @@ class HeterogeneousTilingDataflow(torch.nn.Module):
         return mixed, torch.sum(mixed, dim=1)
 
 
+class LocalReduce(torch.nn.Module):
+    def forward(self, value: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        return value.sum(dim=3), value.sum(dim=(2, 3))
+
+
+def make_local_reduce(
+    dtype: torch.dtype, seed: int, *, extent: int = 1024
+) -> PyTorchBoardCase:
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    value = torch.randint(
+        -4, 5, (1, 24, 8, extent), generator=generator
+    ).to(dtype) / 64
+    module = LocalReduce().eval()
+    inputs = (value,)
+
+    def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
+        with torch.no_grad():
+            return module(*inputs)
+
+    return PyTorchBoardCase(
+        name=f"local-reduce-{extent}",
+        num_partitions=1,
+        dtype=dtype,
+        inputs=inputs,
+        expected_outputs_factory=expected_outputs_factory,
+        export_program=lambda output: _save_exported_program(output, module, inputs),
+        comparison_policy=common.PYTORCH_DEFAULT,
+    )
+
+
+class LocalConv(torch.nn.Module):
+    def forward(self, value: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.conv2d(value, weight, padding=(1, 1))
+
+
+def make_local_conv(
+    dtype: torch.dtype, seed: int, *, extent: int = 1024,
+    kernel: tuple[int, int] = (3, 3),
+) -> PyTorchBoardCase:
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    # Exact binary fractions make swapped kernel axes and physical padding
+    # visible independently of accumulation rounding. The mixed DAG retains
+    # its original random floating-point inputs as the numerical regression.
+    value = torch.randint(
+        -4, 5, (1, 16, 8, extent), generator=generator
+    ).to(dtype) / 8
+    weight = torch.randint(
+        -4, 5, (24, 16, *kernel), generator=generator
+    ).to(dtype) / 16
+    module = LocalConv().eval()
+    inputs = (value, weight)
+
+    def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
+        with torch.no_grad():
+            return (module(*inputs),)
+
+    return PyTorchBoardCase(
+        name=f"local-conv-{kernel[0]}x{kernel[1]}-{extent}",
+        num_partitions=1,
+        dtype=dtype,
+        inputs=inputs,
+        expected_outputs_factory=expected_outputs_factory,
+        export_program=lambda output: _save_exported_program(output, module, inputs),
+        comparison_policy=common.PYTORCH_DEFAULT,
+    )
+
+
 class ConvMixedDataflow(torch.nn.Module):
     """Convolution feeding branch, fanin, fanout, and reduction dataflow."""
 
@@ -970,6 +1037,20 @@ CASE_FACTORIES: dict[
     ),
     "heterogeneous-tiling-dataflow": _heterogeneous_tiling_single_card,
     "conv-mixed-dag": _conv_mixed_dag,
+    "local-conv": make_local_conv,
+    "local-conv-tail-1025": lambda dtype, seed: make_local_conv(
+        dtype, seed, extent=1025, kernel=(2, 3)
+    ),
+    "local-conv-tail-1031": lambda dtype, seed: make_local_conv(
+        dtype, seed, extent=1031, kernel=(3, 2)
+    ),
+    "local-reduce": make_local_reduce,
+    "local-reduce-tail-1025": lambda dtype, seed: make_local_reduce(
+        dtype, seed, extent=1025
+    ),
+    "local-reduce-tail-1031": lambda dtype, seed: make_local_reduce(
+        dtype, seed, extent=1031
+    ),
     "attention-prefill": _attention_prefill,
     "attention-decode-kv-cache": _attention_decode_kv_cache,
     "llama-2-7b-block": _llama_2_7b_block,

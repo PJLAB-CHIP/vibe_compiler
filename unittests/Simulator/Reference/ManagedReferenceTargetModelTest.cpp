@@ -146,7 +146,7 @@ TEST(ManagedReferenceTargetModelTest,
   PhysicalTensorDescriptor reduceInput =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2, 2});
   PhysicalTensorDescriptor reduceOutput =
-      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2});
+      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2, 1});
   const std::vector<RawLogicalValue> reduceValues{
       {LogicalFormat::F32, UINT64_C(0x3f800000)},
       {LogicalFormat::F32, UINT64_C(0x40000000)},

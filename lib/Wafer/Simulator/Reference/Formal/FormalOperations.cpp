@@ -372,15 +372,20 @@ llvm::Expected<FormalReduceOperation> createFormalReduceOperation(
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "native CT reduce dimension is not valid for the input rank");
-  std::vector<uint64_t> expectedShape;
-  for (size_t index = 0; index < rank; ++index)
-    if (std::find(reduced.begin(), reduced.end(), index) == reduced.end())
-      expectedShape.push_back(input.getShape()[index]);
+  if (dimension == TargetReduceDimension::Trailing3 ||
+      dimension == TargetReduceDimension::Trailing2And1And0)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "native CT reduce N/HWC axes have no supported target contract");
+  std::vector<uint64_t> expectedShape(input.getShape().begin(),
+                                      input.getShape().end());
+  for (size_t index : reduced)
+    expectedShape[index] = 1;
   if (destination.getShape() != llvm::ArrayRef<uint64_t>(expectedShape))
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "native CT reduce destination shape must contain exactly the "
-        "non-reduced input dimensions");
+        "native CT reduce destination must retain input rank and set reduced "
+        "dimensions to one");
 
   return FormalReduceOperation{operation, std::move(input),
                                std::move(destination), dimension};

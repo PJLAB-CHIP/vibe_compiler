@@ -6,7 +6,7 @@ module {
   %conv_act = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x7x11x5xf16, #wafer.memory<spm, ncx>>
   %weight = "builtin.unrealized_conversion_cast"()
-      : () -> memref<3x2x7x5xf16, #wafer.memory<spm, ncx>>
+      : () -> memref<2x3x7x5xf16, #wafer.memory<spm, cx>>
   %conv_out = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x3x5x7xf16, #wafer.memory<spm, ncx>>
   %pool_out = "builtin.unrealized_conversion_cast"()
@@ -34,14 +34,14 @@ module {
 
   wafer.instr.conv #wafer.instr_conv_kind<conv> %conv_act, %weight into %conv_out
       {input_shape = array<i64: 1, 7, 11, 5>,
-       weight_shape = array<i64: 3, 2, 7, 5>,
+       weight_shape = array<i64: 2, 3, 7, 5>,
        output_shape = array<i64: 1, 3, 5, 7>,
        pads = array<i64: 1, 0, 2, 1>,
        unpads = array<i64: 0, 0, 0, 0>,
        kernel_strides = array<i64: 3, 2, 2, 3>,
        dilations = array<i64: 2, 1>}
       : memref<1x7x11x5xf16, #wafer.memory<spm, ncx>>,
-        memref<3x2x7x5xf16, #wafer.memory<spm, ncx>>
+        memref<2x3x7x5xf16, #wafer.memory<spm, cx>>
     into memref<1x3x5x7xf16, #wafer.memory<spm, ncx>>
 
   wafer.instr.pool #wafer.instr_pool_kind<indexedmax> %act into %pool_out, %pool_idx
@@ -107,7 +107,7 @@ module {
 // CHECK: wafer.instr.conv <conv>
 // CHECK-SAME: dilations = array<i64: 2, 1>
 // CHECK-SAME: kernel_strides = array<i64: 3, 2, 2, 3>
-// CHECK-SAME: weight_shape = array<i64: 3, 2, 7, 5>
+// CHECK-SAME: weight_shape = array<i64: 2, 3, 7, 5>
 // CHECK: wafer.instr.pool <indexedmax>
 // CHECK: wafer.instr.unpool <mask>
 // CHECK-SAME: %{{.*}}, %{{.*}} into %{{.*}}

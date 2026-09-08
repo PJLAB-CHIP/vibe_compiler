@@ -151,9 +151,12 @@ mlir::LogicalResult ComputeConvOp::verify() {
     if (!hasWaferMemorySpace(type, MemorySpace::SPM))
       return emitOpError("convolution storage values must use SPM memory "
                          "space");
-    if (!hasWaferLayout(type, MemLayout::NCx))
-      return emitOpError("convolution storage values must use ncx layout");
   }
+  if (!hasWaferLayout(getInput().getType(), MemLayout::NCx) ||
+      !hasWaferLayout(getResult().getType(), MemLayout::NCx) ||
+      !hasWaferLayout(getWeight().getType(), MemLayout::Cx))
+    return emitOpError(
+        "convolution input/result must use ncx and weight must use cx layout");
   if (inputTensor->getElementType() != weightTensor->getElementType() ||
       inputTensor->getElementType() != resultTensor->getElementType())
     return emitOpError(

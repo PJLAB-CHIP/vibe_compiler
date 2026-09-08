@@ -12,6 +12,7 @@
 #include "gtest/gtest.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/bit.h"
 #include "llvm/Support/Error.h"
 
 #include <cassert>
@@ -828,7 +829,7 @@ TEST(TargetModelKernelTest, NativeF32SumUsesFixedShapeABIAndFormalNumeric) {
   PhysicalTensorDescriptor input =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {1, 1, 2, 2});
   PhysicalTensorDescriptor destination =
-      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {1, 1, 2});
+      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {1, 1, 2, 1});
   writeTensor(memory, 0, spm, input,
               {{LogicalFormat::F32, UINT64_C(0x3f800000)},
                {LogicalFormat::F32, UINT64_C(0x40000000)},
@@ -853,6 +854,78 @@ TEST(TargetModelKernelTest, NativeF32SumUsesFixedShapeABIAndFormalNumeric) {
   EXPECT_EQ(result[0].bits, UINT64_C(0x40400000));
   EXPECT_EQ(result[1].bits, UINT64_C(0x40e00000));
   EXPECT_FALSE(config.getAggregateFlags().any());
+}
+
+// F32 isolates the native result ABI in the formal model. Product board
+// coverage uses FP16 and independently generated PyTorch references.
+TEST(TargetModelKernelTest, NativeReducePreservesPhysicalAxesAndTail) {
+  for (uint32_t channels : {1024, 1025, 1031}) {
+    for (TargetReduceDimension axis :
+         {TargetReduceDimension::Trailing0, TargetReduceDimension::Trailing1,
+          TargetReduceDimension::Trailing2,
+          TargetReduceDimension::Trailing2And1}) {
+      SCOPED_TRACE(channels);
+      SCOPED_TRACE(static_cast<unsigned>(axis));
+      InvocationMemoryRegistry memory = makeRegistry();
+      FormalNumericExecutionContext config;
+      const uint64_t spm = memory.getAddressPlan().getSPMBase();
+      std::vector<uint64_t> shape{1, 2, 3, channels};
+      PhysicalTensorDescriptor input =
+          makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, shape);
+      std::vector<uint64_t> outputShape(shape);
+      for (size_t dimension : getTargetReduceLogicalDimensions(axis, 4))
+        outputShape[dimension] = 1;
+      PhysicalTensorDescriptor destination = makeTensor(
+          LogicalFormat::F32, PhysicalTensorLayout::NCx, outputShape);
+      std::vector<RawLogicalValue> values;
+      std::vector<float> expected(destination.getElementCount(), 0.0f);
+      for (uint64_t h = 0; h < 2; ++h)
+        for (uint64_t w = 0; w < 3; ++w)
+          for (uint64_t c = 0; c < channels; ++c) {
+            float value = static_cast<float>(1 + h * 3 + w + c % 5);
+            values.push_back(
+                {LogicalFormat::F32, llvm::bit_cast<uint32_t>(value)});
+            uint64_t resultIndex =
+                ((outputShape[1] == 1 ? 0 : h) * outputShape[2] +
+                 (outputShape[2] == 1 ? 0 : w)) *
+                    outputShape[3] +
+                (outputShape[3] == 1 ? 0 : c);
+            expected[resultIndex] += value;
+          }
+      writeTensor(memory, 0, spm, input, values);
+      TargetCommand command{CardId(0), TileId(0), LaunchSlotId(0), 0,
+                            TargetReduceCommand{TargetReduceOperation::Sum,
+                                                spm,
+                                                spm + UINT64_C(0x10000),
+                                                static_cast<uint32_t>(axis),
+                                                {1, 2, 3, channels},
+                                                LogicalFormat::F32}};
+      auto budget = TargetModelKernelBudget::create(
+          FormalNumericWorkBudget::create(10000, 0), 100000, 256);
+      auto effect =
+          llvm::cantFail(executeTargetModelCommand(command, memory, budget));
+      llvm::cantFail(
+          applyTargetModelCommandEffect(memory, config, std::move(effect)));
+      auto result = readTensor(memory, 0, spm + UINT64_C(0x10000), destination);
+      ASSERT_EQ(result.size(), expected.size());
+      for (size_t i = 0; i < result.size(); ++i)
+        EXPECT_EQ(result[i].bits, llvm::bit_cast<uint32_t>(expected[i]));
+      if (axis == TargetReduceDimension::Trailing0) {
+        // The second scalar is at byte 16 (C0=4 F32), not byte 4.
+        auto bytes = llvm::cantFail(memory.readSnapshot(
+            0, TargetModelAddressSpace::TileSPM, spm + UINT64_C(0x10000),
+            llvm::cantFail(getPhysicalTensorStorageBytes(destination)), 1));
+        EXPECT_EQ(bytes[4], 0);
+        EXPECT_EQ(bytes[5], 0);
+        EXPECT_EQ(bytes[6], 0);
+        EXPECT_EQ(bytes[7], 0);
+        uint32_t second = 0;
+        for (unsigned byte = 0; byte < 4; ++byte)
+          second |= static_cast<uint32_t>(bytes[16 + byte]) << (8 * byte);
+        EXPECT_EQ(second, llvm::bit_cast<uint32_t>(expected[1]));
+      }
+    }
+  }
 }
 
 TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {

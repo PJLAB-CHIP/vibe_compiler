@@ -12,7 +12,7 @@ module {
         : memref<4x64xf16, #wafer.memory<spm, cx>>
     %reduce_output = memref.alloc()
         {wafer.spm.offset = #wafer.spm_offset<66048>}
-        : memref<64xf16, #wafer.memory<spm, cx>>
+        : memref<1x64xf16, #wafer.memory<spm, cx>>
     %pool_input = memref.alloc()
         {wafer.spm.offset = #wafer.spm_offset<66304>}
         : memref<1x3x5x64xf16, #wafer.memory<spm, ncx>>
@@ -30,7 +30,7 @@ module {
         %reduce_input into %reduce_output
         {dim = 1 : i64}
         : memref<4x64xf16, #wafer.memory<spm, cx>>
-      into memref<64xf16, #wafer.memory<spm, cx>>
+      into memref<1x64xf16, #wafer.memory<spm, cx>>
     wafer.instr.pool #wafer.instr_pool_kind<indexedmax> %pool_input
         into %pool_value, %pool_index
         {source_shape = array<i64: 1, 3, 5, 64>,

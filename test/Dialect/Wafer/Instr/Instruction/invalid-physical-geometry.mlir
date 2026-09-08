@@ -102,7 +102,7 @@ module {
   %input = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
   %weight = "builtin.unrealized_conversion_cast"()
-      : () -> memref<3x3x64x64xf16, #wafer.memory<spm, ncx>>
+      : () -> memref<3x3x64x64xf16, #wafer.memory<spm, cx>>
   %output = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
   // expected-error @below {{input_shape must match the logical buffer shape}}
@@ -115,7 +115,7 @@ module {
        kernel_strides = array<i64: 3, 3, 1, 1>,
        dilations = array<i64: 1, 1>}
       : memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>,
-        memref<3x3x64x64xf16, #wafer.memory<spm, ncx>>
+        memref<3x3x64x64xf16, #wafer.memory<spm, cx>>
     into memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
 }
 
@@ -293,12 +293,12 @@ module {
   %input = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x65536xf16, #wafer.memory<spm, cx>>
   %dst = "builtin.unrealized_conversion_cast"()
-      : () -> memref<1xf16, #wafer.memory<spm, cx>>
+      : () -> memref<1x1xf16, #wafer.memory<spm, cx>>
   // expected-error @below {{reduce input shape C dimension must be in [1, 16384]}}
   wafer.instr.reduce #wafer.instr_reduce_kind<sum> %input into %dst
       {dim = 0 : i64}
       : memref<1x65536xf16, #wafer.memory<spm, cx>>
-    into memref<1xf16, #wafer.memory<spm, cx>>
+    into memref<1x1xf16, #wafer.memory<spm, cx>>
 }
 
 // -----
@@ -406,7 +406,7 @@ module {
   %input = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x1x1x65536xf16, #wafer.memory<spm, ncx>>
   %weight = "builtin.unrealized_conversion_cast"()
-      : () -> memref<1x1x1x1xf16, #wafer.memory<spm, ncx>>
+      : () -> memref<1x1x1x1xf16, #wafer.memory<spm, cx>>
   %output = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x1x1x65536xf16, #wafer.memory<spm, ncx>>
   // expected-error @below {{input_shape C dimension must be in [1, 16384]}}
@@ -419,7 +419,7 @@ module {
        kernel_strides = array<i64: 1, 1, 1, 1>,
        dilations = array<i64: 1, 1>}
       : memref<1x1x1x65536xf16, #wafer.memory<spm, ncx>>,
-        memref<1x1x1x1xf16, #wafer.memory<spm, ncx>>
+        memref<1x1x1x1xf16, #wafer.memory<spm, cx>>
     into memref<1x1x1x65536xf16, #wafer.memory<spm, ncx>>
 }
 
@@ -586,7 +586,7 @@ module {
   %input = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
   %weight = "builtin.unrealized_conversion_cast"()
-      : () -> memref<3x3x64x64xf16, #wafer.memory<spm, ncx>>
+      : () -> memref<3x3x64x64xf16, #wafer.memory<spm, cx>>
   %output = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x99x99x64xf16, #wafer.memory<spm, ncx>>
   // expected-error @below {{target_geometry_mismatch: convolution output spatial shape does not match input/kernel/stride/dilation/pad/unpad}}
@@ -599,7 +599,7 @@ module {
        kernel_strides = array<i64: 3, 3, 1, 1>,
        dilations = array<i64: 1, 1>}
       : memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>,
-        memref<3x3x64x64xf16, #wafer.memory<spm, ncx>>
+        memref<3x3x64x64xf16, #wafer.memory<spm, cx>>
     into memref<1x99x99x64xf16, #wafer.memory<spm, ncx>>
 }
 
@@ -609,20 +609,20 @@ module {
   %input = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x7x11x5xf16, #wafer.memory<spm, ncx>>
   %weight = "builtin.unrealized_conversion_cast"()
-      : () -> memref<3x2x5x7xf16, #wafer.memory<spm, ncx>>
+      : () -> memref<2x3x5x7xf16, #wafer.memory<spm, cx>>
   %output = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x3x5x7xf16, #wafer.memory<spm, ncx>>
   // expected-error @below {{target_geometry_mismatch: convolution input channels must match the weight input channels}}
   wafer.instr.conv #wafer.instr_conv_kind<conv> %input, %weight into %output
       {input_shape = array<i64: 1, 7, 11, 5>,
-       weight_shape = array<i64: 3, 2, 5, 7>,
+       weight_shape = array<i64: 2, 3, 5, 7>,
        output_shape = array<i64: 1, 3, 5, 7>,
        pads = array<i64: 1, 0, 2, 1>,
        unpads = array<i64: 0, 0, 0, 0>,
        kernel_strides = array<i64: 3, 2, 2, 3>,
        dilations = array<i64: 2, 1>}
       : memref<1x7x11x5xf16, #wafer.memory<spm, ncx>>,
-        memref<3x2x5x7xf16, #wafer.memory<spm, ncx>>
+        memref<2x3x5x7xf16, #wafer.memory<spm, cx>>
     into memref<1x3x5x7xf16, #wafer.memory<spm, ncx>>
 }
 

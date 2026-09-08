@@ -270,11 +270,11 @@ module {
        to memref<4x64xf16, #wafer.memory<spm, cx>>
     wafer.instr.ncc_join [0]
     %reduced = memref.alloc()
-        : memref<4xf16, #wafer.memory<spm, cx>>
+        : memref<4x1xf16, #wafer.memory<spm, cx>>
     wafer.instr.reduce #wafer.instr_reduce_kind<sum> %dest into %reduced
         {dim = 0 : i64}
         : memref<4x64xf16, #wafer.memory<spm, cx>>
-      into memref<4xf16, #wafer.memory<spm, cx>>
+      into memref<4x1xf16, #wafer.memory<spm, cx>>
     wafer.instr.ncc_join [0]
     return
   }

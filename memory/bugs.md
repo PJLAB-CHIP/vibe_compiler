@@ -1752,3 +1752,16 @@
   TileMajor参数直接位于packet内，不增加间接row操作。使用invalidate而非写回旧cache内容。
 - 防复发：检查row地址load→exact byte-range acquire→slot loads的LLVM顺序；连续运行不同整除/尾长的完整PyTorch产品矩阵，
   保持同一设备会话并覆盖参数行和allocation地址复用。
+
+## Native reduce的逻辑降rank不能直接替换physical结果
+
+- 根因：native CT Reduce把归约轴extent设为1并保留rank；直接声明降rank destination改变Cx/NCx步长，后续load读到padding。
+  模型若复制同一个降rank假设，host通过不能证明板端正确。
+- 修复：native intermediates保持rank，最终用existing exact IndexRelation/GatherScatter物化逻辑输出；actual allocations由原owner记录。
+- 防复发：1024/1025/1031单轴/双轴完整PyTorch板测；model独立检查valid lane的物理偏移；verifier拒绝降rank和unsafe N/HWC。
+
+## Ordinary Conv不能把kernel轴当成NCx batch轴
+
+- 根因：原canonical weight将kernel宽排在高前，并复用按首轴独立对齐的NCx；native bare forward实际读取HWOI的一个Cx volume。
+- 修复：从current Linalg indexing maps证明weight角色并物化HWOI/Cx；feature/output继续NHWC/NCx，kernel寄存器仍按X/Y打包。
+- 防复发：非方形2×3/3×2、O1/O2、I65跨block及1024/1025/1031完整PyTorch见证；Tile/Instr明确拒绝NCx weight。

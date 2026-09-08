@@ -41,6 +41,47 @@ def read_portable_stablehlo(program: pathlib.Path) -> str:
 
 
 class PyTorchBoardCasesTest(unittest.TestCase):
+    def test_local_conv_reference_detects_weight_axis_and_tail_errors(self) -> None:
+        for extent, kernel in ((1024, (3, 3)), (1025, (2, 3)), (1031, (3, 2))):
+            case = cases.make_local_conv(
+                torch.float16, 20260803, extent=extent, kernel=kernel
+            )
+            value, weight = case.inputs
+            expected, = case.materialize_expected_outputs()
+            self.assertEqual(value.shape, (1, 16, 8, extent))
+            self.assertEqual(
+                expected.shape, (1, 24, 11 - kernel[0], extent + 3 - kernel[1])
+            )
+            wrong_weight = cases.LocalConv()(value, weight.flip(2))
+            missing_tail = expected.clone()
+            missing_tail.flatten()[-1] += 1
+            for actual in (wrong_weight, missing_tail):
+                with self.assertRaises(AssertionError):
+                    cases.common.assert_tensor_matches(
+                        actual, expected, policy=case.comparison_policy,
+                        context=f"LocalConv L={extent}",
+                    )
+
+    def test_local_reduce_reference_covers_both_axes_and_output_tail(self) -> None:
+        for extent in (1024, 1025, 1031):
+            case = cases.make_local_reduce(torch.float16, 20260803, extent=extent)
+            value, = case.inputs
+            width_sum, spatial_sum = case.materialize_expected_outputs()
+            self.assertEqual(value.shape, (1, 24, 8, extent))
+            self.assertEqual(width_sum.shape, (1, 24, 8))
+            self.assertEqual(spatial_sum.shape, (1, 24))
+            torch.testing.assert_close(
+                width_sum.sum(dim=2), spatial_sum, rtol=0, atol=0
+            )
+            for expected in (width_sum, spatial_sum):
+                missing_tail = expected.clone()
+                missing_tail.flatten()[-1] += 1
+                with self.assertRaises(AssertionError):
+                    cases.common.assert_tensor_matches(
+                        missing_tail, expected, policy=case.comparison_policy,
+                        context=f"LocalReduce L={extent}",
+                    )
+
     def test_alltoall_reference_detects_wrong_source_and_output_tail(self) -> None:
         for extent in (1024, 1025, 1031):
             case = cases.make_alltoall_transpose(torch.float16, 20260803, extent=extent)

@@ -102,7 +102,7 @@ static mlir::LogicalResult verifyConvShapeRelation(
   int64_t dilationX = dilation[0];
   int64_t dilationY = dilation[1];
 
-  if (kernelX != weight[0] || kernelY != weight[1])
+  if (kernelX != weight[1] || kernelY != weight[0])
     return op->emitOpError(
         "target_geometry_mismatch: convolution kernel dimensions must match "
         "the weight shape");
@@ -302,20 +302,18 @@ verifyInstructionReduceContract(mlir::Operation *op, mlir::Value input,
       return op->emitOpError("reduce dim maps to duplicate logical dims");
   }
 
-  if (destTensor->getRank() !=
-      inputTensor->getRank() - static_cast<int64_t>(dims.size()))
+  if (targetDim == 3 || targetDim == 5)
     return op->emitOpError(
-        "reduce dest rank must match input rank minus reduce dimensions");
-
-  int64_t destDim = 0;
-  for (int64_t inputDim = 0; inputDim < inputTensor->getRank(); ++inputDim) {
-    if (reducedDims.contains(inputDim))
-      continue;
-    if (hasStaticMismatch(inputTensor->getDimSize(inputDim),
-                          destTensor->getDimSize(destDim)))
+        "reduce N/HWC axes have no supported target contract");
+  if (destTensor->getRank() != inputTensor->getRank())
+    return op->emitOpError("reduce dest must retain input rank");
+  for (int64_t inputDim = 0; inputDim < rank; ++inputDim) {
+    int64_t expected =
+        reducedDims.contains(inputDim) ? 1 : inputTensor->getDimSize(inputDim);
+    if (hasStaticMismatch(expected, destTensor->getDimSize(inputDim)))
       return op->emitOpError(
-          "reduce dest shape must match non-reduced input dimensions");
-    ++destDim;
+          "reduce dest must retain non-reduced dimensions and set reduced "
+          "dimensions to one");
   }
 
   return mlir::success();
@@ -1068,6 +1066,12 @@ mlir::LogicalResult InstrConvOp::verify() {
       mlir::failed(
           verifyAlignedSPMMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
+
+  if (!hasWaferLayout(getInput().getType(), MemLayout::NCx) ||
+      !hasWaferLayout(getDest().getType(), MemLayout::NCx) ||
+      !hasWaferLayout(getWeight().getType(), MemLayout::Cx))
+    return emitOpError(
+        "convolution input/dest must use ncx and weight must use cx layout");
 
   std::optional<mlir::RankedTensorType> inputTensor =
       getLogicalTensorType(getInput().getType());

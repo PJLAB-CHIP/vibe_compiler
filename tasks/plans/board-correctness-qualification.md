@@ -218,18 +218,98 @@ ReduceScatter首条source本轮编译/no-card成功，但actual package有240个
 
 ## 本轮检查点
 
-### 卷积组合计算首轮（2026-09-08）
+### 第6项修复合同
+
+Pipeline position:
+- Upstream IR / input: current Linalg affine convolution与layout-resolved `wafer.tile.reduce/conv`、typed memref、原始PyTorch FP16 source与fresh输入。
+- Current stage responsibility: 修正native Reduce实际结果shape与逻辑输出的物理转换；通过独立权重读取见证确定Conv的物理合同后同步producer/consumer。
+- Output IR / files: verifier-valid native Instr、实际allocation与GatherScatter、同步的target model及完整ExecutablePackage。
+- Downstream consumer: fresh completion、MiniMalloc、Instr→LLVM/CRT、target model和同一PyTorch board runner。
+- User-level driver / named pipeline: 共用`wafer-lower-tile-region-to-instr`与普通`wafer-compile` none/search。
+- Explicit non-goals: 不改source算术和dtype，不放宽容差，不用其它计算算法遮盖未知权重布局，不改变通信选路。
+- Completion criteria: 下表host/实际下游覆盖完成，canonical完整增量构建与no-op通过；独立修复case及原组合case本轮实卡全量PyTorch通过。
+
+| 输入等价类 | exact结构与typed失败 | 直接下游witness |
+| --- | --- | --- |
+| 单轴C/W/H/HW，rank至少3，主要维度1024/1025/1031；rank-2仅作Cx ABI补充 | native destination保留rank及extent=1；删除归约轴的Instr和不安全N/HWC必须拒绝 | Instr verifier、target LLVM与model真实physical output；转换后逻辑坐标完整且无重叠 |
+| FP16多轴C后W，`[1,24,8,L]`，L=1024/1025/1031 | 中间`[1,localC,8,1]`、最终native`[1,localC,1,1]`；axis仍对应原始rank；final movement按exact relation读valid lane | 实际allocation/owner、completion、MiniMalloc、完整source/package/no-card及16 Tile PyTorch |
+| 非identity init、保留维度source boundary、已支持ordered reduce | 既有数值顺序和合法路径不变；不能把错误native合同移入ordered分支 | 现有ordered lowering回归及下游消费 |
+| Conv单点及随机权重，1×1/3×3，输入宽1024与tail | 用PyTorch明确区分padding、输入/输出转换和weight物理读取；仅有直接证据后修改weight合同 | source与native权重见证、fresh no-card、逐case实卡；正确Conv输出再接activation及sum |
+| 原`conv-mixed-dag` none/search | 同一source与eager expected，两个完整输出都通过；缺尾值或错layout必须被检查检出 | 新package实卡，原通信/GEMM定向回归；不以局部对照代签第6项 |
+
+Conv的新native见证已确定logical HWOI与physical Cx；input/output仍为NHWC/NCx。Layout optimization按current Linalg convolution interface识别weight operand并要求Cx，Structured→Tile按affine relation物化HWOI transpose，Tile/Instr verifier与kernel X/Y打包使用同一合同；不根据名称或case判定。API参照[MLIR Linalg](https://mlir.llvm.org/docs/Dialects/Linalg/)及pinned `LinalgInterfaces.h`。
+
+实现采用既有exact affine IndexRelation与GatherScatter descriptor生成器，不选择新归约算法。
+[MLIR MemRef](https://mlir.llvm.org/docs/Dialects/MemRef/)区分view和实际copy，
+[PatternRewriter](https://mlir.llvm.org/docs/PatternRewriter/)要求匹配确认前不改IR；本项先验证全部native类型与final movement关系，
+再通过同一个rewriter物化。具体API以pinned `AffineMap.h`、`BuiltinTypes.cpp`和现有movement测试确认。
+
+### 第6项布局修复与本轮验收（2026-09-08）
+
+已修复两处实际错误：native Reduce保持rank和reduced extent=1，最后以exact GatherScatter生成逻辑输出；
+Conv由current Linalg maps物化HWOI，weight采用一个Cx volume，input/output保持NHWC/NCx。
+Tile与Instr verifier、非方形kernel X/Y字段、target reduce model/formal oracle和全部直接fixture同步。
+
+Native权重见证均为fresh FP16 PyTorch输入，先no-card，再单次launch；每项16 Tile正常completion/cleanup，计算仅在Tile 0。
+output DDR先显式初始化0xA5，SPM slot prefix/suffix及完整output physical bytes都校验；没有弱化guard。
+
+| native input NHWC | weight HWOI/Cx | output NHWC | 本轮结果 |
+| --- | --- | --- | --- |
+| `[1,3,1026,16]` | `[3,3,2,16]` | `[1,1,1024,2]` | 2048项PyTorch exact，physical padding/guard通过 |
+| `[1,2,1033,16]` | `[2,3,1,16]` | `[1,1,1031,1]` | 1031项PyTorch exact，非方形kernel、单output channel与tail通过 |
+| `[1,1,1026,65]` | `[1,3,64,65]` | `[1,1,1024,64]` | 65536项PyTorch exact，input channel跨block与tail通过 |
+
+这些见证覆盖bare forward，不扩大Depthwise/Backward、bias/activation option或BF16资格。
+修复前XYOI/Cx探针正常完成后，权重线性恢复唯一匹配HWOI；另一项host guard报错源于旧probe未初始化output DDR，
+不是timeout。两个失败产物在保存有界结论后清理；之后三项初始化完整的probe均通过。
+
+正式source使用`LocalConv`/`LocalReduce`模块，导出与reference共用同一原始PyTorch module；reference由eager重新生成。
+所有case保留FP16与PyTorch默认rtol=1e-3、atol=1e-5，输入含正负非零binary fractions，原mixed case仍用原随机浮点数。
+
+| 正式source | 输入/输出覆盖 | none / search 实卡 |
+| --- | --- | --- |
+| `local-conv` | `[1,16,8,1024]`、24 outputs、3×3、显式pad；输出`[1,24,8,1024]` | 两项完整PyTorch exact |
+| `local-conv-tail-1025` | `[1,16,8,1025]`、2×3；输出`[1,24,9,1025]` | 两项完整PyTorch exact |
+| `local-conv-tail-1031` | `[1,16,8,1031]`、3×2；输出`[1,24,8,1032]` | 两项完整PyTorch exact |
+| `local-reduce` / `tail-1025` / `tail-1031` | `[1,24,8,L]`，单轴输出`[1,24,8]`与双轴输出`[1,24]`；16 Tile含output channel tail | 六项两个完整输出均PyTorch exact |
+
+12项均先通过本轮no-card、输入/manifest/expected dtype一致，单进程逐case单次launch，16 Tile完成并正常清理。
+主机回归包括真实规模非方形Linalg→layout→Tile→boundary consumer、native C/W/H/HW的1024/1025/1031 physical model、
+降rank/错误extent/unsafe N与HWC/错误Conv weight layout的verifier拒绝，以及既有ordered reduce和全部canonical gate。
+成功package/capture的审计目录为`build/test/board-audit/conv-reduce-layout/`；它们不能作为下一轮输入。
+本轮canonical完整增量构建通过，再次无源码变化构建为Ninja no-op；完整`check-wafer`的266项lit、14组component unit、
+42项board IO unit、62项formal numeric、19项target backend与17项SystemC均实际执行通过。补充的Conv weight负例及最终
+7项focused lit通过；Python case/reference测试24项通过，12项source no-card与11项通信/GEMM/BF16定向no-card全部通过。
+日志为`conv-reduce-full-check.log`、`conv-reduce-final-{build,noop,focused-lit}.log`及`conv-reduce-unaffected-no-card.log`。
+
+
+**原组合case仍未通过，不能把上述布局修复代签第6项完成。** 修复后`conv-mixed-dag` FP16 none/search的新no-card均通过；
+none单次实卡正常完成，主输出由196509/196608项失败降到1856/196608（0.944%），F32最大绝对误差由0.6415329降至
+0.0003662109375；归约输出最大误差0.125。容差未更改，search尚未重复发射同一数值语义。
+
+后续只读定位已分开两个数值边界：
+- fresh portable StableHLO已把PyTorch `conv2d(..., bias)`变成FP16 convolution后接FP16 add；pinned XLA
+  `BuildConvolutionOverrideableBias`直接生成这两步。以PyTorch显式分开bias的诊断输出作对照，device剩50项超原容差；
+  这只是定位，不能替换原expected。
+- source保留`stablehlo.logistic`；pinned StableHLO `MapStablehloToScalarOp.h`将其展开成同dtype的neg/exp/add/div。
+  PyTorch同dtype逐步展开诊断再将残差缩到4项，说明该边界也需单独验证精度；尚不能把剩余4项直接归因于某个硬件原语。
+- 仅把PyTorch Conv+bias改用FP32或FP64计算再回FP16，组合结果仍有1项超原default容差；因此不能凭“提高精度”就宣称解决，
+  更不能悄悄改原case、eager expected或阈值。下一步先闭合PyTorch operator→StableHLO的舍入合同，再处理logistic lowering。
+
+当前修改不引入精度策略、算术重排、case特判或第二条export路径；尚未完成部分继续留在统一`board-testing`。
+
+### 修复前卷积组合计算首轮（2026-09-08）
 
 none/search两项fresh no-card通过；none单次实卡的输入、manifest与expected均为FP16，seed=20260803。
 16 Tile completion、两个输出回读和normal cleanup完成，无timeout或设备异常，未retry/reset/power。
 完整PyTorch比较失败：主输出`[1,24,8,1024]`有196509/196608项不匹配，转F32计算最大绝对误差0.6415328979492188；
 归约输出`[1,24]`有24/24项不匹配，最大绝对误差320.75。容差保持rtol=1e-3、atol=1e-5。
 manifest SHA256为`bcc4508efdcec23485d5fd31903e557174aad665da6696cc85562cb58bf52929`。
-当前只确认是数值失败；归约回读也不等于主输出的PyTorch求和，二者最大差380.5，不能先假定只有卷积运算错误。后续设备发射停止。
+当前只确认是数值失败；归约回读也不等于主输出的PyTorch求和，二者最大差380.5，不能先假定只有卷积运算错误。该批次停止。
 
 已完成只读定位：重新从同一PyTorch source导出的诊断package与失败实卡package的全部文件逐字节相同，actual IR有以下两个检查点：
-- Tile 0的Conv使用input `[1,10,1026,16]`、HWOI weight `[3,3,2,16]`、output `[1,8,1024,2]`，三者均为NCx。
-  `docs/tx81-compiler-hardware-calibration.md`的Ordinary Conv条目明确记录通用weight physical layout尚未恢复，不能把feature/output的NCx证据当成weight合同。
+- Tile 0的Conv使用input `[1,10,1026,16]`、当时声明的XYOI weight `[3,3,2,16]`、output `[1,8,1024,2]`，三者均为NCx。
+  当时`docs/tx81-compiler-hardware-calibration.md`的Ordinary Conv条目记录通用weight physical layout尚未恢复，不能把feature/output的NCx证据当成weight合同。
   当前主输出失败与这个缺口相容，但仅凭本case不能断言它是唯一根因。
 - 相同Tile的多轴sum实际降低为两次`dim=0`：`[1,2,8,1024] NCx → [1,2,8] NCx → [1,2] Cx`，中间直接连接native reduce。
   两channel的Tile在归约输出中有交替零值；降rank后的physical writeback/下一次读取需要独立验证，尚不作已证实根因。
@@ -270,10 +350,10 @@ shape为`[24,16,K,K]`，不加bias；K分别为1和3。Padding对照先对同一
 修复必须同步Instr verifier、Tile→Instr native目标物化/后续layout转换、target model和formal destination合同，
 保留native物理结果后再显式产生逻辑降rank结果；不能只在多轴循环中增加一次reshape或只改数值expected。
 
-**卷积正确权重布局尚未确认。** 上述两个1×1对照通过、3×3中心单点失败，排除了本组输入的一般padding、输入/输出回排
+**此定位阶段尚未确认卷积正确权重布局；后续修复见前述本轮验收。** 上述两个1×1对照通过、3×3中心单点失败，排除了本组输入的一般padding、输入/输出回排
 以及普通累加精度解释。`ComputeConvOp::verify`目前无条件要求weight使用NCx，`StructuredToTile`和`ConvLowering`随后把
 该weight交给native Conv。当前`[3,3,2,16]`权重每个首轴slice按256B对齐，而相同logical shape的Cx只在整体末尾对齐；
-这与既有硬件文档中“feature/output NCx不能外推weight”的缺口一致，但本轮尚未直接证明Cx或其它布局就是正确答案。
+这与既有硬件文档中“feature/output NCx不能外推weight”的缺口一致，但当时尚未直接证明Cx或其它布局就是正确答案。
 下一步先为本组3×3 weight恢复有直接见证的物理读取合同，再做生产修改；不猜布局、不替换算法、不发射原组合case重试。
 
 | 诊断source | manifest SHA256 |

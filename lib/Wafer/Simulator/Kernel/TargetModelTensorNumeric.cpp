@@ -357,13 +357,10 @@ executeReduce(const compiler::TargetCommand &command,
   if (reducedDimensions.empty())
     return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                        "reduce dimension is invalid for the fixed ABI shape");
-  std::vector<uint64_t> destinationShape;
-  for (size_t index = 0; index < inputShape.size(); ++index)
-    if (!llvm::is_contained(reducedDimensions, index))
-      destinationShape.push_back(inputShape[index]);
-  const PhysicalTensorLayout destinationLayout = destinationShape.size() > 2
-                                                     ? PhysicalTensorLayout::NCx
-                                                     : PhysicalTensorLayout::Cx;
+  std::vector<uint64_t> destinationShape(inputShape);
+  for (size_t index : reducedDimensions)
+    destinationShape[index] = 1;
+  const PhysicalTensorLayout destinationLayout = PhysicalTensorLayout::NCx;
   llvm::Expected<PhysicalTensorDescriptor> inputKey =
       PhysicalTensorDescriptor::create(value.format, PhysicalTensorLayout::NCx,
                                        std::move(inputShape));

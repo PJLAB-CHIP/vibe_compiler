@@ -239,6 +239,24 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
   endforeach()
   unset(_wafer_all_reduce_case)
 
+  foreach(_wafer_local_reduce_case IN ITEMS
+      local-reduce local-reduce-tail-1025 local-reduce-tail-1031)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_local_reduce_case} float16 fp16 none)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_local_reduce_case} float16 fp16 search)
+  endforeach()
+  unset(_wafer_local_reduce_case)
+
+  foreach(_wafer_local_conv_case IN ITEMS
+      local-conv local-conv-tail-1025 local-conv-tail-1031)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_local_conv_case} float16 fp16 none)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_local_conv_case} float16 fp16 search)
+  endforeach()
+  unset(_wafer_local_conv_case)
+
   foreach(_wafer_product_case IN ITEMS
       conv-mixed-dag
       attention-prefill

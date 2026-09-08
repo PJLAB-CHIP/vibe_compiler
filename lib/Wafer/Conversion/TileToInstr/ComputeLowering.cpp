@@ -818,7 +818,7 @@ public:
       // target selector is handled by a checked chain of single-axis native
       // reductions before falling back to ordered movement.
       std::optional<int64_t> targetDim;
-      for (int64_t candidate = 0; candidate <= 5; ++candidate) {
+      for (int64_t candidate : {0, 1, 2, 4}) {
         llvm::SmallVector<int64_t, 3> candidateDims =
             wafer::getInstrReduceLogicalDims(candidate, inputType.getRank());
         llvm::sort(candidateDims);
@@ -898,91 +898,87 @@ public:
         auto kind =
             InstrReduceKindAttr::get(rewriter.getContext(), *nativeKind);
 
+        // Native results retain every input axis. Dropping an axis changes
+        // Cx/NCx packing even when the logical element count is unchanged.
+        // Keep native intermediates in their hardware geometry and materialize
+        // the logical result through the same exact movement path as views.
+        llvm::SmallVector<int64_t, 4> nativeDims;
         if (targetDim) {
-          mlir::FailureOr<mlir::Value> dest = createDestAlloc(
-              op.getLoc(), resultType, rewriter, op, bufferRecorder);
-          if (mlir::failed(dest))
-            return mlir::failure();
-          auto instr = rewriter.create<InstrReduceOp>(
-              op.getLoc(), kind, op.getInput(), *dest,
-              getI64Attr(rewriter, *targetDim),
-              getDefaultNCCWorkerAttr(rewriter));
-          if (bufferRecorder)
-            bufferRecorder->recordLoweredOperation(op, instr);
-          rewriter.replaceOp(op, *dest);
-          return mlir::success();
-        }
-
-        // The target encodes every individual logical axis. Reduce source
-        // dimensions in descending order so removing a higher dimension does
-        // not change the index of any remaining lower dimension. Build and
-        // validate every intermediate type before creating the first op.
-        llvm::SmallVector<int64_t, 4> descendingDims(reducedDims.begin(),
-                                                     reducedDims.end());
-        llvm::sort(descendingDims,
-                   [](int64_t lhs, int64_t rhs) { return lhs > rhs; });
-        llvm::SmallVector<int64_t, 4> currentShape(inputType.getShape().begin(),
-                                                   inputType.getShape().end());
-        llvm::SmallVector<int64_t, 4> singleTargetDims;
-        llvm::SmallVector<mlir::MemRefType, 4> nativeDestinationTypes;
-        bool canDecomposeNatively = true;
-        for (auto [stepIndex, sourceDim] : llvm::enumerate(descendingDims)) {
-          if (sourceDim < 0 ||
-              sourceDim >= static_cast<int64_t>(currentShape.size())) {
-            canDecomposeNatively = false;
-            break;
-          }
-          std::optional<int64_t> singleTargetDim;
-          for (int64_t candidate = 0; candidate <= 5; ++candidate) {
-            llvm::SmallVector<int64_t, 3> candidateDims =
-                wafer::getInstrReduceLogicalDims(
-                    candidate, static_cast<int64_t>(currentShape.size()));
-            if (candidateDims.size() == 1 &&
-                candidateDims.front() == sourceDim) {
-              singleTargetDim = candidate;
+          nativeDims.push_back(*targetDim);
+        } else {
+          for (int64_t sourceDim : llvm::reverse(reducedDims)) {
+            int64_t trailingDim = inputType.getRank() - 1 - sourceDim;
+            if (trailingDim > 2) {
+              nativeDims.clear();
               break;
             }
+            nativeDims.push_back(trailingDim);
           }
-          if (!singleTargetDim) {
-            canDecomposeNatively = false;
-            break;
-          }
-          singleTargetDims.push_back(*singleTargetDim);
-          currentShape.erase(currentShape.begin() + sourceDim);
-          const bool isFinalStep = stepIndex + 1 == descendingDims.size();
-          if (isFinalStep) {
-            if (llvm::ArrayRef<int64_t>(currentShape) != resultType.getShape())
-              canDecomposeNatively = false;
-            else
-              nativeDestinationTypes.push_back(resultType);
-            break;
-          }
-          const MemLayout intermediateLayout =
-              currentShape.size() > 2 ? MemLayout::NCx : MemLayout::Cx;
-          nativeDestinationTypes.push_back(mlir::MemRefType::get(
-              currentShape, elementType, mlir::MemRefLayoutAttrInterface{},
-              MemoryAttr::get(rewriter.getContext(), MemorySpace::SPM,
-                              intermediateLayout)));
         }
+        if (!nativeDims.empty()) {
+          llvm::SmallVector<int64_t, 4> currentShape(inputType.getShape());
+          llvm::SmallVector<mlir::MemRefType, 4> nativeTypes;
+          for (int64_t dimension : nativeDims) {
+            for (int64_t logicalDim : wafer::getInstrReduceLogicalDims(
+                     dimension, inputType.getRank()))
+              currentShape[logicalDim] = 1;
+            nativeTypes.push_back(mlir::MemRefType::get(
+                currentShape, elementType, mlir::MemRefLayoutAttrInterface{},
+                inputMemory));
+          }
 
-        if (canDecomposeNatively &&
-            nativeDestinationTypes.size() == singleTargetDims.size()) {
+          llvm::SmallVector<mlir::AffineExpr, 4> nativeCoordinates;
+          unsigned resultDim = 0;
+          for (int64_t inputDim = 0; inputDim < inputType.getRank(); ++inputDim)
+            nativeCoordinates.push_back(
+                llvm::is_contained(reducedDims, inputDim)
+                    ? mlir::getAffineConstantExpr(0, rewriter.getContext())
+                    : mlir::getAffineDimExpr(resultDim++,
+                                             rewriter.getContext()));
+          analysis::IndexRelationResult sourceRelation =
+              analysis::IndexRelation::fromAffineMap(
+                  mlir::AffineMap::get(resultType.getRank(), 0,
+                                       nativeCoordinates,
+                                       rewriter.getContext()),
+                  resultType.getShape(), nativeTypes.back().getShape());
+          analysis::IndexRelationResult destRelation =
+              analysis::IndexRelation::identity(resultType.getShape());
+          if (!sourceRelation.isExact() || !destRelation.isExact())
+            return failPattern(
+                rewriter, op,
+                "tile.reduce native result relation is not exact");
+          mlir::FailureOr<SharedMovementDescriptorPlan> descriptors =
+              descriptorCache->getOrCreate(
+                  rewriter, op, nativeTypes.back(), resultType,
+                  resultType.getShape(), *sourceRelation.get(),
+                  *destRelation.get(), MovementEngine::GatherScatter,
+                  "tile.reduce native result movement");
+          if (mlir::failed(descriptors))
+            return mlir::failure();
+
           mlir::Value currentInput = op.getInput();
-          for (auto [stepIndex, destinationType] :
-               llvm::enumerate(nativeDestinationTypes)) {
+          for (auto [dimension, destinationType] :
+               llvm::zip_equal(nativeDims, nativeTypes)) {
             mlir::FailureOr<mlir::Value> destination = createDestAlloc(
                 op.getLoc(), destinationType, rewriter, op, bufferRecorder);
             if (mlir::failed(destination))
               return mlir::failure();
             auto instr = rewriter.create<InstrReduceOp>(
                 op.getLoc(), kind, currentInput, *destination,
-                getI64Attr(rewriter, singleTargetDims[stepIndex]),
+                getI64Attr(rewriter, dimension),
                 getDefaultNCCWorkerAttr(rewriter));
             if (bufferRecorder)
               bufferRecorder->recordLoweredOperation(op, instr);
             currentInput = *destination;
           }
-          rewriter.replaceOp(op, currentInput);
+          mlir::FailureOr<mlir::Value> destination = createDestAlloc(
+              op.getLoc(), resultType, rewriter, op, bufferRecorder);
+          if (mlir::failed(destination) ||
+              mlir::failed(emitGatherScatterDescriptorPlan(
+                  rewriter, op.getLoc(), op, currentInput, *destination,
+                  **descriptors, bufferRecorder)))
+            return mlir::failure();
+          rewriter.replaceOp(op, *destination);
           return mlir::success();
         }
       }
@@ -1795,9 +1791,9 @@ public:
     auto weightShape = rewriter.getDenseI64ArrayAttr(weight->getShape());
     auto outputShape = rewriter.getDenseI64ArrayAttr(output->getShape());
     // Instruction fields use X/Y order while tile.conv keeps semantic H/W
-    // order. Weight is already canonical XYOI at this boundary.
+    // order. Weight is already canonical HWOI at this boundary.
     auto kernelStrides = rewriter.getDenseI64ArrayAttr(
-        {weight->getDimSize(0), weight->getDimSize(1), strides[1], strides[0]});
+        {weight->getDimSize(1), weight->getDimSize(0), strides[1], strides[0]});
     auto instructionDilations =
         rewriter.getDenseI64ArrayAttr({dilations[1], dilations[0]});
     auto instr = rewriter.create<InstrConvOp>(

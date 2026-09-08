@@ -86,7 +86,8 @@ def Wafer_ComputeConvOp : Wafer_Op<"tile.conv", [
   let description = [{
     `wafer.tile.conv` is the canonical tile-local ordinary 2-D convolution
     contract. Input and result storage use logical `[N, H, W, C]` order and
-    weight storage uses logical `[X, Y, O, I]` order. `strides` and
+    weight storage uses logical `[H, W, O, I]` order with Cx layout.
+    Input and result use NCx layout. `strides` and
     `dilations` use logical `[H, W]` order; `pads` and `unpads` use
     `[H-before, H-after, W-before, W-after]` order. The operation remains
     target-abstract: instruction field packing and register bounds belong to
