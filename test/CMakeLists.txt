@@ -257,6 +257,22 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
   endforeach()
   unset(_wafer_local_conv_case)
 
+  foreach(_wafer_precision_case IN ITEMS
+      biased-conv biased-conv-tail-1025 biased-conv-tail-1031
+      sigmoid sigmoid-tail-1025 sigmoid-tail-1031)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_precision_case} float16 fp16 none)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_precision_case} float16 fp16 search)
+  endforeach()
+  unset(_wafer_precision_case)
+
+  foreach(_wafer_division_case IN ITEMS division division-tail-1025 division-tail-1031)
+    wafer_add_pytorch_source_no_card_test(${_wafer_division_case} float32 fp32 none)
+    wafer_add_pytorch_source_no_card_test(${_wafer_division_case} float32 fp32 search)
+  endforeach()
+  unset(_wafer_division_case)
+
   foreach(_wafer_product_case IN ITEMS
       conv-mixed-dag
       attention-prefill

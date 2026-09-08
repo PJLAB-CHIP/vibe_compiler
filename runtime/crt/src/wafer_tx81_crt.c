@@ -959,17 +959,13 @@ void wafer_tx81_mask_move(uint64_t src, uint32_t mask, uint64_t dst,
     TsmDeleteArith(arith);                                                     \
   }
 
-#define WAFER_DEFINE_RELATION(SYMBOL, METHOD, BOOL_METHOD)                     \
+#define WAFER_DEFINE_RELATION(SYMBOL, BOOL_METHOD)                             \
   void SYMBOL(uint64_t lhs, uint64_t rhs, uint64_t dst, uint32_t elem_count,   \
               uint32_t format, uint32_t worker) {                              \
     TsmRelationInstr instr = {0};                                              \
     TsmRelation *relation = TsmNewRelation();                                  \
-    if (format == Fmt_BOOL)                                                    \
-      relation->BOOL_METHOD(&instr, lhs, rhs, dst, elem_count,                 \
-                            wafer_format(format));                             \
-    else                                                                       \
-      relation->METHOD(&instr, lhs, rhs, dst, elem_count,                      \
-                       wafer_format(format));                                  \
+    relation->BOOL_METHOD(&instr, lhs, rhs, dst, elem_count,                   \
+                          wafer_format(format));                               \
     wafer_execute_ct(&instr, worker);                                          \
     TsmDeleteRelation(relation);                                               \
   }
@@ -1032,14 +1028,12 @@ WAFER_DEFINE_ARITH_BINARY(wafer_tx81_elementwise_add, AddVV)
 WAFER_DEFINE_ARITH_BINARY(wafer_tx81_elementwise_sub, SubVV)
 WAFER_DEFINE_ARITH_BINARY(wafer_tx81_elementwise_mul, MulVV)
 WAFER_DEFINE_ARITH_BINARY(wafer_tx81_elementwise_div, DivVV)
-WAFER_DEFINE_RELATION(wafer_tx81_elementwise_eq, EqualVV, BoolEqualVV)
-WAFER_DEFINE_RELATION(wafer_tx81_elementwise_ne, UnEqualVV, BoolUnEqualVV)
-WAFER_DEFINE_RELATION(wafer_tx81_elementwise_ge, GreaterEqualVV,
-                      BoolGreaterEqualVV)
-WAFER_DEFINE_RELATION(wafer_tx81_elementwise_gt, GreaterVV, BoolGreaterVV)
-WAFER_DEFINE_RELATION(wafer_tx81_elementwise_le, LessEqualVV,
-                      BoolLessEqualVV)
-WAFER_DEFINE_RELATION(wafer_tx81_elementwise_lt, LessThenVV, BoolLessThenVV)
+WAFER_DEFINE_RELATION(wafer_tx81_elementwise_eq, BoolEqualVV)
+WAFER_DEFINE_RELATION(wafer_tx81_elementwise_ne, BoolUnEqualVV)
+WAFER_DEFINE_RELATION(wafer_tx81_elementwise_ge, BoolGreaterEqualVV)
+WAFER_DEFINE_RELATION(wafer_tx81_elementwise_gt, BoolGreaterVV)
+WAFER_DEFINE_RELATION(wafer_tx81_elementwise_le, BoolLessEqualVV)
+WAFER_DEFINE_RELATION(wafer_tx81_elementwise_lt, BoolLessThenVV)
 WAFER_DEFINE_LOGIC_UNARY(wafer_tx81_elementwise_logic_not, NotV, BoolNotV)
 WAFER_DEFINE_LOGIC_BINARY(wafer_tx81_elementwise_logic_and, AndVV, BoolAndV)
 WAFER_DEFINE_LOGIC_BINARY(wafer_tx81_elementwise_logic_or, OrVV, BoolOrV)
@@ -1197,14 +1191,14 @@ void wafer_tx81_gemm_oriented(uint64_t lhs, uint64_t rhs, uint64_t dst,
   do {                                                                         \
     OP->AddInput(INSTR, input,                                                 \
                  wafer_shape4(input_n, input_h, input_w, input_c),             \
-                 wafer_format(format));                                        \
+                 wafer_format(input_format));                                  \
     OP->AddWeight(INSTR, weight,                                               \
                   wafer_shape4(weight_n, weight_h, weight_w, weight_c),        \
-                  wafer_format(format));                                       \
+                  wafer_format(input_format));                                 \
     OP->AddBias(INSTR, 0, 0);                                                  \
     OP->AddOutput(INSTR, dst,                                                  \
                   wafer_shape4(output_n, output_h, output_w, output_c),        \
-                  wafer_format(format));                                       \
+                  wafer_format(output_format));                                \
     OP->SetOpType(INSTR, (uint8_t)kind);                                       \
     OP->SetNegativeAxisScale(INSTR, 0, 0);                                     \
     OP->SetPositiveAxisScale(INSTR, 0, 0);                                     \
@@ -1219,16 +1213,18 @@ void wafer_tx81_gemm_oriented(uint64_t lhs, uint64_t rhs, uint64_t dst,
     OP->DisableLeakyRelu(INSTR);                                               \
   } while (0)
 
-void wafer_tx81_conv(
-    uint64_t input, uint64_t weight, uint64_t dst, uint32_t kind,
-    uint32_t input_n, uint32_t input_h, uint32_t input_w, uint32_t input_c,
-    uint32_t weight_n, uint32_t weight_h, uint32_t weight_w, uint32_t weight_c,
-    uint32_t output_n, uint32_t output_h, uint32_t output_w, uint32_t output_c,
-    uint32_t pad_top, uint32_t pad_bottom, uint32_t pad_left,
-    uint32_t pad_right, uint32_t unpad_top, uint32_t unpad_bottom,
-    uint32_t unpad_left, uint32_t unpad_right, uint32_t kernel_x,
-    uint32_t kernel_y, uint32_t stride_x, uint32_t stride_y, uint32_t dilation0,
-    uint32_t dilation1, uint32_t format, uint32_t worker) {
+void wafer_tx81_conv(uint64_t input, uint64_t weight, uint64_t dst,
+                     uint32_t kind, uint32_t input_n, uint32_t input_h,
+                     uint32_t input_w, uint32_t input_c, uint32_t weight_n,
+                     uint32_t weight_h, uint32_t weight_w, uint32_t weight_c,
+                     uint32_t output_n, uint32_t output_h, uint32_t output_w,
+                     uint32_t output_c, uint32_t pad_top, uint32_t pad_bottom,
+                     uint32_t pad_left, uint32_t pad_right, uint32_t unpad_top,
+                     uint32_t unpad_bottom, uint32_t unpad_left,
+                     uint32_t unpad_right, uint32_t kernel_x, uint32_t kernel_y,
+                     uint32_t stride_x, uint32_t stride_y, uint32_t dilation0,
+                     uint32_t dilation1, uint32_t input_format,
+                     uint32_t output_format, uint32_t worker) {
   TsmNeInstr instr = {0};
   TsmConv *conv = TsmNewConv();
   WAFER_CONFIGURE_CONV(conv, &instr);
@@ -1245,7 +1241,8 @@ void wafer_tx81_depthwise_conv(
     uint32_t pad_right, uint32_t unpad_top, uint32_t unpad_bottom,
     uint32_t unpad_left, uint32_t unpad_right, uint32_t kernel_x,
     uint32_t kernel_y, uint32_t stride_x, uint32_t stride_y, uint32_t dilation0,
-    uint32_t dilation1, uint32_t format, uint32_t worker) {
+    uint32_t dilation1, uint32_t input_format, uint32_t output_format,
+    uint32_t worker) {
   TsmNeInstr instr = {0};
   TsmDepthwiseConv *conv = TsmNewDepthwiseConv();
   WAFER_CONFIGURE_CONV(conv, &instr);
@@ -1262,7 +1259,8 @@ void wafer_tx81_backward_conv(
     uint32_t pad_right, uint32_t unpad_top, uint32_t unpad_bottom,
     uint32_t unpad_left, uint32_t unpad_right, uint32_t kernel_x,
     uint32_t kernel_y, uint32_t stride_x, uint32_t stride_y, uint32_t dilation0,
-    uint32_t dilation1, uint32_t format, uint32_t worker) {
+    uint32_t dilation1, uint32_t input_format, uint32_t output_format,
+    uint32_t worker) {
   TsmNeInstr instr = {0};
   TsmConv *conv = TsmNewConv();
   WAFER_CONFIGURE_CONV(conv, &instr);

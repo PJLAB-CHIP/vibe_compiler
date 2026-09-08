@@ -1765,3 +1765,11 @@
 - 根因：原canonical weight将kernel宽排在高前，并复用按首轴独立对齐的NCx；native bare forward实际读取HWOI的一个Cx volume。
 - 修复：从current Linalg indexing maps证明weight角色并物化HWOI/Cx；feature/output继续NHWC/NCx，kernel寄存器仍按X/Y打包。
 - 防复发：非方形2×3/3×2、O1/O2、I65跨block及1024/1025/1031完整PyTorch见证；Tile/Instr明确拒绝NCx weight。
+
+## 输入format不能决定comparison的输出编码
+
+- 根因：Instr relation的输入是浮点，结果是packed i1；CRT却按输入format选择SDK value/BOOL方法，导致浮点结果写入BOOL allocation。
+  下游Bit2Fp会把浮点codeword逐bit解释成谓词，数值误差呈现codeword位模式；设备正常completion不能排除这种错写。
+- 修复：relation结果编码由typed op固定为BOOL，CRT始终调用Bool relation方法，format仅描述输入dtype。MaskMove继续消费浮点mask。
+- 防复发：检查完整producer→predicate→Bit2Fp→consumer链和actual buffer跨度，并以真实规模正负/特殊值及tail的PyTorch结果验证；
+  不根据最终mask现象直接改MaskMove合同，先分别确认产生的编码和消费的编码。

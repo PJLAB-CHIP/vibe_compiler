@@ -474,6 +474,7 @@ TEST(TargetModelKernelTest, TargetRegisterBoundsFailClosedAtModelEntry) {
                              {0, 0, 0, 0},
                              {1, 1, 1, 1},
                              {1, 1},
+                             LogicalFormat::F16,
                              LogicalFormat::F16};
   };
   TargetConvCommand conv = makeConv();
@@ -504,6 +505,7 @@ TEST(TargetModelKernelTest, ConvolutionWeightShapeIsNotADataShape) {
                          {0, 0, 0, 0},
                          {1, 1, 1, 1},
                          {1, 1},
+                         LogicalFormat::F16,
                          LogicalFormat::F16};
   llvm::Error error = validateTargetModelCommandFields(TargetCommand{
       CardId(0), TileId(0), LaunchSlotId(0), 0, TargetCommandPayload{conv}});

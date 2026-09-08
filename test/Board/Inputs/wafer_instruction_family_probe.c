@@ -725,9 +725,9 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
     break;
   case WAFER_IFP_CASE_CONV_F16:
   case WAFER_IFP_CASE_CONV_BF16:
-    wafer_tx81_conv(input_a, input_b, output, 0, 1, 1, 3, 4, 1, 1, 4, 4, 1,
-                       1, 2, 4, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 1, 1, 1,
-                       format, 0U);
+    wafer_tx81_conv(input_a, input_b, output, 0, 1, 1, 3, 4, 1, 1, 4, 4, 1, 1,
+                    2, 4, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 1, 1, 1, format,
+                    format, 0U);
     break;
   case WAFER_IFP_CASE_POOL_F16:
   case WAFER_IFP_CASE_POOL_BF16:

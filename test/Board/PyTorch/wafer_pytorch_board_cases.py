@@ -41,6 +41,7 @@ class PyTorchBoardCase:
     expected_outputs_factory: Callable[[], tuple[torch.Tensor, ...]]
     export_program: Callable[[pathlib.Path], None]
     comparison_policy: common.ComparisonPolicy
+    widened_convolution: bool = False
     allgather_payload_elements: int | None = None
     gemm_dimensions: tuple[int, int, int] | None = None
     alltoall_extent: int | None = None
@@ -267,6 +268,78 @@ def make_local_conv(
         expected_outputs_factory=expected_outputs_factory,
         export_program=lambda output: _save_exported_program(output, module, inputs),
         comparison_policy=common.PYTORCH_DEFAULT,
+    )
+
+
+class BiasedConv(torch.nn.Module):
+    def forward(self, value, weight, bias):
+        return torch.nn.functional.conv2d(value, weight, bias, padding=1)
+
+
+class Sigmoid(torch.nn.Module):
+    def forward(self, value):
+        return torch.sigmoid(value)
+
+
+def make_biased_conv(dtype: torch.dtype, seed: int, *, extent: int = 1024):
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    inputs = (
+        _random_tensor((1, 16, 8, extent), dtype=dtype, generator=generator) * 0.125,
+        _random_tensor((24, 16, 3, 3), dtype=dtype, generator=generator) * 0.03125,
+        _random_tensor((24,), dtype=dtype, generator=generator) * 0.015625,
+    )
+    module = BiasedConv().eval()
+    return PyTorchBoardCase(
+        name=f"biased-conv-{extent}", num_partitions=1, dtype=dtype, inputs=inputs,
+        widened_convolution=True,
+        expected_outputs_factory=lambda: (module(*inputs),),
+        export_program=lambda out: _save_exported_program(out, module, inputs),
+        comparison_policy=common.PYTORCH_DEFAULT,
+    )
+
+
+def make_sigmoid(dtype: torch.dtype, seed: int, *, extent: int = 1024):
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    value = torch.randn((2, 4, extent), generator=generator).to(dtype) * 4
+    # Saturation and signed zero complement the random positive/negative domain.
+    value.flatten()[:8] = torch.tensor(
+        [-65504, -20, -0.001, -0.0, 0.0, 0.001, 20, 65504], dtype=dtype
+    )
+    module = Sigmoid().eval()
+    inputs = (value,)
+    return PyTorchBoardCase(
+        name=f"sigmoid-{extent}", num_partitions=1, dtype=dtype, inputs=inputs,
+        expected_outputs_factory=lambda: (module(*inputs),),
+        export_program=lambda out: _save_exported_program(out, module, inputs),
+        comparison_policy=common.PYTORCH_DEFAULT,
+    )
+
+
+class Division(torch.nn.Module):
+    def forward(self, lhs, rhs):
+        return lhs / rhs
+
+
+def make_division(dtype: torch.dtype, seed: int, *, extent: int = 1024):
+    if dtype != torch.float32:
+        raise RuntimeError("division refinement qualification requires F32")
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    lhs = torch.randn((2, 4, extent), generator=generator) * 3
+    rhs = torch.randn((2, 4, extent), generator=generator) * 2
+    # Exercise the semantic division boundary, including native-result lanes.
+    lhs.flatten()[:12] = torch.tensor(
+        [0, -0.0, 0, -0.0, 1, -1, torch.inf, -torch.inf, 0, torch.inf, torch.nan, 1]
+    )
+    rhs.flatten()[:12] = torch.tensor(
+        [1, 1, -1, -1, torch.inf, torch.inf, 1, 1, 0, torch.inf, 1, torch.nan]
+    )
+    module = Division().eval()
+    inputs = (lhs, rhs)
+    return PyTorchBoardCase(
+        name=f"division-{extent}", num_partitions=1, dtype=dtype, inputs=inputs,
+        expected_outputs_factory=lambda: (module(*inputs),),
+        export_program=lambda out: _save_exported_program(out, module, inputs),
+        comparison_policy=common.ComparisonPolicy(equal_nan=True),
     )
 
 
@@ -579,6 +652,7 @@ def _conv_mixed_dag(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
 
     return PyTorchBoardCase(
         name="conv-mixed-dag",
+        widened_convolution=True,
         num_partitions=1,
         dtype=dtype,
         inputs=inputs,
@@ -1037,6 +1111,15 @@ CASE_FACTORIES: dict[
     ),
     "heterogeneous-tiling-dataflow": _heterogeneous_tiling_single_card,
     "conv-mixed-dag": _conv_mixed_dag,
+    "biased-conv": make_biased_conv,
+    "biased-conv-tail-1025": lambda dtype, seed: make_biased_conv(dtype, seed, extent=1025),
+    "biased-conv-tail-1031": lambda dtype, seed: make_biased_conv(dtype, seed, extent=1031),
+    "division": make_division,
+    "division-tail-1025": lambda dtype, seed: make_division(dtype, seed, extent=1025),
+    "division-tail-1031": lambda dtype, seed: make_division(dtype, seed, extent=1031),
+    "sigmoid": make_sigmoid,
+    "sigmoid-tail-1025": lambda dtype, seed: make_sigmoid(dtype, seed, extent=1025),
+    "sigmoid-tail-1031": lambda dtype, seed: make_sigmoid(dtype, seed, extent=1031),
     "local-conv": make_local_conv,
     "local-conv-tail-1025": lambda dtype, seed: make_local_conv(
         dtype, seed, extent=1025, kernel=(2, 3)

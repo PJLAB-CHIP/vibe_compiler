@@ -260,8 +260,10 @@ mlir::LogicalResult FunctionLowering::lowerConv(InstrConvOp op) {
       materializeAddress(op, op.getDest(), "conv dest");
   mlir::FailureOr<int64_t> fmt =
       getDataFormatCode(op, op.getDest(), "conv dest");
+  mlir::FailureOr<int64_t> inputFmt =
+      getDataFormatCode(op, op.getInput(), "conv input");
   if (mlir::failed(input) || mlir::failed(weight) || mlir::failed(dest) ||
-      mlir::failed(fmt))
+      mlir::failed(fmt) || mlir::failed(inputFmt))
     return mlir::failure();
   args.push_back(*input);
   args.push_back(*weight);
@@ -274,6 +276,7 @@ mlir::LogicalResult FunctionLowering::lowerConv(InstrConvOp op) {
   appendArrayI32(op.getLoc(), args, op.getUnpads());
   appendArrayI32(op.getLoc(), args, op.getKernelStrides());
   appendArrayI32(op.getLoc(), args, op.getDilations());
+  appendI32(op.getLoc(), args, *inputFmt);
   appendI32(op.getLoc(), args, *fmt);
   emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()), args,
               op.getWorker());

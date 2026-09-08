@@ -62,7 +62,13 @@ class FakeReferenceModule(FakeModule):
 class FakeTorch(types.ModuleType):
     def __init__(self):
         super().__init__("torch")
-        self.exported_program = object()
+        self.exported_program = types.SimpleNamespace(
+            graph=types.SimpleNamespace(nodes=[])
+        )
+        self.ops = types.SimpleNamespace(aten=types.SimpleNamespace(**{
+            name: types.SimpleNamespace(default=object())
+            for name in ("convolution", "conv1d", "conv2d", "conv3d")
+        }))
         self.export_calls = []
         self.empty_calls = []
         self.no_grad_entered = False

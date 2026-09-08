@@ -19,6 +19,7 @@ void buildNormalizeImportedStablehloPipeline(mlir::OpPassManager &pm) {
 }
 
 void buildLegalizeStablehloToStructuredTensorPipeline(mlir::OpPassManager &pm) {
+  pm.addNestedPass<mlir::func::FuncOp>(createPromoteStablehloLogisticPass());
   pm.addPass(createLegalizeStablehloToLinalgPass());
 }
 
@@ -39,6 +40,7 @@ void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
   buildLegalizeStablehloToStructuredTensorPipeline(pm);
   buildSimplifyStructuredTensorPipeline(pm);
   pm.addPass(mlir::createCanonicalizerPass());
+  pm.addNestedPass<mlir::func::FuncOp>(createFoldConvolutionInputCastsPass());
   buildNormalizeAttentionPipeline(pm);
   pm.addNestedPass<mlir::func::FuncOp>(
       createNormalizeStructuredTensorGraphPass());

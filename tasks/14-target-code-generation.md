@@ -154,6 +154,13 @@ Direct-DTE begin/send/issue/receive/wait/finish、NCC join以及各 compute/move
 
 TargetCall/CRT 是 current target ABI，不是 search IR，也不能把 target transaction倒灌到 structured层。
 
+Ordinary Conv保留独立input/weight dtype与destination dtype：两输入相同，允许FP16/BF16输入向F32 accumulator/output
+扩宽；同dtype形式保留。TargetCall尾部显式传`input_format, output_format, worker`，CRT的AddInput/AddWeight与AddOutput分别
+消费对应format，decoder和model command也保留两字段；不通过symbol或shape恢复dtype。实卡资格以已列mixed-format见证为限。
+
+Relation TargetCall的format表示浮点输入dtype，结果由typed Instr固定为packed i1；CRT必须选择SDK `Bool*VV`，
+不能根据输入是否为Fmt_BOOL选择value/BOOL输出。
+
 Native Reduce的CRT只接收input shape和axis，不接收destination shape。Target lowering验证11号保留维度的destination合同，
 target model及formal operation也按input中归约轴extent=1推导physical结果；逻辑降rank由上游显式movement完成。
 Model不能从logical element count重建紧凑结果，或与compiler共同假定删除轴不改变Cx/NCx stride。

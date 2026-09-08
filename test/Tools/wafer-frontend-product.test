@@ -4,6 +4,7 @@
 # RUN: %importer_python %wafer_src_root/test/Tools/wafer_frontend_product_test.py --output-root %t | FileCheck %s --check-prefix=EXPORT
 # RUN: wafer-verify-program --program-dir %t/program | FileCheck %s --check-prefix=VERIFY
 # RUN: wafer-verify-program --program-dir %t/branched | FileCheck %s --check-prefix=BRANCHED
+# RUN: %importer_python -c "import pathlib, subprocess; [subprocess.run(['wafer-verify-program', '--program-dir', str(p)], check=True) for p in pathlib.Path('%t').glob('conv-*')]"
 
 # EXPORT: wafer_frontend_product: portable=true repeat_equal=true graph_break=rejected
 # VERIFY: wafer-verify-program: verified portable StableHLO program parameters=1 constants=0

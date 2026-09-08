@@ -41,6 +41,31 @@ def read_portable_stablehlo(program: pathlib.Path) -> str:
 
 
 class PyTorchBoardCasesTest(unittest.TestCase):
+    def test_precision_cases_keep_eager_operator_rounding_and_default_tolerance(self):
+        for extent in (1024, 1025, 1031):
+            conv = cases.make_biased_conv(torch.float16, 20260803, extent=extent)
+            value, weight, bias = conv.inputs
+            expected, = conv.materialize_expected_outputs()
+            separately_rounded = torch.nn.functional.conv2d(value, weight, padding=1)
+            separately_rounded = separately_rounded + bias[None, :, None, None]
+            self.assertEqual(conv.comparison_policy, cases.common.PYTORCH_DEFAULT)
+            with self.assertRaises(AssertionError):
+                cases.common.assert_tensor_matches(
+                    separately_rounded, expected, policy=conv.comparison_policy,
+                    context="bias rounded after the entire convolution",
+                )
+            sigmoid = cases.make_sigmoid(torch.float16, 20260803, extent=extent)
+            expected, = sigmoid.materialize_expected_outputs()
+            self.assertEqual(expected.shape, (2, 4, extent))
+            self.assertEqual(sigmoid.comparison_policy, cases.common.PYTORCH_DEFAULT)
+            missing_tail = expected.clone()
+            missing_tail.flatten()[-1] += 1
+            with self.assertRaises(AssertionError):
+                cases.common.assert_tensor_matches(
+                    missing_tail, expected, policy=sigmoid.comparison_policy,
+                    context="sigmoid full tail",
+                )
+
     def test_local_conv_reference_detects_weight_axis_and_tail_errors(self) -> None:
         for extent, kernel in ((1024, (3, 3)), (1025, (2, 3)), (1031, (3, 2))):
             case = cases.make_local_conv(

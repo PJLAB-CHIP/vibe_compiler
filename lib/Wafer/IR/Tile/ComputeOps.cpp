@@ -158,9 +158,12 @@ mlir::LogicalResult ComputeConvOp::verify() {
     return emitOpError(
         "convolution input/result must use ncx and weight must use cx layout");
   if (inputTensor->getElementType() != weightTensor->getElementType() ||
-      inputTensor->getElementType() != resultTensor->getElementType())
-    return emitOpError(
-        "convolution operand and result element types must match");
+      (inputTensor->getElementType() != resultTensor->getElementType() &&
+       !((inputTensor->getElementType().isF16() ||
+          inputTensor->getElementType().isBF16()) &&
+         resultTensor->getElementType().isF32())))
+    return emitOpError("convolution inputs must match and result must match or "
+                       "widen f16/bf16 to f32");
   return verifyCanonicalConv2DGeometry(
       getOperation(), *inputTensor, *weightTensor, *resultTensor,
       getPadsAttr().asArrayRef(), getUnpadsAttr().asArrayRef(),

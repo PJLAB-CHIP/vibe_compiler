@@ -120,7 +120,8 @@ struct TargetConvCommand {
   std::array<uint32_t, 4> unpads;
   std::array<uint32_t, 4> kernelStrides;
   std::array<uint32_t, 2> dilations;
-  LogicalFormat format;
+  LogicalFormat inputFormat;
+  LogicalFormat outputFormat;
 };
 
 struct TargetPoolCommand {

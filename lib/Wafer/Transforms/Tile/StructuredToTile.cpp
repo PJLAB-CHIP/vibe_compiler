@@ -1322,7 +1322,10 @@ lowerConvolution(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
   mlir::MemRefType weightType = getMemRef(weight);
   if (!destinationType || !inputType || !weightType ||
       inputType.getElementType() != weightType.getElementType() ||
-      inputType.getElementType() != destinationType.getElementType())
+      (inputType.getElementType() != destinationType.getElementType() &&
+       !((inputType.getElementType().isF16() ||
+          inputType.getElementType().isBF16()) &&
+         destinationType.getElementType().isF32())))
     return mlir::failure();
   mlir::MemRefType resultType = getOwnedType(destinationType);
   rewriter.setInsertionPoint(operation);

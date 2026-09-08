@@ -273,6 +273,15 @@ instr-lowering后的 instruction IR 不允许 `#wafer.elementwise_kind` / `#wafe
 这类 tile-level semantic attr 出现在 `wafer.instr.*` op 上；这些语义必须在 lowering 时选择成
 instr-level target kind。
 
+Ordinary Conv输入/weight允许FP16/BF16，result可保持原dtype或扩宽为F32；扩宽必须已由current Linalg scalar body
+表达，lowering不能从数值分布猜测。Tile/Instr memref、实际allocation与14号TargetCall分别保留输入和输出dtype。
+
+F32语义division在Tile→Instr边界展开为native近似商与两轮residual correction：`q=a/b; q=q+(a-b*q)/b`。
+这是对current target approximate division的数值实现，参照LLVM reciprocal refinement与本轮CT原语见证；不是改写上层
+算术关系。所有临时buffer和op经同一recorder拥有，再交给completion和actual SPM规划。Correction的非finite结果和原始
+零商保留native结果，避免修正引入NaN或丢失signed zero。FP16/BF16 raw division不变，raw Instr div不再次展开。
+完成门禁包括rank3整除/tail、有限正负、零/Inf/NaN、actual owner/offset和完整PyTorch实卡比较；不宣称F32全域correct rounding。
+
 ## 4. Instruction Ops And Families
 
 `wafer.instr.*` 的 op mnemonic 表达指令语义，不把 CT/NE/TDMA/DTE 这类硬件 family 做成

@@ -277,16 +277,20 @@ buildConvCommand(const TargetCallDecodeConfig &config,
   if (llvm::Error error = verifyStaticKind(
           argument32(arguments, 3), static_cast<uint32_t>(kind), "convolution"))
     return std::move(error);
-  llvm::Expected<LogicalFormat> format =
+  llvm::Expected<LogicalFormat> inputFormat =
       decodeFormat(TargetFormatEngine::NE, arguments[30]);
-  if (!format)
-    return format.takeError();
+  if (!inputFormat)
+    return inputFormat.takeError();
+  llvm::Expected<LogicalFormat> outputFormat =
+      decodeFormat(TargetFormatEngine::NE, arguments[31]);
+  if (!outputFormat)
+    return outputFormat.takeError();
   return TargetCommandPayload{TargetConvCommand{
       kind, arguments[0], arguments[1], arguments[2],
       argumentArray32<4>(arguments, 4), argumentArray32<4>(arguments, 8),
       argumentArray32<4>(arguments, 12), argumentArray32<4>(arguments, 16),
       argumentArray32<4>(arguments, 20), argumentArray32<4>(arguments, 24),
-      argumentArray32<2>(arguments, 28), *format}};
+      argumentArray32<2>(arguments, 28), *inputFormat, *outputFormat}};
 }
 
 static llvm::Expected<TargetCommandPayload>

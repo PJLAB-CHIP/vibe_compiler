@@ -123,6 +123,19 @@ mutation复用的“verified path”。旧测试generator调用产品export/save
 transaction中重新打开、拥有并验证全部输入。参数内容的`ProgramDataSource`/`ProgramDataRange`生命周期由本文件2.1节负责；
 产品adapter不重建参数管理层或plugin registry。
 
+### 2.3 低精度算子的内部计算边界
+
+输入为当前`ExportedProgram`中仍带显式bias operand的ATen convolution。FP16/BF16输入、weight与bias先转换为
+FP32，convolution和bias加法在FP32完成，整个算子结果再转换回原dtype；输出的StableHLO SSA必须直接表达这些转换。
+直接消费者仍是同一portable program ingestion和05号official legalization，用户入口仍为`export_pytorch_program`。
+使用pinned `ExportedProgram.run_decompositions`，不修改用户module、输入、state或PyTorch eager reference。
+
+无bias convolution、F32/F64和显式的低精度`conv → add`保留原算子边界；不能在StableHLO阶段从相邻add猜测bias。
+这不是所有算术统一升精度，也不保证不同CPU/device累加顺序逐bit相同。Pinned PyTorch/XLA
+`BuildConvolutionOverrideableBias`会在低精度卷积后生成独立低精度add，因此提升必须发生在该信息丢失前。
+完成条件为带/不带bias、FP16/BF16/F32、参数state与真实规模tail的export/verifier验证，以及原组合case完整PyTorch验收；
+具体矩阵与本轮实卡证据由统一board-testing计划拥有。
+
 ## 3. Frontend Verification
 
 ### 3.1 IR 与 function boundary

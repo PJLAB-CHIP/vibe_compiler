@@ -314,16 +314,18 @@ void wafer_tx81_convert_tf32_fp32(uint64_t src, uint64_t dst,
                                      uint32_t elem_count, uint32_t zero_point,
                                      uint32_t rounding_mode, uint32_t worker);
 
-void wafer_tx81_conv(
-    uint64_t input, uint64_t weight, uint64_t dst, uint32_t kind,
-    uint32_t input_n, uint32_t input_h, uint32_t input_w, uint32_t input_c,
-    uint32_t weight_n, uint32_t weight_h, uint32_t weight_w, uint32_t weight_c,
-    uint32_t output_n, uint32_t output_h, uint32_t output_w, uint32_t output_c,
-    uint32_t pad_top, uint32_t pad_bottom, uint32_t pad_left,
-    uint32_t pad_right, uint32_t unpad_top, uint32_t unpad_bottom,
-    uint32_t unpad_left, uint32_t unpad_right, uint32_t kernel_x,
-    uint32_t kernel_y, uint32_t stride_x, uint32_t stride_y, uint32_t dilation0,
-    uint32_t dilation1, uint32_t format, uint32_t worker);
+void wafer_tx81_conv(uint64_t input, uint64_t weight, uint64_t dst,
+                     uint32_t kind, uint32_t input_n, uint32_t input_h,
+                     uint32_t input_w, uint32_t input_c, uint32_t weight_n,
+                     uint32_t weight_h, uint32_t weight_w, uint32_t weight_c,
+                     uint32_t output_n, uint32_t output_h, uint32_t output_w,
+                     uint32_t output_c, uint32_t pad_top, uint32_t pad_bottom,
+                     uint32_t pad_left, uint32_t pad_right, uint32_t unpad_top,
+                     uint32_t unpad_bottom, uint32_t unpad_left,
+                     uint32_t unpad_right, uint32_t kernel_x, uint32_t kernel_y,
+                     uint32_t stride_x, uint32_t stride_y, uint32_t dilation0,
+                     uint32_t dilation1, uint32_t input_format,
+                     uint32_t output_format, uint32_t worker);
 void wafer_tx81_depthwise_conv(
     uint64_t input, uint64_t weight, uint64_t dst, uint32_t kind,
     uint32_t input_n, uint32_t input_h, uint32_t input_w, uint32_t input_c,
@@ -333,7 +335,8 @@ void wafer_tx81_depthwise_conv(
     uint32_t pad_right, uint32_t unpad_top, uint32_t unpad_bottom,
     uint32_t unpad_left, uint32_t unpad_right, uint32_t kernel_x,
     uint32_t kernel_y, uint32_t stride_x, uint32_t stride_y, uint32_t dilation0,
-    uint32_t dilation1, uint32_t format, uint32_t worker);
+    uint32_t dilation1, uint32_t input_format, uint32_t output_format,
+    uint32_t worker);
 void wafer_tx81_backward_conv(
     uint64_t input, uint64_t weight, uint64_t dst, uint32_t kind,
     uint32_t input_n, uint32_t input_h, uint32_t input_w, uint32_t input_c,
@@ -343,7 +346,8 @@ void wafer_tx81_backward_conv(
     uint32_t pad_right, uint32_t unpad_top, uint32_t unpad_bottom,
     uint32_t unpad_left, uint32_t unpad_right, uint32_t kernel_x,
     uint32_t kernel_y, uint32_t stride_x, uint32_t stride_y, uint32_t dilation0,
-    uint32_t dilation1, uint32_t format, uint32_t worker);
+    uint32_t dilation1, uint32_t input_format, uint32_t output_format,
+    uint32_t worker);
 
 void wafer_tx81_pool_avg(
     uint64_t input, uint64_t dst, uint32_t kind, uint32_t src_n, uint32_t src_h,

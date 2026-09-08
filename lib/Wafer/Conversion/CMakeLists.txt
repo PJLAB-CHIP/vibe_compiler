@@ -82,9 +82,11 @@ target_include_directories(WaferInstrToLLVM PRIVATE
   ${PROJECT_SOURCE_DIR}/lib)
 
 add_mlir_conversion_library(WaferStableHLOToLinalg
+  StableHLOToLinalg/FoldConvolutionInputCasts.cpp
   StableHLOToLinalg/LegalizeStablehloToLinalg.cpp
   StableHLOToLinalg/LowerStaticStablehloConcatenate.cpp
   StableHLOToLinalg/NormalizeStablehloCollectives.cpp
+  StableHLOToLinalg/PromoteStablehloLogistic.cpp
 
   DEPENDS
   WaferConversionPassesIncGen

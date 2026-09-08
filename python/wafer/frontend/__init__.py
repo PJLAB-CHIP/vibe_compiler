@@ -30,7 +30,43 @@ def _state_dict_payloads(torch: Any, exported_program: Any) -> dict[str, Any]:
     return payloads
 
 
+def _promote_biased_convolution(torch: Any, exported_program: Any) -> Any:
+    """Keep convolution and its bias in opmath dtype until the operator result."""
+    convolution_ops = {
+        torch.ops.aten.convolution.default,
+        torch.ops.aten.conv1d.default,
+        torch.ops.aten.conv2d.default,
+        torch.ops.aten.conv3d.default,
+    }
+    low_precision = (torch.float16, torch.bfloat16)
+    if not any(
+        node.op == "call_function"
+        and node.target in convolution_ops
+        and len(node.args) > 2
+        and node.args[2] is not None
+        and getattr(node.meta.get("val"), "dtype", None) in low_precision
+        for node in exported_program.graph.nodes
+    ):
+        return exported_program
+
+    def convolution(input, weight, bias, stride, padding, dilation,
+                    transposed, output_padding, groups):
+        if input.dtype not in low_precision or bias is None:
+            return NotImplemented
+        return torch.ops.aten.convolution.default(
+            input.float(), weight.float(), bias.float(), stride, padding,
+            dilation, transposed, output_padding, groups,
+        ).to(input.dtype)
+
+    # Functionalization presents conv1d/2d/3d as aten.convolution. The F32 call
+    # returns NotImplemented to let the tracer retain it as an operator.
+    return exported_program.run_decompositions(
+        {torch.ops.aten.convolution.default: convolution}
+    )
+
+
 def _export_stablehlo(torch: Any, stablehlo: Any, exported_program: Any) -> Any:
+    exported_program = _promote_biased_convolution(torch, exported_program)
     options = stablehlo.StableHLOExportOptions()
     options.export_weights = True
     options.save_weights = True

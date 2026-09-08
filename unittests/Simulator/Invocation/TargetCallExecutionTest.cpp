@@ -350,7 +350,11 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
   if (const auto *kind = std::get_if<wafer::TargetConvolutionOperation>(
           &descriptor.semantic)) {
     arguments[3] = static_cast<uint32_t>(*kind);
-    arguments[30] = supportedF32Code(wafer::TargetFormatEngine::NE);
+    arguments[30] =
+        wafer::findTargetFormatEncoding(wafer::TargetFormatEngine::NE,
+                                        wafer::LogicalFormat::F16)
+            ->dataFormatCode;
+    arguments[31] = supportedF32Code(wafer::TargetFormatEngine::NE);
     return arguments;
   }
   if (const auto *kind =
@@ -740,7 +744,8 @@ void expectPayloadFields(const wafer::TargetCallDescriptor &descriptor,
     EXPECT_EQ(value.unpads, expectedArray<4>(arguments, 20));
     EXPECT_EQ(value.kernelStrides, expectedArray<4>(arguments, 24));
     EXPECT_EQ(value.dilations, expectedArray<2>(arguments, 28));
-    expectFormat(value.format);
+    EXPECT_EQ(value.inputFormat, wafer::LogicalFormat::F16);
+    expectFormat(value.outputFormat);
     return;
   }
   if (const auto *kind =
@@ -952,7 +957,7 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   EXPECT_EQ(wafer::getTargetCallDescriptor(
                 wafer::TargetConvolutionOperation::Convolution)
                 .arguments.size(),
-            32u);
+            33u);
   EXPECT_EQ(
       wafer::getTargetCallDescriptor(wafer::TargetPeripheralOperation::Bilinear)
           .arguments.size(),
@@ -1000,6 +1005,18 @@ TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
     ++decoded;
   }
   EXPECT_EQ(decoded, 116u);
+}
+
+TEST(TargetCallRegistryTest, RejectsInvalidConvolutionInputAndOutputFormats) {
+  const auto &descriptor = wafer::getTargetCallDescriptor(
+      wafer::TargetConvolutionOperation::Convolution);
+  for (unsigned formatIndex : {30u, 31u}) {
+    auto arguments = makeDecodableArguments(descriptor);
+    arguments[formatIndex] = UINT32_MAX;
+    auto payload = wafer::decodeTargetCallPayload(descriptor, {1}, arguments);
+    ASSERT_FALSE(static_cast<bool>(payload));
+    llvm::consumeError(payload.takeError());
+  }
 }
 
 TEST(TargetCallRegistryTest, DecodesExplicitWorkerOneAndTwo) {

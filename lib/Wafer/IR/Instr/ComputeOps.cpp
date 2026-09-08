@@ -1079,12 +1079,15 @@ mlir::LogicalResult InstrConvOp::verify() {
       getLogicalTensorType(getWeight().getType());
   std::optional<mlir::RankedTensorType> destTensor =
       getLogicalTensorType(getDest().getType());
+  if (inputTensor->getElementType() != destTensor->getElementType() &&
+      !((inputTensor->getElementType().isF16() ||
+         inputTensor->getElementType().isBF16()) &&
+        destTensor->getElementType().isF32()))
+    return emitOpError(
+        "conv dest element type must match input or widen f16/bf16 to f32");
   if (mlir::failed(verifySameElementType(
           getOperation(), *inputTensor, *weightTensor,
           "conv input and weight element types must match")) ||
-      mlir::failed(verifySameElementType(
-          getOperation(), *inputTensor, *destTensor,
-          "conv input and dest element types must match")) ||
       mlir::failed(verifyI64Array(getOperation(), getInputShapeAttr(),
                                   "input_shape", 4, /*positive=*/true)) ||
       mlir::failed(verifyI64Array(getOperation(), getWeightShapeAttr(),

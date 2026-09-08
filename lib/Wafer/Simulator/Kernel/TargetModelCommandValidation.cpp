@@ -379,8 +379,12 @@ llvm::Error validatePayload(const target::TargetCommandPayload &payload) {
           if (llvm::Error error =
                   validateDilations(value.dilations, "convolution dilations"))
             return error;
-          return requireEngineFormat(value.format, TargetFormatEngine::NE,
-                                     "convolution");
+          if (llvm::Error error =
+                  requireEngineFormat(value.inputFormat, TargetFormatEngine::NE,
+                                      "convolution input"))
+            return error;
+          return requireEngineFormat(value.outputFormat, TargetFormatEngine::NE,
+                                     "convolution output");
         } else if constexpr (std::is_same_v<T, target::TargetPoolCommand>) {
           if (llvm::Error error = requireRegisteredOperation(
                   value.operation, getTargetPoolingOperations(),

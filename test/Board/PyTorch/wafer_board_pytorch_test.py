@@ -89,6 +89,30 @@ def run(
     return result
 
 
+def verify_widened_convolution(directory: pathlib.Path, dtype: torch.dtype) -> None:
+    element, format_code = {torch.float16: ("f16", 2), torch.bfloat16: ("bf16", 3)}[dtype]
+    operations = [
+        line for path in sorted((directory / "instruction").glob("tile_*.mlir"))
+        for line in path.read_text().splitlines() if "wafer.instr.conv " in line
+    ]
+    if not operations:
+        raise RuntimeError("biased convolution has no actual native convolution")
+    for line in operations:
+        types = re.findall(r"memref<[^>]+>", line)
+        if (len(types) != 3 or f"x{element}," not in types[0]
+                or f"x{element}," not in types[1] or "xf32," not in types[2]):
+            raise RuntimeError("convolution did not preserve low-precision inputs and F32 output")
+    calls = [
+        line for path in sorted((directory / "target-llvm").glob("tile_*.ll"))
+        for line in path.read_text().splitlines() if "call void @wafer_tx81_conv(" in line
+    ]
+    if len(calls) != len(operations) or any(
+        re.search(rf"i32 {format_code}, i32 5, i32 [0-9]+\)$", line) is None
+        for line in calls
+    ):
+        raise RuntimeError("convolution target call lost its independent input/output formats")
+
+
 def prepare_work_dir(work_dir: pathlib.Path) -> None:
     if work_dir.exists():
         shutil.rmtree(work_dir)
@@ -954,6 +978,8 @@ def prepare_case_step(
             )
         ):
             raise RuntimeError("compiler IR dump is incomplete")
+        if case.widened_convolution:
+            verify_widened_convolution(dump_compiler_ir, case.dtype)
         for tile_file in tile_files:
             tile_ir = tile_file.read_text(encoding="utf-8")
             if "wafer.instr." in tile_ir:
@@ -1101,6 +1127,7 @@ def main() -> int:
                 or current_case.alltoall_extent is not None
                 or current_case.reduce_scatter_extent is not None
                 or current_case.all_reduce_extent is not None
+                or current_case.widened_convolution
             )
         ):
             dump_compiler_ir = step_dir / "compiler-ir"

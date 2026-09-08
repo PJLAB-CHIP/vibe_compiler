@@ -68,7 +68,7 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 | 3. AllToAll | 普通计算加转置/重分布source，覆盖不同source到不同destination的piece | 三个长度的actual personalized exchange、no-card、实卡完整PyTorch比较与正常清理均通过 |
 | 4. ReduceScatter | 多Tile partial contribution合并到各destination shard | 1024/1025/1031的none/search/peer九次实卡及完整PyTorch归约比较均通过，最大绝对误差0 |
 | 5. AllReduce | 多Tile partial contribution合并后供全部participant消费 | 1024/1025/1031的none/search/peer矩阵均已实卡通过；专项为direct贡献交换加Ring AllGather，完整PyTorch误差均为0 |
-| 6. 卷积组合计算 | 现有`conv-mixed-dag`，FP16 | none实卡两个输出失败；独立实卡确认native归约降rank错读，卷积缩小到3×3权重打包/硬件读取边界；代码待修，search未发射 |
+| 6. 卷积组合计算 | 现有`conv-mixed-dag`，FP16 | Conv/Reduce布局与bias/logistic中间舍入修复均有独立整除/尾部none/search实卡通过证据；原组合两种policy均剩同一卷积累加舍入边界点，尚未通过 |
 | 7. Attention prefill | 现有`attention-prefill`，FP16、序列长度1024 | fresh source/no-card，与同一输入的PyTorch eager attention完整比较 |
 | 8. KV cache decode | 现有`attention-decode-kv-cache`，连续两步 | 第二步消费第一步实际回读的KV；两步attention输出和完整KV cache均与PyTorch比较 |
 | 9. LLaMA block | 现有`llama-2-7b-block`，FP16 | 完整block输出对比PyTorch；此前局部算子通过不能代签本项 |
@@ -243,6 +243,69 @@ Conv的新native见证已确定logical HWOI与physical Cx；input/output仍为NH
 [MLIR MemRef](https://mlir.llvm.org/docs/Dialects/MemRef/)区分view和实际copy，
 [PatternRewriter](https://mlir.llvm.org/docs/PatternRewriter/)要求匹配确认前不改IR；本项先验证全部native类型与final movement关系，
 再通过同一个rewriter物化。具体API以pinned `AffineMap.h`、`BuiltinTypes.cpp`和现有movement测试确认。
+
+### 第6项bias与logistic舍入修复合同
+
+用户已明确授权修复本项数值边界。Pipeline输入分别为带bias关系的typed ATen convolution和verified
+`stablehlo.logistic`；输出为显式F32内部计算、原dtype输出的同一SSA程序，直接消费者为portable ingestion及official
+StableHLO-to-Linalg conversion。稳定合同分别在02号2.3节和05号3.1节，none/search共用，不按case或policy特判。
+不改原module、输入分布、seed、eager oracle或PyTorch default容差；不以FP32 host近似替换reference。
+
+| 输入等价类 | exact结构/失败检查 | 直接下游witness |
+| --- | --- | --- |
+| FP16/BF16带bias Conv，rank4、1024/1025/1031 | typed bias在回写低精度前参与FP32计算；shape、输入/输出和state dtype不变 | 产品export portable、frontend verifier、实际compiler/no-card |
+| 无bias Conv、F32及显式Conv后add | 保留已有算子边界，不从邻接SSA恢复bias | 产品export及IR断言 |
+| FP16/BF16 logistic，rank3、1024/1025/1031 | F32内部neg/exp/add/div；仅算子输出trunc；重复pass不增加convert | shared production builder与official Linalg输出 |
+| F32/F64 logistic、显式低精度primitive | 不额外升精度；verifier-invalid输入仍拒绝 | focused IR正负例及原有lowering gate |
+| 独立biased Conv、sigmoid及原组合 | 同module完整PyTorch eager/default容差，含正负与舍入边界；不以少数点通过代签 | fresh source/package/no-card、逐case单次launch、normal cleanup |
+| 原组合none/search | 两个完整输出均通过；任何元素缺失/超容差仍失败 | 本轮实卡及原通信/GEMM定向回归 |
+
+### 第6项中间舍入修复与本轮验收（2026-09-08）
+
+本轮实现：typed ATen biased convolution在F32完成conv与bias后才回原dtype；官方Linalg前的logistic显式使用F32
+opmath。实际convolution scalar body保留F32乘加，精确的输入扩宽融合把storage保留为FP16/BF16，TargetCall/CRT独立传入
+input/output format。F32 division采用两轮residual correction，所有scratch和effect进入current Instr，再由同一completion/SPM
+规划。CRT relation固定产生packed BOOL，format仅解释浮点输入；旧代码按输入format选择value输出，会错写i1 buffer。
+MaskMove仍消费Bit2Fp产生的浮点mask，本轮曾提出直接packed mask的猜测，交叉验证否定后已全部撤回。
+
+| 本轮fresh source/package实卡 | 全输出PyTorch结果 | 边界与限制 |
+| --- | --- | --- |
+| FP16 biased Conv，1024/1025/1031，none/search | 6/6通过default容差；每case分别196608/196800/197952元素 | bias参与F32后再回FP16；实际Instr/LLVM额外确认F16 input/weight与F32 result/format |
+| FP16 sigmoid，1024/1025/1031，none/search | 6/6通过；已检查输出与eager一致，覆盖8192/8200/8248元素 | 正负随机输入、饱和、signed zero；不提升raw FP16/BF16 primitive语义 |
+| F32 division，1024/1025/1031，none/search | 6/6通过F32 default容差；有限值最大绝对误差约6.1e-5/1.22e-4/1.22e-4 | F32用于本次数值实现边界；零符号与NaN/Inf位置另行检查通过。NaN按equal_nan比较，其余阈值不变 |
+| 原FP16 ConvMixedDataflow，none/search | 主输出均剩1/196608超差；24项sum输出均通过，sum最大误差0.25 | 原module、分布、seed、eager和default容差完全未变；两种policy都不能标通过 |
+| Native FP16 input/weight→F32 Conv output，3×3 I16/O2/W1024 | 2048输出与本轮PyTorch F32 reference exact，SPM/DDR guards与cleanup通过 | 这是mixed-format数值边界见证；不外推BF16、Depthwise/Backward或all-F32 input Conv |
+
+所有实卡均单进程逐case、每个fresh package单次launch，16Tile正常completion和cleanup；本轮没有device timeout/reset。
+日志保留于本地审计目录；失败的package/raw和临时诊断case在分析结束后删除，不作后续测试输入。
+
+剩余点为`(0,11,0,14)`：原eager主输出`0.09716796875`，设备为`0.0970458984375`，绝对差`0.0001220703125`。
+卷积结果分别为`0.0640869140625`与`0.06402587890625`，位于相邻FP16值的中点附近。主机F32/F64卷积后加bias再回FP16
+也复现同一点；以bias初始化F32有序累加会落到eager一侧。这是剩余累加顺序与最终half舍入的合同问题，不能通过改reference、
+放宽容差、移动其它算子的rounding或按坐标补偿掩盖。后续必须先确定可实现的bias-in-accumulator语义与实际target证据，
+再修改当前IR；native bias/psum option尚无该资格，不能直接打开。
+
+额外尝试的普通`where(lhs < rhs, lhs, rhs)` source回归在既有packed BOOL跨region copy lowering被拒绝，未上板；
+本轮不把它列为通过，也不增加未闭合的CTest入口。CRT comparison本轮直接消费者的见证来自F32 division与sigmoid全输出。
+
+本轮主机验证：完整`check-wafer`实际执行并通过270项lit、14个unit executable和17项SystemC；
+PyTorch case单元测试25项通过；canonical完整增量构建与第二次Ninja no-op通过。最终代码重编译的18个已通过板测
+package与对应本轮launch的全部package文件SHA256一致；该检查只确认交付代码身份，不计作额外板测。
+
+扩展no-card共34项：上述18项新精度case和原组合FP16/BF16的none/search共22项全部通过；
+prefill FP16/BF16的none另有2项通过。其它模型资格仍未闭合：
+
+| 输入与policy | 本轮no-card结果 | 对照与后续边界 |
+| --- | --- | --- |
+| prefill FP16/BF16 search | `unsupported_lifetime_alias`：loop-body SPM allocation跨loop-carried，尚无multi-instance placement | 关闭本次F32 division展开后，FP16代表case仍以相同42次trial、32次capacity rejection、10次unsupported失败；该source没有convolution/logistic |
+| decode FP16/BF16 none | shared DDR与DTE completion依赖环 | 关闭本次F32 division展开后，FP16代表case仍复现；该source没有convolution/logistic |
+| decode FP16/BF16 search | 编译器SIGSEGV，未产出可用package | 关闭本次F32 division展开后，FP16代表case仍复现；不得当作typed unsupported或通过 |
+| Llama FP16/BF16 none | package manifest readback超过JSON byte limit | 同一canonical build关闭本次两个opmath pipeline pass及F32 division展开，FP16代表case仍复现同一限制；未放宽大小限制 |
+| Llama FP16/BF16 search | 为进行上述A/B，主动终止本任务的两个主机编译进程 | 本轮未完成，不计作编译器失败或通过；没有执行设备launch |
+
+以上对照只对实际执行的FP16代表输入确认不是此次修改引入；没有以它代签BF16的独立基线复验。
+A/B结束后已恢复本次实现，同一canonical build完整增量构建和no-op、4项直接IR回归、biased Conv/sigmoid尾部/division尾部3项fresh no-card再次通过，18项成功板测的package文件身份全部一致；历史模型`board-ready`结论不能代替本轮结果。
+这些失败统一留在`board-testing`后续模型条目处理；本轮没有修改completion算法、manifest限制或模型输入。
 
 ### 第6项布局修复与本轮验收（2026-09-08）
 

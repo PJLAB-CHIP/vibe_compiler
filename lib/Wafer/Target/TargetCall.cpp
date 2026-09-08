@@ -104,7 +104,7 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
     for (TargetConvolutionOperation operation :
          getTargetConvolutionOperations())
       addVoid(stringifyTargetConvolutionOperation(operation).str(),
-              signature(3, 28), operation);
+              signature(3, 29), operation);
 
     for (TargetPoolingOperation operation : getTargetPoolingOperations()) {
       bool indexed = operation == TargetPoolingOperation::IndexedMaximum ||

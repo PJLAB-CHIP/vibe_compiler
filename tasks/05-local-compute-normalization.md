@@ -87,6 +87,28 @@ Wafer复用pinned官方StableHLO legalization，而不是维护按op名分发的
 普通softmax、precomputed scores或不完整Q/K/V关系的图继续保持Linalg DAG；
 它们不因外观相似被提升为attention。
 
+### 3.1 Logistic内部精度
+
+输入为verified function内的`stablehlo.logistic`。在official legalization前，FP16/BF16 logistic转换为
+`convert(input, f32) → logistic(f32) → convert(original dtype)`，结果shape与所有用户可见dtype保持原样。
+直接消费者为pinned official StableHLO-to-Linalg converter：neg/exp/add/div均在F32计算，只在算子输出处回到低精度。
+`wafer-promote-stablehlo-logistic`锚定`func.func`，由production与named pipeline共用的legalization builder调用。
+不修改F32/F64 logistic或原IR中的显式低精度exp/add/div，不引入算术重排、target选择或e-graph旁路优化。
+
+算法采用[StableHLO logistic定义](https://openxla.org/stablehlo/spec#logistic)；pinned官方
+`MapStablehloToScalarOp.h`当前在输入dtype展开，pinned PyTorch的`torch._refs.sigmoid`使用opmath promotion。
+这里先明确opmath dtype，再复用官方展开，不维护第二套logistic converter。
+完成条件为FP16/BF16/F32/F64、1024/1025/1031、重复执行与显式primitive保留的IR覆盖，official conversion直接输出
+F32 scalar body与单次回写转换，以及原PyTorch source完整数值验收。覆盖矩阵和板端状态归统一board-testing计划。
+
+### 3.2 Convolution的精确输入扩宽融合
+
+Official legalization后的generic convolution若两个输入都来自identity pointwise `arith.extf`，且源为相同FP16/BF16、
+accumulator为F32，将扩宽移入该convolution的scalar body。允许跨越constant-zero `tensor.pad`，但必须先从current SSA证明
+cast与padding；padding重建为源dtype。算术乘加、顺序、result和bias加法保持F32，输入storage保留低精度。
+该变换由`wafer-fold-convolution-input-casts`在official conversion后运行，结果直接交给physical planning；这是精确的
+scalar扩宽融合，不属于access-relation e-graph的算术等价探索。不能根据shape/name或历史输入猜测F32值可降为FP16。
+
 ## 4. Attention Semantic Normalization
 
 ### 4.1 Match边界
