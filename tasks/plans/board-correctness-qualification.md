@@ -313,6 +313,17 @@ ordinary/profile Primary逐字节相同，替代旧的“内部入口必须拒�
 时钟核对与每阶段首条/后续median/P90/range。汇总工具只读这些审计记录，重新上板必须重新生成输入与package。
 可复现汇总：`python3 -B test/Board/Support/wafer_board_latency_summary.py <本轮measurement.json...> --output <summary.json>`。
 
+用户要求修正cost model源码归属：按06/18号合同，将`ActualResultController`内的参数/cohort、typed objective、
+估时和比较函数整体迁到`Analysis/Instr/CostModel`。公式、参数、比较顺序与unknown规则保持原样；
+controller、actual communication/temporal比较和统计共用唯一接口。公式测试移到Analysis-only target，
+controller保留预算、结果分类、retention和handoff测试；本次不新增板测、不修改统一评分算法。
+本轮归属修正已完成：新`CostModel.h/.cpp`由`WaferAnalysis`唯一拥有，三个生产消费者显式使用analysis API，
+无Driver兼容alias或重复公式。源码对照确认参数、估时、比较和controller状态机仅发生迁移/namespace/格式变化。
+4项公式测试移到Analysis，原混合test拆出的strict-bound检查仍在controller；44项Analysis、28项Driver/search、
+2项source→package/no-card（1024/1025 DDR/DTE及search入口）本轮实际通过。
+Link command确认Analysis测试不链接Compiler/Planning，object symbol确认公式只在Analysis定义。
+canonical完整增量构建、后续Ninja no-op、完整diff与源码cache检查通过。
+
 ### 第1项：AllGather source到Ring专项（旧入口三个长度已通过）
 
 Pipeline position:

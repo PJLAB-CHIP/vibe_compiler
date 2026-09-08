@@ -2,6 +2,7 @@
 
 #include "Wafer/Driver/PhysicalDataflow/UnifiedSearch.h"
 
+#include "Wafer/Analysis/Instr/CostModel.h"
 #include "Wafer/Planning/PhysicalDataflow/PlanningProfile.h"
 #include "Wafer/Support/CompileTiming.h"
 
@@ -39,7 +40,7 @@ void recordRegionCandidateCounter(size_t index, llvm::StringRef metric,
 void recordStructuralCandidateMetrics(
     size_t index, const RegionPlan &plan,
     const StructuralCandidateEvaluation &evaluation,
-    const std::optional<SearchCostCohort> &cohort) {
+    const std::optional<analysis::SearchCostCohort> &cohort) {
   if (index >= 8)
     return;
 
@@ -92,19 +93,20 @@ void recordStructuralCandidateMetrics(
     recordRegionCandidateCounter(index, "instruction-count",
                                  cost.aggregateInstructionCount.value);
 
-  SearchObjective objective = deriveSearchObjective(cost, cohort);
-  const auto *known = std::get_if<KnownSearchObjective>(&objective);
+  analysis::SearchObjective objective =
+      analysis::deriveSearchObjective(cost, cohort);
+  const auto *known = std::get_if<analysis::KnownSearchObjective>(&objective);
   recordRegionCandidateCounter(index, "objective-known", known != nullptr);
   if (!known)
     return;
-  const SearchResourceDurations &durations = known->durations;
+  const analysis::SearchResourceDurations &durations = known->durations;
   recordRegionCandidateCounter(
       index, "objective-profile-identity",
       known->cohort.getPolicy().profileIdentity);
   recordRegionCandidateCounter(
       index, "objective-profile-calibrated",
       known->cohort.getPolicy().profileProvenance ==
-          SearchCostProfileProvenance::CalibratedTarget);
+          analysis::SearchCostProfileProvenance::CalibratedTarget);
   recordRegionCandidateCounter(index, "objective-ne-picoseconds",
                                durations.neF16Bf16Picoseconds);
   recordRegionCandidateCounter(index, "objective-vector-f16-picoseconds",
@@ -393,7 +395,7 @@ struct UnifiedSearchSession::Impl {
   PhysicalDataflowPlanningSession &planningSession;
   StructuralCandidateEvaluator &evaluator;
   SearchTerminationPolicy termination;
-  std::optional<SearchCostCohort> costCohort;
+  std::optional<analysis::SearchCostCohort> costCohort;
   uint64_t remainingActualizationCredits;
   uint64_t maximumRegionRefinementCandidates;
   ActualResultController controller;

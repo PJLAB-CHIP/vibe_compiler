@@ -740,8 +740,25 @@ NCC control从current IR的实际join次数与participant wait次数分别估计
 它们不能退化为固定instruction数量，也不能使用target-independent guessed route。rate必须来自同一target-profile cohort；未校准时保持
 `Unknown`/`Incomparable`，不能用默认零值继续排序。
 
-本修改复用final Instr的现有work collector和duration analysis，删除search controller中的flat instruction objective；不新增operation、
-attribute、Wafer-specific interface或legality verifier。Cost和duration仍是mutation后失效、可从current IR fresh重算的analysis结果。
+`Analysis/Instr/ScheduleCostAnalysis`拥有final current IR的工作量统计；`Analysis/Instr/CostModel`唯一拥有
+`SearchCostPolicy`、不可变`SearchCostCohort`、typed objective、估时公式和成本比较。Cost model输入为fresh
+`InstructionProgramAggregateCost`与显式cohort，输出`SearchObjective`及比较结果，直接消费者为
+`ActualResultController`、`SearchCurrentIR`的actual candidate比较和`UnifiedSearch`统计。
+它是无IR mutation、无cache的普通typed query，不依赖Driver、Planning或candidate key，不新增AnalysisManager wrapper。
+Controller只拥有预算、去重、typed结果、incumbent和handoff，使用cost model接口，不保存第二份硬件参数或公式。
+生产入口仍为`wafer-compile --optimization-policy=search`；本次归属修正不改数值参数、Pareto比较、tie-break、
+IR/legality、completion或板端协议，也不实现尚未完成的统一makespan评分。
+完成条件为所有消费者共用同一cost model、Analysis测试不链接Driver、原公式/unknown/overflow/cohort与controller行为
+回归通过，真实规模整除/尾部的通信产品下游和canonical build/no-op闭合。
+
+| Cost model归属覆盖 | exact要求 | 直接下游witness |
+| --- | --- | --- |
+| DTE 0/1/15/32消息；NCC combined/split与不同Tile分布 | 原ps结果不变，先同Tile求和再取max | Analysis-only公式unit；Driver使用相同typed objective |
+| 缺cohort、metric unavailable、非法profile和溢出 | 原typed unknown/failure和跨cohort不可比保持 | Analysis边界unit |
+| better/worse/equivalent/incomparable与预算/拒绝 | 成本比较与controller状态管理分属唯一owner | 比较unit和controller预算/retention/coverage回归 |
+| rank≥3、1024/1025通信输入 | 原actual DDR/DTE结构、source→package和profile合同保持 | fresh no-card及search actual compiler回归 |
+
+工作量和估时不新增operation、attribute或legality verifier；IR mutation后重新统计，cost model只消费本轮值。
 
 Actual capacity rejection默认只对产生该current IR的完整choice有效。只有从actual owner/conflict witness可证明的有限条件
 才能作为causal feedback；unknown、unsupported、timeout和compiler error不得改写为capacity rejection。

@@ -154,7 +154,8 @@ Physical-dataflow不能整体塞入CodeGen，也不能继续把analysis、choice
 
 - current Linalg/Tensor SSA、IndexRelation、DAG、SemanticRoot和choice-independent source relation进入`Analysis/Linalg`；
 - Tile physical access/layout/transfer relation进入`Analysis/Tile`；
-- Instr lifetime、completion、cost和resource analysis进入`Analysis/Instr`；
+- Instr lifetime、completion、cost和resource analysis进入`Analysis/Instr`；其中`ScheduleCostAnalysis`只统计actual work，
+  `CostModel`拥有性能参数/cohort、typed估时与比较；Driver/controller只消费其接口，不拥有估时公式；
 - explicit SpatialAssignment、choice-dependent ExactDemand/RootRegionWork、Spatial/Region domain，以及从candidate live operations建立的
   query-local TemporalDomain/PBQP assignment和search traversal留在`Planning/PhysicalDataflow`；它们不拥有IR，choice apply后立即销毁；
 - closed spatial/region choice到actual TileModule/TileRegion的原子物化属于`Transforms/Linalg`；

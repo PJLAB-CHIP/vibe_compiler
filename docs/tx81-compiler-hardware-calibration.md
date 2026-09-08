@@ -110,7 +110,8 @@ solve自然遇到、且hard outcome、actual high-water与planner work完全相�
 不得另做query、生成physical-dataflow choice或post-solve relocation。当前校准没有给出可消费的
 port/stride conflict penalty，因此phase不得影响legality、resident/spill、`tile.region`或join。
 
-当前Search controller从fresh final IR提取card-aggregate DDR、max-Tile compute/SPM/Instr/DTE work、
+`Analysis/Instr/ScheduleCostAnalysis`统计fresh final IR的actual work；参数/cohort、估时和比较由
+`Analysis/Instr/CostModel`唯一拥有，controller消费其typed结果。Cost model使用card-aggregate DDR、max-Tile compute/SPM/Instr/DTE work、
 modeled peak-link pressure及typed completion/resource计数，并在相同cohort内形成独立service terms。
 实现仍按各term的Pareto关系比较；DDR下降而DTE上升时仍可为`Incomparable`。
 统一estimated makespan及其dependency/overlap组合规则尚未实施，不能把资源最大值或统一selection tuple写成当前行为。

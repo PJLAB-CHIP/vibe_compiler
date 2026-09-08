@@ -3,6 +3,7 @@
 #ifndef WAFER_DRIVER_PHYSICALDATAFLOW_UNIFIEDSEARCH_H
 #define WAFER_DRIVER_PHYSICALDATAFLOW_UNIFIEDSEARCH_H
 
+#include "Wafer/Analysis/Instr/CostModel.h"
 #include "Wafer/Driver/PhysicalDataflow/ActualResultController.h"
 #include "Wafer/Planning/PhysicalDataflow/PlanningSession.h"
 
@@ -27,7 +28,7 @@ struct UnifiedSearchOptions {
   uint64_t candidateActualizationCredits = std::numeric_limits<uint64_t>::max();
   uint64_t maximumRegionRefinementCandidates = 0;
   SearchTerminationPolicy termination = SearchTerminationPolicy::Exhaustive;
-  std::optional<SearchCostCohort> costCohort;
+  std::optional<analysis::SearchCostCohort> costCohort;
   ExactRejectionCachePolicy exactRejectionCache =
       ExactRejectionCachePolicy::Enabled;
   PlanningProfileSink *profile = nullptr;

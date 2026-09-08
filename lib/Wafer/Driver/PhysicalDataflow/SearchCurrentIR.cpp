@@ -4,8 +4,10 @@
 
 #include "PhysicalDataflowInstrumentation.h"
 #include "StructuredProgramAnalysis.h"
+#include "Wafer/Analysis/Instr/CostModel.h"
 #include "Wafer/Planning/PhysicalDataflow/PlanningProblem.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Linalg/CommunicationRegionClosure.h"
 #include "Wafer/Transforms/Linalg/OnlineAttentionDecomposition.h"
 #include "Wafer/Transforms/Linalg/SpatialRegionMaterialization.h"
@@ -14,7 +16,6 @@
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
 #include "Wafer/Transforms/Tile/StructuredToTile.h"
-#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/IRMapping.h"
@@ -349,7 +350,7 @@ public:
       const frontend::FrontendProgramVerificationResult &program,
       const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
       ProgramDataHandoff &programData, const SearchCurrentIROptions &options,
-      const std::optional<SearchCostCohort> &cohort,
+      const std::optional<analysis::SearchCostCohort> &cohort,
       SearchCurrentIRStatistics *statistics,
       ExecutableLoweringStatistics *executableStatistics)
       : tensorProgram(tensorProgram), analysis(analysis), planning(planning),
@@ -408,7 +409,7 @@ public:
     }
 
     std::optional<ExecutableCompilationResult> winner;
-    std::optional<SearchObjective> winnerObjective;
+    std::optional<analysis::SearchObjective> winnerObjective;
     uint64_t actualizations = 0;
     bool sawUnsupported = false;
     bool sawIndeterminate = false;
@@ -502,14 +503,14 @@ public:
               ExecutableFailureScope::StructuralChoiceInvariant;
       switch (status) {
       case ActualCandidateStatus::Accepted: {
-        SearchObjective objective =
-            deriveSearchObjective(compiled.executable->resourceCost, cohort);
+        analysis::SearchObjective objective = analysis::deriveSearchObjective(
+            compiled.executable->resourceCost, cohort);
         bool replace = !winner;
         if (winnerObjective) {
-          SearchObjectiveComparison comparison =
-              compareSearchObjectives(objective, *winnerObjective);
-          replace = comparison == SearchObjectiveComparison::Better;
-          if (comparison == SearchObjectiveComparison::Incomparable &&
+          analysis::SearchObjectiveComparison comparison =
+              analysis::compareSearchObjectives(objective, *winnerObjective);
+          replace = comparison == analysis::SearchObjectiveComparison::Better;
+          if (comparison == analysis::SearchObjectiveComparison::Incomparable &&
               statistics)
             ++statistics->incomparableTemporalObjectives;
         }
@@ -667,14 +668,15 @@ private:
     }
     bool useMerged = fused.compilation.isAccepted();
     if (preserving.compilation.isAccepted() && fused.compilation.isAccepted()) {
-      auto originalObjective = deriveSearchObjective(
+      auto originalObjective = analysis::deriveSearchObjective(
           preserving.compilation.executable->resourceCost, cohort);
-      auto mergedObjective = deriveSearchObjective(
+      auto mergedObjective = analysis::deriveSearchObjective(
           fused.compilation.executable->resourceCost, cohort);
       auto comparison =
-          compareSearchObjectives(mergedObjective, originalObjective);
-      useMerged = comparison == SearchObjectiveComparison::Better;
-      if (statistics && comparison == SearchObjectiveComparison::Incomparable)
+          analysis::compareSearchObjectives(mergedObjective, originalObjective);
+      useMerged = comparison == analysis::SearchObjectiveComparison::Better;
+      if (statistics &&
+          comparison == analysis::SearchObjectiveComparison::Incomparable)
         ++statistics->incomparableMovementObjectives;
     }
     if (useMerged) {
@@ -968,23 +970,24 @@ private:
               attemptedMovements};
 
     std::optional<size_t> winner;
-    std::optional<SearchObjective> winnerObjective;
+    std::optional<analysis::SearchObjective> winnerObjective;
     for (auto [index, candidateResult] : llvm::enumerate(compiled)) {
       if (!candidateResult->result.isAccepted())
         continue;
-      SearchObjective objective = deriveSearchObjective(
+      analysis::SearchObjective objective = analysis::deriveSearchObjective(
           candidateResult->result.executable->resourceCost, cohort);
       if (!winner) {
         winner = index;
         winnerObjective = std::move(objective);
         continue;
       }
-      SearchObjectiveComparison comparison =
-          compareSearchObjectives(objective, *winnerObjective);
-      if (comparison == SearchObjectiveComparison::Better) {
+      analysis::SearchObjectiveComparison comparison =
+          analysis::compareSearchObjectives(objective, *winnerObjective);
+      if (comparison == analysis::SearchObjectiveComparison::Better) {
         winner = index;
         winnerObjective = std::move(objective);
-      } else if (comparison == SearchObjectiveComparison::Incomparable &&
+      } else if (comparison ==
+                     analysis::SearchObjectiveComparison::Incomparable &&
                  statistics) {
         ++statistics->incomparableMovementObjectives;
       }
@@ -1033,7 +1036,7 @@ private:
   llvm::raw_ostream &diagnostics;
   ProgramDataHandoff &programData;
   const SearchCurrentIROptions &options;
-  const std::optional<SearchCostCohort> &cohort;
+  const std::optional<analysis::SearchCostCohort> &cohort;
   SearchCurrentIRStatistics *statistics = nullptr;
   ExecutableLoweringStatistics *executableStatistics = nullptr;
 };
@@ -1089,11 +1092,12 @@ ExecutableCompilationResult compileSearchCurrentIR(
   PhysicalDataflowPlanningSession planning(*problem,
                                            maximumInitialRegionProposals);
 
-  auto cohort = SearchCostCohort::create(SearchCostPolicy{}, &detail);
+  auto cohort =
+      analysis::SearchCostCohort::create(analysis::SearchCostPolicy{}, &detail);
   if (mlir::failed(cohort))
     return fail(ExecutableCompilationStatus::CompilerFailure,
                 "search-cost-cohort", detail);
-  std::optional<SearchCostCohort> currentCohort(std::move(*cohort));
+  std::optional<analysis::SearchCostCohort> currentCohort(std::move(*cohort));
   CurrentIRStructuralEvaluator evaluator(tensorProgram, **structured, planning,
                                          program, executionConfig, diagnostics,
                                          programData, options, currentCohort,

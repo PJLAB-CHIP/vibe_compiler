@@ -9,6 +9,7 @@ add_mlir_library(WaferAnalysis
   Tile/PhysicalLayoutRelation.cpp
   Tile/TileDataflowAnalysis.cpp
   Tile/TransferRealizability.cpp
+  Instr/CostModel.cpp
   Instr/ExecutionCost.cpp
   Instr/DDRHighWater.cpp
   Instr/SPMHighWater.cpp

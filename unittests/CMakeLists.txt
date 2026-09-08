@@ -78,6 +78,7 @@ wafer_add_component_unit_test(WaferAnalysisUnitTests
     Analysis/Linalg/IndexRelationTest.cpp
     Analysis/Linalg/TensorResultIndexingTest.cpp
     Analysis/Instr/ScheduleCostAnalysisTest.cpp
+    Analysis/Instr/CostModelTest.cpp
   LINK_LIBS WaferAnalysis WaferIR)
 
 wafer_add_component_unit_test(WaferPlanningUnitTests
