@@ -10,13 +10,153 @@ Add/DTE、通信、GEMM、组合计算、模型及性能全部放在本任务的
 
 Pipeline position:
 
-- Upstream IR / input: current compiler/runtime、PyTorch source与同一输入的eager reference、逐case通过fresh no-card的ExecutablePackage、可用设备会话。
+- Upstream IR / input: current compiler/runtime、正确性case的PyTorch source与同一输入的eager reference、纯性能探针的手写IR/input、逐case通过fresh no-card的ExecutablePackage、可用设备会话。
 - Current stage responsibility: 补齐并登记板测覆盖矩阵，串行执行真实设备，检查完整数值、guard/status、completion与cleanup；正确性通过后完成同一清单内的性能测量。
 - Output IR / files: 每个case的原样package、输入/reference/capture、误差、执行日志、性能记录及与实际结果绑定的覆盖记录。
 - Downstream consumer: 产品板端正确性与性能结论。
 - User-level driver / named pipeline: `wafer-compile`、`wafer-run`、现有PyTorch board runner和基础CRT probe runner。
 - Explicit non-goals: 不在本项声明编译器全部架构收敛完成，不以单case代签整项，不把未执行的性能测量写成性能结论。
 - Completion criteria: 基础前置和下列第1--10项的计划覆盖全部完成；正确性以生产路径、fresh no-card、实卡完整PyTorch比较及正常完成为证据，性能以matched测量为证据。待补case、失败或仅no-card不能计作完成。
+
+## 剩余工作的实施步骤
+
+任务状态、当前步骤与直接前置只由`tasks/progress.md`拥有。本节是同一`board-testing`的working plan，
+不新增work item；下方第1--10项编号保留为覆盖清单索引，历史checkpoint只用于定位已取得的证据。
+现有Add/DTE、通信、GEMM、卷积组合及prefill的已验收范围保持有效；后续修改影响产物或执行合同时才定向复验。
+Cost采样和源码归属修正的证据见“第10项：cost参数的实卡测量”，它们不代签统一评分或产品性能。
+
+| 实施步骤 | 直接输入 | 交付给下一步的结果 | 完成判据 |
+| --- | --- | --- | --- |
+| 第一步：统一评分 | final actual Instr、同一cost cohort、已有时延/同步测量 | 可解释的DDR/DTE成本比较与保留原owner的winner | 可量化的tradeoff能排序；unknown与合法性边界不变；actual source/no-card回归通过 |
+| 第二步：KV cache decode | 第一步的公共compiler，原两步HF attention source与PyTorch reference | 完整两步package、实际KV continuation和数值证据 | FP16/BF16×none/search两步no-card；FP16两种policy的两步实卡通过 |
+| 第三步：LLaMA block | 前两步的公共修复，原完整HF block | 完整block package与数值证据 | FP16/BF16×none/search no-card；FP16 none/search实卡完整输出通过 |
+| 第四步：产品性能验收 | 前三步最终实现与已验收产品case | 同源none/search设备计时、预测/实测对照及总覆盖记录 | matched重复测量、PyTorch检查和性能结论闭合；总矩阵无未执行项 |
+
+### 第一步：统一评分（清单第10项的实现收尾）
+
+Pipeline position:
+- Upstream IR / input: accepted candidate-owned final Instr、fresh `ScheduleCostAnalysis`统计、相同`SearchCostCohort`和硬件校准文档中的证据边界。
+- Current stage responsibility: 在`Analysis/Instr/CostModel`形成同单位、可解释的耗时估计与比较；current IR提供依赖和资源事实，显式profile提供性能假设。
+- Output IR / files: typed objective/comparison及工作量、耗时分项与unknown原因；不修改IR、不产出旁路schedule或同步计划。
+- Downstream consumer: `ActualResultController`、`SearchCurrentIR`和`UnifiedSearch`，继续保留同一actual winner owner。
+- User-level driver / named pipeline: 同一`wafer-compile --optimization-policy=search`；`none`继续使用既有确定性路径。
+- Explicit non-goals: 不在controller重写公式，不用估时判断SPM合法性或插join/wait，不按case、payload阈值或通信类别指定winner，不扩展硬件测试矩阵。
+- Completion criteria: 同cohort且信息充分的DDR下降/DTE上升可以比较，DDR与DTE均有可获胜见证；未知、溢出与跨cohort保留typed结果，actual候选回归和canonical build/no-op通过。
+
+实施顺序：
+
+1. 审计当前aggregate保留和丢失的事实：逐Tile工作量、共享DDR、endpoint、control、实际issue/token/completion与有限循环次数。
+   只在确实缺少下游必需信息时扩展同一current-IR只读分析；不能从汇总计数猜出执行顺序。
+2. 比较06号引用的成熟compiler/collective模型与官方MLIR分析规则，再用pinned源码确认具体API；在写代码前更新06号cost合同和16号验证规则，
+   明确分项组合、共享资源、已证明的并发关系、误差/unknown和稳定tie-break。采用能解释现有候选的最小模型，不建设周期级模拟器。
+3. 实现统一的estimated duration比较。实际依赖要求串行的部分累加；并发只消费current IR及已支持的硬件关系，不能无条件把所有项相加或取max。
+   DDR/DTE互换本身不再导致不可比；若胜负依赖缺失的顺序、并发或rate，仍明确返回unknown/incomparable。
+   时间估计只参与候选排序，不能变成硬pruning bound；storage统计继续报告，不能作为独立Pareto项暗中否决已经合法候选的耗时改善。
+4. 保留已测first/steady DTE与NCC调用/participant参数的来源，检查sender生命周期和wait不重复计费。
+   rate、route等先验仍标估计；只有一个具体缺失参数确实影响胜负、且现有profiler能独立辨识时才提出最小补测，否则保留unknown。
+5. 先跑Analysis公式与Driver接入回归，再跑实际DDR/peer候选和公共search source→package/no-card。
+   新winner若改变已验收case产物，记录受影响项并用fresh package定向PyTorch实卡复验，再交给decode。
+
+| 覆盖输入 | exact要求与typed failure | 直接下游witness |
+| --- | --- | --- |
+| rank≥3、1024/1025/1031的actual DDR/peer候选 | 全部候选先经actual completion/SPM/target；同cohort存在DDR更优与DTE更优两类评分，输入不得固定选路 | 实际候选比较、公共search winner owner→package/no-card；受影响产品实卡 |
+| 相同资源计数、不同actual串行依赖；独立worker/Tile | 顺序变化只在有事实的边界影响估时；无并发证据时不猜max，逐Tile组合不能拼接不同Tile的独立最大值 | current-IR分析与CostModel回归 |
+| DTE 0/1/多消息、NCC合并/拆开及多participant | 首条、后续、调用固定项和participant增量各计一次；send wait不重复计入完整生命周期 | Analysis-only unit与既有时延记录对账 |
+| 缺rate/次数、跨cohort、溢出、真实capacity rejection | 保持typed unknown/failure；改变cost不改变同一组actual候选的SPM合法集合 | Analysis、controller预算/retention及actual SPM反馈回归 |
+
+### 第二步：两步KV cache decode（清单第8项）
+
+Pipeline position:
+- Upstream IR / input: 原HF LlamaAttention eager functional-state source；hidden `[1,1,4096]`、KV `[1,32,L,128]`、官方RoPE常量与causal mask。
+- Current stage responsibility: 从当前none/search重现并修复通用IR/completion缺口，准备完整两步source/input/PyTorch reference/package；实卡第二步只消费本轮第一步capture的KV。
+- Output IR / files: verified Tile/Instr、actual SPM/transport/completion、两份fresh ExecutablePackage、两步完整attention/K/V capture与误差记录。
+- Downstream consumer: 同一package runner与PyTorch board gate；下一项LLaMA block。
+- User-level driver / named pipeline: 原`wafer-compile` none/search与`wafer_board_pytorch_test.py` functional continuation。
+- Explicit non-goals: 不改HF层、输入分布、权重、seed、dtype、mask/RoPE或容差，不强制DDR/DTE，不绕过completion验证；不在生产代码硬编码调试输出。
+- Completion criteria: 原FP16/BF16×none/search四项fresh两步no-card闭合；FP16两种policy各完成两次串行launch、完整PyTorch比较与正常清理；受影响通用回归、canonical build/no-op与check-wafer通过。
+
+实施顺序：
+
+1. 用本轮构建先重现原FP16 none/search主机case，分别定位到首次失效的current IR边界；历史假环与SIGSEGV记录只提供线索。
+2. 对`none`检查联合DDR/DTE顺序图。拟修正方向是保留actual Region入口/出口与DTE issue/wait位置，
+   避免把DTE连通的整个Region集合收缩成原子节点而误报环；prepare、issue和token wait的依赖必须逐条来自实际CRT/IR合同。
+   只透明展开标准interface证明的单次region；重复或条件路径证据不足时给出typed failure，不能猜动态次数或插全局drain。
+3. 对`search`检查closure合并的实际Region集合。拟修正方向是把纳入的本地纯tensor依赖也计入重叠判断，
+   对重叠集合统一检查SSA dominance、effect与完整exchange，再一次物化；不能删除后重放失效端点。
+   若并集不合法，该重叠连通组的可选合并整体不应用，不能留下只覆盖部分participant的exchange。
+4. 上述两条仍是待验证修法。先补最小失败回归和真实规模正例，再更新13号稳定合同并实现；现有DDR候选继续参与正常选择，不能把DTE当补救路径。
+5. 四项两步no-card实际执行后，按`none第一步→none第二步→search第一步→search第二步`串行上板。
+   每条链第一步输入独立生成；第二步使用该policy本轮第一步的完整KV capture，不使用历史raw或另一policy的KV。
+
+| 输入等价类 | exact与数值要求 | 下游witness |
+| --- | --- | --- |
+| 原第一步，past=1023、updated=1024 | attention与完整K/V使用同一HF eager reference；历史prefix保留、追加一个token | 普通source→package/no-card；FP16 none/search单次实卡 |
+| 原第二步，past=1024、updated=1025 | 上板必须使用第一步实际回读KV；attention及完整尾部KV按原容差比较 | fresh continuation source/package与实际capture输入；两步链完成 |
+| FP16/BF16、none/search | 不同policy消费同一source合同；crash不算unsupported，失败不换路径 | 四项注册no-card，逐项确认两步实际执行 |
+| rank≥3、1024/1025/1031的合法交错DDR/DTE顺序与真实环 | 保留每个实际issue/token和区域依赖；合法交错通过、真实环拒绝，无法证明的control flow保持typed failure | 通用IR正负例、fresh completion/transport与实际模型 |
+| 重叠/不重叠closure，共享纯tensor依赖、effect阻止或缺participant | actual Region只物化一次，SSA dominance与all-and-only exchange保持；不可合并时原IR不变 | Tile verifier→Instr→actual SPM；通信产品定向回归 |
+| 错误旧cache、遗漏新token、最后元素超容差 | oracle/runner必须拒绝，不抽样、不放宽阈值 | Python合同负例与两步完整capture |
+
+### 第三步：完整LLaMA block（清单第9项）
+
+Pipeline position:
+- Upstream IR / input: 现有`llama-2-7b-block`的HF config、module、seed与输入 `[1,16,4096]`；保持当前权重和eager reference。
+- Current stage responsibility: 解决完整source→package/readback的实际阻塞，确认公共修复可被完整block消费，准备no-card与板端数值验收。
+- Output IR / files: verified final Instr、完整ExecutablePackage、strict readback/no-card结果与完整block output capture。
+- Downstream consumer: 产品板端正确性结论与第四步matched性能。
+- User-level driver / named pipeline: 原`wafer-compile` none/search及同一PyTorch board runner。
+- Explicit non-goals: 不缩小hidden/config、不拆block代签、不扩成整网/长序列测试，不放宽现有PyTorch容差，不绕过manifest验证。
+- Completion criteria: FP16/BF16×none/search四项fresh no-card通过，FP16两种policy完整输出与PyTorch比较通过，受影响package/compiler回归和canonical build/no-op闭合。
+
+实施顺序：
+
+1. 重跑原主机输入，分别记录none/search的首次失败、work count、编译wall/RSS、manifest实际字节及各类record数量。
+   历史none为manifest JSON byte limit；search此前主动终止，不能当成已知失败或已通过。
+2. 按实际数据区分producer重复物化/元数据膨胀与合理模型规模触及reader限制；先找唯一owner和主要增长来源。
+   若需修改package规模合同，先同步15/16号设计及全部writer/reader，再做有界实现；不能只把limit调大或删descriptor绕过问题。
+3. 原case保持sequence=16、hidden=4096的rank-3规模；本项不新增tiling算法，若修复确实涉及循环或切分，另在该通用机制补1024/1025/1031回归。
+4. 完成四项no-card后串行运行FP16 none、search两份fresh package，完整输出按既有`HF_LLAMA2_7B_COMPARISON`校验并检查guard/status/cleanup。
+
+| 输入等价类 | exact要求与typed failure | 直接下游witness |
+| --- | --- | --- |
+| 原完整block，FP16/BF16×none/search | all-and-only input/constant/output/entry及实际buffer/绑定；四项均完成严格readback | source→package→no-card；FP16两次实卡完整PyTorch比较 |
+| 合法大manifest及上限边界、超限/截断/溢出 | 保持单一schema、字节/record限制与typed错误；不吞错、不部分读取 | 对实际修复边界的package unit/roundtrip与runtime pre-effect拒绝 |
+| 共享constant/多consumer与重复引用 | 不按shape/name归并identity；actual owner/引用与payload范围精确一致 | producer→strict manifest verifier→完整runtime binding |
+
+### 第四步：产品性能验收与总任务收口（清单第10项）
+
+Pipeline position:
+- Upstream IR / input: 最终实现生成、已经完成数值验收的同source/同输入none/search package，同一合格设备身份与显式计时范围。
+- Current stage responsibility: 比较设备耗时与cost预测，检查实际选择及性能差异来源，完成同一板测清单的性能覆盖。
+- Output IR / files: package/source/input身份、逐次设备计时、统计量、完整PyTorch检查、预测分项与实际profiler解释。
+- Downstream consumer: 16号产品性能资格与`tasks/progress.md`的board-testing完成判定。
+- User-level driver / named pipeline: 复用同一PyTorch board runner、`wafer-run --device-timing`和已有`--profile`；如缺透传/汇总，只扩现有入口。
+- Explicit non-goals: 不扩测硬件engine/拓扑，不把host wall或Trace扰动当产品延迟，不把指令减少直接换成加速比，不要求产品强制选DDR或DTE。
+- Completion criteria: 下表同源A/B全部实际执行，完整数值和生命周期通过；预测/实测差异有解释，16号要求的matched性能改善有证据，退化闭合后才签发性能结论。
+
+| 代表输入 | 对照与范围 | 直接下游witness |
+| --- | --- | --- |
+| AllGather、AllToAll、ReduceScatter、AllReduce各一个已有L=1024产品case | 每类相同source/input的none/search；记录实际DDR/DTE选择，不用peer专项代替产品winner | 设备耗时、完整PyTorch输出及cost分项 |
+| 已有GEMM整除和尾部两组 | 使用原rank-3真实规模；两个policy均先通过本轮正确性 | steady与tail执行差异及设备耗时 |
+| 原conv-mixed-dag、L=1024 prefill | 分别比较两种policy；Conv数值修复的额外实际work单列 | 完整PyTorch输出与CT/NE/搬运的必要profiler解释 |
+| 原两步decode、原LLaMA block | decode每次从独立第一步开始，分别报告两步及总耗时；block使用原完整输入 | 完整KV链/完整block数值及设备计时 |
+
+每个对照初始采用每policy一次预热、三次正式测量，交替none/search执行；预热也检查数值、guard/status与正常清理，
+正式结果报告所有样本、median和min/max。计时作用域、warm/cold条件与编译预算保持一致，不把不同scope的数字混算。
+产品延迟来自未插桩执行的设备事件；必要时对差异明显的配对另采一次既有profiler，以engine/site和DTE阶段解释原因，
+不为每个重复样本附加整套Trace。纯IR校准探针沿用用户批准的无PyTorch例外，产品A/B每次仍完整对比PyTorch。
+三次样本不足以支持稳定结论时，先报告波动原因和最小补测范围，不静默扩成大规模采样。
+
+### 每步交付与停止条件
+
+- 实施前按该步重新核对编号设计、当前API与覆盖矩阵；本次只整理计划，不把拟修法或历史结果写成新实现/新板测通过。
+- 代码变化后完成直接受影响的unit/lit、source→package/no-card及canonical完整增量构建，第二次构建确认Ninja no-op；
+  不因文档整理运行编译或设备。相关源码/输入/package/环境未改变的成功板测不机械重跑。
+- 每份待上板package必须先达到board-ready：输入、dtype/descriptor/payload/reference一致，runner与本轮no-card完整，绑定产物身份。
+- 设备始终单进程、逐case；第一次timeout或设备异常立即停止批次，不自动retry/reset/power或补跑Add。
+  正常结束检查全部输出、guard/status和cleanup；失效产物按用户要求清理，只保留必要错误摘要。
+- 每步把实际case、执行数量、skip/unsupported、误差或时延及剩余风险回写对应checkpoint；只更新progress的当前摘要与下一步，
+  不把历史日志堆回progress或`physical-dataflow-synthesis.md`。完成当前修改后复审diff、提交；全部正确性与性能覆盖闭合前总任务保持未完成。
 
 ## 首批真实板端验收：Add与Direct-DTE
 
@@ -58,7 +198,8 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 
 具体pipeline与覆盖合同以13号“区域与传输选择的覆盖合同”为准；未验证的实现和测试保持doing。
 
-以下编号只是`board-testing`同一测试清单内的执行顺序，不是独立任务。Add、基础Direct-DTE及下列FP16 Ring AllGather矩阵已有实卡通过证据；GEMM与AllToAll的三组整除/尾部实卡也已通过，当前区域/传输选择修正、ReduceScatter与AllReduce已实卡验收，卷积组合计算和Attention prefill也已完成本轮验收，下一项是第8项KV cache decode。
+以下编号保留为`board-testing`同一测试清单的覆盖索引，不是独立任务。Add、基础Direct-DTE及第1--7项已有各自范围的实卡通过证据。
+剩余实施顺序见progress及上方working plan：先收尾统一评分，再完成第8项decode、第9项LLaMA block，最后完成第10项产品性能验收。
 每类测试按列出的覆盖范围验收，单个case通过不能代表整类或总任务完成。实现、输入或环境没有影响结论的变化时，不重复已通过的case。
 
 | 测试顺序 | 具体范围 | 完成门禁与后续动作 |
