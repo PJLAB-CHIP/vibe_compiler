@@ -9,6 +9,27 @@
 using namespace wafer;
 using namespace wafer::detail;
 
+static mlir::LogicalResult
+verifyDDRPublication(mlir::Operation *op, mlir::Value data, mlir::Value ready) {
+  auto dataType = mlir::cast<mlir::MemRefType>(data.getType());
+  auto readyType = mlir::cast<mlir::MemRefType>(ready.getType());
+  if (!isWaferDDRMemRefType(dataType) || !dataType.hasStaticShape() ||
+      !isWaferDDRMemRefType(readyType) || readyType.getRank() != 1 ||
+      readyType.getShape()[0] != 64 ||
+      !readyType.getElementType().isInteger(8) || data == ready)
+    return op->emitOpError(
+        "requires DDR data and a distinct 64-byte DDR completion storage");
+  return mlir::success();
+}
+
+mlir::LogicalResult SyncDDRPublishOp::verify() {
+  return verifyDDRPublication(*this, getData(), getReady());
+}
+
+mlir::LogicalResult SyncDDRAcquireOp::verify() {
+  return verifyDDRPublication(*this, getData(), getReady());
+}
+
 mlir::LogicalResult SyncNCCJoinOp::verify() {
   llvm::ArrayRef<int64_t> participants = getParticipants();
   if (participants.empty())

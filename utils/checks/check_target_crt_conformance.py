@@ -887,6 +887,8 @@ def check_ncc_worker_command_abi(
 ) -> None:
     shared_signatures = {
         "wafer_tx81_ncc_join": "uint32_t participant_mask",
+        "wafer_tx81_ddr_publish": "uint64_t data_addr, uint64_t ready_addr, uint64_t byte_count",
+        "wafer_tx81_ddr_acquire": "uint64_t data_addr, uint64_t ready_addr, uint64_t byte_count",
         "wafer_tx81_direct_dte_begin":
             "uint64_t status_addr, uint32_t participant_count",
         "wafer_tx81_direct_dte_begin_after_prepare":
@@ -915,9 +917,9 @@ def check_ncc_worker_command_abi(
         header_text,
         re.DOTALL,
     )
-    if len(declarations) != 114:
+    if len(declarations) != 116:
         fail(
-            "runtime CRT worker ABI: expected 114 public declarations, found "
+            "runtime CRT worker ABI: expected 116 public declarations, found "
             f"{len(declarations)}"
         )
     signatures = {
@@ -988,7 +990,7 @@ def check_ncc_worker_command_abi(
         registry_text,
         r"addEnumSelectedCalls\(\);.*?"
         r'addVoid\("direct_dte_send_issue".*?'
-        r"assert\(result\.size\(\)\s*==\s*114",
+        r"assert\(result\.size\(\)\s*==\s*116",
         "target-call registry current-only closure",
     )
     require_pattern(

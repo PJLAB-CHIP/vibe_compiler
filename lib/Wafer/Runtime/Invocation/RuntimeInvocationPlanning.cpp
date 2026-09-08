@@ -174,17 +174,14 @@ llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
       return range.takeError();
     plan.outputRanges.push_back(*range);
   }
-  std::map<uint64_t, std::pair<uint64_t, uint64_t>> sharedWorkspaceRequirements;
+  std::map<uint64_t, SharedWorkspaceArgument> sharedWorkspaceRequirements;
   for (const PackageEntrypointRecord *entry : entriesByLaunchSlot)
     for (const TileEntryArgumentRecord &argument : entry->arguments)
       if (const auto *workspace =
               std::get_if<SharedWorkspaceArgument>(&argument.reference)) {
         auto [requirement, inserted] = sharedWorkspaceRequirements.try_emplace(
-            workspace->resource,
-            std::make_pair(workspace->bytes, workspace->alignment));
-        if (!inserted &&
-            requirement->second !=
-                std::make_pair(workspace->bytes, workspace->alignment))
+            workspace->resource, *workspace);
+        if (!inserted && requirement->second != *workspace)
           return invalid("runtime card workspace requirements disagree");
       }
   plan.sharedWorkspaceRanges.reserve(sharedWorkspaceRequirements.size());
@@ -193,10 +190,12 @@ llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
     if (resource != expectedSharedWorkspace++)
       return invalid("runtime card workspace IDs are not dense");
     llvm::Expected<RuntimePlannedRange> range =
-        placeRange(requirement.first, requirement.second);
+        placeRange(requirement.bytes, requirement.alignment);
     if (!range)
       return range.takeError();
     plan.sharedWorkspaceRanges.push_back(*range);
+    if (requirement.zeroInitialize)
+      plan.zeroInitializedSharedWorkspaceRanges.push_back(*range);
   }
   plan.tileRanges.reserve(entriesByLaunchSlot.size());
   for (const PackageEntrypointRecord *entry : entriesByLaunchSlot) {

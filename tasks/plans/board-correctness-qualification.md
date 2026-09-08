@@ -46,19 +46,19 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 
 ## 推进顺序
 
-### 当前前置：区域与传输选择修正
+### 已完成前置：区域与传输选择修正
 
 本轮按用户确认的五步执行，仍属于同一board-testing：
 1. 同步06/13号设计，取消公共pipeline的自动communication closure；资格分析与显式变换分离。
 2. none保持single-root Region；search保留合并前owner，独立物化可用合并和DDR/peer实现并比较actual成本。
-3. Shared-DDR候选必须满足current Region出口store、入口load的无环依赖；不在已合并循环里切标志或补全局同步。
+3. Shared-DDR候选必须满足current Region出口store、入口load的无环依赖及实际publish/acquire完成；不在已合并循环里切标志或补全局同步。
 4. 保留AllGather握手和AllToAll窗口/打包修复；ReduceScatter的扩大合并只作为可选变换。专项测试选择内部实现，产品测试不强制算法。
 5. 完成相关host矩阵、canonical build/no-op和fresh no-card后，逐case继续实卡完整PyTorch比较。改变实现的case按新产物重新验收；
    旧none下的成功通信记录只证明当时产物，不代签修改后的none或专项入口。
 
 具体pipeline与覆盖合同以13号“区域与传输选择的覆盖合同”为准；未验证的实现和测试保持doing。
 
-以下编号只是`board-testing`同一测试清单内的执行顺序，不是独立任务。Add、基础Direct-DTE及下列FP16 Ring AllGather矩阵已有实卡通过证据；GEMM与AllToAll的三组整除/尾部实卡也已通过，当前先完成区域/传输选择修正及新入口验收，再继续ReduceScatter。
+以下编号只是`board-testing`同一测试清单内的执行顺序，不是独立任务。Add、基础Direct-DTE及下列FP16 Ring AllGather矩阵已有实卡通过证据；GEMM与AllToAll的三组整除/尾部实卡也已通过，当前区域/传输选择修正及ReduceScatter已实卡验收，下一项是AllReduce。
 每类测试按列出的覆盖范围验收，单个case通过不能代表整类或总任务完成。实现、输入或环境没有影响结论的变化时，不重复已通过的case。
 
 | 测试顺序 | 具体范围 | 完成门禁与后续动作 |
@@ -66,7 +66,7 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 | 1. FP16 Ring AllGather | L=1024、1025、1031；16 Tile、15轮、生产source到DTE | 三个长度实卡均通过，完整PyTorch比较最大绝对误差均为0；全部Tile completion和正常清理通过 |
 | 2. FP16 GEMM | rank-3矩阵乘；整除与M/K/N尾部，覆盖主要维度1024/1025/1031 | 三组source/no-card与实卡完整PyTorch比较均通过；16 Tile输出分片覆盖完整且无重叠 |
 | 3. AllToAll | 普通计算加转置/重分布source，覆盖不同source到不同destination的piece | 三个长度的actual personalized exchange、no-card、实卡完整PyTorch比较与正常清理均通过 |
-| 4. ReduceScatter | 多Tile partial contribution合并到各destination shard | 先补生产source case；actual contribution coverage、combine与DTE闭合，再与PyTorch完整归约结果比较 |
+| 4. ReduceScatter | 多Tile partial contribution合并到各destination shard | 1024/1025/1031的none/search/peer九次实卡及完整PyTorch归约比较均通过，最大绝对误差0 |
 | 5. AllReduce | 多Tile partial contribution合并后供全部participant消费 | 先补生产source case；证明实际fanin/fanout或Ring路径，再与PyTorch完整归约及广播结果比较 |
 | 6. 卷积组合计算 | 现有`conv-mixed-dag`，FP16 | fresh source/no-card，完整检查两个PyTorch输出与正常完成 |
 | 7. Attention prefill | 现有`attention-prefill`，FP16、序列长度1024 | fresh source/no-card，与同一输入的PyTorch eager attention完整比较 |
@@ -201,24 +201,25 @@ ReduceScatter首条source本轮编译/no-card成功，但actual package有240个
 
 ## 本轮检查点
 
-### 区域与传输选择修正：主机通过，DDR板端验收未通过（2026-09-08）
+### 区域与传输选择修正及DDR完成修复（2026-09-08）
 
-本轮五点尚未全部完成。修改保存在开发分支，未并入main；不能用已有DTE实卡结果代签新none。
+五点修正的实现、最终主机门禁和27项实卡验收全部通过。修改仍在开发分支，未并入main。
+总任务还包含AllReduce、组合计算、模型及性能，不能由本次修复代签完成。
 
-| 修正项 | 已实际完成 | 未完成边界 |
-| --- | --- | --- |
-| 1. 可选closure | 公共自动合并已移除；只读资格分析和显式变换分离 | 无 |
-| 2. none/search选择 | none不调用closure；search保留原owner及独立合并/DDR候选；三长度driver回归证明原Region、合并Region和DDR均进入实际memory/target leaf | 下游DDR完成缺口使其板端合法性尚未闭合 |
-| 3. DDR因果顺序 | 原始Region依赖DAG检查、合并双向循环拒绝、预算不足不冒充capacity rejection | DAG只证明可以安排顺序；缺少跨Tile发布/获取完成，不能作为实际写后读证明 |
-| 4. 专项与产品测试 | 专项选择仅在内部compiler；产品none/search不消费通信结构期望；ReduceScatter贡献、combine与完整PyTorch reference已准备 | ReduceScatter尚未实卡验收 |
-| 5. 验证 | canonical完整增量构建及no-op、完整check-wafer、21条Python测试、27条fresh no-card全部通过 | 第一条新none实卡数值失败；后续用例未发射，总任务保持doing |
+| 修正项 | 实际结果 |
+| --- | --- |
+| 1. 可选closure | 公共自动合并已移除；只读资格分析和显式变换分离 |
+| 2. none/search选择 | none不调用closure；search保留原owner及独立合并/DDR候选，三长度driver验证均进入同一actual memory/target leaf |
+| 3. DDR因果顺序 | current Instr显式publish/acquire，writer实际WDMA完成后发布，reader首次RDMA前获取；独立零初始化storage，联合DTE/DDR依赖无环 |
+| 4. 专项与产品测试 | 产品none/search不消费通信结构期望；专项仅内部compiler选peer；AllGather/AllToAll/ReduceScatter各三长度、三路径实卡全部通过 |
+| 5. 验证 | 27项完整PyTorch比较共2,522,520个FP16值，最大绝对误差均为0；16 Tile completion、readback与正常cleanup均通过；canonical增量构建/no-op、完整check-wafer、42项CTest及27项fresh no-card全部通过 |
 
 主机回归另修复了同一source多个local/external fragment的组装、dimension-ordered AllToAll的source定义/receive消费之间插入位置，
 以及Instr拷贝消除后失效的buffer owner关系；后者在变换结束后从actual IR重建，不用operation地址存活过滤跨越erase/create。
 新专项入口产生的AllGather/AllToAll六个package（全部文件）及每个case的16个target LLVM文件，与此前成功实卡产物逐字节相同；
 其manifest身份仍为下面已记录的六个SHA256。此比较证明没有丢失原有握手/窗口修复，不构成一次新的实卡执行。
 
-新产品AllGather L=1024、none单次执行结果：
+修复前的新产品AllGather L=1024、none单次执行结果（历史失败，产物已删除）：
 - manifest SHA256：`52e18cefbd6d38a7fc350f7959eecfe17db6694379ca7a0b8af4671295ecaf9f`。
 - 同一已确认设备会话；FP16 source/input/descriptor/expected一致，PyTorch 2.5.0+cpu，seed=20260803；
   grid main完成、全部Tile终止、output回读及normal cleanup完成，没有timeout或poison，没有retry/reset/power。
@@ -227,7 +228,7 @@ ReduceScatter首条source本轮编译/no-card成功，但actual package有240个
 - actual Instr是共享DDR的WDMA/RDMA，target为单个grid main。每Tile局部issue order及末端NCC join不建立另一Tile的
   store→load先行关系；现有shared-DDR resource/binding及host allocation只表达共享地址，也不提供这一关系。
 
-所缺合同和接下来必须闭合的边界：
+该历史失败要求的修复边界（实现选择及本轮验收见下文）：
 1. 输入是actual共享DDR writer/reader、range、Region/control flow与worker/completion事实；先建立跨Tile release/acquire要求，
    再由唯一completion stage物化可验证的执行顺序。无环Region图只是必要条件，不能将其当成已有完成事件。
 2. 消费者必须同时覆盖Instr验证、target/CRT、launch/runtime以及SystemC；publication在WDMA实际完成后，acquire在远端RDMA前，
@@ -271,16 +272,51 @@ Pipeline position:
 | 缺writer、缺发布/获取、重复/冲突writer、参与者缺席、依赖环、SPM跨阶段泄露 | actual resource/range与完成关系不能闭合时明确失败，不伪装capacity rejection | host verifier和no-card负例；不把可能挂卡的负例发到设备 |
 | runtime阶段失败/超时 | 后续计算阶段和output发布均不发生；沿用absolute deadline与poison合同 | fake-provider单测；不在实卡制造timeout |
 
-待讨论问题与实现前必须解决的选择：
+实现采用按实际DDR resource的单次发布/获取，详见13号设计；不新增runtime计算阶段，不借用DTE ready slot。
+每个resource仅在一个单次writer Region内生成，invocation内不覆盖；连续交换使用独立实际资源，不能证明该前提或
+出现未知alias/effect/control-flow escape时typed拒绝。覆盖写与循环状态复用没有被包装成已支持的重复epoch协议。
 
-- 按依赖发布/等待可以保留较小同步范围，但需要明确的通知storage、初始化、可见性及重复epoch确认协议，不能直接挪用DTE ready slot。
-- runtime分阶段可复用`BoardRuntime`现有的submit→全阶段completion顺序；当前ABI仅允许grid main或cluster prepare/main，
-  因此还需要实际计算阶段表示、逐阶段export、共享DDR跨阶段lifetime与target/runtime/SystemC的一致消费。
-- 两条路线都必须先由current IR物化并验证，再交给成本比较；不能因为DDR路径现有cost较低就跳过完成准入。
-  在实现选择及上述合同闭合前，问题状态保持未修复，主机历史通过记录只保留其实际覆盖范围。
+实现过程中还修复了TileRowPointerTable间接参数的Host→Kcore可见性：固件只invalidate顶层packet；kernel wrapper
+必须在首次slot load前invalidate实际DDR row。初版publication的1024/1025六次实卡通过，但1031 none正常返回后出现
+45,364/263,936值不匹配，分布覆盖整片而非仅tail；补齐row acquire后重新生成，1031及完整27项连续调用全部通过。
+这个失败的package/IR/raw已删除；成功的初版六项只作历史审计，最终验收使用全部重新生成的27项产物。
 
-失效的18条新产品shared-DDR用例目录（source派生产物、package、IR、raw/capture）已清理；保留主机检查日志及上述失败摘要。
-此前成功实卡的产物和本轮9条DTE专项no-card产物保留；后者不能代签未执行的ReduceScatter实卡。
+本轮模型验证：rank-3 FP16的1024/1025/1031三份独立resource，15个reader先等待、Tile15完成后发布；完整输出exact。
+漏掉发布前NCC join的负例被pending DDR write检查拒绝。Driver从真实source验证16 publish/240 acquire及none原Region；
+缺少/移后/重复acquire、重复publish、非零初始化要求和无关写入由共同验证器拒绝。Runtime连续两次调用都先初始化通知区，
+H2D失败不提交launch且正常清理。Kernel aggregation检查先读row地址、一次acquire该row的exact bytes、再读全部slot。
+
+本轮实卡（PyTorch 2.5.0+cpu，FP16，seed=20260803；rtol=1e-3、atol=1e-5，未调整容差）：
+
+| source | L=1024/1025/1031的完整输出元素 | 产品none | 产品search | peer专项 |
+| --- | --- | --- | --- | --- |
+| AllGather Add | 262144 / 262400 / 263936 | 三项通过 | 三项通过 | 三项通过 |
+| AllToAll transpose | 16384 / 16400 / 16496 | 三项通过 | 三项通过 | 三项通过 |
+| ReduceScatter sum | 1024 / 1025 / 1031 | 三项通过 | 三项通过 | 三项通过 |
+
+最终构建复核：完整check-wafer的265条lit、14个unit target和17个SystemC target全部执行通过；单独CTest的42项全部通过，
+27条fresh no-card全部通过，canonical完整增量构建后再次构建为Ninja no-op。最终构建重新生成的27个package、81个文件
+与本轮实卡通过产物逐字节相同。无unexpected skip/unsupported；源码目录无Python缓存，完整diff与文本检查通过。
+
+本轮实卡manifest SHA256（每格对应同一行source/长度及列出的实际入口）：
+
+| source / L | none | search | peer专项 |
+| --- | --- | --- | --- |
+| allgather-add / 1024 | `c610846436a479df2c1f7e4963558115e08e13f771c6c593a7aee7ff119770c2` | `c610846436a479df2c1f7e4963558115e08e13f771c6c593a7aee7ff119770c2` | `c3f3ed4376ef2c3ac9fbc3c8a38b44a1be886657c02b4526f7b74a17cdf01ce2` |
+| allgather-add / 1025 | `f221a2d8b43f26d235bf6e7afd8a9298e66cc771f4074f0867c1104b878e2e9a` | `f221a2d8b43f26d235bf6e7afd8a9298e66cc771f4074f0867c1104b878e2e9a` | `668db1c7527f446aca32d62c16c032c2bcfcc70f4a401178418531fc499fc968` |
+| allgather-add / 1031 | `0b3a8ada5fd1e912128eb02411388ff0923097b2d0c44afe557e1fe27553fb94` | `0b3a8ada5fd1e912128eb02411388ff0923097b2d0c44afe557e1fe27553fb94` | `501667465121bbf7342e6a6267028d86ee4d794544a0431a490b2ef354bee24a` |
+| alltoall-transpose / 1024 | `37925aaaac27ffa4c9bbf184c340f63e38524107803c62a5b20bbc2341d7b04f` | `37925aaaac27ffa4c9bbf184c340f63e38524107803c62a5b20bbc2341d7b04f` | `288d5c36e872c5c327dad473f689e3ba3c53dfdf1568bbc5b56e7846c785fbe3` |
+| alltoall-transpose / 1025 | `5efb2c714b75f4355d97418a40177769411f9dea9a1cffeee69870eff5ff32f0` | `5efb2c714b75f4355d97418a40177769411f9dea9a1cffeee69870eff5ff32f0` | `38c9f8110359ddebdd6662f0d8abac59dcc12b2bddf592cbe13c208b26783ba0` |
+| alltoall-transpose / 1031 | `b9da2ec9352bb155556f994a53fb165f7aecdea54a46626218afd523a6495ccc` | `b9da2ec9352bb155556f994a53fb165f7aecdea54a46626218afd523a6495ccc` | `37268d4794d111ac440a521f4753572b72ed2ff9783b20c6f0b46ed0949f3017` |
+| reduce-scatter-sum / 1024 | `8fb11373ffb0bcf214eb101ae56709e96c4da76f738edb7235f08dcd4732f760` | `dc311bc9082e03711ffcae078706dbce95b8a069673e05f0f2605adb0260e94e` | `2f8380410dfdd63b2ddf0d7903516ef3f79d354cf3860e616f8fa2afd2373eaf` |
+| reduce-scatter-sum / 1025 | `f94656d52ea55407f15fec6097e1e94510b5220a96347f70d7c5d323fb5c1122` | `bd1857064eda8c9e699e3a79f9af8dc09dc5dce616aeba1d02dd0ebb6c0cf19c` | `a7f3086a015d4374553ba87cbc4fd6f9c9f5cce68bdfe3944e9693fa7fcff3fd` |
+| reduce-scatter-sum / 1031 | `7b792a7d68e79bb43ac241d5667892af5118b409c66026feffa97879cad07a6a` | `8296594cf5989eeb1804710b1d2586e74de84153f6788d4e57f79b2a7de31e82` | `903a2ebb0020def4f99822b4e8d53bfcb8fbb5d4dec214eac92cec8d6ff95ce6` |
+
+所有最大绝对误差为0；每项单进程、单次launch、全部Tile完成并正常清理。本轮无timeout、poison、reset或power cycle。
+板端runner只将已确认SDK provider链接到canonical build的本轮静态库，派生工具位于同一build内；未另建主工程或修改共享账号环境。
+
+历史失败阶段的18条失效shared-DDR派生产物已清理，只保留失败摘要；当时9条DTE专项只有no-card证据。
+本轮重新生成并实卡验收了全部27项，成功package/input/reference/capture独立保留作审计，不作为后续测试输入。
 
 
 ### AllToAll精确窗口修复及实卡（2026-09-08）
@@ -296,7 +332,7 @@ actual IR每条均为240 send、240 recv、480 exact-token wait，无shared DDR�
 | 1031 | 16496 | `37268d4794d111ac440a521f4753572b72ed2ff9783b20c6f0b46ed0949f3017` |
 
 日志为`third_party/host-tools/logs/alltoall-{baseline,tail-1025,tail-1031}-board.log`；修复前后no-card日志为`alltoall-before-no-card.log`与`alltoall-window-no-card.log`。
-本轮未timeout、未重试或reset/power；后续ReduceScatter、AllReduce、组合计算、模型与性能继续由同一个board-testing项推进。
+该历史检查点未timeout、未重试或reset/power；ReduceScatter已在上方本轮矩阵验收，后续AllReduce、组合计算、模型与性能仍由同一个board-testing项推进。
 
 
 ### GEMM整除与尾部实卡（2026-09-08）

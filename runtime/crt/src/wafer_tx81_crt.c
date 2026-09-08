@@ -146,7 +146,7 @@ static void wafer_profile_direct_dte_phase_end(uint32_t event_index);
  * rt_hw_cpu_dcache_ops(FLUSH) path so a host D2H observes the terminal value
  * rather than the pre-launch poison word.
  */
-static void wafer_direct_dte_flush_status(volatile uint32_t *status) {
+static void wafer_flush_ddr_cache_line(volatile uint32_t *status) {
   enum {
     WAFER_TX81_SUPERVISOR_MODE = 1,
     WAFER_TX81_MACHINE_MODE = 3,
@@ -168,12 +168,61 @@ static void wafer_direct_dte_flush_status(volatile uint32_t *status) {
   __asm__ volatile("sync" ::: "memory");
 }
 
+/* The firmware invalidates the launch packet, which contains row pointers,
+ * but cannot recursively discover the host-written rows. Match the pinned
+ * C908 csi_dcache_invalid_range sequence before the wrapper loads a row.
+ * Invalidation must not write back stale data from a previous allocation. */
+void wafer_kernel_acquire_argument_row(uint64_t row_addr, uint64_t byte_count) {
+  uintptr_t address = (uintptr_t)row_addr & ~(uintptr_t)63;
+  uintptr_t end = (uintptr_t)(row_addr + byte_count);
+  uintptr_t mode;
+  __asm__ volatile("fence" ::: "memory");
+  __asm__ volatile("sync" ::: "memory");
+  __asm__ volatile("csrr %0, mxstatus" : "=r"(mode));
+  mode = (mode >> 30) & 3U;
+  for (; address < end; address += 64) {
+    if (mode == 3U)
+      __asm__ volatile("dcache.ipa %0" : : "r"(address) : "memory");
+    else if (mode == 1U)
+      __asm__ volatile("dcache.iva %0" : : "r"(address) : "memory");
+  }
+  __asm__ volatile("sync.is" ::: "memory");
+  __asm__ volatile("fence" ::: "memory");
+  __asm__ volatile("sync" ::: "memory");
+}
+
+/* Each publication word has one writer, its own cache line, and host zero
+ * initialization before launch. Readers never write this line; cleaning an
+ * invalidated reader line cannot overwrite the publisher's value. Tensor DMA
+ * completion is established by the preceding typed NCC join, not this cache
+ * operation. There is no reuse until the complete invocation has terminated. */
+void wafer_tx81_ddr_publish(uint64_t data_addr, uint64_t ready_addr,
+                            uint64_t byte_count) {
+  (void)data_addr;
+  (void)byte_count;
+  volatile uint32_t *ready = (volatile uint32_t *)(uintptr_t)ready_addr;
+  *ready = 1U;
+  wafer_flush_ddr_cache_line(ready);
+}
+
+void wafer_tx81_ddr_acquire(uint64_t data_addr, uint64_t ready_addr,
+                            uint64_t byte_count) {
+  (void)data_addr;
+  (void)byte_count;
+  volatile uint32_t *ready = (volatile uint32_t *)(uintptr_t)ready_addr;
+  do {
+    wafer_flush_ddr_cache_line(ready);
+  } while (*ready != 1U);
+  __asm__ volatile("fence" ::: "memory");
+  __asm__ volatile("sync" ::: "memory");
+}
+
 static void wafer_direct_dte_write_status(uint32_t value) {
   wafer_direct_dte_status_value = value;
   if (!wafer_direct_dte_status)
     return;
   *wafer_direct_dte_status = value;
-  wafer_direct_dte_flush_status(wafer_direct_dte_status);
+  wafer_flush_ddr_cache_line(wafer_direct_dte_status);
 }
 
 static void wafer_direct_dte_set_error(void) {

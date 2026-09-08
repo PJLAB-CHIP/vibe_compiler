@@ -139,6 +139,8 @@ llvm::StringRef stringifyProfileTargetSiteKind(ProfileTargetSiteKind kind) {
   switch (kind) {
   case ProfileTargetSiteKind::NCCCommand:
     return "ncc-command";
+  case ProfileTargetSiteKind::DDRCompletion:
+    return "ddr-completion";
   case ProfileTargetSiteKind::NCCCompletion:
     return "ncc-completion";
   case ProfileTargetSiteKind::DirectDTEControl:
@@ -177,6 +179,9 @@ getProfileTargetSiteKind(const TargetCallDescriptor &descriptor) {
     llvm_unreachable(
         "non-builtin target call without an NCC issue-domain engine");
   switch (*builtin) {
+  case TargetCallBuiltin::DDRPublish:
+  case TargetCallBuiltin::DDRAcquire:
+    return ProfileTargetSiteKind::DDRCompletion;
   case TargetCallBuiltin::NCCJoin:
     return ProfileTargetSiteKind::NCCCompletion;
   case TargetCallBuiltin::DirectDTEBegin:

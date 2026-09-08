@@ -134,6 +134,7 @@ void attachTargetLLVMMetadata(llvm::Module &module,
     };
     for (int64_t dimension : slot.shape)
       fields.push_back(signedMetadata(context, dimension));
+    fields.push_back(signedMetadata(context, slot.zeroInitialize));
     slots->addOperand(llvm::MDNode::get(context, fields));
   }
 }
@@ -222,7 +223,7 @@ verifyTargetLLVMSlotMetadata(const llvm::Module &module,
                                    "does not cover the typed ABI");
   for (auto [index, expected] : llvm::enumerate(expectedSlots)) {
     const llvm::MDNode &row = *slots->getOperand(index);
-    if (row.getNumOperands() != 9 + expected.shape.size())
+    if (row.getNumOperands() != 10 + expected.shape.size())
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "target LLVM tile entry argument %zu has an invalid field count",
@@ -274,6 +275,13 @@ verifyTargetLLVMSlotMetadata(const llvm::Module &module,
           llvm::errc::invalid_argument,
           "target LLVM tile entry argument %zu does not match the typed ABI",
           index);
+    auto initialized = readSignedMetadataOperand(
+        row, 9 + expected.shape.size(), "shared workspace initialization");
+    if (!initialized)
+      return initialized.takeError();
+    if (*initialized != static_cast<int64_t>(expected.zeroInitialize))
+      return llvm::createStringError(
+          "target LLVM shared workspace initialization differs");
     for (auto [dimensionIndex, expectedDimension] :
          llvm::enumerate(expected.shape)) {
       llvm::Expected<int64_t> dimension = readSignedMetadataOperand(

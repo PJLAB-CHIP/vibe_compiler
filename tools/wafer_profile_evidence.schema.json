@@ -519,7 +519,7 @@
         "site_kind": {
           "enum": [
             "ncc-command",
-            "ncc-completion",
+            "ncc-completion", "ddr-completion",
             "direct-dte-control",
             "direct-dte-issue",
             "direct-dte-wait"
@@ -557,7 +557,7 @@
           "if": {
             "properties": {
               "site_kind": {
-                "enum": ["ncc-completion", "direct-dte-control"]
+                "enum": ["ncc-completion", "ddr-completion", "direct-dte-control"]
               }
             },
             "required": ["site_kind"]

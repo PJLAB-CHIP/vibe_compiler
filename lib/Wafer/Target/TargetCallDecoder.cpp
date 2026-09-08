@@ -144,6 +144,12 @@ buildBuiltinCommand(const TargetCallDecodeConfig &config,
         argumentArray32<4>(arguments, 6), argumentArray32<4>(arguments, 10),
         kernelStrides, *format}};
   }
+  case TargetCallBuiltin::DDRPublish:
+    return TargetCommandPayload{
+        TargetDDRPublishCommand{arguments[0], arguments[1], arguments[2]}};
+  case TargetCallBuiltin::DDRAcquire:
+    return TargetCommandPayload{
+        TargetDDRAcquireCommand{arguments[0], arguments[1], arguments[2]}};
   case TargetCallBuiltin::NCCJoin: {
     uint32_t participants = argument32(arguments, 0);
     if (participants == 0 || (participants & ~kAllTargetNCCWorkersMask) != 0)

@@ -997,6 +997,35 @@ TEST_F(PackageManifestTest,
     EXPECT_EQ(tile.argumentAddresses[4].offset, 512u);
   }
 
+  EXPECT_TRUE(plan->zeroInitializedSharedWorkspaceRanges.empty());
+  PackageManifest initialized = verified->getManifest();
+  for (auto &entry : initialized.entries)
+    for (auto &argument : entry.arguments)
+      if (auto *workspace =
+              std::get_if<SharedWorkspaceArgument>(&argument.reference))
+        workspace->zeroInitialize = true;
+  auto initializedPackage = verifyPackageManifest(initialized, root);
+  ASSERT_TRUE(static_cast<bool>(initializedPackage))
+      << llvm::toString(initializedPackage.takeError());
+  auto initializedPlan = planRuntimeInvocation(
+      *initializedPackage, makeInputBindings(initializedPackage->getManifest()),
+      makeEnvironment(1024 * 1024));
+  ASSERT_TRUE(static_cast<bool>(initializedPlan))
+      << llvm::toString(initializedPlan.takeError());
+  ASSERT_EQ(initializedPlan->zeroInitializedSharedWorkspaceRanges.size(), 1u);
+  EXPECT_EQ(
+      initializedPlan->zeroInitializedSharedWorkspaceRanges.front().offset,
+      512u);
+  EXPECT_EQ(initializedPlan->zeroInitializedSharedWorkspaceRanges.front().bytes,
+            1024u);
+  for (auto &argument : initialized.entries.front().arguments)
+    if (auto *workspace =
+            std::get_if<SharedWorkspaceArgument>(&argument.reference))
+      workspace->zeroInitialize = false;
+  auto inconsistent = verifyPackageManifest(std::move(initialized), root);
+  ASSERT_FALSE(static_cast<bool>(inconsistent));
+  llvm::consumeError(inconsistent.takeError());
+
   PackageManifest missingWriter = verified->getManifest();
   for (PackageEntrypointRecord &entry : missingWriter.entries)
     for (TileEntryArgumentRecord &argument : entry.arguments)

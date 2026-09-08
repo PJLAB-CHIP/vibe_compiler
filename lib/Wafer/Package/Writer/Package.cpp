@@ -590,7 +590,8 @@ buildManifest(const DeviceExecutable &deviceExecutable,
                  runtime::SharedWorkspaceArgument{
                      packageSharedWorkspaceIds.at(slot.resourceIndex),
                      static_cast<uint64_t>(slot.byteSize),
-                     static_cast<uint64_t>(slot.alignment)}),
+                     static_cast<uint64_t>(slot.alignment),
+                     slot.zeroInitialize}),
              getAccess(slot.access)});
         continue;
       }
@@ -1197,6 +1198,8 @@ detail::writePackage(llvm::StringRef tensorProgramDirectory,
 
 bool detail::doesPackageSlotMatchProgramBinding(
     const TileEntryArgument &slot, const ProgramResourceBinding &binding) {
+  if (slot.zeroInitialize)
+    return false;
   switch (slot.kind) {
   case TileEntryArgumentKind::ExternalInput:
     if (binding.role != ProgramResourceRole::UserInput)
@@ -1222,6 +1225,9 @@ bool detail::doesPackageSlotMatchProgramBinding(
 }
 
 bool detail::isValidPackageCompilerManagedSlot(const TileEntryArgument &slot) {
+  if (slot.zeroInitialize &&
+      slot.kind != TileEntryArgumentKind::SharedWorkspace)
+    return false;
   if (slot.layout != MemLayout::Tensor || slot.byteSize <= 0 ||
       slot.alignment <= 0 || slot.targetTensorMaterialization)
     return false;

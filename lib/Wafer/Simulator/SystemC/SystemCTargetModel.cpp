@@ -74,6 +74,8 @@ public:
 
   ~SystemCTargetModel() override {
     detail::destroySystemCRunner(runner);
+    for (auto &[address, publication] : ddrPublications)
+      detail::destroySystemCEvent(publication.event);
     for (DTEEndpoint &endpoint : endpoints) {
       detail::destroySystemCEvent(endpoint.completionEvent);
       detail::destroySystemCEvent(endpoint.readinessEvent);
@@ -271,6 +273,10 @@ public:
       }
       return UINT64_C(0);
     }
+    case TargetModelControlAction::DDRPublish:
+      return processDDRPublication(command, true);
+    case TargetModelControlAction::DDRAcquire:
+      return processDDRPublication(command, false);
     case TargetModelControlAction::NCCJoin:
       return processNCCJoin(command);
     case TargetModelControlAction::DirectDTEBegin:
@@ -538,6 +544,78 @@ private:
       else
         llvm::consumeError(std::move(error));
     }
+  }
+
+  llvm::Expected<uint64_t>
+  processDDRPublication(const compiler::TargetCommand &command, bool publish) {
+    uint64_t address =
+        publish ? std::get<target::TargetDDRPublishCommand>(command.payload)
+                      .readyAddress
+                : std::get<target::TargetDDRAcquireCommand>(command.payload)
+                      .readyAddress;
+    uint64_t data =
+        publish ? std::get<target::TargetDDRPublishCommand>(command.payload)
+                      .dataAddress
+                : std::get<target::TargetDDRAcquireCommand>(command.payload)
+                      .dataAddress;
+    uint64_t bytes =
+        publish ? std::get<target::TargetDDRPublishCommand>(command.payload)
+                      .byteCount
+                : std::get<target::TargetDDRAcquireCommand>(command.payload)
+                      .byteCount;
+    auto &state = ddrPublications[address];
+    if (state.dataAddress &&
+        (state.dataAddress != data || state.byteCount != bytes)) {
+      latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
+                   "ddr-publication", command.launchSlotId.getValue(),
+                   command.issueOrdinal,
+                   "DDR publication endpoints disagree on data range");
+      return currentFailureOrLifecycle("DDR publication range mismatch");
+    }
+    state.dataAddress = data;
+    state.byteCount = bytes;
+    if (!state.event)
+      state.event = detail::createSystemCEvent();
+    if (!state.event)
+      return currentFailureOrLifecycle("DDR publication event creation failed");
+    if (publish) {
+      if (hasPendingNCCConflict(command.launchSlotId.getValue(), data, bytes,
+                                false, TargetModelAddressSpace::DDR)) {
+        latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
+                     "ddr-publication", command.launchSlotId.getValue(),
+                     command.issueOrdinal,
+                     "pending NCC write precedes DDR publication without "
+                     "matching completion");
+        return currentFailureOrLifecycle("DDR publication has pending writes");
+      }
+      if (state.published) {
+        latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
+                     "ddr-publication", command.launchSlotId.getValue(),
+                     command.issueOrdinal, "duplicate DDR publication");
+        return currentFailureOrLifecycle("duplicate DDR publication");
+      }
+      TargetModelByteWrite write{command.launchSlotId.getValue(),
+                                 TargetModelAddressSpace::DDR,
+                                 address,
+                                 64,
+                                 {1, 0, 0, 0},
+                                 std::nullopt};
+      if (auto error = memory.applyAtomically(
+              llvm::ArrayRef<TargetModelByteWrite>(write)))
+        return std::move(error);
+      state.published = true;
+      detail::notifySystemCEvent(state.event);
+    } else {
+      while (!state.published && !failure) {
+        detail::waitSystemCEvent(state.event);
+        if (bridgeFailed(command, "ddr-acquire"))
+          break;
+      }
+    }
+    if (failure)
+      return currentFailureOrLifecycle("DDR acquisition failed");
+    markOrdinalComplete(command.launchSlotId.getValue(), command.issueOrdinal);
+    return UINT64_C(0);
   }
 
   llvm::Expected<uint64_t>
@@ -950,7 +1028,9 @@ private:
   }
 
   bool hasPendingNCCConflict(int64_t launchSlot, uint64_t address,
-                             uint64_t byteCount, bool dteWrites) const {
+                             uint64_t byteCount, bool dteWrites,
+                             TargetModelAddressSpace addressSpace =
+                                 TargetModelAddressSpace::TileSPM) const {
     uint64_t end = 0;
     if (byteCount == 0 || !checkedAdd(address, byteCount, end))
       return true;
@@ -959,16 +1039,14 @@ private:
         continue;
       if (effect.hasUnknownWrite ||
           llvm::any_of(effect.writes, [&](const PendingMemoryInterval &range) {
-            return memoryIntervalOverlaps(range, launchSlot,
-                                          TargetModelAddressSpace::TileSPM,
+            return memoryIntervalOverlaps(range, launchSlot, addressSpace,
                                           address, end);
           }))
         return true;
       if (dteWrites &&
           (effect.hasUnknownRead ||
            llvm::any_of(effect.reads, [&](const PendingMemoryInterval &range) {
-             return memoryIntervalOverlaps(range, launchSlot,
-                                           TargetModelAddressSpace::TileSPM,
+             return memoryIntervalOverlaps(range, launchSlot, addressSpace,
                                            address, end);
            })))
         return true;
@@ -1191,6 +1269,8 @@ private:
       return;
     failure = InvocationFailure{code, stage.str(), launchSlot, issueOrdinal,
                                 detailText.str()};
+    for (auto &[address, publication] : ddrPublications)
+      detail::notifySystemCEvent(publication.event);
     for (detail::SystemCEvent *event : tileCompletionEvents)
       detail::notifySystemCEvent(event);
     for (DTEEndpoint &endpoint : endpoints)
@@ -1212,6 +1292,13 @@ private:
   // Endpoint pointers remain live across SystemC wait(). A deque preserves
   // those references while other Tile processes append their endpoints.
   std::deque<PreparedDTESend> preparedSends;
+  struct DDRPublication {
+    bool published = false;
+    uint64_t dataAddress = 0;
+    uint64_t byteCount = 0;
+    detail::SystemCEvent *event = nullptr;
+  };
+  std::map<uint64_t, DDRPublication> ddrPublications;
   std::deque<DTEEndpoint> endpoints;
   std::map<std::pair<int64_t, uint64_t>, PendingNCCMemoryEffect>
       pendingNCCMemoryEffects;

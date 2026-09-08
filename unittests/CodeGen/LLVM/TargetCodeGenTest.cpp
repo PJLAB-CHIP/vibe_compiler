@@ -792,7 +792,7 @@ TEST(TargetCodeGenTest, CurrentEngineRegistryIncludesDirectDTEIssueAndWait) {
       siteKindCount(wafer::runtime::ProfileTargetSiteKind::DirectDTEIssue), 1);
   EXPECT_EQ(siteKindCount(wafer::runtime::ProfileTargetSiteKind::DirectDTEWait),
             1);
-  EXPECT_EQ(descriptors.size(), 114u);
+  EXPECT_EQ(descriptors.size(), 116u);
   EXPECT_EQ(wafer::getTargetCallTSMEngine(
                 getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA)),
             wafer::TargetCallTSMEngine::RDMA);
@@ -1244,6 +1244,19 @@ TEST(TargetCodeGenTest,
                     "15"),
             std::string::npos);
   EXPECT_NE(ir.find("%launch_slot.15.row = load i64"), std::string::npos);
+  auto acquire = ir.find("call void @wafer_kernel_acquire_argument_row(i64 "
+                         "%launch_slot.15.row, i64 144)");
+  ASSERT_NE(acquire, std::string::npos);
+  EXPECT_LT(ir.find("%launch_slot.15.row = load i64"), acquire);
+  EXPECT_LT(acquire, ir.find("%launch_slot.15.slot.0 = load i64"));
+  unsigned acquisitions = 0;
+  for (auto &block : *aggregate->module->getFunction("main"))
+    for (auto &instruction : block)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction))
+        if (auto *callee = call->getCalledFunction())
+          acquisitions +=
+              callee->getName() == "wafer_kernel_acquire_argument_row";
+  EXPECT_EQ(acquisitions, 16u);
   EXPECT_NE(
       ir.find(
           "%launch_slot.15.slots = inttoptr i64 %launch_slot.15.row to ptr"),

@@ -12,6 +12,10 @@ namespace wafer::model::kernel_detail {
 
 TargetModelControlAction
 getControlAction(const target::TargetCommandPayload &payload) {
+  if (std::holds_alternative<target::TargetDDRPublishCommand>(payload))
+    return TargetModelControlAction::DDRPublish;
+  if (std::holds_alternative<target::TargetDDRAcquireCommand>(payload))
+    return TargetModelControlAction::DDRAcquire;
   if (std::holds_alternative<target::TargetNCCJoinCommand>(payload))
     return TargetModelControlAction::NCCJoin;
   if (std::holds_alternative<target::TargetDirectDTEBeginCommand>(payload))
@@ -36,6 +40,52 @@ getControlAction(const target::TargetCommandPayload &payload) {
 
 llvm::Error validateControlAddresses(const compiler::TargetCommand &command,
                                      const InvocationAddressPlan &plan) {
+  std::optional<uint64_t> ready;
+  uint64_t dataAddress = 0, dataBytes = 0;
+  TargetModelAccess access = TargetModelAccess::Read;
+  if (auto *publish =
+          std::get_if<target::TargetDDRPublishCommand>(&command.payload)) {
+    ready = publish->readyAddress;
+    dataAddress = publish->dataAddress;
+    dataBytes = publish->byteCount;
+    access = TargetModelAccess::Write;
+  }
+  if (auto *acquire =
+          std::get_if<target::TargetDDRAcquireCommand>(&command.payload)) {
+    ready = acquire->readyAddress;
+    dataAddress = acquire->dataAddress;
+    dataBytes = acquire->byteCount;
+  }
+  if (ready) {
+    auto data = plan.resolve(command.launchSlotId.getValue(),
+                             TargetModelAddressSpace::DDR, access, dataAddress,
+                             dataBytes, 1);
+    if (!data)
+      return data.takeError();
+    if (dataAddress < *ready + 64 && *ready < dataAddress + dataBytes)
+      return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
+                         "DDR data and completion storage overlap");
+    auto range =
+        plan.resolve(command.launchSlotId.getValue(),
+                     TargetModelAddressSpace::DDR, access, *ready, 64, 64);
+    if (!range)
+      return range.takeError();
+    if (!range->slotOrdinal)
+      return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
+                         "DDR completion requires a typed ABI slot");
+    const TargetModelPlannedSlot *slot = nullptr;
+    for (const auto &candidate : plan.getSlots())
+      if (candidate.launchSlot == command.launchSlotId.getValue() &&
+          candidate.slotOrdinal == *range->slotOrdinal)
+        slot = &candidate;
+    if (!slot ||
+        slot->kind != compiler::TileEntryArgumentKind::SharedWorkspace ||
+        !slot->zeroInitialize || slot->base != *ready || slot->byteSize != 64)
+      return kernelError(
+          TargetModelKernelErrorCode::InvalidCommandField,
+          "DDR completion requires distinct zero-initialized shared storage");
+    return llvm::Error::success();
+  }
   if (const auto *begin =
           std::get_if<target::TargetDirectDTEBeginCommand>(&command.payload)) {
     if (begin->participantCount != plan.getLaunchSlots().size())

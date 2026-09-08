@@ -1735,3 +1735,20 @@
   通知已消费证明。Verifier独立拒绝重叠同peer通知，并把matching receive preparation加入send issue依赖；独立peer保持异步窗口。
 - 防复发：rank-3 FP16 1024/1025/1031覆盖同peer不同buffer、独立peer、延后wait的双向send及跨循环recv hoist；
   生产PyTorch AllGather继续生成原有数量的send/recv/wait，并检查wait位置。主机协议复现不代签真实设备完成或数值结果。
+
+## 共享DDR地址不能替代跨Tile完成关系
+
+- 根因：source WDMA与remote RDMA只有共同resource/binding，Region DAG与各Tile NCC join没有跨Tile happens-before。
+- 修复模式：最终Instr completion从actual读写与SSA资源建立单writer发布、首次reader获取，独立通知storage由runtime在每次launch前初始化；
+  发布前完成实际pending WDMA worker。未知alias、额外通知写入、重复发布/获取或缺少匹配必须在共同leaf拒绝。
+- 防复发：真实source的none/search保留DDR与peer选择；整除和尾长均完整比较PyTorch。SystemC让reader先到，并注入漏join；
+  runtime验证重复invocation初始化和初始化失败不launch。不可用强制DTE或全卡barrier掩盖遗漏。
+
+## TileRow参数的可见性不由顶层launch packet递归保证
+
+- 根因：TileRowPointerTable的顶层packet只有DDR row地址；固件invalidate packet后，wrapper仍可能从Kcore cache读取旧row内容。
+  参数行是Host→Kcore域交接，tensor DMA和DDR publication不能代替它。
+- 修复模式：wrapper读出选中row地址后、任何slot load前，以ABI中的实际slot数invalidate整个row并执行fence/sync；
+  TileMajor参数直接位于packet内，不增加间接row操作。使用invalidate而非写回旧cache内容。
+- 防复发：检查row地址load→exact byte-range acquire→slot loads的LLVM顺序；连续运行不同整除/尾长的完整PyTorch产品矩阵，
+  保持同一设备会话并覆盖参数行和allocation地址复用。

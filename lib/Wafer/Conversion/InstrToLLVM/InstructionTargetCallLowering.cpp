@@ -64,6 +64,11 @@ mlir::LogicalResult FunctionLowering::lowerInstruction(mlir::Operation *op) {
           [&](auto typedOp) { return lowerTDMADataMove(typedOp); })
       .Case<InstrPeripheralOp>(
           [&](auto typedOp) { return lowerPeripheral(typedOp); })
+      .Case<SyncDDRPublishOp>(
+          [&](auto op) { return lowerDDRPublication(op, op.getReady(), true); })
+      .Case<SyncDDRAcquireOp>([&](auto op) {
+        return lowerDDRPublication(op, op.getReady(), false);
+      })
       .Case<SyncNCCJoinOp>([&](auto typedOp) { return lowerNCCJoin(typedOp); })
       .Default([&](mlir::Operation *unknown) {
         return unknown->emitError()
@@ -179,20 +184,19 @@ struct TargetInstructionOpLowering
   const DirectDTEEndpointDomain *dteDomain;
 };
 
-struct TargetNCCJoinOpLowering
-    : public mlir::OpConversionPattern<SyncNCCJoinOp> {
-  TargetNCCJoinOpLowering(mlir::LLVMTypeConverter &converter,
-                          const DirectDTEEndpointDomain *dteDomain)
-      : mlir::OpConversionPattern<SyncNCCJoinOp>(converter,
-                                                 &converter.getContext()),
+template <typename OpTy>
+struct TargetSyncOpLowering : public mlir::OpConversionPattern<OpTy> {
+  TargetSyncOpLowering(mlir::LLVMTypeConverter &converter,
+                       const DirectDTEEndpointDomain *dteDomain)
+      : mlir::OpConversionPattern<OpTy>(converter, &converter.getContext()),
         dteDomain(dteDomain) {}
 
   mlir::LogicalResult
-  matchAndRewrite(SyncNCCJoinOp op, OpAdaptor adaptor,
+  matchAndRewrite(OpTy op, typename OpTy::Adaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     return lowerTargetInstruction(
         op.getOperation(), adaptor.getOperands(), rewriter,
-        getTypeConverter<mlir::LLVMTypeConverter>(), dteDomain);
+        this->template getTypeConverter<mlir::LLVMTypeConverter>(), dteDomain);
   }
 
   const DirectDTEEndpointDomain *dteDomain;
@@ -202,8 +206,9 @@ struct TargetNCCJoinOpLowering
 void populateTargetInstructionConversionPatterns(
     mlir::LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns,
     const DirectDTEEndpointDomain *dteDomain) {
-  patterns.add<TargetInstructionOpLowering, TargetNCCJoinOpLowering>(converter,
-                                                                     dteDomain);
+  patterns.add<TargetInstructionOpLowering, TargetSyncOpLowering<SyncNCCJoinOp>,
+               TargetSyncOpLowering<SyncDDRPublishOp>,
+               TargetSyncOpLowering<SyncDDRAcquireOp>>(converter, dteDomain);
 }
 
 } // namespace wafer::target_llvm_detail

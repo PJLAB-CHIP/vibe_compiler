@@ -2,6 +2,7 @@
 //===//
 
 #include "Wafer/Driver/ProgramResourceVerification.h"
+#include "Wafer/Transforms/Instr/SharedDDRCompletion.h"
 
 #include "Wafer/Analysis/Module/ExecutableCallClosure.h"
 
@@ -39,6 +40,11 @@ verifyProgramResources(llvm::ArrayRef<mlir::ModuleOp> inputModules,
            << executionConfig.getTileCount() << "), got " << actual
            << " at sorted position " << expected;
   }
+
+  auto completion = verifySharedDDRCompletion(inputModules, tileIds);
+  if (!completion.succeeded())
+    return mlir::ModuleOp(inputModules.front()).emitError()
+           << "shared_ddr_completion: " << completion.detail;
 
   const TargetMemoryPolicy memory = getTargetMemoryPolicy();
   mlir::ModuleOp diagnosticAnchor = inputModules.front();

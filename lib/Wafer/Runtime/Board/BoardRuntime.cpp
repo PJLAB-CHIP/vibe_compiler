@@ -578,6 +578,13 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
             BoardDeviceMemory{checkedInvocationAddress(range)}, binding->bytes))
       return fail(BoardRuntimeStage::HostToDevice, {}, std::move(error));
   }
+  for (const RuntimePlannedRange &range :
+       capacityPlan->zeroInitializedSharedWorkspaceRanges) {
+    std::vector<uint8_t> zero(range.bytes, 0);
+    if (llvm::Error error = driver.copyHostToDevice(
+            BoardDeviceMemory{checkedInvocationAddress(range)}, zero))
+      return fail(BoardRuntimeStage::HostToDevice, {}, std::move(error));
+  }
   if (request.profilerRecordBytes) {
     for (auto [tile, ranges, image] :
          llvm::zip(capacityPlan->tiles, capacityPlan->tileRanges,

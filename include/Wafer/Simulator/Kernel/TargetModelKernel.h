@@ -86,6 +86,8 @@ private:
 enum class TargetModelControlAction : uint8_t {
   None,
   NCCJoin,
+  DDRPublish,
+  DDRAcquire,
   DirectDTEBegin,
   DirectDTESendPrepare,
   DirectDTEMultiSendPrepare,

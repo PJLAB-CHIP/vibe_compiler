@@ -59,4 +59,26 @@ mlir::LogicalResult FunctionLowering::lowerNCCJoin(SyncNCCJoinOp op) {
   return mlir::success();
 }
 
+mlir::LogicalResult FunctionLowering::lowerDDRPublication(mlir::Operation *op,
+                                                          mlir::Value ready,
+                                                          bool publish) {
+  auto data = op->getOperand(0);
+  auto info = computeWaferPhysicalTensorInfo(
+      mlir::cast<mlir::MemRefType>(data.getType()));
+  if (!info || info->physicalBytes <= 0)
+    return op->emitError("DDR publication requires an exact payload span");
+  auto dataAddress = materializeAddress(op, data, "shared DDR data");
+  if (mlir::failed(dataAddress))
+    return mlir::failure();
+  auto address = materializeAddress(op, ready, "shared DDR completion storage");
+  if (mlir::failed(address))
+    return mlir::failure();
+  emitCall(
+      op->getLoc(),
+      getTargetCallDescriptor(publish ? TargetCallBuiltin::DDRPublish
+                                      : TargetCallBuiltin::DDRAcquire),
+      {*dataAddress, *address, constantI64(op->getLoc(), info->physicalBytes)});
+  return mlir::success();
+}
+
 } // namespace wafer::target_llvm_detail

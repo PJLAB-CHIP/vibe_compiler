@@ -109,7 +109,8 @@ bool haveSameResourceGeometry(const compiler::TileEntryArgument &lhs,
          lhs.dtype == rhs.dtype && lhs.layout == rhs.layout &&
          lhs.shape == rhs.shape && lhs.byteSize == rhs.byteSize &&
          lhs.alignment == rhs.alignment &&
-         lhs.targetTensorMaterialization == rhs.targetTensorMaterialization;
+         lhs.targetTensorMaterialization == rhs.targetTensorMaterialization &&
+         lhs.zeroInitialize == rhs.zeroInitialize;
 }
 
 } // namespace
@@ -343,7 +344,8 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
                  slot.access == compiler::TileEntryArgumentAccess::ReadWrite});
       }
       slots.push_back({launchSlot, slot.ordinal, slot.kind, slot.resourceIndex,
-                       slot.access, resource, base, byteSize, alignment});
+                       slot.access, resource, base, byteSize, alignment,
+                       slot.zeroInitialize});
     }
   }
 

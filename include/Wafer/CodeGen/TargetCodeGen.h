@@ -77,6 +77,8 @@ struct TileEntryArgument {
   /// writing. Present exactly for TargetTensor slots; it is compiler metadata,
   /// not part of the runtime pointer-row ABI or package manifest.
   std::optional<TargetTensorMaterializationAction> targetTensorMaterialization;
+  /// Zero initializer of an actual mutable shared DDR global.
+  bool zeroInitialize = false;
 };
 
 /// One fully translated target LLVM module and the context that owns all of

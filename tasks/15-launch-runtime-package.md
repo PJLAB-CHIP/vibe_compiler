@@ -180,11 +180,24 @@ argument是closed union：
 - package-owned TargetTensor；
 - external output；
 - entry-local workspace；
+- compiler-owned shared workspace；
 - entry-local profile record；
 - entry-local Direct-DTE status。
 
 entry-local requirement直接记录bytes/alignment/access和必要typed ABI，不进入ProgramTensor/TargetTensor表。
-同一TargetTensor ID被多个entries引用是唯一共享事实；相同字段或文件range不能由runtime自动合并。
+同一TargetTensor ID或shared workspace ResourceId被多个entries引用是对应存储的唯一共享事实；相同字段或文件range不能由runtime自动合并。
+
+Shared workspace reference包含`resource`、`bytes`、`alignment`、`access`和必填`zero_initialize`。
+同一ResourceId的大小、对齐及初始化要求必须一致；access保留各entry的实际读写权限。`zero_initialize`只来自实际DDR global的
+零initializer，不根据符号、slot序号或用途推断。它随typed TileEntryArgument、target LLVM metadata和manifest逐层传递；
+普通workspace保持未初始化，外部tensor和entry-local resource不得携带该要求。
+Runtime规划为每个共享ResourceId分配一次存储，并只为要求初始化的实际range生成清零H2D；每次invocation在任何launch前完成，
+初始化失败不得提交设备执行。Shared-DDR publication使用独立64B通知resource；数据仍由WDMA生产，不能用host清零代替实际计算。
+
+TileRowPointerTable的packet仅保存各Tile的DDR row地址；固件对packet的invalidate不包含这些间接存储。
+Kernel aggregation在选定physical Tile对应的row后、首次slot load前调用CRT wrapper helper
+`wafer_kernel_acquire_argument_row(row, slotsPerTile * 8)`，对实际host-written range执行C908 invalidate及fence/sync。
+该操作属于launch ABI读取，不是Instr计算或NCC/DTE完成事件；TileMajor参数直接位于固件已处理的packet中，不增加该调用。
 
 `tile_id`与`launch_slot`是独立typed domains；launch slot必须dense且唯一，但不要求等于Tile ID。
 Module ID/path/vector位置不承担Tile identity。

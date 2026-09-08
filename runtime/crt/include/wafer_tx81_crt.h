@@ -10,6 +10,9 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+/* Kernel launch wrapper support; not an Instr target call. The row is a
+ * host-written, invocation-owned DDR array of argument addresses. */
+void wafer_kernel_acquire_argument_row(uint64_t row_addr, uint64_t byte_count);
 void wafer_tx81_rdma(uint64_t src, uint64_t dst, uint32_t byte_count,
                         uint32_t inner_bytes, uint32_t stride0,
                         uint32_t stride1, uint32_t stride2, uint32_t iteration0,
@@ -56,6 +59,10 @@ void wafer_tx81_tdma_img2col(
     uint32_t pad_right, uint32_t kernel_x, uint32_t kernel_y, uint32_t stride_x,
     uint32_t stride_y, uint32_t format, uint32_t worker);
 void wafer_tx81_ncc_join(uint32_t participant_mask);
+void wafer_tx81_ddr_publish(uint64_t data_addr, uint64_t ready_addr,
+                            uint64_t byte_count);
+void wafer_tx81_ddr_acquire(uint64_t data_addr, uint64_t ready_addr,
+                            uint64_t byte_count);
 
 void wafer_tx81_direct_dte_begin(uint64_t status_addr,
                                  uint32_t participant_count);

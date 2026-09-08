@@ -715,6 +715,7 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
   struct SharedWorkspaceUse {
     uint64_t bytes = 0;
     uint64_t alignment = 0;
+    bool zeroInitialize = false;
     bool read = false;
     bool write = false;
   };
@@ -783,9 +784,12 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
           return invalid("package entry card workspace requirement is invalid");
         auto [use, inserted] = sharedWorkspaces.try_emplace(
             workspace->resource,
-            SharedWorkspaceUse{workspace->bytes, workspace->alignment});
-        if (!inserted && (use->second.bytes != workspace->bytes ||
-                          use->second.alignment != workspace->alignment))
+            SharedWorkspaceUse{workspace->bytes, workspace->alignment,
+                               workspace->zeroInitialize});
+        if (!inserted &&
+            (use->second.bytes != workspace->bytes ||
+             use->second.alignment != workspace->alignment ||
+             use->second.zeroInitialize != workspace->zeroInitialize))
           return invalid(
               "package card workspace references disagree on storage");
         use->second.read |= argument.access == PackageAccessMode::ReadOnly ||

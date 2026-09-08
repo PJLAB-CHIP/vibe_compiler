@@ -491,6 +491,15 @@ llvm::Error validatePayload(const target::TargetCommandPayload &payload) {
                                "peripheral element_count must be positive");
           return requireEngineFormat(value.format, TargetFormatEngine::CT,
                                      "peripheral");
+        } else if constexpr (std::is_same_v<T,
+                                            target::TargetDDRPublishCommand> ||
+                             std::is_same_v<T,
+                                            target::TargetDDRAcquireCommand>) {
+          if (value.readyAddress % 64 || !value.byteCount)
+            return kernelError(
+                TargetModelKernelErrorCode::InvalidCommandField,
+                "DDR publication requires cache-line aligned storage");
+          return llvm::Error::success();
         } else if constexpr (std::is_same_v<T, target::TargetNCCJoinCommand>) {
           if (value.participantMask == 0 ||
               (value.participantMask & ~kAllTargetNCCWorkersMask) != 0)

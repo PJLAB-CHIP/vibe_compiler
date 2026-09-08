@@ -204,6 +204,17 @@ struct TargetPeripheralElementMaskCommand {
   uint32_t roundingMode;
 };
 
+struct TargetDDRPublishCommand {
+  uint64_t dataAddress;
+  uint64_t readyAddress;
+  uint64_t byteCount;
+};
+struct TargetDDRAcquireCommand {
+  uint64_t dataAddress;
+  uint64_t readyAddress;
+  uint64_t byteCount;
+};
+
 struct TargetNCCJoinCommand {
   uint32_t participantMask;
 };
@@ -261,11 +272,11 @@ using TargetCommandPayload = std::variant<
     TargetTDMATransformCommand, TargetPeripheralArgExtremaCommand,
     TargetPeripheralBilinearCommand, TargetPeripheralLUTCommand,
     TargetPeripheralRandomCommand, TargetPeripheralElementMaskCommand,
-    TargetNCCJoinCommand, TargetDirectDTEBeginCommand,
-    TargetDirectDTESendCommand, TargetDirectDTEMultiSendCommand,
-    TargetDirectDTEMultiSendDestinationCommand, TargetDirectDTESendIssueCommand,
-    TargetDirectDTEReceiveCommand, TargetDirectDTEWaitCommand,
-    TargetDirectDTEFinishCommand>;
+    TargetDDRPublishCommand, TargetDDRAcquireCommand, TargetNCCJoinCommand,
+    TargetDirectDTEBeginCommand, TargetDirectDTESendCommand,
+    TargetDirectDTEMultiSendCommand, TargetDirectDTEMultiSendDestinationCommand,
+    TargetDirectDTESendIssueCommand, TargetDirectDTEReceiveCommand,
+    TargetDirectDTEWaitCommand, TargetDirectDTEFinishCommand>;
 
 } // namespace target
 
@@ -282,6 +293,8 @@ enum class TargetCallBuiltin : uint8_t {
   TDMAPad,
   TDMAImg2Col,
   NCCJoin,
+  DDRPublish,
+  DDRAcquire,
   DirectDTEBegin,
   DirectDTEBeginAfterPrepare,
   DirectDTESendPrepare,

@@ -247,10 +247,12 @@ struct SharedWorkspaceArgument {
   uint64_t resource = std::numeric_limits<uint64_t>::max();
   uint64_t bytes = 0;
   uint64_t alignment = 0;
+  bool zeroInitialize = false;
   friend bool operator==(const SharedWorkspaceArgument &lhs,
                          const SharedWorkspaceArgument &rhs) {
     return lhs.resource == rhs.resource && lhs.bytes == rhs.bytes &&
-           lhs.alignment == rhs.alignment;
+           lhs.alignment == rhs.alignment &&
+           lhs.zeroInitialize == rhs.zeroInitialize;
   }
   friend bool operator!=(const SharedWorkspaceArgument &lhs,
                          const SharedWorkspaceArgument &rhs) {
@@ -596,6 +598,7 @@ struct RuntimeInvocationPlan {
   std::vector<RuntimePlannedRange> outputRanges;
   /// Shared DDR child ranges indexed by SharedWorkspace resource id.
   std::vector<RuntimePlannedRange> sharedWorkspaceRanges;
+  std::vector<RuntimePlannedRange> zeroInitializedSharedWorkspaceRanges;
   /// Per-Tile entry-local ranges, indexed by launch slot.
   std::vector<RuntimeEntryLocalRanges> tileRanges;
   /// Per-Tile device pointer rows for the TileRowPointerTable entry ABI;

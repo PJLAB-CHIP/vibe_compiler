@@ -993,6 +993,52 @@ TEST_F(BoardRuntimeTest,
   EXPECT_EQ(driver.freedAddresses, expectedAllocations);
 }
 
+TEST_F(BoardRuntimeTest, InitializesSharedPublicationStorageBeforeEveryLaunch) {
+  using namespace wafer::runtime;
+  writeProgramDataFile({});
+  auto manifest = makeTile16Manifest();
+  for (auto &entry : manifest.entries) {
+    auto workspace = entry.arguments.back();
+    entry.arguments.pop_back();
+    entry.arguments.push_back({static_cast<uint64_t>(entry.arguments.size()),
+                               SharedWorkspaceArgument{0, 64, 64, true},
+                               entry.tileId == wafer::TileId(15)
+                                   ? PackageAccessMode::WriteOnly
+                                   : PackageAccessMode::ReadOnly});
+    workspace.ordinal = entry.arguments.size();
+    entry.arguments.push_back(std::move(workspace));
+  }
+  auto package = loadPackage(std::move(manifest));
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  FakeBoardDriver driver;
+  for (unsigned invocation = 0; invocation < 2; ++invocation) {
+    size_t firstCall = driver.calls.size();
+    size_t firstCopy = driver.h2dPayloads.size();
+    auto result = executeBoardInvocation(
+        *package, makeTile16Request(package->getManifest()), driver);
+    ASSERT_TRUE(static_cast<bool>(result))
+        << llvm::toString(result.takeError());
+    ASSERT_EQ(driver.h2dPayloads.size() - firstCopy, 2u);
+    EXPECT_EQ(driver.h2dPayloads[firstCopy + 1], std::vector<uint8_t>(64, 0));
+    auto submit =
+        std::find(driver.calls.begin() + firstCall, driver.calls.end(),
+                  "submit-kernel-phase:grid:main");
+    ASSERT_NE(submit, driver.calls.end());
+    EXPECT_EQ(std::count(driver.calls.begin() + firstCall, submit, "h2d"), 2);
+    EXPECT_EQ(driver.allocatedAddresses.size(), driver.freedAddresses.size());
+  }
+  FakeBoardDriver failed;
+  failed.failOperation = "h2d";
+  failed.failIndex = 1; // Input succeeds; publication initialization fails.
+  auto result = executeBoardInvocation(
+      *package, makeTile16Request(package->getManifest()), failed);
+  ASSERT_FALSE(static_cast<bool>(result));
+  llvm::consumeError(result.takeError());
+  EXPECT_TRUE(failed.submittedLaunches.empty());
+  EXPECT_EQ(failed.allocatedAddresses.size(), failed.freedAddresses.size());
+}
+
 TEST_F(BoardRuntimeTest, ExecutesExplicitNonIdentityTileLaunchBinding) {
   using namespace wafer::runtime;
   writeProgramDataFile({});

@@ -10,6 +10,7 @@
 #include "Wafer/Target/TargetMemory.h"
 #include "Wafer/Transforms/Instr/MemoryPlanning.h"
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
+#include "Wafer/Transforms/Instr/SharedDDRCompletion.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -594,6 +595,85 @@ TEST(ExecutableCompilationPolicyTest,
     EXPECT_EQ(baseline.communicationRegionClosures, 0u);
     ASSERT_TRUE(baselineResult.physicalIRInventory);
     EXPECT_GE(baselineResult.physicalIRInventory->tileRegions, 32u);
+
+    llvm::SmallVector<mlir::ModuleOp> modules;
+    llvm::SmallVector<wafer::TileId> tileIds;
+    unsigned publications = 0, acquisitions = 0;
+    for (auto &tile : baselineResult.executable->tiles) {
+      auto module = tile.getModule();
+      modules.push_back(module);
+      tileIds.push_back(tile.getTileId());
+      module.walk([&](wafer::SyncDDRPublishOp op) {
+        ++publications;
+        EXPECT_TRUE(
+            mlir::isa_and_nonnull<wafer::SyncNCCJoinOp>(op->getPrevNode()));
+      });
+      module.walk([&](wafer::SyncDDRAcquireOp) { ++acquisitions; });
+    }
+    EXPECT_EQ(publications, 16u);
+    EXPECT_EQ(acquisitions, 240u);
+    auto completed = wafer::verifySharedDDRCompletion(modules, tileIds);
+    EXPECT_TRUE(completed.succeeded()) << completed.detail;
+    // Mutate only a private Tile Module clone; all other current owners stay
+    // read-only. Missing/misplaced acquire must fail the same product gate.
+    mlir::OwningOpRef<mlir::ModuleOp> missingAcquire(modules.front().clone());
+    wafer::SyncDDRAcquireOp acquire;
+    missingAcquire->walk([&](wafer::SyncDDRAcquireOp op) { acquire = op; });
+    ASSERT_TRUE(acquire);
+    auto original = modules.front();
+    modules.front() = *missingAcquire;
+    auto *next = acquire->getNextNode();
+    auto *block = acquire->getBlock();
+    acquire->moveBefore(block->getTerminator());
+    EXPECT_EQ(wafer::verifySharedDDRCompletion(modules, tileIds).failure,
+              wafer::SharedDDRCompletionFailure::Contract);
+    acquire->moveBefore(next);
+    EXPECT_TRUE(wafer::verifySharedDDRCompletion(modules, tileIds).succeeded());
+    mlir::OpBuilder acquireBuilder(acquire);
+    auto *extraAcquire = acquireBuilder.clone(*acquire);
+    EXPECT_EQ(wafer::verifySharedDDRCompletion(modules, tileIds).failure,
+              wafer::SharedDDRCompletionFailure::Contract);
+    extraAcquire->erase();
+    auto readyArgument = mlir::cast<mlir::BlockArgument>(acquire.getReady());
+    auto readyFunction =
+        mlir::cast<mlir::func::FuncOp>(readyArgument.getOwner()->getParentOp());
+    auto readyBinding = readyFunction.getArgAttrOfType<wafer::DDRBindingAttr>(
+        readyArgument.getArgNumber(), wafer::kWaferDDRBindingAttrName);
+    auto readyGlobal = missingAcquire->lookupSymbol<mlir::memref::GlobalOp>(
+        readyBinding.getResource().getValue());
+    ASSERT_TRUE(readyGlobal);
+    auto initializer = readyGlobal.getInitialValueAttr();
+    readyGlobal.setInitialValueAttr(acquireBuilder.getUnitAttr());
+    EXPECT_EQ(wafer::verifySharedDDRCompletion(modules, tileIds).failure,
+              wafer::SharedDDRCompletionFailure::Contract);
+    readyGlobal.setInitialValueAttr(initializer);
+    auto zeroIndex = acquireBuilder.create<mlir::arith::ConstantIndexOp>(
+        acquire.getLoc(), 0);
+    auto zeroByte = acquireBuilder.create<mlir::arith::ConstantIntOp>(
+        acquire.getLoc(), 0, 8);
+    auto unrelatedWrite = acquireBuilder.create<mlir::memref::StoreOp>(
+        acquire.getLoc(), zeroByte, acquire.getReady(),
+        mlir::ValueRange{zeroIndex});
+    EXPECT_EQ(wafer::verifySharedDDRCompletion(modules, tileIds).failure,
+              wafer::SharedDDRCompletionFailure::Unsupported);
+    unrelatedWrite.erase();
+    zeroByte.erase();
+    zeroIndex.erase();
+    acquire.erase();
+    EXPECT_EQ(wafer::verifySharedDDRCompletion(modules, tileIds).failure,
+              wafer::SharedDDRCompletionFailure::Contract);
+    modules.front() = original;
+
+    mlir::OwningOpRef<mlir::ModuleOp> duplicatePublish(original.clone());
+    wafer::SyncDDRPublishOp publish;
+    duplicatePublish->walk([&](wafer::SyncDDRPublishOp op) { publish = op; });
+    ASSERT_TRUE(publish);
+    mlir::OpBuilder builder(publish);
+    builder.clone(*publish);
+    modules.front() = *duplicatePublish;
+    EXPECT_EQ(wafer::verifySharedDDRCompletion(modules, tileIds).failure,
+              wafer::SharedDDRCompletionFailure::Contract);
+    modules.front() = original;
 
     wafer::compiler::ProgramDataHandoff searchData;
     wafer::compiler::detail::SearchCurrentIROptions options;

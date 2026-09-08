@@ -488,6 +488,14 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   add_wafer_systemc_transport_test(
     WaferSystemCSimulatorNoProgressTest
     Simulator/SystemC/SystemCTargetModelNoProgressTest.cpp)
+  add_wafer_systemc_transport_test(
+    WaferSystemCSimulatorDDRPublicationTest
+    Simulator/SystemC/SystemCTargetModelDDRPublicationTest.cpp)
+  add_wafer_systemc_transport_test(
+    WaferSystemCSimulatorDDRLateJoinTest
+    Simulator/SystemC/SystemCTargetModelDDRPublicationTest.cpp)
+  target_compile_definitions(WaferSystemCSimulatorDDRLateJoinTest PRIVATE
+    WAFER_TEST_DDR_LATE_JOIN=1)
 
   set_tests_properties(
     ${WAFER_SYSTEMC_MODEL_TEST_TARGETS}

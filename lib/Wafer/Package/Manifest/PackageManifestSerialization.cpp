@@ -171,6 +171,7 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
                   json.attribute("resource", int64_t(reference->resource));
                   json.attribute("bytes", int64_t(reference->bytes));
                   json.attribute("alignment", int64_t(reference->alignment));
+                  json.attribute("zero_initialize", reference->zeroInitialize);
                 } else if (const auto *reference =
                                std::get_if<ProfileRecordArgument>(
                                    &argument.reference)) {

@@ -744,6 +744,8 @@ llvm::Expected<ProfileTargetSiteKind> parseSiteKind(llvm::StringRef value,
                                                     llvm::StringRef context) {
   if (value == "ncc-command")
     return ProfileTargetSiteKind::NCCCommand;
+  if (value == "ddr-completion")
+    return ProfileTargetSiteKind::DDRCompletion;
   if (value == "ncc-completion")
     return ProfileTargetSiteKind::NCCCompletion;
   if (value == "direct-dte-control")

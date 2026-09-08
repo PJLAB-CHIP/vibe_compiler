@@ -627,10 +627,11 @@ parseTileEntryArgumentReference(const llvm::json::Object &object,
     return TileEntryArgumentReference{WorkspaceArgument{*bytes, *alignment}};
   }
   if (*kind == "shared_workspace") {
-    if (llvm::Error error = requireExactFields(
-            object,
-            {"kind", "ordinal", "resource", "bytes", "alignment", "access"},
-            context))
+    if (llvm::Error error =
+            requireExactFields(object,
+                               {"kind", "ordinal", "resource", "bytes",
+                                "alignment", "access", "zero_initialize"},
+                               context))
       return std::move(error);
     llvm::Expected<uint64_t> resource =
         requireUnsigned(object, "resource", context);
@@ -643,8 +644,11 @@ parseTileEntryArgumentReference(const llvm::json::Object &object,
       return bytes.takeError();
     if (!alignment)
       return alignment.takeError();
-    return TileEntryArgumentReference{
-        SharedWorkspaceArgument{*resource, *bytes, *alignment}};
+    auto zeroInitialize = requireBoolean(object, "zero_initialize", context);
+    if (!zeroInitialize)
+      return zeroInitialize.takeError();
+    return TileEntryArgumentReference{SharedWorkspaceArgument{
+        *resource, *bytes, *alignment, *zeroInitialize}};
   }
   if (*kind == "profile_record") {
     if (llvm::Error error = requireExactFields(

@@ -129,9 +129,9 @@ def production_symbols_from_registry(
         fail("target lowering retains the old symbol-construction path")
 
     static_bases = set(STATIC_REGISTRY_STEM_RE.findall(registry_text))
-    if len(static_bases) != 20:
+    if len(static_bases) != 22:
         fail(
-            "target-call registry must contain 20 fixed call stems, found "
+            "target-call registry must contain 22 fixed call stems, found "
             f"{len(static_bases)}"
         )
     symbols = {f"wafer_tx81_{base}" for base in static_bases}
@@ -178,11 +178,13 @@ def production_symbols_from_registry(
         f"wafer_tx81_peripheral_{peripheral_spellings[kind]}"
         for kind in peripheral_kinds
     )
-    if len(symbols) != 114:
-        fail(f"target-call registry must close 114 symbols, found {len(symbols)}")
+    if len(symbols) != 116:
+        fail(f"target-call registry must close 116 symbols, found {len(symbols)}")
 
     shared_symbols = {
         "wafer_tx81_ncc_join",
+        "wafer_tx81_ddr_publish",
+        "wafer_tx81_ddr_acquire",
         "wafer_tx81_direct_dte_begin",
         "wafer_tx81_direct_dte_begin_after_prepare",
         "wafer_tx81_direct_dte_send_prepare",

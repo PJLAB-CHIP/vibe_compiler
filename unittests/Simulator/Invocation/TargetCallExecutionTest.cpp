@@ -258,6 +258,10 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
   if (const auto *builtin =
           std::get_if<wafer::TargetCallBuiltin>(&descriptor.semantic)) {
     switch (*builtin) {
+    case wafer::TargetCallBuiltin::DDRPublish:
+    case wafer::TargetCallBuiltin::DDRAcquire:
+      break;
+
     case wafer::TargetCallBuiltin::RDMA:
       arguments[10] = supportedF32Code(wafer::TargetFormatEngine::RDMA);
       break;
@@ -416,6 +420,29 @@ void expectPayloadFields(const wafer::TargetCallDescriptor &descriptor,
 
   if (const auto *builtin = std::get_if<wafer::TargetCallBuiltin>(&semantic)) {
     switch (*builtin) {
+    case wafer::TargetCallBuiltin::DDRPublish:
+      EXPECT_EQ(
+          std::get<wafer::target::TargetDDRPublishCommand>(payload).dataAddress,
+          arguments[0]);
+      EXPECT_EQ(std::get<wafer::target::TargetDDRPublishCommand>(payload)
+                    .readyAddress,
+                arguments[1]);
+      EXPECT_EQ(
+          std::get<wafer::target::TargetDDRPublishCommand>(payload).byteCount,
+          arguments[2]);
+      return;
+    case wafer::TargetCallBuiltin::DDRAcquire:
+      EXPECT_EQ(
+          std::get<wafer::target::TargetDDRAcquireCommand>(payload).dataAddress,
+          arguments[0]);
+      EXPECT_EQ(std::get<wafer::target::TargetDDRAcquireCommand>(payload)
+                    .readyAddress,
+                arguments[1]);
+      EXPECT_EQ(
+          std::get<wafer::target::TargetDDRAcquireCommand>(payload).byteCount,
+          arguments[2]);
+      return;
+
     case wafer::TargetCallBuiltin::RDMA:
     case wafer::TargetCallBuiltin::WDMA: {
       ASSERT_TRUE(
@@ -848,7 +875,7 @@ void expectPayloadFields(const wafer::TargetCallDescriptor &descriptor,
 TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   llvm::ArrayRef<wafer::TargetCallDescriptor> descriptors =
       wafer::getTargetCallDescriptors();
-  ASSERT_EQ(descriptors.size(), 114u);
+  ASSERT_EQ(descriptors.size(), 116u);
   llvm::DenseSet<llvm::StringRef> symbols;
   size_t issueDomainCount = 0;
   size_t nccIssueDomainCount = 0;
@@ -972,7 +999,7 @@ TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
     expectPayloadFields(descriptor, arguments, *payload);
     ++decoded;
   }
-  EXPECT_EQ(decoded, 114u);
+  EXPECT_EQ(decoded, 116u);
 }
 
 TEST(TargetCallRegistryTest, DecodesExplicitWorkerOneAndTwo) {

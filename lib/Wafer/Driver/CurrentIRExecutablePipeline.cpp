@@ -9,6 +9,7 @@
 #include "Wafer/Transforms/Instr/DirectDTETransport.h"
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
 #include "Wafer/Transforms/Instr/NativeDirectDTEMultiSend.h"
+#include "Wafer/Transforms/Instr/SharedDDRCompletion.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
@@ -272,6 +273,18 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
                   "instr-transfer-cleanup",
                   "canonical Instr transfer cleanup failed");
   }
+
+  llvm::SmallVector<TileId> completionTileIds;
+  for (const StandaloneTileModule &tile : *standalone)
+    completionTileIds.push_back(tile.tileId);
+  auto sharedCompletion =
+      materializeSharedDDRCompletion(instructionModules, completionTileIds);
+  if (!sharedCompletion.succeeded())
+    return fail(sharedCompletion.failure ==
+                        SharedDDRCompletionFailure::Unsupported
+                    ? ExecutableCompilationStatus::UnsupportedFailure
+                    : ExecutableCompilationStatus::CompilerFailure,
+                "shared-ddr-completion", sharedCompletion.detail);
 
   DirectDTECompletionResult finalDTECompletion =
       rebuildRequiredDirectDTEWaits(instructionModules);

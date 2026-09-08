@@ -251,6 +251,8 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
       arguments[2] = 1;
       arguments[3] = 0;
       break;
+    case TargetCallBuiltin::DDRPublish:
+    case TargetCallBuiltin::DDRAcquire:
     case TargetCallBuiltin::NCCJoin:
     case TargetCallBuiltin::DirectDTESendIssue:
     case TargetCallBuiltin::DirectDTERecvPrepare:
@@ -339,7 +341,7 @@ TEST(TargetModelKernelTest, EveryTypedCallPayloadHasClosedFieldValidation) {
         << descriptor.symbol << ": " << llvm::toString(std::move(error));
     ++validated;
   }
-  EXPECT_EQ(validated, 114u);
+  EXPECT_EQ(validated, 116u);
 }
 
 TEST(TargetModelTileCommandTrackerTest,

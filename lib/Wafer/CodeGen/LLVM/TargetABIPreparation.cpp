@@ -405,6 +405,14 @@ prepareTargetABI(const TileExecutable &tileExecutable,
          std::vector<int64_t>(memrefType.getShape().begin(),
                               memrefType.getShape().end()),
          physical->physicalBytes, *alignment, access});
+    if (auto initial = declaration.getInitialValue()) {
+      auto dense = mlir::dyn_cast<mlir::DenseIntElementsAttr>(*initial);
+      if (!dense || !dense.isSplat() ||
+          !dense.getSplatValue<llvm::APInt>().isZero())
+        return function.emitError("target_abi_mismatch: shared DDR initializer "
+                                  "must be an integer zero splat");
+      prepared.slots.back().zeroInitialize = true;
+    }
   }
 
   llvm::SmallVector<mlir::func::ReturnOp, 2> returns;

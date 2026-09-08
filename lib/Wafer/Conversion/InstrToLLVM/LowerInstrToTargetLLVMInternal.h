@@ -151,6 +151,8 @@ struct FunctionLowering {
   mlir::LogicalResult lowerTDMADataMove(InstrTDMADataMoveOp op);
   mlir::LogicalResult lowerPeripheral(InstrPeripheralOp op);
   mlir::LogicalResult lowerNCCJoin(SyncNCCJoinOp op);
+  mlir::LogicalResult lowerDDRPublication(mlir::Operation *op,
+                                          mlir::Value ready, bool publish);
   mlir::LogicalResult lowerInstruction(mlir::Operation *op);
 };
 

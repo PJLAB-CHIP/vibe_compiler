@@ -27,4 +27,23 @@ def Wafer_SyncNCCJoinOp
   let assemblyFormat = "$participants attr-dict";
 }
 
+class Wafer_DDRPublicationOp<string mnemonic, list<SideEffect> readyEffects>
+    : Wafer_Op<mnemonic, [MemoryEffects<[MemWrite<Wafer_SyncResource>]>]> {
+  let arguments = (ins Arg<AnyMemRef, "published DDR data", [MemRead]>:$data,
+      Arg<AnyMemRef, "invocation-owned completion word", readyEffects>:$ready);
+  let assemblyFormat =
+      "$data `,` $ready attr-dict `:` type($data) `,` type($ready)";
+  let hasVerifier = 1;
+}
+
+def Wafer_SyncDDRPublishOp
+    : Wafer_DDRPublicationOp<"instr.ddr_publish", [MemWrite]> {
+  let summary = "publish completed immutable shared DDR data";
+}
+
+def Wafer_SyncDDRAcquireOp
+    : Wafer_DDRPublicationOp<"instr.ddr_acquire", [MemRead]> {
+  let summary = "wait for the matching shared DDR publication before reading";
+}
+
 #endif // WAFER_IR_OPS_SYNCOPS_TD

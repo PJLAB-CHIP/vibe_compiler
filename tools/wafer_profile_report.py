@@ -27,6 +27,7 @@ EVENT_ENGINES = ENGINES
 SITE_KINDS = (
     "ncc-command",
     "ncc-completion",
+    "ddr-completion",
     "direct-dte-control",
     "direct-dte-issue",
     "direct-dte-wait",
@@ -603,10 +604,10 @@ def _validate_sites(
                 f"{path}.engine",
                 "a Direct-DTE issue/wait site must name the DIRECT_DTE engine",
             )
-        if site_kind == "direct-dte-control" and engine is not None:
+        if site_kind in ("direct-dte-control", "ddr-completion") and engine is not None:
             _fail(
                 f"{path}.engine",
-                "a Direct-DTE control site must use null engine",
+                "a transport control site must use null engine",
             )
         _integer(
             row["target_call_ordinal"],
@@ -771,6 +772,7 @@ def _validate_experiment(
                 },
                 "ncc-completion": {"target-site", "ncc-completion-wait"},
                 "direct-dte-control": {"target-site"},
+                "ddr-completion": {"target-site"},
                 "direct-dte-issue": {
                     "target-site",
                     "direct-dte-issue",
@@ -3521,6 +3523,7 @@ const TERMS={
     "target-site":{label:"动态 target-call 调用点包络",definition:"一次静态 target-call site 的动态进入/退出容器，用于关联内部 operation。",not:"不是额外 engine 工作，也不能与内部 operation 再相加。"}
   },
   site:{
+    "ddr-completion":{label:"共享 DDR 发布与获取调用点",definition:"发布已完成的数据，或等待远端发布后允许读取的静态调用点。",not:"不能计作 NCC 或 DTE engine 执行时间。"},
     "ncc-command":{label:"NCC 指令调用点",definition:"会向 CT/NE/RDMA/WDMA/TDMA 之一提交 TsmExecute 的静态 target-call site。",not:"site 包络不是对应 engine 的持续执行时间。"},
     "ncc-completion":{label:"NCC 完成调用点",definition:"观察或等待 NCC completion 的静态 target-call site。",not:"不是多 tile barrier，也不专属于某一个 engine。"},
     "direct-dte-control":{label:"Direct-DTE 控制调用点",definition:"Direct-DTE 生命周期准备或结束类控制 operation 的静态 site。",not:"不是发起或完成等待。"},

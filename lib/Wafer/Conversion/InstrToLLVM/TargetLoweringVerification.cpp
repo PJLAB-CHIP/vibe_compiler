@@ -66,7 +66,8 @@ bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result) {
 }
 
 bool isWaferInstruction(mlir::Operation *op) {
-  return mlir::isa<WaferInstructionOpInterface, SyncNCCJoinOp>(op);
+  return mlir::isa<WaferInstructionOpInterface, SyncNCCJoinOp, SyncDDRPublishOp,
+                   SyncDDRAcquireOp>(op);
 }
 
 mlir::Value resolveTileRegionBoundaryValue(mlir::Value value) {
@@ -891,7 +892,7 @@ static mlir::LogicalResult verifyTargetInstructionFormat(mlir::Operation *op) {
       })
       .Case<InstrGatherScatterOp, InstrDTESendOp, InstrDTERecvOp,
             InstrDTEBroadcastOp, InstrDTEScatterOp, InstrDTEWaitOp,
-            SyncNCCJoinOp>(
+            SyncNCCJoinOp, SyncDDRPublishOp, SyncDDRAcquireOp>(
           [&](auto) { return mlir::success(); })
       .Case<InstrFillOp>(
           [&](auto typedOp) { return verify(typedOp.getDest(), "fill dest"); })

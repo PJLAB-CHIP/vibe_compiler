@@ -207,6 +207,15 @@ llvm::Error createKernelAggregateExports(
       getOrInsertExactDeclaration(module, "__get_pid", pidType);
   if (!getPid)
     return getPid.takeError();
+  llvm::Function *acquireArgumentRow = nullptr;
+  if (entryABI == KernelEntryABI::TileRowPointerTable) {
+    auto acquire = getOrInsertExactDeclaration(
+        module, "wafer_kernel_acquire_argument_row",
+        llvm::FunctionType::get(voidType, {i64, i64}, false));
+    if (!acquire)
+      return acquire.takeError();
+    acquireArgumentRow = *acquire;
+  }
   if (includePrepare) {
     llvm::FunctionType *initTileType =
         llvm::FunctionType::get(i32, {i32, i32}, /*isVarArg=*/false);
@@ -297,6 +306,9 @@ llvm::Error createKernelAggregateExports(
           i64, rowAddress,
           llvm::formatv("launch_slot.{0}.row", launchSlot).str());
       rowValue->setAlignment(llvm::Align(8));
+      builder.CreateCall(acquireArgumentRow,
+                         {rowValue, llvm::ConstantInt::get(
+                                        i64, slotsPerTile * sizeof(uint64_t))});
       row = builder.CreateIntToPtr(
           rowValue, pointer,
           llvm::formatv("launch_slot.{0}.slots", launchSlot).str());

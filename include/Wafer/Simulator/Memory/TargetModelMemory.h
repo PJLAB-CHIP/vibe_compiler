@@ -107,6 +107,7 @@ struct TargetModelPlannedSlot {
   uint64_t base = 0;
   uint64_t byteSize = 0;
   uint64_t alignment = 0;
+  bool zeroInitialize = false;
 };
 
 /// A checked range identity. regionOffset is relative either to the private

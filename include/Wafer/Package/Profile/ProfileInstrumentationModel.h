@@ -69,6 +69,7 @@ enum class ProfileTSMEngine {
 enum class ProfileTargetSiteKind {
   NCCCommand,
   NCCCompletion,
+  DDRCompletion,
   DirectDTEControl,
   DirectDTEIssue,
   DirectDTEWait,

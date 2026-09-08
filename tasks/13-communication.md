@@ -157,14 +157,33 @@ relation与同Tile Region顺序构成无环图时才可选择该实现，之后�
 不能证明不同Tile已经按该顺序执行。候选还必须在current IR中表达writer实际完成后的跨Tile发布、reader读取前的获取以及重复执行的匹配/复用；
 同一actual memory/target leaf须验证这些事实后才可比较和发布。
 
-当前完成缺口：shared-DDR物化只有resource/binding和WDMA/RDMA，没有跨Tile release/acquire实现；runtime的共享allocation、
-grid launch顺序和Tile-local NCC join均不能补足。实卡已观察到新none AllGather数值失败，详见board-testing计划。
-因此此前仅凭Region DAG/host gate得出的DDR可执行结论不成立；完成合同未闭合前不能给这条路径签发board-ready/done。
-`docs/tx81-compiler-hardware-calibration.md`记录过`hrt_barrier`完整16 Tile、两个错峰epoch的board-observed结果；
-该窄证据不等于current shared-DDR完成实现。当前launch模式、保留状态初始化、PRODUCT_TYPE_PG跳过分支、
-WDMA完成与重复调用仍须共同验证；不能仅凭primitive名字或历史成功插入全卡同步。
-本项修复边界、机制待讨论问题及逐项验收矩阵由`tasks/plans/board-correctness-qualification.md`统一记录。
+Shared-DDR的跨Tile完成由下述publication协议实现；resource/binding、共享allocation、grid launch顺序及Tile-local
+NCC join各自只表达本域事实，不能单独作为远端store→load先行证明。共同leaf验证实际publish/acquire及资源初始化后才接受候选。
+板端验收和失败历史统一见`tasks/plans/board-correctness-qualification.md`。
 预算不足时报告有界搜索实际覆盖，不把未尝试或unsupported候选当作capacity rejection。
+
+### Shared-DDR publication
+
+完成变换消费已经lower为Instr的完整TileModule集合。当前boundary materializer为每个source value建立独立shared-DDR resource；
+每个resource在一个无条件、单次执行的writer Region内写入，后续reader只读，invocation内不覆盖复用。完成变换必须从actual
+WDMA/RDMA、SSA alias和control flow验证这一前提，不能按resource名字或既有binding access标签猜测。多次交换使用各自实际resource；
+不能证明单次发布或存在跨Region覆盖写的输入保持typed失败，不能错误套用一次性通知。
+
+为每个有跨Tile读者的resource创建独立64B、cache-line隔离、零初始化的DDR通知storage，作为普通typed DDR global/binding进入
+同一资源与package路径。`wafer.instr.ddr_publish(data, ready)`只在writer Region结束后发布，`wafer.instr.ddr_acquire(data, ready)`
+在reader首次读取前获取；二者的data operand保留实际资源关系及memory effect，ready operand保留实际通知storage，不能用旁路pair表。
+NCC完成放置从publish的数据访问要求生成对应pending worker join。Acquire不完成NCC或DTE事件；跨Tile verifier检查唯一publisher、
+全部reader的获取位置、无发布后写入及联合依赖无环。无跨Tile读写的资源不生成通知。
+
+Target/CRT将publish实现为完成标记的单writer 32-bit写入和显式cache clean，将acquire实现为显式invalidate后观察该标记；
+沿用已确认的C908 cache-line操作与fence/sync序列，不能把volatile当作cache一致性。通知不承载tensor数值，不借用DTE ready slot。
+Runtime从actual global的零initializer取得shared workspace初始化要求，在任何launch前完成H2D初始化；每次invocation重新初始化，
+所有Tile终止前不释放。目标调用和SystemC模型使用同一publish/acquire语义；模型允许reader先到，并在publisher发生后恢复。
+
+标准`gpu.barrier`只定义GPU workgroup内的集体到达，不能表达此处单writer、多reader、独立DDR资源的发布；`memref`提供storage及initializer，
+`MemoryEffectOpInterface`提供局部effect，跨Tile匹配由共同parent验证。新增两个Instr op的直接消费者是NCC completion、target lowering和
+跨Tile completion verifier，不建立新的IR层或host launch阶段。该路径的完成门禁为上述actual验证、zero-init package/runtime回归、
+不同执行顺序的模型验证及板测计划中1024/1025/1031完整PyTorch矩阵。
 
 Native grouping不在Tile层新增第二套communication op。Movement对eligible group保留从同一个actual source发出的普通
 `wafer.tile.peer_send`及每destination `peer_recv`；全部TileRegion转为current Instr、但fresh completion尚未生成时，card-scoped atomic

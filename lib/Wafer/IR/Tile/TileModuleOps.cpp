@@ -71,9 +71,15 @@ mlir::LogicalResult wafer::verifyTileModuleCollection(mlir::ModuleOp module) {
       continue;
     mlir::MemRefType type = global.getType();
     if (resource.getResourceId() < 0 || !type || !type.hasStaticShape() ||
-        !isWaferDDRMemRefType(type) || global.getInitialValue())
-      return global.emitOpError(
-          "DDR resource must be external, static, and DDR-typed");
+        !isWaferDDRMemRefType(type))
+      return global.emitOpError("DDR resource must be static and DDR-typed");
+    if (auto initial = global.getInitialValue()) {
+      auto dense = mlir::dyn_cast<mlir::DenseIntElementsAttr>(*initial);
+      if (!dense || !dense.isSplat() ||
+          !dense.getSplatValue<llvm::APInt>().isZero())
+        return global.emitOpError(
+            "DDR initializer must be an integer zero splat");
+    }
     if (!resources.try_emplace(resource.getResourceId(), global).second)
       return global.emitOpError("DDR resource_id must be unique: ")
              << resource.getResourceId();

@@ -29,7 +29,7 @@
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump \
 # RUN:   -dr -M no-aliases --disassemble=wafer_tx81_ncc_join %t.crt.o | FileCheck --check-prefix=NCC-JOIN %s
 
-# SURFACE: checked 114 production wafer_tx81_* CRT symbols from the shared typed target-call registry
+# SURFACE: checked 116 production wafer_tx81_* CRT symbols from the shared typed target-call registry
 # CONFORMANCE: checked Wafer target CRT conformance rules from compiler and CRT code: formats=13, encoding_rows=65, convert_routes=36, groups=4/23/9
 
 # ARGMAX-LABEL: <wafer_tx81_peripheral_argmax>:

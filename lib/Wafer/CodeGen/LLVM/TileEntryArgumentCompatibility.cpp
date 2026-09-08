@@ -19,6 +19,8 @@ findTileEntryArgumentOrderDifference(llvm::ArrayRef<TileEntryArgument> lhs,
       return TileEntryArgumentOrderDifference{index, "ordinal"};
     if (left.kind != right.kind)
       return TileEntryArgumentOrderDifference{index, "kind"};
+    if (left.zeroInitialize != right.zeroInitialize)
+      return TileEntryArgumentOrderDifference{index, "zero-initialize"};
     if (left.resourceIndex != right.resourceIndex)
       return TileEntryArgumentOrderDifference{index, "resource-index"};
     if (left.kind != TileEntryArgumentKind::SharedWorkspace &&
