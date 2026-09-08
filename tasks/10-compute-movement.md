@@ -275,6 +275,26 @@ iter_arg由该operation自身读取，因为`elementwise_into`明确支持destin
 mapped elementwise或无法证明的control flow都保持原IR；Tile-to-Instr lowering不得重新查看users后临时决定alias或复用，也不得为已经显式
 loop-carried的结果创建body-local allocation。
 
+Execution-structure closure同时消除相邻的elementwise写回：functional `elementwise`的唯一use必须是紧接着的
+`copy_into`，result和destination的完整memref type相同，所有input与result同型且indexing maps为空或identity。
+每个input必须与destination为同一SSA value，或由fresh MLIR AliasAnalysis证明NoAlias；MustAlias但不是同一view、
+PartialAlias和MayAlias均不支持此优化。满足条件时以`elementwise_into`直接写入原destination，并删除临时result和copy。
+原destination的view、后续reader和loop state保持不变；不跨越任何operation，不合并已经绑定pipeline stage/phase的operation。
+这是已有明确写入的局部转发，不重新运行Tensor bufferization、不改变算术、layout或通信选择；下游从新IR重建completion与SPM。
+Functional Tile compute与layout materialization的memref result拥有独立storage，ODS以标准result-bound Allocate/Write
+effect表达这一既有合同，使MLIR AliasAnalysis能证明独立结果的NoAlias；destination-style op不声明新allocation。
+
+算法选择对照[MLIR One-Shot Bufferization](https://mlir.llvm.org/docs/Bufferization/)的DPS与冲突检查：Tensor层继续使用
+One-Shot；这里的functional Tile临时量产生于bufferization之后，因此在已有execution-structure owner内消除，不能用第二次
+bufferization或Instr allocator合并storage代替。具体alias查询以pinned MLIR `LocalAliasAnalysis`为准。
+
+| 写回消除输入等价类 | exact输出或保留条件 | 直接下游witness |
+| --- | --- | --- |
+| rank-3 FP16，1024/1025/1031，独立allocation或destination自身作为input | 相邻唯一use、同layout；functional result/copy为0，原destination直接被写 | Tile verifier→Instr同dest、无额外allocation/copy→completion/SPM |
+| destination预先存在view、后续读取或loop yield | observer继续引用原storage，不做dominated-use替换 | alias与backedge断言；prefill循环/展开完整PyTorch回归 |
+| 部分重叠view、未知alias、非identity map、layout改变、result多use、两op间存在操作 | 不执行优化，原copy保留 | 结构负例及verifier |
+| AllReduce三个长度的none/search/peer；prefill三个长度none/search | 产品路径不强制通信，专项原local写回消失，原数学与容差不变 | fresh source/no-card/package、串行完整PyTorch实卡 |
+
 fresh completion owner在worker/order确定后，从actual SSA、effects、ranges、control-flow path和observable obligations重建
 latest-necessary completion。DTE wait、NCC participant join和group barrier是不同resource语义，不能互相替代。
 

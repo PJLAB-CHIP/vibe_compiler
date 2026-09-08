@@ -7,6 +7,15 @@
 `completion`、`bufferization`、`package`、`runtime`、`CMake`和`ownership`。条目描述的是防复发模式；若与current
 编号设计或源码冲突，以current事实源为准并在同次修改中修正文档。
 
+## Functional buffer结果缺少allocation effect会阻断安全写回消除
+
+- 现象：计算结果只由相邻copy写入既有destination，最终Instr仍多一次搬运和临时allocation；标准alias分析不能证明两个独立结果NoAlias。
+- 根因：bufferization后的functional Tile compute/layout已拥有独立memref storage，但ODS只声明读写，没有result-bound Allocate。
+- 修复模式：用标准Allocate/Write effect表达既有结果存储合同；execution-structure在current IR上证明相邻唯一use、完整type/identity map、
+  input与destination同SSA或NoAlias后，改为已有destination-style op。原destination及其view不重命名；下游重新分析completion/SPM。
+- 防复发：整除/尾部同时检查最终Instr没有临时写回，并覆盖旧值中间读取、部分重叠、未知alias、多use和layout变化的拒绝；
+  不以MustAlias代替同一view，不把减少的指令数当作设备延迟收益。
+
 ## Tensor loop state与memref写入不能混用SSA重命名规则
 
 - 现象：同一算子的循环版本在SPM lifetime阶段拒绝，展开版本却生成合法package但丢掉前一块贡献；已有view或loop yield读到旧buffer。

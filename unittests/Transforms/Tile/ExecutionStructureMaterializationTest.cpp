@@ -197,6 +197,207 @@ TEST(ExecutionStructureMaterializationTest,
 }
 
 TEST(ExecutionStructureMaterializationTest,
+     AdjacentWritebackPreservesDestinationAndRejectsUnprovenReuse) {
+  enum class Case {
+    Disjoint,
+    InPlace,
+    Observer,
+    Loop,
+    Materialized,
+    AliasView,
+    PartialOverlap,
+    UnknownAlias,
+    Mapped,
+    DifferentLayout,
+    ExtraUse,
+    InterveningRead
+  };
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (Case test : {Case::Disjoint, Case::InPlace, Case::Observer, Case::Loop,
+                      Case::Materialized, Case::AliasView, Case::PartialOverlap,
+                      Case::UnknownAlias, Case::Mapped, Case::DifferentLayout,
+                      Case::ExtraUse, Case::InterveningRead}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(static_cast<int>(test));
+      auto context = createContext();
+      mlir::Location loc = mlir::UnknownLoc::get(context.get());
+      mlir::OwningOpRef<mlir::ModuleOp> module(mlir::ModuleOp::create(loc));
+      mlir::OpBuilder builder(context.get());
+      auto memory =
+          MemoryAttr::get(context.get(), MemorySpace::SPM, MemLayout::Tensor);
+      auto type =
+          mlir::MemRefType::get({2, extent, 2}, builder.getF16Type(),
+                                mlir::MemRefLayoutAttrInterface{}, memory);
+      builder.setInsertionPointToStart(module->getBody());
+      if (test == Case::UnknownAlias) {
+        auto external = builder.create<mlir::func::FuncOp>(
+            loc, "buffers", builder.getFunctionType({}, {type, type}));
+        external.setPrivate();
+      }
+      auto function = builder.create<mlir::func::FuncOp>(
+          loc, "main", builder.getFunctionType({}, {}));
+      auto *entry = function.addEntryBlock();
+      builder.setInsertionPointToStart(entry);
+      auto region = builder.create<TileRegionOp>(loc, mlir::TypeRange{},
+                                                 entry->getArguments());
+      auto *body = new mlir::Block();
+      region.getBody().push_back(body);
+      builder.setInsertionPointToStart(body);
+      mlir::Value dest, input;
+      if (test == Case::UnknownAlias) {
+        auto call = builder.create<mlir::func::CallOp>(
+            loc, "buffers", mlir::TypeRange{type, type}, mlir::ValueRange{});
+        dest = call.getResult(0);
+        input = call.getResult(1);
+      } else if (test == Case::PartialOverlap) {
+        auto bytes =
+            mlir::MemRefType::get({8 * extent + 2}, builder.getI8Type(),
+                                  mlir::MemRefLayoutAttrInterface{}, memory);
+        auto storage = builder.create<mlir::memref::AllocOp>(loc, bytes);
+        auto zero = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+        auto two = builder.create<mlir::arith::ConstantIndexOp>(loc, 2);
+        dest = builder.create<mlir::memref::ViewOp>(loc, type, storage, zero,
+                                                    mlir::ValueRange{});
+        input = builder.create<mlir::memref::ViewOp>(loc, type, storage, two,
+                                                     mlir::ValueRange{});
+      } else {
+        auto destType =
+            test == Case::DifferentLayout
+                ? mlir::MemRefType::get(type.getShape(), type.getElementType(),
+                                        mlir::MemRefLayoutAttrInterface{},
+                                        MemoryAttr::get(context.get(),
+                                                        MemorySpace::SPM,
+                                                        MemLayout::Cx))
+                : type;
+        dest = builder.create<mlir::memref::AllocOp>(loc, destType);
+        input = builder.create<mlir::memref::AllocOp>(loc, type);
+      }
+      mlir::Value observer;
+      if (test == Case::Observer || test == Case::AliasView)
+        observer = builder.create<mlir::memref::CastOp>(loc, type, dest);
+      if (test == Case::AliasView)
+        input = observer;
+      if (test == Case::InPlace)
+        input = dest;
+      if (test == Case::Materialized) {
+        auto cxType = mlir::MemRefType::get(
+            type.getShape(), type.getElementType(),
+            mlir::MemRefLayoutAttrInterface{},
+            MemoryAttr::get(context.get(), MemorySpace::SPM, MemLayout::Cx));
+        dest = builder.create<LayoutMaterializeOp>(loc, cxType, dest);
+        input = builder.create<ComputeElementwiseOp>(
+            loc, cxType, ComputeElementwiseKind::Add,
+            mlir::ValueRange{dest, dest}, mlir::ArrayAttr{});
+        type = cxType;
+      }
+      mlir::scf::ForOp loop;
+      if (test == Case::Loop) {
+        auto zero = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+        auto one = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+        auto end = builder.create<mlir::arith::ConstantIndexOp>(loc, 7);
+        loop = builder.create<mlir::scf::ForOp>(loc, zero, end, one,
+                                                mlir::ValueRange{dest});
+        builder.setInsertionPointToStart(loop.getBody());
+        dest = loop.getRegionIterArgs().front();
+        input = dest;
+      }
+      mlir::AffineMap identity =
+          mlir::AffineMap::getMultiDimIdentityMap(3, context.get());
+      mlir::AffineMap inputMap =
+          test == Case::Mapped
+              ? mlir::AffineMap::getPermutationMap(
+                    llvm::ArrayRef<unsigned>{2, 1, 0}, context.get())
+              : identity;
+      auto maps = builder.getAffineMapArrayAttr({inputMap, inputMap, identity});
+      auto value = builder.create<ComputeElementwiseOp>(
+          loc, type, ComputeElementwiseKind::Add,
+          mlir::ValueRange{input, input}, maps);
+      if (test == Case::InterveningRead)
+        builder.create<MoveCopyOp>(loc, type, dest, DDRResourceAttr());
+      builder.create<MoveCopyIntoOp>(loc, value, dest);
+      if (test == Case::ExtraUse)
+        builder.create<MoveCopyOp>(loc, type, value, DDRResourceAttr());
+      MoveCopyOp reader;
+      if (test == Case::Observer)
+        reader =
+            builder.create<MoveCopyOp>(loc, type, observer, DDRResourceAttr());
+      if (loop) {
+        builder.create<mlir::scf::YieldOp>(loc, dest);
+        builder.setInsertionPointAfter(loop);
+      }
+      builder.create<TileYieldOp>(loc);
+      builder.setInsertionPointAfter(region);
+      builder.create<mlir::func::ReturnOp>(loc);
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      auto prepared = prepareTileExecutionStructure(*module, {});
+      ASSERT_TRUE(prepared.succeeded());
+      auto materialized = materializeExecutionStructure(
+          std::move(module), std::move(*prepared.prepared));
+      ASSERT_TRUE(materialized.succeeded())
+          << (materialized.failure ? materialized.failure->detail : "");
+      unsigned functional = 0, copies = 0, updates = 0;
+      region.walk([&](ComputeElementwiseOp) { ++functional; });
+      region.walk([&](MoveCopyIntoOp) { ++copies; });
+      region.walk([&](ComputeElementwiseIntoOp update) {
+        ++updates;
+        EXPECT_EQ(update.getDest(), dest);
+      });
+      bool eliminate = test == Case::Disjoint || test == Case::InPlace ||
+                       test == Case::Observer || test == Case::Loop ||
+                       test == Case::Materialized;
+      EXPECT_EQ(updates, eliminate ? 1u : 0u);
+      EXPECT_EQ(functional, eliminate && test != Case::Materialized ? 0u : 1u);
+      EXPECT_EQ(copies, eliminate ? 0u : 1u);
+      if (reader) {
+        EXPECT_EQ(reader.getSource(), observer);
+      }
+      if (loop) {
+        EXPECT_EQ(
+            mlir::cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator())
+                .getOperand(0),
+            dest);
+      }
+      if (!eliminate)
+        continue;
+      unsigned beforeAllocations = 0;
+      region.walk([&](mlir::memref::AllocOp) { ++beforeAllocations; });
+      TileRegionToInstrLoweringSession session(*context);
+      ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+      unsigned instructions = 0, afterAllocations = 0, transfers = 0;
+      InstrElementwiseOp firstInstruction;
+      region.walk([&](InstrElementwiseOp instruction) {
+        ++instructions;
+        if (test == Case::Materialized) {
+          if (firstInstruction) {
+            EXPECT_EQ(instruction.getDest(),
+                      firstInstruction.getInputs().front());
+            EXPECT_EQ(instruction.getInputs().front(),
+                      firstInstruction.getDest());
+          } else {
+            firstInstruction = instruction;
+          }
+        } else {
+          EXPECT_EQ(instruction.getDest(), dest);
+        }
+      });
+      region.walk([&](InstrGatherScatterOp) { ++transfers; });
+      region.walk([&](mlir::memref::AllocOp) { ++afterAllocations; });
+      EXPECT_EQ(instructions, test == Case::Materialized ? 2u : 1u);
+      EXPECT_EQ(transfers,
+                test == Case::Observer || test == Case::Materialized ? 1u : 0u);
+      EXPECT_EQ(afterAllocations,
+                beforeAllocations + (test == Case::Materialized ? 2u
+                                     : test == Case::Observer   ? 1u
+                                                                : 0u));
+      ASSERT_TRUE(mlir::succeeded(
+          rebuildRequiredNCCJoins(*materialized.materialized->module)));
+      EXPECT_TRUE(mlir::succeeded(planSPMMemoryModule(
+          *materialized.materialized->module, 0, 3 * 1024 * 1024, 16)));
+    }
+  }
+}
+
+TEST(ExecutionStructureMaterializationTest,
      LoopCarriedElementwiseUsesExplicitExistingDestination) {
   for (int64_t extent : {1024, 1025, 1031}) {
     SCOPED_TRACE(extent);

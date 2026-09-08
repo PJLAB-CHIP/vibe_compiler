@@ -741,14 +741,19 @@ def _verify_all_reduce_ir(
         if seed not in layouts:
             raise RuntimeError("AllReduce lacks the published result layout")
         destination, copied_at = layouts[seed]
-        # Bufferized DPS writes into its destination before the layout copy
-        # snapshots it. Require the actual sum publication in that interval.
+        # The local sum must write its destination directly, before the layout
+        # snapshot. This also witnesses elimination of the temporary writeback.
         publications = re.findall(
-            rf"wafer\.tile\.copy_into (%\w+) into {re.escape(destination)} :",
+            rf"wafer\.tile\.elementwise_into <add> (%\w+), (%\w+) "
+            rf"into {re.escape(destination)} :",
             ir[reduction.end():copied_at],
         )
-        if len(publications) != 1 or reduction[1] not in adds.get(publications[0], ()):
+        if (len(publications) != 1 or publications[0] not in (
+                (destination, reduction[1]), (reduction[1], destination))):
             raise RuntimeError("AllReduce broadcasts a value other than its local sum")
+        if re.search(rf"wafer\.tile\.copy_into .* into {re.escape(destination)} :",
+                     ir[reduction.end():copied_at]):
+            raise RuntimeError("AllReduce retains a redundant local sum writeback")
         seeds[tile] = seed
         final_views = [rhs for lhs, rhs in adds.values()
                        if rhs in views and views[rhs][1:] == ((0, 0), (extent, 1))]
@@ -759,6 +764,13 @@ def _verify_all_reduce_ir(
         copies_by_tile[tile] = re.findall(r"memref\.copy (%\w+), (%\w+) :", ir)
 
         instr = instruction_irs[tile]
+        local_updates = re.findall(
+            r"wafer\.instr\.elementwise <add> (%\w+), (%\w+) into (%\w+) : "
+            rf"memref<{shards[tile][1]}x1xf16, #wafer\.memory<spm, cx>>",
+            instr,
+        )
+        if len(local_updates) != 1 or local_updates[0][2] not in local_updates[0][:2]:
+            raise RuntimeError("AllReduce Instr retains an out-of-place local sum")
         final_issues = _read_peer_issues(instr, "instr.dte")
         signature = lambda issue: (issue.kind, issue.size, issue.communication,
                                    issue.round, issue.slice, issue.peer)
@@ -854,11 +866,12 @@ def verify_all_reduce(package: pathlib.Path, dump: pathlib.Path, extent: int) ->
     reduction = re.search(r"(%\w+) = wafer\.tile\.reduce <sum>", tiles[0])
     assert reduction is not None  # Established by the successful verifier above.
     sum_add = next(match for match in re.finditer(
-        r"(%\w+) = wafer\.tile\.elementwise <add> (%\w+), (%\w+)", tiles[0]
-    ) if reduction[1] in match.groups()[1:])
-    wrong_sum = re.sub(
-        rf"(wafer\.tile\.copy_into ){re.escape(sum_add[1])}( into )",
-        lambda match: match[1] + sum_add[2] + match[2], tiles[0], count=1,
+        r"wafer\.tile\.elementwise_into <add> (%\w+), (%\w+) into (%\w+)", tiles[0]
+    ) if reduction[1] in match.groups()[:2])
+    wrong_sum = (
+        tiles[0][:sum_add.start()]
+        + sum_add[0].replace(reduction[1], sum_add[3])
+        + tiles[0][sum_add.end():]
     )
     faults = (
         ("wrong-published-sum", "tile", wrong_sum),

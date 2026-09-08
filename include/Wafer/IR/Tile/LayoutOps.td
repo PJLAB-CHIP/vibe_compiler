@@ -19,7 +19,7 @@ def Wafer_LayoutMaterializeOp : Wafer_Op<"tile.materialize_layout", [
   }];
 
   let arguments = (ins Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source);
-  let results = (outs Wafer_AnySPMMemRef:$result);
+  let results = (outs Res<Wafer_AnySPMMemRef, "", [MemAlloc, MemWrite]>:$result);
 
   let hasVerifier = 1;
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";

@@ -41,7 +41,7 @@ def Wafer_ComputeConvertOp : Wafer_Op<"tile.compute.convert", [
   }];
 
   let arguments = (ins Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source);
-  let results = (outs Wafer_AnySPMMemRef:$result);
+  let results = (outs Res<Wafer_AnySPMMemRef, "", [MemAlloc, MemWrite]>:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$source attr-dict `:` type($source) `to` type($result)";
@@ -70,7 +70,7 @@ def Wafer_ComputeGemmOp : Wafer_Op<"tile.gemm", [
     OptionalAttr<I64Attr>:$result_m_dim,
     OptionalAttr<I64Attr>:$result_n_dim
   );
-  let results = (outs Wafer_AnySPMMemRef:$result);
+  let results = (outs Res<Wafer_AnySPMMemRef, "", [MemAlloc, MemWrite]>:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$lhs `,` $rhs attr-dict `:` functional-type(operands, results)";
@@ -102,7 +102,7 @@ def Wafer_ComputeConvOp : Wafer_Op<"tile.conv", [
     DenseI64ArrayAttr:$strides,
     DenseI64ArrayAttr:$dilations
   );
-  let results = (outs Wafer_AnySPMMemRef:$result);
+  let results = (outs Res<Wafer_AnySPMMemRef, "", [MemAlloc, MemWrite]>:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$input `,` $weight attr-dict `:` functional-type(operands, results)";
@@ -130,7 +130,7 @@ def Wafer_ComputeElementwiseOp : Wafer_Op<"tile.elementwise", [
     Arg<Variadic<Wafer_AnySPMMemRef>, "", [MemRead]>:$inputs,
     OptionalAttr<AffineMapArrayAttr>:$indexing_maps
   );
-  let results = (outs Wafer_AnySPMMemRef:$result);
+  let results = (outs Res<Wafer_AnySPMMemRef, "", [MemAlloc, MemWrite]>:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$kind $inputs attr-dict `:` functional-type(operands, results)";
@@ -147,9 +147,9 @@ def Wafer_ComputeElementwiseIntoOp : Wafer_Op<"tile.elementwise_into", [
     `wafer.tile.elementwise_into` applies one map-free elementwise operation
     to already materialized SPM values and writes the result into an explicit
     destination. The destination may be one of the inputs. This form owns
-    reduction accumulator updates whose storage must remain stable across a
-    temporal loop backedge; ordinary functional elementwise values continue
-    to use `wafer.tile.elementwise`.
+    explicit storage updates, including reduction accumulators across a
+    temporal loop backedge and proven direct destination writes. Ordinary
+    functional elementwise values continue to use `wafer.tile.elementwise`.
   }];
 
   let arguments = (ins
@@ -185,7 +185,7 @@ def Wafer_ComputeReduceOp : Wafer_Op<"tile.reduce", [
     DenseI64ArrayAttr:$dimensions,
     OptionalAttr<TypedAttrInterface>:$init_value
   );
-  let results = (outs Wafer_AnySPMMemRef:$result);
+  let results = (outs Res<Wafer_AnySPMMemRef, "", [MemAlloc, MemWrite]>:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$kind $input (`,` $init^)? attr-dict `:` functional-type(operands, results)";

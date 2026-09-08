@@ -4,6 +4,7 @@
 
 #include "Wafer/IR/WaferDialect.h"
 
+#include "mlir/Analysis/AliasAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
@@ -267,27 +268,61 @@ getDeadLoopCarriedDestination(mlir::Operation *operation, mlir::Value result,
   return destination;
 }
 
+static bool hasMapFreeEquivalent(ComputeElementwiseOp elementwise) {
+  mlir::Type resultType = elementwise.getResult().getType();
+  if (llvm::any_of(elementwise.getInputs(), [&](mlir::Value input) {
+        return input.getType() != resultType;
+      }))
+    return false;
+  mlir::ArrayAttr maps = elementwise.getIndexingMapsAttr();
+  if (!maps)
+    return true;
+  auto resultMemref = mlir::dyn_cast<mlir::MemRefType>(resultType);
+  if (!resultMemref || maps.size() != elementwise.getInputs().size() + 1)
+    return false;
+  return llvm::all_of(maps, [&](mlir::Attribute attribute) {
+    auto map = mlir::dyn_cast<mlir::AffineMapAttr>(attribute);
+    return map && map.getValue().getNumDims() == resultMemref.getRank() &&
+           map.getValue().getNumSymbols() == 0 && map.getValue().isIdentity();
+  });
+}
+
+static void eliminateElementwiseWritebacks(
+    mlir::ModuleOp module, mlir::IRRewriter &rewriter,
+    const llvm::DenseSet<mlir::Operation *> &pipelineOperations) {
+  module.walk([&](MoveCopyIntoOp copy) {
+    auto elementwise = copy.getSource().getDefiningOp<ComputeElementwiseOp>();
+    if (!elementwise || !elementwise.getResult().hasOneUse() ||
+        elementwise->getNextNode() != copy.getOperation() ||
+        copy.getSource().getType() != copy.getDest().getType() ||
+        !hasMapFreeEquivalent(elementwise) ||
+        pipelineOperations.contains(elementwise) ||
+        pipelineOperations.contains(copy))
+      return;
+
+    // The explicit write already happens immediately after the computation.
+    // Exact destination reads are supported by elementwise_into; a different
+    // view may overlap only part of an input and cannot be updated in place.
+    // Construct fresh analysis for this IR epoch, before making any mutation.
+    {
+      mlir::AliasAnalysis aliases(module);
+      for (mlir::Value input : elementwise.getInputs())
+        if (input != copy.getDest() &&
+            !aliases.alias(input, copy.getDest()).isNo())
+          return;
+    }
+    rewriter.setInsertionPoint(elementwise);
+    rewriter.create<ComputeElementwiseIntoOp>(
+        elementwise.getLoc(), elementwise.getKindAttr(),
+        elementwise.getInputs(), copy.getDest());
+    rewriter.eraseOp(copy);
+    rewriter.eraseOp(elementwise);
+  });
+}
+
 static mlir::LogicalResult
 materializeLoopCarriedDestinations(mlir::ModuleOp module,
                                    mlir::IRRewriter &rewriter) {
-  auto hasMapFreeEquivalent = [](ComputeElementwiseOp elementwise) {
-    mlir::Type resultType = elementwise.getResult().getType();
-    if (llvm::any_of(elementwise.getInputs(), [&](mlir::Value input) {
-          return input.getType() != resultType;
-        }))
-      return false;
-    mlir::ArrayAttr maps = elementwise.getIndexingMapsAttr();
-    if (!maps)
-      return true;
-    auto resultMemref = mlir::dyn_cast<mlir::MemRefType>(resultType);
-    if (!resultMemref || maps.size() != elementwise.getInputs().size() + 1)
-      return false;
-    return llvm::all_of(maps, [&](mlir::Attribute attribute) {
-      auto map = mlir::dyn_cast<mlir::AffineMapAttr>(attribute);
-      return map && map.getValue().getNumDims() == resultMemref.getRank() &&
-             map.getValue().getNumSymbols() == 0 && map.getValue().isIdentity();
-    });
-  };
   struct Rewrite {
     mlir::Operation *operation = nullptr;
     mlir::Value destination;
@@ -596,6 +631,11 @@ materializeExecutionStructure(mlir::OwningOpRef<mlir::ModuleOp> module,
     return materializationFailure(
         ExecutionStructureFailureKind::CompilerBug,
         "materialized execution structure retained private attributes");
+  llvm::DenseSet<mlir::Operation *> pipelineOperations;
+  for (const MaterializedExecutionPipeline &pipeline : result.pipelines)
+    for (const MaterializedExecutionOperation &operation : pipeline.operations)
+      pipelineOperations.insert(operation.operation);
+  eliminateElementwiseWritebacks(*module, rewriter, pipelineOperations);
   if (mlir::failed(materializeLoopCarriedDestinations(*module, rewriter)))
     return materializationFailure(
         ExecutionStructureFailureKind::CompilerBug,

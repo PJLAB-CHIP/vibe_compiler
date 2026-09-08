@@ -135,8 +135,61 @@ Canonical完整增量构建通过，随后Ninja no-op；`check-wafer`全部通�
 PyTorch board case合同25项通过。51项source/no-card最终全部通过：8项prefill、36项通信、3项GEMM、4项Conv。
 其中AllReduce专项检查器同步追踪DPS copy发布，三个长度重新从source生成并通过no-card；错误发布的新增负例与原四类故障注入全部拒绝。
 最后重编译的6份FP16 prefill package逐文件SHA256与本轮成功launch一致。本项完成，下一项为两步KV cache decode。
-本次正确性修复仍保留部分实际copy：AllReduce L=1024的最终Instr在每Tile的local add后有128B同布局SPM写回，
-尚未消除或测量其耗时。写入语义必须保持，物理copy是否可消除取决于actual alias/lifetime与target原地执行证明；不能把全部copy视为算法必需。
+上述正确性修复当时保留了部分实际copy：AllReduce L=1024在每Tile的local add后有128B同布局SPM写回；
+用户随后要求优化，当前完成证据如下。写入语义必须保持，不能把全部copy视为算法必需。
+
+### 第7项后续：公共elementwise写回消除
+
+仍属同一board-testing，设计与覆盖矩阵归10号。Execution-structure从相邻唯一use、完整type/identity map与fresh
+AliasAnalysis证明可安全直接写入，复用已有`elementwise_into`。Functional compute/layout result补齐标准Allocate/Write
+effect，使独立storage可由标准分析证明NoAlias；未知或部分重叠、非identity map、不同layout、多use、intervening operation和
+已绑定pipeline阶段的operation保持原IR。不添加算子、case或policy特判；通信选择与数值语义不变。
+
+本轮主机验证：36个rank-3分支/长度cell覆盖1024/1025/1031、独立allocation、原地读写、layout/compute结果、预先建立的view、
+loop state及七类拒绝条件；正例实际经过Instr、completion与SPM。ExecutionStructure 8项测试通过；完整check-wafer的272 lit、
+14个component unit、42 BoardIO、62 reference numeric、19 target numeric及17 SystemC全部通过。
+51项fresh source/no-card全部通过，PyTorch case合同通过；最后完整增量构建通过，随后Ninja no-op。
+AllReduce专项还断言Tile和最终Instr均直接写local sum destination，并拒绝原五类故障注入。
+
+对同一fresh AllReduce L=1024 peer source的实际工作量：
+
+| 已物化的事实 | 优化前 | 优化后 |
+| --- | --- | --- |
+| 16 Tile最终Instr中的allocation总数（含DDR） | 848 | 832 |
+| 最终gather_scatter静态site | 704 | 688 |
+| 实际TDMA动态执行次数 | 976 | 960 |
+| CT静态site / 动态执行次数 | 64 / 304 | 64 / 304 |
+| NCC join静态site / non-terminal动态执行次数 | 48 / 32 | 48 / 32 |
+| actual SPM high-water最大值 | 82176B | 82176B |
+
+每Tile原128B local写回和对应临时allocation消失；其它必要layout/copy不在此结论内。记录了完整pass/analysis timing与work count；
+单次compiler wall/RSS为2.73s/102500KiB与2.74s/101132KiB，仅用于编译工作量审计，不作为设备性能结论。
+尚未做matched设备延迟测量，不能把指令减少换算成运行加速比。
+
+本轮15项FP16实卡均来自上述fresh source/no-card，seed=20260803、PyTorch 2.5.0+cpu；每case只launch一次，全部16 Tile完成、
+完整capture对比与正常cleanup通过，无timeout/设备异常或retry/reset。AllReduce保持原exact策略，prefill保持
+`rtol=0.006, atol=0.008, equal_nan=false`。
+
+| case | 长度 | policy | 最大绝对误差 | manifest SHA256前12位 |
+| --- | --- | --- | --- | --- |
+| AllReduce | 1024 | none | 0 | `9c6398091264` |
+| AllReduce | 1024 | search | 0 | `12bf223598ab` |
+| AllReduce | 1024 | peer | 0 | `84c877e96e28` |
+| AllReduce | 1025 | none | 0 | `cb096b06dd13` |
+| AllReduce | 1025 | search | 0 | `859743b82861` |
+| AllReduce | 1025 | peer | 0 | `4608dc6d896e` |
+| AllReduce | 1031 | none | 0 | `b8ecd68d65ee` |
+| AllReduce | 1031 | search | 0 | `9367112a05a8` |
+| AllReduce | 1031 | peer | 0 | `69237e501f48` |
+| prefill | 1024 | none | 0.0009765625 | `f1d3b421dfcf` |
+| prefill | 1024 | search | 0.0009765625 | `2dd055d9f98e` |
+| prefill | 1025 | none | 0.0009765625 | `571d44c4e6d9` |
+| prefill | 1025 | search | 0.0009765625 | `a3eb84c39f2b` |
+| prefill | 1031 | none | 0.0009765625 | `bb7b277b18a5` |
+| prefill | 1031 | search | 0.0009765625 | `8f11229c1b00` |
+
+完整source、input/reference、package、IR、capture、board log和manifest digest位于
+`build/test/board-audit/elementwise-writeback/`，只作审计。本次写回优化与实卡复验完成，继续第8项两步KV cache decode。
 
 ### 第1项：AllGather source到Ring专项（旧入口三个长度已通过）
 
