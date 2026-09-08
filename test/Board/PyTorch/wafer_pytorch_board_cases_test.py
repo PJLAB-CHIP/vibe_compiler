@@ -74,6 +74,27 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                         context=f"ReduceScatter L={extent}",
                     )
 
+    def test_all_reduce_reference_detects_contribution_broadcast_and_tail_errors(self) -> None:
+        for extent in (1024, 1025, 1031):
+            case = cases.make_all_reduce_sum(torch.float16, 20260803, extent=extent)
+            lhs, rhs = case.inputs
+            expected, = case.materialize_expected_outputs()
+            self.assertEqual(expected.shape, (16, extent, 1))
+            missing_source = lhs + (rhs[:-1] + rhs[:-1]).sum(dim=0, keepdim=True)
+            duplicate = rhs.clone()
+            duplicate[-1] = duplicate[0]
+            duplicated_source = lhs + (duplicate + duplicate).sum(dim=0, keepdim=True)
+            missing_destination = expected.clone()
+            missing_destination[-1] = lhs[-1]
+            wrong_tail = expected.clone()
+            wrong_tail[-1, -1, 0] += 1
+            for actual in (missing_source, duplicated_source, missing_destination, wrong_tail):
+                with self.assertRaises(AssertionError):
+                    cases.common.assert_tensor_matches(
+                        actual, expected, policy=case.comparison_policy,
+                        context=f"AllReduce L={extent}",
+                    )
+
     def test_gemm_reference_detects_missing_k_and_output_tails(self) -> None:
         for name in ("single-card-gemm", "single-card-gemm-tail-1025",
                      "single-card-gemm-tail-1031"):
@@ -306,7 +327,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             allgather_payload_elements=None,
             gemm_dimensions=None,
             alltoall_extent=None,
-            reduce_scatter_extent=None,
+            reduce_scatter_extent=None, all_reduce_extent=None,
             export_program=mock.Mock(),
             materialize_expected_outputs=mock.Mock(
                 return_value=(torch.zeros((1,), dtype=torch.float16),)
@@ -355,7 +376,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
     def test_product_policies_ignore_communication_expectations(self) -> None:
         case = types.SimpleNamespace(
             num_partitions=1, allgather_payload_elements=1024,
-            alltoall_extent=1024, reduce_scatter_extent=1024,
+            alltoall_extent=1024, reduce_scatter_extent=1024, all_reduce_extent=1024,
             gemm_dimensions=None, export_program=mock.Mock(),
             materialize_expected_outputs=mock.Mock(return_value=(torch.zeros(1),)),
         )
@@ -372,6 +393,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                                   return_value=([], {}, set(), {})),
                 mock.patch.object(board_runner, "verify_ring_allgather") as gather,
                 mock.patch.object(board_runner, "verify_personalized_exchange") as exchange,
+                mock.patch.object(board_runner, "verify_all_reduce") as reduce,
             ):
                 board_runner.prepare_case_step(
                     args, case, step_index=0, step_dir=pathlib.Path("step"),
@@ -380,6 +402,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 )
                 gather.assert_not_called()
                 exchange.assert_not_called()
+                reduce.assert_not_called()
                 self.assertFalse(any("test-communication" in arg for arg in command.call_args.args[0]))
             args.qualify_communication = "ring-allgather"
             args.optimization_policy = "search"

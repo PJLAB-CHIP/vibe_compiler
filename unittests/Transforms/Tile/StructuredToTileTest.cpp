@@ -1067,6 +1067,72 @@ module {
     return text;
   }
 
+  static std::string makeSequentialExchangeSource(int64_t extent,
+                                                  int64_t tileCount) {
+    std::string text;
+    llvm::raw_string_ostream stream(text);
+    const std::string type = "tensor<1x" + std::to_string(extent) + "x1xf16>";
+    stream << R"mlir(
+#id = affine_map<(b, m, n) -> (b, m, n)>
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+)mlir";
+    for (int64_t tile = 0; tile < tileCount; ++tile) {
+      stream << "  wafer.tile.module card_id = 0 tile_id = " << tile
+             << " {\n    func.func @entry(%local: " << type;
+      for (int phase = 0; phase < 2; ++phase)
+        for (int64_t source = 0; source < tileCount; ++source)
+          if (source != tile)
+            stream << ", %remote" << phase << "_" << source << ": " << type
+                   << " {wafer.cross_tile_boundary_input}";
+      stream << ") -> " << type << " {\n";
+      for (int phase = 0; phase < 3; ++phase) {
+        const int64_t inputs = phase ? tileCount : 1;
+        stream << "      %result" << phase << " = wafer.tile.region("
+               << (phase ? "%result" + std::to_string(phase - 1) : "%local");
+        if (phase)
+          for (int64_t source = 0; source < tileCount; ++source)
+            if (source != tile)
+              stream << ", %remote" << phase - 1 << "_" << source;
+        stream << " : ";
+        for (int64_t input = 0; input < inputs; ++input)
+          stream << (input ? ", " : "") << type;
+        stream << ") -> (" << type << ") {\n      ^bb0(";
+        for (int64_t input = 0; input < inputs; ++input)
+          stream << (input ? ", " : "") << "%arg" << input << ": " << type;
+        stream << "):\n        %empty = tensor.empty() : " << type
+               << "\n        %value = linalg.generic {indexing_maps = [";
+        for (int64_t input = 0; input <= inputs; ++input)
+          stream << (input ? ", " : "") << "#id";
+        stream << "], iterator_types = [\"parallel\", \"parallel\", "
+                  "\"parallel\"]} ins(";
+        for (int64_t input = 0; input < inputs; ++input)
+          stream << (input ? ", " : "") << "%arg" << input;
+        stream << " : ";
+        for (int64_t input = 0; input < inputs; ++input)
+          stream << (input ? ", " : "") << type;
+        stream << ") outs(%empty : " << type << ") {\n        ^bb1(";
+        for (int64_t input = 0; input < inputs; ++input)
+          stream << "%v" << input << ": f16, ";
+        stream << "%old: f16):\n";
+        for (int64_t input = 1; input < inputs; ++input)
+          stream << "          %sum" << input << " = arith.addf "
+                 << (input == 1 ? "%v0" : "%sum" + std::to_string(input - 1))
+                 << ", %v" << input << " : f16\n";
+        stream << "          linalg.yield "
+               << (phase ? "%sum" + std::to_string(inputs - 1) : "%v0")
+               << " : f16\n        } -> " << type
+               << "\n        wafer.tile.yield %value : " << type
+               << "\n      }\n";
+      }
+      stream << "      return %result2 : " << type << "\n    }\n  }\n";
+    }
+    stream << "}\n";
+    return text;
+  }
+
   static std::string makeCausalTwoTileExchangeSource(int64_t extent) {
     std::string text;
     llvm::raw_string_ostream stream(text);
@@ -2676,6 +2742,102 @@ TEST_F(StructuredToTileTest, SplitExchangeRegionsCloseBeforeOneRingRound) {
     EXPECT_EQ(movement.statistics.peerSends, 2u);
     EXPECT_EQ(movement.statistics.peerReceives, 2u);
     EXPECT_EQ(movement.statistics.crossTileDDRStages, 0u);
+  }
+}
+
+TEST_F(StructuredToTileTest,
+       SequentialExchangesKeepSeparateCutsInOneActualRegion) {
+  for (int64_t tileCount : {4, 16}) {
+    for (int64_t extent : {1024, 1025, 1031}) {
+      SCOPED_TRACE(tileCount);
+      SCOPED_TRACE(extent);
+      auto module = parse(makeSequentialExchangeSource(extent, tileCount));
+      ASSERT_TRUE(module);
+      llvm::SmallVector<llvm::SmallVector<TileRegionOp, 3>, 16> regions(
+          tileCount);
+      for (TileModuleOp tile : module->getOps<TileModuleOp>())
+        tile.walk([&](TileRegionOp region) {
+          regions[tile.getTileIdAttr().getInt()].push_back(region);
+        });
+      StructuredMaterializationRelations relations;
+      // Interleave the two exchanges so relation iteration order cannot
+      // substitute for current producer/consumer dependencies.
+      for (unsigned source = 0; source < regions.size(); ++source)
+        for (unsigned phase = 0; phase < 2; ++phase)
+          for (unsigned destination = 0; destination < regions.size();
+               ++destination) {
+            if (source == destination)
+              continue;
+            unsigned argument = 1 + source - (source > destination);
+            relations.boundaryRelations.push_back(
+                {regions[source][phase].getResult(0),
+                 regions[destination][phase + 1].getBody().getArgument(
+                     argument)});
+          }
+      for (auto &tileRegions : regions)
+        relations.structuralOutputs.push_back(
+            {0, tileRegions.back().getResult(0)});
+      auto print = [&]() {
+        std::string text;
+        llvm::raw_string_ostream stream(text);
+        module->print(stream);
+        return text;
+      };
+      const std::string before = print();
+      auto available = analyzeCommunicationRegionClosure(*module, relations);
+      ASSERT_TRUE(mlir::succeeded(available));
+      EXPECT_EQ(*available, CommunicationRegionClosureAvailability::Available);
+      EXPECT_EQ(print(), before);
+      CommunicationRegionClosureStatistics closure;
+      ASSERT_TRUE(mlir::succeeded(
+          closeCrossTileCommunicationRegions(*module, relations, &closure)));
+      EXPECT_EQ(closure.mergedTileScopes, static_cast<uint64_t>(tileCount));
+      EXPECT_EQ(closure.mergedRegions, static_cast<uint64_t>(3 * tileCount));
+      EXPECT_EQ(countOps<TileRegionOp>(module->getOperation()), tileCount);
+      auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+      ASSERT_TRUE(layout.succeeded()) << layout.detail;
+      auto compute = lowerStructuredComputeToTile(*module, relations);
+      ASSERT_TRUE(compute.succeeded()) << compute.detail;
+      auto movement = materializeTileBoundaryMovement(*module, relations);
+      ASSERT_TRUE(movement.succeeded()) << movement.detail;
+      EXPECT_EQ(movement.statistics.ringComponents, 2u);
+      EXPECT_EQ(movement.statistics.ringRounds, 2 * (tileCount - 1));
+      EXPECT_EQ(movement.statistics.peerSends, 2 * tileCount * (tileCount - 1));
+      EXPECT_EQ(movement.statistics.peerReceives,
+                2 * tileCount * (tileCount - 1));
+      EXPECT_EQ(movement.statistics.crossTileDDRStages, 0u);
+      std::string detail;
+      auto standalone =
+          createStandaloneTileModules(std::move(module), &detail, &relations);
+      ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+      llvm::SmallVector<mlir::ModuleOp, 16> instructionModules;
+      for (StandaloneTileModule &tile : *standalone) {
+        llvm::SmallVector<TileRegionOp, 1> tileRegions;
+        tile.module->walk(
+            [&](TileRegionOp region) { tileRegions.push_back(region); });
+        ASSERT_EQ(tileRegions.size(), 1u);
+        TileRegionToInstrLoweringSession session(*tile.module->getContext());
+        ASSERT_TRUE(mlir::succeeded(
+            convertTileRegionToInstr(tileRegions.front(), session)));
+        ASSERT_TRUE(mlir::succeeded(
+            convertBufferizationCopiesToInstr(*tile.module, session)));
+        instructionModules.push_back(*tile.module);
+      }
+      auto completion = rebuildRequiredDirectDTEWaits(instructionModules);
+      ASSERT_TRUE(completion.succeeded()) << completion.detail;
+      instructionModules.clear();
+      for (StandaloneTileModule &tile : *standalone) {
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+        TileMemoryPlanningFailure failure;
+        auto planned = planTileMemory(std::move(tile.module), &failure);
+        ASSERT_TRUE(mlir::succeeded(planned));
+        tile.module = std::move(*planned);
+        instructionModules.push_back(*tile.module);
+      }
+      EXPECT_TRUE(mlir::succeeded(
+          verifyDirectDTETransportSchedule(instructionModules)));
+      EXPECT_TRUE(mlir::succeeded(bindDirectDTETransport(instructionModules)));
+    }
   }
 }
 

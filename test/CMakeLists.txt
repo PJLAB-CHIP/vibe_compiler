@@ -228,6 +228,17 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
   endforeach()
   unset(_wafer_reduce_scatter_case)
 
+  foreach(_wafer_all_reduce_case IN ITEMS
+      all-reduce-sum all-reduce-sum-tail-1025 all-reduce-sum-tail-1031)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_all_reduce_case} float16 fp16 none)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_all_reduce_case} float16 fp16 search)
+    wafer_add_pytorch_communication_no_card_test(
+      ${_wafer_all_reduce_case} all-reduce)
+  endforeach()
+  unset(_wafer_all_reduce_case)
+
   foreach(_wafer_product_case IN ITEMS
       conv-mixed-dag
       attention-prefill

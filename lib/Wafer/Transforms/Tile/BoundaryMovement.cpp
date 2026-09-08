@@ -113,6 +113,15 @@ struct CommunicationComponent {
   llvm::SmallVector<uint64_t, 16> participants;
 };
 
+static bool hasCurrentCommunicationCut(const CommunicationComponent &component,
+                                       llvm::ArrayRef<PayloadGroup> groups,
+                                       llvm::ArrayRef<PeerPlan> peers);
+
+static llvm::SmallVector<CommunicationComponent, 4>
+partitionCommunicationCuts(const CommunicationComponent &component,
+                           llvm::ArrayRef<PayloadGroup> groups,
+                           llvm::ArrayRef<PeerPlan> peers);
+
 static mlir::Operation *findFirstBufferConsumer(mlir::Value buffer,
                                                 mlir::Block &block);
 static mlir::LogicalResult findLastBufferWrite(mlir::Value buffer,
@@ -188,7 +197,6 @@ buildPayloadGroups(llvm::ArrayRef<PeerPlan> peers) {
 static llvm::SmallVector<CommunicationComponent, 8>
 buildCommunicationComponents(llvm::ArrayRef<PayloadGroup> groups,
                              llvm::ArrayRef<PeerPlan> peers) {
-  (void)peers;
   llvm::SmallVector<unsigned, 16> parents(groups.size());
   for (auto [index, parent] : llvm::enumerate(parents))
     parent = static_cast<unsigned>(index);
@@ -256,7 +264,11 @@ buildCommunicationComponents(llvm::ArrayRef<PayloadGroup> groups,
     llvm::sort(component.groups);
     llvm::sort(component.participants);
   }
-  return components;
+  llvm::SmallVector<CommunicationComponent, 8> cutComponents;
+  for (const CommunicationComponent &component : components)
+    llvm::append_range(cutComponents,
+                       partitionCommunicationCuts(component, groups, peers));
+  return cutComponents;
 }
 
 static bool componentUsesSharedDDR(const CommunicationComponent &component,
@@ -564,12 +576,97 @@ static bool hasCurrentCommunicationCut(const CommunicationComponent &component,
             firstConsumer = consumer;
         }
       }
-    if (sources.empty() || destinations.empty() ||
-        (lastProducer && (lastProducer == firstConsumer ||
-                          firstConsumer->isBeforeInBlock(lastProducer))))
+    if (sources.empty() || destinations.empty())
+      return false;
+    if (lastProducer && !destinations.empty() &&
+        (lastProducer == firstConsumer ||
+         firstConsumer->isBeforeInBlock(lastProducer)))
       return false;
   }
   return true;
+}
+
+// Build dependencies from actual consumer/producer order before choosing cuts.
+// A first-fit packing can mix a later send-only group into an earlier partial
+// exchange, before that group's incoming dependencies have been visited.
+static llvm::SmallVector<CommunicationComponent, 4>
+partitionCommunicationCuts(const CommunicationComponent &component,
+                           llvm::ArrayRef<PayloadGroup> groups,
+                           llvm::ArrayRef<PeerPlan> peers) {
+  if (hasCurrentCommunicationCut(component, groups, peers) ||
+      !hasOneCommunicationRegionPerTile(component, groups, peers))
+    return {component};
+  struct Bounds {
+    mlir::Operation *producer = nullptr;
+    llvm::SmallVector<mlir::Operation *, 16> consumers;
+  };
+  llvm::SmallVector<Bounds, 16> bounds(component.groups.size());
+  StorageRootMemo storageRoots;
+  std::string detail;
+  for (auto [index, groupIndex] : llvm::enumerate(component.groups)) {
+    const PayloadGroup &group = groups[groupIndex];
+    const PeerPlan &source = peers[group.peers.front()];
+    TileRegionOp sourceRegion = source.sourceRegion;
+    if (mlir::failed(findLastBufferWrite(
+            source.sourceSPM, sourceRegion.getBody().front(), storageRoots,
+            bounds[index].producer, detail)))
+      return {component};
+    for (unsigned peerIndex : group.peers) {
+      const PeerPlan &peer = peers[peerIndex];
+      TileRegionOp destinationRegion = peer.destinationRegion;
+      for (mlir::Value buffer : peer.destinationSPMCarriers) {
+        mlir::Operation *consumer = findFirstBufferConsumer(
+            buffer, destinationRegion.getBody().front());
+        if (!consumer)
+          return {component};
+        bounds[index].consumers.push_back(consumer);
+      }
+    }
+  }
+  llvm::SmallVector<llvm::SmallVector<unsigned, 16>, 16> successors(
+      bounds.size());
+  llvm::SmallVector<unsigned, 16> incoming(bounds.size(), 0);
+  for (unsigned lhs = 0; lhs < bounds.size(); ++lhs)
+    for (unsigned rhs = 0; rhs < bounds.size(); ++rhs) {
+      mlir::Operation *producer = bounds[rhs].producer;
+      if (lhs == rhs || !producer)
+        continue;
+      if (llvm::any_of(bounds[lhs].consumers, [&](mlir::Operation *consumer) {
+            return consumer->getBlock() == producer->getBlock() &&
+                   (consumer == producer ||
+                    consumer->isBeforeInBlock(producer));
+          })) {
+        successors[lhs].push_back(rhs);
+        ++incoming[rhs];
+      }
+    }
+  llvm::SmallVector<CommunicationComponent, 4> cuts;
+  unsigned remaining = bounds.size();
+  while (remaining) {
+    llvm::SmallVector<unsigned, 16> frontier;
+    CommunicationComponent cut;
+    for (unsigned index = 0; index < incoming.size(); ++index) {
+      if (incoming[index] != 0)
+        continue;
+      frontier.push_back(index);
+      incoming[index] = std::numeric_limits<unsigned>::max();
+      unsigned groupIndex = component.groups[index];
+      cut.groups.push_back(groupIndex);
+      for (uint64_t tile : groups[groupIndex].participants)
+        if (!llvm::is_contained(cut.participants, tile))
+          cut.participants.push_back(tile);
+    }
+    // Cycles and incomplete frontiers keep the original causal component.
+    if (frontier.empty() || !hasCurrentCommunicationCut(cut, groups, peers))
+      return {component};
+    llvm::sort(cut.participants);
+    cuts.push_back(std::move(cut));
+    remaining -= frontier.size();
+    for (unsigned index : frontier)
+      for (unsigned successor : successors[index])
+        --incoming[successor];
+  }
+  return cuts;
 }
 
 static bool hasBidirectionalParticipant(const CommunicationComponent &component,

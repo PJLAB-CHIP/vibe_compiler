@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import pathlib
@@ -39,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compile-timing", action="store_true")
     parser.add_argument(
         "--qualify-communication",
-        choices=("ring-allgather", "direct-alltoall", "direct-reduce-scatter"),
+        choices=("ring-allgather", "direct-alltoall", "direct-reduce-scatter", "all-reduce"),
         help="explicit implementation qualification using wafer-compile-test",
     )
     parser.add_argument(
@@ -625,6 +626,212 @@ def verify_personalized_exchange(
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class _PeerIssue:
+    position: int
+    kind: str
+    token: str
+    buffer: str
+    size: int
+    communication: int
+    round: int
+    slice: int
+    peer: int
+
+
+def _read_peer_issues(ir: str, dialect: str) -> list[_PeerIssue]:
+    pattern = (
+        rf"(%\w+) = wafer\.{dialect}_(send|recv) (%\w+) \{{[^\n]*?"
+        r"bytes = (\d+) : i64, message = #wafer\.dte_message<"
+        r"communication = (\d+), round = (\d+), slice = (\d+)>, "
+        r"peer = (\d+) : i64} : memref<[\dx]+f16,"
+    )
+    return [
+        _PeerIssue(match.start(), match[2], match[1], match[3],
+                   *map(int, match.groups()[3:]))
+        for match in re.finditer(pattern, ir)
+    ]
+
+
+def _verify_all_reduce_ir(
+    tile_irs: dict[int, str], instruction_irs: dict[int, str], extent: int
+) -> None:
+    shards: dict[int, tuple[int, int]] = {}
+    phases: dict[tuple[int, int, str], list[_PeerIssue]] = {}
+    seeds: dict[int, str] = {}
+    views_by_tile = {}
+    copies_by_tile = {}
+    final_buffers: dict[int, str] = {}
+    for tile, ir in tile_irs.items():
+        reductions = list(re.finditer(
+            r"(%\w+) = wafer\.tile\.reduce <sum> .*?"
+            r"\{dimensions = array<i64: 0>} : \(memref<16x(\d+)x1xf16,", ir
+        ))
+        if len(reductions) != 1:
+            raise RuntimeError("AllReduce requires one full contribution sum per Tile")
+        reduction, = reductions
+        views = {
+            result: (source, tuple(map(int, offsets.split(", "))),
+                     tuple(map(int, sizes.split(", "))))
+            for result, source, offsets, sizes in re.findall(
+                r"(%\w+) = memref\.subview (%\w+)\[([\d, ]+)\] "
+                r"\[([\d, ]+)\] \[[1, ]+\]", ir
+            )
+        }
+        slices = [view for view in views.values()
+                  if view[2] == (16, int(reduction[2]), 1)]
+        if len(slices) != 1:
+            raise RuntimeError("AllReduce lacks one exact contribution shard")
+        shards[tile] = (slices[0][1][1], int(reduction[2]))
+        verify_reduce_scatter_contributions(ir, tile, extent, shards[tile])
+        issues = _read_peer_issues(ir, "tile.peer")
+        for phase in (0, 1):
+            for kind in ("send", "recv"):
+                selected = [issue for issue in issues if issue.kind == kind
+                            and (issue.position > reduction.start()) == bool(phase)]
+                if len(selected) != 15:
+                    raise RuntimeError("AllReduce lacks both complete exchanges")
+                phases[(tile, phase, kind)] = sorted(selected, key=lambda issue: issue.round)
+        gather_sends = phases[(tile, 1, "send")]
+        seed = gather_sends[0].buffer
+        layouts = dict(re.findall(
+            r"(%\w+) = wafer\.tile\.materialize_layout (%\w+) :", ir
+        ))
+        adds = {result: (lhs, rhs) for result, lhs, rhs in re.findall(
+            r"(%\w+) = wafer\.tile\.elementwise <add> (%\w+), (%\w+)", ir
+        )}
+        if reduction[1] not in adds.get(layouts.get(seed, ""), ()):
+            raise RuntimeError("AllReduce broadcasts a value other than its local sum")
+        seeds[tile] = seed
+        final_views = [rhs for lhs, rhs in adds.values()
+                       if rhs in views and views[rhs][1:] == ((0, 0), (extent, 1))]
+        if len(final_views) != 1:
+            raise RuntimeError("AllReduce does not consume the complete gathered result")
+        final_buffers[tile] = views[final_views[0]][0]
+        views_by_tile[tile] = views
+        copies_by_tile[tile] = re.findall(r"memref\.copy (%\w+), (%\w+) :", ir)
+
+        instr = instruction_irs[tile]
+        final_issues = _read_peer_issues(instr, "instr.dte")
+        signature = lambda issue: (issue.kind, issue.size, issue.communication,
+                                   issue.round, issue.slice, issue.peer)
+        if sorted(map(signature, issues)) != sorted(map(signature, final_issues)):
+            raise RuntimeError("AllReduce Tile/Instr messages differ")
+        waits = re.findall(r"wafer\.instr\.dte_wait (%\w+) :", instr)
+        if sorted(waits) != sorted(issue.token for issue in final_issues):
+            raise RuntimeError("AllReduce lacks exact token completion")
+        returned = re.findall(rf"return (%\w+) : memref<16x{extent}x1xf16,", instr)
+        if len(returned) != 1 or len(re.findall(
+            rf"memref\.subview {re.escape(returned[0])}\[{tile}, 0, 0\] "
+            rf"\[1, {extent}, 1\] \[1, 1, 1\]", instr
+        )) != 1:
+            raise RuntimeError("AllReduce lacks exact replicated output ownership")
+    end = 0
+    for offset, size in sorted(shards.values()):
+        if offset != end or size <= 0:
+            raise RuntimeError("AllReduce contribution shards overlap or omit values")
+        end += size
+    if end != extent:
+        raise RuntimeError("AllReduce contribution shards omit the tail")
+    origin = {phases[(tile, 1, "send")][0].communication: tile for tile in tile_irs}
+    if len(origin) != PHYSICAL_TILE_COUNT:
+        raise RuntimeError("AllReduce has duplicate gathered contributions")
+    messages: dict[str, dict[tuple[int, ...], int]] = {"send": {}, "recv": {}}
+    for (tile, phase, kind), issues in phases.items():
+        if phase == 0:
+            if sorted(issue.peer for issue in issues) != [peer for peer in tile_irs if peer != tile]:
+                raise RuntimeError("AllReduce misses a direct contribution peer")
+        elif [issue.round for issue in issues] != list(range(15)):
+            raise RuntimeError("AllReduce lacks the 15-round result gather")
+        for issue in issues:
+            source, destination = (tile, issue.peer) if kind == "send" else (issue.peer, tile)
+            owner = destination if phase == 0 else origin.get(issue.communication)
+            if owner not in shards or issue.size != shards[owner][1] * 2:
+                raise RuntimeError("AllReduce transfers the wrong contribution payload")
+            key = (phase, source, destination, issue.communication, issue.round, issue.slice)
+            if key in messages[kind]:
+                raise RuntimeError("AllReduce duplicates a message")
+            messages[kind][key] = issue.size
+            if phase == 1 and kind == "send" and issue.round:
+                previous = phases[(tile, 1, "recv")][issue.round - 1]
+                if (issue.buffer, issue.communication) != (previous.buffer, previous.communication):
+                    raise RuntimeError("AllReduce forwards the wrong gathered contribution")
+    if messages["send"] != messages["recv"]:
+        raise RuntimeError("AllReduce sends and receives do not match")
+    for tile in tile_irs:
+        labels = {issue.buffer: origin[issue.communication]
+                  for issue in phases[(tile, 1, "recv")]}
+        labels[seeds[tile]] = tile
+        views = views_by_tile[tile]
+        writes = {}
+        for source, destination in copies_by_tile[tile]:
+            if destination in views:
+                key = views[destination]
+                if key in writes:
+                    raise RuntimeError("AllReduce overwrites a result fragment")
+                writes[key] = source
+
+        def origin_of(buffer: str, visited: frozenset[str] = frozenset()) -> int:
+            if buffer in labels:
+                return labels[buffer]
+            if buffer in visited or buffer not in views or views[buffer] not in writes:
+                raise RuntimeError("AllReduce result fragment has no contribution origin")
+            return origin_of(writes[views[buffer]], visited | {buffer})
+
+        copied = set()
+        for (root, offsets, sizes), source in writes.items():
+            if root != final_buffers[tile]:
+                continue
+            owner = origin_of(source)
+            offset, size = shards[owner]
+            if owner in copied or (offsets, sizes) != ((offset, 0), (size, 1)):
+                raise RuntimeError("AllReduce places a gathered fragment in the wrong output slot")
+            copied.add(owner)
+        if copied != set(tile_irs):
+            raise RuntimeError("AllReduce does not replicate every contribution to every Tile")
+
+
+def verify_all_reduce(package: pathlib.Path, dump: pathlib.Path, extent: int) -> None:
+    manifest = json.loads((package / "manifest.json").read_text())
+    for entry in manifest["entries"]:
+        kinds = {argument["kind"] for argument in entry["arguments"]}
+        if "transport_status" not in kinds or "shared_workspace" in kinds:
+            raise RuntimeError("AllReduce qualification requires DTE in both exchanges")
+    tiles = {tile: (dump / "tile-dataflow" / f"tile_{tile:05d}.mlir").read_text()
+             for tile in range(PHYSICAL_TILE_COUNT)}
+    instructions = {tile: (dump / "instruction" / f"tile_{tile:05d}.mlir").read_text()
+                    for tile in tiles}
+    _verify_all_reduce_ir(tiles, instructions, extent)
+    first_receive = next(issue for issue in _read_peer_issues(tiles[0], "tile.peer")
+                         if issue.kind == "recv")
+    faults = (
+        ("missing-peer", "tile", re.sub(
+            r"^.*wafer\.tile\.peer_recv .*\n", "", tiles[0], count=1, flags=re.MULTILINE)),
+        ("missing-contribution", "tile", re.sub(
+            rf"^.*memref\.copy {re.escape(first_receive.buffer)},.*\n", "",
+            tiles[0], count=1, flags=re.MULTILINE)),
+        ("wrong-payload", "instr", re.sub(
+            r"(wafer\.instr\.dte_recv[^\n]*?bytes = )(\d+)",
+            lambda match: match[1] + str(int(match[2]) + 2), instructions[0], count=1)),
+        ("missing-wait", "instr", re.sub(
+            r"^.*wafer\.instr\.dte_wait .*\n", "", instructions[0],
+            count=1, flags=re.MULTILINE)),
+    )
+    for fault, stage, corrupted in faults:
+        original = tiles if stage == "tile" else instructions
+        if corrupted == original[0]:
+            raise RuntimeError(f"AllReduce fault {fault} was not injected")
+        changed = {**original, 0: corrupted}
+        try:
+            _verify_all_reduce_ir(changed if stage == "tile" else tiles,
+                                  changed if stage == "instr" else instructions, extent)
+        except RuntimeError:
+            continue
+        raise RuntimeError(f"AllReduce accepted {fault}")
+    print(f"qualified_all_reduce: extent={extent} tiles=16 sends=480 receives=480 "
+          "waits=960 exact_contributions=true replicated_results=true rejected_faults=4")
+
+
 def verify_row_sharded_gemm(
     dump: pathlib.Path, dimensions: tuple[int, int, int], dtype: torch.dtype
 ) -> None:
@@ -800,6 +1007,10 @@ def prepare_case_step(
         verify_personalized_exchange(
             package, dump_compiler_ir, case.reduce_scatter_extent, reduce_scatter=True
         )
+    if args.qualify_communication == "all-reduce":
+        if case.all_reduce_extent is None or dump_compiler_ir is None:
+            raise RuntimeError("AllReduce qualification requires its source and current IR")
+        verify_all_reduce(package, dump_compiler_ir, case.all_reduce_extent)
     oracle_start_ns = time.monotonic_ns()
     expected_outputs = case.materialize_expected_outputs()
     print(
@@ -889,6 +1100,7 @@ def main() -> int:
                 or current_case.gemm_dimensions is not None
                 or current_case.alltoall_extent is not None
                 or current_case.reduce_scatter_extent is not None
+                or current_case.all_reduce_extent is not None
             )
         ):
             dump_compiler_ir = step_dir / "compiler-ir"

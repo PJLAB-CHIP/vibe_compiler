@@ -294,6 +294,10 @@ static bool hasCommonCut(const ExchangeComponent &component,
       }
     if (tileRegions.empty())
       return false;
+    if (llvm::any_of(tileRegions, [&](TileRegionOp region) {
+          return region->getBlock() != tileRegions.front()->getBlock();
+        }))
+      return false;
     llvm::sort(tileRegions, [](TileRegionOp lhs, TileRegionOp rhs) {
       return lhs->isBeforeInBlock(rhs);
     });
@@ -326,8 +330,92 @@ static bool hasCommonCut(const ExchangeComponent &component,
             firstConsumer = position;
         }
       }
-    if (!lastProducer || !firstConsumer || !(*lastProducer < *firstConsumer))
+    if (!lastProducer || !firstConsumer)
       return false;
+    if (lastProducer && firstConsumer && !(*lastProducer < *firstConsumer))
+      return false;
+  }
+  return true;
+}
+
+// Shared Regions connect residency scopes, not necessarily communication cuts.
+// Prove every exchange separately, then rewrite the connected scope only once.
+// These temporary partitions are discarded before the actual Region rewrite.
+static bool
+hasCompleteExchangeCuts(const ExchangeComponent &component,
+                        llvm::ArrayRef<PayloadGroup> groups,
+                        llvm::ArrayRef<RelationInfo> relationInfo,
+                        llvm::ArrayRef<StructuredBoundaryRelation> relations) {
+  if (hasCommonCut(component, groups, relationInfo, relations))
+    return getCompleteExchangeMultiplicity(component, groups, relationInfo)
+        .has_value();
+
+  struct Consumer {
+    TileRegionOp region;
+    Position position;
+  };
+  struct Bounds {
+    TileRegionOp region;
+    Position producer;
+    llvm::SmallVector<Consumer, 16> consumers;
+  };
+  llvm::SmallVector<Bounds, 16> bounds(component.groups.size());
+  for (auto [index, groupIndex] : llvm::enumerate(component.groups)) {
+    const PayloadGroup &group = groups[groupIndex];
+    auto producer = getSourcePosition(relations[group.relations.front()], 0);
+    if (!producer)
+      return false;
+    bounds[index].region = group.sourceRegion;
+    bounds[index].producer = *producer;
+    for (unsigned relationIndex : group.relations) {
+      auto consumer = getDestinationPosition(relations[relationIndex], 0);
+      if (!consumer)
+        return false;
+      bounds[index].consumers.push_back(
+          {relationInfo[relationIndex].destinationRegion, *consumer});
+    }
+  }
+  llvm::SmallVector<llvm::SmallVector<unsigned, 16>, 16> successors(
+      bounds.size());
+  llvm::SmallVector<unsigned, 16> incoming(bounds.size(), 0);
+  for (unsigned lhs = 0; lhs < bounds.size(); ++lhs)
+    for (unsigned rhs = 0; rhs < bounds.size(); ++rhs) {
+      if (lhs == rhs)
+        continue;
+      if (llvm::any_of(bounds[lhs].consumers, [&](const Consumer &consumer) {
+            if (consumer.region == bounds[rhs].region)
+              return !(bounds[rhs].producer < consumer.position);
+            return consumer.region->getBlock() ==
+                       bounds[rhs].region->getBlock() &&
+                   consumer.region->isBeforeInBlock(bounds[rhs].region);
+          })) {
+        successors[lhs].push_back(rhs);
+        ++incoming[rhs];
+      }
+    }
+  unsigned remaining = bounds.size();
+  while (remaining) {
+    llvm::SmallVector<unsigned, 16> frontier;
+    ExchangeComponent cut;
+    for (unsigned index = 0; index < incoming.size(); ++index) {
+      if (incoming[index] != 0)
+        continue;
+      frontier.push_back(index);
+      incoming[index] = std::numeric_limits<unsigned>::max();
+      unsigned groupIndex = component.groups[index];
+      cut.groups.push_back(groupIndex);
+      for (uint64_t tile : groups[groupIndex].participants)
+        if (!llvm::is_contained(cut.participants, tile))
+          cut.participants.push_back(tile);
+    }
+    if (frontier.empty() ||
+        !getCompleteExchangeMultiplicity(cut, groups, relationInfo) ||
+        !hasCommonCut(cut, groups, relationInfo, relations))
+      return false;
+    remaining -= frontier.size();
+    for (unsigned index : frontier)
+      for (unsigned successor : successors[index])
+        --incoming[successor];
   }
   return true;
 }
@@ -552,9 +640,8 @@ prepareCommunicationRegionClosure(
   llvm::SmallVector<TileMergeSet, 16> sets;
   llvm::SmallVector<unsigned, 8> candidateComponents;
   for (auto [componentIndex, component] : llvm::enumerate(components)) {
-    if (!getCompleteExchangeMultiplicity(component, groups, relationInfo) ||
-        !hasCommonCut(component, groups, relationInfo,
-                      relations.boundaryRelations))
+    if (!hasCompleteExchangeCuts(component, groups, relationInfo,
+                                 relations.boundaryRelations))
       continue;
     candidateComponents.push_back(static_cast<unsigned>(componentIndex));
     for (uint64_t tileId : component.participants) {

@@ -120,6 +120,11 @@ Complete exchange的closure可按current relation中每对不同participant的�
 合并输入实际依赖的本地纯tensor初始化region可以进入同一个候选，但不得携带另一跨Tile边界，且保持原block顺序、SSA dominance与effect规则。
 Closure不保存route、round或buffer对象。
 
+同一Region可以消费前一个exchange并产生后一个exchange；共享Region本身不能证明属于同一个cut。
+合组先从current consumer先于其它group producer的顺序构造依赖图，再验证每个拓扑frontier的完整exchange与双侧共同cut；
+不能按relation遍历顺序把尚未遇到输入依赖的后续发送塞入前一组。多个已经分别证明合法的exchange若合并范围重叠，按原SSA和effect顺序一次物化其Region并集，
+不能重复删除或用失效端点重放。Movement从合并后actual buffer的最后写入和首次读取重新分组与验证，不继承上游phase编号。
+
 若每个participant均有相同lane数的source payload group，并且每个group的destination集合恰为其它全部participant，则该component是
 typed complete exchange。每个source group满足native broadcast时使用一次multi-destination issue；否则使用minimum-hop Ring
 All-Gather。不同participant的payload只要求各自的exact typed representation和cover，不要求数值相同。Ring每个lane在`P-1`轮中让
@@ -339,8 +344,9 @@ package/runtime不重新选择peer、route、algorithm或memory placement。
 
 | 输入等价类 | 分支和失败 | exact输出与直接下游witness |
 | --- | --- | --- |
-| rank≥3、1024/1025/1031，AllGather/AllToAll/ReduceScatter来源 | none保留原Region；search保留未合并和eligible合并候选 | 不同actual owner，完整输出/贡献coverage，实际memory/target与成本比较 |
+| rank≥3、1024/1025/1031，AllGather/AllToAll/ReduceScatter/AllReduce来源 | none保留原Region；search保留未合并和eligible合并候选 | 不同actual owner，完整输出/贡献coverage，实际memory/target与成本比较 |
 | 同payload与personalized完整交换 | 只读分析、显式合并；无peer/缺peer/无共同cut不可合并 | 分析不改IR；只合并选中区域，重建live endpoint，保留SSA/effect |
+| 相邻exchange共享生产/消费Region，relation顺序交错 | 从current依赖划分拓扑frontier；每个完整交换分别证明cut，再一次合并重叠范围 | 4/16 Tile与1024/1025/1031，两段peer IR、贡献/结果复制、Instr completion、实际SPM规划和transport；AllReduce source到PyTorch完整板测 |
 | 本地纯tensor初始化依赖 | 可纳入合并；side effect/其它跨Tile边界阻止合并 | dominance和effect保持，失败输入不修改 |
 | current Region间无环DDR依赖 | peer与shared-DDR各自物化；双向循环拒绝DDR候选，缺少跨Tile完成时不能证明可执行 | exact存储范围、实际写后读顺序、DDR resource与completion闭合 |
 | 多fragment、SSA与清理 | 同一source的local/external fragments共同按actual demand组装；聚合交换位于全部source定义之后、首次receive消费之前 | 多分片source回归，verifier dominance，Instr拷贝消除后重建实际buffer owner并进入SPM规划 |

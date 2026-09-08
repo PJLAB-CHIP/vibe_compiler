@@ -58,7 +58,7 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 
 具体pipeline与覆盖合同以13号“区域与传输选择的覆盖合同”为准；未验证的实现和测试保持doing。
 
-以下编号只是`board-testing`同一测试清单内的执行顺序，不是独立任务。Add、基础Direct-DTE及下列FP16 Ring AllGather矩阵已有实卡通过证据；GEMM与AllToAll的三组整除/尾部实卡也已通过，当前区域/传输选择修正及ReduceScatter已实卡验收，下一项是AllReduce。
+以下编号只是`board-testing`同一测试清单内的执行顺序，不是独立任务。Add、基础Direct-DTE及下列FP16 Ring AllGather矩阵已有实卡通过证据；GEMM与AllToAll的三组整除/尾部实卡也已通过，当前区域/传输选择修正、ReduceScatter与AllReduce已实卡验收，下一项是卷积组合计算。
 每类测试按列出的覆盖范围验收，单个case通过不能代表整类或总任务完成。实现、输入或环境没有影响结论的变化时，不重复已通过的case。
 
 | 测试顺序 | 具体范围 | 完成门禁与后续动作 |
@@ -67,8 +67,8 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 | 2. FP16 GEMM | rank-3矩阵乘；整除与M/K/N尾部，覆盖主要维度1024/1025/1031 | 三组source/no-card与实卡完整PyTorch比较均通过；16 Tile输出分片覆盖完整且无重叠 |
 | 3. AllToAll | 普通计算加转置/重分布source，覆盖不同source到不同destination的piece | 三个长度的actual personalized exchange、no-card、实卡完整PyTorch比较与正常清理均通过 |
 | 4. ReduceScatter | 多Tile partial contribution合并到各destination shard | 1024/1025/1031的none/search/peer九次实卡及完整PyTorch归约比较均通过，最大绝对误差0 |
-| 5. AllReduce | 多Tile partial contribution合并后供全部participant消费 | 先补生产source case；证明实际fanin/fanout或Ring路径，再与PyTorch完整归约及广播结果比较 |
-| 6. 卷积组合计算 | 现有`conv-mixed-dag`，FP16 | fresh source/no-card，完整检查两个PyTorch输出与正常完成 |
+| 5. AllReduce | 多Tile partial contribution合并后供全部participant消费 | 1024/1025/1031的none/search/peer矩阵均已实卡通过；专项为direct贡献交换加Ring AllGather，完整PyTorch误差均为0 |
+| 6. 卷积组合计算 | 现有`conv-mixed-dag`，FP16 | 本轮none/search no-card通过；none单次实卡正常完成，但两个PyTorch输出均失败，正在定位；search未发射 |
 | 7. Attention prefill | 现有`attention-prefill`，FP16、序列长度1024 | fresh source/no-card，与同一输入的PyTorch eager attention完整比较 |
 | 8. KV cache decode | 现有`attention-decode-kv-cache`，连续两步 | 第二步消费第一步实际回读的KV；两步attention输出和完整KV cache均与PyTorch比较 |
 | 9. LLaMA block | 现有`llama-2-7b-block`，FP16 | 完整block输出对比PyTorch；此前局部算子通过不能代签本项 |
@@ -78,7 +78,7 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 
 - 每个新增case先完成真实source、输入、同module PyTorch eager reference、原样package和本轮no-card，再执行一次真实调用。
 - 产品回归使用普通`wafer-compile`的none/search，不断言必须使用某种通信。通信专项使用`wafer-compile-test --test-communication-candidate=peer`显式选择可选closure及现有peer物化；从同一PyTorch source经同一变换实现产生原样package，再检查指定结构。DDR产物不能代签DTE专项；不修改ELF/manifest。GEMM先验收none。
-- 第4项已有rank-3 ReduceScatter source及1024/1025/1031产品/专项注册，完整contribution/combine coverage和PyTorch负例；第5项AllReduce仍须准备对应source与验收。尚未通过fresh no-card的用例不能标board-ready。
+- 第4项已有rank-3 ReduceScatter source及1024/1025/1031产品/专项注册，完整contribution/combine coverage和PyTorch负例；第5项AllReduce已有同source三长度、三路径的完整实卡验收。尚未通过fresh no-card的用例不能标board-ready。
 - 同一可用设备会话复用已确认身份。真实设备始终单进程、逐case；首次timeout或设备异常立即停止。用户已说明卡死后必须重启整机；重启恢复前不再发射Add或其它case。
 - 数值检查覆盖完整tensor，不抽样；记录dtype/shape、seed、容差、package身份、回读、误差和完成状态。保留现有PyTorch比较策略，失败后不通过放宽容差获得通过。
 - 超时的失效package、IR、raw按用户要求清理，仅保留必要错误摘要；成功产物保留用于审计，不作下一轮测试输入。
@@ -178,7 +178,7 @@ Pipeline position:
 - Current stage responsibility: 从actual producer/result shard与DTE证实每个destination shard消费全部16 source贡献；AllReduce还须证实所有participant获得完整归约结果。先验证实际路径再登记具体实现。
 - Output IR / files: fresh source/IR/package、同module完整PyTorch eager reference、no-card及实卡记录。
 - Downstream consumer: 当前板测runner与后续组合计算、性能验收。
-- User-level driver / named pipeline: 同一PyTorch exporter与`wafer-run`；产品none/search使用`wafer-compile`，ReduceScatter专项使用内部compiler及`--qualify-communication=direct-reduce-scatter`。
+- User-level driver / named pipeline: 同一PyTorch exporter与`wafer-run`；产品none/search使用`wafer-compile`，专项使用内部compiler；ReduceScatter选择`--qualify-communication=direct-reduce-scatter`，AllReduce选择`--qualify-communication=all-reduce`。
 - Explicit non-goals: 不用单Tile归约或DDR转存代签分布式DTE；不要求未被actual IR选择的Ring算法，不更改归约数值语义。
 - Completion criteria: 两种语义各三个长度的exact贡献/输出coverage、message/token闭合与fresh no-card通过，实卡全量PyTorch比较和正常清理通过。
 
@@ -187,6 +187,23 @@ Pipeline position:
 | L=1024 | 16参与者、每个输出元素包含全部16份贡献；ReduceScatter输出`[1,L,1]`，AllReduce输出`[16,L,1]` | 真实DTE传输与完整tensor PyTorch对比 |
 | L=1025/1031 | exact shard coverage与尾元素；漏source、错destination或漏tail必须失败 | 非均匀分片与各自真实设备结果 |
 | FP16输入 | 通信归约使用有正负号的`1..8 / 16`非零值，16份贡献可精确累加，以明确检验遗漏、重复和搬运；seed=20260803，rtol=1e-3、atol=1e-5 | expected始终来自同一个PyTorch module，不手写归约reference |
+
+AllReduce本轮验收：同一rank-3 source的`none/search`各三个长度，加内部peer专项三个长度；source仍使用普通
+sum/broadcast/add，不输入collective或固定transport标签。先检查actual Tile/Instr的完整贡献与结果复制，再登记专项的实际算法，
+不要求未被选中的Ring。输入含正负非零二进制分数，lhs随Tile和位置变化；缺少source、重复source、缺少destination和尾元素错误
+必须被完整PyTorch比较拒绝。通信专项还注入缺peer/错payload/漏贡献的IR负例；产品测试不读取这些结构期望。
+
+本轮产品六项已通过完整PyTorch实卡比较，通信专项暴露连续exchange的资格缺口：归约Region同时接收第一次交换、产生第二次交换，
+仅按共享Region连接component会把两个不同cut合为一个无共同cut的component。修复边界仍是可选closure及其直接Movement消费者：
+从当前consumer先于其它group producer的关系构建依赖图；每个拓扑frontier独立证明完整exchange与共同cut。重叠的合法合并范围只做一次实际Region重写，
+Movement从新的buffer def-use重新区分cut，不跨stage保存phase编号或旁路计划。none不调用closure，search仍保留未合并/DDR候选。
+覆盖两个连续完整exchange、只有单向producer/consumer的group、无cut的真实因果交换、effect阻止和缺peer；正例经过Instr completion、
+actual MiniMalloc与transport验证，三个AllReduce通信专项no-card与实卡已通过。原有AllGather/AllToAll/ReduceScatter作为直接回归。
+
+方法比较：[MLIR affine fusion](https://mlir.llvm.org/docs/Passes/#-affine-loop-fusion-loop-fusion-pass)从实际依赖判断合法插入范围，
+不能用共同owner代替依赖；本项沿用已有cut证明，合组时求这些范围的交集，不引入全局调度器或更改collective算法。
+SSA、Region和clone按[MLIR语言合同](https://mlir.llvm.org/docs/LangRef/)及pinned `Operation.h`、`IRMapping.h`、
+`Affine/Utils/LoopFusionUtils.cpp`确认。
 
 ReduceScatter首条source本轮编译/no-card成功，但actual package有240个shared-workspace、无DTE，尚未发射。
 修复前closure只识别每个source result向全体广播的group，遗漏已有完整personalized contribution matrix；
@@ -200,6 +217,47 @@ ReduceScatter首条source本轮编译/no-card成功，但actual package有240个
 修改前后都运行完整current-IR/transport/SystemC gate；真实DTE与PyTorch结果闭合之前不能完成该条。
 
 ## 本轮检查点
+
+### 卷积组合计算首轮（2026-09-08）
+
+none/search两项fresh no-card通过；none单次实卡的输入、manifest与expected均为FP16，seed=20260803。
+16 Tile completion、两个输出回读和normal cleanup完成，无timeout或设备异常，未retry/reset/power。
+完整PyTorch比较失败：主输出`[1,24,8,1024]`有196509/196608项不匹配，转F32计算最大绝对误差0.6415328979492188；
+归约输出`[1,24]`有24/24项不匹配，最大绝对误差320.75。容差保持rtol=1e-3、atol=1e-5。
+manifest SHA256为`bcc4508efdcec23485d5fd31903e557174aad665da6696cc85562cb58bf52929`。
+当前只确认是数值失败；归约回读也不等于主输出的PyTorch求和，不能先假定只有卷积运算错误。后续设备发射停止，先检查actual IR/descriptor与回读分布。
+
+### AllReduce验收（2026-09-08）
+
+第5项九条矩阵全部通过；当前none/search仍选择共享DDR，专项由相同普通PyTorch source产生direct贡献交换加Ring AllGather，
+不把专项选择带入产品。每个专项包含480 send、480 recv和960个对应wait，前后exchange从actual buffer读写重建不同cut；
+每个destination sum恰好消费16个source贡献，全部16 Tile从local/receive/relay buffer获得完整归约结果并广播参与最终add。
+
+- 三个长度的完整输出分别为16384、16400、16496个FP16值；九条矩阵共147840个值，最大绝对误差全部为0。
+  PyTorch 2.5.0+cpu、seed=20260803、rtol=1e-3、atol=1e-5、equal_nan=false；expected来自导出同一module的eager计算。
+- 本轮先执行产品六项；修复后search三项与新增peer三项全部重新执行。none三个最终package的全部文件与本轮实际通过产物逐字节相同，
+  因此复用同会话验收证据，没有重复发射。所有调用均16 Tile completion、正常readback/cleanup，无timeout或设备异常。
+- 4/16 Tile、1024/1025/1031的两阶段current-IR回归将relation顺序交错，证明分组不依赖先遍历到哪个source；
+  实际经过Instr、DTE wait、NCC join、MiniMalloc与transport binding。无cut因果、独立none与effect阻止回归通过。
+- 三个fresh专项同时验证缺peer、漏贡献copy、错误Instr payload和漏wait四种IR故障必须拒绝；PyTorch负例覆盖漏source、重复source、
+  未复制destination与最后一个输出元素错误。产品runner不调用专项结构验证。
+- canonical完整增量构建及连续Ninja no-op通过；完整check-wafer（265 lit、14组unit、17项SystemC及model gate）、
+  Python board-case suite、新增九项和原有27项通信fresh no-card全部通过，无skip/unsupported。
+  原有27个最终package全部文件与已通过实卡的审计产物逐字节一致，无需重复发射。
+- 最终审计在`build/test/board-audit/all-reduce/`；最初六项在`all-reduce-initial-ddr/`，只用于审计。
+  临时DDR/失败检查目录和包含失败IR的调试日志已删除。
+
+| L | 路径 | 最终manifest SHA256 |
+| --- | --- | --- |
+| 1024 | none | `6b33c17831cae75af35a1bbc952af1ce2dee8ebb95eb819702da6ef36aafd5b9` |
+| 1024 | search | `ed3945fe5daf9b639c4dd5f558f3c0f5d644f493fd67dd88891f75d3840fdf10` |
+| 1024 | peer | `c6c7914aa8e4045487be7848d6cc3e30c8c49d22949a57b5dae9bf44063e3f94` |
+| 1025 | none | `27bb05fb9f3895090fcbc488b125018ceb930e327f839110f893cc9160e71886` |
+| 1025 | search | `a07d83e636e802eb5c83902a0cbfecacf09e6e691d6ac18541630d0759b4771e` |
+| 1025 | peer | `717ed1d7aa8bd3b151ac8e022668c4c086521b0a378ee486fe1606981387e210` |
+| 1031 | none | `7db14fafe3ed8a73e1d50dcc6abe591b94782d10cccb6fa5e682cba976723b89` |
+| 1031 | search | `366890a81986f0fbd4802da0b505b4250e027c1a23da5896389c533636e35a71` |
+| 1031 | peer | `8d94b4928fcc8bee26abb256e6f9ab47e5edc8f6b9782ef1ce210e3bb36049d2` |
 
 ### 区域与传输选择修正及DDR完成修复（2026-09-08）
 
