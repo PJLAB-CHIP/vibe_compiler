@@ -85,12 +85,18 @@ physical timing未校准就把可精确计数的工作量降成Unknown：
   collective latency或sustained lower bound；
 - physical route和arbiter仍未知。point model从typed 2D mesh构造modeled deterministic shortest path，
   以`EstimatedRoute` assumption计peak directed-link pressure；它不是actual route或hot-link observation；
-- Direct-DTE每message `α = 10 us`、maximum modeled route每hop的route-fill prior `1 ns`以及
-  instruction/event/wait control `1 ns`均为versioned compiler policy prior，不是板端测量或保守bound。
-  历史校准曾把SPM0/RAM_ACC的1024-bit接口与1 GHz相乘得到每tile `128 GB/s` point estimate；该数不是
-  SPM1 aggregate bandwidth，当前cost实现已删除该term，不用于SPM驻留、allocator或候选计时。当前`α`有意
-  惩罚小message；未来由同profile、
-  同participant、重复matched board measurement替换，而不是由论文或单次counter移植绝对常数。
+- Direct-DTE sender控制成本区分每Tile首条与后续消息。当前built-in estimate采用首条`13 us`、后续`1.5 us`，
+  有n条send时为`13 + (n-1) × 1.5 us`，无send为0；endpoint payload仍另按上述128 GB/s prior计费。
+  这是由下方有限板测支持的point estimate，首条含冷代码/控制路径等开销，不是纯fabric latency或upper bound。
+  不再每条固定计10 us；cohort identity包含两个参数，profile整体仍为`BuiltInEstimate`。
+- NCC空闲control使用`join calls × 0.14 us + participant waits × 0.045 us`的point estimate，
+  分别解释调用/ordering和逐worker polling；从同一Tile的实际计数求和后再取max-Tile。单participant约0.18 us，
+  2/3 participant合并join约0.227/0.274 us；不能只按participant数线性计每个0.2 us。
+  隐式NCC drain保留actual participant计数，只有显式join增加本次测得的调用固定项；不把pending engine work写进该固定项。
+- maximum modeled route每hop的route-fill prior `1 ns`以及instruction/DTE event control `1 ns`仍为
+  compiler policy prior；本次没有从软件wait混合区间辨识这些独立参数。
+  sender生命周期已包含send wait，其分段观察不能再次当作独立完整wait duration叠加。
+  历史SPM0/RAM_ACC的1024-bit接口×1 GHz所得128 GB/s并非SPM1 aggregate bandwidth，cost已删除该term。
 
 SPM1的静态硬件事实另行处理：每tile 3 MiB，由8个独立2048-bit bank和LSB-interleaved交换网络组成。
 本项目按1 GHz，并额外假设每个bank每周期贡献一个2048-bit传输，做粗略service-envelope算术得到2.048 TB/s；
@@ -104,19 +110,12 @@ solve自然遇到、且hard outcome、actual high-water与planner work完全相�
 不得另做query、生成physical-dataflow choice或post-solve relocation。当前校准没有给出可消费的
 port/stride conflict penalty，因此phase不得影响legality、resident/spill、`tile.region`或join。
 
-Search controller比较actual candidate时，本profile可提供fresh final IR的card-aggregate DDR、max-Tile local GS、max-Tile
-steady/nonterminal/total participant completion及critical-path位置，并保留compute/recompute、NoC、Instr、descriptor/resource等
-exact work和当前校准的point/bound parameters；不含legacy SPM0/RAM_ACC flat duration。SPM1 exact movement按上述
-单bank nominal prior形成max-Tile service envelope，并与DDR/NoC/compute service取资源最大值以避免对同一DMA重复计时；
-GS是SPM movement的可审计子集，不另加一遍duration。若某个performance term没有qualified comparison
-parameter，在cohort开始时对全部candidate一致删除该term，不在单个candidate上保留`Unknown`或当零。
-没有current-IR+target capability共同qualified的multi-buffer时，已具备qualified duration的DDR、NoC和compute phases按
-dependency order串行计费；只有某个actual TileModule/TileRegion/Instr candidate的multi-buffer recurrence、exact wait/reuse cut和
-capability均闭合时，steady state才取可并行resource maximum。GS和completion始终按上述max-Tile作用域
-进入统一selection tuple，不会因其duration未校准而当作0。所有exact-admitted candidate在同一个cohort中启用完全
-相同的数值term，直接按estimated makespan和稳定tie-break选优；不存在固定百分比margin、benefit等级、promotion
-分支或candidate-local fallback。缺少sustained lower rate、route dilation、startup upper或hop-fill upper时不构造
-该term；必要的hard resource、typed transport或算术可表示性失败仍只淘汰对应candidate。
+当前Search controller从fresh final IR提取card-aggregate DDR、max-Tile compute/SPM/Instr/DTE work、
+modeled peak-link pressure及typed completion/resource计数，并在相同cohort内形成独立service terms。
+实现仍按各term的Pareto关系比较；DDR下降而DTE上升时仍可为`Incomparable`。
+统一estimated makespan及其dependency/overlap组合规则尚未实施，不能把资源最大值或统一selection tuple写成当前行为。
+本次时延参数回写只改变实际message/participant count的性能估计，不修改candidate物化、SPM/completion合法性或强制transport选择。
+缺少sustained lower rate、route dilation、startup upper或hop-fill upper时不形成可用于pruning的硬界。
 
 论文只提供模型结构：Stream-K支持work-centric decomposition并要求把seam/fixup计入总work；TileLink说明
 tile、resource binding和dependency signal共同决定compute/communication overlap；collective-capable NoC
@@ -124,6 +123,37 @@ tile、resource binding和dependency signal共同决定compute/communication ove
 bandwidth和startup数字均不进入TX81 profile。Search选出的actual DeviceExecutable仍需fresh correctness；
 configured-board matched `search`/`none` A/B由production qualification签发。`none`只提供同源deterministic
 `none` baseline，不反向建立第二个compiler promotion或selection接口。
+
+### 软件消息与同步时延观察
+
+本组`board-observed`使用现有16-Tile cluster ABI、production CRT与固定2/8 KiB payload，
+每Tile执行32次有界调用。`rdcycle`只放在CRT调用边界，采样记录在该轮所有调用完成后写出；
+不使用完整Trace bookkeeping，也不把host wall time或DTE PMU raw换成时延。
+3种CPU区间的StreamEvents差分测得约`1 cycle ≈ 1 ns`，相邻区间斜率为约0.982/1.003 ns/cycle，
+CLINT约2 ns/tick；这是本会话约百分之几精度的速率核对，不能由此宣布跨Tile全局timestamp mapping有效。
+空读cycle对最少7 cycles，以下为含该观察开销的local区间；不扣除不确定的peer等待。
+
+| 本地CRT区间 | 后续样本中位数 | 解释 |
+| --- | --- | --- |
+| 2 KiB sender prepare→issue→send wait返回 | 约1.44/1.44 us | 首条另列，每次496个后续样本 |
+| 8 KiB sender prepare→issue→send wait返回 | 约1.49/1.47 us | 不能外推为纯fabric或pipeline吞吐 |
+| 2/8 KiB send wait | 约0.77/0.84 us | 含轮询、完成处理及peer进展 |
+| 2/8 KiB recv wait | 约0.65/0.64 us | 接收者就绪时间影响长尾 |
+| 空闲NCC join，worker0 | 约0.182/0.182 us | 两次独立launch，单participant调用和前后ordering |
+| 空闲NCC，2 participant | 合并0.227 us；拆开0.365 us | 相同worker集合，固定调用/fence次数不同 |
+| 空闲NCC，3 participant | 合并0.274 us；拆开0.560 us | 同上，每种496个后续样本 |
+| 每worker 8 KiB WDMA后，2 participant | 合并0.585 us；拆开0.625 us | pending wait包含剩余执行，不按idle差值预测整段收益 |
+| 每worker 8 KiB WDMA后，3 participant | 合并0.282 us；拆开0.561 us | 等待接近idle，不据此推断吞吐或跨worker overlap |
+| 8 KiB RDMA后matching join | 约1.73/1.85 us | 包含剩余搬运；P90约4.86/5.05 us |
+| 8 KiB WDMA后matching join | 约1.00/1.09 us | 包含剩余搬运；P90约3.50/3.71 us |
+
+各DTE launch首条sender的Tile中位数约8–13 us，单Tile最大约20 us，不能把13 us叫作保守上界。
+后续sender中位数减去nominal payload serialization约16/64 ns后支持约1.5 us的取整startup估计。
+32次顺序复用的同步来自探针本身的buffer lifecycle；本组不改变生产wait位置，不证明多worker overlap，
+不校准更大payload、allocator模式、拓扑/hop或其它collective的独立参数。多join对照采用先combined后split的固定顺序，
+pending数据只解释该负载下的剩余等待，未用于拟合独立硬件执行或合并收益。
+原始记录、时钟差分与重复分布由`wafer_board_dte_latency.py`和`wafer_board_latency_summary.py`生成；
+运行身份、实际package与检查结果在统一板测计划中，历史文件只作审计。
 
 ## 硬件实验、行为结论与compiler价值
 
@@ -260,8 +290,9 @@ configured-board matched `search`/`none` A/B由production qualification签发。
   固定worker join或issue后立即wait填补。
 - Pipeline window由buffer、SPM、engine和dependency共同约束，不使用header queue depth。cross-engine
   correctness由typed instruction、range、dependency、completion和generic activation合同决定；表中10个same-worker
-  pair与1个cross-worker placement key只证明对应行为边界，不建立独立profitability接口。未校准的performance term
-  对整个cohort删除；candidate只能因proven legality失败被精确拒绝，未校准收益不得参与排序。Production实测前不预设
+  pair与1个cross-worker placement key只证明对应行为边界，不建立独立profitability接口。Point estimate必须标明
+  cohort与外推假设，不能当作calibrated bound；缺失actual work仍返回typed unknown，不能按candidate删term或当零。
+  candidate只能因proven legality失败被精确拒绝。Production实测前不预设
   bounded shortlist；若以后启用有损策略，结果必须明确标为`budgeted-feasible`。
 - Current Direct-DTE target/CRT合同已经把sender生命周期拆成显式prepare、issue和wait/release：unicast lowering在
   `DirectDTESendPrepare`后发射`DirectDTESendIssue`；已确认的native broadcast/scatter使用一个multi-send prepare、逐destination

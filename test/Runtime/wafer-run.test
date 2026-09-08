@@ -10,6 +10,7 @@
 # RUN: not wafer-run --package-dir %t.package --board --max-resource-bytes 32 2>&1 | FileCheck %s --check-prefix=BOARD-OPTIONS
 # RUN: not wafer-run --package-dir %t.package --no-card --max-resource-bytes 32 2>&1 | FileCheck %s --check-prefix=CAPACITY
 # RUN: not wafer-run --package-dir %t.package --no-card --device-id 0 2>&1 | FileCheck %s --check-prefix=NO-CARD-BOARD-OPTION
+# RUN: not wafer-run --package-dir %t.package --no-card --device-timing 2>&1 | FileCheck %s --check-prefix=NO-CARD-BOARD-OPTION
 # RUN: not wafer-run --package-dir %t.package --no-card --output 1=%t.raw 2>&1 | FileCheck %s --check-prefix=NO-CARD-BOARD-OPTION
 # RUN: cp -R %t.package %t.bad-package
 # RUN: printf extra > %t.bad-package/modules/extra.so

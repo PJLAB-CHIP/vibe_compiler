@@ -46,6 +46,7 @@ struct Options {
   std::vector<wafer::runtime::cli::PortFile> relaxedF16ExpectedFiles;
   std::vector<wafer::runtime::cli::PortFile> outputFiles;
   bool supportsHostWatchdog = false;
+  bool deviceTiming = false;
   bool noCard = false;
   bool board = false;
 };
@@ -61,6 +62,7 @@ void printUsage(llvm::raw_ostream &output) {
             "--expected-tile-count <count> "
             "--expected-runtime-library-sha256 <hex> "
             "[--completion-timeout-ms <milliseconds>] "
+            "[--device-timing] "
             "--resource <ResourceId=raw-file>... "
             "[--expected <ResourceId=raw-file>]... "
             "[--expected-f16-relaxed <ResourceId=raw-file>]... "
@@ -218,6 +220,10 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
       printUsage(llvm::outs());
       std::exit(0);
     }
+    if (argument == "--device-timing") {
+      options.deviceTiming = true;
+      continue;
+    }
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "unknown option: " + argument);
   }
@@ -236,7 +242,7 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
        !options.expectedDeviceName.empty() ||
        !options.expectedPCIBusId.empty() ||
        !options.expectedRuntimeLibraryDigest.empty() ||
-       options.completionTimeoutSpecified))
+       options.completionTimeoutSpecified || options.deviceTiming))
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "board binding and qualification options require --board");
@@ -368,6 +374,9 @@ int runBoard(const Options &options,
   wafer::runtime::BoardRuntimeInvocationRequest request;
   request.deviceId = options.deviceId;
   request.completionTimeoutMilliseconds = options.completionTimeoutMilliseconds;
+  if (options.deviceTiming)
+    request.deviceTimingPolicy =
+        wafer::runtime::BoardDeviceTimingPolicy::StreamEvents;
   request.qualification = {
       options.expectedRuntimeVersion,       options.expectedTileCount,
       options.expectedDeviceName,           options.expectedPCIBusId,
@@ -487,6 +496,9 @@ int runBoard(const Options &options,
                         tile.completion)
                  << " tile_id=" << tile.tileId.getValue() << "\n";
   llvm::outs() << "invocation_tiles: " << result->tiles.size() << "\n";
+  if (options.deviceTiming && result->deviceExecutionNanoseconds)
+    llvm::outs() << "board_timing: kind=tx-stream-events device_elapsed_ns="
+                 << *result->deviceExecutionNanoseconds << "\n";
   const wafer::KernelRuntimeLaunchContract &kernel = manifest.launch.getKernel();
   if (kernel.form == wafer::KernelLaunchForm::Grid) {
     llvm::outs() << "launch_pattern: kernel-grid-x" << manifest.tileCount

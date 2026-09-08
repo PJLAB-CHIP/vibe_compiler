@@ -59,6 +59,21 @@ maximumTileMetric(const analysis::InstructionProgramAggregateCost &cost,
   return maximum;
 }
 
+std::variant<uint64_t, SearchObjectiveUnknownReason>
+deriveNCCControlTime(const analysis::ScheduleCostMetric &joins,
+                    const analysis::ScheduleCostMetric &participants,
+                    const SearchCostPolicy &policy) {
+  if (!joins.isKnown() || !participants.isKnown())
+    return SearchObjectiveUnknownReason::MetricUnavailable;
+  uint64_t calls = 0, waits = 0, total = 0;
+  if (!checkedMultiply(joins.value, policy.nccJoinPicosecondsEstimate, calls) ||
+      !checkedMultiply(participants.value,
+                       policy.nccParticipantWaitPicosecondsEstimate, waits) ||
+      !checkedAdd(calls, waits, total))
+    return SearchObjectiveUnknownReason::ArithmeticOverflow;
+  return total;
+}
+
 std::array<uint64_t, 12> asServiceArray(
     const SearchResourceDurations &durations) {
   return {durations.neF16Bf16Picoseconds,
@@ -107,14 +122,16 @@ bool isNoWorseThanReference(const SearchObjective &objective,
 mlir::FailureOr<SearchCostCohort>
 SearchCostCohort::create(const SearchCostPolicy &policy,
                          std::string *failureReason) {
-  const std::array<uint64_t, 12> rates{
+  const std::array<uint64_t, 14> rates{
       policy.ddrNominalBytesPerSecond,
       policy.directionalNoCBytesPerSecond,
       policy.dteEndpointBytesPerSecondEstimate,
+      policy.dteFirstMessagePicosecondsEstimate,
       policy.dteMessageStartupPicosecondsEstimate,
       policy.noCHopPicosecondsEstimate,
       policy.instructionFixedPicosecondsEstimate,
       policy.dteWaitedEventPicosecondsEstimate,
+      policy.nccJoinPicosecondsEstimate,
       policy.nccParticipantWaitPicosecondsEstimate,
       policy.f16Bf16NPULogicalOpsPerSecondPerTile,
       policy.f16Bf16VectorLogicalOpsPerSecondPerTile,
@@ -189,15 +206,8 @@ deriveSearchObjective(const analysis::InstructionProgramAggregateCost &cost,
         return tile.noc.waitedEventCount;
       },
       cost.aggregateNoC.waitedEventCount);
-  auto nccWaits = maximumTileMetric(
-      cost,
-      [](const analysis::InstructionProgramCost &tile)
-          -> const analysis::ScheduleCostMetric & {
-        return tile.nccParticipantWaitCount;
-      },
-      cost.aggregateNCCParticipantWaitCount);
   if (!npu || !vectorF16 || !vectorF32 || !spm || !instructions || !dteWaits ||
-      !nccWaits || !cost.aggregateDDRReadBytes.isKnown() ||
+      !cost.aggregateDDRReadBytes.isKnown() ||
       !cost.aggregateDDRWriteBytes.isKnown() ||
       !cost.aggregateNoC.staticIssueSiteCount.isKnown() ||
       !cost.maximumTileNoCTransmitBytes.isKnown() ||
@@ -229,6 +239,36 @@ deriveSearchObjective(const analysis::InstructionProgramAggregateCost &cost,
   const uint64_t hopMessageDemand = cost.minimumHopMessageDemand.value;
 
   SearchResourceDurations durations;
+  if (cost.tileCosts.empty()) {
+    auto control = deriveNCCControlTime(cost.aggregateNCCJoinCount,
+                                      cost.aggregateNCCParticipantWaitCount,
+                                      policy);
+    if (const auto *reason =
+            std::get_if<SearchObjectiveUnknownReason>(&control))
+      return UnknownSearchObjective{*reason};
+    durations.nccWaitControlPicoseconds = std::get<uint64_t>(control);
+  } else {
+    // Join and participant maxima need not belong to the same Tile.
+    for (const analysis::InstructionProgramCost &tile : cost.tileCosts) {
+      auto control = deriveNCCControlTime(tile.nccJoinCount,
+                                        tile.nccParticipantWaitCount, policy);
+      if (const auto *reason =
+              std::get_if<SearchObjectiveUnknownReason>(&control))
+        return UnknownSearchObjective{*reason};
+      durations.nccWaitControlPicoseconds =
+          std::max(durations.nccWaitControlPicoseconds,
+                   std::get<uint64_t>(control));
+    }
+  }
+  if (dteMessageCount != 0 &&
+      (!checkedMultiply(dteMessageCount - 1,
+                        policy.dteMessageStartupPicosecondsEstimate,
+                        durations.dteStartupPicoseconds) ||
+       !checkedAdd(durations.dteStartupPicoseconds,
+                   policy.dteFirstMessagePicosecondsEstimate,
+                   durations.dteStartupPicoseconds)))
+    return UnknownSearchObjective{
+        SearchObjectiveUnknownReason::ArithmeticOverflow};
   auto assignTime = [&](uint64_t work, uint64_t rate, uint64_t &destination) {
     std::optional<uint64_t> duration = timeForWork(work, rate);
     if (!duration)
@@ -248,9 +288,6 @@ deriveSearchObjective(const analysis::InstructionProgramAggregateCost &cost,
                   durations.nocPicoseconds) ||
       !assignTime(dteEndpointBytes, policy.dteEndpointBytesPerSecondEstimate,
                   durations.dteEndpointPicoseconds) ||
-      !checkedMultiply(dteMessageCount,
-                       policy.dteMessageStartupPicosecondsEstimate,
-                       durations.dteStartupPicoseconds) ||
       !checkedMultiply(hopMessageDemand, policy.noCHopPicosecondsEstimate,
                        durations.nocHopPicoseconds) ||
       !assignTime(*spm, policy.spmExplicitMovementBytesPerSecondPerTileEstimate,
@@ -259,9 +296,7 @@ deriveSearchObjective(const analysis::InstructionProgramAggregateCost &cost,
                        policy.instructionFixedPicosecondsEstimate,
                        durations.instructionControlPicoseconds) ||
       !checkedMultiply(*dteWaits, policy.dteWaitedEventPicosecondsEstimate,
-                       durations.dteWaitControlPicoseconds) ||
-      !checkedMultiply(*nccWaits, policy.nccParticipantWaitPicosecondsEstimate,
-                       durations.nccWaitControlPicoseconds))
+                       durations.dteWaitControlPicoseconds))
     return UnknownSearchObjective{
         SearchObjectiveUnknownReason::ArithmeticOverflow};
   durations.spmHighWaterBytes = cost.maximumTileSPMHighWaterBytes.value;

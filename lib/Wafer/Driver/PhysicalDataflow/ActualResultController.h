@@ -32,17 +32,23 @@ struct SearchCostPolicy {
   /// Stable provenance is part of the comparison cohort. A candidate scored
   /// with one profile can never silently outrank a candidate scored with
   /// another profile.
-  uint64_t profileIdentity = 1;
+  uint64_t profileIdentity = 2;
   SearchCostProfileProvenance profileProvenance =
       SearchCostProfileProvenance::BuiltInEstimate;
   uint64_t ddrNominalBytesPerSecond = 150'000'000'000ULL;
   uint64_t directionalNoCBytesPerSecond = 128'000'000'000ULL;
   uint64_t dteEndpointBytesPerSecondEstimate = 128'000'000'000ULL;
-  uint64_t dteMessageStartupPicosecondsEstimate = 10'000'000ULL;
+  // Sender lifecycle estimates: first call includes cold control/setup work;
+  // subsequent calls use the warmed path. Both exclude payload serialization.
+  uint64_t dteFirstMessagePicosecondsEstimate = 13'000'000ULL;
+  uint64_t dteMessageStartupPicosecondsEstimate = 1'500'000ULL;
   uint64_t noCHopPicosecondsEstimate = 1'000ULL;
   uint64_t instructionFixedPicosecondsEstimate = 1'000ULL;
   uint64_t dteWaitedEventPicosecondsEstimate = 1'000ULL;
-  uint64_t nccParticipantWaitPicosecondsEstimate = 1'000ULL;
+  // Idle NCC control: one call/ordering cost plus incremental worker polling.
+  // Pending engine work is separate from these point estimates.
+  uint64_t nccJoinPicosecondsEstimate = 140'000ULL;
+  uint64_t nccParticipantWaitPicosecondsEstimate = 45'000ULL;
   uint64_t f16Bf16NPULogicalOpsPerSecondPerTile = 8'000'000'000'000ULL;
   uint64_t f16Bf16VectorLogicalOpsPerSecondPerTile = 64'000'000'000ULL;
   uint64_t f32VectorLogicalOpsPerSecondPerTile = 32'000'000'000ULL;
@@ -103,6 +109,8 @@ public:
                right.directionalNoCBytesPerSecond &&
            left.dteEndpointBytesPerSecondEstimate ==
                right.dteEndpointBytesPerSecondEstimate &&
+           left.dteFirstMessagePicosecondsEstimate ==
+               right.dteFirstMessagePicosecondsEstimate &&
            left.dteMessageStartupPicosecondsEstimate ==
                right.dteMessageStartupPicosecondsEstimate &&
            left.noCHopPicosecondsEstimate == right.noCHopPicosecondsEstimate &&
@@ -110,6 +118,8 @@ public:
                right.instructionFixedPicosecondsEstimate &&
            left.dteWaitedEventPicosecondsEstimate ==
                right.dteWaitedEventPicosecondsEstimate &&
+           left.nccJoinPicosecondsEstimate ==
+               right.nccJoinPicosecondsEstimate &&
            left.nccParticipantWaitPicosecondsEstimate ==
                right.nccParticipantWaitPicosecondsEstimate &&
            left.f16Bf16NPULogicalOpsPerSecondPerTile ==

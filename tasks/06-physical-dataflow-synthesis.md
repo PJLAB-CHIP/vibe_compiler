@@ -731,6 +731,12 @@ schedule multiplicity或算术结果为unknown/unsupported/overflow时，该obje
 该objective，也不参与frontier ordering；controller只对layout已经唯一确定的candidate继续枚举其它choice，并以物化后的actual objective比较。
 
 当前实现的DTE endpoint、message startup和minimum-hop terms直接消费final Instr cost中的actual transmit bytes、message count和hop-demand；
+message startup区分首条与后续消息：每Tile无send时为0，有`n`条send时为`first + (n-1)×steady`，
+仍在同一target cohort中按actual max-Tile message count计价。`first/steady`均是性能估计，不证明同步、容量或fabric latency；
+溢出返回typed unknown。该项覆盖0/1/多消息、cohort差异与溢出，实卡来源和外推边界由硬件校准文档拥有。
+NCC control从current IR的实际join次数与participant wait次数分别估计固定调用/ordering和逐participant polling开销；
+先逐Tile求和，再取max-Tile。Pending engine剩余执行不能拟合为固定wait常数；空闲观察仍为point estimate，
+不证明并行或completion合法性。覆盖combined/split多participant、非重合max-Tile、unknown与overflow。
 它们不能退化为固定instruction数量，也不能使用target-independent guessed route。rate必须来自同一target-profile cohort；未校准时保持
 `Unknown`/`Incomparable`，不能用默认零值继续排序。
 

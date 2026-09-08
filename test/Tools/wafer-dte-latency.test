@@ -1,0 +1,15 @@
+# REQUIRES: stablehlo, shardy, xla-spmd-helper
+
+# This bounded timing probe uses FP16 ports as raw diagnostic containers.
+# Numerical comparison is intentionally absent; the DTE path retains the
+# current cluster prepare/status ABI, two guarded buffers and exact waits.
+# RUN: rm -rf %t.clock %t.dte %t.sync %t.combined
+# RUN: %python %S/../Board/Support/wafer_board_dte_latency.py --work-dir %t.clock --wafer-compile %wafer_compile_test --wafer-run %wafer_obj_root/bin/wafer-run --llvm-clangxx clang++ --clock-cycles 2000000 --no-card | FileCheck %s --check-prefix=CLOCK
+# RUN: %python %S/../Board/Support/wafer_board_dte_latency.py --work-dir %t.dte --wafer-compile %wafer_compile_test --wafer-run %wafer_obj_root/bin/wafer-run --llvm-clangxx clang++ --payload-bytes 8192 --no-card | FileCheck %s --check-prefix=DTE
+# RUN: %python %S/../Board/Support/wafer_board_dte_latency.py --work-dir %t.sync --wafer-compile %wafer_compile_test --wafer-run %wafer_obj_root/bin/wafer-run --llvm-clangxx clang++ --payload-bytes 8192 --ncc-sync --no-card | FileCheck %s --check-prefix=SYNC
+# RUN: %python %S/../Board/Support/wafer_board_dte_latency.py --work-dir %t.combined --wafer-compile %wafer_compile_test --wafer-run %wafer_obj_root/bin/wafer-run --llvm-clangxx clang++ --payload-bytes 8192 --ncc-sync --ncc-participants 3 --no-card | FileCheck %s --check-prefix=COMBINED
+
+# CLOCK: latency_no_card: cycles=2000000 payload=2048 tiles=16
+# DTE: latency_no_card: cycles=0 payload=8192 tiles=16
+# SYNC: latency_no_card: cycles=0 payload=8192 tiles=16 ncc_sync=True
+# COMBINED: latency_no_card: cycles=0 payload=8192 tiles=16 ncc_sync=True participants=3

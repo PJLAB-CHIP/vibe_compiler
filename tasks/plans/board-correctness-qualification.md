@@ -224,7 +224,7 @@ Pipeline position:
 以及[implementation-derived collective model](https://arxiv.org/abs/2004.11062)对实际实现和算法分别校准的要求。
 共享服务器不按benchmark建议关闭服务或改全局affinity；仅使用本仓产物并检查设备是否空闲。
 
-本轮checkpoint：
+Profiler修复checkpoint（绝对时钟资格前）：
 
 - 已撤回整段回归参数、独立拟合/采样脚本和临时`--device-timing` CLI，cost policy保持原值；统一使用原有profiler。
 - Profiler的C++ producer已使用external output port，但Python reader/schema及手写fixture仍使用旧scope/role，
@@ -256,11 +256,62 @@ peer每组240 send、240 recv和480 wait；shared-ddr的DTE事件为0。
 | DDR路径WDMA执行 | 1611.5 | 12763.5 | PMU ns，16 Tile中位数 |
 
 DTE setup中位数对这两个payload变化不大，但peer-ready/receive wait有长尾；这些是插桩时本地控制阶段，
-没有qualified cycle→ns映射，不能称为DTE本征latency或直接写成固定10us。DDR值包含该候选全部读写，
-不把多Tile中位数倒数当作整卡带宽。四组采样已闭合；统一评分及参数回写未完成，cost常量保持原值，decode仍阻塞。
+当时没有qualified cycle→ns映射，不能称为DTE本征latency或直接写成固定10us。DDR值包含该候选全部读写，
+不把多Tile中位数倒数当作整卡带宽。该checkpoint四组采样已闭合；当时统一评分及参数回写未完成，cost常量保持原值，decode仍阻塞。
 报告在`build/test/board-audit/communication-performance/`。新增lit覆盖整除/尾部、DDR/DTE选择与
 ordinary/profile Primary逐字节相同，替代旧的“内部入口必须拒绝profile”unit；生产test-choice拒绝仍通过。
 最终4项focused lit、10项compiler unit、本轮四份报告的动态phase复核与完整canonical增量构建通过；后续Ninja no-op。
+
+用户要求继续补齐单消息绝对时延，新增范围仅限这一缺口：
+
+- 输入为手写计时LLVM IR/C helper、原DTE cluster启动/状态ABI与固定FP16 payload；同一个seed package明确改为测试探针，重新绑定ELF digest并通过no-card。
+- 先用三种有界`rdcycle`忙等长度和同区间CLINT tick，借已有runtime StreamEvents测得cycle/tick速率；长短区间差抵消固定launch开销，第三长度验证换算，不按firmware库默认频率或Tile名猜时钟。
+- 单消息沿现有CRT的recv_prepare、send_prepare、issue、send_wait、recv_wait执行，记录每条调用的本地计时；只在全部完成后记录样本和回读guard，避免Trace bookkeeping进入被测调用。
+- 只覆盖2/8 KiB、16 Tile、每Tile32次有界生命周期；不测新拓扑/通信算法，不做数值结果对比。Wait来自本探针下一轮buffer复用需求，不改变生产completion。
+- 输出原始计数、换算ns与分布；实际clock线性、status/guard、完成和cleanup全部通过后才给单消息时延，仍区分软件生命周期和纯fabric latency。
+- 用户补充要求同步开销：复用同一探针，仅增加空闲NCC join与8 KiB RDMA/WDMA之后的matching join；各32次，不扩展engine/worker矩阵。DTE send/recv wait沿用已采集的生命周期分段。空闲join测调用开销，pending join包含硬件剩余执行及轮询，不能作为固定同步常数。
+
+| 延迟补测输入 | exact范围/失败 | 下游witness |
+| --- | --- | --- |
+| 三种有界clock区间 | 16 Tile周期/tick有效；相邻斜率与长短差一致 | StreamEvents换算、第三点线性核对 |
+| 2/8 KiB DTE，每Tile32次，两次独立launch | source/receive双侧guard、精确阶段、status与cleanup；首条单列 | 每调用与sender生命周期ns分布 |
+| 8 KiB NCC同步，每Tile32次 | idle join、RDMA/WDMA后worker0 matching join；原SPM/output范围 | 空闲与pending等待分布，禁止推断跨worker同步规则 |
+| NCC 2/3 participant，combined/split | 同一worker集合、3份DDR和source guard；idle及WDMA后pending，32次/Tile | 单次调用与逐participant增量，actual cost同Tile求和 |
+| actual max-Tile send数量0/1/15/32 | 首条/后续仿射成本、cohort差异和算术溢出 | typed objective unit与真实IR通信candidate回归 |
+
+用户进一步要求多join组合：增加2/3个participant的`join(mask)`与连续`join(1<<worker)`对照，
+每Tile各32次，分别测idle与同一组8 KiB WDMA之后的等待；WDMA共享只读SPM source、各worker写独立DDR guarded slice。
+三份DDR双侧guard和独立SPM source guard均回读，不由最终copy覆盖待检查的DDR guard。只消费已有typed join/participant计数，
+若固定调用与逐participant差异可辨识，cost改为同一Tile的`calls×fixed + participants×increment`再取max-Tile；
+不把多个participant的独立最大值相加，不修改join合并或completion位置。覆盖2/3 participant的combined/split、不同Tile分布、unknown与overflow。
+
+本轮绝对时延与同步补测已完成（2026-09-09）：
+
+- 三个时钟区间各一次launch：2M/8M/20M cycle，StreamEvents为3.097/8.989/21.029 ms；
+  长短差分0.996 ns/cycle，两个相邻差分0.982/1.003 ns/cycle，第三点残差约85 us。
+  CLINT为约1.992 ns/tick；空读cycle对7 cycles。本会话只报告约1 ns/cycle，不赋予伪精度或全局timestamp资格。
+- DTE 2/8 KiB各两次独立launch，每Tile32次、每次496个后续样本。sender lifecycle中位数分别为
+  1.443/1.445 us和1.489/1.471 us；首条Tile中位数8.05–12.92 us，单Tile最长约20 us。
+  send wait分别约0.768/0.842 us，recv wait约0.649/0.638 us；均包含peer/轮询而非纯fabric。
+- NCC 8 KiB两次独立launch：idle join均约0.182 us；RDMA后join约1.734/1.850 us，
+  WDMA后join约0.999/1.090 us。pending wait有长尾，不写成固定wait参数。
+- 十一次launch全部fresh package先no-card，16 Tile有界采样、guard/status与normal cleanup通过，无timeout/reset。
+  最终clock/DTE/NCC单participant与combined四种no-card probe.o均与对应成功launch逐字节一致；未扩大为硬件矩阵或数值资格。
+- 多join：2 participant的idle combined/split为0.227/0.365 us，3 participant为0.274/0.560 us；
+  每worker 8 KiB WDMA后分别0.585/0.625 us和0.282/0.561 us，均为496个后续样本的中位数。
+  三份DDR guard与独立SPM source guard、status和cleanup通过；相同worker集合，先combined后split，pending差值不当固定收益。
+- cost cohort更新为首条sender 13 us、后续1.5 us，空闲NCC为每次join 0.14 us＋每participant 0.045 us，
+  替换仅根据单participant提出的0.2 us/participant草稿；actual join与participant计数先在同一Tile求和，再取max。
+  首条/后续按actual max-Tile send count仿射计费；profile仍是BuiltInEstimate，payload bandwidth、hop、
+  DTE独立wait control与compute不因本次观察升级为完整实测。NCC对未测组合的外推不作硬界。
+  实现仍按独立service terms比较，DDR/DTE互换可为Incomparable；统一评分尚未完成，decode仍待修复。
+- 最终3项focused lit实际通过（含clock/DTE/NCC no-card、通信profile real-IR与CLI边界）；
+  13项Driver unit实际通过，含首条/多消息、combined/split、非重合max-Tile、unknown/溢出/cohort和baseline/search DDR alternative回归；
+  canonical完整增量构建通过，第二次Ninja no-op，git diff --check与源码cache检查通过。
+
+原始成功测量与汇总在`build/test/board-audit/dte-latency/`；`summary.json`保留device identity、manifest digest、
+时钟核对与每阶段首条/后续median/P90/range。汇总工具只读这些审计记录，重新上板必须重新生成输入与package。
+可复现汇总：`python3 -B test/Board/Support/wafer_board_latency_summary.py <本轮measurement.json...> --output <summary.json>`。
 
 ### 第1项：AllGather source到Ring专项（旧入口三个长度已通过）
 

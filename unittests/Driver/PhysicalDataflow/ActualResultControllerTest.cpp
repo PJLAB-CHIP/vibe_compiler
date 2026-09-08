@@ -12,6 +12,7 @@
 #include <array>
 #include <limits>
 #include <set>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -91,9 +92,11 @@ SearchCostPolicy unitCostPolicy() {
   policy.directionalNoCBytesPerSecond = UINT64_C(1000000000000);
   policy.dteEndpointBytesPerSecondEstimate = UINT64_C(1000000000000);
   policy.dteMessageStartupPicosecondsEstimate = 1;
+  policy.dteFirstMessagePicosecondsEstimate = 1;
   policy.noCHopPicosecondsEstimate = 1;
   policy.instructionFixedPicosecondsEstimate = 1;
   policy.dteWaitedEventPicosecondsEstimate = 1;
+  policy.nccJoinPicosecondsEstimate = 1;
   policy.nccParticipantWaitPicosecondsEstimate = 1;
   policy.f16Bf16NPULogicalOpsPerSecondPerTile = UINT64_C(1000000000000);
   policy.f16Bf16VectorLogicalOpsPerSecondPerTile = UINT64_C(1000000000000);
@@ -226,6 +229,94 @@ TEST(ActualResultControllerTest,
   EXPECT_FALSE(controller.canPrune(equal));
   EXPECT_TRUE(controller.canPrune(worse));
   EXPECT_FALSE(controller.canPrune(unknown));
+}
+
+TEST(ActualResultControllerTest,
+     DTEStartupSeparatesFirstMessageAndChecksCohortAndOverflow) {
+  // Bounded arithmetic oracle; actual multi-Tile IR is covered by the
+  // communication candidate tests and the guarded board timing probe.
+  SearchCostPolicy policy;
+  auto cohort = *SearchCostCohort::create(policy);
+  InstructionProgramAggregateCost cost;
+  for (auto [count, expected] : std::array<std::pair<uint64_t, uint64_t>, 4>{
+           {{0, 0}, {1, 13'000'000}, {15, 34'000'000}, {32, 59'500'000}}}) {
+    SCOPED_TRACE(count);
+    cost.maximumTileNoCTransmitMessageCount.value = count;
+    SearchObjective objective = deriveSearchObjective(cost, cohort);
+    const auto *known = std::get_if<KnownSearchObjective>(&objective);
+    ASSERT_NE(known, nullptr);
+    EXPECT_EQ(known->durations.dteStartupPicoseconds, expected);
+  }
+  SearchObjective reference = deriveSearchObjective(cost, cohort);
+  ++policy.dteFirstMessagePicosecondsEstimate;
+  auto otherCohort = *SearchCostCohort::create(policy);
+  EXPECT_EQ(compareSearchObjectives(reference,
+                                    deriveSearchObjective(cost, otherCohort)),
+            SearchObjectiveComparison::Incomparable);
+  policy.dteFirstMessagePicosecondsEstimate = 0;
+  EXPECT_TRUE(mlir::failed(SearchCostCohort::create(policy)));
+
+  policy = unitCostPolicy();
+  policy.dteFirstMessagePicosecondsEstimate =
+      std::numeric_limits<uint64_t>::max();
+  cost.maximumTileNoCTransmitMessageCount.value = 2;
+  EXPECT_EQ(std::get<UnknownSearchObjective>(
+                deriveSearchObjective(cost, *SearchCostCohort::create(policy)))
+                .reason,
+            SearchObjectiveUnknownReason::ArithmeticOverflow);
+  policy = unitCostPolicy();
+  policy.dteMessageStartupPicosecondsEstimate = 2;
+  cost.maximumTileNoCTransmitMessageCount.value =
+      std::numeric_limits<uint64_t>::max();
+  EXPECT_EQ(std::get<UnknownSearchObjective>(
+                deriveSearchObjective(cost, *SearchCostCohort::create(policy)))
+                .reason,
+            SearchObjectiveUnknownReason::ArithmeticOverflow);
+}
+
+TEST(ActualResultControllerTest,
+     NCCControlCountsCallsAndParticipantsOnTheSameTile) {
+  SearchCostPolicy policy;
+  auto cohort = *SearchCostCohort::create(policy);
+  InstructionProgramAggregateCost cost;
+  for (uint64_t participants : {2, 3}) {
+    cost.aggregateNCCJoinCount.value = 1;
+    cost.aggregateNCCParticipantWaitCount.value = participants;
+    SearchObjective combined = deriveSearchObjective(cost, cohort);
+    EXPECT_EQ(std::get<KnownSearchObjective>(combined)
+                  .durations.nccWaitControlPicoseconds,
+              participants == 2 ? 230'000u : 275'000u);
+    cost.aggregateNCCJoinCount.value = participants;
+    SearchObjective split = deriveSearchObjective(cost, cohort);
+    EXPECT_EQ(std::get<KnownSearchObjective>(split)
+                  .durations.nccWaitControlPicoseconds,
+              participants == 2 ? 370'000u : 555'000u);
+    EXPECT_EQ(compareSearchObjectives(combined, split),
+              SearchObjectiveComparison::Better);
+  }
+  cost.tileCosts.resize(2);
+  cost.tileCosts[0].nccJoinCount.value = 2;
+  cost.tileCosts[0].nccParticipantWaitCount.value = 2;
+  cost.tileCosts[1].nccJoinCount.value = 1;
+  cost.tileCosts[1].nccParticipantWaitCount.value = 3;
+  SearchObjective known = deriveSearchObjective(cost, cohort);
+  EXPECT_EQ(std::get<KnownSearchObjective>(known)
+                .durations.nccWaitControlPicoseconds,
+            370'000u);
+  ++policy.nccJoinPicosecondsEstimate;
+  EXPECT_EQ(
+      compareSearchObjectives(
+          known, deriveSearchObjective(cost, *SearchCostCohort::create(policy))),
+      SearchObjectiveComparison::Incomparable);
+  cost.tileCosts[0].nccJoinCount.knowledge = ScheduleCostKnowledge::Unavailable;
+  EXPECT_EQ(
+      std::get<UnknownSearchObjective>(deriveSearchObjective(cost, cohort)).reason,
+      SearchObjectiveUnknownReason::MetricUnavailable);
+  cost.tileCosts[0].nccJoinCount.knowledge = ScheduleCostKnowledge::Known;
+  cost.tileCosts[0].nccJoinCount.value = std::numeric_limits<uint64_t>::max();
+  EXPECT_EQ(
+      std::get<UnknownSearchObjective>(deriveSearchObjective(cost, cohort)).reason,
+      SearchObjectiveUnknownReason::ArithmeticOverflow);
 }
 
 TEST(ActualResultControllerTest,

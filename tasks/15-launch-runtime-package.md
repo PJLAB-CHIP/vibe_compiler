@@ -353,6 +353,11 @@ Profile output validation使用ordinary manifest的external output `PortId`作�
 evidence中的`port`由C++ producer、JSON schema和报告reader共同消费；`role_index`只描述输出序号，
 不再恢复旧resource的`scope/role`身份。重复port、旧字段和非法整数在报告输入边界拒绝。
 
+`wafer-run --board --device-timing`显式请求已有`BoardDeviceTimingPolicy::StreamEvents`，
+成功时输出`board_timing: kind=tx-stream-events device_elapsed_ns=...`；默认仍关闭，no-card拒绝此选项。
+它只观察原有device invocation区间，不增加launch或IR插桩。校准探针可用不同长度的有界CPU区间之差建立
+local cycle比例；普通程序整段时间不能按静态指令数均摊为每条指令或同步时延。
+
 ## 9. Verification
 
 Host/no-card至少覆盖：
