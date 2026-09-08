@@ -58,7 +58,7 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 
 具体pipeline与覆盖合同以13号“区域与传输选择的覆盖合同”为准；未验证的实现和测试保持doing。
 
-以下编号只是`board-testing`同一测试清单内的执行顺序，不是独立任务。Add、基础Direct-DTE及下列FP16 Ring AllGather矩阵已有实卡通过证据；GEMM与AllToAll的三组整除/尾部实卡也已通过，当前区域/传输选择修正、ReduceScatter与AllReduce已实卡验收，下一项是卷积组合计算。
+以下编号只是`board-testing`同一测试清单内的执行顺序，不是独立任务。Add、基础Direct-DTE及下列FP16 Ring AllGather矩阵已有实卡通过证据；GEMM与AllToAll的三组整除/尾部实卡也已通过，当前区域/传输选择修正、ReduceScatter与AllReduce已实卡验收，卷积组合计算也已完成本轮验收，下一项是Attention prefill。
 每类测试按列出的覆盖范围验收，单个case通过不能代表整类或总任务完成。实现、输入或环境没有影响结论的变化时，不重复已通过的case。
 
 | 测试顺序 | 具体范围 | 完成门禁与后续动作 |
@@ -68,7 +68,7 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 | 3. AllToAll | 普通计算加转置/重分布source，覆盖不同source到不同destination的piece | 三个长度的actual personalized exchange、no-card、实卡完整PyTorch比较与正常清理均通过 |
 | 4. ReduceScatter | 多Tile partial contribution合并到各destination shard | 1024/1025/1031的none/search/peer九次实卡及完整PyTorch归约比较均通过，最大绝对误差0 |
 | 5. AllReduce | 多Tile partial contribution合并后供全部participant消费 | 1024/1025/1031的none/search/peer矩阵均已实卡通过；专项为direct贡献交换加Ring AllGather，完整PyTorch误差均为0 |
-| 6. 卷积组合计算 | 现有`conv-mixed-dag`，FP16 | Conv/Reduce布局与bias/logistic中间舍入修复均有独立整除/尾部none/search实卡通过证据；原组合两种policy均剩同一卷积累加舍入边界点，尚未通过 |
+| 6. 卷积组合计算 | 现有`conv-mixed-dag`，FP16 | 布局、中间舍入及四路F32累加修复后，独立整除/尾部与原组合none/search均通过本轮完整PyTorch实卡；主输出exact，归约输出通过原容差 |
 | 7. Attention prefill | 现有`attention-prefill`，FP16、序列长度1024 | fresh source/no-card，与同一输入的PyTorch eager attention完整比较 |
 | 8. KV cache decode | 现有`attention-decode-kv-cache`，连续两步 | 第二步消费第一步实际回读的KV；两步attention输出和完整KV cache均与PyTorch比较 |
 | 9. LLaMA block | 现有`llama-2-7b-block`，FP16 | 完整block输出对比PyTorch；此前局部算子通过不能代签本项 |
@@ -260,7 +260,65 @@ StableHLO-to-Linalg conversion。稳定合同分别在02号2.3节和05号3.1节�
 | 独立biased Conv、sigmoid及原组合 | 同module完整PyTorch eager/default容差，含正负与舍入边界；不以少数点通过代签 | fresh source/package/no-card、逐case单次launch、normal cleanup |
 | 原组合none/search | 两个完整输出均通过；任何元素缺失/超容差仍失败 | 本轮实卡及原通信/GEMM定向回归 |
 
-### 第6项中间舍入修复与本轮验收（2026-09-08）
+### 第6项剩余累加边界修复合同
+
+本轮核对pinned PyTorch 2.5.0：原FP16 source实际选择`Slow2d`，NCHW convolution通过
+[`ConvolutionMM2d.cpp`](https://github.com/pytorch/pytorch/blob/v2.5.0/aten/src/ATen/native/ConvolutionMM2d.cpp)
+调用no-transpose GEMM；[`BlasKernel.cpp`](https://github.com/pytorch/pytorch/blob/v2.5.0/aten/src/ATen/native/cpu/BlasKernel.cpp)
+的低精度路径使用四个F32 partial sums，K按`I,KH,KW`展平，每四项分别累加，余项进入第0路，然后按0+1+2+3合并、加bias、回写FP16。
+主机按该顺序复现原196608个卷积输出逐bit一致；bias-seeded虽然解决旧单点，却仍有189个卷积值不同，不能当作实际根因。
+把权重分四组再调用普通native Conv也不能保证路内求和顺序，主机对照仍有组合超差；当前native bias/psum没有相应数值合同。
+
+Pipeline position:
+- Upstream IR / input: layout-resolved ordinary `wafer.tile.conv`，FP16 input/weight、F32 result，输入padding已在current IR物化，op自身pads/unpads为0。
+- Current stage responsibility: 在Tile→Instr数值实现边界按`I,KH,KW`物化四路F32乘加；精确GatherScatter关系广播每个输入/weight项，路内顺序和最终合并顺序由actual SSA/effect表达。
+- Output IR / files: 标准Instr movement/convert/mul/add、显式allocation/owner和最终NCx output；不新增op或旁路执行入口。
+- Downstream consumer: 原fresh completion、actual SPM、Instr→LLVM/CRT、package和board runner。
+- User-level driver / named pipeline: 原`wafer-lower-tile-region-to-instr`及`wafer-compile` none/search共用；前端仍输出F32 convolution与bias。
+- Explicit non-goals: 不改module、数据、seed或eager reference/容差；同dtype、其它dtype、显式native Instr及尚未物化padding的原native合同保持原样；不打开未验证native option，不改变通信选择。
+- Completion criteria: 原组合none/search两个输出完整PyTorch实卡通过；整除/tail、非方形kernel和K余项的host/actual下游覆盖通过。记录实际work与编译代价，性能资格仍待第10项；不能声称native Conv性能不变。
+
+| 输入等价类 | exact输出及结构 | 下游witness |
+| --- | --- | --- |
+| FP16→F32 ordinary Conv，L=1024/1025/1031 | 每个I/KH/KW项恰好一次；四路partial、余项与末端合并顺序明确 | Instr owner/effect与完整product none/search no-card/board |
+| 非方形kernel、K整除及余1/2/3 | source/dest affine relation、stride/dilation、padding后输入域一致 | IR精确结构及PyTorch host oracle |
+| 同dtype、BF16/F32及直接native Instr | 现有算子/target边界不变 | 原有frontend/IR与board定向回归 |
+| 非法geometry、weight layout及不可表示physical span | 原Tile/Instr verifier按typed合同拒绝；lowering先证明所有relation/转换再物化，不改走native规避失败 | 本轮完整gate实际执行`invalid-conv-geometry`、`invalid-conv-weight-layout`与`invalid-physical-geometry` |
+| 原组合FP16 none/search | 原两个输出、原seed与default容差；包含原失败坐标且不特判坐标 | 本轮source/package/no-card、单次launch与normal cleanup |
+
+前端完全展开的探索已撤回：原组合无卡编译超过5分钟、RSS约3.3GB仍未完成，已主动停止本任务主机编译，未上板。
+因此固定上层convolution边界，仅在所选Tile的实际物化中展开，并复用明确owner的scratch；不通过扩大全局预算遮盖问题。
+
+### 第6项最终数值验收（2026-09-08）
+
+本轮保持前端opmath、bias、sigmoid及原组合module/input/seed/reference/default容差，实际修改仅在Tile→Instr的
+FP16→F32 convolution数值实现：四路partial sums使用10个明确owner的scratch（两个FP16、两个扩宽F32、一个product、
+四个partial和一个轮换spare），再生成一个结果buffer；每个K项精确读取input/weight后分别扩宽、乘加，最后按固定顺序合并。
+所有对象都经同一recorder进入fresh completion/SPM，无新增全局join、选路规则、native bias/psum选项或设备旁路。
+前次bias-seeded推测已由上述pinned source及实际Slow2d分派证据修正；不能按失败坐标补偿。
+
+| 本轮fresh source/package实卡 | 完整数值结果 | manifest SHA256（none / search） |
+| --- | --- | --- |
+| 原FP16组合 | none/search的196608项主输出均逐bit等于PyTorch，超差为0；24项sum均通过原容差，最大绝对误差0.25 | `24984bff192612c1ca625037153adb7362228816c85fc640faceefc77eca8474` / `24984bff192612c1ca625037153adb7362228816c85fc640faceefc77eca8474` |
+| biased Conv，1024 | none/search的196608项主输出均逐bit等于PyTorch，超差为0 | `b206868bfee9162a6bfebbbda1e25d8962fa5edfeffb29b38b03132f8cd97304` / `80aa2f16f99c0de388b3bc0b53a444391b1087908e5de5a15b4a6bf666738acd` |
+| biased Conv，1025 | none/search的196800项主输出均逐bit等于PyTorch，超差为0 | `cf925e3eff76da4c0670654ad8ee8226e9c1756a2b3708843056a97e40608021` / `76b8fd3ea3ce67efdc8ce19d21d84affd8a0742a94ea0a061481c06a2a925b48` |
+| biased Conv，1031 | none/search的197952项主输出均逐bit等于PyTorch，超差为0 | `2e365b133d58dd811a9bd4354c0b8e50e370ab7afeb6ae11ac9b97611c6f9fcd` / `f644690a995eb2f41447bbeae35a0eb8990e35cb84742ea57153c300ef6a45c6` |
+
+八项均使用本轮no-card原样package，逐case单次launch、16 Tile正常completion和cleanup，无设备timeout/reset；
+输入/descriptor/payload/expected均为FP16，`rtol=1e-3, atol=1e-5`。本地审计报告只保留成功launch及文件身份，不作后续输入。
+
+编译代价：原组合none的完整source/export/compiler/no-card约18秒，search在本轮并发矩阵中约77秒。
+原组合每Tile实际147个mul、154个add、314个GatherScatter，只有末端1个`ncc_join [0]`；16 Tile无可避免的非末端join。
+独立biased Conv的none旧native路径全卡16个conv、32个add、192个GatherScatter，现为2304个mul、2384个add、4816个GatherScatter；
+两者均仅16个末端join。这里是指令/work与主机编译时间记录，未测设备性能，不能声称保留native Conv性能。
+
+最终主机门禁：canonical完整增量构建与第二次Ninja no-op通过；完整`check-wafer`实际执行271项lit、14个unit executable、
+17项SystemC全部通过。新增IR回归覆盖K=1/4/6/7、非方形kernel、1024/1025/1031，并精确断言K余项、四路合并和spare复用；
+BF16→F32及同dtype native分支仍有独立结构断言；非平凡stride/dilation的最终focused复核通过。最终八项fresh no-card全部通过，全部package文件SHA256与本轮成功launch一致。板测任务第6项完成，下一项为prefill；模型既有编译失败与性能资格仍未完成。
+
+### 第6项中间舍入修复的历史检查点（2026-09-08）
+
+以下记录提交`2ff03dce`时的结果；其中剩余单点已由上方本轮验收闭合。
 
 本轮实现：typed ATen biased convolution在F32完成conv与bias后才回原dtype；官方Linalg前的logistic显式使用F32
 opmath。实际convolution scalar body保留F32乘加，精确的输入扩宽融合把storage保留为FP16/BF16，TargetCall/CRT独立传入
@@ -282,8 +340,8 @@ MaskMove仍消费Bit2Fp产生的浮点mask，本轮曾提出直接packed mask的
 剩余点为`(0,11,0,14)`：原eager主输出`0.09716796875`，设备为`0.0970458984375`，绝对差`0.0001220703125`。
 卷积结果分别为`0.0640869140625`与`0.06402587890625`，位于相邻FP16值的中点附近。主机F32/F64卷积后加bias再回FP16
 也复现同一点；以bias初始化F32有序累加会落到eager一侧。这是剩余累加顺序与最终half舍入的合同问题，不能通过改reference、
-放宽容差、移动其它算子的rounding或按坐标补偿掩盖。后续必须先确定可实现的bias-in-accumulator语义与实际target证据，
-再修改当前IR；native bias/psum option尚无该资格，不能直接打开。
+放宽容差、移动其它算子的rounding或按坐标补偿掩盖。当时把bias-in-accumulator列为待证候选；本轮已确认实际根因为四路求和，
+见上方修复合同。Native bias/psum option仍无相应资格，不能直接打开。
 
 额外尝试的普通`where(lhs < rhs, lhs, rhs)` source回归在既有packed BOOL跨region copy lowering被拒绝，未上板；
 本轮不把它列为通过，也不增加未闭合的CTest入口。CRT comparison本轮直接消费者的见证来自F32 division与sigmoid全输出。

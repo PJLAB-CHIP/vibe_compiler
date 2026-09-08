@@ -42,6 +42,7 @@ class PyTorchBoardCase:
     export_program: Callable[[pathlib.Path], None]
     comparison_policy: common.ComparisonPolicy
     widened_convolution: bool = False
+    ordered_convolution: bool = False
     allgather_payload_elements: int | None = None
     gemm_dimensions: tuple[int, int, int] | None = None
     alltoall_extent: int | None = None
@@ -291,7 +292,8 @@ def make_biased_conv(dtype: torch.dtype, seed: int, *, extent: int = 1024):
     module = BiasedConv().eval()
     return PyTorchBoardCase(
         name=f"biased-conv-{extent}", num_partitions=1, dtype=dtype, inputs=inputs,
-        widened_convolution=True,
+        widened_convolution=dtype == torch.bfloat16,
+        ordered_convolution=dtype == torch.float16,
         expected_outputs_factory=lambda: (module(*inputs),),
         export_program=lambda out: _save_exported_program(out, module, inputs),
         comparison_policy=common.PYTORCH_DEFAULT,
@@ -652,7 +654,8 @@ def _conv_mixed_dag(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
 
     return PyTorchBoardCase(
         name="conv-mixed-dag",
-        widened_convolution=True,
+        widened_convolution=dtype == torch.bfloat16,
+        ordered_convolution=dtype == torch.float16,
         num_partitions=1,
         dtype=dtype,
         inputs=inputs,

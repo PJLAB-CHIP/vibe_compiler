@@ -113,6 +113,20 @@ def verify_widened_convolution(directory: pathlib.Path, dtype: torch.dtype) -> N
         raise RuntimeError("convolution target call lost its independent input/output formats")
 
 
+def verify_ordered_convolution(directory: pathlib.Path) -> None:
+    operations = [
+        line for path in sorted((directory / "instruction").glob("tile_*.mlir"))
+        for line in path.read_text().splitlines()
+    ]
+    if any("wafer.instr.conv " in line for line in operations):
+        raise RuntimeError("ordered convolution was replaced by native accumulation")
+    for kind in ("mul", "add"):
+        matching = [line for line in operations
+                    if f"wafer.instr.elementwise <{kind}>" in line and "xf32," in line]
+        if not matching:
+            raise RuntimeError(f"ordered convolution omitted its F32 {kind}")
+
+
 def prepare_work_dir(work_dir: pathlib.Path) -> None:
     if work_dir.exists():
         shutil.rmtree(work_dir)
@@ -980,6 +994,8 @@ def prepare_case_step(
             raise RuntimeError("compiler IR dump is incomplete")
         if case.widened_convolution:
             verify_widened_convolution(dump_compiler_ir, case.dtype)
+        if case.ordered_convolution:
+            verify_ordered_convolution(dump_compiler_ir)
         for tile_file in tile_files:
             tile_ir = tile_file.read_text(encoding="utf-8")
             if "wafer.instr." in tile_ir:
@@ -1128,6 +1144,7 @@ def main() -> int:
                 or current_case.reduce_scatter_extent is not None
                 or current_case.all_reduce_extent is not None
                 or current_case.widened_convolution
+                or current_case.ordered_convolution
             )
         ):
             dump_compiler_ir = step_dir / "compiler-ir"

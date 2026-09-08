@@ -276,6 +276,12 @@ instr-level target kind。
 Ordinary Conv输入/weight允许FP16/BF16，result可保持原dtype或扩宽为F32；扩宽必须已由current Linalg scalar body
 表达，lowering不能从数值分布猜测。Tile/Instr memref、实际allocation与14号TargetCall分别保留输入和输出dtype。
 
+FP16 input/weight→F32 result且padding已物化的ordinary Conv，在Tile→Instr使用四路F32累加：
+K按canonical input-channel/kernel-H/kernel-W展平，完整四项分别累加至四路，余项进入第0路，最后顺序合并0+1+2+3。
+该数值实现参照pinned PyTorch低精度CPU GEMM；input/weight仍保留低精度storage，逐项exact GatherScatter广播到Tensor scratch并扩宽。
+Scratch allocation、复用和mul/add全在actual Instr中，沿同一owner recorder交给completion与SPM；不预判容量或插入额外join。
+同dtype及其它dtype/native Instr的既有合同保持原样；本项不保证不同上游reduction分块的逐bit等价，也不推广未验证bias/psum option。
+
 F32语义division在Tile→Instr边界展开为native近似商与两轮residual correction：`q=a/b; q=q+(a-b*q)/b`。
 这是对current target approximate division的数值实现，参照LLVM reciprocal refinement与本轮CT原语见证；不是改写上层
 算术关系。所有临时buffer和op经同一recorder拥有，再交给completion和actual SPM规划。Correction的非finite结果和原始

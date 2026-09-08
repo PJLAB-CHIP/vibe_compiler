@@ -1773,3 +1773,10 @@
 - 修复：relation结果编码由typed op固定为BOOL，CRT始终调用Bool relation方法，format仅描述输入dtype。MaskMove继续消费浮点mask。
 - 防复发：检查完整producer→predicate→Bit2Fp→consumer链和actual buffer跨度，并以真实规模正负/特殊值及tail的PyTorch结果验证；
   不根据最终mask现象直接改MaskMove合同，先分别确认产生的编码和消费的编码。
+
+## 扩宽opmath不等于保持低精度卷积的累加顺序
+
+- 根因：消除bias前的低精度回写后，不同F32求和树仍可能跨过FP16舍入中点，后续低精度算子会把该差异放大到默认容差之外。
+- 定位：先确认PyTorch实际backend与pinned实现。Slow2d的低精度no-transpose GEMM是四路F32 partial sums，余项进入第0路，最后合并再加bias；某个bias-seeded试算命中expected不能证明它就是reference算法。
+- 修复：在已有Tile convolution数值边界物化明确顺序的actual mul/add和可复用scratch，保留上层结构，由同一SPM/completion路径验证。前端逐项展开会放大规划输入，不应为此扩大全局编译预算。
+- 防复发：原module、seed、oracle与容差不变；检查整个组合输出、K余项和partial合并，而不只看独立卷积是否在容差内。此方法的适用范围需明确dtype/geometry与reference后端，不外推全域逐bit等价。

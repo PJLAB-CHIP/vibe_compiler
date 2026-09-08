@@ -1927,13 +1927,166 @@ public:
   }
 };
 
+// Match the low-precision CPU dot-product order: four independent F32 sums,
+// followed by a left-to-right merge. All movement, storage and reuse are
+// materialized here, before the shared completion and memory analyses.
+static mlir::LogicalResult lowerConvolutionWithOrderedAccumulation(
+    ComputeConvOp op, mlir::PatternRewriter &rewriter,
+    TileRegionToInstrBufferRecorder *recorder,
+    MovementDescriptorCache *descriptorCache) {
+  auto inputType = mlir::cast<mlir::MemRefType>(op.getInput().getType());
+  auto weightType = mlir::cast<mlir::MemRefType>(op.getWeight().getType());
+  auto outputType = mlir::cast<mlir::MemRefType>(op.getResult().getType());
+  auto space = MemoryAttr::get(rewriter.getContext(), MemorySpace::SPM,
+                               MemLayout::Tensor);
+  auto narrowType =
+      mlir::MemRefType::get(outputType.getShape(), rewriter.getF16Type(),
+                            mlir::MemRefLayoutAttrInterface{}, space);
+  auto wideType =
+      mlir::MemRefType::get(outputType.getShape(), rewriter.getF32Type(),
+                            mlir::MemRefLayoutAttrInterface{}, space);
+  if (mlir::failed(proveIdentityPhysicalTraversal(
+          rewriter, op, narrowType, wideType, descriptorCache,
+          "convolution opmath conversion")))
+    return mlir::failure();
+  auto conversion =
+      resolveInstrConvertKind(rewriter.getF16Type(), rewriter.getF32Type());
+  if (!conversion)
+    return failPattern(rewriter, op,
+                       "convolution has no exact input conversion");
+  int64_t kernelH = weightType.getDimSize(0);
+  int64_t kernelW = weightType.getDimSize(1);
+  int64_t channels = weightType.getDimSize(3);
+  int64_t kernelElements = 0, terms = 0;
+  if (llvm::MulOverflow(kernelH, kernelW, kernelElements) ||
+      llvm::MulOverflow(kernelElements, channels, terms))
+    return failPattern(rewriter, op,
+                       "convolution reduction extent overflows int64");
+  auto identity = analysis::IndexRelation::identity(outputType.getShape());
+  if (!identity.isExact())
+    return failPattern(rewriter, op,
+                       "convolution output relation is not exact");
+  struct ProductMovement {
+    SharedMovementDescriptorPlan input;
+    SharedMovementDescriptorPlan weight;
+  };
+  llvm::SmallVector<ProductMovement> movements;
+  auto dim = [&](unsigned index) {
+    return mlir::getAffineDimExpr(index, rewriter.getContext());
+  };
+  auto constant = [&](int64_t value) {
+    return mlir::getAffineConstantExpr(value, rewriter.getContext());
+  };
+  auto plan = [&](mlir::MemRefType sourceType,
+                  llvm::ArrayRef<mlir::AffineExpr> coordinates)
+      -> mlir::FailureOr<SharedMovementDescriptorPlan> {
+    auto relation = analysis::IndexRelation::fromAffineMap(
+        mlir::AffineMap::get(4, 0, coordinates, rewriter.getContext()),
+        outputType.getShape(), sourceType.getShape());
+    if (!relation.isExact())
+      return mlir::failure();
+    return descriptorCache->getOrCreate(
+        rewriter, op, sourceType, narrowType, outputType.getShape(),
+        *relation.get(), *identity.get(), MovementEngine::GatherScatter,
+        "convolution product movement");
+  };
+  for (int64_t index = 0; index < terms; ++index) {
+    int64_t channel = index / kernelElements;
+    int64_t kh = (index / kernelW) % kernelH;
+    int64_t kw = index % kernelW;
+    auto input =
+        plan(inputType,
+             {dim(0), dim(1) * op.getStrides()[0] + kh * op.getDilations()[0],
+              dim(2) * op.getStrides()[1] + kw * op.getDilations()[1],
+              constant(channel)});
+    auto weight = plan(weightType,
+                       {constant(kh), constant(kw), dim(3), constant(channel)});
+    if (mlir::failed(input) || mlir::failed(weight))
+      return failPattern(rewriter, op,
+                         "convolution product movement is not representable");
+    movements.push_back({*input, *weight});
+  }
+  auto finalMovement = descriptorCache->getOrCreate(
+      rewriter, op, wideType, outputType, outputType.getShape(),
+      *identity.get(), *identity.get(), MovementEngine::GatherScatter,
+      "convolution result movement");
+  if (mlir::failed(finalMovement))
+    return mlir::failure();
+
+  llvm::SmallVector<mlir::Value> scratch;
+  for (unsigned index = 0; index < 10; ++index) {
+    auto allocation = createDestAlloc(
+        op.getLoc(), index < 2 ? narrowType : wideType, rewriter, op, recorder);
+    if (mlir::failed(allocation))
+      return mlir::failure();
+    scratch.push_back(*allocation);
+  }
+  auto destination =
+      createDestAlloc(op.getLoc(), outputType, rewriter, op, recorder);
+  if (mlir::failed(destination))
+    return mlir::failure();
+  auto record = [&](mlir::Operation *operation) {
+    if (recorder)
+      recorder->recordLoweredOperation(op, operation);
+  };
+  auto emit = [&](InstrElementwiseKind kind, mlir::Value lhs, mlir::Value rhs,
+                  mlir::Value dest) {
+    record(rewriter.create<InstrElementwiseOp>(
+        op.getLoc(), InstrElementwiseKindAttr::get(rewriter.getContext(), kind),
+        mlir::ValueRange{lhs, rhs}, dest, getDefaultNCCWorkerAttr(rewriter)));
+  };
+  auto convertKind =
+      InstrConvertKindAttr::get(rewriter.getContext(), *conversion);
+  auto zero = rewriter.create<mlir::arith::ConstantOp>(
+      op.getLoc(), rewriter.getF32FloatAttr(0.0));
+  llvm::SmallVector<mlir::Value, 4> partials(scratch.begin() + 5,
+                                             scratch.begin() + 9);
+  mlir::Value spare = scratch[9];
+  for (mlir::Value partial : partials)
+    record(rewriter.create<InstrFillOp>(op.getLoc(), partial, zero,
+                                        FillDomainAttr{},
+                                        getDefaultNCCWorkerAttr(rewriter)));
+  int64_t complete = terms - terms % 4;
+  for (int64_t index = 0; index < terms; ++index) {
+    if (mlir::failed(emitGatherScatterDescriptorPlan(
+            rewriter, op.getLoc(), op, op.getInput(), scratch[0],
+            *movements[index].input, recorder)) ||
+        mlir::failed(emitGatherScatterDescriptorPlan(
+            rewriter, op.getLoc(), op, op.getWeight(), scratch[1],
+            *movements[index].weight, recorder)))
+      return mlir::failure();
+    for (unsigned operand = 0; operand < 2; ++operand)
+      record(rewriter.create<InstrConvertOp>(
+          op.getLoc(), convertKind, scratch[operand], scratch[operand + 2],
+          mlir::IntegerAttr{}, mlir::IntegerAttr{},
+          getDefaultNCCWorkerAttr(rewriter)));
+    emit(InstrElementwiseKind::Mul, scratch[2], scratch[3], scratch[4]);
+    unsigned lane = index < complete ? index % 4 : 0;
+    emit(InstrElementwiseKind::Add, partials[lane], scratch[4], spare);
+    std::swap(partials[lane], spare);
+  }
+  mlir::Value sum = partials[0];
+  for (unsigned lane = 1; lane < 4; ++lane) {
+    emit(InstrElementwiseKind::Add, sum, partials[lane], spare);
+    std::swap(sum, spare);
+  }
+  if (mlir::failed(emitGatherScatterDescriptorPlan(rewriter, op.getLoc(), op,
+                                                   sum, *destination,
+                                                   **finalMovement, recorder)))
+    return mlir::failure();
+  rewriter.replaceOp(op, *destination);
+  return mlir::success();
+}
+
 class ConvLowering : public mlir::OpRewritePattern<ComputeConvOp>,
                      private ScratchRecorderHolder {
 public:
   ConvLowering(mlir::MLIRContext *context,
-               TileRegionToInstrBufferRecorder *bufferRecorder)
+               TileRegionToInstrBufferRecorder *bufferRecorder,
+               MovementDescriptorCache *descriptorCache)
       : mlir::OpRewritePattern<ComputeConvOp>(context),
-        ScratchRecorderHolder(bufferRecorder) {}
+        ScratchRecorderHolder(bufferRecorder),
+        descriptorCache(descriptorCache) {}
 
   mlir::LogicalResult
   matchAndRewrite(ComputeConvOp op,
@@ -1959,6 +2112,12 @@ public:
                          "tile.conv lowering requires two spatial strides and "
                          "dilations");
 
+    if (input->getElementType().isF16() && output->getElementType().isF32() &&
+        llvm::all_of(op.getPads(), [](int64_t value) { return value == 0; }) &&
+        llvm::all_of(op.getUnpads(), [](int64_t value) { return value == 0; }))
+      return lowerConvolutionWithOrderedAccumulation(
+          op, rewriter, bufferRecorder, descriptorCache);
+
     mlir::FailureOr<mlir::Value> dest = createDestAlloc(
         op.getLoc(), op.getResult().getType(), rewriter, op, bufferRecorder);
     if (mlir::failed(dest))
@@ -1983,6 +2142,9 @@ public:
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
+
+private:
+  MovementDescriptorCache *descriptorCache;
 };
 
 static mlir::FailureOr<InstrElementwiseKindAttr>
@@ -2078,9 +2240,9 @@ void wafer::tile_region_to_instr::populateComputeLoweringPatterns(
   mlir::MLIRContext *context = patterns.getContext();
   patterns.add<ElementwiseIntoLowering>(context, bufferRecorder,
                                         descriptorCache);
-  patterns.add<GemmLowering, ConvLowering>(context, bufferRecorder);
-  patterns.add<ConvertLowering, ElementwiseLowering>(context, bufferRecorder,
-                                                     descriptorCache);
+  patterns.add<GemmLowering>(context, bufferRecorder);
+  patterns.add<ConvLowering, ConvertLowering, ElementwiseLowering>(
+      context, bufferRecorder, descriptorCache);
   patterns.add<ReduceLowering>(context, bufferRecorder, descriptorCache);
 }
 
