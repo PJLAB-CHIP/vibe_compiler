@@ -7,6 +7,22 @@
 `completion`、`bufferization`、`package`、`runtime`、`CMake`和`ownership`。条目描述的是防复发模式；若与current
 编号设计或源码冲突，以current事实源为准并在同次修改中修正文档。
 
+## 可选rewrite必须在依赖扩展后重新检查集合重叠
+
+- 现象：两个原本不共享输入Region的合法exchange在依次合并时，第二次clone解引用已经删除的operation。
+- 根因：只按原始通信component判断独立性，遗漏两者后来纳入的同一个纯tensor初始化Region。
+- 修复模式：首次改IR前完成所有actual依赖扩展，对重叠集合求并集并重新扩展到不动点；再检查SSA/effect和全部participant，
+  每个实际Region只由一个rewrite集合拥有。某Tile不能合并时拒绝关联component整组，不留下部分参与者。
+- 防复发：共享初始化与单Tile外部effect成对覆盖，检查关系retarget和下游Instr、SPM、transport，不只检查合并数量。
+
+## 跨Tile顺序图不能把异步通信连通区域当作原子阶段
+
+- 现象：真实可执行的DDR publication与DTE交错被判为依赖环。
+- 根因：先收缩整组DTE连通Region，抹掉某Tile先发布DDR、另一Tile随后继续交换的实际顺序。
+- 修复模式：消费已物化publish/acquire、DTE prepare/issue和token wait，以CRT握手合同连接实际阻塞点。
+  只展开标准接口证明的单次控制流；条件或重复路径缺证据时保持typed失败，不补全局drain。
+- 防复发：同一真实规模输入构造合法交错、真实环和条件通信三种情况，并验证合法路径的同步没有增加。
+
 ## Runtime身份迁移必须同时覆盖profiler报告reader
 
 - 现象：普通package/no-card与设备采集都完成，最终报告生成却拒绝output validation字段。
@@ -708,11 +724,13 @@
 - 现象：TileModule set编译入口只看到“SPM allocation failed”，会把unsupported lifetime误归为内部失败，或反过来把未分类的
   allocator failure误当作candidate非法并从搜索域删除。
 - 根因：Tile memory planning跨边界时丢失了`SPMMemoryPlanningFailureKind`，上层只能从诊断文本或capacity布尔量猜taxonomy。
-- 修复模式：memory-planning failure保留typed SPM failure kind；capacity overflow与unsupported lifetime作为可验证exact rejection，
-  resource exhaustion、未分类allocator/internal failure保持indeterminate。组装结果时先复制primary gate/detail，再move failure
+- 修复模式：memory-planning failure保留typed SPM failure kind；只有带actual冲突证据的capacity overflow是exact rejection，
+  unsupported lifetime保持unsupported，resource exhaustion保持indeterminate，missing completion和internal failure保持compiler failure。
+  组装结果时先复制primary gate/detail，再move failure
   容器；不能依赖函数实参求值顺序同时引用元素和转移其owner。
-- 防复发：无策略DeviceExecutable seam直接测试同一TileModule set的可重复exact rejection，并单测不完整/内部调用保持indeterminate；
-  caller遇到indeterminate必须终止当前编译，不能生成no-good或repair candidate。
+- 防复发：无策略DeviceExecutable seam直接测试同一TileModule set的可重复exact rejection，并独立测试其它typed分类。
+  同一选择的多个alternative中，汇总状态与已执行leaf的容量反馈分别保存；其它alternative的unsupported或预算未穷尽
+  不能吞掉该反馈。反馈只允许controller提出新choice再完整物化验证，不能生成共同owner的no-good或在leaf中repair。
 
 ## 跨region替换后保留旧Value relation会造成悬空引用
 

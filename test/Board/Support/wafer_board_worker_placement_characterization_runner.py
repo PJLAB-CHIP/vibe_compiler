@@ -452,7 +452,7 @@ def build_probe(
         ".manifest.json.worker-placement-probe"
     )
     staged_manifest.write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        json.dumps(manifest, separators=(",", ":")) + "\n", encoding="utf-8"
     )
     os.replace(staged_manifest, manifest_path)
 

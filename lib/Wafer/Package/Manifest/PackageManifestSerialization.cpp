@@ -15,7 +15,7 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
   const PackageManifest &manifest = verified.getManifest();
   std::string storage;
   llvm::raw_string_ostream output(storage);
-  llvm::json::OStream json(output, /*IndentSize=*/2);
+  llvm::json::OStream json(output, /*IndentSize=*/0);
   json.object([&] {
     json.attributeObject("program", [&] {
       json.attribute("id", int64_t(manifest.program.getValue()));

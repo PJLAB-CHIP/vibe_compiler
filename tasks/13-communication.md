@@ -118,6 +118,10 @@ Closure是显式选择的可选变换，不是公共pipeline的必经合法化�
 Complete exchange的closure可按current relation中每对不同participant的完整、有相同正数重数的边集合判断，
 包括同payload fanout和逐destination不同piece；不以source result必须相同限制候选资格。
 合并输入实际依赖的本地纯tensor初始化region可以进入同一个候选，但不得携带另一跨Tile边界，且保持原block顺序、SSA dominance与effect规则。
+局部依赖扩展后的actual Region集合也必须纳入重叠判断。先对所有候选完成依赖扩展，再对共享Region的集合求并集；
+并集若引入先前位于较晚anchor之前的依赖，继续同一有界扩展直到集合互不重叠。每次重叠收敛至少减少一个集合，
+不按component身份忽略实际共享Region。最后才验证合并体并一次物化；任一集合不可合并时，关联exchange连通组的全部Tile均不应用此可选合并。
+这不增加communication资格、不改none行为；所有边仍由合并后的current IR重新物化和验证。
 Closure不保存route、round或buffer对象。
 
 同一Region可以消费前一个exchange并产生后一个exchange；共享Region本身不能证明属于同一个cut。
@@ -164,7 +168,7 @@ relation与同Tile Region顺序构成无环图时才可选择该实现，之后�
 
 Shared-DDR的跨Tile完成由下述publication协议实现；resource/binding、共享allocation、grid launch顺序及Tile-local
 NCC join各自只表达本域事实，不能单独作为远端store→load先行证明。共同leaf验证实际publish/acquire及资源初始化后才接受候选。
-板端验收和失败历史统一见`tasks/plans/board-correctness-qualification.md`。
+板端验收和失败历史统一见`tasks/archive/board-correctness-qualification.md`。
 预算不足时报告有界搜索实际覆盖，不把未尝试或unsupported候选当作capacity rejection。
 
 ### Shared-DDR publication
@@ -177,6 +181,11 @@ WDMA/RDMA、SSA alias和control flow验证这一前提，不能按resource名字
 为每个有跨Tile读者的resource创建独立64B、cache-line隔离、零初始化的DDR通知storage，作为普通typed DDR global/binding进入
 同一资源与package路径。`wafer.instr.ddr_publish(data, ready)`只在writer Region结束后发布，`wafer.instr.ddr_acquire(data, ready)`
 在reader首次读取前获取；二者的data operand保留实际资源关系及memory effect，ready operand保留实际通知storage，不能用旁路pair表。
+联合顺序验证消费已经物化的publish/acquire、Direct-DTE issue/token wait和actual单次执行控制流；不先把整组
+DTE连通Region收缩成原子节点。程序顺序连接相邻实际阻塞点；receiver prepare先于matching send issue，
+send issue先于matching token wait，publisher先于同resource的acquire。这与Direct-DTE transport现有wait-graph的CRT合同相同。
+只透明遍历标准RegionBranch接口证明的单次region；包含通信阻塞点的循环、条件或不明call保持typed unsupported。
+图只作当前IR无环验证，不输出schedule、提前wait或全局drain；materializer在candidate-owned IR上先创建通知op，再验证实际图，失败销毁候选。
 NCC完成放置从publish的数据访问要求生成对应pending worker join。Acquire不完成NCC或DTE事件；跨Tile verifier检查唯一publisher、
 全部reader的获取位置、无发布后写入及联合依赖无环。无跨Tile读写的资源不生成通知。
 
@@ -349,7 +358,9 @@ package/runtime不重新选择peer、route、algorithm或memory placement。
 | rank≥3、1024/1025/1031，AllGather/AllToAll/ReduceScatter/AllReduce来源 | none保留原Region；search保留未合并和eligible合并候选 | 不同actual owner，完整输出/贡献coverage，实际memory/target与成本比较 |
 | 同payload与personalized完整交换 | 只读分析、显式合并；无peer/缺peer/无共同cut不可合并 | 分析不改IR；只合并选中区域，重建live endpoint，保留SSA/effect |
 | 相邻exchange共享生产/消费Region，relation顺序交错 | 从current依赖划分拓扑frontier；每个完整交换分别证明cut，再一次合并重叠范围 | 4/16 Tile与1024/1025/1031，两段peer IR、贡献/结果复制、Instr completion、实际SPM规划和transport；AllReduce source到PyTorch完整板测 |
+| 两个exchange共享后置本地初始化，4/16 Tile、1024/1025/1031 | actual依赖集合先收敛成互不重叠rewrite集合；effect阻止时整组不应用 | 每个Region只删除一次，关系全部retarget；layout→Instr→SPM/transport及原decode no-card |
 | 本地纯tensor初始化依赖 | 可纳入合并；side effect/其它跨Tile边界阻止合并 | dominance和effect保持，失败输入不修改 |
+| 同一DTE连通集合中的交错DDR发布与真实阻塞环 | 按actual prepare/issue/wait和publish/acquire区分顺序；合法交错通过，真实环拒绝，重复/条件保持typed失败 | rank≥3、1024/1025/1031正负例与原decode none到package |
 | current Region间无环DDR依赖 | peer与shared-DDR各自物化；双向循环拒绝DDR候选，缺少跨Tile完成时不能证明可执行 | exact存储范围、实际写后读顺序、DDR resource与completion闭合 |
 | 多fragment、SSA与清理 | 同一source的local/external fragments共同按actual demand组装；聚合交换位于全部source定义之后、首次receive消费之前 | 多分片source回归，verifier dominance，Instr拷贝消除后重建实际buffer owner并进入SPM规划 |
 | capacity/unsupported/预算不足 | 失败只属于当前候选；compiler bug终止 | actual SPM冲突见证；无未运行候选冒充拒绝，winner不重建 |

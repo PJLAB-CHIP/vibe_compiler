@@ -476,48 +476,48 @@ TEST_F(PackageManifestTest, CanonicalRoundtripOwnsTypedManifest) {
   ASSERT_TRUE(static_cast<bool>(verified))
       << llvm::toString(verified.takeError());
   std::string canonical = serializeCanonicalPackageJson(*verified);
-  EXPECT_NE(canonical.find("\"program\": {"), std::string::npos);
-  EXPECT_NE(canonical.find("\"target\": {"), std::string::npos);
-  EXPECT_NE(canonical.find("\"card_count\": 1"), std::string::npos);
-  EXPECT_NE(canonical.find("\"tile_count\": 16"), std::string::npos);
-  EXPECT_NE(canonical.find("\"completion\": \"return_after_local_drain\""),
+  EXPECT_NE(canonical.find("\"program\":{"), std::string::npos);
+  EXPECT_NE(canonical.find("\"target\":{"), std::string::npos);
+  EXPECT_NE(canonical.find("\"card_count\":1"), std::string::npos);
+  EXPECT_NE(canonical.find("\"tile_count\":16"), std::string::npos);
+  EXPECT_NE(canonical.find("\"completion\":\"return_after_local_drain\""),
             std::string::npos);
-  EXPECT_NE(canonical.find("\"identity\": \"wafer-tx81-single-card\""),
+  EXPECT_NE(canonical.find("\"identity\":\"wafer-tx81-single-card\""),
             std::string::npos);
-  EXPECT_NE(canonical.find("\"runtime_abi\": \"wafer-tx81-kernel\""),
+  EXPECT_NE(canonical.find("\"runtime_abi\":\"wafer-tx81-kernel\""),
             std::string::npos);
-  EXPECT_NE(canonical.find("\"module_format\": \"elf-riscv64\""),
+  EXPECT_NE(canonical.find("\"module_format\":\"elf-riscv64\""),
             std::string::npos);
-  EXPECT_NE(canonical.find("\"launch\": {"), std::string::npos);
-  EXPECT_NE(canonical.find("\"kind\": \"kernel\""), std::string::npos);
-  EXPECT_NE(canonical.find("\"form\": \"grid\""), std::string::npos);
-  EXPECT_NE(canonical.find("\"entry_abi\": \"tile-major-pointer-table\""),
+  EXPECT_NE(canonical.find("\"launch\":{"), std::string::npos);
+  EXPECT_NE(canonical.find("\"kind\":\"kernel\""), std::string::npos);
+  EXPECT_NE(canonical.find("\"form\":\"grid\""), std::string::npos);
+  EXPECT_NE(canonical.find("\"entry_abi\":\"tile-major-pointer-table\""),
             std::string::npos);
-  EXPECT_NE(canonical.find("\"phases\": ["), std::string::npos);
-  EXPECT_NE(canonical.find("\"program_data\": {"), std::string::npos);
-  EXPECT_NE(canonical.find("\"relative_path\": \"data/program-data.bin\""),
+  EXPECT_NE(canonical.find("\"phases\":["), std::string::npos);
+  EXPECT_NE(canonical.find("\"program_data\":{"), std::string::npos);
+  EXPECT_NE(canonical.find("\"relative_path\":\"data/program-data.bin\""),
             std::string::npos);
-  EXPECT_NE(canonical.find("\"total_bytes\": 80"), std::string::npos);
-  EXPECT_NE(canonical.find("\"base_alignment\": 64"), std::string::npos);
-  EXPECT_NE(canonical.find("\"program_tensors\": ["), std::string::npos);
-  EXPECT_NE(canonical.find("\"role\": \"parameter\""), std::string::npos);
-  EXPECT_NE(canonical.find("\"role\": \"constant\""), std::string::npos);
-  EXPECT_NE(canonical.find("\"target_tensors\": ["), std::string::npos);
-  EXPECT_NE(canonical.find("\"layout\": \"tensor\""), std::string::npos);
-  EXPECT_NE(canonical.find("\"file_offset\": 64"), std::string::npos);
-  EXPECT_NE(canonical.find("\"inputs\": ["), std::string::npos);
-  EXPECT_NE(canonical.find("\"outputs\": ["), std::string::npos);
-  EXPECT_NE(canonical.find("\"modules\": ["), std::string::npos);
-  EXPECT_NE(canonical.find("\"entries\": ["), std::string::npos);
-  EXPECT_NE(canonical.find("\"kind\": \"external_input\""), std::string::npos);
-  EXPECT_NE(canonical.find("\"kind\": \"target_tensor\""), std::string::npos);
-  EXPECT_NE(canonical.find("\"kind\": \"external_output\""), std::string::npos);
-  EXPECT_NE(canonical.find("\"kind\": \"workspace\""), std::string::npos);
-  EXPECT_NE(canonical.find("\"access\": \"read_only\""), std::string::npos);
-  EXPECT_NE(canonical.find("\"access\": \"write_only\""), std::string::npos);
-  EXPECT_NE(canonical.find("\"access\": \"read_write\""), std::string::npos);
-  EXPECT_NE(canonical.find("\"transport\": {"), std::string::npos);
-  EXPECT_NE(canonical.find("\"kind\": \"none\""), std::string::npos);
+  EXPECT_NE(canonical.find("\"total_bytes\":80"), std::string::npos);
+  EXPECT_NE(canonical.find("\"base_alignment\":64"), std::string::npos);
+  EXPECT_NE(canonical.find("\"program_tensors\":["), std::string::npos);
+  EXPECT_NE(canonical.find("\"role\":\"parameter\""), std::string::npos);
+  EXPECT_NE(canonical.find("\"role\":\"constant\""), std::string::npos);
+  EXPECT_NE(canonical.find("\"target_tensors\":["), std::string::npos);
+  EXPECT_NE(canonical.find("\"layout\":\"tensor\""), std::string::npos);
+  EXPECT_NE(canonical.find("\"file_offset\":64"), std::string::npos);
+  EXPECT_NE(canonical.find("\"inputs\":["), std::string::npos);
+  EXPECT_NE(canonical.find("\"outputs\":["), std::string::npos);
+  EXPECT_NE(canonical.find("\"modules\":["), std::string::npos);
+  EXPECT_NE(canonical.find("\"entries\":["), std::string::npos);
+  EXPECT_NE(canonical.find("\"kind\":\"external_input\""), std::string::npos);
+  EXPECT_NE(canonical.find("\"kind\":\"target_tensor\""), std::string::npos);
+  EXPECT_NE(canonical.find("\"kind\":\"external_output\""), std::string::npos);
+  EXPECT_NE(canonical.find("\"kind\":\"workspace\""), std::string::npos);
+  EXPECT_NE(canonical.find("\"access\":\"read_only\""), std::string::npos);
+  EXPECT_NE(canonical.find("\"access\":\"write_only\""), std::string::npos);
+  EXPECT_NE(canonical.find("\"access\":\"read_write\""), std::string::npos);
+  EXPECT_NE(canonical.find("\"transport\":{"), std::string::npos);
+  EXPECT_NE(canonical.find("\"kind\":\"none\""), std::string::npos);
 
   llvm::Expected<VerifiedPackageManifest> parsed =
       parseCanonicalPackageJson(canonical, root);
@@ -554,6 +554,70 @@ TEST_F(PackageManifestTest, CanonicalRoundtripOwnsTypedManifest) {
             serializeCanonicalPackageJson(*verified));
 }
 
+TEST_F(PackageManifestTest,
+       LargeSharedWorkspaceManifestFitsCanonicalByteBudget) {
+  // Manifest-only scale witness: resource identity/entry references, not an IR
+  // tensor-shape test. Each reference remains distinct in the entry ABI.
+  auto manifest = makeManifest(/*withTargetTensors=*/false);
+  manifest.launch = llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
+      wafer::KernelLaunchForm::Grid, wafer::KernelEntryABI::TileRowPointerTable,
+      {wafer::RuntimeLaunchPhaseRole::Main}));
+  for (auto &entry : manifest.entries) {
+    auto workspace = entry.arguments.back();
+    entry.arguments.pop_back();
+    for (uint64_t resource = 0; resource < 2048; ++resource)
+      entry.arguments.push_back(
+          {entry.arguments.size(),
+           SharedWorkspaceArgument{resource, resource % 2 ? 64u : 512u, 256},
+           entry.tileId == wafer::TileId(resource % 16)
+               ? PackageAccessMode::WriteOnly
+           : entry.tileId == wafer::TileId((resource + 1) % 16)
+               ? PackageAccessMode::ReadOnly
+               : PackageAccessMode::None});
+    workspace.ordinal = entry.arguments.size();
+    entry.arguments.push_back(std::move(workspace));
+  }
+  auto verified = verifyPackageManifest(std::move(manifest), root);
+  ASSERT_TRUE(static_cast<bool>(verified))
+      << llvm::toString(verified.takeError());
+  const std::string canonical = serializeCanonicalPackageJson(*verified);
+  EXPECT_LT(canonical.size(), PackageParseLimits{}.maxJSONBytes);
+  EXPECT_EQ(canonical.find('\n'), canonical.size() - 1);
+  auto parsed = parseCanonicalPackageJson(canonical, root);
+  ASSERT_TRUE(static_cast<bool>(parsed)) << llvm::toString(parsed.takeError());
+  EXPECT_EQ(serializeCanonicalPackageJson(*parsed), canonical);
+  auto plan =
+      planRuntimeInvocation(*parsed, makeInputBindings(parsed->getManifest()),
+                            makeEnvironment(16 * 1024 * 1024));
+  ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
+  ASSERT_EQ(plan->sharedWorkspaceRanges.size(), 2048u);
+  ASSERT_EQ(plan->tiles.size(), 16u);
+  for (const auto &tile : plan->tiles) {
+    ASSERT_EQ(tile.argumentAddresses.size(), 2051u);
+    for (size_t index = 0; index < 2048; ++index) {
+      EXPECT_EQ(tile.argumentAddresses[index + 2].base,
+                RuntimeArgumentAddressBase::Invocation);
+      EXPECT_EQ(tile.argumentAddresses[index + 2].offset,
+                plan->sharedWorkspaceRanges[index].offset);
+    }
+  }
+  PackageParseLimits limits;
+  limits.maxJSONBytes = canonical.size();
+  auto exact = parseCanonicalPackageJson(canonical, root, limits);
+  ASSERT_TRUE(static_cast<bool>(exact)) << llvm::toString(exact.takeError());
+  --limits.maxJSONBytes;
+  expectRejected(parseCanonicalPackageJson(canonical, root, limits),
+                 "JSON byte limit");
+  limits = PackageParseLimits{};
+  limits.maxRecords = 32768;
+  expectRejected(parseCanonicalPackageJson(canonical, root, limits),
+                 "record limit");
+  expectRejected(
+      parseCanonicalPackageJson(
+          llvm::StringRef(canonical).take_front(canonical.size() / 2), root),
+      "");
+}
+
 TEST_F(PackageManifestTest, RejectsMissingTargetFacts) {
   llvm::Expected<VerifiedPackageManifest> verified = verify();
   ASSERT_TRUE(static_cast<bool>(verified))
@@ -562,10 +626,10 @@ TEST_F(PackageManifestTest, RejectsMissingTargetFacts) {
 
   std::string missingIdentity = canonical;
   size_t identity =
-      missingIdentity.find("    \"identity\": \"wafer-tx81-single-card\",\n");
+      missingIdentity.find("\"identity\":\"wafer-tx81-single-card\",");
   ASSERT_NE(identity, std::string::npos);
-  missingIdentity.erase(identity, std::string("    \"identity\": "
-                                              "\"wafer-tx81-single-card\",\n")
+  missingIdentity.erase(identity, std::string("\"identity\":"
+                                              "\"wafer-tx81-single-card\",")
                                       .size());
   llvm::Expected<VerifiedPackageManifest> rejected =
       parseCanonicalPackageJson(missingIdentity, root);
@@ -574,8 +638,8 @@ TEST_F(PackageManifestTest, RejectsMissingTargetFacts) {
       llvm::toString(rejected.takeError()).find("missing field 'identity'"),
       std::string::npos);
 
-  const std::string launchPrefix = "  \"launch\": {\n";
-  const std::string cardCountPrefix = "  \"card_count\":";
+  const std::string launchPrefix = "\"launch\":{";
+  const std::string cardCountPrefix = "\"card_count\":";
   size_t launchBegin = canonical.find(launchPrefix);
   size_t launchEnd = canonical.find(cardCountPrefix);
   ASSERT_NE(launchBegin, std::string::npos);
@@ -609,18 +673,17 @@ TEST_F(PackageManifestTest, RejectsMalformedTaggedLaunchContract) {
               std::string::npos);
   };
 
-  rejectMutation("\"form\": \"grid\"", "\"form\": \"diagonal\"",
+  rejectMutation("\"form\":\"grid\"", "\"form\":\"diagonal\"",
                  "kernel launch form");
-  rejectMutation("\"entry_abi\": \"tile-major-pointer-table\"",
-                 "\"entry_abi\": \"raw-addresses\"", "kernel entry ABI");
-  rejectMutation("\"phases\": [\n      \"main\"\n    ]",
-                 "\"phases\": [\n      \"prepare\",\n      \"main\"\n    ]",
+  rejectMutation("\"entry_abi\":\"tile-major-pointer-table\"",
+                 "\"entry_abi\":\"raw-addresses\"", "kernel entry ABI");
+  rejectMutation("\"phases\":[\"main\"]", "\"phases\":[\"prepare\",\"main\"]",
                  "incompatible");
-  rejectMutation("    \"form\": \"grid\",\n", "", "missing field 'form'");
-  rejectMutation("\"kind\": \"kernel\",\n    \"form\": \"grid\",\n"
-                 "    \"entry_abi\": \"tile-major-pointer-table\"",
-                 "\"kind\": \"graph\",\n    \"form\": \"grid\",\n"
-                 "    \"entry_abi\": \"tile-major-pointer-table\"",
+  rejectMutation("\"form\":\"grid\",", "", "missing field 'form'");
+  rejectMutation("\"kind\":\"kernel\",\"form\":\"grid\","
+                 "\"entry_abi\":\"tile-major-pointer-table\"",
+                 "\"kind\":\"graph\",\"form\":\"grid\","
+                 "\"entry_abi\":\"tile-major-pointer-table\"",
                  "must be 'kernel'");
 }
 
@@ -630,7 +693,7 @@ TEST_F(PackageManifestTest, RejectsUnknownFieldsAndNonCanonicalJSON) {
       << llvm::toString(verified.takeError());
   std::string canonical = serializeCanonicalPackageJson(*verified);
   std::string unknown = canonical;
-  unknown.insert(unknown.find("\n"), "\n  \"instructions\": [],");
+  unknown.insert(1, "\"instructions\":[],");
   llvm::Expected<VerifiedPackageManifest> rejected =
       parseCanonicalPackageJson(unknown, root);
   ASSERT_FALSE(static_cast<bool>(rejected));
@@ -645,9 +708,9 @@ TEST_F(PackageManifestTest, RejectsUnknownFieldsAndNonCanonicalJSON) {
             std::string::npos);
 
   std::string whitespace = canonical;
-  size_t cardCount = whitespace.find("\"card_count\": 1");
+  size_t cardCount = whitespace.find("\"card_count\":1");
   ASSERT_NE(cardCount, std::string::npos);
-  whitespace.replace(cardCount, std::string("\"card_count\": 1").size(),
+  whitespace.replace(cardCount, std::string("\"card_count\":1").size(),
                      "\"card_count\" : 1");
   rejected = parseCanonicalPackageJson(whitespace, root);
   ASSERT_FALSE(static_cast<bool>(rejected));
@@ -655,7 +718,7 @@ TEST_F(PackageManifestTest, RejectsUnknownFieldsAndNonCanonicalJSON) {
             std::string::npos);
 
   std::string duplicate = canonical;
-  duplicate.insert(duplicate.find("\"card_count\""), "\"card_count\": 1,\n  ");
+  duplicate.insert(duplicate.find("\"card_count\""), "\"card_count\":1,\n  ");
   rejected = parseCanonicalPackageJson(duplicate, root);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_FALSE(llvm::toString(rejected.takeError()).empty());
@@ -1299,9 +1362,9 @@ TEST_F(PackageManifestTest, EmptyProgramDataRoundtripAndDigest) {
   ASSERT_TRUE(static_cast<bool>(verified))
       << llvm::toString(verified.takeError());
   std::string canonical = serializeCanonicalPackageJson(*verified);
-  EXPECT_NE(canonical.find("\"total_bytes\": 0"), std::string::npos);
-  EXPECT_NE(canonical.find("\"base_alignment\": 1"), std::string::npos);
-  EXPECT_NE(canonical.find("\"digest\": \"sha256:e3b0c44298fc1c149afbf4c8996"
+  EXPECT_NE(canonical.find("\"total_bytes\":0"), std::string::npos);
+  EXPECT_NE(canonical.find("\"base_alignment\":1"), std::string::npos);
+  EXPECT_NE(canonical.find("\"digest\":\"sha256:e3b0c44298fc1c149afbf4c8996"
                            "fb92427ae41e4649b934ca495991b7852b855\""),
             std::string::npos);
   llvm::Expected<VerifiedPackageManifest> parsed =

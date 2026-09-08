@@ -42,6 +42,10 @@ struct CurrentCandidate {
 struct FinishedCandidate {
   ExecutableCompilationResult compilation;
   uint64_t actualLeaves = 1;
+  // Evidence from one actual rejected leaf, independently of the aggregate
+  // alternative status. It can propose a smaller choice, never reject the
+  // common owner or prune alternatives. These snapshots have no IR handles.
+  llvm::SmallVector<ExecutableTileFailure, 4> capacityRejections;
 };
 
 struct TemporalAxis {
@@ -411,14 +415,12 @@ public:
     std::optional<ExecutableCompilationResult> winner;
     std::optional<analysis::SearchObjective> winnerObjective;
     uint64_t actualizations = 0;
+    uint64_t temporalCandidates = 0;
     bool sawUnsupported = false;
     bool sawIndeterminate = false;
     bool domainExhausted = false;
     bool compilerBug = false;
     std::optional<std::vector<TemporalChoice>> feedbackChoices;
-    const uint64_t actualizationLimit =
-        std::min(options.maximumTemporalCandidatesPerStructuralState,
-                 actualizationCredits);
     do {
       if (options.deadline &&
           std::chrono::steady_clock::now() >= *options.deadline)
@@ -426,6 +428,7 @@ public:
                               "search wall-time budget exhausted"),
                 actualizations, false};
       ++actualizations;
+      ++temporalCandidates;
       if (statistics)
         ++statistics->temporalCandidateActualizations;
       mlir::IRMapping mapping;
@@ -486,17 +489,32 @@ public:
 
       wafer::support::ScopedCompileTimingSpan candidateTiming(
           "search-candidate", "current-ir", "finish-candidate",
-          llvm::formatv("temporal={0}", actualizations).str());
+          llvm::formatv("temporal={0}", temporalCandidates).str());
       FinishedCandidate finished =
           finishCandidate(std::move(*candidate),
-                          actualizationLimit - actualizations + 1, detail);
+                          actualizationCredits - actualizations + 1, detail);
       if (finished.actualLeaves > 1) {
         actualizations += finished.actualLeaves - 1;
       }
       ExecutableCompilationResult compiled = std::move(finished.compilation);
+      if (!compiled.isAccepted() &&
+          wafer::support::getActiveCompileTimingSession()) {
+        diagnostics << "wafer-compile: rejected-temporal gate=" << compiled.gate
+                    << " detail=" << compiled.detail << '\n';
+        if (!finished.capacityRejections.empty()) {
+          const auto &failure = finished.capacityRejections.front();
+          diagnostics << "wafer-compile: actual-capacity tile="
+                      << failure.tileId.getValue() << " largest-bytes="
+                      << failure.memoryPlanning.spmLargestDemandBytes;
+          if (failure.memoryPlanning.spmLargestDemandType)
+            diagnostics << " type="
+                        << failure.memoryPlanning.spmLargestDemandType;
+          diagnostics << '\n';
+        }
+      }
       const ActualCandidateStatus status =
           classifyActualStatus(compiled.status);
-      const bool capacityRejected = hasActualSPMCapacityRejection(compiled);
+      const bool capacityRejected = !finished.capacityRejections.empty();
       const bool structuralChoiceInvariantFailure =
           status != ActualCandidateStatus::Accepted &&
           compiled.failureScope ==
@@ -552,7 +570,9 @@ public:
         break;
       }
 
-      if (actualizations >= actualizationLimit)
+      if (actualizations >= actualizationCredits ||
+          temporalCandidates >=
+              options.maximumTemporalCandidatesPerStructuralState)
         break;
       if (capacityRejected) {
         auto refined = refineTemporalChoices(axes, selectedChoices, detail);
@@ -658,9 +678,13 @@ private:
         std::move(*merged), maximumMovementLeaves - preserving.actualLeaves,
         detail);
     const uint64_t actualLeaves = preserving.actualLeaves + fused.actualLeaves;
+    auto capacityRejections = preserving.capacityRejections.empty()
+                                  ? std::move(fused.capacityRejections)
+                                  : std::move(preserving.capacityRejections);
     if (fused.compilation.status ==
         ExecutableCompilationStatus::CompilerFailure)
-      return {std::move(fused.compilation), actualLeaves};
+      return {std::move(fused.compilation), actualLeaves,
+              std::move(capacityRejections)};
     if (statistics) {
       statistics->regionPreservingAccepted +=
           preserving.compilation.isAccepted();
@@ -682,20 +706,25 @@ private:
     if (useMerged) {
       if (statistics)
         ++statistics->mergedRegionWinners;
-      return {std::move(fused.compilation), actualLeaves};
+      return {std::move(fused.compilation), actualLeaves,
+              std::move(capacityRejections)};
     }
     if (preserving.compilation.isAccepted())
-      return {std::move(preserving.compilation), actualLeaves};
+      return {std::move(preserving.compilation), actualLeaves,
+              std::move(capacityRejections)};
     // An unknown or unsupported alternative prevents lifting a capacity
     // rejection to the common pre-merge owner.
     for (auto status : {ExecutableCompilationStatus::IndeterminateFailure,
                         ExecutableCompilationStatus::UnsupportedFailure}) {
       if (preserving.compilation.status == status)
-        return {std::move(preserving.compilation), actualLeaves};
+        return {std::move(preserving.compilation), actualLeaves,
+                std::move(capacityRejections)};
       if (fused.compilation.status == status)
-        return {std::move(fused.compilation), actualLeaves};
+        return {std::move(fused.compilation), actualLeaves,
+                std::move(capacityRejections)};
     }
-    return {std::move(preserving.compilation), actualLeaves};
+    return {std::move(preserving.compilation), actualLeaves,
+            std::move(capacityRejections)};
   }
 
   FinishedCandidate finishRegionCandidate(CurrentCandidate candidate,
@@ -993,6 +1022,15 @@ private:
       }
     }
     const uint64_t actualLeaves = attemptedMovements;
+    llvm::SmallVector<ExecutableTileFailure, 4> capacityRejections;
+    for (const auto &candidateResult : compiled) {
+      if (!hasActualSPMCapacityRejection(candidateResult->result))
+        continue;
+      for (const auto &failure : candidateResult->result.tileFailures)
+        if (isProvenExactTileMemoryPlanningFailure(failure.memoryPlanning))
+          capacityRejections.push_back(failure);
+      break;
+    }
     if (winner) {
       if (statistics) {
         statistics->recursiveDoublingWinners += compiled[*winner]->recursive;
@@ -1002,30 +1040,35 @@ private:
             compiled[*winner]->distributedRing;
         statistics->sharedDDRWinners += compiled[*winner]->sharedDDR;
       }
-      return {std::move(compiled[*winner]->result), actualLeaves};
+      return {std::move(compiled[*winner]->result), actualLeaves,
+              std::move(capacityRejections)};
     }
     if (!movementDomainExhausted)
       return {fail(ExecutableCompilationStatus::IndeterminateFailure,
                    "search-movement-budget",
                    "current movement alternatives were not exhausted"),
-              actualLeaves};
+              actualLeaves, std::move(capacityRejections)};
     if (sawUnsupportedMovement)
       return {fail(ExecutableCompilationStatus::UnsupportedFailure,
                    "search-boundary-movement",
                    "an actual movement alternative is unsupported"),
-              actualLeaves};
+              actualLeaves, std::move(capacityRejections)};
     for (std::unique_ptr<CompiledMovement> &candidateResult : compiled)
       if (candidateResult->result.status ==
           ExecutableCompilationStatus::IndeterminateFailure)
-        return {std::move(candidateResult->result), actualLeaves};
+        return {std::move(candidateResult->result), actualLeaves,
+                std::move(capacityRejections)};
     for (std::unique_ptr<CompiledMovement> &candidateResult : compiled)
       if (candidateResult->result.status ==
           ExecutableCompilationStatus::UnsupportedFailure)
-        return {std::move(candidateResult->result), actualLeaves};
+        return {std::move(candidateResult->result), actualLeaves,
+                std::move(capacityRejections)};
     for (std::unique_ptr<CompiledMovement> &candidateResult : compiled)
       if (candidateResult->result.isProvenExactRejection())
-        return {std::move(candidateResult->result), actualLeaves};
-    return {std::move(compiled.front()->result), actualLeaves};
+        return {std::move(candidateResult->result), actualLeaves,
+                std::move(capacityRejections)};
+    return {std::move(compiled.front()->result), actualLeaves,
+            std::move(capacityRejections)};
   }
 
   mlir::ModuleOp tensorProgram;

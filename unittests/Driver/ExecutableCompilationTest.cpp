@@ -693,6 +693,73 @@ TEST(ExecutableCompilationPolicyTest,
 }
 
 TEST(ExecutableCompilationPolicyTest,
+     SearchRetainsLeafCapacityFeedbackWhenAlternativesAreIncomplete) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto parsed = wafer::compiler::testing::parseProgram();
+    std::string body = llvm::formatv(R"mlir(
+      %empty = tensor.empty() : tensor<16x128x{0}xf16>
+      %produced = linalg.add
+          ins(%input, %input : tensor<16x128x{0}xf16>, tensor<16x128x{0}xf16>)
+          outs(%empty : tensor<16x128x{0}xf16>) -> tensor<16x128x{0}xf16>
+      %output = tensor.empty() : tensor<16x16x128x{0}xf16>
+      %expanded = linalg.broadcast ins(%produced : tensor<16x128x{0}xf16>)
+          outs(%output : tensor<16x16x128x{0}xf16>) dimensions = [0]
+      %result = linalg.add
+          ins(%lhs, %expanded : tensor<16x16x128x{0}xf16>, tensor<16x16x128x{0}xf16>)
+          outs(%output : tensor<16x16x128x{0}xf16>) -> tensor<16x16x128x{0}xf16>
+      return %result : tensor<16x16x128x{0}xf16>
+    )mlir",
+                                     extent)
+                           .str();
+    std::string source =
+        "module { wafer.target.topology @default "
+        "{card_grid = array<i64: 1, 1>, card_interconnect = \"mesh\", "
+        "tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>} "
+        "wafer.execution.mesh @default_mesh "
+        "{axes = [\"card\"], shape = array<i64: 1>} " +
+        llvm::formatv("func.func @main(%lhs: tensor<16x16x128x{0}xf16>, "
+                      "%input: tensor<16x128x{0}xf16>) -> "
+                      "tensor<16x16x128x{0}xf16> {{",
+                      extent)
+            .str() +
+        body + "} }";
+    parsed.module =
+        mlir::parseSourceString<mlir::ModuleOp>(source, parsed.context.get());
+    ASSERT_TRUE(parsed.module);
+    wafer::frontend::FrontendProgramVerificationResult program;
+    program.numPartitions = 1;
+    program.programUserInputCount = 2;
+    program.distributedInputs = {
+        wafer::compiler::testing::boundary(0, {16, 16, 128, extent}),
+        wafer::compiler::testing::boundary(1, {16, 128, extent})};
+    program.distributedOutputs = {
+        wafer::compiler::testing::boundary(0, {16, 16, 128, extent})};
+    wafer::compiler::ProgramDataHandoff programData;
+    std::string diagnosticText;
+    llvm::raw_string_ostream diagnostics(diagnosticText);
+    wafer::compiler::detail::SearchCurrentIROptions options;
+    options.limits = wafer::SearchLimits{1, 8};
+    options.maximumTemporalCandidatesPerStructuralState = 2;
+    options.downstream.tilePipelineParallelism = 1;
+    wafer::compiler::detail::SearchCurrentIRStatistics search;
+    auto result = wafer::compiler::detail::compileSearchCurrentIR(
+        *parsed.module, program, wafer::compiler::testing::executionConfig(),
+        diagnostics, programData, options, &search);
+    EXPECT_EQ(result.status,
+              wafer::compiler::detail::ExecutableCompilationStatus::
+                  IndeterminateFailure)
+        << result.detail << diagnosticText;
+    EXPECT_GT(search.actualCapacityRefinements, 0u) << diagnosticText;
+    EXPECT_GT(search.indeterminateTemporalCandidates, 0u);
+    EXPECT_GT(search.movementCandidateActualizations, 2u);
+    EXPECT_EQ(search.temporalCandidateActualizations, 2u);
+    EXPECT_LE(search.movementCandidateActualizations, 8u);
+    EXPECT_FALSE(result.isProvenExactRejection());
+  }
+}
+
+TEST(ExecutableCompilationPolicyTest,
      SearchActualizesCurrentIRAndRetainsTheAcceptedOwner) {
   wafer::compiler::testing::ParsedProgram parsed =
       wafer::compiler::testing::parseProgram();
@@ -921,6 +988,101 @@ TEST_F(ExecutableCompilationTest,
       << mlirDiagnosticText;
   EXPECT_EQ(statistics.actualMemoryTargetGateInvocations, 1u);
   EXPECT_EQ(statistics.tileModuleLoweringAttempts, 0u);
+}
+
+TEST(ExecutableCompilationPolicyTest,
+     SharedDDRChecksActualDTESendAndWaitOrder) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (unsigned mode : {0, 1, 2}) {
+      bool cycle = mode == 1;
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(mode);
+      auto parsed = wafer::compiler::testing::parseProgram();
+      llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 2> owners;
+      llvm::SmallVector<mlir::ModuleOp, 2> modules;
+      llvm::SmallVector<wafer::TileId, 2> tiles;
+      for (int64_t tile = 0; tile < 2; ++tile) {
+        std::string shape = "1x" + std::to_string(extent) + "x1xf16";
+        std::string ddr = "memref<" + shape + ", #wafer.memory<ddr, tensor>>";
+        std::string spm = "memref<" + shape + ", #wafer.memory<spm, tensor>>";
+        std::string text;
+        llvm::raw_string_ostream ir(text);
+        ir << "module { memref.global \"private\" @data : " << ddr
+           << " {wafer.ddr_resource = #wafer.ddr_resource<0>}\n"
+           << "func.func @entry(%data: " << ddr << " {wafer.ddr_binding = "
+           << "#wafer.ddr_binding<@data, id = 0, " << (tile ? "read" : "write")
+           << ">}, %condition: i1) {\n";
+        unsigned regionIndex = 0;
+        auto beginRegion = [&]() {
+          ir << "%region" << regionIndex++
+             << " = wafer.tile.region(%data, %condition : " << ddr
+             << ", i1) -> (i1) { ^bb0(%arg: " << ddr
+             << ", %flag: i1): %buffer = memref.alloc() : " << spm << "\n";
+        };
+        auto transport = [&]() {
+          ir << "%event = wafer.instr.dte_" << (tile ? "send" : "recv")
+             << " %buffer {peer = " << 1 - tile
+             << " : i64, bytes = " << 2 * extent
+             << " : i64, message = #wafer.dte_message<communication = 0, round "
+                "= 0, slice = 0>} : "
+             << spm << " -> !async.token\n"
+             << "wafer.instr.dte_wait %event : !async.token\n";
+        };
+        beginRegion();
+        if (!tile && cycle)
+          transport();
+        ir << "wafer.instr."
+           << (tile ? "rdma %arg to %buffer" : "wdma %buffer to %arg")
+           << " {byte_count = " << 2 * extent
+           << " : i64, inner_bytes = " << 2 * extent << " : i64, "
+           << (tile ? "src" : "dst") << "_iterations = array<i64: 1, 1, 1>, "
+           << (tile ? "src" : "dst")
+           << "_strides = array<i64: 0, 0, 0>} : " << (tile ? ddr : spm)
+           << " to " << (tile ? spm : ddr) << "\n"
+           << "wafer.instr.ncc_join [0]\n";
+        if (tile)
+          transport();
+        ir << "wafer.tile.yield %flag : i1 }\n";
+        if (!tile && !cycle) {
+          beginRegion();
+          if (mode == 2)
+            ir << "scf.if %flag {\n";
+          transport();
+          if (mode == 2)
+            ir << "}\n";
+          ir << "wafer.tile.yield %flag : i1 }\n";
+        }
+        ir << "return } }\n";
+        auto module =
+            mlir::parseSourceString<mlir::ModuleOp>(text, parsed.context.get());
+        ASSERT_TRUE(module) << text;
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        modules.push_back(*module);
+        owners.push_back(std::move(module));
+        tiles.push_back(wafer::TileId(tile));
+      }
+      auto completion = wafer::materializeSharedDDRCompletion(modules, tiles);
+      if (mode != 0) {
+        EXPECT_EQ(completion.failure,
+                  wafer::SharedDDRCompletionFailure::Unsupported);
+        EXPECT_NE(completion.detail.find(cycle ? "cycle" : "conditional"),
+                  std::string::npos);
+        continue;
+      }
+      ASSERT_TRUE(completion.succeeded()) << completion.detail;
+      EXPECT_TRUE(wafer::verifySharedDDRCompletion(modules, tiles).succeeded());
+      unsigned publishes = 0, acquires = 0, waits = 0;
+      for (auto module : modules) {
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(module)));
+        module.walk([&](wafer::SyncDDRPublishOp) { ++publishes; });
+        module.walk([&](wafer::SyncDDRAcquireOp) { ++acquires; });
+        module.walk([&](wafer::InstrDTEWaitOp) { ++waits; });
+      }
+      EXPECT_EQ(publishes, 1u);
+      EXPECT_EQ(acquires, 1u);
+      EXPECT_EQ(waits, 2u);
+    }
+  }
 }
 
 } // namespace

@@ -12,6 +12,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -421,7 +422,7 @@ hasCompleteExchangeCuts(const ExchangeComponent &component,
 }
 
 struct TileMergeSet {
-  unsigned component = 0;
+  llvm::SmallVector<unsigned, 2> components;
   TileModuleOp tile;
   mlir::func::FuncOp function;
   llvm::SmallVector<TileRegionOp, 16> regions;
@@ -638,15 +639,13 @@ prepareCommunicationRegionClosure(
       buildExchangeComponents(groups, relationInfo);
 
   llvm::SmallVector<TileMergeSet, 16> sets;
-  llvm::SmallVector<unsigned, 8> candidateComponents;
   for (auto [componentIndex, component] : llvm::enumerate(components)) {
     if (!hasCompleteExchangeCuts(component, groups, relationInfo,
                                  relations.boundaryRelations))
       continue;
-    candidateComponents.push_back(static_cast<unsigned>(componentIndex));
     for (uint64_t tileId : component.participants) {
       TileMergeSet set;
-      set.component = static_cast<unsigned>(componentIndex);
+      set.components.push_back(static_cast<unsigned>(componentIndex));
       for (unsigned groupIndex : component.groups)
         for (unsigned relationIndex : groups[groupIndex].relations) {
           const RelationInfo &info = relationInfo[relationIndex];
@@ -681,23 +680,66 @@ prepareCommunicationRegionClosure(
     }
   }
 
-  llvm::DenseSet<unsigned> closableComponents;
-  for (unsigned component : candidateComponents) {
-    bool closable = true;
+  // Include actual local dependencies before deciding which rewrite sets
+  // overlap. A shared initialization can connect otherwise separate exchanges.
+  llvm::EquivalenceClasses<unsigned> componentGroups;
+  for (const auto &set : sets)
+    componentGroups.insert(set.components.front());
+  llvm::DenseSet<unsigned> rejected;
+  for (;;) {
     for (TileMergeSet &set : sets)
-      if (set.component == component &&
-          (!includeLocalTensorDependencies(set, relations.boundaryRelations) ||
-           !canMergeTileRegions(set))) {
-        closable = false;
-        break;
+      if (!includeLocalTensorDependencies(set, relations.boundaryRelations))
+        rejected.insert(set.components.front());
+
+    llvm::EquivalenceClasses<unsigned> scopes;
+    llvm::DenseMap<mlir::Operation *, unsigned> firstScope;
+    bool overlaps = false;
+    for (auto [index, set] : llvm::enumerate(sets)) {
+      scopes.insert(index);
+      for (TileRegionOp region : set.regions) {
+        auto [found, inserted] = firstScope.try_emplace(region, index);
+        if (!inserted) {
+          scopes.unionSets(found->second, index);
+          componentGroups.unionSets(sets[found->second].components.front(),
+                                    set.components.front());
+          overlaps = true;
+        }
       }
-    if (!closable)
-      continue;
-    closableComponents.insert(component);
+    }
+    if (!overlaps)
+      break;
+    llvm::SmallVector<TileMergeSet, 16> merged;
+    llvm::DenseMap<unsigned, unsigned> byLeader;
+    for (auto [index, set] : llvm::enumerate(sets)) {
+      unsigned leader = scopes.getLeaderValue(index);
+      auto [found, inserted] = byLeader.try_emplace(leader, merged.size());
+      if (inserted) {
+        merged.push_back(std::move(set));
+        continue;
+      }
+      TileMergeSet &target = merged[found->second];
+      target.components.append(set.components);
+      for (TileRegionOp region : set.regions)
+        if (!llvm::is_contained(target.regions, region))
+          target.regions.push_back(region);
+      llvm::sort(target.regions, [](TileRegionOp lhs, TileRegionOp rhs) {
+        return lhs->isBeforeInBlock(rhs);
+      });
+    }
+    // A merge reduces the set count. Its earlier anchor may expose another
+    // local dependency, so finish the same finite closure before any mutation.
+    sets = std::move(merged);
   }
+  for (TileMergeSet &set : sets)
+    if (!canMergeTileRegions(set))
+      rejected.insert(set.components.front());
+  llvm::DenseSet<unsigned> rejectedGroups;
+  for (unsigned component : rejected)
+    rejectedGroups.insert(componentGroups.getLeaderValue(component));
   llvm::erase_if(sets, [&](const TileMergeSet &set) {
-    return !closableComponents.contains(set.component) ||
-           set.regions.size() < 2;
+    return set.regions.size() < 2 ||
+           rejectedGroups.contains(
+               componentGroups.getLeaderValue(set.components.front()));
   });
   return sets;
 }
@@ -725,7 +767,7 @@ mlir::LogicalResult closeCrossTileCommunicationRegions(
   llvm::DenseSet<unsigned> closedComponents;
   llvm::DenseMap<mlir::Value, mlir::Value> replacements;
   for (TileMergeSet &set : *prepared) {
-    closedComponents.insert(set.component);
+    closedComponents.insert(set.components.begin(), set.components.end());
     uint64_t regionCount = set.regions.size();
     if (mlir::failed(mergeTileRegions(set, replacements)))
       return fail(failure,

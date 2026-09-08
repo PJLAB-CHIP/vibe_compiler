@@ -11,8 +11,10 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include <functional>
 #include <map>
 #include <set>
+#include <tuple>
 
 namespace wafer {
 namespace {
@@ -182,113 +184,180 @@ static Result collect(llvm::ArrayRef<mlir::ModuleOp> modules, Collection &out) {
   return {};
 }
 
-// A DTE-connected residency component must progress within one device phase.
-// Collapse its Regions before adding DDR publication edges and local order.
-// This prevents a DDR acquire from blocking a Tile needed by a peer issue.
+// Preserve actual blocking points. A DTE-connected set of Regions is not an
+// atomic phase: one Tile may publish DDR while another continues that exchange.
 static Result verifyOrder(const Collection &collection,
                           llvm::ArrayRef<TileId> tileIds) {
   if (tileIds.size() != collection.entries.size())
     return contract("shared DDR completion Tile identity domain differs");
-  llvm::DenseMap<mlir::Operation *, unsigned> nodes;
-  llvm::SmallVector<TileRegionOp> regions;
-  for (auto entry : collection.entries)
-    for (auto region : entry.getBody().front().getOps<TileRegionOp>()) {
-      nodes[region] = regions.size();
-      regions.push_back(region);
+  if (collection.resources.empty())
+    return {};
+  auto isBlockingPoint = [](mlir::Operation *op) {
+    return mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEBroadcastOp,
+                     InstrDTEScatterOp, InstrDTEWaitOp, SyncDDRPublishOp,
+                     SyncDDRAcquireOp>(op);
+  };
+  llvm::SmallVector<mlir::Operation *> operations;
+  llvm::SmallVector<llvm::SmallVector<unsigned, 2>> successors;
+  llvm::SmallVector<unsigned> degree;
+  auto edge = [&](unsigned from, unsigned to) {
+    if (!llvm::is_contained(successors[from], to)) {
+      successors[from].push_back(to);
+      ++degree[to];
     }
-  llvm::SmallVector<unsigned> parent(regions.size());
-  for (unsigned i = 0; i < parent.size(); ++i)
-    parent[i] = i;
-  auto root = [&](unsigned i) {
-    while (parent[i] != i)
-      i = parent[i];
-    return i;
   };
-  struct Endpoint {
-    int64_t tile;
-    int64_t peer;
-    DTEMessageAttr message;
-    unsigned node;
-  };
-  llvm::SmallVector<Endpoint> sends, receives;
-  bool unknownDTERegion = false;
+  using Message = std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t>;
+  std::map<Message, unsigned> sends, receives;
+  std::map<int64_t, unsigned> publishers;
+  llvm::SmallVector<std::pair<int64_t, unsigned>> acquisitions;
   for (auto [index, entryRef] : llvm::enumerate(collection.entries)) {
     mlir::func::FuncOp entry = entryRef;
-    auto add = [&](mlir::Operation *op, int64_t peer, DTEMessageAttr message,
-                   bool send) {
-      auto region = getTopLevelRegion(op);
-      if (region)
-        (send ? sends : receives)
-            .push_back({tileIds[index].getValue(), peer, message,
-                        nodes.lookup(region)});
-      else
-        unknownDTERegion = true;
+    std::optional<unsigned> previous;
+    auto endpoint = [&](unsigned node, int64_t peer, DTEMessageAttr message,
+                        bool send) {
+      const int64_t local = tileIds[index].getValue();
+      Message key{send ? local : peer, send ? peer : local,
+                  message.getCommunicationId(), message.getRound(),
+                  message.getPayloadSlice()};
+      return (send ? sends : receives).try_emplace(key, node).second;
     };
-    entry.walk([&](InstrDTESendOp op) {
-      add(op, op.getPeer(), op.getMessage(), true);
-    });
-    entry.walk([&](InstrDTERecvOp op) {
-      add(op, op.getPeer(), op.getMessage(), false);
-    });
-    auto addMultiSend = [&](auto op) {
-      for (auto [peer, message] :
-           llvm::zip_equal(op.getPeers(), op.getMessages()))
-        add(op, peer, mlir::cast<DTEMessageAttr>(message), true);
+    std::function<Result(mlir::Block &)> visit =
+        [&](mlir::Block &block) -> Result {
+      for (mlir::Operation &op : block) {
+        if (isBlockingPoint(&op)) {
+          unsigned node = operations.size();
+          operations.push_back(&op);
+          successors.emplace_back();
+          degree.push_back(0);
+          if (previous)
+            edge(*previous, node);
+          previous = node;
+          bool unique = true;
+          if (auto send = mlir::dyn_cast<InstrDTESendOp>(op))
+            unique = endpoint(node, send.getPeer(), send.getMessage(), true);
+          if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(op))
+            unique = endpoint(node, recv.getPeer(), recv.getMessage(), false);
+          auto multiSend = [&](auto send) {
+            for (auto [peer, message] :
+                 llvm::zip_equal(send.getPeers(), send.getMessages()))
+              unique &= endpoint(node, peer,
+                                 mlir::cast<DTEMessageAttr>(message), true);
+          };
+          if (auto send = mlir::dyn_cast<InstrDTEBroadcastOp>(op))
+            multiSend(send);
+          if (auto send = mlir::dyn_cast<InstrDTEScatterOp>(op))
+            multiSend(send);
+          if (!unique)
+            return unsupported("shared DDR order requires unique "
+                               "single-execution DTE messages");
+          if (auto publish = mlir::dyn_cast<SyncDDRPublishOp>(op)) {
+            auto binding = getBinding(publish.getData());
+            if (!binding ||
+                !publishers.try_emplace(binding.getResourceId(), node).second)
+              return contract(
+                  "shared DDR order requires a unique bound publisher");
+          }
+          if (auto acquire = mlir::dyn_cast<SyncDDRAcquireOp>(op)) {
+            auto binding = getBinding(acquire.getData());
+            if (!binding)
+              return contract("shared DDR order has an unbound acquire");
+            acquisitions.emplace_back(binding.getResourceId(), node);
+          }
+          continue;
+        }
+        if (auto flow = analysis::getSingleExecutionRegionFlow(&op)) {
+          Result nested = visit(flow->region->front());
+          if (!nested.succeeded())
+            return nested;
+          continue;
+        }
+        bool containsBlocking = false;
+        op.walk([&](mlir::Operation *nested) {
+          containsBlocking |=
+              isBlockingPoint(nested) ||
+              (nested != &op && mlir::isa<mlir::func::CallOp>(nested));
+        });
+        if (containsBlocking)
+          return unsupported("shared DDR order cannot flatten repeated or "
+                             "conditional communication");
+        if (auto call = mlir::dyn_cast<mlir::func::CallOp>(op)) {
+          auto callee =
+              mlir::SymbolTable::lookupNearestSymbolFrom<mlir::func::FuncOp>(
+                  call, call.getCalleeAttr());
+          if (!callee || callee.isExternal())
+            return unsupported("shared DDR order has an unresolved call");
+          callee.walk([&](mlir::Operation *nested) {
+            containsBlocking |= isBlockingPoint(nested) ||
+                                mlir::isa<mlir::func::CallOp>(nested);
+          });
+          if (containsBlocking)
+            return unsupported(
+                "shared DDR order requires inlined communication calls");
+        }
+      }
+      return {};
     };
-    entry.walk([&](InstrDTEBroadcastOp op) { addMultiSend(op); });
-    entry.walk([&](InstrDTEScatterOp op) { addMultiSend(op); });
+    Result result = visit(entry.getBody().front());
+    if (!result.succeeded())
+      return result;
   }
-  if (unknownDTERegion && !collection.resources.empty())
-    return unsupported(
-        "shared DDR order cannot resolve a Direct DTE execution region");
-  for (const Endpoint &send : sends) {
-    auto receive = llvm::find_if(receives, [&](const Endpoint &recv) {
-      return recv.tile == send.peer && recv.peer == send.tile &&
-             recv.message == send.message;
-    });
+  if (sends.size() != receives.size())
+    return contract("shared DDR order has unmatched Direct DTE endpoints");
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<unsigned, 2>>
+      prerequisites;
+  for (const auto &[message, send] : sends) {
+    auto receive = receives.find(message);
     if (receive == receives.end())
       return contract("shared DDR order has an unmatched Direct DTE endpoint");
-    parent[root(send.node)] = root(receive->node);
-  }
-  std::set<std::pair<unsigned, unsigned>> edges;
-  auto edge = [&](TileRegionOp a, TileRegionOp b, bool strict) {
-    unsigned from = root(nodes.lookup(a)), to = root(nodes.lookup(b));
-    if (from == to)
-      return !strict;
-    edges.insert({from, to});
-    return true;
-  };
-  for (auto entry : collection.entries) {
-    TileRegionOp previous;
-    for (auto region : entry.getBody().front().getOps<TileRegionOp>()) {
-      if (previous)
-        edge(previous, region, false);
-      previous = region;
+    unsigned recv = receive->second;
+    // CRT send issue consumes peer-ready; waits need both endpoint issues.
+    // Match the existing DirectDTETransport wait-graph contract exactly.
+    edge(recv, send);
+    for (unsigned node : {send, recv}) {
+      prerequisites[operations[node]].push_back(send);
+      prerequisites[operations[node]].push_back(recv);
     }
   }
-  for (const auto &[id, resource] : collection.resources)
-    for (const Access &reader : resource.readers)
-      if (!edge(resource.writer->region, reader.region, true))
-        return unsupported("shared DDR publication crosses a mutually "
-                           "dependent DTE component");
-  llvm::SmallVector<unsigned> degree(regions.size(), 0);
-  for (auto [from, to] : edges)
-    ++degree[to];
+  for (auto [index, op] : llvm::enumerate(operations)) {
+    auto wait = mlir::dyn_cast<InstrDTEWaitOp>(op);
+    if (!wait)
+      continue;
+    for (mlir::Value token : wait.getTokens()) {
+      llvm::DenseSet<mlir::Value> visited;
+      while (token && visited.insert(token).second &&
+             !prerequisites.count(token.getDefiningOp())) {
+        if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(token))
+          token = analysis::getSingleExecutionRegionEntryOperand(argument);
+        else if (auto result = mlir::dyn_cast<mlir::OpResult>(token))
+          token = analysis::getSingleExecutionRegionExitOperand(result);
+        else
+          token = {};
+      }
+      auto found = prerequisites.find(token ? token.getDefiningOp() : nullptr);
+      if (found == prerequisites.end())
+        return unsupported("shared DDR order cannot resolve a DTE wait token");
+      for (unsigned issue : found->second)
+        edge(issue, index);
+    }
+  }
+  for (auto [resource, acquire] : acquisitions) {
+    auto publish = publishers.find(resource);
+    if (publish == publishers.end())
+      return contract("shared DDR order has an acquire without publication");
+    edge(publish->second, acquire);
+  }
   llvm::SmallVector<unsigned> ready;
-  unsigned count = 0;
-  for (unsigned i = 0; i < parent.size(); ++i)
-    if (root(i) == i) {
-      ++count;
-      if (!degree[i])
-        ready.push_back(i);
-    }
-  for (unsigned i = 0; i < ready.size(); ++i)
-    for (auto [from, to] : edges)
-      if (from == ready[i] && --degree[to] == 0)
-        ready.push_back(to);
-  return ready.size() == count ? Result{}
-                               : unsupported("shared DDR and DTE completion "
-                                             "dependencies contain a cycle");
+  for (unsigned node = 0; node < degree.size(); ++node)
+    if (!degree[node])
+      ready.push_back(node);
+  for (unsigned index = 0; index < ready.size(); ++index)
+    for (unsigned next : successors[ready[index]])
+      if (--degree[next] == 0)
+        ready.push_back(next);
+  return ready.size() == operations.size()
+             ? Result{}
+             : unsupported("shared DDR and DTE completion dependencies contain "
+                           "a cycle");
 }
 
 static bool isZeroInitialized(mlir::BlockArgument argument) {
@@ -411,9 +480,6 @@ Result materializeSharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
   Collection collection;
   Result result = collect(modules, collection);
   if (!result.succeeded() || collection.resources.empty())
-    return result;
-  result = verifyOrder(collection, tileIds);
-  if (!result.succeeded())
     return result;
   bool existing = false;
   for (auto entry : collection.entries)

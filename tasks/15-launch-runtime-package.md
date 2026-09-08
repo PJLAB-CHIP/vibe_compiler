@@ -74,6 +74,12 @@ entries
 current要求`card_count=1`、`tile_count=16`。parser要求exact field set、bounded JSON size/nesting/record count、
 checked integer conversion和canonical serialization；没有version branch、upgrade reader或兼容alias。
 
+Canonical JSON按serializer固定字段顺序输出紧凑对象和数组，只保留文件末尾一个换行。缩进空白不占用有限的manifest
+字节预算；reader仍要求唯一canonical字节表示，不接受旧缩进形式，也不放宽4 MiB字节和65536条record上限。
+本边界的输入是verified typed manifest，输出由同一严格reader与runtime binding消费；不修改schema、参数ordinal、resource
+identity、entry ABI或payload。完成检查覆盖16 Tile各2048条shared workspace引用的合法roundtrip与binding、字节上限
+恰好相等/少一字节、record超限、截断及非canonical空白；实际source到package验证由统一板测计划的完整模型承担。
+
 `target`记录compiler-fixed target identity、runtime ABI和module format；`launch`直接记录current kernel launch mode、entry ABI和
 ordered phases。它们必须与DeviceExecutable、target module readback及全部entries逐项相等，runtime不得从module path或entry
 shape猜测launch方式。

@@ -331,7 +331,7 @@ def build_probe(
     staged_manifest = manifest_path.with_name(
         ".manifest.json.ncc-execution-probe"
     )
-    staged_manifest.write_text(json.dumps(manifest, indent=2) + "\n")
+    staged_manifest.write_text(json.dumps(manifest, separators=(",", ":")) + "\n")
     os.replace(staged_manifest, manifest_path)
 
 

@@ -1,4 +1,7 @@
-# 板测总计划
+# 板测实施与验收归档
+
+本项于2026-09-09按用户收缩后的板测与性能范围闭合。下文保留本次实施合同和历史检查点；
+最终结果见前部各步骤的收口记录，当前调度只读`tasks/progress.md`，稳定规则以编号设计为准。
 
 ## 统一任务边界
 
@@ -18,7 +21,7 @@ Pipeline position:
 - Explicit non-goals: 不在本项声明编译器全部架构收敛完成，不以单case代签整项，不把未执行的性能测量写成性能结论。
 - Completion criteria: 基础前置和下列第1--10项的计划覆盖全部完成；正确性以生产路径、fresh no-card、实卡完整PyTorch比较及正常完成为证据，性能以matched测量为证据。待补case、失败或仅no-card不能计作完成。
 
-## 剩余工作的实施步骤
+## 本次实施步骤与验收记录
 
 任务状态、当前步骤与直接前置只由`tasks/progress.md`拥有。本节是同一`board-testing`的working plan，
 不新增work item；下方第1--10项编号保留为覆盖清单索引，历史checkpoint只用于定位已取得的证据。
@@ -67,7 +70,7 @@ Pipeline position:
 - AllReduce 1024/1025/1031 × none/search六项fresh source→package/no-card全部通过。
   canonical完整增量构建通过，随后Ninja no-op；本轮没有新增板卡launch，不宣称已验证新winner的设备性能。
 - 同轮重现decode：原FP16 none在shared DDR/DTE联合顺序检查报环；search在`buildMergedBody → Operation::clone`崩溃。
-  它们是下一步待修复项，不计入第一步通过数，也尚未board-ready。
+  它们当时留待后续修复，不计入第一步通过数；本次最终结果见第二、三步。
 
 ### 第二步：两步KV cache decode（清单第8项）
 
@@ -83,24 +86,56 @@ Pipeline position:
 实施顺序：
 
 1. 用本轮构建先重现原FP16 none/search主机case，分别定位到首次失效的current IR边界；历史假环与SIGSEGV记录只提供线索。
-2. 对`none`检查联合DDR/DTE顺序图。拟修正方向是保留actual Region入口/出口与DTE issue/wait位置，
+2. 对`none`检查联合DDR/DTE顺序图。实现保留actual publish/acquire与DTE issue/wait位置，
    避免把DTE连通的整个Region集合收缩成原子节点而误报环；prepare、issue和token wait的依赖必须逐条来自实际CRT/IR合同。
    只透明展开标准interface证明的单次region；重复或条件路径证据不足时给出typed failure，不能猜动态次数或插全局drain。
-3. 对`search`检查closure合并的实际Region集合。拟修正方向是把纳入的本地纯tensor依赖也计入重叠判断，
+3. 对`search`检查closure合并的实际Region集合。实现把纳入的本地纯tensor依赖也计入重叠判断，
    对重叠集合统一检查SSA dominance、effect与完整exchange，再一次物化；不能删除后重放失效端点。
    若并集不合法，该重叠连通组的可选合并整体不应用，不能留下只覆盖部分participant的exchange。
-4. 上述两条仍是待验证修法。先补最小失败回归和真实规模正例，再更新13号稳定合同并实现；现有DDR候选继续参与正常选择，不能把DTE当补救路径。
+4. 已补最小失败回归和真实规模正例，并同步13号合同。继续保留actual leaf的容量反馈：其它movement/closure的unsupported或预算未穷尽不能吞掉已执行leaf的容量证据；反馈只提出新choice，不提升为共同owner不合法。现有DDR候选继续参与正常选择，不能把DTE当补救路径。
 5. 四项两步no-card实际执行后，按`none第一步→none第二步→search第一步→search第二步`串行上板。
    每条链第一步输入独立生成；第二步使用该policy本轮第一步的完整KV capture，不使用历史raw或另一policy的KV。
 
 | 输入等价类 | exact与数值要求 | 下游witness |
 | --- | --- | --- |
 | 原第一步，past=1023、updated=1024 | attention与完整K/V使用同一HF eager reference；历史prefix保留、追加一个token | 普通source→package/no-card；FP16 none/search单次实卡 |
-| 原第二步，past=1024、updated=1025 | 上板必须使用第一步实际回读KV；attention及完整尾部KV按原容差比较 | fresh continuation source/package与实际capture输入；两步链完成 |
+| 原第二步，past=1024、updated=1025 | 上板必须使用第一步实际回读KV；attention及完整尾部KV按原容差比较 | 本轮该长度的source/package与实际capture输入；两步链完成 |
 | FP16/BF16、none/search | 不同policy消费同一source合同；crash不算unsupported，失败不换路径 | 四项注册no-card，逐项确认两步实际执行 |
 | rank≥3、1024/1025/1031的合法交错DDR/DTE顺序与真实环 | 保留每个实际issue/token和区域依赖；合法交错通过、真实环拒绝，无法证明的control flow保持typed failure | 通用IR正负例、fresh completion/transport与实际模型 |
 | 重叠/不重叠closure，共享纯tensor依赖、effect阻止或缺participant | actual Region只物化一次，SSA dominance与all-and-only exchange保持；不可合并时原IR不变 | Tile verifier→Instr→actual SPM；通信产品定向回归 |
 | 错误旧cache、遗漏新token、最后元素超容差 | oracle/runner必须拒绝，不抽样、不放宽阈值 | Python合同负例与两步完整capture |
+
+本轮主机修复检查点（2026-09-09）：
+
+- 原search最小共享初始化输入在修复前复现SIGSEGV；现4/16 Tile×1024/1025/1031×有/无effect覆盖通过。
+  正例全部关系retarget，并实际经过layout→Tile→Instr→completion→SPM→transport binding；负例整组不应用closure。
+- 联合顺序图改用实际阻塞点。1024/1025/1031×合法交错/真实环/条件路径九种输入分别通过或保持typed拒绝，未添加额外join/wait。
+- 首轮FP16/BF16 none完整两步no-card通过。原FP16 search修复崩溃后暴露8 MiB allocation容量反馈被其它alternative状态掩盖；
+  分离typed leaf反馈后，默认产品预算内生成可用package（42 actual leaves、5次反馈细化、5个accepted structural结果），未强制DDR/DTE。
+- 直接Driver policy回归8项、package回归32项通过。紧凑manifest和最终公共修复后的四项完整两步no-card均通过：FP16 none/search为104.21/583.83秒，BF16 none/search为102.21/578.15秒。
+  canonical完整增量构建及Ninja no-op通过，check-wafer的274项lit、14个unit可执行文件及17项SystemC全部通过，无skip。
+  同一设备会话未变，FP16 none两步实卡均通过，完整attention/K/V按原rtol=0.006、atol=0.008比较。
+  第二步使用本轮第一步actual KV；未修改seed、dtype、HF module或容差。两次launch均正常completion/readback/cleanup，无timeout或重试。
+
+| FP16 none | attention元素/最大绝对误差 | K/V各元素与最大绝对误差 | 设备事件耗时 | manifest SHA256 |
+| --- | --- | --- | --- | --- |
+| 第一步 | 4096 / 0.0000457763671875 | 各4194304；K、V均0.000244140625 | 18.050 ms | `a780724d446c4383854a4b95f31fe1ce322e2e85f0534f9d312a98ea636d1b8c` |
+| 第二步 | 4096 / 0.00006103515625 | 各4198400；K为0.000244140625，V为0.0001220703125 | 18.271 ms | `57dad6926169546b767d4ad070677bd91243c748a99186b0b3d69e06fcc26822` |
+
+两步合计36.321 ms，为各一次未插桩invocation的TX stream事件观察值，尚不是稳定性能统计。成功source/package/input/capture及逐输出误差在
+`build/test/board-audit/model-qualification/decode-none/`，只作审计。Search预算计数修正后，FP16/BF16完整两步no-card分别471.79/470.52秒通过；随后FP16两次实卡通过。
+
+Search最终实卡：两步attention的最大绝对误差依次0.0000457763671875、0.00006103515625；K/V的元素数与最大误差均与上表none相同。
+两种policy每一步的历史KV prefix都与该次runtime输入逐bit相同，第二步消费各自第一步actual KV。Search实卡复用本轮已通过no-card的
+step-specific package和source，输入是普通runtime自由operand；重新生成本次输入/reference、核对全部port/dtype/shape并再做no-card后各launch一次，
+不修改ELF/manifest或重放winner。成功产物位于`build/test/board-audit/model-qualification/decode-search/`。
+
+| FP16 search | 设备事件耗时 | manifest SHA256 |
+| --- | --- | --- |
+| 第一步 | 11.410 ms | `4b2872aa4bf19466e862a7d928ba98a3ccc1be1825c18362b34837973342e663` |
+| 第二步 | 11.518 ms | `7c956ffdea99b279866188124716ba3fa88bde6b7282c3bb580dc4ec1d881ebc` |
+
+第二步覆盖矩阵闭合：四项两步no-card、四次FP16实卡、完整HF/PyTorch输出与实际KV continuation、正常生命周期均通过。
 
 ### 第三步：完整LLaMA block（清单第9项）
 
@@ -128,6 +163,28 @@ Pipeline position:
 | 合法大manifest及上限边界、超限/截断/溢出 | 保持单一schema、字节/record限制与typed错误；不吞错、不部分读取 | 对实际修复边界的package unit/roundtrip与runtime pre-effect拒绝 |
 | 共享constant/多consumer与重复引用 | 不按shape/name归并identity；actual owner/引用与payload范围精确一致 | producer→strict manifest verifier→完整runtime binding |
 
+本轮规模定位检查点（2026-09-09）：原FP16 none的manifest实际7513526字节，12个program tensor、12个target tensor、
+1个共享module、16个entry；每entry 2063个参数，其中2048个shared workspace引用。唯一resource共2048个、实际606208字节，
+重复引用来自完整entry ABI，不按相同shape或内容归并。JSON缩进空白约3363865字节；同schema紧凑序列化为4149662字节（含末尾换行），
+可落入原4 MiB限制。writer/strict reader/fixture统一采用紧凑形式，未放宽字节、record或SDK packet限制；
+16 Tile×2048条引用的roundtrip、runtime地址绑定及边界拒绝已通过，FP16/BF16 none完整no-card分别273.62/255.83秒通过，search原默认预算内未找到可用候选：6个structural、42 actual leaves、各structural仅一次容量细化。
+内部上限原本名为Temporal次数，却与movement leaf混用计数；现按两个独立维度核算，仍服从原trials=42。
+FP16 search经过7个Temporal choice、6次actual容量细化，在同一structural owner的42个actual leaf内取得accepted package。
+该普通driver产物继续由现有runner函数生成fresh完整PyTorch reference/input并完成strict no-card（未重复编译同一source）；BF16 search的注册no-card于611.45秒通过。
+两种dtype、两种policy的完整no-card矩阵闭合。
+
+LLaMA最终FP16实卡：none/search各一次，完整`[1,16,4096]`的65536元素均通过原rtol=0.002、atol=0.004，最大绝对误差均0.00146484375；
+16 Tile completion、readback和cleanup均通过。Search使用上述同一accepted package重新核对payload/no-card后launch，未重建winner。
+两种policy都没有Direct-DTE transport，实际跨Tile资源经已物化DDR完成合同消费；这一结果来自普通产品选择，不是专项强制选路。
+
+| policy | 设备事件耗时 | manifest SHA256 |
+| --- | --- | --- |
+| none | 130.001999 ms | `1ca7e1de0e59b53bd11e4dd009fb48105a29911c9906876aa7e3898ae6f548ce` |
+| search | 108.660004 ms | `bafe8d46f9bdf7f72b02c481ab6434323a56be045bd04fb9fb27b4db8c7c1e82` |
+
+原source/config/weights、dtype、seed与容差均未改。成功输入/package/capture和逐输出误差在
+`build/test/board-audit/model-qualification/llama-{none,search}/`。第三步完整模型覆盖闭合。
+
 ### 第四步：产品性能验收与总任务收口（清单第10项）
 
 Pipeline position:
@@ -154,9 +211,28 @@ Pipeline position:
 不为每个重复样本附加整套Trace。纯IR校准探针沿用用户批准的无PyTorch例外，产品A/B每次仍完整对比PyTorch。
 现有样本不足以支持稳定结论时明确限制，不为收口静默扩成大规模采样。
 
+第四步最终验收：只复用上述6次必要正确性launch的TX stream事件计时，没有追加任何性能探针、warmup或重复采样。
+逐文件SHA256确认每个none/search配对的source函数、全部参数数据和runtime输入都相同，包含decode第二步各自实际产生的KV；
+完整数值比较和生命周期均通过。审计记录在`build/test/board-audit/model-qualification/matched-input-audit.json`。
+
+| 同源配对 | none | search | 测量范围 |
+| --- | --- | --- | --- |
+| 两步decode合计 | 36.321 ms | 22.928 ms | 两次独立invocation的设备事件耗时之和，第二步含actual KV continuation |
+| 完整LLaMA block | 130.001999 ms | 108.660004 ms | 各一次完整block invocation的设备事件耗时 |
+
+以上是本轮各一次的观察值，不作为稳定加速比或全模型族结论。Decode两种policy均包含Direct-DTE，LLaMA两者均走DDR；
+不能把这些差异简单归因于DDR/DTE切换。Search导出module bytes分别从decode两步的511464/548328降为404968/441832，
+LLaMA从1132856降为1091896；这是实际文件大小，只作实现差异证据，不换算成指令耗时。
+LLaMA accepted候选的CostModel估时为578.409 ms，标记`usesCoarseEstimate=true`，设备观察值108.660004 ms。
+未建模work使用既定每指令先验，说明粗估仍有明显误差；该值只用于合法候选排序，不是时延上界，也不从单个模型反拟合校准常量。
+按用户要求，本次不再追加profiler或针对性板测来解释/拟合该差异。性能覆盖以这些明确范围的matched模型观察收口。
+
+本次四步最终检查：canonical完整增量build、第二次Ninja no-op、274项lit、14个unit可执行文件、17项SystemC及PyTorch runner合同通过；
+全部产品no-card与上述6次实卡完成，无skip、timeout、retry、reset或power cycle。代码、06/13/15合同、fixture与经验同步，板测总任务按本清单闭合。
+
 ### 每步交付与停止条件
 
-- 实施前按该步重新核对编号设计、当前API与覆盖矩阵；本次只整理计划，不把拟修法或历史结果写成新实现/新板测通过。
+- 实施前按该步重新核对编号设计、当前API与覆盖矩阵；不把拟修法、局部通过或历史结果写成完整新板测通过。
 - 代码变化后完成直接受影响的unit/lit、source→package/no-card及canonical完整增量构建，第二次构建确认Ninja no-op；
   不因文档整理运行编译或设备。相关源码/输入/package/环境未改变的成功板测不机械重跑。
 - 每份待上板package必须先达到board-ready：输入、dtype/descriptor/payload/reference一致，runner与本轮no-card完整，绑定产物身份。
@@ -206,7 +282,7 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 具体pipeline与覆盖合同以13号“区域与传输选择的覆盖合同”为准；未验证的实现和测试保持doing。
 
 以下编号保留为`board-testing`同一测试清单的覆盖索引，不是独立任务。Add、基础Direct-DTE及第1--7项已有各自范围的实卡通过证据。
-剩余实施顺序见progress及上方working plan：先收尾统一评分，再完成第8项decode、第9项LLaMA block，最后完成第10项产品性能验收。
+本次最终实施顺序与完成证据见上方四步记录；当前调度见progress。
 每类测试按列出的覆盖范围验收，单个case通过不能代表整类或总任务完成。实现、输入或环境没有影响结论的变化时，不重复已通过的case。
 
 | 测试顺序 | 具体范围 | 完成门禁与后续动作 |
@@ -218,9 +294,9 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 | 5. AllReduce | 多Tile partial contribution合并后供全部participant消费 | 1024/1025/1031的none/search/peer矩阵均已实卡通过；专项为direct贡献交换加Ring AllGather，完整PyTorch误差均为0 |
 | 6. 卷积组合计算 | 现有`conv-mixed-dag`，FP16 | 布局、中间舍入及四路F32累加修复后，独立整除/尾部与原组合none/search均通过本轮完整PyTorch实卡；主输出exact，归约输出通过原容差 |
 | 7. Attention prefill | 原case及1025/1031尾长，FP16，none/search | 通用state/destination/fill与切分修复后，6项实卡完整PyTorch比较均通过，最大绝对误差0.0009765625；8项prefill no-card和公共回归闭合 |
-| 8. KV cache decode | 现有`attention-decode-kv-cache`，连续两步 | 第二步消费第一步实际回读的KV；两步attention输出和完整KV cache均与PyTorch比较 |
-| 9. LLaMA block | 现有`llama-2-7b-block`，FP16 | 完整block输出对比PyTorch；此前局部算子通过不能代签本项 |
-| 10. 性能 | 已通过数值验收的同source、同输入none/search | 在本任务内完成matched测量并保留每次PyTorch检查；记录设备计时、重复次数与统计结果，不用host wall time代替设备性能 |
+| 8. KV cache decode | 现有`attention-decode-kv-cache`，连续两步 | FP16/BF16×none/search两步no-card、FP16两种policy各两次实卡通过；完整PyTorch与actual KV continuation闭合 |
+| 9. LLaMA block | 现有`llama-2-7b-block`，FP16 | FP16/BF16×none/search no-card、FP16 none/search实卡完整65536元素PyTorch比较通过 |
+| 10. 性能 | 已通过数值验收的同source、同输入none/search | 按用户收缩范围复用模型6次正确性launch的设备计时；source/参数/输入逐bit相同、每次PyTorch检查通过，结论限于单次观察 |
 
 执行规则：
 

@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--work-dir", type=pathlib.Path, required=True)
     parser.add_argument("--dump-compiler-ir", type=pathlib.Path)
     parser.add_argument("--compile-timing", action="store_true")
+    parser.add_argument("--device-timing", action="store_true")
     parser.add_argument(
         "--qualify-communication",
         choices=("ring-allgather", "direct-alltoall", "direct-reduce-scatter", "all-reduce"),
@@ -1229,6 +1230,8 @@ def main() -> int:
             print(result.stdout, end="")
             continuation_outputs = expected_outputs
         else:
+            if args.device_timing:
+                command.append("--device-timing")
             command.extend(
                 [
                     "--board",
@@ -1258,6 +1261,7 @@ def main() -> int:
                         + PROCESS_TIMEOUT_MARGIN_SECONDS
                     ),
                 )
+                print(result.stdout, end="")
                 verify_board(
                     result.stdout,
                     current_case,
@@ -1274,7 +1278,6 @@ def main() -> int:
                     f"{(time.monotonic_ns() - iteration_start_ns) // 1_000_000} "
                     "torch_close=true"
                 )
-                print(result.stdout, end="")
             continuation_outputs = (
                 read_single_card_continuation_outputs(
                     result_capture_paths, expected_outputs

@@ -301,7 +301,7 @@ def compile_package(
         role = "user_input" if table == "inputs" else "output"
         for tile_id in range(TILE_COUNT):
             bindings[(tile_id, role, role_index)] = port_id
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    manifest_path.write_text(json.dumps(manifest, separators=(",", ":")) + "\n")
     slot_layout = validate_terminal_slots(package, bindings)
     module_path = package / manifest["modules"][0]["path"]
     return package, module_path, bindings, slot_layout
@@ -487,7 +487,7 @@ def build_probe(
     staged_manifest = manifest_path.with_name(
         ".manifest.json.complete-tile-barrier"
     )
-    staged_manifest.write_text(json.dumps(manifest, indent=2) + "\n")
+    staged_manifest.write_text(json.dumps(manifest, separators=(",", ":")) + "\n")
     os.replace(staged_manifest, manifest_path)
 
 

@@ -343,7 +343,7 @@ def build_probe(
         "sha256:" + hashlib.sha256(module_path.read_bytes()).hexdigest()
     )
     staged_manifest = manifest_path.with_name(".manifest.json.pmu-probe")
-    staged_manifest.write_text(json.dumps(manifest, indent=2) + "\n")
+    staged_manifest.write_text(json.dumps(manifest, separators=(",", ":")) + "\n")
     os.replace(staged_manifest, manifest_path)
     print("probe_build: read_only_ncc_pmu_snapshot")
 

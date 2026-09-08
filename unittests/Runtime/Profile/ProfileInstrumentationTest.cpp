@@ -916,10 +916,9 @@ TEST_F(ProfileInstrumentationTest, RejectsCaptureProgramDataAlignmentDrift) {
       llvm::MemoryBuffer::getFile(captureManifest);
   ASSERT_TRUE(static_cast<bool>(buffer));
   std::string json = (*buffer)->getBuffer().str();
-  const std::string canonical = "\"base_alignment\": 16";
+  const std::string canonical = "\"base_alignment\":16";
   ASSERT_NE(json.find(canonical), std::string::npos);
-  json.replace(json.find(canonical), canonical.size(),
-               "\"base_alignment\": 32");
+  json.replace(json.find(canonical), canonical.size(), "\"base_alignment\":32");
   writeText(captureManifest, json);
   llvm::SmallString<256> captureRoot(instrumentation);
   llvm::sys::path::append(captureRoot, "captures/count");

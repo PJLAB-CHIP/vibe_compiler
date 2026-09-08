@@ -150,7 +150,7 @@ define void @entry(ptr %slots) {
          "--loader-abi", "tx8-kcore-loader-cluster", "--extra-object", str(obj)], 120)
     module_path.write_bytes(linked.read_bytes())
     module["digest"] = "sha256:" + hashlib.sha256(module_path.read_bytes()).hexdigest()
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    manifest_path.write_text(json.dumps(manifest, separators=(",", ":")) + "\n")
     command = [str(args.wafer_run), "--package-dir", str(package)]
     no_card = run(command + ["--no-card", "--direct-dte-status-abi", "wafer-direct-dte-status", "--supports-host-watchdog"])
     if "invocation_tiles: 16" not in no_card.stdout:

@@ -3341,4 +3341,157 @@ TEST_F(StructuredToTileTest, RegionClosureIncludesOnlyPureLocalDependencies) {
   }
 }
 
+TEST_F(StructuredToTileTest, SharedLocalInitializationIsMergedOnlyOnce) {
+  for (int64_t tileCount : {4, 16}) {
+    for (int64_t extent : {1024, 1025, 1031}) {
+      for (bool effect : {false, true}) {
+        SCOPED_TRACE(effect);
+        SCOPED_TRACE(tileCount);
+        SCOPED_TRACE(extent);
+        auto module = parse(makeSequentialExchangeSource(extent, tileCount));
+        ASSERT_TRUE(module);
+        llvm::SmallVector<llvm::SmallVector<TileRegionOp, 4>, 16> scopes(
+            tileCount);
+        for (TileModuleOp tile : module->getOps<TileModuleOp>()) {
+          llvm::SmallVector<TileRegionOp, 3> original;
+          tile.walk([&](TileRegionOp region) { original.push_back(region); });
+          mlir::OpBuilder builder(original[1]);
+          auto secondProducer =
+              mlir::cast<TileRegionOp>(builder.clone(*original[0]));
+          original[2].getInputsMutable()[0].set(secondProducer.getResult(0));
+          scopes[tile.getTileIdAttr().getInt()] = {original[0], original[1],
+                                                   secondProducer, original[2]};
+          // Both producers precede this shared initialization; both consumers
+          // depend on it. Neither communication component initially owns it.
+          auto firstEmpty = *original[1]
+                                 .getBody()
+                                 .front()
+                                 .getOps<mlir::tensor::EmptyOp>()
+                                 .begin();
+          auto init = builder.create<TileRegionOp>(
+              original[1].getLoc(), mlir::TypeRange{firstEmpty.getType()},
+              mlir::ValueRange{});
+          init.getBody().push_back(new mlir::Block());
+          for (TileRegionOp consumer : {original[1], original[2]}) {
+            auto empty = *consumer.getBody()
+                              .front()
+                              .getOps<mlir::tensor::EmptyOp>()
+                              .begin();
+            auto argument = consumer.getBody().front().addArgument(
+                empty.getType(), empty.getLoc());
+            consumer.getInputsMutable().append(init.getResult(0));
+            empty.getResult().replaceAllUsesWith(argument);
+            if (empty == firstEmpty)
+              empty->moveBefore(&init.getBody().front(),
+                                init.getBody().front().end());
+            else
+              empty.erase();
+          }
+          builder.setInsertionPointToEnd(&init.getBody().front());
+          builder.create<TileYieldOp>(init.getLoc(), firstEmpty.getResult());
+          auto function = original[0]->getParentOfType<mlir::func::FuncOp>();
+          function.getBody().front().getTerminator()->setOperands(
+              mlir::ValueRange{original[1].getResult(0),
+                               original[2].getResult(0)});
+          function.setFunctionType(builder.getFunctionType(
+              function.getArgumentTypes(),
+              mlir::TypeRange{firstEmpty.getType(), firstEmpty.getType()}));
+          if (effect && tile.getTileIdAttr().getInt() == 0) {
+            builder.setInsertionPoint(function);
+            auto observer = builder.create<mlir::func::FuncOp>(
+                function.getLoc(), "observe", builder.getFunctionType({}, {}));
+            observer.setPrivate();
+            builder.setInsertionPoint(original[1]);
+            builder.create<mlir::func::CallOp>(original[1].getLoc(), "observe",
+                                               mlir::TypeRange{},
+                                               mlir::ValueRange{});
+          }
+        }
+        StructuredMaterializationRelations relations;
+        for (unsigned source = 0; source < scopes.size(); ++source)
+          for (unsigned phase = 0; phase < 2; ++phase)
+            for (unsigned destination = 0; destination < scopes.size();
+                 ++destination) {
+              if (source == destination)
+                continue;
+              unsigned argument = 1 + source - (source > destination);
+              relations.boundaryRelations.push_back(
+                  {scopes[source][2 * phase].getResult(0),
+                   scopes[destination][2 * phase + 1].getBody().getArgument(
+                       argument)});
+            }
+        for (auto &tile : scopes)
+          for (unsigned phase : {1, 3})
+            relations.structuralOutputs.push_back(
+                {phase / 2, tile[phase].getResult(0)});
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        auto availability =
+            analyzeCommunicationRegionClosure(*module, relations);
+        ASSERT_TRUE(mlir::succeeded(availability));
+        EXPECT_EQ(*availability,
+                  effect ? CommunicationRegionClosureAvailability::Unavailable
+                         : CommunicationRegionClosureAvailability::Available);
+        CommunicationRegionClosureStatistics closure;
+        ASSERT_TRUE(mlir::succeeded(
+            closeCrossTileCommunicationRegions(*module, relations, &closure)));
+        if (effect) {
+          EXPECT_EQ(closure.closedExchangeComponents, 0u);
+          EXPECT_EQ(countOps<TileRegionOp>(module->getOperation()),
+                    5 * tileCount);
+          ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+          continue;
+        }
+        EXPECT_EQ(closure.closedExchangeComponents, 2u);
+        EXPECT_EQ(closure.mergedRegions, 5 * tileCount);
+        EXPECT_EQ(closure.mergedTileScopes, tileCount);
+        EXPECT_EQ(countOps<TileRegionOp>(module->getOperation()), tileCount);
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+        ASSERT_TRUE(layout.succeeded()) << layout.detail;
+        auto compute = lowerStructuredComputeToTile(*module, relations);
+        ASSERT_TRUE(compute.succeeded()) << compute.detail;
+        auto movement = materializeTileBoundaryMovement(*module, relations);
+        ASSERT_TRUE(movement.succeeded()) << movement.detail;
+        EXPECT_EQ(movement.statistics.peerSends,
+                  2 * tileCount * (tileCount - 1));
+        EXPECT_EQ(movement.statistics.peerReceives,
+                  2 * tileCount * (tileCount - 1));
+        EXPECT_EQ(movement.statistics.crossTileDDRStages, 0u);
+        std::string detail;
+        auto standalone =
+            createStandaloneTileModules(std::move(module), &detail, &relations);
+        ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+        llvm::SmallVector<mlir::ModuleOp, 16> instructionModules;
+        for (StandaloneTileModule &tile : *standalone) {
+          llvm::SmallVector<TileRegionOp, 1> tileRegions;
+          tile.module->walk(
+              [&](TileRegionOp region) { tileRegions.push_back(region); });
+          ASSERT_EQ(tileRegions.size(), 1u);
+          TileRegionToInstrLoweringSession session(*tile.module->getContext());
+          ASSERT_TRUE(mlir::succeeded(
+              convertTileRegionToInstr(tileRegions.front(), session)));
+          ASSERT_TRUE(mlir::succeeded(
+              convertBufferizationCopiesToInstr(*tile.module, session)));
+          instructionModules.push_back(*tile.module);
+        }
+        auto completion = rebuildRequiredDirectDTEWaits(instructionModules);
+        ASSERT_TRUE(completion.succeeded()) << completion.detail;
+        instructionModules.clear();
+        for (StandaloneTileModule &tile : *standalone) {
+          ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+          TileMemoryPlanningFailure failure;
+          auto planned = planTileMemory(std::move(tile.module), &failure);
+          ASSERT_TRUE(mlir::succeeded(planned));
+          tile.module = std::move(*planned);
+          instructionModules.push_back(*tile.module);
+        }
+        EXPECT_TRUE(mlir::succeeded(
+            verifyDirectDTETransportSchedule(instructionModules)));
+        EXPECT_TRUE(
+            mlir::succeeded(bindDirectDTETransport(instructionModules)));
+      }
+    }
+  }
+}
+
 } // namespace

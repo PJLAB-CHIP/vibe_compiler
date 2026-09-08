@@ -17,6 +17,8 @@ namespace wafer::compiler::detail {
 
 struct SearchCurrentIROptions {
   uint64_t layoutWorkLimit = UINT64_C(1048576);
+  // Complete Temporal choices per structural owner. Region/movement leaves
+  // consume the separate global SearchLimits::trials budget.
   uint64_t maximumTemporalCandidatesPerStructuralState = 8;
   SearchLimits limits;
   bool stopTemporalAfterFirstAccepted = true;

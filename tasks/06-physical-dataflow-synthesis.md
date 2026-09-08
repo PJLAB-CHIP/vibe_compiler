@@ -754,6 +754,18 @@ Non-goals：不新增IR/attribute、改变数值语义、推断SPM合法性、�
 Actual capacity rejection默认只对产生该current IR的完整choice有效。只有从actual owner/conflict witness可证明的有限条件
 才能作为causal feedback；unknown、unsupported、timeout和compiler error不得改写为capacity rejection。
 
+同一个Temporal choice下，Region和movement候选的汇总状态与已执行leaf的容量反馈分别保留。某个leaf已经得到带actual
+conflict demand的SPM容量拒绝时，即使其它alternative尚未穷尽或不支持，controller仍可据此提出更小的Temporal choice；
+汇总结果继续保持indeterminate/unsupported，不得把该反馈提升为共同owner不合法或用来剪枝。反馈只携带已执行leaf的typed
+failure快照，不保存被销毁IR的operation/value指针；新choice必须重新物化并通过同一actual leaf。
+
+内部Temporal上限按当前结构owner上的完整Temporal choice次数计数；该choice下的Region/movement子候选分别扣除全局
+actual leaf预算，不重复占用Temporal次数。两项限制同时生效；预算耗尽仍报告未穷尽，不提升为无解，也不增加用户指定的trials。
+
+覆盖要求：真实规模actual候选同时覆盖纯容量拒绝、容量拒绝与未穷尽movement并存、容量拒绝与unsupported并存，以及无容量证据。
+检查更小choice确实进入actual SPM/target，预算未闭合时仍返回typed indeterminate，不能宣称共同域无解。
+多movement正例另检查两个Temporal choice可以实际执行超过两个leaf，同时两种计数各自不超过配置上限。
+
 ## 8. Ownership、analysis 与实现边界
 
 - Compiler driver拥有policy routing、frontier/budget、candidate transaction和唯一winner handoff；不实现leaf rewrite。
