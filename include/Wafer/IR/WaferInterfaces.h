@@ -101,6 +101,11 @@ struct CoupledReductionDescription {
       CoupledReductionMergeKind::OnlineAttention;
   CoupledReductionFinalizationKind finalizationKind =
       CoupledReductionFinalizationKind::NormalizeAccumulator;
+
+  /// Whether any coupled state component omits this iteration coordinate.
+  /// Tiling a parallel iterator with such shared state would update the same
+  /// component once per tile instead of once per reduction contribution.
+  bool hasReplicatedComponent(unsigned iterationDimension) const;
 };
 
 struct WaferSPMResource

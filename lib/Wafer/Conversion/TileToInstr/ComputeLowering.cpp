@@ -450,12 +450,14 @@ emitF32Division(mlir::Operation *owner, mlir::ValueRange inputs,
   auto infinity = rewriter.create<mlir::arith::ConstantOp>(
       owner->getLoc(),
       rewriter.getF32FloatAttr(std::numeric_limits<float>::infinity()));
-  record(rewriter.create<InstrFillOp>(owner->getLoc(), scratch[6], zero,
-                                      FillDomainAttr{},
-                                      getDefaultNCCWorkerAttr(rewriter)));
-  record(rewriter.create<InstrFillOp>(owner->getLoc(), scratch[7], infinity,
-                                      FillDomainAttr{},
-                                      getDefaultNCCWorkerAttr(rewriter)));
+  record(rewriter.create<InstrFillOp>(
+      owner->getLoc(), scratch[6], zero,
+      FillDomainAttr::get(rewriter.getContext(), FillDomain::PhysicalFootprint),
+      getDefaultNCCWorkerAttr(rewriter)));
+  record(rewriter.create<InstrFillOp>(
+      owner->getLoc(), scratch[7], infinity,
+      FillDomainAttr::get(rewriter.getContext(), FillDomain::PhysicalFootprint),
+      getDefaultNCCWorkerAttr(rewriter)));
   emit(InstrElementwiseKind::Abs, quotient, {}, scratch[8]);
   emit(InstrElementwiseKind::Lt, scratch[8], scratch[7], scratch[9]);
   emit(InstrElementwiseKind::Ne, scratch[0], scratch[6], scratch[10]);

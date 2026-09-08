@@ -256,6 +256,20 @@ mlir::FailureOr<llvm::SmallVector<IteratorTilingCapability, 4>>
 getIteratorCapabilities(mlir::Operation *operation, unsigned rank) {
   llvm::SmallVector<IteratorTilingCapability, 4> capabilities(
       rank, IteratorTilingCapability::Tileable);
+  if (auto coupled =
+          mlir::dyn_cast<WaferCoupledReductionOpInterface>(operation)) {
+    auto description = coupled.getCoupledReductionDescription();
+    auto tiling = mlir::dyn_cast<mlir::TilingInterface>(operation);
+    if (!tiling)
+      return mlir::failure();
+    auto iterators = tiling.getLoopIteratorTypes();
+    if (iterators.size() != rank)
+      return mlir::failure();
+    for (unsigned dimension = 0; dimension < rank; ++dimension)
+      if (iterators[dimension] == mlir::utils::IteratorType::parallel &&
+          description.hasReplicatedComponent(dimension))
+        capabilities[dimension] = IteratorTilingCapability::FullExtentOnly;
+  }
   if (auto online = mlir::dyn_cast<LinalgExtOnlineAttentionOp>(operation)) {
     mlir::FailureOr<AttentionIterationRoles> roles = online.getIterationRoles();
     if (mlir::failed(roles))

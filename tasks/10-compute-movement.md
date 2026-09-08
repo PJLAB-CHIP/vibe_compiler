@@ -127,6 +127,11 @@ QK contraction
 固定展开顺序为QK(K1 reduction)→scale→optional additive mask→row maximum→old-state normalization→probability→row sum→PV(K2
 reduction)。Score/probability destination只覆盖current M tile×K2 block及batch/head coordinates；QK/PV和state update使用普通DPS
 Linalg，保留既有SCF iter args；current arithmetic和dtype语义不变。
+展开只保留tensor SSA数值与SCF state语义；通用循环destination绑定由08号layout/bufferization阶段负责。
+本层不为Maximum、Accumulator或Sum另建state写回特判，也不根据loop boundary插入completion。
+Bufferized Linalg的DPS destination已拥有确定storage/alias语义；structured-to-Tile必须把computed值写回该destination，
+即使type相同也不能用dominated-use替换把memref mutation当作tensor SSA重命名。现有view、loop-carried state和外部observer
+继续引用原buffer；必要copy是actual movement，后续cleanup只能凭既有exact alias/effect证明消除。
 随后同一transaction调用普通structured-to-tile lowering，把compute确定性变成existing `wafer.tile.gemm`、
 `wafer.tile.reduce`和`wafer.tile.elementwise`。Linalg中间态不是公开IR层、candidate cache或第二production pipeline。
 
@@ -178,6 +183,14 @@ geometry无法direct traversal时保留显式movement。
 TargetCall/SystemC和正负验证。只注册builder、增加symbol或通过单op fixture不进入production。attention、decode、mask、
 KV-cache parameter位置和model shape不能成为Tile/Instr特殊compute类别；attention只在TensorProgram层保留semantic identity，
 winner展开后作为普通GEMM/reduce/elementwise/state/effect流经相同pipeline。
+
+### Bufferized destination的初始化证明
+
+Structured compute进入Tile lowering后，memref保存可变存储。把归约/GEMM/Conv的destination当作初始常量，
+必须由当前读位置之前的actual fill、effect与alias证明；任何中间写入、释放或unknown effect均使该证明失效，
+此时保留对当前destination的combine。`materialize_layout`是取值时刻确定的materializing copy，追踪其source
+时以copy的位置为界，不能把copy之后的fill当成已复制的值。该规则对循环、展开的连续block和普通DPS均相同，
+不读取workload名称或数值分布。actual输出继续交给Instr completion与SPM规划。
 
 ## 5. Movement Contracts
 

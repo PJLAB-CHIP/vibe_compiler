@@ -103,3 +103,48 @@ func.func @divide_1031() {
   }
   return
 }
+
+// CHECK-LABEL: func.func @divide_blocked_1024
+// CHECK-COUNT-2: wafer.instr.fill {{.*}}physical_footprint
+// CHECK: wafer.instr.mask_move
+func.func @divide_blocked_1024() {
+  %token = arith.constant false
+  %unused = wafer.tile.region(%token : i1) -> (i1) {
+  ^bb0(%tile_token: i1):
+    %lhs = memref.alloc() : memref<1x1024x1024xf32, #wafer.memory<spm, ncx>>
+    %rhs = memref.alloc() : memref<1x1024x1024xf32, #wafer.memory<spm, ncx>>
+    %result = wafer.tile.elementwise <div> %lhs, %rhs : (memref<1x1024x1024xf32, #wafer.memory<spm, ncx>>, memref<1x1024x1024xf32, #wafer.memory<spm, ncx>>) -> memref<1x1024x1024xf32, #wafer.memory<spm, ncx>>
+    wafer.tile.yield %tile_token : i1
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @divide_blocked_1025
+// CHECK-COUNT-2: wafer.instr.fill {{.*}}physical_footprint
+// CHECK: wafer.instr.mask_move
+func.func @divide_blocked_1025() {
+  %token = arith.constant false
+  %unused = wafer.tile.region(%token : i1) -> (i1) {
+  ^bb0(%tile_token: i1):
+    %lhs = memref.alloc() : memref<1x1025x1024xf32, #wafer.memory<spm, ncx>>
+    %rhs = memref.alloc() : memref<1x1025x1024xf32, #wafer.memory<spm, ncx>>
+    %result = wafer.tile.elementwise <div> %lhs, %rhs : (memref<1x1025x1024xf32, #wafer.memory<spm, ncx>>, memref<1x1025x1024xf32, #wafer.memory<spm, ncx>>) -> memref<1x1025x1024xf32, #wafer.memory<spm, ncx>>
+    wafer.tile.yield %tile_token : i1
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @divide_blocked_1031
+// CHECK-COUNT-2: wafer.instr.fill {{.*}}physical_footprint
+// CHECK: wafer.instr.mask_move
+func.func @divide_blocked_1031() {
+  %token = arith.constant false
+  %unused = wafer.tile.region(%token : i1) -> (i1) {
+  ^bb0(%tile_token: i1):
+    %lhs = memref.alloc() : memref<1x1031x1024xf32, #wafer.memory<spm, ncx>>
+    %rhs = memref.alloc() : memref<1x1031x1024xf32, #wafer.memory<spm, ncx>>
+    %result = wafer.tile.elementwise <div> %lhs, %rhs : (memref<1x1031x1024xf32, #wafer.memory<spm, ncx>>, memref<1x1031x1024xf32, #wafer.memory<spm, ncx>>) -> memref<1x1031x1024xf32, #wafer.memory<spm, ncx>>
+    wafer.tile.yield %tile_token : i1
+  }
+  return
+}

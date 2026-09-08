@@ -667,6 +667,14 @@ LinalgExtOnlineAttentionOp::getTiledImplementation(
                              sizes[dimension]))
       return mlir::failure();
 
+  auto coupled = getCoupledReductionDescription();
+  for (auto [dimension, iterator] : llvm::enumerate(getLoopIteratorTypes()))
+    if (iterator == mlir::utils::IteratorType::parallel &&
+        coupled.hasReplicatedComponent(dimension) &&
+        !isFullDimensionTile((*extents)[dimension], offsets[dimension],
+                             sizes[dimension]))
+      return mlir::failure();
+
   llvm::SmallVector<mlir::Operation *> slices;
   llvm::SmallVector<mlir::Value, 8> operands;
   auto appendSlice = [&](mlir::Value value,

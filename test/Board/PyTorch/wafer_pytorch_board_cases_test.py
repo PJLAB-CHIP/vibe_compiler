@@ -767,26 +767,40 @@ class PyTorchBoardCasesTest(unittest.TestCase):
     def test_hf_prefill_preserves_the_official_additive_mask(self) -> None:
         from transformers.masking_utils import create_causal_mask
 
-        observed_masks = []
+        for extent in (1024, 1025, 1031):
+            with self.subTest(extent=extent):
+                observed_masks = []
 
-        def record_official_mask(*args: object, **kwargs: object) -> object:
-            mask = create_causal_mask(*args, **kwargs)
-            observed_masks.append(mask)
-            return mask
+                def record_official_mask(*args: object, **kwargs: object) -> object:
+                    mask = create_causal_mask(*args, **kwargs)
+                    observed_masks.append(mask)
+                    return mask
 
-        with mock.patch(
-            "transformers.masking_utils.create_causal_mask",
-            side_effect=record_official_mask,
-        ) as create_mask_mock:
-            case = cases._attention_prefill(torch.float16, seed=37)
+                with mock.patch(
+                    "transformers.masking_utils.create_causal_mask",
+                    side_effect=record_official_mask,
+                ) as create_mask_mock:
+                    case = cases._attention_prefill(
+                        torch.float16, seed=20260803, extent=extent
+                    )
 
-        self.assertEqual(create_mask_mock.call_count, 1)
-        mask = case.inputs[-1]
-        self.assertIs(mask, observed_masks[0])
-        self.assertEqual(mask.shape, (1, 1, 1024, 1024))
-        call = create_mask_mock.call_args
-        expected = create_causal_mask(*call.args, **call.kwargs)
-        self.assertTrue(torch.equal(mask, expected))
+                self.assertEqual(create_mask_mock.call_count, 1)
+                mask = case.inputs[-1]
+                self.assertIs(mask, observed_masks[0])
+                self.assertEqual(mask.shape, (1, 1, extent, extent))
+                call = create_mask_mock.call_args
+                expected_mask = create_causal_mask(*call.args, **call.kwargs)
+                self.assertTrue(torch.equal(mask, expected_mask))
+                expected, = case.materialize_expected_outputs()
+                self.assertEqual(expected.shape, (1, 1, extent, 64))
+                self.assertTrue(torch.isfinite(expected).all())
+                missing_tail = expected.clone()
+                missing_tail.flatten()[-1] += 1
+                with self.assertRaises(AssertionError):
+                    cases.common.assert_tensor_matches(
+                        missing_tail, expected, policy=case.comparison_policy,
+                        context=f"causal prefill L={extent} full tail",
+                    )
 
     def test_hf_llama_block_wraps_the_official_decoder_layer(self) -> None:
         from transformers import LlamaConfig

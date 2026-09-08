@@ -4,12 +4,21 @@
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "llvm/ADT/STLExtras.h"
 
 #include <optional>
 
 #include "Wafer/IR/WaferInterfaces.cpp.inc"
 
 namespace wafer {
+bool CoupledReductionDescription::hasReplicatedComponent(
+    unsigned iterationDimension) const {
+  return llvm::any_of(
+      components, [&](const CoupledReductionComponent &component) {
+        return !component.indexingMap.isFunctionOfDim(iterationDimension);
+      });
+}
+
 namespace {
 
 mlir::FailureOr<llvm::SmallVector<int64_t, 4>>

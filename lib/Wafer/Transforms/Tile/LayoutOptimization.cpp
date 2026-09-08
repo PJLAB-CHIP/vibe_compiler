@@ -1337,6 +1337,10 @@ static mlir::LogicalResult convertLayoutCopies(
   mlir::IRRewriter rewriter(module.getContext());
   mlir::DominanceInfo copyDominance(module);
   for (mlir::memref::CopyOp copy : copies) {
+    if (copy.getSource() == copy.getTarget()) {
+      rewriter.eraseOp(copy);
+      continue;
+    }
     auto sourceType =
         mlir::dyn_cast<mlir::MemRefType>(copy.getSource().getType());
     auto destType =
@@ -2137,6 +2141,61 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
           MemoryAttr::get(tensorType.getContext(), space, MemLayout::Tensor));
     return getMemRefType(ranked, space, MemLayout::Tensor);
   };
+  // Identify only state edges that One-Shot cannot keep in the same buffer.
+  // The analysis sees the actual layout materializations; in-place loops and
+  // metadata aliases require no additional destination constraint.
+  struct LoopStateBinding {
+    mlir::scf::YieldOp yield;
+    unsigned index;
+    mlir::BlockArgument destination;
+    MemLayout layout;
+  };
+  llvm::SmallVector<LoopStateBinding, 8> loopBindings;
+  {
+    mlir::bufferization::OneShotAnalysisState state(module, options);
+    if (mlir::failed(mlir::bufferization::analyzeModuleOp(module, state))) {
+      result.status = ExactPBQPStatus::BrokenContract;
+      result.detail = "One-Shot loop state analysis failed";
+      return result;
+    }
+    auto collected = module.walk([&](mlir::scf::ForOp loop) {
+      if (!loop->getParentOfType<TileRegionOp>())
+        return mlir::WalkResult::advance();
+      auto yield =
+          mlir::cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
+      for (auto [index, argument] : llvm::enumerate(loop.getRegionIterArgs())) {
+        mlir::Value value = yield.getOperand(index);
+        if (!isTensorValue(argument) ||
+            state.areEquivalentBufferizedValues(value, argument))
+          continue;
+        auto layout = selectedLayouts.find(argument);
+        if (layout == selectedLayouts.end())
+          return mlir::WalkResult::interrupt();
+        loopBindings.push_back(
+            {yield, static_cast<unsigned>(index), argument, layout->second});
+      }
+      return mlir::WalkResult::advance();
+    });
+    if (collected.wasInterrupted()) {
+      result.status = ExactPBQPStatus::BrokenContract;
+      result.detail = "loop state destination has no selected current layout";
+      return result;
+    }
+  }
+  // Destroy the analysis before mutation. A fresh One-Shot analysis below
+  // resolves all read/write conflicts introduced by the destination bindings.
+  for (LoopStateBinding state : loopBindings) {
+    assignmentRewriter.setInsertionPoint(state.yield);
+    auto binding =
+        assignmentRewriter
+            .create<mlir::bufferization::MaterializeInDestinationOp>(
+                state.yield.getLoc(), state.yield.getOperand(state.index),
+                state.destination);
+    selectedLayouts.try_emplace(binding.getResult(), state.layout);
+    assignmentRewriter.modifyOpInPlace(state.yield, [&] {
+      state.yield->setOperand(state.index, binding.getResult());
+    });
+  }
   ++result.statistics.bufferizationInvocations;
   if (mlir::failed(
           mlir::bufferization::runOneShotModuleBufferize(module, options)) ||

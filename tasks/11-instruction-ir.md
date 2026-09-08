@@ -285,7 +285,9 @@ Scratch allocation、复用和mul/add全在actual Instr中，沿同一owner reco
 F32语义division在Tile→Instr边界展开为native近似商与两轮residual correction：`q=a/b; q=q+(a-b*q)/b`。
 这是对current target approximate division的数值实现，参照LLVM reciprocal refinement与本轮CT原语见证；不是改写上层
 算术关系。所有临时buffer和op经同一recorder拥有，再交给completion和actual SPM规划。Correction的非finite结果和原始
-零商保留native结果，避免修正引入NaN或丢失signed zero。FP16/BF16 raw division不变，raw Instr div不再次展开。
+零商保留native结果，避免修正引入NaN或丢失signed zero。内部zero/infinity常量使用fresh private scratch的完整
+`physical_footprint` fill，使Tensor/NCx遍历所需的所有lane与padding已定义；该规则不扩大用户view的写入范围。
+FP16/BF16 raw division不变，raw Instr div不再次展开。
 完成门禁包括rank3整除/tail、有限正负、零/Inf/NaN、actual owner/offset和完整PyTorch实卡比较；不宣称F32全域correct rounding。
 
 ## 4. Instruction Ops And Families
@@ -624,9 +626,9 @@ wafer.instr.convert #wafer.instr_convert_kind<src_dst> source into dest attr-dic
 | `wafer.instr.reduce` | `input: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_reduce_kind`, `dim` target reduce code；init operand/`init_value`不属于terminal op合同 |
 | `wafer.instr.convert` | `source: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_convert_kind`; required `zero_point` for INT8->FP kinds, required `rounding_mode` for rounding wrapper kinds, no extra attrs for plain kinds |
 
-`wafer.instr.fill`的current Tensor行为从logical element count checked派生`elem_count`，ODS不携带domain attr。
+`wafer.instr.fill`省略domain attr时采用Tensor `logical_valid`，从logical element count checked派生`elem_count`。
 
-Current IR definestyped `#wafer.fill_domain<logical_valid|physical_footprint>`，其中`physical_footprint`表示从dest view base
+Current IR定义typed `#wafer.fill_domain<logical_valid|physical_footprint>`，其中`physical_footprint`表示从dest view base
 连续覆盖`computeWaferPhysicalTensorInfo`给出的完整physical bytes：非BOOL要求
 footprint可整除format element bytes并取商，BOOL按`bytes * 8` checked得到bit count；count、range和target field必须可表示。
 它是建立Cx/NCx padding与bitpacked unused bits `KnownSplat`的唯一full-fill路径；若底层Memset不能按该count完整写入则row非法。

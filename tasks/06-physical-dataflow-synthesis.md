@@ -242,6 +242,11 @@ DAG的全部linear extensions。当前ordinary `TilingInterface` scope默认使�
 typed interface/capability明确给出，不能从名称或shape恢复。Temporal successor按current scope、size vector和order确定性惰性遍历；
 interval proposal只改变先访问哪个size，不改变raw set。
 
+Coupled reduction的parallel轴只有出现在全部state component indexing maps中，才能用现有serial SCF tiler分块；
+任一component省略该坐标时，该轴是`FullExtentOnly`。否则同一state会按parallel tile数重复更新，
+即使SPM placement合法也不保持数值语义。规则只消费`WaferCoupledReductionOpInterface`的current maps，
+两种policy共享同一capability；actual TilingInterface还须拒绝违反此限制的直接调用。独立state复制/merge不属于本合同。
+
 `online_attention`的parallel/output/K2轴使用同一个`TilingInterface`，K2 tile以三个DPS result携带actual
 Accumulator/Maximum/Sum。FA在唯一spatial owner内形成K2 recurrence；FD的每个local contribution在自己的exact K2 interval内形成相同
 recurrence。K1在该层保持full extent，decomposition后成为QK Linalg contraction的普通reduction codegen问题。第14项不再选择K1/K2、

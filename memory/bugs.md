@@ -7,6 +7,23 @@
 `completion`、`bufferization`、`package`、`runtime`、`CMake`和`ownership`。条目描述的是防复发模式；若与current
 编号设计或源码冲突，以current事实源为准并在同次修改中修正文档。
 
+## Tensor loop state与memref写入不能混用SSA重命名规则
+
+- 现象：同一算子的循环版本在SPM lifetime阶段拒绝，展开版本却生成合法package但丢掉前一块贡献；已有view或loop yield读到旧buffer。
+- 根因：One-Shot为旧值仍被使用的tensor state创建body allocation；下游又把memref destination写入实现成dominated-use替换，
+  并仅凭历史fill忽略实际中间写入。只看decomposition op数量或SPM容量无法发现这些数值错误。
+- 修复模式：完成layout物化后，以One-Shot equivalence识别需要标准destination binding的state edge，销毁analysis后改IR并重新分析；
+  memref lowering保留实际destination写入。初始化常量只在当前读位置前的effect/alias证明仍有效时使用，materializing copy按自身取值时刻追踪。
+- 防复发：成对覆盖循环与展开、旧值延迟读取、写入前建立的view、同block多次归约、layout copy后重填source以及1024/1025/1031尾部；
+  从真实输入推进到bufferization、completion、actual SPM与完整PyTorch输出，不放宽body allocation跨backedge的拒绝合同。
+
+## Coupled state遗漏的parallel坐标不能直接重复切分
+
+- 现象：某些切分的SPM规划正常、输出却按parallel tile数缩小；换一种合法容量的切分后数值不同。
+- 根因：多个coupled component使用不同indexing map，某parallel坐标只存在于部分component；串行分块重复更新共享的归约state。
+- 修复模式：根据current component maps，把未出现在全部component中的parallel轴标为FullExtentOnly；temporal domain与直接TilingInterface统一执行。
+- 防复发：检查map投影和实际dynamic update次数，直接tiling拒绝时不得留下slice；none/search及整除/尾部均用完整PyTorch比较验证。
+
 ## 板端probe的manifest通过不等于实际ELF和初始内存有效
 
 - 现象：no-card通过，但SDK在entry-resolve找不到kernel；或计算结果正确、guard整片不匹配。

@@ -58,7 +58,7 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 
 具体pipeline与覆盖合同以13号“区域与传输选择的覆盖合同”为准；未验证的实现和测试保持doing。
 
-以下编号只是`board-testing`同一测试清单内的执行顺序，不是独立任务。Add、基础Direct-DTE及下列FP16 Ring AllGather矩阵已有实卡通过证据；GEMM与AllToAll的三组整除/尾部实卡也已通过，当前区域/传输选择修正、ReduceScatter与AllReduce已实卡验收，卷积组合计算也已完成本轮验收，下一项是Attention prefill。
+以下编号只是`board-testing`同一测试清单内的执行顺序，不是独立任务。Add、基础Direct-DTE及下列FP16 Ring AllGather矩阵已有实卡通过证据；GEMM与AllToAll的三组整除/尾部实卡也已通过，当前区域/传输选择修正、ReduceScatter与AllReduce已实卡验收，卷积组合计算和Attention prefill也已完成本轮验收，下一项是第8项KV cache decode。
 每类测试按列出的覆盖范围验收，单个case通过不能代表整类或总任务完成。实现、输入或环境没有影响结论的变化时，不重复已通过的case。
 
 | 测试顺序 | 具体范围 | 完成门禁与后续动作 |
@@ -69,7 +69,7 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 | 4. ReduceScatter | 多Tile partial contribution合并到各destination shard | 1024/1025/1031的none/search/peer九次实卡及完整PyTorch归约比较均通过，最大绝对误差0 |
 | 5. AllReduce | 多Tile partial contribution合并后供全部participant消费 | 1024/1025/1031的none/search/peer矩阵均已实卡通过；专项为direct贡献交换加Ring AllGather，完整PyTorch误差均为0 |
 | 6. 卷积组合计算 | 现有`conv-mixed-dag`，FP16 | 布局、中间舍入及四路F32累加修复后，独立整除/尾部与原组合none/search均通过本轮完整PyTorch实卡；主输出exact，归约输出通过原容差 |
-| 7. Attention prefill | 现有`attention-prefill`，FP16、序列长度1024 | fresh source/no-card，与同一输入的PyTorch eager attention完整比较 |
+| 7. Attention prefill | 原case及1025/1031尾长，FP16，none/search | 通用state/destination/fill与切分修复后，6项实卡完整PyTorch比较均通过，最大绝对误差0.0009765625；8项prefill no-card和公共回归闭合 |
 | 8. KV cache decode | 现有`attention-decode-kv-cache`，连续两步 | 第二步消费第一步实际回读的KV；两步attention输出和完整KV cache均与PyTorch比较 |
 | 9. LLaMA block | 现有`llama-2-7b-block`，FP16 | 完整block输出对比PyTorch；此前局部算子通过不能代签本项 |
 | 10. 性能 | 已通过数值验收的同source、同输入none/search | 在本任务内完成matched测量并保留每次PyTorch检查；记录设备计时、重复次数与统计结果，不用host wall time代替设备性能 |
@@ -82,6 +82,61 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 - 同一可用设备会话复用已确认身份。真实设备始终单进程、逐case；首次timeout或设备异常立即停止。用户已说明卡死后必须重启整机；重启恢复前不再发射Add或其它case。
 - 数值检查覆盖完整tensor，不抽样；记录dtype/shape、seed、容差、package身份、回读、误差和完成状态。保留现有PyTorch比较策略，失败后不通过放宽容差获得通过。
 - 超时的失效package、IR、raw按用户要求清理，仅保留必要错误摘要；成功产物保留用于审计，不作下一轮测试输入。
+
+### 第7项：Attention prefill的状态与实卡资格
+
+Pipeline position:
+- Upstream IR / input: 原HF eager causal prefill导出source；普通none/search的actual online state、SCF与layout-resolved Linalg。
+- Current stage responsibility: 06号按coupled component indexing map约束切分；08号用One-Shot equivalence与标准destination binding处理loop state；10号保留DPS写入并验证初始化fill的有效期；11号明确私有常量scratch的fill domain。
+- Output IR / files: 可验证的current Tile/Instr、actual SPM offset、fresh ExecutablePackage、完整PyTorch expected/capture和执行记录。
+- Downstream consumer: 同一memory/target leaf、package runner与板端PyTorch比较；公共collective识别继续消费actual copy/effect。
+- User-level driver / named pipeline: `wafer-compile` none/search、`wafer-resolve-layouts-and-bufferize`与现有PyTorch board runner。
+- Explicit non-goals: 不改变attention算法、dtype、输入分布、seed或容差；不放宽SPM lifetime检查，不强制通信，不修复后续decode/Llama独立问题。
+- Completion criteria: 以下公共回归、8项fresh no-card及6项FP16完整PyTorch实卡与正常cleanup全部通过；canonical完整增量构建、check-wafer及直接受影响的通信/组合no-card闭合。
+
+| 输入等价类 | 结构、typed failure与exact输出 | 下游witness |
+| --- | --- | --- |
+| rank-3 state，1024/1025/1031，旧值在新值之后仍被读取 | One-Shot仅绑定非equivalent edge；旧值读完后copy back，yield保持iter-arg storage | 新loop-state lit；原source→Instr→actual SPM→package |
+| nested in-place tensor与scalar state，动态trip count含0 | 两层SCF保持in-place，无新增state copy；scalar不参与绑定 | loop-state lit；原loop-body SPM allocation跨backedge负例仍typed拒绝 |
+| rank-3 buffer destination，1024/1025/1031，写入前已创建view | Linalg lowering写回原destination，view和loop yield继续观察原storage | StructuredToTile直接alias与backedge witness |
+| 同block连续归约、layout copy后source重填、alias写入 | 初始化证明不能越过实际写入；未知时保留当前destination combine，不能丢前一块贡献 | StructuredToTile三种结构×三长度；尾部search完整PyTorch实卡 |
+| coupled state各component投影不同的parallel轴 | 未出现在全部component map中的轴为FullExtentOnly；直接TilingInterface也必须在mutation前拒绝 | rank-6 TemporalDomain与direct tiling负例；none/search使用同一描述 |
+| F32除法私有常量，Tensor/NCx，1024/1025/1031 | zero/infinity的fresh scratch按physical footprint初始化；不扩大用户view写入范围 | division lit→Instr verifier；prefill tail→actual SPM/package/实卡 |
+| DPS copy发布的AllReduce，4/16 Tile、1024/1025/1031、FP16/BF16 | 完整fanin/merge/fanout仍可识别；source或destination clobber均拒绝优化且保留原IR | AllReduce unit→Instr/completion/SPM/transport；通信产品与专项fresh no-card |
+| 原FP16/BF16 causal prefill，none/search；新增FP16 1025/1031尾长，none/search | 原HF mask、输入与PyTorch eager reference；末元素越阈值的负例必须失败 | 8项fresh no-card；6项FP16逐case完整实卡 |
+
+本轮根因及修复：
+- 原search在decomposition后返回loop-body临时allocation；此前仅检查decomposition结构，未覆盖到SPM lifetime。
+  修复落在通用bufferization state binding；decomposition本身没有Maximum特判。
+- Bufferized Linalg lowering曾把destination后续SSA use改成新buffer，破坏已有view与backedge；现以actual copy保留存储身份。
+- none曾沿N切分只按row存储的Maximum/Sum，重复更新归约state；现按component map拒绝该不合法切分。
+- 尾部search的展开归约曾把已写入的destination仍当成初始fill，丢掉前块贡献；现按current write/effect/alias判断。
+- NCx F32 division私有常量曾使用logical-valid fill；现明确使用其fresh allocation的physical footprint。
+
+本轮FP16实卡验收：同一原HF eager输入、seed=20260803、PyTorch 2.5.0+cpu；所有比较保持
+`rtol=0.006, atol=0.008, equal_nan=false`，无抽样、无输入缩放变更、无容差调整。
+
+| 序列长度 | policy | 完整输出元素 | 最大绝对误差 | manifest SHA256前12位 | 实卡 |
+| --- | --- | --- | --- | --- | --- |
+| 1024 | none | 65536 | 0.0009765625 | `9828c5ec3790` | 16 Tile完成、回读与正常cleanup通过 |
+| 1024 | search | 65536 | 0.0009765625 | `deeefbdd2bba` | 16 Tile完成、回读与正常cleanup通过 |
+| 1025 | none | 65600 | 0.0009765625 | `b37a3a85d753` | 16 Tile完成、回读与正常cleanup通过 |
+| 1025 | search | 65600 | 0.0009765625 | `ab0da5e2cf62` | 16 Tile完成、回读与正常cleanup通过 |
+| 1031 | none | 65984 | 0.0009765625 | `6a6b08a95c2c` | 16 Tile完成、回读与正常cleanup通过 |
+| 1031 | search | 65984 | 0.0009765625 | `b3e89de441e0` | 16 Tile完成、回读与正常cleanup通过 |
+
+原1024 search实际包含SCF recurrence；1025/1031 search把两个不同长度K2 block展开在同一block，
+两种结构均已实卡。每份产物为16 Tile，每Tile恰一个terminal NCC join，没有循环内新增join。
+成功package、完整raw/capture、日志与完整manifest digest保存在`build/test/board-audit/attention-prefill/`，仅作审计。
+失败的临时IR已清理；没有timeout、设备异常、retry/reset或power cycle。
+
+Canonical完整增量构建通过，随后Ninja no-op；`check-wafer`全部通过：272个lit、14个component unit目标、
+42个BoardIO单测、62个reference numeric、19个target numeric backend、17个SystemC及public link smoke。
+PyTorch board case合同25项通过。51项source/no-card最终全部通过：8项prefill、36项通信、3项GEMM、4项Conv。
+其中AllReduce专项检查器同步追踪DPS copy发布，三个长度重新从source生成并通过no-card；错误发布的新增负例与原四类故障注入全部拒绝。
+最后重编译的6份FP16 prefill package逐文件SHA256与本轮成功launch一致。本项完成，下一项为两步KV cache decode。
+本次正确性修复仍保留部分实际copy：AllReduce L=1024的最终Instr在每Tile的local add后有128B同布局SPM写回，
+尚未消除或测量其耗时。写入语义必须保持，物理copy是否可消除取决于actual alias/lifetime与target原地执行证明；不能把全部copy视为算法必需。
 
 ### 第1项：AllGather source到Ring专项（旧入口三个长度已通过）
 
@@ -314,7 +369,7 @@ FP16→F32 convolution数值实现：四路partial sums使用10个明确owner的
 
 最终主机门禁：canonical完整增量构建与第二次Ninja no-op通过；完整`check-wafer`实际执行271项lit、14个unit executable、
 17项SystemC全部通过。新增IR回归覆盖K=1/4/6/7、非方形kernel、1024/1025/1031，并精确断言K余项、四路合并和spare复用；
-BF16→F32及同dtype native分支仍有独立结构断言；非平凡stride/dilation的最终focused复核通过。最终八项fresh no-card全部通过，全部package文件SHA256与本轮成功launch一致。板测任务第6项完成，下一项为prefill；模型既有编译失败与性能资格仍未完成。
+BF16→F32及同dtype native分支仍有独立结构断言；非平凡stride/dilation的最终focused复核通过。最终八项fresh no-card全部通过，全部package文件SHA256与本轮成功launch一致。当时第6项完成并转入prefill；prefill的后续完成证据见第7项，decode/Llama与性能资格仍未完成。
 
 ### 第6项中间舍入修复的历史检查点（2026-09-08）
 
@@ -351,11 +406,11 @@ PyTorch case单元测试25项通过；canonical完整增量构建与第二次Nin
 package与对应本轮launch的全部package文件SHA256一致；该检查只确认交付代码身份，不计作额外板测。
 
 扩展no-card共34项：上述18项新精度case和原组合FP16/BF16的none/search共22项全部通过；
-prefill FP16/BF16的none另有2项通过。其它模型资格仍未闭合：
+prefill FP16/BF16的none当时另有2项通过。下表记录第6项期间的模型定位；prefill已由第7项后续修复闭合，decode/Llama仍待处理：
 
 | 输入与policy | 本轮no-card结果 | 对照与后续边界 |
 | --- | --- | --- |
-| prefill FP16/BF16 search | `unsupported_lifetime_alias`：loop-body SPM allocation跨loop-carried，尚无multi-instance placement | 关闭本次F32 division展开后，FP16代表case仍以相同42次trial、32次capacity rejection、10次unsupported失败；该source没有convolution/logistic |
+| prefill FP16/BF16 search | 当时为`unsupported_lifetime_alias`；第7项已用通用state destination修复并通过FP16/BF16 no-card与FP16实卡 | 当时关闭F32 division展开仍以42次trial、32次capacity、10次unsupported失败，确认不是该数值修改引入；当前完成证据见第7项 |
 | decode FP16/BF16 none | shared DDR与DTE completion依赖环 | 关闭本次F32 division展开后，FP16代表case仍复现；该source没有convolution/logistic |
 | decode FP16/BF16 search | 编译器SIGSEGV，未产出可用package | 关闭本次F32 division展开后，FP16代表case仍复现；不得当作typed unsupported或通过 |
 | Llama FP16/BF16 none | package manifest readback超过JSON byte limit | 同一canonical build关闭本次两个opmath pipeline pass及F32 division展开，FP16代表case仍复现同一限制；未放宽大小限制 |
@@ -363,7 +418,7 @@ prefill FP16/BF16的none另有2项通过。其它模型资格仍未闭合：
 
 以上对照只对实际执行的FP16代表输入确认不是此次修改引入；没有以它代签BF16的独立基线复验。
 A/B结束后已恢复本次实现，同一canonical build完整增量构建和no-op、4项直接IR回归、biased Conv/sigmoid尾部/division尾部3项fresh no-card再次通过，18项成功板测的package文件身份全部一致；历史模型`board-ready`结论不能代替本轮结果。
-这些失败统一留在`board-testing`后续模型条目处理；本轮没有修改completion算法、manifest限制或模型输入。
+剩余decode/Llama失败统一留在`board-testing`后续模型条目处理；第6/7项没有修改completion算法、manifest限制或模型输入。
 
 ### 第6项布局修复与本轮验收（2026-09-08）
 

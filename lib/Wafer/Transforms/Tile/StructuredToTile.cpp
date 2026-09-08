@@ -7,12 +7,12 @@
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
+#include "mlir/Analysis/AliasAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -21,7 +21,6 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <limits>
@@ -779,26 +778,37 @@ static mlir::LogicalResult preflight(mlir::ModuleOp module,
   return mlir::success(!failed);
 }
 
-static ComputeFillOp
-findLastFillBefore(mlir::Value destination, mlir::Operation *operation,
-                   llvm::SmallPtrSetImpl<mlir::Operation *> &visited) {
-  ComputeFillOp selected;
+// A fill is usable only if it still reaches this read. Layout materialization
+// takes a snapshot of its source, so follow it at the copy's own position, not
+// at the later consumer. Any intervening or unknown write invalidates the fill.
+static ComputeFillOp findLastFillBefore(mlir::Value destination,
+                                        mlir::Operation *operation,
+                                        mlir::AliasAnalysis &aliases) {
   if (!destination || !operation)
-    return selected;
-  for (mlir::Operation *user : destination.getUsers()) {
-    auto fill = mlir::dyn_cast<ComputeFillOp>(user);
-    if (!fill || fill->getBlock() != operation->getBlock() ||
-        !fill->isBeforeInBlock(operation))
+    return {};
+  for (mlir::Operation *previous = operation->getPrevNode(); previous;
+       previous = previous->getPrevNode()) {
+    if (previous == destination.getDefiningOp()) {
+      if (auto materialize = mlir::dyn_cast<LayoutMaterializeOp>(previous))
+        return findLastFillBefore(materialize.getSource(), previous, aliases);
+      return {};
+    }
+    auto effects = mlir::getEffectsRecursively(previous);
+    if (!effects)
+      return {};
+    bool writes = llvm::any_of(*effects, [&](const auto &effect) {
+      if (!mlir::isa<mlir::MemoryEffects::Write, mlir::MemoryEffects::Free>(
+              effect.getEffect()))
+        return false;
+      auto value = effect.getValue();
+      return !value || !aliases.alias(value, destination).isNo();
+    });
+    if (!writes)
       continue;
-    if (!selected || selected->isBeforeInBlock(fill))
-      selected = fill;
+    auto fill = mlir::dyn_cast<ComputeFillOp>(previous);
+    return fill && fill.getDest() == destination ? fill : ComputeFillOp{};
   }
-  if (selected)
-    return selected;
-  auto materialize = destination.getDefiningOp<LayoutMaterializeOp>();
-  if (materialize && visited.insert(materialize).second)
-    return findLastFillBefore(materialize.getSource(), operation, visited);
-  return selected;
+  return {};
 }
 
 static mlir::LogicalResult
@@ -818,8 +828,8 @@ lowerCapturedFill(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
 
 static ComputeFillOp findLastFillBefore(mlir::Value destination,
                                         mlir::Operation *operation) {
-  llvm::SmallPtrSet<mlir::Operation *, 4> visited;
-  return findLastFillBefore(destination, operation, visited);
+  mlir::AliasAnalysis aliases(operation->getParentOfType<mlir::ModuleOp>());
+  return findLastFillBefore(destination, operation, aliases);
 }
 
 static bool isPositiveZero(mlir::Value value) {
@@ -833,30 +843,12 @@ static bool isPositiveZero(mlir::Value value) {
   return false;
 }
 
-static void replaceDominatedUses(mlir::ModuleOp module, mlir::Value oldValue,
-                                 mlir::Value newValue,
-                                 mlir::Operation *sourceOperation) {
-  if (oldValue == newValue)
-    return;
-  mlir::DominanceInfo dominance(module);
-  llvm::SmallVector<mlir::OpOperand *, 8> replacements;
-  for (mlir::OpOperand &use : oldValue.getUses())
-    if (use.getOwner() != sourceOperation &&
-        dominance.properlyDominates(newValue, use.getOwner()))
-      replacements.push_back(&use);
-  for (mlir::OpOperand *use : replacements)
-    use->set(newValue);
-}
-
 static mlir::Value
-publishComputedValue(mlir::ModuleOp module, mlir::Operation *sourceOperation,
-                     mlir::Value destination, mlir::Value computed,
-                     mlir::IRRewriter &rewriter,
+publishComputedValue(mlir::Operation *sourceOperation, mlir::Value destination,
+                     mlir::Value computed, mlir::IRRewriter &rewriter,
                      StructuredToTileStatistics &statistics) {
-  if (destination.getType() == computed.getType()) {
-    replaceDominatedUses(module, destination, computed, sourceOperation);
-    return computed;
-  }
+  if (destination == computed)
+    return destination;
   mlir::MemRefType destinationType = getMemRef(destination);
   mlir::MemRefType computedType = getMemRef(computed);
   if (!destinationType || !computedType ||
@@ -864,6 +856,9 @@ publishComputedValue(mlir::ModuleOp module, mlir::Operation *sourceOperation,
       destinationType.getElementType() != computedType.getElementType() ||
       destinationType.getMemorySpace() != computedType.getMemorySpace())
     return {};
+  // Bufferization has already fixed storage identity and aliases. A write to
+  // its destination cannot be implemented by redirecting dominated SSA uses:
+  // views and loop-carried state must keep observing that same storage.
   rewriter.create<MoveCopyIntoOp>(sourceOperation->getLoc(), computed,
                                   destination);
   ++statistics.passthroughMovements;
@@ -1157,8 +1152,7 @@ static mlir::LogicalResult lowerFill(mlir::linalg::LinalgOp operation,
 }
 
 static mlir::LogicalResult
-lowerContraction(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
-                 mlir::IRRewriter &rewriter,
+lowerContraction(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
                  StructuredToTileStatistics &statistics) {
   mlir::FailureOr<GemmDescriptor> descriptor = buildGemmDescriptor(operation);
   if (mlir::failed(descriptor))
@@ -1299,8 +1293,8 @@ lowerContraction(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
     replacement = combined.getResult();
     ++statistics.elementwiseOperations;
   }
-  if (!publishComputedValue(module, operation, destination, replacement,
-                            rewriter, statistics))
+  if (!publishComputedValue(operation, destination, replacement, rewriter,
+                            statistics))
     return mlir::failure();
   rewriter.eraseOp(operation);
   ++statistics.contractions;
@@ -1308,8 +1302,7 @@ lowerContraction(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
 }
 
 static mlir::LogicalResult
-lowerConvolution(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
-                 mlir::IRRewriter &rewriter,
+lowerConvolution(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
                  StructuredToTileStatistics &statistics) {
   mlir::FailureOr<ConvDescriptor> descriptor = buildConvDescriptor(operation);
   if (mlir::failed(descriptor))
@@ -1367,8 +1360,8 @@ lowerConvolution(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
     replacement = combined.getResult();
     ++statistics.elementwiseOperations;
   }
-  if (!publishComputedValue(module, operation, destination, replacement,
-                            rewriter, statistics))
+  if (!publishComputedValue(operation, destination, replacement, rewriter,
+                            statistics))
     return mlir::failure();
   rewriter.eraseOp(operation);
   ++statistics.convolutions;
@@ -1414,8 +1407,7 @@ getAccumulatorElementwiseKind(ComputeReduceKind kind) {
 }
 
 static mlir::LogicalResult
-lowerReduction(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
-               mlir::IRRewriter &rewriter,
+lowerReduction(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
                StructuredToTileStatistics &statistics) {
   std::optional<ComputeReduceKind> kind = getReductionKind(operation);
   mlir::FailureOr<llvm::SmallVector<int64_t, 4>> dimensions =
@@ -1456,8 +1448,8 @@ lowerReduction(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
     replacement = combined.getResult();
     ++statistics.elementwiseOperations;
   }
-  if (!publishComputedValue(module, operation, destination, replacement,
-                            rewriter, statistics))
+  if (!publishComputedValue(operation, destination, replacement, rewriter,
+                            statistics))
     return mlir::failure();
   rewriter.eraseOp(operation);
   ++statistics.reductions;
@@ -1473,8 +1465,7 @@ lookupExpr(mlir::Value value, llvm::DenseMap<mlir::Value, ExprValue> &values) {
 }
 
 static mlir::LogicalResult
-lowerElementwise(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
-                 mlir::IRRewriter &rewriter,
+lowerElementwise(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
                  StructuredToTileStatistics &statistics) {
   mlir::Value destination = operation.getDpsInits().front();
   mlir::MemRefType destinationType = getMemRef(destination);
@@ -1593,8 +1584,8 @@ lowerElementwise(mlir::ModuleOp module, mlir::linalg::LinalgOp operation,
       *yielded, resultType, rewriter, operation.getLoc(), statistics);
   if (mlir::failed(replacement))
     return mlir::failure();
-  if (!publishComputedValue(module, operation, destination, *replacement,
-                            rewriter, statistics))
+  if (!publishComputedValue(operation, destination, *replacement, rewriter,
+                            statistics))
     return mlir::failure();
   rewriter.eraseOp(operation);
   ++statistics.elementwiseExpressions;
@@ -1698,20 +1689,16 @@ lowerStructuredComputeToTile(mlir::ModuleOp module,
       lowered = lowerCapturedFill(plan.operation, rewriter, result.statistics);
       break;
     case LoweringKind::Contraction:
-      lowered =
-          lowerContraction(module, plan.operation, rewriter, result.statistics);
+      lowered = lowerContraction(plan.operation, rewriter, result.statistics);
       break;
     case LoweringKind::Convolution:
-      lowered =
-          lowerConvolution(module, plan.operation, rewriter, result.statistics);
+      lowered = lowerConvolution(plan.operation, rewriter, result.statistics);
       break;
     case LoweringKind::Reduction:
-      lowered =
-          lowerReduction(module, plan.operation, rewriter, result.statistics);
+      lowered = lowerReduction(plan.operation, rewriter, result.statistics);
       break;
     case LoweringKind::Elementwise:
-      lowered =
-          lowerElementwise(module, plan.operation, rewriter, result.statistics);
+      lowered = lowerElementwise(plan.operation, rewriter, result.statistics);
       break;
     }
     if (mlir::failed(lowered)) {

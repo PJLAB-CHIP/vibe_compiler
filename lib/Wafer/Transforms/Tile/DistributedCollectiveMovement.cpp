@@ -6,6 +6,7 @@
 #include "Wafer/IR/Topology/TargetTopology.h"
 #include "Wafer/IR/WaferDialect.h"
 
+#include "mlir/Analysis/AliasAnalysis.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
@@ -992,6 +993,65 @@ createLeadingChunk(mlir::OpBuilder &builder, mlir::Location location,
   return view.getResult();
 }
 
+// Match a value published through exact destination writes. Bufferization
+// preserves destination identity, so fanout need not use the compute SSA
+// result directly. Unknown writes or a source clobber invalidate the proof.
+static bool mayWriteSPMBuffer(mlir::Operation *operation, mlir::Value buffer,
+                              mlir::AliasAnalysis &aliases) {
+  auto effects = mlir::getEffectsRecursively(operation);
+  if (!effects)
+    return true;
+  return llvm::any_of(*effects, [&](const auto &effect) {
+    if (!mlir::isa<mlir::MemoryEffects::Write, mlir::MemoryEffects::Free>(
+            effect.getEffect()))
+      return false;
+    if (effect.getResource() != WaferSPMResource::get() &&
+        effect.getResource() != mlir::SideEffects::DefaultResource::get())
+      return false;
+    auto value = effect.getValue();
+    return !value || !aliases.alias(value, buffer).isNo();
+  });
+}
+
+static bool isPublishedCopyOf(mlir::Value value, mlir::Value expected,
+                              mlir::Operation *producer,
+                              mlir::Operation *consumer,
+                              mlir::AliasAnalysis &aliases) {
+  llvm::DenseSet<mlir::Value> visited;
+  while (value != expected) {
+    if (!visited.insert(value).second)
+      return false;
+    mlir::Operation *writer = consumer->getPrevNode();
+    while (writer && !mayWriteSPMBuffer(writer, value, aliases))
+      writer = writer->getPrevNode();
+    mlir::Value source;
+    if (auto copy = mlir::dyn_cast_or_null<MoveCopyIntoOp>(writer)) {
+      if (copy.getDest() == value)
+        source = copy.getSource();
+    } else if (auto copy =
+                   mlir::dyn_cast_or_null<mlir::memref::CopyOp>(writer)) {
+      if (copy.getTarget() == value)
+        source = copy.getSource();
+    }
+    if (!source || source.getType() != value.getType())
+      return false;
+    for (mlir::Operation *between = writer->getNextNode(); between != consumer;
+         between = between->getNextNode())
+      if (mayWriteSPMBuffer(between, source, aliases))
+        return false;
+    value = source;
+    consumer = writer;
+  }
+  if (producer->getBlock() != consumer->getBlock() ||
+      !producer->isBeforeInBlock(consumer))
+    return false;
+  for (mlir::Operation *between = producer->getNextNode(); between != consumer;
+       between = between->getNextNode())
+    if (mayWriteSPMBuffer(between, expected, aliases))
+      return false;
+  return true;
+}
+
 static std::optional<RingAllReduceComponent>
 findRingAllReduceComponent(ComputeElementwiseOp root,
                            llvm::MutableArrayRef<PeerPair> pairs,
@@ -1052,10 +1112,16 @@ findRingAllReduceComponent(ComputeElementwiseOp root,
     return std::nullopt;
   merge.localLeaf = localLeaves.front();
 
-  std::map<uint64_t, mlir::Value> holders;
-  holders.emplace(static_cast<uint64_t>(*rootTileId), root.getResult());
+  struct Publication {
+    mlir::Value buffer;
+    mlir::Operation *writer;
+  };
+  std::map<uint64_t, Publication> holders;
+  holders.emplace(static_cast<uint64_t>(*rootTileId),
+                  Publication{root.getResult(), root});
   llvm::DenseSet<unsigned> faninSet(faninIndices.begin(), faninIndices.end());
   llvm::DenseSet<unsigned> fanoutSet;
+  mlir::AliasAnalysis aliases(root->getParentOfType<mlir::ModuleOp>());
   bool progress = true;
   while (progress) {
     progress = false;
@@ -1065,13 +1131,15 @@ findRingAllReduceComponent(ComputeElementwiseOp root,
           pair.source < 0 || pair.destination < 0)
         continue;
       auto holder = holders.find(static_cast<uint64_t>(pair.source));
-      if (holder == holders.end() || pair.send.getBuffer() != holder->second ||
+      if (holder == holders.end() ||
+          !isPublishedCopyOf(pair.send.getBuffer(), holder->second.buffer,
+                             holder->second.writer, pair.send, aliases) ||
           holders.count(static_cast<uint64_t>(pair.destination)) ||
           !logicalTypesMatch(pair.receive.getBuffer().getType(), fullType,
                              static_cast<uint64_t>(fullInfo->physicalBytes)))
         continue;
       holders.emplace(static_cast<uint64_t>(pair.destination),
-                      pair.receive.getBuffer());
+                      Publication{pair.receive.getBuffer(), pair.receive});
       fanoutSet.insert(index);
       progress = true;
     }
@@ -1091,7 +1159,8 @@ findRingAllReduceComponent(ComputeElementwiseOp root,
   component.rootTile = static_cast<uint64_t>(*rootTileId);
   component.merge = std::move(merge);
   component.contributions = std::move(contributions);
-  component.publishedResults = std::move(holders);
+  for (const auto &[participant, publication] : holders)
+    component.publishedResults.emplace(participant, publication.buffer);
   component.fullType = fullType;
   component.fullBytes = static_cast<uint64_t>(fullInfo->physicalBytes);
   component.communication = std::numeric_limits<int64_t>::max();

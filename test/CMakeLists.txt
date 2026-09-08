@@ -273,6 +273,13 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
   endforeach()
   unset(_wafer_division_case)
 
+  foreach(_wafer_prefill_case IN ITEMS
+      attention-prefill-tail-1025 attention-prefill-tail-1031)
+    wafer_add_pytorch_source_no_card_test(${_wafer_prefill_case} float16 fp16 none)
+    wafer_add_pytorch_source_no_card_test(${_wafer_prefill_case} float16 fp16 search)
+  endforeach()
+  unset(_wafer_prefill_case)
+
   foreach(_wafer_product_case IN ITEMS
       conv-mixed-dag
       attention-prefill

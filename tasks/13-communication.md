@@ -228,8 +228,10 @@ message startup、bytes、shortest-hop/link-pressure model、SPM high-water、se
 - ReduceScatter只认complete source×destination contribution matrix以及每个destination current `wafer.tile.elementwise` use-def中闭合的
   `add/max/min` combine tree。Ring每轮必须实际创建recv、partial combine和forward value；只改变message round而没有local combine不构成
   ReduceScatter。
-- AllReduce只认full-buffer contribution merge加complete result fanout。Ring实现必须复用同一个ReduceScatter materializer，并在其actual
-  reduced chunks上使用AllGather；不能复制第二份归约算法或从上游collective名字直接生成Tile通信。
+- AllReduce只认full-buffer contribution merge加complete result fanout。Bufferized DPS发布可以保留原destination identity；
+  识别允许沿同block、同完整type的actual copy追踪到merge结果；typed effect和alias必须证明从merge/recv到copy、
+  再到consumer的各段都无source clobber或destination覆盖。Unknown effect、非完整copy或不能证明的alias不构成该优化的匹配。
+  Ring实现必须复用同一个ReduceScatter materializer，并在其actual reduced chunks上使用AllGather；不能复制第二份归约算法或从上游collective名字直接生成Tile通信。
 - 以上specialized choice都在search candidate owner中完整物化后分别进入completion、MiniMalloc、transport和cost。Baseline继续使用现行
   direct/central realization。缺失participant、piece、combiner、type、range、coordinate或current cut时保持原IR，不推测、不局部改写。
 

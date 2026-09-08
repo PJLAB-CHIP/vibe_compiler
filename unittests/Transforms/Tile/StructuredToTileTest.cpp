@@ -25,6 +25,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
@@ -1349,6 +1350,173 @@ TEST_F(StructuredToTileTest,
 }
 
 TEST_F(StructuredToTileTest,
+       InitializationProofStopsAtWritesAndLayoutSnapshots) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (unsigned mode : {0u, 1u, 2u}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(mode);
+      const bool snapshot = mode == 1;
+      std::string row = "memref<1x1x" + std::to_string(extent) +
+                        "xf32, #wafer.memory<spm, " +
+                        (snapshot ? "tensor" : "ncx") + ">>";
+      std::string destination = "memref<1x1x" + std::to_string(extent) +
+                                "xf32, #wafer.memory<spm, ncx>>";
+      std::string input = "memref<1x1x" + std::to_string(extent) +
+                          "x64xf32, #wafer.memory<spm, ncx>>";
+      std::string text;
+      llvm::raw_string_ostream stream(text);
+      stream
+          << R"mlir(
+#id = affine_map<(b, h, m, k) -> (b, h, m, k)>
+#row = affine_map<(b, h, m, k) -> (b, h, m)>
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry() {
+      %token = arith.constant false
+      %unused = wafer.tile.region(%token : i1) -> (i1) {
+      ^bb0(%tile_token: i1):
+        %zero = arith.constant 0.0 : f32
+        %five = arith.constant 5.0 : f32
+        %input = memref.alloc() : )mlir"
+          << input << R"mlir(
+        %buffer = memref.alloc() : )mlir"
+          << row << R"mlir(
+        wafer.tile.fill %buffer, )mlir"
+          << (snapshot ? "%five" : "%zero")
+          << (snapshot
+                  ? ""
+                  : " {fill_domain = #wafer.fill_domain<physical_footprint>}")
+          << " : " << row << ", f32\n";
+      if (snapshot) {
+        stream
+            << "        %destination = wafer.tile.materialize_layout %buffer : "
+            << row << " -> " << destination << "\n"
+            << "        wafer.tile.fill %buffer, %zero : " << row << ", f32\n";
+      } else {
+        stream << "        %destination = memref.cast %buffer : " << row
+               << " to " << destination << "\n";
+        if (mode == 2)
+          stream << "        wafer.tile.fill %destination, %five {fill_domain "
+                    "= #wafer.fill_domain<physical_footprint>} : "
+                 << destination << ", f32\n";
+      }
+      // Sequential reductions must read the preceding result. The alias case
+      // targets the original buffer so the intervening view write is relevant.
+      std::string output = snapshot ? "%destination" : "%buffer";
+      for (unsigned index = 0; index < (mode == 0 ? 2u : 1u); ++index)
+        stream << R"mlir(
+        linalg.generic {indexing_maps = [#id, #row],
+            iterator_types = ["parallel", "parallel", "parallel", "reduction"]}
+            ins(%input : )mlir"
+               << input << ") outs(" << output << " : " << destination
+               << R"mlir() {
+        ^bb1(%value: f32, %accumulator: f32):
+          %sum = arith.addf %value, %accumulator : f32
+          linalg.yield %sum : f32
+        }
+)mlir";
+      stream << R"mlir(
+        wafer.tile.yield %tile_token : i1
+      }
+      return
+    }
+  }
+})mlir";
+      auto module = parse(stream.str());
+      ASSERT_TRUE(module);
+      StructuredMaterializationRelations relations;
+      auto lowered = lowerStructuredComputeToTile(*module, relations);
+      ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+      EXPECT_EQ(countOps<ComputeReduceOp>(module->getOperation()),
+                mode == 0 ? 2u : 1u);
+      EXPECT_EQ(countOps<ComputeElementwiseOp>(module->getOperation()), 1u);
+      module->walk([&](ComputeReduceOp reduce) {
+        auto init = reduce.getInit().getDefiningOp<mlir::arith::ConstantOp>();
+        ASSERT_TRUE(init);
+        EXPECT_EQ(
+            mlir::cast<mlir::FloatAttr>(init.getValue()).getValueAsDouble(),
+            0.0);
+      });
+      EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
+    }
+  }
+}
+
+TEST_F(StructuredToTileTest, PreservesLoopDestinationAndPreexistingView) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    std::string type = "memref<2x" + std::to_string(extent) +
+                       "x1xf16, #wafer.memory<spm, tensor>>";
+    std::string text;
+    llvm::raw_string_ostream stream(text);
+    stream << R"mlir(
+#id = affine_map<(b, m, n) -> (b, m, n)>
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry() {
+      %token = arith.constant false
+      %unused = wafer.tile.region(%token : i1) -> (i1) {
+      ^bb0(%tile_token: i1):
+        %zero = arith.constant 0 : index
+        %one = arith.constant 1 : index
+        %sixteen = arith.constant 16 : index
+        %buffer = memref.alloc() : )mlir"
+           << type << R"mlir(
+        %result = scf.for %iv = %zero to %sixteen step %one
+            iter_args(%state = %buffer) -> ()mlir"
+           << type << R"mlir() {
+          %view = memref.cast %state : )mlir"
+           << type << " to " << type << R"mlir(
+          linalg.generic {indexing_maps = [#id, #id],
+              iterator_types = ["parallel", "parallel", "parallel"]}
+              ins(%state : )mlir"
+           << type << ") outs(%state : " << type << R"mlir() {
+          ^bb0(%input: f16, %old: f16):
+            %twice = arith.addf %input, %input : f16
+            linalg.yield %twice : f16
+          }
+          %observed = wafer.tile.elementwise <add> %view, %view : ()mlir"
+           << type << ", " << type << ") -> " << type << R"mlir(
+          scf.yield %state : )mlir"
+           << type << R"mlir(
+        }
+        wafer.tile.yield %tile_token : i1
+      }
+      return
+    }
+  }
+})mlir";
+    auto module = parse(stream.str());
+    ASSERT_TRUE(module);
+    mlir::scf::ForOp loop;
+    mlir::memref::CastOp view;
+    module->walk([&](mlir::scf::ForOp op) { loop = op; });
+    module->walk([&](mlir::memref::CastOp op) { view = op; });
+    ASSERT_TRUE(loop);
+    ASSERT_TRUE(view);
+    auto state = loop.getRegionIterArgs().front();
+    StructuredMaterializationRelations relations;
+    auto lowered = lowerStructuredComputeToTile(*module, relations);
+    ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+    auto yield =
+        mlir::cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
+    EXPECT_EQ(yield.getOperand(0), state);
+    EXPECT_EQ(view.getSource(), state);
+    unsigned writes = 0;
+    module->walk([&](MoveCopyIntoOp copy) {
+      if (copy.getDest() == state) {
+        ++writes;
+        EXPECT_TRUE(copy.getSource().getDefiningOp<ComputeElementwiseOp>());
+        EXPECT_TRUE(view->isBeforeInBlock(copy));
+        EXPECT_TRUE(copy->isBeforeInBlock(yield));
+      }
+    });
+    EXPECT_EQ(writes, 1u);
+    EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
+  }
+}
+
+TEST_F(StructuredToTileTest,
        LowersContractionExpressionAndReductionAtRealisticScale) {
   for (int64_t extent : {1024, 1025, 1031}) {
     SCOPED_TRACE(extent);
@@ -2076,6 +2244,65 @@ TEST_F(StructuredToTileTest,
         EXPECT_EQ(cost->maximumTileNoCReceiveMessageCount.value, tileCount - 1);
       }
     }
+  }
+}
+
+TEST_F(StructuredToTileTest, AllReduceRejectsClobberedPublication) {
+  for (unsigned clobberPosition : {0u, 1u, 2u}) {
+    SCOPED_TRACE(clobberPosition);
+    auto module = parse(makeDenseAllReduceSource(1025, 4, "arith.addf", false));
+    ASSERT_TRUE(module);
+    llvm::SmallVector<TileRegionOp> regions;
+    for (TileModuleOp tile : module->getOps<TileModuleOp>())
+      tile.walk([&](TileRegionOp region) { regions.push_back(region); });
+    ASSERT_EQ(regions.size(), 4u);
+    StructuredMaterializationRelations relations;
+    for (unsigned source = 1; source < regions.size(); ++source) {
+      relations.boundaryRelations.push_back(
+          {regions[source].getResult(0),
+           regions.front().getBody().getArgument(source)});
+      relations.boundaryRelations.push_back(
+          {regions.front().getResult(1),
+           regions[source].getBody().getArgument(1)});
+    }
+    for (TileRegionOp region : regions)
+      relations.structuralOutputs.push_back({0, region.getResult(1)});
+    auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    auto lowered = lowerStructuredComputeToTile(*module, relations);
+    ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+    auto movement = materializeTileBoundaryMovement(*module, relations);
+    ASSERT_TRUE(movement.succeeded()) << movement.detail;
+    EXPECT_EQ(movement.statistics.ringAllReduceComponents, 0u);
+
+    MoveCopyIntoOp publication;
+    module->walk([&](MoveCopyIntoOp copy) {
+      if (copy.getSource().getDefiningOp<ComputeElementwiseOp>())
+        publication = copy;
+    });
+    ASSERT_TRUE(publication);
+    mlir::OpBuilder builder(publication);
+    if (clobberPosition != 2)
+      builder.setInsertionPointAfter(publication);
+    auto clobbered =
+        clobberPosition == 0 ? publication.getDest() : publication.getSource();
+    auto replacement = builder.create<mlir::memref::AllocOp>(
+        publication.getLoc(),
+        mlir::cast<mlir::MemRefType>(clobbered.getType()));
+    // A typed write between publication and fanout destroys the exact value
+    // proof, even when all shapes, participants and message pairs still match.
+    builder.create<MoveCopyIntoOp>(publication.getLoc(), replacement,
+                                   clobbered);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    const auto sends = countOps<CommPeerSendOp>(module->getOperation());
+    const auto combines =
+        countOps<ComputeElementwiseOp>(module->getOperation());
+    auto result = materializeRingAllReduce(*module);
+    ASSERT_TRUE(result.succeeded()) << result.detail;
+    EXPECT_EQ(result.allReduceComponents, 0u);
+    EXPECT_EQ(countOps<CommPeerSendOp>(module->getOperation()), sends);
+    EXPECT_EQ(countOps<ComputeElementwiseOp>(module->getOperation()), combines);
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
   }
 }
 

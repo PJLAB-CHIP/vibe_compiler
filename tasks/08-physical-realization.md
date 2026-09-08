@@ -125,6 +125,21 @@ Observable output在本stage先从current TileRegion yield中的exact piece rela
 回填不属于current合同；actual allocation owner由当前operation、SSA use-def和effect表达，跨Tile endpoint与program output index继续由
 candidate-owned current relation保存。
 
+Tile-local `scf.for`的tensor state采用固定destination：完成layout assignment与actual conversion后、One-Shot之前，
+先以只读One-Shot analysis检查yield与iter argument的buffer equivalence；仅非equivalent的state edge通过标准
+`bufferization.materialize_in_destination`绑定到对应iter argument。销毁该analysis后再修改IR，并在唯一一次
+bufferization中重建analysis。这只指定buffer化后的写入位置，不改变tensor值、算术顺序或dtype。
+One-Shot从完整SSA读写冲突决定中间值的独立allocation；旧state读完后的必要copy保持actual effect。
+已证明in-place的state不额外绑定；bufferization留下的同SSA self-copy直接删除。
+绑定必须晚于layout materialization，否则fixed-compute layout conversion仍可能把destination换成循环内部的新allocation。
+零次循环保持init值，nested loop逐层绑定；scalar state不参与。不能满足in-place destination的cross-state alias/parallel-copy
+冲突由标准bufferization明确拒绝，本项不引入rotating buffer或多实例placement。
+SPM planner继续拒绝loop-body allocation跨backedge；没有通过该检查的current IR不成为合法candidate。
+
+采用标准DPS绑定而非allocation hoist或allocator放宽的依据为[MLIR Bufferization](https://mlir.llvm.org/docs/Bufferization/)
+和[IREE同类SCF状态问题](https://github.com/iree-org/iree/issues/16956)；具体alias、must-in-place与copy行为以pinned
+`BufferizationOps.cpp`、`SCF/Transforms/BufferizableOpInterfaceImpl.cpp`为准。该规则不读取attention或其它workload identity。
+
 Movement transformation完成后，以同一relation/physical-map/alias/effect/lifetime proof运行一次full-transfer cleanup；该cleanup必须在
 execution-structure和Instr scheduling前完成。现有Instr-only或test-only eliminator的独有正负资产迁移到这一owner后删除旧实现，
 不能并存两个production cleanup路径。

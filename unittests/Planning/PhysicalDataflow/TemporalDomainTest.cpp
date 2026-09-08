@@ -605,6 +605,8 @@ TEST(TemporalDomainTest, RankSixOnlineAttentionKeepsK1FullAndK2InTheRawDomain) {
             IteratorTilingCapability::FullExtentOnly);
   EXPECT_EQ(descriptor.iteratorCapabilities[4],
             IteratorTilingCapability::Tileable);
+  EXPECT_EQ(descriptor.iteratorCapabilities[5],
+            IteratorTilingCapability::FullExtentOnly);
 
   TemporalChoice choice = *built.domain->getFirstChoice().getChoice();
   choice.scopes.front().iteratorTileSizes[3] = 32;
@@ -614,6 +616,23 @@ TEST(TemporalDomainTest, RankSixOnlineAttentionKeepsK1FullAndK2InTheRawDomain) {
   choice.scopes.front().iteratorTileSizes[4] = 128;
   choice.scopes.front().loopOrder = {4};
   EXPECT_TRUE(built.domain->contains(choice));
+  choice.scopes.front().iteratorTileSizes[5] = 64;
+  choice.scopes.front().loopOrder = {4, 5};
+  EXPECT_FALSE(built.domain->contains(choice));
+
+  // A caller bypassing the domain must get the same rejection without any
+  // partially materialized slices or changes to the actual operation.
+  auto online = mlir::cast<LinalgExtOnlineAttentionOp>(descriptor.operation);
+  mlir::OpBuilder builder(online);
+  llvm::SmallVector<mlir::OpFoldResult> offsets(6, builder.getIndexAttr(0));
+  llvm::SmallVector<mlir::OpFoldResult> sizes;
+  for (int64_t extent : descriptor.iterationExtents)
+    sizes.push_back(builder.getIndexAttr(extent));
+  sizes[5] = builder.getIndexAttr(64);
+  auto before = online->getBlock()->getOperations().size();
+  EXPECT_TRUE(
+      mlir::failed(online.getTiledImplementation(builder, offsets, sizes)));
+  EXPECT_EQ(online->getBlock()->getOperations().size(), before);
 }
 
 TEST(TemporalDomainTest, DynamicTraversalStaysFullExtentWithoutChangingIR) {

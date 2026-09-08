@@ -48,6 +48,7 @@ class PyTorchBoardCase:
     alltoall_extent: int | None = None
     reduce_scatter_extent: int | None = None
     all_reduce_extent: int | None = None
+    prefill_extent: int | None = None
     continuation_factory: (
         Callable[[tuple[torch.Tensor, ...]], "PyTorchBoardCase"] | None
     ) = None
@@ -844,16 +845,21 @@ def _read_only_attention(
         expected_outputs_factory=expected_outputs_factory,
         export_program=export_program,
         comparison_policy=ATTENTION_COMPARISON,
+        prefill_extent=query_length if causal else None,
     )
 
 
-def _attention_prefill(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
+def _attention_prefill(
+    dtype: torch.dtype, seed: int, *, extent: int = 1024
+) -> PyTorchBoardCase:
     return _read_only_attention(
         dtype,
         seed,
-        name="attention-prefill",
-        query_length=1024,
-        key_value_length=1024,
+        name=(
+            "attention-prefill" if extent == 1024 else f"attention-prefill-tail-{extent}"
+        ),
+        query_length=extent,
+        key_value_length=extent,
         causal=True,
     )
 
@@ -1138,6 +1144,12 @@ CASE_FACTORIES: dict[
         dtype, seed, extent=1031
     ),
     "attention-prefill": _attention_prefill,
+    "attention-prefill-tail-1025": lambda dtype, seed: _attention_prefill(
+        dtype, seed, extent=1025
+    ),
+    "attention-prefill-tail-1031": lambda dtype, seed: _attention_prefill(
+        dtype, seed, extent=1031
+    ),
     "attention-decode-kv-cache": _attention_decode_kv_cache,
     "llama-2-7b-block": _llama_2_7b_block,
 }

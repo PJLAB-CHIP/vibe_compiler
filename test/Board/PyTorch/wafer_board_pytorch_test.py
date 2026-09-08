@@ -732,13 +732,22 @@ def _verify_all_reduce_ir(
                 phases[(tile, phase, kind)] = sorted(selected, key=lambda issue: issue.round)
         gather_sends = phases[(tile, 1, "send")]
         seed = gather_sends[0].buffer
-        layouts = dict(re.findall(
+        layouts = {match[1]: (match[2], match.start()) for match in re.finditer(
             r"(%\w+) = wafer\.tile\.materialize_layout (%\w+) :", ir
-        ))
+        )}
         adds = {result: (lhs, rhs) for result, lhs, rhs in re.findall(
             r"(%\w+) = wafer\.tile\.elementwise <add> (%\w+), (%\w+)", ir
         )}
-        if reduction[1] not in adds.get(layouts.get(seed, ""), ()):
+        if seed not in layouts:
+            raise RuntimeError("AllReduce lacks the published result layout")
+        destination, copied_at = layouts[seed]
+        # Bufferized DPS writes into its destination before the layout copy
+        # snapshots it. Require the actual sum publication in that interval.
+        publications = re.findall(
+            rf"wafer\.tile\.copy_into (%\w+) into {re.escape(destination)} :",
+            ir[reduction.end():copied_at],
+        )
+        if len(publications) != 1 or reduction[1] not in adds.get(publications[0], ()):
             raise RuntimeError("AllReduce broadcasts a value other than its local sum")
         seeds[tile] = seed
         final_views = [rhs for lhs, rhs in adds.values()
@@ -842,7 +851,17 @@ def verify_all_reduce(package: pathlib.Path, dump: pathlib.Path, extent: int) ->
     _verify_all_reduce_ir(tiles, instructions, extent)
     first_receive = next(issue for issue in _read_peer_issues(tiles[0], "tile.peer")
                          if issue.kind == "recv")
+    reduction = re.search(r"(%\w+) = wafer\.tile\.reduce <sum>", tiles[0])
+    assert reduction is not None  # Established by the successful verifier above.
+    sum_add = next(match for match in re.finditer(
+        r"(%\w+) = wafer\.tile\.elementwise <add> (%\w+), (%\w+)", tiles[0]
+    ) if reduction[1] in match.groups()[1:])
+    wrong_sum = re.sub(
+        rf"(wafer\.tile\.copy_into ){re.escape(sum_add[1])}( into )",
+        lambda match: match[1] + sum_add[2] + match[2], tiles[0], count=1,
+    )
     faults = (
+        ("wrong-published-sum", "tile", wrong_sum),
         ("missing-peer", "tile", re.sub(
             r"^.*wafer\.tile\.peer_recv .*\n", "", tiles[0], count=1, flags=re.MULTILINE)),
         ("missing-contribution", "tile", re.sub(
@@ -867,7 +886,7 @@ def verify_all_reduce(package: pathlib.Path, dump: pathlib.Path, extent: int) ->
             continue
         raise RuntimeError(f"AllReduce accepted {fault}")
     print(f"qualified_all_reduce: extent={extent} tiles=16 sends=480 receives=480 "
-          "waits=960 exact_contributions=true replicated_results=true rejected_faults=4")
+          "waits=960 exact_contributions=true replicated_results=true rejected_faults=5")
 
 
 def verify_row_sharded_gemm(
@@ -1145,6 +1164,7 @@ def main() -> int:
                 or current_case.all_reduce_extent is not None
                 or current_case.widened_convolution
                 or current_case.ordered_convolution
+                or current_case.prefill_extent is not None
             )
         ):
             dump_compiler_ir = step_dir / "compiler-ir"
