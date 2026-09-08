@@ -99,6 +99,10 @@ void recordStructuralCandidateMetrics(
   recordRegionCandidateCounter(index, "objective-known", known != nullptr);
   if (!known)
     return;
+  recordRegionCandidateCounter(index, "objective-estimated-picoseconds",
+                               known->estimatedDurationPicoseconds);
+  recordRegionCandidateCounter(index, "objective-coarse-estimate",
+                               known->usesCoarseEstimate);
   const analysis::SearchResourceDurations &durations = known->durations;
   recordRegionCandidateCounter(
       index, "objective-profile-identity",

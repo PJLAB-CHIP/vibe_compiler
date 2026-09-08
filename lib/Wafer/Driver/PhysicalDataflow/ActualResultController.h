@@ -147,14 +147,6 @@ struct ActualResultControllerOptions {
       ExactRejectionCachePolicy::Enabled;
 };
 
-/// A caller assertion that `objective` is an admissible lower bound for the
-/// named complete assignment. The controller only compares the typed value;
-/// the producer and its proof are owned by the search policy.
-struct SearchLowerBound {
-  StructuralCandidateKey key;
-  analysis::SearchObjective objective;
-};
-
 struct SearchControllerStatistics {
   uint64_t reserved = 0;
   uint64_t duplicateReservations = 0;
@@ -188,7 +180,6 @@ public:
   bool isForbidden(const StructuralCandidateKey &key) const;
   const ExactCompleteRejection *
   findExactCompleteRejection(const StructuralCandidateKey &key) const;
-  bool canPrune(const SearchLowerBound &lowerBound) const;
   void markCompilerBug();
   uint64_t getRemainingCredits() const { return remainingCredits; }
   const StructuralCandidateKey *getIncumbentKey() const {
@@ -209,7 +200,6 @@ private:
   std::set<StructuralCandidateKey> completed;
   std::set<ExactCompleteRejection> forbidden;
   std::optional<RetainedSearchCandidate> incumbent;
-  std::optional<analysis::SearchObjective> referenceObjective;
   SearchControllerStatistics statistics;
   bool sawUnknownOrIncomparable = false;
   bool poisoned = false;

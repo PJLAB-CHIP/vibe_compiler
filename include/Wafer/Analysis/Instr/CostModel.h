@@ -27,7 +27,7 @@ struct SearchCostPolicy {
   /// Stable provenance is part of the comparison cohort. A candidate scored
   /// with one profile can never silently outrank a candidate scored with
   /// another profile.
-  uint64_t profileIdentity = 2;
+  uint64_t profileIdentity = 3;
   SearchCostProfileProvenance profileProvenance =
       SearchCostProfileProvenance::BuiltInEstimate;
   uint64_t ddrNominalBytesPerSecond = 150'000'000'000ULL;
@@ -39,6 +39,9 @@ struct SearchCostPolicy {
   uint64_t dteMessageStartupPicosecondsEstimate = 1'500'000ULL;
   uint64_t noCHopPicosecondsEstimate = 1'000ULL;
   uint64_t instructionFixedPicosecondsEstimate = 1'000ULL;
+  // Coarse service prior only when detailed work is not available/calibrated.
+  // This includes estimated work, unlike the small issue-only control term.
+  uint64_t unmodeledInstructionPicosecondsEstimate = 13'000'000ULL;
   uint64_t dteWaitedEventPicosecondsEstimate = 1'000ULL;
   // Idle NCC control: one call/ordering cost plus incremental worker polling.
   // Pending engine work is separate from these point estimates.
@@ -76,6 +79,8 @@ public:
            left.noCHopPicosecondsEstimate == right.noCHopPicosecondsEstimate &&
            left.instructionFixedPicosecondsEstimate ==
                right.instructionFixedPicosecondsEstimate &&
+           left.unmodeledInstructionPicosecondsEstimate ==
+               right.unmodeledInstructionPicosecondsEstimate &&
            left.dteWaitedEventPicosecondsEstimate ==
                right.dteWaitedEventPicosecondsEstimate &&
            left.nccJoinPicosecondsEstimate ==
@@ -98,11 +103,8 @@ private:
   SearchCostPolicy policy;
 };
 
-/// Independently comparable service and actual-storage dimensions derived from
-/// the final actual Instr program. NE and Vector/CT are deliberately not
-/// collapsed into one compute number: without a proved inter-engine schedule,
-/// a trade-off between them has no total order. Storage facts remain separate
-/// dimensions and never become a capacity admission substitute.
+/// Resource service estimates retained for diagnostics. Candidate ranking uses
+/// one estimated duration; these terms are not independent Pareto objectives.
 struct SearchResourceDurations {
   uint64_t neF16Bf16Picoseconds = 0;
   uint64_t vectorF16Bf16Picoseconds = 0;
@@ -116,8 +118,8 @@ struct SearchResourceDurations {
   uint64_t instructionControlPicoseconds = 0;
   uint64_t dteWaitControlPicoseconds = 0;
   uint64_t nccWaitControlPicoseconds = 0;
-  /// Actual storage facts kept as independent comparison dimensions. They are
-  /// not converted to time and never stand in for a capacity admission.
+  /// Actual storage facts used only to break equal-duration ties. They never
+  /// stand in for capacity admission.
   uint64_t spmHighWaterBytes = 0;
   uint64_t ddrHighWaterBytes = 0;
   uint64_t spmBufferCount = 0;
@@ -147,6 +149,10 @@ struct SearchResourceDurations {
 struct KnownSearchObjective {
   SearchResourceDurations durations;
   SearchCostCohort cohort;
+  uint64_t estimatedDurationPicoseconds = 0;
+  /// Detailed work was unavailable, uncalibrated, or saturated. This changes
+  /// diagnostic confidence, not whether a legal candidate can be ranked.
+  bool usesCoarseEstimate = false;
 };
 
 enum class SearchObjectiveUnknownReason : uint8_t {

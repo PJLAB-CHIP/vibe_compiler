@@ -34,6 +34,17 @@ SearchCostPolicy unitCostPolicy() {
   return policy;
 }
 
+void expectCoarse(const SearchObjective &objective, bool saturated = false) {
+  const auto *known = std::get_if<KnownSearchObjective>(&objective);
+  ASSERT_NE(known, nullptr);
+  EXPECT_TRUE(known->usesCoarseEstimate);
+  EXPECT_GT(known->estimatedDurationPicoseconds, 0u);
+  if (saturated) {
+    EXPECT_EQ(known->estimatedDurationPicoseconds,
+              std::numeric_limits<uint64_t>::max());
+  }
+}
+
 TEST(CostModelTest, ExplicitCohortDerivesResourceTermsUnknownAndOverflow) {
   std::string failureReason;
   SearchCostPolicy policy = unitCostPolicy();
@@ -63,28 +74,20 @@ TEST(CostModelTest, ExplicitCohortDerivesResourceTermsUnknownAndOverflow) {
   EXPECT_EQ(knownValue->durations.dteEndpointPicoseconds, 10u);
   EXPECT_EQ(knownValue->durations.dteStartupPicoseconds, 2u);
   EXPECT_EQ(knownValue->durations.nocHopPicoseconds, 3u);
+  EXPECT_EQ(knownValue->estimatedDurationPicoseconds, 21u);
   EXPECT_TRUE(std::holds_alternative<UnknownSearchObjective>(
       deriveSearchObjective(cost, std::nullopt)));
   cost.minimumHopMessageDemand.knowledge = ScheduleCostKnowledge::Unavailable;
-  EXPECT_EQ(
-      std::get<UnknownSearchObjective>(deriveSearchObjective(cost, *cohort))
-          .reason,
-      SearchObjectiveUnknownReason::MetricUnavailable);
+  expectCoarse(deriveSearchObjective(cost, *cohort));
   cost.minimumHopMessageDemand.knowledge = ScheduleCostKnowledge::Known;
   cost.aggregateInstructionCount.knowledge = ScheduleCostKnowledge::Unavailable;
-  EXPECT_EQ(
-      std::get<UnknownSearchObjective>(deriveSearchObjective(cost, *cohort))
-          .reason,
-      SearchObjectiveUnknownReason::MetricUnavailable);
+  expectCoarse(deriveSearchObjective(cost, *cohort));
   cost.aggregateInstructionCount.knowledge = ScheduleCostKnowledge::Known;
   cost.aggregateInstructionCount.value = std::numeric_limits<uint64_t>::max();
   SearchCostPolicy overflowPolicy = unitCostPolicy();
   overflowPolicy.instructionFixedPicosecondsEstimate = 2;
   auto overflowCohort = *SearchCostCohort::create(overflowPolicy);
-  EXPECT_EQ(std::get<UnknownSearchObjective>(
-                deriveSearchObjective(cost, overflowCohort))
-                .reason,
-            SearchObjectiveUnknownReason::ArithmeticOverflow);
+  expectCoarse(deriveSearchObjective(cost, overflowCohort), true);
 }
 
 TEST(CostModelTest, DTEStartupSeparatesFirstMessageAndChecksCohortAndOverflow) {
@@ -115,18 +118,14 @@ TEST(CostModelTest, DTEStartupSeparatesFirstMessageAndChecksCohortAndOverflow) {
   policy.dteFirstMessagePicosecondsEstimate =
       std::numeric_limits<uint64_t>::max();
   cost.maximumTileNoCTransmitMessageCount.value = 2;
-  EXPECT_EQ(std::get<UnknownSearchObjective>(
-                deriveSearchObjective(cost, *SearchCostCohort::create(policy)))
-                .reason,
-            SearchObjectiveUnknownReason::ArithmeticOverflow);
+  expectCoarse(deriveSearchObjective(cost, *SearchCostCohort::create(policy)),
+               true);
   policy = unitCostPolicy();
   policy.dteMessageStartupPicosecondsEstimate = 2;
   cost.maximumTileNoCTransmitMessageCount.value =
       std::numeric_limits<uint64_t>::max();
-  EXPECT_EQ(std::get<UnknownSearchObjective>(
-                deriveSearchObjective(cost, *SearchCostCohort::create(policy)))
-                .reason,
-            SearchObjectiveUnknownReason::ArithmeticOverflow);
+  expectCoarse(deriveSearchObjective(cost, *SearchCostCohort::create(policy)),
+               true);
 }
 TEST(CostModelTest, NCCControlCountsCallsAndParticipantsOnTheSameTile) {
   SearchCostPolicy policy;
@@ -162,18 +161,12 @@ TEST(CostModelTest, NCCControlCountsCallsAndParticipantsOnTheSameTile) {
                 deriveSearchObjective(cost, *SearchCostCohort::create(policy))),
             SearchObjectiveComparison::Incomparable);
   cost.tileCosts[0].nccJoinCount.knowledge = ScheduleCostKnowledge::Unavailable;
-  EXPECT_EQ(
-      std::get<UnknownSearchObjective>(deriveSearchObjective(cost, cohort))
-          .reason,
-      SearchObjectiveUnknownReason::MetricUnavailable);
+  expectCoarse(deriveSearchObjective(cost, cohort));
   cost.tileCosts[0].nccJoinCount.knowledge = ScheduleCostKnowledge::Known;
   cost.tileCosts[0].nccJoinCount.value = std::numeric_limits<uint64_t>::max();
-  EXPECT_EQ(
-      std::get<UnknownSearchObjective>(deriveSearchObjective(cost, cohort))
-          .reason,
-      SearchObjectiveUnknownReason::ArithmeticOverflow);
+  expectCoarse(deriveSearchObjective(cost, cohort), true);
 }
-TEST(CostModelTest, SameInstructionCountKeepsNEAndVectorTradeoffIncomparable) {
+TEST(CostModelTest, ResourceTradeoffsUseScalarTime) {
   auto cohort = *SearchCostCohort::create(unitCostPolicy());
   auto makeCost = [](uint64_t ne, uint64_t vector) {
     InstructionProgramAggregateCost cost;
@@ -187,7 +180,7 @@ TEST(CostModelTest, SameInstructionCountKeepsNEAndVectorTradeoffIncomparable) {
   SearchObjective vectorHeavy =
       deriveSearchObjective(makeCost(0, 1024), cohort);
   EXPECT_EQ(compareSearchObjectives(neHeavy, vectorHeavy),
-            SearchObjectiveComparison::Incomparable);
+            SearchObjectiveComparison::Equivalent);
 
   SearchObjective lessOfBoth =
       deriveSearchObjective(makeCost(1024, 1024), cohort);
@@ -200,6 +193,84 @@ TEST(CostModelTest, SameInstructionCountKeepsNEAndVectorTradeoffIncomparable) {
   EXPECT_EQ(known->durations.neF16Bf16Picoseconds, 1024u);
   EXPECT_EQ(known->durations.vectorF16Bf16Picoseconds, 1024u);
   EXPECT_EQ(known->durations.instructionControlPicoseconds, 10u);
+}
+
+TEST(CostModelTest, DDRAndPeerCanBothWinWithTheSameProfile) {
+  auto cohort = *SearchCostCohort::create(SearchCostPolicy{});
+  InstructionProgramAggregateCost ddr, peer;
+  peer.maximumTileNoCTransmitMessageCount.value = 1;
+  peer.maximumTileNoCTransmitBytes.value = 2048;
+  ddr.aggregateDDRReadBytes.value = 2048;
+  EXPECT_EQ(compareSearchObjectives(deriveSearchObjective(ddr, cohort),
+                                    deriveSearchObjective(peer, cohort)),
+            SearchObjectiveComparison::Better);
+  ddr.aggregateDDRReadBytes.value = 16 * 1024 * 1024;
+  EXPECT_EQ(compareSearchObjectives(deriveSearchObjective(ddr, cohort),
+                                    deriveSearchObjective(peer, cohort)),
+            SearchObjectiveComparison::Worse);
+}
+
+TEST(CostModelTest, CombineWorkOnEachTileBeforeTakingTheMaximum) {
+  auto cohort = *SearchCostCohort::create(unitCostPolicy());
+  InstructionProgramAggregateCost split;
+  split.tileCosts.resize(2);
+  split.tileCosts[0].compute.npuF16Bf16LogicalOps.value = 1024;
+  split.tileCosts[1].compute.vectorF32LogicalOps.value = 1031;
+  auto joined = split;
+  joined.tileCosts[0].compute.vectorF32LogicalOps.value = 1031;
+  joined.tileCosts[1].compute.vectorF32LogicalOps.value = 0;
+  auto left = deriveSearchObjective(split, cohort);
+  auto right = deriveSearchObjective(joined, cohort);
+  EXPECT_EQ(std::get<KnownSearchObjective>(left).estimatedDurationPicoseconds,
+            1031u);
+  EXPECT_EQ(std::get<KnownSearchObjective>(right).estimatedDurationPicoseconds,
+            2055u);
+  EXPECT_EQ(compareSearchObjectives(left, right),
+            SearchObjectiveComparison::Better);
+}
+
+TEST(CostModelTest, SharedDDRAndPayloadSerializationAreCountedOnce) {
+  auto cohort = *SearchCostCohort::create(unitCostPolicy());
+  InstructionProgramAggregateCost cost;
+  cost.tileCosts.resize(2);
+  for (auto &tile : cost.tileCosts) {
+    tile.noc.aggregateTransmitBytes.value = 1024;
+    tile.ddrReadBytes.value = 1024;
+  }
+  cost.aggregateNoC.staticIssueSiteCount.value = 2;
+  cost.aggregateDDRReadBytes.value = 2048;
+  cost.maximumTileNoCTransmitBytes.value = 1024;
+  cost.modeledNoCRoute.peakDirectedLinkByteDemand.value = 1031;
+  auto result = deriveSearchObjective(cost, cohort);
+  EXPECT_EQ(std::get<KnownSearchObjective>(result).estimatedDurationPicoseconds,
+            3079u); // Shared DDR 2048 plus payload bottleneck 1031.
+}
+
+TEST(CostModelTest, MissingWorkStillRanksAndStorageCannotVetoFasterTime) {
+  auto cohort = *SearchCostCohort::create(unitCostPolicy());
+  InstructionProgramAggregateCost cost;
+  cost.aggregateInstructionCount.knowledge = ScheduleCostKnowledge::Unavailable;
+  cost.aggregateWork.instructions.upperBound.knowledge =
+      ScheduleCostKnowledge::Unavailable;
+  cost.aggregateWork.instructions.staticSites.value = 3;
+  auto coarse = deriveSearchObjective(cost, cohort);
+  expectCoarse(coarse);
+  EXPECT_EQ(std::get<KnownSearchObjective>(coarse).estimatedDurationPicoseconds,
+            39'000'000u);
+  cost.aggregateWork.instructions.upperBound = {5};
+  auto larger = deriveSearchObjective(cost, cohort);
+  EXPECT_EQ(compareSearchObjectives(coarse, larger),
+            SearchObjectiveComparison::Better);
+
+  InstructionProgramAggregateCost fast, slow;
+  fast.aggregateInstructionCount.value = 1024;
+  fast.maximumTileSPMHighWaterBytes.value = 100000;
+  slow.aggregateInstructionCount.value = 1025;
+  EXPECT_EQ(compareSearchObjectives(deriveSearchObjective(fast, cohort),
+                                    deriveSearchObjective(slow, cohort)),
+            SearchObjectiveComparison::Better);
+  fast.aggregateCompute.npuOtherLogicalOps.value = 1024;
+  expectCoarse(deriveSearchObjective(fast, cohort));
 }
 
 } // namespace

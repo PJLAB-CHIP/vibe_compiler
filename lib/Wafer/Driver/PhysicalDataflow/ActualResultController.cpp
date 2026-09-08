@@ -20,18 +20,6 @@ bool hasSPMCapacityRejection(const ActualCandidateResult &result) {
                       });
 }
 
-uint64_t getSelectedRegionCount(const RetainedSearchCandidate &candidate) {
-  return candidate.key.getRegionPlan().groups.size();
-}
-
-bool isNoWorseThanReference(const analysis::SearchObjective &objective,
-                            const analysis::SearchObjective &reference) {
-  analysis::SearchObjectiveComparison comparison =
-      analysis::compareSearchObjectives(objective, reference);
-  return comparison == analysis::SearchObjectiveComparison::Better ||
-         comparison == analysis::SearchObjectiveComparison::Equivalent;
-}
-
 } // namespace
 
 CandidateReservation
@@ -69,8 +57,6 @@ ActualResultController::record(const StructuralCandidateKey &key,
         result.compilation->executable->resourceCost, cohort);
     RetainedSearchCandidate candidate{key, objective,
                                       std::move(*result.compilation)};
-    if (!referenceObjective)
-      referenceObjective = candidate.objective;
     bool replace = !incumbent;
     if (incumbent) {
       analysis::SearchObjectiveComparison comparison =
@@ -88,25 +74,6 @@ ActualResultController::record(const StructuralCandidateKey &key,
         break;
       case analysis::SearchObjectiveComparison::Incomparable:
         sawUnknownOrIncomparable = true;
-        if (referenceObjective) {
-          const bool candidateQualified =
-              isNoWorseThanReference(candidate.objective, *referenceObjective);
-          const bool incumbentQualified =
-              isNoWorseThanReference(incumbent->objective, *referenceObjective);
-          if (candidateQualified != incumbentQualified) {
-            replace = candidateQualified;
-            break;
-          }
-          if (candidateQualified) {
-            const uint64_t candidateRegions = getSelectedRegionCount(candidate);
-            const uint64_t incumbentRegions =
-                getSelectedRegionCount(*incumbent);
-            if (candidateRegions != incumbentRegions) {
-              replace = candidateRegions < incumbentRegions;
-              break;
-            }
-          }
-        }
         replace = candidate.key < incumbent->key;
         break;
       }
@@ -171,20 +138,6 @@ ActualResultController::findExactCompleteRejection(
   auto found = forbidden.find(ExactCompleteRejection{
       key, ExactCompleteRejectionKind::ExecutableGate, {}});
   return found == forbidden.end() ? nullptr : &*found;
-}
-
-bool ActualResultController::canPrune(
-    const SearchLowerBound &lowerBound) const {
-  if (!incumbent)
-    return false;
-  const auto *bound =
-      std::get_if<analysis::KnownSearchObjective>(&lowerBound.objective);
-  const auto *best =
-      std::get_if<analysis::KnownSearchObjective>(&incumbent->objective);
-  return bound && best && bound->cohort == best->cohort &&
-         analysis::compareSearchObjectives(lowerBound.objective,
-                                           incumbent->objective) ==
-             analysis::SearchObjectiveComparison::Worse;
 }
 
 SearchControllerResult

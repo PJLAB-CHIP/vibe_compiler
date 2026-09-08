@@ -74,22 +74,6 @@ deriveNCCControlTime(const ScheduleCostMetric &joins,
   return total;
 }
 
-std::array<uint64_t, 12>
-asServiceArray(const SearchResourceDurations &durations) {
-  return {durations.neF16Bf16Picoseconds,
-          durations.vectorF16Bf16Picoseconds,
-          durations.vectorF32Picoseconds,
-          durations.ddrPicoseconds,
-          durations.nocPicoseconds,
-          durations.dteEndpointPicoseconds,
-          durations.dteStartupPicoseconds,
-          durations.nocHopPicoseconds,
-          durations.spmMovementPicoseconds,
-          durations.instructionControlPicoseconds,
-          durations.dteWaitControlPicoseconds,
-          durations.nccWaitControlPicoseconds};
-}
-
 std::array<uint64_t, 4>
 asStorageArray(const SearchResourceDurations &durations) {
   return {durations.spmHighWaterBytes, durations.ddrHighWaterBytes,
@@ -101,7 +85,8 @@ asStorageArray(const SearchResourceDurations &durations) {
 mlir::FailureOr<SearchCostCohort>
 SearchCostCohort::create(const SearchCostPolicy &policy,
                          std::string *failureReason) {
-  const std::array<uint64_t, 14> rates{
+  const std::array<uint64_t, 15> rates{
+      policy.unmodeledInstructionPicosecondsEstimate,
       policy.ddrNominalBytesPerSecond,
       policy.directionalNoCBytesPerSecond,
       policy.dteEndpointBytesPerSecondEstimate,
@@ -128,9 +113,11 @@ SearchCostCohort::create(const SearchCostPolicy &policy,
   return SearchCostCohort(policy);
 }
 
+namespace {
+
 SearchObjective
-deriveSearchObjective(const InstructionProgramAggregateCost &cost,
-                      const std::optional<SearchCostCohort> &cohort) {
+deriveResourceObjective(const InstructionProgramAggregateCost &cost,
+                        const std::optional<SearchCostCohort> &cohort) {
   if (!cohort)
     return UnknownSearchObjective{SearchObjectiveUnknownReason::NoCohort};
   const SearchCostPolicy &policy = cohort->getPolicy();
@@ -278,49 +265,148 @@ deriveSearchObjective(const InstructionProgramAggregateCost &cost,
   return KnownSearchObjective{durations, *cohort};
 }
 
+// A performance assumption, not a reconstructed schedule: sum service on each
+// Tile before taking the maximum. Never assemble one Tile from unrelated peaks.
+std::optional<uint64_t> localServiceTime(const InstructionProgramCost &tile,
+                                         const SearchCostPolicy &policy) {
+  uint64_t total = 0;
+  auto addWork = [&](uint64_t work, uint64_t rate) {
+    auto duration = timeForWork(work, rate);
+    return duration && checkedAdd(total, *duration, total);
+  };
+  auto addFixed = [&](uint64_t count, uint64_t duration) {
+    uint64_t term;
+    return checkedMultiply(count, duration, term) &&
+           checkedAdd(total, term, total);
+  };
+  if (!addWork(tile.compute.npuF16Bf16LogicalOps.value,
+               policy.f16Bf16NPULogicalOpsPerSecondPerTile) ||
+      !addWork(tile.compute.vectorF16Bf16LogicalOps.value,
+               policy.f16Bf16VectorLogicalOpsPerSecondPerTile) ||
+      !addWork(tile.compute.vectorF32LogicalOps.value,
+               policy.f32VectorLogicalOpsPerSecondPerTile) ||
+      !addWork(tile.spmMovementBytes.value,
+               policy.spmExplicitMovementBytesPerSecondPerTileEstimate) ||
+      !addWork(tile.noc.aggregateTransmitBytes.value,
+               policy.dteEndpointBytesPerSecondEstimate) ||
+      !addFixed(tile.instructionCount.value,
+                policy.instructionFixedPicosecondsEstimate) ||
+      !addFixed(tile.noc.waitedEventCount.value,
+                policy.dteWaitedEventPicosecondsEstimate) ||
+      !addFixed(tile.nccJoinCount.value, policy.nccJoinPicosecondsEstimate) ||
+      !addFixed(tile.nccParticipantWaitCount.value,
+                policy.nccParticipantWaitPicosecondsEstimate))
+    return std::nullopt;
+  uint64_t messages = tile.noc.transmitMessageCount.value;
+  if (messages &&
+      (!addFixed(1, policy.dteFirstMessagePicosecondsEstimate) ||
+       !addFixed(messages - 1, policy.dteMessageStartupPicosecondsEstimate)))
+    return std::nullopt;
+  return total;
+}
+
+uint64_t estimateInstructionCount(const InstructionExecutionCount &work,
+                                  const ScheduleCostMetric &count) {
+  if (count.isKnown())
+    return count.value;
+  if (work.upperBound.isKnown())
+    return work.upperBound.value;
+  // Static sites are an explicit one-visit estimate, not a dynamic work fact.
+  return work.staticSites.isKnown() ? work.staticSites.value : 1;
+}
+
+} // namespace
+
+SearchObjective
+deriveSearchObjective(const InstructionProgramAggregateCost &cost,
+                      const std::optional<SearchCostCohort> &cohort) {
+  SearchObjective result = deriveResourceObjective(cost, cohort);
+  auto *known = std::get_if<KnownSearchObjective>(&result);
+  if (!known) {
+    auto reason = std::get<UnknownSearchObjective>(result).reason;
+    if (reason == SearchObjectiveUnknownReason::NoCohort)
+      return result;
+    KnownSearchObjective coarse{{}, *cohort, 0, true};
+    if (reason == SearchObjectiveUnknownReason::ArithmeticOverflow) {
+      coarse.estimatedDurationPicoseconds =
+          std::numeric_limits<uint64_t>::max();
+      return coarse;
+    }
+    // Last-resort service prior when detailed work cannot be priced. Reuse the
+    // explicit generic instruction service estimate; do not invent IR or return
+    // zero for unavailable work. This is only a ranking estimate.
+    uint64_t count = 0;
+    if (cost.tileCosts.empty()) {
+      count = estimateInstructionCount(cost.aggregateWork.instructions,
+                                       cost.aggregateInstructionCount);
+    } else {
+      for (const auto &tile : cost.tileCosts)
+        count =
+            std::max(count, estimateInstructionCount(tile.work.instructions,
+                                                     tile.instructionCount));
+    }
+    count = std::max(count, uint64_t{1});
+    if (!checkedMultiply(
+            count, cohort->getPolicy().unmodeledInstructionPicosecondsEstimate,
+            coarse.estimatedDurationPicoseconds))
+      coarse.estimatedDurationPicoseconds =
+          std::numeric_limits<uint64_t>::max();
+    return coarse;
+  }
+
+  const auto &d = known->durations;
+  unsigned __int128 local = 0;
+  if (cost.tileCosts.empty()) {
+    // Aggregate-only callers represent a single program arithmetic oracle.
+    for (uint64_t term :
+         {d.neF16Bf16Picoseconds, d.vectorF16Bf16Picoseconds,
+          d.vectorF32Picoseconds, d.spmMovementPicoseconds,
+          d.dteEndpointPicoseconds, d.dteStartupPicoseconds,
+          d.instructionControlPicoseconds, d.dteWaitControlPicoseconds,
+          d.nccWaitControlPicoseconds})
+      local += term;
+  } else {
+    for (const auto &tile : cost.tileCosts) {
+      auto time = localServiceTime(tile, cohort->getPolicy());
+      if (!time) {
+        local = std::numeric_limits<uint64_t>::max();
+        known->usesCoarseEstimate = true;
+        break;
+      }
+      local = std::max(local, static_cast<unsigned __int128>(*time));
+    }
+  }
+  // DDR is card-shared. Endpoint and link serialize the same payload: only
+  // charge link pressure exceeding endpoint service, rather than both in full.
+  unsigned __int128 total = local + d.ddrPicoseconds + d.nocHopPicoseconds;
+  if (d.nocPicoseconds > d.dteEndpointPicoseconds)
+    total += d.nocPicoseconds - d.dteEndpointPicoseconds;
+  if (total > std::numeric_limits<uint64_t>::max()) {
+    known->estimatedDurationPicoseconds = std::numeric_limits<uint64_t>::max();
+    known->usesCoarseEstimate = true;
+  } else {
+    known->estimatedDurationPicoseconds = static_cast<uint64_t>(total);
+  }
+  return result;
+}
+
 SearchObjectiveComparison compareSearchObjectives(const SearchObjective &lhs,
                                                   const SearchObjective &rhs) {
   const auto *left = std::get_if<KnownSearchObjective>(&lhs);
   const auto *right = std::get_if<KnownSearchObjective>(&rhs);
+  // Missing/mixed profiles are a caller contract error, not a resource
+  // tradeoff.
   if (!left || !right || !(left->cohort == right->cohort))
     return SearchObjectiveComparison::Incomparable;
-  const std::array<uint64_t, 12> leftTerms = asServiceArray(left->durations);
-  const std::array<uint64_t, 12> rightTerms = asServiceArray(right->durations);
-  bool noWorse = true;
-  bool noBetter = true;
-  bool strictlyBetter = false;
-  bool strictlyWorse = false;
-  for (auto [leftTerm, rightTerm] : llvm::zip_equal(leftTerms, rightTerms)) {
-    noWorse &= leftTerm <= rightTerm;
-    noBetter &= leftTerm >= rightTerm;
-    strictlyBetter |= leftTerm < rightTerm;
-    strictlyWorse |= leftTerm > rightTerm;
-  }
-  if (noWorse && strictlyBetter)
+  auto leftKey = std::make_pair(left->estimatedDurationPicoseconds,
+                                asStorageArray(left->durations));
+  auto rightKey = std::make_pair(right->estimatedDurationPicoseconds,
+                                 asStorageArray(right->durations));
+  if (leftKey < rightKey)
     return SearchObjectiveComparison::Better;
-  if (noBetter && strictlyWorse)
+  if (rightKey < leftKey)
     return SearchObjectiveComparison::Worse;
-  if (leftTerms != rightTerms)
-    return SearchObjectiveComparison::Incomparable;
-  const std::array<uint64_t, 4> leftStorage = asStorageArray(left->durations);
-  const std::array<uint64_t, 4> rightStorage = asStorageArray(right->durations);
-  noWorse = true;
-  noBetter = true;
-  strictlyBetter = false;
-  strictlyWorse = false;
-  for (auto [leftTerm, rightTerm] :
-       llvm::zip_equal(leftStorage, rightStorage)) {
-    noWorse &= leftTerm <= rightTerm;
-    noBetter &= leftTerm >= rightTerm;
-    strictlyBetter |= leftTerm < rightTerm;
-    strictlyWorse |= leftTerm > rightTerm;
-  }
-  if (noWorse && strictlyBetter)
-    return SearchObjectiveComparison::Better;
-  if (noBetter && strictlyWorse)
-    return SearchObjectiveComparison::Worse;
-  return leftStorage == rightStorage ? SearchObjectiveComparison::Equivalent
-                                     : SearchObjectiveComparison::Incomparable;
+  return SearchObjectiveComparison::Equivalent;
 }
 
 } // namespace wafer::analysis

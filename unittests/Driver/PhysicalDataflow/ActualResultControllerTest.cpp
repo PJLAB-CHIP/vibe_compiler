@@ -159,29 +159,6 @@ ActualCandidateResult exactRejected(uint32_t rootAnchor,
   return result;
 }
 
-TEST(ActualResultControllerTest, StrictBoundUsesCostModelComparison) {
-  auto cohort = SearchCostCohort::create(unitCostPolicy());
-  ASSERT_TRUE(mlir::succeeded(cohort));
-  ActualResultController controller = makeController(1, *cohort);
-  StructuralCandidateKey key = makeKey(0);
-  ASSERT_EQ(controller.reserve(key), CandidateReservation::Granted);
-  ASSERT_EQ(controller.record(key, accepted(1)),
-            CandidateRecordOutcome::Accepted);
-  SearchResourceDurations equalDurations;
-  equalDurations.instructionControlPicoseconds = 1;
-  equalDurations.ddrPicoseconds = 5;
-  equalDurations.nocPicoseconds = 4;
-  SearchResourceDurations worseDurations = equalDurations;
-  worseDurations.instructionControlPicoseconds = 2;
-  SearchLowerBound equal{key, KnownSearchObjective{equalDurations, *cohort}};
-  SearchLowerBound worse{key, KnownSearchObjective{worseDurations, *cohort}};
-  SearchLowerBound unknown{
-      key, UnknownSearchObjective{SearchObjectiveUnknownReason::NoCohort}};
-  EXPECT_FALSE(controller.canPrune(equal));
-  EXPECT_TRUE(controller.canPrune(worse));
-  EXPECT_FALSE(controller.canPrune(unknown));
-}
-
 TEST(ActualResultControllerTest,
      TwoToSevenAcceptedResultsMatchIndependentWinnerOracleInAnyOrder) {
   // Two-to-seven is intentionally a bounded independent controller oracle;
@@ -221,9 +198,7 @@ TEST(ActualResultControllerTest,
   }
 }
 
-
-TEST(ActualResultControllerTest,
-     IncomparableSafeRefinementsPreferFewerSelectedRegionGroups) {
+TEST(ActualResultControllerTest, EqualEstimatedTimesUseCompleteSemanticKey) {
   auto cohort = *SearchCostCohort::create(unitCostPolicy());
   auto makeCost = [](uint64_t ne, uint64_t vector) {
     InstructionProgramAggregateCost cost;
@@ -248,12 +223,12 @@ TEST(ActualResultControllerTest,
   SearchControllerResult result =
       controller.finish(SearchFrontierStatus::Exhausted);
   ASSERT_TRUE(result.winner);
-  EXPECT_EQ(result.winner->key, makeKey(2, 5));
-  EXPECT_EQ(result.coverage, SearchControllerCoverage::FeasibleUnranked);
+  EXPECT_EQ(result.winner->key, makeKey(1, 10));
+  EXPECT_EQ(result.coverage, SearchControllerCoverage::ComparableBest);
 }
 
 TEST(ActualResultControllerTest,
-     FewerRegionGroupsCannotOverrideAReferenceRegression) {
+     FewerRegionGroupsCannotOverrideASlowerEstimate) {
   auto cohort = *SearchCostCohort::create(unitCostPolicy());
   auto makeCost = [](uint64_t ne, uint64_t vector) {
     InstructionProgramAggregateCost cost;
@@ -279,7 +254,7 @@ TEST(ActualResultControllerTest,
       controller.finish(SearchFrontierStatus::Exhausted);
   ASSERT_TRUE(result.winner);
   EXPECT_EQ(result.winner->key, makeKey(1, 10));
-  EXPECT_EQ(result.coverage, SearchControllerCoverage::FeasibleUnranked);
+  EXPECT_EQ(result.coverage, SearchControllerCoverage::ComparableBest);
 }
 
 TEST(ActualResultControllerTest,

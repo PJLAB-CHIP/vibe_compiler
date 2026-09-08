@@ -254,10 +254,13 @@ materialize accepted executable；它不是只消费预选fixed assignment的val
 测试不得把两者相同结果写成长期合同，也不得为某个case硬编码winner。
 
 搜索结果分级必须与实际coverage一致：finite域与planning objective/global bound闭合才是`objective-optimal`；未展开completion仍由完整
-exact continuation和admissible bound表示时可为`feasible-with-bound`；objective Unknown/incomparable时是`feasible-unranked`；缺bound或
+exact continuation和admissible bound表示时可为`feasible-with-bound`；缺少或混用cost profile的调用合同错误时不能声明成本最优；缺bound或
 已经丢弃合法completion时只能是`budgeted-feasible`。单纯预算中止不自动产生bound，也不能把planning optimum外推成硬件最优。
 
 ### 4.4 Cost model
+
+Accepted final Instr的统一评分遵循06号：同cohort合法候选必须得到标量估时，缺测量或详细work时用明确粗估；
+DDR/DTE资源交换不得产生不可比结论。估时质量与搜索coverage分开报告，点估计不能进入hard pruning或SPM合法性。
 
 每个comparison cohort预先确定统一typed target facts与enabled terms；exact work、admissible bound和estimate分开。测试必须证明：
 

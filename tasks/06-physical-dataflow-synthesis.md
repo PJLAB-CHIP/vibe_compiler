@@ -688,11 +688,9 @@ Search最多actualize 8个structural candidates，并共享42次Temporal actual-
 改变proposal/refinement或关闭它们不得改变raw lazy successor集合。General DAG不声明全局最优，quality由tiny fixed-region-count独立穷举oracle
 量化optimality gap并要求已知greedy trap严格改善，再由真实规模cut gain和final actual objective共同约束。
 
-第一个Accepted actual objective作为本次search的no-regression reference。普通Better/Worse/Equivalent仍完全由actual service terms与
-storage/residency facts的Pareto比较
-决定；两个known objective互相incomparable时，只有二者都相对reference为Better或Equivalent，才以现有StructuralCandidateKey中的RegionPlan
-group数选择delivery owner，数量相同再用complete key。该选择仍报告`FeasibleUnranked`，不宣称runtime优劣；任何相对reference存在actual term回退的
-candidate都不能凭Region更少覆盖safe incumbent。Unknown objective不进入此规则。
+Accepted actual objective按同一profile的标量estimated duration比较；合法候选的DDR、DTE、计算和同步交换
+不再触发Pareto不可比。估时相等时使用storage tuple和完整semantic key稳定选取同一actual owner。
+性能估计不参与capacity admission或hard pruning，缺少测量仅降低估计质量，不阻止正常候选排序。
 
 Public search work limit只有`width`和`trials`。`width`是可访问的structural choices总数，`trials`是全局actual
 compilation次数；默认分别为8和42。正式CLI使用`--search-width`与`--search-trials`，public C++ API使用
@@ -711,54 +709,47 @@ DP、memo、priority、dominance和LNS可以改变choice访问顺序和搜索工
 Source-IR-derived lower bound只能用于frontier ordering，必须标明不是actual cost。Candidate comparison使用物化后的TileRegion、Instr、
 movement、completion和memory/target数据。推算结果不进入legality、SPM feedback或exact no-good。
 
-最终winner objective从每个Accepted owner的final current Instr和fresh schedule/cost analysis计算，不使用
-`aggregateInstructionCount * instruction_tick`作为compute cost。比较合同至少分别保留：
+最终winner objective消费每个Accepted owner的final current Instr及fresh `InstructionProgramAggregateCost`。
+`Analysis/Instr/ScheduleCostAnalysis`拥有原始工作量；`Analysis/Instr/CostModel`唯一拥有参数、耗时公式和比较。
+输入为逐Tile实际工作量、整卡DDR/NoC统计及不可变`SearchCostCohort`；输出为ps标量估时、资源分项及估计质量，
+直接消费者为`ActualResultController`、`SearchCurrentIR`和`UnifiedSearch`。生产入口仍为
+`wafer-compile --optimization-policy=search`，不修改IR、同步、SPM合法集合或winner owner。
 
-- 每Tile的NE FP16/BF16 logical work及target-profile NE throughput；
-- 每Tile的Vector/CT FP16/BF16和F32 logical work及各自throughput；
-- instruction issue/control、DTE endpoint bytes、DTE message startup、minimum-hop message demand、wait、DDR、NoC和显式SPM movement的独立work与service term；
-- current control flow、effect、token和已物化execution structure决定的有限schedule/makespan。
+同一Tile的NE FP16/BF16、CT FP16/BF16/F32、显式SPM movement分别按work/rate计时，
+加上DTE endpoint payload、首条/后续sender生命周期及instruction/NCC控制，先逐Tile求和再取最大。
+整卡共享DDR按总read+write bytes/rate计一次；NoC link与endpoint承载同一payload，
+只补`max(0, peak-link-time - maximum-endpoint-time)`，另计hop估计。
+该模型采用Tile内串行服务、Tile间并行的显式近似；不能把它称为actual makespan或严格上界。
+暂不新增依赖图、completion划分、overlap参数或周期模拟器；没有保留顺序的aggregate不伪装成已知schedule。
+NE与CT仍各用自己的吞吐率，instruction数量只计控制开销。Storage仅在时间相等时按固定tuple打破平局。
 
-NE与Vector的service time分别计算；instruction数量只额外计发射/控制开销。一条NE GEMM与一条Vector instruction即使instruction数相同，
-也不能因此得到相同compute cost。当前硬件事实证明CT、NE是不同engine/completion domain，并有CT/NE与movement engine overlap的
-profile内观测；尚无证据证明NE与CT彼此如何重叠。Current IR明确依赖或completion顺序的work按该顺序累加；没有依赖的NE/CT work
-不能擅自按`max`重叠，也不能把强制串行的诊断上界冒充可比较的actual makespan。若候选排序取决于这项unknown，objective保持
-incomparable。只有后续硬件文档和matched profile明确证明的并发关系才能增加对应schedule resource组合。
+DTE无send时startup为0，有n条时为`first + (n-1) × steady`；使用已有首条13us、后续1.5us先验。
+NCC使用已有每call 0.14us和每participant 0.045us，先同Tile组合再取最大。
+Sender生命周期已包含send wait，不重复叠加完整wait样本；额外wait项仅为既有微小控制估计。
+吞吐和hop先验保持显式profile身份，不把少量板测样本当硬件保证。此次不新增专项板测。
 
-同一次winner比较的所有candidate必须使用同一target profile和同一组enabled terms。某个实际出现的NE/Vector work、所需rate、
-schedule multiplicity或算术结果为unknown/unsupported/overflow时，该objective保持typed incomparable，controller只能报告
-`FeasibleUnranked`或其它准确coverage；不得退回统一instruction cost，也不得把semantic tie-break伪装成cost winner。Layout PBQP不读取
-该objective，也不参与frontier ordering；controller只对layout已经唯一确定的candidate继续枚举其它choice，并以物化后的actual objective比较。
+当详细work缺失或格式没有校准时，使用实际instruction执行次数（依次取exact、有限upper、static sites）
+和统一每instruction服务先验形成粗估，并标记估计质量；这只是排序近似，不宣称动态次数已知。
+算术溢出使用饱和值并标记粗估，不能绕回零。正常同cohort合法候选始终有可比较的数值；
+缺cohort或混用profile是调用合同错误，不作为DDR/DTE胜负结论。估计不得充当hard pruning bound。
 
-当前实现的DTE endpoint、message startup和minimum-hop terms直接消费final Instr cost中的actual transmit bytes、message count和hop-demand；
-message startup区分首条与后续消息：每Tile无send时为0，有`n`条send时为`first + (n-1)×steady`，
-仍在同一target cohort中按actual max-Tile message count计价。`first/steady`均是性能估计，不证明同步、容量或fabric latency；
-溢出返回typed unknown。该项覆盖0/1/多消息、cohort差异与溢出，实卡来源和外推边界由硬件校准文档拥有。
-NCC control从current IR的实际join次数与participant wait次数分别估计固定调用/ordering和逐participant polling开销；
-先逐Tile求和，再取max-Tile。Pending engine剩余执行不能拟合为固定wait常数；空闲观察仍为point estimate，
-不证明并行或completion合法性。覆盖combined/split多participant、非重合max-Tile、unknown与overflow。
-它们不能退化为固定instruction数量，也不能使用target-independent guessed route。rate必须来自同一target-profile cohort；未校准时保持
-`Unknown`/`Incomparable`，不能用默认零值继续排序。
+方法比较：[OpenXLA性能模型](https://github.com/openxla/xla/blob/main/xla/service/gpu/model/gpu_performance_model_base.cc)
+按资源服务时间和目标overlap假设构造标量；本仓采用更简单的串行近似，不移植GPU常数。
+[实现驱动的collective模型](https://arxiv.org/abs/2004.11062)按实际实现计消息和工作量，
+本仓同样不从collective名称套轮数。[MLIR analysis管理](https://mlir.llvm.org/docs/PassManagement/#analysis-management)
+要求IR mutation后重新统计，本项不生成或重放旁路schedule。
 
-`Analysis/Instr/ScheduleCostAnalysis`拥有final current IR的工作量统计；`Analysis/Instr/CostModel`唯一拥有
-`SearchCostPolicy`、不可变`SearchCostCohort`、typed objective、估时公式和成本比较。Cost model输入为fresh
-`InstructionProgramAggregateCost`与显式cohort，输出`SearchObjective`及比较结果，直接消费者为
-`ActualResultController`、`SearchCurrentIR`的actual candidate比较和`UnifiedSearch`统计。
-它是无IR mutation、无cache的普通typed query，不依赖Driver、Planning或candidate key，不新增AnalysisManager wrapper。
-Controller只拥有预算、去重、typed结果、incumbent和handoff，使用cost model接口，不保存第二份硬件参数或公式。
-生产入口仍为`wafer-compile --optimization-policy=search`；本次归属修正不改数值参数、Pareto比较、tie-break、
-IR/legality、completion或板端协议，也不实现尚未完成的统一makespan评分。
-完成条件为所有消费者共用同一cost model、Analysis测试不链接Driver、原公式/unknown/overflow/cohort与controller行为
-回归通过，真实规模整除/尾部的通信产品下游和canonical build/no-op闭合。
+Non-goals：不新增IR/attribute、改变数值语义、推断SPM合法性、插join/wait或强制通信。
+完成条件：唯一CostModel实现上述标量、三个consumer接入、下列主机矩阵和canonical build/no-op通过。
+板测进度和后续模型验收只写统一板测计划。
 
-| Cost model归属覆盖 | exact要求 | 直接下游witness |
+| 覆盖输入 | exact要求 | 直接下游witness |
 | --- | --- | --- |
-| DTE 0/1/15/32消息；NCC combined/split与不同Tile分布 | 原ps结果不变，先同Tile求和再取max | Analysis-only公式unit；Driver使用相同typed objective |
-| 缺cohort、metric unavailable、非法profile和溢出 | 原typed unknown/failure和跨cohort不可比保持 | Analysis边界unit |
-| better/worse/equivalent/incomparable与预算/拒绝 | 成本比较与controller状态管理分属唯一owner | 比较unit和controller预算/retention/coverage回归 |
-| rank≥3、1024/1025通信输入 | 原actual DDR/DTE结构、source→package和profile合同保持 | fresh no-card及search actual compiler回归 |
-
-工作量和估时不新增operation、attribute或legality verifier；IR mutation后重新统计，cost model只消费本轮值。
+| DDR减少/DTE增加与反向；NE/CT交换 | 同cohort均能排序，DDR和DTE各有胜出条件 | Analysis公式unit与actual candidate/no-card |
+| 不同Tile的资源峰值 | 先同Tile相加再取max，不合成不存在的Tile | Analysis-only算术oracle |
+| 0/1/15/32 DTE消息，combined/split NCC | 原分项ps结果保持，不重复计payload或sender wait | Analysis与Driver回归 |
+| 未校准work/缺metric、溢出及缺/异cohort | 粗估标识、饱和不回绕；profile合同错误保持typed | Analysis公式和controller接入 |
+| rank≥3、1024/1025/1031 actual候选 | actual SPM/target先验证，保留同一winner owner | 现有主机IR与source→package/no-card |
 
 Actual capacity rejection默认只对产生该current IR的完整choice有效。只有从actual owner/conflict witness可证明的有限条件
 才能作为causal feedback；unknown、unsupported、timeout和compiler error不得改写为capacity rejection。
