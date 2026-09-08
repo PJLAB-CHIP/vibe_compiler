@@ -225,7 +225,18 @@ none/search两项fresh no-card通过；none单次实卡的输入、manifest与ex
 完整PyTorch比较失败：主输出`[1,24,8,1024]`有196509/196608项不匹配，转F32计算最大绝对误差0.6415328979492188；
 归约输出`[1,24]`有24/24项不匹配，最大绝对误差320.75。容差保持rtol=1e-3、atol=1e-5。
 manifest SHA256为`bcc4508efdcec23485d5fd31903e557174aad665da6696cc85562cb58bf52929`。
-当前只确认是数值失败；归约回读也不等于主输出的PyTorch求和，不能先假定只有卷积运算错误。后续设备发射停止，先检查actual IR/descriptor与回读分布。
+当前只确认是数值失败；归约回读也不等于主输出的PyTorch求和，二者最大差380.5，不能先假定只有卷积运算错误。后续设备发射停止。
+
+已完成只读定位：重新从同一PyTorch source导出的诊断package与失败实卡package的全部文件逐字节相同，actual IR有以下两个检查点：
+- Tile 0的Conv使用input `[1,10,1026,16]`、HWOI weight `[3,3,2,16]`、output `[1,8,1024,2]`，三者均为NCx。
+  `docs/tx81-compiler-hardware-calibration.md`的Ordinary Conv条目明确记录通用weight physical layout尚未恢复，不能把feature/output的NCx证据当成weight合同。
+  当前主输出失败与这个缺口相容，但仅凭本case不能断言它是唯一根因。
+- 相同Tile的多轴sum实际降低为两次`dim=0`：`[1,2,8,1024] NCx → [1,2,8] NCx → [1,2] Cx`，中间直接连接native reduce。
+  两channel的Tile在归约输出中有交替零值；降rank后的physical writeback/下一次读取需要独立验证，尚不作已证实根因。
+
+下一步从相同FP16输入单独导出Conv结果和相同shape多轴sum，各自通过fresh no-card后比较完整PyTorch；先闭合权重布局、归约写回及各自的直接消费者，
+再修正组合case。当前没有放宽容差、替换算法或对未知weight布局补猜测。失败case、未发射search和临时诊断的package/IR/raw目录均已删除，
+只保留执行错误摘要与有界统计日志；后续输入由case factory重新生成。
 
 ### AllReduce验收（2026-09-08）
 
