@@ -9,6 +9,7 @@ Add/DTE、通信、GEMM、组合计算、模型及性能全部放在本任务的
 板测失败触发的代码修复仍遵守相应compiler/runtime设计；复验case、板端证据和覆盖进度由本项统一记录。
 
 Pipeline position:
+
 - Upstream IR / input: current compiler/runtime、PyTorch source与同一输入的eager reference、逐case通过fresh no-card的ExecutablePackage、可用设备会话。
 - Current stage responsibility: 补齐并登记板测覆盖矩阵，串行执行真实设备，检查完整数值、guard/status、completion与cleanup；正确性通过后完成同一清单内的性能测量。
 - Output IR / files: 每个case的原样package、输入/reference/capture、误差、执行日志、性能记录及与实际结果绑定的覆盖记录。
@@ -231,11 +232,52 @@ ReduceScatter首条source本轮编译/no-card成功，但actual package有240个
    再由唯一completion stage物化可验证的执行顺序。无环Region图只是必要条件，不能将其当成已有完成事件。
 2. 消费者必须同时覆盖Instr验证、target/CRT、launch/runtime以及SystemC；publication在WDMA实际完成后，acquire在远端RDMA前，
    还需覆盖重复phase、dynamic次数、状态初始化/复用和DTE并存；不能复用NCC join或单slot DTE ready冒充通用跨Tile完成。
-3. 现有`hrt_barrier`只有header/binary证据：固定16 participant、依赖runtime保留状态，且PRODUCT_TYPE_PG magic分支直接返回。
-   `direct_sync_post/wait`是DTE使用的单slot通知，不能未经匹配/复用证明挪作DDR协议。因此本轮不插入未经证明的barrier，也不改用强制DTE。
+3. `docs/tx81-compiler-hardware-calibration.md`的Full-card barrier条目记录了`hrt_barrier`在16 participant、两个错峰epoch中的实卡通过证据；
+   不能将其说成只有header/binary证据。该证据不等于当前产品DDR完成合同：还需绑定当前launch、保留状态初始化、实际WDMA完成和重复调用；
+   pinned binary中PRODUCT_TYPE_PG magic分支直接返回，其在当前执行模式下的条件也必须闭合。
+   `direct_sync_post/wait`是DTE使用的单slot通知，不能未经匹配/复用证明挪作DDR协议。因此不插入未经证明的barrier，也不改用强制DTE。
 4. 当前ABI仅有prepare/main；若选择runtime分阶段执行，需先完整定义实际阶段、接口、跨阶段存储及完成合同，不能把prepare临时当作计算阶段。
    这是IR/CRT/launch合同尚未闭合的阻塞，不能用扩大测试timeout或放宽精度解决。
 5. 合同和实现闭合后重新导出新package，运行匹配的host/no-card与逐case实卡PyTorch比较，再继续本表剩余顺序。
+
+### DDR完成问题的修复边界与验收矩阵
+
+问题属于通用shared-DDR movement的完成缺口，AllGather只是本轮最先暴露它的输入。AllToAll和ReduceScatter的产品
+`none`/`search`只要生成相同的shared-DDR writer/reader关系，也受到影响；已有DTE专项通过不能覆盖这条路径。
+同Tile store/reload、无跨Tile共享读写的Add，以及已有匹配token/wait的Direct-DTE与本问题分别验收。
+
+Pipeline position:
+- Upstream IR / input：已经物化的完整TileModule集合、shared-DDR resource/binding、actual WDMA/RDMA范围、
+  Region/control flow、NCC worker、DTE token和实际storage lifetime。
+- Current stage responsibility：识别跨Tile RAW及状态复用的WAR/WAW要求，将所选执行机制真正物化，随后重新分析和验证；
+  Region DAG、共享地址和launch slot只作各自事实，不能充当完成事件。
+- Output IR / files：带可验证完成关系的actual Instr及与之相符的target、launch contract和ExecutablePackage；
+  当前缺失的表示与实现必须一起补齐，不能用C++ side table描述将来会执行的同步。
+- Downstream consumer：同一SPM/DDR规划与target leaf、target/CRT、package/no-card、runtime和SystemC。
+- User-level driver / named pipeline：同一`wafer-compile` source-to-package路径；产品`none`/`search`自由比较合法传输，
+  专项测试选择只在内部compiler入口。
+- Explicit non-goals：不强制DTE，不扩大Region合并，不改变数值语义、PyTorch reference或容差，不加固定worker drain，
+  不把现有prepare阶段改作计算，也不通过timeout/retry取得成功。
+- Completion criteria：缺少完成关系的输入在产品发布前被typed拒绝；修复后的DDR与peer候选均从真实source通过直接下游，
+  本轮新产物完成全量PyTorch、guard/status、全部Tile completion和正常清理后才能签发相应板端结论。
+
+| 输入等价类/结构分支 | 必须验证的exact事实 | 直接下游与失败门禁 |
+| --- | --- | --- |
+| FP16 AllGather/AllToAll/ReduceScatter，rank≥3，1024与1025/1031，产品none/search及内部DDR/peer选择 | writer/reader实际范围与tail无hole/overlap；DDR writer完成严格先于remote reader issue；peer保持原message/token合同 | fresh Instr→实际SPM/DDR→target/package→no-card；每个新板测case完整PyTorch比较 |
+| 同Tile数据链、无cross-Tile hazard、独立计算 | 不凭Region结束或op类别增加跨Tile等待；none仍保留原Region | actual join/wait位置及无多余同步断言 |
+| chain、diamond、fanout/fanin、不对称Tile工作量 | 每条依赖都有实际先行关系，无提前读；不要求不相关数据相互等待，除非所选硬件/launch机制确实只支持更大完成域 | 多Tile执行模型按不同可运行顺序推进，缺边/错边应失败 |
+| 多个连续交换、同资源覆盖写、重复invocation、循环零次/一次/多次 | 初始化发生在首次观察前；每个动态epoch次数匹配；前一reader完成后才可覆盖；旧状态不能满足新等待 | 状态复用与dynamic-count正反例；无法证明的控制流保持typed unsupported/indeterminate |
+| shared-DDR与DTE并存、不同tile_id/launch_slot排列 | 两个完成域各自闭合；不借用DTE单slot；参与者来自physical Tile identity | transport verifier、target与runtime/SystemC共同验证 |
+| 缺writer、缺发布/获取、重复/冲突writer、参与者缺席、依赖环、SPM跨阶段泄露 | actual resource/range与完成关系不能闭合时明确失败，不伪装capacity rejection | host verifier和no-card负例；不把可能挂卡的负例发到设备 |
+| runtime阶段失败/超时 | 后续计算阶段和output发布均不发生；沿用absolute deadline与poison合同 | fake-provider单测；不在实卡制造timeout |
+
+待讨论问题与实现前必须解决的选择：
+
+- 按依赖发布/等待可以保留较小同步范围，但需要明确的通知storage、初始化、可见性及重复epoch确认协议，不能直接挪用DTE ready slot。
+- runtime分阶段可复用`BoardRuntime`现有的submit→全阶段completion顺序；当前ABI仅允许grid main或cluster prepare/main，
+  因此还需要实际计算阶段表示、逐阶段export、共享DDR跨阶段lifetime与target/runtime/SystemC的一致消费。
+- 两条路线都必须先由current IR物化并验证，再交给成本比较；不能因为DDR路径现有cost较低就跳过完成准入。
+  在实现选择及上述合同闭合前，问题状态保持未修复，主机历史通过记录只保留其实际覆盖范围。
 
 失效的18条新产品shared-DDR用例目录（source派生产物、package、IR、raw/capture）已清理；保留主机检查日志及上述失败摘要。
 此前成功实卡的产物和本轮9条DTE专项no-card产物保留；后者不能代签未执行的ReduceScatter实卡。

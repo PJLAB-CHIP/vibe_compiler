@@ -160,7 +160,10 @@ relation与同Tile Region顺序构成无环图时才可选择该实现，之后�
 当前完成缺口：shared-DDR物化只有resource/binding和WDMA/RDMA，没有跨Tile release/acquire实现；runtime的共享allocation、
 grid launch顺序和Tile-local NCC join均不能补足。实卡已观察到新none AllGather数值失败，详见board-testing计划。
 因此此前仅凭Region DAG/host gate得出的DDR可执行结论不成立；完成合同未闭合前不能给这条路径签发board-ready/done。
-`hrt_barrier`的名字不构成hardware completion证明，不能用它补一个猜测的全卡同步。
+`docs/tx81-compiler-hardware-calibration.md`记录过`hrt_barrier`完整16 Tile、两个错峰epoch的board-observed结果；
+该窄证据不等于current shared-DDR完成实现。当前launch模式、保留状态初始化、PRODUCT_TYPE_PG跳过分支、
+WDMA完成与重复调用仍须共同验证；不能仅凭primitive名字或历史成功插入全卡同步。
+本项修复边界、机制待讨论问题及逐项验收矩阵由`tasks/plans/board-correctness-qualification.md`统一记录。
 预算不足时报告有界搜索实际覆盖，不把未尝试或unsupported候选当作capacity rejection。
 
 Native grouping不在Tile层新增第二套communication op。Movement对eligible group保留从同一个actual source发出的普通
