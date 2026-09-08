@@ -68,7 +68,7 @@ PyTorch eager是数值expected唯一来源；纯搬运、layout、index和guard�
 | 3. AllToAll | 普通计算加转置/重分布source，覆盖不同source到不同destination的piece | 三个长度的actual personalized exchange、no-card、实卡完整PyTorch比较与正常清理均通过 |
 | 4. ReduceScatter | 多Tile partial contribution合并到各destination shard | 1024/1025/1031的none/search/peer九次实卡及完整PyTorch归约比较均通过，最大绝对误差0 |
 | 5. AllReduce | 多Tile partial contribution合并后供全部participant消费 | 1024/1025/1031的none/search/peer矩阵均已实卡通过；专项为direct贡献交换加Ring AllGather，完整PyTorch误差均为0 |
-| 6. 卷积组合计算 | 现有`conv-mixed-dag`，FP16 | 本轮none/search no-card通过；none单次实卡正常完成，但两个PyTorch输出均失败，正在定位；search未发射 |
+| 6. 卷积组合计算 | 现有`conv-mixed-dag`，FP16 | none实卡两个输出失败；独立实卡确认native归约降rank错读，卷积缩小到3×3权重打包/硬件读取边界；代码待修，search未发射 |
 | 7. Attention prefill | 现有`attention-prefill`，FP16、序列长度1024 | fresh source/no-card，与同一输入的PyTorch eager attention完整比较 |
 | 8. KV cache decode | 现有`attention-decode-kv-cache`，连续两步 | 第二步消费第一步实际回读的KV；两步attention输出和完整KV cache均与PyTorch比较 |
 | 9. LLaMA block | 现有`llama-2-7b-block`，FP16 | 完整block输出对比PyTorch；此前局部算子通过不能代签本项 |
@@ -234,9 +234,59 @@ manifest SHA256为`bcc4508efdcec23485d5fd31903e557174aad665da6696cc85562cb58bf52
 - 相同Tile的多轴sum实际降低为两次`dim=0`：`[1,2,8,1024] NCx → [1,2,8] NCx → [1,2] Cx`，中间直接连接native reduce。
   两channel的Tile在归约输出中有交替零值；降rank后的physical writeback/下一次读取需要独立验证，尚不作已证实根因。
 
-下一步从相同FP16输入单独导出Conv结果和相同shape多轴sum，各自通过fresh no-card后比较完整PyTorch；先闭合权重布局、归约写回及各自的直接消费者，
-再修正组合case。当前没有放宽容差、替换算法或对未知weight布局补猜测。失败case、未发射search和临时诊断的package/IR/raw目录均已删除，
+上述两个检查点随后按下一节独立验证。首轮失败case、未发射search和临时诊断的package/IR/raw目录均已删除，
 只保留执行错误摘要与有界统计日志；后续输入由case factory重新生成。
+
+### 卷积与归约独立定位（2026-09-08）
+
+本轮只定位第6项，没有修改production C++、IR协议、测试注册或数值容差。五条诊断source均使用现有PyTorch exporter、
+普通`wafer-compile --optimization-policy=none`和原样package，分别完成fresh no-card后串行单次实卡执行。
+PyTorch 2.5.0+cpu、FP16、seed=20260803，完整比较采用rtol=1e-3、atol=1e-5、equal_nan=false。
+五次均16 Tile completion、完整回读及正常cleanup，没有timeout、设备异常、retry或reset。
+
+可复现输入：重新调用`_conv_mixed_dag`取得本轮`x/weight/bias`。独立归约输入取同一module的PyTorch eager主输出；
+独立卷积只返回`conv2d(x, weight, bias, padding=1)`。单点权重对照令`weight[o,o%16,K//2,K//2]=1`，其余为0，
+shape为`[24,16,K,K]`，不加bias；K分别为1和3。Padding对照先对同一x调用`F.pad(x,(1,1,1,1))`，再做K=1卷积。
+每条source与expected都调用同一个PyTorch module；不使用历史回读作为输入，也不以单点权重代签随机权重卷积。
+
+| 诊断输入等价类 | 完整PyTorch结果 | 定位边界 |
+| --- | --- | --- |
+| 正确eager输入`[1,24,8,1024]`，独立sum(dim=3)与sum(dim=(2,3)) | 单轴176/192项失败、最大绝对误差68.0625；双轴24/24项失败、最大误差342.5 | 无Conv、sigmoid或分支参与，归约自身有独立错误 |
+| 原始随机输入/权重/bias，独立3×3 Conv | 196510/196608项失败，最大误差0.44366455078125 | 无后续激活、fan-in或sum参与，卷积路径也有独立错误 |
+| K=1单点权重，输出`[1,24,8,1024]` | 196608项全部exact | 当前输入通道排列、1/2输出channel分片与输出回排有直接实卡见证 |
+| K=1单点权重，加显式padding，输出`[1,24,10,1026]` | 246240项全部exact | 同一padding输入及1026尾宽的layout转换可正确执行 |
+| K=3中心单点权重，输出`[1,24,8,1024]` | 196506/196608项失败，最大误差0.838623046875 | 没有多项非零乘积累加，失败集中在多位置卷积的权重打包/硬件读取边界 |
+
+**归约根因已确认。** `ReduceLowering`把`[1,2,8,1024] NCx`的C归约目标直接声明为`[1,2,8] NCx`；
+`verifyInstructionReduceContract`要求删除归约轴，`lowerReduce`仅向CRT传递输入NHWC与axis，没有输出shape参数。
+但现有板端probe的`_reduce_physical_shape`及`reduce_exact_result_byte_offsets`明确使用保留归约轴、extent=1的native结果。
+本轮Tile 0的硬件结果因此为`[1,2,8,1] NCx`：16个有效FP16标量的字节偏移是0、8、16、…、120，
+生产descriptor却按0、2、4、…、30读取。错误descriptor中仍能落到native有效位置的48个标量，在全部Tile上与PyTorch逐bit相同；
+其它padding槽不能当作逻辑输出。第二次reduce又把这个错误的rank-3结果作为C输入，进一步错误累加并产生交替零值。
+这不是阈值问题，也不只影响多轴链：本轮单轴的直接输出同样失败。
+
+漏检边界也已定位：`TargetModelTensorNumeric.cpp::executeReduce`和`FormalOperations.cpp::createFormalReduceOperation`
+重复使用删除归约轴的destination shape，model与production共享了同一个错误假设。
+修复必须同步Instr verifier、Tile→Instr native目标物化/后续layout转换、target model和formal destination合同，
+保留native物理结果后再显式产生逻辑降rank结果；不能只在多轴循环中增加一次reshape或只改数值expected。
+
+**卷积正确权重布局尚未确认。** 上述两个1×1对照通过、3×3中心单点失败，排除了本组输入的一般padding、输入/输出回排
+以及普通累加精度解释。`ComputeConvOp::verify`目前无条件要求weight使用NCx，`StructuredToTile`和`ConvLowering`随后把
+该weight交给native Conv。当前`[3,3,2,16]`权重每个首轴slice按256B对齐，而相同logical shape的Cx只在整体末尾对齐；
+这与既有硬件文档中“feature/output NCx不能外推weight”的缺口一致，但本轮尚未直接证明Cx或其它布局就是正确答案。
+下一步先为本组3×3 weight恢复有直接见证的物理读取合同，再做生产修改；不猜布局、不替换算法、不发射原组合case重试。
+
+| 诊断source | manifest SHA256 |
+| --- | --- |
+| 独立归约 | `de58ff340893f658c3483f6b9c9750664aad7f7b5fa24a804bbba536d887f32d` |
+| 独立随机卷积 | `530b9207678321a097c826c55711711f32e0736f938e6ad334d98477046af6c4` |
+| K=1单点 | `82dbb5d299ce9579ef8a45629c5a92c9dd2ea1324cb33fd343e9077b224045fe` |
+| K=1单点加padding | `4b4f785fa57680b050e78d391f2ff0e2751000b86382b101af789e1f153978ea` |
+| K=3中心单点 | `89baf47928e25b40b366f1fbdef277b5f93c70170db6dc55a823ce6b5c295c4d` |
+
+三个失败诊断的package/IR/raw已清理，只保留执行日志与有界数值摘要；两条成功对照留在`build/test/board-audit/conv-localization/`供审计。
+本轮汇总为`third_party/host-tools/logs/conv-reduce-localization-summary.json`，精确偏移证据为`isolated-reduce-diagnosis.log`。
+五条no-card通过不表示数值通过，两条对照通过也不表示第6项完成；当前修复及原组合case复验均未完成。
 
 ### AllReduce验收（2026-09-08）
 
