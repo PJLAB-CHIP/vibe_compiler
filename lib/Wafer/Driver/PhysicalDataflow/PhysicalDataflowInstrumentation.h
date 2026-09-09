@@ -206,6 +206,7 @@ recordMovementInstrumentation(const BoundaryMovementStatistics &statistics) {
   counter("inter-region-ddr-stages", statistics.interRegionDDRStages);
   counter("output-copies-removed", statistics.outputCopiesRemoved);
   counter("tensor-bridges-removed", statistics.tensorBridgesRemoved);
+  counter("streamed-output-carriers", statistics.streamedOutputCarriers);
 }
 
 } // namespace wafer::compiler::detail

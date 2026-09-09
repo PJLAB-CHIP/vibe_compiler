@@ -138,6 +138,17 @@ destination list对应连续等长segments并满足native scatter合同，使用
 每轮每个sender至多一个issue、每个receiver至多四个live source；先最大化covered edges，再优先minimum-hop并使用physical Tile ID和
 relation identity完成tie-break。
 
+单向稀疏component的source Tile集合与destination Tile集合不相交时，receive不要求与其它round共享一个最早consumer cut。
+每个receiver从actual staging的首次非view使用得到各round的最晚位置，再按round逆序取后缀最早位置：第r轮不得晚于本轮
+或任何后续轮的首次使用。按这些位置物化receive，保持全部round/message顺序，使不依赖后续payload的本地计算可先执行。
+此选择仅在当前movement调用中存在，实际输出仍只有peer op、buffer effect和message；不生成额外schedule事实源。
+有双向participant的exchange及relay保持已证明的共同cut；sender顺序、payload、transport资格和算术顺序不变。
+直接下游completion仍从实际IR计算receiver-ready slot/FSM复用等待与首次读取等待，SPM仍由actual lifetime规划。
+
+该变换覆盖矩阵：1024/1025/1031的rank3单向双payload，分别覆盖同序首次使用和逆序首次使用；断言晚用payload的receive位于
+独立compute之后，逆序使用时receive仍保持协议顺序。两者都实际推进Instr、wait、SPM与Direct DTE schedule验证；现有complete
+AllGather/AllToAll与relay测试证明共同cut分支仍可消费。板端收益由06所属board-testing的decode匹配A/B验证，不以wait数量减少代替。
+
 Native multi-destination合同不是raw register能力的无界开放。当前只接受calibration已经真实执行的fanout `2/4/8/15`、每destination
 `256B`以及available physical Tile列表；broadcast要求所有destination收到同一source range，scatter要求source是按destination list
 排列的连续等长segments。其它byte count、fanout、ragged segment、dynamic remote selector或same-buffer alias保持unsupported native

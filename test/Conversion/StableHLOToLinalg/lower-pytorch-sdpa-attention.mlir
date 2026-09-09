@@ -89,7 +89,7 @@ module {
 // CHECK-LABEL: func.func @native_sdpa
 // CHECK: arith.select
 // CHECK: %[[ATTENTION:.+]] = wafer.linalg_ext.attention
-// CHECK-SAME: tensor<1x2x4x8xf32>, tensor<1x2x8x4xf32>, tensor<1x2x4x8xf32>, f32, tensor<1x2x4x4xf32>
+// CHECK-SAME: tensor<1x2x4x8xf32>, tensor<1x2x8x4xf32>, tensor<1x2x4x8xf32>, f32, tensor<4x4xf32>
 // CHECK-SAME: algorithm(<flash_attention>)
 // CHECK: arith.truncf
 // CHECK: return %{{.+}} : tensor<1x2x4x8xf16>

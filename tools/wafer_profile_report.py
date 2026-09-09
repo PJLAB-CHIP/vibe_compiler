@@ -11,7 +11,7 @@ import os
 import pathlib
 import tempfile
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import Any
 
 
@@ -1944,36 +1944,62 @@ def _semantic_segments(
         if ordered_sites
         else None
     )
+    # Endpoint cursors only advance. Active indices preserve the original
+    # claimant order even for nested intervals and equal endpoints.
+    site_starts = [int(site["begin_cycle"]) for site in ordered_sites]
+    site_ends = sorted(
+        (int(site["end_cycle"]), index)
+        for index, site in enumerate(ordered_sites)
+    )
+    operation_starts = sorted(
+        (operation[0], index) for index, operation in enumerate(operations)
+    )
+    operation_ends = sorted(
+        (operation[1], index) for index, operation in enumerate(operations)
+    )
+    active_sites: set[int] = set()
+    active_operations: set[int] = set()
+    site_start = site_end = operation_start = operation_end = 0
+    previous_index = -1
     result: list[dict[str, Any]] = []
     ordered = sorted(boundaries)
     for begin, end in zip(ordered, ordered[1:]):
         if end <= begin:
             continue
+        while site_end < len(site_ends) and site_ends[site_end][0] <= begin:
+            _, index = site_ends[site_end]
+            active_sites.discard(index)
+            previous_index = max(previous_index, index)
+            site_end += 1
+        while site_start < len(site_starts) and site_starts[site_start] < end:
+            if int(ordered_sites[site_start]["end_cycle"]) > begin:
+                active_sites.add(site_start)
+            site_start += 1
+        while (
+            operation_end < len(operation_ends)
+            and operation_ends[operation_end][0] <= begin
+        ):
+            active_operations.discard(operation_ends[operation_end][1])
+            operation_end += 1
+        while (
+            operation_start < len(operation_starts)
+            and operation_starts[operation_start][0] < end
+        ):
+            index = operation_starts[operation_start][1]
+            if operations[index][1] > begin:
+                active_operations.add(index)
+            operation_start += 1
         operation_claims = [
-            (kind, sequence, site_ref)
-            for op_begin, op_end, kind, sequence, site_ref in operations
-            if op_begin < end and op_end > begin
+            operations[index][2:] for index in sorted(active_operations)
         ]
-        site_claims = [
-            site
-            for site in ordered_sites
-            if int(site["begin_cycle"]) < end and int(site["end_cycle"]) > begin
-        ]
-        previous_site = next(
-            (
-                site["ref"]
-                for site in reversed(ordered_sites)
-                if int(site["end_cycle"]) <= begin
-            ),
-            None,
+        site_claims = [ordered_sites[index] for index in sorted(active_sites)]
+        previous_site = (
+            ordered_sites[previous_index]["ref"] if previous_index >= 0 else None
         )
-        next_site = next(
-            (
-                site["ref"]
-                for site in ordered_sites
-                if int(site["begin_cycle"]) >= end
-            ),
-            None,
+        next_site = (
+            ordered_sites[site_start]["ref"]
+            if site_start < len(ordered_sites)
+            else None
         )
         reason: str | None = None
         event_kind: str | None = None
@@ -3964,32 +3990,44 @@ window.__waferProfileUI={analysis,evidence,state,navigate,selectTile,focusEvent,
 </html>"""
 
 
+def _report_chunks(
+    evidence: object, analysis: Mapping[str, Any] | None = None
+) -> Iterator[str]:
+    valid = validate_evidence(evidence)
+    result = analyze_evidence(valid) if analysis is None else analysis
+    # Split the template before inserting user strings: a literal placeholder
+    # in an input string must never be interpreted as another substitution.
+    prefix, remainder = _REPORT_TEMPLATE.split("__ANALYSIS__", 1)
+    middle, suffix = remainder.split("__EVIDENCE__", 1)
+    prefix = prefix.replace("__RUN_ID__", html.escape(str(valid["run_id"])))
+    encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"))
+    yield prefix
+    for value, following in ((result, middle), (valid, suffix)):
+        for chunk in encoder.iterencode(value):
+            yield (
+                chunk.replace("&", "\\u0026")
+                .replace("<", "\\u003c")
+                .replace(">", "\\u003e")
+                .replace("\u2028", "\\u2028")
+                .replace("\u2029", "\\u2029")
+            )
+        yield following
+
+
 def render_report(
     evidence: object, analysis: Mapping[str, Any] | None = None
 ) -> str:
-    valid = validate_evidence(evidence)
-    result = analyze_evidence(valid) if analysis is None else analysis
-
-    def script_payload(value: object) -> str:
-        payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-        return (
-            payload.replace("&", "\\u0026")
-            .replace("<", "\\u003c")
-            .replace(">", "\\u003e")
-            .replace("\u2028", "\\u2028")
-            .replace("\u2029", "\\u2029")
-        )
-
-    return (
-        _REPORT_TEMPLATE.replace(
-            "__RUN_ID__", html.escape(str(valid["run_id"]))
-        )
-        .replace("__ANALYSIS__", script_payload(result))
-        .replace("__EVIDENCE__", script_payload(valid))
-    )
+    return "".join(_report_chunks(evidence, analysis))
 
 
-def _atomic_write(path: pathlib.Path, contents: str) -> None:
+def _json_chunks(value: object) -> Iterator[str]:
+    yield from json.JSONEncoder(
+        sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    ).iterencode(value)
+    yield "\n"
+
+
+def _atomic_write(path: pathlib.Path, contents: Iterable[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", dir=path.parent
@@ -3997,7 +4035,7 @@ def _atomic_write(path: pathlib.Path, contents: str) -> None:
     temporary = pathlib.Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(contents)
+            stream.writelines(contents)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
@@ -4020,16 +4058,15 @@ def generate_report(
     if pathlib.Path(evidence_path).resolve() != evidence_output.resolve():
         _atomic_write(
             evidence_output,
-            json.dumps(evidence, indent=2, sort_keys=True, ensure_ascii=False)
-            + "\n",
+            _json_chunks(evidence),
         )
     else:
         os.chmod(evidence_output, 0o777)
     _atomic_write(
         analysis_path,
-        json.dumps(analysis, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        _json_chunks(analysis),
     )
-    _atomic_write(html_path, render_report(evidence, analysis))
+    _atomic_write(html_path, _report_chunks(evidence, analysis))
     os.chmod(output, 0o777)
     return html_path, analysis_path
 

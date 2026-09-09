@@ -1,0 +1,55 @@
+{
+  "date": "2026-09-09",
+  "case": "attention-decode-kv-cache",
+  "source_state": "共享mask/view/receive优化，加上16 MiB Trace、Temporal上限16及per-tile输出写回；在coupled-state consumer修改之前测量。",
+  "qualification": {
+    "runtime_version": "1300",
+    "runtime_library_sha256": "b4f19d673e1767314f6cd900f7f66345e7d1d8c0545de83a7139d62596a6e12c",
+    "tile_count": 16
+  },
+  "sample_count": 1,
+  "primary": {
+    "sample_id": "primary",
+    "sample_index": 0,
+    "device_elapsed_ns": 8222000,
+    "device_timer_kind": "tx-stream-events",
+    "host_submit_ns": 153671,
+    "host_launch_to_completion_ns": 8802058,
+    "completion_observation_resolution_ns": 17176
+  },
+  "program_manifest_sha256": "sha256:5e3115e41722598710a6dc3227f7f3ed39c99ffebd59586539a7358061d871f3",
+  "evidence_sha256": "55d84f6592440896e028ce2c28d0c8337d19d56ee14c3e835bae2c4e8a4dbba2",
+  "pytorch": {
+    "case": "attention-decode-kv-cache",
+    "manifest_sha256": "5e3115e41722598710a6dc3227f7f3ed39c99ffebd59586539a7358061d871f3",
+    "outputs": [
+      {
+        "elements": 4096,
+        "max_abs_error": 4.57763671875e-05
+      },
+      {
+        "elements": 4194304,
+        "max_abs_error": 0.000244140625
+      },
+      {
+        "elements": 4194304,
+        "max_abs_error": 0.000244140625
+      }
+    ],
+    "comparison": {
+      "rtol": 0.006,
+      "atol": 0.008
+    },
+    "inputs": {
+      "card_00_user_input_0.f16.raw": "b7994926db73037524b5a45b805941e6887b8dd53aeda7b7528c99196e241ad6",
+      "card_00_user_input_1.f16.raw": "3982fec6b3245fa9f711adb7c9e91b80e4c88f579374e77fc0238bb6f0e843dd",
+      "card_00_user_input_2.f16.raw": "66f159274ddd2df81dc0af4eba87a5f072597b974dc5a6dfa30acef58cb2f618",
+      "card_00_user_input_3.f16.raw": "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad"
+    },
+    "prefix_bitwise_equal": [
+      true,
+      true
+    ]
+  },
+  "limitation": "8.198与8.222 ms均为单样本，不解释为额外收益或退化。"
+}

@@ -80,6 +80,11 @@ Canonical JSON按serializer固定字段顺序输出紧凑对象和数组，只�
 identity、entry ABI或payload。完成检查覆盖16 Tile各2048条shared workspace引用的合法roundtrip与binding、字节上限
 恰好相等/少一字节、record超限、截断及非canonical空白；实际source到package验证由统一板测计划的完整模型承担。
 
+Profile companion的target-site metadata覆盖16 Tile的全部typed target call，使用独立16 MiB JSON字节预算
+`PackageParseLimits::maxProfileJSONBytes`；普通manifest继续使用4 MiB的`maxJSONBytes`。
+Profile metadata的record/string/nesting与digest校验保持同一规则；writer和reader使用同一profile字节预算，
+超过该预算在发布/读取时明确失败，不能写出成功但默认runtime无法读取的profile。测试覆盖两种独立字节预算的边界。
+
 `target`记录compiler-fixed target identity、runtime ABI和module format；`launch`直接记录current kernel launch mode、entry ABI和
 ordered phases。它们必须与DeviceExecutable、target module readback及全部entries逐项相等，runtime不得从module path或entry
 shape猜测launch方式。
@@ -350,6 +355,18 @@ Profile instrumentation必须复用同一个DeviceExecutable、TargetTensor mate
 - profile不得触发parameter/constant再次转换；
 - activation/site map使用独立typed合同，不成为普通执行manifest字段；
 - stale/malformed profile在provider effect前失败。
+
+Trace record采用16 MiB/Tile的固定有界分配，Count仍为最小record。容量由同一个ABI常量生成typed entry requirement、package和runtime
+检查；record字段与采集顺序不变。Count实测动态event数超过该package容量时，在Trace launch前停止并报告Tile、实测数与容量；
+不得截断记录后声称完整profile。普通执行不携带这项分配。默认容量覆盖模型级指令trace，仍不承诺任意循环规模可完整采集。
+
+报告的输入是本轮已验证的evidence，输出为原有analysis JSON与离线HTML，由collector原子发布。Exclusive semantic partition
+按已有半开区间端点单向扫描，维护当前重叠claimant；不对每个端点重扫全部动态事件。参考
+[LLVM IntervalMap](https://llvm.org/doxygen/IntervalMap_8h_source.html)的有序半开区间访问，离线只读输入采用排序游标，
+不引入支持动态插入的树结构。必须保持原有category、claimant顺序、previous/next site及相邻区间合并规则；
+不修改测量数据、计时口径或device执行。覆盖空输入、相接/重叠/嵌套区间与同端点、独立逐点oracle，以及大规模输入的读取工作量上界。
+报告JSON与HTML使用同一encoder流式写入临时文件、fsync后原子发布，避免在内存同时拼接多份完整动态trace文本；
+JSON允许紧凑空白，schema、字段与精度不变。HTML的JSON脚本转义逐chunk执行，模板只在插入数据前分割，数据中的模板占位符保持字面值。
 
 IR inspection和内部通信候选资格入口可请求同一profile transaction；显式choice传到
 DeviceExecutable物化点，Primary与Count/Trace共用这一个actual owner。测试choice仍只存在于内部driver，

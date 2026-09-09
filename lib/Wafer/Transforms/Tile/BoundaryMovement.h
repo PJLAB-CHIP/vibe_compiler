@@ -50,6 +50,7 @@ struct BoundaryMovementOptions {
 struct BoundaryMovementStatistics {
   uint64_t ddrLoads = 0;
   uint64_t ddrStores = 0;
+  uint64_t streamedOutputCarriers = 0;
   uint64_t peerSends = 0;
   uint64_t peerReceives = 0;
   uint64_t peerRelaySends = 0;

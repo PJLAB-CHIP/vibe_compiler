@@ -252,6 +252,48 @@ Accumulator/Maximum/Sum。FA在唯一spatial owner内形成K2 recurrence；FD的
 recurrence。K1在该层保持full extent，decomposition后成为QK Linalg contraction的普通reduction codegen问题。第14项不再选择K1/K2、
 contribution或merge Tile。
 
+Temporal tiling已经产生actual `tensor.extract_slice`后，若其source是仅删除unit维度的collapse，
+使用pinned Tensor的rank-reducing-slice simplification并组合连续slice，使外部tensor只按current tile实际需要的范围读取。
+该规则在同一TileRegion的temporal canonicalization中运行，要求actual slice user；没有tile demand的普通reshape仍由05号
+e-graph负责。不根据缩小后的shape预判SPM合法性，后续仍实际bufferize、lower和规划。
+Boundary movement把SPM carrier的subview改接DDR输入或紧凑allocation时，必须保留原result shape所表达的rank reduction，
+只从新的source layout重新推导offset/stride；不能调用无result type的builder重新引入已删除的unit维度。
+直接覆盖从rank4输入、1024/1025/1031 temporal main/tail到rank3实际`tile.load`：source/destination shape相同，读取范围至多一个tile。
+API依据为[MemRef subview合同](https://mlir.llvm.org/docs/Dialects/MemRef/#memrefsubview-memrefsubviewop)，
+以pinned `SubViewOp::inferRankReducedResultType`及`IndependenceTransforms.cpp`调用方式确认。
+
+Boundary movement已经物化actual DDR destination与terminal `tile.store`后，对只用于收集已完成tile的SPM输出carrier做直接写回：
+从actual allocation及其subview、原样转发的`scf.for` iter_arg/result证明完整use closure。除terminal store外，只允许tile copy写入，
+以及可证明source/destination为同一view的冗余copy；存在读取、算术更新、DTE使用、非原样loop yield、未知alias或其它escape时不改写。
+DDR destination必须是支配全部tile写入的Region参数，在当前Region中仅由该terminal store使用，且已有actual allocation；
+同一Region对该allocation存在其它alias使用时保留原IR。证明完成后，将原tile copy改为同位置的
+`tile.store`到对应DDR subview，loop只携带DDR destination，删除完整SPM carrier与最终整块store；不改tile compute、数值顺序或消息。
+该变换输入为完整bufferized Tile region，输出为显式per-tile store及DDR alias，直接下游为Tile→Instr、completion、SPM/DDR规划与target验证。
+它不按shape/估算容量触发，不在allocator中spill，不创建future buffer，也不改变带read/merge需求的SPM state。
+
+算法依据为[MLIR DPS与bufferization](https://mlir.llvm.org/docs/Bufferization/)的destination reuse/subset写入规则，
+以pinned Tensor `InsertSliceOpInterface::bufferize`的destination subview与copy语义确认；当前阶段DDR destination已经存在，故只改写
+已确定alias/effect的低层movement，不重新做Tensor in-place选择。覆盖rank3/4、1024/1025/1031、超过SPM的4096整除/4097尾部，
+精确检查写回offset/size、无完整SPM carrier，并实际推进Instr/completion/SPM；带读取、变化loop yield或未知alias的负例必须保持原IR。
+
+对于已物化的online coupled-state producer及其唯一parallel Linalg consumer，temporal apply可以构造共同的输出遍历。
+输入仍是current `online_attention`、其全部SSA results、scalar-fill DPS初值及本轮两者的tile/loop choice；不产生另一种attention IR。
+必须证明全部live state结果只供该consumer使用，consumer不读取DPS旧输出，各state indexing map组合一致，所有active输出轴都在
+每个state中出现且允许parallel tiling。两者选择的共同轴tile size和parallel次序必须一致，原选择必须把parallel循环置于reduction之前。
+无法证明、额外state consumer、不同tile grid、state共享轴或带reduction的consumer均保留原路径。
+
+物化先建立consumer的输出tile循环，然后在该循环中只创建一次三结果producer和同值同dtype的tile初值，再按原选择构造完整K/V recurrence，
+最后消费本tile全部state并写入输出tile。不得按accumulator/sum等不同result分别重算producer；不得把K/V block顺序、算术op或中间dtype改变。
+多头、sequence和head dimension只由current maps/shapes决定，不使用模型名或固定长度。该变换位于actual temporal choice之后、
+attention decomposition/layout之前；输出为普通SCF、online state及Linalg，直接下游仍为既有decomposition、bufferization、movement和actual SPM gate。
+它不替代普通pure producer的e-graph探索，也不猜测容量、插入spill或选择DDR/通信路径。
+
+算法对照[FlashAttention-2](https://arxiv.org/abs/2307.08691)的输出block内完成online归约及归一化，实际复用pinned MLIR
+`SCF/Transforms/TileUsingInterface.h`的`tileUsingSCF`和Tensor tile producer helper。这里只改变已证明独立的输出遍历和state lifetime，
+不采用论文中的数值或硬件专用改写。完成条件为完整state allocation消失、每输出tile只有一次三结果producer、K/V动态次数与顺序不变、
+exact output main/tail及actual Instr/completion/SPM成功，产品4096×32-head fresh no-card和实卡PyTorch闭合。
+覆盖1024/1025/1031、4096/4097、FP16/BF16；额外state use、DPS读取、不同grid/次序和共享state轴的负例保留原IR。
+
 Producer tile是否由consumer tile唯一决定，只能由一次transformation调用内的只读exact tile-relation query判断。该query只读取current
 producer/result、current consumer/operand、已经选定的自由tile参数、indexing map与`IndexRelation`/`ExactIndexSet`，不调用会修改IR的
 tiling builder，也不把offset、extent、operation或SSA保存到跨stage plan。只有证明为total single-valued relation时才能把producer参数
@@ -262,7 +304,7 @@ broken contract终止该candidate。
 当前exact-derived边界要求producer/consumer位于同一Region和block、producer pure、edge不是DPS destination，并由current indexing map或
 composed `IndexRelation`证明实际tile demand。Single-use direct/projected chain、general reshape rectangle/有限pieces以及all-use compatible
 direct/view chain均可形成Joint；未捕获use、effect、DPS destination、cross-Region或relation失败保持Independent。Broadcast和window遵循下述
-额外门禁。`online_attention`始终是独立root，不作为ordinary producer被复制进finalize或其它consumer traversal。
+额外门禁。`online_attention`不进入ordinary逐result producer fusion；符合上述完整coupled-state合同的唯一consumer才可共用输出遍历。
 
 Direct edge不是完整边界。Spatial exact-demand已经通过`WaferTensorIndexingOpInterface`和`IndexRelation`解释static pure
 `tensor.cast`、`extract_slice`、`insert_slice`、`expand_shape`、`collapse_shape`和`pad`；该current-op relation构造必须抽为
@@ -695,6 +737,8 @@ Accepted actual objective按同一profile的标量estimated duration比较；合
 Public search work limit只有`width`和`trials`。`width`是可访问的structural choices总数，`trials`是全局actual
 compilation次数；默认分别为8和42。正式CLI使用`--search-width`与`--search-trials`，public C++ API使用
 `OptimizationConfig::search(SearchLimits)`。Initial/refinement slots和单candidate Temporal上限是内部调度，不对外暴露。
+单structural owner默认最多16个Temporal choice，以允许真实capacity反馈继续收窄大输入；全局42次actual-attempt预算保持不变，
+实际首次可接受后仍停止该owner的Temporal遍历。该上限只是工作量调度，耗尽只报告partial，不能据此认定shape不合法。
 Search limit不是shape、legality、cost或wall-time policy；none不接受它，缺省参数保持现有结果。Effective limits在
 compiler diagnostic和compile counters中记录，相同source、target、policy和limits保持确定性。
 

@@ -8,10 +8,12 @@ import importlib.util
 import json
 import pathlib
 import re
+import random
 import subprocess
 import sys
 import tempfile
 from html.parser import HTMLParser
+from unittest.mock import patch
 
 from wafer_profile_report_fixture import make_evidence
 
@@ -814,6 +816,94 @@ def _test_direct_dte(module: object) -> None:
     assert raw_timeline_event["counter_status"] == "Sampled"
 
 
+def _test_semantic_sweep(module: object) -> None:
+    def make_site(index: int, begin: int, end: int) -> dict:
+        return {
+            "begin_cycle": begin,
+            "end_cycle": end,
+            "ref": {
+                "site_id": index, "instance_sequence": index,
+                "site_kind": "ncc-command", "target_call_symbol": "entry",
+                "target_call_ordinal": index, "correlation_key": str(index),
+                "position": None,
+            },
+        }
+
+    # A small integer axis is intentional: each individual cycle is checked
+    # with an independent exhaustive overlap oracle, including tied endpoints.
+    rng = random.Random(1327)
+    for trial in range(100):
+        sites = [
+            make_site(index, *sorted(rng.sample(range(33), 2)))
+            for index in range(trial % 12)
+        ]
+        operations = [
+            (*sorted(rng.sample(range(33), 2)), "ncc-command", index,
+             rng.choice(sites)["ref"])
+            for index in range(trial % 9)
+        ] if sites else []
+        segments = module._semantic_segments(0, 32, sites, operations)
+        ordered = sorted(sites, key=lambda s: (
+            s["begin_cycle"], s["end_cycle"], s["ref"]["instance_sequence"]
+        ))
+        assert sum(s["cycles"] for s in segments) == 32
+        for cycle in range(32):
+            rows = [s for s in segments
+                    if s["begin_cycle"] <= cycle < s["end_cycle"]]
+            assert len(rows) == 1
+            row = rows[0]
+            active_ops = [o for o in operations if o[0] <= cycle < o[1]]
+            active_sites = [s for s in ordered
+                            if s["begin_cycle"] <= cycle < s["end_cycle"]]
+            previous = [s["ref"] for s in ordered if s["end_cycle"] <= cycle]
+            following = [s["ref"] for s in ordered if s["begin_cycle"] > cycle]
+            assert row["previous_site"] == (previous[-1] if previous else None)
+            assert row["next_site"] == (following[0] if following else None)
+            if len(active_ops) > 1:
+                assert row["reason"] == "overlapping-operation-spans"
+                assert row["claimant_sites"] == [o[4] for o in active_ops]
+            elif active_ops:
+                assert row["category"] == "ncc-submit"
+                assert row["source_event_sequence"] == active_ops[0][3]
+                assert row["containing_site"] == active_ops[0][4]
+            elif len(active_sites) > 1:
+                assert row["reason"] == "overlapping-site-spans"
+                assert row["claimant_sites"] == [s["ref"] for s in active_sites]
+            elif active_sites:
+                assert row["category"] == "site-control"
+                assert row["containing_site"] == active_sites[0]["ref"]
+            elif not ordered:
+                assert row["reason"] == "no-valid-site-boundaries"
+            elif cycle < ordered[0]["begin_cycle"]:
+                assert row["category"] == "entry-prologue"
+            elif cycle >= max(s["end_cycle"] for s in ordered):
+                assert row["category"] == "entry-epilogue"
+            else:
+                assert row["category"] == "between-site-gap"
+
+    # Work-count bound, not a wall-time threshold: a sequential 16K-site trace
+    # must not reread every completed interval at each new endpoint.
+    reads = 0
+
+    class CountedSite(dict):
+        def __getitem__(self, key):
+            nonlocal reads
+            reads += 1
+            return super().__getitem__(key)
+
+    count = 16384
+    sites = [CountedSite(make_site(i, 4 * i + 1, 4 * i + 3))
+             for i in range(count)]
+    operations = [(4 * i + 1, 4 * i + 2, "ncc-command", i, s["ref"])
+                  for i, s in enumerate(sites)]
+    segments = module._semantic_segments(0, 4 * count, sites, operations)
+    assert sum(s["cycles"] for s in segments) == 4 * count
+    assert len(segments) == 3 * count + 1
+    assert sum(s["cycles"] for s in segments
+               if s["category"] == "ncc-submit") == count
+    assert reads < 60 * count, reads
+
+
 def _test_cost_attribution(module: object) -> None:
     base = module.analyze_evidence(make_evidence())
     base_partition = base["program"]["tiles"][0]["semantic_partition"]
@@ -1497,12 +1587,16 @@ def _test_rejections(module: object) -> None:
 
 def _test_report_files(repo: pathlib.Path, module: object) -> None:
     evidence = make_evidence()
+    evidence["run_id"] = "__ANALYSIS____EVIDENCE__</script>&\u2028\u2029"
     with tempfile.TemporaryDirectory() as temporary:
         root = pathlib.Path(temporary)
         input_path = root / "input.json"
         output = root / "run"
         input_path.write_text(json.dumps(evidence), encoding="utf-8")
-        html_path, analysis_path = module.generate_report(input_path, output)
+        with patch.object(module.json, "dumps", side_effect=AssertionError(
+            "file generation must stream JSON instead of building a full string"
+        )):
+            html_path, analysis_path = module.generate_report(input_path, output)
         assert html_path == output / "index.html"
         assert analysis_path == output / "analysis.json"
         assert {path.name for path in output.iterdir()} == {
@@ -1520,6 +1614,12 @@ def _test_report_files(repo: pathlib.Path, module: object) -> None:
             analysis_path.read_text(encoding="utf-8")
         )
         assert analysis["program"]["duration"]["qualified"]
+        report = html_path.read_text()
+        assert report == module.render_report(evidence)
+        payload = report.split("const evidence=", 1)[1].split(";\n", 1)[0]
+        assert json.loads(payload) == evidence
+        assert "</script>" not in payload
+        assert "\u2028" not in payload and "\u2029" not in payload
 
         command = [
             sys.executable,
@@ -1604,6 +1704,7 @@ def main() -> int:
     _test_program(module)
     _test_direct_dte(module)
     _test_cost_attribution(module)
+    _test_semantic_sweep(module)
     _test_validity(module)
     _test_rejections(module)
     _test_report_files(repo, module)

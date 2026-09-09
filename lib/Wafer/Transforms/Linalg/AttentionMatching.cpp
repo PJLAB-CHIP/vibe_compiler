@@ -501,6 +501,27 @@ std::optional<ScoreExpression> matchScoreExpression(mlir::Value value) {
     score->mask = add.getDpsInputs()[1 - scoreIndex];
     score->maskMap = maps[1 - scoreIndex];
     score->scoreOutputMap = maps[2];
+    // Prove the mask relation while forming the semantic attention operand.
+    // A pure forwarding producer need not materialize its broadcast domain.
+    // Other uses keep the producer; only the matched attention input changes.
+    while (auto producer =
+               score->mask.getDefiningOp<mlir::linalg::GenericOp>()) {
+      if (!matchBroadcastBody(producer) || !producer.hasPureTensorSemantics())
+        break;
+      auto producerMaps = producer.getIndexingMapsArray();
+      if (producerMaps.size() != 2 ||
+          !isProjectedPermutation(producerMaps[0]) ||
+          !producerMaps[1].isPermutation())
+        break;
+      mlir::AffineMap composed =
+          producerMaps[0]
+              .compose(mlir::inversePermutation(producerMaps[1]))
+              .compose(score->maskMap);
+      if (!isProjectedPermutation(composed))
+        break;
+      score->mask = producer.getDpsInputs().front();
+      score->maskMap = composed;
+    }
     return score;
   }
   return std::nullopt;

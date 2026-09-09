@@ -153,7 +153,7 @@ loadJSONDocument(llvm::StringRef path, llvm::StringRef label,
     return llvm::createStringError(buffer.getError(),
                                    "failed to read " + label + ": " + path);
   llvm::StringRef contents = (*buffer)->getBuffer();
-  if (contents.size() > limits.maxJSONBytes)
+  if (contents.size() > limits.maxProfileJSONBytes)
     return invalid(label + " exceeds JSON byte limit");
   if (exceedsJSONNesting(contents, limits.maxJSONNesting))
     return invalid(label + " exceeds JSON nesting limit");

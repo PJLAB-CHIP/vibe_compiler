@@ -194,7 +194,7 @@ protected:
 
   /// Writes one verifiable package. `recordBytes` selects the entry-local
   /// profiler record extension of every Tile entry (only the canonical
-  /// 832/1048576 byte images verify); `finalArgument` controls what the final
+  /// Count/Trace-sized images verify); `finalArgument` controls what the final
   /// ordered entry argument is. `includeProgramData` adds a single 16-byte
   /// TargetTensor backed by program-data.bin; its alignment is 16 unless
   /// overridden. `doubleProfileRecord` appends a second identical profile
@@ -523,6 +523,42 @@ protected:
   llvm::SmallString<256> instrumentation;
 };
 
+TEST_F(ProfileInstrumentationTest, ProfileMetadataUsesItsOwnBoundedJSONBudget) {
+  llvm::SmallString<256> path(instrumentation);
+  llvm::sys::path::append(path, "site-map.json");
+  auto contents = llvm::MemoryBuffer::getFile(path);
+  ASSERT_TRUE(static_cast<bool>(contents));
+  const std::string padded =
+      std::string(4 * 1024 * 1024, ' ') + (*contents)->getBuffer().str();
+  std::error_code error;
+  llvm::raw_fd_ostream output(path, error, llvm::sys::fs::OF_Text);
+  ASSERT_FALSE(error);
+  output << padded;
+  output.close();
+  ASSERT_FALSE(output.has_error());
+  ASSERT_NO_FATAL_FAILURE(writeActivation());
+
+  wafer::runtime::PackageParseLimits limits;
+  limits.maxProfileJSONBytes = padded.size();
+  auto exact = wafer::runtime::loadVerifiedProfileInstrumentation(
+      instrumentation, primary, limits);
+  ASSERT_TRUE(static_cast<bool>(exact)) << llvm::toString(exact.takeError());
+  --limits.maxProfileJSONBytes;
+  auto tooSmall = wafer::runtime::loadVerifiedProfileInstrumentation(
+      instrumentation, primary, limits);
+  ASSERT_FALSE(static_cast<bool>(tooSmall));
+  EXPECT_NE(
+      llvm::toString(tooSmall.takeError()).find("profile site map exceeds"),
+      std::string::npos);
+
+  limits.maxProfileJSONBytes = padded.size();
+  limits.maxJSONBytes = 1;
+  auto packageTooSmall = wafer::runtime::loadVerifiedProfileInstrumentation(
+      instrumentation, primary, limits);
+  ASSERT_FALSE(static_cast<bool>(packageTooSmall));
+  llvm::consumeError(packageTooSmall.takeError());
+}
+
 TEST_F(ProfileInstrumentationTest,
        LoadsExactBoundInstrumentationAndSixteenTileSiteMap) {
   llvm::Expected<wafer::runtime::VerifiedProfileInstrumentation> loaded =
@@ -559,7 +595,7 @@ TEST_F(ProfileInstrumentationTest,
   const auto *trace =
       loaded->findCapture(wafer::runtime::ProfileCaptureKind::Trace);
   ASSERT_NE(trace, nullptr);
-  EXPECT_EQ(trace->getRecordBytes(), UINT64_C(1024) * 1024);
+  EXPECT_EQ(trace->getRecordBytes(), WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES);
   EXPECT_EQ(trace->getRecordABI(), wafer::runtime::kProfileRecordABI);
   for (wafer::runtime::ProfileCaptureKind capture :
        {wafer::runtime::ProfileCaptureKind::Count,

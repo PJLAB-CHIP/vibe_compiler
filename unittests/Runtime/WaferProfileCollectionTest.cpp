@@ -902,8 +902,9 @@ TEST(WaferProfileCollectionTest, CountCapacityFailurePreventsTraceLaunch) {
   EXPECT_EQ(calls, 2u);
   EXPECT_EQ(traceCalls, 0u);
   EXPECT_FALSE(measurementsConsumed);
-  EXPECT_NE(llvm::toString(result.takeError()).find("exceeds"),
-            std::string::npos);
+  EXPECT_EQ(llvm::toString(result.takeError()),
+            "profile count exceeds the fixed trace package capacity: "
+            "tile=0 counted=3 capacity=2");
 }
 
 TEST(WaferProfileCollectionTest, TraceMismatchStopsBeforeReportWrite) {

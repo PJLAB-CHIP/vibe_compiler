@@ -1,0 +1,143 @@
+{
+  "date": "2026-09-09",
+  "case": "attention-prefill-llama-2-7b",
+  "dtype": "float16",
+  "seed": 20260803,
+  "scope": "causal attention core；Q/K/V为输入，不包含QKVO projection或RoPE。",
+  "shapes": {
+    "qkv_each": [
+      1,
+      32,
+      4096,
+      128
+    ],
+    "mask": [
+      1,
+      1,
+      4096,
+      4096
+    ]
+  },
+  "qualification": {
+    "runtime_version": "1300",
+    "runtime_library_sha256": "b4f19d673e1767314f6cd900f7f66345e7d1d8c0545de83a7139d62596a6e12c",
+    "tile_count": 16
+  },
+  "policy": "search",
+  "limits": {
+    "width": 8,
+    "trials": 42,
+    "temporal_per_structural": 16
+  },
+  "primary": {
+    "sample_count": 1,
+    "device_elapsed_ns": 913580017,
+    "device_timer_kind": "tx-stream-events"
+  },
+  "manifest_sha256": "6e7b339de5d8bd99a0d0243633010db521326036022f68fbd073a2fab18180c7",
+  "modules": [
+    {
+      "id": 0,
+      "path": "modules/module_00000.so",
+      "digest": "sha256:7653507865b8f58ae83a28a4c82def1305bcfb2ec071c892b81b06aa6c6949de",
+      "format": "elf-riscv64",
+      "exports": [
+        {
+          "role": "main",
+          "symbol": "entry"
+        }
+      ]
+    }
+  ],
+  "pytorch": {
+    "case": "attention-prefill-llama-2-7b",
+    "manifest_sha256": "6e7b339de5d8bd99a0d0243633010db521326036022f68fbd073a2fab18180c7",
+    "outputs": [
+      {
+        "elements": 16777216,
+        "max_abs_error": 0.001953125
+      }
+    ],
+    "comparison": {
+      "rtol": 0.006,
+      "atol": 0.008
+    },
+    "inputs": {
+      "card_00_user_input_0.f16.raw": "09ac500ff6f47422cee86f5f8c79164fe8e3c6e79334e92ddac3bcf9186d54f0",
+      "card_00_user_input_1.f16.raw": "032057f25bd5cc45fe4953e2978b0a19b8dcaeccdf215ec2ea516ee6a0efed04",
+      "card_00_user_input_2.f16.raw": "8205f432bf79c825241af66edd95ead04eccd78fc59413393dc15d408cc3ea08",
+      "card_00_user_input_3.f16.raw": "348a22cba824428a45b3aead5781dbfb399de1b45bc614b73ac31c7fd6bfb489"
+    }
+  },
+  "no_card": true,
+  "compile": {
+    "wall_seconds": 381.85,
+    "peak_rss_kib": 96676,
+    "actualizations": 42,
+    "accepted_temporal_candidates": 1
+  },
+  "state_lifetime": {
+    "tile_count": 16,
+    "heads_per_tile": 2,
+    "query_tile": 128,
+    "key_value_tile": 128,
+    "accumulator_before_shape": [
+      1,
+      2,
+      4096,
+      128
+    ],
+    "accumulator_before_bytes": 2097152,
+    "accumulator_after_shape": [
+      1,
+      2,
+      128,
+      128
+    ],
+    "accumulator_after_bytes": 65536,
+    "max_sum_each_shape": [
+      1,
+      2,
+      128
+    ],
+    "max_sum_each_dtype": "float32",
+    "max_sum_each_bytes": 1024,
+    "full_state_spm_carrier_present": false,
+    "output_carrier_space": "DDR"
+  },
+  "profile_attempt": {
+    "primary_and_count_completed": true,
+    "trace_launched": false,
+    "counted_events_tile0": 1185666,
+    "trace_capacity_events_per_tile": 209705,
+    "reason": "主机在Count后拒绝超容量Trace；没有设备timeout，不把该collector命令计为成功。"
+  },
+  "limitation": "修复前此4096×32-head配置不能通过SPM，因此没有同shape设备基线，不报告加速比。没有完整Trace；不能据本次Primary给出engine热点分解。",
+  "instruction_ir_sha256": {
+    "tile_00000.mlir": "281fc38e0ae2ff2575abe3304e9d8214582d3bb63c22e1dcc1e767b2021ffd30",
+    "tile_00001.mlir": "a742dcf047be44d080a32ef33c544a2f68f8c8c6a09f8a43c95b4851258d0008",
+    "tile_00002.mlir": "7a9295c6a1ff10ec86a7d554f9a23d88ec4f48f55e9d09b5423902d3009aba89",
+    "tile_00003.mlir": "945385d7f309b8a0c5f7d3537354abd6f7a4708a2027c9d41aee48da3602f95b",
+    "tile_00004.mlir": "b8dc6da1f9d38dec5a5c334c647c2b8217ada29e41da6d8f6a1d356110e5eb14",
+    "tile_00005.mlir": "9388968ae9cd05bd93c6a9d31a69d60281d531c0ef8f663caf3a59e517fc8319",
+    "tile_00006.mlir": "03833ca538eed1dab001ed183ab21a591fb574342e65f18e08f843c952d68cb6",
+    "tile_00007.mlir": "ff7a3bb9250d9e218888ca63aec9382dbf3d944bf919505566527b493f32bb3c",
+    "tile_00008.mlir": "60e025aeee387c3716be7980f51c5b73e172c1cc77f881599a4cc4f27f57467e",
+    "tile_00009.mlir": "cd399023f85eb7f0a06255a4ab5df958bbcd5aef10856f5318730045ffba6fb0",
+    "tile_00010.mlir": "2113a7efebaf54668d40b65e40f48453e134a586bcdb01879bd781d2431fb882",
+    "tile_00011.mlir": "5170c48427dd4443755fa313e982e7f80d51064f255f3fbfe4498e00dcabc88e",
+    "tile_00012.mlir": "ea8aa334c187dd59da441e7c3020a2e2e8520edf7b4065fecea4b5d6a4a3af47",
+    "tile_00013.mlir": "b979cc79d64950f72e5078f036eef5ea4f0ca57eff640d9fa8d2f0d0d431b149",
+    "tile_00014.mlir": "478fc0e9a66416b740b7a053dbbe4a56b589161557e65aa97abfe133696499cc",
+    "tile_00015.mlir": "9c49f485f22d73a1bfbe0b1bc436c3113ef51e6f0c29e42612e146cc6da4555e"
+  },
+  "registered_no_card": {
+    "test": "wafer-runtime-pytorch-attention-prefill-llama-2-7b-fp16-optimization-search-no-card",
+    "passed": true,
+    "skipped": false,
+    "wall_seconds": 627.83,
+    "fresh_full_pytorch_reference": true,
+    "manifest_matches_board": true,
+    "log_sha256": "3727492b10c46087e015b824f56b6f9407af8aee43df62d7def7076b2f006c68"
+  }
+}

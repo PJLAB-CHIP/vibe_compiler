@@ -37,6 +37,15 @@ materializeScale(mlir::IRRewriter &rewriter,
     return match.scale;
   auto type = mlir::dyn_cast<mlir::RankedTensorType>(match.scale.getType());
   assert(type && "attention proof only returns scalar or ranked scale");
+  if (auto constant = match.scale.getDefiningOp<mlir::arith::ConstantOp>()) {
+    if (auto elements =
+            mlir::dyn_cast<mlir::DenseElementsAttr>(constant.getValue());
+        elements && elements.isSplat())
+      return rewriter.create<mlir::arith::ConstantOp>(
+          match.root->getLoc(),
+          rewriter.getFloatAttr(type.getElementType(),
+                                elements.getSplatValue<llvm::APFloat>()));
+  }
   llvm::SmallVector<mlir::Value, 4> indices;
   for (int64_t dimension = 0; dimension < type.getRank(); ++dimension)
     indices.push_back(

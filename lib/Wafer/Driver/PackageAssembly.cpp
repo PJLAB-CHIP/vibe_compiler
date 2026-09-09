@@ -66,6 +66,12 @@ writeJSONFile(llvm::StringRef path,
                readback.getError().message());
     return mlir::failure();
   }
+  if ((*readback)->getBufferSize() >
+      runtime::PackageParseLimits{}.maxProfileJSONBytes) {
+    reject(diagnostics,
+           "profile instrumentation metadata exceeds JSON byte limit");
+    return mlir::failure();
+  }
   llvm::Expected<llvm::json::Value> parsed =
       llvm::json::parse((*readback)->getBuffer());
   if (!parsed || !parsed->getAsObject()) {

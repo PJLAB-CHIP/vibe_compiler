@@ -1,0 +1,1734 @@
+{
+  "case": "llama-2-7b-block",
+  "measurement": {
+    "sample_id": "primary",
+    "sample_index": 0,
+    "measurement_kind": "tx-stream-kernel-launch-to-completion-envelope",
+    "scope": "primary-launch-to-stream-completion",
+    "is_engine_only": false,
+    "includes_device_control_wait_and_scheduling": true,
+    "includes_host_submit": false,
+    "includes_host_completion_polling": false,
+    "includes_trace_instrumentation": false,
+    "device_elapsed_ns": 109008003,
+    "device_timer_kind": "tx-stream-events",
+    "device_elapsed_quantized_zero": false,
+    "host_submit_ns": 107989,
+    "host_submit_quantized_zero": false,
+    "host_launch_to_completion_ns": 109385618,
+    "host_non_submit_envelope_ns": 109277629,
+    "host_envelope_available": true,
+    "completion_observation_resolution_ns": 17473,
+    "completion_observation_fraction": 0.00015973763571002544,
+    "host_completion_high_resolution": true,
+    "qualified": true,
+    "status": "Measured"
+  },
+  "program": {
+    "program_manifest_sha256": "sha256:09e775995ee7173d27d8e14c3bab5b76b5c7a95398bb5313da2e44558a163f0e",
+    "target_identity": "wafer-tx81-single-card",
+    "launch": {
+      "kind": "kernel",
+      "form": "grid",
+      "entry_abi": "tile-row-pointer-table",
+      "phases": [
+        "main"
+      ]
+    },
+    "card_count": 1,
+    "tile_count": 16,
+    "site_correlation_basis": "target-call-ordinal-ssa-position",
+    "record_abi": "wafer-tx81-profiler-record"
+  },
+  "validity": {
+    "program_contract": true,
+    "output_equivalence": true,
+    "semantic_correctness": null,
+    "environment": true,
+    "profile_instrumentation": true,
+    "measurement_basis": true,
+    "host_completion_resolution": true,
+    "trace": true,
+    "cost_accounting": true,
+    "pmu": true,
+    "pmu_restore": true,
+    "clock_alignment": false
+  },
+  "pytorch": {
+    "case": "llama-2-7b-block",
+    "manifest_sha256": "09e775995ee7173d27d8e14c3bab5b76b5c7a95398bb5313da2e44558a163f0e",
+    "outputs": [
+      {
+        "elements": 65536,
+        "max_abs_error": 0.00146484375
+      }
+    ],
+    "comparison": {
+      "rtol": 0.002,
+      "atol": 0.004
+    },
+    "inputs": {
+      "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+    }
+  },
+  "capture_summary": [
+    {
+      "tile_id": 0,
+      "count": 90556,
+      "counted_event_count": 90556,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 1,
+      "count": 90556,
+      "counted_event_count": 90556,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 2,
+      "count": 90556,
+      "counted_event_count": 90556,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 3,
+      "count": 90556,
+      "counted_event_count": 90556,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 4,
+      "count": 90556,
+      "counted_event_count": 90556,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 5,
+      "count": 90556,
+      "counted_event_count": 90556,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 6,
+      "count": 90556,
+      "counted_event_count": 90556,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 7,
+      "count": 90556,
+      "counted_event_count": 90556,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 8,
+      "count": 90556,
+      "counted_event_count": 90556,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 9,
+      "count": 90556,
+      "counted_event_count": 90556,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 10,
+      "count": 90556,
+      "counted_event_count": 90556,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 11,
+      "count": 90556,
+      "counted_event_count": 90556,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 12,
+      "count": 90556,
+      "counted_event_count": 90556,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 13,
+      "count": 90556,
+      "counted_event_count": 90556,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 14,
+      "count": 90556,
+      "counted_event_count": 90556,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 15,
+      "count": 90548,
+      "counted_event_count": 90548,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    }
+  ],
+  "date": "2026-09-09",
+  "dtype": "float16",
+  "shape": [
+    1,
+    16,
+    4096
+  ],
+  "mlp": 11008,
+  "seed": 20260803,
+  "qualification": {
+    "runtime_version": "1300",
+    "runtime_library_sha256": "b4f19d673e1767314f6cd900f7f66345e7d1d8c0545de83a7139d62596a6e12c",
+    "tile_count": 16
+  },
+  "tiles": [
+    {
+      "tile": 0,
+      "trace_entry_cpu_cycles": 180522590,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 707791,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 14790,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 1872051,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 576,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 44413283,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 5403,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 471844,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 155,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 7675754,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 24247,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "ncc-submit": 42051023,
+        "site-control": 126410831,
+        "between-site-gap": 12023245,
+        "completion-wait-proxy": 32809,
+        "entry-epilogue": 2564,
+        "entry-prologue": 2118
+      }
+    },
+    {
+      "tile": 1,
+      "trace_entry_cpu_cycles": 176831716,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 707766,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 14790,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 1871936,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 576,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 40530868,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 5403,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 512819,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 155,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 7675742,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 24247,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 125853528,
+        "ncc-submit": 38909218,
+        "completion-wait-proxy": 47118,
+        "between-site-gap": 12016307,
+        "entry-epilogue": 3287,
+        "entry-prologue": 2258
+      }
+    },
+    {
+      "tile": 2,
+      "trace_entry_cpu_cycles": 175117325,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 707790,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 14790,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 1871936,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 576,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 37556911,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 5403,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 522433,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 155,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 7675742,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 24247,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 126868397,
+        "ncc-submit": 36181473,
+        "entry-epilogue": 4451,
+        "between-site-gap": 12023413,
+        "completion-wait-proxy": 37156,
+        "entry-prologue": 2435
+      }
+    },
+    {
+      "tile": 3,
+      "trace_entry_cpu_cycles": 179967136,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 707766,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 14790,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 1871936,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 576,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 42997983,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 5403,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 435742,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 155,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 7675742,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 24247,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 126818422,
+        "ncc-submit": 41069162,
+        "between-site-gap": 12037473,
+        "completion-wait-proxy": 37206,
+        "entry-prologue": 2683,
+        "entry-epilogue": 2190
+      }
+    },
+    {
+      "tile": 4,
+      "trace_entry_cpu_cycles": 181088283,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 707790,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 14790,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 1871936,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 576,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 45853026,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 5403,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 600335,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 155,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 7675742,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 24247,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "ncc-submit": 43553936,
+        "site-control": 125545977,
+        "between-site-gap": 11952425,
+        "completion-wait-proxy": 30671,
+        "entry-prologue": 2887,
+        "entry-epilogue": 2387
+      }
+    },
+    {
+      "tile": 5,
+      "trace_entry_cpu_cycles": 178878011,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 707766,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 14790,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 1871936,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 576,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 42333964,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 5403,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 435865,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 155,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 7675742,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 24247,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 126213945,
+        "ncc-submit": 40294372,
+        "between-site-gap": 12329108,
+        "completion-wait-proxy": 35296,
+        "entry-epilogue": 3340,
+        "entry-prologue": 1950
+      }
+    },
+    {
+      "tile": 6,
+      "trace_entry_cpu_cycles": 177044101,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 707790,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 14790,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 1871936,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 576,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 39985659,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 5403,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 437450,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 155,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 7675742,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 24247,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 126666986,
+        "ncc-submit": 38394183,
+        "completion-wait-proxy": 32658,
+        "entry-epilogue": 3456,
+        "between-site-gap": 11944202,
+        "entry-prologue": 2616
+      }
+    },
+    {
+      "tile": 7,
+      "trace_entry_cpu_cycles": 180822207,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 707766,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 14790,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 1871936,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 576,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 44240088,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 5403,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 520470,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 155,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 7675743,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 24247,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 126704993,
+        "ncc-submit": 42078896,
+        "between-site-gap": 12002185,
+        "completion-wait-proxy": 31786,
+        "entry-prologue": 2314,
+        "entry-epilogue": 2033
+      }
+    },
+    {
+      "tile": 8,
+      "trace_entry_cpu_cycles": 180963653,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 707790,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 14790,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 1871936,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 576,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 45639384,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 5403,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 561392,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 155,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 7675743,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 24247,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "ncc-submit": 43098989,
+        "site-control": 125825895,
+        "completion-wait-proxy": 40549,
+        "between-site-gap": 11993143,
+        "entry-prologue": 2657,
+        "entry-epilogue": 2420
+      }
+    },
+    {
+      "tile": 9,
+      "trace_entry_cpu_cycles": 178036434,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 707766,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 14790,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 1871936,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 576,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 41872972,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 5403,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 453698,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 155,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 7675742,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 24247,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 125988677,
+        "ncc-submit": 40012791,
+        "completion-wait-proxy": 32370,
+        "entry-epilogue": 3382,
+        "between-site-gap": 11996459,
+        "entry-prologue": 2755
+      }
+    },
+    {
+      "tile": 10,
+      "trace_entry_cpu_cycles": 176548920,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 707790,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 14790,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 1871936,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 576,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 39167519,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 5403,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 488058,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 155,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 7675742,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 24247,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 126973151,
+        "ncc-submit": 37575507,
+        "between-site-gap": 11957399,
+        "completion-wait-proxy": 36421,
+        "entry-epilogue": 3922,
+        "entry-prologue": 2520
+      }
+    },
+    {
+      "tile": 11,
+      "trace_entry_cpu_cycles": 180631426,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 707766,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 14790,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 1871936,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 576,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 44018240,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 5403,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 528108,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 155,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 7675742,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 24247,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 126751579,
+        "ncc-submit": 41927119,
+        "between-site-gap": 11919305,
+        "completion-wait-proxy": 29114,
+        "entry-prologue": 2261,
+        "entry-epilogue": 2048
+      }
+    },
+    {
+      "tile": 12,
+      "trace_entry_cpu_cycles": 179731283,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 707790,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 14790,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 1871936,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 576,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 44213896,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 5403,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 448803,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 155,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 7675742,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 24247,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 125557107,
+        "ncc-submit": 42191123,
+        "between-site-gap": 11944661,
+        "completion-wait-proxy": 33207,
+        "entry-epilogue": 2903,
+        "entry-prologue": 2282
+      }
+    },
+    {
+      "tile": 13,
+      "trace_entry_cpu_cycles": 175185090,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 707766,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 14790,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 1871936,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 576,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 38315901,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 5403,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 540342,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 155,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 7675742,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 24247,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 126355881,
+        "ncc-submit": 36868382,
+        "between-site-gap": 11911018,
+        "completion-wait-proxy": 43652,
+        "entry-epilogue": 3583,
+        "entry-prologue": 2574
+      }
+    },
+    {
+      "tile": 14,
+      "trace_entry_cpu_cycles": 173887235,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 707790,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 14790,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 1871936,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 576,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 35867665,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 5403,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 552994,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 155,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 7675742,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 24247,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 127114931,
+        "ncc-submit": 34760347,
+        "between-site-gap": 11963687,
+        "completion-wait-proxy": 41571,
+        "entry-epilogue": 4044,
+        "entry-prologue": 2655
+      }
+    },
+    {
+      "tile": 15,
+      "trace_entry_cpu_cycles": 179779490,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 707766,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 14790,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 1871936,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 576,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 35904791,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 5403,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 525641,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 155,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 7675742,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 24247,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 132944999,
+        "ncc-submit": 34779228,
+        "between-site-gap": 12025331,
+        "completion-wait-proxy": 24992,
+        "entry-prologue": 2517,
+        "entry-epilogue": 2423
+      }
+    }
+  ],
+  "primary_numeric_validation": {
+    "case": "llama-2-7b-block",
+    "manifest_sha256": "09e775995ee7173d27d8e14c3bab5b76b5c7a95398bb5313da2e44558a163f0e",
+    "outputs": [
+      {
+        "elements": 65536,
+        "max_abs_error": 0.00146484375
+      }
+    ],
+    "comparison": {
+      "rtol": 0.002,
+      "atol": 0.004
+    },
+    "inputs": {
+      "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+    }
+  },
+  "fresh_ordinary_primary_elapsed_ns": 108050003,
+  "collection_note": "Primary/Count/Trace均正常完成。原collector在CPU报告阶段耗时过长，终止的仅为报告子进程；保留原始证据后离线报告成功。另一次普通Primary全量PyTorch通过，输出SHA与原采集三种模式逐字节相同。原collector命令本身未成功。",
+  "captured_output_sha256": "d8d32b1fbc7e771dcef45d6dc0e3a09a546a2fc64ea266c0d2c19a11ad8184c0",
+  "limitation": "本条为热点测量，尚无LLaMA block设备性能优化前后对比。site-control含同步与插桩，不能全部归为可消除开销。",
+  "ir_review": {
+    "basis": "对应实测package的actual Tile IR；load请求量来自实际循环，不是DRAM总线实测流量。",
+    "spatial_states_visited": 1,
+    "compile_log_sha256": "05e664e35905d017ea8b0dcd60ccb6d5bbd8d2192a78e02562815c77e44785d0",
+    "first_projection": {
+      "m": 16,
+      "n": 4096,
+      "k": 4096,
+      "spatial_axis": "M",
+      "temporal_n": 512,
+      "temporal_k": 512,
+      "weight_bytes": 33554432,
+      "weight_loads_per_tile": 64,
+      "logical_weight_load_bytes_all_tiles": 536870912,
+      "tiles": [
+        {
+          "tile_id": 0,
+          "first_gemm_line": 1566,
+          "activation_m_offset": 0,
+          "activation_m_size": 1,
+          "tile_ir_sha256": "8257b6a9e3d9e037e8ba6831179dbf87551ac5f57501366db733cc4900f2a7a4"
+        },
+        {
+          "tile_id": 1,
+          "first_gemm_line": 1569,
+          "activation_m_offset": 1,
+          "activation_m_size": 1,
+          "tile_ir_sha256": "f76d214135bf8b9b7bf098ae48c1fc0a5860b636b8f984b6281839a105d6245a"
+        },
+        {
+          "tile_id": 2,
+          "first_gemm_line": 1569,
+          "activation_m_offset": 2,
+          "activation_m_size": 1,
+          "tile_ir_sha256": "a7a9bb96b3113539dc347f806a9e45ab15739320fd17bb45dbe0a76f6999b188"
+        },
+        {
+          "tile_id": 3,
+          "first_gemm_line": 1569,
+          "activation_m_offset": 3,
+          "activation_m_size": 1,
+          "tile_ir_sha256": "7746f5ac725aa964335196144b6f94d8773e8f2b9cdd8c1c70d40c9bc994cd91"
+        },
+        {
+          "tile_id": 4,
+          "first_gemm_line": 1569,
+          "activation_m_offset": 4,
+          "activation_m_size": 1,
+          "tile_ir_sha256": "731f32a6a1a8256786b5e46ac0bdce0e99003dcf82414f8c5713824461447e89"
+        },
+        {
+          "tile_id": 5,
+          "first_gemm_line": 1569,
+          "activation_m_offset": 5,
+          "activation_m_size": 1,
+          "tile_ir_sha256": "3e43102528779e085c755a02f83a33fc4e36f96e96359fdfd5c34931f272403b"
+        },
+        {
+          "tile_id": 6,
+          "first_gemm_line": 1569,
+          "activation_m_offset": 6,
+          "activation_m_size": 1,
+          "tile_ir_sha256": "ebfd38f50eb93a2928984dcf029a37d6089ad38634a7c514a2f53d1c9c677924"
+        },
+        {
+          "tile_id": 7,
+          "first_gemm_line": 1569,
+          "activation_m_offset": 7,
+          "activation_m_size": 1,
+          "tile_ir_sha256": "c8af4e56e31878d87c62e8ac42c7cc1527d997eb9599956dbe65d8328b7133bb"
+        },
+        {
+          "tile_id": 8,
+          "first_gemm_line": 1569,
+          "activation_m_offset": 8,
+          "activation_m_size": 1,
+          "tile_ir_sha256": "9f49e49684c6bd3f13f869ab11ac0f7c7bdb01e45cd8ba31a64b721eb4fb3391"
+        },
+        {
+          "tile_id": 9,
+          "first_gemm_line": 1569,
+          "activation_m_offset": 9,
+          "activation_m_size": 1,
+          "tile_ir_sha256": "c692021983887a6d685e1979f2131f8e784ee5ddebe29c704638ea7950ec1b8e"
+        },
+        {
+          "tile_id": 10,
+          "first_gemm_line": 1569,
+          "activation_m_offset": 10,
+          "activation_m_size": 1,
+          "tile_ir_sha256": "8b857beea92bbd3a0db2c35da55b04bfa7407463d3641debf7f902ec02f9a1d9"
+        },
+        {
+          "tile_id": 11,
+          "first_gemm_line": 1569,
+          "activation_m_offset": 11,
+          "activation_m_size": 1,
+          "tile_ir_sha256": "f026d112a727c6a9575e5d10236fd6aa00b9f59eb55cb5aa4fe6d9c0921c41a5"
+        },
+        {
+          "tile_id": 12,
+          "first_gemm_line": 1569,
+          "activation_m_offset": 12,
+          "activation_m_size": 1,
+          "tile_ir_sha256": "27b5e8d1c3505b7251acb8cd42c7174651f569b10a7638da405221c66cfeb87a"
+        },
+        {
+          "tile_id": 13,
+          "first_gemm_line": 1569,
+          "activation_m_offset": 13,
+          "activation_m_size": 1,
+          "tile_ir_sha256": "ccd40a4db015335fbde7cfc64491e3ea9c859e073b7c7c21d3f3b0945f820a50"
+        },
+        {
+          "tile_id": 14,
+          "first_gemm_line": 1569,
+          "activation_m_offset": 14,
+          "activation_m_size": 1,
+          "tile_ir_sha256": "9f938933ae1209f318bf1bc15987617a8256524b4402955ad33710fad74e1b60"
+        },
+        {
+          "tile_id": 15,
+          "first_gemm_line": 1403,
+          "activation_m_offset": 15,
+          "activation_m_size": 1,
+          "tile_ir_sha256": "2433a76bcce868f9dac69c7c63df8fe248526c131d06c138dd9da2c75bcb36ed"
+        }
+      ]
+    },
+    "attention_semantic_ops": 0,
+    "movement_limit": "外部权重直接形成DDR boundary，未生成一次读入后DTE共享权重的候选；不能称为此方案成本比较失败。",
+    "attention_limit": "真实projection/head view和输出transpose/reshape关系未被当前matcher完整证明，此测量不是FlashAttention block性能。"
+  }
+}

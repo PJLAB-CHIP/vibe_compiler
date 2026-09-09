@@ -148,6 +148,17 @@ mask是optional shaped operand，其map必须精确表达对score domain的ident
 SSA能先归一成同score element type的显式score adjustment时才进入op，否则保留原图。normalization不比较`attention`、`decode`、
 `q_proj`等名字，不按参数位置或常见Transformer rank识别。
 
+形成attention proof时，mask输入若来自仅yield原输入、全parallel、output map为permutation的纯broadcast/transpose，
+按 `producerInputMap ∘ inverse(producerOutputMap) ∘ maskMap` 组合访问关系，直接绑定原mask和composed map。
+不复制或修改producer；其它use仍消费原producer，只有dead closure可删除。非纯转发、非可逆output map或非投影输入map
+不穿透，保留原mask operand。这属于完整attention语义识别的operand关系证明；不对opaque attention之外的ordinary
+pure component新增e-graph旁路。Scale若已证明是DenseElementsAttr splat，直接形成同element type与同APFloat值的scalar
+constant，不物化整张score形状的constant再extract。
+
+访问关系采用[MLIR Linalg fusion的indexing-map composition](https://mlir.llvm.org/docs/Dialects/Linalg/)；
+pinned `ElementwiseOpFusion.cpp`同样通过producer output map的inverse组合consumer访问。这里保持现有attention
+semantic op和下游TilingInterface，不运行普通producer/consumer fusion，也不改变scalar arithmetic。
+
 PyTorch/HF capture只用于建立和维护上述输入覆盖矩阵，不进入matcher控制流。新增capture若仍可由同一SSA/maps/effect关系证明，
 扩canonical analysis或现有typed rule；若需要模型名、固定rank或参数位置才能通过，则该形态不进入current attention合同。
 

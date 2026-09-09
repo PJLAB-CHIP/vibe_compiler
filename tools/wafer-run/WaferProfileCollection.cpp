@@ -1460,9 +1460,12 @@ llvm::Expected<BoardProfileProtocolResult> runFixedBoardProfileProtocol(
       invoke(BoardProfileProtocolLaunch::Count);
   if (!count)
     return count.takeError();
-  for (uint64_t sequence : count->countSequences)
+  for (auto [tile, sequence] : llvm::enumerate(count->countSequences))
     if (sequence > traceCapacity)
-      return invalid("profile count exceeds the fixed trace package capacity");
+      return invalid(
+          llvm::Twine("profile count exceeds the fixed trace package ") +
+          "capacity: tile=" + llvm::Twine(tile) + " counted=" +
+          llvm::Twine(sequence) + " capacity=" + llvm::Twine(traceCapacity));
 
   llvm::Expected<BoardProfileProtocolObservation> trace =
       invoke(BoardProfileProtocolLaunch::Trace);

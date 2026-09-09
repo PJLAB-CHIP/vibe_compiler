@@ -1,0 +1,209 @@
+{
+  "date": "2026-09-09",
+  "case": "attention-decode-kv-cache",
+  "dtype": "float16",
+  "seed": 20260803,
+  "policy": "search",
+  "limits": {
+    "width": 8,
+    "trials": 42,
+    "temporal_per_structural": 8
+  },
+  "shapes": {
+    "hidden": [
+      1,
+      1,
+      4096
+    ],
+    "past_kv_each": [
+      1,
+      32,
+      1023,
+      128
+    ],
+    "updated_kv_each": [
+      1,
+      32,
+      1024,
+      128
+    ]
+  },
+  "scope": "QKVO, RoPE, causal attention and one KV append; one profiled decode step",
+  "qualification": {
+    "runtime_version": "1300",
+    "runtime_library_sha256": "b4f19d673e1767314f6cd900f7f66345e7d1d8c0545de83a7139d62596a6e12c",
+    "tile_count": 16
+  },
+  "accounting": "Primary is production device elapsed ns; engine PMU and wait cycles are separate Trace-run observations and are not additive to Primary.",
+  "runs": [
+    {
+      "role": "before",
+      "baseline_commit": "4d219882",
+      "source_state": "baseline commit",
+      "program_manifest_sha256": "4b2872aa4bf19466e862a7d928ba98a3ccc1be1825c18362b34837973342e663",
+      "evidence_sha256": "a63d2dba3cbe306cf73943acac7d8852bcdef651d5df21cc2527bf50c22ec10d",
+      "primary": {
+        "sample_id": "primary",
+        "sample_index": 0,
+        "device_elapsed_ns": 11272000,
+        "device_timer_kind": "tx-stream-events",
+        "host_submit_ns": 158682,
+        "host_launch_to_completion_ns": 11735888,
+        "completion_observation_resolution_ns": 8010
+      },
+      "engine_trace_execution": {
+        "ct": {
+          "min_ns": 50823,
+          "max_ns": 53374,
+          "tile14_ns": 53373
+        },
+        "ne": {
+          "min_ns": 43269,
+          "max_ns": 43278,
+          "tile14_ns": 43276
+        },
+        "rdma": {
+          "min_ns": 606717,
+          "max_ns": 1171868,
+          "tile14_ns": 872367
+        },
+        "wdma": {
+          "min_ns": 32489,
+          "max_ns": 90324,
+          "tile14_ns": 47297
+        },
+        "tdma": {
+          "min_ns": 797529,
+          "max_ns": 800855,
+          "tile14_ns": 797529
+        }
+      },
+      "tile14_trace": {
+        "entry_cycles": 16952308,
+        "dte_completion_wait_cycles": 7528630,
+        "longest_dte_completion_wait_cycles": 7344054,
+        "recorded_events": 5139
+      },
+      "trace_complete": true,
+      "all_tiles_no_overflow": true,
+      "pytorch": {
+        "case": "attention-decode-kv-cache",
+        "manifest_sha256": "4b2872aa4bf19466e862a7d928ba98a3ccc1be1825c18362b34837973342e663",
+        "outputs": [
+          {
+            "elements": 4096,
+            "max_abs_error": 4.57763671875e-05
+          },
+          {
+            "elements": 4194304,
+            "max_abs_error": 0.000244140625
+          },
+          {
+            "elements": 4194304,
+            "max_abs_error": 0.000244140625
+          }
+        ],
+        "comparison": {
+          "rtol": 0.006,
+          "atol": 0.008
+        },
+        "inputs": {
+          "card_00_user_input_0.f16.raw": "b7994926db73037524b5a45b805941e6887b8dd53aeda7b7528c99196e241ad6",
+          "card_00_user_input_1.f16.raw": "3982fec6b3245fa9f711adb7c9e91b80e4c88f579374e77fc0238bb6f0e843dd",
+          "card_00_user_input_2.f16.raw": "66f159274ddd2df81dc0af4eba87a5f072597b974dc5a6dfa30acef58cb2f618",
+          "card_00_user_input_3.f16.raw": "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad"
+        },
+        "prefix_bitwise_equal": [
+          true,
+          true
+        ]
+      }
+    },
+    {
+      "role": "after",
+      "baseline_commit": null,
+      "source_state": "working tree with mask/view and receive-placement changes; recorded before later search/profile capacity adjustments",
+      "program_manifest_sha256": "1ea76354e25f0aff76dbdcf8e9b9e09f22ea49b24774c19a9d2df71505ab3990",
+      "evidence_sha256": "c7f42b795353f26c08e09902632724ebf6e134c350d1215527f70ffe2b075948",
+      "primary": {
+        "sample_id": "primary",
+        "sample_index": 0,
+        "device_elapsed_ns": 8198000,
+        "device_timer_kind": "tx-stream-events",
+        "host_submit_ns": 163784,
+        "host_launch_to_completion_ns": 8614077,
+        "completion_observation_resolution_ns": 17263
+      },
+      "engine_trace_execution": {
+        "ct": {
+          "min_ns": 50826,
+          "max_ns": 53372,
+          "tile14_ns": 53372
+        },
+        "ne": {
+          "min_ns": 43268,
+          "max_ns": 43268,
+          "tile14_ns": 43268
+        },
+        "rdma": {
+          "min_ns": 625374,
+          "max_ns": 1207481,
+          "tile14_ns": 1027371
+        },
+        "wdma": {
+          "min_ns": 27576,
+          "max_ns": 76899,
+          "tile14_ns": 53952
+        },
+        "tdma": {
+          "min_ns": 796774,
+          "max_ns": 800136,
+          "tile14_ns": 796774
+        }
+      },
+      "tile14_trace": {
+        "entry_cycles": 9806337,
+        "dte_completion_wait_cycles": 143914,
+        "longest_dte_completion_wait_cycles": 140406,
+        "recorded_events": 5119
+      },
+      "trace_complete": true,
+      "all_tiles_no_overflow": true,
+      "pytorch": {
+        "case": "attention-decode-kv-cache",
+        "manifest_sha256": "1ea76354e25f0aff76dbdcf8e9b9e09f22ea49b24774c19a9d2df71505ab3990",
+        "outputs": [
+          {
+            "elements": 4096,
+            "max_abs_error": 4.57763671875e-05
+          },
+          {
+            "elements": 4194304,
+            "max_abs_error": 0.000244140625
+          },
+          {
+            "elements": 4194304,
+            "max_abs_error": 0.000244140625
+          }
+        ],
+        "comparison": {
+          "rtol": 0.006,
+          "atol": 0.008
+        },
+        "inputs": {
+          "card_00_user_input_0.f16.raw": "b7994926db73037524b5a45b805941e6887b8dd53aeda7b7528c99196e241ad6",
+          "card_00_user_input_1.f16.raw": "3982fec6b3245fa9f711adb7c9e91b80e4c88f579374e77fc0238bb6f0e843dd",
+          "card_00_user_input_2.f16.raw": "66f159274ddd2df81dc0af4eba87a5f072597b974dc5a6dfa30acef58cb2f618",
+          "card_00_user_input_3.f16.raw": "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad"
+        },
+        "prefix_bitwise_equal": [
+          true,
+          true
+        ]
+      }
+    }
+  ],
+  "same_input_bytes": true,
+  "device_elapsed_reduction_percent": 27.27111426543648,
+  "sample_count_per_version": 1
+}

@@ -812,7 +812,6 @@ TEST(ExecutableCompilationPolicyTest,
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   wafer::compiler::detail::SearchCurrentIROptions options;
-  options.maximumTemporalCandidatesPerStructuralState = 16;
   options.termination =
       wafer::compiler::detail::SearchTerminationPolicy::FirstAccepted;
   options.downstream.tilePipelineParallelism = 1;

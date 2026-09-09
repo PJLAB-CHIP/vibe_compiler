@@ -19,7 +19,7 @@ struct SearchCurrentIROptions {
   uint64_t layoutWorkLimit = UINT64_C(1048576);
   // Complete Temporal choices per structural owner. Region/movement leaves
   // consume the separate global SearchLimits::trials budget.
-  uint64_t maximumTemporalCandidatesPerStructuralState = 8;
+  uint64_t maximumTemporalCandidatesPerStructuralState = 16;
   SearchLimits limits;
   bool stopTemporalAfterFirstAccepted = true;
   uint64_t planningCredits = std::numeric_limits<uint64_t>::max();

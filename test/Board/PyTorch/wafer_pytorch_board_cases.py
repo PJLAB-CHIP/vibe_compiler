@@ -729,6 +729,8 @@ def _read_only_attention(
     query_length: int,
     key_value_length: int,
     causal: bool,
+    num_heads: int = 1,
+    head_dim: int = ATTENTION_HEAD_DIM,
 ) -> PyTorchBoardCase:
     if dtype not in {torch.float16, torch.bfloat16}:
         raise RuntimeError(
@@ -748,10 +750,11 @@ def _read_only_attention(
         ) from error
 
     config = LlamaConfig(
-        hidden_size=ATTENTION_HEAD_DIM,
-        intermediate_size=ATTENTION_HEAD_DIM * 4,
-        num_attention_heads=1,
-        num_key_value_heads=1,
+        hidden_size=num_heads * head_dim,
+        intermediate_size=num_heads * head_dim * 4,
+        num_attention_heads=num_heads,
+        num_key_value_heads=num_heads,
+        max_position_embeddings=key_value_length,
         attention_dropout=0.0,
     )
     config._attn_implementation = "eager"
@@ -787,24 +790,24 @@ def _read_only_attention(
 
     generator = torch.Generator(device="cpu").manual_seed(seed)
     query = _random_tensor(
-        (1, 1, query_length, ATTENTION_HEAD_DIM),
+        (1, num_heads, query_length, head_dim),
         dtype=dtype,
         generator=generator,
     ) * 0.125
     key = _random_tensor(
-        (1, 1, key_value_length, ATTENTION_HEAD_DIM),
+        (1, num_heads, key_value_length, head_dim),
         dtype=dtype,
         generator=generator,
     ) * 0.125
     value = _random_tensor(
-        (1, 1, key_value_length, ATTENTION_HEAD_DIM),
+        (1, num_heads, key_value_length, head_dim),
         dtype=dtype,
         generator=generator,
     )
     if causal:
         positions = torch.arange(query_length, dtype=torch.long).unsqueeze(0)
         mask_input = query.transpose(1, 2).reshape(
-            1, query_length, ATTENTION_HEAD_DIM
+            1, query_length, num_heads * head_dim
         )
         additive_mask = create_causal_mask(
             config=config,
@@ -861,6 +864,20 @@ def _attention_prefill(
         query_length=extent,
         key_value_length=extent,
         causal=True,
+    )
+
+
+def _llama_2_7b_attention_prefill(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
+    config = json.loads(HF_LLAMA2_7B_CONFIG.read_text())
+    return _read_only_attention(
+        dtype,
+        seed,
+        name="attention-prefill-llama-2-7b",
+        query_length=config["max_position_embeddings"],
+        key_value_length=config["max_position_embeddings"],
+        causal=True,
+        num_heads=config["num_attention_heads"],
+        head_dim=config["hidden_size"] // config["num_attention_heads"],
     )
 
 
@@ -1144,6 +1161,7 @@ CASE_FACTORIES: dict[
         dtype, seed, extent=1031
     ),
     "attention-prefill": _attention_prefill,
+    "attention-prefill-llama-2-7b": _llama_2_7b_attention_prefill,
     "attention-prefill-tail-1025": lambda dtype, seed: _attention_prefill(
         dtype, seed, extent=1025
     ),

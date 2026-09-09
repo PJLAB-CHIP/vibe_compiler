@@ -802,6 +802,30 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                         context=f"causal prefill L={extent} full tail",
                     )
 
+    def test_llama_prefill_uses_full_context_and_causal_multihead_reference(self) -> None:
+        case = cases.make_case(
+            "attention-prefill-llama-2-7b", dtype=torch.float16, seed=20260803
+        )
+        query, key, value, mask = case.inputs
+        for tensor in (query, key, value):
+            self.assertEqual(tensor.shape, (1, 32, 4096, 128))
+        self.assertEqual(mask.shape, (1, 1, 4096, 4096))
+        self.assertEqual(mask[0, 0, 0, 0].item(), 0)
+        self.assertLess(mask[0, 0, 0, -1].item(), -10000)
+        self.assertEqual(mask[0, 0, -1, 0].item(), 0)
+        # Full-context eager reference runs in the registered product no-card
+        # case. Exercise multihead causality here without duplicating its cost.
+        case = cases._read_only_attention(
+            torch.float16, 20260803, name="multihead-causal-reference",
+            query_length=1031, key_value_length=1031, causal=True,
+            num_heads=2, head_dim=128,
+        )
+        expected, = case.materialize_expected_outputs()
+        self.assertEqual(expected.shape, (1, 2, 1031, 128))
+        # Every head's first causal query must observe only its own first V.
+        torch.testing.assert_close(expected[:, :, 0], case.inputs[2][:, :, 0], rtol=0, atol=0)
+        self.assertTrue(torch.isfinite(expected).all())
+
     def test_hf_llama_block_wraps_the_official_decoder_layer(self) -> None:
         from transformers import LlamaConfig
         from transformers.models.llama.modeling_llama import LlamaDecoderLayer

@@ -4,6 +4,7 @@
 
 #include "DistributedCollectiveMovement.h"
 #include "StructuredToTile.h"
+#include "TiledOutputStores.h"
 #include "Wafer/IR/Topology/TargetTopology.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/DirectDTE.h"
@@ -94,6 +95,7 @@ struct PeerPlan {
   int64_t payloadSlice = 0;
   bool useSharedDDR = false;
   bool scheduledPeer = false;
+  bool splitReceiveRounds = false;
   bool recursiveDoubling = false;
   unsigned recursiveLane = 0;
   unsigned recursiveOriginPosition = 0;
@@ -1302,6 +1304,8 @@ static mlir::LogicalResult scheduleSparseComponent(
   const size_t participantCount = component.participants.size();
   const bool completePersonalized =
       isCompletePersonalizedComponent(component, groups, peers);
+  const bool splitReceiveRounds =
+      !hasBidirectionalParticipant(component, groups, peers);
   unsigned componentCommunication = std::numeric_limits<unsigned>::max();
   if (completePersonalized)
     for (unsigned peerIndex : remaining)
@@ -1327,6 +1331,7 @@ static mlir::LogicalResult scheduleSparseComponent(
           completePersonalized ? componentCommunication : peer.relationIndex;
       peer.protocolRound = round;
       peer.scheduleComponent = componentId;
+      peer.splitReceiveRounds = splitReceiveRounds;
       if (completePersonalized)
         peer.payloadSlice =
             participantPositions.lookup(peer.sourceTile) * participantCount +
@@ -1617,6 +1622,16 @@ static bool hasOnlySubviewUses(mlir::Value value) {
          });
 }
 
+static mlir::MemRefType
+getRetargetedSubviewType(mlir::memref::SubViewOp subview, mlir::Value source) {
+  return mlir::cast<mlir::MemRefType>(
+      mlir::memref::SubViewOp::inferRankReducedResultType(
+          subview.getType().getShape(),
+          mlir::cast<mlir::MemRefType>(source.getType()),
+          subview.getMixedOffsets(), subview.getMixedSizes(),
+          subview.getMixedStrides()));
+}
+
 static void retargetSubviewUsers(mlir::Value oldValue, mlir::Value newValue,
                                  mlir::IRRewriter &rewriter) {
   for (mlir::OpOperand &use : llvm::make_early_inc_range(oldValue.getUses())) {
@@ -1627,8 +1642,9 @@ static void retargetSubviewUsers(mlir::Value oldValue, mlir::Value newValue,
     }
     rewriter.setInsertionPoint(subview);
     auto replacement = rewriter.create<mlir::memref::SubViewOp>(
-        subview.getLoc(), newValue, subview.getMixedOffsets(),
-        subview.getMixedSizes(), subview.getMixedStrides());
+        subview.getLoc(), getRetargetedSubviewType(subview, newValue), newValue,
+        subview.getMixedOffsets(), subview.getMixedSizes(),
+        subview.getMixedStrides());
     retargetSubviewUsers(subview.getResult(), replacement.getResult(),
                          rewriter);
     rewriter.eraseOp(subview);
@@ -1648,10 +1664,7 @@ static void normalizeSubviewResultTypes(mlir::ModuleOp module) {
     auto resultType = mlir::dyn_cast<mlir::MemRefType>(subview.getType());
     if (!sourceType || !resultType)
       continue;
-    auto expected = mlir::dyn_cast<mlir::MemRefType>(
-        mlir::memref::SubViewOp::inferResultType(
-            sourceType, subview.getMixedOffsets(), subview.getMixedSizes(),
-            subview.getMixedStrides()));
+    auto expected = getRetargetedSubviewType(subview, subview.getSource());
     if (expected && expected.getRank() == resultType.getRank() &&
         expected.getShape() == resultType.getShape() && expected != resultType)
       rewriter.modifyOpInPlace(subview, [&] {
@@ -1669,8 +1682,9 @@ static mlir::LogicalResult materializeSubviewLoads(
   for (mlir::memref::SubViewOp subview : subviews) {
     rewriter.setInsertionPoint(subview);
     auto ddrSubview = rewriter.create<mlir::memref::SubViewOp>(
-        subview.getLoc(), ddrArgument, subview.getMixedOffsets(),
-        subview.getMixedSizes(), subview.getMixedStrides());
+        subview.getLoc(), getRetargetedSubviewType(subview, ddrArgument),
+        ddrArgument, subview.getMixedOffsets(), subview.getMixedSizes(),
+        subview.getMixedStrides());
     auto oldType = mlir::cast<mlir::MemRefType>(subview.getType());
     auto allocation = rewriter.create<mlir::memref::AllocOp>(
         subview.getLoc(), getOwnedSPMType(oldType));
@@ -2958,6 +2972,31 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
       for (const PendingSend &send : pendingSends)
         if (send.peer->scheduleComponent == component)
           maximumRound = std::max(maximumRound, send.peer->protocolRound);
+      llvm::SmallVector<mlir::Operation *, 8> receiveCuts(maximumRound + 1,
+                                                          firstConsumer);
+      bool splitReceives =
+          llvm::any_of(receivedPayloads, [&](const ReceivedPayload &received) {
+            return received.peer->scheduleComponent == component &&
+                   received.peer->splitReceiveRounds;
+          });
+      if (splitReceives) {
+        std::fill(receiveCuts.begin(), receiveCuts.end(),
+                  block.getTerminator());
+        for (const ReceivedPayload &received : receivedPayloads) {
+          if (received.peer->scheduleComponent != component)
+            continue;
+          mlir::Operation *consumer =
+              findFirstBufferConsumer(received.allocation, block);
+          mlir::Operation *&cut = receiveCuts[received.peer->protocolRound];
+          if (consumer && consumer->isBeforeInBlock(cut))
+            cut = consumer;
+        }
+        // A later round may be needed first. Keep protocol order while moving
+        // each receive no earlier than required by that round's suffix.
+        for (int64_t round = maximumRound; round > 0; --round)
+          if (receiveCuts[round]->isBeforeInBlock(receiveCuts[round - 1]))
+            receiveCuts[round - 1] = receiveCuts[round];
+      }
       rewriter.setInsertionPoint(firstConsumer);
       for (const RecursiveSeed &seed : recursiveSeeds) {
         if (seed.peer->scheduleComponent != component)
@@ -2989,6 +3028,8 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
         ++statistics.recursiveDoublingSeedCopies;
       }
       for (int64_t round = 0; round <= maximumRound; ++round) {
+        if (splitReceives)
+          rewriter.setInsertionPoint(receiveCuts[round]);
         for (const ReceivedPayload &received : receivedPayloads) {
           if (received.peer->scheduleComponent != component ||
               received.peer->protocolRound != round)
@@ -3202,6 +3243,7 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
   }
   eraseDeadBridges(module);
   normalizeSubviewResultTypes(module);
+  materializeTiledOutputStores(module, statistics);
   for (auto &[operation, indices] : outputArguments) {
     auto function = mlir::cast<mlir::func::FuncOp>(operation);
     llvm::sort(indices, std::greater<unsigned>());

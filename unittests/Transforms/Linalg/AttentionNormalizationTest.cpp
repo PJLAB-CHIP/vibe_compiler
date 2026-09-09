@@ -142,6 +142,108 @@ TEST_F(AttentionNormalizationTest,
   EXPECT_EQ(count<mlir::math::ExpOp>(*module), 0u);
 }
 
+TEST_F(AttentionNormalizationTest,
+       MaskAccessCompositionPreservesOtherUsesAndStopsAtArithmetic) {
+  for (bool aligned : {true, false}) {
+    for (bool arithmetic : {false, true}) {
+      SCOPED_TRACE(aligned);
+      SCOPED_TRACE(arithmetic);
+      auto module = parseRepresentativeDecodeProgram(aligned);
+      ASSERT_TRUE(module);
+      int64_t length = aligned ? 1024 : 1031;
+      auto function = *module->getOps<mlir::func::FuncOp>().begin();
+      auto score = findScoreContraction(*module, length);
+      ASSERT_TRUE(score);
+      mlir::OpBuilder builder(context.get());
+      auto location = function.getLoc();
+      auto maskType =
+          mlir::RankedTensorType::get({length, 1024}, builder.getF16Type());
+      function.insertArgument(function.getNumArguments(), maskType,
+                              mlir::DictionaryAttr{}, location);
+      mlir::Value mask = function.getBody().front().getArguments().back();
+      builder.setInsertionPointAfter(score);
+      auto d0 = builder.getAffineDimExpr(0);
+      auto d1 = builder.getAffineDimExpr(1);
+      auto d2 = builder.getAffineDimExpr(2);
+      auto map = [&](llvm::ArrayRef<mlir::AffineExpr> results) {
+        return mlir::AffineMap::get(3, 0, results, context.get());
+      };
+      auto createForward = [&](mlir::Value input, llvm::ArrayRef<int64_t> shape,
+                               mlir::AffineMap inputMap,
+                               mlir::AffineMap outputMap, bool negate) {
+        auto type = mlir::RankedTensorType::get(shape, builder.getF16Type());
+        mlir::Value empty = builder.create<mlir::tensor::EmptyOp>(
+            location, shape, builder.getF16Type());
+        return builder.create<mlir::linalg::GenericOp>(
+            location, mlir::TypeRange{type}, mlir::ValueRange{input},
+            mlir::ValueRange{empty},
+            llvm::ArrayRef<mlir::AffineMap>{inputMap, outputMap},
+            llvm::SmallVector<mlir::utils::IteratorType, 3>(
+                3, mlir::utils::IteratorType::parallel),
+            [&](mlir::OpBuilder &nested, mlir::Location loc,
+                mlir::ValueRange args) {
+              mlir::Value value = args[0];
+              if (negate)
+                value = nested.create<mlir::arith::NegFOp>(loc, value);
+              nested.create<mlir::linalg::YieldOp>(loc, value);
+            });
+      };
+      auto broadcast = createForward(mask, {2, length, 1024}, map({d2, d1}),
+                                     map({d0, d2, d1}), arithmetic);
+      auto transpose =
+          createForward(broadcast.getResult(0), {2, 1024, length},
+                        map({d0, d2, d1}), map({d0, d1, d2}), false);
+      mlir::Value empty = builder.create<mlir::tensor::EmptyOp>(
+          location, llvm::ArrayRef<int64_t>{2, 1024, length},
+          builder.getF16Type());
+      auto identity = builder.getMultiDimIdentityMap(3);
+      auto add = builder.create<mlir::linalg::GenericOp>(
+          location, mlir::TypeRange{score->getResult(0).getType()},
+          mlir::ValueRange{score->getResult(0), transpose.getResult(0)},
+          mlir::ValueRange{empty},
+          llvm::ArrayRef<mlir::AffineMap>{identity, identity, identity},
+          llvm::SmallVector<mlir::utils::IteratorType, 3>(
+              3, mlir::utils::IteratorType::parallel),
+          [](mlir::OpBuilder &nested, mlir::Location loc,
+             mlir::ValueRange args) {
+            mlir::Value sum =
+                nested.create<mlir::arith::AddFOp>(loc, args[0], args[1]);
+            nested.create<mlir::linalg::YieldOp>(loc, sum);
+          });
+      score->getResult(0).replaceAllUsesExcept(add.getResult(0), add);
+      // The broadcast remains independently observable, including its
+      // arithmetic.
+      auto returned = mlir::cast<mlir::func::ReturnOp>(
+          function.getBody().front().getTerminator());
+      returned->insertOperands(returned.getNumOperands(),
+                               broadcast.getResult(0));
+      auto resultTypes = llvm::to_vector(function.getResultTypes());
+      resultTypes.push_back(broadcast.getResult(0).getType());
+      function.setType(
+          builder.getFunctionType(function.getArgumentTypes(), resultTypes));
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      ASSERT_TRUE(mlir::succeeded(normalize(*module)));
+      auto attention = findSingle<wafer::LinalgExtAttentionOp>(*module);
+      ASSERT_TRUE(attention);
+      EXPECT_EQ(count<mlir::arith::NegFOp>(*module), arithmetic ? 1u : 0u);
+      mlir::Value expectedMask = arithmetic ? broadcast.getResult(0) : mask;
+      EXPECT_EQ(attention.getMask(), expectedMask);
+      auto expectedMap = mlir::AffineMap::get(
+          5, 0,
+          arithmetic
+              ? llvm::ArrayRef<mlir::AffineExpr>{d0,
+                                                 builder.getAffineDimExpr(3),
+                                                 d1}
+              : llvm::ArrayRef<mlir::AffineExpr>{builder.getAffineDimExpr(3),
+                                                 d1},
+          context.get());
+      EXPECT_EQ(*attention.getMaskMap(), expectedMap);
+      EXPECT_EQ(returned->getOperands().back(), broadcast.getResult(0));
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    }
+  }
+}
+
 TEST_F(AttentionNormalizationTest, SymbolSpellingDoesNotAffectClassification) {
   mlir::OwningOpRef<mlir::ModuleOp> module =
       parseRepresentativeDecodeProgram(/*aligned=*/false);

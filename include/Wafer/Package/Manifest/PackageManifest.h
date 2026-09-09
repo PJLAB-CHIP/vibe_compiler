@@ -369,6 +369,7 @@ struct PackageManifest {
 
 struct PackageParseLimits {
   uint64_t maxJSONBytes = 4 * 1024 * 1024;
+  uint64_t maxProfileJSONBytes = 16 * 1024 * 1024;
   uint64_t maxRecords = 65536;
   uint64_t maxStringBytes = 4096;
   uint64_t maxShapeRank = 16;
