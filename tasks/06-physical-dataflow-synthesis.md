@@ -169,6 +169,31 @@ Placement选择logical work piece到available physical Tile的injective/typed ma
 SPM footprint。Producer/consumer需求从current structured IR的indexing relation精确传播；unsupported、resource exhausted、
 invalid和exact-empty保持不同typed result。
 
+Search的constructive parallel proposal还应覆盖输入复用方向。对current Linalg中静态、projected-permutation的实际读取operand，
+从operand element bytes和indexing map未使用轴的partition factor计算跨piece重复的逻辑访问量；在同等最大participant数下，
+先访问该量较小的完整partition，使用完整semantic key打破平局。未知map或dtype保留原proposal排序，不按零开销解释。
+原constructive方案、其它proposal和完整raw lazy domain均保留；该指标不声称已经产生DDR load、DTE、allocation或lifetime，
+只决定explicit choice的访问顺序。每个候选仍经actual materialization、verifier、fresh analysis和唯一SPM/target/cost leaf；
+不得把source访问量当成容量门禁或final winner，也不得因此强制通信。
+
+本项直接下游为`SpatialState` exact demand与structural materializer，两条policy中只修改search的proposal顺序，none不消费它。
+对照[Halide autoscheduler](https://halide-lang.org/papers/autoscheduler2019.html)的输入复用特征与
+[Ansor](https://tvm.apache.org/2021/03/03/intro-auto-scheduler.html)分层候选搜索；这里使用确定且有界的源码访问指标，
+不引入learned model、设备autotuning或第二套cost objective。完成条件是原合法域不变、M/N及置换结构有不同完整候选进入actual比较，
+并由actual Instr和匹配profile验证热点改善。覆盖rank3/4、1024/1025/1031、4/16 Tile，窄M/窄N、等extent、置换map及未知map边界。
+
+输入复用proposal还产生一套沿SSA协调的parallel partition：参考[Shardy的数据流传播](https://openxla.org/shardy/propagation)，
+使用现有Linalg indexing maps与`TensorResultIndexing`，不新增按op名称维护的sharding规则表。
+只对全parallel consumer前向传播；按静态实际读取operand bytes及operand ordinal依次尝试上游partition。
+归约/收缩节点保留seed choice。每个source shard经真实SSA view链与访问relation映射为target迭代域的exact rectangle；
+只有这些rectangle恰好构成已有BalancedParts/UniformExtent Cartesian partition、完整无重叠且embedding injective时，
+才产生该target的choice。非矩形、broadcast重叠、partial slice、未知或超预算relation保留原choice。
+随后单次反向遍历零tensor-read的parallel generator；只有所有下游都推导出相同partition才协调其DPS初始化切分。
+两次有界遍历不追求固定点，不改变算术、不修改source IR，也不推断未来movement或SPM合法性；原seed与raw domain保留。
+完成条件是协调后的完整proposal仍经exact demand、actual materialization与统一leaf，不能以邻接轴一致代替这些验证。
+覆盖GEMM→pointwise→reshape/permutation、多producer冲突、generator多use、1024/1025/1031和4/16 Tile；
+精确检查owner/coverage、保留原proposal、source不变及实际下游shared-DDR/Instr，而不按模型名限定。
+
 ### 5.2 TileRegion formation
 
 对每个Tile的local structured DAG，region choice决定哪些root work进入同一TileRegion。一个producer相对当前Region只有三种

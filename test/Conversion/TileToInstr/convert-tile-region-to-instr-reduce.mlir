@@ -1,11 +1,12 @@
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-tile-region-to-instr)' %s | FileCheck %s
 
 func.func @ordered_sum() {
+  // Tiny shape isolates the exact non-identity-init ordered recurrence.
   %token = arith.constant false
   %unused = wafer.tile.region(%token : i1) -> (i1) {
   ^bb0(%tile_token: i1):
   %input = memref.alloc() : memref<3x2xf32, #wafer.memory<spm, cx>>
-  %init = arith.constant 0.000000e+00 : f32
+  %init = arith.constant 1.000000e+00 : f32
   %result = wafer.tile.reduce #wafer.reduce_kind<sum> %input, %init
       {dimensions = array<i64: 0>}
       : (memref<3x2xf32, #wafer.memory<spm, cx>>, f32)
@@ -16,7 +17,7 @@ func.func @ordered_sum() {
 }
 
 // CHECK-LABEL: func.func @ordered_sum
-// CHECK: %[[INIT:.*]] = arith.constant 0.000000e+00 : f32
+// CHECK: %[[INIT:.*]] = arith.constant 1.000000e+00 : f32
 // CHECK: %[[A:.*]] = memref.alloc() : memref<2xf32, #wafer.memory<spm, tensor>>
 // CHECK: %[[B:.*]] = memref.alloc() : memref<2xf32, #wafer.memory<spm, tensor>>
 // CHECK: %[[SLICE:.*]] = memref.alloc() : memref<2xf32, #wafer.memory<spm, tensor>>
@@ -33,12 +34,13 @@ func.func @ordered_sum() {
 // CHECK: return
 
 func.func @sorted_multidim_lexicographic() {
+  // Tiny shape isolates ordered multi-axis traversal with non-identity init.
   %token = arith.constant false
   %unused = wafer.tile.region(%token : i1) -> (i1) {
   ^bb0(%tile_token: i1):
   %input = memref.alloc() : memref<2x1x2xf32, #wafer.memory<spm, ncx>>
   %result = wafer.tile.reduce #wafer.reduce_kind<sum> %input
-      {dimensions = array<i64: 2, 0>, init_value = 0.000000e+00 : f32}
+      {dimensions = array<i64: 2, 0>, init_value = 1.000000e+00 : f32}
       : (memref<2x1x2xf32, #wafer.memory<spm, ncx>>)
      -> memref<1xf32, #wafer.memory<spm, cx>>
     wafer.tile.yield %tile_token : i1

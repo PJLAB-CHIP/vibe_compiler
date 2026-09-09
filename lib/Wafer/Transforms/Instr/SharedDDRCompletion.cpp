@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/Instr/SharedDDRCompletion.h"
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/SymbolTable.h"
@@ -93,6 +94,8 @@ static TileRegionOp getTopLevelRegion(mlir::Operation *op) {
 // Analyze actual DMA operands, not declared access modes. Communication state
 // itself is consumed by publication ops and never masquerades as a DMA payload.
 static Result collect(llvm::ArrayRef<mlir::ModuleOp> modules, Collection &out) {
+  support::ScopedCompileTimingSpan timing("completion-phase", "shared-ddr",
+                                          "collect-accesses");
   for (mlir::ModuleOp module : modules) {
     mlir::func::FuncOp entry;
     for (auto function : module.getOps<mlir::func::FuncOp>()) {
@@ -188,6 +191,8 @@ static Result collect(llvm::ArrayRef<mlir::ModuleOp> modules, Collection &out) {
 // atomic phase: one Tile may publish DDR while another continues that exchange.
 static Result verifyOrder(const Collection &collection,
                           llvm::ArrayRef<TileId> tileIds) {
+  support::ScopedCompileTimingSpan timing("completion-phase", "shared-ddr",
+                                          "verify-order");
   if (tileIds.size() != collection.entries.size())
     return contract("shared DDR completion Tile identity domain differs");
   if (collection.resources.empty())
@@ -360,13 +365,13 @@ static Result verifyOrder(const Collection &collection,
                            "a cycle");
 }
 
-static bool isZeroInitialized(mlir::BlockArgument argument) {
+static bool isZeroInitialized(mlir::BlockArgument argument,
+                              mlir::SymbolTableCollection &symbols) {
   auto binding = getBinding(argument);
   if (!binding)
     return false;
-  auto global =
-      mlir::SymbolTable::lookupNearestSymbolFrom<mlir::memref::GlobalOp>(
-          argument.getOwner()->getParentOp(), binding.getResource());
+  auto global = symbols.lookupNearestSymbolFrom<mlir::memref::GlobalOp>(
+      argument.getOwner()->getParentOp(), binding.getResource());
   auto initial = global ? global.getInitialValue() : std::nullopt;
   auto dense = initial ? mlir::dyn_cast<mlir::DenseIntElementsAttr>(*initial)
                        : mlir::DenseIntElementsAttr{};
@@ -385,26 +390,52 @@ Result verifySharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
   if (!result.succeeded())
     return result;
   std::set<int64_t> readyResources;
+  support::ScopedCompileTimingSpan timing(
+      "completion-phase", "shared-ddr", "verify-publications",
+      llvm::formatv("resources={0}", collection.resources.size()).str());
+  // These indices describe only this read-only IR epoch. In particular, keep
+  // duplicate operations/bindings so indexing cannot turn an invalid program
+  // into an apparently unique publication.
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<SyncDDRPublishOp, 1>> publishes;
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<SyncDDRAcquireOp, 1>> acquires;
+  using ResourceBindings =
+      std::map<int64_t, llvm::SmallVector<mlir::BlockArgument, 1>>;
+  llvm::SmallVector<ResourceBindings> entryBindings;
+  mlir::SymbolTableCollection symbols;
+  uint64_t indexedOperations = 0, indexedArguments = 0;
+  for (auto entry : collection.entries) {
+    entry.walk([&](mlir::Operation *op) {
+      ++indexedOperations;
+      if (auto publish = mlir::dyn_cast<SyncDDRPublishOp>(op))
+        publishes[getEntryRoot(publish.getData())].push_back(publish);
+      if (auto acquire = mlir::dyn_cast<SyncDDRAcquireOp>(op))
+        acquires[acquire.getData()].push_back(acquire);
+    });
+    auto &bindings = entryBindings.emplace_back();
+    for (auto argument : entry.getArguments()) {
+      ++indexedArguments;
+      if (auto binding = getBinding(argument))
+        bindings[binding.getResourceId()].push_back(argument);
+    }
+  }
+  support::addCompileCounter("shared-ddr", "indexed-operations",
+                             indexedOperations);
+  support::addCompileCounter("shared-ddr", "indexed-arguments",
+                             indexedArguments);
   llvm::DenseSet<mlir::Operation *> checked;
   for (auto &[id, resource] : collection.resources) {
-    SyncDDRPublishOp publish;
-    auto writer = mlir::cast<mlir::func::FuncOp>(
-        resource.writer->root.getOwner()->getParentOp());
-    unsigned count = 0;
-    writer.walk([&](SyncDDRPublishOp op) {
-      if (getEntryRoot(op.getData()) == resource.writer->root) {
-        publish = op;
-        ++count;
-      }
-    });
-    if (count != 1 ||
-        publish->getBlock() != resource.writer->region->getBlock() ||
+    auto publications = publishes.find(resource.writer->root);
+    if (publications == publishes.end() || publications->second.size() != 1)
+      return contract("shared DDR writer requires exactly one publication "
+                      "after its writes");
+    SyncDDRPublishOp publish = publications->second.front();
+    if (publish->getBlock() != resource.writer->region->getBlock() ||
         !resource.writer->region->isBeforeInBlock(publish))
       return contract("shared DDR writer requires exactly one publication "
                       "after its writes");
     auto ready = getEntryRoot(publish.getReady());
     auto readyBinding = getBinding(ready);
-    if (!ready || !readyBinding || !isZeroInitialized(ready) ||
+    if (!ready || !readyBinding || !isZeroInitialized(ready, symbols) ||
         readyBinding.getResourceId() == id ||
         !readyResources.insert(readyBinding.getResourceId()).second)
       return contract("shared DDR publication requires distinct "
@@ -419,10 +450,12 @@ Result verifySharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
     for (const Access &reader : resource.readers) {
       if (!readersChecked.insert(reader.root.getOwner()).second)
         continue;
-      auto function =
-          mlir::cast<mlir::func::FuncOp>(reader.root.getOwner()->getParentOp());
       unsigned acquired = 0;
-      function.walk([&](SyncDDRAcquireOp op) {
+      auto acquisitions = acquires.find(reader.root);
+      if (acquisitions == acquires.end())
+        return contract("shared DDR reader has no matching acquisition before "
+                        "its first DMA");
+      for (SyncDDRAcquireOp op : acquisitions->second) {
         auto binding = getBinding(op.getReady());
         bool beforeAllReads =
             llvm::all_of(resource.readers, [&](const Access &access) {
@@ -433,24 +466,24 @@ Result verifySharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
         if (op.getData() == reader.root && binding &&
             op.getReady() == getEntryRoot(op.getReady()) &&
             binding.getResourceId() == readyBinding.getResourceId() &&
-            isZeroInitialized(getEntryRoot(op.getReady())) && beforeAllReads) {
+            isZeroInitialized(getEntryRoot(op.getReady()), symbols) &&
+            beforeAllReads) {
           ++acquired;
           checked.insert(op);
         }
-      });
+      }
       if (acquired != 1)
         return contract("shared DDR reader has no matching acquisition before "
                         "its first DMA");
     }
-    for (auto entry : collection.entries) {
-      unsigned bindings = 0;
-      for (auto argument : entry.getArguments()) {
-        auto binding = getBinding(argument);
-        if (!binding || binding.getResourceId() != readyBinding.getResourceId())
-          continue;
-        ++bindings;
+    for (const auto &bindings : entryBindings) {
+      auto found = bindings.find(readyBinding.getResourceId());
+      if (found == bindings.end() || found->second.size() != 1)
+        return contract(
+            "shared DDR completion requires one binding on every Tile");
+      for (auto argument : found->second) {
         if (argument.getType() != ready.getType() ||
-            !isZeroInitialized(argument))
+            !isZeroInitialized(argument, symbols))
           return contract(
               "shared DDR completion initialization differs across Tiles");
         for (auto *user : argument.getUsers())
@@ -458,9 +491,6 @@ Result verifySharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
             return contract(
                 "shared DDR completion storage has an unrelated access");
       }
-      if (bindings != 1)
-        return contract(
-            "shared DDR completion requires one binding on every Tile");
     }
   }
   for (auto entry : collection.entries)
@@ -488,63 +518,68 @@ Result materializeSharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
     });
   if (existing)
     return verifySharedDDRCompletion(modules, tileIds);
-  int64_t nextResource = 0;
-  for (auto module : modules)
-    for (auto global : module.getOps<mlir::memref::GlobalOp>())
-      if (auto resource =
-              global->getAttrOfType<DDRResourceAttr>(kWaferDDRResourceAttrName))
-        nextResource = std::max(nextResource, resource.getResourceId() + 1);
-  for (auto &[id, resource] : collection.resources) {
-    auto *context = mlir::ModuleOp(modules.front()).getContext();
-    mlir::OpBuilder builder(context);
-    auto type = mlir::MemRefType::get(
-        {64}, builder.getI8Type(), mlir::MemRefLayoutAttrInterface{},
-        MemoryAttr::get(context, MemorySpace::DDR, MemLayout::Tensor));
-    auto initial = mlir::DenseIntElementsAttr::get(
-        mlir::RankedTensorType::get({64}, builder.getI8Type()),
-        llvm::ArrayRef<int8_t>{0});
-    std::string symbol =
-        "__wafer_ddr_completion_" + std::to_string(nextResource);
-    for (auto [moduleRef, entry] :
-         llvm::zip_equal(modules, collection.entries)) {
-      mlir::ModuleOp module = moduleRef;
-      builder.setInsertionPointToStart(module.getBody());
-      auto global = builder.create<mlir::memref::GlobalOp>(
-          module.getLoc(), symbol, builder.getStringAttr("private"), type,
-          initial, false, builder.getI64IntegerAttr(64));
-      global->setAttr(kWaferDDRResourceAttrName,
-                      DDRResourceAttr::get(context, nextResource));
-      auto dataRoot = resource.writer->root;
-      bool writes = dataRoot.getOwner() == &entry.getBody().front();
-      TileRegionOp firstRead;
-      for (const Access &reader : resource.readers)
-        if (reader.root.getOwner() == &entry.getBody().front() &&
-            (!firstRead || reader.region->isBeforeInBlock(firstRead))) {
-          firstRead = reader.region;
-          dataRoot = reader.root;
+  {
+    support::ScopedCompileTimingSpan timing(
+        "completion-phase", "shared-ddr", "materialize-publications",
+        llvm::formatv("resources={0}", collection.resources.size()).str());
+    int64_t nextResource = 0;
+    for (auto module : modules)
+      for (auto global : module.getOps<mlir::memref::GlobalOp>())
+        if (auto resource = global->getAttrOfType<DDRResourceAttr>(
+                kWaferDDRResourceAttrName))
+          nextResource = std::max(nextResource, resource.getResourceId() + 1);
+    for (auto &[id, resource] : collection.resources) {
+      auto *context = mlir::ModuleOp(modules.front()).getContext();
+      mlir::OpBuilder builder(context);
+      auto type = mlir::MemRefType::get(
+          {64}, builder.getI8Type(), mlir::MemRefLayoutAttrInterface{},
+          MemoryAttr::get(context, MemorySpace::DDR, MemLayout::Tensor));
+      auto initial = mlir::DenseIntElementsAttr::get(
+          mlir::RankedTensorType::get({64}, builder.getI8Type()),
+          llvm::ArrayRef<int8_t>{0});
+      std::string symbol =
+          "__wafer_ddr_completion_" + std::to_string(nextResource);
+      for (auto [moduleRef, entry] :
+           llvm::zip_equal(modules, collection.entries)) {
+        mlir::ModuleOp module = moduleRef;
+        builder.setInsertionPointToStart(module.getBody());
+        auto global = builder.create<mlir::memref::GlobalOp>(
+            module.getLoc(), symbol, builder.getStringAttr("private"), type,
+            initial, false, builder.getI64IntegerAttr(64));
+        global->setAttr(kWaferDDRResourceAttrName,
+                        DDRResourceAttr::get(context, nextResource));
+        auto dataRoot = resource.writer->root;
+        bool writes = dataRoot.getOwner() == &entry.getBody().front();
+        TileRegionOp firstRead;
+        for (const Access &reader : resource.readers)
+          if (reader.root.getOwner() == &entry.getBody().front() &&
+              (!firstRead || reader.region->isBeforeInBlock(firstRead))) {
+            firstRead = reader.region;
+            dataRoot = reader.root;
+          }
+        DDRAccess access = writes      ? DDRAccess::Write
+                           : firstRead ? DDRAccess::Read
+                                       : DDRAccess::None;
+        auto binding = DDRBindingAttr::get(
+            context, mlir::FlatSymbolRefAttr::get(context, symbol),
+            nextResource, access);
+        unsigned index = entry.getNumArguments();
+        entry.insertArgument(index, type,
+                             builder.getDictionaryAttr({builder.getNamedAttr(
+                                 kWaferDDRBindingAttrName, binding)}),
+                             entry.getLoc());
+        auto ready = entry.getArgument(index);
+        if (writes) {
+          builder.setInsertionPointAfter(resource.writer->region);
+          builder.create<SyncDDRPublishOp>(entry.getLoc(), dataRoot, ready);
         }
-      DDRAccess access = writes      ? DDRAccess::Write
-                         : firstRead ? DDRAccess::Read
-                                     : DDRAccess::None;
-      auto binding = DDRBindingAttr::get(
-          context, mlir::FlatSymbolRefAttr::get(context, symbol), nextResource,
-          access);
-      unsigned index = entry.getNumArguments();
-      entry.insertArgument(index, type,
-                           builder.getDictionaryAttr({builder.getNamedAttr(
-                               kWaferDDRBindingAttrName, binding)}),
-                           entry.getLoc());
-      auto ready = entry.getArgument(index);
-      if (writes) {
-        builder.setInsertionPointAfter(resource.writer->region);
-        builder.create<SyncDDRPublishOp>(entry.getLoc(), dataRoot, ready);
+        if (firstRead) {
+          builder.setInsertionPoint(firstRead);
+          builder.create<SyncDDRAcquireOp>(entry.getLoc(), dataRoot, ready);
+        }
       }
-      if (firstRead) {
-        builder.setInsertionPoint(firstRead);
-        builder.create<SyncDDRAcquireOp>(entry.getLoc(), dataRoot, ready);
-      }
+      ++nextResource;
     }
-    ++nextResource;
   }
   for (auto module : modules)
     if (mlir::failed(mlir::verify(module)))

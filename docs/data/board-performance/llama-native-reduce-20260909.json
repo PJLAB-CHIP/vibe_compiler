@@ -1,0 +1,5297 @@
+{
+  "measurement": {
+    "sample_id": "primary",
+    "sample_index": 0,
+    "measurement_kind": "tx-stream-kernel-launch-to-completion-envelope",
+    "scope": "primary-launch-to-stream-completion",
+    "is_engine_only": false,
+    "includes_device_control_wait_and_scheduling": true,
+    "includes_host_submit": false,
+    "includes_host_completion_polling": false,
+    "includes_trace_instrumentation": false,
+    "device_elapsed_ns": 17677999,
+    "device_timer_kind": "tx-stream-events",
+    "device_elapsed_quantized_zero": false,
+    "host_submit_ns": 128491,
+    "host_submit_quantized_zero": false,
+    "host_launch_to_completion_ns": 18109442,
+    "host_non_submit_envelope_ns": 17980951,
+    "host_envelope_available": true,
+    "completion_observation_resolution_ns": 17399,
+    "completion_observation_fraction": 0.0009607695256430319,
+    "host_completion_high_resolution": true,
+    "qualified": true,
+    "status": "Measured"
+  },
+  "program": {
+    "program_manifest_sha256": "sha256:bdfe32d76366903f9042fbe318ad8767865cfad4defb8766a3393b9181d843cd",
+    "target_identity": "wafer-tx81-single-card",
+    "launch": {
+      "kind": "kernel",
+      "form": "grid",
+      "entry_abi": "tile-row-pointer-table",
+      "phases": [
+        "main"
+      ]
+    },
+    "card_count": 1,
+    "tile_count": 16,
+    "site_correlation_basis": "target-call-ordinal-ssa-position",
+    "record_abi": "wafer-tx81-profiler-record"
+  },
+  "validity": {
+    "program_contract": true,
+    "output_equivalence": true,
+    "semantic_correctness": null,
+    "environment": true,
+    "profile_instrumentation": true,
+    "measurement_basis": true,
+    "host_completion_resolution": true,
+    "trace": true,
+    "cost_accounting": true,
+    "pmu": true,
+    "pmu_restore": true,
+    "clock_alignment": false
+  },
+  "capture_summary": [
+    {
+      "tile_id": 0,
+      "count": 8588,
+      "counted_event_count": 8588,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 1,
+      "count": 8588,
+      "counted_event_count": 8588,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 2,
+      "count": 8588,
+      "counted_event_count": 8588,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 3,
+      "count": 8588,
+      "counted_event_count": 8588,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 4,
+      "count": 8588,
+      "counted_event_count": 8588,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 5,
+      "count": 8588,
+      "counted_event_count": 8588,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 6,
+      "count": 8588,
+      "counted_event_count": 8588,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 7,
+      "count": 8588,
+      "counted_event_count": 8588,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 8,
+      "count": 8588,
+      "counted_event_count": 8588,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 9,
+      "count": 8588,
+      "counted_event_count": 8588,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 10,
+      "count": 8588,
+      "counted_event_count": 8588,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 11,
+      "count": 8588,
+      "counted_event_count": 8588,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 12,
+      "count": 8588,
+      "counted_event_count": 8588,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 13,
+      "count": 8588,
+      "counted_event_count": 8588,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 14,
+      "count": 8588,
+      "counted_event_count": 8588,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    },
+    {
+      "tile_id": 15,
+      "count": 8594,
+      "counted_event_count": 8594,
+      "capacity": 209705,
+      "overflow": false,
+      "dropped_event_count": 0
+    }
+  ],
+  "ordinary_primary_device_elapsed_ns": 17635000,
+  "pytorch": {
+    "passed": true,
+    "case": "llama-2-7b-block",
+    "manifest_sha256": "bdfe32d76366903f9042fbe318ad8767865cfad4defb8766a3393b9181d843cd",
+    "outputs": [
+      {
+        "elements": 65536,
+        "max_abs_error": 0.00146484375
+      }
+    ],
+    "comparison": {
+      "rtol": 0.002,
+      "atol": 0.004
+    },
+    "inputs": {
+      "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+    }
+  },
+  "tiles": [
+    {
+      "tile": 0,
+      "trace_entry_cpu_cycles": 18562466,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 78542,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 830,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 120656,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 72,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 4626985,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 870,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 433596,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 254,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 642137,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 2162,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 13734461,
+        "ncc-submit": 3475434,
+        "between-site-gap": 1316875,
+        "completion-wait-proxy": 31426,
+        "entry-epilogue": 2464,
+        "entry-prologue": 1806
+      },
+      "cycles_by_call_and_category": {
+        "site-control wafer_tx81_ddr_acquire": {
+          "cycles": 1013867,
+          "intervals": 135
+        },
+        "ncc-submit wafer_tx81_gather_scatter": {
+          "cycles": 1745026,
+          "intervals": 1997
+        },
+        "site-control wafer_tx81_gemm_oriented": {
+          "cycles": 403356,
+          "intervals": 56
+        },
+        "ncc-submit wafer_tx81_gemm_oriented": {
+          "cycles": 1233394,
+          "intervals": 56
+        },
+        "ncc-submit wafer_tx81_convert_fp16_fp32": {
+          "cycles": 122144,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_elementwise_neg": {
+          "cycles": 89617,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_gather_scatter": {
+          "cycles": 5758192,
+          "intervals": 1997
+        },
+        "site-control wafer_tx81_elementwise_add": {
+          "cycles": 561067,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_convert_fp32_fp16": {
+          "cycles": 286263,
+          "intervals": 96
+        },
+        "between-site-gap outside-site": {
+          "cycles": 1316875,
+          "intervals": 4386
+        },
+        "site-control wafer_tx81_rdma": {
+          "cycles": 2709000,
+          "intervals": 870
+        },
+        "ncc-submit wafer_tx81_wdma": {
+          "cycles": 46882,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_reduce_sum": {
+          "cycles": 81809,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_elementwise_mul": {
+          "cycles": 350507,
+          "intervals": 122
+        },
+        "site-control wafer_tx81_wdma": {
+          "cycles": 771445,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_elementwise_square": {
+          "cycles": 49148,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_convert_fp16_fp32": {
+          "cycles": 384599,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_reduce_max": {
+          "cycles": 26593,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_memset": {
+          "cycles": 452170,
+          "intervals": 165
+        },
+        "site-control wafer_tx81_elementwise_lt": {
+          "cycles": 51303,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_exp": {
+          "cycles": 49104,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_gemm": {
+          "cycles": 50944,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_logic_and": {
+          "cycles": 50415,
+          "intervals": 16
+        },
+        "completion-wait-proxy wafer_tx81_ncc_join": {
+          "cycles": 31426,
+          "intervals": 13
+        },
+        "ncc-submit wafer_tx81_gemm": {
+          "cycles": 14633,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_ne": {
+          "cycles": 47941,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_add": {
+          "cycles": 51004,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_ncc_join": {
+          "cycles": 26449,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_mask_move": {
+          "cycles": 45702,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_max": {
+          "cycles": 24448,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_elementwise_abs": {
+          "cycles": 45216,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_div": {
+          "cycles": 183460,
+          "intervals": 64
+        },
+        "site-control wafer_tx81_elementwise_sub": {
+          "cycles": 115277,
+          "intervals": 40
+        },
+        "site-control wafer_tx81_bit2fp": {
+          "cycles": 44744,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_rsqrt": {
+          "cycles": 7506,
+          "intervals": 2
+        },
+        "ncc-submit wafer_tx81_rdma": {
+          "cycles": 102649,
+          "intervals": 870
+        },
+        "entry-epilogue outside-site": {
+          "cycles": 2464,
+          "intervals": 1
+        },
+        "site-control wafer_tx81_ddr_publish": {
+          "cycles": 54319,
+          "intervals": 51
+        },
+        "entry-prologue outside-site": {
+          "cycles": 1806,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_elementwise_mul": {
+          "cycles": 32555,
+          "intervals": 122
+        },
+        "ncc-submit wafer_tx81_elementwise_square": {
+          "cycles": 4337,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_abs": {
+          "cycles": 4305,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_neg": {
+          "cycles": 6224,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_memset": {
+          "cycles": 30093,
+          "intervals": 165
+        },
+        "ncc-submit wafer_tx81_elementwise_exp": {
+          "cycles": 4253,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_convert_fp32_fp16": {
+          "cycles": 24374,
+          "intervals": 96
+        },
+        "ncc-submit wafer_tx81_elementwise_div": {
+          "cycles": 15763,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_reduce_sum": {
+          "cycles": 6223,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_sub": {
+          "cycles": 9976,
+          "intervals": 40
+        },
+        "ncc-submit wafer_tx81_elementwise_lt": {
+          "cycles": 3408,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_logic_and": {
+          "cycles": 3717,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_ne": {
+          "cycles": 3511,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_reduce_max": {
+          "cycles": 1837,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_bit2fp": {
+          "cycles": 3350,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_rsqrt": {
+          "cycles": 496,
+          "intervals": 2
+        },
+        "ncc-submit wafer_tx81_elementwise_max": {
+          "cycles": 1807,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_mask_move": {
+          "cycles": 3473,
+          "intervals": 16
+        }
+      }
+    },
+    {
+      "tile": 1,
+      "trace_entry_cpu_cycles": 18476486,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 78542,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 830,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 120656,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 72,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 4283736,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 870,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 440821,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 254,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 642503,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 2162,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 13782856,
+        "ncc-submit": 3361954,
+        "between-site-gap": 1294960,
+        "completion-wait-proxy": 31881,
+        "entry-epilogue": 3380,
+        "entry-prologue": 1455
+      },
+      "cycles_by_call_and_category": {
+        "site-control wafer_tx81_ddr_acquire": {
+          "cycles": 1334658,
+          "intervals": 135
+        },
+        "ncc-submit wafer_tx81_gather_scatter": {
+          "cycles": 1549822,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_convert_fp16_fp32": {
+          "cycles": 219291,
+          "intervals": 136
+        },
+        "ncc-submit wafer_tx81_gemm_oriented": {
+          "cycles": 1211239,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_gemm_oriented": {
+          "cycles": 260751,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_elementwise_exp": {
+          "cycles": 72696,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_add": {
+          "cycles": 66403,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_gather_scatter": {
+          "cycles": 5702591,
+          "intervals": 1997
+        },
+        "site-control wafer_tx81_rdma": {
+          "cycles": 2678016,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_elementwise_mul": {
+          "cycles": 355299,
+          "intervals": 122
+        },
+        "site-control wafer_tx81_convert_fp32_fp16": {
+          "cycles": 289628,
+          "intervals": 96
+        },
+        "ncc-submit wafer_tx81_wdma": {
+          "cycles": 47875,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_reduce_sum": {
+          "cycles": 80530,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_elementwise_neg": {
+          "cycles": 74447,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_elementwise_square": {
+          "cycles": 49635,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_reduce_max": {
+          "cycles": 27072,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_elementwise_lt": {
+          "cycles": 52568,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_gemm": {
+          "cycles": 53257,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_memset": {
+          "cycles": 449982,
+          "intervals": 165
+        },
+        "site-control wafer_tx81_elementwise_logic_and": {
+          "cycles": 49642,
+          "intervals": 16
+        },
+        "between-site-gap outside-site": {
+          "cycles": 1294960,
+          "intervals": 4386
+        },
+        "site-control wafer_tx81_wdma": {
+          "cycles": 767686,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_elementwise_add": {
+          "cycles": 519051,
+          "intervals": 178
+        },
+        "ncc-submit wafer_tx81_gemm": {
+          "cycles": 16994,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_convert_fp16_fp32": {
+          "cycles": 383201,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_bit2fp": {
+          "cycles": 47622,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_sub": {
+          "cycles": 113145,
+          "intervals": 40
+        },
+        "site-control wafer_tx81_elementwise_div": {
+          "cycles": 177466,
+          "intervals": 64
+        },
+        "site-control wafer_tx81_ncc_join": {
+          "cycles": 26028,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_elementwise_ne": {
+          "cycles": 47749,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_mask_move": {
+          "cycles": 47901,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_abs": {
+          "cycles": 46158,
+          "intervals": 16
+        },
+        "completion-wait-proxy wafer_tx81_ncc_join": {
+          "cycles": 31881,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_elementwise_max": {
+          "cycles": 23174,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_neg": {
+          "cycles": 9473,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_elementwise_rsqrt": {
+          "cycles": 8027,
+          "intervals": 2
+        },
+        "entry-epilogue outside-site": {
+          "cycles": 3380,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_rdma": {
+          "cycles": 94735,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_ddr_publish": {
+          "cycles": 44876,
+          "intervals": 51
+        },
+        "entry-prologue outside-site": {
+          "cycles": 1455,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_reduce_sum": {
+          "cycles": 6746,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_mul": {
+          "cycles": 30072,
+          "intervals": 122
+        },
+        "ncc-submit wafer_tx81_memset": {
+          "cycles": 30690,
+          "intervals": 165
+        },
+        "ncc-submit wafer_tx81_convert_fp32_fp16": {
+          "cycles": 23186,
+          "intervals": 96
+        },
+        "ncc-submit wafer_tx81_mask_move": {
+          "cycles": 3700,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_bit2fp": {
+          "cycles": 3873,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_sub": {
+          "cycles": 8421,
+          "intervals": 40
+        },
+        "ncc-submit wafer_tx81_elementwise_rsqrt": {
+          "cycles": 646,
+          "intervals": 2
+        },
+        "ncc-submit wafer_tx81_elementwise_exp": {
+          "cycles": 4023,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_div": {
+          "cycles": 14155,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_elementwise_ne": {
+          "cycles": 3547,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_logic_and": {
+          "cycles": 3817,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_max": {
+          "cycles": 1819,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_square": {
+          "cycles": 3507,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_abs": {
+          "cycles": 3163,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_reduce_max": {
+          "cycles": 1623,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_lt": {
+          "cycles": 3134,
+          "intervals": 16
+        }
+      }
+    },
+    {
+      "tile": 2,
+      "trace_entry_cpu_cycles": 18477360,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 78542,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 830,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 120656,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 72,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 3675648,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 870,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 460039,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 254,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 642225,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 2162,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 14348624,
+        "ncc-submit": 2804899,
+        "between-site-gap": 1281660,
+        "completion-wait-proxy": 37434,
+        "entry-epilogue": 3224,
+        "entry-prologue": 1519
+      },
+      "cycles_by_call_and_category": {
+        "site-control wafer_tx81_ddr_acquire": {
+          "cycles": 1905162,
+          "intervals": 135
+        },
+        "ncc-submit wafer_tx81_gather_scatter": {
+          "cycles": 1225274,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_convert_fp16_fp32": {
+          "cycles": 145208,
+          "intervals": 136
+        },
+        "ncc-submit wafer_tx81_gemm_oriented": {
+          "cycles": 1047472,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_elementwise_neg": {
+          "cycles": 130249,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_add": {
+          "cycles": 70921,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_gemm_oriented": {
+          "cycles": 202048,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_rdma": {
+          "cycles": 2690623,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_reduce_sum": {
+          "cycles": 78846,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_wdma": {
+          "cycles": 47359,
+          "intervals": 254
+        },
+        "ncc-submit wafer_tx81_elementwise_neg": {
+          "cycles": 14631,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_gather_scatter": {
+          "cycles": 5705785,
+          "intervals": 1997
+        },
+        "site-control wafer_tx81_elementwise_exp": {
+          "cycles": 53556,
+          "intervals": 16
+        },
+        "between-site-gap outside-site": {
+          "cycles": 1281660,
+          "intervals": 4386
+        },
+        "site-control wafer_tx81_elementwise_square": {
+          "cycles": 50150,
+          "intervals": 16
+        },
+        "completion-wait-proxy wafer_tx81_ncc_join": {
+          "cycles": 37434,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_reduce_max": {
+          "cycles": 25980,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_memset": {
+          "cycles": 452404,
+          "intervals": 165
+        },
+        "site-control wafer_tx81_elementwise_lt": {
+          "cycles": 50456,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_ncc_join": {
+          "cycles": 31168,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_elementwise_mul": {
+          "cycles": 349419,
+          "intervals": 122
+        },
+        "site-control wafer_tx81_convert_fp32_fp16": {
+          "cycles": 283334,
+          "intervals": 96
+        },
+        "site-control wafer_tx81_elementwise_add": {
+          "cycles": 521521,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_wdma": {
+          "cycles": 775895,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_convert_fp16_fp32": {
+          "cycles": 384798,
+          "intervals": 136
+        },
+        "ncc-submit wafer_tx81_gemm": {
+          "cycles": 16427,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_div": {
+          "cycles": 179613,
+          "intervals": 64
+        },
+        "site-control wafer_tx81_gemm": {
+          "cycles": 50209,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_logic_and": {
+          "cycles": 48450,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_sub": {
+          "cycles": 112353,
+          "intervals": 40
+        },
+        "site-control wafer_tx81_mask_move": {
+          "cycles": 47909,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_bit2fp": {
+          "cycles": 45729,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_ne": {
+          "cycles": 47392,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_rsqrt": {
+          "cycles": 7944,
+          "intervals": 2
+        },
+        "site-control wafer_tx81_elementwise_abs": {
+          "cycles": 44702,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_max": {
+          "cycles": 23141,
+          "intervals": 8
+        },
+        "entry-epilogue outside-site": {
+          "cycles": 3224,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_rdma": {
+          "cycles": 91582,
+          "intervals": 870
+        },
+        "ncc-submit wafer_tx81_memset": {
+          "cycles": 33014,
+          "intervals": 165
+        },
+        "site-control wafer_tx81_ddr_publish": {
+          "cycles": 49788,
+          "intervals": 51
+        },
+        "entry-prologue outside-site": {
+          "cycles": 1519,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_reduce_sum": {
+          "cycles": 6109,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_convert_fp32_fp16": {
+          "cycles": 21953,
+          "intervals": 96
+        },
+        "ncc-submit wafer_tx81_elementwise_mul": {
+          "cycles": 28355,
+          "intervals": 122
+        },
+        "ncc-submit wafer_tx81_elementwise_logic_and": {
+          "cycles": 4791,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_abs": {
+          "cycles": 3591,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_ne": {
+          "cycles": 3997,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_bit2fp": {
+          "cycles": 4268,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_lt": {
+          "cycles": 3490,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_sub": {
+          "cycles": 8570,
+          "intervals": 40
+        },
+        "ncc-submit wafer_tx81_mask_move": {
+          "cycles": 3673,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_div": {
+          "cycles": 13546,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_elementwise_exp": {
+          "cycles": 3526,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_reduce_max": {
+          "cycles": 1723,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_max": {
+          "cycles": 1679,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_square": {
+          "cycles": 3318,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_rsqrt": {
+          "cycles": 422,
+          "intervals": 2
+        }
+      }
+    },
+    {
+      "tile": 3,
+      "trace_entry_cpu_cycles": 18578057,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 78542,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 830,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 120656,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 72,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 4224115,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 870,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 495346,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 254,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 642474,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 2162,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 13982186,
+        "ncc-submit": 3258208,
+        "completion-wait-proxy": 30978,
+        "between-site-gap": 1301606,
+        "entry-epilogue": 2637,
+        "entry-prologue": 2442
+      },
+      "cycles_by_call_and_category": {
+        "site-control wafer_tx81_ddr_acquire": {
+          "cycles": 1397162,
+          "intervals": 135
+        },
+        "ncc-submit wafer_tx81_gather_scatter": {
+          "cycles": 1469654,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_gemm_oriented": {
+          "cycles": 1266678,
+          "intervals": 56
+        },
+        "ncc-submit wafer_tx81_convert_fp16_fp32": {
+          "cycles": 171193,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_gemm_oriented": {
+          "cycles": 232036,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_elementwise_neg": {
+          "cycles": 91357,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_gather_scatter": {
+          "cycles": 5821542,
+          "intervals": 1997
+        },
+        "site-control wafer_tx81_rdma": {
+          "cycles": 2709378,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_elementwise_lt": {
+          "cycles": 58310,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_memset": {
+          "cycles": 456520,
+          "intervals": 165
+        },
+        "ncc-submit wafer_tx81_wdma": {
+          "cycles": 46969,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_elementwise_logic_and": {
+          "cycles": 53281,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_reduce_sum": {
+          "cycles": 78426,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_convert_fp32_fp16": {
+          "cycles": 278989,
+          "intervals": 96
+        },
+        "site-control wafer_tx81_elementwise_add": {
+          "cycles": 531816,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_reduce_max": {
+          "cycles": 27915,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_mask_move": {
+          "cycles": 49713,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_wdma": {
+          "cycles": 784975,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_elementwise_ne": {
+          "cycles": 48761,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_convert_fp16_fp32": {
+          "cycles": 384887,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_gemm": {
+          "cycles": 52569,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_bit2fp": {
+          "cycles": 48049,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_mul": {
+          "cycles": 349713,
+          "intervals": 122
+        },
+        "site-control wafer_tx81_elementwise_exp": {
+          "cycles": 49805,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_gemm": {
+          "cycles": 14991,
+          "intervals": 16
+        },
+        "completion-wait-proxy wafer_tx81_ncc_join": {
+          "cycles": 30978,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_elementwise_abs": {
+          "cycles": 47570,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_square": {
+          "cycles": 45725,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_rsqrt": {
+          "cycles": 8514,
+          "intervals": 2
+        },
+        "between-site-gap outside-site": {
+          "cycles": 1301606,
+          "intervals": 4386
+        },
+        "site-control wafer_tx81_ncc_join": {
+          "cycles": 27008,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_elementwise_max": {
+          "cycles": 22953,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_elementwise_div": {
+          "cycles": 176737,
+          "intervals": 64
+        },
+        "site-control wafer_tx81_elementwise_sub": {
+          "cycles": 112291,
+          "intervals": 40
+        },
+        "entry-epilogue outside-site": {
+          "cycles": 2637,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_elementwise_add": {
+          "cycles": 47178,
+          "intervals": 178
+        },
+        "ncc-submit wafer_tx81_rdma": {
+          "cycles": 92890,
+          "intervals": 870
+        },
+        "entry-prologue outside-site": {
+          "cycles": 2442,
+          "intervals": 1
+        },
+        "site-control wafer_tx81_ddr_publish": {
+          "cycles": 36184,
+          "intervals": 51
+        },
+        "ncc-submit wafer_tx81_elementwise_mul": {
+          "cycles": 29898,
+          "intervals": 122
+        },
+        "ncc-submit wafer_tx81_memset": {
+          "cycles": 30894,
+          "intervals": 165
+        },
+        "ncc-submit wafer_tx81_reduce_max": {
+          "cycles": 2193,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_div": {
+          "cycles": 14248,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_convert_fp32_fp16": {
+          "cycles": 21203,
+          "intervals": 96
+        },
+        "ncc-submit wafer_tx81_reduce_sum": {
+          "cycles": 6643,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_mask_move": {
+          "cycles": 3424,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_sub": {
+          "cycles": 8988,
+          "intervals": 40
+        },
+        "ncc-submit wafer_tx81_elementwise_exp": {
+          "cycles": 3710,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_ne": {
+          "cycles": 3476,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_logic_and": {
+          "cycles": 3610,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_lt": {
+          "cycles": 3218,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_bit2fp": {
+          "cycles": 3325,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_neg": {
+          "cycles": 5094,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_square": {
+          "cycles": 3444,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_abs": {
+          "cycles": 3152,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_rsqrt": {
+          "cycles": 454,
+          "intervals": 2
+        },
+        "ncc-submit wafer_tx81_elementwise_max": {
+          "cycles": 1681,
+          "intervals": 8
+        }
+      }
+    },
+    {
+      "tile": 4,
+      "trace_entry_cpu_cycles": 18603241,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 78542,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 830,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 120656,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 72,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 4741794,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 870,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 537438,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 254,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 642146,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 2162,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 13624239,
+        "ncc-submit": 3647424,
+        "completion-wait-proxy": 34012,
+        "between-site-gap": 1292758,
+        "entry-epilogue": 2858,
+        "entry-prologue": 1950
+      },
+      "cycles_by_call_and_category": {
+        "site-control wafer_tx81_ddr_acquire": {
+          "cycles": 1016915,
+          "intervals": 135
+        },
+        "ncc-submit wafer_tx81_gather_scatter": {
+          "cycles": 1737425,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_gemm_oriented": {
+          "cycles": 1417180,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_gemm_oriented": {
+          "cycles": 334067,
+          "intervals": 56
+        },
+        "ncc-submit wafer_tx81_convert_fp16_fp32": {
+          "cycles": 113480,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_gather_scatter": {
+          "cycles": 5789075,
+          "intervals": 1997
+        },
+        "site-control wafer_tx81_elementwise_neg": {
+          "cycles": 84601,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_convert_fp32_fp16": {
+          "cycles": 292574,
+          "intervals": 96
+        },
+        "site-control wafer_tx81_reduce_sum": {
+          "cycles": 85131,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_elementwise_add": {
+          "cycles": 532428,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_rdma": {
+          "cycles": 2675782,
+          "intervals": 870
+        },
+        "ncc-submit wafer_tx81_elementwise_add": {
+          "cycles": 62866,
+          "intervals": 178
+        },
+        "ncc-submit wafer_tx81_wdma": {
+          "cycles": 48310,
+          "intervals": 254
+        },
+        "ncc-submit wafer_tx81_elementwise_mul": {
+          "cycles": 36550,
+          "intervals": 122
+        },
+        "site-control wafer_tx81_elementwise_square": {
+          "cycles": 49490,
+          "intervals": 16
+        },
+        "completion-wait-proxy wafer_tx81_ncc_join": {
+          "cycles": 34012,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_elementwise_lt": {
+          "cycles": 52887,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_mul": {
+          "cycles": 348983,
+          "intervals": 122
+        },
+        "site-control wafer_tx81_reduce_max": {
+          "cycles": 26380,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_wdma": {
+          "cycles": 767535,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_gemm": {
+          "cycles": 51626,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_memset": {
+          "cycles": 453863,
+          "intervals": 165
+        },
+        "site-control wafer_tx81_elementwise_exp": {
+          "cycles": 49728,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_convert_fp16_fp32": {
+          "cycles": 379896,
+          "intervals": 136
+        },
+        "ncc-submit wafer_tx81_rdma": {
+          "cycles": 101169,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_elementwise_logic_and": {
+          "cycles": 50383,
+          "intervals": 16
+        },
+        "between-site-gap outside-site": {
+          "cycles": 1292758,
+          "intervals": 4386
+        },
+        "site-control wafer_tx81_elementwise_ne": {
+          "cycles": 47901,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_max": {
+          "cycles": 23105,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_ncc_join": {
+          "cycles": 26119,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_mask_move": {
+          "cycles": 46304,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_bit2fp": {
+          "cycles": 47412,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_abs": {
+          "cycles": 45824,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_rsqrt": {
+          "cycles": 7631,
+          "intervals": 2
+        },
+        "ncc-submit wafer_tx81_gemm": {
+          "cycles": 14376,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_sub": {
+          "cycles": 111864,
+          "intervals": 40
+        },
+        "site-control wafer_tx81_elementwise_div": {
+          "cycles": 175405,
+          "intervals": 64
+        },
+        "entry-epilogue outside-site": {
+          "cycles": 2858,
+          "intervals": 1
+        },
+        "site-control wafer_tx81_ddr_publish": {
+          "cycles": 51330,
+          "intervals": 51
+        },
+        "entry-prologue outside-site": {
+          "cycles": 1950,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_elementwise_exp": {
+          "cycles": 4008,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_reduce_sum": {
+          "cycles": 5968,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_bit2fp": {
+          "cycles": 3677,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_square": {
+          "cycles": 4249,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_memset": {
+          "cycles": 28761,
+          "intervals": 165
+        },
+        "ncc-submit wafer_tx81_elementwise_neg": {
+          "cycles": 5674,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_div": {
+          "cycles": 13586,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_elementwise_lt": {
+          "cycles": 3404,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_convert_fp32_fp16": {
+          "cycles": 20729,
+          "intervals": 96
+        },
+        "ncc-submit wafer_tx81_reduce_max": {
+          "cycles": 2023,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_logic_and": {
+          "cycles": 3651,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_abs": {
+          "cycles": 3302,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_ne": {
+          "cycles": 3430,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_sub": {
+          "cycles": 8233,
+          "intervals": 40
+        },
+        "ncc-submit wafer_tx81_mask_move": {
+          "cycles": 3196,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_max": {
+          "cycles": 1745,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_rsqrt": {
+          "cycles": 432,
+          "intervals": 2
+        }
+      }
+    },
+    {
+      "tile": 5,
+      "trace_entry_cpu_cycles": 18482200,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 78542,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 830,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 120656,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 72,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 4473376,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 870,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 515155,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 254,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 642505,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 2162,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 13710584,
+        "ncc-submit": 3459313,
+        "completion-wait-proxy": 42687,
+        "between-site-gap": 1264877,
+        "entry-epilogue": 2837,
+        "entry-prologue": 1902
+      },
+      "cycles_by_call_and_category": {
+        "site-control wafer_tx81_ddr_acquire": {
+          "cycles": 1156825,
+          "intervals": 135
+        },
+        "ncc-submit wafer_tx81_gather_scatter": {
+          "cycles": 1687109,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_convert_fp16_fp32": {
+          "cycles": 181391,
+          "intervals": 136
+        },
+        "ncc-submit wafer_tx81_gemm_oriented": {
+          "cycles": 1215333,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_gemm_oriented": {
+          "cycles": 290349,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_elementwise_exp": {
+          "cycles": 60632,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_neg": {
+          "cycles": 81581,
+          "intervals": 24
+        },
+        "completion-wait-proxy wafer_tx81_ncc_join": {
+          "cycles": 42687,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_rdma": {
+          "cycles": 2683906,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_elementwise_mul": {
+          "cycles": 356374,
+          "intervals": 122
+        },
+        "site-control wafer_tx81_convert_fp32_fp16": {
+          "cycles": 289753,
+          "intervals": 96
+        },
+        "ncc-submit wafer_tx81_wdma": {
+          "cycles": 49145,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_gather_scatter": {
+          "cycles": 5753626,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_elementwise_add": {
+          "cycles": 60627,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_memset": {
+          "cycles": 453144,
+          "intervals": 165
+        },
+        "site-control wafer_tx81_elementwise_square": {
+          "cycles": 49924,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_reduce_sum": {
+          "cycles": 79456,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_reduce_max": {
+          "cycles": 26622,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_elementwise_lt": {
+          "cycles": 51619,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_wdma": {
+          "cycles": 781062,
+          "intervals": 254
+        },
+        "ncc-submit wafer_tx81_rdma": {
+          "cycles": 99876,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_elementwise_add": {
+          "cycles": 535320,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_convert_fp16_fp32": {
+          "cycles": 383628,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_gemm": {
+          "cycles": 51913,
+          "intervals": 16
+        },
+        "between-site-gap outside-site": {
+          "cycles": 1264877,
+          "intervals": 4386
+        },
+        "site-control wafer_tx81_elementwise_logic_and": {
+          "cycles": 50055,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_sub": {
+          "cycles": 111434,
+          "intervals": 40
+        },
+        "site-control wafer_tx81_elementwise_ne": {
+          "cycles": 47277,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_gemm": {
+          "cycles": 14590,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_mask_move": {
+          "cycles": 46566,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_max": {
+          "cycles": 23070,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_bit2fp": {
+          "cycles": 46067,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_div": {
+          "cycles": 179214,
+          "intervals": 64
+        },
+        "site-control wafer_tx81_ncc_join": {
+          "cycles": 27997,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_elementwise_abs": {
+          "cycles": 44933,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_rsqrt": {
+          "cycles": 7368,
+          "intervals": 2
+        },
+        "entry-epilogue outside-site": {
+          "cycles": 2837,
+          "intervals": 1
+        },
+        "entry-prologue outside-site": {
+          "cycles": 1902,
+          "intervals": 1
+        },
+        "site-control wafer_tx81_ddr_publish": {
+          "cycles": 40869,
+          "intervals": 51
+        },
+        "ncc-submit wafer_tx81_memset": {
+          "cycles": 30643,
+          "intervals": 165
+        },
+        "ncc-submit wafer_tx81_bit2fp": {
+          "cycles": 4047,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_convert_fp32_fp16": {
+          "cycles": 21768,
+          "intervals": 96
+        },
+        "ncc-submit wafer_tx81_elementwise_neg": {
+          "cycles": 5782,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_mul": {
+          "cycles": 30764,
+          "intervals": 122
+        },
+        "ncc-submit wafer_tx81_elementwise_logic_and": {
+          "cycles": 4221,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_sub": {
+          "cycles": 8948,
+          "intervals": 40
+        },
+        "ncc-submit wafer_tx81_elementwise_square": {
+          "cycles": 3803,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_div": {
+          "cycles": 13716,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_elementwise_exp": {
+          "cycles": 3558,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_reduce_max": {
+          "cycles": 2027,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_ne": {
+          "cycles": 3665,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_reduce_sum": {
+          "cycles": 5609,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_abs": {
+          "cycles": 3517,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_lt": {
+          "cycles": 3592,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_max": {
+          "cycles": 1836,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_mask_move": {
+          "cycles": 3281,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_rsqrt": {
+          "cycles": 465,
+          "intervals": 2
+        }
+      }
+    },
+    {
+      "tile": 6,
+      "trace_entry_cpu_cycles": 18535444,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 78542,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 830,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 120656,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 72,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 3833486,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 870,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 586838,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 254,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 642216,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 2162,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 14292941,
+        "ncc-submit": 2925289,
+        "completion-wait-proxy": 39428,
+        "between-site-gap": 1273496,
+        "entry-epilogue": 2516,
+        "entry-prologue": 1774
+      },
+      "cycles_by_call_and_category": {
+        "site-control wafer_tx81_ddr_acquire": {
+          "cycles": 1791596,
+          "intervals": 135
+        },
+        "ncc-submit wafer_tx81_gather_scatter": {
+          "cycles": 1316313,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_gemm_oriented": {
+          "cycles": 1078241,
+          "intervals": 56
+        },
+        "ncc-submit wafer_tx81_convert_fp16_fp32": {
+          "cycles": 136396,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_gemm_oriented": {
+          "cycles": 226352,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_elementwise_div": {
+          "cycles": 189412,
+          "intervals": 64
+        },
+        "site-control wafer_tx81_elementwise_neg": {
+          "cycles": 83544,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_elementwise_exp": {
+          "cycles": 59838,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_convert_fp32_fp16": {
+          "cycles": 39071,
+          "intervals": 96
+        },
+        "site-control wafer_tx81_memset": {
+          "cycles": 456161,
+          "intervals": 165
+        },
+        "site-control wafer_tx81_rdma": {
+          "cycles": 2687478,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_reduce_sum": {
+          "cycles": 80815,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_wdma": {
+          "cycles": 48966,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_gather_scatter": {
+          "cycles": 5768618,
+          "intervals": 1997
+        },
+        "site-control wafer_tx81_elementwise_lt": {
+          "cycles": 52783,
+          "intervals": 16
+        },
+        "completion-wait-proxy wafer_tx81_ncc_join": {
+          "cycles": 39428,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_elementwise_square": {
+          "cycles": 49938,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_convert_fp32_fp16": {
+          "cycles": 283564,
+          "intervals": 96
+        },
+        "site-control wafer_tx81_elementwise_add": {
+          "cycles": 527874,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_elementwise_logic_and": {
+          "cycles": 51589,
+          "intervals": 16
+        },
+        "between-site-gap outside-site": {
+          "cycles": 1273496,
+          "intervals": 4386
+        },
+        "site-control wafer_tx81_wdma": {
+          "cycles": 774969,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_reduce_max": {
+          "cycles": 26127,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_add": {
+          "cycles": 61236,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_ncc_join": {
+          "cycles": 32235,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_convert_fp16_fp32": {
+          "cycles": 379312,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_elementwise_max": {
+          "cycles": 24028,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_elementwise_mul": {
+          "cycles": 345759,
+          "intervals": 122
+        },
+        "site-control wafer_tx81_elementwise_ne": {
+          "cycles": 47353,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_gemm": {
+          "cycles": 50461,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_abs": {
+          "cycles": 46223,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_bit2fp": {
+          "cycles": 46346,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_gemm": {
+          "cycles": 14224,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_mask_move": {
+          "cycles": 46531,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_sub": {
+          "cycles": 110796,
+          "intervals": 40
+        },
+        "site-control wafer_tx81_elementwise_rsqrt": {
+          "cycles": 7655,
+          "intervals": 2
+        },
+        "entry-epilogue outside-site": {
+          "cycles": 2516,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_rdma": {
+          "cycles": 99603,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_ddr_publish": {
+          "cycles": 45584,
+          "intervals": 51
+        },
+        "ncc-submit wafer_tx81_memset": {
+          "cycles": 32403,
+          "intervals": 165
+        },
+        "entry-prologue outside-site": {
+          "cycles": 1774,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_elementwise_mul": {
+          "cycles": 31538,
+          "intervals": 122
+        },
+        "ncc-submit wafer_tx81_elementwise_div": {
+          "cycles": 15490,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_reduce_max": {
+          "cycles": 2215,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_mask_move": {
+          "cycles": 4088,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_exp": {
+          "cycles": 3653,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_neg": {
+          "cycles": 5616,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_max": {
+          "cycles": 1864,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_sub": {
+          "cycles": 8472,
+          "intervals": 40
+        },
+        "ncc-submit wafer_tx81_elementwise_abs": {
+          "cycles": 3433,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_reduce_sum": {
+          "cycles": 5515,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_rsqrt": {
+          "cycles": 538,
+          "intervals": 2
+        },
+        "ncc-submit wafer_tx81_bit2fp": {
+          "cycles": 3345,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_logic_and": {
+          "cycles": 3470,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_square": {
+          "cycles": 3402,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_lt": {
+          "cycles": 2998,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_ne": {
+          "cycles": 3199,
+          "intervals": 16
+        }
+      }
+    },
+    {
+      "tile": 7,
+      "trace_entry_cpu_cycles": 18606455,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 78542,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 830,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 120656,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 72,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 4538703,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 870,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 497352,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 254,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 642465,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 2162,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 13732008,
+        "ncc-submit": 3559744,
+        "completion-wait-proxy": 37285,
+        "between-site-gap": 1272802,
+        "entry-epilogue": 2378,
+        "entry-prologue": 2238
+      },
+      "cycles_by_call_and_category": {
+        "site-control wafer_tx81_ddr_acquire": {
+          "cycles": 1252034,
+          "intervals": 135
+        },
+        "ncc-submit wafer_tx81_gather_scatter": {
+          "cycles": 1668094,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_gemm_oriented": {
+          "cycles": 1316985,
+          "intervals": 56
+        },
+        "ncc-submit wafer_tx81_convert_fp16_fp32": {
+          "cycles": 213710,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_gemm_oriented": {
+          "cycles": 235128,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_elementwise_exp": {
+          "cycles": 79192,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_gather_scatter": {
+          "cycles": 5782412,
+          "intervals": 1997
+        },
+        "site-control wafer_tx81_rdma": {
+          "cycles": 2654292,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_memset": {
+          "cycles": 461605,
+          "intervals": 165
+        },
+        "site-control wafer_tx81_convert_fp32_fp16": {
+          "cycles": 290518,
+          "intervals": 96
+        },
+        "ncc-submit wafer_tx81_wdma": {
+          "cycles": 48552,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_elementwise_neg": {
+          "cycles": 77952,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_elementwise_mul": {
+          "cycles": 348216,
+          "intervals": 122
+        },
+        "site-control wafer_tx81_elementwise_lt": {
+          "cycles": 52610,
+          "intervals": 16
+        },
+        "completion-wait-proxy wafer_tx81_ncc_join": {
+          "cycles": 37285,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_wdma": {
+          "cycles": 770212,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_reduce_sum": {
+          "cycles": 78323,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_rdma": {
+          "cycles": 101274,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_convert_fp16_fp32": {
+          "cycles": 380687,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_elementwise_add": {
+          "cycles": 520831,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_reduce_max": {
+          "cycles": 25525,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_gemm": {
+          "cycles": 51484,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_logic_and": {
+          "cycles": 49992,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_square": {
+          "cycles": 46455,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_ne": {
+          "cycles": 48139,
+          "intervals": 16
+        },
+        "between-site-gap outside-site": {
+          "cycles": 1272802,
+          "intervals": 4386
+        },
+        "site-control wafer_tx81_elementwise_sub": {
+          "cycles": 111133,
+          "intervals": 40
+        },
+        "site-control wafer_tx81_ncc_join": {
+          "cycles": 28241,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_elementwise_div": {
+          "cycles": 176946,
+          "intervals": 64
+        },
+        "site-control wafer_tx81_elementwise_max": {
+          "cycles": 23210,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_gemm": {
+          "cycles": 12971,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_abs": {
+          "cycles": 47062,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_bit2fp": {
+          "cycles": 46418,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_mask_move": {
+          "cycles": 46018,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_rsqrt": {
+          "cycles": 7472,
+          "intervals": 2
+        },
+        "ncc-submit wafer_tx81_convert_fp32_fp16": {
+          "cycles": 25669,
+          "intervals": 96
+        },
+        "entry-epilogue outside-site": {
+          "cycles": 2378,
+          "intervals": 1
+        },
+        "entry-prologue outside-site": {
+          "cycles": 2238,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_elementwise_add": {
+          "cycles": 46154,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_ddr_publish": {
+          "cycles": 39901,
+          "intervals": 51
+        },
+        "ncc-submit wafer_tx81_memset": {
+          "cycles": 30522,
+          "intervals": 165
+        },
+        "ncc-submit wafer_tx81_elementwise_neg": {
+          "cycles": 6119,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_reduce_sum": {
+          "cycles": 6228,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_mul": {
+          "cycles": 28304,
+          "intervals": 122
+        },
+        "ncc-submit wafer_tx81_elementwise_square": {
+          "cycles": 3943,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_exp": {
+          "cycles": 3714,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_div": {
+          "cycles": 14412,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_elementwise_logic_and": {
+          "cycles": 3707,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_ne": {
+          "cycles": 3489,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_abs": {
+          "cycles": 3581,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_mask_move": {
+          "cycles": 3689,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_bit2fp": {
+          "cycles": 3478,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_sub": {
+          "cycles": 8074,
+          "intervals": 40
+        },
+        "ncc-submit wafer_tx81_elementwise_max": {
+          "cycles": 1834,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_lt": {
+          "cycles": 3075,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_reduce_max": {
+          "cycles": 1736,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_rsqrt": {
+          "cycles": 430,
+          "intervals": 2
+        }
+      }
+    },
+    {
+      "tile": 8,
+      "trace_entry_cpu_cycles": 18568173,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 78542,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 830,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 120656,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 72,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 4729098,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 870,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 550605,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 254,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 642141,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 2162,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 13583295,
+        "ncc-submit": 3667995,
+        "completion-wait-proxy": 37356,
+        "between-site-gap": 1274460,
+        "entry-epilogue": 2979,
+        "entry-prologue": 2088
+      },
+      "cycles_by_call_and_category": {
+        "site-control wafer_tx81_ddr_acquire": {
+          "cycles": 1006887,
+          "intervals": 135
+        },
+        "ncc-submit wafer_tx81_gather_scatter": {
+          "cycles": 1823317,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_gemm_oriented": {
+          "cycles": 1352197,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_gemm_oriented": {
+          "cycles": 278195,
+          "intervals": 56
+        },
+        "ncc-submit wafer_tx81_convert_fp16_fp32": {
+          "cycles": 114040,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_elementwise_neg": {
+          "cycles": 95073,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_gather_scatter": {
+          "cycles": 5790736,
+          "intervals": 1997
+        },
+        "site-control wafer_tx81_rdma": {
+          "cycles": 2687675,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_elementwise_add": {
+          "cycles": 557819,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_convert_fp32_fp16": {
+          "cycles": 282912,
+          "intervals": 96
+        },
+        "ncc-submit wafer_tx81_wdma": {
+          "cycles": 51231,
+          "intervals": 254
+        },
+        "ncc-submit wafer_tx81_elementwise_add": {
+          "cycles": 52555,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_elementwise_mul": {
+          "cycles": 350094,
+          "intervals": 122
+        },
+        "site-control wafer_tx81_memset": {
+          "cycles": 451762,
+          "intervals": 165
+        },
+        "site-control wafer_tx81_reduce_sum": {
+          "cycles": 78922,
+          "intervals": 24
+        },
+        "completion-wait-proxy wafer_tx81_ncc_join": {
+          "cycles": 37356,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_reduce_max": {
+          "cycles": 26895,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_convert_fp16_fp32": {
+          "cycles": 381419,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_wdma": {
+          "cycles": 774978,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_elementwise_lt": {
+          "cycles": 50892,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_gemm": {
+          "cycles": 50574,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_square": {
+          "cycles": 47189,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_rdma": {
+          "cycles": 111448,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_elementwise_exp": {
+          "cycles": 48922,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_logic_and": {
+          "cycles": 49255,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_gemm": {
+          "cycles": 14821,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_bit2fp": {
+          "cycles": 47419,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_mask_move": {
+          "cycles": 46788,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_ne": {
+          "cycles": 47784,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_ncc_join": {
+          "cycles": 26825,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_elementwise_max": {
+          "cycles": 23334,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_elementwise_rsqrt": {
+          "cycles": 7957,
+          "intervals": 2
+        },
+        "site-control wafer_tx81_elementwise_sub": {
+          "cycles": 110946,
+          "intervals": 40
+        },
+        "between-site-gap outside-site": {
+          "cycles": 1274460,
+          "intervals": 4386
+        },
+        "site-control wafer_tx81_elementwise_div": {
+          "cycles": 177793,
+          "intervals": 64
+        },
+        "site-control wafer_tx81_elementwise_abs": {
+          "cycles": 45458,
+          "intervals": 16
+        },
+        "entry-epilogue outside-site": {
+          "cycles": 2979,
+          "intervals": 1
+        },
+        "entry-prologue outside-site": {
+          "cycles": 2088,
+          "intervals": 1
+        },
+        "site-control wafer_tx81_ddr_publish": {
+          "cycles": 38792,
+          "intervals": 51
+        },
+        "ncc-submit wafer_tx81_convert_fp32_fp16": {
+          "cycles": 23429,
+          "intervals": 96
+        },
+        "ncc-submit wafer_tx81_elementwise_mul": {
+          "cycles": 30284,
+          "intervals": 122
+        },
+        "ncc-submit wafer_tx81_elementwise_abs": {
+          "cycles": 4172,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_sub": {
+          "cycles": 9188,
+          "intervals": 40
+        },
+        "ncc-submit wafer_tx81_memset": {
+          "cycles": 28943,
+          "intervals": 165
+        },
+        "ncc-submit wafer_tx81_elementwise_square": {
+          "cycles": 3868,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_div": {
+          "cycles": 13816,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_elementwise_exp": {
+          "cycles": 3531,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_neg": {
+          "cycles": 5185,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_max": {
+          "cycles": 1818,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_mask_move": {
+          "cycles": 3352,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_reduce_sum": {
+          "cycles": 5289,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_bit2fp": {
+          "cycles": 3358,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_ne": {
+          "cycles": 3322,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_logic_and": {
+          "cycles": 3712,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_lt": {
+          "cycles": 3056,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_reduce_max": {
+          "cycles": 1657,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_rsqrt": {
+          "cycles": 406,
+          "intervals": 2
+        }
+      }
+    },
+    {
+      "tile": 9,
+      "trace_entry_cpu_cycles": 18441079,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 78542,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 830,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 120656,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 72,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 4437372,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 870,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 518353,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 254,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 642503,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 2162,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 13673246,
+        "ncc-submit": 3457050,
+        "completion-wait-proxy": 45769,
+        "entry-epilogue": 4889,
+        "between-site-gap": 1257788,
+        "entry-prologue": 2337
+      },
+      "cycles_by_call_and_category": {
+        "site-control wafer_tx81_ddr_acquire": {
+          "cycles": 1214187,
+          "intervals": 135
+        },
+        "ncc-submit wafer_tx81_gather_scatter": {
+          "cycles": 1726044,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_convert_fp16_fp32": {
+          "cycles": 190507,
+          "intervals": 136
+        },
+        "ncc-submit wafer_tx81_gemm_oriented": {
+          "cycles": 1169859,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_gemm_oriented": {
+          "cycles": 249292,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_elementwise_exp": {
+          "cycles": 67707,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_convert_fp32_fp16": {
+          "cycles": 290019,
+          "intervals": 96
+        },
+        "completion-wait-proxy wafer_tx81_ncc_join": {
+          "cycles": 45769,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_rdma": {
+          "cycles": 2691287,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_elementwise_neg": {
+          "cycles": 77522,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_wdma": {
+          "cycles": 50464,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_gather_scatter": {
+          "cycles": 5728263,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_elementwise_add": {
+          "cycles": 55182,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_memset": {
+          "cycles": 455367,
+          "intervals": 165
+        },
+        "site-control wafer_tx81_elementwise_mul": {
+          "cycles": 346444,
+          "intervals": 122
+        },
+        "site-control wafer_tx81_elementwise_square": {
+          "cycles": 49160,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_reduce_max": {
+          "cycles": 27170,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_elementwise_add": {
+          "cycles": 537100,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_elementwise_lt": {
+          "cycles": 52395,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_reduce_sum": {
+          "cycles": 78420,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_gemm": {
+          "cycles": 52703,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_wdma": {
+          "cycles": 761190,
+          "intervals": 254
+        },
+        "ncc-submit wafer_tx81_rdma": {
+          "cycles": 97042,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_convert_fp16_fp32": {
+          "cycles": 378523,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_elementwise_logic_and": {
+          "cycles": 50648,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_ne": {
+          "cycles": 48227,
+          "intervals": 16
+        },
+        "entry-epilogue outside-site": {
+          "cycles": 4889,
+          "intervals": 1
+        },
+        "site-control wafer_tx81_elementwise_div": {
+          "cycles": 175782,
+          "intervals": 64
+        },
+        "between-site-gap outside-site": {
+          "cycles": 1257788,
+          "intervals": 4386
+        },
+        "site-control wafer_tx81_ncc_join": {
+          "cycles": 26434,
+          "intervals": 13
+        },
+        "ncc-submit wafer_tx81_elementwise_neg": {
+          "cycles": 9943,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_elementwise_max": {
+          "cycles": 23615,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_gemm": {
+          "cycles": 14957,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_mask_move": {
+          "cycles": 46434,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_abs": {
+          "cycles": 44846,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_bit2fp": {
+          "cycles": 46732,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_sub": {
+          "cycles": 109347,
+          "intervals": 40
+        },
+        "site-control wafer_tx81_elementwise_rsqrt": {
+          "cycles": 7487,
+          "intervals": 2
+        },
+        "entry-prologue outside-site": {
+          "cycles": 2337,
+          "intervals": 1
+        },
+        "site-control wafer_tx81_ddr_publish": {
+          "cycles": 36945,
+          "intervals": 51
+        },
+        "ncc-submit wafer_tx81_elementwise_mul": {
+          "cycles": 27990,
+          "intervals": 122
+        },
+        "ncc-submit wafer_tx81_memset": {
+          "cycles": 30896,
+          "intervals": 165
+        },
+        "ncc-submit wafer_tx81_elementwise_exp": {
+          "cycles": 4406,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_ne": {
+          "cycles": 3991,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_sub": {
+          "cycles": 8923,
+          "intervals": 40
+        },
+        "ncc-submit wafer_tx81_mask_move": {
+          "cycles": 3880,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_convert_fp32_fp16": {
+          "cycles": 22154,
+          "intervals": 96
+        },
+        "ncc-submit wafer_tx81_elementwise_div": {
+          "cycles": 14101,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_bit2fp": {
+          "cycles": 3639,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_reduce_max": {
+          "cycles": 1696,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_reduce_sum": {
+          "cycles": 5253,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_rsqrt": {
+          "cycles": 554,
+          "intervals": 2
+        },
+        "ncc-submit wafer_tx81_elementwise_logic_and": {
+          "cycles": 3892,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_lt": {
+          "cycles": 3171,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_square": {
+          "cycles": 3434,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_abs": {
+          "cycles": 3310,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_max": {
+          "cycles": 1762,
+          "intervals": 8
+        }
+      }
+    },
+    {
+      "tile": 10,
+      "trace_entry_cpu_cycles": 18498178,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 78542,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 830,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 120656,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 72,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 3759301,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 870,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 613210,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 254,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 642217,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 2162,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 14348037,
+        "ncc-submit": 2842215,
+        "completion-wait-proxy": 41354,
+        "between-site-gap": 1262733,
+        "entry-epilogue": 2264,
+        "entry-prologue": 1575
+      },
+      "cycles_by_call_and_category": {
+        "site-control wafer_tx81_ddr_acquire": {
+          "cycles": 1810722,
+          "intervals": 135
+        },
+        "ncc-submit wafer_tx81_gather_scatter": {
+          "cycles": 1314954,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_convert_fp16_fp32": {
+          "cycles": 140458,
+          "intervals": 136
+        },
+        "ncc-submit wafer_tx81_gemm_oriented": {
+          "cycles": 1001291,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_elementwise_exp": {
+          "cycles": 70451,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_div": {
+          "cycles": 190861,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_convert_fp32_fp16": {
+          "cycles": 38266,
+          "intervals": 96
+        },
+        "site-control wafer_tx81_gemm_oriented": {
+          "cycles": 220982,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_gather_scatter": {
+          "cycles": 5783439,
+          "intervals": 1997
+        },
+        "site-control wafer_tx81_elementwise_add": {
+          "cycles": 533912,
+          "intervals": 178
+        },
+        "ncc-submit wafer_tx81_elementwise_add": {
+          "cycles": 60296,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_convert_fp32_fp16": {
+          "cycles": 293048,
+          "intervals": 96
+        },
+        "site-control wafer_tx81_rdma": {
+          "cycles": 2686340,
+          "intervals": 870
+        },
+        "ncc-submit wafer_tx81_wdma": {
+          "cycles": 48639,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_elementwise_neg": {
+          "cycles": 74093,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_memset": {
+          "cycles": 459585,
+          "intervals": 165
+        },
+        "completion-wait-proxy wafer_tx81_ncc_join": {
+          "cycles": 41354,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_elementwise_square": {
+          "cycles": 49933,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_ne": {
+          "cycles": 50749,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_reduce_sum": {
+          "cycles": 78092,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_elementwise_mul": {
+          "cycles": 350491,
+          "intervals": 122
+        },
+        "site-control wafer_tx81_elementwise_lt": {
+          "cycles": 51760,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_ncc_join": {
+          "cycles": 33910,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_reduce_max": {
+          "cycles": 26840,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_elementwise_logic_and": {
+          "cycles": 49859,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_gemm": {
+          "cycles": 52064,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_mask_move": {
+          "cycles": 48015,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_convert_fp16_fp32": {
+          "cycles": 390492,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_wdma": {
+          "cycles": 761692,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_elementwise_sub": {
+          "cycles": 112871,
+          "intervals": 40
+        },
+        "site-control wafer_tx81_bit2fp": {
+          "cycles": 46075,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_max": {
+          "cycles": 22993,
+          "intervals": 8
+        },
+        "between-site-gap outside-site": {
+          "cycles": 1262733,
+          "intervals": 4386
+        },
+        "site-control wafer_tx81_elementwise_abs": {
+          "cycles": 45056,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_gemm": {
+          "cycles": 12959,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_rsqrt": {
+          "cycles": 7250,
+          "intervals": 2
+        },
+        "site-control wafer_tx81_ddr_publish": {
+          "cycles": 46462,
+          "intervals": 51
+        },
+        "entry-epilogue outside-site": {
+          "cycles": 2264,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_rdma": {
+          "cycles": 94333,
+          "intervals": 870
+        },
+        "ncc-submit wafer_tx81_memset": {
+          "cycles": 31902,
+          "intervals": 165
+        },
+        "entry-prologue outside-site": {
+          "cycles": 1575,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_elementwise_mul": {
+          "cycles": 30297,
+          "intervals": 122
+        },
+        "ncc-submit wafer_tx81_elementwise_max": {
+          "cycles": 2666,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_mask_move": {
+          "cycles": 3963,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_lt": {
+          "cycles": 3710,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_rsqrt": {
+          "cycles": 685,
+          "intervals": 2
+        },
+        "ncc-submit wafer_tx81_elementwise_ne": {
+          "cycles": 3898,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_bit2fp": {
+          "cycles": 3961,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_reduce_sum": {
+          "cycles": 5946,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_sub": {
+          "cycles": 8811,
+          "intervals": 40
+        },
+        "ncc-submit wafer_tx81_elementwise_div": {
+          "cycles": 13746,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_reduce_max": {
+          "cycles": 1860,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_logic_and": {
+          "cycles": 4239,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_abs": {
+          "cycles": 3468,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_exp": {
+          "cycles": 3374,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_square": {
+          "cycles": 3468,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_neg": {
+          "cycles": 5025,
+          "intervals": 24
+        }
+      }
+    },
+    {
+      "tile": 11,
+      "trace_entry_cpu_cycles": 18583584,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 78542,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 830,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 120656,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 72,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 4446323,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 870,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 552847,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 254,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 642468,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 2162,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 13850442,
+        "ncc-submit": 3416350,
+        "completion-wait-proxy": 36946,
+        "between-site-gap": 1275072,
+        "entry-prologue": 2634,
+        "entry-epilogue": 2140
+      },
+      "cycles_by_call_and_category": {
+        "site-control wafer_tx81_ddr_acquire": {
+          "cycles": 1248950,
+          "intervals": 135
+        },
+        "ncc-submit wafer_tx81_gather_scatter": {
+          "cycles": 1718456,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_gemm_oriented": {
+          "cycles": 1160799,
+          "intervals": 56
+        },
+        "ncc-submit wafer_tx81_convert_fp16_fp32": {
+          "cycles": 175575,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_elementwise_exp": {
+          "cycles": 74390,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_gemm_oriented": {
+          "cycles": 254039,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_elementwise_neg": {
+          "cycles": 86777,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_convert_fp32_fp16": {
+          "cycles": 290025,
+          "intervals": 96
+        },
+        "site-control wafer_tx81_gather_scatter": {
+          "cycles": 5794328,
+          "intervals": 1997
+        },
+        "site-control wafer_tx81_elementwise_add": {
+          "cycles": 542941,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_rdma": {
+          "cycles": 2698372,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_memset": {
+          "cycles": 457580,
+          "intervals": 165
+        },
+        "site-control wafer_tx81_ncc_join": {
+          "cycles": 35896,
+          "intervals": 13
+        },
+        "ncc-submit wafer_tx81_wdma": {
+          "cycles": 48099,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_elementwise_mul": {
+          "cycles": 347899,
+          "intervals": 122
+        },
+        "site-control wafer_tx81_reduce_sum": {
+          "cycles": 77861,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_elementwise_lt": {
+          "cycles": 51575,
+          "intervals": 16
+        },
+        "completion-wait-proxy wafer_tx81_ncc_join": {
+          "cycles": 36946,
+          "intervals": 13
+        },
+        "between-site-gap outside-site": {
+          "cycles": 1275072,
+          "intervals": 4386
+        },
+        "site-control wafer_tx81_reduce_max": {
+          "cycles": 26984,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_rdma": {
+          "cycles": 104783,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_wdma": {
+          "cycles": 782898,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_gemm": {
+          "cycles": 51651,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_square": {
+          "cycles": 48274,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_div": {
+          "cycles": 179262,
+          "intervals": 64
+        },
+        "site-control wafer_tx81_convert_fp16_fp32": {
+          "cycles": 384122,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_elementwise_logic_and": {
+          "cycles": 48620,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_ne": {
+          "cycles": 47599,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_bit2fp": {
+          "cycles": 46100,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_sub": {
+          "cycles": 113470,
+          "intervals": 40
+        },
+        "site-control wafer_tx81_mask_move": {
+          "cycles": 46289,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_abs": {
+          "cycles": 45983,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_rsqrt": {
+          "cycles": 7690,
+          "intervals": 2
+        },
+        "site-control wafer_tx81_elementwise_max": {
+          "cycles": 22631,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_gemm": {
+          "cycles": 13502,
+          "intervals": 16
+        },
+        "entry-prologue outside-site": {
+          "cycles": 2634,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_elementwise_mul": {
+          "cycles": 30041,
+          "intervals": 122
+        },
+        "entry-epilogue outside-site": {
+          "cycles": 2140,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_elementwise_add": {
+          "cycles": 47348,
+          "intervals": 178
+        },
+        "ncc-submit wafer_tx81_memset": {
+          "cycles": 30385,
+          "intervals": 165
+        },
+        "site-control wafer_tx81_ddr_publish": {
+          "cycles": 38236,
+          "intervals": 51
+        },
+        "ncc-submit wafer_tx81_elementwise_div": {
+          "cycles": 14571,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_reduce_sum": {
+          "cycles": 6146,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_reduce_max": {
+          "cycles": 2182,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_max": {
+          "cycles": 1994,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_ne": {
+          "cycles": 3598,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_logic_and": {
+          "cycles": 3822,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_convert_fp32_fp16": {
+          "cycles": 20618,
+          "intervals": 96
+        },
+        "ncc-submit wafer_tx81_elementwise_sub": {
+          "cycles": 9037,
+          "intervals": 40
+        },
+        "ncc-submit wafer_tx81_elementwise_abs": {
+          "cycles": 3460,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_exp": {
+          "cycles": 3521,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_square": {
+          "cycles": 3403,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_mask_move": {
+          "cycles": 3249,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_rsqrt": {
+          "cycles": 467,
+          "intervals": 2
+        },
+        "ncc-submit wafer_tx81_elementwise_lt": {
+          "cycles": 3171,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_neg": {
+          "cycles": 4959,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_bit2fp": {
+          "cycles": 3164,
+          "intervals": 16
+        }
+      }
+    },
+    {
+      "tile": 12,
+      "trace_entry_cpu_cycles": 18507036,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 78542,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 830,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 120656,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 72,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 4597330,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 870,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 473062,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 254,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 642129,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 2162,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 13626077,
+        "ncc-submit": 3561801,
+        "between-site-gap": 1278627,
+        "completion-wait-proxy": 36030,
+        "entry-epilogue": 2666,
+        "entry-prologue": 1835
+      },
+      "cycles_by_call_and_category": {
+        "site-control wafer_tx81_ddr_acquire": {
+          "cycles": 1109675,
+          "intervals": 135
+        },
+        "ncc-submit wafer_tx81_gather_scatter": {
+          "cycles": 1841341,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_gemm_oriented": {
+          "cycles": 1219063,
+          "intervals": 56
+        },
+        "ncc-submit wafer_tx81_convert_fp16_fp32": {
+          "cycles": 128603,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_gemm_oriented": {
+          "cycles": 270400,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_elementwise_neg": {
+          "cycles": 88330,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_gather_scatter": {
+          "cycles": 5749652,
+          "intervals": 1997
+        },
+        "site-control wafer_tx81_convert_fp32_fp16": {
+          "cycles": 289115,
+          "intervals": 96
+        },
+        "site-control wafer_tx81_elementwise_add": {
+          "cycles": 544697,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_rdma": {
+          "cycles": 2672001,
+          "intervals": 870
+        },
+        "ncc-submit wafer_tx81_elementwise_add": {
+          "cycles": 64802,
+          "intervals": 178
+        },
+        "ncc-submit wafer_tx81_wdma": {
+          "cycles": 49225,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_reduce_sum": {
+          "cycles": 80483,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_memset": {
+          "cycles": 455735,
+          "intervals": 165
+        },
+        "site-control wafer_tx81_elementwise_mul": {
+          "cycles": 348001,
+          "intervals": 122
+        },
+        "site-control wafer_tx81_elementwise_square": {
+          "cycles": 49598,
+          "intervals": 16
+        },
+        "between-site-gap outside-site": {
+          "cycles": 1278627,
+          "intervals": 4386
+        },
+        "completion-wait-proxy wafer_tx81_ncc_join": {
+          "cycles": 36030,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_elementwise_exp": {
+          "cycles": 49961,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_gemm": {
+          "cycles": 53088,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_wdma": {
+          "cycles": 776374,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_reduce_max": {
+          "cycles": 26482,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_elementwise_lt": {
+          "cycles": 52242,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_convert_fp16_fp32": {
+          "cycles": 380742,
+          "intervals": 136
+        },
+        "ncc-submit wafer_tx81_gemm": {
+          "cycles": 14699,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_logic_and": {
+          "cycles": 49883,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_sub": {
+          "cycles": 112679,
+          "intervals": 40
+        },
+        "site-control wafer_tx81_elementwise_div": {
+          "cycles": 178621,
+          "intervals": 64
+        },
+        "site-control wafer_tx81_elementwise_abs": {
+          "cycles": 46360,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_max": {
+          "cycles": 23707,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_elementwise_ne": {
+          "cycles": 48028,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_mask_move": {
+          "cycles": 46395,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_ncc_join": {
+          "cycles": 26600,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_elementwise_rsqrt": {
+          "cycles": 7362,
+          "intervals": 2
+        },
+        "site-control wafer_tx81_bit2fp": {
+          "cycles": 46216,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_rdma": {
+          "cycles": 97640,
+          "intervals": 870
+        },
+        "entry-epilogue outside-site": {
+          "cycles": 2666,
+          "intervals": 1
+        },
+        "site-control wafer_tx81_ddr_publish": {
+          "cycles": 43650,
+          "intervals": 51
+        },
+        "entry-prologue outside-site": {
+          "cycles": 1835,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_bit2fp": {
+          "cycles": 4096,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_mul": {
+          "cycles": 28576,
+          "intervals": 122
+        },
+        "ncc-submit wafer_tx81_elementwise_lt": {
+          "cycles": 3768,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_logic_and": {
+          "cycles": 4385,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_reduce_sum": {
+          "cycles": 5956,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_memset": {
+          "cycles": 30449,
+          "intervals": 165
+        },
+        "ncc-submit wafer_tx81_elementwise_neg": {
+          "cycles": 5475,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_sub": {
+          "cycles": 8612,
+          "intervals": 40
+        },
+        "ncc-submit wafer_tx81_convert_fp32_fp16": {
+          "cycles": 20379,
+          "intervals": 96
+        },
+        "ncc-submit wafer_tx81_reduce_max": {
+          "cycles": 2137,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_mask_move": {
+          "cycles": 3389,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_div": {
+          "cycles": 13309,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_elementwise_ne": {
+          "cycles": 3504,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_square": {
+          "cycles": 3529,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_max": {
+          "cycles": 1767,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_exp": {
+          "cycles": 3442,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_rsqrt": {
+          "cycles": 456,
+          "intervals": 2
+        },
+        "ncc-submit wafer_tx81_elementwise_abs": {
+          "cycles": 3199,
+          "intervals": 16
+        }
+      }
+    },
+    {
+      "tile": 13,
+      "trace_entry_cpu_cycles": 18378224,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 78542,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 830,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 120656,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 72,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 3873597,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 870,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 490845,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 254,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 642506,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 2162,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 13989491,
+        "ncc-submit": 3078551,
+        "completion-wait-proxy": 44679,
+        "between-site-gap": 1260806,
+        "entry-epilogue": 2691,
+        "entry-prologue": 2006
+      },
+      "cycles_by_call_and_category": {
+        "site-control wafer_tx81_ddr_acquire": {
+          "cycles": 1618861,
+          "intervals": 135
+        },
+        "ncc-submit wafer_tx81_gather_scatter": {
+          "cycles": 1518922,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_convert_fp16_fp32": {
+          "cycles": 194629,
+          "intervals": 136
+        },
+        "ncc-submit wafer_tx81_gemm_oriented": {
+          "cycles": 985308,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_gemm_oriented": {
+          "cycles": 219800,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_elementwise_neg": {
+          "cycles": 81826,
+          "intervals": 24
+        },
+        "completion-wait-proxy wafer_tx81_ncc_join": {
+          "cycles": 44679,
+          "intervals": 13
+        },
+        "ncc-submit wafer_tx81_elementwise_mul": {
+          "cycles": 44631,
+          "intervals": 122
+        },
+        "site-control wafer_tx81_rdma": {
+          "cycles": 2643796,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_convert_fp32_fp16": {
+          "cycles": 288819,
+          "intervals": 96
+        },
+        "site-control wafer_tx81_gather_scatter": {
+          "cycles": 5715603,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_wdma": {
+          "cycles": 48946,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_memset": {
+          "cycles": 456037,
+          "intervals": 165
+        },
+        "site-control wafer_tx81_elementwise_lt": {
+          "cycles": 53387,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_logic_and": {
+          "cycles": 52287,
+          "intervals": 16
+        },
+        "between-site-gap outside-site": {
+          "cycles": 1260806,
+          "intervals": 4386
+        },
+        "site-control wafer_tx81_reduce_sum": {
+          "cycles": 76979,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_elementwise_add": {
+          "cycles": 528220,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_wdma": {
+          "cycles": 775925,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_reduce_max": {
+          "cycles": 26037,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_add": {
+          "cycles": 58220,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_elementwise_ne": {
+          "cycles": 48540,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_abs": {
+          "cycles": 47293,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_ncc_join": {
+          "cycles": 29326,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_gemm": {
+          "cycles": 51915,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_convert_fp16_fp32": {
+          "cycles": 379880,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_mask_move": {
+          "cycles": 47532,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_bit2fp": {
+          "cycles": 47048,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_square": {
+          "cycles": 47621,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_exp": {
+          "cycles": 48160,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_mul": {
+          "cycles": 343832,
+          "intervals": 122
+        },
+        "site-control wafer_tx81_elementwise_max": {
+          "cycles": 22995,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_elementwise_sub": {
+          "cycles": 111507,
+          "intervals": 40
+        },
+        "site-control wafer_tx81_elementwise_rsqrt": {
+          "cycles": 7677,
+          "intervals": 2
+        },
+        "site-control wafer_tx81_elementwise_div": {
+          "cycles": 178408,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_gemm": {
+          "cycles": 14316,
+          "intervals": 16
+        },
+        "entry-epilogue outside-site": {
+          "cycles": 2691,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_rdma": {
+          "cycles": 94253,
+          "intervals": 870
+        },
+        "entry-prologue outside-site": {
+          "cycles": 2006,
+          "intervals": 1
+        },
+        "site-control wafer_tx81_ddr_publish": {
+          "cycles": 40180,
+          "intervals": 51
+        },
+        "ncc-submit wafer_tx81_elementwise_div": {
+          "cycles": 14616,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_reduce_sum": {
+          "cycles": 5761,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_square": {
+          "cycles": 4136,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_convert_fp32_fp16": {
+          "cycles": 21346,
+          "intervals": 96
+        },
+        "ncc-submit wafer_tx81_elementwise_ne": {
+          "cycles": 4004,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_abs": {
+          "cycles": 3829,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_lt": {
+          "cycles": 3673,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_neg": {
+          "cycles": 5695,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_bit2fp": {
+          "cycles": 3677,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_sub": {
+          "cycles": 8705,
+          "intervals": 40
+        },
+        "ncc-submit wafer_tx81_memset": {
+          "cycles": 29401,
+          "intervals": 165
+        },
+        "ncc-submit wafer_tx81_elementwise_logic_and": {
+          "cycles": 3736,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_mask_move": {
+          "cycles": 3359,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_reduce_max": {
+          "cycles": 1834,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_exp": {
+          "cycles": 3470,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_max": {
+          "cycles": 1664,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_rsqrt": {
+          "cycles": 420,
+          "intervals": 2
+        }
+      }
+    },
+    {
+      "tile": 14,
+      "trace_entry_cpu_cycles": 18432495,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 78542,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 830,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 120656,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 72,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 3342002,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 870,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 570536,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 254,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 642223,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 2162,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 14607084,
+        "ncc-submit": 2513028,
+        "completion-wait-proxy": 41712,
+        "between-site-gap": 1265077,
+        "entry-epilogue": 3756,
+        "entry-prologue": 1838
+      },
+      "cycles_by_call_and_category": {
+        "site-control wafer_tx81_ddr_acquire": {
+          "cycles": 2181529,
+          "intervals": 135
+        },
+        "ncc-submit wafer_tx81_gather_scatter": {
+          "cycles": 1080178,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_convert_fp16_fp32": {
+          "cycles": 156584,
+          "intervals": 136
+        },
+        "ncc-submit wafer_tx81_gemm_oriented": {
+          "cycles": 882208,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_elementwise_exp": {
+          "cycles": 66666,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_div": {
+          "cycles": 198655,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_elementwise_add": {
+          "cycles": 73054,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_elementwise_neg": {
+          "cycles": 79163,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_rdma": {
+          "cycles": 2669355,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_gemm_oriented": {
+          "cycles": 193911,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_convert_fp32_fp16": {
+          "cycles": 284626,
+          "intervals": 96
+        },
+        "site-control wafer_tx81_memset": {
+          "cycles": 458762,
+          "intervals": 165
+        },
+        "ncc-submit wafer_tx81_wdma": {
+          "cycles": 49671,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_elementwise_lt": {
+          "cycles": 55614,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_gather_scatter": {
+          "cycles": 5725752,
+          "intervals": 1997
+        },
+        "site-control wafer_tx81_elementwise_add": {
+          "cycles": 524129,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_elementwise_logic_and": {
+          "cycles": 52764,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_reduce_sum": {
+          "cycles": 78731,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_elementwise_square": {
+          "cycles": 49286,
+          "intervals": 16
+        },
+        "completion-wait-proxy wafer_tx81_ncc_join": {
+          "cycles": 41712,
+          "intervals": 13
+        },
+        "site-control wafer_tx81_ncc_join": {
+          "cycles": 31862,
+          "intervals": 13
+        },
+        "between-site-gap outside-site": {
+          "cycles": 1265077,
+          "intervals": 4386
+        },
+        "site-control wafer_tx81_reduce_max": {
+          "cycles": 26674,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_mask_move": {
+          "cycles": 49053,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_ne": {
+          "cycles": 48781,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_wdma": {
+          "cycles": 773298,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_convert_fp16_fp32": {
+          "cycles": 383031,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_gemm": {
+          "cycles": 51409,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_max": {
+          "cycles": 23762,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_elementwise_mul": {
+          "cycles": 342965,
+          "intervals": 122
+        },
+        "ncc-submit wafer_tx81_gemm": {
+          "cycles": 13994,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_abs": {
+          "cycles": 45422,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_sub": {
+          "cycles": 111441,
+          "intervals": 40
+        },
+        "site-control wafer_tx81_bit2fp": {
+          "cycles": 45844,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_convert_fp32_fp16": {
+          "cycles": 26871,
+          "intervals": 96
+        },
+        "entry-epilogue outside-site": {
+          "cycles": 3756,
+          "intervals": 1
+        },
+        "site-control wafer_tx81_elementwise_rsqrt": {
+          "cycles": 7072,
+          "intervals": 2
+        },
+        "ncc-submit wafer_tx81_elementwise_mul": {
+          "cycles": 33072,
+          "intervals": 122
+        },
+        "ncc-submit wafer_tx81_rdma": {
+          "cycles": 96417,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_ddr_publish": {
+          "cycles": 47527,
+          "intervals": 51
+        },
+        "entry-prologue outside-site": {
+          "cycles": 1838,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_elementwise_div": {
+          "cycles": 15701,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_memset": {
+          "cycles": 31982,
+          "intervals": 165
+        },
+        "ncc-submit wafer_tx81_elementwise_sub": {
+          "cycles": 9411,
+          "intervals": 40
+        },
+        "ncc-submit wafer_tx81_elementwise_neg": {
+          "cycles": 5958,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_mask_move": {
+          "cycles": 3998,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_reduce_max": {
+          "cycles": 1997,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_reduce_sum": {
+          "cycles": 5768,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_rsqrt": {
+          "cycles": 606,
+          "intervals": 2
+        },
+        "ncc-submit wafer_tx81_elementwise_ne": {
+          "cycles": 3536,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_bit2fp": {
+          "cycles": 3654,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_exp": {
+          "cycles": 3424,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_lt": {
+          "cycles": 3073,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_abs": {
+          "cycles": 3220,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_logic_and": {
+          "cycles": 3565,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_max": {
+          "cycles": 1722,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_square": {
+          "cycles": 3364,
+          "intervals": 16
+        }
+      }
+    },
+    {
+      "tile": 15,
+      "trace_entry_cpu_cycles": 18556831,
+      "engines": [
+        {
+          "engine": "CT",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 78542,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 830,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "NE",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 120656,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 72,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "RDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 3872184,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 870,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "WDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 509588,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 254,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "TDMA",
+          "measurement_kind": "ncc-engine-execution-time-ns",
+          "engine_execution_time_ns": 642502,
+          "engine_execution_time_valid": true,
+          "engine_execution_time_status": "Measured",
+          "activity_window_count": 0,
+          "zero_delta_marker_count": 0,
+          "ambiguous_attribution_count": 2162,
+          "activity_window_status": "Ambiguous"
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "measurement_kind": "direct-dte-issue-and-wait-windows",
+          "issue_window_cpu_cycles": 0,
+          "issue_windows_valid": true,
+          "issue_window_status": "Measured",
+          "issue_window_count": 0,
+          "wait_window_cpu_cycles": 0,
+          "wait_windows_valid": true,
+          "wait_window_status": "Measured",
+          "wait_window_count": 0,
+          "raw_pmu_activity": null,
+          "raw_pmu_activity_valid": false,
+          "raw_pmu_activity_status": "Unavailable",
+          "activity_window_count": 0
+        }
+      ],
+      "semantic_categories": {
+        "site-control": 14212992,
+        "ncc-submit": 3018583,
+        "completion-wait-proxy": 48205,
+        "between-site-gap": 1272729,
+        "entry-epilogue": 2374,
+        "entry-prologue": 1948
+      },
+      "cycles_by_call_and_category": {
+        "site-control wafer_tx81_ddr_acquire": {
+          "cycles": 1615223,
+          "intervals": 135
+        },
+        "ncc-submit wafer_tx81_gather_scatter": {
+          "cycles": 1552586,
+          "intervals": 1997
+        },
+        "ncc-submit wafer_tx81_convert_fp16_fp32": {
+          "cycles": 173469,
+          "intervals": 136
+        },
+        "ncc-submit wafer_tx81_gemm_oriented": {
+          "cycles": 936668,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_elementwise_exp": {
+          "cycles": 67580,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_rdma": {
+          "cycles": 2758195,
+          "intervals": 870
+        },
+        "site-control wafer_tx81_convert_fp16_fp32": {
+          "cycles": 399728,
+          "intervals": 136
+        },
+        "site-control wafer_tx81_gemm_oriented": {
+          "cycles": 207701,
+          "intervals": 56
+        },
+        "site-control wafer_tx81_elementwise_neg": {
+          "cycles": 78637,
+          "intervals": 24
+        },
+        "completion-wait-proxy wafer_tx81_ncc_join": {
+          "cycles": 48205,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_memset": {
+          "cycles": 493140,
+          "intervals": 165
+        },
+        "ncc-submit wafer_tx81_wdma": {
+          "cycles": 50266,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_gather_scatter": {
+          "cycles": 5760678,
+          "intervals": 1997
+        },
+        "site-control wafer_tx81_reduce_max": {
+          "cycles": 28024,
+          "intervals": 8
+        },
+        "between-site-gap outside-site": {
+          "cycles": 1272729,
+          "intervals": 4389
+        },
+        "site-control wafer_tx81_reduce_sum": {
+          "cycles": 79899,
+          "intervals": 24
+        },
+        "site-control wafer_tx81_elementwise_add": {
+          "cycles": 524233,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_elementwise_lt": {
+          "cycles": 51459,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_ncc_join": {
+          "cycles": 30730,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_wdma": {
+          "cycles": 799799,
+          "intervals": 254
+        },
+        "site-control wafer_tx81_elementwise_mul": {
+          "cycles": 345924,
+          "intervals": 122
+        },
+        "site-control wafer_tx81_elementwise_square": {
+          "cycles": 47236,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_add": {
+          "cycles": 48687,
+          "intervals": 178
+        },
+        "site-control wafer_tx81_elementwise_logic_and": {
+          "cycles": 49704,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_convert_fp32_fp16": {
+          "cycles": 275411,
+          "intervals": 96
+        },
+        "site-control wafer_tx81_elementwise_ne": {
+          "cycles": 47426,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_mask_move": {
+          "cycles": 47060,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_gemm": {
+          "cycles": 48844,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_div": {
+          "cycles": 176699,
+          "intervals": 64
+        },
+        "site-control wafer_tx81_elementwise_max": {
+          "cycles": 23749,
+          "intervals": 8
+        },
+        "site-control wafer_tx81_elementwise_abs": {
+          "cycles": 45239,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_elementwise_rsqrt": {
+          "cycles": 7557,
+          "intervals": 2
+        },
+        "site-control wafer_tx81_elementwise_sub": {
+          "cycles": 112010,
+          "intervals": 40
+        },
+        "site-control wafer_tx81_bit2fp": {
+          "cycles": 45540,
+          "intervals": 16
+        },
+        "site-control wafer_tx81_ddr_publish": {
+          "cycles": 45567,
+          "intervals": 51
+        },
+        "ncc-submit wafer_tx81_rdma": {
+          "cycles": 95035,
+          "intervals": 870
+        },
+        "entry-epilogue outside-site": {
+          "cycles": 2374,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_convert_fp32_fp16": {
+          "cycles": 22555,
+          "intervals": 96
+        },
+        "entry-prologue outside-site": {
+          "cycles": 1948,
+          "intervals": 1
+        },
+        "ncc-submit wafer_tx81_memset": {
+          "cycles": 33986,
+          "intervals": 165
+        },
+        "ncc-submit wafer_tx81_gemm": {
+          "cycles": 7723,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_abs": {
+          "cycles": 3924,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_neg": {
+          "cycles": 5778,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_mul": {
+          "cycles": 28690,
+          "intervals": 122
+        },
+        "ncc-submit wafer_tx81_elementwise_ne": {
+          "cycles": 4187,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_div": {
+          "cycles": 14303,
+          "intervals": 64
+        },
+        "ncc-submit wafer_tx81_bit2fp": {
+          "cycles": 4167,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_max": {
+          "cycles": 2046,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_reduce_sum": {
+          "cycles": 5691,
+          "intervals": 24
+        },
+        "ncc-submit wafer_tx81_elementwise_lt": {
+          "cycles": 3749,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_logic_and": {
+          "cycles": 3816,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_mask_move": {
+          "cycles": 3386,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_elementwise_rsqrt": {
+          "cycles": 593,
+          "intervals": 2
+        },
+        "ncc-submit wafer_tx81_elementwise_sub": {
+          "cycles": 8616,
+          "intervals": 40
+        },
+        "ncc-submit wafer_tx81_elementwise_exp": {
+          "cycles": 3422,
+          "intervals": 16
+        },
+        "ncc-submit wafer_tx81_reduce_max": {
+          "cycles": 1774,
+          "intervals": 8
+        },
+        "ncc-submit wafer_tx81_elementwise_square": {
+          "cycles": 3466,
+          "intervals": 16
+        }
+      }
+    }
+  ],
+  "actual_instr": {
+    "ddr_read_bytes": 474011200,
+    "ddr_write_bytes": 196317888,
+    "direct_dte_operations": 0
+  },
+  "comparison": {
+    "baseline_record": "llama-spatial-fill-20260909.json",
+    "ordinary_primary_speedup": 2.1354125886022115,
+    "ordinary_primary_reduction_fraction": 0.5317064227599335,
+    "profile_primary_speedup": 2.1176605451782184,
+    "configuration": {
+      "attention_implementation": "matched unfused baseline",
+      "pending_attention_edits_preserved": {
+        "lib/Wafer/Transforms/Linalg/AttentionMatching.cpp": {
+          "pending_sha256": "208dff60c340ba3fe76f3be7aff7a98f9992400e4787995d9d159acb235b2f91",
+          "baseline_sha256": "3908d0447c7a8d492b36036d6d9ff01b39431d9dce9278a9588e3145d50b72db"
+        },
+        "unittests/Transforms/Linalg/AttentionNormalizationTest.cpp": {
+          "pending_sha256": "127e4aa0ee7d733097f109154a8d6e6d5f9928372a1bf4ec269c4e94cfdb29a7",
+          "baseline_sha256": "11fdf9cf263f6897aa6703727ab53883ccbe621fad00b52f611c620e1689e9ec"
+        }
+      },
+      "baseline": "llama-spatial-fill",
+      "change": "native local reduction preferred whenever existing contracts permit",
+      "build/bin/wafer-compile_sha256": "d15b6b0b18ef98a2d1e36480c4980b0becb9fbfba62ced36921d5e409826efd3",
+      "lib/Wafer/Conversion/TileToInstr/ComputeLowering.cpp_sha256": "879c5574eab09f25f5a93bd072e59a00d4bface2279461c86fa3207a77d45641"
+    }
+  },
+  "artifacts": {
+    "compiled/package/manifest.json": "bdfe32d76366903f9042fbe318ad8767865cfad4defb8766a3393b9181d843cd",
+    "compiled/package/modules/module_00000.so": "81109c20b3ac3a50904f3cbabe7499f655d31d61d69752a06d76d6e73ffacdf6",
+    "invocation/board.log": "924262680c1adfa2c324b6e6769375ea8c3da94c44ba8a593a93544bc10526ab",
+    "invocation/numeric-audit.json": "d7b262eea3163299116b7f0574993236a6896bb5b018cee1a68da4e8c5b0c0ec",
+    "primary-validation/board.log": "7196dc96394079acae157cdd778d88ce9c0368525063b125598974c8a678791b",
+    "primary-validation/numeric-audit.json": "d7b262eea3163299116b7f0574993236a6896bb5b018cee1a68da4e8c5b0c0ec",
+    "invocation/raw/card_00_output_0.capture.f16.raw": "121a02c4d5f4d99a3cf2754bb119e73e7ee6edba066dd26acef6c4ae48cc92c5",
+    "invocation/raw/card_00_output_0.expected.f16.raw": "8c27d15ee4c1fa40254dfeefe53496272301297b5c85da4eefa5cd5dbc27585d",
+    "compiler-ir/instruction/tile_00014.mlir": "42485541fdea80dc00471fe2c8cc63fccd9b91154a76e1768a6f46184c387a1c",
+    "comparison-configuration.json": "18ee2be658c3a411c624417c6c09c91a5be1083d416c9b0c8cf1d0851c918a7f",
+    "compile.log": "487b6768283523d741b2da85fd051bfced3b6639d1bad0162a1edd2166bf76ef",
+    "no-card.log": "355993685d28e5878d2a2179ca589317de0d1dc240a7cf8a3d6c19403643a1a2",
+    "ordinary-no-card.log": "5e35eb61be0134c644ec95ebab605bf21f31063250a7c75dee76458cdce1d356"
+  },
+  "limitations": [
+    "同源输入、同一设备会话、相同未融合attention实现；普通Primary和profile Primary各一次，不是统计分布。",
+    "pending attention matcher改动在该package编译时隔离，随后原样恢复；本记录不签发融合block的产品资格。",
+    "PMU为engine累计ns，Trace为插桩后的Tile本地周期；不相加推算Primary，不把控制开销全部解释为同步等待。",
+    "Profiler验证模式间输出一致；全量PyTorch由独立runner验证，普通与profile输出均通过。",
+    "native优先消除满足既有合同的逐项展开；不宣称非native fallback布局已全面优化，也不签发新的硬件支持范围。"
+  ]
+}

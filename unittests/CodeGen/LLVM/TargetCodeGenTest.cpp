@@ -22,10 +22,12 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/ModRef.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
@@ -169,14 +171,14 @@ makeSlot(int64_t ordinal, wafer::compiler::TileEntryArgumentKind role,
 static llvm::Expected<wafer::compiler::TargetLLVMModules>
 makeRuntimeLaunchModules(
     wafer::RuntimeLaunchContract launch,
-    wafer::TransportContract transport =
-        wafer::TransportContract::None,
+    wafer::TransportContract transport = wafer::TransportContract::None,
     std::optional<int64_t> mismatchedSchemaTile = std::nullopt,
     std::optional<int64_t> mismatchedBodyTile = std::nullopt,
     size_t slotCount = 2, bool withCollidingClosure = false,
     bool withUnsupportedInlineAsm = false,
     std::optional<int64_t> renamedSlotTile = std::nullopt,
-    bool permuteTiles = false, bool variableWorkspace = false) {
+    bool permuteTiles = false, bool variableWorkspace = false,
+    llvm::function_ref<void(llvm::Function &)> populate = nullptr) {
   const int64_t tileCount = 16;
   llvm::Expected<wafer::compiler::ExecutionConfig> config =
       wafer::compiler::ExecutionConfig::createForSingleCard(1);
@@ -259,6 +261,8 @@ makeRuntimeLaunchModules(
       store->setVolatile(true);
     }
     builder.CreateRetVoid();
+    if (populate)
+      populate(*entry);
     modules.push_back(wafer::compiler::TargetLLVMModulesBuilder::makeModule(
         wafer::CardId(0),
         wafer::TileId(permuteTiles && tile < 2 ? 1 - tile : tile),
@@ -1248,7 +1252,8 @@ TEST(TargetCodeGenTest,
                          "%launch_slot.15.row, i64 144)");
   ASSERT_NE(acquire, std::string::npos);
   EXPECT_LT(ir.find("%launch_slot.15.row = load i64"), acquire);
-  EXPECT_LT(acquire, ir.find("%launch_slot.15.slot.0 = load i64"));
+  EXPECT_LT(acquire,
+            ir.find("call void @__wafer_kernel_launch_slot_00015_main_body"));
   unsigned acquisitions = 0;
   for (auto &block : *aggregate->module->getFunction("main"))
     for (auto &instruction : block)
@@ -1261,9 +1266,174 @@ TEST(TargetCodeGenTest,
       ir.find(
           "%launch_slot.15.slots = inttoptr i64 %launch_slot.15.row to ptr"),
       std::string::npos);
-  EXPECT_NE(
-      ir.find("getelementptr inbounds i64, ptr %launch_slot.15.slots, i64 17"),
-      std::string::npos);
+  EXPECT_NE(ir.find("main_body(ptr %launch_slot.15.slots)"), std::string::npos);
+  // This fixture has no live slots. Its typed interface and row acquisition
+  // remain intact without emitting unused scalar loads/call arguments.
+  EXPECT_EQ(
+      targetLLVMModules->getModules().front().getTileEntryArguments().size(),
+      18u);
+}
+
+TEST(TargetCodeGenTest, KernelRowBodiesPreserveSlotSnapshotsAndInputModules) {
+  for (auto abi : {wafer::KernelEntryABI::TileMajorPointerTable,
+                   wafer::KernelEntryABI::TileRowPointerTable}) {
+    for (size_t count :
+         {size_t(15), size_t(1024), size_t(1025), size_t(1031)}) {
+      if (abi == wafer::KernelEntryABI::TileMajorPointerTable && count != 15)
+        continue; // The qualified direct packet has only 15 slots per Tile.
+      SCOPED_TRACE(count);
+      auto input = makeRuntimeLaunchModules(
+          makeKernelLaunch(wafer::KernelLaunchForm::Grid, abi),
+          wafer::TransportContract::None, std::nullopt, std::nullopt, count,
+          false, false, std::nullopt, true, false, [](llvm::Function &body) {
+            llvm::IRBuilder<> builder(body.getEntryBlock().getTerminator());
+            auto callee = body.getParent()->getOrInsertFunction(
+                "observe",
+                llvm::FunctionType::get(builder.getVoidTy(),
+                                        {builder.getInt64Ty()}, false));
+            builder.CreateCall(callee, {body.getArg(body.arg_size() - 1)});
+            builder.CreateCall(callee, {body.getArg(0)});
+          });
+      ASSERT_TRUE(static_cast<bool>(input))
+          << llvm::toString(input.takeError());
+      auto aggregate =
+          wafer::compiler::detail::buildKernelAggregateTargetModule(*input);
+      ASSERT_TRUE(static_cast<bool>(aggregate))
+          << llvm::toString(aggregate.takeError());
+      EXPECT_FALSE(llvm::verifyModule(*aggregate->module, &llvm::errs()));
+      for (const auto &source : input->getModules()) {
+        const auto *body = source.getModule().getFunction("main");
+        ASSERT_NE(body, nullptr);
+        EXPECT_EQ(body->arg_size(), count);
+      }
+      unsigned bodies = 0;
+      for (auto &body : *aggregate->module) {
+        if (!body.hasInternalLinkage())
+          continue;
+        ++bodies;
+        ASSERT_EQ(body.arg_size(), 1u);
+        EXPECT_TRUE(body.getArg(0)->getType()->isPointerTy());
+        llvm::SmallVector<uint64_t> indices;
+        bool sawEffect = false;
+        for (auto &instruction : body.getEntryBlock()) {
+          if (llvm::isa<llvm::CallInst>(instruction))
+            sawEffect = true;
+          if (auto *load = llvm::dyn_cast<llvm::LoadInst>(&instruction)) {
+            EXPECT_FALSE(sawEffect);
+            EXPECT_EQ(load->getAlign(), llvm::Align(8));
+            auto *address = llvm::dyn_cast<llvm::GetElementPtrInst>(
+                load->getPointerOperand());
+            ASSERT_NE(address, nullptr);
+            EXPECT_EQ(address->getPointerOperand(), body.getArg(0));
+            auto *index =
+                llvm::dyn_cast<llvm::ConstantInt>(address->getOperand(1));
+            ASSERT_NE(index, nullptr);
+            indices.push_back(index->getZExtValue());
+          }
+        }
+        EXPECT_TRUE(sawEffect);
+        EXPECT_EQ(indices, (llvm::SmallVector<uint64_t>{0, count - 1}));
+      }
+      EXPECT_EQ(bodies, 16u);
+    }
+  }
+}
+
+TEST(TargetCodeGenTest, KernelRowLoadsInvalidatePureEntryAttributes) {
+  auto input = makeRuntimeLaunchModules(
+      makeKernelLaunch(wafer::KernelLaunchForm::Grid),
+      wafer::TransportContract::None, std::nullopt, std::nullopt, 2, false,
+      false, std::nullopt, false, false, [](llvm::Function &body) {
+        llvm::IRBuilder<> builder(body.getEntryBlock().getTerminator());
+        builder.CreateAdd(body.getArg(0), body.getArg(1));
+        body.setMemoryEffects(llvm::MemoryEffects::none());
+        body.addFnAttr(llvm::Attribute::Speculatable);
+        body.addParamAttr(1, llvm::Attribute::NoUndef);
+      });
+  ASSERT_TRUE(static_cast<bool>(input)) << llvm::toString(input.takeError());
+  auto aggregate =
+      wafer::compiler::detail::buildKernelAggregateTargetModule(*input);
+  ASSERT_TRUE(static_cast<bool>(aggregate))
+      << llvm::toString(aggregate.takeError());
+  EXPECT_FALSE(llvm::verifyModule(*aggregate->module, &llvm::errs()));
+  for (auto &body : *aggregate->module)
+    if (body.hasInternalLinkage()) {
+      EXPECT_EQ(body.getMemoryEffects(),
+                llvm::MemoryEffects::argMemOnly(llvm::ModRefInfo::Ref));
+      EXPECT_FALSE(body.hasFnAttribute(llvm::Attribute::Speculatable));
+      EXPECT_FALSE(body.hasParamAttribute(1, llvm::Attribute::NoUndef));
+    }
+}
+
+TEST(TargetCodeGenTest,
+     KernelAggregationRejectsReferencedEntryBeforeReshaping) {
+  auto input = makeRuntimeLaunchModules(
+      makeKernelLaunch(wafer::KernelLaunchForm::Grid),
+      wafer::TransportContract::None, std::nullopt, std::nullopt, 2, false,
+      false, std::nullopt, false, false, [](llvm::Function &body) {
+        llvm::IRBuilder<> builder(body.getEntryBlock().getTerminator());
+        builder.CreateCall(&body, {body.getArg(0), body.getArg(1)});
+      });
+  ASSERT_TRUE(static_cast<bool>(input)) << llvm::toString(input.takeError());
+  auto aggregate =
+      wafer::compiler::detail::buildKernelAggregateTargetModule(*input);
+  ASSERT_FALSE(static_cast<bool>(aggregate));
+  EXPECT_NE(llvm::toString(aggregate.takeError()).find("referenced Tile entry"),
+            std::string::npos);
+}
+
+TEST(TargetCodeGenTest, LargeLiveKernelRowsCompileWithPinnedRiscvBackend) {
+  // This is an ABI stress witness: scalar slot count, not tensor size,
+  // triggered RISC-V register scavenging failure when expanded at the
+  // dispatcher call.
+  auto input = makeRuntimeLaunchModules(
+      makeKernelLaunch(wafer::KernelLaunchForm::Grid,
+                       wafer::KernelEntryABI::TileRowPointerTable),
+      wafer::TransportContract::None, std::nullopt, std::nullopt, 9728, false,
+      false, std::nullopt, false, false, [](llvm::Function &body) {
+        llvm::IRBuilder<> builder(body.getEntryBlock().getTerminator());
+        auto callee = body.getParent()->getOrInsertFunction(
+            "observe", llvm::FunctionType::get(builder.getVoidTy(),
+                                               {builder.getInt64Ty()}, false));
+        for (auto &argument : body.args())
+          builder.CreateCall(callee, {&argument});
+        body.addFnAttr(llvm::Attribute::NoInline);
+      });
+  ASSERT_TRUE(static_cast<bool>(input)) << llvm::toString(input.takeError());
+  auto aggregate =
+      wafer::compiler::detail::buildKernelAggregateTargetModule(*input);
+  ASSERT_TRUE(static_cast<bool>(aggregate))
+      << llvm::toString(aggregate.takeError());
+  EXPECT_FALSE(llvm::verifyModule(*aggregate->module, &llvm::errs()));
+  llvm::SmallString<256> directory;
+  ASSERT_FALSE(
+      llvm::sys::fs::createUniqueDirectory("wafer-kernel-row", directory));
+  auto cleanup = llvm::make_scope_exit(
+      [&] { (void)llvm::sys::fs::remove_directories(directory); });
+  auto irPath = pathInDirectory(directory, "module.ll");
+  auto objectPath = pathInDirectory(directory, "module.o");
+  std::error_code error;
+  {
+    llvm::raw_fd_ostream output(irPath, error);
+    ASSERT_FALSE(error) << error.message();
+    aggregate->module->print(output, nullptr);
+  }
+  llvm::SmallVector<llvm::StringRef> arguments = {
+      WAFER_TEST_LLVM_CLANGXX,
+      irPath,
+      "-O2",
+      "-c",
+      "-fPIC",
+      "--target=riscv64-unknown-elf",
+      "-march=rv64imafdc",
+      "-o",
+      objectPath};
+  ASSERT_EQ(llvm::sys::ExecuteAndWait(WAFER_TEST_LLVM_CLANGXX, arguments,
+                                      std::nullopt, {}, 180),
+            0);
+  uint64_t bytes = 0;
+  ASSERT_FALSE(llvm::sys::fs::file_size(objectPath, bytes));
+  EXPECT_GT(bytes, 0u);
 }
 
 TEST(TargetCodeGenTest, KernelAggregationDispatchesTileToExplicitLaunchSlot) {
@@ -1399,7 +1569,7 @@ TEST(TargetCodeGenTest,
   EXPECT_TRUE(firstIR.find("i32 15, label %tile.15.launch_slot.15") !=
               std::string::npos);
   EXPECT_TRUE(firstIR.find("getelementptr inbounds i64, ptr %tile_major_slots, "
-                           "i64 31") != std::string::npos);
+                           "i64 30") != std::string::npos);
   EXPECT_TRUE(firstIR.find("@__wafer_kernel_launch_slot_00015_main_body") !=
               std::string::npos);
 

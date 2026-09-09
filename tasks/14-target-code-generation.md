@@ -211,6 +211,19 @@ aggregate materialization只是一项 target-lowering实现：
 - host JIT中的 `wafer_target_call_dispatch` 仅是把 final target calls转成 typed transactions 的内部桥，
   不是公开 runtime ABI、package field或兼容入口。
 
+内部Tile调用直接传递已选中的参数行指针，不将整行重新展开为大量RISC-V函数实参。
+输入仍为verified typed i64 entry arguments；aggregate在自己拥有的LLVM module内将每个entry body改为
+单一pointer参数，在body首部按原ordinal加载实际使用的slot并替换对应SSA argument。
+所有加载仍先于原body effect，保持原快照语义；间接row的invalidate仍在dispatcher调用body之前。
+未使用slot无需加载，但typed Tile interface、统一row长度、package metadata和runtime填表不变。
+新增load必须反映到LLVM memory attributes；不能保留过时的`memory(none)`或推测新row无别名。
+当前entry不接受module内调用或取地址；这些use在内部签名改写前明确拒绝。
+输出只由同一次device-link消费，不形成另一套公开entry ABI，也不改变原Tile module或profile插桩边界。
+
+该边界覆盖两种pointer-table ABI、非恒等Tile/launch-slot映射、1024/1025/1031 slot、未使用slot、
+body effect前的精确ordinal加载、旧memory attribute修正及entry引用拒绝；大量live slot须实际经过
+pinned RISC-V `-O2`代码生成，不能仅以LLVM verifier通过代替下游验证。
+
 ### 4.2 原子发布
 
 writing在私有 staging root中完成 LLVM IR、object、CRT、device link、ELF 和 readback。只有以下条件全部成立

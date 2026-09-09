@@ -555,7 +555,14 @@ TEST(ExecutableCompilationPolicyTest,
       %result = linalg.add
           ins(%lhs, %expanded : tensor<16x16x1x{0}xf16>, tensor<16x16x1x{0}xf16>)
           outs(%output : tensor<16x16x1x{0}xf16>) -> tensor<16x16x1x{0}xf16>
-      return %result : tensor<16x16x1x{0}xf16>
+      // Both broadcast directions are consumed. Coordinating one edge cannot
+      // remove the actual exchange required by the orthogonal edge.
+      %other = linalg.broadcast ins(%produced : tensor<16x1x{0}xf16>)
+          outs(%output : tensor<16x16x1x{0}xf16>) dimensions = [1]
+      %combined = linalg.add
+          ins(%result, %other : tensor<16x16x1x{0}xf16>, tensor<16x16x1x{0}xf16>)
+          outs(%output : tensor<16x16x1x{0}xf16>) -> tensor<16x16x1x{0}xf16>
+      return %combined : tensor<16x16x1x{0}xf16>
     )mlir",
                                      extent)
                            .str();
@@ -708,7 +715,14 @@ TEST(ExecutableCompilationPolicyTest,
       %result = linalg.add
           ins(%lhs, %expanded : tensor<16x16x128x{0}xf16>, tensor<16x16x128x{0}xf16>)
           outs(%output : tensor<16x16x128x{0}xf16>) -> tensor<16x16x128x{0}xf16>
-      return %result : tensor<16x16x128x{0}xf16>
+      // Both broadcast directions are consumed. Coordinating one edge cannot
+      // remove the actual exchange required by the orthogonal edge.
+      %other = linalg.broadcast ins(%produced : tensor<16x128x{0}xf16>)
+          outs(%output : tensor<16x16x128x{0}xf16>) dimensions = [1]
+      %combined = linalg.add
+          ins(%result, %other : tensor<16x16x128x{0}xf16>, tensor<16x16x128x{0}xf16>)
+          outs(%output : tensor<16x16x128x{0}xf16>) -> tensor<16x16x128x{0}xf16>
+      return %combined : tensor<16x16x128x{0}xf16>
     )mlir",
                                      extent)
                            .str();
@@ -800,6 +814,104 @@ TEST(ExecutableCompilationPolicyTest,
   EXPECT_EQ(search.movementCandidateActualizations,
             search.temporalCandidateActualizations);
   EXPECT_EQ(search.recursiveDoublingCandidates, 0u);
+}
+
+TEST(ExecutableCompilationPolicyTest,
+     SpatialOperandReuseReducesActualReadsThroughTheCommonLeaf) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto parsed = wafer::compiler::testing::parseProgram();
+    ASSERT_TRUE(parsed.module);
+    const std::string rhs = "tensor<1x4096x" + std::to_string(extent) + "xf16>";
+    const std::string output =
+        "tensor<1x16x" + std::to_string(extent) + "xf16>";
+    std::string text;
+    llvm::raw_string_ostream stream(text);
+    stream << R"mlir(module {
+      wafer.target.topology @default
+        {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+         tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+      wafer.execution.mesh @default_mesh
+        {axes = ["card"], shape = array<i64: 1>}
+      func.func @main(%lhs: tensor<1x16x4096xf16>, %rhs: )mlir"
+           << rhs << ") -> " << output << " {\n"
+           << "%zero = arith.constant 0.0 : f16\n"
+           << "%empty = tensor.empty() : " << output << "\n"
+           << "%init = linalg.fill ins(%zero : f16) outs(%empty : " << output
+           << ") -> " << output << "\n"
+           << "%result = linalg.batch_matmul ins(%lhs, %rhs : "
+              "tensor<1x16x4096xf16>, "
+           << rhs << ") outs(%init : " << output << ") -> " << output << "\n"
+           << "%point = linalg.add ins(%result, %result : " << output << ", "
+           << output << ") outs(%empty : " << output << ") -> " << output
+           << "\n"
+           << "return %point : " << output << "\n}}";
+    parsed.module = mlir::parseSourceString<mlir::ModuleOp>(
+        stream.str(), parsed.context.get());
+    ASSERT_TRUE(parsed.module);
+    wafer::frontend::FrontendProgramVerificationResult program;
+    program.numPartitions = 1;
+    program.programUserInputCount = 2;
+    program.distributedInputs = {
+        wafer::compiler::testing::boundary(0, {1, 16, 4096}),
+        wafer::compiler::testing::boundary(1, {1, 4096, extent})};
+    program.distributedOutputs = {
+        wafer::compiler::testing::boundary(0, {1, 16, extent})};
+    uint64_t baselineReads = 0;
+    for (bool search : {false, true}) {
+      SCOPED_TRACE(search);
+      wafer::compiler::ProgramDataHandoff data;
+      std::string diagnosticText;
+      llvm::raw_string_ostream diagnostics(diagnosticText);
+      auto result = [&]() {
+        if (search) {
+          wafer::compiler::detail::SearchCurrentIROptions options;
+          options.termination =
+              wafer::compiler::detail::SearchTerminationPolicy::FirstAccepted;
+          options.downstream.tilePipelineParallelism = 1;
+          return wafer::compiler::detail::compileSearchCurrentIR(
+              *parsed.module, program,
+              wafer::compiler::testing::executionConfig(), diagnostics, data,
+              options);
+        }
+        wafer::compiler::detail::BaselineCurrentIROptions options;
+        options.downstream.tilePipelineParallelism = 1;
+        return wafer::compiler::detail::compileBaselineCurrentIR(
+            *parsed.module, program,
+            wafer::compiler::testing::executionConfig(), diagnostics, data,
+            options);
+      }();
+      ASSERT_TRUE(result.isAccepted())
+          << result.gate << ": " << result.detail << "\n"
+          << diagnosticText;
+      ASSERT_TRUE(result.executable);
+      ASSERT_EQ(result.executable->tiles.size(), 16u);
+      const auto &reads = result.executable->resourceCost.aggregateDDRReadBytes;
+      ASSERT_TRUE(reads.isKnown());
+      if (search)
+        EXPECT_LT(reads.value, baselineReads / 2);
+      else
+        baselineReads = reads.value;
+      for (const auto &tile : result.executable->tiles) {
+        unsigned contractions = 0;
+        unsigned publications = 0;
+        tile.getModule().walk([&](wafer::SyncDDRPublishOp) { ++publications; });
+        tile.getModule().walk([&](wafer::InstrGemmOp gemm) {
+          ++contractions;
+          if (search)
+            EXPECT_GT(gemm.getM(), 1);
+          else
+            EXPECT_EQ(gemm.getM(), 1);
+        });
+        EXPECT_GT(contractions, 0u);
+        if (search) {
+          EXPECT_EQ(publications, 0u)
+              << "coordinated GEMM, pointwise and initializer need no peer DDR";
+        }
+        EXPECT_TRUE(mlir::succeeded(mlir::verify(tile.getModule())));
+      }
+    }
+  }
 }
 
 TEST(ExecutableCompilationPolicyTest,
@@ -1081,6 +1193,95 @@ TEST(ExecutableCompilationPolicyTest,
       EXPECT_EQ(acquires, 1u);
       EXPECT_EQ(waits, 2u);
     }
+  }
+}
+
+TEST(ExecutableCompilationPolicyTest,
+     SharedDDRManyResourcesPreserveExactReadersAndFreshValidation) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    // A wide actual communication graph exercises publication lookup scaling;
+    // every payload retains a real rank-3 DMA extent.
+    constexpr unsigned resources = 1024;
+    auto parsed = wafer::compiler::testing::parseProgram();
+    llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>> owners;
+    llvm::SmallVector<mlir::ModuleOp> modules;
+    llvm::SmallVector<wafer::TileId> tiles;
+    std::string shape = "1x" + std::to_string(extent) + "x1xf16";
+    std::string ddr = "memref<" + shape + ", #wafer.memory<ddr, tensor>>";
+    std::string spm = "memref<" + shape + ", #wafer.memory<spm, tensor>>";
+    for (unsigned tile = 0; tile < 4; ++tile) {
+      std::string text;
+      llvm::raw_string_ostream ir(text);
+      ir << "module {\n";
+      for (unsigned id = 0; id < resources; ++id)
+        ir << "memref.global \"private\" @data" << id << " : " << ddr
+           << " {wafer.ddr_resource = #wafer.ddr_resource<" << id << ">}\n";
+      ir << "func.func @entry(";
+      for (unsigned id = 0; id < resources; ++id) {
+        if (id)
+          ir << ", ";
+        unsigned relative = (tile + 4 - id % 4) % 4;
+        ir << "%data" << id << ": " << ddr << " {wafer.ddr_binding = "
+           << "#wafer.ddr_binding<@data" << id << ", id = " << id << ", "
+           << (relative == 0   ? "write"
+               : relative == 3 ? "none"
+                               : "read")
+           << ">}";
+      }
+      ir << ") {\n%condition = arith.constant true\n";
+      for (unsigned id = 0; id < resources; ++id) {
+        unsigned relative = (tile + 4 - id % 4) % 4;
+        if (relative == 3)
+          continue;
+        bool write = relative == 0;
+        ir << "%result" << id << " = wafer.tile.region(%data" << id
+           << ", %condition : " << ddr << ", i1) -> (i1) { ^bb0(%arg: " << ddr
+           << ", %flag: i1): "
+           << "%buffer = memref.alloc() : " << spm << "\n"
+           << "wafer.instr."
+           << (write ? "wdma %buffer to %arg" : "rdma %arg to %buffer")
+           << " {byte_count = " << 2 * extent
+           << " : i64, inner_bytes = " << 2 * extent << " : i64, "
+           << (write ? "dst" : "src") << "_iterations = array<i64: 1, 1, 1>, "
+           << (write ? "dst" : "src")
+           << "_strides = array<i64: 0, 0, 0>} : " << (write ? spm : ddr)
+           << " to " << (write ? ddr : spm)
+           << "\nwafer.instr.ncc_join [0]\nwafer.tile.yield %flag : i1 }\n";
+      }
+      ir << "return } }";
+      auto module =
+          mlir::parseSourceString<mlir::ModuleOp>(text, parsed.context.get());
+      ASSERT_TRUE(module);
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      modules.push_back(*module);
+      owners.push_back(std::move(module));
+      tiles.push_back(wafer::TileId(tile));
+    }
+    auto result = wafer::materializeSharedDDRCompletion(modules, tiles);
+    ASSERT_TRUE(result.succeeded()) << result.detail;
+    unsigned publications = 0, acquisitions = 0;
+    wafer::SyncDDRPublishOp first;
+    for (auto module : modules) {
+      module.walk([&](wafer::SyncDDRPublishOp op) {
+        ++publications;
+        if (!first)
+          first = op;
+      });
+      module.walk([&](wafer::SyncDDRAcquireOp) { ++acquisitions; });
+    }
+    EXPECT_EQ(publications, resources);
+    EXPECT_EQ(acquisitions, 2 * resources);
+    ASSERT_TRUE(first);
+    mlir::OpBuilder builder(first);
+    auto *duplicate = builder.clone(*first);
+    EXPECT_EQ(wafer::verifySharedDDRCompletion(modules, tiles).failure,
+              wafer::SharedDDRCompletionFailure::Contract);
+    duplicate->erase();
+    EXPECT_TRUE(wafer::verifySharedDDRCompletion(modules, tiles).succeeded());
+    first.erase();
+    EXPECT_EQ(wafer::verifySharedDDRCompletion(modules, tiles).failure,
+              wafer::SharedDDRCompletionFailure::Contract);
   }
 }
 

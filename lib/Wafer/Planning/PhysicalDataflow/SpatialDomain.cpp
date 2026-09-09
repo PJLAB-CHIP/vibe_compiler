@@ -1,12 +1,14 @@
 //===- SpatialDomain.cpp - Complete spatial plan domain ----------------===//
 
 #include "Wafer/Planning/PhysicalDataflow/SpatialDomain.h"
+#include "Wafer/Planning/PhysicalDataflow/SpatialPartitionPropagation.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
 #include "mlir/Interfaces/TilingInterface.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallBitVector.h"
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
@@ -468,6 +470,67 @@ enum class BalancedAxisSelection : uint8_t {
   AllPartitionable,
 };
 
+struct OperandProjection {
+  llvm::SmallBitVector iterators;
+  uint64_t bytes = 0;
+};
+
+std::optional<llvm::SmallVector<OperandProjection, 4>>
+getReadOperandProjections(mlir::Operation *operation) {
+  auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(operation);
+  if (!linalg)
+    return std::nullopt;
+  llvm::SmallVector<OperandProjection, 4> result;
+  for (mlir::OpOperand &operand : linalg->getOpOperands()) {
+    if (!linalg.payloadUsesValueFromOperand(&operand))
+      continue;
+    mlir::AffineMap map = linalg.getMatchingIndexingMap(&operand);
+    if (!map.isProjectedPermutation())
+      return std::nullopt;
+    mlir::Type element = operand.get().getType();
+    uint64_t elements = 1;
+    if (auto shaped = mlir::dyn_cast<mlir::ShapedType>(element)) {
+      if (!shaped.hasStaticShape())
+        return std::nullopt;
+      for (int64_t extent : shaped.getShape()) {
+        if (extent <= 0)
+          return std::nullopt;
+        elements =
+            llvm::SaturatingMultiply(elements, static_cast<uint64_t>(extent));
+      }
+      element = shaped.getElementType();
+    }
+    if (!element.isIntOrFloat())
+      return std::nullopt;
+    OperandProjection projection;
+    projection.bytes = llvm::SaturatingMultiply(
+        elements,
+        static_cast<uint64_t>((element.getIntOrFloatBitWidth() + 7) / 8));
+    projection.iterators.resize(map.getNumDims(), false);
+    for (mlir::AffineExpr expression : map.getResults())
+      projection.iterators.set(
+          mlir::cast<mlir::AffineDimExpr>(expression).getPosition());
+    result.push_back(std::move(projection));
+  }
+  return result;
+}
+
+// This ranks explicit source-domain partitions, before any movement exists.
+// It is neither an actual traffic inventory nor a memory-admission estimate.
+uint64_t getRepeatedOperandBytes(llvm::ArrayRef<OperandProjection> operands,
+                                 llvm::ArrayRef<IteratorPartition> axes) {
+  uint64_t bytes = 0;
+  for (const OperandProjection &operand : operands) {
+    uint64_t repeated = operand.bytes;
+    for (auto [iterator, axis] : llvm::enumerate(axes))
+      if (!operand.iterators.test(iterator))
+        repeated = llvm::SaturatingMultiply(
+            repeated, static_cast<uint64_t>(axis.parameter));
+    bytes = llvm::SaturatingAdd(bytes, repeated);
+  }
+  return bytes;
+}
+
 bool canPartitionForProposal(const SpatialRootDomainFacts &root,
                              size_t iterator, BalancedAxisSelection selection) {
   if (selection == BalancedAxisSelection::AllPartitionable)
@@ -486,15 +549,20 @@ void findMaximumBalancedAxes(const SpatialRootDomainFacts &root,
                              size_t iterator, size_t cells,
                              llvm::SmallVectorImpl<IteratorPartition> &current,
                              llvm::SmallVectorImpl<IteratorPartition> &best,
-                             size_t &bestCells) {
+                             size_t &bestCells,
+                             llvm::ArrayRef<OperandProjection> operands) {
   if (iterator == root.iteratorExtents.size()) {
     if (checkAttention(root, current) !=
         AttentionSpatialConstraintViolation::None)
       return;
     bool prefer = cells > bestCells;
     if (cells == bestCells) {
-      prefer = std::lexicographical_compare(best.begin(), best.end(),
-                                            current.begin(), current.end());
+      uint64_t currentBytes = getRepeatedOperandBytes(operands, current);
+      uint64_t bestBytes = getRepeatedOperandBytes(operands, best);
+      prefer = currentBytes < bestBytes ||
+               (currentBytes == bestBytes &&
+                std::lexicographical_compare(best.begin(), best.end(),
+                                             current.begin(), current.end()));
     }
     if (prefer) {
       best.assign(current.begin(), current.end());
@@ -513,21 +581,22 @@ void findMaximumBalancedAxes(const SpatialRootDomainFacts &root,
                        IteratorPartitionScheme::BalancedParts,
                        static_cast<int64_t>(factor)});
     findMaximumBalancedAxes(root, selection, tileCount, iterator + 1,
-                            cells * factor, current, best, bestCells);
+                            cells * factor, current, best, bestCells, operands);
     current.pop_back();
   }
 }
 
 std::optional<llvm::SmallVector<IteratorPartition, 4>> getMaximumBalancedAxes(
     const SpatialRootDomainFacts &root, size_t tileCount,
-    BalancedAxisSelection selection = BalancedAxisSelection::AllPartitionable) {
+    BalancedAxisSelection selection = BalancedAxisSelection::AllPartitionable,
+    llvm::ArrayRef<OperandProjection> operands = {}) {
   if (tileCount == 0)
     return std::nullopt;
   llvm::SmallVector<IteratorPartition, 4> current;
   llvm::SmallVector<IteratorPartition, 4> best;
   size_t bestCells = 0;
   findMaximumBalancedAxes(root, selection, tileCount, 0, 1, current, best,
-                          bestCells);
+                          bestCells, operands);
   if (bestCells == 0)
     return std::nullopt;
   return best;
@@ -1206,12 +1275,42 @@ llvm::SmallVector<SpatialPlan, 4> SpatialPlanDomain::getProposals() const {
     return node;
   };
 
-  // The first constructive point uses as many parallel partitions as the
+  // The first point retains maximum parallelism while reducing replicated
+  // reads of current operands. The original constructive point follows it;
+  // neither proposal removes any raw-domain member or decides actual cost.
+  SpatialPlan reuse;
+  bool complete = true;
+  for (const SpatialRootDomainFacts &root : problem.getRoots()) {
+    const auto *binding = problem.getSemanticRoots().find(root.root);
+    auto operands =
+        binding ? getReadOperandProjections(binding->operation) : std::nullopt;
+    if (operands &&
+        llvm::any_of(*operands, [&](const OperandProjection &operand) {
+          return operand.iterators.size() != root.iteratorExtents.size();
+        }))
+      operands.reset();
+    std::optional<llvm::SmallVector<IteratorPartition, 4>> axes =
+        getMaximumBalancedAxes(
+            root, available.size(), BalancedAxisSelection::Constructive,
+            operands ? llvm::ArrayRef<OperandProjection>(*operands)
+                     : llvm::ArrayRef<OperandProjection>{});
+    auto node =
+        axes ? buildNode(root, std::move(*axes), available) : std::nullopt;
+    if (!node) {
+      complete = false;
+      break;
+    }
+    reuse.nodes.push_back(std::move(*node));
+  }
+  if (complete)
+    append(std::move(reuse));
+
+  // The original constructive point uses as many parallel partitions as the
   // target admits, while leaving optional reductions local. Flash decoding's
   // required key/value partition remains explicit. This is an ordinary exact
   // domain member; later proposals still cover reduction-parallel points.
   SpatialPlan constructive;
-  bool complete = true;
+  complete = true;
   for (const SpatialRootDomainFacts &root : problem.getRoots()) {
     std::optional<llvm::SmallVector<IteratorPartition, 4>> axes =
         getMaximumBalancedAxes(root, available.size(),
@@ -1325,7 +1424,16 @@ SpatialPlanDomain::getGraphCoherentProposals(
     if (contains(plan) && !llvm::is_contained(result, plan))
       result.push_back(std::move(plan));
   };
-  for (const SpatialPlan &raw : getProposals()) {
+  auto proposals = getProposals();
+  if (!proposals.empty()) {
+    auto coordinated =
+        propagateSpatialPartitions(*this, dag, proposals.front(), limits);
+    if (mlir::failed(coordinated))
+      return mlir::failure();
+    if (!llvm::is_contained(proposals, *coordinated))
+      proposals.insert(proposals.begin(), std::move(*coordinated));
+  }
+  for (const SpatialPlan &raw : proposals) {
     SpatialDomainEvaluation evaluation = evaluate(dag, raw, limits);
     if (evaluation.failure)
       return mlir::failure();

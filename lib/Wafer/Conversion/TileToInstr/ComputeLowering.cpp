@@ -133,7 +133,78 @@ static mlir::LogicalResult proveIdentityPhysicalTraversal(
   return mlir::success();
 }
 
-#include "TileToInstr/Patterns.inc"
+struct FillLowering : mlir::OpRewritePattern<ComputeFillOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ComputeFillOp op,
+                  mlir::PatternRewriter &rewriter) const override {
+    if (op.getFillDomain().value_or(FillDomain::LogicalValid) ==
+        FillDomain::PhysicalFootprint) {
+      rewriter.replaceOpWithNewOp<InstrFillOp>(op, op.getDest(), op.getValue(),
+                                               op.getFillDomainAttr());
+      return mlir::success();
+    }
+    auto type = mlir::cast<mlir::MemRefType>(op.getDest().getType());
+    llvm::SmallVector<int64_t> strides;
+    int64_t offset;
+    if (!type.hasStaticShape() ||
+        mlir::failed(mlir::getStridesAndOffset(type, strides, offset)) ||
+        llvm::any_of(type.getShape(), [](int64_t size) { return size <= 0; }) ||
+        llvm::any_of(strides, [](int64_t stride) { return stride <= 0; }))
+      return rewriter.notifyMatchFailure(
+          op, "logical fill requires static positive shape and strides");
+
+    // Memset writes a contiguous range. Preserve holes by iterating the outer
+    // axes; unit axes do not extend the physical range or require a loop.
+    int64_t suffix = type.getRank();
+    uint64_t elements = 1;
+    while (suffix > 0) {
+      int64_t axis = suffix - 1;
+      if (static_cast<uint64_t>(strides[axis]) != elements)
+        break;
+      uint64_t size = static_cast<uint64_t>(type.getDimSize(axis));
+      if (size > std::numeric_limits<uint32_t>::max() / elements)
+        return rewriter.notifyMatchFailure(
+            op, "contiguous fill element count exceeds the target ABI");
+      elements *= size;
+      --suffix;
+    }
+    if (suffix == 0) {
+      rewriter.replaceOpWithNewOp<InstrFillOp>(op, op.getDest(), op.getValue(),
+                                               op.getFillDomainAttr());
+      return mlir::success();
+    }
+
+    mlir::OpBuilder::InsertionGuard guard(rewriter);
+    llvm::SmallVector<mlir::OpFoldResult> offsets(type.getRank(),
+                                                  rewriter.getIndexAttr(0));
+    llvm::SmallVector<mlir::OpFoldResult> sizes;
+    llvm::SmallVector<mlir::OpFoldResult> steps(type.getRank(),
+                                                rewriter.getIndexAttr(1));
+    for (int64_t axis = 0; axis < type.getRank(); ++axis)
+      sizes.push_back(
+          rewriter.getIndexAttr(axis < suffix ? 1 : type.getDimSize(axis)));
+    auto zero = rewriter.create<mlir::arith::ConstantIndexOp>(op.getLoc(), 0);
+    auto one = rewriter.create<mlir::arith::ConstantIndexOp>(op.getLoc(), 1);
+    for (int64_t axis = 0; axis < suffix; ++axis) {
+      if (type.getDimSize(axis) == 1)
+        continue;
+      auto upper = rewriter.create<mlir::arith::ConstantIndexOp>(
+          op.getLoc(), type.getDimSize(axis));
+      auto loop =
+          rewriter.create<mlir::scf::ForOp>(op.getLoc(), zero, upper, one);
+      offsets[axis] = loop.getInductionVar();
+      rewriter.setInsertionPointToStart(loop.getBody());
+    }
+    auto view = rewriter.create<mlir::memref::SubViewOp>(
+        op.getLoc(), op.getDest(), offsets, sizes, steps);
+    rewriter.create<InstrFillOp>(op.getLoc(), view, op.getValue(),
+                                 op.getFillDomainAttr());
+    rewriter.eraseOp(op);
+    return mlir::success();
+  }
+};
 
 static std::optional<InstrConvertKind>
 resolveInstrConvertKind(mlir::Type sourceType, mlir::Type resultType) {
@@ -981,16 +1052,11 @@ public:
       return failPattern(
           rewriter, op,
           "tile.reduce reduction tuple count overflows or is not positive");
-    // This is a profitability/materialization preference, not a legality
-    // limit. The exact final instruction count is fed to schedule cost; a
-    // larger ordered program remains representable when native reduction
-    // cannot preserve the source identity or target contract.
-    constexpr uint64_t preferredMaximumOrderedReductionOperations = 4096;
     uint64_t tupleCount = static_cast<uint64_t>(*reductionTupleCount);
-    bool preferNativeReduction =
-        resultType.getRank() != 0 &&
-        tupleCount > (preferredMaximumOrderedReductionOperations - 4) / 4;
-    if (preferNativeReduction && !extentOneBoundary) {
+    // Prefer the native instruction whenever the existing source and target
+    // contracts permit it. Compiler work limits on the ordered expansion do
+    // not describe hardware profitability or native reduction legality.
+    if (resultType.getRank() != 0 && !extentOneBoundary) {
       // The native CT reduction encodes a complete logical reduction rather
       // than one scalar tuple at a time. Select it only when the source init
       // is the exact identity and the layouts already satisfy that
@@ -1164,8 +1230,9 @@ public:
       }
     }
 
+    constexpr uint64_t maximumOrderedScalarReductionTuples = 4096;
     if (resultType.getRank() == 0 &&
-        tupleCount > preferredMaximumOrderedReductionOperations)
+        tupleCount > maximumOrderedScalarReductionTuples)
       return failPattern(
           rewriter, op,
           "tile.reduce ordered scalar lowering exceeds the current 4096-tuple "
@@ -2250,5 +2317,5 @@ void wafer::tile_region_to_instr::populateComputeLoweringPatterns(
 
 void wafer::tile_region_to_instr::populateFillLoweringPattern(
     mlir::RewritePatternSet &patterns) {
-  populateWithGenerated(patterns);
+  patterns.add<FillLowering>(patterns.getContext());
 }

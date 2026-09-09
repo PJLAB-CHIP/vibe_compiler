@@ -7,7 +7,8 @@ func.func @ordered_trailing_tensor_sum() {
   %tile_input = memref.alloc()
       : memref<2x2x512xf16, #wafer.memory<spm, ncx>>
   %result = wafer.tile.reduce #wafer.reduce_kind<sum> %tile_input
-      {dimensions = array<i64: 2>, init_value = 0.000000e+00 : f16}
+      // Non-identity init isolates ordered slice packing at a 512-wide tile.
+      {dimensions = array<i64: 2>, init_value = 1.000000e+00 : f16}
       : (memref<2x2x512xf16, #wafer.memory<spm, ncx>>)
      -> memref<2x2xf16, #wafer.memory<spm, cx>>
     wafer.tile.yield %tile_token : i1

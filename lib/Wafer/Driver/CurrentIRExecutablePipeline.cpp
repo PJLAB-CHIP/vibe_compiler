@@ -222,8 +222,14 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
   llvm::SmallVector<mlir::ModuleOp, 16> instructionModules;
   for (StandaloneTileModule &tile : *standalone)
     instructionModules.push_back(*tile.module);
-  NativeDirectDTEMultiSendResult coalesced =
-      coalesceExactDirectDTETransfers(instructionModules);
+  auto timed = [](llvm::StringRef stage, auto &&run) {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "stage", "current-ir-downstream", stage);
+    return run();
+  };
+  NativeDirectDTEMultiSendResult coalesced = timed("coalesce-direct-dte", [&] {
+    return coalesceExactDirectDTETransfers(instructionModules);
+  });
   if (!coalesced.succeeded())
     return fail(ExecutableCompilationStatus::CompilerFailure,
                 "exact-direct-dte-coalescing", coalesced.detail);
@@ -237,8 +243,9 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
       coalesced.statistics.unicastReceiveOperationsRemoved);
   for (StandaloneTileModule &tile : *standalone)
     eraseDeadSubviewOperations(*tile.module);
-  NativeDirectDTEMultiSendResult multiSend =
-      materializeNativeDirectDTEMultiSends(instructionModules);
+  NativeDirectDTEMultiSendResult multiSend = timed("native-direct-dte", [&] {
+    return materializeNativeDirectDTEMultiSends(instructionModules);
+  });
   if (!multiSend.succeeded())
     return fail(ExecutableCompilationStatus::CompilerFailure,
                 "native-direct-dte-multi-send", multiSend.detail);
@@ -255,7 +262,8 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
         coalesced.statistics.unicastSendOperationsRemoved +
         multiSend.statistics.unicastSendOperationsRemoved;
   DirectDTECompletionResult initialDTECompletion =
-      rebuildRequiredDirectDTEWaits(instructionModules);
+      timed("initial-direct-dte-completion",
+            [&] { return rebuildRequiredDirectDTEWaits(instructionModules); });
   if (!initialDTECompletion.succeeded())
     return fail(initialDTECompletion.failure ==
                         DirectDTECompletionFailureKind::Unsupported
@@ -266,8 +274,10 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
   for (StandaloneTileModule &tile : *standalone) {
     rebuildCurrentBufferOwnerRelations(tile.module->getOperation(),
                                        tile.materializationRelations);
-    mlir::FailureOr<unsigned> eliminated = cleanupCanonicalInstructionTransfers(
-        *tile.module, tile.materializationRelations);
+    mlir::FailureOr<unsigned> eliminated = timed("instr-transfer-cleanup", [&] {
+      return cleanupCanonicalInstructionTransfers(
+          *tile.module, tile.materializationRelations);
+    });
     if (mlir::failed(eliminated))
       return fail(ExecutableCompilationStatus::CompilerFailure,
                   "instr-transfer-cleanup",
@@ -277,8 +287,10 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
   llvm::SmallVector<TileId> completionTileIds;
   for (const StandaloneTileModule &tile : *standalone)
     completionTileIds.push_back(tile.tileId);
-  auto sharedCompletion =
-      materializeSharedDDRCompletion(instructionModules, completionTileIds);
+  auto sharedCompletion = timed("shared-ddr-completion", [&] {
+    return materializeSharedDDRCompletion(instructionModules,
+                                          completionTileIds);
+  });
   if (!sharedCompletion.succeeded())
     return fail(sharedCompletion.failure ==
                         SharedDDRCompletionFailure::Unsupported
@@ -287,7 +299,8 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
                 "shared-ddr-completion", sharedCompletion.detail);
 
   DirectDTECompletionResult finalDTECompletion =
-      rebuildRequiredDirectDTEWaits(instructionModules);
+      timed("final-direct-dte-completion",
+            [&] { return rebuildRequiredDirectDTEWaits(instructionModules); });
   if (!finalDTECompletion.succeeded())
     return fail(finalDTECompletion.failure ==
                         DirectDTECompletionFailureKind::Unsupported
@@ -296,7 +309,9 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
                 "direct-dte-completion", finalDTECompletion.detail);
 
   for (StandaloneTileModule &tile : *standalone) {
-    if (mlir::failed(rebuildRequiredNCCJoins(*tile.module)))
+    if (mlir::failed(timed("ncc-completion", [&] {
+          return rebuildRequiredNCCJoins(*tile.module);
+        })))
       return fail(ExecutableCompilationStatus::CompilerFailure,
                   "instr-completion", "fresh NCC completion placement failed");
     rebuildCurrentBufferOwnerRelations(tile.module->getOperation(),

@@ -6,6 +6,7 @@
 #include "TestSupport/Planning/SpatialPlanReference.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/RootRegionWorkAnalysis.h"
+#include "Wafer/Planning/PhysicalDataflow/SpatialPartitionPropagation.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -896,6 +897,241 @@ module {
   overlapping.nodes[1].root = built->domain.getProblem().getRoots()[1].root;
   EXPECT_TRUE(built->domain.contains(overlapping))
       << "component-disjoint proposal must not remove overlapping raw siblings";
+}
+
+TEST_F(SpatialDomainTest,
+       OperandReuseProposalsFollowMapsAndKeepOriginalPartitions) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (int64_t tiles : {4, 16}) {
+      for (unsigned shape : {0u, 1u, 2u}) {
+        for (bool permuted : {false, true}) {
+          SCOPED_TRACE(std::to_string(extent) + ":" + std::to_string(tiles) +
+                       ":" + std::to_string(shape) + ":" +
+                       std::to_string(permuted));
+          const int64_t m = shape == 0 ? 16 : extent;
+          const int64_t n = shape == 1 ? 16 : extent;
+          // The second batch coordinate also covers rank-four operands;
+          // operand permutation must not turn an input-reuse rule into an
+          // implicit M/N spelling or dimension-order rule.
+          auto type = [&](int64_t first, int64_t second) {
+            return "tensor<1x" + std::string(permuted ? "1x" : "") +
+                   std::to_string(first) + "x" + std::to_string(second) +
+                   "xf16>";
+          };
+          const std::string lhs = permuted ? type(128, m) : type(m, 128);
+          const std::string rhs = permuted ? type(128, n) : type(n, 128);
+          const std::string output = type(m, n);
+          const std::string batch = permuted ? "b, h, " : "b, ";
+          const std::string domain = batch + "m, n, k";
+          auto map = [&](llvm::StringRef axes) {
+            return "affine_map<(" + domain + ") -> (" + batch + axes.str() +
+                   ")>";
+          };
+          std::string source;
+          llvm::raw_string_ostream stream(source);
+          stream
+              << "module { func.func @main(%lhs: " << lhs << ", %rhs: " << rhs
+              << ", %init: " << output << ") -> " << output
+              << " {\n%result = linalg.generic {indexing_maps = ["
+              << map(permuted ? "k, m" : "m, k") << ", "
+              << map(permuted ? "k, n" : "n, k") << ", " << map("m, n")
+              << "], iterator_types = [\"parallel\", "
+              << (permuted ? "\"parallel\", " : "")
+              << "\"parallel\", \"parallel\", \"reduction\"]} ins(%lhs, %rhs : "
+              << lhs << ", " << rhs << ") outs(%init : " << output
+              << ") { ^bb0(%a: f16, %b: f16, %old: f16):\n"
+                 "%mul = arith.mulf %a, %b : f16\n"
+                 "%sum = arith.addf %mul, %old : f16\n"
+                 "linalg.yield %sum : f16\n} -> "
+              << output << "\nreturn %result : " << output << "\n}}";
+          auto module = parse(withTopology(stream.str(), 2, tiles / 2));
+          ASSERT_TRUE(module);
+          const std::string before = print(module->getOperation());
+          std::string detail;
+          auto built = build(*module, detail);
+          ASSERT_TRUE(built) << detail;
+          auto proposals = built->domain.getProposals();
+          ASSERT_FALSE(proposals.empty());
+          const unsigned mAxis = permuted ? 2 : 1;
+          const unsigned nAxis = mAxis + 1;
+          const auto &first = proposals.front().nodes.front();
+          EXPECT_EQ(first.embedding.size(), static_cast<size_t>(tiles));
+          const int64_t balanced = tiles == 4 ? 2 : 4;
+          EXPECT_EQ(first.axes[mAxis].parameter, shape == 0   ? 1
+                                                 : shape == 1 ? tiles
+                                                              : balanced);
+          EXPECT_EQ(first.axes[nAxis].parameter, shape == 1   ? 1
+                                                 : shape == 0 ? tiles
+                                                              : balanced);
+          EXPECT_TRUE(llvm::any_of(proposals, [&](const SpatialPlan &plan) {
+            const auto &node = plan.nodes.front();
+            return node.axes[mAxis].parameter == tiles &&
+                   node.axes[nAxis].parameter == 1;
+          }));
+          for (const SpatialPlan &proposal : proposals)
+            EXPECT_TRUE(built->domain.contains(proposal));
+          auto assignment = built->domain.close(proposals.front(), &detail);
+          ASSERT_TRUE(mlir::succeeded(assignment)) << detail;
+          expectExactShardCoverage(
+              assignment->nodes.front(),
+              built->domain.getProblem().getRoots().front().iteratorExtents);
+          auto evaluation =
+              built->domain.evaluate(built->dag, proposals.front());
+          ASSERT_TRUE(evaluation.isSatisfied());
+          const auto *proof = analysis::getExactDemandProof(*evaluation.demand);
+          ASSERT_NE(proof, nullptr);
+          auto works = RootRegionWorkAnalysis::create(
+              built->dag, *evaluation.assignment, *proof, &detail);
+          ASSERT_TRUE(mlir::succeeded(works)) << detail;
+          EXPECT_EQ(print(module->getOperation()), before);
+        }
+      }
+    }
+  }
+}
+
+TEST_F(SpatialDomainTest, NonProjectedInputKeepsConstructiveProposalOrder) {
+  auto module = parse(withTopology(R"mlir(
+module {
+  func.func @main(%input: tensor<1x1151x128xf16>) -> tensor<1x1024x128xf16> {
+    %empty = tensor.empty() : tensor<1x1024x128xf16>
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(b, m, n) -> (b, m + n, n)>,
+                         affine_map<(b, m, n) -> (b, m, n)>],
+        iterator_types = ["parallel", "parallel", "parallel"]}
+        ins(%input : tensor<1x1151x128xf16>)
+        outs(%empty : tensor<1x1024x128xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        linalg.yield %value : f16
+    } -> tensor<1x1024x128xf16>
+    return %result : tensor<1x1024x128xf16>
+  }
+})mlir",
+                                   4, 4));
+  ASSERT_TRUE(module);
+  std::string detail;
+  auto built = build(*module, detail);
+  ASSERT_TRUE(built) << detail;
+  auto proposals = built->domain.getProposals();
+  ASSERT_FALSE(proposals.empty());
+  const auto &first = proposals.front().nodes.front();
+  EXPECT_EQ(first.axes[1].parameter, 16);
+  EXPECT_EQ(first.axes[2].parameter, 1);
+  EXPECT_TRUE(built->domain.contains(proposals.front()));
+}
+
+TEST_F(SpatialDomainTest,
+       PartitionsFollowActualViewsAndCoordinateInitializers) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (int64_t tiles : {4, 16})
+      for (int64_t inner : {1, 128})
+        for (bool sharedInit : {false, true}) {
+          SCOPED_TRACE(std::to_string(extent) + ":" + std::to_string(tiles) +
+                       ":" + std::to_string(sharedInit) + ":" +
+                       std::to_string(inner));
+          const bool rectangular = inner == 1 || extent % tiles == 0;
+          std::string source;
+          llvm::raw_string_ostream out(source);
+          const std::string tensor =
+              "tensor<1x16x" + std::to_string(extent * inner) + "xf16>";
+          const std::string view = "tensor<1x16x" + std::to_string(extent) +
+                                   "x" + std::to_string(inner) + "xf16>";
+          const std::string transposed = "tensor<1x" + std::to_string(extent) +
+                                         "x16x" + std::to_string(inner) +
+                                         "xf16>";
+          const std::string rhs =
+              "tensor<1x128x" + std::to_string(extent * inner) + "xf16>";
+          out << "module { func.func @main(%lhs: tensor<1x16x128xf16>, %rhs: "
+              << rhs << ") -> (" << transposed
+              << (sharedInit ? ", " + tensor : "") << ") {\n"
+              << "%zero = arith.constant 0.0 : f16\n"
+              << "%empty = tensor.empty() : " << tensor << "\n"
+              << "%init = linalg.fill ins(%zero : f16) outs(%empty : " << tensor
+              << ") -> " << tensor << "\n"
+              << "%gemm = linalg.batch_matmul ins(%lhs, %rhs : "
+                 "tensor<1x16x128xf16>, "
+              << rhs << ") outs(%init : " << tensor << ") -> " << tensor << "\n"
+              << "%view = tensor.expand_shape %gemm [[0], [1], [2, 3]] "
+                 "output_shape [1, 16, "
+              << extent << ", " << inner << "] : " << tensor << " into " << view
+              << "\n"
+              << "%pe = tensor.empty() : " << view << "\n"
+              << "%point = linalg.map ins(%view : " << view
+              << ") outs(%pe : " << view
+              << ") (%x: f16) { %y = arith.addf %x, %x : f16\nlinalg.yield %y "
+                 ": "
+                 "f16 }\n"
+              << "%te = tensor.empty() : " << transposed << "\n"
+              << "%trans = linalg.transpose ins(%point : " << view
+              << ") outs(%te : " << transposed
+              << ") permutation = [0, 2, 1, 3]\n";
+          if (sharedInit)
+            out << "%other = linalg.map ins(%init : " << tensor
+                << ") outs(%empty : " << tensor
+                << ") (%x: f16) { linalg.yield %x : f16 }\n";
+          out << "return %trans" << (sharedInit ? ", %other" : "") << " : "
+              << transposed << (sharedInit ? ", " + tensor : "") << "\n}}";
+          auto module = parse(withTopology(out.str(), 2, tiles / 2));
+          ASSERT_TRUE(module);
+          const auto before = print(module->getOperation());
+          std::string detail;
+          auto built = build(*module, detail);
+          ASSERT_TRUE(built) << detail;
+          auto raw = built->domain.getProposals();
+          ASSERT_FALSE(raw.empty());
+          auto propagated = propagateSpatialPartitions(
+              built->domain, built->dag, raw.front(), {});
+          ASSERT_TRUE(mlir::succeeded(propagated));
+          EXPECT_TRUE(built->domain.contains(*propagated));
+          analysis::IndexRelationLimits limited;
+          limited.maxVariables = 1;
+          auto unknown = propagateSpatialPartitions(built->domain, built->dag,
+                                                    raw.front(), limited);
+          ASSERT_TRUE(mlir::succeeded(unknown));
+          EXPECT_EQ(*unknown, raw.front());
+          for (const auto &node : built->dag.getNodes()) {
+            auto binding = built->domain.getProblem().getSemanticRoots().find(
+                node.operation);
+            ASSERT_NE(binding, nullptr);
+            auto partition =
+                llvm::find_if(propagated->nodes, [&](const auto &p) {
+                  return p.root == binding->key;
+                });
+            ASSERT_NE(partition, propagated->nodes.end());
+            if (mlir::isa<mlir::linalg::MapOp>(node.operation) &&
+                mlir::cast<mlir::RankedTensorType>(
+                    node.operation->getResult(0).getType())
+                        .getRank() == 4) {
+              EXPECT_EQ(partition->axes[1].parameter, rectangular ? 1 : tiles);
+              EXPECT_EQ(partition->axes[2].parameter, rectangular ? tiles : 1);
+            }
+            if (mlir::isa<mlir::linalg::FillOp>(node.operation)) {
+              EXPECT_EQ(partition->axes[1].parameter, sharedInit ? tiles : 1);
+              EXPECT_EQ(partition->axes[2].parameter, sharedInit ? 1 : tiles);
+            }
+          }
+          auto evaluation = built->domain.evaluate(built->dag, *propagated);
+          ASSERT_TRUE(evaluation.isSatisfied());
+          const auto *proof = analysis::getExactDemandProof(*evaluation.demand);
+          ASSERT_NE(proof, nullptr);
+          for (const auto &dependency : proof->dependencyDemands)
+            for (const auto &destination : dependency.perDestination)
+              for (const auto &sourceDemand : destination.sources)
+                if (!sharedInit && rectangular) {
+                  for (const auto &owner : sourceDemand.eligibleFinalOwners)
+                    EXPECT_EQ(owner.tile, destination.destinationTile);
+                }
+          for (const auto &node : evaluation.assignment->nodes) {
+            const auto *facts = built->domain.getProblem().findRoot(node.root);
+            ASSERT_NE(facts, nullptr);
+            expectExactShardCoverage(node, facts->iteratorExtents);
+          }
+          auto proposals = built->domain.getGraphCoherentProposals(built->dag);
+          ASSERT_TRUE(mlir::succeeded(proposals));
+          for (const auto &seed : raw)
+            EXPECT_TRUE(llvm::is_contained(*proposals, seed));
+          EXPECT_EQ(print(module->getOperation()), before);
+        }
 }
 
 TEST_F(SpatialDomainTest,

@@ -1,7 +1,3 @@
-set(LLVM_TARGET_DEFINITIONS TileToInstr/Patterns.td)
-mlir_tablegen(TileToInstr/Patterns.inc -gen-rewriters)
-add_public_tablegen_target(WaferTileToInstrPatternsIncGen)
-
 add_mlir_conversion_library(WaferTileToInstr
   TileToInstr/ComputeLowering.cpp
   TileToInstr/MovementLowering.cpp
@@ -14,7 +10,6 @@ add_mlir_conversion_library(WaferTileToInstr
 
   DEPENDS
   WaferConversionPassesIncGen
-  WaferTileToInstrPatternsIncGen
 
   LINK_LIBS PUBLIC
   WaferAnalysis

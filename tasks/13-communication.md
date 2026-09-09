@@ -210,6 +210,12 @@ Runtime从actual global的零initializer取得shared workspace初始化要求，
 跨Tile completion verifier，不建立新的IR层或host launch阶段。该路径的完成门禁为上述actual验证、zero-init package/runtime回归、
 不同执行顺序的模型验证及板测计划中1024/1025/1031完整PyTorch矩阵。
 
+Publication验证在一次只读current-IR epoch内索引实际publish/acquire的SSA data operand、entry的typed resource binding和
+symbol definition；按resource查询匹配项，不为每个resource重扫所有函数指令或全部参数。索引在调用结束时销毁，IR修改后重新建立，
+不缓存合法性或补造缺失publication。重复、缺失、错误位置、非零初始化、额外访问及DTE联合依赖环的typed结论保持不变。
+本项覆盖多资源rank3、1024/1025/1031的actual DMA和publication，检查唯一通知、精确reader集合及上述负例；
+大资源输入的验证工作计数与实际IR大小成比例，直接下游仍为NCC completion与共同resource/target leaf。
+
 Native grouping不在Tile层新增第二套communication op。Movement对eligible group保留从同一个actual source发出的普通
 `wafer.tile.peer_send`及每destination `peer_recv`；全部TileRegion转为current Instr、但fresh completion尚未生成时，card-scoped atomic
 transformation先按双侧actual buffer range合并同phase、同source/destination Tile的连续unicast send/recv，再从剩余actual unicast

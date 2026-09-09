@@ -137,8 +137,9 @@ module {
 }
 
 // CHECK-LABEL: func.func @scaled_masked_attention
-// CHECK: %[[SCALE:.+]] = tensor.extract
+// CHECK: %[[SCALE:.+]] = arith.constant 5.000000e-01 : f16
 // CHECK: %[[ATTENTION:.+]] = wafer.linalg_ext.attention
+// CHECK-SAME: ins(%{{[^,]+}}, %{{[^,]+}}, %{{[^,]+}}, %[[SCALE]],
 // CHECK-SAME: algorithm(<flash_attention>)
 // CHECK-SAME: indexing_maps = [
 // CHECK: return %[[ATTENTION]] : tensor<2x6xf16>

@@ -40,6 +40,7 @@ add_mlir_dialect_library(WaferIR
   MLIRIR
   MLIRInferTypeOpInterface
   MLIRMemRefDialect
+  MLIRMemRefUtils
   MLIRSCFDialect
   MLIRSideEffectInterfaces
   MLIRSupport

@@ -160,7 +160,7 @@ wafer_add_component_unit_test(WaferCodeGenUnitTests
 
 wafer_add_component_unit_test(WaferConversionUnitTests
   SOURCES Conversion/InstrToLLVM/LowerInstrToLLVMTest.cpp
-  LINK_LIBS WaferIR WaferInstrToLLVM)
+  LINK_LIBS WaferIR WaferInstrToLLVM WaferTileToInstr)
 
 wafer_add_component_unit_test(WaferFrontendUnitTests
   SOURCES Frontend/NpyPayloadTest.cpp

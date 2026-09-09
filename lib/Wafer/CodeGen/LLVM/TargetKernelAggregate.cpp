@@ -5,9 +5,12 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
+#include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalAlias.h"
@@ -20,6 +23,7 @@
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/ModRef.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
@@ -181,11 +185,64 @@ getOrInsertExactDeclaration(llvm::Module &module, llvm::StringRef symbol,
                                 symbol, module);
 }
 
+// The runtime already supplies a dense address row. Keep that representation at
+// the internal call boundary instead of expanding it into an unbounded number
+// of scalar call arguments (and an equally large outgoing RISC-V stack frame).
+llvm::Function *consumeArgumentRow(llvm::Function &body) {
+  llvm::LLVMContext &context = body.getContext();
+  auto *pointer = llvm::PointerType::get(context, 0);
+  auto *type = llvm::FunctionType::get(body.getReturnType(), {pointer}, false);
+  auto *rowBody = llvm::Function::Create(
+      type, body.getLinkage(), body.getAddressSpace(), "", body.getParent());
+  rowBody->copyAttributesFrom(&body);
+  rowBody->setAttributes(
+      llvm::AttributeList::get(context, body.getAttributes().getFnAttrs(),
+                               body.getAttributes().getRetAttrs(), {}));
+  rowBody->removeFnAttr(llvm::Attribute::Speculatable);
+  rowBody->removeFnAttr(llvm::Attribute::AllocSize);
+  rowBody->takeName(&body);
+  rowBody->IsNewDbgInfoFormat = body.IsNewDbgInfoFormat;
+  llvm::SmallVector<std::pair<unsigned, llvm::MDNode *>, 1> metadata;
+  body.getAllMetadata(metadata);
+  for (auto [kind, node] : metadata)
+    rowBody->addMetadata(kind, *node);
+  if (auto *subprogram = rowBody->getSubprogram()) {
+    auto type = subprogram->getType()->cloneWithCC(llvm::dwarf::DW_CC_nocall);
+    subprogram->replaceType(
+        llvm::MDNode::replaceWithPermanent(std::move(type)));
+  }
+  rowBody->getArg(0)->setName("argument_row");
+  rowBody->splice(rowBody->begin(), &body);
+  llvm::IRBuilder<> builder(&*rowBody->getEntryBlock().getFirstInsertionPt());
+  bool readsRow = false;
+  for (llvm::Argument &argument : body.args()) {
+    if (argument.use_empty())
+      continue;
+    readsRow = true;
+    auto *i64 = llvm::Type::getInt64Ty(context);
+    llvm::Value *address = builder.CreateInBoundsGEP(
+        i64, rowBody->getArg(0),
+        llvm::ConstantInt::get(i64, argument.getArgNo()),
+        llvm::formatv("slot.{0}.address", argument.getArgNo()).str());
+    llvm::LoadInst *value = builder.CreateLoad(
+        i64, address, llvm::formatv("slot.{0}", argument.getArgNo()).str());
+    value->setAlignment(llvm::Align(8));
+    argument.replaceAllUsesWith(value);
+  }
+  // Preserve the snapshot before any original effect. No noalias/invariant
+  // promise is needed, and the new loads cannot inherit memory(none).
+  if (readsRow)
+    rowBody->setMemoryEffects(
+        body.getMemoryEffects() |
+        llvm::MemoryEffects::argMemOnly(llvm::ModRefInfo::Ref));
+  body.eraseFromParent();
+  return rowBody;
+}
+
 llvm::Error createKernelAggregateExports(
     llvm::Module &module, llvm::ArrayRef<std::string> bodyNames,
-    llvm::ArrayRef<int64_t> tileIdsByLaunchSlot,
-    llvm::StringRef mainSymbol, uint64_t slotsPerTile, KernelEntryABI entryABI,
-    bool includePrepare) {
+    llvm::ArrayRef<int64_t> tileIdsByLaunchSlot, llvm::StringRef mainSymbol,
+    uint64_t slotsPerTile, KernelEntryABI entryABI, bool includePrepare) {
   llvm::LLVMContext &context = module.getContext();
   llvm::Type *voidType = llvm::Type::getVoidTy(context);
   llvm::IntegerType *i32 = llvm::Type::getInt32Ty(context);
@@ -285,17 +342,16 @@ llvm::Error createKernelAggregateExports(
           body != nullptr, body ? body->isDeclaration() : 0,
           body ? body->isVarArg() : 0,
           static_cast<unsigned long long>(body ? body->arg_size() : 0));
+    if (!body->use_empty())
+      return unsupportedLinkConstruct("referenced Tile entry body");
+    body = consumeArgumentRow(*body);
     const int64_t tileId = tileIdsByLaunchSlot[launchSlot];
     llvm::BasicBlock *slotBlock = llvm::BasicBlock::Create(
         context,
-        llvm::formatv("tile.{0}.launch_slot.{1}", tileId,
-                      launchSlot)
-            .str(),
+        llvm::formatv("tile.{0}.launch_slot.{1}", tileId, launchSlot).str(),
         main);
     dispatch->addCase(llvm::ConstantInt::get(i32, tileId), slotBlock);
     builder.SetInsertPoint(slotBlock);
-    llvm::SmallVector<llvm::Value *, 16> arguments;
-    arguments.reserve(slotsPerTile);
     llvm::Value *row = main->getArg(0);
     uint64_t rowBase = static_cast<uint64_t>(launchSlot) * slotsPerTile;
     if (entryABI == KernelEntryABI::TileRowPointerTable) {
@@ -312,20 +368,12 @@ llvm::Error createKernelAggregateExports(
       row = builder.CreateIntToPtr(
           rowValue, pointer,
           llvm::formatv("launch_slot.{0}.slots", launchSlot).str());
-      rowBase = 0;
+    } else {
+      row = builder.CreateInBoundsGEP(
+          i64, row, llvm::ConstantInt::get(i64, rowBase),
+          llvm::formatv("launch_slot.{0}.slots", launchSlot).str());
     }
-    for (uint64_t slot = 0; slot < slotsPerTile; ++slot) {
-      llvm::Value *address = builder.CreateInBoundsGEP(
-          i64, row, llvm::ConstantInt::get(i64, rowBase + slot),
-          llvm::formatv("launch_slot.{0}.slot.{1}.address", launchSlot, slot)
-              .str());
-      llvm::LoadInst *value = builder.CreateLoad(
-          i64, address,
-          llvm::formatv("launch_slot.{0}.slot.{1}", launchSlot, slot).str());
-      value->setAlignment(llvm::Align(8));
-      arguments.push_back(value);
-    }
-    builder.CreateCall(body, arguments);
+    builder.CreateCall(body, {row})->setCallingConv(body->getCallingConv());
     builder.CreateBr(exitBlock);
   }
   builder.SetInsertPoint(defaultBlock);
@@ -373,8 +421,8 @@ buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules) {
         llvm::errc::invalid_argument,
         "kernel aggregate argument packet exceeds the qualified V5.6 packet "
         "limit");
-  const size_t transportStatusSlots =
-      llvm::count_if(first.getTileEntryArguments(), [](const TileEntryArgument &slot) {
+  const size_t transportStatusSlots = llvm::count_if(
+      first.getTileEntryArguments(), [](const TileEntryArgument &slot) {
         return slot.kind == TileEntryArgumentKind::TransportStatus;
       });
   if (transportStatusSlots > 1)
@@ -386,14 +434,12 @@ buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules) {
   std::set<int64_t> tileIds;
   std::vector<const TargetLLVMModule *> modulesByLaunchSlot(
       kKernelAggregateTileCount, nullptr);
-  std::vector<int64_t> tileIdsByLaunchSlot(kKernelAggregateTileCount,
-                                                   -1);
+  std::vector<int64_t> tileIdsByLaunchSlot(kKernelAggregateTileCount, -1);
   for (const TargetLLVMModule &source : targetLLVMModules.getModules()) {
     if (!cardId)
       cardId = source.getCardId();
     const int64_t launchSlot = source.getLaunchSlotId().getValue();
-    if (source.getCardId() != *cardId ||
-        source.getCardId().getValue() < 0 ||
+    if (source.getCardId() != *cardId || source.getCardId().getValue() < 0 ||
         source.getTileId().getValue() < 0 ||
         source.getTileId().getValue() >= kKernelAggregateTileCount ||
         launchSlot < 0 || launchSlot >= kKernelAggregateTileCount ||
@@ -418,8 +464,7 @@ buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules) {
           "kernel target Tile domain has inconsistent typed module "
           "facts");
     modulesByLaunchSlot[launchSlot] = &source;
-    tileIdsByLaunchSlot[launchSlot] =
-        source.getTileId().getValue();
+    tileIdsByLaunchSlot[launchSlot] = source.getTileId().getValue();
   }
   if (llvm::is_contained(modulesByLaunchSlot, nullptr))
     return llvm::createStringError(
@@ -464,9 +509,8 @@ buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules) {
       targetLLVMModules.getRuntimeLaunchContract().getPhases(),
       RuntimeLaunchPhaseRole::Prepare);
   if (llvm::Error error = createKernelAggregateExports(
-          *aggregate, bodyNames, tileIdsByLaunchSlot,
-          first.getEntrySymbol(), first.getTileEntryArguments().size(),
-          kernel.entryABI, hasPrepare))
+          *aggregate, bodyNames, tileIdsByLaunchSlot, first.getEntrySymbol(),
+          first.getTileEntryArguments().size(), kernel.entryABI, hasPrepare))
     return std::move(error);
   return OwnedTargetLLVMModule{std::move(context), std::move(aggregate)};
 }

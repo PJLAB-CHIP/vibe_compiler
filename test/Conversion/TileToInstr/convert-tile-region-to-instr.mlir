@@ -159,10 +159,11 @@ func.func @gemm_reduce_and_reshape(
 // CHECK-SAME: k = 64 : i64
 // CHECK-SAME: m = 4 : i64
 // CHECK-SAME: n = 64 : i64
-// CHECK-NOT: wafer.instr.reduce
-// CHECK: wafer.instr.fill
-// CHECK: wafer.instr.gather_scatter
-// CHECK: wafer.instr.elementwise <add>
+// CHECK-NOT: wafer.instr.fill
+// CHECK-NOT: wafer.instr.elementwise
+// CHECK: wafer.instr.reduce <sum>
+// CHECK-SAME: dim = 1 : i64
+// CHECK-SAME: into memref<1x64xf16, #wafer.memory<spm, cx>>
 // CHECK: wafer.instr.gather_scatter
 // CHECK-NOT: wafer.instr.reduce
 // CHECK-NOT: wafer.tile.reshape

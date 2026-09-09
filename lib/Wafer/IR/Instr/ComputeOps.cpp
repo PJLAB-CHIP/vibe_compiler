@@ -5,6 +5,7 @@
 #include "InstructionVerification.h"
 #include "WaferIRVerification.h"
 
+#include "mlir/Dialect/MemRef/Utils/MemRefUtils.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
@@ -739,6 +740,11 @@ mlir::LogicalResult InstrFillOp::verify() {
     if (!hasWaferLayout(getDest().getType(), MemLayout::Tensor))
       return emitOpError(
           "logical_valid fill destination must use tensor layout");
+    if (!mlir::memref::isStaticShapeAndContiguousRowMajor(
+            mlir::cast<mlir::MemRefType>(getDest().getType())))
+      return emitOpError(
+          "logical_valid fill requires a static contiguous row-major view; "
+          "strided fill must be decomposed before Instr");
     return verifyStaticElementCountFitsUInt32(getOperation(),
                                               getDest().getType(), "fill dest");
   }

@@ -307,7 +307,7 @@ FP16/BF16 raw division不变，raw Instr div不再次展开。
 | CT | `wafer.instr.elementwise` | `wafer.tile.elementwise` | `#wafer.instr_elementwise_kind` target kind；不含 select |
 | CT | `wafer.instr.bit2fp` | tile semantic select lowering | i1 mask -> floating mask target peripheral op |
 | CT | `wafer.instr.mask_move` | tile semantic select lowering | `TsmMaskDataMove::MaskMove`使用CT packet并最终发往CT/CGRA queue的masked SPM data movement target op |
-| TDMA/CT composite | `wafer.instr.fill` + conditional `gather_scatter` + `wafer.instr.elementwise` | `wafer.tile.reduce` | init-first canonical-order legalization；只有真实layout/materialization movement需要时保留GS，same-root/view由08通用规范化删除；native `wafer.instr.reduce`只有compiler-owned full-domain等价证明后才可替换 |
+| TDMA/CT composite | `wafer.instr.fill` + conditional `gather_scatter` + `wafer.instr.elementwise` | `wafer.tile.reduce` | 不满足既有native合同的输入沿init-first canonical-order legalization；只有真实layout/materialization movement需要时保留GS，same-root/view由08通用规范化删除；完整domain/init/axis/format合同闭合时优先native |
 | CT | `wafer.instr.convert` | future convert lowering | `#wafer.instr_convert_kind` opcode-aligned dtype pair + kind-specific wrapper attrs |
 | NE | `wafer.instr.gemm` | `wafer.tile.gemm` | tile-local GEMM / batched GEMM |
 | NE | `wafer.instr.conv` | future conv lowering / imported target op | basic Conv / Depthwise / BackwardConv packet fields |
@@ -354,7 +354,7 @@ packet/register与板端证据另由`tasks/16` gate。
 | `TsmPeripheral::Memset` / scalar fill | `wafer.instr.fill` | current production target op | attr缺省保持v1 Tensor logical-valid count；显式`physical_footprint`从Cx/NCx/BOOL physical encoding checked派生count并覆盖padding/tail/unused bits。current TX81只对BOOL full physical footprint开放I8 byte-fill canonicalization，native TDMA `Fmt_BOOL`和logical-valid BOOL均fail closed |
 | CT arithmetic / relation / logic / activation / selected transcendental | `wafer.instr.elementwise` + `#wafer.instr_elementwise_kind` | current production target op | 覆盖当前enum中的target kind；tile-level map必须先materialize为movement/同形状operand并strip，terminal op不携带`indexing_maps`。existing encoding implementation的Cx/NCx `i1` mapping可用既有full-traversal fields承载value-form relation/logic的bitpacked result；scalar immediate、VuV/VuVLoop和缺失rounding field的形态仍需显式target variant |
 | semantic select | 无单条 select op | composite lowering | 必须展开为 false-copy `gather_scatter` + `bit2fp` + `mask_move`；`wafer.instr.elementwise <select>` 非法 |
-| CT reduce `sum/avg/max/min` | `wafer.instr.reduce` + `#wafer.instr_reduce_kind` + target `dim` code | target-native leaf；source-reduce legalization不直接生成 | terminal op不携带init operand/attr；只有完整domain/dimension/combiner/init映射闭合时才允许对应typed plan生成native selected op |
+| CT reduce `sum/avg/max/min` | `wafer.instr.reduce` + `#wafer.instr_reduce_kind` + target `dim` code | target-native leaf；source lowering的sum/max/min支持边界见7.4 | terminal op不携带init operand/attr；完整domain/dimension/combiner/init与target format合同闭合时直接生成native Instr，不能丢弃非identity init |
 | CT convert opcode 139..174 | `wafer.instr.convert` + `#wafer.instr_convert_kind<src_dst>` + kind-specific attrs | current production target op | dtype pair 由 kind 唯一决定；INT8->FP 要求 `zero_point`，rounding wrapper 要求 `rounding_mode`，plain wrapper 不允许额外转换参数；same-format copy 必须走 movement，不允许伪造成 convert |
 | NE GEMM | `wafer.instr.gemm` | current production target op | 只表达 GEMM / batched GEMM 主路径参数；当前单一format及同element-type合同不表达product/accumulator/FMA/rounding，program-selectable行为必须先扩IR/CRT ABI，target-fixed行为必须按revision/tuple唯一映射；bias、scale、quant、fused activation和复杂psum policy不能隐式打开 |
 | NE affine INT8 GEMM | `wafer.instr.quantized_gemm` | typed production extension；未完成capability/CRT/golden前target-illegal | exact M/K/N/batch/format、q0/q1、left/right zero point、typed scale operands/mode和matched capability；不复用plain GEMM flag |
@@ -626,7 +626,23 @@ wafer.instr.convert #wafer.instr_convert_kind<src_dst> source into dest attr-dic
 | `wafer.instr.reduce` | `input: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_reduce_kind`, `dim` target reduce code；init operand/`init_value`不属于terminal op合同 |
 | `wafer.instr.convert` | `source: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_convert_kind`; required `zero_point` for INT8->FP kinds, required `rounding_mode` for rounding wrapper kinds, no extra attrs for plain kinds |
 
-`wafer.instr.fill`省略domain attr时采用Tensor `logical_valid`，从logical element count checked派生`elem_count`。
+`wafer.instr.fill`省略domain attr时采用Tensor `logical_valid`，目标必须是静态连续row-major view，
+从logical element count checked派生`elem_count`；不能忽略memref stride把非连续view作为一个Memset发射。
+
+Tile→Instr的fill输入是已经确定alias/layout的`wafer.tile.fill` destination。该转换从实际memref shape/stride找出连续suffix，
+对其它非unit轴物化`scf.for`，在每个iteration建立精确`memref.subview`并发射连续`wafer.instr.fill`。
+输出不增加allocation、不扩大写入范围；直接下游completion/SPM/TargetCall从这些实际loops/views/effects重建事实。
+动态shape/stride、非正stride与不可表示的count在首次mutation前拒绝；动态base offset沿SSA保留。
+physical-footprint的既有连续物理范围合同不变。此处不选择spatial/temporal方案、不改变公开Memset ABI，也不额外插入join。
+named conversion和production driver使用同一实现；原单条DRR被这一实现取代。
+
+本项完成矩阵：rank3/4、1024/1025/1031、非零及动态offset、unit轴、行间hole和内轴stride，
+检查实际loop trip count、每个连续fill的target count、全部目标元素恰好一次覆盖及holes未写；
+连续/physical-footprint保持单指令，原始strided Instr被verifier拒绝。
+直接下游为当前Instr→completion/SPM→Target LLVM，完整block仍须fresh PyTorch实卡验证。
+规则依据MLIR [MemRef subview](https://mlir.llvm.org/docs/Dialects/MemRef/#memrefsubview-memrefsubviewop)与
+[SCF for](https://mlir.llvm.org/docs/Dialects/SCFDialect/#scffor-scfforop)官方合同，以及pinned MemRefUtils的连续view判断；
+硬件Memset当前ABI只接收连续element count，见register-level文档。
 
 Current IR定义typed `#wafer.fill_domain<logical_valid|physical_footprint>`，其中`physical_footprint`表示从dest view base
 连续覆盖`computeWaferPhysicalTensorInfo`给出的完整physical bytes：非BOOL要求
@@ -666,21 +682,40 @@ operands，再生成无map的terminal `wafer.instr.elementwise`；identity map�
 `indexing_maps` attr，target conversion只做defensive check，CModel不得读取该attr补做broadcast。
 
 当前target LLVM reduce emission不传init，所以tile→instruction先验证tile-level SSA `init`与`init_value`互斥且类型一致。
-source-reduce legalization把可表示的init写入result-shaped accumulator，按canonical lexicographic reduction
-tuple依次materialize同shape slice，并以与source combiner精确对应的map-free elementwise op在两块accumulator间ping-pong；
-correctness-first基线在fill、每个slice movement、每次elementwise更新和final movement后均形成显式completion；只有当前
-IR可验证的同engine顺序或dependency relation才允许合并。不能被typed fill表示的dynamic init、没有exact elementwise
-mapping的combiner（当前包括avg）或超过checked expansion budget的case在effect前拒绝。tile→instruction先形成只在本次
-lowering存活的完整expansion，checked统计实际拆分后的engine command和completion op；每个Tile module的独立上限为4096。
-这个static reduce terminal-op预算不复用tasks/06 planning work allowance，也不是target/workload语义。
-该序列不使用native reduce，因此不会把
-`native_reduce(xs) op init`误当成source-order `(((init op x0) op x1)...)`。
+source-reduce legalization对满足既有native合同的输入优先生成原生归约，不以归约长度或编译展开预算阻止native检查。
+当前native路径要求exact identity init、可编码的浮点格式、受支持的归约轴及Cx/NCx物理布局；保留rank的native结果
+经exact movement产生Tile要求的降rank结果。当前rank-zero和保留归约轴的Tile结果边界仍沿既有展开路径处理。
+不符合native合同的输入把可表示的init写入result-shaped Tensor accumulator，按canonical lexicographic reduction
+tuple依次materialize同shape Tensor slice，以对应的map-free elementwise op在两块accumulator间ping-pong，最后写入
+Tile result要求的布局。Elementwise按可直接消费的Tensor/NTensor或物理遍历兼容布局执行；scratch的标称布局不能成为
+额外layout materialization的理由。当前热点优先通过native归约消除整个逐项scratch路径，不以改layout标签代替消除实际搬运。
+不能被typed fill表示的dynamic init或没有exact elementwise mapping的combiner（当前包括avg）在effect前拒绝。
+仅rank-zero展开保留4096-tuple编译工作上限；它不决定native选择，也不签发SPM合法性。Completion由后续唯一stage
+从actual effect/lifetime重建，本lowering不在逐元素movement或add后插join。
 
 terminal `wafer.instr.reduce`的ODS移除optional init operand，verifier拒绝`init_value`等残留attr。它只表示无init字段的
 target-native leaf；current production source path只有在完整logical reduction domain、dimension、combiner和init合同没有丢失，
 且current target revision对该完整command tuple已有足以证明source等价的target-owned numeric contract时才可选择它。
 formal CModel是否实现、oneDNN backend是否可用或有限host corpus是否通过都不能代签该compiler gate。floating leaf order无需与
 source一致，integer仍须满足exact/modular合同；保留在Instr IR但不进入CRT call的init不是合法production语义，CModel不得补偿。
+
+原生归约优先规则的验证边界：
+
+- Upstream IR / input：layout-resolved `wafer.tile.reduce`，含actual input/result type、dimensions和constant init。
+- Current stage responsibility：先检查既有native合同，再物化原生指令或既有Tensor展开；长度不参与native准入。
+- Output IR / files：verified Instr、actual allocation及exact结果movement。
+- Downstream consumer：统一completion、SPM规划和target lowering；产品入口为`wafer-compile`，pass入口为
+  `wafer-lower-tile-region-to-instr`，共用同一实现。
+- Explicit non-goals：不改layout assignment、展开路径的Tensor scratch、dtype、硬件能力或搜索预算。
+- Completion criteria：下表host检查、canonical构建及fresh产品no-card/PyTorch；性能证据由统一板测项记录。
+
+| 输入等价类 | 精确输出/保留 | 下游见证 |
+| --- | --- | --- |
+| rank3、主要维1024/1025/1031，512元素归约，F16/BF16/F32，sum/max/min identity | 一条native、rank-preserving中间结果及exact降rankmovement；无逐项add/max/min和循环 | Instr verifier、完整模型actual completion/SPM/target |
+| 归约长度1/8/1023/1024/1025/1031、主要维1024 | 阈值两侧均选择native；完整归约轴与结果shape一致 | Instr verifier及同一结果movement消费者 |
+| Elementwise同形状同布局Tensor/NTensor/Cx/NCx，rank3、1024/1025/1031、C=65 | 原输入SSA直接消费、结果布局保留，GS及layout materialization均为0 | Instr verifier及物理遍历证明 |
+| 非identity init、negative zero、integer和原有多轴边界 | 保留有序Tensor展开及init；不误入native | 既有ordered与negative测试 |
+| 完整LLaMA block `[1,16,4096]` | fresh输入/reference、全量PyTorch及匹配计时；数值容差不变 | 普通package、真实SPM规划及串行设备执行 |
 
 ### 7.5 GEMM
 
@@ -927,7 +962,7 @@ Tile movement。Tile-to-Instr不把module-scope DDR→DDR copy包装成新TileRe
 | `wafer.tile.fill` | current只对Tensor logical-valid domain生成无domain attr的`wafer.instr.fill`；padding/physical-footprint初始化已增加typed Instr/TargetCall字段并闭合count/raw-value纵向 |
 | `wafer.tile.gemm` | 只消费current operand/result memref的actual encoding；需要的Tensor/Cx/NCx conversion必须已由上游layout stage物化，本lowering不创建另一份physical representation或根据consumer临时选layout。Plain form只在normal/normal relation成立时生成无orientation字段的`wafer.instr.gemm`；已是合法Cx/NCx时直接消费该encoding。Typed orientation无损写入current oriented Instr op，不从shape或op名恢复flag |
 | `wafer.tile.elementwise` | materialize every input indexing map into explicit movement/same-shape operands; strip even identity maps; ensure/create destination; map non-select kind and emit map-free `wafer.instr.elementwise`; semantic select lowers to false-copy `gather_scatter` + `bit2fp` + `mask_move`; reject if a map is unrepresentable |
-| `wafer.tile.reduce` | typed baseline验证init后显式构造fill、slice、map-free elementwise ping-pong和final movement。Native lowering preflight必须从current op证明完整logical reduction domain/dimension/combiner/init映射；dynamic-init/combiner/budget或native proof失败只拒绝当前lowering choice，不创建跨stage plan |
+| `wafer.tile.reduce` | 优先检查current op的完整logical reduction domain/dimension/combiner/init及target format/layout合同，满足时直接生成native Instr和exact结果movement；其它输入沿既有ordered fill、slice、map-free elementwise ping-pong和final movement。无法编码的init/combiner或ordered工作上限在mutation前拒绝，不创建跨stage plan |
 | `wafer.tile.copy` | ensure / create destination SPM memref; emit one gather_scatter; replace result with dest memref |
 | `wafer.tile.extract_slice` | create destination SPM memref; compose the static offsets/sizes/strides relation with both physical encodings, split only at layout/field/descriptor boundaries, directly emit up to three loop levels per exact `wafer.instr.gather_scatter`, and replace result with dest memref |
 | `wafer.tile.insert_slice` | create destination SPM memref; first construct an exact valid-domain copy of the original destination, then compose the static insertion relation and overlay the source with symbolic loop descriptors; replace result with the new memref |
