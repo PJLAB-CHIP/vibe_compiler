@@ -1,7 +1,7 @@
 # 板测实施与验收归档
 
 本项于2026-09-09按用户收缩后的板测与性能范围闭合。下文保留本次实施合同和历史检查点；
-最终结果见前部各步骤的收口记录，当前调度只读`tasks/progress.md`，稳定规则以编号设计为准。
+最终结果见前部各步骤的收口记录及“Prefill有限计时补测”，当前调度只读`tasks/progress.md`，稳定规则以编号设计为准。
 
 ## 统一任务边界
 
@@ -229,6 +229,43 @@ LLaMA accepted候选的CostModel估时为578.409 ms，标记`usesCoarseEstimate=
 
 本次四步最终检查：canonical完整增量build、第二次Ninja no-op、274项lit、14个unit可执行文件、17项SystemC及PyTorch runner合同通过；
 全部产品no-card与上述6次实卡完成，无skip、timeout、retry、reset或power cycle。代码、06/13/15合同、fixture与经验同步，板测总任务按本清单闭合。
+
+### Prefill有限计时补测（2026-09-09）
+
+用户在上述四步收口后明确要求补测prefill性能，本次仅追加FP16 L=1024的none/search各一次，仍归同一`board-testing`。
+此前prefill只取得正确性证据，没有设备计时；本节是独立的fresh性能观察，不将旧日志改称性能结果。
+
+Pipeline position:
+- Upstream IR / input: compiler提交`89428f91`、current runtime、原`attention-prefill` source、seed=20260803及同源PyTorch reference。
+- Current stage responsibility: 两种policy各生成fresh package并完成no-card，核对同源输入与设备会话，然后串行各launch一次。
+- Output IR / files: 原样package、完整expected/capture、数值与completion/cleanup结果、TX stream设备事件耗时和身份摘要。
+- Downstream consumer: 本归档中的prefill性能观察与板测任务完成判定。
+- User-level driver / named pipeline: 原PyTorch runner的source/payload/verification函数、`wafer-compile` none/search和`wafer-run --device-timing`。
+- Explicit non-goals: 不改compiler、输入、seed或容差，不扩展尾长/BF16/其他模型，不加warmup、重复采样或profiler探针。
+- Completion criteria: 两项fresh no-card和两次实卡完整PyTorch比较通过；同源配对、计时范围及正常生命周期记录完整。
+
+输入为已有causal attention核心：Q/K/V均为`[1,1,1024,64]`，mask为`[1,1,1024,1024]`，输出65536个FP16元素。
+直接调用HF eager attention backend；该范围不含QKV projection或完整LLaMA block，不能外推整模型prefill延迟。
+
+| policy | fresh no-card | 单次设备事件耗时 | 完整数值比较 | manifest SHA256 |
+| --- | --- | --- | --- | --- |
+| none | 通过，14.33秒 | 11.847 ms | 65536项全部通过；max abs=0.0009765625 | `d141d6ed562c47c04d53ee561433011f1da9590e3d635f57cdb35a368cee47c6` |
+| search | 通过，55.76秒 | 6.608 ms | 65536项全部通过；max abs=0.0009765625 | `04a65397f77a36ab07ef7823015643fb617f9abd8ae0dce2fe4d0f85182614ad` |
+
+两项注册no-card实际执行，无skip/unsupported。随后使用同一轮已通过no-card的原样source/package，重新生成输入/reference，
+核对全部port/dtype/shape并再次strict no-card后上板；逐文件hash确认source/package与编译产物一致，两个policy的source、
+全部4个runtime输入和完整reference相同。比较仍为`rtol=0.006, atol=0.008, equal_nan=false`，没有放宽容差。
+每次均16 Tile完成、完整回读与正常cleanup，无timeout/retry/reset/power；两次串行launch均一次通过。
+
+计时来自未插桩kernel launch前后的TX stream事件，不含source编译、主机输入准备、H2D、D2H或PyTorch校验。
+本次未做warmup或重复采样，数字只作为该输入各一次的观察值，不声明稳定加速比。设备仍为同一boot会话
+`1e83f33c-ff56-43ab-b524-57e25a3b522a`，runtime=1300、PCI=`0000:3b:00.0`、16 Tile，runtime library SHA256为
+`b4f19d673e1767314f6cd900f7f66345e7d1d8c0545de83a7139d62596a6e12c`。
+
+本次canonical增量build为Ninja no-op，没有修改compiler/runtime/test源码。成功source/package/input/reference/capture、
+board log及`numeric-audit.json`位于`build/test/board-audit/prefill-timing/{none,search}/`，同源证据在父目录
+`matched-input-audit.json`；no-card日志为`third_party/host-tools/logs/prefill-timing-no-card.log`。这些文件仅用于审计。
+本次补测合同闭合；没有追加其它设备测试。
 
 ### 每步交付与停止条件
 
