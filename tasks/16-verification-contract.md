@@ -159,6 +159,23 @@ lit的`UNSUPPORTED`和skip只表示未执行。canonical build中的测试若因
 | product install | full、`Compiler`、`Runtime` component | 缺文件、跨component泄漏、build绝对路径或不可执行资源失败 | full含compiler/runtime；Compiler含compiler/helper/frontend资源且无runtime tool；Runtime含run/loader资源且无compiler | install-tree smoke及package/runtime consumer |
 | 特殊配置 | board SDK、sanitizer、debug | 未满足外部前置时不创建或typed停止 | 不在repo内建立第二CMake tree，不代签canonical build gate | 对应board或诊断owner |
 
+### 3.2 编译与设备热点修复的证据边界
+
+同一优化任务可以连续交付current-IR根因、主机修复、模型执行、fresh no-card和板端复验；各层证据分别消费
+本轮产物，不能因设备不可用停止可独立完成的主机工作，也不能以低层完成代签设备收益。
+具体输入、执行顺序和逐项覆盖矩阵由当前实施计划拥有。
+
+- 编译开销优化前固定source、配置和搜索预算，记录实际work count、pass/analysis timing、wall与RSS；
+  未到达的stage记为未到达。新增诊断只读current IR，不改变候选选择、failure或优化开关。
+- Halo、layout与中间搬运修复从actual demand/use/alias/effect追到首次物化owner；分别检查logical集合、
+  physical bytes、动态执行次数和completion。完整carrier缩小后仍须经过同一actual SPM规划，不能由节省字节签发合法性。
+- 主机数值执行使用同次owner-backed target模块和现有numeric/SystemC合同；模型unsupported单独保留，
+  不以编译成功、静态IR或no-card替代完整输出比较。
+- Profile容量不足时只能报告已取得的Primary、Count及其覆盖范围。若实现范围选择，codegen、record、
+  collection和report必须消费同一显式范围；未采集事件、缺失阶段和截断数据不得被报告为完整Trace或全程耗时。
+- 源输入到完整package的fresh产品门禁与板端数值/性能门禁分别记录；历史热点只决定调查入口，
+  修改后的根因与结果必须由current IR和本轮运行重新证明。
+
 ## 4. IR 与 physical-dataflow gates
 
 ### 4.1 TileModule set / TileRegion / Instr

@@ -1,7 +1,7 @@
 # 模型板端性能优化
 
 本计划属于同一个 `board-testing` work item。既有正确性及单次计时证据保留在
-`tasks/archive/board-correctness-qualification.md`。本轮用户已重新授权实卡；目标是以实际 profile
+`tasks/archive/board-correctness-qualification.md`。目标是以实际 profile
 定位 prefill、KV decode、LLaMA block 的瓶颈，修复共用生成逻辑，并完成匹配的数值和性能复验。
 
 逐次性能记录统一追加到[`docs/board-performance-results.md`](../../docs/board-performance-results.md)，
@@ -19,7 +19,44 @@
 - Completion criteria：三条路径具备本轮实际 profile 归因；所选热点有 current-IR 根因与通用修复、host 覆盖、完整构建/no-op；
   受影响产品通过 fresh no-card、完整 PyTorch 比较及匹配 A/B，性能无收益的改写不交付为优化。
 
-## 顺序与覆盖矩阵
+## 当前持续实施范围
+
+用户已授权持续完成以下七项。设备当前不可用，先推进全部可独立完成的主机实现、验证与产品准备；
+设备恢复后才执行同一计划内的串行板测。第八项搜索质量、访问公平性与预算比较继续延后，不扩大搜索预算。
+任务状态由`tasks/progress.md`的`board-testing`统一拥有；本节记录内部步骤、直接前置与验收证据，
+下文历次检查点保留为实现背景，不覆盖本节的执行顺序，也不作为本轮新验证。
+
+| 项 | 范围与直接输入 | 实施步骤与直接下游 | 完成条件 |
+| --- | --- | --- | --- |
+| 1 | Halo与中间buffer；current exact demand、spatial/temporal/layout/movement IR | 从真实内部producer→window consumer及外部输入分别追踪首次完整carrier、copy、DDR往返；在实际创建它的stage修复，再进入Instr/completion/SPM | 精确窗口、局部与远端片段的并集及动态次数保持；只有有完整use/alias/effect证明的冗余被消除；完整下游和fresh no-card通过 |
+| 2 | 主机正确性；受影响变换及同次owner-backed target modules | 独立oracle检查coverage/owner/merge/tail；用既有numeric backend、SystemC实际执行支持的数值与通信路径，补足本项缺口 | 每项修改绑定exact断言、完整输出数值与必要lifetime witness；模型不支持保持typed结果，不能用no-card替代执行 |
+| 3 | 编译开销；相同source/config和固定搜索预算 | 先记录work count、pass/analysis timing、wall与RSS；定位重复查询、遍历、物化或过大scope，实施经证据支持的通用改进 | 同输入、同预算的前后记录可对账；IR语义、候选结果与typed失败不变；无新热点则交付定位结论，不凭空添加cache或计数系统 |
+| 4 | Decode退化；历史8.222/11.443 ms证据及fresh decode IR | 沿DDR publication/acquire和实际consumer追踪切分与搬运变化；根因确认后修共用实现，生成新的完整case/reference/package | 主机与fresh no-card闭合，hidden/K/V及prefix检查齐全；实卡同源比较确认退化处理结果，不凭IR数量宣称速度改善 |
+| 5 | 完整LLaMA FA融合；官方block source及当前attention/temporal实现 | fresh导出，确认真实attention识别与唯一decomposition，运行正式search到ExecutablePackage；若失败记录actual typed原因并在owner修复 | 完整block的fresh no-card、全量PyTorch及匹配融合前后板端A/B；历史未融合17.635 ms不代签当前FA |
+| 6 | 4K、32-head prefill profile；Count超容量证据与current profiler | 核对采集、codegen、record与report合同，设计有明确采集范围的可执行方案；host验证容量边界和报告归因，再生成fresh profile package | 完整或范围明确的Trace可采集且报告不会冒充全程；普通结果检查不变；真实设备取得有效热点数据，不盲目增大缓冲区 |
+| 7 | LLaMA剩余搬运；native归约后Trace及fresh actual IR | 将GS、layout conversion、跨Region读写及外部权重复用追到producer；与第1项共用修复，额外movement choice必须先实际物化后同门禁比较 | 每个所选热点有保留/消除原因及actual下游证据；涉及新方案具备匹配实卡数值与性能结论，不强制DDR或DTE |
+
+执行依赖：首先建立第3项基线并启动第5项完整产品复验，同时定位第1项；第2项随每个实际改动推进。
+随后按第1项产物检查第7项共用机制，推进第4项decode归因和第6项采集准备。
+任何一项等待设备时继续其余主机工作；每个可提交边界更新本节证据并提交，不以记录计划代替实施完成。
+涉及变换的具体算法在确认根因后先补06/13/14等直接owner合同，并比较成熟实现及pinned API；本表不授权第二条pipeline。
+
+### 本轮覆盖矩阵
+
+| 项 | 输入等价类与规模 | 结构分支与typed失败 | exact输出与直接下游witness |
+| --- | --- | --- | --- |
+| 1 | rank3/4，window长度1024/1025/1031，4/16 Tile；内部producer和外部输入、named/generic、stride/dilation | local/remote/mixed、单use/fanout、紧凑/strided/multi-piece、重叠/holes、未知alias | 请求集与独立区间oracle相等；actual allocation/copy/load/store/peer范围及owner；Instr/completion/SPM与产品no-card |
+| 2 | 第1/4/5/7项机制的1024/1025/1031 FP16/BF16；tiny仅作有界oracle或单点负例 | main/tail、多wave、parallel/reduction、local/remote merge、state及buffer复用；unsupported与执行错误区分 | all-and-only coverage、init/merge次数、完整数值结果、token/participant与首次读/最后释放；现有numeric/SystemC直接消费者 |
+| 3 | 同源完整block/decode/prefill与对应机制的整除/尾部输入；固定原搜索参数 | accepted、actual capacity、unsupported、indeterminate分别记录；超时不当作容量失败 | 真实阶段调用数、已到达IR规模、wall/RSS；无重复winner物化；固定输入的前后编译结果及fresh package |
+| 4 | FP16 hidden `[1,1,4096]`、32 heads、past 1023；共用修复另配1024/1025/1031机制例 | DDR publication/acquire、多consumer、布局变化、单步；改动涉及state时两步 | 当前IR依赖和精确movement；完整hidden/K/V与KV prefix，fresh no-card及匹配板测 |
+| 5 | 官方FP16 `[1,16,4096]` block、MLP 11008；通用attention机制另配1024/1025/1031及BF16 | 输入/输出view、projection/transpose、coupled state、非零init、多use；实际容量与预算耗尽区分 | 真实attention及输出遍历、actual Instr/SPM、完整ExecutablePackage；fresh no-card与全量板端PyTorch/A/B |
+| 6 | `[1,32,4096,128]` prefill；record容量等于/差一、长循环与tail | Count→Trace、范围内/外事件、overflow、空范围、invalid metadata、设备失败 | 采集范围与实际event/count一致，报告明确覆盖率与缺失；当前profiler/no-card及实卡采集 |
+| 7 | 完整block；rank3/4 GEMM/conv/elementwise/reduction、1024/1025/1031、4/16 Tile | 共享输入/权重、多use、跨Region、layout转换；DDR/DTE的actual capacity/unsupported | 每次GS/转换/读取对应真实producer及动态次数，scope/alias/lifetime合法；actual cost同门禁与必要板端A/B |
+
+当前检查点：七项范围、依赖和覆盖已登记；第3项基线与第5项fresh产品复验先行，第1项开始定位。
+第2/4/6/7项按上述依赖推进。尚无本轮新增板端结果，不沿用旧package签发`board-ready`或`done`。
+
+## 既有板端流程与产品矩阵
 
 1. 新鲜导出与编译三条 search FP16 case；逐 case 采集原 profiler。先核对 Count 容量与所有数值/完成门禁。
 2. 分离 Primary device 时间、engine PMU ns 和 Trace 本地周期，分析热点及生成根因；不将插桩时间冒充生产时间。
