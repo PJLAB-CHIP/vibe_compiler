@@ -370,10 +370,10 @@ fiber内部仍保留自由切分参数。存在多个合法取值时继续完整
 查询结果区分exact、unsupported、indeterminate和broken contract；unsupported/indeterminate只关闭本次fusion机会，不签发resource结论，
 broken contract终止该candidate。
 
-当前exact-derived边界要求producer/consumer位于同一Region和block、producer pure、edge不是DPS destination，并由current indexing map或
-composed `IndexRelation`证明实际tile demand。Single-use direct/projected chain、general reshape rectangle/有限pieces以及all-use compatible
-direct/view chain均可形成Joint；未捕获use、effect、DPS destination、cross-Region或relation失败保持Independent。Broadcast和window遵循下述
-额外门禁。多结果 producer不进入ordinary逐result producer fusion；符合上述完整state合同的唯一consumer由同一整体物化规则共用输出遍历。
+当前exact-derived边界要求producer/consumer位于同一Region和block、producer pure、edge不是DPS destination，并由composed
+`IndexRelation`证明实际tile demand。全部terminal uses由同一query收集，零长度、共同或分叉view路径与多use都使用同一需求比较；
+受支持的rectangle/有限pieces均可形成Joint。未捕获use、effect、DPS destination、cross-Region或relation失败保持Independent。
+复用与window overlap使用下述同一需求门禁。多结果producer不进入ordinary逐result fusion；符合完整state合同的唯一consumer由同一整体物化规则共用输出遍历。
 
 Direct edge不是完整边界。Spatial exact-demand已经通过`WaferTensorIndexingOpInterface`和`IndexRelation`解释static pure
 `tensor.cast`、`extract_slice`、`insert_slice`、`expand_shape`、`collapse_shape`和`pad`；该current-op relation构造必须抽为
@@ -436,7 +436,22 @@ pinned接口暂时不能表达的exact reshape或`tensor.insert_slice` window只
 - Downstream consumer：temporal choice/apply，随后为既有decomposition、layout/bufferization、Instr/completion与actual SPM gate。
 - User-level driver / named pipeline：none/search共用现有temporal入口。
 - Explicit non-goals：dynamic shape、隐式重算、rolling halo storage、数值重排、搜索预算和allocator策略；不另建fusion IR或跨epoch analysis cache。
-- Completion criteria：direct/view/shared及window与不变轴复用的组合消费同一需求分析；旧的融合专用系数/边界/重叠判断删除，生成端拒绝与关系失败可区分；真实规模main/tail推进actual下游。
+- Completion criteria：ordinary producer的全部uses由一个入口遍历和证明，direct为零长度view链，shared为多个terminal uses；旧direct/view/shared发现与准入入口、独立group schema及consumer map白名单删除；生成端拒绝与关系失败可区分；真实规模main/tail推进actual下游。
+
+一次ordinary fusion query只接受一个current producer result，沿全部实际uses遍历透明typed support链，返回完整terminal-use集合及每条
+consumer迭代域到producer结果的组合IndexRelation。任一未捕获use、effect、DPS destination或跨Region边关闭整个group；不得逐consumer部分提交。
+相同consumer多次使用、多个consumer共享同一view、分叉view链及直接/view混合均使用同一遍历和关系比较。共享request须有可物化的共同
+iteration grid，并在selected tile/order上证明相同producer需求；没有共同grid或需求不同返回typed不适用，不按map语法提前分流。
+若terminal consumer自身已派生到下游遍历，须继续通过其current result/operand关系将需求组合到实际selected root，比较完整需求与grid；
+不能把“没有独立consumer choice”解释成任意兼容。共同循环生成位置还须支配原有consumer result的全部使用；较早的observable use不能被越过。
+
+生成描述仅表达既有helper能够执行的结果切片、参数化矩形或有限reshape pieces。是否采用共同循环及在哪一层共享，统一由group的
+完整uses和selected需求决定。常规单use可以复用SCF producer-fusion mechanics，多个use可以复用共同循环和slice去重，view helper只负责
+重建局部表示；这些helper不重新进行各自的融合准入。General reshape的当前piece生成范围与Pack/UnPack/Pad的TilingInterface限制保持
+显式typed生成合同。非透明insert/concat assembly及多结果coupled state保留自身的语义物化合同，不伪装成ordinary unary relation。
+Pack输入的关系由source坐标到outer迭代坐标的floor-div关系取逆得到，保留inner tile与outer permutation及源边界；一对多需求仍由同一关系协议消费。
+仅增删unit轴的reshape在IndexRelation primitive中规范化为精确投影，identity composition只在完整中间box吻合时消去；
+生成局部view时按已证明的轴关系对齐actual tile与consumer slice的形状精度，不能丢失归约主块/尾块的已知维度。
 
 逻辑关系沿current SSA将consumer迭代域映射到producer结果，再由producer结果关系反推完整迭代fiber。
 Linalg maps与typed tensor-support description是输入语义；IndexRelation负责组合与证明，不从op名称选择融合规则。

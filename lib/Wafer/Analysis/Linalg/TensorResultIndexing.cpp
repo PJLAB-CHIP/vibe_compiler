@@ -61,6 +61,32 @@ deriveIterationOperandRelation(mlir::OpOperand &operand,
                                llvm::ArrayRef<int64_t> iterationShape,
                                const IndexRelationLimits &limits) {
   auto type = mlir::dyn_cast<mlir::RankedTensorType>(operand.get().getType());
+  if (auto pack = mlir::dyn_cast<mlir::tensor::PackOp>(operand.getOwner());
+      pack && operand.getOperandNumber() == 0 && type &&
+      type.hasStaticShape()) {
+    // Pack's TilingInterface iterates the outer packed coordinates. The exact
+    // source demand is the inverse of source-point -> outer-tile, including
+    // source bounds for a partially filled last inner tile.
+    auto inner = pack.getStaticInnerTiles();
+    if (llvm::any_of(inner, [](int64_t value) { return value <= 0; }))
+      return {IndexRelationStatus::Unsupported, std::nullopt,
+              "pack access requires static positive inner tiles"};
+    llvm::SmallVector<int64_t, 4> factors(type.getRank(), 1);
+    for (auto [axis, tile] : llvm::zip_equal(pack.getInnerDimsPos(), inner))
+      factors[axis] = tile;
+    llvm::SmallVector<mlir::AffineExpr, 4> outer;
+    for (int64_t position = 0; position < type.getRank(); ++position) {
+      int64_t axis = pack.getOuterDimsPerm().empty()
+                         ? position
+                         : pack.getOuterDimsPerm()[position];
+      outer.push_back(mlir::getAffineDimExpr(axis, pack.getContext())
+                          .floorDiv(factors[axis]));
+    }
+    auto points = IndexRelation::fromAffineMap(
+        mlir::AffineMap::get(type.getRank(), 0, outer, pack.getContext()),
+        type.getShape(), iterationShape, limits);
+    return points.isExact() ? points.get()->inverse(limits) : points;
+  }
   auto map = getStructuredOperandMap(operand);
   if (!type || !type.hasStaticShape() || mlir::failed(map))
     return {IndexRelationStatus::Unsupported, std::nullopt,

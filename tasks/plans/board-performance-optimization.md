@@ -259,7 +259,7 @@ Scalar 初始化覆盖 main/tail、非零值及共享 init；多结果共同循�
 - `IndexRelation::getRectangularTileImage`返回整个selected grid的精确bounds、不变坐标与互斥结论。主块/尾块由平移构造证明覆盖；
   source/intermediate bounds逐约束检查，复杂坐标使用同一Presburger image及tile关系injectivity，不枚举wave。
 - Direct与view的producer parallel fiber、consumer需求唯一性改为关系查询；all-use以exact relation equality比较需求。
-  原broadcast/window schema、系数覆盖和相邻跨度判断由一个`TemporalOperandFusion`及共同materializer替代。
+  原broadcast/window schema、系数覆盖和相邻跨度判断由共同的需求协议及materializer替代；ordinary入口的最终收敛见下节。
 - Pinned result-tile与consumer slice生成合同分别检查；精确负向映射的分析成功不会掩盖当前consumer tiler不支持的bounds。
   原一般reshape有限pieces路径保留同一IndexRelation image/inverse分析，局部生成仍有明确表示边界。
 - 组合关系使用pinned整数等式消元，保留全部中间边界；injectivity/functionality构造证明随compose/inverse/restriction传播。
@@ -279,3 +279,51 @@ Scalar 初始化覆盖 main/tail、非零值及共享 init；多结果共同循�
 - 11个fresh PyTorch source→export/reference→compile/package→strict no-card通过：GEMM tail-1031 none，local reduce/local conv/prefill
   tail-1031 none/search，以及conv-mixed-dag FP16/BF16 none/search。Runner清理各自work目录后重新export，未复用历史输入或package。
 - 完整diff、旧接口残留、`git diff --check`与Wafer-owned Python cache检查通过。Halo storage、显式重算和真实板端性能仍不由本次接入代签。
+
+## Ordinary fusion入口收敛
+
+用户进一步要求收敛direct/view/shared入口。归属同一work item及06号设计；当前实现不能仅以共用IndexRelation代签入口统一。
+
+1. 用一个producer-all-uses query替代direct/path/all-use/operand发现入口，统一typed结果及每条use的关系和生成描述。
+2. TemporalDomain只保存一种fusion group；共享window、分叉view及direct/view混合使用同一需求比较与choice检查。
+3. Apply与late producer fusion只消费同一query/group，保留slice/view/common-loop的生成helper，删除旧准入函数和schema。
+4. 运行如下矩阵、canonical增量构建/no-op、完整check-wafer和fresh no-card；复审完整diff后提交。
+
+| 输入等价类 | 整除/非整除及结构 | exact输出 | typed失败 | 下游witness |
+| --- | --- | --- | --- | --- |
+| direct / view / 混合 | rank3+，1024/1025/1031，零/多级/分叉view | 全部uses只收集一次，关系一致，source不变 | 额外observable use、effect、跨Region、DPS init | domain、实际temporal/Instr/SPM |
+| shared window与复用 | named/generic，2个以上consumer，同view/独立unit views | 同一producer tile供全部consumer，channel外共享；精确动态次数 | overlap、不同需求、不同grid/order | actual Instr/completion/SPM |
+| 既有shared与内部归约 | 2/15 uses，长归约、direct/view链 | 保留自由归约choice和共同循环owner | 部分group重叠/未捕获use | 既有actual下游回归 |
+| 非线性reshape及tensor tiler | static pieces、Pad、Pack/UnPack，主块与尾块 | 原生成能力与精确coverage保留 | 关系精确但generator不支持，resource exhaustion | 既有reshape/pack/pad与bufferization回归 |
+| 产品与资源 | none/search、FP16/BF16、fresh source | 同一入口推进actual allocation与SPM gate | unsupported不解释为capacity | PyTorch source/package/strict no-card |
+
+当前检查点：ordinary入口及group协议已收敛，本轮host/fresh no-card资格已完成，未新增板端资格。
+
+实现与迁移：
+
+- 唯一`queryTemporalFusion`按producer的全部实际uses遍历，返回一种`TemporalFusion`及逐use关系；direct为identity view，分叉/shared以同一集合表示。
+  旧direct/path/all-use/operand发现函数和三种group schema已删除；consumer不再经过projected-permutation准入白名单。
+- Shared需求以IndexRelation比较；已派生consumer的需求继续组合到selected root。不同需求、不同grid/order、较早observable use、
+  跨Region或effect均关闭整个group；work exhaustion保持typed indeterminate，查询不修改IR。
+- Apply使用同一group列表。Rectangular需求每group只物化一次producer，所有terminal uses共享，按真实view DAG逆序清理；
+  多个shared group的共同consumer形成同一cohort。共同循环只依赖TilingInterface及完整DPS，不限定Linalg consumer类型。
+- 原slice和reshape-pieces helper继续执行统一结论。Pack source关系明确表达outer iteration到完整inner source fiber；
+  unit reshape及有完整中间边界证明的identity composition在IndexRelation内规范化，不再维护独立的unit-view映射入口。
+  View materializer按实际tile与已证明轴关系对齐局部类型，保留内部归约和非零初始化的main/tail语义。
+
+本轮验证：
+
+- Analysis组件94项、temporal domain 16项及temporal transformation 36项通过；既有general reshape pieces、Pack/UnPack、Pad、
+  内部归约、nonzero init、shared/view与coupled-state资格均保持。
+- 新增24组shared window正例：named/generic × direct/common-view/forked-view/mixed × 1024/1025/1031，
+  精确统计producer与consumer动态元素覆盖，producer occurrence只随H主块/尾块变化，全部推进actual Instr/completion/SPM。
+  对应24组halo-overlap负例保留independent，另逐项拒绝不一致tile grid。
+- 新增3组双Pack consumer正例，1024/1025/1031均经共同TilingInterface循环、exact动态覆盖、actual Instr/completion/SPM。
+  Pack关系另配对覆盖outer permutation、128/129 inner维度及partial inner demand，检查精确source offsets/sizes、越界排除及typed work limit。
+- Selected-root一致/转置差异、producer observable use、consumer较早observable use及有界query work limit均有typed查询断言，
+  验证source IR及use数量不变，不能逐use部分提交。
+- Canonical不指定target的完整增量构建通过，紧接着的第二次构建为Ninja no-op。
+- 完整check-wafer通过：277/277 lit、14个组件CTest、public link/RunBoardIO、numeric/target numeric及17个SystemC全部实际执行，无意外skip/unsupported。
+- 11个fresh PyTorch source/export/reference→compile/package→strict no-card通过：GEMM tail-1031 none，local reduce/local conv/prefill
+  tail-1031 none/search，conv-mixed-dag FP16/BF16 none/search。没有复用历史package或运行真实设备。
+- 完整diff、`git diff --check`、旧入口/schema与consumer map白名单残留检查通过；Wafer-owned源码无Python缓存。生产代码净减少233行，新增主要为覆盖矩阵与测试。

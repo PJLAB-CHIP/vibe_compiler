@@ -775,6 +775,57 @@ IndexRelation::staticReshape(llvm::ArrayRef<int64_t> destinationShape,
     return fail(IndexRelationStatus::Invalid,
                 "reshape source and destination element counts differ");
 
+  // Unit-axis reshapes are projections on the bounded logical domain. Keep
+  // that primitive representation here so every relation consumer can compose
+  // it without a separate operation-specific reshape shortcut.
+  llvm::SmallVector<unsigned, 6> destinationNonUnit, sourceNonUnit;
+  for (auto [axis, extent] : llvm::enumerate(destinationShape))
+    if (extent != 1)
+      destinationNonUnit.push_back(axis);
+  for (auto [axis, extent] : llvm::enumerate(sourceShape))
+    if (extent != 1)
+      sourceNonUnit.push_back(axis);
+  if (destinationNonUnit.size() == sourceNonUnit.size() &&
+      llvm::all_of(llvm::zip_equal(destinationNonUnit, sourceNonUnit),
+                   [&](auto axes) {
+                     return destinationShape[std::get<0>(axes)] ==
+                            sourceShape[std::get<1>(axes)];
+                   })) {
+    MLIRContext context;
+    llvm::SmallVector<AffineExpr, 6> expressions(
+        sourceShape.size(), getAffineConstantExpr(0, &context));
+    for (auto [destination, source] :
+         llvm::zip_equal(destinationNonUnit, sourceNonUnit))
+      expressions[source] = getAffineDimExpr(destination, &context);
+    auto result = fromAffineMap(
+        AffineMap::get(destinationShape.size(), 0, expressions, &context),
+        destinationShape, sourceShape, limits);
+    if (result.isExact()) {
+      result.relation->canonicalRowMajorOrderByConstruction = true;
+      result.relation->injectiveByConstruction = true;
+      result.relation->totalBoundedAffineMapByConstruction = true;
+      result.relation->rectangleDestinationShape =
+          llvm::SmallVector<int64_t, 4>(destinationShape);
+      result.relation->rectangleSourceShape =
+          llvm::SmallVector<int64_t, 4>(sourceShape);
+      llvm::SmallVector<int64_t, 4> pattern(sourceShape.size(), -1);
+      for (auto [destination, source] :
+           llvm::zip_equal(destinationNonUnit, sourceNonUnit))
+        pattern[source] = destination;
+      llvm::SmallVector<RowMajorRectangleMapping, 4> mappings;
+      for (unsigned source = 0; source < sourceShape.size(); ++source) {
+        RowMajorRectangleMapping mapping;
+        mapping.sourceDimensions.push_back(source);
+        if (pattern[source] >= 0)
+          mapping.destinationDimensions.push_back(pattern[source]);
+        mappings.push_back(std::move(mapping));
+      }
+      result.relation->projectedRectanglePattern = std::move(pattern);
+      result.relation->rowMajorRectangleMappings = std::move(mappings);
+    }
+    return result;
+  }
+
   // Recover the reshape's exact reassociation as equal-product row-major
   // groups. This is a construction proof for both collapse and expansion;
   // it does not depend on a solver rediscovering quotient/remainder facts.
@@ -1154,6 +1205,32 @@ IndexRelation::compose(const IndexRelation &next,
   if (exceedsVariableLimit(getDestinationRank(), next.getSourceRank(), limits))
     return fail(IndexRelationStatus::ResourceExhausted,
                 "composed index relation exceeds variable budget");
+
+  auto isBoundedIdentity = [](const IndexRelation &value) {
+    if (!value.projectedRectanglePattern || !value.rectangleDestinationShape ||
+        !value.rectangleSourceShape ||
+        *value.rectangleDestinationShape != *value.rectangleSourceShape)
+      return false;
+    return llvm::all_of(
+        llvm::enumerate(*value.projectedRectanglePattern), [](auto coordinate) {
+          return coordinate.value() >= 0 &&
+                 coordinate.index() == static_cast<size_t>(coordinate.value());
+        });
+  };
+  // An identity can be removed only when its entire intermediate box is the
+  // already proved range/domain. Different bounds must still participate in
+  // composition. Preserve the other relation's rectangle/piece construction.
+  if (status == IndexRelationStatus::Exact &&
+      next.status == IndexRelationStatus::Exact) {
+    if (isBoundedIdentity(next) && rectangleSourceShape &&
+        *rectangleSourceShape == *next.rectangleDestinationShape &&
+        !exceedsRelationLimits(relation, limits))
+      return {status, *this, {}};
+    if (isBoundedIdentity(*this) && next.rectangleDestinationShape &&
+        *rectangleSourceShape == *next.rectangleDestinationShape &&
+        !exceedsRelationLimits(next.relation, limits))
+      return {next.status, next, {}};
+  }
 
   // If every intermediate coordinate is produced by one current row-major
   // group, substitute those groups into the next relation's reassociation.

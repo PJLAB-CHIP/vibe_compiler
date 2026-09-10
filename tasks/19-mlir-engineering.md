@@ -229,6 +229,9 @@ candidate compiler failure，销毁该transaction，不以bounding box、完整p
 Structured operand/result map的dialect adapter及沿SSA组合到producer的逻辑关系也由同一Analysis/Linalg入口提供。
 Selected tile的数学image、不变性和互斥查询不拥有循环或storage；temporal决定是否共享并调用TilingInterface物化。
 Relation exact与generator可表达性分别检查，不能将窗口/广播的map算术再复制到各条融合路径。
+Ordinary fusion只通过`queryTemporalFusion`收集producer的全部terminal uses；direct、透明view链和多use共用同一group协议及准入。
+生成helper可以分别执行结果slice、局部view或共同循环，但不得另建按拓扑类别分流的融合分析入口。消费者已派生到其它root时，
+共享需求继续沿current result/operand关系组合到实际selected root；不能因缺少独立consumer choice而跳过需求一致性检查。
 
 Logical e-graph对ordinary pure connected component使用ordered multi-root request，不在MLIR中创建tuple/super-root op。Importer对同一current
 SSA只建立一个e-node；Rust对多个runner roots使用同一e-class选择，并把结果deterministic hash-cons为共享DAG。C++先验证全部root

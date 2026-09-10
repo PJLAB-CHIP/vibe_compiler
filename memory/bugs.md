@@ -1864,3 +1864,10 @@
 - 根因：IndexRelation能表达的访问不一定符合pinned tiler的slice构造约定；主块/尾块中暂时动态的unit reshape，在source经类型收紧变静态后也可能留下不满足verifier的动态result。
 - 修复模式：将generator实际offset/size约定与精确需求bounds比较；按actual source shape和reassociation同步收紧局部Expand/Collapse。只增删unit轴时可在canonical loop内保留bounded动态size，一般dynamic输入仍不支持。
 - 防复发：named/generic window加通道复用、直接/经unit view、1024/1025/1031均检查动态执行覆盖并推进Instr/SPM；负向关系的分析成功与当前generator拒绝分别断言。
+- 当projection替代较一般的reshape表示后，不能假定producer tile与consumer slice具有相同的静态类型精度。按已证明的producer/view轴对应关系对齐局部shape，再重建view并转换回请求类型；内部归约及非零init的尾块必须覆盖该分支。
+
+## 共享需求必须对应实际selected root与合法生成位置
+
+- 根因：多个consumer自身的operand maps相同，不代表它们派生到下游root后的需求相同；省略不存在的独立consumer choice会放过不同请求。共同循环放在最后一个consumer前，也可能越过较早的observable result use。
+- 修复模式：沿current result/operand关系将全部请求组合到实际selected root，检查需求与grid一致；生成前检查共同循环位置对已有uses的支配关系。不能用consumer数量、相同map或原始source顺序代替这些证明。
+- 防复发：同一producer经两个pointwise consumer到一个root，配对检查identity与transpose访问；producer observable use和较早consumer result use分别拒绝，保持source IR不变。

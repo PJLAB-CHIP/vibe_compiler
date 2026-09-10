@@ -26,6 +26,14 @@ namespace {
 using namespace wafer;
 using namespace wafer::compiler::detail;
 
+std::vector<TemporalFusion> sharedFusions(const TemporalDomain &domain) {
+  std::vector<TemporalFusion> result;
+  for (const auto &fusion : domain.getFusions())
+    if (fusion.uses.size() > 1)
+      result.push_back(fusion);
+  return result;
+}
+
 std::unique_ptr<mlir::MLIRContext> createContext() {
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
@@ -191,9 +199,7 @@ TEST(TemporalDomainTest,
   });
   ASSERT_EQ(chainOps.size(), 2u);
   ASSERT_TRUE(chainOps.front()->getResult(0).hasOneUse());
-  auto query = queryTemporalProducerFusion(
-      chainOps.front()->getResult(0),
-      *chainOps.front()->getResult(0).getUses().begin());
+  auto query = queryTemporalFusion(chainOps.front()->getResult(0));
   EXPECT_EQ(query.kind, TemporalFusionQueryKind::ExactDerived);
   EXPECT_EQ(chainDomain.domain->getScopeDescriptors().front().operation,
             chainOps.back().getOperation());
@@ -261,7 +267,7 @@ TEST(TemporalDomainTest,
                 ->getScopeDescriptors(TemporalTraversalKind::Independent)
                 .size(),
             4u);
-  EXPECT_EQ(fanoutDomain.domain->getJointProducerGroups().size(), 1u);
+  EXPECT_EQ(sharedFusions(*fanoutDomain.domain).size(), 1u);
 }
 
 TEST(TemporalDomainTest,
@@ -300,11 +306,11 @@ TEST(TemporalDomainTest,
     operations.push_back(operation);
   });
   ASSERT_EQ(operations.size(), 2u);
-  TemporalFusionPathResult path = queryTemporalProducerFusionPath(
+  TemporalFusionQueryResult path = queryTemporalFusion(
       mlir::cast<mlir::OpResult>(operations.front().getResult(0)));
   EXPECT_EQ(path.kind, TemporalFusionQueryKind::ExactDerived) << path.detail;
-  EXPECT_TRUE(path.consumerViewToProducer.has_value());
-  EXPECT_EQ(path.generalReshapeConsumerDimensions,
+  EXPECT_TRUE(path.fusion->uses.front().viewToProducer.has_value());
+  EXPECT_EQ(path.fusion->uses.front().reshapeDimensions,
             (llvm::SmallVector<uint32_t, 2>{0}));
   TemporalDomainResult domain = buildTemporalDomain(region);
   ASSERT_TRUE(domain.succeeded());
@@ -373,19 +379,19 @@ TEST(TemporalDomainTest, MultiUseViewResultFormsOneAllUseJointProducerGroup) {
     operations.push_back(operation);
   });
   ASSERT_EQ(operations.size(), 4u);
-  TemporalFusionPathResult path = queryTemporalProducerFusionPath(
+  TemporalFusionQueryResult path = queryTemporalFusion(
       mlir::cast<mlir::OpResult>(operations.front().getResult(0)));
-  EXPECT_EQ(path.kind, TemporalFusionQueryKind::NonUnique);
+  ASSERT_TRUE(path.isExact()) << path.detail;
+  EXPECT_EQ(path.fusion->uses.size(), 2u);
   TemporalDomainResult domain = buildTemporalDomain(region);
   ASSERT_TRUE(domain.succeeded());
   EXPECT_EQ(domain.domain->getScopeDescriptors().size(), 1u);
-  llvm::ArrayRef<TemporalJointProducerGroup> groups =
-      domain.domain->getJointProducerGroups();
+  auto groups = sharedFusions(*domain.domain);
   ASSERT_EQ(groups.size(), 1u);
-  const TemporalJointProducerGroup &group = groups.front();
-  EXPECT_TRUE(group.isViewTransparent());
-  EXPECT_EQ(group.consumerOperands.size(), 2u);
-  EXPECT_EQ(group.consumerValue.getDefiningOp(),
+  const TemporalFusion &group = groups.front();
+  EXPECT_TRUE((group.uses.front().consumerValue != group.producer));
+  EXPECT_EQ(group.uses.size(), 2u);
+  EXPECT_EQ(group.uses.front().consumerValue.getDefiningOp(),
             operations.front()->getNextNode());
   EXPECT_EQ(
       domain.domain->getScopeDescriptors(TemporalTraversalKind::Independent)
@@ -471,17 +477,18 @@ TEST(TemporalDomainTest,
     operations.push_back(operation);
   });
   ASSERT_EQ(operations.size(), 2u);
-  auto query = queryTemporalProducerFusion(
-      operations.front()->getResult(0),
-      *operations.front()->getResult(0).getUses().begin());
-  EXPECT_EQ(query.kind, TemporalFusionQueryKind::NonUnique);
+  auto query = queryTemporalFusion(operations.front()->getResult(0));
+  ASSERT_TRUE(query.isExact()) << query.detail;
+  EXPECT_EQ(query.fusion->uses.front().representation,
+            TemporalTileRepresentation::RectangularImage);
   TemporalDomainResult domain = buildTemporalDomain(region);
   ASSERT_TRUE(domain.succeeded());
   EXPECT_EQ(domain.domain->getScopeDescriptors().size(), 1u);
-  ASSERT_EQ(domain.domain->getOperandFusions().size(), 1u);
+  ASSERT_EQ(domain.domain->getFusions().size(), 1u);
   auto first = *domain.domain->getFirstChoice().getChoice();
-  auto demand = queryTemporalOperandTile(
-      domain.domain->getOperandFusions().front(), first.scopes.front());
+  auto demand = queryTemporalFusionTile(
+      domain.domain->getFusions().front(),
+      domain.domain->getFusions().front().uses.front(), first.scopes.front());
   ASSERT_TRUE(demand.isExact()) << demand.reason;
   EXPECT_EQ(demand.image->invariantDimensions,
             (llvm::SmallVector<uint32_t, 4>{3}));
@@ -555,7 +562,7 @@ TEST(TemporalDomainTest,
     TemporalDomainResult domain = buildTemporalDomain(region);
     ASSERT_TRUE(domain.succeeded())
         << (domain.failure ? domain.failure->detail : "");
-    ASSERT_EQ(domain.domain->getOperandFusions().size(), 1u);
+    ASSERT_EQ(domain.domain->getFusions().size(), 1u);
     ASSERT_EQ(domain.domain->getScopeDescriptors().size(), 1u);
     TemporalChoice joint = *domain.domain->getFirstChoice().getChoice();
     ASSERT_EQ(joint.scopes.size(), 1u);
@@ -787,18 +794,20 @@ TEST(TemporalDomainTest, ExactRelationDoesNotAuthorizeUnsupportedTilingBounds) {
   auto before = region.getBody().front().getOperations().size();
   auto domain = buildTemporalDomain(region);
   ASSERT_TRUE(domain.succeeded());
-  ASSERT_EQ(domain.domain->getOperandFusions().size(), 1u);
+  ASSERT_EQ(domain.domain->getFusions().size(), 1u);
   auto choice = *domain.domain->getFirstChoice().getChoice();
   ASSERT_EQ(choice.scopes.size(), 1u);
   choice.scopes.front().iteratorTileSizes = {2, 128, 16};
   choice.scopes.front().loopOrder = {1};
-  auto fusions = domain.domain->getOperandFusions();
+  auto fusions = domain.domain->getFusions();
   const auto &fusion = fusions.front();
-  auto exact = fusion.iterationToProducer.getRectangularTileImage(
-      context.get(), fusion.iterationShape, {2, 1031, 16}, {2, 128, 16});
+  auto exact = fusion.uses.front().iterationToProducer->getRectangularTileImage(
+      context.get(), fusion.uses.front().iterationShape, {2, 1031, 16},
+      {2, 128, 16});
   ASSERT_TRUE(exact.isExact()) << exact.reason;
   EXPECT_TRUE(exact.image->distinctTilesDisjoint);
-  auto generated = queryTemporalOperandTile(fusion, choice.scopes.front());
+  auto generated = queryTemporalFusionTile(fusion, fusion.uses.front(),
+                                           choice.scopes.front());
   EXPECT_EQ(generated.status, analysis::IndexRelationStatus::Unsupported);
   EXPECT_NE(generated.reason.find("tiling interface"), std::string::npos);
   EXPECT_FALSE(domain.domain->contains(choice));
@@ -808,6 +817,131 @@ TEST(TemporalDomainTest, ExactRelationDoesNotAuthorizeUnsupportedTilingBounds) {
       2u);
   EXPECT_EQ(region.getBody().front().getOperations().size(), before);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+}
+
+TEST(TemporalDomainTest, SharedRequestsFollowTheirActualSelectedRoot) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool transposeAtSink : {false, true}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(transposeAtSink);
+      auto context = createContext();
+      auto type = "tensor<2x" + std::to_string(extent) + "x" +
+                  std::to_string(extent) + "xf16>";
+      std::string body;
+      llvm::raw_string_ostream b(body);
+      auto pointwise = [&](llvm::StringRef name, llvm::StringRef input) {
+        b << "%e_" << name << " = tensor.empty() : " << type << "\n%" << name
+          << " = linalg.generic {indexing_maps = [affine_map<(b,m,n)->(b,m,n)>,"
+             "affine_map<(b,m,n)->(b,m,n)>], iterator_types = "
+             "[\"parallel\",\"parallel\",\"parallel\"]} "
+             "ins(%"
+          << input << " : " << type << ") outs(%e_" << name << " : " << type
+          << ") { ^bb0(%x: f16, %old: f16): %p = arith.addf %x, %x : f16 "
+             "linalg.yield %p : f16 } -> "
+          << type << "\n";
+      };
+      pointwise("producer", "arg");
+      pointwise("left", "producer");
+      pointwise("right", "producer");
+      b << "%out = tensor.empty() : " << type
+        << "\n%value = linalg.generic {indexing_maps = ["
+           "affine_map<(b,m,n)->(b,m,n)>, affine_map<(b,m,n)->"
+        << (transposeAtSink ? "(b,n,m)>" : "(b,m,n)>")
+        << ", affine_map<(b,m,n)->(b,m,n)>], iterator_types = "
+           "[\"parallel\",\"parallel\",\"parallel\"]} "
+           "ins(%left, %right : "
+        << type << ", " << type << ") outs(%out : " << type
+        << ") { ^bb0(%x: f16, %y: f16, %old: f16): %p = arith.addf %x, %y : "
+           "f16 linalg.yield %p : f16 } -> "
+        << type;
+      auto module = parse(*context, b.str(), type, type);
+      ASSERT_TRUE(module);
+      TileRegionOp region;
+      module->walk([&](TileRegionOp op) { region = op; });
+      mlir::OpResult producer;
+      region.walk([&](mlir::linalg::GenericOp op) {
+        if (!producer)
+          producer = op->getResult(0);
+      });
+      auto before = region.getBody().front().getOperations().size();
+      auto query = queryTemporalFusion(producer);
+      ASSERT_TRUE(query.isExact()) << query.detail;
+      ASSERT_EQ(query.fusion->uses.size(), 2u);
+      analysis::IndexRelationLimits limits;
+      limits.maxRectangularPieces = 1;
+      EXPECT_EQ(queryTemporalFusion(producer, limits).kind,
+                TemporalFusionQueryKind::Indeterminate);
+      auto domain = buildTemporalDomain(region);
+      ASSERT_TRUE(domain.succeeded());
+      auto choice = *domain.domain->getFirstChoice().getChoice();
+      ASSERT_EQ(choice.scopes.size(), 1u);
+      EXPECT_TRUE(domain.domain->contains(choice));
+      choice.scopes.front().iteratorTileSizes = {2, 128, 64};
+      choice.scopes.front().loopOrder = {1, 2};
+      EXPECT_EQ(domain.domain->contains(choice), !transposeAtSink);
+      EXPECT_EQ(region.getBody().front().getOperations().size(), before);
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    }
+}
+
+TEST(TemporalDomainTest, AnObservableUseRejectsTheEntireFusionGroup) {
+  auto context = createContext();
+  const std::string original = R"mlir(
+    module { wafer.tile.module card_id = 0 tile_id = 0 {
+      func.func private @observe(tensor<2x1031x16xf16>)
+      func.func @entry(%input: tensor<2x1031x16xf16>) -> tensor<2x1031x16xf16> {
+        %result = wafer.tile.region(%input : tensor<2x1031x16xf16>) -> (tensor<2x1031x16xf16>) {
+        ^bb0(%arg: tensor<2x1031x16xf16>):
+          %e = tensor.empty() : tensor<2x1031x16xf16>
+          %p = linalg.generic {indexing_maps = [affine_map<(b,m,n)->(b,m,n)>,affine_map<(b,m,n)->(b,m,n)>],
+            iterator_types = ["parallel","parallel","parallel"]}
+            ins(%arg : tensor<2x1031x16xf16>) outs(%e : tensor<2x1031x16xf16>) {
+            ^bb0(%x: f16, %old: f16): %v = arith.addf %x, %x : f16 linalg.yield %v : f16
+          } -> tensor<2x1031x16xf16>
+          func.call @observe(%p) : (tensor<2x1031x16xf16>) -> ()
+          %out = tensor.empty() : tensor<2x1031x16xf16>
+          %value = linalg.generic {indexing_maps = [affine_map<(b,m,n)->(b,m,n)>,affine_map<(b,m,n)->(b,m,n)>],
+            iterator_types = ["parallel","parallel","parallel"]}
+            ins(%p : tensor<2x1031x16xf16>) outs(%out : tensor<2x1031x16xf16>) {
+            ^bb0(%x: f16, %old: f16): %v = arith.addf %x, %x : f16 linalg.yield %v : f16
+          } -> tensor<2x1031x16xf16>
+          wafer.tile.yield %value : tensor<2x1031x16xf16>
+        }
+        return %result : tensor<2x1031x16xf16>
+      }
+    } }
+  )mlir";
+  for (bool observeProducer : {true, false}) {
+    SCOPED_TRACE(observeProducer);
+    std::string text = original;
+    if (!observeProducer) {
+      const std::string call = "func.call @observe(%p)";
+      text.replace(text.find(call), call.size(), R"mlir(
+          %le = tensor.empty() : tensor<2x1031x16xf16>
+          %left = linalg.generic {indexing_maps = [affine_map<(b,m,n)->(b,m,n)>,affine_map<(b,m,n)->(b,m,n)>],
+            iterator_types = ["parallel","parallel","parallel"]}
+            ins(%p : tensor<2x1031x16xf16>) outs(%le : tensor<2x1031x16xf16>) {
+            ^bb0(%x: f16, %old: f16): %v = arith.addf %x, %x : f16 linalg.yield %v : f16
+          } -> tensor<2x1031x16xf16>
+          func.call @observe(%left))mlir");
+    }
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(
+        text, mlir::ParserConfig(context.get()));
+    ASSERT_TRUE(module);
+    mlir::OpResult producer;
+    module->walk([&](mlir::linalg::GenericOp op) {
+      if (!producer)
+        producer = op->getResult(0);
+    });
+    auto uses = llvm::range_size(producer.getUses());
+    auto query = queryTemporalFusion(producer);
+    EXPECT_EQ(query.kind, observeProducer
+                              ? TemporalFusionQueryKind::NonUnique
+                              : TemporalFusionQueryKind::Unsupported);
+    EXPECT_FALSE(query.fusion.has_value());
+    EXPECT_EQ(llvm::range_size(producer.getUses()), uses);
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  }
 }
 
 } // namespace

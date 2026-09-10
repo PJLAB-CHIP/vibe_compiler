@@ -135,65 +135,63 @@ enum class TemporalFusionQueryKind : uint8_t {
   BrokenContract,
 };
 
-struct TemporalFusionQueryResult {
-  TemporalFusionQueryKind kind = TemporalFusionQueryKind::BrokenContract;
-  std::string detail;
-};
-
 struct TemporalViewDimensionMapping {
   int32_t viewDimension = -1;
   int64_t offset = 0;
 };
 
-/// One current exact producer-to-consumer path. `viewTransparent` distinguishes
-/// a direct SSA edge from a path through one or more current tensor support
-/// operations. All handles are borrowed from one unchanged TileRegion.
-struct TemporalFusionPathResult {
-  TemporalFusionQueryKind kind = TemporalFusionQueryKind::BrokenContract;
-  mlir::OpResult producer;
-  mlir::OpOperand *consumerOperand = nullptr;
-  bool viewTransparent = false;
+/// The supported local representation of a proved demand. These select
+/// generation helpers, not independent fusion-discovery or legality paths.
+enum class TemporalTileRepresentation : uint8_t {
+  ResultSlice,
+  RectangularImage,
+  ReshapePieces,
+};
+
+/// One terminal current use and its complete transparent source relation.
+/// A direct edge has consumerValue == producer and an identity view relation.
+struct TemporalFusionUse {
+  mlir::OpOperand *operand = nullptr;
+  mlir::Value consumerValue;
+  std::optional<analysis::IndexRelation> iterationToProducer;
+  std::optional<analysis::IndexRelation> viewToProducer;
+  llvm::SmallVector<int64_t, 4> iterationShape;
   llvm::SmallVector<TemporalViewDimensionMapping, 4> producerDimensions;
-  std::optional<analysis::IndexRelation> consumerViewToProducer;
-  llvm::SmallVector<uint32_t, 2> forcedFullExtentConsumerDimensions;
-  llvm::SmallVector<uint32_t, 2> generalReshapeConsumerDimensions;
+  llvm::SmallVector<uint32_t, 2> fullExtentDimensions;
+  llvm::SmallVector<uint32_t, 2> reshapeDimensions;
+  TemporalTileRepresentation representation =
+      TemporalTileRepresentation::ResultSlice;
+};
+
+/// All-and-only terminal uses of one producer. Borrowed handles and relations
+/// belong to one unchanged IR epoch and are consumed by the immediate apply.
+struct TemporalFusion {
+  mlir::OpResult producer;
+  llvm::SmallVector<TemporalFusionUse, 4> uses;
+};
+
+struct TemporalFusionQueryResult {
+  TemporalFusionQueryKind kind = TemporalFusionQueryKind::BrokenContract;
   std::string detail;
+  std::optional<TemporalFusion> fusion;
 
   bool isExact() const {
-    return kind == TemporalFusionQueryKind::ExactDerived && producer &&
-           consumerOperand;
+    return kind == TemporalFusionQueryKind::ExactDerived && fusion.has_value();
   }
 };
 
-/// One all-use producer group that may be materialized once in a common joint
-/// traversal. `consumerValue` is either the producer itself or the final value
-/// of one exact transparent view chain. All IR handles are borrowed from the
-/// same unchanged TileRegion.
-struct TemporalJointProducerGroup {
-  mlir::OpResult producer;
-  mlir::Value consumerValue;
-  llvm::SmallVector<mlir::OpOperand *, 4> consumerOperands;
-  llvm::SmallVector<TemporalViewDimensionMapping, 4> producerDimensions;
-  std::optional<analysis::IndexRelation> consumerViewToProducer;
-  llvm::SmallVector<uint32_t, 2> generalReshapeConsumerDimensions;
+/// The single ordinary-fusion discovery/legality entry. Traverses all uses,
+/// including zero-length, shared and branching transparent view paths.
+TemporalFusionQueryResult
+queryTemporalFusion(mlir::OpResult producer,
+                    const analysis::IndexRelationLimits &limits =
+                        analysis::IndexRelationLimits());
 
-  bool isViewTransparent() const { return consumerValue != producer; }
-};
-
-/// One current operand demand, possibly through a transparent view chain.
-/// Window access and invariance are properties of the same relation. Its
-/// rectangular representation and disjointness are queried for each choice.
-struct TemporalOperandFusion {
-  mlir::OpResult producer;
-  mlir::Value consumerValue;
-  mlir::OpOperand *consumerOperand;
-  analysis::IndexRelation iterationToProducer;
-  llvm::SmallVector<int64_t, 4> iterationShape;
-};
-
+/// Proves one selected use's rectangular demand and current generator bounds.
 analysis::RectangularTileImageResult
-queryTemporalOperandTile(const TemporalOperandFusion &fusion,
-                         const TemporalScopeChoice &choice);
+queryTemporalFusionTile(const TemporalFusion &fusion,
+                        const TemporalFusionUse &use,
+                        const TemporalScopeChoice &choice);
 
 enum class TemporalConcatQueryKind : uint8_t {
   Exact,
@@ -226,18 +224,6 @@ struct TemporalConcatQueryResult {
            consumerOperand && !segments.empty();
   }
 };
-
-/// Determines whether one current producer result is uniquely determined by
-/// its only current consumer traversal for every legal tile of that traversal.
-TemporalFusionQueryResult
-queryTemporalProducerFusion(mlir::OpResult producer,
-                            mlir::OpOperand &consumerOperand);
-
-/// Follows a pure all-result-single-use static tensor support chain and
-/// returns the final current consumer when the complete edge is an exact
-/// derived temporal producer relation.
-TemporalFusionPathResult
-queryTemporalProducerFusionPath(mlir::OpResult producer);
 
 /// Recognizes a static, unit-stride, nonoverlapping insert_slice chain rooted
 /// in tensor.empty whose source rectangles exactly cover the assembled value.
@@ -312,12 +298,7 @@ public:
     return kind == TemporalTraversalKind::Joint ? jointScopes
                                                 : independentScopes;
   }
-  llvm::ArrayRef<TemporalJointProducerGroup> getJointProducerGroups() const {
-    return jointProducerGroups;
-  }
-  llvm::ArrayRef<TemporalOperandFusion> getOperandFusions() const {
-    return operandFusions;
-  }
+  llvm::ArrayRef<TemporalFusion> getFusions() const { return fusions; }
 
 private:
   struct Completion;
@@ -325,12 +306,10 @@ private:
   TemporalDomain(TileRegionOp region,
                  std::vector<TemporalScopeDescriptor> jointScopes,
                  std::vector<TemporalScopeDescriptor> independentScopes,
-                 std::vector<TemporalJointProducerGroup> jointProducerGroups,
-                 std::vector<TemporalOperandFusion> operandFusions)
+                 std::vector<TemporalFusion> fusions)
       : region(region), jointScopes(std::move(jointScopes)),
         independentScopes(std::move(independentScopes)),
-        jointProducerGroups(std::move(jointProducerGroups)),
-        operandFusions(std::move(operandFusions)) {}
+        fusions(std::move(fusions)) {}
 
   static TemporalScopeChoice
   getFirstScopeChoice(const TemporalScopeDescriptor &scope);
@@ -343,8 +322,7 @@ private:
   TileRegionOp region;
   std::vector<TemporalScopeDescriptor> jointScopes;
   std::vector<TemporalScopeDescriptor> independentScopes;
-  std::vector<TemporalJointProducerGroup> jointProducerGroups;
-  std::vector<TemporalOperandFusion> operandFusions;
+  std::vector<TemporalFusion> fusions;
 
   friend struct TemporalDomainResult;
   friend TemporalDomainResult buildTemporalDomain(TileRegionOp);
@@ -363,10 +341,6 @@ struct TemporalDomainResult {
 /// Derives traversal roots, exact-derived producer edges, iterator extents and
 /// capabilities directly from one verifier-valid structural TileRegion.
 TemporalDomainResult buildTemporalDomain(TileRegionOp region);
-
-/// Read-only iteration-to-result map of a current structured tensor result.
-/// Dialect adapters expose semantics; transformation uses the same map
-/// contract.
 
 /// Remaps one immutable structural TemporalDomain onto a fresh clone of the
 /// same current TileRegion. This copies only query metadata and typed handles;
