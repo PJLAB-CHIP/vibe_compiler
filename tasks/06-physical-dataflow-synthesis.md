@@ -194,6 +194,62 @@ Search的constructive parallel proposal还应覆盖输入复用方向。对curre
 覆盖GEMM→pointwise→reshape/permutation、多producer冲突、generator多use、1024/1025/1031和4/16 Tile；
 精确检查owner/coverage、保留原proposal、source不变及实际下游shared-DDR/Instr，而不按模型名限定。
 
+#### 不可分析root的admission与typed结果
+
+`buildSpatialDomainProblem`当前把任一root的不支持语义升级为整个spatial domain失败；`StructuredRelationFacts::create`又把任一root
+拿不到fact升级为整个demand会话失败，并丢弃typed原因、在外层重新分类成`BrokenContract`。本项收敛这两层：**只有真正无法物化的root
+才允许整体失败**；可分析但不可并行切分的root不得从合法域消失；不可分析的root必须保持typed结果并只关闭本次choice。
+
+```text
+Pipeline position:
+- Upstream IR / input:
+  与5.1相同。verifier-valid card-local TensorProgram；本项不新增输入、不修改source IR。
+- Current stage responsibility:
+  判定每个semantic root进入spatial domain的切分自由度，并把"不可分析"表达为typed结果而不是整会话失败。
+- Output IR / files:
+  无新IR、无新文件格式。产出是`SpatialPlanDomain`的合法域成员集合与`ExactDemandOutcome`的typed分类。
+- Downstream consumer:
+  `SpatialState` exact demand、structural materializer、以及controller的choice淘汰。
+- User-level driver / named pipeline:
+  `none`与`search`共用同一domain构造与同一demand会话，不建立第二条路径。
+- Explicit non-goals:
+  不改算术；不新增第二条demand或materialization路径；不把不可分析的op静默当成单Tile执行；不让collective退化为单Tile；
+  不在planning层按op名称或dialect名猜测索引语义。
+- Completion criteria:
+  非投影result map的root保留为不切分域点并通过exact demand与actual materialization；真正不可分析的root以typed结果返回且只关闭
+  本次choice；不存在把typed unsupported压成字符串再重新分类的路径。
+```
+
+- **非投影result map**：当某个result的indexing map含非`AffineDimExpr`表达式时，该root的`partitionableParallelIterators`置全false，
+  只保留不切分域点，其余语义不变。它仍是complete的linalg语义，operand/result relation由现有`IndexRelation::fromAffineMap`精确建立。
+  这是**合法域的表达**——不切分本就是`BalancedParts(1)`域点——不是失败后的repair或fallback。
+- **DAG输入边界**：缺`DestinationStyleOpInterface`或`TilingInterface`的op不进入structured DAG，因此不是本层的输入；
+  `SpatialDomain.cpp`中对应的拒绝分支是不可达的防御代码。
+- **真正的不可分析类**：DPS与Tiling齐备、但既非`mlir::linalg::LinalgOp`也非`LinalgExtAttentionOp`的op（例如`tensor.pack`/`tensor.unpack`、
+  `wafer.linalg_ext.collective.*`）。这类op当前无法提供operand/result indexing relation：pinned MLIR没有通用indexing-map接口，
+  indexing map是linalg接口专有；本仓`WaferTensorIndexingOpInterface`只描述support/transform值，不表达迭代空间与iterator角色。
+  因此本项**不为它们推断语义**，它们保持typed unsupported，不扩大admission。
+- **collective不是单Tile退化对象**：`wafer.linalg_ext.collective.*`在单Tile上执行不等价于原分布式语义，不允许走"不切分"路径；
+  其规划阶段归宿属于13号communication边界。
+- **typed结果不得丢失**：`StructuredRelationFacts::create`当前对任一root无facts直接失败并丢弃typed原因；本项改为按root给出typed结果，
+  使外层能区分unsupported与broken contract，并在`PlanningSession`中只关闭该choice。
+
+待讨论问题：
+- 非linalg的DPS+Tiling root要进入demand，需要op侧声明索引语义（扩展现有接口，或新增source-owned的迭代空间/iterator角色声明）。
+  在取得该声明与明确调用者之前，本项不扩大它们的admission。
+- collective在规划阶段应保持typed unsupported还是由13号物化，需与13号设计一次收敛，避免两套说法。
+
+覆盖矩阵：
+
+| 输入等价类 | 结构分支 | 期望输出 | 下游witness |
+| --- | --- | --- | --- |
+| 非投影result map的linalg op，rank3、一条迭代维1024 | result map含`d0+d1` | 域构建成功；该root `partitionableParallelIterators`全false；不切分点`contains`/`close`通过 | `evaluate`得到`ExactDemandProof`；`materializeSpatialRegions`产出TileModule/TileRegion |
+| 同上，迭代维1025 | 非整除 | 同上，tail不丢失 | exact coverage与owner断言 |
+| 多result、部分投影部分非投影 | 交集分支 | 该root整体不并行切分 | 与单result非投影同 |
+| 投影result map的linalg op | 回归 | 合法域与既有实现逐点相等 | 现有oracle全量比对不变 |
+| DPS+Tiling但非linalg/attention的root | typed failure | typed unsupported，只关闭choice | 不再出现`BrokenContract`/compiler error分类 |
+| 无`TilingInterface`的顶层op | DAG边界 | DAG分析阶段失败，与本项无关 | 不进入spatial |
+
 ### 5.2 TileRegion formation
 
 对每个Tile的local structured DAG，region choice决定哪些root work进入同一TileRegion。一个producer相对当前Region只有三种

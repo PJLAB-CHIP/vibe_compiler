@@ -33,6 +33,8 @@
 | 7 | `distributed-reduce-scatter-production-choice` | `done` | 06、07、13、16 | current Tile peer IR中的complete per-destination contribution matrix及closed associative local combine use-def | 将现行central/direct merge与minimum-hop Ring ReduceScatter分别物化为actual peer op和`wafer.tile.elementwise` combine；每个destination shard all-and-only消费全部actual contributions，1024/1025/1031与4/16-Tile经fresh downstream闭合；无法证明combiner closure时不改写 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 8 | `distributed-all-reduce-production-choice` | `done` | 06、07、13、16 | current Tile peer IR中的complete full-buffer fanin、closed associative merge和complete result fanout；`distributed-reduce-scatter-production-choice`产出的Ring mechanics | AllReduce Ring复用同一actual ReduceScatter materializer并接现有AllGather，不维护第二套归约算法；ragged contiguous chunk、全部participant replicated result、2(P-1)轮及actual cost selection在1024/1025/1031、4/16-Tile闭合；其它形态保留central merge+fanout | `tasks/plans/physical-dataflow-synthesis.md` |
 
+| 9 | `spatial-admission-and-typed-outcomes` | `next` | 06；关联07、13、16 | current `SpatialPlanDomain`域构造与`StructuredRelationFacts::create`；非投影result map的linalg op；DPS+Tiling但非linalg root的typed路径 | 非投影result map的root保留为不切分域点并通过exact demand与actual materialization；不可分析root以typed结果只关闭本次choice；1024/1025、rank≥3、多Tile与tail的实际下游witness通过。已在独立开发分支推进 | `tasks/plans/spatial-admission-and-typed-outcomes.md` |
+
 ## 已满足的直接前置
 
 | Owner | 状态 | Current作用 | 证据入口 |

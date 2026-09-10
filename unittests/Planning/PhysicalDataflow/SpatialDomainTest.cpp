@@ -1178,4 +1178,65 @@ TEST_F(SpatialDomainTest,
   }
 }
 
+TEST_F(SpatialDomainTest,
+       NonProjectedResultMapStaysInDomainAsOneUnpartitionedCell) {
+  // linalg permits a result indexing map that is not a projected permutation;
+  // its verifier only requires symbol-free maps with consistent shapes. Such a
+  // root cannot prove which result elements a parallel partition owns, so it
+  // must stay in the domain as one unpartitioned cell instead of failing the
+  // complete spatial domain. The pairs cover 1024 and the non-divisible 1025.
+  for (int64_t extent : {1024, 1025}) {
+    SCOPED_TRACE(extent);
+    std::string source;
+    llvm::raw_string_ostream stream(source);
+    stream << "module {\n"
+           << "  func.func @main(%input: tensor<" << extent
+           << "x4x4xf16>, %init: tensor<" << extent
+           << "x7xf16>) -> tensor<" << extent << "x7xf16> {\n"
+           << "    %result = linalg.generic {\n"
+           << "        indexing_maps = [affine_map<(m, n, k) -> (m, n, k)>,\n"
+           << "                         affine_map<(m, n, k) -> (m, n + k)>],\n"
+           << "        iterator_types = [\"parallel\", \"parallel\", "
+              "\"parallel\"]}\n"
+           << "        ins(%input : tensor<" << extent << "x4x4xf16>)\n"
+           << "        outs(%init : tensor<" << extent << "x7xf16>) {\n"
+           << "      ^bb0(%value: f16, %acc: f16):\n"
+           << "        %next = arith.addf %value, %acc : f16\n"
+           << "        linalg.yield %next : f16\n"
+           << "    } -> tensor<" << extent << "x7xf16>\n"
+           << "    return %result : tensor<" << extent << "x7xf16>\n"
+           << "  }\n}\n";
+    auto module = parse(withTopology(stream.str(), 4, 4));
+    ASSERT_TRUE(module);
+    const std::string before = print(module->getOperation());
+    std::string failureReason;
+    auto built = build(*module, failureReason);
+    ASSERT_TRUE(built) << failureReason;
+
+    const SpatialRootDomainFacts root =
+        built->domain.getProblem().getRoots().front();
+    EXPECT_FALSE(root.partitionableParallelIterators.any())
+        << "a non-projected result map must not authorize a parallel split";
+    EXPECT_FALSE(root.partitionableReductionIterators.any());
+
+    SpatialPlan plan = built->domain.getFirstPlan();
+    ASSERT_TRUE(built->domain.contains(plan));
+    ASSERT_EQ(plan.nodes.size(), 1u);
+    EXPECT_EQ(plan.nodes.front().embedding.size(), 1u);
+    for (const IteratorPartition &axis : plan.nodes.front().axes)
+      EXPECT_EQ(axis.parameter, 1);
+
+    auto assignment = built->domain.close(plan, &failureReason);
+    ASSERT_TRUE(mlir::succeeded(assignment)) << failureReason;
+    ASSERT_EQ(assignment->nodes.front().shards.size(), 1u);
+    expectExactShardCoverage(assignment->nodes.front(), root.iteratorExtents);
+
+    SpatialDomainEvaluation evaluation =
+        built->domain.evaluate(built->dag, plan);
+    ASSERT_TRUE(evaluation.isSatisfied());
+    EXPECT_NE(analysis::getExactDemandProof(*evaluation.demand), nullptr);
+    EXPECT_EQ(print(module->getOperation()), before);
+  }
+}
+
 } // namespace

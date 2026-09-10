@@ -2126,4 +2126,72 @@ module {
       mlir::failed(wafer::verifyTileRegionStorageBoundaries(*structural)));
 }
 
+TEST(SpatialRegionMaterializationTest,
+     MaterializesNonProjectedResultMapAsOneUnpartitionedRegion) {
+  // A result indexing map that is not a projected permutation keeps the root in
+  // the spatial domain as one unpartitioned cell, so its Tile IR must come out
+  // of the ordinary materialization path: one TileRegion on one Tile and no
+  // cross-Tile boundary relation. The pairs cover 1024 and the non-divisible
+  // 1025.
+  for (int64_t extent : {1024, 1025}) {
+    SCOPED_TRACE(extent);
+    std::unique_ptr<mlir::MLIRContext> context = createContext();
+    std::string sourceText;
+    llvm::raw_string_ostream stream(sourceText);
+    stream << R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical {axes = ["card"], shape = array<i64: 1>}
+  func.func @map(%input: tensor<2x)mlir"
+           << extent << R"mlir(x4x4xf16>, %init: tensor<2x)mlir"
+           << extent << R"mlir(x7xf16>) -> tensor<2x)mlir"
+           << extent << R"mlir(x7xf16> {
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(b, m, n, k) -> (b, m, n, k)>,
+                         affine_map<(b, m, n, k) -> (b, m, n + k)>],
+        iterator_types = ["parallel", "parallel", "parallel", "parallel"]}
+        ins(%input : tensor<2x)mlir"
+           << extent << R"mlir(x4x4xf16>)
+        outs(%init : tensor<2x)mlir"
+           << extent << R"mlir(x7xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        %next = arith.addf %value, %old : f16
+        linalg.yield %next : f16
+    } -> tensor<2x)mlir"
+           << extent << R"mlir(x7xf16>
+    return %result : tensor<2x)mlir"
+           << extent << R"mlir(x7xf16>
+  }
+}
+)mlir";
+    auto source = mlir::parseSourceString<mlir::ModuleOp>(
+        sourceText, mlir::ParserConfig(context.get()));
+    ASSERT_TRUE(source);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
+    std::string before;
+    llvm::raw_string_ostream beforeStream(before);
+    source->print(beforeStream);
+    beforeStream.flush();
+
+    std::string failureReason;
+    auto materialized = materializeCanonical(*source, failureReason);
+    ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
+    EXPECT_EQ(
+        countOps<wafer::TileModuleOp>(materialized->module->getOperation()),
+        16u);
+    EXPECT_EQ(
+        countOps<wafer::TileRegionOp>(materialized->module->getOperation()),
+        1u);
+    EXPECT_TRUE(materialized->relations.boundaryRelations.empty());
+    EXPECT_EQ(materialized->relations.structuralOutputs.size(), 1u);
+    std::string after;
+    llvm::raw_string_ostream afterStream(after);
+    source->print(afterStream);
+    afterStream.flush();
+    EXPECT_EQ(after, before);
+  }
+}
+
 } // namespace

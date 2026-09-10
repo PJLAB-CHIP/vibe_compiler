@@ -935,6 +935,7 @@ buildSpatialDomainProblem(const StructuredDAGAnalysis &dag,
                      binding.key)};
     }
     bool firstResultMap = true;
+    bool projectedResultMaps = true;
     for (mlir::AffineMap map : resultMaps) {
       if (!map || map.getNumDims() != iteratorTypes.size() ||
           map.getNumSymbols() != 0)
@@ -945,11 +946,16 @@ buildSpatialDomainProblem(const StructuredDAGAnalysis &dag,
       llvm::SmallBitVector resultParallel(iteratorTypes.size(), false);
       for (mlir::AffineExpr expression : map.getResults()) {
         auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
-        if (!dimension || dimension.getPosition() >= iteratorTypes.size())
-          return {{},
-                  fail(SpatialDomainFailureKind::UnsupportedSemantics,
-                       "spatial domain requires projected result maps",
-                       binding.key)};
+        if (!dimension || dimension.getPosition() >= iteratorTypes.size()) {
+          // A non-projected result index cannot prove which result elements a
+          // parallel or reduction partition owns. Keep the root in the domain
+          // as one unpartitioned cell instead of failing the complete spatial
+          // domain: its typed indexing semantics stay exact and analyzable,
+          // and the unpartitioned point is an ordinary domain member.
+          projectedResultMaps = false;
+          resultParallel.reset();
+          break;
+        }
         if (iteratorTypes[dimension.getPosition()] ==
             mlir::utils::IteratorType::parallel) {
           resultParallel.set(dimension.getPosition());
@@ -991,6 +997,15 @@ buildSpatialDomainProblem(const StructuredDAGAnalysis &dag,
       facts.reductionResultGroupCount = 1;
       facts.resultParallelIteratorsByGroup = {
           facts.partitionableParallelIterators};
+    }
+    if (!projectedResultMaps) {
+      // Every result index must be a projected dimension before any partition
+      // can own its elements exactly. Withholding reduction partitioning too
+      // keeps this root at the single unpartitioned cell rather than inventing
+      // contribution groups it cannot justify.
+      facts.partitionableParallelIterators.reset();
+      facts.partitionableReductionIterators.reset();
+      facts.reductionResultGroupCount = 0;
     }
 
     NodeIterationSpace space;
