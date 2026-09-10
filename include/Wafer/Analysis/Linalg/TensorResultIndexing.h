@@ -7,6 +7,7 @@
 #include "Wafer/IR/WaferInterfaces.h"
 
 #include "mlir/IR/Value.h"
+#include "mlir/Support/LogicalResult.h"
 
 #include "llvm/ADT/SmallVector.h"
 
@@ -56,6 +57,23 @@ struct TensorResultIndexingResult {
 /// materialize or predict tiles, buffers, movement, or storage.
 TensorResultIndexingResult deriveTensorResultIndexing(
     mlir::OpResult result,
+    const IndexRelationLimits &limits = IndexRelationLimits());
+
+/// Current structured-compute access maps. These adapters expose dialect
+/// semantics only; no fusion, tiling, or placement decisions belong here.
+mlir::FailureOr<mlir::AffineMap>
+getStructuredOperandMap(mlir::OpOperand &operand);
+mlir::FailureOr<mlir::AffineMap> getStructuredResultMap(mlir::OpResult result);
+
+IndexRelationResult deriveIterationOperandRelation(
+    mlir::OpOperand &operand, llvm::ArrayRef<int64_t> iterationShape,
+    const IndexRelationLimits &limits = IndexRelationLimits());
+
+/// Follow an actual unary transparent support chain from an operand to the
+/// specified producer result. Multi-source updates are not transparent views.
+IndexRelationResult deriveIterationProducerRelation(
+    mlir::OpOperand &operand, llvm::ArrayRef<int64_t> iterationShape,
+    mlir::OpResult producer,
     const IndexRelationLimits &limits = IndexRelationLimits());
 
 } // namespace wafer::analysis

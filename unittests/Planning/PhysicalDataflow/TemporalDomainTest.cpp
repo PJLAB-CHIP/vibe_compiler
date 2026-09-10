@@ -478,10 +478,13 @@ TEST(TemporalDomainTest,
   TemporalDomainResult domain = buildTemporalDomain(region);
   ASSERT_TRUE(domain.succeeded());
   EXPECT_EQ(domain.domain->getScopeDescriptors().size(), 1u);
-  ASSERT_EQ(domain.domain->getBroadcastFusions().size(), 1u);
-  EXPECT_EQ(
-      domain.domain->getBroadcastFusions().front().invariantConsumerDimensions,
-      (llvm::SmallVector<uint32_t, 2>{3}));
+  ASSERT_EQ(domain.domain->getOperandFusions().size(), 1u);
+  auto first = *domain.domain->getFirstChoice().getChoice();
+  auto demand = queryTemporalOperandTile(
+      domain.domain->getOperandFusions().front(), first.scopes.front());
+  ASSERT_TRUE(demand.isExact()) << demand.reason;
+  EXPECT_EQ(demand.image->invariantDimensions,
+            (llvm::SmallVector<uint32_t, 4>{3}));
   EXPECT_EQ(
       domain.domain->getScopeDescriptors(TemporalTraversalKind::Independent)
           .size(),
@@ -552,7 +555,7 @@ TEST(TemporalDomainTest,
     TemporalDomainResult domain = buildTemporalDomain(region);
     ASSERT_TRUE(domain.succeeded())
         << (domain.failure ? domain.failure->detail : "");
-    ASSERT_EQ(domain.domain->getWindowFusions().size(), 1u);
+    ASSERT_EQ(domain.domain->getOperandFusions().size(), 1u);
     ASSERT_EQ(domain.domain->getScopeDescriptors().size(), 1u);
     TemporalChoice joint = *domain.domain->getFirstChoice().getChoice();
     ASSERT_EQ(joint.scopes.size(), 1u);
@@ -751,6 +754,58 @@ TEST(TemporalDomainTest, DynamicTensorInterfaceDoesNotMaterializeADomainQuery) {
   auto domain = buildTemporalDomain(region);
   ASSERT_TRUE(domain.succeeded());
   EXPECT_TRUE(domain.domain->getScopeDescriptors().empty());
+  EXPECT_EQ(region.getBody().front().getOperations().size(), before);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+}
+
+TEST(TemporalDomainTest, ExactRelationDoesNotAuthorizeUnsupportedTilingBounds) {
+  auto context = createContext();
+  auto module = parse(*context, R"mlir(
+    %pe = tensor.empty() : tensor<2x1031x16xf16>
+    %producer = linalg.generic {
+      indexing_maps = [affine_map<(b,m,n)->(b,m,n)>, affine_map<(b,m,n)->(b,m,n)>],
+      iterator_types = ["parallel","parallel","parallel"]}
+      ins(%arg : tensor<2x1031x16xf16>) outs(%pe : tensor<2x1031x16xf16>) {
+      ^bb0(%x: f16, %old: f16):
+        %p = arith.addf %x, %x : f16
+        linalg.yield %p : f16
+    } -> tensor<2x1031x16xf16>
+    %ce = tensor.empty() : tensor<2x1031x16xf16>
+    %value = linalg.generic {
+      indexing_maps = [affine_map<(b,m,n)->(b,1030-m,n)>, affine_map<(b,m,n)->(b,m,n)>],
+      iterator_types = ["parallel","parallel","parallel"]}
+      ins(%producer : tensor<2x1031x16xf16>) outs(%ce : tensor<2x1031x16xf16>) {
+      ^bb0(%x: f16, %old: f16):
+        %p = arith.addf %x, %x : f16
+        linalg.yield %p : f16
+    } -> tensor<2x1031x16xf16>
+  )mlir",
+                      "tensor<2x1031x16xf16>", "tensor<2x1031x16xf16>");
+  ASSERT_TRUE(module);
+  TileRegionOp region;
+  module->walk([&](TileRegionOp op) { region = op; });
+  auto before = region.getBody().front().getOperations().size();
+  auto domain = buildTemporalDomain(region);
+  ASSERT_TRUE(domain.succeeded());
+  ASSERT_EQ(domain.domain->getOperandFusions().size(), 1u);
+  auto choice = *domain.domain->getFirstChoice().getChoice();
+  ASSERT_EQ(choice.scopes.size(), 1u);
+  choice.scopes.front().iteratorTileSizes = {2, 128, 16};
+  choice.scopes.front().loopOrder = {1};
+  auto fusions = domain.domain->getOperandFusions();
+  const auto &fusion = fusions.front();
+  auto exact = fusion.iterationToProducer.getRectangularTileImage(
+      context.get(), fusion.iterationShape, {2, 1031, 16}, {2, 128, 16});
+  ASSERT_TRUE(exact.isExact()) << exact.reason;
+  EXPECT_TRUE(exact.image->distinctTilesDisjoint);
+  auto generated = queryTemporalOperandTile(fusion, choice.scopes.front());
+  EXPECT_EQ(generated.status, analysis::IndexRelationStatus::Unsupported);
+  EXPECT_NE(generated.reason.find("tiling interface"), std::string::npos);
+  EXPECT_FALSE(domain.domain->contains(choice));
+  EXPECT_EQ(
+      domain.domain->getScopeDescriptors(TemporalTraversalKind::Independent)
+          .size(),
+      2u);
   EXPECT_EQ(region.getBody().front().getOperations().size(), before);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
 }

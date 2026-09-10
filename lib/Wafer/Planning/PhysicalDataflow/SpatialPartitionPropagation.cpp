@@ -46,20 +46,9 @@ getConsumerToProducer(mlir::linalg::LinalgOp consumer, unsigned operand,
   if (!type || !type.hasStaticShape() || !outputType ||
       !outputType.hasStaticShape())
     return std::nullopt;
-  auto relation = analysis::IndexRelation::fromAffineMap(
-      consumer.getMatchingIndexingMap(&consumer->getOpOperand(operand)),
-      consumerFacts.iteratorExtents, type.getShape(), limits);
-  while (relation.isExact() && value != output) {
-    auto intermediate = mlir::dyn_cast<mlir::OpResult>(value);
-    if (!intermediate)
-      return std::nullopt;
-    auto transfer = analysis::deriveTensorResultIndexing(intermediate, limits);
-    if (!transfer.isExact() || transfer.indexing->operands.size() != 1)
-      return std::nullopt;
-    const auto &source = transfer.indexing->operands.front();
-    relation = relation.get()->compose(source.resultToOperand, limits);
-    value = intermediate.getOwner()->getOperand(source.operand);
-  }
+  auto relation = analysis::deriveIterationProducerRelation(
+      consumer->getOpOperand(operand), consumerFacts.iteratorExtents, output,
+      limits);
   if (!relation.isExact())
     return std::nullopt;
   auto iteration = analysis::IndexRelation::fromAffineMap(

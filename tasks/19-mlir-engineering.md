@@ -226,6 +226,10 @@ operation-specific reshape/slice规则，也不把operation/value handle缓存�
 只读relation/interface preflight无法证明requested tile可表示时保持独立producer；已经签发exact-derived并开始rewrite后，pinned mechanics失败是
 candidate compiler failure，销毁该transaction，不以bounding box、完整producer fallback或后端容量推测补写IR。
 
+Structured operand/result map的dialect adapter及沿SSA组合到producer的逻辑关系也由同一Analysis/Linalg入口提供。
+Selected tile的数学image、不变性和互斥查询不拥有循环或storage；temporal决定是否共享并调用TilingInterface物化。
+Relation exact与generator可表达性分别检查，不能将窗口/广播的map算术再复制到各条融合路径。
+
 Logical e-graph对ordinary pure connected component使用ordered multi-root request，不在MLIR中创建tuple/super-root op。Importer对同一current
 SSA只建立一个e-node；Rust对多个runner roots使用同一e-class选择，并把结果deterministic hash-cons为共享DAG。C++先验证全部root
 replacement及unique computeId/semantic facts，再按一个transaction物化每个unique node一次并原子替换全部roots。任一root失败擦除本轮全部

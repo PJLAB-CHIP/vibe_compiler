@@ -14,6 +14,7 @@
 #include "gtest/gtest.h"
 
 #include <limits>
+#include <set>
 
 namespace {
 
@@ -654,6 +655,161 @@ TEST(IndexRelationTest, DoesNotReplaceExactStridedDemandWithBoundingBox) {
   EXPECT_EQ(rectangle.status, IndexRelationStatus::Unsupported);
   EXPECT_NE(rectangle.reason.find("not one dense static rectangle"),
             std::string::npos);
+}
+
+TEST(IndexRelationTest, RectangularTileFamilyCombinesWindowsAndInvariantAxes) {
+  mlir::MLIRContext context;
+  auto b = mlir::getAffineDimExpr(0, &context);
+  auto m = mlir::getAffineDimExpr(1, &context);
+  auto k = mlir::getAffineDimExpr(2, &context);
+  auto c = mlir::getAffineDimExpr(4, &context);
+  auto map = mlir::AffineMap::get(5, 0, {b, m * 3 + k, c}, &context);
+  for (int64_t extent : {1024, 1025, 1031}) {
+    llvm::SmallVector<int64_t> domain{2, extent, 3, 17, 129};
+    llvm::SmallVector<int64_t> source{2, 3 * extent, 129};
+    auto relation = IndexRelation::fromAffineMap(map, domain, source);
+    ASSERT_TRUE(relation.isExact());
+    auto image = relation.get()->getRectangularTileImage(
+        &context, domain, source, {1, 128, 3, 4, 64});
+    ASSERT_TRUE(image.isExact()) << image.reason;
+    EXPECT_EQ(image.image->invariantDimensions,
+              (llvm::SmallVector<uint32_t, 4>{3}));
+    EXPECT_TRUE(image.image->distinctTilesDisjoint);
+    EXPECT_EQ(image.image->checkedTileClasses, extent == 1024 ? 4u : 8u);
+    auto tail = relation.get()->getExactStaticRectangularImage(
+        {1, 1024 - (extent == 1024 ? 128 : 0), 0, 16, 128},
+        {1, extent == 1024 ? 128 : extent - 1024, 3, 1, 1});
+    ASSERT_TRUE(tail.isExact()) << tail.reason;
+    EXPECT_EQ(tail.domain->sizes[1],
+              3 * (extent == 1024 ? 128 : extent - 1024));
+  }
+}
+
+TEST(IndexRelationTest,
+     TileFamilyDistinguishesOverlapHolesAndRestrictedDomain) {
+  mlir::MLIRContext context;
+  auto b = mlir::getAffineDimExpr(0, &context);
+  auto m = mlir::getAffineDimExpr(1, &context);
+  auto k = mlir::getAffineDimExpr(2, &context);
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto window = IndexRelation::fromAffineMap(
+        mlir::AffineMap::get(3, 0, {b, m + k}, &context), {2, extent, 3},
+        {2, extent + 2});
+    ASSERT_TRUE(window.isExact());
+    auto overlap = window.get()->getRectangularTileImage(
+        &context, {2, extent, 3}, {2, extent + 2}, {1, 128, 3});
+    ASSERT_TRUE(overlap.isExact()) << overlap.reason;
+    EXPECT_FALSE(overlap.image->distinctTilesDisjoint);
+
+    auto stride = IndexRelation::fromAffineMap(
+        mlir::AffineMap::get(3, 0, {b, m * 2, k}, &context), {2, extent, 3},
+        {2, 2 * extent, 3});
+    ASSERT_TRUE(stride.isExact());
+    auto holes = stride.get()->getRectangularTileImage(
+        &context, {2, extent, 3}, {2, 2 * extent, 3}, {1, 128, 3});
+    EXPECT_EQ(holes.status, IndexRelationStatus::Unsupported);
+    auto points = stride.get()->getRectangularTileImage(
+        &context, {2, extent, 3}, {2, 2 * extent, 3}, {1, 1, 3});
+    ASSERT_TRUE(points.isExact()) << points.reason;
+    EXPECT_TRUE(points.image->distinctTilesDisjoint);
+
+    auto domain = IndexRelation::staticDomain({2, extent - 1, 3});
+    auto restricted = stride.get()->intersectDestinationDomain(*domain.set);
+    ASSERT_TRUE(restricted.isExact());
+    auto partial = restricted.get()->getRectangularTileImage(
+        &context, {2, extent, 3}, {2, 2 * extent, 3}, {1, 1, 3});
+    EXPECT_EQ(partial.status, IndexRelationStatus::Unsupported);
+  }
+}
+
+TEST(IndexRelationTest, TileFamilyWorkDependsOnTailClassesNotTileCount) {
+  mlir::MLIRContext context;
+  for (int64_t extent : {1024, 1025, 1031, 1048576, 1048577}) {
+    auto identity = IndexRelation::identity({2, extent, 129});
+    auto image = identity.get()->getRectangularTileImage(
+        &context, {2, extent, 129}, {2, extent, 129}, {1, 128, 64});
+    ASSERT_TRUE(image.isExact()) << image.reason;
+    EXPECT_EQ(image.image->checkedTileClasses, extent % 128 ? 4u : 2u);
+    IndexRelationLimits limits;
+    limits.maxRectangularPieces = 1;
+    auto exhausted = identity.get()->getRectangularTileImage(
+        &context, {2, extent, 129}, {2, extent, 129}, {1, 128, 64}, limits);
+    EXPECT_EQ(exhausted.status, IndexRelationStatus::ResourceExhausted);
+  }
+}
+
+TEST(IndexRelationTest, ParametricTileBoundsMatchBoundedEnumerationOracle) {
+  // Tiny domains bound the exhaustive oracle. The same window mechanism has
+  // rank-five 1024/1025/1031 coverage above and actual temporal/SPM witnesses.
+  mlir::MLIRContext context;
+  auto b = mlir::getAffineDimExpr(0, &context);
+  auto m = mlir::getAffineDimExpr(1, &context);
+  auto k = mlir::getAffineDimExpr(2, &context);
+  for (bool reversed : {false, true}) {
+    auto coordinate = reversed ? 26 - (m * 3 + k) : m * 3 + k;
+    auto relation = IndexRelation::fromAffineMap(
+        mlir::AffineMap::get(4, 0, {b, coordinate}, &context), {2, 9, 3, 5},
+        {2, 27});
+    auto image = relation.get()->getRectangularTileImage(&context, {2, 9, 3, 5},
+                                                         {2, 27}, {1, 4, 3, 2});
+    ASSERT_TRUE(image.isExact()) << image.reason;
+    EXPECT_TRUE(image.image->distinctTilesDisjoint);
+    auto evaluate = [&](mlir::AffineMap map, llvm::ArrayRef<int64_t> values) {
+      llvm::SmallVector<mlir::Attribute> arguments, folded;
+      for (int64_t value : values)
+        arguments.push_back(
+            mlir::IntegerAttr::get(mlir::IndexType::get(&context), value));
+      EXPECT_TRUE(mlir::succeeded(map.constantFold(arguments, folded)));
+      llvm::SmallVector<int64_t> result;
+      for (auto attr : folded)
+        result.push_back(mlir::cast<mlir::IntegerAttr>(attr).getInt());
+      return result;
+    };
+    std::set<std::pair<int64_t, int64_t>> all;
+    for (int64_t batch = 0; batch < 2; ++batch)
+      for (int64_t start = 0; start < 9; start += 4) {
+        int64_t length = std::min<int64_t>(4, 9 - start);
+        std::set<std::pair<int64_t, int64_t>> expected;
+        for (int64_t row = start; row < start + length; ++row)
+          for (int64_t kernel = 0; kernel < 3; ++kernel)
+            expected.emplace(batch, reversed ? 26 - (3 * row + kernel)
+                                             : 3 * row + kernel);
+        for (int64_t channel = 0; channel < 5; channel += 2) {
+          int64_t channels = std::min<int64_t>(2, 5 - channel);
+          auto lower =
+              evaluate(image.image->offsetMap,
+                       {batch, start, 0, channel, 1, length, 3, channels});
+          auto sizes = evaluate(image.image->sizeMap, {1, length, 3, channels});
+          std::set<std::pair<int64_t, int64_t>> actual;
+          for (int64_t i = lower[0]; i < lower[0] + sizes[0]; ++i)
+            for (int64_t j = lower[1]; j < lower[1] + sizes[1]; ++j)
+              actual.emplace(i, j);
+          EXPECT_EQ(actual, expected);
+        }
+        for (auto point : expected)
+          EXPECT_TRUE(all.insert(point).second);
+      }
+    EXPECT_EQ(all.size(), 54u);
+  }
+}
+
+TEST(IndexRelationTest, CoupledCoordinatesUseGenericTileDisjointnessProof) {
+  mlir::MLIRContext context;
+  auto b = mlir::getAffineDimExpr(0, &context);
+  auto m = mlir::getAffineDimExpr(1, &context);
+  auto n = mlir::getAffineDimExpr(2, &context);
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto relation = IndexRelation::fromAffineMap(
+        mlir::AffineMap::get(3, 0, {b, m + n, m - n + 2}, &context),
+        {2, extent, 3}, {2, extent + 2, extent + 2});
+    auto points = relation.get()->getRectangularTileImage(
+        &context, {2, extent, 3}, {2, extent + 2, extent + 2}, {1, 1, 1});
+    ASSERT_TRUE(points.isExact()) << points.reason;
+    EXPECT_TRUE(points.image->distinctTilesDisjoint);
+    auto diagonal = relation.get()->getRectangularTileImage(
+        &context, {2, extent, 3}, {2, extent + 2, extent + 2}, {1, 128, 3});
+    EXPECT_EQ(diagonal.status, IndexRelationStatus::Unsupported);
+  }
 }
 
 TEST(IndexRelationTest, ProjectedRectangleFastPathRejectsOutOfBoundsDomain) {

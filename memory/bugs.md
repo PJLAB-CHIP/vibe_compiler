@@ -1852,3 +1852,15 @@
 - 定位：先确认PyTorch实际backend与pinned实现。Slow2d的低精度no-transpose GEMM是四路F32 partial sums，余项进入第0路，最后合并再加bias；某个bias-seeded试算命中expected不能证明它就是reference算法。
 - 修复：在已有Tile convolution数值边界物化明确顺序的actual mul/add和可复用scratch，保留上层结构，由同一SPM/completion路径验证。前端逐项展开会放大规划输入，不应为此扩大全局编译预算。
 - 防复发：原module、seed、oracle与容差不变；检查整个组合输出、K余项和partial合并，而不只看独立卷积是否在容差内。此方法的适用范围需明确dtype/geometry与reference后端，不外推全域逐bit等价。
+
+## 索引组合应保留构造证明和全部中间边界
+
+- 根因：slice/reshape链组合后丢失injectivity/functionality构造证明，每个consumer反复执行Presburger自组合；未消去的整数等式local又使可恢复的affine访问被判为不可表示。
+- 修复模式：在IndexRelation内传播这些数学性质；symbol-free组合使用pinned `mergeAndCompose`消去整数等式local，仍保留中间shape约束。该API要求启用identifier存储，无symbol时使用空identifier，不引入operation身份。
+- 防复发：同时覆盖中间边界裁剪、domain restriction、unit view链、shared uses和真实规模main/tail。恢复表达式后仍须验证完整domain，不能以表达式相同代替约束相同。
+
+## 精确tile需求与局部reshape生成需要分别闭合
+
+- 根因：IndexRelation能表达的访问不一定符合pinned tiler的slice构造约定；主块/尾块中暂时动态的unit reshape，在source经类型收紧变静态后也可能留下不满足verifier的动态result。
+- 修复模式：将generator实际offset/size约定与精确需求bounds比较；按actual source shape和reassociation同步收紧局部Expand/Collapse。只增删unit轴时可在canonical loop内保留bounded动态size，一般dynamic输入仍不支持。
+- 防复发：named/generic window加通道复用、直接/经unit view、1024/1025/1031均检查动态执行覆盖并推进Instr/SPM；负向关系的分析成功与当前generator拒绝分别断言。

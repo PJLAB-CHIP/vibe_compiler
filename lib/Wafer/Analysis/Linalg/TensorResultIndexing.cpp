@@ -1,7 +1,9 @@
 //===- TensorResultIndexing.cpp - Static tensor support relations -------===//
 
 #include "Wafer/Analysis/Linalg/TensorResultIndexing.h"
+#include "Wafer/IR/WaferDialect.h"
 
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
@@ -29,6 +31,75 @@ fromRelationFailure(const IndexRelationResult &result) {
 }
 
 } // namespace
+
+mlir::FailureOr<mlir::AffineMap>
+getStructuredOperandMap(mlir::OpOperand &operand) {
+  if (auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(operand.getOwner()))
+    return linalg.getMatchingIndexingMap(&operand);
+  if (auto online =
+          mlir::dyn_cast<LinalgExtOnlineAttentionOp>(operand.getOwner())) {
+    auto maps = online.getIndexingMapsArray();
+    if (operand.getOperandNumber() < maps.size())
+      return maps[operand.getOperandNumber()];
+  }
+  return mlir::failure();
+}
+
+mlir::FailureOr<mlir::AffineMap> getStructuredResultMap(mlir::OpResult result) {
+  if (!result)
+    return mlir::failure();
+  auto dps =
+      mlir::dyn_cast<mlir::DestinationStyleOpInterface>(result.getOwner());
+  if (!dps || result.getResultNumber() >= dps.getNumDpsInits())
+    return mlir::failure();
+  return getStructuredOperandMap(
+      *dps.getDpsInitOperand(result.getResultNumber()));
+}
+
+IndexRelationResult
+deriveIterationOperandRelation(mlir::OpOperand &operand,
+                               llvm::ArrayRef<int64_t> iterationShape,
+                               const IndexRelationLimits &limits) {
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(operand.get().getType());
+  auto map = getStructuredOperandMap(operand);
+  if (!type || !type.hasStaticShape() || mlir::failed(map))
+    return {IndexRelationStatus::Unsupported, std::nullopt,
+            "operand has no static structured indexing contract"};
+  return IndexRelation::fromAffineMap(*map, iterationShape, type.getShape(),
+                                      limits);
+}
+
+IndexRelationResult deriveIterationProducerRelation(
+    mlir::OpOperand &operand, llvm::ArrayRef<int64_t> iterationShape,
+    mlir::OpResult producer, const IndexRelationLimits &limits) {
+  auto relation =
+      deriveIterationOperandRelation(operand, iterationShape, limits);
+  mlir::Value value = operand.get();
+  while (relation.isExact() && value != producer) {
+    auto result = mlir::dyn_cast<mlir::OpResult>(value);
+    if (!result)
+      return {IndexRelationStatus::Unsupported, std::nullopt,
+              "operand path does not reach the current producer"};
+    auto step = deriveTensorResultIndexing(result, limits);
+    if (!step.isExact()) {
+      auto status = step.status == TensorResultIndexingStatus::ResourceExhausted
+                        ? IndexRelationStatus::ResourceExhausted
+                    : step.status == TensorResultIndexingStatus::BrokenContract
+                        ? IndexRelationStatus::Invalid
+                        : IndexRelationStatus::Unsupported;
+      return {status, std::nullopt, step.detail};
+    }
+    if (step.indexing->operands.size() != 1 ||
+        step.indexing->operands.front().role !=
+            TensorIndexingOperandRole::Source)
+      return {IndexRelationStatus::Unsupported, std::nullopt,
+              "operand path is not one transparent source relation"};
+    const auto &source = step.indexing->operands.front();
+    relation = relation.get()->compose(source.resultToOperand, limits);
+    value = result.getOwner()->getOperand(source.operand);
+  }
+  return relation;
+}
 
 TensorResultIndexingResult
 deriveTensorResultIndexing(mlir::OpResult result,

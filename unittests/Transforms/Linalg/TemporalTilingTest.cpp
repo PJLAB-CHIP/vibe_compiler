@@ -4,6 +4,7 @@
 #include "Wafer/Transforms/Linalg/OnlineAttentionDecomposition.h"
 #include "Wafer/Transforms/Linalg/OnlineAttentionMaterialization.h"
 
+#include "Wafer/Analysis/Linalg/TensorResultIndexing.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Driver/StandaloneTileModules/StandaloneTileModules.h"
@@ -1580,7 +1581,7 @@ TEST(TemporalTilingTest, BroadcastProducerIsOutsideEveryInvariantConsumerLoop) {
         mlir::StringAttr::get(context.get(), "broadcast-invariant")));
     TemporalDomainResult domain = buildTemporalDomain(region);
     ASSERT_TRUE(domain.succeeded());
-    ASSERT_EQ(domain.domain->getBroadcastFusions().size(), 1u);
+    ASSERT_EQ(domain.domain->getOperandFusions().size(), 1u);
     TemporalChoice choice = selectTileSizes(*domain.domain, {2, 4, 128, 64});
     StructuredMaterializationRelations relations;
     relations.structuralOutputs.push_back({0, region.getResult(0)});
@@ -1691,7 +1692,7 @@ TEST(TemporalTilingTest,
     TemporalDomainResult domain = buildTemporalDomain(region);
     ASSERT_TRUE(domain.succeeded())
         << (domain.failure ? domain.failure->detail : "");
-    ASSERT_EQ(domain.domain->getWindowFusions().size(), 1u);
+    ASSERT_EQ(domain.domain->getOperandFusions().size(), 1u);
     TemporalChoice choice = selectTileSizes(*domain.domain, {2, 128, 3, 64});
     StructuredMaterializationRelations relations;
     relations.structuralOutputs.push_back({0, region.getResult(0)});
@@ -1769,7 +1770,7 @@ TEST(TemporalTilingTest,
   TileRegionOp region = findRegion(*module);
   TemporalDomainResult domain = buildTemporalDomain(region);
   ASSERT_TRUE(domain.succeeded());
-  ASSERT_EQ(domain.domain->getWindowFusions().size(), 1u);
+  ASSERT_EQ(domain.domain->getOperandFusions().size(), 1u);
   TemporalChoice rejectedJoint = *domain.domain->getFirstChoice().getChoice();
   ASSERT_EQ(rejectedJoint.scopes.size(), 1u);
   rejectedJoint.scopes.front().iteratorTileSizes = {2, 128, 3, 129};
@@ -3078,6 +3079,145 @@ TEST(TemporalTilingTest,
   });
   EXPECT_EQ(reductions, 2u);
   expectTemporalSPM(std::move(module), relations);
+}
+
+TEST(TemporalTilingTest,
+     WindowAndChannelReuseShareTheSameRelationMaterializer) {
+  for (bool throughView : {false, true})
+    for (bool generic : {false, true})
+      for (int64_t extent : {1024, 1025, 1031}) {
+        SCOPED_TRACE(throughView);
+        SCOPED_TRACE(generic);
+        SCOPED_TRACE(extent);
+        auto context = createContext();
+        std::string length = std::to_string(extent);
+        std::string inputLength = std::to_string(3 * extent);
+        std::string input = "tensor<1x" + inputLength +
+                            (throughView ? "x16xf16>" : "x1x16xf16>");
+        std::string activation = "tensor<1x" + inputLength + "x1x16xf16>";
+        std::string output = "tensor<1x" + length + "x1x129xf16>";
+        std::string map = throughView ? "affine_map<(b,h,c)->(b,h,c)>"
+                                      : "affine_map<(b,h,w,c)->(b,h,w,c)>";
+        std::string body;
+        llvm::raw_string_ostream b(body);
+        b << "%pe = tensor.empty() : " << input
+          << "\n%producer = linalg.generic {indexing_maps = [" << map << ","
+          << map
+          << "], iterator_types = [\"parallel\",\"parallel\",\"parallel\""
+          << (throughView ? "" : ",\"parallel\"") << "]} ins(%arg : " << input
+          << ") outs(%pe : " << input
+          << ") { ^bb0(%x: f16, %old: f16): %p = arith.addf %x, %x : f16 "
+             "linalg.yield %p : f16 } -> "
+          << input << "\n";
+        if (throughView)
+          b << "%view = tensor.expand_shape %producer [[0], [1], [2, 3]] "
+               "output_shape [1, "
+            << inputLength << ", 1, 16] : " << input << " into " << activation
+            << "\n";
+        b << "%one = arith.constant 1.0 : f16\n"
+             "%zero = arith.constant 0.0 : f16\n"
+             "%ke = tensor.empty() : tensor<3x1x16x129xf16>\n"
+             "%kernel = linalg.fill ins(%one : f16) outs(%ke : "
+             "tensor<3x1x16x129xf16>) "
+             "-> tensor<3x1x16x129xf16>\n"
+             "%oe = tensor.empty() : "
+          << output
+          << "\n"
+             "%init = linalg.fill ins(%zero : f16) outs(%oe : "
+          << output << ") -> " << output << "\n";
+        if (generic)
+          b << "%value = linalg.generic {indexing_maps = ["
+               "affine_map<(n,h,w,o,kh,kw,c)->(n,h*3+kh,w+kw,c)>,"
+               "affine_map<(n,h,w,o,kh,kw,c)->(kh,kw,c,o)>,"
+               "affine_map<(n,h,w,o,kh,kw,c)->(n,h,w,o)>], iterator_types = "
+               "[\"parallel\",\"parallel\",\"parallel\",\"parallel\","
+               "\"reduction\",\"reduction\",\"reduction\"]} ins("
+            << (throughView ? "%view" : "%producer")
+            << ", %kernel : " << activation
+            << ", tensor<3x1x16x129xf16>) outs(%init : " << output
+            << ") { ^bb0(%x: f16, %w: f16, %old: f16): "
+               "%p = arith.mulf %x, %w : f16 %a = arith.addf %old, %p : f16 "
+               "linalg.yield %a : f16 } -> "
+            << output;
+        else
+          b << "%value = linalg.conv_2d_nhwc_hwcf {strides = dense<[3,1]> : "
+               "tensor<2xi64>, "
+               "dilations = dense<1> : tensor<2xi64>} ins("
+            << (throughView ? "%view" : "%producer")
+            << ", %kernel : " << activation
+            << ", tensor<3x1x16x129xf16>) outs(%init : " << output << ") -> "
+            << output;
+        auto module = parseModule(*context, b.str(), input, output);
+        ASSERT_TRUE(module);
+        auto region = findRegion(*module);
+        mlir::linalg::LinalgOp producer, consumer;
+        region.walk([&](mlir::linalg::LinalgOp op) {
+          if (op.getNumReductionLoops())
+            consumer = op;
+          else if (mlir::isa<mlir::linalg::GenericOp>(op))
+            producer = op;
+        });
+        ASSERT_TRUE(producer && consumer);
+        auto access = analysis::deriveIterationProducerRelation(
+            *consumer.getDpsInputOperand(0), consumer.getStaticLoopRanges(),
+            producer->getResult(0));
+        ASSERT_TRUE(access.isExact()) << access.reason;
+        auto image = access.get()->getRectangularTileImage(
+            context.get(), consumer.getStaticLoopRanges(),
+            mlir::cast<mlir::RankedTensorType>(producer->getResult(0).getType())
+                .getShape(),
+            {1, 128, 1, 64, 3, 1, 16});
+        ASSERT_TRUE(image.isExact()) << image.reason;
+        auto domain = buildTemporalDomain(region);
+        ASSERT_TRUE(domain.succeeded());
+        ASSERT_EQ(domain.domain->getOperandFusions().size(), 1u);
+        auto choice =
+            selectTileSizes(*domain.domain, {1, 128, 1, 64, 3, 1, 16});
+        auto badOrder = choice;
+        badOrder.scopes.front().loopOrder = {3, 1};
+        EXPECT_FALSE(domain.domain->contains(badOrder));
+        auto demand = queryTemporalOperandTile(
+            domain.domain->getOperandFusions().front(), choice.scopes.front());
+        ASSERT_TRUE(demand.isExact()) << demand.reason;
+        EXPECT_TRUE(demand.image->distinctTilesDisjoint);
+        EXPECT_TRUE(llvm::is_contained(demand.image->invariantDimensions, 3u));
+        StructuredMaterializationRelations relations;
+        relations.structuralOutputs.push_back({0, region.getResult(0)});
+        TemporalTilingFailure failure;
+        auto tiled =
+            applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        int64_t producerElements = 0, outputElements = 0;
+        module->walk([&](mlir::linalg::LinalgOp op) {
+          if (mlir::isa<mlir::linalg::FillOp>(op))
+            return;
+          auto type =
+              mlir::cast<mlir::RankedTensorType>(op->getResult(0).getType());
+          ASSERT_TRUE(type.hasStaticShape());
+          int64_t instances = 1;
+          for (auto *parent = op->getParentOp(); parent != region;
+               parent = parent->getParentOp())
+            if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(parent)) {
+              auto lo = mlir::getConstantIntValue(loop.getLowerBound());
+              auto hi = mlir::getConstantIntValue(loop.getUpperBound());
+              auto step = mlir::getConstantIntValue(loop.getStep());
+              ASSERT_TRUE(lo && hi && step);
+              instances *= (*hi - *lo + *step - 1) / *step;
+            }
+          if (op.getNumReductionLoops()) {
+            EXPECT_LE(type.getShape()[1], 128);
+            EXPECT_LE(type.getShape()[3], 64);
+            outputElements += instances * type.getNumElements();
+          } else {
+            EXPECT_LE(type.getShape()[1], 384);
+            producerElements += instances * type.getNumElements();
+          }
+        });
+        EXPECT_EQ(producerElements, 3 * extent * 16);
+        EXPECT_EQ(outputElements, extent * 129);
+        expectTemporalSPM(std::move(module), relations);
+      }
 }
 
 } // namespace

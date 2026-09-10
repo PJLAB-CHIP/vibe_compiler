@@ -229,3 +229,53 @@ Scalar 初始化覆盖 main/tail、非零值及共享 init；多结果共同循�
 - 上述 11 个 PyTorch source→package→strict no-card case 全部通过。真实设备、融合 LLaMA 的性能 A/B 和 decode 性能退化
   仍由本计划其余边界拥有，本轮不以主机结果代签。
 - 完整 diff、`git diff --check` 与 Wafer-owned Python cache 检查通过。
+
+## Temporal IndexRelation接入
+
+归属同一work item及06号设计。用户已授权实现统一需求分析；本次完成边界为host及fresh no-card，不运行真实设备。
+
+实施顺序：
+
+1. 在Analysis/Linalg补齐current access relation与有界tile-family查询，覆盖精确需求、不变坐标、互斥及失败分类。
+2. 将direct/view/shared的只读证明接入同一关系服务，保留独立域和自由归约参数。
+3. 统一broadcast/window的需求判定与局部物化，覆盖window叠加不变轴和view；清除迁移后的重复map算术。
+4. 运行关系oracle、domain、temporal及actual Instr/SPM覆盖，记录查询工作量、wall/RSS并检查编译工作不随tile数量展开。
+5. 完成canonical全量增量构建/no-op、fresh产品no-card、完整diff复审，更新结果并提交本项修改。
+
+| 输入等价类 | 整除/非整除与结构 | exact输出 | typed失败/保留 | 下游witness |
+| --- | --- | --- | --- | --- |
+| direct contraction/reduction/parallel | rank3+，1024/1025/1031，named/generic、轴置换、多归约轴 | 精确需求、完整reduction fiber、保留内部choice | 缺生成接口与unknown关系区分 | temporal及actual Instr/completion/SPM |
+| view/support链 | reshape、slice、组合、有限pieces | 组合关系与局部拼接一致，无多算bounding box | 非矩形且无法表示、超预算、越界 | 既有view产品路径与bufferization |
+| window + invariant axes | rank3/4，1024/1025/1031，window与channel复用、view组合 | 全grid需求精确，producer在首个不变循环外，每request一次 | halo overlap、需求有holes、非法order | actual主块/尾块、Instr/SPM |
+| shared producer | 多use、相同/不同需求、公共循环 | all-use relation一致及唯一producer occurrence | 未捕获use或不一致需求 | verified共同循环与actual下游 |
+| multi-result/state/init | coupled state、非零scalar init、main/tail | 整体更新，初始化和结果次数不变 | shared state轴、DPS读取、额外use | 既有online no-card及actual回归 |
+| 查询资源与生命周期 | 有界small oracle加真实规模；mutation/remap；大tile count | exact集合与oracle一致；无IR mutation；工作不按wave展开 | unsupported/resource/broken保持typed，不冒充capacity | none/search共用路径、真实allocation反馈 |
+
+当前检查点：统一关系分析及本轮host/fresh no-card资格已完成，未新增板端资格。
+
+实现与迁移：
+
+- `TensorResultIndexing`共用current structured operand/result map adapter与SSA到producer关系构造；Spatial partition propagation和temporal调用同一builder。
+- `IndexRelation::getRectangularTileImage`返回整个selected grid的精确bounds、不变坐标与互斥结论。主块/尾块由平移构造证明覆盖；
+  source/intermediate bounds逐约束检查，复杂坐标使用同一Presburger image及tile关系injectivity，不枚举wave。
+- Direct与view的producer parallel fiber、consumer需求唯一性改为关系查询；all-use以exact relation equality比较需求。
+  原broadcast/window schema、系数覆盖和相邻跨度判断由一个`TemporalOperandFusion`及共同materializer替代。
+- Pinned result-tile与consumer slice生成合同分别检查；精确负向映射的分析成功不会掩盖当前consumer tiler不支持的bounds。
+  原一般reshape有限pieces路径保留同一IndexRelation image/inverse分析，局部生成仍有明确表示边界。
+- 组合关系使用pinned整数等式消元，保留全部中间边界；injectivity/functionality构造证明随compose/inverse/restriction传播。
+  Unit view支持canonical loop内暂时动态的tile size，并在actual source变静态后同步refine reshape结果类型。
+
+本轮验证：
+
+- Analysis组件93项通过；新增5项tile-family测试包含有界枚举oracle、负向映射、耦合坐标、holes、overlap、受限domain和work limit。
+  1024/1025/1031与百万级长度的查询仅检查对应main/tail类型，checked class数保持2/4/8量级；5项focused查询合计wall约35 ms、peak RSS约10 MiB。
+- Temporal domain 14项、temporal transformation 34项通过。新增12组named/generic conv × direct/unit-view × 1024/1025/1031，
+  精确统计producer元素覆盖与输出覆盖，证明沿channel共享且反向loop order被拒绝，全部推进actual Instr/completion/SPM。
+  既有自由归约、shared/view、nonzero init、coupled state和halo overlap回归保持通过。
+- 3项slice/unit-view/shared-view focused回归合计wall约62 ms、peak RSS约36 MiB。接入中暴露的重复Presburger自组合已由构造证明消除；
+  此处是主机分析开销记录，不是设备性能A/B。
+- 不指定target的canonical完整增量构建通过，紧接着的第二次构建为Ninja no-op。
+- 完整`check-wafer`通过：277/277 lit、14个组件CTest、public link/RunBoardIO、numeric/target numeric及17个SystemC测试实际执行，无意外skip/unsupported。
+- 11个fresh PyTorch source→export/reference→compile/package→strict no-card通过：GEMM tail-1031 none，local reduce/local conv/prefill
+  tail-1031 none/search，以及conv-mixed-dag FP16/BF16 none/search。Runner清理各自work目录后重新export，未复用历史输入或package。
+- 完整diff、旧接口残留、`git diff --check`与Wafer-owned Python cache检查通过。Halo storage、显式重算和真实板端性能仍不由本次接入代签。

@@ -364,8 +364,9 @@ exact output main/tail及actual Instr/completion/SPM成功，产品4096×32-head
 
 Producer tile是否由consumer tile唯一决定，只能由一次transformation调用内的只读exact tile-relation query判断。该query只读取current
 producer/result、current consumer/operand、已经选定的自由tile参数、indexing map与`IndexRelation`/`ExactIndexSet`，不调用会修改IR的
-tiling builder，也不把offset、extent、operation或SSA保存到跨stage plan。只有证明为total single-valued relation时才能把producer参数
-作为派生量移出domain；存在多个合法取值时继续完整枚举，无法证明或当前接口不支持时保留独立producer traversal和Region candidate。
+tiling builder，也不把offset、extent、operation或SSA保存到跨stage plan。只有精确需求及其可物化表示已经确定时才能把对应producer参数
+作为派生量移出domain。这里的确定性指tile需求，不要求输出点到输入点的关系single-valued；归约的完整fiber是一对多关系，
+fiber内部仍保留自由切分参数。存在多个合法取值时继续完整枚举，无法证明或当前接口不支持时保留独立producer traversal和Region candidate。
 查询结果区分exact、unsupported、indeterminate和broken contract；unsupported/indeterminate只关闭本次fusion机会，不签发resource结论，
 broken contract终止该candidate。
 
@@ -427,15 +428,37 @@ loop外producer，joint choice只在all-use exact条件下把producer tile放入
 Tile-and-fuse后只运行有界local canonicalization、CSE和DCE清理本次新建的slice/view恒等式，不重新运行全图e-graph；
 pinned接口暂时不能表达的exact reshape或`tensor.insert_slice` window只保留窄的current-SSA adapter。
 
-Broadcast Joint不要求producer与consumer具有相同rank。对projected-permutation result/operand maps，query建立producer-result维度到consumer
-iterator的exact映射；consumer中未参与该operand的active轴是broadcast-only轴。只有全部producer-dependent active轴在selected loop order中
-构成prefix时，producer result tile才在该prefix之后、首个broadcast-only loop之前物化，并由内层consumer tiles直接共享。反向order或任一
-all-use映射不一致只关闭Joint，不改变Independent raw domain。
+#### IndexRelation需求与复用分析
 
-Window/conv Joint从selected consumer iteration rectangle和operand affine map计算exact operand rectangle。当前闭包只接受symbol-free、
-separable、非负线性表达式，且每个source coordinate的离散image经系数覆盖证明为连续区间。每个active consumer轴必须映射到唯一source
-coordinate，并满足相邻tile的物理offset shift不小于该coordinate demand span，证明不同iteration的producer demand互斥后才逐tile融合。
-Halo overlap时保持Independent，让完整current producer作为实际共享值；不引入预测halo buffer、rolling cache或隐式重算choice。
+- Upstream IR / input：同一current TileRegion内pure tensor SSA边、typed iterator/result/operand maps及support relation；已选静态tile size与loop order。
+- Current stage responsibility：由共享只读关系构造和tile需求查询证明exact image、需求不变性、跨tile互斥和all-use一致性；生成能力与SSA/state legality分别验证。
+- Output IR / files：查询只产生本次调用的数学关系与typed结论；apply通过既有TilingInterface/SCF生成actual tensor slices、局部compute及共同循环。
+- Downstream consumer：temporal choice/apply，随后为既有decomposition、layout/bufferization、Instr/completion与actual SPM gate。
+- User-level driver / named pipeline：none/search共用现有temporal入口。
+- Explicit non-goals：dynamic shape、隐式重算、rolling halo storage、数值重排、搜索预算和allocator策略；不另建fusion IR或跨epoch analysis cache。
+- Completion criteria：direct/view/shared及window与不变轴复用的组合消费同一需求分析；旧的融合专用系数/边界/重叠判断删除，生成端拒绝与关系失败可区分；真实规模main/tail推进actual下游。
+
+逻辑关系沿current SSA将consumer迭代域映射到producer结果，再由producer结果关系反推完整迭代fiber。
+Linalg maps与typed tensor-support description是输入语义；IndexRelation负责组合与证明，不从op名称选择融合规则。
+Selected tile family使用`x = q * B + r`和静态domain边界表达，B为本次已选常量，q为tile编号，r为tile内坐标。
+需求查询证明整个合法grid及main/tail，不逐element或wave枚举。简单关系使用库内构造证明；其它关系使用有界Presburger查询，
+超预算返回typed indeterminate，不以bounding box或只检查首块/尾块代替完整证明。
+
+Broadcast与window是需求的性质，不是互斥的op分类。改变某个active tile坐标而需求保持相同，则该轴可共享同一producer tile；
+只有全部需求相关active轴在selected order中构成prefix，且current SSA/effect/state允许，才把producer放在prefix之后、首个不变循环之前。
+移除已证明不变的tile坐标后，不同request必须互斥；all-use共享还要求公共遍历上的exact需求一致。
+Halo overlap仍保持Independent，让完整current producer作为实际共享值；不把需求重叠自动转成复制或新storage。
+
+Relation exact不代签TilingInterface支持。Pinned Linalg result-tile helper仍要求projected result map；consumer的实际slice构造采用
+`map(offsets)`与`map(sizes-1)+1`，temporal须确认它们与已证明的精确operand bounds一致。该限制属于局部计算生成合同，
+不能当作分析语言的限制，也不能仅删除入口检查后让已放行candidate在helper中失败。普通result tile、view重建和有限piece assembly
+复用同一producer materializer；复杂关系的生成能力按明确支持形式及其直接下游测试签发。
+仅增删unit轴的局部view可以携带canonical loop内暂时动态的bounded size；main/tail特化及Linalg type refinement后，
+从actual静态source shape与reassociation同步收紧Expand/Collapse result，避免静态source与动态reshape result不满足verifier合同。
+对照MLIR [structured tiling/fusion](https://mlir.llvm.org/docs/Tutorials/transform/Ch1/)与
+[slicing-based Affine fusion](https://mlir.llvm.org/docs/Passes/#-affine-loop-fusion-fuse-affine-loop-nests)：前者保留op tiling机制，
+后者将计算切片与重复计算选择区分。本项只收敛关系分析，保持原有显式replica与actual IR合同。
+具体API以pinned `TilingInterface.td`、`Linalg/Transforms/TilingInterfaceImpl.cpp`和Presburger relation实现/测试为准。
 
 Candidate transaction的owner只由controller建立一次：已有candidate-owned IR时本stage直接rewrite，不再clone TileModule owner；只有试行
 existing isolated owner上的alternative且caller仍需保留原IR时，controller才clone最近的`IsolatedFromAbove` scope。Standard tiling创建的

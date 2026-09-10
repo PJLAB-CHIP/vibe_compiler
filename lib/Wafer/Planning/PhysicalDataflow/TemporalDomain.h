@@ -180,24 +180,20 @@ struct TemporalJointProducerGroup {
   bool isViewTransparent() const { return consumerValue != producer; }
 };
 
-/// A direct producer whose result demand is invariant over one or more
-/// consumer iteration dimensions. Joint apply places the producer tile after
-/// every active mapped dimension and before the first active invariant loop.
-struct TemporalBroadcastFusion {
+/// One current operand demand, possibly through a transparent view chain.
+/// Window access and invariance are properties of the same relation. Its
+/// rectangular representation and disjointness are queried for each choice.
+struct TemporalOperandFusion {
   mlir::OpResult producer;
-  mlir::OpOperand *consumerOperand = nullptr;
-  mlir::AffineMap consumerOperandMap;
-  llvm::SmallVector<uint32_t, 2> invariantConsumerDimensions;
+  mlir::Value consumerValue;
+  mlir::OpOperand *consumerOperand;
+  analysis::IndexRelation iterationToProducer;
+  llvm::SmallVector<int64_t, 4> iterationShape;
 };
 
-/// A direct producer feeding a separable affine window operand. The selected
-/// joint choice must prove every dynamic producer request rectangle disjoint;
-/// overlapping choices remain independent.
-struct TemporalWindowFusion {
-  mlir::OpResult producer;
-  mlir::OpOperand *consumerOperand = nullptr;
-  mlir::AffineMap consumerOperandMap;
-};
+analysis::RectangularTileImageResult
+queryTemporalOperandTile(const TemporalOperandFusion &fusion,
+                         const TemporalScopeChoice &choice);
 
 enum class TemporalConcatQueryKind : uint8_t {
   Exact,
@@ -319,11 +315,8 @@ public:
   llvm::ArrayRef<TemporalJointProducerGroup> getJointProducerGroups() const {
     return jointProducerGroups;
   }
-  llvm::ArrayRef<TemporalBroadcastFusion> getBroadcastFusions() const {
-    return broadcastFusions;
-  }
-  llvm::ArrayRef<TemporalWindowFusion> getWindowFusions() const {
-    return windowFusions;
+  llvm::ArrayRef<TemporalOperandFusion> getOperandFusions() const {
+    return operandFusions;
   }
 
 private:
@@ -333,13 +326,11 @@ private:
                  std::vector<TemporalScopeDescriptor> jointScopes,
                  std::vector<TemporalScopeDescriptor> independentScopes,
                  std::vector<TemporalJointProducerGroup> jointProducerGroups,
-                 std::vector<TemporalBroadcastFusion> broadcastFusions,
-                 std::vector<TemporalWindowFusion> windowFusions)
+                 std::vector<TemporalOperandFusion> operandFusions)
       : region(region), jointScopes(std::move(jointScopes)),
         independentScopes(std::move(independentScopes)),
         jointProducerGroups(std::move(jointProducerGroups)),
-        broadcastFusions(std::move(broadcastFusions)),
-        windowFusions(std::move(windowFusions)) {}
+        operandFusions(std::move(operandFusions)) {}
 
   static TemporalScopeChoice
   getFirstScopeChoice(const TemporalScopeDescriptor &scope);
@@ -353,8 +344,7 @@ private:
   std::vector<TemporalScopeDescriptor> jointScopes;
   std::vector<TemporalScopeDescriptor> independentScopes;
   std::vector<TemporalJointProducerGroup> jointProducerGroups;
-  std::vector<TemporalBroadcastFusion> broadcastFusions;
-  std::vector<TemporalWindowFusion> windowFusions;
+  std::vector<TemporalOperandFusion> operandFusions;
 
   friend struct TemporalDomainResult;
   friend TemporalDomainResult buildTemporalDomain(TileRegionOp);
@@ -377,7 +367,6 @@ TemporalDomainResult buildTemporalDomain(TileRegionOp region);
 /// Read-only iteration-to-result map of a current structured tensor result.
 /// Dialect adapters expose semantics; transformation uses the same map
 /// contract.
-mlir::FailureOr<mlir::AffineMap> getTemporalResultMap(mlir::OpResult result);
 
 /// Remaps one immutable structural TemporalDomain onto a fresh clone of the
 /// same current TileRegion. This copies only query metadata and typed handles;

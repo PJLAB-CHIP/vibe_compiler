@@ -370,6 +370,7 @@ IndexRelationResult IndexRelation::identity(llvm::ArrayRef<int64_t> shape,
     return result;
   result.relation->functionalByConstruction = true;
   result.relation->canonicalRowMajorOrderByConstruction = true;
+  result.relation->injectiveByConstruction = true;
   result.relation->totalBoundedAffineMapByConstruction = true;
   llvm::SmallVector<int64_t, 4> pattern;
   pattern.reserve(shape.size());
@@ -719,6 +720,7 @@ IndexRelationResult IndexRelation::staticSlice(
       return fail(IndexRelationStatus::Invalid,
                   "static slice exceeds source domain");
   }
+  result.relation->injectiveByConstruction = true;
   return result;
 }
 
@@ -1215,8 +1217,42 @@ IndexRelation::compose(const IndexRelation &next,
     if (validMappings)
       composedMappings = std::move(mappings);
   }
-  PresburgerRelation composed = relation;
-  composed.compose(next.relation);
+  // mergeAndCompose substitutes integral local equalities while retaining
+  // every intermediate bound. Plain PresburgerRelation::compose leaves these
+  // locals existential, obscuring an otherwise affine view/access chain.
+  // Its direction is next.mergeAndCompose(this): A->B followed by B->C.
+  PresburgerRelation composed =
+      PresburgerRelation::getEmpty(PresburgerSpace::getRelationSpace(
+          getDestinationRank(), next.getSourceRank(),
+          relation.getNumSymbolVars()));
+  if (static_cast<uint64_t>(relation.getNumDisjuncts()) *
+          next.relation.getNumDisjuncts() >
+      limits.maxDisjuncts)
+    return fail(IndexRelationStatus::ResourceExhausted,
+                "composed index relation exceeds disjunct budget");
+  for (const IntegerRelation &before : relation.getAllDisjuncts())
+    for (const IntegerRelation &after : next.relation.getAllDisjuncts()) {
+      IntegerRelation joined = after;
+      if (before.getNumSymbolVars() == 0 && after.getNumSymbolVars() == 0) {
+        // The pinned API requires identifier storage even with no symbols to
+        // align. Empty identifiers carry no operation/value identity.
+        IntegerRelation input = before;
+        input.resetIds();
+        joined.resetIds();
+        joined.mergeAndCompose(input);
+        auto space = joined.getSpace();
+        space.disableIds();
+        joined.setSpace(space);
+      } else {
+        // Symbolic relations retain their existing positional symbol contract.
+        joined = before;
+        joined.compose(after);
+      }
+      if (exceedsDisjunctWorkLimits(joined, limits))
+        return fail(IndexRelationStatus::ResourceExhausted,
+                    "composed index relation exceeds constraint budget");
+      composed.unionInPlace(joined);
+    }
   if (exceedsRelationLimits(composed, limits))
     return fail(IndexRelationStatus::ResourceExhausted,
                 "composed index relation exceeds variable or disjunct budget");
@@ -1227,6 +1263,15 @@ IndexRelation::compose(const IndexRelation &next,
           : IndexRelationStatus::SoundBound;
   IndexRelationResult result{
       composedStatus, IndexRelation(std::move(composed), composedStatus), {}};
+  if (composedStatus == IndexRelationStatus::Exact) {
+    result.relation->functionalByConstruction =
+        functionalByConstruction && next.functionalByConstruction;
+    result.relation->injectiveByConstruction =
+        (injectiveByConstruction ||
+         hasCanonicalRowMajorReshapeConstruction()) &&
+        (next.injectiveByConstruction ||
+         next.hasCanonicalRowMajorReshapeConstruction());
+  }
   if (composedStatus == IndexRelationStatus::Exact && composedMappings) {
     result.relation->rowMajorRectangleMappings = std::move(composedMappings);
     result.relation->rectangleDestinationShape = rectangleDestinationShape;
@@ -1254,6 +1299,8 @@ IndexRelation::inverse(const IndexRelationLimits &limits) const {
                 "inverse index relation exceeds variable or disjunct budget");
   IndexRelationResult result{
       status, IndexRelation(std::move(inverted), status), {}};
+  result.relation->functionalByConstruction = injectiveByConstruction;
+  result.relation->injectiveByConstruction = functionalByConstruction;
   if (status == IndexRelationStatus::Exact &&
       canonicalRowMajorOrderByConstruction && rectangleDestinationShape &&
       rectangleSourceShape) {
@@ -1287,6 +1334,8 @@ IndexRelationResult IndexRelation::intersectDestinationDomain(
   // pattern bypass the intersection.
   IndexRelation restrictedRelation(std::move(restricted), status);
   restrictedRelation.functionalByConstruction = functionalByConstruction;
+  restrictedRelation.injectiveByConstruction =
+      injectiveByConstruction || hasCanonicalRowMajorReshapeConstruction();
   if ((projectedRectanglePattern || rowMajorRectangleMappings) &&
       rectangleDestinationShape && rectangleSourceShape) {
     StaticRectangularIndexSetResult rectangle = IndexSetResult{
@@ -1324,6 +1373,8 @@ IndexRelation::intersectSourceDomain(const PresburgerSet &domain,
   // projected-rectangle proof while preserving single-valuedness.
   IndexRelation restrictedRelation(std::move(restricted), status);
   restrictedRelation.functionalByConstruction = functionalByConstruction;
+  restrictedRelation.injectiveByConstruction =
+      injectiveByConstruction || hasCanonicalRowMajorReshapeConstruction();
   if ((projectedRectanglePattern || rowMajorRectangleMappings) &&
       rectangleDestinationShape && rectangleSourceShape) {
     StaticRectangularIndexSetResult rectangle = IndexSetResult{
@@ -1951,6 +2002,8 @@ IndexRelation::isInjective(const IndexRelationLimits &limits) const {
   if (status != IndexRelationStatus::Exact)
     return failQuery(IndexRelationStatus::SoundBound,
                      "injectivity requires an exact relation");
+  if (injectiveByConstruction || hasCanonicalRowMajorReshapeConstruction())
+    return {IndexRelationStatus::Exact, true, {}};
   if (projectedRectanglePattern && rectangleDestinationShape) {
     const llvm::SmallVector<int64_t, 4> &pattern = *projectedRectanglePattern;
     const llvm::SmallVector<int64_t, 4> &destinationShape =
@@ -2023,6 +2076,8 @@ IndexRelation::isEquivalentTo(const IndexRelation &other,
       other.status != IndexRelationStatus::Exact)
     return failQuery(IndexRelationStatus::SoundBound,
                      "equivalence requires exact relations");
+  if (relation.isObviouslyEqual(other.relation))
+    return {IndexRelationStatus::Exact, true, {}};
   if (projectedRectanglePattern && other.projectedRectanglePattern &&
       rectangleDestinationShape && other.rectangleDestinationShape &&
       rectangleSourceShape && other.rectangleSourceShape &&

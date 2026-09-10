@@ -40,6 +40,7 @@ struct IndexSetResult;
 struct IndexRelationQueryResult;
 struct StaticRectangularIndexSetResult;
 struct StaticRectangularIndexSetPiecesResult;
+struct RectangularTileImageResult;
 
 /// A transformation-local adapter over MLIR Presburger relations. Domain
 /// variables are destination logical indexes and range variables are source
@@ -182,6 +183,16 @@ public:
       llvm::ArrayRef<int64_t> destinationSizes,
       const IndexRelationLimits &limits = IndexRelationLimits()) const;
 
+  /// Prove the exact image of every tile in a static Cartesian grid, including
+  /// ragged tails. Offsets remain parametric; work is bounded by main/tail
+  /// classes, never by the number of tiles. A one-to-many tile demand is
+  /// expected. Unsupported means its rectangular representation is unavailable,
+  /// not that the relation itself is inexact.
+  RectangularTileImageResult getRectangularTileImage(
+      mlir::MLIRContext *context, llvm::ArrayRef<int64_t> destinationShape,
+      llvm::ArrayRef<int64_t> sourceShape, llvm::ArrayRef<int64_t> tileSizes,
+      const IndexRelationLimits &limits = IndexRelationLimits()) const;
+
   IndexSetResult
   preimage(const mlir::presburger::PresburgerSet &sourceDomain,
            const IndexRelationLimits &limits = IndexRelationLimits()) const;
@@ -237,6 +248,10 @@ private:
   /// functionality query returns proven-true without running the generic
   /// self-composition proof for such relations.
   bool functionalByConstruction = false;
+  /// Restricting a relation preserves injectivity; composing two injective
+  /// relations does too. This proof avoids rediscovering slice/reshape
+  /// uniqueness with Presburger self-composition at every consumer.
+  bool injectiveByConstruction = false;
   bool canonicalRowMajorOrderByConstruction = false;
   /// True only for an affine construction whose source bounds cannot clip
   /// any point in the complete destination box.
@@ -318,6 +333,28 @@ struct IndexRelationQueryResult {
 
   bool isProvenTrue() const {
     return status == IndexRelationStatus::Exact && value.value_or(false);
+  }
+};
+
+/// Mathematical bounds for a complete tile family, with no IR handles or
+/// storage/schedule facts. offsetMap takes destination offsets followed by
+/// bounded destination sizes; sizeMap takes only those sizes. The maps are
+/// usable only on the grid whose exactness was proved by the query.
+struct RectangularTileImage {
+  mlir::AffineMap offsetMap;
+  mlir::AffineMap sizeMap;
+  llvm::SmallVector<uint32_t, 4> invariantDimensions;
+  bool distinctTilesDisjoint = false;
+  uint64_t checkedTileClasses = 0;
+};
+
+struct RectangularTileImageResult {
+  IndexRelationStatus status = IndexRelationStatus::Invalid;
+  std::optional<RectangularTileImage> image;
+  std::string reason;
+
+  bool isExact() const {
+    return status == IndexRelationStatus::Exact && image.has_value();
   }
 };
 

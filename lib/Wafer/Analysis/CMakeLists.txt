@@ -2,6 +2,7 @@ add_mlir_library(WaferAnalysis
   Module/DirectCallGraphAnalysis.cpp
   Module/ExecutableCallClosure.cpp
   Linalg/IndexRelation.cpp
+  Linalg/IndexTileImage.cpp
   Linalg/SemanticRootAnalysis.cpp
   Linalg/StructuredDAGAnalysis.cpp
   Linalg/TensorResultIndexing.cpp
