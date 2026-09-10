@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="520" viewBox="0 0 1080 520" role="img" aria-labelledby="title desc">
+  <title id="title">从高层张量程序到单卡多 Tile 执行</title>
+  <desc id="desc">用户提供高层张量程序。Wafer Compiler 自动选择工作在不同 Tile 之间的空间划分，以及每个 Tile 内的时间分块与循环；两者与融合、布局和 DDR 或通信交换共同决定数据流。编译器生成设备指令和可执行包，供单卡多 Tile 执行。LLaMA block 已通过实卡数值对照。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="m1 1 7 4-7 4" fill="none" stroke="#31576b" stroke-width="2" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      text { font-family: "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; fill: #16364b; }
+      .title { font-size: 28px; font-weight: 700; }
+      .heading { font-size: 20px; font-weight: 700; }
+      .body { font-size: 16px; }
+      .small { font-size: 14px; fill: #526a7a; }
+      .flow { fill: none; stroke: #31576b; stroke-width: 2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1080" height="520" rx="16" fill="#fff"/>
+  <text x="28" y="44" class="title">用户描述计算，编译器完成映射</text>
+  <text x="28" y="75" class="body">不为每个输入手写 kernel，也不手工安排 Tile 间的数据交换</text>
+
+  <rect x="28" y="153" width="198" height="240" rx="14" fill="#f3f6fa" stroke="#c8d5e0"/>
+  <text x="46" y="187" class="heading">高层张量程序</text>
+  <text x="46" y="221" class="body">matmul / norm</text>
+  <text x="46" y="248" class="body">attention / MLP</text>
+  <path d="M46 268h162" stroke="#c8d5e0"/>
+  <text x="46" y="302" class="body">PyTorch / XLA</text>
+  <text x="46" y="330" class="body">↓ StableHLO</text>
+  <text x="46" y="370" class="small">计算与输入数据</text>
+  <path class="flow" d="M226 273h28"/>
+
+  <rect x="256" y="110" width="526" height="337" rx="16" fill="#fbfcfe" stroke="#b4c9d9"/>
+  <text x="278" y="145" class="heading">Wafer Compiler</text>
+  <rect x="278" y="166" width="230" height="161" rx="10" fill="#edf3ff" stroke="#b8caec"/>
+  <text x="294" y="196" class="heading">Spatial · 空间</text>
+  <text x="294" y="223" class="body">工作分给哪些 Tile？</text>
+  <g fill="#7ca5e8">
+    <rect x="294" y="242" width="38" height="28" rx="4"/>
+    <rect x="340" y="242" width="38" height="28" rx="4"/>
+    <rect x="386" y="242" width="38" height="28" rx="4"/>
+    <rect x="432" y="242" width="38" height="28" rx="4"/>
+  </g>
+  <text x="294" y="306" class="small">划分迭代域 · 分配计算</text>
+  <rect x="528" y="166" width="232" height="161" rx="10" fill="#edfaf5" stroke="#a4d2c0"/>
+  <text x="544" y="196" class="heading">Temporal · 时间</text>
+  <text x="544" y="223" class="body">每个 Tile 怎样分批做？</text>
+  <g fill="#73baa0">
+    <rect x="544" y="242" width="41" height="28" rx="4"/>
+    <rect x="593" y="242" width="41" height="28" rx="4"/>
+    <rect x="642" y="242" width="41" height="28" rx="4"/>
+    <rect x="691" y="242" width="28" height="28" rx="4" fill="#b0d9c9"/>
+  </g>
+  <text x="544" y="306" class="small">分块循环 · 数据复用 · 尾块</text>
+  <path d="M393 327v18h251v-18M519 345v13" fill="none" stroke="#8ba7b8" stroke-width="2"/>
+  <text x="519" y="383" text-anchor="middle" class="body">与 group / fusion、布局、存储共同选择</text>
+  <text x="519" y="411" text-anchor="middle" class="body">自动生成 DDR / 通信交换与设备指令</text>
+  <path class="flow" d="M782 273h28"/>
+
+  <rect x="812" y="153" width="240" height="240" rx="14" fill="#16364b"/>
+  <text x="832" y="187" class="heading" style="fill:#fff">可执行包 → 实卡</text>
+  <text x="832" y="221" class="body" style="fill:#e0eef6">单卡 · 多 Tile 协同执行</text>
+  <g fill="#7eb4cb">
+    <rect x="832" y="242" width="40" height="14" rx="3"/>
+    <rect x="882" y="242" width="40" height="14" rx="3"/>
+    <rect x="932" y="242" width="40" height="14" rx="3"/>
+    <rect x="982" y="242" width="40" height="14" rx="3"/>
+    <rect x="832" y="262" width="40" height="14" rx="3"/>
+    <rect x="882" y="262" width="40" height="14" rx="3"/>
+    <rect x="932" y="262" width="40" height="14" rx="3"/>
+    <rect x="982" y="262" width="40" height="14" rx="3"/>
+    <rect x="832" y="282" width="40" height="14" rx="3"/>
+    <rect x="882" y="282" width="40" height="14" rx="3"/>
+    <rect x="932" y="282" width="40" height="14" rx="3"/>
+    <rect x="982" y="282" width="40" height="14" rx="3"/>
+    <rect x="832" y="302" width="40" height="14" rx="3"/>
+    <rect x="882" y="302" width="40" height="14" rx="3"/>
+    <rect x="932" y="302" width="40" height="14" rx="3"/>
+    <rect x="982" y="302" width="40" height="14" rx="3"/>
+  </g>
+  <text x="832" y="338" class="body" style="fill:#fff">LLaMA block 数值通过</text>
+  <text x="832" y="369" class="small" style="fill:#c0d7e4">继续用 profile 改善性能</text>
+  <text x="28" y="489" class="body">人和 Agent 共同开发这套能力；之后的程序由编译器独立编译。</text>
+</svg>
