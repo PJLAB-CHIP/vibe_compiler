@@ -30,6 +30,23 @@ bool isSameSubview(mlir::Value lhs, mlir::Value rhs) {
          left.getMixedStrides() == right.getMixedStrides();
 }
 
+// Follow only exact SCF identity forwarding. A nested loop result can be
+// the same buffer as an outer iter_arg even though the SSA values differ.
+bool forwardsArgument(mlir::Value value, mlir::BlockArgument argument) {
+  if (value == argument)
+    return true;
+  auto result = mlir::dyn_cast<mlir::OpResult>(value);
+  auto loop = result ? mlir::dyn_cast<mlir::scf::ForOp>(result.getOwner())
+                     : mlir::scf::ForOp{};
+  if (!loop)
+    return false;
+  unsigned index = result.getResultNumber();
+  auto yield = mlir::cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
+  return forwardsArgument(yield.getOperand(index),
+                          loop.getRegionIterArg(index)) &&
+         forwardsArgument(loop.getInitArgs()[index], argument);
+}
+
 struct OutputWrites {
   mlir::memref::AllocOp allocation;
   llvm::SmallVector<mlir::Value, 16> aliases;
@@ -111,7 +128,7 @@ std::optional<OutputWrites> collectOutputWrites(StorageStoreOp terminal) {
         auto yield =
             mlir::cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
         mlir::BlockArgument iterArg = loop.getRegionIterArg(argument);
-        if (yield.getOperand(argument) != iterArg)
+        if (!forwardsArgument(yield.getOperand(argument), iterArg))
           return std::nullopt;
         append(iterArg);
         append(loop.getResult(argument));
@@ -119,7 +136,8 @@ std::optional<OutputWrites> collectOutputWrites(StorageStoreOp terminal) {
       }
       if (auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(user)) {
         auto loop = mlir::dyn_cast<mlir::scf::ForOp>(yield->getParentOp());
-        if (!loop || value != loop.getRegionIterArg(use.getOperandNumber()))
+        if (!loop || !forwardsArgument(
+                         value, loop.getRegionIterArg(use.getOperandNumber())))
           return std::nullopt;
         continue;
       }

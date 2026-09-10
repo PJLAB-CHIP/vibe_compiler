@@ -182,3 +182,50 @@ DDR read/write请求量及13次join不变。数值、性能和artifact身份已�
 本轮其余八个组件CTest全部通过，159个lit中两个旧预期失败在修正后分别重跑通过，无skip/unsupported。
 当前归约热点的native优先修复已完成；非native展开的布局优化不由此代签。
 下一步仍为attention融合产品容量边界与同源短序列A/B，然后处理decode DDR acquire退化；搜索预算比较继续延后。
+
+## 通用 temporal 分块与融合修复
+
+用户要求处理静态计算的共用机制，覆盖 GEMM 之外的归约、卷积、逐元素和多结果状态。
+归属本 work item 的 06 号设计；本节先闭合 compiler host/actual SPM 资格，不以旧板测结果代签改变后的产品性能。
+
+1. 为 fused producer 保留输出需求不能确定的内部归约参数，direct/view/shared 路径共用物化入口。
+2. 将 actual main/tail slice 的 scalar 初始化局部化；保留非 uniform init 和 observable extra use 的语义。
+3. 将 online 专用共同循环实现改为基于 DPS/result maps 的多结果实现；当前 op/interface 适配与循环机制分开。
+4. 同步 source 到 actual Instr/SPM 的正负例与 driver capacity feedback，运行完整 canonical build/no-op 和受影响测试。
+5. 复审完整 diff，更新实际结果与稳定根因后提交。
+
+| 输入等价类 | 长度/结构 | exact 断言 | 失败或保留 | 下游 witness |
+| --- | --- | --- | --- | --- |
+| contraction + consumer | rank3，M=1024/1025/1031，K>=1024；named/generic、map permutation | 融合内存在显式 K recurrence，输出覆盖一次，无完整初始化 | 非 exact demand 不强制融合 | actual Instr/completion/SPM；源输入编译回归 |
+| ordinary reduction + consumer | rank3+，长归约、main/tail、多 reduction axes | 保留全部自由归约参数，init 每输出 tile 一次，顺序不变 | 旧 init 被读取时不丢值 | actual lower/Instr/SPM |
+| convolution + consumer | rank4，长 channel reduction、空间整除/尾部 | 同一 result demand/内部归约机制，无 GEMM 特判 | affine/window proof 失败保持 typed | temporal IR 及支持布局的 actual downstream |
+| pure parallel producer chain | rank3/4，1024/1025/1031、direct/view/shared | 不额外增加归约参数，producer 每 request 物化一次 | extra use/overlap 保持合法原路径 | 既有 joint/shared actual 回归 |
+| scalar fill / empty | 多 slice、main/tail、多个 init use | 同值同 dtype 的局部 init；没有未被使用的完整 allocation | nonuniform init 保持读取，extra observable use 保留 | actual SPM，holes/owner/use closure |
+| multi-result state | ordinary 多结果与 online attention，FP16/BF16、置换 maps | 一次 producer 更新全部 results，finalize 同输出循环 | shared state 轴、额外 use、不同 grid/order | verifier、online actual Instr/SPM |
+| 搜索与错误 | baseline/search；合法/实际 capacity/unsupported | actual capacity 只改变现有自由 choice；clone/remap 保留 role | unsupported/预算耗尽不签发全局无解 | driver focused tests |
+
+当前检查点：通用实现及本轮 host/no-card 资格已完成，未新增板端资格。
+
+实现以 interface/DPS/current maps 为输入，保留 fused reduction 的自由参数，并在 direct、view、共享 producer 和多层输入链中使用同一物化入口。
+Scalar 初始化覆盖 main/tail、非零值及共享 init；多结果共同循环覆盖普通双结果 state 与 online state。
+嵌套 SCF 输出 carrier 的 identity forwarding 由 actual init/yield 递归证明，读取、未知 alias 与变化 yield 的负例保持原拒绝。
+
+新增实际 SPM 矩阵包含：named/permuted contraction、单轴 sum、共享 sum、卷积、一/多输出轴、view/nonzero init、
+逐元素→归约链、经 view 的输入链、共享输入→两条归约、双归约轴，以及 full-output consumer 的内部归约。
+普通双结果 state 的直接输出为 verified Linalg/SCF；不由本项扩张 backend 的任意多结果 Linalg 支持范围。
+
+产品复验从本轮 PyTorch source/export/reference 重新生成 package：GEMM tail-1031（none）；local reduce/local conv/prefill
+的 tail-1031（none/search）；conv-mixed-dag 的 FP16/BF16（none/search）。没有使用历史 package 或真实设备。
+
+本轮最终验证：
+
+- Temporal domain 13 项、temporal transformation 33 项通过；新增 36 组真实规模 actual Instr/completion/SPM 正例，
+  覆盖 1024/1025/1031、一个/多个输出轴、一个/多个归约轴、不同 indexing map、direct/view/shared 和多层 producer 链。
+  普通双结果 state 另覆盖独立/共享 scalar init 共 6 组；既有 FP16/BF16 online-state main/tail 矩阵仍通过。
+- Fused reduction 的 `1..1024` 每个 tile size 均仍在 raw domain；clone/remap 保留 role；动态 Tensor query 不生成 IR。
+- 不指定 target 的 canonical 增量构建通过；紧接着的无源码变化构建为 Ninja no-op。
+- 完整 `check-wafer` 通过：277 个 lit 全部实际执行、14 个组件 CTest、public link smoke、numeric model、target numeric backend
+  及 17 个 SystemC 测试均通过，无意外 skip/unsupported。
+- 上述 11 个 PyTorch source→package→strict no-card case 全部通过。真实设备、融合 LLaMA 的性能 A/B 和 decode 性能退化
+  仍由本计划其余边界拥有，本轮不以主机结果代签。
+- 完整 diff、`git diff --check` 与 Wafer-owned Python cache 检查通过。

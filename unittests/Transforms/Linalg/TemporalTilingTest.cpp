@@ -1946,7 +1946,7 @@ TEST(TemporalTilingTest,
   }
 }
 
-TEST(TemporalTilingTest, ExactContractionProducerUsesFullReductionFiber) {
+TEST(TemporalTilingTest, FusedContractionRetainsItsInnerReductionChoice) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto module = parseModule(*context,
                             R"mlir(
@@ -1974,8 +1974,18 @@ TEST(TemporalTilingTest, ExactContractionProducerUsesFullReductionFiber) {
   TemporalDomainResult domain = buildTemporalDomain(region);
   ASSERT_TRUE(domain.succeeded())
       << (domain.failure ? domain.failure->detail : "");
-  ASSERT_EQ(domain.domain->getScopeDescriptors().size(), 1u);
-  TemporalChoice choice = selectTileSizes(*domain.domain, {2, 128, 128});
+  ASSERT_EQ(domain.domain->getScopeDescriptors().size(), 2u);
+  auto choice = *domain.domain->getFirstChoice().getChoice();
+  for (auto [scope, descriptor] :
+       llvm::zip_equal(choice.scopes, domain.domain->getScopeDescriptors())) {
+    if (descriptor.role == TemporalScopeRole::FusedReduction)
+      scope.iteratorTileSizes = {2, 1025, 128, 32};
+    else
+      scope.iteratorTileSizes = {2, 128, 128};
+    scope.loopOrder = *buildFirstTemporalLoopOrder(descriptor.iterationExtents,
+                                                   scope.iteratorTileSizes,
+                                                   descriptor.precedence);
+  }
   StructuredMaterializationRelations relations;
   relations.structuralOutputs.push_back({0, region.getResult(0)});
   TemporalTilingFailure failure;
@@ -1987,7 +1997,7 @@ TEST(TemporalTilingTest, ExactContractionProducerUsesFullReductionFiber) {
     auto lhsType = mlir::cast<mlir::RankedTensorType>(
         matmul.getInputs().front().getType());
     EXPECT_TRUE(lhsType.hasStaticShape());
-    EXPECT_EQ(lhsType.getShape()[2], 64);
+    EXPECT_EQ(lhsType.getShape()[2], 32);
     EXPECT_TRUE(lhsType.getShape()[1] == 128 || lhsType.getShape()[1] == 1);
   });
 }
@@ -2477,6 +2487,597 @@ TEST(TemporalTilingTest, CoupledStateFinalizesInsideOutputTile) {
       }
     }
   }
+}
+
+// The input is structural current IR, and every positive below reaches actual
+// Instr/completion/SPM. No estimated footprint substitutes for the allocator.
+void expectTemporalSPM(mlir::OwningOpRef<mlir::ModuleOp> module,
+                       StructuredMaterializationRelations &relations) {
+  auto &context = *module->getContext();
+  auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+  ASSERT_TRUE(layout.succeeded()) << layout.detail;
+  auto lowered = lowerStructuredComputeToTile(*module, relations);
+  ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+  auto movement = materializeTileBoundaryMovement(*module, relations);
+  ASSERT_TRUE(movement.succeeded()) << movement.detail;
+  std::string detail;
+  auto standalone =
+      createStandaloneTileModules(std::move(module), &detail, &relations);
+  ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+  ASSERT_EQ(standalone->size(), 1u);
+  auto &tile = standalone->front();
+  TileRegionToInstrLoweringSession session(context);
+  llvm::SmallVector<TileRegionOp> regions;
+  tile.module->walk([&](TileRegionOp region) { regions.push_back(region); });
+  for (auto region : regions)
+    ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+  ASSERT_TRUE(mlir::succeeded(
+      convertBufferizationCopiesToInstr(*tile.module, session)));
+  ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+  TileMemoryPlanningFailure failure;
+  auto planned = planTileMemory(std::move(tile.module), &failure);
+  ASSERT_TRUE(mlir::succeeded(planned)) << failure.spmLargestDemandBytes;
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(**planned)));
+}
+
+TEST(TemporalTilingTest, FusedReductionsAndConvolutionUseCurrentInnerChoices) {
+  enum class Form { Matmul, PermutedContraction, Sum, SharedSum, Convolution };
+  for (auto form : {Form::Matmul, Form::PermutedContraction, Form::Sum,
+                    Form::SharedSum, Form::Convolution}) {
+    for (bool multipleOutputAxes : {false, true}) {
+      if (multipleOutputAxes && form != Form::Matmul &&
+          form != Form::PermutedContraction)
+        continue;
+      for (int64_t extent : {1024, 1025, 1031}) {
+        SCOPED_TRACE(static_cast<int>(form));
+        SCOPED_TRACE(extent);
+        SCOPED_TRACE(multipleOutputAxes);
+        auto context = createContext();
+        const bool sum = form == Form::Sum || form == Form::SharedSum;
+        const bool convolution = form == Form::Convolution;
+        std::string m = std::to_string(extent);
+        std::string lhs = sum           ? "tensor<1x2x" + m + "x" + m + "xf16>"
+                          : convolution ? "tensor<1x" + m + "x1x" + m + "xf16>"
+                                        : "tensor<2x" + m + "x" + m + "xf16>";
+        std::string rhs = convolution ? "tensor<1x1x" + m + "x128xf16>"
+                                      : "tensor<2x" + m + "x1024xf16>";
+        std::string output = sum           ? "tensor<1x2x" + m + "xf16>"
+                             : convolution ? "tensor<1x" + m + "x1x128xf16>"
+                                           : "tensor<2x" + m + "x1024xf16>";
+        std::string body;
+        llvm::raw_string_ostream b(body);
+        b << "%z = arith.constant 0.0 : f16\n%e = tensor.empty() : " << output
+          << "\n%init = linalg.fill ins(%z : f16) outs(%e : " << output
+          << ") -> " << output << "\n";
+        if (form == Form::Matmul)
+          b << "%producer = linalg.batch_matmul ins(%a, %b : " << lhs << ", "
+            << rhs << ") outs(%init : " << output << ") -> " << output << "\n";
+        else if (convolution)
+          b << "%producer = linalg.conv_2d_nhwc_hwcf {dilations = dense<1> : "
+               "tensor<2xi64>, strides = dense<1> : tensor<2xi64>} ins(%a, %b "
+               ": "
+            << lhs << ", " << rhs << ") outs(%init : " << output << ") -> "
+            << output << "\n";
+        else if (sum)
+          b << "%producer = linalg.generic {indexing_maps = "
+               "[affine_map<(b,h,m,k)->(b,h,m,k)>,affine_map<(b,h,m,k)->(b,h,m)"
+               ">], iterator_types = "
+               "[\"parallel\",\"parallel\",\"parallel\",\"reduction\"]} ins(%a "
+               ": "
+            << lhs << ") outs(%init : " << output
+            << ") { ^bb0(%x: f16, %old: f16): %v = arith.addf %x, %old : f16 "
+               "linalg.yield %v : f16 } -> "
+            << output << "\n";
+        else
+          b << "%producer = linalg.generic {indexing_maps = "
+               "[affine_map<(k,b,n,m)->(b,m,k)>,affine_map<(k,b,n,m)->(b,k,n)>,"
+               "affine_map<(k,b,n,m)->(b,m,n)>], iterator_types = "
+               "[\"reduction\",\"parallel\",\"parallel\",\"parallel\"]} "
+               "ins(%a, %b : "
+            << lhs << ", " << rhs << ") outs(%init : " << output
+            << ") { ^bb0(%x: f16, %y: f16, %old: f16): %v = arith.mulf %x, %y "
+               ": f16 %w = arith.addf %v, %old : f16 linalg.yield %w : f16 } "
+               "-> "
+            << output << "\n";
+        std::string map = convolution ? "affine_map<(a,b,c,d)->(a,b,c,d)>"
+                                      : "affine_map<(a,b,c)->(a,b,c)>";
+        b << "%ce = tensor.empty() : " << output
+          << "\n%value = linalg.generic {indexing_maps = [" << map << ","
+          << map;
+        if (form == Form::SharedSum)
+          b << "," << map;
+        b << "], iterator_types = [\"parallel\",\"parallel\",\"parallel\""
+          << (convolution ? ",\"parallel\"" : "") << "]} ins(%producer"
+          << (form == Form::SharedSum ? ", %producer" : "") << " : " << output;
+        if (form == Form::SharedSum)
+          b << ", " << output;
+        b << ") outs(%ce : " << output << ") { ^bb0(%x: f16, "
+          << (form == Form::SharedSum ? "%y: f16, " : "")
+          << "%old: f16): %v = arith.addf %x, "
+          << (form == Form::SharedSum ? "%y" : "%x")
+          << " : f16 linalg.yield %v : f16 } -> " << output;
+        std::string text;
+        llvm::raw_string_ostream source(text);
+        source << "module { wafer.tile.module card_id = 0 tile_id = 0 { "
+                  "func.func @entry(%lhs: "
+               << lhs << ", %rhs: " << rhs << ") -> " << output
+               << " { %r = wafer.tile.region(%lhs, %rhs : " << lhs << ", "
+               << rhs << ") -> (" << output << ") { ^bb0(%a: " << lhs
+               << ", %b: " << rhs << "): " << b.str()
+               << " wafer.tile.yield %value : " << output
+               << " } return %r : " << output << " } } }";
+        auto module = mlir::parseSourceString<mlir::ModuleOp>(
+            source.str(), mlir::ParserConfig(context.get()));
+        ASSERT_TRUE(module);
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        auto region = findRegion(*module);
+        auto domain = buildTemporalDomain(region);
+        ASSERT_TRUE(domain.succeeded());
+        auto choice = *domain.domain->getFirstChoice().getChoice();
+        ASSERT_EQ(choice.scopes.size(), 2u);
+        for (auto [scope, descriptor] : llvm::zip_equal(
+                 choice.scopes, domain.domain->getScopeDescriptors())) {
+          if (descriptor.role == TemporalScopeRole::FusedReduction) {
+            for (auto [axis, capability] :
+                 llvm::enumerate(descriptor.iteratorCapabilities))
+              if (capability == IteratorTilingCapability::Tileable)
+                scope.iteratorTileSizes[axis] =
+                    std::min<int64_t>(128, descriptor.iterationExtents[axis]);
+          } else {
+            scope.iteratorTileSizes[sum ? 2 : 1] = 64;
+            if (multipleOutputAxes)
+              scope.iteratorTileSizes[2] = 128;
+          }
+          scope.loopOrder = *buildFirstTemporalLoopOrder(
+              descriptor.iterationExtents, scope.iteratorTileSizes,
+              descriptor.precedence);
+        }
+        ASSERT_TRUE(domain.domain->contains(choice));
+        StructuredMaterializationRelations relations;
+        relations.structuralOutputs.push_back({0, region.getResult(0)});
+        TemporalTilingFailure failure;
+        auto tiled =
+            applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        int64_t covered = 0;
+        module->walk([&](mlir::linalg::LinalgOp op) {
+          if (op.getNumReductionLoops() == 0)
+            return;
+          auto ranges = op.getStaticLoopRanges();
+          auto iterators = op.getIteratorTypesArray();
+          int64_t reduction = 1;
+          for (auto [axis, iterator] : llvm::enumerate(iterators))
+            if (iterator == mlir::utils::IteratorType::reduction) {
+              EXPECT_LE(ranges[axis], 128);
+              EXPECT_GT(ranges[axis], 0);
+              reduction *= ranges[axis];
+            }
+          auto type =
+              mlir::cast<mlir::RankedTensorType>(op->getResult(0).getType());
+          int64_t count = 1;
+          for (mlir::Operation *parent = op->getParentOp(); parent != region;
+               parent = parent->getParentOp())
+            if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(parent)) {
+              auto lo = mlir::getConstantIntValue(loop.getLowerBound());
+              auto hi = mlir::getConstantIntValue(loop.getUpperBound());
+              auto step = mlir::getConstantIntValue(loop.getStep());
+              ASSERT_TRUE(lo && hi && step);
+              count *= (*hi - *lo + *step - 1) / *step;
+            }
+          covered += count * type.getNumElements() * reduction;
+        });
+        EXPECT_EQ(covered, (sum           ? 2
+                            : convolution ? 128
+                                          : 2048) *
+                               extent * extent);
+        module->walk([&](mlir::linalg::FillOp fill) {
+          auto type =
+              mlir::cast<mlir::RankedTensorType>(fill.getResult(0).getType());
+          EXPECT_LE(type.getShape()[sum ? 2 : 1], 64);
+        });
+        expectTemporalSPM(std::move(module), relations);
+      }
+    }
+  }
+}
+
+TEST(TemporalTilingTest, OrdinaryTwoResultStateUsesTheCommonConsumerTraversal) {
+  for (bool sharedInit : {false, true}) {
+    for (int64_t extent : {1024, 1025, 1031}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(sharedInit);
+      auto context = createContext();
+      std::string m = std::to_string(extent);
+      std::string input = "tensor<1x2x" + m + "x1031xf16>";
+      std::string output = "tensor<1x2x" + m + "xf16>";
+      std::string text;
+      llvm::raw_string_ostream body(text);
+      body
+          << "%z = arith.constant 0.0 : f16\n%low = arith.constant -1.0 : f16\n"
+          << "%e0 = tensor.empty() : " << output
+          << "\n%e1 = tensor.empty() : " << output
+          << "\n%i0 = linalg.fill ins(%z : f16) outs(%e0 : " << output
+          << ") -> " << output
+          << "\n%i1 = linalg.fill ins(%low : f16) outs(%e1 : " << output
+          << ") -> " << output
+          << "\n%p:2 = linalg.generic {indexing_maps = "
+             "[affine_map<(b,h,m,k)->(b,h,m,k)>,affine_map<(b,h,m,k)->(b,h,m)>,"
+             "affine_map<(b,h,m,k)->(b,h,m)>], iterator_types = "
+             "[\"parallel\",\"parallel\",\"parallel\",\"reduction\"]} ins(%arg "
+             ": "
+          << input << ") outs(%i0, " << (sharedInit ? "%i0" : "%i1") << " : "
+          << output << ", " << output
+          << ") { ^bb0(%x: f16, %sum: f16, %maximum: f16): %s = arith.addf %x, "
+             "%sum : f16 %m = arith.maximumf %x, %maximum : f16 linalg.yield "
+             "%s, "
+             "%m : f16, f16 } -> ("
+          << output << ", " << output << ")"
+          << "\n%out = tensor.empty() : " << output
+          << "\n%value = linalg.add ins(%p#0, %p#1 : " << output << ", "
+          << output << ") outs(%out : " << output << ") -> " << output;
+      auto module = parseModule(*context, body.str(), input, output);
+      ASSERT_TRUE(module);
+      auto region = findRegion(*module);
+      auto domain = buildTemporalDomain(region);
+      ASSERT_TRUE(domain.succeeded());
+      auto choice = *domain.domain->getFirstChoice().getChoice();
+      ASSERT_EQ(choice.scopes.size(), 2u);
+      for (auto [scope, descriptor] : llvm::zip_equal(
+               choice.scopes, domain.domain->getScopeDescriptors())) {
+        for (int64_t &size : scope.iteratorTileSizes)
+          size = std::min<int64_t>(size, 128);
+        scope.loopOrder = *buildFirstTemporalLoopOrder(
+            descriptor.iterationExtents, scope.iteratorTileSizes,
+            descriptor.precedence);
+      }
+      StructuredMaterializationRelations relations;
+      relations.structuralOutputs.push_back({0, region.getResult(0)});
+      TemporalTilingFailure failure;
+      auto result =
+          applyTemporalTiling(*domain.domain, choice, relations, &failure);
+      ASSERT_TRUE(mlir::succeeded(result)) << failure.detail;
+      EXPECT_EQ(result->fusedProducers, 1u);
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      int64_t covered = 0;
+      module->walk([&](mlir::linalg::GenericOp state) {
+        ASSERT_EQ(state.getNumResults(), 2u);
+        auto inputType = mlir::cast<mlir::RankedTensorType>(
+            state.getDpsInputs()[0].getType());
+        EXPECT_LE(inputType.getDimSize(2), 128);
+        EXPECT_LE(inputType.getDimSize(3), 128);
+        int64_t count = 1;
+        for (mlir::Operation *parent = state->getParentOp(); parent != region;
+             parent = parent->getParentOp())
+          if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(parent)) {
+            auto lo = mlir::getConstantIntValue(loop.getLowerBound());
+            auto hi = mlir::getConstantIntValue(loop.getUpperBound());
+            auto step = mlir::getConstantIntValue(loop.getStep());
+            ASSERT_TRUE(lo && hi && step);
+            count *= (*hi - *lo + *step - 1) / *step;
+          }
+        covered += count * inputType.getNumElements();
+      });
+      EXPECT_EQ(covered, 2 * extent * 1031);
+      module->walk([&](mlir::linalg::AddOp finalizer) {
+        EXPECT_EQ(finalizer.getInputs()[0].getDefiningOp(),
+                  finalizer.getInputs()[1].getDefiningOp());
+        auto type = mlir::cast<mlir::RankedTensorType>(
+            finalizer.getResult(0).getType());
+        EXPECT_LE(type.getDimSize(2), 128);
+      });
+      // Multi-result Linalg is the direct consumer contract of this transform.
+      // Online state exercises the same mechanism through decomposition to SPM.
+    }
+  }
+}
+
+TEST(TemporalTilingTest, ViewFusionPreservesReductionChoiceAndNonzeroInit) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto context = createContext();
+    auto m = std::to_string(extent);
+    std::string input = "tensor<2x" + m + "x" + m + "xf16>";
+    std::string inner = "tensor<2x" + m + "x128xf16>";
+    std::string output = "tensor<1x2x" + m + "x128xf16>";
+    std::string text;
+    llvm::raw_string_ostream body(text);
+    body
+        << "%rhs = tensor.extract_slice %arg[0, 0, 0] [2, " << m
+        << ", 128] [1, 1, 1] : " << input << " to " << inner
+        << "\n%one = arith.constant 1.0 : f16\n%e = tensor.empty() : " << inner
+        << "\n%i = linalg.fill ins(%one : f16) outs(%e : " << inner << ") -> "
+        << inner << "\n%p = linalg.batch_matmul ins(%arg, %rhs : " << input
+        << ", " << inner << ") outs(%i : " << inner << ") -> " << inner
+        << "\n%view = tensor.expand_shape %p [[0, 1], [2], [3]] output_shape "
+           "[1, 2, "
+        << m << ", 128] : " << inner << " into " << output
+        << "\n%out = tensor.empty() : " << output
+        << "\n%value = linalg.generic {indexing_maps = "
+           "[affine_map<(b,h,m,n)->(b,h,m,n)>,affine_map<(b,h,m,n)->(b,h,m,n)>]"
+           ", iterator_types = "
+           "[\"parallel\",\"parallel\",\"parallel\",\"parallel\"]} ins(%view : "
+        << output << ") outs(%out : " << output
+        << ") { ^bb0(%x: f16, %old: f16): %v = arith.addf %x, %x : f16 "
+           "linalg.yield %v : f16 } -> "
+        << output;
+    auto module = parseModule(*context, body.str(), input, output);
+    ASSERT_TRUE(module);
+    auto region = findRegion(*module);
+    auto domain = buildTemporalDomain(region);
+    ASSERT_TRUE(domain.succeeded());
+    auto choice = *domain.domain->getFirstChoice().getChoice();
+    ASSERT_EQ(choice.scopes.size(), 2u);
+    for (auto [scope, descriptor] :
+         llvm::zip_equal(choice.scopes, domain.domain->getScopeDescriptors())) {
+      if (descriptor.role == TemporalScopeRole::FusedReduction)
+        scope.iteratorTileSizes[3] = 128;
+      else
+        scope.iteratorTileSizes[2] = 64;
+      scope.loopOrder = *buildFirstTemporalLoopOrder(
+          descriptor.iterationExtents, scope.iteratorTileSizes,
+          descriptor.precedence);
+    }
+    StructuredMaterializationRelations relations;
+    relations.structuralOutputs.push_back({0, region.getResult(0)});
+    TemporalTilingFailure failure;
+    auto result =
+        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+    ASSERT_TRUE(mlir::succeeded(result)) << failure.detail;
+    module->walk([&](mlir::linalg::BatchMatmulOp op) {
+      auto type =
+          mlir::cast<mlir::RankedTensorType>(op.getInputs()[0].getType());
+      EXPECT_LE(type.getDimSize(1), 64);
+      EXPECT_LE(type.getDimSize(2), 128);
+    });
+    unsigned fills = 0;
+    module->walk([&](mlir::linalg::FillOp fill) {
+      ++fills;
+      auto value = fill.getInputs()[0].getDefiningOp<mlir::arith::ConstantOp>();
+      ASSERT_TRUE(value);
+      EXPECT_TRUE(mlir::cast<mlir::FloatAttr>(value.getValue())
+                      .getValue()
+                      .isExactlyValue(1.0));
+      EXPECT_LE(mlir::cast<mlir::RankedTensorType>(fill.getResult(0).getType())
+                    .getDimSize(1),
+                64);
+    });
+    EXPECT_GT(fills, 0u);
+    expectTemporalSPM(std::move(module), relations);
+  }
+}
+
+TEST(TemporalTilingTest, InputProducerChainsStayInsideTheReductionTile) {
+  for (int mode : {0, 1, 2}) {
+    for (int64_t extent : {1024, 1025, 1031}) {
+      SCOPED_TRACE(mode);
+      SCOPED_TRACE(extent);
+      auto context = createContext();
+      std::string m = std::to_string(extent);
+      std::string input = "tensor<1x2x" + m + "x" + m + "xf16>";
+      std::string work =
+          mode == 1 ? "tensor<2x" + m + "x" + m + "xf16>" : input;
+      std::string output =
+          mode == 1 ? "tensor<2x" + m + "xf16>" : "tensor<1x2x" + m + "xf16>";
+      std::string inputMap = mode == 1 ? "affine_map<(h,m,k)->(h,m,k)>"
+                                       : "affine_map<(b,h,m,k)->(b,h,m,k)>";
+      std::string resultMap = mode == 1 ? "affine_map<(h,m,k)->(h,m)>"
+                                        : "affine_map<(b,h,m,k)->(b,h,m)>";
+      std::string consumerMap = mode == 1 ? "affine_map<(h,m)->(h,m)>"
+                                          : "affine_map<(b,h,m)->(b,h,m)>";
+      std::string text;
+      llvm::raw_string_ostream body(text);
+      body << "%pe = tensor.empty() : " << input
+           << "\n%p = linalg.generic {indexing_maps = "
+              "[affine_map<(b,h,m,k)->(b,h,m,k)>,affine_map<(b,h,m,k)->(b,h,m,"
+              "k)>], iterator_types = "
+              "[\"parallel\",\"parallel\",\"parallel\",\"parallel\"]} ins(%arg "
+              ": "
+           << input << ") outs(%pe : " << input
+           << ") { ^bb0(%x: f16, %old: f16): %v = arith.mulf %x, %x : f16 "
+              "linalg.yield %v : f16 } -> "
+           << input;
+      if (mode == 1)
+        body << "\n%view = tensor.collapse_shape %p [[0, 1], [2], [3]] : "
+             << input << " into " << work;
+      body << "\n%zero = arith.constant 0.0 : f16\n%low = arith.constant -1.0 "
+              ": f16";
+      for (int r = 0; r < (mode == 2 ? 2 : 1); ++r) {
+        body << "\n%e" << r << " = tensor.empty() : " << output << "\n%i" << r
+             << " = linalg.fill ins(" << (r == 0 ? "%zero" : "%low")
+             << " : f16) outs(%e" << r << " : " << output << ") -> " << output
+             << "\n%r" << r << " = linalg.generic {indexing_maps = ["
+             << inputMap << "," << resultMap
+             << "], iterator_types = [\"parallel\",\"parallel\","
+             << (mode == 1 ? "" : "\"parallel\",") << "\"reduction\"]} ins("
+             << (mode == 1 ? "%view" : "%p") << " : " << work << ") outs(%i"
+             << r << " : " << output << ") { ^bb0(%x: f16, %old: f16): %v = "
+             << (r == 0 ? "arith.addf" : "arith.maximumf")
+             << " %x, %old : f16 linalg.yield %v : f16 } -> " << output;
+      }
+      body << "\n%out = tensor.empty() : " << output
+           << "\n%value = linalg.generic {indexing_maps = [" << consumerMap
+           << "," << consumerMap;
+      if (mode == 2)
+        body << "," << consumerMap;
+      body << "], iterator_types = [\"parallel\",\"parallel\""
+           << (mode == 1 ? "" : ",\"parallel\"") << "]} ins(%r0"
+           << (mode == 2 ? ", %r1" : "") << " : " << output;
+      if (mode == 2)
+        body << ", " << output;
+      body << ") outs(%out : " << output << ") { ^bb0(%x: f16, "
+           << (mode == 2 ? "%y: f16, " : "")
+           << "%old: f16): %v = arith.addf %x, " << (mode == 2 ? "%y" : "%x")
+           << " : f16 linalg.yield %v : f16 } -> " << output;
+      auto module = parseModule(*context, body.str(), input, output);
+      ASSERT_TRUE(module);
+      auto region = findRegion(*module);
+      auto domain = buildTemporalDomain(region);
+      ASSERT_TRUE(domain.succeeded());
+      auto choice = *domain.domain->getFirstChoice().getChoice();
+      ASSERT_EQ(choice.scopes.size(), mode == 2 ? 3u : 2u);
+      for (auto [scope, descriptor] : llvm::zip_equal(
+               choice.scopes, domain.domain->getScopeDescriptors())) {
+        for (auto [axis, capability] :
+             llvm::enumerate(descriptor.iteratorCapabilities))
+          if (capability == IteratorTilingCapability::Tileable)
+            scope.iteratorTileSizes[axis] =
+                std::min<int64_t>(128, descriptor.iterationExtents[axis]);
+        scope.loopOrder = *buildFirstTemporalLoopOrder(
+            descriptor.iterationExtents, scope.iteratorTileSizes,
+            descriptor.precedence);
+      }
+      ASSERT_TRUE(domain.domain->contains(choice));
+      StructuredMaterializationRelations relations;
+      relations.structuralOutputs.push_back({0, region.getResult(0)});
+      TemporalTilingFailure failure;
+      auto result =
+          applyTemporalTiling(*domain.domain, choice, relations, &failure);
+      ASSERT_TRUE(mlir::succeeded(result)) << failure.detail;
+      int64_t covered = 0;
+      module->walk([&](mlir::linalg::GenericOp op) {
+        if (op.getNumLoops() != 4 || op.getNumReductionLoops() != 0)
+          return;
+        auto type =
+            mlir::cast<mlir::RankedTensorType>(op.getResult(0).getType());
+        EXPECT_LE(type.getDimSize(2), 128);
+        EXPECT_LE(type.getDimSize(3), 128);
+        int64_t count = 1;
+        for (mlir::Operation *parent = op->getParentOp(); parent != region;
+             parent = parent->getParentOp())
+          if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(parent)) {
+            auto lo = mlir::getConstantIntValue(loop.getLowerBound());
+            auto hi = mlir::getConstantIntValue(loop.getUpperBound());
+            auto step = mlir::getConstantIntValue(loop.getStep());
+            ASSERT_TRUE(lo && hi && step);
+            count *= (*hi - *lo + *step - 1) / *step;
+          }
+        covered += count * type.getNumElements();
+      });
+      EXPECT_EQ(covered, 2 * extent * extent);
+      expectTemporalSPM(std::move(module), relations);
+    }
+  }
+}
+
+TEST(TemporalTilingTest,
+     FusedMultiAxisReductionPreservesTheSelectedRecurrence) {
+  for (int64_t extent : {1024, 1031}) {
+    SCOPED_TRACE(extent);
+    auto context = createContext();
+    auto m = std::to_string(extent);
+    std::string input = "tensor<2x" + m + "x1031x17xf16>";
+    std::string output = "tensor<2x" + m + "xf16>";
+    std::string text;
+    llvm::raw_string_ostream body(text);
+    body << "%z = arith.constant 0.0 : f16\n%e = tensor.empty() : " << output
+         << "\n%i = linalg.fill ins(%z : f16) outs(%e : " << output << ") -> "
+         << output
+         << "\n%p = linalg.generic {indexing_maps = "
+            "[affine_map<(b,m,k,l)->(b,m,k,l)>,affine_map<(b,m,k,l)->(b,m)>], "
+            "iterator_types = "
+            "[\"parallel\",\"parallel\",\"reduction\",\"reduction\"]} ins(%arg "
+            ": "
+         << input << ") outs(%i : " << output
+         << ") { ^bb0(%x: f16, %old: f16): %v = arith.addf %x, %old : f16 "
+            "linalg.yield %v : f16 } -> "
+         << output << "\n%out = tensor.empty() : " << output
+         << "\n%value = linalg.generic {indexing_maps = "
+            "[affine_map<(b,m)->(b,m)>,affine_map<(b,m)->(b,m)>], "
+            "iterator_types = [\"parallel\",\"parallel\"]} ins(%p : "
+         << output << ") outs(%out : " << output
+         << ") { ^bb0(%x: f16, %old: f16): %v = arith.addf %x, %x : f16 "
+            "linalg.yield %v : f16 } -> "
+         << output;
+    auto module = parseModule(*context, body.str(), input, output);
+    ASSERT_TRUE(module);
+    auto region = findRegion(*module);
+    auto domain = buildTemporalDomain(region);
+    ASSERT_TRUE(domain.succeeded());
+    auto choice = *domain.domain->getFirstChoice().getChoice();
+    for (auto [scope, descriptor] :
+         llvm::zip_equal(choice.scopes, domain.domain->getScopeDescriptors())) {
+      if (descriptor.role == TemporalScopeRole::FusedReduction) {
+        scope.iteratorTileSizes[2] = 128;
+        scope.iteratorTileSizes[3] = 8;
+      } else
+        scope.iteratorTileSizes[1] = 64;
+      scope.loopOrder = *buildFirstTemporalLoopOrder(
+          descriptor.iterationExtents, scope.iteratorTileSizes,
+          descriptor.precedence);
+    }
+    StructuredMaterializationRelations relations;
+    relations.structuralOutputs.push_back({0, region.getResult(0)});
+    TemporalTilingFailure failure;
+    auto result =
+        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+    ASSERT_TRUE(mlir::succeeded(result)) << failure.detail;
+    int64_t covered = 0;
+    module->walk([&](mlir::linalg::GenericOp op) {
+      if (op.getNumReductionLoops() != 2)
+        return;
+      auto type =
+          mlir::cast<mlir::RankedTensorType>(op.getDpsInputs()[0].getType());
+      EXPECT_LE(type.getDimSize(1), 64);
+      EXPECT_LE(type.getDimSize(2), 128);
+      EXPECT_LE(type.getDimSize(3), 8);
+      int64_t count = 1;
+      for (mlir::Operation *parent = op->getParentOp(); parent != region;
+           parent = parent->getParentOp())
+        if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(parent)) {
+          auto lo = mlir::getConstantIntValue(loop.getLowerBound());
+          auto hi = mlir::getConstantIntValue(loop.getUpperBound());
+          auto step = mlir::getConstantIntValue(loop.getStep());
+          ASSERT_TRUE(lo && hi && step);
+          count *= (*hi - *lo + *step - 1) / *step;
+        }
+      covered += count * type.getNumElements();
+    });
+    EXPECT_EQ(covered, 2 * extent * 1031 * 17);
+    expectTemporalSPM(std::move(module), relations);
+  }
+}
+
+TEST(TemporalTilingTest,
+     FullOutputConsumerStillAppliesItsProducersInnerChoice) {
+  auto context = createContext();
+  auto module = parseModule(*context, R"mlir(
+    %z = arith.constant 0.0 : f16
+    %e = tensor.empty() : tensor<2x128xf16>
+    %i = linalg.fill ins(%z : f16) outs(%e : tensor<2x128xf16>) -> tensor<2x128xf16>
+    %p = linalg.generic {indexing_maps = [affine_map<(b,m,k)->(b,m,k)>,affine_map<(b,m,k)->(b,m)>], iterator_types = ["parallel","parallel","reduction"]} ins(%arg : tensor<2x128x1031xf16>) outs(%i : tensor<2x128xf16>) {
+      ^bb0(%x: f16, %old: f16): %v = arith.addf %x, %old : f16 linalg.yield %v : f16
+    } -> tensor<2x128xf16>
+    %out = tensor.empty() : tensor<2x128xf16>
+    %value = linalg.generic {indexing_maps = [affine_map<(b,m)->(b,m)>,affine_map<(b,m)->(b,m)>], iterator_types = ["parallel","parallel"]} ins(%p : tensor<2x128xf16>) outs(%out : tensor<2x128xf16>) {
+      ^bb0(%x: f16, %old: f16): %v = arith.addf %x, %x : f16 linalg.yield %v : f16
+    } -> tensor<2x128xf16>)mlir",
+                            "tensor<2x128x1031xf16>", "tensor<2x128xf16>");
+  ASSERT_TRUE(module);
+  auto region = findRegion(*module);
+  auto domain = buildTemporalDomain(region);
+  ASSERT_TRUE(domain.succeeded());
+  auto choice = *domain.domain->getFirstChoice().getChoice();
+  ASSERT_EQ(choice.scopes.size(), 2u);
+  choice.scopes[0].iteratorTileSizes[2] = 128;
+  choice.scopes[0].loopOrder = {2};
+  StructuredMaterializationRelations relations;
+  relations.structuralOutputs.push_back({0, region.getResult(0)});
+  TemporalTilingFailure failure;
+  auto result =
+      applyTemporalTiling(*domain.domain, choice, relations, &failure);
+  ASSERT_TRUE(mlir::succeeded(result)) << failure.detail;
+  unsigned reductions = 0;
+  module->walk([&](mlir::linalg::GenericOp op) {
+    if (op.getNumReductionLoops() == 0)
+      return;
+    ++reductions;
+    auto type =
+        mlir::cast<mlir::RankedTensorType>(op.getDpsInputs()[0].getType());
+    EXPECT_TRUE(type.getDimSize(2) == 128 || type.getDimSize(2) == 7);
+  });
+  EXPECT_EQ(reductions, 2u);
+  expectTemporalSPM(std::move(module), relations);
 }
 
 } // namespace

@@ -72,6 +72,11 @@ mlir::FailureOr<llvm::SmallVector<uint32_t, 4>> buildFirstTemporalLoopOrder(
     llvm::ArrayRef<TemporalPrecedenceEdge> precedence = {},
     std::string *failureReason = nullptr);
 
+enum class TemporalScopeRole : uint8_t {
+  Traversal,
+  FusedReduction,
+};
+
 /// A synchronous descriptor derived from one live current operation. The
 /// operation handle is valid only while the owning TileRegion is unchanged.
 struct TemporalScopeDescriptor {
@@ -80,6 +85,7 @@ struct TemporalScopeDescriptor {
   llvm::SmallVector<IteratorTilingCapability, 4> iteratorCapabilities;
   llvm::SmallVector<TemporalPrecedenceEdge, 4> precedence;
   llvm::SmallVector<uint32_t, 2> exactReshapeDimensions;
+  TemporalScopeRole role = TemporalScopeRole::Traversal;
 
   friend bool operator==(const TemporalScopeDescriptor &lhs,
                          const TemporalScopeDescriptor &rhs) {
@@ -87,7 +93,8 @@ struct TemporalScopeDescriptor {
            lhs.iterationExtents == rhs.iterationExtents &&
            lhs.iteratorCapabilities == rhs.iteratorCapabilities &&
            lhs.precedence == rhs.precedence &&
-           lhs.exactReshapeDimensions == rhs.exactReshapeDimensions;
+           lhs.exactReshapeDimensions == rhs.exactReshapeDimensions &&
+           lhs.role == rhs.role;
   }
 };
 
@@ -366,6 +373,11 @@ struct TemporalDomainResult {
 /// Derives traversal roots, exact-derived producer edges, iterator extents and
 /// capabilities directly from one verifier-valid structural TileRegion.
 TemporalDomainResult buildTemporalDomain(TileRegionOp region);
+
+/// Read-only iteration-to-result map of a current structured tensor result.
+/// Dialect adapters expose semantics; transformation uses the same map
+/// contract.
+mlir::FailureOr<mlir::AffineMap> getTemporalResultMap(mlir::OpResult result);
 
 /// Remaps one immutable structural TemporalDomain onto a fresh clone of the
 /// same current TileRegion. This copies only query metadata and typed handles;

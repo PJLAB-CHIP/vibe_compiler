@@ -233,6 +233,49 @@ movement消费对应actual relation并删除该argument，该attr不能越过phy
 
 ### 5.3 Temporal tiling
 
+
+本层的通用性按静态 current IR 的 interface、结果需求和 DPS 使用关系定义，不按 GEMM、卷积或模型名称定义。
+独立 traversal、由 consumer 决定的输出范围、producer 内部尚可选择的归约分块是三种不同事实。
+
+#### 融合中的自由归约轴与初始化
+
+- Upstream IR / input：verified、pure tensor 的 current TileRegion；`TilingInterface`、DPS、实际 indexing maps、SSA uses，以及当前 temporal choice。
+- Current stage responsibility：物化输出遍历及其 producer；保留未由输出需求确定的内部归约 tile size/order；按实际 slice 物化局部初始化。
+- Output IR / files：普通 SCF、Linalg/Tensor 和仍待 decomposition 的 coupled-state op；所有 loop、state、init 与 main/tail 均已实际存在。
+- Downstream consumer：既有 decomposition、layout/bufferization、Tile/Instr、completion 和唯一 actual SPM gate。
+- User-level driver / named pipeline：none/search 共用 `buildTemporalDomain` / `applyTemporalTiling`；不增加第二条产品入口。
+- Explicit non-goals：不支持 dynamic shape，不修改数值 operation/dtype/order，不改变通信、allocator、搜索预算或代价策略，不由估算容量决定是否合法。
+- Completion criteria：普通 contraction、卷积、归约和逐元素 producer/consumer 的初始化及内部归约由同一实现处理；多结果状态整体物化，attention 不拥有另一套循环生成逻辑；整除和尾部均通过 actual 下游，失败分类保持 typed。
+
+Joint domain 只能移除由 consumer 输出需求唯一确定的参数。一个 producer 的 output tile 要求完整 reduction fiber，
+并不意味着 reduction fiber 内只能使用 full-extent 的计算块。由结果需求确定的 parallel 轴在 fused producer descriptor 中固定；
+仍可分块的 reduction 轴保留完整 `1..L` 参数及合法顺序。该 descriptor 的 role 表达它在已物化的 producer tile 内生成循环，
+不会再次在 region 顶层生成完整 producer。Independent domain 保持原有全部参数。
+
+Direct、view、broadcast/window 与共享 producer 使用同一个 result-tile materializer。该 materializer 先经 pinned Tensor/SCF helper
+生成 actual producer tile，再用该 producer 的显式剩余 choice 生成内部 SCF recurrence；实际嵌套 slice 随后按原有 subset 规则组合。
+不按 clone 顺序、operation 名或打印文本恢复 producer 对应，不重新猜测 tile size。
+内部归约生成新的输入 slice 后，继续沿已证明的 current producer/view 关系物化上游 tile，直到直接输入；
+source proof 只活在本次调用，source 或 view 链依赖被修改或删除时由 rewriter listener 失效。对嵌套 slice 先用 pinned subset 规则组合，
+不能先物化完整归约输入再仅切其 SPM subview。需要共同归约循环的 all-use group 唯一拥有其 consumer roots；这些 roots 不同时被另一条边消去，
+以免共享 producer 的共同循环丢失或同一个 op 被两条物化路径处理。纯 parallel consumer 仍可共同派生到下游遍历。
+
+当多个 live results 由同一个 parallel consumer 消费时，按全部 result indexing maps、DPS init read 和 selected traversal 证明共同输出域。
+一次 output tile 只物化一次完整 producer，并一起改接所有结果。共享 state 轴、额外 observable use、无法证明的映射或不兼容顺序保留原遍历。
+该实现以 `TilingInterface` 和 DPS 为循环/状态机制；已知 dialect 的只读 map adapter 只解释当前 op 的语义，不拥有另一条变换路径。
+
+初始化由 actual slice demand 驱动。Scalar fill 的 main/tail 或多个消费者切片可以分别物化同值同 dtype 的 tile fill，
+不依赖 fill 只有一个 use；原 full fill 只有在全部 uses 已改接后才能删除。`tensor.empty` 的切片对应局部 empty。
+有实际旧值读取的非 uniform 初始化保持原 SSA 读取；不能将它替换成 zero/empty。初始化不拥有无消费者依据的独立搜索轴。
+
+算法对照：MLIR [structured tiling/fusion](https://mlir.llvm.org/docs/Tutorials/transform/Ch0/)区分 result tile 与 loop transformation；
+IREE [lowering configs](https://iree.dev/developers/lowering-config/)分别保留输出分块和归约分块。
+本实现使用 pinned `SCF/Transforms/TileUsingInterface.h` 的 `tileUsingSCF`、`tileAndFuseProducerOfSlice` 及
+Tensor `replaceExtractSliceWithTiledProducer`；不引入 IREE IR/config 或 newer upstream API。
+Pinned `SwapExtractSliceWithFillPatterns.cpp` 的单 use 前置只能覆盖单个 slice，不能代签 main/tail 的全部初始化使用关系。
+
+本项覆盖矩阵及本轮结果由 `tasks/plans/board-performance-optimization.md` 的通用 temporal 修复节维护。
+
 每个actual traversal选择complete temporal tile vector和loop order，不允许单一标量`tile_size`代替多轴语义。第12项输出后，
 规划阶段的 region/root 记录和预物化 temporal 状态均已在本边界消费，不能作为第13项的 operation identity。
 Baseline和search分别从自己candidate内的live `TilingInterface` operation建立query-local domain；choice选中后
@@ -288,7 +331,7 @@ API依据为[MemRef subview合同](https://mlir.llvm.org/docs/Dialects/MemRef/#m
 以pinned `SubViewOp::inferRankReducedResultType`及`IndependenceTransforms.cpp`调用方式确认。
 
 Boundary movement已经物化actual DDR destination与terminal `tile.store`后，对只用于收集已完成tile的SPM输出carrier做直接写回：
-从actual allocation及其subview、原样转发的`scf.for` iter_arg/result证明完整use closure。除terminal store外，只允许tile copy写入，
+从actual allocation及其subview、原样转发的`scf.for` iter_arg/result证明完整use closure；嵌套循环的result须沿实际init/yield递归证明为同一个buffer。除terminal store外，只允许tile copy写入，
 以及可证明source/destination为同一view的冗余copy；存在读取、算术更新、DTE使用、非原样loop yield、未知alias或其它escape时不改写。
 DDR destination必须是支配全部tile写入的Region参数，在当前Region中仅由该terminal store使用，且已有actual allocation；
 同一Region对该allocation存在其它alias使用时保留原IR。证明完成后，将原tile copy改为同位置的
@@ -301,14 +344,14 @@ DDR destination必须是支配全部tile写入的Region参数，在当前Region�
 已确定alias/effect的低层movement，不重新做Tensor in-place选择。覆盖rank3/4、1024/1025/1031、超过SPM的4096整除/4097尾部，
 精确检查写回offset/size、无完整SPM carrier，并实际推进Instr/completion/SPM；带读取、变化loop yield或未知alias的负例必须保持原IR。
 
-对于已物化的online coupled-state producer及其唯一parallel Linalg consumer，temporal apply可以构造共同的输出遍历。
-输入仍是current `online_attention`、其全部SSA results、scalar-fill DPS初值及本轮两者的tile/loop choice；不产生另一种attention IR。
+对于已物化的多结果 state producer及其唯一parallel Linalg consumer，temporal apply可以构造共同的输出遍历。
+输入是current `TilingInterface` producer、其全部SSA results、scalar-fill DPS初值及本轮两者的tile/loop choice；不产生另一种state IR。
 必须证明全部live state结果只供该consumer使用，consumer不读取DPS旧输出，各state indexing map组合一致，所有active输出轴都在
 每个state中出现且允许parallel tiling。两者选择的共同轴tile size和parallel次序必须一致，原选择必须把parallel循环置于reduction之前。
 无法证明、额外state consumer、不同tile grid、state共享轴或带reduction的consumer均保留原路径。
 
-物化先建立consumer的输出tile循环，然后在该循环中只创建一次三结果producer和同值同dtype的tile初值，再按原选择构造完整K/V recurrence，
-最后消费本tile全部state并写入输出tile。不得按accumulator/sum等不同result分别重算producer；不得把K/V block顺序、算术op或中间dtype改变。
+物化先建立consumer的输出tile循环，然后在该循环中只创建一次完整producer和同值同dtype的tile初值，再按原选择构造归约recurrence，
+最后消费本tile全部state并写入输出tile。不得按不同result分别重算producer；不得改变原归约顺序、算术op或中间dtype。
 多头、sequence和head dimension只由current maps/shapes决定，不使用模型名或固定长度。该变换位于actual temporal choice之后、
 attention decomposition/layout之前；输出为普通SCF、online state及Linalg，直接下游仍为既有decomposition、bufferization、movement和actual SPM gate。
 它不替代普通pure producer的e-graph探索，也不猜测容量、插入spill或选择DDR/通信路径。
@@ -329,13 +372,13 @@ broken contract终止该candidate。
 当前exact-derived边界要求producer/consumer位于同一Region和block、producer pure、edge不是DPS destination，并由current indexing map或
 composed `IndexRelation`证明实际tile demand。Single-use direct/projected chain、general reshape rectangle/有限pieces以及all-use compatible
 direct/view chain均可形成Joint；未捕获use、effect、DPS destination、cross-Region或relation失败保持Independent。Broadcast和window遵循下述
-额外门禁。`online_attention`不进入ordinary逐result producer fusion；符合上述完整coupled-state合同的唯一consumer才可共用输出遍历。
+额外门禁。多结果 producer不进入ordinary逐result producer fusion；符合上述完整state合同的唯一consumer由同一整体物化规则共用输出遍历。
 
 Direct edge不是完整边界。Spatial exact-demand已经通过`WaferTensorIndexingOpInterface`和`IndexRelation`解释static pure
 `tensor.cast`、`extract_slice`、`insert_slice`、`expand_shape`、`collapse_shape`和`pad`；该current-op relation构造必须抽为
 Analysis/Linalg中的一个共享只读typed builder，Spatial demand与Temporal fusion调用同一实现。TemporalDomain沿same-Region pure support
 chain逐段组合result-to-operand relation，并为每个all-use connected component保留independent与joint两类typed transformation choice。
-Independent从全部current candidate建立原始scope；joint只移除由current consumer完整决定的producer。两类choice各自有独立首项和完整lazy
+Independent从全部current candidate建立原始scope；joint只移除由current consumer完整决定的参数，并保留 fused producer 的自由归约轴。两类choice各自有独立首项和完整lazy
 successor，不把relation proof写进原始per-op size/order域。只有组合结果exact，且完整selected choice使consumer tile形成一个parametric
 dense rectangle或work-bounded、互斥、static-shape exact pieces时，producer才可成为derived traversal；joint还要求全部current uses具有
 相同iteration domain、tile vector、loop order和exact producer demand。

@@ -10,6 +10,8 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
 #include "gtest/gtest.h"
@@ -30,6 +32,7 @@ std::unique_ptr<mlir::MLIRContext> createContext() {
                   mlir::linalg::LinalgDialect, mlir::tensor::TensorDialect>();
   wafer::registerWaferCoreDialects(registry);
   mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  mlir::tensor::registerTilingInterfaceExternalModels(registry);
   auto context = std::make_unique<mlir::MLIRContext>(registry);
   context->loadAllAvailableDialects();
   return context;
@@ -678,6 +681,78 @@ TEST(TemporalDomainTest, IntervalSplitPreservesEveryPoint) {
   ASSERT_TRUE(split->below);
   EXPECT_EQ(*split->above, (TemporalSizeInterval{129, 1031}));
   EXPECT_EQ(*split->below, (TemporalSizeInterval{1, 127}));
+}
+
+TEST(TemporalDomainTest, FusedReductionRetainsEverySizeAndRemapsItsRole) {
+  auto context = createContext();
+  auto module = parse(*context, R"mlir(
+    %e = tensor.empty() : tensor<2x1024x1024xf16>
+    %p = linalg.batch_matmul ins(%arg, %arg : tensor<2x1024x1024xf16>, tensor<2x1024x1024xf16>) outs(%e : tensor<2x1024x1024xf16>) -> tensor<2x1024x1024xf16>
+    %out = tensor.empty() : tensor<2x1024x1024xf16>
+    %value = linalg.generic {indexing_maps = [affine_map<(b,m,n)->(b,m,n)>, affine_map<(b,m,n)->(b,m,n)>], iterator_types = ["parallel","parallel","parallel"]} ins(%p : tensor<2x1024x1024xf16>) outs(%out : tensor<2x1024x1024xf16>) {
+      ^bb0(%x: f16, %old: f16): linalg.yield %x : f16
+    } -> tensor<2x1024x1024xf16>)mlir",
+                      "tensor<2x1024x1024xf16>", "tensor<2x1024x1024xf16>");
+  ASSERT_TRUE(module);
+  TileRegionOp region;
+  module->walk([&](TileRegionOp op) { region = op; });
+  auto domain = buildTemporalDomain(region);
+  ASSERT_TRUE(domain.succeeded());
+  auto descriptors = domain.domain->getScopeDescriptors();
+  ASSERT_EQ(descriptors.size(), 2u);
+  ASSERT_EQ(descriptors[0].role, TemporalScopeRole::FusedReduction);
+  EXPECT_EQ(descriptors[0].iteratorCapabilities[0],
+            IteratorTilingCapability::FullExtentOnly);
+  EXPECT_EQ(descriptors[0].iteratorCapabilities[3],
+            IteratorTilingCapability::Tileable);
+  auto choice = *domain.domain->getFirstChoice().getChoice();
+  choice.scopes[1].iteratorTileSizes = {2, 128, 128};
+  choice.scopes[1].loopOrder = {1, 2};
+  for (int64_t size = 1; size <= 1024; ++size) {
+    choice.scopes[0].iteratorTileSizes[3] = size;
+    choice.scopes[0].loopOrder = size == 1024
+                                     ? llvm::SmallVector<uint32_t, 4>{}
+                                     : llvm::SmallVector<uint32_t, 4>{3};
+    EXPECT_TRUE(domain.domain->contains(choice));
+  }
+  choice.scopes[0].iteratorTileSizes[1] = 128;
+  EXPECT_FALSE(domain.domain->contains(choice));
+  EXPECT_EQ(
+      domain.domain->getScopeDescriptors(TemporalTraversalKind::Independent)[0]
+          .iteratorCapabilities[1],
+      IteratorTilingCapability::Tileable);
+  auto function = region->getParentOfType<mlir::func::FuncOp>();
+  mlir::IRMapping mapping;
+  mlir::OwningOpRef<mlir::func::FuncOp> clone(
+      mlir::cast<mlir::func::FuncOp>(function->clone(mapping)));
+  auto mappedRegion =
+      mlir::cast<TileRegionOp>(mapping.lookup(region.getOperation()));
+  auto mapped = remapTemporalDomain(*domain.domain, mappedRegion, mapping);
+  ASSERT_TRUE(mlir::succeeded(mapped));
+  EXPECT_EQ(mapped->getScopeDescriptors()[0].role,
+            TemporalScopeRole::FusedReduction);
+  EXPECT_EQ(mapped->getScopeDescriptors()[0].operation,
+            mapping.lookup(descriptors[0].operation));
+}
+
+TEST(TemporalDomainTest, DynamicTensorInterfaceDoesNotMaterializeADomainQuery) {
+  auto context = createContext();
+  auto module = parse(*context, R"mlir(
+    %value = tensor.pad %arg low[0, 0, 1] high[0, 0, 1] {
+      ^bb0(%b: index, %m: index, %n: index):
+        %zero = arith.constant 0.0 : f16
+        tensor.yield %zero : f16
+    } : tensor<2x?x128xf16> to tensor<2x?x130xf16>)mlir",
+                      "tensor<2x?x128xf16>", "tensor<2x?x130xf16>");
+  ASSERT_TRUE(module);
+  TileRegionOp region;
+  module->walk([&](TileRegionOp op) { region = op; });
+  size_t before = region.getBody().front().getOperations().size();
+  auto domain = buildTemporalDomain(region);
+  ASSERT_TRUE(domain.succeeded());
+  EXPECT_TRUE(domain.domain->getScopeDescriptors().empty());
+  EXPECT_EQ(region.getBody().front().getOperations().size(), before);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
 }
 
 } // namespace

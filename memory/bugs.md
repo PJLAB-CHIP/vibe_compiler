@@ -7,6 +7,26 @@
 `completion`、`bufferization`、`package`、`runtime`、`CMake`和`ownership`。条目描述的是防复发模式；若与current
 编号设计或源码冲突，以current事实源为准并在同次修改中修正文档。
 
+## 融合输出范围不能消除内部归约参数
+
+- 现象：普通 contraction/reduction 已经融合进 consumer 的输出循环，actual SPM 仍因完整操作数或初始化 allocation 拒绝。
+- 根因：结果 tile 只确定输出范围，完整 reduction fiber 仍有内部 tile size/order；把整个 producer scope 删除会丢掉这些自由参数。
+  同时，`extract_slice(fill)` 的多 use/main-tail 形式不会被 pinned 的单 use swap pattern 自动局部化。
+- 修复模式：从 current interface/maps 区分派生输出坐标与自由归约坐标；通过同一 result-tile materializer 生成内部 recurrence，
+  组合实际嵌套 slice，并继续物化上游 producer。Scalar fill 按实际 slice 创建同值同 dtype 的局部初始化；非 uniform 旧值读取保持 SSA。
+  共享归约 group 必须唯一拥有其 consumer roots，不能同时将它们作为另一条融合路径的已消去 producer。
+- 防复发：使用 named/generic contraction、卷积、单轴/多轴归约、共享输入和 view 链，成对检查整除/尾部的 exact 动态覆盖、
+  物化次数、原初始化值及实际 Instr/completion/SPM；不能仅用短 reduction 或 temporal IR 成功签发内存资格。
+
+## Result-tile helper 的返回值不等于已完成 rewiring
+
+- 现象：创建 tiled producer 后删除仍有 use 的 slice，或在已删除 operation 的 insertion point 上继续创建 cast，触发断言/崩溃。
+- 根因：pinned `tensor::replaceExtractSliceWithTiledProducer` 只生成并返回 `TilingResult`，调用者仍拥有 slice 的替换与删除；
+  helper 内继续 tiling/替换临时 producer 后，其 insertion point 也可能失效。
+- 修复模式：按返回的 actual values 明确 rewiring，再删除旧 slice；修改 insertion point 的 helper 使用 `OpBuilder::InsertionGuard`，
+  不依据函数名猜测 API 是否已经替换 IR。
+- 防复发：从真实 consumer use 推进 main/tail 到直接下游，验证 use-def 和 verifier；以 pinned 源码确认 mutation/ownership 合同。
+
 ## 可选rewrite必须在依赖扩展后重新检查集合重叠
 
 - 现象：两个原本不共享输入Region的合法exchange在依次合并时，第二次clone解引用已经删除的operation。
