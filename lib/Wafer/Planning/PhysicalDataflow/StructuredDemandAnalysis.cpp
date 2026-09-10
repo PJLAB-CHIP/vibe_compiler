@@ -1134,13 +1134,16 @@ public:
   SemanticRootAnalysis semanticRoots;
   llvm::SmallVector<StructuredOperationFact, 16> operations;
   std::vector<ResultRelationFact> reverseResults;
+  std::optional<DemandFailure> rootFactFailure;
 
   Impl(StructuredDAGAnalysis dag, SemanticRootAnalysis semanticRoots,
        llvm::SmallVector<StructuredOperationFact, 16> operations,
-       std::vector<ResultRelationFact> reverseResults)
+       std::vector<ResultRelationFact> reverseResults,
+       std::optional<DemandFailure> rootFactFailure)
       : dag(std::move(dag)), semanticRoots(std::move(semanticRoots)),
         operations(std::move(operations)),
-        reverseResults(std::move(reverseResults)) {}
+        reverseResults(std::move(reverseResults)),
+        rootFactFailure(std::move(rootFactFailure)) {}
 };
 
 StructuredRelationFacts::StructuredRelationFacts(std::unique_ptr<Impl> impl)
@@ -1161,15 +1164,18 @@ StructuredRelationFacts::create(const StructuredDAGAnalysis &dag,
   if (mlir::failed(roots))
     return mlir::failure();
   llvm::SmallVector<StructuredOperationFact, 16> operations;
+  std::optional<DemandFailure> rootFactFailure;
   for (const SemanticRootBinding &binding : roots->getRoots()) {
     DemandResult<StructuredOperationFact> fact =
         deriveStructuredOperationFact(binding, limits);
     if (!getValue(fact)) {
-      if (failureReason)
-        *failureReason =
-            std::visit([](const auto &failure) { return failure.detail; },
-                       getFailure(std::move(fact)));
-      return mlir::failure();
+      // One root that cannot expose relation facts makes every exact demand
+      // query unsatisfiable. Keep the typed reason instead of flattening it
+      // into a string, so the caller can close this choice as unsupported
+      // rather than reporting a broken contract.
+      if (!rootFactFailure)
+        rootFactFailure = getFailure(std::move(fact));
+      continue;
     }
     operations.push_back(std::move(*getValue(fact)));
   }
@@ -1249,7 +1255,8 @@ StructuredRelationFacts::create(const StructuredDAGAnalysis &dag,
   }
   return StructuredRelationFacts(
       std::make_unique<Impl>(dag, std::move(*roots), std::move(operations),
-                             std::move(reverseResults)));
+                             std::move(reverseResults),
+                             std::move(rootFactFailure)));
 }
 
 const StructuredDAGAnalysis &StructuredRelationFacts::getDAG() const {
@@ -1258,6 +1265,10 @@ const StructuredDAGAnalysis &StructuredRelationFacts::getDAG() const {
 
 const SemanticRootAnalysis &StructuredRelationFacts::getSemanticRoots() const {
   return impl->semanticRoots;
+}
+
+bool StructuredRelationFacts::hasUnanalyzableRoot() const {
+  return impl->rootFactFailure.has_value();
 }
 
 StructuredRelationAnalysis::StructuredRelationAnalysis(
@@ -1282,6 +1293,8 @@ analysis::ExactDemandOutcome
 deriveExactDemand(const StructuredRelationFacts &facts,
                   const SpatialAssignment &assignment,
                   const IndexRelationLimits &limits) {
+  if (facts.impl->rootFactFailure)
+    return getFailureOutcome(*facts.impl->rootFactFailure);
   llvm::SmallVector<NodeIterationSpace, 16> iterationSpaces;
   llvm::SmallVector<TileId, 16> tiles;
   for (const StructuredOperationFact &fact : facts.impl->operations) {

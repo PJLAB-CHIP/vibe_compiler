@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
@@ -701,6 +702,88 @@ module {
       std::make_unique<ObserveRelationPass>(&observations));
   ASSERT_TRUE(mlir::succeeded(manager.run(*module)));
   EXPECT_EQ(observations, (llvm::SmallVector<unsigned, 3>{1, 1, 2}));
+}
+
+TEST(StructuredDemandRootFactTest,
+     NonLinalgRootKeepsTypedUnsupportedDemandOutcome) {
+  // `tensor.pack` is DestinationStyle and TilingInterface, so it enters the
+  // structured DAG, but it is neither a linalg op nor an attention op and
+  // therefore cannot expose operand/result indexing relations. The typed
+  // reason must survive as an unsupported demand outcome that closes one
+  // choice, instead of becoming a broken-contract session failure. The tensor
+  // tiling models are registered here because production registers them too.
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::linalg::LinalgDialect, mlir::tensor::TensorDialect>();
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  mlir::tensor::registerTilingInterfaceExternalModelsForPackUnPackOps(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(%input: tensor<2x1024x128xf16>) -> tensor<2x1024x128xf16> {
+    %packed_empty = tensor.empty() : tensor<1x8x128x2x128xf16>
+    %packed = tensor.pack %input inner_dims_pos = [0, 1] inner_tiles = [2, 128]
+        into %packed_empty : tensor<2x1024x128xf16> -> tensor<1x8x128x2x128xf16>
+    %result_empty = tensor.empty() : tensor<2x1024x128xf16>
+    %result = tensor.unpack %packed inner_dims_pos = [0, 1]
+        inner_tiles = [2, 128]
+        into %result_empty : tensor<1x8x128x2x128xf16> -> tensor<2x1024x128xf16>
+    return %result : tensor<2x1024x128xf16>
+  }
+}
+)mlir",
+                                                              mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  auto function = *module->getOps<mlir::func::FuncOp>().begin();
+
+  std::string failureReason;
+  auto dag = StructuredDAGAnalysis::create(function, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+
+  auto session = DemandPlanningSession::create(*dag, {}, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(session)) << failureReason;
+  EXPECT_TRUE(session->hasUnanalyzableRoot());
+  // The session holds typed facts, so no spatial assignment can satisfy them;
+  // the outcome category is what PlanningSession maps to a closed choice.
+  ExactDemandOutcome outcome = session->query(SpatialAssignment{});
+  EXPECT_EQ(classifyExactDemandOutcome(outcome),
+            ExactDemandOutcomeCategory::UnsupportedSemantics);
+  ASSERT_TRUE(std::holds_alternative<UnsupportedDemandSemantics>(outcome));
+  EXPECT_FALSE(std::get<UnsupportedDemandSemantics>(outcome).detail.empty());
+}
+
+TEST(StructuredDemandRootFactTest, LinalgProgramHasNoUnanalyzableRoot) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::linalg::LinalgDialect, mlir::tensor::TensorDialect>();
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(%input: tensor<2x1024x128xf16>) -> tensor<2x1024x128xf16> {
+    %empty = tensor.empty() : tensor<2x1024x128xf16>
+    %result = linalg.map ins(%input : tensor<2x1024x128xf16>)
+        outs(%empty : tensor<2x1024x128xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    return %result : tensor<2x1024x128xf16>
+  }
+}
+)mlir",
+                                                              mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+  auto function = *module->getOps<mlir::func::FuncOp>().begin();
+  std::string failureReason;
+  auto dag = StructuredDAGAnalysis::create(function, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+  auto session = DemandPlanningSession::create(*dag, {}, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(session)) << failureReason;
+  EXPECT_FALSE(session->hasUnanalyzableRoot());
 }
 
 } // namespace
