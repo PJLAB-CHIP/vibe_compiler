@@ -966,6 +966,45 @@ mlir::LogicalResult specializeConcatLoopBoundaries(
   return mlir::success();
 }
 
+// The assembly query proves the value, not the selected traversal's ability to
+// rebuild it with static pieces. Overlapping windows can still read the
+// already materialized assembly; they do not require concat fusion to tile.
+bool canSpecializeConcatSlices(TileRegionOp region,
+                               const ConcatFusionRequest &request) {
+  auto type =
+      mlir::dyn_cast<mlir::RankedTensorType>(request.assembledValue.getType());
+  auto axis = getConcatPartitionDimension(type, request.segments);
+  if (!axis)
+    return false;
+  bool found = false;
+  bool supported = true;
+  region.walk([&](mlir::tensor::ExtractSliceOp slice) {
+    if (slice.getSource() != request.assembledValue)
+      return;
+    found = true;
+    if (slice.getType().getRank() != type.getRank()) {
+      supported = false;
+      return;
+    }
+    for (mlir::OpFoldResult size : slice.getMixedSizes()) {
+      auto length = resolveStaticIndex(size);
+      if (!length || *length <= 0)
+        supported = false;
+    }
+    for (mlir::OpFoldResult stride : slice.getMixedStrides())
+      if (resolveStaticIndex(stride) != 1)
+        supported = false;
+    auto offset = slice.getMixedOffsets()[*axis];
+    if (resolveStaticIndex(offset))
+      return;
+    auto grid = getCanonicalLoopGrid(offset);
+    auto length = resolveStaticIndex(slice.getMixedSizes()[*axis]);
+    if (!grid || !length || grid->step != *length)
+      supported = false;
+  });
+  return found && supported;
+}
+
 mlir::LogicalResult
 fuseConcatSlices(mlir::IRRewriter &rewriter, TileRegionOp region,
                  llvm::ArrayRef<ConcatFusionRequest> requests,
@@ -2755,6 +2794,9 @@ applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
           failure, TemporalTilingFailureKind::CompilerFailure,
           "ragged temporal loop could not form one static tail");
     canonicalizeLoopBoundMinMax(rewriter, region);
+    llvm::erase_if(concatFusionRequests, [&](const auto &request) {
+      return !canSpecializeConcatSlices(region, request);
+    });
     if (mlir::failed(specializeConcatLoopBoundaries(
             rewriter, region, concatFusionRequests, statistics)))
       return fail<TemporalTilingStatistics>(

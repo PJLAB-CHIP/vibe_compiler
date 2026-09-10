@@ -296,6 +296,28 @@ current pure tensor support chain，保持reshape/slice/insert等typed indexing�
 external/coupled/partial entry argument使用stage-local `wafer.cross_tile_boundary_input`标记其actual structural boundary身份；
 movement消费对应actual relation并删除该argument，该attr不能越过physical movement closure，也不表示future buffer、route或movement。
 
+#### 精确需求内的片段拼接
+
+- Upstream IR / input：selected execution的`RootOperandWork`、exact operand demand、local/external fragment domains及当前tensor endpoints。
+- Current stage responsibility：在spatial structural materialization内，把所选consumer需要的多个片段直接拼入其精确矩形；
+  source slice仍使用producer坐标，destination slice减去需求原点。显式`tensor.insert_slice` support链使用同一局部需求机制。
+- Output IR / files：紧凑`tensor.empty`、source `extract_slice`和相对坐标的`insert_slice`，交给同一个TilingInterface adapter。
+  仅为调用原op tiler保留的full-type包装在本次物化内由实际matching slice替换并清理，不跨stage充当存储事实。
+- Downstream consumer：temporal、layout/One-Shot Bufferize、boundary movement、Instr/completion及唯一SPM规划。
+- User-level driver / named pipeline：正式`wafer-compile --optimization-policy=search`的spatial materializer。
+- Explicit non-goals：不扩大或近似operand demand，不改变fragment ownership、Region choice、producer的observable输出或DDR/DTE选择；
+  不引入rolling buffer、数值重排或另一条graph rewrite路径。
+- Completion criteria：1024/1025/1031、多Tile、named/generic window及多片段fan-in的精确范围、相对offset、coverage和actual下游通过；
+  非单矩形需求继续使用有限pieces语义，不能以bounding box冒充精确需求。
+
+算法采用[MLIR DPS与subset bufferization](https://mlir.llvm.org/docs/Bufferization/)的显式destination构造：
+先给出正确局部destination，再让bufferization决定alias/copy。对照pinned Tensor `foldExtractAfterInsertSlice`，该fold只消除
+紧邻且offset/size/stride相同的insert/extract，不能消除多片段拼接后的较大extract；因此在已选spatial demand的物化owner直接构造，
+不增加e-graph外的普通图等价探索，也不依赖canonicalizer消除完整allocation。
+后续temporal concat查询的exact结论只证明片段值；static concat loop specialization还须在实际生成的slice上证明
+offset grid、静态size及步长满足生成合同。重叠window或其它无法生成static pieces的slice保持读取已有紧凑assembly，
+普通TilingInterface切分继续有效；不能把可选concat融合不支持升级成整个temporal变换的compiler failure。
+
 ### 5.3 Temporal tiling
 
 

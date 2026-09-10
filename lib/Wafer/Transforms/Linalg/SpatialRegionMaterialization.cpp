@@ -1195,9 +1195,10 @@ struct GroupBuilder {
     return supportMapping.lookup(value);
   }
 
-  mlir::FailureOr<mlir::Value>
-  assembleFragments(mlir::Value sourceValue,
-                    llvm::SmallVector<DemandFragmentId, 4> fragments) {
+  mlir::FailureOr<mlir::Value> assembleFragments(
+      mlir::Value sourceValue, llvm::SmallVector<DemandFragmentId, 4> fragments,
+      std::optional<analysis::StaticRectangularIndexSet> requested =
+          std::nullopt) {
     if (!getSourceValueKey(sourceValue, sourceFunction, nodes)) {
       auto sourceResult = mlir::dyn_cast<mlir::OpResult>(sourceValue);
       mlir::Operation *definition =
@@ -1232,12 +1233,14 @@ struct GroupBuilder {
             failure, SpatialRegionMaterializationFailureKind::Unsupported,
             "exact-empty structural input requires a static ranked tensor");
       return builder
-          .create<mlir::tensor::EmptyOp>(sourceValue.getLoc(),
-                                         tensorType.getShape(),
-                                         tensorType.getElementType())
+          .create<mlir::tensor::EmptyOp>(
+              sourceValue.getLoc(),
+              requested ? llvm::ArrayRef<int64_t>(requested->sizes)
+                        : tensorType.getShape(),
+              tensorType.getElementType())
           .getResult();
     }
-    if (fragments.size() == 1)
+    if (fragments.size() == 1 && !requested)
       return getOrCreateFragmentValue(sourceValue, fragments.front());
     if (fragments.empty())
       return fail<mlir::Value>(
@@ -1247,10 +1250,13 @@ struct GroupBuilder {
       return fail<mlir::Value>(
           failure, SpatialRegionMaterializationFailureKind::Unsupported,
           "structural fan-in requires a static ranked tensor");
-    auto empty = builder.create<mlir::tensor::EmptyOp>(
-        sourceValue.getLoc(), tensorType.getShape(),
-        tensorType.getElementType());
-    mlir::Value assembled = empty.getResult();
+    // Keep source coordinates until emission. Only the destination is rebased
+    // to the selected demand; a bounding box is never used to infer demand.
+    struct FragmentSlice {
+      DemandFragmentId fragment;
+      analysis::StaticRectangularIndexSet box;
+    };
+    llvm::SmallVector<FragmentSlice, 4> slices;
     for (const DemandFragmentId &fragment : fragments) {
       const analysis::ExactIndexSet *domain = findFragmentDomain(fragment);
       if (!domain) {
@@ -1267,32 +1273,68 @@ struct GroupBuilder {
         return fail<mlir::Value>(
             failure, SpatialRegionMaterializationFailureKind::Unsupported,
             "external fragment is not a finite rectangular union");
-      mlir::FailureOr<mlir::Value> endpoint =
-          getOrCreateFragmentValue(sourceValue, fragment);
-      if (mlir::failed(endpoint))
-        return mlir::failure();
       for (const auto &box : normalized->getBoxes()) {
         if (box.offsets.size() != static_cast<size_t>(tensorType.getRank()) ||
             box.sizes.size() != static_cast<size_t>(tensorType.getRank()))
           return fail<mlir::Value>(
               failure, SpatialRegionMaterializationFailureKind::BrokenContract,
               "external fragment rank does not match its tensor");
-        llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
-        llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
-        llvm::SmallVector<mlir::OpFoldResult, 4> strides;
-        for (auto [offset, size] : llvm::zip_equal(box.offsets, box.sizes)) {
-          offsets.push_back(builder.getIndexAttr(offset));
-          sizes.push_back(builder.getIndexAttr(size));
-          strides.push_back(builder.getIndexAttr(1));
+        auto clipped = box;
+        bool empty = false;
+        for (int64_t axis = 0; axis < tensorType.getRank(); ++axis) {
+          int64_t end = 0;
+          if (box.offsets[axis] < 0 || box.sizes[axis] <= 0 ||
+              llvm::AddOverflow(box.offsets[axis], box.sizes[axis], end) ||
+              end > tensorType.getDimSize(axis))
+            return fail<mlir::Value>(
+                failure,
+                SpatialRegionMaterializationFailureKind::BrokenContract,
+                "external fragment is outside its tensor");
+          if (!requested)
+            continue;
+          int64_t begin = std::max(box.offsets[axis], requested->offsets[axis]);
+          end =
+              std::min(end, requested->offsets[axis] + requested->sizes[axis]);
+          if (begin >= end) {
+            empty = true;
+            break;
+          }
+          clipped.offsets[axis] = begin;
+          clipped.sizes[axis] = end - begin;
         }
-        auto slice = builder.create<mlir::tensor::ExtractSliceOp>(
-            sourceValue.getLoc(), *endpoint, offsets, sizes, strides);
-        assembled = builder
-                        .create<mlir::tensor::InsertSliceOp>(
-                            sourceValue.getLoc(), slice.getResult(), assembled,
-                            offsets, sizes, strides)
-                        .getResult();
+        if (!empty)
+          slices.push_back({fragment, std::move(clipped)});
       }
+    }
+    auto empty = builder.create<mlir::tensor::EmptyOp>(
+        sourceValue.getLoc(),
+        requested ? llvm::ArrayRef<int64_t>(requested->sizes)
+                  : tensorType.getShape(),
+        tensorType.getElementType(), tensorType.getEncoding());
+    mlir::Value assembled = empty.getResult();
+    for (const FragmentSlice &selected : slices) {
+      auto endpoint = getOrCreateFragmentValue(sourceValue, selected.fragment);
+      if (mlir::failed(endpoint))
+        return mlir::failure();
+      llvm::SmallVector<mlir::OpFoldResult, 4> sourceOffsets;
+      llvm::SmallVector<mlir::OpFoldResult, 4> destinationOffsets;
+      llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
+      llvm::SmallVector<mlir::OpFoldResult, 4> strides;
+      for (int64_t axis = 0; axis < tensorType.getRank(); ++axis) {
+        int64_t offset = selected.box.offsets[axis];
+        sourceOffsets.push_back(builder.getIndexAttr(offset));
+        destinationOffsets.push_back(builder.getIndexAttr(
+            offset - (requested ? requested->offsets[axis] : 0)));
+        sizes.push_back(builder.getIndexAttr(selected.box.sizes[axis]));
+        strides.push_back(builder.getIndexAttr(1));
+      }
+      auto slice = builder.create<mlir::tensor::ExtractSliceOp>(
+          sourceValue.getLoc(), *endpoint, sourceOffsets, sizes, strides);
+      assembled = builder
+                      .create<mlir::tensor::InsertSliceOp>(
+                          sourceValue.getLoc(), slice.getResult(), assembled,
+                          destinationOffsets, sizes, strides)
+                      .getResult();
     }
     return assembled;
   }
@@ -1490,10 +1532,7 @@ struct GroupBuilder {
           }
         if (matching.empty())
           return mlir::failure();
-        auto assembled = assembleFragments(value, matching);
-        if (mlir::failed(assembled))
-          return mlir::failure();
-        full = *assembled;
+        return assembleFragments(value, matching, requested);
       }
     } else {
       llvm::SmallVector<DemandFragmentId, 4> selectedFragments(
@@ -1542,7 +1581,8 @@ struct GroupBuilder {
       destinationShard = &std::get<ReplicaExecutionId>(consumer).producer.shard;
     }
     if (destinationShard &&
-        operand.get().getDefiningOp<mlir::tensor::InsertSliceOp>()) {
+        (fragments.size() > 1 ||
+         operand.get().getDefiningOp<mlir::tensor::InsertSliceOp>())) {
       const analysis::RootRegionWork *work =
           findWork(rootWorks, analysis::RootRegionWorkId{destinationShard->root,
                                                          group.tile});

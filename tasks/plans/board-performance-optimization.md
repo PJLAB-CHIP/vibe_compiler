@@ -56,6 +56,28 @@
 当前检查点：七项范围、依赖和覆盖已登记；第3项基线与第5项fresh产品复验先行，第1项开始定位。
 第2/4/6/7项按上述依赖推进。尚无本轮新增板端结果，不沿用旧package签发`board-ready`或`done`。
 
+首个实施边界：第1项consumer fan-in在spatial materializer直接按exact demand构造紧凑assembly，source offset保留producer坐标，
+destination offset减去请求原点。已发现的temporal concat生成限制另在actual slice上预检：重叠window保留已有assembly供循环读取，
+不把可选融合不支持解释为普通tiling失败。此边界不宣称producer跨Region输出、DDR往返或halo传输已全部优化。
+
+该边界本轮验证：`AssemblesHaloInExactConsumerWindow`的12组named/generic × 4/16 Tile × 1024/1025/1031
+逐行检查输入coverage、producer绝对坐标与consumer相对坐标、无完整consumer assembly，再经过多block/tail、movement、
+Instr/completion/SPM到accepted executable。Spatial/temporal 62项通过；完整`check-wafer`的277 lit、14组件CTest、
+42 runtime/public-link相关检查、62 reference numeric、19 target numeric与17 SystemC实际通过；6组fresh local-conv-tail-1031
+及conv-mixed-dag FP16/BF16的none/search产品no-card通过。最后的concat stride预检补齐后，重新构建、复跑62项及6组fresh no-card均通过，
+canonical完整增量构建后的第二次构建为Ninja no-op。此处numeric/SystemC是既有机制回归，新增halo矩阵的直接witness为实际executable，
+未声明新增halo case已经执行完整模型数值。
+
+第3/4项fresh基线发现新的产品阻塞：FP16 decode第一步在原width=8/trials=42下编译约296.09秒，actual尝试42次、accepted=0；
+末次反馈包含真实4 MiB `memref<1x4096x512xf16>` SPM demand。实际region-to-Instr转换11328次、relation descriptor规划133546次。
+该次未生成package、未进入no-card或第二步，不将预算内未找到候选写成全局无解；下一步先追到实际allocation producer，
+恢复current产品编译，再开展与历史8.222/11.443 ms相对应的设备性能调查。
+
+第3/5项同轮完整block基线也未生成package：约945.84秒，两个structural states、42 actual尝试、accepted=0，
+在structured-to-Tile遇到input map `(d0,d1,d2)->(0,d1,d0,d2)`、rank4→rank3的parallel Linalg映射拒绝，尚未进入实际SPM gate。
+同时tensor-linalg inventory仍为两个`linalg.batch_matmul`，没有attention op；需要分别闭合unit-axis输入映射lowering与真实source的attention识别。
+该结果替代对旧完整weight容量故障的猜测，不把失败编译当作FA产品验收或设备性能结果。
+
 ## 既有板端流程与产品矩阵
 
 1. 新鲜导出与编译三条 search FP16 case；逐 case 采集原 profiler。先核对 Count 容量与所有数值/完成门禁。
