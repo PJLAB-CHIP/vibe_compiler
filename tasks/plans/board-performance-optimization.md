@@ -88,12 +88,19 @@ Unit-axis实现的24组1024/1025/1031 × leading/middle/multiple-unit/broadcast 
 strided输入包含非零slice原点，检查删除unit轴后同source、同offset、逐轴相同stride与memory space，并实际进入Instr。
 两类非unit常量坐标负例保持typed Unsupported且IR不变，StructuredToTile共36项通过。
 本轮完整canonical构建、Ninja no-op、完整`check-wafer`及prefill/local-conv tail-1031 FP16的none/search四组fresh no-card通过。
-完整block新产品复验已经越过原映射拒绝，但仍在actual容量反馈中推进，未签发完整产品资格。
+完整block新产品复验已经越过原映射拒绝，最终约771.62秒、42 actual尝试、accepted=0，仍未生成package；
+末次实际容量记录为5,636,096 bytes的`1376x2048xf16`权重buffer，聚合结果保留Unsupported/Indeterminate，
+不将其它movement尚未穷尽或预算结束压成全局容量无解。未签发完整产品资格或设备加速结论。
 
 当前allocation定位已区分两种来源：完整block的首个实际候选直接加载`11008x4096xf16`权重并执行未切小的GEMM；
 后续真实反馈依次出现`5504x4096`、`2752x4096`和`2752x2048`，不能称为“buffer根本不随tile变化”。
 Decode首个temporal候选的`1x4096x512xf16`来自standard reduction contribution的展开乘积，随后按K片段拼接供merge读取；
 它不是attention的online accumulator。该定位只决定下一步调查producer/merge与实际容量反馈，不能从shape估算签发下一候选合法性。
+
+下一施工边界：先追踪standard contribution与merge间完整carrier的实际use/lifetime，以及相同DPS init片段的重复拼接；
+随后补真实block的attention view/indexing proof，并按第6项统一profile采集范围、record和report。
+第2项按新机制补模型执行，既有numeric/SystemC通过不代替新增case；第4/7项的设备性能复验等待合格设备恢复。
+搜索预算、访问公平性及更长搜索时间比较仍不在本轮实施范围内。
 
 ## 既有板端流程与产品矩阵
 
