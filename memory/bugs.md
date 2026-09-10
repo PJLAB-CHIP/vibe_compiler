@@ -1871,3 +1871,15 @@
 - 根因：多个consumer自身的operand maps相同，不代表它们派生到下游root后的需求相同；省略不存在的独立consumer choice会放过不同请求。共同循环放在最后一个consumer前，也可能越过较早的observable result use。
 - 修复模式：沿current result/operand关系将全部请求组合到实际selected root，检查需求与grid一致；生成前检查共同循环位置对已有uses的支配关系。不能用consumer数量、相同map或原始source顺序代替这些证明。
 - 防复发：同一producer经两个pointwise consumer到一个root，配对检查identity与transpose访问；producer observable use和较早consumer result use分别拒绝，保持source IR不变。
+
+## 非均匀切分在当前relation形态下没有可构造的producer
+
+- 现象：为spatial partition新增"任意切点列表"（非均匀切分）时，唯一自然producer是relation协调——把上游已证明的矩形边界直接当作切点。
+  但构造不出能触发它的输入；raw后继枚举也不可能枚举该家族（把extent切成≤k段有`C(extent-1,k-1)`种，1024、k≤16时约`10^29`）。
+- 根因：`SpatialPartitionPropagation`的consumer-to-producer关系由indexing map复合而成，是仿射的。仿射映射对所有分片按同一系数缩放，
+  保留`BalancedParts`的"余数在前"结构，因此映射结果仍落回`BalancedParts`或`UniformExtent`。实测：源轴2050切`BalancedParts(3)`为
+  684/683/683，经`p→p/2`映射得342/341/341，恰好等于`BalancedParts(3)`在1025上的结果，于是走了参数化分支而非显式切点。
+- 修复模式：不为切分新增枚举或搜索维度，也不保留没有producer的scheme。要做非均匀切分，先指出产生切点的真实事实来源
+  （例如目标侧块粒度，或非仿射但可精确表示的支持链），再连同该来源一起实现。
+- 防复发：新增scheme必须附一个可构造的producer用例。只有"可表示、可验证"而没有创建者仍是死代码；domain成员合法性与canonical去重
+  的测试不能代替producer测试。同理，为切分加"对齐约束"前要先确认存在迭代空间粒度事实——`TargetMemory.h`的alignment是内存地址对齐，不适用。
