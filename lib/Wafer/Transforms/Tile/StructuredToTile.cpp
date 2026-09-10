@@ -21,6 +21,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <limits>
@@ -313,19 +314,67 @@ getCanonicalElementwiseMaps(mlir::linalg::LinalgOp operation) {
       maps.back().getNumDims() != resultType.getRank() ||
       maps.back().getNumSymbols() != 0 || !maps.back().isPermutation())
     return std::nullopt;
-  if (maps.back().isIdentity())
-    return maps;
   mlir::AffineMap resultToIteration = mlir::inversePermutation(maps.back());
-  if (!resultToIteration)
+  if (!resultToIteration || !resultType.hasStaticShape())
     return std::nullopt;
+  llvm::SmallVector<mlir::AffineExpr, 4> coordinates;
+  for (int64_t axis = 0; axis < resultType.getRank(); ++axis)
+    coordinates.push_back(
+        resultType.getDimSize(axis) == 1
+            ? mlir::getAffineConstantExpr(0, operation.getContext())
+            : mlir::getAffineDimExpr(axis, operation.getContext()));
   for (mlir::AffineMap &map : maps) {
     map = map.compose(resultToIteration);
-    if (map.getNumDims() != resultType.getRank() || map.getNumSymbols() != 0 ||
-        !map.isProjectedPermutation(/*allowZeroInResults=*/true))
+    if (map.getNumDims() != resultType.getRank() || map.getNumSymbols() != 0)
+      return std::nullopt;
+    if (map.isProjectedPermutation())
+      continue;
+    // Selected tiles can make an affine window axis a singleton. For example,
+    // m + w is exactly m when the current w extent is one. Keep ordinary dim
+    // expressions and normalize only the remaining expressions under these
+    // current bounds; the Tile op still receives a projected permutation.
+    llvm::SmallVector<mlir::AffineExpr, 4> expressions;
+    llvm::SmallBitVector used(resultType.getRank());
+    for (mlir::AffineExpr expression : map.getResults()) {
+      if (!mlir::isa<mlir::AffineDimExpr>(expression))
+        expression = mlir::simplifyAffineExpr(
+            expression.replaceDimsAndSymbols(coordinates, {}),
+            resultType.getRank(), 0);
+      if (auto dim = mlir::dyn_cast<mlir::AffineDimExpr>(expression))
+        used.set(dim.getPosition());
+      expressions.push_back(expression);
+    }
+    for (mlir::AffineExpr &expression : expressions) {
+      auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
+      if (!constant || constant.getValue() != 0)
+        continue;
+      for (int64_t axis = 0; axis < resultType.getRank(); ++axis)
+        if (resultType.getDimSize(axis) == 1 && !used.test(axis)) {
+          expression = mlir::getAffineDimExpr(axis, operation.getContext());
+          used.set(axis);
+          break;
+        }
+    }
+    map = mlir::AffineMap::get(resultType.getRank(), 0, expressions,
+                               operation.getContext());
+    if (!map.isProjectedPermutation())
       return std::nullopt;
   }
   maps.back() = mlir::AffineMap::getMultiDimIdentityMap(resultType.getRank(),
                                                         operation.getContext());
+  for (auto [operand, map] : llvm::zip_equal(operation->getOperands(), maps)) {
+    auto input = getMemRef(operand);
+    if (!input)
+      continue;
+    if (map.getNumResults() != input.getRank())
+      return std::nullopt;
+    for (auto [axis, expression] : llvm::enumerate(map.getResults())) {
+      auto dim = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+      if (!dim ||
+          input.getDimSize(axis) != resultType.getDimSize(dim.getPosition()))
+        return std::nullopt;
+    }
+  }
   return maps;
 }
 
@@ -336,6 +385,8 @@ static bool isSupportedElementwiseBody(mlir::linalg::LinalgOp operation) {
       !getCanonicalElementwiseMaps(operation))
     return false;
   mlir::Block &body = operation->getRegion(0).front();
+  if (operation.getOpOperandsMatchingBBargs().size() != body.getNumArguments())
+    return false;
   auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(body.getTerminator());
   if (!yield || yield.getValues().size() != 1)
     return false;
@@ -458,22 +509,27 @@ buildConvDescriptor(mlir::linalg::LinalgOp operation) {
     return mlir::failure();
   mlir::FailureOr<mlir::linalg::ConvolutionDimensions> inferred =
       mlir::linalg::inferConvolutionDims(operation);
-  if (mlir::failed(inferred) || inferred->batch.size() != 1 ||
-      inferred->outputImage.size() != 2 ||
-      inferred->outputChannel.size() != 1 || inferred->filterLoop.size() != 2 ||
+  if (mlir::failed(inferred))
+    return mlir::failure();
+  const size_t spatialRank = inferred->outputImage.size();
+  const int64_t rank = spatialRank + 2;
+  if (inferred->batch.size() != 1 || (spatialRank != 1 && spatialRank != 2) ||
+      inferred->outputChannel.size() != 1 ||
+      inferred->filterLoop.size() != spatialRank ||
       inferred->inputChannel.size() != 1 || !inferred->depth.empty() ||
-      inferred->strides.size() != 2 || inferred->dilations.size() != 2)
+      inferred->strides.size() != spatialRank ||
+      inferred->dilations.size() != spatialRank)
     return mlir::failure();
   mlir::MemRefType input = getMemRef(operation.getDpsInputs()[0]);
   mlir::MemRefType weight = getMemRef(operation.getDpsInputs()[1]);
   mlir::MemRefType output = getMemRef(operation.getDpsInits()[0]);
   if (!isStaticPositive(input) || !isStaticPositive(weight) ||
-      !isStaticPositive(output) || input.getRank() != 4 ||
-      weight.getRank() != 4 || output.getRank() != 4)
+      !isStaticPositive(output) || input.getRank() != rank ||
+      weight.getRank() != rank || output.getRank() != rank)
     return mlir::failure();
   llvm::SmallVector<mlir::AffineMap, 3> maps = operation.getIndexingMapsArray();
-  if (maps.size() != 3 || llvm::any_of(maps, [](mlir::AffineMap map) {
-        return map.getNumSymbols() != 0 || map.getNumResults() != 4;
+  if (maps.size() != 3 || llvm::any_of(maps, [&](mlir::AffineMap map) {
+        return map.getNumSymbols() != 0 || map.getNumResults() != rank;
       }))
     return mlir::failure();
   mlir::MLIRContext *context = operation.getContext();
@@ -502,7 +558,7 @@ buildConvDescriptor(mlir::linalg::LinalgOp operation) {
   llvm::SmallVector<unsigned, 2> inputSpatial;
   llvm::SmallVector<unsigned, 2> weightSpatial;
   llvm::SmallVector<unsigned, 2> outputSpatial;
-  for (unsigned index = 0; index < 2; ++index) {
+  for (unsigned index = 0; index < spatialRank; ++index) {
     mlir::AffineExpr window =
         loopExpr(inferred->outputImage[index]) * inferred->strides[index] +
         loopExpr(inferred->filterLoop[index]) * inferred->dilations[index];
@@ -519,23 +575,22 @@ buildConvDescriptor(mlir::linalg::LinalgOp operation) {
   }
 
   ConvDescriptor descriptor;
-  descriptor.inputToNHWC = {static_cast<int64_t>(*inputBatch),
-                            static_cast<int64_t>(inputSpatial[0]),
-                            static_cast<int64_t>(inputSpatial[1]),
-                            static_cast<int64_t>(*inputChannel)};
-  descriptor.weightToHWOI = {static_cast<int64_t>(weightSpatial[0]),
-                             static_cast<int64_t>(weightSpatial[1]),
-                             static_cast<int64_t>(*weightOutputChannel),
-                             static_cast<int64_t>(*weightInputChannel)};
-  descriptor.outputToNHWC = {static_cast<int64_t>(*outputBatch),
-                             static_cast<int64_t>(outputSpatial[0]),
-                             static_cast<int64_t>(outputSpatial[1]),
-                             static_cast<int64_t>(*outputChannel)};
-  if (!isPermutation(descriptor.inputToNHWC, 4) ||
-      !isPermutation(descriptor.weightToHWOI, 4) ||
-      !isPermutation(descriptor.outputToNHWC, 4))
+  descriptor.inputToNHWC.push_back(*inputBatch);
+  descriptor.outputToNHWC.push_back(*outputBatch);
+  for (size_t axis = 0; axis < spatialRank; ++axis) {
+    descriptor.inputToNHWC.push_back(inputSpatial[axis]);
+    descriptor.weightToHWOI.push_back(weightSpatial[axis]);
+    descriptor.outputToNHWC.push_back(outputSpatial[axis]);
+  }
+  descriptor.inputToNHWC.push_back(*inputChannel);
+  descriptor.weightToHWOI.push_back(*weightOutputChannel);
+  descriptor.weightToHWOI.push_back(*weightInputChannel);
+  descriptor.outputToNHWC.push_back(*outputChannel);
+  if (!isPermutation(descriptor.inputToNHWC, rank) ||
+      !isPermutation(descriptor.weightToHWOI, rank) ||
+      !isPermutation(descriptor.outputToNHWC, rank))
     return mlir::failure();
-  descriptor.outputFromNHWC.assign(4, -1);
+  descriptor.outputFromNHWC.assign(rank, -1);
   for (auto [canonicalDimension, sourceDimension] :
        llvm::enumerate(descriptor.outputToNHWC))
     descriptor.outputFromNHWC[sourceDimension] = canonicalDimension;
@@ -556,6 +611,13 @@ buildConvDescriptor(mlir::linalg::LinalgOp operation) {
       permutedShape(weight, descriptor.weightToHWOI);
   llvm::SmallVector<int64_t, 4> outputShape =
       permutedShape(output, descriptor.outputToNHWC);
+  if (spatialRank == 1) {
+    inputShape.insert(inputShape.begin() + 1, 1);
+    weightShape.insert(weightShape.begin(), 1);
+    outputShape.insert(outputShape.begin() + 1, 1);
+    descriptor.strides.insert(descriptor.strides.begin(), 1);
+    descriptor.dilations.insert(descriptor.dilations.begin(), 1);
+  }
   auto validOutput = [](int64_t inputExtent, int64_t kernel, int64_t stride,
                         int64_t dilation) -> std::optional<int64_t> {
     if (inputExtent <= 0 || kernel <= 0 || stride <= 0 || dilation <= 0 ||
@@ -1332,6 +1394,20 @@ lowerConvolution(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
   llvm::SmallVector<int64_t, 4> canonicalResultShape;
   for (int64_t dimension : descriptor->outputToNHWC)
     canonicalResultShape.push_back(resultType.getDimSize(dimension));
+  const auto logicalResultShape = canonicalResultShape;
+  if (inputType.getRank() == 3) {
+    auto inputShape = llvm::to_vector(getMemRef(*canonicalInput).getShape());
+    auto weightShape = llvm::to_vector(getMemRef(*canonicalWeight).getShape());
+    inputShape.insert(inputShape.begin() + 1, 1);
+    weightShape.insert(weightShape.begin(), 1);
+    canonicalInput = reshapeBuffer(*canonicalInput, inputShape, rewriter,
+                                   operation.getLoc(), statistics);
+    canonicalWeight = reshapeBuffer(*canonicalWeight, weightShape, rewriter,
+                                    operation.getLoc(), statistics);
+    if (mlir::failed(canonicalInput) || mlir::failed(canonicalWeight))
+      return mlir::failure();
+    canonicalResultShape.insert(canonicalResultShape.begin() + 1, 1);
+  }
   auto convolution = rewriter.create<ComputeConvOp>(
       operation.getLoc(), getShapedType(resultType, canonicalResultShape),
       *canonicalInput, *canonicalWeight,
@@ -1339,9 +1415,14 @@ lowerConvolution(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
       rewriter.getDenseI64ArrayAttr(descriptor->unpads),
       rewriter.getDenseI64ArrayAttr(descriptor->strides),
       rewriter.getDenseI64ArrayAttr(descriptor->dilations));
+  auto logicalResult =
+      reshapeBuffer(convolution.getResult(), logicalResultShape, rewriter,
+                    operation.getLoc(), statistics);
+  if (mlir::failed(logicalResult))
+    return mlir::failure();
   mlir::FailureOr<mlir::Value> restored =
-      permuteBuffer(convolution.getResult(), descriptor->outputFromNHWC,
-                    rewriter, operation.getLoc(), statistics);
+      permuteBuffer(*logicalResult, descriptor->outputFromNHWC, rewriter,
+                    operation.getLoc(), statistics);
   if (mlir::failed(restored) || (*restored).getType() != resultType)
     return mlir::failure();
   mlir::Value replacement = *restored;
@@ -1477,17 +1558,24 @@ lowerElementwise(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
     return mlir::failure();
   llvm::SmallVector<mlir::AffineMap, 4> maps = std::move(*canonicalMaps);
   mlir::Block &body = operation->getRegion(0).front();
-  if (body.getNumArguments() != operation.getNumDpsInputs() + 1 ||
-      maps.size() != body.getNumArguments())
+  auto blockOperands = operation.getOpOperandsMatchingBBargs();
+  if (body.getNumArguments() != blockOperands.size() ||
+      llvm::any_of(blockOperands, [&](mlir::OpOperand *operand) {
+        return !operand || operand->getOwner() != operation ||
+               operand->getOperandNumber() >= maps.size();
+      }))
     return mlir::failure();
 
   rewriter.setInsertionPoint(operation);
   llvm::DenseMap<mlir::Value, ExprValue> values;
-  unsigned argumentIndex = 0;
-  for (mlir::Value input : operation.getDpsInputs()) {
-    mlir::BlockArgument argument = body.getArgument(argumentIndex);
+  // The interface owns the payload/operand correspondence. Map-like ops do
+  // not expose a destination block argument; generic DPS bodies usually do.
+  for (auto [argument, operand] :
+       llvm::zip_equal(body.getArguments(), blockOperands)) {
+    mlir::Value input = operand->get();
     if (mlir::MemRefType inputType = getMemRef(input)) {
-      values.try_emplace(argument, ExprValue{input, maps[argumentIndex]});
+      values.try_emplace(argument,
+                         ExprValue{input, maps[operand->getOperandNumber()]});
     } else {
       mlir::FailureOr<ExprValue> filled = createScalarFill(
           input, resultType, rewriter, operation.getLoc(), statistics);
@@ -1495,10 +1583,7 @@ lowerElementwise(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
         return mlir::failure();
       values.try_emplace(argument, *filled);
     }
-    ++argumentIndex;
   }
-  values.try_emplace(body.getArgument(argumentIndex),
-                     ExprValue{destination, maps[argumentIndex]});
   llvm::SetVector<mlir::Value> captures;
   mlir::getUsedValuesDefinedAbove(operation->getRegion(0), captures);
   for (mlir::Value capture : captures) {

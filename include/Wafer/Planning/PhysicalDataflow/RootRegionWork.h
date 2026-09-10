@@ -39,16 +39,15 @@ struct RootRegionWorkId {
 
 struct RootUseId {
   uint32_t operand = 0;
-  compiler::detail::LogicalShardId destinationShard;
+  DemandDestination destination;
 
   friend bool operator==(const RootUseId &lhs, const RootUseId &rhs) {
-    return lhs.operand == rhs.operand &&
-           lhs.destinationShard == rhs.destinationShard;
+    return lhs.operand == rhs.operand && lhs.destination == rhs.destination;
   }
   friend bool operator<(const RootUseId &lhs, const RootUseId &rhs) {
     if (lhs.operand != rhs.operand)
       return lhs.operand < rhs.operand;
-    return lhs.destinationShard < rhs.destinationShard;
+    return lhs.destination < rhs.destination;
   }
 };
 

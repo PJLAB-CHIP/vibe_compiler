@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <map>
 #include <set>
+#include <type_traits>
 
 namespace wafer::compiler::detail {
 namespace {
@@ -81,10 +82,18 @@ CanonicalRegionPlanOutcome buildGroup(const analysis::RootRegionWork &work) {
   std::set<analysis::RootUseId> boundaryUses;
   for (const analysis::RootBoundaryWork &boundary : work.boundaries) {
     for (const analysis::RootBoundaryUseWork &use : boundary.consumerUses) {
-      if (use.id.destinationShard.root != work.id.root ||
-          !executionShards.count(use.id.destinationShard))
+      bool local = std::visit(
+          [&](const auto &consumer) {
+            using T = std::decay_t<decltype(consumer)>;
+            if constexpr (std::is_same_v<T, LogicalShardId>)
+              return executionShards.count(consumer) != 0;
+            else
+              return mergeGroups.count(consumer) != 0;
+          },
+          use.id.destination);
+      if (analysis::getDemandRoot(use.id.destination) != work.id.root || !local)
         return broken(BrokenRegionPlanReason::WorkStructureMismatch,
-                      "root boundary use has no local execution shard",
+                      "root boundary use has no local execution or merge",
                       work.id);
       boundaryUses.insert(use.id);
       if ((!use.requiredDomain && !use.eligibleFinalOwners.empty()) ||

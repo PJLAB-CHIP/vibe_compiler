@@ -385,7 +385,7 @@ RegionDomain::create(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
   std::map<ReductionGroupId,
            std::pair<analysis::RootRegionWorkId, ExecutionInstanceId>>
       mergeOwners;
-  std::map<LogicalShardId,
+  std::map<analysis::DemandDestination,
            std::pair<analysis::RootRegionWorkId, ExecutionInstanceId>>
       consumers;
   std::map<analysis::RootRegionWorkId, bool> replicaAllowedByWork;
@@ -410,6 +410,8 @@ RegionDomain::create(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
       } else {
         const auto &merge =
             std::get<RequiredMergeExecution>(execution.id.source);
+        consumers.emplace(merge.group,
+                          std::make_pair(merge.work, execution.id));
         if (!mergeOwners.try_emplace(merge.group, merge.work, execution.id)
                  .second) {
           if (failureReason)
@@ -425,7 +427,7 @@ RegionDomain::create(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
       if (external.fragment.source.kind !=
           analysis::RootBoundaryKind::StructuredResult)
         continue;
-      auto consumer = consumers.find(external.fragment.use.destinationShard);
+      auto consumer = consumers.find(external.fragment.use.destination);
       if (consumer == consumers.end())
         continue;
       std::optional<std::pair<analysis::RootRegionWorkId, ExecutionInstanceId>>

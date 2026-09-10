@@ -745,9 +745,8 @@ module {
 
   auto session = DemandPlanningSession::create(*dag, {}, &failureReason);
   ASSERT_TRUE(mlir::succeeded(session)) << failureReason;
-  EXPECT_TRUE(session->hasUnanalyzableRoot());
-  // The session holds typed facts, so no spatial assignment can satisfy them;
-  // the outcome category is what PlanningSession maps to a closed choice.
+  // This isolates facts construction; the production entry's earlier
+  // domain rejection is covered by ExecutableCompilationPolicyTest.
   ExactDemandOutcome outcome = session->query(SpatialAssignment{});
   EXPECT_EQ(classifyExactDemandOutcome(outcome),
             ExactDemandOutcomeCategory::UnsupportedSemantics);
@@ -755,7 +754,7 @@ module {
   EXPECT_FALSE(std::get<UnsupportedDemandSemantics>(outcome).detail.empty());
 }
 
-TEST(StructuredDemandRootFactTest, LinalgProgramHasNoUnanalyzableRoot) {
+TEST(StructuredDemandRootFactTest, LinalgProgramHasExactDemand) {
   mlir::DialectRegistry registry;
   wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
@@ -783,7 +782,11 @@ module {
   ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
   auto session = DemandPlanningSession::create(*dag, {}, &failureReason);
   ASSERT_TRUE(mlir::succeeded(session)) << failureReason;
-  EXPECT_FALSE(session->hasUnanalyzableRoot());
+  auto coordinate =
+      buildCanonicalSpatialAssignment(*dag, {TileId(0)}, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(coordinate)) << failureReason;
+  EXPECT_NE(getExactDemandProof(session->query(coordinate->assignment)),
+            nullptr);
 }
 
 } // namespace

@@ -182,73 +182,82 @@ Search的constructive parallel proposal还应覆盖输入复用方向。对curre
 不引入learned model、设备autotuning或第二套cost objective。完成条件是原合法域不变、M/N及置换结构有不同完整候选进入actual比较，
 并由actual Instr和匹配profile验证热点改善。覆盖rank3/4、1024/1025/1031、4/16 Tile，窄M/窄N、等extent、置换map及未知map边界。
 
-输入复用proposal还产生一套沿SSA协调的parallel partition：参考[Shardy的数据流传播](https://openxla.org/shardy/propagation)，
-使用现有Linalg indexing maps与`TensorResultIndexing`，不新增按op名称维护的sharding规则表。
-只对全parallel consumer前向传播；按静态实际读取operand bytes及operand ordinal依次尝试上游partition。
-归约/收缩节点保留seed choice。每个source shard经真实SSA view链与访问relation映射为target迭代域的exact rectangle；
-只有这些rectangle恰好构成已有BalancedParts/UniformExtent Cartesian partition、完整无重叠且embedding injective时，
-才产生该target的choice。非矩形、broadcast重叠、partial slice、未知或超预算relation保留原choice。
-随后单次反向遍历零tensor-read的parallel generator；只有所有下游都推导出相同partition才协调其DPS初始化切分。
-两次有界遍历不追求固定点，不改变算术、不修改source IR，也不推断未来movement或SPM合法性；原seed与raw domain保留。
-完成条件是协调后的完整proposal仍经exact demand、actual materialization与统一leaf，不能以邻接轴一致代替这些验证。
-覆盖GEMM→pointwise→reshape/permutation、多producer冲突、generator多use、1024/1025/1031和4/16 Tile；
-精确检查owner/coverage、保留原proposal、source不变及实际下游shared-DDR/Instr，而不按模型名限定。
+输入复用proposal还产生沿SSA双向协调的partition。参考[Shardy的数据流传播](https://openxla.org/shardy/propagation)的双向factor传播；本实现使用已有IndexRelation表达实际访问，而不增加按GEMM/conv名称分支的规则表。
+与Shardy的固定点求解不同，此处只生成有界候选：从首个完整seed分别执行前向优先和反向优先的两次遍历，原seed、其余proposal及raw域保留。
 
-#### 不可分析root的admission与typed结果
+每条边组合consumer迭代域、实际operand/support链与producer结果的逆关系。每个source shard必须映射为exact rectangle；
+完全相同的矩形表示复用需求，合并为一个logical piece并确定性选择一个source Tile；部分重叠、非矩形或不能由当前
+BalancedParts/UniformExtent精确表示的边界不产生协调候选。新target partition必须完整覆盖迭代域，并通过domain `contains`/`close`。
+不再因consumer有归约轴或producer读取tensor而跳过。未被结果映射保留的归约轴由关系逆像恢复完整范围；若映射要求切归约轴，
+从新axes重新推导全部reduction group。仍存在的group保留seed merge placement，新group选择其首个contribution Tile作为显式merge choice。
+多个consumer反推同一个producer时，只有完整partition及placement一致才应用。前向仅根据实际读取operand尝试，按静态bytes与semantic ordinal排序。
+目标轴只有经逆关系tile-image证明invariant时才保留其独立seed切分，不能把单个full-extent image当成独立性证明。
+前向以实际读取的data input协调，DPS init沿consumer需求反向协调，不反过来用初始化的seed覆盖计算选择。
+没有新边界的whole-target需求保留seed；未改变或未被domain接纳的提案不能阻止继续尝试其它读取operand。
+这些选择不声明复制执行、movement、同步或SPM合法性；所有候选仍走actual materialization与fresh分析。
 
-`buildSpatialDomainProblem`当前把任一root的不支持语义升级为整个spatial domain失败；`StructuredRelationFacts::create`又把任一root
-拿不到fact升级为整个demand会话失败，并丢弃typed原因、在外层重新分类成`BrokenContract`。本项收敛这两层：**只有真正无法物化的root
-才允许整体失败**；可分析但不可并行切分的root不得从合法域消失；不可分析的root必须保持typed结果并只关闭本次choice。
+普通partial reduction的DPS init只在merge处消费一次。ExactDemand与RootUseId使用`DemandDestination`明确区分compute shard和
+reduction group；init的需求来自该merge完整contribution迭代域的精确像，目标Tile为已选择的merge owner。RootWork、RegionPlan、
+replica与materializer消费同一typed use，group依赖排序因而包含init producer到merge的SSA边。partial贡献仍使用接口生成identity；
+不向每个贡献广播原init，不在merge物化时按shape或位置补找source，也不偷偷重算init producer。
+下游elementwise lowering通过pinned Linalg `getOpOperandsMatchingBBargs`读取body参数与operand的对应，不能假定每个body都有DPS init参数。
+Selected tile产生的静态unit轴可在索引表达式内折为0（如`m+w`且`extent(w)=1`）；重建的projected map必须逐轴匹配当前operand/result shape，
+不能因output map为identity而绕过input map检查或发出verifier-invalid Tile op。
+Tile reduce选择native指令时同时验证Instr的rank≤4合同；更高rank的已选Tile IR走既有ordered reduction构造，不能发出非法Instr后再失败。
+普通卷积通过Linalg convolution dimensions统一推导；1D按已知unit高度补成2D native输入/weight/result视图，stride/dilation在该轴为1，
+输出再恢复原rank。该规则依赖索引接口和actual shape，不按named/generic op名称区分，也不改算术。
+Sparse peer round matching只纳入同一Tile当前block中最早的待发送source Region；后续Region的payload不得因relation编号较小而被安排先接收，
+否则source的实际release wait可能与receiver ready形成环。这只约束已有round选择，不插入额外join/wait，不改变transport或使用全局drain。
+稀疏merge owner的actual输出也必须闭合14号既有统一entry结果合同：BoundaryMovement从当前输出destination推导完整result port类型，
+每Tile每output index物化一个实际DDR root；同Tile多个piece共享，未写该结果的Tile不增加写回。Current-relations检查endpoint唯一性，
+layout preflight从实际insert_slice检查同Tile同output的piece类型一致且不重叠，不能以Tile唯一性拒绝多个合法merge piece。不能到ABI层按shape猜测缺失输出。
+
+#### Spatial admission、typed结果与relation协调的合同
 
 ```text
 Pipeline position:
 - Upstream IR / input:
-  与5.1相同。verifier-valid card-local TensorProgram；本项不新增输入、不修改source IR。
+  verifier-valid card-local TensorProgram、current StructuredDAG、target可用Tile及显式relation work limits。
 - Current stage responsibility:
-  判定每个semantic root进入spatial domain的切分自由度，并把"不可分析"表达为typed结果而不是整会话失败。
+  保留空间域入口的typed拒绝；从current indexing relation生成双向完整partition候选，重建归约分组及merge placement。
 - Output IR / files:
-  无新IR、无新文件格式。产出是`SpatialPlanDomain`的合法域成员集合与`ExactDemandOutcome`的typed分类。
+  typed planning admission结果、SpatialPlan候选、SpatialAssignment及ExactDemandOutcome；需求consumer区分shard/merge，无新IR或切分scheme。
 - Downstream consumer:
-  `SpatialState` exact demand、structural materializer、以及controller的choice淘汰。
+  none/search driver的admission处理；PlanningSession、RootWorkDomain、RegionDomain及spatial materializer。
 - User-level driver / named pipeline:
-  `none`与`search`共用同一domain构造与同一demand会话，不建立第二条路径。
+  none/search共享空间域语义；双向协调扩展search proposal，none仍使用canonical coordinate。
 - Explicit non-goals:
-  不改算术；不新增第二条demand或materialization路径；不把不可分析的op静默当成单Tile执行；不让collective退化为单Tile；
-  不在planning层按op名称或dialect名猜测索引语义。
+  不推断未知op索引语义；不让collective退化为单Tile；不恢复任意切点scheme；不修改算术、同步、memory规划或原始IR。
 - Completion criteria:
-  非投影result map的root保留为不切分域点并通过exact demand与actual materialization；真正不可分析的root以typed结果返回且只关闭
-  本次choice；不存在把typed unsupported压成字符串再重新分类的路径。
+  正式入口将缺索引语义的root报告为unsupported；已建立domain后的unsupported demand仅关闭该空间choice。
+  GEMM/conv两侧及generic等价结构产生可验证的双向候选，归约、multi-use与tail闭合；actual下游及fresh no-card验证通过。
 ```
 
-- **非投影result map**：当某个result的indexing map含非`AffineDimExpr`表达式时，该root的`partitionableParallelIterators`置全false，
-  只保留不切分域点，其余语义不变。它仍是complete的linalg语义，operand/result relation由现有`IndexRelation::fromAffineMap`精确建立。
-  这是**合法域的表达**——不切分本就是`BalancedParts(1)`域点——不是失败后的repair或fallback。
-- **DAG输入边界**：缺`DestinationStyleOpInterface`或`TilingInterface`的op不进入structured DAG，因此不是本层的输入；
-  `SpatialDomain.cpp`中对应的拒绝分支是不可达的防御代码。
-- **真正的不可分析类**：DPS与Tiling齐备、但既非`mlir::linalg::LinalgOp`也非`LinalgExtAttentionOp`的op（例如`tensor.pack`/`tensor.unpack`、
-  `wafer.linalg_ext.collective.*`）。这类op当前无法提供operand/result indexing relation：pinned MLIR没有通用indexing-map接口，
-  indexing map是linalg接口专有；本仓`WaferTensorIndexingOpInterface`只描述support/transform值，不表达迭代空间与iterator角色。
-  因此本项**不为它们推断语义**，它们保持typed unsupported，不扩大admission。
-- **collective不是单Tile退化对象**：`wafer.linalg_ext.collective.*`在单Tile上执行不等价于原分布式语义，不允许走"不切分"路径；
-  其规划阶段归宿属于13号communication边界。
-- **typed结果不得丢失**：`StructuredRelationFacts::create`当前对任一root无facts直接失败并丢弃typed原因；本项改为按root给出typed结果，
-  使外层能区分unsupported与broken contract，并在`PlanningSession`中只关闭该choice。
+域构建失败和candidate失败处于不同边界。缺少迭代空间或result indexing语义时，不能伪造单Tile域，也不能声称已经进入候选搜索：
+`PhysicalDataflowPlanningProblem::create`保留builder的typed failure，search入口据此返回unsupported或compiler failure。
+none的同类输入保持unsupported。Canonical coordinate只闭合结构选择，不将demand失败压成字符串提前退出；none/search均按
+ExactDemandOutcome分类处理unsupported、分析预算耗尽及broken contract。域已建立后，`StructuredRelationFacts`保留root facts的typed失败，`PlanningSession`按
+unsupported / indeterminate / broken contract处理当前choice。这不承诺换一个空间坐标就能支持缺少语义的op。
 
-待讨论问题：
-- 非linalg的DPS+Tiling root要进入demand，需要op侧声明索引语义（扩展现有接口，或新增source-owned的迭代空间/iterator角色声明）。
-  在取得该声明与明确调用者之前，本项不扩大它们的admission。
-- collective在规划阶段应保持typed unsupported还是由13号物化，需与13号设计一次收敛，避免两套说法。
+非投影result map但具有完整静态Linalg索引语义的root保留`BalancedParts(1)`，禁用该root的parallel/reduction切分；其operand/result
+relation仍精确分析，普通物化负责创建完整计算。动态extent和未知索引语义不扩大admission。
+
+仿射关系不保证保持当前两种切分形式。例如1025均分三份后沿`1024-m`反转，目标区间长度为341/342/342；关系精确但schema不可表达。
+这是proposal的表达范围限制，不是“没有可构造输入”。本项以真实关系回归锁定此边界，不新增scheme。
 
 覆盖矩阵：
 
-| 输入等价类 | 结构分支 | 期望输出 | 下游witness |
+| 输入等价类 | 整除/非整除、结构分支 | exact输出 / typed失败 | 直接下游witness |
 | --- | --- | --- | --- |
-| 非投影result map的linalg op，rank3、一条迭代维1024 | result map含`d0+d1` | 域构建成功；该root `partitionableParallelIterators`全false；不切分点`contains`/`close`通过 | `evaluate`得到`ExactDemandProof`；`materializeSpatialRegions`产出TileModule/TileRegion |
-| 同上，迭代维1025 | 非整除 | 同上，tail不丢失 | exact coverage与owner断言 |
-| 多result、部分投影部分非投影 | 交集分支 | 该root整体不并行切分 | 与单result非投影同 |
-| 投影result map的linalg op | 回归 | 合法域与既有实现逐点相等 | 现有oracle全量比对不变 |
-| DPS+Tiling但非linalg/attention的root | typed failure | typed unsupported，只关闭choice | 不再出现`BrokenContract`/compiler error分类 |
-| 无`TilingInterface`的顶层op | DAG边界 | DAG分析阶段失败，与本项无关 | 不进入spatial |
+| 非投影result map回归 | rank≥3，1024/1025 | 单cell、exact demand与原始IR不变 | actual TileRegion |
+| tensor.pack root | rank≥3，1024/1025静态输入 | planning admission与none/search均unsupported；无伪造assignment | 正式driver分类 |
+| relation构造预算不足 | rank17、静态主维1025，超默认变量预算 | none/search均indeterminate，不误判unsupported | 正式driver分类 |
+| 已有domain但operand relation不支持 | 静态Linalg，合法result map | 当前choice unsupported，非compiler bug；后继仍可访问 | PlanningSession |
+| producer → GEMM/conv及generic等价 | 1024/1025/1031，4/16 Tile，parallel/reduction分支 | 精确Cartesian coverage、重建merge group/owner、完整contributions | RootWork与actual spatial region、Instr/SPM |
+| partial init来自实际producer | 1024/1025/1031，merge owner在contribution Tile或独立Tile | init只归属merge；60组actual region/temporal；较大partial保留typed capacity冲突证据，同一输入经正式search成功 | Instr、SPM及accepted executable |
+| GEMM/conv → pointwise及反向producer需求 | 1024/1025/1031，投影/实际view链、重复需求 | full reduction fiber、重复矩形合并、稳定placement | exact demand与actual region |
+| 多consumer一致/冲突 | 相同及置换访问 | 一致才协调；冲突保留seed；两种顺序均保留原seed | source不变、domain合法 |
+| halo部分重叠、反向仿射、work limit | 1024/1025，矩形不可表示/unknown | 不伪造partition，原seed保留 | 独立区间期望及relation结果 |
 
 ### 5.2 TileRegion formation
 

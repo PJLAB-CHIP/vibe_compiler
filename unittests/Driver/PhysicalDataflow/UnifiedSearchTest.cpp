@@ -38,11 +38,13 @@ SearchFixture prepare(mlir::ModuleOp module, llvm::raw_ostream &diagnostics,
   if (mlir::failed(analysis))
     return result;
   result.analysis = std::move(*analysis);
-  auto problem = PhysicalDataflowPlanningProblem::create(
-      *result.analysis, CardId(0), analysis::IndexRelationLimits(),
-      &failureReason);
-  if (mlir::failed(problem))
+  auto admission = PhysicalDataflowPlanningProblem::create(
+      *result.analysis, CardId(0), analysis::IndexRelationLimits());
+  auto *problem = std::get_if<PhysicalDataflowPlanningProblem>(&admission);
+  if (!problem) {
+    failureReason = std::get<SpatialDomainFailure>(admission).detail;
     return result;
+  }
   result.problem.emplace(std::move(*problem));
   result.session = std::make_unique<PhysicalDataflowPlanningSession>(
       *result.problem, maximumRegionProposals, profile);

@@ -1,6 +1,8 @@
 //===- SpatialRegionMaterializationTest.cpp ---------------------------===//
 
 #include "Wafer/Transforms/Linalg/SpatialRegionMaterialization.h"
+#include "TestSupport/CodeGen/ExecutableTestSupport.h"
+#include "Wafer/Planning/PhysicalDataflow/SpatialPartitionPropagation.h"
 #include "Wafer/Transforms/Linalg/OnlineAttentionDecomposition.h"
 #include "Wafer/Transforms/Linalg/StructuredTiling.h"
 #include "Wafer/Transforms/Linalg/TemporalTiling.h"
@@ -8,6 +10,8 @@
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
 #include "Wafer/Driver/CompilationInternal.h"
+#include "Wafer/Driver/CurrentIRExecutablePipeline.h"
+#include "Wafer/Driver/PhysicalDataflow/SearchCurrentIR.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalRegionPlan.h"
@@ -16,6 +20,8 @@
 #include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDemandAnalysis.h"
+#include "Wafer/Transforms/Tile/BoundaryMovement.h"
+#include "Wafer/Transforms/Tile/StructuredToTile.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -2192,6 +2198,249 @@ module {
     afterStream.flush();
     EXPECT_EQ(after, before);
   }
+}
+
+TEST(SpatialRegionMaterializationTest,
+     RelationCoordinatedContributionsMaterialize) {
+  using namespace wafer;
+  using namespace wafer::compiler::detail;
+  for (bool conv : {false, true})
+    for (bool generic : {false, true})
+      for (int64_t extent : {1024, 1025, 1031})
+        for (unsigned mode : {0u, 1u, 2u, 3u, 4u}) {
+          const bool reduction = mode != 0;
+          const int64_t rows = mode == 4 ? 2 : mode == 3 ? 1 : extent;
+          const int64_t depth = mode >= 3 ? extent : 128;
+          const int64_t columns = mode >= 3 ? 16 : 128;
+          SCOPED_TRACE(std::to_string(conv) + ":" + std::to_string(generic) +
+                       ":" + std::to_string(extent) + ":" +
+                       std::to_string(mode));
+          auto context = createContext();
+          auto source = mlir::parseSourceString<mlir::ModuleOp>(
+              wafer::compiler::testing::spatialContractionSource(
+                  rows, conv, generic, 16, depth, columns),
+              context.get());
+          ASSERT_TRUE(source);
+          std::string detail;
+          auto dag = analyzeSingleTensorProgram(*source, detail);
+          ASSERT_TRUE(mlir::succeeded(dag)) << detail;
+          auto topology = TargetTopology::create(*source, &detail);
+          ASSERT_TRUE(mlir::succeeded(topology)) << detail;
+          auto domain = buildSpatialPlanDomain(*dag, *topology, CardId(0));
+          ASSERT_TRUE(domain.succeeded());
+          auto seed = domain.domain->getFirstPlan();
+          auto *consumerOp = dag->getFunction()
+                                 .getBody()
+                                 .front()
+                                 .getTerminator()
+                                 ->getOperand(0)
+                                 .getDefiningOp();
+          const auto &roots = domain.domain->getProblem().getSemanticRoots();
+          auto producerKey =
+              roots.find(consumerOp->getOperand(0).getDefiningOp())->key;
+          auto consumerKey = roots.find(consumerOp)->key;
+          auto producer = llvm::find_if(seed.nodes, [&](const auto &node) {
+            return node.root == producerKey;
+          });
+          ASSERT_NE(producer, seed.nodes.end());
+          producer->axes[reduction ? 2 : 1].parameter = mode == 4 ? 2 : 4;
+          if (mode == 4)
+            producer->axes[1].parameter = 2;
+          producer->embedding = {TileId(0), TileId(1), TileId(2), TileId(3)};
+          auto coordinated =
+              propagateSpatialPartitions(*domain.domain, *dag, seed, {});
+          ASSERT_TRUE(mlir::succeeded(coordinated));
+          auto consumer =
+              llvm::find_if(coordinated->nodes, [&](const auto &node) {
+                return node.root == consumerKey;
+              });
+          ASSERT_NE(consumer, coordinated->nodes.end());
+          ASSERT_EQ(consumer->embedding.size(), 4u);
+          if (mode >= 2) {
+            ASSERT_EQ(consumer->reductionMerges.size(), mode == 4 ? 2u : 1u);
+            for (auto &merge : consumer->reductionMerges)
+              merge.tile = TileId(15);
+          }
+          auto actual = materializeWithSpatialPlan(
+              *source, [&](SpatialPlan &plan) { plan = *coordinated; }, detail);
+          ASSERT_TRUE(mlir::succeeded(actual)) << detail;
+          EXPECT_TRUE(mlir::succeeded(mlir::verify(*actual->module)));
+          EXPECT_EQ(actual->relations.structuralOutputs.size(), mode == 4 ? 2u
+                                                                : reduction
+                                                                    ? 1u
+                                                                    : 4u);
+          unsigned multiplyBodies = 0;
+          actual->module->walk([&](mlir::arith::MulFOp) { ++multiplyBodies; });
+          EXPECT_EQ(multiplyBodies, 4u);
+          if (reduction) {
+            unsigned mergeBodies = 0;
+            actual->module->walk([&](mlir::linalg::LinalgOp op) {
+              if (op.getNumReductionLoops())
+                ++mergeBodies;
+            });
+            EXPECT_EQ(mergeBodies, mode == 4 ? 2u : 1u);
+          }
+          if (mode >= 2) {
+            EXPECT_GE(actual->relations.boundaryRelations.size(), 5u);
+          }
+          llvm::SmallVector<TileRegionOp, 16> regions;
+          actual->module->walk(
+              [&](TileRegionOp region) { regions.push_back(region); });
+          unsigned loops = 0;
+          for (auto region : regions) {
+            auto temporal = buildTemporalDomain(region);
+            ASSERT_TRUE(temporal.succeeded());
+            auto first = temporal.domain->getFirstChoice();
+            ASSERT_EQ(first.getKind(), TemporalSuccessorKind::Choice);
+            TemporalChoice choice = *first.getChoice();
+            for (auto [scope, descriptor] : llvm::zip_equal(
+                     choice.scopes, temporal.domain->getScopeDescriptors())) {
+              for (size_t axis = 0; axis < scope.iteratorTileSizes.size();
+                   ++axis)
+                if (descriptor.iteratorCapabilities[axis] ==
+                    IteratorTilingCapability::Tileable)
+                  scope.iteratorTileSizes[axis] =
+                      std::min<int64_t>(16, descriptor.iterationExtents[axis]);
+              auto order = buildFirstTemporalLoopOrder(
+                  descriptor.iterationExtents, scope.iteratorTileSizes,
+                  descriptor.precedence);
+              ASSERT_TRUE(mlir::succeeded(order));
+              scope.loopOrder = std::move(*order);
+            }
+            ASSERT_TRUE(temporal.domain->contains(choice));
+            TemporalTilingFailure failure;
+            auto tiled = applyTemporalTiling(*temporal.domain, choice,
+                                             actual->relations, &failure);
+            ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
+            loops += tiled->loops;
+          }
+          EXPECT_GT(loops, 0u);
+          EXPECT_TRUE(mlir::succeeded(mlir::verify(*actual->module)));
+          if (mode >= 2) {
+            auto layout = resolveCurrentLayoutsAndBufferize(*actual->module,
+                                                            actual->relations);
+            ASSERT_TRUE(layout.succeeded()) << layout.detail;
+            auto compute = lowerStructuredComputeToTile(*actual->module,
+                                                        actual->relations);
+            ASSERT_TRUE(compute.succeeded()) << compute.detail;
+            auto movement = materializeTileBoundaryMovement(*actual->module,
+                                                            actual->relations);
+            ASSERT_TRUE(movement.succeeded()) << movement.detail;
+            if (mode == 4) {
+              for (auto tile : actual->module->getOps<TileModuleOp>())
+                for (auto entry : tile.getOps<mlir::func::FuncOp>()) {
+                  ASSERT_EQ(entry.getNumResults(), 1u);
+                  auto returned = mlir::cast<mlir::func::ReturnOp>(
+                      entry.getBody().front().getTerminator());
+                  auto root = returned.getOperand(0)
+                                  .getDefiningOp<mlir::memref::AllocOp>();
+                  ASSERT_TRUE(root);
+                  EXPECT_EQ(root.getType().getShape(),
+                            (llvm::ArrayRef<int64_t>{1, rows, columns}));
+                }
+              continue;
+            }
+            wafer::frontend::FrontendProgramVerificationResult program;
+            program.numPartitions = 1;
+            program.programUserInputCount = 2;
+            program.distributedInputs = {
+                wafer::compiler::testing::boundary(0, {1, rows, depth}),
+                wafer::compiler::testing::boundary(1, {1, depth, columns})};
+            program.distributedOutputs = {
+                wafer::compiler::testing::boundary(0, {1, rows, columns})};
+            wafer::compiler::ProgramDataHandoff data;
+            std::string diagnosticsText;
+            llvm::raw_string_ostream diagnostics(diagnosticsText);
+            CurrentIRDownstreamStatistics downstream;
+            ExecutableLoweringStatistics executable;
+            auto compiled = compileCurrentIRCandidateToExecutable(
+                std::move(actual->module), std::move(actual->relations),
+                CardId(0), allTiles(), program,
+                wafer::compiler::testing::executionConfig(), diagnostics, data,
+                {}, &downstream, &executable);
+            EXPECT_EQ(executable.actualMemoryTargetGateInvocations, 1u);
+            EXPECT_GT(downstream.instructionOperations, 0u);
+            if (mode == 3) {
+              ASSERT_TRUE(compiled.isAccepted())
+                  << compiled.gate << ": " << compiled.detail << "\n"
+                  << diagnosticsText;
+              EXPECT_EQ(executable.deviceExecutablesProduced, 1u);
+            } else {
+              // This deliberately large materialized partial is rejected by
+              // actual allocation/lifetime planning, not a shape estimate.
+              ASSERT_TRUE(compiled.isProvenExactRejection())
+                  << compiled.gate << ": " << compiled.detail;
+              ASSERT_FALSE(compiled.tileFailures.empty());
+              bool capacityWitness = false;
+              for (const auto &failure : compiled.tileFailures)
+                if (isProvenExactTileMemoryPlanningFailure(
+                        failure.memoryPlanning)) {
+                  EXPECT_FALSE(failure.memoryPlanning.spmCapacityConflictDemands
+                                   .empty());
+                  capacityWitness = true;
+                }
+              EXPECT_TRUE(capacityWitness);
+              EXPECT_FALSE(compiled.executable);
+              // The failed coordinate must not be confused with an unsupported
+              // input program. Exercise the production search on this same IR.
+              wafer::compiler::ProgramDataHandoff searchData;
+              SearchCurrentIROptions options;
+              options.termination = SearchTerminationPolicy::FirstAccepted;
+              ExecutableLoweringStatistics acceptedStatistics;
+              auto searched = compileSearchCurrentIR(
+                  *source, program, wafer::compiler::testing::executionConfig(),
+                  diagnostics, searchData, options, nullptr,
+                  &acceptedStatistics);
+              ASSERT_TRUE(searched.isAccepted())
+                  << searched.gate << ": " << searched.detail << "\n"
+                  << diagnosticsText;
+              EXPECT_GT(acceptedStatistics.actualMemoryTargetGateInvocations,
+                        0u);
+              EXPECT_EQ(acceptedStatistics.deviceExecutablesProduced, 1u);
+            }
+          }
+        }
+}
+
+TEST(SpatialRegionMaterializationTest, SameTileOutputPiecesMustBeDisjoint) {
+  auto context = createContext();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(%input: tensor<1x1024x128xf16>) {
+      %a = wafer.tile.region(%input : tensor<1x1024x128xf16>) -> (tensor<1x1025x128xf16>) {
+      ^bb0(%x: tensor<1x1024x128xf16>):
+        %e = tensor.empty() : tensor<1x1025x128xf16>
+        %r = tensor.insert_slice %x into %e[0,0,0] [1,1024,128] [1,1,1] : tensor<1x1024x128xf16> into tensor<1x1025x128xf16>
+        wafer.tile.yield %r : tensor<1x1025x128xf16>
+      }
+      %b = wafer.tile.region(%input : tensor<1x1024x128xf16>) -> (tensor<1x1025x128xf16>) {
+      ^bb0(%x: tensor<1x1024x128xf16>):
+        %e = tensor.empty() : tensor<1x1025x128xf16>
+        %r = tensor.insert_slice %x into %e[0,0,0] [1,1024,128] [1,1,1] : tensor<1x1024x128xf16> into tensor<1x1025x128xf16>
+        wafer.tile.yield %r : tensor<1x1025x128xf16>
+      }
+      return
+    }
+  }
+}
+)mlir",
+                                                        context.get());
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  wafer::StructuredMaterializationRelations relations;
+  module->walk([&](wafer::TileRegionOp region) {
+    relations.structuralOutputs.push_back({0, region.getResult(0)});
+  });
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
+          *module, relations)));
+  auto layout = wafer::compiler::detail::resolveCurrentLayoutsAndBufferize(
+      *module, relations);
+  EXPECT_EQ(layout.status,
+            wafer::compiler::detail::ExactPBQPStatus::NoSolution);
+  EXPECT_EQ(layout.detail, "same-Tile output pieces overlap");
+  EXPECT_EQ(layout.statistics.bufferizationInvocations, 0u);
 }
 
 } // namespace

@@ -112,6 +112,8 @@ TargetTensor slot另携带一个same-invocation materialization action；其它k
 - parameter/constant对应card-scoped ProgramTensor/TargetTensor；program input/output对应external port；
 - accepted Tile entry在ABI preparation前精确保留frontend的全部真实arguments和results；TileModule set内部使用过的
   scheduling destination已被消费，不能作为额外argument到达本层；
+  无输出写入的Tile仍保留相同program result ports；BoundaryMovement从actual输出destination的类型建立每Tile每output index唯一的DDR root，
+  同Tile的多个结果piece共用该root，非owner Tile只声明该输出资源而不增加计算或写回。所有root实际经过DDR规划后才由ABI preparation绑定到external output；
 - compiler workspace、profile record与Direct-DTE status是entry-local typed requirements，不伪装成ProgramTensor；
 - output是caller-visible append-only entry argument，不通过隐藏返回buffer或symbol约定发布；
 - workspace high-water 与 alignment 从同一个 final physical memory plan重算；

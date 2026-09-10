@@ -694,7 +694,7 @@ imageSupportOperand(const analysis::TensorResultIndexing &transfer,
 struct DemandKey {
   SemanticRootKey consumer;
   uint32_t operand = 0;
-  LogicalShardId destination;
+  analysis::DemandDestination destination;
 
   friend bool operator<(const DemandKey &lhs, const DemandKey &rhs) {
     if (lhs.consumer != rhs.consumer)
@@ -1267,10 +1267,6 @@ const SemanticRootAnalysis &StructuredRelationFacts::getSemanticRoots() const {
   return impl->semanticRoots;
 }
 
-bool StructuredRelationFacts::hasUnanalyzableRoot() const {
-  return impl->rootFactFailure.has_value();
-}
-
 StructuredRelationAnalysis::StructuredRelationAnalysis(
     mlir::Operation *operation) {
   auto function = mlir::dyn_cast_or_null<mlir::func::FuncOp>(operation);
@@ -1333,7 +1329,7 @@ deriveExactDemand(const StructuredRelationFacts &facts,
   struct SeedInfo {
     const StructuredOperationFact *consumer = nullptr;
     const StructuredOperandFact *operand = nullptr;
-    const ExecutionShard *destination = nullptr;
+    TileId destinationTile{0};
     ExactIndexSet execution;
     ExactIndexSet operandDemand;
   };
@@ -1343,6 +1339,53 @@ deriveExactDemand(const StructuredRelationFacts &facts,
     const NodeExecutionPartition *node =
         findNodeAssignment(assignment, consumer.root);
     for (const StructuredOperandFact &operand : consumer.operands) {
+      bool mergeInit = false;
+      if (operand.kind == DemandOperandKind::InitInput) {
+        auto dps =
+            mlir::cast<mlir::DestinationStyleOpInterface>(consumer.operation);
+        for (const auto &merge : getValue(availability)->reductionMerges) {
+          if (merge.group.root != consumer.root || merge.coupledRule)
+            continue;
+          bool consumesInit =
+              llvm::any_of(merge.results, [&](const auto &result) {
+                return dps.getDpsInitOperand(result.result)
+                           ->getOperandNumber() == operand.operand;
+              });
+          if (!consumesInit)
+            continue;
+          mergeInit = true;
+          std::optional<ExactIndexSet> execution;
+          for (const auto &contribution : merge.contributions) {
+            if (!execution) {
+              execution = contribution.iterationDomain;
+              continue;
+            }
+            auto combined =
+                unionExactSets(*execution, contribution.iterationDomain, limits,
+                               RelationOperationKind::Union, consumer.root);
+            if (!getValue(combined))
+              return takeFailure(std::move(combined));
+            execution = std::move(*getValue(combined));
+          }
+          if (!execution)
+            return BrokenDemandContract{
+                BrokenDemandContractReason::InterfaceContradiction,
+                {},
+                "standard merge has no contribution domain"};
+          auto demand =
+              imageExactSet(operand.iterationToOperand, *execution, limits,
+                            RelationOperationKind::Image, consumer.root);
+          if (!getValue(demand))
+            return takeFailure(std::move(demand));
+          DemandKey key{consumer.root, operand.operand, merge.group};
+          seeds.emplace(key, SeedInfo{&consumer, &operand, merge.mergeTile,
+                                      *execution, *getValue(demand)});
+          state[consumer.operation->getOperand(operand.operand)]
+              .demands.emplace(key, std::move(*getValue(demand)));
+        }
+      }
+      if (mergeInit)
+        continue;
       for (const ExecutionShard &destination : node->shards) {
         DemandResult<ExactIndexSet> execution =
             makeShardSet(destination, limits);
@@ -1354,7 +1397,7 @@ deriveExactDemand(const StructuredRelationFacts &facts,
         if (!getValue(demand))
           return takeFailure(std::move(demand));
         DemandKey key{consumer.root, operand.operand, destination.shard};
-        seeds.emplace(key, SeedInfo{&consumer, &operand, &destination,
+        seeds.emplace(key, SeedInfo{&consumer, &operand, destination.tile,
                                     *getValue(execution), *getValue(demand)});
         state[consumer.operation->getOperand(operand.operand)].demands.emplace(
             key, std::move(*getValue(demand)));
@@ -1495,17 +1538,21 @@ deriveExactDemand(const StructuredRelationFacts &facts,
       currentDependency = std::make_pair(key.consumer, key.operand);
     }
     DestinationDemand destination;
-    destination.destinationShard = key.destination;
-    destination.destinationTile = seed.destination->tile;
+    destination.destination = key.destination;
+    destination.destinationTile = seed.destinationTile;
     destination.consumerExecutionDomain = seed.execution;
     destination.operandDemand = seed.operandDemand;
     auto boundary = boundaries.find(key);
     if (boundary == boundaries.end())
       return BrokenDemandContract{
           BrokenDemandContractReason::InternalExactnessFailure,
-          DemandFailureSite{key.consumer, std::nullopt, key.operand,
-                            key.destination,
-                            RelationOperationKind::BuildRelationGraph},
+          DemandFailureSite{
+              key.consumer, std::nullopt, key.operand,
+              std::holds_alternative<LogicalShardId>(key.destination)
+                  ? std::optional<LogicalShardId>(
+                        std::get<LogicalShardId>(key.destination))
+                  : std::nullopt,
+              RelationOperationKind::BuildRelationGraph},
           "consumer operand demand reaches no typed source boundary"};
     for (const BoundaryState &source : boundary->second) {
       DemandResult<SourceDemand> demand = buildSourceDemand(

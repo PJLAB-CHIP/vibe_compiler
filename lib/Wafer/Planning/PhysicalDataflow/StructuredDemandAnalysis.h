@@ -33,10 +33,6 @@ public:
 
   const StructuredDAGAnalysis &getDAG() const;
   const SemanticRootAnalysis &getSemanticRoots() const;
-  /// Set when at least one semantic root could not expose relation facts.
-  /// Every exact demand query over these facts then returns that typed failure
-  /// instead of deriving demand.
-  bool hasUnanalyzableRoot() const;
 
 private:
   class Impl;
@@ -94,9 +90,6 @@ public:
   void close();
   bool isClosed() const { return closed; }
   const StructuredRelationFacts &getFacts() const { return facts; }
-  /// True when the underlying facts could not be built for every semantic root.
-  /// Every query then returns that typed failure instead of deriving demand.
-  bool hasUnanalyzableRoot() const { return facts.hasUnanalyzableRoot(); }
 
 private:
   class Cache;

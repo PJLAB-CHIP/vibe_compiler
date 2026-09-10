@@ -10,6 +10,7 @@
 
 #include <string>
 #include <utility>
+#include <variant>
 
 namespace wafer::compiler::detail {
 
@@ -19,11 +20,10 @@ namespace wafer::compiler::detail {
 /// state identity.
 class PhysicalDataflowPlanningProblem {
 public:
-  static mlir::FailureOr<PhysicalDataflowPlanningProblem>
+  static std::variant<PhysicalDataflowPlanningProblem, SpatialDomainFailure>
   create(const StructuredProgramAnalysis &program, CardId cardId,
          const analysis::IndexRelationLimits &relationLimits =
-             analysis::IndexRelationLimits(),
-         std::string *failureReason = nullptr);
+             analysis::IndexRelationLimits());
 
   const StructuredProgramAnalysis &getProgram() const { return program; }
   CardId getCardId() const { return cardId; }

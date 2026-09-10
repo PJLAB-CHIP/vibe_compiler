@@ -7,11 +7,14 @@
 
 namespace wafer::compiler::detail {
 
+enum class SpatialPropagationOrder { ProducersFirst, ConsumersFirst };
+
 /// Bounded proposal construction from current SSA/index relations. Unknown or
 /// unrepresentable edge images retain the seed; no source IR is modified.
 mlir::FailureOr<SpatialPlan> propagateSpatialPartitions(
     const SpatialPlanDomain &domain, const StructuredDAGAnalysis &dag,
-    const SpatialPlan &seed, const analysis::IndexRelationLimits &limits);
+    const SpatialPlan &seed, const analysis::IndexRelationLimits &limits,
+    SpatialPropagationOrder order = SpatialPropagationOrder::ProducersFirst);
 
 } // namespace wafer::compiler::detail
 

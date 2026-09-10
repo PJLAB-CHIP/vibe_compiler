@@ -408,18 +408,18 @@ mlir::LogicalResult checkStructuredBufferRelationsCurrent(
           "boundary relation has invalid or duplicate Tile endpoints");
   }
 
-  std::set<std::pair<unsigned, int64_t>> outputOwners;
+  std::set<std::pair<unsigned, const void *>> outputEndpoints;
   for (const StructuredOutputRelation &relation : relations.structuralOutputs) {
     if (!relation.endpoint ||
         !liveValues.contains(relation.endpoint.getAsOpaquePointer()))
       return root->emitError("output relation has no live endpoint");
     TileModuleOp owner = getTileOwner(relation.endpoint);
-    if (!owner ||
-        !outputOwners
-             .insert({relation.outputIndex, owner.getTileIdAttr().getInt()})
-             .second)
+    if (!owner || !outputEndpoints
+                       .insert({relation.outputIndex,
+                                relation.endpoint.getAsOpaquePointer()})
+                       .second)
       return root->emitError(
-          "output relation has an invalid or duplicate Tile owner");
+          "output relation has an invalid Tile owner or duplicate endpoint");
   }
   return mlir::success();
 }

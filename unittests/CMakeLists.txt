@@ -143,6 +143,7 @@ wafer_add_component_unit_test(WaferTransformsUnitTests
   LINK_LIBS
     WaferCompiler
     WaferCompilerTestSupport
+    WaferExecutableTestSupport
     WaferLinalgTransforms
     WaferTileToInstrPipelines
     WaferTransforms)

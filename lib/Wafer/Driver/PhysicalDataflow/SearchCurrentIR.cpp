@@ -1127,11 +1127,16 @@ ExecutableCompilationResult compileSearchCurrentIR(
                 "structured-analysis",
                 "cannot derive search structured program facts");
   std::string detail;
-  auto problem = PhysicalDataflowPlanningProblem::create(
-      **structured, CardId(0), analysis::IndexRelationLimits(), &detail);
-  if (mlir::failed(problem))
-    return fail(ExecutableCompilationStatus::CompilerFailure,
-                "search-planning-problem", detail);
+  auto admission = PhysicalDataflowPlanningProblem::create(
+      **structured, CardId(0), analysis::IndexRelationLimits());
+  auto *problem = std::get_if<PhysicalDataflowPlanningProblem>(&admission);
+  if (!problem) {
+    const auto &failure = std::get<SpatialDomainFailure>(admission);
+    return fail(failure.kind == SpatialDomainFailureKind::UnsupportedSemantics
+                    ? ExecutableCompilationStatus::UnsupportedFailure
+                    : ExecutableCompilationStatus::CompilerFailure,
+                "search-planning-problem", failure.detail);
+  }
   PhysicalDataflowPlanningSession planning(*problem,
                                            maximumInitialRegionProposals);
 

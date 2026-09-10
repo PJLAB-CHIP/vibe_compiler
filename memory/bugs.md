@@ -1872,14 +1872,26 @@
 - 修复模式：沿current result/operand关系将全部请求组合到实际selected root，检查需求与grid一致；生成前检查共同循环位置对已有uses的支配关系。不能用consumer数量、相同map或原始source顺序代替这些证明。
 - 防复发：同一producer经两个pointwise consumer到一个root，配对检查identity与transpose访问；producer observable use和较早consumer result use分别拒绝，保持source IR不变。
 
-## 非均匀切分在当前relation形态下没有可构造的producer
+## 精确仿射关系不保证保留规则切分形式
 
-- 现象：为spatial partition新增"任意切点列表"（非均匀切分）时，唯一自然producer是relation协调——把上游已证明的矩形边界直接当作切点。
-  但构造不出能触发它的输入；raw后继枚举也不可能枚举该家族（把extent切成≤k段有`C(extent-1,k-1)`种，1024、k≤16时约`10^29`）。
-- 根因：`SpatialPartitionPropagation`的consumer-to-producer关系由indexing map复合而成，是仿射的。仿射映射对所有分片按同一系数缩放，
-  保留`BalancedParts`的"余数在前"结构，因此映射结果仍落回`BalancedParts`或`UniformExtent`。实测：源轴2050切`BalancedParts(3)`为
-  684/683/683，经`p→p/2`映射得342/341/341，恰好等于`BalancedParts(3)`在1025上的结果，于是走了参数化分支而非显式切点。
-- 修复模式：不为切分新增枚举或搜索维度，也不保留没有producer的scheme。要做非均匀切分，先指出产生切点的真实事实来源
-  （例如目标侧块粒度，或非仿射但可精确表示的支持链），再连同该来源一起实现。
-- 防复发：新增scheme必须附一个可构造的producer用例。只有"可表示、可验证"而没有创建者仍是死代码；domain成员合法性与canonical去重
-  的测试不能代替producer测试。同理，为切分加"对齐约束"前要先确认存在迭代空间粒度事实——`TargetMemory.h`的alignment是内存地址对齐，不适用。
+- 根因：把“同一个仿射关系作用于每个分片”误认为“映射后仍是BalancedParts/UniformExtent”。负系数会改变余数所在位置，
+  support链的整除/取模或多个轴的组合也必须单独证明，不能由“仿射”二字推出切分闭包。
+- 已验证反例：静态rank3、长度1025的轴均分三份为342/342/341；实际Linalg输入索引`1024-m`的精确映射按目标坐标排列为
+  `[0,341)`、`[341,683)`、`[683,1025)`，即341/342/342。当前IndexRelation可求出全部矩形，但现有两种scheme无法表达它们。
+- 防复发：分别验证relation精确性、完整覆盖和partition schema可表达性；暂不实现更丰富的scheme时保留原proposal，
+  不把“当前schema拒绝”记录为“真实输入不存在”。新增scheme仍须有明确producer及actual下游，不凭反例自动扩大实现范围。
+
+## 空间partial归约的init、通信与输出边界
+
+- 普通partial只消费identity；原DPS init的真正consumer是merge。需求ID必须区分compute shard与reduction group，不能把init挂到
+  contribution后又在merge物化时临时补找producer。RootWork、RegionPlan和实际边界沿同一个typed consumer传递。
+- Sparse peer matching不能用relation编号代替source Region的当前block顺序。先接收一个尚未执行的后续Region payload，可能与
+  source前序Region的release wait形成环；只让当前最早待发source Region进入round matching，不增加join或固定wait。
+- 稀疏merge owner不减少程序输出端口。每Tile每program output index需要一个实际DDR结果root；同Tile多个piece先证明实际slice不重叠，
+  再共用该root。非写入Tile保留输出资源引用，不能复制计算或增加写回来凑齐ABI。
+
+## Lowering必须消费真实Linalg payload与目标rank合同
+
+- Linalg body参数不总是`inputs + init`，例如`linalg.map`没有init块参数。使用`getOpOperandsMatchingBBargs`，不能依据op类别猜参数位置。
+- 当前unit迭代轴可以把`m+w`这样的访问化为投影；归一后的input map仍须匹配实际operand/result shape，output identity不能跳过检查。
+- Tile reduce的logical rank不等于native Instr的可编码rank；native选择必须先满足rank上限，其他已支持形态使用同一既有ordered构造。

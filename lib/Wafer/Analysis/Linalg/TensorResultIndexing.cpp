@@ -36,6 +36,12 @@ mlir::FailureOr<mlir::AffineMap>
 getStructuredOperandMap(mlir::OpOperand &operand) {
   if (auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(operand.getOwner()))
     return linalg.getMatchingIndexingMap(&operand);
+  if (auto attention =
+          mlir::dyn_cast<LinalgExtAttentionOp>(operand.getOwner())) {
+    auto maps = attention.getIndexingMapsArray();
+    if (operand.getOperandNumber() < maps.size())
+      return maps[operand.getOperandNumber()];
+  }
   if (auto online =
           mlir::dyn_cast<LinalgExtOnlineAttentionOp>(operand.getOwner())) {
     auto maps = online.getIndexingMapsArray();

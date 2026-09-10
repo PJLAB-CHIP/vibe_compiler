@@ -133,3 +133,4 @@ structure；相关旧caller/type是否还能保留由这两个current work item�
 | Q13.T | `supporting-doc-tool-decoupling` | `done` | Conformance工具不再解析设计文档marker。 | 01、16 |
 | Q13.W | `tool-workflow-consistency` | `done` | SystemC canonical dependency root和CMake cache workflow闭合。 | 16；`tasks/archive/third-party-dependency-root-consistency.md` |
 | Q10-Q13 | `historical-design-governance` | `done` | 历史审计、恢复和设计治理已归档。 | `tasks/README.md`、`tasks/archive/` |
+| 06 | `spatial-admission-and-typed-outcomes` | `done` | Typed admission、双向IndexRelation partition协调、归约init/merge及实际下游闭合；真实capacity负例与同输入search成功分别验证，host/fresh no-card完成。 | 06、07、13、14、16；`tasks/archive/spatial-admission-and-typed-outcomes.md` |

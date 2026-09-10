@@ -125,9 +125,10 @@ TEST_F(PlanningSessionTest,
     std::string failureReason;
     auto program = buildProgram(*module, failureReason);
     ASSERT_TRUE(program) << failureReason;
-    auto problem = PhysicalDataflowPlanningProblem::create(
-        *program, CardId(0), analysis::IndexRelationLimits(), &failureReason);
-    ASSERT_TRUE(mlir::succeeded(problem)) << failureReason;
+    auto admission = PhysicalDataflowPlanningProblem::create(
+        *program, CardId(0), analysis::IndexRelationLimits());
+    auto *problem = std::get_if<PhysicalDataflowPlanningProblem>(&admission);
+    ASSERT_NE(problem, nullptr);
 
     PhysicalDataflowPlanningSession session(*problem, 16);
     std::optional<SpatialState> spatial = takeFirstSpatial(session);
@@ -151,9 +152,10 @@ TEST_F(PlanningSessionTest,
   std::string failureReason;
   auto program = buildProgram(*module, failureReason);
   ASSERT_TRUE(program) << failureReason;
-  auto problem = PhysicalDataflowPlanningProblem::create(
-      *program, CardId(0), analysis::IndexRelationLimits(), &failureReason);
-  ASSERT_TRUE(mlir::succeeded(problem)) << failureReason;
+  auto admission = PhysicalDataflowPlanningProblem::create(
+      *program, CardId(0), analysis::IndexRelationLimits());
+  auto *problem = std::get_if<PhysicalDataflowPlanningProblem>(&admission);
+  ASSERT_NE(problem, nullptr);
 
   auto firstChoice = [&](PhysicalDataflowPlanningSession &session)
       -> std::optional<RegionState> {
@@ -177,6 +179,39 @@ TEST_F(PlanningSessionTest,
   EXPECT_EQ(*lhs, *rhs);
   EXPECT_EQ(first.getWork().spatialSuccessorSteps,
             second.getWork().spatialSuccessorSteps);
+}
+
+TEST_F(PlanningSessionTest, UnsupportedDemandClosesChoicesInAnAdmittedDomain) {
+  for (int64_t extent : {1024, 1025}) {
+    auto module = parse(extent);
+    ASSERT_TRUE(module);
+    auto function = *module->getOps<mlir::func::FuncOp>().begin();
+    mlir::OpBuilder builder(&function.getBody().front(),
+                            function.getBody().front().begin());
+    auto input = function.getArgument(0);
+    auto condition =
+        builder.create<mlir::arith::ConstantIntOp>(function.getLoc(), 1, 1);
+    auto unsupported = builder.create<mlir::arith::SelectOp>(
+        function.getLoc(), condition, input, input);
+    function.walk(
+        [&](mlir::linalg::MapOp op) { op->setOperand(0, unsupported); });
+    const auto before = print(module->getOperation());
+    std::string detail;
+    auto program = buildProgram(*module, detail);
+    ASSERT_TRUE(program) << detail;
+    auto admission =
+        PhysicalDataflowPlanningProblem::create(*program, CardId(0));
+    auto *problem = std::get_if<PhysicalDataflowPlanningProblem>(&admission);
+    ASSERT_NE(problem, nullptr);
+    PhysicalDataflowPlanningSession session(*problem, 16);
+    for (unsigned query = 0; query < 2; ++query) {
+      auto result = session.resumeSpatial();
+      EXPECT_EQ(result.getKind(), SpatialExpansionKind::Unsupported);
+    }
+    EXPECT_EQ(session.getWork().unsupportedSpatialChoices, 2u);
+    EXPECT_FALSE(session.takeNextSpatialState());
+    EXPECT_EQ(print(module->getOperation()), before);
+  }
 }
 
 } // namespace

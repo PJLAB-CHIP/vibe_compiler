@@ -1137,7 +1137,7 @@ public:
               : nullptr;
       const bool targetAllowsNativeReduce = reduceFormat != nullptr;
       const bool nativeLayoutContract =
-          targetAllowsNativeReduce && inputMemory &&
+          inputType.getRank() <= 4 && targetAllowsNativeReduce && inputMemory &&
           inputMemory.getLayout() == expectedInputLayout && resultMemory &&
           resultMemory.getLayout() == expectedResultLayout;
       if (nativeKind && hasExactNativeIdentity && nativeLayoutContract) {

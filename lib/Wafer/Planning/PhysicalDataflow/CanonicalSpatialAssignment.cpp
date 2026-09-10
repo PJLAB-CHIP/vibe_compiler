@@ -11,9 +11,7 @@
 #include <array>
 #include <optional>
 #include <string>
-#include <type_traits>
 #include <utility>
-#include <variant>
 #include <vector>
 
 namespace wafer::compiler::detail {
@@ -249,26 +247,11 @@ buildCanonicalSpatialAssignment(const StructuredDAGAnalysis &dag,
   if (mlir::failed(demandSession))
     return mlir::failure();
   analysis::ExactDemandOutcome demand = demandSession->query(*assignment);
-  const bool unanalyzableRoot = demandSession->hasUnanalyzableRoot();
   demandSession->close();
   const analysis::ExactDemandProof *proof =
       analysis::getExactDemandProof(demand);
-  if (!proof && unanalyzableRoot) {
-    // A root without relation facts cannot be satisfied by any spatial
-    // coordinate, so the canonical baseline stops here with that typed reason
-    // instead of publishing a coordinate it cannot justify.
-    if (failureReason)
-      *failureReason =
-          std::visit([](const auto &value) -> std::string {
-            using T = std::decay_t<decltype(value)>;
-            if constexpr (std::is_same_v<T, analysis::ExactDemandProof>)
-              return {};
-            else
-              return value.detail;
-          },
-                     demand);
-    return mlir::failure();
-  }
+  // This constructs a structural coordinate, not an accepted candidate.
+  // The baseline's demand stage consumes every non-exact typed outcome.
   if (proof) {
     mlir::FailureOr<SpatialPlan> coherent =
         buildGraphCoherentSpatialProposal(problem, plan, *assignment, *proof,

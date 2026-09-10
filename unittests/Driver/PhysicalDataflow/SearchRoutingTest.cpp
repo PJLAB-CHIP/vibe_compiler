@@ -82,9 +82,9 @@ TEST(SearchRoutingTest, SearchBuildsOneCurrentIRDeviceExecutable) {
            "compile-counter category=search name=width value=8",
            "compile-counter category=search name=trials value=42",
            "compile-counter category=search "
-           "name=accepted-structural-states value=1",
+           "name=accepted-structural-states value=8",
            "compile-counter category=search "
-           "name=unsupported-structural-states value=7",
+           "name=unsupported-structural-states value=0",
        })
     EXPECT_NE(diagnosticsText.find(counter.str()), std::string::npos)
         << counter.str() << "\n"

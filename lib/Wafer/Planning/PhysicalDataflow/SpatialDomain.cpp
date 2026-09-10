@@ -684,13 +684,19 @@ mlir::FailureOr<SpatialPlan> buildGraphCoherentSpatialProposal(
       }
   }
 
+  std::map<analysis::DemandDestination, TileId> destinations;
+  for (const auto &[shard, tile] : tilesByShard)
+    destinations.emplace(shard, tile);
+  for (const auto &node : assignment.nodes)
+    for (const auto &merge : node.reductionGroups)
+      destinations.emplace(merge.group, merge.mergeTile);
   using TileVotes = std::map<int64_t, uint64_t>;
   std::map<LogicalShardId, TileVotes> votes;
   for (const analysis::DependencyDemand &dependency : demand.dependencyDemands)
     for (const analysis::DestinationDemand &destination :
          dependency.perDestination) {
-      auto destinationTile = tilesByShard.find(destination.destinationShard);
-      if (destinationTile == tilesByShard.end() ||
+      auto destinationTile = destinations.find(destination.destination);
+      if (destinationTile == destinations.end() ||
           destinationTile->second != destination.destinationTile) {
         if (failureReason)
           *failureReason =
@@ -1420,12 +1426,16 @@ SpatialPlanDomain::getGraphCoherentProposals(
   };
   auto proposals = getProposals();
   if (!proposals.empty()) {
-    auto coordinated =
-        propagateSpatialPartitions(*this, dag, proposals.front(), limits);
-    if (mlir::failed(coordinated))
-      return mlir::failure();
-    if (!llvm::is_contained(proposals, *coordinated))
-      proposals.insert(proposals.begin(), std::move(*coordinated));
+    const SpatialPlan seed = proposals.front();
+    for (auto order : {SpatialPropagationOrder::ProducersFirst,
+                       SpatialPropagationOrder::ConsumersFirst}) {
+      auto coordinated =
+          propagateSpatialPartitions(*this, dag, seed, limits, order);
+      if (mlir::failed(coordinated))
+        return mlir::failure();
+      if (!llvm::is_contained(proposals, *coordinated))
+        proposals.insert(proposals.begin(), std::move(*coordinated));
+    }
   }
   for (const SpatialPlan &raw : proposals) {
     SpatialDomainEvaluation evaluation = evaluate(dag, raw, limits);

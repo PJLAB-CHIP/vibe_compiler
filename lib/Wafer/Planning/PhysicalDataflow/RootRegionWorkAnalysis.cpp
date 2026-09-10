@@ -451,14 +451,24 @@ private:
            dependency.perDestination) {
         if (destination.destinationTile != site.tile)
           continue;
-        if (executionShards.find(destination.destinationShard) ==
-            executionShards.end()) {
+        bool local = std::visit(
+            [&](const auto &consumer) {
+              using T = std::decay_t<decltype(consumer)>;
+              if constexpr (std::is_same_v<T, LogicalShardId>)
+                return executionShards.count(consumer) != 0;
+              else
+                return llvm::any_of(work.merges, [&](const auto &merge) {
+                  return merge.group == consumer;
+                });
+            },
+            destination.destination);
+        if (!local) {
           setFailure(
               broken(site, BrokenRootRegionWorkReason::AssignmentProofMismatch,
-                     "root operand demand names no local execution shard"));
+                     "root operand demand names no local execution or merge"));
           return;
         }
-        RootUseId use{dependency.consumerOperand, destination.destinationShard};
+        RootUseId use{dependency.consumerOperand, destination.destination};
         auto [position, inserted] =
             operands.try_emplace(dependency.consumerOperand);
         RootOperandWork &operand = position->second;

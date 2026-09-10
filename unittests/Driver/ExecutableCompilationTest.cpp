@@ -1285,4 +1285,112 @@ TEST(ExecutableCompilationPolicyTest,
   }
 }
 
+TEST(ExecutableCompilationPolicyTest,
+     UnknownSpatialRootIsUnsupportedAtBothEntries) {
+  using namespace wafer::compiler;
+  using namespace wafer::compiler::detail;
+  for (int64_t extent : {1024, 1025})
+    for (bool search : {false, true}) {
+      SCOPED_TRACE(std::to_string(extent) + ":" + std::to_string(search));
+      auto parsed = wafer::compiler::testing::parseProgram();
+      const std::string input =
+          "tensor<2x" + std::to_string(extent) + "x128xf16>";
+      const std::string output =
+          "tensor<2x" + std::to_string(extent) + "x1x128xf16>";
+      std::string source;
+      llvm::raw_string_ostream os(source);
+      os << R"mlir(module {
+        wafer.target.topology @target {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+        wafer.execution.mesh @logical {axes = ["card"], shape = array<i64: 1>}
+      )mlir"
+         << "func.func @main(%input: " << input << ") -> " << output << " {\n"
+         << "%empty = tensor.empty() : " << output << "\n"
+         << "%result = tensor.pack %input inner_dims_pos = [2] inner_tiles = "
+            "[128] into %empty : "
+         << input << " -> " << output << "\n"
+         << "return %result : " << output << "\n}}";
+      parsed.module = mlir::parseSourceString<mlir::ModuleOp>(
+          os.str(), parsed.context.get());
+      ASSERT_TRUE(parsed.module);
+      wafer::frontend::FrontendProgramVerificationResult program;
+      program.numPartitions = 1;
+      program.programUserInputCount = 1;
+      program.distributedInputs = {
+          wafer::compiler::testing::boundary(0, {2, extent, 128})};
+      program.distributedOutputs = {
+          wafer::compiler::testing::boundary(0, {2, extent, 1, 128})};
+      ProgramDataHandoff data;
+      std::string diagnosticsText;
+      llvm::raw_string_ostream diagnostics(diagnosticsText);
+      auto result = search ? compileSearchCurrentIR(
+                                 *parsed.module, program,
+                                 wafer::compiler::testing::executionConfig(),
+                                 diagnostics, data, SearchCurrentIROptions{})
+                           : compileBaselineCurrentIR(
+                                 *parsed.module, program,
+                                 wafer::compiler::testing::executionConfig(),
+                                 diagnostics, data, BaselineCurrentIROptions{});
+      EXPECT_EQ(result.status, ExecutableCompilationStatus::UnsupportedFailure)
+          << result.gate << ": " << result.detail;
+      EXPECT_EQ(result.gate,
+                search ? "search-planning-problem" : "baseline-spatial");
+      EXPECT_FALSE(result.executable);
+    }
+}
+
+TEST(ExecutableCompilationPolicyTest,
+     RelationWorkLimitRemainsIndeterminateAtBothEntries) {
+  using namespace wafer::compiler;
+  using namespace wafer::compiler::detail;
+  // Rank 17 deliberately exceeds the default 32-variable relation budget
+  // (17 iteration + 17 operand coordinates); extents remain static and real
+  // scale.
+  for (bool search : {false, true}) {
+    auto parsed = wafer::compiler::testing::parseProgram();
+    std::vector<int64_t> shape(17, 1);
+    shape[15] = 1025;
+    shape[16] = 128;
+    std::string type = "tensor<";
+    for (int64_t extent : shape)
+      type += std::to_string(extent) + "x";
+    type += "f16>";
+    std::string source;
+    llvm::raw_string_ostream os(source);
+    os << R"mlir(module {
+      wafer.target.topology @target {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+      wafer.execution.mesh @logical {axes = ["card"], shape = array<i64: 1>}
+    )mlir"
+       << "func.func @main(%input: " << type << ") -> " << type << " {\n"
+       << "%e = tensor.empty() : " << type
+       << "\n%r = linalg.map ins(%input : " << type << ") outs(%e : " << type
+       << ") (%x: f16) { %v = arith.addf %x,%x : f16\nlinalg.yield %v : f16 "
+          "}\nreturn %r : "
+       << type << "\n}}";
+    parsed.module =
+        mlir::parseSourceString<mlir::ModuleOp>(os.str(), parsed.context.get());
+    ASSERT_TRUE(parsed.module);
+    wafer::frontend::FrontendProgramVerificationResult program;
+    program.numPartitions = 1;
+    program.programUserInputCount = 1;
+    program.distributedInputs = {wafer::compiler::testing::boundary(0, shape)};
+    program.distributedOutputs = {wafer::compiler::testing::boundary(0, shape)};
+    ProgramDataHandoff data;
+    std::string text;
+    llvm::raw_string_ostream diagnostics(text);
+    SearchCurrentIROptions options;
+    options.planningCredits = 8;
+    auto result = search ? compileSearchCurrentIR(
+                               *parsed.module, program,
+                               wafer::compiler::testing::executionConfig(),
+                               diagnostics, data, options)
+                         : compileBaselineCurrentIR(
+                               *parsed.module, program,
+                               wafer::compiler::testing::executionConfig(),
+                               diagnostics, data, BaselineCurrentIROptions{});
+    EXPECT_EQ(result.status, ExecutableCompilationStatus::IndeterminateFailure)
+        << result.gate << ": " << result.detail;
+    EXPECT_FALSE(result.executable);
+  }
+}
+
 } // namespace

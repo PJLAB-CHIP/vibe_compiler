@@ -246,8 +246,20 @@ ExecutableCompilationResult compileBaselineCurrentIR(
       analysis::getExactDemandProof(demand);
   if (!proof) {
     demandSession->close();
-    return fail(ExecutableCompilationStatus::UnsupportedFailure,
-                "baseline-demand", demandFailureDetail(demand));
+    ExecutableCompilationStatus status =
+        ExecutableCompilationStatus::CompilerFailure;
+    switch (analysis::classifyExactDemandOutcome(demand)) {
+    case analysis::ExactDemandOutcomeCategory::UnsupportedSemantics:
+      status = ExecutableCompilationStatus::UnsupportedFailure;
+      break;
+    case analysis::ExactDemandOutcomeCategory::IndeterminateResourceExhaustion:
+      status = ExecutableCompilationStatus::IndeterminateFailure;
+      break;
+    case analysis::ExactDemandOutcomeCategory::CompilerContractError:
+    case analysis::ExactDemandOutcomeCategory::Satisfied:
+      break;
+    }
+    return fail(status, "baseline-demand", demandFailureDetail(demand));
   }
   auto rootDomain =
       RootWorkDomain::create((*structured)->dag, spatial->assignment, *proof,

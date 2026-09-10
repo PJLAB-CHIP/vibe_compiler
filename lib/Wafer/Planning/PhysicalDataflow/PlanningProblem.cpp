@@ -4,19 +4,16 @@
 
 namespace wafer::compiler::detail {
 
-mlir::FailureOr<PhysicalDataflowPlanningProblem>
+std::variant<PhysicalDataflowPlanningProblem, SpatialDomainFailure>
 PhysicalDataflowPlanningProblem::create(
     const StructuredProgramAnalysis &program, CardId cardId,
-    const analysis::IndexRelationLimits &relationLimits,
-    std::string *failureReason) {
+    const analysis::IndexRelationLimits &relationLimits) {
   SpatialPlanDomainResult spatial =
       buildSpatialPlanDomain(program.dag, program.topology, cardId);
   if (!spatial.succeeded()) {
-    if (failureReason)
-      *failureReason = spatial.failure
-                           ? spatial.failure->detail
-                           : "spatial planning problem returned no detail";
-    return mlir::failure();
+    return spatial.failure.value_or(SpatialDomainFailure{
+        SpatialDomainFailureKind::BrokenContract, std::nullopt,
+        "spatial planning problem returned no detail"});
   }
   return PhysicalDataflowPlanningProblem(
       program, cardId, std::move(*spatial.domain), relationLimits);

@@ -1317,8 +1317,27 @@ static mlir::LogicalResult scheduleSparseComponent(
                                      static_cast<unsigned>(position));
   int64_t round = 0;
   while (!remaining.empty()) {
+    // A source Region can release its payload before the next Region on the
+    // same Tile runs. Receiver round order must not wait for that later
+    // payload first: the earlier send's completion would then form a cycle.
+    // Use current block order, not relation/communication numbering, to make
+    // only the earliest remaining source Regions eligible for this round.
+    llvm::SmallVector<unsigned, 64> ready;
+    for (unsigned candidate : remaining) {
+      const PeerPlan &peer = peers[candidate];
+      bool blocked = llvm::any_of(remaining, [&](unsigned predecessor) {
+        const PeerPlan &earlier = peers[predecessor];
+        return earlier.sourceTile == peer.sourceTile &&
+               earlier.sourceRegion != peer.sourceRegion &&
+               earlier.sourceRegion->getBlock() ==
+                   peer.sourceRegion->getBlock() &&
+               earlier.sourceRegion->isBeforeInBlock(peer.sourceRegion);
+      });
+      if (!blocked)
+        ready.push_back(candidate);
+    }
     mlir::FailureOr<llvm::SmallVector<unsigned, 16>> selected =
-        selectSparseRound(remaining, peers, topology, detail);
+        selectSparseRound(ready, peers, topology, detail);
     if (mlir::failed(selected))
       return mlir::failure();
     llvm::DenseSet<unsigned> selectedSet;
@@ -1938,14 +1957,12 @@ preflight(mlir::ModuleOp module, StructuredMaterializationRelations &relations,
     detail = "not every observable output has one current publication copy";
     return mlir::failure();
   }
+  std::set<unsigned> programOutputIndices;
   for (auto &[operation, indices] : functionOutputIndices) {
     auto function = mlir::cast<mlir::func::FuncOp>(operation);
     llvm::sort(indices);
-    for (auto [expected, index] : llvm::enumerate(indices))
-      if (index != expected) {
-        detail = "entry observable output indices are not dense and unique";
-        return mlir::failure();
-      }
+    indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+    programOutputIndices.insert(indices.begin(), indices.end());
     if (!function.getBody().hasOneBlock() ||
         !mlir::isa<mlir::func::ReturnOp>(
             function.getBody().front().getTerminator()) ||
@@ -1955,6 +1972,12 @@ preflight(mlir::ModuleOp module, StructuredMaterializationRelations &relations,
       return mlir::failure();
     }
   }
+  unsigned expectedOutput = 0;
+  for (unsigned index : programOutputIndices)
+    if (index != expectedOutput++) {
+      detail = "program observable output indices are not dense";
+      return mlir::failure();
+    }
 
   for (auto [relationIndex, relation] :
        llvm::enumerate(relations.boundaryRelations)) {
@@ -2435,9 +2458,9 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
     return mlir::failure();
   llvm::DenseMap<mlir::Value, mlir::Value> stagedResults;
   llvm::SmallVector<TileRegionOp, 16> oldRegions;
-  llvm::DenseMap<mlir::Operation *,
-                 llvm::SmallVector<std::pair<unsigned, mlir::Value>, 2>>
+  llvm::DenseMap<mlir::Operation *, std::map<unsigned, mlir::Value>>
       functionOutputs;
+  std::map<unsigned, mlir::MemRefType> outputTypes;
   llvm::DenseMap<mlir::Operation *, llvm::SmallVector<unsigned, 2>>
       outputArguments;
   llvm::DenseSet<mlir::Operation *> erasedCleanupOperations;
@@ -2482,18 +2505,24 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
             !result.outputIndex ||
             outputArgument.getOwner() != &function.getBody().front())
           return failApply("observable output has no exact temporary arg");
+        auto outputType =
+            mlir::cast<mlir::MemRefType>(outputArgument.getType());
+        auto [type, newType] =
+            outputTypes.try_emplace(*result.outputIndex, outputType);
+        if (!newType && type->second != outputType)
+          return failApply(
+              "program output pieces disagree on their full DDR type");
+        auto &outputs = functionOutputs[function.getOperation()];
+        auto [output, newOutput] = outputs.try_emplace(*result.outputIndex);
         rewriter.setInsertionPoint(oldRegion);
-        auto output = rewriter.create<mlir::memref::AllocOp>(
-            oldRegion.getLoc(),
-            mlir::cast<mlir::MemRefType>(outputArgument.getType()));
+        if (newOutput)
+          output->second = rewriter.create<mlir::memref::AllocOp>(
+              oldRegion.getLoc(), outputType);
         auto outputSubview = rewriter.create<mlir::memref::SubViewOp>(
-            oldSubview.getLoc(), output.getResult(),
-            oldSubview.getMixedOffsets(), oldSubview.getMixedSizes(),
-            oldSubview.getMixedStrides());
+            oldSubview.getLoc(), output->second, oldSubview.getMixedOffsets(),
+            oldSubview.getMixedSizes(), oldSubview.getMixedStrides());
         result.obsoleteOutputSubview = oldSubview;
         result.ddrDestination = outputSubview.getResult();
-        functionOutputs[function.getOperation()].push_back(
-            {*result.outputIndex, output.getResult()});
         outputArguments[function.getOperation()].push_back(
             outputArgument.getArgNumber());
         resultDestinations.try_emplace(result.index, result.ddrDestination);
@@ -3211,11 +3240,33 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
     }
   }
 
+  // Every public Tile entry retains the same logical program result ports,
+  // including Tiles that only contribute to another Tile's final merge. These
+  // actual DDR roots are the existing ABI's output resources; adding the port
+  // adds no compute or write. Multiple pieces of one output on a Tile share
+  // the same root rather than producing duplicate function results.
+  unsigned expectedOutput = 0;
+  for (const auto &[index, type] : outputTypes) {
+    (void)type;
+    if (index != expectedOutput++)
+      return failApply("current program output indices are not contiguous");
+  }
+  if (!outputTypes.empty())
+    for (TileModuleOp tile : module.getOps<TileModuleOp>())
+      for (mlir::func::FuncOp function : tile.getOps<mlir::func::FuncOp>()) {
+        if (function.isPrivate() || function.isExternal())
+          continue;
+        if (!function.getBody().hasOneBlock())
+          return failApply("program output port requires a single-block entry");
+        auto &outputs = functionOutputs[function.getOperation()];
+        rewriter.setInsertionPointToStart(&function.getBody().front());
+        for (const auto &[index, type] : outputTypes)
+          if (!outputs.count(index))
+            outputs.emplace(index, rewriter.create<mlir::memref::AllocOp>(
+                                       function.getLoc(), type));
+      }
   for (auto &[operation, outputs] : functionOutputs) {
     auto function = mlir::cast<mlir::func::FuncOp>(operation);
-    llvm::sort(outputs, [](const auto &lhs, const auto &rhs) {
-      return lhs.first < rhs.first;
-    });
     llvm::SmallVector<mlir::Value, 2> values;
     llvm::SmallVector<mlir::Type, 2> types;
     values.reserve(outputs.size());

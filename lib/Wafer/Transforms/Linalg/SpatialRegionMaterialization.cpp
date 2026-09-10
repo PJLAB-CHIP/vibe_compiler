@@ -375,6 +375,33 @@ collectGroupExecutions(const RegionGroupPlan &group,
   return executions;
 }
 
+bool hasDemandConsumer(const analysis::RootRegionWork &work,
+                       const analysis::DemandDestination &destination) {
+  if (analysis::getDemandRoot(destination) != work.id.root)
+    return false;
+  if (const auto *shard =
+          std::get_if<compiler::detail::LogicalShardId>(&destination))
+    return findExecution(work, *shard) != nullptr;
+  const auto &group = std::get<compiler::detail::ReductionGroupId>(destination);
+  return llvm::any_of(work.merges,
+                      [&](const auto &merge) { return merge.group == group; });
+}
+
+analysis::DemandDestination
+getDemandDestination(const RegionExecutionId &consumer) {
+  if (const auto *required = std::get_if<ExecutionInstanceId>(&consumer))
+    return std::visit(
+        [](const auto &execution) -> analysis::DemandDestination {
+          using T = std::decay_t<decltype(execution)>;
+          if constexpr (std::is_same_v<T, RequiredRootExecution>)
+            return execution.shard;
+          else
+            return execution.group;
+        },
+        required->source);
+  return std::get<ReplicaExecutionId>(consumer).producer.shard;
+}
+
 mlir::LogicalResult
 validateRegionChoice(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
                      const compiler::detail::RegionPlan &regionPlan,
@@ -439,12 +466,9 @@ validateRegionChoice(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
     auto findConsumerWork = [&](const DemandFragmentId &fragment)
         -> const analysis::RootRegionWork * {
       auto found = llvm::find_if(group.mandatoryRoots, [&](const auto &id) {
-        if (id.root != fragment.use.destinationShard.root)
-          return false;
         auto work = works.find(id);
         return work != works.end() &&
-               findExecution(*work->second, fragment.use.destinationShard) !=
-                   nullptr;
+               hasDemandConsumer(*work->second, fragment.use.destination);
       });
       if (found == group.mandatoryRoots.end())
         return nullptr;
@@ -1079,8 +1103,7 @@ struct GroupBuilder {
   const analysis::ExactIndexSet *
   findFragmentDomain(const DemandFragmentId &fragment) const {
     auto work = llvm::find_if(rootWorks, [&](const auto &candidate) {
-      return candidate.id.root == fragment.use.destinationShard.root &&
-             findExecution(candidate, fragment.use.destinationShard);
+      return hasDemandConsumer(candidate, fragment.use.destination);
     });
     if (work == rootWorks.end())
       return nullptr;
@@ -1323,19 +1346,11 @@ struct GroupBuilder {
   llvm::SmallVector<const LocalUseBinding *, 2>
   findLocalBindings(const RegionExecutionId &consumer,
                     unsigned operandNumber) const {
-    const compiler::detail::LogicalShardId *shard = nullptr;
-    if (const auto *required = std::get_if<ExecutionInstanceId>(&consumer)) {
-      const auto *root = std::get_if<RequiredRootExecution>(&required->source);
-      shard = root ? &root->shard : nullptr;
-    } else {
-      shard = &std::get<ReplicaExecutionId>(consumer).producer.shard;
-    }
-    if (!shard)
-      return {};
+    const auto destination = getDemandDestination(consumer);
     llvm::SmallVector<const LocalUseBinding *, 2> bindings;
     for (const LocalUseBinding &binding : group.localBindings)
       if (binding.fragment.use.operand == operandNumber &&
-          binding.fragment.use.destinationShard == *shard)
+          binding.fragment.use.destination == destination)
         bindings.push_back(&binding);
     return bindings;
   }
@@ -1343,22 +1358,14 @@ struct GroupBuilder {
   llvm::SmallVector<const DemandFragmentId *, 2>
   findExternalBindings(const RegionExecutionId &consumer,
                        unsigned operandNumber, mlir::Value operandValue) const {
-    const compiler::detail::LogicalShardId *shard = nullptr;
-    if (const auto *required = std::get_if<ExecutionInstanceId>(&consumer)) {
-      const auto *root = std::get_if<RequiredRootExecution>(&required->source);
-      shard = root ? &root->shard : nullptr;
-    } else {
-      shard = &std::get<ReplicaExecutionId>(consumer).producer.shard;
-    }
+    const auto destination = getDemandDestination(consumer);
     llvm::SmallVector<const DemandFragmentId *, 2> result;
-    if (!shard)
-      return result;
     const bool directSource =
         getSourceValueKey(operandValue, sourceFunction, nodes).has_value();
     for (const auto &binding : group.externalBindings) {
       const DemandFragmentId &fragment = binding.fragment;
       if (fragment.use.operand != operandNumber ||
-          fragment.use.destinationShard != *shard)
+          fragment.use.destination != destination)
         continue;
       if (directSource) {
         bool sameCurrentSource = false;
@@ -1549,7 +1556,8 @@ struct GroupBuilder {
       if (work && operandWork != work->operands.end()) {
         auto use = llvm::find_if(operandWork->uses, [&](const auto &candidate) {
           return candidate.id.operand == operand.getOperandNumber() &&
-                 candidate.id.destinationShard == *destinationShard;
+                 candidate.id.destination ==
+                     analysis::DemandDestination(*destinationShard);
         });
         if (use != operandWork->uses.end()) {
           auto normalized =
@@ -1872,8 +1880,9 @@ struct GroupBuilder {
     }
     llvm::SmallVector<mlir::Value, 2> resultDestinations;
     for (const analysis::ReductionResultSlice &result : merge.results) {
-      mlir::Value sourceInit = dps.getDpsInitOperand(result.result)->get();
-      auto mappedInit = mapSupportValue(sourceInit);
+      auto mappedInit =
+          mapExecutionOperand(ExecutionInstanceId{execution},
+                              *dps.getDpsInitOperand(result.result));
       llvm::SmallVector<mlir::OpFoldResult> resultOffsets;
       llvm::SmallVector<mlir::OpFoldResult> resultSizes;
       if (mlir::failed(mappedInit) ||

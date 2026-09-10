@@ -60,6 +60,11 @@ struct ParsedProgram {
   mlir::OwningOpRef<mlir::ModuleOp> module;
 };
 
+std::string spatialContractionSource(int64_t extent, bool convolution,
+                                     bool generic, int64_t tiles,
+                                     int64_t depth = 128,
+                                     int64_t columns = 128);
+
 ParsedProgram parseProgram();
 ParsedProgram parseBranchProgram();
 ParsedProgram parseDependentProgram();

@@ -137,8 +137,18 @@ struct SourceDemand {
   llvm::SmallVector<OwnerIntersection, 8> eligibleFinalOwners;
 };
 
+/// The actual consumer of an operand: a compute shard or a reduction merge.
+using DemandDestination = std::variant<LogicalShardId, ReductionGroupId>;
+
+inline const SemanticRootKey &
+getDemandRoot(const DemandDestination &destination) {
+  return std::visit(
+      [](const auto &value) -> const SemanticRootKey & { return value.root; },
+      destination);
+}
+
 struct DestinationDemand {
-  LogicalShardId destinationShard;
+  DemandDestination destination;
   TileId destinationTile{0};
   ExactIndexSet consumerExecutionDomain;
   ExactIndexSet operandDemand;

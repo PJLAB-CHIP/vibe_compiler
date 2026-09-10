@@ -921,4 +921,57 @@ void expectCompleteTileDomain(
   }
 }
 
+std::string spatialContractionSource(int64_t rows, bool conv, bool generic,
+                                     int64_t tiles, int64_t depth,
+                                     int64_t columns) {
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  const std::string input = "tensor<1x" + std::to_string(rows) + "x" +
+                            std::to_string(depth) + "xf16>";
+  const std::string weight = "tensor<1x" + std::to_string(depth) + "x" +
+                             std::to_string(columns) + "xf16>";
+  const std::string output = "tensor<1x" + std::to_string(rows) + "x" +
+                             std::to_string(columns) + "xf16>";
+  os << "module {\nwafer.target.topology @target {card_grid = array<i64: 1, "
+        "1>, card_interconnect = \"mesh\", tile_grid = array<i64: "
+     << (tiles == 16 ? 4 : 1) << ", " << (tiles == 16 ? 4 : tiles)
+     << ">, unavailable_tiles = array<i64>}\nwafer.execution.mesh @logical "
+        "{axes = [\"card\"], shape = array<i64: 1>}\nfunc.func @main(%input: "
+     << input << ", %weight: " << weight << ") -> " << output << " {\n"
+     << "%e = tensor.empty() : " << input << "\n"
+     << "%p = linalg.map ins(%input : " << input << ") outs(%e : " << input
+     << ") (%x: f16) { %v = arith.addf %x, %x : f16\nlinalg.yield %v : f16 }\n"
+     << "%init_scalar = arith.constant 2.0 : f16\n"
+     << "%oe = tensor.empty() : " << output << "\n"
+     << "%init = linalg.fill ins(%init_scalar : f16) outs(%oe : " << output
+     << ") -> " << output << "\n";
+  if (generic) {
+    os << "%r = linalg.generic { indexing_maps = [";
+    if (conv)
+      os << "affine_map<(b,m,n,w,k)->(b,m+w,k)>, "
+            "affine_map<(b,m,n,w,k)->(w,k,n)>, "
+            "affine_map<(b,m,n,w,k)->(b,m,n)>], iterator_types = "
+            "[\"parallel\",\"parallel\",\"parallel\",\"reduction\","
+            "\"reduction\"]}";
+    else
+      os << "affine_map<(b,m,n,k)->(b,m,k)>, affine_map<(b,m,n,k)->(b,k,n)>, "
+            "affine_map<(b,m,n,k)->(b,m,n)>], iterator_types = "
+            "[\"parallel\",\"parallel\",\"parallel\",\"reduction\"]}";
+    os << " ins(%p, %weight : " << input << ", " << weight
+       << ") outs(%init : " << output
+       << ") { ^bb0(%a: f16, %b: f16, %c: f16): %v = arith.mulf %a, %b : f16\n"
+       << "%v2 = arith.addf %v, %c : f16\nlinalg.yield %v2 : f16 } -> "
+       << output << "\n";
+  } else {
+    os << "%r = "
+       << (conv ? "linalg.conv_1d_nwc_wcf {strides = dense<1> : tensor<1xi64>, "
+                  "dilations = dense<1> : tensor<1xi64>}"
+                : "linalg.batch_matmul")
+       << " ins(%p, %weight : " << input << ", " << weight
+       << ") outs(%init : " << output << ") -> " << output << "\n";
+  }
+  os << "return %r : " << output << "\n}}";
+  return text;
+}
+
 } // namespace wafer::compiler::testing

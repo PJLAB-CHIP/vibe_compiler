@@ -864,6 +864,30 @@ preflightOutputPieces(StructuredMaterializationRelations &relations,
         return mlir::failure();
       }
 
+    // Several merge groups may publish disjoint pieces of the same program
+    // result on one Tile. Their actual insert_slice bounds, rather than a
+    // one-output-per-Tile restriction, establish whether sharing a DDR result
+    // root is legal.
+    for (const OutputPiecePlan &previous : plans) {
+      if (relations.structuralOutputs[previous.relationIndex].outputIndex !=
+              relation.outputIndex ||
+          previous.region->getParentOfType<TileModuleOp>() !=
+              region->getParentOfType<TileModuleOp>())
+        continue;
+      if (previous.fullType != fullType) {
+        detail = "same-Tile output pieces have different full result types";
+        return mlir::failure();
+      }
+      bool disjoint = false;
+      for (size_t axis = 0; axis < offsets.size(); ++axis)
+        disjoint |=
+            offsets[axis] + sizes[axis] <= previous.offsets[axis] ||
+            previous.offsets[axis] + previous.sizes[axis] <= offsets[axis];
+      if (!disjoint) {
+        detail = "same-Tile output pieces overlap";
+        return mlir::failure();
+      }
+    }
     plans.push_back(OutputPiecePlan{
         static_cast<unsigned>(relationIndex), region,
         endpoint.getResultNumber(), piece, fullType, std::move(offsets),
