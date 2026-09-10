@@ -9,7 +9,6 @@
 #include "Wafer/Planning/PhysicalDataflow/AttentionSpatialConstraints.h"
 #include "Wafer/Analysis/Linalg/SemanticRootAnalysis.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"
-#include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallBitVector.h"
@@ -160,9 +159,6 @@ public:
       const StructuredDAGAnalysis &dag,
       const analysis::IndexRelationLimits &limits =
           analysis::IndexRelationLimits()) const;
-
-  llvm::SmallVector<StructuredDAGNodePlacement, 16>
-  getNodePlacements(const SpatialPlan &plan) const;
 
   const SpatialDomainProblem &getProblem() const { return problem; }
   const TargetTopology &getTopology() const { return topology; }

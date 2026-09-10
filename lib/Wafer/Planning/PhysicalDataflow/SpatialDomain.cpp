@@ -1219,27 +1219,6 @@ SpatialPlanDomain::evaluate(const StructuredDAGAnalysis &dag,
   return evaluation;
 }
 
-llvm::SmallVector<StructuredDAGNodePlacement, 16>
-SpatialPlanDomain::getNodePlacements(const SpatialPlan &plan) const {
-  llvm::SmallVector<StructuredDAGNodePlacement, 16> placements;
-  if (!contains(plan))
-    return placements;
-  for (auto [root, node] : llvm::zip_equal(problem.getRoots(), plan.nodes)) {
-    mlir::FailureOr<llvm::SmallVector<int64_t, 8>> counts =
-        getIntervalCounts(root.iteratorExtents, node.axes);
-    if (mlir::failed(counts))
-      return {};
-    StructuredDAGNodePlacement placement;
-    placement.node = root.node;
-    for (int64_t count : *counts)
-      placement.iteratorPartitionFactors.push_back(
-          static_cast<uint32_t>(count));
-    placement.tiles = node.embedding;
-    placements.push_back(std::move(placement));
-  }
-  return placements;
-}
-
 llvm::SmallVector<SpatialPlan, 4> SpatialPlanDomain::getProposals() const {
   llvm::SmallVector<SpatialPlan, 4> proposals;
   auto append = [&](SpatialPlan plan) {
