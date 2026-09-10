@@ -357,7 +357,15 @@ getCanonicalElementwiseMaps(mlir::linalg::LinalgOp operation) {
     }
     map = mlir::AffineMap::get(resultType.getRank(), 0, expressions,
                                operation.getContext());
-    if (!map.isProjectedPermutation())
+    llvm::SmallVector<mlir::AffineExpr, 4> projected;
+    for (mlir::AffineExpr expression : expressions) {
+      auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
+      if (!constant || constant.getValue() != 0)
+        projected.push_back(expression);
+    }
+    if (!mlir::AffineMap::get(resultType.getRank(), 0, projected,
+                              operation.getContext())
+             .isProjectedPermutation())
       return std::nullopt;
   }
   maps.back() = mlir::AffineMap::getMultiDimIdentityMap(resultType.getRank(),
@@ -369,6 +377,15 @@ getCanonicalElementwiseMaps(mlir::linalg::LinalgOp operation) {
     if (map.getNumResults() != input.getRank())
       return std::nullopt;
     for (auto [axis, expression] : llvm::enumerate(map.getResults())) {
+      if (auto zero = mlir::dyn_cast<mlir::AffineConstantExpr>(expression)) {
+        if (zero.getValue() != 0 || input.getDimSize(axis) != 1)
+          return std::nullopt;
+        llvm::SmallVector<int64_t, 4> strides;
+        int64_t offset = 0;
+        if (mlir::failed(mlir::getStridesAndOffset(input, strides, offset)))
+          return std::nullopt;
+        continue;
+      }
       auto dim = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
       if (!dim ||
           input.getDimSize(axis) != resultType.getDimSize(dim.getPosition()))
@@ -1545,6 +1562,34 @@ lookupExpr(mlir::Value value, llvm::DenseMap<mlir::Value, ExprValue> &values) {
   return found->second;
 }
 
+static ExprValue dropConstantUnitInputAxes(ExprValue value,
+                                           mlir::IRRewriter &rewriter,
+                                           mlir::Location location) {
+  auto type = getMemRef(value.buffer);
+  llvm::SmallVector<mlir::AffineExpr, 4> expressions;
+  llvm::SmallVector<int64_t, 4> shape;
+  for (auto [axis, expression] :
+       llvm::enumerate(value.indexingMap.getResults())) {
+    // getCanonicalElementwiseMaps has proved that every constant coordinate
+    // here is zero and indexes an actual unit extent.
+    if (mlir::isa<mlir::AffineConstantExpr>(expression))
+      continue;
+    expressions.push_back(expression);
+    shape.push_back(type.getDimSize(axis));
+  }
+  if (shape.size() == static_cast<size_t>(type.getRank()))
+    return value;
+  llvm::SmallVector<int64_t, 4> offsets(type.getRank(), 0);
+  llvm::SmallVector<int64_t, 4> strides(type.getRank(), 1);
+  auto reducedType = mlir::cast<mlir::MemRefType>(
+      mlir::memref::SubViewOp::inferRankReducedResultType(
+          shape, type, offsets, type.getShape(), strides));
+  auto view = rewriter.create<mlir::memref::SubViewOp>(
+      location, reducedType, value.buffer, offsets, type.getShape(), strides);
+  return {view, mlir::AffineMap::get(value.indexingMap.getNumDims(), 0,
+                                     expressions, rewriter.getContext())};
+}
+
 static mlir::LogicalResult
 lowerElementwise(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
                  StructuredToTileStatistics &statistics) {
@@ -1574,8 +1619,10 @@ lowerElementwise(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
        llvm::zip_equal(body.getArguments(), blockOperands)) {
     mlir::Value input = operand->get();
     if (mlir::MemRefType inputType = getMemRef(input)) {
-      values.try_emplace(argument,
-                         ExprValue{input, maps[operand->getOperandNumber()]});
+      values.try_emplace(
+          argument,
+          dropConstantUnitInputAxes({input, maps[operand->getOperandNumber()]},
+                                    rewriter, operation.getLoc()));
     } else {
       mlir::FailureOr<ExprValue> filled = createScalarFill(
           input, resultType, rewriter, operation.getLoc(), statistics);

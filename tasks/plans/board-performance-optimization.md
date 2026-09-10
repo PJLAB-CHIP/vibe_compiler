@@ -78,6 +78,23 @@ canonical完整增量构建后的第二次构建为Ninja no-op。此处numeric/S
 同时tensor-linalg inventory仍为两个`linalg.batch_matmul`，没有attention op；需要分别闭合unit-axis输入映射lowering与真实source的attention识别。
 该结果替代对旧完整weight容量故障的猜测，不把失败编译当作FA产品验收或设备性能结果。
 
+Unit-axis lowering覆盖：rank4/5输入、rank3输出，1024/1025/1031；leading/middle unit轴、permutation/broadcast、
+plain/strided输入，检查rank-reducing subview的source、offset/stride及Tile map不含常量，进入actual Instr。
+非unit零坐标与非零常量为独立typed负例；完整block的fresh产品是后续witness，不由局部测试代签。
+第3项基线中`finish-candidate`累计约809秒缺少内部阶段归因，现复用已有compile-timing session分别记录
+`layout-and-bufferization`与`structured-to-tile`的调用、耗时和失败；只读诊断不改变budget、choice或IR。
+
+Unit-axis实现的24组1024/1025/1031 × leading/middle/multiple-unit/broadcast × plain/strided输入已通过；
+strided输入包含非零slice原点，检查删除unit轴后同source、同offset、逐轴相同stride与memory space，并实际进入Instr。
+两类非unit常量坐标负例保持typed Unsupported且IR不变，StructuredToTile共36项通过。
+本轮完整canonical构建、Ninja no-op、完整`check-wafer`及prefill/local-conv tail-1031 FP16的none/search四组fresh no-card通过。
+完整block新产品复验已经越过原映射拒绝，但仍在actual容量反馈中推进，未签发完整产品资格。
+
+当前allocation定位已区分两种来源：完整block的首个实际候选直接加载`11008x4096xf16`权重并执行未切小的GEMM；
+后续真实反馈依次出现`5504x4096`、`2752x4096`和`2752x2048`，不能称为“buffer根本不随tile变化”。
+Decode首个temporal候选的`1x4096x512xf16`来自standard reduction contribution的展开乘积，随后按K片段拼接供merge读取；
+它不是attention的online accumulator。该定位只决定下一步调查producer/merge与实际容量反馈，不能从shape估算签发下一候选合法性。
+
 ## 既有板端流程与产品矩阵
 
 1. 新鲜导出与编译三条 search FP16 case；逐 case 采集原 profiler。先核对 Count 容量与所有数值/完成门禁。

@@ -606,6 +606,15 @@ destination mutation、view/alias与materializing copy必须已经是actual IR�
 Redundant full-buffer transfer normalization只在current IR上使用exact logical relation、physical map、SSA root、effect和
 use/lifetime证明删除；partial、permuted、layout-changing或alias-unknown transfer保留。
 
+Structured-to-Tile的parallel表达式lowering消费已bufferize的Linalg/current indexing maps，输出既有Tile elementwise、
+convert或movement，直接下游为boundary movement及Tile→Instr。输入map中的常量零若对应实际extent=1的memref轴，
+可以先用标准rank-reducing `memref.subview`删除该恒定轴，再按剩余projected permutation处理；offset、stride、memory space及
+原storage保持，不能为删除unit轴先制造整块copy。结果坐标仍由DPS output map确定，算术body与dtype不变。
+此规则属于`none/search`共用lowering，不按attention、模型或固定rank触发；非unit轴、非零常量和无法证明的map维持typed拒绝。
+API依据为[MemRef subview](https://mlir.llvm.org/docs/Dialects/MemRef/#memrefsubview-memrefsubviewop)的rank reduction，
+具体结果type使用pinned `SubViewOp::inferRankReducedResultType`保留source strides。完成条件为1024/1025/1031、
+不同unit位置、置换/广播、strided view的精确alias与访问证明及actual Instr下游；不扩展SPM或硬件layout能力。
+
 #### 6.1.1 Layout assignment 与 exact PBQP
 
 Layout合法域直接从current structural TileRegion的SSA value/use、consumer interface、exact `IndexRelation`和可验证encoding构造。

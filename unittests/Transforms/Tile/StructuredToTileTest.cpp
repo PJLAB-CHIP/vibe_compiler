@@ -2555,6 +2555,184 @@ module {
 }
 
 TEST_F(StructuredToTileTest,
+       ConstantUnitInputAxesKeepTheirStorageAndProjectedMaps) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (unsigned form : {0u, 1u, 2u, 3u})
+      for (bool strided : {false, true}) {
+        SCOPED_TRACE(std::to_string(extent) + ":" + std::to_string(form) + ":" +
+                     std::to_string(strided));
+        llvm::SmallVector<int64_t, 5> shape;
+        llvm::SmallVector<mlir::AffineExpr, 5> expressions;
+        auto d0 = mlir::getAffineDimExpr(0, context.get());
+        auto d1 = mlir::getAffineDimExpr(1, context.get());
+        auto d2 = mlir::getAffineDimExpr(2, context.get());
+        auto zero = mlir::getAffineConstantExpr(0, context.get());
+        if (form == 0) {
+          shape = {1, extent, 2, 8};
+          expressions = {zero, d1, d0, d2};
+        } else if (form == 1) {
+          shape = {extent, 1, 2, 8};
+          expressions = {d1, zero, d0, d2};
+        } else if (form == 2) {
+          shape = {1, extent, 1, 2, 8};
+          expressions = {zero, d1, zero, d0, d2};
+        } else {
+          shape = {1, extent, 8};
+          expressions = {zero, d1, d2};
+        }
+        auto fullShape = shape;
+        if (strided)
+          fullShape.back() *= 2;
+        auto fullType = mlir::RankedTensorType::get(
+            fullShape, mlir::Float16Type::get(context.get()));
+        auto inputType = mlir::RankedTensorType::get(
+            shape, mlir::Float16Type::get(context.get()));
+        auto outputType = mlir::RankedTensorType::get(
+            {2, extent, 8}, mlir::Float16Type::get(context.get()));
+        auto map = mlir::AffineMap::get(3, 0, expressions, context.get());
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { wafer.tile.module card_id = 0 tile_id = 0 {\n"
+            << "func.func @entry(%input: " << fullType << ") {\n"
+            << "%result = wafer.tile.region(%input : " << fullType << ") -> ("
+            << outputType << ") {\n^bb0(%local: " << fullType << "):\n";
+        if (strided) {
+          out << "%slice = tensor.extract_slice %local[";
+          llvm::SmallVector<int64_t> offsets(shape.size(), 0);
+          offsets.back() = 3;
+          llvm::interleaveComma(offsets, out);
+          out << "] [";
+          llvm::interleaveComma(shape, out);
+          out << "] [";
+          llvm::interleaveComma(llvm::SmallVector<int64_t>(shape.size(), 1),
+                                out);
+          out << "] : " << fullType << " to " << inputType << "\n";
+        }
+        out << "%empty = tensor.empty() : " << outputType << "\n"
+            << "%mapped = linalg.generic {indexing_maps = [affine_map<" << map
+            << ">, affine_map<(d0,d1,d2)->(d0,d1,d2)>], "
+               "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]} "
+            << "ins(" << (strided ? "%slice" : "%local") << " : " << inputType
+            << ") outs(%empty : " << outputType << ") {\n"
+            << "^bb1(%x: f16, %old: f16):\n";
+        if (form == 3)
+          out << "%neg = arith.negf %x : f16\nlinalg.yield %neg : f16\n";
+        else
+          out << "linalg.yield %x : f16\n";
+        out << "} -> " << outputType
+            << "\nwafer.tile.yield %mapped : " << outputType
+            << "\n}\nreturn\n}}}\n";
+        auto module = parse(text);
+        ASSERT_TRUE(module);
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        TileRegionOp region;
+        module->walk([&](TileRegionOp current) { region = current; });
+        StructuredMaterializationRelations relations;
+        relations.structuralOutputs.push_back({0, region.getResult(0)});
+        auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+        ASSERT_TRUE(layout.succeeded()) << layout.detail;
+        mlir::Value input;
+        module->walk([&](mlir::linalg::GenericOp generic) {
+          input = generic.getDpsInputOperand(0)->get();
+        });
+        ASSERT_TRUE(input);
+        auto sourceType = mlir::cast<mlir::MemRefType>(input.getType());
+        llvm::SmallVector<int64_t> sourceStrides;
+        int64_t sourceOffset = 0;
+        ASSERT_TRUE(mlir::succeeded(mlir::getStridesAndOffset(
+            sourceType, sourceStrides, sourceOffset)));
+        auto lowered = lowerStructuredComputeToTile(*module, relations);
+        ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+        unsigned reducedViews = 0;
+        module->walk([&](mlir::memref::SubViewOp view) {
+          if (view.getSource() != input ||
+              view.getType().getRank() == sourceType.getRank())
+            return;
+          ++reducedViews;
+          llvm::SmallVector<int64_t> expectedStrides;
+          for (auto [axis, expression] : llvm::enumerate(expressions))
+            if (!mlir::isa<mlir::AffineConstantExpr>(expression))
+              expectedStrides.push_back(sourceStrides[axis]);
+          llvm::SmallVector<int64_t> strides;
+          int64_t offset = 0;
+          ASSERT_TRUE(mlir::succeeded(
+              mlir::getStridesAndOffset(view.getType(), strides, offset)));
+          EXPECT_EQ(strides, expectedStrides);
+          EXPECT_EQ(offset, sourceOffset);
+          EXPECT_EQ(view.getType().getMemorySpace(),
+                    sourceType.getMemorySpace());
+        });
+        EXPECT_EQ(reducedViews, 1u);
+        module->walk([&](ComputeElementwiseOp op) {
+          for (mlir::Attribute attr : op.getIndexingMapsAttr())
+            EXPECT_TRUE(mlir::cast<mlir::AffineMapAttr>(attr)
+                            .getValue()
+                            .isProjectedPermutation());
+        });
+        EXPECT_EQ(countOps<mlir::linalg::LinalgOp>(module->getOperation()), 0u);
+        auto movement = materializeTileBoundaryMovement(*module, relations);
+        ASSERT_TRUE(movement.succeeded()) << movement.detail;
+        TileRegionToInstrLoweringSession session(*module->getContext());
+        llvm::SmallVector<TileRegionOp> regions;
+        module->walk([&](TileRegionOp current) { regions.push_back(current); });
+        for (auto current : regions)
+          ASSERT_TRUE(
+              mlir::succeeded(convertTileRegionToInstr(current, session)));
+        EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        EXPECT_EQ(countOps<ComputeElementwiseOp>(module->getOperation()), 0u);
+      }
+}
+
+TEST_F(StructuredToTileTest,
+       NonUnitConstantInputCoordinatesRemainTypedUnsupported) {
+  for (int64_t coordinate : {0, 1}) {
+    std::string text;
+    llvm::raw_string_ostream out(text);
+    out << R"mlir(module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(%input: tensor<2x1025x2x8xf16>) {
+      %result = wafer.tile.region(%input : tensor<2x1025x2x8xf16>)
+          -> (tensor<2x1025x8xf16>) {
+      ^bb0(%local: tensor<2x1025x2x8xf16>):
+        %empty = tensor.empty() : tensor<2x1025x8xf16>
+        %mapped = linalg.generic {
+          indexing_maps = [affine_map<(d0,d1,d2)->()mlir"
+        << coordinate << R"mlir(,d1,d0,d2)>,
+                           affine_map<(d0,d1,d2)->(d0,d1,d2)>],
+          iterator_types = ["parallel","parallel","parallel"]}
+          ins(%local : tensor<2x1025x2x8xf16>)
+          outs(%empty : tensor<2x1025x8xf16>) {
+        ^bb1(%x: f16, %old: f16):
+          linalg.yield %x : f16
+        } -> tensor<2x1025x8xf16>
+        wafer.tile.yield %mapped : tensor<2x1025x8xf16>
+      }
+      return
+    }
+  }
+})mlir";
+    auto module = parse(text);
+    ASSERT_TRUE(module);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    TileRegionOp region;
+    module->walk([&](TileRegionOp current) { region = current; });
+    StructuredMaterializationRelations relations;
+    relations.structuralOutputs.push_back({0, region.getResult(0)});
+    auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    std::string before;
+    llvm::raw_string_ostream beforeStream(before);
+    module->print(beforeStream);
+    auto lowered = lowerStructuredComputeToTile(*module, relations);
+    EXPECT_EQ(lowered.failure, StructuredToTileFailureKind::Unsupported);
+    std::string after;
+    llvm::raw_string_ostream afterStream(after);
+    module->print(afterStream);
+    EXPECT_EQ(before, after);
+  }
+}
+
+TEST_F(StructuredToTileTest,
        InterferingFanoutsBecomeActualSparseRoundsWithoutDDR) {
   for (int64_t extent : {1024, 1025}) {
     SCOPED_TRACE(extent);

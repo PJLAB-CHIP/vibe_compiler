@@ -730,6 +730,14 @@ private:
   FinishedCandidate finishRegionCandidate(CurrentCandidate candidate,
                                           uint64_t maximumMovementLeaves,
                                           std::string &detail) {
+    auto timed = [](llvm::StringRef stage, auto &&run) {
+      wafer::support::ScopedCompileTimingSpan timing(
+          "stage", "current-ir-physical", stage);
+      auto result = run();
+      if (!result.succeeded())
+        timing.markFailed();
+      return result;
+    };
     OnlineAttentionDecompositionFailure attentionFailure;
     if (mlir::failed(decomposeOnlineAttention(
             *candidate.module, candidate.relations, &attentionFailure)))
@@ -740,8 +748,10 @@ private:
               : ExecutableCompilationStatus::CompilerFailure,
           "search-attention-decomposition", attentionFailure.detail)};
 
-    LayoutOptimizationResult layout = resolveCurrentLayoutsAndBufferize(
-        *candidate.module, candidate.relations, options.layoutWorkLimit);
+    LayoutOptimizationResult layout = timed("layout-and-bufferization", [&] {
+      return resolveCurrentLayoutsAndBufferize(
+          *candidate.module, candidate.relations, options.layoutWorkLimit);
+    });
     recordLayoutInstrumentation(layout.statistics);
     if (statistics) {
       ++statistics->layoutInvocations;
@@ -752,8 +762,10 @@ private:
       return {fail(classifyLayoutFailure(layout.status), "search-layout",
                    layout.detail)};
 
-    StructuredToTileResult compute =
-        lowerStructuredComputeToTile(*candidate.module, candidate.relations);
+    StructuredToTileResult compute = timed("structured-to-tile", [&] {
+      return lowerStructuredComputeToTile(*candidate.module,
+                                          candidate.relations);
+    });
     if (!compute.succeeded())
       return {fail(compute.failure == StructuredToTileFailureKind::Unsupported
                        ? ExecutableCompilationStatus::UnsupportedFailure
