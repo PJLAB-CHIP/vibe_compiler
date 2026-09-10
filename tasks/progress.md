@@ -35,6 +35,8 @@
 
 | 9 | `spatial-admission-and-typed-outcomes` | `next` | 06；关联07、13、16 | current `SpatialPlanDomain`域构造与`StructuredRelationFacts::create`；非投影result map的linalg op；DPS+Tiling但非linalg root的typed路径 | 非投影result map的root保留为不切分域点并通过exact demand与actual materialization；不可分析root以typed结果只关闭本次choice；1024/1025、rank≥3、多Tile与tail的实际下游witness通过。已在独立开发分支推进 | `tasks/plans/spatial-admission-and-typed-outcomes.md` |
 
+| 10 | `spatial-explicit-partition-bounds` | `next` | 06；关联07、16 | `IteratorPartition`表示与`SpatialPartitionPropagation`的上游矩形映射；不得为切点新增枚举或搜索维度 | 由relation协调得出的稠密矩形边界成为合法域成员并通过exact demand与actual materialization；同一interval向量在域内只有一个表示；raw后继枚举集合与原实现逐点相等。已在独立开发分支推进 | `tasks/plans/spatial-admission-and-typed-outcomes.md` |
+
 ## 已满足的直接前置
 
 | Owner | 状态 | Current作用 | 证据入口 |

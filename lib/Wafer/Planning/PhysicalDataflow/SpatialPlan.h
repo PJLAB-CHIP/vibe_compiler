@@ -21,17 +21,22 @@ namespace wafer::compiler::detail {
 enum class IteratorPartitionScheme : uint8_t {
   BalancedParts,
   UniformExtent,
+  ExplicitBounds,
 };
 
 struct IteratorPartition {
   uint32_t iterator = 0;
   IteratorPartitionScheme scheme = IteratorPartitionScheme::BalancedParts;
   int64_t parameter = 1;
+  /// Only `ExplicitBounds` uses this: the ascending interior cut points that
+  /// separate consecutive intervals. It never contains 0 or the extent, and it
+  /// stays empty for the two parameterized schemes.
+  llvm::SmallVector<int64_t, 4> bounds;
 
   friend bool operator==(const IteratorPartition &lhs,
                          const IteratorPartition &rhs) {
     return lhs.iterator == rhs.iterator && lhs.scheme == rhs.scheme &&
-           lhs.parameter == rhs.parameter;
+           lhs.parameter == rhs.parameter && lhs.bounds == rhs.bounds;
   }
   friend bool operator<(const IteratorPartition &lhs,
                         const IteratorPartition &rhs);
@@ -41,6 +46,16 @@ mlir::FailureOr<int64_t>
 getIteratorPartitionIntervalCount(int64_t extent,
                                   const IteratorPartition &partition,
                                   std::string *failureReason = nullptr);
+
+/// Rejects a partition whose exact ordered intervals are already expressed by
+/// a more canonical scheme. `BalancedParts` is always canonical; every other
+/// scheme must not duplicate a form an earlier scheme already produces, so one
+/// interval vector has exactly one representation in the domain.
+mlir::LogicalResult
+validateCanonicalPartition(int64_t extent, const IteratorPartition &partition,
+                           llvm::ArrayRef<IteratorInterval> intervals,
+                           size_t maximumIntervals,
+                           std::string *failureReason = nullptr);
 
 /// Materializes one partition's exact ordered nonempty intervals. The result
 /// is a query value derived only from the typed scheme and extent; callers do

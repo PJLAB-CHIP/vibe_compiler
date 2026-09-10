@@ -13,6 +13,21 @@
 
 不在本项：为非 linalg 的 DPS+Tiling root 推断索引语义（需要 op 侧声明，见设计「待讨论问题」）；collective 的规划归宿（13号）。
 
+## 第三项：显式切点（`ExplicitBounds`）
+
+稳定设计见 06 §5.1「显式切点与域的成员边界」。要点：任意切点家族不可枚举，因此不进 raw 后继；域改为「有界枚举族 ∪
+规范化的显式成员」，显式成员的唯一 producer 是 relation 协调（`mapPartition` 映射出的稠密矩形边界）。
+
+1. `IteratorPartition` 增加 `bounds` 字段并进入 `operator==`/`operator<` 全序。
+2. `buildIntervalsImpl`/`getIteratorPartitionIntervalCount` 增加 `ExplicitBounds` 分支；bounds 必须严格升序且在 `(0, extent)` 内。
+3. `validateCanonicalPartition` 提升为公开 API 并推广去重规则：`BalancedParts` 恒为规范形式，其它 scheme 不得与之或与
+   `UniformExtent` 重复。`SpatialDomain.cpp` 的原重复实现改为调用同一函数。
+4. `mapPartition` 在两种参数化 scheme 都表达不出时，用映射矩形的内部边界构造显式切点。
+5. 测试：显式轴是合法域成员并给出 exact interval 与 exact demand；与 `BalancedParts` 等价的向量被拒绝；越界与非升序被拒绝；
+   raw 后继枚举集合与原实现逐点相等（既有 oracle 全量比对不变）。
+
+对齐约束**不在本项**：planning 与 target facts 里都没有迭代空间粒度/对齐事实，没有 producer 就没有 legality 消费者，见设计「待讨论问题」。
+
 ## 步骤
 
 ### A

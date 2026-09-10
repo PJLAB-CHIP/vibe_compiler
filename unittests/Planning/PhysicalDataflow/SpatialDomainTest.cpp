@@ -1239,4 +1239,67 @@ TEST_F(SpatialDomainTest,
   }
 }
 
+TEST_F(SpatialDomainTest, ExplicitBoundsAxisIsACanonicalDomainMember) {
+  // The raw successor enumerates only BalancedParts and UniformExtent, so an
+  // explicit cut-point axis is never produced by getNextPlan. It must still be
+  // a legal member with exact intervals, and a vector that an earlier scheme
+  // already expresses must be rejected so one interval vector keeps exactly
+  // one representation.
+  auto module = parse(withTopology(R"mlir(
+module {
+  func.func @main(%input: tensor<2x1024x128xf16>) -> tensor<2x1024x128xf16> {
+    %empty = tensor.empty() : tensor<2x1024x128xf16>
+    %result = linalg.map ins(%input : tensor<2x1024x128xf16>)
+        outs(%empty : tensor<2x1024x128xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    return %result : tensor<2x1024x128xf16>
+  }
+}
+)mlir",
+                                   4, 4));
+  ASSERT_TRUE(module);
+  std::string failureReason;
+  auto built = build(*module, failureReason);
+  ASSERT_TRUE(built) << failureReason;
+
+  SpatialPlan plan = built->domain.getFirstPlan();
+  ASSERT_EQ(plan.nodes.size(), 1u);
+  // 1024 as 512 + 256 + 256 has no BalancedParts or UniformExtent form.
+  plan.nodes.front().axes = {
+      {0, IteratorPartitionScheme::BalancedParts, 1},
+      {1, IteratorPartitionScheme::ExplicitBounds, 1, {512, 768}},
+      {2, IteratorPartitionScheme::BalancedParts, 1}};
+  plan.nodes.front().embedding = {TileId(0), TileId(1), TileId(2)};
+  ASSERT_TRUE(built->domain.contains(plan));
+  auto assignment = built->domain.close(plan, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(assignment)) << failureReason;
+  ASSERT_EQ(assignment->nodes.front().shards.size(), 3u);
+  llvm::SmallVector<IteratorInterval, 4> axisOne;
+  for (const ExecutionShard &shard : assignment->nodes.front().shards)
+    axisOne.push_back(shard.iterationDomain[1]);
+  llvm::sort(axisOne, [](const IteratorInterval &lhs,
+                         const IteratorInterval &rhs) {
+    return lhs.offset < rhs.offset;
+  });
+  EXPECT_EQ(axisOne, (llvm::SmallVector<IteratorInterval, 4>{
+                         {0, 512}, {512, 256}, {768, 256}}));
+  SpatialDomainEvaluation evaluation = built->domain.evaluate(built->dag, plan);
+  ASSERT_TRUE(evaluation.isSatisfied());
+  EXPECT_NE(analysis::getExactDemandProof(*evaluation.demand), nullptr);
+
+  // BalancedParts(3) on 1024 is 342 + 341 + 341; the same vector must not be
+  // expressible a second time as explicit cut points.
+  plan.nodes.front().axes[1] = {
+      1, IteratorPartitionScheme::ExplicitBounds, 1, {342, 683}};
+  EXPECT_FALSE(built->domain.contains(plan));
+  // Out-of-range and non-ascending bounds stay outside the domain.
+  plan.nodes.front().axes[1] = {
+      1, IteratorPartitionScheme::ExplicitBounds, 1, {1024}};
+  EXPECT_FALSE(built->domain.contains(plan));
+  plan.nodes.front().axes[1] = {
+      1, IteratorPartitionScheme::ExplicitBounds, 1, {768, 512}};
+  EXPECT_FALSE(built->domain.contains(plan));
+}
+
 } // namespace
