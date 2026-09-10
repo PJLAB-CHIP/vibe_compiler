@@ -171,14 +171,14 @@ bool hasAllowedPartitionKinds(const SpatialRootDomainFacts &root,
         *count > static_cast<int64_t>(maximumIntervals) ||
         (*count > 1 && !canPartitionIterator(root, iterator)))
       return false;
-    mlir::FailureOr<llvm::SmallVector<IteratorInterval, 4>> intervals =
-        getIteratorPartitionIntervals(root.iteratorExtents[iterator], partition,
-                                      maximumIntervals);
-    if (mlir::failed(intervals) ||
-        mlir::failed(validateCanonicalPartition(
-            root.iteratorExtents[iterator], partition, *intervals,
-            maximumIntervals)))
-      return false;
+    if (partition.scheme == IteratorPartitionScheme::UniformExtent) {
+      IteratorPartition balanced{static_cast<uint32_t>(iterator),
+                                 IteratorPartitionScheme::BalancedParts,
+                                 *count};
+      if (intervalsEqual(root.iteratorExtents[iterator], partition, balanced,
+                         maximumIntervals))
+        return false;
+    }
   }
   return checkAttention(root, partitions) ==
          AttentionSpatialConstraintViolation::None;

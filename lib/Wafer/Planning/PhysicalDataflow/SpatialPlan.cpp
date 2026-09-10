@@ -116,15 +116,6 @@ buildIntervalsImpl(int64_t extent, const IteratorPartition &partition,
     }
     break;
   }
-  case IteratorPartitionScheme::ExplicitBounds: {
-    int64_t offset = 0;
-    for (int64_t bound : partition.bounds) {
-      intervals.push_back({offset, bound - offset});
-      offset = bound;
-    }
-    intervals.push_back({offset, extent - offset});
-    break;
-  }
   default:
     return failValue<llvm::SmallVector<IteratorInterval, 4>>(
         failureReason, "partition uses unknown scheme");
@@ -132,31 +123,23 @@ buildIntervalsImpl(int64_t extent, const IteratorPartition &partition,
   return intervals;
 }
 
-/// Returns the tile size when `intervals` is exactly what `UniformExtent` would
-/// produce, so a less canonical scheme can be rejected for duplicating it.
-std::optional<int64_t>
-getUniformExtentSize(llvm::ArrayRef<IteratorInterval> intervals) {
-  if (intervals.empty() || intervals.front().size <= 0)
-    return std::nullopt;
-  const int64_t size = intervals.front().size;
-  for (size_t index = 0; index + 1 < intervals.size(); ++index)
-    if (intervals[index].size != size)
-      return std::nullopt;
-  if (intervals.size() > 1 && intervals.back().size > size)
-    return std::nullopt;
-  return size;
-}
-
-mlir::LogicalResult validateExplicitBounds(int64_t extent,
-                                           llvm::ArrayRef<int64_t> bounds,
-                                           std::string *failureReason) {
-  int64_t previous = 0;
-  for (int64_t bound : bounds) {
-    if (bound <= previous || bound >= extent)
-      return fail(failureReason,
-                  "explicit partition bounds must ascend inside the extent");
-    previous = bound;
-  }
+mlir::LogicalResult
+validateCanonicalPartition(int64_t extent, const IteratorPartition &partition,
+                           llvm::ArrayRef<IteratorInterval> intervals,
+                           size_t maximumIntervals,
+                           std::string *failureReason) {
+  if (partition.scheme != IteratorPartitionScheme::UniformExtent)
+    return mlir::success();
+  IteratorPartition balanced{partition.iterator,
+                             IteratorPartitionScheme::BalancedParts,
+                             static_cast<int64_t>(intervals.size())};
+  mlir::FailureOr<llvm::SmallVector<IteratorInterval, 4>> balancedIntervals =
+      buildIntervalsImpl(extent, balanced, maximumIntervals, failureReason);
+  if (mlir::failed(balancedIntervals))
+    return mlir::failure();
+  if (llvm::equal(*balancedIntervals, intervals))
+    return fail(failureReason,
+                "UniformExtent duplicates canonical BalancedParts intervals");
   return mlir::success();
 }
 
@@ -249,48 +232,9 @@ getIteratorPartitionIntervals(int64_t extent,
   return buildIntervalsImpl(extent, partition, maximumIntervals, failureReason);
 }
 
-mlir::LogicalResult
-validateCanonicalPartition(int64_t extent, const IteratorPartition &partition,
-                           llvm::ArrayRef<IteratorInterval> intervals,
-                           size_t maximumIntervals,
-                           std::string *failureReason) {
-  if (partition.scheme == IteratorPartitionScheme::BalancedParts)
-    return mlir::success();
-  IteratorPartition balanced{partition.iterator,
-                             IteratorPartitionScheme::BalancedParts,
-                             static_cast<int64_t>(intervals.size())};
-  mlir::FailureOr<llvm::SmallVector<IteratorInterval, 4>> balancedIntervals =
-      buildIntervalsImpl(extent, balanced, maximumIntervals, failureReason);
-  if (mlir::failed(balancedIntervals))
-    return mlir::failure();
-  if (llvm::equal(*balancedIntervals, intervals))
-    return fail(failureReason,
-                "partition duplicates canonical BalancedParts intervals");
-  if (partition.scheme == IteratorPartitionScheme::UniformExtent)
-    return mlir::success();
-  if (std::optional<int64_t> size = getUniformExtentSize(intervals)) {
-    IteratorPartition uniform{partition.iterator,
-                              IteratorPartitionScheme::UniformExtent, *size};
-    mlir::FailureOr<llvm::SmallVector<IteratorInterval, 4>> uniformIntervals =
-        buildIntervalsImpl(extent, uniform, maximumIntervals, failureReason);
-    if (mlir::failed(uniformIntervals))
-      return mlir::failure();
-    if (llvm::equal(*uniformIntervals, intervals))
-      return fail(failureReason,
-                  "partition duplicates canonical UniformExtent intervals");
-  }
-  return mlir::success();
-}
-
 bool operator<(const IteratorPartition &lhs, const IteratorPartition &rhs) {
-  if (lhs.iterator != rhs.iterator)
-    return lhs.iterator < rhs.iterator;
-  if (lhs.scheme != rhs.scheme)
-    return lhs.scheme < rhs.scheme;
-  if (lhs.parameter != rhs.parameter)
-    return lhs.parameter < rhs.parameter;
-  return std::lexicographical_compare(lhs.bounds.begin(), lhs.bounds.end(),
-                                      rhs.bounds.begin(), rhs.bounds.end());
+  return std::tie(lhs.iterator, lhs.scheme, lhs.parameter) <
+         std::tie(rhs.iterator, rhs.scheme, rhs.parameter);
 }
 
 bool operator<(const MergePlacement &lhs, const MergePlacement &rhs) {
@@ -321,22 +265,14 @@ getIteratorPartitionIntervalCount(int64_t extent,
   if (extent <= 0)
     return failValue<int64_t>(failureReason,
                               "iterator extent must be positive");
+  if (partition.parameter <= 0 || partition.parameter > extent)
+    return failValue<int64_t>(failureReason,
+                              "partition parameter is outside iterator extent");
   switch (partition.scheme) {
   case IteratorPartitionScheme::BalancedParts:
-    if (partition.parameter <= 0 || partition.parameter > extent)
-      return failValue<int64_t>(
-          failureReason, "partition parameter is outside iterator extent");
     return partition.parameter;
   case IteratorPartitionScheme::UniformExtent:
-    if (partition.parameter <= 0 || partition.parameter > extent)
-      return failValue<int64_t>(
-          failureReason, "partition parameter is outside iterator extent");
     return 1 + (extent - 1) / partition.parameter;
-  case IteratorPartitionScheme::ExplicitBounds:
-    if (mlir::failed(
-            validateExplicitBounds(extent, partition.bounds, failureReason)))
-      return mlir::failure();
-    return static_cast<int64_t>(partition.bounds.size()) + 1;
   }
   return failValue<int64_t>(failureReason, "partition uses unknown scheme");
 }

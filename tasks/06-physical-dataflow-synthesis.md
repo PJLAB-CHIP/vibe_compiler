@@ -250,46 +250,6 @@ Pipeline position:
 | DPS+Tiling但非linalg/attention的root | typed failure | typed unsupported，只关闭choice | 不再出现`BrokenContract`/compiler error分类 |
 | 无`TilingInterface`的顶层op | DAG边界 | DAG分析阶段失败，与本项无关 | 不进入spatial |
 
-#### 显式切点与域的成员边界
-
-现有两种scheme每轴只提供`O(extent)`个候选，`getNextPlan`逐个走完即整个域。任意切点列表的家族是`C(extent-1, k-1)`量级——extent=1024、k≤16时约`10^29`——**不可枚举**。因此本项不把它加进raw后继枚举：域的定义改为"有界枚举族 ∪ 规范化的显式成员"，后者只由已有relation协调产出，不新增搜索维度。
-
-```text
-Pipeline position:
-- Upstream IR / input:
-  与5.1相同。verifier-valid card-local TensorProgram；本项不新增输入。
-- Current stage responsibility:
-  让relation协调能把上游已证明的矩形边界表达为一个域成员，而不是在两种scheme都表达不出时静默丢弃。
-- Output IR / files:
-  无新IR、无新文件格式。`SpatialPlan`的轴表示新增一个scheme值与其切点字段。
-- Downstream consumer:
-  `SpatialAssignment`的exact interval、`SpatialState` exact demand、structural materializer。
-- User-level driver / named pipeline:
-  `none`与`search`共用同一domain构造、同一`contains`与同一materializer。
-- Explicit non-goals:
-  不为显式切点新增枚举维度或搜索维度；不让`getNextPlan`枚举它；不发明迭代空间对齐或粒度事实；
-  不把不可表达的非矩形/非稠密映射强行当作切点。
-- Completion criteria:
-  由relation协调得出的稠密矩形边界成为合法域成员并通过exact demand与actual materialization；
-  同一interval向量在域内只有一个表示；raw后继枚举集合与原实现逐点相等。
-```
-
-- **表示**：新增`IteratorPartitionScheme::ExplicitBounds`，参数为升序切点列表（不含0与extent）。interval由相邻切点之间的段给出，
-  必须稠密覆盖`[0, extent)`。非稠密、有空隙或越界的映射仍不可表达，保持原choice。
-- **唯一表示**：给定同一interval向量，若它能由`BalancedParts`或`UniformExtent`表达，则必须用那两种，不允许`ExplicitBounds`。
-  这是现有UniformExtent去重规则的推广，保证每个interval向量在域内恰好一个表示，`explicit bounds`不得成为第三种同义写法。
-- **identity与全序**：切点字段进入`IteratorPartition`的相等与全序比较，且必须有完整语义tie-break——它同时是`PlanningMemo`的
-  map键和frontier的set序，不允许退化为地址或hash顺序。
-- **域成员边界**：`getFirstPlan`/`getNextPlan`仍只枚举两种scheme，集合与原实现逐点相等；`contains`额外接受规范化的显式成员。
-  proposal是普通域成员这一性质不变，但"proposal必属于枚举集合"不再成立，相关测试断言按此更新。
-- **来源**：切点只来自`SpatialPartitionPropagation`已映射出的上游矩形边界。协调仍要求映射矩形完整、无重叠、embedding injective；
-  只有这些矩形稠密且无法由两种scheme表达时才产出显式切点。
-
-待讨论问题：
-- 迭代空间对齐约束（例如"边界必须是s的倍数"）目前**没有事实来源**：planning与target facts中都不存在迭代空间粒度或对齐事实，
-  `TargetMemory.h`的alignment是内存地址对齐，与切分无关。在出现真实producer（例如目标侧向量/块粒度）与consumer之前不引入该字段。
-- 显式切点目前只由relation协调产出。若将来出现其它合法producer（如按硬件块粒度直接构造），须先说明其事实来源与legality依据。
-
 ### 5.2 TileRegion formation
 
 对每个Tile的local structured DAG，region choice决定哪些root work进入同一TileRegion。一个producer相对当前Region只有三种

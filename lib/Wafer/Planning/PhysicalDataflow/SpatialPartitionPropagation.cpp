@@ -108,21 +108,8 @@ mapPartition(const NodeExecutionPartition &source,
       partition.parameter = pieces.front().size;
       exact = getIteratorPartitionIntervals(target.iteratorExtents[axis],
                                             partition, source.shards.size());
-      if (mlir::failed(exact) || *exact != pieces) {
-        // Neither parameterized scheme reproduces the mapped rectangles, but
-        // their interior boundaries are exactly the cut points of an explicit
-        // partition. This is the only producer of that scheme: the raw
-        // successor never enumerates it.
-        partition.scheme = IteratorPartitionScheme::ExplicitBounds;
-        partition.parameter = 1;
-        partition.bounds.clear();
-        for (size_t index = 0; index + 1 < pieces.size(); ++index)
-          partition.bounds.push_back(pieces[index].getEnd());
-        exact = getIteratorPartitionIntervals(target.iteratorExtents[axis],
-                                              partition, source.shards.size());
-        if (mlir::failed(exact) || *exact != pieces)
-          return std::nullopt;
-      }
+      if (mlir::failed(exact) || *exact != pieces)
+        return std::nullopt;
     }
     result.axes.push_back(partition);
   }
