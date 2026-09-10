@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1060" height="498" viewBox="0 0 1060 498" role="img" aria-labelledby="title desc">
+  <title id="title">人、agent 与工程证据</title>
+  <desc id="desc">人明确目标、边界和关键取舍，agent 调查事实、设计、实现并执行工具检查。构建、模型和实卡产生工程证据，反馈给 agent 继续定位，也反馈给人调整方向。Agent 主动读写仓库中的代码、当前设计、任务状态和已验证经验，供下一轮工作使用。这是协作流程示意，不代表额外的自动化平台。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="m1 1 7 4-7 4" fill="none" stroke="#31576b" stroke-width="2" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      text { font-family: "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; fill: #16364b; }
+      .title { font-size: 28px; font-weight: 700; }
+      .heading { font-size: 19px; font-weight: 700; }
+      .body { font-size: 16px; }
+      .small { font-size: 14px; fill: #526a7a; }
+      .flow { fill: none; stroke: #31576b; stroke-width: 2; stroke-linejoin: round; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1060" height="498" rx="16" fill="#fff"/>
+  <text x="32" y="45" class="title">人、agent 与工程证据</text>
+  <text x="32" y="72" class="body">一次任务的推进，依靠可检查的结果与明确的交接</text>
+
+  <path class="flow" d="M898 120V96H152v24"/>
+  <text x="427" y="89" class="small">依据证据调整方向与验收</text>
+
+  <g id="human">
+    <rect x="32" y="120" width="240" height="114" rx="12" fill="#eff5ff" stroke="#a9c4e8"/>
+    <text x="52" y="153" class="heading">人：目标与关键判断</text>
+    <text x="52" y="186" class="body">目标 · 边界 · 优先级</text>
+    <text x="52" y="213" class="body">关键取舍与方向修正</text>
+  </g>
+  <path class="flow" d="M272 177h88"/>
+  <text x="283" y="166" class="small">目标 / 讨论</text>
+
+  <g id="agent">
+    <rect x="360" y="120" width="320" height="114" rx="12" fill="#edfaf6" stroke="#91c9bb"/>
+    <text x="380" y="153" class="heading">Agent：调查、设计、实现</text>
+    <text x="380" y="186" class="body">读取代码 · 修改文件 · 执行工具</text>
+    <text x="380" y="213" class="body">定位失败，提出并检验下一步假设</text>
+  </g>
+  <path class="flow" d="M680 177h88"/>
+  <text x="689" y="166" class="small">执行 / 检查</text>
+
+  <g id="evidence">
+    <rect x="768" y="120" width="260" height="114" rx="12" fill="#16364b"/>
+    <text x="788" y="153" class="heading" style="fill:#fff">工程证据</text>
+    <text x="788" y="186" class="body" style="fill:#e4eff6">代码 / IR · 日志 · 数值结果</text>
+    <text x="788" y="213" class="body" style="fill:#e4eff6">来自构建、模型与实卡</text>
+  </g>
+  <path class="flow" d="M898 234v44H616v-44"/>
+  <text x="690" y="269" class="small">失败 / profile / 新线索</text>
+
+  <path class="flow" d="M508 234v104" marker-start="url(#arrow)"/>
+  <text x="526" y="316" class="small">读取 / 写回</text>
+  <g id="repository">
+    <rect x="360" y="338" width="320" height="102" rx="12" fill="#f4f7fa" stroke="#c1d0da"/>
+    <text x="380" y="369" class="heading">仓库中的共享上下文</text>
+    <text x="380" y="396" class="body">代码 · 当前设计 · 任务状态</text>
+    <text x="380" y="421" class="small">AGENTS.md · 计划 · 已验证经验</text>
+  </g>
+  <g id="intervention">
+    <rect x="32" y="338" width="240" height="102" rx="12" fill="#fff" stroke="#dce5ed"/>
+    <text x="52" y="369" class="heading">人何时介入</text>
+    <text x="52" y="396" class="body">目标、语义或实验范围改变</text>
+    <text x="52" y="421" class="small">局部实现自主推进</text>
+  </g>
+  <g id="validation-layers">
+    <rect x="768" y="338" width="260" height="102" rx="12" fill="#fff" stroke="#dce5ed"/>
+    <text x="788" y="369" class="heading">证据各有边界</text>
+    <text x="788" y="396" class="body">verifier / reference / 模型</text>
+    <text x="788" y="421" class="body">package / 实卡 / 设备计时</text>
+  </g>
+  <text x="32" y="477" class="small">共享上下文需要主动读写与维护，不是模型的自动永久记忆；局部结果也不能替代整条执行链的验证。</text>
+</svg>
