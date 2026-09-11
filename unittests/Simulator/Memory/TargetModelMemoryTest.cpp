@@ -192,6 +192,12 @@ TEST(TargetModelMemoryTest,
          access});
     descriptor.slotValues.push_back(shared);
   }
+  auto inconsistent = invocation;
+  inconsistent.tiles[1].tileEntryArguments.back().zeroInitialize = true;
+  EXPECT_NE(
+      expectError(InvocationAddressPlan::create(inconsistent, makeBindings(3)))
+          .find("same resource"),
+      std::string::npos);
   InvocationMemoryRegistry registry =
       llvm::cantFail(InvocationMemoryRegistry::create(llvm::cantFail(
           InvocationAddressPlan::create(invocation, makeBindings(3)))));

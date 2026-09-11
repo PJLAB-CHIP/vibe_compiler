@@ -3,6 +3,7 @@
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
+#include "Wafer/Support/CompileWorkStatistics.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -334,6 +335,101 @@ TEST(LowerInstrToTargetLLVMTest, RejectsUnprovenCopySubviewEndpoints) {
     EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*module), 0u);
     EXPECT_EQ(countOps<mlir::memref::CopyOp>(*module), kind == 2 ? 0u : 1u);
   }
+}
+
+TEST(LowerInstrToTargetLLVMTest, DescriptorReusePreservesEachActualMovement) {
+  mlir::DialectRegistry registry;
+  registerTargetConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  std::string text;
+  llvm::raw_string_ostream out(text);
+  out << "module { func.func @main() { %token = arith.constant false\n";
+  for (unsigned index = 0; index < 36; ++index) {
+    int64_t extent = llvm::ArrayRef<int64_t>{1024, 1025, 1031}[index / 12];
+    out << llvm::formatv(R"mlir(
+      %result{0} = wafer.tile.region(%token : i1) -> (i1) {{
+      ^bb0(%done: i1):
+        %source = memref.alloc() : memref<1x{1}x65xf16, #wafer.memory<spm, ncx>>
+        %dest = memref.alloc() : memref<1x{1}x65xf16, #wafer.memory<spm, ncx>>
+        %output = memref.alloc() : memref<1x{1}x65xf16, #wafer.memory<ddr, tensor>>
+        memref.copy %source, %dest
+          : memref<1x{1}x65xf16, #wafer.memory<spm, ncx>> to memref<1x{1}x65xf16, #wafer.memory<spm, ncx>>
+        wafer.tile.copy_into %source into %dest
+          : memref<1x{1}x65xf16, #wafer.memory<spm, ncx>> into memref<1x{1}x65xf16, #wafer.memory<spm, ncx>>
+        wafer.tile.store %dest, %output
+          : memref<1x{1}x65xf16, #wafer.memory<spm, ncx>> -> memref<1x{1}x65xf16, #wafer.memory<ddr, tensor>>
+        wafer.tile.yield %done : i1
+      }
+    )mlir",
+                         index, extent);
+  }
+  out << "return } }";
+  auto lower = [&](bool shared) {
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+    EXPECT_TRUE(module);
+    auto work =
+        std::make_shared<wafer::support::CompileWorkStatisticsSession>();
+    wafer::support::ScopedCompileWorkStatisticsActivation activation(work);
+    wafer::TileRegionToInstrLoweringSession sharedSession(context);
+    module->walk([&](wafer::TileRegionOp region) {
+      if (shared) {
+        EXPECT_TRUE(mlir::succeeded(
+            wafer::convertTileRegionToInstr(region, sharedSession)));
+      } else {
+        wafer::TileRegionToInstrLoweringSession independent(context);
+        EXPECT_TRUE(mlir::succeeded(
+            wafer::convertTileRegionToInstr(region, independent)));
+      }
+    });
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    EXPECT_EQ(countOps<mlir::memref::AllocOp>(*module), 108u);
+    EXPECT_GT(countOps<wafer::InstrGatherScatterOp>(*module), 0u);
+    EXPECT_GT(countOps<wafer::InstrWDMAOp>(*module), 0u);
+    std::string result;
+    llvm::raw_string_ostream stream(result);
+    module->print(stream);
+    return std::make_pair(result, work->snapshot().relationDescriptorPlannings);
+  };
+  auto independent = lower(false);
+  auto shared = lower(true);
+  EXPECT_EQ(shared.first, independent.first);
+  EXPECT_LT(shared.second, independent.second);
+  EXPECT_LE(shared.second, 18u); // Three warm-up queries for each of six keys.
+  EXPECT_EQ(independent.second, 108u);
+}
+
+TEST(LowerInstrToTargetLLVMTest, DescriptorReuseDoesNotCacheUnsupportedCopies) {
+  mlir::DialectRegistry registry;
+  registerTargetConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  wafer::TileRegionToInstrLoweringSession session(context);
+  auto work = std::make_shared<wafer::support::CompileWorkStatisticsSession>();
+  wafer::support::ScopedCompileWorkStatisticsActivation activation(work);
+  for (unsigned repeat = 0; repeat < 4; ++repeat) {
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+      module { func.func @main() {
+        %token = arith.constant false
+        %unused = wafer.tile.region(%token : i1) -> (i1) {
+        ^bb0(%done: i1):
+          %a = memref.alloc() : memref<1x1024x65xi1, #wafer.memory<spm, tensor>>
+          %b = memref.alloc() : memref<1x1024x65xi1, #wafer.memory<spm, tensor>>
+          memref.copy %a, %b : memref<1x1024x65xi1, #wafer.memory<spm, tensor>>
+                           to memref<1x1024x65xi1, #wafer.memory<spm, tensor>>
+          wafer.tile.yield %done : i1
+        }
+        return
+      } })mlir",
+                                                          &context);
+    ASSERT_TRUE(module);
+    wafer::TileRegionOp region;
+    module->walk([&](wafer::TileRegionOp op) { region = op; });
+    EXPECT_TRUE(mlir::failed(wafer::convertTileRegionToInstr(region, session)));
+    EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*module), 0u);
+    EXPECT_EQ(countOps<mlir::memref::CopyOp>(*module), 1u);
+  }
+  EXPECT_EQ(work->snapshot().relationDescriptorPlannings, 4u);
 }
 
 TEST(LowerInstrToTargetLLVMTest,

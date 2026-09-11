@@ -103,6 +103,8 @@ std::string tileSlot(int64_t launchSlot, int64_t slotOrdinal) {
       .str();
 }
 
+} // namespace
+
 bool haveSameResourceGeometry(const compiler::TileEntryArgument &lhs,
                               const compiler::TileEntryArgument &rhs) {
   return lhs.kind == rhs.kind && lhs.resourceIndex == rhs.resourceIndex &&
@@ -113,7 +115,6 @@ bool haveSameResourceGeometry(const compiler::TileEntryArgument &lhs,
          lhs.zeroInitialize == rhs.zeroInitialize;
 }
 
-} // namespace
 
 TargetModelResourceId
 getTargetModelResourceId(CardId cardId, TileId tileId,

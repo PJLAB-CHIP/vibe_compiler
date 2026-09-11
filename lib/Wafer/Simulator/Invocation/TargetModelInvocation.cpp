@@ -163,14 +163,6 @@ bool checkedAlign(uint64_t value, uint64_t alignment, uint64_t &result) {
   return true;
 }
 
-bool haveSameResourceGeometry(const compiler::TileEntryArgument &lhs,
-                              const compiler::TileEntryArgument &rhs) {
-  return lhs.kind == rhs.kind && lhs.resourceIndex == rhs.resourceIndex &&
-         lhs.dtype == rhs.dtype && lhs.layout == rhs.layout &&
-         lhs.shape == rhs.shape && lhs.byteSize == rhs.byteSize &&
-         lhs.alignment == rhs.alignment && lhs.access == rhs.access &&
-         lhs.targetTensorMaterialization == rhs.targetTensorMaterialization;
-}
 
 bool haveSameBytesView(llvm::ArrayRef<uint8_t> lhs,
                        llvm::ArrayRef<uint8_t> rhs) {

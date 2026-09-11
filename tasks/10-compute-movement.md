@@ -271,6 +271,15 @@ WDMA descriptor，并让actual Instr引用base allocation；被该store唯一消
 | 既有movement consumers | StorageStore/MoveCopyInto、main/tail | 相同base、range与已有descriptor；Tensor dynamic-offset回归保持 | 无owner或不支持memory space仍拒绝 |
 | Decode产品 | fresh FP16单步source、原width=8/trials=42 | 越过已定位copy拒绝并进入实际SPM gate；只有生成package才运行no-card | capacity、unsupported与预算耗尽仍分开报告 |
 
+描述符几何的重复查询使用既有`TileRegionToInstrLoweringSession`中的只读复用机制。普通copy、copy_into和store与layout materialization
+共用该机制；key仅含immutable endpoint type、iteration shape、已证明total且bounded的affine投影和engine。受限/非投影关系仍按原查询处理。
+缓存只保存已验证的静态descriptor，不含Operation/Value、alias、owner、lifetime或SPM结论；失败不缓存，session结束即销毁。
+每次发射仍创建自己的实际Instr、offset SSA和buffer owner，fresh completion/SPM/target验证不受复用结果替代。
+
+本项覆盖为1024/1025/1031、多Region相同几何、不同shape/layout/engine及unsupported输入。共享session与逐Region独立session
+产生的完整IR必须相同，后者用作无跨Region复用的对照；查询工作数须下降，失败仍逐次返回。再用原width=8/trials=42的fresh模型
+记录同次work/timing，受影响actual SPM与no-card回归不能仅由工作数下降代签。
+
 per-Tile conversion输出canonical/unplaced Instr：Wafer-tagged memref尚未带runtime address，但instruction kind、
 geometry、descriptor relation、worker-independent effects/ranges和async obligations完整。conversion不选择Tile placement、
 SPM/DDR offset、worker/order或transport resource，也不插入基于region/loop boundary猜出的completion。

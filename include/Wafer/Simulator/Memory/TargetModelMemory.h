@@ -56,8 +56,8 @@ private:
 };
 
 /// Invocation-local physical allocation identity. Program-boundary resources
-/// are owned by the card and therefore omit tileId. Compiler-managed
-/// workspace, profile records and transport status are owned by one Tile.
+/// and SharedWorkspace are owned by the card and therefore omit tileId.
+/// Workspace, profile records and transport status are owned by one Tile.
 /// Kind and resourceIndex are the typed entry-argument identity; names never
 /// participate.
 struct TargetModelResourceId {
@@ -80,12 +80,17 @@ struct TargetModelResourceId {
 
 /// Derives allocation identity from typed physical ownership and tile entry
 /// argument facts. External input, TargetTensor and external output arguments
-/// are card-owned; workspace, profile record and transport status arguments
-/// are Tile-owned.
+/// and SharedWorkspace are card-owned; workspace, profile record and
+/// transport status arguments are Tile-owned.
 TargetModelResourceId
 getTargetModelResourceId(CardId cardId, TileId tileId,
                          compiler::TileEntryArgumentKind kind,
                          int64_t resourceIndex);
+
+/// Shared allocation facts, independent of a participant's per-Tile access.
+/// Invocation preparation and the memory registry consume the same contract.
+bool haveSameResourceGeometry(const compiler::TileEntryArgument &lhs,
+                              const compiler::TileEntryArgument &rhs);
 
 /// Initial contents for one read-only model allocation. There is exactly one
 /// binding for a card-shared input resource, regardless of how many Tile ABI

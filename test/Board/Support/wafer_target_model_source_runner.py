@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wafer-compile", type=pathlib.Path, required=True)
     parser.add_argument("--work-dir", type=pathlib.Path, required=True)
-    parser.add_argument("--case", choices=("add", "score-rounding"), default="add")
+    parser.add_argument("--case", choices=("add", "score-rounding", "broadcast-add"), default="add")
     parser.add_argument("--extent", type=int, choices=(1024, 1025, 1031), default=1024)
     parser.add_argument("--optimization-policy", choices=("none", "search"), default="none")
     return parser.parse_args()
@@ -73,10 +73,12 @@ def write_case(
     if work_dir.exists():
         shutil.rmtree(work_dir)
     source = work_dir / "source-program"
-    shape = (2, extent, 64)
+    shape = (16, 16, 32, extent) if case == "broadcast-add" else (2, extent, 64)
+    rhs_shape = (16, 32, extent) if case == "broadcast-add" else shape
     spelling = "x".join(map(str, shape))
     input_type = f"tensor<{spelling}xf16>"
     wide_type = f"tensor<{spelling}xf32>"
+    rhs_type = "tensor<" + "x".join(map(str, rhs_shape)) + "xf16>"
     values = np.arange(int(np.prod(shape)), dtype=np.int64).reshape(shape)
     lhs = ((values % 37) - 18).astype(DTYPE) / np.float16(7)
     rhs = ((values % 17) - 8).astype(DTYPE) / np.float16(19)
@@ -96,6 +98,17 @@ def write_case(
     %masked = stablehlo.add %rounded, %rhs : {input_type}
     %result = stablehlo.convert %masked : ({input_type}) -> {wide_type}
 """
+    elif case == "broadcast-add":
+        output_type = input_type
+        lhs = ((values % 37 - 18) / 32).astype(DTYPE)
+        rhs_values = np.arange(int(np.prod(rhs_shape)), dtype=np.int64).reshape(rhs_shape)
+        rhs = ((rhs_values % 17 - 8) / 16).astype(DTYPE)
+        expected = (lhs + (rhs + rhs)[None, :, :, :]).astype(DTYPE)
+        body = f"""
+    %double = stablehlo.add %rhs, %rhs : {rhs_type}
+    %broadcast = "stablehlo.broadcast_in_dim"(%double) {{broadcast_dimensions = array<i64: 1, 2, 3>}} : ({rhs_type}) -> {input_type}
+    %result = stablehlo.add %lhs, %broadcast : {input_type}
+"""
     else:
         output_type = input_type
         lhs = ((values % 17) - 8).astype(DTYPE)
@@ -103,7 +116,7 @@ def write_case(
         expected = (lhs + rhs).astype(DTYPE)
         body = f"    %result = stablehlo.add %lhs, %rhs : {input_type}\n"
     module = f"""module {{
-  func.func @main(%lhs: {input_type}, %rhs: {input_type}) -> {output_type} {{
+  func.func @main(%lhs: {input_type}, %rhs: {rhs_type}) -> {output_type} {{
 {body}
     return %result : {output_type}
   }}
@@ -111,7 +124,8 @@ def write_case(
 """
     metadata = dict(SOURCE_METADATA)
     metadata["input_signature"] = [
-        {"shape": list(shape), "dtype": "float16", "dynamic_dims": []} for _ in range(2)
+        {"shape": list(input_shape), "dtype": "float16", "dynamic_dims": []}
+        for input_shape in (shape, rhs_shape)
     ]
     metadata["output_signature"] = [{
         "shape": list(shape), "dtype": "float32" if case == "score-rounding" else "float16",
@@ -129,7 +143,12 @@ def write_case(
 
 def main() -> int:
     args = parse_args()
+    if args.case == "broadcast-add" and args.optimization_policy != "none":
+        raise RuntimeError("explicit shared-DDR qualification requires none")
     source, input_lhs, input_rhs, expected = write_case(args.work_dir, args.case, args.extent)
+    extra = []
+    if args.case == "broadcast-add":
+        extra = ["--test-communication-candidate=shared-ddr", "--dump-compiler-ir", str(args.work_dir / "compiler-ir")]
     package = args.work_dir / "package"
     output = run(
         [
@@ -149,10 +168,11 @@ def main() -> int:
             f"0={expected}",
             "--model-atol=0",
             "--model-rtol=0",
-            "--target-model-max-scalar-evaluations=1000000",
+            f"--target-model-max-scalar-evaluations={20000000 if args.case == 'broadcast-add' else 1000000}",
             "--target-model-max-fused-multiply-adds=1000000",
-            "--target-model-max-movement-bytes=100000000",
+            f"--target-model-max-movement-bytes={2000000000 if args.case == 'broadcast-add' else 100000000}",
             "--target-model-max-movement-segments=1000000",
+            *extra,
         ]
     )
     if "target model outputs matched" not in output:
@@ -167,9 +187,18 @@ def main() -> int:
         raise RuntimeError("target-model source omitted StableHLO bytecode")
     if (source / "functions" / "forward.mlir").exists():
         raise RuntimeError("target-model source retained staging MLIR text")
+    if args.case == "broadcast-add":
+        modules = list((args.work_dir / "compiler-ir" / "instruction").glob("*.mlir"))
+        if len(modules) != 16:
+            raise RuntimeError("shared-DDR model case omitted actual Instr modules")
+        for module in modules:
+            ir = module.read_text()
+            if "scf.for" not in ir or "wafer.instr.ddr_acquire" not in ir:
+                raise RuntimeError("shared-DDR model case did not execute temporal and publication paths")
+    result_shape = [16, 16, 32, args.extent] if args.case == "broadcast-add" else [2, args.extent, 64]
     print(
         "target-model source vertical passed: shape="
-        f"{[2, args.extent, 64]} case={args.case} tiles={len(entries)} package={package}"
+        f"{result_shape} case={args.case} tiles={len(entries)} package={package}"
     )
     return 0
 

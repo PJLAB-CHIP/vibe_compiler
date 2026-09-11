@@ -185,6 +185,31 @@ Copy修复后的fresh decode已越过此前NCx copy与同址copy拒绝，实际m
 memref.copy lowering累计79.30秒，descriptor physical-access composition累计68.58秒。存在并行主机工作，不作为设备或纯wall加速对比。
 下一步在第3项核对并复用重复descriptor query的既有session机制，同时沿第1/7项追踪完整weight carrier保留的actual producer/fusion边界。
 
+### 描述符复用、shared-DDR按需加载与主机执行
+
+第3项将普通copy/copy_into/store接入既有session descriptor复用；没有新增跨stage缓存。
+36个真实规模Region的对照中，逐Region独立session与共享session生成完整相同IR，query次数108→18；
+shape/engine key分别检查，unsupported重复请求仍逐次执行。Fresh固定预算decode query 124,794→114,847，
+完整block 198,536→186,567，actual尝试数、容量/unsupported/indeterminate结果保持。该轮含只读IR诊断快照和并行任务，
+总wall没有改善（decode约334.88秒、block约986.34秒），不签发整体编译加速结论。
+
+第1/7项的shared-DDR接收端已接通现有Subview加载机制：payload未rebase且全部实际uses为Subview时，在读取位置分配/加载所选范围。
+4/16 Tile × 1024/1025/1031 × tiled/whole-use共12组检查source DDR坐标、无遗漏/重叠、main/tail的局部extent、owner及实际Instr/completion/SPM。
+已有公共静态payload窗口和whole-buffer需求保持对应合同；该改动只应用已经选择的shared-DDR route。
+
+第2项新增两组真实source→同次target LLVM owner→SystemC/numeric执行：FP16输入为`[16,16,32,N]`与`[16,32,N]`，
+N=1024/1025，内部producer经广播供16 Tile消费，并明确选择现有shared-DDR候选。两组分别比较8,388,608与8,396,800个输出元素，
+零容差匹配独立NumPy reference；实际Instr含temporal循环及DDR publication/acquire。已注册CTest并实际通过。
+此验证发现并修复model invocation错误地要求共享resource的writer/reader权限相同；现在它与memory registry共用同一geometry检查，
+每个Tile的access仍独立约束，越权测试保持拒绝，zero-initialize不一致也拒绝。
+
+本边界通过完整canonical构建/no-op、完整check-wafer、上述两组registered source model和四组fresh prefill/local-conv tail-1031 none/search no-card。
+增加compile-timing的逐movement拒绝原因与真实capacity摘要，避免只看第一个失败候选混淆peer/shared-DDR路径。
+
+完整block与decode仍未闭合。新的actual physical IR明确显示：转置只向`256x11008` subview写入，背后却仍有`4096x11008`的SPM allocation，
+同一subview随后被本地及shared-DDR两个store读取。它来自保留的完整输出初始化/承载buffer，并非要求普通tiler生成第二套算法。
+下一步在实际tile初始化与多出口store的拥有层消除该完整buffer，并沿nested subview追到实际需要的load尺寸；不能把接收端的改进代签完整模型成功。
+
 ## 既有板端流程与产品矩阵
 
 1. 新鲜导出与编译三条 search FP16 case；逐 case 采集原 profiler。先核对 Count 容量与所有数值/完成门禁。

@@ -114,6 +114,14 @@ Tensor↔Cx/NCx与broadcast descriptor cover由Tile-to-Instr compute/movement共
 Instr offset operand，commands随encoding axis/decomposition增长，不随logical element数展开。Standalone fanout在physical boundary与
 execution structure闭合后先move Tile body，再逐Tile运行conversion、cleanup和fresh completion。
 
+已选择shared-DDR route的cross-Tile输入与本地DDR输入共用actual subview加载：当payload仍使用完整carrier坐标、没有recursive aggregate slot，
+且全部ToMemref bridge只被Subview读取时，在各Subview的当前位置建立对应DDR view与所选layout的局部SPM allocation/load。
+静态size和动态offset均来自同一current SSA，不要求把动态起点变成常数，不重新决定tile size或route。已rebase的公共静态窗口保持原payload合同；
+有whole-buffer use的输入仍按完整需求物化。直接DTE选择继续执行其message/receive合同。
+
+覆盖1024/1025/1031、4/16 Tile、main/tail和多个wave，检查本地/跨Tile读的完整DDR坐标、每次load的SPM extent、owner及实际Instr/completion/SPM；
+whole-buffer use和已有静态payload重定位不能误走该路径。完整block使用fresh source作产品witness，不能从某个较小shape推算SPM合法。
+
 Value/use assignment采用current SSA buffer-equivalence group、consumer-use和op-tuple auxiliary factor；不使用structured-node ID或
 bufferization后的operation parity。Shared conversion通过每个dominance/effect cohort的三态activation factor只计一次，并由apply创建
 恰好一个actual SSA result。Descriptor analysis即使在直接下游抽为shared query，也只服务actual lowering、inventory和最终winner cost，

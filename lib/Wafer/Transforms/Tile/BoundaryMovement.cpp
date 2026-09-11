@@ -2749,6 +2749,29 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
         const PeerPlan *peer = findPeer(peers, *input.peerRelation);
         if (!peer || input.bridges.empty())
           return failApply("peer input has no exact movement buffer");
+        if (peer->useSharedDDR) {
+          auto binding = sharedDDRBindings->find(peer->relationIndex);
+          if (binding == sharedDDRBindings->end())
+            return failApply("shared DDR peer input has no actual binding");
+          argument.setType(binding->second.type);
+          bool subviewLoads =
+              !peer->recursiveDoubling && peer->destinationSubviews.empty() &&
+              llvm::all_of(input.bridges, [&](auto bridge) {
+                return logicalTypesMatch(mlir::cast<mlir::MemRefType>(
+                                             bridge.getMemref().getType()),
+                                         binding->second.type) &&
+                       hasOnlySubviewUses(bridge.getMemref());
+              });
+          if (subviewLoads) {
+            for (auto bridge : input.bridges)
+              if (mlir::failed(materializeSubviewLoads(bridge, argument,
+                                                       rewriter, statistics)))
+                return failApply(
+                    "shared DDR subview load materialization failed");
+            ++statistics.crossTileDDRStages;
+            continue;
+          }
+        }
         mlir::Value allocation;
         if (peer->recursiveDoubling) {
           mlir::FailureOr<mlir::Value> slot = getRecursiveSlot(*peer);
@@ -2763,10 +2786,6 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
                            .getResult();
         }
         if (peer->useSharedDDR) {
-          auto binding = sharedDDRBindings->find(peer->relationIndex);
-          if (binding == sharedDDRBindings->end())
-            return failApply("shared DDR peer input has no actual binding");
-          argument.setType(binding->second.type);
           rewriter.create<StorageLoadOp>(argument.getLoc(), argument,
                                          allocation);
           ++statistics.ddrLoads;

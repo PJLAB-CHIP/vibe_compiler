@@ -983,6 +983,31 @@ private:
           "search-candidate", "movement", "compile-candidate");
       ExecutableCompilationResult result =
           compileMovementCandidate(std::move(movementCandidate.candidate));
+      if (!result.isAccepted() && support::getActiveCompileTimingSession()) {
+        diagnostics << "wafer-compile: rejected-movement transport="
+                    << (movementCandidate.options.transport ==
+                                BoundaryMovementTransport::SharedDDR
+                            ? "shared-ddr"
+                            : "peer")
+                    << " recursive=" << movementCandidate.requiresRecursive
+                    << " dimension-ordered="
+                    << movementCandidate.requiresDimensionOrderedAllToAll
+                    << " distributed-ring="
+                    << movementCandidate.requiresDistributedRing
+                    << " gate=" << result.gate << " detail=" << result.detail
+                    << '\n';
+        for (const auto &failure : result.tileFailures)
+          if (failure.memoryPlanning.spmCapacityOverflow) {
+            diagnostics << "wafer-compile: movement-capacity tile="
+                        << failure.tileId.getValue() << " largest-bytes="
+                        << failure.memoryPlanning.spmLargestDemandBytes;
+            if (failure.memoryPlanning.spmLargestDemandType)
+              diagnostics << " type="
+                          << failure.memoryPlanning.spmLargestDemandType;
+            diagnostics << '\n';
+            break;
+          }
+      }
       if (result.status == ExecutableCompilationStatus::CompilerFailure)
         return {std::move(result), attemptedMovements};
       if (statistics && result.isAccepted()) {
