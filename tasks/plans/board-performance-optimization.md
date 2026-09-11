@@ -98,7 +98,11 @@ F32 max/min，同一遍历与identity，NaN保持写入前拒绝。Sum、编译�
 
 本轮验证包括1024/1025/1031、rank3/4、多归约轴、负数、无穷、正负零、NaN、padding及预算拒绝；
 formal/managed新增3项测试实际通过；6组真实source row-max none/search完成编译并在SystemC比较全部输出。
-完整LLaMA沿既有显式managed-reference入口，用fresh input/reference执行，结果另记本节；未以局部归约测试代签完整模型数值。
+完整LLaMA沿既有显式managed-reference入口、fresh input/reference实际执行后失败，整轮wall约1113.99秒、peak RSS约24.43 GiB。
+新的拒绝位于launch_slot=14、issue=13382：`elementwise tensors do not have one same-shape F16/F32 domain`；未获得完整输出比较。
+该检查同时要求shape/layout/dtype一致，不能只根据文案判成shape或编译错误。Current Instr另确认存在同形状F32比较→i1以及Bool logic_and，
+而managed elementwise要求输入输出同dtype且结果为F16/F32；这是尚未覆盖的数学模型能力。下一步按实际typed command收敛这个缺口及匹配数值覆盖。
+此结果不影响本轮编译/package/no-card资格，但第2/5项的完整模型数值与真实板端验收继续待办。
 
 
 
