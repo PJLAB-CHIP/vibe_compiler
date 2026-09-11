@@ -162,6 +162,18 @@ semantic op和下游TilingInterface，不运行普通producer/consumer fusion，
 PyTorch/HF capture只用于建立和维护上述输入覆盖矩阵，不进入matcher控制流。新增capture若仍可由同一SSA/maps/effect关系证明，
 扩canonical analysis或现有typed rule；若需要模型名、固定rank或参数位置才能通过，则该形态不进入current attention合同。
 
+输入view链不能无条件穿透到最早的value：projection后的reshape可能显式展开contraction所需的head或归约轴。
+Matcher在同一有界只读查询内考察该链上的actual value；shape只提出轴对应候选，`IndexRelation`组合原contraction maps、
+透明view及已匹配score/probability路径，证明Q/K、probability/V的共同迭代坐标、score/output坐标及归约词典序一致后才接受。
+不能只按相同extent认定轴相等。Proof未成立或超查询工作界限时保持普通图，不能猜测mapping或签发SPM结论。
+
+输出替换锚定已证明的PV contraction result。必要的同序reshape在该位置形成，原有后续transpose、reshape、projection和其它uses
+继续消费它；不穿透transpose后再用元素数量相同的reshape代替实际排列。此变换仍由同一attention normalization pass执行，
+输入为current structured tensor SSA，输出为现有attention op与标准views，直接消费者为06号spatial/temporal及原graph users。
+不改变scalar arithmetic、dtype、state或算法选择合同，也不运行ordinary graph的额外等价探索。
+完成覆盖包含1024/1025/1031、投影后展开的输入、输出transpose、同extent不同轴、多use及相反索引顺序的拒绝，
+并用真实完整block的source→attention→actual Instr/SPM/package作为产品witness。
+
 matcher先构造全部proof并在首次mutation前验证overlap：
 
 ```text
@@ -188,15 +200,32 @@ planning/cost看见。两个matches共享Q/K/V或mask并不冲突；只有它们
     outs(%output)
     {algorithm = flash_attention | flash_decoding,
      indexing_maps = [query, key, value, scale, mask?, output]}
+    score { scalar dot/scale/mask arguments -> original score computation -> attention.yield }
 ```
 
 `output`是destination，不表示额外accumulate语义；source在attention之后的bias/residual仍是独立SSA consumer。
 tensor form返回一个与output同type的result；buffer form写入tied destination。op不公开block size、partition count、Tile、layout、
 state buffer、merge owner或schedule字段。
 
-Q/K/V/output使用同一floating storage element type；scale保持source scalar floating type，并作为Maximum/Sum online state的
-element type，optional additive mask保持自己的显式floating type，online-attention conversion/decomposition按current SSA所表达的转换边界使用它们。
+Q/K/V/output使用同一floating storage element type；scale保持source scalar floating type，optional additive mask保持自己的显式floating type，
+Maximum/Sum online state的element type由下述score region的yield定义。Online-attention conversion/decomposition按current SSA所表达的转换边界使用它们。
 Accumulator component使用output storage element type。这些都是op operand/type事实，不形成algorithm或physical candidate轴。
+
+Score路径的scalar arithmetic由attention自有的单block `score` region保存，并在online form中原样保留。
+Block参数依次是QK contraction的storage scalar、scale scalar和可选mask scalar；终结于
+`wafer.linalg_ext.attention.yield`，yield的floating type定义Maximum/Sum state type。Region必须封闭、无effect，
+只含标量运算；不能捕获外部SSA或包含tensor/buffer。已有DPS/Tiling接口继续拥有tensor输入与state，不增加另一套数值policy。
+标准`linalg.yield`的parent合同不适用于这个opaque composite op，因此新增attention专用terminator，直接消费者为op verifier和唯一decomposition。
+
+Matcher从已证明的QK→scale/cast→mask/cast→softmax输入SSA克隆原scalar计算，保留每个dtype与转换位置。例如F32 scale结果先
+trunc到F16、再执行F16 mask add、最后ext到F32，这三步必须真实存在于region。不能仅凭scale/mask operand type推断舍入位置。
+`score` region是当前op的完整语义，不是future-output IR；graph→online和TilingInterface均通过IRMapping克隆同一region。
+Decomposition仅将它嵌入实际score tile的Linalg scalar body，移除原来独立重建scale/mask算术的路径。
+对照[IREE AttentionOp的owned region](https://iree.dev/reference/mlir-dialects/LinalgExt/#iree_linalg_extattention-linalgextattentionop)，
+采用标准MLIR region与SSA保留source计算，不使用precision模式字符串或按模型恢复语义。
+
+覆盖要求：FP16/BF16/F32、mask有无及不同type、scale前后cast、额外score use、region捕获/effect/type不匹配负例，
+1024/1025/1031 graph→spatial→tiled online→Linalg检查相同scalar依赖和舍入；完整block以fresh source验证，最终板端数值另行验收。
 
 current semantic subset是forward scaled dot-product attention和optional additive/broadcast mask。dropout或其它random effect、backward、
 sparse/block-sparse attention、runtime paged-cache lookup及未能由下面maps完整证明的variant不进入该op；它们保持原IR或由未来独立
@@ -250,8 +279,8 @@ attention op实现：
 CoupledReductionDescription
   reductionIterators: K2 iterator IDs
   components:
-    Maximum     with row indexing map (B, M) and scale element type
-    Sum         with row indexing map (B, M) and scale element type
+    Maximum     with row indexing map (B, M) and score result element type
+    Sum         with row indexing map (B, M) and score result element type
     Accumulator with output indexing map (B, M, N) and output element type
   initialization: one neutral state per contribution
   merge: all components are consumed by one coupled combine

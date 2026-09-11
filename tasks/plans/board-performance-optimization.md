@@ -102,6 +102,41 @@ Decode首个temporal候选的`1x4096x512xf16`来自standard reduction contributi
 第2项按新机制补模型执行，既有numeric/SystemC通过不代替新增case；第4/7项的设备性能复验等待合格设备恢复。
 搜索预算、访问公平性及更长搜索时间比较仍不在本轮实施范围内。
 
+### Attention语义与重复片段的本轮实现
+
+第1项修复了多个standard contribution共用init时的相邻重复拼接：同一个实际SSA source和相同矩形只写一次，
+不同source或中间有其它写入仍保留原顺序。12组named/generic contraction/conv × 1024/1025/1031中的每组
+原先出现48次相邻重复extract/insert，本轮降为0；实际下游与原有coverage/merge检查通过。
+
+第5项的attention输入不再无条件穿透所有view；在实际view链上提出候选，使用IndexRelation证明QK/PV、score/output与归约顺序。
+替换只作用于PV result，后继transpose/reshape继续消费同序结果。相同extent的不同轴另有回归，不能靠shape猜测。
+完整block现在实际形成attention，但仍未生成package，因此这里只签发识别与局部生成资格。
+
+此次识别同时暴露score舍入语义缺失，已在05号设计闭合：graph与online attention的必需score region保存原scalar SSA，
+包括F32 scale、trunc至FP16、FP16 mask add及ext回F32。Maximum/Sum type取region yield；唯一decomposition克隆该计算，
+不再重建另一套scale/mask算术。新增terminator、verifier、标准clone/tiling、直接consumer和全部仓内fixture同步迁移。
+两个attention roots共用上游图时的dead producer清理也修正为待处理集合，避免重复删除或过早跳过仍有use的producer。
+
+本轮验证：attention normalization、online decomposition、spatial与temporal共78项通过；其中12组FP16/BF16 × mask有无 ×
+1024/1025/1031逐步检查main/tail中的相同scalar运算和类型，并推进实际Instr。新的capture、effect和参数type负例实际执行。
+四组已注册的1024/1025 × none/search score-rounding源程序通过16-Tile owner-backed target model/SystemC、完整输出零容差比较；
+独立NumPy reference明确区分保留/丢失舍入。另两组fresh PyTorch score程序也通过同一模型执行。
+这验证score arithmetic执行，不宣称完整attention或完整block已经在模型上运行。
+
+完整check-wafer通过：278 lit、14组件CTest、42 runtime/public-link、62 reference numeric、19 target numeric与17 SystemC。
+新score四组与原add共5项注册产品模型测试通过；prefill/local-conv tail-1031 FP16的none/search四组fresh source→package→strict no-card通过。
+Canonical完整增量构建及紧接着的Ninja no-op通过；未运行真实设备。
+
+完整模型仍未闭合。相同width=8/trials=42下，完整block的fresh harness wall为823.72秒、peak RSS约4.30 GiB，
+实际42次、accepted=0；六次容量反馈仍有90,177,536-byte权重buffer。Decode同为42次、accepted=0，
+实际32 MiB standard-merge assembly仍存在。只读检查确认其linalg.reduce具备TilingInterface且进入temporal domain，
+concat也通过exact查询；不能把当前未切小解释为算子接口不支持。
+
+Decode的下一处已定位到实际copy：切小后的candidate在NCx source/target subview的memref.copy lowering被拒；
+它直接使用view的strided type，没有像已有StorageStore/MoveCopyInto一样组合current view→base关系。
+下一步在10号既有movement合同内统一接入该关系，配对验证source/destination、nested/尾部和actual Instr/SPM。
+第6项的范围明确Trace尚待实施；第4/5/7项的完整产品和匹配板端性能仍未完成。搜索预算比较继续延后。
+
 ## 既有板端流程与产品矩阵
 
 1. 新鲜导出与编译三条 search FP16 case；逐 case 采集原 profiler。先核对 Count 容量与所有数值/完成门禁。

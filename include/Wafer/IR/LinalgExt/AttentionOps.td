@@ -6,6 +6,15 @@
 def Wafer_AttentionShaped
     : AnyTypeOf<[AnyMemRef, AnyRankedTensor], "", "::mlir::ShapedType">;
 
+def Wafer_LinalgExtAttentionYieldOp : Wafer_Op<"linalg_ext.attention.yield", [
+    ParentOneOf<["LinalgExtAttentionOp", "LinalgExtOnlineAttentionOp"]>,
+    Pure, ReturnLike, Terminator
+  ]> {
+  let summary = "yield the adjusted scalar attention score";
+  let arguments = (ins AnyFloat:$value);
+  let assemblyFormat = "$value attr-dict `:` type($value)";
+}
+
 def Wafer_LinalgExtAttentionOp
     : Wafer_Op<"linalg_ext.attention", [
         DestinationStyleOpInterface,
@@ -40,6 +49,7 @@ def Wafer_LinalgExtAttentionOp
     AffineMapArrayAttr:$indexing_maps
   );
   let results = (outs Variadic<AnyRankedTensor>:$results);
+  let regions = (region AnyRegion:$score_region);
 
   let hasVerifier = 1;
   let assemblyFormat = [{
@@ -49,6 +59,7 @@ def Wafer_LinalgExtAttentionOp
     `outs` `(` $output `:` type($output) `)`
     `algorithm` `(` $algorithm `)`
     `indexing_maps` `=` $indexing_maps
+    `score` $score_region
     attr-dict
     (`->` type($results)^)?
   }];
@@ -60,6 +71,7 @@ def Wafer_LinalgExtAttentionOp
 
     ::llvm::SmallVector<::mlir::AffineMap, 6> getIndexingMapsArray();
     ::llvm::SmallVector<int64_t> getStaticLoopRanges();
+    ::mlir::Type getScoreType();
     ::mlir::FailureOr<::wafer::AttentionIterationRoles>
     getIterationRoles();
 
@@ -138,6 +150,7 @@ def Wafer_LinalgExtOnlineAttentionOp
     AnyRankedTensor:$updated_maximum,
     AnyRankedTensor:$updated_sum
   );
+  let regions = (region AnyRegion:$score_region);
 
   let hasVerifier = 1;
   let assemblyFormat = [{
@@ -147,6 +160,7 @@ def Wafer_LinalgExtOnlineAttentionOp
     `outs` `(` $accumulator `,` $maximum `,` $sum `:`
       type($accumulator) `,` type($maximum) `,` type($sum) `)`
     `indexing_maps` `=` $indexing_maps
+    `score` $score_region
     attr-dict
     `->` `(` type($updated_accumulator) `,` type($updated_maximum) `,`
              type($updated_sum) `)`
@@ -157,6 +171,7 @@ def Wafer_LinalgExtOnlineAttentionOp
 
     ::llvm::SmallVector<::mlir::AffineMap, 8> getIndexingMapsArray();
     ::llvm::SmallVector<int64_t> getStaticLoopRanges();
+    ::mlir::Type getScoreType();
     ::mlir::FailureOr<::wafer::AttentionIterationRoles>
     getIterationRoles();
 

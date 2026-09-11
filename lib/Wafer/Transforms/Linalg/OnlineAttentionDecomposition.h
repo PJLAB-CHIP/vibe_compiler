@@ -31,8 +31,7 @@ struct OnlineAttentionDecompositionStatistics {
   uint64_t decomposedOperations = 0;
   uint64_t qkContractions = 0;
   uint64_t pvContractions = 0;
-  uint64_t scaleApplications = 0;
-  uint64_t maskApplications = 0;
+  uint64_t scoreApplications = 0;
   uint64_t rowReductions = 0;
   uint64_t normalizationFactors = 0;
   uint64_t probabilityUpdates = 0;

@@ -1,6 +1,7 @@
 //===- AttentionMatching.cpp - Structured attention graph proof --------===//
 
 #include "AttentionMatching.h"
+#include "Wafer/Analysis/Linalg/TensorResultIndexing.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -9,6 +10,8 @@
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -38,6 +41,7 @@ struct Softmax {
   mlir::linalg::GenericOp rowMax;
   mlir::Value scores;
   mlir::AffineMap scoreMap;
+  mlir::Value probability;
 };
 
 struct ScoreExpression {
@@ -334,35 +338,6 @@ mlir::Value stripTransparentValue(mlir::Value value) {
   return {};
 }
 
-mlir::Value stripTransparentLayout(mlir::Value value) {
-  llvm::DenseSet<mlir::Value> visited;
-  while (value && visited.insert(value).second) {
-    mlir::Value source = getTransparentLayoutSource(value.getDefiningOp());
-    if (!source)
-      return value;
-    auto sourceType = mlir::dyn_cast<mlir::RankedTensorType>(source.getType());
-    auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
-    if (!sourceType || !resultType || !sourceType.hasStaticShape() ||
-        !resultType.hasStaticShape() ||
-        sourceType.getNumElements() != resultType.getNumElements() ||
-        sourceType.getElementType() != resultType.getElementType())
-      return value;
-    value = source;
-  }
-  return {};
-}
-
-mlir::Value followTransparentLayoutUsers(mlir::Value value) {
-  llvm::DenseSet<mlir::Value> visited;
-  while (value && visited.insert(value).second && value.hasOneUse()) {
-    mlir::Operation *user = value.use_begin()->getOwner();
-    if (getTransparentLayoutSource(user) != value)
-      return value;
-    value = user->getResult(0);
-  }
-  return value;
-}
-
 std::optional<Softmax> matchSoftmax(mlir::Value value) {
   auto probability = value.getDefiningOp<mlir::linalg::GenericOp>();
   if (!matchBinaryBody<mlir::arith::DivFOp>(probability,
@@ -422,7 +397,8 @@ std::optional<Softmax> matchSoftmax(mlir::Value value) {
       return std::nullopt;
   }
 
-  return Softmax{rowMax, shifted.getDpsInputs()[0], rowMaxMaps[0]};
+  return Softmax{rowMax, shifted.getDpsInputs()[0], rowMaxMaps[0],
+                 probability.getResult(0)};
 }
 
 mlir::Value traceScalarSource(mlir::Value value) {
@@ -560,46 +536,261 @@ struct LogicalAttentionMaps {
   llvm::SmallVector<unsigned, 2> keyValueGlobalDimensions;
 };
 
-std::optional<unsigned>
-getQueryContractionInput(const Contraction &queryKey,
-                         const Contraction &probabilityValue,
-                         unsigned probabilityInput) {
-  mlir::AffineMap queryKeyOutput = queryKey.maps[2];
-  mlir::AffineMap probabilityMap = probabilityValue.maps[probabilityInput];
-  if (queryKeyOutput.getNumResults() != probabilityMap.getNumResults())
+constexpr uint64_t kMaximumAxisProofWork = 1u << 16;
+
+bool isValueAncestor(mlir::Value ancestor, mlir::Value value);
+
+std::optional<analysis::IndexRelation>
+getValueRelation(mlir::Value value, mlir::Value ancestor, uint64_t &work) {
+  using analysis::IndexRelation;
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+  if (!type || !type.hasStaticShape())
     return std::nullopt;
-  llvm::SmallBitVector left = getMapDimensionSet(queryKey.maps[0]);
-  llvm::SmallBitVector right = getMapDimensionSet(queryKey.maps[1]);
-  std::optional<bool> leftIsQuery;
-  for (unsigned axis = 0; axis < queryKeyOutput.getNumResults(); ++axis) {
-    unsigned queryKeyDimension =
-        mlir::cast<mlir::AffineDimExpr>(queryKeyOutput.getResult(axis))
-            .getPosition();
-    unsigned probabilityDimension =
-        mlir::cast<mlir::AffineDimExpr>(probabilityMap.getResult(axis))
-            .getPosition();
-    const bool inLeft = left.test(queryKeyDimension);
-    const bool inRight = right.test(queryKeyDimension);
-    const bool isKeyValue = probabilityValue.iterators[probabilityDimension] ==
-                            mlir::utils::IteratorType::reduction;
-    if (inLeft && inRight)
-      continue;
-    if (inLeft == inRight)
+  auto relation = IndexRelation::identity(type.getShape());
+  llvm::DenseSet<mlir::Value> visited;
+  while (value != ancestor) {
+    if (++work > kMaximumAxisProofWork || !visited.insert(value).second)
       return std::nullopt;
-    const bool candidate = isKeyValue ? !inLeft : inLeft;
-    if (leftIsQuery && *leftIsQuery != candidate)
+    auto result = mlir::dyn_cast<mlir::OpResult>(value);
+    if (!result)
       return std::nullopt;
-    leftIsQuery = candidate;
+    mlir::Value source = getTransparentSource(result.getOwner());
+    auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(result.getOwner());
+    if (!source && linalg && isAllParallel(linalg)) {
+      // The scalar score/softmax skeleton has already been matched. Here we
+      // only follow its unambiguous indexing path to the selected ancestor.
+      for (mlir::Value input : linalg.getDpsInputs())
+        if (isValueAncestor(ancestor, input)) {
+          if (source)
+            return std::nullopt;
+          source = input;
+        }
+    }
+    if (!source)
+      return std::nullopt;
+    analysis::IndexRelationResult step;
+    if (linalg) {
+      auto sourceType =
+          mlir::dyn_cast<mlir::RankedTensorType>(source.getType());
+      if (!sourceType || !sourceType.hasStaticShape() ||
+          !isAllParallel(linalg) || !linalg.getShapesToLoopsMap())
+        return std::nullopt;
+      auto operand = llvm::find(linalg->getOperands(), source);
+      if (operand == linalg->operand_end())
+        return std::nullopt;
+      auto outputMap = analysis::getStructuredResultMap(result);
+      auto inputMap = analysis::getStructuredOperandMap(
+          linalg->getOpOperand(operand - linalg->operand_begin()));
+      if (mlir::failed(outputMap) || mlir::failed(inputMap))
+        return std::nullopt;
+      step = IndexRelation::fromCommonIterationDomain(
+          *outputMap,
+          mlir::cast<mlir::RankedTensorType>(value.getType()).getShape(),
+          *inputMap, sourceType.getShape(), linalg.getStaticLoopRanges());
+    } else {
+      auto indexing = analysis::deriveTensorResultIndexing(result);
+      if (!indexing.isExact() || indexing.indexing->operands.size() != 1)
+        return std::nullopt;
+      const auto &operand = indexing.indexing->operands.front();
+      if (result.getOwner()->getOperand(operand.operand) != source)
+        return std::nullopt;
+      step.status = analysis::IndexRelationStatus::Exact;
+      step.relation = operand.resultToOperand;
+    }
+    if (!relation.isExact() || !step.isExact())
+      return std::nullopt;
+    relation = relation.get()->compose(*step.get());
+    if (!relation.isExact())
+      return std::nullopt;
+    value = source;
   }
-  if (!leftIsQuery)
+  return relation.isExact() ? std::optional<IndexRelation>(*relation.get())
+                            : std::nullopt;
+}
+
+std::optional<analysis::IndexRelation>
+getContractionIterationRelation(const Contraction &contraction,
+                                const analysis::IndexRelation &globalToLeft,
+                                const analysis::IndexRelation &globalToRight,
+                                llvm::ArrayRef<int64_t> globalShape) {
+  using analysis::IndexRelation;
+  auto operation = contraction.operation;
+  if (!operation.getShapesToLoopsMap())
     return std::nullopt;
-  return *leftIsQuery ? 0u : 1u;
+  auto iterations = operation.getStaticLoopRanges();
+  std::optional<IndexRelation> iteration;
+  for (unsigned operand : {0u, 1u}) {
+    auto type = mlir::cast<mlir::RankedTensorType>(
+        operation.getDpsInputs()[operand].getType());
+    auto access = IndexRelation::fromAffineMap(contraction.maps[operand],
+                                               iterations, type.getShape());
+    if (!access.isExact())
+      return std::nullopt;
+    auto inverse = access.get()->inverse();
+    if (!inverse.isExact())
+      return std::nullopt;
+    auto joined =
+        (operand == 0 ? globalToLeft : globalToRight).compose(*inverse.get());
+    if (!joined.isExact())
+      return std::nullopt;
+    iteration =
+        iteration ? IndexRelation(iteration->getPresburgerRelation().intersect(
+                                      joined.get()->getPresburgerRelation()),
+                                  analysis::IndexRelationStatus::Exact)
+                  : *joined.get();
+  }
+  auto domain = IndexRelation::staticDomain(globalShape);
+  if (!domain.isExact() || !iteration ||
+      !iteration->isFunctional().isProvenTrue() ||
+      !iteration->getPresburgerRelation().getDomainSet().isEqual(*domain.set))
+    return std::nullopt;
+  return iteration;
+}
+
+bool proveReductionOrder(const analysis::IndexRelation &globalToIteration,
+                         mlir::linalg::LinalgOp operation,
+                         llvm::ArrayRef<int64_t> globalShape,
+                         llvm::ArrayRef<unsigned> globalReductionAxes) {
+  using analysis::IndexRelation;
+  auto iterationShape = operation.getStaticLoopRanges();
+  llvm::SmallVector<mlir::AffineExpr, 4> actualAxes;
+  llvm::SmallVector<int64_t, 4> actualShape;
+  for (auto [axis, kind] : llvm::enumerate(operation.getIteratorTypesArray()))
+    if (kind == mlir::utils::IteratorType::reduction) {
+      actualAxes.push_back(
+          mlir::getAffineDimExpr(axis, operation.getContext()));
+      actualShape.push_back(iterationShape[axis]);
+    }
+  llvm::SmallVector<mlir::AffineExpr, 4> expectedAxes;
+  llvm::SmallVector<int64_t, 4> expectedShape;
+  for (unsigned axis : globalReductionAxes) {
+    expectedAxes.push_back(
+        mlir::getAffineDimExpr(axis, operation.getContext()));
+    expectedShape.push_back(globalShape[axis]);
+  }
+  auto actualProjection = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(iterationShape.size(), 0, actualAxes,
+                           operation.getContext()),
+      iterationShape, actualShape);
+  auto expectedProjection = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(globalShape.size(), 0, expectedAxes,
+                           operation.getContext()),
+      globalShape, expectedShape);
+  auto reshape = IndexRelation::staticReshape(expectedShape, actualShape);
+  if (!actualProjection.isExact() || !expectedProjection.isExact() ||
+      !reshape.isExact())
+    return false;
+  auto actual = globalToIteration.compose(*actualProjection.get());
+  auto expected = expectedProjection.get()->compose(*reshape.get());
+  return actual.isExact() && expected.isExact() &&
+         actual.get()->isEquivalentTo(*expected.get()).isProvenTrue();
+}
+
+bool proveLogicalAttentionMaps(
+    const ScoreExpression &score, const Softmax &softmax,
+    const Contraction &valueContraction, unsigned queryInput,
+    unsigned probabilityInput, const LogicalAttentionMaps &maps,
+    llvm::ArrayRef<int64_t> globalShape, mlir::AffineMap scoreMap,
+    llvm::ArrayRef<unsigned> queryKeyAxes, uint64_t &work) {
+  using analysis::IndexRelation;
+  auto qk = score.contraction.operation;
+  auto pv = valueContraction.operation;
+  auto rowMax = softmax.rowMax;
+  auto globalToOperand =
+      [&](mlir::Value raw, mlir::Value selected,
+          mlir::AffineMap map) -> std::optional<IndexRelation> {
+    auto type = mlir::cast<mlir::RankedTensorType>(selected.getType());
+    auto expected =
+        IndexRelation::fromAffineMap(map, globalShape, type.getShape());
+    auto toSelected = getValueRelation(raw, selected, work);
+    if (!expected.isExact() || !toSelected)
+      return std::nullopt;
+    auto toRaw = toSelected->inverse();
+    if (!toRaw.isExact())
+      return std::nullopt;
+    auto composed = expected.get()->compose(*toRaw.get());
+    return composed.isExact() ? std::optional<IndexRelation>(*composed.get())
+                              : std::nullopt;
+  };
+  auto query =
+      globalToOperand(qk.getDpsInputs()[queryInput], maps.query, maps.maps[0]);
+  auto key = globalToOperand(qk.getDpsInputs()[1 - queryInput], maps.key,
+                             maps.maps[1]);
+  auto value = globalToOperand(pv.getDpsInputs()[1 - probabilityInput],
+                               maps.value, maps.maps[2]);
+  auto probability = globalToOperand(pv.getDpsInputs()[probabilityInput],
+                                     softmax.probability, scoreMap);
+  if (!query || !key || !value || !probability)
+    return false;
+  auto qkIteration = getContractionIterationRelation(
+      score.contraction, queryInput == 0 ? *query : *key,
+      queryInput == 0 ? *key : *query, globalShape);
+  auto pvIteration = getContractionIterationRelation(
+      valueContraction, probabilityInput == 0 ? *probability : *value,
+      probabilityInput == 0 ? *value : *probability, globalShape);
+  if (!qkIteration || !pvIteration ||
+      !proveReductionOrder(*qkIteration, score.contraction.operation,
+                           globalShape, queryKeyAxes) ||
+      !proveReductionOrder(*pvIteration, valueContraction.operation,
+                           globalShape, maps.keyValueGlobalDimensions))
+    return false;
+  auto scoresType =
+      mlir::cast<mlir::RankedTensorType>(softmax.scores.getType());
+  auto expectedScores = IndexRelation::fromAffineMap(scoreMap, globalShape,
+                                                     scoresType.getShape());
+  auto scoresToRaw = getValueRelation(
+      softmax.scores, score.contraction.operation->getResult(0), work);
+  if (!expectedScores.isExact() || !scoresToRaw)
+    return false;
+  auto expectedQKOutput = expectedScores.get()->compose(*scoresToRaw);
+  auto qkType = mlir::cast<mlir::RankedTensorType>(
+      score.contraction.operation->getResult(0).getType());
+  auto qkOutput = IndexRelation::fromAffineMap(
+      score.contraction.maps[2], qk.getStaticLoopRanges(), qkType.getShape());
+  if (!expectedQKOutput.isExact() || !qkOutput.isExact())
+    return false;
+  auto actualQKOutput = qkIteration->compose(*qkOutput.get());
+  if (!actualQKOutput.isExact() ||
+      !actualQKOutput.get()
+           ->isEquivalentTo(*expectedQKOutput.get())
+           .isProvenTrue())
+    return false;
+  auto pvType = mlir::cast<mlir::RankedTensorType>(
+      valueContraction.operation->getResult(0).getType());
+  auto pvOutput = IndexRelation::fromAffineMap(
+      valueContraction.maps[2], pv.getStaticLoopRanges(), pvType.getShape());
+  auto expectedOutput = IndexRelation::fromAffineMap(
+      maps.maps.back(), globalShape, maps.outputType.getShape());
+  auto outputReshape = IndexRelation::staticReshape(maps.outputType.getShape(),
+                                                    pvType.getShape());
+  if (!pvOutput.isExact() || !expectedOutput.isExact() ||
+      !outputReshape.isExact())
+    return false;
+  auto actualPVOutput = pvIteration->compose(*pvOutput.get());
+  auto expectedPVOutput = expectedOutput.get()->compose(*outputReshape.get());
+  if (!actualPVOutput.isExact() || !expectedPVOutput.isExact() ||
+      !actualPVOutput.get()
+           ->isEquivalentTo(*expectedPVOutput.get())
+           .isProvenTrue())
+    return false;
+  auto softmaxAccess = IndexRelation::fromAffineMap(
+      softmax.scoreMap, rowMax.getStaticLoopRanges(), scoresType.getShape());
+  if (!softmaxAccess.isExact())
+    return false;
+  auto inverse = softmaxAccess.get()->inverse();
+  if (!inverse.isExact())
+    return false;
+  auto softmaxIteration = expectedScores.get()->compose(*inverse.get());
+  return softmaxIteration.isExact() &&
+         proveReductionOrder(*softmaxIteration.get(), softmax.rowMax,
+                             globalShape, maps.keyValueGlobalDimensions);
 }
 
 std::optional<LogicalAxisAssignment> solveLogicalAttentionAxes(
     mlir::RankedTensorType queryType, mlir::RankedTensorType keyType,
     mlir::RankedTensorType valueType, mlir::RankedTensorType scoreType,
-    llvm::ArrayRef<bool> scoreReductionAxes) {
+    llvm::ArrayRef<bool> scoreReductionAxes, uint64_t &work,
+    llvm::function_ref<bool(const LogicalAxisAssignment &)> accept) {
   if (!queryType || !keyType || !valueType || !scoreType ||
       !queryType.hasStaticShape() || !keyType.hasStaticShape() ||
       !valueType.hasStaticShape() || !scoreType.hasStaticShape() ||
@@ -610,8 +801,6 @@ std::optional<LogicalAxisAssignment> solveLogicalAttentionAxes(
   llvm::SmallVector<bool, 8> usedKey(keyType.getRank(), false);
   llvm::SmallVector<bool, 8> usedValue(valueType.getRank(), false);
   LogicalAxisAssignment assignment;
-  uint64_t work = 0;
-  constexpr uint64_t kMaximumAxisProofWork = 1u << 16;
 
   auto sameExtent = [](mlir::RankedTensorType left, unsigned leftAxis,
                        mlir::RankedTensorType right, unsigned rightAxis) {
@@ -648,7 +837,9 @@ std::optional<LogicalAxisAssignment> solveLogicalAttentionAxes(
                axis < static_cast<unsigned>(valueType.getRank()); ++axis)
             if (!usedValue[axis])
               assignment.valueOutput.push_back(axis);
-          return !assignment.valueOutput.empty();
+          return !assignment.query.empty() && !assignment.queryKey.empty() &&
+                 !assignment.keyValue.empty() &&
+                 !assignment.valueOutput.empty() && accept(assignment);
         }
         const unsigned queryAxis = remainingQuery[index];
         for (unsigned keyAxis : remainingKey) {
@@ -743,22 +934,11 @@ std::optional<LogicalAxisAssignment> solveLogicalAttentionAxes(
   return assignment;
 }
 
-std::optional<LogicalAttentionMaps>
-buildLogicalAttentionMaps(ScoreExpression &score, const Softmax &softmax,
-                          const Contraction &valueContraction,
-                          unsigned probabilityInput) {
-  std::optional<unsigned> queryInput = getQueryContractionInput(
-      score.contraction, valueContraction, probabilityInput);
-  if (!queryInput)
-    return std::nullopt;
-  const unsigned keyInput = 1 - *queryInput;
-  const unsigned valueInput = 1 - probabilityInput;
-  mlir::Value query = stripTransparentLayout(
-      *queryInput == 0 ? score.contraction.left : score.contraction.right);
-  mlir::Value key = stripTransparentLayout(
-      keyInput == 0 ? score.contraction.left : score.contraction.right);
-  mlir::Value value = stripTransparentLayout(
-      valueInput == 0 ? valueContraction.left : valueContraction.right);
+std::optional<LogicalAttentionMaps> buildLogicalAttentionMapsForValues(
+    ScoreExpression &score, const Softmax &softmax,
+    const Contraction &valueContraction, unsigned probabilityInput,
+    unsigned queryInput, mlir::Value query, mlir::Value key, mlir::Value value,
+    uint64_t &work) {
   auto queryType = mlir::dyn_cast<mlir::RankedTensorType>(query.getType());
   auto keyType = mlir::dyn_cast<mlir::RankedTensorType>(key.getType());
   auto valueType = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
@@ -783,111 +963,174 @@ buildLogicalAttentionMaps(ScoreExpression &score, const Softmax &softmax,
                                mlir::utils::IteratorType::reduction;
   }
 
-  std::optional<LogicalAxisAssignment> assignment = solveLogicalAttentionAxes(
-      queryType, keyType, valueType, scoreType, scoreReductionAxes);
-  if (!assignment)
-    return std::nullopt;
-
-  const unsigned globalRank =
-      assignment->batch.size() + assignment->query.size() +
-      assignment->queryKey.size() + assignment->keyValue.size() +
-      assignment->valueOutput.size();
-  llvm::SmallVector<int64_t, 8> queryToGlobal(queryType.getRank(), -1);
-  llvm::SmallVector<int64_t, 8> keyToGlobal(keyType.getRank(), -1);
-  llvm::SmallVector<int64_t, 8> valueToGlobal(valueType.getRank(), -1);
-  llvm::SmallVector<int64_t, 8> scoreToGlobal(scoreType.getRank(), -1);
-  llvm::SmallVector<int64_t, 8> globalExtents;
-  globalExtents.reserve(globalRank);
-  llvm::SmallVector<unsigned, 4> outputGlobalDimensions;
-  unsigned nextGlobal = 0;
-  for (const auto &axes : assignment->batch) {
-    queryToGlobal[axes[0]] = nextGlobal;
-    keyToGlobal[axes[1]] = nextGlobal;
-    valueToGlobal[axes[2]] = nextGlobal;
-    scoreToGlobal[axes[3]] = nextGlobal;
-    globalExtents.push_back(scoreType.getDimSize(axes[3]));
-    outputGlobalDimensions.push_back(nextGlobal++);
-  }
-  for (const auto &axes : assignment->query) {
-    queryToGlobal[axes[0]] = nextGlobal;
-    scoreToGlobal[axes[1]] = nextGlobal;
-    globalExtents.push_back(scoreType.getDimSize(axes[1]));
-    outputGlobalDimensions.push_back(nextGlobal++);
-  }
-  for (const auto &axes : assignment->queryKey) {
-    queryToGlobal[axes[0]] = nextGlobal;
-    keyToGlobal[axes[1]] = nextGlobal;
-    globalExtents.push_back(queryType.getDimSize(axes[0]));
-    ++nextGlobal;
-  }
-  llvm::SmallVector<unsigned, 2> keyValueGlobalDimensions;
-  for (const auto &axes : assignment->keyValue) {
-    keyToGlobal[axes[0]] = nextGlobal;
-    valueToGlobal[axes[1]] = nextGlobal;
-    scoreToGlobal[axes[2]] = nextGlobal;
-    globalExtents.push_back(scoreType.getDimSize(axes[2]));
-    keyValueGlobalDimensions.push_back(nextGlobal++);
-  }
-  for (unsigned axis : assignment->valueOutput) {
-    valueToGlobal[axis] = nextGlobal;
-    globalExtents.push_back(valueType.getDimSize(axis));
-    outputGlobalDimensions.push_back(nextGlobal++);
-  }
-  if (nextGlobal != globalRank ||
-      llvm::is_contained(queryToGlobal, int64_t{-1}) ||
-      llvm::is_contained(keyToGlobal, int64_t{-1}) ||
-      llvm::is_contained(valueToGlobal, int64_t{-1}) ||
-      llvm::is_contained(scoreToGlobal, int64_t{-1}))
-    return std::nullopt;
-
-  auto makeOperandMap = [&](llvm::ArrayRef<int64_t> axisToGlobal) {
-    llvm::SmallVector<mlir::AffineExpr, 4> expressions;
-    for (int64_t global : axisToGlobal)
-      expressions.push_back(mlir::getAffineDimExpr(global, query.getContext()));
-    return mlir::AffineMap::get(globalRank, 0, expressions, query.getContext());
-  };
-  llvm::SmallVector<mlir::AffineMap, 6> maps{
-      makeOperandMap(queryToGlobal), makeOperandMap(keyToGlobal),
-      makeOperandMap(valueToGlobal),
-      mlir::AffineMap::get(globalRank, 0, {}, query.getContext())};
-  if (score.mask) {
-    llvm::SmallVector<int64_t, 8> expressionToGlobal(
-        score.scoreOutputMap.getNumDims(), -1);
-    if (score.scoreOutputMap.getNumResults() !=
-        static_cast<unsigned>(scoreType.getRank()))
-      return std::nullopt;
-    for (auto [axis, expression] :
-         llvm::enumerate(score.scoreOutputMap.getResults())) {
-      unsigned dimension =
-          mlir::cast<mlir::AffineDimExpr>(expression).getPosition();
-      expressionToGlobal[dimension] = scoreToGlobal[axis];
+  auto makeCandidate = [&](const LogicalAxisAssignment &candidate)
+      -> std::optional<LogicalAttentionMaps> {
+    const auto *assignment = &candidate;
+    const unsigned globalRank =
+        assignment->batch.size() + assignment->query.size() +
+        assignment->queryKey.size() + assignment->keyValue.size() +
+        assignment->valueOutput.size();
+    llvm::SmallVector<int64_t, 8> queryToGlobal(queryType.getRank(), -1);
+    llvm::SmallVector<int64_t, 8> keyToGlobal(keyType.getRank(), -1);
+    llvm::SmallVector<int64_t, 8> valueToGlobal(valueType.getRank(), -1);
+    llvm::SmallVector<int64_t, 8> scoreToGlobal(scoreType.getRank(), -1);
+    llvm::SmallVector<int64_t, 8> globalExtents;
+    globalExtents.reserve(globalRank);
+    llvm::SmallVector<unsigned, 4> outputGlobalDimensions;
+    unsigned nextGlobal = 0;
+    for (const auto &axes : assignment->batch) {
+      queryToGlobal[axes[0]] = nextGlobal;
+      keyToGlobal[axes[1]] = nextGlobal;
+      valueToGlobal[axes[2]] = nextGlobal;
+      scoreToGlobal[axes[3]] = nextGlobal;
+      globalExtents.push_back(scoreType.getDimSize(axes[3]));
+      outputGlobalDimensions.push_back(nextGlobal++);
     }
-    std::optional<mlir::AffineMap> maskMap =
-        translateMap(score.maskMap, expressionToGlobal, globalRank);
-    if (!maskMap)
+    for (const auto &axes : assignment->query) {
+      queryToGlobal[axes[0]] = nextGlobal;
+      scoreToGlobal[axes[1]] = nextGlobal;
+      globalExtents.push_back(scoreType.getDimSize(axes[1]));
+      outputGlobalDimensions.push_back(nextGlobal++);
+    }
+    llvm::SmallVector<unsigned, 2> queryKeyGlobalDimensions;
+    for (const auto &axes : assignment->queryKey) {
+      queryKeyGlobalDimensions.push_back(nextGlobal);
+      queryToGlobal[axes[0]] = nextGlobal;
+      keyToGlobal[axes[1]] = nextGlobal;
+      globalExtents.push_back(queryType.getDimSize(axes[0]));
+      ++nextGlobal;
+    }
+    llvm::SmallVector<unsigned, 2> keyValueGlobalDimensions;
+    for (const auto &axes : assignment->keyValue) {
+      keyToGlobal[axes[0]] = nextGlobal;
+      valueToGlobal[axes[1]] = nextGlobal;
+      scoreToGlobal[axes[2]] = nextGlobal;
+      globalExtents.push_back(scoreType.getDimSize(axes[2]));
+      keyValueGlobalDimensions.push_back(nextGlobal++);
+    }
+    for (unsigned axis : assignment->valueOutput) {
+      valueToGlobal[axis] = nextGlobal;
+      globalExtents.push_back(valueType.getDimSize(axis));
+      outputGlobalDimensions.push_back(nextGlobal++);
+    }
+    if (nextGlobal != globalRank ||
+        llvm::is_contained(queryToGlobal, int64_t{-1}) ||
+        llvm::is_contained(keyToGlobal, int64_t{-1}) ||
+        llvm::is_contained(valueToGlobal, int64_t{-1}) ||
+        llvm::is_contained(scoreToGlobal, int64_t{-1}))
       return std::nullopt;
-    maps.push_back(*maskMap);
-  }
-  llvm::SmallVector<mlir::AffineExpr, 4> outputExpressions;
-  llvm::SmallVector<int64_t, 4> outputShape;
-  for (unsigned global : outputGlobalDimensions) {
-    outputExpressions.push_back(
-        mlir::getAffineDimExpr(global, query.getContext()));
-    outputShape.push_back(globalExtents[global]);
-  }
-  maps.push_back(mlir::AffineMap::get(globalRank, 0, outputExpressions,
-                                      query.getContext()));
-  auto storageElementType =
-      mlir::cast<mlir::ShapedType>(
-          valueContraction.operation->getResult(0).getType())
-          .getElementType();
-  return LogicalAttentionMaps{
-      query,
-      key,
-      value,
-      mlir::RankedTensorType::get(outputShape, storageElementType),
-      std::move(maps),
-      std::move(keyValueGlobalDimensions)};
+
+    auto makeOperandMap = [&](llvm::ArrayRef<int64_t> axisToGlobal) {
+      llvm::SmallVector<mlir::AffineExpr, 4> expressions;
+      for (int64_t global : axisToGlobal)
+        expressions.push_back(
+            mlir::getAffineDimExpr(global, query.getContext()));
+      return mlir::AffineMap::get(globalRank, 0, expressions,
+                                  query.getContext());
+    };
+    llvm::SmallVector<mlir::AffineMap, 6> maps{
+        makeOperandMap(queryToGlobal), makeOperandMap(keyToGlobal),
+        makeOperandMap(valueToGlobal),
+        mlir::AffineMap::get(globalRank, 0, {}, query.getContext())};
+    if (score.mask) {
+      llvm::SmallVector<int64_t, 8> expressionToGlobal(
+          score.scoreOutputMap.getNumDims(), -1);
+      if (score.scoreOutputMap.getNumResults() !=
+          static_cast<unsigned>(scoreType.getRank()))
+        return std::nullopt;
+      for (auto [axis, expression] :
+           llvm::enumerate(score.scoreOutputMap.getResults())) {
+        unsigned dimension =
+            mlir::cast<mlir::AffineDimExpr>(expression).getPosition();
+        expressionToGlobal[dimension] = scoreToGlobal[axis];
+      }
+      std::optional<mlir::AffineMap> maskMap =
+          translateMap(score.maskMap, expressionToGlobal, globalRank);
+      if (!maskMap)
+        return std::nullopt;
+      maps.push_back(*maskMap);
+    }
+    llvm::SmallVector<mlir::AffineExpr, 4> outputExpressions;
+    llvm::SmallVector<int64_t, 4> outputShape;
+    for (unsigned global : outputGlobalDimensions) {
+      outputExpressions.push_back(
+          mlir::getAffineDimExpr(global, query.getContext()));
+      outputShape.push_back(globalExtents[global]);
+    }
+    maps.push_back(mlir::AffineMap::get(globalRank, 0, outputExpressions,
+                                        query.getContext()));
+    auto storageElementType =
+        mlir::cast<mlir::ShapedType>(
+            valueContraction.operation->getResult(0).getType())
+            .getElementType();
+    LogicalAttentionMaps proposed{
+        query,
+        key,
+        value,
+        mlir::RankedTensorType::get(outputShape, storageElementType),
+        std::move(maps),
+        std::move(keyValueGlobalDimensions)};
+    if (!proveLogicalAttentionMaps(score, softmax, valueContraction, queryInput,
+                                   probabilityInput, proposed, globalExtents,
+                                   makeOperandMap(scoreToGlobal),
+                                   queryKeyGlobalDimensions, work))
+      return std::nullopt;
+    return proposed;
+  };
+  std::optional<LogicalAttentionMaps> result;
+  solveLogicalAttentionAxes(queryType, keyType, valueType, scoreType,
+                            scoreReductionAxes, work,
+                            [&](const LogicalAxisAssignment &candidate) {
+                              result = makeCandidate(candidate);
+                              return result.has_value();
+                            });
+  return result;
+}
+
+std::optional<LogicalAttentionMaps>
+buildLogicalAttentionMaps(ScoreExpression &score, const Softmax &softmax,
+                          const Contraction &valueContraction,
+                          unsigned probabilityInput) {
+  uint64_t work = 0;
+  auto candidates = [&](mlir::Value value) {
+    llvm::SmallVector<mlir::Value, 4> values;
+    llvm::DenseSet<mlir::Value> visited;
+    while (value && visited.insert(value).second &&
+           ++work <= kMaximumAxisProofWork) {
+      auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+      if (!type || !type.hasStaticShape())
+        break;
+      values.push_back(value);
+      mlir::Value source = getTransparentLayoutSource(value.getDefiningOp());
+      auto sourceType =
+          source ? mlir::dyn_cast<mlir::RankedTensorType>(source.getType())
+                 : mlir::RankedTensorType{};
+      if (!sourceType || !sourceType.hasStaticShape() ||
+          sourceType.getElementType() != type.getElementType() ||
+          sourceType.getNumElements() != type.getNumElements())
+        break;
+      value = source;
+    }
+    std::reverse(values.begin(), values.end());
+    return values;
+  };
+  auto left = candidates(score.contraction.left);
+  auto right = candidates(score.contraction.right);
+  auto values = candidates(probabilityInput == 0 ? valueContraction.right
+                                                 : valueContraction.left);
+  for (unsigned queryInput : {0u, 1u})
+    for (mlir::Value query : queryInput == 0 ? left : right)
+      for (mlir::Value key : queryInput == 0 ? right : left)
+        for (mlir::Value value : values) {
+          if (++work > kMaximumAxisProofWork)
+            return std::nullopt;
+          auto result = buildLogicalAttentionMapsForValues(
+              score, softmax, valueContraction, probabilityInput, queryInput,
+              query, key, value, work);
+          if (result)
+            return result;
+        }
+  return std::nullopt;
 }
 
 bool isValueAncestor(mlir::Value ancestor, mlir::Value value) {
@@ -903,6 +1146,56 @@ bool isValueAncestor(mlir::Value ancestor, mlir::Value value) {
       llvm::append_range(worklist, definition->getOperands());
   }
   return false;
+}
+
+bool hasClosedScalarScore(const AttentionMatch &match) {
+  llvm::DenseSet<mlir::Value> visited;
+  std::function<bool(mlir::Value)> check = [&](mlir::Value value) {
+    if (value == match.rawScores || value == match.scale || value == match.mask)
+      return true;
+    if (!visited.insert(value).second)
+      return true;
+    mlir::Operation *definition = value.getDefiningOp();
+    if (!definition)
+      return false;
+    if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(definition)) {
+      if (!isAllParallel(generic) || generic->getNumResults() != 1 ||
+          llvm::any_of(
+              generic.getRegionOutputArgs(),
+              [](mlir::BlockArgument arg) { return !arg.use_empty(); }) ||
+          !llvm::all_of(generic.getDpsInputs(), check))
+        return false;
+      for (mlir::Operation &scalar : generic.getRegion().front()) {
+        if (scalar.getNumRegions() != 0 || !mlir::isMemoryEffectFree(&scalar))
+          return false;
+        for (mlir::Value operand : scalar.getOperands()) {
+          if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(operand)) {
+            if (argument.getOwner() == &generic.getRegion().front())
+              continue;
+          } else if (operand.getDefiningOp()->getBlock() ==
+                     &generic.getRegion().front()) {
+            continue;
+          }
+          if (!check(operand))
+            return false;
+        }
+      }
+      return true;
+    }
+    if (mlir::isa<mlir::ShapedType>(value.getType())) {
+      mlir::Value source = getTransparentSource(definition);
+      return source && check(source);
+    }
+    return definition->getNumRegions() == 0 &&
+           mlir::isMemoryEffectFree(definition) &&
+           llvm::all_of(definition->getResultTypes(),
+                        [](mlir::Type type) {
+                          return mlir::isa<mlir::FloatType, mlir::IntegerType>(
+                              type);
+                        }) &&
+           llvm::all_of(definition->getOperands(), check);
+  };
+  return check(match.adjustedScores);
 }
 
 std::optional<int64_t> getStaticIndex(mlir::OpFoldResult value) {
@@ -1169,6 +1462,8 @@ matchAttentionRoot(mlir::func::FuncOp function,
     AttentionMatch match;
     match.scale = score->scale;
     match.mask = score->mask;
+    match.rawScores = score->contraction.operation->getResult(0);
+    match.adjustedScores = softmax->scores;
     std::optional<LogicalAttentionMaps> logicalMaps = buildLogicalAttentionMaps(
         *score, *softmax, *matchedValue, probabilityInput);
     if (!logicalMaps) {
@@ -1180,9 +1475,19 @@ matchAttentionRoot(mlir::func::FuncOp function,
     match.value = logicalMaps->value;
     match.outputType = logicalMaps->outputType;
     match.indexingMaps = std::move(logicalMaps->maps);
+    auto storageType = match.outputType.getElementType();
+    if (mlir::cast<mlir::ShapedType>(match.rawScores.getType())
+                .getElementType() != storageType ||
+        mlir::cast<mlir::ShapedType>(match.query.getType()).getElementType() !=
+            storageType ||
+        mlir::cast<mlir::ShapedType>(match.key.getType()).getElementType() !=
+            storageType ||
+        mlir::cast<mlir::ShapedType>(match.value.getType()).getElementType() !=
+            storageType ||
+        !hasClosedScalarScore(match))
+      continue;
 
-    mlir::Value observable =
-        followTransparentLayoutUsers(valueContraction->getResult(0));
+    mlir::Value observable = valueContraction->getResult(0);
     auto observableType =
         mlir::dyn_cast<mlir::RankedTensorType>(observable.getType());
     if (!observableType || !observableType.hasStaticShape() ||
@@ -1225,6 +1530,71 @@ collectAttentionMatches(mlir::func::FuncOp function) {
       matches.push_back(std::move(*match));
   });
   return matches;
+}
+
+mlir::LogicalResult materializeAttentionScoreRegion(mlir::OpBuilder &builder,
+                                                    const AttentionMatch &match,
+                                                    mlir::Region &region,
+                                                    mlir::Type scaleType) {
+  if (!region.empty() || !hasClosedScalarScore(match))
+    return mlir::failure();
+  mlir::OpBuilder::InsertionGuard guard(builder);
+  mlir::Block *block = builder.createBlock(&region);
+  mlir::Location location = match.root->getLoc();
+  auto dotType =
+      mlir::cast<mlir::ShapedType>(match.rawScores.getType()).getElementType();
+  mlir::IRMapping mapping;
+  mapping.map(match.rawScores, block->addArgument(dotType, location));
+  auto scaleArgument = block->addArgument(scaleType, location);
+  if (match.scale)
+    mapping.map(match.scale, scaleArgument);
+  if (match.mask) {
+    auto maskType =
+        mlir::cast<mlir::ShapedType>(match.mask.getType()).getElementType();
+    mapping.map(match.mask, block->addArgument(maskType, location));
+  }
+  std::function<mlir::Value(mlir::Value)> clone = [&](mlir::Value value) {
+    if (auto mapped = mapping.lookupOrNull(value))
+      return mapped;
+    auto *definition = value.getDefiningOp();
+    if (!definition)
+      return mlir::Value{};
+    if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(definition)) {
+      for (auto [argument, input] : llvm::zip_equal(
+               generic.getRegionInputArgs(), generic.getDpsInputs())) {
+        mlir::Value scalar = clone(input);
+        if (!scalar)
+          return mlir::Value{};
+        mapping.map(argument, scalar);
+      }
+      auto yield = mlir::cast<mlir::linalg::YieldOp>(
+          generic.getRegion().front().getTerminator());
+      mlir::Value result = clone(yield.getValues().front());
+      if (result)
+        mapping.map(value, result);
+      return result;
+    }
+    if (mlir::isa<mlir::ShapedType>(value.getType())) {
+      mlir::Value source = getTransparentSource(definition);
+      mlir::Value result = source ? clone(source) : mlir::Value{};
+      if (result)
+        mapping.map(value, result);
+      return result;
+    }
+    for (mlir::Value operand : definition->getOperands())
+      if (!clone(operand))
+        return mlir::Value{};
+    auto *cloned = builder.clone(*definition, mapping);
+    for (auto [source, result] :
+         llvm::zip_equal(definition->getResults(), cloned->getResults()))
+      mapping.map(source, result);
+    return mapping.lookup(value);
+  };
+  mlir::Value score = clone(match.adjustedScores);
+  if (!score)
+    return mlir::failure();
+  builder.create<LinalgExtAttentionYieldOp>(location, score);
+  return mlir::success();
 }
 
 } // namespace wafer::attention_normalization

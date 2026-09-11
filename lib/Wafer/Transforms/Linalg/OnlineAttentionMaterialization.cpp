@@ -8,6 +8,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/IRMapping.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -169,6 +170,8 @@ mlir::FailureOr<OnlineAttentionState> materializeOnlineAttentionTile(
       mlir::TypeRange{accumulator.getType(), maximum.getType(), sum.getType()},
       *queryTile, *keyTile, *valueTile, scale, mask ? *maskTile : mlir::Value{},
       accumulator, maximum, sum, builder.getArrayAttr(maps));
+  mlir::IRMapping scoreMapping;
+  source.getScoreRegion().cloneInto(&online.getScoreRegion(), scoreMapping);
   return OnlineAttentionState{online.getUpdatedAccumulator(),
                               online.getUpdatedMaximum(),
                               online.getUpdatedSum()};

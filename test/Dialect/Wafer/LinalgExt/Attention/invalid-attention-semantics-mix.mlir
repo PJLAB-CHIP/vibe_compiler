@@ -16,7 +16,11 @@ func.func @invalid_attention_semantics_mix(
           tensor<2x3x4xf16>, memref<2x5x4xf16>, tensor<2x5x6xf16>, f16)
       outs(%out : tensor<2x3x6xf16>)
       algorithm(<flash_attention>)
-      indexing_maps = [#q, #k, #v, #s, #o]
+      indexing_maps = [#q, #k, #v, #s, #o] score {
+  ^bb0(%attention_0_dot: f16, %attention_0_scale: f16):
+    %attention_0_scaled = arith.mulf %attention_0_dot, %attention_0_scale : f16
+    wafer.linalg_ext.attention.yield %attention_0_scaled : f16
+  }
       -> tensor<2x3x6xf16>
   return %result : tensor<2x3x6xf16>
 }

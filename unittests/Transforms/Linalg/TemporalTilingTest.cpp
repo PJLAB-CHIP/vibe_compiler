@@ -2095,6 +2095,11 @@ TEST(TemporalTilingTest, OnlineK2CarriesThreeStatesThroughMainAndTail) {
               "(b, h, m)>,\n"
               "              affine_map<(b, h, m, k1, k2, n) -> "
               "(b, h, m)>]\n"
+              "            score { ^bb0(%dot: f16, %scale_arg: f32):\n"
+              "              %wide = arith.extf %dot : f16 to f32\n"
+              "              %scaled = arith.mulf %wide, %scale_arg : f32\n"
+              "              wafer.linalg_ext.attention.yield %scaled : f32\n"
+              "            }\n"
               "            -> (tensor<2x4x1025x128xf16>, "
               "tensor<2x4x1025xf32>,\n"
               "                tensor<2x4x1025xf32>)";
@@ -2228,7 +2233,12 @@ createOnlineFinalizerModule(mlir::MLIRContext &context, int64_t extent,
         affine_map<(b, h, m, k1, k2, n) -> (b, h, k2, k1)>,
         affine_map<(b, h, m, k1, k2, n) -> (b, h, k2, n)>,
         affine_map<(b, h, m, k1, k2, n) -> ()>,
-        affine_map<(b, h, m, k1, k2, n) -> (b, h, m, n)>]
+        affine_map<(b, h, m, k1, k2, n) -> (b, h, m, n)>] score {
+    ^bb0(%attention_0_dot: f16, %attention_0_scale: f32):
+      %attention_0_converted = arith.extf %attention_0_dot : f16 to f32
+      %attention_0_scaled = arith.mulf %attention_0_converted, %attention_0_scale : f32
+      wafer.linalg_ext.attention.yield %attention_0_scaled : f32
+    }
       -> tensor<1x2x4096x128xf16>)mlir";
   auto substitute = [&](llvm::StringRef from, llvm::StringRef to) {
     size_t offset = 0;

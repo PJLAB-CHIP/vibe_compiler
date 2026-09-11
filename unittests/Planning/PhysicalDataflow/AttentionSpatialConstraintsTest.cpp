@@ -55,7 +55,12 @@ module {
             tensor<2x1024x64xf16>, f32)
         outs(%out0 : tensor<2x1024x64xf16>)
         algorithm(<flash_attention>)
-        indexing_maps = [#q, #k, #v, #s, #o]
+        indexing_maps = [#q, #k, #v, #s, #o] score {
+    ^bb0(%attention_0_dot: f16, %attention_0_scale: f32):
+      %attention_0_converted = arith.extf %attention_0_dot : f16 to f32
+      %attention_0_scaled = arith.mulf %attention_0_converted, %attention_0_scale : f32
+      wafer.linalg_ext.attention.yield %attention_0_scaled : f32
+    }
         -> tensor<2x1024x64xf16>
     %out1 = tensor.empty() : tensor<2x1024x64xf16>
     %fd = wafer.linalg_ext.attention
@@ -64,7 +69,12 @@ module {
             tensor<2x1024x64xf16>, f32)
         outs(%out1 : tensor<2x1024x64xf16>)
         algorithm(<flash_decoding>)
-        indexing_maps = [#q, #k, #v, #s, #o]
+        indexing_maps = [#q, #k, #v, #s, #o] score {
+    ^bb0(%attention_1_dot: f16, %attention_1_scale: f32):
+      %attention_1_converted = arith.extf %attention_1_dot : f16 to f32
+      %attention_1_scaled = arith.mulf %attention_1_converted, %attention_1_scale : f32
+      wafer.linalg_ext.attention.yield %attention_1_scaled : f32
+    }
         -> tensor<2x1024x64xf16>
     return %fa, %fd : tensor<2x1024x64xf16>, tensor<2x1024x64xf16>
   }
@@ -79,7 +89,12 @@ module {
             tensor<2x33x31x128xf16>, tensor<2x33x31x64xf16>, f32)
         outs(%out : tensor<2x1025x64xf16>)
         algorithm(<flash_decoding>)
-        indexing_maps = [#multi_q, #multi_k, #multi_v, #multi_s, #multi_o]
+        indexing_maps = [#multi_q, #multi_k, #multi_v, #multi_s, #multi_o] score {
+    ^bb0(%attention_2_dot: f16, %attention_2_scale: f32):
+      %attention_2_converted = arith.extf %attention_2_dot : f16 to f32
+      %attention_2_scaled = arith.mulf %attention_2_converted, %attention_2_scale : f32
+      wafer.linalg_ext.attention.yield %attention_2_scaled : f32
+    }
         -> tensor<2x1025x64xf16>
     return %result : tensor<2x1025x64xf16>
   }

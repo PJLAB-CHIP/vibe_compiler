@@ -12,6 +12,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
@@ -163,44 +164,12 @@ mlir::Value createZeroTensor(mlir::Location location,
       .getResult(0);
 }
 
-mlir::Value convertTensorElementType(mlir::Location location,
-                                     mlir::Value source,
-                                     mlir::Type targetElementType,
-                                     mlir::OpBuilder &builder) {
-  auto sourceType = mlir::cast<mlir::RankedTensorType>(source.getType());
-  if (sourceType.getElementType() == targetElementType)
-    return source;
-  auto resultType = mlir::RankedTensorType::get(
-      sourceType.getShape(), targetElementType, sourceType.getEncoding());
-  mlir::Value empty = builder.create<mlir::tensor::EmptyOp>(
-      location, resultType.getShape(), resultType.getElementType(),
-      resultType.getEncoding());
-  mlir::AffineMap identity = mlir::AffineMap::getMultiDimIdentityMap(
-      resultType.getRank(), builder.getContext());
-  return builder
-      .create<mlir::linalg::GenericOp>(
-          location, mlir::TypeRange{resultType}, mlir::ValueRange{source},
-          mlir::ValueRange{empty},
-          llvm::ArrayRef<mlir::AffineMap>{identity, identity},
-          getParallelIteratorTypes(resultType.getRank()),
-          [&](mlir::OpBuilder &nestedBuilder, mlir::Location nestedLocation,
-              mlir::ValueRange arguments) {
-            mlir::Value converted = compiler::detail::castAttentionFloatScalar(
-                arguments[0], targetElementType, nestedBuilder, nestedLocation);
-            nestedBuilder.create<mlir::linalg::YieldOp>(nestedLocation,
-                                                        converted);
-          })
-      .getResult(0);
-}
-
 mlir::Value createQK(const DecompositionDescriptor &descriptor,
                      mlir::OpBuilder &builder) {
   LinalgExtOnlineAttentionOp operation = descriptor.operation;
   mlir::Location location = operation.getLoc();
   auto queryType =
       mlir::cast<mlir::RankedTensorType>(operation.getQuery().getType());
-  auto maximumType =
-      mlir::cast<mlir::RankedTensorType>(operation.getMaximum().getType());
   auto scoreType = mlir::RankedTensorType::get(descriptor.scoreShape,
                                                queryType.getElementType());
   mlir::Value score = createZeroTensor(location, scoreType, builder);
@@ -218,50 +187,45 @@ mlir::Value createQK(const DecompositionDescriptor &descriptor,
             nestedLocation, product, arguments[2]);
         nestedBuilder.create<mlir::linalg::YieldOp>(nestedLocation, result);
       });
-  return convertTensorElementType(location, contraction.getResult(0),
-                                  maximumType.getElementType(), builder);
+  return contraction.getResult(0);
 }
 
-mlir::Value applyScale(const DecompositionDescriptor &descriptor,
-                       mlir::Value score, mlir::OpBuilder &builder) {
+mlir::Value applyScoreRegion(const DecompositionDescriptor &descriptor,
+                             mlir::Value rawScores, mlir::OpBuilder &builder) {
   LinalgExtOnlineAttentionOp operation = descriptor.operation;
-  llvm::SmallVector<mlir::AffineMap, 3> maps = mlir::compressUnusedDims(
-      {descriptor.scoreMap, operation.getScaleMap(), descriptor.scoreMap});
-  auto scaled = builder.create<mlir::linalg::GenericOp>(
-      operation.getLoc(), mlir::TypeRange{score.getType()},
-      mlir::ValueRange{score, operation.getScale()}, mlir::ValueRange{score},
-      maps, getParallelIteratorTypes(maps.front().getNumDims()),
-      [&](mlir::OpBuilder &nestedBuilder, mlir::Location location,
-          mlir::ValueRange arguments) {
-        mlir::Value scale = compiler::detail::castAttentionFloatScalar(
-            arguments[1], arguments[0].getType(), nestedBuilder, location);
-        mlir::Value result = nestedBuilder.create<mlir::arith::MulFOp>(
-            location, arguments[0], scale);
-        nestedBuilder.create<mlir::linalg::YieldOp>(location, result);
-      });
-  return scaled.getResult(0);
-}
-
-mlir::Value applyMask(const DecompositionDescriptor &descriptor,
-                      mlir::Value score, mlir::OpBuilder &builder) {
-  LinalgExtOnlineAttentionOp operation = descriptor.operation;
-  if (!operation.getMask())
-    return score;
-  llvm::SmallVector<mlir::AffineMap, 3> maps = mlir::compressUnusedDims(
-      {descriptor.scoreMap, *operation.getMaskMap(), descriptor.scoreMap});
-  auto masked = builder.create<mlir::linalg::GenericOp>(
-      operation.getLoc(), mlir::TypeRange{score.getType()},
-      mlir::ValueRange{score, operation.getMask()}, mlir::ValueRange{score},
-      maps, getParallelIteratorTypes(maps.front().getNumDims()),
-      [&](mlir::OpBuilder &nestedBuilder, mlir::Location location,
-          mlir::ValueRange arguments) {
-        mlir::Value mask = compiler::detail::castAttentionFloatScalar(
-            arguments[1], arguments[0].getType(), nestedBuilder, location);
-        mlir::Value result = nestedBuilder.create<mlir::arith::AddFOp>(
-            location, arguments[0], mask);
-        nestedBuilder.create<mlir::linalg::YieldOp>(location, result);
-      });
-  return masked.getResult(0);
+  llvm::SmallVector<mlir::Value, 3> inputs{rawScores, operation.getScale()};
+  llvm::SmallVector<mlir::AffineMap, 4> maps{descriptor.scoreMap,
+                                             operation.getScaleMap()};
+  if (operation.getMask()) {
+    inputs.push_back(operation.getMask());
+    maps.push_back(*operation.getMaskMap());
+  }
+  maps.push_back(descriptor.scoreMap);
+  maps = mlir::compressUnusedDims(maps);
+  auto type = mlir::RankedTensorType::get(descriptor.scoreShape,
+                                          operation.getScoreType());
+  mlir::Value empty = builder.create<mlir::tensor::EmptyOp>(
+      operation.getLoc(), type.getShape(), type.getElementType());
+  return builder
+      .create<mlir::linalg::GenericOp>(
+          operation.getLoc(), mlir::TypeRange{type}, inputs,
+          mlir::ValueRange{empty}, maps,
+          getParallelIteratorTypes(maps.back().getNumDims()),
+          [&](mlir::OpBuilder &nested, mlir::Location location,
+              mlir::ValueRange arguments) {
+            mlir::IRMapping mapping;
+            auto &body = operation.getScoreRegion().front();
+            for (auto [source, target] : llvm::zip_equal(
+                     body.getArguments(), arguments.take_front(inputs.size())))
+              mapping.map(source, target);
+            for (mlir::Operation &scalar : body.without_terminator())
+              nested.clone(scalar, mapping);
+            auto yield =
+                mlir::cast<LinalgExtAttentionYieldOp>(body.getTerminator());
+            nested.create<mlir::linalg::YieldOp>(
+                location, mapping.lookup(yield.getValue()));
+          })
+      .getResult(0);
 }
 
 template <typename CombineOp>
@@ -382,8 +346,7 @@ DecomposedState decomposeOne(const DecompositionDescriptor &descriptor,
                              mlir::OpBuilder &builder) {
   LinalgExtOnlineAttentionOp operation = descriptor.operation;
   mlir::Value score = createQK(descriptor, builder);
-  score = applyScale(descriptor, score, builder);
-  score = applyMask(descriptor, score, builder);
+  score = applyScoreRegion(descriptor, score, builder);
   mlir::Value newMaximum = createReduction<mlir::arith::MaximumFOp>(
       operation.getLoc(), score, operation.getMaximum(), descriptor.scoreMap,
       operation.getMaximumMap(), builder);
@@ -475,7 +438,6 @@ decomposeOnlineAttention(mlir::ModuleOp module,
   OnlineAttentionDecompositionStatistics statistics;
   for (const DecompositionDescriptor &descriptor : descriptors) {
     LinalgExtOnlineAttentionOp operation = descriptor.operation;
-    const bool hasMask = static_cast<bool>(operation.getMask());
     rewriter.setInsertionPoint(operation);
     DecomposedState state = decomposeOne(descriptor, rewriter);
     rewriter.replaceOp(operation, mlir::ValueRange{state.accumulator,
@@ -483,9 +445,7 @@ decomposeOnlineAttention(mlir::ModuleOp module,
     ++statistics.decomposedOperations;
     ++statistics.qkContractions;
     ++statistics.pvContractions;
-    ++statistics.scaleApplications;
-    if (hasMask)
-      ++statistics.maskApplications;
+    ++statistics.scoreApplications;
     statistics.rowReductions += 2;
     ++statistics.normalizationFactors;
     ++statistics.probabilityUpdates;

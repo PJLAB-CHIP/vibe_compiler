@@ -45,7 +45,7 @@ protected:
   }
 
   mlir::OwningOpRef<mlir::ModuleOp>
-  parseRepresentativeDecodeProgram(bool aligned) {
+  parseRepresentativeDecodeProgram(bool aligned, int64_t keyExtent = 1031) {
     std::string path = std::string(WAFER_TEST_SOURCE_DIR) +
                        "/test/Transforms/Linalg/Inputs/"
                        "attention-decode-representative.mlir";
@@ -56,6 +56,9 @@ protected:
     if (aligned) {
       replaceAll(source, "1031", "1024");
       replaceAll(source, "1030", "1023");
+    } else if (keyExtent != 1031) {
+      replaceAll(source, "1031", std::to_string(keyExtent));
+      replaceAll(source, "1030", std::to_string(keyExtent - 1));
     }
     return mlir::parseSourceString<mlir::ModuleOp>(
         source, mlir::ParserConfig(context.get()));
@@ -244,6 +247,142 @@ TEST_F(AttentionNormalizationTest,
   }
 }
 
+TEST_F(AttentionNormalizationTest,
+       ProjectionViewsAndOutputPermutationArePreserved) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool inputView : {false, true})
+      for (bool outputView : {false, true}) {
+        SCOPED_TRACE(std::to_string(extent) + ":" + std::to_string(inputView) +
+                     ":" + std::to_string(outputView));
+        auto module = parseRepresentativeDecodeProgram(false, extent);
+        ASSERT_TRUE(module);
+        auto function = *module->getOps<mlir::func::FuncOp>().begin();
+        mlir::linalg::LinalgOp pv;
+        function.walk([&](mlir::linalg::LinalgOp op) {
+          if (op->getNumResults() == 1 && op.getNumDpsInputs() == 2 &&
+              llvm::is_contained(op.getIteratorTypesArray(),
+                                 mlir::utils::IteratorType::reduction) &&
+              mlir::cast<mlir::ShapedType>(op->getResult(0).getType())
+                      .getShape() == llvm::ArrayRef<int64_t>{2, 1024, 64})
+            pv = op;
+        });
+        ASSERT_TRUE(pv);
+        mlir::OpBuilder builder(pv);
+        auto loc = pv.getLoc();
+        mlir::Value expectedValue = pv.getDpsInputs()[1];
+        if (inputView) {
+          auto flatType = mlir::RankedTensorType::get({2 * extent, 64},
+                                                      builder.getF16Type());
+          auto flat = builder.create<mlir::tensor::CollapseShapeOp>(
+              loc, flatType, expectedValue,
+              llvm::ArrayRef<mlir::ReassociationIndices>{{0, 1}, {2}});
+          mlir::Value empty = builder.create<mlir::tensor::EmptyOp>(
+              loc, flatType.getShape(), builder.getF16Type());
+          auto identity = builder.getMultiDimIdentityMap(2);
+          auto projection = builder.create<mlir::linalg::GenericOp>(
+              loc, mlir::TypeRange{flatType}, mlir::ValueRange{flat},
+              mlir::ValueRange{empty},
+              llvm::ArrayRef<mlir::AffineMap>{identity, identity},
+              llvm::SmallVector<mlir::utils::IteratorType, 2>(
+                  2, mlir::utils::IteratorType::parallel),
+              [](mlir::OpBuilder &b, mlir::Location l, mlir::ValueRange args) {
+                auto neg = b.create<mlir::arith::NegFOp>(l, args[0]);
+                b.create<mlir::linalg::YieldOp>(l, neg.getResult());
+              });
+          expectedValue = builder.create<mlir::tensor::ExpandShapeOp>(
+              loc, expectedValue.getType(), projection.getResult(0),
+              llvm::ArrayRef<mlir::ReassociationIndices>{{0, 1}, {2}});
+          pv.getDpsInputOperand(1)->set(expectedValue);
+        }
+        mlir::Value returned;
+        if (outputView) {
+          builder.setInsertionPointAfter(pv);
+          auto type =
+              mlir::RankedTensorType::get({1024, 2, 64}, builder.getF16Type());
+          mlir::Value empty = builder.create<mlir::tensor::EmptyOp>(
+              loc, type.getShape(), builder.getF16Type());
+          auto permutation = mlir::AffineMap::getPermutationMap(
+              llvm::ArrayRef<unsigned>{1, 0, 2}, context.get());
+          auto transpose = builder.create<mlir::linalg::GenericOp>(
+              loc, mlir::TypeRange{type}, mlir::ValueRange{pv->getResult(0)},
+              mlir::ValueRange{empty},
+              llvm::ArrayRef<mlir::AffineMap>{
+                  permutation, builder.getMultiDimIdentityMap(3)},
+              llvm::SmallVector<mlir::utils::IteratorType, 3>(
+                  3, mlir::utils::IteratorType::parallel),
+              [](mlir::OpBuilder &b, mlir::Location l, mlir::ValueRange args) {
+                b.create<mlir::linalg::YieldOp>(l, args[0]);
+              });
+          auto flatType =
+              mlir::RankedTensorType::get({1024, 128}, builder.getF16Type());
+          returned = builder.create<mlir::tensor::CollapseShapeOp>(
+              loc, flatType, transpose.getResult(0),
+              llvm::ArrayRef<mlir::ReassociationIndices>{{0}, {1, 2}});
+          auto resultTypes = llvm::to_vector(function.getResultTypes());
+          resultTypes[0] = flatType;
+          function.setType(builder.getFunctionType(function.getArgumentTypes(),
+                                                   resultTypes));
+          auto ret = mlir::cast<mlir::func::ReturnOp>(
+              function.getBody().front().getTerminator());
+          ret->setOperand(0, returned);
+        }
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        ASSERT_TRUE(mlir::succeeded(normalize(*module)));
+        auto attention = findSingle<wafer::LinalgExtAttentionOp>(*module);
+        ASSERT_TRUE(attention);
+        EXPECT_EQ(attention.getValue(), expectedValue);
+        if (outputView) {
+          auto ret = mlir::cast<mlir::func::ReturnOp>(
+              function.getBody().front().getTerminator());
+          EXPECT_EQ(ret.getOperand(0), returned);
+          auto collapse =
+              returned.getDefiningOp<mlir::tensor::CollapseShapeOp>();
+          auto transpose =
+              collapse.getSrc().getDefiningOp<mlir::linalg::GenericOp>();
+          ASSERT_TRUE(transpose);
+          EXPECT_EQ(transpose.getDpsInputs()[0], attention.getResult(0));
+        }
+        EXPECT_FALSE(attention.getScoreRegion().empty());
+      }
+}
+
+TEST_F(AttentionNormalizationTest, EqualExtentsDoNotDetermineKeyAxes) {
+  auto module = parseRepresentativeDecodeProgram(false, 128);
+  ASSERT_TRUE(module);
+  auto score = findScoreContraction(*module, 128);
+  ASSERT_TRUE(score);
+  auto key = score.getDpsInputs()[1];
+  auto oldTranspose = key.getDefiningOp<mlir::linalg::GenericOp>();
+  ASSERT_TRUE(oldTranspose);
+  auto expectedKey = oldTranspose.getDpsInputs()[0];
+  mlir::OpBuilder builder(score);
+  auto type = mlir::cast<mlir::RankedTensorType>(key.getType());
+  mlir::Value empty = builder.create<mlir::tensor::EmptyOp>(
+      score.getLoc(), type.getShape(), type.getElementType());
+  auto transpose = builder.create<mlir::linalg::GenericOp>(
+      score.getLoc(), mlir::TypeRange{type}, mlir::ValueRange{key},
+      mlir::ValueRange{empty},
+      llvm::ArrayRef<mlir::AffineMap>{
+          mlir::AffineMap::getPermutationMap(llvm::ArrayRef<unsigned>{0, 2, 1},
+                                             context.get()),
+          builder.getMultiDimIdentityMap(3)},
+      llvm::SmallVector<mlir::utils::IteratorType, 3>(
+          3, mlir::utils::IteratorType::parallel),
+      [](mlir::OpBuilder &b, mlir::Location l, mlir::ValueRange args) {
+        b.create<mlir::linalg::YieldOp>(l, args[0]);
+      });
+  score.getDpsInputOperand(1)->set(transpose.getResult(0));
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  ASSERT_TRUE(mlir::succeeded(normalize(*module)));
+  auto attention = findSingle<wafer::LinalgExtAttentionOp>(*module);
+  ASSERT_TRUE(attention);
+  EXPECT_EQ(attention.getKey(), expectedKey);
+  EXPECT_EQ(attention.getKeyMap().getResult(1), builder.getAffineDimExpr(2));
+  EXPECT_EQ(attention.getKeyMap().getResult(2), builder.getAffineDimExpr(3));
+  EXPECT_EQ(attention.getAlgorithm(),
+            wafer::AttentionAlgorithm::FlashAttention);
+}
+
 TEST_F(AttentionNormalizationTest, SymbolSpellingDoesNotAffectClassification) {
   mlir::OwningOpRef<mlir::ModuleOp> module =
       parseRepresentativeDecodeProgram(/*aligned=*/false);
@@ -339,6 +478,8 @@ TEST_F(AttentionNormalizationTest, NormalizesEveryIndependentValueRoot) {
 
   ASSERT_TRUE(mlir::succeeded(normalize(*module)));
   EXPECT_EQ(count<wafer::LinalgExtAttentionOp>(*module), 2u);
+  EXPECT_EQ(count<mlir::math::ExpOp>(*module), 0u);
+  EXPECT_FALSE(findScoreContraction(*module, 1031));
 }
 
 TEST_F(AttentionNormalizationTest, ExtraScoreUseKeepsItsOriginalProducerChain) {

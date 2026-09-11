@@ -18,7 +18,12 @@ func.func @tensor_attention(
           tensor<2x3x5xf16>)
       outs(%out : tensor<2x3x6xf16>)
       algorithm(#wafer.attention_algorithm<flash_attention>)
-      indexing_maps = [#q, #k, #v, #s, #mask, #o]
+      indexing_maps = [#q, #k, #v, #s, #mask, #o] score {
+  ^bb0(%attention_0_dot: f16, %attention_0_scale: f16, %attention_0_mask: f16):
+    %attention_0_scaled = arith.mulf %attention_0_dot, %attention_0_scale : f16
+    %attention_0_masked = arith.addf %attention_0_scaled, %attention_0_mask : f16
+    wafer.linalg_ext.attention.yield %attention_0_masked : f16
+  }
       -> tensor<2x3x6xf16>
   return %result : tensor<2x3x6xf16>
 }
@@ -36,7 +41,11 @@ func.func @generic_flash_decoding(
       %query, %key, %value, %scale, %out) <{
         algorithm = #wafer.attention_algorithm<flash_decoding>,
         indexing_maps = [#q, #k, #v, #s, #o]
-      }> : (tensor<2x3x4xf16>, tensor<2x5x4xf16>, tensor<2x5x6xf16>,
+      }> ({
+      ^bb0(%dot: f16, %scale_arg: f16):
+        %scaled = arith.mulf %dot, %scale_arg : f16
+        wafer.linalg_ext.attention.yield %scaled : f16
+      }) : (tensor<2x3x4xf16>, tensor<2x5x4xf16>, tensor<2x5x6xf16>,
             f16, tensor<2x3x6xf16>) -> tensor<2x3x6xf16>
   return %result : tensor<2x3x6xf16>
 }
@@ -54,7 +63,11 @@ func.func @buffer_attention(
           memref<2x3x4xf16>, memref<2x5x4xf16>, memref<2x5x6xf16>, f16)
       outs(%out : memref<2x3x6xf16>)
       algorithm(#wafer.attention_algorithm<flash_attention>)
-      indexing_maps = [#q, #k, #v, #s, #o]
+      indexing_maps = [#q, #k, #v, #s, #o] score {
+  ^bb0(%attention_1_dot: f16, %attention_1_scale: f16):
+    %attention_1_scaled = arith.mulf %attention_1_dot, %attention_1_scale : f16
+    wafer.linalg_ext.attention.yield %attention_1_scaled : f16
+  }
   return
 }
 

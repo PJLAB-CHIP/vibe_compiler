@@ -1312,10 +1312,21 @@ struct GroupBuilder {
                   : tensorType.getShape(),
         tensorType.getElementType(), tensorType.getEncoding());
     mlir::Value assembled = empty.getResult();
+    mlir::Value previousEndpoint;
+    const analysis::StaticRectangularIndexSet *previousBox = nullptr;
     for (const FragmentSlice &selected : slices) {
       auto endpoint = getOrCreateFragmentValue(sourceValue, selected.fragment);
       if (mlir::failed(endpoint))
         return mlir::failure();
+      // Set unions may retain repeated rectangles. Consecutive writes of the
+      // same immutable tensor slice to the same assembly offset are one write.
+      // Do not deduplicate across an intervening fragment from another value.
+      if (previousEndpoint == *endpoint && previousBox &&
+          previousBox->offsets == selected.box.offsets &&
+          previousBox->sizes == selected.box.sizes)
+        continue;
+      previousEndpoint = *endpoint;
+      previousBox = &selected.box;
       llvm::SmallVector<mlir::OpFoldResult, 4> sourceOffsets;
       llvm::SmallVector<mlir::OpFoldResult, 4> destinationOffsets;
       llvm::SmallVector<mlir::OpFoldResult, 4> sizes;

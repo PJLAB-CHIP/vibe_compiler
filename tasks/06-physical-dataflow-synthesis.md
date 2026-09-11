@@ -317,6 +317,10 @@ movement消费对应actual relation并删除该argument，该attr不能越过phy
 后续temporal concat查询的exact结论只证明片段值；static concat loop specialization还须在实际生成的slice上证明
 offset grid、静态size及步长满足生成合同。重叠window或其它无法生成static pieces的slice保持读取已有紧凑assembly，
 普通TilingInterface切分继续有效；不能把可选concat融合不支持升级成整个temporal变换的compiler failure。
+同一次fragment assembly中，相邻片段若来自同一个actual SSA endpoint、相同source rectangle及相同destination rectangle，
+只创建一次extract/insert。该规则利用tensor值不可变和相邻同址覆盖恒等式，不修改ExactDemand集合、owner或归约算术；
+不同endpoint、不同rectangle或中间有其它写入时保持原顺序。覆盖多contribution共用DPS init的重复矩形，
+并由named/generic contraction/conv、1024/1025/1031、多Tile与actual Instr/SPM回归消费。
 
 ### 5.3 Temporal tiling
 

@@ -113,13 +113,28 @@ mlir::OwningOpRef<mlir::ModuleOp> parseOnlineModule(mlir::MLIRContext &context,
       << R"mlir(              affine_map<(b, h, m, k1, k2, n) -> (b, h, m, n)>,
               affine_map<(b, h, m, k1, k2, n) -> (b, h, m)>,
               affine_map<(b, h, m, k1, k2, n) -> (b, h, m)>]
-            -> ()mlir"
-      << accumulatorType << R"mlir(, tensor<2x4x1025xf32>, tensor<2x4x1025xf32>)
+            score { ^bb0(%dot: )mlir"
+      << elementType << ", %scale_arg: f32";
+  if (withMask)
+    stream << ", %mask_scalar: f32";
+  stream << "):\n";
+  if (elementType == "f32")
+    stream << "%scaled = arith.mulf %dot, %scale_arg : f32\n";
+  else
+    stream << "%wide = arith.extf %dot : " << elementType
+           << " to f32\n%scaled = arith.mulf %wide, %scale_arg : f32\n";
+  if (withMask)
+    stream << "%masked = arith.addf %scaled, %mask_scalar : f32\n"
+              "wafer.linalg_ext.attention.yield %masked : f32\n";
+  else
+    stream << "wafer.linalg_ext.attention.yield %scaled : f32\n";
+  stream << "} -> (" << accumulatorType
+         << R"mlir(, tensor<2x4x1025xf32>, tensor<2x4x1025xf32>)
         wafer.tile.yield %next_accumulator : )mlir"
-      << accumulatorType << R"mlir(
+         << accumulatorType << R"mlir(
       }
       return %result : )mlir"
-      << accumulatorType << R"mlir(
+         << accumulatorType << R"mlir(
     }
   }
 }
@@ -234,8 +249,7 @@ TEST(OnlineAttentionDecompositionTest,
     EXPECT_EQ(decomposed->decomposedOperations, onlineBefore);
     EXPECT_EQ(decomposed->qkContractions, onlineBefore);
     EXPECT_EQ(decomposed->pvContractions, onlineBefore);
-    EXPECT_EQ(decomposed->scaleApplications, onlineBefore);
-    EXPECT_EQ(decomposed->maskApplications, 0u);
+    EXPECT_EQ(decomposed->scoreApplications, onlineBefore);
     EXPECT_EQ(decomposed->rowReductions, onlineBefore * 2);
     EXPECT_EQ(decomposed->normalizationFactors, onlineBefore);
     EXPECT_EQ(decomposed->probabilityUpdates, onlineBefore);
@@ -298,6 +312,90 @@ TEST(OnlineAttentionDecompositionTest,
   }
 }
 
+TEST(OnlineAttentionDecompositionTest, ScoreRoundingSurvivesMainAndTail) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (llvm::StringRef storage : {"f16", "bf16"})
+      for (bool withMask : {false, true}) {
+        SCOPED_TRACE(std::to_string(extent) + ":" + storage.str() + ":" +
+                     std::to_string(withMask));
+        auto context = createContext();
+        auto module = parseOnlineModule(*context, extent, storage, withMask);
+        ASSERT_TRUE(module);
+        LinalgExtOnlineAttentionOp online;
+        module->walk([&](LinalgExtOnlineAttentionOp op) { online = op; });
+        ASSERT_TRUE(online);
+        auto storageType = online.getQuery().getType().getElementType();
+        mlir::OpBuilder builder(online);
+        auto loc = online.getLoc();
+        auto scale = builder.create<mlir::arith::ConstantOp>(
+            loc, builder.getFloatAttr(storageType, 0.375));
+        online.getScaleMutable().assign(scale.getResult());
+        auto &body = online.getScoreRegion().front();
+        while (!body.empty())
+          body.back().erase();
+        body.getArgument(1).setType(storageType);
+        builder.setInsertionPointToStart(&body);
+        auto dot = builder.create<mlir::arith::ExtFOp>(
+            loc, builder.getF32Type(), body.getArgument(0));
+        auto scaleWide = builder.create<mlir::arith::ExtFOp>(
+            loc, builder.getF32Type(), body.getArgument(1));
+        auto scaled = builder.create<mlir::arith::MulFOp>(loc, dot, scaleWide);
+        mlir::Value rounded =
+            builder.create<mlir::arith::TruncFOp>(loc, storageType, scaled);
+        if (withMask) {
+          auto mask = builder.create<mlir::arith::TruncFOp>(
+              loc, storageType, body.getArgument(2));
+          rounded = builder.create<mlir::arith::AddFOp>(loc, rounded, mask);
+        }
+        auto widened = builder.create<mlir::arith::ExtFOp>(
+            loc, builder.getF32Type(), rounded);
+        builder.create<LinalgExtAttentionYieldOp>(loc, widened);
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        EXPECT_EQ(online.getScoreType(), builder.getF32Type());
+        EXPECT_NE(online.getScoreType(), online.getScale().getType());
+        auto signature = [](mlir::Block &block) {
+          std::vector<std::pair<std::string, mlir::Type>> result;
+          for (mlir::Operation &op : block.without_terminator())
+            result.emplace_back(op.getName().getStringRef().str(),
+                                op.getResult(0).getType());
+          return result;
+        };
+        auto expected = signature(body);
+        auto region = findRegion(*module);
+        auto domain = buildTemporalDomain(region);
+        ASSERT_TRUE(domain.succeeded());
+        StructuredMaterializationRelations relations;
+        relations.structuralOutputs.push_back({0, region.getResult(0)});
+        auto choice = selectK2Tile(*domain.domain, 128);
+        ASSERT_TRUE(mlir::succeeded(
+            applyTemporalTiling(*domain.domain, choice, relations)));
+        unsigned updates = 0;
+        module->walk([&](LinalgExtOnlineAttentionOp op) {
+          EXPECT_EQ(signature(op.getScoreRegion().front()), expected);
+          ++updates;
+        });
+        EXPECT_EQ(updates, extent == 1024 ? 1u : 2u);
+        ASSERT_TRUE(
+            mlir::succeeded(decomposeOnlineAttention(*module, relations)));
+        unsigned scores = 0;
+        module->walk([&](mlir::linalg::GenericOp op) {
+          if (op.getNumDpsInputs() != (withMask ? 3 : 2) ||
+              mlir::isa<mlir::ShapedType>(op.getDpsInputs()[1].getType()))
+            return;
+          EXPECT_EQ(signature(op.getRegion().front()), expected);
+          ++scores;
+        });
+        EXPECT_EQ(scores, updates);
+        auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+        ASSERT_TRUE(layout.succeeded()) << layout.detail;
+        auto lowered = lowerStructuredComputeToTile(*module, relations);
+        ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+        auto movement = materializeTileBoundaryMovement(*module, relations);
+        ASSERT_TRUE(movement.succeeded()) << movement.detail;
+        EXPECT_TRUE(mlir::succeeded(lowerPhysicalToInstr(*module)));
+      }
+}
+
 TEST(OnlineAttentionDecompositionTest,
      BroadcastMaskAndBF16UseTheSameModeNeutralDecomposition) {
   for (auto [elementType, withMask] :
@@ -319,8 +417,7 @@ TEST(OnlineAttentionDecompositionTest,
     auto decomposed = decomposeOnlineAttention(*module, relations);
     ASSERT_TRUE(mlir::succeeded(decomposed));
     EXPECT_EQ(decomposed->decomposedOperations, onlineBefore);
-    EXPECT_EQ(decomposed->scaleApplications, onlineBefore);
-    EXPECT_EQ(decomposed->maskApplications, withMask ? onlineBefore : 0u);
+    EXPECT_EQ(decomposed->scoreApplications, onlineBefore);
     unsigned maskConsumers = 0;
     module->walk([&](mlir::linalg::GenericOp generic) {
       if (llvm::any_of(generic.getDpsInputs(), [](mlir::Value value) {
@@ -371,7 +468,12 @@ module {
         ins(%query, %key, %value, %scale : tensor<2x1025x64xf16>,
             tensor<2x1031x64xf16>, tensor<2x1031x128xf16>, f32)
         outs(%empty : tensor<2x1025x128xf16>)
-        algorithm(<flash_attention>) indexing_maps = [#q, #k, #v, #s, #o]
+        algorithm(<flash_attention>) indexing_maps = [#q, #k, #v, #s, #o] score {
+    ^bb0(%attention_1_dot: f16, %attention_1_scale: f32):
+      %attention_1_converted = arith.extf %attention_1_dot : f16 to f32
+      %attention_1_scaled = arith.mulf %attention_1_converted, %attention_1_scale : f32
+      wafer.linalg_ext.attention.yield %attention_1_scaled : f32
+    }
         -> tensor<2x1025x128xf16>
     return %result : tensor<2x1025x128xf16>
   }
@@ -434,7 +536,12 @@ module {
                 tensor<2x?x128xf16>, f32)
             outs(%accumulator, %maximum, %sum : tensor<2x1025x128xf16>,
                 tensor<2x1025xf32>, tensor<2x1025xf32>)
-            indexing_maps = [#q, #k, #v, #s, #acc, #row, #row]
+            indexing_maps = [#q, #k, #v, #s, #acc, #row, #row] score {
+            ^bb0(%attention_2_dot: f16, %attention_2_scale: f32):
+              %attention_2_converted = arith.extf %attention_2_dot : f16 to f32
+              %attention_2_scaled = arith.mulf %attention_2_converted, %attention_2_scale : f32
+              wafer.linalg_ext.attention.yield %attention_2_scaled : f32
+            }
             -> (tensor<2x1025x128xf16>, tensor<2x1025xf32>,
                 tensor<2x1025xf32>)
         wafer.tile.yield %next_accumulator : tensor<2x1025x128xf16>

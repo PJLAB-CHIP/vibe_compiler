@@ -6,6 +6,7 @@
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSpatialAssignment.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDemandView.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Verifier.h"
@@ -34,7 +35,8 @@ class AttentionDemandIntegrationTest : public ::testing::Test {
 protected:
   AttentionDemandIntegrationTest() {
     wafer::registerWaferCoreDialects(registry);
-    registry.insert<mlir::func::FuncDialect, mlir::tensor::TensorDialect>();
+    registry.insert<mlir::func::FuncDialect, mlir::tensor::TensorDialect,
+                    mlir::arith::ArithDialect>();
     context = std::make_unique<mlir::MLIRContext>(registry);
     context->loadAllAvailableDialects();
   }
@@ -113,8 +115,18 @@ module {
            << "        indexing_maps = [#q, #k, #v, #s";
     if (withMask)
       stream << ", #mask";
-    stream << ", #o]\n"
-           << "        -> tensor<2x" << queryExtent << "x64xf16>\n"
+    stream << ", #o]\nscore { ^bb0(%dot: f16, %scale_arg: f32";
+    if (withMask)
+      stream << ", %mask_arg: f16";
+    stream << "):\n%wide = arith.extf %dot : f16 to f32\n"
+              "%scaled = arith.mulf %wide, %scale_arg : f32\n";
+    if (withMask)
+      stream << "%mask_wide = arith.extf %mask_arg : f16 to f32\n"
+                "%masked = arith.addf %scaled, %mask_wide : f32\n"
+                "wafer.linalg_ext.attention.yield %masked : f32\n";
+    else
+      stream << "wafer.linalg_ext.attention.yield %scaled : f32\n";
+    stream << "}\n        -> tensor<2x" << queryExtent << "x64xf16>\n"
            << "    return %result : tensor<2x" << queryExtent << "x64xf16>\n"
            << "  }\n"
            << "}\n";
@@ -141,7 +153,14 @@ module {
             tensor<2x33x31x64xf16>, f32, tensor<1025x33x31xf16>)
         outs(%out : tensor<2x1025x64xf16>)
         algorithm(<flash_decoding>)
-        indexing_maps = [#q, #k, #v, #s, #mask, #o]
+        indexing_maps = [#q, #k, #v, #s, #mask, #o] score {
+    ^bb0(%attention_0_dot: f16, %attention_0_scale: f32, %attention_0_mask: f16):
+      %attention_0_converted = arith.extf %attention_0_dot : f16 to f32
+      %attention_0_scaled = arith.mulf %attention_0_converted, %attention_0_scale : f32
+      %attention_0_converted_mask = arith.extf %attention_0_mask : f16 to f32
+      %attention_0_masked = arith.addf %attention_0_scaled, %attention_0_converted_mask : f32
+      wafer.linalg_ext.attention.yield %attention_0_masked : f32
+    }
         -> tensor<2x1025x64xf16>
     return %result : tensor<2x1025x64xf16>
   }

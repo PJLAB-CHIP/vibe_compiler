@@ -18,6 +18,50 @@ using namespace wafer;
 
 namespace {
 
+mlir::Type getScoreResultType(mlir::Region &region) {
+  if (!llvm::hasSingleElement(region) || region.front().empty())
+    return {};
+  auto yield =
+      mlir::dyn_cast<LinalgExtAttentionYieldOp>(region.front().getTerminator());
+  return yield ? yield.getValue().getType() : mlir::Type{};
+}
+
+mlir::LogicalResult verifyScoreRegion(mlir::Operation *operation,
+                                      mlir::Region &region, mlir::Type dotType,
+                                      mlir::Type scaleType, mlir::Value mask) {
+  if (!llvm::hasSingleElement(region) || !getScoreResultType(region))
+    return operation->emitOpError(
+        "score requires one block ending in attention.yield");
+  mlir::Block &block = region.front();
+  llvm::SmallVector<mlir::Type, 3> types{dotType, scaleType};
+  if (mask)
+    types.push_back(
+        mlir::cast<mlir::ShapedType>(mask.getType()).getElementType());
+  if (!llvm::equal(block.getArgumentTypes(), types))
+    return operation->emitOpError("score arguments must match dot, scale, and "
+                                  "optional mask scalar types");
+  for (mlir::Operation &nested : block) {
+    if (nested.getNumRegions() != 0 || !mlir::isMemoryEffectFree(&nested))
+      return operation->emitOpError(
+          "score must contain only pure scalar operations");
+    for (mlir::Type type : nested.getResultTypes())
+      if (!mlir::isa<mlir::FloatType, mlir::IntegerType>(type))
+        return operation->emitOpError("score operation results must be scalar");
+    for (mlir::Value operand : nested.getOperands()) {
+      if (!mlir::isa<mlir::FloatType, mlir::IntegerType>(operand.getType()))
+        return operation->emitOpError(
+            "score operation operands must be scalar");
+      if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(operand)) {
+        if (argument.getOwner() != &block)
+          return operation->emitOpError("score must not capture values");
+      } else if (operand.getDefiningOp()->getBlock() != &block) {
+        return operation->emitOpError("score must not capture values");
+      }
+    }
+  }
+  return mlir::success();
+}
+
 mlir::FailureOr<llvm::SmallVector<unsigned, 4>>
 getProjectedDimensions(mlir::AffineMap map, int64_t shapedRank) {
   if (!map || map.getNumSymbols() != 0 ||
@@ -335,7 +379,16 @@ mlir::LogicalResult LinalgExtAttentionOp::verify() {
       return emitOpError(
           "flash_decoding requires at least two nonempty K2 pieces");
   }
-  return mlir::success();
+  return verifyScoreRegion(getOperation(), getScoreRegion(), elementType,
+                           getScale().getType(), getMask());
+}
+
+mlir::Type LinalgExtAttentionOp::getScoreType() {
+  return getScoreResultType(getScoreRegion());
+}
+
+mlir::Type LinalgExtOnlineAttentionOp::getScoreType() {
+  return getScoreResultType(getScoreRegion());
 }
 
 void LinalgExtAttentionOp::getEffects(
@@ -527,7 +580,7 @@ LinalgExtAttentionOp::getCoupledReductionDescription() {
 
   CoupledReductionDescription description;
   description.reductionIterators = roles->keyValueReduction;
-  mlir::Type stateElementType = getScale().getType();
+  mlir::Type stateElementType = getScoreType();
   mlir::Type accumulatorElementType =
       mlir::cast<mlir::ShapedType>(getOutput().getType()).getElementType();
   description.components.push_back(
@@ -601,20 +654,22 @@ mlir::LogicalResult LinalgExtOnlineAttentionOp::verify() {
       getValue().getType().getElementType() != storageElementType ||
       getAccumulator().getType().getElementType() != storageElementType ||
       !mlir::isa<mlir::FloatType>(getScale().getType()) ||
-      getMaximum().getType().getElementType() != getScale().getType() ||
-      getSum().getType().getElementType() != getScale().getType() ||
+      getMaximum().getType().getElementType() != getScoreType() ||
+      getSum().getType().getElementType() != getScoreType() ||
       (getMask() &&
        !mlir::isa<mlir::FloatType>(getMask().getType().getElementType())))
     return emitOpError(
         "query, key, value, and accumulator must share one floating storage "
-        "type; maximum and sum must use the scale type; mask must be floating");
+        "type; maximum and sum must use the score result type; mask must be "
+        "floating");
 
   if (getUpdatedAccumulator().getType() != getAccumulator().getType() ||
       getUpdatedMaximum().getType() != getMaximum().getType() ||
       getUpdatedSum().getType() != getSum().getType())
     return emitOpError(
         "each result type must equal its destination state type");
-  return mlir::success();
+  return verifyScoreRegion(getOperation(), getScoreRegion(), storageElementType,
+                           getScale().getType(), getMask());
 }
 
 void LinalgExtOnlineAttentionOp::getEffects(

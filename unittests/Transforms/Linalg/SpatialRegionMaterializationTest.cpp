@@ -83,7 +83,12 @@ module {
             tensor<2x1031x128xf16>, tensor<2x1031x64xf16>, f32)
         outs(%empty : tensor<2x1025x64xf16>)
         algorithm(<)mlir"
-         << algorithm << R"mlir(>) indexing_maps = [#q, #k, #v, #s, #o]
+         << algorithm << R"mlir(>) indexing_maps = [#q, #k, #v, #s, #o] score {
+    ^bb0(%attention_0_dot: f16, %attention_0_scale: f32):
+      %attention_0_converted = arith.extf %attention_0_dot : f16 to f32
+      %attention_0_scaled = arith.mulf %attention_0_converted, %attention_0_scale : f32
+      wafer.linalg_ext.attention.yield %attention_0_scaled : f32
+    }
         -> tensor<2x1025x64xf16>
     return %result : tensor<2x1025x64xf16>
   }
@@ -1072,7 +1077,12 @@ module {
         ins(%q, %k, %v, %scale : tensor<2x1025x128xf16>,
             tensor<2x1031x128xf16>, tensor<2x1031x64xf16>, f32)
         outs(%empty : tensor<2x1025x64xf16>)
-        algorithm(<flash_attention>) indexing_maps = [#q, #k, #v, #s, #o]
+        algorithm(<flash_attention>) indexing_maps = [#q, #k, #v, #s, #o] score {
+    ^bb0(%attention_1_dot: f16, %attention_1_scale: f32):
+      %attention_1_converted = arith.extf %attention_1_dot : f16 to f32
+      %attention_1_scaled = arith.mulf %attention_1_converted, %attention_1_scale : f32
+      wafer.linalg_ext.attention.yield %attention_1_scaled : f32
+    }
         -> tensor<2x1025x64xf16>
     return %result : tensor<2x1025x64xf16>
   }
@@ -1518,6 +1528,11 @@ module {
            << R"mlir(x64xf16>, f32)
         outs(%empty : tensor<2x1025x64xf16>)
         algorithm(<flash_decoding>) indexing_maps = [#q, #k, #v, #s, #o]
+        score { ^bb0(%dot: f16, %scale_arg: f32):
+          %wide = arith.extf %dot : f16 to f32
+          %scaled = arith.mulf %wide, %scale_arg : f32
+          wafer.linalg_ext.attention.yield %scaled : f32
+        }
         -> tensor<2x1025x64xf16>
     return %result : tensor<2x1025x64xf16>
   }
@@ -1655,7 +1670,12 @@ module {
         ins(%qv, %kv, %vv, %scale : tensor<2x1025x128xf16>,
             tensor<2x1031x128xf16>, tensor<2x1031x64xf16>, f32)
         outs(%attention_empty : tensor<2x1025x64xf16>)
-        algorithm(<flash_decoding>) indexing_maps = [#q, #k, #v, #s, #o]
+        algorithm(<flash_decoding>) indexing_maps = [#q, #k, #v, #s, #o] score {
+    ^bb0(%attention_3_dot: f16, %attention_3_scale: f32):
+      %attention_3_converted = arith.extf %attention_3_dot : f16 to f32
+      %attention_3_scaled = arith.mulf %attention_3_converted, %attention_3_scale : f32
+      wafer.linalg_ext.attention.yield %attention_3_scaled : f32
+    }
         -> tensor<2x1025x64xf16>
     %consumer_empty = tensor.empty() : tensor<2x1025x64xf16>
     %consumer = linalg.generic {
@@ -1731,7 +1751,12 @@ module {
         ins(%reshaped, %key, %value, %scale : tensor<2x1025x128xf16>,
             tensor<2x1031x128xf16>, tensor<2x1031x64xf16>, f32)
         outs(%attention_empty : tensor<2x1025x64xf16>)
-        algorithm(<flash_decoding>) indexing_maps = [#q, #k, #v, #s, #o]
+        algorithm(<flash_decoding>) indexing_maps = [#q, #k, #v, #s, #o] score {
+    ^bb0(%attention_4_dot: f16, %attention_4_scale: f32):
+      %attention_4_converted = arith.extf %attention_4_dot : f16 to f32
+      %attention_4_scaled = arith.mulf %attention_4_converted, %attention_4_scale : f32
+      wafer.linalg_ext.attention.yield %attention_4_scaled : f32
+    }
         -> tensor<2x1025x64xf16>
     return %attention : tensor<2x1025x64xf16>
   }
@@ -2250,6 +2275,21 @@ TEST(SpatialRegionMaterializationTest,
           auto coordinated =
               propagateSpatialPartitions(*domain.domain, *dag, seed, {});
           ASSERT_TRUE(mlir::succeeded(coordinated));
+          if (mode == 3) {
+            // A distributed init is requested by every K contribution, but
+            // each init fragment must be assembled only once at the merge.
+            auto dps =
+                mlir::cast<mlir::DestinationStyleOpInterface>(consumerOp);
+            auto *initRoot =
+                roots.find(dps.getDpsInitOperand(0)->get().getDefiningOp());
+            ASSERT_NE(initRoot, nullptr);
+            auto initNode = llvm::find_if(coordinated->nodes, [&](auto &node) {
+              return node.root == initRoot->key;
+            });
+            ASSERT_NE(initNode, coordinated->nodes.end());
+            initNode->axes[2].parameter = 16;
+            initNode->embedding = allTiles();
+          }
           auto consumer =
               llvm::find_if(coordinated->nodes, [&](const auto &node) {
                 return node.root == consumerKey;
@@ -2265,6 +2305,30 @@ TEST(SpatialRegionMaterializationTest,
               *source, [&](SpatialPlan &plan) { plan = *coordinated; }, detail);
           ASSERT_TRUE(mlir::succeeded(actual)) << detail;
           EXPECT_TRUE(mlir::succeeded(mlir::verify(*actual->module)));
+          unsigned repeatedFragmentCopies = 0;
+          actual->module->walk([&](mlir::tensor::InsertSliceOp inserted) {
+            auto previous =
+                inserted.getDest().getDefiningOp<mlir::tensor::InsertSliceOp>();
+            auto currentSlice =
+                inserted.getSource()
+                    .getDefiningOp<mlir::tensor::ExtractSliceOp>();
+            auto previousSlice =
+                previous ? previous.getSource()
+                               .getDefiningOp<mlir::tensor::ExtractSliceOp>()
+                         : mlir::tensor::ExtractSliceOp{};
+            if (currentSlice && previousSlice &&
+                currentSlice.getSource() == previousSlice.getSource() &&
+                currentSlice.getMixedOffsets() ==
+                    previousSlice.getMixedOffsets() &&
+                currentSlice.getMixedSizes() == previousSlice.getMixedSizes() &&
+                currentSlice.getMixedStrides() ==
+                    previousSlice.getMixedStrides() &&
+                inserted.getMixedOffsets() == previous.getMixedOffsets() &&
+                inserted.getMixedSizes() == previous.getMixedSizes() &&
+                inserted.getMixedStrides() == previous.getMixedStrides())
+              ++repeatedFragmentCopies;
+          });
+          EXPECT_EQ(repeatedFragmentCopies, 0u);
           EXPECT_EQ(actual->relations.structuralOutputs.size(), mode == 4 ? 2u
                                                                 : reduction
                                                                     ? 1u

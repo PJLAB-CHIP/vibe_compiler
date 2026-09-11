@@ -56,10 +56,14 @@ materializeScale(mlir::IRRewriter &rewriter,
 
 void eraseDeadProducerClosure(mlir::IRRewriter &rewriter,
                               llvm::ArrayRef<mlir::Operation *> seeds) {
-  llvm::SmallVector<mlir::Operation *, 32> worklist(seeds.begin(), seeds.end());
-  llvm::DenseSet<mlir::Operation *> queued(seeds.begin(), seeds.end());
+  llvm::SmallVector<mlir::Operation *, 32> worklist;
+  llvm::DenseSet<mlir::Operation *> queued;
+  for (mlir::Operation *seed : seeds)
+    if (queued.insert(seed).second)
+      worklist.push_back(seed);
   while (!worklist.empty()) {
     mlir::Operation *operation = worklist.pop_back_val();
+    queued.erase(operation);
     if (!mlir::isOpTriviallyDead(operation))
       continue;
     llvm::SmallVector<mlir::Operation *, 8> producers;
@@ -159,6 +163,9 @@ struct FormAttentionOpsPass final
           match.root->getLoc(), mlir::TypeRange{match.outputType}, match.query,
           match.key, match.value, scale, match.mask, output, match.algorithm,
           rewriter.getAffineMapArrayAttr(match.indexingMaps));
+      if (mlir::failed(attention_normalization::materializeAttentionScoreRegion(
+              rewriter, match, attention.getScoreRegion(), scale.getType())))
+        return signalPassFailure();
 
       for (mlir::Value operand : match.root->getOperands()) {
         if (mlir::Operation *producer = operand.getDefiningOp())

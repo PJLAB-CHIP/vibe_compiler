@@ -17,20 +17,7 @@ import wafer_runtime_launch_contract as runtime_launch
 
 
 SHAPE = (2, 1024, 64)
-ELEMENT_COUNT = int(np.prod(SHAPE))
 DTYPE = np.dtype("<f2")
-SOURCE_MODULE = f"""\
-module {{
-  func.func @main(
-      %lhs: tensor<{SHAPE[0]}x{SHAPE[1]}x{SHAPE[2]}xf16>,
-      %rhs: tensor<{SHAPE[0]}x{SHAPE[1]}x{SHAPE[2]}xf16>)
-      -> tensor<{SHAPE[0]}x{SHAPE[1]}x{SHAPE[2]}xf16> {{
-    %sum = stablehlo.add %lhs, %rhs
-        : tensor<{SHAPE[0]}x{SHAPE[1]}x{SHAPE[2]}xf16>
-    return %sum : tensor<{SHAPE[0]}x{SHAPE[1]}x{SHAPE[2]}xf16>
-  }}
-}}
-"""
 SOURCE_METADATA = {
     "name": "forward",
     "stablehlo_version": "0.0.0",
@@ -53,6 +40,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wafer-compile", type=pathlib.Path, required=True)
     parser.add_argument("--work-dir", type=pathlib.Path, required=True)
+    parser.add_argument("--case", choices=("add", "score-rounding"), default="add")
+    parser.add_argument("--extent", type=int, choices=(1024, 1025, 1031), default=1024)
+    parser.add_argument("--optimization-policy", choices=("none", "search"), default="none")
     return parser.parse_args()
 
 
@@ -78,17 +68,56 @@ def run(command: list[str], timeout_seconds: float = 900.0) -> str:
 
 
 def write_case(
-    work_dir: pathlib.Path,
+    work_dir: pathlib.Path, case: str, extent: int,
 ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path, pathlib.Path]:
     if work_dir.exists():
         shutil.rmtree(work_dir)
     source = work_dir / "source-program"
-    source_program.write_program(source, SOURCE_MODULE, SOURCE_METADATA)
-
-    values = np.arange(ELEMENT_COUNT, dtype=np.int64).reshape(SHAPE)
-    lhs = ((values % 17) - 8).astype(DTYPE)
-    rhs = ((values % 7) - 3).astype(DTYPE)
-    expected = (lhs + rhs).astype(DTYPE)
+    shape = (2, extent, 64)
+    spelling = "x".join(map(str, shape))
+    input_type = f"tensor<{spelling}xf16>"
+    wide_type = f"tensor<{spelling}xf32>"
+    values = np.arange(int(np.prod(shape)), dtype=np.int64).reshape(shape)
+    lhs = ((values % 37) - 18).astype(DTYPE) / np.float16(7)
+    rhs = ((values % 17) - 8).astype(DTYPE) / np.float16(19)
+    if case == "score-rounding":
+        output_type = wide_type
+        expected = ((lhs.astype(np.float32) * np.float32(0.0883883461))
+                    .astype(DTYPE) + rhs).astype(np.float32)
+        unrounded = lhs.astype(np.float32) * np.float32(0.0883883461) + rhs.astype(np.float32)
+        if not np.any(expected != unrounded):
+            raise RuntimeError("rounding corpus does not distinguish lost casts")
+        body = f"""
+    %wide = stablehlo.convert %lhs : ({input_type}) -> {wide_type}
+    %scale = stablehlo.constant dense<0.0883883461> : tensor<f32>
+    %scales = stablehlo.broadcast_in_dim %scale, dims = [] : (tensor<f32>) -> {wide_type}
+    %scaled = stablehlo.multiply %wide, %scales : {wide_type}
+    %rounded = stablehlo.convert %scaled : ({wide_type}) -> {input_type}
+    %masked = stablehlo.add %rounded, %rhs : {input_type}
+    %result = stablehlo.convert %masked : ({input_type}) -> {wide_type}
+"""
+    else:
+        output_type = input_type
+        lhs = ((values % 17) - 8).astype(DTYPE)
+        rhs = ((values % 7) - 3).astype(DTYPE)
+        expected = (lhs + rhs).astype(DTYPE)
+        body = f"    %result = stablehlo.add %lhs, %rhs : {input_type}\n"
+    module = f"""module {{
+  func.func @main(%lhs: {input_type}, %rhs: {input_type}) -> {output_type} {{
+{body}
+    return %result : {output_type}
+  }}
+}}
+"""
+    metadata = dict(SOURCE_METADATA)
+    metadata["input_signature"] = [
+        {"shape": list(shape), "dtype": "float16", "dynamic_dims": []} for _ in range(2)
+    ]
+    metadata["output_signature"] = [{
+        "shape": list(shape), "dtype": "float32" if case == "score-rounding" else "float16",
+        "dynamic_dims": [],
+    }]
+    source_program.write_program(source, module, metadata)
     input_lhs = work_dir / "lhs.npy"
     input_rhs = work_dir / "rhs.npy"
     output = work_dir / "expected.npy"
@@ -100,7 +129,7 @@ def write_case(
 
 def main() -> int:
     args = parse_args()
-    source, input_lhs, input_rhs, expected = write_case(args.work_dir)
+    source, input_lhs, input_rhs, expected = write_case(args.work_dir, args.case, args.extent)
     package = args.work_dir / "package"
     output = run(
         [
@@ -110,7 +139,7 @@ def main() -> int:
             "--output-dir",
             str(package),
             "--num-partitions=1",
-            "--optimization-policy=none",
+            f"--optimization-policy={args.optimization_policy}",
             "--target-model",
             "--model-input",
             f"0={input_lhs}",
@@ -140,7 +169,7 @@ def main() -> int:
         raise RuntimeError("target-model source retained staging MLIR text")
     print(
         "target-model source vertical passed: shape="
-        f"{list(SHAPE)} tiles={len(entries)} package={package}"
+        f"{[2, args.extent, 64]} case={args.case} tiles={len(entries)} package={package}"
     )
     return 0
 

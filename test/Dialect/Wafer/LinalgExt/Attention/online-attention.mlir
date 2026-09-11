@@ -28,7 +28,14 @@ func.func @online_attention(
       outs(%accumulator, %maximum, %sum :
           tensor<2x16x1025x64xf16>, tensor<2x16x1025xf32>,
           tensor<2x16x1025xf32>)
-      indexing_maps = [#q, #k, #v, #s, #mask, #acc, #row, #row]
+      indexing_maps = [#q, #k, #v, #s, #mask, #acc, #row, #row] score {
+      ^bb0(%attention_0_dot: f16, %attention_0_scale: f32, %attention_0_mask: f16):
+        %attention_0_converted = arith.extf %attention_0_dot : f16 to f32
+        %attention_0_scaled = arith.mulf %attention_0_converted, %attention_0_scale : f32
+        %attention_0_converted_mask = arith.extf %attention_0_mask : f16 to f32
+        %attention_0_masked = arith.addf %attention_0_scaled, %attention_0_converted_mask : f32
+        wafer.linalg_ext.attention.yield %attention_0_masked : f32
+      }
       -> (tensor<2x16x1025x64xf16>, tensor<2x16x1025xf32>,
           tensor<2x16x1025xf32>)
   return %next_accumulator, %next_maximum, %next_sum :

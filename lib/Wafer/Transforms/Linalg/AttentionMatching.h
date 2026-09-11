@@ -19,6 +19,8 @@ struct AttentionMatch {
   mlir::Value value;
   mlir::Value scale;
   mlir::Value mask;
+  mlir::Value rawScores;
+  mlir::Value adjustedScores;
   mlir::RankedTensorType outputType;
   AttentionAlgorithm algorithm = AttentionAlgorithm::FlashAttention;
   llvm::SmallVector<mlir::AffineMap, 6> indexingMaps;
@@ -26,6 +28,11 @@ struct AttentionMatch {
 
 llvm::SmallVector<AttentionMatch, 4>
 collectAttentionMatches(mlir::func::FuncOp function);
+
+mlir::LogicalResult materializeAttentionScoreRegion(mlir::OpBuilder &builder,
+                                                    const AttentionMatch &match,
+                                                    mlir::Region &region,
+                                                    mlir::Type scaleType);
 
 } // namespace wafer::attention_normalization
 
