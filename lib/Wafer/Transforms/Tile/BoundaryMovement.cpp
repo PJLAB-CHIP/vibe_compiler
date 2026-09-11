@@ -1692,28 +1692,57 @@ static void normalizeSubviewResultTypes(mlir::ModuleOp module) {
   }
 }
 
-static mlir::LogicalResult materializeSubviewLoads(
-    mlir::bufferization::ToMemrefOp bridge, mlir::BlockArgument ddrArgument,
-    mlir::IRRewriter &rewriter, BoundaryMovementStatistics &statistics) {
-  llvm::SmallVector<mlir::memref::SubViewOp, 8> subviews;
-  for (mlir::Operation *user : bridge.getMemref().getUsers())
-    subviews.push_back(mlir::cast<mlir::memref::SubViewOp>(user));
-  for (mlir::memref::SubViewOp subview : subviews) {
-    rewriter.setInsertionPoint(subview);
-    auto ddrSubview = rewriter.create<mlir::memref::SubViewOp>(
-        subview.getLoc(), getRetargetedSubviewType(subview, ddrArgument),
-        ddrArgument, subview.getMixedOffsets(), subview.getMixedSizes(),
-        subview.getMixedStrides());
+static mlir::LogicalResult
+materializeSubviewLoad(mlir::memref::SubViewOp subview, mlir::Value ddrSource,
+                       mlir::IRRewriter &rewriter,
+                       BoundaryMovementStatistics &statistics) {
+  rewriter.setInsertionPoint(subview);
+  auto ddrSubview = rewriter.create<mlir::memref::SubViewOp>(
+      subview.getLoc(), getRetargetedSubviewType(subview, ddrSource), ddrSource,
+      subview.getMixedOffsets(), subview.getMixedSizes(),
+      subview.getMixedStrides());
+  if (hasOnlySubviewUses(subview.getResult())) {
+    llvm::SmallVector<mlir::memref::SubViewOp, 4> children;
+    for (auto *user : subview.getResult().getUsers())
+      children.push_back(mlir::cast<mlir::memref::SubViewOp>(user));
+    for (auto child : children)
+      if (mlir::failed(
+              materializeSubviewLoad(child, ddrSubview, rewriter, statistics)))
+        return mlir::failure();
+  } else {
     auto oldType = mlir::cast<mlir::MemRefType>(subview.getType());
+    if (!oldType.hasStaticShape())
+      return mlir::failure();
     auto allocation = rewriter.create<mlir::memref::AllocOp>(
         subview.getLoc(), getOwnedSPMType(oldType));
     rewriter.create<StorageLoadOp>(subview.getLoc(), ddrSubview.getResult(),
                                    allocation.getResult());
     retargetSubviewUsers(subview.getResult(), allocation.getResult(), rewriter);
-    rewriter.eraseOp(subview);
     ++statistics.ddrLoads;
   }
-  if (!bridge.getMemref().use_empty())
+  rewriter.eraseOp(subview);
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+materializeSubviewUses(mlir::Value source, mlir::Value ddrSource,
+                       mlir::IRRewriter &rewriter,
+                       BoundaryMovementStatistics &statistics) {
+  llvm::SmallVector<mlir::memref::SubViewOp, 8> subviews;
+  for (mlir::Operation *user : source.getUsers())
+    subviews.push_back(mlir::cast<mlir::memref::SubViewOp>(user));
+  for (auto subview : subviews)
+    if (mlir::failed(
+            materializeSubviewLoad(subview, ddrSource, rewriter, statistics)))
+      return mlir::failure();
+  return mlir::success(source.use_empty());
+}
+
+static mlir::LogicalResult materializeSubviewLoads(
+    mlir::bufferization::ToMemrefOp bridge, mlir::BlockArgument ddrArgument,
+    mlir::IRRewriter &rewriter, BoundaryMovementStatistics &statistics) {
+  if (mlir::failed(materializeSubviewUses(bridge.getMemref(), ddrArgument,
+                                          rewriter, statistics)))
     return mlir::failure();
   rewriter.eraseOp(bridge);
   ++statistics.tensorBridgesRemoved;
@@ -2754,20 +2783,37 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
           if (binding == sharedDDRBindings->end())
             return failApply("shared DDR peer input has no actual binding");
           argument.setType(binding->second.type);
+          llvm::SmallVector<mlir::Value, 4> payloads;
+          if (peer->destinationSubviews.empty()) {
+            for (auto bridge : input.bridges)
+              payloads.push_back(bridge.getMemref());
+          } else {
+            for (auto subview : peer->destinationSubviews)
+              payloads.push_back(subview.getResult());
+          }
           bool subviewLoads =
-              !peer->recursiveDoubling && peer->destinationSubviews.empty() &&
-              llvm::all_of(input.bridges, [&](auto bridge) {
-                return logicalTypesMatch(mlir::cast<mlir::MemRefType>(
-                                             bridge.getMemref().getType()),
-                                         binding->second.type) &&
-                       hasOnlySubviewUses(bridge.getMemref());
+              !peer->recursiveDoubling &&
+              llvm::all_of(payloads, [&](mlir::Value payload) {
+                return logicalTypesMatch(
+                           mlir::cast<mlir::MemRefType>(payload.getType()),
+                           binding->second.type) &&
+                       hasOnlySubviewUses(payload);
               });
           if (subviewLoads) {
-            for (auto bridge : input.bridges)
-              if (mlir::failed(materializeSubviewLoads(bridge, argument,
-                                                       rewriter, statistics)))
+            for (auto payload : payloads)
+              if (mlir::failed(materializeSubviewUses(payload, argument,
+                                                      rewriter, statistics)))
                 return failApply(
                     "shared DDR subview load materialization failed");
+            for (auto subview : peer->destinationSubviews)
+              rewriter.eraseOp(subview);
+            for (auto bridge : input.bridges) {
+              if (!bridge.getMemref().use_empty())
+                return failApply(
+                    "shared DDR payload carrier still has a live use");
+              rewriter.eraseOp(bridge);
+              ++statistics.tensorBridgesRemoved;
+            }
             ++statistics.crossTileDDRStages;
             continue;
           }

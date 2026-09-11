@@ -64,6 +64,11 @@ post-attention bounded logical normalization
   -> physical TileRegion
 ```
 
+进入layout/bufferization时，selected spatial/temporal IR中的`tensor.extract_slice(tensor.empty)`按实际slice result type与encoding重建局部empty。
+`tensor.empty`没有定义内容，该规则与pinned MLIR `FoldEmptyTensorWithExtractSliceOp`一致；它只收敛当前tile的未初始化destination尺寸，
+不读取估计SPM用量，也不改变已定义的fill/input初始化。重复使用的empty分别按各自实际slice生成，未被替换的uses继续保留。
+修改先于layout/One-Shot分析，所有后续分析从更新后的current IR重建。覆盖rank3/4、1024/1025/1031、rank reduction、多use及定义过内容的init。
+
 Layout transformation先闭合function boundary，再为每个current compute use建立实际endpoint，但保留显式TileRegion logical tensor
 boundary；它不重新移动/融合reshape、transpose、broadcast、concat或compute graph，不创建route、message或DDR donor。若input仍含
 可由05号logical normalizer严格支配的graph form，属于上游stage未闭合，不能在PBQP里恢复另一套e-graph。
@@ -116,11 +121,24 @@ execution structure闭合后先move Tile body，再逐Tile运行conversion、cle
 
 已选择shared-DDR route的cross-Tile输入与本地DDR输入共用actual subview加载：当payload仍使用完整carrier坐标、没有recursive aggregate slot，
 且全部ToMemref bridge只被Subview读取时，在各Subview的当前位置建立对应DDR view与所选layout的局部SPM allocation/load。
-静态size和动态offset均来自同一current SSA，不要求把动态起点变成常数，不重新决定tile size或route。已rebase的公共静态窗口保持原payload合同；
+若Subview仅继续派生Subview，则继续沿同一SSA树建立DDR views，只在首次实际数据使用处建立SPM allocation/load；
+中间view出现整体读取时在该处加载，不能越过真实需求。静态size和动态offset均来自同一current SSA，不要求把动态起点变成常数，不重新决定tile size或route。
+已rebase的公共静态窗口以实际payload view为递归起点，DDR binding必须与该view逻辑shape一致；子view沿用相对坐标，不能重复叠加原始窗口offset。
 有whole-buffer use的输入仍按完整需求物化。直接DTE选择继续执行其message/receive合同。
 
 覆盖1024/1025/1031、4/16 Tile、main/tail和多个wave，检查本地/跨Tile读的完整DDR坐标、每次load的SPM extent、owner及实际Instr/completion/SPM；
 whole-buffer use和已有静态payload重定位不能误走该路径。完整block使用fresh source作产品witness，不能从某个较小shape推算SPM合法。
+
+Movement结束前，write-only SPM输出carrier可按实际写入流式存到一个或多个既有DDR出口。所有terminal store必须读同一allocation的完整值，
+位于同一Region顶层且晚于全部写入；carrier只允许Subview与已证明identity forwarding的SCF alias，以及copy目的端和这些terminal读取。
+出口必须是当前私有DDR allocation，或具有Write权限的typed DDRBinding；允许从Region argument派生的单use Subview链，
+其offset/size/stride的SSA operands必须支配原carrier allocation，才可在该处克隆view并保持原窗口坐标。Region内不能存在其它出口alias use。每次原写入按原顺序
+向所有出口的对应Subview发射store，carrier及旧terminal store删除，defined数据、覆盖及出口集合保持。
+只转发该carrier的SCF iter argument/result同时删除，循环范围、其它state及原body保持；采用pinned SCF iter-arg folding的block转移方式，
+不把DDR地址伪装成跨迭代更新的state。外层carrier消除后重新从current IR收集新terminal，继续处理内层carrier；每次成功严格删除一个allocation，因而收敛。
+这种变换只应用current buffers/effects，shared-DDR publication仍由下游fresh completion重建并验证；partial source窗口、读写状态、未知alias
+或中途可观察读取不通过该证明。覆盖单/多出口、私有/shared-DDR、嵌套循环、1024/1025/1031 main/tail、重叠写及拒绝例，
+并实际经过Instr/completion/SPM和source模型执行。
 
 Value/use assignment采用current SSA buffer-equivalence group、consumer-use和op-tuple auxiliary factor；不使用structured-node ID或
 bufferization后的operation parity。Shared conversion通过每个dominance/effect cohort的三态activation factor只计一次，并由apply创建

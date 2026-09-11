@@ -1895,3 +1895,12 @@
 - Linalg body参数不总是`inputs + init`，例如`linalg.map`没有init块参数。使用`getOpOperandsMatchingBBargs`，不能依据op类别猜参数位置。
 - 当前unit迭代轴可以把`m+w`这样的访问化为投影；归一后的input map仍须匹配实际operand/result shape，output identity不能跳过检查。
 - Tile reduce的logical rank不等于native Instr的可编码rank；native选择必须先满足rank上限，其他已支持形态使用同一既有ordered构造。
+
+
+## 已切块的计算仍可能保留多层输出汇集buffer
+
+- DPS对`tensor.empty`取slice会让bufferization保留原始大allocation；在已选择tile的物化边界按actual slice生成局部empty，不能丢弃有定义的初始化。
+- 一个output carrier可能有本地和远端多个terminal，也可能先复制进另一层carrier。只按单个store或只扫一轮会留下内层buffer。
+  必须证明完整use/alias集合，向全部既有出口保持原顺序写入，再从修改后的IR处理新暴露的carrier；成功删除allocation保证收敛。
+- 删除write-only carrier时同时消除其identity SCF forwarding，保留其它state。不要将不变DDR地址变成loop-carried state，再扩大completion来接受它。
+- 回归需要实际源程序模型执行与Instr/SPM，检查多个出口、窗口holes、尾块和原来需要读取的状态；仅检查某个大allocation消失不足以证明完整模型可编译。

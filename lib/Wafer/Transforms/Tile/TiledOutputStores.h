@@ -10,8 +10,8 @@ class ModuleOp;
 namespace wafer::compiler::detail {
 struct BoundaryMovementStatistics;
 
-/// Replace a write-only SPM collection buffer and its terminal DDR store with
-/// stores of the already materialized tiles into that same DDR destination.
+/// Replace a write-only SPM collection buffer and its terminal DDR stores with
+/// stores of the already materialized tiles into those same DDR destinations.
 void materializeTiledOutputStores(mlir::ModuleOp module,
                                   BoundaryMovementStatistics &statistics);
 } // namespace wafer::compiler::detail

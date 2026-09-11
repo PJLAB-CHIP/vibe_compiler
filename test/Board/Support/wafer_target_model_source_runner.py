@@ -195,6 +195,8 @@ def main() -> int:
             ir = module.read_text()
             if "scf.for" not in ir or "wafer.instr.ddr_acquire" not in ir:
                 raise RuntimeError("shared-DDR model case did not execute temporal and publication paths")
+            if "iter_args(" in ir:
+                raise RuntimeError("pointwise outputs still retain loop-carried collection buffers")
     result_shape = [16, 16, 32, args.extent] if args.case == "broadcast-add" else [2, args.extent, 64]
     print(
         "target-model source vertical passed: shape="

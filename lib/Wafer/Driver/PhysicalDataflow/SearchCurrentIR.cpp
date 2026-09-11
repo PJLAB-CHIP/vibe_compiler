@@ -916,6 +916,14 @@ private:
       recordMovementInstrumentation(movement.statistics);
       if (!movement.succeeded()) {
         if (movement.failure == BoundaryMovementFailureKind::Unsupported) {
+          if (support::getActiveCompileTimingSession())
+            diagnostics
+                << "wafer-compile: rejected-movement-materialization transport="
+                << (movementCandidate.options.transport ==
+                            BoundaryMovementTransport::SharedDDR
+                        ? "shared-ddr"
+                        : "peer")
+                << " detail=" << movement.detail << '\n';
           sawUnsupportedMovement = true;
           continue;
         }

@@ -549,6 +549,70 @@ module {
   std::unique_ptr<mlir::MLIRContext> context;
 };
 
+TEST_F(LayoutOptimizationTest, EmptySlicesUseLocalStorageBeforeBufferization) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool reduced : {false, true})
+      for (bool initialized : {false, true}) {
+        SCOPED_TRACE(extent);
+        SCOPED_TRACE(reduced);
+        SCOPED_TRACE(initialized);
+        std::string full = "tensor<64x2x" + std::to_string(extent) + "x64xf16>";
+        std::string type = "tensor<" + std::string(reduced ? "2x" : "1x2x") +
+                           std::to_string(extent) + "x64xf16>";
+        std::string map = reduced ? "affine_map<(a,b,c)->(a,b,c)>"
+                                  : "affine_map<(a,b,c,d)->(a,b,c,d)>";
+        std::string iterators =
+            reduced ? "[\"parallel\",\"parallel\",\"parallel\"]"
+                    : "[\"parallel\",\"parallel\",\"parallel\",\"parallel\"]";
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { wafer.tile.module card_id = 0 tile_id = 0 { func.func "
+               "@entry(%input: "
+            << type << ") -> (" << type << ", " << type << ") {\n"
+            << "%a, %b = wafer.tile.region(%input : " << type << ") -> ("
+            << type << ", " << type << ") { ^bb0(%x: " << type << "):\n"
+            << "%base = tensor.empty() : " << full << "\n";
+        if (initialized)
+          out << "%one = arith.constant 1.25 : f16\n%filled = linalg.fill "
+                 "ins(%one : f16) outs(%base : "
+              << full << ") -> " << full << "\n";
+        for (unsigned i : {0u, 1u}) {
+          out << "%slice" << i << " = tensor.extract_slice %"
+              << (initialized ? "filled" : "base") << "[" << (i ? 9 : 5)
+              << ",0,0,0] [1,2," << extent << ",64] [1,1,1,1] : " << full
+              << " to " << type << "\n"
+              << "%value" << i << " = linalg.generic {indexing_maps = [" << map
+              << "," << map << "], iterator_types = " << iterators
+              << "} ins(%x : " << type << ") outs(%slice" << i << " : " << type
+              << ") { ^bb1(%v: f16, %init: f16):\n"
+              << "%next = arith.addf %v, " << (initialized ? "%init" : "%v")
+              << " : f16\nlinalg.yield %next : f16 } -> " << type << "\n";
+        }
+        out << "wafer.tile.yield %value0, %value1 : " << type << ", " << type
+            << " }\nreturn %a, %b : " << type << ", " << type << " } } }";
+        auto module = parse(text);
+        ASSERT_TRUE(module);
+        TileRegionOp region;
+        module->walk([&](TileRegionOp op) { region = op; });
+        StructuredMaterializationRelations relations;
+        relations.structuralOutputs = {{0, region.getResult(0)},
+                                       {1, region.getResult(1)}};
+        auto result = resolveCurrentLayoutsAndBufferize(*module, relations);
+        ASSERT_TRUE(result.succeeded()) << result.detail;
+        unsigned large = 0;
+        module->walk([&](mlir::memref::AllocOp op) {
+          large += op.getType().getShape() ==
+                   llvm::ArrayRef<int64_t>{64, 2, extent, 64};
+        });
+        EXPECT_EQ(large != 0, initialized);
+        EXPECT_EQ(countOps<mlir::linalg::FillOp>(*module),
+                  initialized ? 1u : 0u);
+        EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*module)));
+        EXPECT_TRUE(mlir::succeeded(
+            checkStructuredBufferRelationsCurrent(*module, relations)));
+      }
+}
+
 TEST_F(LayoutOptimizationTest,
        AssignsCurrentValueUsesAndSharesOneConversionAtRealisticScale) {
   for (int64_t extent : {1024, 1025, 1031}) {

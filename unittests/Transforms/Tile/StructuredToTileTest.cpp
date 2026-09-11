@@ -3561,10 +3561,11 @@ TEST_F(StructuredToTileTest, RegionClosureIsOptionalAndDDRHasItsOwnOrderProof) {
 TEST_F(StructuredToTileTest, SharedDDRLoadsEachCurrentConsumerSubview) {
   for (int64_t tileCount : {4, 16})
     for (int64_t extent : {1024, 1025, 1031})
-      for (bool tiled : {false, true}) {
+      for (unsigned mode : {0u, 1u, 2u}) {
+        bool tiled = mode != 0;
         SCOPED_TRACE(tileCount);
         SCOPED_TRACE(extent);
-        SCOPED_TRACE(tiled);
+        SCOPED_TRACE(mode);
         auto module = parse(makeSplitExchangeSource(extent, tileCount));
         ASSERT_TRUE(module);
         llvm::SmallVector<llvm::SmallVector<TileRegionOp, 2>, 16> scopes(
@@ -3598,6 +3599,43 @@ TEST_F(StructuredToTileTest, SharedDDRLoadsEachCurrentConsumerSubview) {
         ASSERT_TRUE(layout.succeeded()) << layout.detail;
         auto compute = lowerStructuredComputeToTile(*module, relations);
         ASSERT_TRUE(compute.succeeded()) << compute.detail;
+        if (mode == 2) {
+          // Model a spatial selection followed by temporal main/tail views.
+          // Both intermediate views have no data use and must stay in DDR.
+          llvm::SmallVector<TileRegionOp> consumers;
+          module->walk([&](TileRegionOp region) {
+            if (countOps<ComputeElementwiseOp>(region))
+              consumers.push_back(region);
+          });
+          ASSERT_EQ(consumers.size(), tileCount);
+          for (auto consumer : consumers) {
+            llvm::SmallVector<mlir::bufferization::ToMemrefOp> bridges;
+            consumer.walk([&](mlir::bufferization::ToMemrefOp op) {
+              bridges.push_back(op);
+            });
+            ASSERT_EQ(bridges.size(), extent % 128 ? 2u : 1u);
+            for (auto bridge : bridges) {
+              llvm::SmallVector<mlir::OpOperand *> uses;
+              for (auto &use : bridge.getMemref().getUses())
+                uses.push_back(&use);
+              mlir::OpBuilder builder(bridge);
+              builder.setInsertionPointAfter(bridge);
+              auto outer = builder.create<mlir::memref::SubViewOp>(
+                  bridge.getLoc(), bridge.getMemref(),
+                  llvm::ArrayRef<int64_t>{0, 0, 0},
+                  llvm::ArrayRef<int64_t>{1, extent, 64},
+                  llvm::ArrayRef<int64_t>{1, 1, 1});
+              auto inner = builder.create<mlir::memref::SubViewOp>(
+                  bridge.getLoc(), outer.getResult(),
+                  llvm::ArrayRef<int64_t>{0, 0, 0},
+                  llvm::ArrayRef<int64_t>{1, extent, 64},
+                  llvm::ArrayRef<int64_t>{1, 1, 1});
+              for (auto *use : uses)
+                use->set(inner);
+            }
+          }
+          ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        }
         BoundaryMovementOptions options;
         options.transport = BoundaryMovementTransport::SharedDDR;
         auto movement =
@@ -3628,6 +3666,21 @@ TEST_F(StructuredToTileTest, SharedDDRLoadsEachCurrentConsumerSubview) {
             ASSERT_TRUE(view);
             EXPECT_EQ(view.getSourceType().getShape(),
                       (llvm::ArrayRef<int64_t>{1, extent, 64}));
+            if (mode == 2) {
+              auto source = view.getSource();
+              for (unsigned level = 0; level < 1; ++level) {
+                auto parent = source.getDefiningOp<mlir::memref::SubViewOp>();
+                ASSERT_TRUE(parent);
+                EXPECT_EQ(parent.getStaticOffsets(),
+                          (llvm::ArrayRef<int64_t>{0, 0, 0}));
+                EXPECT_EQ(parent.getStaticSizes(),
+                          (llvm::ArrayRef<int64_t>{1, extent, 64}));
+                EXPECT_EQ(parent.getStaticStrides(),
+                          (llvm::ArrayRef<int64_t>{1, 1, 1}));
+                source = parent.getSource();
+              }
+              EXPECT_TRUE(mlir::isa<mlir::BlockArgument>(source));
+            }
             auto offsets = view.getMixedOffsets();
             EXPECT_EQ(mlir::getConstantIntValue(offsets[0]), 0);
             EXPECT_EQ(mlir::getConstantIntValue(offsets[2]), 0);
@@ -3893,9 +3946,253 @@ TEST_F(StructuredToTileTest, SharedLocalInitializationIsMergedOnlyOnce) {
   }
 }
 
+TEST_F(StructuredToTileTest,
+       TiledOutputStoresStreamAllDestinationsInWriteOrder) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (unsigned sinks : {1u, 2u, 3u})
+      for (bool shared : {false, true})
+        for (bool window : {false, true}) {
+          SCOPED_TRACE(extent);
+          SCOPED_TRACE(sinks);
+          SCOPED_TRACE(shared);
+          SCOPED_TRACE(window);
+          std::string shape = "2x" + std::to_string(extent) + "x64xf16";
+          std::string spm = "memref<" + shape + ", #wafer.memory<spm, tensor>>";
+          int64_t rows = extent + (window ? 6 : 0);
+          int64_t batches = window ? 4 : 2;
+          std::string ddr = "memref<" + std::to_string(batches) + "x" +
+                            std::to_string(rows) +
+                            "x64xf16, #wafer.memory<ddr, tensor>>";
+          std::string destinationType =
+              window
+                  ? "memref<" + shape + ", strided<[" +
+                        std::to_string(rows * 64) +
+                        ", 64, 1], offset: " + std::to_string((rows + 3) * 64) +
+                        ">, #wafer.memory<ddr, tensor>>"
+                  : ddr;
+          std::string text;
+          llvm::raw_string_ostream ir(text);
+          ir << "module {\n";
+          if (shared)
+            ir << "memref.global \"private\" @shared : " << ddr
+               << " {wafer.ddr_resource = #wafer.ddr_resource<0>}\n";
+          ir << "wafer.tile.module card_id = 0 tile_id = 0 { func.func @entry(";
+          if (shared)
+            ir << "%out0: " << ddr
+               << " {wafer.ddr_binding = #wafer.ddr_binding<@shared, id = 0, "
+                  "write>}";
+          ir << ") {\n";
+          for (unsigned sink = shared ? 1 : 0; sink < sinks; ++sink)
+            ir << "%out" << sink << " = memref.alloc() : " << ddr << "\n";
+          ir << "\"wafer.tile.region\"(";
+          for (unsigned sink = 0; sink < sinks; ++sink)
+            ir << (sink ? ", " : "") << "%out" << sink;
+          ir << ") ({ ^bb0(";
+          for (unsigned sink = 0; sink < sinks; ++sink)
+            ir << (sink ? ", " : "") << "%dst" << sink << ": " << ddr;
+          ir << "):\n%c0 = arith.constant 0 : index\n%c1 = arith.constant 1 : "
+                "index\n%c2 = arith.constant 2 : index\n"
+             << "%step = arith.constant 128 : index\n%end = arith.constant "
+             << extent / 128 * 128 << " : index\n"
+             << "%one = arith.constant 1.25 : f16\n%two = arith.constant 2.5 : "
+                "f16\n"
+             << "%full = memref.alloc() : " << spm << "\n"
+             << "%result:2 = scf.for %batch = %c0 to %c2 step %c1 "
+                "iter_args(%outer "
+                "= %full, %count = %c0) -> ("
+             << spm << ", index) {\n"
+             << "%inner_result = scf.for %row = %c0 to %end step %step "
+                "iter_args(%inner = %outer) -> ("
+             << spm << ") {\n";
+          auto write = [&](int64_t size, llvm::StringRef row,
+                           llvm::StringRef carrier) {
+            std::string piece = "memref<1x" + std::to_string(size) +
+                                "x64xf16, #wafer.memory<spm, tensor>>";
+            std::string view =
+                "memref<1x" + std::to_string(size) + "x64xf16, strided<[" +
+                std::to_string(extent * 64) +
+                ", 64, 1], offset: ?>, #wafer.memory<spm, tensor>>";
+            ir << "%view = memref.subview " << carrier << "[%batch, " << row
+               << ", 0] [1, " << size << ", 64] [1, 1, 1] : " << spm << " to "
+               << view << "\n"
+               << "%a = memref.alloc() : " << piece
+               << "\n%b = memref.alloc() : " << piece << "\n"
+               << "wafer.tile.fill %a, %one : " << piece
+               << ", f16\nwafer.tile.fill %b, %two : " << piece << ", f16\n"
+               << "wafer.tile.copy_into %a into %view : " << piece << " into "
+               << view << "\n"
+               << "memref.copy %b, %view : " << piece << " to " << view << "\n"
+               << "memref.copy %view, %view : " << view << " to " << view
+               << "\n";
+          };
+          write(128, "%row", "%inner");
+          ir << "scf.yield %inner : " << spm << "\n}\n";
+          if (extent % 128)
+            write(extent % 128, "%end", "%outer");
+          ir << "%next_count = arith.addi %count, %c1 : index\nscf.yield "
+                "%inner_result, %next_count : "
+             << spm << ", index\n}\n";
+          if (window)
+            ir << "%collected = memref.alloc() : " << spm
+               << "\nmemref.copy %result#0, %collected : " << spm << " to "
+               << spm << "\n";
+          for (unsigned sink = 0; sink < sinks; ++sink) {
+            if (window)
+              ir << "%window" << sink << " = memref.subview %dst" << sink
+                 << "[1, 3, 0] [2, " << extent << ", 64] [1, 1, 1] : " << ddr
+                 << " to " << destinationType << "\n";
+            ir << "wafer.tile.store %" << (window ? "collected" : "result#0")
+               << ", %" << (window ? "window" : "dst") << sink << " : " << spm
+               << " -> " << destinationType << "\n";
+          }
+          ir << "wafer.tile.yield\n}) : (";
+          for (unsigned sink = 0; sink < sinks; ++sink)
+            ir << (sink ? ", " : "") << ddr;
+          ir << ") -> ()\nreturn\n} } }";
+          auto module = parse(text);
+          ASSERT_TRUE(module);
+          ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+          BoundaryMovementStatistics statistics;
+          materializeTiledOutputStores(*module, statistics);
+          ASSERT_EQ(statistics.streamedOutputCarriers, window ? 2u : 1u);
+          ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+          EXPECT_EQ(countOps<MoveCopyIntoOp>(*module), 0u);
+          module->walk([&](mlir::scf::ForOp loop) {
+            bool outer = !loop->getParentOfType<mlir::scf::ForOp>();
+            ASSERT_EQ(loop.getNumRegionIterArgs(), outer ? 1u : 0u);
+            if (outer) {
+              EXPECT_TRUE(loop.getRegionIterArg(0).getType().isIndex());
+              auto yield = mlir::cast<mlir::scf::YieldOp>(
+                  loop.getBody()->getTerminator());
+              auto next =
+                  yield.getOperand(0).getDefiningOp<mlir::arith::AddIOp>();
+              ASSERT_TRUE(next);
+              EXPECT_EQ(next.getLhs(), loop.getRegionIterArg(0));
+              EXPECT_EQ(mlir::getConstantIntValue(next.getRhs()), 1);
+            }
+          });
+          EXPECT_EQ(countOps<mlir::memref::CopyOp>(*module), 0u);
+          EXPECT_EQ(countOps<StorageStoreOp>(*module),
+                    sinks * 2 * (extent % 128 ? 2 : 1));
+          module->walk([&](mlir::memref::AllocOp allocation) {
+            if (isWaferSPMMemRefType(allocation.getType())) {
+              EXPECT_LE(allocation.getType().getDimSize(1), 128);
+            }
+          });
+          TileRegionOp region;
+          module->walk([&](TileRegionOp op) { region = op; });
+          // Execute only control flow and coordinates, independently of the
+          // transformation. Every output element receives 1.25 then 2.5.
+          std::vector<std::vector<unsigned>> coverage(
+              sinks, std::vector<unsigned>(batches * rows * 64));
+          llvm::DenseMap<mlir::Value, int64_t> indices;
+          auto index = [&](mlir::OpFoldResult value) -> int64_t {
+            if (auto constant = mlir::getConstantIntValue(value))
+              return *constant;
+            return indices.lookup(mlir::cast<mlir::Value>(value));
+          };
+          auto destination =
+              [&](auto &&self, mlir::Value value,
+                  llvm::SmallVectorImpl<int64_t> &offsets) -> unsigned {
+            if (auto view = value.getDefiningOp<mlir::memref::SubViewOp>()) {
+              for (unsigned axis = 0; axis < 3; ++axis)
+                offsets[axis] += index(view.getMixedOffsets()[axis]);
+              return self(self, view.getSource(), offsets);
+            }
+            if (auto result = mlir::dyn_cast<mlir::OpResult>(value)) {
+              auto loop = mlir::cast<mlir::scf::ForOp>(result.getOwner());
+              return self(self, loop.getInitArgs()[result.getResultNumber()],
+                          offsets);
+            }
+            auto argument = mlir::cast<mlir::BlockArgument>(value);
+            if (argument.getOwner() == &region.getBody().front())
+              return argument.getArgNumber();
+            auto loop = mlir::cast<mlir::scf::ForOp>(
+                argument.getOwner()->getParentOp());
+            return self(self, loop.getInitArgs()[argument.getArgNumber() - 1],
+                        offsets);
+          };
+          llvm::DenseMap<mlir::Value, unsigned> sourcePhases;
+          region.walk([&](ComputeFillOp fill) {
+            auto constant =
+                fill.getValue().getDefiningOp<mlir::arith::ConstantOp>();
+            sourcePhases[fill.getDest()] =
+                mlir::cast<mlir::FloatAttr>(constant.getValue())
+                            .getValueAsDouble() == 1.25
+                    ? 0
+                    : 1;
+          });
+          auto execute = [&](auto &&self, mlir::Block &block) -> void {
+            for (auto &operation : block) {
+              if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(operation)) {
+                for (int64_t i = index(loop.getLowerBound());
+                     i < index(loop.getUpperBound());
+                     i += index(loop.getStep())) {
+                  indices[loop.getInductionVar()] = i;
+                  self(self, *loop.getBody());
+                }
+              } else if (auto store =
+                             mlir::dyn_cast<StorageStoreOp>(operation)) {
+                llvm::SmallVector<int64_t> offsets(3, 0);
+                unsigned sink =
+                    destination(destination, store.getDest(), offsets);
+                ASSERT_LT(sink, sinks);
+                auto type =
+                    mlir::cast<mlir::MemRefType>(store.getSource().getType());
+                ASSERT_EQ(type.getDimSize(0), 1);
+                ASSERT_EQ(type.getDimSize(2), 64);
+                ASSERT_TRUE(sourcePhases.contains(store.getSource()));
+                for (int64_t row = 0; row < type.getDimSize(1); ++row)
+                  for (int64_t col = 0; col < 64; ++col) {
+                    int64_t address =
+                        ((offsets[0] * rows + offsets[1] + row) * 64) +
+                        offsets[2] + col;
+                    ASSERT_GE(address, 0);
+                    ASSERT_LT(address,
+                              static_cast<int64_t>(coverage[sink].size()));
+                    ASSERT_EQ(coverage[sink][address]++,
+                              sourcePhases.lookup(store.getSource()));
+                  }
+              }
+            }
+          };
+          execute(execute, region.getBody().front());
+          for (auto &output : coverage)
+            for (int64_t batch = 0; batch < batches; ++batch)
+              for (int64_t row = 0; row < rows; ++row)
+                for (int64_t col = 0; col < 64; ++col) {
+                  bool inside = !window || (batch >= 1 && batch < 3 &&
+                                            row >= 3 && row < extent + 3);
+                  ASSERT_EQ(output[(batch * rows + row) * 64 + col],
+                            inside ? 2u : 0u);
+                }
+          StructuredMaterializationRelations relations;
+          std::string detail;
+          auto standalone = createStandaloneTileModules(std::move(module),
+                                                        &detail, &relations);
+          ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+          for (auto &tile : *standalone) {
+            TileRegionToInstrLoweringSession session(*context);
+            auto current = *tile.module->getOps<mlir::func::FuncOp>().begin();
+            llvm::SmallVector<TileRegionOp> regions;
+            current.walk([&](TileRegionOp op) { regions.push_back(op); });
+            for (auto op : regions)
+              ASSERT_TRUE(
+                  mlir::succeeded(convertTileRegionToInstr(op, session)));
+            ASSERT_TRUE(mlir::succeeded(
+                convertBufferizationCopiesToInstr(*tile.module, session)));
+            ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+            TileMemoryPlanningFailure failure;
+            auto planned = planTileMemory(std::move(tile.module), &failure);
+            ASSERT_TRUE(mlir::succeeded(planned));
+          }
+        }
+}
+
 TEST_F(StructuredToTileTest, TiledOutputStoresPreserveReadsAndUnknownAliases) {
-  for (llvm::StringRef variant : {"read", "yield", "alias", "destination-alias",
-                                  "late-destination", "write-after-store"}) {
+  for (llvm::StringRef variant :
+       {"read", "yield", "alias", "destination-alias", "late-destination",
+        "write-after-store", "ddr-copy-source"}) {
     SCOPED_TRACE(variant.str());
     auto module = parse(R"mlir(
       module {
@@ -3949,6 +4246,11 @@ TEST_F(StructuredToTileTest, TiledOutputStoresPreserveReadsAndUnknownAliases) {
           loop.getLoc(), mlir::cast<mlir::MemRefType>(full.getType()));
       builder.create<StorageLoadOp>(
           loop.getLoc(), region.getBody().front().getArgument(1), other);
+    } else if (variant == "ddr-copy-source") {
+      auto other = builder.create<mlir::memref::AllocOp>(
+          loop.getLoc(),
+          mlir::cast<mlir::MemRefType>(store.getDest().getType()));
+      builder.create<mlir::memref::CopyOp>(loop.getLoc(), other, full);
     } else if (variant == "write-after-store") {
       builder.setInsertionPointAfter(store);
       auto other = builder.create<mlir::memref::AllocOp>(
@@ -3956,10 +4258,17 @@ TEST_F(StructuredToTileTest, TiledOutputStoresPreserveReadsAndUnknownAliases) {
       builder.create<MoveCopyIntoOp>(store.getLoc(), other, full);
     } else {
       builder.setInsertionPoint(store);
+      auto zero =
+          builder.create<mlir::arith::ConstantIndexOp>(store.getLoc(), 0);
+      auto lateOffset =
+          builder.create<mlir::arith::AddIOp>(store.getLoc(), zero, zero);
       auto view = builder.create<mlir::memref::SubViewOp>(
-          store.getLoc(), store.getDest(), llvm::ArrayRef<int64_t>{0, 0, 0},
-          llvm::ArrayRef<int64_t>{2, 1024, 128},
-          llvm::ArrayRef<int64_t>{1, 1, 1});
+          store.getLoc(), store.getDest(),
+          llvm::ArrayRef<mlir::OpFoldResult>{lateOffset.getResult(),
+                                             builder.getIndexAttr(0),
+                                             builder.getIndexAttr(0)},
+          mlir::getAsIndexOpFoldResult(builder.getContext(), {2, 1024, 128}),
+          mlir::getAsIndexOpFoldResult(builder.getContext(), {1, 1, 1}));
       store->setOperand(1, view);
     }
     ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));

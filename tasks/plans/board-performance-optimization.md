@@ -210,6 +210,34 @@ N=1024/1025，内部producer经广播供16 Tile消费，并明确选择现有sha
 同一subview随后被本地及shared-DDR两个store读取。它来自保留的完整输出初始化/承载buffer，并非要求普通tiler生成第二套算法。
 下一步在实际tile初始化与多出口store的拥有层消除该完整buffer，并沿nested subview追到实际需要的load尺寸；不能把接收端的改进代签完整模型成功。
 
+### 局部初始化、嵌套加载与多出口写回
+
+第1/7项的当前物化路径现在按实际slice局部化未定义的empty初始化；已定义的fill/input仍保留原读取。
+DDR输入沿Subview树递归，只在真实数据使用处加载；shared-DDR的完整carrier与已重定位payload使用同一规则，后者保留相对坐标。
+
+输出侧按实际allocation汇集全部terminal store，证明carrier只有写入、Subview与identity SCF forwarding后，将每次写入发往全部既有出口。
+私有DDR和typed Write binding都适用；出口子窗口的动态参数必须支配原allocation。嵌套输出assembly按更新后的IR继续消除，
+每次成功严格减少一个allocation；只转发地址的loop参数被删除，其余state和原body保留。Shared-DDR publication仍由原completion路径重建。
+
+本边界覆盖与实际结果：
+
+- Empty slice：12组rank3/4、1024/1025/1031、rank reduction、多use及有定义init；实际bufferization不保留无用的完整empty allocation。
+- DDR读取：4/16 Tile × 1024/1025/1031 × whole/direct/nested共18组，检查全坐标覆盖、重定位、main/tail及实际Instr/completion/SPM。
+- 输出：36组1024/1025/1031 × 1/2/3出口 × private/shared × direct/window；包含两层assembly、嵌套循环及保留独立index recurrence。
+  每个位置按顺序写1.25再写2.5，独立坐标执行检查全部出口、窗口外holes、tail和写入顺序，随后通过实际Instr/completion/SPM。
+  读取、变化yield、未知alias、出口alias、晚定义offset、store后写入及DDR copy source七类拒绝例保留原IR。
+- 两组已注册shared-DDR源程序重新执行同次target model/SystemC；8,388,608与8,396,800个输出零容差匹配。
+  当前Instr中两层producer输出carrier及对应GS被消除，每个小块直接写本地和远端；pointwise循环不再保留memref iter_args。
+- 完整canonical增量构建及Ninja no-op通过；完整check-wafer的278 lit、14组件、runtime/public-link、numeric/target numeric和17 SystemC全部实际通过。
+  六组已注册score/shared-DDR source模型与四组fresh prefill/local-conv tail-1031 none/search产品no-card通过。
+
+完整LLaMA与decode继续使用原width=8/trials=42复编。此前定位的完整empty初始化与当前consumer汇集allocation是不同来源：
+后者在LLaMA首候选把16个权重片段汇成实际Cx矩阵，在decode首候选汇集standard reduction contribution。
+不能把前者消除解释为后者已经合法；完整产品及板端验收仍由第4/5项继续推进。
+最新decode复编约224.08秒transaction、42次actual、accepted=0；首候选仍有32 MiB standard-merge assembly，切块候选当前在StorageStore到Instr拒绝。
+下一步继续定位该actual store的端点关系，不能将typed lowering拒绝解释为SPM全局无解。完整LLaMA同源复编仍在执行。
+
+
 ## 既有板端流程与产品矩阵
 
 1. 新鲜导出与编译三条 search FP16 case；逐 case 采集原 profiler。先核对 Count 容量与所有数值/完成门禁。

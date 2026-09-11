@@ -1647,6 +1647,29 @@ mlir::LogicalResult verifyLayoutResolvedTileRegions(mlir::ModuleOp module) {
   return mlir::success(valid);
 }
 
+static void localizeEmptySlices(mlir::ModuleOp module,
+                                StructuredMaterializationRelations &relations) {
+  llvm::SmallVector<mlir::tensor::ExtractSliceOp, 16> slices;
+  module.walk([&](mlir::tensor::ExtractSliceOp slice) {
+    if (slice->getParentOfType<TileRegionOp>())
+      slices.push_back(slice);
+  });
+  StructuredBufferReplacementListener listener(relations);
+  mlir::IRRewriter rewriter(module.getContext(), &listener);
+  for (auto slice : slices) {
+    auto empty = slice.getSource().getDefiningOp<mlir::tensor::EmptyOp>();
+    if (!empty || !slice.getType().hasStaticShape())
+      continue;
+    // Empty tensors carry no contents; a selected slice needs only its own
+    // destination shape. This is the pinned Tensor empty/slice fold.
+    rewriter.setInsertionPoint(slice);
+    rewriter.replaceOpWithNewOp<mlir::tensor::EmptyOp>(slice, slice.getType(),
+                                                       mlir::ValueRange{});
+    if (empty->use_empty())
+      rewriter.eraseOp(empty);
+  }
+}
+
 LayoutOptimizationResult
 resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
                                   StructuredMaterializationRelations &relations,
@@ -1680,6 +1703,8 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
                         : "layout/bufferization stage was already applied";
     return result;
   }
+
+  localizeEmptySlices(module, relations);
 
   std::string detail;
   auto boundaryPlans = preflightBoundarySources(relations, detail);
