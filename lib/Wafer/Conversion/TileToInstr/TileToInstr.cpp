@@ -211,6 +211,12 @@ mlir::LogicalResult wafer::convertTileRegionToInstr(
         "lowering-phase", "tile-region-to-instr", "dead-private-fill-erasure");
     eraseDeadPrivateFills(region.getOperation(), listener);
   }
+  llvm::SmallVector<mlir::memref::SubViewOp, 8> subviews;
+  region.walk([&](mlir::memref::SubViewOp view) { subviews.push_back(view); });
+  mlir::IRRewriter rewriter(region.getContext(), listener);
+  for (auto view : llvm::reverse(subviews))
+    if (view->use_empty())
+      rewriter.eraseOp(view);
   return mlir::success();
 }
 

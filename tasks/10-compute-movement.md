@@ -257,6 +257,20 @@ byte-offset SSA；当前标准Tensor view由base strides提供该证明，不能
 WDMA descriptor，并让actual Instr引用base allocation；被该store唯一消费的dead subview在rewrite中删除。全部Tile-to-Instr pattern
 完成后统一删除其它`use_empty()` pure subview，full target conversion不靠unknown-op规则放过dead view。
 
+`memref.copy`、`StorageStore`与`MoveCopyInto`共用同一次调用内的static endpoint解析：沿actual subview SSA组合offset/stride和rank reduction，
+直到可解释physical encoding的base；source与destination分别证明完整iteration domain。标准strided Tensor view和Cx/NCx view遵循同一逻辑关系，
+不将view type当作独立blocked allocation。动态blocked offset保持Unsupported，标准Tensor的既有线性dynamic offset路径不变。
+同一SSA或具有相同base、type和全部静态/动态参数的两个subview之间的copy是同址恒等写入，可直接删除；参数不同不能仅凭type相同删除。
+该查询不创建IR；通过descriptor证明后，Instr直接引用base及精确offset/range，owner与effect仍由实际生成的Instr消费。
+
+本项覆盖矩阵：
+
+| 输入 | 结构与长度 | exact输出及直接下游 | typed失败 |
+| --- | --- | --- | --- |
+| Static copy endpoints | rank3/4，1024/1025/1031，Tensor/Cx/NCx，source/destination/both、nested、rank reduction、非零offset/stride | descriptor逐字节范围与独立logical坐标oracle一致，无完整view副本；actual Instr、completion/SPM、target lowering | 越界关系、动态blocked offset不可证明时拒绝，不能忽略offset |
+| 既有movement consumers | StorageStore/MoveCopyInto、main/tail | 相同base、range与已有descriptor；Tensor dynamic-offset回归保持 | 无owner或不支持memory space仍拒绝 |
+| Decode产品 | fresh FP16单步source、原width=8/trials=42 | 越过已定位copy拒绝并进入实际SPM gate；只有生成package才运行no-card | capacity、unsupported与预算耗尽仍分开报告 |
+
 per-Tile conversion输出canonical/unplaced Instr：Wafer-tagged memref尚未带runtime address，但instruction kind、
 geometry、descriptor relation、worker-independent effects/ranges和async obligations完整。conversion不选择Tile placement、
 SPM/DDR offset、worker/order或transport resource，也不插入基于region/loop boundary猜出的completion。

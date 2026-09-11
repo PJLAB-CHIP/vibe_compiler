@@ -137,6 +137,22 @@ Decode的下一处已定位到实际copy：切小后的candidate在NCx source/ta
 下一步在10号既有movement合同内统一接入该关系，配对验证source/destination、nested/尾部和actual Instr/SPM。
 第6项的范围明确Trace尚待实施；第4/5/7项的完整产品和匹配板端性能仍未完成。搜索预算比较继续延后。
 
+### Copy子视图的通用搬运接入
+
+第4/7项的NCx子视图copy拒绝已在Tile-to-Instr修复。普通memref.copy、StorageStore和MoveCopyInto的静态端点共用
+actual subview→base IndexRelation组合，包含嵌套、rank reduction和offset/stride；Instr引用实际base和精确descriptor。
+普通Tensor/NTensor的动态起点仍由SSA view携带，不能强制成静态坐标。相同SSA或全部base/type/参数相同的两个subview间copy直接删除；
+不同参数或不同base不删除。转换后逆序删除已无use的subview，保持owner listener和下游target closure。
+
+27组Tensor/Cx/NCx × source/destination/both × 1024/1025/1031通过独立logical坐标到逐字节descriptor的核对；
+包含nested、stride=2、非零offset与rank reduction。动态blocked和越界为拒绝例，同址dynamic view为无搬运正例。
+另三组1024/1025/1031均实际运行生产Instr/completion/SPM路径，再为16 Tile生成DeviceExecutable；不靠footprint估算签发合法性。
+完整62项spatial/temporal回归、完整Conversion组件和受影响driver回归通过。最终canonical完整增量构建、Ninja no-op与
+完整check-wafer通过（278 lit、14组件、runtime/public-link、numeric/target numeric、17 SystemC）。
+
+静态接入的首版曾误拒普通Tensor动态子视图，全量回归定位并修正后重新执行上述检查；修正前的长模型编译不作当前资格。
+完整block/decode正在用修正后版本重新fresh导出与编译；本边界仍不宣称两个完整模型已board-ready。
+
 ## 既有板端流程与产品矩阵
 
 1. 新鲜导出与编译三条 search FP16 case；逐 case 采集原 profiler。先核对 Count 容量与所有数值/完成门禁。

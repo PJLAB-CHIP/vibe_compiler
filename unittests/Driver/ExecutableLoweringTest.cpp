@@ -3,6 +3,7 @@
 #include "Wafer/Driver/ExecutableLowering.h"
 #include "Wafer/CodeGen/DeviceExecutableInternal.h"
 #include "Wafer/CodeGen/LLVM/TargetCodeGenInternal.h"
+#include "Wafer/Conversion/TileToInstr/Pipelines.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Driver/ProgramData/ProgramData.h"
 #include "Wafer/Support/BoundedTilePipelines.h"
@@ -22,6 +23,7 @@
 #include "mlir/Pass/PassManager.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
@@ -126,6 +128,66 @@ TEST_F(ExecutableLoweringTest, ConsumesCompleteTileDomain) {
   EXPECT_EQ(statistics.tileModuleLoweringAttempts, 1u);
   EXPECT_EQ(statistics.tileModuleLoweringSuccesses, 1u);
   EXPECT_EQ(statistics.deviceExecutablesProduced, 1u);
+}
+
+TEST_F(ExecutableLoweringTest, BlockedSubviewCopyReachesActualMemoryPlanning) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto module =
+        parseTileModule(llvm::formatv(R"mlir(
+      func.func @main() {{
+        %token = arith.constant false
+        %unused = wafer.tile.region(%token : i1) -> (i1) {{
+        ^bb0(%done: i1):
+          %source = memref.alloc() : memref<1x1x{0}x32xf16, #wafer.memory<spm, ncx>>
+          %base = memref.alloc() : memref<1x1x{1}x32xf16, #wafer.memory<spm, ncx>>
+          %zero = arith.constant 0.0 : f16
+          wafer.tile.fill %source, %zero {{fill_domain = #wafer.fill_domain<physical_footprint>} : memref<1x1x{0}x32xf16, #wafer.memory<spm, ncx>>, f16
+          %view = memref.subview %base[0, 0, 1, 0] [1, 1, {0}, 32] [1, 1, 1, 1]
+              : memref<1x1x{1}x32xf16, #wafer.memory<spm, ncx>>
+                to memref<1x1x{0}x32xf16, strided<[{2}, {2}, 32, 1], offset: 32>, #wafer.memory<spm, ncx>>
+          memref.copy %source, %view
+              : memref<1x1x{0}x32xf16, #wafer.memory<spm, ncx>>
+                to memref<1x1x{0}x32xf16, strided<[{2}, {2}, 32, 1], offset: 32>, #wafer.memory<spm, ncx>>
+          wafer.tile.yield %done : i1
+        }
+        return
+      })mlir",
+                                      extent, extent + 2, (extent + 2) * 32)
+                            .str());
+    ASSERT_TRUE(module);
+    mlir::PassManager manager(context.get());
+    manager.enableVerifier(true);
+    wafer::buildLowerTileRegionToInstrPipeline(manager);
+    ASSERT_TRUE(mlir::succeeded(manager.run(*module)));
+    const auto memory = wafer::getTargetMemoryPolicy();
+    wafer::SPMMemoryPlanningFailure memoryFailure;
+    ASSERT_TRUE(mlir::succeeded(
+        wafer::planSPMMemoryModule(*module, memory.spmBase, memory.spmLimit,
+                                   memory.spmAlignment, &memoryFailure)));
+    auto config = executionConfig();
+    ASSERT_TRUE(static_cast<bool>(config));
+    std::string text;
+    llvm::raw_string_ostream diagnostics(text);
+    wafer::compiler::detail::ExecutableLoweringFailure failure;
+    wafer::compiler::ProgramDataHandoff programData;
+    auto executable = wafer::compiler::detail::lowerTileModulesToExecutable(
+        makeTileModules(*module), emptyProgram(), *config, diagnostics, failure,
+        programData);
+    ASSERT_TRUE(mlir::succeeded(executable)) << text;
+    EXPECT_FALSE(failure);
+    ASSERT_EQ(executable->tiles.size(), 16u);
+    for (auto &tile : executable->tiles) {
+      unsigned moves = 0;
+      tile.getModule().walk([&](wafer::InstrGatherScatterOp move) {
+        ++moves;
+        EXPECT_EQ(move.getByteCountAttr().getInt(), extent * 32 * 2);
+        EXPECT_TRUE(move.getSource().getDefiningOp<mlir::memref::AllocOp>());
+        EXPECT_TRUE(move.getDest().getDefiningOp<mlir::memref::AllocOp>());
+      });
+      EXPECT_EQ(moves, 1u);
+    }
+  }
 }
 
 TEST_F(ExecutableLoweringTest, DirectDDRKernelMatchesTheRegisteredPassAdapter) {
