@@ -355,12 +355,15 @@ executeConvert(const FormalConvertOperation &command,
 llvm::Expected<std::vector<RawLogicalValue>>
 executeReduce(const FormalReduceOperation &command,
               llvm::ArrayRef<std::vector<RawLogicalValue>> inputs) {
-  if (command.operation != TargetReduceOperation::Sum ||
+  if ((command.operation != TargetReduceOperation::Sum &&
+       command.operation != TargetReduceOperation::Max &&
+       command.operation != TargetReduceOperation::Min) ||
       command.input.getFormat() != LogicalFormat::F32 ||
       command.destination.getFormat() != LogicalFormat::F32 ||
       inputs.size() != 1 ||
       inputs.front().size() != command.input.getElementCount())
-    return referenceError("reduce is outside the native F32 sum domain");
+    return referenceError(
+        "reduce is outside the native F32 sum/max/min domain");
   const llvm::ArrayRef<uint64_t> inputShape = command.input.getShape();
   const std::vector<size_t> reducedDimensions =
       getTargetReduceLogicalDimensions(command.dimension, inputShape.size());
@@ -368,7 +371,12 @@ executeReduce(const FormalReduceOperation &command,
     return referenceError("reduce has no logical dimensions");
 
   const uint64_t outputCount = command.destination.getElementCount();
-  std::vector<float> accumulators(static_cast<size_t>(outputCount), 0.0F);
+  float identity = command.operation == TargetReduceOperation::Max
+                       ? -std::numeric_limits<float>::infinity()
+                   : command.operation == TargetReduceOperation::Min
+                       ? std::numeric_limits<float>::infinity()
+                       : 0.0F;
+  std::vector<float> accumulators(static_cast<size_t>(outputCount), identity);
   llvm::SmallVector<bool, 4> reduced(inputShape.size(), false);
   for (size_t dimension : reducedDimensions)
     reduced[dimension] = true;
@@ -392,7 +400,19 @@ executeReduce(const FormalReduceOperation &command,
     llvm::Expected<float> value = decodeNonNaN(inputs.front()[inputIndex]);
     if (!value)
       return value.takeError();
-    accumulators[destinationIndex] += *value;
+    float &accumulator = accumulators[destinationIndex];
+    if (command.operation == TargetReduceOperation::Sum) {
+      accumulator += *value;
+    } else if (accumulator == 0.0F && *value == 0.0F) {
+      bool negative = command.operation == TargetReduceOperation::Max
+                          ? std::signbit(accumulator) && std::signbit(*value)
+                          : std::signbit(accumulator) || std::signbit(*value);
+      accumulator = negative ? -0.0F : 0.0F;
+    } else {
+      accumulator = command.operation == TargetReduceOperation::Max
+                        ? std::fmax(accumulator, *value)
+                        : std::fmin(accumulator, *value);
+    }
     if (std::isnan(accumulators[destinationIndex]))
       return referenceError("reduce accumulator left the non-NaN domain");
   }

@@ -321,8 +321,12 @@ executeReduce(const FormalReduceOperation &reduce,
 
   const uint64_t outputCount = reduce.destination.getElementCount();
   FormalTensorNumericResult result;
+  uint64_t identity =
+      reduce.operation == TargetReduceOperation::Max   ? UINT64_C(0xff800000)
+      : reduce.operation == TargetReduceOperation::Min ? UINT64_C(0x7f800000)
+                                                       : UINT64_C(0);
   result.values.assign(static_cast<size_t>(outputCount),
-                       RawLogicalValue{LogicalFormat::F32, UINT64_C(0)});
+                       RawLogicalValue{LogicalFormat::F32, identity});
   llvm::SmallVector<bool, 4> reduced(inputShape.size(), false);
   for (size_t dimension : reducedDimensions)
     reduced[dimension] = true;

@@ -742,6 +742,23 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
         PROCESSORS 4
         TIMEOUT 900)
     endforeach()
+    foreach(_max_extent IN ITEMS 1024 1025 1031)
+      foreach(_max_policy IN ITEMS none search)
+        set(_max_test "wafer-runtime-target-model-row-max-${_max_extent}-${_max_policy}-no-card")
+        add_test(NAME ${_max_test}
+          COMMAND ${WAFER_PYTHON_COMMAND}
+            ${CMAKE_CURRENT_SOURCE_DIR}/Board/Support/wafer_target_model_source_runner.py
+            --wafer-compile $<TARGET_FILE:wafer-compile-test>
+            --case row-max --extent ${_max_extent}
+            --optimization-policy ${_max_policy}
+            --work-dir ${CMAKE_CURRENT_BINARY_DIR}/${_max_test})
+        set_tests_properties(${_max_test} PROPERTIES
+          ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Board/Support;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>"
+          LABELS "runtime;no-card;source;target-model;numeric-model"
+          PROCESSORS 4
+          TIMEOUT 900)
+      endforeach()
+    endforeach()
     foreach(_score_extent IN ITEMS 1024 1025)
       foreach(_score_policy IN ITEMS none search)
         set(_score_test "wafer-runtime-target-model-score-rounding-${_score_extent}-${_score_policy}-no-card")

@@ -80,11 +80,14 @@ llvm::Error validateFormalGemmOperation(const FormalGemmOperation &operation) {
 
 llvm::Error
 validateFormalReduceOperation(const FormalReduceOperation &operation) {
-  if (operation.operation != TargetReduceOperation::Sum ||
+  if ((operation.operation != TargetReduceOperation::Sum &&
+       operation.operation != TargetReduceOperation::Max &&
+       operation.operation != TargetReduceOperation::Min) ||
       operation.input.getFormat() != LogicalFormat::F32 ||
       operation.destination.getFormat() != LogicalFormat::F32)
-    return formalError(FormalNumericErrorCode::UnsupportedOperation,
-                       "reduction is outside the formal F32 sum subset");
+    return formalError(
+        FormalNumericErrorCode::UnsupportedOperation,
+        "reduction is outside the formal F32 sum/max/min subset");
   return llvm::Error::success();
 }
 

@@ -174,6 +174,12 @@ formal lane拥有确定的dtype arithmetic、rounding、NaN/Inf/signed-zero、co
 family接收typed target operation/format/parameter；实现未覆盖的组合在任何memory write或flags merge前分类拒绝，不以稀疏policy row、
 wildcard selector或digest resolution决定控制流。
 
+F32 native reduction的formal数学子集包括sum/max/min。Sum保持原逐步RNE加法；max/min复用LLVM APFloat的IEEE maximum/minimum语义，
+分别从负/正无穷初始化，传播canonical NaN、累计signaling-NaN invalid并区分正负零。其它dtype和未支持CT轴仍明确拒绝。
+既有managed-reference lane对非NaN F32的sum/max/min使用同一逻辑遍历与identity，包含无穷和正负零；NaN仍在任何写入前拒绝。
+该扩展用于主机数学验证，不签发硬件位级或性能资格，也不改变被测Instr。覆盖rank3/4、1024/1025/1031、负值、无穷、零、NaN、
+多归约维度、padding和工作预算，并通过真实source到SystemC的输出比较；大模型沿既有显式managed-reference入口执行。
+
 ### 5.3 `WaferOneDNNBackend` qualification lane
 
 大规模支持项可以进入qualified oneDNN implementation，但必须：

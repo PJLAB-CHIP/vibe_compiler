@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wafer-compile", type=pathlib.Path, required=True)
     parser.add_argument("--work-dir", type=pathlib.Path, required=True)
-    parser.add_argument("--case", choices=("add", "score-rounding", "broadcast-add"), default="add")
+    parser.add_argument("--case", choices=("add", "score-rounding", "broadcast-add", "row-max"), default="add")
     parser.add_argument("--extent", type=int, choices=(1024, 1025, 1031), default=1024)
     parser.add_argument("--optimization-policy", choices=("none", "search"), default="none")
     return parser.parse_args()
@@ -98,6 +98,23 @@ def write_case(
     %masked = stablehlo.add %rounded, %rhs : {input_type}
     %result = stablehlo.convert %masked : ({input_type}) -> {wide_type}
 """
+    elif case == "row-max":
+        output_type = f"tensor<2x{extent}x1xf32>"
+        lhs = -((values % 37) + 1).astype(DTYPE)
+        rhs = -((values % 17) + 1).astype(DTYPE)
+        lhs[0, 0, -1] = -np.inf
+        expected = np.max((lhs + rhs).astype(np.float32), axis=2, keepdims=True)
+        body = f"""
+    %sum = stablehlo.add %lhs, %rhs : {input_type}
+    %wide = stablehlo.convert %sum : ({input_type}) -> {wide_type}
+    %init = stablehlo.constant dense<0xFF800000> : tensor<f32>
+    %maximum = "stablehlo.reduce"(%wide, %init) ({{
+      ^bb0(%value: tensor<f32>, %acc: tensor<f32>):
+        %next = stablehlo.maximum %value, %acc : tensor<f32>
+        stablehlo.return %next : tensor<f32>
+    }}) {{dimensions = array<i64: 2>}} : ({wide_type}, tensor<f32>) -> tensor<2x{extent}xf32>
+    %result = stablehlo.reshape %maximum : (tensor<2x{extent}xf32>) -> {output_type}
+"""
     elif case == "broadcast-add":
         output_type = input_type
         lhs = ((values % 37 - 18) / 32).astype(DTYPE)
@@ -128,7 +145,7 @@ def write_case(
         for input_shape in (shape, rhs_shape)
     ]
     metadata["output_signature"] = [{
-        "shape": list(shape), "dtype": "float32" if case == "score-rounding" else "float16",
+        "shape": list(expected.shape), "dtype": "float32" if expected.dtype == np.float32 else "float16",
         "dynamic_dims": [],
     }]
     source_program.write_program(source, module, metadata)
@@ -197,7 +214,9 @@ def main() -> int:
                 raise RuntimeError("shared-DDR model case did not execute temporal and publication paths")
             if "iter_args(" in ir:
                 raise RuntimeError("pointwise outputs still retain loop-carried collection buffers")
-    result_shape = [16, 16, 32, args.extent] if args.case == "broadcast-add" else [2, args.extent, 64]
+    result_shape = ([16, 16, 32, args.extent] if args.case == "broadcast-add"
+                    else [2, args.extent, 1] if args.case == "row-max"
+                    else [2, args.extent, 64])
     print(
         "target-model source vertical passed: shape="
         f"{result_shape} case={args.case} tiles={len(entries)} package={package}"

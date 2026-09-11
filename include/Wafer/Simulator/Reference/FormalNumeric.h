@@ -149,10 +149,9 @@ llvm::Expected<FormalNumericResult>
 evaluateFormalGemmFinalize(const FormalGemmOperation &operation,
                            RawLogicalValue accumulator);
 
-/// Effect-free single addition for the supported native F32 sum reduction.
-/// Both operands and the returned accumulator are canonical F32. Each step is
-/// rounded to nearest-even; tensor traversal order belongs to the tensor
-/// dispatcher and is part of the resolved reduction policy.
+/// Effect-free F32 sum/maximum/minimum step. Sum rounds to nearest-even;
+/// extrema preserve IEEE signed-zero order and canonical NaN propagation.
+/// Tensor traversal order belongs to the tensor dispatcher.
 llvm::Expected<FormalNumericResult>
 evaluateFormalReduceStep(const FormalReduceOperation &operation,
                          RawLogicalValue accumulator, RawLogicalValue input);

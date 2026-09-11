@@ -44,9 +44,16 @@ evaluateFormalReduceStep(const FormalReduceOperation &operation,
                            canonicalPositiveQuietNaNBits(descriptor), flags);
 
   llvm::APFloat result = decodeFloat(*canonicalAccumulator);
-  llvm::APFloat::opStatus status = result.add(
-      decodeFloat(*canonicalInput), llvm::APFloat::rmNearestTiesToEven);
-  mergeFlags(flags, flagsFromStatus(status));
+  llvm::APFloat inputValue = decodeFloat(*canonicalInput);
+  if (operation.operation == TargetReduceOperation::Sum) {
+    llvm::APFloat::opStatus status =
+        result.add(inputValue, llvm::APFloat::rmNearestTiesToEven);
+    mergeFlags(flags, flagsFromStatus(status));
+  } else if (operation.operation == TargetReduceOperation::Max) {
+    result = llvm::maximum(result, inputValue);
+  } else {
+    result = llvm::minimum(result, inputValue);
+  }
   if (result.isNaN())
     return finishRawResult(LogicalFormat::F32,
                            canonicalPositiveQuietNaNBits(descriptor), flags);

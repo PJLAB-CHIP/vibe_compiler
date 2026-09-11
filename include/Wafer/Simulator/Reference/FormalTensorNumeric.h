@@ -93,9 +93,10 @@ private:
 /// Executes one checked family operation over logical-dense raw values.
 /// Complete operation, input size,
 /// input encoding, and checked work-budget validation happens before output
-/// allocation. Native reduction and every static unsupported capability fail
-/// closed. On every error the caller context is unchanged and no result is
-/// returned; flags are recorded only after the complete tensor succeeds.
+/// allocation. Unsupported reduction combinations and other unsupported
+/// capabilities fail closed. On every error the caller context is unchanged and
+/// no result is returned; flags are recorded only after the complete tensor
+/// succeeds.
 llvm::Expected<FormalTensorNumericResult> executeFormalTensorNumeric(
     FormalNumericExecutionContext &context,
     const FormalConvertOperation &operation,
