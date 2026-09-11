@@ -93,7 +93,35 @@ ctest --preset default -j$(nproc)
 
 任务结果只报告真正运行的target和case，不把构建一个object、收集到一个test或生成fixture写成端到端通过。
 
-### 3.1 Canonical build gate
+### 3.1 PyTorch板测唯一入口
+
+`test/Board/PyTorch/wafer_board_pytorch_test.py`统一拥有source导出、编译、运行与完整PyTorch校验。
+输入为current case及显式compiler/runtime；默认生成package，`--prepared-work-dir`则读取本轮已准备的
+source/package，省去重复编译。输出为独立`--work-dir`下的新source、payload、reference及执行记录，
+直接消费者仍为`wafer-run`；ordinary/profile和decode continuation共用同一条校验与执行路径。
+Profile报告继续由runtime写入对应instrumentation的`runs`目录，runner在本次执行日志中记录其位置。
+`--completion-timeout-ms`只约束各次设备执行。Ordinary执行另有进程退出余量；profile在设备采集后还需
+生成主机报告，因此不套用该设备派生的总进程期限。主机报告失败单独记录，不能据此判为设备超时或停止后续设备批次；
+真实设备timeout或异常仍停止批次且不重试。
+
+复用前重新导出case，逐文件检查source graph、metadata和不可变参数与准备目录一致；runtime输入和reference
+始终从本次case重建，不读取旧raw/capture。Decode第二步消费第一步实际输出，不能要求它与no-card参考接续的
+raw相等。准备目录与输出目录必须互不包含，复用输出目录必须尚不存在；完整no-card在任何设备launch之前执行。
+复用不重新签发compiler freshness：调用者只能指定本轮current build产生的产物，compiler/ABI变化后须重新准备。
+本入口不实现缓存查找、安装SDK、设备重试、reset或编译策略fallback，设备资格继续使用原有显式参数。
+
+覆盖矩阵与完成条件：
+
+| 输入/分支 | exact结果或失败 | 直接消费者 |
+| --- | --- | --- |
+| FP16 rank3+、1024/1031，ordinary/profile；新编译/复用 | source/参数一致，复用不调用compiler；新payload与全输出reference，profile范围参数保留 | 本轮完整package与strict no-card |
+| source/参数改变、缺少产物、准备与输出目录重叠 | 在设备执行前明确失败，不删除准备产物或覆盖已有回读 | runner负例 |
+| 两步state chain | 第二步输入使用本次实际回读，原dtype、shape与全输出比较不变 | 共用continuation及数值校验 |
+| 缺生命周期、输出错误、设备timeout | 本case失败且不重试；设备timeout或异常停止批次 | 共用`verify_board`、runtime watchdog与`run` |
+| Ordinary/profile执行期限 | 两者均传设备watchdog；profile报告不受设备派生总期限约束 | runner到runtime调用边界测试与实际profile |
+| DTE贡献组装、完整view/紧凑buffer、layout materialization、copy_into | 从actual SSA追踪16个来源及全局/局部窗口；缺来源、重复来源、错窗口均拒绝 | 正式通信资格入口、1024/1025/1031及注入负例 |
+
+### 3.2 Canonical build gate
 
 ```text
 Pipeline position:
@@ -159,7 +187,7 @@ lit的`UNSUPPORTED`和skip只表示未执行。canonical build中的测试若因
 | product install | full、`Compiler`、`Runtime` component | 缺文件、跨component泄漏、build绝对路径或不可执行资源失败 | full含compiler/runtime；Compiler含compiler/helper/frontend资源且无runtime tool；Runtime含run/loader资源且无compiler | install-tree smoke及package/runtime consumer |
 | 特殊配置 | board SDK、sanitizer、debug | 未满足外部前置时不创建或typed停止 | 不在repo内建立第二CMake tree，不代签canonical build gate | 对应board或诊断owner |
 
-### 3.2 编译与设备热点修复的证据边界
+### 3.3 编译与设备热点修复的证据边界
 
 同一优化任务可以连续交付current-IR根因、主机修复、模型执行、fresh no-card和板端复验；各层证据分别消费
 本轮产物，不能因设备不可用停止可独立完成的主机工作，也不能以低层完成代签设备收益。
@@ -282,10 +310,12 @@ DDR/DTE资源交换不得产生不可比结论。估时质量与搜索coverage�
 每个comparison cohort预先确定统一typed target facts与enabled terms；exact work、admissible bound和estimate分开。测试必须证明：
 
 - hard legality/capacity failure仍然fail closed；
-- 缺性能参数、dynamic multiplicity和arithmetic overflow产生typed Unknown/Incomparable，不按0或极大值比较；
+- 缺性能参数或dynamic multiplicity时原始work保持typed unknown，排序按06号形成显式粗估；arithmetic overflow饱和且标记粗估，
+  同cohort合法候选仍可比较，缺失或混用cohort按调用合同错误处理；
 - per-Tile compute、shared DDR、endpoint/minimum-hop/cut NoC、per-Tile explicit SPM movement和available control work保留各自knowledge；只有
   qualified exact route才有directed-link work；
-- dependency phases相加，独立branch/资源取并发最大值，只有显式double/triple buffering才用steady-state II；
+- 当前标量估时按同Tile资源服务时间相加、不同Tile取最大，再计整卡共享资源；该近似不是actual schedule，
+  不从aggregate虚构dependency phase、overlap或steady-state II；
 - estimate只排priority，不剪枝；lower bound逐prefix与flat completion minimum比较不高估；raw work与term source不写入selected IR。
 - PBQP hard factor只表达current interface/encoding的exact legality；finite objective只计unique actual layout materialization，shared
   conversion在同一dominance/effect cohort内只计一次，fixed-compute result publication按实际materialization计数。Descriptor、engine、

@@ -12,6 +12,9 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/raw_ostream.h"
+#include <algorithm>
+#include <cassert>
 #include <functional>
 #include <map>
 #include <set>
@@ -203,12 +206,21 @@ static Result verifyOrder(const Collection &collection,
                      SyncDDRAcquireOp>(op);
   };
   llvm::SmallVector<mlir::Operation *> operations;
+  llvm::SmallVector<TileId> operationTiles;
   llvm::SmallVector<llvm::SmallVector<unsigned, 2>> successors;
   llvm::SmallVector<unsigned> degree;
-  auto edge = [&](unsigned from, unsigned to) {
+  enum class DependencyKind {
+    TileOrder,
+    ReceiveReady,
+    TokenCompletion,
+    Publication
+  };
+  std::map<std::pair<unsigned, unsigned>, DependencyKind> edgeKinds;
+  auto edge = [&](unsigned from, unsigned to, DependencyKind kind) {
     if (!llvm::is_contained(successors[from], to)) {
       successors[from].push_back(to);
       ++degree[to];
+      edgeKinds.emplace(std::make_pair(from, to), kind);
     }
   };
   using Message = std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t>;
@@ -232,10 +244,11 @@ static Result verifyOrder(const Collection &collection,
         if (isBlockingPoint(&op)) {
           unsigned node = operations.size();
           operations.push_back(&op);
+          operationTiles.push_back(tileIds[index]);
           successors.emplace_back();
           degree.push_back(0);
           if (previous)
-            edge(*previous, node);
+            edge(*previous, node, DependencyKind::TileOrder);
           previous = node;
           bool unique = true;
           if (auto send = mlir::dyn_cast<InstrDTESendOp>(op))
@@ -317,7 +330,7 @@ static Result verifyOrder(const Collection &collection,
     unsigned recv = receive->second;
     // CRT send issue consumes peer-ready; waits need both endpoint issues.
     // Match the existing DirectDTETransport wait-graph contract exactly.
-    edge(recv, send);
+    edge(recv, send, DependencyKind::ReceiveReady);
     for (unsigned node : {send, recv}) {
       prerequisites[operations[node]].push_back(send);
       prerequisites[operations[node]].push_back(recv);
@@ -342,14 +355,14 @@ static Result verifyOrder(const Collection &collection,
       if (found == prerequisites.end())
         return unsupported("shared DDR order cannot resolve a DTE wait token");
       for (unsigned issue : found->second)
-        edge(issue, index);
+        edge(issue, index, DependencyKind::TokenCompletion);
     }
   }
   for (auto [resource, acquire] : acquisitions) {
     auto publish = publishers.find(resource);
     if (publish == publishers.end())
       return contract("shared DDR order has an acquire without publication");
-    edge(publish->second, acquire);
+    edge(publish->second, acquire, DependencyKind::Publication);
   }
   llvm::SmallVector<unsigned> ready;
   for (unsigned node = 0; node < degree.size(); ++node)
@@ -359,10 +372,59 @@ static Result verifyOrder(const Collection &collection,
     for (unsigned next : successors[ready[index]])
       if (--degree[next] == 0)
         ready.push_back(next);
-  return ready.size() == operations.size()
-             ? Result{}
-             : unsupported("shared DDR and DTE completion dependencies contain "
-                           "a cycle");
+  if (ready.size() == operations.size())
+    return {};
+
+  // Every residual node has a residual predecessor. Following predecessors
+  // recovers an actual cycle without recursion or changing the failure gate.
+  llvm::SmallVector<std::optional<unsigned>> predecessor(operations.size());
+  for (unsigned from = 0; from < operations.size(); ++from)
+    if (degree[from])
+      for (unsigned to : successors[from])
+        if (degree[to] && !predecessor[to])
+          predecessor[to] = from;
+  unsigned node = 0;
+  while (!degree[node])
+    ++node;
+  std::map<unsigned, size_t> positions;
+  llvm::SmallVector<unsigned> path;
+  while (!positions.count(node)) {
+    positions.emplace(node, path.size());
+    path.push_back(node);
+    assert(predecessor[node] && "residual node must have a predecessor");
+    node = *predecessor[node];
+  }
+  path.erase(path.begin(), path.begin() + positions.find(node)->second);
+  std::reverse(path.begin(), path.end());
+  path.push_back(path.front());
+  std::string detail;
+  llvm::raw_string_ostream stream(detail);
+  stream << "shared DDR and DTE completion dependencies contain a cycle";
+  for (size_t index = 0; index + 1 < path.size(); ++index) {
+    const unsigned from = path[index], to = path[index + 1];
+    auto reason = edgeKinds.find({from, to});
+    assert(reason != edgeKinds.end() && "cycle must follow an actual edge");
+    stream << "\n  cycle-edge from=" << from << " to=" << to << " kind=";
+    switch (reason->second) {
+    case DependencyKind::TileOrder:
+      stream << "tile-order";
+      break;
+    case DependencyKind::ReceiveReady:
+      stream << "recv-ready";
+      break;
+    case DependencyKind::TokenCompletion:
+      stream << "token-completion";
+      break;
+    case DependencyKind::Publication:
+      stream << "ddr-publication";
+      break;
+    }
+    stream << "\n    tile=" << operationTiles[from].getValue() << " ";
+    operations[from]->print(stream);
+    stream << "\n    tile=" << operationTiles[to].getValue() << " ";
+    operations[to]->print(stream);
+  }
+  return unsupported(stream.str());
 }
 
 static bool isZeroInitialized(mlir::BlockArgument argument,

@@ -41,6 +41,161 @@ def read_portable_stablehlo(program: pathlib.Path) -> str:
 
 
 class PyTorchBoardCasesTest(unittest.TestCase):
+    def test_profile_keeps_device_watchdog_without_timing_out_host_report(self):
+        outputs = (torch.zeros((1, 1, 1024), dtype=torch.float16),)
+        case = cases.PyTorchBoardCase(
+            name="launch-reference", num_partitions=1, dtype=torch.float16,
+            inputs=outputs, expected_outputs_factory=lambda: outputs,
+            export_program=lambda _path: None,
+            comparison_policy=cases.ATTENTION_COMPARISON,
+        )
+        for profile in (False, True):
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                argv = [
+                    "runner", "--case", "attention-prefill", "--wafer-compile", "compile",
+                    "--wafer-run", "run", "--work-dir", str(root / "work"),
+                    "--expected-runtime-version", "1300", "--expected-device-name", "device",
+                    "--expected-pci-bus-id", "bus", "--expected-tile-count", "16",
+                    "--expected-runtime-library-sha256", "digest", "--completion-timeout-ms", "7000",
+                ] + (["--profile"] if profile else [])
+                with (
+                    mock.patch.object(sys, "argv", argv),
+                    mock.patch.dict(os.environ, {"WAFER_EXECUTE_HARDWARE_TESTS": "1"}),
+                    mock.patch.object(cases, "make_case", return_value=case),
+                    mock.patch.object(board_runner, "prepare_case_step", return_value=(
+                        outputs, [], {}, set(), {},
+                    )),
+                    mock.patch.object(board_runner, "run", return_value=types.SimpleNamespace(
+                        stdout="", stderr="",
+                    )) as run,
+                    mock.patch.object(board_runner, "verify_no_card"),
+                    mock.patch.object(board_runner, "verify_board"),
+                    mock.patch.object(board_runner, "read_single_card_continuation_outputs",
+                                      return_value=outputs),
+                    mock.patch.object(board_runner, "file_sha256", return_value="digest"),
+                ):
+                    self.assertEqual(board_runner.main(), 0)
+                self.assertEqual(run.call_count, 2)
+                no_card, launch = run.call_args_list
+                self.assertIn("--no-card", no_card.args[0])
+                command = launch.args[0]
+                self.assertIn("--board", command)
+                self.assertEqual(command[command.index("--completion-timeout-ms") + 1], "7000")
+                self.assertEqual(launch.kwargs["timeout_seconds"], None if profile else 67)
+
+    def test_compact_contribution_assembly_preserves_sources_and_global_window(self):
+        # The full input has extent 1025; this is its real 64-element Tile 1 tail shard.
+        lines = [
+            "wafer.tile.region(%input : memref<16x1025x1xf16>) -> () {",
+            "%local = memref.subview %input[1, 65, 0] [1, 64, 1] [1, 1, 1]",
+        ]
+        for peer in range(16):
+            source = "%local" if peer == 1 else f"%recv_{peer}"
+            if peer != 1:
+                lines.append(f"wafer.tile.peer_recv {source} {{peer = {peer} : i64}}")
+            lines.extend([
+                f"%slot_{peer} = memref.subview %assembly[{peer}, 0, 0] [1, 64, 1] [1, 1, 1]",
+                f"%layout_{peer} = wafer.tile.materialize_layout {source} : memref<1x64x1xf16>",
+                f"wafer.tile.copy_into %layout_{peer} into %slot_{peer} : memref<1x64x1xf16>",
+            ])
+        lines.extend([
+            "%sum = wafer.tile.reduce <sum> %assembly, %zero {dimensions = array<i64: 0>} : (memref<16x64x1xf16, #wafer.memory<spm, ncx>>, f16)",
+            "}",
+        ])
+        text = "\n".join(lines)
+        for shard in (None, (65, 64)):
+            self.assertEqual(
+                board_runner.verify_reduce_scatter_contributions(text, 1, 1025, shard),
+                (65, 64),
+            )
+        faults = (
+            text.replace("peer = 0 : i64", "peer = 2 : i64"),
+            text.replace("[1, 65, 0]", "[1, 64, 0]"),
+            text.replace("wafer.tile.copy_into %layout_0 into %slot_0", "removed %layout_0 %slot_0"),
+            text.replace("%slot_2 : memref", "%slot_0 : memref"),
+        )
+        for corrupted in faults:
+            with self.assertRaises(RuntimeError):
+                board_runner.verify_reduce_scatter_contributions(corrupted, 1, 1025, (65, 64))
+
+    def test_prepared_source_checks_graph_parameters_and_file_set(self):
+        # File-boundary negative tests; production-size no-card covers execution.
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared, fresh = root / "prepared", root / "fresh"
+            for path in (prepared, fresh):
+                (path / "functions").mkdir(parents=True)
+                (path / "data").mkdir()
+                (path / "functions/forward.stablehlo.bc").write_bytes(b"graph")
+                (path / "data/weight").write_bytes(b"weight")
+            board_runner.verify_prepared_source(prepared, fresh)
+            for name in ("functions/forward.stablehlo.bc", "data/weight"):
+                path = fresh / name
+                original = path.read_bytes()
+                path.write_bytes(b"changed")
+                with self.assertRaisesRegex(RuntimeError, "prepared source differs"):
+                    board_runner.verify_prepared_source(prepared, fresh)
+                path.write_bytes(original)
+            (fresh / "data/weight").unlink()
+            with self.assertRaisesRegex(RuntimeError, "prepared source differs"):
+                board_runner.verify_prepared_source(prepared, fresh)
+
+    def test_prepared_output_cannot_remove_or_overwrite_existing_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = root / "prepared"
+            prepared.mkdir()
+            sentinel = prepared / "capture"
+            sentinel.write_bytes(b"keep")
+            for output in (prepared, prepared / "child", root):
+                with self.assertRaisesRegex(RuntimeError, "must not overlap"):
+                    board_runner.validate_prepared_directories(prepared, output)
+            output = root / "invocation"
+            board_runner.validate_prepared_directories(prepared, output)
+            output.mkdir()
+            with self.assertRaisesRegex(RuntimeError, "fresh output"):
+                board_runner.validate_prepared_directories(prepared, output)
+            self.assertEqual(sentinel.read_bytes(), b"keep")
+
+    def test_prepared_step_reuses_package_but_rebuilds_payload_and_reference(self):
+        for profile in (False, True):
+            with tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                prepared, invocation = root / "prepared", root / "invocation"
+                invocation.mkdir()
+                package = prepared / ("package/package" if profile else "package")
+                package.mkdir(parents=True)
+                (package / "manifest.json").write_text("{}")
+                def export(path):
+                    path.mkdir()
+                    (path / "graph").write_bytes(b"same-current-graph")
+                export(prepared / "source-program")
+                expected = (torch.zeros((1, 2, 1031), dtype=torch.float16),)
+                case = types.SimpleNamespace(
+                    export_program=export, gemm_dimensions=None,
+                    materialize_expected_outputs=mock.Mock(return_value=expected),
+                )
+                args = types.SimpleNamespace(
+                    qualify_communication=None, optimization_policy="search",
+                )
+                with (
+                    mock.patch.object(board_runner, "run") as compiler,
+                    mock.patch.object(board_runner, "prepare_runtime_payloads",
+                                      return_value=([], {}, set(), {})) as payload,
+                ):
+                    result = board_runner.prepare_case_step(
+                        args, case, step_index=0, step_dir=invocation,
+                        source=invocation / "source-program", package=package,
+                        dump_compiler_ir=None, prepared_step=prepared,
+                    )
+                compiler.assert_not_called()
+                case.materialize_expected_outputs.assert_called_once()
+                self.assertIs(result[0], expected)
+                payload.assert_called_once_with(
+                    invocation, invocation / "source-program", package, case, expected
+                )
+
     def test_precision_cases_keep_eager_operator_rounding_and_default_tolerance(self):
         for extent in (1024, 1025, 1031):
             conv = cases.make_biased_conv(torch.float16, 20260803, extent=extent)
@@ -263,6 +418,8 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             case="attention-decode-kv-cache",
             dtype="float16",
             seed=17,
+            prepared_work_dir=None, search_width=None, search_trials=None,
+            compile_timeout_seconds=1800,
             wafer_compile=pathlib.Path("wafer-compile"),
             wafer_run=pathlib.Path("wafer-run"),
             work_dir=pathlib.Path("work"),
@@ -400,6 +557,8 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             ),
         )
         args = types.SimpleNamespace(
+            prepared_work_dir=None, search_width=None, search_trials=None,
+            compile_timeout_seconds=1800,
             wafer_compile=pathlib.Path("wafer-compile"),
             compile_timing=False, profile=False, profile_trace_event_limit=None,
             optimization_policy="none",
@@ -448,7 +607,12 @@ class PyTorchBoardCasesTest(unittest.TestCase):
         )
         for policy in ("none", "search"):
             args = types.SimpleNamespace(
-                wafer_compile=pathlib.Path("wafer-compile"), compile_timing=False, profile=False, profile_trace_event_limit=None,
+                prepared_work_dir=None,
+                search_width=16 if policy == "search" else None,
+                search_trials=126 if policy == "search" else None,
+                compile_timeout_seconds=2400,
+                wafer_compile=pathlib.Path("wafer-compile"), compile_timing=False,
+                profile=False, profile_trace_event_limit=None,
                 optimization_policy=policy, qualify_communication=None,
             )
             with (
@@ -469,7 +633,14 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 gather.assert_not_called()
                 exchange.assert_not_called()
                 reduce.assert_not_called()
-                self.assertFalse(any("test-communication" in arg for arg in command.call_args.args[0]))
+                compile_command = command.call_args.args[0]
+                self.assertFalse(any("test-communication" in arg for arg in compile_command))
+                self.assertEqual(command.call_args.kwargs["timeout_seconds"], 2400)
+                for option, expected in (("--search-width", "16"), ("--search-trials", "126")):
+                    if policy == "search":
+                        self.assertEqual(compile_command[compile_command.index(option) + 1], expected)
+                    else:
+                        self.assertNotIn(option, compile_command)
             args.qualify_communication = "ring-allgather"
             args.optimization_policy = "search"
             with mock.patch.object(board_runner, "run") as command:
@@ -480,6 +651,16 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                         dump_compiler_ir=None,
                     )
                 command.assert_not_called()
+
+    def test_output_error_audit_preserves_valid_json_for_nonfinite_values(self) -> None:
+        # Tiny scalar oracle for the diagnostic format, not numeric qualification.
+        finite = torch.tensor([1.0, 2.0])
+        audit = board_runner.summarize_output_error(finite + 0.25, finite)
+        self.assertEqual(audit["max_abs_error"], 0.25)
+        special = torch.tensor([float("nan"), float("inf")])
+        audit = board_runner.summarize_output_error(special, special)
+        self.assertIsNone(audit["max_abs_error"])
+        json.dumps(audit, allow_nan=False)
 
     def test_board_continuation_reads_the_step_one_captures(self) -> None:
         expected = (
@@ -859,6 +1040,16 @@ class PyTorchBoardCasesTest(unittest.TestCase):
         self.assertEqual(updated_value.shape[-2], past_value.shape[-2] + 1)
         self.assertTrue(torch.equal(updated_key[..., :-1, :], past_key))
         self.assertTrue(torch.equal(updated_value[..., :-1, :], past_value))
+        self.assertIsNotNone(case.validate_actual_outputs)
+        case.validate_actual_outputs((attention, updated_key, updated_value))
+        for index in (1, 2):
+            corrupted = [attention, updated_key, updated_value]
+            corrupted[index] = corrupted[index].clone()
+            # A single stored-bit change must fail even within numeric tolerance.
+            bits = corrupted[index].view(torch.int16)
+            bits[0, 0, 0, 0] ^= 1
+            with self.assertRaisesRegex(RuntimeError, "existing KV prefix"):
+                case.validate_actual_outputs(tuple(corrupted))
         self.assertIsNotNone(case.continuation_factory)
         continuation = case.continuation_factory(
             (attention, updated_key, updated_value)

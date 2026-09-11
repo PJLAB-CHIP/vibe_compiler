@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -36,6 +38,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wafer-compile", type=pathlib.Path, required=True)
     parser.add_argument("--wafer-run", type=pathlib.Path, required=True)
     parser.add_argument("--work-dir", type=pathlib.Path, required=True)
+    parser.add_argument(
+        "--prepared-work-dir", type=pathlib.Path,
+        help="reuse this round's source/package; write fresh payloads to --work-dir",
+    )
     parser.add_argument("--dump-compiler-ir", type=pathlib.Path)
     parser.add_argument("--compile-timing", action="store_true")
     parser.add_argument("--profile", action="store_true")
@@ -60,6 +66,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-runtime-library-sha256")
     parser.add_argument("--completion-timeout-ms", type=int, default=60000)
     parser.add_argument("--repeat", type=int, default=1)
+    parser.add_argument("--search-width", type=int)
+    parser.add_argument("--search-trials", type=int)
+    parser.add_argument("--compile-timeout-seconds", type=int, default=COMPILE_TIMEOUT_SECONDS)
     return parser.parse_args()
 
 
@@ -134,6 +143,48 @@ def prepare_work_dir(work_dir: pathlib.Path) -> None:
     if work_dir.exists():
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True)
+
+
+def validate_prepared_directories(
+    prepared: pathlib.Path, output: pathlib.Path,
+) -> None:
+    prepared, output = prepared.resolve(), output.resolve()
+    if output.is_relative_to(prepared) or prepared.is_relative_to(output):
+        raise RuntimeError("prepared and output directories must not overlap")
+    if not prepared.is_dir():
+        raise RuntimeError("prepared work directory does not exist")
+    if output.exists():
+        raise RuntimeError("reuse requires a fresh output directory")
+
+
+def file_sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def summarize_output_error(actual: torch.Tensor, expected: torch.Tensor) -> dict:
+    maximum = (actual.float() - expected.float()).abs().max().item()
+    return {
+        "shape": list(expected.shape), "dtype": str(expected.dtype),
+        "elements": expected.numel(),
+        "max_abs_error": maximum if math.isfinite(maximum) else None,
+    }
+
+
+def verify_prepared_source(prepared: pathlib.Path, fresh: pathlib.Path) -> None:
+    def contents(directory: pathlib.Path) -> dict[str, str]:
+        return {
+            str(path.relative_to(directory)): file_sha256(path)
+            for path in sorted(directory.rglob("*")) if path.is_file()
+        }
+    original, current = contents(prepared), contents(fresh)
+    if not original or original != current:
+        changed = sorted(key for key in original.keys() | current.keys()
+                         if original.get(key) != current.get(key))
+        raise RuntimeError(f"prepared source differs from current case: {changed}")
 
 
 def case_step_paths(
@@ -530,8 +581,8 @@ def verify_ring_allgather(
 
 
 def verify_reduce_scatter_contributions(
-    ir: str, tile: int, extent: int, output_shard: tuple[int, int]
-) -> None:
+    ir: str, tile: int, extent: int, output_shard: tuple[int, int] | None
+) -> tuple[int, int]:
     """Follow the actual receive buffers into the selected sum's input slots."""
     regions: list[str] = []
     lines: list[str] = []
@@ -564,25 +615,46 @@ def verify_reduce_scatter_contributions(
         r"wafer\.tile\.reduce <sum> (%[\w]+), %\w+ "
         r"\{dimensions = array<i64: 0>\} : \(memref<16x(\d+)x1xf16,", body
     )
-    if len(reductions) != 1 or int(reductions[0][1]) != output_shard[1]:
+    if len(reductions) != 1:
         raise RuntimeError("ReduceScatter lacks the full 16-source sum")
-    reduced_view = views.get(layouts.get(reductions[0][0], ""))
-    offset, size = output_shard
-    if reduced_view is None or reduced_view[1:] != ((0, offset, 0), (16, size, 1)):
-        raise RuntimeError("ReduceScatter sum consumes the wrong shard")
-    assembled = reduced_view[0]
+    size = int(reductions[0][1])
+
+    def before_layout(value: str) -> str:
+        visited: set[str] = set()
+        while value in layouts:
+            if value in visited:
+                raise RuntimeError("ReduceScatter layout chain contains a cycle")
+            visited.add(value)
+            value = layouts[value]
+        return value
+
+    reduced = before_layout(reductions[0][0])
+    reduced_view = views.get(reduced)
+    if reduced_view is None:
+        assembled, assembly_column = reduced, 0
+    else:
+        assembled, offsets, sizes = reduced_view
+        if offsets[0] != 0 or offsets[2] != 0 or sizes != (16, size, 1):
+            raise RuntimeError("ReduceScatter sum consumes the wrong shard")
+        assembly_column = offsets[1]
+    offset = None if output_shard is None else output_shard[0]
+    if output_shard is not None and size != output_shard[1]:
+        raise RuntimeError("ReduceScatter sum has the wrong shard size")
     receives = {
         buffer: int(peer) for buffer, peer in re.findall(
             r"wafer\.tile\.peer_recv (%[\w]+) \{.*?peer = (\d+) : i64", body
         )
     }
     contributions: dict[int, str] = {}
-    for source, destination in re.findall(r"memref\.copy (%[\w]+), (%[\w]+) :", body):
+    copies = re.findall(r"memref\.copy (%[\w]+), (%[\w]+) :", body)
+    copies += re.findall(r"wafer\.tile\.copy_into (%[\w]+) into (%[\w]+) :", body)
+    for source, destination in copies:
+        source = before_layout(source)
         view = views.get(destination)
         if view is None or view[0] != assembled:
             continue
         participant, column, last = view[1]
-        if (column, last) != (offset, 0) or view[2] != (1, size, 1):
+        if (column, last) != (assembly_column, 0) or view[2] != (1, size, 1):
             raise RuntimeError("ReduceScatter contribution has the wrong window")
         if participant in contributions:
             raise RuntimeError("ReduceScatter duplicates a contribution")
@@ -590,11 +662,18 @@ def verify_reduce_scatter_contributions(
             raise RuntimeError("ReduceScatter places a receive in the wrong source slot")
         if participant == tile:
             local = views.get(source)
-            if local is None or local[1:] != ((tile, offset, 0), (1, size, 1)):
+            if local is None:
                 raise RuntimeError("ReduceScatter omits its local source contribution")
+            if offset is None:
+                offset = local[1][1]
+            if local[1:] != ((tile, offset, 0), (1, size, 1)):
+                raise RuntimeError("ReduceScatter has the wrong local source window")
         contributions[participant] = source
     if sorted(contributions) != list(range(PHYSICAL_TILE_COUNT)):
         raise RuntimeError("ReduceScatter does not consume every source exactly once")
+    if offset is None or offset < 0 or offset + size > extent:
+        raise RuntimeError("ReduceScatter source window is outside the full domain")
+    return offset, size
 
 def verify_personalized_exchange(
     package: pathlib.Path, dump: pathlib.Path, extent: int, *, reduce_scatter: bool = False
@@ -719,12 +798,7 @@ def _verify_all_reduce_ir(
                 r"\[([\d, ]+)\] \[[1, ]+\]", ir
             )
         }
-        slices = [view for view in views.values()
-                  if view[2] == (16, int(reduction[2]), 1)]
-        if len(slices) != 1:
-            raise RuntimeError("AllReduce lacks one exact contribution shard")
-        shards[tile] = (slices[0][1][1], int(reduction[2]))
-        verify_reduce_scatter_contributions(ir, tile, extent, shards[tile])
+        shards[tile] = verify_reduce_scatter_contributions(ir, tile, extent, None)
         issues = _read_peer_issues(ir, "tile.peer")
         for phase in (0, 1):
             for kind in ("send", "recv"):
@@ -737,9 +811,6 @@ def _verify_all_reduce_ir(
         seed = gather_sends[0].buffer
         layouts = {match[1]: (match[2], match.start()) for match in re.finditer(
             r"(%\w+) = wafer\.tile\.materialize_layout (%\w+) :", ir
-        )}
-        adds = {result: (lhs, rhs) for result, lhs, rhs in re.findall(
-            r"(%\w+) = wafer\.tile\.elementwise <add> (%\w+), (%\w+)", ir
         )}
         if seed not in layouts:
             raise RuntimeError("AllReduce lacks the published result layout")
@@ -758,11 +829,20 @@ def _verify_all_reduce_ir(
                      ir[reduction.end():copied_at]):
             raise RuntimeError("AllReduce retains a redundant local sum writeback")
         seeds[tile] = seed
-        final_views = [rhs for lhs, rhs in adds.values()
-                       if rhs in views and views[rhs][1:] == ((0, 0), (extent, 1))]
-        if len(final_views) != 1:
+        final_inputs = re.findall(
+            rf"wafer\.tile\.elementwise <add> %\w+, (%\w+) [^\n]*"
+            rf": \(memref<1x{extent}x1xf16,[^\n]*?>, "
+            rf"memref<{extent}x1xf16,", ir
+        )
+        if len(final_inputs) != 1:
             raise RuntimeError("AllReduce does not consume the complete gathered result")
-        final_buffers[tile] = views[final_views[0]][0]
+        final_input = final_inputs[0]
+        if final_input in views:
+            root, offsets, sizes = views[final_input]
+            if (offsets, sizes) != ((0, 0), (extent, 1)):
+                raise RuntimeError("AllReduce consumes a partial gathered result")
+            final_input = root
+        final_buffers[tile] = final_input
         views_by_tile[tile] = views
         copies_by_tile[tile] = re.findall(r"memref\.copy (%\w+), (%\w+) :", ir)
 
@@ -876,12 +956,18 @@ def verify_all_reduce(package: pathlib.Path, dump: pathlib.Path, extent: int) ->
         + sum_add[0].replace(reduction[1], sum_add[3])
         + tiles[0][sum_add.end():]
     )
+    received_layout = re.search(
+        rf"(%\w+) = wafer\.tile\.materialize_layout {re.escape(first_receive.buffer)} :",
+        tiles[0],
+    )
+    contribution = received_layout[1] if received_layout else first_receive.buffer
     faults = (
         ("wrong-published-sum", "tile", wrong_sum),
         ("missing-peer", "tile", re.sub(
             r"^.*wafer\.tile\.peer_recv .*\n", "", tiles[0], count=1, flags=re.MULTILINE)),
         ("missing-contribution", "tile", re.sub(
-            rf"^.*memref\.copy {re.escape(first_receive.buffer)},.*\n", "",
+            rf"^.*(?:memref\.copy {re.escape(contribution)},|"
+            rf"wafer\.tile\.copy_into {re.escape(contribution)} into).*\n", "",
             tiles[0], count=1, flags=re.MULTILINE)),
         ("wrong-payload", "instr", re.sub(
             r"(wafer\.instr\.dte_recv[^\n]*?bytes = )(\d+)",
@@ -959,6 +1045,7 @@ def prepare_case_step(
     source: pathlib.Path,
     package: pathlib.Path,
     dump_compiler_ir: pathlib.Path | None,
+    prepared_step: pathlib.Path | None = None,
 ) -> tuple[
     tuple[torch.Tensor, ...],
     list[str],
@@ -974,38 +1061,48 @@ def prepare_case_step(
         f"step={step_number} "
         f"wall_ms={(time.monotonic_ns() - export_start_ns) // 1_000_000}"
     )
-    compile_command = [
-        str(args.wafer_compile),
-        "--input-program-dir",
-        str(source),
-        "--output-dir",
-        str(package.parent if args.profile else package),
-        f"--num-partitions={case.num_partitions}",
-        f"--optimization-policy={args.optimization_policy}",
-    ]
-    if args.qualify_communication is not None:
-        if args.optimization_policy != "none":
-            raise RuntimeError("explicit communication qualification cannot run search")
-        compile_command.append("--test-communication-candidate=peer")
-    if args.compile_timing:
-        compile_command.append("--compile-timing")
-    if args.profile:
-        compile_command.append("--profile")
-    if dump_compiler_ir is not None:
-        compile_command.extend(
-            ["--dump-compiler-ir", str(dump_compiler_ir)]
+    if prepared_step is not None:
+        verify_prepared_source(prepared_step / "source-program", source)
+        if not (package / "manifest.json").is_file():
+            raise RuntimeError("prepared package manifest is missing")
+        print(f"pytorch-board-prepared: step={step_number} source_equal=true compile=false")
+    else:
+        compile_command = [
+            str(args.wafer_compile),
+            "--input-program-dir",
+            str(source),
+            "--output-dir",
+            str(package.parent if args.profile else package),
+            f"--num-partitions={case.num_partitions}",
+            f"--optimization-policy={args.optimization_policy}",
+        ]
+        if args.qualify_communication is not None:
+            if args.optimization_policy != "none":
+                raise RuntimeError("explicit communication qualification cannot run search")
+            compile_command.append("--test-communication-candidate=peer")
+        if args.compile_timing:
+            compile_command.append("--compile-timing")
+        if args.profile:
+            compile_command.append("--profile")
+        if dump_compiler_ir is not None:
+            compile_command.extend(
+                ["--dump-compiler-ir", str(dump_compiler_ir)]
+            )
+        for option in ("search_width", "search_trials"):
+            value = getattr(args, option)
+            if value is not None:
+                compile_command.extend(["--" + option.replace("_", "-"), str(value)])
+        compile_result = run(
+            compile_command,
+            timeout_seconds=args.compile_timeout_seconds,
         )
-    compile_result = run(
-        compile_command,
-        timeout_seconds=COMPILE_TIMEOUT_SECONDS,
-    )
-    if args.compile_timing:
-        print(compile_result.stderr, end="", file=sys.stderr)
-    if (
-        "wrote verified package with num-partitions=1 tiles=16"
-        not in compile_result.stdout
-    ):
-        raise RuntimeError("wafer-compile did not write the PyTorch package")
+        if args.compile_timing:
+            print(compile_result.stderr, end="", file=sys.stderr)
+        if (
+            "wrote verified package with num-partitions=1 tiles=16"
+            not in compile_result.stdout
+        ):
+            raise RuntimeError("wafer-compile did not write the PyTorch package")
     if dump_compiler_ir is not None:
         expected_stems = [
             f"tile_{tile_id:05d}" for tile_id in range(PHYSICAL_TILE_COUNT)
@@ -1133,6 +1230,13 @@ def base_runtime_command(
 
 def main() -> int:
     args = parse_args()
+    if args.compile_timeout_seconds < 1:
+        raise RuntimeError("compile timeout must be positive")
+    for limit in (args.search_width, args.search_trials):
+        if limit is not None and (limit < 1 or args.optimization_policy != "search"):
+            raise RuntimeError("search limits require search policy and positive values")
+    if args.prepared_work_dir is not None:
+        validate_prepared_directories(args.prepared_work_dir, args.work_dir)
     if args.profile_trace_event_limit is not None and (
         not args.profile or not 0 < args.profile_trace_event_limit <= (1 << 32) - 1
     ):
@@ -1175,6 +1279,12 @@ def main() -> int:
             step_index=step_index,
             is_chain=is_chain,
         )
+        prepared_step = None
+        if args.prepared_work_dir is not None:
+            prepared_step = args.prepared_work_dir.resolve()
+            if is_chain:
+                prepared_step = prepared_step / f"step_{step_index + 1:02d}"
+            package = prepared_step / "package"
         if args.profile:
             package = package / "package"
         dump_compiler_ir = args.dump_compiler_ir
@@ -1191,7 +1301,7 @@ def main() -> int:
                 or current_case.prefill_extent is not None
             )
         ):
-            dump_compiler_ir = step_dir / "compiler-ir"
+            dump_compiler_ir = (prepared_step or step_dir) / "compiler-ir"
         if dump_compiler_ir is not None and is_chain:
             dump_compiler_ir = (
                 dump_compiler_ir / f"step_{step_index + 1:02d}"
@@ -1210,26 +1320,27 @@ def main() -> int:
             source=source,
             package=package,
             dump_compiler_ir=dump_compiler_ir,
+            prepared_step=prepared_step,
         )
 
         command = base_runtime_command(args.wafer_run, package)
         if args.profile_trace_event_limit is not None:
             command.extend(["--profile-trace-event-limit", str(args.profile_trace_event_limit)])
+        # Direct DTE is selected by the common card search, so a
+        # board-ready no-card runner must advertise the same transport
+        # capabilities regardless of which candidate wins.  This remains
+        # side-effect-free validation; it does not claim hardware execution.
+        no_card_command = command + (
+            [
+                "--no-card",
+                "--direct-dte-status-abi",
+                DIRECT_DTE_STATUS_ABI,
+                "--supports-host-watchdog",
+            ]
+        )
+        result = run(no_card_command)
+        verify_no_card(result.stdout)
         if args.no_card:
-            # Direct DTE is selected by the common card search, so a
-            # board-ready no-card runner must advertise the same transport
-            # capabilities regardless of which candidate wins.  This remains
-            # side-effect-free validation; it does not claim hardware execution.
-            command.extend(
-                [
-                    "--no-card",
-                    "--direct-dte-status-abi",
-                    DIRECT_DTE_STATUS_ABI,
-                    "--supports-host-watchdog",
-                ]
-            )
-            result = run(command)
-            verify_no_card(result.stdout)
             print(
                 f"pytorch_board_no_card: case={current_case.name} "
                 f"dtype={args.dtype} seed={args.seed} "
@@ -1266,12 +1377,20 @@ def main() -> int:
             )
             for iteration in range(args.repeat):
                 iteration_start_ns = time.monotonic_ns()
+                (step_dir / "command.json").write_text(json.dumps(command, indent=2) + "\n")
+                # Profile includes host report generation after device collection.
+                # Each launch still has --completion-timeout-ms; that device
+                # deadline must not also bound host report processing.
                 result = run(
                     command,
                     timeout_seconds=(
-                        args.completion_timeout_ms / 1000
-                        + PROCESS_TIMEOUT_MARGIN_SECONDS
+                        None
+                        if args.profile else
+                        args.completion_timeout_ms / 1000 + PROCESS_TIMEOUT_MARGIN_SECONDS
                     ),
+                )
+                (step_dir / f"board-{iteration + 1:02d}.log").write_text(
+                    result.stdout + result.stderr
                 )
                 print(result.stdout, end="")
                 verify_board(
@@ -1279,6 +1398,33 @@ def main() -> int:
                     current_case,
                     output_ids,
                     captures,
+                )
+                actual_outputs = read_single_card_continuation_outputs(
+                    result_capture_paths, expected_outputs
+                )
+                if current_case.validate_actual_outputs is not None:
+                    current_case.validate_actual_outputs(actual_outputs)
+                audit = {
+                    "case": current_case.name,
+                    "step": step_index + 1,
+                    "policy": args.optimization_policy,
+                    "search_width": args.search_width,
+                    "search_trials": args.search_trials,
+                    "manifest_sha256": file_sha256(package / "manifest.json"),
+                    "comparison_passed": True,
+                    "comparison": dataclasses.asdict(current_case.comparison_policy),
+                    "inputs": {path.name: file_sha256(path) for path in sorted(
+                        (step_dir / "raw").glob("*user_input*")
+                    )},
+                    "outputs": [
+                        summarize_output_error(actual, expected)
+                        for actual, expected in zip(actual_outputs, expected_outputs, strict=True)
+                    ],
+                    "timing": [line for line in result.stdout.splitlines()
+                               if line.startswith(("board_timing:", "profile_run:"))],
+                }
+                (step_dir / f"numeric-audit-{iteration + 1:02d}.json").write_text(
+                    json.dumps(audit, indent=2) + "\n"
                 )
                 print(
                     f"pytorch_board_iteration: case={current_case.name} "
@@ -1290,13 +1436,7 @@ def main() -> int:
                     f"{(time.monotonic_ns() - iteration_start_ns) // 1_000_000} "
                     "torch_close=true"
                 )
-            continuation_outputs = (
-                read_single_card_continuation_outputs(
-                    result_capture_paths, expected_outputs
-                )
-                if current_case.continuation_factory is not None
-                else expected_outputs
-            )
+            continuation_outputs = actual_outputs
 
         continuation_factory = current_case.continuation_factory
         if continuation_factory is None:

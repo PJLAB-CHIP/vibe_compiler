@@ -21,8 +21,62 @@
 
 ## 当前验收范围
 
-按用户确认，本轮原第1、2、3、7项已定位修复的实现与对应主机验证已完成，从当前开发待办中收口。
-后续集中验收完整LLaMA、KV decode与4K prefill的新版实卡数值和性能；总任务仍由
+### 已完成的审计：全workload搜索空间与lowering
+
+用户要求系统分析搜索问题，搜索质量与预算比较在本轮启动，覆盖当前正式PyTorch board catalog的38个case
+（含1024/1025/1031变体、4K prefill与decode两步）。35个case使用FP16；3个division资格case按既有特殊值语义合同使用F32；已注册四条产品纵向补BF16对照。
+单指令硬件校准catalog不属于编译器workload；旧tiny source corpus仅补主机语言/有界oracle覆盖。
+
+- 输入：冻结的current compiler、current case/source/input/reference，以及显式none/search配置。
+- 职责：记录空间proposal、实际访问的structural/temporal/movement、typed失败与winner；区分表达范围、遍历预算、
+  actual lowering/completion错误和cost排序，不在采集期间修改选路或搜索算法。
+- 输出：本轮日志、IR/package/no-card、全部PyTorch输出校验、必要profile及横向分析报告；同一board-testing验收。
+- 正式入口：统一`wafer_board_pytorch_test.py`，显式透传`--search-width/--search-trials`，支持复用本轮已准备产物；
+  废弃临时重复执行入口。只读cycle diagnostic只输出actual依赖边，不参与legality或改变同步。
+- 完成条件：清单中每个case都有实际结果或明确失败阶段，预算敏感性有同源对照；四项搜索问题及DTE成环逐项绑定代码
+  和本轮证据；足够性按机制覆盖和有界oracle说明，不声称有限budget证明全局最优；提出通用修正顺序。
+- 非目标：不针对LLaMA名称/shape选择partition，不强制通信，不放宽SPM/completion检查，不开展新硬件校准。
+
+| 维度 | 本轮矩阵 | 必须记录的结果 |
+| --- | --- | --- |
+| policy/budget | none；search width/trials=8/14、8/42、8/126、16/126 | source/input身份、有效配置、实际尝试、accepted、wall/RSS、最终IR流量与估时 |
+| workload | 全部38个case（35 FP16、3 F32）；四条产品BF16 | 所有输出与原PyTorch容差；decode实际回读接续及prefix；失败不算通过 |
+| 搜索表达与遍历 | 空间M/N/K、并行/归约、view/broadcast、Region单root/融合、temporal整除/tail、DDR/DTE | proposal与raw-domain保留、已访问/未访问、首可行停止及预算分配；局部穷举oracle |
+| lowering/completion | actual capacity、unsupported、真实cycle与合法异步反例 | 冲突owner与实际变换范围；cycle中Tile、operation及边来源；可执行candidate才参与cost比较 |
+| Direct DTE实现资格 | 既有四类通信 × 1024/1025/1031，使用正式runner已有qualify-communication入口 | 与自动选路矩阵分开；只验证指定DTE实现、消息/token与PyTorch，不将强制路径当作生产winner |
+| 设备 | 各case先通过本轮主机/no-card，再串行执行该case及发生变化的budget winner | 真实设备计时和全输出；相同产物不重复launch；设备timeout/异常停止整个设备批次，主机报告失败单独记录 |
+
+主机并发按canonical可用CPU运行，受每case CTest既有PROCESSORS与实际内存/磁盘约束限制。预算对照使用相同源码，
+只对本轮产物去重；历史raw不作输入。先采集既有行为，明确证据后再讨论算法修改。
+
+审计已闭合，详细证据和限制见[`search-space-audit.md`](../../docs/search-space-audit.md)：
+
+- 210个有效主机组合全部执行：207个package/no-card成功，3个小预算未找到候选。
+  207个产物对应86个实际运行的配置与121个逐文件相同的复用证明；按配置计183个数值通过、24个数值失败。
+- 默认42个输入为37通过、5失败；既有DTE四类×三个长度为8通过、4个归约tail失败。没有设备timeout或reset。
+  LLaMA profile仅主机报告失败，已修正runner期限边界并继续剩余板测；其完整采集与输出digest有效。
+- LLaMA与4K prefill、small BF16 prefill的本轮profile已取得；4K为显式Trace前缀，不能代签全程逐site归因。
+  所有已执行数值检查保持原PyTorch容差；BF16 LLaMA与归约tail的失败不能算板端完成。
+- 四项搜索问题已分别绑定当前代码与不同预算证据；记录到的DDR/DTE候选环只有Tile顺序与DDR publication边。
+  已证明rank3 NCx与native reduce ABI的stride冲突；尚未实施这些编译器修复。
+
+### 审计后的修复顺序
+
+以下仍在同一`board-testing`，不是已经完成的功能：
+
+1. 统一native reduce的logical rank、physical layout与固定ABI映射；对BF16 LLaMA补中间值数值witness。
+   编码前在对应lowering设计补输入/轴/格式/offset覆盖，保持native优先和原算术语义，不按tail长度特判。
+2. 对混合DDR/DTE失败candidate保留实际DMA、Region内顺序和resource依赖witness，区分过宽Region completion边界与更早物化成环。
+   在已有依赖支持的位置修正，不关闭verifier、不猜测publish/acquire位置。
+3. 让不同Spatial/Region家族公平获得可恢复的actualization预算，将复用seed与传播seed共同比较；
+   避免raw Tile embedding排列先耗尽预算，并为同actual pipeline的baseline choice建立共同比较入口。
+4. Capacity refinement局部消费实际冲突owner；首可行Temporal后保留有限后继比较。
+   Candidate继续持有实际IR，不用估算SPM做剪枝，也不把小配额失败当成结构无解。
+5. 按已确认热点处理循环内重复布局/reshape/广播与缺失流水/外部输入共享choice，再验证同cohort cost排序。
+   4K的Q布局转换已有循环内重复位置证据；移动前验证alias/effect/lifetime和实际SPM，不直接扩大成整套搜索重写。
+
+按用户确认，原第1、2、3、7项已定位修复的实现与对应主机验证已完成；本轮审计补齐新版产品实卡结果。
+新发现的问题按上方修复顺序推进，总任务仍由
 `tasks/progress.md`中的`board-testing`统一管理。原项号只保留用于关联下文证据，不新增work item。
 
 | 原项 | 范围 | 已交付边界 | 后续验收归属 |
@@ -30,19 +84,17 @@
 | 1 | Halo与中间buffer | 已完成紧凑consumer窗口、shared-DDR按需加载、局部empty初始化、嵌套加载与多出口写回；对应exact coverage、Instr/completion/SPM及主机/no-card验证通过 | 已完成本轮开发；设备数值与实际收益随三条模型复验 |
 | 2 | 主机正确性 | 已完成本轮机制的coverage/owner/merge/tail与numeric/SystemC回归；完整LLaMA的65,536个FP16输出按原容差匹配PyTorch | 已完成本轮机制验证；新版decode完整数值回读归原第4项，不由两步no-card代签 |
 | 3 | 编译开销 | 已完成descriptor session复用、函数边界查询复用、有界关系证明；查询工作量、typed结果和直接下游验证已有记录 | 已完成本轮开发；后续仅在出现新的明确热点时启动修改 |
-| 4 | KV decode | 空间传播与归约分组修复已交付，两步均生成16-Tile package并通过no-card；这次两步准备尚无完整数值回读 | 验证hidden/K/V及历史prefix，采集新版profile，复验历史8.222→11.443 ms退化 |
-| 5 | 完整LLaMA FA融合 | 实际view/indexing proof、score舍入语义、完整FA package/no-card与SystemC全量PyTorch通过；Div→Recip+Mul已验证 | 完成新版实卡数值、普通耗时及profile，并做同源融合前后比较；历史未融合17.635 ms仅作审计基线 |
-| 6 | 4K、32-head prefill profile | 有明确事件范围的Trace已实现，采集/record/report及容量边界通过主机验证；ordinary/profile package和N=200000 no-card准备通过 | 完成新版全量PyTorch、普通耗时及实际Trace，报告明确采集覆盖范围 |
+| 4 | KV decode | 本轮FP16/BF16、五种预算均完成两步no-card、完整hidden/K/V和历史prefix实卡校验；实际KV接续、普通计时已记录 | 新版实卡数值验收已完成；后续搜索/复用改动再按其受影响路径做匹配profile，不重跑相同package |
+| 5 | 完整LLaMA FA融合 | 原view/indexing、score舍入、SystemC合同保持；本轮FP16的所有可编译预算均通过实卡，普通计时及完整profile证据已取得；BF16数值失败 | 处理BF16数值与已确认的重复权重读取/搜索覆盖；尚无同源融合开关A/B，历史17.635 ms只作审计基线 |
+| 6 | 4K、32-head prefill profile | 本轮所有可编译预算通过实卡PyTorch；普通/profile计时和有效PMU已取得，Trace显式采集每Tile前20000事件 | 本轮范围内验收完成；后续针对TDMA/循环内布局复用热点修复，前缀Trace不代签全程逐site归因 |
 | 7 | 已定位搬运热点 | native归约优先已有实卡收益；本轮subview/copy、完整中间carrier与相关GS修复已完成，对应机制主机验证通过 | 已完成本轮开发；新版整体收益随三条模型复验，进一步优化由新profile决定 |
 
-后续执行顺序：完整LLaMA（原第5项）→KV decode（原第4项）→4K prefill（原第6项）。
-同步后的本机先完成canonical增量构建，为指定case从fresh source/input/reference生成本轮package并通过no-card，
-再确认合格设备会话，逐case验数值、普通耗时及Primary/Count/Trace。Decode两步还须明确记录实际输入延续方式；
-历史准备中第二步使用PyTorch reference continuation，不能称为已经验证设备输出接续。
-每项结果写入统一性能记录，三条模型按当前矩阵完成前，总任务保持`doing`。
+后续遵循上方通用修复顺序。每次实现修改先完成canonical构建、主机覆盖及fresh source/package/no-card，
+再对受影响case串行验证全输出和必要profile；decode保持实际KV接续。历史reference continuation不代签设备输出接续。
+每项结果写入统一性能记录；已发现数值失败与性能问题未闭合前，总任务保持`doing`。
 
 外部权重DTE共享等尚无完成证据的方案保留为候选方向；由新profile确认瓶颈后再确定具体实现边界。
-搜索质量、访问公平性与预算比较继续延后。新增通用修复按对应编号设计补合同和覆盖，再完成主机、fresh no-card与匹配实卡复验。
+搜索质量、访问公平性与预算比较的审计已完成。新增通用修复按对应编号设计补合同和覆盖，再完成主机、fresh no-card与匹配实卡复验。
 下文历次检查点保存当时的实现与验证证据；其中旧的阻塞和“下一步”不覆盖本节，也不重新打开已经完成的开发项。
 
 ### 已实施边界与模型验收覆盖矩阵
@@ -57,7 +109,7 @@
 | 6 | `[1,32,4096,128]` prefill；record容量等于/差一、长循环与tail | Count→Trace、范围内/外事件、overflow、空范围、invalid metadata、设备失败 | 采集范围与实际event/count一致，报告明确覆盖率与缺失；当前profiler/no-card及实卡采集 |
 | 7 | 已修复的native归约、subview/copy与完整carrier；rank3/4、1024/1025/1031、4/16 Tile | source/destination子视图、nested/main/tail、private/shared多出口、alias拒绝 | exact descriptor/输出坐标、owner与lifetime、actual Instr/completion/SPM；已有主机证据见下文，整体性能由三模型实卡复验 |
 
-当前执行边界为三条模型的实卡验收与profile分析。本次状态收口不新增构建、no-card或设备验证结果。
+本轮新增的构建、no-card、完整预算矩阵及设备验证结果以上方审计和统一JSON为准；下文保留历史实施证据。
 
 ## 已提交实现与验证记录
 

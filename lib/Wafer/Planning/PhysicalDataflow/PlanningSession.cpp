@@ -238,6 +238,8 @@ SpatialExpansionResult PhysicalDataflowPlanningSession::resumeSpatial() {
         return {SpatialExpansionKind::CompilerBug,
                 "graph-coherent spatial proposal construction failed"};
       std::vector<SpatialPlan> values(generated->begin(), generated->end());
+      wafer::support::addCompileCounter("search", "spatial-proposals",
+                                        values.size());
       proposals = spatialProposalCache.try_emplace(0, std::move(values)).first;
     }
     for (const SpatialPlan &proposal : proposals->second) {

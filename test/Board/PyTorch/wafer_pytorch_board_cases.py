@@ -52,6 +52,7 @@ class PyTorchBoardCase:
     continuation_factory: (
         Callable[[tuple[torch.Tensor, ...]], "PyTorchBoardCase"] | None
     ) = None
+    validate_actual_outputs: Callable[[tuple[torch.Tensor, ...]], None] | None = None
 
     def materialize_expected_outputs(self) -> tuple[torch.Tensor, ...]:
         outputs = self.expected_outputs_factory()
@@ -1045,6 +1046,12 @@ def _attention_decode_kv_cache_step(
             raise RuntimeError("HF functional decode did not append one K/V token")
         return outputs
 
+    def validate_actual_outputs(outputs: tuple[torch.Tensor, ...]) -> None:
+        for output, original in zip(outputs[1:], (past_key, past_value), strict=True):
+            prefix = output[..., :original.shape[-2], :].contiguous()
+            if not torch.equal(prefix.view(torch.uint8), original.contiguous().view(torch.uint8)):
+                raise RuntimeError("functional decode changed the existing KV prefix")
+
     continuation_factory = None
     if add_continuation:
 
@@ -1080,6 +1087,7 @@ def _attention_decode_kv_cache_step(
         ),
         comparison_policy=ATTENTION_COMPARISON,
         continuation_factory=continuation_factory,
+        validate_actual_outputs=validate_actual_outputs,
     )
 
 

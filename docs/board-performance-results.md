@@ -248,3 +248,43 @@ PMU累计ns、Trace本地周期与Primary属于不同测量口径，不能互相
 
 该结果仅资格化满足既有native合同的优先路径；不宣称所有非native展开的布局往返已消除，也不把剩余1997次GS一律视为冗余。
 本次没有调整搜索预算，没有加入模型/shape特判；尚未完成的FA融合与decode退化继续按计划独立处理。
+
+## 2026-09-12：全workload搜索预算与下游实现审计
+
+当前正式38个case按原dtype合同运行，另补4条BF16产品纵向，共42个输入；同源比较none、search `8/14`、`8/42`、
+`8/126`、`16/126`。210个有效主机组合中207个产生完整package并通过本轮no-card；3个小预算组合未找到候选。
+本轮冻结搜索和lowering算法，只增加proposal计数和实际completion环路诊断，统一PyTorch runner。
+完整shape、预算、实际搜索计数、artifact身份、数值与profile记录见
+[`search-space-audit-20260912.json`](data/board-performance/search-space-audit-20260912.json)，
+系统性归因和覆盖限制见[`search-space-audit.md`](search-space-audit.md)。
+
+默认`8/42`的42个输入实际运行，37个全输出通过，5个数值失败：4个跨Tile reduction tail和BF16 LLaMA。
+另将既有四类Direct DTE实现按1024/1025/1031资格化，共12个，8个通过、4个reduction tail失败。
+所有这些设备调用均正常完成；数值失败独立记录，未放宽PyTorch阈值。Decode两步使用实际KV接续并检查旧prefix位级一致。
+
+LLaMA FP16输入`[1,16,4096]`、MLP=11008，普通Primary为**140.636002 ms**，profile Primary为**140.591003 ms**；
+全部65,536个输出通过`rtol=0.002, atol=0.004`。历史17.635 ms来自另一软件/启动会话，不能当作本轮匹配A/B。
+但actual IR显示O projection、MLP up/gate/down四矩阵由N切分变成M切分，每Tile重复读取整份权重，
+四矩阵读取总量由304,087,040增至4,865,392,640 bytes。增量占总DDR read增量94.1%，是明确的流量归因。
+当前每Tile RDMA累计43.063–54.494 ms、TDMA约28.009 ms；本地Trace另有明显RDMA submit、GS控制及DDR acquire等待。
+不能把PMU相加或从Primary相减，也不能把混有插桩的Trace site-control全部算作可消除开销。
+
+LLaMA增加预算后的普通Primary单样本为：`8/126` **133.869003 ms**、`16/126` **140.128006 ms**，FP16均通过原PyTorch容差。
+两者都只访问一个Spatial state，accepted structural仅由1增至2；compiler transaction由默认734.516秒增至约1815–1817秒。
+因此此次扩大预算没有恢复历史性能，不能把133.869 ms这一单样本解释为稳定改进。4K prefill的更大预算package与默认完全相同；
+decode的`16/126`与`8/126`也完全相同，分别引用本轮已执行结果，不重复launch。
+
+4K causal prefill使用`Q/K/V=[1,32,4096,128]`，普通Primary为**282.928009 ms**，profile Primary为**284.184998 ms**；
+16,777,216个输出通过`rtol=0.006, atol=0.008`，最大绝对误差0.001953125。它已经是局部状态online attention和native归约，
+不是attention未匹配。每Tile TDMA约**240.651 ms**；actual GS共有625,152次、32,348,045,312 bytes，
+包含循环内布局转换、transpose、rank变化及状态广播/复制。Q tile在外层加载，其布局转换仍在key循环内重复执行，
+提供了后续通用复用优化的具体入口；必须继续用actual effect/lifetime/SPM证明合法性。
+Trace采集显式前缀320,000/2,111,520事件，PMU有效，未覆盖部分不能作逐site全程归因。
+
+Small BF16 prefill `Q/K/V=[1,1,1024,64]` 初次普通计时15.350 ms，profile Primary为**1.469 ms**，
+全量PyTorch和完整Trace通过；初次高值未复现，不据其声称BF16稳定慢十倍。
+
+本轮LLaMA完整Trace已经采集，原runner却把“设备期限＋退出余量”的120秒套在整个profile进程上，误杀后续主机报告。
+已改为每次设备launch保持watchdog，主机报告不受设备派生总期限限制；32项Python测试通过，剩余profile和板测随后继续。
+LLaMA的profile输出digest与本轮完整PyTorch通过的普通capture一致，Count/Trace与Primary一致，故采集证据可用；
+未完成的HTML及报告进程失败不计为runner成功。没有因这次主机报告问题执行reset、重启或重复LLaMA采集。

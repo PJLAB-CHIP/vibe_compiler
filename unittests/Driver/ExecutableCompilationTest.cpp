@@ -1178,6 +1178,13 @@ TEST(ExecutableCompilationPolicyTest,
                   wafer::SharedDDRCompletionFailure::Unsupported);
         EXPECT_NE(completion.detail.find(cycle ? "cycle" : "conditional"),
                   std::string::npos);
+        if (cycle) {
+          for (llvm::StringRef evidence :
+               {"cycle-edge from=", "kind=tile-order", "kind=token-completion",
+                "kind=ddr-publication", "tile=0", "tile=1"})
+            EXPECT_NE(completion.detail.find(evidence.str()), std::string::npos)
+                << completion.detail;
+        }
         continue;
       }
       ASSERT_TRUE(completion.succeeded()) << completion.detail;

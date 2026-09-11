@@ -1915,3 +1915,10 @@
 - pinned One-Shot会为函数的多个参数和结果重复调用functionArgTypeConverterFn；在每次callback中扫描整个module会随ABI宽度放大编译工作。
 - 同一次layout/bufferization内按实际FuncOp保留一次边界空间选择。标准FuncOp/CallOp bufferization保留函数身份和callee引用；下一次调用重新查询。
 - 用被调用helper与外部entry核对全部参数/结果的空间，并记录查询次数；大型source必须比较相同输入/预算及最终Instr，不能只凭局部计时宣称优化。
+
+## 设备完成期限不能覆盖主机profile报告
+
+- Profile入口包含Primary、Count、Trace设备执行及后续Python报告。将设备watchdog加退出余量作为整个进程期限，会在设备正常完成后误杀报告，
+  还可能留下报告子进程；主机报告超时不能据此判定板卡异常。
+- 每次launch保留runtime completion watchdog；主机报告遵守自身处理合同，不套用设备派生期限。主机后处理失败与真实设备timeout分别记录，
+  只有后者按板端规则停止批次。测试检查ordinary/profile都传设备期限，而profile不设设备派生的总进程期限。

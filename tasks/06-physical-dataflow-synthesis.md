@@ -968,6 +968,16 @@ DP、memo、priority、dominance和LNS可以改变choice访问顺序和搜索工
 
 ### 7.4 Cost 与feedback
 
+#### 搜索空间与失败审计
+
+本轮系统性审计只消费current source、显式Spatial/Region/Temporal/movement choice、actual Instr及typed gate结果。
+输出为已有compile counters、失败diagnostic与本轮workload/预算报告，由16号验证合同和统一board-testing消费；
+不在审计期间修改候选排序、budget分配、SPM admission或同步语义。
+Shared-DDR/Direct-DTE成环失败应附一个完整actual cycle，逐边注明Tile顺序、recv-ready、token completion或
+DDR publish/acquire来源，并标识实际Tile和operation。只在失败路径恢复witness，不新增持久依赖图或按文本控制流程。
+coverage包括无环、双向ready等待、混合DDR/DTE环和单执行region；真实规模产品失败及现有completion负例验证
+同一typed结果与边序列。搜索proposal数量由现有计时session记录，与实际访问数区分；日志不足不能声称空间已穷尽。
+
 Source-IR-derived lower bound只能用于frontier ordering，必须标明不是actual cost。Candidate comparison使用物化后的TileRegion、Instr、
 movement、completion和memory/target数据。推算结果不进入legality、SPM feedback或exact no-good。
 
