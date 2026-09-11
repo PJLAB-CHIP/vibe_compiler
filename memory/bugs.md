@@ -650,6 +650,10 @@
 - 防复发：用轻量synthetic relation复现相同composition形态，断言supported路径generic equality调用数为零且pair-query数只随
   actual DAG edge和deterministic legalization step增长；重型模型只归后续显式scalability profile，不作为功能bug的常规复现器。
 
+- Spatial可选协调需要严格有界的查询：保留构造证明，必要时用有工作上限的单位等式消元、整数精确投影和box约束验证；
+  未能证明就保留seed。对独立轴的查询，Unsupported不是“轴有依赖”，更不能用空的invariant列表清除原输出切分。
+  配对覆盖set-valued归约fiber、reshape余数完整/有holes、受限domain及显式work耗尽；优先级不能代替关系正确性证明。
+
 ## Baseline不搜索通信方案不等于所有依赖零peer
 
 - 现象：为落实逐op DDR baseline而把所有peer fragment禁止后，带reshape/transpose和多种spatial轴的Llama DAG在16-Tile

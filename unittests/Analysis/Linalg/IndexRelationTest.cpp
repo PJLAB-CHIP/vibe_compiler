@@ -31,6 +31,192 @@ using wafer::analysis::StaticRectangularIndexSetPiecesResult;
 using wafer::analysis::StaticRectangularIndexSetResult;
 using wafer::analysis::TransferRealizability;
 
+TEST(IndexRelationTest, InvariancePreservesReductionFibersAndReshapeBounds) {
+  mlir::MLIRContext context;
+  auto b = mlir::getAffineDimExpr(0, &context);
+  auto n = mlir::getAffineDimExpr(1, &context);
+  auto k = mlir::getAffineDimExpr(2, &context);
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto consumer = IndexRelation::fromAffineMap(
+        mlir::AffineMap::get(3, 0, {b, k}, &context), {2, extent, 1024},
+        {2, 1024});
+    auto producer = IndexRelation::fromAffineMap(
+        mlir::AffineMap::get(3, 0, {b, n}, &context), {2, 1024, 128},
+        {2, 1024});
+    ASSERT_TRUE(consumer.isExact() && producer.isExact());
+    auto fiber = producer.get()->inverse();
+    ASSERT_TRUE(fiber.isExact());
+    auto relation = consumer.get()->compose(*fiber.get());
+    ASSERT_TRUE(relation.isExact());
+    EXPECT_FALSE(relation.get()
+                     ->getRectangularTileImage(&context, {2, extent, 1024},
+                                               {2, 1024, 128},
+                                               {2, extent, 1024})
+                     .isExact());
+    for (uint32_t axis : {0u, 1u, 2u}) {
+      auto invariant = relation.get()->isInvariantOnDestinationDimension(
+          {2, extent, 1024}, axis);
+      ASSERT_EQ(invariant.status, IndexRelationStatus::Exact)
+          << invariant.reason;
+      ASSERT_TRUE(invariant.value);
+      EXPECT_EQ(*invariant.value, axis == 1);
+    }
+    // A restricted input axis is not invariant merely because its coordinate
+    // is absent from the result map: fixing it to zero would lose the domain.
+    auto subset = IndexRelation::staticRectangularDomain({0, 1, 0},
+                                                         {2, extent - 1, 1024});
+    ASSERT_TRUE(subset.isExact());
+    auto restricted = relation.get()->intersectDestinationDomain(*subset.set);
+    ASSERT_TRUE(restricted.isExact());
+    auto constrained = restricted.get()->isInvariantOnDestinationDimension(
+        {2, extent, 1024}, 1);
+    ASSERT_EQ(constrained.status, IndexRelationStatus::Exact);
+    EXPECT_EQ(constrained.value, false);
+
+    auto reshape = IndexRelation::staticReshape({2, 1024}, {2, 16, 64});
+    ASSERT_TRUE(reshape.isExact());
+    auto reshaped = consumer.get()->compose(*reshape.get());
+    ASSERT_TRUE(reshaped.isExact());
+    EXPECT_TRUE(reshaped.get()
+                    ->isInvariantOnDestinationDimension({2, extent, 1024}, 1)
+                    .isProvenTrue());
+    EXPECT_EQ(reshaped.get()
+                  ->isInvariantOnDestinationDimension({2, extent, 1024}, 2)
+                  .value,
+              false);
+    EXPECT_EQ(relation.get()
+                  ->isInvariantOnDestinationDimension({2, extent, 1024}, 3)
+                  .status,
+              IndexRelationStatus::Invalid);
+    IndexRelationLimits limited;
+    limited.maxConstraintWork = 1;
+    EXPECT_EQ(
+        relation.get()
+            ->isInvariantOnDestinationDimension({2, extent, 1024}, 1, limited)
+            .status,
+        IndexRelationStatus::ResourceExhausted);
+    limited = IndexRelationLimits{};
+    limited.maxVariables = 1;
+    EXPECT_EQ(
+        relation.get()
+            ->isInvariantOnDestinationDimension({2, extent, 1024}, 1, limited)
+            .status,
+        IndexRelationStatus::ResourceExhausted);
+  }
+}
+
+TEST(IndexRelationTest, BoundedInvarianceDoesNotPromoteMatchingSamplesToProof) {
+  mlir::MLIRContext context;
+  auto k = mlir::getAffineDimExpr(2, &context);
+  auto zero = mlir::getAffineConstantExpr(0, &context);
+  auto relation = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(3, 0, {zero, zero, k.floorDiv(256) % 4}, &context),
+      {1, 1, 1025}, {1, 1, 4});
+  ASSERT_TRUE(relation.isExact());
+  auto result =
+      relation.get()->isInvariantOnDestinationDimension({1, 1, 1025}, 2);
+  EXPECT_EQ(result.status, IndexRelationStatus::Unsupported);
+  EXPECT_FALSE(result.value.has_value());
+  EXPECT_TRUE(relation.get()->contains({0, 0, 256}, {0, 0, 1}));
+  EXPECT_FALSE(relation.get()->contains({0, 0, 0}, {0, 0, 1}));
+}
+
+TEST(IndexRelationTest,
+     BoundedRectangleRecoveryKeepsExactOffsetsAndRejectsHoles) {
+  mlir::MLIRContext context;
+  auto b = mlir::getAffineDimExpr(0, &context);
+  auto m = mlir::getAffineDimExpr(1, &context);
+  auto n = mlir::getAffineDimExpr(2, &context);
+  IndexRelationLimits limits;
+  limits.rectangleProof = wafer::analysis::RectangleProofMode::Construction;
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto reverse = IndexRelation::fromAffineMap(
+        mlir::AffineMap::get(3, 0, {b, extent - 1 - m, n}, &context),
+        {1, extent, 64}, {1, extent, 64});
+    ASSERT_TRUE(reverse.isExact());
+    auto image = reverse.get()->getExactStaticRectangularImage(
+        {0, 17, 0}, {1, 256, 64}, limits);
+    ASSERT_TRUE(image.isExact()) << image.reason;
+    EXPECT_EQ(image.domain->offsets,
+              (llvm::SmallVector<int64_t>{0, extent - 273, 0}));
+    EXPECT_EQ(image.domain->sizes, (llvm::SmallVector<int64_t>{1, 256, 64}));
+    auto sparse = IndexRelation::fromAffineMap(
+        mlir::AffineMap::get(3, 0, {b, m, 2 * n}, &context), {1, extent, 64},
+        {1, extent, 128});
+    ASSERT_TRUE(sparse.isExact());
+    EXPECT_FALSE(
+        sparse.get()
+            ->getExactStaticRectangularImage({0, 0, 0}, {1, extent, 64}, limits)
+            .isExact());
+    auto budget = limits;
+    budget.maxConstraintWork = 1;
+    EXPECT_EQ(
+        reverse.get()
+            ->getExactStaticRectangularImage({0, 17, 0}, {1, 256, 64}, budget)
+            .status,
+        IndexRelationStatus::ResourceExhausted);
+  }
+}
+
+TEST(IndexRelationTest, BoundedProjectionRequiresCompleteIntegerResidues) {
+  using namespace mlir::presburger;
+  IndexRelationLimits limits;
+  limits.rectangleProof = wafer::analysis::RectangleProofMode::Construction;
+  auto make = [](int64_t extent, int64_t factor, int64_t width) {
+    IntegerPolyhedron set(PresburgerSpace::getSetSpace(3, 0, 1));
+    set.addBound(BoundType::LB, 0, 0);
+    set.addBound(BoundType::UB, 0, 0);
+    set.addBound(BoundType::LB, 1, 0);
+    set.addBound(BoundType::UB, 1, extent - 1);
+    set.addBound(BoundType::LB, 3, 0);
+    set.addBound(BoundType::UB, 3, extent - 1);
+    // -3 <= x - factor*q <= width-4, with existential integer q.
+    set.addInequality({0, 0, 1, -factor, 3});
+    set.addInequality({0, 0, -1, factor, width - 4});
+    return IndexSetResult{IndexRelationStatus::Exact, PresburgerSet(set), {}};
+  };
+  // Tiny extents only for independent exhaustive integer projection oracle.
+  // The same mechanism is checked below at realistic rank-three sizes.
+  for (int64_t factor : {2, 3, 4})
+    for (int64_t width : {1, 2, 3, 4, 5}) {
+      auto set = make(4, factor, width);
+      auto result = set.getExactStaticRectangularDomain(limits);
+      std::set<int64_t> points;
+      for (int64_t q = 0; q < 4; ++q)
+        for (int64_t residue = 0; residue < width; ++residue)
+          points.insert(factor * q + residue - 3);
+      const bool dense =
+          points.size() ==
+          static_cast<size_t>(*points.rbegin() - *points.begin() + 1);
+      ASSERT_EQ(result.isExact(), dense) << factor << ":" << width;
+      if (result.isExact()) {
+        EXPECT_EQ(result.domain->offsets,
+                  (llvm::SmallVector<int64_t>{0, 0, *points.begin()}));
+        EXPECT_EQ(result.domain->sizes,
+                  (llvm::SmallVector<int64_t>{
+                      1, 4, static_cast<int64_t>(points.size())}));
+      } else {
+        EXPECT_EQ(result.status, IndexRelationStatus::Unsupported);
+      }
+    }
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto dense = make(extent, 128, 128);
+    auto result = dense.getExactStaticRectangularDomain(limits);
+    ASSERT_TRUE(result.isExact()) << result.reason;
+    EXPECT_EQ(result.domain->offsets, (llvm::SmallVector<int64_t>{0, 0, -3}));
+    EXPECT_EQ(result.domain->sizes,
+              (llvm::SmallVector<int64_t>{1, extent, extent * 128}));
+    EXPECT_EQ(
+        make(extent, 128, 127).getExactStaticRectangularDomain(limits).status,
+        IndexRelationStatus::Unsupported);
+    auto budget = limits;
+    budget.maxConstraintWork = 32;
+    EXPECT_EQ(dense.getExactStaticRectangularDomain(budget).status,
+              IndexRelationStatus::ResourceExhausted);
+  }
+}
+
 TEST(IndexRelationTest, RepresentsIdentityPermutationAndBroadcastExactly) {
   IndexRelationResult identity = IndexRelation::identity({2, 3});
   ASSERT_TRUE(identity.isExact());

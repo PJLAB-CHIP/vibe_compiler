@@ -705,6 +705,51 @@ module {
   SpatialDomainEvaluation evaluation =
       built->domain.evaluate(built->dag, first);
   EXPECT_TRUE(evaluation.isSatisfied());
+  // A larger output-parallel proposal cannot remove mandatory K2 splitting.
+  auto function = *module->getOps<mlir::func::FuncOp>().begin();
+  auto *returnOp = function.getBody().front().getTerminator();
+  auto fd =
+      mlir::cast<LinalgExtAttentionOp>(returnOp->getOperand(1).getDefiningOp());
+  mlir::OpBuilder builder(returnOp);
+  auto type = mlir::cast<mlir::RankedTensorType>(fd.getResult(0).getType());
+  auto empty = builder.create<mlir::tensor::EmptyOp>(
+      fd.getLoc(), type.getShape(), type.getElementType());
+  auto identity = builder.getMultiDimIdentityMap(type.getRank());
+  auto consumer = builder.create<mlir::linalg::GenericOp>(
+      fd.getLoc(), mlir::TypeRange{type}, mlir::ValueRange{fd.getResult(0)},
+      mlir::ValueRange{empty},
+      llvm::ArrayRef<mlir::AffineMap>{identity, identity},
+      llvm::SmallVector<mlir::utils::IteratorType>(
+          type.getRank(), mlir::utils::IteratorType::parallel),
+      [&](mlir::OpBuilder &body, mlir::Location loc, mlir::ValueRange args) {
+        body.create<mlir::linalg::YieldOp>(loc, args.front());
+      });
+  returnOp->setOperand(1, consumer.getResult(0));
+  auto updated = build(*module, failureReason);
+  ASSERT_TRUE(updated) << failureReason;
+  auto seed = updated->domain.getFirstPlan();
+  auto position = [&](mlir::Operation *op) {
+    auto key = updated->domain.getProblem().getSemanticRoots().find(op)->key;
+    return llvm::find_if(seed.nodes,
+                         [&](const auto &node) { return node.root == key; }) -
+           seed.nodes.begin();
+  };
+  auto fdIndex = position(fd), consumerIndex = position(consumer);
+  seed.nodes[consumerIndex].axes[1].parameter = 16;
+  seed.nodes[consumerIndex].embedding.clear();
+  for (int64_t tile = 0; tile < 16; ++tile)
+    seed.nodes[consumerIndex].embedding.push_back(TileId(tile));
+  ASSERT_TRUE(updated->domain.contains(seed));
+  for (auto order : {SpatialPropagationOrder::ProducersFirst,
+                     SpatialPropagationOrder::ConsumersFirst}) {
+    auto coordinated = propagateSpatialPartitions(updated->domain, updated->dag,
+                                                  seed, {}, order);
+    ASSERT_TRUE(mlir::succeeded(coordinated));
+    EXPECT_EQ(coordinated->nodes[consumerIndex].axes[1].parameter, 16);
+    EXPECT_GT(coordinated->nodes[fdIndex].axes[3].parameter, 1);
+    EXPECT_TRUE(
+        updated->domain.evaluate(updated->dag, *coordinated).isSatisfied());
+  }
 }
 
 TEST_F(SpatialDomainTest,
@@ -1372,6 +1417,85 @@ TEST_F(SpatialDomainTest, RelationsCoordinateContractionsInBothDirections) {
             }
 }
 
+TEST_F(SpatialDomainTest,
+       ReductionProducerPreservesIndependentConsumerOutputAxis) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (auto order : {SpatialPropagationOrder::ProducersFirst,
+                       SpatialPropagationOrder::ConsumersFirst}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(static_cast<unsigned>(order));
+      std::string text;
+      llvm::raw_string_ostream ir(text);
+      ir << R"mlir(module {
+        func.func @main(%input: tensor<1x1024x128xf16>, %weight: tensor<1x)mlir"
+         << extent << R"mlir(x1024xf16>) -> tensor<1x)mlir" << extent
+         << R"mlir(xf16> {
+          %zero = arith.constant 0.0 : f16
+          %pe = tensor.empty() : tensor<1x1024xf16>
+          %pi = linalg.fill ins(%zero : f16) outs(%pe : tensor<1x1024xf16>) -> tensor<1x1024xf16>
+          %p = linalg.generic {indexing_maps = [affine_map<(b,k,r)->(b,k,r)>, affine_map<(b,k,r)->(b,k)>], iterator_types = ["parallel", "parallel", "reduction"]}
+              ins(%input : tensor<1x1024x128xf16>) outs(%pi : tensor<1x1024xf16>) {
+          ^bb0(%x: f16, %acc: f16):
+            %sum = arith.addf %x, %acc : f16
+            linalg.yield %sum : f16
+          } -> tensor<1x1024xf16>
+          %ce = tensor.empty() : tensor<1x)mlir"
+         << extent << R"mlir(xf16>
+          %ci = linalg.fill ins(%zero : f16) outs(%ce : tensor<1x)mlir"
+         << extent << R"mlir(xf16>) -> tensor<1x)mlir" << extent << R"mlir(xf16>
+          %c = linalg.generic {indexing_maps = [affine_map<(b,n,k)->(b,k)>, affine_map<(b,n,k)->(b,n,k)>, affine_map<(b,n,k)->(b,n)>], iterator_types = ["parallel", "parallel", "reduction"]}
+              ins(%p, %weight : tensor<1x1024xf16>, tensor<1x)mlir"
+         << extent << R"mlir(x1024xf16>) outs(%ci : tensor<1x)mlir" << extent
+         << R"mlir(xf16>) {
+          ^bb0(%a: f16, %w: f16, %acc: f16):
+            %product = arith.mulf %a, %w : f16
+            %sum = arith.addf %product, %acc : f16
+            linalg.yield %sum : f16
+          } -> tensor<1x)mlir"
+         << extent << R"mlir(xf16>
+          return %c : tensor<1x)mlir"
+         << extent << R"mlir(xf16>
+        }
+      })mlir";
+      auto module = parse(withTopology(text, 4, 4));
+      ASSERT_TRUE(module);
+      std::string detail;
+      auto built = build(*module, detail);
+      ASSERT_TRUE(built) << detail;
+      auto function = *module->getOps<mlir::func::FuncOp>().begin();
+      auto *consumer = function.getBody()
+                           .front()
+                           .getTerminator()
+                           ->getOperand(0)
+                           .getDefiningOp();
+      auto *producer = consumer->getOperand(0).getDefiningOp();
+      auto seed = built->domain.getFirstPlan();
+      size_t producerIndex = spatialNodeIndex(built->domain, seed, producer);
+      size_t consumerIndex = spatialNodeIndex(built->domain, seed, consumer);
+      seed.nodes[producerIndex].axes[1].parameter = 4;
+      seed.nodes[producerIndex].embedding = {TileId(0), TileId(4), TileId(8),
+                                             TileId(12)};
+      seed.nodes[consumerIndex].axes[1].parameter = 16;
+      seed.nodes[consumerIndex].embedding.clear();
+      for (int64_t tile = 0; tile < 16; ++tile)
+        seed.nodes[consumerIndex].embedding.push_back(TileId(tile));
+      ASSERT_TRUE(built->domain.contains(seed));
+      auto coordinated = propagateSpatialPartitions(built->domain, built->dag,
+                                                    seed, {}, order);
+      ASSERT_TRUE(mlir::succeeded(coordinated));
+      EXPECT_EQ(coordinated->nodes[consumerIndex].axes[1].parameter, 16);
+      EXPECT_EQ(coordinated->nodes[consumerIndex].axes[2].parameter, 1);
+      EXPECT_TRUE(coordinated->nodes[consumerIndex].reductionMerges.empty());
+      auto evaluation = built->domain.evaluate(built->dag, *coordinated);
+      ASSERT_TRUE(evaluation.isSatisfied());
+      for (auto &node : evaluation.assignment->nodes)
+        expectExactShardCoverage(
+            node,
+            built->domain.getProblem().findRoot(node.root)->iteratorExtents);
+      EXPECT_TRUE(built->domain.contains(seed));
+    }
+}
+
 TEST_F(SpatialDomainTest, RepeatedDemandRetainsIndependentConsumerPartitions) {
   for (int64_t extent : {1024, 1025, 1031}) {
     auto module = parse(wafer::compiler::testing::spatialContractionSource(
@@ -1554,54 +1678,61 @@ TEST_F(SpatialDomainTest,
 
 TEST_F(SpatialDomainTest,
        BackwardOutputDemandRetainsAnIndependentReductionAxis) {
-  for (int64_t extent : {1024, 1025}) {
-    auto module = parse(wafer::compiler::testing::spatialContractionSource(
-        extent, false, false, 16));
-    ASSERT_TRUE(module);
-    auto function = *module->getOps<mlir::func::FuncOp>().begin();
-    auto *terminator = function.getBody().front().getTerminator();
-    auto *gemm = terminator->getOperand(0).getDefiningOp();
-    auto *producer = gemm->getOperand(0).getDefiningOp();
-    mlir::OpBuilder builder(terminator);
-    mlir::IRMapping mapping;
-    mapping.map(producer->getOperand(0), gemm->getResult(0));
-    auto *pointwise = builder.clone(*producer, mapping);
-    terminator->setOperand(0, pointwise->getResult(0));
-    std::string detail;
-    auto built = build(*module, detail);
-    ASSERT_TRUE(built) << detail;
-    auto seed = built->domain.getFirstPlan();
-    size_t gemmIndex = spatialNodeIndex(built->domain, seed, gemm);
-    size_t consumerIndex = spatialNodeIndex(built->domain, seed, pointwise);
-    seed.nodes[gemmIndex].axes[3].parameter = 4;
-    seed.nodes[gemmIndex].embedding = {TileId(0), TileId(1), TileId(2),
-                                       TileId(3)};
-    auto groups = deriveSpatialReductionGroups(
-        built->domain.getProblem().getRoots()[gemmIndex],
-        seed.nodes[gemmIndex].axes);
-    ASSERT_TRUE(mlir::succeeded(groups));
-    ASSERT_EQ(groups->size(), 1u);
-    seed.nodes[gemmIndex].reductionMerges = {{groups->front(), TileId(3)}};
-    seed.nodes[consumerIndex].axes[1].parameter = 4;
-    seed.nodes[consumerIndex].embedding = {TileId(0), TileId(4), TileId(8),
-                                           TileId(12)};
-    ASSERT_TRUE(built->domain.contains(seed));
-    auto coordinated =
-        propagateSpatialPartitions(built->domain, built->dag, seed, {},
-                                   SpatialPropagationOrder::ConsumersFirst);
-    ASSERT_TRUE(mlir::succeeded(coordinated));
-    EXPECT_EQ(coordinated->nodes[gemmIndex].axes[1].parameter, 4);
-    EXPECT_EQ(coordinated->nodes[gemmIndex].axes[3].parameter, 4);
-    EXPECT_EQ(coordinated->nodes[gemmIndex].embedding.size(), 16u);
-    ASSERT_EQ(coordinated->nodes[gemmIndex].reductionMerges.size(), 4u);
-    auto evaluation = built->domain.evaluate(built->dag, *coordinated);
-    ASSERT_TRUE(evaluation.isSatisfied());
-    auto *proof = analysis::getExactDemandProof(*evaluation.demand);
-    ASSERT_NE(proof, nullptr);
-    ASSERT_EQ(proof->reductionMerges.size(), 4u);
-    for (const auto &merge : proof->reductionMerges)
-      EXPECT_EQ(merge.contributions.size(), 4u);
-  }
+  for (int64_t extent : {1024, 1025, 1031})
+    for (int64_t reductionParts : {4, 16}) {
+      SCOPED_TRACE(reductionParts);
+      auto module = parse(wafer::compiler::testing::spatialContractionSource(
+          extent, false, false, 16));
+      ASSERT_TRUE(module);
+      auto function = *module->getOps<mlir::func::FuncOp>().begin();
+      auto *terminator = function.getBody().front().getTerminator();
+      auto *gemm = terminator->getOperand(0).getDefiningOp();
+      auto *producer = gemm->getOperand(0).getDefiningOp();
+      mlir::OpBuilder builder(terminator);
+      mlir::IRMapping mapping;
+      mapping.map(producer->getOperand(0), gemm->getResult(0));
+      auto *pointwise = builder.clone(*producer, mapping);
+      terminator->setOperand(0, pointwise->getResult(0));
+      std::string detail;
+      auto built = build(*module, detail);
+      ASSERT_TRUE(built) << detail;
+      auto seed = built->domain.getFirstPlan();
+      size_t gemmIndex = spatialNodeIndex(built->domain, seed, gemm);
+      size_t consumerIndex = spatialNodeIndex(built->domain, seed, pointwise);
+      seed.nodes[gemmIndex].axes[3].parameter = reductionParts;
+      seed.nodes[gemmIndex].embedding.clear();
+      for (int64_t tile = 0; tile < reductionParts; ++tile)
+        seed.nodes[gemmIndex].embedding.push_back(TileId(tile));
+      auto groups = deriveSpatialReductionGroups(
+          built->domain.getProblem().getRoots()[gemmIndex],
+          seed.nodes[gemmIndex].axes);
+      ASSERT_TRUE(mlir::succeeded(groups));
+      ASSERT_EQ(groups->size(), 1u);
+      seed.nodes[gemmIndex].reductionMerges = {
+          {groups->front(), TileId(reductionParts - 1)}};
+      seed.nodes[consumerIndex].axes[1].parameter = 4;
+      seed.nodes[consumerIndex].embedding = {TileId(0), TileId(4), TileId(8),
+                                             TileId(12)};
+      ASSERT_TRUE(built->domain.contains(seed));
+      auto coordinated =
+          propagateSpatialPartitions(built->domain, built->dag, seed, {},
+                                     SpatialPropagationOrder::ConsumersFirst);
+      ASSERT_TRUE(mlir::succeeded(coordinated));
+      EXPECT_EQ(coordinated->nodes[gemmIndex].axes[1].parameter, 4);
+      EXPECT_EQ(coordinated->nodes[gemmIndex].axes[3].parameter,
+                reductionParts == 4 ? 4 : 1);
+      EXPECT_EQ(coordinated->nodes[gemmIndex].embedding.size(),
+                reductionParts == 4 ? 16u : 4u);
+      ASSERT_EQ(coordinated->nodes[gemmIndex].reductionMerges.size(),
+                reductionParts == 4 ? 4u : 0u);
+      auto evaluation = built->domain.evaluate(built->dag, *coordinated);
+      ASSERT_TRUE(evaluation.isSatisfied());
+      auto *proof = analysis::getExactDemandProof(*evaluation.demand);
+      ASSERT_NE(proof, nullptr);
+      ASSERT_EQ(proof->reductionMerges.size(), reductionParts == 4 ? 4u : 0u);
+      for (const auto &merge : proof->reductionMerges)
+        EXPECT_EQ(merge.contributions.size(), 4u);
+    }
 }
 
 TEST_F(SpatialDomainTest, UnchangedInputDoesNotHideAnotherProducerPartition) {

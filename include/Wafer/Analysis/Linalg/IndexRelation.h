@@ -26,6 +26,10 @@ enum class IndexRelationStatus {
   ResourceExhausted,
 };
 
+/// Construction uses bounded algebraic proofs and may return Unsupported;
+/// General may invoke the Presburger solver when construction is insufficient.
+enum class RectangleProofMode { General, Construction };
+
 struct IndexRelationLimits {
   unsigned maxVariables = 32;
   unsigned maxDisjuncts = 8;
@@ -33,6 +37,9 @@ struct IndexRelationLimits {
   unsigned maxLocalVariablesPerDisjunct = 32;
   uint64_t maxAbsoluteCoefficient = uint64_t{1} << 50;
   uint64_t maxRectangularPieces = 4096;
+  /// Coefficient-work budget for invariance and construction-only recovery.
+  uint64_t maxConstraintWork = 262144;
+  RectangleProofMode rectangleProof = RectangleProofMode::General;
 };
 
 struct IndexRelationResult;
@@ -205,6 +212,14 @@ public:
   isBijective(const IndexRelationLimits &limits = IndexRelationLimits()) const;
   IndexRelationQueryResult isEquivalentTo(
       const IndexRelation &other,
+      const IndexRelationLimits &limits = IndexRelationLimits()) const;
+  /// Prove that relation membership is unchanged when one destination
+  /// coordinate varies across its declared static extent. This also applies
+  /// to set-valued relations and reshapes without a translated tile map.
+  /// Uses bounded constraint elimination/scanning, never general equality
+  /// solving. Unsupported means that the bounded proof was inconclusive.
+  IndexRelationQueryResult isInvariantOnDestinationDimension(
+      llvm::ArrayRef<int64_t> destinationShape, uint32_t dimension,
       const IndexRelationLimits &limits = IndexRelationLimits()) const;
   IndexRelationQueryResult
   implies(const IndexRelation &other,

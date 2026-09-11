@@ -183,6 +183,18 @@ Search的constructive parallel proposal还应覆盖输入复用方向。对curre
 并由actual Instr和匹配profile验证热点改善。覆盖rank3/4、1024/1025/1031、4/16 Tile，窄M/窄N、等extent、置换map及未知map边界。
 
 输入复用proposal还产生沿SSA双向协调的partition。参考[Shardy的数据流传播](https://openxla.org/shardy/propagation)的双向factor传播；本实现使用已有IndexRelation表达实际访问，而不增加按GEMM/conv名称分支的规则表。
+
+传播冲突按显式优先级处理：domain/算法硬约束最高，其次是已有输出并行度，再次是producer/consumer对齐；可选归约切分作为较低优先的显式候选。
+协调不能减少当前节点的并行分片数。新增并行切分与独立的可选归约seed冲突时，先保留并行切分，再按轴的semantic顺序撤去可选归约切分；
+强制归约轴不撤去。仍不能满足Tile数量或domain约束时，放弃该协调提案。原seed与其它合法raw候选保留，最终优劣由actual IR成本决定。
+
+独立轴证明直接检查完整IndexRelation的约束，限定系数工作量，只通过单位系数等式消去局部变量；轴仅出现在覆盖完整范围的自身约束中时才证明独立。
+有限的整数反例可证明不独立；其它情况返回Unknown，不调用通用关系相等、集合差或整数采样求解。预算耗尽保持typed ResourceExhausted。传播的矩形像恢复使用同一工作预算：单位等式消元后，只对有整数精确性证明的上下界对做Fourier–Motzkin投影，
+再以区间传播求必要边界，并逐约束证明整个矩形均满足它们。完整余数范围可以投影，带holes的范围不能冒充矩形。
+参考[MLIR整数投影合同](https://mlir.llvm.org/doxygen/classmlir_1_1presburger_1_1IntegerRelation.html)及pinned实现；
+直接调用通用投影不提供本查询所需的工作上限与整数精确保证。不能证明时保留seed，不进入集合差或整数极值求解。
+该证明保留domain bounds、reshape约束及producer reduction fiber，不依赖translated rectangular tile map；未知结果不能清除seed轴。
+覆盖rank3+、1024/1025/1031、归约producer到contraction、reshape、受限domain、优先级冲突及强制归约；检查分片覆盖、merge/raw域和actual下游，不扩张搜索预算。
 与Shardy的固定点求解不同，此处只生成有界候选：从首个完整seed分别执行前向优先和反向优先的两次遍历，原seed、其余proposal及raw域保留。
 
 每条边组合consumer迭代域、实际operand/support链与producer结果的逆关系。每个source shard必须映射为exact rectangle；
@@ -191,7 +203,7 @@ BalancedParts/UniformExtent精确表示的边界不产生协调候选。新targe
 不再因consumer有归约轴或producer读取tensor而跳过。未被结果映射保留的归约轴由关系逆像恢复完整范围；若映射要求切归约轴，
 从新axes重新推导全部reduction group。仍存在的group保留seed merge placement，新group选择其首个contribution Tile作为显式merge choice。
 多个consumer反推同一个producer时，只有完整partition及placement一致才应用。前向仅根据实际读取operand尝试，按静态bytes与semantic ordinal排序。
-目标轴只有经逆关系tile-image证明invariant时才保留其独立seed切分，不能把单个full-extent image当成独立性证明。
+目标轴只有经完整逆关系的轴不变性证明后才保留其独立seed切分，不能把单个full-extent image当成独立性证明。
 前向以实际读取的data input协调，DPS init沿consumer需求反向协调，不反过来用初始化的seed覆盖计算选择。
 没有新边界的whole-target需求保留seed；未改变或未被domain接纳的提案不能阻止继续尝试其它读取operand。
 这些选择不声明复制执行、movement、同步或SPM合法性；所有候选仍走actual materialization与fresh分析。

@@ -53,8 +53,54 @@
 | 6 | `[1,32,4096,128]` prefill；record容量等于/差一、长循环与tail | Count→Trace、范围内/外事件、overflow、空范围、invalid metadata、设备失败 | 采集范围与实际event/count一致，报告明确覆盖率与缺失；当前profiler/no-card及实卡采集 |
 | 7 | 完整block；rank3/4 GEMM/conv/elementwise/reduction、1024/1025/1031、4/16 Tile | 共享输入/权重、多use、跨Region、layout转换；DDR/DTE的actual capacity/unsupported | 每次GS/转换/读取对应真实producer及动态次数，scope/alias/lifetime合法；actual cost同门禁与必要板端A/B |
 
-当前检查点：七项范围、依赖和覆盖已登记；第3项基线与第5项fresh产品复验先行，第1项开始定位。
-第2/4/6/7项按上述依赖推进。尚无本轮新增板端结果，不沿用旧package签发`board-ready`或`done`。
+当前执行边界为下节传播优先级与有界证明；其余七项按本表依赖持续推进，后续各节保存已经提交的实现与验证证据。
+没有本轮真实设备结果，不以主机通过代签板端`done`。
+
+### 本轮空间传播优先级与有界证明
+
+用户补充授权按优先级处理传播冲突，归属第3/4/5项及06号设计。输入仍为current structured IR、原seed和typed domain；
+输出为同一SpatialPlan候选，由actual region/temporal/Instr/SPM直接消费。搜索width=8、trials=42及raw候选空间保持。
+
+- 硬约束 → 已有输出并行度 → producer/consumer对齐 → 可选归约切分。传播不得减少已有并行分片数；新并行轴与可选归约组合
+  超出Tile数时，按semantic轴顺序撤去可选归约。FD强制K2等domain约束不能撤去。无法协调时保留原候选。
+- 修复把tile-image查询不支持误当作“没有独立轴”的问题。轴独立性改由完整IndexRelation约束证明，保留set-valued reduction fiber、
+  reshape和中间domain边界；未知结论不清除seed轴。
+- 独立性查询与传播的矩形恢复均限定系数工作量。矩形恢复保留整数精确投影及余数完整性证明，再验证整个box满足约束；
+  无法证明返回Unsupported，预算耗尽返回ResourceExhausted，不调用通用集合差、等价或整数极值求解来强行协调。
+
+| 输入等价类 | 整除/非整除及结构 | exact输出/typed失败 | 直接下游witness |
+| --- | --- | --- | --- |
+| reduction producer → contraction | rank3、1024/1025/1031，前向/反向 | N16保留，不能被K4覆盖；无新增consumer merge | exact demand、完整shard coverage |
+| 输出并行与独立归约竞争 | 1024/1025/1031，16 Tile，M4×K4 / M4×K16 | 前者保留两轴与4组merge；后者保留M4、撤去可选K16 | domain、demand与merge贡献 |
+| mandatory coupled reduction | rank3、1025，FD K2与consumer M16竞争 | 强制K2保留，consumer并行度不下降 | domain与exact demand |
+| relation构造/反例 | rank3+、1024/1025/1031，reshape、reverse、stride、受限domain | exact offsets/sizes；holes不当矩形；匹配样本不证明独立；work limit typed拒绝 | 独立有界整数投影oracle、既有GEMM/conv/view传播矩阵 |
+| 完整产品 | fresh FP16 decode两步、完整LLaMA source/input/reference | 原width/trials，actual capacity与Unsupported保持区分 | 本轮ExecutablePackage/no-card；数学模型执行另按17号设计记录 |
+
+本轮开发诊断已确认：直接使用通用等价/矩形求解的版本在完整block的空间proposal查询中持续约912秒后终止；
+有界版本对同一tensor-program的只读domain/proposal检查约1.964秒、peak RSS约170 MiB；fresh产品中该query约1.492秒。
+这只说明空间分析热路径恢复，不代替完整编译耗时、SPM合法性或设备性能结论。
+
+本轮host验证：IndexRelation 34项（含新增有界投影oracle）、SpatialDomain 27项通过；canonical完整增量构建及随后Ninja no-op通过。
+最终代码的完整check-wafer通过：278/278 lit、14组件CTest以及numeric/target numeric、public/runtime与17个SystemC测试实际执行。
+额外13组source→compiler→SystemC输出比较通过，覆盖row-max、attention score舍入、shared-DDR和基础vertical。
+
+Fresh产品复验：FP16 decode两步均生成16-Tile executable并通过strict no-card；每步structural=7、actual=42、accepted=7，
+完整export/reference/编译/no-card两步wall约720.32秒、peak RSS约2.24 GiB。本轮同时运行其它主机验证，不作为编译性能A/B。
+最终Instr的输出projection每片N=256，K=2048分块在Tile内部循环；旧的`1x4096x512`展开归约carrier未再出现，actual SPM offset均已验证。
+完整LLaMA编译约681.234秒，actual=42、accepted=1，16-Tile package及strict no-card通过；16份最终Instr与前次成功版本逐字节相同。
+Decode此次无数值回读，第二步输入沿现有runner使用PyTorch reference continuation；两条产品均未执行真实设备或签发性能改善结论。
+
+### 本轮F32 extrema数学模型支持
+
+归属第2/5项及17号设计。真实LLaMA的target model此前在F32 max指令处返回Unsupported；当前Instr无需改动。
+Formal lane补F32 max/min的正负无穷identity、IEEE正负零和canonical NaN/signaling invalid；managed-reference lane补非NaN
+F32 max/min，同一遍历与identity，NaN保持写入前拒绝。Sum、编译算术和dtype保持。该范围只提供数学reference，不增加硬件位级资格。
+
+本轮验证包括1024/1025/1031、rank3/4、多归约轴、负数、无穷、正负零、NaN、padding及预算拒绝；
+formal/managed新增3项测试实际通过；6组真实source row-max none/search完成编译并在SystemC比较全部输出。
+完整LLaMA沿既有显式managed-reference入口，用fresh input/reference执行，结果另记本节；未以局部归约测试代签完整模型数值。
+
+
 
 首个实施边界：第1项consumer fan-in在spatial materializer直接按exact demand构造紧凑assembly，source offset保留producer坐标，
 destination offset减去请求原点。已发现的temporal concat生成限制另在actual slice上预检：重叠window保留已有assembly供循环读取，

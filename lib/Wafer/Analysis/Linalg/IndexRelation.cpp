@@ -88,6 +88,71 @@ static bool exceedsRelationLimits(const PresburgerRelation &relation,
                       });
 }
 
+// Exact local substitution with an explicit coefficient-work budget. No
+// simplex, sampling, set difference or equality solver is invoked.
+static bool eliminateUnitLocals(IntegerRelation &current, uint64_t &remaining,
+                                const IndexRelationLimits &limits) {
+  auto charge = [&](uint64_t count) {
+    if (count > remaining)
+      return false;
+    remaining -= count;
+    return true;
+  };
+  const llvm::DynamicAPInt maximum(
+      static_cast<int64_t>(limits.maxAbsoluteCoefficient));
+  // Exact unit-coefficient substitution, as in IntegerRelation's local
+  // elimination. Each substitution removes a variable; every coefficient
+  // visit/update is charged and coefficient growth is checked immediately.
+  while (true) {
+    std::optional<std::pair<unsigned, unsigned>> pivot;
+    for (unsigned row = 0; row < current.getNumEqualities() && !pivot; ++row)
+      for (unsigned col = current.getNumDimAndSymbolVars();
+           col < current.getNumVars(); ++col) {
+        if (!charge(1))
+          return false;
+        if (llvm::abs(current.atEq(row, col)) == 1) {
+          pivot = {{row, col}};
+          break;
+        }
+      }
+    if (!pivot)
+      break;
+    auto [row, col] = *pivot;
+    if (!charge(current.getNumVars() + 1))
+      return false;
+    llvm::SmallVector<llvm::DynamicAPInt> equation(current.getEquality(row));
+    auto eliminate = [&](bool equality, unsigned target) {
+      if (!charge(1))
+        return false;
+      auto factor =
+          (equality ? current.atEq(target, col) : current.atIneq(target, col)) *
+          equation[col];
+      if (factor == 0)
+        return true;
+      for (unsigned index = 0; index <= current.getNumVars(); ++index) {
+        if (!charge(1))
+          return false;
+        auto &coefficient = equality ? current.atEq(target, index)
+                                     : current.atIneq(target, index);
+        auto value = coefficient - factor * equation[index];
+        if (llvm::abs(value) > maximum)
+          return false;
+        coefficient = std::move(value);
+      }
+      return true;
+    };
+    for (unsigned i = 0; i < current.getNumEqualities(); ++i)
+      if (i != row && !eliminate(true, i))
+        return false;
+    for (unsigned i = 0; i < current.getNumInequalities(); ++i)
+      if (!eliminate(false, i))
+        return false;
+    current.removeEquality(row);
+    current.removeVar(col);
+  }
+  return true;
+}
+
 static bool exceedsSetLimits(const PresburgerSet &set,
                              const IndexRelationLimits &limits) {
   return set.getNumVars() > limits.maxVariables ||
@@ -172,6 +237,179 @@ recoverDirectStaticRectangle(const IntegerRelation &box, unsigned rank) {
   }
   return StaticRectangularIndexSetResult{
       IndexRelationStatus::Exact, std::move(rectangle), {}};
+}
+
+static StaticRectangularIndexSetResult
+recoverBoundedStaticRectangle(const PresburgerSet &set,
+                              const IndexRelationLimits &limits) {
+  if (set.getNumDisjuncts() != 1)
+    return failRectangle(IndexRelationStatus::Unsupported,
+                         "bounded rectangle proof requires one conjunction");
+  IntegerRelation normalized = set.getDisjunct(0);
+  uint64_t work = limits.maxConstraintWork;
+  if (!eliminateUnitLocals(normalized, work, limits))
+    return failRectangle(IndexRelationStatus::ResourceExhausted,
+                         "bounded rectangle elimination exceeds budget");
+  // First project locals with an integer exactness proof. Interval propagation
+  // then gives necessary visible bounds; accept the box only if every projected
+  // constraint holds throughout it. A bounding box alone is not proof.
+  using Integer = llvm::DynamicAPInt;
+  llvm::SmallVector<llvm::SmallVector<Integer>> rows;
+  auto append = [&](ArrayRef<Integer> values, bool negate) {
+    if (work < values.size())
+      return false;
+    work -= values.size();
+    auto &row = rows.emplace_back();
+    for (const auto &value : values)
+      row.push_back(negate ? -value : value);
+    return true;
+  };
+  for (unsigned row = 0; row < normalized.getNumEqualities(); ++row)
+    if (!append(normalized.getEquality(row), false) ||
+        !append(normalized.getEquality(row), true))
+      return failRectangle(IndexRelationStatus::ResourceExhausted,
+                           "bounded rectangle scan exceeds budget");
+  for (unsigned row = 0; row < normalized.getNumInequalities(); ++row)
+    if (!append(normalized.getInequality(row), false))
+      return failRectangle(IndexRelationStatus::ResourceExhausted,
+                           "bounded rectangle scan exceeds budget");
+  if (normalized.getNumSymbolVars() != 0)
+    return failRectangle(IndexRelationStatus::Unsupported,
+                         "bounded rectangle proof requires no symbols");
+  const Integer maximum(static_cast<int64_t>(limits.maxAbsoluteCoefficient));
+  // Bounded Fourier-Motzkin projection, only where each lower/upper pair
+  // has an integer witness. Unit bounds are exact. Equal nonunit factors
+  // are also exact when their constant interval contains every residue
+  // (e.g. 0 <= x - 128*q <= 127); narrower intervals may contain holes.
+  unsigned variables = normalized.getNumVars();
+  while (variables > normalized.getNumDimVars()) {
+    const unsigned local = variables - 1;
+    llvm::SmallVector<unsigned> positive, negative;
+    llvm::SmallVector<llvm::SmallVector<Integer>> projected;
+    for (auto [index, row] : llvm::enumerate(rows)) {
+      if (work < row.size())
+        return failRectangle(IndexRelationStatus::ResourceExhausted,
+                             "bounded local projection exceeds budget");
+      work -= row.size();
+      if (row[local] > 0)
+        positive.push_back(index);
+      else if (row[local] < 0)
+        negative.push_back(index);
+      else {
+        auto &copy = projected.emplace_back(row);
+        copy.erase(copy.begin() + local);
+      }
+    }
+    for (unsigned low : positive)
+      for (unsigned high : negative) {
+        if (work < variables + 1 ||
+            projected.size() >= limits.maxConstraintsPerDisjunct)
+          return failRectangle(IndexRelationStatus::ResourceExhausted,
+                               "bounded local projection exceeds budget");
+        work -= variables + 1;
+        const Integer a = rows[low][local], b = -rows[high][local];
+        llvm::SmallVector<Integer> combined;
+        bool constant = true;
+        for (unsigned col = 0; col <= variables; ++col) {
+          if (col == local)
+            continue;
+          Integer value = b * rows[low][col] + a * rows[high][col];
+          if (llvm::abs(value) > maximum)
+            return failRectangle(
+                IndexRelationStatus::ResourceExhausted,
+                "bounded local projection coefficients exceed budget");
+          if (col != variables && value != 0)
+            constant = false;
+          combined.push_back(std::move(value));
+        }
+        if (a != 1 && b != 1 &&
+            !(a == b && constant && combined.back() >= a * (a - 1)))
+          return failRectangle(
+              IndexRelationStatus::Unsupported,
+              "local projection lacks an integer exactness proof");
+        projected.push_back(std::move(combined));
+      }
+    rows = std::move(projected);
+    --variables;
+  }
+  llvm::SmallVector<std::optional<Integer>> lower(variables), upper(variables);
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (const auto &row : rows)
+      for (unsigned axis = 0; axis < variables; ++axis) {
+        if (work == 0)
+          return failRectangle(IndexRelationStatus::ResourceExhausted,
+                               "bounded rectangle propagation exceeds budget");
+        --work;
+        if (row[axis] == 0)
+          continue;
+        Integer rest = row.back();
+        bool bounded = true;
+        for (unsigned other = 0; other < variables; ++other) {
+          if (work == 0)
+            return failRectangle(
+                IndexRelationStatus::ResourceExhausted,
+                "bounded rectangle propagation exceeds budget");
+          --work;
+          if (other == axis || row[other] == 0)
+            continue;
+          const auto &bound = row[other] > 0 ? upper[other] : lower[other];
+          if (!bound) {
+            bounded = false;
+            break;
+          }
+          rest += row[other] * *bound;
+          if (llvm::abs(rest) > maximum)
+            return failRectangle(IndexRelationStatus::ResourceExhausted,
+                                 "bounded rectangle arithmetic exceeds budget");
+        }
+        if (!bounded)
+          continue;
+        bool isLower = row[axis] > 0;
+        Integer value = isLower ? llvm::ceilDiv(-rest, row[axis])
+                                : llvm::floorDiv(rest, -row[axis]);
+        auto &bound = isLower ? lower[axis] : upper[axis];
+        if (!bound || (isLower ? value > *bound : value < *bound)) {
+          bound = value;
+          changed = true;
+        }
+        if (lower[axis] && upper[axis] && *lower[axis] > *upper[axis])
+          return failRectangle(IndexRelationStatus::Unsupported,
+                               "empty index demand has no transfer rectangle");
+      }
+  }
+  if (llvm::any_of(lower, [](const auto &v) { return !v; }) ||
+      llvm::any_of(upper, [](const auto &v) { return !v; }))
+    return failRectangle(IndexRelationStatus::Unsupported,
+                         "bounded rectangle proof has unbounded variables");
+  for (const auto &row : rows) {
+    Integer minimum = row.back();
+    for (unsigned axis = 0; axis < variables; ++axis) {
+      if (work == 0)
+        return failRectangle(IndexRelationStatus::ResourceExhausted,
+                             "bounded rectangle verification exceeds budget");
+      --work;
+      minimum += row[axis] * (row[axis] > 0 ? *lower[axis] : *upper[axis]);
+      if (llvm::abs(minimum) > maximum)
+        return failRectangle(IndexRelationStatus::ResourceExhausted,
+                             "bounded rectangle arithmetic exceeds budget");
+    }
+    if (minimum < 0)
+      return failRectangle(
+          IndexRelationStatus::Unsupported,
+          "index demand does not have a proven dense rectangle");
+  }
+  StaticRectangularIndexSet result;
+  for (unsigned axis = 0; axis < set.getSpace().getNumSetDimVars(); ++axis) {
+    Integer size = *upper[axis] - *lower[axis] + 1;
+    if (size > std::numeric_limits<int64_t>::max())
+      return failRectangle(IndexRelationStatus::Invalid,
+                           "exact index demand rectangle overflows");
+    result.offsets.push_back(static_cast<int64_t>(*lower[axis]));
+    result.sizes.push_back(static_cast<int64_t>(size));
+  }
+  return {IndexRelationStatus::Exact, std::move(result), {}};
 }
 
 static PresburgerRelation getUnboundedIdentityRelation(unsigned rank) {
@@ -1102,6 +1340,8 @@ StaticRectangularIndexSetResult IndexSetResult::getExactStaticRectangularDomain(
     if (direct.isExact())
       return direct;
   }
+  if (limits.rectangleProof == RectangleProofMode::Construction)
+    return recoverBoundedStaticRectangle(*set, limits);
   if (set->isIntegerEmpty())
     return failRectangle(IndexRelationStatus::Unsupported,
                          "empty index demand has no transfer rectangle");
@@ -2164,6 +2404,112 @@ IndexRelation::isEquivalentTo(const IndexRelation &other,
     return IndexRelationQueryResult{IndexRelationStatus::Exact, true, {}};
   return IndexRelationQueryResult{
       IndexRelationStatus::Exact, relation.isEqual(other.relation), {}};
+}
+
+IndexRelationQueryResult IndexRelation::isInvariantOnDestinationDimension(
+    llvm::ArrayRef<int64_t> destinationShape, uint32_t dimension,
+    const IndexRelationLimits &limits) const {
+  if (destinationShape.size() != getDestinationRank() ||
+      dimension >= destinationShape.size() ||
+      llvm::any_of(destinationShape,
+                   [](int64_t extent) { return extent <= 0; }))
+    return failQuery(IndexRelationStatus::Invalid,
+                     "invariance requires a positive static destination box");
+  if (status != IndexRelationStatus::Exact)
+    return failQuery(status, "invariance requires an exact relation");
+  if (exceedsRelationLimits(relation, limits))
+    return failQuery(IndexRelationStatus::ResourceExhausted,
+                     "invariance relation exceeds budget");
+  uint64_t remaining = limits.maxConstraintWork;
+  auto charge = [&](uint64_t count) {
+    if (count > remaining)
+      return false;
+    remaining -= count;
+    return true;
+  };
+  auto exhausted = [&]() {
+    return failQuery(IndexRelationStatus::ResourceExhausted,
+                     "invariance constraint work exceeds budget");
+  };
+  llvm::SmallVector<IntegerRelation, 8> disjuncts;
+  for (const auto &original : relation.getAllDisjuncts()) {
+    if (!charge(uint64_t(original.getNumVars() + 1) *
+                original.getNumConstraints()))
+      return exhausted();
+    IntegerRelation current = original;
+    if (!eliminateUnitLocals(current, remaining, limits))
+      return exhausted();
+    disjuncts.push_back(std::move(current));
+  }
+  const llvm::DynamicAPInt last(destinationShape[dimension] - 1);
+  bool product = true;
+  for (const auto &part : disjuncts) {
+    auto check = [&](llvm::ArrayRef<llvm::DynamicAPInt> row, bool equality) {
+      if (!charge(row.size()))
+        return false;
+      if (row[dimension] == 0)
+        return true;
+      for (unsigned col = 0; col < part.getNumVars(); ++col)
+        if (col != dimension && row[col] != 0) {
+          product = false;
+          return true;
+        }
+      auto end = row.back() + row[dimension] * last;
+      product &=
+          equality ? row.back() == 0 && end == 0 : row.back() >= 0 && end >= 0;
+      return true;
+    };
+    for (unsigned i = 0; i < part.getNumEqualities(); ++i)
+      if (!check(part.getEquality(i), true))
+        return exhausted();
+    for (unsigned i = 0; i < part.getNumInequalities(); ++i)
+      if (!check(part.getInequality(i), false))
+        return exhausted();
+  }
+  if (product)
+    return {IndexRelationStatus::Exact, true, {}};
+  // A concrete satisfying assignment (including locals) and a second point
+  // excluded by a local-free constraint in every disjunct prove dependence.
+  // Failure to find these bounded witnesses is Unknown, never false.
+  llvm::SmallVector<int64_t, 3> samples{0};
+  if (destinationShape[dimension] > 1)
+    samples.push_back(1);
+  if (destinationShape[dimension] > 2)
+    samples.push_back(destinationShape[dimension] - 1);
+  bool anyWitness = false, anyExcluded = false;
+  for (int64_t sample : samples) {
+    bool witness = false, excluded = true;
+    for (const auto &part : disjuncts) {
+      bool satisfies = true, forbidden = false;
+      auto check = [&](llvm::ArrayRef<llvm::DynamicAPInt> row, bool equality) {
+        if (!charge(row.size()))
+          return false;
+        auto value = row.back() + row[dimension] * llvm::DynamicAPInt(sample);
+        bool valid = equality ? value == 0 : value >= 0;
+        satisfies &= valid;
+        bool visible = true;
+        for (unsigned col = part.getNumDimAndSymbolVars();
+             col < part.getNumVars(); ++col)
+          visible &= row[col] == 0;
+        forbidden |= visible && !valid;
+        return true;
+      };
+      for (unsigned i = 0; i < part.getNumEqualities(); ++i)
+        if (!check(part.getEquality(i), true))
+          return exhausted();
+      for (unsigned i = 0; i < part.getNumInequalities(); ++i)
+        if (!check(part.getInequality(i), false))
+          return exhausted();
+      witness |= satisfies;
+      excluded &= forbidden;
+    }
+    anyWitness |= witness;
+    anyExcluded |= excluded;
+  }
+  if (anyWitness && anyExcluded)
+    return {IndexRelationStatus::Exact, false, {}};
+  return failQuery(IndexRelationStatus::Unsupported,
+                   "bounded constraints do not establish axis invariance");
 }
 
 IndexRelationQueryResult
