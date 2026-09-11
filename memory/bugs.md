@@ -1904,3 +1904,10 @@
   必须证明完整use/alias集合，向全部既有出口保持原顺序写入，再从修改后的IR处理新暴露的carrier；成功删除allocation保证收敛。
 - 删除write-only carrier时同时消除其identity SCF forwarding，保留其它state。不要将不变DDR地址变成loop-carried state，再扩大completion来接受它。
 - 回归需要实际源程序模型执行与Instr/SPM，检查多个出口、窗口holes、尾块和原来需要读取的状态；仅检查某个大allocation消失不足以证明完整模型可编译。
+
+
+## 函数边界type converter不能逐参数重复扫描symbol uses
+
+- pinned One-Shot会为函数的多个参数和结果重复调用functionArgTypeConverterFn；在每次callback中扫描整个module会随ABI宽度放大编译工作。
+- 同一次layout/bufferization内按实际FuncOp保留一次边界空间选择。标准FuncOp/CallOp bufferization保留函数身份和callee引用；下一次调用重新查询。
+- 用被调用helper与外部entry核对全部参数/结果的空间，并记录查询次数；大型source必须比较相同输入/预算及最终Instr，不能只凭局部计时宣称优化。

@@ -259,7 +259,9 @@ WDMA descriptor，并让actual Instr引用base allocation；被该store唯一消
 
 `memref.copy`、`StorageStore`与`MoveCopyInto`共用同一次调用内的static endpoint解析：沿actual subview SSA组合offset/stride和rank reduction，
 直到可解释physical encoding的base；source与destination分别证明完整iteration domain。标准strided Tensor view和Cx/NCx view遵循同一逻辑关系，
-不将view type当作独立blocked allocation。动态blocked offset保持Unsupported，标准Tensor的既有线性dynamic offset路径不变。
+不将view type当作独立blocked allocation。动态blocked offset保持Unsupported；合法标准Tensor source的动态起点由current SSA view携带，
+copy与store共用同一endpoint解析，不能在store路径退回static-only查询。覆盖1024/1025/1031、嵌套非零窗口、动态main块和静态tail，
+逐字节检查WDMA的source/destination与下游实际offset。
 同一SSA或具有相同base、type和全部静态/动态参数的两个subview之间的copy是同址恒等写入，可直接删除；参数不同不能仅凭type相同删除。
 该查询不创建IR；通过descriptor证明后，Instr直接引用base及精确offset/range，owner与effect仍由实际生成的Instr消费。
 

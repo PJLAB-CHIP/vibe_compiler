@@ -6,6 +6,7 @@
 #include "Wafer/Analysis/Tile/PhysicalLayoutRelation.h"
 #include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Passes.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
@@ -2174,15 +2175,28 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
                          tileLocal ? MemorySpace::SPM : MemorySpace::DDR,
                          tileLocal ? found->second : MemLayout::Tensor);
   };
+  llvm::DenseMap<mlir::Operation *, MemorySpace> functionMemorySpaces;
   options.functionArgTypeConverterFn =
-      [module](mlir::TensorType tensorType, mlir::Attribute,
-               mlir::func::FuncOp function,
-               const mlir::bufferization::BufferizationOptions &)
+      [module, &functionMemorySpaces,
+       &result](mlir::TensorType tensorType, mlir::Attribute,
+                mlir::func::FuncOp function,
+                const mlir::bufferization::BufferizationOptions &)
       -> mlir::BaseMemRefType {
-    const MemorySpace space =
-        mlir::SymbolTable::symbolKnownUseEmpty(function, module)
-            ? MemorySpace::DDR
-            : MemorySpace::SPM;
+    auto found = functionMemorySpaces.find(function);
+    if (found == functionMemorySpaces.end()) {
+      support::ScopedCompileTimingSpan timing("query",
+                                              "layout-and-bufferization",
+                                              "function-argument-memory-space");
+      // One-Shot updates function/call types in place and preserves callees.
+      // Apply one boundary-space choice to all parameters and results.
+      MemorySpace space =
+          mlir::SymbolTable::symbolKnownUseEmpty(function, module)
+              ? MemorySpace::DDR
+              : MemorySpace::SPM;
+      found = functionMemorySpaces.try_emplace(function, space).first;
+      ++result.statistics.functionBoundaryQueries;
+    }
+    const MemorySpace space = found->second;
     auto ranked = mlir::dyn_cast<mlir::RankedTensorType>(tensorType);
     if (!ranked)
       return mlir::UnrankedMemRefType::get(

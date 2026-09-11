@@ -238,6 +238,30 @@ DDR输入沿Subview树递归，只在真实数据使用处加载；shared-DDR的
 下一步继续定位该actual store的端点关系，不能将typed lowering拒绝解释为SPM全局无解。完整LLaMA同源复编仍在执行。
 
 
+### 完整FA package、动态store与编译查询复用
+
+普通Tensor的动态source subview现在与copy共用endpoint解析，不再被store的static-only查询拒绝。
+三组1024/1025/1031正例逐字节验证嵌套非零source/destination、动态main块和静态tail；六组Cx/NCx动态source保持typed拒绝。
+NTensor仍受store自身的既有layout verifier约束，本项不扩张该op的格式合同。
+
+普通manifest默认字节预算统一为16 MiB，schema、canonical格式、65536条record与其它边界不变。
+16 Tile各2048/4000条shared workspace引用通过readback与完整runtime地址绑定；包含超过原4 MiB的合法manifest、精确字节边界及record超限拒绝。
+完整LLaMA的实际manifest为4,628,381 bytes、36,592条entry argument，原4 MiB reader预算确实挡住了已通过其它验证的产品。
+
+第3项定位到functionArgTypeConverterFn逐参数重复扫描整个symbol-use图；现在同一FuncOp的参数/结果复用本次调用内的一次空间判定。
+三组1024/1025/1031、每entry 1024个输入及一个被调用helper的测试，检查全部参数/结果的DDR/SPM选择和每次调用仅两次查询。
+同源固定8次actual的诊断对照：query 34,304→64，累计58.48秒→0.132秒，wall 228.87→173.19秒，peak RSS约3.78 GiB保持；
+两次均actual=8、accepted=0及相同typed失败分类。该较小预算只用于实现开销对照，正式产品仍使用width=8/trials=42。
+
+第5项完整FP16 LLaMA block现已从fresh source生成正式package并通过strict no-card，42次actual中accepted=1；
+第6项4K/32-head prefill的ordinary/profile package亦重新生成并通过N=200000的strict no-card。两者均没有真实设备执行。
+复用查询后的完整LLaMA再编译约673.55秒，16个最终Instr module与复用前逐字节相同；两次都有完整package，后者也通过strict no-card。
+完整block的formal/SystemC数值尝试在launch slot 14、issue 13114因F32 max归约不在当前formal F32 sum支持子集而typed停止，
+不能计为完整数值通过。下一步补齐该模型组合并继续执行；不修改被测程序算术或放宽PyTorch的rtol=0.002、atol=0.004。
+Decode已越过动态store拒绝，原42次actual仍未找到accepted candidate；当前要继续核对空间传播产生的归约分组与merge缓冲。
+
+本边界完整canonical构建/no-op、完整check-wafer及六组已注册score/shared-DDR source模型全部实际通过。
+
 ## 既有板端流程与产品矩阵
 
 1. 新鲜导出与编译三条 search FP16 case；逐 case 采集原 profiler。先核对 Count 容量与所有数值/完成门禁。

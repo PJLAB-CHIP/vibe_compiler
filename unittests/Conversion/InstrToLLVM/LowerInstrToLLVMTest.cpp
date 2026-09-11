@@ -6,10 +6,13 @@
 #include "Wafer/Support/CompileWorkStatistics.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/IR/ValueBoundsOpInterfaceImpl.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/IRMapping.h"
@@ -157,6 +160,144 @@ module {{
     }
   for (int64_t width : {1, 8, 1023, 1024, 1025, 1031})
     check(1024, width, "f32", "sum", "0.0");
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     StoresPreserveDynamicStandardSubviewAddresses) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (auto layout : {wafer::MemLayout::Tensor, wafer::MemLayout::Cx,
+                        wafer::MemLayout::NCx}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(static_cast<unsigned>(layout));
+      mlir::DialectRegistry registry;
+      registerTargetConversionDialects(registry);
+      mlir::arith::registerValueBoundsOpInterfaceExternalModels(registry);
+      mlir::scf::registerValueBoundsOpInterfaceExternalModels(registry);
+      mlir::MLIRContext context(registry);
+      context.loadAllAvailableDialects();
+      auto text = llvm::formatv(R"mlir(
+        module {{
+          func.func @main(%output: memref<1x1x{0}xf16, #wafer.memory<ddr, tensor>>) {{
+            %token = arith.constant false
+            %unused = wafer.tile.region(%output, %token : memref<1x1x{0}xf16, #wafer.memory<ddr, tensor>>, i1) -> (i1) {{
+            ^bb0(%destination: memref<1x1x{0}xf16, #wafer.memory<ddr, tensor>>, %done: i1):
+              wafer.tile.yield %done : i1
+            }
+            return
+          }
+        }
+      )mlir",
+                                extent + 4)
+                      .str();
+      auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+      ASSERT_TRUE(module);
+      wafer::TileRegionOp region;
+      module->walk([&](wafer::TileRegionOp op) { region = op; });
+      mlir::OpBuilder builder(region.getBody().front().getTerminator());
+      auto loc = region.getLoc();
+      auto memory =
+          wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM, layout);
+      auto type =
+          mlir::MemRefType::get({1, 1, extent + 6}, builder.getF16Type(),
+                                mlir::MemRefLayoutAttrInterface{}, memory);
+      auto allocation = builder.create<mlir::memref::AllocOp>(loc, type);
+      auto source = builder.create<mlir::memref::SubViewOp>(
+          loc, allocation, llvm::ArrayRef<int64_t>{0, 0, 3},
+          llvm::ArrayRef<int64_t>{1, 1, extent},
+          llvm::ArrayRef<int64_t>{1, 1, 1});
+      auto destination = builder.create<mlir::memref::SubViewOp>(
+          loc, region.getBody().getArgument(0),
+          llvm::ArrayRef<int64_t>{0, 0, 2},
+          llvm::ArrayRef<int64_t>{1, 1, extent},
+          llvm::ArrayRef<int64_t>{1, 1, 1});
+      auto zero = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+      auto end =
+          builder.create<mlir::arith::ConstantIndexOp>(loc, extent / 128 * 128);
+      auto step = builder.create<mlir::arith::ConstantIndexOp>(loc, 128);
+      auto loop = builder.create<mlir::scf::ForOp>(loc, zero, end, step);
+      auto store = [&](int64_t size, mlir::OpFoldResult offset) {
+        llvm::SmallVector<mlir::OpFoldResult> offsets{
+            builder.getIndexAttr(0), builder.getIndexAttr(0), offset};
+        auto sizes = mlir::getAsIndexOpFoldResult(&context, {1, 1, size});
+        auto strides = mlir::getAsIndexOpFoldResult(&context, {1, 1, 1});
+        auto src = builder.create<mlir::memref::SubViewOp>(loc, source, offsets,
+                                                           sizes, strides);
+        auto dst = builder.create<mlir::memref::SubViewOp>(
+            loc, destination, offsets, sizes, strides);
+        builder.create<wafer::StorageStoreOp>(loc, src, dst);
+      };
+      builder.setInsertionPoint(loop.getBody()->getTerminator());
+      store(128, loop.getInductionVar());
+      builder.setInsertionPointAfter(loop);
+      if (extent % 128)
+        store(extent % 128, builder.getIndexAttr(extent / 128 * 128));
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      wafer::TileRegionToInstrLoweringSession session(context);
+      bool standard = layout == wafer::MemLayout::Tensor;
+      bool lowered =
+          mlir::succeeded(wafer::convertTileRegionToInstr(region, session));
+      EXPECT_EQ(lowered, standard);
+      if (!standard) {
+        EXPECT_EQ(countOps<wafer::StorageStoreOp>(*module),
+                  extent % 128 ? 2u : 1u);
+        continue;
+      }
+      ASSERT_TRUE(lowered);
+      EXPECT_EQ(countOps<wafer::StorageStoreOp>(*module), 0u);
+      EXPECT_EQ(countOps<mlir::memref::AllocOp>(*module), 1u);
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      std::map<int64_t, int64_t> actual, expected;
+      for (int64_t byte = 0; byte < 2 * extent; ++byte)
+        expected[4 + byte] = 6 + byte;
+      auto address = [&](auto &&self, mlir::Value value,
+                         int64_t iv) -> int64_t {
+        auto view = value.getDefiningOp<mlir::memref::SubViewOp>();
+        if (!view)
+          return 0;
+        llvm::SmallVector<int64_t> strides;
+        int64_t ignored;
+        EXPECT_TRUE(mlir::succeeded(
+            mlir::getStridesAndOffset(view.getSourceType(), strides, ignored)));
+        int64_t result = self(self, view.getSource(), iv);
+        for (auto [axis, offset] : llvm::enumerate(view.getMixedOffsets())) {
+          auto constant = mlir::getConstantIntValue(offset);
+          if (!constant) {
+            EXPECT_EQ(mlir::cast<mlir::Value>(offset), loop.getInductionVar());
+          }
+          result += 2 * strides[axis] * (constant ? *constant : iv);
+        }
+        return result;
+      };
+      module->walk([&](wafer::InstrWDMAOp dma) {
+        bool repeated =
+            static_cast<bool>(dma->getParentOfType<mlir::scf::ForOp>());
+        for (int64_t iv = 0; iv < (repeated ? extent / 128 * 128 : 1);
+             iv += 128) {
+          int64_t src =
+              address(address, dma.getSource(), iv) +
+              (dma.getSrcOffsetAttr() ? dma.getSrcOffsetAttr().getInt() : 0);
+          int64_t dst =
+              address(address, dma.getDest(), iv) +
+              (dma.getDstOffsetAttr() ? dma.getDstOffsetAttr().getInt() : 0);
+          auto n = dma.getDstIterations();
+          auto strides = dma.getDstStrides();
+          int64_t read = 0;
+          for (int64_t k = 0; k < n[2]; ++k)
+            for (int64_t j = 0; j < n[1]; ++j)
+              for (int64_t i = 0; i < n[0]; ++i)
+                for (int64_t byte = 0; byte < dma.getInnerBytesAttr().getInt();
+                     ++byte)
+                  EXPECT_TRUE(actual
+                                  .emplace(dst + k * strides[2] +
+                                               j * strides[1] + i * strides[0] +
+                                               byte,
+                                           src + read++)
+                                  .second);
+          EXPECT_EQ(read, dma.getByteCountAttr().getInt());
+        }
+      });
+      EXPECT_EQ(actual, expected);
+    }
 }
 
 TEST(LowerInstrToTargetLLVMTest, CopySubviewEndpointsUseTheirBaseCoordinates) {

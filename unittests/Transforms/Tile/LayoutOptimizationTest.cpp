@@ -549,6 +549,66 @@ module {
   std::unique_ptr<mlir::MLIRContext> context;
 };
 
+TEST_F(LayoutOptimizationTest, FunctionBoundarySpaceIsQueriedOncePerFunction) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    const std::string type = "tensor<1x" + std::to_string(extent) + "x64xf16>";
+    std::string text;
+    llvm::raw_string_ostream ir(text);
+    ir << "module { wafer.tile.module card_id = 0 tile_id = 0 {\n"
+       << "func.func private @helper(%x: " << type << ") -> " << type
+       << " { return %x : " << type << " }\n"
+       << "func.func @entry(";
+    for (unsigned i = 0; i < 1024; ++i)
+      ir << (i ? ", " : "") << "%arg" << i << ": " << type;
+    ir << ") -> " << type << " {\n"
+       << "%result = wafer.tile.region(%arg0 : " << type << ") -> (" << type
+       << ") { ^bb0(%x: " << type << "):\n"
+       << "%forwarded = func.call @helper(%x) : (" << type << ") -> " << type
+       << "\n"
+       << "%empty = tensor.empty() : " << type << "\n"
+       << "%value = linalg.add ins(%x, %forwarded : " << type << ", " << type
+       << ") outs(%empty : " << type << ") -> " << type << "\n"
+       << "wafer.tile.yield %value : " << type
+       << " }\nreturn %result : " << type << "\n} } }";
+    auto module = parse(text);
+    ASSERT_TRUE(module);
+    TileRegionOp region;
+    module->walk([&](TileRegionOp op) { region = op; });
+    StructuredMaterializationRelations relations;
+    relations.structuralOutputs = {{0, region.getResult(0)}};
+    auto result = resolveCurrentLayoutsAndBufferize(*module, relations);
+    ASSERT_TRUE(result.succeeded()) << result.detail;
+    EXPECT_EQ(result.statistics.functionBoundaryQueries, 2u);
+    EXPECT_EQ(result.statistics.outputDestinations, 1u);
+    unsigned functions = 0;
+    module->walk([&](mlir::func::FuncOp function) {
+      ++functions;
+      auto expected =
+          function.isPrivate() ? MemorySpace::SPM : MemorySpace::DDR;
+      EXPECT_EQ(function.getNumArguments(), function.isPrivate() ? 1u : 1025u);
+      for (auto type : function.getArgumentTypes()) {
+        auto memref = mlir::dyn_cast<mlir::MemRefType>(type);
+        ASSERT_TRUE(memref);
+        auto memory = getWaferMemoryAttr(memref);
+        ASSERT_TRUE(memory);
+        EXPECT_EQ(memory.getSpace(), expected);
+      }
+      for (auto type : function.getResultTypes()) {
+        auto memref = mlir::dyn_cast<mlir::MemRefType>(type);
+        ASSERT_TRUE(memref);
+        auto memory = getWaferMemoryAttr(memref);
+        ASSERT_TRUE(memory);
+        EXPECT_EQ(memory.getSpace(), expected);
+      }
+    });
+    EXPECT_EQ(functions, 2u);
+    EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*module)));
+    EXPECT_TRUE(mlir::succeeded(
+        checkStructuredBufferRelationsCurrent(*module, relations)));
+  }
+}
+
 TEST_F(LayoutOptimizationTest, EmptySlicesUseLocalStorageBeforeBufferization) {
   for (int64_t extent : {1024, 1025, 1031})
     for (bool reduced : {false, true})

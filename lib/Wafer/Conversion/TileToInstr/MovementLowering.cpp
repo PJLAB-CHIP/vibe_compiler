@@ -157,7 +157,7 @@ public:
       return failPattern(rewriter, op,
                          "tile.store identity relation is not exact");
 
-    auto source = resolveStaticMovementEndpoint(op.getSource());
+    auto source = resolveMovementEndpoint(op.getSource());
     if (mlir::failed(source))
       return failPattern(rewriter, op,
                          "tile.store source requires an exact view relation");

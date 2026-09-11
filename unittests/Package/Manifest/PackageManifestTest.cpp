@@ -556,66 +556,74 @@ TEST_F(PackageManifestTest, CanonicalRoundtripOwnsTypedManifest) {
 
 TEST_F(PackageManifestTest,
        LargeSharedWorkspaceManifestFitsCanonicalByteBudget) {
-  // Manifest-only scale witness: resource identity/entry references, not an IR
-  // tensor-shape test. Each reference remains distinct in the entry ABI.
-  auto manifest = makeManifest(/*withTargetTensors=*/false);
-  manifest.launch = llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
-      wafer::KernelLaunchForm::Grid, wafer::KernelEntryABI::TileRowPointerTable,
-      {wafer::RuntimeLaunchPhaseRole::Main}));
-  for (auto &entry : manifest.entries) {
-    auto workspace = entry.arguments.back();
-    entry.arguments.pop_back();
-    for (uint64_t resource = 0; resource < 2048; ++resource)
-      entry.arguments.push_back(
-          {entry.arguments.size(),
-           SharedWorkspaceArgument{resource, resource % 2 ? 64u : 512u, 256},
-           entry.tileId == wafer::TileId(resource % 16)
-               ? PackageAccessMode::WriteOnly
-           : entry.tileId == wafer::TileId((resource + 1) % 16)
-               ? PackageAccessMode::ReadOnly
-               : PackageAccessMode::None});
-    workspace.ordinal = entry.arguments.size();
-    entry.arguments.push_back(std::move(workspace));
-  }
-  auto verified = verifyPackageManifest(std::move(manifest), root);
-  ASSERT_TRUE(static_cast<bool>(verified))
-      << llvm::toString(verified.takeError());
-  const std::string canonical = serializeCanonicalPackageJson(*verified);
-  EXPECT_LT(canonical.size(), PackageParseLimits{}.maxJSONBytes);
-  EXPECT_EQ(canonical.find('\n'), canonical.size() - 1);
-  auto parsed = parseCanonicalPackageJson(canonical, root);
-  ASSERT_TRUE(static_cast<bool>(parsed)) << llvm::toString(parsed.takeError());
-  EXPECT_EQ(serializeCanonicalPackageJson(*parsed), canonical);
-  auto plan =
-      planRuntimeInvocation(*parsed, makeInputBindings(parsed->getManifest()),
-                            makeEnvironment(16 * 1024 * 1024));
-  ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
-  ASSERT_EQ(plan->sharedWorkspaceRanges.size(), 2048u);
-  ASSERT_EQ(plan->tiles.size(), 16u);
-  for (const auto &tile : plan->tiles) {
-    ASSERT_EQ(tile.argumentAddresses.size(), 2051u);
-    for (size_t index = 0; index < 2048; ++index) {
-      EXPECT_EQ(tile.argumentAddresses[index + 2].base,
-                RuntimeArgumentAddressBase::Invocation);
-      EXPECT_EQ(tile.argumentAddresses[index + 2].offset,
-                plan->sharedWorkspaceRanges[index].offset);
+  for (uint64_t resourceCount : {2048u, 4000u}) {
+    SCOPED_TRACE(resourceCount);
+    // Manifest-only scale witness: resource identity/entry references, not an
+    // IR tensor-shape test. Each reference remains distinct in the entry ABI.
+    auto manifest = makeManifest(/*withTargetTensors=*/false);
+    manifest.launch = llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
+        wafer::KernelLaunchForm::Grid,
+        wafer::KernelEntryABI::TileRowPointerTable,
+        {wafer::RuntimeLaunchPhaseRole::Main}));
+    for (auto &entry : manifest.entries) {
+      auto workspace = entry.arguments.back();
+      entry.arguments.pop_back();
+      for (uint64_t resource = 0; resource < resourceCount; ++resource)
+        entry.arguments.push_back(
+            {entry.arguments.size(),
+             SharedWorkspaceArgument{resource, resource % 2 ? 64u : 512u, 256},
+             entry.tileId == wafer::TileId(resource % 16)
+                 ? PackageAccessMode::WriteOnly
+             : entry.tileId == wafer::TileId((resource + 1) % 16)
+                 ? PackageAccessMode::ReadOnly
+                 : PackageAccessMode::None});
+      workspace.ordinal = entry.arguments.size();
+      entry.arguments.push_back(std::move(workspace));
     }
+    auto verified = verifyPackageManifest(std::move(manifest), root);
+    ASSERT_TRUE(static_cast<bool>(verified))
+        << llvm::toString(verified.takeError());
+    const std::string canonical = serializeCanonicalPackageJson(*verified);
+    EXPECT_LT(canonical.size(), PackageParseLimits{}.maxJSONBytes);
+    if (resourceCount == 4000) {
+      EXPECT_GT(canonical.size(), 4u * 1024u * 1024u);
+    }
+    EXPECT_EQ(canonical.find('\n'), canonical.size() - 1);
+    auto parsed = parseCanonicalPackageJson(canonical, root);
+    ASSERT_TRUE(static_cast<bool>(parsed))
+        << llvm::toString(parsed.takeError());
+    EXPECT_EQ(serializeCanonicalPackageJson(*parsed), canonical);
+    auto plan =
+        planRuntimeInvocation(*parsed, makeInputBindings(parsed->getManifest()),
+                              makeEnvironment(16 * 1024 * 1024));
+    ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
+    ASSERT_EQ(plan->sharedWorkspaceRanges.size(), resourceCount);
+    ASSERT_EQ(plan->tiles.size(), 16u);
+    for (const auto &tile : plan->tiles) {
+      ASSERT_EQ(tile.argumentAddresses.size(), resourceCount + 3);
+      for (size_t index = 0; index < resourceCount; ++index) {
+        EXPECT_EQ(tile.argumentAddresses[index + 2].base,
+                  RuntimeArgumentAddressBase::Invocation);
+        EXPECT_EQ(tile.argumentAddresses[index + 2].offset,
+                  plan->sharedWorkspaceRanges[index].offset);
+      }
+    }
+    PackageParseLimits limits;
+    limits.maxJSONBytes = canonical.size();
+    auto exact = parseCanonicalPackageJson(canonical, root, limits);
+    ASSERT_TRUE(static_cast<bool>(exact)) << llvm::toString(exact.takeError());
+    --limits.maxJSONBytes;
+    expectRejected(parseCanonicalPackageJson(canonical, root, limits),
+                   "JSON byte limit");
+    limits = PackageParseLimits{};
+    limits.maxRecords = 32768;
+    expectRejected(parseCanonicalPackageJson(canonical, root, limits),
+                   "record limit");
+    expectRejected(
+        parseCanonicalPackageJson(
+            llvm::StringRef(canonical).take_front(canonical.size() / 2), root),
+        "");
   }
-  PackageParseLimits limits;
-  limits.maxJSONBytes = canonical.size();
-  auto exact = parseCanonicalPackageJson(canonical, root, limits);
-  ASSERT_TRUE(static_cast<bool>(exact)) << llvm::toString(exact.takeError());
-  --limits.maxJSONBytes;
-  expectRejected(parseCanonicalPackageJson(canonical, root, limits),
-                 "JSON byte limit");
-  limits = PackageParseLimits{};
-  limits.maxRecords = 32768;
-  expectRejected(parseCanonicalPackageJson(canonical, root, limits),
-                 "record limit");
-  expectRejected(
-      parseCanonicalPackageJson(
-          llvm::StringRef(canonical).take_front(canonical.size() / 2), root),
-      "");
 }
 
 TEST_F(PackageManifestTest, RejectsMissingTargetFacts) {

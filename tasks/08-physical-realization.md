@@ -69,6 +69,10 @@ post-attention bounded logical normalization
 不读取估计SPM用量，也不改变已定义的fill/input初始化。重复使用的empty分别按各自实际slice生成，未被替换的uses继续保留。
 修改先于layout/One-Shot分析，所有后续分析从更新后的current IR重建。覆盖rank3/4、1024/1025/1031、rank reduction、多use及定义过内容的init。
 
+函数边界的memory space按当前FuncOp的symbol uses判定，每个函数的参数与结果共用同一个选择。该选择仅活于一次layout/bufferization调用；
+pinned One-Shot的FuncOp/CallOp转换保留函数身份和callee引用，改变的buffer类型不需要重新扫描symbol uses。跨候选或下一次调用重新判定。
+覆盖大量rank3静态参数、1024/1025/1031、外部entry与被调用helper；检查逐参数/结果memory space及查询次数，并以同输入实际编译记录核对工作量与耗时。
+
 Layout transformation先闭合function boundary，再为每个current compute use建立实际endpoint，但保留显式TileRegion logical tensor
 boundary；它不重新移动/融合reshape、transpose、broadcast、concat或compute graph，不创建route、message或DDR donor。若input仍含
 可由05号logical normalizer严格支配的graph form，属于上游stage未闭合，不能在PBQP里恢复另一套e-graph。

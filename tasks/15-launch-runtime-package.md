@@ -75,13 +75,14 @@ current要求`card_count=1`、`tile_count=16`。parser要求exact field set、bo
 checked integer conversion和canonical serialization；没有version branch、upgrade reader或兼容alias。
 
 Canonical JSON按serializer固定字段顺序输出紧凑对象和数组，只保留文件末尾一个换行。缩进空白不占用有限的manifest
-字节预算；reader仍要求唯一canonical字节表示，不接受旧缩进形式，也不放宽4 MiB字节和65536条record上限。
+字节预算；reader仍要求唯一canonical字节表示，不接受旧缩进形式。普通manifest使用16 MiB字节和65536条record上限；
+字节预算覆盖合法的大entry ABI，不能让record验证已接受的实际模型仅因较小的默认reader预算而无法交付。
 本边界的输入是verified typed manifest，输出由同一严格reader与runtime binding消费；不修改schema、参数ordinal、resource
-identity、entry ABI或payload。完成检查覆盖16 Tile各2048条shared workspace引用的合法roundtrip与binding、字节上限
+identity、entry ABI或payload。完成检查覆盖16 Tile各2048/4000条shared workspace引用的合法roundtrip与binding、字节上限
 恰好相等/少一字节、record超限、截断及非canonical空白；实际source到package验证由统一板测计划的完整模型承担。
 
 Profile companion的target-site metadata覆盖16 Tile的全部typed target call，使用独立16 MiB JSON字节预算
-`PackageParseLimits::maxProfileJSONBytes`；普通manifest继续使用4 MiB的`maxJSONBytes`。
+`PackageParseLimits::maxProfileJSONBytes`；普通manifest独立使用16 MiB的`maxJSONBytes`。
 Profile metadata的record/string/nesting与digest校验保持同一规则；writer和reader使用同一profile字节预算，
 超过该预算在发布/读取时明确失败，不能写出成功但默认runtime无法读取的profile。测试覆盖两种独立字节预算的边界。
 
