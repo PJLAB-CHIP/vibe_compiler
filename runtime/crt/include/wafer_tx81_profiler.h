@@ -15,7 +15,7 @@ extern "C" {
  */
 void wafer_tx81_profile_entry_begin(uint64_t buffer_address,
                                     uint64_t buffer_bytes, uint32_t tile_id,
-                                    uint32_t flags);
+                                    uint32_t flags, uint32_t trace_event_limit);
 void wafer_tx81_profile_entry_begin_from_config(uint64_t buffer_address);
 void wafer_tx81_profile_site_begin(uint32_t site_id);
 void wafer_tx81_profile_site_end(uint32_t site_id);

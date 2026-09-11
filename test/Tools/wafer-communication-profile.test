@@ -8,9 +8,19 @@
 # RUN: %python %S/../Board/Support/wafer_board_communication_performance.py --transport peer --extent 1025 --work-dir %t.tail --wafer-compile %wafer_compile_test --wafer-run %wafer_obj_root/bin/wafer-run --no-card | FileCheck %s --check-prefix=TAIL
 # RUN: %wafer_compile_test --input-program-dir %t.peer/source --output-dir %t.ordinary --num-partitions=1 --optimization-policy=none --test-communication-candidate=peer
 # RUN: diff -r %t.ordinary %t.peer/delivery/package
+# RUN: %wafer_obj_root/bin/wafer-run --package-dir %t.peer/delivery/package --no-card --direct-dte-status-abi wafer-direct-dte-status --supports-host-watchdog --profile-trace-event-limit 1024 | FileCheck %s --check-prefix=PREFIX
+# RUN: not %wafer_obj_root/bin/wafer-run --package-dir %t.peer/delivery/package --no-card --profile-trace-event-limit 0 2>&1 | FileCheck %s --check-prefix=ZERO-LIMIT
+# RUN: not %wafer_obj_root/bin/wafer-run --package-dir %t.peer/delivery/package --no-card --profile-trace-event-limit 209706 2>&1 | FileCheck %s --check-prefix=OVER-LIMIT
+# RUN: not %wafer_obj_root/bin/wafer-run --package-dir %t.ordinary --no-card --profile-trace-event-limit 1024 2>&1 | FileCheck %s --check-prefix=NO-PROFILE
 # RUN: not %wafer_compile_test --input-program-dir %t.peer/source --output-dir %t.invalid --num-partitions=1 --optimization-policy=search --test-communication-candidate=peer --profile 2>&1 | FileCheck %s --check-prefix=INVALID
 
 # PEER: performance_no_card: peer extent=1024 sends_per_tile=15 profile_ready=true numeric_reference=false
 # DDR: performance_no_card: shared-ddr extent=1024 sends_per_tile=0 profile_ready=true numeric_reference=false
 # TAIL: performance_no_card: peer extent=1025 sends_per_tile=15 profile_ready=true numeric_reference=false
 # INVALID: explicit communication qualification requires none
+
+# PREFIX: profile_trace: event_prefix_limit=1024
+# PREFIX: profile_instrumentation: ready cards=1 tiles=16
+# ZERO-LIMIT: --profile-trace-event-limit must be a positive uint32 integer
+# OVER-LIMIT: --profile-trace-event-limit exceeds the trace package capacity
+# NO-PROFILE: --profile-trace-event-limit requires sibling profile instrumentation

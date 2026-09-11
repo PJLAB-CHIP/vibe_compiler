@@ -1694,6 +1694,62 @@ def _test_report_files(repo: pathlib.Path, module: object) -> None:
     )
 
 
+def _test_prefix_capture(module) -> None:
+    for limit, total in ((1, None), (2, None), (3, None), (5, None),
+                         (1024, 1025), (1024, 1031)):
+        evidence = make_evidence()
+        trace = evidence["experiment"]["trace"]
+        trace["full_execution"] = False
+        for tile in trace["tiles"]:
+            if total is not None:
+                templates = copy.deepcopy(tile["events"][:2])
+                assert templates[0]["kind"] == "target-site"
+                events = []
+                span = templates[0]["site_end_cycle"] - templates[0]["site_begin_cycle"]
+                for index in range(total):
+                    event = copy.deepcopy(templates[index % 2])
+                    shift = (index // 2) * (span + 10)
+                    for key in ("site_begin_cycle", "site_end_cycle", "operation_begin_cycle",
+                                "operation_end_cycle", "observed_begin_cycle", "observed_end_cycle"):
+                        if event[key]:
+                            event[key] += shift
+                    event["sequence"] = index
+                    events.append(event)
+                tile["events"] = events
+                tile["entry_end_cycle"] = events[-1]["site_end_cycle"] + 30
+                tile["next_sequence"] = tile["counted_event_count"] = total
+                tile["capacity"] = total
+            tile["event_limit"] = limit
+            tile["events"] = tile["events"][:limit]
+            tile["count"] = len(tile["events"])
+        analysis = module.analyze_evidence(evidence)
+        assert analysis["valid"], analysis["diagnostics"]
+        assert analysis["validity"]["trace"]
+        assert not analysis["validity"]["full_trace"]
+        capture = analysis["trace_capture"]
+        assert capture["scope"] == "event-prefix"
+        assert capture["captured_events"] == 16 * limit
+        assert capture["total_events"] > capture["captured_events"]
+        for tile in analysis["program"]["tiles"]:
+            assert tile["captured_events"] == limit
+            assert 0 < tile["event_coverage"] < 1
+            rows = tile["semantic_partition"]["rows"]
+            residual = [row for row in rows if row["reason"] == "unrecorded-events"]
+            assert residual
+            assert all(row["category"] == "capture-boundary-residual" for row in residual)
+            assert not any(row["category"] == "entry-epilogue" for row in rows)
+        dishonest = copy.deepcopy(evidence)
+        dishonest["experiment"]["trace"]["full_execution"] = True
+        assert not module.analyze_evidence(dishonest)["valid"]
+        undeclared = copy.deepcopy(evidence)
+        for tile in undeclared["experiment"]["trace"]["tiles"]:
+            tile["event_limit"] = 0
+        assert not module.analyze_evidence(undeclared)["valid"]
+    source = pathlib.Path(module.__file__).read_text()
+    assert "仅采集事件前缀" in source
+    assert "tile.captured_events" in source and "tile.total_events" in source
+
+
 def main() -> int:
     repo = (
         pathlib.Path(sys.argv[1]).resolve()
@@ -1706,6 +1762,7 @@ def main() -> int:
     _test_cost_attribution(module)
     _test_semantic_sweep(module)
     _test_validity(module)
+    _test_prefix_capture(module)
     _test_rejections(module)
     _test_report_files(repo, module)
     print("wafer_profile_report_test: PASS")

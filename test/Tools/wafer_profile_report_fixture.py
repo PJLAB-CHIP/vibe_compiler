@@ -381,6 +381,7 @@ def _trace_tile(tile: int) -> dict[str, Any]:
         "entry_end_cycle": entry_end,
         "capacity": len(events) + 2,
         "count": len(events),
+        "event_limit": 0,
         "counted_event_count": len(events),
         "next_sequence": len(events),
         "dropped_event_count": 0,
@@ -480,6 +481,7 @@ def make_evidence(*, permute_bindings: bool = False) -> dict[str, Any]:
         ],
         "trace": {
             "complete": True,
+            "full_execution": True,
             "tiles": [_trace_tile(tile) for tile in range(16)],
         },
         "pmu": {"tiles": [_pmu_tile(tile) for tile in range(16)]},

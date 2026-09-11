@@ -153,6 +153,38 @@ actual subview→base IndexRelation组合，包含嵌套、rank reduction和offs
 静态接入的首版曾误拒普通Tensor动态子视图，全量回归定位并修正后重新执行上述检查；修正前的长模型编译不作当前资格。
 完整block/decode正在用修正后版本重新fresh导出与编译；本边界仍不宣称两个完整模型已board-ready。
 
+### Prefill范围明确的Trace准备
+
+第6项本轮达到host/board-ready准备边界，真实采集仍待可用设备。`wafer-run --profile-trace-event-limit N`显式选择
+每Tile事件前缀；未指定时仍要求全程Trace并在Count超过固定容量时停止。16 MiB/Tile容量不变，Primary→Count→Trace顺序及
+完整输出比较不变。LaunchConfig、CRT record、decoder、collector和报告使用同一limit与全程next_sequence合同。
+
+报告分别呈现采集协议完整性与全程事件覆盖，列出各Tile已采集/总事件及覆盖率；末尾未采集部分和最后一个不完整site的未知区间
+归入无法归因，不能称为control或epilogue开销。DTE active lifecycle已与event index分开，前缀外phase/end仍严格成对。
+Production CRT硬件I/O与记录状态机机械分离；新主机测试直接执行同一状态机，只mock时钟、寄存器、cache和vendor调用，
+覆盖1024/1025/1031轮NCC issue/wait、DTE issue/phase/wait和site hooks，包括多个截断位置及未匹配end负例。
+
+本轮22项record测试、11项采集协议测试、3项CRT测试实际通过；CRT正例含21组Trace与3组Count。
+Report包含小型边界和1025/1031事件长前缀，拒绝未声明截断和伪造全程覆盖；四个直接lit检查通过，
+含真实profile package/no-card、参数容量/缺instrumentation拒绝、target CRT交叉构建及寄存器写回conformance。
+PyTorch runner同步显式profile开关、delivery中的实际package路径和前缀参数。
+
+Fresh FP16 `[1,32,4096,128]` prefill以search原width=8/trials=42编译，实际42次中accepted=1；
+生成完整ordinary/Count/Trace package、16,777,216元素PyTorch eager reference和payload，`N=200000` strict no-card通过，
+profile中有1408个静态target-call sites。这里未运行设备或比较设备numeric输出，也不把旧1,185,666事件数当作本轮实测Count。
+完整canonical增量构建、Ninja no-op、完整check-wafer及本轮Python cache/diff检查通过。
+
+### 完整模型的最新产品结果与编译工作量
+
+Copy修复后的fresh decode已越过此前NCx copy与同址copy拒绝，实际merge assembly容量反馈从32 MiB下降到16 MiB、8 MiB；
+原42次actual预算仍无accepted candidate。完整block同为42次、accepted=0，六次反馈仍有90,177,536-byte实际weight allocation。
+两者均未生成完整package；这不是已证明全局无解，不增加预算或将unsupported归为capacity。
+
+当前同次compile timing基线：decode transaction约317.57秒，11,728次Tile-to-Instr、124,794次descriptor planning；
+完整block约934.79秒，24,296次Tile-to-Instr、198,536次descriptor planning。完整block中layout/bufferization累计354.38秒，
+memref.copy lowering累计79.30秒，descriptor physical-access composition累计68.58秒。存在并行主机工作，不作为设备或纯wall加速对比。
+下一步在第3项核对并复用重复descriptor query的既有session机制，同时沿第1/7项追踪完整weight carrier保留的actual producer/fusion边界。
+
 ## 既有板端流程与产品矩阵
 
 1. 新鲜导出与编译三条 search FP16 case；逐 case 采集原 profiler。先核对 Count 容量与所有数值/完成门禁。

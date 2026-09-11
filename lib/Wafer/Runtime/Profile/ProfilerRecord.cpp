@@ -153,12 +153,29 @@ bool snapshotsRecovered(const WaferTx81ProfilerPMUSnapshot &end,
 
 } // namespace
 
-llvm::Expected<std::vector<uint8_t>>
-buildTx81ProfilerLaunchImage(uint64_t recordBytes, uint32_t tileId,
-                             Tx81ProfilerCaptureKind kind) {
+llvm::Expected<uint32_t> getTx81ProfilerEventCapacity(uint64_t recordBytes) {
   if (recordBytes < WAFER_TX81_PROFILER_MIN_BUFFER_BYTES ||
       recordBytes % WAFER_TX81_PROFILER_BUFFER_ALIGNMENT != 0)
     return invalid("TX81 profiler record bytes are too small or misaligned");
+  const uint64_t capacity = (recordBytes - WAFER_TX81_PROFILER_EVENTS_OFFSET -
+                             WAFER_TX81_PROFILER_BUFFER_GUARD_BYTES) /
+                            WAFER_TX81_PROFILER_TSM_CALL_EVENT_BYTES;
+  if (capacity > std::numeric_limits<uint32_t>::max())
+    return invalid("TX81 profiler event capacity exceeds the record field");
+  return static_cast<uint32_t>(capacity);
+}
+
+llvm::Expected<std::vector<uint8_t>>
+buildTx81ProfilerLaunchImage(uint64_t recordBytes, uint32_t tileId,
+                             Tx81ProfilerCaptureKind kind,
+                             uint32_t traceEventLimit) {
+  auto capacity = getTx81ProfilerEventCapacity(recordBytes);
+  if (!capacity)
+    return capacity.takeError();
+  if (traceEventLimit > *capacity ||
+      (traceEventLimit != 0 && kind != Tx81ProfilerCaptureKind::Trace))
+    return invalid(
+        "TX81 profiler trace event limit is invalid for this capture");
   if (recordBytes > std::numeric_limits<size_t>::max())
     return invalid("TX81 profiler record bytes exceed host addressability");
   if (tileId >= WAFER_TX81_PROFILER_TILE_COUNT)
@@ -194,7 +211,10 @@ buildTx81ProfilerLaunchImage(uint64_t recordBytes, uint32_t tileId,
   writeLittleEndian<uint64_t>(image,
                               offsetof(WaferTx81ProfilerLaunchConfig, guard),
                               WAFER_TX81_PROFILER_LAUNCH_CONFIG_GUARD);
-  for (size_t index = 0; index < 3; ++index)
+  writeLittleEndian<uint64_t>(
+      image, offsetof(WaferTx81ProfilerLaunchConfig, trace_event_limit),
+      traceEventLimit);
+  for (size_t index = 0; index < 2; ++index)
     writeLittleEndian<uint64_t>(
         image,
         offsetof(WaferTx81ProfilerLaunchConfig, reserved) +
@@ -227,8 +247,7 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
   if (header.tile_id >= WAFER_TX81_PROFILER_TILE_COUNT)
     return invalid("TX81 profiler record tile id is outside 0..15");
   if (!hasOnlyBits(header.flags, kKnownRecordFlags) ||
-      !hasOnlyBits(header.summary_validity, kKnownSummaryValidity) ||
-      header.reserved1 != 0)
+      !hasOnlyBits(header.summary_validity, kKnownSummaryValidity))
     return invalid("TX81 profiler record contains unknown flags");
   if (header.header_guard != WAFER_TX81_PROFILER_HEADER_GUARD ||
       header.header_footer_guard != WAFER_TX81_PROFILER_HEADER_GUARD)
@@ -250,7 +269,8 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
       eventStorage / WAFER_TX81_PROFILER_TSM_CALL_EVENT_BYTES;
   if (expectedCapacity > std::numeric_limits<uint32_t>::max() ||
       header.event_capacity != expectedCapacity ||
-      header.event_count > header.event_capacity)
+      header.event_count > header.event_capacity ||
+      header.trace_event_limit > header.event_capacity)
     return invalid("TX81 profiler event capacity or count is invalid");
   const bool traceEnabled =
       (header.flags & WAFER_TX81_PROFILER_RECORD_TRACE_ENABLED) != 0;
@@ -258,11 +278,17 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
       (header.flags & WAFER_TX81_PROFILER_RECORD_COUNT_ONLY) != 0;
   if (traceEnabled == countOnly)
     return invalid("TX81 profiler record must enable exactly one capture mode");
+  const uint64_t requestedEvents =
+      header.trace_event_limit == 0
+          ? header.next_sequence
+          : std::min<uint64_t>(header.next_sequence, header.trace_event_limit);
   if (traceEnabled &&
-      header.next_sequence != static_cast<uint64_t>(header.event_count) +
-                                  header.dropped_event_count)
+      requestedEvents != static_cast<uint64_t>(header.event_count) +
+                             header.dropped_event_count)
     return invalid("TX81 profiler event sequence accounting is inconsistent");
-  if (countOnly && (header.event_count != 0 || header.dropped_event_count != 0))
+  if (countOnly &&
+      (header.event_count != 0 || header.dropped_event_count != 0 ||
+       header.trace_event_limit != 0))
     return invalid("TX81 profiler count record contains stored events");
   if ((!traceEnabled && !costSummaryIsZero(header.cost_summary)) ||
       !costSummaryIsFinite(header.cost_summary))
@@ -559,6 +585,7 @@ verifyTx81ProfilerTileDomain(llvm::ArrayRef<Tx81ProfilerRecord> records) {
     if (!bufferAddresses.insert(header.buffer_address).second)
       return invalid("TX81 profiler buffer address is duplicated");
     if (header.buffer_bytes != bufferBytes ||
+        header.trace_event_limit != records.front().header.trace_event_limit ||
         ((header.flags & WAFER_TX81_PROFILER_RECORD_TRACE_ENABLED) != 0) !=
             traceEnabled ||
         ((header.flags & WAFER_TX81_PROFILER_RECORD_COUNT_ONLY) != 0) !=

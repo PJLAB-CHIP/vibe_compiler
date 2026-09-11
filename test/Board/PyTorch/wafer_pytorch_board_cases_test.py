@@ -267,7 +267,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             wafer_run=pathlib.Path("wafer-run"),
             work_dir=pathlib.Path("work"),
             dump_compiler_ir=None,
-            compile_timing=False,
+            compile_timing=False, profile=False, profile_trace_event_limit=None,
             optimization_policy="none",
             qualify_communication=None,
             no_card=True,
@@ -401,7 +401,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
         )
         args = types.SimpleNamespace(
             wafer_compile=pathlib.Path("wafer-compile"),
-            compile_timing=False,
+            compile_timing=False, profile=False, profile_trace_event_limit=None,
             optimization_policy="none",
             qualify_communication=None,
         )
@@ -448,7 +448,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
         )
         for policy in ("none", "search"):
             args = types.SimpleNamespace(
-                wafer_compile=pathlib.Path("wafer-compile"), compile_timing=False,
+                wafer_compile=pathlib.Path("wafer-compile"), compile_timing=False, profile=False, profile_trace_event_limit=None,
                 optimization_policy=policy, qualify_communication=None,
             )
             with (

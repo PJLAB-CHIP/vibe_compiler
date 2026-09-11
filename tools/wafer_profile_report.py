@@ -628,8 +628,9 @@ def _validate_experiment(
         _boolean(row["monotonic"], f"{path}.monotonic")
 
     trace = _mapping(experiment["trace"], "experiment.trace")
-    _exact_keys(trace, {"complete", "tiles"}, "experiment.trace")
+    _exact_keys(trace, {"complete", "full_execution", "tiles"}, "experiment.trace")
     _boolean(trace["complete"], "experiment.trace.complete")
+    _boolean(trace["full_execution"], "experiment.trace.full_execution")
     for index, row in enumerate(
         _tile_rows(trace["tiles"], "experiment.trace.tiles")
     ):
@@ -644,6 +645,7 @@ def _validate_experiment(
                 "entry_end_cycle",
                 "capacity",
                 "count",
+                "event_limit",
                 "counted_event_count",
                 "next_sequence",
                 "dropped_event_count",
@@ -663,7 +665,7 @@ def _validate_experiment(
             _integer(row[key], f"{path}.{key}", minimum=0)
         for key in ("counted_event_count", "next_sequence"):
             _integer(row[key], f"{path}.{key}", minimum=0, maximum=UINT64_MAX)
-        for key in ("dropped_event_count", "record_flags"):
+        for key in ("event_limit", "dropped_event_count", "record_flags"):
             _integer(row[key], f"{path}.{key}", minimum=0, maximum=UINT32_MAX)
         _integer(row["trace_state"], f"{path}.trace_state", minimum=0, maximum=4)
         _boolean(row["overflow"], f"{path}.overflow")
@@ -1917,6 +1919,7 @@ def _semantic_segments(
     upper: int,
     sites: Sequence[Mapping[str, Any]],
     operations: Sequence[tuple[int, int, str, int, Mapping[str, Any]]],
+    complete_events: bool = True,
 ) -> list[dict[str, Any]]:
     """Build an exclusive, source-attributed partition of one Trace entry."""
     boundaries = {lower, upper}
@@ -2027,6 +2030,16 @@ def _semantic_segments(
             primary = relation = "unknown"
             optimization = "inspect nested or overlapping target-call sites"
             claimant_sites = [site["ref"] for site in site_claims]
+        elif not complete_events and last_site is not None and (
+            begin >= int(last_site["end_cycle"])
+            or (site_claims and site_claims[0]["ref"] == last_site["ref"])
+        ):
+            category = "capture-boundary-residual"
+            reason = "unrecorded-events"
+            primary = relation = "unknown"
+            optimization = "collect the remaining events before attributing this interval"
+            if site_claims:
+                containing_site = site_claims[0]["ref"]
         elif site_claims:
             category = "site-control"
             containing_site = site_claims[0]["ref"]
@@ -2283,6 +2296,16 @@ def analyze_evidence(value: object) -> dict[str, Any]:
     timeline_events: list[dict[str, Any]] = []
     tile_rows: list[dict[str, Any]] = []
     trace_all = bool(experiment["trace"]["complete"])
+    full_trace = all(int(row["count"]) == int(row["next_sequence"]) for row in trace.values())
+    if bool(experiment["trace"]["full_execution"]) != full_trace:
+        trace_all = False
+        diagnose("error", "trace_coverage_inconsistent", "Declared full execution coverage differs from the recorded event counts")
+    event_limits = {int(row["event_limit"]) for row in trace.values()}
+    if len(event_limits) != 1:
+        trace_all = False
+        diagnose("error", "trace_limits_inconsistent", "Tiles do not share one requested event prefix")
+    if not full_trace:
+        diagnose("warning", "partial_trace", "Event attribution covers only the declared prefix; entry and PMU summaries cover the complete Trace invocation")
     accounting_all = True
     pmu_all = True
     pmu_restore_all = True
@@ -2292,6 +2315,9 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         trace_begin = int(trace_row["entry_begin_cycle"])
         trace_end = int(trace_row["entry_end_cycle"])
         trace_axis = trace_end - trace_begin if trace_end >= trace_begin else None
+        event_limit = int(trace_row["event_limit"])
+        total_events = int(trace_row["next_sequence"])
+        expected_events = min(total_events, event_limit) if event_limit else total_events
         protocol_ok = bool(
             experiment["trace"]["complete"]
             and trace_axis is not None
@@ -2301,8 +2327,9 @@ def analyze_evidence(value: object) -> dict[str, Any]:
             and int(trace_row["trace_state"]) == TRACE_COMPLETE_STATE
             and int(trace_row["count"]) == len(trace_row["events"])
             and int(trace_row["count"]) <= int(trace_row["capacity"])
-            and int(trace_row["counted_event_count"]) == int(trace_row["count"])
-            and int(trace_row["next_sequence"]) == int(trace_row["count"])
+            and event_limit <= int(trace_row["capacity"])
+            and int(trace_row["counted_event_count"]) == total_events
+            and int(trace_row["count"]) == expected_events
             and [int(event["sequence"]) for event in trace_row["events"]]
             == list(range(len(trace_row["events"])))
         )
@@ -2725,7 +2752,8 @@ def analyze_evidence(value: object) -> dict[str, Any]:
             operation_spans.append((begin, end, kind, sequence, site_ref))
         semantic = (
             _semantic_segments(
-                trace_begin, trace_end, site_instances, operation_spans
+                trace_begin, trace_end, site_instances, operation_spans,
+                complete_events=int(trace_row["count"]) == total_events,
             )
             if trace_axis is not None
             else []
@@ -2984,6 +3012,10 @@ def analyze_evidence(value: object) -> dict[str, Any]:
                 "timeline_axis": "kcore-rdcycle-entry-span",
                 "timeline_scope": "tile-local",
                 "trace_status": trace_status,
+                "captured_events": int(trace_row["count"]),
+                "total_events": total_events,
+                "event_coverage": int(trace_row["count"]) / total_events if total_events else 1.0,
+                "full_trace": protocol_ok and int(trace_row["count"]) == total_events,
                 "clock_status": "Measured" if clock_valid else "Unavailable",
                 "clock_mapping": {
                     "slope": float(clock_row["slope"]),
@@ -3120,6 +3152,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         "measurement_basis": bool(source_validity["measurement_basis"]),
         "host_completion_resolution": high_resolution,
         "trace": trace_all,
+        "full_trace": trace_all and full_trace,
         "cost_accounting": accounting_all,
         "pmu": pmu_all,
         "pmu_restore": pmu_restore_all,
@@ -3131,6 +3164,12 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         "record_abi": evidence["program"]["record_abi"],
         "valid": qualified,
         "validity": validity,
+        "trace_capture": {
+            "scope": "event-prefix" if any(event_limits) else "full-execution",
+            "full_execution": trace_all and full_trace,
+            "captured_events": sum(int(row["count"]) for row in trace.values()),
+            "total_events": sum(int(row["next_sequence"]) for row in trace.values()),
+        },
         "program": {
             "package_digest": evidence["program"]["program_manifest_sha256"],
             "target_identity": evidence["program"]["target_identity"],
@@ -3548,6 +3587,7 @@ const TERMS={
     "operation@site/event":{label:"已关联到具体调用点的 operation",definition:"reason 后半段给出 event kind、site、动态 instance 和 event sequence。",not:"reason 是来源定位，不是另一笔可相加成本。"},
     "inside-site-outside-operation":{label:"调用点内、已识别 operation 之外",definition:"位于具体 target-call site 内，但不属于已识别 submit/wait/DTE operation 的剩余区间。",not:"不能直接叫做硬件空闲或纯软件开销。"},
     "before-first-site":{label:"首个调用点之前",definition:"Trace entry 开始后、第一次动态 target-call 之前的准备区间。",not:"不是 Trace entry-setup；后者在 entry 轴外单列。"},
+    "unrecorded-events":{label:"未采集事件",definition:"显式事件前缀之外或最后一个site未完整记录的部分，无法分配给具体操作。",not:"不能当作软件控制、空闲或收尾开销。"},
     "after-last-site":{label:"最后调用点之后",definition:"最后一次动态 target-call 结束后、Trace entry 返回前的收尾区间。",not:"不是 Trace entry-teardown；后者在 entry 轴外单列。"},
     "between-sites":{label:"两个调用点之间",definition:"reason 明确列出前一个和后一个动态 site，用于定位依赖、等待或控制来源。",not:"不能直接称为 engine idle。"}
   },
@@ -3571,6 +3611,7 @@ const TERMS={
     "profile_instrumentation":{label:"产物与 profiler instrumentation 匹配",definition:"最终 package 和同源 profiler instrumentation 的身份/版本关系有效。",not:"不允许混用旧 instrumentation 或另一份产物。"},
     "measurement_basis":{label:"Primary 计时基础",definition:"未插桩最终产物的 same-stream device event 计时基础满足合同。",not:"不包含 Host submit，也不等于 Trace clone duration。"},
     "host_completion_resolution":{label:"Host 完成观测分辨率",definition:"Host completion polling 的观测间隔足够细，可作为次级诊断 envelope。",not:"未满足时不否定 device event elapsed，但 Host envelope 不能作高分辨率结论。"},
+    "full_trace":{label:"全程事件覆盖",definition:"全部动态事件均已记录；显式前缀采集可以协议有效，但不满足全程覆盖。",not:"部分采集不能代签全程热点。"},
     "trace":{label:"Trace 采集完整性",definition:"所有 tile 的 Trace 生命周期、容量、terminal 和区间关系闭合。",not:"不自动证明每个 PMU counter 都可归属。"},
     "cost_accounting":{label:"成本分项会计闭合",definition:"每个 tile 的语义分项排他并覆盖完整 Trace entry，Trace-only overlay 独立。",not:"不表示这些 Trace 数值可以从 Primary 直接相减。"},
     "pmu":{label:"PMU 计数资格",definition:"需要使用的 NCC/DTE/aggregate counter 读取稳定且生命周期闭合。",not:"PMU bound 仍不是精确 engine 起止。"},
@@ -3644,6 +3685,7 @@ const semanticReason=value=>{
   const text=String(value==null?"":value);
   if(text.startsWith("inside-site-outside-operation@"))return TERMS.reason["inside-site-outside-operation"];
   if(text.startsWith("before-first-"))return TERMS.reason["before-first-site"];
+  if(text==="unrecorded-events")return TERMS.reason["unrecorded-events"];
   if(text.startsWith("after-last-"))return TERMS.reason["after-last-site"];
   if(text.startsWith("between-")&&text.includes("-and-"))return TERMS.reason["between-sites"];
   if(text.includes("@site-")&&text.includes("/event-"))return TERMS.reason["operation@site/event"];
@@ -3727,10 +3769,10 @@ function renderOverview(){
   ].map(row=>`<tr><td><b>${escapeHtml(row[0])}</b></td><td class="mono">${escapeHtml(row[1])}</td><td class="num">${durationText(row[2])}</td><td class="num">${number(row[2])}</td><td>${statusBadge(row[3])}</td><td>${escapeHtml(row[4])}</td></tr>`).join("");
   q("#outputStatus").innerHTML=statusBadge(analysis.validity.output_equivalence?"Measured":"Invalid");
   q("#outputNote").innerHTML=`${profiledProgram.output.resource_count} resources · ${termValue("correctness",profiledProgram.output.correctness_status)}`;
-  const completeTiles=profiledProgram.tiles.filter(tile=>tile.trace_status==="Measured").length;
-  q("#traceCoverage").textContent=`${completeTiles} / ${profiledProgram.tiles.length}`;
-  q("#traceNote").textContent="tile-local complete trace spans";
-  q("#overviewTiles").innerHTML=[...profiledProgram.tiles].sort((left,right)=>left.y-right.y||left.x-right.x).map(tile=>`<button class="tile-card" data-overview-tile="${tile.tile}" type="button"><b>${tileLabel(tile.tile)} ${statusBadge(tile.trace_status)}</b><small>${number(tile.trace_entry_cpu_cycles)} Kcore CPU cycles · (${tile.x},${tile.y})</small></button>`).join("");
+  const capture=analysis.trace_capture;
+  q("#traceCoverage").textContent=`${number(capture.captured_events)} / ${number(capture.total_events)} events`;
+  q("#traceNote").textContent=capture.full_execution?"全程事件已采集；各Tile时钟独立。":"仅采集事件前缀：事件归因只覆盖已采集范围；entry与PMU summary仍覆盖完整Trace执行。";
+  q("#overviewTiles").innerHTML=[...profiledProgram.tiles].sort((left,right)=>left.y-right.y||left.x-right.x).map(tile=>`<button class="tile-card" data-overview-tile="${tile.tile}" type="button"><b>${tileLabel(tile.tile)} ${statusBadge(tile.trace_status)}</b><small>${number(tile.trace_entry_cpu_cycles)} Kcore CPU cycles · (${tile.x},${tile.y})</small><small>Events ${number(tile.captured_events)} / ${number(tile.total_events)} · ${(100*tile.event_coverage).toFixed(1)}%</small></button>`).join("");
   qa("[data-overview-tile]").forEach(node=>node.addEventListener("click",()=>selectTile(node.dataset.overviewTile)));
   const methodLabels={kernel_launch_to_completion:"Kernel launch → completion",host_submit_time:"Host submit",host_envelope_time:"Host launch → trusted completion",host_envelope_ledger:"Host envelope accounting",queue_delay:"Queue delay",timeline_axis:"Timeline axis",timeline_scope:"Clock/order",semantic_partition:"Semantic partition",trace_overhead_overlay:"Trace-run cost overlay",engine_active_time:"NCC engine active time",hardware_cost_model:"Hardware cost reference",statistics_window:"Statistics window",ncc_activity_window:"NCC window",direct_dte_time:"Direct-DTE wait",direct_dte_raw_pmu:"Direct-DTE raw"};
   q("#methodList").innerHTML=Object.keys(analysis.method).map(key=>`<div class="method-row"><b>${escapeHtml(methodLabels[key]||key)}</b><span>${escapeHtml(analysis.method[key])}</span></div>`).join("");

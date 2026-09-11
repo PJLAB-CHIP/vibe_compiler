@@ -357,8 +357,36 @@ Profile instrumentation必须复用同一个DeviceExecutable、TargetTensor mate
 - stale/malformed profile在provider effect前失败。
 
 Trace record采用16 MiB/Tile的固定有界分配，Count仍为最小record。容量由同一个ABI常量生成typed entry requirement、package和runtime
-检查；record字段与采集顺序不变。Count实测动态event数超过该package容量时，在Trace launch前停止并报告Tile、实测数与容量；
-不得截断记录后声称完整profile。普通执行不携带这项分配。默认容量覆盖模型级指令trace，仍不承诺任意循环规模可完整采集。
+检查。默认请求完整Trace：Count实测动态event数超过package容量时，在Trace launch前停止并报告Tile、实测数与容量。
+普通执行不携带这项分配；不承诺任意循环规模可完整采集。
+
+显式`wafer-run --profile-trace-event-limit N`请求每个Tile的event sequence前缀`[0, min(N, total_events))`，N必须为正且不超过
+已验证Trace package容量。no-card校验相同约束；没有sibling instrumentation时拒绝该参数。仍只执行Primary→Count→Trace三次，
+仍验证三次完整输出；不重编译algorithm、改变buffer容量、追加launch或使用历史输入。没有指定该参数时保持完整采集合同。
+
+LaunchConfig与RecordHeader分别以`trace_event_limit`保存相同选择，0表示完整采集。CRT对全部动态事件继续递增`next_sequence`并保持
+site、PMU及terminal协议，只将选定前缀写入record；范围外事件不属于overflow。合法前缀的`event_count = min(N, next_sequence)`且
+`dropped_event_count = 0`，Count与Trace的total仍必须完全相等。存储序列从0连续，无缺口；请求容量、记录容量与header选择不一致时拒绝。
+Scalar entry/PMU summary仍覆盖完整Trace invocation；前缀事件只能用于该范围的site/operation归因，不外推其它事件。
+
+DTE的active lifecycle与record index分开保存；前缀外没有event slot不表示aggregate已经结束，phase和end仍必须成对。
+Record实现与clock/register/cache I/O机械分离，production CRT与主机测试包含同一份状态机；主机只替换硬件I/O与vendor调用，
+实际执行1024/1025/1031轮NCC issue/wait、DTE issue/phase/wait及site hooks并由正式decoder消费record。
+该模型证明记录范围和控制协议，实际硬件counter与设备性能仍须本轮板测。
+
+选择前缀而非覆盖旧记录的ring buffer，是为保持每个已记录phase之前的target-site/Direct-DTE aggregate容器；比较
+[Perfetto的DISCARD与RING_BUFFER合同](https://perfetto.dev/docs/concepts/config)后采用固定前缀，且显式保留完整Count与未采集事件数。
+这里是record选择，不是IR或schedule选择。Reader、collector、evidence schema与HTML必须使用同一个范围合同：完整输出正确性、
+采集协议完整性和全程事件覆盖分别报告；部分Trace须显示每Tile的已采集/总事件及覆盖率，不能标成全程热点或隐藏未采集部分。
+
+本项覆盖矩阵：
+
+| 输入 | 分支与规模 | exact输出及直接下游 | 失败 |
+| --- | --- | --- | --- |
+| CRT/record | 0/full与正前缀；容量相等/差一；1024/1025/1031次site/command和跨边界容器 | 全程sequence、连续前缀、完整site span、无溢出、末态及PMU恢复；C++ decoder | 非法limit、Count携带limit、header/sequence/guard损坏 |
+| Collector | 16 Tile不同total；短于/等于/长于N | Primary/Count/Trace各一次；limit逐层相同、total相等、完整输出比较 | 完整采集超容量仍提前拒绝；设备失败无retry；错误audit不能发布报告 |
+| Report | full与部分前缀、末尾截到site/aggregate内部 | 分开呈现完整summary与已采集事件；JSON/HTML同覆盖率；未采集部分明确unknown | 未声明截断、序列缺口、伪造完整覆盖、缺失容器 |
+| 产品准备 | fresh FP16 `[1,32,4096,128]` prefill、同源reference/profile package | 同一ExecutablePackage的no-card、选择校验与runner准备；真实采集待板端验收 | no-card不代签板测或全程归因 |
 
 报告的输入是本轮已验证的evidence，输出为原有analysis JSON与离线HTML，由collector原子发布。Exclusive semantic partition
 按已有半开区间端点单向扫描，维护当前重叠claimant；不对每个端点重扫全部动态事件。参考

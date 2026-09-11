@@ -196,7 +196,8 @@ Tx81ProfilerCaptureKind toRuntimeCaptureKind(ProfileCaptureKind capture) {
 llvm::Expected<BoardInvocationFilePlan>
 makeCapturePlan(const BoardInvocationFilePlan &primaryPlan,
                 const PackageManifest &primaryManifest,
-                const ProfileCapturePackage &capture) {
+                const ProfileCapturePackage &capture,
+                uint32_t traceEventLimit) {
   llvm::Expected<BoardInvocationFilePlan> plan = remapBoardInvocationFilePlan(
       primaryPlan, primaryManifest, capture.getPackage().getManifest());
   if (!plan)
@@ -207,7 +208,7 @@ makeCapturePlan(const BoardInvocationFilePlan &primaryPlan,
   for (uint32_t tile = 0; tile < WAFER_TX81_PROFILER_TILE_COUNT; ++tile) {
     llvm::Expected<std::vector<uint8_t>> image = buildTx81ProfilerLaunchImage(
         capture.getRecordBytes(), tile,
-        toRuntimeCaptureKind(capture.getCaptureKind()));
+        toRuntimeCaptureKind(capture.getCaptureKind()), traceEventLimit);
     if (!image)
       return image.takeError();
     plan->request.profilerRecordBytes->push_back(std::move(*image));
@@ -486,6 +487,11 @@ void emitProfileExperiment(llvm::json::OStream &json,
     });
     json.attributeObject("trace", [&] {
       json.attribute("complete", true);
+      json.attribute("full_execution",
+                     llvm::all_of(collection.trace, [](const auto &record) {
+                       return record.header.next_sequence ==
+                              record.header.event_count;
+                     }));
       json.attributeArray("tiles", [&] {
         for (const ProfileTileSiteMap &tile : siteMap) {
           const Tx81ProfilerRecord &record =
@@ -499,6 +505,8 @@ void emitProfileExperiment(llvm::json::OStream &json,
             json.attribute("entry_end_cycle", record.header.entry_end_cycle);
             json.attribute("capacity", int64_t(record.header.event_capacity));
             json.attribute("count", int64_t(record.header.event_count));
+            json.attribute("event_limit",
+                           int64_t(record.header.trace_event_limit));
             json.attribute(
                 "counted_event_count",
                 collection.count[record.header.tile_id].header.next_sequence);
@@ -1428,7 +1436,10 @@ llvm::Expected<BoardProfileProtocolResult> runFixedBoardProfileProtocol(
         execute,
     llvm::function_ref<
         llvm::Error(llvm::ArrayRef<BoardProfileMeasurementSample>)>
-        consumeMeasurements) {
+        consumeMeasurements,
+    uint32_t traceEventLimit) {
+  if (traceEventLimit > traceCapacity)
+    return invalid("profile trace event limit exceeds the trace capacity");
   auto invoke = [&](BoardProfileProtocolLaunch launch)
       -> llvm::Expected<BoardProfileProtocolObservation> {
     return execute({launch});
@@ -1461,7 +1472,7 @@ llvm::Expected<BoardProfileProtocolResult> runFixedBoardProfileProtocol(
   if (!count)
     return count.takeError();
   for (auto [tile, sequence] : llvm::enumerate(count->countSequences))
-    if (sequence > traceCapacity)
+    if (traceEventLimit == 0 && sequence > traceCapacity)
       return invalid(
           llvm::Twine("profile count exceeds the fixed trace package ") +
           "capacity: tile=" + llvm::Twine(tile) + " counted=" +
@@ -1475,7 +1486,11 @@ llvm::Expected<BoardProfileProtocolResult> runFixedBoardProfileProtocol(
     const BoardProfileTraceTileAudit &audit = trace->trace[tile];
     if (audit.countedEventCount != count->countSequences[tile] ||
         audit.countedEventCount != audit.nextSequence ||
-        audit.nextSequence != audit.storedEventCount ||
+        audit.storedEventCount !=
+            (traceEventLimit == 0
+                 ? audit.nextSequence
+                 : std::min<uint64_t>(audit.nextSequence, traceEventLimit)) ||
+        audit.traceEventLimit != traceEventLimit ||
         audit.droppedEventCount != 0 ||
         audit.recordFlags != kExpectedTraceFlags ||
         audit.traceState != WAFER_TX81_PROFILER_TRACE_COMPLETE)
@@ -1493,7 +1508,8 @@ llvm::Expected<BoardProfileCollectionResult>
 runBoardProfileCollection(const VerifiedProfileInstrumentation &instrumentation,
                           const PackageManifest &primaryManifest,
                           const BoardInvocationFilePlan &primaryPlan,
-                          BoardRuntimeDriver &driver) {
+                          BoardRuntimeDriver &driver,
+                          uint32_t traceEventLimit) {
   if (primaryManifest.cardCount != 1 ||
       primaryManifest.tileCount != WAFER_TX81_PROFILER_TILE_COUNT)
     return invalid(
@@ -1516,22 +1532,21 @@ runBoardProfileCollection(const VerifiedProfileInstrumentation &instrumentation,
   if (!collection.countPackage || !collection.tracePackage)
     return invalid(
         "profile instrumentation has no complete capture package set");
-  llvm::Expected<BoardInvocationFilePlan> count =
-      makeCapturePlan(primaryPlan, primaryManifest, *collection.countPackage);
+  llvm::Expected<BoardInvocationFilePlan> count = makeCapturePlan(
+      primaryPlan, primaryManifest, *collection.countPackage, 0);
   if (!count)
     return count.takeError();
   collection.countPlan = std::move(*count);
-  llvm::Expected<BoardInvocationFilePlan> trace =
-      makeCapturePlan(primaryPlan, primaryManifest, *collection.tracePackage);
+  llvm::Expected<BoardInvocationFilePlan> trace = makeCapturePlan(
+      primaryPlan, primaryManifest, *collection.tracePackage, traceEventLimit);
   if (!trace)
     return trace.takeError();
   collection.tracePlan = std::move(*trace);
 
-  const uint64_t eventStorage = collection.tracePackage->getRecordBytes() -
-                                WAFER_TX81_PROFILER_EVENTS_OFFSET -
-                                WAFER_TX81_PROFILER_BUFFER_GUARD_BYTES;
-  const uint64_t traceCapacity =
-      eventStorage / WAFER_TX81_PROFILER_TSM_CALL_EVENT_BYTES;
+  auto traceCapacity =
+      getTx81ProfilerEventCapacity(collection.tracePackage->getRecordBytes());
+  if (!traceCapacity)
+    return traceCapacity.takeError();
 
   // Resolve the report generator and create its writable staging directory
   // before the first device/provider call.
@@ -1590,7 +1605,7 @@ runBoardProfileCollection(const VerifiedProfileInstrumentation &instrumentation,
   std::string profileRunDirectory;
   llvm::Expected<BoardProfileProtocolResult> protocol =
       runFixedBoardProfileProtocol(
-          traceCapacity,
+          *traceCapacity,
           [&](const BoardProfileProtocolStep &step)
               -> llvm::Expected<BoardProfileProtocolObservation> {
             BoardProfileProtocolObservation observation;
@@ -1674,6 +1689,7 @@ runBoardProfileCollection(const VerifiedProfileInstrumentation &instrumentation,
                     header.dropped_event_count,
                     header.flags,
                     header.trace_state,
+                    header.trace_event_limit,
                 };
               }
               return observation;
@@ -1695,7 +1711,8 @@ runBoardProfileCollection(const VerifiedProfileInstrumentation &instrumentation,
               return reportDirectory.takeError();
             profileRunDirectory = std::move(*reportDirectory);
             return llvm::Error::success();
-          });
+          },
+          traceEventLimit);
   if (!protocol)
     return protocol.takeError();
   if (!finalResult)

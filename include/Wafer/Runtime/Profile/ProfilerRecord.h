@@ -29,13 +29,17 @@ enum class Tx81ProfilerCaptureKind {
   Trace,
 };
 
+/// Returns the event capacity of one aligned ABI record.
+llvm::Expected<uint32_t> getTx81ProfilerEventCapacity(uint64_t recordBytes);
+
 /// Builds the exact host image uploaded to an owned, aligned per-tile DDR
 /// profiler allocation before launch. The profiling-only device wrapper
 /// receives the allocation address through its hidden final pointer-table
 /// slot; the CRT replaces this configuration with the output record.
 llvm::Expected<std::vector<uint8_t>>
 buildTx81ProfilerLaunchImage(uint64_t recordBytes, uint32_t tileId,
-                             Tx81ProfilerCaptureKind kind);
+                             Tx81ProfilerCaptureKind kind,
+                             uint32_t traceEventLimit = 0);
 
 /// Decodes and verifies one terminal record, including version, byte layout,
 /// guards, event bounds and internal lifecycle consistency. Overflow and

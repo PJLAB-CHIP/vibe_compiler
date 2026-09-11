@@ -36,6 +36,7 @@ struct BoardProfileTraceTileAudit {
   uint32_t droppedEventCount = 0;
   uint32_t recordFlags = 0;
   uint32_t traceState = 0;
+  uint32_t traceEventLimit = 0;
 };
 
 struct BoardProfileProtocolObservation {
@@ -134,7 +135,8 @@ llvm::Expected<BoardProfileProtocolResult> runFixedBoardProfileProtocol(
         execute,
     llvm::function_ref<
         llvm::Error(llvm::ArrayRef<BoardProfileMeasurementSample>)>
-        consumeMeasurements);
+        consumeMeasurements,
+    uint32_t traceEventLimit = 0);
 
 #if defined(WAFER_PROFILE_COLLECTION_TESTING)
 namespace testing {
@@ -172,7 +174,8 @@ llvm::Expected<BoardProfileCollectionResult>
 runBoardProfileCollection(const VerifiedProfileInstrumentation &instrumentation,
                           const PackageManifest &primaryManifest,
                           const BoardInvocationFilePlan &primaryPlan,
-                          BoardRuntimeDriver &driver);
+                          BoardRuntimeDriver &driver,
+                          uint32_t traceEventLimit = 0);
 
 } // namespace wafer::runtime::cli
 

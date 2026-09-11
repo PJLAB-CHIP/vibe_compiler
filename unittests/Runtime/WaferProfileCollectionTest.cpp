@@ -13,6 +13,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -373,6 +374,73 @@ TEST_F(WaferProfileReportDirectoryTest,
   EXPECT_FALSE(staged);
   EXPECT_FALSE(removed);
   EXPECT_TRUE(llvm::sys::fs::exists(prior));
+}
+
+TEST(WaferProfileCollectionTest, PrefixCaptureAuditsFullCountsAcrossAllTiles) {
+  for (uint32_t limit : {1024u, 1025u, 1031u})
+    for (unsigned fault : {0u, 1u, 2u, 3u, 4u}) {
+      SCOPED_TRACE(limit);
+      SCOPED_TRACE(fault);
+      unsigned launches = 0;
+      bool consumed = false;
+      auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
+          1031,
+          [&](const BoardProfileProtocolStep &step)
+              -> llvm::Expected<BoardProfileProtocolObservation> {
+            ++launches;
+            auto observation = validObservation(step);
+            for (uint32_t tile = 0; tile < 16; ++tile) {
+              uint64_t total = tile == 0   ? 0
+                               : tile == 1 ? 1024
+                               : tile == 2 ? 1025
+                                           : 1031;
+              observation.countSequences[tile] = total;
+              auto &audit = observation.trace[tile];
+              audit.countedEventCount = audit.nextSequence = total;
+              audit.storedEventCount = std::min<uint64_t>(total, limit);
+              audit.traceEventLimit = limit;
+            }
+            if (step.launch == BoardProfileProtocolLaunch::Trace) {
+              auto &audit = observation.trace[15];
+              if (fault == 1)
+                --audit.storedEventCount;
+              if (fault == 2)
+                ++audit.nextSequence;
+              if (fault == 3)
+                audit.traceEventLimit = 0;
+              if (fault == 4)
+                audit.droppedEventCount = 1;
+            }
+            return observation;
+          },
+          [&](llvm::ArrayRef<wafer::runtime::cli::BoardProfileMeasurementSample>
+                  samples) {
+            consumed = true;
+            EXPECT_EQ(samples.size(), 1u);
+            return llvm::Error::success();
+          },
+          limit);
+      EXPECT_EQ(launches, 3u);
+      EXPECT_EQ(static_cast<bool>(result), fault == 0);
+      EXPECT_EQ(consumed, fault == 0);
+      if (!result)
+        llvm::consumeError(result.takeError());
+    }
+  unsigned launches = 0;
+  auto rejected = wafer::runtime::cli::runFixedBoardProfileProtocol(
+      1024,
+      [&](const BoardProfileProtocolStep &step)
+          -> llvm::Expected<BoardProfileProtocolObservation> {
+        ++launches;
+        return validObservation(step);
+      },
+      [](llvm::ArrayRef<wafer::runtime::cli::BoardProfileMeasurementSample>) {
+        return llvm::Error::success();
+      },
+      1025);
+  ASSERT_FALSE(static_cast<bool>(rejected));
+  llvm::consumeError(rejected.takeError());
+  EXPECT_EQ(launches, 0u);
 }
 
 TEST(WaferProfileCollectionTest, FixedOrderRunsOnePrimaryThenCountAndTrace) {

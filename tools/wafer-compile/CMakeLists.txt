@@ -23,6 +23,8 @@ set(_wafer_compile_crt_resource_directory
   "${_wafer_compile_resource_directory}/crt")
 set(_wafer_compile_crt_source_resource
   "${_wafer_compile_crt_resource_directory}/src/wafer_tx81_crt.c")
+set(_wafer_compile_crt_profile_hardware_resource
+  "${_wafer_compile_crt_resource_directory}/src/wafer_tx81_profiler_hardware.inc")
 set(_wafer_compile_crt_profile_impl_resource
   "${_wafer_compile_crt_resource_directory}/src/wafer_tx81_profiler_impl.inc")
 set(_wafer_compile_crt_include_resource
@@ -41,6 +43,7 @@ set(_wafer_compile_abi_profiler_resource
 set(_wafer_compile_resource_outputs
   "${_wafer_device_linker_resource}"
   "${_wafer_compile_crt_source_resource}"
+  "${_wafer_compile_crt_profile_hardware_resource}"
   "${_wafer_compile_crt_profile_impl_resource}"
   "${_wafer_compile_crt_include_resource}"
   "${_wafer_compile_crt_profiler_include_resource}"
@@ -51,6 +54,7 @@ add_custom_command(
   OUTPUT
     "${_wafer_device_linker_resource}"
     "${_wafer_compile_crt_source_resource}"
+    "${_wafer_compile_crt_profile_hardware_resource}"
     "${_wafer_compile_crt_profile_impl_resource}"
     "${_wafer_compile_crt_include_resource}"
     "${_wafer_compile_crt_profiler_include_resource}"
@@ -68,6 +72,9 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_SOURCE_DIR}/runtime/crt/src/wafer_tx81_crt.c"
     "${_wafer_compile_crt_source_resource}"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/runtime/crt/src/wafer_tx81_profiler_hardware.inc"
+    "${_wafer_compile_crt_profile_hardware_resource}"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_SOURCE_DIR}/runtime/crt/src/wafer_tx81_profiler_impl.inc"
     "${_wafer_compile_crt_profile_impl_resource}"
@@ -89,6 +96,7 @@ add_custom_command(
   DEPENDS
     "${CMAKE_SOURCE_DIR}/tools/wafer_device_link.py"
     "${CMAKE_SOURCE_DIR}/runtime/crt/src/wafer_tx81_crt.c"
+    "${CMAKE_SOURCE_DIR}/runtime/crt/src/wafer_tx81_profiler_hardware.inc"
     "${CMAKE_SOURCE_DIR}/runtime/crt/src/wafer_tx81_profiler_impl.inc"
     "${CMAKE_SOURCE_DIR}/runtime/crt/include/wafer_tx81_crt.h"
     "${CMAKE_SOURCE_DIR}/runtime/crt/include/wafer_tx81_profiler.h"
@@ -160,6 +168,7 @@ if(WAFER_ENABLE_PRODUCT_INSTALL)
     COMPONENT Compiler)
   install(FILES
     "${CMAKE_SOURCE_DIR}/runtime/crt/src/wafer_tx81_crt.c"
+    "${CMAKE_SOURCE_DIR}/runtime/crt/src/wafer_tx81_profiler_hardware.inc"
     "${CMAKE_SOURCE_DIR}/runtime/crt/src/wafer_tx81_profiler_impl.inc"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/wafer/crt/src"
     COMPONENT Compiler)

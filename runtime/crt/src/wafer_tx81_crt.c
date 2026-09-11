@@ -719,6 +719,7 @@ static int32_t wafer_bilinear_scale(uint32_t src, uint32_t dst) {
 }
 
 #ifdef WAFER_TX81_PROFILE_TRACE_CRT
+#include "wafer_tx81_profiler_hardware.inc"
 #include "wafer_tx81_profiler_impl.inc"
 #endif
 

@@ -38,6 +38,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--work-dir", type=pathlib.Path, required=True)
     parser.add_argument("--dump-compiler-ir", type=pathlib.Path)
     parser.add_argument("--compile-timing", action="store_true")
+    parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--profile-trace-event-limit", type=int)
     parser.add_argument("--device-timing", action="store_true")
     parser.add_argument(
         "--qualify-communication",
@@ -977,7 +979,7 @@ def prepare_case_step(
         "--input-program-dir",
         str(source),
         "--output-dir",
-        str(package),
+        str(package.parent if args.profile else package),
         f"--num-partitions={case.num_partitions}",
         f"--optimization-policy={args.optimization_policy}",
     ]
@@ -987,6 +989,8 @@ def prepare_case_step(
         compile_command.append("--test-communication-candidate=peer")
     if args.compile_timing:
         compile_command.append("--compile-timing")
+    if args.profile:
+        compile_command.append("--profile")
     if dump_compiler_ir is not None:
         compile_command.extend(
             ["--dump-compiler-ir", str(dump_compiler_ir)]
@@ -1129,6 +1133,10 @@ def base_runtime_command(
 
 def main() -> int:
     args = parse_args()
+    if args.profile_trace_event_limit is not None and (
+        not args.profile or not 0 < args.profile_trace_event_limit <= (1 << 32) - 1
+    ):
+        raise RuntimeError("profile trace event limit requires --profile and a positive uint32 limit")
     if args.repeat < 1 or args.completion_timeout_ms < 1:
         raise RuntimeError("repeat and completion timeout must be positive")
     if not args.no_card and os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
@@ -1167,6 +1175,8 @@ def main() -> int:
             step_index=step_index,
             is_chain=is_chain,
         )
+        if args.profile:
+            package = package / "package"
         dump_compiler_ir = args.dump_compiler_ir
         if (
             dump_compiler_ir is None
@@ -1203,6 +1213,8 @@ def main() -> int:
         )
 
         command = base_runtime_command(args.wafer_run, package)
+        if args.profile_trace_event_limit is not None:
+            command.extend(["--profile-trace-event-limit", str(args.profile_trace_event_limit)])
         if args.no_card:
             # Direct DTE is selected by the common card search, so a
             # board-ready no-card runner must advertise the same transport

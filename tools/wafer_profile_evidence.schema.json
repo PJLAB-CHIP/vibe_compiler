@@ -1011,6 +1011,7 @@
         "entry_end_cycle",
         "capacity",
         "count",
+        "event_limit",
         "counted_event_count",
         "next_sequence",
         "dropped_event_count",
@@ -1044,6 +1045,7 @@
           "type": "integer",
           "minimum": 0
         },
+        "event_limit": {"$ref": "#/$defs/u32"},
         "counted_event_count": {
           "$ref": "#/$defs/u64"
         },
@@ -1251,11 +1253,12 @@
         "trace": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["complete", "tiles"],
+          "required": ["complete", "full_execution", "tiles"],
           "properties": {
             "complete": {
               "type": "boolean"
             },
+            "full_execution": {"type": "boolean"},
             "tiles": {
               "type": "array",
               "minItems": 16,

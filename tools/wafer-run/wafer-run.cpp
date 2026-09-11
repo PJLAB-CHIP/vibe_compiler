@@ -1,8 +1,9 @@
 //===- wafer-run.cpp - Verified Wafer package execution -----------------===//
 
-#include "Wafer/Runtime/Board/BoardRuntime.h"
 #include "Wafer/Package/Manifest/PackageManifest.h"
+#include "Wafer/Runtime/Board/BoardRuntime.h"
 #include "Wafer/Runtime/Profile/ProfileInstrumentation.h"
+#include "Wafer/Runtime/Profile/ProfilerRecord.h"
 #include "WaferProfileCollection.h"
 #include "WaferRunBoardIO.h"
 #if defined(WAFER_ENABLE_BOARD_RUNTIME)
@@ -47,6 +48,7 @@ struct Options {
   std::vector<wafer::runtime::cli::PortFile> outputFiles;
   bool supportsHostWatchdog = false;
   bool deviceTiming = false;
+  uint32_t profileTraceEventLimit = 0;
   bool noCard = false;
   bool board = false;
 };
@@ -54,6 +56,7 @@ struct Options {
 void printUsage(llvm::raw_ostream &output) {
   output << "usage:\n"
             "  wafer-run --package-dir <path> --no-card "
+            "[--profile-trace-event-limit <events>] "
             "[--max-resource-bytes <bytes>] [--direct-dte-status-abi <abi> "
             "--supports-host-watchdog]\n"
             "  wafer-run --package-dir <path> --board "
@@ -62,7 +65,7 @@ void printUsage(llvm::raw_ostream &output) {
             "--expected-tile-count <count> "
             "--expected-runtime-library-sha256 <hex> "
             "[--completion-timeout-ms <milliseconds>] "
-            "[--device-timing] "
+            "[--device-timing] [--profile-trace-event-limit <events>] "
             "--resource <ResourceId=raw-file>... "
             "[--expected <ResourceId=raw-file>]... "
             "[--expected-f16-relaxed <ResourceId=raw-file>]... "
@@ -107,6 +110,17 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
         return llvm::createStringError(
             llvm::errc::invalid_argument,
             "--max-resource-bytes must be an integer");
+      continue;
+    }
+    if (argument == "--profile-trace-event-limit") {
+      auto value = requireValue();
+      if (!value)
+        return value.takeError();
+      if (value->getAsInteger(10, options.profileTraceEventLimit) ||
+          options.profileTraceEventLimit == 0)
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "--profile-trace-event-limit must be a positive uint32 integer");
       continue;
     }
     if (argument == "--device-id") {
@@ -421,7 +435,8 @@ int runBoard(const Options &options,
     if (profileInstrumentation) {
       llvm::Expected<wafer::runtime::cli::BoardProfileCollectionResult>
           collection = wafer::runtime::cli::runBoardProfileCollection(
-              *profileInstrumentation, manifest, *filePlan, **driver);
+              *profileInstrumentation, manifest, *filePlan, **driver,
+              options.profileTraceEventLimit);
       if (!collection)
         return collection.takeError();
       completedPlan = std::move(collection->finalPlan);
@@ -543,6 +558,26 @@ int main(int argc, char **argv) {
       profileInstrumentation;
   if (*loaded)
     profileInstrumentation.emplace(std::move(**loaded));
+  if (options->profileTraceEventLimit != 0) {
+    if (!profileInstrumentation)
+      return fail(llvm::createStringError(
+          llvm::errc::invalid_argument, "--profile-trace-event-limit requires "
+                                        "sibling profile instrumentation"));
+    for (const auto &capture : profileInstrumentation->getCaptures()) {
+      if (capture.getCaptureKind() != wafer::runtime::ProfileCaptureKind::Trace)
+        continue;
+      auto capacity = wafer::runtime::getTx81ProfilerEventCapacity(
+          capture.getRecordBytes());
+      if (!capacity)
+        return fail(capacity.takeError());
+      if (options->profileTraceEventLimit > *capacity)
+        return fail(llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "--profile-trace-event-limit exceeds the trace package capacity"));
+    }
+    llvm::outs() << "profile_trace: event_prefix_limit="
+                 << options->profileTraceEventLimit << "\n";
+  }
   if (options->noCard) {
     return runNoCard(*options, *package, profileInstrumentation);
   }

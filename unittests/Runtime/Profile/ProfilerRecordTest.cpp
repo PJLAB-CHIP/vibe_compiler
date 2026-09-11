@@ -4,6 +4,7 @@
 
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -175,6 +176,102 @@ TEST(ProfilerRecordTest, BuildsLaunchConfigurationWithoutExposingASchemaSlot) {
   EXPECT_EQ(config.guard, WAFER_TX81_PROFILER_LAUNCH_CONFIG_GUARD);
   EXPECT_EQ(config.reserved[0], 0u);
   EXPECT_EQ((*image)[WAFER_TX81_PROFILER_LAUNCH_CONFIG_BYTES], UINT8_C(0xa5));
+}
+
+TEST(ProfilerRecordTest, BoundedPrefixKeepsTheCompleteDynamicCount) {
+  for (uint32_t total : {1024u, 1025u, 1031u})
+    for (uint32_t limit : {0u, 1024u, 1025u}) {
+      SCOPED_TRACE(total);
+      SCOPED_TRACE(limit);
+      auto original = makeRecord(0);
+      auto command = *eventAt(original, 1);
+      WaferTx81ProfilerRecordHeader header{};
+      std::memcpy(&header, original.data(), sizeof(header));
+      uint32_t count = limit == 0 ? total : std::min(total, limit);
+      uint64_t recordBytes =
+          (WAFER_TX81_PROFILER_HEADER_BYTES +
+           static_cast<uint64_t>(std::max(count, limit)) * sizeof(command) +
+           WAFER_TX81_PROFILER_BUFFER_GUARD_BYTES + 63) /
+          64 * 64;
+      auto image = wafer::runtime::buildTx81ProfilerLaunchImage(
+          recordBytes, 0, wafer::runtime::Tx81ProfilerCaptureKind::Trace,
+          limit);
+      ASSERT_TRUE(static_cast<bool>(image))
+          << llvm::toString(image.takeError());
+      WaferTx81ProfilerLaunchConfig config{};
+      std::memcpy(&config, image->data(), sizeof(config));
+      EXPECT_EQ(config.trace_event_limit, limit);
+      header.buffer_bytes = recordBytes;
+      header.buffer_guard_offset = recordBytes - sizeof(uint64_t);
+      header.event_capacity =
+          (recordBytes - WAFER_TX81_PROFILER_EVENTS_OFFSET - sizeof(uint64_t)) /
+          sizeof(command);
+      header.trace_event_limit = limit;
+      header.event_count = count;
+      header.next_sequence = total;
+      header.entry_end_cycle = 200 + total * 10;
+      std::memcpy(image->data(), &header, sizeof(header));
+      uint64_t guard = WAFER_TX81_PROFILER_BUFFER_GUARD;
+      std::memcpy(image->data() + header.buffer_guard_offset, &guard,
+                  sizeof(guard));
+      for (uint32_t i = 0; i < count; ++i) {
+        uint64_t begin = 110 + (i / 2) * 10;
+        auto event =
+            i % 2 == 0 ? makeTargetSiteEvent(7, begin, begin + 8) : command;
+        event.sequence = i;
+        if (i % 2 != 0) {
+          event.site_begin_cycle = begin;
+          event.site_end_cycle = begin + 8;
+          event.observed_begin_cycle = begin + 1;
+          event.observed_end_cycle = begin + 6;
+          event.operation_begin_cycle = begin + 2;
+          event.operation_end_cycle = begin + 4;
+        }
+        std::memcpy(image->data() + WAFER_TX81_PROFILER_EVENTS_OFFSET +
+                        i * sizeof(event),
+                    &event, sizeof(event));
+      }
+      auto decoded = wafer::runtime::decodeTx81ProfilerRecord(*image);
+      ASSERT_TRUE(static_cast<bool>(decoded))
+          << llvm::toString(decoded.takeError());
+      EXPECT_EQ(decoded->events.size(), count);
+      EXPECT_EQ(decoded->header.next_sequence, total);
+      EXPECT_EQ(decoded->header.dropped_event_count, 0u);
+      for (uint32_t i = 0; i < count; ++i)
+        EXPECT_EQ(decoded->events[i].sequence, i);
+      auto *stored =
+          reinterpret_cast<WaferTx81ProfilerRecordHeader *>(image->data());
+      stored->trace_event_limit = header.event_capacity + 1;
+      auto badLimit = wafer::runtime::decodeTx81ProfilerRecord(*image);
+      ASSERT_FALSE(static_cast<bool>(badLimit));
+      llvm::consumeError(badLimit.takeError());
+      stored->trace_event_limit = limit;
+      --stored->event_count;
+      auto missing = wafer::runtime::decodeTx81ProfilerRecord(*image);
+      ASSERT_FALSE(static_cast<bool>(missing));
+      llvm::consumeError(missing.takeError());
+    }
+}
+
+TEST(ProfilerRecordTest, InvalidPrefixIsRejectedBeforeBuildingTheImage) {
+  auto capacity = wafer::runtime::getTx81ProfilerEventCapacity(kRecordBytes);
+  ASSERT_TRUE(static_cast<bool>(capacity));
+  for (auto kind : {wafer::runtime::Tx81ProfilerCaptureKind::Count,
+                    wafer::runtime::Tx81ProfilerCaptureKind::Trace}) {
+    auto bad = wafer::runtime::buildTx81ProfilerLaunchImage(
+        kRecordBytes, 0, kind,
+        kind == wafer::runtime::Tx81ProfilerCaptureKind::Count ? 1
+                                                               : *capacity + 1);
+    ASSERT_FALSE(static_cast<bool>(bad));
+    llvm::consumeError(bad.takeError());
+  }
+  auto bytes = makeRecord(0, false);
+  auto *header =
+      reinterpret_cast<WaferTx81ProfilerRecordHeader *>(bytes.data());
+  header->trace_event_limit = 1;
+  auto bad = wafer::runtime::decodeTx81ProfilerRecord(bytes);
+  ASSERT_FALSE(static_cast<bool>(bad));
+  llvm::consumeError(bad.takeError());
 }
 
 TEST(ProfilerRecordTest, CountOnlyCarriesRequiredCapacityWithoutEvents) {

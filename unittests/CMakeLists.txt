@@ -197,7 +197,11 @@ wafer_add_component_unit_test(WaferRuntimeUnitTests
     Runtime/Board/BoardRuntimeTest.cpp
     Runtime/Profile/ProfileInstrumentationTest.cpp
     Runtime/Profile/ProfilerRecordTest.cpp
+    Runtime/Profile/ProfilerCRTTest.cpp
   LINK_LIBS WaferRuntime)
+target_include_directories(WaferRuntimeUnitTests PRIVATE
+  "${CMAKE_SOURCE_DIR}/runtime/crt/src"
+  "${CMAKE_SOURCE_DIR}/third_party/tx8_deps/include")
 
 wafer_add_component_unit_test(WaferPackageUnitTests
   SOURCES Package/Manifest/PackageManifestTest.cpp

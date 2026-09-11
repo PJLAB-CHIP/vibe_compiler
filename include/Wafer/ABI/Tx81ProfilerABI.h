@@ -148,7 +148,9 @@ typedef struct WaferTx81ProfilerLaunchConfig {
   uint32_t tile_id;
   uint32_t flags;
   uint64_t guard;
-  uint64_t reserved[3];
+  /* Zero captures the full execution; otherwise retain this event prefix. */
+  uint64_t trace_event_limit;
+  uint64_t reserved[2];
 } WaferTx81ProfilerLaunchConfig;
 
 /*
@@ -245,7 +247,7 @@ typedef struct WaferTx81ProfilerRecordHeader {
   uint16_t next_sub_index;
   uint16_t active_site_depth;
   uint32_t summary_validity;
-  uint32_t reserved1;
+  uint32_t trace_event_limit;
   uint64_t header_guard;
   uint64_t buffer_guard_offset;
   WaferTx81ProfilerPMUSnapshot pmu_before;

@@ -1117,9 +1117,19 @@ def check_expanded_profile_completion(expanded_source_text: str) -> None:
     require_pattern(
         entry_end,
         r"if\s*\(\s*wafer_profile_dte_enable_owned\s*!=\s*0U\s*\).*"
-        r"\*\s*\(.*\)\s*=\s*wafer_profile_dte_enable_before\s*;",
+        r"wafer_profile_write_dte_pmu32\s*\(\s*0x800\s*,\s*"
+        r"wafer_profile_dte_enable_before\s*\)\s*;",
         "expanded owned trace-only DTE PMU restore",
     )
+    for helper, base in (
+        ("wafer_profile_write_pmu32", "0x590000"),
+        ("wafer_profile_write_dte_pmu32", "0x400000"),
+    ):
+        require_pattern(
+            function_body(expanded_source_text, helper),
+            rf"volatile\s+uint32_t.*{base}.*offset.*=\s*value\s*;",
+            "expanded profiler register write keeps its hardware address and value",
+        )
     require_absent(
         entry_end,
         "if (wafer_profile_is_trace_capture())",
