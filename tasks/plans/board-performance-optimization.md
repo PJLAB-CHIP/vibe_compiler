@@ -19,29 +19,33 @@
 - Completion criteria：三条路径具备本轮实际 profile 归因；所选热点有 current-IR 根因与通用修复、host 覆盖、完整构建/no-op；
   受影响产品通过 fresh no-card、完整 PyTorch 比较及匹配 A/B，性能无收益的改写不交付为优化。
 
-## 当前持续实施范围
+## 当前验收范围
 
-用户已授权持续完成以下七项。设备当前不可用，先推进全部可独立完成的主机实现、验证与产品准备；
-设备恢复后才执行同一计划内的串行板测。第八项搜索质量、访问公平性与预算比较继续延后，不扩大搜索预算。
-任务状态由`tasks/progress.md`的`board-testing`统一拥有；本节记录内部步骤、直接前置与验收证据，
-下文历次检查点保留为实现背景，不覆盖本节的执行顺序，也不作为本轮新验证。
+按用户确认，本轮原第1、2、3、7项已定位修复的实现与对应主机验证已完成，从当前开发待办中收口。
+后续集中验收完整LLaMA、KV decode与4K prefill的新版实卡数值和性能；总任务仍由
+`tasks/progress.md`中的`board-testing`统一管理。原项号只保留用于关联下文证据，不新增work item。
 
-| 项 | 范围与直接输入 | 实施步骤与直接下游 | 完成条件 |
+| 原项 | 范围 | 已交付边界 | 后续验收归属 |
 | --- | --- | --- | --- |
-| 1 | Halo与中间buffer；current exact demand、spatial/temporal/layout/movement IR | 从真实内部producer→window consumer及外部输入分别追踪首次完整carrier、copy、DDR往返；在实际创建它的stage修复，再进入Instr/completion/SPM | 精确窗口、局部与远端片段的并集及动态次数保持；只有有完整use/alias/effect证明的冗余被消除；完整下游和fresh no-card通过 |
-| 2 | 主机正确性；受影响变换及同次owner-backed target modules | 独立oracle检查coverage/owner/merge/tail；用既有numeric backend、SystemC实际执行支持的数值与通信路径，补足本项缺口 | 每项修改绑定exact断言、完整输出数值与必要lifetime witness；模型不支持保持typed结果，不能用no-card替代执行 |
-| 3 | 编译开销；相同source/config和固定搜索预算 | 先记录work count、pass/analysis timing、wall与RSS；定位重复查询、遍历、物化或过大scope，实施经证据支持的通用改进 | 同输入、同预算的前后记录可对账；IR语义、候选结果与typed失败不变；无新热点则交付定位结论，不凭空添加cache或计数系统 |
-| 4 | Decode退化；历史8.222/11.443 ms证据及fresh decode IR | 沿DDR publication/acquire和实际consumer追踪切分与搬运变化；根因确认后修共用实现，生成新的完整case/reference/package | 主机与fresh no-card闭合，hidden/K/V及prefix检查齐全；实卡同源比较确认退化处理结果，不凭IR数量宣称速度改善 |
-| 5 | 完整LLaMA FA融合；官方block source及当前attention/temporal实现 | fresh导出，确认真实attention识别与唯一decomposition，运行正式search到ExecutablePackage；若失败记录actual typed原因并在owner修复 | 完整block的fresh no-card、全量PyTorch及匹配融合前后板端A/B；历史未融合17.635 ms不代签当前FA |
-| 6 | 4K、32-head prefill profile；Count超容量证据与current profiler | 核对采集、codegen、record与report合同，设计有明确采集范围的可执行方案；host验证容量边界和报告归因，再生成fresh profile package | 完整或范围明确的Trace可采集且报告不会冒充全程；普通结果检查不变；真实设备取得有效热点数据，不盲目增大缓冲区 |
-| 7 | LLaMA剩余搬运；native归约后Trace及fresh actual IR | 将GS、layout conversion、跨Region读写及外部权重复用追到producer；与第1项共用修复，额外movement choice必须先实际物化后同门禁比较 | 每个所选热点有保留/消除原因及actual下游证据；涉及新方案具备匹配实卡数值与性能结论，不强制DDR或DTE |
+| 1 | Halo与中间buffer | 已完成紧凑consumer窗口、shared-DDR按需加载、局部empty初始化、嵌套加载与多出口写回；对应exact coverage、Instr/completion/SPM及主机/no-card验证通过 | 已完成本轮开发；设备数值与实际收益随三条模型复验 |
+| 2 | 主机正确性 | 已完成本轮机制的coverage/owner/merge/tail与numeric/SystemC回归；完整LLaMA的65,536个FP16输出按原容差匹配PyTorch | 已完成本轮机制验证；新版decode完整数值回读归原第4项，不由两步no-card代签 |
+| 3 | 编译开销 | 已完成descriptor session复用、函数边界查询复用、有界关系证明；查询工作量、typed结果和直接下游验证已有记录 | 已完成本轮开发；后续仅在出现新的明确热点时启动修改 |
+| 4 | KV decode | 空间传播与归约分组修复已交付，两步均生成16-Tile package并通过no-card；这次两步准备尚无完整数值回读 | 验证hidden/K/V及历史prefix，采集新版profile，复验历史8.222→11.443 ms退化 |
+| 5 | 完整LLaMA FA融合 | 实际view/indexing proof、score舍入语义、完整FA package/no-card与SystemC全量PyTorch通过；Div→Recip+Mul已验证 | 完成新版实卡数值、普通耗时及profile，并做同源融合前后比较；历史未融合17.635 ms仅作审计基线 |
+| 6 | 4K、32-head prefill profile | 有明确事件范围的Trace已实现，采集/record/report及容量边界通过主机验证；ordinary/profile package和N=200000 no-card准备通过 | 完成新版全量PyTorch、普通耗时及实际Trace，报告明确采集覆盖范围 |
+| 7 | 已定位搬运热点 | native归约优先已有实卡收益；本轮subview/copy、完整中间carrier与相关GS修复已完成，对应机制主机验证通过 | 已完成本轮开发；新版整体收益随三条模型复验，进一步优化由新profile决定 |
 
-执行依赖：首先建立第3项基线并启动第5项完整产品复验，同时定位第1项；第2项随每个实际改动推进。
-随后按第1项产物检查第7项共用机制，推进第4项decode归因和第6项采集准备。
-任何一项等待设备时继续其余主机工作；每个可提交边界更新本节证据并提交，不以记录计划代替实施完成。
-涉及变换的具体算法在确认根因后先补06/13/14等直接owner合同，并比较成熟实现及pinned API；本表不授权第二条pipeline。
+后续执行顺序：完整LLaMA（原第5项）→KV decode（原第4项）→4K prefill（原第6项）。
+同步后的本机先完成canonical增量构建，为指定case从fresh source/input/reference生成本轮package并通过no-card，
+再确认合格设备会话，逐case验数值、普通耗时及Primary/Count/Trace。Decode两步还须明确记录实际输入延续方式；
+历史准备中第二步使用PyTorch reference continuation，不能称为已经验证设备输出接续。
+每项结果写入统一性能记录，三条模型按当前矩阵完成前，总任务保持`doing`。
 
-### 本轮覆盖矩阵
+外部权重DTE共享等尚无完成证据的方案保留为候选方向；由新profile确认瓶颈后再确定具体实现边界。
+搜索质量、访问公平性与预算比较继续延后。新增通用修复按对应编号设计补合同和覆盖，再完成主机、fresh no-card与匹配实卡复验。
+下文历次检查点保存当时的实现与验证证据；其中旧的阻塞和“下一步”不覆盖本节，也不重新打开已经完成的开发项。
+
+### 已实施边界与模型验收覆盖矩阵
 
 | 项 | 输入等价类与规模 | 结构分支与typed失败 | exact输出与直接下游witness |
 | --- | --- | --- | --- |
@@ -51,10 +55,11 @@
 | 4 | FP16 hidden `[1,1,4096]`、32 heads、past 1023；共用修复另配1024/1025/1031机制例 | DDR publication/acquire、多consumer、布局变化、单步；改动涉及state时两步 | 当前IR依赖和精确movement；完整hidden/K/V与KV prefix，fresh no-card及匹配板测 |
 | 5 | 官方FP16 `[1,16,4096]` block、MLP 11008；通用attention机制另配1024/1025/1031及BF16 | 输入/输出view、projection/transpose、coupled state、非零init、多use；实际容量与预算耗尽区分 | 真实attention及输出遍历、actual Instr/SPM、完整ExecutablePackage；fresh no-card与全量板端PyTorch/A/B |
 | 6 | `[1,32,4096,128]` prefill；record容量等于/差一、长循环与tail | Count→Trace、范围内/外事件、overflow、空范围、invalid metadata、设备失败 | 采集范围与实际event/count一致，报告明确覆盖率与缺失；当前profiler/no-card及实卡采集 |
-| 7 | 完整block；rank3/4 GEMM/conv/elementwise/reduction、1024/1025/1031、4/16 Tile | 共享输入/权重、多use、跨Region、layout转换；DDR/DTE的actual capacity/unsupported | 每次GS/转换/读取对应真实producer及动态次数，scope/alias/lifetime合法；actual cost同门禁与必要板端A/B |
+| 7 | 已修复的native归约、subview/copy与完整carrier；rank3/4、1024/1025/1031、4/16 Tile | source/destination子视图、nested/main/tail、private/shared多出口、alias拒绝 | exact descriptor/输出坐标、owner与lifetime、actual Instr/completion/SPM；已有主机证据见下文，整体性能由三模型实卡复验 |
 
-当前执行边界为浮点除法目标实现与完整模型复验；其余七项按本表依赖持续推进，后续各节保存已经提交的实现与验证证据。
-没有本轮真实设备结果，不以主机通过代签板端`done`。
+当前执行边界为三条模型的实卡验收与profile分析。本次状态收口不新增构建、no-card或设备验证结果。
+
+## 已提交实现与验证记录
 
 ### 本轮浮点除法改用独立Recip指令
 
@@ -356,7 +361,7 @@ Decode已越过动态store拒绝，原42次actual仍未找到accepted candidate�
 | 修复通用性 | 按已确认机制选择 1024/1025/1031、不同 rank/axis/多 use 或 layout | 具体 producer/verifier、actual IR 精确断言及直接下游 witness；实施前补齐 |
 | 设备或 profile 异常 | timeout、guard/status、Count 容量、counter validity | 首个设备异常即停；不得 retry/reset；局部计时未知不伪造完整归因 |
 
-## 当前检查点
+## 早期板端检查点（历史记录）
 
 新4096×32-head prefill已完成attention识别及mask/splat、unit view和rank-reduced subview前置修复；
 完整state驻留已定位并实施输出tile内的coupled-state归约/归一化，host实际SPM矩阵、fresh no-card及实卡完整PyTorch通过。
@@ -376,7 +381,7 @@ Decode组合优化及完整block已有本轮profile/PyTorch证据；这些局部
 
 一次旧block profile的board入口曾在metadata loader检查处拒绝，未进入provider；调度已要求no-card成功记录，不能仅因package存在就launch。
 
-### 最新检查点
+### 当时的验证结果
 
 - Decode组合修复本轮fresh no-card与实卡完整PyTorch通过：Primary 11.272→8.198 ms，Tile14 DTE completion wait
   7528630→143914 Trace cycles。容量及输出写回修改后重新完整采集并通过PyTorch，单样本8.222 ms；详见性能记录。
