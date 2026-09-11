@@ -282,13 +282,33 @@ K按canonical input-channel/kernel-H/kernel-W展平，完整四项分别累加�
 Scratch allocation、复用和mul/add全在actual Instr中，沿同一owner recorder交给completion与SPM；不预判容量或插入额外join。
 同dtype及其它dtype/native Instr的既有合同保持原样；本项不保证不同上游reduction分块的逐bit等价，也不推广未验证bias/psum option。
 
-F32语义division在Tile→Instr边界展开为native近似商与两轮residual correction：`q=a/b; q=q+(a-b*q)/b`。
-这是对current target approximate division的数值实现，参照LLVM reciprocal refinement与本轮CT原语见证；不是改写上层
-算术关系。所有临时buffer和op经同一recorder拥有，再交给completion和actual SPM规划。Correction的非finite结果和原始
-零商保留native结果，避免修正引入NaN或丢失signed zero。内部zero/infinity常量使用fresh private scratch的完整
-`physical_footprint` fill，使Tensor/NCx遍历所需的所有lane与padding已定义；该规则不扩大用户view的写入范围。
-FP16/BF16 raw division不变，raw Instr div不再次展开。
-完成门禁包括rank3整除/tail、有限正负、零/Inf/NaN、actual owner/offset和完整PyTorch实卡比较；不宣称F32全域correct rounding。
+### 浮点除法的目标实现
+
+- Upstream IR / input：verified `wafer.tile.elementwise` / `elementwise_into` 的浮点Div，F16/BF16/F32、已选shape/layout/indexing及SSA destination。
+- Current stage responsibility：Tile→Instr统一实现为`r = recip(b); out = mul(a, r)`；recip直接使用硬件RecipVV。
+- Output IR / files：existing Instr Recip与Mul、一个typed-owner scratch；普通result另有结果allocation，into保留原destination。
+- Downstream consumer：actual completion/SPM规划、Instr→Target LLVM、CRT与同一target model。
+- User-level driver / named pipeline：none/search共用Tile→Instr转换及生产`wafer-compile`入口。
+- Explicit non-goals：整数/index地址除法、上游e-graph等价探索、额外精度修正、比较保护、model专用编译分支与搜索预算调整。
+- Completion criteria：所有计算Div进入同一Recip+Mul序列；Instr Div、target Div及Wafer CRT div出口删除；旧F32 residual/mask路径和测试期望清零；
+  真实规模机制覆盖、canonical构建/no-op、完整host门禁、fresh产品编译/no-card与可支持的主机数值执行完成，板端资格等待实卡。
+
+用户明确选择该目标数值实现。参考[LLVM arcp](https://llvm.org/docs/LangRef.html#fast-math-flags)及pinned DAGCombiner的
+AllowReciprocal路径：reciprocal-multiply有独立舍入和范围，不冒充任意IEEE divide的逐bit等价，也不添加全局fast-math假设。
+硬件事实来自`wafer-register-level-instruction-spec.md`的opcode 1与TsmArith::RecipVV、既有CRT实现及CT校准；
+不将历史Div residual板测结果转移为本实现的板端结果。
+
+Recip写入独立scratch后Mul才写destination，支持destination与任一输入别名；输入的broadcast/permutation仍由现有映射物化消费。
+Scratch、Recip和Mul均经同一buffer recorder进入current IR；不推算SPM容量，也不添加固定join。模型只执行这两条实际指令。
+不再为除法生成zero/infinity常量、Lt/Ne/LogicAnd、Bit2Fp、MaskMove或为了packed Bool扩大遍历。
+高层Div继续表达源计算，外部vendor opcode与历史原语校准保留硬件原名；生产Instr和Wafer ABI不再提供Div。
+
+| 输入等价类 | 整除/非整除与结构 | exact输出/typed failure | 直接下游witness |
+| --- | --- | --- | --- |
+| F16/BF16/F32语义Div | rank3、1024/1025/1031，Tensor/Cx/NCx | 仅Recip→Mul，分母/分子顺序、同dtype/layout、无Bool scratch与额外fill | Instr verifier、Target LLVM与CRT符号 |
+| result/into与alias | 独立dest、dest=lhs、dest=rhs、静态view、输入map | reciprocal scratch先写后读，dest保留、输入不被提前覆盖 | actual Instr SSA/effect与下游 |
+| 数学模型 | rank3、1024/1025/1031，正负/零/Inf/NaN、舍入边界 | oracle按实际Recip再Mul两次舍入；不把直接divide逐bit结果作等价前提 | formal模型及source→SystemC输出 |
+| 源程序与完整block | none/search，F32 division、FP16 sigmoid、完整LLaMA | 无raw div及旧比较/mask生成，typed capacity/unsupported区分 | fresh package/no-card及实际模型报告 |
 
 ## 4. Instruction Ops And Families
 

@@ -1,22 +1,8 @@
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-tile-region-to-instr)' %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-tile-region-to-instr)' %s | FileCheck %s --implicit-check-not="wafer.instr.elementwise <div>" --implicit-check-not="wafer.instr.bit2fp" --implicit-check-not="wafer.instr.mask_move" --implicit-check-not="wafer.instr.fill"
 
 // CHECK-LABEL: func.func @divide_1024
-// CHECK: wafer.instr.elementwise <div>
-// CHECK: wafer.instr.elementwise <mul>
-// CHECK: wafer.instr.elementwise <sub>
-// CHECK: wafer.instr.elementwise <div>
-// CHECK: wafer.instr.elementwise <add>
-// CHECK: wafer.instr.elementwise <mul>
-// CHECK: wafer.instr.elementwise <sub>
-// CHECK: wafer.instr.elementwise <div>
-// CHECK: wafer.instr.elementwise <add>
-// CHECK: wafer.instr.elementwise <abs>
-// CHECK: wafer.instr.elementwise <lt>
-// CHECK: wafer.instr.elementwise <ne>
-// CHECK: wafer.instr.elementwise <logic_and>
-// CHECK: wafer.instr.bit2fp
-// CHECK: wafer.instr.elementwise <div>
-// CHECK: wafer.instr.mask_move
+// CHECK: wafer.instr.elementwise <recip> %[[DEN:.*]] into %[[RECIP:.*]] :
+// CHECK-NEXT: wafer.instr.elementwise <mul> %{{.*}}, %[[RECIP]] into %{{.*}} :
 func.func @divide_1024() {
   %token = arith.constant false
   %unused = wafer.tile.region(%token : i1) -> (i1) {
@@ -33,26 +19,8 @@ func.func @divide_1024() {
 }
 
 // CHECK-LABEL: func.func @divide_1025
-// CHECK: memref.alloc() : memref<1x2x1032xf32, #wafer.memory<spm, tensor>>
-// CHECK: memref.subview
-// CHECK: wafer.instr.gather_scatter
-// CHECK: wafer.instr.elementwise <div>
-// CHECK: wafer.instr.elementwise <mul>
-// CHECK: wafer.instr.elementwise <sub>
-// CHECK: wafer.instr.elementwise <div>
-// CHECK: wafer.instr.elementwise <add>
-// CHECK: wafer.instr.elementwise <mul>
-// CHECK: wafer.instr.elementwise <sub>
-// CHECK: wafer.instr.elementwise <div>
-// CHECK: wafer.instr.elementwise <add>
-// CHECK: wafer.instr.elementwise <abs>
-// CHECK: wafer.instr.elementwise <lt>
-// CHECK: wafer.instr.elementwise <ne>
-// CHECK: wafer.instr.elementwise <logic_and>
-// CHECK: wafer.instr.bit2fp
-// CHECK: wafer.instr.elementwise <div>
-// CHECK: wafer.instr.mask_move
-// CHECK: wafer.instr.gather_scatter
+// CHECK: wafer.instr.elementwise <recip> %[[DEN:.*]] into %[[RECIP:.*]] :
+// CHECK-NEXT: wafer.instr.elementwise <mul> %{{.*}}, %[[RECIP]] into %{{.*}} :
 func.func @divide_1025() {
   %token = arith.constant false
   %unused = wafer.tile.region(%token : i1) -> (i1) {
@@ -69,26 +37,8 @@ func.func @divide_1025() {
 }
 
 // CHECK-LABEL: func.func @divide_1031
-// CHECK: memref.alloc() : memref<1x2x1032xf32, #wafer.memory<spm, tensor>>
-// CHECK: memref.subview
-// CHECK: wafer.instr.gather_scatter
-// CHECK: wafer.instr.elementwise <div>
-// CHECK: wafer.instr.elementwise <mul>
-// CHECK: wafer.instr.elementwise <sub>
-// CHECK: wafer.instr.elementwise <div>
-// CHECK: wafer.instr.elementwise <add>
-// CHECK: wafer.instr.elementwise <mul>
-// CHECK: wafer.instr.elementwise <sub>
-// CHECK: wafer.instr.elementwise <div>
-// CHECK: wafer.instr.elementwise <add>
-// CHECK: wafer.instr.elementwise <abs>
-// CHECK: wafer.instr.elementwise <lt>
-// CHECK: wafer.instr.elementwise <ne>
-// CHECK: wafer.instr.elementwise <logic_and>
-// CHECK: wafer.instr.bit2fp
-// CHECK: wafer.instr.elementwise <div>
-// CHECK: wafer.instr.mask_move
-// CHECK: wafer.instr.gather_scatter
+// CHECK: wafer.instr.elementwise <recip> %[[DEN:.*]] into %[[RECIP:.*]] :
+// CHECK-NEXT: wafer.instr.elementwise <mul> %{{.*}}, %[[RECIP]] into %{{.*}} :
 func.func @divide_1031() {
   %token = arith.constant false
   %unused = wafer.tile.region(%token : i1) -> (i1) {
@@ -105,8 +55,8 @@ func.func @divide_1031() {
 }
 
 // CHECK-LABEL: func.func @divide_blocked_1024
-// CHECK-COUNT-2: wafer.instr.fill {{.*}}physical_footprint
-// CHECK: wafer.instr.mask_move
+// CHECK: wafer.instr.elementwise <recip> %[[DEN:.*]] into %[[RECIP:.*]] :
+// CHECK-NEXT: wafer.instr.elementwise <mul> %{{.*}}, %[[RECIP]] into %{{.*}} :
 func.func @divide_blocked_1024() {
   %token = arith.constant false
   %unused = wafer.tile.region(%token : i1) -> (i1) {
@@ -120,8 +70,8 @@ func.func @divide_blocked_1024() {
 }
 
 // CHECK-LABEL: func.func @divide_blocked_1025
-// CHECK-COUNT-2: wafer.instr.fill {{.*}}physical_footprint
-// CHECK: wafer.instr.mask_move
+// CHECK: wafer.instr.elementwise <recip> %[[DEN:.*]] into %[[RECIP:.*]] :
+// CHECK-NEXT: wafer.instr.elementwise <mul> %{{.*}}, %[[RECIP]] into %{{.*}} :
 func.func @divide_blocked_1025() {
   %token = arith.constant false
   %unused = wafer.tile.region(%token : i1) -> (i1) {
@@ -135,8 +85,8 @@ func.func @divide_blocked_1025() {
 }
 
 // CHECK-LABEL: func.func @divide_blocked_1031
-// CHECK-COUNT-2: wafer.instr.fill {{.*}}physical_footprint
-// CHECK: wafer.instr.mask_move
+// CHECK: wafer.instr.elementwise <recip> %[[DEN:.*]] into %[[RECIP:.*]] :
+// CHECK-NEXT: wafer.instr.elementwise <mul> %{{.*}}, %[[RECIP]] into %{{.*}} :
 func.func @divide_blocked_1031() {
   %token = arith.constant false
   %unused = wafer.tile.region(%token : i1) -> (i1) {

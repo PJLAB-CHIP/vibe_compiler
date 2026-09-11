@@ -18,7 +18,6 @@ bool isLLVMElementwiseOperation(TargetElementwiseOperation operation) {
   case TargetElementwiseOperation::Add:
   case TargetElementwiseOperation::Sub:
   case TargetElementwiseOperation::Mul:
-  case TargetElementwiseOperation::Div:
   case TargetElementwiseOperation::Eq:
   case TargetElementwiseOperation::Ne:
   case TargetElementwiseOperation::Ge:

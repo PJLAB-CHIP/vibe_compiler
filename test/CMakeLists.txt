@@ -759,6 +759,23 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
           TIMEOUT 900)
       endforeach()
     endforeach()
+    foreach(_division_extent IN ITEMS 1024 1025 1031)
+      foreach(_division_policy IN ITEMS none search)
+        set(_division_test "wafer-runtime-target-model-division-${_division_extent}-${_division_policy}-no-card")
+        add_test(NAME ${_division_test}
+          COMMAND ${WAFER_PYTHON_COMMAND}
+            ${CMAKE_CURRENT_SOURCE_DIR}/Board/Support/wafer_target_model_source_runner.py
+            --wafer-compile $<TARGET_FILE:wafer-compile-test>
+            --case division --extent ${_division_extent}
+            --optimization-policy ${_division_policy}
+            --work-dir ${CMAKE_CURRENT_BINARY_DIR}/${_division_test})
+        set_tests_properties(${_division_test} PROPERTIES
+          ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Board/Support;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>"
+          LABELS "runtime;no-card;source;target-model;numeric-model"
+          PROCESSORS 4
+          TIMEOUT 900)
+      endforeach()
+    endforeach()
     foreach(_score_extent IN ITEMS 1024 1025)
       foreach(_score_policy IN ITEMS none search)
         set(_score_test "wafer-runtime-target-model-score-rounding-${_score_extent}-${_score_policy}-no-card")

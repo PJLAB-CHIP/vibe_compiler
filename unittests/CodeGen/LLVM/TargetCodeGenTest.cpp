@@ -779,14 +779,14 @@ TEST(TargetCodeGenTest, CurrentEngineRegistryIncludesDirectDTEIssueAndWait) {
                 [](const auto &descriptor) {
                   return wafer::getTargetCallTSMEngine(descriptor).has_value();
                 }),
-            106);
+            105);
   auto siteKindCount = [&](wafer::runtime::ProfileTargetSiteKind kind) {
     return llvm::count_if(descriptors, [&](const auto &descriptor) {
       return wafer::runtime::getProfileTargetSiteKind(descriptor) == kind;
     });
   };
   EXPECT_EQ(siteKindCount(wafer::runtime::ProfileTargetSiteKind::NCCCommand),
-            104);
+            103);
   EXPECT_EQ(siteKindCount(wafer::runtime::ProfileTargetSiteKind::NCCCompletion),
             1);
   EXPECT_EQ(
@@ -796,7 +796,7 @@ TEST(TargetCodeGenTest, CurrentEngineRegistryIncludesDirectDTEIssueAndWait) {
       siteKindCount(wafer::runtime::ProfileTargetSiteKind::DirectDTEIssue), 1);
   EXPECT_EQ(siteKindCount(wafer::runtime::ProfileTargetSiteKind::DirectDTEWait),
             1);
-  EXPECT_EQ(descriptors.size(), 116u);
+  EXPECT_EQ(descriptors.size(), 115u);
   EXPECT_EQ(wafer::getTargetCallTSMEngine(
                 getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA)),
             wafer::TargetCallTSMEngine::RDMA);

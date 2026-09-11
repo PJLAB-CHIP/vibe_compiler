@@ -178,8 +178,8 @@ def production_symbols_from_registry(
         f"wafer_tx81_peripheral_{peripheral_spellings[kind]}"
         for kind in peripheral_kinds
     )
-    if len(symbols) != 116:
-        fail(f"target-call registry must close 116 symbols, found {len(symbols)}")
+    if len(symbols) != 115:
+        fail(f"target-call registry must close 115 symbols, found {len(symbols)}")
 
     shared_symbols = {
         "wafer_tx81_ncc_join",
@@ -200,9 +200,9 @@ def production_symbols_from_registry(
         for symbol in symbols
         if symbol not in shared_symbols
     }
-    if len(ordinary_symbols) != 104:
+    if len(ordinary_symbols) != 103:
         fail(
-            "target-call registry must close 104 current ordinary "
+            "target-call registry must close 103 current ordinary "
             f"symbols, found {len(ordinary_symbols)}"
         )
     if "wafer_tx81_direct_dte_send_issue" not in symbols:

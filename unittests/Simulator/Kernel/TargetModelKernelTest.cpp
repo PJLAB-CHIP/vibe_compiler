@@ -342,7 +342,7 @@ TEST(TargetModelKernelTest, EveryTypedCallPayloadHasClosedFieldValidation) {
         << descriptor.symbol << ": " << llvm::toString(std::move(error));
     ++validated;
   }
-  EXPECT_EQ(validated, 116u);
+  EXPECT_EQ(validated, 115u);
 }
 
 TEST(TargetModelTileCommandTrackerTest,

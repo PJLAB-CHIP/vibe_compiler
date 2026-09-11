@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wafer-compile", type=pathlib.Path, required=True)
     parser.add_argument("--work-dir", type=pathlib.Path, required=True)
-    parser.add_argument("--case", choices=("add", "score-rounding", "broadcast-add", "row-max"), default="add")
+    parser.add_argument("--case", choices=("add", "score-rounding", "broadcast-add", "row-max", "division"), default="add")
     parser.add_argument("--extent", type=int, choices=(1024, 1025, 1031), default=1024)
     parser.add_argument("--optimization-policy", choices=("none", "search"), default="none")
     return parser.parse_args()
@@ -98,6 +98,17 @@ def write_case(
     %masked = stablehlo.add %rounded, %rhs : {input_type}
     %result = stablehlo.convert %masked : ({input_type}) -> {wide_type}
 """
+    elif case == "division":
+        input_type = rhs_type = output_type = wide_type
+        lhs = ((values % 37) - 18).astype(np.float32) / np.float32(7)
+        rhs = ((values % 17) + 1).astype(np.float32) / np.float32(19)
+        rhs *= np.where(values % 2, np.float32(-1), np.float32(1))
+        lhs.flat[0] = np.float32(-0.0)
+        # Independent source division reference; allow the two target roundings.
+        expected = lhs / rhs
+        body = f"""
+    %result = stablehlo.divide %lhs, %rhs : {input_type}
+"""
     elif case == "row-max":
         output_type = f"tensor<2x{extent}x1xf32>"
         lhs = -((values % 37) + 1).astype(DTYPE)
@@ -141,7 +152,7 @@ def write_case(
 """
     metadata = dict(SOURCE_METADATA)
     metadata["input_signature"] = [
-        {"shape": list(input_shape), "dtype": "float16", "dynamic_dims": []}
+        {"shape": list(input_shape), "dtype": "float32" if case == "division" else "float16", "dynamic_dims": []}
         for input_shape in (shape, rhs_shape)
     ]
     metadata["output_signature"] = [{
@@ -164,8 +175,10 @@ def main() -> int:
         raise RuntimeError("explicit shared-DDR qualification requires none")
     source, input_lhs, input_rhs, expected = write_case(args.work_dir, args.case, args.extent)
     extra = []
-    if args.case == "broadcast-add":
-        extra = ["--test-communication-candidate=shared-ddr", "--dump-compiler-ir", str(args.work_dir / "compiler-ir")]
+    if args.case in ("broadcast-add", "division"):
+        extra = ["--dump-compiler-ir", str(args.work_dir / "compiler-ir")]
+        if args.case == "broadcast-add":
+            extra.append("--test-communication-candidate=shared-ddr")
     package = args.work_dir / "package"
     output = run(
         [
@@ -184,7 +197,7 @@ def main() -> int:
             "--model-expected",
             f"0={expected}",
             "--model-atol=0",
-            "--model-rtol=0",
+            f"--model-rtol={1e-6 if args.case == 'division' else 0}",
             f"--target-model-max-scalar-evaluations={20000000 if args.case == 'broadcast-add' else 1000000}",
             "--target-model-max-fused-multiply-adds=1000000",
             f"--target-model-max-movement-bytes={2000000000 if args.case == 'broadcast-add' else 100000000}",
@@ -204,6 +217,19 @@ def main() -> int:
         raise RuntimeError("target-model source omitted StableHLO bytecode")
     if (source / "functions" / "forward.mlir").exists():
         raise RuntimeError("target-model source retained staging MLIR text")
+    if args.case == "division":
+        modules = list((args.work_dir / "compiler-ir" / "instruction").glob("*.mlir"))
+        if len(modules) != 16:
+            raise RuntimeError("division case omitted actual Instr modules")
+        ir = "\n".join(module.read_text() for module in modules)
+        if "wafer.instr.elementwise <recip>" not in ir or "wafer.instr.elementwise <mul>" not in ir:
+            raise RuntimeError("division did not use native reciprocal and multiply")
+        forbidden = ("<div>", "<lt>", "<ne>", "<logic_and>", "wafer.instr.bit2fp", "wafer.instr.mask_move")
+        if any(text in ir for text in forbidden):
+            raise RuntimeError("division retained raw divide or correction guards")
+        llvm_ir = "\n".join(module.read_text() for module in (args.work_dir / "compiler-ir" / "target-llvm").glob("*.ll"))
+        if "wafer_tx81_elementwise_recip" not in llvm_ir or "wafer_tx81_elementwise_mul" not in llvm_ir or "wafer_tx81_elementwise_div" in llvm_ir:
+            raise RuntimeError("division target calls do not match reciprocal product")
     if args.case == "broadcast-add":
         modules = list((args.work_dir / "compiler-ir" / "instruction").glob("*.mlir"))
         if len(modules) != 16:

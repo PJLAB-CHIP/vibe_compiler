@@ -61,24 +61,23 @@ constexpr std::array kRoundingModes = {
     TargetRoundingMode::Stochastic,
 };
 constexpr std::array kElementwiseOperations = {
-    TargetElementwiseOperation::Abs,      TargetElementwiseOperation::Recip,
-    TargetElementwiseOperation::Square,   TargetElementwiseOperation::Sqrt,
-    TargetElementwiseOperation::Rsqrt,    TargetElementwiseOperation::Neg,
-    TargetElementwiseOperation::Max,      TargetElementwiseOperation::Min,
-    TargetElementwiseOperation::Add,      TargetElementwiseOperation::Sub,
-    TargetElementwiseOperation::Mul,      TargetElementwiseOperation::Div,
-    TargetElementwiseOperation::Eq,       TargetElementwiseOperation::Ne,
-    TargetElementwiseOperation::Ge,       TargetElementwiseOperation::Gt,
-    TargetElementwiseOperation::Le,       TargetElementwiseOperation::Lt,
-    TargetElementwiseOperation::LogicNot, TargetElementwiseOperation::LogicAnd,
-    TargetElementwiseOperation::LogicOr,  TargetElementwiseOperation::LogicXor,
-    TargetElementwiseOperation::Log2,     TargetElementwiseOperation::Ln,
-    TargetElementwiseOperation::Pow2,     TargetElementwiseOperation::Exp,
-    TargetElementwiseOperation::ExpLp,    TargetElementwiseOperation::Sin,
-    TargetElementwiseOperation::Cos,      TargetElementwiseOperation::Tanh,
-    TargetElementwiseOperation::Sigmoid,  TargetElementwiseOperation::Relu,
-    TargetElementwiseOperation::SatRelu,  TargetElementwiseOperation::LeakyRelu,
-    TargetElementwiseOperation::Softplus,
+    TargetElementwiseOperation::Abs,       TargetElementwiseOperation::Recip,
+    TargetElementwiseOperation::Square,    TargetElementwiseOperation::Sqrt,
+    TargetElementwiseOperation::Rsqrt,     TargetElementwiseOperation::Neg,
+    TargetElementwiseOperation::Max,       TargetElementwiseOperation::Min,
+    TargetElementwiseOperation::Add,       TargetElementwiseOperation::Sub,
+    TargetElementwiseOperation::Mul,       TargetElementwiseOperation::Eq,
+    TargetElementwiseOperation::Ne,        TargetElementwiseOperation::Ge,
+    TargetElementwiseOperation::Gt,        TargetElementwiseOperation::Le,
+    TargetElementwiseOperation::Lt,        TargetElementwiseOperation::LogicNot,
+    TargetElementwiseOperation::LogicAnd,  TargetElementwiseOperation::LogicOr,
+    TargetElementwiseOperation::LogicXor,  TargetElementwiseOperation::Log2,
+    TargetElementwiseOperation::Ln,        TargetElementwiseOperation::Pow2,
+    TargetElementwiseOperation::Exp,       TargetElementwiseOperation::ExpLp,
+    TargetElementwiseOperation::Sin,       TargetElementwiseOperation::Cos,
+    TargetElementwiseOperation::Tanh,      TargetElementwiseOperation::Sigmoid,
+    TargetElementwiseOperation::Relu,      TargetElementwiseOperation::SatRelu,
+    TargetElementwiseOperation::LeakyRelu, TargetElementwiseOperation::Softplus,
 };
 constexpr std::array kReduceOperations = {
     TargetReduceOperation::Sum,
@@ -203,8 +202,6 @@ stringifyTargetElementwiseOperation(TargetElementwiseOperation operation) {
     return "sub";
   case TargetElementwiseOperation::Mul:
     return "mul";
-  case TargetElementwiseOperation::Div:
-    return "div";
   case TargetElementwiseOperation::Eq:
     return "eq";
   case TargetElementwiseOperation::Ne:
@@ -283,7 +280,6 @@ unsigned getTargetElementwiseArity(TargetElementwiseOperation operation) {
   case TargetElementwiseOperation::Add:
   case TargetElementwiseOperation::Sub:
   case TargetElementwiseOperation::Mul:
-  case TargetElementwiseOperation::Div:
   case TargetElementwiseOperation::Eq:
   case TargetElementwiseOperation::Ne:
   case TargetElementwiseOperation::Ge:

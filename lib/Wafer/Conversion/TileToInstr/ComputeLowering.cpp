@@ -384,162 +384,36 @@ getConstantPredicateSelectPlan(ComputeElementwiseOp op) {
                                      loweredPredicateFill, constant, selected};
 }
 
-// The target F32 divide is an estimate. Correct its residual while retaining
-// the native result for zero and special-value lanes. Every scratch value is
-// actual IR, recorded before completion and SPM planning.
+// Division has one target implementation: hardware reciprocal then multiply.
+// Keep the reciprocal separate from dest so into forms may alias either input.
 static mlir::LogicalResult
-emitF32Division(mlir::Operation *owner, mlir::ValueRange inputs,
-                mlir::Value dest, mlir::PatternRewriter &rewriter,
-                TileRegionToInstrBufferRecorder *recorder,
-                MovementDescriptorCache *descriptorCache) {
+emitReciprocalProduct(mlir::Operation *owner, mlir::ValueRange inputs,
+                      mlir::Value dest, mlir::PatternRewriter &rewriter,
+                      TileRegionToInstrBufferRecorder *recorder) {
   auto type = mlir::cast<mlir::MemRefType>(dest.getType());
-  auto predicateType =
-      mlir::MemRefType::get(type.getShape(), rewriter.getI1Type(),
-                            type.getLayout(), type.getMemorySpace());
-  auto dataInfo = computeWaferPhysicalTensorInfo(type);
-  auto predicateInfo = computeWaferPhysicalTensorInfo(predicateType);
-  if (!dataInfo || !predicateInfo)
-    return failPattern(rewriter, owner,
-                       "division requires static physical storage");
-  if (dataInfo->physicalBytes / 4 != predicateInfo->physicalBytes * 8) {
-    // Materialize one common traversal for floating data and packed predicates.
-    // Prefix subviews retain the original logical domain for exact copies.
-    auto tensorSpace = MemoryAttr::get(rewriter.getContext(), MemorySpace::SPM,
-                                       MemLayout::Tensor);
-    auto boolUnit =
-        mlir::MemRefType::get({1}, rewriter.getI1Type(),
-                              mlir::MemRefLayoutAttrInterface{}, tensorSpace);
-    int64_t quantum =
-        computeWaferPhysicalTensorInfo(boolUnit)->physicalBytes * 8;
-    llvm::SmallVector<int64_t> shape(type.getShape());
-    if (shape.empty())
-      shape.push_back(1);
-    if (shape.back() > std::numeric_limits<int64_t>::max() - (quantum - 1))
-      return failPattern(rewriter, owner,
-                         "division traversal extent overflows int64");
-    shape.back() = llvm::alignTo(shape.back(), quantum);
-    auto workType =
-        mlir::MemRefType::get(shape, rewriter.getF32Type(),
-                              mlir::MemRefLayoutAttrInterface{}, tensorSpace);
-    llvm::SmallVector<int64_t> offsets(shape.size(), 0),
-        strides(shape.size(), 1);
-    llvm::SmallVector<int64_t> sizes(type.getShape());
-    if (sizes.empty())
-      sizes.push_back(1);
-    auto viewType = mlir::cast<mlir::MemRefType>(
-        mlir::memref::SubViewOp::inferRankReducedResultType(
-            type.getShape(), workType, offsets, sizes, strides));
-    auto identity = analysis::IndexRelation::identity(type.getShape());
-    if (!identity.isExact())
-      return failPattern(rewriter, owner,
-                         "division copy relation is not exact");
-    llvm::SmallVector<SharedMovementDescriptorPlan, 3> copies;
-    for (unsigned index = 0; index < 3; ++index) {
-      auto sourceType =
-          index < 2 ? mlir::cast<mlir::MemRefType>(inputs[index].getType())
-                    : viewType;
-      auto destType = index < 2 ? viewType : type;
-      auto descriptors = descriptorCache->getOrCreate(
-          rewriter, owner, sourceType, destType, type.getShape(),
-          *identity.get(), *identity.get(), MovementEngine::GatherScatter,
-          "division traversal copy");
-      if (mlir::failed(descriptors))
-        return mlir::failure();
-      copies.push_back(*descriptors);
-    }
-    llvm::SmallVector<mlir::Value, 3> work, views;
-    for (unsigned index = 0; index < 3; ++index) {
-      auto allocation =
-          createDestAlloc(owner->getLoc(), workType, rewriter, owner, recorder);
-      if (mlir::failed(allocation))
-        return mlir::failure();
-      work.push_back(*allocation);
-      auto view = rewriter.create<mlir::memref::SubViewOp>(
-          owner->getLoc(), viewType, *allocation, offsets, sizes, strides);
-      views.push_back(view);
-      if (recorder)
-        recorder->recordLoweredOperation(owner, view);
-      if (index < 2) {
-        auto zero = rewriter.create<mlir::arith::ConstantOp>(
-            owner->getLoc(), rewriter.getF32FloatAttr(0.0));
-        auto fill = rewriter.create<InstrFillOp>(
-            owner->getLoc(), *allocation, zero, FillDomainAttr{},
-            getDefaultNCCWorkerAttr(rewriter));
-        if (recorder)
-          recorder->recordLoweredOperation(owner, fill);
-        if (mlir::failed(emitGatherScatterDescriptorPlan(
-                rewriter, owner->getLoc(), owner, inputs[index], view,
-                *copies[index], recorder)))
-          return mlir::failure();
-      }
-    }
-    if (mlir::failed(
-            emitF32Division(owner, mlir::ValueRange(work).take_front(2),
-                            work[2], rewriter, recorder, descriptorCache)))
-      return mlir::failure();
-    return emitGatherScatterDescriptorPlan(
-        rewriter, owner->getLoc(), owner, views[2], dest, *copies[2], recorder);
-  }
-  llvm::SmallVector<mlir::Value> scratch;
-  for (unsigned index = 0; index < 12; ++index) {
-    auto allocation =
-        createDestAlloc(owner->getLoc(), index < 9 ? type : predicateType,
-                        rewriter, owner, recorder);
-    if (mlir::failed(allocation))
-      return mlir::failure();
-    scratch.push_back(*allocation);
-  }
-  auto record = [&](mlir::Operation *op) {
-    if (recorder)
-      recorder->recordLoweredOperation(owner, op);
-  };
-  auto emit = [&](InstrElementwiseKind kind, mlir::Value lhs, mlir::Value rhs,
-                  mlir::Value result) {
-    llvm::SmallVector<mlir::Value, 2> operands{lhs};
-    if (rhs)
-      operands.push_back(rhs);
-    auto op = rewriter.create<InstrElementwiseOp>(
-        owner->getLoc(),
-        InstrElementwiseKindAttr::get(rewriter.getContext(), kind), operands,
-        result, getDefaultNCCWorkerAttr(rewriter));
-    record(op);
-  };
-  mlir::Value quotient = scratch[0];
-  emit(InstrElementwiseKind::Div, inputs[0], inputs[1], quotient);
-  // Reuse these buffers through explicit read/write effects; their actual
-  // lifetimes, aliases and completion remain visible to the shared planner.
-  for (unsigned iteration = 0; iteration < 2; ++iteration) {
-    emit(InstrElementwiseKind::Mul, inputs[1], quotient, scratch[1]);
-    emit(InstrElementwiseKind::Sub, inputs[0], scratch[1], scratch[2]);
-    emit(InstrElementwiseKind::Div, scratch[2], inputs[1], scratch[3]);
-    auto next = scratch[4 + iteration];
-    emit(InstrElementwiseKind::Add, quotient, scratch[3], next);
-    quotient = next;
-  }
-  auto zero = rewriter.create<mlir::arith::ConstantOp>(
-      owner->getLoc(), rewriter.getF32FloatAttr(0.0));
-  auto infinity = rewriter.create<mlir::arith::ConstantOp>(
+  auto scratchType = mlir::MemRefType::get(
+      type.getShape(), type.getElementType(), mlir::MemRefLayoutAttrInterface{},
+      type.getMemorySpace());
+  auto reciprocal =
+      createDestAlloc(owner->getLoc(), scratchType, rewriter, owner, recorder);
+  if (mlir::failed(reciprocal))
+    return mlir::failure();
+  auto recip = rewriter.create<InstrElementwiseOp>(
       owner->getLoc(),
-      rewriter.getF32FloatAttr(std::numeric_limits<float>::infinity()));
-  record(rewriter.create<InstrFillOp>(
-      owner->getLoc(), scratch[6], zero,
-      FillDomainAttr::get(rewriter.getContext(), FillDomain::PhysicalFootprint),
-      getDefaultNCCWorkerAttr(rewriter)));
-  record(rewriter.create<InstrFillOp>(
-      owner->getLoc(), scratch[7], infinity,
-      FillDomainAttr::get(rewriter.getContext(), FillDomain::PhysicalFootprint),
-      getDefaultNCCWorkerAttr(rewriter)));
-  emit(InstrElementwiseKind::Abs, quotient, {}, scratch[8]);
-  emit(InstrElementwiseKind::Lt, scratch[8], scratch[7], scratch[9]);
-  emit(InstrElementwiseKind::Ne, scratch[0], scratch[6], scratch[10]);
-  emit(InstrElementwiseKind::LogicAnd, scratch[9], scratch[10], scratch[11]);
-  record(
-      rewriter.create<InstrBit2FpOp>(owner->getLoc(), scratch[11], scratch[8]));
-  // Emit the native result into the destination only after all reads needed
-  // for correction, including when the destination aliases a source.
-  emit(InstrElementwiseKind::Div, inputs[0], inputs[1], dest);
-  record(rewriter.create<InstrMaskMoveOp>(owner->getLoc(), quotient, scratch[8],
-                                          dest));
+      InstrElementwiseKindAttr::get(rewriter.getContext(),
+                                    InstrElementwiseKind::Recip),
+      mlir::ValueRange{inputs[1]}, *reciprocal,
+      getDefaultNCCWorkerAttr(rewriter));
+  auto multiply = rewriter.create<InstrElementwiseOp>(
+      owner->getLoc(),
+      InstrElementwiseKindAttr::get(rewriter.getContext(),
+                                    InstrElementwiseKind::Mul),
+      mlir::ValueRange{inputs[0], *reciprocal}, dest,
+      getDefaultNCCWorkerAttr(rewriter));
+  if (recorder) {
+    recorder->recordLoweredOperation(owner, recip);
+    recorder->recordLoweredOperation(owner, multiply);
+  }
   return mlir::success();
 }
 
@@ -739,7 +613,8 @@ public:
     }
 
     InstrElementwiseKindAttr instrKind;
-    if (op.getKind() != ComputeElementwiseKind::Select) {
+    if (op.getKind() != ComputeElementwiseKind::Select &&
+        op.getKind() != ComputeElementwiseKind::Div) {
       mlir::FailureOr<InstrElementwiseKindAttr> resolvedInstrKind =
           getInstrElementwiseKindAttr(rewriter, op, op.getKindAttr());
       if (mlir::failed(resolvedInstrKind))
@@ -827,10 +702,9 @@ public:
       return mlir::success();
     }
 
-    if (op.getKind() == ComputeElementwiseKind::Div &&
-        resultType.getElementType().isF32()) {
-      if (mlir::failed(emitF32Division(op, inputs, *dest, rewriter,
-                                       bufferRecorder, descriptorCache)))
+    if (op.getKind() == ComputeElementwiseKind::Div) {
+      if (mlir::failed(emitReciprocalProduct(op, inputs, *dest, rewriter,
+                                             bufferRecorder)))
         return mlir::failure();
       rewriter.replaceOp(op, *dest);
       return mlir::success();
@@ -852,30 +726,25 @@ class ElementwiseIntoLowering
     : public mlir::OpRewritePattern<ComputeElementwiseIntoOp> {
 public:
   ElementwiseIntoLowering(mlir::MLIRContext *context,
-                          TileRegionToInstrBufferRecorder *bufferRecorder,
-                          MovementDescriptorCache *descriptorCache)
+                          TileRegionToInstrBufferRecorder *bufferRecorder)
       : mlir::OpRewritePattern<ComputeElementwiseIntoOp>(context),
-        bufferRecorder(bufferRecorder), descriptorCache(descriptorCache) {}
+        bufferRecorder(bufferRecorder) {}
 
   mlir::LogicalResult
   matchAndRewrite(ComputeElementwiseIntoOp op,
                   mlir::PatternRewriter &rewriter) const final {
     ScopedLoweringPatternTiming timing(op.getOperation());
-    mlir::FailureOr<InstrElementwiseKindAttr> instrKind =
-        getInstrElementwiseKindAttr(rewriter, op, op.getKindAttr());
-    if (mlir::failed(instrKind))
-      return mlir::failure();
-    if (op.getKind() == ComputeElementwiseKind::Div &&
-        mlir::cast<mlir::MemRefType>(op.getDest().getType())
-            .getElementType()
-            .isF32()) {
-      if (mlir::failed(emitF32Division(op, op.getInputs(), op.getDest(),
-                                       rewriter, bufferRecorder,
-                                       descriptorCache)))
+    if (op.getKind() == ComputeElementwiseKind::Div) {
+      if (mlir::failed(emitReciprocalProduct(op, op.getInputs(), op.getDest(),
+                                             rewriter, bufferRecorder)))
         return mlir::failure();
       rewriter.eraseOp(op);
       return mlir::success();
     }
+    mlir::FailureOr<InstrElementwiseKindAttr> instrKind =
+        getInstrElementwiseKindAttr(rewriter, op, op.getKindAttr());
+    if (mlir::failed(instrKind))
+      return mlir::failure();
     auto instr = rewriter.create<InstrElementwiseOp>(
         op.getLoc(), *instrKind, op.getInputs(), op.getDest(),
         getDefaultNCCWorkerAttr(rewriter));
@@ -887,7 +756,6 @@ public:
 
 private:
   TileRegionToInstrBufferRecorder *bufferRecorder = nullptr;
-  MovementDescriptorCache *descriptorCache = nullptr;
 };
 
 class ReduceLowering : public mlir::OpRewritePattern<ComputeReduceOp>,
@@ -2231,7 +2099,8 @@ getInstrElementwiseKindAttr(mlir::PatternRewriter &rewriter,
   case ComputeElementwiseKind::Mul:
     return makeKind(InstrElementwiseKind::Mul);
   case ComputeElementwiseKind::Div:
-    return makeKind(InstrElementwiseKind::Div);
+    return failFailureOr<InstrElementwiseKindAttr>(
+        rewriter, op, "division requires a reciprocal and multiply sequence");
   case ComputeElementwiseKind::Max:
     return makeKind(InstrElementwiseKind::Max);
   case ComputeElementwiseKind::Min:
@@ -2307,8 +2176,7 @@ void wafer::tile_region_to_instr::populateComputeLoweringPatterns(
     TileRegionToInstrBufferRecorder *bufferRecorder,
     MovementDescriptorCache *descriptorCache) {
   mlir::MLIRContext *context = patterns.getContext();
-  patterns.add<ElementwiseIntoLowering>(context, bufferRecorder,
-                                        descriptorCache);
+  patterns.add<ElementwiseIntoLowering>(context, bufferRecorder);
   patterns.add<GemmLowering>(context, bufferRecorder);
   patterns.add<ConvLowering, ConvertLowering, ElementwiseLowering>(
       context, bufferRecorder, descriptorCache);

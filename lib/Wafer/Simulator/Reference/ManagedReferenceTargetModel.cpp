@@ -228,8 +228,6 @@ llvm::Expected<float> evaluateElementwise(TargetElementwiseOperation operation,
     return operands[0] - operands[1];
   case TargetElementwiseOperation::Mul:
     return operands[0] * operands[1];
-  case TargetElementwiseOperation::Div:
-    return operands[0] / operands[1];
   case TargetElementwiseOperation::Relu:
     return operands[0] < 0.0F ? 0.0F : operands[0];
   case TargetElementwiseOperation::Sqrt:

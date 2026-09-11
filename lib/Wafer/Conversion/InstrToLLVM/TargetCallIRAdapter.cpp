@@ -24,7 +24,6 @@ mapElementwiseOperation(InstrElementwiseKind operation) {
     WAFER_MAP_ELEMENTWISE(Add);
     WAFER_MAP_ELEMENTWISE(Sub);
     WAFER_MAP_ELEMENTWISE(Mul);
-    WAFER_MAP_ELEMENTWISE(Div);
     WAFER_MAP_ELEMENTWISE(Eq);
     WAFER_MAP_ELEMENTWISE(Ne);
     WAFER_MAP_ELEMENTWISE(Ge);

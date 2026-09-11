@@ -15,7 +15,7 @@
 - Output IR / files：profile 证据、根因及通用修复、fresh IR/package、PyTorch 结果和匹配的设备时间。
 - Downstream consumer：普通 compiler/runtime 产品链；同一板测项验收。
 - User-level driver / named pipeline：`wafer-compile --profile`、现有 PyTorch case 与 `wafer-run`。
-- Explicit non-goals：不按模型名/固定 shape 特判，不改变算术顺序或 dtype，不扩展硬件校准矩阵，不猜测同步或 SPM 合法性。
+- Explicit non-goals：不按模型名/固定 shape 特判；除本轮用户指定的Div→Recip+Mul外不改变算术顺序或 dtype，不扩展硬件校准矩阵，不猜测同步或 SPM 合法性。
 - Completion criteria：三条路径具备本轮实际 profile 归因；所选热点有 current-IR 根因与通用修复、host 覆盖、完整构建/no-op；
   受影响产品通过 fresh no-card、完整 PyTorch 比较及匹配 A/B，性能无收益的改写不交付为优化。
 
@@ -55,6 +55,29 @@
 
 当前执行边界为下节传播优先级与有界证明；其余七项按本表依赖持续推进，后续各节保存已经提交的实现与验证证据。
 没有本轮真实设备结果，不以主机通过代签板端`done`。
+
+### 本轮浮点除法改用独立Recip指令
+
+用户明确要求全部计算除法改成乘以倒数，并删除旧除法lowering。归属第2/5/7项及11号设计的同名pipeline合同和覆盖矩阵。
+复用硬件opcode 1 `RecipVV`与existing Recip/Mul模型；删除F32 residual correction、比较保护、Bool遍历及production raw Div出口。
+当前主机构建关闭真实板卡，先完成机制、source模型和fresh产品验证；历史Div精度修正及旧LLaMA板测不代签本次数值实现。
+
+本轮实现与验证：
+
+- 普通result/into共同消费`emitReciprocalProduct`；旧`emitF32Division`、Instr/target Div枚举、adapter和CRT出口删除。
+  Target-call闭合面同步为115个symbol/103个ordinary调用；其余typed operation编号保持，原Div编号不注册。
+- 108组F16/BF16/F32 × Tensor/Cx/NCx × 1024/1025/1031 × result/独立dest/alias lhs/alias rhs，以及6组broadcast/subview
+  实际转换通过；检查Recip读取分母、Mul读取分子与reciprocal scratch、destination保留，无旧Bool scratch/movement序列。
+- 9组rank3 formal模型检查两条实际指令的全部元素，包括正负、零、Inf/NaN与异常flags；6组真实source division的none/search
+  完成compiler→SystemC全输出比较，rtol=1e-6、atol=0对独立NumPy divide reference，实际Instr/LLVM仅Recip+Mul、无Div出口。
+- 12组fresh PyTorch division F32 / sigmoid FP16 × 1024/1025/1031 × none/search的source、reference、package和no-card通过。
+  这12组没有执行设备或数值回读；独立source/SystemC数值见上一条。
+- canonical完整增量构建及第二次Ninja no-op通过；完整check-wafer的279/279 lit、14组件CTest，以及numeric、public/runtime、
+  target model与17个SystemC测试均实际执行通过，未将skip/unsupported计作通过。原Div parser负例和CRT symbol/object检查通过。
+- Fresh完整LLaMA编译约659.744秒，原width=8/trials=42、actual=42、accepted=1；16-Tile package及strict no-card通过。
+  16份actual Instr中的128条Div归零，旧Lt/Ne/LogicAnd/Bit2Fp/MaskMove各32条均归零，新增32条Recip。
+  这些是静态IR数量，不换算成设备性能；完整主机数值结果在实际执行结束后记录。
+
 
 ### 本轮空间传播优先级与有界证明
 

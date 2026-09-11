@@ -880,7 +880,7 @@ void expectPayloadFields(const wafer::TargetCallDescriptor &descriptor,
 TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   llvm::ArrayRef<wafer::TargetCallDescriptor> descriptors =
       wafer::getTargetCallDescriptors();
-  ASSERT_EQ(descriptors.size(), 116u);
+  ASSERT_EQ(descriptors.size(), 115u);
   llvm::DenseSet<llvm::StringRef> symbols;
   size_t issueDomainCount = 0;
   size_t nccIssueDomainCount = 0;
@@ -927,12 +927,16 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
       synchronousWritebackCount += synchronous;
     }
   }
-  EXPECT_EQ(issueDomainCount, 106u);
-  EXPECT_EQ(nccIssueDomainCount, 104u);
-  EXPECT_EQ(argumentNCCIssueDomainCount, 104u);
+  EXPECT_EQ(issueDomainCount, 105u);
+  EXPECT_EQ(nccIssueDomainCount, 103u);
+  EXPECT_EQ(argumentNCCIssueDomainCount, 103u);
   EXPECT_EQ(synchronousWritebackCount, 2u);
   EXPECT_EQ(directDTEIssueDomainCount, 2u);
   EXPECT_EQ(wafer::findTargetCallDescriptor("wafer_tx81_unknown"), nullptr);
+  EXPECT_EQ(wafer::findTargetCallDescriptor("wafer_tx81_elementwise_div"),
+            nullptr);
+  EXPECT_NE(wafer::findTargetCallDescriptor("wafer_tx81_elementwise_recip"),
+            nullptr);
 
   const auto &join =
       wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::NCCJoin);
@@ -1004,7 +1008,7 @@ TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
     expectPayloadFields(descriptor, arguments, *payload);
     ++decoded;
   }
-  EXPECT_EQ(decoded, 116u);
+  EXPECT_EQ(decoded, 115u);
 }
 
 TEST(TargetCallRegistryTest, RejectsInvalidConvolutionInputAndOutputFormats) {

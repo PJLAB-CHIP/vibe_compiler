@@ -372,6 +372,8 @@ Triton 对照样例：公开 backend 目前把 `linalg.reduce` 规整到 4D 后�
 
 ### `OP_FUNC_CGRA` opcode 全表
 
+当前编译器的浮点除法固定使用opcode 1 `RecipVV`与乘法；不提供Wafer Instr/CRT Div出口。下面保留vendor硬件opcode的原始定义。
+
 此表直接来自 `instr_def.h` 的 `OP_FUNC_CGRA` enum。类别只是文档归类，真实发射以 opcode/name 为准。
 
 | Opcode | enum 名称 |

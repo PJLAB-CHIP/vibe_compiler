@@ -335,8 +335,6 @@ toComputeElementwiseKind(InstrElementwiseKind kind) {
     return ComputeElementwiseKind::Sub;
   case InstrElementwiseKind::Mul:
     return ComputeElementwiseKind::Mul;
-  case InstrElementwiseKind::Div:
-    return ComputeElementwiseKind::Div;
   case InstrElementwiseKind::Max:
     return ComputeElementwiseKind::Max;
   case InstrElementwiseKind::Min:
@@ -431,7 +429,6 @@ static unsigned getInstrElementwiseArity(InstrElementwiseKind kind) {
   case InstrElementwiseKind::Add:
   case InstrElementwiseKind::Sub:
   case InstrElementwiseKind::Mul:
-  case InstrElementwiseKind::Div:
   case InstrElementwiseKind::Eq:
   case InstrElementwiseKind::Ne:
   case InstrElementwiseKind::Ge:

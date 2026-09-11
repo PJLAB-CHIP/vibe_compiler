@@ -13,7 +13,7 @@ prototype与repo-local实现分别查看`runtime/crt/include/wafer_tx81_crt.h`�
 - Repo-local observation：compiler target lowering以及`runtime/crt` public header/source中可直接
   读取的legality、ABI、wrapper调用、参数处理、wait/writeback和optional-feature配置。
 - 本表不因旧helper存在而授权新symbol，也不定义某个family的production状态。
-- 当前symbol checker从target lowering和Wafer enum registry推导出114个production symbol；这是当前
+- 当前symbol checker从target lowering和Wafer enum registry推导出115个production symbol；这是当前
   实现的可重放观察，closure事实源仍是checker，不由本表另建清单。
 
 ## Static Matrix
@@ -23,7 +23,7 @@ prototype与repo-local实现分别查看`runtime/crt/include/wafer_tx81_crt.h`�
 | RDMA / WDMA | `__Rdma4d`, `__Wdma4d` call `AddSrcDst` and `ConfigStrideIteration`；Kcore setter及正常caller证明inner和三层stride均为logical element count，BOOL为logical bit count；old generic helpers also contain a vectorize fallback | Wafer compiler/CRT public descriptor保持byte unit；CRT到vendor wrapper边界对`inner_bytes`和三层byte stride统一做checked conversion：bitpacked BOOL要求字段`<= UINT32_MAX / 8`并计算`bytes * 8`，其它format要求可被element byte width整除；不满足时fail closed，不做截断除法或溢出乘法 |
 | GatherScatter | `__GatherScatter` and `__Memcpy` expose source/destination stride-iteration ordering | Wafer CRT passes byte `inner_bytes` and separate source/destination descriptors to `GatherScatter` |
 | Memset / Bit2Fp / MaskMove | old direct helpers and public wrapper declarations expose these operations; the public MaskMove field is `uint32_t` | Wafer CRT header/source都以`uint32_t mask`调用public wrapper，不含隐藏cast；compiler lowering证明mask来自已规划SPM allocation、view/range不越界且完整physical address range适配`uint32_t`后才发i32参数 |
-| Elementwise arithmetic / relation / logic | `arith.c`, `relation.c`, `logic.c` and unary files contain VV, VS, bool and value wrapper variants | Wafer CRT source defines per-kind wrapper calls; relation/logic macros branch on `Fmt_BOOL` |
+| Elementwise arithmetic / relation / logic | `arith.c`, `relation.c`, `logic.c` and unary files contain VV, VS, bool and value wrapper variants | Wafer CRT source定义逐kind wrapper，浮点除法改用RecipVV+Mul，不再提供Div wrapper；relation/logic仍按typed Bool/value合同发射 |
 | Convert | old dtype conversion files separate zero-point, rounding and plain wrapper forms | Wafer CRT source has corresponding zero-point, rounding and plain macro groups |
 | Reduce | old source contains sum/avg/max/min direct wrappers and a composite reduce-mul path | Wafer CRT source contains direct sum/avg/max/min wrapper definitions; no reduce-mul definition is observed |
 | GEMM | `__Gemm` records input/config/output calls and optional feature setters；current V5.6 Kcore source与SDK example均显示RHS raw hardware transpose bit和semantic transpose相反，semantic NN发`SetTransflag(0, 1)` | Wafer CRT保持public call中的orientation为semantic值，只在packet wrapper边界把RHS bit取反，发`(lhs_orientation, !rhs_orientation)`；psum、bias、scale、quant和activation仍显式关闭 |

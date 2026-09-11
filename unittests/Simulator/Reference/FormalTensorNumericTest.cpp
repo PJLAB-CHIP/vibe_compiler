@@ -432,6 +432,68 @@ TEST(FormalTensorNumericTest,
   EXPECT_FALSE(context.getAggregateFlags().any());
 }
 
+TEST(FormalTensorNumericTest, ReciprocalProductPreservesExplicitTwoStepValues) {
+  struct FormatBits {
+    LogicalFormat format;
+    uint64_t one, two, half, infinity, nan, sign;
+  };
+  for (const auto &bits :
+       {FormatBits{LogicalFormat::F16, 0x3c00, 0x4000, 0x3800, 0x7c00, 0x7e00,
+                   0x8000},
+        FormatBits{LogicalFormat::BF16, 0x3f80, 0x4000, 0x3f00, 0x7f80, 0x7fc0,
+                   0x8000},
+        FormatBits{LogicalFormat::F32, 0x3f800000, 0x40000000, 0x3f000000,
+                   0x7f800000, 0x7fc00000, 0x80000000}})
+    for (uint64_t extent : {1024u, 1025u, 1031u}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(static_cast<unsigned>(bits.format));
+      // Exact binary values and IEEE special cases are independent of the
+      // implementation's reciprocal/multiply evaluator. Repeat over main/tail.
+      const std::array<std::array<uint64_t, 3>, 12> cases{
+          {{bits.one, bits.two, bits.half},
+           {bits.one | bits.sign, bits.two, bits.half | bits.sign},
+           {0, bits.two, 0},
+           {bits.sign, bits.two, bits.sign},
+           {bits.one, 0, bits.infinity},
+           {bits.one | bits.sign, 0, bits.infinity | bits.sign},
+           {bits.one, bits.infinity, 0},
+           {bits.one | bits.sign, bits.infinity, bits.sign},
+           {bits.infinity, bits.two, bits.infinity},
+           {0, 0, bits.nan},
+           {bits.infinity, bits.infinity, bits.nan},
+           {bits.nan, bits.one, bits.nan}}};
+      std::vector<RawLogicalValue> lhs, rhs;
+      for (uint64_t i = 0; i < 2 * extent; ++i) {
+        lhs.push_back({bits.format, cases[i % cases.size()][0]});
+        rhs.push_back({bits.format, cases[i % cases.size()][1]});
+      }
+      auto reciprocal =
+          makeElementwise(TargetElementwiseOperation::Recip, bits.format,
+                          bits.format, {1, 2, extent});
+      auto multiply = makeElementwise(TargetElementwiseOperation::Mul,
+                                      bits.format, bits.format, {1, 2, extent});
+      FormalNumericExecutionContext context;
+      std::array<llvm::ArrayRef<RawLogicalValue>, 1> reciprocalInputs{rhs};
+      auto inverse = executeFormalTensorNumeric(
+          context, reciprocal, reciprocalInputs,
+          FormalNumericWorkBudget::create(2 * extent, 0));
+      ASSERT_TRUE(static_cast<bool>(inverse))
+          << llvm::toString(inverse.takeError());
+      std::array<llvm::ArrayRef<RawLogicalValue>, 2> multiplyInputs{
+          lhs, inverse->values};
+      auto output = executeFormalTensorNumeric(
+          context, multiply, multiplyInputs,
+          FormalNumericWorkBudget::create(2 * extent, 0));
+      ASSERT_TRUE(static_cast<bool>(output))
+          << llvm::toString(output.takeError());
+      ASSERT_EQ(output->values.size(), 2 * extent);
+      for (uint64_t i = 0; i < output->values.size(); ++i)
+        EXPECT_EQ(output->values[i].bits, cases[i % cases.size()][2]) << i;
+      EXPECT_TRUE(context.getAggregateFlags().invalid);
+      EXPECT_TRUE(context.getAggregateFlags().divByZero);
+    }
+}
+
 TEST(FormalTensorNumericTest, F32ExtremaPreserveIdentityZerosNaNsAndTail) {
   // Scalar special values are embedded in realistic rank-3 reductions.
   for (uint64_t extent : {1024u, 1025u, 1031u})

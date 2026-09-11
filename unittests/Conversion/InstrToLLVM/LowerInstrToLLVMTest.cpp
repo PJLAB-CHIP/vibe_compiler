@@ -46,6 +46,184 @@ template <typename OpT> unsigned countOps(mlir::ModuleOp module) {
 }
 
 TEST(LowerInstrToTargetLLVMTest,
+     DivisionUsesReciprocalProductWithSafeAliasing) {
+  for (llvm::StringRef dtype : {"f16", "bf16", "f32"})
+    for (llvm::StringRef layout : {"tensor", "cx", "ncx"})
+      for (int64_t extent : {1024, 1025, 1031})
+        for (unsigned form = 0; form < 4; ++form) {
+          SCOPED_TRACE(
+              llvm::formatv("{0}:{1}:{2}:{3}", dtype, layout, extent, form)
+                  .str());
+          mlir::DialectRegistry registry;
+          registerTargetConversionDialects(registry);
+          mlir::MLIRContext context(registry);
+          context.loadAllAvailableDialects();
+          auto type =
+              llvm::formatv("memref<1x2x{0}x{1}, #wafer.memory<spm, {2}>>",
+                            extent, dtype, layout)
+                  .str();
+          std::string compute;
+          if (form == 0)
+            compute = llvm::formatv("%result = wafer.tile.elementwise <div> "
+                                    "%lhs, %rhs : ({0}, {0}) -> {0}",
+                                    type)
+                          .str();
+          else {
+            if (form == 1)
+              compute = "%dest = memref.alloc() : " + type + "\n";
+            compute += llvm::formatv("wafer.tile.elementwise_into <div> %lhs, "
+                                     "%rhs into %{1} : {0}, {0} into {0}",
+                                     type,
+                                     form == 1   ? "dest"
+                                     : form == 2 ? "lhs"
+                                                 : "rhs")
+                           .str();
+          }
+          auto text = llvm::formatv(R"mlir(module {{
+            func.func @main() {{
+              %token = arith.constant false
+              %unused = wafer.tile.region(%token : i1) -> (i1) {{
+              ^bb0(%done: i1):
+                %lhs = memref.alloc() : {0}
+                %rhs = memref.alloc() : {0}
+                {1}
+                wafer.tile.yield %done : i1
+              }
+              return
+            }
+          })mlir",
+                                    type, compute)
+                          .str();
+          auto source = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+          ASSERT_TRUE(source) << text;
+          wafer::TileRegionOp region;
+          mlir::Value lhs, rhs, destination;
+          source->walk([&](wafer::TileRegionOp op) { region = op; });
+          source->walk([&](wafer::ComputeElementwiseOp op) {
+            lhs = op.getInputs()[0];
+            rhs = op.getInputs()[1];
+          });
+          source->walk([&](wafer::ComputeElementwiseIntoOp op) {
+            lhs = op.getInputs()[0];
+            rhs = op.getInputs()[1];
+            destination = op.getDest();
+          });
+          wafer::TileRegionToInstrLoweringSession session(context);
+          ASSERT_TRUE(mlir::succeeded(
+              wafer::convertTileRegionToInstr(region, session)));
+          ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
+          EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(*source), 0u);
+          EXPECT_EQ(countOps<wafer::ComputeElementwiseIntoOp>(*source), 0u);
+          llvm::SmallVector<wafer::InstrElementwiseOp> operations;
+          source->walk(
+              [&](wafer::InstrElementwiseOp op) { operations.push_back(op); });
+          ASSERT_EQ(operations.size(), 2u);
+          auto reciprocal = operations[0], multiply = operations[1];
+          EXPECT_EQ(reciprocal.getKind(), wafer::InstrElementwiseKind::Recip);
+          EXPECT_EQ(reciprocal.getInputs().front(), rhs);
+          EXPECT_EQ(multiply.getKind(), wafer::InstrElementwiseKind::Mul);
+          EXPECT_EQ(multiply.getInputs()[0], lhs);
+          EXPECT_EQ(multiply.getInputs()[1], reciprocal.getDest());
+          EXPECT_TRUE(reciprocal->isBeforeInBlock(multiply));
+          EXPECT_NE(reciprocal.getDest(), lhs);
+          EXPECT_NE(reciprocal.getDest(), rhs);
+          EXPECT_NE(reciprocal.getDest(), multiply.getDest());
+          if (destination) {
+            EXPECT_EQ(multiply.getDest(), destination);
+          }
+          EXPECT_EQ(reciprocal.getDest().getType(),
+                    multiply.getDest().getType());
+          EXPECT_EQ(countOps<mlir::memref::AllocOp>(*source),
+                    form < 2 ? 4u : 3u);
+          EXPECT_EQ(countOps<wafer::InstrFillOp>(*source), 0u);
+          EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*source), 0u);
+          EXPECT_EQ(countOps<wafer::InstrBit2FpOp>(*source), 0u);
+          EXPECT_EQ(countOps<wafer::InstrMaskMoveOp>(*source), 0u);
+        }
+}
+
+TEST(LowerInstrToTargetLLVMTest, DivisionSupportsMappedInputAndAliasedSubview) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool mapped : {false, true}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(mapped);
+      mlir::DialectRegistry registry;
+      registerTargetConversionDialects(registry);
+      mlir::MLIRContext context(registry);
+      context.loadAllAvailableDialects();
+      auto type = llvm::formatv(
+                      "memref<1x2x{0}xf32, #wafer.memory<spm, tensor>>", extent)
+                      .str();
+      auto viewType =
+          llvm::formatv("memref<1x2x{0}xf32, strided<[{1}, {0}, 1], offset: "
+                        "{1}>, #wafer.memory<spm, tensor>>",
+                        extent, 2 * extent)
+              .str();
+      auto computation = mapped ? llvm::formatv(R"mlir(
+        %rhs = memref.alloc() : memref<1x2xf32, #wafer.memory<spm, tensor>>
+        %result = wafer.tile.elementwise <div> %lhs, %rhs {{indexing_maps = [
+          affine_map<(b,m,n)->(b,m,n)>, affine_map<(b,m,n)->(b,m)>, affine_map<(b,m,n)->(b,m,n)>]}
+          : ({0}, memref<1x2xf32, #wafer.memory<spm, tensor>>) -> {0}
+      )mlir",
+                                                type)
+                                      .str()
+                                : llvm::formatv(R"mlir(
+        %parent = memref.alloc() : memref<2x2x{0}xf32, #wafer.memory<spm, tensor>>
+        %rhs = memref.subview %parent[1, 0, 0] [1, 2, {0}] [1, 1, 1]
+          : memref<2x2x{0}xf32, #wafer.memory<spm, tensor>> to {2}
+        wafer.tile.elementwise_into <div> %lhs, %rhs into %rhs : {1}, {2} into {2}
+      )mlir",
+                                                extent, type, viewType)
+                                      .str();
+      auto text = llvm::formatv(R"mlir(module {{ func.func @main() {{
+        %token = arith.constant false
+        %unused = wafer.tile.region(%token : i1) -> (i1) {{
+        ^bb0(%done: i1):
+          %lhs = memref.alloc() : {0}
+          {1}
+          wafer.tile.yield %done : i1
+        }
+        return
+      } })mlir",
+                                type, computation)
+                      .str();
+      auto source = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+      ASSERT_TRUE(source) << text;
+      wafer::TileRegionOp region;
+      mlir::Value rhs;
+      source->walk([&](wafer::TileRegionOp op) { region = op; });
+      source->walk(
+          [&](wafer::ComputeElementwiseOp op) { rhs = op.getInputs()[1]; });
+      source->walk(
+          [&](wafer::ComputeElementwiseIntoOp op) { rhs = op.getInputs()[1]; });
+      wafer::TileRegionToInstrLoweringSession session(context);
+      ASSERT_TRUE(
+          mlir::succeeded(wafer::convertTileRegionToInstr(region, session)));
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
+      llvm::SmallVector<wafer::InstrElementwiseOp> operations;
+      source->walk(
+          [&](wafer::InstrElementwiseOp op) { operations.push_back(op); });
+      ASSERT_EQ(operations.size(), 2u);
+      auto reciprocal = operations[0], multiply = operations[1];
+      EXPECT_EQ(reciprocal.getKind(), wafer::InstrElementwiseKind::Recip);
+      EXPECT_EQ(multiply.getKind(), wafer::InstrElementwiseKind::Mul);
+      EXPECT_EQ(multiply.getInputs()[1], reciprocal.getDest());
+      if (mapped) {
+        EXPECT_GT(countOps<wafer::InstrGatherScatterOp>(*source), 0u);
+        source->walk([&](wafer::InstrGatherScatterOp move) {
+          EXPECT_EQ(move.getSource(), rhs);
+          EXPECT_EQ(move.getDest(), reciprocal.getInputs().front());
+        });
+      } else {
+        EXPECT_EQ(reciprocal.getInputs().front(), rhs);
+        EXPECT_EQ(multiply.getDest(), rhs);
+        EXPECT_NE(reciprocal.getDest(), rhs);
+        EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*source), 0u);
+      }
+    }
+}
+
+TEST(LowerInstrToTargetLLVMTest,
      NativeReductionDoesNotDependOnOrderedExpansionBudget) {
   auto check = [](int64_t rows, int64_t width, llvm::StringRef type,
                   llvm::StringRef kind, llvm::StringRef identity) {

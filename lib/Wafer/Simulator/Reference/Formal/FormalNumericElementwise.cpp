@@ -184,10 +184,6 @@ evaluateFormalElementwiseLLVM(const FormalElementwiseOperation &elementwise,
     status =
         result.multiply(floatingInputs[1], llvm::APFloat::rmNearestTiesToEven);
     break;
-  case TargetElementwiseOperation::Div:
-    status =
-        result.divide(floatingInputs[1], llvm::APFloat::rmNearestTiesToEven);
-    break;
   case TargetElementwiseOperation::Relu:
     if (classifications[0].negative && !floatingInputs[0].isZero())
       result = llvm::APFloat::getZero(*getFloatSemantics(inputFormat));

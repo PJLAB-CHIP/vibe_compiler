@@ -325,11 +325,11 @@ class Division(torch.nn.Module):
 
 def make_division(dtype: torch.dtype, seed: int, *, extent: int = 1024):
     if dtype != torch.float32:
-        raise RuntimeError("division refinement qualification requires F32")
+        raise RuntimeError("division implementation qualification requires F32")
     generator = torch.Generator(device="cpu").manual_seed(seed)
     lhs = torch.randn((2, 4, extent), generator=generator) * 3
     rhs = torch.randn((2, 4, extent), generator=generator) * 2
-    # Exercise the semantic division boundary, including native-result lanes.
+    # Exercise the source division boundary, including zero and special values.
     lhs.flatten()[:12] = torch.tensor(
         [0, -0.0, 0, -0.0, 1, -1, torch.inf, -torch.inf, 0, torch.inf, torch.nan, 1]
     )

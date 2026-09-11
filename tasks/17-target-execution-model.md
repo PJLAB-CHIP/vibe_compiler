@@ -180,6 +180,9 @@ F32 native reduction的formal数学子集包括sum/max/min。Sum保持原逐步R
 该扩展用于主机数学验证，不签发硬件位级或性能资格，也不改变被测Instr。覆盖rank3/4、1024/1025/1031、负值、无穷、零、NaN、
 多归约维度、padding和工作预算，并通过真实source到SystemC的输出比较；大模型沿既有显式managed-reference入口执行。
 
+源浮点Div的当前目标实现由11号设计规定为Recip再Mul。模型按actual Instr分别计算与舍入两条指令，
+不把它们合并为直接divide；TargetElementwiseOperation及Wafer target-call registry已移除Div，保留独立Recip。
+
 ### 5.3 `WaferOneDNNBackend` qualification lane
 
 大规模支持项可以进入qualified oneDNN implementation，但必须：

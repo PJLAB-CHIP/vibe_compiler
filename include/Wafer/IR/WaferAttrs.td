@@ -405,7 +405,6 @@ def Wafer_InstrElementwiseKindMin : I32EnumAttrCase<"Min", 10, "min">;
 def Wafer_InstrElementwiseKindAdd : I32EnumAttrCase<"Add", 14, "add">;
 def Wafer_InstrElementwiseKindSub : I32EnumAttrCase<"Sub", 18, "sub">;
 def Wafer_InstrElementwiseKindMul : I32EnumAttrCase<"Mul", 22, "mul">;
-def Wafer_InstrElementwiseKindDiv : I32EnumAttrCase<"Div", 26, "div">;
 def Wafer_InstrElementwiseKindEq : I32EnumAttrCase<"Eq", 30, "eq">;
 def Wafer_InstrElementwiseKindNe : I32EnumAttrCase<"Ne", 38, "ne">;
 def Wafer_InstrElementwiseKindGe : I32EnumAttrCase<"Ge", 46, "ge">;
@@ -443,7 +442,6 @@ def Wafer_InstrElementwiseKind
   Wafer_InstrElementwiseKindAdd,
   Wafer_InstrElementwiseKindSub,
   Wafer_InstrElementwiseKindMul,
-  Wafer_InstrElementwiseKindDiv,
   Wafer_InstrElementwiseKindEq,
   Wafer_InstrElementwiseKindNe,
   Wafer_InstrElementwiseKindGe,

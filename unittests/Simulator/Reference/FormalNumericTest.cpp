@@ -768,9 +768,9 @@ TEST(FormalNumericTest,
                                       LogicalFormat::F16);
   auto multiply = getElementwiseResolution(TargetElementwiseOperation::Mul,
                                            LogicalFormat::F16);
-  auto divide = getElementwiseResolution(TargetElementwiseOperation::Div,
-                                         LogicalFormat::F16);
-  ASSERT_TRUE(add && multiply && divide);
+  auto reciprocal = getElementwiseResolution(TargetElementwiseOperation::Recip,
+                                             LogicalFormat::F16);
+  ASSERT_TRUE(add && multiply && reciprocal);
   result = expectElementwise(*add, {{LogicalFormat::F16, UINT64_C(0xfe01)},
                                     {LogicalFormat::F16, UINT64_C(0x3c00)}});
   ASSERT_TRUE(result.has_value());
@@ -787,8 +787,8 @@ TEST(FormalNumericTest,
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->value.bits, UINT64_C(0x7e00));
   EXPECT_TRUE(result->flags.invalid);
-  result = expectElementwise(*divide, {{LogicalFormat::F16, UINT64_C(0x3c00)},
-                                       {LogicalFormat::F16, UINT64_C(0x0000)}});
+  result =
+      expectElementwise(*reciprocal, {{LogicalFormat::F16, UINT64_C(0x0000)}});
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->value.bits, UINT64_C(0x7c00));
   EXPECT_TRUE(result->flags.divByZero);
