@@ -53,7 +53,7 @@
 | 6 | `[1,32,4096,128]` prefill；record容量等于/差一、长循环与tail | Count→Trace、范围内/外事件、overflow、空范围、invalid metadata、设备失败 | 采集范围与实际event/count一致，报告明确覆盖率与缺失；当前profiler/no-card及实卡采集 |
 | 7 | 完整block；rank3/4 GEMM/conv/elementwise/reduction、1024/1025/1031、4/16 Tile | 共享输入/权重、多use、跨Region、layout转换；DDR/DTE的actual capacity/unsupported | 每次GS/转换/读取对应真实producer及动态次数，scope/alias/lifetime合法；actual cost同门禁与必要板端A/B |
 
-当前执行边界为下节传播优先级与有界证明；其余七项按本表依赖持续推进，后续各节保存已经提交的实现与验证证据。
+当前执行边界为浮点除法目标实现与完整模型复验；其余七项按本表依赖持续推进，后续各节保存已经提交的实现与验证证据。
 没有本轮真实设备结果，不以主机通过代签板端`done`。
 
 ### 本轮浮点除法改用独立Recip指令
@@ -76,7 +76,11 @@
   target model与17个SystemC测试均实际执行通过，未将skip/unsupported计作通过。原Div parser负例和CRT symbol/object检查通过。
 - Fresh完整LLaMA编译约659.744秒，原width=8/trials=42、actual=42、accepted=1；16-Tile package及strict no-card通过。
   16份actual Instr中的128条Div归零，旧Lt/Ne/LogicAnd/Bit2Fp/MaskMove各32条均归零，新增32条Recip。
-  这些是静态IR数量，不换算成设备性能；完整主机数值结果在实际执行结束后记录。
+  这些是静态IR数量，不换算成设备性能。
+- 同轮fresh完整LLaMA的managed-reference/SystemC执行通过：65,536个FP16输出按原rtol=0.002、atol=0.004全部匹配PyTorch；
+  max abs=0.001953125、mean abs约0.0002046543。实际执行16 Tile、378,142条command、62,752次managed-reference command、
+  4,224次oneDNN matmul；全程export/编译/执行wall约1296.67秒、peak RSS约24.45 GiB。这是主机数学验证，未执行真实设备。
+  当前完整block已不再被旧除法保护生成的Bool比较阻塞；没有为此扩展managed Bool算术，也未放宽既有模型容差。
 
 
 ### 本轮空间传播优先级与有界证明
@@ -113,7 +117,7 @@ Fresh产品复验：FP16 decode两步均生成16-Tile executable并通过strict 
 完整LLaMA编译约681.234秒，actual=42、accepted=1，16-Tile package及strict no-card通过；16份最终Instr与前次成功版本逐字节相同。
 Decode此次无数值回读，第二步输入沿现有runner使用PyTorch reference continuation；两条产品均未执行真实设备或签发性能改善结论。
 
-### 本轮F32 extrema数学模型支持
+### F32 extrema数学模型支持与当时的定位
 
 归属第2/5项及17号设计。真实LLaMA的target model此前在F32 max指令处返回Unsupported；当前Instr无需改动。
 Formal lane补F32 max/min的正负无穷identity、IEEE正负零和canonical NaN/signaling invalid；managed-reference lane补非NaN
@@ -124,8 +128,9 @@ formal/managed新增3项测试实际通过；6组真实source row-max none/searc
 完整LLaMA沿既有显式managed-reference入口、fresh input/reference实际执行后失败，整轮wall约1113.99秒、peak RSS约24.43 GiB。
 新的拒绝位于launch_slot=14、issue=13382：`elementwise tensors do not have one same-shape F16/F32 domain`；未获得完整输出比较。
 该检查同时要求shape/layout/dtype一致，不能只根据文案判成shape或编译错误。Current Instr另确认存在同形状F32比较→i1以及Bool logic_and，
-而managed elementwise要求输入输出同dtype且结果为F16/F32；这是尚未覆盖的数学模型能力。下一步按实际typed command收敛这个缺口及匹配数值覆盖。
-此结果不影响本轮编译/package/no-card资格，但第2/5项的完整模型数值与真实板端验收继续待办。
+而managed elementwise要求输入输出同dtype且结果为F16/F32；这是当时尚未覆盖的数学模型能力。
+本轮Recip+Mul已经移除该除法lowering生成的比较，完成了上述完整block主机数值复验；这次失败记录保留为历史定位。
+第2/5项的其它覆盖及真实板端验收继续按总表推进，不能将一个block的主机结果写成七项全部完成。
 
 
 
