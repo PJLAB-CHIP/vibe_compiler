@@ -58,6 +58,9 @@ Region修复后完整Driver再次103项通过；最终两项Python CTest、源�
   当前Instr没有Direct DTE，SPM范围在已有可用区间，字段未发现越界；这些排查未定位停在哪条指令，不能据此宣称硬件故障或修复。
 
 详细audit、版本与未完成项统一见[性能记录](../../docs/board-performance-results.md#2026-09-12整数预算复验与未闭合边界)。
+2026-09-13用户指定单独复查Add：fresh package/no-card通过，16 Tile FP16 Add同样发生60秒真实completion超时，
+没有输出回读；boot/runtime身份未变。一次尝试后已停止，未retry/reset，设备基本执行尚未恢复。
+
 下一步顺序：先修长链buffer type推导的重复工作并恢复上述no-card矩阵，再定位prefill新候选的设备完成问题；
 取得可用设备后补剩余模型/BF16数值与匹配性能。当前不推进其它work item。
 

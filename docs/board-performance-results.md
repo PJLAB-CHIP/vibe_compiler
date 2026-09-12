@@ -790,3 +790,14 @@ GDB栈和正在执行的完整IR共同表明：分段输入生成一串共享ten
 包含后补的Region依赖修复。完整Planning 120、Transforms 374、Driver 103项通过；Analysis 106、lit 140及runner 7项
 沿用本批对应代码的已通过结果。最后两项Python CTest、源码/IR组织检查、canonical完整增量构建与Ninja no-op通过。
 这些分项检查不代替上方尚未闭合的产品和板端矩阵；当前没有运行中的模型长测或设备进程。
+
+## 2026-09-13：用户指定Add复查
+
+用户在上一轮prefill超时后明确要求单独执行Add检查基本运行状态。本次使用现有complete-Tile Add：
+16 Tile、每Tile 458,752元素、全局7,340,032个FP16元素；fresh PyTorch source/reference及package/no-card通过。
+只尝试一次普通实卡调用，未开启profile，60秒device completion期限内没有完成；runtime再次报告
+`TX grid:main completion exceeded the host deadline`与`context=poisoned`。没有输出回读或PyTorch比较结果。
+进程已结束，未retry/reset/power，后续设备执行停止。boot id及runtime身份与prefill失败时相同。
+这说明该会话的基础执行仍异常，不能据此确认硬件损坏，或把prefill的根因确定为卡故障。
+Compiler为`460c71fc`的构建；输入规模、artifact/环境身份与失败日志摘要见
+[`add-health-20260913.json`](data/board-performance/add-health-20260913.json)。
