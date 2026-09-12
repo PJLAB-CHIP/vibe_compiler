@@ -28,9 +28,10 @@ mlir::LogicalResult StorageLoadOp::verify() {
     return emitOpError("tile.load destination must use SPM memory space");
   std::optional<MemLayout> destLayout = getWaferLayout(getDest().getType());
   if (!destLayout ||
-      (*destLayout != MemLayout::Tensor && *destLayout != MemLayout::Cx &&
-       *destLayout != MemLayout::NCx))
-    return emitOpError("tile.load destination must use tensor/cx/ncx layout");
+      (*destLayout != MemLayout::Tensor && *destLayout != MemLayout::NTensor &&
+       *destLayout != MemLayout::Cx && *destLayout != MemLayout::NCx))
+    return emitOpError(
+        "tile.load destination must use tensor/ntensor/cx/ncx layout");
 
   return mlir::success();
 }
@@ -50,10 +51,11 @@ mlir::LogicalResult StorageStoreOp::verify() {
     return emitOpError("tile.store source must use SPM memory space");
   std::optional<MemLayout> sourceLayout = getWaferLayout(getSource().getType());
   if (!sourceLayout ||
-      (*sourceLayout != MemLayout::Tensor && *sourceLayout != MemLayout::Cx &&
+      (*sourceLayout != MemLayout::Tensor &&
+       *sourceLayout != MemLayout::NTensor && *sourceLayout != MemLayout::Cx &&
        *sourceLayout != MemLayout::NCx))
     return emitOpError(
-        "tile.store source must use tensor/cx/ncx layout for external "
+        "tile.store source must use tensor/ntensor/cx/ncx layout for external "
         "writeback");
   if (!hasWaferMemorySpace(getDest().getType(), MemorySpace::DDR))
     return emitOpError("tile.store dest must use DDR memory space");

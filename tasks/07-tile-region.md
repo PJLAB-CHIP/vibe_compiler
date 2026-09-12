@@ -172,6 +172,13 @@ epoch内存活，不能由planning session、analysis cache或全局side table�
    closure、standard reduction contribution/merge和explicit replica按RootRegionWork逐项形成actual operation/SSA。Standard reduction的每个
    contribution必须产生actual partial result，selected merge Region必须消费全部partials并产生observable result；不能保留空merge shell或允许
    missing output通过stage check。
+   Standard partial按当前result map给出的exact输出窗口保留输出坐标顺序，再在PartialReductionOpInterface规定的
+   reduction loop位置插入贡献区间；边界type、merge allocation和insert_slice共同使用这一坐标合同。
+   不能把完整iteration shape直接当作partial shape。覆盖包含输出置换、非尾部归约、1024/1025/1031及4/16 Tile，
+   检查贡献拼接all-and-only覆盖、最终merge type与直接temporal消费者。
+   Temporal中constant generate和constant pad的DPS分解消费actual dynamic extent SSA；pad尺寸由source尺寸与low/high相加，
+   不要求结果type静态。两种branch均在layout assignment前分解，不能在bufferization期间从source继承未经选择的layout。后续layout/movement
+   对实际动态窗口的支持仍单独验证，不能把未知搬运大小改成PBQP不可行或bufferization contract error。
 5. **创建attention structural work**：从graph attention及closed Spatial/Region choice直接创建current IR。FA在唯一K2 owner创建一个
    `online_attention`及finalize；FD在每个selected contribution Region创建覆盖本地exact K2 interval的`online_attention`，并在
    `mergeTile`所属Region创建actual coupled merge/finalize。Region body先作为本次op构造所需的detached region建立，再一次接入最终

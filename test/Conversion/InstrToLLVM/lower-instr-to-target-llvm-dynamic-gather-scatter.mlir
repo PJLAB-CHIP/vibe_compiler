@@ -89,7 +89,7 @@ module {
   }
 }
 
-// RANGE: target_geometry_mismatch: source dynamic descriptor byte range exceeds the physical buffer
+// RANGE: target_geometry_mismatch: source dynamic descriptor byte range [0, 10000) exceeds the physical buffer 'memref<2x1025x2xf16, #wafer.memory<spm, tensor>>' (bytes=8200)
 
 //--- unbounded.mlir
 

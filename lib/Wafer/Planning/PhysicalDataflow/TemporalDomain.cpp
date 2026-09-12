@@ -1301,6 +1301,125 @@ bool TemporalDomain::isJointChoiceCompatible(
   return true;
 }
 
+std::optional<TemporalChoice>
+TemporalDomain::getCoupledStateProposal(const TemporalChoice &choice) const {
+  if (!contains(choice))
+    return std::nullopt;
+  auto proposal = choice;
+  auto descriptors = getScopeDescriptors(choice.kind);
+  llvm::DenseMap<mlir::Operation *, size_t> positions;
+  for (auto [index, scope] : llvm::enumerate(proposal.scopes))
+    positions.try_emplace(scope.operation, index);
+  for (auto [producerIndex, producerScope] : llvm::enumerate(proposal.scopes)) {
+    auto *producer = producerScope.operation;
+    if (producer->getNumResults() < 2)
+      continue;
+    mlir::Operation *soleConsumer = nullptr;
+    bool unique = true;
+    for (auto *user : producer->getUsers()) {
+      unique &= !soleConsumer || soleConsumer == user;
+      soleConsumer = user;
+    }
+    auto consumer =
+        mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(soleConsumer);
+    if (!unique || !consumer || !consumer.hasPureTensorSemantics() ||
+        consumer.getNumReductionLoops() || !positions.count(consumer))
+      continue;
+    size_t consumerIndex = positions.lookup(consumer);
+    auto &consumerScope = proposal.scopes[consumerIndex];
+    const auto &p = descriptors[producerIndex];
+    const auto &c = descriptors[consumerIndex];
+    llvm::SmallVector<int64_t> producerToConsumer(p.iterationExtents.size(),
+                                                  -1);
+    llvm::SmallVector<int64_t> consumerToProducer(c.iterationExtents.size(),
+                                                  -1);
+    llvm::SmallBitVector common(c.iterationExtents.size(), true);
+    llvm::SmallBitVector seen(producer->getNumResults());
+    bool exact = true;
+    for (mlir::OpOperand *input : consumer.getDpsInputOperands()) {
+      auto result = mlir::dyn_cast<mlir::OpResult>(input->get());
+      if (!result || result.getOwner() != producer)
+        continue;
+      auto from = analysis::getStructuredResultMap(result);
+      auto to = consumer.getMatchingIndexingMap(input);
+      if (mlir::failed(from) || !from->isProjectedPermutation() ||
+          !to.isProjectedPermutation() ||
+          from->getNumResults() != to.getNumResults()) {
+        exact = false;
+        break;
+      }
+      seen.set(result.getResultNumber());
+      llvm::SmallBitVector dimensions(c.iterationExtents.size());
+      for (auto [source, destination] :
+           llvm::zip_equal(from->getResults(), to.getResults())) {
+        unsigned a = mlir::cast<mlir::AffineDimExpr>(source).getPosition();
+        unsigned b = mlir::cast<mlir::AffineDimExpr>(destination).getPosition();
+        if (a >= p.iterationExtents.size() || b >= c.iterationExtents.size() ||
+            p.iterationExtents[a] != c.iterationExtents[b] ||
+            (producerToConsumer[a] >= 0 && producerToConsumer[a] != b) ||
+            (consumerToProducer[b] >= 0 && consumerToProducer[b] != a)) {
+          exact = false;
+          break;
+        }
+        producerToConsumer[a] = b;
+        consumerToProducer[b] = a;
+        dimensions.set(b);
+      }
+      common &= dimensions;
+    }
+    // An unobserved state result still constrains the common traversal, but
+    // need not become an artificial consumer operand (e.g. a retained max).
+    for (auto result : producer->getResults()) {
+      if (!exact || seen.test(result.getResultNumber()))
+        continue;
+      auto map = analysis::getStructuredResultMap(result);
+      if (mlir::failed(map) || !map->isProjectedPermutation()) {
+        exact = false;
+        break;
+      }
+      llvm::SmallBitVector dimensions(c.iterationExtents.size());
+      for (auto expression : map->getResults()) {
+        unsigned axis =
+            mlir::cast<mlir::AffineDimExpr>(expression).getPosition();
+        if (axis >= producerToConsumer.size()) {
+          exact = false;
+          break;
+        }
+        if (producerToConsumer[axis] >= 0)
+          dimensions.set(producerToConsumer[axis]);
+      }
+      common &= dimensions;
+    }
+    if (!exact || seen.count() < 2)
+      continue;
+    for (auto [dimension, source] : llvm::enumerate(consumerToProducer)) {
+      int64_t size = c.iterationExtents[dimension];
+      if (common.test(dimension) && source >= 0 &&
+          p.iteratorCapabilities[source] ==
+              IteratorTilingCapability::Tileable &&
+          c.iteratorCapabilities[dimension] ==
+              IteratorTilingCapability::Tileable)
+        size = std::min(producerScope.iteratorTileSizes[source],
+                        consumerScope.iteratorTileSizes[dimension]);
+      consumerScope.iteratorTileSizes[dimension] = size;
+      if (source >= 0)
+        producerScope.iteratorTileSizes[source] = size;
+    }
+  }
+  for (auto [scope, descriptor] :
+       llvm::zip_equal(proposal.scopes, descriptors)) {
+    auto order = buildFirstTemporalLoopOrder(descriptor.iterationExtents,
+                                             scope.iteratorTileSizes,
+                                             descriptor.precedence);
+    if (mlir::failed(order))
+      return std::nullopt;
+    scope.loopOrder = std::move(*order);
+  }
+  if (proposal == choice || !contains(proposal))
+    return std::nullopt;
+  return proposal;
+}
+
 bool TemporalDomain::contains(const TemporalChoice &choice) const {
   Completion completed = completeChoice(choice.kind, choice.scopes);
   return completed.kind == TemporalSuccessorKind::Choice && completed.choice &&

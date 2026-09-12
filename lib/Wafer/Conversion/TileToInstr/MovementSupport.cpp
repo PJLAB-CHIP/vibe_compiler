@@ -316,10 +316,10 @@ getDynamicSubviewDescriptor(mlir::Value source, mlir::Operation *operation) {
       viewType.getMemorySpace());
   descriptor.offsets = subview.getMixedOffsets();
   descriptor.byteCoefficients.reserve(baseStrides.size());
-  if (baseOffset >
-      std::numeric_limits<int64_t>::max() / basePhysical->elementBytes)
-    return std::nullopt;
-  descriptor.staticByteOffset = baseOffset * basePhysical->elementBytes;
+  // sourceBase is the actual source view, whose address already includes its
+  // static MemRef offset. The descriptor is relative to that view, not to its
+  // allocation root; adding baseOffset here would apply it twice.
+  descriptor.staticByteOffset = 0;
   for (auto [offset, stride] :
        llvm::zip_equal(subview.getMixedOffsets(), baseStrides)) {
     if (stride >

@@ -6,7 +6,6 @@
 #include "PhysicalDataflow/PhysicalDataflowInstrumentation.h"
 #include "PhysicalDataflow/SearchCurrentIR.h"
 #include "Wafer/Support/CompileTiming.h"
-#include "Wafer/Support/ExternalProcess.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Errc.h"
@@ -46,9 +45,6 @@ static llvm::Expected<DeviceExecutable> compileCurrentPolicy(
           llvm::errc::invalid_argument,
           "search optimization policy omitted its work limits");
     options.limits = *limits;
-    options.deadline = std::chrono::steady_clock::now() +
-                       std::chrono::seconds(
-                           wafer::support::kExternalProcessTimeoutSeconds);
     options.downstream.captureTileDataflowIR = irTrace != nullptr;
     SearchCurrentIRStatistics searchStatistics;
     compiled = compileSearchCurrentIR(tensorModule, program, executionConfig,

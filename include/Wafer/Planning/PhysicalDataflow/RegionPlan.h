@@ -150,14 +150,17 @@ struct ReplicaExecutionId {
 
 struct ReplicaExecutionPlan {
   ReplicaExecutionId id;
+  /// Exact inputs of the selected required execution. Replication adds a use,
+  /// not implicit recursive recomputation of its producers.
+  std::vector<ExternalUseBinding> inputs;
 
   friend bool operator==(const ReplicaExecutionPlan &lhs,
                          const ReplicaExecutionPlan &rhs) {
-    return lhs.id == rhs.id;
+    return lhs.id == rhs.id && lhs.inputs == rhs.inputs;
   }
   friend bool operator<(const ReplicaExecutionPlan &lhs,
                         const ReplicaExecutionPlan &rhs) {
-    return lhs.id < rhs.id;
+    return std::tie(lhs.id, lhs.inputs) < std::tie(rhs.id, rhs.inputs);
   }
 };
 
@@ -215,6 +218,11 @@ struct RegionPlan {
     return lhs.groups < rhs.groups;
   }
 };
+
+/// All mandatory and explicit replica inputs, in deterministic fragment order.
+/// Repeated reads of one selected fragment share a physical Region endpoint.
+std::vector<ExternalUseBinding>
+getRegionExternalInputs(const RegionGroupPlan &group);
 
 enum class BrokenRegionPlanReason : uint8_t {
   DuplicateRootWork,

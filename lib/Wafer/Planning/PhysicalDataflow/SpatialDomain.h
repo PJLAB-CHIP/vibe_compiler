@@ -3,12 +3,12 @@
 #ifndef WAFER_PLANNING_PHYSICALDATAFLOW_SPATIALDOMAIN_H
 #define WAFER_PLANNING_PHYSICALDATAFLOW_SPATIALDOMAIN_H
 
-#include "Wafer/Planning/PhysicalDataflow/StructuredDemandAnalysis.h"
+#include "Wafer/Analysis/Linalg/SemanticRootAnalysis.h"
 #include "Wafer/Analysis/Linalg/StructuredDAGAnalysis.h"
 #include "Wafer/IR/Topology/TargetTopology.h"
 #include "Wafer/Planning/PhysicalDataflow/AttentionSpatialConstraints.h"
-#include "Wafer/Analysis/Linalg/SemanticRootAnalysis.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"
+#include "Wafer/Planning/PhysicalDataflow/StructuredDemandAnalysis.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallBitVector.h"
@@ -102,13 +102,21 @@ buildSpatialDomainProblem(const StructuredDAGAnalysis &dag,
 /// whenever one injective embedding can do so. This is a deterministic
 /// proposal transformation: it does not change axes, merge choices, the raw
 /// spatial domain, or any legality result.
-mlir::FailureOr<SpatialPlan> buildGraphCoherentSpatialProposal(
-    const SpatialDomainProblem &problem, const SpatialPlan &plan,
-    const SpatialAssignment &assignment,
-    const analysis::ExactDemandProof &demand,
-    std::string *failureReason = nullptr);
+mlir::FailureOr<SpatialPlan>
+buildGraphCoherentSpatialProposal(const SpatialDomainProblem &problem,
+                                  const SpatialPlan &plan,
+                                  const SpatialAssignment &assignment,
+                                  const analysis::ExactDemandProof &demand,
+                                  std::string *failureReason = nullptr);
 
 enum class SpatialPlanSuccessorKind : uint8_t { Successor, End, Failure };
+
+enum class SpatialSuccessorDomain : uint8_t {
+  AllPlacements,
+  /// One canonical embedding/merge witness per axis tuple. Interleaved with
+  /// AllPlacements by the driver; does not remove any raw-domain point.
+  AxisSchemes,
+};
 
 struct SpatialPlanSuccessor {
   SpatialPlanSuccessorKind kind = SpatialPlanSuccessorKind::Failure;
@@ -137,7 +145,10 @@ struct SpatialPlanDomainResult;
 class SpatialPlanDomain {
 public:
   SpatialPlan getFirstPlan() const;
-  SpatialPlanSuccessor getNextPlan(const SpatialPlan &plan) const;
+  SpatialPlanSuccessor
+  getNextPlan(const SpatialPlan &plan,
+              SpatialSuccessorDomain successorDomain =
+                  SpatialSuccessorDomain::AllPlacements) const;
   bool contains(const SpatialPlan &plan) const;
 
   SpatialDomainEvaluation evaluate(const StructuredDAGAnalysis &dag,
@@ -155,10 +166,9 @@ public:
   /// seeds. Both forms remain ordinary domain members; demand evaluation and
   /// the complete raw successor traversal are unchanged.
   mlir::FailureOr<llvm::SmallVector<SpatialPlan, 8>>
-  getGraphCoherentProposals(
-      const StructuredDAGAnalysis &dag,
-      const analysis::IndexRelationLimits &limits =
-          analysis::IndexRelationLimits()) const;
+  getGraphCoherentProposals(const StructuredDAGAnalysis &dag,
+                            const analysis::IndexRelationLimits &limits =
+                                analysis::IndexRelationLimits()) const;
 
   const SpatialDomainProblem &getProblem() const { return problem; }
   const TargetTopology &getTopology() const { return topology; }

@@ -75,6 +75,9 @@ event wait直接推导endpoint/resource/completion输入。它不是另一层buf
   storage/buffer IR 层。
 - RDMA/WDMA lowering 可以消费 DDR `memref.subview` / strided memref view，但不会从
   IR 外的调度计划自行恢复这些 view。Structural/layout/movement choice必须先由上游transformation显式变成actual DDR subview。
+- Compact DMA的SPM端必须在current memref strides下连续；仅layout标称Tensor不足以证明连续。
+  RDMA的SPM destination与WDMA的SPM source均为顺序payload，strided SPM view必须进入既有mapped descriptor路径，
+  不得丢弃其行间隔。覆盖1024/1025/1031、F16/BF16、动态base offset与load/store两个方向，逐字节核对实际descriptor的地址对。
 - instruction lowering只消费selected rewrite已经物化到payload IR的typed implementation字段、operands、views和memory/
   layout types，以及compiler固定的immutable target facts；不消费implementation/route proposal或其它
   side plan。compute lowering验证显式selected字段；boundary lowering从两端typed views/encoding和08 transfer proof导出
@@ -579,9 +582,14 @@ wafer.instr.wdma source to dest attr-dict : type(source) to type(dest)
 | `wafer.instr.wdma` | `source: MemRef<#wafer.memory<spm, *>>`, `dest: MemRef<#wafer.memory<ddr, *>>` | none | current：`byte_count`, `inner_bytes`, `dst_strides`, `dst_iterations` |
 
 `wafer.tile.load/store`已经是explicit source/destination的destination-style边界。compact Tensor保留为baseline；mapped target extension
-mapped route在DDR logical view到Cx/NCx SPM physical order的exact transfer proof闭合时直接发descriptor，否则显式使用
+SPM endpoint允许Tensor/NTensor/Cx/NCx，外部DDR仍为Tensor。NTensor不通过改类型冒充Tensor：同Cx/NCx一样，
+mapped route从其typed physical encoding证明DDR logical view到SPM physical order的精确映射，闭合时直接发descriptor，否则显式使用
 `wafer.tile.materialize_layout`/GatherScatter。representation/movement planning只生成这些已有actual-IR representation/movement路径，physical search联合选择，
 都不改变instruction合同。
+
+搜索的完整布局域必须经过同一load/store物化和descriptor验证，不能因局部布局约简过去没有访问某状态而将其静默排除。
+覆盖rank3 `[2,1024/1025/1031,3]`、FP16/BF16的NTensor load/store：检查双向完整payload、起始offset、
+无额外GatherScatter、Instr verifier、completion及actual SPM规划。该主机覆盖不提升历史硬件校准的board-observed范围。
 
 #### Mapped DMA
 
@@ -703,8 +711,10 @@ operands，再生成无map的terminal `wafer.instr.elementwise`；identity map�
 
 当前target LLVM reduce emission不传init，所以tile→instruction先验证tile-level SSA `init`与`init_value`互斥且类型一致。
 source-reduce legalization对满足既有native合同的输入优先生成原生归约，不以归约长度或编译展开预算阻止native检查。
-当前native路径要求exact identity init、可编码的浮点格式、受支持的归约轴及Cx/NCx物理布局；保留rank的native结果
-经exact movement产生Tile要求的降rank结果。当前rank-zero和保留归约轴的Tile结果边界仍沿既有展开路径处理。
+当前native路径要求exact identity init、可编码的浮点格式、受支持的归约轴及Cx/NCx物理布局；输入先物化为固定rank4 NHWC/NCx。
+rank不足4时前补单位轴，只有08号物理关系证明byte offset与footprint完全一致才保留metadata view；否则用同一exact GS搬运。
+不能将rank3 NCx首维的独立256-byte slice直接解释为NHWC的H维。全部native中间结果保持rank4，最后按原归约轴的exact关系
+产生Tile要求的降rank结果。当前rank-zero和保留归约轴的Tile结果边界仍沿既有展开路径处理。
 不符合native合同的输入把可表示的init写入result-shaped Tensor accumulator，按canonical lexicographic reduction
 tuple依次materialize同shape Tensor slice，以对应的map-free elementwise op在两块accumulator间ping-pong，最后写入
 Tile result要求的布局。Elementwise按可直接消费的Tensor/NTensor或物理遍历兼容布局执行；scratch的标称布局不能成为
@@ -731,7 +741,8 @@ source一致，integer仍须满足exact/modular合同；保留在Instr IR但不�
 
 | 输入等价类 | 精确输出/保留 | 下游见证 |
 | --- | --- | --- |
-| rank3、主要维1024/1025/1031，512元素归约，F16/BF16/F32，sum/max/min identity | 一条native、rank-preserving中间结果及exact降rankmovement；无逐项add/max/min和循环 | Instr verifier、完整模型actual completion/SPM/target |
+| rank3、主要维1024/1025/1031，512元素归约，F16/BF16/F32，sum/max/min identity | 一条native、rank4中间结果及exact降rankmovement；无逐项add/max/min和循环 | Instr verifier、完整模型actual completion/SPM/target |
+| rank3 NCx的首维>1，尾宽64/65与C跨block；F16/BF16/F32 | NHWC实际输入每个byte offset与native ABI一致；非等价packing实际搬运，等价packing只建view | exact输入/输出GS oracle、target NHWC参数及归约tail PyTorch |
 | 归约长度1/8/1023/1024/1025/1031、主要维1024 | 阈值两侧均选择native；完整归约轴与结果shape一致 | Instr verifier及同一结果movement消费者 |
 | Elementwise同形状同布局Tensor/NTensor/Cx/NCx，rank3、1024/1025/1031、C=65 | 原输入SSA直接消费、结果布局保留，GS及layout materialization均为0 | Instr verifier及物理遍历证明 |
 | 非identity init、negative zero、integer和原有多轴边界 | 保留有序Tensor展开及init；不误入native | 既有ordered与negative测试 |
@@ -1044,12 +1055,15 @@ legalize 的其它 instruction fragments。
   full-block and tail GatherScatter descriptors.
 - static slice/insert/broadcast/transpose whose logical index relation or physical byte offsets cannot be
   converted into one or more `gather_scatter` descriptors.
+- 动态subview的GatherScatter offset相对actual source/destination view；底层view的静态MemRef offset由其地址语义拥有，
+  不能再次加入动态描述符。嵌套view覆盖非零base offset、读/写和1024/1025/1031尾部，并以逐字节地址oracle验证。
 - unsupported control-flow op, multi-block region, or nested region whose executable body cannot be fully
   legalized under the same instruction conversion rules.
 - current NE GEMM dimension/batch attrs不能精确匹配stored operand/result types；oriented row的两个typed
   orientation attrs还必须匹配stored shapes并命中current Kernel Runtime ABI。
 - tile reduce dimensions无法形成static canonical tuple/slice movement、combiner没有exact elementwise mapping、init不被typed
-  fill表示或checked expansion budget超限；native optimization另在`dimensions`不能映射target `dim`时拒绝。
+  fill表示或checked expansion budget超限；native optimization另在`dimensions`不能映射target `dim`或actual NHWC shape
+  超过`Tx81InstructionLimits`的字段范围时不适用；必须在mutation前检查，不能先创建verifier-invalid Instr。
 - any source op that would require raw DTE resource ids, CSR/SCALAR, raw packet fields, SPM offset,
   DDR planning result or
   runtime ABI call to be legal.
@@ -1116,9 +1130,9 @@ instr-lowering verifier checks only instruction legality:
   permutation/broadcast/identity maps must already have been materialized/stripped. `wafer.instr.elementwise` /
   `wafer.instr.reduce` use instr-level target kind attrs only；generic
   `#wafer.elementwise_kind` / `#wafer.reduce_kind` on instruction ops is verifier-illegal.
-- `wafer.instr.reduce`的destination保留input rank，归约轴extent为1，其它轴不变；input/destination使用同一rank对应的
-  Cx/NCx布局。Native C/W/H/HW轴的physical结果不能被直接解释为降rank的逻辑tensor，N/HWC仍不属于已验证的安全轴。
-  Tile→Instr保留既有归约轴顺序，逐次物化同rank的native allocation；最后用08号exact relation和现有GatherScatter
+- `wafer.instr.reduce`的input/destination统一使用rank4 NHWC/NCx，归约轴extent为1，其它轴不变。
+  Native C/W/H/HW轴的physical结果不能被直接解释为降rank的逻辑tensor，N/HWC仍不属于已验证的安全轴。
+  Tile→Instr在mutation前证明输入packing或准备exact转换，保留既有归约轴顺序，逐次物化rank4的native allocation；最后用08号exact relation和现有GatherScatter
   产生Tile层要求的逻辑输出。新allocation、effect及consumer进入同一actual Instr/SPM/completion路径，不能用reshape替代搬运证明。
 - `wafer.instr.convert` uses `#wafer.instr_convert_kind` only；source/dest dtype is derived from the
   convert kind and checked against memref element types. It does not accept free-form `src_dtype` /

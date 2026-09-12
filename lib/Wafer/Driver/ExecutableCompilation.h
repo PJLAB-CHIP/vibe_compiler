@@ -147,7 +147,8 @@ ExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     ProgramDataHandoff &programData,
     ExecutableLoweringStatistics *statistics = nullptr,
-    unsigned tilePipelineParallelism = 0);
+    unsigned tilePipelineParallelism = 0,
+    SPMCapacityObserver capacityObserver = nullptr);
 
 } // namespace wafer::compiler::detail
 

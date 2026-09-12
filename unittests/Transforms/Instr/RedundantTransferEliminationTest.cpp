@@ -252,29 +252,29 @@ TEST_F(RedundantTransferEliminationTest,
 module {
   func.func @main() {
     %source = memref.alloc()
-        : memref<4x64xf16, #wafer.memory<spm, tensor>>
+        : memref<1x1x4x64xf16, #wafer.memory<spm, tensor>>
     %source_cast = memref.cast %source
-        : memref<4x64xf16, #wafer.memory<spm, tensor>>
-       to memref<4x64xf16, strided<[64, 1], offset: ?>,
+        : memref<1x1x4x64xf16, #wafer.memory<spm, tensor>>
+       to memref<1x1x4x64xf16, strided<[256, 256, 64, 1], offset: ?>,
                  #wafer.memory<spm, tensor>>
     %dest = memref.alloc()
-        : memref<4x64xf16, #wafer.memory<spm, cx>>
+        : memref<1x1x4x64xf16, #wafer.memory<spm, ncx>>
     wafer.instr.gather_scatter %source_cast to %dest
         {byte_count = 512 : i64, inner_bytes = 512 : i64,
          src_strides = array<i64: 0, 0, 0>,
          src_iterations = array<i64: 1, 1, 1>,
          dst_strides = array<i64: 0, 0, 0>,
          dst_iterations = array<i64: 1, 1, 1>}
-        : memref<4x64xf16, strided<[64, 1], offset: ?>,
+        : memref<1x1x4x64xf16, strided<[256, 256, 64, 1], offset: ?>,
                  #wafer.memory<spm, tensor>>
-       to memref<4x64xf16, #wafer.memory<spm, cx>>
+       to memref<1x1x4x64xf16, #wafer.memory<spm, ncx>>
     wafer.instr.ncc_join [0]
     %reduced = memref.alloc()
-        : memref<4x1xf16, #wafer.memory<spm, cx>>
+        : memref<1x1x4x1xf16, #wafer.memory<spm, ncx>>
     wafer.instr.reduce #wafer.instr_reduce_kind<sum> %dest into %reduced
         {dim = 0 : i64}
-        : memref<4x64xf16, #wafer.memory<spm, cx>>
-      into memref<4x1xf16, #wafer.memory<spm, cx>>
+        : memref<1x1x4x64xf16, #wafer.memory<spm, ncx>>
+      into memref<1x1x4x1xf16, #wafer.memory<spm, ncx>>
     wafer.instr.ncc_join [0]
     return
   }
@@ -289,7 +289,8 @@ module {
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
   EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*module), 1u);
   module->walk([&](mlir::memref::AllocOp allocation) {
-    if (allocation.getType().getShape() == llvm::ArrayRef<int64_t>({4, 64}) &&
+    if (allocation.getType().getShape() ==
+            llvm::ArrayRef<int64_t>({1, 1, 4, 64}) &&
         wafer::getWaferMemoryAttr(allocation.getType()).getLayout() ==
             wafer::MemLayout::Tensor) {
       EXPECT_FALSE(allocation.getAlignment().has_value());

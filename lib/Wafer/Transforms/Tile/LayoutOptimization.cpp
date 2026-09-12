@@ -25,6 +25,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 
@@ -258,15 +259,36 @@ static mlir::MemRefType getMemRefType(mlir::RankedTensorType tensor,
       MemoryAttr::get(tensor.getContext(), space, layout));
 }
 
+static mlir::RankedTensorType getLayoutCostType(mlir::Value value) {
+  auto type = mlir::cast<mlir::RankedTensorType>(value.getType());
+  if (type.hasStaticShape())
+    return type;
+  llvm::SmallVector<int64_t> shape(type.getShape());
+  for (auto [dimension, extent] : llvm::enumerate(shape)) {
+    if (!mlir::ShapedType::isDynamic(extent))
+      continue;
+    auto bound = mlir::ValueBoundsConstraintSet::computeConstantBound(
+        mlir::presburger::BoundType::UB,
+        mlir::ValueBoundsConstraintSet::Variable(value, dimension),
+        /*stopCondition=*/nullptr, /*closedUB=*/true);
+    if (mlir::failed(bound) || *bound < 0)
+      return {};
+    extent = *bound;
+  }
+  return mlir::RankedTensorType::get(shape, type.getElementType());
+}
+
 static ExactPBQPCost getLayoutMaterializationCost(mlir::RankedTensorType type,
-                                                   MemLayout layout) {
-  if (!type || !type.hasStaticShape())
-    return kExactPBQPInfinity;
-  std::optional<WaferPhysicalTensorInfo> info =
-      computeWaferPhysicalTensorInfo(
-          getMemRefType(type, MemorySpace::SPM, layout));
+                                                  MemLayout layout) {
+  // Unknown geometry still has a finite activation cost. It is not an
+  // impossible layout state; actual bufferization and memory planning own
+  // their legality checks independently of this ordering objective.
+  if (!type)
+    return 1;
+  std::optional<WaferPhysicalTensorInfo> info = computeWaferPhysicalTensorInfo(
+      getMemRefType(type, MemorySpace::SPM, layout));
   if (!info || info->physicalBytes < 0)
-    return kExactPBQPInfinity;
+    return 1;
   // Keep one unit for the materialization itself and include the actual
   // physical footprint (including layout padding). This remains a query-local
   // ordering cost; legality and final SPM capacity still come only from the
@@ -276,7 +298,7 @@ static ExactPBQPCost getLayoutMaterializationCost(mlir::RankedTensorType type,
     return kExactPBQPInfinity;
   ++bytes;
   return bytes > kExactPBQPInfinity ? kExactPBQPInfinity
-                                     : static_cast<ExactPBQPCost>(bytes);
+                                    : static_cast<ExactPBQPCost>(bytes);
 }
 
 static bool proveReshapeLayoutAlias(mlir::RankedTensorType source,
@@ -1301,6 +1323,36 @@ static bool hasInterveningWrite(mlir::Operation *earlier,
   return false;
 }
 
+static mlir::Operation *getLoopInvariantInsertionPoint(mlir::Value source,
+                                                       mlir::Operation *use) {
+  mlir::Operation *point = use;
+  while (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(point->getParentOp())) {
+    auto lower = mlir::getConstantIntValue(loop.getLowerBound());
+    auto upper = mlir::getConstantIntValue(loop.getUpperBound());
+    auto step = mlir::getConstantIntValue(loop.getStep());
+    if (!lower || !upper || !step || *step <= 0 || *upper <= *lower ||
+        !loop.isDefinedOutsideOfLoop(source))
+      break;
+    // This placement choice applies to tensor SSA. Mixed buffer effects and
+    // opaque operations require a separate alias proof and stay at the use.
+    bool tensorOnly = true;
+    loop.walk([&](mlir::Operation *operation) {
+      if (llvm::any_of(operation->getOperandTypes(),
+                       [](mlir::Type type) {
+                         return mlir::isa<mlir::BaseMemRefType>(type);
+                       }) ||
+          (!operation->hasTrait<mlir::OpTrait::HasRecursiveMemoryEffects>() &&
+           !mlir::isMemoryEffectFree(operation) &&
+           !mlir::isa<mlir::bufferization::AllocTensorOp>(operation)))
+        tensorOnly = false;
+    });
+    if (!tensorOnly)
+      break;
+    point = loop;
+  }
+  return point;
+}
+
 static bool
 tupleStateIsLegal(mlir::linalg::LinalgOp operation,
                   llvm::ArrayRef<mlir::RankedTensorType> coordinateTypes,
@@ -1672,9 +1724,8 @@ static void localizeEmptySlices(mlir::ModuleOp module,
 }
 
 LayoutOptimizationResult
-resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
-                                  StructuredMaterializationRelations &relations,
-                                  uint64_t workLimit) {
+prepareCurrentLayoutInput(mlir::ModuleOp module,
+                          StructuredMaterializationRelations &relations) {
   LayoutOptimizationResult result;
   result.statistics.invocations = 1;
   if (!module) {
@@ -1736,13 +1787,42 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
     return result;
   }
 
+  result.status = ExactPBQPStatus::Optimal;
+  return result;
+}
+
+struct LayoutAssignmentQuery::Impl {
+  mlir::ModuleOp module;
+  llvm::SmallVector<ValueGroup, 32> groups;
+  llvm::SmallVector<UseBinding, 64> uses;
+  llvm::SmallVector<ResultBinding, 32> results;
+  llvm::SmallVector<UseCohort, 32> cohorts;
+  llvm::SmallVector<ConversionActivation, 64> activations;
+  ExactPBQPProblem problem;
+  std::vector<uint32_t> canonicalAssignment;
+  bool exactTupleDomainBounded = true;
+  LayoutOptimizationStatistics statistics;
+};
+
+LayoutAssignmentQuery::LayoutAssignmentQuery(std::unique_ptr<Impl> impl)
+    : impl(std::move(impl)) {}
+LayoutAssignmentQuery::~LayoutAssignmentQuery() = default;
+
+LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp module,
+                                               LayoutDomain domain) {
+  LayoutOptimizationResult result;
+  std::string detail;
+  if (!module || mlir::failed(mlir::verify(module))) {
+    result.detail = "layout query requires verifier-valid current IR";
+    return {std::move(result), nullptr};
+  }
   llvm::SmallVector<mlir::Value, 64> values;
   llvm::DenseMap<mlir::Value, unsigned> valueIndices;
   ValueUnion unions;
   collectTensorValues(module, values, valueIndices, unions);
   if (values.empty()) {
     result.detail = "current layout input contains no tensor SSA values";
-    return result;
+    return {std::move(result), nullptr};
   }
   buildBufferEquivalence(module, valueIndices, unions);
   llvm::DenseMap<mlir::Value, unsigned> groupByValue;
@@ -1751,13 +1831,13 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
   if (mlir::failed(maybeGroups)) {
     result.status = ExactPBQPStatus::NoSolution;
     result.detail = std::move(detail);
-    return result;
+    return {std::move(result), nullptr};
   }
   llvm::SmallVector<ValueGroup, 32> groups = std::move(*maybeGroups);
   auto maybeUses = buildUseBindings(module, groupByValue, detail);
   if (mlir::failed(maybeUses)) {
     result.detail = std::move(detail);
-    return result;
+    return {std::move(result), nullptr};
   }
   llvm::SmallVector<UseBinding, 64> uses = std::move(*maybeUses);
   llvm::SmallVector<ResultBinding, 32> resultBindings =
@@ -1776,8 +1856,10 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
     if (group.layouts.empty()) {
       result.status = ExactPBQPStatus::BrokenContract;
       result.detail = "current value group has no legal layout state";
-      return result;
+      return {std::move(result), nullptr};
     }
+    if (domain == LayoutDomain::AllLegal)
+      continue;
     llvm::SmallVector<MemLayout, 4> relevantLayouts;
     for (const ResultBinding &binding : resultBindings)
       if (binding.publishedGroup == groupIndex &&
@@ -1809,13 +1891,11 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
     for (const ResultBinding &binding : resultBindings) {
       if (binding.publishedGroup != groupIndex)
         continue;
+      auto costType = getLayoutCostType(binding.result);
       for (auto [state, layout] : llvm::enumerate(group.layouts))
         if (layout != binding.computeLayout)
           costs[state] = addCost(
-              costs[state],
-              getLayoutMaterializationCost(
-                  mlir::cast<mlir::RankedTensorType>(binding.result.getType()),
-                  layout));
+              costs[state], getLayoutMaterializationCost(costType, layout));
     }
     problem.variables.push_back(ExactPBQPVariable{std::move(costs)});
   }
@@ -1870,7 +1950,7 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
     if (tuple.states.empty()) {
       result.status = ExactPBQPStatus::NoSolution;
       result.detail = "one current Linalg op has no supported layout tuple";
-      return result;
+      return {std::move(result), nullptr};
     }
     if (tuple.states.size() > kMaximumLayoutTupleStates) {
       // The first legal tuple remains a complete typed assignment witness.
@@ -1923,19 +2003,19 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
     llvm::sort(layouts, [](MemLayout lhs, MemLayout rhs) {
       return static_cast<unsigned>(lhs) < static_cast<unsigned>(rhs);
     });
+    auto costType = getLayoutCostType(cohort.source);
     for (MemLayout layout : layouts) {
       ConversionActivation activation;
       activation.cohort = cohortIndex;
       activation.layout = layout;
       activation.variable = problem.variables.size();
-      const mlir::RankedTensorType sourceType =
-          mlir::cast<mlir::RankedTensorType>(cohort.source.getType());
       const ExactPBQPCost materializationCost =
-          getLayoutMaterializationCost(sourceType, layout);
+          getLayoutMaterializationCost(costType, layout);
       // The activation state remains an exact current-IR materialization
       // decision, but its finite objective includes physical bytes/padding so
       // a copy-count tie cannot prefer a much larger layout blindly.
-      problem.variables.push_back(ExactPBQPVariable{{0, 0, materializationCost}});
+      problem.variables.push_back(
+          ExactPBQPVariable{{0, 0, materializationCost}});
       activations.push_back(activation);
 
       const ValueGroup &sourceGroup = groups[cohort.sourceGroup];
@@ -1987,7 +2067,7 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
         result.status = ExactPBQPStatus::BrokenContract;
         result.detail =
             "canonical layout assignment has conflicting op tuple states";
-        return result;
+        return {std::move(result), nullptr};
       }
       selected = state;
     }
@@ -2003,7 +2083,7 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
       result.status = ExactPBQPStatus::BrokenContract;
       result.detail =
           "canonical layout assignment selected an invalid group state";
-      return result;
+      return {std::move(result), nullptr};
     }
     const bool needed = llvm::any_of(cohort.uses, [&](unsigned useIndex) {
       const UseBinding &use = uses[useIndex];
@@ -2021,36 +2101,218 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
   if (llvm::is_contained(canonicalAssignment, unassigned)) {
     result.status = ExactPBQPStatus::BrokenContract;
     result.detail = "canonical layout assignment did not cover every variable";
-    return result;
+    return {std::move(result), nullptr};
+  }
+  for (auto [variable, state] : llvm::enumerate(canonicalAssignment)) {
+    if (problem.variables[variable].unaryCosts[state] != kExactPBQPInfinity)
+      continue;
+    result.status = ExactPBQPStatus::BrokenContract;
+    result.detail =
+        "canonical layout assignment has an infinite unary cost at " +
+        std::to_string(variable) + ":" + std::to_string(state);
+    for (const auto &activation : activations)
+      if (activation.variable == variable) {
+        llvm::raw_string_ostream stream(result.detail);
+        stream << " for " << cohorts[activation.cohort].source.getType()
+               << " layout=" << stringifyMemLayout(activation.layout);
+      }
+    return {std::move(result), nullptr};
+  }
+  for (const auto &factor : problem.factors) {
+    uint32_t lhs = canonicalAssignment[factor.lhs];
+    uint32_t rhs = canonicalAssignment[factor.rhs];
+    if (factor.costs[static_cast<size_t>(lhs) * factor.rhsStates + rhs] !=
+        kExactPBQPInfinity)
+      continue;
+    result.status = ExactPBQPStatus::BrokenContract;
+    result.detail = "canonical layout assignment violates factor " +
+                    std::to_string(factor.lhs) + ":" + std::to_string(lhs) +
+                    " -> " + std::to_string(factor.rhs) + ":" +
+                    std::to_string(rhs);
+    return {std::move(result), nullptr};
   }
   ++result.statistics.canonicalAssignmentsBuilt;
 
-  ExactPBQPSolveOptions solveOptions;
-  solveOptions.workLimit = exactTupleDomainBounded ? workLimit : 0;
-  solveOptions.semanticTieVariableCount = static_cast<uint32_t>(groups.size());
-  solveOptions.initialFeasibleAssignment = std::move(canonicalAssignment);
-  ExactPBQPResult solved = solveExactPBQP(problem, solveOptions);
-  result.status = solved.status;
-  result.statistics.solverWork = solved.work;
-  if (solved.status == ExactPBQPStatus::Feasible)
-    ++result.statistics.canonicalAssignmentFallbacks;
-  if (solved.status != ExactPBQPStatus::Optimal &&
-      solved.status != ExactPBQPStatus::Feasible) {
-    result.detail =
-        "current value/use layout PBQP did not produce a complete legal "
-        "assignment; "
-        "status=" +
-        std::to_string(static_cast<unsigned>(solved.status)) +
-        ", work=" + std::to_string(solved.work);
-    return result;
-  }
-  if (solved.assignment.size() != problem.variables.size()) {
-    result.status = ExactPBQPStatus::BrokenContract;
-    result.detail =
-        "current value/use layout PBQP returned an incomplete assignment";
-    return result;
-  }
+  auto impl = std::make_unique<LayoutAssignmentQuery::Impl>();
+  impl->module = module;
+  impl->groups = std::move(groups);
+  impl->uses = std::move(uses);
+  impl->results = std::move(resultBindings);
+  impl->cohorts = std::move(cohorts);
+  impl->activations = std::move(activations);
+  impl->problem = std::move(problem);
+  impl->canonicalAssignment = std::move(canonicalAssignment);
+  impl->exactTupleDomainBounded = exactTupleDomainBounded;
+  impl->statistics = result.statistics;
+  result.status = ExactPBQPStatus::Optimal;
+  return {std::move(result), std::unique_ptr<LayoutAssignmentQuery>(
+                                 new LayoutAssignmentQuery(std::move(impl)))};
+}
 
+ExactPBQPResult
+LayoutAssignmentQuery::solve(uint64_t workLimit,
+                             std::optional<LayoutConstraint> constraint) const {
+  ExactPBQPSolveOptions options;
+  options.workLimit = impl->exactTupleDomainBounded ? workLimit : 0;
+  options.semanticTieVariableCount = static_cast<uint32_t>(impl->groups.size());
+  if (!constraint) {
+    options.initialFeasibleAssignment = impl->canonicalAssignment;
+    return solveExactPBQP(impl->problem, options);
+  }
+  std::optional<uint32_t> variable, selected;
+  if (const auto *value = std::get_if<LayoutValueConstraint>(&*constraint)) {
+    for (const auto &group : impl->groups) {
+      if (!llvm::is_contained(group.values, value->value))
+        continue;
+      variable = group.variable;
+      auto state = llvm::find(group.layouts, value->layout);
+      if (state != group.layouts.end())
+        selected = static_cast<uint32_t>(state - group.layouts.begin());
+      break;
+    }
+  } else {
+    const auto &use = std::get<LayoutUseConstraint>(*constraint);
+    for (const auto &binding : impl->uses) {
+      if (binding.owner != use.owner ||
+          binding.operandNumber != use.operandNumber)
+        continue;
+      variable = binding.variable;
+      auto state = llvm::find(binding.layouts, use.layout);
+      if (state != binding.layouts.end())
+        selected = static_cast<uint32_t>(state - binding.layouts.begin());
+      break;
+    }
+  }
+  if (!variable || !selected)
+    return {ExactPBQPStatus::BrokenContract};
+  ExactPBQPProblem constrained = impl->problem;
+  for (auto [state, cost] :
+       llvm::enumerate(constrained.variables[*variable].unaryCosts))
+    if (state != *selected)
+      cost = kExactPBQPInfinity;
+  // The unconstrained canonical assignment need not satisfy this choice.
+  // The same exact solver establishes a fresh feasible constrained assignment.
+  return solveExactPBQP(constrained, options);
+}
+
+std::vector<LayoutConstraint>
+LayoutAssignmentQuery::alternatives(const ExactPBQPResult &center) const {
+  std::vector<LayoutConstraint> result;
+  if (center.assignment.size() != impl->problem.variables.size())
+    return result;
+  for (const auto &group : impl->groups)
+    for (auto [state, layout] : llvm::enumerate(group.layouts))
+      if (state != center.assignment[group.variable])
+        result.emplace_back(
+            LayoutValueConstraint{group.values.front(), layout});
+  for (const auto &use : impl->uses)
+    for (auto [state, layout] : llvm::enumerate(use.layouts))
+      if (state != center.assignment[use.variable])
+        result.emplace_back(
+            LayoutUseConstraint{use.owner, use.operandNumber, layout});
+  return result;
+}
+
+bool LayoutAssignmentQuery::hasLoopInvariantPlacement(
+    const ExactPBQPResult &assignment) const {
+  if (assignment.assignment.size() != impl->problem.variables.size())
+    return false;
+  for (const ConversionActivation &activation : impl->activations) {
+    if (assignment.assignment[activation.variable] !=
+        static_cast<uint32_t>(ActivationState::Materialized))
+      continue;
+    const UseCohort &cohort = impl->cohorts[activation.cohort];
+    for (unsigned index : cohort.uses) {
+      const UseBinding &use = impl->uses[index];
+      uint32_t state = assignment.assignment[use.variable];
+      if (state < use.layouts.size() &&
+          use.layouts[state] == activation.layout &&
+          getLoopInvariantInsertionPoint(cohort.source, use.owner) != use.owner)
+        return true;
+    }
+  }
+  return false;
+}
+
+LayoutOptimizationResult LayoutAssignmentQuery::apply(
+    mlir::ModuleOp module, StructuredMaterializationRelations &relations,
+    const ExactPBQPResult &solved, const mlir::IRMapping *mapping,
+    LayoutMaterializationPlacement placement) const {
+  LayoutOptimizationResult result;
+  result.statistics = impl->statistics;
+  result.statistics.solverWork = solved.work;
+  result.statistics.invocations = 1;
+  result.statistics.canonicalAssignmentFallbacks =
+      solved.status == ExactPBQPStatus::Feasible &&
+      solved.assignment == impl->canonicalAssignment;
+  result.status = solved.status;
+  std::string detail;
+  if ((mapping ? mapping->lookupOrNull(impl->module.getOperation()) !=
+                     module.getOperation()
+               : module != impl->module) ||
+      (solved.status != ExactPBQPStatus::Optimal &&
+       solved.status != ExactPBQPStatus::Feasible) ||
+      solved.assignment.size() != impl->problem.variables.size()) {
+    result.status = ExactPBQPStatus::BrokenContract;
+    result.detail = "layout apply requires a complete assignment and its "
+                    "actual owner or exact clone";
+    return result;
+  }
+  for (auto [index, variable] : llvm::enumerate(impl->problem.variables)) {
+    auto state = solved.assignment[index];
+    if (state >= variable.unaryCosts.size() ||
+        variable.unaryCosts[state] == kExactPBQPInfinity) {
+      result.status = ExactPBQPStatus::BrokenContract;
+      result.detail = "layout assignment violates a current variable domain";
+      return result;
+    }
+  }
+  for (const auto &factor : impl->problem.factors)
+    if (factor.costs[solved.assignment[factor.lhs] * factor.rhsStates +
+                     solved.assignment[factor.rhs]] == kExactPBQPInfinity) {
+      result.status = ExactPBQPStatus::BrokenContract;
+      result.detail = "layout assignment violates a current factor";
+      return result;
+    }
+  auto groups = impl->groups;
+  auto uses = impl->uses;
+  auto resultBindings = impl->results;
+  auto cohorts = impl->cohorts;
+  const auto &activations = impl->activations;
+  if (mapping) {
+    bool missing = false;
+    auto remapValue = [&](mlir::Value value) {
+      auto mapped = mapping->lookupOrNull(value);
+      missing |= !mapped;
+      return mapped;
+    };
+    auto remapOp = [&](mlir::Operation *operation) {
+      auto *mapped = mapping->lookupOrNull(operation);
+      missing |= !mapped;
+      return mapped;
+    };
+    for (auto &group : groups)
+      for (auto &value : group.values)
+        value = remapValue(value);
+    for (auto &use : uses) {
+      use.owner = remapOp(use.owner);
+      use.source = remapValue(use.source);
+    }
+    for (auto &binding : resultBindings)
+      binding.result =
+          mlir::dyn_cast_or_null<mlir::OpResult>(remapValue(binding.result));
+    for (auto &cohort : cohorts) {
+      cohort.source = remapValue(cohort.source);
+      cohort.block = mapping->lookupOrNull(cohort.block);
+      missing |= !cohort.block;
+      cohort.lastOwner = remapOp(cohort.lastOwner);
+    }
+    if (missing) {
+      result.status = ExactPBQPStatus::BrokenContract;
+      result.detail = "layout clone omitted a current value, use or cohort";
+      return result;
+    }
+  }
   llvm::DenseMap<mlir::Value, MemLayout> selectedLayouts;
   for (const ValueGroup &group : groups) {
     uint32_t state = solved.assignment[group.variable];
@@ -2098,7 +2360,13 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
           "layout materialization source is not Tile-local tensor SSA";
       return result;
     }
-    assignmentRewriter.setInsertionPoint(firstOwner);
+    mlir::Operation *insertionPoint = firstOwner;
+    if (placement == LayoutMaterializationPlacement::LoopInvariant)
+      insertionPoint =
+          getLoopInvariantInsertionPoint(cohort.source, firstOwner);
+    result.statistics.loopInvariantMaterializations +=
+        insertionPoint != firstOwner;
+    assignmentRewriter.setInsertionPoint(insertionPoint);
     auto copy = assignmentRewriter.create<mlir::bufferization::AllocTensorOp>(
         firstOwner->getLoc(), tensorType, mlir::ValueRange{}, cohort.source);
     copy.setMemorySpaceAttr(MemoryAttr::get(
@@ -2213,51 +2481,75 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
     mlir::BlockArgument destination;
     MemLayout layout;
   };
-  llvm::SmallVector<LoopStateBinding, 8> loopBindings;
-  {
-    mlir::bufferization::OneShotAnalysisState state(module, options);
-    if (mlir::failed(mlir::bufferization::analyzeModuleOp(module, state))) {
-      result.status = ExactPBQPStatus::BrokenContract;
-      result.detail = "One-Shot loop state analysis failed";
-      return result;
-    }
-    auto collected = module.walk([&](mlir::scf::ForOp loop) {
-      if (!loop->getParentOfType<TileRegionOp>())
-        return mlir::WalkResult::advance();
-      auto yield =
-          mlir::cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
-      for (auto [index, argument] : llvm::enumerate(loop.getRegionIterArgs())) {
-        mlir::Value value = yield.getOperand(index);
-        if (!isTensorValue(argument) ||
-            state.areEquivalentBufferizedValues(value, argument))
-          continue;
-        auto layout = selectedLayouts.find(argument);
-        if (layout == selectedLayouts.end())
-          return mlir::WalkResult::interrupt();
-        loopBindings.push_back(
-            {yield, static_cast<unsigned>(index), argument, layout->second});
+  while (true) {
+    llvm::SmallVector<LoopStateBinding, 8> loopBindings;
+    {
+      mlir::bufferization::OneShotAnalysisState state(module, options);
+      if (mlir::failed(mlir::bufferization::analyzeModuleOp(module, state))) {
+        result.status = ExactPBQPStatus::BrokenContract;
+        result.detail = "One-Shot loop state analysis failed";
+        return result;
       }
-      return mlir::WalkResult::advance();
-    });
-    if (collected.wasInterrupted()) {
-      result.status = ExactPBQPStatus::BrokenContract;
-      result.detail = "loop state destination has no selected current layout";
-      return result;
+      auto collected = module.walk([&](mlir::scf::ForOp loop) {
+        if (!loop->getParentOfType<TileRegionOp>())
+          return mlir::WalkResult::advance();
+        auto yield =
+            mlir::cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
+        for (auto [index, argument] :
+             llvm::enumerate(loop.getRegionIterArgs())) {
+          mlir::Value value = yield.getOperand(index);
+          if (!isTensorValue(argument) ||
+              state.areEquivalentBufferizedValues(value, argument))
+            continue;
+          auto layout = selectedLayouts.find(argument);
+          if (layout == selectedLayouts.end())
+            return mlir::WalkResult::interrupt();
+          loopBindings.push_back(
+              {yield, static_cast<unsigned>(index), argument, layout->second});
+        }
+        return mlir::WalkResult::advance();
+      });
+      if (collected.wasInterrupted()) {
+        result.status = ExactPBQPStatus::BrokenContract;
+        result.detail = "loop state destination has no selected current layout";
+        return result;
+      }
     }
-  }
-  // Destroy the analysis before mutation. A fresh One-Shot analysis below
-  // resolves all read/write conflicts introduced by the destination bindings.
-  for (LoopStateBinding state : loopBindings) {
-    assignmentRewriter.setInsertionPoint(state.yield);
-    auto binding =
-        assignmentRewriter
-            .create<mlir::bufferization::MaterializeInDestinationOp>(
-                state.yield.getLoc(), state.yield.getOperand(state.index),
-                state.destination);
-    selectedLayouts.try_emplace(binding.getResult(), state.layout);
-    assignmentRewriter.modifyOpInPlace(state.yield, [&] {
-      state.yield->setOperand(state.index, binding.getResult());
-    });
+    if (loopBindings.empty())
+      break;
+    // Bind only the innermost unresolved loops. Their alias relationships can
+    // make an enclosing edge equivalent, so outer decisions must be recomputed
+    // from the changed IR rather than replayed from the old analysis.
+    llvm::SmallVector<LoopStateBinding, 8> innermost;
+    for (LoopStateBinding binding : loopBindings) {
+      auto *loop = binding.destination.getOwner()->getParentOp();
+      if (llvm::any_of(loopBindings, [&](const LoopStateBinding &other) {
+            auto *nested = other.destination.getOwner()->getParentOp();
+            return loop != nested && loop->isAncestor(nested);
+          }))
+        continue;
+      innermost.push_back(binding);
+    }
+    for (LoopStateBinding binding : innermost) {
+      mlir::Value source = binding.yield.getOperand(binding.index);
+      if (auto prior = source.getDefiningOp<
+                       mlir::bufferization::MaterializeInDestinationOp>()) {
+        if (prior.getDest() == binding.destination) {
+          result.status = ExactPBQPStatus::BrokenContract;
+          result.detail =
+              "loop destination binding did not establish equivalence";
+          return result;
+        }
+      }
+      assignmentRewriter.setInsertionPoint(binding.yield);
+      auto bound = assignmentRewriter
+                       .create<mlir::bufferization::MaterializeInDestinationOp>(
+                           binding.yield.getLoc(), source, binding.destination);
+      selectedLayouts.try_emplace(bound.getResult(), binding.layout);
+      assignmentRewriter.modifyOpInPlace(binding.yield, [&] {
+        binding.yield->setOperand(binding.index, bound.getResult());
+      });
+    }
   }
   ++result.statistics.bufferizationInvocations;
   if (mlir::failed(
@@ -2278,7 +2570,10 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
 
   if (mlir::failed(
           convertLayoutCopies(module, relations, result.statistics, detail))) {
-    result.status = ExactPBQPStatus::BrokenContract;
+    // This failure means an actual selected copy has no supported exact
+    // movement proof. The PBQP assignment is valid; this materialized layout
+    // choice is unsupported by the downstream movement implementation.
+    result.status = ExactPBQPStatus::NoSolution;
     result.detail = std::move(detail);
     return result;
   }
@@ -2319,7 +2614,35 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
   if (solved.status == ExactPBQPStatus::Feasible)
     result.detail =
         "exact layout optimization did not complete; applied the factor-valid "
-        "canonical assignment";
+        "assignment";
+  return result;
+}
+
+LayoutOptimizationResult
+resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
+                                  StructuredMaterializationRelations &relations,
+                                  uint64_t workLimit) {
+  auto prepared = prepareCurrentLayoutInput(module, relations);
+  if (!prepared.succeeded())
+    return prepared;
+  auto queried = queryCurrentLayoutAssignment(module, LayoutDomain::Relevant);
+  if (!queried.query)
+    return std::move(queried.outcome);
+  auto solved = queried.query->solve(workLimit);
+  if (solved.status != ExactPBQPStatus::Optimal &&
+      solved.status != ExactPBQPStatus::Feasible) {
+    queried.outcome.status = solved.status;
+    queried.outcome.statistics.solverWork = solved.work;
+    queried.outcome.detail =
+        "current value/use PBQP did not produce a complete legal assignment";
+    return std::move(queried.outcome);
+  }
+  auto result = queried.query->apply(module, relations, solved);
+  result.statistics.outputDestinations +=
+      prepared.statistics.outputDestinations;
+  result.statistics.outputSubviews += prepared.statistics.outputSubviews;
+  result.statistics.boundarySourceViewsElided +=
+      prepared.statistics.boundarySourceViewsElided;
   return result;
 }
 

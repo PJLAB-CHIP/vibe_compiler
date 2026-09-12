@@ -268,6 +268,28 @@ module {
   ASSERT_TRUE(actual);
   EXPECT_EQ(*actual, expected);
   EXPECT_EQ(actual->size(), 21u);
+  // Project the independent complete oracle onto axes. The axis cursor must
+  // reach all of them before enumerating embeddings, with one real witness
+  // per tuple; the complete successor above still covers all 21 placements.
+  std::set<std::vector<IteratorPartition>> expectedAxes, visitedAxes;
+  for (const SpatialPlan &plan : expected) {
+    const auto &axes = plan.nodes.front().axes;
+    expectedAxes.emplace(axes.begin(), axes.end());
+  }
+  SpatialPlan axisPlan = built->domain.getFirstPlan();
+  while (true) {
+    ASSERT_TRUE(expected.count(axisPlan));
+    const auto &axes = axisPlan.nodes.front().axes;
+    ASSERT_TRUE(visitedAxes.emplace(axes.begin(), axes.end()).second);
+    auto next = built->domain.getNextPlan(axisPlan,
+                                          SpatialSuccessorDomain::AxisSchemes);
+    if (next.kind == SpatialPlanSuccessorKind::End)
+      break;
+    ASSERT_EQ(next.kind, SpatialPlanSuccessorKind::Successor);
+    ASSERT_TRUE(next.plan);
+    axisPlan = std::move(*next.plan);
+  }
+  EXPECT_EQ(visitedAxes, expectedAxes);
   for (const SpatialPlan &proposal : built->domain.getProposals())
     EXPECT_TRUE(expected.count(proposal));
 
@@ -1257,8 +1279,8 @@ TEST_F(SpatialDomainTest,
     llvm::raw_string_ostream stream(source);
     stream << "module {\n"
            << "  func.func @main(%input: tensor<" << extent
-           << "x4x4xf16>, %init: tensor<" << extent
-           << "x7xf16>) -> tensor<" << extent << "x7xf16> {\n"
+           << "x4x4xf16>, %init: tensor<" << extent << "x7xf16>) -> tensor<"
+           << extent << "x7xf16> {\n"
            << "    %result = linalg.generic {\n"
            << "        indexing_maps = [affine_map<(m, n, k) -> (m, n, k)>,\n"
            << "                         affine_map<(m, n, k) -> (m, n + k)>],\n"

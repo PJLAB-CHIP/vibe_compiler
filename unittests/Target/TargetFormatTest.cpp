@@ -522,12 +522,12 @@ TEST(TargetFormatTest,
       mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   func.func @main() {
-    %input = memref.alloc() : memref<2x3xf16, #wafer.memory<spm, cx>>
-    %dest = memref.alloc() : memref<2x1xf16, #wafer.memory<spm, cx>>
+    %input = memref.alloc() : memref<1x1x2x3xf16, #wafer.memory<spm, ncx>>
+    %dest = memref.alloc() : memref<1x1x2x1xf16, #wafer.memory<spm, ncx>>
     wafer.instr.reduce #wafer.instr_reduce_kind<sum> %input into %dest
         {dim = 0 : i64}
-        : memref<2x3xf16, #wafer.memory<spm, cx>>
-      into memref<2x1xf16, #wafer.memory<spm, cx>>
+        : memref<1x1x2x3xf16, #wafer.memory<spm, ncx>>
+      into memref<1x1x2x1xf16, #wafer.memory<spm, ncx>>
     return
   }
 }

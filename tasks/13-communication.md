@@ -118,6 +118,9 @@ Closure是显式选择的可选变换，不是公共pipeline的必经合法化�
 Complete exchange的closure可按current relation中每对不同participant的完整、有相同正数重数的边集合判断，
 包括同payload fanout和逐destination不同piece；不以source result必须相同限制候选资格。
 合并输入实际依赖的本地纯tensor初始化region可以进入同一个候选，但不得携带另一跨Tile边界，且保持原block顺序、SSA dominance与effect规则。
+多个Region导入同一个外部SSA tensor时，合并后的同一block argument可以服务全部原use；精确重映射后相同的
+source/destination SSA pair只保留一条boundary relation。该去重由实际参数合并产生，不按shape、流量或预期通信数量判断。
+4/16 Tile、1024/1025/1031覆盖重复导入的fanout，检查实际参数、唯一关系及直接movement的消息数量；不同端点仍分别保留。
 局部依赖扩展后的actual Region集合也必须纳入重叠判断。先对所有候选完成依赖扩展，再对共享Region的集合求并集；
 并集若引入先前位于较晚anchor之前的依赖，继续同一有界扩展直到集合互不重叠。每次重叠收敛至少减少一个集合，
 不按component身份忽略实际共享Region。最后才验证合并体并一次物化；任一集合不可合并时，关联exchange连通组的全部Tile均不应用此可选合并。
@@ -170,9 +173,9 @@ actual peer/multi-send ops、SSA token及current control flow，随后销毁choi
 才是执行轮次。在共同cut内先物化该轮
 receive prepare，再物化root/relay send。Complete exchange或round-safe只证明peer实现可用，不排除合法的shared-DDR实现。
 
-Shared-DDR是显式movement choice。当前实现的load位于destination Region入口、store位于source Region出口；只有current source/destination
-relation与同Tile Region顺序构成无环图时才可选择该实现，之后仍须通过actual completion/resource/target gate。
-已合并的双向exchange不能只切换transport标志改成DDR；本轮在合并前的owner上保留DDR候选，不发明跨区域同步或拆分未来Region。
+Shared-DDR是显式movement choice。load位于实际destination首次消费前，store保留actual source完成写入后的切点。
+只生成metadata view不要求提前加载payload。Region可包含多个有序exchange，不能把Region入口/出口当作所有resource共同的完成边界；
+每个component独立选择DDR/Peer，之后仍须通过actual completion/resource/target gate，不发明跨区域同步或拆分未来Region。
 `none`保持原Region划分；`search`可以试行shared-DDR布局/传输候选。无环Region依赖只能证明存在一种安排，
 不能证明不同Tile已经按该顺序执行。候选还必须在current IR中表达writer实际完成后的跨Tile发布、reader读取前的获取以及重复执行的匹配/复用；
 同一actual memory/target leaf须验证这些事实后才可比较和发布。
@@ -190,8 +193,11 @@ WDMA/RDMA、SSA alias和control flow验证这一前提，不能按resource名字
 不能证明单次发布或存在跨Region覆盖写的输入保持typed失败，不能错误套用一次性通知。
 
 为每个有跨Tile读者的resource创建独立64B、cache-line隔离、零初始化的DDR通知storage，作为普通typed DDR global/binding进入
-同一资源与package路径。`wafer.instr.ddr_publish(data, ready)`只在writer Region结束后发布，`wafer.instr.ddr_acquire(data, ready)`
+同一资源与package路径。`wafer.instr.ddr_publish(data, ready)`在resource最后一次实际WDMA之后发布，`wafer.instr.ddr_acquire(data, ready)`
 在reader首次读取前获取；二者的data operand保留实际资源关系及memory effect，ready operand保留实际通知storage，不能用旁路pair表。
+完成op通过显式Region operand/block argument访问whole data/ready binding，保持IsolatedFromAbove；不通过name或ordinal恢复资源。
+DMA位于静态非空循环时以整个循环作单次切点，通知不进入重复执行的loop。条件、未知次数或无法证明单次的边界保持typed unsupported。
+同一Region内连续exchange的DDR/Peer四种组合须经过actual Instr、两个完成域和SPM；真实issue/wait环仍被拒绝。
 联合顺序验证消费已经物化的publish/acquire、Direct-DTE issue/token wait和actual单次执行控制流；不先把整组
 DTE连通Region收缩成原子节点。程序顺序连接相邻实际阻塞点；receiver prepare先于matching send issue，
 send issue先于matching token wait，publisher先于同resource的acquire。这与Direct-DTE transport现有wait-graph的CRT合同相同。

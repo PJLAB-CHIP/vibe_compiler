@@ -241,6 +241,18 @@ mlir::FailureOr<ProgramResourceBoundary> buildProgramResourceBoundary(
     }
     return mlir::failure();
   }
+  for (unsigned index = 0; index < argumentCount; ++index) {
+    auto identity = function.getArgAttrOfType<ProgramArgumentAttr>(
+        index, kWaferProgramArgumentAttrName);
+    if (function.getArgAttr(index, kWaferProgramArgumentAttrName) &&
+        (!identity || !boundary.argumentBindings[index] ||
+         identity.getIndex() != index)) {
+      if (emitDiagnostics)
+        function.emitError("target_abi_mismatch: program argument identity "
+                           "does not match its resource binding");
+      return mlir::failure();
+    }
+  }
   return boundary;
 }
 
@@ -581,9 +593,11 @@ prepareTargetABI(const TileExecutable &tileExecutable,
          getTileEntryArgumentAccess(TileEntryArgumentKind::ProfileRecord)});
   }
 
-  for (unsigned index = 0; index < originalArgumentCount; ++index)
+  for (unsigned index = 0; index < originalArgumentCount; ++index) {
+    function.removeArgAttr(index, kWaferProgramArgumentAttrName);
     if (ddrBindings[index])
       function.removeArgAttr(index, kWaferDDRBindingAttrName);
+  }
   llvm::SmallVector<mlir::memref::GlobalOp, 4> ddrDeclarations;
   for (mlir::memref::GlobalOp global :
        prepared.module->getOps<mlir::memref::GlobalOp>())

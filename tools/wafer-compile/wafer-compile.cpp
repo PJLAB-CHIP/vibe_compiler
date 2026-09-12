@@ -328,6 +328,10 @@ int main(int argc, char **argv) {
         selected = CommunicationCandidate::DimensionOrderedAllToAll;
       else if (name == "ring-reduction")
         selected = CommunicationCandidate::RingReduction;
+      else if (name == "shared-input")
+        selected = CommunicationCandidate::SharedInput;
+      else if (name == "pipelined-loads")
+        selected = CommunicationCandidate::PipelinedLoads;
       if (!selected)
         return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                        "unknown test communication candidate");

@@ -985,9 +985,12 @@ static mlir::LogicalResult verifyDynamicGatherScatterOffset(
       computeWaferPhysicalTensorInfo(endpointType);
   if (!physical || physical->physicalBytes < 0 ||
       maximumEnd > physical->physicalBytes)
-    return op.emitError()
-           << "target_geometry_mismatch: " << role
-           << " dynamic descriptor byte range exceeds the physical buffer";
+    return op.emitError() << "target_geometry_mismatch: " << role
+                          << " dynamic descriptor byte range ["
+                          << range.range.min << ", " << maximumEnd
+                          << ") exceeds the physical buffer " << endpointType
+                          << " (bytes="
+                          << (physical ? physical->physicalBytes : -1) << ")";
   return mlir::success();
 }
 

@@ -20,6 +20,11 @@
 
 namespace wafer::compiler::detail {
 
+/// Pass the still-owned instruction modules to the sole cost implementation.
+analysis::SearchObjective deriveExecutableSearchObjective(
+    const ExecutableLoweringResult &executable,
+    const std::optional<analysis::SearchCostCohort> &cohort);
+
 /// Stable identity of one structural search transaction. Facts created after
 /// TileRegion materialization (layout, buffers, movement, events, schedule and
 /// offsets) cannot enter this key.
@@ -68,6 +73,8 @@ enum class CandidateRecordOutcome : uint8_t {
   Indeterminate,
   CompilerBug,
 };
+
+enum class CandidateDomainState : uint8_t { Open, Closed };
 
 enum class ExactCompleteRejectionKind : uint8_t {
   SPMCapacity,
@@ -174,8 +181,11 @@ public:
         exactRejectionCache(options.exactRejectionCache) {}
 
   CandidateReservation reserve(const StructuralCandidateKey &key);
-  CandidateRecordOutcome record(const StructuralCandidateKey &key,
-                                ActualCandidateResult result);
+  CandidateRecordOutcome
+  record(const StructuralCandidateKey &key, ActualCandidateResult result,
+         CandidateDomainState domain = CandidateDomainState::Closed);
+  /// Closes a session separately from recording an actual leaf.
+  void close(const StructuralCandidateKey &key, SearchFrontierStatus domain);
 
   bool isForbidden(const StructuralCandidateKey &key) const;
   const ExactCompleteRejection *
@@ -202,6 +212,7 @@ private:
   std::optional<RetainedSearchCandidate> incumbent;
   SearchControllerStatistics statistics;
   bool sawUnknownOrIncomparable = false;
+  bool sawIncompleteDomain = false;
   bool poisoned = false;
   bool finished = false;
 };

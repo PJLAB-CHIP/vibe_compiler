@@ -4,11 +4,11 @@
 #define WAFER_CONVERSION_INSTRTOLLVM_LOWERINSTRTOTARGETLLVMINTERNAL_H
 
 #include "Wafer/Analysis/Module/DirectCallGraphAnalysis.h"
+#include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
 #include "Wafer/IR/Topology/TargetTopology.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Target/TopologyIds.h"
 #include "Wafer/Target/TargetCall.h"
-#include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
+#include "Wafer/Target/TopologyIds.h"
 
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -81,9 +81,10 @@ mlir::FailureOr<int64_t>
 getDataFormatCode(mlir::Operation *op, mlir::Value value, llvm::StringRef role);
 mlir::LogicalResult verifyTargetInstructionFormats(mlir::ModuleOp moduleOp);
 mlir::LogicalResult verifyTargetSubviewAddresses(mlir::ModuleOp moduleOp);
-mlir::FailureOr<DirectDTEEndpointDomain> resolveDirectDTEEndpointDomain(
-    const TargetTopology &topology, mlir::ModuleOp diagnosticModule,
-    CardId cardId, TileId tileId);
+mlir::FailureOr<DirectDTEEndpointDomain>
+resolveDirectDTEEndpointDomain(const TargetTopology &topology,
+                               mlir::ModuleOp diagnosticModule, CardId cardId,
+                               TileId tileId);
 
 struct FunctionLowering {
   mlir::OpBuilder &builder;
@@ -101,9 +102,6 @@ struct FunctionLowering {
   void appendArrayI32(mlir::Location loc,
                       llvm::SmallVectorImpl<mlir::Value> &out,
                       llvm::ArrayRef<int64_t> values);
-  mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
-  getNHWCShape(mlir::Operation *op, mlir::MemRefType type,
-               llvm::StringRef role);
   mlir::FailureOr<AddressValue>
   addStaticOffset(mlir::Operation *op, AddressValue address, int64_t offset);
   mlir::Value materializeAddress(mlir::Location loc, AddressValue address);
@@ -187,11 +185,12 @@ mlir::LogicalResult injectDirectDTEStatusLifecycle(
     TargetCallBuiltin beginBuiltin,
     llvm::StringMap<CalleeSignature> &usedCallees);
 
-mlir::LogicalResult
-lowerModuleInPlace(mlir::ModuleOp moduleOp, bool transportPreparedBeforeEntry,
-                   int64_t defaultDDRArenaArgumentIndex, int64_t cardId,
-                   int64_t tileId, int64_t transportStatusArgumentIndex,
-                   int64_t profileRecordArgumentIndex);
+mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
+                                       bool transportPreparedBeforeEntry,
+                                       int64_t defaultDDRArenaArgumentIndex,
+                                       int64_t cardId, int64_t tileId,
+                                       int64_t transportStatusArgumentIndex,
+                                       int64_t profileRecordArgumentIndex);
 
 } // namespace wafer::target_llvm_detail
 

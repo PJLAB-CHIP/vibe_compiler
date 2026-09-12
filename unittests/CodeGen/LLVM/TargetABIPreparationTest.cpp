@@ -41,6 +41,39 @@
 namespace {
 
 TEST(TargetABIPreparationTest,
+     ProgramArgumentIdentityMatchesTheActualBoundary) {
+  mlir::DialectRegistry registry;
+  wafer::compiler::detail::registerCompilationDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @entry(%input: memref<2x1031x64xf16, #wafer.memory<ddr, tensor>>
+      {wafer.program_argument = #wafer.program_argument<0>}) { return }
+}
+)mlir",
+                                                        &context);
+  ASSERT_TRUE(module);
+  auto function = *module->getOps<mlir::func::FuncOp>().begin();
+  wafer::compiler::ProgramResourceBinding binding{};
+  binding.role = wafer::compiler::ProgramResourceRole::UserInput;
+  binding.index = 0;
+  EXPECT_TRUE(
+      mlir::succeeded(wafer::compiler::detail::verifyProgramResourceBoundary(
+          function, {binding})));
+  mlir::ScopedDiagnosticHandler diagnostics(
+      &context, [](mlir::Diagnostic &) { return mlir::success(); });
+  for (mlir::Attribute invalid :
+       {mlir::Attribute(wafer::ProgramArgumentAttr::get(&context, 1)),
+        mlir::Attribute(mlir::UnitAttr::get(&context))}) {
+    function.setArgAttr(0, wafer::kWaferProgramArgumentAttrName, invalid);
+    EXPECT_TRUE(
+        mlir::failed(wafer::compiler::detail::verifyProgramResourceBoundary(
+            function, {binding})));
+  }
+}
+
+TEST(TargetABIPreparationTest,
      WorkspaceAlignmentCombinesPolicyAndAllocationRequirements) {
   mlir::DialectRegistry registry;
   wafer::compiler::detail::registerCompilationDialects(registry);
@@ -66,8 +99,7 @@ module {
   wafer::compiler::TileExecutable tile =
       wafer::compiler::DeviceExecutableBuilder::makeTileExecutable(
           wafer::CardId(0), wafer::TileId(0), wafer::LaunchSlotId(0),
-          std::move(module), "main", {},
-          wafer::TransportContract::None);
+          std::move(module), "main", {}, wafer::TransportContract::None);
   mlir::func::FuncOp entry =
       tile.getModule().lookupSymbol<mlir::func::FuncOp>(tile.getEntrySymbol());
   ASSERT_TRUE(entry);

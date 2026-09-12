@@ -135,14 +135,14 @@ public:
   bool hasRemainingSpatialWork() const;
   bool isSpatialExhausted() const {
     return canonicalCursor == CanonicalCursor::Exhausted &&
+           axisCursor == CanonicalCursor::Exhausted &&
            !pausedSpatialChoice.has_value();
   }
 
 private:
   enum class CanonicalCursor : uint8_t { NotStarted, LastChoice, Exhausted };
 
-  SpatialExpansionResult evaluateAndQueue(SpatialPlan choice,
-                                          bool proposalChoice);
+  SpatialExpansionResult evaluateAndQueue(SpatialPlan choice);
   mlir::FailureOr<RegionDomain *>
   getOrCreateRegionDomain(const SpatialState &spatial,
                           std::string *failureReason = nullptr);
@@ -150,9 +150,11 @@ private:
   const PhysicalDataflowPlanningProblem &problem;
   CanonicalCursor canonicalCursor = CanonicalCursor::NotStarted;
   std::optional<SpatialPlan> lastCanonicalChoice;
+  CanonicalCursor axisCursor = CanonicalCursor::NotStarted;
+  std::optional<SpatialPlan> lastAxisChoice;
+  bool takeAxis = true;
   std::optional<SpatialPlan> pausedSpatialChoice;
-  bool pausedChoiceIsProposal = false;
-  std::set<SpatialPlan> resolvedProposalChoices;
+  std::set<SpatialPlan> resolvedChoices;
   std::set<SpatialState> frontier;
   PlanningMemo<uint8_t, std::vector<SpatialPlan>> spatialProposalCache;
   PlanningMemo<SpatialPlan, std::vector<analysis::RootRegionWork>>

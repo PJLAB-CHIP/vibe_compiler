@@ -14,8 +14,10 @@ namespace wafer::compiler::detail {
 struct CurrentIRDownstreamOptions {
   std::vector<TilePipelineChoice> executionPipelines;
   ExecutionStructureLimits executionLimits;
+  bool distanceOneLoadPipeline = false;
   unsigned tilePipelineParallelism = 0;
   bool captureTileDataflowIR = false;
+  SPMCapacityObserver capacityObserver = nullptr;
 };
 
 struct CurrentIRDownstreamStatistics {

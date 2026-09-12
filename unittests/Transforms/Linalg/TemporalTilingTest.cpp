@@ -2701,6 +2701,93 @@ TEST(TemporalTilingTest, FusedReductionsAndConvolutionUseCurrentInnerChoices) {
   }
 }
 
+TEST(TemporalTilingTest, CoupledProposalKeepsBroadcastDimensionsWhole) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool permuted : {false, true})
+      for (bool extraConsumer : {false, true}) {
+        SCOPED_TRACE(::testing::Message()
+                     << extent << "/" << permuted << "/" << extraConsumer);
+        auto context = createContext();
+        std::string m = std::to_string(extent);
+        std::string input = "tensor<1x2x" + m + "x1031xf16>";
+        std::string state = "tensor<1x2x" + m + "xf16>";
+        std::string output =
+            "tensor<1x2x" + (permuted ? "128x" + m : m + "x128") + "xf16>";
+        std::string text;
+        llvm::raw_string_ostream body(text);
+        body << "%z = arith.constant 0.0 : f16\n%e = tensor.empty() : " << state
+             << "\n%i = linalg.fill ins(%z : f16) outs(%e : " << state
+             << ") -> " << state
+             << "\n%p:3 = linalg.generic {indexing_maps = "
+                "[affine_map<(b,h,m,k)->(b,h,m,k)>,affine_map<(b,h,m,k)->(b,h,"
+                "m)>,"
+                "affine_map<(b,h,m,k)->(b,h,m)>,"
+                "affine_map<(b,h,m,k)->(b,h,m)>], iterator_types = "
+                "[\"parallel\",\"parallel\",\"parallel\",\"reduction\"]} "
+                "ins(%arg : "
+             << input << ") outs(%i, %i, %i : " << state << ", " << state
+             << ", " << state
+             << ") { ^bb0(%x: f16, %a: f16, %b: f16, %unused: f16): "
+                "%s = arith.addf %x, %a : f16 "
+                "%t = arith.maximumf %x, %b : f16 "
+                "linalg.yield %s, %t, %s : f16, f16, f16 } -> ("
+             << state << ", " << state << ", " << state << ")\n";
+        if (extraConsumer)
+          body << "%other = linalg.add ins(%p#0, %p#1 : " << state << ", "
+               << state << ") outs(%e : " << state << ") -> " << state << "\n";
+        const char *order = permuted ? "b,h,c,m" : "b,h,m,c";
+        body << "%out = tensor.empty() : " << output
+             << "\n%value = linalg.generic {indexing_maps = [affine_map<("
+             << order << ")->(b,h,m)>,affine_map<(" << order
+             << ")->(b,h,m)>,affine_map<(" << order << ")->(" << order
+             << ")>], iterator_types = "
+                "[\"parallel\",\"parallel\",\"parallel\",\"parallel\"]}"
+                " ins(%p#0, %p#1 : "
+             << state << ", " << state << ") outs(%out : " << output
+             << ") { ^bb0(%a: f16, %b: f16, %old: f16): "
+                "%sum = arith.addf %a, %b : f16 "
+                "linalg.yield %sum : f16 } -> "
+             << output;
+        auto module = parseModule(*context, body.str(), input, output);
+        ASSERT_TRUE(module);
+        auto region = findRegion(*module);
+        auto built = buildTemporalDomain(region);
+        ASSERT_TRUE(built.succeeded());
+        auto choice = *built.domain->getFirstIndependentChoice().getChoice();
+        auto descriptors = built.domain->getScopeDescriptors(choice.kind);
+        for (auto [scope, descriptor] :
+             llvm::zip_equal(choice.scopes, descriptors)) {
+          for (auto [dimension, capability] :
+               llvm::enumerate(descriptor.iteratorCapabilities))
+            if (capability == IteratorTilingCapability::Tileable)
+              scope.iteratorTileSizes[dimension] =
+                  std::min<int64_t>(descriptor.iterationExtents[dimension], 64);
+          scope.loopOrder = *buildFirstTemporalLoopOrder(
+              descriptor.iterationExtents, scope.iteratorTileSizes,
+              descriptor.precedence);
+        }
+        auto proposal = built.domain->getCoupledStateProposal(choice);
+        if (extraConsumer) {
+          EXPECT_FALSE(proposal);
+          continue;
+        }
+        ASSERT_TRUE(proposal);
+        EXPECT_TRUE(built.domain->contains(*proposal));
+        ASSERT_EQ(proposal->scopes.size(), 2u);
+        EXPECT_EQ(proposal->scopes[0].iteratorTileSizes[2], 64);
+        EXPECT_EQ(proposal->scopes[1].iteratorTileSizes[permuted ? 3 : 2], 64);
+        EXPECT_EQ(proposal->scopes[1].iteratorTileSizes[permuted ? 2 : 3], 128);
+        StructuredMaterializationRelations relations;
+        relations.structuralOutputs.push_back({0, region.getResult(0)});
+        TemporalTilingFailure failure;
+        auto result =
+            applyTemporalTiling(*built.domain, *proposal, relations, &failure);
+        ASSERT_TRUE(mlir::succeeded(result)) << failure.detail;
+        EXPECT_EQ(result->fusedProducers, 1u);
+        EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      }
+}
+
 TEST(TemporalTilingTest, OrdinaryTwoResultStateUsesTheCommonConsumerTraversal) {
   for (bool sharedInit : {false, true}) {
     for (int64_t extent : {1024, 1025, 1031}) {

@@ -113,8 +113,9 @@ port/stride conflict penalty，因此phase不得影响legality、resident/spill�
 `Analysis/Instr/ScheduleCostAnalysis`统计fresh final IR的actual work；参数/cohort、估时和比较由
 `Analysis/Instr/CostModel`唯一拥有，controller消费其typed结果。Cost model使用card-aggregate DDR、max-Tile compute/SPM/Instr/DTE work、
 modeled peak-link pressure及typed completion/resource计数，并在相同cohort内形成独立service terms。
-实现仍按各term的Pareto关系比较；DDR下降而DTE上升时仍可为`Incomparable`。
-统一estimated makespan及其dependency/overlap组合规则尚未实施，不能把资源最大值或统一selection tuple写成当前行为。
+同一cohort内现按06号设计的统一estimated duration排序；DDR/DTE资源交换不会产生`Incomparable`。
+可解释的actual Instr按worker/family、effect、completion与有界loop摘要估计重叠；其余输入使用有限串行粗估。
+这是性能近似，不是actual schedule或硬件时延保证；不能用估时替代legality、SPM规划或同步证明。
 本次时延参数回写只改变实际message/participant count的性能估计，不修改candidate物化、SPM/completion合法性或强制transport选择。
 缺少sustained lower rate、route dilation、startup upper或hop-fill upper时不形成可用于pruning的硬界。
 

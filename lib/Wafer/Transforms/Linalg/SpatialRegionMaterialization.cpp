@@ -71,6 +71,39 @@ void recordFailure(SpatialRegionMaterializationFailure *failure,
   failure->detail = detail.str();
 }
 
+mlir::FailureOr<analysis::StaticRectangularIndexSet>
+getStandardPartialBox(llvm::ArrayRef<mlir::utils::IteratorType> iteratorTypes,
+                      const analysis::StaticRectangularIndexSet &iteration,
+                      const analysis::ExactIndexSet &resultDomain,
+                      SpatialRegionMaterializationFailure *failure) {
+  auto normalized = analysis::normalizeFiniteExactIndexSet(resultDomain);
+  if (mlir::failed(normalized) || normalized->getBoxes().size() != 1)
+    return fail<analysis::StaticRectangularIndexSet>(
+        failure, SpatialRegionMaterializationFailureKind::Unsupported,
+        "standard partial result is not one exact tensor tile");
+  const auto &result = normalized->getBoxes().front();
+  const size_t reductions =
+      llvm::count(iteratorTypes, mlir::utils::IteratorType::reduction);
+  if (iteration.offsets.size() != iteratorTypes.size() ||
+      iteration.sizes.size() != iteratorTypes.size() ||
+      result.sizes.size() + reductions != iteratorTypes.size())
+    return fail<analysis::StaticRectangularIndexSet>(
+        failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+        "standard partial coordinates disagree with the reduction interface");
+  // Pinned Linalg PartialReductionOpInterface inserts reduction dimensions at
+  // their loop positions and preserves the original output's coordinate order.
+  analysis::StaticRectangularIndexSet partial;
+  unsigned output = 0;
+  for (auto [dimension, iterator] : llvm::enumerate(iteratorTypes)) {
+    const bool reduction = iterator == mlir::utils::IteratorType::reduction;
+    partial.offsets.push_back(reduction ? iteration.offsets[dimension]
+                                        : result.offsets[output]);
+    partial.sizes.push_back(reduction ? iteration.sizes[dimension]
+                                      : result.sizes[output++]);
+  }
+  return partial;
+}
+
 struct SourceValueKey {
   enum class Kind : uint8_t { FunctionArgument, StructuredResult };
   Kind kind = Kind::FunctionArgument;
@@ -503,6 +536,17 @@ validateRegionChoice(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
                       "RegionPlan repeats one explicit replica");
         return mlir::failure();
       }
+      std::vector<compiler::detail::ExternalUseBinding> inputs;
+      for (const auto &fragment : expectedFragments)
+        if (fragment.use.destination ==
+            analysis::DemandDestination(replica.id.producer.shard))
+          inputs.push_back({fragment});
+      if (replica.inputs != inputs) {
+        recordFailure(failure,
+                      SpatialRegionMaterializationFailureKind::BrokenContract,
+                      "replica inputs do not cover its selected execution");
+        return mlir::failure();
+      }
     }
     for (const auto &binding : group.externalBindings) {
       if (!findConsumerWork(binding.fragment) ||
@@ -862,6 +906,26 @@ struct GroupBuilder {
     return argument;
   }
 
+  std::optional<RegionExecutionId>
+  findCurrentProducer(const DemandFragmentId &fragment) const {
+    if (fragment.source.kind != analysis::RootBoundaryKind::StructuredResult ||
+        !fragment.ownerTile || *fragment.ownerTile != group.tile)
+      return std::nullopt;
+    for (const auto &execution : group.executions) {
+      if (const auto *root =
+              std::get_if<RequiredRootExecution>(&execution.id.source)) {
+        if (fragment.ownerShard && root->shard == *fragment.ownerShard)
+          return execution.id;
+      } else {
+        const auto &merge =
+            std::get<RequiredMergeExecution>(execution.id.source);
+        if (fragment.reductionGroup && merge.group == *fragment.reductionGroup)
+          return execution.id;
+      }
+    }
+    return std::nullopt;
+  }
+
   mlir::FailureOr<mlir::Value>
   getOrCreateFragmentValue(mlir::Value sourceValue,
                            const DemandFragmentId &fragment) {
@@ -949,6 +1013,15 @@ struct GroupBuilder {
           "external fragment has no selected producer endpoint");
     mlir::Value actualInput;
     if (planned->second.tile == group.tile) {
+      if (auto execution = findCurrentProducer(fragment)) {
+        auto values = executionResults.find(*execution);
+        if (values == executionResults.end() ||
+            fragment.source.index >= values->second.size())
+          return fail<mlir::Value>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "replica input precedes its selected local producer");
+        return values->second[fragment.source.index];
+      }
       auto current = produced.find(planned->second);
       if (current == produced.end())
         return fail<mlir::Value>(
@@ -1401,6 +1474,8 @@ struct GroupBuilder {
                     unsigned operandNumber) const {
     const auto destination = getDemandDestination(consumer);
     llvm::SmallVector<const LocalUseBinding *, 2> bindings;
+    if (std::holds_alternative<ReplicaExecutionId>(consumer))
+      return bindings;
     for (const LocalUseBinding &binding : group.localBindings)
       if (binding.fragment.use.operand == operandNumber &&
           binding.fragment.use.destination == destination)
@@ -1415,7 +1490,15 @@ struct GroupBuilder {
     llvm::SmallVector<const DemandFragmentId *, 2> result;
     const bool directSource =
         getSourceValueKey(operandValue, sourceFunction, nodes).has_value();
-    for (const auto &binding : group.externalBindings) {
+    const auto *bindings = &group.externalBindings;
+    if (const auto *id = std::get_if<ReplicaExecutionId>(&consumer)) {
+      auto replica = llvm::find_if(
+          group.replicas, [&](const auto &plan) { return plan.id == *id; });
+      if (replica == group.replicas.end())
+        return result;
+      bindings = &replica->inputs;
+    }
+    for (const auto &binding : *bindings) {
       const DemandFragmentId &fragment = binding.fragment;
       if (fragment.use.operand != operandNumber ||
           fragment.use.destination != destination)
@@ -1594,9 +1677,11 @@ struct GroupBuilder {
     if (destinationShard &&
         (fragments.size() > 1 ||
          operand.get().getDefiningOp<mlir::tensor::InsertSliceOp>())) {
-      const analysis::RootRegionWork *work =
-          findWork(rootWorks, analysis::RootRegionWorkId{destinationShard->root,
-                                                         group.tile});
+      const auto workId =
+          std::holds_alternative<ReplicaExecutionId>(consumer)
+              ? std::get<ReplicaExecutionId>(consumer).producer.work
+              : analysis::RootRegionWorkId{destinationShard->root, group.tile};
+      const analysis::RootRegionWork *work = findWork(rootWorks, workId);
       auto operandWork =
           work ? llvm::find_if(work->operands,
                                [&](const auto &candidate) {
@@ -1893,24 +1978,46 @@ struct GroupBuilder {
             "standard merge result index is out of range");
       auto resultType = mlir::cast<mlir::RankedTensorType>(
           work.rootOperation->getResult(result.result).getType());
-      mlir::Value assembled = builder
-                                  .create<mlir::tensor::EmptyOp>(
-                                      work.rootOperation->getLoc(), globalSizes,
-                                      resultType.getElementType())
-                                  .getResult();
+      analysis::StaticRectangularIndexSet globalIteration;
+      globalIteration.offsets.assign(globalOffsets.begin(),
+                                     globalOffsets.end());
+      globalIteration.sizes.assign(globalSizes.begin(), globalSizes.end());
+      auto globalPartial = getStandardPartialBox(iteratorTypes, globalIteration,
+                                                 result.domain, failure);
+      if (mlir::failed(globalPartial))
+        return mlir::failure();
+      mlir::Value assembled =
+          builder
+              .create<mlir::tensor::EmptyOp>(work.rootOperation->getLoc(),
+                                             globalPartial->sizes,
+                                             resultType.getElementType())
+              .getResult();
       for (auto [contribution, box] :
            llvm::zip_equal(merge.contributions, boxes)) {
         StandardPartialKey key{merge.group, contribution.shard, result.result};
         auto partial = getOrCreateStandardPartialBoundary(key);
         if (mlir::failed(partial))
           return mlir::failure();
+        auto contributionResult =
+            llvm::find_if(contribution.results, [&](const auto &slice) {
+              return slice.result == result.result;
+            });
+        if (contributionResult == contribution.results.end())
+          return fail<llvm::SmallVector<mlir::Value, 2>>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "standard contribution has no exact result slice");
+        auto partialBox = getStandardPartialBox(
+            iteratorTypes, box, contributionResult->domain, failure);
+        if (mlir::failed(partialBox))
+          return mlir::failure();
         llvm::SmallVector<mlir::OpFoldResult, 6> offsets;
         llvm::SmallVector<mlir::OpFoldResult, 6> sizes;
         llvm::SmallVector<mlir::OpFoldResult, 6> strides;
         for (size_t dimension = 0; dimension < rank; ++dimension) {
-          offsets.push_back(builder.getIndexAttr(box.offsets[dimension] -
-                                                 globalOffsets[dimension]));
-          sizes.push_back(builder.getIndexAttr(box.sizes[dimension]));
+          offsets.push_back(
+              builder.getIndexAttr(partialBox->offsets[dimension] -
+                                   globalPartial->offsets[dimension]));
+          sizes.push_back(builder.getIndexAttr(partialBox->sizes[dimension]));
           strides.push_back(builder.getIndexAttr(1));
         }
         assembled = builder
@@ -2380,11 +2487,20 @@ struct GroupBuilder {
                                result.result};
         auto required = standardPartialBoundaryRequirements.find(key);
         mlir::Value value = partial->partialValues[result.result];
-        if (required == standardPartialBoundaryRequirements.end() ||
-            required->second.type != value.getType())
+        if (required == standardPartialBoundaryRequirements.end())
           return fail<llvm::SmallVector<mlir::Value, 2>>(
               failure, SpatialRegionMaterializationFailureKind::BrokenContract,
-              "standard partial does not match its actual endpoint type");
+              "standard partial has no selected boundary requirement");
+        if (required->second.type != value.getType()) {
+          std::string detail;
+          llvm::raw_string_ostream stream(detail);
+          stream << "standard partial type " << value.getType()
+                 << " differs from selected boundary type "
+                 << required->second.type;
+          return fail<llvm::SmallVector<mlir::Value, 2>>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              detail);
+        }
         partialValues.push_back({key, value});
       }
       for (mlir::Operation *operation :
@@ -2463,9 +2579,15 @@ struct GroupBuilder {
       return mlir::failure();
     // Every selected nonempty external fragment must have an actual
     // destination endpoint before the Region is committed.
-    for (const auto &binding : group.externalBindings) {
+    for (const auto &binding :
+         compiler::detail::getRegionExternalInputs(group)) {
       const DemandFragmentId &fragment = binding.fragment;
       if (fragment.source.kind != analysis::RootBoundaryKind::StructuredResult)
+        continue;
+      if (findCurrentProducer(fragment) ||
+          llvm::any_of(group.localBindings, [&](const auto &local) {
+            return local.fragment == fragment;
+          }))
         continue;
       const analysis::ExactIndexSet *domain = findFragmentDomain(fragment);
       if (domain && domain->isEmpty())
@@ -2874,9 +2996,17 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
           return fail<SpatialRegionMaterializationResult>(
               failure, SpatialRegionMaterializationFailureKind::BrokenContract,
               "standard partial has no selected contribution work");
-        llvm::SmallVector<int64_t, 6> shape;
-        for (const auto &interval : piece->iterationDomain)
-          shape.push_back(interval.size);
+        auto tiling = mlir::dyn_cast<mlir::TilingInterface>(
+            contributionWork->rootOperation);
+        if (!tiling)
+          return fail<SpatialRegionMaterializationResult>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "standard partial has no current tiling interface");
+        analysis::StaticRectangularIndexSet iteration;
+        for (const auto &interval : piece->iterationDomain) {
+          iteration.offsets.push_back(interval.offset);
+          iteration.sizes.push_back(interval.size);
+        }
         for (const analysis::ReductionResultSlice &result :
              contribution.results) {
           if (result.result >= contributionWork->rootOperation->getNumResults())
@@ -2887,15 +3017,20 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
           auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
               contributionWork->rootOperation->getResult(result.result)
                   .getType());
+          auto partialBox = getStandardPartialBox(
+              tiling.getLoopIteratorTypes(), iteration, result.domain, failure);
+          if (mlir::failed(partialBox))
+            return mlir::failure();
           StandardPartialKey key{merge.group, contribution.shard,
                                  result.result};
-          if (!resultType || shape.empty() ||
+          if (!resultType || partialBox->sizes.empty() ||
               !standardPartialBoundaryRequirements
-                   .emplace(key,
-                            StandardPartialBoundaryRequirement{
-                                contribution.tile,
-                                mlir::RankedTensorType::get(
-                                    shape, resultType.getElementType())})
+                   .emplace(
+                       key,
+                       StandardPartialBoundaryRequirement{
+                           contribution.tile,
+                           mlir::RankedTensorType::get(
+                               partialBox->sizes, resultType.getElementType())})
                    .second)
             return fail<SpatialRegionMaterializationResult>(
                 failure,
@@ -2917,14 +3052,10 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
     if (matched != plannedResults.end())
       fragmentSources.emplace(fragment, *matched);
   };
-  std::set<DemandFragmentId> externalFragments;
   for (const RegionGroupPlan &group : regionPlan.groups)
-    for (const auto &binding : group.externalBindings) {
+    for (const auto &binding :
+         compiler::detail::getRegionExternalInputs(group)) {
       const DemandFragmentId &fragment = binding.fragment;
-      if (!externalFragments.insert(fragment).second)
-        return fail<SpatialRegionMaterializationResult>(
-            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
-            "RegionPlan repeats one external demand fragment");
       recordFragmentSource(fragment);
     }
 
@@ -2957,7 +3088,8 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
       ++groupIndegrees[consumer];
   };
   for (auto [consumerIndex, group] : llvm::enumerate(regionPlan.groups)) {
-    for (const auto &binding : group.externalBindings) {
+    for (const auto &binding :
+         compiler::detail::getRegionExternalInputs(group)) {
       if (binding.fragment.source.kind !=
           analysis::RootBoundaryKind::StructuredResult)
         continue;
@@ -2970,10 +3102,7 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
             failure, SpatialRegionMaterializationFailureKind::BrokenContract,
             "RegionPlan external binding has no producer group");
       if (producer->second == consumerIndex)
-        return fail<SpatialRegionMaterializationResult>(
-            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
-            "RegionPlan retains a local structured result as an external "
-            "binding");
+        continue;
       addGroupEdge(producer->second, consumerIndex);
     }
   }
@@ -3034,11 +3163,14 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
     mlir::OpBuilder entryBuilder(&entryBody, entryBody.end());
     std::map<SourceValueKey, mlir::BlockArgument> sourceArguments;
     for (auto [index, argument] :
-         llvm::enumerate(sourceFunction->getArguments()))
+         llvm::enumerate(sourceFunction->getArguments())) {
       sourceArguments.emplace(
           SourceValueKey{SourceValueKey::Kind::FunctionArgument,
                          static_cast<uint32_t>(index), 0},
           entry.getArgument(index));
+      entry.setArgAttr(index, kWaferProgramArgumentAttrName,
+                       ProgramArgumentAttr::get(source.getContext(), index));
+    }
     std::map<DemandFragmentId, mlir::BlockArgument> externalArguments;
     std::map<CoupledStateKey, mlir::BlockArgument> coupledStateArguments;
     std::map<StandardPartialKey, mlir::BlockArgument> standardPartialArguments;
@@ -3054,12 +3186,19 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
     while (!remaining.empty()) {
       auto ready = llvm::find_if(remaining, [&](size_t index) {
         const RegionGroupPlan &group = regionPlan.groups[index];
-        for (const auto &binding : group.externalBindings) {
+        for (const auto &binding :
+             compiler::detail::getRegionExternalInputs(group)) {
           const DemandFragmentId &fragment = binding.fragment;
           if (fragment.source.kind !=
               analysis::RootBoundaryKind::StructuredResult)
             continue;
           auto planned = fragmentSources.find(fragment);
+          if (planned != fragmentSources.end()) {
+            auto producer = plannedResultGroups.find(planned->second);
+            if (producer != plannedResultGroups.end() &&
+                producer->second == index)
+              continue;
+          }
           if (planned != fragmentSources.end() &&
               planned->second.tile == tileId &&
               produced.find(planned->second) == produced.end())

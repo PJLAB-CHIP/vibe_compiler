@@ -57,6 +57,8 @@ public:
                                  mlir::MemRefType destType,
                                  bool destinationMayWrite);
 
+  /// The SPM endpoint must be physically contiguous. Only the DDR endpoint
+  /// has strided descriptor fields; Tensor layout alone does not prove this.
   static mlir::LogicalResult proveCompactDma(mlir::MemRefType sourceType,
                                              mlir::MemRefType destType,
                                              const IndexRelation &relation);

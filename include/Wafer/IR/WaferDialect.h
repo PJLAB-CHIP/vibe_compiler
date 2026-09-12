@@ -93,6 +93,8 @@ public:
 namespace wafer {
 
 inline constexpr char kWaferSPMOffsetAttrName[] = "wafer.spm.offset";
+inline constexpr char kWaferProgramArgumentAttrName[] =
+    "wafer.program_argument";
 inline constexpr char kWaferDDROffsetAttrName[] = "wafer.ddr.offset";
 inline constexpr char kWaferDDRBindingAttrName[] = "wafer.ddr_binding";
 inline constexpr char kWaferDDRResourceAttrName[] = "wafer.ddr_resource";

@@ -1,5 +1,6 @@
 //===- Target LLVM lowering implementation -------------------------------===//
 
+#include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
 #include "Wafer/Conversion/InstrToLLVM/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Conversion/InstrToLLVM/TargetCallIRAdapter.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
@@ -7,7 +8,6 @@
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/TargetFormat.h"
 #include "Wafer/Target/TargetMemory.h"
-#include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
@@ -177,15 +177,12 @@ mlir::LogicalResult FunctionLowering::lowerReduce(InstrReduceOp op) {
   auto inputType = mlir::cast<mlir::MemRefType>(op.getInput().getType());
   mlir::FailureOr<int64_t> fmt =
       getDataFormatCode(op, op.getInput(), "reduce input");
-  mlir::FailureOr<llvm::SmallVector<int64_t, 4>> shape =
-      getNHWCShape(op, inputType, "reduce input");
-  if (mlir::failed(input) || mlir::failed(dest) || mlir::failed(fmt) ||
-      mlir::failed(shape))
+  if (mlir::failed(input) || mlir::failed(dest) || mlir::failed(fmt))
     return mlir::failure();
   args.push_back(*input);
   args.push_back(*dest);
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getDimAttr()));
-  appendArrayI32(op.getLoc(), args, *shape);
+  appendArrayI32(op.getLoc(), args, inputType.getShape());
   appendI32(op.getLoc(), args, *fmt);
   emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()), args,
               op.getWorker());

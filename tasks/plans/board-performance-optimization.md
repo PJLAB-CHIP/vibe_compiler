@@ -60,44 +60,115 @@
 - 四项搜索问题已分别绑定当前代码与不同预算证据；记录到的DDR/DTE候选环只有Tile顺序与DDR publication边。
   已证明rank3 NCx与native reduce ABI的stride冲突；尚未实施这些编译器修复。
 
-### 审计后的修复顺序
+### 已批准的搜索空间与搜索方法修正
 
-以下仍在同一`board-testing`，不是已经完成的功能：
+本节取代审计时的初步修复顺序。所有步骤仍属于 `board-testing`；批准实施不表示已经验证。
+默认保持 `width=8, trials=42`。`width` 改为同时保留的可扩展分支数；`trials` 限制实际候选尝试，
+开始 actualization 后失败的尝试同样计费。增大 trials 必须延续相同确定性序列并保留此前最佳 actual owner。
 
-1. 统一native reduce的logical rank、physical layout与固定ABI映射；对BF16 LLaMA补中间值数值witness。
-   编码前在对应lowering设计补输入/轴/格式/offset覆盖，保持native优先和原算术语义，不按tail长度特判。
-2. 对混合DDR/DTE失败candidate保留实际DMA、Region内顺序和resource依赖witness，区分过宽Region completion边界与更早物化成环。
-   在已有依赖支持的位置修正，不关闭verifier、不猜测publish/acquire位置。
-3. 让不同Spatial/Region家族公平获得可恢复的actualization预算，将复用seed与传播seed共同比较；
-   避免raw Tile embedding排列先耗尽预算，并为同actual pipeline的baseline choice建立共同比较入口。
-4. Capacity refinement局部消费实际冲突owner；首可行Temporal后保留有限后继比较。
-   Candidate继续持有实际IR，不用估算SPM做剪枝，也不把小配额失败当成结构无解。
-5. 按已确认热点处理循环内重复布局/reshape/广播与缺失流水/外部输入共享choice，再验证同cohort cost排序。
-   4K的Q布局转换已有循环内重复位置证据；移动前验证alias/effect/lifetime和实际SPM，不直接扩大成整套搜索重写。
+- 输入：已验证的 TensorProgram、当前 typed Spatial/Region domain；每层持有实际 IR checkpoint。
+- 职责：分层产生结构与参数选择，轮转探索、容量修正、可执行候选改进三类工作；每轮最多执行一个实际尝试。
+- 输出：同一 accepted owner 的 final Instr/DeviceExecutable、完整访问与 typed outcome 计数；直接交给原 target/package 链。
+- 产品入口：`wafer-compile --optimization-policy=search`；局部 named pipeline 和 driver 复用唯一 transform。
+- 非目标：不改变当前算术、dtype 或已选 attention 算法，不引入 future IR、学习模型、周期模拟器或额外硬件校准。
+- 完成：下列矩阵闭合、canonical build/no-op、fresh package/no-card、PyTorch 和匹配性能复验通过。
 
-按用户确认，原第1、2、3、7项已定位修复的实现与对应主机验证已完成；本轮审计补齐新版产品实卡结果。
-新发现的问题按上方修复顺序推进，总任务仍由
-`tasks/progress.md`中的`board-testing`统一管理。原项号只保留用于关联下文证据，不新增work item。
+实施顺序：
 
-| 原项 | 范围 | 已交付边界 | 后续验收归属 |
-| --- | --- | --- | --- |
-| 1 | Halo与中间buffer | 已完成紧凑consumer窗口、shared-DDR按需加载、局部empty初始化、嵌套加载与多出口写回；对应exact coverage、Instr/completion/SPM及主机/no-card验证通过 | 已完成本轮开发；设备数值与实际收益随三条模型复验 |
-| 2 | 主机正确性 | 已完成本轮机制的coverage/owner/merge/tail与numeric/SystemC回归；完整LLaMA的65,536个FP16输出按原容差匹配PyTorch | 已完成本轮机制验证；新版decode完整数值回读归原第4项，不由两步no-card代签 |
-| 3 | 编译开销 | 已完成descriptor session复用、函数边界查询复用、有界关系证明；查询工作量、typed结果和直接下游验证已有记录 | 已完成本轮开发；后续仅在出现新的明确热点时启动修改 |
-| 4 | KV decode | 本轮FP16/BF16、五种预算均完成两步no-card、完整hidden/K/V和历史prefix实卡校验；实际KV接续、普通计时已记录 | 新版实卡数值验收已完成；后续搜索/复用改动再按其受影响路径做匹配profile，不重跑相同package |
-| 5 | 完整LLaMA FA融合 | 原view/indexing、score舍入、SystemC合同保持；本轮FP16的所有可编译预算均通过实卡，普通计时及完整profile证据已取得；BF16数值失败 | 处理BF16数值与已确认的重复权重读取/搜索覆盖；尚无同源融合开关A/B，历史17.635 ms只作审计基线 |
-| 6 | 4K、32-head prefill profile | 本轮所有可编译预算通过实卡PyTorch；普通/profile计时和有效PMU已取得，Trace显式采集每Tile前20000事件 | 本轮范围内验收完成；后续针对TDMA/循环内布局复用热点修复，前缀Trace不代签全程逐site归因 |
-| 7 | 已定位搬运热点 | native归约优先已有实卡收益；本轮subview/copy、完整中间carrier与相关GS修复已完成，对应机制主机验证通过 | 已完成本轮开发；新版整体收益随三条模型复验，进一步优化由新profile决定 |
+1. 补充06号合同、能力矩阵与构造性 witness，区分已有表达能力、生产入口缺失和 lowering 故障。
+2. 将同步 evaluator 改为拥有实际 IR 的可恢复 session；分离一次 leaf 更新与结构域关闭；去掉首可行停止、
+   隐藏 Temporal 次数上限及前8条诊断截断。保留冲突 IR 存活期间的 typed owner 归因，无法归因时走普通后继。
+3. 分层生成与三类队列轮转，修正 width、结构保留和预算记账；传播/复用/基线 seed 共同进入，
+   Joint/Independent 先获得入口，再扩展大小、顺序和布局；不让 placement 排列耗尽结构探索。
+4. 接入成组邻域：Spatial/producer-use/通信，fusion/Temporal/驻留，layout/转换位置，tile/double-buffer。
+   Layout 用同一 PBQP 的约束重求解产生备选；通信按当前 component 独立选择；外部只读输入先覆盖相同精确窗口的共享。
+   距离一双缓冲与基于 actual worker、completion、loop summary 的轻量耗时估计一起接入；公式仅在 CostModel。
+5. 闭合 native reduce ABI、BF16 LLaMA 和 DDR publication completion witness，再执行全 catalog 默认预算，
+   代表性计算/通信与三条模型的 14/42/126 曲线；板卡始终串行。完成证据写统一性能文档。
 
-后续遵循上方通用修复顺序。每次实现修改先完成canonical构建、主机覆盖及fresh source/package/no-card，
-再对受影响case串行验证全输出和必要profile；decode保持实际KV接续。历史reference continuation不代签设备输出接续。
-每项结果写入统一性能记录；已发现数值失败与性能问题未闭合前，总任务保持`doing`。
+| 覆盖维度 | 必须证明的结果 | 直接下游 |
+| --- | --- | --- |
+| 分层/暂停恢复/有限预算 | 一次轮转≤一次尝试；IR与cursor不重建；width只限制保留；42是14的延续；首可行后继续 | Driver实际会话和typed controller |
+| 空间/Region/融合/replica | seed与raw successor均可到达；同流量不等于同结构；部分融合先用已有Region+Temporal构造 | actual TileRegion、demand及owner验证 |
+| 容量与失败 | actual冲突只调整可证明相关scope；暂停不推广为结构无解；unsupported/compiler error保持区分 | Instr→SPM→反馈→新actual候选 |
+| 布局/复用/通信 | 不同PBQP解实际bufferize；独立DDR/DTE及混合；相同只读窗口加载/共享各有合法witness | completion、SPM、target与cost |
+| 组合选择/流水 | 单项不改善但组合改善的有界oracle；串行与distance-one流水均物化，依赖和缓冲复用正确 | actual Instr、精确动态访问与耗时比较 |
+| 规模与数值 | rank≥3，1024/1025/1031，4/16 Tile，多wave/tail；tiny只作穷举oracle | source→package/no-card→PyTorch；decode真实KV接续 |
+| 搜索质量 | 有界穷举检查可达集/去重/最佳；固定width增预算不丢最佳估时；实卡耗时单独匹配A/B | 全workload及14/42/126报告 |
 
-外部权重DTE共享等尚无完成证据的方案保留为候选方向；由新profile确认瓶颈后再确定具体实现边界。
-搜索质量、访问公平性与预算比较的审计已完成。新增通用修复按对应编号设计补合同和覆盖，再完成主机、fresh no-card与匹配实卡复验。
-下文历次检查点保存当时的实现与验证证据；其中旧的阻塞和“下一步”不覆盖本节，也不重新打开已经完成的开发项。
+方法依据：[Ansor](https://www.usenix.org/conference/osdi20/presentation/zheng)的结构/参数分层与组合修改，
+[Halide GPU autoscheduler](https://aekul.github.io/gpu_autoscheduler/)的结构多样性保留；只采用当前预算适合的确定性遍历，
+不移植依赖历史重放或训练数据的实现。IR失效遵循[MLIR analysis合同](https://mlir.llvm.org/docs/PassManagement/#analysis-management)，
+具体 clone/remap 使用仓库 pinned `IRMapping` 与 `OwningOpRef`。
 
-### 已实施边界与模型验收覆盖矩阵
+本轮实施检查点（总任务未完成，逐次样本见统一性能记录）：
+
+- 第1—3步已实现：actual IR可恢复session、Explore/Repair/Improve轮转、width/trials记账、确定性预算前缀与最佳owner保留；
+  空间轴先于placement，Joint/Independent、合法最大/局部融合及replica共同保留入口。容量失败只消费存活IR上的精确owner，
+  待修正队列有独立保留状态，不因下一项局部工作类别改变而提前淘汰。
+- 第4步已接入生产搜索：同一PBQP的布局备选、component独立DDR/DTE及组合、相同外部只读窗口共享、distance-one双缓冲。
+  CostModel从actual worker、effect/completion、SPM alias与loop carry估计依赖和重叠；未知部分保留有限粗估，不参与SPM合法性。
+  有界oracle、4/16 Tile、1024/1025/1031及实际Instr/completion/SPM矩阵通过；共享和流水已有产品实卡witness。
+- 第5步中native reduce已统一actual rank4 NHWC/NCx和ABI字段范围；DDR publication依据实际DMA切点；
+  partial输出坐标、replica输入、动态GS偏移、SPM strided DMA和合并后的重复boundary relation均已补通用回归。
+  最新canonical完整增量构建和紧接的Ninja no-op通过；完整check-wafer通过279 lit、14组件、65/20 numeric、17 SystemC及链接检查。
+- 较早中间版本的39个默认配置、12个显式DTE及3个共享输入资格实卡PyTorch通过，不能代签后续搜索winner的数值。
+  最新39项非LLaMA默认catalog no-card全部通过，含FP16/BF16 decode的两步；
+  FP16/BF16 LLaMA和decode更高预算的产品闭合仍须重签。
+- 代表性14/42/126对照已发现实际预算收益和数值缺口：4K为514.896/276.943 ms，126与42完整package相同；
+  reduce-scatter三种预算均PyTorch通过。FP16 GEMM的42/126以及BF16 projection已确认额外K分块舍入，不算有效性能结果。
+  LLaMA FP16的14次实卡80.119 ms通过；decode的14/42次两步均通过但约14.8—15.0 ms，慢于本轮较早约5.3 ms。
+  LLaMA、decode的完整曲线、decode退化归因及低精度合同处理仍未完成，不能以增加accepted数或主机成功签发任务完成。
+
+### 本轮反馈与剩余验收
+
+本轮实卡反馈补充：4K默认结果正确，但562.259 ms慢于审计时约283 ms。实际候选把多结果producer和consumer各自的
+所有可切维度取几何中点，使只出现在部分状态结果中的广播维度也进入consumer循环；现有共同输出遍历因此无法应用。
+第4步补一项通用候选：从current result/input projected-permutation maps协调多结果producer与唯一consumer的尺寸，
+仅共同维度保持分块，其余广播维度保留完整长度；原独立候选继续可达。输出仍是typed TemporalChoice，经同一物化、verifier、
+fresh cost/SPM叶子验收。覆盖普通多结果归约和attention、1024/1025/1031、结果坐标置换与非唯一consumer负例。
+另补围绕几何入口的尺度候选，避免合法中点之后只遍历接近完整extent的相邻整数；不引用容量估算或case名称。
+
+LLaMA的14次实际尝试计时显示Tile转换累计约103秒、transfer cleanup约108秒，二者在独立Tile间串行。
+复用已有bounded Tile executor，按Tile槽持有结果并在共同边界按序归并；跨Tile completion保持共同执行。
+补串行/并行final Instr与SPM一致性覆盖。移除生产入口借用external-process 1800秒作为隐式搜索预算的限制，
+显式runner主机期限仍保留；超时配置不签发完整trials曲线。
+
+后续轮转回归补充：下一项工作类别不能代表是否仍有capacity repair排队，外层现接收独立保留状态。
+width=1的1024/1025/1031实际输入中，8次预算保留typed incomplete反馈，42次预算找到accepted；
+12项调度oracle及此真实输入回归通过，未完成容量链不被新结构替换。
+
+BF16中间输出定位补充：首层RMSNorm全部输出逐bit匹配PyTorch，Q projection的输出出现大幅错误。
+发现compact DMA证明漏查SPM memref strides，导致动态strided SPM子视图被当成连续WDMA source；
+已在唯一transfer proof中补连续性约束，非连续输入交给原mapped descriptor实现，RDMA destination同理。
+1024/1025/1031、F16/BF16、动态base的两向逐字节地址对检查通过；相同source的fresh无卡/实卡复验继续执行。
+这条证据尚不能解释完整BF16 block的全部小幅误差，保持原容差与未完成状态。
+
+#### 待讨论问题：低精度contraction的K分块合同
+
+修复SPM stride之后，相同BF16 prefix的RMSNorm仍逐bit正确；Q projection与原PyTorch有28.4%输出超容差。
+将相同norm/weight按current Instr的K=64分块，每块输出和块间累加均舍入BF16，PyTorch模拟与实卡65,531/65,536项
+逐bit一致，其余5项最大差0.00390625且均在原容差内。问题因此绑定到普通contraction的额外中间舍入。
+FP16 GEMM的K=263完整版本通过，K=16加tail=7的版本有29.3%超默认容差；问题不限于BF16或完整block。
+
+当前GEMM target ABI只传一个format并写同dtype结果，未提供已验证的宽精度partial/跨块累加合同。
+两条方向会改变原计划的能力边界或非目标，已向用户询问，尚未选择或实施：
+
+- 在没有宽累加合同的低精度contraction中保留完整K，继续搜索parallel轴、Region、layout、输入共享和transport。
+  需要统一Spatial/Temporal能力及同一materializer验证，不能只改某个模型的seed或给失败case增加cost惩罚。
+- 扩展显式宽累加IR/ABI与target支持，定向证明partial、累计状态、最终舍入和硬件行为，再重新开放K分块。
+  不能从已有FP16 local psum观察外推BF16或跨块累加语义，也不能仅把CT add改F32后宣称消除了partial舍入。
+
+期间保持原PyTorch容差，不把已知失败候选的时间计为正确性能结果；继续与此选择无关的主机门禁、通信和prefill对照。
+
+剩余验收按以下顺序继续，仍由同一个`board-testing`管理：
+
+1. 确定并实现上述低精度K分块合同，补Spatial/Temporal及actual target的统一覆盖，不按模型或容差结果特判。
+2. 对修正后的compiler重签受影响的fresh source/package/no-card、完整PyTorch结果和LLaMA/decode的14/42/126曲线；
+   未完整执行的预算、旧产物或数值失败都单独列出。
+3. 复审匹配profile和最终diff，更新稳定设计与证据，完成最终主机门禁后提交；只有这些验收闭合才更新总任务完成状态。
+
+## 已实施边界与模型验收覆盖矩阵
 
 | 项 | 输入等价类与规模 | 结构分支与typed失败 | exact输出与直接下游witness |
 | --- | --- | --- | --- |

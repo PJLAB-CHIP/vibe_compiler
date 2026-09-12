@@ -405,9 +405,9 @@ TEST(FormalTensorNumericTest,
   EXPECT_FALSE(context.getAggregateFlags().any());
 
   PhysicalTensorDescriptor reduceInput =
-      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2, 2});
+      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {1, 1, 2, 2});
   PhysicalTensorDescriptor reduceDestination =
-      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2, 1});
+      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {1, 1, 2, 1});
   auto reduce = llvm::cantFail(createFormalReduceOperation(
       TargetReduceOperation::Sum, std::move(reduceInput),
       std::move(reduceDestination), TargetReduceDimension::Trailing0));
@@ -495,7 +495,7 @@ TEST(FormalTensorNumericTest, ReciprocalProductPreservesExplicitTwoStepValues) {
 }
 
 TEST(FormalTensorNumericTest, F32ExtremaPreserveIdentityZerosNaNsAndTail) {
-  // Scalar special values are embedded in realistic rank-3 reductions.
+  // Scalar special values are embedded in realistic rank-4 reductions.
   for (uint64_t extent : {1024u, 1025u, 1031u})
     for (auto kind : {TargetReduceOperation::Max, TargetReduceOperation::Min})
       for (bool signaling : {false, true}) {
@@ -503,9 +503,9 @@ TEST(FormalTensorNumericTest, F32ExtremaPreserveIdentityZerosNaNsAndTail) {
         SCOPED_TRACE(static_cast<unsigned>(kind));
         SCOPED_TRACE(signaling);
         auto input = makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx,
-                                {1, 4, extent});
+                                {1, 1, 4, extent});
         auto output = makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx,
-                                 {1, 4, 1});
+                                 {1, 1, 4, 1});
         auto operation = llvm::cantFail(createFormalReduceOperation(
             kind, input, output, TargetReduceDimension::Trailing0));
         std::vector<RawLogicalValue> values(

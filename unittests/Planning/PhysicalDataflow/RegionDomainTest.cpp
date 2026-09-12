@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Parser/Parser.h"
 
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "gtest/gtest.h"
@@ -576,6 +577,7 @@ module {
     return %b : tensor<2x2x1031x128xbf16>
   }
 }
+
 )mlir");
   ASSERT_TRUE(module);
   const std::string before = print(module->getOperation());
@@ -590,6 +592,72 @@ module {
   ASSERT_TRUE(plans);
   EXPECT_EQ(plans->size(), 4u);
   EXPECT_EQ(print(module->getOperation()), before);
+}
+
+TEST_F(RegionDomainTest, SmallProposalQuotaRetainsDisconnectedFusionGroups) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto source = llvm::formatv(R"mlir(
+module {{
+  func.func @main(%x: tensor<2x{0}x128xf16>, %y: tensor<2x{0}x128xf16>)
+      -> (tensor<2x{0}x128xf16>, tensor<2x{0}x128xf16>) {{
+    %e = tensor.empty() : tensor<2x{0}x128xf16>
+    %a = linalg.add ins(%x, %x : tensor<2x{0}x128xf16>, tensor<2x{0}x128xf16>)
+        outs(%e : tensor<2x{0}x128xf16>) -> tensor<2x{0}x128xf16>
+    %b = linalg.add ins(%a, %a : tensor<2x{0}x128xf16>, tensor<2x{0}x128xf16>)
+        outs(%e : tensor<2x{0}x128xf16>) -> tensor<2x{0}x128xf16>
+    %c = linalg.add ins(%y, %y : tensor<2x{0}x128xf16>, tensor<2x{0}x128xf16>)
+        outs(%e : tensor<2x{0}x128xf16>) -> tensor<2x{0}x128xf16>
+    %d = linalg.add ins(%c, %c : tensor<2x{0}x128xf16>, tensor<2x{0}x128xf16>)
+        outs(%e : tensor<2x{0}x128xf16>) -> tensor<2x{0}x128xf16>
+    return %b, %d : tensor<2x{0}x128xf16>, tensor<2x{0}x128xf16>
+  }
+}
+)mlir",
+                                extent)
+                      .str();
+    auto module = parse(source);
+    ASSERT_TRUE(module);
+    std::string reason;
+    auto dag = StructuredDAGAnalysis::create(function(*module), &reason);
+    ASSERT_TRUE(mlir::succeeded(dag)) << reason;
+    auto works = buildWorks(*dag, &reason);
+    ASSERT_TRUE(mlir::succeeded(works)) << reason;
+    auto domain = RegionDomain::create(*works, &reason);
+    ASSERT_TRUE(mlir::succeeded(domain)) << reason;
+    auto proposals = domain->getProposals(3);
+    ASSERT_LE(proposals.size(), 3u);
+    EXPECT_TRUE(llvm::any_of(proposals, [&](const RegionPlan &plan) {
+      auto metrics = domain->getProposalMetrics(plan);
+      return metrics.fusionMerges == 2 && metrics.maximumRootsPerRegion == 2;
+    }));
+    // Four roots permit a bounded exhaustive oracle even at full tensor size.
+    auto raw = enumerate(*domain);
+    ASSERT_TRUE(raw);
+    for (const auto &proposal : proposals) {
+      EXPECT_TRUE(domain->contains(proposal));
+      EXPECT_TRUE(llvm::is_contained(*raw, proposal));
+    }
+  }
+}
+
+// Fusion-quality oracles compare the same non-replica language as before.
+// One extra proposal slot accounts for the separately retained replica family;
+// sort by the property under test, not the production family's visit order.
+std::vector<RegionPlan> fusionProposals(const RegionDomain &domain,
+                                        uint64_t count) {
+  auto proposals = domain.getProposals(count + 1);
+  llvm::erase_if(proposals, [](const RegionPlan &plan) {
+    return llvm::any_of(plan.groups, [](const RegionGroupPlan &group) {
+      return !group.replicas.empty();
+    });
+  });
+  llvm::sort(proposals, [&](const RegionPlan &lhs, const RegionPlan &rhs) {
+    auto left = domain.getProposalMetrics(lhs).fusionMerges;
+    auto right = domain.getProposalMetrics(rhs).fusionMerges;
+    return left != right ? left < right : lhs < rhs;
+  });
+  return proposals;
 }
 
 TEST_F(RegionDomainTest, RaggedChainProposalsSampleOneCoherentMergeSequence) {
@@ -625,7 +693,7 @@ module {
   ASSERT_TRUE(mlir::succeeded(works)) << failureReason;
   auto domain = RegionDomain::create(*works, &failureReason);
   ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
-  std::vector<RegionPlan> proposals = domain->getProposals(4);
+  std::vector<RegionPlan> proposals = fusionProposals(*domain, 4);
   std::vector<uint64_t> fusionLevels;
   for (const RegionPlan &proposal : proposals) {
     ASSERT_TRUE(domain->contains(proposal));
@@ -646,7 +714,7 @@ module {
   std::reverse(works->begin(), works->end());
   auto reordered = RegionDomain::create(*works, &failureReason);
   ASSERT_TRUE(mlir::succeeded(reordered)) << failureReason;
-  EXPECT_EQ(reordered->getProposals(4), proposals);
+  EXPECT_EQ(fusionProposals(*reordered, 4), proposals);
 }
 
 TEST_F(RegionDomainTest,
@@ -684,7 +752,7 @@ module {
   ASSERT_TRUE(mlir::succeeded(works)) << failureReason;
   auto domain = RegionDomain::create(*works, &failureReason);
   ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
-  std::vector<RegionPlan> proposals = domain->getProposals(4);
+  std::vector<RegionPlan> proposals = fusionProposals(*domain, 4);
   ASSERT_EQ(proposals.size(), 4u);
 
   std::set<int64_t> tilesWithFusedGroup;
@@ -766,7 +834,7 @@ TEST_F(RegionDomainTest,
   ASSERT_TRUE(mlir::succeeded(works)) << failureReason;
   auto domain = RegionDomain::create(*works, &failureReason);
   ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
-  std::vector<RegionPlan> proposals = domain->getProposals(4);
+  std::vector<RegionPlan> proposals = fusionProposals(*domain, 4);
   ASSERT_EQ(proposals.size(), 4u);
   RegionProposalMetrics refined = domain->getProposalMetrics(proposals[1]);
   EXPECT_EQ(refined.regions, 3u);
@@ -985,7 +1053,7 @@ module {
   }
   auto domain = RegionDomain::create(*works, &failureReason);
   ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
-  std::vector<RegionPlan> proposals = domain->getProposals(3);
+  std::vector<RegionPlan> proposals = fusionProposals(*domain, 3);
   ASSERT_EQ(proposals.size(), 3u);
 
   auto fusedGroups = [](const RegionPlan &plan) {
@@ -1069,7 +1137,7 @@ module {
   }
   auto domain = RegionDomain::create(*works, &failureReason);
   ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
-  std::vector<RegionPlan> proposals = domain->getProposals(4);
+  std::vector<RegionPlan> proposals = fusionProposals(*domain, 4);
   ASSERT_EQ(proposals.size(), 4u);
   auto firstFused =
       llvm::find_if(proposals[1].groups, [](const RegionGroupPlan &group) {

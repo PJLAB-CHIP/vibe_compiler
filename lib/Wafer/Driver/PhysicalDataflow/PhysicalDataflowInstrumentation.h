@@ -149,6 +149,8 @@ recordLayoutInstrumentation(const LayoutOptimizationStatistics &statistics) {
   counter("canonical-assignments", statistics.canonicalAssignmentsBuilt);
   counter("feasible-fallbacks", statistics.canonicalAssignmentFallbacks);
   counter("selected-materializations", statistics.selectedMaterializations);
+  counter("loop-invariant-materializations",
+          statistics.loopInvariantMaterializations);
   counter("materializations-before", statistics.layoutMaterializationsBefore);
   counter("materializations-after", statistics.layoutMaterializationsAfter);
   counter("unused-materializations-erased",

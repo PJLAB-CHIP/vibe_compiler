@@ -69,9 +69,9 @@ TEST(ManagedReferenceTargetModelTest,
       SCOPED_TRACE(extent);
       SCOPED_TRACE(static_cast<unsigned>(kind));
       auto input = makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx,
-                              {1, 3, extent});
-      auto output =
-          makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {1, 3, 1});
+                              {1, 1, 3, extent});
+      auto output = makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx,
+                               {1, 1, 3, 1});
       auto operation = llvm::cantFail(createFormalReduceOperation(
           kind, input, output, TargetReduceDimension::Trailing0));
       std::vector<RawLogicalValue> values(
@@ -210,9 +210,9 @@ TEST(ManagedReferenceTargetModelTest,
     EXPECT_EQ(convertedValues[index].bits, formalConvert.values[index].bits);
 
   PhysicalTensorDescriptor reduceInput =
-      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2, 2});
+      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {1, 1, 2, 2});
   PhysicalTensorDescriptor reduceOutput =
-      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2, 1});
+      makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {1, 1, 2, 1});
   const std::vector<RawLogicalValue> reduceValues{
       {LogicalFormat::F32, UINT64_C(0x3f800000)},
       {LogicalFormat::F32, UINT64_C(0x40000000)},

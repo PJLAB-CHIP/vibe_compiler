@@ -2,6 +2,7 @@
 
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
+#include "Wafer/Transforms/Tile/StructuredToTile.h"
 
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/IR/WaferDialect.h"
@@ -11,6 +12,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
@@ -740,6 +742,148 @@ TEST_F(LayoutOptimizationTest,
       EXPECT_TRUE(isWaferDDRMemRefType(
           relations.structuralOutputs.front().endpoint.getType()));
     }
+  }
+}
+
+TEST_F(LayoutOptimizationTest,
+       NestedReductionStateReanalyzesAfterInnerDestinationBinding) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    std::string inputType = "tensor<2x8x" + std::to_string(extent) + "xf16>";
+    std::string text;
+    llvm::raw_string_ostream out(text);
+    out << "module { wafer.tile.module card_id = 0 tile_id = 0 {\n"
+        << "func.func @entry(%input: " << inputType << ") {\n"
+        << "%result = wafer.tile.region(%input : " << inputType
+        << ") -> (tensor<2xf16>) {\n^bb0(%local: " << inputType << "):\n"
+        << "%c0 = arith.constant 0 : index\n%c4 = arith.constant 4 : index\n"
+        << "%c8 = arith.constant 8 : index\n%c32 = arith.constant 32 : index\n"
+        << "%end = arith.constant " << extent / 32 * 32 << " : index\n"
+        << "%zero = arith.constant 0.0 : f16\n"
+        << "%empty = tensor.empty() : tensor<2xf16>\n"
+        << "%init = linalg.fill ins(%zero : f16) outs(%empty : tensor<2xf16>) "
+           "-> tensor<2xf16>\n"
+        << "%outer = scf.for %x = %c0 to %c8 step %c4 iter_args(%a = %init) -> "
+           "(tensor<2xf16>) {\n"
+        << "%inner = scf.for %y = %c0 to %end step %c32 iter_args(%b = %a) -> "
+           "(tensor<2xf16>) {\n"
+        << "%slice = tensor.extract_slice %local[0, %x, %y] [2, 4, 32] [1, 1, "
+           "1] : "
+        << inputType << " to tensor<2x4x32xf16>\n"
+        << "%sum = linalg.reduce ins(%slice : tensor<2x4x32xf16>) outs(%b : "
+           "tensor<2xf16>) "
+        << "dimensions = [1, 2] (%v: f16, %old: f16) {\n"
+        << "%next = arith.addf %old, %v : f16\nlinalg.yield %next : f16\n}\n"
+        << "scf.yield %sum : tensor<2xf16>\n}\n";
+    if (extent % 32) {
+      std::string tailType =
+          "tensor<2x4x" + std::to_string(extent % 32) + "xf16>";
+      out << "%tail = tensor.extract_slice %local[0, %x, " << extent / 32 * 32
+          << "] [2, 4, " << extent % 32 << "] [1, 1, 1] : " << inputType
+          << " to " << tailType << "\n"
+          << "%final = linalg.reduce ins(%tail : " << tailType
+          << ") outs(%inner : tensor<2xf16>) "
+          << "dimensions = [1, 2] (%v: f16, %old: f16) {\n"
+          << "%next = arith.addf %old, %v : f16\nlinalg.yield %next : f16\n}\n"
+          << "scf.yield %final : tensor<2xf16>\n";
+    } else {
+      out << "scf.yield %inner : tensor<2xf16>\n";
+    }
+    out << "}\nwafer.tile.yield %outer : tensor<2xf16>\n}\nreturn\n}}}\n";
+    auto module = parse(text);
+    ASSERT_TRUE(module);
+    auto relations = outputRelation(*module);
+    auto result = resolveCurrentLayoutsAndBufferize(*module, relations, 0);
+    ASSERT_TRUE(result.succeeded()) << result.detail;
+    EXPECT_EQ(result.statistics.bufferizationInvocations, 1u);
+    EXPECT_EQ(countOps<mlir::scf::ForOp>(*module), 2u);
+    EXPECT_EQ(
+        countOps<mlir::bufferization::MaterializeInDestinationOp>(*module), 0u);
+    module->walk([&](mlir::scf::ForOp loop) {
+      for (mlir::Value initial : loop.getInitArgs()) {
+        auto allocation = initial.getDefiningOp<mlir::memref::AllocOp>();
+        if (allocation) {
+          EXPECT_FALSE(loop->isAncestor(allocation));
+        }
+      }
+    });
+    EXPECT_TRUE(mlir::succeeded(
+        checkStructuredBufferRelationsCurrent(*module, relations)));
+    auto lowered = lowerStructuredComputeToTile(*module, relations);
+    EXPECT_TRUE(lowered.succeeded()) << lowered.detail;
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  }
+}
+
+TEST_F(LayoutOptimizationTest, DynamicTileCostDoesNotBecomeAnImpossibleLayout) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    std::string text;
+    llvm::raw_string_ostream out(text);
+    out << R"mlir(module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(%input: tensor<2x)mlir"
+        << extent << R"mlir(x64xf16>) {
+      %result = wafer.tile.region(%input : tensor<2x)mlir"
+        << extent << R"mlir(x64xf16>) -> (tensor<2x)mlir" << extent
+        << R"mlir(xf16>) {
+      ^bb0(%local: tensor<2x)mlir"
+        << extent << R"mlir(x64xf16>):
+        %c0 = arith.constant 0 : index
+        %c64 = arith.constant 64 : index
+        %end = arith.constant )mlir"
+        << extent << R"mlir( : index
+        %zero = arith.constant 0.0 : f16
+        %empty = tensor.empty() : tensor<2x)mlir"
+        << extent << R"mlir(xf16>
+        %full = scf.for %i = %c0 to %end step %c64
+            iter_args(%state = %empty) -> (tensor<2x)mlir"
+        << extent << R"mlir(xf16>) {
+          %left = arith.subi %end, %i : index
+          %size = arith.minsi %left, %c64 : index
+          %piece = tensor.extract_slice %local[0, %i, 0] [2, %size, 64] [1, 1, 1]
+              : tensor<2x)mlir"
+        << extent << R"mlir(x64xf16> to tensor<2x?x64xf16>
+          %init = tensor.empty(%size) : tensor<2x?xf16>
+          %zeros = linalg.fill ins(%zero : f16) outs(%init : tensor<2x?xf16>)
+              -> tensor<2x?xf16>
+          %sum = linalg.reduce ins(%piece : tensor<2x?x64xf16>)
+              outs(%zeros : tensor<2x?xf16>) dimensions = [2]
+              (%x: f16, %acc: f16) {
+                %next = arith.addf %x, %acc : f16
+                linalg.yield %next : f16
+              }
+          %next = tensor.insert_slice %sum into %state[0, %i] [2, %size] [1, 1]
+              : tensor<2x?xf16> into tensor<2x)mlir"
+        << extent << R"mlir(xf16>
+          scf.yield %next : tensor<2x)mlir"
+        << extent << R"mlir(xf16>
+        }
+        wafer.tile.yield %full : tensor<2x)mlir"
+        << extent << R"mlir(xf16>
+      }
+      return
+    }
+  }
+})mlir";
+    auto module = parse(text);
+    ASSERT_TRUE(module);
+    auto relations = outputRelation(*module);
+    auto prepared = prepareCurrentLayoutInput(*module, relations);
+    ASSERT_TRUE(prepared.succeeded()) << prepared.detail;
+    auto query = queryCurrentLayoutAssignment(*module);
+    ASSERT_TRUE(query.query) << query.outcome.detail;
+    auto assignment = query.query->solve(0);
+    ASSERT_EQ(assignment.status, ExactPBQPStatus::Feasible);
+    ASSERT_TRUE(assignment.cost);
+    EXPECT_GT(*assignment.cost, 1u);
+    auto applied = query.query->apply(*module, relations, assignment);
+    // The query must remain feasible even when the actual downstream cannot
+    // yet describe this dynamic blocked-layout copy. Only that actual copy
+    // proof may reject the choice, with a typed unsupported result.
+    EXPECT_EQ(applied.status, ExactPBQPStatus::NoSolution) << applied.detail;
+    EXPECT_NE(applied.detail.find("no exact GatherScatter proof"),
+              std::string::npos);
   }
 }
 
@@ -1639,6 +1783,163 @@ module {
   module->print(afterStream);
   afterStream.flush();
   EXPECT_EQ(after, before);
+}
+
+TEST_F(LayoutOptimizationTest,
+       ConstrainedAssignmentsUseIndependentActualClones) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto base = parse(makeSharedContractionSource(extent));
+    ASSERT_TRUE(base);
+    auto relations = outputRelation(*base);
+    auto prepared = prepareCurrentLayoutInput(*base, relations);
+    ASSERT_TRUE(prepared.succeeded()) << prepared.detail;
+    auto query = queryCurrentLayoutAssignment(*base);
+    ASSERT_TRUE(query.query) << query.outcome.detail;
+    auto center = query.query->solve(1048576);
+    ASSERT_EQ(center.status, ExactPBQPStatus::Optimal);
+    std::vector<ExactPBQPResult> assignments;
+    assignments.push_back(center);
+    for (const auto &constraint : query.query->alternatives(center)) {
+      auto alternative = query.query->solve(1048576, constraint);
+      if ((alternative.status == ExactPBQPStatus::Optimal ||
+           alternative.status == ExactPBQPStatus::Feasible) &&
+          alternative.assignment != center.assignment) {
+        assignments.push_back(std::move(alternative));
+        break;
+      }
+    }
+    ASSERT_EQ(assignments.size(), 2u)
+        << "the real-scale query must expose a second legal layout";
+    auto print = [](mlir::ModuleOp module) {
+      std::string text;
+      llvm::raw_string_ostream stream(text);
+      module.print(stream);
+      return text;
+    };
+    const std::string before = print(*base);
+    std::vector<std::string> actual;
+    for (const auto &assignment : assignments) {
+      mlir::IRMapping mapping;
+      mlir::OwningOpRef<mlir::ModuleOp> clone(
+          mlir::cast<mlir::ModuleOp>(base->getOperation()->clone(mapping)));
+      StructuredMaterializationRelations remapped;
+      for (const auto &relation : relations.buffers)
+        remapped.buffers.push_back({mapping.lookup(relation.owner),
+                                    mapping.lookup(relation.buffer),
+                                    relation.role});
+      for (const auto &relation : relations.structuralOutputs)
+        remapped.structuralOutputs.push_back(
+            {relation.outputIndex, mapping.lookup(relation.endpoint)});
+      for (const auto &relation : relations.boundaryRelations)
+        remapped.boundaryRelations.push_back(
+            {mapping.lookup(relation.sourceEndpoint),
+             mapping.lookup(relation.destinationEndpoint)});
+      auto applied = query.query->apply(*clone, remapped, assignment, &mapping);
+      ASSERT_TRUE(applied.succeeded()) << applied.detail;
+      EXPECT_EQ(applied.statistics.bufferizationInvocations, 1u);
+      EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*clone)));
+      EXPECT_TRUE(mlir::succeeded(
+          checkStructuredBufferRelationsCurrent(*clone, remapped)));
+      actual.push_back(print(*clone));
+      auto lowered = lowerStructuredComputeToTile(*clone, remapped);
+      ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+      EXPECT_EQ(countOps<mlir::linalg::BatchMatmulOp>(clone->getOperation()),
+                0u);
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(*clone)));
+    }
+    EXPECT_NE(actual[0], actual[1]);
+    EXPECT_EQ(print(*base), before);
+    EXPECT_EQ(query.query->solve(1048576).assignment, center.assignment);
+  }
+}
+
+TEST_F(LayoutOptimizationTest,
+       LoopInvariantPlacementIsAnActualBufferizedChoice) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (bool localSource : {false, true}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(localSource);
+      const std::string output =
+          "tensor<2x" + std::to_string(extent) + "x64xf16>";
+      std::string source = makeSharedContractionSource(extent);
+      size_t start =
+          source.find(localSource ? "        %view =" : "        %empty0 =");
+      ASSERT_NE(start, std::string::npos);
+      source.insert(start,
+                    "        %c0 = arith.constant 0 : index\n"
+                    "        %c1 = arith.constant 1 : index\n"
+                    "        %c3 = arith.constant 3 : index\n"
+                    "        %initial = tensor.empty() : " +
+                        output +
+                        "\n"
+                        "        %loop = scf.for %i = %c0 to %c3 step %c1 "
+                        "iter_args(%state = %initial) -> (" +
+                        output + ") {\n");
+      size_t end = source.find("        wafer.tile.yield %sum");
+      ASSERT_NE(end, std::string::npos);
+      source.replace(end, std::string("        wafer.tile.yield %sum").size(),
+                     "        scf.yield %sum : " + output +
+                         "\n        }\n        wafer.tile.yield %loop");
+      auto module = parse(source);
+      ASSERT_TRUE(module);
+      StructuredMaterializationRelations relations;
+      ASSERT_TRUE(prepareCurrentLayoutInput(*module, relations).succeeded());
+      auto query = queryCurrentLayoutAssignment(*module);
+      ASSERT_TRUE(query.query) << query.outcome.detail;
+      auto assignment = query.query->solve(100000);
+      ASSERT_EQ(assignment.status, ExactPBQPStatus::Optimal);
+      EXPECT_EQ(query.query->hasLoopInvariantPlacement(assignment),
+                !localSource);
+      for (auto placement : {LayoutMaterializationPlacement::FirstUse,
+                             LayoutMaterializationPlacement::LoopInvariant}) {
+        mlir::IRMapping mapping;
+        mlir::OwningOpRef<mlir::ModuleOp> clone(
+            mlir::cast<mlir::ModuleOp>(module->getOperation()->clone(mapping)));
+        StructuredMaterializationRelations cloneRelations;
+        auto result = query.query->apply(*clone, cloneRelations, assignment,
+                                         &mapping, placement);
+        ASSERT_TRUE(result.succeeded()) << result.detail;
+        const bool hoist =
+            !localSource &&
+            placement == LayoutMaterializationPlacement::LoopInvariant;
+        EXPECT_EQ(result.statistics.loopInvariantMaterializations > 0, hoist);
+        unsigned inside = 0, outside = 0;
+        clone->walk([&](LayoutMaterializeOp copy) {
+          auto type = mlir::cast<mlir::MemRefType>(copy.getSource().getType());
+          if (type.getShape() != llvm::ArrayRef<int64_t>({2, extent, 128}))
+            return;
+          if (copy->getParentOfType<mlir::scf::ForOp>())
+            ++inside;
+          else
+            ++outside;
+        });
+        EXPECT_EQ(inside > 0, !hoist);
+        EXPECT_EQ(outside > 0, hoist);
+        auto lowered = lowerStructuredComputeToTile(*clone, cloneRelations);
+        ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*clone)));
+      }
+    }
+  }
+}
+
+TEST_F(LayoutOptimizationTest, AssignmentRejectsAnUnmappedOwnerBeforeMutation) {
+  auto base = parse(makeSharedContractionSource(1025));
+  ASSERT_TRUE(base);
+  auto relations = outputRelation(*base);
+  ASSERT_TRUE(prepareCurrentLayoutInput(*base, relations).succeeded());
+  auto query = queryCurrentLayoutAssignment(*base);
+  ASSERT_TRUE(query.query);
+  auto assignment = query.query->solve(1048576);
+  mlir::IRMapping mapping;
+  mlir::OwningOpRef<mlir::ModuleOp> clone(
+      mlir::cast<mlir::ModuleOp>(base->getOperation()->clone(mapping)));
+  StructuredMaterializationRelations remapped;
+  auto result = query.query->apply(*clone, remapped, assignment);
+  EXPECT_EQ(result.status, ExactPBQPStatus::BrokenContract);
+  EXPECT_EQ(result.statistics.bufferizationInvocations, 0u);
+  EXPECT_EQ(countOps<mlir::linalg::BatchMatmulOp>(clone->getOperation()), 2u);
 }
 
 } // namespace

@@ -78,13 +78,13 @@ TEST(SearchRoutingTest, SearchBuildsOneCurrentIRDeviceExecutable) {
            "compile-counter category=search "
            "name=region-candidate-0-objective-known value=1",
            "compile-counter category=search "
-           "name=candidate-actualizations value=8",
+           "name=candidate-actualizations value=42",
            "compile-counter category=search name=width value=8",
            "compile-counter category=search name=trials value=42",
            "compile-counter category=search "
-           "name=accepted-structural-states value=8",
+           "name=accepted-candidates value=42",
            "compile-counter category=search "
-           "name=unsupported-structural-states value=0",
+           "name=unsupported-candidates value=0",
        })
     EXPECT_NE(diagnosticsText.find(counter.str()), std::string::npos)
         << counter.str() << "\n"
@@ -120,9 +120,9 @@ TEST(SearchRoutingTest, PublicLimitsBoundTheActualSearchWork) {
            "compile-counter category=search "
            "name=candidate-actualizations value=1",
            "compile-counter category=search "
-           "name=accepted-structural-states value=1",
+           "name=accepted-candidates value=1",
            "compile-counter category=search "
-           "name=unsupported-structural-states value=0",
+           "name=unsupported-candidates value=0",
        })
     EXPECT_NE(diagnosticsText.find(counter.str()), std::string::npos)
         << counter.str() << "\n"

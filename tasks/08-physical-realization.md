@@ -77,8 +77,8 @@ Layout transformation先闭合function boundary，再为每个current compute us
 boundary；它不重新移动/融合reshape、transpose、broadcast、concat或compute graph，不创建route、message或DDR donor。若input仍含
 可由05号logical normalizer严格支配的graph form，属于上游stage未闭合，不能在PBQP里恢复另一套e-graph。
 Movement transformation只能读取这些current endpoint和exact relation，不能反向改compute layout。某条route与唯一PBQP assignment产生的
-endpoint layout不兼容时，当前candidate返回typed failure；outer controller只能改变其它显式choice并在new current IR上重新运行PBQP，
-不能直接指定另一layout或在movement内部fallback。
+endpoint layout不兼容时，当前candidate返回typed failure；outer controller通过同一PBQP的typed约束查询另一完整assignment，
+在其独立actual clone上应用并重新bufferize，不能在movement内部fallback。
 
 三种TileRegion form的局部和stage verifier合同由07定义。两项transformation必须各自使用唯一registered实现；baseline先逐项接入同一实现，
 search integration只增加独立choice/controller owner，不增加第二套rewrite。
@@ -87,24 +87,29 @@ search integration只增加独立choice/controller owner，不增加第二套rew
 
 Layout domain builder只读current structural TileRegion，为每个SSA value、consumer use、exact alias和op layout tuple枚举合法
 `MemLayout` label。Baseline与search调用同一个query-local exact PBQP optimizer，PBQP结果不进入IR、candidate key或下一stage。
-Baseline与search每个attempt都只调用一次solver并应用一次完整assignment；layout不是search axis，不建立layout frontier或raw layout枚举。
+Baseline应用一个完整assignment；search保留未变的current-IR query owner，通过SSA value/use的typed layout约束重求解，
+每个不同完整assignment在同次`IRMapping`的独立clone上应用并bufferize。Query不跨其owner的mutation保存；失败/loser的actual owner销毁。
 Exact optimization完成时结果为`Optimal`；budget exhaustion时使用solver已验证的canonical incumbent并标记`Feasible`。二者共用同一
 assignment和apply实现；没有合法incumbent才是typed failure，不由movement或其它下游stage补layout。
 
 PBQP hard factor只表达current interface和physical encoding能够证明的合法性。Finite objective只计最终实际创建的unique layout
-materialization：同一dominance/effect cohort中的shared conversion计一次，per-use conversion、不同target layout及fixed-compute result
-publication分别计数，same-layout、metadata view和alias为0。等materialization数的assignment使用stable semantic tie-break。
+materialization的估计physical bytes加一次activation成本：static type直接计算；dynamic dimension用current SSA的ValueBounds闭上界估计。
+无法得到范围时只计activation，不把未知字节数记为hard infinity，也不以估计shape约束allocation或SPM合法性。
+同一dominance/effect cohort中的shared conversion计一次，per-use conversion、不同target layout及fixed-compute result
+publication分别计费，same-layout、metadata view和alias为0。相同目标值的assignment使用stable semantic tie-break。
 PBQP不读取NE/Vector/CT throughput、descriptor、instruction、DDR/NoC、SPM movement或capacity；这些信息只由物化后的current IR下游
 分析和最终candidate objective消费。Checked materialization count overflow返回`Indeterminate`，不能与hard infinity混合。
 
-只在query-local exact solve中删除materialization-objective严格支配的layout state：保留每个live fixed-compute publication和fixed-use实际
+Baseline的单次局部优化可在query-local exact solve中删除materialization-objective严格支配的layout state：保留每个live fixed-compute publication和fixed-use实际
 要求的layout；从未被current compute/use要求的state不能减少任何activation/publication，因而可删除。无live target的group只保留原domain
-第一个canonical state。该约简保留materialization-count optimum和stable tie结果，不改变current IR合法性。
+第一个canonical state。物理search保留完整合法label域，因为局部conversion目标支配不能推导下游instruction/capacity/cost支配。
 
 Solver output在mutation前重新验证，然后由唯一layout transformation立即创建或复用actual SSA：same-layout不建op，exact metadata
 view绑定原storage，多个use共享同一`(source, target layout)` conversion，per-use conversion保持独立，unused conversion不生成。
 共享还必须证明canonical conversion支配全部新use、两端consumer只读，并且两次materialization之间没有对source或其alias的write/free；
-不同block、未知effect或alias不确定时保留各自conversion。Transformation成功后solver graph、state index和assignment立即销毁。
+不同block、未知effect或alias不确定时保留各自conversion。仅依赖循环外不可变Tensor SSA的已选转换另有LoopInvariant placement，
+按06号合同在实际静态非空循环前物化，随后重新One-Shot分析和SPM验证；不改普通pure graph，不绕过e-graph owner。
+Transformation只消耗assignment并改变目标clone；原query仅在其独立owner保持不变时继续供后继使用。
 
 C3先按production caller审计现有relation consumer，不以API存在推定缺口。已确认的layout降级是tensor view邻接值被机械并入一个
 `compactOnly` domain。One-Shot必然alias的DPS init/result及reshape/cast source/result现在进入同一个PBQP value group；每个候选layout由
@@ -157,8 +162,9 @@ candidate-owned current relation保存。
 
 Tile-local `scf.for`的tensor state采用固定destination：完成layout assignment与actual conversion后、One-Shot之前，
 先以只读One-Shot analysis检查yield与iter argument的buffer equivalence；仅非equivalent的state edge通过标准
-`bufferization.materialize_in_destination`绑定到对应iter argument。销毁该analysis后再修改IR，并在唯一一次
-bufferization中重建analysis。这只指定buffer化后的写入位置，不改变tensor值、算术顺序或dtype。
+`bufferization.materialize_in_destination`绑定到对应iter argument。每轮只绑定当前非equivalent边中的最内层循环，
+销毁analysis后改IR并重新分析外层；不能把内层alias改变前收集的外层决定继续用于mutation。
+等价关系闭合后进入唯一一次bufferization。这只指定buffer化后的写入位置，不改变tensor值、算术顺序或dtype。
 One-Shot从完整SSA读写冲突决定中间值的独立allocation；旧state读完后的必要copy保持actual effect。
 已证明in-place的state不额外绑定；bufferization留下的同SSA self-copy直接删除。
 绑定必须晚于layout materialization，否则fixed-compute layout conversion仍可能把destination换成循环内部的新allocation。
@@ -296,9 +302,42 @@ Movement stage只交付actual compute/movement、endpoint、token和effect。后
 prefix/steady/tail、独立或rotating buffer roots和slot reuse；再后续Instr stage创建issue order和matching completion。每项都必须能从
 其current Tile/Instr IR重建；一个pipeline flag、估算overlap窗口或descriptor side list既不能证明transfer，也不能缩短lifetime。
 
+距离一load/compute邻域消费movement-closed TileRegion。首个生产覆盖为静态非空、至少两次迭代的最内层`scf.for`：
+每个选中SPM临时量在循环内allocation，由单个`tile.load`完整定义，随后仅在该轮读取，所有view/use均不逃出该循环。
+加载的地址不依赖loop-carried state；其它effect仍按current根和stage验证。变换将这些实际allocation移到循环前并复制为两个槽，
+以`((iv-lower)/step)%2`选择；原load及其纯SSA地址计算位于stage 0，其它计算位于stage 1，使用同一个pinned SCF pipeliner
+生成prologue、kernel、epilogue。主块外的remainder保持原执行次数与访问。外部可写根跨stage只有在current select、两个独立allocation
+和精确槽位周期证明stage跨度小于复用距离时才合法；不能依据slot名字或一个pipeline标志放宽effect检查。
+直接下游仍是Tile→Instr、minimum completion和唯一SPM planner；新增根必须保有实际owner关系。动态trip、逃逸、部分定义、
+读前写、条件加载和未知effect不进入本邻域；这些限制不改变串行候选的合法性。验收同时检查1024/1025/1031的每轮load与consumer
+一一对应、两个实际槽与复用距离、remainder、负例不改IR，以及final Instr/completion/SPM witness；cost与实卡另按06和板测计划比较。
+
 spatial placement、Region membership/replica、自由temporal tile、encoding和communication由06的physical-dataflow selection选择；
 fusion由这些choice物化后的current SSA transformation决定。本文只验证actual relation和physical dataflow，不因某个route更便宜而修改placement，也不创建独立layout或
 NoC selector。
+
+### 外部只读窗口共享
+
+输入是 boundary movement 已闭合、尚未 fan-out 的 actual Tile modules。源 TensorProgram 的正式参数在结构物化时
+通过 `ProgramArgumentAttr` 显式绑定到原 program ABI 参数；该属性只保存参数身份，不能携带未来 buffer 或搬运计划。
+现有 `DDRBindingAttr` 引用的是新建共享 DDR declaration，不能表达已有 program input，因此不复用该属性。
+Tile collection verifier 检查参数身份与正式入口位置，target ABI verifier 再与实际 program resource binding 核对。
+
+生产 search 同时保留独立 DDR load 和共享候选。共享变换只接受同一 program 参数、相同静态精确窗口、相同实际
+SPM payload type 的跨 Tile load；SSA/view/effect 必须证明同一卡上该输入的所有绑定均只读、加载目的只在本次 load 写入。
+实际入口 memref 参数必须具有 program input 或共享 DDR 的明确身份；任一绑定缺失身份时不能只检查其余 Tile 就推断只读。
+带有明确 Allocate effect 的计算/布局转换结果是新 storage，不视为输入别名；未知结果别名仍排除。首轮只处理入口
+Region 中执行一次的静态 load，不外推动态窗口、loop 迭代对应或别名。由 Tile ID 确定 donor，保留其 actual load，
+在 load 后生成 typed peer send，在其他 Tile 原 load 处生成匹配 recv。原计算和 dtype 不变。
+
+输出为包含实际 donor load、receiver storage、message 与 async token 的同一 candidate owner，直接消费者仍是
+execution structure、Instr completion、唯一 SPM 规划和 target/package。变换不放置 wait，不估计容量、不强制选 DTE。
+负例包含缺失身份、不同输入/窗口/布局、输入写入、目的复写和动态控制；正例覆盖 4/16 Tile、1024/1025/1031，
+检查精确 payload、一个 load 对应全部 receiver、actual completion/SPM/target 及 PyTorch witness。
+既有 test-only communication qualifier 可显式选择 `shared-input`，调用同一 materializer；普通 none/search 入口不暴露该选择。
+三个 row-sharded GEMM 资格 case 检查单次 RHS load、完整接收端和精确 payload，再由统一 runner 完成 PyTorch 比较。
+同一 test-only qualifier 的 `pipelined-loads` 调用生产 distance-one materializer，检查实际两槽 select/load 后运行
+4K prefill PyTorch witness。资格参数不改变生产搜索的优先级或 winner。
 
 ## 7. Exact Descriptor 与 Invalid Lane
 

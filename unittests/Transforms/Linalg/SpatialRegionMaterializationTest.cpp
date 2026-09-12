@@ -785,7 +785,8 @@ module {
     std::optional<wafer::compiler::detail::RegionPlan> selected;
     std::optional<wafer::compiler::detail::RegionPlan> replicaPlan;
     for (const auto &proposal : regionDomain->getProposals(64))
-      if (!selected && llvm::any_of(proposal.groups, [](const auto &group) {
+      if (!selected && proposal.groups.size() == works->works.size() - 1 &&
+          llvm::any_of(proposal.groups, [](const auto &group) {
             return group.mandatoryRoots.size() == 2 &&
                    !group.localBindings.empty();
           })) {
@@ -858,6 +859,19 @@ module {
     EXPECT_EQ(
         countOps<mlir::linalg::GenericOp>(replicated->module->getOperation()),
         selectedOccurrences);
+    auto incomplete = *replicaPlan;
+    auto replicaGroup = llvm::find_if(incomplete.groups, [](const auto &group) {
+      return !group.replicas.empty();
+    });
+    ASSERT_NE(replicaGroup, incomplete.groups.end());
+    ASSERT_FALSE(replicaGroup->replicas.front().inputs.empty());
+    replicaGroup->replicas.front().inputs.pop_back();
+    wafer::SpatialRegionMaterializationFailure missingInput;
+    EXPECT_TRUE(mlir::failed(wafer::materializeSpatialRegions(
+        *source, wafer::CardId(0), allTiles(), mappings, works->works,
+        incomplete, &missingInput)));
+    EXPECT_EQ(missingInput.kind,
+              wafer::SpatialRegionMaterializationFailureKind::BrokenContract);
   }
 }
 
@@ -1496,6 +1510,97 @@ module {
   source->print(afterStream);
   afterStream.flush();
   EXPECT_EQ(after, before);
+}
+
+TEST(SpatialRegionMaterializationTest,
+     PartialMergePreservesPermutedOutputCoordinates) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (int64_t parts : {4, 16}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(parts);
+      auto context = createContext();
+      std::string text;
+      llvm::raw_string_ostream out(text);
+      out << R"mlir(module {
+  wafer.target.topology @target {card_grid = array<i64: 1, 1>,
+      card_interconnect = "mesh", tile_grid = array<i64: 4, 4>,
+      unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical {axes = ["card"], shape = array<i64: 1>}
+  func.func @main(%input: tensor<2x)mlir"
+          << extent
+          << R"mlir(x3xf16>, %init: tensor<3x2xf16>) -> tensor<3x2xf16> {
+    %result = linalg.generic {
+      indexing_maps = [affine_map<(b, k, n) -> (b, k, n)>,
+                       affine_map<(b, k, n) -> (n, b)>],
+      iterator_types = ["parallel", "reduction", "parallel"]}
+      ins(%input : tensor<2x)mlir"
+          << extent << R"mlir(x3xf16>) outs(%init : tensor<3x2xf16>) {
+      ^bb0(%x: f16, %old: f16):
+        %sum = arith.addf %x, %old : f16
+        linalg.yield %sum : f16
+    } -> tensor<3x2xf16>
+    return %result : tensor<3x2xf16>
+  }
+})mlir";
+      auto source =
+          mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+      ASSERT_TRUE(source);
+      wafer::SpatialRegionMaterializationFailure failure;
+      std::string detail;
+      auto actual = materializeWithSpatialDomainPlan(
+          *source,
+          [&](const wafer::compiler::detail::SpatialRootDomainFacts &root,
+              wafer::compiler::detail::SpatialPlan &plan, std::string &reason) {
+            auto &node = plan.nodes.front();
+            for (auto &axis : node.axes) {
+              axis.scheme = wafer::compiler::detail::IteratorPartitionScheme::
+                  BalancedParts;
+              axis.parameter = axis.iterator == 1 ? parts : 1;
+            }
+            node.embedding.clear();
+            for (int64_t tile = 0; tile < parts; ++tile)
+              node.embedding.push_back(wafer::TileId(tile));
+            auto groups = wafer::compiler::detail::deriveSpatialReductionGroups(
+                root, node.axes, &reason);
+            if (mlir::failed(groups))
+              return;
+            node.reductionMerges.clear();
+            for (const auto &group : *groups)
+              node.reductionMerges.push_back({group, wafer::TileId(15)});
+          },
+          failure, detail);
+      ASSERT_TRUE(mlir::succeeded(actual)) << detail;
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*actual->module)));
+      std::vector<unsigned> coverage(extent);
+      unsigned contributions = 0;
+      actual->module->walk([&](mlir::tensor::InsertSliceOp insert) {
+        auto type =
+            mlir::cast<mlir::RankedTensorType>(insert.getDest().getType());
+        if (type.getShape() != llvm::ArrayRef<int64_t>{3, extent, 2})
+          return;
+        ++contributions;
+        auto offsets = insert.getStaticOffsets();
+        auto sizes = insert.getStaticSizes();
+        EXPECT_EQ(offsets[0], 0);
+        EXPECT_EQ(offsets[2], 0);
+        EXPECT_EQ(sizes[0], 3);
+        EXPECT_EQ(sizes[2], 2);
+        EXPECT_EQ(insert.getStaticStrides(),
+                  (llvm::ArrayRef<int64_t>{1, 1, 1}));
+        ASSERT_GE(offsets[1], 0);
+        ASSERT_LE(offsets[1] + sizes[1], extent);
+        EXPECT_EQ(
+            mlir::cast<mlir::RankedTensorType>(insert.getSource().getType())
+                .getShape(),
+            (llvm::ArrayRef<int64_t>{3, sizes[1], 2}));
+        for (int64_t k = offsets[1]; k < offsets[1] + sizes[1]; ++k)
+          ++coverage[k];
+      });
+      EXPECT_EQ(contributions, static_cast<unsigned>(parts));
+      EXPECT_TRUE(
+          llvm::all_of(coverage, [](unsigned count) { return count == 1; }));
+    }
+  }
 }
 
 TEST(SpatialRegionMaterializationTest,

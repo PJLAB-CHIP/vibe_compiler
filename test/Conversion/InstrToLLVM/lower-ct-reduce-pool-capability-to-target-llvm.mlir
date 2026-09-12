@@ -9,10 +9,10 @@ module {
   func.func @ct_reduce_pool_capability_vertical() {
     %reduce_input = memref.alloc()
         {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<4x64xf16, #wafer.memory<spm, cx>>
+        : memref<1x1x4x64xf16, #wafer.memory<spm, ncx>>
     %reduce_output = memref.alloc()
         {wafer.spm.offset = #wafer.spm_offset<66048>}
-        : memref<1x64xf16, #wafer.memory<spm, cx>>
+        : memref<1x1x1x64xf16, #wafer.memory<spm, ncx>>
     %pool_input = memref.alloc()
         {wafer.spm.offset = #wafer.spm_offset<66304>}
         : memref<1x3x5x64xf16, #wafer.memory<spm, ncx>>
@@ -29,8 +29,8 @@ module {
     wafer.instr.reduce #wafer.instr_reduce_kind<sum>
         %reduce_input into %reduce_output
         {dim = 1 : i64}
-        : memref<4x64xf16, #wafer.memory<spm, cx>>
-      into memref<1x64xf16, #wafer.memory<spm, cx>>
+        : memref<1x1x4x64xf16, #wafer.memory<spm, ncx>>
+      into memref<1x1x1x64xf16, #wafer.memory<spm, ncx>>
     wafer.instr.pool #wafer.instr_pool_kind<indexedmax> %pool_input
         into %pool_value, %pool_index
         {source_shape = array<i64: 1, 3, 5, 64>,

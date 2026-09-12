@@ -199,13 +199,13 @@ module {
 module {
   func.func @ct_reduce_f32() {
     %input = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<4x64xf32, #wafer.memory<spm, cx>>
+        : memref<1x1x4x64xf32, #wafer.memory<spm, ncx>>
     %output = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66560>}
-        : memref<1x64xf32, #wafer.memory<spm, cx>>
+        : memref<1x1x1x64xf32, #wafer.memory<spm, ncx>>
     wafer.instr.reduce #wafer.instr_reduce_kind<sum> %input into %output
         {dim = 1 : i64}
-        : memref<4x64xf32, #wafer.memory<spm, cx>>
-      into memref<1x64xf32, #wafer.memory<spm, cx>>
+        : memref<1x1x4x64xf32, #wafer.memory<spm, ncx>>
+      into memref<1x1x1x64xf32, #wafer.memory<spm, ncx>>
     return
   }
 }

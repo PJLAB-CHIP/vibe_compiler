@@ -274,7 +274,7 @@ module {{
                                         : wafer::InstrReduceKind::Min;
     EXPECT_EQ(reduce.getKind(), expectedKind);
     auto nativeType = mlir::cast<mlir::MemRefType>(reduce.getDest().getType());
-    EXPECT_EQ(nativeType.getShape(), (llvm::ArrayRef<int64_t>{1, rows, 1}));
+    EXPECT_EQ(nativeType.getShape(), (llvm::ArrayRef<int64_t>{1, 1, rows, 1}));
     EXPECT_EQ(wafer::getWaferMemoryAttr(nativeType).getLayout(),
               wafer::MemLayout::NCx);
     EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*source),
@@ -289,7 +289,7 @@ module {{
                 wafer::MemLayout::Cx);
       for (int64_t row = 0; row < rows; ++row) {
         auto src = wafer::computeWaferPhysicalElementByteOffset(nativeType,
-                                                                {0, row, 0});
+                                                                {0, 0, row, 0});
         auto dst =
             wafer::computeWaferPhysicalElementByteOffset(resultType, {0, row});
         ASSERT_TRUE(src && dst);
@@ -338,6 +338,294 @@ module {{
     }
   for (int64_t width : {1, 8, 1023, 1024, 1025, 1031})
     check(1024, width, "f32", "sum", "0.0");
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     NativeReductionChecksTheActualNHWCRegisterLimits) {
+  for (int64_t rows : {4096, 4097}) {
+    SCOPED_TRACE(rows);
+    mlir::DialectRegistry registry;
+    registerTargetConversionDialects(registry);
+    mlir::MLIRContext context(registry);
+    context.loadAllAvailableDialects();
+    auto text = llvm::formatv(R"mlir(
+module {{
+  func.func @main() {{
+    %token = arith.constant false
+    %unused = wafer.tile.region(%token : i1) -> (i1) {{
+    ^bb0(%done: i1):
+      %input = memref.alloc() : memref<1x1x{0}x2xf16, #wafer.memory<spm, ncx>>
+      %result = wafer.tile.reduce <sum> %input
+          {{dimensions = array<i64: 3>, init_value = 0.0 : f16}
+          : (memref<1x1x{0}x2xf16, #wafer.memory<spm, ncx>>)
+         -> memref<1x1x{0}xf16, #wafer.memory<spm, ncx>>
+      wafer.tile.yield %done : i1
+    }
+    return
+  }
+}
+)mlir",
+                              rows)
+                    .str();
+    auto source = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+    ASSERT_TRUE(source);
+    wafer::TileRegionOp region;
+    source->walk([&](wafer::TileRegionOp op) { region = op; });
+    wafer::TileRegionToInstrLoweringSession session(context);
+    ASSERT_TRUE(
+        mlir::succeeded(wafer::convertTileRegionToInstr(region, session)));
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*source)));
+    EXPECT_EQ(countOps<wafer::ComputeReduceOp>(*source), 0u);
+    EXPECT_EQ(countOps<wafer::InstrReduceOp>(*source), rows == 4096 ? 1u : 0u);
+    EXPECT_EQ(countOps<wafer::InstrElementwiseOp>(*source),
+              rows == 4096 ? 0u : 1u);
+  }
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     NativeReductionMaterializesExactNHWCInputGeometry) {
+  auto check = [](int64_t rows, int64_t channels, llvm::StringRef dtype) {
+    SCOPED_TRACE(
+        llvm::formatv("rows={0}, C={1}, dtype={2}", rows, channels, dtype)
+            .str());
+    mlir::DialectRegistry registry;
+    registerTargetConversionDialects(registry);
+    mlir::MLIRContext context(registry);
+    context.loadAllAvailableDialects();
+    auto text = llvm::formatv(R"mlir(
+module {{
+  func.func @main() {{
+    %token = arith.constant false
+    %unused = wafer.tile.region(%token : i1) -> (i1) {{
+    ^bb0(%done: i1):
+      %input = memref.alloc() : memref<16x{0}x{1}x{2}, #wafer.memory<spm, ncx>>
+      %result = wafer.tile.reduce <sum> %input
+          {{dimensions = array<i64: 0>, init_value = 0.0 : {2}}
+          : (memref<16x{0}x{1}x{2}, #wafer.memory<spm, ncx>>)
+         -> memref<{0}x{1}x{2}, #wafer.memory<spm, cx>>
+      wafer.tile.yield %done : i1
+    }
+    return
+  }
+}
+)mlir",
+                              rows, channels, dtype)
+                    .str();
+    auto source = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+    ASSERT_TRUE(source);
+    mlir::memref::AllocOp original;
+    source->walk([&](mlir::memref::AllocOp op) { original = op; });
+    wafer::TileRegionOp region;
+    source->walk([&](wafer::TileRegionOp op) { region = op; });
+    wafer::TileRegionToInstrLoweringSession session(context);
+    ASSERT_TRUE(
+        mlir::succeeded(wafer::convertTileRegionToInstr(region, session)));
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
+    ASSERT_EQ(countOps<wafer::InstrReduceOp>(*source), 1u);
+    wafer::InstrReduceOp reduce;
+    source->walk([&](wafer::InstrReduceOp op) { reduce = op; });
+    EXPECT_EQ(reduce.getDimAttr().getInt(), 2);
+    auto packed = mlir::cast<mlir::MemRefType>(reduce.getInput().getType());
+    EXPECT_EQ(packed.getShape(),
+              (llvm::ArrayRef<int64_t>{1, 16, rows, channels}));
+    EXPECT_EQ(
+        mlir::cast<mlir::MemRefType>(reduce.getDest().getType()).getShape(),
+        (llvm::ArrayRef<int64_t>{1, 1, rows, channels}));
+    // Independently enumerate logical elements under the two physical types.
+    // The descriptor must cover exactly these bytes, without touching padding.
+    auto packedInfo = wafer::computeWaferPhysicalTensorInfo(packed);
+    auto originalInfo =
+        wafer::computeWaferPhysicalTensorInfo(original.getType());
+    ASSERT_TRUE(packedInfo && originalInfo);
+    std::vector<int64_t> expected(packedInfo->physicalBytes, -1);
+    const int64_t elementBytes = dtype == "f32" ? 4 : 2;
+    bool identical = packedInfo->physicalBytes == originalInfo->physicalBytes;
+    for (int64_t h = 0; h < 16; ++h)
+      for (int64_t w = 0; w < rows; ++w)
+        for (int64_t c = 0; c < channels; ++c) {
+          auto src = wafer::computeWaferPhysicalElementByteOffset(
+              original.getType(), *originalInfo, {h, w, c});
+          auto dst = wafer::computeWaferPhysicalElementByteOffset(
+              packed, *packedInfo, {0, h, w, c});
+          ASSERT_TRUE(src && dst);
+          identical &= *src == *dst;
+          for (int64_t byte = 0; byte < elementBytes; ++byte)
+            expected[*dst + byte] = *src + byte;
+        }
+    if (identical) {
+      auto view =
+          reduce.getInput().getDefiningOp<mlir::memref::ReinterpretCastOp>();
+      ASSERT_TRUE(view);
+      EXPECT_EQ(view.getSource(), original.getResult());
+    } else {
+      ASSERT_TRUE(reduce.getInput().getDefiningOp<mlir::memref::AllocOp>());
+      std::vector<bool> seen(expected.size(), false);
+      uint64_t transferred = 0;
+      unsigned movements = 0;
+      source->walk([&](wafer::InstrGatherScatterOp move) {
+        if (move.getDest() != reduce.getInput())
+          return;
+        ++movements;
+        ASSERT_EQ(move.getSource(), original.getResult());
+        auto expand = [&](mlir::DenseI64ArrayAttr iterations,
+                          mlir::DenseI64ArrayAttr strides,
+                          mlir::IntegerAttr offset) {
+          std::vector<int64_t> bytes;
+          auto counts = iterations.asArrayRef();
+          auto steps = strides.asArrayRef();
+          int64_t base = offset ? offset.getInt() : 0;
+          for (int64_t k = 0; k < counts[2]; ++k)
+            for (int64_t j = 0; j < counts[1]; ++j)
+              for (int64_t i = 0; i < counts[0]; ++i)
+                for (int64_t byte = 0; byte < move.getInnerBytesAttr().getInt();
+                     ++byte)
+                  bytes.push_back(base + i * steps[0] + j * steps[1] +
+                                  k * steps[2] + byte);
+          return bytes;
+        };
+        auto src = expand(move.getSrcIterationsAttr(), move.getSrcStridesAttr(),
+                          move.getSrcOffsetAttr());
+        auto dst = expand(move.getDstIterationsAttr(), move.getDstStridesAttr(),
+                          move.getDstOffsetAttr());
+        ASSERT_EQ(src.size(), dst.size());
+        ASSERT_EQ(src.size(),
+                  static_cast<size_t>(move.getByteCountAttr().getInt()));
+        bool exact = true;
+        for (size_t i = 0; i < src.size(); ++i) {
+          if (dst[i] < 0 || static_cast<size_t>(dst[i]) >= expected.size() ||
+              seen[dst[i]] || expected[dst[i]] != src[i]) {
+            exact = false;
+            break;
+          }
+          seen[dst[i]] = true;
+        }
+        EXPECT_TRUE(exact);
+        transferred += src.size();
+      });
+      EXPECT_GT(movements, 0u);
+      EXPECT_EQ(transferred,
+                static_cast<uint64_t>(16 * rows * channels * elementBytes));
+      for (size_t i = 0; i < expected.size(); ++i)
+        if (seen[i] != (expected[i] >= 0)) {
+          ADD_FAILURE() << "missing or padded destination byte " << i;
+          break;
+        }
+    }
+    EXPECT_EQ(countOps<wafer::InstrElementwiseOp>(*source), 0u);
+    EXPECT_EQ(countOps<mlir::scf::ForOp>(*source), 0u);
+  };
+  for (int64_t rows : {1024, 1025, 1031})
+    for (llvm::StringRef dtype : {"f16", "bf16", "f32"})
+      check(rows, 1, dtype);
+  check(1031, 65, "f16");
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     DynamicGatherScatterOffsetsAreRelativeToNestedViews) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    mlir::DialectRegistry registry;
+    registerTargetConversionDialects(registry);
+    mlir::arith::registerValueBoundsOpInterfaceExternalModels(registry);
+    mlir::scf::registerValueBoundsOpInterfaceExternalModels(registry);
+    mlir::MLIRContext context(registry);
+    context.loadAllAvailableDialects();
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(module {
+      func.func @main() {
+        %token = arith.constant false
+        %unused = wafer.tile.region(%token : i1) -> (i1) {
+        ^bb0(%done: i1):
+          wafer.tile.yield %done : i1
+        }
+        return
+      }
+    })mlir",
+                                                          &context);
+    ASSERT_TRUE(module);
+    wafer::TileRegionOp region;
+    module->walk([&](wafer::TileRegionOp op) { region = op; });
+    mlir::OpBuilder builder(region.getBody().front().getTerminator());
+    auto loc = region.getLoc();
+    auto tensor = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                         wafer::MemLayout::Tensor);
+    auto ncx = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                      wafer::MemLayout::NCx);
+    auto type =
+        mlir::MemRefType::get({1, extent, 128}, builder.getF16Type(),
+                              mlir::MemRefLayoutAttrInterface{}, tensor);
+    auto input = builder.create<mlir::memref::AllocOp>(loc, type);
+    auto output = builder.create<mlir::memref::AllocOp>(loc, type);
+    auto view = [&](mlir::Value base, int64_t channel) {
+      return builder.create<mlir::memref::SubViewOp>(
+          loc, base, llvm::ArrayRef<int64_t>{0, 0, channel},
+          llvm::ArrayRef<int64_t>{1, extent, 64},
+          llvm::ArrayRef<int64_t>{1, 1, 1});
+    };
+    auto source = view(input, 64);
+    auto destination = view(output, 32);
+    auto zero = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+    auto end = builder.create<mlir::arith::ConstantIndexOp>(loc, extent);
+    auto one = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+    auto loop = builder.create<mlir::scf::ForOp>(loc, zero, end, one);
+    builder.setInsertionPoint(loop.getBody()->getTerminator());
+    llvm::SmallVector<mlir::OpFoldResult> offsets{builder.getIndexAttr(0),
+                                                  loop.getInductionVar(),
+                                                  builder.getIndexAttr(0)};
+    auto sizes = mlir::getAsIndexOpFoldResult(&context, {1, 1, 64});
+    auto strides = mlir::getAsIndexOpFoldResult(&context, {1, 1, 1});
+    auto from = builder.create<mlir::memref::SubViewOp>(loc, source, offsets,
+                                                        sizes, strides);
+    auto to = builder.create<mlir::memref::SubViewOp>(loc, destination, offsets,
+                                                      sizes, strides);
+    auto packedType =
+        mlir::MemRefType::get({1, 1, 64}, builder.getF16Type(),
+                              mlir::MemRefLayoutAttrInterface{}, ncx);
+    auto packed =
+        builder.create<wafer::LayoutMaterializeOp>(loc, packedType, from);
+    builder.create<wafer::MoveCopyIntoOp>(loc, packed, to);
+    wafer::TileRegionToInstrLoweringSession session(context);
+    ASSERT_TRUE(
+        mlir::succeeded(wafer::convertTileRegionToInstr(region, session)));
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    ASSERT_TRUE(mlir::succeeded(
+        wafer::target_llvm_detail::verifyTargetInstructionFormats(*module)));
+    std::function<int64_t(mlir::Value, int64_t)> evaluate =
+        [&](mlir::Value value, int64_t row) -> int64_t {
+      if (!value)
+        return 0;
+      if (value == loop.getInductionVar())
+        return row;
+      if (auto constant = value.getDefiningOp<mlir::arith::ConstantIndexOp>())
+        return constant.value();
+      if (auto add = value.getDefiningOp<mlir::arith::AddIOp>())
+        return evaluate(add.getLhs(), row) + evaluate(add.getRhs(), row);
+      if (auto mul = value.getDefiningOp<mlir::arith::MulIOp>())
+        return evaluate(mul.getLhs(), row) * evaluate(mul.getRhs(), row);
+      ADD_FAILURE() << "unexpected actual offset expression";
+      return -1;
+    };
+    unsigned reads = 0, writes = 0;
+    module->walk([&](wafer::InstrGatherScatterOp move) {
+      bool read = move.getSource() == source.getResult();
+      bool write = move.getDest() == destination.getResult();
+      ASSERT_NE(read, write);
+      reads += read;
+      writes += write;
+      EXPECT_EQ(move.getByteCount(), 128);
+      EXPECT_EQ(move.getInnerBytes(), 128);
+      auto counts = read ? move.getSrcIterations() : move.getDstIterations();
+      EXPECT_EQ(counts, (llvm::ArrayRef<int64_t>{1, 1, 1}));
+      for (int64_t row = 0; row < extent; ++row) {
+        int64_t relative = evaluate(
+            read ? move.getSrcOffsetValue() : move.getDstOffsetValue(), row);
+        for (int64_t byte = 0; byte < 128; ++byte)
+          EXPECT_EQ((read ? 128 : 64) + relative + byte,
+                    2 * (row * 128 + (read ? 64 : 32)) + byte);
+      }
+    });
+    EXPECT_EQ(reads, 1u);
+    EXPECT_EQ(writes, 1u);
+  }
 }
 
 TEST(LowerInstrToTargetLLVMTest,

@@ -265,17 +265,11 @@ verifyInstructionReduceContract(mlir::Operation *op, mlir::Value input,
       !hasWaferMemorySpace(dest.getType(), MemorySpace::SPM))
     return op->emitOpError("reduce operands/dest must use SPM memory space");
 
-  MemLayout expectedInputLayout =
-      inputTensor->getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
-  MemLayout expectedDestLayout =
-      destTensor->getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
-  if (!hasWaferLayout(input.getType(), expectedInputLayout) ||
-      !hasWaferLayout(dest.getType(), expectedDestLayout)) {
-    if (inputTensor->getRank() > 2 || destTensor->getRank() > 2)
-      return op->emitOpError(
-          "reduce rank > 2 operands/dest must use ncx layout");
-    return op->emitOpError("reduce rank <= 2 operands/dest must use cx layout");
-  }
+  if (inputTensor->getRank() != 4 || destTensor->getRank() != 4)
+    return op->emitOpError("reduce operands/dest must use rank4 NHWC geometry");
+  if (!hasWaferLayout(input.getType(), MemLayout::NCx) ||
+      !hasWaferLayout(dest.getType(), MemLayout::NCx))
+    return op->emitOpError("reduce operands/dest must use ncx layout");
 
   if (inputTensor->getElementType() != destTensor->getElementType())
     return op->emitOpError(
@@ -288,9 +282,6 @@ verifyInstructionReduceContract(mlir::Operation *op, mlir::Value input,
     return op->emitOpError("reduce dim must be a target code in [0, 5]");
 
   int64_t rank = inputTensor->getRank();
-  if (rank <= 0 || rank > 4)
-    return op->emitOpError("reduce input rank must be in [1, 4]");
-
   llvm::SmallVector<int64_t, 3> dims =
       getInstrReduceLogicalDims(targetDim, rank);
 

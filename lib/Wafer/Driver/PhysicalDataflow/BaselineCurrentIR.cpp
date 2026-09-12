@@ -17,6 +17,7 @@
 #include "Wafer/Transforms/Linalg/TemporalTiling.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
+#include "Wafer/Transforms/Tile/ReadOnlyInputSharing.h"
 #include "Wafer/Transforms/Tile/StructuredToTile.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -401,13 +402,38 @@ ExecutableCompilationResult compileBaselineCurrentIR(
     if (statistics)
       statistics->boundaryMovement = movement.statistics;
 
+    if (options.qualification && options.qualification->shareReadOnlyInputs) {
+      auto sharing = materializeReadOnlyInputSharing(*candidate->module,
+                                                     candidate->relations);
+      if (!sharing.succeeded())
+        return fail(sharing.failure == BoundaryMovementFailureKind::Unsupported
+                        ? ExecutableCompilationStatus::UnsupportedFailure
+                        : ExecutableCompilationStatus::CompilerFailure,
+                    "input-sharing", sharing.detail);
+      recordMovementInstrumentation(sharing.statistics);
+    }
+
     CurrentIRDownstreamStatistics downstream;
+    auto downstreamOptions = options.downstream;
+    const bool qualifyPipeline =
+        options.qualification && options.qualification->pipelineLoads;
+    const bool applyPipeline =
+        qualifyPipeline && hasDistanceOneLoadPipeline(*candidate->module);
+    if (applyPipeline)
+      downstreamOptions.distanceOneLoadPipeline = true;
     ExecutableCompilationResult result = compileCurrentIRCandidateToExecutable(
         std::move(candidate->module), std::move(candidate->relations), cardId,
         (*structured)->availableTileIds, program, executionConfig, diagnostics,
-        programData, options.downstream, &downstream, executableStatistics);
+        programData, downstreamOptions, &downstream, executableStatistics);
     if (statistics)
       statistics->downstream = downstream;
+    // The initial full-size baseline can have no loop yet. Let its actual
+    // memory result drive the existing capacity controller. A feasible serial
+    // leaf still cannot satisfy explicit pipeline qualification.
+    if (qualifyPipeline && !applyPipeline && result.isAccepted())
+      return fail(ExecutableCompilationStatus::UnsupportedFailure,
+                  "execution-structure",
+                  "baseline has no eligible load pipeline");
     if (!result.isProvenExactRejection())
       return result;
     lastCapacityRejection = std::move(result);

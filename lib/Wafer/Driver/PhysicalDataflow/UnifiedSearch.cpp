@@ -9,6 +9,8 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FormatVariadic.h"
 
+#include <algorithm>
+#include <deque>
 #include <limits>
 #include <utility>
 #include <variant>
@@ -19,12 +21,7 @@ namespace {
 
 struct SpatialFrame {};
 
-struct StructuralCandidateFrame {
-  RegionState state;
-};
-
-using FrontierFrame =
-    std::variant<SpatialFrame, RegionContinuation, StructuralCandidateFrame>;
+using FrontierFrame = std::variant<SpatialFrame, RegionContinuation>;
 
 bool isTerminal(UnifiedSearchResumeStatus status) {
   return status != UnifiedSearchResumeStatus::Paused;
@@ -41,8 +38,6 @@ void recordStructuralCandidateMetrics(
     size_t index, const RegionPlan &plan,
     const StructuralCandidateEvaluation &evaluation,
     const std::optional<analysis::SearchCostCohort> &cohort) {
-  if (index >= 8)
-    return;
 
   uint64_t fusionMerges = 0;
   for (const RegionGroupPlan &group : plan.groups)
@@ -50,7 +45,7 @@ void recordStructuralCandidateMetrics(
   recordRegionCandidateCounter(index, "actualizations",
                                evaluation.actualizations);
   recordRegionCandidateCounter(index, "merges", fusionMerges);
-  const ActualCandidateStatus status = evaluation.result.status;
+  const ActualCandidateStatus status = evaluation.result->status;
   recordRegionCandidateCounter(index, "accepted",
                                status == ActualCandidateStatus::Accepted);
   recordRegionCandidateCounter(index, "exact-rejected",
@@ -61,14 +56,14 @@ void recordStructuralCandidateMetrics(
                                status == ActualCandidateStatus::Indeterminate);
 
   if (status != ActualCandidateStatus::Accepted ||
-      !evaluation.result.compilation ||
-      !evaluation.result.compilation->executable)
+      !evaluation.result->compilation ||
+      !evaluation.result->compilation->executable)
     return;
   const analysis::InstructionProgramAggregateCost &cost =
-      evaluation.result.compilation->executable->resourceCost;
-  if (evaluation.result.compilation->physicalIRInventory) {
+      evaluation.result->compilation->executable->resourceCost;
+  if (evaluation.result->compilation->physicalIRInventory) {
     const PhysicalDataflowIRInventory &inventory =
-        *evaluation.result.compilation->physicalIRInventory;
+        *evaluation.result->compilation->physicalIRInventory;
     recordRegionCandidateCounter(index, "actual-tile-regions",
                                  inventory.tileRegions);
     for (const PhysicalTileIRInventory &tile : inventory.tiles)
@@ -93,8 +88,8 @@ void recordStructuralCandidateMetrics(
     recordRegionCandidateCounter(index, "instruction-count",
                                  cost.aggregateInstructionCount.value);
 
-  analysis::SearchObjective objective =
-      analysis::deriveSearchObjective(cost, cohort);
+  analysis::SearchObjective objective = deriveExecutableSearchObjective(
+      *evaluation.result->compilation->executable, cohort);
   const auto *known = std::get_if<analysis::KnownSearchObjective>(&objective);
   recordRegionCandidateCounter(index, "objective-known", known != nullptr);
   if (!known)
@@ -104,9 +99,8 @@ void recordStructuralCandidateMetrics(
   recordRegionCandidateCounter(index, "objective-coarse-estimate",
                                known->usesCoarseEstimate);
   const analysis::SearchResourceDurations &durations = known->durations;
-  recordRegionCandidateCounter(
-      index, "objective-profile-identity",
-      known->cohort.getPolicy().profileIdentity);
+  recordRegionCandidateCounter(index, "objective-profile-identity",
+                               known->cohort.getPolicy().profileIdentity);
   recordRegionCandidateCounter(
       index, "objective-profile-calibrated",
       known->cohort.getPolicy().profileProvenance ==
@@ -148,16 +142,28 @@ void recordStructuralCandidateMetrics(
 } // namespace
 
 struct UnifiedSearchSession::Impl {
+  struct Branch {
+    RegionState state;
+    std::unique_ptr<StructuralCandidateSession> session;
+    CandidateContinuation next = CandidateContinuation::Explore;
+    std::optional<analysis::SearchObjective> objective;
+    uint64_t identity = 0;
+    uint64_t lastVisit = 0;
+    bool evaluated = false;
+    CandidateRetention retention = CandidateRetention::Replaceable;
+  };
+
   Impl(PhysicalDataflowPlanningSession &planningSession,
        StructuralCandidateEvaluator &evaluator,
        const UnifiedSearchOptions &options, UnifiedSearchTrace *trace)
       : planningSession(planningSession), evaluator(evaluator),
         termination(options.termination), costCohort(options.costCohort),
         remainingActualizationCredits(options.candidateActualizationCredits),
+        retainedBranches(options.retainedBranches),
         maximumRegionRefinementCandidates(
             options.maximumRegionRefinementCandidates),
         controller(ActualResultControllerOptions{
-            options.structuralCandidateCredits, options.costCohort,
+            std::numeric_limits<uint64_t>::max(), options.costCohort,
             options.exactRejectionCache}),
         profile(options.profile), trace(trace) {
     frontier.emplace_back(SpatialFrame{});
@@ -165,11 +171,8 @@ struct UnifiedSearchSession::Impl {
       profile->beginSearch();
       profile->observeFrontierDepth(frontier.size());
     }
-  }
-
-  template <typename State> void recordPrefix(const State &state) {
-    if (trace)
-      trace->prefixes.emplace_back(state);
+    if (!retainedBranches)
+      fail("search retention width must be positive");
   }
 
   void fail(llvm::StringRef detail) {
@@ -177,167 +180,324 @@ struct UnifiedSearchSession::Impl {
     failureDetail = detail.str();
   }
 
-  void pauseIndeterminate(llvm::StringRef detail) {
-    status = UnifiedSearchResumeStatus::Indeterminate;
-    failureDetail = detail.str();
+  template <typename State> void recordPrefix(const State &state) {
+    if (trace)
+      trace->prefixes.emplace_back(state);
   }
 
-  void stepSpatial() {
+  // Round-robin parent continuations preserve each raw-domain cursor. A new
+  // Spatial family gets its first Region before parameter successors of older
+  // families; no Region subtree drains the global budget.
+  void generate() {
+    FrontierFrame frame = std::move(frontier.front());
+    frontier.pop_front();
     ++work.successorSteps;
-    SpatialExpansionResult expansion = planningSession.resumeSpatial();
-    switch (expansion.getKind()) {
-    case SpatialExpansionKind::StateQueued: {
-      std::optional<SpatialState> state =
-          planningSession.takeNextSpatialState();
-      if (!state) {
-        fail("spatial continuation lost its queued state");
+    if (std::holds_alternative<SpatialFrame>(frame)) {
+      SpatialExpansionResult expansion = planningSession.resumeSpatial();
+      switch (expansion.getKind()) {
+      case SpatialExpansionKind::StateQueued: {
+        auto state = planningSession.takeNextSpatialState();
+        if (!state) {
+          fail("spatial continuation lost its queued state");
+          return;
+        }
+        recordPrefix(*state);
+        frontier.emplace_front(
+            planningSession.createRegionContinuation(std::move(*state)));
+        frontier.emplace_back(SpatialFrame{});
         return;
       }
-      recordPrefix(*state);
-      frontier.emplace_back(
-          planningSession.createRegionContinuation(std::move(*state)));
-      return;
+      case SpatialExpansionKind::Unsupported:
+        sawUnsupportedPrefix = true;
+        frontier.emplace_back(SpatialFrame{});
+        return;
+      case SpatialExpansionKind::ParentExhausted:
+        return;
+      case SpatialExpansionKind::Indeterminate:
+        status = UnifiedSearchResumeStatus::Indeterminate;
+        failureDetail = expansion.getDetail().str();
+        return;
+      case SpatialExpansionKind::CompilerBug:
+        fail(expansion.getDetail());
+        return;
+      }
     }
-    case SpatialExpansionKind::Unsupported:
-      sawUnsupportedPrefix = true;
-      return;
-    case SpatialExpansionKind::Indeterminate:
-      pauseIndeterminate(expansion.getDetail());
-      return;
-    case SpatialExpansionKind::ParentExhausted:
-      frontier.pop_back();
-      return;
-    case SpatialExpansionKind::CompilerBug:
-      fail(expansion.getDetail());
-      return;
+    auto &continuation = std::get<RegionContinuation>(frame);
+    if (continuation.needsRefinementProposals(
+            maximumRegionRefinementCandidates)) {
+      const auto *incumbent = controller.getIncumbentKey();
+      if (incumbent && maximumRegionRefinementCandidates &&
+          incumbent->getSpatialPlan() == continuation.getParent().getPlan()) {
+        std::string detail;
+        if (mlir::failed(planningSession.addRegionRefinementProposals(
+                continuation, incumbent->getRegionPlan(),
+                maximumRegionRefinementCandidates, &detail))) {
+          fail(detail);
+          return;
+        }
+      } else {
+        planningSession.skipRegionRefinementProposals(continuation);
+      }
     }
-  }
-
-  void stepRegion(RegionContinuation &continuation) {
-    ++work.successorSteps;
     std::string detail;
-    auto next = planningSession.resumeRegion(continuation, &detail);
-    if (mlir::failed(next)) {
+    auto state = planningSession.resumeRegion(continuation, &detail);
+    if (mlir::failed(state)) {
       fail(detail.empty() ? "region continuation failed" : detail);
       return;
     }
-    if (!*next) {
-      frontier.pop_back();
+    if (!*state)
       return;
-    }
-    recordPrefix(**next);
-    frontier.emplace_back(StructuralCandidateFrame{std::move(**next)});
+    recordPrefix(**state);
+    pending.emplace(std::move(**state));
+    frontier.emplace_back(std::move(continuation));
   }
 
-  void stepCandidate(StructuralCandidateFrame frame) {
-    if (remainingActualizationCredits == 0) {
-      status = UnifiedSearchResumeStatus::CandidateBudgetExhausted;
-      return;
+  bool makeRoom() {
+    if (branches.size() < retainedBranches)
+      return true;
+    std::optional<size_t> worst;
+    auto sameStructure = [](const RegionState &lhs, const RegionState &rhs) {
+      if (!(lhs.getRegionPlan() == rhs.getRegionPlan()))
+        return false;
+      const auto &left = lhs.getSpatialPlan().nodes;
+      const auto &right = rhs.getSpatialPlan().nodes;
+      if (left.size() != right.size())
+        return false;
+      for (size_t node = 0; node < left.size(); ++node) {
+        if (!(left[node].root == right[node].root) ||
+            left[node].axes.size() != right[node].axes.size())
+          return false;
+        for (size_t axis = 0; axis < left[node].axes.size(); ++axis) {
+          const auto &a = left[node].axes[axis];
+          const auto &b = right[node].axes[axis];
+          if (a.iterator != b.iterator || a.scheme != b.scheme ||
+              (a.parameter == 1) != (b.parameter == 1))
+            return false;
+        }
+      }
+      return true;
+    };
+    // This grouping affects retention priority only. Distinct placements and
+    // numeric choices still have distinct keys and actual evaluations.
+    auto redundant = [&](size_t index) {
+      if (pending && sameStructure(branches[index].state, *pending))
+        return true;
+      for (size_t other = 0; other < branches.size(); ++other)
+        if (other != index &&
+            sameStructure(branches[index].state, branches[other].state))
+          return true;
+      return false;
+    };
+    for (size_t i = 0; i < branches.size(); ++i) {
+      const Branch &candidate = branches[i];
+      // Never discard an unfinished capacity-correction chain just because
+      // another structure wants an evaluation slot.
+      if (!candidate.evaluated ||
+          candidate.next == CandidateContinuation::Repair ||
+          candidate.retention == CandidateRetention::PendingCapacityRepair)
+        continue;
+      if (!worst) {
+        worst = i;
+        continue;
+      }
+      const Branch &previous = branches[*worst];
+      if (redundant(i) != redundant(*worst)) {
+        if (redundant(i))
+          worst = i;
+        continue;
+      }
+      if (!candidate.objective ||
+          (previous.objective &&
+           analysis::compareSearchObjectives(*candidate.objective,
+                                             *previous.objective) ==
+               analysis::SearchObjectiveComparison::Worse))
+        worst = i;
     }
-    RegionState state = std::move(frame.state);
-    StructuralCandidateKey key = StructuralCandidateKey::create(state);
+    if (!worst)
+      return false;
+    controller.close(StructuralCandidateKey::create(branches[*worst].state),
+                     SearchFrontierStatus::Incomplete);
+    branches.erase(branches.begin() + *worst);
+    ++work.retiredBranches;
+    sawIncompleteInnerDomain = true;
+    return true;
+  }
+
+  void startPending() {
+    StructuralCandidateKey key = StructuralCandidateKey::create(*pending);
     CandidateReservation reservation = controller.reserve(key);
     if (reservation == CandidateReservation::Duplicate) {
       ++work.duplicateCompleteKeys;
+      pending.reset();
       return;
     }
     if (reservation != CandidateReservation::Granted) {
-      if (reservation == CandidateReservation::Exhausted) {
-        status = UnifiedSearchResumeStatus::CandidateBudgetExhausted;
-        return;
-      }
-      fail("actual-result controller rejected a unique complete key");
+      fail("actual-result controller rejected a new structural session");
       return;
     }
-    ++work.structuralStatesActualized;
-    StructuralCandidateEvaluation evaluation =
-        evaluator.evaluate(state, remainingActualizationCredits);
-    if (evaluation.actualizations > remainingActualizationCredits) {
-      fail("structural evaluator exceeded its actualization credits");
+    // Resolve duplicates before retiring an actual owner. The scheduler only
+    // enters here when a slot or an evaluated, non-repair branch is available.
+    if (!makeRoom()) {
+      fail("reserved structural session has no available retention slot");
+      return;
+    }
+    auto session = evaluator.start(*pending);
+    if (!session) {
+      fail("structural evaluator returned no owned session");
+      return;
+    }
+    uint64_t identity = work.structuralStatesActualized++;
+    branches.push_back({std::move(*pending),
+                        std::move(session),
+                        CandidateContinuation::Explore,
+                        {},
+                        identity});
+    pending.reset();
+    exploreRetainedNext = true;
+    work.peakRetainedBranches =
+        std::max<uint64_t>(work.peakRetainedBranches, branches.size());
+    evaluate(branches.size() - 1);
+  }
+
+  void evaluate(size_t index) {
+    Branch &branch = branches[index];
+    work.resumedCandidates += branch.evaluated;
+    branch.evaluated = true;
+    branch.lastVisit = ++visit;
+    support::ScopedCompileTimingSpan timing(
+        "search-candidate", "current-ir", "advance",
+        llvm::formatv("structural={0}, attempt={1}", branch.identity,
+                      work.candidateActualizations)
+            .str());
+    StructuralCandidateEvaluation evaluation = branch.session->advance();
+    if (evaluation.actualizations > 1 ||
+        evaluation.actualizations > remainingActualizationCredits ||
+        (!evaluation.actualizations &&
+         evaluation.continuation != CandidateContinuation::Exhausted)) {
+      fail("candidate session must advance by at most one actual attempt");
+      return;
+    }
+    if (!evaluation.result) {
+      if (evaluation.actualizations ||
+          evaluation.continuation != CandidateContinuation::Exhausted) {
+        fail("candidate session omitted a nonterminal actual result");
+        return;
+      }
+      controller.close(StructuralCandidateKey::create(branch.state),
+                       SearchFrontierStatus::Exhausted);
+      branches.erase(branches.begin() + index);
+      phase = (phase + 1) % 3;
       return;
     }
     remainingActualizationCredits -= evaluation.actualizations;
-    recordStructuralCandidateMetrics(work.structuralStatesActualized - 1,
-                                     state.getRegionPlan(), evaluation,
-                                     costCohort);
     work.candidateActualizations += evaluation.actualizations;
-    if (!evaluation.domainExhausted) {
-      sawIncompleteInnerDomain = true;
-      ++work.incompleteInnerDomains;
+    if (evaluation.actualizations) {
+      recordStructuralCandidateMetrics(work.candidateActualizations - 1,
+                                       branch.state.getRegionPlan(), evaluation,
+                                       costCohort);
+      recordRegionCandidateCounter(work.candidateActualizations - 1,
+                                   "structural-session", branch.identity);
     }
-    const ActualCandidateStatus actualStatus = evaluation.result.status;
+    const bool exhausted =
+        evaluation.continuation == CandidateContinuation::Exhausted;
+    const auto actualStatus = evaluation.result->status;
+    if (evaluation.result->isAccepted()) {
+      auto objective = deriveExecutableSearchObjective(
+          *evaluation.result->compilation->executable, costCohort);
+      if (!branch.objective ||
+          analysis::compareSearchObjectives(objective, *branch.objective) ==
+              analysis::SearchObjectiveComparison::Better)
+        branch.objective = std::move(objective);
+    }
     if (profile)
       profile->recordCandidateActualization(
           evaluation.actualizations,
           actualStatus == ActualCandidateStatus::Accepted);
-    const std::string actualDetail = evaluation.result.detail;
+    auto key = StructuralCandidateKey::create(branch.state);
     if (trace)
       trace->candidates.push_back({key, actualStatus});
-    CandidateRecordOutcome recorded =
-        controller.record(key, std::move(evaluation.result));
+    std::string detail = evaluation.result->detail;
+    CandidateRecordOutcome recorded = controller.record(
+        key, std::move(*evaluation.result),
+        exhausted ? CandidateDomainState::Closed : CandidateDomainState::Open);
     if (recorded == CandidateRecordOutcome::CompilerBug) {
-      fail(actualDetail.empty()
-               ? "actual-result controller rejected a typed actual result"
-               : actualDetail);
+      fail(detail.empty() ? "invalid typed actual candidate result" : detail);
       return;
     }
-    if (!frontier.empty())
-      if (auto *continuation =
-              std::get_if<RegionContinuation>(&frontier.back())) {
-        if (continuation->needsRefinementProposals(
-                maximumRegionRefinementCandidates)) {
-          const StructuralCandidateKey *incumbent =
-              controller.getIncumbentKey();
-          if (!incumbent || maximumRegionRefinementCandidates == 0 ||
-              !(incumbent->getSpatialPlan() ==
-                continuation->getParent().getPlan())) {
-            planningSession.skipRegionRefinementProposals(*continuation);
-          } else {
-            std::string refinementDetail;
-            if (mlir::failed(planningSession.addRegionRefinementProposals(
-                    *continuation, incumbent->getRegionPlan(),
-                    maximumRegionRefinementCandidates, &refinementDetail))) {
-              fail(refinementDetail.empty()
-                       ? "Region incumbent refinement failed"
-                       : refinementDetail);
-              return;
-            }
-          }
-        }
-      }
-    if (recorded == CandidateRecordOutcome::Indeterminate) {
-      if (!evaluation.domainExhausted)
-        return;
-      pauseIndeterminate(actualDetail.empty()
-                             ? "complete candidate actualization is unknown"
-                             : actualDetail);
-      return;
+    branch.next = evaluation.continuation;
+    branch.retention = evaluation.retention;
+    if (!evaluation.actualizations &&
+        actualStatus == ActualCandidateStatus::Indeterminate) {
+      status = UnifiedSearchResumeStatus::Indeterminate;
+      failureDetail = detail;
     }
+    if (exhausted)
+      branches.erase(branches.begin() + index);
     if (recorded == CandidateRecordOutcome::Accepted &&
         termination == SearchTerminationPolicy::FirstAccepted)
       status = UnifiedSearchResumeStatus::AcceptedCheckpoint;
+    phase = (phase + 1) % 3;
+  }
+
+  std::optional<size_t> select(CandidateContinuation kind) const {
+    std::optional<size_t> selected;
+    for (size_t i = 0; i < branches.size(); ++i) {
+      if (branches[i].next != kind)
+        continue;
+      if (!selected ||
+          (kind == CandidateContinuation::Repair
+               ? branches[i].identity < branches[*selected].identity
+               : branches[i].lastVisit < branches[*selected].lastVisit))
+        selected = i;
+    }
+    return selected;
   }
 
   void step() {
-    if (frontier.empty())
-      return;
-    if (std::holds_alternative<SpatialFrame>(frontier.back())) {
-      stepSpatial();
+    if (!remainingActualizationCredits) {
+      status = UnifiedSearchResumeStatus::CandidateBudgetExhausted;
       return;
     }
-    if (auto *continuation =
-            std::get_if<RegionContinuation>(&frontier.back())) {
-      stepRegion(*continuation);
+    if (frontier.empty() && !pending && branches.empty()) {
+      status = UnifiedSearchResumeStatus::FrontierExhausted;
       return;
     }
-    if (std::holds_alternative<StructuralCandidateFrame>(frontier.back())) {
-      StructuralCandidateFrame frame =
-          std::move(std::get<StructuralCandidateFrame>(frontier.back()));
-      frontier.pop_back();
-      stepCandidate(std::move(frame));
-      return;
+    for (unsigned skipped = 0; skipped < 3; ++skipped) {
+      if (phase == 0) {
+        if (exploreRetainedNext)
+          if (auto index = select(CandidateContinuation::Explore)) {
+            exploreRetainedNext = false;
+            evaluate(*index);
+            return;
+          }
+        if (branches.size() < retainedBranches ||
+            std::any_of(branches.begin(), branches.end(), [](const Branch &b) {
+              return b.evaluated && b.next != CandidateContinuation::Repair &&
+                     b.retention != CandidateRetention::PendingCapacityRepair;
+            })) {
+          if (!pending && !frontier.empty()) {
+            generate();
+            return;
+          }
+          if (pending) {
+            startPending();
+            return;
+          }
+        }
+        if (auto index = select(CandidateContinuation::Explore)) {
+          exploreRetainedNext = false;
+          evaluate(*index);
+          return;
+        }
+      } else if (auto index =
+                     select(phase == 1 ? CandidateContinuation::Repair
+                                       : CandidateContinuation::Improve)) {
+        evaluate(*index);
+        return;
+      }
+      phase = (phase + 1) % 3;
     }
-    fail("current search frontier contains an unknown structural frame");
+    fail("search has work but no schedulable owned branch");
   }
 
   UnifiedSearchResumeResult resume(uint64_t credits) {
@@ -347,43 +507,34 @@ struct UnifiedSearchSession::Impl {
       return {status, 0};
     ++work.resumeCalls;
     uint64_t consumed = 0;
-    while (consumed < credits) {
-      if (frontier.empty()) {
-        status = UnifiedSearchResumeStatus::FrontierExhausted;
-        return {status, consumed};
-      }
+    while (consumed < credits && !isTerminal(status)) {
       step();
-      if (profile)
-        profile->observeFrontierDepth(frontier.size());
       ++consumed;
-      if (isTerminal(status))
-        return {status, consumed};
+      if (profile)
+        profile->observeFrontierDepth(frontier.size() + branches.size() +
+                                      bool(pending));
     }
-    if (frontier.empty())
-      status = UnifiedSearchResumeStatus::FrontierExhausted;
     return {status, consumed};
   }
 
   UnifiedSearchResult finish() {
     if (finalized) {
       UnifiedSearchResult result;
-      result.control.coverage = SearchControllerCoverage::Failed;
       result.failureDetail = "unified search session was finished twice";
       return result;
     }
     if (status == UnifiedSearchResumeStatus::CompilerBug)
       controller.markCompilerBug();
-    const bool exactExhaustion =
-        status == UnifiedSearchResumeStatus::FrontierExhausted &&
-        !sawUnsupportedPrefix && !sawIncompleteInnerDomain;
+    work.incompleteInnerDomains = work.retiredBranches + branches.size();
+    bool exhausted = status == UnifiedSearchResumeStatus::FrontierExhausted;
     UnifiedSearchResult result;
-    result.control =
-        controller.finish(exactExhaustion ? SearchFrontierStatus::Exhausted
-                                          : SearchFrontierStatus::Incomplete);
+    result.control = controller.finish(exhausted && !sawUnsupportedPrefix &&
+                                               !sawIncompleteInnerDomain
+                                           ? SearchFrontierStatus::Exhausted
+                                           : SearchFrontierStatus::Incomplete);
     result.planning = planningSession.getWork();
     result.work = work;
-    result.frontierExhausted =
-        status == UnifiedSearchResumeStatus::FrontierExhausted;
+    result.frontierExhausted = exhausted;
     result.failureDetail = std::move(failureDetail);
     if (result.control.winner) {
       if (trace)
@@ -391,7 +542,9 @@ struct UnifiedSearchSession::Impl {
       if (profile)
         profile->recordWinnerHandoff();
     }
+    branches.clear();
     frontier.clear();
+    pending.reset();
     finalized = true;
     return result;
   }
@@ -401,11 +554,17 @@ struct UnifiedSearchSession::Impl {
   SearchTerminationPolicy termination;
   std::optional<analysis::SearchCostCohort> costCohort;
   uint64_t remainingActualizationCredits;
+  uint64_t retainedBranches;
   uint64_t maximumRegionRefinementCandidates;
   ActualResultController controller;
-  PlanningProfileSink *profile = nullptr;
-  UnifiedSearchTrace *trace = nullptr;
-  std::vector<FrontierFrame> frontier;
+  PlanningProfileSink *profile;
+  UnifiedSearchTrace *trace;
+  std::deque<FrontierFrame> frontier;
+  std::optional<RegionState> pending;
+  std::vector<Branch> branches;
+  uint64_t visit = 0;
+  unsigned phase = 0;
+  bool exploreRetainedNext = false;
   UnifiedSearchWork work;
   UnifiedSearchResumeStatus status = UnifiedSearchResumeStatus::Paused;
   bool sawUnsupportedPrefix = false;

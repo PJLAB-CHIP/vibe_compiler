@@ -43,6 +43,12 @@ llvm::Expected<CompiledProgram> compileProgramWithCommunicationCandidate(
   case CommunicationCandidate::RingReduction:
     selection.movement.reduction = detail::DistributedReductionAlgorithm::Ring;
     break;
+  case CommunicationCandidate::SharedInput:
+    selection.shareReadOnlyInputs = true;
+    break;
+  case CommunicationCandidate::PipelinedLoads:
+    selection.pipelineLoads = true;
+    break;
   }
   return detail::compileProgramWithTargetLLVMModulesImpl(
       std::move(request), outputDirectory, xlaSpmdPartitionerHelper,

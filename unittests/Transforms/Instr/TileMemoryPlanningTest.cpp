@@ -257,6 +257,66 @@ TEST_F(TileMemoryPlanningTest, ReportsSPMFailureForOwnedTileModule) {
       << diagnostics;
 }
 
+TEST_F(TileMemoryPlanningTest, CapacityObserverReadsLiveActualOwnersOnly) {
+  // Rank-three, full allocation geometry distinguishes a live proof from a
+  // copied byte-count report. No Tile dataflow op reaches this memory gate.
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (int64_t channels : {16, 1024}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(channels);
+      auto module = mlir::parseSourceString<mlir::ModuleOp>(
+          "module { func.func @entry() { return } }", context.get());
+      ASSERT_TRUE(module);
+      auto function = *module->getOps<mlir::func::FuncOp>().begin();
+      mlir::OpBuilder builder(function.getBody().front().getTerminator());
+      auto location = builder.getUnknownLoc();
+      auto region = builder.create<wafer::TileRegionOp>(
+          location, mlir::TypeRange{}, mlir::ValueRange{});
+      builder.setInsertionPointToStart(&region.getBody().emplaceBlock());
+      auto type = mlir::MemRefType::get(
+          {2, extent, channels}, builder.getF16Type(),
+          mlir::MemRefLayoutAttrInterface{},
+          wafer::MemoryAttr::get(context.get(), wafer::MemorySpace::SPM,
+                                 wafer::MemLayout::Tensor));
+      auto allocation = builder.create<mlir::memref::AllocOp>(location, type);
+      auto zero = builder.create<mlir::arith::ConstantOp>(
+          location, builder.getF16FloatAttr(0.0));
+      auto fill = builder.create<wafer::InstrFillOp>(location, allocation, zero,
+                                                     wafer::FillDomainAttr{});
+      builder.create<wafer::TileYieldOp>(location, mlir::ValueRange{});
+      ASSERT_TRUE(mlir::succeeded(wafer::rebuildRequiredNCCJoins(*module)));
+      wafer::StructuredMaterializationRelations relations;
+      wafer::compiler::detail::rebuildCurrentBufferOwnerRelations(*module,
+                                                                  relations);
+      unsigned observed = 0;
+      auto observer =
+          [&](const wafer::SPMMemoryPlanningFailure &failure,
+              const wafer::StructuredMaterializationRelations &owners) {
+            ++observed;
+            EXPECT_EQ(failure.kind,
+                      wafer::SPMMemoryPlanningFailureKind::CapacityOverflow);
+            ASSERT_EQ(failure.individuallyOversizedDemands.size(), 1u);
+            const auto &demand = failure.individuallyOversizedDemands.front();
+            EXPECT_EQ(demand.allocation, allocation.getResult());
+            mlir::Value liveAllocation = demand.allocation;
+            EXPECT_EQ(liveAllocation.getParentRegion(), &region.getBody());
+            EXPECT_EQ(demand.bytes,
+                      static_cast<uint64_t>(2 * extent * channels * 2));
+            EXPECT_TRUE(llvm::any_of(owners.buffers, [&](const auto &relation) {
+              return relation.owner == fill.getOperation() &&
+                     relation.buffer == demand.allocation;
+            }));
+            EXPECT_TRUE(mlir::succeeded(mlir::verify(function)));
+          };
+      wafer::compiler::detail::TileMemoryPlanningFailure failure;
+      auto planned = wafer::compiler::detail::planTileMemory(
+          std::move(module), &failure, &relations, false, observer);
+      EXPECT_EQ(mlir::failed(planned), channels == 1024);
+      EXPECT_EQ(observed, channels == 1024 ? 1u : 0u);
+    }
+  }
+}
+
 TEST_F(TileMemoryPlanningTest,
        RejectsCurrentAllocationWithoutActualOwnerRelation) {
   mlir::OwningOpRef<mlir::ModuleOp> module =

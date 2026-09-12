@@ -38,8 +38,10 @@ module {
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
     %convert_out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<67328>}
         : memref<2x3xf32, #wafer.memory<spm, tensor>>
+    %reduce_input = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<524288>}
+        : memref<1x1x2x3xf16, #wafer.memory<spm, ncx>>
     %reduce_out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<67584>}
-        : memref<2x1xf16, #wafer.memory<spm, cx>>
+        : memref<1x1x2x1xf16, #wafer.memory<spm, ncx>>
     %pad_out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<67840>}
         : memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
     %arg_value = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<68096>}
@@ -92,10 +94,10 @@ module {
         : memref<2x3xf16, #wafer.memory<spm, tensor>>,
           memref<2x3xf16, #wafer.memory<spm, tensor>>
       into memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.reduce #wafer.instr_reduce_kind<sum> %cx into %reduce_out
+    wafer.instr.reduce #wafer.instr_reduce_kind<sum> %reduce_input into %reduce_out
         {dim = 0 : i64}
-        : memref<2x3xf16, #wafer.memory<spm, cx>>
-      into memref<2x1xf16, #wafer.memory<spm, cx>>
+        : memref<1x1x2x3xf16, #wafer.memory<spm, ncx>>
+      into memref<1x1x2x1xf16, #wafer.memory<spm, ncx>>
     wafer.instr.convert #wafer.instr_convert_kind<fp16_fp32> %loaded into %convert_out
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<2x3xf32, #wafer.memory<spm, tensor>>

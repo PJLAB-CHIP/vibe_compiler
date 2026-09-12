@@ -20,6 +20,8 @@ enum class CommunicationCandidate {
   RecursiveDoubling,
   DimensionOrderedAllToAll,
   RingReduction,
+  SharedInput,
+  PipelinedLoads,
 };
 
 /// Selects one realization for source-derived qualification. This adapter is

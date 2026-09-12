@@ -17,24 +17,17 @@ namespace wafer::compiler::detail {
 
 struct SearchCurrentIROptions {
   uint64_t layoutWorkLimit = UINT64_C(1048576);
-  // Complete Temporal choices per structural owner. Region/movement leaves
-  // consume the separate global SearchLimits::trials budget.
-  uint64_t maximumTemporalCandidatesPerStructuralState = 16;
   SearchLimits limits;
-  bool stopTemporalAfterFirstAccepted = true;
   uint64_t planningCredits = std::numeric_limits<uint64_t>::max();
   SearchTerminationPolicy termination = SearchTerminationPolicy::Exhaustive;
-  // Set by the production driver to bound one search session. Unit callers
-  // leave it empty when they intentionally exercise an unbounded domain.
+  // Optional explicit cancellation boundary for callers. Production search
+  // uses its requested trial budget, without an implicit wall-time cutoff.
   std::optional<std::chrono::steady_clock::time_point> deadline;
   CurrentIRDownstreamOptions downstream;
 
-  uint64_t getRefinementLimit() const {
-    return limits.width > 2 ? std::min<uint64_t>(2, limits.width - 2) : 0;
-  }
-  uint64_t getInitialProposalLimit() const {
-    return limits.width - getRefinementLimit();
-  }
+  // Proposal generation is independent of retention width and leaf budget.
+  uint64_t getRefinementLimit() const { return 2; }
+  uint64_t getInitialProposalLimit() const { return 6; }
 };
 
 struct SearchCurrentIRStatistics {
@@ -47,30 +40,25 @@ struct SearchCurrentIRStatistics {
   uint64_t regionPreservingAccepted = 0;
   uint64_t mergedRegionCandidates = 0;
   uint64_t mergedRegionAccepted = 0;
-  uint64_t mergedRegionWinners = 0;
   uint64_t sharedDDRCandidates = 0;
   uint64_t sharedDDRAccepted = 0;
-  uint64_t sharedDDRWinners = 0;
+  uint64_t inputSharingCandidates = 0;
+  uint64_t inputSharingAccepted = 0;
   uint64_t layoutInvocations = 0;
   uint64_t layoutFeasibleFallbacks = 0;
   uint64_t movementCandidateActualizations = 0;
   uint64_t recursiveDoublingCandidates = 0;
   uint64_t recursiveDoublingAccepted = 0;
-  uint64_t recursiveDoublingWinners = 0;
   uint64_t dimensionOrderedAllToAllCandidates = 0;
   uint64_t dimensionOrderedAllToAllAccepted = 0;
-  uint64_t dimensionOrderedAllToAllWinners = 0;
   uint64_t distributedRingCandidates = 0;
   uint64_t distributedRingAccepted = 0;
-  uint64_t distributedRingWinners = 0;
-  uint64_t incomparableMovementObjectives = 0;
-  uint64_t acceptedTemporalCandidates = 0;
-  uint64_t exactRejectedTemporalCandidates = 0;
+  uint64_t acceptedCandidates = 0;
+  uint64_t exactRejectedCandidates = 0;
   uint64_t actualCapacityRefinements = 0;
   uint64_t unavailableCapacityRefinements = 0;
-  uint64_t unsupportedTemporalCandidates = 0;
-  uint64_t indeterminateTemporalCandidates = 0;
-  uint64_t incomparableTemporalObjectives = 0;
+  uint64_t unsupportedCandidates = 0;
+  uint64_t indeterminateCandidates = 0;
   PlanningWorkCounts planning;
   UnifiedSearchWork traversal;
   SearchControllerStatistics controller;

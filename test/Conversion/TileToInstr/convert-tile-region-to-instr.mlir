@@ -163,7 +163,7 @@ func.func @gemm_reduce_and_reshape(
 // CHECK-NOT: wafer.instr.elementwise
 // CHECK: wafer.instr.reduce <sum>
 // CHECK-SAME: dim = 1 : i64
-// CHECK-SAME: into memref<1x64xf16, #wafer.memory<spm, cx>>
+// CHECK-SAME: into memref<1x1x1x64xf16, #wafer.memory<spm, ncx>>
 // CHECK: wafer.instr.gather_scatter
 // CHECK-NOT: wafer.instr.reduce
 // CHECK-NOT: wafer.tile.reshape

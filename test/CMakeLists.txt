@@ -203,6 +203,10 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
       single-card-gemm single-card-gemm-tail-1025 single-card-gemm-tail-1031)
     wafer_add_pytorch_source_no_card_test(
       ${_wafer_gemm_case} float16 fp16 none)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_gemm_case} float16 fp16 search)
+    wafer_add_pytorch_communication_no_card_test(
+      ${_wafer_gemm_case} shared-input)
   endforeach()
   unset(_wafer_gemm_case)
 

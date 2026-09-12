@@ -59,6 +59,19 @@ def Wafer_DDRAccess
   let genSpecializedAttr = 0;
 }
 
+def Wafer_ProgramArgumentAttr : AttrDef<Wafer_Dialect, "ProgramArgument"> {
+  let mnemonic = "program_argument";
+  let summary = "Original program ABI argument bound to a Tile entry argument";
+  let description = [{
+    Assigned while the source program argument and its actual Tile entry
+    argument coexist. Identifies the existing input/parameter ABI slot across
+    isolated Tile entries. It carries no placement, storage or movement choice.
+    Tile collection and target ABI verification validate this binding.
+  }];
+  let parameters = (ins "int64_t":$index);
+  let assemblyFormat = "`<` $index `>`";
+}
+
 def Wafer_DDRBindingAttr : AttrDef<Wafer_Dialect, "DDRBinding"> {
   let mnemonic = "ddr_binding";
   let summary = "Tile entry binding to one shared DDR declaration";

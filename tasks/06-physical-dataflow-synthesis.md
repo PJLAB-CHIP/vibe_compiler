@@ -635,8 +635,8 @@ API依据为[MemRef subview](https://mlir.llvm.org/docs/Dialects/MemRef/#memrefs
 
 Layout合法域直接从current structural TileRegion的SSA value/use、consumer interface、exact `IndexRelation`和可验证encoding构造。
 Baseline与search都调用同一个query-local PBQP layout optimizer；它不是search state，也不共享两条policy的candidate owner。
-Baseline与search对每个actual attempt都只求解并应用一次确定性`Optimal` assignment；layout不是search axis，不建立layout frontier或
-raw layout枚举。PBQP在当前IR上按实际 materialization 的 physical bytes（含 padding）与一次 materialization unit
+Baseline每个actual attempt求解并应用一次确定性assignment；search允许对同一实际IR约束合法value/use layout后，
+使用同一PBQP求解器产生备选。每个备选在独立actual owner上apply并bufferize，再经完整下游比较；不枚举虚构buffer。PBQP在当前IR上按实际 materialization 的 physical bytes（含 padding）与一次 materialization unit
 进行 query-local 排序；最终search winner仍由物化后的其它choice和actual objective决定。该排序不能替代实际 MiniMalloc。
 
 C3不因某value邻接view就把整个buffer-equivalent group机械降为`compactOnly`。One-Shot必然alias的DPS init/result和reshape/cast
@@ -886,6 +886,11 @@ Allocator不返回retile、spill、layout、route或completion repair recipe。
 
 ## 7. `none` 与 `search`
 
+Actual leaf在fan-out完成后，Tile-to-Instr、局部transfer cleanup和NCC completion各自只修改独立Tile module及其owner relations，
+使用已有bounded Tile executor并行执行。每个阶段结束后按Tile顺序收集typed失败、统计和IR；跨Tile DTE/DDR completion仍在共同边界执行。
+此并行化不改变候选顺序、预算或数值语义。覆盖1024/1025/1031、16 Tile和1/4/16 worker，串行与并行的final Instr及实际SPM offset相同；typed失败按Tile顺序收集。
+生产搜索不借用外部工具的进程期限截断trials；用户显式主机进程期限只作为取消边界，不报告为完整预算比较。
+
 ### 7.1 独立 owner
 
 `none`和`search`是两个独立compiler transaction：
@@ -937,28 +942,81 @@ known exact localized bytes、local binding数和unknown localized binding数；
 
 Structural metric分别保留Region数、external/local binding数、known exact localized-use bytes和unknown binding数，不用任意权重压成legality。
 本项不对publication closure打分；仍在group外的relation继续作为external binding，直到actual materialization和movement根据current IR决定其实现。
-Structural Pareto只淘汰相同Region数量下被支配的plan，不跨Region数量删除diversity；它只决定最多6个initial proposal的
-访问顺序，P0和graph-coherent endpoint不可饥饿。当initial proposal
-还剩两个slots时，proposal owner只接受controller incumbent已有的RegionPlan作为现有choice，并将至多2个邻域RegionPlan排在剩余深seed之前；不读取或复制incumbent的actual
-buffer/layout/movement/lifetime事实。
+Structural metric只决定proposal访问顺序；不同结构、replica、传播与复用seed均保留入口，不能把局部metric支配当作
+最终候选的cost支配。Raw lazy successor集合不因proposal/refinement而缩小；不声称有限预算证明全局最优。
 
-Search最多actualize 8个structural candidates，并共享42次Temporal actual-attempt credits。每个proposal都是普通`RegionPlan`并独立进入
-`current IR → actual transformation → verifier → fresh analysis`。Actual capacity rejection只描述该complete Region/Temporal tuple，不泛化到
-其它partition；credit exhaustion报告bounded partial。Winner只由final actual objective决定，Accepted owner直接保留，不按query labels重建。
-改变proposal/refinement或关闭它们不得改变raw lazy successor集合。General DAG不声明全局最优，quality由tiny fixed-region-count独立穷举oracle
-量化optimality gap并要求已知greedy trap严格改善，再由真实规模cut gain和final actual objective共同约束。
+Search由可恢复的候选会话拥有实际IR checkpoint与当前epoch的domain/cursor。一次轮转最多执行一个actual候选；
+失败尝试也计费。候选会话暂停时保留原owner和未访问后继，继续时不重复物化已完成的前缀。
+Controller接收每个实际leaf的typed结果；leaf更新与结构域关闭分开，未穷尽的容量失败不能成为结构no-good。
 
-Accepted actual objective按同一profile的标量estimated duration比较；合法候选的DDR、DTE、计算和同步交换
-不再触发Pareto不可比。估时相等时使用storage tuple和完整semantic key稳定选取同一actual owner。
-性能估计不参与capacity admission或hard pruning，缺少测量仅降低估计质量，不阻止正常候选排序。
+容量反馈在allocator返回精确证书、allocation与current owner仍存活时同步读取；只返回本次选择的参数坐标，
+不保留失败IR的裸句柄。Region body由同次`IRMapping`关联到未变的上层choice，body-preserving变换继续使用同一block；
+通信Region合并等销毁该边界的变换丢弃关联。实际冲突allocation通过current storage-root/owner relation关联到body，
+只有该body的Temporal domain存在唯一scope时才据此缩小其可tile维度。多scope或无关联保持unknown并访问普通后继，
+不能按allocation大小、诊断位置、遍历序号或所有Region统一缩小来补归因。观察回调不修改IR、不参与SPM合法判定。
+成功候选的同一actual executable交给全局incumbent，后续搜索不得按choice重建winner。
 
-Public search work limit只有`width`和`trials`。`width`是可访问的structural choices总数，`trials`是全局actual
-compilation次数；默认分别为8和42。正式CLI使用`--search-width`与`--search-trials`，public C++ API使用
-`OptimizationConfig::search(SearchLimits)`。Initial/refinement slots和单candidate Temporal上限是内部调度，不对外暴露。
-单structural owner默认最多16个Temporal choice，以允许真实capacity反馈继续收窄大输入；全局42次actual-attempt预算保持不变，
-实际首次可接受后仍停止该owner的Temporal遍历。该上限只是工作量调度，耗尽只报告partial，不能据此认定shape不合法。
-Search limit不是shape、legality、cost或wall-time policy；none不接受它，缺省参数保持现有结果。Effective limits在
-compiler diagnostic和compile counters中记录，相同source、target、policy和limits保持确定性。
+Public limits只有`width`和`trials`，默认8/42。`width`限制同时保留的可扩展分支数，不限制累计访问的结构数；
+`trials`限制实际候选尝试总数，包括在物化/下游失败的尝试。CLI仍为`--search-width/--search-trials`，C++仍为
+`OptimizationConfig::search(SearchLimits)`。不另设每结构Temporal上限，也不在首个可行Temporal后停止。
+同一source、target和width的更大trials延续同一确定性序列，已找到的最佳actual objective始终保留。
+
+调度轮转探索、容量修正、候选改进三类工作，每类每轮最多一个实际尝试，空类跳过。探索先给不同结构入口，
+再遍历参数；容量修正优先最早开始且仍有实际证据的修正链，配额用完只暂停；改进对保留候选提出成组邻域。
+Spatial seed之后交错访问axis tuple的规范placement witness与完整raw placement cursor；二者按完整typed choice去重。
+轴投影复用同一domain successor和closure，不改变raw集合。Region/layout/movement各保留实际checkpoint并逐leaf轮转，
+某个完整布局的所有后继不会阻止另一个Region closure获得首次尝试。
+尚无可行leaf的分支同样必须获得续跑：新结构与已保留的Explore分支交错，不能每次容量反馈无法定位就只启动新结构。
+Joint/Independent各自保留初始参数和合法extent区间的几何中点参数（向上取2的幂），作为普通数值入口；
+多结果producer和唯一consumer另从actual result/input projected-permutation maps提出协调参数：共同迭代维度使用一致tile，
+仅部分结果携带的广播维度保留完整长度，使已有共同输出遍历可被选择。原参数仍保留；相邻几何尺度只作普通候选，
+不预测SPM合法性、不修改数值顺序。此query输出typed TemporalChoice，直接交给唯一Temporal物化和fresh下游检查。
+它们在任何actual容量结果之前生成，不读取SPM大小、footprint或预测lifetime，也不用于合法性剪枝。
+每个参数都实际物化并经过唯一SPM门禁，原raw successor继续保留。
+
+通信transport参数按同一boundary preflight的current component选择。每个component用其中一条现存SSA boundary edge
+作query-local anchor；clone只经同次`IRMapping`重映射，物化前重算component并拒绝缺失/重复anchor。
+默认DDR/Peer坐标保留，混合transport使用惰性二进制tuple而非只枚举单component修改；现有collective算法参数与该tuple共同物化。
+选择Peer仍须满足实际cut、effect与completion合同；只按成功产物的实际DDR/DTE流量计费。覆盖两次连续exchange的四种
+transport组合、4/16 Tile和1024/1025/1031，核对消息数、共享DDR范围、双完成域及actual SPM，不按测试名选路。
+
+Layout placement把已选转换在首次use处物化，或在输入Tensor SSA不随循环变化时移到最内必要循环之前。
+只跨越静态非空`scf.for`，不跨conditional、未知effect或mixed memref操作；仍在同一TileRegion内。
+两种placement使用同一PBQP解、同一One-Shot Bufferization及完整实际内存门禁，延长的实际lifetime由下游重新分析。
+搜索保留两种结果比较，不能用估算buffer大小决定是否允许提升；不重排算术、不增加shadow buffer。
+Tensor不可变及重新bufferize的依据见[MLIR Bufferization](https://mlir.llvm.org/docs/Bufferization/)。
+候选池优先保留不同结构，同类可执行分支按实际估时排序；全局最佳executable独立持有。池满且没有可替换的
+已评估分支时继续推进现有分支，保留结构生成cursor，不销毁未完成的容量修正链。
+下一项工作类别与待执行容量修正的保留状态分别报告。内部轮转到proposal或已有前缀时，尚有actual反馈修正排队的
+session仍不可被新结构替换；修正队列排空后才恢复通常的结构多样性与估时替换规则。
+结构分类只决定顺序；去重要求typed choice相同或实际IR等价证明，流量计数相同不能作为等价证明。
+
+显式replica必须携带所选required producer execution的完整输入fragment；这些输入从同一canonical demand导出，
+不能只复制计算root再由materializer猜上游值。RegionDomain同时检查新增输入的producer→consumer依赖；materializer
+在同Region使用已生成的required SSA结果，在其它Region建立显式endpoint与必要movement，不隐式递归复制producer链。
+replica输入与mandatory输入分别验证all-and-only，多个replica读取同一片段允许共享实际Region input。
+覆盖leaf与多层producer、DPS init来自structured root、same/cross Tile及局部/最大融合，rank3+、1024/1025/1031；
+下游必须包含actual TileRegion、完整boundary relation与Instr/SPM，不以raw proposal存在代替可执行性。
+
+组合邻域覆盖Spatial与producer/use/通信、Region融合与Temporal/驻留、layout与转换位置/共享、tile与双缓冲流水。
+Region proposal的全合并标签若因不连通等结构约束不可构造，使用同一合法合并序列的最终分组作为融合入口；
+不能只保留该序列的中间样本而丢失最终合法融合方案。该入口与baseline、replica先于合并数量采样，raw domain不变。
+Temporal普通参数入口同时保留全extent、每scope仅缩小最大可切轴、全可切轴几何中点及协调状态的尺度邻域。
+只缩小一轴的入口保留其它轴的复用与指令粒度，避免所有维度一起缩小产生大量小指令；按extent和轴序确定顺序，
+不使用SPM估算或算子/模型名。所有入口仍经typed domain、actual transformation、verifier和同一actual leaf。
+同一参数入口先访问已有的基础DDR/Peer transport备选，再访问其共享输入/流水组合，不能将组合插到尚未访问的另一transport之前。
+结构session内部同样轮转参数proposal、actual容量修正与已物化前缀的后续layout/movement，向外层报告下一项实际工作类别。
+不能因旧参数仍有capacity repair就阻止已可行参数继续比较，也不能先耗尽全部参数seed才恢复已有前缀。
+上游choice改变时从存活的实际祖先checkpoint产生新candidate并重建下游analysis。各rewrite分别verify，完整组合
+随后经completion、唯一SPM规划和target gate；单项不改善不能直接排除组合。流水估时消费actual Instr依赖及worker，
+详细信息不足时仍给标记质量的标量粗估；不从aggregate假造schedule。
+
+Accepted objective按同一profile的标量estimated duration比较；storage与semantic key用于稳定tie-break。
+性能估计不能参与capacity admission、hard pruning或同步合法性。Limits只管理工作量，none不接受search limits。
+
+方法比较采用[Ansor](https://www.usenix.org/conference/osdi20/presentation/zheng)的结构/参数分层、
+[Halide GPU autoscheduler](https://aekul.github.io/gpu_autoscheduler/)的结构多样性保留；当前使用确定性小预算队列，
+不引入学习模型或以历史schedule trace重放actual owner。具体实施与本轮矩阵在统一板测计划。
 
 Candidate形成`TileExecutable`前必须调用target ABI preparation共用的exact program/DDR function-boundary verifier；argument/result binding不完整的
 Spatial/Region candidate在controller admission前返回typed failure，不能先作为Accepted winner保留、再由最终target codegen首次发现错误。
@@ -991,8 +1049,15 @@ movement、completion和memory/target数据。推算结果不进入legality、SP
 加上DTE endpoint payload、首条/后续sender生命周期及instruction/NCC控制，先逐Tile求和再取最大。
 整卡共享DDR按总read+write bytes/rate计一次；NoC link与endpoint承载同一payload，
 只补`max(0, peak-link-time - maximum-endpoint-time)`，另计hop估计。
-该模型采用Tile内串行服务、Tile间并行的显式近似；不能把它称为actual makespan或严格上界。
-暂不新增依赖图、completion划分、overlap参数或周期模拟器；没有保留顺序的aggregate不伪装成已知schedule。
+只有aggregate或无法解释当前执行结构时，采用Tile内串行服务、Tile间并行的显式近似。生产比较还可传入仍存活的accepted
+Instr modules：CostModel只读actual worker/family、block顺序、SSA/view/slot、typed effect与NCC participant，按资源服务时间
+和根级读写依赖估计最早完成时间。同一engine保持顺序；不同engine只有无依赖且未被实际completion隔开时才估算重叠。
+根级范围合并会高估依赖，不改变IR。两槽流水直接解释current select/loop-carried buffer；固定循环在携带buffer两轮复现且
+没有变化的index carry时，取前五轮，以最后两轮服务增量外推其余完整两轮，并单独解释奇数余轮。其它循环在统一work上限内
+继续解释，超限采用有限粗估；不能只平移时钟却丢失后续操作读取的index结果。这是有界性能近似，不是周期模拟、hardware保证或hard pruning bound。
+估计器有固定分析工作上限；动态控制、未支持的完成域/alias或超限时回到上述有限串行估计，不给出不可比。
+整卡DDR总服务仍为资源下限，与估计的最长Tile路径取最大，不能与已经包含的DDR服务重复求和。所有公式与近似仅在CostModel；
+controller只传递current IR并比较返回标量。IR修改后旧估计失效，模型不保存跨stage的buffer、schedule或completion事实。
 NE与CT仍各用自己的吞吐率，instruction数量只计控制开销。Storage仅在时间相等时按固定tuple打破平局。
 
 DTE无send时startup为0，有n条时为`first + (n-1) × steady`；使用已有首条13us、后续1.5us先验。
@@ -1006,7 +1071,7 @@ Sender生命周期已包含send wait，不重复叠加完整wait样本；额外w
 缺cohort或混用profile是调用合同错误，不作为DDR/DTE胜负结论。估计不得充当hard pruning bound。
 
 方法比较：[OpenXLA性能模型](https://github.com/openxla/xla/blob/main/xla/service/gpu/model/gpu_performance_model_base.cc)
-按资源服务时间和目标overlap假设构造标量；本仓采用更简单的串行近似，不移植GPU常数。
+按资源服务时间和目标overlap假设构造标量；本仓使用有界current-IR服务估计及串行粗估，不移植GPU常数。
 [实现驱动的collective模型](https://arxiv.org/abs/2004.11062)按实际实现计消息和工作量，
 本仓同样不从collective名称套轮数。[MLIR analysis管理](https://mlir.llvm.org/docs/PassManagement/#analysis-management)
 要求IR mutation后重新统计，本项不生成或重放旁路schedule。
@@ -1031,12 +1096,16 @@ conflict demand的SPM容量拒绝时，即使其它alternative尚未穷尽或不
 汇总结果继续保持indeterminate/unsupported，不得把该反馈提升为共同owner不合法或用来剪枝。反馈只携带已执行leaf的typed
 failure快照，不保存被销毁IR的operation/value指针；新choice必须重新物化并通过同一actual leaf。
 
-内部Temporal上限按当前结构owner上的完整Temporal choice次数计数；该choice下的Region/movement子候选分别扣除全局
-actual leaf预算，不重复占用Temporal次数。两项限制同时生效；预算耗尽仍报告未穷尽，不提升为无解，也不增加用户指定的trials。
+Temporal choice下的Region/layout/movement/execution alternatives逐个惰性物化，分别扣除全局trials。
+预算耗尽保留未完成域的typed状态；同一actual checkpoint的后继恢复不能重复扣除已执行的leaf。
 
-覆盖要求：真实规模actual候选同时覆盖纯容量拒绝、容量拒绝与未穷尽movement并存、容量拒绝与unsupported并存，以及无容量证据。
-检查更小choice确实进入actual SPM/target，预算未闭合时仍返回typed indeterminate，不能宣称共同域无解。
-多movement正例另检查两个Temporal choice可以实际执行超过两个leaf，同时两种计数各自不超过配置上限。
+| 本项覆盖 | exact要求 | 直接下游witness |
+| --- | --- | --- |
+| 暂停/恢复、14/42/126、width=1/8 | 已执行序列前缀一致；width只限制保留；最佳actual owner不重建 | Driver/controller与实际source编译 |
+| Joint/Independent、Region/replica、不同placement | 不同结构先获得入口；raw domain仍可达；同流量不去重 | rank≥3、1024/1025/1031多Tile与tail |
+| capacity、unsupported、compiler error | 冲突相关scope才作因果修正；暂停不成为结构no-good | actual Instr→SPM反馈→新candidate |
+| Layout/通信/复用/流水及组合 | 分别物化、verify、fresh memory/target；局部坏但组合好的oracle | 实际owner、访问、completion及标量cost |
+| 全workload与模型 | 原PyTorch容差；decode实际KV接续；估时与实卡时间分别报告 | fresh package/no-card与串行board |
 
 ## 8. Ownership、analysis 与实现边界
 
@@ -1050,8 +1119,7 @@ actual leaf预算，不重复占用Temporal次数。两项限制同时生效；�
 源码稳定职责为：
 
 - TensorProgram analysis：structured semantics、exact demand和Spatial/Region choice domain；
-- current-candidate planning：从live operation/interfaces建立query-local Temporal等search choice；layout由一次query-local exact PBQP唯一确定并
-  立即apply，二者均在mutation后失效；
+- current-candidate planning：从live operation/interfaces建立query-local Temporal等search choice；layout备选由query-local exact PBQP产生并在各自actual clone中apply，query均在mutation后失效；
 - TensorProgram/TileModule/TileRegion transforms：structural materialization、selected temporal tile-and-fuse apply、online-attention decomposition、
   layout/view/bufferization和movement；
 - TileRegion-to-Instr conversion：deterministic target-abstract lowering；

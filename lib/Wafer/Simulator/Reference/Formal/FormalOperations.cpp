@@ -346,20 +346,15 @@ llvm::Expected<FormalReduceOperation> createFormalReduceOperation(
     return std::move(error);
 
   const size_t rank = input.getShape().size();
-  if (rank < 1 || rank > 4)
+  if (rank != 4 || destination.getShape().size() != 4)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "native CT reduce input rank must be in [1, 4]");
-  PhysicalTensorLayout expectedInputLayout =
-      rank > 2 ? PhysicalTensorLayout::NCx : PhysicalTensorLayout::Cx;
-  PhysicalTensorLayout expectedDestinationLayout =
-      destination.getShape().size() > 2 ? PhysicalTensorLayout::NCx
-                                        : PhysicalTensorLayout::Cx;
-  if (input.getLayout() != expectedInputLayout ||
-      destination.getLayout() != expectedDestinationLayout)
+        "native CT reduce operands must use rank4 NHWC geometry");
+  if (input.getLayout() != PhysicalTensorLayout::NCx ||
+      destination.getLayout() != PhysicalTensorLayout::NCx)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "native CT reduce rank <= 2 requires cx and rank > 2 requires ncx");
+        "native CT reduce operands must use ncx layout");
   for (uint64_t value : input.getShape())
     if (value == 0 || value > std::numeric_limits<uint16_t>::max())
       return llvm::createStringError(

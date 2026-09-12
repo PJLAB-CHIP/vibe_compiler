@@ -288,3 +288,167 @@ Small BF16 prefill `Q/K/V=[1,1,1024,64]` 初次普通计时15.350 ms，profile P
 已改为每次设备launch保持watchdog，主机报告不受设备派生总期限限制；32项Python测试通过，剩余profile和板测随后继续。
 LLaMA的profile输出digest与本轮完整PyTorch通过的普通capture一致，Count/Trace与Primary一致，故采集证据可用；
 未完成的HTML及报告进程失败不计为runner成功。没有因这次主机报告问题执行reset、重启或重复LLaMA采集。
+
+## 2026-09-12：搜索空间修正的实现与主机验证（进行中）
+
+本轮针对全workload审计暴露的搜索覆盖不足修改生产入口；先完成下述主机检查点，随后实卡结果见本节末尾。
+默认仍为`width=8, trials=42`。Width约束保留的可扩展分支，trials计实际尝试及失败；actual IR会话可以暂停恢复，
+已接受候选之后继续比较，增大预算延续同一序列并保留最佳actual owner。空间轴方案与placement分开遍历，
+Region/Temporal/layout/movement分别保留cursor；通信component可以独立选择DDR或Peer。
+
+已经有主机witness的通用修改包括：两个component的四种混合通信选择，4/16 Tile、1024/1025/1031的completion/SPM；
+Shared-DDR publication/acquire移到实际DMA切点；replica显式输入闭合；同一PBQP的约束备选与loop-invariant转换位置；
+native reduce统一actual rank4 NHWC/NCx，并对rank变化前后的输入GS进行逐字节地址检查。
+这些结论只说明对应机制已通过主机验证，不代替全模型正确性与性能。
+
+搜索主体和native ABI完成过canonical构建、Ninja no-op及完整check-wafer。随后第一轮38项产品search no-card为25通过、
+13失败：4K prefill无可行候选，8项conv partial坐标错误，两种decode动态GS范围拒绝，两种LLaMA native字段范围漏检。
+扩大搜索使此前未访问的结构进入实际lowering，暴露了原实现问题，也发现本轮动态layout cost误用hard infinity的问题；
+所有失败仍计在当前任务，未作为“不支持”跳过总验收。
+
+4K prefill通过未可行分支轮转和普通中等tile入口，在同一42次预算下获得9个accepted、31个actual capacity rejection、
+2个unsupported，生成verified package，编译transaction约46.744秒。参数入口不使用footprint猜测容量，只有唯一actual owner
+可归因时才执行冲突驱动修正。该package尚未签发实卡或性能结论。
+
+Conv partial的类型和merge拼接已按exact result坐标及归约位置统一，输出置换的4/16 Tile、1024/1025/1031覆盖通过。
+动态layout cost只用当前SSA可证明范围估算；未知字节数不决定legality，actual搬运证明失败保持typed unsupported。
+随后定位并修复嵌套循环destination binding使用过时alias分析：内层绑定会改变外层关系，现逐层由内到外重新分析。
+动态constant pad/generate均按实际SSA extent分解为DPS操作，使条件分支遵守同一PBQP布局。Conv mixed DAG的42次尝试获得
+13个accepted并生成verified package，transaction约139.585秒。Native降低前检查真实NHWC字段范围，4096/4097边界通过。
+decode动态GS将嵌套subview底层静态offset重复相加；现descriptor仅保留相对当前base view的偏移，source/destination非零offset
+均通过1024/1025/1031逐字节oracle。FP16 decode step 1完整42次编译生成verified package，transaction约557.057秒。
+
+上述catalog修复完成新的canonical构建、Ninja no-op与完整check-wafer：279 lit、14组件、reference numeric 65、target numeric 20、
+SystemC 17均实际通过。整套38项fresh search no-card全部通过，包含FP16/BF16 LLaMA和decode两步。
+
+距离一load/consumer流水已接入search备选，两槽与显式slot选择、prologue/kernel/epilogue在1024/1025/1031通过逐窗口执行oracle、
+尾部覆盖、四类负例及Instr/completion/SPM检查。恒等loop-carried memref经标准ForOp折叠；pinned pipeliner的静态kernel域
+在物化时发布为exact常量，消除原backedge非空证明失败，未增加同步。生产4K的42次尝试有7个accepted（3个流水）、
+31个actual capacity与4个unsupported，完整编译生成verified package。
+CostModel新增基于actual worker、顺序、SSA slot、effect和join的有界服务估计，65536次分析工作上限与五轮循环采样保持编译工作有界，
+未支持结构保留有限串行粗估。1024/1025/1031×1/32/33轮的相同work、不同依赖/join对照通过，9项cost与21项搜索/controller回归通过。
+估计器还补上actual TileRegion入口/结果的SSA映射；相同Instr在Region内外的估时一致。4K全部accepted进入依赖估计，
+串行和流水均受46.976 ms整卡DDR服务下限支配；transaction约44.117秒。估计相等不能签发实卡性能或宣称流水必然有收益。
+外部相同只读窗口共享已进入生产备选：typed program参数身份、精确static subview和只读effect共同决定可共享性，
+原独立DDR候选保留。4/16 Tile与1024/1025/1031的两种路径通过Instr/completion/SPM，16 Tile通过整卡资源检查，
+缺身份、不同窗口、输入写入、目的复写和循环内load均不共享。另补target ABI身份校验及移除已消费的高层属性。
+流水/共享11项、cost 10项和ABI 2项直接回归通过；集成后的canonical构建、Ninja no-op及完整check-wafer也已通过
+（279 lit、14组件、65/20 numeric、17 SystemC）。本轮新catalog及14/42/126对照仍在执行，BF16数值和板端性能未签发完成。
+
+### 实卡复验与继续修正
+
+同一TX81 5.6.0运行会话，runtime ABI=1300、16 Tile；runtime库SHA256为
+`b4f19d673e1767314f6cd900f7f66345e7d1d8c0545de83a7139d62596a6e12c`。以下均由正式runner单次串行launch，
+保留原PyTorch容差，完整output/guard/status和正常清理通过；没有设备timeout、reset或重试。
+各case的`numeric-audit-01.json`保存本轮输入与manifest SHA256、误差统计及原始device timing。
+
+| 自动search，width=8/trials=42 | 设备时间ms，按1024/1025/1031顺序 | PyTorch |
+| --- | --- | --- |
+| allgather-add | 1.664 / 1.645 / 1.732 | 全通过 |
+| alltoall-transpose | 1.948 / 1.735 / 1.744 | 全通过 |
+| reduce-scatter-sum | 0.890 / 0.899 / 0.848 | 全通过 |
+| all-reduce-sum | 1.612 / 1.594 / 1.606 | 全通过 |
+| local-reduce | 2.360 / 2.449 / 2.481 | 全通过 |
+| local-conv | 1.603 / 1.742 / 1.687 | 全通过 |
+| biased-conv | 18.057 / 18.116 / 18.214 | 全通过 |
+| sigmoid | 0.931 / 0.886 / 1.006 | 全通过 |
+| division，按既有特殊值合同使用F32 | 0.974 / 0.955 / 0.950 | 全通过 |
+| single-card-gemm | 1.085 / 0.986 / 0.996 | 全通过 |
+| small prefill FP16、tail1025/1031 | 1.334 / 1.374 / 1.559 | 全通过 |
+| small prefill BF16 | 1.334 | 全通过 |
+| conv-mixed-dag FP16 / BF16 | 18.214 / 1.652 | 全通过 |
+| decode FP16，两步实际KV接续 | 5.296 / 5.347 | hidden、完整K/V及旧prefix通过 |
+| decode BF16，两步实际KV接续 | 5.386 / 5.265 | hidden、完整K/V及旧prefix通过 |
+| 4K prefill，协调分块前 | 562.259 | 全16,777,216输出通过，但性能退化 |
+
+正式catalog新增三项GEMM注册后共41个配置；上表39个默认配置已实卡通过，FP16/BF16 LLaMA默认42的主机编译
+超过1800秒期限，未用其他预算代签。另有FP16 LLaMA的14次尝试结果431.807 ms、请求126但实际只运行39次结果431.610 ms，
+两者完整65,536输出通过。生产入口借用external-process的1800秒期限截断搜索，后者不能称为完整126次曲线。
+这是主机预算问题，不是设备卡死；旧decode的126对照在主机阶段因实现已更新而停止，未执行其设备项目。
+
+显式DTE资格四类×三个长度共12项也全部通过，已消除旧reduce tail失败。外部只读权重共享的GEMM三个长度
+分别1.370 / 2.049 / 2.022 ms并通过完整PyTorch，IR确认整份RHS仅加载一次、向其余15 Tile发送准确窗口；
+该资格入口仍使用生产共享transform。自动搜索这三项选择独立DDR，不能把显式共享写成性能winner。
+共享证明另修复对带Allocate effect的新layout结果的误排除；任一Tile输入写入或身份缺失仍排除共享。
+
+4K退化根因：通用中点参数把consumer的广播轴也分块，producer/consumer无法使用现有共同状态遍历。
+补充基于current result/input projected-permutation maps的协调候选后，未消费的state result仍参与共同轴约束，
+生成每Q tile局部状态、同一轮归一化及搜索选出的distance-one双缓冲。普通多结果归约的1024/1025/1031、坐标置换、
+未消费result和额外consumer负例通过；生产4K完整42次编译transaction约42.779秒，选中候选估时22.094 ms。
+同会话实卡为**277.123 ms**，全部PyTorch输出通过；相比562.259 ms约减半，与审计时282.928 ms接近，
+单样本不能声明超过历史方案的稳定加速。估时仍明显偏乐观，profile继续核对。
+
+匹配profile的设备采集已完成，主机报告尚在生成时先从完整PMU证据读取：每Tile TDMA **241.080–241.082 ms**、
+CT **26.368–26.370 ms**、NE **2.549760 ms**、RDMA **8.419–9.162 ms**，FU union **277.506–278.042 ms**。
+各counter稳定、enabled且恢复核对通过；这些engine时间不能相加作为Primary。实际Instr仍有`inner_bytes=2/4`的
+NCx转置、归约结果降rank及状态广播GS。每Tile逻辑SPM movement约2.267 GB，按256 GB/s prior仅估8.9 ms，
+该bytes-only项没有解释细粒度descriptor的实际服务开销；不把这次单模型观察拟合成全局带宽。
+Trace显式每Tile前20000事件，不能代签全程逐site归因。报告随后正常生成，完整runner/PyTorch通过，
+profile Primary为**277.009 ms**，与普通运行277.123 ms接近；主机报告约7分钟未被设备期限误杀。
+
+LLaMA候选主机计时另显示14次尝试中的Tile转换累计约103秒、transfer cleanup约108秒，原先逐Tile串行。
+已复用bounded executor并行独立Tile阶段，跨Tile completion仍共同执行；1/4/16 worker、1024/1025/1031的
+final Instr（含实际SPM offset）完全一致。移除生产入口隐式wall-time截断，显式主机进程取消期限保留。
+Region全合并不可构造时补回合法合并序列的最终分组，防止只保留中间样本；对应真实规模/有界穷举检查通过。
+这些后续修改及单轴参数入口还在复验，不由上表较早产物代签最终完成。
+
+默认42次的通信回归进一步暴露内部饥饿：旧capacity repair及参数seed优先于已物化前缀，基础DDR备选又被共享/流水插队。
+现结构session内部轮转proposal、repair和已有前缀，并向外层报告下一项实际工作；基础transport先于附加组合。
+1024/1025/1031生产入口的DDR、合并/保留Region accepted witness已恢复，直接回归通过；最新完整门禁及产品矩阵继续执行。
+
+合法融合入口、单轴参数和Tile并行之后，LLaMA FP16在14次实际尝试中有4个accepted，编译transaction为563.959秒。
+该中间版本同会话实卡为**79.639 ms**，65,536项输出通过原PyTorch容差，改善此前141.419 ms审计值及本轮431.807 ms，
+仍慢于历史约37 ms。该产物早于后续内部轮转修正，不能代签最终42/126预算结果。
+
+BF16另一个42次完整候选产物完成设备执行与正常清理，112.942 ms，但6,137/65,536项（9.4%）超出原容差，
+最大绝对误差0.0234375；不计正确性或有效性能通过。当前Instr的projection按K分块并用BF16保存partial与块间累加。
+相同输入的PyTorch分段舍入模拟只能解释部分误差，尚不能据此把全部失败归因为GEMM，继续用中间输出定位。
+
+内部轮转复验发现外层把“下一项不是Repair”误当作“没有待修正候选”，会在width很小时提前淘汰尚有修正队列的session。
+现单独传递待修正保留状态，局部工作继续轮转；有界调度oracle与真实容量反馈输入分别检查不重启和实际可行结果。
+
+### 中间输出与最新预算反馈
+
+BF16 prefix先观察RMSNorm和Q projection两个输出。RMSNorm的65,536项逐bit等于PyTorch，最初projection却含明显错误值。
+根因是compact DMA证明只检查Tensor布局，没有检查SPM子视图的真实strides，WDMA因而忽略source行间隔。
+唯一transfer proof补SPM连续性检查后，非连续load/store进入原mapped descriptor；1024/1025/1031、F16/BF16、动态base的
+逐字节地址对通过，全部41项StructuredToTile回归通过。相同prefix重新生成package并上板后，大幅错误值消失。
+
+修复后projection仍有18,614/65,536项（28.4%）超原容差，最大绝对误差0.0390625。按actual K=64模拟BF16 partial与BF16
+块间累加，65,531项逐bit匹配实卡，其余5项也在原容差内；原始完整GEMM参考始终没有改写。这确认普通K分块的中间舍入问题。
+FP16 GEMM尾部case `[1,1031,263] × [1,263,519]` 也有同类反馈：14次预算保留完整K，**1.079 ms且PyTorch通过**；
+42次预算选中K=16及tail=7，2.484 ms但29.3%输出超容差。126次得到相同Instr，未重复执行该已知失败产物。
+不能把增加预算的候选数或较小SPM峰值当作数值/性能改善；低精度K分块的完成方向记录在current plan待讨论问题中。
+
+Reduce-scatter尾部1031的14/42/126次实际尝试分别有14/38/106个accepted，三次fresh实卡全量PyTorch通过，
+时间1.138 / 1.183 / 1.075 ms；这些单次差异不足以说明稳定加速。4K的14/42/126实际尝试分别有1/8/23个accepted，
+最佳估时32.660 / 22.094 / 22.094 ms，三项fresh no-card通过；实卡14次为**514.896 ms**、42次为**276.943 ms**，
+均全16,777,216输出PyTorch通过。本轮42次相对14次减少约46.2%；126与42的manifest、data和ELF逐文件SHA256完全相同，
+不再重复launch。全部16份final Instr汇总SHA256也相同，为`fe631a5b140b86f5a189eea32dcb5b2959cec8d5e5e51967c22c961a7ff502f8`。
+
+全catalog中的两种LLaMA，以及126次decode，又访问到重复导入同一外部SSA值的Region合并分支；原合并收敛了block argument，
+却没有收敛精确相同的boundary endpoint pair，触发verifier。4/16 Tile、1024/1025/1031的普通两次fanout输入已复现并修复；
+修复前测试同样失败，修复后检查唯一relation及实际消息数通过，原顺序exchange与DDR独立选路回归也通过。
+失败和随后停止的旧主机编译不计为完整预算结果；没有设备timeout或reset。
+
+最新LLaMA FP16的14次完整尝试有2个accepted、8次actual capacity和4次unsupported；fresh实卡**80.119 ms**，
+65,536项输出全量PyTorch通过。该结果与较早14次的79.639 ms接近，不能外推默认42次、126次或BF16的资格。
+最新完整主机门禁通过：canonical增量构建、无源码变化Ninja no-op、279 lit、14组件、65/20 numeric、17 SystemC和链接检查。
+最新39项非LLaMA默认search no-card全部通过，含两种dtype的decode两步，wall 689.62秒；没有skip/unsupported作为测试通过。
+LLaMA高预算和decode 126的旧编译错误/主动取消，以及低精度数值失败仍不计为完成。
+
+本次最终主机门禁的`wafer-compile` SHA256为`348599a6a37558476664fbe3681345c35a5828515742b00545212fe7c75841a0`，
+`wafer-compile-test`为`76486de50681f4fa561c1ab1b52e735f50ff17aceafff682ee98e719df6571bf`。
+上述最新预算产物在相同源码批次、seed和配置下生成，compiler-test SHA256为
+`bb5f31d23cf65bd1678d175902a7f5a97bae4b4026aee66ab89384a7c9658748`，已包含SPM stride与容量队列保留修正，
+早于随后boundary relation精确去重修正；当前主机门禁不代签这些较早package为新binary的完整产品矩阵。
+
+Decode的最新14次预算实卡两步为**14.926 / 14.956 ms**，42次为**14.788 / 14.799 ms**；
+hidden、完整K/V和旧prefix均通过原PyTorch容差，step 2读取本轮实际KV结果。两预算没有明显性能收益，
+并慢于较早中间版本约5.3 ms；因此decode性能仍未恢复，不能仅按本轮数值通过签发优化完成。
+126次旧编译在50次actual、9个accepted后触发上述boundary verifier错误，没有完整预算或设备结果。
+修正低精度合同后需连同LLaMA重跑受影响的高预算产物，并用匹配profile检查实际winner的退化原因。
+
+本批原始预算摘要和设备结果索引为`build/test/search-board/verified-budget-results.json`；
+4K和GEMM的42/126逐文件同一性证明分别为该目录的`attention-prefill-llama-2-7b-42-126-equivalence.json`、
+`single-card-gemm-tail-1031-42-126-equivalence.json`。文件只保存本轮审计证据，不作为下一轮测试输入。

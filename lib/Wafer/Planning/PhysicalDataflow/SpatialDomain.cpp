@@ -1,6 +1,7 @@
 //===- SpatialDomain.cpp - Complete spatial plan domain ----------------===//
 
 #include "Wafer/Planning/PhysicalDataflow/SpatialDomain.h"
+#include "Wafer/Planning/PhysicalDataflow/CanonicalSpatialAssignment.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPartitionPropagation.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -340,19 +341,20 @@ bool nodePlanContains(const SpatialRootDomainFacts &root,
   return true;
 }
 
-std::optional<NodeSpatialPlan>
-getNextNodePlan(const SpatialRootDomainFacts &root,
-                llvm::ArrayRef<TileId> available,
-                const NodeSpatialPlan &current) {
+std::optional<NodeSpatialPlan> getNextNodePlan(
+    const SpatialRootDomainFacts &root, llvm::ArrayRef<TileId> available,
+    const NodeSpatialPlan &current, SpatialSuccessorDomain successorDomain) {
   if (!nodePlanContains(root, available, current))
     return std::nullopt;
   NodeSpatialPlan next = current;
-  if (nextMergePlacement(available, next.reductionMerges))
-    return next;
-  for (MergePlacement &placement : next.reductionMerges)
-    placement.tile = available.front();
-  if (nextDistinctTileSequence(available, next.embedding))
-    return next;
+  if (successorDomain == SpatialSuccessorDomain::AllPlacements) {
+    if (nextMergePlacement(available, next.reductionMerges))
+      return next;
+    for (MergePlacement &placement : next.reductionMerges)
+      placement.tile = available.front();
+    if (nextDistinctTileSequence(available, next.embedding))
+      return next;
+  }
   if (!advanceAxes(root, available.size(), next.axes))
     return std::nullopt;
   std::optional<size_t> cells =
@@ -1174,7 +1176,8 @@ bool SpatialPlanDomain::contains(const SpatialPlan &plan) const {
 }
 
 SpatialPlanSuccessor
-SpatialPlanDomain::getNextPlan(const SpatialPlan &plan) const {
+SpatialPlanDomain::getNextPlan(const SpatialPlan &plan,
+                               SpatialSuccessorDomain successorDomain) const {
   if (!contains(plan))
     return {SpatialPlanSuccessorKind::Failure,
             {},
@@ -1185,8 +1188,9 @@ SpatialPlanDomain::getNextPlan(const SpatialPlan &plan) const {
       problem.getStructuralProblem().getAvailableTiles();
   for (size_t reverse = 0; reverse < next.nodes.size(); ++reverse) {
     size_t index = next.nodes.size() - reverse - 1;
-    std::optional<NodeSpatialPlan> successor = getNextNodePlan(
-        problem.getRoots()[index], available, next.nodes[index]);
+    std::optional<NodeSpatialPlan> successor =
+        getNextNodePlan(problem.getRoots()[index], available, next.nodes[index],
+                        successorDomain);
     if (!successor)
       continue;
     next.nodes[index] = std::move(*successor);
@@ -1425,6 +1429,8 @@ SpatialPlanDomain::getGraphCoherentProposals(
       result.push_back(std::move(plan));
   };
   auto proposals = getProposals();
+  // Coordinated reuse keeps the earliest entry. Raw reuse and the fixed-policy
+  // coordinate remain separate seeds; propagation never removes either choice.
   if (!proposals.empty()) {
     const SpatialPlan seed = proposals.front();
     for (auto order : {SpatialPropagationOrder::ProducersFirst,
@@ -1433,10 +1439,18 @@ SpatialPlanDomain::getGraphCoherentProposals(
           propagateSpatialPartitions(*this, dag, seed, limits, order);
       if (mlir::failed(coordinated))
         return mlir::failure();
+      append(*coordinated);
       if (!llvm::is_contained(proposals, *coordinated))
-        proposals.insert(proposals.begin(), std::move(*coordinated));
+        proposals.push_back(std::move(*coordinated));
     }
   }
+  if (!proposals.empty())
+    append(proposals.front());
+  auto canonical = buildCanonicalSpatialAssignment(
+      dag, problem.getStructuralProblem().getAvailableTiles());
+  if (mlir::failed(canonical))
+    return mlir::failure();
+  append(std::move(canonical->plan));
   for (const SpatialPlan &raw : proposals) {
     SpatialDomainEvaluation evaluation = evaluate(dag, raw, limits);
     if (evaluation.failure)

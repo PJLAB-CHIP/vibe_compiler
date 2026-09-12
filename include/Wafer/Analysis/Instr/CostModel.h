@@ -27,7 +27,7 @@ struct SearchCostPolicy {
   /// Stable provenance is part of the comparison cohort. A candidate scored
   /// with one profile can never silently outrank a candidate scored with
   /// another profile.
-  uint64_t profileIdentity = 3;
+  uint64_t profileIdentity = 4;
   SearchCostProfileProvenance profileProvenance =
       SearchCostProfileProvenance::BuiltInEstimate;
   uint64_t ddrNominalBytesPerSecond = 150'000'000'000ULL;
@@ -169,9 +169,10 @@ struct UnknownSearchObjective {
 using SearchObjective =
     std::variant<KnownSearchObjective, UnknownSearchObjective>;
 
-SearchObjective
-deriveSearchObjective(const InstructionProgramAggregateCost &cost,
-                      const std::optional<SearchCostCohort> &cohort);
+SearchObjective deriveSearchObjective(
+    const InstructionProgramAggregateCost &cost,
+    const std::optional<SearchCostCohort> &cohort,
+    llvm::ArrayRef<TileInstructionProgram> currentPrograms = {});
 
 enum class SearchObjectiveComparison : uint8_t {
   Better,

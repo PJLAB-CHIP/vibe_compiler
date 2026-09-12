@@ -1,12 +1,12 @@
 //===- Target LLVM lowering implementation -------------------------------===//
 
+#include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
 #include "Wafer/Conversion/InstrToLLVM/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/TargetFormat.h"
 #include "Wafer/Target/TargetMemory.h"
-#include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
@@ -67,25 +67,6 @@ void FunctionLowering::appendArrayI32(mlir::Location loc,
                                       llvm::ArrayRef<int64_t> values) {
   for (int64_t value : values)
     appendI32(loc, out, value);
-}
-
-mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
-FunctionLowering::getNHWCShape(mlir::Operation *op, mlir::MemRefType type,
-                               llvm::StringRef role) {
-  if (!type.hasStaticShape())
-    return op->emitError()
-           << "unsupported_target_shape: " << role
-           << " memref must have static shape for target LLVM lowering";
-  if (type.getRank() > 4)
-    return op->emitError()
-           << "unsupported_target_shape: " << role
-           << " memref rank must be <= 4 for fixed target CRT shape ABI";
-
-  llvm::SmallVector<int64_t, 4> shape(4, 1);
-  int64_t offset = 4 - type.getRank();
-  for (auto [index, dim] : llvm::enumerate(type.getShape()))
-    shape[offset + index] = dim;
-  return shape;
 }
 
 mlir::FailureOr<AddressValue>

@@ -86,7 +86,7 @@ build/bin/wafer-compile \
 
 普通编译的 `<package-directory>` 就是交付 package；编译输出目录必须尚不存在。
 使用 `--optimization-policy none` 选择 deterministic baseline。`search` 可以用 `--search-width` 和 `--search-trials` 限制搜索工作量；
-有界搜索不承诺全局最优。
+默认 `width=8` 限制同时保留的可扩展分支，`trials=42` 限制实际尝试次数（包含失败）。有界搜索不承诺全局最优。
 
 ## 验证和运行 package
 

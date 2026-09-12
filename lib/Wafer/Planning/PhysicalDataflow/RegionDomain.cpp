@@ -740,6 +740,13 @@ RegionDomain::buildPlan(llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
       ReplicaExecutionPlan replica;
       replica.id.producer = *required;
       replica.id.fragment = fragment->fragment;
+      const auto *producerBase = findBaseGroup(baseGroups, required->work);
+      if (!producerBase)
+        return std::nullopt;
+      for (const auto &input : producerBase->externalBindings)
+        if (input.fragment.use.destination ==
+            analysis::DemandDestination(required->shard))
+          replica.inputs.push_back(input);
       if (llvm::is_contained(group.replicas, replica))
         return std::nullopt;
       group.replicas.push_back(replica);
@@ -804,7 +811,7 @@ RegionDomain::buildPlan(llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
   std::vector<std::set<size_t>> successors(plan.groups.size());
   std::vector<size_t> indegree(plan.groups.size(), 0);
   for (auto [consumerIndex, group] : llvm::enumerate(plan.groups)) {
-    for (const ExternalUseBinding &binding : group.externalBindings) {
+    for (const ExternalUseBinding &binding : getRegionExternalInputs(group)) {
       if (binding.fragment.source.kind !=
           analysis::RootBoundaryKind::StructuredResult)
         continue;
@@ -830,7 +837,7 @@ RegionDomain::buildPlan(llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
         }
       for (size_t producerIndex : producers) {
         if (producerIndex == consumerIndex)
-          return std::nullopt;
+          continue;
         if (successors[producerIndex].insert(consumerIndex).second)
           ++indegree[consumerIndex];
       }
@@ -968,7 +975,7 @@ RegionDomain::getProposalMetrics(const RegionPlan &plan) const {
         metrics.maximumRootsPerRegion, group.mandatoryRoots.size());
     metrics.fusionMerges += group.mandatoryRoots.size() - 1;
     metrics.localBindings += group.localBindings.size();
-    metrics.externalBindings += group.externalBindings.size();
+    metrics.externalBindings += getRegionExternalInputs(group).size();
     for (const LocalUseBinding &binding : group.localBindings) {
       const LocalFragment *fragment = nullptr;
       if (const auto *required =
@@ -1027,7 +1034,11 @@ std::vector<RegionPlan> RegionDomain::buildRefinedProposals(
     std::vector<RegionPlan> retained;
     retained.reserve(plans.size());
     for (size_t candidate = 0; candidate < plans.size(); ++candidate) {
-      const bool anchor = candidate == 0 || candidate + 1 == plans.size();
+      const bool anchor = candidate == 0 || candidate + 1 == plans.size() ||
+                          llvm::any_of(plans[candidate].groups,
+                                       [](const RegionGroupPlan &group) {
+                                         return !group.replicas.empty();
+                                       });
       bool dominated = false;
       if (!anchor)
         for (size_t other = 0; other < plans.size(); ++other) {
@@ -1591,8 +1602,25 @@ std::vector<RegionPlan> RegionDomain::buildRefinedProposals(
       break;
   }
 
-  const uint64_t snapshotCount =
-      std::min<uint64_t>(maximumPlans, mergeHistory.size() + 1);
+  // Structural families precede numeric merge-history samples. In particular,
+  // a full proposal quota must not silently omit explicit replica choices.
+  if (!neighborhoodCenter) {
+    auto fused = buildPlan(maximal, makeChoices(maximal, /*local once=*/1));
+    // A Tile can contain disconnected groups, so merging every vertex need
+    // not be legal. The completed legal merge sequence must still have an
+    // entry before intermediate snapshots consume the proposal quota.
+    if (!fused)
+      fused = buildPlan(coherent, makeChoices(coherent, /*local once=*/1));
+    append(std::move(fused));
+    if (proposals.size() >= maximumPlans)
+      return retainStructuralPareto(std::move(proposals));
+    append(
+        buildPlan(singleton, makeChoices(singleton, /*explicit replicas=*/2)));
+    if (proposals.size() >= maximumPlans)
+      return retainStructuralPareto(std::move(proposals));
+  }
+  const uint64_t snapshotCount = std::min<uint64_t>(
+      maximumPlans - proposals.size() + 1, mergeHistory.size() + 1);
   if (snapshotCount > 1) {
     ProposalLabels snapshot = singleton;
     size_t applied = 0;
@@ -1600,8 +1628,10 @@ std::vector<RegionPlan> RegionDomain::buildRefinedProposals(
     for (uint64_t index = 1; index < snapshotCount; ++index) {
       const unsigned __int128 numerator =
           static_cast<unsigned __int128>(index) * mergeHistory.size();
-      const uint64_t target = static_cast<uint64_t>(
-          (numerator + snapshotCount - 2) / (snapshotCount - 1));
+      const uint64_t denominator =
+          neighborhoodCenter ? snapshotCount - 1 : snapshotCount;
+      const uint64_t target =
+          static_cast<uint64_t>((numerator + denominator - 1) / denominator);
       if (target == previousTarget)
         continue;
       while (applied < target) {

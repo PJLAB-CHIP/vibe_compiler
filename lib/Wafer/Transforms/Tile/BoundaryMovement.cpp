@@ -1674,9 +1674,8 @@ static void normalizeSubviewResultTypes(mlir::ModuleOp module) {
   if (!module)
     return;
   llvm::SmallVector<mlir::memref::SubViewOp, 32> subviews;
-  module.walk([&](mlir::memref::SubViewOp subview) {
-    subviews.push_back(subview);
-  });
+  module.walk(
+      [&](mlir::memref::SubViewOp subview) { subviews.push_back(subview); });
   mlir::IRRewriter rewriter(module.getContext());
   for (mlir::memref::SubViewOp subview : subviews) {
     auto sourceType = mlir::dyn_cast<mlir::MemRefType>(subview.getSourceType());
@@ -1686,9 +1685,8 @@ static void normalizeSubviewResultTypes(mlir::ModuleOp module) {
     auto expected = getRetargetedSubviewType(subview, subview.getSource());
     if (expected && expected.getRank() == resultType.getRank() &&
         expected.getShape() == resultType.getShape() && expected != resultType)
-      rewriter.modifyOpInPlace(subview, [&] {
-        subview.getResult().setType(expected);
-      });
+      rewriter.modifyOpInPlace(subview,
+                               [&] { subview.getResult().setType(expected); });
   }
 }
 
@@ -2580,13 +2578,14 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
         if (!owned)
           if (auto toMemref =
                   resident.getDefiningOp<mlir::bufferization::ToMemrefOp>()) {
-            auto tensorAllocation = toMemref.getTensor().getDefiningOp<
-                mlir::bufferization::AllocTensorOp>();
-            owned = tensorAllocation && tileOwner &&
-                    tensorAllocation->getParentOfType<TileModuleOp>() ==
-                        tileOwner &&
-                    tensorAllocation->getParentOfType<TileRegionOp>() !=
-                        oldRegion;
+            auto tensorAllocation =
+                toMemref.getTensor()
+                    .getDefiningOp<mlir::bufferization::AllocTensorOp>();
+            owned =
+                tensorAllocation && tileOwner &&
+                tensorAllocation->getParentOfType<TileModuleOp>() ==
+                    tileOwner &&
+                tensorAllocation->getParentOfType<TileRegionOp>() != oldRegion;
             if (owned)
               toMemref->moveBefore(oldRegion);
           }
@@ -2832,6 +2831,20 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
                            .getResult();
         }
         if (peer->useSharedDDR) {
+          mlir::Operation *firstUse = nullptr;
+          for (auto bridge : input.bridges) {
+            auto *use = findFirstBufferConsumer(bridge.getMemref(), block);
+            if (!use)
+              return failApply("shared DDR input has no current consumer cut");
+            if (!firstUse || use->isBeforeInBlock(firstUse))
+              firstUse = use;
+          }
+          if (!firstUse)
+            return failApply("shared DDR input omitted its actual use");
+          // The allocation and metadata views may precede this cut. Loading
+          // at Region entry can wait on a remote producer that itself needs
+          // earlier work in this same Region.
+          rewriter.setInsertionPoint(firstUse);
           rewriter.create<StorageLoadOp>(argument.getLoc(), argument,
                                          allocation);
           ++statistics.ddrLoads;
@@ -3210,7 +3223,6 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
       lastIssueByProducer[producer] = issue.getOperation();
       ++statistics.peerSends;
     }
-    rewriter.setInsertionPoint(yield);
     llvm::DenseSet<mlir::Value> storedSharedDDRResults;
     for (const ResultPlan &result : plan.results) {
       for (unsigned relationIndex : result.peerRelations) {
@@ -3224,6 +3236,15 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
         auto destination = sharedDDRResultArguments.find(sourceBinding);
         if (destination == sharedDDRResultArguments.end())
           return failApply("shared DDR peer output has no Region argument");
+        mlir::Operation *producer = nullptr;
+        mlir::bufferization::ToTensorOp bridge = result.bridge;
+        if (mlir::failed(findLastBufferWrite(bridge.getMemref(), block,
+                                             storageRoots, producer, detail)))
+          return mlir::failure();
+        if (producer)
+          rewriter.setInsertionPointAfter(producer);
+        else
+          rewriter.setInsertionPointToStart(&block);
         mlir::FailureOr<mlir::Value> source =
             materializeTransferSource(result, *peer);
         if (mlir::failed(source))
@@ -3233,6 +3254,7 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
         ++statistics.ddrStores;
       }
     }
+    rewriter.setInsertionPoint(yield);
     for (const ResultPlan &result : plan.results) {
       auto destination = destinationArguments.find(result.index);
       if (destination == destinationArguments.end())
@@ -3532,13 +3554,10 @@ DistributedMovementAvailability analyzeDistributedMovementAvailability(
   if (mlir::failed(
           preflight(module, copiedRelations, regions, peers, result.detail)))
     return result;
-  // All raw edges participate: DDR loads execute at Region entry and stores
-  // at Region exit. Peer rounds must not hide a cycle in that actual order.
-  llvm::DenseMap<mlir::Operation *, unsigned> ddrRanks;
-  std::string ddrDetail;
-  result.sharedDDR =
-      !peers.empty() && mlir::succeeded(buildRegionTopologicalRanks(
-                            module, peers, ddrRanks, ddrDetail));
+  // DDR exchanges use actual producer/consumer cuts inside each Region.
+  // Region cycles do not rule out a choice: its actual publication order is
+  // verified only after DMA and completion have been materialized.
+  result.sharedDDR = !peers.empty();
   llvm::SmallVector<PayloadGroup, 16> groups = buildPayloadGroups(peers);
   llvm::SmallVector<CommunicationComponent, 8> components =
       buildCommunicationComponents(groups, peers);
@@ -3625,6 +3644,32 @@ DistributedMovementAvailability analyzeDistributedMovementAvailability(
   return result;
 }
 
+BoundaryComponentQuery queryBoundaryMovementComponents(
+    mlir::ModuleOp module,
+    const StructuredMaterializationRelations &relations) {
+  BoundaryComponentQuery result;
+  if (!module || mlir::failed(verifyStructuredComputeLowered(module)) ||
+      mlir::failed(checkStructuredBufferRelationsCurrent(module, relations))) {
+    result.failure = BoundaryMovementFailureKind::BrokenContract;
+    result.detail = "communication component query requires current lowered IR";
+    return result;
+  }
+  auto current = relations;
+  llvm::SmallVector<RegionPlan, 16> regions;
+  llvm::SmallVector<PeerPlan, 16> peers;
+  if (mlir::failed(preflight(module, current, regions, peers, result.detail))) {
+    result.failure = BoundaryMovementFailureKind::Unsupported;
+    return result;
+  }
+  const auto groups = buildPayloadGroups(peers);
+  const auto components = buildCommunicationComponents(groups, peers);
+  for (const auto &component : components) {
+    const auto &peer = peers[groups[component.groups.front()].peers.front()];
+    result.anchors.push_back(current.boundaryRelations[peer.relationIndex]);
+  }
+  return result;
+}
+
 BoundaryMovementResult
 materializeTileBoundaryMovement(mlir::ModuleOp module,
                                 StructuredMaterializationRelations &relations,
@@ -3641,17 +3686,41 @@ materializeTileBoundaryMovement(mlir::ModuleOp module,
     return fail(BoundaryMovementFailureKind::Unsupported, detail);
 
   BoundaryMovementResult result;
-  if (options.transport == BoundaryMovementTransport::SharedDDR) {
+  for (PeerPlan &peer : peers)
+    peer.useSharedDDR =
+        options.transport == BoundaryMovementTransport::SharedDDR;
+  if (!options.components.empty()) {
+    const auto groups = buildPayloadGroups(peers);
+    const auto components = buildCommunicationComponents(groups, peers);
+    llvm::DenseSet<unsigned> selected;
+    for (const auto &choice : options.components) {
+      std::optional<unsigned> matched;
+      for (auto [index, component] : llvm::enumerate(components))
+        for (unsigned group : component.groups)
+          for (unsigned peerIndex : groups[group].peers) {
+            const auto &edge =
+                relations.boundaryRelations[peers[peerIndex].relationIndex];
+            if (edge.sourceEndpoint == choice.anchor.sourceEndpoint &&
+                edge.destinationEndpoint == choice.anchor.destinationEndpoint)
+              matched = index;
+          }
+      if (!matched || !selected.insert(*matched).second)
+        return fail(
+            BoundaryMovementFailureKind::BrokenContract,
+            "communication choice has a stale or repeated component edge");
+      for (unsigned group : components[*matched].groups)
+        for (unsigned peerIndex : groups[group].peers)
+          peers[peerIndex].useSharedDDR =
+              choice.transport == BoundaryMovementTransport::SharedDDR;
+    }
+  }
+  if (llvm::all_of(peers,
+                   [](const PeerPlan &peer) { return peer.useSharedDDR; })) {
     if (options.allGather != CompleteAllGatherAlgorithm::Ring ||
         options.allToAll != CompleteAllToAllAlgorithm::Direct ||
         options.reduction != DistributedReductionAlgorithm::Centralized)
       return fail(BoundaryMovementFailureKind::BrokenContract,
                   "shared DDR cannot request a peer collective algorithm");
-    llvm::DenseMap<mlir::Operation *, unsigned> ranks;
-    if (mlir::failed(buildRegionTopologicalRanks(module, peers, ranks, detail)))
-      return fail(BoundaryMovementFailureKind::Unsupported, detail);
-    for (PeerPlan &peer : peers)
-      peer.useSharedDDR = true;
   } else if (mlir::failed(buildTopologyFanoutChoices(
                  module, peers, options.allGather, result.statistics, detail)))
     return fail(BoundaryMovementFailureKind::Unsupported, detail);

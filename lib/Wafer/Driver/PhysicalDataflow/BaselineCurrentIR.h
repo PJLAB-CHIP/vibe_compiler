@@ -12,6 +12,8 @@ namespace wafer::compiler::detail {
 // supply it; test drivers select a realization using the same transformations.
 struct CommunicationCandidateSelection {
   bool mergeRegions = true;
+  bool shareReadOnlyInputs = false;
+  bool pipelineLoads = false;
   BoundaryMovementOptions movement;
 };
 

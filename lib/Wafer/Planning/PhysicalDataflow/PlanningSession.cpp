@@ -88,8 +88,7 @@ classifySpatialChoiceOutcome(const analysis::ExactDemandOutcome &outcome) {
 }
 
 SpatialExpansionResult
-PhysicalDataflowPlanningSession::evaluateAndQueue(SpatialPlan choice,
-                                                  bool proposalChoice) {
+PhysicalDataflowPlanningSession::evaluateAndQueue(SpatialPlan choice) {
   ++work.spatialDemandQueries;
   SpatialDomainEvaluation evaluation = [&]() {
     wafer::support::ScopedCompileTimingSpan timing("query", "physical-search",
@@ -100,8 +99,7 @@ PhysicalDataflowPlanningSession::evaluateAndQueue(SpatialPlan choice,
   if (evaluation.failure) {
     if (evaluation.failure->kind ==
         SpatialDomainFailureKind::UnsupportedSemantics) {
-      if (proposalChoice)
-        resolvedProposalChoices.insert(std::move(choice));
+      resolvedChoices.insert(std::move(choice));
       ++work.unsupportedSpatialChoices;
       return {SpatialExpansionKind::Unsupported, evaluation.failure->detail};
     }
@@ -115,16 +113,13 @@ PhysicalDataflowPlanningSession::evaluateAndQueue(SpatialPlan choice,
       classifySpatialChoiceOutcome(*evaluation.demand);
   if (outcome == SpatialChoiceOutcomeKind::Indeterminate) {
     pausedSpatialChoice = std::move(choice);
-    pausedChoiceIsProposal = proposalChoice;
     ++work.indeterminateSpatialChoices;
     return {SpatialExpansionKind::Indeterminate,
             getDemandDetail(*evaluation.demand)};
   }
   pausedSpatialChoice.reset();
-  pausedChoiceIsProposal = false;
   if (outcome == SpatialChoiceOutcomeKind::Unsupported) {
-    if (proposalChoice)
-      resolvedProposalChoices.insert(std::move(choice));
+    resolvedChoices.insert(std::move(choice));
     ++work.unsupportedSpatialChoices;
     return {SpatialExpansionKind::Unsupported,
             getDemandDetail(*evaluation.demand)};
@@ -170,14 +165,12 @@ PhysicalDataflowPlanningSession::evaluateAndQueue(SpatialPlan choice,
                 "root-work successor omitted its typed failure"};
       if (current.getKind() == RootWorkSuccessorKind::Indeterminate) {
         pausedSpatialChoice = std::move(choice);
-        pausedChoiceIsProposal = proposalChoice;
         ++work.indeterminateSpatialChoices;
         return {SpatialExpansionKind::Indeterminate,
                 getRootWorkFailureDetail(*failure)};
       }
       if (current.getKind() == RootWorkSuccessorKind::Unsupported) {
-        if (proposalChoice)
-          resolvedProposalChoices.insert(std::move(choice));
+        resolvedChoices.insert(std::move(choice));
         ++work.unsupportedSpatialChoices;
         return {SpatialExpansionKind::Unsupported,
                 getRootWorkFailureDetail(*failure)};
@@ -198,8 +191,7 @@ PhysicalDataflowPlanningSession::evaluateAndQueue(SpatialPlan choice,
   if (mlir::failed(regionDomain))
     return {SpatialExpansionKind::CompilerBug, std::move(detail)};
 
-  if (proposalChoice)
-    resolvedProposalChoices.insert(choice);
+  resolvedChoices.insert(choice);
   auto state = SpatialState::create(problem, std::move(choice), &detail);
   if (mlir::failed(state))
     return {SpatialExpansionKind::CompilerBug, std::move(detail)};
@@ -223,7 +215,7 @@ SpatialExpansionResult PhysicalDataflowPlanningSession::resumeSpatial() {
   while (true) {
     if (pausedSpatialChoice) {
       ++work.spatialSuccessorSteps;
-      return evaluateAndQueue(*pausedSpatialChoice, pausedChoiceIsProposal);
+      return evaluateAndQueue(*pausedSpatialChoice);
     }
 
     auto proposals = spatialProposalCache.find(0);
@@ -243,47 +235,56 @@ SpatialExpansionResult PhysicalDataflowPlanningSession::resumeSpatial() {
       proposals = spatialProposalCache.try_emplace(0, std::move(values)).first;
     }
     for (const SpatialPlan &proposal : proposals->second) {
-      if (resolvedProposalChoices.count(proposal))
+      if (resolvedChoices.count(proposal))
         continue;
       ++work.spatialSuccessorSteps;
-      return evaluateAndQueue(proposal, /*proposalChoice=*/true);
+      return evaluateAndQueue(proposal);
     }
 
+    if (isSpatialExhausted())
+      return {SpatialExpansionKind::ParentExhausted};
+    bool axis = takeAxis;
+    takeAxis = !takeAxis;
+    if (axis && axisCursor == CanonicalCursor::Exhausted)
+      axis = false;
+    if (!axis && canonicalCursor == CanonicalCursor::Exhausted)
+      axis = true;
+    CanonicalCursor &cursor = axis ? axisCursor : canonicalCursor;
+    auto &last = axis ? lastAxisChoice : lastCanonicalChoice;
     SpatialPlan choice;
-    if (canonicalCursor == CanonicalCursor::NotStarted) {
+    if (cursor == CanonicalCursor::NotStarted) {
       choice = problem.getSpatialDomain().getFirstPlan();
       if (!problem.getSpatialDomain().contains(choice))
         return {SpatialExpansionKind::CompilerBug,
-                "spatial canonical domain has no valid first choice"};
-      lastCanonicalChoice = choice;
-      canonicalCursor = CanonicalCursor::LastChoice;
-    } else if (canonicalCursor == CanonicalCursor::LastChoice) {
-      SpatialPlanSuccessor next =
-          problem.getSpatialDomain().getNextPlan(*lastCanonicalChoice);
+                "spatial domain has no valid first choice"};
+      last = choice;
+      cursor = CanonicalCursor::LastChoice;
+    } else {
+      SpatialPlanSuccessor next = problem.getSpatialDomain().getNextPlan(
+          *last, axis ? SpatialSuccessorDomain::AxisSchemes
+                      : SpatialSuccessorDomain::AllPlacements);
       if (next.kind == SpatialPlanSuccessorKind::Failure)
         return {SpatialExpansionKind::CompilerBug,
                 next.failure ? next.failure->detail
                              : "spatial successor returned no failure detail"};
       if (next.kind == SpatialPlanSuccessorKind::End) {
-        canonicalCursor = CanonicalCursor::Exhausted;
-        lastCanonicalChoice.reset();
-        return {SpatialExpansionKind::ParentExhausted};
+        cursor = CanonicalCursor::Exhausted;
+        last.reset();
+        continue;
       }
       if (!next.plan)
         return {SpatialExpansionKind::CompilerBug,
                 "spatial successor returned no plan"};
       choice = std::move(*next.plan);
-      lastCanonicalChoice = choice;
-    } else {
-      return {SpatialExpansionKind::ParentExhausted};
+      last = choice;
     }
 
     ++work.spatialSuccessorSteps;
-    if (resolvedProposalChoices.count(choice)) {
+    if (resolvedChoices.count(choice)) {
       ++work.duplicateSpatialChoices;
       continue;
     }
-    return evaluateAndQueue(std::move(choice), /*proposalChoice=*/false);
+    return evaluateAndQueue(std::move(choice));
   }
 }
 
@@ -508,6 +509,7 @@ void PhysicalDataflowPlanningSession::skipRegionRefinementProposals(
 
 bool PhysicalDataflowPlanningSession::hasRemainingSpatialWork() const {
   return canonicalCursor != CanonicalCursor::Exhausted ||
+         axisCursor != CanonicalCursor::Exhausted ||
          pausedSpatialChoice.has_value() || !frontier.empty();
 }
 

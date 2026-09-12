@@ -1,6 +1,7 @@
 //===- ExecutableCompilationTest.cpp -------------------------------===//
 
 #include "Wafer/Driver/ExecutableCompilation.h"
+#include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Driver/CurrentIRExecutablePipeline.h"
 #include "Wafer/Driver/PhysicalDataflow/BaselineCurrentIR.h"
@@ -33,23 +34,13 @@
 
 namespace {
 
-TEST(SearchCurrentIROptionsTest, WidthUniquelyDeterminesInternalAllocation) {
+TEST(SearchCurrentIROptionsTest,
+     RetentionWidthDoesNotChangeProposalGeneration) {
   wafer::compiler::detail::SearchCurrentIROptions options;
-  EXPECT_EQ(options.getInitialProposalLimit(), 6u);
-  EXPECT_EQ(options.getRefinementLimit(), 2u);
-
-  for (auto [width, initial, refinements] : {
-           std::tuple<uint64_t, uint64_t, uint64_t>{1, 1, 0},
-           {2, 2, 0},
-           {3, 2, 1},
-           {4, 2, 2},
-           {8, 6, 2},
-           {16, 14, 2},
-       }) {
+  for (uint64_t width : {1, 2, 3, 4, 8, 16}) {
     options.limits.width = width;
-    EXPECT_EQ(options.getInitialProposalLimit(), initial);
-    EXPECT_EQ(options.getRefinementLimit(), refinements);
-    EXPECT_EQ(initial + refinements, width);
+    EXPECT_EQ(options.getInitialProposalLimit(), 6u);
+    EXPECT_EQ(options.getRefinementLimit(), 2u);
   }
 }
 
@@ -540,6 +531,46 @@ TEST(ExecutableCompilationPolicyTest,
 }
 
 TEST(ExecutableCompilationPolicyTest,
+     ParallelCurrentIRStagesPreserveExactInstructionAndStorage) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto parsed =
+        wafer::compiler::testing::parseRealScaleDependentProgram(extent);
+    ASSERT_TRUE(parsed.module);
+    auto program =
+        wafer::compiler::testing::realScaleDependentProgramMetadata(extent);
+    std::vector<std::string> serial;
+    for (unsigned workers : {1u, 4u, 16u}) {
+      SCOPED_TRACE(workers);
+      wafer::compiler::ProgramDataHandoff data;
+      std::string diagnosticText;
+      llvm::raw_string_ostream diagnostics(diagnosticText);
+      wafer::compiler::detail::BaselineCurrentIROptions options;
+      options.downstream.tilePipelineParallelism = workers;
+      wafer::compiler::detail::ExecutableLoweringStatistics statistics;
+      auto result = wafer::compiler::detail::compileBaselineCurrentIR(
+          *parsed.module, program, wafer::compiler::testing::executionConfig(),
+          diagnostics, data, options, nullptr, &statistics);
+      ASSERT_TRUE(result.isAccepted()) << result.gate << ": " << result.detail;
+      ASSERT_TRUE(result.executable);
+      ASSERT_EQ(result.executable->tiles.size(), 16u);
+      EXPECT_EQ(statistics.maximumTilePipelineWorkers, workers);
+      std::vector<std::string> actual;
+      for (const auto &tile : result.executable->tiles) {
+        std::string text;
+        llvm::raw_string_ostream stream(text);
+        tile.getModule().print(stream);
+        actual.push_back(std::move(text));
+      }
+      if (workers == 1)
+        serial = std::move(actual);
+      else
+        EXPECT_EQ(actual, serial);
+    }
+  }
+}
+
+TEST(ExecutableCompilationPolicyTest,
      CommunicationClosurePreservesBaselineAndSearchDDRAlternatives) {
   for (int64_t extent : {1024, 1025, 1031}) {
     SCOPED_TRACE(extent);
@@ -642,6 +673,13 @@ TEST(ExecutableCompilationPolicyTest,
               wafer::SharedDDRCompletionFailure::Contract);
     extraAcquire->erase();
     auto readyArgument = mlir::cast<mlir::BlockArgument>(acquire.getReady());
+    while (!mlir::isa<mlir::func::FuncOp>(
+        readyArgument.getOwner()->getParentOp())) {
+      auto operand =
+          wafer::analysis::getSingleExecutionRegionEntryOperand(readyArgument);
+      ASSERT_TRUE(mlir::isa_and_nonnull<mlir::BlockArgument>(operand));
+      readyArgument = mlir::cast<mlir::BlockArgument>(operand);
+    }
     auto readyFunction =
         mlir::cast<mlir::func::FuncOp>(readyArgument.getOwner()->getParentOp());
     auto readyBinding = readyFunction.getArgAttrOfType<wafer::DDRBindingAttr>(
@@ -684,7 +722,7 @@ TEST(ExecutableCompilationPolicyTest,
 
     wafer::compiler::ProgramDataHandoff searchData;
     wafer::compiler::detail::SearchCurrentIROptions options;
-    options.limits = wafer::SearchLimits{1, 16};
+    options.limits = wafer::SearchLimits{8, 42};
     options.downstream.tilePipelineParallelism = 1;
     wafer::compiler::detail::SearchCurrentIRStatistics search;
     auto result = wafer::compiler::detail::compileSearchCurrentIR(
@@ -694,7 +732,63 @@ TEST(ExecutableCompilationPolicyTest,
     EXPECT_GT(search.regionPreservingAccepted, 0u);
     EXPECT_GT(search.mergedRegionAccepted, 0u);
     EXPECT_GT(search.sharedDDRAccepted, 0u);
-    EXPECT_LE(search.temporalCandidateActualizations, 16u);
+    EXPECT_LE(search.temporalCandidateActualizations, 42u);
+    EXPECT_EQ(result.executable->tiles.size(), 16u);
+  }
+}
+
+TEST(ExecutableCompilationPolicyTest,
+     SearchActuallyCompilesReadOnlyInputSharingThroughLayoutConsumers) {
+  using namespace wafer::compiler::detail;
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto parsed = wafer::compiler::testing::parseProgram();
+    ASSERT_TRUE(parsed.module);
+    std::string text = llvm::formatv(R"mlir(
+module {{
+  wafer.target.topology @default {{card_grid = array<i64: 1, 1>,
+      card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh {{axes = ["card"], shape = array<i64: 1>}
+  func.func @main(%lhs: tensor<1x{0}x256xf16>, %rhs: tensor<1x256x512xf16>)
+      -> tensor<1x{0}x512xf16> {{
+    %zero = arith.constant 0.0 : f16
+    %empty = tensor.empty() : tensor<1x{0}x512xf16>
+    %init = linalg.fill ins(%zero : f16) outs(%empty : tensor<1x{0}x512xf16>) -> tensor<1x{0}x512xf16>
+    %result = linalg.batch_matmul ins(%lhs, %rhs : tensor<1x{0}x256xf16>, tensor<1x256x512xf16>)
+        outs(%init : tensor<1x{0}x512xf16>) -> tensor<1x{0}x512xf16>
+    return %result : tensor<1x{0}x512xf16>
+  }
+}
+)mlir",
+                                     extent)
+                           .str();
+    parsed.module =
+        mlir::parseSourceString<mlir::ModuleOp>(text, parsed.context.get());
+    ASSERT_TRUE(parsed.module) << text;
+    wafer::frontend::FrontendProgramVerificationResult program;
+    program.numPartitions = 1;
+    program.programUserInputCount = 2;
+    program.distributedInputs = {
+        wafer::compiler::testing::boundary(0, {1, extent, 256}),
+        wafer::compiler::testing::boundary(1, {1, 256, 512})};
+    program.distributedOutputs = {
+        wafer::compiler::testing::boundary(0, {1, extent, 512})};
+    wafer::compiler::ProgramDataHandoff data;
+    std::string diagnosticText;
+    llvm::raw_string_ostream diagnostics(diagnosticText);
+    SearchCurrentIROptions options;
+    options.limits = wafer::SearchLimits{8, 42};
+    options.downstream.tilePipelineParallelism = 1;
+    SearchCurrentIRStatistics statistics;
+    auto result = compileSearchCurrentIR(
+        *parsed.module, program, wafer::compiler::testing::executionConfig(),
+        diagnostics, data, options, &statistics);
+    ASSERT_TRUE(result.isAccepted()) << result.detail << diagnosticText;
+    EXPECT_GT(statistics.inputSharingCandidates, 0u);
+    EXPECT_GT(statistics.inputSharingAccepted, 0u);
+    EXPECT_GT(statistics.acceptedCandidates, statistics.inputSharingAccepted);
+    EXPECT_EQ(statistics.traversal.candidateActualizations, 42u);
+    ASSERT_TRUE(result.executable);
     EXPECT_EQ(result.executable->tiles.size(), 16u);
   }
 }
@@ -754,22 +848,50 @@ TEST(ExecutableCompilationPolicyTest,
     llvm::raw_string_ostream diagnostics(diagnosticText);
     wafer::compiler::detail::SearchCurrentIROptions options;
     options.limits = wafer::SearchLimits{1, 8};
-    options.maximumTemporalCandidatesPerStructuralState = 2;
+
     options.downstream.tilePipelineParallelism = 1;
     wafer::compiler::detail::SearchCurrentIRStatistics search;
     auto result = wafer::compiler::detail::compileSearchCurrentIR(
         *parsed.module, program, wafer::compiler::testing::executionConfig(),
         diagnostics, programData, options, &search);
-    EXPECT_EQ(result.status,
-              wafer::compiler::detail::ExecutableCompilationStatus::
-                  IndeterminateFailure)
-        << result.detail << diagnosticText;
-    EXPECT_GT(search.actualCapacityRefinements, 0u) << diagnosticText;
-    EXPECT_GT(search.indeterminateTemporalCandidates, 0u);
-    EXPECT_GT(search.movementCandidateActualizations, 2u);
-    EXPECT_EQ(search.temporalCandidateActualizations, 2u);
-    EXPECT_LE(search.movementCandidateActualizations, 8u);
+    // A short prefix may contain only actual capacity rejections. It must
+    // retain that feedback without promoting the incomplete domain to an
+    // exact rejection. Acceptance belongs to the extended prefix below.
+    if (result.isAccepted()) {
+      EXPECT_EQ(
+          search.coverage,
+          wafer::compiler::detail::SearchControllerCoverage::FeasiblePartial);
+    } else {
+      EXPECT_EQ(result.status,
+                wafer::compiler::detail::ExecutableCompilationStatus::
+                    IndeterminateFailure)
+          << result.detail << diagnosticText;
+      EXPECT_EQ(search.coverage,
+                wafer::compiler::detail::SearchControllerCoverage::
+                    IncompleteNoCandidate);
+    }
     EXPECT_FALSE(result.isProvenExactRejection());
+    EXPECT_EQ(search.traversal.peakRetainedBranches, 1u);
+    EXPECT_EQ(search.traversal.candidateActualizations, 8u);
+    EXPECT_GT(search.actualCapacityRefinements, 0u) << diagnosticText;
+    EXPECT_GT(search.traversal.resumedCandidates, 0u);
+    EXPECT_GT(search.movementCandidateActualizations, 2u);
+    EXPECT_GT(search.temporalCandidateActualizations, 2u);
+    EXPECT_LE(search.movementCandidateActualizations, 8u);
+    const auto prefixRefinements = search.actualCapacityRefinements;
+    const auto prefixAccepted = search.acceptedCandidates;
+    options.limits.trials = 42;
+    search = {};
+    result = wafer::compiler::detail::compileSearchCurrentIR(
+        *parsed.module, program, wafer::compiler::testing::executionConfig(),
+        diagnostics, programData, options, &search);
+    ASSERT_TRUE(result.isAccepted()) << result.detail << diagnosticText;
+    EXPECT_EQ(
+        search.coverage,
+        wafer::compiler::detail::SearchControllerCoverage::FeasiblePartial);
+    EXPECT_EQ(search.traversal.candidateActualizations, 42u);
+    EXPECT_GE(search.actualCapacityRefinements, prefixRefinements);
+    EXPECT_GE(search.acceptedCandidates, prefixAccepted);
   }
 }
 
@@ -783,7 +905,7 @@ TEST(ExecutableCompilationPolicyTest,
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   wafer::compiler::detail::SearchCurrentIROptions options;
-  options.maximumTemporalCandidatesPerStructuralState = 2;
+
   options.termination =
       wafer::compiler::detail::SearchTerminationPolicy::FirstAccepted;
   options.downstream.captureTileDataflowIR = true;
@@ -805,7 +927,7 @@ TEST(ExecutableCompilationPolicyTest,
   EXPECT_GE(search.temporalCandidateActualizations, 1u);
   EXPECT_LE(search.temporalCandidateActualizations, 2u);
   EXPECT_EQ(search.layoutInvocations, search.temporalCandidateActualizations);
-  EXPECT_GE(search.acceptedTemporalCandidates, 1u);
+  EXPECT_GE(search.acceptedCandidates, 1u);
   EXPECT_EQ(search.controller.accepted, 1u);
   EXPECT_EQ(search.coverage,
             wafer::compiler::detail::SearchControllerCoverage::FeasiblePartial);
@@ -937,11 +1059,12 @@ TEST(ExecutableCompilationPolicyTest,
   ASSERT_TRUE(result.isAccepted())
       << result.gate << ": " << result.detail << "\n"
       << diagnosticText;
-  EXPECT_EQ(search.structuralMaterializations, 1u);
-  EXPECT_GT(search.exactRejectedTemporalCandidates, 0u);
-  EXPECT_EQ(search.acceptedTemporalCandidates, 1u);
+  EXPECT_GT(search.structuralMaterializations, 0u);
+  EXPECT_GT(search.traversal.resumedCandidates, 0u);
+  EXPECT_GT(search.exactRejectedCandidates, 0u);
+  EXPECT_EQ(search.acceptedCandidates, 1u);
   EXPECT_EQ(search.temporalCandidateActualizations,
-            search.exactRejectedTemporalCandidates + 1);
+            search.exactRejectedCandidates + 1);
   EXPECT_EQ(search.layoutInvocations, search.temporalCandidateActualizations);
   EXPECT_EQ(executable.actualMemoryTargetGateInvocations,
             search.temporalCandidateActualizations);
@@ -964,7 +1087,7 @@ TEST(ExecutableCompilationPolicyTest,
     llvm::raw_string_ostream diagnostics(diagnosticText);
     wafer::compiler::detail::SearchCurrentIROptions options;
     options.limits = wafer::SearchLimits{2, 32};
-    options.maximumTemporalCandidatesPerStructuralState = 16;
+
     options.termination =
         wafer::compiler::detail::SearchTerminationPolicy::Exhaustive;
     options.downstream.tilePipelineParallelism = 1;
@@ -979,12 +1102,14 @@ TEST(ExecutableCompilationPolicyTest,
         << result.gate << ": " << result.detail << "\n"
         << diagnosticText;
     ASSERT_TRUE(result.physicalIRInventory);
-    EXPECT_EQ(search.structuralMaterializations, 2u);
-    EXPECT_EQ(search.controller.accepted, 2u);
+    EXPECT_GE(search.structuralMaterializations, 2u);
+    EXPECT_LE(search.traversal.peakRetainedBranches, 2u);
+    EXPECT_EQ(search.traversal.candidateActualizations, 32u);
+    EXPECT_GE(search.controller.accepted, 2u);
     EXPECT_EQ(result.physicalIRInventory->tileModules, 16u);
-    // The singleton has two Regions on every Tile (32 total). Width two
-    // evaluates exactly the singleton and coherent endpoint; the endpoint
-    // merges the pair independently on all 16 Tiles.
+    // The singleton has 32 Regions. The coherent endpoint remains reachable
+    // with only two simultaneously retained branches and removes all sixteen
+    // producer/consumer boundaries, independent of total visited structures.
     EXPECT_EQ(result.physicalIRInventory->tileRegions, 16u);
     ASSERT_EQ(result.physicalIRInventory->tiles.size(), 16u);
     for (const auto &tile : result.physicalIRInventory->tiles)
@@ -1104,7 +1229,7 @@ TEST_F(ExecutableCompilationTest,
 TEST(ExecutableCompilationPolicyTest,
      SharedDDRChecksActualDTESendAndWaitOrder) {
   for (int64_t extent : {1024, 1025, 1031}) {
-    for (unsigned mode : {0, 1, 2}) {
+    for (unsigned mode : {0, 1, 2, 3, 4}) {
       bool cycle = mode == 1;
       SCOPED_TRACE(extent);
       SCOPED_TRACE(mode);
@@ -1142,6 +1267,11 @@ TEST(ExecutableCompilationPolicyTest,
         beginRegion();
         if (!tile && cycle)
           transport();
+        if (mode == 4)
+          ir << "%lb = arith.constant 0 : index\n"
+                "%ub = arith.constant 3 : index\n"
+                "%step = arith.constant 1 : index\n"
+                "scf.for %i = %lb to %ub step %step {\n";
         ir << "wafer.instr."
            << (tile ? "rdma %arg to %buffer" : "wdma %buffer to %arg")
            << " {byte_count = " << 2 * extent
@@ -1149,12 +1279,14 @@ TEST(ExecutableCompilationPolicyTest,
            << (tile ? "src" : "dst") << "_iterations = array<i64: 1, 1, 1>, "
            << (tile ? "src" : "dst")
            << "_strides = array<i64: 0, 0, 0>} : " << (tile ? ddr : spm)
-           << " to " << (tile ? spm : ddr) << "\n"
-           << "wafer.instr.ncc_join [0]\n";
-        if (tile)
+           << " to " << (tile ? spm : ddr) << "\n";
+        if (mode == 4)
+          ir << "}\n";
+        ir << "wafer.instr.ncc_join [0]\n";
+        if (tile || mode == 3)
           transport();
         ir << "wafer.tile.yield %flag : i1 }\n";
-        if (!tile && !cycle) {
+        if (!tile && !cycle && mode != 3) {
           beginRegion();
           if (mode == 2)
             ir << "scf.if %flag {\n";
@@ -1173,7 +1305,7 @@ TEST(ExecutableCompilationPolicyTest,
         tiles.push_back(wafer::TileId(tile));
       }
       auto completion = wafer::materializeSharedDDRCompletion(modules, tiles);
-      if (mode != 0) {
+      if (mode == 1 || mode == 2) {
         EXPECT_EQ(completion.failure,
                   wafer::SharedDDRCompletionFailure::Unsupported);
         EXPECT_NE(completion.detail.find(cycle ? "cycle" : "conditional"),
@@ -1192,8 +1324,29 @@ TEST(ExecutableCompilationPolicyTest,
       unsigned publishes = 0, acquires = 0, waits = 0;
       for (auto module : modules) {
         ASSERT_TRUE(mlir::succeeded(mlir::verify(module)));
-        module.walk([&](wafer::SyncDDRPublishOp) { ++publishes; });
-        module.walk([&](wafer::SyncDDRAcquireOp) { ++acquires; });
+        module.walk([&](wafer::SyncDDRPublishOp op) {
+          ++publishes;
+          EXPECT_TRUE(mlir::isa<wafer::TileRegionOp>(op->getParentOp()));
+          EXPECT_FALSE(op->getParentOfType<mlir::scf::ForOp>());
+          if (mode == 4) {
+            EXPECT_TRUE(mlir::isa<mlir::scf::ForOp>(op->getPrevNode()));
+          }
+          if (mode == 3) {
+            wafer::InstrDTERecvOp receive;
+            op->getParentOp()->walk(
+                [&](wafer::InstrDTERecvOp recv) { receive = recv; });
+            ASSERT_TRUE(receive);
+            EXPECT_TRUE(op->isBeforeInBlock(receive));
+          }
+        });
+        module.walk([&](wafer::SyncDDRAcquireOp op) {
+          ++acquires;
+          EXPECT_TRUE(mlir::isa<wafer::TileRegionOp>(op->getParentOp()));
+          EXPECT_FALSE(op->getParentOfType<mlir::scf::ForOp>());
+          if (mode == 4) {
+            EXPECT_TRUE(mlir::isa<mlir::scf::ForOp>(op->getNextNode()));
+          }
+        });
         module.walk([&](wafer::InstrDTEWaitOp) { ++waits; });
       }
       EXPECT_EQ(publishes, 1u);

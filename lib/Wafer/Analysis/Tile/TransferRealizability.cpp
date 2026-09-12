@@ -6,6 +6,8 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
 
+#include <limits>
+
 namespace wafer::analysis {
 namespace {
 
@@ -193,6 +195,23 @@ TransferRealizability::proveCompactDma(mlir::MemRefType sourceType,
   if (!identity.isExact() ||
       !relation.isEquivalentTo(*identity.get()).isProvenTrue())
     return mlir::failure();
+  // The engine descriptor is strided on DDR only. A dynamic base offset is
+  // carried by the SSA view, but gaps between SPM rows require mapped DMA.
+  auto spmType =
+      sourceMemory.getSpace() == MemorySpace::SPM ? sourceType : destType;
+  llvm::SmallVector<int64_t> strides;
+  int64_t offset;
+  if (!spmType.hasStaticShape() ||
+      mlir::failed(mlir::getStridesAndOffset(spmType, strides, offset)))
+    return mlir::failure();
+  int64_t contiguousStride = 1;
+  for (int64_t axis = spmType.getRank(); axis-- > 0;) {
+    const int64_t extent = spmType.getDimSize(axis);
+    if (extent <= 0 || (extent > 1 && strides[axis] != contiguousStride) ||
+        contiguousStride > std::numeric_limits<int64_t>::max() / extent)
+      return mlir::failure();
+    contiguousStride *= extent;
+  }
   auto sourceEncoding =
       mlir::dyn_cast_or_null<WaferPhysicalEncodingAttrInterface>(
           sourceType.getMemorySpace());
@@ -205,10 +224,9 @@ TransferRealizability::proveCompactDma(mlir::MemRefType sourceType,
       sourceEncoding.getPhysicalElementBitWidth(sourceType);
   mlir::FailureOr<int64_t> destBits =
       destEncoding.getPhysicalElementBitWidth(destType);
-  return mlir::success(
-      mlir::succeeded(sourceBits) && mlir::succeeded(destBits) &&
-      *sourceBits > 0 && *sourceBits % 8 == 0 &&
-      *sourceBits == *destBits);
+  return mlir::success(mlir::succeeded(sourceBits) &&
+                       mlir::succeeded(destBits) && *sourceBits > 0 &&
+                       *sourceBits % 8 == 0 && *sourceBits == *destBits);
 }
 
 mlir::LogicalResult

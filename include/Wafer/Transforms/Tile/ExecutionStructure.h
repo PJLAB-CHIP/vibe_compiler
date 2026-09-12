@@ -118,6 +118,17 @@ MaterializedExecutionStructureResult
 materializeExecutionStructure(mlir::OwningOpRef<mlir::ModuleOp> module,
                               PreparedExecutionStructure prepared);
 
+/// Query the current physical load/consumer graph. No capacity prediction is
+/// used; eligibility requires a complete per-iteration definition and no
+/// escaping or mutated alias of the selected load destination.
+bool hasDistanceOneLoadPipeline(mlir::ModuleOp module);
+
+/// Materialize two actual slots and the existing SCF pipeline in the owned
+/// transaction. The ordinary Instr/completion/memory path remains the consumer.
+MaterializedExecutionStructureResult materializeDistanceOneLoadPipelines(
+    mlir::OwningOpRef<mlir::ModuleOp> module,
+    StructuredMaterializationRelations &relations);
+
 struct RotatingAllocationBinding {
   mlir::memref::AllocOp allocation;
   mlir::scf::ForOp loop;

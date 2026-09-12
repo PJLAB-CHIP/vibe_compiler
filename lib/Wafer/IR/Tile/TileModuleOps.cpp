@@ -93,6 +93,15 @@ mlir::LogicalResult wafer::verifyTileModuleCollection(mlir::ModuleOp module) {
         return;
       for (unsigned argument = 0; argument < function.getNumArguments();
            ++argument) {
+        auto program = function.getArgAttrOfType<ProgramArgumentAttr>(
+            argument, kWaferProgramArgumentAttrName);
+        if (function.getArgAttr(argument, kWaferProgramArgumentAttrName) &&
+            (!program || program.getIndex() != argument ||
+             function.getArgAttr(argument, kWaferDDRBindingAttrName))) {
+          function.emitOpError("has an invalid program argument binding");
+          valid = mlir::failure();
+          return;
+        }
         auto binding = function.getArgAttrOfType<DDRBindingAttr>(
             argument, kWaferDDRBindingAttrName);
         if (!binding)

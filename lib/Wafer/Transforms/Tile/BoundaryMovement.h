@@ -39,13 +39,35 @@ enum class BoundaryMovementTransport : uint8_t {
   SharedDDR,
 };
 
+/// Selects the current communication component containing this exact SSA
+/// edge. The edge must belong to the unchanged input (or its IRMapping clone).
+struct BoundaryComponentTransport {
+  StructuredBoundaryRelation anchor;
+  BoundaryMovementTransport transport = BoundaryMovementTransport::Peer;
+};
+
 struct BoundaryMovementOptions {
   CompleteAllGatherAlgorithm allGather = CompleteAllGatherAlgorithm::Ring;
   CompleteAllToAllAlgorithm allToAll = CompleteAllToAllAlgorithm::Direct;
   DistributedReductionAlgorithm reduction =
       DistributedReductionAlgorithm::Centralized;
   BoundaryMovementTransport transport = BoundaryMovementTransport::Peer;
+  llvm::SmallVector<BoundaryComponentTransport, 4> components;
 };
+
+struct BoundaryComponentQuery {
+  BoundaryMovementFailureKind failure = BoundaryMovementFailureKind::None;
+  llvm::SmallVector<StructuredBoundaryRelation, 4> anchors;
+  std::string detail;
+  bool succeeded() const {
+    return failure == BoundaryMovementFailureKind::None;
+  }
+};
+
+/// One actual boundary edge per independently selectable current component.
+/// Uses the same preflight/grouping as materialization, without creating IR.
+BoundaryComponentQuery queryBoundaryMovementComponents(
+    mlir::ModuleOp module, const StructuredMaterializationRelations &relations);
 
 struct BoundaryMovementStatistics {
   uint64_t ddrLoads = 0;

@@ -291,6 +291,10 @@ public:
   TemporalSuccessor getNextChoice(const TemporalCursor &cursor) const;
   TemporalSuccessor completePrefix(const TemporalChoice &prefix) const;
   bool contains(const TemporalChoice &choice) const;
+  /// A numeric proposal from current multi-result producer/consumer maps.
+  /// Absence means no distinct valid proposal, never an illegal input shape.
+  std::optional<TemporalChoice>
+  getCoupledStateProposal(const TemporalChoice &choice) const;
 
   TileRegionOp getRegion() const { return region; }
   llvm::ArrayRef<TemporalScopeDescriptor> getScopeDescriptors(

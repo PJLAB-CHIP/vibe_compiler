@@ -6,6 +6,8 @@
 #include "Wafer/Support/CompileTiming.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
@@ -30,7 +32,8 @@ static Result unsupported(llvm::StringRef detail) {
   return {SharedDDRCompletionFailure::Unsupported, detail.str()};
 }
 
-static mlir::BlockArgument getEntryRoot(mlir::Value value) {
+static mlir::BlockArgument getEntryRoot(mlir::Value value,
+                                        bool allowViews = true) {
   llvm::DenseSet<mlir::Value> seen;
   while (value && seen.insert(value).second) {
     if (auto arg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
@@ -48,6 +51,8 @@ static mlir::BlockArgument getEntryRoot(mlir::Value value) {
     }
     if (auto view = mlir::dyn_cast_or_null<mlir::ViewLikeOpInterface>(
             value.getDefiningOp())) {
+      if (!allowViews)
+        return {};
       value = view.getViewSource();
       continue;
     }
@@ -75,6 +80,8 @@ static DDRBindingAttr getBinding(mlir::Value value) {
 struct Access {
   mlir::BlockArgument root;
   TileRegionOp region;
+  mlir::Operation *first;
+  mlir::Operation *last;
 };
 struct Resource {
   std::optional<Access> writer;
@@ -92,6 +99,96 @@ static TileRegionOp getTopLevelRegion(mlir::Operation *op) {
       region->getBlock() != &function.getBody().front())
     return {};
   return region;
+}
+
+// A publication covers every actual write in this one Region invocation. A
+// static loop is therefore one cut, not one notification per iteration.
+static mlir::Operation *getAccessCut(mlir::Operation *op, TileRegionOp region) {
+  while (op->getParentOp() != region) {
+    auto *parent = op->getParentOp();
+    if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(parent)) {
+      auto lower = mlir::getConstantIntValue(loop.getLowerBound());
+      auto upper = mlir::getConstantIntValue(loop.getUpperBound());
+      auto step = mlir::getConstantIntValue(loop.getStep());
+      if (!lower || !upper || !step || *step <= 0 || *lower >= *upper)
+        return nullptr;
+    } else if (!analysis::getSingleExecutionRegionFlow(parent)) {
+      return nullptr;
+    }
+    op = parent;
+  }
+  return op;
+}
+
+// Compare current operations through unconditional, single-execution parents.
+// Neither side may be moved through a loop or conditional by this proof.
+static bool isBefore(mlir::Operation *before, mlir::Operation *after) {
+  for (auto *left = before; left;) {
+    for (auto *right = after; right;) {
+      if (left->getBlock() == right->getBlock())
+        return left != right && left->isBeforeInBlock(right);
+      auto *parent = right->getParentOp();
+      right = parent && analysis::getSingleExecutionRegionFlow(parent)
+                  ? parent
+                  : nullptr;
+    }
+    auto *parent = left->getParentOp();
+    left = parent && analysis::getSingleExecutionRegionFlow(parent) ? parent
+                                                                    : nullptr;
+  }
+  return false;
+}
+
+static bool executesOnce(mlir::Operation *op) {
+  auto function = op->getParentOfType<mlir::func::FuncOp>();
+  if (!function || !function.getBody().hasOneBlock())
+    return false;
+  while (op->getBlock() != &function.getBody().front()) {
+    auto *parent = op->getParentOp();
+    if (!analysis::getSingleExecutionRegionFlow(parent))
+      return false;
+    op = parent;
+  }
+  return true;
+}
+
+static mlir::Value bindInput(TileRegionOp region, mlir::Value value) {
+  auto found = llvm::find(region.getInputs(), value);
+  if (found != region.getInputs().end())
+    return region.getBody().front().getArgument(found -
+                                                region.getInputs().begin());
+  region.getInputsMutable().append(value);
+  return region.getBody().front().addArgument(value.getType(), value.getLoc());
+}
+
+static bool
+hasOnlyCompletionUses(mlir::Value root,
+                      const llvm::DenseSet<mlir::Operation *> &checked) {
+  llvm::SmallVector<mlir::Value> pending{root};
+  llvm::DenseSet<mlir::Value> seen;
+  while (!pending.empty()) {
+    auto value = pending.pop_back_val();
+    if (!seen.insert(value).second)
+      continue;
+    for (mlir::OpOperand &use : value.getUses()) {
+      auto *user = use.getOwner();
+      if (checked.contains(user))
+        continue;
+      auto flow = analysis::getSingleExecutionRegionFlow(user);
+      if (!flow)
+        return false;
+      bool forwarded = false;
+      for (auto [operand, argument] :
+           llvm::zip_equal(flow->entryOperands, flow->entryArguments))
+        if (operand == value) {
+          pending.push_back(argument);
+          forwarded = true;
+        }
+      if (!forwarded)
+        return false;
+    }
+  }
+  return true;
 }
 
 // Analyze actual DMA operands, not declared access modes. Communication state
@@ -156,7 +253,8 @@ static Result collect(llvm::ArrayRef<mlir::ModuleOp> modules, Collection &out) {
         return;
       auto root = getEntryRoot(buffer);
       auto region = getTopLevelRegion(op);
-      if (!region) {
+      auto *cut = region ? getAccessCut(op, region) : nullptr;
+      if (!cut) {
         result = unsupported("shared DDR DMA requires an unconditional, "
                              "single-execution TileRegion");
         return;
@@ -169,11 +267,25 @@ static Result collect(llvm::ArrayRef<mlir::ModuleOp> modules, Collection &out) {
                                "Region without later overwrites");
           return;
         }
-        resource.writer = Access{root, region};
-      } else if (!llvm::any_of(resource.readers, [&](const Access &access) {
-                   return access.root == root && access.region == region;
-                 })) {
-        resource.readers.push_back({root, region});
+        if (!resource.writer)
+          resource.writer = Access{root, region, cut, cut};
+        if (cut->isBeforeInBlock(resource.writer->first))
+          resource.writer->first = cut;
+        if (resource.writer->last->isBeforeInBlock(cut))
+          resource.writer->last = cut;
+      } else {
+        auto reader =
+            llvm::find_if(resource.readers, [&](const Access &access) {
+              return access.root == root && access.region == region;
+            });
+        if (reader == resource.readers.end()) {
+          resource.readers.push_back({root, region, cut, cut});
+        } else {
+          if (cut->isBeforeInBlock(reader->first))
+            reader->first = cut;
+          if (reader->last->isBeforeInBlock(cut))
+            reader->last = cut;
+        }
       }
     });
     if (!result.succeeded())
@@ -471,7 +583,7 @@ Result verifySharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
       if (auto publish = mlir::dyn_cast<SyncDDRPublishOp>(op))
         publishes[getEntryRoot(publish.getData())].push_back(publish);
       if (auto acquire = mlir::dyn_cast<SyncDDRAcquireOp>(op))
-        acquires[acquire.getData()].push_back(acquire);
+        acquires[getEntryRoot(acquire.getData())].push_back(acquire);
     });
     auto &bindings = entryBindings.emplace_back();
     for (auto argument : entry.getArguments()) {
@@ -491,8 +603,7 @@ Result verifySharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
       return contract("shared DDR writer requires exactly one publication "
                       "after its writes");
     SyncDDRPublishOp publish = publications->second.front();
-    if (publish->getBlock() != resource.writer->region->getBlock() ||
-        !resource.writer->region->isBeforeInBlock(publish))
+    if (!executesOnce(publish) || !isBefore(resource.writer->last, publish))
       return contract("shared DDR writer requires exactly one publication "
                       "after its writes");
     auto ready = getEntryRoot(publish.getReady());
@@ -502,8 +613,8 @@ Result verifySharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
         !readyResources.insert(readyBinding.getResourceId()).second)
       return contract("shared DDR publication requires distinct "
                       "zero-initialized completion storage");
-    if (publish.getData() != resource.writer->root ||
-        publish.getReady() != ready ||
+    if (getEntryRoot(publish.getData(), false) != resource.writer->root ||
+        getEntryRoot(publish.getReady(), false) != ready ||
         collection.resources.count(readyBinding.getResourceId()))
       return contract("shared DDR publication must use whole, disjoint data "
                       "and completion resources");
@@ -522,11 +633,10 @@ Result verifySharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
         bool beforeAllReads =
             llvm::all_of(resource.readers, [&](const Access &access) {
               return access.root.getOwner() != reader.root.getOwner() ||
-                     (op->getBlock() == access.region->getBlock() &&
-                      op->isBeforeInBlock(access.region));
+                     isBefore(op, access.first);
             });
-        if (op.getData() == reader.root && binding &&
-            op.getReady() == getEntryRoot(op.getReady()) &&
+        if (getEntryRoot(op.getData(), false) == reader.root && binding &&
+            getEntryRoot(op.getReady(), false) && executesOnce(op) &&
             binding.getResourceId() == readyBinding.getResourceId() &&
             isZeroInitialized(getEntryRoot(op.getReady()), symbols) &&
             beforeAllReads) {
@@ -548,10 +658,9 @@ Result verifySharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
             !isZeroInitialized(argument, symbols))
           return contract(
               "shared DDR completion initialization differs across Tiles");
-        for (auto *user : argument.getUsers())
-          if (!checked.contains(user))
-            return contract(
-                "shared DDR completion storage has an unrelated access");
+        if (!hasOnlyCompletionUses(argument, checked))
+          return contract(
+              "shared DDR completion storage has an unrelated access");
       }
     }
   }
@@ -612,11 +721,11 @@ Result materializeSharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
                         DDRResourceAttr::get(context, nextResource));
         auto dataRoot = resource.writer->root;
         bool writes = dataRoot.getOwner() == &entry.getBody().front();
-        TileRegionOp firstRead;
+        const Access *firstRead = nullptr;
         for (const Access &reader : resource.readers)
           if (reader.root.getOwner() == &entry.getBody().front() &&
-              (!firstRead || reader.region->isBeforeInBlock(firstRead))) {
-            firstRead = reader.region;
+              (!firstRead || isBefore(reader.first, firstRead->first))) {
+            firstRead = &reader;
             dataRoot = reader.root;
           }
         DDRAccess access = writes      ? DDRAccess::Write
@@ -632,12 +741,19 @@ Result materializeSharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
                              entry.getLoc());
         auto ready = entry.getArgument(index);
         if (writes) {
-          builder.setInsertionPointAfter(resource.writer->region);
-          builder.create<SyncDDRPublishOp>(entry.getLoc(), dataRoot, ready);
+          auto region = resource.writer->region;
+          auto dataInput = bindInput(region, dataRoot);
+          auto readyInput = bindInput(region, ready);
+          builder.setInsertionPointAfter(resource.writer->last);
+          builder.create<SyncDDRPublishOp>(entry.getLoc(), dataInput,
+                                           readyInput);
         }
         if (firstRead) {
-          builder.setInsertionPoint(firstRead);
-          builder.create<SyncDDRAcquireOp>(entry.getLoc(), dataRoot, ready);
+          auto dataInput = bindInput(firstRead->region, dataRoot);
+          auto readyInput = bindInput(firstRead->region, ready);
+          builder.setInsertionPoint(firstRead->first);
+          builder.create<SyncDDRAcquireOp>(entry.getLoc(), dataInput,
+                                           readyInput);
         }
       }
       ++nextResource;

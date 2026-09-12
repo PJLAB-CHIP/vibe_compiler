@@ -4,6 +4,7 @@ add_mlir_library(WaferTileTransforms
   ExecutionStructure.cpp
   LayoutOptimization.cpp
   Pipelines.cpp
+  ReadOnlyInputSharing.cpp
   StructuredToTile.cpp
   StructuredBufferRelations.cpp
   TiledOutputStores.cpp
@@ -33,6 +34,7 @@ add_mlir_library(WaferTileTransforms
   MLIRSideEffectInterfaces
   MLIRSupport
   MLIRTensorDialect
+  MLIRValueBoundsOpInterface
   MLIRViewLikeInterface
 )
 

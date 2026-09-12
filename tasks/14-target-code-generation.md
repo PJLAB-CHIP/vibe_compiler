@@ -39,6 +39,11 @@ Pipeline position:
 
 ## 2. 稳定对象与身份
 
+CT reduce只接收11号verified rank4 NHWC/NCx输入和保留归约轴的rank4输出，CRT shape直接取实际输入memref的四个维度。
+Target lowering不左补rank、不重解释Cx/NCx outer slice。原逻辑rank不足4的输入由Tile→Instr先完成物理等价view或exact搬运；
+归约轴与actual allocation必须已在该层闭合。覆盖rank3首维>1、64/65尾宽和跨C-block的输入，检查actual offset与最终CRT参数；
+rank不足4的Instr负例在verifier拒绝，不能等到设备数值失败。
+
 ### 2.1 DeviceExecutable 的 Tile entry
 
 `DeviceExecutable`原子拥有当前卡all-and-only 16个Tile entries；每个entry包含：

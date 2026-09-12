@@ -6,10 +6,16 @@
 #include "Wafer/Planning/PhysicalDataflow/ExactPBQPSolver.h"
 #include "Wafer/Transforms/Tile/StructuredMaterializationRelations.h"
 
+#include "Wafer/IR/WaferDialect.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
 
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <string>
+#include <variant>
+#include <vector>
 
 namespace wafer::compiler::detail {
 
@@ -27,6 +33,7 @@ struct LayoutOptimizationStatistics {
   uint64_t canonicalAssignmentsBuilt = 0;
   uint64_t canonicalAssignmentFallbacks = 0;
   uint64_t selectedMaterializations = 0;
+  uint64_t loopInvariantMaterializations = 0;
   uint64_t layoutMaterializationsBefore = 0;
   uint64_t layoutMaterializationsAfter = 0;
   uint64_t unusedMaterializationsErased = 0;
@@ -50,14 +57,78 @@ struct LayoutOptimizationResult {
   }
 };
 
+/// Layout parameters on current SSA values or exact current operands.
+struct LayoutValueConstraint {
+  mlir::Value value;
+  MemLayout layout = MemLayout::Tensor;
+};
+struct LayoutUseConstraint {
+  mlir::Operation *owner = nullptr;
+  unsigned operandNumber = 0;
+  MemLayout layout = MemLayout::Tensor;
+};
+using LayoutConstraint =
+    std::variant<LayoutValueConstraint, LayoutUseConstraint>;
+
+enum class LayoutDomain : uint8_t {
+  AllLegal,
+  /// Restricts a single local optimum query to its relevant publication/use
+  /// states. This local objective reduction must not prune physical search.
+  Relevant,
+};
+
+enum class LayoutMaterializationPlacement : uint8_t {
+  FirstUse,
+  LoopInvariant,
+};
+
+class LayoutAssignmentQuery;
+struct LayoutQueryResult {
+  LayoutOptimizationResult outcome;
+  std::unique_ptr<LayoutAssignmentQuery> query;
+};
+
+/// Read-only PBQP query on one unchanged, prepared actual module. It owns no
+/// future allocations or instructions. Apply consumes an assignment on that
+/// module or its exact IRMapping clone, then the mutated owner's query expires.
+class LayoutAssignmentQuery {
+public:
+  ~LayoutAssignmentQuery();
+  ExactPBQPResult solve(uint64_t workLimit,
+                        std::optional<LayoutConstraint> constraint = {}) const;
+  std::vector<LayoutConstraint>
+  alternatives(const ExactPBQPResult &center) const;
+  bool hasLoopInvariantPlacement(const ExactPBQPResult &assignment) const;
+  LayoutOptimizationResult
+  apply(mlir::ModuleOp target, StructuredMaterializationRelations &relations,
+        const ExactPBQPResult &assignment,
+        const mlir::IRMapping *mapping = nullptr,
+        LayoutMaterializationPlacement placement =
+            LayoutMaterializationPlacement::FirstUse) const;
+
+private:
+  struct Impl;
+  explicit LayoutAssignmentQuery(std::unique_ptr<Impl> impl);
+  std::unique_ptr<Impl> impl;
+  friend LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp,
+                                                        LayoutDomain);
+};
+
+LayoutOptimizationResult
+prepareCurrentLayoutInput(mlir::ModuleOp module,
+                          StructuredMaterializationRelations &relations);
+LayoutQueryResult
+queryCurrentLayoutAssignment(mlir::ModuleOp module,
+                             LayoutDomain domain = LayoutDomain::AllLegal);
+
 /// Resolves layouts directly on one candidate's current SSA/use graph, binds
 /// observable output pieces to DDR subviews and runs function-boundary plus
 /// region-local One-Shot Bufferization exactly once.  The supplied relations
 /// are retargeted in the same transaction and never refer to source graph IDs.
 ///
 /// A canonical factor-valid assignment guarantees a complete legal result;
-/// PBQP attempts to minimize the exact number of unique actual layout
-/// materializations and returns Feasible rather than claiming optimality when
+/// PBQP minimizes physical bytes plus one unit per shared materialization,
+/// and returns Feasible rather than claiming optimality when
 /// its work budget is exhausted. Target descriptor, engine and execution costs
 /// belong to downstream actual IR analysis and never participate in layout
 /// assignment.

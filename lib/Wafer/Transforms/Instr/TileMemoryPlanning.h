@@ -9,6 +9,7 @@
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
@@ -54,6 +55,14 @@ struct TileMemoryPlanningFailure {
   llvm::SmallVector<SPMDemandEvidence, 8> spmIndividuallyOversizedDemands;
 };
 
+/// Synchronous read-only observation of an exact capacity certificate while
+/// its allocation/owner IR is still alive. Invoked independently by parallel
+/// Tile leaves; callers synchronize their own choice work data. No IR handle
+/// may escape the callback or participate in the allocator's decision.
+using SPMCapacityObserver =
+    llvm::function_ref<void(const SPMMemoryPlanningFailure &,
+                            const StructuredMaterializationRelations &)>;
+
 /// Converts one raw SPM planning failure into Tile-local planning evidence.
 /// Actual allocation/user/type/location evidence comes directly from the SPM
 /// planner. Observable output attribution is joined only through current
@@ -76,7 +85,8 @@ mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> planTileMemory(
     mlir::OwningOpRef<mlir::ModuleOp> module,
     TileMemoryPlanningFailure *failure = nullptr,
     StructuredMaterializationRelations *materializationRelations = nullptr,
-    bool emitSPMCapacityDiagnostics = true);
+    bool emitSPMCapacityDiagnostics = true,
+    SPMCapacityObserver capacityObserver = nullptr);
 
 } // namespace wafer::compiler::detail
 

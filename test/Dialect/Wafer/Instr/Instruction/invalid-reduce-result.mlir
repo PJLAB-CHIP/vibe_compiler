@@ -4,10 +4,24 @@
 // storage. A rank-dropped declaration must not hide these physical strides.
 func.func @rank_dropped(%input: memref<1x2x8x1024xf16, #wafer.memory<spm, ncx>>,
                         %dest: memref<1x2x8xf16, #wafer.memory<spm, ncx>>) {
-  // expected-error @below {{reduce dest must retain input rank}}
+  // expected-error @below {{reduce operands/dest must use rank4 NHWC geometry}}
   wafer.instr.reduce <sum> %input into %dest {dim = 0 : i64}
       : memref<1x2x8x1024xf16, #wafer.memory<spm, ncx>>
     into memref<1x2x8xf16, #wafer.memory<spm, ncx>>
+  return
+}
+
+// -----
+
+// Rank3 NCx has independent outer slices; left-padding its shape in the CRT
+// call would lose their bank alignment. Keep this real-scale negative even
+// when both buffers otherwise satisfy the logical H reduction shape.
+func.func @implicit_nhwc(%input: memref<16x1025x1xf16, #wafer.memory<spm, ncx>>,
+                         %dest: memref<1x1025x1xf16, #wafer.memory<spm, ncx>>) {
+  // expected-error @below {{reduce operands/dest must use rank4 NHWC geometry}}
+  wafer.instr.reduce <sum> %input into %dest {dim = 2 : i64}
+      : memref<16x1025x1xf16, #wafer.memory<spm, ncx>>
+    into memref<1x1025x1xf16, #wafer.memory<spm, ncx>>
   return
 }
 

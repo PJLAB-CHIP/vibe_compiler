@@ -5,6 +5,7 @@
 #include "Wafer/Analysis/Tile/TileDataflowAnalysis.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/Driver/StandaloneTileModules/StandaloneTileModules.h"
+#include "Wafer/Support/BoundedTilePipelines.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Instr/DirectDTETransport.h"
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
@@ -159,20 +160,29 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
   const PhysicalDataflowIRInventory physicalInventory =
       collectPhysicalCandidateInventory(*module);
 
-  PreparedExecutionStructureResult prepared = prepareTileExecutionStructure(
-      *module, options.executionPipelines, options.executionLimits);
-  if (!prepared.succeeded()) {
-    const ExecutionStructureFailureKind kind = prepared.failure->kind;
-    return fail(kind == ExecutionStructureFailureKind::Indeterminate
-                    ? ExecutableCompilationStatus::IndeterminateFailure
-                    : (kind == ExecutionStructureFailureKind::Unsupported
-                           ? ExecutableCompilationStatus::UnsupportedFailure
-                           : ExecutableCompilationStatus::CompilerFailure),
-                "execution-structure", prepared.failure->detail);
+  MaterializedExecutionStructureResult execution;
+  if (options.distanceOneLoadPipeline) {
+    if (!options.executionPipelines.empty())
+      return fail(ExecutableCompilationStatus::CompilerFailure,
+                  "execution-structure",
+                  "conflicting execution structure choices");
+    execution =
+        materializeDistanceOneLoadPipelines(std::move(module), relations);
+  } else {
+    PreparedExecutionStructureResult prepared = prepareTileExecutionStructure(
+        *module, options.executionPipelines, options.executionLimits);
+    if (!prepared.succeeded()) {
+      const ExecutionStructureFailureKind kind = prepared.failure->kind;
+      return fail(kind == ExecutionStructureFailureKind::Indeterminate
+                      ? ExecutableCompilationStatus::IndeterminateFailure
+                      : (kind == ExecutionStructureFailureKind::Unsupported
+                             ? ExecutableCompilationStatus::UnsupportedFailure
+                             : ExecutableCompilationStatus::CompilerFailure),
+                  "execution-structure", prepared.failure->detail);
+    }
+    execution = materializeExecutionStructure(std::move(module),
+                                              std::move(*prepared.prepared));
   }
-  MaterializedExecutionStructureResult execution =
-      materializeExecutionStructure(std::move(module),
-                                    std::move(*prepared.prepared));
   if (!execution.succeeded()) {
     const ExecutionStructureFailureKind kind = execution.failure->kind;
     return fail(kind == ExecutionStructureFailureKind::Indeterminate
@@ -187,6 +197,9 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
   if (downstreamStatistics)
     downstreamStatistics->materializedExecutionPipelines +=
         execution.materialized->pipelines.size();
+  wafer::support::addCompileCounter("execution-structure",
+                                    "materialized-pipelines",
+                                    execution.materialized->pipelines.size());
 
   std::string fanoutFailure;
   auto standalone = createStandaloneTileModules(std::move(module),
@@ -194,6 +207,32 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
   if (mlir::failed(standalone))
     return fail(ExecutableCompilationStatus::CompilerFailure,
                 "standalone-tile-fanout", fanoutFailure);
+  if (standalone->empty())
+    return fail(ExecutableCompilationStatus::CompilerFailure,
+                "standalone-tile-fanout", "current candidate has no Tiles");
+
+  // Each callback owns one isolated module and its relations. Cross-Tile
+  // transformations run only after all indexed results have been collected.
+  auto runTiles =
+      [&](llvm::StringRef stage,
+          auto &&run) -> std::optional<ExecutableCompilationResult> {
+    std::vector<std::optional<ExecutableCompilationResult>> failures(
+        standalone->size());
+    unsigned workers = support::runBoundedTilePipelines(
+        standalone->front().module->getContext(), standalone->size(),
+        [&](size_t index) { failures[index] = run((*standalone)[index]); },
+        options.tilePipelineParallelism
+            ? options.tilePipelineParallelism
+            : support::kMaximumBoundedTilePipelineWorkers);
+    support::addCompileCounter("current-ir-downstream", stage, workers);
+    if (executableStatistics)
+      executableStatistics->maximumTilePipelineWorkers = std::max<uint64_t>(
+          executableStatistics->maximumTilePipelineWorkers, workers);
+    for (auto &failure : failures)
+      if (failure)
+        return std::move(failure);
+    return std::nullopt;
+  };
 
   std::vector<CanonicalInstructionTile> canonicalTiles;
   canonicalTiles.reserve(standalone->size());
@@ -201,23 +240,34 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
   for (StandaloneTileModule &tile : *standalone) {
     if (options.captureTileDataflowIR)
       tileDataflowTrace.push_back(printModule(*tile.module));
-    llvm::SmallVector<TileRegionOp, 8> regions;
-    tile.module->walk([&](TileRegionOp region) { regions.push_back(region); });
     if (downstreamStatistics)
-      downstreamStatistics->tileRegionsLowered += regions.size();
-
-    TileRegionToInstrLoweringSession session(*tile.module->getContext());
-    for (TileRegionOp region : regions)
-      if (mlir::failed(convertTileRegionToInstr(region, session)))
-        return fail(ExecutableCompilationStatus::UnsupportedFailure,
-                    "tile-to-instr",
-                    "one physical TileRegion has no exact Instr lowering");
-    if (mlir::failed(convertBufferizationCopiesToInstr(*tile.module, session)))
-      return fail(ExecutableCompilationStatus::CompilerFailure,
-                  "tile-to-instr-relations",
-                  "Tile-to-Instr left an unclassified current movement");
-    eraseDeadSubviewOperations(*tile.module);
+      tile.module->walk(
+          [&](TileRegionOp) { ++downstreamStatistics->tileRegionsLowered; });
   }
+  auto loweringFailure = runTiles(
+      "tile-to-instr-workers",
+      [&](StandaloneTileModule &tile)
+          -> std::optional<ExecutableCompilationResult> {
+        llvm::SmallVector<TileRegionOp, 8> regions;
+        tile.module->walk(
+            [&](TileRegionOp region) { regions.push_back(region); });
+
+        TileRegionToInstrLoweringSession session(*tile.module->getContext());
+        for (TileRegionOp region : regions)
+          if (mlir::failed(convertTileRegionToInstr(region, session)))
+            return fail(ExecutableCompilationStatus::UnsupportedFailure,
+                        "tile-to-instr",
+                        "one physical TileRegion has no exact Instr lowering");
+        if (mlir::failed(
+                convertBufferizationCopiesToInstr(*tile.module, session)))
+          return fail(ExecutableCompilationStatus::CompilerFailure,
+                      "tile-to-instr-relations",
+                      "Tile-to-Instr left an unclassified current movement");
+        eraseDeadSubviewOperations(*tile.module);
+        return std::nullopt;
+      });
+  if (loweringFailure)
+    return std::move(*loweringFailure);
 
   llvm::SmallVector<mlir::ModuleOp, 16> instructionModules;
   for (StandaloneTileModule &tile : *standalone)
@@ -271,18 +321,25 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
                     : ExecutableCompilationStatus::CompilerFailure,
                 "direct-dte-completion", initialDTECompletion.detail);
 
-  for (StandaloneTileModule &tile : *standalone) {
-    rebuildCurrentBufferOwnerRelations(tile.module->getOperation(),
-                                       tile.materializationRelations);
-    mlir::FailureOr<unsigned> eliminated = timed("instr-transfer-cleanup", [&] {
-      return cleanupCanonicalInstructionTransfers(
-          *tile.module, tile.materializationRelations);
-    });
-    if (mlir::failed(eliminated))
-      return fail(ExecutableCompilationStatus::CompilerFailure,
-                  "instr-transfer-cleanup",
-                  "canonical Instr transfer cleanup failed");
-  }
+  auto cleanupFailure = runTiles(
+      "transfer-cleanup-workers",
+      [&](StandaloneTileModule &tile)
+          -> std::optional<ExecutableCompilationResult> {
+        rebuildCurrentBufferOwnerRelations(tile.module->getOperation(),
+                                           tile.materializationRelations);
+        mlir::FailureOr<unsigned> eliminated =
+            timed("instr-transfer-cleanup", [&] {
+              return cleanupCanonicalInstructionTransfers(
+                  *tile.module, tile.materializationRelations);
+            });
+        if (mlir::failed(eliminated))
+          return fail(ExecutableCompilationStatus::CompilerFailure,
+                      "instr-transfer-cleanup",
+                      "canonical Instr transfer cleanup failed");
+        return std::nullopt;
+      });
+  if (cleanupFailure)
+    return std::move(*cleanupFailure);
 
   llvm::SmallVector<TileId> completionTileIds;
   for (const StandaloneTileModule &tile : *standalone)
@@ -308,21 +365,31 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
                     : ExecutableCompilationStatus::CompilerFailure,
                 "direct-dte-completion", finalDTECompletion.detail);
 
+  auto completionFailure = runTiles(
+      "ncc-completion-workers",
+      [&](StandaloneTileModule &tile)
+          -> std::optional<ExecutableCompilationResult> {
+        if (mlir::failed(timed("ncc-completion", [&] {
+              return rebuildRequiredNCCJoins(*tile.module);
+            })))
+          return fail(ExecutableCompilationStatus::CompilerFailure,
+                      "instr-completion",
+                      "fresh NCC completion placement failed");
+        rebuildCurrentBufferOwnerRelations(tile.module->getOperation(),
+                                           tile.materializationRelations);
+        if (analysis::containsTileDataflowOperations(
+                tile.module->getOperation()) ||
+            mlir::failed(mlir::verify(*tile.module)) ||
+            mlir::failed(checkStructuredBufferRelationsCurrent(
+                tile.module->getOperation(), tile.materializationRelations)))
+          return fail(
+              ExecutableCompilationStatus::CompilerFailure, "canonical-instr",
+              "Tile-to-Instr produced invalid or incomplete current IR");
+        return std::nullopt;
+      });
+  if (completionFailure)
+    return std::move(*completionFailure);
   for (StandaloneTileModule &tile : *standalone) {
-    if (mlir::failed(timed("ncc-completion", [&] {
-          return rebuildRequiredNCCJoins(*tile.module);
-        })))
-      return fail(ExecutableCompilationStatus::CompilerFailure,
-                  "instr-completion", "fresh NCC completion placement failed");
-    rebuildCurrentBufferOwnerRelations(tile.module->getOperation(),
-                                       tile.materializationRelations);
-    if (analysis::containsTileDataflowOperations(tile.module->getOperation()) ||
-        mlir::failed(mlir::verify(*tile.module)) ||
-        mlir::failed(checkStructuredBufferRelationsCurrent(
-            tile.module->getOperation(), tile.materializationRelations)))
-      return fail(ExecutableCompilationStatus::CompilerFailure,
-                  "canonical-instr",
-                  "Tile-to-Instr produced invalid or incomplete current IR");
     if (downstreamStatistics)
       collectInstructionStatistics(*tile.module, *downstreamStatistics);
     canonicalTiles.push_back(CanonicalInstructionTile{
@@ -334,7 +401,7 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
       compileCanonicalInstructionTilesToExecutable(
           std::move(canonicalTiles), expectedCardId, expectedTileIds, program,
           executionConfig, diagnostics, programData, executableStatistics,
-          options.tilePipelineParallelism);
+          options.tilePipelineParallelism, options.capacityObserver);
   if (result.isAccepted() && result.executable)
     result.physicalIRInventory = physicalInventory;
   if (options.captureTileDataflowIR)

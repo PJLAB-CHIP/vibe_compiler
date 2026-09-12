@@ -49,7 +49,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device-timing", action="store_true")
     parser.add_argument(
         "--qualify-communication",
-        choices=("ring-allgather", "direct-alltoall", "direct-reduce-scatter", "all-reduce"),
+        choices=(
+            "ring-allgather", "direct-alltoall", "direct-reduce-scatter",
+            "all-reduce", "shared-input", "pipelined-loads",
+        ),
         help="explicit implementation qualification using wafer-compile-test",
     )
     parser.add_argument(
@@ -1036,6 +1039,40 @@ def verify_row_sharded_gemm(
     )
 
 
+def verify_shared_gemm_input(
+    dump: pathlib.Path, dimensions: tuple[int, int, int], dtype: torch.dtype
+) -> None:
+    """Qualify the existing row-sharded GEMM with its complete RHS shared."""
+    _, k, n = dimensions
+    expected_bytes = k * n * common.element_bytes(dtype)
+    sends, receives = {}, {}
+    rhs_loads = []
+    donor_buffers = set()
+    for tile in range(PHYSICAL_TILE_COUNT):
+        ir = (dump / "tile-dataflow" / f"tile_{tile:05d}.mlir").read_text()
+        rhs_loads.extend((tile, match[1]) for match in re.finditer(
+            rf"wafer\.tile\.load %\w+ into (%\w+) : [^\n]* into "
+            rf"memref<1x{k}x{n}xf16, #wafer\.memory<spm, tensor>>", ir
+        ))
+        for issue in _read_peer_issues(ir, "tile.peer"):
+            source, destination = (tile, issue.peer) if issue.kind == "send" else (issue.peer, tile)
+            if source != 0 or not 0 < destination < PHYSICAL_TILE_COUNT or issue.size != expected_bytes:
+                raise RuntimeError("shared GEMM RHS has an incorrect endpoint or payload")
+            key = (issue.communication, issue.round, issue.slice, source, destination)
+            entries = sends if issue.kind == "send" else receives
+            if issue.kind == "send":
+                donor_buffers.add(issue.buffer)
+            if key in entries:
+                raise RuntimeError("shared GEMM RHS repeats a message")
+            entries[key] = issue.size
+    if len(rhs_loads) != 1 or rhs_loads[0][0] != 0 or sends != receives or len(sends) != PHYSICAL_TILE_COUNT - 1:
+        raise RuntimeError("shared GEMM RHS lacks one donor load and one transfer per receiver")
+    if donor_buffers != {rhs_loads[0][1]} or {key[-1] for key in sends} != set(range(1, PHYSICAL_TILE_COUNT)):
+        raise RuntimeError("shared GEMM RHS does not forward the loaded buffer to every receiver")
+    print(f"qualified_shared_input: rhs_loads={len(rhs_loads)} sends={len(sends)} receives={len(receives)} "
+          f"payload_bytes={expected_bytes} exact_endpoints=true")
+
+
 def prepare_case_step(
     args: argparse.Namespace,
     case: board_cases.PyTorchBoardCase,
@@ -1079,7 +1116,8 @@ def prepare_case_step(
         if args.qualify_communication is not None:
             if args.optimization_policy != "none":
                 raise RuntimeError("explicit communication qualification cannot run search")
-            compile_command.append("--test-communication-candidate=peer")
+            selected = args.qualify_communication if args.qualify_communication in ("shared-input", "pipelined-loads") else "peer"
+            compile_command.append(f"--test-communication-candidate={selected}")
         if args.compile_timing:
             compile_command.append("--compile-timing")
         if args.profile:
@@ -1187,6 +1225,21 @@ def prepare_case_step(
         if case.all_reduce_extent is None or dump_compiler_ir is None:
             raise RuntimeError("AllReduce qualification requires its source and current IR")
         verify_all_reduce(package, dump_compiler_ir, case.all_reduce_extent)
+    if args.qualify_communication == "shared-input":
+        if case.gemm_dimensions is None or dump_compiler_ir is None:
+            raise RuntimeError("shared-input qualification requires GEMM source and current IR")
+        verify_shared_gemm_input(dump_compiler_ir, case.gemm_dimensions, case.dtype)
+    if args.qualify_communication == "pipelined-loads":
+        if dump_compiler_ir is None:
+            raise RuntimeError("load pipeline qualification requires current IR")
+        rotating_loads = 0
+        for path in (dump_compiler_ir / "tile-dataflow").glob("tile_*.mlir"):
+            ir = path.read_text()
+            slots = re.findall(r"(%\w+) = arith\.select [^\n]* : memref<[^\n]*#wafer\.memory<spm,", ir)
+            rotating_loads += sum(len(re.findall(rf"wafer\.tile\.load %\w+ into {re.escape(slot)} :", ir)) for slot in slots)
+        if not rotating_loads:
+            raise RuntimeError("load pipeline qualification did not materialize rotating loads")
+        print(f"qualified_pipelined_loads: actual_rotating_load_sites={rotating_loads}")
     oracle_start_ns = time.monotonic_ns()
     expected_outputs = case.materialize_expected_outputs()
     print(

@@ -7,6 +7,7 @@
 #include "Wafer/Transforms/Instr/DirectDTETransport.h"
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
 #include "Wafer/Transforms/Instr/NativeDirectDTEMultiSend.h"
+#include "Wafer/Transforms/Instr/SharedDDRCompletion.h"
 #include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
 #include "Wafer/Transforms/Linalg/CommunicationRegionClosure.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
@@ -39,8 +40,9 @@
 
 #include "gtest/gtest.h"
 
-#include <memory>
 #include <limits>
+#include <memory>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -1349,7 +1351,7 @@ TEST_F(StructuredToTileTest,
     EXPECT_LE(step.dimension, 1u);
   }
   auto oneDimensional = buildDimensionOrderedAllToAll(mesh, /*rows=*/1,
-                                                       /*columns=*/4);
+                                                      /*columns=*/4);
   ASSERT_TRUE(mlir::succeeded(oneDimensional));
   EXPECT_EQ(oneDimensional->size(), 12u);
 }
@@ -2904,18 +2906,17 @@ module {
   ASSERT_TRUE(mlir::succeeded(topology));
 
   llvm::SmallVector<uint64_t, 4> validParticipants{0, 1, 2, 3};
-  EXPECT_TRUE(mlir::succeeded(
-      buildMinimumHopTileRing(*topology, validParticipants)));
+  EXPECT_TRUE(
+      mlir::succeeded(buildMinimumHopTileRing(*topology, validParticipants)));
 
   llvm::SmallVector<uint64_t, 4> duplicateParticipants{0, 1, 1, 2};
-  EXPECT_TRUE(mlir::failed(
-      buildMinimumHopTileRing(*topology, duplicateParticipants)));
+  EXPECT_TRUE(
+      mlir::failed(buildMinimumHopTileRing(*topology, duplicateParticipants)));
 
   llvm::SmallVector<uint64_t, 4> outOfRangeParticipants{
-      0, 1, 2,
-      static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1};
-  EXPECT_TRUE(mlir::failed(
-      buildMinimumHopTileRing(*topology, outOfRangeParticipants)));
+      0, 1, 2, static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1};
+  EXPECT_TRUE(
+      mlir::failed(buildMinimumHopTileRing(*topology, outOfRangeParticipants)));
 }
 
 TEST_F(StructuredToTileTest, CompleteExchangeBecomesThreeTopologyRingRounds) {
@@ -3257,6 +3258,63 @@ TEST_F(StructuredToTileTest, SplitExchangeRegionsCloseBeforeOneRingRound) {
   }
 }
 
+TEST_F(StructuredToTileTest, RegionClosureCoalescesIdenticalImportedArguments) {
+  for (int64_t tileCount : {4, 16}) {
+    for (int64_t extent : {1024, 1025, 1031}) {
+      SCOPED_TRACE(tileCount);
+      SCOPED_TRACE(extent);
+      auto module = parse(makeSequentialExchangeSource(extent, tileCount));
+      ASSERT_TRUE(module);
+      llvm::SmallVector<llvm::SmallVector<TileRegionOp, 3>, 16> regions(
+          tileCount);
+      for (TileModuleOp tile : module->getOps<TileModuleOp>())
+        tile.walk([&](TileRegionOp region) {
+          regions[tile.getTileId()].push_back(region);
+        });
+      StructuredMaterializationRelations relations;
+      for (unsigned source = 0; source < regions.size(); ++source)
+        for (unsigned destination = 0; destination < regions.size();
+             ++destination) {
+          if (source == destination)
+            continue;
+          unsigned argument = 1 + source - (source > destination);
+          // Both consumers import the same external SSA tensor. Their
+          // distinct block arguments become one argument after merging.
+          regions[destination][2]->setOperand(
+              argument, regions[destination][1].getInputs()[argument]);
+          for (unsigned phase : {1u, 2u})
+            relations.boundaryRelations.push_back(
+                {regions[source][0].getResult(0),
+                 regions[destination][phase].getBody().getArgument(argument)});
+        }
+      for (auto &tileRegions : regions)
+        relations.structuralOutputs.push_back(
+            {0, tileRegions.back().getResult(0)});
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      ASSERT_TRUE(mlir::succeeded(
+          checkStructuredBufferRelationsCurrent(*module, relations)));
+      SpatialRegionMaterializationFailure failure;
+      ASSERT_TRUE(mlir::succeeded(closeCrossTileCommunicationRegions(
+          *module, relations, nullptr, &failure)))
+          << failure.detail;
+      EXPECT_EQ(relations.boundaryRelations.size(),
+                tileCount * (tileCount - 1));
+      EXPECT_EQ(countOps<TileRegionOp>(*module), tileCount);
+      ASSERT_TRUE(mlir::succeeded(
+          checkStructuredBufferRelationsCurrent(*module, relations)));
+      auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+      ASSERT_TRUE(layout.succeeded()) << layout.detail;
+      auto compute = lowerStructuredComputeToTile(*module, relations);
+      ASSERT_TRUE(compute.succeeded()) << compute.detail;
+      auto movement = materializeTileBoundaryMovement(*module, relations);
+      ASSERT_TRUE(movement.succeeded()) << movement.detail;
+      EXPECT_EQ(movement.statistics.peerSends, tileCount * (tileCount - 1));
+      EXPECT_EQ(movement.statistics.peerReceives, tileCount * (tileCount - 1));
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    }
+  }
+}
+
 TEST_F(StructuredToTileTest,
        SequentialExchangesKeepSeparateCutsInOneActualRegion) {
   for (int64_t tileCount : {4, 16}) {
@@ -3349,6 +3407,94 @@ TEST_F(StructuredToTileTest,
       EXPECT_TRUE(mlir::succeeded(
           verifyDirectDTETransportSchedule(instructionModules)));
       EXPECT_TRUE(mlir::succeeded(bindDirectDTETransport(instructionModules)));
+    }
+  }
+}
+
+TEST_F(StructuredToTileTest,
+       CommunicationComponentsChooseTransportIndependently) {
+  for (int64_t tileCount : {4, 16}) {
+    for (int64_t extent : {1024, 1025, 1031}) {
+      for (unsigned mask = 0; mask < 4; ++mask) {
+        SCOPED_TRACE(tileCount);
+        SCOPED_TRACE(extent);
+        SCOPED_TRACE(mask);
+        auto module = parse(makeSequentialExchangeSource(extent, tileCount));
+        ASSERT_TRUE(module);
+        llvm::SmallVector<llvm::SmallVector<TileRegionOp, 3>, 16> regions(
+            tileCount);
+        for (TileModuleOp tile : module->getOps<TileModuleOp>())
+          tile.walk([&](TileRegionOp region) {
+            regions[tile.getTileIdAttr().getInt()].push_back(region);
+          });
+        StructuredMaterializationRelations relations;
+        for (unsigned source = 0; source < regions.size(); ++source)
+          for (unsigned phase = 0; phase < 2; ++phase)
+            for (unsigned dest = 0; dest < regions.size(); ++dest)
+              if (source != dest)
+                relations.boundaryRelations.push_back(
+                    {regions[source][phase].getResult(0),
+                     regions[dest][phase + 1].getBody().getArgument(
+                         1 + source - (source > dest))});
+        for (auto &tile : regions)
+          relations.structuralOutputs.push_back({0, tile.back().getResult(0)});
+        ASSERT_TRUE(mlir::succeeded(
+            closeCrossTileCommunicationRegions(*module, relations)));
+        ASSERT_TRUE(
+            resolveCurrentLayoutsAndBufferize(*module, relations).succeeded());
+        ASSERT_TRUE(
+            lowerStructuredComputeToTile(*module, relations).succeeded());
+        auto components = queryBoundaryMovementComponents(*module, relations);
+        ASSERT_TRUE(components.succeeded()) << components.detail;
+        ASSERT_EQ(components.anchors.size(), 2u);
+        BoundaryMovementOptions options;
+        for (unsigned component = 0; component < 2; ++component)
+          options.components.push_back(
+              {components.anchors[component],
+               mask & (1u << component) ? BoundaryMovementTransport::SharedDDR
+                                        : BoundaryMovementTransport::Peer});
+        auto movement =
+            materializeTileBoundaryMovement(*module, relations, options);
+        ASSERT_TRUE(movement.succeeded()) << movement.detail;
+        const unsigned ddr = (mask & 1) + ((mask >> 1) & 1);
+        EXPECT_EQ(movement.statistics.crossTileDDRStages,
+                  ddr * tileCount * (tileCount - 1));
+        EXPECT_EQ(movement.statistics.peerSends,
+                  (2 - ddr) * tileCount * (tileCount - 1));
+        EXPECT_EQ(movement.statistics.peerReceives,
+                  movement.statistics.peerSends);
+        std::string detail;
+        auto standalone =
+            createStandaloneTileModules(std::move(module), &detail, &relations);
+        ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+        llvm::SmallVector<mlir::ModuleOp, 16> modules;
+        llvm::SmallVector<TileId, 16> tileIds;
+        for (auto &tile : *standalone) {
+          llvm::SmallVector<TileRegionOp, 4> scopes;
+          tile.module->walk(
+              [&](TileRegionOp region) { scopes.push_back(region); });
+          TileRegionToInstrLoweringSession session(*context);
+          for (auto scope : scopes)
+            ASSERT_TRUE(
+                mlir::succeeded(convertTileRegionToInstr(scope, session)));
+          ASSERT_TRUE(mlir::succeeded(
+              convertBufferizationCopiesToInstr(*tile.module, session)));
+          modules.push_back(*tile.module);
+          tileIds.push_back(tile.tileId);
+        }
+        auto waits = rebuildRequiredDirectDTEWaits(modules);
+        ASSERT_TRUE(waits.succeeded()) << waits.detail;
+        auto shared = materializeSharedDDRCompletion(modules, tileIds);
+        ASSERT_TRUE(shared.succeeded()) << shared.detail;
+        waits = rebuildRequiredDirectDTEWaits(modules);
+        ASSERT_TRUE(waits.succeeded()) << waits.detail;
+        for (auto &tile : *standalone) {
+          ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+          TileMemoryPlanningFailure failure;
+          auto planned = planTileMemory(std::move(tile.module), &failure);
+          ASSERT_TRUE(mlir::succeeded(planned));
+        }
+      }
     }
   }
 }
@@ -3515,19 +3661,12 @@ TEST_F(StructuredToTileTest, RegionClosureIsOptionalAndDDRHasItsOwnOrderProof) {
       ASSERT_TRUE(layout.succeeded()) << layout.detail;
       auto compute = lowerStructuredComputeToTile(*module, relations);
       ASSERT_TRUE(compute.succeeded()) << compute.detail;
-      EXPECT_EQ(
-          analyzeDistributedMovementAvailability(*module, relations).sharedDDR,
-          !merge);
-      before = text();
+      EXPECT_TRUE(
+          analyzeDistributedMovementAvailability(*module, relations).sharedDDR);
       BoundaryMovementOptions options;
       options.transport = BoundaryMovementTransport::SharedDDR;
       auto movement =
           materializeTileBoundaryMovement(*module, relations, options);
-      if (merge) {
-        EXPECT_EQ(movement.failure, BoundaryMovementFailureKind::Unsupported);
-        EXPECT_EQ(text(), before);
-        continue;
-      }
       ASSERT_TRUE(movement.succeeded()) << movement.detail;
       EXPECT_EQ(movement.statistics.crossTileDDRStages, 2u);
       EXPECT_EQ(movement.statistics.peerSends, 0u);
@@ -3538,6 +3677,8 @@ TEST_F(StructuredToTileTest, RegionClosureIsOptionalAndDDRHasItsOwnOrderProof) {
       auto standalone =
           createStandaloneTileModules(std::move(module), &detail, &relations);
       ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+      llvm::SmallVector<mlir::ModuleOp> modules;
+      llvm::SmallVector<TileId> tileIds;
       for (StandaloneTileModule &tile : *standalone) {
         llvm::SmallVector<TileRegionOp, 2> scopes;
         tile.module->walk(
@@ -3548,6 +3689,12 @@ TEST_F(StructuredToTileTest, RegionClosureIsOptionalAndDDRHasItsOwnOrderProof) {
               mlir::succeeded(convertTileRegionToInstr(region, session)));
         ASSERT_TRUE(mlir::succeeded(
             convertBufferizationCopiesToInstr(*tile.module, session)));
+        modules.push_back(*tile.module);
+        tileIds.push_back(tile.tileId);
+      }
+      auto completion = materializeSharedDDRCompletion(modules, tileIds);
+      ASSERT_TRUE(completion.succeeded()) << completion.detail;
+      for (StandaloneTileModule &tile : *standalone) {
         ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
         TileMemoryPlanningFailure failure;
         auto planned = planTileMemory(std::move(tile.module), &failure);
@@ -4187,6 +4334,144 @@ TEST_F(StructuredToTileTest,
             ASSERT_TRUE(mlir::succeeded(planned));
           }
         }
+}
+
+TEST_F(StructuredToTileTest, StridedSPMEndpointsPreserveEveryDMAAddress) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (llvm::StringRef element : {"f16", "bf16"}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(element.str());
+      const std::string shape =
+          "2x" + std::to_string(extent) + "x16x" + element.str();
+      const std::string ddr =
+          "memref<" + shape + ", #wafer.memory<ddr, tensor>>";
+      const std::string carrier = "memref<2x" + std::to_string(extent) +
+                                  "x64x" + element.str() +
+                                  ", #wafer.memory<spm, tensor>>";
+      const std::string view =
+          "memref<" + shape + ", strided<[" + std::to_string(extent * 64) +
+          ", 64, 1], offset: ?>, #wafer.memory<spm, tensor>>";
+      std::string text;
+      llvm::raw_string_ostream os(text);
+      os << "module { func.func @entry(%input: " << ddr << ", %output: " << ddr
+         << ") {\n"
+         << "\"wafer.tile.region\"(%input, %output) ({\n"
+         << "^bb0(%in: " << ddr << ", %out: " << ddr << "):\n"
+         << "%storage = memref.alloc() : " << carrier << "\n"
+         << "%c0 = arith.constant 0 : index\n%c16 = arith.constant 16 : "
+            "index\n%c64 = arith.constant 64 : index\n"
+         << "scf.for %shift = %c0 to %c64 step %c16 {\n"
+         << "%view = memref.subview %storage[0, 0, %shift] [2, " << extent
+         << ", 16] [1, 1, 1] : " << carrier << " to " << view << "\n"
+         << "wafer.tile.load %in into %view : " << ddr << " into " << view
+         << "\n"
+         << "wafer.tile.store %view, %out : " << view << " -> " << ddr
+         << "\n}\n"
+         << "wafer.tile.yield\n}) : (" << ddr << ", " << ddr
+         << ") -> ()\nreturn\n}}";
+      auto module = parse(text);
+      ASSERT_TRUE(module);
+      TileRegionOp region;
+      module->walk([&](TileRegionOp op) { region = op; });
+      TileRegionToInstrLoweringSession session(*context);
+      ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      // Each row contains 32 bytes. On SPM adjacent rows are 128 bytes
+      // apart; the dynamic view supplies the same column shift to both
+      // engines in each of the four iterations.
+      std::set<std::pair<int64_t, int64_t>> reads, writes, expected;
+      for (int64_t row = 0; row < 2 * extent; ++row)
+        for (int64_t byte = 0; byte < 32; ++byte)
+          expected.emplace(row * 32 + byte, row * 128 + byte);
+      module->walk([&](InstrRDMAOp op) {
+        ASSERT_TRUE(op.getSrcOffset());
+        ASSERT_TRUE(op.getDstOffset());
+        EXPECT_EQ(op.getByteCount(), 32);
+        EXPECT_EQ(op.getInnerBytes(), 32);
+        EXPECT_TRUE(op.getDest().getDefiningOp<mlir::memref::SubViewOp>());
+        for (int64_t byte = 0; byte < static_cast<int64_t>(op.getByteCount()); ++byte)
+          EXPECT_TRUE(
+              reads
+                  .emplace(*op.getSrcOffset() + byte, *op.getDstOffset() + byte)
+                  .second);
+      });
+      module->walk([&](InstrWDMAOp op) {
+        ASSERT_TRUE(op.getSrcOffset());
+        ASSERT_TRUE(op.getDstOffset());
+        EXPECT_EQ(op.getByteCount(), 32);
+        EXPECT_EQ(op.getInnerBytes(), 32);
+        EXPECT_TRUE(op.getSource().getDefiningOp<mlir::memref::SubViewOp>());
+        for (int64_t byte = 0; byte < static_cast<int64_t>(op.getByteCount()); ++byte)
+          EXPECT_TRUE(
+              writes
+                  .emplace(*op.getDstOffset() + byte, *op.getSrcOffset() + byte)
+                  .second);
+      });
+      EXPECT_EQ(reads, expected);
+      EXPECT_EQ(writes, expected);
+    }
+  }
+}
+
+TEST_F(StructuredToTileTest, NTensorBoundaryUsesExactMappedDMA) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (llvm::StringRef element : {"f16", "bf16"}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(element.str());
+      std::string text;
+      llvm::raw_string_ostream os(text);
+      const std::string shape =
+          "2x" + std::to_string(extent) + "x3x" + element.str();
+      const std::string ddr =
+          "memref<" + shape + ", #wafer.memory<ddr, tensor>>";
+      const std::string spm =
+          "memref<" + shape + ", #wafer.memory<spm, ntensor>>";
+      os << "module { func.func @entry(%input: " << ddr << ", %output: " << ddr
+         << ") {\n"
+         << "\"wafer.tile.region\"(%input, %output) ({ ^bb0(%in: " << ddr
+         << ", %out: " << ddr << "):\n"
+         << "%storage = memref.alloc() : " << spm << "\n"
+         << "wafer.tile.load %in into %storage : " << ddr << " into " << spm
+         << "\nwafer.tile.store %storage, %out : " << spm << " -> " << ddr
+         << "\nwafer.tile.yield\n}) : (" << ddr << ", " << ddr
+         << ") -> ()\nreturn\n}}";
+      auto module = parse(text);
+      ASSERT_TRUE(module);
+      TileRegionOp region;
+      module->walk([&](TileRegionOp op) { region = op; });
+      TileRegionToInstrLoweringSession session(*context);
+      ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      EXPECT_EQ(countOps<InstrRDMAOp>(*module), 1u);
+      EXPECT_EQ(countOps<InstrWDMAOp>(*module), 1u);
+      EXPECT_EQ(countOps<InstrGatherScatterOp>(*module), 0u);
+      const int64_t bytes = 2 * extent * 3 * 2;
+      module->walk([&](InstrRDMAOp load) {
+        EXPECT_EQ(load.getByteCount(), bytes);
+        EXPECT_EQ(load.getInnerBytes(), bytes);
+        ASSERT_TRUE(load.getSrcOffset());
+        ASSERT_TRUE(load.getDstOffset());
+        EXPECT_EQ(*load.getSrcOffset(), 0);
+        EXPECT_EQ(*load.getDstOffset(), 0);
+        EXPECT_EQ(getWaferMemoryAttr(load.getDest().getType()).getLayout(),
+                  MemLayout::NTensor);
+      });
+      module->walk([&](InstrWDMAOp store) {
+        EXPECT_EQ(store.getByteCount(), bytes);
+        EXPECT_EQ(store.getInnerBytes(), bytes);
+        ASSERT_TRUE(store.getSrcOffset());
+        ASSERT_TRUE(store.getDstOffset());
+        EXPECT_EQ(*store.getSrcOffset(), 0);
+        EXPECT_EQ(*store.getDstOffset(), 0);
+        EXPECT_EQ(getWaferMemoryAttr(store.getSource().getType()).getLayout(),
+                  MemLayout::NTensor);
+      });
+      ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*module)));
+      TileMemoryPlanningFailure failure;
+      auto planned = planTileMemory(std::move(module), &failure);
+      ASSERT_TRUE(mlir::succeeded(planned));
+    }
+  }
 }
 
 TEST_F(StructuredToTileTest, TiledOutputStoresPreserveReadsAndUnknownAliases) {

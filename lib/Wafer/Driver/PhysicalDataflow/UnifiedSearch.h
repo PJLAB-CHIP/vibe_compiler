@@ -24,7 +24,7 @@ enum class SearchTerminationPolicy : uint8_t {
 
 struct UnifiedSearchOptions {
   uint64_t planningCredits = std::numeric_limits<uint64_t>::max();
-  uint64_t structuralCandidateCredits = std::numeric_limits<uint64_t>::max();
+  uint64_t retainedBranches = 8;
   uint64_t candidateActualizationCredits = std::numeric_limits<uint64_t>::max();
   uint64_t maximumRegionRefinementCandidates = 0;
   SearchTerminationPolicy termination = SearchTerminationPolicy::Exhaustive;
@@ -41,6 +41,9 @@ struct UnifiedSearchWork {
   uint64_t candidateActualizations = 0;
   uint64_t duplicateCompleteKeys = 0;
   uint64_t incompleteInnerDomains = 0;
+  uint64_t peakRetainedBranches = 0;
+  uint64_t resumedCandidates = 0;
+  uint64_t retiredBranches = 0;
 };
 
 using UnifiedSearchPrefixKey = std::variant<SpatialState, RegionState>;
@@ -63,24 +66,43 @@ struct UnifiedSearchTrace {
   uint64_t winnerHandoffs = 0;
 };
 
-struct StructuralCandidateEvaluation {
-  ActualCandidateResult result;
-  uint64_t actualizations = 0;
-  bool domainExhausted = true;
+enum class CandidateContinuation : uint8_t {
+  Exhausted,
+  Explore,
+  Repair,
+  Improve,
 };
 
-/// Caller-owned synchronous current-IR actualizer. Implementations materialize
-/// one RegionState, build and immediately consume temporal choices from that
-/// actual IR, and return one typed aggregate outcome. This structural search
-/// core never owns candidate IR or a complete/shadow materializer. Because the
-/// controller key ends at RegionState, ExactRejection is valid only after the
-/// evaluator has closed every relevant current-IR inner choice; one temporal
-/// candidate rejection cannot be lifted to the structural key.
+enum class CandidateRetention : uint8_t {
+  Replaceable,
+  PendingCapacityRepair,
+};
+
+struct StructuralCandidateEvaluation {
+  /// Empty only when an already owned domain exhausts without another leaf.
+  std::optional<ActualCandidateResult> result;
+  uint64_t actualizations = 0;
+  CandidateContinuation continuation = CandidateContinuation::Exhausted;
+  /// Queued repair survives even when another local work class runs next.
+  CandidateRetention retention = CandidateRetention::Replaceable;
+};
+
+/// Owns immutable actual IR checkpoints and their current-epoch cursors. Each
+/// advance evaluates at most one new leaf. A suspended session never recreates
+/// a checkpoint or borrows handles from a discarded candidate.
+class StructuralCandidateSession {
+public:
+  virtual ~StructuralCandidateSession() = default;
+  virtual StructuralCandidateEvaluation advance() = 0;
+};
+
+/// Starts an owned current-IR session. Construction itself does not actualize
+/// a candidate; the first advance is charged just like subsequent leaves.
 class StructuralCandidateEvaluator {
 public:
   virtual ~StructuralCandidateEvaluator() = default;
-  virtual StructuralCandidateEvaluation
-  evaluate(const RegionState &state, uint64_t actualizationCredits) = 0;
+  virtual std::unique_ptr<StructuralCandidateSession>
+  start(const RegionState &state) = 0;
 };
 
 enum class UnifiedSearchResumeStatus : uint8_t {
@@ -109,8 +131,7 @@ struct UnifiedSearchResult {
 };
 
 /// Resumable, deterministic parent-by-parent traversal. The session owns only
-/// typed continuations and controller state; candidate IR lives solely inside
-/// one synchronous actual evaluation.
+/// typed continuations, bounded owned candidate sessions and controller state.
 class UnifiedSearchSession {
 public:
   UnifiedSearchSession(PhysicalDataflowPlanningSession &session,

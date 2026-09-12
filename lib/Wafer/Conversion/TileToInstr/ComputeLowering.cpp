@@ -3,6 +3,7 @@
 #include "Internal.h"
 #include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "Wafer/Target/TargetCall.h"
+#include "Wafer/Target/Tx81InstructionLimits.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -1004,8 +1005,18 @@ public:
               ? findTargetFormatEncoding(TargetFormatEngine::CT, *logicalFormat)
               : nullptr;
       const bool targetAllowsNativeReduce = reduceFormat != nullptr;
+      const bool nativeShapeContract = llvm::all_of(
+          llvm::enumerate(inputType.getShape()), [&](const auto &dimension) {
+            const int64_t maximum =
+                dimension.index() + 1 ==
+                        static_cast<size_t>(inputType.getRank())
+                    ? Tx81InstructionLimits::dataShapeChannelMax
+                    : Tx81InstructionLimits::dataShapeOuterMax;
+            return dimension.value() > 0 && dimension.value() <= maximum;
+          });
       const bool nativeLayoutContract =
-          inputType.getRank() <= 4 && targetAllowsNativeReduce && inputMemory &&
+          inputType.getRank() <= 4 && nativeShapeContract &&
+          targetAllowsNativeReduce && inputMemory &&
           inputMemory.getLayout() == expectedInputLayout && resultMemory &&
           resultMemory.getLayout() == expectedResultLayout;
       if (nativeKind && hasExactNativeIdentity && nativeLayoutContract) {
@@ -1030,18 +1041,69 @@ public:
           }
         }
         if (!nativeDims.empty()) {
-          llvm::SmallVector<int64_t, 4> currentShape(inputType.getShape());
+          const int64_t leadingUnits = 4 - inputType.getRank();
+          llvm::SmallVector<int64_t, 4> nativeShape(leadingUnits, 1);
+          llvm::append_range(nativeShape, inputType.getShape());
+          auto nativeMemory = MemoryAttr::get(rewriter.getContext(),
+                                              MemorySpace::SPM, MemLayout::NCx);
+          auto nativeInputType = mlir::MemRefType::get(
+              nativeShape, elementType, mlir::MemRefLayoutAttrInterface{},
+              nativeMemory);
+          // A rank3 NCx leading slice has independent bank padding. Merely
+          // prepending N=1 in the CRT call does not preserve its H stride.
+          // Only an exact physical proof permits an alias into the rank4 ABI.
+          const bool inputIsView =
+              inputType == nativeInputType ||
+              (inputType.getMemorySpace() == nativeInputType.getMemorySpace() &&
+               mlir::succeeded(analysis::TransferRealizability::
+                                   proveStaticReshapeMetadataView(
+                                       inputType, nativeInputType, false)));
+          SharedMovementDescriptorPlan inputDescriptors;
+          llvm::SmallVector<int64_t> inputViewStrides;
+          if (inputIsView && inputType != nativeInputType) {
+            auto strides =
+                getStaticCompactStrides(rewriter, op, nativeInputType);
+            if (mlir::failed(strides))
+              return mlir::failure();
+            inputViewStrides = std::move(*strides);
+          } else if (!inputIsView) {
+            llvm::SmallVector<mlir::AffineExpr, 4> coordinates(
+                leadingUnits,
+                mlir::getAffineConstantExpr(0, rewriter.getContext()));
+            for (int64_t dim = 0; dim < inputType.getRank(); ++dim)
+              coordinates.push_back(
+                  mlir::getAffineDimExpr(dim, rewriter.getContext()));
+            auto source =
+                analysis::IndexRelation::identity(inputType.getShape());
+            auto dest = analysis::IndexRelation::fromAffineMap(
+                mlir::AffineMap::get(inputType.getRank(), 0, coordinates,
+                                     rewriter.getContext()),
+                inputType.getShape(), nativeShape);
+            if (!source.isExact() || !dest.isExact())
+              return failPattern(
+                  rewriter, op, "native reduction input relation is not exact");
+            auto descriptors = descriptorCache->getOrCreate(
+                rewriter, op, inputType, nativeInputType, inputType.getShape(),
+                *source.get(), *dest.get(), MovementEngine::GatherScatter,
+                "tile.reduce native input movement");
+            if (mlir::failed(descriptors))
+              return mlir::failure();
+            inputDescriptors = std::move(*descriptors);
+          }
+          llvm::SmallVector<int64_t, 4> currentShape(nativeShape);
           llvm::SmallVector<mlir::MemRefType, 4> nativeTypes;
           for (int64_t dimension : nativeDims) {
-            for (int64_t logicalDim : wafer::getInstrReduceLogicalDims(
-                     dimension, inputType.getRank()))
+            for (int64_t logicalDim :
+                 wafer::getInstrReduceLogicalDims(dimension, 4))
               currentShape[logicalDim] = 1;
             nativeTypes.push_back(mlir::MemRefType::get(
                 currentShape, elementType, mlir::MemRefLayoutAttrInterface{},
-                inputMemory));
+                nativeMemory));
           }
 
-          llvm::SmallVector<mlir::AffineExpr, 4> nativeCoordinates;
+          llvm::SmallVector<mlir::AffineExpr, 4> nativeCoordinates(
+              leadingUnits,
+              mlir::getAffineConstantExpr(0, rewriter.getContext()));
           unsigned resultDim = 0;
           for (int64_t inputDim = 0; inputDim < inputType.getRank(); ++inputDim)
             nativeCoordinates.push_back(
@@ -1071,6 +1133,20 @@ public:
             return mlir::failure();
 
           mlir::Value currentInput = op.getInput();
+          if (inputDescriptors) {
+            auto packed = createDestAlloc(op.getLoc(), nativeInputType,
+                                          rewriter, op, bufferRecorder);
+            if (mlir::failed(packed) ||
+                mlir::failed(emitGatherScatterDescriptorPlan(
+                    rewriter, op.getLoc(), op, currentInput, *packed,
+                    *inputDescriptors, bufferRecorder)))
+              return mlir::failure();
+            currentInput = *packed;
+          } else if (inputType != nativeInputType) {
+            currentInput = rewriter.create<mlir::memref::ReinterpretCastOp>(
+                op.getLoc(), nativeInputType, currentInput, /*offset=*/0,
+                nativeShape, inputViewStrides);
+          }
           for (auto [dimension, destinationType] :
                llvm::zip_equal(nativeDims, nativeTypes)) {
             mlir::FailureOr<mlir::Value> destination = createDestAlloc(

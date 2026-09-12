@@ -204,7 +204,8 @@ mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
 planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
                TileMemoryPlanningFailure *failure,
                StructuredMaterializationRelations *materializationRelations,
-               bool emitSPMCapacityDiagnostics) {
+               bool emitSPMCapacityDiagnostics,
+               SPMCapacityObserver capacityObserver) {
   if (failure)
     *failure = {};
   if (!module) {
@@ -281,6 +282,11 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
       &spmFailure, emitSPMCapacityDiagnostics);
   if (mlir::failed(spmResult)) {
     recordFailure(TileMemoryPlanningFailureKind::SPMAllocation);
+    if (capacityObserver &&
+        spmFailure.kind == SPMMemoryPlanningFailureKind::CapacityOverflow)
+      capacityObserver(spmFailure, materializationRelations
+                                       ? *materializationRelations
+                                       : StructuredMaterializationRelations{});
     if (failure) {
       // The raw planner certificate is preserved completely on both entry
       // paths: structured relations only add owner attribution on top of the

@@ -9,8 +9,9 @@
 namespace wafer {
 
 /// Public deterministic work limits for the search optimization policy.
-/// Width bounds distinct structural choices; trials bounds actual candidate
-/// compilations. Neither value participates in IR legality or cost.
+/// Width bounds simultaneously retained expandable branches, not total visited
+/// structures. Trials bounds actual candidate attempts, including failures.
+/// Neither value participates in IR legality or cost.
 struct SearchLimits {
   uint64_t width = 8;
   uint64_t trials = 42;

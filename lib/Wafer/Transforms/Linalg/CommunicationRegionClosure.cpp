@@ -794,6 +794,18 @@ mlir::LogicalResult closeCrossTileCommunicationRegions(
   for (StructuredOutputRelation &output : relations.structuralOutputs)
     retarget(output.endpoint);
 
+  // Merging imports of the same external SSA value creates one actual block
+  // argument. Its original uses survive in the merged body, but identical
+  // source/destination pairs now denote one boundary rather than two copies.
+  llvm::DenseSet<std::pair<mlir::Value, mlir::Value>> boundaries;
+  llvm::erase_if(relations.boundaryRelations,
+                 [&](const StructuredBoundaryRelation &relation) {
+                   return !boundaries
+                               .insert({relation.sourceEndpoint,
+                                        relation.destinationEndpoint})
+                               .second;
+                 });
+
   if (mlir::failed(mlir::verify(module)) ||
       mlir::failed(verifyStructuralTileRegions(module)) ||
       mlir::failed(compiler::detail::checkStructuredBufferRelationsCurrent(

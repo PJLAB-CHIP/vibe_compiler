@@ -419,4 +419,49 @@ TEST(ActualResultControllerTest,
             SearchControllerCoverage::Failed);
 }
 
+TEST(ActualResultControllerTest,
+     OpenLeafRejectionDoesNotCloseTheStructuralDomain) {
+  auto cohort = *SearchCostCohort::create(unitCostPolicy());
+  auto controller = makeController(1, cohort);
+  auto key = makeKey(0);
+  ASSERT_EQ(controller.reserve(key), CandidateReservation::Granted);
+  auto rejection = exactRejected(0, true);
+  rejection.causalRoots.clear();
+  EXPECT_EQ(
+      controller.record(key, std::move(rejection), CandidateDomainState::Open),
+      CandidateRecordOutcome::ExactRejection);
+  EXPECT_FALSE(controller.isForbidden(key));
+  EXPECT_EQ(controller.record(key, accepted(90), CandidateDomainState::Open),
+            CandidateRecordOutcome::Accepted);
+  EXPECT_EQ(controller.record(key, accepted(30), CandidateDomainState::Open),
+            CandidateRecordOutcome::Accepted);
+  EXPECT_EQ(controller.record(key, accepted(60), CandidateDomainState::Closed),
+            CandidateRecordOutcome::Accepted);
+  auto result = controller.finish(SearchFrontierStatus::Exhausted);
+  ASSERT_TRUE(result.winner);
+  EXPECT_EQ(result.winner->compilation.executable->resourceCost
+                .aggregateInstructionCount.value,
+            30u);
+  EXPECT_EQ(result.statistics.reserved, 1u);
+  EXPECT_EQ(result.statistics.accepted, 3u);
+  EXPECT_EQ(result.exactCompleteRejections, 0u);
+}
+
+TEST(ActualResultControllerTest,
+     BudgetEndRetainsTheActualOwnerOfAnOpenSession) {
+  auto controller =
+      makeController(1, *SearchCostCohort::create(unitCostPolicy()));
+  auto key = makeKey(0);
+  ASSERT_EQ(controller.reserve(key), CandidateReservation::Granted);
+  auto candidate = accepted(17);
+  candidate.compilation->detail = "owned accepted artifact";
+  EXPECT_EQ(
+      controller.record(key, std::move(candidate), CandidateDomainState::Open),
+      CandidateRecordOutcome::Accepted);
+  auto result = controller.finish(SearchFrontierStatus::Incomplete);
+  ASSERT_TRUE(result.winner);
+  EXPECT_EQ(result.coverage, SearchControllerCoverage::FeasiblePartial);
+  EXPECT_EQ(result.winner->compilation.detail, "owned accepted artifact");
+}
+
 } // namespace

@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/Tile/ExecutionStructure.h"
 
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
 #include "mlir/Analysis/AliasAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -14,6 +15,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -156,11 +158,42 @@ bool isExternalToLoop(mlir::Value root, mlir::scf::ForOp loop) {
   return !definition || !loop->isAncestor(definition);
 }
 
+bool isDistanceOneRotatingView(mlir::Value value, mlir::scf::ForOp loop) {
+  while (auto view = mlir::dyn_cast_or_null<mlir::ViewLikeOpInterface>(
+             value.getDefiningOp()))
+    value = view.getViewSource();
+  auto select = value.getDefiningOp<mlir::arith::SelectOp>();
+  if (!select)
+    return false;
+  auto first = select.getTrueValue().getDefiningOp<mlir::memref::AllocOp>();
+  auto second = select.getFalseValue().getDefiningOp<mlir::memref::AllocOp>();
+  if (!first || !second || first == second ||
+      first->getBlock() != loop->getBlock() ||
+      second->getBlock() != loop->getBlock() || !first->isBeforeInBlock(loop) ||
+      !second->isBeforeInBlock(loop))
+    return false;
+  auto condition = select.getCondition().getDefiningOp<mlir::arith::CmpIOp>();
+  if (!condition ||
+      condition.getPredicate() != mlir::arith::CmpIPredicate::eq ||
+      mlir::getConstantIntValue(condition.getRhs()) != 1)
+    return false;
+  auto remainder = condition.getLhs().getDefiningOp<mlir::arith::RemUIOp>();
+  if (!remainder || mlir::getConstantIntValue(remainder.getRhs()) != 2)
+    return false;
+  auto iteration = remainder.getLhs().getDefiningOp<mlir::arith::DivUIOp>();
+  if (!iteration || iteration.getRhs() != loop.getStep())
+    return false;
+  auto delta = iteration.getLhs().getDefiningOp<mlir::arith::SubIOp>();
+  return delta && delta.getLhs() == loop.getInductionVar() &&
+         delta.getRhs() == loop.getLowerBound();
+}
+
 std::optional<std::string>
 checkExternalEffects(mlir::scf::ForOp loop,
                      const std::map<mlir::Operation *, uint32_t> &stages) {
   struct Summary {
     bool write = false;
+    bool distanceOneRotation = true;
     std::set<uint32_t> stages;
   };
   using EffectList = llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 4>;
@@ -195,6 +228,8 @@ checkExternalEffects(mlir::scf::ForOp loop,
         if (!isExternalToLoop(root, loop))
           continue;
         Summary &summary = summaries[root];
+        summary.distanceOneRotation &=
+            isDistanceOneRotatingView(effect.getValue(), loop);
         summary.write |=
             !mlir::isa<mlir::MemoryEffects::Read>(effect.getEffect());
         summary.stages.insert(stage);
@@ -203,10 +238,100 @@ checkExternalEffects(mlir::scf::ForOp loop,
   }
   for (const auto &[root, summary] : summaries) {
     (void)root;
-    if (summary.write && summary.stages.size() > 1)
+    if (summary.write && summary.stages.size() > 1 &&
+        !(summary.distanceOneRotation &&
+          *summary.stages.rbegin() - *summary.stages.begin() < 2))
       return "cross-stage external write has no current rotating root";
   }
   return std::nullopt;
+}
+
+struct LoadPipeline {
+  mlir::scf::ForOp loop;
+  llvm::SmallVector<StorageLoadOp, 4> loads;
+  llvm::SmallVector<mlir::memref::AllocOp, 4> allocations;
+};
+
+bool collectLoadDependencies(mlir::Value value, mlir::scf::ForOp loop,
+                             llvm::DenseSet<mlir::Operation *> &early) {
+  if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value))
+    return argument.getOwner() != loop.getBody() ||
+           argument == loop.getInductionVar();
+  mlir::Operation *definition = value.getDefiningOp();
+  if (!definition || !loop->isAncestor(definition))
+    return true;
+  if (definition->getBlock() != loop.getBody() ||
+      !mlir::isMemoryEffectFree(definition))
+    return false;
+  if (!early.insert(definition).second)
+    return true;
+  return llvm::all_of(definition->getOperands(), [&](mlir::Value operand) {
+    return collectLoadDependencies(operand, loop, early);
+  });
+}
+
+bool hasOnlyPostLoadReads(mlir::Value value, StorageLoadOp load,
+                          mlir::scf::ForOp loop,
+                          llvm::DenseSet<mlir::Value> &visited) {
+  if (!visited.insert(value).second)
+    return true;
+  for (mlir::OpOperand &use : value.getUses()) {
+    mlir::Operation *user = use.getOwner();
+    if (user == load && use.getOperandNumber() == 1)
+      continue;
+    if (user->getBlock() != loop.getBody())
+      return false;
+    if (auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(user)) {
+      if (view.getViewSource() != value || user->getNumResults() != 1 ||
+          !hasOnlyPostLoadReads(user->getResult(0), load, loop, visited))
+        return false;
+      continue;
+    }
+    if (!load->isBeforeInBlock(user))
+      return false;
+    auto interface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(user);
+    if (!interface)
+      return false;
+    llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 4> effects;
+    interface.getEffectsOnValue(value, effects);
+    if (effects.empty() || llvm::any_of(effects, [](const auto &effect) {
+          return !mlir::isa<mlir::MemoryEffects::Read>(effect.getEffect());
+        }))
+      return false;
+  }
+  return true;
+}
+
+llvm::SmallVector<LoadPipeline, 4> findLoadPipelines(mlir::ModuleOp module) {
+  llvm::SmallVector<LoadPipeline, 4> pipelines;
+  module.walk([&](mlir::scf::ForOp loop) {
+    auto tripCount = getStaticTripCount(loop);
+    if (!loop->getParentOfType<TileRegionOp>() || !tripCount ||
+        *tripCount < 2 ||
+        llvm::any_of(loop.getBody()->without_terminator(), [](auto &operation) {
+          return operation.getNumRegions() != 0;
+        }))
+      return;
+    LoadPipeline pipeline{loop};
+    for (StorageLoadOp load : loop.getBody()->getOps<StorageLoadOp>()) {
+      auto allocation = load.getDest().getDefiningOp<mlir::memref::AllocOp>();
+      if (!allocation || allocation->getBlock() != loop.getBody() ||
+          allocation.getResult().hasOneUse() ||
+          !allocation.getDynamicSizes().empty() ||
+          !allocation.getSymbolOperands().empty())
+        continue;
+      llvm::DenseSet<mlir::Value> visited;
+      llvm::DenseSet<mlir::Operation *> dependencies;
+      if (!hasOnlyPostLoadReads(allocation, load, loop, visited) ||
+          !collectLoadDependencies(load.getSource(), loop, dependencies))
+        continue;
+      pipeline.loads.push_back(load);
+      pipeline.allocations.push_back(allocation);
+    }
+    if (!pipeline.loads.empty())
+      pipelines.push_back(std::move(pipeline));
+  });
+  return pipelines;
 }
 
 bool hasTemporaryAttributes(mlir::Operation *root) {
@@ -564,31 +689,32 @@ materializeExecutionStructure(mlir::OwningOpRef<mlir::ModuleOp> module,
           "pinned SCF pipelining rejected a prepared current-IR schedule",
           static_cast<uint32_t>(pipelineIndex));
 
+    // Publish the exact static kernel domain. The pinned helper leaves
+    // `ub - stage * step` as unfurled arith operations; current completion and
+    // lifetime consumers need the proven nonempty loop bounds in the IR.
+    const uint64_t factor = pipeline.tripCount - maximumStage;
+    std::optional<int64_t> lower =
+        mlir::getConstantIntValue(kernel->getLowerBound());
+    std::optional<int64_t> step = mlir::getConstantIntValue(kernel->getStep());
+    const __int128 upper =
+        lower && step
+            ? static_cast<__int128>(*lower) +
+                  static_cast<__int128>(factor) * *step
+            : static_cast<__int128>(std::numeric_limits<int64_t>::max()) + 1;
+    if (factor == 0 || !lower || !step || *step <= 0 ||
+        upper > std::numeric_limits<int64_t>::max() ||
+        upper < std::numeric_limits<int64_t>::min())
+      return materializationFailure(
+          ExecutionStructureFailureKind::CompilerBug,
+          "static pipeline has non-constant or overflowing bounds",
+          static_cast<uint32_t>(pipelineIndex));
+    rewriter.setInsertionPoint(*kernel);
+    auto constant = rewriter.create<mlir::arith::ConstantOp>(
+        kernel->getLoc(),
+        rewriter.getIntegerAttr(kernel->getUpperBound().getType(),
+                                static_cast<int64_t>(upper)));
+    rewriter.modifyOpInPlace(*kernel, [&] { kernel->setUpperBound(constant); });
     if (pipeline.lowering == TilePipelineLowering::FiniteUnrolled) {
-      const uint64_t factor = pipeline.tripCount - maximumStage;
-      std::optional<int64_t> lower =
-          mlir::getConstantIntValue(kernel->getLowerBound());
-      std::optional<int64_t> step =
-          mlir::getConstantIntValue(kernel->getStep());
-      const __int128 upper =
-          lower && step
-              ? static_cast<__int128>(*lower) +
-                    static_cast<__int128>(factor) * *step
-              : static_cast<__int128>(std::numeric_limits<int64_t>::max()) + 1;
-      if (factor == 0 || !lower || !step || *step <= 0 ||
-          upper > std::numeric_limits<int64_t>::max() ||
-          upper < std::numeric_limits<int64_t>::min())
-        return materializationFailure(
-            ExecutionStructureFailureKind::CompilerBug,
-            "finite pipeline has non-constant or overflowing bounds",
-            static_cast<uint32_t>(pipelineIndex));
-      rewriter.setInsertionPoint(*kernel);
-      auto constant = rewriter.create<mlir::arith::ConstantOp>(
-          kernel->getLoc(),
-          rewriter.getIntegerAttr(kernel->getUpperBound().getType(),
-                                  static_cast<int64_t>(upper)));
-      rewriter.modifyOpInPlace(*kernel,
-                               [&] { kernel->setUpperBound(constant); });
       if (mlir::failed(mlir::loopUnrollByFactor(
               *kernel, factor,
               [&](unsigned iteration, mlir::Operation *operation,
@@ -826,6 +952,101 @@ RotatingAllocationMaterializationResult materializeRotatingAllocations(
     return rotationFailure(ExecutionStructureFailureKind::CompilerBug,
                            "rotating allocation produced verifier-invalid IR");
   return {std::move(result), {}};
+}
+
+bool hasDistanceOneLoadPipeline(mlir::ModuleOp module) {
+  return module && !findLoadPipelines(module).empty();
+}
+
+MaterializedExecutionStructureResult materializeDistanceOneLoadPipelines(
+    mlir::OwningOpRef<mlir::ModuleOp> module,
+    StructuredMaterializationRelations &relations) {
+  if (!module || mlir::failed(mlir::verify(*module)))
+    return materializationFailure(ExecutionStructureFailureKind::BrokenContract,
+                                  "load pipeline requires verified current IR");
+  // Bufferization can leave unchanged memrefs as loop-carried arguments. The
+  // pinned SCF pipeliner does not accept a yield of a BlockArgument. Apply the
+  // standard ForOp folds to the selected loops, then rediscover all handles.
+  llvm::SmallVector<mlir::Operation *, 4> loops;
+  for (const LoadPipeline &pipeline : findLoadPipelines(*module)) {
+    for (mlir::memref::AllocOp allocation : pipeline.allocations)
+      if (!llvm::any_of(relations.buffers, [&](const auto &relation) {
+            return relation.buffer == allocation.getResult();
+          }))
+        return materializationFailure(
+            ExecutionStructureFailureKind::BrokenContract,
+            "load pipeline allocation has no current owner");
+    loops.push_back(pipeline.loop);
+  }
+  mlir::RewritePatternSet patterns(module->getContext());
+  mlir::scf::ForOp::getCanonicalizationPatterns(patterns, module->getContext());
+  mlir::GreedyRewriteConfig config;
+  config.strictMode = mlir::GreedyRewriteStrictness::ExistingOps;
+  config.maxNumRewrites = loops.size() + 1;
+  if (mlir::failed(
+          mlir::applyOpPatternsAndFold(loops, std::move(patterns), config)))
+    return materializationFailure(
+        ExecutionStructureFailureKind::Indeterminate,
+        "load pipeline loop normalization did not converge");
+  rebuildCurrentBufferOwnerRelations(module->getOperation(), relations);
+  auto pipelines = findLoadPipelines(*module);
+  if (pipelines.empty())
+    return materializationFailure(
+        ExecutionStructureFailureKind::Unsupported,
+        "no current load has a complete rotating lifetime");
+  llvm::SmallVector<RotatingAllocationBinding, 4> rotations;
+  for (const LoadPipeline &pipeline : pipelines)
+    for (mlir::memref::AllocOp allocation : pipeline.allocations) {
+      if (!llvm::any_of(relations.buffers, [&](const auto &relation) {
+            return relation.buffer == allocation.getResult();
+          }))
+        return materializationFailure(
+            ExecutionStructureFailureKind::BrokenContract,
+            "load pipeline allocation has no current owner");
+      rotations.push_back({allocation, pipeline.loop, 2});
+    }
+  mlir::IRRewriter rewriter(module->getContext());
+  for (const auto &rotation : rotations)
+    rewriter.moveOpBefore(rotation.allocation, rotation.loop);
+  auto rotated =
+      materializeRotatingAllocations(std::move(module), rotations, relations);
+  if (!rotated.succeeded())
+    return {{}, std::move(rotated.failure)};
+  module = std::move(rotated.materialized->module);
+  llvm::SmallVector<TilePipelineChoice, 4> choices;
+  for (LoadPipeline &pipeline : pipelines) {
+    llvm::DenseSet<mlir::Operation *> early;
+    for (StorageLoadOp load : pipeline.loads) {
+      early.insert(load);
+      for (mlir::Value operand : load->getOperands())
+        if (!collectLoadDependencies(operand, pipeline.loop, early))
+          return materializationFailure(
+              ExecutionStructureFailureKind::CompilerBug,
+              "load pipeline rotation changed an address dependency");
+    }
+    TilePipelineChoice choice;
+    choice.loop = pipeline.loop;
+    bool hasConsumerStage = false;
+    for (mlir::Operation &operation :
+         pipeline.loop.getBody()->without_terminator()) {
+      const uint32_t stage = early.contains(&operation) ? 0 : 1;
+      hasConsumerStage |= stage == 1;
+      choice.operations.push_back({&operation, stage});
+    }
+    if (!hasConsumerStage)
+      return materializationFailure(ExecutionStructureFailureKind::Unsupported,
+                                    "load pipeline has no consumer stage");
+    choices.push_back(std::move(choice));
+  }
+  auto prepared = prepareTileExecutionStructure(*module, choices);
+  if (!prepared.succeeded())
+    return {{}, std::move(prepared.failure)};
+  auto result = materializeExecutionStructure(std::move(module),
+                                              std::move(*prepared.prepared));
+  if (result.succeeded())
+    rebuildCurrentBufferOwnerRelations(
+        result.materialized->module->getOperation(), relations);
+  return result;
 }
 
 } // namespace wafer::compiler::detail

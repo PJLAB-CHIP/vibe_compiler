@@ -267,6 +267,11 @@ mlir::LogicalResult runCompilationTransaction(
       &context, [&](mlir::Diagnostic &diagnostic) {
         diagnostic.print(diagnostics);
         diagnostics << "\n";
+        for (const mlir::Diagnostic &note : diagnostic.getNotes()) {
+          diagnostics << "note: ";
+          note.print(diagnostics);
+          diagnostics << "\n";
+        }
         return mlir::success();
       });
 

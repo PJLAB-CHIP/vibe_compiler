@@ -22,6 +22,16 @@ bool hasSPMCapacityRejection(const ActualCandidateResult &result) {
 
 } // namespace
 
+analysis::SearchObjective deriveExecutableSearchObjective(
+    const ExecutableLoweringResult &executable,
+    const std::optional<analysis::SearchCostCohort> &cohort) {
+  llvm::SmallVector<analysis::TileInstructionProgram, 16> programs;
+  for (const auto &tile : executable.tiles)
+    programs.push_back({tile.getTileId(), tile.getModule()});
+  return analysis::deriveSearchObjective(executable.resourceCost, cohort,
+                                         programs);
+}
+
 CandidateReservation
 ActualResultController::reserve(const StructuralCandidateKey &key) {
   if (finished || poisoned) {
@@ -44,17 +54,21 @@ ActualResultController::reserve(const StructuralCandidateKey &key) {
 
 CandidateRecordOutcome
 ActualResultController::record(const StructuralCandidateKey &key,
-                               ActualCandidateResult result) {
-  if (finished || poisoned || !reserved.erase(key) || completed.count(key))
+                               ActualCandidateResult result,
+                               CandidateDomainState domain) {
+  if (finished || poisoned || !reserved.count(key) || completed.count(key))
     return failCompilerBug();
-  completed.insert(key);
+  if (domain == CandidateDomainState::Closed) {
+    reserved.erase(key);
+    completed.insert(key);
+  }
   switch (result.status) {
   case ActualCandidateStatus::Accepted: {
     if (!result.compilation || !result.compilation->isAccepted() ||
         !result.compilation->executable)
       return failCompilerBug();
-    analysis::SearchObjective objective = analysis::deriveSearchObjective(
-        result.compilation->executable->resourceCost, cohort);
+    analysis::SearchObjective objective = deriveExecutableSearchObjective(
+        *result.compilation->executable, cohort);
     RetainedSearchCandidate candidate{key, objective,
                                       std::move(*result.compilation)};
     bool replace = !incumbent;
@@ -90,7 +104,7 @@ ActualResultController::record(const StructuralCandidateKey &key,
     if (!result.compilation || !result.compilation->isProvenExactRejection())
       return failCompilerBug();
     const bool spmCapacity = hasSPMCapacityRejection(result);
-    if (spmCapacity &&
+    if (domain == CandidateDomainState::Closed && spmCapacity &&
         exactRejectionCache == ExactRejectionCachePolicy::Enabled &&
         result.causalRoots.empty())
       return failCompilerBug();
@@ -99,7 +113,8 @@ ActualResultController::record(const StructuralCandidateKey &key,
         spmCapacity ? ExactCompleteRejectionKind::SPMCapacity
                     : ExactCompleteRejectionKind::ExecutableGate,
         std::move(result.causalRoots)};
-    if (exactRejectionCache == ExactRejectionCachePolicy::Enabled) {
+    if (domain == CandidateDomainState::Closed &&
+        exactRejectionCache == ExactRejectionCachePolicy::Enabled) {
       if (!forbidden.insert(std::move(rejection)).second)
         return failCompilerBug();
     }
@@ -127,6 +142,16 @@ CandidateRecordOutcome ActualResultController::failCompilerBug() {
 
 void ActualResultController::markCompilerBug() { (void)failCompilerBug(); }
 
+void ActualResultController::close(const StructuralCandidateKey &key,
+                                   SearchFrontierStatus domain) {
+  if (finished || poisoned || !reserved.erase(key)) {
+    markCompilerBug();
+    return;
+  }
+  completed.insert(key);
+  sawIncompleteDomain |= domain == SearchFrontierStatus::Incomplete;
+}
+
 bool ActualResultController::isForbidden(
     const StructuralCandidateKey &key) const {
   return findExactCompleteRejection(key) != nullptr;
@@ -145,7 +170,8 @@ ActualResultController::finish(SearchFrontierStatus frontier) {
   SearchControllerResult result;
   result.statistics = statistics;
   result.exactCompleteRejections = forbidden.size();
-  if (finished || poisoned || !reserved.empty()) {
+  if (finished || poisoned ||
+      (frontier == SearchFrontierStatus::Exhausted && !reserved.empty())) {
     result.coverage = SearchControllerCoverage::Failed;
     finished = true;
     incumbent.reset();
@@ -153,15 +179,15 @@ ActualResultController::finish(SearchFrontierStatus frontier) {
   }
   finished = true;
   if (!incumbent) {
-    result.coverage = frontier == SearchFrontierStatus::Exhausted &&
-                              statistics.unsupported == 0 &&
-                              statistics.indeterminate == 0
-                          ? SearchControllerCoverage::NoFeasible
-                          : SearchControllerCoverage::IncompleteNoCandidate;
+    result.coverage =
+        frontier == SearchFrontierStatus::Exhausted && !sawIncompleteDomain &&
+                statistics.unsupported == 0 && statistics.indeterminate == 0
+            ? SearchControllerCoverage::NoFeasible
+            : SearchControllerCoverage::IncompleteNoCandidate;
     return result;
   }
   const bool incomplete = frontier == SearchFrontierStatus::Incomplete ||
-                          statistics.unsupported != 0 ||
+                          sawIncompleteDomain || statistics.unsupported != 0 ||
                           statistics.indeterminate != 0;
   if (incomplete)
     result.coverage = SearchControllerCoverage::FeasiblePartial;

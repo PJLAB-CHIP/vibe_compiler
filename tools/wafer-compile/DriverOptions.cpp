@@ -17,18 +17,22 @@
 namespace wafer::compile_driver {
 
 void printHelp() {
-  llvm::outs() << "usage: wafer-compile --input-program-dir <dir> "
-                  "--output-dir <dir> --num-partitions <1> "
-                  "[--optimization-policy <search|none>] "
-                  "[--search-width <count>] [--search-trials <count>] "
-                  "[--compile-timing] "
-                  "[--dump-compiler-ir <dir>] "
-                  "[--profile]\n";
+  llvm::outs()
+      << "usage: wafer-compile --input-program-dir <dir> "
+         "--output-dir <dir> --num-partitions <1> "
+         "[--optimization-policy <search|none>] "
+         "[--search-width <count>] [--search-trials <count>] "
+         "[--compile-timing] "
+         "[--dump-compiler-ir <dir>] "
+         "[--profile]\n"
+         "search: width limits retained expandable branches (default 8); "
+         "trials limits actual candidate attempts, including failures "
+         "(default 42).\n";
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
   llvm::outs() << "test-only internal entry also accepts: "
                   "[--test-communication-candidate "
                   "<peer|shared-ddr|recursive-doubling|dimension-ordered|ring-"
-                  "reduction>] "
+                  "reduction|shared-input|pipelined-loads>] "
                   "[--target-model "
                   "--model-input <index>=<npy> "
                   "--model-expected <index>=<npy> "
