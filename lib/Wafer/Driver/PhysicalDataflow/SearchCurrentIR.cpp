@@ -4,6 +4,7 @@
 
 #include "PhysicalDataflowInstrumentation.h"
 #include "StructuredProgramAnalysis.h"
+#include "TemporalProposals.h"
 #include "Wafer/Analysis/Instr/CostModel.h"
 #include "Wafer/Planning/PhysicalDataflow/PlanningProblem.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
@@ -126,90 +127,6 @@ hasActualSPMCapacityRejection(const ExecutableCompilationResult &result) {
                       [](const ExecutableTileFailure &failure) {
                         return failure.memoryPlanning.spmCapacityOverflow;
                       });
-}
-
-static std::optional<std::vector<TemporalChoice>> refineTemporalChoices(
-    llvm::ArrayRef<TemporalAxis> axes, llvm::ArrayRef<TemporalChoice> current,
-    const std::set<size_t> &affectedAxes, std::string &detail) {
-  if (axes.size() != current.size()) {
-    detail = "Temporal refinement lost its current domain tuple";
-    return std::nullopt;
-  }
-  std::vector<TemporalChoice> refined(current.begin(), current.end());
-  bool changed = false;
-  // Only the live allocation certificate's current owner can select a scope.
-  // The scalar size orders alternative parameters after that proof; it never
-  // predicts capacity, identifies an owner or rules out another choice.
-  llvm::SmallVector<std::optional<std::tuple<size_t, size_t, int64_t>>, 16>
-      refinements(axes.size());
-  size_t axisIndex = 0;
-  for (auto [axis, choice] : llvm::zip(axes, refined)) {
-    if (!affectedAxes.count(axisIndex)) {
-      ++axisIndex;
-      continue;
-    }
-    llvm::ArrayRef<TemporalScopeDescriptor> descriptors =
-        axis.domain.getScopeDescriptors(choice.kind);
-    if (descriptors.size() != choice.scopes.size()) {
-      detail = "Temporal refinement scope tuple differs from current domain";
-      return std::nullopt;
-    }
-    // A Region owner alone cannot distinguish independent roots or a fused
-    // traversal from its internal reduction scope.
-    if (descriptors.size() != 1) {
-      ++axisIndex;
-      continue;
-    }
-    for (auto [descriptorIndex, descriptorAndScope] :
-         llvm::enumerate(llvm::zip(descriptors, choice.scopes))) {
-      const TemporalScopeDescriptor &descriptor =
-          std::get<0>(descriptorAndScope);
-      TemporalScopeChoice &scope = std::get<1>(descriptorAndScope);
-      for (auto [dimension, capability] :
-           llvm::enumerate(descriptor.iteratorCapabilities)) {
-        if (capability != IteratorTilingCapability::Tileable ||
-            scope.iteratorTileSizes[dimension] <= 1)
-          continue;
-        auto &selected = refinements[axisIndex];
-        if (!selected ||
-            scope.iteratorTileSizes[dimension] > std::get<2>(*selected))
-          selected = std::make_tuple(descriptorIndex, dimension,
-                                     scope.iteratorTileSizes[dimension]);
-      }
-      auto loopOrder = buildFirstTemporalLoopOrder(
-          descriptor.iterationExtents, scope.iteratorTileSizes,
-          descriptor.precedence, &detail);
-      if (mlir::failed(loopOrder))
-        return std::nullopt;
-      scope.loopOrder = std::move(*loopOrder);
-    }
-    if (!axis.domain.contains(choice)) {
-      detail = "actual-capacity Temporal refinement is outside the current "
-               "typed domain";
-      return std::nullopt;
-    }
-    ++axisIndex;
-  }
-  for (size_t index = 0; index < refinements.size(); ++index) {
-    if (!refinements[index])
-      continue;
-    const auto [scopeIndex, dimension, size] = *refinements[index];
-    refined[index].scopes[scopeIndex].iteratorTileSizes[dimension] =
-        (size + 1) / 2;
-    llvm::ArrayRef<TemporalScopeDescriptor> descriptors =
-        axes[index].domain.getScopeDescriptors(refined[index].kind);
-    auto loopOrder = buildFirstTemporalLoopOrder(
-        descriptors[scopeIndex].iterationExtents,
-        refined[index].scopes[scopeIndex].iteratorTileSizes,
-        descriptors[scopeIndex].precedence, &detail);
-    if (mlir::failed(loopOrder))
-      return std::nullopt;
-    refined[index].scopes[scopeIndex].loopOrder = std::move(*loopOrder);
-    changed = true;
-  }
-  if (!changed)
-    return std::nullopt;
-  return refined;
 }
 
 static mlir::FailureOr<StructuredMaterializationRelations>
@@ -391,12 +308,15 @@ public:
       const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
       ProgramDataHandoff &programData, const SearchCurrentIROptions &options,
       SearchCurrentIRStatistics *statistics,
-      ExecutableLoweringStatistics *executableStatistics)
+      ExecutableLoweringStatistics *executableStatistics,
+      const std::optional<analysis::SearchCostCohort> &costCohort,
+      size_t explorationStratum)
       : state(std::move(state)), tensorProgram(tensorProgram),
         analysis(analysis), planning(planning), program(program),
         executionConfig(executionConfig), diagnostics(diagnostics),
         programData(programData), options(options), statistics(statistics),
-        executableStatistics(executableStatistics) {}
+        executableStatistics(executableStatistics), costCohort(costCohort),
+        explorationStratum(explorationStratum) {}
 
   StructuralCandidateEvaluation advance() override {
     while (true) {
@@ -418,7 +338,7 @@ public:
           return finish(std::move(*failure));
       }
       TemporalWork work = nextTemporalWork();
-      temporalPhase = (static_cast<unsigned>(work) + 1) % 3;
+      temporalPhase = (static_cast<unsigned>(work) + 1) % 4;
       if (work != TemporalWork::Resume) {
         auto failure = startTemporal(work);
         if (failure)
@@ -591,17 +511,34 @@ public:
           }
         }
       }
+      if (choice.options.components.empty())
+        temporal.observedTransports.insert(choice.options.transport);
       if (hasActualSPMCapacityRejection(compiled)) {
-        auto refined =
-            refineTemporalChoices(axes, temporal.choices, affectedAxes, detail);
-        if (refined && !wasVisited(*refined)) {
-          repairs.push_back(std::move(*refined));
-          if (statistics)
-            ++statistics->actualCapacityRefinements;
-        } else if (statistics) {
-          ++statistics->unavailableCapacityRefinements;
+        bool refined =
+            proposals->observeCapacity(temporal.choices, affectedAxes);
+        if (statistics) {
+          statistics->actualCapacityRefinements += refined;
+          statistics->unavailableCapacityRefinements += !refined;
+        }
+      } else if (compiled.isAccepted()) {
+        auto objective =
+            deriveExecutableSearchObjective(*compiled.executable, costCohort);
+        if (auto *known =
+                std::get_if<analysis::KnownSearchObjective>(&objective)) {
+          uint64_t duration = known->estimatedDurationPicoseconds;
+          temporal.bestDuration =
+              temporal.bestDuration ? std::min(*temporal.bestDuration, duration)
+                                    : duration;
         }
       }
+      // Give both base transports an actual attempt before numeric neighbors
+      // fan out. This is symmetric exploration ordering, never a transport
+      // preference; only accepted leaves supply the scalar feedback.
+      if (temporal.bestDuration &&
+          temporal.observedTransports.count(BoundaryMovementTransport::Peer) &&
+          temporal.observedTransports.count(
+              BoundaryMovementTransport::SharedDDR))
+        proposals->observeAccepted(temporal.choices, *temporal.bestDuration);
       // Each Region/layout/movement family advances one leaf before yielding.
       // Live queries and exact actual prefixes move with their continuation.
       if (!pending.empty()) {
@@ -619,18 +556,20 @@ public:
   }
 
 private:
-  enum class TemporalWork { Proposal, Repair, Resume };
+  enum class TemporalWork { Proposal, Repair, Improve, Resume };
 
   TemporalWork nextTemporalWork() const {
-    for (unsigned offset = 0; offset < 3; ++offset) {
-      auto work = static_cast<TemporalWork>((temporalPhase + offset) % 3);
-      if ((work == TemporalWork::Proposal && !proposals.empty()) ||
-          (work == TemporalWork::Repair && !repairs.empty()) ||
+    for (unsigned offset = 0; offset < 4; ++offset) {
+      auto work = static_cast<TemporalWork>((temporalPhase + offset) % 4);
+      if ((work == TemporalWork::Proposal && proposals &&
+           !proposals->empty(TemporalProposalKind::Explore)) ||
+          (work == TemporalWork::Repair && proposals &&
+           !proposals->empty(TemporalProposalKind::Repair)) ||
+          (work == TemporalWork::Improve && proposals &&
+           !proposals->empty(TemporalProposalKind::Improve)) ||
           (work == TemporalWork::Resume && !pending.empty()))
         return work;
     }
-    // With no retained parameter continuation, advance the ordinary raw
-    // domain through the same proposal/materialization entry.
     return TemporalWork::Proposal;
   }
 
@@ -662,6 +601,8 @@ private:
     std::vector<TemporalChoice> choices;
     CurrentCandidate tiled;
     std::deque<RegionAttempt> regions;
+    std::set<BoundaryMovementTransport> observedTransports;
+    std::optional<uint64_t> bestDuration;
   };
 
   static bool appendMixedMovement(RegionAttempt &attempt) {
@@ -748,139 +689,30 @@ private:
       independent.push_back(*first.getChoice());
       hasFusion |= !axis.domain.getFusions().empty();
     }
-    auto appendSeeds =
-        [&](const std::vector<TemporalChoice> &initial) -> mlir::LogicalResult {
-      if (!llvm::is_contained(proposals, initial))
-        proposals.push_back(initial);
-      auto interior = initial;
-      // Sample the geometric midpoint of each legal extent interval before
-      // enumerating adjacent integers. This proposal is constructed before
-      // any capacity result and contains no memory-footprint estimate.
-      for (auto [axis, choice] : llvm::zip(axes, interior)) {
-        auto descriptors = axis.domain.getScopeDescriptors(choice.kind);
-        for (auto [descriptor, scope] :
-             llvm::zip_equal(descriptors, choice.scopes)) {
-          for (auto [dimension, capability] :
-               llvm::enumerate(descriptor.iteratorCapabilities)) {
-            if (capability != IteratorTilingCapability::Tileable)
-              continue;
-            int64_t extent = descriptor.iterationExtents[dimension];
-            int64_t size = 1;
-            while (size < extent / size)
-              size *= 2;
-            scope.iteratorTileSizes[dimension] = std::min(size, extent);
-          }
-          auto order = buildFirstTemporalLoopOrder(
-              descriptor.iterationExtents, scope.iteratorTileSizes,
-              descriptor.precedence, &detail);
-          if (mlir::failed(order))
-            return mlir::failure();
-          scope.loopOrder = std::move(*order);
-        }
-        if (!axis.domain.contains(choice)) {
-          detail = "geometric Temporal proposal is outside its typed domain";
-          return mlir::failure();
-        }
-      }
-      auto append = [&](std::vector<TemporalChoice> choices) {
-        if (!llvm::is_contained(proposals, choices))
-          proposals.push_back(std::move(choices));
-      };
-      // Preserve reuse on other axes while sampling the interior of the
-      // largest tileable extent. Shrinking all dimensions together can turn
-      // a feasible contraction into thousands of unnecessarily small issues.
-      auto singleAxis = initial;
-      for (auto [axisIndex, choice] : llvm::enumerate(singleAxis)) {
-        auto &axis = axes[axisIndex];
-        auto descriptors = axis.domain.getScopeDescriptors(choice.kind);
-        for (auto [scopeIndex, scope] : llvm::enumerate(choice.scopes)) {
-          const auto &descriptor = descriptors[scopeIndex];
-          std::optional<size_t> largest;
-          for (auto [dimension, capability] :
-               llvm::enumerate(descriptor.iteratorCapabilities))
-            if (capability == IteratorTilingCapability::Tileable &&
-                descriptor.iterationExtents[dimension] > 1 &&
-                (!largest || descriptor.iterationExtents[dimension] >
-                                 descriptor.iterationExtents[*largest]))
-              largest = dimension;
-          if (largest)
-            scope.iteratorTileSizes[*largest] =
-                interior[axisIndex]
-                    .scopes[scopeIndex]
-                    .iteratorTileSizes[*largest];
-          auto order = buildFirstTemporalLoopOrder(
-              descriptor.iterationExtents, scope.iteratorTileSizes,
-              descriptor.precedence, &detail);
-          if (mlir::failed(order))
-            return mlir::failure();
-          scope.loopOrder = std::move(*order);
-        }
-        if (!axis.domain.contains(choice)) {
-          detail = "single-axis Temporal proposal is outside its typed domain";
-          return mlir::failure();
-        }
-      }
-      append(std::move(singleAxis));
-      auto coordinated = interior;
-      for (auto [axis, choice] : llvm::zip(axes, coordinated))
-        if (auto coupled = axis.domain.getCoupledStateProposal(choice))
-          choice = std::move(*coupled);
-      append(coordinated);
-      // A geometric seed also needs a nearby larger scale. Raw enumeration
-      // otherwise returns to extent-1 and can spend the entire budget far
-      // away from the feasible interior. This is an ordinary domain choice,
-      // independent of capacity evidence and cost acceptance.
-      auto larger = coordinated;
-      for (auto [axis, choice] : llvm::zip(axes, larger)) {
-        auto descriptors = axis.domain.getScopeDescriptors(choice.kind);
-        for (auto [descriptor, scope] :
-             llvm::zip_equal(descriptors, choice.scopes)) {
-          for (auto [dimension, capability] :
-               llvm::enumerate(descriptor.iteratorCapabilities)) {
-            if (capability != IteratorTilingCapability::Tileable)
-              continue;
-            int64_t extent = descriptor.iterationExtents[dimension];
-            int64_t &size = scope.iteratorTileSizes[dimension];
-            size = size > extent / 2 ? extent : size * 2;
-          }
-          auto order = buildFirstTemporalLoopOrder(
-              descriptor.iterationExtents, scope.iteratorTileSizes,
-              descriptor.precedence, &detail);
-          if (mlir::failed(order))
-            return mlir::failure();
-          scope.loopOrder = std::move(*order);
-        }
-        if (!axis.domain.contains(choice)) {
-          detail = "scaled Temporal proposal is outside its typed domain";
-          return mlir::failure();
-        }
-      }
-      append(std::move(larger));
-      append(std::move(interior));
-      return mlir::success();
-    };
-    if (mlir::failed(appendSeeds(joint)) ||
-        (hasFusion && mlir::failed(appendSeeds(independent))))
-      return fail(ExecutableCompilationStatus::CompilerFailure,
-                  "search-temporal-proposals", detail);
+    std::vector<const TemporalDomain *> domains;
+    for (const auto &axis : axes)
+      domains.push_back(&axis.domain);
+    proposals.emplace(std::move(domains));
+    proposals->seed(joint, explorationStratum);
+    if (hasFusion)
+      proposals->seed(independent, explorationStratum);
     return std::nullopt;
-  }
-
-  bool wasVisited(llvm::ArrayRef<TemporalChoice> choices) const {
-    return llvm::any_of(visited, [&](const auto &previous) {
-      return llvm::ArrayRef<TemporalChoice>(previous) == choices;
-    });
   }
 
   std::optional<ExecutableCompilationResult> startTemporal(TemporalWork work) {
     std::vector<TemporalChoice> choices;
     std::string detail;
-    if (work == TemporalWork::Repair) {
-      choices = std::move(repairs.front());
-      repairs.pop_front();
-    } else if (!proposals.empty()) {
-      choices = std::move(proposals.front());
-      proposals.pop_front();
+    auto kind = work == TemporalWork::Repair    ? TemporalProposalKind::Repair
+                : work == TemporalWork::Improve ? TemporalProposalKind::Improve
+                                                : TemporalProposalKind::Explore;
+    if (!proposals->empty(kind)) {
+      choices = proposals->take(kind);
+      support::addCompileCounter(
+          "search",
+          work == TemporalWork::Repair    ? "integer-repair-proposals"
+          : work == TemporalWork::Improve ? "integer-improve-proposals"
+                                          : "integer-explore-proposals",
+          1);
     } else {
       bool compilerBug = false;
       while (true) {
@@ -894,17 +726,27 @@ private:
         choices.clear();
         for (const auto &axis : axes)
           choices.push_back(*axis.current.getChoice());
-        if (!wasVisited(choices))
+        if (proposals->visitRaw(choices))
           break;
       }
     }
-    if (wasVisited(choices))
-      return fail(ExecutableCompilationStatus::CompilerFailure,
-                  "search-temporal-next",
-                  "Temporal proposal was enqueued twice");
-    visited.push_back(choices);
-    if (statistics)
-      ++statistics->temporalCandidateActualizations;
+    if (statistics) {
+      const auto number = statistics->temporalCandidateActualizations++;
+      support::addCompileCounter(
+          "search-temporal",
+          llvm::formatv("choice-{0}-structural-stratum", number).str(),
+          explorationStratum);
+      for (auto [axis, choice] : llvm::enumerate(choices))
+        for (auto [scope, selected] : llvm::enumerate(choice.scopes))
+          for (auto [dimension, size] :
+               llvm::enumerate(selected.iteratorTileSizes))
+            support::addCompileCounter(
+                "search-temporal",
+                llvm::formatv("choice-{0}-domain-{1}-scope-{2}-dim-{3}", number,
+                              axis, scope, dimension)
+                    .str(),
+                size);
+    }
     mlir::IRMapping mapping;
     auto candidate = cloneCandidate(*structural, mapping, detail);
     if (mlir::failed(candidate))
@@ -1035,10 +877,9 @@ private:
       // Full assignments from this same current-IR query have an exact
       // identity. Equivalent constrained solves consume query work only.
       if (attempt.visitedLayouts.insert(assignment.assignment).second) {
-        if (attempt.layoutQuery->hasLoopInvariantPlacement(assignment)) {
-          attempt.localPlacement = assignment;
-          placement = LayoutMaterializationPlacement::LoopInvariant;
-        }
+        // Late structured lowering can introduce additional physical copies.
+        // Decide whether a FirstUse alternative is needed after both stages.
+        placement = LayoutMaterializationPlacement::LoopInvariant;
         break;
       }
     }
@@ -1076,6 +917,17 @@ private:
                       ? ExecutableCompilationStatus::UnsupportedFailure
                       : ExecutableCompilationStatus::CompilerFailure,
                   "search-structured-to-tile", compute.detail);
+    auto physicalPlacement = optimizePhysicalMovementPlacement(
+        candidate->module->getOperation(), candidate->relations, placement);
+    if (mlir::failed(physicalPlacement))
+      return fail(ExecutableCompilationStatus::CompilerFailure,
+                  "search-physical-movement-placement",
+                  "physical movement placement produced invalid current IR");
+    if (placement == LayoutMaterializationPlacement::LoopInvariant &&
+        (*physicalPlacement || layout.statistics.loopInvariantMaterializations))
+      attempt.localPlacement = assignment;
+    support::addCompileCounter("movement", "invariant-physical-copies",
+                               *physicalPlacement);
     auto recursive = analyzeRecursiveDoublingAvailability(*candidate->module,
                                                           candidate->relations);
     if (recursive.kind == RecursiveDoublingAvailabilityKind::BrokenContract)
@@ -1176,11 +1028,13 @@ private:
     return {std::move(result), 1,
             exhausted                      ? CandidateContinuation::Exhausted
             : next == TemporalWork::Repair ? CandidateContinuation::Repair
-            : next == TemporalWork::Resume && hasAcceptedCandidate
+            : next == TemporalWork::Improve ||
+                    (next == TemporalWork::Resume && hasAcceptedCandidate)
                 ? CandidateContinuation::Improve
                 : CandidateContinuation::Explore,
-            repairs.empty() ? CandidateRetention::Replaceable
-                            : CandidateRetention::PendingCapacityRepair};
+            !proposals || proposals->empty(TemporalProposalKind::Repair)
+                ? CandidateRetention::Replaceable
+                : CandidateRetention::PendingCapacityRepair};
   }
 
   RegionState state;
@@ -1194,12 +1048,12 @@ private:
   const SearchCurrentIROptions &options;
   SearchCurrentIRStatistics *statistics;
   ExecutableLoweringStatistics *executableStatistics;
+  const std::optional<analysis::SearchCostCohort> &costCohort;
   std::optional<CurrentCandidate> structural;
   std::vector<TemporalAxis> axes;
-  std::vector<std::vector<TemporalChoice>> visited;
-  std::deque<std::vector<TemporalChoice>> proposals;
-  std::deque<std::vector<TemporalChoice>> repairs;
+  std::optional<TemporalProposals> proposals;
   std::deque<TemporalAttempt> pending;
+  const size_t explorationStratum;
   unsigned temporalPhase = 0;
   bool exhausted = false;
   bool hasAcceptedCandidate = false;
@@ -1214,17 +1068,20 @@ public:
       const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
       ProgramDataHandoff &programData, const SearchCurrentIROptions &options,
       SearchCurrentIRStatistics *statistics,
-      ExecutableLoweringStatistics *executableStatistics)
+      ExecutableLoweringStatistics *executableStatistics,
+      const std::optional<analysis::SearchCostCohort> &costCohort)
       : tensorProgram(tensorProgram), analysis(analysis), planning(planning),
         program(program), executionConfig(executionConfig),
         diagnostics(diagnostics), programData(programData), options(options),
-        statistics(statistics), executableStatistics(executableStatistics) {}
+        statistics(statistics), executableStatistics(executableStatistics),
+        costCohort(costCohort) {}
 
   std::unique_ptr<StructuralCandidateSession>
   start(const RegionState &state) override {
     return std::make_unique<CurrentIRCandidateSession>(
         state, tensorProgram, analysis, planning, program, executionConfig,
-        diagnostics, programData, options, statistics, executableStatistics);
+        diagnostics, programData, options, statistics, executableStatistics,
+        costCohort, nextExplorationStratum++);
   }
 
 private:
@@ -1238,6 +1095,8 @@ private:
   const SearchCurrentIROptions &options;
   SearchCurrentIRStatistics *statistics;
   ExecutableLoweringStatistics *executableStatistics;
+  const std::optional<analysis::SearchCostCohort> &costCohort;
+  size_t nextExplorationStratum = 0;
 };
 
 } // namespace
@@ -1304,9 +1163,10 @@ ExecutableCompilationResult compileSearchCurrentIR(
     return fail(ExecutableCompilationStatus::CompilerFailure,
                 "search-cost-cohort", detail);
   std::optional<analysis::SearchCostCohort> currentCohort(std::move(*cohort));
-  CurrentIRStructuralEvaluator evaluator(
-      tensorProgram, **structured, planning, program, executionConfig,
-      diagnostics, programData, options, statistics, executableStatistics);
+  CurrentIRStructuralEvaluator evaluator(tensorProgram, **structured, planning,
+                                         program, executionConfig, diagnostics,
+                                         programData, options, statistics,
+                                         executableStatistics, currentCohort);
 
   UnifiedSearchOptions traversal;
   traversal.planningCredits = options.planningCredits;

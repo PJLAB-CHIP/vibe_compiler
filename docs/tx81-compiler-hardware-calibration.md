@@ -93,8 +93,10 @@ physical timing未校准就把可精确计数的工作量降成Unknown：
   分别解释调用/ordering和逐worker polling；从同一Tile的实际计数求和后再取max-Tile。单participant约0.18 us，
   2/3 participant合并join约0.227/0.274 us；不能只按participant数线性计每个0.2 us。
   隐式NCC drain保留actual participant计数，只有显式join增加本次测得的调用固定项；不把pending engine work写进该固定项。
-- maximum modeled route每hop的route-fill prior `1 ns`以及instruction/DTE event control `1 ns`仍为
-  compiler policy prior；本次没有从软件wait混合区间辨识这些独立参数。
+- maximum modeled route每hop的route-fill prior `1 ns`和DTE event control `1 ns`仍为compiler policy prior。
+  ordinary instruction的runtime提交先验更新为`1 us`，包含命令构造/dispatch的粗估，不是单个硬件issue cycle。
+  三条模型的Trace短调用包络都在数千CPU cycles量级，说明旧1 ns没有反映软件路径；但包络含observer及可能等待，
+  不能将其直接当作纯issue校准。因此1 us仍标为未校准共享prior，本轮没有新增专项板测来分离该参数。
   sender生命周期已包含send wait，其分段观察不能再次当作独立完整wait duration叠加。
   历史SPM0/RAM_ACC的1024-bit接口×1 GHz所得128 GB/s并非SPM1 aggregate bandwidth，cost已删除该term。
 

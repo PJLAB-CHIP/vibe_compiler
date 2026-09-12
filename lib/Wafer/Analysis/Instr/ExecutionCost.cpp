@@ -169,6 +169,13 @@ static void collectResourceCost(mlir::Operation *op,
   if (auto gatherScatter = mlir::dyn_cast<InstrGatherScatterOp>(op)) {
     addBytes(cost.spmMovementBytes, gatherScatter.getByteCount());
     addBytes(cost.gatherScatterBytes, gatherScatter.getByteCount());
+    addBytes(cost.gatherScatterInnerIterations,
+             gatherScatter.getInnerBytes() > 0 &&
+                     gatherScatter.getByteCount() %
+                             gatherScatter.getInnerBytes() ==
+                         0
+                 ? gatherScatter.getByteCount() / gatherScatter.getInnerBytes()
+                 : -1);
     return;
   }
   if (auto dataMove = mlir::dyn_cast<InstrTDMADataMoveOp>(op)) {
@@ -731,6 +738,7 @@ static void forEachExactExecutionMetric(InstructionProgramCost &cost,
   callback(cost.ddrWriteBytes);
   callback(cost.spmMovementBytes);
   callback(cost.gatherScatterBytes);
+  callback(cost.gatherScatterInnerIterations);
   callback(cost.noc.aggregateTransmitBytes);
   callback(cost.noc.aggregateReceiveBytes);
   callback(cost.noc.waitedEventCount);
@@ -762,6 +770,8 @@ static void zipExactExecutionMetrics(InstructionProgramCost &result,
   callback(result.spmMovementBytes, lhs.spmMovementBytes, rhs.spmMovementBytes);
   callback(result.gatherScatterBytes, lhs.gatherScatterBytes,
            rhs.gatherScatterBytes);
+  callback(result.gatherScatterInnerIterations,
+           lhs.gatherScatterInnerIterations, rhs.gatherScatterInnerIterations);
   callback(result.noc.aggregateTransmitBytes, lhs.noc.aggregateTransmitBytes,
            rhs.noc.aggregateTransmitBytes);
   callback(result.noc.aggregateReceiveBytes, lhs.noc.aggregateReceiveBytes,
@@ -1038,6 +1048,7 @@ void collectExecutionCost(
     mark(cost.ddrWriteBytes);
     mark(cost.spmMovementBytes);
     mark(cost.gatherScatterBytes);
+    mark(cost.gatherScatterInnerIterations);
     mark(cost.noc.staticIssueSiteCount);
     mark(cost.noc.aggregateTransmitBytes);
     mark(cost.noc.aggregateReceiveBytes);

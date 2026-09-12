@@ -17,4 +17,9 @@ def ResolveCurrentLayoutsAndBufferizePass
                            "wafer::WaferDialect"];
 }
 
+def HoistInvariantPhysicalMovementPass
+    : Pass<"wafer-hoist-invariant-physical-movement", "mlir::func::FuncOp"> {
+  let summary = "Reuse private physical copies with invariant source contents";
+}
+
 #endif // WAFER_TRANSFORMS_TILE_PASSES_TD

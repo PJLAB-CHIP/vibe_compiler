@@ -1110,7 +1110,7 @@ TEST(ExecutableCompilationPolicyTest,
     // The singleton has 32 Regions. The coherent endpoint remains reachable
     // with only two simultaneously retained branches and removes all sixteen
     // producer/consumer boundaries, independent of total visited structures.
-    EXPECT_EQ(result.physicalIRInventory->tileRegions, 16u);
+    EXPECT_EQ(result.physicalIRInventory->tileRegions, 16u) << diagnosticText;
     ASSERT_EQ(result.physicalIRInventory->tiles.size(), 16u);
     for (const auto &tile : result.physicalIRInventory->tiles)
       EXPECT_EQ(tile.regions, 1u);
@@ -1423,6 +1423,25 @@ TEST(ExecutableCompilationPolicyTest,
     unsigned publications = 0, acquisitions = 0;
     wafer::SyncDDRPublishOp first;
     for (auto module : modules) {
+      auto entry = *module.getOps<mlir::func::FuncOp>().begin();
+      ASSERT_EQ(entry.getNumArguments(), 2 * resources);
+      for (unsigned id = 0; id < resources; ++id) {
+        auto data = entry.getArgAttrOfType<wafer::DDRBindingAttr>(
+            id, wafer::kWaferDDRBindingAttrName);
+        auto ready = entry.getArgAttrOfType<wafer::DDRBindingAttr>(
+            resources + id, wafer::kWaferDDRBindingAttrName);
+        ASSERT_TRUE(data && ready);
+        EXPECT_EQ(data.getResourceId(), id);
+        EXPECT_EQ(ready.getResourceId(), resources + id);
+        EXPECT_EQ(ready.getAccess(), data.getAccess());
+        EXPECT_EQ(entry.getArgument(resources + id).getType(),
+                  mlir::MemRefType::get(
+                      {64}, mlir::IntegerType::get(parsed.context.get(), 8),
+                      mlir::MemRefLayoutAttrInterface{},
+                      wafer::MemoryAttr::get(parsed.context.get(),
+                                             wafer::MemorySpace::DDR,
+                                             wafer::MemLayout::Tensor)));
+      }
       module.walk([&](wafer::SyncDDRPublishOp op) {
         ++publications;
         if (!first)

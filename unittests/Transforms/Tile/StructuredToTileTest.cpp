@@ -2065,6 +2065,136 @@ TEST_F(StructuredToTileTest, CrossTileRelationBecomesOneMatchedPeerTransfer) {
 }
 
 TEST_F(StructuredToTileTest,
+       PhysicalCopyPlacementPreservesAliasAndActualMemoryContracts) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (unsigned variant = 0; variant < 9; ++variant) {
+      SCOPED_TRACE(::testing::Message() << extent << "/" << variant);
+      std::string sourceType = "memref<2x1x" + std::to_string(extent) +
+                               "x64xf16, #wafer.memory<spm, tensor>>";
+      std::string resultType = "memref<2x" + std::to_string(extent) +
+                               "x64xf16, #wafer.memory<spm, tensor>>";
+      std::string text;
+      llvm::raw_string_ostream ir(text);
+      ir << "module {\n";
+      for (unsigned tile = 0; tile < 4; ++tile) {
+        ir << "wafer.tile.module card_id = 0 tile_id = " << tile
+           << " { func.func private @unknown_effect()\n"
+              "func.func @entry() { wafer.tile.region() -> () {\n"
+           << "%source = memref.alloc() : " << sourceType << "\n"
+           << "%destination = memref.alloc() : " << resultType << "\n"
+           << "%other = memref.alloc() : " << sourceType << "\n"
+           << "%another = memref.alloc() : " << sourceType << "\n"
+           << "%observable = memref.alloc() : memref<1x1024x1024xf16, "
+              "#wafer.memory<ddr, tensor>>\n"
+           << "%zero = arith.constant 0 : index\n"
+           << "%step = arith.constant 128 : index\n"
+           << "%end = arith.constant " << (variant == 3 ? 0 : extent)
+           << " : index\n%value = arith.constant 0.0 : f16\n";
+        if (variant == 7)
+          ir << "%escaped = ";
+        ir << "scf.for %iv = %zero to %end step %step";
+        if (variant == 7)
+          ir << " iter_args(%carried = %destination) -> (" << resultType << ")";
+        ir << " {\n";
+        if (variant == 6)
+          ir << "%temporary = memref.alloc() : memref<1x1024x1024xf16, "
+                "#wafer.memory<spm, tensor>>\n"
+                "wafer.tile.fill %temporary, %value : "
+                "memref<1x1024x1024xf16, #wafer.memory<spm, tensor>>, f16\n"
+                "wafer.tile.store %temporary, %observable : "
+                "memref<1x1024x1024xf16, #wafer.memory<spm, tensor>> -> "
+                "memref<1x1024x1024xf16, #wafer.memory<ddr, tensor>>\n"
+             << "wafer.tile.copy_into %source into %other : " << sourceType
+             << " into " << sourceType << "\n";
+        ir << "%copy = wafer.tile.reshape_copy %source : " << sourceType
+           << " -> " << resultType << "\n";
+        if (variant == 1)
+          ir << "%alias = memref.cast %source : " << sourceType << " to "
+             << sourceType
+             << "\nmemref.store %value, %alias[%zero, %zero, "
+                "%zero, %zero] : "
+             << sourceType << "\n";
+        if (variant == 2)
+          ir << "wafer.tile.fill %copy, %value : " << resultType << ", f16\n";
+        if (variant == 8)
+          ir << "func.call @unknown_effect() : () -> ()\n";
+        if (variant == 4 || variant == 5)
+          ir << "%condition = arith.cmpi eq, %iv, %zero : index\n"
+             << "%selected = arith.select %condition, %other, %"
+             << (variant == 4 ? "another" : "source") << " : " << sourceType
+             << "\nwafer.tile.fill %selected, %value : " << sourceType
+             << ", f16\n";
+        ir << "wafer.tile.copy_into %copy into %destination : " << resultType
+           << " into " << resultType << "\n";
+        if (variant == 7)
+          ir << "scf.yield %copy : " << resultType << "\n";
+        ir << "}\nwafer.tile.yield\n}\nreturn\n}}\n";
+      }
+      ir << "}\n";
+      for (auto placement : {LayoutMaterializationPlacement::FirstUse,
+                             LayoutMaterializationPlacement::LoopInvariant}) {
+        auto module = parse(text);
+        ASSERT_TRUE(module) << text;
+        StructuredMaterializationRelations relations;
+        const bool hoisted =
+            (variant == 0 || variant == 4 || variant == 6) &&
+            placement == LayoutMaterializationPlacement::LoopInvariant;
+        auto moved =
+            optimizePhysicalMovementPlacement(*module, relations, placement);
+        ASSERT_TRUE(mlir::succeeded(moved));
+        EXPECT_EQ(*moved, hoisted ? 4u : 0u);
+        module->walk([&](MoveReshapeOp copy) {
+          EXPECT_EQ(bool(copy->getParentOfType<mlir::scf::ForOp>()), !hoisted);
+        });
+        if (variant != 0 && variant != 4 && variant != 6)
+          continue;
+        std::string failure;
+        auto standalone = createStandaloneTileModules(std::move(module),
+                                                      &failure, &relations);
+        ASSERT_TRUE(mlir::succeeded(standalone)) << failure;
+        ASSERT_EQ(standalone->size(), 4u);
+        for (auto &tile : *standalone) {
+          TileRegionToInstrLoweringSession session(*tile.module->getContext());
+          llvm::SmallVector<TileRegionOp> regions;
+          tile.module->walk(
+              [&](TileRegionOp region) { regions.push_back(region); });
+          for (auto region : regions)
+            ASSERT_TRUE(
+                mlir::succeeded(convertTileRegionToInstr(region, session)));
+          unsigned outside = 0, inside = 0;
+          tile.module->walk([&](InstrGatherScatterOp copy) {
+            if (copy->getParentOfType<mlir::scf::ForOp>())
+              ++inside;
+            else
+              ++outside;
+          });
+          EXPECT_EQ(outside, hoisted ? 1u : 0u);
+          EXPECT_EQ(inside, (variant == 6 ? 3u : 2u) - outside);
+          const uint64_t waves = (extent + 127) / 128;
+          EXPECT_EQ(outside + inside * waves, (variant == 6 ? 3u : 2u) * waves -
+                                                  (hoisted ? waves - 1 : 0));
+          ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+          TileMemoryPlanningFailure memoryFailure;
+          auto planned = planTileMemory(std::move(tile.module), &memoryFailure);
+          if (variant == 6 && hoisted) {
+            std::string actual;
+            if (mlir::succeeded(planned)) {
+              llvm::raw_string_ostream stream(actual);
+              (*planned)->print(stream);
+            }
+            ASSERT_TRUE(mlir::failed(planned)) << actual;
+            EXPECT_TRUE(memoryFailure.spmCapacityOverflow);
+          } else {
+            ASSERT_TRUE(mlir::succeeded(planned));
+            EXPECT_TRUE(mlir::succeeded(mlir::verify(**planned)));
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST_F(StructuredToTileTest,
        SamePayloadFanoutBecomesTopologyAwareActualRelayTree) {
   constexpr int64_t destinations[] = {1, 2, 3, 4, 5};
   for (int64_t extent : {1024, 1025, 1031}) {

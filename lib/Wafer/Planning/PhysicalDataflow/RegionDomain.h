@@ -104,11 +104,18 @@ private:
     std::optional<uint64_t> exactLogicalBytes;
   };
 
+  struct RequiredDependency {
+    analysis::RootRegionWorkId producer;
+    analysis::RootRegionWorkId consumer;
+  };
+
   RegionDomain(std::vector<RegionGroupPlan> baseGroups,
                llvm::SmallVector<Component, 16> components,
-               std::vector<LocalFragment> localFragments)
+               std::vector<LocalFragment> localFragments,
+               std::vector<RequiredDependency> reductionDependencies)
       : baseGroups(std::move(baseGroups)), components(std::move(components)),
-        localFragments(std::move(localFragments)) {}
+        localFragments(std::move(localFragments)),
+        reductionDependencies(std::move(reductionDependencies)) {}
 
   llvm::SmallVector<llvm::SmallVector<uint32_t, 8>, 8> getFirstLabels() const;
   bool advanceLabels(
@@ -130,6 +137,8 @@ private:
   std::vector<RegionGroupPlan> baseGroups;
   llvm::SmallVector<Component, 16> components;
   std::vector<LocalFragment> localFragments;
+  // Query-local semantic partial -> merge edges, independent of use choices.
+  std::vector<RequiredDependency> reductionDependencies;
 };
 
 } // namespace wafer::compiler::detail

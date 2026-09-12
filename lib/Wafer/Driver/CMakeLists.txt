@@ -14,6 +14,7 @@ add_mlir_library(WaferCompiler
   PhysicalDataflow/BaselineCurrentIR.cpp
   PhysicalDataflow/SearchCurrentIR.cpp
   PhysicalDataflow/StructuredProgramAnalysis.cpp
+  PhysicalDataflow/TemporalProposals.cpp
   PhysicalDataflow/UnifiedSearch.cpp
   ProgramDirectoryTransaction.cpp
   ProgramResourceVerification.cpp

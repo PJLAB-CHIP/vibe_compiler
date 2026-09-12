@@ -37,7 +37,8 @@ def Wafer_TileRegionOp : Wafer_Op<"tile.region", [
   let hasVerifier = 1;
   let hasRegionVerifier = 1;
   let assemblyFormat = [{
-    `(` $inputs `:` type($inputs) `)` `->` `(` type($results) `)`
+    `(` ($inputs^ `:` type($inputs))? `)` `->`
+    custom<ParenthesizedTypeList>(type($results))
     $body attr-dict
   }];
 }

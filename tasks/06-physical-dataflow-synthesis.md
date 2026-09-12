@@ -729,6 +729,17 @@ SSA/effect witness，不能按copy数量一律删除。
 
 ### 6.2 Movement
 
+StructuredToTile之后，物理copy的位置继续消费同一`LayoutMaterializationPlacement` choice。
+`FirstUse`保留原位置；`LoopInvariant`只将实际materializing movement外提到可证明的static正trip-count循环之前。
+输入是已确定allocation/view语义的Tile memref IR，输出仍为同一SSA及owner，直接下游为boundary movement、Instr、completion与SPM。
+新建结果的movement通过标准value-associated Allocate/Write说明独占存储；Wafer custom resource effects说明资源占用，
+地址clobber由value-associated memory effects决定，与Instr completion的既有区分一致。
+外提要求全部operand在循环外、源的全部可能alias无Write/Free、结果及其views只在循环内读取；未知effect、逃逸、
+loop-carried源、zero-trip及条件执行均保持原位置。每次mutation后重建只读alias查询，不保存跨IR的证明。
+Search为确实改变位置的assignment保留FirstUse备选，两者各自进入唯一actual SPM规划；none使用FirstUse。
+测试覆盖rank3/4、1024/1025/1031、多次循环、view clobber、只读复用、逃逸及zero-trip，检查动态copy次数、owner与直接Instr消费。
+该变换不改变算术、dtype、访问映射或descriptor语义，也不以估算footprint决定外提合法性。
+
 Movement choice以current producer value、consumer operand、exact demanded domain和physical layout为输入，选择local view/copy、
 DDR store/load、Direct DTE、software relay或已定义collective。选择由唯一movement transformation立即创建actual typed ops、
 staging buffer、token和effect。
@@ -827,6 +838,9 @@ obligation时返回typed unknown/unsupported；不在本stage
 插join、分配offset、spill或退回另一structure。每个alternative作用于自己的candidate owner，成功后旧analysis失效并fresh重算。
 
 ### 6.4 TileRegion-to-Instr
+
+物理`TileRegion`允许空输入及空结果；canonical文本分别为`()`及`-> ()`，必须可打印、解析并再次验证。
+该格式同样用于独立Instr module的checkpoint，不建立额外reader。
 
 Conversion按actual typed Tile op使用DialectConversion/RewritePattern生成canonical Instr。它不重新选择layout、movement、buffer、
 execution structure、worker或completion，也不从上游plan恢复这些事实。输出Instr在每个Tile上显式保留actual loop/slot relation、
@@ -964,6 +978,11 @@ prefix。每个Tile component继续直接使用current `RootRegionWork`和`allow
 totality和contracted dependency DAG只由`RegionDomain`现有合法性检查。不得增加持久Graph/Hypergraph、MergeForest、PartitionPlan或其它
 RegionPlan平行表示。
 
+商图的边必须包含current `RootRegionWork.contributions`中每个partial shard到其typed merge owner的必需依赖，
+以及selected external/replica输入边。Contribution不是普通operand binding，不能因其不在local-use choice中而漏掉；
+缺少shard或merge owner属于contract failure。该检查只判断显式Region partition是否可调度，不估算movement、同步或SPM。
+形成环的partition不进入domain；下游materializer仍独立验证实际生成边界，不能把漏边导致的compiler error改成可忽略失败。
+
 Builder先用maximum-gain feasible matching生成不同Region数量的seed，再在固定Region数量下执行bounded FM-style refinement。一次move只把一个
 boundary root移到相邻group，且移动前后source/destination connected、binding totality、cannot-link和quotient acyclicity全部成立。每个root在一轮
 refinement中最多移动一次；可以经过结构metric暂时不改善的move，但只发布本轮best-prefix对应的完整RegionPlan。Move priority依次比较
@@ -997,9 +1016,17 @@ Spatial seed之后交错访问axis tuple的规范placement witness与完整raw p
 轴投影复用同一domain successor和closure，不改变raw集合。Region/layout/movement各保留实际checkpoint并逐leaf轮转，
 某个完整布局的所有后继不会阻止另一个Region closure获得首次尝试。
 尚无可行leaf的分支同样必须获得续跑：新结构与已保留的Explore分支交错，不能每次容量反馈无法定位就只启动新结构。
-Joint/Independent各自保留初始参数和合法extent区间的几何中点参数（向上取2的幂），作为普通数值入口；
+Joint/Independent各自保留全extent和合法整数区间向下逐层中点，作为独立远处探索入口；
+这些提案不冒充近邻，也不以sqrt统一压缩所有维度。
+不同结构session按确定性的启动顺序轮转数值尺度和单轴/协调/多轴组合。每个结构的Joint入口先保留完整extent，
+保证融合与未融合结构不会因只试到碎tile而失去可比较的起点；Independent入口先试其分配的全tuple数值样本，
+完整extent与只修改FullExtentOnly所在scope的提案仍在后续队列内。两类入口交错，避免尚未修改的独立scope始终保持完整尺寸。
+当前scope的FullExtentOnly非单位尺寸也可为其它维度提供远处提案，再通过现有多结果映射协调消费者；
+只使用已存在的kernel extent，不按模型名选择尺寸，不以该尺寸推断SPM容量或限制整数近邻。启动顺序只排序显式choice，不恢复任何IR语义；
+它与trials无关，同一更大预算继续同一前缀。Joint/Independent种子交错，所有尺度与组合均保留。
+调用协调查询前先补齐新尺寸对应的loop order并验证typed choice，避免查询拒绝而静默漏掉多结果状态协调。
 多结果producer和唯一consumer另从actual result/input projected-permutation maps提出协调参数：共同迭代维度使用一致tile，
-仅部分结果携带的广播维度保留完整长度，使已有共同输出遍历可被选择。原参数仍保留；相邻几何尺度只作普通候选，
+仅部分结果携带的广播维度保留完整长度，使已有共同输出遍历可被选择。原参数仍保留；区间样本只作普通候选，
 不预测SPM合法性、不修改数值顺序。此query输出typed TemporalChoice，直接交给唯一Temporal物化和fresh下游检查。
 它们在任何actual容量结果之前生成，不读取SPM大小、footprint或预测lifetime，也不用于合法性剪枝。
 每个参数都实际物化并经过唯一SPM门禁，原raw successor继续保留。
@@ -1031,11 +1058,20 @@ replica输入与mandatory输入分别验证all-and-only，多个replica读取同
 组合邻域覆盖Spatial与producer/use/通信、Region融合与Temporal/驻留、layout与转换位置/共享、tile与双缓冲流水。
 Region proposal的全合并标签若因不连通等结构约束不可构造，使用同一合法合并序列的最终分组作为融合入口；
 不能只保留该序列的中间样本而丢失最终合法融合方案。该入口与baseline、replica先于合并数量采样，raw domain不变。
-Temporal普通参数入口同时保留全extent、每scope仅缩小最大可切轴、全可切轴几何中点及协调状态的尺度邻域。
+Temporal普通探索保留全extent、每scope仅改变最大可切轴、全可切轴区间中点及协调状态的组合。
 只缩小一轴的入口保留其它轴的复用与指令粒度，避免所有维度一起缩小产生大量小指令；按extent和轴序确定顺序，
 不使用SPM估算或算子/模型名。所有入口仍经typed domain、actual transformation、verifier和同一actual leaf。
 同一参数入口先访问已有的基础DDR/Peer transport备选，再访问其共享输入/流水组合，不能将组合插到尚未访问的另一transport之前。
-结构session内部同样轮转参数proposal、actual容量修正与已物化前缀的后续layout/movement，向外层报告下一项实际工作类别。
+结构session内部轮转独立参数探索、actual容量修正、可执行参数的整数改进和已物化前缀的后续layout/movement，
+向外层报告下一项实际工作类别。每个数值tuple先让基础Peer/DDR各获得一次实际尝试，再扩展accepted数值近邻；
+失败类型仍保留，标量反馈只来自其中已接受的结果，不偏向某种transport。`TemporalProposals`只保存未修改结构域的typed choice、数值提案及已观测标量，
+不保存buffer、SPM或completion事实；accepted executable仍交给原controller持有。
+可执行参数先生成单scope单维的±1，当前indexing map能明确对应Cx channel轴时补target block边界及两侧；
+布局几何只排序，不能选择该布局或排除非对齐点。估时改善后距离按1、2、4扩展，较远点变差时补未证明间隙。
+组合±1独立于单轴结果进入Explore；持平/变差不关闭原始domain。实际capacity反馈只允许证据关联scope内的修正，
+初次距离1，连续实际失败才扩大；不同leaf后来提供的新owner证据仍可生成修正。无法区分多scope的Region不补猜测归因。
+已排队和已访问的完整typed tuple统一去重，包含traversal kind及loop order；raw游标保留其它整数与顺序。
+实际legality、trial计费和winner ownership仍只有原生产路径。
 不能因旧参数仍有capacity repair就阻止已可行参数继续比较，也不能先耗尽全部参数seed才恢复已有前缀。
 上游choice改变时从存活的实际祖先checkpoint产生新candidate并重建下游analysis。各rewrite分别verify，完整组合
 随后经completion、唯一SPM规划和target gate；单项不改善不能直接排除组合。流水估时消费actual Instr依赖及worker，
@@ -1079,16 +1115,38 @@ movement、completion和memory/target数据。推算结果不进入legality、SP
 加上DTE endpoint payload、首条/后续sender生命周期及instruction/NCC控制，先逐Tile求和再取最大。
 整卡共享DDR按总read+write bytes/rate计一次；NoC link与endpoint承载同一payload，
 只补`max(0, peak-link-time - maximum-endpoint-time)`，另计hop估计。
-只有aggregate或无法解释当前执行结构时，采用Tile内串行服务、Tile间并行的显式近似。生产比较还可传入仍存活的accepted
+仅有aggregate时采用Tile内串行服务、Tile间并行的显式近似；有current Instr时未知只退到最近可界定scope。生产比较还可传入仍存活的accepted
 Instr modules：CostModel只读actual worker/family、block顺序、SSA/view/slot、typed effect与NCC participant，按资源服务时间
 和根级读写依赖估计最早完成时间。同一engine保持顺序；不同engine只有无依赖且未被实际completion隔开时才估算重叠。
 根级范围合并会高估依赖，不改变IR。两槽流水直接解释current select/loop-carried buffer；固定循环在携带buffer两轮复现且
 没有变化的index carry时，取前五轮，以最后两轮服务增量外推其余完整两轮，并单独解释奇数余轮。其它循环在统一work上限内
 继续解释，超限采用有限粗估；不能只平移时钟却丢失后续操作读取的index结果。这是有界性能近似，不是周期模拟、hardware保证或hard pruning bound。
-估计器有固定分析工作上限；动态控制、未支持的完成域/alias或超限时回到上述有限串行估计，不给出不可比。
+估计器有固定分析工作上限；已知条件解释实际分支，动态控制、未支持的完成域/alias或超限使用局部有限串行估计，不给出不可比。
 整卡DDR总服务仍为资源下限，与估计的最长Tile路径取最大，不能与已经包含的DDR服务重复求和。所有公式与近似仅在CostModel；
 controller只传递current IR并比较返回标量。IR修改后旧估计失效，模型不保存跨stage的buffer、schedule或completion事实。
 NE与CT仍各用自己的吞吐率，instruction数量只计控制开销。Storage仅在时间相等时按固定tuple打破平局。
+
+搬运几何扩展消费actual GS的`byte_count`与`inner_bytes`，按执行次数累计
+`gatherScatterInnerIterations = sum(byte_count / inner_bytes)`。两端stride与iterations已由Instr verifier
+验证；该统计是描述符内层遍历，不是软件issue、硬件事务或周期。连续大inner与小inner的strided/broadcast
+使用同一有限先验：GS服务为`max(bytes / SPM_rate, inner_iterations * iteration_prior)`，其它SPM流量单独计，
+不把GS bytes再加一次。初始iteration prior为1 ns，只是未校准的共享估计；不从某模型的整段TDMA时间拟合系数。
+逐指令依赖估计使用实际descriptor服务，汇总路径只保留同类work的近似；先验属于同一cohort identity。
+指令提交只推进control issue时间，不能同时以同一issue项再次增加异步worker服务。
+ordinary instruction的共享runtime提交先验取1 us，包含命令构造/dispatch的粗估；旧1 ns把软件提交近似成一个硬件cycle，
+明显缺少控制路径成本。该值仍未校准，不能把含observer/可能等待的Trace调用包络直接拟合为纯提交耗时。
+三个异类模型的短调用包络均在数千CPU cycles量级，只支持修正数量级的动机，不为1 us签发硬件时延合同。
+覆盖相同bytes、不同inner/stride/broadcast，rank3 1024/1025/1031及32/33次循环，检查动态统计、排序、
+整除/tail、相同work不同命令数及只计一次issue；输出仍仅由现有CostModel消费者排序，不改变生成与合法集合。
+
+完成依赖估计在一次current-IR只读调用内传播时间：DDR通过entry的typed binding匹配publication/acquisition，
+静态单次Direct DTE通过peer/message匹配send/recv，wait消费本次动态SSA token的完成时间。
+不同Tile按物理id确定性遍历，重复传播直到时间不再变化或到达32轮工作上限；缓存仅保存当前不变Instr的服务估计。
+这不是同步验证：输入须先通过实际completion/transport gate，估计不增删任何join/wait。
+重复DTE与不能解析的控制/alias在最近operation/loop scope使用有限串行服务，标记局部近似；其余scope继续保持已有依赖。
+跨Tile传播未收敛只影响估计质量，并使用有限资源服务兜底，不能据此拒绝合法候选或返回不可比。
+测试补DDR生产者/消费者的访问顺序置换、DTE token等待与同work独立工作重叠、混合完成域及未知scope前后的已知重叠，
+检查只读IR、有限值、无payload重复计费、确定性及饱和；无匹配peer或格式先验不足也不能得到零服务。
 
 DTE无send时startup为0，有n条时为`first + (n-1) × steady`；使用已有首条13us、后续1.5us先验。
 NCC使用已有每call 0.14us和每participant 0.045us，先同Tile组合再取最大。
@@ -1181,7 +1239,7 @@ Current迁移必须遵守：
 ### 10.2 Current-IR 证据
 
 - post-attention ordinary logical normalization只在policy分叉前运行一次；graph attention在该pass中保持opaque，candidate attention转换及
-  后续stage不再调用e-graph；e-graph budget exhaustion保持对应current component不变且不进入candidate key或legality；
+  后续stage不再调用e-graph；搜索扩展budget结束仍按05号合同提取已证明等价式，关系/提取证据不足才保持原component；budget状态不进入candidate key或legality；
 - structural materialization对每个FA owner或FD K2 contribution创建all-and-only一个三结果online-attention；selected merge Tile由parent
   TileModule证明，参与 state 由 SSA 证明，不存在 empty shell、规划句柄到 operation 的映射或 `merge ID -> TileId`；
 - 第13项只从live current operations建立temporal domain；online-attention的parallel轴由`TilingInterface`处理、K2由
@@ -1203,7 +1261,7 @@ Current迁移必须遵守：
 启用compile timing时只从current choice和actual IR输出有界汇总，不参与candidate selection或legality：
 
 - global logical normalization的component、input op、relation query、e-node/e-class、match、iteration、extraction work、wall、RSS及
-  reshape/transpose/broadcast/concat消除数；budget exhaustion单独计数且输出graph保持原样；
+  reshape/transpose/broadcast/concat消除数；budget exhaustion与是否提交有效改写分别计数；
 - physical Tile数、TileRegion数和structured execution instance总数；
 - 每TileRegion的structured execution数的minimum/average/maximum和singleton region数；
 - 每TileRegion的actual nested operation数的minimum/average/maximum；

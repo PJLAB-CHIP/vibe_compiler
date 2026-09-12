@@ -41,7 +41,7 @@ Pipeline position:
 - Done criteria:
   official conversion后无StableHLO/SDY residual；attention custom/generic form、verifier、standard interfaces与coupled-state
   query闭合；graph matcher、FA/FD分类、算法reference、planning description、online K2 stateful tiling和late Linalg decomposition均有正负例；
-  bounded e-graph对支持的ordinary pure component只产生verified canonical Tensor/Linalg IR，预算耗尽保持原verified component且不改变
+  bounded e-graph对支持的ordinary pure component只产生verified canonical Tensor/Linalg IR，搜索预算结束仍提取已证明的等价式，未得到完整有效提取时保持原component且不改变
   legality；on/off以exact relation/scalar-region proof保持program语义和downstream representability，不要求结构choice集合逐项相同；
   `none`与`search`消费同一normalized TensorProgram；selected prefill/decode分别沿06--15主线形成package/no-card；每个candidate只执行一次
   `attention -> online_attention -> tiled online_attention -> Linalg`转换链。
@@ -610,7 +610,7 @@ Pipeline position:
 - Completion criteria:
   C++ importer只导入current原始节点；至少一个真实phase-order case由两条以上egg rules连续创建中间e-node后闭合，不能由
   `build...Alternatives`或candidate recipe代签。支持的每条rewrite由exact relation/type/iterator proof签发；budgeted exploration确定
-  且有界，超预算保持输入component不变；multi-root extraction不复制compute/producer occurrence、不破坏fanout/DPS/effect；输出通过verifier
+  且有界，搜索预算结束不丢弃已证明的等价式；multi-root extraction不复制compute/producer occurrence、不破坏fanout/DPS/effect；输出通过verifier
   并由现有StructuredDAG和exact-demand直接消费；真实规模on/off矩阵记录work、wall、RSS、IR变化和下游stage reachability。
 ```
 
@@ -848,8 +848,14 @@ ABI import/export records and bytes
 ```
 
 Request budget由调用方通过typed pass options提供；它只限制本次relation query的确定性工作量，不是由某个workload profile固定的
-production常量，shape也不进入选择逻辑。达到任一budget、typed work limit、内部资源耗尽或没有strictly dominating extraction时，
-销毁request并保持原verified component不变；这不是compiler error、unsupported program、physical rejection或candidate feedback。
+production常量，shape也不进入选择逻辑。达到iteration、e-node或match上限只停止扩展；从已经rebuild且所有analysis有效的
+e-graph运行同一个有界extractor，仍按下述完整root/DAG合同验证并原子提交strictly dominating结果。
+饱和不是等价证明的前置条件；pinned egg在一次rewrite结束后rebuild，达到搜索上限不撤销已签发的等价关系，见
+[egg Runner](https://docs.rs/egg/latest/egg/struct.Runner.html)。默认迭代上限为32，达到饱和即提前结束；
+e-node、match和relation query仍受原独立上限约束，不另外运行局部C++改写。
+Relation callback的typed work limit、提取验证无法完成或没有strictly dominating结果时销毁request并保持原verified component；
+这不是compiler error、unsupported program、physical rejection或candidate feedback。内部错误始终typed失败，不能被预算状态遮蔽。
+达到搜索上限与是否改变IR独立统计；未饱和结果不承诺第二次运行不再改进，正式产品仍只运行一次该stage。
 标准MLIR pass statistics记录上述work、input/output op和rule application；fresh qualification另用host profile记录wall/RSS。Timing和RSS
 只用于诊断，不进入输出选择。
 
@@ -907,7 +913,7 @@ actual Linalg；若它产生冗余IR，应修正该emitter或其本地canonicali
 | fanout boundary | component的1/2/15 observable roots、chain/diamond；elementwise、reduction和contraction同构及混合uses；DPS-init与barrier use；1024/1025/1031 | 任一root越过barrier、relation/map不可组合、完整maps无法恢复loop bounds或signature不被下游接受时对应e-class保持原表达；整个request仍须原子materialize | projected/general reshape Access只经egg rules从全部可改写分支消除；shared producer在input/output DAG各一次；每个root maps、iterator、scalar/combiner、DPS init和computeId集合精确检查；无`propagateMultiUseProjectedAccesses`；第二次运行byte-equivalent | StructuredDAG edge、partial-reduction tiler、named contraction lowering和producer occurrence一致 |
 | attention/collective/effect barriers | ordinary DAG邻接attention、collective、SCF/call和effect | rule不得同时匹配barrier两侧；malformed输入由原verifier失败 | attention op数量、类型、result type、attributes、algorithm和region逐项不变；只允许data operand被exact同type SSA正常rewire | physical planning看到相同attention semantic roots |
 | pinned `egg` multi-root relation-service C ABI与ownership | 1/2/15 roots；empty/single/dense records；连续/并行compiler context；malformed root/tag/length/relation/callback result及forced Rust panic | configure/build缺依赖直接失败；callback typed Unsupported/WorkLimit/InternalError不发布partial rewrite | importer只含原始e-nodes和ordered root indices；dynamic Applier实际创建RHS；output hash-cons共享DAG；无MLIR对象跨ABI；handle同步且不逃逸；allocator/deallocator all-and-only；旧single-root字段/caller为0 | named/driver同一pass和adapter |
-| deterministic budget与真实规模 | tiny independent e-class oracle；fresh PyTorch/HF/LLaMA dense ordinary component | relation/e-node/match/rebuild/extraction limit保持原component，不进入legality或candidate feedback | 相同budget产生相同IR/diagnostic；至少一个fresh真实component由两条以上rules产生非零有效变换；记录relation/e-node/e-class/match/iteration/extraction/wall/RSS | physical-dataflow scale inventory与产品pipeline reachability |
+| deterministic budget与真实规模 | tiny independent e-class oracle；rank3 1024/1025/1031 transpose→compute及共享DAG；fresh PyTorch/HF/LLaMA dense ordinary component | iteration/e-node/match上限后仍可提取；relation/extraction证据不足保持原component，内部错误typed失败，不进入physical legality | 相同budget产生相同IR/diagnostic；一轮上限下Access减少且全部root、compute、dtype、maps保持；无已证明改进则原样；至少一个fresh真实component多rule有效改写 | StructuredDAG/tiling、physical-dataflow与产品package |
 
 小shape只用于独立e-class congruence和extractor oracle；所有production rewrite family仍须由表中真实规模case覆盖。
 
@@ -944,7 +950,7 @@ GSPMD输出可能含由constants和static tensor views完全决定的partition/m
 ## 10. Failure 与 Atomicity
 
 - attention near-miss不是错误，保持普通verified Linalg DAG；
-- e-graph component不受支持、没有strictly dominating extraction或确定性work budget耗尽不是错误，保持该component原IR；
+- e-graph component不受支持、没有完整strictly dominating extraction或relation/extraction work不足不是错误，保持该component原IR；搜索扩展预算结束仍尝试同一extractor；
 - e-graph声称等价但extracted graph无法通过type/relation proof或verifier是compiler error；rewrite transaction必须回滚且不得发布部分结果；
 - C ABI schema/tag/length/ownership、relation-service callback contract错误、Rust panic或`egg` internal failure是compiler-internal typed failure；不得fallback自研C++ engine、
   外部进程或另一rewrite路径；缺失pinned Rust build dependency在configure/build时直接失败，不伪装为runtime optimization skip；

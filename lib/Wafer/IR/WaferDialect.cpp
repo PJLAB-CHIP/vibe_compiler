@@ -55,6 +55,29 @@ wafer::verifyNoSchemaFreeSemanticAttributes(mlir::Operation *operation) {
 
 #include "Wafer/IR/WaferOpsDialect.cpp.inc"
 
+// A physical TileRegion may have no results. The ordinary type-list directive
+// requires one type even when the printer emits an empty variadic list.
+static mlir::ParseResult
+parseParenthesizedTypeList(mlir::OpAsmParser &parser,
+                           llvm::SmallVectorImpl<mlir::Type> &types) {
+  return parser.parseCommaSeparatedList(mlir::OpAsmParser::Delimiter::Paren,
+                                        [&] {
+                                          mlir::Type type;
+                                          if (parser.parseType(type))
+                                            return mlir::failure();
+                                          types.push_back(type);
+                                          return mlir::success();
+                                        });
+}
+
+static void printParenthesizedTypeList(mlir::OpAsmPrinter &printer,
+                                       mlir::Operation *,
+                                       mlir::TypeRange types) {
+  printer << '(';
+  llvm::interleaveComma(types, printer);
+  printer << ')';
+}
+
 #define GET_OP_CLASSES
 #include "Wafer/IR/WaferOps.cpp.inc"
 

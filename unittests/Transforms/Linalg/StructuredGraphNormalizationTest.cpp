@@ -140,6 +140,76 @@ TEST_F(StructuredGraphNormalizationTest,
 }
 
 TEST_F(StructuredGraphNormalizationTest,
+       IterationLimitRetainsSharedAccessAbsorption) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    std::string input = "tensor<2x" + std::to_string(extent) + "x64xf32>";
+    std::string output = "tensor<2x64x" + std::to_string(extent) + "xf32>";
+    std::string source;
+    llvm::raw_string_ostream stream(source);
+    stream << "#id = affine_map<(b, m, n) -> (b, m, n)>\n"
+           << "module { func.func @shared(%arg0: " << input << ") -> ("
+           << output << ", " << output << ") {\n"
+           << "%empty = tensor.empty() : " << output << "\n"
+           << "%transpose = linalg.transpose ins(%arg0 : " << input
+           << ") outs(%empty : " << output << ") permutation = [0, 2, 1]\n";
+    for (unsigned index : {0u, 1u}) {
+      stream << "%init" << index << " = tensor.empty() : " << output << "\n"
+             << "%result" << index
+             << " = linalg.generic {indexing_maps = [#id, #id], "
+                "iterator_types = [\"parallel\", \"parallel\", \"parallel\"]} "
+             << "ins(%transpose : " << output << ") outs(%init" << index
+             << " : " << output << ") {\n^bb0(%x: f32, %unused: f32):\n"
+             << "%v = " << (index ? "math.exp" : "arith.negf")
+             << " %x : f32\nlinalg.yield %v : f32\n} -> " << output << "\n";
+    }
+    stream << "return %result0, %result1 : " << output << ", " << output
+           << "\n}}\n";
+    stream.flush();
+    std::string expected;
+    for (unsigned repetition : {0u, 1u}) {
+      auto module = parse(source);
+      ASSERT_TRUE(module);
+      auto function = module->lookupSymbol<mlir::func::FuncOp>("shared");
+      wafer::StructuredGraphNormalizationOptions options;
+      options.maximumIterations = 1;
+      wafer::StructuredGraphNormalizationStatistics statistics;
+      auto outcome =
+          wafer::normalizeStructuredTensorGraph(function, options, &statistics);
+      ASSERT_TRUE(mlir::succeeded(outcome));
+      EXPECT_EQ(*outcome, wafer::StructuredGraphNormalizationOutcome::Changed);
+      EXPECT_EQ(statistics.budgetExhaustedComponents, 1u);
+      EXPECT_EQ(statistics.multiRootComponents, 1u);
+      EXPECT_EQ(count<mlir::linalg::TransposeOp>(function), 0u);
+      EXPECT_EQ(count<mlir::linalg::GenericOp>(function), 2u);
+      EXPECT_EQ(count<mlir::arith::NegFOp>(function), 1u);
+      EXPECT_EQ(count<mlir::math::ExpOp>(function), 1u);
+      auto map =
+          mlir::AffineMap::get(3, 0,
+                               {mlir::getAffineDimExpr(0, context.get()),
+                                mlir::getAffineDimExpr(2, context.get()),
+                                mlir::getAffineDimExpr(1, context.get())},
+                               context.get());
+      function.walk([&](mlir::linalg::GenericOp operation) {
+        EXPECT_EQ(operation.getDpsInputs().front(), function.getArgument(0));
+        EXPECT_EQ(operation.getIndexingMapsArray().front(), map);
+        EXPECT_TRUE(operation.getIndexingMapsArray().back().isIdentity());
+      });
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      std::string detail;
+      auto dag = wafer::compiler::detail::StructuredDAGAnalysis::create(
+          function, &detail);
+      ASSERT_TRUE(mlir::succeeded(dag)) << detail;
+      EXPECT_EQ(dag->getNodes().size(), 2u);
+      if (repetition == 0)
+        expected = print(*module);
+      else
+        EXPECT_EQ(print(*module), expected);
+    }
+  }
+}
+
+TEST_F(StructuredGraphNormalizationTest,
        BudgetExhaustionLeavesRaggedComponentByteIdentical) {
   mlir::OwningOpRef<mlir::ModuleOp> module = parse(R"mlir(
     #identity = affine_map<(d0, d1, d2) -> (d0, d1, d2)>

@@ -4,6 +4,7 @@ add_mlir_library(WaferTileTransforms
   ExecutionStructure.cpp
   GemmFinalization.cpp
   LayoutOptimization.cpp
+  PhysicalMovementPlacement.cpp
   Pipelines.cpp
   ReadOnlyInputSharing.cpp
   StructuredToTile.cpp

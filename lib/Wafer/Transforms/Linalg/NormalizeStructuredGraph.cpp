@@ -919,9 +919,13 @@ public:
       ++statistics.budgetExhaustedComponents;
       return StructuredGraphNormalizationOutcome::BudgetExhausted;
     }
+    if (result.statistics.searchLimitReached)
+      ++statistics.budgetExhaustedComponents;
     if (result.kind == EGraphOutcomeKind::Unchanged) {
       ++statistics.unchangedComponents;
-      return StructuredGraphNormalizationOutcome::Unchanged;
+      return result.statistics.searchLimitReached
+                 ? StructuredGraphNormalizationOutcome::BudgetExhausted
+                 : StructuredGraphNormalizationOutcome::Unchanged;
     }
     if (result.kind != EGraphOutcomeKind::Changed)
       return mlir::failure();

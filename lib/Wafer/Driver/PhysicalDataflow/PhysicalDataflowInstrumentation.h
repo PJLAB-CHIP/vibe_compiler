@@ -88,6 +88,8 @@ inline void recordAcceptedPhysicalDataflowInstrumentation(
   recordMetric("ddr-write-bytes", cost.aggregateDDRWriteBytes);
   recordMetric("spm-movement-bytes", cost.aggregateSPMMovementBytes);
   recordMetric("gather-scatter-bytes", cost.aggregateGatherScatterBytes);
+  recordMetric("gather-scatter-inner-iterations",
+               cost.aggregateGatherScatterInnerIterations);
   recordMetric("noc-transmit-bytes", cost.aggregateNoC.aggregateTransmitBytes);
   recordMetric("noc-receive-bytes", cost.aggregateNoC.aggregateReceiveBytes);
   recordMetric("spm-high-water-max", cost.maximumTileSPMHighWaterBytes);

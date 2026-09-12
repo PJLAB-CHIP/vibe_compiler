@@ -4,6 +4,7 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -31,6 +32,7 @@ SearchCostPolicy unitCostPolicy() {
   policy.dteFirstMessagePicosecondsEstimate = 1;
   policy.noCHopPicosecondsEstimate = 1;
   policy.instructionFixedPicosecondsEstimate = 1;
+  policy.gatherScatterInnerIterationPicosecondsEstimate = 1;
   policy.dteWaitedEventPicosecondsEstimate = 1;
   policy.nccJoinPicosecondsEstimate = 1;
   policy.nccParticipantWaitPicosecondsEstimate = 1;
@@ -132,6 +134,331 @@ TEST(CostModelTest, ActualDependenciesAndJoinsChangeOverlapWithIdenticalWork) {
         EXPECT_EQ(serialized[variant], serialized[variant + 3]);
       }
     }
+  }
+}
+
+TEST(CostModelTest, DescriptorGeometryAndIssueRemainDistinctWithEqualBytes) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  auto policy = unitCostPolicy();
+  policy.instructionFixedPicosecondsEstimate = 7;
+  policy.gatherScatterInnerIterationPicosecondsEstimate = 10;
+  auto cohort = SearchCostCohort::create(policy);
+  ASSERT_TRUE(mlir::succeeded(cohort));
+  for (int64_t extent : {1024, 1025, 1031})
+    for (uint64_t trips : {32u, 33u}) {
+      SCOPED_TRACE(::testing::Message() << extent << "/" << trips);
+      std::array<uint64_t, 4> times{}, aggregateTimes{};
+      const uint64_t bytes = 256 * extent;
+      for (unsigned variant = 0; variant < 4; ++variant) {
+        const unsigned commands = variant == 3 ? 2 : 1;
+        const bool narrow = variant == 1 || variant == 2;
+        const uint64_t inner = narrow ? 2 : bytes / commands;
+        const uint64_t iterations = bytes / commands / inner;
+        const std::string type = "memref<2x" + std::to_string(extent) +
+                                 "x128xf16, #wafer.memory<spm, tensor>>";
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { func.func @main() {\n"
+            << "%source = memref.alloc() {wafer.spm.offset = "
+               "#wafer.spm_offset<65536>} : "
+            << type << "\n"
+            << "%dest = memref.alloc() {wafer.spm.offset = "
+               "#wafer.spm_offset<1048576>} : "
+            << type << "\n"
+            << "%zero = arith.constant 0 : index\n"
+               "%one = arith.constant 1 : index\n"
+            << "%end = arith.constant " << trips
+            << " : index\n"
+               "scf.for %iv = %zero to %end step %one {\n";
+        for (unsigned command = 0; command < commands; ++command)
+          out << "wafer.instr.gather_scatter %source to %dest {byte_count = "
+              << bytes / commands << " : i64, inner_bytes = " << inner
+              << " : i64, src_offset = " << command * inner
+              << " : i64, dst_offset = " << command * inner
+              << " : i64, src_strides = array<i64: " << (variant == 1 ? 4 : 0)
+              << ", 0, 0>, dst_strides = array<i64: " << (narrow ? 2 : 0)
+              << ", 0, 0>, src_iterations = array<i64: " << iterations
+              << ", 1, 1>, dst_iterations = array<i64: " << iterations
+              << ", 1, 1>} : " << type << " to " << type << "\n";
+        out << "}\nwafer.instr.ncc_join [0]\nreturn\n}}\n";
+        auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+        ASSERT_TRUE(module) << text;
+        llvm::SmallVector<TileInstructionProgram> programs{
+            {wafer::TileId(0), *module}};
+        auto cost = analyzeInstructionProgramAggregateCost(
+            programs, wafer::getTargetMemoryPolicy());
+        ASSERT_TRUE(cost.aggregateGatherScatterInnerIterations.isKnown());
+        EXPECT_EQ(cost.aggregateGatherScatterBytes.value, bytes * trips);
+        EXPECT_EQ(cost.aggregateGatherScatterInnerIterations.value,
+                  iterations * commands * trips);
+        EXPECT_EQ(
+            cost.aggregateWork.gatherScatterOperations.exactExecutions.value,
+            commands * trips);
+        auto result = deriveSearchObjective(cost, *cohort, programs);
+        auto aggregate = deriveSearchObjective(cost, *cohort);
+        auto *known = std::get_if<KnownSearchObjective>(&result);
+        auto *serial = std::get_if<KnownSearchObjective>(&aggregate);
+        ASSERT_TRUE(known && serial);
+        EXPECT_FALSE(known->usesCoarseEstimate);
+        times[variant] = known->estimatedDurationPicoseconds;
+        aggregateTimes[variant] = serial->estimatedDurationPicoseconds;
+      }
+      // The busy worker hides software issue. Charging it again as worker
+      // service would incorrectly add 7 ps per command to these exact oracles.
+      EXPECT_EQ(times[0], bytes * trips + 2);
+      EXPECT_EQ(times[3], times[0]);
+      EXPECT_EQ(times[1], 5 * bytes * trips + 2);
+      EXPECT_EQ(times[2], times[1]);
+      EXPECT_GT(aggregateTimes[3], aggregateTimes[0]);
+    }
+}
+
+TEST(CostModelTest, SharedDDRPropagatesCurrentPublicationAcrossTiles) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  auto cohort = SearchCostCohort::create(unitCostPolicy());
+  ASSERT_TRUE(mlir::succeeded(cohort));
+  for (int64_t extent : {1024, 1025, 1031}) {
+    const uint64_t bytes = 256 * extent;
+    const std::string shape = "2x" + std::to_string(extent) + "x64xf16";
+    const std::string spm = "memref<" + shape + ", #wafer.memory<spm, tensor>>";
+    const std::string ddr = "memref<" + shape + ", #wafer.memory<ddr, tensor>>";
+    const std::string ready = "memref<64xi8, #wafer.memory<ddr, tensor>>";
+    llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>> owners;
+    llvm::SmallVector<TileInstructionProgram> programs;
+    // A producer on Tile 2 feeds Tile 1, then Tile 0. Input enumeration order
+    // must not hide either cross-Tile dependency.
+    for (unsigned tile = 0; tile < 3; ++tile) {
+      std::string text;
+      llvm::raw_string_ostream out(text);
+      out << "module {\n";
+      for (unsigned id = 0; id < 4; ++id)
+        out << "memref.global \"private\" @data" << id << " : "
+            << (id < 2 ? ddr : ready)
+            << " {wafer.ddr_resource = #wafer.ddr_resource<" << id << ">}\n";
+      out << "func.func @main(";
+      for (unsigned id = 0; id < 4; ++id) {
+        if (id)
+          out << ", ";
+        out << "%data" << id << ": " << (id < 2 ? ddr : ready)
+            << " {wafer.ddr_binding = #wafer.ddr_binding<@data" << id
+            << ", id = " << id << ", "
+            << (tile == 2 - id % 2 ? "write" : "read") << ">}";
+      }
+      out << ") {\n";
+      for (auto [name, offset] : {std::pair{"a", 65536}, {"b", 1048576}})
+        out << "%" << name << " = memref.alloc() {wafer.spm.offset = "
+            << "#wafer.spm_offset<" << offset << ">} : " << spm << "\n";
+      if (tile == 2) {
+        out << "wafer.instr.gather_scatter %a to %b {byte_count = " << bytes
+            << " : i64, inner_bytes = " << bytes
+            << " : i64, src_strides = array<i64: 0, 0, 0>, "
+               "dst_strides = array<i64: 0, 0, 0>, src_iterations = array<i64: "
+               "1, 1, 1>, "
+               "dst_iterations = array<i64: 1, 1, 1>} : "
+            << spm << " to " << spm << "\n";
+      } else {
+        const unsigned id = 1 - tile;
+        out << "wafer.instr.ddr_acquire %data" << id << ", %data" << id + 2
+            << " : " << ddr << ", " << ready << "\n"
+            << "wafer.instr.rdma %data" << id
+            << " to %a {byte_count = " << bytes
+            << " : i64, inner_bytes = " << bytes
+            << " : i64, src_strides = array<i64: 0, 0, 0>, "
+               "src_iterations = array<i64: 1, 1, 1>} : "
+            << ddr << " to " << spm << "\n";
+      }
+      if (tile) {
+        const unsigned id = 2 - tile;
+        out << "wafer.instr.wdma %" << (tile == 2 ? "b" : "a") << " to %data"
+            << id << " {byte_count = " << bytes
+            << " : i64, inner_bytes = " << bytes
+            << " : i64, dst_strides = array<i64: 0, 0, 0>, "
+               "dst_iterations = array<i64: 1, 1, 1>} : "
+            << spm << " to " << ddr << "\nwafer.instr.ncc_join [0]\n"
+            << "wafer.instr.ddr_publish %data" << id << ", %data" << id + 2
+            << " : " << ddr << ", " << ready << "\n";
+      } else {
+        out << "wafer.instr.elementwise <add> %a, %a into %b : " << spm << ", "
+            << spm << " into " << spm << "\nwafer.instr.ncc_join [0]\n";
+      }
+      out << "return\n}}\n";
+      auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+      ASSERT_TRUE(module) << text;
+      programs.push_back({wafer::TileId(tile), *module});
+      owners.push_back(std::move(module));
+    }
+    for (unsigned order = 0; order < 2; ++order) {
+      auto cost = analyzeInstructionProgramAggregateCost(
+          programs, wafer::getTargetMemoryPolicy());
+      auto result = deriveSearchObjective(cost, *cohort, programs);
+      auto *known = std::get_if<KnownSearchObjective>(&result);
+      ASSERT_TRUE(known);
+      EXPECT_FALSE(known->usesCoarseEstimate);
+      EXPECT_EQ(known->estimatedDurationPicoseconds,
+                9 * bytes + bytes / 2 + 10);
+      std::reverse(programs.begin(), programs.end());
+    }
+  }
+}
+
+TEST(CostModelTest, DirectDTETokensAndLocalUnknownPreserveIndependentOverlap) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
+                  mlir::func::FuncDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  auto cohort = SearchCostCohort::create(unitCostPolicy());
+  ASSERT_TRUE(mlir::succeeded(cohort));
+  for (int64_t extent : {1024, 1025, 1031}) {
+    const uint64_t bytes = 256 * extent;
+    const std::string shape = "2x" + std::to_string(extent) + "x64xf16";
+    const std::string spm = "memref<" + shape + ", #wafer.memory<spm, tensor>>";
+    const std::string ddr = "memref<" + shape + ", #wafer.memory<ddr, tensor>>";
+    std::array<uint64_t, 4> times{};
+    for (unsigned variant = 0; variant < 4; ++variant) {
+      const bool early = variant % 2;
+      const bool unknown = variant >= 2;
+      llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>> owners;
+      llvm::SmallVector<TileInstructionProgram> programs;
+      for (unsigned tile = 0; tile < 2; ++tile) {
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { wafer.target.topology @topology {card_grid = "
+               "array<i64: 1, 1>, "
+               "card_interconnect = \"mesh\", tile_grid = array<i64: 1, 2>, "
+               "unavailable_tiles = array<i64>}\n"
+               "func.func private @unknown_effect()\n"
+            << "func.func @main(%input: " << ddr << ") {\n";
+        for (auto [name, offset] :
+             {std::pair{"a", 65536}, {"b", 1048576}, {"c", 2097152}})
+          out << "%" << name << " = memref.alloc() {wafer.spm.offset = "
+              << "#wafer.spm_offset<" << offset << ">} : " << spm << "\n";
+        if (unknown)
+          out << "func.call @unknown_effect() : () -> ()\n";
+        if (!tile)
+          out << "wafer.instr.gather_scatter %a to %b {byte_count = " << bytes
+              << " : i64, inner_bytes = " << bytes
+              << " : i64, src_strides = array<i64: 0, 0, 0>, "
+                 "dst_strides = array<i64: 0, 0, 0>, src_iterations = "
+                 "array<i64: 1, 1, 1>, "
+                 "dst_iterations = array<i64: 1, 1, 1>} : "
+              << spm << " to " << spm << "\nwafer.instr.ncc_join [0]\n";
+        out << "%token = wafer.instr.dte_" << (tile ? "recv %a" : "send %b")
+            << " {peer = " << 1 - tile << " : i64, bytes = " << bytes
+            << " : i64, message = #wafer.dte_message<communication = 1, round "
+               "= 0, slice = 0>} : "
+            << spm << " -> !async.token\n";
+        if (early)
+          out << "wafer.instr.dte_wait %token : !async.token\n";
+        out << "wafer.instr.rdma %input to %" << (tile ? "b" : "a")
+            << " {byte_count = " << bytes << " : i64, inner_bytes = " << bytes
+            << " : i64, src_strides = array<i64: 0, 0, 0>, "
+               "src_iterations = array<i64: 1, 1, 1>} : "
+            << ddr << " to " << spm << "\n";
+        if (!early)
+          out << "wafer.instr.dte_wait %token : !async.token\n";
+        if (tile)
+          out << "wafer.instr.elementwise <add> %a, %a into %c : " << spm
+              << ", " << spm << " into " << spm << "\n";
+        out << "wafer.instr.ncc_join [0]\nreturn\n}}\n";
+        auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+        ASSERT_TRUE(module) << text;
+        programs.push_back({wafer::TileId(tile), *module});
+        owners.push_back(std::move(module));
+      }
+      auto cost = analyzeInstructionProgramAggregateCost(
+          programs, wafer::getTargetMemoryPolicy());
+      auto result = deriveSearchObjective(cost, *cohort, programs);
+      auto *known = std::get_if<KnownSearchObjective>(&result);
+      ASSERT_TRUE(known);
+      EXPECT_EQ(known->usesCoarseEstimate, unknown);
+      times[variant] = known->estimatedDurationPicoseconds;
+    }
+    EXPECT_EQ(times[0], 3 * bytes + 6); // Includes one modeled NoC hop.
+    EXPECT_EQ(times[1], 4 * bytes + 8);
+    EXPECT_LT(times[2], times[3]);
+    EXPECT_EQ(times[3] - times[2], times[1] - times[0]);
+  }
+}
+
+TEST(CostModelTest,
+     KnownFirstIterationBranchRetainsLocalServiceAndLeavesIRUnchanged) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  auto cohort = SearchCostCohort::create(unitCostPolicy());
+  ASSERT_TRUE(mlir::succeeded(cohort));
+  for (int64_t extent : {1024, 1025, 1031}) {
+    int64_t trips = (extent + 31) / 32;
+    std::string type = "memref<2x" + std::to_string(extent) +
+                       "x64xf16, #wafer.memory<spm, tensor>>";
+    std::array<uint64_t, 2> times{};
+    for (bool conditional : {false, true}) {
+      std::string text;
+      llvm::raw_string_ostream out(text);
+      out << "module { func.func @main() {\n";
+      for (auto [name, offset] : {std::pair{"a", 65536}, {"b", 1048576}})
+        out << "%" << name << " = memref.alloc() {wafer.spm.offset = "
+            << "#wafer.spm_offset<" << offset << ">} : " << type << "\n";
+      out << "%c0 = arith.constant 0 : index\n"
+          << "%c1 = arith.constant 1 : index\n"
+          << "%end = arith.constant " << trips << " : index\n";
+      auto copy = [&]() {
+        out << "wafer.instr.gather_scatter %a to %b {byte_count = "
+            << 256 * extent << " : i64, inner_bytes = " << 256 * extent
+            << " : i64, src_strides = array<i64: 0, 0, 0>, "
+               "dst_strides = array<i64: 0, 0, 0>, src_iterations = "
+               "array<i64: 1, 1, 1>, dst_iterations = array<i64: 1, 1, 1>} : "
+            << type << " to " << type << "\n";
+      };
+      if (!conditional)
+        copy();
+      out << "scf.for %iv = %" << (conditional ? "c0" : "c1")
+          << " to %end step %c1 {\n";
+      if (conditional) {
+        out << "%first = arith.cmpi eq, %iv, %c0 : index\n"
+               "scf.if %first {\n";
+        copy();
+        out << "} else {\n";
+      }
+      out << "wafer.instr.elementwise <add> %b, %b into %b : " << type << ", "
+          << type << " into " << type << "\n";
+      if (conditional)
+        out << "}\n";
+      out << "}\nwafer.instr.ncc_join [0]\nreturn\n}}\n";
+      auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+      ASSERT_TRUE(module) << text;
+      std::string before, after;
+      llvm::raw_string_ostream beforeStream(before), afterStream(after);
+      module->print(beforeStream);
+      llvm::SmallVector<TileInstructionProgram> programs{
+          {wafer::TileId(0), *module}};
+      auto cost = analyzeInstructionProgramAggregateCost(
+          programs, wafer::getTargetMemoryPolicy());
+      auto objective = deriveSearchObjective(cost, *cohort, programs);
+      auto *known = std::get_if<KnownSearchObjective>(&objective);
+      ASSERT_TRUE(known);
+      times[conditional] = known->estimatedDurationPicoseconds;
+      module->print(afterStream);
+      EXPECT_EQ(before, after);
+    }
+    EXPECT_EQ(times[0], times[1]);
+    EXPECT_GT(times[0], 256u * extent);
   }
 }
 

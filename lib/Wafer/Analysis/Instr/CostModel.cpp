@@ -1,11 +1,13 @@
 //===- CostModel.cpp - Instruction program performance model ----------===//
 
 #include "Wafer/Analysis/Instr/CostModel.h"
+#include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/NCCCompletion.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -19,6 +21,7 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <utility>
 
@@ -92,12 +95,33 @@ asStorageArray(const SearchResourceDurations &durations) {
           durations.spmBufferCount, durations.ddrBufferCount};
 }
 
+std::optional<uint64_t> movementServiceTime(
+    const ScheduleCostMetric &allBytes, const ScheduleCostMetric &gsBytes,
+    const ScheduleCostMetric &innerIterations, const SearchCostPolicy &policy) {
+  if (!allBytes.isKnown() || !gsBytes.isKnown() || !innerIterations.isKnown() ||
+      gsBytes.value > allBytes.value)
+    return std::nullopt;
+  auto other =
+      timeForWork(allBytes.value - gsBytes.value,
+                  policy.spmExplicitMovementBytesPerSecondPerTileEstimate);
+  auto bytes = timeForWork(
+      gsBytes.value, policy.spmExplicitMovementBytesPerSecondPerTileEstimate);
+  uint64_t traversal, total;
+  if (!other || !bytes ||
+      !checkedMultiply(innerIterations.value,
+                       policy.gatherScatterInnerIterationPicosecondsEstimate,
+                       traversal) ||
+      !checkedAdd(*other, std::max(*bytes, traversal), total))
+    return std::numeric_limits<uint64_t>::max();
+  return total;
+}
+
 } // namespace
 
 mlir::FailureOr<SearchCostCohort>
 SearchCostCohort::create(const SearchCostPolicy &policy,
                          std::string *failureReason) {
-  const std::array<uint64_t, 15> rates{
+  const std::array<uint64_t, 16> rates{
       policy.unmodeledInstructionPicosecondsEstimate,
       policy.ddrNominalBytesPerSecond,
       policy.directionalNoCBytesPerSecond,
@@ -106,6 +130,7 @@ SearchCostCohort::create(const SearchCostPolicy &policy,
       policy.dteMessageStartupPicosecondsEstimate,
       policy.noCHopPicosecondsEstimate,
       policy.instructionFixedPicosecondsEstimate,
+      policy.gatherScatterInnerIterationPicosecondsEstimate,
       policy.dteWaitedEventPicosecondsEstimate,
       policy.nccJoinPicosecondsEstimate,
       policy.nccParticipantWaitPicosecondsEstimate,
@@ -261,8 +286,6 @@ deriveResourceObjective(const InstructionProgramAggregateCost &cost,
                   durations.dteEndpointPicoseconds) ||
       !checkedMultiply(hopMessageDemand, policy.noCHopPicosecondsEstimate,
                        durations.nocHopPicoseconds) ||
-      !assignTime(*spm, policy.spmExplicitMovementBytesPerSecondPerTileEstimate,
-                  durations.spmMovementPicoseconds) ||
       !checkedMultiply(*instructions,
                        policy.instructionFixedPicosecondsEstimate,
                        durations.instructionControlPicoseconds) ||
@@ -270,6 +293,28 @@ deriveResourceObjective(const InstructionProgramAggregateCost &cost,
                        durations.dteWaitControlPicoseconds))
     return UnknownSearchObjective{
         SearchObjectiveUnknownReason::ArithmeticOverflow};
+  auto assignMovement = [&](const auto &bytes, const auto &gs,
+                            const auto &iterations) {
+    auto duration = movementServiceTime(bytes, gs, iterations, policy);
+    if (!duration)
+      return false;
+    durations.spmMovementPicoseconds =
+        std::max(durations.spmMovementPicoseconds, *duration);
+    return true;
+  };
+  if (cost.tileCosts.empty()) {
+    if (!assignMovement(cost.aggregateSPMMovementBytes,
+                        cost.aggregateGatherScatterBytes,
+                        cost.aggregateGatherScatterInnerIterations))
+      return UnknownSearchObjective{
+          SearchObjectiveUnknownReason::MetricUnavailable};
+  } else {
+    for (const auto &tile : cost.tileCosts)
+      if (!assignMovement(tile.spmMovementBytes, tile.gatherScatterBytes,
+                          tile.gatherScatterInnerIterations))
+        return UnknownSearchObjective{
+            SearchObjectiveUnknownReason::MetricUnavailable};
+  }
   durations.spmHighWaterBytes = cost.maximumTileSPMHighWaterBytes.value;
   durations.ddrHighWaterBytes = cost.maximumTileDDRHighWaterBytes.value;
   durations.spmBufferCount = cost.aggregateCompilerOwnedSPMBufferCount.value;
@@ -280,8 +325,14 @@ deriveResourceObjective(const InstructionProgramAggregateCost &cost,
 // A performance assumption, not a reconstructed schedule: sum service on each
 // Tile before taking the maximum. Never assemble one Tile from unrelated peaks.
 std::optional<uint64_t> localServiceTime(const InstructionProgramCost &tile,
-                                         const SearchCostPolicy &policy) {
-  uint64_t total = 0;
+                                         const SearchCostPolicy &policy,
+                                         bool includeIssue = true) {
+  auto movement =
+      movementServiceTime(tile.spmMovementBytes, tile.gatherScatterBytes,
+                          tile.gatherScatterInnerIterations, policy);
+  if (!movement)
+    return std::nullopt;
+  uint64_t total = *movement;
   auto addWork = [&](uint64_t work, uint64_t rate) {
     auto duration = timeForWork(work, rate);
     return duration && checkedAdd(total, *duration, total);
@@ -297,12 +348,10 @@ std::optional<uint64_t> localServiceTime(const InstructionProgramCost &tile,
                policy.f16Bf16VectorLogicalOpsPerSecondPerTile) ||
       !addWork(tile.compute.vectorF32LogicalOps.value,
                policy.f32VectorLogicalOpsPerSecondPerTile) ||
-      !addWork(tile.spmMovementBytes.value,
-               policy.spmExplicitMovementBytesPerSecondPerTileEstimate) ||
       !addWork(tile.noc.aggregateTransmitBytes.value,
                policy.dteEndpointBytesPerSecondEstimate) ||
-      !addFixed(tile.instructionCount.value,
-                policy.instructionFixedPicosecondsEstimate) ||
+      (includeIssue && !addFixed(tile.instructionCount.value,
+                                 policy.instructionFixedPicosecondsEstimate)) ||
       !addFixed(tile.noc.waitedEventCount.value,
                 policy.dteWaitedEventPicosecondsEstimate) ||
       !addFixed(tile.nccJoinCount.value, policy.nccJoinPicosecondsEstimate) ||
@@ -327,14 +376,51 @@ uint64_t estimateInstructionCount(const InstructionExecutionCount &work,
   return work.staticSites.isKnown() ? work.staticSites.value : 1;
 }
 
+// Current-IR endpoints and estimates live only for this immutable comparison.
+// Repeated dynamic messages are handled locally rather than merged by name.
+struct CompletionTimes {
+  llvm::DenseMap<int64_t, uint64_t> publications;
+  llvm::DenseMap<mlir::Operation *, mlir::Operation *> sendForReceive;
+  llvm::DenseMap<mlir::Operation *, mlir::Operation *> receiveForSend;
+  llvm::DenseMap<mlir::Operation *, uint64_t> sendFinished, receivePosted;
+  bool changed = false;
+
+  template <typename Map, typename Key>
+  void update(Map &map, Key key, uint64_t value) {
+    auto [entry, inserted] = map.try_emplace(key, value);
+    changed |= inserted || entry->second != value;
+    entry->second = value;
+  }
+};
+
+bool executesOnce(mlir::Operation *operation) {
+  for (auto *parent = operation->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (mlir::isa<mlir::func::FuncOp>(parent))
+      return true;
+    if (!getSingleExecutionRegionFlow(parent))
+      return false;
+  }
+  return false;
+}
+
 /// A bounded service estimate of existing instructions, never a scheduler or
 /// legality proof. Values and clocks are local to this read-only invocation.
 class InstructionServiceEstimator {
 public:
-  explicit InstructionServiceEstimator(const SearchCostPolicy &policy)
-      : policy(policy) {}
+  InstructionServiceEstimator(const SearchCostPolicy &policy,
+                              CompletionTimes &completionTimes)
+      : policy(policy), completionTimes(completionTimes) {}
 
   std::optional<uint64_t> estimate(mlir::Operation *root) {
+    engines = {};
+    issue = dte = messages = work = localEstimates = 0;
+    indices.clear();
+    aliases.clear();
+    storages.clear();
+    hazards.clear();
+    tokens.clear();
+    coarse = false;
     auto module = mlir::dyn_cast_or_null<mlir::ModuleOp>(root);
     if (!module)
       return std::nullopt;
@@ -349,9 +435,9 @@ public:
     return entries == 1 ? std::optional<uint64_t>(maximum()) : std::nullopt;
   }
 
-  llvm::StringRef getFallbackOperationName() const {
-    return lastOperation ? lastOperation->getName().getStringRef() : "entry";
-  }
+  bool usesCoarseEstimate() const { return coarse; }
+  uint64_t getWorkCount() const { return work; }
+  uint64_t getLocalEstimateCount() const { return localEstimates; }
 
 private:
   struct Hazard {
@@ -363,10 +449,12 @@ private:
   };
 
   uint64_t maximum() const {
-    uint64_t result = issue;
+    uint64_t result = std::max(issue, dte);
     for (const auto &worker : engines)
       for (uint64_t time : worker)
         result = std::max(result, time);
+    for (const auto &token : tokens)
+      result = std::max(result, token.second);
     return result;
   }
 
@@ -458,13 +546,25 @@ private:
       if (!value)
         return false;
       indices[to] = *value;
+    } else if (mlir::isa<mlir::async::TokenType>(to.getType())) {
+      auto found = tokens.find(from);
+      if (found == tokens.end())
+        return false;
+      tokens[to] = found->second;
     }
     return true;
   }
 
-  bool shift(uint64_t delta) {
+  bool shift(uint64_t delta,
+             const llvm::DenseMap<mlir::Value, uint64_t> &previousTokens) {
     if (!checkedAdd(issue, delta, issue))
       return false;
+    if (!checkedAdd(dte, delta, dte))
+      return false;
+    for (auto &entry : tokens)
+      if (previousTokens.lookup(entry.first) != entry.second &&
+          !checkedAdd(entry.second, delta, entry.second))
+        return false;
     for (auto &worker : engines)
       for (auto &time : worker)
         if (!checkedAdd(time, delta, time))
@@ -501,6 +601,7 @@ private:
           return !argument.getType().isIndex() || argument == result;
         });
     llvm::SmallVector<Storage> thirdAliases;
+    llvm::DenseMap<mlir::Value, uint64_t> thirdTokens;
     uint64_t third = 0;
     for (uint64_t iteration = 0; iteration < count; ++iteration) {
       indices[loop.getInductionVar()] = *lower + iteration * *step;
@@ -518,6 +619,7 @@ private:
           return false;
       if (iteration == 2) {
         third = maximum();
+        thirdTokens = tokens;
         for (auto argument : loop.getRegionIterArgs())
           if (mlir::isa<mlir::MemRefType>(argument.getType()))
             thirdAliases.push_back(aliases.lookup(argument));
@@ -535,7 +637,7 @@ private:
           continue;
         uint64_t periods = (count - 5) / 2, delta;
         if (!checkedMultiply(maximum() - third, periods, delta) ||
-            !shift(delta))
+            !shift(delta, thirdTokens))
           return false;
         iteration += periods * 2;
       }
@@ -587,7 +689,7 @@ private:
           !work.compute.vectorOtherLogicalOps.isKnown() ||
           work.compute.vectorOtherLogicalOps.value)
         return false;
-      auto service = localServiceTime(work, policy);
+      auto service = localServiceTime(work, policy, /*includeIssue=*/false);
       uint64_t bytes, duration;
       if (!service ||
           !checkedAdd(work.ddrReadBytes.value, work.ddrWriteBytes.value, bytes))
@@ -636,50 +738,269 @@ private:
     return true;
   }
 
+  uint64_t hazardTime(const Storage &root, bool write) const {
+    uint64_t time = 0;
+    for (const auto &[key, hazard] : hazards) {
+      const auto &other = storages.find(key)->second;
+      bool overlap = root.root == other.root;
+      if (root.spm && other.spm)
+        overlap |= root.spm->first < other.spm->second &&
+                   other.spm->first < root.spm->second;
+      if (overlap)
+        time = std::max(time, write ? std::max(hazard.read, hazard.write)
+                                    : hazard.write);
+    }
+    return time;
+  }
+
+  void recordAccess(const Storage &root, bool write, uint64_t time) {
+    storages.try_emplace(root.root, root);
+    auto &hazard = hazards[root.root];
+    auto &previous = write ? hazard.write : hazard.read;
+    previous = std::max(previous, time);
+  }
+
+  bool executePublication(mlir::Value data, bool publish) {
+    auto root = storage(data);
+    if (!root)
+      return false;
+    auto argument = mlir::dyn_cast<mlir::BlockArgument>(root->root);
+    if (!argument)
+      return false;
+    auto function =
+        mlir::dyn_cast<mlir::func::FuncOp>(argument.getOwner()->getParentOp());
+    auto binding = function
+                       ? function.getArgAttrOfType<DDRBindingAttr>(
+                             argument.getArgNumber(), kWaferDDRBindingAttrName)
+                       : DDRBindingAttr{};
+    if (!binding)
+      return false;
+    if (publish) {
+      issue = std::max(issue, hazardTime(*root, /*write=*/false));
+      if (!checkedAdd(issue, policy.instructionFixedPicosecondsEstimate, issue))
+        return false;
+      completionTimes.update(completionTimes.publications,
+                             binding.getResourceId(), issue);
+    } else {
+      auto found = completionTimes.publications.find(binding.getResourceId());
+      if (found == completionTimes.publications.end()) {
+        coarse = true;
+        if (!checkedAdd(issue, policy.unmodeledInstructionPicosecondsEstimate,
+                        issue))
+          return false;
+      } else {
+        issue = std::max(issue, found->second);
+      }
+      if (!checkedAdd(issue, policy.instructionFixedPicosecondsEstimate, issue))
+        return false;
+    }
+    return true;
+  }
+
+  bool executeDTE(mlir::Operation *operation) {
+    if (auto wait = mlir::dyn_cast<InstrDTEWaitOp>(operation)) {
+      for (auto token : wait.getTokens()) {
+        auto found = tokens.find(token);
+        if (found == tokens.end())
+          return false;
+        issue = std::max(issue, found->second);
+      }
+      uint64_t control;
+      return checkedMultiply(wait.getTokens().size(),
+                             policy.dteWaitedEventPicosecondsEstimate,
+                             control) &&
+             checkedAdd(issue, control, issue) &&
+             checkedAdd(issue, policy.instructionFixedPicosecondsEstimate,
+                        issue);
+    }
+    auto send = mlir::dyn_cast<InstrDTESendOp>(operation);
+    auto receive = mlir::dyn_cast<InstrDTERecvOp>(operation);
+    if (!send && !receive)
+      return false;
+    auto root = storage(send ? send.getBuffer() : receive.getBuffer());
+    if (!root)
+      return false;
+    uint64_t start = std::max(issue, hazardTime(*root, bool(receive)));
+    uint64_t finish = start;
+    const bool repeated = !executesOnce(operation);
+    if (send) {
+      start = std::max(start, dte);
+      auto remote = completionTimes.receiveForSend.find(operation);
+      if (!repeated && remote != completionTimes.receiveForSend.end())
+        start = std::max(start,
+                         completionTimes.receivePosted.lookup(remote->second));
+      else
+        coarse = true;
+      auto bytes = timeForWork(send.getBytes(),
+                               policy.dteEndpointBytesPerSecondEstimate);
+      uint64_t startup = messages++ == 0
+                             ? policy.dteFirstMessagePicosecondsEstimate
+                             : policy.dteMessageStartupPicosecondsEstimate;
+      if (!bytes || !checkedAdd(start, startup, finish) ||
+          !checkedAdd(finish, *bytes, finish))
+        return false;
+      dte = finish;
+      if (!repeated)
+        completionTimes.update(completionTimes.sendFinished, operation, finish);
+      tokens[send.getToken()] = finish;
+    } else {
+      auto remote = completionTimes.sendForReceive.find(operation);
+      if (!repeated && remote != completionTimes.sendForReceive.end()) {
+        completionTimes.update(completionTimes.receivePosted, operation, start);
+        finish = std::max(start,
+                          completionTimes.sendFinished.lookup(remote->second));
+      } else {
+        // The receive has no matched single-invocation remote timestamp.
+        // Preserve local work/dependencies with an explicit lifecycle prior.
+        coarse = true;
+        auto bytes = timeForWork(receive.getBytes(),
+                                 policy.dteEndpointBytesPerSecondEstimate);
+        if (!bytes ||
+            !checkedAdd(start, policy.dteMessageStartupPicosecondsEstimate,
+                        finish) ||
+            !checkedAdd(finish, *bytes, finish))
+          return false;
+      }
+      tokens[receive.getToken()] = finish;
+    }
+    recordAccess(*root, bool(receive), finish);
+    return checkedAdd(issue, policy.instructionFixedPicosecondsEstimate, issue);
+  }
+
+  void estimateLocally(mlir::Operation *operation, uint64_t prefix) {
+    coarse = true;
+    ++localEstimates;
+    auto cost =
+        analyzeInstructionProgramCost(operation, getTargetMemoryPolicy());
+    auto service = localServiceTime(cost, policy);
+    uint64_t bytes, duration = 0;
+    if (!service || !cost.ddrReadBytes.isKnown() ||
+        !cost.ddrWriteBytes.isKnown() || !cost.instructionCount.isKnown() ||
+        !cost.compute.npuF16Bf16LogicalOps.isKnown() ||
+        !cost.compute.vectorF16Bf16LogicalOps.isKnown() ||
+        !cost.compute.vectorF32LogicalOps.isKnown() ||
+        !cost.compute.npuOtherLogicalOps.isKnown() ||
+        cost.compute.npuOtherLogicalOps.value ||
+        !cost.compute.vectorOtherLogicalOps.isKnown() ||
+        cost.compute.vectorOtherLogicalOps.value ||
+        !checkedAdd(cost.ddrReadBytes.value, cost.ddrWriteBytes.value, bytes)) {
+      uint64_t count = std::max(
+          uint64_t{1}, estimateInstructionCount(cost.work.instructions,
+                                                cost.instructionCount));
+      if (!checkedMultiply(
+              count, policy.unmodeledInstructionPicosecondsEstimate, duration))
+        duration = std::numeric_limits<uint64_t>::max();
+    } else {
+      auto ddr = timeForWork(bytes, policy.ddrNominalBytesPerSecond);
+      if (!ddr || !checkedAdd(*service, *ddr, duration))
+        duration = std::numeric_limits<uint64_t>::max();
+      if (!duration)
+        duration = policy.unmodeledInstructionPicosecondsEstimate;
+    }
+    if (!checkedAdd(prefix, duration, issue))
+      issue = std::numeric_limits<uint64_t>::max();
+    dte = issue;
+    for (auto &worker : engines)
+      worker.fill(issue);
+    hazards.clear();
+    // A failed partial loop/region visit cannot leave guessed carry results.
+    auto within = [&](mlir::Value value) {
+      auto *owner = value.getParentRegion()->getParentOp();
+      return owner == operation || operation->isAncestor(owner) ||
+             value.getDefiningOp() == operation;
+    };
+    for (auto it = aliases.begin(); it != aliases.end();)
+      if (within(it->first))
+        aliases.erase(it++);
+      else
+        ++it;
+    for (auto it = indices.begin(); it != indices.end();)
+      if (within(it->first))
+        indices.erase(it++);
+      else
+        ++it;
+    for (auto it = tokens.begin(); it != tokens.end();)
+      if (within(it->first))
+        tokens.erase(it++);
+      else
+        ++it;
+  }
+
   bool execute(mlir::Block &block) {
     for (mlir::Operation &operation : block.without_terminator()) {
-      lastOperation = &operation;
-      if (++work > 65536)
-        return false;
-      if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(operation)) {
-        if (!executeLoop(loop))
+      const uint64_t prefix = maximum();
+      auto visit = [&]() -> bool {
+        if (++work > 65536)
           return false;
-      } else if (auto region = mlir::dyn_cast<TileRegionOp>(operation)) {
-        if (!region.getBody().hasOneBlock())
-          return false;
-        auto &body = region.getBody().front();
-        for (auto [argument, operand] :
-             llvm::zip_equal(body.getArguments(), region.getInputs()))
-          if (!bind(argument, operand))
+        if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(operation)) {
+          if (!executeLoop(loop))
             return false;
-        if (!execute(body))
-          return false;
-        for (auto [result, value] : llvm::zip_equal(
-                 region.getResults(), body.getTerminator()->getOperands()))
-          if (!bind(result, value))
+        } else if (auto branch = mlir::dyn_cast<mlir::scf::IfOp>(operation)) {
+          auto condition = index(branch.getCondition());
+          if (!condition)
             return false;
-      } else if (mlir::isa<WaferInstructionOpInterface, SyncNCCJoinOp>(
-                     operation)) {
-        if (!executeInstruction(&operation))
+          auto &region =
+              *condition ? branch.getThenRegion() : branch.getElseRegion();
+          if (region.empty())
+            return branch.getNumResults() == 0;
+          if (!region.hasOneBlock() || !execute(region.front()))
+            return false;
+          for (auto [result, value] :
+               llvm::zip_equal(branch.getResults(),
+                               region.front().getTerminator()->getOperands()))
+            if (!bind(result, value))
+              return false;
+        } else if (auto region = mlir::dyn_cast<TileRegionOp>(operation)) {
+          if (!region.getBody().hasOneBlock())
+            return false;
+          auto &body = region.getBody().front();
+          for (auto [argument, operand] :
+               llvm::zip_equal(body.getArguments(), region.getInputs()))
+            if (!bind(argument, operand))
+              return false;
+          if (!execute(body))
+            return false;
+          for (auto [result, value] : llvm::zip_equal(
+                   region.getResults(), body.getTerminator()->getOperands()))
+            if (!bind(result, value))
+              return false;
+        } else if (auto publication =
+                       mlir::dyn_cast<SyncDDRPublishOp>(operation)) {
+          return executePublication(publication.getData(), true);
+        } else if (auto acquisition =
+                       mlir::dyn_cast<SyncDDRAcquireOp>(operation)) {
+          return executePublication(acquisition.getData(), false);
+        } else if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(
+                       operation)) {
+          return executeDTE(&operation);
+        } else if (mlir::isa<WaferInstructionOpInterface, SyncNCCJoinOp>(
+                       operation)) {
+          if (!executeInstruction(&operation))
+            return false;
+        } else if (!mlir::isMemoryEffectFree(&operation) &&
+                   !mlir::isa<mlir::memref::AllocOp, mlir::memref::DeallocOp>(
+                       operation)) {
           return false;
-      } else if (!mlir::isMemoryEffectFree(&operation) &&
-                 !mlir::isa<mlir::memref::AllocOp, mlir::memref::DeallocOp>(
-                     operation)) {
-        return false;
-      }
+        }
+        return true;
+      };
+      if (!visit())
+        estimateLocally(&operation, prefix);
     }
     return true;
   }
 
   const SearchCostPolicy &policy;
+  CompletionTimes &completionTimes;
   std::array<std::array<uint64_t, static_cast<unsigned>(InstrFamily::DTE)>,
              kNCCWorkerCount>
       engines{};
-  uint64_t issue = 0, work = 0;
-  mlir::Operation *lastOperation = nullptr;
+  uint64_t issue = 0, dte = 0, messages = 0, work = 0, localEstimates = 0;
+  bool coarse = false;
   llvm::DenseMap<mlir::Value, int64_t> indices;
   llvm::DenseMap<mlir::Value, Storage> aliases, storages;
   llvm::DenseMap<mlir::Value, Hazard> hazards;
+  llvm::DenseMap<mlir::Value, uint64_t> tokens;
   llvm::DenseMap<mlir::Operation *, uint64_t> services;
 };
 
@@ -691,6 +1012,7 @@ deriveSearchObjective(const InstructionProgramAggregateCost &cost,
                       llvm::ArrayRef<TileInstructionProgram> currentPrograms) {
   SearchObjective result = deriveResourceObjective(cost, cohort);
   auto *known = std::get_if<KnownSearchObjective>(&result);
+  const bool resourcesAvailable = known != nullptr;
   if (!known) {
     auto reason = std::get<UnknownSearchObjective>(result).reason;
     if (reason == SearchObjectiveUnknownReason::NoCohort)
@@ -720,65 +1042,132 @@ deriveSearchObjective(const InstructionProgramAggregateCost &cost,
             coarse.estimatedDurationPicoseconds))
       coarse.estimatedDurationPicoseconds =
           std::numeric_limits<uint64_t>::max();
-    return coarse;
+    result = coarse;
+    known = std::get_if<KnownSearchObjective>(&result);
+    uint64_t bytes;
+    if (cost.aggregateDDRReadBytes.isKnown() &&
+        cost.aggregateDDRWriteBytes.isKnown() &&
+        checkedAdd(cost.aggregateDDRReadBytes.value,
+                   cost.aggregateDDRWriteBytes.value, bytes))
+      if (auto ddr =
+              timeForWork(bytes, cohort->getPolicy().ddrNominalBytesPerSecond))
+        known->durations.ddrPicoseconds = *ddr;
   }
 
   const auto &d = known->durations;
-  unsigned __int128 local = 0;
-  if (cost.tileCosts.empty()) {
-    // Aggregate-only callers represent a single program arithmetic oracle.
-    for (uint64_t term :
-         {d.neF16Bf16Picoseconds, d.vectorF16Bf16Picoseconds,
-          d.vectorF32Picoseconds, d.spmMovementPicoseconds,
-          d.dteEndpointPicoseconds, d.dteStartupPicoseconds,
-          d.instructionControlPicoseconds, d.dteWaitControlPicoseconds,
-          d.nccWaitControlPicoseconds})
-      local += term;
-  } else {
-    for (const auto &tile : cost.tileCosts) {
-      auto time = localServiceTime(tile, cohort->getPolicy());
-      if (!time) {
-        local = std::numeric_limits<uint64_t>::max();
-        known->usesCoarseEstimate = true;
-        break;
+  if (resourcesAvailable) {
+    unsigned __int128 local = 0;
+    if (cost.tileCosts.empty()) {
+      // Aggregate-only callers represent a single program arithmetic oracle.
+      for (uint64_t term :
+           {d.neF16Bf16Picoseconds, d.vectorF16Bf16Picoseconds,
+            d.vectorF32Picoseconds, d.spmMovementPicoseconds,
+            d.dteEndpointPicoseconds, d.dteStartupPicoseconds,
+            d.instructionControlPicoseconds, d.dteWaitControlPicoseconds,
+            d.nccWaitControlPicoseconds})
+        local += term;
+    } else {
+      for (const auto &tile : cost.tileCosts) {
+        auto time = localServiceTime(tile, cohort->getPolicy());
+        if (!time) {
+          local = std::numeric_limits<uint64_t>::max();
+          known->usesCoarseEstimate = true;
+          break;
+        }
+        local = std::max(local, static_cast<unsigned __int128>(*time));
       }
-      local = std::max(local, static_cast<unsigned __int128>(*time));
     }
-  }
-  // DDR is card-shared. Endpoint and link serialize the same payload: only
-  // charge link pressure exceeding endpoint service, rather than both in full.
-  unsigned __int128 total = local + d.ddrPicoseconds + d.nocHopPicoseconds;
-  if (d.nocPicoseconds > d.dteEndpointPicoseconds)
-    total += d.nocPicoseconds - d.dteEndpointPicoseconds;
-  if (total > std::numeric_limits<uint64_t>::max()) {
-    known->estimatedDurationPicoseconds = std::numeric_limits<uint64_t>::max();
-    known->usesCoarseEstimate = true;
-  } else {
-    known->estimatedDurationPicoseconds = static_cast<uint64_t>(total);
+    // DDR is card-shared. Endpoint and link serialize the same payload: only
+    // charge link pressure exceeding endpoint service, rather than both in
+    // full.
+    unsigned __int128 total = local + d.ddrPicoseconds + d.nocHopPicoseconds;
+    if (d.nocPicoseconds > d.dteEndpointPicoseconds)
+      total += d.nocPicoseconds - d.dteEndpointPicoseconds;
+    if (total > std::numeric_limits<uint64_t>::max()) {
+      known->estimatedDurationPicoseconds =
+          std::numeric_limits<uint64_t>::max();
+      known->usesCoarseEstimate = true;
+    } else {
+      known->estimatedDurationPicoseconds = static_cast<uint64_t>(total);
+    }
   }
   if (!currentPrograms.empty() &&
       currentPrograms.size() == cost.tileCosts.size()) {
+    llvm::SmallVector<TileInstructionProgram> ordered(currentPrograms);
+    llvm::sort(ordered, [](const auto &lhs, const auto &rhs) {
+      return lhs.tileId.getValue() < rhs.tileId.getValue();
+    });
+    CompletionTimes completionTimes;
+    struct SendEndpoint {
+      uint64_t tile;
+      InstrDTESendOp op;
+    };
+    llvm::SmallVector<SendEndpoint> sends;
+    for (const auto &program : ordered)
+      program.root->walk([&](InstrDTESendOp send) {
+        if (executesOnce(send))
+          sends.push_back(
+              {static_cast<uint64_t>(program.tileId.getValue()), send});
+      });
+    for (const auto &program : ordered)
+      program.root->walk([&](InstrDTERecvOp receive) {
+        if (!executesOnce(receive))
+          return;
+        for (auto &endpoint : sends)
+          if (endpoint.tile == receive.getPeer() &&
+              endpoint.op.getPeer() ==
+                  static_cast<uint64_t>(program.tileId.getValue()) &&
+              endpoint.op.getMessage() == receive.getMessage()) {
+            completionTimes.sendForReceive[receive] = endpoint.op;
+            completionTimes.receiveForSend[endpoint.op] = receive;
+          }
+      });
+    llvm::SmallVector<std::unique_ptr<InstructionServiceEstimator>> estimators;
+    for (size_t index = 0; index < ordered.size(); ++index)
+      estimators.push_back(std::make_unique<InstructionServiceEstimator>(
+          cohort->getPolicy(), completionTimes));
     uint64_t critical = 0;
-    bool complete = true;
-    for (const auto &program : currentPrograms) {
-      InstructionServiceEstimator estimator(cohort->getPolicy());
-      auto duration = estimator.estimate(program.root);
-      if (!duration) {
-        wafer::support::addCompileCounter(
-            "cost",
-            ("execution-fallback-" + estimator.getFallbackOperationName())
-                .str(),
-            1);
-        complete = false;
+    bool complete = false, coarse = false;
+    for (unsigned iteration = 0; iteration < 32; ++iteration) {
+      support::addCompileCounter("cost", "completion-propagation-rounds", 1);
+      completionTimes.changed = false;
+      critical = 0;
+      coarse = false;
+      bool failed = false;
+      for (auto [program, estimator] : llvm::zip(ordered, estimators)) {
+        auto duration = estimator->estimate(program.root);
+        support::addCompileCounter("cost", "current-ir-estimate-work",
+                                   estimator->getWorkCount());
+        support::addCompileCounter("cost", "local-coarse-scopes",
+                                   estimator->getLocalEstimateCount());
+        if (!duration) {
+          failed = true;
+          break;
+        }
+        coarse |= estimator->usesCoarseEstimate();
+        critical = std::max(critical, *duration);
+      }
+      if (failed)
+        break;
+      if (!completionTimes.changed) {
+        complete = true;
         break;
       }
-      critical = std::max(critical, *duration);
     }
-    if (complete)
-      known->estimatedDurationPicoseconds =
-          std::max(critical, d.ddrPicoseconds);
-    else
+    if (complete) {
+      uint64_t duration =
+          std::max({critical, d.ddrPicoseconds, d.nocPicoseconds});
+      if (!checkedAdd(duration, d.nocHopPicoseconds, duration)) {
+        duration = std::numeric_limits<uint64_t>::max();
+        coarse = true;
+      }
+      known->estimatedDurationPicoseconds = duration;
+      known->usesCoarseEstimate |= coarse;
+    } else {
       known->usesCoarseEstimate = true;
+      wafer::support::addCompileCounter("cost",
+                                        "completion-estimate-work-limit", 1);
+    }
   }
   return result;
 }

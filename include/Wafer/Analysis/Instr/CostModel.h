@@ -27,7 +27,7 @@ struct SearchCostPolicy {
   /// Stable provenance is part of the comparison cohort. A candidate scored
   /// with one profile can never silently outrank a candidate scored with
   /// another profile.
-  uint64_t profileIdentity = 4;
+  uint64_t profileIdentity = 5;
   SearchCostProfileProvenance profileProvenance =
       SearchCostProfileProvenance::BuiltInEstimate;
   uint64_t ddrNominalBytesPerSecond = 150'000'000'000ULL;
@@ -38,7 +38,11 @@ struct SearchCostPolicy {
   uint64_t dteFirstMessagePicosecondsEstimate = 13'000'000ULL;
   uint64_t dteMessageStartupPicosecondsEstimate = 1'500'000ULL;
   uint64_t noCHopPicosecondsEstimate = 1'000ULL;
-  uint64_t instructionFixedPicosecondsEstimate = 1'000ULL;
+  // Shared, uncalibrated runtime submission prior. This includes software
+  // command construction/dispatch; it is not a single hardware issue cycle.
+  uint64_t instructionFixedPicosecondsEstimate = 1'000'000ULL;
+  // Uncalibrated descriptor traversal prior, distinct from software issue.
+  uint64_t gatherScatterInnerIterationPicosecondsEstimate = 1'000ULL;
   // Coarse service prior only when detailed work is not available/calibrated.
   // This includes estimated work, unlike the small issue-only control term.
   uint64_t unmodeledInstructionPicosecondsEstimate = 13'000'000ULL;
@@ -79,6 +83,8 @@ public:
            left.noCHopPicosecondsEstimate == right.noCHopPicosecondsEstimate &&
            left.instructionFixedPicosecondsEstimate ==
                right.instructionFixedPicosecondsEstimate &&
+           left.gatherScatterInnerIterationPicosecondsEstimate ==
+               right.gatherScatterInnerIterationPicosecondsEstimate &&
            left.unmodeledInstructionPicosecondsEstimate ==
                right.unmodeledInstructionPicosecondsEstimate &&
            left.dteWaitedEventPicosecondsEstimate ==

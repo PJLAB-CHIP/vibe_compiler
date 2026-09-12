@@ -10,6 +10,25 @@ import unittest
 import torch
 
 import wafer_pytorch_board_common as common
+import wafer_board_pytorch_test as board_runner
+
+
+class CompilerIRDumpTest(unittest.TestCase):
+    def test_inactive_function_symbol_and_ddr_result_do_not_imply_work(self) -> None:
+        for symbol in ("entry", "other_symbol"):
+            ir = f"""module {{
+              func.func @{symbol}() -> memref<1x2x1031xf16, #wafer.memory<ddr, tensor>> {{
+                %result = memref.alloc() : memref<1x2x1031xf16, #wafer.memory<ddr, tensor>>
+                return %result : memref<1x2x1031xf16, #wafer.memory<ddr, tensor>>
+              }}
+            }}"""
+            board_runner.verify_pre_instruction_boundary(ir, ir)
+            with self.assertRaisesRegex(RuntimeError, "gained instructions"):
+                board_runner.verify_pre_instruction_boundary(ir, "wafer.instr.fill")
+
+    def test_instruction_dump_cannot_replace_pre_instruction_evidence(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "pre-Instr"):
+            board_runner.verify_pre_instruction_boundary("wafer.instr.fill", "wafer.instr.fill")
 
 
 class PyTorchBoardCommonTest(unittest.TestCase):

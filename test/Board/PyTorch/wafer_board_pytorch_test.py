@@ -92,8 +92,7 @@ def run(
                     partial = partial.decode(errors="replace")
                 print(partial, end="", file=sys.stderr)
         raise RuntimeError(
-            "one-shot PyTorch board vertical exceeded its bounded deadline; "
-            "the test will not retry or invoke reset/power"
+            f"host process deadline exceeded after {error.timeout}s: {command[0]}"
         ) from error
     if result.returncode != 0:
         print(result.stdout, end="", file=sys.stderr)
@@ -493,6 +492,17 @@ def verify_no_card(stdout: str) -> None:
     }
     if not required.issubset(set(stdout.splitlines())):
         raise RuntimeError("no-card output omitted PyTorch package evidence")
+
+
+def verify_pre_instruction_boundary(tile_ir: str, instruction_ir: str) -> None:
+    if "wafer.instr." in tile_ir:
+        raise RuntimeError("compiler Tile/dataflow evidence is not a selected pre-Instr IR")
+    # Inactive interfaces can return a typed DDR allocation and retain the
+    # source function's symbol. Neither spelling nor allocation alone proves
+    # computation. The compiler owns typed IR verification; this check only
+    # cross-checks the two already-verified dump stages for unexpected work.
+    if "wafer.tile.region" not in tile_ir and "wafer.instr." in instruction_ir:
+        raise RuntimeError("compiler inactive Tile/dataflow evidence gained instructions")
 
 
 def verify_board(
@@ -1168,31 +1178,11 @@ def prepare_case_step(
             verify_widened_convolution(dump_compiler_ir, case.dtype)
         if case.ordered_convolution:
             verify_ordered_convolution(dump_compiler_ir)
-        for tile_file in tile_files:
-            tile_ir = tile_file.read_text(encoding="utf-8")
-            if "wafer.instr." in tile_ir:
-                raise RuntimeError(
-                    "compiler Tile/dataflow evidence is not a selected "
-                    "pre-Instr IR"
-                )
-            # A selected MPMD candidate still contains all-and-only the 16
-            # Tile interfaces. Tiles outside the winner's active
-            # placement intentionally contain the typed function boundary and
-            # observable empty results but no TileRegion. Accept that canonical
-            # inactive pre-Instr IR; requiring every interface to carry
-            # work would invalidate the legal less-than-16-Tile spatial axis.
-            if (
-                "wafer.tile.region" not in tile_ir
-                and (
-                    "func.func @main" not in tile_ir
-                    or "wafer.tile." in tile_ir
-                    or "memref.alloc" in tile_ir
-                )
-            ):
-                raise RuntimeError(
-                    "compiler inactive Tile/dataflow evidence is not a "
-                    "canonical selected pre-Instr IR"
-                )
+        for tile_file, instruction_file in zip(tile_files, instruction_files, strict=True):
+            verify_pre_instruction_boundary(
+                tile_file.read_text(encoding="utf-8"),
+                instruction_file.read_text(encoding="utf-8"),
+            )
     if args.qualify_communication == "ring-allgather":
         if case.allgather_payload_elements is None:
             raise RuntimeError("Ring AllGather qualification requires an AllGather source")

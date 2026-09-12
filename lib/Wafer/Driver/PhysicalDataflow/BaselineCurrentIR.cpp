@@ -394,6 +394,12 @@ ExecutableCompilationResult compileBaselineCurrentIR(
                       ? ExecutableCompilationStatus::UnsupportedFailure
                       : ExecutableCompilationStatus::CompilerFailure,
                   "baseline-structured-to-tile", compute.detail);
+    if (mlir::failed(optimizePhysicalMovementPlacement(
+            candidate->module->getOperation(), candidate->relations,
+            LayoutMaterializationPlacement::FirstUse)))
+      return fail(ExecutableCompilationStatus::CompilerFailure,
+                  "baseline-physical-movement-placement",
+                  "physical movement placement produced invalid current IR");
     BoundaryMovementResult movement = materializeTileBoundaryMovement(
         *candidate->module, candidate->relations,
         options.qualification ? options.qualification->movement

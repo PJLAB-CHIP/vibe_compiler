@@ -1,0 +1,1857 @@
+{
+  "compiler_sha256": "343f59262db54a71d386e8803a4dd6cfb0fa0920507d6fd0afdc0b66fe838abc",
+  "normalization_budget_measurements": [
+    {
+      "case": "llama-2-7b-block",
+      "iterations": 8,
+      "process_wall_ms": [
+        94.339,
+        93.952,
+        89.179
+      ],
+      "log": "build/test/model-performance/checkpoints/llama-2-7b-block-iterations-8.log"
+    },
+    {
+      "case": "llama-2-7b-block",
+      "iterations": 16,
+      "process_wall_ms": [
+        129.382,
+        127.961,
+        128.365
+      ],
+      "log": "build/test/model-performance/checkpoints/llama-2-7b-block-iterations-16.log"
+    },
+    {
+      "case": "llama-2-7b-block",
+      "iterations": 32,
+      "process_wall_ms": [
+        126.659,
+        128.322,
+        126.56
+      ],
+      "log": "build/test/model-performance/checkpoints/llama-2-7b-block-iterations-32.log"
+    },
+    {
+      "case": "attention-decode-kv-cache",
+      "iterations": 8,
+      "process_wall_ms": [
+        23.362,
+        19.08,
+        23.896
+      ],
+      "log": "build/test/model-performance/checkpoints/attention-decode-kv-cache-iterations-8.log"
+    },
+    {
+      "case": "attention-decode-kv-cache",
+      "iterations": 16,
+      "process_wall_ms": [
+        23.746,
+        23.371,
+        19.825
+      ],
+      "log": "build/test/model-performance/checkpoints/attention-decode-kv-cache-iterations-16.log"
+    },
+    {
+      "case": "attention-decode-kv-cache",
+      "iterations": 32,
+      "process_wall_ms": [
+        19.311,
+        21.592,
+        23.699
+      ],
+      "log": "build/test/model-performance/checkpoints/attention-decode-kv-cache-iterations-32.log"
+    }
+  ],
+  "baseline_prefill_audit": {
+    "case": "attention-prefill-llama-2-7b",
+    "step": 1,
+    "policy": "search",
+    "search_width": 8,
+    "search_trials": 42,
+    "manifest_sha256": "e6d1c6b918ecf0854a94b3466ceeb63ceac4a924388e1fa5edfad633401daf30",
+    "comparison_passed": true,
+    "comparison": {
+      "rtol": 0.006,
+      "atol": 0.008,
+      "equal_nan": false
+    },
+    "inputs": {
+      "card_00_user_input_0.f16.raw": "09ac500ff6f47422cee86f5f8c79164fe8e3c6e79334e92ddac3bcf9186d54f0",
+      "card_00_user_input_1.f16.raw": "032057f25bd5cc45fe4953e2978b0a19b8dcaeccdf215ec2ea516ee6a0efed04",
+      "card_00_user_input_2.f16.raw": "8205f432bf79c825241af66edd95ead04eccd78fc59413393dc15d408cc3ea08",
+      "card_00_user_input_3.f16.raw": "348a22cba824428a45b3aead5781dbfb399de1b45bc614b73ac31c7fd6bfb489"
+    },
+    "outputs": [
+      {
+        "shape": [
+          1,
+          32,
+          4096,
+          128
+        ],
+        "dtype": "torch.float16",
+        "elements": 16777216,
+        "max_abs_error": 0.001953125
+      }
+    ],
+    "timing": [
+      "board_timing: kind=tx-stream-events device_elapsed_ns=276776001"
+    ]
+  },
+  "decode_first_step_audit": {
+    "case": "attention-decode-kv-cache",
+    "step": 1,
+    "policy": "search",
+    "search_width": 8,
+    "search_trials": 42,
+    "manifest_sha256": "1cc7d8103fd85379992ef6dfdd02552e4a71e7c942f6ee9d4aac63d4cc7ddc8f",
+    "comparison_passed": true,
+    "comparison": {
+      "rtol": 0.006,
+      "atol": 0.008,
+      "equal_nan": false
+    },
+    "inputs": {
+      "card_00_user_input_0.f16.raw": "b7994926db73037524b5a45b805941e6887b8dd53aeda7b7528c99196e241ad6",
+      "card_00_user_input_1.f16.raw": "3982fec6b3245fa9f711adb7c9e91b80e4c88f579374e77fc0238bb6f0e843dd",
+      "card_00_user_input_2.f16.raw": "66f159274ddd2df81dc0af4eba87a5f072597b974dc5a6dfa30acef58cb2f618",
+      "card_00_user_input_3.f16.raw": "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad"
+    },
+    "outputs": [
+      {
+        "shape": [
+          1,
+          1,
+          4096
+        ],
+        "dtype": "torch.float16",
+        "elements": 4096,
+        "max_abs_error": 6.103515625e-05
+      },
+      {
+        "shape": [
+          1,
+          32,
+          1024,
+          128
+        ],
+        "dtype": "torch.float16",
+        "elements": 4194304,
+        "max_abs_error": 0.0001220703125
+      },
+      {
+        "shape": [
+          1,
+          32,
+          1024,
+          128
+        ],
+        "dtype": "torch.float16",
+        "elements": 4194304,
+        "max_abs_error": 6.103515625e-05
+      }
+    ],
+    "timing": [
+      "board_timing: kind=tx-stream-events device_elapsed_ns=15067000",
+      "profile_run: /home/ubuntu/hxf_dev/vibe_compiler/build/test/model-performance/access/attention-decode-kv-cache/step_01/package/package.profile/runs/current"
+    ]
+  },
+  "decode_first_step_profile": {
+    "run_id": "run-c62d15-05884e",
+    "duration": {
+      "completion_observation_fraction": 0.0004032843425811155,
+      "completion_observation_resolution_ns": 6320,
+      "device_elapsed_ns": 15067000,
+      "device_elapsed_quantized_zero": false,
+      "device_timer_kind": "tx-stream-events",
+      "host_completion_high_resolution": true,
+      "host_envelope_available": true,
+      "host_launch_to_completion_ns": 15671325,
+      "host_non_submit_envelope_ns": 15506152,
+      "host_submit_ns": 165173,
+      "host_submit_quantized_zero": false,
+      "includes_device_control_wait_and_scheduling": true,
+      "includes_host_completion_polling": false,
+      "includes_host_submit": false,
+      "includes_trace_instrumentation": false,
+      "is_engine_only": false,
+      "measurement_kind": "tx-stream-kernel-launch-to-completion-envelope",
+      "qualified": true,
+      "sample_id": "primary",
+      "sample_index": 0,
+      "scope": "primary-launch-to-stream-completion",
+      "status": "Measured"
+    },
+    "engine_active_time": {
+      "additive_to_kernel_launch_envelope": false,
+      "by_engine": [
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 26708.0,
+          "engine": "CT",
+          "maximum_per_tile_ns": 28371,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 25045,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 427328
+        },
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 81456.0,
+          "engine": "NE",
+          "maximum_per_tile_ns": 81456,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 81456,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 1303296
+        },
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 6909390.6875,
+          "engine": "RDMA",
+          "maximum_per_tile_ns": 7579909,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 6354612,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 110550251
+        },
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 80651.3125,
+          "engine": "WDMA",
+          "maximum_per_tile_ns": 96804,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 75027,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 1290421
+        },
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 799919.375,
+          "engine": "TDMA",
+          "maximum_per_tile_ns": 804805,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 795031,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 12798710
+        }
+      ],
+      "card_wide_engine_elapsed_ns": null,
+      "card_wide_engine_elapsed_reason": "per-tile engines may overlap and have no qualified global activity start/end alignment",
+      "card_wide_engine_elapsed_status": "Unavailable",
+      "cross_tile_sum_role": "work-volume-not-wall-time",
+      "measurement_kind": "trace-pmu-engine-active-time",
+      "measurement_run": "trace-diagnostic",
+      "per_tile_work_volume": {
+        "available_tile_count": 16,
+        "average_per_tile_total_work_ns": 7898125.375,
+        "maximum_per_tile_total_work_ns": 8558390,
+        "minimum_per_tile_total_work_ns": 7353524,
+        "status": "Measured",
+        "sum_across_tiles_work_ns": 126370006
+      },
+      "relation_to_primary": "separate-run-proxy",
+      "scope": "per-tile-per-ncc-engine",
+      "source_capture": "trace",
+      "unit": "ns"
+    },
+    "trace_capture": {
+      "captured_events": 64000,
+      "full_execution": false,
+      "scope": "event-prefix",
+      "total_events": 115360
+    },
+    "validity": {
+      "clock_alignment": false,
+      "cost_accounting": true,
+      "environment": true,
+      "full_trace": false,
+      "host_completion_resolution": true,
+      "measurement_basis": true,
+      "output_equivalence": true,
+      "pmu": true,
+      "pmu_restore": true,
+      "profile_instrumentation": true,
+      "program_contract": true,
+      "semantic_correctness": null,
+      "trace": true
+    }
+  },
+  "limitations": [
+    "decode first step passed; first continuation launch was not attempted because host preparation was incomplete",
+    "budget timing uses the same normalized TensorProgram checkpoint, not full compilation or device execution",
+    "partial address proof accepts only pairwise disjoint current physical alternatives"
+  ],
+  "llama_audit": {
+    "case": "llama-2-7b-block",
+    "step": 1,
+    "policy": "search",
+    "search_width": 8,
+    "search_trials": 14,
+    "manifest_sha256": "73e5f62e6dd3654dac38978ae4feeafa6cdc73e828c2faa21c3af0b671c5df8d",
+    "comparison_passed": true,
+    "comparison": {
+      "rtol": 0.002,
+      "atol": 0.004,
+      "equal_nan": false
+    },
+    "inputs": {
+      "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+    },
+    "outputs": [
+      {
+        "shape": [
+          1,
+          16,
+          4096
+        ],
+        "dtype": "torch.float16",
+        "elements": 65536,
+        "max_abs_error": 0.0009765625
+      }
+    ],
+    "timing": [
+      "board_timing: kind=tx-stream-events device_elapsed_ns=37444000",
+      "profile_run: /home/ubuntu/hxf_dev/vibe_compiler/build/test/model-performance/access/llama-2-7b-block/package/package.profile/runs/current"
+    ]
+  },
+  "llama_profile": {
+    "trace_capture": {
+      "captured_events": 64000,
+      "full_execution": false,
+      "scope": "event-prefix",
+      "total_events": 326884
+    },
+    "validity": {
+      "clock_alignment": false,
+      "cost_accounting": true,
+      "environment": true,
+      "full_trace": false,
+      "host_completion_resolution": true,
+      "measurement_basis": true,
+      "output_equivalence": true,
+      "pmu": true,
+      "pmu_restore": true,
+      "profile_instrumentation": true,
+      "program_contract": true,
+      "semantic_correctness": null,
+      "trace": true
+    },
+    "program": {
+      "duration": {
+        "completion_observation_fraction": 0.0004772828690829749,
+        "completion_observation_resolution_ns": 18050,
+        "device_elapsed_ns": 37444000,
+        "device_elapsed_quantized_zero": false,
+        "device_timer_kind": "tx-stream-events",
+        "host_completion_high_resolution": true,
+        "host_envelope_available": true,
+        "host_launch_to_completion_ns": 37818244,
+        "host_non_submit_envelope_ns": 37684811,
+        "host_submit_ns": 133433,
+        "host_submit_quantized_zero": false,
+        "includes_device_control_wait_and_scheduling": true,
+        "includes_host_completion_polling": false,
+        "includes_host_submit": false,
+        "includes_trace_instrumentation": false,
+        "is_engine_only": false,
+        "measurement_kind": "tx-stream-kernel-launch-to-completion-envelope",
+        "qualified": true,
+        "sample_id": "primary",
+        "sample_index": 0,
+        "scope": "primary-launch-to-stream-completion",
+        "status": "Measured"
+      },
+      "engine_active_time": {
+        "additive_to_kernel_launch_envelope": false,
+        "by_engine": [
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 86020.0,
+            "engine": "CT",
+            "maximum_per_tile_ns": 86020,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 86020,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 1376320
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 190306.0,
+            "engine": "NE",
+            "maximum_per_tile_ns": 190306,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 190306,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 3044896
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 18290366.3125,
+            "engine": "RDMA",
+            "maximum_per_tile_ns": 20167434,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 16419831,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 292645861
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 287181.875,
+            "engine": "WDMA",
+            "maximum_per_tile_ns": 298028,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 274408,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 4594910
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 949586.6875,
+            "engine": "TDMA",
+            "maximum_per_tile_ns": 949744,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 949527,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 15193387
+          }
+        ],
+        "card_wide_engine_elapsed_ns": null,
+        "card_wide_engine_elapsed_reason": "per-tile engines may overlap and have no qualified global activity start/end alignment",
+        "card_wide_engine_elapsed_status": "Unavailable",
+        "cross_tile_sum_role": "work-volume-not-wall-time",
+        "measurement_kind": "trace-pmu-engine-active-time",
+        "measurement_run": "trace-diagnostic",
+        "per_tile_work_volume": {
+          "available_tile_count": 16,
+          "average_per_tile_total_work_ns": 19803460.875,
+          "maximum_per_tile_total_work_ns": 21687265,
+          "minimum_per_tile_total_work_ns": 17920121,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 316855374
+        },
+        "relation_to_primary": "separate-run-proxy",
+        "scope": "per-tile-per-ncc-engine",
+        "source_capture": "trace",
+        "unit": "ns"
+      }
+    }
+  },
+  "decode_step_01_audit": {
+    "case": "attention-decode-kv-cache",
+    "step": 1,
+    "policy": "search",
+    "search_width": 8,
+    "search_trials": 42,
+    "manifest_sha256": "1cc7d8103fd85379992ef6dfdd02552e4a71e7c942f6ee9d4aac63d4cc7ddc8f",
+    "comparison_passed": true,
+    "comparison": {
+      "rtol": 0.006,
+      "atol": 0.008,
+      "equal_nan": false
+    },
+    "inputs": {
+      "card_00_user_input_0.f16.raw": "b7994926db73037524b5a45b805941e6887b8dd53aeda7b7528c99196e241ad6",
+      "card_00_user_input_1.f16.raw": "3982fec6b3245fa9f711adb7c9e91b80e4c88f579374e77fc0238bb6f0e843dd",
+      "card_00_user_input_2.f16.raw": "66f159274ddd2df81dc0af4eba87a5f072597b974dc5a6dfa30acef58cb2f618",
+      "card_00_user_input_3.f16.raw": "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad"
+    },
+    "outputs": [
+      {
+        "shape": [
+          1,
+          1,
+          4096
+        ],
+        "dtype": "torch.float16",
+        "elements": 4096,
+        "max_abs_error": 6.103515625e-05
+      },
+      {
+        "shape": [
+          1,
+          32,
+          1024,
+          128
+        ],
+        "dtype": "torch.float16",
+        "elements": 4194304,
+        "max_abs_error": 0.0001220703125
+      },
+      {
+        "shape": [
+          1,
+          32,
+          1024,
+          128
+        ],
+        "dtype": "torch.float16",
+        "elements": 4194304,
+        "max_abs_error": 6.103515625e-05
+      }
+    ],
+    "timing": [
+      "board_timing: kind=tx-stream-events device_elapsed_ns=15258000",
+      "profile_run: /home/ubuntu/hxf_dev/vibe_compiler/build/test/model-performance/access/attention-decode-kv-cache/step_01/package/package.profile/runs/current"
+    ]
+  },
+  "decode_step_01_profile": {
+    "trace_capture": {
+      "captured_events": 64000,
+      "full_execution": false,
+      "scope": "event-prefix",
+      "total_events": 115360
+    },
+    "validity": {
+      "clock_alignment": false,
+      "cost_accounting": true,
+      "environment": true,
+      "full_trace": false,
+      "host_completion_resolution": true,
+      "measurement_basis": true,
+      "output_equivalence": true,
+      "pmu": true,
+      "pmu_restore": true,
+      "profile_instrumentation": true,
+      "program_contract": true,
+      "semantic_correctness": null,
+      "trace": true
+    },
+    "program": {
+      "duration": {
+        "completion_observation_fraction": 0.0011408528210382208,
+        "completion_observation_resolution_ns": 18105,
+        "device_elapsed_ns": 15258000,
+        "device_elapsed_quantized_zero": false,
+        "device_timer_kind": "tx-stream-events",
+        "host_completion_high_resolution": true,
+        "host_envelope_available": true,
+        "host_launch_to_completion_ns": 15869707,
+        "host_non_submit_envelope_ns": 15696037,
+        "host_submit_ns": 173670,
+        "host_submit_quantized_zero": false,
+        "includes_device_control_wait_and_scheduling": true,
+        "includes_host_completion_polling": false,
+        "includes_host_submit": false,
+        "includes_trace_instrumentation": false,
+        "is_engine_only": false,
+        "measurement_kind": "tx-stream-kernel-launch-to-completion-envelope",
+        "qualified": true,
+        "sample_id": "primary",
+        "sample_index": 0,
+        "scope": "primary-launch-to-stream-completion",
+        "status": "Measured"
+      },
+      "engine_active_time": {
+        "additive_to_kernel_launch_envelope": false,
+        "by_engine": [
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 26708.0,
+            "engine": "CT",
+            "maximum_per_tile_ns": 28371,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 25045,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 427328
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 81456.0,
+            "engine": "NE",
+            "maximum_per_tile_ns": 81456,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 81456,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 1303296
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 6930515.75,
+            "engine": "RDMA",
+            "maximum_per_tile_ns": 7867433,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 5844365,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 110888252
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 82089.25,
+            "engine": "WDMA",
+            "maximum_per_tile_ns": 90706,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 74441,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 1313428
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 799919.875,
+            "engine": "TDMA",
+            "maximum_per_tile_ns": 804806,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 795031,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 12798718
+          }
+        ],
+        "card_wide_engine_elapsed_ns": null,
+        "card_wide_engine_elapsed_reason": "per-tile engines may overlap and have no qualified global activity start/end alignment",
+        "card_wide_engine_elapsed_status": "Unavailable",
+        "cross_tile_sum_role": "work-volume-not-wall-time",
+        "measurement_kind": "trace-pmu-engine-active-time",
+        "measurement_run": "trace-diagnostic",
+        "per_tile_work_volume": {
+          "available_tile_count": 16,
+          "average_per_tile_total_work_ns": 7920688.875,
+          "maximum_per_tile_total_work_ns": 8864448,
+          "minimum_per_tile_total_work_ns": 6846000,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 126731022
+        },
+        "relation_to_primary": "separate-run-proxy",
+        "scope": "per-tile-per-ncc-engine",
+        "source_capture": "trace",
+        "unit": "ns"
+      }
+    }
+  },
+  "decode_step_02_audit": {
+    "case": "attention-decode-kv-cache-continuation",
+    "step": 2,
+    "policy": "search",
+    "search_width": 8,
+    "search_trials": 42,
+    "manifest_sha256": "583687b7e821ffdbabdb794e2f4e57fa5303ddcea1590235ad15de1c88d57733",
+    "comparison_passed": true,
+    "comparison": {
+      "rtol": 0.006,
+      "atol": 0.008,
+      "equal_nan": false
+    },
+    "inputs": {
+      "card_00_user_input_0.f16.raw": "720290da4654d41418b64ee61449cbb8c6612bb18ae6b69f4702678dd1e9a3ea",
+      "card_00_user_input_1.f16.raw": "250c21ea9d405ccdd0847ab31f1f9dd29fbcdec205c061e69775594d5fc29950",
+      "card_00_user_input_2.f16.raw": "32827052832674fdfbd5ee1cb1665e1a3eb9a8453f4050eabaa81684b03da637",
+      "card_00_user_input_3.f16.raw": "382e008e5bc647359ed6f41cb932f732b000a96c6048edd3cae85e65df04c175"
+    },
+    "outputs": [
+      {
+        "shape": [
+          1,
+          1,
+          4096
+        ],
+        "dtype": "torch.float16",
+        "elements": 4096,
+        "max_abs_error": 6.103515625e-05
+      },
+      {
+        "shape": [
+          1,
+          32,
+          1025,
+          128
+        ],
+        "dtype": "torch.float16",
+        "elements": 4198400,
+        "max_abs_error": 6.103515625e-05
+      },
+      {
+        "shape": [
+          1,
+          32,
+          1025,
+          128
+        ],
+        "dtype": "torch.float16",
+        "elements": 4198400,
+        "max_abs_error": 0.0001220703125
+      }
+    ],
+    "timing": [
+      "board_timing: kind=tx-stream-events device_elapsed_ns=15087000",
+      "profile_run: /home/ubuntu/hxf_dev/vibe_compiler/build/test/model-performance/access/attention-decode-kv-cache/step_02/package/package.profile/runs/current"
+    ]
+  },
+  "decode_step_02_profile": {
+    "trace_capture": {
+      "captured_events": 64000,
+      "full_execution": false,
+      "scope": "event-prefix",
+      "total_events": 116256
+    },
+    "validity": {
+      "clock_alignment": false,
+      "cost_accounting": true,
+      "environment": true,
+      "full_trace": false,
+      "host_completion_resolution": true,
+      "measurement_basis": true,
+      "output_equivalence": true,
+      "pmu": true,
+      "pmu_restore": true,
+      "profile_instrumentation": true,
+      "program_contract": true,
+      "semantic_correctness": null,
+      "trace": true
+    },
+    "program": {
+      "duration": {
+        "completion_observation_fraction": 0.0011623647877572712,
+        "completion_observation_resolution_ns": 18117,
+        "device_elapsed_ns": 15087000,
+        "device_elapsed_quantized_zero": false,
+        "device_timer_kind": "tx-stream-events",
+        "host_completion_high_resolution": true,
+        "host_envelope_available": true,
+        "host_launch_to_completion_ns": 15586329,
+        "host_non_submit_envelope_ns": 15432028,
+        "host_submit_ns": 154301,
+        "host_submit_quantized_zero": false,
+        "includes_device_control_wait_and_scheduling": true,
+        "includes_host_completion_polling": false,
+        "includes_host_submit": false,
+        "includes_trace_instrumentation": false,
+        "is_engine_only": false,
+        "measurement_kind": "tx-stream-kernel-launch-to-completion-envelope",
+        "qualified": true,
+        "sample_id": "primary",
+        "sample_index": 0,
+        "scope": "primary-launch-to-stream-completion",
+        "status": "Measured"
+      },
+      "engine_active_time": {
+        "additive_to_kernel_launch_envelope": false,
+        "by_engine": [
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 27195.5,
+            "engine": "CT",
+            "maximum_per_tile_ns": 29346,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 25045,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 435128
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 81712.5,
+            "engine": "NE",
+            "maximum_per_tile_ns": 81969,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 81456,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 1307400
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 7140903.625,
+            "engine": "RDMA",
+            "maximum_per_tile_ns": 8020123,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 6219919,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 114254458
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 81263.875,
+            "engine": "WDMA",
+            "maximum_per_tile_ns": 92716,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 71129,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 1300222
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 801344.0625,
+            "engine": "TDMA",
+            "maximum_per_tile_ns": 808260,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 794431,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 12821505
+          }
+        ],
+        "card_wide_engine_elapsed_ns": null,
+        "card_wide_engine_elapsed_reason": "per-tile engines may overlap and have no qualified global activity start/end alignment",
+        "card_wide_engine_elapsed_status": "Unavailable",
+        "cross_tile_sum_role": "work-volume-not-wall-time",
+        "measurement_kind": "trace-pmu-engine-active-time",
+        "measurement_run": "trace-diagnostic",
+        "per_tile_work_volume": {
+          "available_tile_count": 16,
+          "average_per_tile_total_work_ns": 8132419.5625,
+          "maximum_per_tile_total_work_ns": 9020924,
+          "minimum_per_tile_total_work_ns": 7217466,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 130118713
+        },
+        "relation_to_primary": "separate-run-proxy",
+        "scope": "per-tile-per-ncc-engine",
+        "source_capture": "trace",
+        "unit": "ns"
+      }
+    }
+  },
+  "placement_prefill_audit": {
+    "case": "attention-prefill-llama-2-7b",
+    "step": 1,
+    "policy": "search",
+    "search_width": 8,
+    "search_trials": 42,
+    "manifest_sha256": "6f7ceca1a5966f1c75a394a106a17d1baa617d962cf8a669f94ab1eae134fe09",
+    "comparison_passed": true,
+    "comparison": {
+      "rtol": 0.006,
+      "atol": 0.008,
+      "equal_nan": false
+    },
+    "inputs": {
+      "card_00_user_input_0.f16.raw": "09ac500ff6f47422cee86f5f8c79164fe8e3c6e79334e92ddac3bcf9186d54f0",
+      "card_00_user_input_1.f16.raw": "032057f25bd5cc45fe4953e2978b0a19b8dcaeccdf215ec2ea516ee6a0efed04",
+      "card_00_user_input_2.f16.raw": "8205f432bf79c825241af66edd95ead04eccd78fc59413393dc15d408cc3ea08",
+      "card_00_user_input_3.f16.raw": "348a22cba824428a45b3aead5781dbfb399de1b45bc614b73ac31c7fd6bfb489"
+    },
+    "outputs": [
+      {
+        "shape": [
+          1,
+          32,
+          4096,
+          128
+        ],
+        "dtype": "torch.float16",
+        "elements": 16777216,
+        "max_abs_error": 0.001953125
+      }
+    ],
+    "timing": [
+      "profile_run: /home/ubuntu/hxf_dev/vibe_compiler/build/test/model-performance/placement/prefill/package/package.profile/runs/current"
+    ]
+  },
+  "placement_prefill_profile": {
+    "trace_capture": {
+      "captured_events": 64000,
+      "full_execution": false,
+      "scope": "event-prefix",
+      "total_events": 1982496
+    },
+    "validity": {
+      "clock_alignment": false,
+      "cost_accounting": true,
+      "environment": true,
+      "full_trace": false,
+      "host_completion_resolution": true,
+      "measurement_basis": true,
+      "output_equivalence": true,
+      "pmu": true,
+      "pmu_restore": true,
+      "profile_instrumentation": true,
+      "program_contract": true,
+      "semantic_correctness": null,
+      "trace": true
+    },
+    "program": {
+      "duration": {
+        "completion_observation_fraction": 6.361814621530298e-05,
+        "completion_observation_resolution_ns": 17835,
+        "device_elapsed_ns": 279968994,
+        "device_elapsed_quantized_zero": false,
+        "device_timer_kind": "tx-stream-events",
+        "host_completion_high_resolution": true,
+        "host_envelope_available": true,
+        "host_launch_to_completion_ns": 280344541,
+        "host_non_submit_envelope_ns": 280233141,
+        "host_submit_ns": 111400,
+        "host_submit_quantized_zero": false,
+        "includes_device_control_wait_and_scheduling": true,
+        "includes_host_completion_polling": false,
+        "includes_host_submit": false,
+        "includes_trace_instrumentation": false,
+        "is_engine_only": false,
+        "measurement_kind": "tx-stream-kernel-launch-to-completion-envelope",
+        "qualified": true,
+        "sample_id": "primary",
+        "sample_index": 0,
+        "scope": "primary-launch-to-stream-completion",
+        "status": "Measured"
+      },
+      "engine_active_time": {
+        "additive_to_kernel_launch_envelope": false,
+        "by_engine": [
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 26371712.125,
+            "engine": "CT",
+            "maximum_per_tile_ns": 26371714,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 26371712,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 421947394
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 2549760.0,
+            "engine": "NE",
+            "maximum_per_tile_ns": 2549760,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 2549760,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 40796160
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 12083115.1875,
+            "engine": "RDMA",
+            "maximum_per_tile_ns": 15628654,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 8956275,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 193329843
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 109737.625,
+            "engine": "WDMA",
+            "maximum_per_tile_ns": 160637,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 81801,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 1755802
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 236432676.375,
+            "engine": "TDMA",
+            "maximum_per_tile_ns": 236432717,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 236432672,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 3782922822
+          }
+        ],
+        "card_wide_engine_elapsed_ns": null,
+        "card_wide_engine_elapsed_reason": "per-tile engines may overlap and have no qualified global activity start/end alignment",
+        "card_wide_engine_elapsed_status": "Unavailable",
+        "cross_tile_sum_role": "work-volume-not-wall-time",
+        "measurement_kind": "trace-pmu-engine-active-time",
+        "measurement_run": "trace-diagnostic",
+        "per_tile_work_volume": {
+          "available_tile_count": 16,
+          "average_per_tile_total_work_ns": 277547001.3125,
+          "maximum_per_tile_total_work_ns": 281128881,
+          "minimum_per_tile_total_work_ns": 274396190,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 4440752021
+        },
+        "relation_to_primary": "separate-run-proxy",
+        "scope": "per-tile-per-ncc-engine",
+        "source_capture": "trace",
+        "unit": "ns"
+      }
+    }
+  },
+  "compilerGenerations": {
+    "access": "343f59262db54a71d386e8803a4dd6cfb0fa0920507d6fd0afdc0b66fe838abc",
+    "placement": "c3c20429aa6b1a067042078b8738627ea249e302cf2f0e4f4a2f5a265f0994b5",
+    "beforeIntegerProposals": "6552168f76f04d2890dc64eeffd1e04d57491709df92db9bc69b62e0d92768eb",
+    "integerProposals": "b3f97ca90320465dbd498ee237b1b22d64fde773f44bfbc5a0cf0a9266b4ccf9",
+    "integerAnchors": "1e2160143b76511717c29e21aaa8e2265fd25aca4df183e775414439304ed11c",
+    "regionDependencies": "cd6ffdf24479ed844bcf3e999e80059a222e2a3b1529f8509023d6008ef4fce3"
+  },
+  "beforeIntegerProposals": [
+    {
+      "case": "llama",
+      "noCard": true,
+      "boardExecuted": true,
+      "compilerGeneration": "beforeIntegerProposals",
+      "module_00000.so": {
+        "sha256": "a6276aac2c15eca8f039528534991a223f3c3203480911ec4b7c05ccc5972da9",
+        "equalToPrevious": false
+      },
+      "program-data.bin": {
+        "sha256": "2c70f48e3e9be02d85e54cf0486fdf833a0ddd09a3e13659e7d8a874268cad59",
+        "equalToPrevious": true
+      },
+      "boardAudit": {
+        "case": "llama-2-7b-block",
+        "step": 1,
+        "policy": "search",
+        "search_width": 8,
+        "search_trials": 14,
+        "manifest_sha256": "42257f622fd33210e438972cbf9982b0a761e237460a7d90c229daeaf7ec9c63",
+        "comparison_passed": true,
+        "comparison": {
+          "rtol": 0.002,
+          "atol": 0.004,
+          "equal_nan": false
+        },
+        "inputs": {
+          "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+        },
+        "outputs": [
+          {
+            "shape": [
+              1,
+              16,
+              4096
+            ],
+            "dtype": "torch.float16",
+            "elements": 65536,
+            "max_abs_error": 0.0009765625
+          }
+        ],
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=36780998"
+        ]
+      }
+    },
+    {
+      "case": "prefill",
+      "noCard": true,
+      "boardExecuted": false,
+      "compilerGeneration": "beforeIntegerProposals",
+      "module_00000.so": {
+        "sha256": "fe0b0aed108d93de5c32f40271264b6a79f293b5c83ce402830b5773b2e4a75b",
+        "equalToPrevious": true
+      },
+      "program-data.bin": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "equalToPrevious": true
+      }
+    },
+    {
+      "case": "decode1",
+      "noCard": true,
+      "boardExecuted": false,
+      "compilerGeneration": "beforeIntegerProposals",
+      "module_00000.so": {
+        "sha256": "147b4e6358c46c0f7aed1c249e6a80ca5406ec85e1e023cfb55ac6ac532de984",
+        "equalToPrevious": false
+      },
+      "program-data.bin": {
+        "sha256": "93043fc6e4304f3cd534b48f9aa820f7148a32b7325cd9ece218062a134aa7d2",
+        "equalToPrevious": true
+      }
+    },
+    {
+      "case": "decode2",
+      "noCard": true,
+      "boardExecuted": false,
+      "compilerGeneration": "beforeIntegerProposals",
+      "module_00000.so": {
+        "sha256": "36cc0c2f5a9d4ef4108abc9f786797027d12cc9f429c0eb7df5d254e9b17ead1",
+        "equalToPrevious": false
+      },
+      "program-data.bin": {
+        "sha256": "9a74a9310d8b19df18210ceaa45df95ffe94501c4c0cf397208da2f2880a5fd9",
+        "equalToPrevious": true
+      }
+    }
+  ],
+  "ablationBoundary": "访问吸收样本与整数近邻前样本还包含物理复用和主机实现差异，不是纯cost单变量对照；目录cost仅为本轮审计位置。",
+  "integerBudgetHostAudit": [
+    {
+      "case": "prefill",
+      "dtype": "float16",
+      "width": 8,
+      "trials": 14,
+      "compilerGeneration": "integerAnchors",
+      "status": "no-card-passed",
+      "completedNoCardSteps": 1,
+      "expectedSteps": 1,
+      "coverage": [
+        {
+          "status": "feasible-partial",
+          "structural": 6,
+          "actual": 14,
+          "accepted": 2,
+          "exact_rejected": 12,
+          "capacity_refinements": 0,
+          "unavailable_refinements": 12,
+          "unsupported": 0,
+          "indeterminate": 0
+        }
+      ],
+      "compile": [
+        {
+          "wallMs": 24113,
+          "peakRssKiB": 1093128
+        }
+      ],
+      "log": "build/test/model-performance/anchored/prefill-14.log",
+      "minimumRecordedEstimateCandidate": 3,
+      "minimumRecordedEstimatePs": 123150589672,
+      "minimumRecordedCandidateCounters": {
+        "accepted": 1,
+        "actual-tile-0-regions": 1,
+        "actual-tile-1-regions": 1,
+        "actual-tile-10-regions": 1,
+        "actual-tile-11-regions": 1,
+        "actual-tile-12-regions": 1,
+        "actual-tile-13-regions": 1,
+        "actual-tile-14-regions": 1,
+        "actual-tile-15-regions": 1,
+        "actual-tile-2-regions": 1,
+        "actual-tile-3-regions": 1,
+        "actual-tile-4-regions": 1,
+        "actual-tile-5-regions": 1,
+        "actual-tile-6-regions": 1,
+        "actual-tile-7-regions": 1,
+        "actual-tile-8-regions": 1,
+        "actual-tile-9-regions": 1,
+        "actual-tile-regions": 16,
+        "actualizations": 1,
+        "ddr-read-bytes": 2717908992,
+        "ddr-read-bytes-known": 1,
+        "ddr-write-bytes": 33554432,
+        "ddr-write-bytes-known": 1,
+        "exact-rejected": 0,
+        "indeterminate": 0,
+        "instruction-count": 991248,
+        "instruction-count-known": 1,
+        "merges": 0,
+        "objective-coarse-estimate": 0,
+        "objective-ddr-buffer-count": 16,
+        "objective-ddr-high-water-bytes": 33554432,
+        "objective-ddr-picoseconds": 18343089494,
+        "objective-dte-endpoint-picoseconds": 0,
+        "objective-dte-startup-picoseconds": 0,
+        "objective-dte-wait-picoseconds": 0,
+        "objective-estimated-picoseconds": 123150589672,
+        "objective-instruction-picoseconds": 61953000000,
+        "objective-known": 1,
+        "objective-ncc-wait-picoseconds": 185000,
+        "objective-ne-picoseconds": 2147483648,
+        "objective-noc-hop-picoseconds": 0,
+        "objective-noc-picoseconds": 0,
+        "objective-profile-calibrated": 0,
+        "objective-profile-identity": 5,
+        "objective-spm-buffer-count": 864,
+        "objective-spm-high-water-bytes": 952320,
+        "objective-spm-picoseconds": 108193280000,
+        "objective-vector-f16-picoseconds": 2097152000,
+        "objective-vector-f32-picoseconds": 10641408000,
+        "structural-session": 0,
+        "unsupported": 0
+      },
+      "primaryPackages": [
+        {
+          "manifestSha256": "6f7ceca1a5966f1c75a394a106a17d1baa617d962cf8a669f94ab1eae134fe09",
+          "path": "build/test/model-performance/anchored/prefill-14/package/package",
+          "moduleSha256": "fe0b0aed108d93de5c32f40271264b6a79f293b5c83ce402830b5773b2e4a75b"
+        }
+      ]
+    },
+    {
+      "case": "prefill",
+      "dtype": "float16",
+      "width": 8,
+      "trials": 42,
+      "compilerGeneration": "integerAnchors",
+      "status": "no-card-passed",
+      "completedNoCardSteps": 1,
+      "expectedSteps": 1,
+      "coverage": [
+        {
+          "status": "feasible-partial",
+          "structural": 19,
+          "actual": 42,
+          "accepted": 2,
+          "exact_rejected": 40,
+          "capacity_refinements": 0,
+          "unavailable_refinements": 40,
+          "unsupported": 0,
+          "indeterminate": 0
+        }
+      ],
+      "compile": [
+        {
+          "wallMs": 32816,
+          "peakRssKiB": 1087296
+        }
+      ],
+      "log": "build/test/model-performance/anchored/prefill-42.log",
+      "minimumRecordedEstimateCandidate": 3,
+      "minimumRecordedEstimatePs": 123150589672,
+      "minimumRecordedCandidateCounters": {
+        "accepted": 1,
+        "actual-tile-0-regions": 1,
+        "actual-tile-1-regions": 1,
+        "actual-tile-10-regions": 1,
+        "actual-tile-11-regions": 1,
+        "actual-tile-12-regions": 1,
+        "actual-tile-13-regions": 1,
+        "actual-tile-14-regions": 1,
+        "actual-tile-15-regions": 1,
+        "actual-tile-2-regions": 1,
+        "actual-tile-3-regions": 1,
+        "actual-tile-4-regions": 1,
+        "actual-tile-5-regions": 1,
+        "actual-tile-6-regions": 1,
+        "actual-tile-7-regions": 1,
+        "actual-tile-8-regions": 1,
+        "actual-tile-9-regions": 1,
+        "actual-tile-regions": 16,
+        "actualizations": 1,
+        "ddr-read-bytes": 2717908992,
+        "ddr-read-bytes-known": 1,
+        "ddr-write-bytes": 33554432,
+        "ddr-write-bytes-known": 1,
+        "exact-rejected": 0,
+        "indeterminate": 0,
+        "instruction-count": 991248,
+        "instruction-count-known": 1,
+        "merges": 0,
+        "objective-coarse-estimate": 0,
+        "objective-ddr-buffer-count": 16,
+        "objective-ddr-high-water-bytes": 33554432,
+        "objective-ddr-picoseconds": 18343089494,
+        "objective-dte-endpoint-picoseconds": 0,
+        "objective-dte-startup-picoseconds": 0,
+        "objective-dte-wait-picoseconds": 0,
+        "objective-estimated-picoseconds": 123150589672,
+        "objective-instruction-picoseconds": 61953000000,
+        "objective-known": 1,
+        "objective-ncc-wait-picoseconds": 185000,
+        "objective-ne-picoseconds": 2147483648,
+        "objective-noc-hop-picoseconds": 0,
+        "objective-noc-picoseconds": 0,
+        "objective-profile-calibrated": 0,
+        "objective-profile-identity": 5,
+        "objective-spm-buffer-count": 864,
+        "objective-spm-high-water-bytes": 952320,
+        "objective-spm-picoseconds": 108193280000,
+        "objective-vector-f16-picoseconds": 2097152000,
+        "objective-vector-f32-picoseconds": 10641408000,
+        "structural-session": 0,
+        "unsupported": 0
+      },
+      "primaryPackages": [
+        {
+          "manifestSha256": "6f7ceca1a5966f1c75a394a106a17d1baa617d962cf8a669f94ab1eae134fe09",
+          "path": "build/test/model-performance/anchored/prefill-42/package/package",
+          "moduleSha256": "fe0b0aed108d93de5c32f40271264b6a79f293b5c83ce402830b5773b2e4a75b"
+        }
+      ]
+    },
+    {
+      "case": "prefill",
+      "dtype": "float16",
+      "width": 8,
+      "trials": 126,
+      "compilerGeneration": "integerAnchors",
+      "status": "no-card-passed",
+      "completedNoCardSteps": 1,
+      "expectedSteps": 1,
+      "coverage": [
+        {
+          "status": "feasible-partial",
+          "structural": 52,
+          "actual": 126,
+          "accepted": 9,
+          "exact_rejected": 117,
+          "capacity_refinements": 0,
+          "unavailable_refinements": 117,
+          "unsupported": 0,
+          "indeterminate": 0
+        }
+      ],
+      "compile": [
+        {
+          "wallMs": 107611,
+          "peakRssKiB": 1113780
+        }
+      ],
+      "log": "build/test/model-performance/anchored/prefill-126.log",
+      "minimumRecordedEstimateCandidate": 124,
+      "minimumRecordedEstimatePs": 85792929789,
+      "minimumRecordedCandidateCounters": {
+        "accepted": 1,
+        "actual-tile-0-regions": 1,
+        "actual-tile-1-regions": 1,
+        "actual-tile-10-regions": 1,
+        "actual-tile-11-regions": 1,
+        "actual-tile-12-regions": 1,
+        "actual-tile-13-regions": 1,
+        "actual-tile-14-regions": 1,
+        "actual-tile-15-regions": 1,
+        "actual-tile-2-regions": 1,
+        "actual-tile-3-regions": 1,
+        "actual-tile-4-regions": 1,
+        "actual-tile-5-regions": 1,
+        "actual-tile-6-regions": 1,
+        "actual-tile-7-regions": 1,
+        "actual-tile-8-regions": 1,
+        "actual-tile-9-regions": 1,
+        "actual-tile-regions": 16,
+        "actualizations": 1,
+        "ddr-read-bytes": 2181038080,
+        "ddr-read-bytes-known": 1,
+        "ddr-write-bytes": 33554432,
+        "ddr-write-bytes-known": 1,
+        "exact-rejected": 0,
+        "indeterminate": 0,
+        "instruction-count": 392208,
+        "instruction-count-known": 1,
+        "merges": 0,
+        "objective-coarse-estimate": 0,
+        "objective-ddr-buffer-count": 16,
+        "objective-ddr-high-water-bytes": 33554432,
+        "objective-ddr-picoseconds": 14763950080,
+        "objective-dte-endpoint-picoseconds": 0,
+        "objective-dte-startup-picoseconds": 0,
+        "objective-dte-wait-picoseconds": 0,
+        "objective-estimated-picoseconds": 85792929789,
+        "objective-instruction-picoseconds": 24513000000,
+        "objective-known": 1,
+        "objective-ncc-wait-picoseconds": 185000,
+        "objective-ne-picoseconds": 2147483648,
+        "objective-noc-hop-picoseconds": 0,
+        "objective-noc-picoseconds": 0,
+        "objective-profile-calibrated": 0,
+        "objective-profile-identity": 5,
+        "objective-spm-buffer-count": 768,
+        "objective-spm-high-water-bytes": 1707008,
+        "objective-spm-picoseconds": 72911744000,
+        "objective-vector-f16-picoseconds": 1572864000,
+        "objective-vector-f32-picoseconds": 10104832000,
+        "structural-session": 0,
+        "unsupported": 0
+      },
+      "primaryPackages": [
+        {
+          "manifestSha256": "aade124945b11e306e3a8715575b1950b4f06f6641585e45a9b811c9f1318a16",
+          "path": "build/test/model-performance/anchored/prefill-126/package/package",
+          "moduleSha256": "9098923c9caa6f1236a4f616d44b2f1149c41a8c8b83e76b30cb7ae8a63a848a"
+        }
+      ]
+    },
+    {
+      "case": "decode",
+      "dtype": "float16",
+      "width": 8,
+      "trials": 14,
+      "compilerGeneration": "integerAnchors",
+      "status": "no-card-passed",
+      "completedNoCardSteps": 2,
+      "expectedSteps": 2,
+      "coverage": [
+        {
+          "status": "feasible-partial",
+          "structural": 4,
+          "actual": 14,
+          "accepted": 1,
+          "exact_rejected": 13,
+          "capacity_refinements": 9,
+          "unavailable_refinements": 4,
+          "unsupported": 0,
+          "indeterminate": 0
+        },
+        {
+          "status": "feasible-partial",
+          "structural": 4,
+          "actual": 14,
+          "accepted": 1,
+          "exact_rejected": 13,
+          "capacity_refinements": 9,
+          "unavailable_refinements": 4,
+          "unsupported": 0,
+          "indeterminate": 0
+        }
+      ],
+      "compile": [
+        {
+          "wallMs": 211189,
+          "peakRssKiB": 2183412
+        },
+        {
+          "wallMs": 204680,
+          "peakRssKiB": 2238160
+        }
+      ],
+      "log": "build/test/model-performance/anchored/decode-14.log",
+      "primaryPackages": [
+        {
+          "manifestSha256": "398516a8792c0c69336d6a7ad8683479a2005dc3f8c0bbc21aa962e06b2f8e75",
+          "path": "build/test/model-performance/anchored/decode-14/step_01/package/package",
+          "moduleSha256": "08efbb3917237bc9032ac99573d11564b74cf347910acb8f56daa7a542d9f899"
+        },
+        {
+          "manifestSha256": "50dfc13e51e101581bae7f6604c53701a9ef27a358046399646563f05f1b81ad",
+          "path": "build/test/model-performance/anchored/decode-14/step_02/package/package",
+          "moduleSha256": "4e3c503e0997e3f2fca032e0475ad981458e531cc314d6df24069546df605fd7"
+        }
+      ]
+    },
+    {
+      "case": "decode",
+      "dtype": "float16",
+      "width": 8,
+      "trials": 42,
+      "compilerGeneration": "integerAnchors",
+      "status": "no-card-passed",
+      "completedNoCardSteps": 2,
+      "expectedSteps": 2,
+      "coverage": [
+        {
+          "status": "feasible-partial",
+          "structural": 13,
+          "actual": 42,
+          "accepted": 5,
+          "exact_rejected": 32,
+          "capacity_refinements": 19,
+          "unavailable_refinements": 13,
+          "unsupported": 5,
+          "indeterminate": 0
+        },
+        {
+          "status": "feasible-partial",
+          "structural": 13,
+          "actual": 42,
+          "accepted": 5,
+          "exact_rejected": 32,
+          "capacity_refinements": 19,
+          "unavailable_refinements": 13,
+          "unsupported": 5,
+          "indeterminate": 0
+        }
+      ],
+      "compile": [
+        {
+          "wallMs": 500243,
+          "peakRssKiB": 3484084
+        },
+        {
+          "wallMs": 556874,
+          "peakRssKiB": 3487216
+        }
+      ],
+      "log": "build/test/model-performance/anchored/decode-42.log",
+      "primaryPackages": [
+        {
+          "manifestSha256": "398516a8792c0c69336d6a7ad8683479a2005dc3f8c0bbc21aa962e06b2f8e75",
+          "path": "build/test/model-performance/anchored/decode-42/step_01/package/package",
+          "moduleSha256": "08efbb3917237bc9032ac99573d11564b74cf347910acb8f56daa7a542d9f899"
+        },
+        {
+          "manifestSha256": "50dfc13e51e101581bae7f6604c53701a9ef27a358046399646563f05f1b81ad",
+          "path": "build/test/model-performance/anchored/decode-42/step_02/package/package",
+          "moduleSha256": "4e3c503e0997e3f2fca032e0475ad981458e531cc314d6df24069546df605fd7"
+        }
+      ]
+    },
+    {
+      "case": "decode",
+      "dtype": "float16",
+      "width": 8,
+      "trials": 126,
+      "compilerGeneration": "integerAnchors",
+      "status": "host-stopped",
+      "completedNoCardSteps": 1,
+      "expectedSteps": 2,
+      "coverage": [
+        {
+          "status": "feasible-partial",
+          "structural": 20,
+          "actual": 126,
+          "accepted": 29,
+          "exact_rejected": 85,
+          "capacity_refinements": 52,
+          "unavailable_refinements": 33,
+          "unsupported": 12,
+          "indeterminate": 0
+        }
+      ],
+      "compile": [
+        {
+          "wallMs": 1805961,
+          "peakRssKiB": 5124072
+        }
+      ],
+      "log": "build/test/model-performance/anchored/decode-126.log",
+      "primaryPackages": [
+        {
+          "manifestSha256": "37c186104662f03659b8cb99eb234461e1d08d5d2636dacfc19929fd9efe2dfe",
+          "path": "build/test/model-performance/anchored/decode-126/step_01/package/package",
+          "moduleSha256": "8773a04488ef14fb7a4f4f8bb2aa103862f212f69b3698064f1f05f2bef6b7b3"
+        }
+      ]
+    },
+    {
+      "case": "llama",
+      "dtype": "float16",
+      "width": 8,
+      "trials": 14,
+      "compilerGeneration": "integerAnchors",
+      "status": "incomplete-no-candidate",
+      "completedNoCardSteps": 0,
+      "expectedSteps": 1,
+      "coverage": [
+        {
+          "status": "incomplete-no-candidate",
+          "structural": 5,
+          "actual": 14,
+          "accepted": 0,
+          "exact_rejected": 13,
+          "capacity_refinements": 8,
+          "unavailable_refinements": 5,
+          "unsupported": 1,
+          "indeterminate": 0
+        }
+      ],
+      "compile": [],
+      "log": "build/test/model-performance/anchored/llama-14.log",
+      "primaryPackages": []
+    },
+    {
+      "case": "llama",
+      "dtype": "float16",
+      "width": 8,
+      "trials": 42,
+      "compilerGeneration": "integerAnchors",
+      "status": "host-stopped",
+      "completedNoCardSteps": 0,
+      "expectedSteps": 1,
+      "coverage": [],
+      "compile": [],
+      "log": "build/test/model-performance/anchored/llama-42.log",
+      "primaryPackages": []
+    },
+    {
+      "case": "llama",
+      "dtype": "float16",
+      "width": 8,
+      "trials": 126,
+      "compilerGeneration": "integerAnchors",
+      "status": "host-stopped",
+      "completedNoCardSteps": 0,
+      "expectedSteps": 1,
+      "coverage": [],
+      "compile": [],
+      "log": "build/test/model-performance/anchored/llama-126.log",
+      "primaryPackages": []
+    },
+    {
+      "case": "single-card-gemm-tail-1025",
+      "dtype": "float16",
+      "width": 8,
+      "trials": 14,
+      "compilerGeneration": "integerAnchors",
+      "status": "no-card-passed",
+      "completedNoCardSteps": 1,
+      "expectedSteps": 1,
+      "coverage": [
+        {
+          "status": "feasible-partial",
+          "structural": 4,
+          "actual": 14,
+          "accepted": 14,
+          "exact_rejected": 0,
+          "capacity_refinements": 0,
+          "unavailable_refinements": 0,
+          "unsupported": 0,
+          "indeterminate": 0
+        }
+      ],
+      "compile": [
+        {
+          "wallMs": 12723,
+          "peakRssKiB": 463984
+        }
+      ],
+      "log": "build/test/model-performance/anchored/single-card-gemm-tail-1025-14.log",
+      "minimumRecordedEstimateCandidate": 8,
+      "minimumRecordedEstimatePs": 28091854,
+      "primaryPackages": [
+        {
+          "manifestSha256": "d7709764fc8e8ea8f9468ca291bec0e4240319c42fad2c54caf9c0540dad29b0",
+          "path": "build/test/model-performance/anchored/single-card-gemm-tail-1025-14/package",
+          "moduleSha256": "cf47c0d3f932770b4e4c53d75abccd7043c8c0ef5613bcc76eff55b3841cb6c5"
+        }
+      ]
+    },
+    {
+      "case": "single-card-gemm-tail-1025",
+      "dtype": "float16",
+      "width": 8,
+      "trials": 42,
+      "compilerGeneration": "integerAnchors",
+      "status": "no-card-passed",
+      "completedNoCardSteps": 1,
+      "expectedSteps": 1,
+      "coverage": [
+        {
+          "status": "feasible-partial",
+          "structural": 10,
+          "actual": 42,
+          "accepted": 33,
+          "exact_rejected": 9,
+          "capacity_refinements": 4,
+          "unavailable_refinements": 5,
+          "unsupported": 0,
+          "indeterminate": 0
+        }
+      ],
+      "compile": [
+        {
+          "wallMs": 35869,
+          "peakRssKiB": 464020
+        }
+      ],
+      "log": "build/test/model-performance/anchored/single-card-gemm-tail-1025-42.log",
+      "minimumRecordedEstimateCandidate": 8,
+      "minimumRecordedEstimatePs": 28091854,
+      "primaryPackages": [
+        {
+          "manifestSha256": "d7709764fc8e8ea8f9468ca291bec0e4240319c42fad2c54caf9c0540dad29b0",
+          "path": "build/test/model-performance/anchored/single-card-gemm-tail-1025-42/package",
+          "moduleSha256": "cf47c0d3f932770b4e4c53d75abccd7043c8c0ef5613bcc76eff55b3841cb6c5"
+        }
+      ]
+    },
+    {
+      "case": "single-card-gemm-tail-1025",
+      "dtype": "float16",
+      "width": 8,
+      "trials": 126,
+      "compilerGeneration": "integerAnchors",
+      "status": "host-stopped",
+      "completedNoCardSteps": 0,
+      "expectedSteps": 1,
+      "coverage": [],
+      "compile": [],
+      "log": "build/test/model-performance/anchored/single-card-gemm-tail-1025-126.log",
+      "primaryPackages": []
+    },
+    {
+      "case": "all-reduce-sum-tail-1031",
+      "dtype": "float16",
+      "width": 8,
+      "trials": 14,
+      "compilerGeneration": "integerAnchors",
+      "status": "no-card-passed",
+      "completedNoCardSteps": 1,
+      "expectedSteps": 1,
+      "coverage": [
+        {
+          "status": "feasible-partial",
+          "structural": 4,
+          "actual": 14,
+          "accepted": 14,
+          "exact_rejected": 0,
+          "capacity_refinements": 0,
+          "unavailable_refinements": 0,
+          "unsupported": 0,
+          "indeterminate": 0
+        }
+      ],
+      "compile": [
+        {
+          "wallMs": 19771,
+          "peakRssKiB": 464668
+        }
+      ],
+      "log": "build/test/model-performance/anchored/all-reduce-sum-tail-1031-14.log",
+      "minimumRecordedEstimateCandidate": 6,
+      "minimumRecordedEstimatePs": 18185000,
+      "primaryPackages": [
+        {
+          "manifestSha256": "4c523d82b9b08a63e08690a6fa804a7cc35474021c2da52daa2391203e4a9dc0",
+          "path": "build/test/model-performance/anchored/all-reduce-sum-tail-1031-14/package",
+          "moduleSha256": "9189eafdbf4b4247d19b36fba2bf1a8728916a2e9748705f4b715447516a4297"
+        }
+      ]
+    },
+    {
+      "case": "all-reduce-sum-tail-1031",
+      "dtype": "float16",
+      "width": 8,
+      "trials": 42,
+      "compilerGeneration": "integerAnchors",
+      "status": "no-card-passed",
+      "completedNoCardSteps": 1,
+      "expectedSteps": 1,
+      "coverage": [
+        {
+          "status": "feasible-partial",
+          "structural": 11,
+          "actual": 42,
+          "accepted": 41,
+          "exact_rejected": 0,
+          "capacity_refinements": 0,
+          "unavailable_refinements": 0,
+          "unsupported": 1,
+          "indeterminate": 0
+        }
+      ],
+      "compile": [
+        {
+          "wallMs": 62570,
+          "peakRssKiB": 465456
+        }
+      ],
+      "log": "build/test/model-performance/anchored/all-reduce-sum-tail-1031-42.log",
+      "minimumRecordedEstimateCandidate": 6,
+      "minimumRecordedEstimatePs": 18185000,
+      "primaryPackages": [
+        {
+          "manifestSha256": "4c523d82b9b08a63e08690a6fa804a7cc35474021c2da52daa2391203e4a9dc0",
+          "path": "build/test/model-performance/anchored/all-reduce-sum-tail-1031-42/package",
+          "moduleSha256": "9189eafdbf4b4247d19b36fba2bf1a8728916a2e9748705f4b715447516a4297"
+        }
+      ]
+    },
+    {
+      "case": "all-reduce-sum-tail-1031",
+      "dtype": "float16",
+      "width": 8,
+      "trials": 126,
+      "compilerGeneration": "integerAnchors",
+      "status": "no-card-passed",
+      "completedNoCardSteps": 1,
+      "expectedSteps": 1,
+      "coverage": [
+        {
+          "status": "feasible-partial",
+          "structural": 32,
+          "actual": 126,
+          "accepted": 117,
+          "exact_rejected": 0,
+          "capacity_refinements": 0,
+          "unavailable_refinements": 0,
+          "unsupported": 9,
+          "indeterminate": 0
+        }
+      ],
+      "compile": [
+        {
+          "wallMs": 157858,
+          "peakRssKiB": 985680
+        }
+      ],
+      "log": "build/test/model-performance/anchored/all-reduce-sum-tail-1031-126.log",
+      "minimumRecordedEstimateCandidate": 6,
+      "minimumRecordedEstimatePs": 18185000,
+      "primaryPackages": [
+        {
+          "manifestSha256": "4c523d82b9b08a63e08690a6fa804a7cc35474021c2da52daa2391203e4a9dc0",
+          "path": "build/test/model-performance/anchored/all-reduce-sum-tail-1031-126/package",
+          "moduleSha256": "9189eafdbf4b4247d19b36fba2bf1a8728916a2e9748705f4b715447516a4297"
+        }
+      ]
+    }
+  ],
+  "prefillIntegerBoardAttempt": {
+    "compilerGeneration": "integerAnchors",
+    "case": "attention-prefill-llama-2-7b",
+    "shape": [
+      1,
+      32,
+      4096,
+      128
+    ],
+    "dtype": "float16",
+    "width": 8,
+    "trials": 126,
+    "package": "build/test/model-performance/anchored/prefill-126/package/package",
+    "moduleSha256": "9098923c9caa6f1236a4f616d44b2f1149c41a8c8b83e76b30cb7ae8a63a848a",
+    "status": "device-completion-timeout",
+    "completionTimeoutMs": 60000,
+    "runtimeContext": "poisoned",
+    "numericComparisonCompleted": false,
+    "deviceElapsedNs": null,
+    "profileCompleted": false,
+    "subsequentBoardBatchStopped": true,
+    "retryResetPowerAttempted": false,
+    "log": "build/test/model-performance/anchored-prefill-126-board.log"
+  },
+  "integerCatalogAudit": {
+    "compilerGeneration": "integerAnchors",
+    "registered": 42,
+    "passed": 37,
+    "failed": 5,
+    "log": "build/performance-anchored-catalog.log",
+    "failures": {
+      "heterogeneous-tiling-dataflow-fp16": "Region quotient cycle missing partial-to-merge edges; later corrected in source and host units",
+      "conv-mixed-dag-fp16": "host compiler deadline 1800s",
+      "conv-mixed-dag-bf16": "host compiler deadline 1800s",
+      "llama-2-7b-block-fp16": "host compiler deadline 1800s",
+      "llama-2-7b-block-bf16": "host compiler stopped after pathological compile work was confirmed"
+    },
+    "regionFixProductRecheck": {
+      "none": "passed",
+      "search": "host-stopped",
+      "log": "build/performance-region-cycle-product.log"
+    }
+  },
+  "hostBufferTypeRepro": {
+    "case": "single-card-gemm-tail-1025",
+    "trials": 126,
+    "compilerGeneration": "integerAnchors",
+    "completedActualAttemptsBeforeSlowStage": 93,
+    "activeStage": "layout-and-bufferization",
+    "sampledStack": "SCF computeLoopRegionIterArgBufferType -> getBufferType, called from ExtractSliceOpInterface::bufferize",
+    "currentIrPath": "build/test/model-performance/bufferization-current-repro.mlir",
+    "currentIrSha256": "e78988e20b55784c743a9647abd0b6df1dd3d89f4dfc1decff3e288b4b6b2f3a",
+    "parseAndVerifyPassed": true,
+    "fixed": false,
+    "deviceExecuted": false
+  },
+  "compilerGenerationNotes": {
+    "integerProposals": "中间提案排序版本，后由integerAnchors修正；不作为最终产品资格。",
+    "integerAnchors": "14/42/126预算曲线和prefill真实设备超时的冻结编译器。",
+    "regionDependencies": "补齐partial到merge的Region依赖；组件回归通过，异构search和完整模型矩阵尚未闭合。"
+  },
+  "closingHostVerification": {
+    "compilerGeneration": "regionDependencies",
+    "passedComponents": {
+      "Planning": 120,
+      "Transforms": 374,
+      "Driver": 103
+    },
+    "previouslyPassedUnchangedComponentCode": {
+      "Analysis": 106,
+      "lit": 140,
+      "boardRunnerUnit": 7
+    },
+    "finalPythonCTestPassed": 2,
+    "canonicalFullIncrementalBuildPassed": true,
+    "subsequentNinjaNoOp": true,
+    "sourceOrganizationPassed": true,
+    "irOrganizationPassed": true,
+    "partialMergeEdgeMutationFailedWithoutFix": true,
+    "partialMergeEdgeMutationPassedAfterRestore": true,
+    "fullProductQualificationPassed": false,
+    "finalBoardQualificationPassed": false
+  }
+}

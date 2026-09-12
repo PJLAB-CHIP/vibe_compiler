@@ -38,6 +38,104 @@ protected:
 };
 
 TEST_F(StructuredBufferRelationsTest,
+       RebuildKeepsDistinctOwnersAndDeduplicatesRepeatedOperands) {
+  for (int64_t length : {1024, 1025, 1031}) {
+    auto module = parse(R"mlir(
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry() {
+      %buffer = memref.alloc()
+          : memref<2x1024x64xf16, #wafer.memory<spm, tensor>>
+      return
+    }
+  }
+}
+)mlir");
+    ASSERT_TRUE(module);
+    mlir::memref::AllocOp allocation;
+    module->walk([&](mlir::memref::AllocOp op) { allocation = op; });
+    auto type = allocation.getType();
+    allocation.getResult().setType(
+        mlir::MemRefType::get({2, length, 64}, type.getElementType(),
+                              type.getLayout(), type.getMemorySpace()));
+    mlir::OpBuilder builder(allocation->getBlock()->getTerminator());
+    llvm::SmallVector<mlir::Operation *> copies;
+    for (unsigned index = 0; index < 1024; ++index)
+      copies.push_back(builder.create<mlir::memref::CopyOp>(
+          allocation.getLoc(), allocation, allocation));
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+    StructuredMaterializationRelations relations;
+    for (unsigned repetition = 0; repetition < 2; ++repetition) {
+      rebuildCurrentBufferOwnerRelations(*module, relations);
+      ASSERT_EQ(relations.buffers.size(), copies.size() + 1);
+      EXPECT_EQ(relations.buffers.front().owner, allocation);
+      EXPECT_EQ(relations.buffers.front().role,
+                MaterializedBufferRole::Scratch);
+      for (auto [index, copy] : llvm::enumerate(copies)) {
+        const auto &relation = relations.buffers[index + 1];
+        EXPECT_EQ(relation.owner, copy);
+        EXPECT_EQ(relation.buffer, allocation.getResult());
+        EXPECT_EQ(relation.role, MaterializedBufferRole::Movement);
+      }
+      EXPECT_TRUE(mlir::succeeded(
+          checkStructuredBufferRelationsCurrent(*module, relations)));
+    }
+    copies.back()->erase();
+    rebuildCurrentBufferOwnerRelations(*module, relations);
+    EXPECT_EQ(relations.buffers.size(), copies.size());
+    EXPECT_TRUE(mlir::succeeded(
+        checkStructuredBufferRelationsCurrent(*module, relations)));
+  }
+}
+
+TEST_F(StructuredBufferRelationsTest,
+       LoopStorageRootsIncludeBackedgesIndependentOfQueryOrder) {
+  auto module = parse(R"mlir(
+module {
+  func.func @entry() {
+    %a = memref.alloc() : memref<2x1031x64xf16, #wafer.memory<spm, tensor>>
+    %b = memref.alloc() : memref<2x1031x64xf16, #wafer.memory<spm, tensor>>
+    %zero = arith.constant 0 : index
+    %one = arith.constant 1 : index
+    %end = arith.constant 33 : index
+    %results:2 = scf.for %iv = %zero to %end step %one
+        iter_args(%left = %a, %right = %b)
+        -> (memref<2x1031x64xf16, #wafer.memory<spm, tensor>>,
+            memref<2x1031x64xf16, #wafer.memory<spm, tensor>>) {
+      scf.yield %right, %left
+          : memref<2x1031x64xf16, #wafer.memory<spm, tensor>>,
+            memref<2x1031x64xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  llvm::SmallVector<mlir::Value> allocations;
+  mlir::scf::ForOp loop;
+  module->walk([&](mlir::memref::AllocOp op) { allocations.push_back(op); });
+  module->walk([&](mlir::scf::ForOp op) { loop = op; });
+  ASSERT_EQ(allocations.size(), 2u);
+  ASSERT_TRUE(loop);
+  for (bool reverse : {false, true}) {
+    StorageRootMemo memo;
+    llvm::SmallVector<mlir::Value> queries;
+    queries.append(loop.getRegionIterArgs().begin(),
+                   loop.getRegionIterArgs().end());
+    queries.append(loop.getResults().begin(), loop.getResults().end());
+    if (reverse)
+      std::reverse(queries.begin(), queries.end());
+    for (auto value : queries) {
+      const auto &roots = memo.getStorageRoots(value);
+      ASSERT_EQ(roots.size(), 2u);
+      for (auto allocation : allocations)
+        EXPECT_TRUE(roots.contains(allocation));
+    }
+  }
+}
+
+TEST_F(StructuredBufferRelationsTest,
        ListenerRetargetsActualValueWithoutSourceNodeParity) {
   auto module = parse(R"mlir(
 module {

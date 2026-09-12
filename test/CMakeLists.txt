@@ -287,6 +287,12 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
   wafer_add_pytorch_source_no_card_test(
     attention-prefill-llama-2-7b float16 fp16 search)
 
+  foreach(_wafer_heterogeneous_policy IN ITEMS none search)
+    wafer_add_pytorch_source_no_card_test(
+      heterogeneous-tiling-dataflow float16 fp16 ${_wafer_heterogeneous_policy})
+  endforeach()
+  unset(_wafer_heterogeneous_policy)
+
   foreach(_wafer_product_case IN ITEMS
       conv-mixed-dag
       attention-prefill

@@ -192,6 +192,7 @@ pub struct WaferEGraphStatistics {
     output_records: u64,
     input_bytes: u64,
     output_bytes: u64,
+    search_limit_reached: u64,
 }
 
 #[repr(C)]
@@ -2078,17 +2079,25 @@ unsafe fn run(request: &WaferEGraphRequest) -> Result<WaferEGraphResult, u32> {
         .load(AtomicOrdering::Relaxed);
 
     let stop_reason = runner.stop_reason.as_ref().ok_or(STATUS_INTERNAL_ERROR)?;
-    if counters.exhausted.get() || budget_stop(stop_reason) || runtime.status() == RUNTIME_BUDGET {
-        result.status = STATUS_BUDGET_EXHAUSTED;
-        return Ok(result);
-    }
+    let search_limit_reached = counters.exhausted.get() || budget_stop(stop_reason);
+    result.statistics.search_limit_reached = u64::from(search_limit_reached);
     if runtime.status() == RUNTIME_INTERNAL_ERROR
-        || !matches!(stop_reason, StopReason::Saturated)
         || runner.egraph.classes().any(|class| !class.data.valid)
     {
         return Err(STATUS_INTERNAL_ERROR);
     }
+    if runtime.status() == RUNTIME_BUDGET {
+        result.status = STATUS_BUDGET_EXHAUSTED;
+        return Ok(result);
+    }
+    if !search_limit_reached && !matches!(stop_reason, StopReason::Saturated) {
+        return Err(STATUS_INTERNAL_ERROR);
+    }
 
+    // Runner rebuilds after applying rewrites even when a search limit stops
+    // saturation. Those proven equalities remain valid: use the same bounded
+    // extractor and complete DAG checks instead of discarding all progress.
+    // A relation-service limit still prevents publishing an unverified result.
     let extraction_calls = Rc::new(Cell::new(0));
     let extractor = Extractor::new(
         &runner.egraph,

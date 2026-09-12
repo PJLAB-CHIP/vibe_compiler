@@ -19,11 +19,51 @@
 - Completion criteria：三条路径具备本轮实际 profile 归因；所选热点有 current-IR 根因与通用修复、host 覆盖、完整构建/no-op；
   受影响产品通过 fresh no-card、完整 PyTorch 比较及匹配 A/B，性能无收益的改写不交付为优化。
 
-## 2026-09-12：通用性能优化方案（拟议，尚未实施）
+## 2026-09-12：通用性能优化方案
 
-本节综合五项优化和离散近邻搜索调研，规定下一轮建议的实施顺序。它不表示编译器已经修改，
-也不覆盖06号的当前实现合同；实施时先同步实际涉及的编号设计及下述覆盖矩阵。
-本轮只复核既有 profile、最终 IR 和源码，没有重编模型或运行设备。下方既有实施检查点继续保留其原验证范围。
+本节综合五项优化和离散近邻搜索调研；用户已批准按顺序实施，并允许提高e-graph额度。
+实际涉及的编号设计随实现同步；下方既有实施检查点继续保留其原验证范围。
+
+当前检查点：e-graph已修复达到搜索上限后丢弃已证明改进的问题，默认迭代额度8→32，饱和提前结束。
+原native-psum编译器4K FP16 prefill基线fresh no-card/实卡PyTorch通过，设备276.776 ms；
+LLaMA/decode原基线暴露的静态psum地址限制已按实际SSA所有地址分支修复，保持原生GEMM format与FP32 partial。
+访问吸收修复后的LLaMA 8/14本轮实卡37.444 ms；decode 8/42两步15.258/15.087 ms，完整PyTorch通过。
+current buffer owner重复查重与shared-DDR通知逐参数追加的主机重复工作已修正。
+物理copy外提通过4 Tile、1024/1025/1031、alias/loop与actual容量反例；4K新placement完整PyTorch通过，Primary279.969 ms，尚无整模型加速收益。
+第3/4项已实施：actual GS内层遍历与runtime提交分开估时，DDR/DTE沿实际完成依赖传播，未知局部保持有限估计；
+参数探索采用整数±1、自适应距离、独立区间样本及组合，raw domain不变。协调查询先补齐新尺寸的loop order，
+基础DDR/Peer先各获得一次actual尝试，避免数值近邻抢占尚未访问的transport。
+主机106项Analysis、120项Planning、374项Transforms、103项Driver、140项lit及runner 7项已通过。
+Region修复后完整Driver再次103项通过；最终两项Python CTest、源码/IR组织检查、canonical完整增量构建及Ninja no-op通过。
+完整Driver先前的融合起点退步已修正：Joint保留各结构完整尺寸，Independent较早探索全tuple；
+只改变attention的kernel提案不会挤占Independent的整组数值样本。该修复后decode 14/42两步fresh no-card通过。
+
+最终资格仍未闭合，不能将上述分项通过标成整体完成：
+
+- 冻结整数提案版本的42项search catalog为37项通过、5项失败：异构case的Region依赖环；
+  conv-mixed-dag FP16/BF16及LLaMA FP16的1800秒主机编译期限；LLaMA BF16在定位到主机病态耗时后停止。
+  编译器进程超时不表示板卡异常；runner诊断已改为报告实际host executable和期限。
+- Region依赖检查漏掉current contributions中的partial→merge边。本轮补齐typed shard/group owner后，
+  120项Planning通过；移除该边的mutation测试明确失败，恢复后通过。异构产品none通过，search复验因主机长测停止，
+  尚未签发该case的新search no-card资格。
+- 14/42/126曲线已部分完成：4K prefill分别2/2/9个accepted，编译24.113/32.816/107.611秒；
+  decode 14/42两步各1/5个accepted，126仅首步完成且29个accepted。LLaMA14无候选，42/126长测停止；
+  GEMM tail-1025的14/42通过，126在第94个actual尝试进入bufferization长测；AllReduce tail-1031三个预算均通过。
+  这些是带compiler身份的主机证据，不代替最终板端数值资格。
+- GDB从正在执行的GEMM候选读取完整current module：分段输入形成长串带tensor状态的SCF循环，
+  `ExtractSliceOpInterface::bufferize`触发pinned `computeLoopRegionIterArgBufferType/getBufferType`重复递归。
+  复现IR已通过parser/verifier；未改LLVM依赖、未降低搜索域或以估算提前跳过actual SPM。该主机根因尚未修复。
+- 4K prefill的126次候选选择256分块，Primary在60秒真实设备期限内未完成，context已隔离，
+  后续全部板端批次停止，不retry/reset。没有数值或Count/Trace结果，不能按静态指令减少声称加速。
+  当前Instr没有Direct DTE，SPM范围在已有可用区间，字段未发现越界；这些排查未定位停在哪条指令，不能据此宣称硬件故障或修复。
+
+详细audit、版本与未完成项统一见[性能记录](../../docs/board-performance-results.md#2026-09-12整数预算复验与未闭合边界)。
+下一步顺序：先修长链buffer type推导的重复工作并恢复上述no-card矩阵，再定位prefill新候选的设备完成问题；
+取得可用设备后补剩余模型/BF16数值与匹配性能。当前不推进其它work item。
+
+| 追加覆盖 | 输入 | exact断言 | 下游witness |
+| --- | --- | --- | --- |
+| 分布式归约与旁路consumer | rank3，1024/1025/1031，两Tile；producer同时供partial与间接归约consumer | raw/proposal均拒绝跨merge形成的商图环，保留acyclic融合与单root方案；所有partial以typed shard/group定位owner | Planning transitive-closure oracle与去边mutation通过；异构PyTorch none通过，search待完成 |
 
 ### 证据决定优先级
 
@@ -108,6 +148,12 @@ descriptor内层迭代定义为按动态执行次数累计的 `byte_count / inne
   更不能替代同步合法性证明。合法候选始终给出有限标量，SPM/同步证据不足仍按原typed结果处理。
 - 参数无法从现有证据辨识时先用共享先验，并记录对排序的影响；优先修复错误的数量级和候选顺序，
   不建立完整硬件校准矩阵。用已有异类profile作留出检查，避免在同一条prefill上拟合并验收。
+
+当前实施检查点：descriptor内层次数、单次issue、typed DDR/DTE完成时间传播和局部粗估已接入同一CostModel。
+固定旧搜索方法、包含访问/物化及cost修改的三条模型fresh no-card全部通过：LLaMA 625.650 s，4K prefill 35.399 s，decode两步408.557/398.528 s。
+Prefill最终模块及program-data与上一轮逐字节一致；LLaMA完整PyTorch实卡通过，Primary36.781 ms，decode只完成no-card。
+这不是纯cost单变量A/B：LLaMA与访问吸收样本还包含物理复用阶段差异，不能把差值全部归因于cost。
+主机105项Analysis、97项Driver已实际通过（近邻接入前）；新近邻及条件scope增量另行验证，不以旧gate代签。
 
 ### 4. 完整整数域上的自适应近邻搜索
 

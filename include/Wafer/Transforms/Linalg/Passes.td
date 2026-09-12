@@ -52,7 +52,7 @@ def NormalizeStructuredTensorGraphPass
            /*default=*/"8192",
            "Maximum exact rewrite matches admitted by one component request">,
     Option<"maximumIterations", "maximum-iterations", "uint32_t",
-           /*default=*/"8",
+           /*default=*/"32",
            "Maximum deterministic equality-saturation iterations">
   ];
   let statistics = [
@@ -67,7 +67,7 @@ def NormalizeStructuredTensorGraphPass
     Statistic<"numMultiRuleChangedComponents", "multi-rule-changed-components",
               "Number of changed components in which multiple dynamic rule kinds applied">,
     Statistic<"numBudgetExhaustedComponents", "budget-exhausted-components",
-              "Number of components preserved after deterministic budget exhaustion">,
+              "Number of components that reached a deterministic work limit">,
     Statistic<"numENodes", "e-nodes", "Number of explored e-nodes">,
     Statistic<"numEClasses", "e-classes", "Number of explored e-classes">,
     Statistic<"numRewriteMatches", "rewrite-matches",

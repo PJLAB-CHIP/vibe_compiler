@@ -495,6 +495,110 @@ mlir::FailureOr<int64_t> getStaticUInt32SPMAddress(mlir::Operation *op,
   return start;
 }
 
+namespace {
+struct SPMAddressRange {
+  int64_t begin;
+  int64_t end;
+};
+
+// The target already lowers selected/loop-carried addresses. Verify all their
+// current physical alternatives instead of requiring a single constant address.
+// This is a union analysis: unrelated predicates are not assumed correlated.
+static mlir::FailureOr<llvm::SmallVector<SPMAddressRange>>
+collectPossibleSPMRanges(mlir::Operation *op, mlir::Value value,
+                         llvm::StringRef role) {
+  llvm::SmallVector<SPMAddressRange> ranges;
+  llvm::SmallVector<mlir::Value> pending{value};
+  llvm::DenseSet<mlir::Value> visited;
+  while (!pending.empty()) {
+    mlir::Value current = pending.pop_back_val();
+    if (!visited.insert(current).second)
+      continue;
+    mlir::Value root = getRootViewSource(current);
+    while (auto cast = root.getDefiningOp<mlir::memref::CastOp>())
+      root = getRootViewSource(cast.getSource());
+    if (root.getDefiningOp<mlir::memref::AllocOp>()) {
+      auto start = getStaticUInt32SPMAddress(op, current, role);
+      auto info = computeWaferPhysicalTensorInfo(
+          mlir::cast<mlir::MemRefType>(current.getType()));
+      if (mlir::failed(start) || !info)
+        return mlir::failure();
+      int64_t end;
+      if (!checkedAdd(*start, info->physicalBytes, end))
+        return op->emitError() << "unsupported_target_address: " << role
+                               << " physical range overflows int64";
+      ranges.push_back({*start, end});
+      continue;
+    }
+    if (current != root) {
+      // A whole predecessor range is a safe envelope for a zero-offset view.
+      // Nonzero/dynamic offsets through loop cycles need a separate range
+      // proof.
+      auto offset = getStaticViewOffsetBytes(
+          op, mlir::cast<mlir::MemRefType>(current.getType()), role);
+      if (mlir::failed(offset))
+        return mlir::failure();
+      auto viewInfo = computeWaferPhysicalTensorInfo(
+          mlir::cast<mlir::MemRefType>(current.getType()));
+      auto rootInfo = computeWaferPhysicalTensorInfo(
+          mlir::cast<mlir::MemRefType>(root.getType()));
+      if (*offset != 0 || !viewInfo || !rootInfo ||
+          viewInfo->physicalBytes > rootInfo->physicalBytes)
+        return op->emitError()
+               << "unsupported_target_address: " << role
+               << " selected view requires a proven physical range";
+      pending.push_back(root);
+      continue;
+    }
+    if (auto select = current.getDefiningOp<mlir::arith::SelectOp>()) {
+      pending.push_back(select.getTrueValue());
+      pending.push_back(select.getFalseValue());
+      continue;
+    }
+    mlir::scf::ForOp loop;
+    unsigned index = 0;
+    if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(current)) {
+      loop =
+          mlir::dyn_cast<mlir::scf::ForOp>(argument.getOwner()->getParentOp());
+      if (loop && argument.getOwner() == loop.getBody() &&
+          argument.getArgNumber() > 0)
+        index = argument.getArgNumber() - 1;
+      else
+        loop = {};
+    } else if (auto result = mlir::dyn_cast<mlir::OpResult>(current)) {
+      loop = mlir::dyn_cast<mlir::scf::ForOp>(result.getOwner());
+      index = result.getResultNumber();
+      if (mlir::Value exit =
+              analysis::getSingleExecutionRegionExitOperand(result)) {
+        pending.push_back(exit);
+        continue;
+      }
+      if (auto branch = mlir::dyn_cast<mlir::scf::IfOp>(result.getOwner())) {
+        for (mlir::Region &region : branch->getRegions())
+          pending.push_back(
+              mlir::cast<mlir::scf::YieldOp>(region.front().getTerminator())
+                  .getOperand(index));
+        continue;
+      }
+    }
+    if (loop) {
+      pending.push_back(loop.getInitArgs()[index]);
+      pending.push_back(
+          mlir::cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator())
+              .getOperand(index));
+      continue;
+    }
+    return op->emitError()
+           << "unsupported_target_address: " << role
+           << " requires planned SPM ranges for every address alternative";
+  }
+  if (ranges.empty())
+    return op->emitError() << "unsupported_target_address: " << role
+                           << " has no proven physical range";
+  return ranges;
+}
+} // namespace
+
 mlir::FailureOr<int64_t> getStaticSPMAddress(mlir::Operation *op,
                                              mlir::Value value,
                                              llvm::StringRef role) {
@@ -936,21 +1040,17 @@ static mlir::LogicalResult verifyTargetInstructionFormat(mlir::Operation *op) {
           return mlir::failure();
         if (typedOp.getPsum()) {
           auto partial =
-              getStaticUInt32SPMAddress(op, typedOp.getPsum(), "gemm psum");
+              collectPossibleSPMRanges(op, typedOp.getPsum(), "gemm psum");
           auto destination =
-              getStaticUInt32SPMAddress(op, typedOp.getDest(), "gemm dest");
-          auto partialInfo = computeWaferPhysicalTensorInfo(
-              mlir::cast<mlir::MemRefType>(typedOp.getPsum().getType()));
-          auto destinationInfo = computeWaferPhysicalTensorInfo(
-              mlir::cast<mlir::MemRefType>(typedOp.getDest().getType()));
-          if (mlir::failed(partial) || mlir::failed(destination) ||
-              !partialInfo || !destinationInfo)
+              collectPossibleSPMRanges(op, typedOp.getDest(), "gemm dest");
+          if (mlir::failed(partial) || mlir::failed(destination))
             return mlir::failure();
-          if (*partial < *destination + destinationInfo->physicalBytes &&
-              *destination < *partial + partialInfo->physicalBytes)
-            return typedOp.emitError()
-                   << "unsupported_target_alias: GEMM psum and destination "
-                      "must have disjoint physical storage";
+          for (SPMAddressRange input : *partial)
+            for (SPMAddressRange output : *destination)
+              if (input.begin < output.end && output.begin < input.end)
+                return typedOp.emitError()
+                       << "unsupported_target_alias: GEMM psum and destination "
+                          "must have disjoint physical storage";
         }
         return verify(typedOp.getDest(), "gemm dest");
       })

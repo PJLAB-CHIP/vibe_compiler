@@ -45,6 +45,11 @@ Pipeline position:
 不保留旧签名reader/wrapper。覆盖F16/BF16、NN/NT/TN/TT、batch、M/N/K tail及F32输出的真实byte布局；
 F32乘法输入仍拒绝。缺少psum operand时传零地址与SDK `Fmt_UNUSED`；存在时传实际F32 operand地址。
 psum只读、destination独占写入，两者physical storage必须不重叠；最终target stage验证actual SPM范围，numeric model执行同一限制。
+该检查消费实际SSA上的view、select和结构化控制流：收集所有可达的已规划物理范围，检查每一对psum/destination范围。
+循环同时检查初值与backedge，不能只追初值；相同SSA的循环边只在本次查询内去重。动态选择地址本身不是unsupported，
+只要所有可能范围均已证明不相交即可使用原有动态地址lowering。无法确定范围或可能相交仍typed拒绝，不据此禁用K分块。
+覆盖矩阵补充rank3、K=1024/1025/1031、F16/BF16、F32 partial及最终窄输出，检查select/loop的实际LLVM地址参数；
+负例覆盖一个分支相交、循环backedge相交及未知来源。这里不推断不同predicate之间的相关性。
 同址复用及bias/activation不隐式打开。本轮有限三段K实卡确认两种dtype的最终结果和两个partial回读/guard；oneDNN未取得psum资格，
 该形式由formal backend执行，不能忽略第三个输入沿用二输入资格。
 

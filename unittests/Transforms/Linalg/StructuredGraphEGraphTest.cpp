@@ -457,7 +457,7 @@ TEST(StructuredGraphEGraphTest,
   EXPECT_GE(outcome.statistics.resultReindexApplications, 1u);
 }
 
-TEST(StructuredGraphEGraphTest, MatchBudgetExhaustionHasNoPartialExpression) {
+TEST(StructuredGraphEGraphTest, MatchLimitWithoutImprovementPreservesInput) {
   FakeRelationService service = makeInverseAccessService();
   llvm::SmallVector<EGraphNode, 3> nodes;
   nodes.push_back(input(1, 1));
@@ -468,8 +468,31 @@ TEST(StructuredGraphEGraphTest, MatchBudgetExhaustionHasNoPartialExpression) {
 
   EGraphOutcome outcome =
       runEGraph(nodes, /*rootNodes=*/{2}, exhausted, service.getABI());
-  EXPECT_EQ(outcome.kind, EGraphOutcomeKind::BudgetExhausted);
+  EXPECT_EQ(outcome.kind, EGraphOutcomeKind::Unchanged);
+  EXPECT_EQ(outcome.statistics.searchLimitReached, 1u);
   EXPECT_TRUE(outcome.expression.empty());
+}
+
+TEST(StructuredGraphEGraphTest, IterationLimitExtractsProvenComposition) {
+  // Bounded relation oracle; real rank3 aligned/ragged inputs are exercised
+  // through normalization and the downstream structured graph tests.
+  for (uint32_t iterations : {1u, 2u}) {
+    FakeRelationService service = makeInverseAccessService();
+    llvm::SmallVector<EGraphNode, 3> nodes;
+    nodes.push_back(input(1, 1));
+    nodes.push_back(access(2, 0, 1));
+    nodes.push_back(access(1, 1, 2));
+    EGraphWorkBudget limited = budget();
+    limited.maximumIterations = iterations;
+    EGraphOutcome outcome =
+        runEGraph(nodes, /*rootNodes=*/{2}, limited, service.getABI());
+    ASSERT_EQ(outcome.kind, EGraphOutcomeKind::Changed);
+    EXPECT_EQ(outcome.statistics.searchLimitReached, 1u);
+    EXPECT_EQ(outcome.statistics.outputComputeOccurrences, 0u);
+    EXPECT_LT(outcome.statistics.outputAccessOccurrences, 2u);
+    ASSERT_EQ(outcome.rootNodes.size(), 1u);
+    EXPECT_EQ(outcome.expression[outcome.rootNodes.front()].typeId, 1u);
+  }
 }
 
 TEST(StructuredGraphEGraphTest, TypedRelationWorkLimitStopsTheRequest) {

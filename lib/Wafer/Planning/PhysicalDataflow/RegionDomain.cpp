@@ -421,6 +421,28 @@ RegionDomain::create(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
       }
     }
 
+  std::vector<RequiredDependency> reductionDependencies;
+  std::set<std::pair<analysis::RootRegionWorkId, analysis::RootRegionWorkId>>
+      seenDependencies;
+  for (const analysis::RootRegionWork &work : rootWorks)
+    for (const analysis::RootContributionWork &partial : work.contributions) {
+      auto producer = shardOwners.find(partial.contribution.shard);
+      auto consumer = mergeOwners.find(partial.group);
+      if (producer == shardOwners.end() || consumer == mergeOwners.end() ||
+          producer->second.first != work.id ||
+          consumer->second.first.tile != partial.mergeTile) {
+        if (failureReason)
+          *failureReason = "region domain contribution has no matching shard "
+                           "and merge execution";
+        return mlir::failure();
+      }
+      if (seenDependencies
+              .emplace(producer->second.first, consumer->second.first)
+              .second)
+        reductionDependencies.push_back(
+            {producer->second.first, consumer->second.first});
+    }
+
   std::vector<LocalFragment> fragments;
   for (const RegionGroupPlan &consumerGroup : base->groups) {
     for (const ExternalUseBinding &external : consumerGroup.externalBindings) {
@@ -564,8 +586,8 @@ RegionDomain::create(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
     return std::tuple(lhs.tile.getValue(), lhs.works.front()) <
            std::tuple(rhs.tile.getValue(), rhs.works.front());
   });
-  return RegionDomain(base->groups, std::move(components),
-                      std::move(fragments));
+  return RegionDomain(base->groups, std::move(components), std::move(fragments),
+                      std::move(reductionDependencies));
 }
 
 llvm::SmallVector<llvm::SmallVector<uint32_t, 8>, 8>
@@ -810,6 +832,20 @@ RegionDomain::buildPlan(llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
 
   std::vector<std::set<size_t>> successors(plan.groups.size());
   std::vector<size_t> indegree(plan.groups.size(), 0);
+  auto addEdge = [&](size_t producer, size_t consumer) {
+    if (producer != consumer && successors[producer].insert(consumer).second)
+      ++indegree[consumer];
+  };
+  // Reduction contributions are semantic execution dependencies, not ordinary
+  // operand bindings. Their remote merge cannot be fused across a consumer
+  // that needs the completed result, even when local use edges are connected.
+  for (const RequiredDependency &dependency : reductionDependencies) {
+    auto producer = groupByWork.find(dependency.producer);
+    auto consumer = groupByWork.find(dependency.consumer);
+    if (producer == groupByWork.end() || consumer == groupByWork.end())
+      return std::nullopt;
+    addEdge(producer->second, consumer->second);
+  }
   for (auto [consumerIndex, group] : llvm::enumerate(plan.groups)) {
     for (const ExternalUseBinding &binding : getRegionExternalInputs(group)) {
       if (binding.fragment.source.kind !=
@@ -835,12 +871,8 @@ RegionDomain::buildPlan(llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
                            }))
             producers.insert(producerIndex);
         }
-      for (size_t producerIndex : producers) {
-        if (producerIndex == consumerIndex)
-          continue;
-        if (successors[producerIndex].insert(consumerIndex).second)
-          ++indegree[consumerIndex];
-      }
+      for (size_t producerIndex : producers)
+        addEdge(producerIndex, consumerIndex);
     }
   }
   std::set<size_t> ready;
@@ -1020,7 +1052,10 @@ std::vector<RegionPlan> RegionDomain::buildRefinedProposals(
     return proposals;
   std::set<RegionPlan> seen;
   auto append = [&](std::optional<RegionPlan> plan) {
-    if (!plan || !contains(*plan) || !seen.insert(*plan).second)
+    // Every call below consumes this domain's buildPlan result, which has
+    // already checked partition, binding totality and quotient acyclicity.
+    // contains() is for external choices: it reconstructs that same plan.
+    if (!plan || !seen.insert(*plan).second)
       return;
     proposals.push_back(std::move(*plan));
   };

@@ -548,6 +548,10 @@ analyzeInstructionProgramAggregateCostImpl(
     addMetric(result.aggregateDDRWriteBytes, tileCost.ddrWriteBytes);
     addMetric(result.aggregateSPMMovementBytes, tileCost.spmMovementBytes);
     addMetric(result.aggregateGatherScatterBytes, tileCost.gatherScatterBytes);
+    addMetric(result.aggregateGatherScatterInnerIterations,
+              tileCost.gatherScatterInnerIterations);
+    maximizeMetric(result.maximumTileGatherScatterInnerIterations,
+                   tileCost.gatherScatterInnerIterations);
     maximizeMetric(result.maximumTileSPMMovementBytes,
                    tileCost.spmMovementBytes);
     maximizeMetric(result.maximumTileGatherScatterBytes,

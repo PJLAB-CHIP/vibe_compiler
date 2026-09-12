@@ -172,6 +172,7 @@ struct WaferEGraphStatistics {
   uint64_t outputRecords;
   uint64_t inputBytes;
   uint64_t outputBytes;
+  uint64_t searchLimitReached;
 };
 
 struct WaferEGraphResult {

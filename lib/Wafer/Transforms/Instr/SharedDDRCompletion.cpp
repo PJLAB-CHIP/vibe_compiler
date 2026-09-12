@@ -699,26 +699,35 @@ Result materializeSharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
         if (auto resource = global->getAttrOfType<DDRResourceAttr>(
                 kWaferDDRResourceAttrName))
           nextResource = std::max(nextResource, resource.getResourceId() + 1);
-    for (auto &[id, resource] : collection.resources) {
-      auto *context = mlir::ModuleOp(modules.front()).getContext();
-      mlir::OpBuilder builder(context);
-      auto type = mlir::MemRefType::get(
-          {64}, builder.getI8Type(), mlir::MemRefLayoutAttrInterface{},
-          MemoryAttr::get(context, MemorySpace::DDR, MemLayout::Tensor));
-      auto initial = mlir::DenseIntElementsAttr::get(
-          mlir::RankedTensorType::get({64}, builder.getI8Type()),
-          llvm::ArrayRef<int8_t>{0});
-      std::string symbol =
-          "__wafer_ddr_completion_" + std::to_string(nextResource);
-      for (auto [moduleRef, entry] :
-           llvm::zip_equal(modules, collection.entries)) {
-        mlir::ModuleOp module = moduleRef;
+    auto *context = mlir::ModuleOp(modules.front()).getContext();
+    mlir::OpBuilder builder(context);
+    auto type = mlir::MemRefType::get(
+        {64}, builder.getI8Type(), mlir::MemRefLayoutAttrInterface{},
+        MemoryAttr::get(context, MemorySpace::DDR, MemLayout::Tensor));
+    auto initial = mlir::DenseIntElementsAttr::get(
+        mlir::RankedTensorType::get({64}, builder.getI8Type()),
+        llvm::ArrayRef<int8_t>{0});
+    for (auto [moduleRef, entry] :
+         llvm::zip_equal(modules, collection.entries)) {
+      struct Publication {
+        const Access *writer;
+        const Access *reader;
+        mlir::BlockArgument data;
+      };
+      llvm::SmallVector<Publication> publications;
+      llvm::SmallVector<mlir::DictionaryAttr> attributes;
+      const unsigned firstArgument = entry.getNumArguments();
+      int64_t resourceId = nextResource;
+      mlir::ModuleOp module = moduleRef;
+      for (auto &[id, resource] : collection.resources) {
+        std::string symbol =
+            "__wafer_ddr_completion_" + std::to_string(resourceId);
         builder.setInsertionPointToStart(module.getBody());
         auto global = builder.create<mlir::memref::GlobalOp>(
             module.getLoc(), symbol, builder.getStringAttr("private"), type,
             initial, false, builder.getI64IntegerAttr(64));
         global->setAttr(kWaferDDRResourceAttrName,
-                        DDRResourceAttr::get(context, nextResource));
+                        DDRResourceAttr::get(context, resourceId));
         auto dataRoot = resource.writer->root;
         bool writes = dataRoot.getOwner() == &entry.getBody().front();
         const Access *firstRead = nullptr;
@@ -733,30 +742,37 @@ Result materializeSharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
                                        : DDRAccess::None;
         auto binding = DDRBindingAttr::get(
             context, mlir::FlatSymbolRefAttr::get(context, symbol),
-            nextResource, access);
-        unsigned index = entry.getNumArguments();
-        entry.insertArgument(index, type,
-                             builder.getDictionaryAttr({builder.getNamedAttr(
-                                 kWaferDDRBindingAttrName, binding)}),
-                             entry.getLoc());
-        auto ready = entry.getArgument(index);
-        if (writes) {
-          auto region = resource.writer->region;
-          auto dataInput = bindInput(region, dataRoot);
+            resourceId++, access);
+        attributes.push_back(builder.getDictionaryAttr(
+            {builder.getNamedAttr(kWaferDDRBindingAttrName, binding)}));
+        publications.push_back(
+            {writes ? &*resource.writer : nullptr, firstRead, dataRoot});
+      }
+      // Appending one argument at a time repeatedly copies the complete type
+      // and attribute arrays. Equal insertion indices preserve resource order.
+      entry.insertArguments(
+          llvm::SmallVector<unsigned>(attributes.size(), firstArgument),
+          llvm::SmallVector<mlir::Type>(attributes.size(), type), attributes,
+          llvm::SmallVector<mlir::Location>(attributes.size(), entry.getLoc()));
+      for (auto [ordinal, publication] : llvm::enumerate(publications)) {
+        auto ready = entry.getArgument(firstArgument + ordinal);
+        if (publication.writer) {
+          auto region = publication.writer->region;
+          auto dataInput = bindInput(region, publication.data);
           auto readyInput = bindInput(region, ready);
-          builder.setInsertionPointAfter(resource.writer->last);
+          builder.setInsertionPointAfter(publication.writer->last);
           builder.create<SyncDDRPublishOp>(entry.getLoc(), dataInput,
                                            readyInput);
         }
-        if (firstRead) {
-          auto dataInput = bindInput(firstRead->region, dataRoot);
-          auto readyInput = bindInput(firstRead->region, ready);
-          builder.setInsertionPoint(firstRead->first);
+        if (publication.reader) {
+          auto dataInput =
+              bindInput(publication.reader->region, publication.data);
+          auto readyInput = bindInput(publication.reader->region, ready);
+          builder.setInsertionPoint(publication.reader->first);
           builder.create<SyncDDRAcquireOp>(entry.getLoc(), dataInput,
                                            readyInput);
         }
       }
-      ++nextResource;
     }
   }
   for (auto module : modules)

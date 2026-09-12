@@ -670,5 +670,123 @@ GS bytes或描述符内层迭代大增。内层迭代仍不等于软件issue、�
 
 调研比较了Ansor、NOMAD/MADS、TVM Droplet、OpenXLA cost及MLIR的访问/存储合同；
 完整方法取舍、五项实施顺序、整数近邻规则和覆盖矩阵已收敛到
-[同一板测计划](../tasks/plans/board-performance-optimization.md#2026-09-12通用性能优化方案拟议尚未实施)。
+[同一板测计划](../tasks/plans/board-performance-optimization.md#2026-09-12通用性能优化方案)。
 本轮只形成拟议方案，编译器及模型性能没有新修改或验收结论。
+
+
+## 2026-09-12：访问吸收、原生psum地址与物理复用实施
+
+本节为上述方案批准后的实施记录。原native-psum compiler基线与访问修复compiler分别冻结身份，
+输入、reference均由当前case重新生成；完整audit与匹配Primary/PMU摘要在
+[`access-normalization-20260912.json`](data/board-performance/access-normalization-20260912.json)。
+
+| 本轮配置 | 当前结果 | 数值与归因边界 |
+| --- | ---: | --- |
+| 原native-psum，4K prefill FP16 `[1,32,4096,128]`，8/42 | 276.776 ms | 全16,777,216输出通过原PyTorch容差；作为物理复用A/B基线 |
+| 访问吸收，LLaMA block FP16 `[1,16,4096]`，8/14 | 37.444 ms | 全输出PyTorch通过；原native-psum基线在target失败，因此历史80.119 ms不是同版本单改动A/B |
+| 访问吸收，decode FP16 hidden4096、past1023，两步8/42 | 15.258 / 15.087 ms | 两步完整PyTorch通过，第二步使用第一步实际KV回读；独立首步样本15.067 ms单独保留 |
+
+### 已证实的生成与主机根因
+
+- normalized LLaMA checkpoint证明：现有e-graph规则能吸收权重transpose，原先达到iteration/match/node上限后
+  丢弃整个component的有效改进。现在保留已rebuild且验证的等价图，继续同一extractor和完整DAG/严格成本检查；
+  relation服务耗尽或内部错误仍不得发布未验证结果。没有新增模型pattern。
+- 同一checkpoint测8/16/32迭代，各3次：LLaMA约89--94/128--129/127--128 ms，16已饱和；
+  decode约19--24 ms。默认提高到32，饱和提前结束；其它node/query/match界限不变。
+  这是主机normalization时间，不是整模型编译或设备时间。
+- 原native-psum LLaMA/decode的失败来自target只接受静态root的psum地址；实际select、loop init/backedge、if结果
+  都可指向已规划SPM。检查扩展为所有可能地址范围，并逐对证明psum与dest不重叠；未知或潜在重叠继续拒绝。
+  发射仍使用实际SSA地址和GEMM原生format，没有新增convert，也没有关掉K分块。
+- LLaMA主机采样定位到buffer owner重建遍历每个owner时重复扫描整个关系表；改为清空后仅查当前owner后缀，
+  保留重复operand的去重、owner/role及顺序。随后采样定位shared-DDR通知逐参数追加导致函数type/属性数组反复复制，
+  改为每个entry一次批量追加，资源id、binding、发布/获取位置不变。两项均有真实规模exact回归。
+
+当前LLaMA匹配PMU：每Tile RDMA 16.420--20.167 ms，TDMA约0.950 ms，NE约0.190 ms，CT约0.086 ms。
+因此剩余重点仍是读入/指令粒度及执行依赖。PMU来自同产物的独立诊断run，不能与Primary相加；
+Trace只捕获64,000/326,884事件前缀，不能据此给全部等待分摊耗时。
+
+### 物理copy复用的实际边界
+
+`StructuredToTile`之后，统一Tile transform只在源跨循环不变、完整alias无写入、目的私有只读且static正trip时
+外提已有物理copy。StorageRootMemo同时闭合loop init/backedge；只缓存完整可达结果，避免循环查询次序漏root。
+已有FirstUse placement保留为独立候选，两种位置都重新生成completion并通过唯一actual SPM规划。
+4 Tile、1024/1025/1031回归检查精确copy动态次数；source/result写入、select潜在alias及zero-trip不得外提。
+容量反例保留实际DDR可观察输出，证明FirstUse可规划而外提延长驻留可被actual capacity拒绝。
+
+4K prefill的Q reshape在current Tile IR中已从key循环内移到循环前；主循环每query由31次降到1次，
+独立tail仍保留一次。其GS bytes只占历史约3.2%，不能用它解释或承诺消除全部TDMA热点。
+新placement的fresh no-card及完整PyTorch实卡均通过，匹配Primary为279.969 ms，较276.776 ms基线没有测到加速。
+匹配PMU的TDMA约236.433 ms，仍是主要热点；该结果不能作为整模型优化收益交付。
+Transform全374项、目标/IR 32项、相关Transform/TileToInstr/Tile lit 113项、SharedDDR两项unit通过；
+随后补充逃逸和未知effect反例通过。完整canonical增量构建及无源码变化的no-op已验证；后续cost与搜索变化尚未完成。
+
+
+本轮补充：包含访问/物化与新cost、仍采用旧参数访问方法的LLaMA，完整PyTorch对比通过，Primary为36.780998 ms。
+其compiler为`6552168f76f04d2890dc64eeffd1e04d57491709df92db9bc69b62e0d92768eb`；
+与37.444 ms样本之间同时存在物理复用阶段差异，不能把差值全部归因于cost。
+4K prefill在该对照中最终模块及program-data与279.968994 ms样本逐字节相同，未重复launch。
+
+按用户要求清理了前期历史板测/搜索预算产物及失败package，磁盘可用空间恢复到约103 GiB；
+文档和checked-in JSON中的历史结论保留，小型raw审计摘要留在build内。本轮model-performance产物继续供当前验证；
+旧文中build路径只表示当时的审计位置，不保证原始大型文件仍在磁盘上。
+
+补充估时边界：LLaMA旧搜索方法下，新cost此前最低估时为3.232 ms，仍明显低于36.781 ms实测。
+三条模型的Trace前缀中，RDMA/WDMA/GS和elementwise短调用包络均约2,500–3,000 CPU cycles；
+这包含observer及可能的队列等待，不能作为纯issue时延。基于软件命令构造/dispatch的共同开销，
+ordinary instruction的共享先验从1 ns修正为1 us，作为明确未校准的估计；不改变实际同步、指令或legality。
+下节整数预算复验和prefill设备尝试使用该同一profile，原先验产物只作前述分项对照。
+
+## 2026-09-12：整数预算复验与未闭合边界
+
+以下预算结果来自冻结compiler `1e2160143b76511717c29e21aaa8e2265fd25aca4df183e775414439304ed11c`，
+全部width=8；JSON中的`integerBudgetHostAudit`保留逐步计数、编译wall/RSS和package身份。
+这是本轮中间版本的资格，后续Region依赖修复另有主机验证，不能合并为最终全矩阵通过。
+
+| FP16路径 | 14次预算 | 42次预算 | 126次预算 |
+| --- | --- | --- | --- |
+| 4K prefill `[1,32,4096,128]` | no-card通过，2 accepted，24.113 s | no-card通过，2 accepted，32.816 s | no-card通过，9 accepted，107.611 s；实卡超时 |
+| decode hidden4096/past1023，两步 | 两步no-card通过，各1 accepted，211.189/204.680 s | 两步no-card通过，各5 accepted，500.243/556.874 s | 仅首步no-card通过，29 accepted，1805.961 s；第二步主机停止 |
+| LLaMA block `[1,16,4096]` | 0 accepted，未生成package | 主机长测停止，未完成 | 主机长测停止，未完成 |
+| GEMM tail-1025 | no-card通过，14 accepted | no-card通过，33 accepted | 主机bufferization长测停止，未完成 |
+| AllReduce tail-1031 | no-card通过，14 accepted | no-card通过，41 accepted | no-card通过，117 accepted |
+
+较大预算增加了部分路径的实际候选覆盖，也暴露了新的编译开销边界。表中accepted表示通过actual host memory/target gate，
+不表示已通过设备PyTorch比较。没有完成的项目不能用旧package或历史结果补签。
+
+### 新prefill候选的设备超时
+
+42次winner与已实测279.969 ms的placement模块逐字节相同。126次新winner每Tile改为逐head处理，
+query/key分块从128变成256；全卡动态指令991,248→392,208，DDR读取2,717,908,992→2,181,038,080 bytes。
+CostModel估计123.151→85.793 ms，仍是未校准的估计，不能当作实测性能。
+
+新模块`9098923c9caa6f1236a4f616d44b2f1149c41a8c8b83e76b30cb7ae8a63a848a`的普通Primary在60秒
+device completion期限内没有结束。runtime报告`context=poisoned`并隔离上下文；没有继续调用provider、retry、reset或power，
+后续所有设备项目停止。没有numeric readback或Count/Trace，因而没有可用耗时或数值通过结论。
+当前Instr没有Direct DTE，仅保留worker0 terminal join；SPM地址仍在已记录的可用范围内，DMA/shape字段未发现静态越界。
+现有证据尚不能确定阻塞指令或根因，不把这次失败归因为通信、容量或硬件损坏。
+
+### 主机搜索验收暴露的问题
+
+42项search catalog本轮37项通过。其余为异构流水Region依赖环、conv-mixed-dag FP16/BF16与LLaMA FP16
+的1800秒compiler进程期限，以及随后停止的LLaMA BF16长测。这些no-card失败没有使用真实设备。
+Runner原先把通用host timeout误称为board vertical timeout；现已改为报告实际host executable和期限，执行控制不变。
+
+Region domain原商图漏掉partial shard→merge的必需边。局部use图无环并不能证明合并后的完整执行依赖无环，
+导致后续materializer报contract failure，已找到的25个accepted也无法发布。现在从current `RootRegionWork.contributions`
+按typed shard/group owner补边；1024/1025/1031两Tile的独立传递闭包oracle覆盖raw/proposal，去掉这组边时测试失败，恢复后通过。
+Planning全120项通过，异构none产品通过；search复验仍因主机长测停止，不能声称整条异构产品已完成。
+
+独立GEMM 126次主机复现推进93个actual尝试后，在下一候选的layout/bufferization阶段长时间重复工作。
+GDB栈和正在执行的完整IR共同表明：分段输入生成一串共享tensor状态的SCF循环，
+`ExtractSliceOpInterface::bufferize`通过pinned `computeLoopRegionIterArgBufferType/getBufferType`反复推导init/yield链。
+从进程读出的current module已通过parser/verifier，保存在本轮build审计目录，身份写入JSON。
+这与[MLIR文档](https://mlir.llvm.org/docs/Bufferization/)描述的buffer type/alias推导边界一致；具体递归行为以pinned源码和本轮调用栈为证。
+本轮尚未修复该重复推导，也未通过修改LLVM依赖、截断原始整数域或提前估算SPM来绕过它。
+
+当前五项优化的最终验收未闭合：剩余工作是恢复主机长测矩阵、定位新prefill候选的设备完成问题，
+再补最终版本的模型/BF16 PyTorch及匹配性能。已通过的早期访问吸收样本保持其原版本和配置范围。
+
+本批代码收尾时compiler SHA256为`cd6ffdf24479ed844bcf3e999e80059a222e2a3b1529f8509023d6008ef4fce3`，
+包含后补的Region依赖修复。完整Planning 120、Transforms 374、Driver 103项通过；Analysis 106、lit 140及runner 7项
+沿用本批对应代码的已通过结果。最后两项Python CTest、源码/IR组织检查、canonical完整增量构建与Ninja no-op通过。
+这些分项检查不代替上方尚未闭合的产品和板端矩阵；当前没有运行中的模型长测或设备进程。

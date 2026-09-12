@@ -82,6 +82,14 @@ enum class LayoutMaterializationPlacement : uint8_t {
   LoopInvariant,
 };
 
+/// Apply the same placement choice to physical copies created by structured
+/// lowering. The return value counts actually moved operations. No memory or
+/// completion admission is performed here; both are rebuilt downstream.
+mlir::FailureOr<uint64_t>
+optimizePhysicalMovementPlacement(mlir::Operation *root,
+                                  StructuredMaterializationRelations &relations,
+                                  LayoutMaterializationPlacement placement);
+
 class LayoutAssignmentQuery;
 struct LayoutQueryResult {
   LayoutOptimizationResult outcome;

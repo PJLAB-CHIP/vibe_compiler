@@ -66,6 +66,7 @@ struct EGraphStatistics {
   uint64_t outputRecords = 0;
   uint64_t inputBytes = 0;
   uint64_t outputBytes = 0;
+  uint64_t searchLimitReached = 0;
 };
 
 enum class EGraphOutcomeKind {

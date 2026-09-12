@@ -26,7 +26,7 @@ def Wafer_MoveExtractSliceOp : Wafer_MoveOp<"tile.extract_slice"> {
     DenseI64ArrayAttr:$sizes,
     DenseI64ArrayAttr:$strides
   );
-  let results = (outs Wafer_AnySPMMemRef:$result);
+  let results = (outs Res<Wafer_AnySPMMemRef, "", [MemAlloc, MemWrite]>:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$source attr-dict `:` type($source) `->` type($result)";
@@ -67,7 +67,7 @@ def Wafer_MoveCopyOp : Wafer_MoveOp<"tile.copy"> {
     Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source,
     OptionalAttr<Wafer_DDRResourceAttr>:$ddr_resource
   );
-  let results = (outs Wafer_AnySPMMemRef:$result);
+  let results = (outs Res<Wafer_AnySPMMemRef, "", [MemAlloc, MemWrite]>:$result);
   let hasVerifier = 1;
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
 }
@@ -105,7 +105,7 @@ def Wafer_MoveReshapeOp : Wafer_MoveOp<"tile.reshape_copy"> {
   }];
 
   let arguments = (ins Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source);
-  let results = (outs Wafer_AnySPMMemRef:$result);
+  let results = (outs Res<Wafer_AnySPMMemRef, "", [MemAlloc, MemWrite]>:$result);
   let hasVerifier = 1;
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
 }
@@ -116,7 +116,7 @@ def Wafer_MoveTransposeOp : Wafer_MoveOp<"tile.transpose"> {
     Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source,
     DenseI64ArrayAttr:$permutation
   );
-  let results = (outs Wafer_AnySPMMemRef:$result);
+  let results = (outs Res<Wafer_AnySPMMemRef, "", [MemAlloc, MemWrite]>:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$source attr-dict `:` type($source) `->` type($result)";
@@ -128,7 +128,7 @@ def Wafer_MoveBroadcastOp : Wafer_MoveOp<"tile.broadcast"> {
     Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source,
     DenseI64ArrayAttr:$dimensions
   );
-  let results = (outs Wafer_AnySPMMemRef:$result);
+  let results = (outs Res<Wafer_AnySPMMemRef, "", [MemAlloc, MemWrite]>:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$source attr-dict `:` type($source) `->` type($result)";

@@ -594,6 +594,139 @@ module {
   EXPECT_EQ(print(module->getOperation()), before);
 }
 
+TEST_F(RegionDomainTest, PartialMergeEdgesPreventCyclicFusionAcrossTiles) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto module = parse(llvm::formatv(R"mlir(
+module {{
+  func.func @main(%x: tensor<2x8x{0}xf32>) -> tensor<2x8x{0}xf32> {{
+    %e = tensor.empty() : tensor<2x8x{0}xf32>
+    %p = linalg.exp ins(%x : tensor<2x8x{0}xf32>)
+        outs(%e : tensor<2x8x{0}xf32>) -> tensor<2x8x{0}xf32>
+    %init = arith.constant dense<0.0> : tensor<2x8xf32>
+    %r = linalg.reduce ins(%p : tensor<2x8x{0}xf32>)
+        outs(%init : tensor<2x8xf32>) dimensions = [2]
+        (%a: f32, %b: f32) {{
+          %sum = arith.addf %a, %b : f32
+          linalg.yield %sum : f32
+        }
+    %middle0 = tensor.empty() : tensor<2x8xf32>
+    %middle = linalg.exp ins(%r : tensor<2x8xf32>)
+        outs(%middle0 : tensor<2x8xf32>) -> tensor<2x8xf32>
+    %out = linalg.generic {{
+        indexing_maps = [affine_map<(i,j,k)->(i,j,k)>,
+                         affine_map<(i,j,k)->(i,j)>,
+                         affine_map<(i,j,k)->(i,j,k)>],
+        iterator_types = ["parallel", "parallel", "parallel"]}
+        ins(%p, %middle : tensor<2x8x{0}xf32>, tensor<2x8xf32>)
+        outs(%e : tensor<2x8x{0}xf32>) {{
+      ^bb0(%a: f32, %b: f32, %unused: f32):
+        %v = arith.subf %a, %b : f32
+        linalg.yield %v : f32
+    } -> tensor<2x8x{0}xf32>
+    return %out : tensor<2x8x{0}xf32>
+  }
+}
+)mlir",
+                                      extent)
+                            .str());
+    ASSERT_TRUE(module);
+    std::string reason;
+    auto dag = StructuredDAGAnalysis::create(function(*module), &reason);
+    ASSERT_TRUE(mlir::succeeded(dag)) << reason;
+    ASSERT_EQ(dag->getNodes().size(), 4u);
+    llvm::SmallVector<StructuredDAGNodePlacement, 4> placements;
+    for (const StructuredDAGNode &node : dag->getNodes()) {
+      auto tiling = mlir::cast<mlir::TilingInterface>(node.operation);
+      if (tiling.getLoopIteratorTypes().size() == 2)
+        placements.push_back({node.id, {1, 1}, {TileId(0)}});
+      else
+        placements.push_back({node.id, {1, 1, 2}, {TileId(0), TileId(1)}});
+    }
+    auto closed =
+        wafer::test::buildTestSpatialDemand(*dag, placements, &reason);
+    ASSERT_TRUE(mlir::succeeded(closed)) << reason;
+    auto roots = RootWorkDomain::create(*dag, closed->spatial, closed->demand,
+                                        {TileId(0), TileId(1)}, &reason);
+    ASSERT_TRUE(mlir::succeeded(roots)) << reason;
+    auto outcome = collectRootWorks(*roots);
+    RootWorkCollection *works = getRootWorkCollection(outcome);
+    ASSERT_NE(works, nullptr);
+    auto domain = RegionDomain::create(works->works, &reason);
+    ASSERT_TRUE(mlir::succeeded(domain)) << reason;
+    auto raw = enumerate(*domain);
+    ASSERT_TRUE(raw);
+    ASSERT_FALSE(raw->empty());
+    bool hasFusion = false;
+    auto check = [&](const RegionPlan &plan) {
+      std::map<LogicalShardId, size_t> shards;
+      std::map<ReductionGroupId, size_t> merges;
+      for (auto [index, group] : llvm::enumerate(plan.groups))
+        for (const auto &execution : group.executions)
+          if (const auto *root =
+                  std::get_if<RequiredRootExecution>(&execution.id.source))
+            ASSERT_TRUE(shards.emplace(root->shard, index).second);
+          else
+            ASSERT_TRUE(merges
+                            .emplace(std::get<RequiredMergeExecution>(
+                                         execution.id.source)
+                                         .group,
+                                     index)
+                            .second);
+      const size_t n = plan.groups.size();
+      std::vector<std::vector<bool>> reachable(n, std::vector<bool>(n));
+      auto edge = [&](size_t from, size_t to) {
+        if (from != to)
+          reachable[from][to] = true;
+      };
+      for (auto [index, group] : llvm::enumerate(plan.groups))
+        for (const auto &binding : getRegionExternalInputs(group)) {
+          const auto &fragment = binding.fragment;
+          if (fragment.source.kind !=
+              analysis::RootBoundaryKind::StructuredResult)
+            continue;
+          if (fragment.ownerShard) {
+            ASSERT_TRUE(shards.count(*fragment.ownerShard));
+            edge(shards.at(*fragment.ownerShard), index);
+          } else {
+            ASSERT_TRUE(fragment.reductionGroup);
+            ASSERT_TRUE(merges.count(*fragment.reductionGroup));
+            edge(merges.at(*fragment.reductionGroup), index);
+          }
+        }
+      for (const auto &work : works->works)
+        for (const auto &partial : work.contributions) {
+          ASSERT_TRUE(shards.count(partial.contribution.shard));
+          ASSERT_TRUE(merges.count(partial.group));
+          edge(shards.at(partial.contribution.shard), merges.at(partial.group));
+        }
+      // A small execution graph permits exhaustive transitive closure even
+      // with real tensor extents. Include replica inputs and partial edges;
+      // checking the original SSA DAG alone would miss quotient cycles.
+      for (size_t via = 0; via < n; ++via)
+        for (size_t from = 0; from < n; ++from)
+          for (size_t to = 0; to < n; ++to)
+            reachable[from][to] = reachable[from][to] ||
+                                  (reachable[from][via] && reachable[via][to]);
+      for (size_t index = 0; index < n; ++index)
+        EXPECT_FALSE(reachable[index][index]);
+      hasFusion |= domain->getProposalMetrics(plan).fusionMerges != 0;
+    };
+    for (const RegionPlan &plan : *raw)
+      check(plan);
+    for (const RegionPlan &plan : domain->getProposals(16)) {
+      EXPECT_TRUE(llvm::is_contained(*raw, plan));
+      check(plan);
+    }
+    EXPECT_TRUE(hasFusion);
+    EXPECT_TRUE(llvm::any_of(*raw, [](const RegionPlan &plan) {
+      return llvm::all_of(plan.groups, [](const RegionGroupPlan &group) {
+        return group.mandatoryRoots.size() == 1;
+      });
+    }));
+  }
+}
+
 TEST_F(RegionDomainTest, SmallProposalQuotaRetainsDisconnectedFusionGroups) {
   for (int64_t extent : {1024, 1025, 1031}) {
     SCOPED_TRACE(extent);

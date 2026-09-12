@@ -19,7 +19,7 @@ struct StructuredGraphNormalizationOptions {
   uint64_t maximumRelationQueries = 8192;
   uint64_t maximumENodes = 4096;
   uint64_t maximumMatches = 8192;
-  uint32_t maximumIterations = 8;
+  uint32_t maximumIterations = 32;
 };
 
 struct StructuredGraphNormalizationStatistics {
@@ -60,7 +60,8 @@ enum class StructuredGraphNormalizationOutcome {
 };
 
 /// Runs the request-local access-relation e-graph over ordinary pure
-/// single-root components in `function`. Standard pinned canonicalization is
+/// ordered multi-root components in `function`. Search limits retain proven
+/// improvements when complete extraction succeeds. Pinned canonicalization is
 /// owned by the immediately preceding pipeline stage.
 mlir::FailureOr<StructuredGraphNormalizationOutcome>
 normalizeStructuredTensorGraph(

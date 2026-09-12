@@ -145,6 +145,9 @@ struct InstructionProgramCost {
   /// subset of `spmMovementBytes`, retained so layout movement is auditable
   /// without reparsing an IR dump.
   ScheduleCostMetric gatherScatterBytes;
+  /// Dynamic descriptor inner traversals (bytes / inner_bytes), not hardware
+  /// transactions, issued commands or cycles.
+  ScheduleCostMetric gatherScatterInnerIterations;
   /// Maximum end offset among compiler-owned DDR allocations reachable from
   /// the analyzed entry closure. External invocation buffers are not part of
   /// this arena.
@@ -222,11 +225,13 @@ struct InstructionProgramAggregateCost {
   ScheduleCostMetric aggregateDDRWriteBytes;
   ScheduleCostMetric aggregateSPMMovementBytes;
   ScheduleCostMetric aggregateGatherScatterBytes;
+  ScheduleCostMetric aggregateGatherScatterInnerIterations;
   /// Tile-local movement pressure is compared by Tile maximum. Aggregates
   /// remain available as whole-program work audit and are not substituted for
   /// this maximum.
   ScheduleCostMetric maximumTileSPMMovementBytes;
   ScheduleCostMetric maximumTileGatherScatterBytes;
+  ScheduleCostMetric maximumTileGatherScatterInnerIterations;
   ScheduleNoCCost aggregateNoC;
   /// Endpoint pressure derived from the actual per-Tile instruction programs.
   /// These are maxima, not sums, because endpoints are tile-local resources.

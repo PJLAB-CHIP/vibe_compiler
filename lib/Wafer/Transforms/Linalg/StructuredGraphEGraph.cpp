@@ -37,7 +37,8 @@ EGraphStatistics convertStatistics(const WaferEGraphStatistics &statistics) {
                           statistics.inputRecords,
                           statistics.outputRecords,
                           statistics.inputBytes,
-                          statistics.outputBytes};
+                          statistics.outputBytes,
+                          statistics.searchLimitReached};
 }
 
 EGraphOutcomeKind convertStatus(uint32_t status) {

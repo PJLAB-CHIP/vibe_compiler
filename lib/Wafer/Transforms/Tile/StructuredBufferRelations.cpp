@@ -54,6 +54,9 @@ collectStoragePredecessors(mlir::Value value,
           argument.getArgNumber() > 0 &&
           argument.getArgNumber() - 1 < loop.getInitArgs().size()) {
         predecessors.push_back(loop.getInitArgs()[argument.getArgNumber() - 1]);
+        auto yield =
+            mlir::cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
+        predecessors.push_back(yield.getOperand(argument.getArgNumber() - 1));
         return true;
       }
     }
@@ -95,6 +98,9 @@ collectStoragePredecessors(mlir::Value value,
   if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(definition)) {
     if (result.getResultNumber() < loop.getInitArgs().size()) {
       predecessors.push_back(loop.getInitArgs()[result.getResultNumber()]);
+      auto yield =
+          mlir::cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
+      predecessors.push_back(yield.getOperand(result.getResultNumber()));
       return true;
     }
   }
@@ -151,13 +157,15 @@ static bool shareStorage(mlir::Value lhs, mlir::Value rhs,
 
 static void appendBufferRelation(StructuredMaterializationRelations &relations,
                                  mlir::Operation *owner, mlir::Value buffer,
-                                 MaterializedBufferRole role) {
+                                 MaterializedBufferRole role,
+                                 size_t firstRelation = 0) {
   if (!owner || !buffer || !mlir::isa<mlir::BaseMemRefType>(buffer.getType()))
     return;
-  if (llvm::any_of(relations.buffers, [&](const auto &relation) {
-        return relation.owner == owner && relation.buffer == buffer &&
-               relation.role == role;
-      }))
+  if (llvm::any_of(llvm::ArrayRef(relations.buffers).drop_front(firstRelation),
+                   [&](const auto &relation) {
+                     return relation.owner == owner &&
+                            relation.buffer == buffer && relation.role == role;
+                   }))
     return;
   relations.buffers.push_back({owner, buffer, role});
 }
@@ -166,25 +174,31 @@ static void appendBufferRelation(StructuredMaterializationRelations &relations,
 
 const llvm::DenseSet<mlir::Value> &
 StorageRootMemo::getStorageRoots(mlir::Value value) {
-  auto [iterator, inserted] = memo.try_emplace(value);
-  if (inserted) {
-    iterator->second = std::make_unique<llvm::DenseSet<mlir::Value>>();
-    llvm::DenseSet<mlir::Value> *valueRoots = iterator->second.get();
-    llvm::SmallVector<mlir::Value, 4> predecessors;
-    if (!collectStoragePredecessors(value, predecessors)) {
-      if (value)
-        valueRoots->insert(value);
-    } else {
-      // Install the empty entry before recursion so malformed forwarding
-      // cycles terminate conservatively.
-      for (mlir::Value predecessor : predecessors) {
-        const llvm::DenseSet<mlir::Value> &roots = getStorageRoots(predecessor);
-        valueRoots->insert(roots.begin(), roots.end());
-      }
+  if (auto found = memo.find(value); found != memo.end())
+    return *found->second;
+  auto roots = std::make_unique<llvm::DenseSet<mlir::Value>>();
+  llvm::SmallVector<mlir::Value> pending{value};
+  llvm::DenseSet<mlir::Value> visited;
+  while (!pending.empty()) {
+    mlir::Value current = pending.pop_back_val();
+    if (!current || !visited.insert(current).second)
+      continue;
+    if (auto found = memo.find(current); found != memo.end()) {
+      roots->insert(found->second->begin(), found->second->end());
+      continue;
     }
-    return *valueRoots;
+    llvm::SmallVector<mlir::Value, 4> predecessors;
+    if (!collectStoragePredecessors(current, predecessors))
+      roots->insert(current);
+    else
+      pending.append(predecessors.begin(), predecessors.end());
   }
-  return *iterator->second;
+  // Publish only a complete reachability result. Caching an empty entry during
+  // recursion loses roots on ordinary loop-carried SCCs and depends on query
+  // order.
+  auto *result = roots.get();
+  memo.try_emplace(value, std::move(roots));
+  return *result;
 }
 
 struct StructuredBufferReplacementListener::Impl {
@@ -471,16 +485,22 @@ void rebuildCurrentBufferOwnerRelations(
     if (mlir::isa<mlir::ModuleOp, TileModuleOp, TileRegionOp,
                   mlir::func::FuncOp>(operation))
       return;
+    // This walk visits each owner once after clearing the relation list.
+    // Only repeated operands/results of this owner can duplicate a record;
+    // scanning earlier owners makes rebuilding quadratic in program size.
+    const size_t firstRelation = relations.buffers.size();
     for (mlir::Value operand : operation->getOperands())
       appendBufferRelation(relations, operation, operand,
                            isMovement(operation)
                                ? MaterializedBufferRole::Movement
-                               : MaterializedBufferRole::Operand);
+                               : MaterializedBufferRole::Operand,
+                           firstRelation);
     for (mlir::Value result : operation->getResults())
       appendBufferRelation(relations, operation, result,
                            mlir::isa<mlir::memref::AllocOp>(operation)
                                ? MaterializedBufferRole::Scratch
-                               : MaterializedBufferRole::Result);
+                               : MaterializedBufferRole::Result,
+                           firstRelation);
   });
 }
 
