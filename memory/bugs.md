@@ -14,8 +14,19 @@
   重复打开其它分段。其结果依赖递归上下文，不能简单加入只按SSA value命中的缓存。
 - 修复模式：在选定temporal IR之后、layout/One-Shot之前，用标准subset/loop接口证明局部recurrence，把初始extract和最终insert移至
   static正trip循环外，保留原算术、dtype、迭代顺序与未写区域；随后折叠恒等carrier和相邻子集交接。关系由同一rewriter retarget。
+  内层提升后的旧恒等carrier必须先清理，才能在fresh IR上证明外层；两步交替至不再提升，不能把一轮后序扫描当成嵌套闭包。
 - 防复发：真实规模长段链检查exact内层state和最终写回，并走actual Instr/completion/SPM；独立检查零次、未知trip、变化索引、
   重叠观察、分叉和交换state。调用pinned subset helper前排除其尚未修复的nested-state收集/分叉边界，不从优化成功推断任意loop可外提。
+
+## 必执行循环不能携带虚构的零次路径
+
+- 现象：长串嵌套循环已完成bufferization和Instr转换，SPM分析仍在ordered successor与`recordUse`中长时间拆分路径。
+- 根因：timeline给每个`scf.for`无条件增加optional-body decision，常量上下界已证明非空的循环也保留不存在的bypass；
+  pending access经过后续循环时反复相交/相减，虚假分支组合放大工作。
+- 修复模式：只读current常量上下界及正step，已证明非空时body继承parent路径；动态/零次边界保留optional，
+  真正的loop-local条件分支仍为repeatable，不作为跨iteration的互斥证明。沿用原allocation、effect、completion及packing验证。
+- 防复发：同一长段嵌套输入检查exact路径、局部state与actual Instr/completion/SPM，配对覆盖真实分支、动态trip/step、
+  零次completion和跨worker冲突。分析变快不等于设备变快，产品需另作fresh资格。
 
 ## 低精度K分块不能沿用窄输出作为partial
 

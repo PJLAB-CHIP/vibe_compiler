@@ -89,9 +89,9 @@ struct TimelineFailure {
 };
 
 /// A deterministic preorder timeline for structured IR. `scf.if` successors
-/// are mutually exclusive for one execution of their parent region and every
-/// `scf.for` body is modeled as an optional path because the loop may execute
-/// zero times. Decision conditions use a sparse identifier set rather than a
+/// are mutually exclusive for one execution of their parent region. A
+/// `scf.for` body is optional unless constant bounds and a positive step prove
+/// it non-empty. Decision conditions use a sparse identifier set rather than a
 /// machine-word mask. Decisions inside a loop are marked repeatable so packing
 /// does not mistake per-iteration exclusivity for whole-execution exclusivity.
 class StructuredTimeline {

@@ -173,5 +173,173 @@
     "subsequentNinjaNoOp": true,
     "sourceAndIROrganizationPassed": true,
     "fullCatalogPassed": false
+  },
+  "focusedCatalogRecheck": {
+    "compilerSha256": "8e2d3dd85bd33fbfe6f7b1e312a3e05aeacd1f6e08a4e6685562ca26761d9016",
+    "log": "build/test/model-performance/subset-product-ctest.log",
+    "logSha256": "c077b8f8d71b1841c5c054b9ff722d0b484d7626d5c48a81e1e6297e3de08201",
+    "results": [
+      {
+        "case": "heterogeneous-tiling-dataflow",
+        "dtype": "float16",
+        "status": "no-card-passed",
+        "ctestWallSeconds": 1595.69
+      },
+      {
+        "case": "conv-mixed-dag",
+        "dtype": "float16",
+        "status": "host-compiler-timeout",
+        "compilerTimeoutSeconds": 1800
+      },
+      {
+        "case": "conv-mixed-dag",
+        "dtype": "bfloat16",
+        "status": "host-compiler-timeout",
+        "compilerTimeoutSeconds": 1800,
+        "additionalDiagnostic": "failed to legalize wafer.tile.materialize_layout: strided rank7 tensor -> ncx, shape 4x1x6x1x2x1x257xf32"
+      }
+    ],
+    "deviceExecuted": false
+  },
+  "proposalOrderExperiment": {
+    "retainedInProduction": false,
+    "compilerSha256": "a146aa04a5909ecd1ddeea561bc064da05d8d42d55636ca55865314ad9987844",
+    "change": "各scale先访问完整协调tuple，再访问单轴/未协调tuple；仅改变顺序。",
+    "llama14": {
+      "actual": 14,
+      "accepted": 0,
+      "capacityRejected": 13,
+      "completionCycleRejected": 1,
+      "runnerWallSeconds": 477.74,
+      "maxRssKiB": 6939308,
+      "promotedSubsets": 96,
+      "logSha256": "f9da4311addf1b72ce0b343a0d52313e102878a19b288964f0ef76924b071f9b"
+    },
+    "gemm14": {
+      "actual": 14,
+      "accepted": 14,
+      "noCardPassed": true,
+      "runnerWallSeconds": 19.14,
+      "packageIdenticalToThisRoundBoardValidatedGemm": true
+    },
+    "hostChecks": {
+      "driverPassed": 104,
+      "prefixAndSearchPassed": 19
+    },
+    "decision": "未闭合LLaMA有限预算可行性，撤回顺序试改；继续查actual allocation/owner。并行主机负载不隔离，不把wall差值视为因果性能A/B。"
+  },
+  "llama42BeforeNestedFix": {
+    "log": "build/test/model-performance/subset-llama-42.log",
+    "sha256": "3ff18b5e9f574fdaf19df783197b31d1532d9e36e0a1465f20fa55167c2c9239",
+    "compilerSha256": "8e2d3dd85bd33fbfe6f7b1e312a3e05aeacd1f6e08a4e6685562ca26761d9016",
+    "status": "host-compiler-timeout",
+    "runnerWallSeconds": 1817.9,
+    "maxRssKiB": 11942784,
+    "compilerTimeoutSeconds": 1800,
+    "lastCompletedCandidateAdvanceCalls": 35,
+    "activeLayoutAndBufferizationMillisecondsAtDeadline": 394436,
+    "deviceExecuted": false
+  },
+  "firstActualCapacityWitness": {
+    "module": {
+      "log": "build/test/model-performance/llama-first-spm.mlir",
+      "sha256": "0f14de974d4189c839c91000fa60c969c546fd67764903f940569eb05bb5a519"
+    },
+    "diagnostic": {
+      "log": "build/test/model-performance/llama-capacity-diagnostic.log",
+      "sha256": "730d77703e305f8fcdc69911cb5f345c200459eafc8e1daaffa795c5f444ba70"
+    },
+    "parsedAndVerified": true,
+    "spmRange": [
+      65536,
+      3080192
+    ],
+    "allocationBytes": 5636096,
+    "allocationShape": [
+      688,
+      4096
+    ],
+    "dtype": "float16",
+    "flow": "DDR subview -> RDMA -> Tensor SPM -> gather_scatter -> Cx SPM -> GEMM transpose RHS",
+    "gemm": {
+      "m": 16,
+      "n": 688,
+      "k": 4096
+    },
+    "limits": "首个实际失败候选的证据，不代表其余所有capacity rejection；开启既有diagnostic和读取实际IR，不修改生产算法。",
+    "diagnosticCompilerSha256": "8e2d3dd85bd33fbfe6f7b1e312a3e05aeacd1f6e08a4e6685562ca26761d9016",
+    "moduleDumpCompilerSha256": "d00f13f5f77087779c98ae8ff77857e9d07d35d7bb4d80bb9adf28e797848c63"
+  },
+  "nestedSubsetNormalization": {
+    "compilerSha256": "d00f13f5f77087779c98ae8ff77857e9d07d35d7bb4d80bb9adf28e797848c63",
+    "gemm126": {
+      "log": "build/test/model-performance/nested-subset-gemm-126.log",
+      "sha256": "401ed497b44b7ec8e1b4f2c47bf086f32b9c33aa4c7830c7d556912257d4749a",
+      "actual": 126,
+      "accepted": 48,
+      "noCardPassed": true,
+      "runnerWallSeconds": 112.03,
+      "maxRssKiB": 467784,
+      "packageIdenticalToThisRoundBoardValidatedGemm": true
+    },
+    "change": "标准subset提升与恒等state清理迭代到稳定，从fresh IR证明外层，保留原guard。"
+  },
+  "mandatoryLoopPaths": {
+    "compilerSha256": "51a1617f1cf6541fc66a1e59ee8e786d3a27bc264b2c85ac1e75ccb4045dd936",
+    "change": "仅在current常量上下界和正step证明非空时不创建optional-body decision，保留真实分支和未知trip路径。",
+    "mechanismBefore": {
+      "log": "build/test/model-performance/mandatory-loop-long-before.log",
+      "sha256": "dd9f492480307369e6ba8b7dfbbd941df8f72207f671ba6a5bc3b2e501a53836",
+      "status": "host-diagnostic-timeout",
+      "wallSeconds": 10.01,
+      "maxRssKiB": 129008
+    },
+    "mechanismAfter": {
+      "log": "build/test/model-performance/mandatory-loop-focused.log",
+      "sha256": "5ce90fafacf1dd477847dd32497d1f513e49e306f89a8c4c98a0795467779922",
+      "testsPassed": 52,
+      "testsTotal": 52,
+      "fullFocusedWallSeconds": 0.31,
+      "maxRssKiB": 34652,
+      "sameSegmentedTestMilliseconds": 265
+    },
+    "gemm126": {
+      "log": "build/test/model-performance/mandatory-loop-gemm-126.log",
+      "sha256": "61264a8b8911620b00bf5968f36181f23148ed8a189054485be6fc08fcbb0161",
+      "actual": 126,
+      "accepted": 48,
+      "noCardPassed": true,
+      "runnerWallSeconds": 114.61,
+      "maxRssKiB": 468004,
+      "counters": {
+        "lifetime-timeline/non-empty-loops": 7294,
+        "lifetime-timeline/path-decisions": 0,
+        "loop-subsets/examined-loops": 4711,
+        "loop-subsets/promoted-subsets": 548
+      },
+      "packageIdenticalToThisRoundBoardValidatedGemm": true,
+      "boardRerun": false,
+      "boardReuseBoundary": "本轮fresh package/data与已通过PyTorch的GEMM逐字节相同；没有重复设备launch，不签发新性能A/B。"
+    },
+    "qualificationComplete": false,
+    "limits": "机制开销与产品性能分别记录；尚未以此版本完成全部模型、数值、profile资格。",
+    "hostVerification": {
+      "transforms": 378,
+      "driver": 103,
+      "affectedLit": 68,
+      "systemc": 17,
+      "canonicalFullIncrementalBuildPassed": true,
+      "subsequentNinjaNoOp": true,
+      "sourceAndIROrganizationPassed": true,
+      "fullCatalogPassed": false
+    },
+    "verificationLogs": {
+      "mandatory-loop-transforms.log": "9064fc60e427b8b13e2d5ff67846419de96830078d4bceb206615fe894b2febe",
+      "mandatory-loop-driver.log": "73cbf67c2b77599b3ef15629ac37edc7759b226b1e02e02f23ca2a0c96e7417d",
+      "mandatory-loop-lit.log": "20ece2b5cefbb5c71d63f3d88f25d1d0272ba076f9b9fb6ba04e06f5afc4ba43",
+      "mandatory-loop-systemc.log": "86b3fb523e3199fbcdc6473b867a9bb239a33b676a56ab464fa108504c2c9344",
+      "mandatory-loop-final-build.log": "33ddd91bfe1935d806002fc759e966b97acd20fb021dd894523e4fa8f68c7525",
+      "mandatory-loop-build-noop.log": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+    }
   }
 }

@@ -279,7 +279,7 @@ module {
 TEST_F(LifetimeAnalysisTest, TimelineModelsIfAndZeroTripLoopPaths) {
   auto module = parse(R"mlir(
 module {
-  func.func @control(%condition: i1) {
+  func.func @control(%condition: i1, %upper: index) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     scf.if %condition {
@@ -287,7 +287,7 @@ module {
     } else {
       %else = arith.constant 2 : i32
     }
-    scf.for %index = %c0 to %c1 step %c1 {
+    scf.for %index = %c0 to %upper step %c1 {
       %body = arith.constant 3 : i32
     }
     return
@@ -330,6 +330,76 @@ module {
   loopPoint->path.subtract(bodyPoint->path, zeroTripPaths);
   ASSERT_EQ(zeroTripPaths.size(), 1u);
   EXPECT_FALSE(zeroTripPaths.front().compatibleWith(bodyPoint->path));
+}
+
+TEST_F(LifetimeAnalysisTest,
+       TimelineEliminatesOnlyProvedNonEmptyLoopDecisions) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    const std::string type = "memref<1x" + std::to_string(extent) + "x64xf16>";
+    std::string text = "module { func.func @paths(%input: " + type +
+                       ", %upper: index, %step: index, %condition: i1) {\n"
+                       "%c0 = arith.constant 0 : index\n"
+                       "%c1 = arith.constant 1 : index\n"
+                       "%c32 = arith.constant 32 : index\n"
+                       "%end = arith.constant " +
+                       std::to_string(extent) +
+                       " : index\n"
+                       "scf.for %outer = %c0 to %end step %c32 {\n"
+                       "  scf.for %inner = %c0 to %end step %c32 {\n"
+                       "    scf.if %condition {\n"
+                       "      %a = memref.load %input[%c0, %inner, %c0] : " +
+                       type +
+                       "\n"
+                       "    } else {\n"
+                       "      %b = memref.load %input[%c0, %outer, %c0] : " +
+                       type +
+                       "\n"
+                       "    }\n  }\n}\n"
+                       "scf.for %zero = %c0 to %c0 step %c1 {}\n"
+                       "scf.for %dynamic = %c0 to %upper step %c1 {}\n"
+                       "scf.for %dynamicStep = %c0 to %end step %step {}\n"
+                       "return\n}}";
+    auto module = parse(text);
+    ASSERT_TRUE(module);
+    auto function = getOnlyFunction(*module);
+    auto timeline = StructuredTimeline::build(function);
+    ASSERT_TRUE(mlir::succeeded(timeline));
+    unsigned mandatory = 0, optional = 0;
+    function.walk([&](mlir::scf::ForOp loop) {
+      auto parent = timeline->lookup(loop);
+      auto body = timeline->lookup(&loop.getBody()->front());
+      ASSERT_TRUE(parent);
+      ASSERT_TRUE(body);
+      if (loop.getStep().getDefiningOp() &&
+          loop.getLowerBound() != loop.getUpperBound() &&
+          loop.getUpperBound().getDefiningOp()) {
+        ++mandatory;
+        EXPECT_EQ(parent->path, body->path);
+      } else {
+        ++optional;
+        EXPECT_NE(parent->path, body->path);
+        llvm::SmallVector<PathCondition, 2> remaining;
+        parent->path.subtract(body->path, remaining);
+        ASSERT_EQ(remaining.size(), 1u);
+        EXPECT_FALSE(remaining.front().compatibleWith(body->path));
+      }
+    });
+    EXPECT_EQ(mandatory, 2u);
+    EXPECT_EQ(optional, 3u);
+    function.walk([&](mlir::scf::IfOp branch) {
+      auto thenPoint =
+          timeline->lookup(&branch.getThenRegion().front().front());
+      auto elsePoint =
+          timeline->lookup(&branch.getElseRegion().front().front());
+      ASSERT_TRUE(thenPoint);
+      ASSERT_TRUE(elsePoint);
+      EXPECT_FALSE(thenPoint->path.compatibleWith(elsePoint->path));
+      EXPECT_TRUE(thenPoint->path.compatibleForPacking(elsePoint->path));
+      EXPECT_EQ(thenPoint->path.withoutRepeatableDecisions(),
+                PathCondition::root());
+    });
+  }
 }
 
 TEST_F(LifetimeAnalysisTest,

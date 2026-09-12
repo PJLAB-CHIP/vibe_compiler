@@ -44,22 +44,22 @@ Region修复后完整Driver再次103项通过；最终两项Python CTest、源�
   conv-mixed-dag FP16/BF16及LLaMA FP16的1800秒主机编译期限；LLaMA BF16在定位到主机病态耗时后停止。
   编译器进程超时不表示板卡异常；runner诊断已改为报告实际host executable和期限。
 - Region依赖检查漏掉current contributions中的partial→merge边。本轮补齐typed shard/group owner后，
-  120项Planning通过；移除该边的mutation测试明确失败，恢复后通过。异构产品none通过，search复验因主机长测停止，
-  尚未签发该case的新search no-card资格。
+  120项Planning通过；移除该边的mutation测试明确失败，恢复后通过。异构产品none通过，随后子集提升版本的search
+  已完成strict no-card（1595.69秒）；conv FP16/BF16仍主机超时。各版本与范围见下方本轮记录，未代签完整catalog。
 - 14/42/126曲线已部分完成：4K prefill分别2/2/9个accepted，编译24.113/32.816/107.611秒；
   decode 14/42两步各1/5个accepted，126仅首步完成且29个accepted。LLaMA14无候选，42/126长测停止；
   GEMM tail-1025的14/42通过，126在第94个actual尝试进入bufferization长测；AllReduce tail-1031三个预算均通过。
   这些是带compiler身份的主机证据，不代替最终板端数值资格。
 - GDB从正在执行的GEMM候选读取完整current module：分段输入形成长串带tensor状态的SCF循环，
   `ExtractSliceOpInterface::bufferize`触发pinned `computeLoopRegionIterArgBufferType/getBufferType`重复递归。
-  复现IR已通过parser/verifier；未改LLVM依赖、未降低搜索域或以估算提前跳过actual SPM。该主机根因尚未修复。
+  复现IR已通过parser/verifier；该主机根因已按下节子集state合同修复，未改LLVM依赖、搜索域或actual SPM gate。
 - 4K prefill的126次候选选择256分块，Primary在60秒真实设备期限内未完成，context已隔离，
   后续全部板端批次停止，不retry/reset。没有数值或Count/Trace结果，不能按静态指令减少声称加速。
   当前Instr没有Direct DTE，SPM范围在已有可用区间，字段未发现越界；这些排查未定位停在哪条指令，不能据此宣称硬件故障或修复。
 
 详细audit、版本与未完成项统一见[性能记录](../../docs/board-performance-results.md#2026-09-12整数预算复验与未闭合边界)。
 2026-09-13用户指定单独复查Add：fresh package/no-card通过，16 Tile FP16 Add同样发生60秒真实completion超时，
-没有输出回读；boot/runtime身份未变。一次尝试后已停止，未retry/reset，设备基本执行尚未恢复。
+没有输出回读；boot/runtime身份未变。一次尝试后已停止，未retry/reset；随后重启后的恢复结果见下一段。
 
 2026-09-13重启后，用户指定的fresh完整16 Tile FP16 Add单次运行、7340032元素PyTorch对比、回读及清理通过。
 该结果恢复基本执行资格，不为此前prefill候选签发资格。
@@ -86,9 +86,48 @@ runner wall367.75秒。它的搜索可行性和搬运性能是独立未完成边
 | 不可外提 | 变化索引、重叠读取、分叉、嵌套state转发、零次/未知trip-count | 未证明边界逐字节保持原IR | `SubsetPromotionPreservesUnprovedLoopState`：六类反例通过 |
 | 编译开销与产品 | 多段GEMM、组合计算和模型，none/search | 记录循环state/查询工作、wall/RSS；不删除合法参数或更改capacity gate | fresh source→package→strict no-card；设备风险项最后 |
 
+### 有限预算的组合提案实验
+
+本轮LLaMA 14次actual只访问10组temporal选择，五个结构的完整extent与局部容量修正占据早期多数机会。
+曾单独将各scale的完整多维组合提前：同输入仍为14 actual、0 accepted、13 capacity、1 completion-cycle unsupported；
+runner wall477.74秒。主机并行负载并非严格隔离，不据此声称时间差由顺序导致，但该实验没有闭合小预算可行性。
+GEMM 14次仍全部accepted、strict no-card通过，最终package与本轮实卡通过产物逐字节相同。
+这次仅调整提案顺序的试改已撤回，未作为性能优化交付；正式搜索方法不变。下一步先追actual冲突allocation及其owner，
+区分多scope证据不足、实际buffer不随选定参数缩小和仍未访问的组合，避免继续仅按模型耗时调整种子。
+
+Actual SPM首候选现已核验：`688x4096xf16`的RHS权重同时有Tensor与Cx两个5636096-byte实际allocation，
+单个就超过当前可用SPM；RDMA→GS→GEMM的SSA链确认其用途，capacity拒绝本身合理。
+后续信息边界在`SearchCurrentIR`只把冲突owner归回Region domain，而`TemporalProposals`在多scope时不能作精确修正；
+merged/pipelined实际改写还会使原body handle失效。需要补齐当前owner到可修正scope的证明后再改通用搜索反馈，
+不能按shape或遍历位置猜归因，也不能从一个首候选推断全部未接受候选具有同一原因。
+
+循环state的追加边界：一轮subset提升后才canonicalize，会在处理外层循环时仍看到内层尚未删除的完整恒等carrier，
+因此外层可证明的局部state没有被提升。先用两层固定子集循环的exact反例验证这一遗漏，再交替subset提升和局部canonicalization至不再提升。
+每轮只将实际extract/insert移出对应循环，消去恒等state后重建关系；不放宽nested-state前置证明，不增加循环次数或重排算术。
+覆盖矩阵包含32段单层链与32段两层固定子集循环，同样经过1024/1025/1031及actual Instr/completion/SPM。
+32段两层诊断曾在后续SPM的`LifetimeDataflow::recordUse`长时间重复工作；按下节必执行循环路径精化后，
+完整矩阵265 ms通过；单独子集改写没有改变completion或lifetime规则。
+
+### 必执行循环的路径分析
+
+32段双层循环的SPM栈显示`recordUse/extendTo/processOrderedWorkerSuccessor`重复处理路径。
+当前timeline为每个`scf.for`无条件创建optional-body decision，连current常量已经证明非空的循环也保留不存在的零次分支；
+后续路径相交、相减不断拆分历史pending状态。09号只读timeline改为复用现有非空证明，消去这类虚假decision。
+输入仍是当前structured Instr，输出仍是调用内timeline与live segments；直接消费者为SPM/DDR planning与transfer清理。
+不改循环、allocation或completion，不对未知trip-count推断执行，不引入新的analysis缓存。
+
+| 输入等价类 | exact断言 | 下游witness |
+| --- | --- | --- |
+| 常量正trip，1024/1025/1031，rank3 buffer，嵌套与顺序循环 | body与parent路径相同；真实if仍互斥且repeatable；loop subtree/event保持 | 同步tracker、live segments和actual SPM |
+| 零次或动态trip，动态step | 保留optional路径；body completion不能证明未执行路径已完成 | 现有missing completion、loop capture及alias负例 |
+| 32段双层更新与尾行 | 所有局部state、输出holes和初值保持；不再产生虚假路径组合 | Layout→One-Shot→Instr→completion→SPM；前后wall/RSS |
+
+完成条件：上述精确矩阵及完整Transforms/Driver、相关lit、canonical build/no-op与fresh产品验证通过；
+最终产品如发生变化则补原PyTorch对比，风险prefill仍最后。
+
 | 追加覆盖 | 输入 | exact断言 | 下游witness |
 | --- | --- | --- | --- |
-| 分布式归约与旁路consumer | rank3，1024/1025/1031，两Tile；producer同时供partial与间接归约consumer | raw/proposal均拒绝跨merge形成的商图环，保留acyclic融合与单root方案；所有partial以typed shard/group定位owner | Planning transitive-closure oracle与去边mutation通过；异构PyTorch none通过，search待完成 |
+| 分布式归约与旁路consumer | rank3，1024/1025/1031，两Tile；producer同时供partial与间接归约consumer | raw/proposal均拒绝跨merge形成的商图环，保留acyclic融合与单root方案；所有partial以typed shard/group定位owner | Planning transitive-closure oracle与去边mutation通过；异构PyTorch none及子集提升版本search strict no-card通过，未签发实卡资格 |
 
 ### 证据决定优先级
 

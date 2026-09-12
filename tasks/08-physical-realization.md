@@ -167,6 +167,8 @@ candidate-owned current relation保存。
 直接subset组成的单链；跨nested loop、分叉、整值观察或交换state不交给该helper。
 只处理static正trip-count，避免把原本不执行的越界extract推测执行到循环前。未证明的循环保留原IR。
 改写使用relation replacement listener，随后仅运行SCF/Tensor局部canonicalization消除恒等carrier和相邻子集读写；
+两者交替至不再提升子集，每轮重建并验证关系。一次提升把子集移出一层循环，恒等carrier消除后才能在fresh IR上证明外层；
+不能在内层仍保留旧carrier时把外层一次未匹配当成最终结论，也不因此放宽nested-state的前置证明。
 PBQP、One-Shot与actual SPM均从改写后的IR重新建立。不得用猜测memref type或跨递归上下文的SSA缓存替代这一state边界。
 算法依据为[MLIR subset hoisting](https://mlir.llvm.org/docs/Passes/#-loop-invariant-subset-hoisting)；
 pinned缺陷参见[upstream修复](https://github.com/llvm/llvm-project/pull/188761)。本项矩阵在统一性能计划中维护。

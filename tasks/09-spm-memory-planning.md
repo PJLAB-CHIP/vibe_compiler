@@ -275,6 +275,10 @@ lifetime 从 IR 结构和 effect 推出：
 
 当前规则：
 
+- Structured timeline从current `scf.for`的常量上下界和正step证明至少执行一次时，body继承parent路径，
+  不再增加“可能零次”的独立decision。不能证明非空时保留原optional-body路径；loop内真实条件分支仍标为repeatable，
+  不用于证明跨iteration的packing互斥。该规则只精化只读路径分析，不改变IR、completion或allocation。
+  依据[SCF循环语义](https://mlir.llvm.org/docs/Dialects/SCFDialect/#scffor-scfforop)，具体比较与类型以pinned SCF为准。
 - synchronous op 的 input live 到该 op read 完；output live 到最后 use。
 - 本地 compute/movement issue按typed worker进入ordered-pending set；source/destination access至少活到
   matching participant join，或活到可由same-worker exact RAW/WAR/WAW后继接管的有序访问。不同worker、DTE、

@@ -83,23 +83,6 @@ normalizeLoopSubsetState(mlir::ModuleOp module,
       "transform", "layout-and-bufferization", "loop-subset-state");
   StructuredBufferReplacementListener listener(relations);
   mlir::IRRewriter rewriter(module.getContext(), &listener);
-  uint64_t examined = 0, promoted = 0;
-  module.walk([&](TileRegionOp region) {
-    region.walk([&](mlir::scf::ForOp loop) {
-      ++examined;
-      if (!canPromoteSubsets(loop))
-        return;
-      unsigned before = loop.getNumRegionIterArgs();
-      auto result = mlir::hoistLoopInvariantSubsets(
-          rewriter, mlir::cast<mlir::LoopLikeOpInterface>(loop.getOperation()));
-      promoted += result.getRegionIterArgs().size() - before;
-    });
-  });
-  support::addCompileCounter("loop-subsets", "examined-loops", examined);
-  support::addCompileCounter("loop-subsets", "promoted-subsets", promoted);
-  if (!promoted)
-    return mlir::success();
-
   mlir::RewritePatternSet patterns(module.getContext());
   mlir::scf::ForOp::getCanonicalizationPatterns(patterns, module.getContext());
   mlir::tensor::populateMergeConsecutiveInsertExtractSlicePatterns(patterns);
@@ -107,18 +90,43 @@ normalizeLoopSubsetState(mlir::ModuleOp module,
   config.maxIterations = 10;
   config.listener = &listener;
   mlir::FrozenRewritePatternSet frozen(std::move(patterns));
-  auto walked = module.walk([&](TileRegionOp region) {
-    config.scope = &region.getBody();
-    return mlir::failed(mlir::applyPatternsAndFoldGreedily(region.getBody(),
-                                                           frozen, config))
-               ? mlir::WalkResult::interrupt()
-               : mlir::WalkResult::advance();
-  });
-  return mlir::success(!walked.wasInterrupted() &&
-                       listener.finalizeAfterRewrite() &&
-                       mlir::succeeded(mlir::verify(module)) &&
-                       mlir::succeeded(checkStructuredBufferRelationsCurrent(
-                           module, relations)));
+  uint64_t examined = 0, promoted = 0;
+  bool valid = true;
+  while (valid) {
+    uint64_t roundPromoted = 0;
+    module.walk([&](TileRegionOp region) {
+      region.walk([&](mlir::scf::ForOp loop) {
+        ++examined;
+        if (!canPromoteSubsets(loop))
+          return;
+        unsigned before = loop.getNumRegionIterArgs();
+        auto result = mlir::hoistLoopInvariantSubsets(
+            rewriter,
+            mlir::cast<mlir::LoopLikeOpInterface>(loop.getOperation()));
+        roundPromoted += result.getRegionIterArgs().size() - before;
+      });
+    });
+    if (!roundPromoted)
+      break;
+    promoted += roundPromoted;
+    // Each promotion moves a subset through one enclosing loop. Removing the
+    // old identity carrier exposes proofs in outer loops on the next round;
+    // the nested-state guard must inspect that fresh IR, not the old carrier.
+    auto walked = module.walk([&](TileRegionOp region) {
+      config.scope = &region.getBody();
+      return mlir::failed(mlir::applyPatternsAndFoldGreedily(region.getBody(),
+                                                             frozen, config))
+                 ? mlir::WalkResult::interrupt()
+                 : mlir::WalkResult::advance();
+    });
+    valid = !walked.wasInterrupted() && listener.finalizeAfterRewrite() &&
+            mlir::succeeded(mlir::verify(module)) &&
+            mlir::succeeded(
+                checkStructuredBufferRelationsCurrent(module, relations));
+  }
+  support::addCompileCounter("loop-subsets", "examined-loops", examined);
+  support::addCompileCounter("loop-subsets", "promoted-subsets", promoted);
+  return mlir::success(valid);
 }
 
 } // namespace wafer::compiler::detail

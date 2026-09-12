@@ -643,6 +643,7 @@ StructuredTimeline::build(mlir::Operation *scope, TimelineFailure *failure) {
   StructuredTimeline timeline;
   int64_t nextEvent = 0;
   std::optional<uint64_t> nextDecision = 0;
+  uint64_t nonEmptyLoops = 0;
   bool failed = false;
 
   auto takeDecision = [&]() -> std::optional<uint64_t> {
@@ -698,16 +699,23 @@ StructuredTimeline::build(mlir::Operation *scope, TimelineFailure *failure) {
         assignRegion(ifOp.getThenRegion(), *thenPath, loopDepth);
         assignRegion(ifOp.getElseRegion(), *elsePath, loopDepth);
       } else if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
-        std::optional<uint64_t> decision = takeDecision();
-        if (!decision) {
-          failed = true;
-          setTimelineFailure(failure,
-                             TimelineFailureKind::DecisionDomainExhausted, &op);
-          return;
+        // A proved non-empty loop has no bypass path. Inventing one splits
+        // pending lifetimes at every ordered successor and compounds across
+        // nested loop streams. Real branch decisions remain repeatable.
+        std::optional<PathCondition> bodyPath = path;
+        if (isStaticallyNonEmpty(forOp)) {
+          ++nonEmptyLoops;
+        } else {
+          std::optional<uint64_t> decision = takeDecision();
+          if (!decision) {
+            failed = true;
+            setTimelineFailure(
+                failure, TimelineFailureKind::DecisionDomainExhausted, &op);
+            return;
+          }
+          bodyPath = path.withDecision(*decision, /*selected=*/true,
+                                       /*repeatable=*/loopDepth != 0);
         }
-        std::optional<PathCondition> bodyPath =
-            path.withDecision(*decision, /*selected=*/true,
-                              /*repeatable=*/loopDepth != 0);
         if (!bodyPath) {
           failed = true;
           setTimelineFailure(
@@ -745,6 +753,11 @@ StructuredTimeline::build(mlir::Operation *scope, TimelineFailure *failure) {
 
   for (mlir::Region &region : scope->getRegions())
     assignRegion(region, PathCondition::root(), /*loopDepth=*/0);
+  wafer::support::addCompileCounter("lifetime-timeline", "non-empty-loops",
+                                    nonEmptyLoops);
+  if (nextDecision)
+    wafer::support::addCompileCounter("lifetime-timeline", "path-decisions",
+                                      *nextDecision);
   if (failed)
     return mlir::failure();
   return timeline;

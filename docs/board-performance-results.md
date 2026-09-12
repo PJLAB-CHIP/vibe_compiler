@@ -849,3 +849,47 @@ down projection以`256x128xf16`窗口读取，内层256 bytes、stride22016 byte
 
 后续需要分别闭合：有限预算先到达可执行结构/参数组合、actual容量反馈的有效利用，以及合法候选的搬运粒度/提交成本排序。
 此次循环state修复不修改这些搜索策略，也不把尚未执行的LLaMA/decode/BF16及风险prefill标为完成。
+
+### 主机产品复验与容量证据
+
+同一子集提升编译器的异构流水FP16 search已完成strict no-card，CTest wall1595.69秒；
+conv-mixed-dag FP16/BF16仍在1800秒host compiler期限内未完成，BF16另有一个rank7 strided Tensor→NCx候选无法lower。
+LLaMA width8/trials42同样主机超时，runner wall1817.90秒、max RSS11942784 KiB；最后已完成35次candidate advance，
+停止时正在layout/bufferization包装阶段工作394秒。仅凭该阶段名不能确定仍是同一种One-Shot递归。
+这些运行均未使用设备；异构通过不表示全部catalog已恢复。
+
+一次首候选的actual SPM诊断与可验证Instr dump给出更具体的容量证据：
+DDR权重视图`688x4096xf16`经RDMA进入同形Tensor SPM，再经GS进入Cx SPM，直接作为`m16/n688/k4096`
+GEMM的转置RHS。两个实际buffer各5636096 bytes，任一个都超过可用区间`[65536,3080192)`。
+因此该次capacity rejection有真实allocation依据，不能靠更改估算或放宽allocator解决。
+完整dump共7454行，已通过parser/verifier，SHA256为`0f14de974d4189c839c91000fa60c969c546fd67764903f940569eb05bb5a519`。
+诊断仅开启既有capacity输出，在第一actual SPM处读取current IR；未在production代码中加入本地调试文件输出。
+
+另做过“完整多维tuple提前”的单独提案顺序试验：LLaMA14仍为0 accepted、13 capacity、1 completion-cycle unsupported；
+GEMM14全部accepted且package与本轮已上板产物逐字节相同。未证明有限预算可行性改善，试改已撤回，正式搜索策略保持不变。
+这进一步说明不能只为单个模型调整种子顺序；需要继续追actual容量反馈如何到达有效组合，以及合法候选的访问几何排序。
+
+### 嵌套子集与必执行循环的路径精化
+
+补充反例发现：内层subset提升后，旧完整恒等carrier到canonicalization才删除；仅扫描一次时，外层合法提升被旧state挡住。
+现在将标准subset提升与局部清理交替到稳定，每轮从current IR重建关系，不放宽pinned helper的nested-state前置证明。
+仅此追加修改的compiler为`d00f13f5f77087779c98ae8ff77857e9d07d35d7bb4d80bb9adf28e797848c63`；
+fresh GEMM126仍为48 accepted、strict no-card通过，runner wall112.03秒、max RSS467784 KiB。
+
+同一32段双层循环在bufferization和Instr转换完成后，又暴露了独立的生命周期路径膨胀：
+timeline给所有`scf.for`建立optional-body decision，即使当前常量已经证明必执行；
+ordered successor反复对不存在的零次分支拆分pending access，SPM栈停在`recordUse/extendTo`。
+按照[SCF语义](https://mlir.llvm.org/docs/Dialects/SCFDialect/#scffor-scfforop)，并核对pinned SCF，
+现仅在既有常量正trip证明成立时让body继承parent路径。动态/零次/未知step保留原路径，真正的loop内if仍可每次重新选择，
+不可用于证明跨iteration互斥。该改动精化只读analysis，不改同步、算术、allocation或搜索参数。
+
+同一测试修复前10.01秒仍未完成（host限时，RSS129008 KiB）；修复后1024/1025/1031、32段单层/双层矩阵
+全部完成layout→One-Shot→Instr→completion→SPM，测试用时265 ms。
+连同PathCondition与Lifetime全部52项的wall为0.31秒、RSS34652 KiB；真实分支、零次completion与跨worker冲突检查保持通过。
+这是主机分析根因的机制验证，不是设备性能A/B。完整Transforms378及相关lit68项随后通过；产品结果另记其实际版本和范围。
+
+路径精化后的compiler SHA256为`51a1617f1cf6541fc66a1e59ee8e786d3a27bc264b2c85ac1e75ccb4045dd936`。
+fresh GEMM126再次完成、48 accepted、strict no-card通过，runner wall114.61秒、RSS468004 KiB；
+timeline累计证明7294个非空循环，额外路径decision为0。Manifest、设备模块和数据与本轮已上板GEMM逐字节相同，未重复launch。
+完整Driver103、SystemC17项通过，canonical完整增量构建及后续Ninja no-op通过，未产生Wafer-owned Python cache。
+这些主机检查与GEMM资格不代签LLaMA/conv长测、模型数值及匹配性能；风险prefill仍未重新执行。
