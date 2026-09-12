@@ -646,3 +646,29 @@ join 增多的实际例子位于 DDR 分片 acquire 前，体现 producer/consum
 物化复用，再以 actual descriptor 几何、指令提交及 typed completion 改善同一个 CostModel，同时调整 accepted 候选附近的
 逐维搜索。每项分别用真实规模整除/tail、多使用者、合法 alias/physical layout 与下游 package 覆盖，最后做同版本 PyTorch
 和 matched 性能验收。不强制 DDR/DTE、不把全 K 当唯一方案、不按当前三个模型给 tile size，也不以旧快样本签发新性能。
+
+### 同日补充：描述符几何与通用方案
+
+进一步按上述已核验的GS分组计算 `sum(dynamic_byte_count / inner_bytes)`，全部80份Tile inventory的分组bytes
+与GS总量一致且各组可整除。派生结果写入同一数据文件的Tile0 `gs_geometry`；prefill的16个Tile分组一致。
+这不是新板测，也没有从Trace前缀外推每类GS的耗时。
+
+| Tile0样本 | GS descriptor内层迭代 | 2/4-byte内层占GS bytes | 2/4-byte内层占描述符内层迭代 |
+| --- | ---: | ---: | ---: |
+| prefill 277.009 ms profile | 107,532,672 | 16.32% | 95.07% |
+| LLaMA 80.119 ms | 9,805,641 | 39.67% | 97.75% |
+| LLaMA 历史17.635 ms | 246,816 | 0.17% | 7.12% |
+| decode 14.788 ms | 349,837 | 5.30% | 78.41% |
+| decode 历史11.443 ms | 345,751 | 4.37% | 78.35% |
+
+该几何特征支持把prefill/LLaMA的碎片搬运列为重点；decode两份产物则主要体现命令粒度变化，不能统一解释为
+GS bytes或描述符内层迭代大增。内层迭代仍不等于软件issue、硬件事务或周期，表中比例不能直接转换为耗时比例。
+
+源码补充确认：Q的部分物理reshape由 `StructuredToTile.cpp::reshapeBuffer` 在layout assignment之后生成；
+`LayoutOptimization.cpp`较早的Tensor布局转换外提看不到该操作。因此仅扩大前面的LICM不构成完整修复。
+实际物理copy的关系合并或复用必须在它存在的IR边界证明alias、无clobber及生命周期，并重新通过completion/SPM。
+
+调研比较了Ansor、NOMAD/MADS、TVM Droplet、OpenXLA cost及MLIR的访问/存储合同；
+完整方法取舍、五项实施顺序、整数近邻规则和覆盖矩阵已收敛到
+[同一板测计划](../tasks/plans/board-performance-optimization.md#2026-09-12通用性能优化方案拟议尚未实施)。
+本轮只形成拟议方案，编译器及模型性能没有新修改或验收结论。

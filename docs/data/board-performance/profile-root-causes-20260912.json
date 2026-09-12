@@ -6,7 +6,8 @@
     "inventory": "逐行读取 final Instr 的 arith.constant index 和 scf.for 静态上下界；按词法嵌套 trip-count 乘各 instruction。拒绝未知 loop、scf.if、scf.while、call；只分析已列 artifact，不是通用 MLIR analyzer 或 production proof。",
     "bytes": "只累计 actual byte_count；GS 按 inner_bytes 分组。含 padding 的实际 descriptor bytes；不包含 fill 的额外 TDMA 数据量。",
     "profile_crosscheck": "prefill RDMA=3104、NE=2048、TDMA=43200 GS+2144 fill=45344，与 Tile0 PMU instruction delta 一致；历史 llama Tile0 RDMA=870、GS=1997、WDMA=254 与完整 Trace 调用次数一致。",
-    "timing": "PMU active ns 与 Primary 是不同采集运行；不相加、不将 GS 每类 bytes 比例当耗时比例。"
+    "timing": "PMU active ns 与 Primary 是不同采集运行；不相加、不将 GS 每类 bytes 比例当耗时比例。",
+    "descriptor_inner_iterations": "从已计动态次数的GS bytes分组计算sum(bytes / inner_bytes)；每组须整除。small指inner_bytes为2或4。它仅是描述符访问几何特征，不等于软件issue、硬件事务或周期；本轮派生摘要只写Tile0。"
   },
   "cases": [
     {
@@ -163,7 +164,12 @@
               "inner_bytes": 4,
               "byte_count": 65536
             }
-          ]
+          ],
+          "gs_geometry": {
+            "inner_iterations": 107532672,
+            "small_inner_descriptor_bytes": 341835776,
+            "small_inner_iterations": 102236160
+          }
         },
         {
           "tile": 1,
@@ -1110,7 +1116,12 @@
               "inner_bytes": 4,
               "byte_count": 1024
             }
-          ]
+          ],
+          "gs_geometry": {
+            "inner_iterations": 9805641,
+            "small_inner_descriptor_bytes": 19205448,
+            "small_inner_iterations": 9585490
+          }
         },
         {
           "tile": 1,
@@ -2718,7 +2729,12 @@
               "inner_bytes": 4,
               "byte_count": 2048
             }
-          ]
+          ],
+          "gs_geometry": {
+            "inner_iterations": 246816,
+            "small_inner_descriptor_bytes": 53920,
+            "small_inner_iterations": 17576
+          }
         },
         {
           "tile": 1,
@@ -4148,7 +4164,12 @@
               "inner_bytes": 4,
               "byte_count": 256
             }
-          ]
+          ],
+          "gs_geometry": {
+            "inner_iterations": 349837,
+            "small_inner_descriptor_bytes": 572928,
+            "small_inner_iterations": 274304
+          }
         },
         {
           "tile": 1,
@@ -5385,7 +5406,12 @@
               "inner_bytes": 4,
               "byte_count": 2048
             }
-          ]
+          ],
+          "gs_geometry": {
+            "inner_iterations": 345751,
+            "small_inner_descriptor_bytes": 559360,
+            "small_inner_iterations": 270912
+          }
         },
         {
           "tile": 1,

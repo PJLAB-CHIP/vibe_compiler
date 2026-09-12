@@ -9,15 +9,154 @@
 
 ## 输入、输出与边界
 
-- Upstream IR / input：当前 PyTorch case、FP16 输入/reference、search 生成的 verified final Instr 与生产 package。
+- Upstream IR / input：当前 PyTorch case、按各case既定dtype生成的输入/reference、search 生成的 verified final Instr 与生产 package。
 - Current stage responsibility：通过原有 Primary/Count/Trace profiler 建立耗时证据，将热点追到当前 IR 及其 producer；
   在确认根因后补齐对应编号设计的具体变换合同与覆盖矩阵，再修改共用实现。
 - Output IR / files：profile 证据、根因及通用修复、fresh IR/package、PyTorch 结果和匹配的设备时间。
 - Downstream consumer：普通 compiler/runtime 产品链；同一板测项验收。
 - User-level driver / named pipeline：`wafer-compile --profile`、现有 PyTorch case 与 `wafer-run`。
-- Explicit non-goals：不按模型名/固定 shape 特判；除本轮用户指定的Div→Recip+Mul外不改变算术顺序或 dtype，不扩展硬件校准矩阵，不猜测同步或 SPM 合法性。
+- Explicit non-goals：不按模型名/固定 shape 特判；除已授权的Div→Recip+Mul及contraction FP32累加合法化外不改变算术顺序或 dtype，不扩展硬件校准矩阵，不猜测同步或 SPM 合法性。
 - Completion criteria：三条路径具备本轮实际 profile 归因；所选热点有 current-IR 根因与通用修复、host 覆盖、完整构建/no-op；
   受影响产品通过 fresh no-card、完整 PyTorch 比较及匹配 A/B，性能无收益的改写不交付为优化。
+
+## 2026-09-12：通用性能优化方案（拟议，尚未实施）
+
+本节综合五项优化和离散近邻搜索调研，规定下一轮建议的实施顺序。它不表示编译器已经修改，
+也不覆盖06号的当前实现合同；实施时先同步实际涉及的编号设计及下述覆盖矩阵。
+本轮只复核既有 profile、最终 IR 和源码，没有重编模型或运行设备。下方既有实施检查点继续保留其原验证范围。
+
+### 证据决定优先级
+
+完整身份、动态指令及归因限制见[性能记录](../../docs/board-performance-results.md#2026-09-12既有-profile-与最终-instr-的根因复核)
+和[逐 Tile 数据](../../docs/data/board-performance/profile-root-causes-20260912.json)。整模型样本均早于 native psum 修复，
+只能作为问题定位证据，不能代签当前编译器的性能。
+
+| 路径 | 已确定的问题 | 仍需确认的边界 | 优先处理 |
+| --- | --- | --- | --- |
+| 4K prefill，FP16 Q/K/V `[1,32,4096,128]`，8/42 | 匹配 Primary 277.009 ms；全程 PMU 的 TDMA 约241 ms。每 Tile GS 的2/4-byte内层占16.32% bytes、95.07% descriptor内层迭代；三层DMA循环已经使用 | Trace仅前缀，不能给每种GS分摊241 ms。Q重复reshape占GS bytes约3.2%，不能作为整个热点的解释 | 访问关系与物理布局衔接、碎片物化、复用及其估时 |
+| LLaMA block，FP16 `[1,16,4096]`，8/14，80.119 ms | 已按N分片；独立权重transpose经DDR落地。Tile0 GS内层迭代由历史246,816增至9,805,641；GEMM 72→478 | 新产物无匹配profile；尚未定位权重transpose首次未被吸收的checkpoint，不能直接归因于e-graph预算 | 查访问吸收边界，再比较物化、分块与Region切分 |
+| Decode，FP16 hidden4096/past1023，两步，8/42，约14.8 ms | 已有Direct DTE；整卡RDMA bytes基本不变。Tile0 GEMM 12→288、RDMA 117→754，而GS内层迭代基本不变 | 新产物无匹配profile；增加的join必须逐项查真实hazard，不能直接删除 | 指令粒度、原生psum后的实际结构、跨Region完成依赖估时 |
+
+descriptor内层迭代定义为按动态执行次数累计的 `byte_count / inner_bytes`，是访问几何特征，
+不等于软件issue次数、硬件事务数或周期。上述历史对照有结构/版本差异，不能据此分配耗时或承诺收益。
+
+### 调研后的方法取舍
+
+| 依据 | 采用的部分 | 本仓适用限制 |
+| --- | --- | --- |
+| [Ansor论文](https://www.usenix.org/system/files/osdi20-zheng.pdf) | 结构与参数分层；保留优良候选，同时继续产生不同结构和组合修改 | 因子转移不保证数值近邻；不移植训练模型、算术重排或trace重放。成功候选继续持有同一actual IR |
+| [NOMAD的MADS介绍](https://nomad-4-user-guide.readthedocs.io/en/latest/Introduction.html)与[整数粒度](https://nomad-4-user-guide.readthedocs.io/en/latest/AdvancedFunctionalities.html) | 将灵活的远处提案与当前点附近的poll分开；使用整数粒度及自适应尺度 | 采用有界确定性实现，不引入NOMAD依赖，不声称具备完整MADS的收敛保证 |
+| TVM Droplet的[搜索实现](https://raw.githubusercontent.com/apache/tvm/main/python/tvm/s_tir/meta_schedule/post_optimization/droplet.py)及[配置空间](https://raw.githubusercontent.com/apache/tvm/main/python/tvm/s_tir/meta_schedule/post_optimization/space.py) | 邻域去重、有限预算下从已有解继续改进 | 其邻居是选项下标，部分tile选项来自二次幂列表，仍可能数值大跳；本仓按真实整数域取近邻，不照搬选项表、环绕或停止规则 |
+| [OpenXLA GPU performance model](https://raw.githubusercontent.com/openxla/xla/main/xla/service/gpu/model/gpu_performance_model_base.cc) | 内存访问利用率会改变有效服务时间，不能仅看总bytes；启动与执行资源分别建模 | 借鉴建模方法，不使用GPU带宽、cache、warp常数解释TX81 |
+| MLIR的[Linalg](https://mlir.llvm.org/docs/Dialects/Linalg/)、[Bufferization](https://mlir.llvm.org/docs/Bufferization/)与[LICM](https://mlir.llvm.org/docs/Passes/#-loop-invariant-code-motion-hoist-loop-invariant-operations-out-of-loops) | indexing map/SSA表达访问关系；DPS与alias分析决定存储；按依赖/effect证明循环不变量 | pinned `LoopInvariantCodeMotionUtils.h` 的纯操作LICM不能自动证明memref内容不变；有物理copy时必须另有alias、写入及生命周期证据 |
+
+### 1. 固定当前基线，定位首次失效阶段
+
+- 使用 native psum 修复后的同一编译器、runtime、输入、原PyTorch容差和搜索配置准备fresh产物。
+  记录源码、compiler、manifest和ELF身份；普通执行与profile必须匹配，旧快样本只作历史参照。
+- 优先取得三条当前模型的必要profile，LLaMA/decode补齐缺口；沿现有normalized TensorProgram、
+  Region/Temporal、layout/bufferization、StructuredToTile、boundary movement、Instr检查点追踪同一访问关系。
+  诊断使用typed operation、indexing map及当前SSA，不用文件名、buffer名或遍历序号恢复语义。
+- 对独立权重transpose先确定：关系是否进入同一e-graph request、是否能表达等价式、是否提取、
+  还是后续选定布局/Region重新产生了物化。不能看到一次budget exhaustion就改变全局预算或添加末端pattern。
+- 记录各阶段work count、time、wall/RSS，以及actual descriptor、GEMM、DMA、join/wait数量。
+  BF16完整block数值资格和layout物化耗时仍是既有未完成项；数值失败的产物不作为有效性能winner。
+
+### 2. 修复通用访问吸收和物化复用
+
+先处理不改变算术的访问等价关系，再比较依赖具体布局及驻留选择的实际物化方案。
+
+| 输入与阶段职责 | 实际输出 | 直接下游及实现owner |
+| --- | --- | --- |
+| ordinary pure Tensor/Linalg图中的transpose、reshape、broadcast与contraction/reduction使用关系 | 同一structured e-graph提取的verified SSA/indexing maps；共享producer及所有use保持语义 | Spatial/Region构造；`NormalizeStructuredGraph.cpp`与既有e-graph rules/callback |
+| 已选Temporal/布局的Tensor IR；依赖当前选择才可判断的布局及转换位置 | DPS及同一bufferization产生的确定allocation/view/copy | StructuredToTile；`LayoutOptimization.cpp`，不把选择相关变换提前到e-graph |
+| StructuredToTile之后已经存在的物理reshape/transpose/copy与循环 | 可直接消费的物理访问，或有alias/effect证明的copy复用；实际buffer与owner同时更新 | boundary movement、Instr、最终completion及SPM规划；同一Tile transform供none/search调用 |
+| 带完整source/destination物理关系的elementwise/reduce/movement | 合同允许的operand descriptor，或合并后的单次物化；不生成无必要的完整broadcast临时buffer | TileToInstr的Compute/Movement lowering，输出verified Instr |
+
+具体规则：
+
+- 转置能由当前GEMM input orientation/map表达时，保留原权重并直接消费；unsupported的batch、axis组合保持真实搬运。
+  普通图的关系等价式进入已有e-graph，不另加按consumer逐个改写的C++旁路；多use要在同一request证明。
+- rank压缩、keep-dim与broadcast组合只有在完整坐标映射及物理存储合同等价时才省掉物化；
+  Tensor/Cx按消费者真实能力共同比较，不能仅凭逻辑shape相等把copy改成view，也不改归约次序或dtype。
+- 实际需要搬运时，组合相邻source→intermediate→consumer关系，争取直接写入消费者布局。
+  descriptor轴合并仍由两端stride/连续性证明；源端broadcast复用也必须满足当前指令合同。
+- Q的rank4→rank3 copy来自较晚的 `StructuredToTile.cpp::reshapeBuffer`；前面的Tensor布局外提看不到它。
+  因此复用必须在该copy实际存在的阶段证明：源内容跨循环不变、所有alias无clobber、目的buffer私有、
+  所有use及动态执行次数正确。首批覆盖static正trip-count；未知effect、逃逸、条件执行或zero-trip不作无证据外提。
+- 对延长驻留或改变buffer的方案保留原placement备选，在candidate transaction中实际物化后重新生成completion、
+  运行唯一SPM规划；外提导致capacity失败时由controller尝试其它choice。不能凭footprint估算决定能否外提。
+
+### 3. 在同一个CostModel里改善估时
+
+输入仅为已经通过实际legality的Instr、descriptor、worker、typed effect/completion和当前target事实；
+输出为有限标量耗时及局部估计质量，供现有controller排序。公式继续归属 `Analysis/Instr/CostModel.cpp`，
+`ExecutionCost.cpp`提供actual统计，controller不拥有耗时公式。
+
+- **搬运几何。** 使用actual bytes、inner bytes、src/dst strides、循环次数区分连续、strided和broadcast服务。
+  首版候选形式为 `service = setup + max(bytes / B_class, inner_iterations * tau_class)`；这是单条DMA服务的
+  带宽/内层处理瓶颈近似，不是整程序取max，也不把内层迭代声称为硬件事务。模型先保持少量共享类别，
+  优先使用已有完整PMU、可对应site的Trace及校准数据判断参数；不能用241 ms按bytes硬分摊出每类系数。
+- **提交与计算粒度。** host/control issue与异步worker执行分开计，区分动态命令数和descriptor循环。
+  GEMM继续按输入格式计计算服务，F32 psum按实际读写计；小块的命令、搬运、tail和padding开销由实际IR进入，
+  不按K小于某个常数处罚。现有资料无法分离setup/issue时不同时拟合两个自由参数，保留明确有限先验。
+- **完成与重叠。** 在当前轻量worker/loop摘要中消费实际DDR binding的publish/acquire关系及Direct DTE token。
+  已知依赖按完成时间传播；wait主要表达等待已有工作，不能把被等待的服务时间再次加一遍。
+  仅在此次只读估计调用内维护工作状态，不增加跨stage执行计划或周期模拟器。
+- **局部未知仍可比较。** 某类操作缺少时延解释时，只在最近可界定scope使用有限粗估，保留其余可解释依赖，
+  避免一个publish令整模型退回aggregate。未知重叠可作局部串行估计，必须标明近似；这不生成实际join，
+  更不能替代同步合法性证明。合法候选始终给出有限标量，SPM/同步证据不足仍按原typed结果处理。
+- 参数无法从现有证据辨识时先用共享先验，并记录对排序的影响；优先修复错误的数量级和候选顺序，
+  不建立完整硬件校准矩阵。用已有异类profile作留出检查，避免在同一条prefill上拟合并验收。
+
+### 4. 完整整数域上的自适应近邻搜索
+
+沿用当前分层session和Explore/Repair/Improve轮转。每个temporal坐标是明确的 `(scope, iterator)`，
+Tileable域保留完整整数范围，FullExtentOnly仍为单点；其它typed域限制按原合同。
+改进的是访问顺序及有限预算覆盖，不把二次幂、整除数或对齐数变成全部解空间。
+
+1. **先实际近邻。** 从accepted tuple只改一个scope的一维，提议该域的前驱/后继。
+   域为连续整数时512的邻居是511、513；不按选项下标或固定比例计算，也不一次改所有scope的最长轴。
+2. **布局边界作补充。** 将当前dtype/layout/指令合同已知的padding或block边界及其两侧加入提案，
+   与最近整数邻居交错；它们只影响顺序，不证明容量，也不排除非对齐点。
+3. **根据反馈改变距离。** 每个方向从距离1起；出现actual合法且估时改善的点时保留新owner，并尝试较远距离
+   （如1、2、4的整数扩展）。较远点变差时保留best并细查间隙；不把区间当成已证明无解。
+   相邻点持平时可由独立探索提议更远点，不能靠逐整数扫描穿过整段平台。
+4. **容量修正有独立反馈。** 仅对actual冲突owner能证明相关的scope提案；相邻点连续实际capacity失败后，
+   允许扩大该方向的探测距离以尽快找可行点，再在实际可行/失败点附近细化。所有点仍单独物化/规划；
+   不假设容量关于tile单调、不用二分排除区间、不按SPM估算比例retile，归因不明则继续普通域探索。
+5. **保留结构和组合。** raw结构入口及既有tile/layout、fusion/residency、DDR/DTE、tile/pipeline组合继续轮转。
+   单轴局部最优不是停止条件；有界oracle覆盖单项变差、组合改善的情形。
+   不再以sqrt种子作为默认统一压缩入口，也不用固定1/8作为近邻或容量修正规则；较远尺寸仍可经独立探索到达。
+6. **预算和owner不变。** width继续限制活跃分支，trials计每次actualization，包括失败；不新增每轴隐藏预算。
+   去重与排序使用typed choice和完整semantic tie-break；保留未访问游标与全局best actual owner。
+   在同一算法/配置下14→42→126延续相同序列，不能以“轮过近邻”声称有限预算覆盖整个空间或找到全局最优。
+
+这是借鉴direct-search的有界离散方法，不是照搬MADS或Droplet。大跳成为根据反馈产生的补充提案，
+近邻和结构探索持续获得机会；不预先承诺某个K、DDR或DTE必须获胜。
+
+### 5. 分开验收生成、估时与搜索收益
+
+实施依赖顺序为 **当前基线及首次失效证据 → 访问/物化修复 → descriptor与completion估时 → 近邻搜索 → 综合验收**。
+每项先在直接边界闭合，再进入下一项；保持可区分的改动及证据，避免把多项一起修改后的收益全部归给搜索。
+
+| 覆盖维度 | 输入等价类/结构分支 | exact输出与直接下游witness |
+| --- | --- | --- |
+| 访问吸收 | rank≥3，主要长度1024/1025/1031；named/generic contraction、轴置换、keep-dim/broadcast、单use/共享DAG | 全部消费者坐标与dtype保持；支持orientation时无独立transpose落地；unsupported组合保留语义；source→Tile→Instr |
+| 物化复用 | 多Tile/multi-wave/tail，循环不变量与loop-carried值、私有/外部/alias-clobber、正trip/zero-trip | 精确动态copy次数、owner、use与写入范围；可证明复用时只执行必要次数；actual completion/SPM及capacity反例 |
+| 搬运与估时 | 连续/2或4-byte strided/broadcast、相同bytes不同descriptor、相同计算量不同命令数、F16/BF16与F32 psum | 精确动态统计、有限标量、共享参数；匹配profile的数量级及候选相对顺序，留出数据不过拟合 |
+| 完成域 | 同worker ordered issue、typed跨worker hazard、DDR publish/acquire、DTE send/recv/wait、混合通信、loop reuse | 合法输入不因未建模时延变不可比；已知依赖保留、无服务重复计费；同步位置不被cost修改，非法依赖仍typed拒绝 |
+| 搜索表达/方法 | 完整整数域与1025/1031 tail；局部平台、非单调容量、单项无益但组合获益 | tiny有界oracle精确检查可达集/去重/最优及预算前缀，并配真实规模actual Instr→SPM→反馈；有限预算不夸大覆盖 |
+| 产品与编译开销 | 现有catalog、三条模型、decode真实KV接续、FP16/BF16；none/search及代表性14/42/126 | 完整PyTorch原容差、fresh package/no-card；work/time/RSS；canonical完整增量构建后Ninja no-op |
+
+- 先在同一批已接受、仍可核验的actual Instr上比较新旧cost排序，再固定cost比较旧/新proposal序列，
+  避免把候选池变化和估时改善混在一起。离线统计不成为生产winner重建协议；生产始终交付同一accepted owner。
+- 每项先跑直接受影响主机测试，综合阶段跑当前完整catalog的默认预算no-card；14/42/126主机对照限代表性机制和三条模型，
+  不重新铺开全catalog×全部预算。更大预算保留最佳估时，不保证设备实测时间必然单调改善。
+- 板端使用统一runner、fresh输入及PyTorch reference，先no-card，再单进程串行；只执行必要的当前基线、
+  实际变化的最终winner和最少机制资格case，不给每个candidate上板。边际差异才追加必要计时样本，设备异常按原规则停止。
+- 综合结果分别记录实际减少的DDR/GS物化、命令数、不可避免的wait、估时误差、候选覆盖及匹配Primary/PMU。
+  没有匹配profile的因果解释、数值失败和未测预算明确保留为未完成，不以旧17 ms/5 ms样本作当前性能承诺。
 
 ## 当前验收范围
 
