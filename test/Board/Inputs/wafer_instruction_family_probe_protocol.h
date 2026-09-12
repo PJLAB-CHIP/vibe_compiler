@@ -553,12 +553,19 @@ enum WaferIFPDeferredReason {
     "pool-indexed-min-f16-tie-observed", SAFE, POOL, F16, NO_ORACLE,       \
     REASON_NONE, 512, 512, 0)
 
-#define WAFER_IFP_CASES(X)                                                    \
-  WAFER_IFP_BASE_CASES(X)                                                     \
-  WAFER_IFP_CT_REDUCE_CAPABILITY_CASES(X)                                    \
-  WAFER_IFP_CT_POOL_CAPABILITY_CASES(X)                                      \
-  WAFER_IFP_CT_UNPOOL_CAPABILITY_CASES(X)                                    \
-  WAFER_IFP_PENDING_NUMERIC_DOMAIN_CASES(X)
+#define WAFER_IFP_GEMM_ACCUMULATION_CASES(X)                                   \
+  X(GEMM_F16_WIDE_PARTIAL, 249, "ne-gemm-f16-wide-partial", SAFE, NE_GEMM,     \
+    F16, EXACT_BITS, REASON_NONE, 32, 256, 512)                                \
+  X(GEMM_BF16_WIDE_PARTIAL, 250, "ne-gemm-bf16-wide-partial", SAFE, NE_GEMM,   \
+    BF16, EXACT_BITS, REASON_NONE, 32, 256, 512)
+
+#define WAFER_IFP_CASES(X)                                                     \
+  WAFER_IFP_BASE_CASES(X)                                                      \
+  WAFER_IFP_CT_REDUCE_CAPABILITY_CASES(X)                                      \
+  WAFER_IFP_CT_POOL_CAPABILITY_CASES(X)                                        \
+  WAFER_IFP_CT_UNPOOL_CAPABILITY_CASES(X)                                      \
+  WAFER_IFP_PENDING_NUMERIC_DOMAIN_CASES(X)                                    \
+  WAFER_IFP_GEMM_ACCUMULATION_CASES(X)
 
 enum WaferIFPCase {
 #define WAFER_IFP_ENUM_CASE(SYMBOL, ID, SPELLING, DISPOSITION, FAMILY, DTYPE,  \

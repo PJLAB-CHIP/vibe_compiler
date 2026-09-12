@@ -953,11 +953,14 @@ mlir::LogicalResult InstrGemmOp::verify() {
       getLogicalTensorType(getDest().getType());
   if (mlir::failed(
           verifySameElementType(getOperation(), *lhsTensor, *rhsTensor,
-                                "gemm lhs and rhs element types must match")) ||
-      mlir::failed(verifySameElementType(
-          getOperation(), *lhsTensor, *destTensor,
-          "gemm operand and dest element types must match")))
+                                "gemm lhs and rhs element types must match")))
     return mlir::failure();
+  if (lhsTensor->getElementType() != destTensor->getElementType() &&
+      !((lhsTensor->getElementType().isF16() ||
+         lhsTensor->getElementType().isBF16()) &&
+        destTensor->getElementType().isF32()))
+    return emitOpError("gemm requires equal input types and the same output "
+                       "type or f16/bf16 inputs with f32 output");
 
   if (static_cast<bool>(getLhsOrientationAttr()) !=
       static_cast<bool>(getRhsOrientationAttr()))

@@ -220,10 +220,10 @@ mlir::LogicalResult FunctionLowering::lowerGemm(InstrGemmOp op) {
       materializeAddress(op, op.getRhs(), "gemm rhs");
   mlir::FailureOr<mlir::Value> dest =
       materializeAddress(op, op.getDest(), "gemm dest");
-  mlir::FailureOr<int64_t> fmt =
-      getDataFormatCode(op, op.getDest(), "gemm dest");
+  auto inputFormat = getDataFormatCode(op, op.getLhs(), "gemm input");
+  auto outputFormat = getDataFormatCode(op, op.getDest(), "gemm dest");
   if (mlir::failed(lhs) || mlir::failed(rhs) || mlir::failed(dest) ||
-      mlir::failed(fmt))
+      mlir::failed(inputFormat) || mlir::failed(outputFormat))
     return mlir::failure();
   args.push_back(*lhs);
   args.push_back(*rhs);
@@ -233,7 +233,8 @@ mlir::LogicalResult FunctionLowering::lowerGemm(InstrGemmOp op) {
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getNAttr()));
   appendI32(op.getLoc(), args,
             getOptionalIntegerAttrValue(op.getBatchCountAttr(), 1));
-  appendI32(op.getLoc(), args, *fmt);
+  appendI32(op.getLoc(), args, *inputFormat);
+  appendI32(op.getLoc(), args, *outputFormat);
   if (op.getLhsOrientationAttr()) {
     appendI32(op.getLoc(), args, static_cast<int64_t>(*op.getLhsOrientation()));
     appendI32(op.getLoc(), args, static_cast<int64_t>(*op.getRhsOrientation()));

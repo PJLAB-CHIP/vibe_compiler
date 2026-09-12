@@ -9,6 +9,7 @@
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Linalg/CommunicationRegionClosure.h"
+#include "Wafer/Transforms/Linalg/ContractionAccumulation.h"
 #include "Wafer/Transforms/Linalg/OnlineAttentionDecomposition.h"
 #include "Wafer/Transforms/Linalg/SpatialRegionMaterialization.h"
 #include "Wafer/Transforms/Linalg/StructuredGraphNormalization.h"
@@ -1265,6 +1266,10 @@ ExecutableCompilationResult compileSearchCurrentIR(
   if (mlir::failed(function))
     return fail(ExecutableCompilationStatus::CompilerFailure, "search-input",
                 "search requires exactly one defined TensorProgram");
+  if (mlir::failed(promoteContractionAccumulation(*function)))
+    return fail(ExecutableCompilationStatus::CompilerFailure,
+                "contraction-accumulation",
+                "cannot materialize F32 accumulators");
   if (mlir::failed(closeStructuredProgramOutputs(*function)))
     return fail(ExecutableCompilationStatus::CompilerFailure,
                 "search-output-closure",

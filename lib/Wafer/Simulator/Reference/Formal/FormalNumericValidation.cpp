@@ -71,7 +71,8 @@ llvm::Error validateFormalElementwiseOperation(
 llvm::Error validateFormalGemmOperation(const FormalGemmOperation &operation) {
   if (!isFormalFloat(operation.lhs.getFormat()) ||
       operation.rhs.getFormat() != operation.lhs.getFormat() ||
-      operation.destination.getFormat() != operation.lhs.getFormat())
+      (operation.destination.getFormat() != operation.lhs.getFormat() &&
+       operation.destination.getFormat() != LogicalFormat::F32))
     return formalError(FormalNumericErrorCode::UnsupportedOperation,
                        "GEMM formats are outside the formal subset");
   return llvm::Error::success();

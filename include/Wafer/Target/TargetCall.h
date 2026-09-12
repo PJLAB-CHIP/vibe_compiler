@@ -77,7 +77,8 @@ struct TargetGemmCommand {
   uint32_t k;
   uint32_t n;
   uint32_t batchCount;
-  LogicalFormat format;
+  LogicalFormat inputFormat;
+  LogicalFormat outputFormat;
   TargetGemmOrientation lhsOrientation = TargetGemmOrientation::Normal;
   TargetGemmOrientation rhsOrientation = TargetGemmOrientation::Normal;
 };

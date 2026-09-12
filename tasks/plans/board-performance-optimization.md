@@ -70,7 +70,7 @@
 - 职责：分层产生结构与参数选择，轮转探索、容量修正、可执行候选改进三类工作；每轮最多执行一个实际尝试。
 - 输出：同一 accepted owner 的 final Instr/DeviceExecutable、完整访问与 typed outcome 计数；直接交给原 target/package 链。
 - 产品入口：`wafer-compile --optimization-policy=search`；局部 named pipeline 和 driver 复用唯一 transform。
-- 非目标：不改变当前算术、dtype 或已选 attention 算法，不引入 future IR、学习模型、周期模拟器或额外硬件校准。
+- 非目标：除下方已授权的contraction FP32累加合法化外不改变当前算术、dtype 或已选 attention 算法，不引入 future IR、学习模型、周期模拟器或额外硬件校准。
 - 完成：下列矩阵闭合、canonical build/no-op、fresh package/no-card、PyTorch 和匹配性能复验通过。
 
 实施顺序：
@@ -144,26 +144,59 @@ BF16中间输出定位补充：首层RMSNorm全部输出逐bit匹配PyTorch，Q 
 1024/1025/1031、F16/BF16、动态base的两向逐字节地址对检查通过；相同source的fresh无卡/实卡复验继续执行。
 这条证据尚不能解释完整BF16 block的全部小幅误差，保持原容差与未完成状态。
 
-#### 待讨论问题：低精度contraction的K分块合同
+#### 已确定：保留K分块并使用FP32 partial
 
-修复SPM stride之后，相同BF16 prefix的RMSNorm仍逐bit正确；Q projection与原PyTorch有28.4%输出超容差。
-将相同norm/weight按current Instr的K=64分块，每块输出和块间累加均舍入BF16，PyTorch模拟与实卡65,531/65,536项
-逐bit一致，其余5项最大差0.00390625且均在原容差内。问题因此绑定到普通contraction的额外中间舍入。
-FP16 GEMM的K=263完整版本通过，K=16加tail=7的版本有29.3%超默认容差；问题不限于BF16或完整block。
+用户已明确选择保留K分块，指出GEMM的input/output/psum各自支持format。当前SDK的`AddInput`、`AddOutput`和
+`SetPsum`独立参数也确认这一点；先前“当前Wafer ABI只有一个format”描述的是本仓封装缺口，不能作为关闭K空间的理由。
+本轮扩展范围已授权，不再等待选择或把低精度K固定为完整长度。
 
-当前GEMM target ABI只传一个format并写同dtype结果，未提供已验证的宽精度partial/跨块累加合同。
-两条方向会改变原计划的能力边界或非目标，已向用户询问，尚未选择或实施：
+输入为已识别的普通FP16/BF16 contraction，输出与调用者dtype保持不变。标准Linalg的混合输入/累加类型及显式cast足以表示
+FP32 partial与最终舍入，不新增数值profile或future IR。处理必须在Spatial/Temporal切分之前使FP32结果与init进入actual SSA；
+随后局部或跨Tile的K partial、add、storage和transport自然持有F32，最后在原逻辑输出边界舍入一次。
 
-- 在没有宽累加合同的低精度contraction中保留完整K，继续搜索parallel轴、Region、layout、输入共享和transport。
-  需要统一Spatial/Temporal能力及同一materializer验证，不能只改某个模型的seed或给失败case增加cost惩罚。
-- 扩展显式宽累加IR/ABI与target支持，定向证明partial、累计状态、最终舍入和硬件行为，再重新开放K分块。
-  不能从已有FP16 local psum观察外推BF16或跨块累加语义，也不能仅把CT add改F32后宣称消除了partial舍入。
+实施顺序：
 
-期间保持原PyTorch容差，不把已知失败候选的时间计为正确性能结果；继续与此选择无关的主机门禁、通信和prefill对照。
+1. 扩展同一GEMM的独立input/output格式，保留F16/BF16输入并支持F32输出；同步Tile/Instr verifier、CRT、target decoder及formal model。
+   先以GEMM的F32输出和显式F32 add贯通partial，不把无验证的原地psum alias或额外writeback隐藏在lowering中。
+2. 通过唯一数值合法化transform显式建立混合精度contraction和最终cast，覆盖named/generic、axis置换、非零init及extra uses；
+   none/search与named pass使用同一实现，不收缩K合法域，不按模型名或shape选择。
+3. 用有限的混合format实卡资格确认F32 output的packing、guard和精度，再跑此前失败的FP16 GEMM与BF16 projection/block。
+   如使用`SetPsum`进一步融合累加，必须将对应输入、effect、format和alias限制显式放入current IR并补同一资格，不能猜测。
+4. 保持原PyTorch容差，完成canonical/no-op、直接测试和受影响产品复验，再继续高预算及decode性能验收。
+
+| 输入类 | exact输出/边界 | 直接下游witness |
+| --- | --- | --- |
+| F16/BF16，rank3，K=1024/1025/1031；named/generic、置换 | 输入dtype不变、init/result为F32、只有原逻辑输出转窄；raw K选择保留 | Spatial/Temporal实际多Tile/multi-wave/tail |
+| F32输出GEMM，NN/NT/TN/TT、batch1/2、M/N tail | descriptor按各自dtype编码，CRT独立format，SPM范围无越界 | verifier/target decoder/formal/有限板端PyTorch |
+| 非零init、多use、已有mixed precision | 初始化恰好一次，所有消费者仍读原dtype；不重复扩宽 | actual SSA与numeric oracle |
+| 不同输入dtype、非法输出dtype、非contraction payload | typed拒绝或保留，不能伪装混合GEMM | verifier负例及原有运算回归 |
+| 生产失败例 | FP16 GEMM tail、BF16 projection、LLaMA输出恢复原容差 | fresh source/package/no-card/实卡全量PyTorch |
+
+本轮实现与验证：
+
+- 唯一`promoteContractionAccumulation`由none/search及named pass调用；输入不转宽，普通contraction的init/result转F32，
+  保留indexing maps、非零init、多use及fastmath flags；已混合精度与非contraction payload保持原结构。
+- 24组F16/BF16×1024/1025/1031×named/generic/转置/fastmath的Spatial partial/merge与Temporal K循环，
+  6组实际layout/bufferization→Tile→boundary movement、独立format的8组NN/NT/TN/TT LLVM调用，以及typed负例通过。
+- K=16+16+1的F16/BF16板端抵消oracle，经相同CRT GEMM F32 output与F32 add，最终输出与完整PyTorch GEMM逐bit一致。
+  同一输入的低精度partial版本在主机oracle中失败；probe的DDR/SPM guard均通过。该小shape仅用于隔离舍入与格式合同。
+- FP16 GEMM tail-1031的42次搜索有30个accepted，535,089项全量PyTorch通过，1.098 ms；新winner保持完整K=263。
+  BF16 RMSNorm→Q的42次有9个accepted，RMSNorm通过，Q仍有2/65,536项超原容差，5.667 ms；其K=4096未分块。
+- 同一组实际BF16 norm/weight另用显式F32输出隔离观测。当前baseline实际生成K=512及K=128的F32循环与块间add，
+  两输出各65,536项通过PyTorch，F32最大绝对差分别为1.55e-6、7.15e-7；转回BF16后全部满足原0.002/0.004容差。
+  这证明长K分块路径可工作，不能用不同K的结果代签完整K winner的两个误差点已修复。
+- 完整BF16 block的42次主机复验主动停止，未上板：36次advance已结束，第37次的layout assignment物化/bufferization
+  单次仍运行约349秒，进程RSS约30 GiB。36次advance累计1472.842秒；此前496次Instr cleanup累计409.217秒、
+  35,340次Region conversion累计342.997秒。当前证据只能定位到apply边界，不能认定PBQP求解或某个bufferization子算法是根因。
+  下一次先补该边界的细分计时与最小IR证据，再作通用优化，不能靠删K候选或固定layout关闭问题。
+
+最终canonical完整增量构建、第二次Ninja no-op与`check-wafer`通过：282项lit、14组组件、43项BoardIO、66项numeric、
+20项oneDNN及17项SystemC均实际执行；新PyTorch oracle及受ABI影响probe的无卡构建通过。
+真实结果、取消的主机预算和后续未完成边界在`docs/board-performance-results.md`分别记录；本节不签发总任务完成。
 
 剩余验收按以下顺序继续，仍由同一个`board-testing`管理：
 
-1. 确定并实现上述低精度K分块合同，补Spatial/Temporal及actual target的统一覆盖，不按模型或容差结果特判。
+1. 已完成上述低精度K分块实现及定向资格；继续定位完整K的两个BF16舍入差异，以及layout物化/bufferization的编译耗时根因。
 2. 对修正后的compiler重签受影响的fresh source/package/no-card、完整PyTorch结果和LLaMA/decode的14/42/126曲线；
    未完整执行的预算、旧产物或数值失败都单独列出。
 3. 复审匹配profile和最终diff，更新稳定设计与证据，完成最终主机门禁后提交；只有这些验收闭合才更新总任务完成状态。

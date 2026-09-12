@@ -79,6 +79,13 @@ def validate_work_dir_cleanup_is_bounded() -> None:
         assert (source / "functions" / "forward.stablehlo.bc").is_file()
         assert not (source / "functions" / "forward.mlir").exists()
         assert (source / "functions" / "forward.meta").is_file()
+        repeated_args = _build_args(repo, temporary / "repeated")
+        runner.require_build_args(repeated_args)
+        repeated = runner.write_source_program(repeated_args)
+        for name in ("forward.stablehlo.bc", "forward.meta"):
+            assert (source / "functions" / name).read_bytes() == (
+                repeated / "functions" / name
+            ).read_bytes()
 
 
 def validate_matching_tile_completion() -> None:
@@ -2815,8 +2822,8 @@ def validate_reduce_capability_matrix() -> None:
 
 
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 162
-    assert len(catalog.CATALOG) == 170
+    assert len(catalog.SAFE_CASES) == 164
+    assert len(catalog.CATALOG) == 172
     assert {case.case_id for case in catalog.SAFE_CASES} == (
         set(range(1, 30))
         | set(range(100, 144))
@@ -2847,7 +2854,7 @@ def main() -> int:
             234,
             235,
         }
-        | set(range(236, 249))
+        | set(range(236, 251))
     )
     assert {
         (case.symbol, case.reason_name)

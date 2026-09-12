@@ -908,6 +908,22 @@ Actual leaf在fan-out完成后，Tile-to-Instr、局部transfer cleanup和NCC co
 memory/target leaf，但每次分别拥有自己的materializer invocation、candidate owner、controller、fallback和accepted result；不存在
 共享complete candidate schema或一条policy调用另一条policy的路径。
 
+### Contraction累加精度边界
+
+- Upstream IR / input：已完成attention识别与结构规范化的TensorProgram；普通FP16/BF16乘加contraction及原DPS init。
+- Current stage responsibility：在任何Spatial/Temporal K切分之前，把累加状态显式物化为F32，保留低精度乘法输入和原逻辑输出dtype。
+- Output IR / files：标准mixed-precision Linalg、F32 init/result，以及原contraction输出处的一次显式truncation；不新增数值op/profile。
+- Downstream consumer：同一Spatial/Region/Temporal domain及materializer；partial、merge、SPM allocation和DDR/DTE以actual F32 SSA为准。
+- User-level driver / named pipeline：普通none/search入口及`wafer-promote-contraction-accumulation`调用同一transform。
+- Explicit non-goals：不删除K choice，不改变attention算法，不重排任意elementwise/reduction，不扩大外部张量dtype；不隐式开启psum alias。
+- Completion criteria：named/generic、置换、非零init及多use，F16/BF16×1024/1025/1031实际分块与tail，下游mixed-format target及原PyTorch容差通过。
+
+这属于显式数值合法化，不是ordinary e-graph语言中的同dtype代数等价式；e-graph仍独占原有关系等价探索。
+只对精确的低精度乘加payload适用，任意附加算术、未知combiner或不同输入dtype均保持原语义。已有F32 accumulator不再改写。
+标准Linalg允许输入提升到输出/累加类型，参见[MLIR Linalg](https://mlir.llvm.org/docs/Dialects/Linalg/)；
+宽partial与最终epilogue分离可参考[CUTLASS split-K](https://github.com/NVIDIA/cutlass/blob/main/examples/06_splitK_gemm/splitk_gemm.cu)，
+本仓仍保持已有K遍历和显式merge顺序，不据此引入新的归约树。
+
 ### 7.2 Baseline
 
 Baseline的functional contract是：每个compute TileRegion恰有一个semantic root，跨root shaped dependency显式经DDR或已定义

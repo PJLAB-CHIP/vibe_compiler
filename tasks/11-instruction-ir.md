@@ -379,7 +379,7 @@ packet/register与板端证据另由`tasks/16` gate。
 | semantic select | 无单条 select op | composite lowering | 必须展开为 false-copy `gather_scatter` + `bit2fp` + `mask_move`；`wafer.instr.elementwise <select>` 非法 |
 | CT reduce `sum/avg/max/min` | `wafer.instr.reduce` + `#wafer.instr_reduce_kind` + target `dim` code | target-native leaf；source lowering的sum/max/min支持边界见7.4 | terminal op不携带init operand/attr；完整domain/dimension/combiner/init与target format合同闭合时直接生成native Instr，不能丢弃非identity init |
 | CT convert opcode 139..174 | `wafer.instr.convert` + `#wafer.instr_convert_kind<src_dst>` + kind-specific attrs | current production target op | dtype pair 由 kind 唯一决定；INT8->FP 要求 `zero_point`，rounding wrapper 要求 `rounding_mode`，plain wrapper 不允许额外转换参数；same-format copy 必须走 movement，不允许伪造成 convert |
-| NE GEMM | `wafer.instr.gemm` | current production target op | 只表达 GEMM / batched GEMM 主路径参数；当前单一format及同element-type合同不表达product/accumulator/FMA/rounding，program-selectable行为必须先扩IR/CRT ABI，target-fixed行为必须按revision/tuple唯一映射；bias、scale、quant、fused activation和复杂psum policy不能隐式打开 |
+| NE GEMM | `wafer.instr.gemm` | current production target op | 只表达 GEMM / batched GEMM 主路径参数；独立input/output format支持F16/BF16→F32 partial；尚不表达独立product/FMA/rounding，program-selectable行为必须先扩IR/CRT ABI，target-fixed行为必须按revision/tuple唯一映射；bias、scale、quant、fused activation和复杂psum policy不能隐式打开 |
 | NE affine INT8 GEMM | `wafer.instr.quantized_gemm` | typed production extension；未完成capability/CRT/golden前target-illegal | exact M/K/N/batch/format、q0/q1、left/right zero point、typed scale operands/mode和matched capability；不复用plain GEMM flag |
 | MXFP/FP8 packed decode | `wafer.instr.mxfp_decode` | explicit-composite production extension；未完成scratch/completion/CRT gate前target-illegal | packed source + block scale + destination + scratch；decode到BF16/FP16，不能冒充CT convert或native FP8 GEMM |
 | Direct DTE fixed-size unicast | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | current production target op with accepted physical binding | IR表达Tile peer、bytes和async token；post-memory DeviceExecutable verification提交endpoint、remote receiver offset、FSM/completion和status ABI后，target conversion生成opaque event/ready/send/wait/release CRT calls。缺binding或不一致仍以`unsupported_target_transport`拒绝；runtime不能补做endpoint/channel planning |
@@ -784,11 +784,11 @@ plain form只表示normal/normal。orientation进入tasks/14的typed target-call
 family-specific model request及concrete GEMM qualification identity。typed ABI与compiler emission、formal/model support、
 oneDNN qualification和真实board provider allowlist是四个独立结论，不能由通用profile混称或互相代签。
 
-plain GEMM还只要求lhs/rhs/dest element type相同，target CRT call只传一个format；IR没有product、accumulator、
-逐MAC rounding、FMA或reduction-order字段。若这些行为是program-selectable，必须先扩typed tile/instruction op及CRT ABI；
-若它们是target revision固定行为，则由target-owned numeric operation contract对target revision和完整command tuple给出唯一
-解释；formal model按同一typed tuple直接实现或分类拒绝，不建立第二份profile registry。未校准的f16/bf16 narrow/wide、TF32
-和integer候选不能由lowering/CModel按dtype猜测。
+GEMM的lhs/rhs保持相同element type，destination独立携带结果dtype；除既有同dtype形式，允许F16/BF16输入产生F32结果。
+各buffer仍使用自己dtype的Cx/NCx物理encoding，不能沿用16-bit输出的byte count或channel block解释32-bit partial。
+GEMM输出F32及显式F32 add表示K块累加，原逻辑输出处再转换；不允许先写窄partial再提升冒充宽累加。
+Target CRT分别传input/output format，保留已有F32乘法输入拒绝。`SetPsum`的独立format在SDK中存在；
+当前纯输出形式仍关闭inpsum，不能凭接口存在推断原地alias或aux writeback效果。其它feature及special-value行为保持原合同。
 
 generic online reduction和non-GEMM FMA contraction因此不属于current Instr contract。future semantic optimization必须先增加明确source
 predicate、selected state/fused op、对应Instr/TargetCall/必要ABI和SystemC数值纵向；target固定GEMM FMA behavior不能被source
@@ -1044,7 +1044,7 @@ legalize 的其它 instruction fragments。
 
 - non-ranked or dynamic-shaped memref where 当前实现 needs static byte/stride computation.
 - unsupported Wafer memory attr, address space or physical layout marker for an instruction family.
-- invalid/unused/F64/unknown format，或GEMM使用F32。其它13种current logical format不能仅因dtype被拒绝；
+- invalid/unused/F64/unknown format，或GEMM乘法输入使用F32。其它13种current logical format不能仅因dtype被拒绝；
   relation/elementwise/convert若缺少source semantic、opcode、shape/layout、field或typed convert-route proof，按缺失的
   op-specific legality fact失败，而不是恢复一张通用dtype白名单。
 - movement descriptor cannot be represented with buffer-local offsets, `inner_bytes` and three

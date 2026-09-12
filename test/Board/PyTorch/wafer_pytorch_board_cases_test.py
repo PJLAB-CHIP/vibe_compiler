@@ -41,6 +41,26 @@ def read_portable_stablehlo(program: pathlib.Path) -> str:
 
 
 class PyTorchBoardCasesTest(unittest.TestCase):
+    def test_gemm_wide_partial_oracle_matches_full_pytorch(self):
+        import wafer_instruction_family_catalog as catalog
+
+        for dtype_name, dtype in (("F16", torch.float16), ("BF16", torch.bfloat16)):
+            case = catalog.CASES_BY_NAME[f"ne-gemm-{dtype_name.lower()}-wide-partial"]
+            lhs, rhs = catalog.gemm_wide_partial_inputs(dtype_name)
+            a = torch.tensor([lhs], dtype=dtype)
+            b = torch.tensor(rhs, dtype=dtype)
+            expected = a @ b
+            _, _, raw = catalog._gemm(case)
+            reference = torch.frombuffer(bytearray(raw), dtype=dtype).reshape_as(expected)
+            torch.testing.assert_close(reference, expected, rtol=0, atol=0)
+            narrow = torch.zeros_like(expected)
+            wide = torch.zeros_like(expected, dtype=torch.float32)
+            for begin, end in ((0, 16), (16, 32), (32, 33)):
+                narrow += a[:, begin:end] @ b[begin:end]
+                wide += a[:, begin:end].float() @ b[begin:end].float()
+            self.assertTrue(torch.any(narrow != expected))
+            torch.testing.assert_close(wide.to(dtype), expected, rtol=0, atol=0)
+
     def test_profile_keeps_device_watchdog_without_timing_out_host_report(self):
         outputs = (torch.zeros((1, 1, 1024), dtype=torch.float16),)
         case = cases.PyTorchBoardCase(

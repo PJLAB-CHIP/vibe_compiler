@@ -418,7 +418,7 @@ BF16 prefix先观察RMSNorm和Q projection两个输出。RMSNorm的65,536项逐b
 块间累加，65,531项逐bit匹配实卡，其余5项也在原容差内；原始完整GEMM参考始终没有改写。这确认普通K分块的中间舍入问题。
 FP16 GEMM尾部case `[1,1031,263] × [1,263,519]` 也有同类反馈：14次预算保留完整K，**1.079 ms且PyTorch通过**；
 42次预算选中K=16及tail=7，2.484 ms但29.3%输出超容差。126次得到相同Instr，未重复执行该已知失败产物。
-不能把增加预算的候选数或较小SPM峰值当作数值/性能改善；低精度K分块的完成方向记录在current plan待讨论问题中。
+不能把增加预算的候选数或较小SPM峰值当作数值/性能改善；用户随后明确选择FP32 partial并保留K分块，实施与本轮证据见下节。
 
 Reduce-scatter尾部1031的14/42/126次实际尝试分别有14/38/106个accepted，三次fresh实卡全量PyTorch通过，
 时间1.138 / 1.183 / 1.075 ms；这些单次差异不足以说明稳定加速。4K的14/42/126实际尝试分别有1/8/23个accepted，
@@ -452,3 +452,44 @@ hidden、完整K/V和旧prefix均通过原PyTorch容差，step 2读取本轮实�
 本批原始预算摘要和设备结果索引为`build/test/search-board/verified-budget-results.json`；
 4K和GEMM的42/126逐文件同一性证明分别为该目录的`attention-prefill-llama-2-7b-42-126-equivalence.json`、
 `single-card-gemm-tail-1031-42-126-equivalence.json`。文件只保存本轮审计证据，不作为下一轮测试输入。
+
+### GEMM混合格式与FP32 K partial
+
+本轮修正Wafer将GEMM输入/输出绑定成同一format的封装限制。普通FP16/BF16 contraction在Spatial/Temporal之前
+显式建立F32 init/result，原输入保持低精度，完整逻辑输出只转窄一次；partial的存储、add与跨Tile movement由实际F32 SSA决定。
+Tile/Instr、TargetCall、CRT、decoder、formal model和SystemC fixture使用同一独立input/output格式协议。
+本轮使用GEMM F32输出与显式F32 add；没有打开尚未资格化的原地`SetPsum`副作用。
+
+| 本轮输入/路径 | 结果 | 证据边界 |
+| --- | --- | --- |
+| FP16/BF16，K=16+16+1的抵消输入，FP32 partial/add，最终转窄 | 两项实卡各16个输出与完整PyTorch GEMM逐bit一致；DDR/SPM guard通过 | 有界格式/舍入oracle，故使用小shape；低精度partial版本在同一PyTorch oracle中失败，不代签所有GEMM形状 |
+| FP16 `[1,1031,263] × [1,263,519]`，width=8/trials=42 | 535,089项全量PyTorch通过；设备1.098 ms；42次actual、30个accepted | 新winner保持K=263，证明混合输出格式与原case恢复，不能冒充K分块板端资格 |
+| BF16 RMSNorm→Q projection，hidden `[1,16,4096]`，width=8/trials=42 | RMSNorm通过；Q仅2/65,536项超原容差，设备5.667 ms | 尚未通过；新winner保持K=4096。先前18,614项失败的K=64版本是不同winner，不能用失败数减少代签性能或完整精度 |
+
+两个Q误差点的PyTorch F32/F64求和均落在BF16舍入中点的另一侧，原容差未调整；此时还不能仅凭最终BF16输出
+判定差异来自NE累加还是最终convert。继续以F32中间输出区分，不能把剩余误差归因于此winner并不存在的K块间累加。
+定向probe另修正了旧测试工具的guard初始化：runtime输出allocation没有默认字节值，probe必须在发射指令前写入并发布
+DDR canary，不能拿未初始化DDR与`0xa5`比较。首个未初始化guard失败不算通过；修正后两项均重新完成完整检查。
+
+进一步用同一组BF16 norm/weight直接观察F32输出；此处F32用于混合格式/中间精度资格，不是更换普通模型输入dtype。
+Baseline实际生成K=512的循环，以及四个逻辑partial内部K=128的循环，所有partial与add均为F32。
+两输出各65,536项通过PyTorch，最大F32绝对差分别为`1.5497207641601562e-6`、`7.152557373046875e-7`；
+转回BF16后两输出均有0项超原`rtol=0.002, atol=0.004`，上述两个误差点也恢复。该联合诊断case设备17.623 ms，
+包含额外观察输出，不能与原prefix的5.667 ms比较性能。它确认分块路径的精度，仍不代签完整K=4096 winner。
+
+完整BF16 block的42次搜索未完成：为读取已采集的阶段计时，主动终止了仅在主机运行的compiler，退出码为SIGTERM。
+结束前36次advance累计1472.842秒，第37次`LayoutAssignmentQuery::apply`边界仍运行约349秒，进程RSS约30 GiB。
+此前496次Instr transfer cleanup累计409.217秒，35,340次Region conversion累计342.997秒；当前计时不足以区分
+该apply中的alias分析、loop-state绑定、One-Shot bufferization或layout copy转换。没有生成完整预算结果或执行该模型板测，
+不把此主机主动停止记成设备timeout或SPM capacity rejection。
+
+生成的StableHLO测试源同时改为stdin序列化，消除工作目录进入debug location导致的prepared source字节差异；
+两目录生成字节一致的回归及fresh prepared-source检查通过，不放宽输入相等性要求。
+
+本轮raw、fresh package、Instr和PyTorch逐bit复验摘要位于`build/test/gemm-wide/`；
+分块probe摘要为`partial-probe-initialized-board/pytorch-comparison.json`。所有板端执行串行，无timeout、reset或power cycle。
+
+最终主机门禁通过：canonical完整增量构建及第二次Ninja no-op；`check-wafer`实际执行282项lit、14组组件、43项BoardIO、
+66项numeric、20项oneDNN及17项SystemC测试，无skip/unsupported。新PyTorch oracle、instruction catalog及四个受ABI影响的
+probe无卡构建也通过。最终主机构建的compiler SHA256为`cda8802a7d15877b59c0f915a6d7998cc7524888781d734452a7abf49415075b`；
+原始门禁日志为`build/gemm-wide-final-check.log`，各实卡package仍以自己的manifest和module digest标识。

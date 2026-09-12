@@ -923,12 +923,14 @@ static mlir::LogicalResult verifyTargetInstructionFormat(mlir::Operation *op) {
           [&](auto typedOp) { return verifyTargetConvertRoute(typedOp); })
       .Case<InstrGemmOp>([&](auto typedOp) -> mlir::LogicalResult {
         mlir::FailureOr<LogicalFormat> format =
-            getLogicalFormat(op, typedOp.getDest(), "gemm destination");
+            getLogicalFormat(op, typedOp.getLhs(), "gemm input");
         if (mlir::failed(format))
           return mlir::failure();
         if (*format == LogicalFormat::F32)
-          return typedOp.emitError()
-                 << "unsupported_target_instr: GEMM does not support f32";
+          return typedOp.emitError() << "unsupported_target_instr: GEMM does "
+                                        "not support f32 inputs";
+        if (mlir::failed(verify(typedOp.getLhs(), "gemm input")))
+          return mlir::failure();
         return verify(typedOp.getDest(), "gemm dest");
       })
       .Case<InstrConvOp>(

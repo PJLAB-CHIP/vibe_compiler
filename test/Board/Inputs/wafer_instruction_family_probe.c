@@ -642,45 +642,71 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
     record[WAFER_IFP_REC_STEP_FLAGS] |= WAFER_IFP_STEP_MASK_MOVE_ISSUED;
     break;
   case WAFER_IFP_CASE_GEMM_F16:
-    wafer_tx81_gemm(input_a, input_b, output, 1, 16, 16, 1, Fmt_FP16, 0U);
+    wafer_tx81_gemm(input_a, input_b, output, 1, 16, 16, 1, Fmt_FP16, Fmt_FP16,
+                    0U);
+    break;
+  case WAFER_IFP_CASE_GEMM_F16_WIDE_PARTIAL:
+  case WAFER_IFP_CASE_GEMM_BF16_WIDE_PARTIAL:
+    /* Bounded K=16+16+1 cancellation oracle. Reuse and dependencies follow
+     * the compiler's same-worker GEMM / F32 add / final convert path. */
+    wafer_tx81_gemm(input_a, input_b, auxiliary, 1, 16, 16, 1, format, Fmt_FP32,
+                    0U);
+    wafer_tx81_gemm(input_a + 256, input_b + 512, auxiliary + 256, 1, 16, 16, 1,
+                    format, Fmt_FP32, 0U);
+    wafer_tx81_elementwise_add(auxiliary, auxiliary + 256, auxiliary, 64,
+                               Fmt_FP32, 0U);
+    wafer_tx81_gemm(input_a + 512, input_b + 1024, auxiliary + 256, 1, 1, 16, 1,
+                    format, Fmt_FP32, 0U);
+    wafer_tx81_elementwise_add(auxiliary, auxiliary + 256, auxiliary, 64,
+                               Fmt_FP32, 0U);
+    if (descriptor->dtype == WAFER_IFP_F16)
+      wafer_tx81_convert_fp32_fp16(auxiliary, output, 64, 0, 0, 0U);
+    else
+      wafer_tx81_convert_fp32_bf16(auxiliary, output, 64, 0, 0, 0U);
     break;
   case WAFER_IFP_CASE_GEMM_F16_ACCUM_ROUND:
-    wafer_tx81_gemm(input_a, input_b, output, 1, 16, 16, 1, Fmt_FP16, 0U);
+    wafer_tx81_gemm(input_a, input_b, output, 1, 16, 16, 1, Fmt_FP16, Fmt_FP16,
+                    0U);
     break;
   case WAFER_IFP_CASE_GEMM_F16_M4:
-    wafer_tx81_gemm(input_a, input_b, output, 4, 16, 16, 1, Fmt_FP16, 0U);
+    wafer_tx81_gemm(input_a, input_b, output, 4, 16, 16, 1, Fmt_FP16, Fmt_FP16,
+                    0U);
     break;
   case WAFER_IFP_CASE_GEMM_F16_BATCH2_M8:
-    wafer_tx81_gemm(input_a, input_b, output, 8, 16, 16, 2, Fmt_FP16, 0U);
+    wafer_tx81_gemm(input_a, input_b, output, 8, 16, 16, 2, Fmt_FP16, Fmt_FP16,
+                    0U);
     break;
   case WAFER_IFP_CASE_GEMM_F16_N17:
-    wafer_tx81_gemm(input_a, input_b, output, 1, 16, 17, 1, Fmt_FP16, 0U);
+    wafer_tx81_gemm(input_a, input_b, output, 1, 16, 17, 1, Fmt_FP16, Fmt_FP16,
+                    0U);
     break;
   case WAFER_IFP_CASE_GEMM_F16_K17:
-    wafer_tx81_gemm(input_a, input_b, output, 1, 17, 16, 1, Fmt_FP16, 0U);
+    wafer_tx81_gemm(input_a, input_b, output, 1, 17, 16, 1, Fmt_FP16, Fmt_FP16,
+                    0U);
     break;
   case WAFER_IFP_CASE_GEMM_F16_N65:
-    wafer_tx81_gemm(input_a, input_b, output, 1, 16, 65, 1, Fmt_FP16, 0U);
+    wafer_tx81_gemm(input_a, input_b, output, 1, 16, 65, 1, Fmt_FP16, Fmt_FP16,
+                    0U);
     break;
   case WAFER_IFP_CASE_GEMM_F16_ORIENTED_NT:
     wafer_tx81_gemm_oriented(input_a, input_b, output, 4, 16, 8, 1, Fmt_FP16,
-                                WAFER_IFP_GEMM_ORIENTATION_NORMAL,
-                                WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE, 0U);
+                             Fmt_FP16, WAFER_IFP_GEMM_ORIENTATION_NORMAL,
+                             WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE, 0U);
     break;
   case WAFER_IFP_CASE_GEMM_BF16_ORIENTED_NT:
     wafer_tx81_gemm_oriented(input_a, input_b, output, 4, 16, 8, 1, Fmt_BF16,
-                                WAFER_IFP_GEMM_ORIENTATION_NORMAL,
-                                WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE, 0U);
+                             Fmt_BF16, WAFER_IFP_GEMM_ORIENTATION_NORMAL,
+                             WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE, 0U);
     break;
   case WAFER_IFP_CASE_GEMM_F16_ORIENTED_TN:
     wafer_tx81_gemm_oriented(input_a, input_b, output, 4, 16, 8, 1, Fmt_FP16,
-                                WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE,
-                                WAFER_IFP_GEMM_ORIENTATION_NORMAL, 0U);
+                             Fmt_FP16, WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE,
+                             WAFER_IFP_GEMM_ORIENTATION_NORMAL, 0U);
     break;
   case WAFER_IFP_CASE_GEMM_F16_ORIENTED_TT:
     wafer_tx81_gemm_oriented(input_a, input_b, output, 4, 16, 8, 1, Fmt_FP16,
-                                WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE,
-                                WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE, 0U);
+                             Fmt_FP16, WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE,
+                             WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE, 0U);
     break;
   case WAFER_IFP_CASE_GEMM_F16_PSUM: {
     TsmNeInstr instruction = {0};
@@ -703,16 +729,20 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
   }
   case WAFER_IFP_CASE_GEMM_BF16:
   case WAFER_IFP_CASE_GEMM_BF16_ACCUM_ROUND:
-    wafer_tx81_gemm(input_a, input_b, output, 1, 16, 16, 1, Fmt_BF16, 0U);
+    wafer_tx81_gemm(input_a, input_b, output, 1, 16, 16, 1, Fmt_BF16, Fmt_BF16,
+                    0U);
     break;
   case WAFER_IFP_CASE_GEMM_BF16_BATCH2_M8:
-    wafer_tx81_gemm(input_a, input_b, output, 8, 16, 16, 2, Fmt_BF16, 0U);
+    wafer_tx81_gemm(input_a, input_b, output, 8, 16, 16, 2, Fmt_BF16, Fmt_BF16,
+                    0U);
     break;
   case WAFER_IFP_CASE_GEMM_BF16_K17:
-    wafer_tx81_gemm(input_a, input_b, output, 1, 17, 16, 1, Fmt_BF16, 0U);
+    wafer_tx81_gemm(input_a, input_b, output, 1, 17, 16, 1, Fmt_BF16, Fmt_BF16,
+                    0U);
     break;
   case WAFER_IFP_CASE_GEMM_BF16_N65:
-    wafer_tx81_gemm(input_a, input_b, output, 1, 16, 65, 1, Fmt_BF16, 0U);
+    wafer_tx81_gemm(input_a, input_b, output, 1, 16, 65, 1, Fmt_BF16, Fmt_BF16,
+                    0U);
     break;
   case WAFER_IFP_CASE_TDMA_PAD_F16:
     wafer_tx81_tdma_pad(input_a, output, 1, 2, 2, 64, 1, 4, 4, 64, 1, 1, 1,
@@ -961,6 +991,12 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
   const volatile uint64_t *request =
       (const volatile uint64_t *)(uintptr_t)request_ddr;
   volatile uint64_t *record = (volatile uint64_t *)(uintptr_t)output_ddr;
+  /* Output allocations have no implicit initial value. Establish the probe's
+   * DDR guard before issuing any instruction, then publish the Kcore stores. */
+  for (uint32_t index = 0; index < WAFER_IFP_RESOURCE_BYTES / sizeof(uint64_t);
+       ++index)
+    record[index] = UINT64_C(0xa5a5a5a5a5a5a5a5);
+  wafer_ifp_cache_range(output_ddr, WAFER_IFP_RESOURCE_BYTES, 0);
   const WaferIFPDescriptor *descriptor = NULL;
   uint32_t status = wafer_ifp_decode(request, &descriptor);
   wafer_ifp_init_record(record, status);

@@ -28,29 +28,20 @@ def write_program(
 
     functions = source / "functions"
     functions.mkdir(parents=True, exist_ok=True)
-    text = functions / ".forward.mlir.staging"
     bytecode = functions / "forward.stablehlo.bc"
-    text.write_text(module, encoding="utf-8")
-    try:
-        result = subprocess.run(
-            [
-                str(translator),
-                "--serialize",
-                "--target=1.7.1",
-                str(text),
-                "-o",
-                str(bytecode),
-            ],
-            text=True,
-            capture_output=True,
+    # Generated sources have no user file location. A stable stdin source name
+    # keeps bytecode identical when a prepared case is checked in another dir.
+    result = subprocess.run(
+        [str(translator), "--serialize", "--target=1.7.1", "-", "-o", str(bytecode)],
+        input=module,
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "StableHLO serialization failed: "
+            f"{result.stderr or result.stdout}"
         )
-        if result.returncode != 0:
-            raise RuntimeError(
-                "StableHLO serialization failed: "
-                f"{result.stderr or result.stdout}"
-            )
-    finally:
-        text.unlink(missing_ok=True)
     if not bytecode.is_file() or bytecode.stat().st_size == 0:
         raise RuntimeError("StableHLO serialization omitted output bytecode")
     (functions / "forward.meta").write_text(

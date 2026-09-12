@@ -10,6 +10,7 @@
 #include "Wafer/Transforms/Instr/SharedDDRCompletion.h"
 #include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
 #include "Wafer/Transforms/Linalg/CommunicationRegionClosure.h"
+#include "Wafer/Transforms/Linalg/ContractionAccumulation.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/DistributedCollectiveMovement.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
@@ -1521,6 +1522,53 @@ module {
     EXPECT_EQ(writes, 1u);
     EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
   }
+}
+
+TEST_F(StructuredToTileTest,
+       PreservesNarrowOperandsAndWideContractionThroughLayoutAndBufferization) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool bf16 : {false, true}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(bf16);
+      auto source = makeSource(extent);
+      if (bf16)
+        for (size_t at = 0; (at = source.find("f16", at)) != std::string::npos;
+             at += 4)
+          source.replace(at, 3, "bf16");
+      auto module = parse(source);
+      ASSERT_TRUE(module);
+      module->walk([&](mlir::func::FuncOp function) {
+        ASSERT_TRUE(mlir::succeeded(promoteContractionAccumulation(function)));
+      });
+      TileRegionOp region;
+      module->walk([&](TileRegionOp op) { region = op; });
+      ASSERT_TRUE(region);
+      StructuredMaterializationRelations relations;
+      relations.structuralOutputs.push_back({0, region.getResult(0)});
+      relations.structuralOutputs.push_back({1, region.getResult(1)});
+      auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+      ASSERT_TRUE(layout.succeeded()) << layout.detail;
+      auto lowered = lowerStructuredComputeToTile(*module, relations);
+      ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+      EXPECT_EQ(lowered.statistics.contractions, 1u);
+      module->walk([&](ComputeGemmOp gemm) {
+        auto lhs = mlir::cast<mlir::MemRefType>(gemm.getLhs().getType());
+        auto rhs = mlir::cast<mlir::MemRefType>(gemm.getRhs().getType());
+        auto output = mlir::cast<mlir::MemRefType>(gemm.getResult().getType());
+        EXPECT_EQ(lhs.getElementType(), rhs.getElementType());
+        EXPECT_TRUE(bf16 ? lhs.getElementType().isBF16()
+                         : lhs.getElementType().isF16());
+        EXPECT_TRUE(output.getElementType().isF32());
+        EXPECT_EQ(output.getShape(), llvm::ArrayRef<int64_t>({2, extent, 32}));
+      });
+      EXPECT_EQ(countOps<ComputeGemmOp>(module->getOperation()), 1u);
+      EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
+      auto movement = materializeTileBoundaryMovement(*module, relations);
+      ASSERT_TRUE(movement.succeeded()) << movement.detail;
+      EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+      EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
+          module->getOperation(), relations)));
+    }
 }
 
 TEST_F(StructuredToTileTest,

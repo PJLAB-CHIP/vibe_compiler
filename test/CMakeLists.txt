@@ -142,7 +142,7 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
   )
   set_tests_properties(wafer-pytorch-board-cases-python PROPERTIES
     LABELS "runtime;no-card;pytorch;source;huggingface;card-local"
-    ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python;WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>"
+    ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python:${CMAKE_CURRENT_SOURCE_DIR}/Board/Support;WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>"
     TIMEOUT 30
   )
 

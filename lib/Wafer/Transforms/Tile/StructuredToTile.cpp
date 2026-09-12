@@ -1239,16 +1239,23 @@ lowerContraction(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
   mlir::Value lhs = operation.getDpsInputs()[0];
   mlir::Value rhs = operation.getDpsInputs()[1];
   mlir::Value destination = operation.getDpsInits()[0];
+  mlir::MemRefType lhsType = getMemRef(lhs);
+  mlir::MemRefType rhsType = getMemRef(rhs);
   mlir::MemRefType destinationType = getMemRef(destination);
-  if (!destinationType)
+  if (!lhsType || !rhsType || !destinationType)
     return mlir::failure();
   mlir::MemRefType resultType = getOwnedType(destinationType);
+  const bool nativeWideOutput =
+      lhsType.getElementType() == rhsType.getElementType() &&
+      (lhsType.getElementType().isF16() || lhsType.getElementType().isBF16()) &&
+      resultType.getElementType().isF32();
   rewriter.setInsertionPoint(operation);
   for (mlir::Value *input : {&lhs, &rhs}) {
     mlir::MemRefType inputType = getMemRef(*input);
     if (!inputType)
       return mlir::failure();
-    if (inputType.getElementType() == resultType.getElementType())
+    const auto element = inputType.getElementType();
+    if (element == resultType.getElementType() || nativeWideOutput)
       continue;
     mlir::MemRefType convertedType =
         changeElementType(inputType, resultType.getElementType());

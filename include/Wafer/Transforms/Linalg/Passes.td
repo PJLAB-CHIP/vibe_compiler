@@ -3,6 +3,14 @@
 #ifndef WAFER_TRANSFORMS_LINALG_PASSES_TD
 #define WAFER_TRANSFORMS_LINALG_PASSES_TD
 
+def PromoteContractionAccumulationPass
+    : Pass<"wafer-promote-contraction-accumulation", "mlir::func::FuncOp"> {
+  let summary = "Materialize F32 contraction state before K partitioning";
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::linalg::LinalgDialect",
+                           "mlir::tensor::TensorDialect"];
+}
+
 def FoldStaticTensorOpsPass
     : Pass<"wafer-fold-static-tensor-ops", "mlir::ModuleOp"> {
   let summary =

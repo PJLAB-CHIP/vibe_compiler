@@ -741,7 +741,34 @@ def _select(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
     )
 
 
+def gemm_wide_partial_inputs(dtype_name: str) -> tuple[list[float], list[list[float]]]:
+    """Bounded cancellation oracle; rank-three large K tiling is covered in C++."""
+    epsilon = 1.0 / (4096 if dtype_name == "F16" else 512)
+    lhs = [1.0] * 33
+    rhs = [
+        [
+            1.0 if row == 0 else -1.0 if row == 16
+            else epsilon * (1 + column % 4)
+            for column in range(16)
+        ]
+        for row in range(33)
+    ]
+    return lhs, rhs
+
+
 def _gemm(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
+    if case.symbol in {"GEMM_F16_WIDE_PARTIAL", "GEMM_BF16_WIDE_PARTIAL"}:
+        lhs, rhs_rows = gemm_wide_partial_inputs(case.dtype_name)
+        # Three individually packed M=1 input tiles, including the final K=1.
+        lhs_tiles = b"".join(
+            _fp(case.dtype_name, lhs[begin:end] + [0.0] * (128 - (end - begin)))
+            for begin, end in ((0, 16), (16, 32), (32, 33))
+        )
+        rhs = [value for row in rhs_rows for value in row]
+        # Dyadic products and their full sums are exact here. The PyTorch
+        # catalog test independently checks full GEMM and rejects narrow partials.
+        expected = [sum(row[column] for row in rhs_rows) for column in range(16)]
+        return lhs_tiles, _fp(case.dtype_name, rhs), _fp(case.dtype_name, expected)
     if case.symbol in ("GEMM_F16", "GEMM_BF16"):
         lhs = _repeat((1.0, 2.0, 3.0, 4.0), 16)
         rhs = [

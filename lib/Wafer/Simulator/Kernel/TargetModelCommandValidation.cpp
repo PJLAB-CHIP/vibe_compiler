@@ -326,7 +326,13 @@ llvm::Error validatePayload(const target::TargetCommandPayload &payload) {
                value.rhsOrientation != TargetGemmOrientation::Transpose))
             return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                                "GEMM orientation is not a closed enum value");
-          return requireEngineFormat(value.format, TargetFormatEngine::NE,
+          if (value.outputFormat != value.inputFormat &&
+              !((value.inputFormat == LogicalFormat::F16 ||
+                 value.inputFormat == LogicalFormat::BF16) &&
+                value.outputFormat == LogicalFormat::F32))
+            return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
+                               "unsupported GEMM input/output format pair");
+          return requireEngineFormat(value.inputFormat, TargetFormatEngine::NE,
                                      "GEMM");
         } else if constexpr (std::is_same_v<T,
                                             target::TargetElementwiseCommand>) {

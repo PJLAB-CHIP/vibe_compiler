@@ -279,11 +279,13 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
       break;
     case wafer::TargetCallBuiltin::Gemm:
       arguments[7] = supportedF32Code(wafer::TargetFormatEngine::NE);
+      arguments[8] = supportedF32Code(wafer::TargetFormatEngine::NE);
       break;
     case wafer::TargetCallBuiltin::GemmOriented:
       arguments[7] = supportedF32Code(wafer::TargetFormatEngine::NE);
-      arguments[8] = 1;
-      arguments[9] = 0;
+      arguments[8] = supportedF32Code(wafer::TargetFormatEngine::NE);
+      arguments[9] = 1;
+      arguments[10] = 0;
       break;
     case wafer::TargetCallBuiltin::TDMAPad:
       arguments[14] = supportedF32Code(wafer::TargetFormatEngine::TDMA);
@@ -527,7 +529,8 @@ void expectPayloadFields(const wafer::TargetCallDescriptor &descriptor,
       EXPECT_EQ(value.k, u32(4));
       EXPECT_EQ(value.n, u32(5));
       EXPECT_EQ(value.batchCount, u32(6));
-      expectFormat(value.format);
+      expectFormat(value.inputFormat);
+      expectFormat(value.outputFormat);
       EXPECT_EQ(value.lhsOrientation,
                 *builtin == wafer::TargetCallBuiltin::GemmOriented
                     ? wafer::TargetGemmOrientation::Transpose
@@ -1009,6 +1012,37 @@ TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
     ++decoded;
   }
   EXPECT_EQ(decoded, 115u);
+}
+
+TEST(TargetCallRegistryTest, DecodesIndependentGemmFormatsAndOrientations) {
+  for (auto builtin :
+       {wafer::TargetCallBuiltin::Gemm, wafer::TargetCallBuiltin::GemmOriented})
+    for (uint64_t inputCode : {2u, 3u}) {
+      const auto &descriptor = wafer::getTargetCallDescriptor(builtin);
+      auto arguments = makeDecodableArguments(descriptor);
+      arguments[7] = inputCode;
+      arguments[8] = 5;
+      auto payload =
+          wafer::decodeTargetCallPayload(descriptor, {16}, arguments);
+      ASSERT_TRUE(static_cast<bool>(payload))
+          << llvm::toString(payload.takeError());
+      const auto &gemm = std::get<wafer::target::TargetGemmCommand>(*payload);
+      EXPECT_EQ(gemm.inputFormat, inputCode == 2 ? wafer::LogicalFormat::F16
+                                                 : wafer::LogicalFormat::BF16);
+      EXPECT_EQ(gemm.outputFormat, wafer::LogicalFormat::F32);
+      EXPECT_EQ(gemm.lhsOrientation,
+                builtin == wafer::TargetCallBuiltin::GemmOriented
+                    ? wafer::TargetGemmOrientation::Transpose
+                    : wafer::TargetGemmOrientation::Normal);
+      for (unsigned index : {7u, 8u}) {
+        auto invalid = arguments;
+        invalid[index] = UINT32_MAX;
+        auto rejected =
+            wafer::decodeTargetCallPayload(descriptor, {16}, invalid);
+        ASSERT_FALSE(static_cast<bool>(rejected));
+        llvm::consumeError(rejected.takeError());
+      }
+    }
 }
 
 TEST(TargetCallRegistryTest, RejectsInvalidConvolutionInputAndOutputFormats) {

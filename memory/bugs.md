@@ -7,6 +7,15 @@
 `completion`、`bufferization`、`package`、`runtime`、`CMake`和`ownership`。条目描述的是防复发模式；若与current
 编号设计或源码冲突，以current事实源为准并在同次修改中修正文档。
 
+## 低精度K分块不能沿用窄输出作为partial
+
+- 现象：完整K的GEMM通过原数值容差，分块后出现大量误差；SPM、地址、输入及循环覆盖均正确。
+- 根因：GEMM内部使用宽累加并不保证其输出partial也是宽类型。每块先写F16/BF16，再逐块窄加法，会新增原逻辑GEMM没有的舍入。
+- 修复模式：在Spatial/Temporal切分前显式建立F32 init/result与原输出处的一次转换；输入保持低精度，GEMM ABI独立传递输入和输出
+  format。后续partial、merge、存储及通信消费实际F32 SSA；只把CT add改宽不能恢复已经舍入的GEMM partial。
+- 防复发：用抵消输入区分窄partial和宽partial，覆盖整除/尾部、非零init及真实长K下游；原PyTorch容差保持不变。
+  `SetPsum`的可选输入、alias和writeback另由显式effect合同决定，不能从支持F32输出推断其融合副作用。
+
 ## 融合输出范围不能消除内部归约参数
 
 - 现象：普通 contraction/reduction 已经融合进 consumer 的输出循环，actual SPM 仍因完整操作数或初始化 allocation 拒绝。

@@ -448,13 +448,13 @@ executeGemm(const compiler::TargetCommand &command,
       batched ? std::vector<uint64_t>{value.batchCount, value.m, value.n}
               : std::vector<uint64_t>{value.m, value.n};
   llvm::Expected<PhysicalTensorDescriptor> lhsKey =
-      PhysicalTensorDescriptor::create(value.format, layout,
+      PhysicalTensorDescriptor::create(value.inputFormat, layout,
                                        std::move(lhsShape));
   llvm::Expected<PhysicalTensorDescriptor> rhsKey =
-      PhysicalTensorDescriptor::create(value.format, layout,
+      PhysicalTensorDescriptor::create(value.inputFormat, layout,
                                        std::move(rhsShape));
   llvm::Expected<PhysicalTensorDescriptor> destinationKey =
-      PhysicalTensorDescriptor::create(value.format, layout,
+      PhysicalTensorDescriptor::create(value.outputFormat, layout,
                                        std::move(destinationShape));
   if (!lhsKey || !rhsKey || !destinationKey) {
     llvm::Error errors = llvm::Error::success();

@@ -34,7 +34,8 @@ module {
 // CHECK: %[[N:.*]] = llvm.mlir.constant(4 : i32) : i32
 // CHECK: %[[BATCH:.*]] = llvm.mlir.constant(1 : i32) : i32
 // CHECK: %[[FORMAT:.*]] = llvm.mlir.constant(2 : i32) : i32
+// CHECK: %[[OUTPUT_FORMAT:.*]] = llvm.mlir.constant(2 : i32) : i32
 // CHECK: %[[LHS_ORIENTATION:.*]] = llvm.mlir.constant(1 : i32) : i32
 // CHECK: %[[RHS_ORIENTATION:.*]] = llvm.mlir.constant(1 : i32) : i32
 // CHECK: %[[WORKER:.*]] = llvm.mlir.constant(0 : i32) : i32
-// CHECK: llvm.call @wafer_tx81_gemm_oriented(%[[LHS]], %[[RHS]], %[[DST]], %[[M]], %[[K]], %[[N]], %[[BATCH]], %[[FORMAT]], %[[LHS_ORIENTATION]], %[[RHS_ORIENTATION]], %[[WORKER]])
+// CHECK: llvm.call @wafer_tx81_gemm_oriented(%[[LHS]], %[[RHS]], %[[DST]], %[[M]], %[[K]], %[[N]], %[[BATCH]], %[[FORMAT]], %[[OUTPUT_FORMAT]], %[[LHS_ORIENTATION]], %[[RHS_ORIENTATION]], %[[WORKER]])

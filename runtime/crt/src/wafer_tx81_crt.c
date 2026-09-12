@@ -1142,11 +1142,12 @@ WAFER_DEFINE_CONVERT_ROUND(wafer_tx81_convert_tf32_bf16, TF32_BF16)
 WAFER_DEFINE_CONVERT_PLAIN(wafer_tx81_convert_tf32_fp32, TF32_FP32)
 
 void wafer_tx81_gemm(uint64_t lhs, uint64_t rhs, uint64_t dst, uint32_t m,
-                        uint32_t k, uint32_t n, uint32_t batch_count,
-                        uint32_t format, uint32_t worker) {
+                     uint32_t k, uint32_t n, uint32_t batch_count,
+                     uint32_t input_format, uint32_t output_format,
+                     uint32_t worker) {
   TsmNeInstr instr = {0};
   TsmGemm *gemm = TsmNewGemm();
-  gemm->AddInput(&instr, lhs, rhs, wafer_format(format));
+  gemm->AddInput(&instr, lhs, rhs, wafer_format(input_format));
   gemm->ConfigMKN(&instr, m, k, n);
   gemm->ConfigBatch(&instr, batch_count, batch_count);
   /* TX81 encodes the RHS hardware transpose bit opposite to GEMM semantics. */
@@ -1158,19 +1159,19 @@ void wafer_tx81_gemm(uint64_t lhs, uint64_t rhs, uint64_t dst, uint32_t m,
   gemm->SetPositiveAxisScale(&instr, 0, 0);
   gemm->DisableRelu(&instr);
   gemm->DisableLeakyRelu(&instr);
-  gemm->AddOutput(&instr, dst, wafer_format(format));
+  gemm->AddOutput(&instr, dst, wafer_format(output_format));
   wafer_execute_ne(&instr, worker);
   TsmDeleteGemm(gemm);
 }
 
 void wafer_tx81_gemm_oriented(uint64_t lhs, uint64_t rhs, uint64_t dst,
-                                 uint32_t m, uint32_t k, uint32_t n,
-                                 uint32_t batch_count, uint32_t format,
-                                 uint32_t lhs_orientation,
-                                 uint32_t rhs_orientation, uint32_t worker) {
+                              uint32_t m, uint32_t k, uint32_t n,
+                              uint32_t batch_count, uint32_t input_format,
+                              uint32_t output_format, uint32_t lhs_orientation,
+                              uint32_t rhs_orientation, uint32_t worker) {
   TsmNeInstr instr = {0};
   TsmGemm *gemm = TsmNewGemm();
-  gemm->AddInput(&instr, lhs, rhs, wafer_format(format));
+  gemm->AddInput(&instr, lhs, rhs, wafer_format(input_format));
   gemm->ConfigMKN(&instr, m, k, n);
   gemm->ConfigBatch(&instr, batch_count, batch_count);
   /* Keep the public ABI semantic; invert only the raw RHS hardware bit. */
@@ -1182,7 +1183,7 @@ void wafer_tx81_gemm_oriented(uint64_t lhs, uint64_t rhs, uint64_t dst,
   gemm->SetPositiveAxisScale(&instr, 0, 0);
   gemm->DisableRelu(&instr);
   gemm->DisableLeakyRelu(&instr);
-  gemm->AddOutput(&instr, dst, wafer_format(format));
+  gemm->AddOutput(&instr, dst, wafer_format(output_format));
   wafer_execute_ne(&instr, worker);
   TsmDeleteGemm(gemm);
 }

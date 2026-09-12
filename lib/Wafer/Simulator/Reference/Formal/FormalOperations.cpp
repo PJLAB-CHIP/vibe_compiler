@@ -232,10 +232,13 @@ llvm::Expected<FormalGemmOperation> createFormalGemmOperation(
     TargetGemmOrientation lhsOrientation,
     TargetGemmOrientation rhsOrientation) {
   if (lhs.getFormat() != rhs.getFormat() ||
-      lhs.getFormat() != destination.getFormat())
+      (lhs.getFormat() != destination.getFormat() &&
+       !((lhs.getFormat() == LogicalFormat::F16 ||
+          lhs.getFormat() == LogicalFormat::BF16) &&
+         destination.getFormat() == LogicalFormat::F32)))
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "NE GEMM lhs, rhs and destination formats must match");
+        "NE GEMM requires matching inputs and a matching or f32 destination");
   if (llvm::Error error = requireEngineFormat(TargetFormatEngine::NE,
                                               lhs.getFormat(), "NE GEMM"))
     return std::move(error);

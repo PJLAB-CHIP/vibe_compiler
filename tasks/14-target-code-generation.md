@@ -37,6 +37,14 @@ Pipeline position:
   重放通过，并在真实板端gate完成前保持`board-ready`而非`done`。
 ```
 
+### GEMM混合format调用
+
+输入是verified Tile/Instr上的低精度lhs/rhs及同dtype或F32 destination；输出为同一`wafer_tx81_gemm`/
+`wafer_tx81_gemm_oriented`调用的独立input/output format参数，直接消费者为CRT wrapper与同一target decoder/model。
+`AddInput`和`AddOutput`各取对应format；physical descriptor、byte range、owner与effect先在Instr闭合。
+不保留旧签名reader/wrapper。覆盖F16/BF16、NN/NT/TN/TT、batch、M/N/K tail及F32输出的真实byte布局；
+F32乘法输入仍拒绝。其它psum/bias/activation参数不隐式打开，完成要求包括本轮有限实卡numeric/guard证据。
+
 ## 2. 稳定对象与身份
 
 CT reduce只接收11号verified rank4 NHWC/NCx输入和保留归约轴的rank4输出，CRT shape直接取实际输入memref的四个维度。

@@ -220,12 +220,14 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
     case TargetCallBuiltin::Gemm:
       arguments[3] = arguments[4] = arguments[5] = arguments[6] = 1;
       arguments[7] = supportedF32Code(TargetFormatEngine::NE);
+      arguments[8] = supportedF32Code(TargetFormatEngine::NE);
       break;
     case TargetCallBuiltin::GemmOriented:
       arguments[3] = arguments[4] = arguments[5] = arguments[6] = 1;
       arguments[7] = supportedF32Code(TargetFormatEngine::NE);
-      arguments[8] = 1;
-      arguments[9] = 0;
+      arguments[8] = supportedF32Code(TargetFormatEngine::NE);
+      arguments[9] = 1;
+      arguments[10] = 0;
       break;
     case TargetCallBuiltin::TDMAPad:
       arguments[14] = supportedF32Code(TargetFormatEngine::TDMA);
@@ -431,12 +433,23 @@ TEST(TargetModelKernelTest, TargetRegisterBoundsFailClosedAtModelEntry) {
     EXPECT_FALSE(static_cast<bool>(error)) << llvm::toString(std::move(error));
   };
 
-  expectValid(
-      TargetGemmCommand{0, 0, 0, 1, 16384, 1, 4096, LogicalFormat::F16});
-  expectInvalid(TargetGemmCommand{0, 0, 0, 1, 16385, 1, 1, LogicalFormat::F16},
+  expectValid(TargetGemmCommand{0, 0, 0, 1, 16384, 1, 4096, LogicalFormat::F16,
+                                LogicalFormat::F16});
+  expectInvalid(TargetGemmCommand{0, 0, 0, 1, 16385, 1, 1, LogicalFormat::F16,
+                                  LogicalFormat::F16},
                 "GEMM k must be in [1, 16384]");
-  expectInvalid(TargetGemmCommand{0, 0, 0, 1, 1, 1, 4097, LogicalFormat::F16},
+  expectInvalid(TargetGemmCommand{0, 0, 0, 1, 1, 1, 4097, LogicalFormat::F16,
+                                  LogicalFormat::F16},
                 "GEMM batch_count must be in [1, 4096]");
+  for (auto format : {LogicalFormat::F16, LogicalFormat::BF16})
+    expectValid(
+        TargetGemmCommand{0, 0, 0, 2, 1025, 4, 2, format, LogicalFormat::F32});
+  expectInvalid(TargetGemmCommand{0, 0, 0, 2, 1025, 4, 2, LogicalFormat::F16,
+                                  LogicalFormat::BF16},
+                "unsupported GEMM input/output format pair");
+  expectInvalid(TargetGemmCommand{0, 0, 0, 2, 1025, 4, 2, LogicalFormat::F32,
+                                  LogicalFormat::F16},
+                "unsupported GEMM input/output format pair");
 
   expectValid(TargetReduceCommand{
       TargetReduceOperation::Sum,
@@ -977,7 +990,7 @@ TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
                      TargetGemmCommand{spm + UINT64_C(0x3000),
                                        spm + UINT64_C(0x4000),
                                        spm + UINT64_C(0x5000), 2, 2, 2, 1,
-                                       LogicalFormat::F16}};
+                                       LogicalFormat::F16, LogicalFormat::F16}};
   TargetModelCommandEffect gemmEffect =
       llvm::cantFail(executeTargetModelCommand(gemm, memory, makeBudget()));
   llvm::cantFail(
@@ -1033,6 +1046,43 @@ TEST(TargetModelKernelTest,
             (std::vector<uint8_t>{UINT8_C(0xff), UINT8_C(0xff)}));
 }
 
+TEST(TargetModelKernelTest, WideGemmOutputPreservesSubUlpPartial) {
+  // Bounded rounding oracle; realistic rank-three K-loop coverage lives in
+  // ContractionAccumulationTest and StructuredToTileTest.
+  for (auto inputFormat : {LogicalFormat::F16, LogicalFormat::BF16}) {
+    InvocationMemoryRegistry memory = makeRegistry();
+    FormalNumericExecutionContext config;
+    const uint64_t spm = memory.getAddressPlan().getSPMBase();
+    auto lhs = makeTensor(inputFormat, PhysicalTensorLayout::NCx, {2, 1, 2});
+    auto rhs = makeTensor(inputFormat, PhysicalTensorLayout::NCx, {2, 2, 1});
+    auto output =
+        makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {2, 1, 1});
+    const uint64_t one = inputFormat == LogicalFormat::F16 ? 0x3c00 : 0x3f80;
+    const uint64_t epsilon =
+        inputFormat == LogicalFormat::F16 ? 0x0c00 : 0x3a80;
+    writeTensor(memory, 0, spm, lhs,
+                {{inputFormat, one},
+                 {inputFormat, epsilon},
+                 {inputFormat, one},
+                 {inputFormat, epsilon}});
+    writeTensor(memory, 0, spm + 0x1000, rhs,
+                std::vector<RawLogicalValue>(4, {inputFormat, one}));
+    TargetCommand gemm{CardId(0), TileId(0), LaunchSlotId(0), 0,
+                       TargetGemmCommand{spm, spm + 0x1000, spm + 0x2000, 1, 2,
+                                         1, 2, inputFormat,
+                                         LogicalFormat::F32}};
+    auto effect =
+        llvm::cantFail(executeTargetModelCommand(gemm, memory, makeBudget()));
+    llvm::cantFail(
+        applyTargetModelCommandEffect(memory, config, std::move(effect)));
+    auto values = readTensor(memory, 0, spm + 0x2000, output);
+    ASSERT_EQ(values.size(), 2u);
+    for (auto value : values)
+      EXPECT_EQ(value.bits,
+                inputFormat == LogicalFormat::F16 ? 0x3f800800u : 0x3f802000u);
+  }
+}
+
 TEST(TargetModelKernelTest, BatchedGemmUsesImplicitNCxStorageContract) {
   InvocationMemoryRegistry memory = makeRegistry();
   FormalNumericExecutionContext config;
@@ -1060,7 +1110,7 @@ TEST(TargetModelKernelTest, BatchedGemmUsesImplicitNCxStorageContract) {
   TargetCommand gemm{CardId(0), TileId(0), LaunchSlotId(0), 0,
                      TargetGemmCommand{spm, spm + UINT64_C(0x1000),
                                        spm + UINT64_C(0x2000), 2, 2, 2, 2,
-                                       LogicalFormat::F32}};
+                                       LogicalFormat::F32, LogicalFormat::F32}};
   TargetModelCommandEffect effect =
       llvm::cantFail(executeTargetModelCommand(gemm, memory, makeBudget()));
   llvm::cantFail(
@@ -1090,7 +1140,7 @@ TEST(TargetModelKernelTest,
   TargetCommand gemm{CardId(0), TileId(0), LaunchSlotId(0), 0,
                      TargetGemmCommand{spm, spm + UINT64_C(0x1000),
                                        spm + UINT64_C(0x2000), 4, 4, 4, 1,
-                                       LogicalFormat::F32}};
+                                       LogicalFormat::F32, LogicalFormat::F32}};
   TargetModelKernelBudget smallBudget = TargetModelKernelBudget::create(
       FormalNumericWorkBudget::create(/*maximumScalarEvaluations=*/1,
                                       /*maximumFusedMultiplyAdds=*/1),

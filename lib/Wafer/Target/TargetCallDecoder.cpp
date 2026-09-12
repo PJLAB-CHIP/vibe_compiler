@@ -101,28 +101,34 @@ buildBuiltinCommand(const TargetCallDecodeConfig &config,
         decodeFormat(TargetFormatEngine::NE, arguments[7]);
     if (!format)
       return format.takeError();
+    auto outputFormat = decodeFormat(TargetFormatEngine::NE, arguments[8]);
+    if (!outputFormat)
+      return outputFormat.takeError();
     return TargetCommandPayload{TargetGemmCommand{
         arguments[0], arguments[1], arguments[2], argument32(arguments, 3),
         argument32(arguments, 4), argument32(arguments, 5),
-        argument32(arguments, 6), *format}};
+        argument32(arguments, 6), *format, *outputFormat}};
   }
   case TargetCallBuiltin::GemmOriented: {
     llvm::Expected<LogicalFormat> format =
         decodeFormat(TargetFormatEngine::NE, arguments[7]);
     if (!format)
       return format.takeError();
-    uint32_t lhsOrientation = argument32(arguments, 8);
-    uint32_t rhsOrientation = argument32(arguments, 9);
+    uint32_t lhsOrientation = argument32(arguments, 9);
+    uint32_t rhsOrientation = argument32(arguments, 10);
     if (lhsOrientation >
             static_cast<uint32_t>(TargetGemmOrientation::Transpose) ||
         rhsOrientation >
             static_cast<uint32_t>(TargetGemmOrientation::Transpose))
       return llvm::createStringError(
           "oriented GEMM orientation field is not a closed enum value");
+    auto outputFormat = decodeFormat(TargetFormatEngine::NE, arguments[8]);
+    if (!outputFormat)
+      return outputFormat.takeError();
     return TargetCommandPayload{TargetGemmCommand{
         arguments[0], arguments[1], arguments[2], argument32(arguments, 3),
         argument32(arguments, 4), argument32(arguments, 5),
-        argument32(arguments, 6), *format,
+        argument32(arguments, 6), *format, *outputFormat,
         static_cast<TargetGemmOrientation>(lhsOrientation),
         static_cast<TargetGemmOrientation>(rhsOrientation)}};
   }

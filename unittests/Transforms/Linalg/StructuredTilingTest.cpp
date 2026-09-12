@@ -1,5 +1,6 @@
 #include "Wafer/Transforms/Linalg/StructuredTiling.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Transforms/Linalg/ContractionAccumulation.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -21,6 +22,137 @@
 #include <string>
 
 namespace {
+
+TEST(ContractionAccumulationTest, WideStateSurvivesKLoopsAndOriginalUses) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::linalg::LinalgDialect, mlir::scf::SCFDialect,
+                  mlir::tensor::TensorDialect>();
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  for (auto dtype : {"f16", "bf16"})
+    for (int64_t k : {1024, 1025, 1031})
+      for (unsigned variant : {0u, 1u, 2u, 3u}) {
+        const bool generic = variant != 0;
+        const bool transposedRhs = variant == 2;
+        const std::string lhs =
+            "tensor<2x32x" + std::to_string(k) + "x" + dtype + ">";
+        const std::string rhs =
+            transposedRhs
+                ? "tensor<2x65x" + std::to_string(k) + "x" + dtype + ">"
+                : "tensor<2x" + std::to_string(k) + "x65x" + dtype + ">";
+        const std::string result = std::string("tensor<2x32x65x") + dtype + ">";
+        const std::string operation =
+            generic
+                ? std::string("linalg.generic {indexing_maps = "
+                              "[affine_map<(b,m,n,k)->(b,m,k)>, ") +
+                      (transposedRhs ? "affine_map<(b,m,n,k)->(b,n,k)>, "
+                                     : "affine_map<(b,m,n,k)->(b,k,n)>, ") +
+                      "affine_map<(b,m,n,k)->(b,m,n)>], "
+                      "iterator_types = "
+                      "[\"parallel\",\"parallel\",\"parallel\",\"reduction\"]}"
+                : "linalg.batch_matmul";
+        std::string source = "module { func.func @test(%a: " + lhs +
+                             ", %b: " + rhs + ", %init: " + result + ") -> (" +
+                             result + ", " + result + ") { %r = " + operation +
+                             " ins(%a, %b : " + lhs + ", " + rhs +
+                             ") outs(%init : " + result + ")";
+        const std::string flags = variant == 3 ? " fastmath<contract>" : "";
+        if (generic)
+          source += std::string(" { ^bb0(%x: ") + dtype + ", %y: " + dtype +
+                    ", %z: " + dtype + "): %p = arith.mulf %x, %y" + flags +
+                    " : " + dtype + " %s = arith.addf %z, %p" + flags + " : " +
+                    dtype + " linalg.yield %s : " + dtype + " }";
+        source += " -> " + result + " return %r, %r : " + result + ", " +
+                  result + " } }";
+        auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context);
+        ASSERT_TRUE(module);
+        auto function = *module->getOps<mlir::func::FuncOp>().begin();
+        ASSERT_TRUE(
+            mlir::succeeded(wafer::promoteContractionAccumulation(function)));
+        mlir::linalg::LinalgOp contraction;
+        unsigned narrow = 0;
+        function.walk([&](mlir::linalg::LinalgOp op) {
+          if (op.getNumReductionLoops()) {
+            ASSERT_FALSE(contraction);
+            contraction = op;
+          }
+        });
+        function.walk([&](mlir::arith::TruncFOp) { ++narrow; });
+        ASSERT_TRUE(contraction);
+        contraction->walk([&](mlir::arith::MulFOp multiply) {
+          EXPECT_EQ(multiply.getFastmath(),
+                    variant == 3 ? mlir::arith::FastMathFlags::contract
+                                 : mlir::arith::FastMathFlags::none);
+        });
+        EXPECT_EQ(narrow, 1u);
+        EXPECT_EQ(contraction.getDpsInputs()[0], function.getArgument(0));
+        EXPECT_EQ(contraction.getDpsInputs()[1], function.getArgument(1));
+        EXPECT_TRUE(mlir::cast<mlir::RankedTensorType>(
+                        contraction->getResult(0).getType())
+                        .getElementType()
+                        .isF32());
+        auto returned = mlir::cast<mlir::func::ReturnOp>(
+            function.getBody().front().getTerminator());
+        EXPECT_EQ(returned.getOperand(0), returned.getOperand(1));
+        EXPECT_EQ(returned.getOperand(0).getType(),
+                  function.getArgument(2).getType());
+        // The user-provided init is converted once, outside every K block.
+        auto initCast = contraction.getDpsInits()[0]
+                            .getDefiningOp<mlir::linalg::GenericOp>();
+        ASSERT_TRUE(initCast);
+        EXPECT_EQ(initCast.getInputs()[0], function.getArgument(2));
+        ASSERT_TRUE(
+            mlir::succeeded(wafer::promoteContractionAccumulation(function)));
+        mlir::IRRewriter rewriter(&context);
+        rewriter.setInsertionPoint(contraction);
+        // Spatial partial and its merge use the same widened SSA contract.
+        for (int64_t begin : {int64_t{0}, ((k - 1) / 128) * 128}) {
+          llvm::SmallVector<mlir::OpFoldResult> offsets, partialSizes;
+          for (int64_t offset : {int64_t{0}, int64_t{0}, int64_t{0}, begin})
+            offsets.push_back(rewriter.getIndexAttr(offset));
+          for (int64_t size : {int64_t{2}, int64_t{32}, int64_t{65},
+                               std::min(int64_t{128}, k - begin)})
+            partialSizes.push_back(rewriter.getIndexAttr(size));
+          std::string detail;
+          auto partial = wafer::materializePartialReductionTile(
+              contraction, rewriter, offsets, partialSizes, &detail);
+          ASSERT_TRUE(mlir::succeeded(partial)) << detail;
+          EXPECT_EQ(partial->reductionDimensions,
+                    (llvm::SmallVector<int, 2>{3}));
+          ASSERT_EQ(partial->mergedValues.size(), 1u);
+          EXPECT_EQ(partial->mergedValues[0].getType(),
+                    contraction->getResult(0).getType());
+          for (auto *operation : partial->partialOperations)
+            for (auto value : operation->getResults())
+              EXPECT_TRUE(mlir::cast<mlir::RankedTensorType>(value.getType())
+                              .getElementType()
+                              .isF32());
+        }
+        rewriter.setInsertionPoint(contraction);
+        mlir::scf::SCFTilingOptions options;
+        llvm::SmallVector<mlir::OpFoldResult> sizes;
+        for (int64_t size : {1, 16, 32, 128})
+          sizes.push_back(rewriter.getIndexAttr(size));
+        options.setTileSizes(sizes);
+        auto tiled = mlir::scf::tileUsingSCF(
+            rewriter,
+            mlir::cast<mlir::TilingInterface>(contraction.getOperation()),
+            options);
+        ASSERT_TRUE(mlir::succeeded(tiled));
+        ASSERT_EQ(tiled->loops.size(), 4u);
+        auto reductionLoop = mlir::cast<mlir::scf::ForOp>(tiled->loops.back());
+        EXPECT_EQ(mlir::getConstantIntValue(reductionLoop.getUpperBound()), k);
+        EXPECT_EQ(mlir::getConstantIntValue(reductionLoop.getStep()), 128);
+        EXPECT_TRUE(mlir::cast<mlir::RankedTensorType>(
+                        reductionLoop.getInitArgs()[0].getType())
+                        .getElementType()
+                        .isF32());
+        rewriter.replaceOp(contraction, tiled->replacements);
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      }
+}
 
 void registerTilingDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,

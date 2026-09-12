@@ -139,8 +139,8 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
   addVoid("mask_move",
           {Scalar::I64, Scalar::I32, Scalar::I64, Scalar::I32, Scalar::I32},
           TargetCallBuiltin::MaskMove);
-  addVoid("gemm", signature(3, 5), TargetCallBuiltin::Gemm);
-  addVoid("gemm_oriented", signature(3, 7), TargetCallBuiltin::GemmOriented);
+  addVoid("gemm", signature(3, 6), TargetCallBuiltin::Gemm);
+  addVoid("gemm_oriented", signature(3, 8), TargetCallBuiltin::GemmOriented);
   addVoid("tdma_pad", signature(2, 13), TargetCallBuiltin::TDMAPad);
   addVoid("tdma_img2col", signature(2, 17), TargetCallBuiltin::TDMAImg2Col);
 
