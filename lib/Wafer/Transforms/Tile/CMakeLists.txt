@@ -4,6 +4,7 @@ add_mlir_library(WaferTileTransforms
   ExecutionStructure.cpp
   GemmFinalization.cpp
   LayoutOptimization.cpp
+  LoopSubsetState.cpp
   PhysicalMovementPlacement.cpp
   Pipelines.cpp
   ReadOnlyInputSharing.cpp
@@ -27,6 +28,7 @@ add_mlir_library(WaferTileTransforms
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
+  MLIRLoopLikeInterface
   MLIRMathDialect
   MLIRMemRefDialect
   MLIRMemRefUtils
@@ -35,7 +37,10 @@ add_mlir_library(WaferTileTransforms
   MLIRSCFTransforms
   MLIRSideEffectInterfaces
   MLIRSupport
+  MLIRSubsetOpInterface
   MLIRTensorDialect
+  MLIRTensorTransforms
+  MLIRTransformUtils
   MLIRValueBoundsOpInterface
   MLIRViewLikeInterface
 )

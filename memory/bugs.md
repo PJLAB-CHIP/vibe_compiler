@@ -7,6 +7,16 @@
 `completion`、`bufferization`、`package`、`runtime`、`CMake`和`ownership`。条目描述的是防复发模式；若与current
 编号设计或源码冲突，以current事实源为准并在同次修改中修正文档。
 
+## 完整tensor循环state会放大buffer type递归
+
+- 现象：合法分段计算在One-Shot的extract bufferization内长时间工作，栈反复穿过SCF init/yield类型推导。
+- 根因：内层循环只更新固定子集，却携带完整输出；相邻循环把外层完整state连成长链。递归类型查询同时探查init与yield，
+  重复打开其它分段。其结果依赖递归上下文，不能简单加入只按SSA value命中的缓存。
+- 修复模式：在选定temporal IR之后、layout/One-Shot之前，用标准subset/loop接口证明局部recurrence，把初始extract和最终insert移至
+  static正trip循环外，保留原算术、dtype、迭代顺序与未写区域；随后折叠恒等carrier和相邻子集交接。关系由同一rewriter retarget。
+- 防复发：真实规模长段链检查exact内层state和最终写回，并走actual Instr/completion/SPM；独立检查零次、未知trip、变化索引、
+  重叠观察、分叉和交换state。调用pinned subset helper前排除其尚未修复的nested-state收集/分叉边界，不从优化成功推断任意loop可外提。
+
 ## 低精度K分块不能沿用窄输出作为partial
 
 - 现象：完整K的GEMM通过原数值容差，分块后出现大量误差；SPM、地址、输入及循环覆盖均正确。

@@ -801,3 +801,51 @@ GDB栈和正在执行的完整IR共同表明：分段输入生成一串共享ten
 这说明该会话的基础执行仍异常，不能据此确认硬件损坏，或把prefill的根因确定为卡故障。
 Compiler为`460c71fc`的构建；输入规模、artifact/环境身份与失败日志摘要见
 [`add-health-20260913.json`](data/board-performance/add-health-20260913.json)。
+
+### 重启后的基本执行恢复
+
+用户重启后，fresh source/reference/package的完整16 Tile FP16 Add单次执行通过：7340032个输出全部通过PyTorch，
+回读及清理完成。新boot为`f0bc038d-2b5e-42fa-9959-9d3aa265e993`，compiler/runtime与此前相同；
+运行主机wall约0.328秒，不是device elapsed。该结果只恢复基本执行资格，不能确定此前prefill候选超时的根因。
+身份和原日志摘要见[`add-reboot-recovery-20260913.json`](data/board-performance/add-reboot-recovery-20260913.json)。
+
+## 2026-09-13：循环子集状态修复
+
+本轮优先处理主机编译根因，已知会导致设备completion超时的prefill候选保留到最后。
+循环中的算术与dtype没有改变：此前每段内层循环携带完整输出，但只extract/update/insert一个固定子集；
+One-Shot递归推导完整state的init/yield，反复访问相邻分段。现在在正式layout入口调用
+[MLIR subset hoisting](https://mlir.llvm.org/docs/Passes/#-loop-invariant-subset-hoisting)，
+将可证明的子集变成真实循环state，再折叠恒等完整carrier与相邻子集交接。
+无LLVM补丁、猜测memref type或SSA缓存；完整搜索域和actual SPM gate不变。
+Pinned helper的nested-state收集/分叉缺陷有[upstream修复](https://github.com/llvm/llvm-project/pull/188761)，
+本仓用直接单链、正trip-count等前置证明限定其使用范围；未知边界保持原IR。
+
+普通Linalg/SCF 18段机制复现中，pinned One-Shot wall为1.50秒，subset hoisting及canonicalization后为0.03秒。
+该对照说明循环状态结构导致的重复工作，不能作为整编译器加速比。产品复验使用fresh source，不读取旧复现作为测试输入。
+本轮compiler SHA256为`8e2d3dd85bd33fbfe6f7b1e312a3e05aeacd1f6e08a4e6685562ca26761d9016`。
+
+| 路径 | 当前结果 | 边界 |
+| --- | --- | --- |
+| GEMM FP16，A `[1,1025,257]`、B `[1,257,513]`，width8/trials126 | 126 actual、48 accepted，strict no-card通过；runner wall113.09秒、max RSS468164 KiB；检查2706个循环、提升548个子集 | 旧126次搜索在bufferization长测停止，未得到完整baseline时间 |
+| 同一GEMM本轮package实卡 | 一次launch，525825个输出全部通过原PyTorch默认容差；device elapsed0.973 ms，回读/清理完成 | 只签发数值资格；没有matched性能A/B或profile |
+| LLaMA FP16 `[1,16,4096]`，width8/trials14 | 14 actual、0 accepted、13 capacity、1 unsupported；runner wall367.75秒、max RSS6920172 KiB；检查992循环、提升0子集 | 未生成package；不能把GEMM根因修复解释为LLaMA搜索/性能已修复 |
+
+数字、artifact及环境身份见[`loop-subset-state-20260913.json`](data/board-performance/loop-subset-state-20260913.json)。
+循环边界覆盖1024/1025/1031、32段多层循环、多tensor/标量state、rank reduction及六类不外提反例；
+局部state正例实际经过One-Shot、Instr、completion和唯一SPM规划。
+本轮Transforms 377、Driver 103、相关lit 68项全部实际通过；canonical完整增量构建通过，随后Ninja no-op。
+这些检查不代签尚未闭合的模型与catalog矩阵。
+
+### LLaMA剩余瓶颈的边界
+
+既有37.444 ms匹配profile的每Tile RDMA为16.420–20.167 ms，历史17.635 ms样本为3.342–4.742 ms；
+前者全卡DDR读取451889216 bytes，后者474011200 bytes。读取总量下降不能解释RDMA服务时间上升。
+当前可核验的同代Instr中，主投影权重以`256x64xf16`窗口读取，descriptor内层128 bytes、DDR行stride8192 bytes；
+down projection以`256x128xf16`窗口读取，内层256 bytes、stride22016 bytes，另有更短tail。
+这是选定K分块引入的访问粒度，三层DMA循环已经在使用；不是简单漏用DMA循环。
+现有CostModel对DDR主要按bytes估计，尚未像GS那样计入descriptor内层遍历，因而存在通用估时缺口。
+但这些跨版本样本同时改变了算术partial、分块和指令数，不能单凭它们拟合每行硬件时延，或承诺某个K必胜。
+早期快样本也没有Direct DTE，不能把退化全部归因于“没选通信”。
+
+后续需要分别闭合：有限预算先到达可执行结构/参数组合、actual容量反馈的有效利用，以及合法候选的搬运粒度/提交成本排序。
+此次循环state修复不修改这些搜索策略，也不把尚未执行的LLaMA/decode/BF16及风险prefill标为完成。

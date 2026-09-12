@@ -1,11 +1,16 @@
 //===- LayoutOptimizationTest.cpp --------------------------------------===//
 
+#include "Wafer/Conversion/TileToInstr/TileToInstr.h"
+#include "Wafer/Driver/CompilationInternal.h"
+#include "Wafer/Driver/StandaloneTileModules/StandaloneTileModules.h"
+#include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
+#include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
+#include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
+#include "Wafer/Transforms/Tile/LoopSubsetState.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 #include "Wafer/Transforms/Tile/StructuredToTile.h"
-
-#include "Wafer/Driver/CompilationInternal.h"
-#include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -608,6 +613,221 @@ TEST_F(LayoutOptimizationTest, FunctionBoundarySpaceIsQueriedOncePerFunction) {
     EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*module)));
     EXPECT_TRUE(mlir::succeeded(
         checkStructuredBufferRelationsCurrent(*module, relations)));
+  }
+}
+
+TEST_F(LayoutOptimizationTest, SegmentedLoopsCarryOnlyTheirUpdatedOutputSubset) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    const std::string type =
+        "tensor<1x" + std::to_string(extent) + "x64xf16>";
+    constexpr unsigned segments = 32;
+    std::string text;
+    llvm::raw_string_ostream out(text);
+    out << "module { wafer.tile.module card_id = 0 tile_id = 0 {\n"
+        << "func.func @entry(%input: " << type << ") {\n"
+        << "%result = wafer.tile.region(%input : " << type << ") -> ("
+        << type << ") { ^bb0(%local: " << type << "):\n"
+        << "%c0 = arith.constant 0 : index\n"
+        << "%c1 = arith.constant 1 : index\n"
+        << "%c3 = arith.constant 3 : index\n"
+        << "%c32 = arith.constant 32 : index\n"
+        << "%end = arith.constant " << extent / 32 * 32 << " : index\n"
+        << "%outer = scf.for %i = %c0 to %end step %c32 "
+        << "iter_args(%state = %local) -> " << type << " {\n";
+    for (unsigned i = 0; i < segments; ++i) {
+      auto initial = i ? "%loop" + std::to_string(i - 1) : "%state";
+      out << "%loop" << i
+          << " = scf.for %j = %c0 to %c3 step %c1 iter_args(%tile = "
+          << initial << ") -> " << type << " {\n"
+          << "%slice = tensor.extract_slice %tile[0, %i, 0] [1, 32, 64] "
+          << "[1, 1, 1] : " << type << " to tensor<1x32x64xf16>\n"
+          << "%sum = linalg.add ins(%slice, %slice : tensor<1x32x64xf16>, "
+          << "tensor<1x32x64xf16>) outs(%slice : tensor<1x32x64xf16>) "
+          << "-> tensor<1x32x64xf16>\n"
+          << "%updated = tensor.insert_slice %sum into %tile[0, %i, 0] "
+          << "[1, 32, 64] [1, 1, 1] : tensor<1x32x64xf16> into " << type
+          << "\nscf.yield %updated : " << type << "\n}\n";
+    }
+    out << "scf.yield %loop" << segments - 1 << " : " << type << "\n}\n"
+        << "wafer.tile.yield %outer : " << type << "\n}\nreturn\n}}}\n";
+    auto module = parse(text);
+    ASSERT_TRUE(module);
+    auto relations = outputRelation(*module);
+    ASSERT_TRUE(mlir::succeeded(normalizeLoopSubsetState(*module, relations)));
+    unsigned localStates = 0, fullStates = 0;
+    module->walk([&](mlir::scf::ForOp loop) {
+      ASSERT_EQ(loop.getNumRegionIterArgs(), 1u);
+      auto state = mlir::cast<mlir::RankedTensorType>(
+          loop.getRegionIterArgs().front().getType());
+      if (loop->getParentOfType<mlir::scf::ForOp>()) {
+        ++localStates;
+        EXPECT_EQ(state.getShape(), (llvm::ArrayRef<int64_t>{1, 32, 64}));
+        EXPECT_EQ(countOps<mlir::tensor::ExtractSliceOp>(loop), 0u);
+        EXPECT_EQ(countOps<mlir::tensor::InsertSliceOp>(loop), 0u);
+        EXPECT_EQ(countOps<mlir::linalg::AddOp>(loop), 1u);
+      } else {
+        ++fullStates;
+        EXPECT_EQ(state.getDimSize(1), extent);
+      }
+    });
+    EXPECT_EQ(localStates, segments);
+    EXPECT_EQ(fullStates, 1u);
+    // Adjacent segment handoffs fold to one extraction/writeback per output
+    // tile. The final 1/7 rows remain the original state, not an empty tensor.
+    EXPECT_EQ(countOps<mlir::tensor::ExtractSliceOp>(*module), 1u);
+    EXPECT_EQ(countOps<mlir::tensor::InsertSliceOp>(*module), 1u);
+    mlir::tensor::InsertSliceOp writeback;
+    module->walk([&](mlir::tensor::InsertSliceOp op) { writeback = op; });
+    ASSERT_TRUE(writeback);
+    auto outer = writeback->getParentOfType<mlir::scf::ForOp>();
+    ASSERT_TRUE(outer);
+    EXPECT_EQ(writeback.getDest(), outer.getRegionIterArgs().front());
+    EXPECT_EQ(writeback.getStaticSizes(), (llvm::ArrayRef<int64_t>{1, 32, 64}));
+    auto result = resolveCurrentLayoutsAndBufferize(*module, relations);
+    ASSERT_TRUE(result.succeeded()) << result.detail;
+    EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*module)));
+    EXPECT_EQ(result.statistics.bufferizationInvocations, 1u);
+    auto lowered = lowerStructuredComputeToTile(*module, relations);
+    ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    auto movement = materializeTileBoundaryMovement(*module, relations);
+    ASSERT_TRUE(movement.succeeded()) << movement.detail;
+    std::string detail;
+    auto standalone =
+        createStandaloneTileModules(std::move(module), &detail, &relations);
+    ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+    ASSERT_EQ(standalone->size(), 1u);
+    auto &tile = standalone->front();
+    TileRegionToInstrLoweringSession session(*context);
+    llvm::SmallVector<TileRegionOp, 2> regions;
+    tile.module->walk([&](TileRegionOp op) { regions.push_back(op); });
+    for (TileRegionOp region : regions)
+      ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+    ASSERT_TRUE(mlir::succeeded(
+        convertBufferizationCopiesToInstr(*tile.module, session)));
+    ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+    TileMemoryPlanningFailure memoryFailure;
+    auto planned = planTileMemory(std::move(tile.module), &memoryFailure);
+    ASSERT_TRUE(mlir::succeeded(planned));
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(**planned)));
+  }
+}
+
+TEST_F(LayoutOptimizationTest, IndependentAndSwappedSubsetStatesRemainDistinct) {
+  for (bool swap : {false, true}) {
+    SCOPED_TRACE(swap);
+    std::string text = R"mlir(
+module { wafer.tile.module card_id = 0 tile_id = 0 {
+  func.func @entry(%input: tensor<1x1031x64xf16>) {
+    %r:2 = wafer.tile.region(%input : tensor<1x1031x64xf16>)
+        -> (tensor<1x1031x64xf16>, tensor<1x1031x64xf16>) {
+    ^bb0(%local: tensor<1x1031x64xf16>):
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c3 = arith.constant 3 : index
+      %loop:3 = scf.for %i = %c0 to %c3 step %c1
+          iter_args(%a = %local, %b = %local, %n = %c0)
+          -> (tensor<1x1031x64xf16>, tensor<1x1031x64xf16>, index) {
+        %sa = tensor.extract_slice %a[0, 0, 0] [1, 4, 64] [1, 1, 1]
+            : tensor<1x1031x64xf16> to tensor<4x64xf16>
+        %sb = tensor.extract_slice %b[0, 7, 0] [1, 4, 64] [1, 1, 1]
+            : tensor<1x1031x64xf16> to tensor<1x4x64xf16>
+        %va = linalg.add ins(%sa, %sa : tensor<4x64xf16>, tensor<4x64xf16>)
+            outs(%sa : tensor<4x64xf16>) -> tensor<4x64xf16>
+        %vb = linalg.add ins(%sb, %sb : tensor<1x4x64xf16>, tensor<1x4x64xf16>)
+            outs(%sb : tensor<1x4x64xf16>) -> tensor<1x4x64xf16>
+        %za = tensor.insert_slice %va into %a[0, 0, 0] [1, 4, 64] [1, 1, 1]
+            : tensor<4x64xf16> into tensor<1x1031x64xf16>
+        %zb = tensor.insert_slice %vb into %b[0, 7, 0] [1, 4, 64] [1, 1, 1]
+            : tensor<1x4x64xf16> into tensor<1x1031x64xf16>
+        %next = arith.addi %n, %c1 : index
+)mlir";
+    text += swap ? "scf.yield %zb, %za, %next" : "scf.yield %za, %zb, %next";
+    text += R"mlir( : tensor<1x1031x64xf16>, tensor<1x1031x64xf16>, index
+      }
+      wafer.tile.yield %loop#0, %loop#1
+          : tensor<1x1031x64xf16>, tensor<1x1031x64xf16>
+    }
+    return
+  }
+}})mlir";
+    auto module = parse(text);
+    ASSERT_TRUE(module);
+    auto relations = outputRelation(*module);
+    ASSERT_TRUE(mlir::succeeded(normalizeLoopSubsetState(*module, relations)));
+    mlir::scf::ForOp loop;
+    module->walk([&](mlir::scf::ForOp op) { loop = op; });
+    ASSERT_TRUE(loop);
+    unsigned tensorStates = 0, scalarStates = 0;
+    for (auto argument : loop.getRegionIterArgs()) {
+      if (auto type = mlir::dyn_cast<mlir::RankedTensorType>(argument.getType())) {
+        ++tensorStates;
+        EXPECT_EQ(type.getNumElements(), swap ? 1031 * 64 : 4 * 64);
+      } else {
+        ++scalarStates;
+        EXPECT_TRUE(argument.getType().isIndex());
+      }
+    }
+    EXPECT_EQ(tensorStates, 2u);
+    EXPECT_EQ(scalarStates, 1u);
+    EXPECT_EQ(countOps<mlir::tensor::InsertSliceOp>(loop), swap ? 2u : 0u);
+    EXPECT_EQ(countOps<mlir::linalg::AddOp>(loop), 2u);
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  }
+}
+
+TEST_F(LayoutOptimizationTest, SubsetPromotionPreservesUnprovedLoopState) {
+  for (llvm::StringRef boundary :
+       {"empty", "dynamic", "variant", "observed", "fork", "nested"}) {
+    SCOPED_TRACE(boundary.str());
+    std::string text;
+    llvm::raw_string_ostream out(text);
+    out << "module { wafer.tile.module card_id = 0 tile_id = 0 {\n"
+        << "func.func @entry(%input: tensor<1x1031x64xf16>, %limit: index) {\n"
+        << "%result = wafer.tile.region(%input, %limit : tensor<1x1031x64xf16>, index) "
+        << "-> (tensor<1x1031x64xf16>) { ^bb0(%local: tensor<1x1031x64xf16>, %bound: index):\n"
+        << "%c0 = arith.constant 0 : index\n%c1 = arith.constant 1 : index\n"
+        << "%end = arith.constant " << (boundary == "empty" ? 0 : 3)
+        << " : index\n"
+        << "%loop = scf.for %i = %c0 to "
+        << (boundary == "dynamic" ? "%bound" : "%end") << " step %c1 "
+        << "iter_args(%state = %local) -> tensor<1x1031x64xf16> {\n";
+    std::string offset = boundary == "variant" ? "%i" : "0";
+    out << "%slice = tensor.extract_slice %state[0, " << offset
+        << ", 0] [1, 4, 64] [1, 1, 1] : tensor<1x1031x64xf16> "
+        << "to tensor<1x4x64xf16>\n"
+        << "%sum = linalg.add ins(%slice, %slice : tensor<1x4x64xf16>, "
+        << "tensor<1x4x64xf16>) outs(%slice : tensor<1x4x64xf16>) "
+        << "-> tensor<1x4x64xf16>\n";
+    if (boundary == "observed")
+      out << "%read = tensor.extract %state[%c0, %c0, %c0] "
+          << ": tensor<1x1031x64xf16>\n";
+    if (boundary == "fork")
+      out << "%other = tensor.insert_slice %sum into %state[0, 4, 0] "
+          << "[1, 4, 64] [1, 1, 1] : tensor<1x4x64xf16> "
+          << "into tensor<1x1031x64xf16>\n";
+    if (boundary == "nested")
+      out << "%inner = scf.for %j = %c0 to %bound step %c1 "
+          << "iter_args(%forwarded = %state) -> tensor<1x1031x64xf16> {\n"
+          << "scf.yield %forwarded : tensor<1x1031x64xf16>\n}\n";
+    out << "%updated = tensor.insert_slice %sum into %state[0, " << offset
+        << ", 0] [1, 4, 64] [1, 1, 1] : tensor<1x4x64xf16> "
+        << "into tensor<1x1031x64xf16>\n"
+        << "scf.yield %updated : tensor<1x1031x64xf16>\n}\n"
+        << "wafer.tile.yield %loop : tensor<1x1031x64xf16>\n}\nreturn\n}}}\n";
+    auto module = parse(text);
+    ASSERT_TRUE(module);
+    std::string before;
+    llvm::raw_string_ostream beforeStream(before);
+    module->print(beforeStream);
+    auto relations = outputRelation(*module);
+    ASSERT_TRUE(mlir::succeeded(normalizeLoopSubsetState(*module, relations)));
+    std::string after;
+    llvm::raw_string_ostream afterStream(after);
+    module->print(afterStream);
+    EXPECT_EQ(before, after);
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
   }
 }
 

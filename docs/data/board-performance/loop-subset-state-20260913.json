@@ -1,0 +1,177 @@
+{
+  "date": "2026-09-13",
+  "compilerSha256": "8e2d3dd85bd33fbfe6f7b1e312a3e05aeacd1f6e08a4e6685562ca26761d9016",
+  "change": "在正式layout/One-Shot入口将可证明的固定extract/insert子集提升为局部循环state，保留算术和完整整数域。",
+  "mechanism": {
+    "freshMinimalSegmentChain": 18,
+    "oneShotBeforeWallSeconds": 1.5,
+    "subsetCanonicalizationAndOneShotWallSeconds": 0.03,
+    "boundaries": "机制时间不是整模型加速比；原GEMM 126次长测未完成，不能以其停止时刻作为完整baseline。"
+  },
+  "hostRuns": [
+    {
+      "case": "single-card-gemm-tail-1025",
+      "dtype": "float16",
+      "width": 8,
+      "trials": 126,
+      "compilerSha256": "8e2d3dd85bd33fbfe6f7b1e312a3e05aeacd1f6e08a4e6685562ca26761d9016",
+      "hostLog": "build/test/model-performance/subset-gemm-126.log",
+      "hostLogSha256": "3c9fd1dafac45ac4ab8029e07757f09e713926bd56f7cdb95586faf259bc72fc",
+      "runnerWallSeconds": 113.09,
+      "maxRssKiB": 468164,
+      "counters": {
+        "loop-subsets/examined-loops": 2706,
+        "loop-subsets/promoted-subsets": 548,
+        "search/accepted-candidates": 48,
+        "search/actual-capacity-refinements": 44,
+        "search/unavailable-capacity-refinements": 31
+      },
+      "noCardPassed": true,
+      "numericExecution": false,
+      "coverage": "search-current-ir coverage=feasible-partial structural=24 actual=126 accepted=48 exact_rejected=75 capacity_refinements=44 unavailable_refinements=31 unsupported=3 indeterminate=0",
+      "package": {
+        "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "manifest.json": "d7709764fc8e8ea8f9468ca291bec0e4240319c42fad2c54caf9c0540dad29b0",
+        "modules/module_00000.so": "cf47c0d3f932770b4e4c53d75abccd7043c8c0ef5613bcc76eff55b3841cb6c5"
+      }
+    },
+    {
+      "case": "llama-2-7b-block",
+      "dtype": "float16",
+      "width": 8,
+      "trials": 14,
+      "compilerSha256": "8e2d3dd85bd33fbfe6f7b1e312a3e05aeacd1f6e08a4e6685562ca26761d9016",
+      "hostLog": "build/test/model-performance/subset-llama-14.log",
+      "hostLogSha256": "b39f9601dc892893657654697eece72f764e64aeeddb73571f08332ba2b87866",
+      "runnerWallSeconds": 367.75,
+      "maxRssKiB": 6920172,
+      "counters": {
+        "loop-subsets/examined-loops": 992,
+        "loop-subsets/promoted-subsets": 0,
+        "search/accepted-candidates": 0,
+        "search/actual-capacity-refinements": 8,
+        "search/unavailable-capacity-refinements": 5
+      },
+      "noCardPassed": false,
+      "numericExecution": false,
+      "coverage": "search-current-ir coverage=incomplete-no-candidate structural=5 actual=14 accepted=0 exact_rejected=13 capacity_refinements=8 unavailable_refinements=5 unsupported=1 indeterminate=0",
+      "package": null
+    }
+  ],
+  "gemmBoard": {
+    "case": "single-card-gemm-m1025-k257-n513",
+    "step": 1,
+    "policy": "search",
+    "search_width": 8,
+    "search_trials": 126,
+    "manifest_sha256": "d7709764fc8e8ea8f9468ca291bec0e4240319c42fad2c54caf9c0540dad29b0",
+    "comparison_passed": true,
+    "comparison": {
+      "rtol": null,
+      "atol": null,
+      "equal_nan": false
+    },
+    "inputs": {
+      "card_00_user_input_0.f16.raw": "1d1f6132188775c2911ad9f4be0a7b16057ab4642d350f3b51e661a2f97f87ca",
+      "card_00_user_input_1.f16.raw": "2f0a08bd3c32d2b535d26f6c5b881128189ba114819da9f00f0880ac38500a51"
+    },
+    "outputs": [
+      {
+        "shape": [
+          1,
+          1025,
+          513
+        ],
+        "dtype": "torch.float16",
+        "elements": 525825,
+        "max_abs_error": 0.03125
+      }
+    ],
+    "timing": [
+      "board_timing: kind=tx-stream-events device_elapsed_ns=973000"
+    ]
+  },
+  "device": {
+    "bootId": "f0bc038d-2b5e-42fa-9959-9d3aa265e993",
+    "runtimeSha256": "b4f19d673e1767314f6cd900f7f66345e7d1d8c0545de83a7139d62596a6e12c",
+    "runnerSha256": "bb65ae701ce3a8acf100c506681db57490136e44c9fcaca790a35b20c6f18bf7"
+  },
+  "limitations": [
+    "本轮GEMM仅单次普通实卡校验，未做性能A/B或profile。",
+    "LLaMA 14次仍无accepted，循环subset提升为0；不能声称模型性能改善。",
+    "风险prefill尚未重新执行，completion超时根因仍未知。"
+  ],
+  "llamaHistoricalReview": {
+    "scope": "历史样本用于根因分析，不是本轮性能验收。",
+    "newerSample": {
+      "sourceRecord": "access-normalization-20260912.json",
+      "manifestSha256": "73e5f62e6dd3654dac38978ae4feeafa6cdc73e828c2faa21c3af0b671c5df8d",
+      "deviceElapsedNs": 37444000,
+      "rdma": {
+        "active_tile_count": 16,
+        "available_tile_count": 16,
+        "average_per_tile_ns": 18290366.3125,
+        "engine": "RDMA",
+        "maximum_per_tile_ns": 20167434,
+        "measurement_kind": "trace-pmu-engine-active-time",
+        "minimum_per_tile_ns": 16419831,
+        "status": "Measured",
+        "sum_across_tiles_work_ns": 292645861
+      },
+      "ddrReadBytes": 451889216,
+      "ddrWriteBytes": 32842432,
+      "staticPlanSha256": "d72e4cca8c92991aa5127b1b28fa44b62a88ac93b9670e516439a8eb609f3b55",
+      "tile0InstrSha256": "65417a2ebb8b26b546d88f46bb619d7b5052f56d1f754dbf34d21f8be34fa410",
+      "mainWeightWindow": {
+        "logicalShape": [
+          256,
+          64
+        ],
+        "dtype": "float16",
+        "innerBytes": 128,
+        "ddrRowStrideBytes": 8192
+      },
+      "downWeightWindow": {
+        "logicalShape": [
+          256,
+          128
+        ],
+        "dtype": "float16",
+        "innerBytes": 256,
+        "ddrRowStrideBytes": 22016
+      }
+    },
+    "olderSample": {
+      "sourceRecord": "llama-native-reduce-20260909.json",
+      "ordinaryDeviceElapsedNs": 17635000,
+      "rdmaMinimumPerTileNs": 3342002,
+      "rdmaMaximumPerTileNs": 4741794,
+      "ddr_read_bytes": 474011200,
+      "ddr_write_bytes": 196317888,
+      "direct_dte_operations": 0
+    },
+    "limits": [
+      "跨版本分块/partial/指令数量同时变化，不用于拟合精确per-row时延。",
+      "Trace仅事件前缀，PMU覆盖完整Trace运行；不能分摊单site耗时。",
+      "现有DDR估时缺少descriptor内层遍历项；本轮尚未修改此项或搜索方法。"
+    ]
+  },
+  "hostVerification": {
+    "transforms": {
+      "passed": 377,
+      "total": 377
+    },
+    "driver": {
+      "passed": 103,
+      "total": 103
+    },
+    "affectedLit": {
+      "passed": 68,
+      "total": 68
+    },
+    "canonicalFullIncrementalBuildPassed": true,
+    "subsequentNinjaNoOp": true,
+    "sourceAndIROrganizationPassed": true,
+    "fullCatalogPassed": false
+  }
+}

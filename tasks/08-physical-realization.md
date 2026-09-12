@@ -160,6 +160,17 @@ Observable output在本stage先从current TileRegion yield中的exact piece rela
 回填不属于current合同；actual allocation owner由当前operation、SSA use-def和effect表达，跨Tile endpoint与program output index继续由
 candidate-owned current relation保存。
 
+在layout assignment之前，Tile-local `scf.for`中位置、大小和步长均不随该循环变化的extract/insert子集，
+由标准subset hoisting改为子集tensor recurrence：循环前读取初值，循环中只携带实际更新的子集，循环后写回一次。
+匹配、重叠和索引不变性消费`SubsetOpInterface`及`LoopLikeOpInterface`；不改变算术、dtype、迭代顺序、tile size或transport。
+当前pinned helper的嵌套state遍历存在upstream已修复的收集/分叉问题，因此调用前要求每个tensor iter_arg到自身yield为
+直接subset组成的单链；跨nested loop、分叉、整值观察或交换state不交给该helper。
+只处理static正trip-count，避免把原本不执行的越界extract推测执行到循环前。未证明的循环保留原IR。
+改写使用relation replacement listener，随后仅运行SCF/Tensor局部canonicalization消除恒等carrier和相邻子集读写；
+PBQP、One-Shot与actual SPM均从改写后的IR重新建立。不得用猜测memref type或跨递归上下文的SSA缓存替代这一state边界。
+算法依据为[MLIR subset hoisting](https://mlir.llvm.org/docs/Passes/#-loop-invariant-subset-hoisting)；
+pinned缺陷参见[upstream修复](https://github.com/llvm/llvm-project/pull/188761)。本项矩阵在统一性能计划中维护。
+
 Tile-local `scf.for`的tensor state采用固定destination：完成layout assignment与actual conversion后、One-Shot之前，
 先以只读One-Shot analysis检查yield与iter argument的buffer equivalence；仅非equivalent的state edge通过标准
 `bufferization.materialize_in_destination`绑定到对应iter argument。每轮只绑定当前非equivalent边中的最内层循环，

@@ -1,6 +1,7 @@
 //===- LayoutOptimization.cpp - Current layout/bufferization -----------===//
 
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
+#include "LoopSubsetState.h"
 
 #include "Wafer/Analysis/Linalg/IndexRelation.h"
 #include "Wafer/Analysis/Tile/PhysicalLayoutRelation.h"
@@ -1756,6 +1757,10 @@ prepareCurrentLayoutInput(mlir::ModuleOp module,
     return result;
   }
 
+  if (mlir::failed(normalizeLoopSubsetState(module, relations))) {
+    result.detail = "loop subset state normalization failed";
+    return result;
+  }
   localizeEmptySlices(module, relations);
 
   std::string detail;

@@ -61,8 +61,30 @@ Region修复后完整Driver再次103项通过；最终两项Python CTest、源�
 2026-09-13用户指定单独复查Add：fresh package/no-card通过，16 Tile FP16 Add同样发生60秒真实completion超时，
 没有输出回读；boot/runtime身份未变。一次尝试后已停止，未retry/reset，设备基本执行尚未恢复。
 
-下一步顺序：先修长链buffer type推导的重复工作并恢复上述no-card矩阵，再定位prefill新候选的设备完成问题；
-取得可用设备后补剩余模型/BF16数值与匹配性能。当前不推进其它work item。
+2026-09-13重启后，用户指定的fresh完整16 Tile FP16 Add单次运行、7340032元素PyTorch对比、回读及清理通过。
+该结果恢复基本执行资格，不为此前prefill候选签发资格。
+
+用户最新顺序：有卡死风险的prefill候选最后处理。先从current IR修复主机重复推导及搜索覆盖问题，
+用已有profile查LLaMA搬运/粒度/依赖退化，随后完成其余模型/BF16的fresh no-card、数值与匹配性能。
+当前不运行风险prefill，不推进其它work item。
+
+### 循环子集状态与主机根因
+
+完整输出tensor被一串内层循环携带，但每个内层循环只更新固定的输出子集，造成buffer type查询反复穿过外层init/yield与所有分段。
+先采用08号标准subset hoisting合同缩小真实recurrence，避免修改LLVM ABI或加入依赖递归上下文却只按SSA value命中的缓存。
+最小普通Linalg/SCF复现的18段链，pinned One-Shot wall约1.50秒；标准subset hoisting加canonicalization后约0.03秒。
+正式layout入口已接入同一helper。fresh GEMM tail-1025在width8/trials126下完成126次actual、48 accepted、strict no-card；
+含source/reference准备的runner wall113.09秒、max RSS468164 KiB，548个子集提升。随后单次实卡525825个FP16输出通过原PyTorch容差，
+device elapsed0.973 ms。未做性能A/B，不将机制时间或此单次耗时解释为整模型加速。
+LLaMA width8/trials14本轮仍为0 accepted、13 capacity、1 unsupported，992个循环检查中0个子集提升；
+runner wall367.75秒。它的搜索可行性和搬运性能是独立未完成边界。完整证据见[本轮记录](../../docs/board-performance-results.md#2026-09-13循环子集状态修复)。
+
+| 输入等价类 | 结构与长度 | exact输出/保留 | 下游witness |
+| --- | --- | --- | --- |
+| 局部逐元素子集更新 | rank3，1024/1025/1031，32段、多层循环，未写尾行 | 内层只携带更新子集；原输出holes、初值、算术顺序不变 | `SegmentedLoopsCarryOnlyTheirUpdatedOutputSubset`：layout/One-Shot→actual Instr/completion/SPM通过 |
+| 多state与不相交子集 | rank3输入，同循环两个独立状态、标量状态、rank reduction | 各自绑定对应yield；交换state保留完整recurrence | `IndependentAndSwappedSubsetStatesRemainDistinct`：verifier及精确子集检查通过 |
+| 不可外提 | 变化索引、重叠读取、分叉、嵌套state转发、零次/未知trip-count | 未证明边界逐字节保持原IR | `SubsetPromotionPreservesUnprovedLoopState`：六类反例通过 |
+| 编译开销与产品 | 多段GEMM、组合计算和模型，none/search | 记录循环state/查询工作、wall/RSS；不删除合法参数或更改capacity gate | fresh source→package→strict no-card；设备风险项最后 |
 
 | 追加覆盖 | 输入 | exact断言 | 下游witness |
 | --- | --- | --- | --- |
