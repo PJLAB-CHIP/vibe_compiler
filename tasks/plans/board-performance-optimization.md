@@ -125,6 +125,13 @@ merged/pipelined实际改写还会使原body handle失效。需要补齐当前ow
 完成条件：上述精确矩阵及完整Transforms/Driver、相关lit、canonical build/no-op与fresh产品验证通过；
 最终产品如发生变化则补原PyTorch对比，风险prefill仍最后。
 
+当前检查点：完整Transforms378、Driver103、lit68、SystemC17和canonical build/no-op通过；fresh GEMM126仍48 accepted、
+strict no-card通过，package与本轮已通过PyTorch的GEMM逐字节相同，未重复launch。
+最终编译器LLaMA42仍主机1800秒超时，无package/设备执行，峰值RSS约21 GiB；36次advance已完成，
+layout/bufferization单次最长474秒，搬运清理累计约766秒CPU、tryElide约2337万次。
+最后仅外层advance活跃，不能把最后停留点确定为已完成的bufferization；剩余主机瓶颈与模型性能仍未闭合。
+完整分版本计时与归因边界见性能记录，不把上述主机机制改善记为LLaMA加速。
+
 | 追加覆盖 | 输入 | exact断言 | 下游witness |
 | --- | --- | --- | --- |
 | 分布式归约与旁路consumer | rank3，1024/1025/1031，两Tile；producer同时供partial与间接归约consumer | raw/proposal均拒绝跨merge形成的商图环，保留acyclic融合与单root方案；所有partial以typed shard/group定位owner | Planning transitive-closure oracle与去边mutation通过；异构PyTorch none及子集提升版本search strict no-card通过，未签发实卡资格 |

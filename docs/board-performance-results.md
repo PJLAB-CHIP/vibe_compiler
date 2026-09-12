@@ -893,3 +893,11 @@ fresh GEMM126再次完成、48 accepted、strict no-card通过，runner wall114.
 timeline累计证明7294个非空循环，额外路径decision为0。Manifest、设备模块和数据与本轮已上板GEMM逐字节相同，未重复launch。
 完整Driver103、SystemC17项通过，canonical完整增量构建及后续Ninja no-op通过，未产生Wafer-owned Python cache。
 这些主机检查与GEMM资格不代签LLaMA/conv长测、模型数值及匹配性能；风险prefill仍未重新执行。
+
+同一最终编译器的LLaMA width8/trials42仍在1800秒host compiler期限内未完成：runner wall1814.95秒、
+max RSS21985508 KiB，无package、无设备执行。已完成36次candidate advance；33次layout/bufferization累计641.531秒，
+单次最长474.413秒。Instr transfer cleanup为560次、累计766.039秒CPU；`tryElide`阶段调用23372651次、累计550.524秒CPU。
+这些是嵌套/并行累计计时，不能相加成wall时间，也不能从被限时停止的两个版本计算整编译器加速比。
+停止时只有外层`advance`活跃（structural12、attempt36），没有更细的活动span；最后的具体调用栈仍须另行定位。
+因此本轮没有闭合LLaMA搜索和设备性能，下一步还要分别处理候选IR规模、重复清理和容量反馈的scope精度。
+已清理本轮撤回/失败的四个大型生成目录，日志及小型actual-IR审计证据保留；风险prefill没有重试。

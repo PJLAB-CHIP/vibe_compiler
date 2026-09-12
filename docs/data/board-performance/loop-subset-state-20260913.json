@@ -340,6 +340,181 @@
       "mandatory-loop-systemc.log": "86b3fb523e3199fbcdc6473b867a9bb239a33b676a56ab464fa108504c2c9344",
       "mandatory-loop-final-build.log": "33ddd91bfe1935d806002fc759e966b97acd20fb021dd894523e4fa8f68c7525",
       "mandatory-loop-build-noop.log": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+    },
+    "llama42": {
+      "log": "build/test/model-performance/mandatory-loop-llama-42.log",
+      "logSha256": "8f9b4a883fa3da9deab48a666c4daf49da92680af05fda3d3273185ee8a33dca",
+      "status": "host-compiler-timeout",
+      "compilerTimeoutSeconds": 1800,
+      "runnerWallSeconds": 1814.95,
+      "maxRssKiB": 21985508,
+      "completedCandidateAdvanceCalls": 36,
+      "lastActiveScope": "search-candidate/current-ir/advance, structural=12, attempt=36",
+      "finalAcceptedCount": null,
+      "packageProduced": false,
+      "deviceExecuted": false,
+      "lastCumulativeTimingRecords": {
+        "pass/execution-config/wafer-materialize-target-topology": {
+          "cumulative_wall_ms": 0.682,
+          "cumulative_cpu_ms": 0.681,
+          "max_wall_ms": 0.455,
+          "calls": 2
+        },
+        "pass/execution-config/wafer-materialize-execution-mesh": {
+          "cumulative_wall_ms": 0.606,
+          "cumulative_cpu_ms": 0.606,
+          "max_wall_ms": 0.423,
+          "calls": 2
+        },
+        "external-pipeline/source-to-tensor-program/xla-spmd-partitioning": {
+          "cumulative_wall_ms": 3514.21,
+          "cumulative_cpu_ms": 0.206,
+          "max_wall_ms": 3514.21,
+          "calls": 1
+        },
+        "stage/source-to-package/source-to-tensor-program": {
+          "cumulative_wall_ms": 22115.429,
+          "cumulative_cpu_ms": 18599.809,
+          "max_wall_ms": 22115.429,
+          "calls": 1
+        },
+        "query/physical-search/build-spatial-proposals": {
+          "cumulative_wall_ms": 2256.589,
+          "cumulative_cpu_ms": 2256.484,
+          "max_wall_ms": 2256.589,
+          "calls": 1
+        },
+        "query/physical-search/evaluate-spatial-demand": {
+          "cumulative_wall_ms": 332.047,
+          "cumulative_cpu_ms": 332.04,
+          "max_wall_ms": 332.047,
+          "calls": 1
+        },
+        "pass/stablehlo-to-linalg/mlir::detail::OpToOpPassAdaptor": {
+          "cumulative_wall_ms": 133.651,
+          "cumulative_cpu_ms": 133.652,
+          "max_wall_ms": 133.463,
+          "calls": 2
+        },
+        "query/physical-search/validate-root-work-domain": {
+          "cumulative_wall_ms": 123.191,
+          "cumulative_cpu_ms": 123.193,
+          "max_wall_ms": 123.191,
+          "calls": 1
+        },
+        "pass/stablehlo-to-linalg/wafer-normalize-structured-tensor-graph": {
+          "cumulative_wall_ms": 115.193,
+          "cumulative_cpu_ms": 115.194,
+          "max_wall_ms": 115.193,
+          "calls": 1
+        },
+        "query/physical-search/build-region-domain": {
+          "cumulative_wall_ms": 97.796,
+          "cumulative_cpu_ms": 97.799,
+          "max_wall_ms": 97.796,
+          "calls": 1
+        },
+        "pass/stablehlo-to-linalg/wafer-form-attention-ops": {
+          "cumulative_wall_ms": 16.389,
+          "cumulative_cpu_ms": 16.39,
+          "max_wall_ms": 16.389,
+          "calls": 1
+        },
+        "pass/stablehlo-to-linalg/canonicalize": {
+          "cumulative_wall_ms": 4.691,
+          "cumulative_cpu_ms": 4.692,
+          "max_wall_ms": 4.032,
+          "calls": 2
+        },
+        "query/physical-search/build-region-proposals": {
+          "cumulative_wall_ms": 43662.642,
+          "cumulative_cpu_ms": 43660.296,
+          "max_wall_ms": 19174.822,
+          "calls": 3
+        },
+        "stage/current-ir-physical/layout-and-bufferization": {
+          "cumulative_wall_ms": 641530.892,
+          "cumulative_cpu_ms": 640942.674,
+          "max_wall_ms": 474413.05,
+          "calls": 33
+        },
+        "stage/current-ir-physical/structured-to-tile": {
+          "cumulative_wall_ms": 412.832,
+          "cumulative_cpu_ms": 379.927,
+          "max_wall_ms": 412.832,
+          "calls": 1
+        },
+        "search-candidate/current-ir/advance": {
+          "cumulative_wall_ms": 1624801.82,
+          "cumulative_cpu_ms": 1442372.499,
+          "max_wall_ms": 768068.193,
+          "calls": 36
+        },
+        "conversion/tile-region-to-instr/region-conversion": {
+          "cumulative_wall_ms": 404995.393,
+          "cumulative_cpu_ms": 404793.47,
+          "max_wall_ms": 418.356,
+          "calls": 35989
+        },
+        "lowering-phase/tile-region-to-instr/full-conversion": {
+          "cumulative_wall_ms": 404138.398,
+          "cumulative_cpu_ms": 403951.167,
+          "max_wall_ms": 418.147,
+          "calls": 35989
+        },
+        "lowering-algorithm/tile-region-to-instr/relation-descriptor-planning": {
+          "cumulative_wall_ms": 256635.311,
+          "cumulative_cpu_ms": 256538.526,
+          "max_wall_ms": 6.179,
+          "calls": 439943
+        },
+        "lowering-pattern/tile-region-to-instr/memref.copy": {
+          "cumulative_wall_ms": 246071.259,
+          "cumulative_cpu_ms": 246019.59,
+          "max_wall_ms": 6.556,
+          "calls": 281015
+        },
+        "lowering-algorithm-phase/getRelationMovementDescriptors/compose-physical-access-relations": {
+          "cumulative_wall_ms": 189473.061,
+          "cumulative_cpu_ms": 189464.533,
+          "max_wall_ms": 3.875,
+          "calls": 345430
+        },
+        "stage/current-ir-downstream/instr-transfer-cleanup": {
+          "cumulative_wall_ms": 773744.589,
+          "cumulative_cpu_ms": 766039.012,
+          "max_wall_ms": 23001.618,
+          "calls": 560
+        },
+        "optimization/full-buffer-transfer-elision/elideRedundantFullBufferTransfers": {
+          "cumulative_wall_ms": 763904.511,
+          "cumulative_cpu_ms": 759742.553,
+          "max_wall_ms": 22926.434,
+          "calls": 560
+        },
+        "optimization-phase/elideRedundantFullBufferTransfers/tryElide": {
+          "cumulative_wall_ms": 550790.613,
+          "cumulative_cpu_ms": 550524.16,
+          "max_wall_ms": 5.763,
+          "calls": 23372651
+        },
+        "optimization-phase/tryElide/total": {
+          "cumulative_wall_ms": 450418.904,
+          "cumulative_cpu_ms": 450141.438,
+          "max_wall_ms": 5.748,
+          "calls": 23372651
+        }
+      },
+      "limits": "累计嵌套计时不可求和；最后只有外层advance活跃，不能由已完成阶段耗时推断停止时的具体调用栈。"
     }
+  },
+  "generatedArtifactCleanup": {
+    "removedDirectories": [
+      "tuple-llama-14",
+      "subset-llama-14",
+      "subset-llama-42",
+      "mandatory-loop-llama-42"
+    ],
+    "scope": "本轮已撤回/失败的build生成目录；保留日志和已核验的小型Instr审计证据，不作为后续测试输入。"
   }
 }
