@@ -69,6 +69,12 @@ llvm::Error validateFormalElementwiseOperation(
 }
 
 llvm::Error validateFormalGemmOperation(const FormalGemmOperation &operation) {
+  if (operation.psum &&
+      (operation.psum->getFormat() != LogicalFormat::F32 ||
+       operation.psum->getShape() != operation.destination.getShape() ||
+       operation.psum->getLayout() != operation.destination.getLayout()))
+    return formalError(FormalNumericErrorCode::UnsupportedOperation,
+                       "GEMM psum requires F32 destination geometry");
   if (!isFormalFloat(operation.lhs.getFormat()) ||
       operation.rhs.getFormat() != operation.lhs.getFormat() ||
       (operation.destination.getFormat() != operation.lhs.getFormat() &&

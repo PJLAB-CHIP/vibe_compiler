@@ -174,6 +174,26 @@ TEST(OneDNNQualificationTest, ManagedEnvironmentHasClosedReadbackIdentity) {
   EXPECT_EQ(first->getThreadRuntime(), "sequential-caller-worker");
 }
 
+TEST(OneDNNQualificationTest, PartialCannotReuseTwoInputQualification) {
+  auto spec = llvm::cantFail(OneDNNQualificationSpec::create(
+      LogicalFormat::F16, 2, 1025, 4, 2, PhysicalTensorLayout::NCx,
+      PhysicalTensorLayout::NCx, PhysicalTensorLayout::NCx, 11));
+  auto row = llvm::cantFail(
+      materializeOneDNNQualificationCase(std::move(spec), kOneDNNBudget));
+  auto operation = row.getOperation();
+  operation.psum = llvm::cantFail(PhysicalTensorDescriptor::create(
+      LogicalFormat::F32, PhysicalTensorLayout::NCx, {2, 2, 4}));
+  EXPECT_NE(expectError(computeOneDNNGemmProblemDigest(operation))
+                .find("no psum qualification"),
+            std::string::npos);
+  auto environment = llvm::cantFail(createManagedOneDNNExecutionEnvironment());
+  EXPECT_NE(expectError(executeManagedReferenceOneDNNTensorNumeric(
+                            environment, operation, row.getInputs(),
+                            row.getDestinationTemplate(), kOneDNNBudget))
+                .find("no psum qualification"),
+            std::string::npos);
+}
+
 TEST(OneDNNQualificationTest,
      CallerControlDriftIsRejectedAndStickyFlagsAreRestored) {
   OneDNNExecutionEnvironment environment =

@@ -123,6 +123,9 @@ computeOneDNNTensorStorageDigest(const OneDNNTensorStorage &tensor) {
 
 llvm::Expected<std::string>
 computeOneDNNGemmProblemDigest(const FormalGemmOperation &operation) {
+  if (operation.psum)
+    return onednnError(OneDNNTensorNumericErrorCode::UnsupportedOperation,
+                       "oneDNN GEMM identity has no psum qualification");
   const FormalGemmOperation *gemm = &operation;
 
   llvm::SmallString<1024> payload;

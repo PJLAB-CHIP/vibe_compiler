@@ -1924,7 +1924,7 @@ public:
       return mlir::failure();
 
     auto instr = rewriter.create<InstrGemmOp>(
-        op.getLoc(), op.getLhs(), op.getRhs(), *dest,
+        op.getLoc(), op.getLhs(), op.getRhs(), *dest, op.getPsum(),
         getI64Attr(rewriter, (*mkn)[0]), getI64Attr(rewriter, (*mkn)[1]),
         getI64Attr(rewriter, (*mkn)[2]), op.getLhsOrientationAttr(),
         op.getRhsOrientationAttr(), op.getBatchCountAttr(),

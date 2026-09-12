@@ -2,6 +2,7 @@ add_mlir_library(WaferTileTransforms
   BoundaryMovement.cpp
   DistributedCollectiveMovement.cpp
   ExecutionStructure.cpp
+  GemmFinalization.cpp
   LayoutOptimization.cpp
   Pipelines.cpp
   ReadOnlyInputSharing.cpp

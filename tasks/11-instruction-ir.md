@@ -283,7 +283,7 @@ FP16 input/weight→F32 result且padding已物化的ordinary Conv，在Tile→In
 K按canonical input-channel/kernel-H/kernel-W展平，完整四项分别累加至四路，余项进入第0路，最后顺序合并0+1+2+3。
 该数值实现参照pinned PyTorch低精度CPU GEMM；input/weight仍保留低精度storage，逐项exact GatherScatter广播到Tensor scratch并扩宽。
 Scratch allocation、复用和mul/add全在actual Instr中，沿同一owner recorder交给completion与SPM；不预判容量或插入额外join。
-同dtype及其它dtype/native Instr的既有合同保持原样；本项不保证不同上游reduction分块的逐bit等价，也不推广未验证bias/psum option。
+同dtype及其它dtype/native Instr的既有合同保持原样；本项不保证不同上游reduction分块的逐bit等价，也不推广未验证bias或原地psum option。
 
 ### 浮点除法的目标实现
 
@@ -777,7 +777,7 @@ rank-4 tensor直接flatten，调用边界会丢失NCx per-batch bank boundary，
 
 当canonical rank-3 form的`batch_count=1`时，`NCx[1,M,C]`与plain `Cx[M,C]`的footprint及全部logical-element offset
 相同；回归覆盖两个完整channel block与`C0` tail。因此当前target call在`batch_count=1`处擦除source rank不会产生
-byte-order歧义。Fused bias、activation、quant、psum accumulation policy 和 sparse / INT8 variants 不属于 instr-lowering 当前实现。
+byte-order歧义。Fused bias、activation、quant、复杂psum policy 和 sparse / INT8 variants 不属于 instr-lowering 当前实现。
 
 目标Instr IR在选择oriented ABI时必须显式携带两个orientation字段且不得依赖default；未携带orientation的
 plain form只表示normal/normal。orientation进入tasks/14的typed target-call/ABI capability和tasks/17的
@@ -786,9 +786,12 @@ oneDNN qualification和真实board provider allowlist是四个独立结论，不
 
 GEMM的lhs/rhs保持相同element type，destination独立携带结果dtype；除既有同dtype形式，允许F16/BF16输入产生F32结果。
 各buffer仍使用自己dtype的Cx/NCx物理encoding，不能沿用16-bit输出的byte count或channel block解释32-bit partial。
-GEMM输出F32及显式F32 add表示K块累加，原逻辑输出处再转换；不允许先写窄partial再提升冒充宽累加。
-Target CRT分别传input/output format，保留已有F32乘法输入拒绝。`SetPsum`的独立format在SDK中存在；
-当前纯输出形式仍关闭inpsum，不能凭接口存在推断原地alias或aux writeback效果。其它feature及special-value行为保持原合同。
+GEMM的可选`psum` operand显式读取此前partial，type独立指定format、shape和physical encoding；destination是唯一写入。
+没有psum时执行纯乘积；有psum时累加后按destination format写出。中间K块写F32，最后一块可直接写F16/BF16，
+不允许先写窄partial再提升冒充宽累加。当前psum限F32，psum/destination的actual physical storage必须不重叠；
+同址复用和部分重叠均不属于本轮资格，由最终target验证和numeric model拒绝。
+Target CRT分别传input/output/psum format，保留已有F32乘法输入拒绝。bias、scale、activation仍关闭。
+本轮F16/BF16三段K的实卡资格已确认两个F32 partial的只读、独立窄输出及guard；不推广为所有shape或原地alias的资格。
 
 generic online reduction和non-GEMM FMA contraction因此不属于current Instr contract。future semantic optimization必须先增加明确source
 predicate、selected state/fused op、对应Instr/TargetCall/必要ABI和SystemC数值纵向；target固定GEMM FMA behavior不能被source

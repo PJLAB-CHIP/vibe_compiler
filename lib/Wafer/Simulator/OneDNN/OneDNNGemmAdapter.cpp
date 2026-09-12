@@ -178,6 +178,9 @@ llvm::Expected<ValidatedGemm>
 validateGemm(const FormalGemmOperation &operation,
              llvm::ArrayRef<OneDNNTensorStorage> inputs,
              const OneDNNTensorStorage &destinationTemplate) {
+  if (operation.psum)
+    return onednnError(OneDNNTensorNumericErrorCode::UnsupportedOperation,
+                       "oneDNN GEMM adapter has no psum qualification");
   const FormalGemmOperation *gemm = &operation;
   if (inputs.size() != 2)
     return onednnError(OneDNNTensorNumericErrorCode::InputArityMismatch,

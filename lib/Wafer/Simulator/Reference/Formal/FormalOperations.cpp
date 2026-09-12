@@ -229,8 +229,13 @@ llvm::Expected<FormalGemmOperation> createFormalGemmOperation(
     PhysicalTensorDescriptor lhs, PhysicalTensorDescriptor rhs,
     PhysicalTensorDescriptor destination, uint32_t m, uint32_t k, uint32_t n,
     uint32_t batchCount, FormalGemmGeometry geometry,
-    TargetGemmOrientation lhsOrientation,
-    TargetGemmOrientation rhsOrientation) {
+    TargetGemmOrientation lhsOrientation, TargetGemmOrientation rhsOrientation,
+    std::optional<PhysicalTensorDescriptor> psum) {
+  if (psum && (psum->getFormat() != LogicalFormat::F32 ||
+               psum->getShape() != destination.getShape() ||
+               psum->getLayout() != destination.getLayout()))
+    return llvm::createStringError(
+        "GEMM psum must be F32 with destination geometry");
   if (lhs.getFormat() != rhs.getFormat() ||
       (lhs.getFormat() != destination.getFormat() &&
        !((lhs.getFormat() == LogicalFormat::F16 ||
@@ -328,7 +333,8 @@ llvm::Expected<FormalGemmOperation> createFormalGemmOperation(
                              static_cast<uint16_t>(batchCount),
                              std::move(geometry),
                              lhsOrientation,
-                             rhsOrientation};
+                             rhsOrientation,
+                             std::move(psum)};
 }
 
 llvm::Expected<FormalReduceOperation> createFormalReduceOperation(

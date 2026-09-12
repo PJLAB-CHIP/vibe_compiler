@@ -286,8 +286,8 @@ static uint32_t wafer_dmx_issue(const WaferDMXCase *selected,
   case 11U:
     wafer_dmx_gather(input, auxiliary0, 256U, 256U, 0U, 1U, 0U, 1U);
     wafer_dmx_gather(input + 4096U, auxiliary1, 512U, 512U, 0U, 1U, 0U, 1U);
-    wafer_tx81_gemm(auxiliary0, auxiliary1, output, 1U, 16U, 16U, 1U, Fmt_FP16,
-                    Fmt_FP16, 0U);
+    wafer_tx81_gemm(auxiliary0, auxiliary1, output, 0, 1U, 16U, 16U, 1U,
+                    Fmt_FP16, Fmt_FP16, Fmt_UNUSED, 0U);
     break;
   case 12U:
     *raw_execute_rc =

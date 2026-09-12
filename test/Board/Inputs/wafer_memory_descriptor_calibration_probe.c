@@ -704,8 +704,8 @@ static void wafer_mdc_issue_engine(const WaferMDCRequest *request,
                                addresses.transfer_bytes / 2U, Fmt_FP16, 0U);
     break;
   case WAFER_MDC_ENGINE_NE:
-    wafer_tx81_gemm(addresses.read0, addresses.read1, addresses.write, 1U, 16U,
-                    16U, 1U, Fmt_FP16, Fmt_FP16, 0U);
+    wafer_tx81_gemm(addresses.read0, addresses.read1, addresses.write, 0, 1U,
+                    16U, 16U, 1U, Fmt_FP16, Fmt_FP16, Fmt_UNUSED, 0U);
     break;
   case WAFER_MDC_ENGINE_RDMA:
     wafer_tx81_rdma(payload + 8192U, addresses.write,

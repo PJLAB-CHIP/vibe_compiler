@@ -39,11 +39,14 @@ Pipeline position:
 
 ### GEMM混合format调用
 
-输入是verified Tile/Instr上的低精度lhs/rhs及同dtype或F32 destination；输出为同一`wafer_tx81_gemm`/
-`wafer_tx81_gemm_oriented`调用的独立input/output format参数，直接消费者为CRT wrapper与同一target decoder/model。
-`AddInput`和`AddOutput`各取对应format；physical descriptor、byte range、owner与effect先在Instr闭合。
+输入是verified Tile/Instr上的低精度lhs/rhs、可选F32 psum及同dtype或F32 destination；输出为同一`wafer_tx81_gemm`/
+`wafer_tx81_gemm_oriented`调用的独立input/output/psum format参数，直接消费者为CRT wrapper与同一target decoder/model。
+`AddInput`、`AddOutput`和`SetPsum`各取对应format；physical descriptor、byte range、owner与effect先在Instr闭合。
 不保留旧签名reader/wrapper。覆盖F16/BF16、NN/NT/TN/TT、batch、M/N/K tail及F32输出的真实byte布局；
-F32乘法输入仍拒绝。其它psum/bias/activation参数不隐式打开，完成要求包括本轮有限实卡numeric/guard证据。
+F32乘法输入仍拒绝。缺少psum operand时传零地址与SDK `Fmt_UNUSED`；存在时传实际F32 operand地址。
+psum只读、destination独占写入，两者physical storage必须不重叠；最终target stage验证actual SPM范围，numeric model执行同一限制。
+同址复用及bias/activation不隐式打开。本轮有限三段K实卡确认两种dtype的最终结果和两个partial回读/guard；oneDNN未取得psum资格，
+该形式由formal backend执行，不能忽略第三个输入沿用二输入资格。
 
 ## 2. 稳定对象与身份
 

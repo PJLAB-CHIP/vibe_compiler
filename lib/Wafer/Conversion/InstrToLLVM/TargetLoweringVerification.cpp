@@ -931,6 +931,27 @@ static mlir::LogicalResult verifyTargetInstructionFormat(mlir::Operation *op) {
                                         "not support f32 inputs";
         if (mlir::failed(verify(typedOp.getLhs(), "gemm input")))
           return mlir::failure();
+        if (typedOp.getPsum() &&
+            mlir::failed(verify(typedOp.getPsum(), "gemm psum")))
+          return mlir::failure();
+        if (typedOp.getPsum()) {
+          auto partial =
+              getStaticUInt32SPMAddress(op, typedOp.getPsum(), "gemm psum");
+          auto destination =
+              getStaticUInt32SPMAddress(op, typedOp.getDest(), "gemm dest");
+          auto partialInfo = computeWaferPhysicalTensorInfo(
+              mlir::cast<mlir::MemRefType>(typedOp.getPsum().getType()));
+          auto destinationInfo = computeWaferPhysicalTensorInfo(
+              mlir::cast<mlir::MemRefType>(typedOp.getDest().getType()));
+          if (mlir::failed(partial) || mlir::failed(destination) ||
+              !partialInfo || !destinationInfo)
+            return mlir::failure();
+          if (*partial < *destination + destinationInfo->physicalBytes &&
+              *destination < *partial + partialInfo->physicalBytes)
+            return typedOp.emitError()
+                   << "unsupported_target_alias: GEMM psum and destination "
+                      "must have disjoint physical storage";
+        }
         return verify(typedOp.getDest(), "gemm dest");
       })
       .Case<InstrConvOp>(

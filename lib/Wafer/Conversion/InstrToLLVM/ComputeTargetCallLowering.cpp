@@ -225,9 +225,23 @@ mlir::LogicalResult FunctionLowering::lowerGemm(InstrGemmOp op) {
   if (mlir::failed(lhs) || mlir::failed(rhs) || mlir::failed(dest) ||
       mlir::failed(inputFormat) || mlir::failed(outputFormat))
     return mlir::failure();
+  mlir::Value partial;
+  int64_t partialFormat = target::kDisabledGemmPartialFormat;
+  if (op.getPsum()) {
+    auto address = materializeAddress(op, op.getPsum(), "gemm psum");
+    auto format = getDataFormatCode(op, op.getPsum(), "gemm psum");
+    if (mlir::failed(address) || mlir::failed(format))
+      return mlir::failure();
+    partial = *address;
+    partialFormat = *format;
+  }
   args.push_back(*lhs);
   args.push_back(*rhs);
   args.push_back(*dest);
+  if (partial)
+    args.push_back(partial);
+  else
+    args.push_back(constantI64(op.getLoc(), 0));
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getMAttr()));
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getKAttr()));
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getNAttr()));
@@ -235,6 +249,7 @@ mlir::LogicalResult FunctionLowering::lowerGemm(InstrGemmOp op) {
             getOptionalIntegerAttrValue(op.getBatchCountAttr(), 1));
   appendI32(op.getLoc(), args, *inputFormat);
   appendI32(op.getLoc(), args, *outputFormat);
+  appendI32(op.getLoc(), args, partialFormat);
   if (op.getLhsOrientationAttr()) {
     appendI32(op.getLoc(), args, static_cast<int64_t>(*op.getLhsOrientation()));
     appendI32(op.getLoc(), args, static_cast<int64_t>(*op.getRhsOrientation()));

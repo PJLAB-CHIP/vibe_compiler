@@ -1141,10 +1141,10 @@ WAFER_DEFINE_CONVERT_PLAIN(wafer_tx81_convert_tf32_fp16, TF32_FP16)
 WAFER_DEFINE_CONVERT_ROUND(wafer_tx81_convert_tf32_bf16, TF32_BF16)
 WAFER_DEFINE_CONVERT_PLAIN(wafer_tx81_convert_tf32_fp32, TF32_FP32)
 
-void wafer_tx81_gemm(uint64_t lhs, uint64_t rhs, uint64_t dst, uint32_t m,
-                     uint32_t k, uint32_t n, uint32_t batch_count,
+void wafer_tx81_gemm(uint64_t lhs, uint64_t rhs, uint64_t dst, uint64_t psum,
+                     uint32_t m, uint32_t k, uint32_t n, uint32_t batch_count,
                      uint32_t input_format, uint32_t output_format,
-                     uint32_t worker) {
+                     uint32_t psum_format, uint32_t worker) {
   TsmNeInstr instr = {0};
   TsmGemm *gemm = TsmNewGemm();
   gemm->AddInput(&instr, lhs, rhs, wafer_format(input_format));
@@ -1152,7 +1152,8 @@ void wafer_tx81_gemm(uint64_t lhs, uint64_t rhs, uint64_t dst, uint32_t m,
   gemm->ConfigBatch(&instr, batch_count, batch_count);
   /* TX81 encodes the RHS hardware transpose bit opposite to GEMM semantics. */
   gemm->SetTransflag(&instr, 0, 1);
-  gemm->SetPsum(&instr, 0, 0, Fmt_UNUSED);
+  gemm->SetPsum(&instr, psum_format != Fmt_UNUSED, psum,
+                wafer_format(psum_format));
   gemm->SetQuant(&instr, 0, 0, 0, 0);
   gemm->AddBias(&instr, 0, 0);
   gemm->SetNegativeAxisScale(&instr, 0, 0);
@@ -1165,9 +1166,10 @@ void wafer_tx81_gemm(uint64_t lhs, uint64_t rhs, uint64_t dst, uint32_t m,
 }
 
 void wafer_tx81_gemm_oriented(uint64_t lhs, uint64_t rhs, uint64_t dst,
-                              uint32_t m, uint32_t k, uint32_t n,
+                              uint64_t psum, uint32_t m, uint32_t k, uint32_t n,
                               uint32_t batch_count, uint32_t input_format,
-                              uint32_t output_format, uint32_t lhs_orientation,
+                              uint32_t output_format, uint32_t psum_format,
+                              uint32_t lhs_orientation,
                               uint32_t rhs_orientation, uint32_t worker) {
   TsmNeInstr instr = {0};
   TsmGemm *gemm = TsmNewGemm();
@@ -1176,7 +1178,8 @@ void wafer_tx81_gemm_oriented(uint64_t lhs, uint64_t rhs, uint64_t dst,
   gemm->ConfigBatch(&instr, batch_count, batch_count);
   /* Keep the public ABI semantic; invert only the raw RHS hardware bit. */
   gemm->SetTransflag(&instr, lhs_orientation, !rhs_orientation);
-  gemm->SetPsum(&instr, 0, 0, Fmt_UNUSED);
+  gemm->SetPsum(&instr, psum_format != Fmt_UNUSED, psum,
+                wafer_format(psum_format));
   gemm->SetQuant(&instr, 0, 0, 0, 0);
   gemm->AddBias(&instr, 0, 0);
   gemm->SetNegativeAxisScale(&instr, 0, 0);

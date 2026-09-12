@@ -1171,13 +1171,13 @@ def check_relation_logic_convert(source_text: str) -> None:
 
 
 def check_gemm_conv(source_text: str) -> None:
-    gemm = function_body(source_text, "wafer_tx81_gemm")
+    gemm = " ".join(function_body(source_text, "wafer_tx81_gemm").split())
     gemm_sequence = [
             "gemm->AddInput",
             "gemm->ConfigMKN",
             "gemm->ConfigBatch",
             "gemm->SetTransflag",
-            "gemm->SetPsum(&instr, 0, 0, Fmt_UNUSED)",
+            "gemm->SetPsum(&instr, psum_format != Fmt_UNUSED, psum, wafer_format(psum_format))",
             "gemm->SetQuant(&instr, 0, 0, 0, 0)",
             "gemm->AddBias(&instr, 0, 0)",
             "gemm->SetNegativeAxisScale(&instr, 0, 0)",
@@ -1197,7 +1197,9 @@ def check_gemm_conv(source_text: str) -> None:
         "GEMM semantic NN to hardware orientation",
     )
 
-    oriented_gemm = function_body(source_text, "wafer_tx81_gemm_oriented")
+    oriented_gemm = " ".join(
+        function_body(source_text, "wafer_tx81_gemm_oriented").split()
+    )
     require_in_order(
         oriented_gemm,
         gemm_sequence,

@@ -244,7 +244,9 @@ static void collectComputeCost(mlir::Operation *op,
                           ScheduleCostReason::UnsupportedInstructionSemantics));
     else
       logicalOps = multiply(logicalOps, static_cast<uint64_t>(batch));
-    addNPUCost(cost, gemm.getDest().getType(), logicalOps, multiplicity);
+    // Multiplication service follows the input format; F32 partial/output
+    // storage does not change a low-precision GEMM into an F32-input GEMM.
+    addNPUCost(cost, gemm.getLhs().getType(), logicalOps, multiplicity);
     return;
   }
   if (auto conv = mlir::dyn_cast<InstrConvOp>(op)) {

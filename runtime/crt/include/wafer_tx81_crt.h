@@ -37,14 +37,15 @@ void wafer_tx81_bit2fp(uint64_t src, uint64_t dst, uint32_t elem_count,
 void wafer_tx81_mask_move(uint64_t src, uint32_t mask, uint64_t dst,
                              uint32_t elem_count, uint32_t format,
                              uint32_t worker);
-void wafer_tx81_gemm(uint64_t lhs, uint64_t rhs, uint64_t dst, uint32_t m,
-                     uint32_t k, uint32_t n, uint32_t batch_count,
+void wafer_tx81_gemm(uint64_t lhs, uint64_t rhs, uint64_t dst, uint64_t psum,
+                     uint32_t m, uint32_t k, uint32_t n, uint32_t batch_count,
                      uint32_t input_format, uint32_t output_format,
-                     uint32_t worker);
+                     uint32_t psum_format, uint32_t worker);
 void wafer_tx81_gemm_oriented(uint64_t lhs, uint64_t rhs, uint64_t dst,
-                              uint32_t m, uint32_t k, uint32_t n,
+                              uint64_t psum, uint32_t m, uint32_t k, uint32_t n,
                               uint32_t batch_count, uint32_t input_format,
-                              uint32_t output_format, uint32_t lhs_orientation,
+                              uint32_t output_format, uint32_t psum_format,
+                              uint32_t lhs_orientation,
                               uint32_t rhs_orientation, uint32_t worker);
 void wafer_tx81_tdma_pad(uint64_t src, uint64_t dst, uint32_t src_n,
                             uint32_t src_h, uint32_t src_w, uint32_t src_c,

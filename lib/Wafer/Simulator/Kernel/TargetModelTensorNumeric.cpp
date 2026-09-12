@@ -473,16 +473,42 @@ executeGemm(const compiler::TargetCommand &command,
   if (!axes)
     return kernelError(TargetModelKernelErrorCode::FormalNumericFailure,
                        llvm::toString(axes.takeError()));
+  std::optional<PhysicalTensorDescriptor> partialKey;
+  if (value.psum) {
+    auto key = PhysicalTensorDescriptor::create(
+        value.psum->format, layout,
+        std::vector<uint64_t>(destinationKey->getShape().begin(),
+                              destinationKey->getShape().end()));
+    if (!key)
+      return key.takeError();
+    partialKey = std::move(*key);
+    auto partialBytes = getPhysicalTensorStorageBytes(*partialKey);
+    if (!partialBytes)
+      return partialBytes.takeError();
+    auto destinationBytes = getPhysicalTensorStorageBytes(*destinationKey);
+    if (!destinationBytes)
+      return destinationBytes.takeError();
+    const uint64_t partialAddress = value.psum->address;
+    const bool overlaps =
+        partialAddress <= value.destination
+            ? value.destination - partialAddress < *partialBytes
+            : partialAddress - value.destination < *destinationBytes;
+    if (overlaps)
+      return kernelError(
+          TargetModelKernelErrorCode::InvalidCommandField,
+          "GEMM psum and destination must have disjoint physical storage");
+  }
   llvm::Expected<FormalGemmOperation> operation = createFormalGemmOperation(
       *lhsKey, *rhsKey, *destinationKey, value.m, value.k, value.n,
-      value.batchCount, *axes, value.lhsOrientation, value.rhsOrientation);
+      value.batchCount, *axes, value.lhsOrientation, value.rhsOrientation,
+      partialKey);
   if (!operation)
     return kernelError(TargetModelKernelErrorCode::FormalNumericFailure,
                        llvm::toString(operation.takeError()));
 
   if (policy.getGemmDispatchPolicy() ==
           TargetModelGemmDispatchPolicy::OneDNNThenFormal &&
-      value.lhsOrientation == TargetGemmOrientation::Normal &&
+      !value.psum && value.lhsOrientation == TargetGemmOrientation::Normal &&
       value.rhsOrientation == TargetGemmOrientation::Normal) {
     const TargetModelOneDNNBackend *backend = policy.getOneDNNBackend();
     if (!backend)
@@ -567,6 +593,15 @@ executeGemm(const compiler::TargetCommand &command,
   if (!rhs)
     return rhs.takeError();
   std::vector<llvm::ArrayRef<RawLogicalValue>> views{*lhs, *rhs};
+  std::vector<RawLogicalValue> partial;
+  if (value.psum) {
+    auto values = readTensor(memory, command.launchSlotId.getValue(),
+                             value.psum->address, *partialKey);
+    if (!values)
+      return values.takeError();
+    partial = std::move(*values);
+    views.push_back(partial);
+  }
   FormalNumericExecutionContext localContext;
   llvm::Expected<FormalTensorNumericResult> result = executeFormalTensorNumeric(
       localContext, *operation, views, budget.getNumericBudget());
@@ -578,6 +613,12 @@ executeGemm(const compiler::TargetCommand &command,
                  *destinationKey, result->values);
   if (!packed)
     return packed.takeError();
+  std::vector<TargetModelByteRead> reads{
+      makeTensorRead(command.launchSlotId.getValue(), value.lhs, *lhsKey),
+      makeTensorRead(command.launchSlotId.getValue(), value.rhs, *rhsKey)};
+  if (value.psum)
+    reads.push_back(makeTensorRead(command.launchSlotId.getValue(),
+                                   value.psum->address, *partialKey));
   return withReads(
       TargetModelCommandEffect{
           {TargetModelByteWrite{command.launchSlotId.getValue(),
@@ -586,8 +627,7 @@ executeGemm(const compiler::TargetCommand &command,
           result->flags,
           TargetModelControlAction::None,
           TargetModelNumericBackend::Formal},
-      {makeTensorRead(command.launchSlotId.getValue(), value.lhs, *lhsKey),
-       makeTensorRead(command.launchSlotId.getValue(), value.rhs, *rhsKey)});
+      std::move(reads));
 }
 
 llvm::Expected<TargetModelCommandEffect>

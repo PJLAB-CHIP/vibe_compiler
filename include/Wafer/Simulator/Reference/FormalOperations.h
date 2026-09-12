@@ -86,6 +86,7 @@ struct FormalGemmOperation {
   FormalGemmGeometry axes;
   TargetGemmOrientation lhsOrientation;
   TargetGemmOrientation rhsOrientation;
+  std::optional<PhysicalTensorDescriptor> psum;
 
   friend bool operator==(const FormalGemmOperation &lhs,
                          const FormalGemmOperation &rhs) {
@@ -94,7 +95,7 @@ struct FormalGemmOperation {
            lhs.k == rhs.k && lhs.n == rhs.n &&
            lhs.batchCount == rhs.batchCount && lhs.axes == rhs.axes &&
            lhs.lhsOrientation == rhs.lhsOrientation &&
-           lhs.rhsOrientation == rhs.rhsOrientation;
+           lhs.rhsOrientation == rhs.rhsOrientation && lhs.psum == rhs.psum;
   }
 };
 
@@ -126,7 +127,8 @@ llvm::Expected<FormalGemmOperation> createFormalGemmOperation(
     PhysicalTensorDescriptor destination, uint32_t m, uint32_t k, uint32_t n,
     uint32_t batchCount, FormalGemmGeometry geometry,
     TargetGemmOrientation lhsOrientation = TargetGemmOrientation::Normal,
-    TargetGemmOrientation rhsOrientation = TargetGemmOrientation::Normal);
+    TargetGemmOrientation rhsOrientation = TargetGemmOrientation::Normal,
+    std::optional<PhysicalTensorDescriptor> psum = std::nullopt);
 
 llvm::Expected<FormalReduceOperation> createFormalReduceOperation(
     TargetReduceOperation operation, PhysicalTensorDescriptor input,

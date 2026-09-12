@@ -218,16 +218,20 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
       arguments[4] = supportedF32Code(TargetFormatEngine::CT);
       break;
     case TargetCallBuiltin::Gemm:
-      arguments[3] = arguments[4] = arguments[5] = arguments[6] = 1;
-      arguments[7] = supportedF32Code(TargetFormatEngine::NE);
+      arguments[4] = arguments[5] = arguments[6] = arguments[7] = 1;
       arguments[8] = supportedF32Code(TargetFormatEngine::NE);
+      arguments[9] = supportedF32Code(TargetFormatEngine::NE);
+      arguments[3] = 0;
+      arguments[10] = wafer::target::kDisabledGemmPartialFormat;
       break;
     case TargetCallBuiltin::GemmOriented:
-      arguments[3] = arguments[4] = arguments[5] = arguments[6] = 1;
-      arguments[7] = supportedF32Code(TargetFormatEngine::NE);
+      arguments[4] = arguments[5] = arguments[6] = arguments[7] = 1;
       arguments[8] = supportedF32Code(TargetFormatEngine::NE);
-      arguments[9] = 1;
-      arguments[10] = 0;
+      arguments[9] = supportedF32Code(TargetFormatEngine::NE);
+      arguments[11] = 1;
+      arguments[12] = 0;
+      arguments[3] = 0;
+      arguments[10] = wafer::target::kDisabledGemmPartialFormat;
       break;
     case TargetCallBuiltin::TDMAPad:
       arguments[14] = supportedF32Code(TargetFormatEngine::TDMA);
@@ -1080,6 +1084,55 @@ TEST(TargetModelKernelTest, WideGemmOutputPreservesSubUlpPartial) {
     for (auto value : values)
       EXPECT_EQ(value.bits,
                 inputFormat == LogicalFormat::F16 ? 0x3f800800u : 0x3f802000u);
+  }
+}
+
+TEST(TargetModelKernelTest, NativePartialFinalizesWithoutNarrowIntermediate) {
+  // Bounded cancellation oracle; long K and tail use the production tiling
+  // tests.
+  for (auto format : {LogicalFormat::F16, LogicalFormat::BF16}) {
+    InvocationMemoryRegistry memory = makeRegistry();
+    FormalNumericExecutionContext context;
+    const auto base = memory.getAddressPlan().getSPMBase();
+    auto lhs = makeTensor(format, PhysicalTensorLayout::NCx, {2, 1, 2});
+    auto rhs = makeTensor(format, PhysicalTensorLayout::NCx, {2, 2, 1});
+    auto partial =
+        makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {2, 1, 1});
+    auto output = makeTensor(format, PhysicalTensorLayout::NCx, {2, 1, 1});
+    const uint64_t one = format == LogicalFormat::F16 ? 0x3c00 : 0x3f80;
+    const uint64_t epsilon = format == LogicalFormat::F16 ? 0x0c00 : 0x3a80;
+    writeTensor(
+        memory, 0, base, lhs,
+        {{format, one}, {format, epsilon}, {format, one}, {format, epsilon}});
+    writeTensor(memory, 0, base + 0x1000, rhs,
+                std::vector<RawLogicalValue>(4, {format, one}));
+    writeTensor(
+        memory, 0, base + 0x2000, partial,
+        {{LogicalFormat::F32, 0xbf800000}, {LogicalFormat::F32, 0xbf800000}});
+    TargetGemmCommand payload{base, base + 0x1000, base + 0x3000, 1, 2, 1,
+                              2,    format,        format};
+    payload.psum = TargetGemmPartial{base + 0x2000, LogicalFormat::F32};
+    TargetCommand command{CardId(0), TileId(0), LaunchSlotId(0), 0, payload};
+    auto effect = llvm::cantFail(
+        executeTargetModelCommand(command, memory, makeBudget()));
+    ASSERT_EQ(effect.pendingReads.size(), 3u);
+    llvm::cantFail(
+        applyTargetModelCommandEffect(memory, context, std::move(effect)));
+    for (auto value : readTensor(memory, 0, base + 0x3000, output))
+      EXPECT_EQ(value.bits, epsilon);
+    for (auto value : readTensor(memory, 0, base + 0x2000, partial))
+      EXPECT_EQ(value.bits, 0xbf800000u);
+    for (uint64_t offset : {0u, 32u}) {
+      payload.destination = payload.psum->address + offset;
+      TargetCommand overlapping{CardId(0), TileId(0), LaunchSlotId(0), 0,
+                                payload};
+      auto rejected =
+          executeTargetModelCommand(overlapping, memory, makeBudget());
+      ASSERT_FALSE(rejected);
+      EXPECT_NE(llvm::toString(rejected.takeError())
+                    .find("disjoint physical storage"),
+                std::string::npos);
+    }
   }
 }
 

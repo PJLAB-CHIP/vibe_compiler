@@ -818,6 +818,20 @@ def validate_output(
                 f"{mismatch}: actual=0x{actual_aux_slot[mismatch]:02x}, "
                 f"expected=0x{expected_select_aux[mismatch]:02x}"
             )
+    elif case.symbol in {"GEMM_F16_WIDE_PARTIAL", "GEMM_BF16_WIDE_PARTIAL"}:
+        for offset, expected in zip(
+            (0, 256), catalog.gemm_wide_partial_snapshots(case.dtype_name), strict=True
+        ):
+            begin = catalog.BODY_OFFSET + offset
+            if actual_aux_slot[begin : begin + len(expected)] != expected:
+                raise RuntimeError(f"{case.name}: F32 partial or read-only psum changed")
+        for guard in (
+            range(catalog.BODY_OFFSET),
+            range(catalog.BODY_OFFSET + case.aux_span, catalog.SLOT_BYTES),
+        ):
+            for index in guard:
+                if actual_aux_slot[index] != expected_aux_slot[index]:
+                    raise RuntimeError(f"{case.name}: auxiliary guard changed")
     elif repeated_unpool:
         expected_repeated_aux = catalog.repeated_unpool_expected_aux_slot()
         snapshot_begin = (

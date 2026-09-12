@@ -146,6 +146,18 @@ BF16中间输出定位补充：首层RMSNorm全部输出逐bit匹配PyTorch，Q 
 
 #### 已确定：保留K分块并使用FP32 partial
 
+本轮继续接通原生psum与最终输出format：输入是boundary movement已关闭Region桥接后的GEMM、FP32累加state、实际copy及输出cast；本层负责在实际SSA/effect/control-flow
+上合并累加和最终输出，输出带可选psum operand的GEMM，直接交给现有completion、SPM、target与numeric model。
+none/search调用同一实现，不修改搜索预算或按模型筛选。循环只分离真实最后一块，不能把中间state改窄；跨Tile独立归约仍保留实际merge。
+非目标是融合bias/activation、改变K遍历顺序或猜测SPM和同步。完成要求如下：
+
+| 输入类 | 精确断言 | 下游witness |
+| --- | --- | --- |
+| F16/BF16，rank3，K=1024/1025/1031，多块及tail | 中间psum/state为F32，最后GEMM直接输出原dtype；匹配链中无独立add/convert | actual Instr、completion/SPM及fresh package |
+| 非零F32 psum，独立dest，NN/NT/TN/TT与batch | psum的type/读取和dest写入分别可见；原输入不被无关写回 | verifier、decoder、formal及定向实卡PyTorch/guard |
+| 分离Region的私有DDR完整store/load，F16/BF16、1024/1025/1031 | 最后GEMM及传输buffer原生使用目标dtype；无独立convert；Region/DDR选择不变 | 正/负例、fresh none/search package及typed owner/SPM/target |
+| 多use、跨Tile merge、未知alias、同址复用、部分重叠、不同dtype alias | 保留必要计算/转换或typed拒绝，不能丢失中间观察或跨Tile贡献 | 负例和原有数值回归 |
+
 用户已明确选择保留K分块，指出GEMM的input/output/psum各自支持format。当前SDK的`AddInput`、`AddOutput`和
 `SetPsum`独立参数也确认这一点；先前“当前Wafer ABI只有一个format”描述的是本仓封装缺口，不能作为关闭K空间的理由。
 本轮扩展范围已授权，不再等待选择或把低精度K固定为完整长度。
@@ -157,11 +169,11 @@ FP32 partial与最终舍入，不新增数值profile或future IR。处理必须�
 实施顺序：
 
 1. 扩展同一GEMM的独立input/output格式，保留F16/BF16输入并支持F32输出；同步Tile/Instr verifier、CRT、target decoder及formal model。
-   先以GEMM的F32输出和显式F32 add贯通partial，不把无验证的原地psum alias或额外writeback隐藏在lowering中。
+   以显式F32 psum接通原生块间累加，最终GEMM按原dtype输出；保留必要跨Tile merge，不隐式启用原地alias或额外writeback。
 2. 通过唯一数值合法化transform显式建立混合精度contraction和最终cast，覆盖named/generic、axis置换、非零init及extra uses；
    none/search与named pass使用同一实现，不收缩K合法域，不按模型名或shape选择。
 3. 用有限的混合format实卡资格确认F32 output的packing、guard和精度，再跑此前失败的FP16 GEMM与BF16 projection/block。
-   如使用`SetPsum`进一步融合累加，必须将对应输入、effect、format和alias限制显式放入current IR并补同一资格，不能猜测。
+   `SetPsum`的输入、effect、format和禁止重叠限制已进入current IR/target合同，三段K实卡资格必须包含两个partial回读。
 4. 保持原PyTorch容差，完成canonical/no-op、直接测试和受影响产品复验，再继续高预算及decode性能验收。
 
 | 输入类 | exact输出/边界 | 直接下游witness |
@@ -172,7 +184,7 @@ FP32 partial与最终舍入，不新增数值profile或future IR。处理必须�
 | 不同输入dtype、非法输出dtype、非contraction payload | typed拒绝或保留，不能伪装混合GEMM | verifier负例及原有运算回归 |
 | 生产失败例 | FP16 GEMM tail、BF16 projection、LLaMA输出恢复原容差 | fresh source/package/no-card/实卡全量PyTorch |
 
-本轮实现与验证：
+前一轮混合输出实现与验证（`70816a7c`）：
 
 - 唯一`promoteContractionAccumulation`由none/search及named pass调用；输入不转宽，普通contraction的init/result转F32，
   保留indexing maps、非零init、多use及fastmath flags；已混合精度与非contraction payload保持原结构。
@@ -193,6 +205,15 @@ FP32 partial与最终舍入，不新增数值profile或future IR。处理必须�
 最终canonical完整增量构建、第二次Ninja no-op与`check-wafer`通过：282项lit、14组组件、43项BoardIO、66项numeric、
 20项oneDNN及17项SystemC均实际执行；新PyTorch oracle及受ABI影响probe的无卡构建通过。
 真实结果、取消的主机预算和后续未完成边界在`docs/board-performance-results.md`分别记录；本节不签发总任务完成。
+
+当前原生psum补充：K=16+16+1的F16/BF16各一次实卡已通过，三条GEMM无独立CT add/convert，
+各16个输出逐bit匹配完整PyTorch，两个F32 partial回读及前后guard通过。rank3的1024/1025/1031覆盖
+最后迭代剥离、显式tail、F32观察者和caller-owned state保留；另六组真实layout/bufferization链检查原生最终dtype。
+最终融合位于boundary movement之后，并覆盖实际私有DDR的唯一store/load链；新增48组跨Region的direct/loop、
+F16/BF16、1024/1025/1031、私有/观察者/外部/多writer回归。fresh FP16 GEMM的none与search/42 package均有16条GEMM，
+全部原生输出F16，无独立add/convert，均通过no-card。此前none保留转换是本仓新增cast后的实现缺口，已经修正，
+不是硬件限制；Region/DDR选择仍保留，不声称所有DDR往返消失。CostModel同步按GEMM input format划分计算服务，
+F32 partial/output不再错误归入其它计算格式；12组精确计数回归通过。不以本项资格代签下述完整模型。
 
 剩余验收按以下顺序继续，仍由同一个`board-testing`管理：
 

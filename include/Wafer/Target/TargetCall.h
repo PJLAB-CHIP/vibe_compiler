@@ -69,6 +69,13 @@ struct TargetMaskMoveCommand {
   LogicalFormat format;
 };
 
+inline constexpr uint32_t kDisabledGemmPartialFormat = 13;
+
+struct TargetGemmPartial {
+  uint64_t address;
+  LogicalFormat format;
+};
+
 struct TargetGemmCommand {
   uint64_t lhs;
   uint64_t rhs;
@@ -81,6 +88,7 @@ struct TargetGemmCommand {
   LogicalFormat outputFormat;
   TargetGemmOrientation lhsOrientation = TargetGemmOrientation::Normal;
   TargetGemmOrientation rhsOrientation = TargetGemmOrientation::Normal;
+  std::optional<TargetGemmPartial> psum;
 };
 
 struct TargetElementwiseCommand {

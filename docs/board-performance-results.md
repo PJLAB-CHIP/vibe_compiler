@@ -493,3 +493,61 @@ Baseline实际生成K=512的循环，以及四个逻辑partial内部K=128的循�
 66项numeric、20项oneDNN及17项SystemC测试，无skip/unsupported。新PyTorch oracle、instruction catalog及四个受ABI影响的
 probe无卡构建也通过。最终主机构建的compiler SHA256为`cda8802a7d15877b59c0f915a6d7998cc7524888781d734452a7abf49415075b`；
 原始门禁日志为`build/gemm-wide-final-check.log`，各实卡package仍以自己的manifest和module digest标识。
+
+
+### GEMM原生psum与最终输出format
+
+在前述混合精度修正上，生产Structured→Tile lowering已把F32累加state接成GEMM的显式只读psum；
+在boundary movement关闭Region桥接后，完整输出的cast可合并到最后GEMM的output format。只沿当前SSA、实际写入和等价view证明可消除的copy/layout链；
+必要时剥离静态K循环的最后一次迭代，中间state仍为F32。对外可见的state写入、多使用者及未知effect保持原语义，
+跨Tile独立merge保留。此次未调整搜索预算、K合法域或PyTorch容差。
+
+| 本轮验证 | 实际结果 | 边界 |
+| --- | --- | --- |
+| F16、BF16输入，K=16+16+1，三条原生GEMM | 两项各16个输出逐bit匹配完整PyTorch GEMM；两份F32 partial回读及DDR/SPM前后guard通过 | 有界格式/舍入oracle；不代签任意shape、数值求和次序或原地复用 |
+| 中间K输出F32，最后K直接输出原dtype | 此probe移除两条独立CT add和一条最终convert，仍保留三条GEMM | 指令结构改善；未测该probe的性能，不据此声称模型加速 |
+| rank3，F16/BF16×K=1024/1025/1031 | 最后一轮、显式tail和F32观察者覆盖；caller-owned state保持写入；实际layout/bufferization链覆盖最终dtype | 精确结构回归，不能代替完整模型实卡结果 |
+| enabled psum，NN/NT/TN/TT、batch2；重叠和非法dtype | LLVM调用传真实psum地址/F32 format；model记录第三个读取；target/model拒绝重叠；oneDNN拒绝借用二输入资格 | 同址复用未资格化，本轮未启用 |
+
+设备身份沿用本会话已确认的TX81 5.6.0；两项串行各launch一次，无设备timeout或reset。
+原始结果与当前validator/PyTorch复验见`build/test/gemm-psum/native-partial-board/pytorch-comparison.json`，
+日志为`build/gemm-psum-board.log`。前后guard补查只读取本轮raw结果，没有重新启动设备case。
+F16结果SHA256为`da683eff9ba389d254b66ebf513f92a5a6298660ad3b7876ccc69badbf792b6d`，
+BF16为`ebfeb95eb85e9710ce6da403ab2685cc37058566888b5cbb940f82a88291e52c`。
+
+fresh生产GEMM package检查发现，bufferization可为同一窗口分别创建write/read subview。
+仅追踪同一SSA view会漏掉可融合链；按source、offset、size、stride证明等价后继续追踪实际最后写入，
+不根据buffer名或case名决定。这一分支补入同一最后K/多使用者回归。
+进一步在GDB读取transform入口的actual IR，确认GEMM与cast此时还属于不同TileRegion，以to_tensor/to_memref桥接。
+最终输出融合因此移至boundary movement之后、owner重建和Instr lowering之前；不跨未物化的Region猜测buffer语义。
+本项不改变前述完整BF16 projection的两个误差点和完整block/decode性能验收的未完成状态。
+
+中间检查曾发现search已经消除cast，而none仍有16条跨Region的convert。这是本仓新增cast后遗漏了实际DDR传输链，
+不能解释为硬件不支持，也不能拿baseline的Region边界作为保留转换的理由。修复沿actual私有DDR allocation及精确Region
+argument关系证明唯一完整store/load，再把GEMM最终format同步到DDR、store/load和consumer SPM；不修改中间F32 K状态。
+独立Region继续按原选择存在；本次消除的是独立转换及其F32传输格式，不声称所有跨Region DDR往返都已消除。
+外部buffer、额外F32观察者、多个writer和未知view均保留语义，consumer不能观察到提前转窄的中间值。
+
+最新fresh产品验收使用FP16 `[1,1031,263] × [1,263,519]`，同一生产compiler分别运行none与width=8/trials=42。
+两者均从新生成的PyTorch/StableHLO源完成16 Tile package和no-card；最终Instr均有16条GEMM，
+带F32 psum并直接写F16，独立add/convert均为0。两者K均为263；真正多块K及tail由真实规模loop/tail回归另行覆盖。
+两份产品package没有实卡执行或性能结论，摘要见`build/test/gemm-psum/production-ir-summary.json`；
+原始产物目录为`build/test/gemm-psum/verified-f16-1031-{none,search}`。
+
+在同一none选择下，actual Instr没有循环，DDR RDMA总bytes从9,190,922降至8,120,744，WDMA从5,350,890降至4,280,712；
+合计少2,140,356 bytes，恰为完整535,089元素的最终中间值由F32改为F16后的一次写、一次读节省。
+这是本轮IR流量对照，不是实测带宽或耗时。16个Tile仍合计48个Region；search对应16个Region。
+计数依据和产物索引见`build/test/gemm-psum/ddr-format-comparison.json`。
+
+同时修正CostModel按destination dtype划分GEMM计算服务的错误：低精度input即按F16/BF16计算类别计费，
+F32 psum/output只改变其真实存储与搬运，不把乘法归入其它格式计算。12组rank3、F16/BF16、1024/1025/1031、
+两种output格式的回归精确检查logical op计数；未引入新校准参数或性能声称。
+
+完整主机门禁通过285项lit、14组组件、43项BoardIO、67项numeric、21项oneDNN和17项SystemC，
+日志为`build/gemm-psum-complete-check.log`。最后清理无用allocation后补跑45项StructuredToTile、
+112项Transforms/Conversion lit与4项生产Driver回归，并完成canonical完整增量构建和第二次Ninja no-op。
+对应日志为`build/gemm-psum-verified-structured.log`、`build/gemm-psum-verified-lit.log`、
+`build/gemm-psum-verified-driver.log`、`build/gemm-psum-complete-build.log`及`build/gemm-psum-complete-noop.log`。
+四个受ABI影响probe的no-card、instruction catalog和PyTorch oracle在同轮已通过；没有新增设备批次。
+最终compiler SHA256为`ad29e3ba2f6f5cca093d3083297e3f4459eeaa42184077f614f0374b3416d2f8`；
+none/search的package digest及本轮产物身份由前述`production-ir-summary.json`统一记录。

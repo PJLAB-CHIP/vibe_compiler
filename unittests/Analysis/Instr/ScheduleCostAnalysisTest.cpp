@@ -479,6 +479,45 @@ module {
   EXPECT_EQ(cost.compute.vectorF32LogicalOps.value, 4u);
 }
 
+TEST_F(ScheduleCostAnalysisTest, MixedGemmFormatsKeepInputComputeClass) {
+  for (auto input : {"f16", "bf16"})
+    for (auto output : {input, "f32"})
+      for (int64_t k : {1024, 1025, 1031}) {
+        SCOPED_TRACE(input);
+        SCOPED_TRACE(output);
+        SCOPED_TRACE(k);
+        auto type = [](const std::string &shape, const std::string &dtype) {
+          return "memref<" + shape + "x" + dtype + ", #wafer.memory<spm, ncx>>";
+        };
+        auto lhs = type("2x16x" + std::to_string(k), input);
+        auto rhs = type("2x" + std::to_string(k) + "x32", input);
+        auto dst = type("2x16x32", output);
+        auto psum = type("2x16x32", "f32");
+        auto module = parse(
+            "module { func.func @main(%a: " + lhs + ", %b: " + rhs +
+            ", %out: " + dst + ", %partial: " + psum +
+            ") { "
+            "wafer.instr.gemm %a, %b psum(%partial : " +
+            psum +
+            ") into %out {batch_count = 2 : i64, "
+            "lhs_batch_dims = array<i64: 0>, rhs_batch_dims = array<i64: 0>, "
+            "result_batch_dims = array<i64: 0>, lhs_m_dim = 1 : i64, "
+            "lhs_contracting_dim = 2 : i64, rhs_contracting_dim = 1 : i64, "
+            "rhs_n_dim = 2 : i64, result_m_dim = 1 : i64, result_n_dim = 2 : "
+            "i64, "
+            "m = 16 : i64, k = " +
+            std::to_string(k) + " : i64, n = 32 : i64} : " + lhs + ", " + rhs +
+            " into " + dst + " return } }");
+        ASSERT_TRUE(module);
+        auto cost = analyze(*module);
+        ASSERT_TRUE(cost.compute.npuF16Bf16LogicalOps.isKnown());
+        EXPECT_EQ(cost.compute.npuF16Bf16LogicalOps.value,
+                  uint64_t(2 * 2 * 16 * k * 32));
+        ASSERT_TRUE(cost.compute.npuOtherLogicalOps.isKnown());
+        EXPECT_EQ(cost.compute.npuOtherLogicalOps.value, 0u);
+      }
+}
+
 TEST_F(ScheduleCostAnalysisTest, ClassifiesConvertWorkFromBothTypedEndpoints) {
   auto module = parse(R"mlir(
 module {

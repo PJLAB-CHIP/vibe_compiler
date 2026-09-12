@@ -1341,8 +1341,25 @@ lowerContraction(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
     resultMDim = rewriter.getI64IntegerAttr(1);
     resultNDim = rewriter.getI64IntegerAttr(2);
   }
+  ComputeFillOp fill = findLastFillBefore(destination, operation);
+  const bool needsAccumulator = !fill || !isPositiveZero(fill.getValue());
+  mlir::Value psum;
+  if (needsAccumulator && resultType.getElementType().isF32()) {
+    psum = destination;
+    if (!descriptor->rankTwo) {
+      auto canonical = permuteBuffer(psum, resultCanonicalOrder, rewriter,
+                                     operation.getLoc(), statistics);
+      if (mlir::failed(canonical))
+        return mlir::failure();
+      auto flattened = reshapeBuffer(*canonical, gemmResultType.getShape(),
+                                     rewriter, operation.getLoc(), statistics);
+      if (mlir::failed(flattened))
+        return mlir::failure();
+      psum = *flattened;
+    }
+  }
   auto gemm = rewriter.create<ComputeGemmOp>(
-      operation.getLoc(), gemmResultType, lhs, rhs, lhsOrientation,
+      operation.getLoc(), gemmResultType, lhs, rhs, psum, lhsOrientation,
       rhsOrientation, batchCount, lhsBatchDims, lhsMDim, lhsContractingDim,
       rhsBatchDims, rhsContractingDim, rhsNDim, resultBatchDims, resultMDim,
       resultNDim);
@@ -1364,8 +1381,7 @@ lowerContraction(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
       return mlir::failure();
     replacement = *restored;
   }
-  ComputeFillOp fill = findLastFillBefore(destination, operation);
-  if (!fill || !isPositiveZero(fill.getValue())) {
+  if (needsAccumulator && !psum) {
     auto combined = rewriter.create<ComputeElementwiseOp>(
         operation.getLoc(), resultType,
         ComputeElementwiseKindAttr::get(rewriter.getContext(),

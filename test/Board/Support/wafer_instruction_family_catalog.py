@@ -756,6 +756,15 @@ def gemm_wide_partial_inputs(dtype_name: str) -> tuple[list[float], list[list[fl
     return lhs, rhs
 
 
+def gemm_wide_partial_snapshots(dtype_name: str) -> tuple[bytes, bytes]:
+    """The two F32 outputs also witness that later psum reads do not write back."""
+    _, rhs = gemm_wide_partial_inputs(dtype_name)
+    return tuple(
+        _fp("F32", [sum(row[column] for row in rhs[:end]) for column in range(16)])
+        for end in (16, 32)
+    )
+
+
 def _gemm(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
     if case.symbol in {"GEMM_F16_WIDE_PARTIAL", "GEMM_BF16_WIDE_PARTIAL"}:
         lhs, rhs_rows = gemm_wide_partial_inputs(case.dtype_name)

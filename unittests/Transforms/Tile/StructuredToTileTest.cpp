@@ -13,6 +13,7 @@
 #include "Wafer/Transforms/Linalg/ContractionAccumulation.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/DistributedCollectiveMovement.h"
+#include "Wafer/Transforms/Tile/GemmFinalization.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 #include "Wafer/Transforms/Tile/TiledOutputStores.h"
@@ -1525,7 +1526,290 @@ module {
 }
 
 TEST_F(StructuredToTileTest,
-       PreservesNarrowOperandsAndWideContractionThroughLayoutAndBufferization) {
+       NativeFinalOutputPreservesLastKBlockAndWideObservers) {
+  for (auto dtype : {"f16", "bf16"})
+    for (int64_t k : {1024, 1025, 1031})
+      for (unsigned mode : {0u, 1u, 2u}) {
+        const bool observed = mode == 1;
+        const bool external = mode == 2;
+        const bool preserved = observed || external;
+        SCOPED_TRACE(k);
+        SCOPED_TRACE(dtype);
+        SCOPED_TRACE(mode);
+        const std::string narrow = std::string("memref<2x16x32x") + dtype +
+                                   ", #wafer.memory<spm, ncx>>";
+        const std::string wide = "memref<2x16x32xf32, #wafer.memory<spm, ncx>>";
+        const std::string lhs = "memref<2x16x" + std::to_string(k) + "x" +
+                                dtype + ", #wafer.memory<spm, tensor>>";
+        const std::string rhs = "memref<2x" + std::to_string(k) + "x32x" +
+                                dtype + ", #wafer.memory<spm, tensor>>";
+        std::string source = "module { func.func @test(%a: " + lhs +
+                             ", %b: " + rhs + ", %init: " + wide + ") -> (" +
+                             narrow;
+        if (observed)
+          source += ", " + wide;
+        source += ") { ";
+        if (!external)
+          source += "%initial = memref.alloc() : " + wide +
+                    " wafer.tile.copy_into %init into %initial : " + wide +
+                    " into " + wide;
+        source += " %c0 = arith.constant 0 : index %c128 = arith.constant 128 "
+                  ": index %end = arith.constant " +
+                  std::to_string((k / 128) * 128) + " : index ";
+        auto block = [&](int64_t size, const std::string &offset,
+                         const std::string &psum, const std::string &tag) {
+          const auto a = "memref<2x16x" + std::to_string(size) + "x" + dtype;
+          const auto b = "memref<2x" + std::to_string(size) + "x32x" + dtype;
+          const auto av = a + ", strided<[" + std::to_string(16 * k) + ", " +
+                          std::to_string(k) +
+                          ", 1], offset: ?>, #wafer.memory<spm, tensor>>";
+          const auto bv = b + ", strided<[" + std::to_string(32 * k) +
+                          ", 32, 1], offset: ?>, #wafer.memory<spm, tensor>>";
+          const auto ap = a + ", #wafer.memory<spm, ncx>>";
+          const auto bp = b + ", #wafer.memory<spm, ncx>>";
+          return "%av" + tag + " = memref.subview %a[0, 0, " + offset +
+                 "] [2, 16, " + std::to_string(size) + "] [1,1,1] : " + lhs +
+                 " to " + av + " %bv" + tag + " = memref.subview %b[0, " +
+                 offset + ", 0] [2, " + std::to_string(size) +
+                 ", 32] [1,1,1] : " + rhs + " to " + bv + " %ap" + tag +
+                 " = wafer.tile.materialize_layout %av" + tag + " : " + av +
+                 " -> " + ap + " %bp" + tag +
+                 " = wafer.tile.materialize_layout %bv" + tag + " : " + bv +
+                 " -> " + bp + " %g" + tag + " = wafer.tile.gemm %ap" + tag +
+                 ", %bp" + tag + " psum(" + psum + " : " + wide +
+                 ") {batch_count = 2 : i64, lhs_batch_dims = array<i64: 0>, "
+                 "lhs_m_dim = 1 : i64, lhs_contracting_dim = 2 : i64, "
+                 "rhs_batch_dims = array<i64: 0>, rhs_contracting_dim = 1 : "
+                 "i64, rhs_n_dim = 2 : i64, result_batch_dims = array<i64: 0>, "
+                 "result_m_dim = 1 : i64, result_n_dim = 2 : i64} : (" +
+                 ap + ", " + bp + ") -> " + wide + " wafer.tile.copy_into %g" +
+                 tag + " into " + psum + " : " + wide + " into " + wide + " ";
+        };
+        source +=
+            "%state = scf.for %k = %c0 to %end step %c128 iter_args(%sum = " +
+            std::string(external ? "%init" : "%initial") + ") -> (" + wide +
+            ") {" + block(128, "%k", "%sum", "main") +
+            " scf.yield %sum : " + wide + " } ";
+        if (k % 128)
+          source += block(k % 128, "%end", "%state", "tail");
+        source += R"mlir(
+          %tensor = wafer.tile.materialize_layout %state
+              : memref<2x16x32xf32, #wafer.memory<spm, ncx>>
+              -> memref<2x16x32xf32, #wafer.memory<spm, tensor>>
+          %arena = memref.alloc() : memref<2x16x64xf32, #wafer.memory<spm, tensor>>
+          %write = memref.subview %arena[0,0,0] [2,16,32] [1,1,1]
+              : memref<2x16x64xf32, #wafer.memory<spm, tensor>>
+              to memref<2x16x32xf32, strided<[1024,64,1]>, #wafer.memory<spm, tensor>>
+          memref.copy %tensor, %write : memref<2x16x32xf32, #wafer.memory<spm, tensor>>
+              to memref<2x16x32xf32, strided<[1024,64,1]>, #wafer.memory<spm, tensor>>
+          %read = memref.subview %arena[0,0,0] [2,16,32] [1,1,1]
+              : memref<2x16x64xf32, #wafer.memory<spm, tensor>>
+              to memref<2x16x32xf32, strided<[1024,64,1]>, #wafer.memory<spm, tensor>>
+          %copied = wafer.tile.copy %read
+              : memref<2x16x32xf32, strided<[1024,64,1]>, #wafer.memory<spm, tensor>>
+              -> memref<2x16x32xf32, #wafer.memory<spm, tensor>>
+          %final = wafer.tile.materialize_layout %copied
+              : memref<2x16x32xf32, #wafer.memory<spm, tensor>>
+              -> memref<2x16x32xf32, #wafer.memory<spm, ncx>>
+          %dead = memref.cast %final : memref<2x16x32xf32, #wafer.memory<spm, ncx>>
+              to memref<2x16x32xf32, #wafer.memory<spm, ncx>>
+        )mlir";
+        source += "%out = wafer.tile.compute.convert %final : " + wide +
+                  " to " + narrow + " return %out";
+        if (observed)
+          source += ", %state";
+        source += " : " + narrow;
+        if (observed)
+          source += ", " + wide;
+        source += " } }";
+        auto module = parse(source);
+        ASSERT_TRUE(module);
+        ASSERT_TRUE(mlir::succeeded(foldGemmOutputConversions(*module)));
+        unsigned nativeOutputs = 0;
+        module->walk([&](ComputeGemmOp gemm) {
+          ASSERT_TRUE(gemm.getPsum());
+          EXPECT_TRUE(mlir::cast<mlir::MemRefType>(gemm.getPsum().getType())
+                          .getElementType()
+                          .isF32());
+          nativeOutputs +=
+              !mlir::cast<mlir::MemRefType>(gemm.getResult().getType())
+                   .getElementType()
+                   .isF32();
+        });
+        EXPECT_EQ(nativeOutputs, preserved ? 0u : 1u);
+        EXPECT_EQ(countOps<ComputeConvertOp>(module->getOperation()),
+                  preserved ? 1u : 0u);
+        if (!preserved)
+          module->walk([&](mlir::scf::ForOp loop) {
+            EXPECT_EQ(mlir::getConstantIntValue(loop.getUpperBound()),
+                      k % 128 ? (k / 128) * 128 : k - 128);
+            EXPECT_EQ(mlir::getConstantIntValue(loop.getStep()), 128);
+          });
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      }
+}
+
+TEST_F(StructuredToTileTest, NativeOutputCrossesOnlyPrivateDDRTransport) {
+  for (auto dtype : {"f16", "bf16"})
+    for (int64_t k : {1024, 1025, 1031})
+      for (bool loop : {false, true})
+        // Unique transport, extra F32 observer, external DDR, second writer.
+        for (unsigned mode : {0u, 1u, 2u, 3u}) {
+          SCOPED_TRACE(dtype);
+          SCOPED_TRACE(k);
+          SCOPED_TRACE(mode);
+          SCOPED_TRACE(loop);
+          auto type = [](llvm::StringRef shape, llvm::StringRef element,
+                         llvm::StringRef space, llvm::StringRef layout) {
+            return "memref<" + shape.str() + "x" + element.str() +
+                   ", #wafer.memory<" + space.str() + ", " + layout.str() +
+                   ">>";
+          };
+          auto a = type("2x16x" + std::to_string(k), dtype, "ddr", "tensor");
+          auto b =
+              type("2x" + std::to_string(k) + "x32", dtype, "ddr", "tensor");
+          auto ap = type("2x16x" + std::to_string(k), dtype, "spm", "ncx");
+          auto bp = type("2x" + std::to_string(k) + "x32", dtype, "spm", "ncx");
+          auto wide = type("2x16x32", "f32", "spm", "ncx");
+          auto ddr = type("2x16x32", "f32", "ddr", "tensor");
+          auto tensor = type("2x16x32", "f32", "spm", "tensor");
+          auto out = type("2x16x32", dtype, "ddr", "tensor");
+          auto narrow = type("2x16x32", dtype, "spm", "tensor");
+          std::string source = "module { func.func @test(%a: " + a +
+                               ", %b: " + b + ", %initial: " + ddr;
+          if (mode == 2)
+            source += ", %boundary: " + ddr;
+          source += ") -> (" + out;
+          if (mode == 1)
+            source += ", " + ddr;
+          source += ") { ";
+          if (mode != 2)
+            source += "%boundary = memref.alloc() : " + ddr;
+          source +=
+              " %out = memref.alloc() : " + out +
+              " \"wafer.tile.region\"(%a, %b, %initial, %boundary) ({ "
+              "^bb0(%aa: " +
+              a + ", %bb: " + b + ", %ii: " + ddr + ", %dd: " + ddr +
+              "): " + "%ap = memref.alloc() : " + ap +
+              " %bp = memref.alloc() : " + bp +
+              " %sum = memref.alloc() : " + wide +
+              " wafer.tile.load %aa into %ap : " + a + " into " + ap +
+              " wafer.tile.load %bb into %bp : " + b + " into " + bp +
+              " wafer.tile.load %ii into %sum : " + ddr + " into " + wide +
+              " %g = wafer.tile.gemm %ap, %bp psum(%sum : " + wide +
+              ") {batch_count = 2 : i64, lhs_batch_dims = array<i64: 0>, "
+              "lhs_m_dim = 1 : i64, lhs_contracting_dim = 2 : i64, "
+              "rhs_batch_dims = array<i64: 0>, rhs_contracting_dim = 1 : i64, "
+              "rhs_n_dim = 2 : i64, result_batch_dims = array<i64: 0>, "
+              "result_m_dim = 1 : i64, result_n_dim = 2 : i64} : (" +
+              ap + ", " + bp + ") -> " + wide +
+              " wafer.tile.copy_into %g into %sum : " + wide + " into " + wide +
+              " wafer.tile.store %sum, %dd : " + wide + " -> " + ddr;
+          if (mode == 3)
+            source += " wafer.tile.store %sum, %dd : " + wide + " -> " + ddr;
+          source +=
+              " \"wafer.tile.yield\"() : () -> () }) : (" + a + ", " + b +
+              ", " + ddr + ", " + ddr +
+              ") -> () "
+              " \"wafer.tile.region\"(%boundary, %out) ({ ^bb0(%dd: " +
+              ddr + ", %oo: " + out +
+              "): %loaded = memref.alloc() : " + tensor +
+              " wafer.tile.load %dd into %loaded : " + ddr + " into " + tensor +
+              " %final = wafer.tile.compute.convert %loaded : " + tensor +
+              " to " + narrow + " wafer.tile.store %final, %oo : " + narrow +
+              " -> " + out + " \"wafer.tile.yield\"() : () -> () }) : (" + ddr +
+              ", " + out + ") -> () return %out";
+          if (mode == 1)
+            source += ", %boundary";
+          source += " : " + out;
+          if (mode == 1)
+            source += ", " + ddr;
+          source += " } }";
+          if (loop) {
+            // Two actual accumulation blocks, with an arbitrary incoming F32
+            // state; the final block is reached only after the first completes.
+            const auto begin = source.find(" %g = wafer.tile.gemm");
+            const auto end = source.find(" wafer.tile.store %sum", begin);
+            auto body = source.substr(begin, end - begin);
+            for (size_t at = 0;
+                 (at = body.find("%sum", at)) != std::string::npos; at += 8)
+              body.replace(at, 4, "%partial");
+            const auto loopBody = " %c0 = arith.constant 0 : index %c1 = "
+                                  "arith.constant 1 : index "
+                                  "%c2 = arith.constant 2 : index "
+                                  "%state = scf.for %iv = %c0 to %c2 step %c1 "
+                                  "iter_args(%partial = %sum) -> (" +
+                                  wide + ") { " + body +
+                                  " scf.yield %partial : " + wide + " } ";
+            source.replace(begin, end - begin, loopBody);
+            for (size_t at = begin + loopBody.size();
+                 (at = source.find("wafer.tile.store %sum", at)) !=
+                 std::string::npos;
+                 at += 22)
+              source.replace(at,
+                             llvm::StringRef("wafer.tile.store %sum").size(),
+                             "wafer.tile.store %state");
+          }
+          auto module = parse(source);
+          ASSERT_TRUE(module) << source;
+          ASSERT_TRUE(mlir::succeeded(foldGemmOutputConversions(*module)));
+          EXPECT_EQ(countOps<TileRegionOp>(module->getOperation()), 2u);
+          module->walk([&](TileRegionOp region) {
+            if (countOps<ComputeGemmOp>(region) == 0) {
+              EXPECT_EQ(countOps<mlir::memref::AllocOp>(region), 1u);
+            }
+          });
+          EXPECT_EQ(countOps<ComputeConvertOp>(module->getOperation()),
+                    mode ? 1u : 0u);
+          unsigned nativeOutputs = 0, narrowTransports = 0;
+          module->walk([&](ComputeGemmOp gemm) {
+            EXPECT_TRUE(mlir::cast<mlir::MemRefType>(gemm.getPsum().getType())
+                            .getElementType()
+                            .isF32());
+            nativeOutputs +=
+                !mlir::cast<mlir::MemRefType>(gemm.getResult().getType())
+                     .getElementType()
+                     .isF32();
+          });
+          module->walk([&](StorageLoadOp load) {
+            auto argument =
+                mlir::dyn_cast<mlir::BlockArgument>(load.getSource());
+            if (!argument)
+              return;
+            auto region =
+                mlir::cast<TileRegionOp>(argument.getOwner()->getParentOp());
+            if (!region.getInputs()[argument.getArgNumber()]
+                     .getDefiningOp<mlir::memref::AllocOp>())
+              return;
+            auto sourceType =
+                mlir::cast<mlir::MemRefType>(load.getSource().getType());
+            EXPECT_EQ(sourceType.getElementType(),
+                      mlir::cast<mlir::MemRefType>(load.getDest().getType())
+                          .getElementType());
+            narrowTransports += !sourceType.getElementType().isF32();
+          });
+          EXPECT_EQ(nativeOutputs, mode ? 0u : 1u);
+          if (loop) {
+            EXPECT_EQ(countOps<mlir::scf::ForOp>(module->getOperation()), 1u);
+            module->walk([&](mlir::scf::ForOp op) {
+              EXPECT_EQ(mlir::getConstantIntValue(op.getUpperBound()),
+                        mode ? 2 : 1);
+              EXPECT_EQ(countOps<ComputeGemmOp>(op), 1u);
+              op.walk([&](ComputeGemmOp gemm) {
+                EXPECT_TRUE(
+                    mlir::cast<mlir::MemRefType>(gemm.getResult().getType())
+                        .getElementType()
+                        .isF32());
+              });
+            });
+          }
+          EXPECT_EQ(narrowTransports, mode ? 0u : 1u);
+          ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        }
+}
+
+TEST_F(StructuredToTileTest,
+       PreservesWideStateAndNativeOutputThroughLayoutAndBufferization) {
   for (int64_t extent : {1024, 1025, 1031})
     for (bool bf16 : {false, true}) {
       SCOPED_TRACE(extent);
@@ -1551,6 +1835,9 @@ TEST_F(StructuredToTileTest,
       auto lowered = lowerStructuredComputeToTile(*module, relations);
       ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
       EXPECT_EQ(lowered.statistics.contractions, 1u);
+      EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
+      auto movement = materializeTileBoundaryMovement(*module, relations);
+      ASSERT_TRUE(movement.succeeded()) << movement.detail;
       module->walk([&](ComputeGemmOp gemm) {
         auto lhs = mlir::cast<mlir::MemRefType>(gemm.getLhs().getType());
         auto rhs = mlir::cast<mlir::MemRefType>(gemm.getRhs().getType());
@@ -1558,13 +1845,16 @@ TEST_F(StructuredToTileTest,
         EXPECT_EQ(lhs.getElementType(), rhs.getElementType());
         EXPECT_TRUE(bf16 ? lhs.getElementType().isBF16()
                          : lhs.getElementType().isF16());
-        EXPECT_TRUE(output.getElementType().isF32());
+        EXPECT_EQ(output.getElementType(), lhs.getElementType());
+        if (gemm.getPsum()) {
+          EXPECT_TRUE(mlir::cast<mlir::MemRefType>(gemm.getPsum().getType())
+                          .getElementType()
+                          .isF32());
+        }
         EXPECT_EQ(output.getShape(), llvm::ArrayRef<int64_t>({2, extent, 32}));
       });
       EXPECT_EQ(countOps<ComputeGemmOp>(module->getOperation()), 1u);
-      EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
-      auto movement = materializeTileBoundaryMovement(*module, relations);
-      ASSERT_TRUE(movement.succeeded()) << movement.detail;
+      EXPECT_EQ(countOps<ComputeConvertOp>(module->getOperation()), 0u);
       EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
       EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
           module->getOperation(), relations)));

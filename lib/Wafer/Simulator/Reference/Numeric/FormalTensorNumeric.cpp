@@ -106,6 +106,8 @@ validateFormalOperation(const FormalGemmOperation &operation,
   ValidatedFormalOperation result;
   result.inputKeys.push_back(&operation.lhs);
   result.inputKeys.push_back(&operation.rhs);
+  if (operation.psum)
+    result.inputKeys.push_back(&*operation.psum);
   result.destinationKey = &operation.destination;
   uint64_t outputCount = 0;
   if (!checkedMultiply(operation.batchCount, operation.m, outputCount) ||
@@ -117,6 +119,10 @@ validateFormalOperation(const FormalGemmOperation &operation,
     return tensorError(FormalTensorNumericErrorCode::WorkCountOverflow,
                        "NE GEMM formal work count is inconsistent or "
                        "overflows uint64_t");
+  if (operation.psum && !checkedAdd(result.scalarEvaluations, outputCount,
+                                    result.scalarEvaluations))
+    return tensorError(FormalTensorNumericErrorCode::WorkCountOverflow,
+                       "GEMM psum work count overflows");
   if (llvm::Error error = validateBudget(result, budget))
     return std::move(error);
   return result;
@@ -270,6 +276,14 @@ executeGemm(const FormalGemmOperation &gemm,
   llvm::ArrayRef<RawLogicalValue> lhs = inputs[0];
   llvm::ArrayRef<RawLogicalValue> rhs = inputs[1];
 
+  std::optional<FormalElementwiseOperation> accumulation;
+  if (gemm.psum) {
+    auto operation = createFormalElementwiseOperation(
+        TargetElementwiseOperation::Add, {*gemm.psum, *gemm.psum}, *gemm.psum);
+    if (!operation)
+      return operation.takeError();
+    accumulation = std::move(*operation);
+  }
   for (uint64_t batch = 0; batch < gemm.batchCount; ++batch) {
     const uint64_t lhsBatchBase = batch * gemm.m * gemm.k;
     const uint64_t rhsBatchBase = batch * gemm.k * gemm.n;
@@ -295,6 +309,17 @@ executeGemm(const FormalGemmOperation &gemm,
             return step.takeError();
           accumulator = step->value;
           mergeFlags(result.flags, step->flags);
+        }
+        if (gemm.psum) {
+          const auto partial =
+              inputs[2][batch * gemm.m * gemm.n + m * gemm.n + n];
+          auto sum = evaluateFormalElementwiseLLVM(
+              *accumulation,
+              llvm::ArrayRef<RawLogicalValue>{accumulator, partial});
+          if (!sum)
+            return sum.takeError();
+          accumulator = sum->value;
+          mergeFlags(result.flags, sum->flags);
         }
         llvm::Expected<FormalNumericResult> destination =
             evaluateFormalGemmFinalize(gemm, accumulator);

@@ -326,6 +326,9 @@ llvm::Error validatePayload(const target::TargetCommandPayload &payload) {
                value.rhsOrientation != TargetGemmOrientation::Transpose))
             return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                                "GEMM orientation is not a closed enum value");
+          if (value.psum && value.psum->format != LogicalFormat::F32)
+            return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
+                               "GEMM psum requires F32 format");
           if (value.outputFormat != value.inputFormat &&
               !((value.inputFormat == LogicalFormat::F16 ||
                  value.inputFormat == LogicalFormat::BF16) &&

@@ -1406,17 +1406,17 @@ static int wafer_ncc_issue(void *opaque, const WaferNccProbeRequest *request,
     break;
   case WAFER_NCC_ENGINE_NE:
     if (wafer_ncc_is_scope_ne_lane(context, issue->lane_spec))
-      wafer_tx81_gemm(read0, read1, write, WAFER_NCC_NE_SCOPE_M,
+      wafer_tx81_gemm(read0, read1, write, 0, WAFER_NCC_NE_SCOPE_M,
                       WAFER_NCC_NE_SCOPE_K, WAFER_NCC_NE_SCOPE_N, 1, Fmt_FP16,
-                      Fmt_FP16, 0U);
+                      Fmt_FP16, Fmt_UNUSED, 0U);
     else if (wafer_ncc_is_large_ne_lane(issue->lane_spec))
-      wafer_tx81_gemm(read0, read1, write, WAFER_NCC_NE_LARGE_M,
+      wafer_tx81_gemm(read0, read1, write, 0, WAFER_NCC_NE_LARGE_M,
                       WAFER_NCC_NE_LARGE_K, WAFER_NCC_NE_LARGE_N, 1, Fmt_FP16,
-                      Fmt_FP16, 0U);
+                      Fmt_FP16, Fmt_UNUSED, 0U);
     else
-      wafer_tx81_gemm(read0, read1, write, 1, WAFER_NCC_PROBE_NE_LOGICAL_DIM,
+      wafer_tx81_gemm(read0, read1, write, 0, 1, WAFER_NCC_PROBE_NE_LOGICAL_DIM,
                       WAFER_NCC_PROBE_NE_LOGICAL_DIM, 1, Fmt_FP16, Fmt_FP16,
-                      0U);
+                      Fmt_UNUSED, 0U);
     break;
   case WAFER_NCC_ENGINE_RDMA:
     if (issue->lane_spec->layout_kind == WAFER_NCC_LAYOUT_DMA_STRIDED)

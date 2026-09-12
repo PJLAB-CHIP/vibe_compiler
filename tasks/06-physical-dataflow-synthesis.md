@@ -924,6 +924,20 @@ memory/target leaf，但每次分别拥有自己的materializer invocation、can
 宽partial与最终epilogue分离可参考[CUTLASS split-K](https://github.com/NVIDIA/cutlass/blob/main/examples/06_splitK_gemm/splitk_gemm.cu)，
 本仓仍保持已有K遍历和显式merge顺序，不据此引入新的归约树。
 
+上述cast是Tensor层的数值边界，不要求独立硬件convert。实际layout/bufferization后的Structured→Tile lowering把F32 init/state
+作为GEMM的显式psum读取。Boundary movement关闭Region桥接、实际搬运可见后，统一执行最终输出融合；沿完整输出的copy/layout链，在无其它观察者且可删除的写入只触及私有storage时，
+把最终cast合并到GEMM result dtype。若cast读取静态K循环的最终状态，只剥离实际最后一次迭代，先前各块仍写F32；
+显式tail本身即最后一块。所有判断读取当前SSA、effect和view关系，未知write/alias、多use和外部可见写入保留原转换。
+跨Tile merge与非GEMM计算不据此消除；完成后重建actual owner relations，直接交给原Tile→Instr/completion/SPM路径。
+
+独立Region本身不是保留该转换的理由。对actual私有DDR allocation，沿TileRegion operand/block argument的精确关系，
+证明唯一完整store、唯一完整load及没有其它观察者后，可把最终输出format沿这条实际传输链传播：
+最后GEMM输出原dtype，DDR allocation、Region argument、store/load和consumer SPM allocation同步使用该dtype，
+删除末端convert。中间K state不变，Region和DDR/DTE选择不变；actual effect/lifetime/owner由后续同一路径重新验证。
+外部/逃逸buffer、额外F32观察、多个writer或非完整view保持原语义；不能只按shape相等猜测唯一producer。
+此处采用当前memref use/effect闭包，遵循[MLIR Bufferization](https://mlir.llvm.org/docs/Bufferization/)的别名与观察者边界；
+不重做bufferization，不发明未来传输或沿未物化Region推测地址。
+
 ### 7.2 Baseline
 
 Baseline的functional contract是：每个compute TileRegion恰有一个semantic root，跨root shaped dependency显式经DDR或已定义

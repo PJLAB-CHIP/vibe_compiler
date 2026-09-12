@@ -639,7 +639,7 @@ insertPendingComputeBeforeDTEReceive(
     return llvm::createStringError(
         "current target has no F32 data-format code");
   if (elementwiseDescriptor.arguments.size() != 6 ||
-      gemmDescriptor.arguments.size() != 10 ||
+      gemmDescriptor.arguments.size() != 12 ||
       joinDescriptor.arguments.size() != 1)
     return llvm::createStringError(
         "pending-compute test descriptors have unexpected signatures");
@@ -687,10 +687,11 @@ insertPendingComputeBeforeDTEReceive(
         compute = builder.CreateCall(
             gemm,
             {builder.getInt64(lhs), builder.getInt64(rhs),
-             builder.getInt64(destination), builder.getInt32(2),
-             builder.getInt32(2), builder.getInt32(2), builder.getInt32(1),
+             builder.getInt64(destination), builder.getInt64(0),
+             builder.getInt32(2), builder.getInt32(2), builder.getInt32(2),
+             builder.getInt32(1), builder.getInt32(format->dataFormatCode),
              builder.getInt32(format->dataFormatCode),
-             builder.getInt32(format->dataFormatCode),
+             builder.getInt32(target::kDisabledGemmPartialFormat),
              builder.getInt32(
                  static_cast<uint32_t>(TargetNCCWorker::Worker0))});
         ++result.gemmCount;

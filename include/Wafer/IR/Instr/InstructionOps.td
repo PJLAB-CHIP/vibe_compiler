@@ -225,6 +225,7 @@ def Wafer_InstrGemmOp : Wafer_NCCInstrOp<"instr.gemm", [
     Arg<AnyMemRef, "", [MemRead]>:$lhs,
     Arg<AnyMemRef, "", [MemRead]>:$rhs,
     Arg<AnyMemRef, "", [MemWrite]>:$dest,
+    Arg<Optional<AnyMemRef>, "incoming F32 partial", [MemRead]>:$psum,
     I64Attr:$m,
     I64Attr:$k,
     I64Attr:$n,
@@ -245,7 +246,7 @@ def Wafer_InstrGemmOp : Wafer_NCCInstrOp<"instr.gemm", [
   );
   let hasVerifier = 1;
   let assemblyFormat =
-      "$lhs `,` $rhs `into` $dest attr-dict `:` type($lhs) `,` type($rhs) `into` type($dest)";
+      "$lhs `,` $rhs (`psum` `(` $psum^ `:` type($psum) `)`)? `into` $dest attr-dict `:` type($lhs) `,` type($rhs) `into` type($dest)";
 }
 
 def Wafer_InstrConvOp : Wafer_NCCInstrOp<"instr.conv", [

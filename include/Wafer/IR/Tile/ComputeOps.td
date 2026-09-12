@@ -57,6 +57,7 @@ def Wafer_ComputeGemmOp : Wafer_Op<"tile.gemm", [
   let arguments = (ins
     Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$lhs,
     Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$rhs,
+    Arg<Optional<AnyMemRef>, "incoming F32 partial", [MemRead]>:$psum,
     OptionalAttr<Wafer_GemmOrientationAttr>:$lhs_orientation,
     OptionalAttr<Wafer_GemmOrientationAttr>:$rhs_orientation,
     OptionalAttr<I64Attr>:$batch_count,
@@ -73,7 +74,7 @@ def Wafer_ComputeGemmOp : Wafer_Op<"tile.gemm", [
   let results = (outs Res<Wafer_AnySPMMemRef, "", [MemAlloc, MemWrite]>:$result);
   let hasVerifier = 1;
   let assemblyFormat =
-      "$lhs `,` $rhs attr-dict `:` functional-type(operands, results)";
+      "$lhs `,` $rhs (`psum` `(` $psum^ `:` type($psum) `)`)? attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)";
 }
 
 def Wafer_ComputeConvOp : Wafer_Op<"tile.conv", [

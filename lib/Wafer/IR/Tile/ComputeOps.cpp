@@ -69,6 +69,15 @@ mlir::LogicalResult ComputeConvertOp::verify() {
 }
 
 mlir::LogicalResult ComputeGemmOp::verify() {
+  if (auto partial = getPsum()) {
+    auto type = mlir::dyn_cast<mlir::MemRefType>(partial.getType());
+    auto output = mlir::dyn_cast<mlir::MemRefType>(getResult().getType());
+    if (!type || !output || !type.getElementType().isF32() ||
+        type.getShape() != output.getShape() ||
+        type.getLayout() != output.getLayout() ||
+        type.getMemorySpace() != output.getMemorySpace())
+      return emitOpError("psum must be F32 with destination shape and layout");
+  }
   std::optional<mlir::RankedTensorType> lhsTensor =
       getLogicalTensorType(getLhs().getType());
   std::optional<mlir::RankedTensorType> rhsTensor =
