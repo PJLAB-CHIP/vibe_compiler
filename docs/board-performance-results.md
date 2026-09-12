@@ -551,3 +551,98 @@ F32 psum/output只改变其真实存储与搬运，不把乘法归入其它格�
 四个受ABI影响probe的no-card、instruction catalog和PyTorch oracle在同轮已通过；没有新增设备批次。
 最终compiler SHA256为`ad29e3ba2f6f5cca093d3083297e3f4459eeaa42184077f614f0374b3416d2f8`；
 none/search的package digest及本轮产物身份由前述`production-ir-summary.json`统一记录。
+
+## 2026-09-12：既有 profile 与最终 Instr 的根因复核
+
+本轮只分析既有证据，没有修改编译器、重新编译模型或执行实卡。以下整模型产物均早于上述 native psum 修复，
+不能作为当前 HEAD 的性能复验。逐 Tile descriptor 计数、文件哈希和归因限制保存在
+[`profile-root-causes-20260912.json`](data/board-performance/profile-root-causes-20260912.json)。
+计数展开 artifact 中全部静态 `scf.for`，检查没有未知循环或条件分支；它是本轮审计统计，不进入生产分析或合法性判断。
+
+### 证据身份与可比较范围
+
+| 产物 | 已有 Primary | 本轮可用证据 |
+| --- | --- | --- |
+| 4K prefill，FP16，Q/K/V `[1,32,4096,128]`，8/42 | 普通 276.943 ms；profile 277.009 ms | 普通与 profile 基础 package 的 manifest、ELF 均匹配；全程 PMU 有效，Trace 每 Tile 仅前 20,000 events |
+| LLaMA block，FP16，`[1,16,4096]`、MLP 11008，8/14 | 80.119 ms | package manifest/ELF 与预算记录匹配；有完整最终 IR，缺这一产物的 profile |
+| KV decode，FP16，hidden 4096、past 1023，两步，8/42 | 14.788 / 14.799 ms | 第一步 package 与对应 PyTorch audit 的 manifest 匹配；有两步最终 IR，缺这一产物的 profile |
+
+三条普通执行均有原容差的 PyTorch 通过记录。历史 LLaMA 17.635 ms 与 decode 11.443 ms 有匹配 profile，
+本轮仅用其解释结构差异，不把历史 engine 时间分摊到新的 80/14.8 ms。
+decode 5.296 ms 的 audit 尚在，但原 prepared 目录已被新 package 替换，不能拿现目录 IR 解释旧快样本。
+
+### 4K prefill：实际瓶颈是局部物化，不是遗漏 attention 识别
+
+匹配 profile 中各 Tile TDMA 累计 241.080–241.082 ms，CT 26.368–26.370 ms，NE 2.550 ms，
+RDMA 8.419–9.162 ms；FU union 为 277.506–278.042 ms。这些 engine 时间来自单独 Trace 运行，不与 Primary 相加。
+最终 IR 已有 query/key 双循环、在线状态和 native max/sum；不是未融合 attention 或仍逐元素展开归约。
+
+- 每 Tile 动态 GS **43,200** 次、descriptor bytes **2,095,153,152**；其中 `inner_bytes=2/4` 的搬运
+  **341,835,776 bytes**。加上 2,144 次 fill，TDMA 指令数 45,344 与 PMU 一致；RDMA 3,104、NE 2,048 也相符。
+- 2-byte 描述符对应 K 转置；4-byte 描述符包括 native reduce 保留轴结果的降 rank 搬运、行状态广播。
+  当前已经使用 descriptor 的三层循环，不能将问题归为“没有用 3-loop”。对所选 source/destination physical layout，
+  两端缺少共同连续轴，三层循环仍可能在内层逐标量传输；也不能把 descriptor 内层迭代数当成软件 issue 次数。
+- `ComputeLowering.cpp` 的 elementwise 路径会把非 identity indexing map 的输入物化为完整 result shape，
+  所以保留了 broadcast map 仍不等于避免广播 buffer。`MovementSupport.cpp` 只有在两端 stride 都连续时才扩大 inner bytes。
+  核心是 producer/consumer 的物理遍历没有联合保留，后续只能执行真实的 reshape/transpose/broadcast/copy。
+- Q 的 load 和 Tensor→NCx 已在 key 循环外；**仍在 key 循环内重复的是 Q 的 rank4→rank3 `reshape_copy`**，
+  不应把两者混淆。每 query tile 该物化执行 32 次；完整每 Tile 1,024 次、64 MiB。若证明物理布局、输入不变性及
+  lifetime，可把同一 query 的物化复用到多个 key block；延长驻留后的容量仍须 actual SPM 规划验证。
+
+全程 TDMA 热点已证实；Trace 前缀不足以把 241 ms 精确分配给上述每种 GS。不能按 bytes 比例虚构各项耗时或收益。
+通用修正应比较消费端可直接使用的访问/布局、保持归约维度的状态表示、相邻物化的关系组合和循环不变量复用；
+不是直接删除有物理语义的 reshape，或将所有 elementwise 强制为某一种 layout。
+
+### LLaMA/decode：粒度、访问吸收与跨 Region 完成共同影响产物
+
+以下为 Tile0 的动态指令统计；全 16 Tile 明细见数据文件。历史样本的 partition/融合/版本不同，只是结构对照。
+
+| 指标 | LLaMA 历史 17.635 ms | LLaMA 80.119 ms | decode 历史 11.443 ms | decode 14.788 ms |
+| --- | ---: | ---: | ---: | ---: |
+| 投影 GEMM K 块 | 512；down 为 1376 | 64；down 为 128 | 2048 | 64 |
+| GEMM 次数，含 attention | 72 | 478 | 12 | 288 |
+| RDMA 次数 | 870 | 2559 | 117 | 754 |
+| GS 次数 | 1997 | 3123 | 1315 | 1266 |
+| NCC join 次数 | 13 | 269 | 10 | 47 |
+
+**80 ms 的 LLaMA 已按 N 分片，不能再套用早期按 M 分片导致全权重重复读取的结论。**
+新的明确问题是部分投影保留独立权重 transpose Region：实际执行原权重 RDMA → Tensor transpose GS → DDR WDMA，
+后续 GEMM 再 RDMA、转 Cx、按 normal orientation 计算。以 MLP 一处为例，`[688,64]→[64,688]`
+转置 descriptor 的 inner bytes 为 2；历史产物直接把原权重交给 transpose-oriented GEMM。
+整卡 RDMA 从 474,011,200 增至 766,921,728 bytes，WDMA 从 196,317,888 增至 333,374,144 bytes；
+这些是实际流量差异，不能全归因于单个 transpose。
+
+`StructuredToTile.cpp::buildGemmDescriptor` 已按 contraction indexing map 生成 orientation，能力并未消失；
+当 transpose 已成为独立 DDR producer，下游看到的自然是 normal map。应在既有 structured e-graph 内
+让访问关系与 contraction 共同表达/提取，再经 Region/布局选择比较真实产物，不在末端按模型名补一个 transpose peephole。
+本次 LLaMA 日志还有一个 `structured-egraph budget-exhausted-components`；现有日志不能把它精确关联到上述 MLP transpose，
+这一步的首次失效位置仍需对应 normalized checkpoint 证据，不能直接断言由 e-graph budget 耗尽导致。
+
+decode 则不是 DDR bytes 大增：整卡 RDMA 为 169,231,104→169,656,832 bytes，GS bytes 还从
+206,723,968 降至 173,012,608；但 GEMM/读入次数大幅增加。当前 winner 也已经有 Direct DTE，不能称为强制全 DDR。
+join 增多的实际例子位于 DDR 分片 acquire 前，体现 producer/consumer 切分和 buffer reuse 结构；
+没有逐项 hazard 证明前，不把这些 join 全称为冗余，更不能直接删除。
+最近 native psum 修复能去掉部分 K 块间独立 add/convert，但不自动改变以上分块、权重 transpose 或 Region 结构。
+
+### 搜索与估时为何没有充分避开这些结构
+
+1. **提案偏好小块，表达域与有限预算覆盖不是一回事。** `SearchCurrentIR.cpp::appendSeeds` 的几何种子按约
+   `sqrt(extent)` 取二次幂，因此 4096→64。现有代码有 single-axis、较大尺度及完整 domain 后继，不能说只能搜索 64；
+   但 single-axis 是每个 scope 都改变其最长轴，较大尺度又同步放大多个轴。有限预算还缺少围绕 accepted tuple
+   逐 scope/逐维改善复用与 issue 粒度的充分探索。LLaMA 14 次仅 2 个 accepted；4K 42→126 虽 8→23 个 accepted，
+   最终 package 未变。增加预算会扩大访问范围，不能补偿物化缺口和系统性估时误差。
+2. **搬运计费没有表达 descriptor 几何。** `ExecutionCost.cpp` 的 GS 资源成本只累计 `byte_count`；
+   `CostModel.cpp::localServiceTime` 使用 256 GB/s/Tile nominal SPM prior，没有给 2/4-byte strided/broadcast traversal
+   单独计服务。4K 每 Tile RDMA+WDMA+GS 约 2.267 GB 对应此项约 8.86 ms，而 PMU TDMA 已达 241 ms。
+   两者口径不完全相同，但足以否定将 nominal bytes/rate 当作此产物的准确 TDMA 耗时。
+   通用 instruction 控制估计仅 1 ns；它不是实测 wrapper 开销，难以反映大量小指令的实际提交成本。
+3. **完成域解释缺口使整条依赖估计退化。** 两条新模型日志均有 `execution-fallback-wafer.instr.ddr_publish`。
+   当前 estimator 仅解释 NCC ordered issue/join；DDR publish/acquire 不满足此入口，Direct DTE family 也退回粗估。
+   因而有这些操作时使用有限的汇总服务估时，未消费它们的跨 Tile production/completion 关系。
+   这是估时表达不足，不证明 IR 同步非法。LLaMA 两个 accepted 的估时约 7.956/17.070 ms，胜出产物实测 80.119 ms；
+   4K 最低估时约 22.094 ms、实测 276.943 ms。绝对偏差本身不证明另一个候选更快，但结合描述符成本缺口说明排序风险。
+
+后续修正顺序：先保存匹配 artifact 的基线并补 LLaMA/decode 最新产物的必要 profile；优先打通通用访问关系吸收与
+物化复用，再以 actual descriptor 几何、指令提交及 typed completion 改善同一个 CostModel，同时调整 accepted 候选附近的
+逐维搜索。每项分别用真实规模整除/tail、多使用者、合法 alias/physical layout 与下游 package 覆盖，最后做同版本 PyTorch
+和 matched 性能验收。不强制 DDR/DTE、不把全 K 当唯一方案、不按当前三个模型给 tile size，也不以旧快样本签发新性能。

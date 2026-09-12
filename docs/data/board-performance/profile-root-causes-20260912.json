@@ -1,0 +1,6482 @@
+{
+  "date": "2026-09-12",
+  "reviewed_git_head": "b14f03ddf0a5080ca16dfda053582d41efc21aa5",
+  "scope": "既有 profile/package 的只读审计；没有新实卡、编译器修改或性能复验。",
+  "method": {
+    "inventory": "逐行读取 final Instr 的 arith.constant index 和 scf.for 静态上下界；按词法嵌套 trip-count 乘各 instruction。拒绝未知 loop、scf.if、scf.while、call；只分析已列 artifact，不是通用 MLIR analyzer 或 production proof。",
+    "bytes": "只累计 actual byte_count；GS 按 inner_bytes 分组。含 padding 的实际 descriptor bytes；不包含 fill 的额外 TDMA 数据量。",
+    "profile_crosscheck": "prefill RDMA=3104、NE=2048、TDMA=43200 GS+2144 fill=45344，与 Tile0 PMU instruction delta 一致；历史 llama Tile0 RDMA=870、GS=1997、WDMA=254 与完整 Trace 调用次数一致。",
+    "timing": "PMU active ns 与 Primary 是不同采集运行；不相加、不将 GS 每类 bytes 比例当耗时比例。"
+  },
+  "cases": [
+    {
+      "id": "prefill-profile",
+      "artifact_root": "build/test/search-final/prefill-profile-42",
+      "instruction_directory": "compiler-ir/instruction",
+      "manifest_sha256": "50b4cb715d050d27bd9ba55e2ac69ffae569f61b9101bceefbb1ed91376cd439",
+      "aggregate_descriptor_bytes": {
+        "rdma": 2717908992,
+        "gather_scatter": 33522450432,
+        "wdma": 33554432
+      },
+      "tiles": [
+        {
+          "tile": 0,
+          "instruction_sha256": "f17457069c435bc1e0519ad9bf130f1a533bb03c317efc419a898f3741d1a5e7",
+          "instructions": {
+            "rdma": 3104,
+            "fill": 2144,
+            "gather_scatter": 43200,
+            "gemm": 2048,
+            "elementwise": 12352,
+            "convert": 5184,
+            "reduce": 2048,
+            "wdma": 32,
+            "ncc_join": 1
+          },
+          "descriptor_bytes": {
+            "rdma": 169869312,
+            "gather_scatter": 2095153152,
+            "wdma": 2097152
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 67108864,
+            "4": 274726912,
+            "128": 538968064,
+            "256": 268533760,
+            "1024": 6291456,
+            "16384": 402653184,
+            "65536": 268435456,
+            "131072": 268435456
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                128,
+                128,
+                128,
+                2
+              ],
+              "executions": 2048
+            }
+          ],
+          "small_inner_witness": [
+            {
+              "line": 139,
+              "executions": 1984,
+              "inner_bytes": 2,
+              "byte_count": 16384
+            },
+            {
+              "line": 157,
+              "executions": 1984,
+              "inner_bytes": 2,
+              "byte_count": 16384
+            },
+            {
+              "line": 197,
+              "executions": 992,
+              "inner_bytes": 4,
+              "byte_count": 1024
+            },
+            {
+              "line": 222,
+              "executions": 1984,
+              "inner_bytes": 4,
+              "byte_count": 32768
+            },
+            {
+              "line": 240,
+              "executions": 1984,
+              "inner_bytes": 4,
+              "byte_count": 32768
+            },
+            {
+              "line": 250,
+              "executions": 992,
+              "inner_bytes": 4,
+              "byte_count": 1024
+            },
+            {
+              "line": 267,
+              "executions": 1984,
+              "inner_bytes": 4,
+              "byte_count": 32768
+            },
+            {
+              "line": 285,
+              "executions": 1984,
+              "inner_bytes": 4,
+              "byte_count": 32768
+            },
+            {
+              "line": 347,
+              "executions": 64,
+              "inner_bytes": 2,
+              "byte_count": 16384
+            },
+            {
+              "line": 365,
+              "executions": 64,
+              "inner_bytes": 2,
+              "byte_count": 16384
+            },
+            {
+              "line": 405,
+              "executions": 32,
+              "inner_bytes": 4,
+              "byte_count": 1024
+            },
+            {
+              "line": 430,
+              "executions": 64,
+              "inner_bytes": 4,
+              "byte_count": 32768
+            },
+            {
+              "line": 448,
+              "executions": 64,
+              "inner_bytes": 4,
+              "byte_count": 32768
+            },
+            {
+              "line": 458,
+              "executions": 32,
+              "inner_bytes": 4,
+              "byte_count": 1024
+            },
+            {
+              "line": 475,
+              "executions": 64,
+              "inner_bytes": 4,
+              "byte_count": 32768
+            },
+            {
+              "line": 493,
+              "executions": 64,
+              "inner_bytes": 4,
+              "byte_count": 32768
+            },
+            {
+              "line": 538,
+              "executions": 64,
+              "inner_bytes": 4,
+              "byte_count": 65536
+            }
+          ]
+        },
+        {
+          "tile": 1,
+          "instruction_sha256": "5a7a982fdb95feffa059eb6e476a202f401071401cb77952f96b4cb4f1e534f1",
+          "instructions": {
+            "rdma": 3104,
+            "fill": 2144,
+            "gather_scatter": 43200,
+            "gemm": 2048,
+            "elementwise": 12352,
+            "convert": 5184,
+            "reduce": 2048,
+            "wdma": 32,
+            "ncc_join": 1
+          },
+          "descriptor_bytes": {
+            "rdma": 169869312,
+            "gather_scatter": 2095153152,
+            "wdma": 2097152
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 67108864,
+            "4": 274726912,
+            "128": 538968064,
+            "256": 268533760,
+            "1024": 6291456,
+            "16384": 402653184,
+            "65536": 268435456,
+            "131072": 268435456
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                128,
+                128,
+                128,
+                2
+              ],
+              "executions": 2048
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 2,
+          "instruction_sha256": "80e709e7a3bcfcd93145210b1cc059017fa397186406ae5d3c697697f0d35476",
+          "instructions": {
+            "rdma": 3104,
+            "fill": 2144,
+            "gather_scatter": 43200,
+            "gemm": 2048,
+            "elementwise": 12352,
+            "convert": 5184,
+            "reduce": 2048,
+            "wdma": 32,
+            "ncc_join": 1
+          },
+          "descriptor_bytes": {
+            "rdma": 169869312,
+            "gather_scatter": 2095153152,
+            "wdma": 2097152
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 67108864,
+            "4": 274726912,
+            "128": 538968064,
+            "256": 268533760,
+            "1024": 6291456,
+            "16384": 402653184,
+            "65536": 268435456,
+            "131072": 268435456
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                128,
+                128,
+                128,
+                2
+              ],
+              "executions": 2048
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 3,
+          "instruction_sha256": "aee528ab1fc7ac90006f213e8ed6c82ae1c920ab62d0076a7b1efc04d2f242eb",
+          "instructions": {
+            "rdma": 3104,
+            "fill": 2144,
+            "gather_scatter": 43200,
+            "gemm": 2048,
+            "elementwise": 12352,
+            "convert": 5184,
+            "reduce": 2048,
+            "wdma": 32,
+            "ncc_join": 1
+          },
+          "descriptor_bytes": {
+            "rdma": 169869312,
+            "gather_scatter": 2095153152,
+            "wdma": 2097152
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 67108864,
+            "4": 274726912,
+            "128": 538968064,
+            "256": 268533760,
+            "1024": 6291456,
+            "16384": 402653184,
+            "65536": 268435456,
+            "131072": 268435456
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                128,
+                128,
+                128,
+                2
+              ],
+              "executions": 2048
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 4,
+          "instruction_sha256": "01d8799d62a6fe0764e207479b5d5565495f6088a89e76ad6afd26fb0e34dd07",
+          "instructions": {
+            "rdma": 3104,
+            "fill": 2144,
+            "gather_scatter": 43200,
+            "gemm": 2048,
+            "elementwise": 12352,
+            "convert": 5184,
+            "reduce": 2048,
+            "wdma": 32,
+            "ncc_join": 1
+          },
+          "descriptor_bytes": {
+            "rdma": 169869312,
+            "gather_scatter": 2095153152,
+            "wdma": 2097152
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 67108864,
+            "4": 274726912,
+            "128": 538968064,
+            "256": 268533760,
+            "1024": 6291456,
+            "16384": 402653184,
+            "65536": 268435456,
+            "131072": 268435456
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                128,
+                128,
+                128,
+                2
+              ],
+              "executions": 2048
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 5,
+          "instruction_sha256": "9c1fa3b9dfb7c3a9c73a10b06abf0d5f8ada2814e7b6dcf0aa2ebde6d9b5fb06",
+          "instructions": {
+            "rdma": 3104,
+            "fill": 2144,
+            "gather_scatter": 43200,
+            "gemm": 2048,
+            "elementwise": 12352,
+            "convert": 5184,
+            "reduce": 2048,
+            "wdma": 32,
+            "ncc_join": 1
+          },
+          "descriptor_bytes": {
+            "rdma": 169869312,
+            "gather_scatter": 2095153152,
+            "wdma": 2097152
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 67108864,
+            "4": 274726912,
+            "128": 538968064,
+            "256": 268533760,
+            "1024": 6291456,
+            "16384": 402653184,
+            "65536": 268435456,
+            "131072": 268435456
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                128,
+                128,
+                128,
+                2
+              ],
+              "executions": 2048
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 6,
+          "instruction_sha256": "92b57f722532aad0aae3da29752b0be3f5b99f30895ed0657929e04824524414",
+          "instructions": {
+            "rdma": 3104,
+            "fill": 2144,
+            "gather_scatter": 43200,
+            "gemm": 2048,
+            "elementwise": 12352,
+            "convert": 5184,
+            "reduce": 2048,
+            "wdma": 32,
+            "ncc_join": 1
+          },
+          "descriptor_bytes": {
+            "rdma": 169869312,
+            "gather_scatter": 2095153152,
+            "wdma": 2097152
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 67108864,
+            "4": 274726912,
+            "128": 538968064,
+            "256": 268533760,
+            "1024": 6291456,
+            "16384": 402653184,
+            "65536": 268435456,
+            "131072": 268435456
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                128,
+                128,
+                128,
+                2
+              ],
+              "executions": 2048
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 7,
+          "instruction_sha256": "f39d1157e804ef04bf2f87033af0c9b12c8bde99c9d53eac6e0a7d2c0bbc7e2a",
+          "instructions": {
+            "rdma": 3104,
+            "fill": 2144,
+            "gather_scatter": 43200,
+            "gemm": 2048,
+            "elementwise": 12352,
+            "convert": 5184,
+            "reduce": 2048,
+            "wdma": 32,
+            "ncc_join": 1
+          },
+          "descriptor_bytes": {
+            "rdma": 169869312,
+            "gather_scatter": 2095153152,
+            "wdma": 2097152
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 67108864,
+            "4": 274726912,
+            "128": 538968064,
+            "256": 268533760,
+            "1024": 6291456,
+            "16384": 402653184,
+            "65536": 268435456,
+            "131072": 268435456
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                128,
+                128,
+                128,
+                2
+              ],
+              "executions": 2048
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 8,
+          "instruction_sha256": "7dfdace4d5021319808ff5ab6924da69317e6a36f502cbafdcbd99fa8e2a3e02",
+          "instructions": {
+            "rdma": 3104,
+            "fill": 2144,
+            "gather_scatter": 43200,
+            "gemm": 2048,
+            "elementwise": 12352,
+            "convert": 5184,
+            "reduce": 2048,
+            "wdma": 32,
+            "ncc_join": 1
+          },
+          "descriptor_bytes": {
+            "rdma": 169869312,
+            "gather_scatter": 2095153152,
+            "wdma": 2097152
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 67108864,
+            "4": 274726912,
+            "128": 538968064,
+            "256": 268533760,
+            "1024": 6291456,
+            "16384": 402653184,
+            "65536": 268435456,
+            "131072": 268435456
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                128,
+                128,
+                128,
+                2
+              ],
+              "executions": 2048
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 9,
+          "instruction_sha256": "92db1f353e9b5b9443857aa41067728d32a769268eb3e2263a5588638799d6a7",
+          "instructions": {
+            "rdma": 3104,
+            "fill": 2144,
+            "gather_scatter": 43200,
+            "gemm": 2048,
+            "elementwise": 12352,
+            "convert": 5184,
+            "reduce": 2048,
+            "wdma": 32,
+            "ncc_join": 1
+          },
+          "descriptor_bytes": {
+            "rdma": 169869312,
+            "gather_scatter": 2095153152,
+            "wdma": 2097152
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 67108864,
+            "4": 274726912,
+            "128": 538968064,
+            "256": 268533760,
+            "1024": 6291456,
+            "16384": 402653184,
+            "65536": 268435456,
+            "131072": 268435456
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                128,
+                128,
+                128,
+                2
+              ],
+              "executions": 2048
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 10,
+          "instruction_sha256": "fea3ae0e95bc1acc4e636f1699cd74946565fe2b4284b65edee39424c65a62d2",
+          "instructions": {
+            "rdma": 3104,
+            "fill": 2144,
+            "gather_scatter": 43200,
+            "gemm": 2048,
+            "elementwise": 12352,
+            "convert": 5184,
+            "reduce": 2048,
+            "wdma": 32,
+            "ncc_join": 1
+          },
+          "descriptor_bytes": {
+            "rdma": 169869312,
+            "gather_scatter": 2095153152,
+            "wdma": 2097152
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 67108864,
+            "4": 274726912,
+            "128": 538968064,
+            "256": 268533760,
+            "1024": 6291456,
+            "16384": 402653184,
+            "65536": 268435456,
+            "131072": 268435456
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                128,
+                128,
+                128,
+                2
+              ],
+              "executions": 2048
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 11,
+          "instruction_sha256": "5f19eccdeb8351f8623187f48cad5f68d7a62ac47318a0184086b4d671b38d08",
+          "instructions": {
+            "rdma": 3104,
+            "fill": 2144,
+            "gather_scatter": 43200,
+            "gemm": 2048,
+            "elementwise": 12352,
+            "convert": 5184,
+            "reduce": 2048,
+            "wdma": 32,
+            "ncc_join": 1
+          },
+          "descriptor_bytes": {
+            "rdma": 169869312,
+            "gather_scatter": 2095153152,
+            "wdma": 2097152
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 67108864,
+            "4": 274726912,
+            "128": 538968064,
+            "256": 268533760,
+            "1024": 6291456,
+            "16384": 402653184,
+            "65536": 268435456,
+            "131072": 268435456
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                128,
+                128,
+                128,
+                2
+              ],
+              "executions": 2048
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 12,
+          "instruction_sha256": "d2b6f8b2e84d8f392dfc0b0280c89ad209021d3c2baf695e0768477ef47b0380",
+          "instructions": {
+            "rdma": 3104,
+            "fill": 2144,
+            "gather_scatter": 43200,
+            "gemm": 2048,
+            "elementwise": 12352,
+            "convert": 5184,
+            "reduce": 2048,
+            "wdma": 32,
+            "ncc_join": 1
+          },
+          "descriptor_bytes": {
+            "rdma": 169869312,
+            "gather_scatter": 2095153152,
+            "wdma": 2097152
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 67108864,
+            "4": 274726912,
+            "128": 538968064,
+            "256": 268533760,
+            "1024": 6291456,
+            "16384": 402653184,
+            "65536": 268435456,
+            "131072": 268435456
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                128,
+                128,
+                128,
+                2
+              ],
+              "executions": 2048
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 13,
+          "instruction_sha256": "4e836ab5abf58f7e7a6a5976e0e990c49e0d1dc2be27211f67ecfa8efc984224",
+          "instructions": {
+            "rdma": 3104,
+            "fill": 2144,
+            "gather_scatter": 43200,
+            "gemm": 2048,
+            "elementwise": 12352,
+            "convert": 5184,
+            "reduce": 2048,
+            "wdma": 32,
+            "ncc_join": 1
+          },
+          "descriptor_bytes": {
+            "rdma": 169869312,
+            "gather_scatter": 2095153152,
+            "wdma": 2097152
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 67108864,
+            "4": 274726912,
+            "128": 538968064,
+            "256": 268533760,
+            "1024": 6291456,
+            "16384": 402653184,
+            "65536": 268435456,
+            "131072": 268435456
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                128,
+                128,
+                128,
+                2
+              ],
+              "executions": 2048
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 14,
+          "instruction_sha256": "3d2841ed85c46ea42bf2b8b4006893a9dc0ba74229ae291df451fe70496de918",
+          "instructions": {
+            "rdma": 3104,
+            "fill": 2144,
+            "gather_scatter": 43200,
+            "gemm": 2048,
+            "elementwise": 12352,
+            "convert": 5184,
+            "reduce": 2048,
+            "wdma": 32,
+            "ncc_join": 1
+          },
+          "descriptor_bytes": {
+            "rdma": 169869312,
+            "gather_scatter": 2095153152,
+            "wdma": 2097152
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 67108864,
+            "4": 274726912,
+            "128": 538968064,
+            "256": 268533760,
+            "1024": 6291456,
+            "16384": 402653184,
+            "65536": 268435456,
+            "131072": 268435456
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                128,
+                128,
+                128,
+                2
+              ],
+              "executions": 2048
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 15,
+          "instruction_sha256": "c11a3157ef7b2589b20b2290e09593277eeccff95ae3ec645e9463ddd249dd14",
+          "instructions": {
+            "rdma": 3104,
+            "fill": 2144,
+            "gather_scatter": 43200,
+            "gemm": 2048,
+            "elementwise": 12352,
+            "convert": 5184,
+            "reduce": 2048,
+            "wdma": 32,
+            "ncc_join": 1
+          },
+          "descriptor_bytes": {
+            "rdma": 169869312,
+            "gather_scatter": 2095153152,
+            "wdma": 2097152
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 67108864,
+            "4": 274726912,
+            "128": 538968064,
+            "256": 268533760,
+            "1024": 6291456,
+            "16384": 402653184,
+            "65536": 268435456,
+            "131072": 268435456
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                128,
+                128,
+                128,
+                2
+              ],
+              "executions": 2048
+            }
+          ],
+          "small_inner_witness": []
+        }
+      ]
+    },
+    {
+      "id": "llama-80ms",
+      "artifact_root": "build/test/search-verified-budgets/llama-2-7b-block-14",
+      "instruction_directory": "compiler-ir/instruction",
+      "manifest_sha256": "7f87de27f4453503a5b0fd71083235792b4d2c4d6a4e5f028c2b11e20fac31de",
+      "aggregate_descriptor_bytes": {
+        "rdma": 766921728,
+        "gather_scatter": 774689920,
+        "wdma": 333374144
+      },
+      "tiles": [
+        {
+          "tile": 0,
+          "instruction_sha256": "72a224117963e17851adb695c1d06173ad6f66e21110ccd7f57c362b66513750",
+          "instructions": {
+            "rdma": 2559,
+            "gather_scatter": 3123,
+            "convert": 578,
+            "wdma": 1613,
+            "ncc_join": 269,
+            "ddr_publish": 71,
+            "elementwise": 1206,
+            "fill": 46,
+            "reduce": 136,
+            "ddr_acquire": 225,
+            "gemm": 478
+          },
+          "descriptor_bytes": {
+            "rdma": 47932608,
+            "gather_scatter": 48418120,
+            "wdma": 20835884
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 19136512,
+            "4": 68936,
+            "16": 8192,
+            "32": 88064,
+            "64": 108544,
+            "96": 792576,
+            "128": 26189824,
+            "256": 248832,
+            "512": 415744,
+            "1024": 62464,
+            "1376": 352256,
+            "2048": 307200,
+            "4096": 8192,
+            "8192": 589824,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                16,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                16,
+                128,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                688,
+                1
+              ],
+              "executions": 128
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                128,
+                256,
+                1
+              ],
+              "executions": 86
+            }
+          ],
+          "small_inner_witness": [
+            {
+              "line": 2354,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 2365,
+              "executions": 64,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 2423,
+              "executions": 64,
+              "inner_bytes": 4,
+              "byte_count": 256
+            },
+            {
+              "line": 2576,
+              "executions": 64,
+              "inner_bytes": 2,
+              "byte_count": 32768
+            },
+            {
+              "line": 2645,
+              "executions": 64,
+              "inner_bytes": 2,
+              "byte_count": 88064
+            },
+            {
+              "line": 2670,
+              "executions": 64,
+              "inner_bytes": 2,
+              "byte_count": 88064
+            },
+            {
+              "line": 2695,
+              "executions": 86,
+              "inner_bytes": 2,
+              "byte_count": 65536
+            },
+            {
+              "line": 4610,
+              "executions": 8,
+              "inner_bytes": 2,
+              "byte_count": 16384
+            },
+            {
+              "line": 4649,
+              "executions": 4,
+              "inner_bytes": 4,
+              "byte_count": 32
+            },
+            {
+              "line": 4653,
+              "executions": 4,
+              "inner_bytes": 4,
+              "byte_count": 32
+            },
+            {
+              "line": 4656,
+              "executions": 4,
+              "inner_bytes": 4,
+              "byte_count": 32
+            },
+            {
+              "line": 4674,
+              "executions": 4,
+              "inner_bytes": 4,
+              "byte_count": 512
+            },
+            {
+              "line": 4683,
+              "executions": 4,
+              "inner_bytes": 4,
+              "byte_count": 32
+            },
+            {
+              "line": 4687,
+              "executions": 4,
+              "inner_bytes": 4,
+              "byte_count": 32
+            },
+            {
+              "line": 4690,
+              "executions": 4,
+              "inner_bytes": 4,
+              "byte_count": 32
+            },
+            {
+              "line": 4692,
+              "executions": 4,
+              "inner_bytes": 4,
+              "byte_count": 4096
+            },
+            {
+              "line": 4748,
+              "executions": 8,
+              "inner_bytes": 4,
+              "byte_count": 2048
+            },
+            {
+              "line": 5153,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5164,
+              "executions": 64,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5235,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5239,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5243,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5247,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5251,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5255,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5259,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5263,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5267,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5271,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5275,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5279,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5283,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5287,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5291,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5295,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 5300,
+              "executions": 16,
+              "inner_bytes": 4,
+              "byte_count": 1024
+            }
+          ]
+        },
+        {
+          "tile": 1,
+          "instruction_sha256": "5ef90ad3c9f1b2ba1b5bc6ddd5f3b2648526c856956ecaf4d4e5135b7df50307",
+          "instructions": {
+            "rdma": 2559,
+            "gather_scatter": 3123,
+            "convert": 578,
+            "wdma": 1613,
+            "ncc_join": 268,
+            "ddr_publish": 71,
+            "elementwise": 1206,
+            "fill": 46,
+            "reduce": 136,
+            "ddr_acquire": 225,
+            "gemm": 478
+          },
+          "descriptor_bytes": {
+            "rdma": 47932608,
+            "gather_scatter": 48418120,
+            "wdma": 20835884
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 19136512,
+            "4": 68936,
+            "16": 8192,
+            "32": 88064,
+            "64": 108544,
+            "96": 792576,
+            "128": 26189824,
+            "256": 248832,
+            "512": 415744,
+            "1024": 62464,
+            "1376": 352256,
+            "2048": 307200,
+            "4096": 8192,
+            "8192": 589824,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                16,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                16,
+                128,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                688,
+                1
+              ],
+              "executions": 128
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                128,
+                256,
+                1
+              ],
+              "executions": 86
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 2,
+          "instruction_sha256": "b4d8baa50072a834e357a37cb6e8de15cd32d41a0dc686247dc8959d6b5126a2",
+          "instructions": {
+            "rdma": 2559,
+            "gather_scatter": 3123,
+            "convert": 578,
+            "wdma": 1613,
+            "ncc_join": 268,
+            "ddr_publish": 71,
+            "elementwise": 1206,
+            "fill": 46,
+            "reduce": 136,
+            "ddr_acquire": 225,
+            "gemm": 478
+          },
+          "descriptor_bytes": {
+            "rdma": 47932608,
+            "gather_scatter": 48418120,
+            "wdma": 20835884
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 19136512,
+            "4": 68936,
+            "16": 8192,
+            "32": 88064,
+            "64": 108544,
+            "96": 792576,
+            "128": 26189824,
+            "256": 248832,
+            "512": 415744,
+            "1024": 62464,
+            "1376": 352256,
+            "2048": 307200,
+            "4096": 8192,
+            "8192": 589824,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                16,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                16,
+                128,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                688,
+                1
+              ],
+              "executions": 128
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                128,
+                256,
+                1
+              ],
+              "executions": 86
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 3,
+          "instruction_sha256": "b8e18c3218ab441f18afb6ec08597d3407f66f5d926d74bd7e6e0b46cd465275",
+          "instructions": {
+            "rdma": 2559,
+            "gather_scatter": 3123,
+            "convert": 578,
+            "wdma": 1613,
+            "ncc_join": 268,
+            "ddr_publish": 71,
+            "elementwise": 1206,
+            "fill": 46,
+            "reduce": 136,
+            "ddr_acquire": 225,
+            "gemm": 478
+          },
+          "descriptor_bytes": {
+            "rdma": 47932608,
+            "gather_scatter": 48418120,
+            "wdma": 20835884
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 19136512,
+            "4": 68936,
+            "16": 8192,
+            "32": 88064,
+            "64": 108544,
+            "96": 792576,
+            "128": 26189824,
+            "256": 248832,
+            "512": 415744,
+            "1024": 62464,
+            "1376": 352256,
+            "2048": 307200,
+            "4096": 8192,
+            "8192": 589824,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                16,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                16,
+                128,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                688,
+                1
+              ],
+              "executions": 128
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                128,
+                256,
+                1
+              ],
+              "executions": 86
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 4,
+          "instruction_sha256": "29d3f6513fa96cb090becf61c1796a018c8331a04d11a4beb0ae31012c866575",
+          "instructions": {
+            "rdma": 2559,
+            "gather_scatter": 3123,
+            "convert": 578,
+            "wdma": 1613,
+            "ncc_join": 268,
+            "ddr_publish": 71,
+            "elementwise": 1206,
+            "fill": 46,
+            "reduce": 136,
+            "ddr_acquire": 225,
+            "gemm": 478
+          },
+          "descriptor_bytes": {
+            "rdma": 47932608,
+            "gather_scatter": 48418120,
+            "wdma": 20835884
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 19136512,
+            "4": 68936,
+            "16": 8192,
+            "32": 88064,
+            "64": 108544,
+            "96": 792576,
+            "128": 26189824,
+            "256": 248832,
+            "512": 415744,
+            "1024": 62464,
+            "1376": 352256,
+            "2048": 307200,
+            "4096": 8192,
+            "8192": 589824,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                16,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                16,
+                128,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                688,
+                1
+              ],
+              "executions": 128
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                128,
+                256,
+                1
+              ],
+              "executions": 86
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 5,
+          "instruction_sha256": "bf6bb9400fc487761dbe44d440fb7a4137628a0f0f7de10fbf97e9f45a75420d",
+          "instructions": {
+            "rdma": 2559,
+            "gather_scatter": 3123,
+            "convert": 578,
+            "wdma": 1613,
+            "ncc_join": 268,
+            "ddr_publish": 71,
+            "elementwise": 1206,
+            "fill": 46,
+            "reduce": 136,
+            "ddr_acquire": 225,
+            "gemm": 478
+          },
+          "descriptor_bytes": {
+            "rdma": 47932608,
+            "gather_scatter": 48418120,
+            "wdma": 20835884
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 19136512,
+            "4": 68936,
+            "16": 8192,
+            "32": 88064,
+            "64": 108544,
+            "96": 792576,
+            "128": 26189824,
+            "256": 248832,
+            "512": 415744,
+            "1024": 62464,
+            "1376": 352256,
+            "2048": 307200,
+            "4096": 8192,
+            "8192": 589824,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                16,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                16,
+                128,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                688,
+                1
+              ],
+              "executions": 128
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                128,
+                256,
+                1
+              ],
+              "executions": 86
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 6,
+          "instruction_sha256": "241e33c6c11fef5b7580b871d5d9936fcad1e0df636349c0f6e14a070b109122",
+          "instructions": {
+            "rdma": 2559,
+            "gather_scatter": 3123,
+            "convert": 578,
+            "wdma": 1613,
+            "ncc_join": 268,
+            "ddr_publish": 71,
+            "elementwise": 1206,
+            "fill": 46,
+            "reduce": 136,
+            "ddr_acquire": 225,
+            "gemm": 478
+          },
+          "descriptor_bytes": {
+            "rdma": 47932608,
+            "gather_scatter": 48418120,
+            "wdma": 20835884
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 19136512,
+            "4": 68936,
+            "16": 8192,
+            "32": 88064,
+            "64": 108544,
+            "96": 792576,
+            "128": 26189824,
+            "256": 248832,
+            "512": 415744,
+            "1024": 62464,
+            "1376": 352256,
+            "2048": 307200,
+            "4096": 8192,
+            "8192": 589824,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                16,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                16,
+                128,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                688,
+                1
+              ],
+              "executions": 128
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                128,
+                256,
+                1
+              ],
+              "executions": 86
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 7,
+          "instruction_sha256": "17c86475ea98b9145e7541d2cd71cad3a39104d2e0a7ae8edf38949d342ab47d",
+          "instructions": {
+            "rdma": 2559,
+            "gather_scatter": 3123,
+            "convert": 578,
+            "wdma": 1613,
+            "ncc_join": 268,
+            "ddr_publish": 71,
+            "elementwise": 1206,
+            "fill": 46,
+            "reduce": 136,
+            "ddr_acquire": 225,
+            "gemm": 478
+          },
+          "descriptor_bytes": {
+            "rdma": 47932608,
+            "gather_scatter": 48418120,
+            "wdma": 20835884
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 19136512,
+            "4": 68936,
+            "16": 8192,
+            "32": 88064,
+            "64": 108544,
+            "96": 792576,
+            "128": 26189824,
+            "256": 248832,
+            "512": 415744,
+            "1024": 62464,
+            "1376": 352256,
+            "2048": 307200,
+            "4096": 8192,
+            "8192": 589824,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                16,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                16,
+                128,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                688,
+                1
+              ],
+              "executions": 128
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                128,
+                256,
+                1
+              ],
+              "executions": 86
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 8,
+          "instruction_sha256": "012296731fad48724eda840537ffa28f9db0713e416c338571a451af6f4ba1fa",
+          "instructions": {
+            "rdma": 2559,
+            "gather_scatter": 3123,
+            "convert": 578,
+            "wdma": 1613,
+            "ncc_join": 268,
+            "ddr_publish": 71,
+            "elementwise": 1206,
+            "fill": 46,
+            "reduce": 136,
+            "ddr_acquire": 225,
+            "gemm": 478
+          },
+          "descriptor_bytes": {
+            "rdma": 47932608,
+            "gather_scatter": 48418120,
+            "wdma": 20835884
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 19136512,
+            "4": 68936,
+            "16": 8192,
+            "32": 88064,
+            "64": 108544,
+            "96": 792576,
+            "128": 26189824,
+            "256": 248832,
+            "512": 415744,
+            "1024": 62464,
+            "1376": 352256,
+            "2048": 307200,
+            "4096": 8192,
+            "8192": 589824,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                16,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                16,
+                128,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                688,
+                1
+              ],
+              "executions": 128
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                128,
+                256,
+                1
+              ],
+              "executions": 86
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 9,
+          "instruction_sha256": "cb63a4bcf8234e783ddf2f9f8a7ac317f2cbadd2005314d65232b1e21f02859c",
+          "instructions": {
+            "rdma": 2559,
+            "gather_scatter": 3123,
+            "convert": 578,
+            "wdma": 1613,
+            "ncc_join": 268,
+            "ddr_publish": 71,
+            "elementwise": 1206,
+            "fill": 46,
+            "reduce": 136,
+            "ddr_acquire": 225,
+            "gemm": 478
+          },
+          "descriptor_bytes": {
+            "rdma": 47932608,
+            "gather_scatter": 48418120,
+            "wdma": 20835884
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 19136512,
+            "4": 68936,
+            "16": 8192,
+            "32": 88064,
+            "64": 108544,
+            "96": 792576,
+            "128": 26189824,
+            "256": 248832,
+            "512": 415744,
+            "1024": 62464,
+            "1376": 352256,
+            "2048": 307200,
+            "4096": 8192,
+            "8192": 589824,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                16,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                16,
+                128,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                688,
+                1
+              ],
+              "executions": 128
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                128,
+                256,
+                1
+              ],
+              "executions": 86
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 10,
+          "instruction_sha256": "cbb019b38da147448d304e83d5918a0027f365b310dbb4b4c1f8e01f71b68aa4",
+          "instructions": {
+            "rdma": 2559,
+            "gather_scatter": 3123,
+            "convert": 578,
+            "wdma": 1613,
+            "ncc_join": 268,
+            "ddr_publish": 71,
+            "elementwise": 1206,
+            "fill": 46,
+            "reduce": 136,
+            "ddr_acquire": 225,
+            "gemm": 478
+          },
+          "descriptor_bytes": {
+            "rdma": 47932608,
+            "gather_scatter": 48418120,
+            "wdma": 20835884
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 19136512,
+            "4": 68936,
+            "16": 8192,
+            "32": 88064,
+            "64": 108544,
+            "96": 792576,
+            "128": 26189824,
+            "256": 248832,
+            "512": 415744,
+            "1024": 62464,
+            "1376": 352256,
+            "2048": 307200,
+            "4096": 8192,
+            "8192": 589824,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                16,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                16,
+                128,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                688,
+                1
+              ],
+              "executions": 128
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                128,
+                256,
+                1
+              ],
+              "executions": 86
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 11,
+          "instruction_sha256": "7d24d980d244e0fe22db3da66722fc219ff2112c885e2c9cac58b456b44a195b",
+          "instructions": {
+            "rdma": 2559,
+            "gather_scatter": 3123,
+            "convert": 578,
+            "wdma": 1613,
+            "ncc_join": 268,
+            "ddr_publish": 71,
+            "elementwise": 1206,
+            "fill": 46,
+            "reduce": 136,
+            "ddr_acquire": 225,
+            "gemm": 478
+          },
+          "descriptor_bytes": {
+            "rdma": 47932608,
+            "gather_scatter": 48418120,
+            "wdma": 20835884
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 19136512,
+            "4": 68936,
+            "16": 8192,
+            "32": 88064,
+            "64": 108544,
+            "96": 792576,
+            "128": 26189824,
+            "256": 248832,
+            "512": 415744,
+            "1024": 62464,
+            "1376": 352256,
+            "2048": 307200,
+            "4096": 8192,
+            "8192": 589824,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                16,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                16,
+                128,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                688,
+                1
+              ],
+              "executions": 128
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                128,
+                256,
+                1
+              ],
+              "executions": 86
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 12,
+          "instruction_sha256": "a725b93073fb0d38c03cfd915c6f6632f0c4fd6904f7cadae5cfc28b059f9bcf",
+          "instructions": {
+            "rdma": 2559,
+            "gather_scatter": 3123,
+            "convert": 578,
+            "wdma": 1613,
+            "ncc_join": 268,
+            "ddr_publish": 71,
+            "elementwise": 1206,
+            "fill": 46,
+            "reduce": 136,
+            "ddr_acquire": 225,
+            "gemm": 478
+          },
+          "descriptor_bytes": {
+            "rdma": 47932608,
+            "gather_scatter": 48418120,
+            "wdma": 20835884
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 19136512,
+            "4": 68936,
+            "16": 8192,
+            "32": 88064,
+            "64": 108544,
+            "96": 792576,
+            "128": 26189824,
+            "256": 248832,
+            "512": 415744,
+            "1024": 62464,
+            "1376": 352256,
+            "2048": 307200,
+            "4096": 8192,
+            "8192": 589824,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                16,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                16,
+                128,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                688,
+                1
+              ],
+              "executions": 128
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                128,
+                256,
+                1
+              ],
+              "executions": 86
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 13,
+          "instruction_sha256": "26d9c6ac16819741c0d259dc77094b456b8e908b852e69bee4438af6a96168e7",
+          "instructions": {
+            "rdma": 2559,
+            "gather_scatter": 3123,
+            "convert": 578,
+            "wdma": 1613,
+            "ncc_join": 268,
+            "ddr_publish": 71,
+            "elementwise": 1206,
+            "fill": 46,
+            "reduce": 136,
+            "ddr_acquire": 225,
+            "gemm": 478
+          },
+          "descriptor_bytes": {
+            "rdma": 47932608,
+            "gather_scatter": 48418120,
+            "wdma": 20835884
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 19136512,
+            "4": 68936,
+            "16": 8192,
+            "32": 88064,
+            "64": 108544,
+            "96": 792576,
+            "128": 26189824,
+            "256": 248832,
+            "512": 415744,
+            "1024": 62464,
+            "1376": 352256,
+            "2048": 307200,
+            "4096": 8192,
+            "8192": 589824,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                16,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                16,
+                128,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                688,
+                1
+              ],
+              "executions": 128
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                128,
+                256,
+                1
+              ],
+              "executions": 86
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 14,
+          "instruction_sha256": "09281f61a02c2dc94d1f9b06b3d03acc281d842aff95306af426305bbecbcb87",
+          "instructions": {
+            "rdma": 2559,
+            "gather_scatter": 3123,
+            "convert": 578,
+            "wdma": 1613,
+            "ncc_join": 268,
+            "ddr_publish": 71,
+            "elementwise": 1206,
+            "fill": 46,
+            "reduce": 136,
+            "ddr_acquire": 225,
+            "gemm": 478
+          },
+          "descriptor_bytes": {
+            "rdma": 47932608,
+            "gather_scatter": 48418120,
+            "wdma": 20835884
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 19136512,
+            "4": 68936,
+            "16": 8192,
+            "32": 88064,
+            "64": 108544,
+            "96": 792576,
+            "128": 26189824,
+            "256": 248832,
+            "512": 415744,
+            "1024": 62464,
+            "1376": 352256,
+            "2048": 307200,
+            "4096": 8192,
+            "8192": 589824,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                16,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                16,
+                128,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                688,
+                1
+              ],
+              "executions": 128
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                128,
+                256,
+                1
+              ],
+              "executions": 86
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 15,
+          "instruction_sha256": "f21dc9a55fc8c38adadb30eacdd93ab82117be25c3e07a9e066b559942480cf6",
+          "instructions": {
+            "rdma": 2559,
+            "gather_scatter": 3123,
+            "convert": 578,
+            "wdma": 1613,
+            "ncc_join": 268,
+            "ddr_publish": 71,
+            "elementwise": 1206,
+            "fill": 46,
+            "reduce": 136,
+            "ddr_acquire": 225,
+            "gemm": 478
+          },
+          "descriptor_bytes": {
+            "rdma": 47932608,
+            "gather_scatter": 48418120,
+            "wdma": 20835884
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 19136512,
+            "4": 68936,
+            "16": 8192,
+            "32": 88064,
+            "64": 108544,
+            "96": 792576,
+            "128": 26189824,
+            "256": 248832,
+            "512": 415744,
+            "1024": 62464,
+            "1376": 352256,
+            "2048": 307200,
+            "4096": 8192,
+            "8192": 589824,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                16,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                16,
+                128,
+                8
+              ],
+              "executions": 4
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                64,
+                688,
+                1
+              ],
+              "executions": 128
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                128,
+                256,
+                1
+              ],
+              "executions": 86
+            }
+          ],
+          "small_inner_witness": []
+        }
+      ]
+    },
+    {
+      "id": "llama-17ms",
+      "artifact_root": "build/test/board-audit/model-performance/llama-native-reduce",
+      "instruction_directory": "compiler-ir/instruction",
+      "manifest_sha256": "bdfe32d76366903f9042fbe318ad8767865cfad4defb8766a3393b9181d843cd",
+      "aggregate_descriptor_bytes": {
+        "rdma": 474011200,
+        "gather_scatter": 495716864,
+        "wdma": 196317888
+      },
+      "tiles": [
+        {
+          "tile": 0,
+          "instruction_sha256": "d728f3dc95920fd16f555a90dce2c3dd5f3049e4a18dcec327ce0ba737a4442a",
+          "instructions": {
+            "rdma": 870,
+            "gather_scatter": 1997,
+            "convert": 232,
+            "wdma": 254,
+            "ncc_join": 13,
+            "ddr_publish": 51,
+            "fill": 165,
+            "elementwise": 534,
+            "reduce": 32,
+            "ddr_acquire": 135,
+            "gemm": 72,
+            "bit2fp": 16,
+            "mask_move": 16
+          },
+          "descriptor_bytes": {
+            "rdma": 29625700,
+            "gather_scatter": 30982304,
+            "wdma": 12269868
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 16384,
+            "4": 37536,
+            "16": 7168,
+            "32": 242688,
+            "64": 536576,
+            "96": 6144,
+            "128": 26663424,
+            "172": 88064,
+            "256": 40960,
+            "344": 616448,
+            "512": 556032,
+            "1024": 260096,
+            "1376": 374272,
+            "2048": 323584,
+            "2752": 330240,
+            "4096": 8192,
+            "5504": 88064,
+            "8192": 532480,
+            "16384": 212992,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                256,
+                1
+              ],
+              "executions": 32
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                16,
+                16,
+                2
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                688,
+                1
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                1376,
+                256,
+                1
+              ],
+              "executions": 8
+            }
+          ],
+          "small_inner_witness": [
+            {
+              "line": 1746,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 1756,
+              "executions": 8,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 1774,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 1790,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 1801,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 1819,
+              "executions": 8,
+              "inner_bytes": 4,
+              "byte_count": 2048
+            },
+            {
+              "line": 3835,
+              "executions": 8,
+              "inner_bytes": 2,
+              "byte_count": 1024
+            },
+            {
+              "line": 3837,
+              "executions": 8,
+              "inner_bytes": 2,
+              "byte_count": 1024
+            },
+            {
+              "line": 4118,
+              "executions": 8,
+              "inner_bytes": 4,
+              "byte_count": 32
+            },
+            {
+              "line": 4151,
+              "executions": 8,
+              "inner_bytes": 4,
+              "byte_count": 256
+            },
+            {
+              "line": 4235,
+              "executions": 8,
+              "inner_bytes": 4,
+              "byte_count": 32
+            },
+            {
+              "line": 4268,
+              "executions": 8,
+              "inner_bytes": 4,
+              "byte_count": 256
+            },
+            {
+              "line": 4759,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4770,
+              "executions": 8,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4788,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4804,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4815,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4876,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4878,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4880,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4882,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4884,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4886,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4888,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4890,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4892,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4894,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4896,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4898,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4900,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4902,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4904,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4906,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 4
+            },
+            {
+              "line": 4914,
+              "executions": 8,
+              "inner_bytes": 4,
+              "byte_count": 2048
+            }
+          ]
+        },
+        {
+          "tile": 1,
+          "instruction_sha256": "ae0c3749cb37dea424f488774f46aa2fd7f9967d9b86cb41a64b72f47756c588",
+          "instructions": {
+            "rdma": 870,
+            "gather_scatter": 1997,
+            "convert": 232,
+            "wdma": 254,
+            "ncc_join": 13,
+            "ddr_publish": 51,
+            "fill": 165,
+            "elementwise": 534,
+            "reduce": 32,
+            "ddr_acquire": 135,
+            "gemm": 72,
+            "bit2fp": 16,
+            "mask_move": 16
+          },
+          "descriptor_bytes": {
+            "rdma": 29625700,
+            "gather_scatter": 30982304,
+            "wdma": 12269868
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 16384,
+            "4": 37536,
+            "16": 7168,
+            "32": 242688,
+            "64": 536576,
+            "96": 6144,
+            "128": 26663424,
+            "172": 88064,
+            "256": 40960,
+            "344": 616448,
+            "512": 556032,
+            "1024": 260096,
+            "1376": 374272,
+            "2048": 323584,
+            "2752": 330240,
+            "4096": 8192,
+            "5504": 88064,
+            "8192": 532480,
+            "16384": 212992,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                256,
+                1
+              ],
+              "executions": 32
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                16,
+                16,
+                2
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                688,
+                1
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                1376,
+                256,
+                1
+              ],
+              "executions": 8
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 2,
+          "instruction_sha256": "6ac48519b7bfa405de4dafa435a4e485ddfa697f8e7506f6b1a8472d1e539d9f",
+          "instructions": {
+            "rdma": 870,
+            "gather_scatter": 1997,
+            "convert": 232,
+            "wdma": 254,
+            "ncc_join": 13,
+            "ddr_publish": 51,
+            "fill": 165,
+            "elementwise": 534,
+            "reduce": 32,
+            "ddr_acquire": 135,
+            "gemm": 72,
+            "bit2fp": 16,
+            "mask_move": 16
+          },
+          "descriptor_bytes": {
+            "rdma": 29625700,
+            "gather_scatter": 30982304,
+            "wdma": 12269868
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 16384,
+            "4": 37536,
+            "16": 7168,
+            "32": 242688,
+            "64": 536576,
+            "96": 6144,
+            "128": 26663424,
+            "172": 88064,
+            "256": 40960,
+            "344": 616448,
+            "512": 556032,
+            "1024": 260096,
+            "1376": 374272,
+            "2048": 323584,
+            "2752": 330240,
+            "4096": 8192,
+            "5504": 88064,
+            "8192": 532480,
+            "16384": 212992,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                256,
+                1
+              ],
+              "executions": 32
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                16,
+                16,
+                2
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                688,
+                1
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                1376,
+                256,
+                1
+              ],
+              "executions": 8
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 3,
+          "instruction_sha256": "c2ca9142e1c2fb2899141d730a67d8f8f91fc00e35fdd9988a70964467c6c4cd",
+          "instructions": {
+            "rdma": 870,
+            "gather_scatter": 1997,
+            "convert": 232,
+            "wdma": 254,
+            "ncc_join": 13,
+            "ddr_publish": 51,
+            "fill": 165,
+            "elementwise": 534,
+            "reduce": 32,
+            "ddr_acquire": 135,
+            "gemm": 72,
+            "bit2fp": 16,
+            "mask_move": 16
+          },
+          "descriptor_bytes": {
+            "rdma": 29625700,
+            "gather_scatter": 30982304,
+            "wdma": 12269868
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 16384,
+            "4": 37536,
+            "16": 7168,
+            "32": 242688,
+            "64": 536576,
+            "96": 6144,
+            "128": 26663424,
+            "172": 88064,
+            "256": 40960,
+            "344": 616448,
+            "512": 556032,
+            "1024": 260096,
+            "1376": 374272,
+            "2048": 323584,
+            "2752": 330240,
+            "4096": 8192,
+            "5504": 88064,
+            "8192": 532480,
+            "16384": 212992,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                256,
+                1
+              ],
+              "executions": 32
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                16,
+                16,
+                2
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                688,
+                1
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                1376,
+                256,
+                1
+              ],
+              "executions": 8
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 4,
+          "instruction_sha256": "628da9b384f358c794fd9f5a98d9ab4b6ff6fa2195455e4718e5a97ed6192638",
+          "instructions": {
+            "rdma": 870,
+            "gather_scatter": 1997,
+            "convert": 232,
+            "wdma": 254,
+            "ncc_join": 13,
+            "ddr_publish": 51,
+            "fill": 165,
+            "elementwise": 534,
+            "reduce": 32,
+            "ddr_acquire": 135,
+            "gemm": 72,
+            "bit2fp": 16,
+            "mask_move": 16
+          },
+          "descriptor_bytes": {
+            "rdma": 29625700,
+            "gather_scatter": 30982304,
+            "wdma": 12269868
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 16384,
+            "4": 37536,
+            "16": 7168,
+            "32": 242688,
+            "64": 536576,
+            "96": 6144,
+            "128": 26663424,
+            "172": 88064,
+            "256": 40960,
+            "344": 616448,
+            "512": 556032,
+            "1024": 260096,
+            "1376": 374272,
+            "2048": 323584,
+            "2752": 330240,
+            "4096": 8192,
+            "5504": 88064,
+            "8192": 532480,
+            "16384": 212992,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                256,
+                1
+              ],
+              "executions": 32
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                16,
+                16,
+                2
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                688,
+                1
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                1376,
+                256,
+                1
+              ],
+              "executions": 8
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 5,
+          "instruction_sha256": "2ca47f45f852ee1d6914e3cfeb37eab67ad2fd43d742c4a167a0d6f3dbe27a99",
+          "instructions": {
+            "rdma": 870,
+            "gather_scatter": 1997,
+            "convert": 232,
+            "wdma": 254,
+            "ncc_join": 13,
+            "ddr_publish": 51,
+            "fill": 165,
+            "elementwise": 534,
+            "reduce": 32,
+            "ddr_acquire": 135,
+            "gemm": 72,
+            "bit2fp": 16,
+            "mask_move": 16
+          },
+          "descriptor_bytes": {
+            "rdma": 29625700,
+            "gather_scatter": 30982304,
+            "wdma": 12269868
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 16384,
+            "4": 37536,
+            "16": 7168,
+            "32": 242688,
+            "64": 536576,
+            "96": 6144,
+            "128": 26663424,
+            "172": 88064,
+            "256": 40960,
+            "344": 616448,
+            "512": 556032,
+            "1024": 260096,
+            "1376": 374272,
+            "2048": 323584,
+            "2752": 330240,
+            "4096": 8192,
+            "5504": 88064,
+            "8192": 532480,
+            "16384": 212992,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                256,
+                1
+              ],
+              "executions": 32
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                16,
+                16,
+                2
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                688,
+                1
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                1376,
+                256,
+                1
+              ],
+              "executions": 8
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 6,
+          "instruction_sha256": "4113aaa3199c2d3a25314748cb6931000fc45fe7b8171920f5dea1fd884a4437",
+          "instructions": {
+            "rdma": 870,
+            "gather_scatter": 1997,
+            "convert": 232,
+            "wdma": 254,
+            "ncc_join": 13,
+            "ddr_publish": 51,
+            "fill": 165,
+            "elementwise": 534,
+            "reduce": 32,
+            "ddr_acquire": 135,
+            "gemm": 72,
+            "bit2fp": 16,
+            "mask_move": 16
+          },
+          "descriptor_bytes": {
+            "rdma": 29625700,
+            "gather_scatter": 30982304,
+            "wdma": 12269868
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 16384,
+            "4": 37536,
+            "16": 7168,
+            "32": 242688,
+            "64": 536576,
+            "96": 6144,
+            "128": 26663424,
+            "172": 88064,
+            "256": 40960,
+            "344": 616448,
+            "512": 556032,
+            "1024": 260096,
+            "1376": 374272,
+            "2048": 323584,
+            "2752": 330240,
+            "4096": 8192,
+            "5504": 88064,
+            "8192": 532480,
+            "16384": 212992,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                256,
+                1
+              ],
+              "executions": 32
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                16,
+                16,
+                2
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                688,
+                1
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                1376,
+                256,
+                1
+              ],
+              "executions": 8
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 7,
+          "instruction_sha256": "6b43edbd8ee0b8e5f82f9cb9ff1c4d92fd75f974b3fb3551dcf913bde96a6c77",
+          "instructions": {
+            "rdma": 870,
+            "gather_scatter": 1997,
+            "convert": 232,
+            "wdma": 254,
+            "ncc_join": 13,
+            "ddr_publish": 51,
+            "fill": 165,
+            "elementwise": 534,
+            "reduce": 32,
+            "ddr_acquire": 135,
+            "gemm": 72,
+            "bit2fp": 16,
+            "mask_move": 16
+          },
+          "descriptor_bytes": {
+            "rdma": 29625700,
+            "gather_scatter": 30982304,
+            "wdma": 12269868
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 16384,
+            "4": 37536,
+            "16": 7168,
+            "32": 242688,
+            "64": 536576,
+            "96": 6144,
+            "128": 26663424,
+            "172": 88064,
+            "256": 40960,
+            "344": 616448,
+            "512": 556032,
+            "1024": 260096,
+            "1376": 374272,
+            "2048": 323584,
+            "2752": 330240,
+            "4096": 8192,
+            "5504": 88064,
+            "8192": 532480,
+            "16384": 212992,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                256,
+                1
+              ],
+              "executions": 32
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                16,
+                16,
+                2
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                688,
+                1
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                1376,
+                256,
+                1
+              ],
+              "executions": 8
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 8,
+          "instruction_sha256": "e0010c712e5b200027224ef4ac024bbdbce944755994be7c0f1ecdd59d3d8292",
+          "instructions": {
+            "rdma": 870,
+            "gather_scatter": 1997,
+            "convert": 232,
+            "wdma": 254,
+            "ncc_join": 13,
+            "ddr_publish": 51,
+            "fill": 165,
+            "elementwise": 534,
+            "reduce": 32,
+            "ddr_acquire": 135,
+            "gemm": 72,
+            "bit2fp": 16,
+            "mask_move": 16
+          },
+          "descriptor_bytes": {
+            "rdma": 29625700,
+            "gather_scatter": 30982304,
+            "wdma": 12269868
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 16384,
+            "4": 37536,
+            "16": 7168,
+            "32": 242688,
+            "64": 536576,
+            "96": 6144,
+            "128": 26663424,
+            "172": 88064,
+            "256": 40960,
+            "344": 616448,
+            "512": 556032,
+            "1024": 260096,
+            "1376": 374272,
+            "2048": 323584,
+            "2752": 330240,
+            "4096": 8192,
+            "5504": 88064,
+            "8192": 532480,
+            "16384": 212992,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                256,
+                1
+              ],
+              "executions": 32
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                16,
+                16,
+                2
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                688,
+                1
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                1376,
+                256,
+                1
+              ],
+              "executions": 8
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 9,
+          "instruction_sha256": "424f8982e1a7c3d01a1003f033334b9c52553123f377a8bdca1e0e2916a6a825",
+          "instructions": {
+            "rdma": 870,
+            "gather_scatter": 1997,
+            "convert": 232,
+            "wdma": 254,
+            "ncc_join": 13,
+            "ddr_publish": 51,
+            "fill": 165,
+            "elementwise": 534,
+            "reduce": 32,
+            "ddr_acquire": 135,
+            "gemm": 72,
+            "bit2fp": 16,
+            "mask_move": 16
+          },
+          "descriptor_bytes": {
+            "rdma": 29625700,
+            "gather_scatter": 30982304,
+            "wdma": 12269868
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 16384,
+            "4": 37536,
+            "16": 7168,
+            "32": 242688,
+            "64": 536576,
+            "96": 6144,
+            "128": 26663424,
+            "172": 88064,
+            "256": 40960,
+            "344": 616448,
+            "512": 556032,
+            "1024": 260096,
+            "1376": 374272,
+            "2048": 323584,
+            "2752": 330240,
+            "4096": 8192,
+            "5504": 88064,
+            "8192": 532480,
+            "16384": 212992,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                256,
+                1
+              ],
+              "executions": 32
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                16,
+                16,
+                2
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                688,
+                1
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                1376,
+                256,
+                1
+              ],
+              "executions": 8
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 10,
+          "instruction_sha256": "8f567711ed98972adf891e2010d09d9aa9d21f866924cff7d5285e263771ae84",
+          "instructions": {
+            "rdma": 870,
+            "gather_scatter": 1997,
+            "convert": 232,
+            "wdma": 254,
+            "ncc_join": 13,
+            "ddr_publish": 51,
+            "fill": 165,
+            "elementwise": 534,
+            "reduce": 32,
+            "ddr_acquire": 135,
+            "gemm": 72,
+            "bit2fp": 16,
+            "mask_move": 16
+          },
+          "descriptor_bytes": {
+            "rdma": 29625700,
+            "gather_scatter": 30982304,
+            "wdma": 12269868
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 16384,
+            "4": 37536,
+            "16": 7168,
+            "32": 242688,
+            "64": 536576,
+            "96": 6144,
+            "128": 26663424,
+            "172": 88064,
+            "256": 40960,
+            "344": 616448,
+            "512": 556032,
+            "1024": 260096,
+            "1376": 374272,
+            "2048": 323584,
+            "2752": 330240,
+            "4096": 8192,
+            "5504": 88064,
+            "8192": 532480,
+            "16384": 212992,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                256,
+                1
+              ],
+              "executions": 32
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                16,
+                16,
+                2
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                688,
+                1
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                1376,
+                256,
+                1
+              ],
+              "executions": 8
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 11,
+          "instruction_sha256": "b0e0826e863747054c23c64f991fd465c1eba098d1fe978e43c4c743274e5fbc",
+          "instructions": {
+            "rdma": 870,
+            "gather_scatter": 1997,
+            "convert": 232,
+            "wdma": 254,
+            "ncc_join": 13,
+            "ddr_publish": 51,
+            "fill": 165,
+            "elementwise": 534,
+            "reduce": 32,
+            "ddr_acquire": 135,
+            "gemm": 72,
+            "bit2fp": 16,
+            "mask_move": 16
+          },
+          "descriptor_bytes": {
+            "rdma": 29625700,
+            "gather_scatter": 30982304,
+            "wdma": 12269868
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 16384,
+            "4": 37536,
+            "16": 7168,
+            "32": 242688,
+            "64": 536576,
+            "96": 6144,
+            "128": 26663424,
+            "172": 88064,
+            "256": 40960,
+            "344": 616448,
+            "512": 556032,
+            "1024": 260096,
+            "1376": 374272,
+            "2048": 323584,
+            "2752": 330240,
+            "4096": 8192,
+            "5504": 88064,
+            "8192": 532480,
+            "16384": 212992,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                256,
+                1
+              ],
+              "executions": 32
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                16,
+                16,
+                2
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                688,
+                1
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                1376,
+                256,
+                1
+              ],
+              "executions": 8
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 12,
+          "instruction_sha256": "dd975a043fc603bf465bd4a1bcade9f9c7aa2895667c9ea6b40ecc037a11b98e",
+          "instructions": {
+            "rdma": 870,
+            "gather_scatter": 1997,
+            "convert": 232,
+            "wdma": 254,
+            "ncc_join": 13,
+            "ddr_publish": 51,
+            "fill": 165,
+            "elementwise": 534,
+            "reduce": 32,
+            "ddr_acquire": 135,
+            "gemm": 72,
+            "bit2fp": 16,
+            "mask_move": 16
+          },
+          "descriptor_bytes": {
+            "rdma": 29625700,
+            "gather_scatter": 30982304,
+            "wdma": 12269868
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 16384,
+            "4": 37536,
+            "16": 7168,
+            "32": 242688,
+            "64": 536576,
+            "96": 6144,
+            "128": 26663424,
+            "172": 88064,
+            "256": 40960,
+            "344": 616448,
+            "512": 556032,
+            "1024": 260096,
+            "1376": 374272,
+            "2048": 323584,
+            "2752": 330240,
+            "4096": 8192,
+            "5504": 88064,
+            "8192": 532480,
+            "16384": 212992,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                256,
+                1
+              ],
+              "executions": 32
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                16,
+                16,
+                2
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                688,
+                1
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                1376,
+                256,
+                1
+              ],
+              "executions": 8
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 13,
+          "instruction_sha256": "d8fb2d08db613939155198d46c423e96a0c99ae2ff2073c17994d5b748b466dd",
+          "instructions": {
+            "rdma": 870,
+            "gather_scatter": 1997,
+            "convert": 232,
+            "wdma": 254,
+            "ncc_join": 13,
+            "ddr_publish": 51,
+            "fill": 165,
+            "elementwise": 534,
+            "reduce": 32,
+            "ddr_acquire": 135,
+            "gemm": 72,
+            "bit2fp": 16,
+            "mask_move": 16
+          },
+          "descriptor_bytes": {
+            "rdma": 29625700,
+            "gather_scatter": 30982304,
+            "wdma": 12269868
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 16384,
+            "4": 37536,
+            "16": 7168,
+            "32": 242688,
+            "64": 536576,
+            "96": 6144,
+            "128": 26663424,
+            "172": 88064,
+            "256": 40960,
+            "344": 616448,
+            "512": 556032,
+            "1024": 260096,
+            "1376": 374272,
+            "2048": 323584,
+            "2752": 330240,
+            "4096": 8192,
+            "5504": 88064,
+            "8192": 532480,
+            "16384": 212992,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                256,
+                1
+              ],
+              "executions": 32
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                16,
+                16,
+                2
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                688,
+                1
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                1376,
+                256,
+                1
+              ],
+              "executions": 8
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 14,
+          "instruction_sha256": "42485541fdea80dc00471fe2c8cc63fccd9b91154a76e1768a6f46184c387a1c",
+          "instructions": {
+            "rdma": 870,
+            "gather_scatter": 1997,
+            "convert": 232,
+            "wdma": 254,
+            "ncc_join": 13,
+            "ddr_publish": 51,
+            "fill": 165,
+            "elementwise": 534,
+            "reduce": 32,
+            "ddr_acquire": 135,
+            "gemm": 72,
+            "bit2fp": 16,
+            "mask_move": 16
+          },
+          "descriptor_bytes": {
+            "rdma": 29625700,
+            "gather_scatter": 30982304,
+            "wdma": 12269868
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 16384,
+            "4": 37536,
+            "16": 7168,
+            "32": 242688,
+            "64": 536576,
+            "96": 6144,
+            "128": 26663424,
+            "172": 88064,
+            "256": 40960,
+            "344": 616448,
+            "512": 556032,
+            "1024": 260096,
+            "1376": 374272,
+            "2048": 323584,
+            "2752": 330240,
+            "4096": 8192,
+            "5504": 88064,
+            "8192": 532480,
+            "16384": 212992,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                256,
+                1
+              ],
+              "executions": 32
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                16,
+                16,
+                2
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                688,
+                1
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                1376,
+                256,
+                1
+              ],
+              "executions": 8
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 15,
+          "instruction_sha256": "35c5741b2ad7c0493ef6fb723e7adc0323ee9d3ef2c7c9fb44ce8a685e5d17ee",
+          "instructions": {
+            "rdma": 870,
+            "gather_scatter": 1997,
+            "convert": 232,
+            "wdma": 254,
+            "ncc_join": 16,
+            "ddr_publish": 51,
+            "fill": 165,
+            "elementwise": 534,
+            "reduce": 32,
+            "ddr_acquire": 135,
+            "gemm": 72,
+            "bit2fp": 16,
+            "mask_move": 16
+          },
+          "descriptor_bytes": {
+            "rdma": 29625700,
+            "gather_scatter": 30982304,
+            "wdma": 12269868
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 16384,
+            "4": 37536,
+            "16": 7168,
+            "32": 242688,
+            "64": 536576,
+            "96": 6144,
+            "128": 26663424,
+            "172": 88064,
+            "256": 40960,
+            "344": 616448,
+            "512": 556032,
+            "1024": 260096,
+            "1376": 374272,
+            "2048": 323584,
+            "2752": 330240,
+            "4096": 8192,
+            "5504": 88064,
+            "8192": 532480,
+            "16384": 212992,
+            "20480": 40960
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                256,
+                1
+              ],
+              "executions": 32
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                16,
+                16,
+                2
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                512,
+                688,
+                1
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                16,
+                1376,
+                256,
+                1
+              ],
+              "executions": 8
+            }
+          ],
+          "small_inner_witness": []
+        }
+      ],
+      "profile_record": "docs/data/board-performance/llama-native-reduce-20260909.json"
+    },
+    {
+      "id": "decode-14ms",
+      "artifact_root": "build/test/search-verified-budgets/attention-decode-kv-cache-42",
+      "instruction_directory": "compiler-ir/step_01/instruction",
+      "manifest_sha256": "7bc65596a791eeacc38861f1e57ca9d33cdbe66079ebeb5d7c23ce239bd7ad61",
+      "aggregate_descriptor_bytes": {
+        "wdma": 17102848,
+        "rdma": 169656832,
+        "gather_scatter": 173012608
+      },
+      "tiles": [
+        {
+          "tile": 0,
+          "instruction_sha256": "59c1c752aa5a2f241ee22c8db04ed5286a065b83eba861ab8fe47a336df266e3",
+          "instructions": {
+            "fill": 39,
+            "wdma": 259,
+            "rdma": 754,
+            "gather_scatter": 1266,
+            "gemm": 288,
+            "elementwise": 565,
+            "convert": 180,
+            "ncc_join": 47,
+            "ddr_publish": 6,
+            "ddr_acquire": 37,
+            "dte_recv": 4,
+            "dte_wait": 4,
+            "reduce": 32
+          },
+          "descriptor_bytes": {
+            "wdma": 1070720,
+            "rdma": 10603040,
+            "gather_scatter": 10809456
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 48640,
+            "8": 80,
+            "16": 1056,
+            "32": 7680,
+            "64": 14848,
+            "128": 9558528,
+            "256": 13312,
+            "512": 43008,
+            "1024": 41984,
+            "4096": 524288,
+            "7936": 31744
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                32,
+                4
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                32,
+                128,
+                4
+              ],
+              "executions": 16
+            }
+          ],
+          "small_inner_witness": [
+            {
+              "line": 1018,
+              "executions": 32,
+              "inner_bytes": 2,
+              "byte_count": 16384
+            },
+            {
+              "line": 1053,
+              "executions": 16,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 1057,
+              "executions": 16,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 1060,
+              "executions": 16,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 1066,
+              "executions": 16,
+              "inner_bytes": 4,
+              "byte_count": 512
+            },
+            {
+              "line": 1071,
+              "executions": 16,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 1075,
+              "executions": 16,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 1078,
+              "executions": 16,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 1080,
+              "executions": 16,
+              "inner_bytes": 4,
+              "byte_count": 2048
+            },
+            {
+              "line": 1153,
+              "executions": 8,
+              "inner_bytes": 4,
+              "byte_count": 256
+            },
+            {
+              "line": 1157,
+              "executions": 8,
+              "inner_bytes": 4,
+              "byte_count": 256
+            },
+            {
+              "line": 1198,
+              "executions": 8,
+              "inner_bytes": 4,
+              "byte_count": 256
+            }
+          ]
+        },
+        {
+          "tile": 1,
+          "instruction_sha256": "6967eb300ce8985be99005641bd78172748a3e64f07ffbb2353680b5ab8c2179",
+          "instructions": {
+            "fill": 39,
+            "wdma": 233,
+            "rdma": 760,
+            "gather_scatter": 1121,
+            "gemm": 288,
+            "elementwise": 512,
+            "convert": 148,
+            "ncc_join": 48,
+            "ddr_publish": 2,
+            "ddr_acquire": 41,
+            "dte_send": 4,
+            "dte_wait": 4,
+            "reduce": 32
+          },
+          "descriptor_bytes": {
+            "wdma": 1067136,
+            "rdma": 10604064,
+            "gather_scatter": 10817120
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 42048,
+            "8": 32,
+            "16": 512,
+            "32": 3072,
+            "64": 14848,
+            "128": 9530368,
+            "256": 30720,
+            "512": 27136,
+            "1024": 24576,
+            "3968": 63488,
+            "4096": 524288,
+            "7936": 31744
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                32,
+                4
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                32,
+                128,
+                4
+              ],
+              "executions": 16
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 2,
+          "instruction_sha256": "540609fdd7378a8b50d0198a5e7c0de23437cc7549695edb4af84b6cfbc5be01",
+          "instructions": {
+            "fill": 39,
+            "wdma": 259,
+            "rdma": 754,
+            "gather_scatter": 1266,
+            "gemm": 288,
+            "elementwise": 565,
+            "convert": 180,
+            "ncc_join": 47,
+            "ddr_publish": 6,
+            "ddr_acquire": 37,
+            "dte_recv": 4,
+            "dte_wait": 4,
+            "reduce": 32
+          },
+          "descriptor_bytes": {
+            "wdma": 1070720,
+            "rdma": 10603040,
+            "gather_scatter": 10809456
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 48640,
+            "8": 80,
+            "16": 1056,
+            "32": 7680,
+            "64": 14848,
+            "128": 9558528,
+            "256": 13312,
+            "512": 43008,
+            "1024": 41984,
+            "4096": 524288,
+            "7936": 31744
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                32,
+                4
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                32,
+                128,
+                4
+              ],
+              "executions": 16
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 3,
+          "instruction_sha256": "7c41b294c53e7208d20453fa4602618a61d8a971baa3d48021a858c42ce0b30c",
+          "instructions": {
+            "fill": 39,
+            "wdma": 233,
+            "rdma": 760,
+            "gather_scatter": 1121,
+            "gemm": 288,
+            "elementwise": 512,
+            "convert": 148,
+            "ncc_join": 48,
+            "ddr_publish": 2,
+            "ddr_acquire": 41,
+            "dte_send": 4,
+            "dte_wait": 4,
+            "reduce": 32
+          },
+          "descriptor_bytes": {
+            "wdma": 1067136,
+            "rdma": 10604064,
+            "gather_scatter": 10817120
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 42048,
+            "8": 32,
+            "16": 512,
+            "32": 3072,
+            "64": 14848,
+            "128": 9530368,
+            "256": 30720,
+            "512": 27136,
+            "1024": 24576,
+            "3968": 63488,
+            "4096": 524288,
+            "7936": 31744
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                32,
+                4
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                32,
+                128,
+                4
+              ],
+              "executions": 16
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 4,
+          "instruction_sha256": "c6fa4874c696416051684ce79580b458349a2812de62412414e17d4ba98df135",
+          "instructions": {
+            "fill": 39,
+            "wdma": 259,
+            "rdma": 754,
+            "gather_scatter": 1266,
+            "gemm": 288,
+            "elementwise": 565,
+            "convert": 180,
+            "ncc_join": 47,
+            "ddr_publish": 6,
+            "ddr_acquire": 37,
+            "dte_recv": 4,
+            "dte_wait": 4,
+            "reduce": 32
+          },
+          "descriptor_bytes": {
+            "wdma": 1070720,
+            "rdma": 10603040,
+            "gather_scatter": 10809456
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 48640,
+            "8": 80,
+            "16": 1056,
+            "32": 7680,
+            "64": 14848,
+            "128": 9558528,
+            "256": 13312,
+            "512": 43008,
+            "1024": 41984,
+            "4096": 524288,
+            "7936": 31744
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                32,
+                4
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                32,
+                128,
+                4
+              ],
+              "executions": 16
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 5,
+          "instruction_sha256": "c129876efa3173424a70bb5c9035a2546d6486762027f1ee264d24167d1aaefb",
+          "instructions": {
+            "fill": 39,
+            "wdma": 233,
+            "rdma": 760,
+            "gather_scatter": 1121,
+            "gemm": 288,
+            "elementwise": 512,
+            "convert": 148,
+            "ncc_join": 48,
+            "ddr_publish": 2,
+            "ddr_acquire": 41,
+            "dte_send": 4,
+            "dte_wait": 4,
+            "reduce": 32
+          },
+          "descriptor_bytes": {
+            "wdma": 1067136,
+            "rdma": 10604064,
+            "gather_scatter": 10817120
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 42048,
+            "8": 32,
+            "16": 512,
+            "32": 3072,
+            "64": 14848,
+            "128": 9530368,
+            "256": 30720,
+            "512": 27136,
+            "1024": 24576,
+            "3968": 63488,
+            "4096": 524288,
+            "7936": 31744
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                32,
+                4
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                32,
+                128,
+                4
+              ],
+              "executions": 16
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 6,
+          "instruction_sha256": "bc7ae0d00d00d6b2d46e9f6fd42ba63a6e94e989e45d0003a514103503435fee",
+          "instructions": {
+            "fill": 39,
+            "wdma": 259,
+            "rdma": 754,
+            "gather_scatter": 1266,
+            "gemm": 288,
+            "elementwise": 565,
+            "convert": 180,
+            "ncc_join": 47,
+            "ddr_publish": 6,
+            "ddr_acquire": 37,
+            "dte_recv": 4,
+            "dte_wait": 4,
+            "reduce": 32
+          },
+          "descriptor_bytes": {
+            "wdma": 1070720,
+            "rdma": 10603040,
+            "gather_scatter": 10809456
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 48640,
+            "8": 80,
+            "16": 1056,
+            "32": 7680,
+            "64": 14848,
+            "128": 9558528,
+            "256": 13312,
+            "512": 43008,
+            "1024": 41984,
+            "4096": 524288,
+            "7936": 31744
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                32,
+                4
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                32,
+                128,
+                4
+              ],
+              "executions": 16
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 7,
+          "instruction_sha256": "2834468e8c31240583ab007115c3aae41a5377dc62f13e67083f798a20380eee",
+          "instructions": {
+            "fill": 39,
+            "wdma": 233,
+            "rdma": 760,
+            "gather_scatter": 1121,
+            "gemm": 288,
+            "elementwise": 512,
+            "convert": 148,
+            "ncc_join": 48,
+            "ddr_publish": 2,
+            "ddr_acquire": 41,
+            "dte_send": 4,
+            "dte_wait": 4,
+            "reduce": 32
+          },
+          "descriptor_bytes": {
+            "wdma": 1067136,
+            "rdma": 10604064,
+            "gather_scatter": 10817120
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 42048,
+            "8": 32,
+            "16": 512,
+            "32": 3072,
+            "64": 14848,
+            "128": 9530368,
+            "256": 30720,
+            "512": 27136,
+            "1024": 24576,
+            "3968": 63488,
+            "4096": 524288,
+            "7936": 31744
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                32,
+                4
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                32,
+                128,
+                4
+              ],
+              "executions": 16
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 8,
+          "instruction_sha256": "b8c9bf7de4d01967d912a55ee3731c3033f2b73f1b3c0eca46348fe053b1fd03",
+          "instructions": {
+            "fill": 39,
+            "wdma": 259,
+            "rdma": 754,
+            "gather_scatter": 1266,
+            "gemm": 288,
+            "elementwise": 565,
+            "convert": 180,
+            "ncc_join": 47,
+            "ddr_publish": 6,
+            "ddr_acquire": 37,
+            "dte_recv": 4,
+            "dte_wait": 4,
+            "reduce": 32
+          },
+          "descriptor_bytes": {
+            "wdma": 1070720,
+            "rdma": 10603040,
+            "gather_scatter": 10809456
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 48640,
+            "8": 80,
+            "16": 1056,
+            "32": 7680,
+            "64": 14848,
+            "128": 9558528,
+            "256": 13312,
+            "512": 43008,
+            "1024": 41984,
+            "4096": 524288,
+            "7936": 31744
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                32,
+                4
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                32,
+                128,
+                4
+              ],
+              "executions": 16
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 9,
+          "instruction_sha256": "ab281172def089ee2b4e752672b242e067d3ac9e75236fd3144d3f93498c4bd0",
+          "instructions": {
+            "fill": 39,
+            "wdma": 233,
+            "rdma": 760,
+            "gather_scatter": 1121,
+            "gemm": 288,
+            "elementwise": 512,
+            "convert": 148,
+            "ncc_join": 48,
+            "ddr_publish": 2,
+            "ddr_acquire": 41,
+            "dte_send": 4,
+            "dte_wait": 4,
+            "reduce": 32
+          },
+          "descriptor_bytes": {
+            "wdma": 1067136,
+            "rdma": 10604064,
+            "gather_scatter": 10817120
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 42048,
+            "8": 32,
+            "16": 512,
+            "32": 3072,
+            "64": 14848,
+            "128": 9530368,
+            "256": 30720,
+            "512": 27136,
+            "1024": 24576,
+            "3968": 63488,
+            "4096": 524288,
+            "7936": 31744
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                32,
+                4
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                32,
+                128,
+                4
+              ],
+              "executions": 16
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 10,
+          "instruction_sha256": "6598df4876b727eebbaf5cb10dc4f3b4fa41a7c6e0fb16e94e2d8756fb186207",
+          "instructions": {
+            "fill": 39,
+            "wdma": 259,
+            "rdma": 754,
+            "gather_scatter": 1266,
+            "gemm": 288,
+            "elementwise": 565,
+            "convert": 180,
+            "ncc_join": 47,
+            "ddr_publish": 6,
+            "ddr_acquire": 37,
+            "dte_recv": 4,
+            "dte_wait": 4,
+            "reduce": 32
+          },
+          "descriptor_bytes": {
+            "wdma": 1070720,
+            "rdma": 10603040,
+            "gather_scatter": 10809456
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 48640,
+            "8": 80,
+            "16": 1056,
+            "32": 7680,
+            "64": 14848,
+            "128": 9558528,
+            "256": 13312,
+            "512": 43008,
+            "1024": 41984,
+            "4096": 524288,
+            "7936": 31744
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                32,
+                4
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                32,
+                128,
+                4
+              ],
+              "executions": 16
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 11,
+          "instruction_sha256": "dacda2b32e191b8e31af5eb304f26ad04c2b5318ffe4c1ce7d8739e76c8f870a",
+          "instructions": {
+            "fill": 39,
+            "wdma": 233,
+            "rdma": 760,
+            "gather_scatter": 1121,
+            "gemm": 288,
+            "elementwise": 512,
+            "convert": 148,
+            "ncc_join": 48,
+            "ddr_publish": 2,
+            "ddr_acquire": 41,
+            "dte_send": 4,
+            "dte_wait": 4,
+            "reduce": 32
+          },
+          "descriptor_bytes": {
+            "wdma": 1067136,
+            "rdma": 10604064,
+            "gather_scatter": 10817120
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 42048,
+            "8": 32,
+            "16": 512,
+            "32": 3072,
+            "64": 14848,
+            "128": 9530368,
+            "256": 30720,
+            "512": 27136,
+            "1024": 24576,
+            "3968": 63488,
+            "4096": 524288,
+            "7936": 31744
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                32,
+                4
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                32,
+                128,
+                4
+              ],
+              "executions": 16
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 12,
+          "instruction_sha256": "c999f6ffd81056334c5f8020452f9582ede1fc00954b0d103164785d54ef8540",
+          "instructions": {
+            "fill": 39,
+            "wdma": 259,
+            "rdma": 754,
+            "gather_scatter": 1266,
+            "gemm": 288,
+            "elementwise": 565,
+            "convert": 180,
+            "ncc_join": 47,
+            "ddr_publish": 6,
+            "ddr_acquire": 37,
+            "dte_recv": 4,
+            "dte_wait": 4,
+            "reduce": 32
+          },
+          "descriptor_bytes": {
+            "wdma": 1070720,
+            "rdma": 10603040,
+            "gather_scatter": 10809456
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 48640,
+            "8": 80,
+            "16": 1056,
+            "32": 7680,
+            "64": 14848,
+            "128": 9558528,
+            "256": 13312,
+            "512": 43008,
+            "1024": 41984,
+            "4096": 524288,
+            "7936": 31744
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                32,
+                4
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                32,
+                128,
+                4
+              ],
+              "executions": 16
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 13,
+          "instruction_sha256": "8e1d072c822ce8a10cf19b61c458859b46fec9405fa87b00e1d9b6aecea8ec1e",
+          "instructions": {
+            "fill": 39,
+            "wdma": 233,
+            "rdma": 760,
+            "gather_scatter": 1121,
+            "gemm": 288,
+            "elementwise": 512,
+            "convert": 148,
+            "ncc_join": 48,
+            "ddr_publish": 2,
+            "ddr_acquire": 41,
+            "dte_send": 4,
+            "dte_wait": 4,
+            "reduce": 32
+          },
+          "descriptor_bytes": {
+            "wdma": 1067136,
+            "rdma": 10604064,
+            "gather_scatter": 10817120
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 42048,
+            "8": 32,
+            "16": 512,
+            "32": 3072,
+            "64": 14848,
+            "128": 9530368,
+            "256": 30720,
+            "512": 27136,
+            "1024": 24576,
+            "3968": 63488,
+            "4096": 524288,
+            "7936": 31744
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                32,
+                4
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                32,
+                128,
+                4
+              ],
+              "executions": 16
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 14,
+          "instruction_sha256": "02aeeaec23fc28c732919b8a414f77c1f547c6a23131e960306279eedd014146",
+          "instructions": {
+            "fill": 39,
+            "wdma": 259,
+            "rdma": 754,
+            "gather_scatter": 1266,
+            "gemm": 288,
+            "elementwise": 565,
+            "convert": 180,
+            "ncc_join": 47,
+            "ddr_publish": 6,
+            "ddr_acquire": 37,
+            "dte_recv": 4,
+            "dte_wait": 4,
+            "reduce": 32
+          },
+          "descriptor_bytes": {
+            "wdma": 1070720,
+            "rdma": 10603040,
+            "gather_scatter": 10809456
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 48640,
+            "8": 80,
+            "16": 1056,
+            "32": 7680,
+            "64": 14848,
+            "128": 9558528,
+            "256": 13312,
+            "512": 43008,
+            "1024": 41984,
+            "4096": 524288,
+            "7936": 31744
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                32,
+                4
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                32,
+                128,
+                4
+              ],
+              "executions": 16
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 15,
+          "instruction_sha256": "e34008e1f93768c2cc1d67f6974473d8a28ce10868126fc1eaf78e0bf922ce74",
+          "instructions": {
+            "fill": 39,
+            "wdma": 233,
+            "rdma": 760,
+            "gather_scatter": 1121,
+            "gemm": 288,
+            "elementwise": 512,
+            "convert": 148,
+            "ncc_join": 48,
+            "ddr_publish": 2,
+            "ddr_acquire": 41,
+            "dte_send": 4,
+            "dte_wait": 4,
+            "reduce": 32
+          },
+          "descriptor_bytes": {
+            "wdma": 1067136,
+            "rdma": 10604064,
+            "gather_scatter": 10817120
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 42048,
+            "8": 32,
+            "16": 512,
+            "32": 3072,
+            "64": 14848,
+            "128": 9530368,
+            "256": 30720,
+            "512": 27136,
+            "1024": 24576,
+            "3968": 63488,
+            "4096": 524288,
+            "7936": 31744
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                64,
+                256,
+                1
+              ],
+              "executions": 256
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                32,
+                4
+              ],
+              "executions": 16
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                32,
+                128,
+                4
+              ],
+              "executions": 16
+            }
+          ],
+          "small_inner_witness": []
+        }
+      ]
+    },
+    {
+      "id": "decode-11ms",
+      "artifact_root": "build/test/board-audit/model-performance/decode-spatial-fill",
+      "instruction_directory": "compiler-ir/instruction",
+      "manifest_sha256": "238fd74856e00a9156accc4885daa0929b25d689d2d1b1bafaeadd2a0887295a",
+      "aggregate_descriptor_bytes": {
+        "wdma": 17783040,
+        "rdma": 169231104,
+        "gather_scatter": 206723968
+      },
+      "tiles": [
+        {
+          "tile": 0,
+          "instruction_sha256": "7dd6f628a9372bc0b9911e2230ce94b987f43bb25a38ef98115ae09fe81eea9f",
+          "instructions": {
+            "fill": 17,
+            "wdma": 54,
+            "rdma": 117,
+            "convert": 25,
+            "gather_scatter": 1315,
+            "ncc_join": 10,
+            "ddr_publish": 34,
+            "gemm": 12,
+            "elementwise": 1091,
+            "ddr_acquire": 41,
+            "bit2fp": 1,
+            "mask_move": 1
+          },
+          "descriptor_bytes": {
+            "wdma": 1116032,
+            "rdma": 10585152,
+            "gather_scatter": 12798720
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 35072,
+            "32": 10240,
+            "64": 512,
+            "128": 9505792,
+            "256": 31232,
+            "512": 15872,
+            "1024": 26624,
+            "2048": 4096,
+            "4096": 24576,
+            "16384": 524288,
+            "32768": 524288,
+            "130816": 523264,
+            "131072": 1048576
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                2048,
+                256,
+                1
+              ],
+              "executions": 8
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                256,
+                4
+              ],
+              "executions": 2
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                256,
+                128,
+                4
+              ],
+              "executions": 2
+            }
+          ],
+          "small_inner_witness": [
+            {
+              "line": 2017,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 2020,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 2023,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 2057,
+              "executions": 8,
+              "inner_bytes": 2,
+              "byte_count": 32768
+            },
+            {
+              "line": 2075,
+              "executions": 8,
+              "inner_bytes": 2,
+              "byte_count": 32768
+            },
+            {
+              "line": 2113,
+              "executions": 2,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 2135,
+              "executions": 512,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 2141,
+              "executions": 2,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 2148,
+              "executions": 2,
+              "inner_bytes": 4,
+              "byte_count": 4096
+            },
+            {
+              "line": 2173,
+              "executions": 512,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 2179,
+              "executions": 2,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 2182,
+              "executions": 2,
+              "inner_bytes": 4,
+              "byte_count": 2048
+            },
+            {
+              "line": 2210,
+              "executions": 2,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 2215,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 2218,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 2225,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 2233,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 2235,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 16
+            },
+            {
+              "line": 2241,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 2048
+            },
+            {
+              "line": 2245,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 2048
+            },
+            {
+              "line": 2258,
+              "executions": 1,
+              "inner_bytes": 4,
+              "byte_count": 2048
+            }
+          ]
+        },
+        {
+          "tile": 1,
+          "instruction_sha256": "1e38911697277c8c3b6f540d204c5fe3866b5213e86076fc8e4963d1cf9c9a4d",
+          "instructions": {
+            "fill": 15,
+            "wdma": 54,
+            "rdma": 117,
+            "convert": 21,
+            "gather_scatter": 1294,
+            "ncc_join": 9,
+            "ddr_publish": 34,
+            "gemm": 12,
+            "elementwise": 1066,
+            "ddr_acquire": 41
+          },
+          "descriptor_bytes": {
+            "wdma": 1106848,
+            "rdma": 10568736,
+            "gather_scatter": 13041328
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 28848,
+            "32": 10240,
+            "64": 512,
+            "128": 9499648,
+            "256": 30720,
+            "512": 16384,
+            "1024": 21504,
+            "2048": 4096,
+            "4096": 24576,
+            "16384": 524288,
+            "32640": 522240,
+            "32768": 524288,
+            "130816": 261632,
+            "131072": 524288,
+            "261888": 523776
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                2048,
+                256,
+                1
+              ],
+              "executions": 8
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                256,
+                4
+              ],
+              "executions": 2
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                256,
+                128,
+                4
+              ],
+              "executions": 2
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 2,
+          "instruction_sha256": "9424ea9b8d9ab64c28d8bcc7d77b900753c52049265fe8a0afdff1c61d127929",
+          "instructions": {
+            "fill": 17,
+            "wdma": 54,
+            "rdma": 117,
+            "convert": 25,
+            "gather_scatter": 1316,
+            "ncc_join": 10,
+            "ddr_publish": 34,
+            "gemm": 12,
+            "elementwise": 1091,
+            "ddr_acquire": 41,
+            "bit2fp": 1,
+            "mask_move": 1
+          },
+          "descriptor_bytes": {
+            "wdma": 1116032,
+            "rdma": 10585152,
+            "gather_scatter": 12799232
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 35072,
+            "32": 10240,
+            "64": 512,
+            "128": 9505792,
+            "256": 31232,
+            "512": 16384,
+            "1024": 26624,
+            "2048": 4096,
+            "4096": 24576,
+            "16384": 524288,
+            "32768": 524288,
+            "130816": 523264,
+            "131072": 1048576
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                2048,
+                256,
+                1
+              ],
+              "executions": 8
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                256,
+                4
+              ],
+              "executions": 2
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                256,
+                128,
+                4
+              ],
+              "executions": 2
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 3,
+          "instruction_sha256": "20b71596903c6c91b8aeca35b96d78b62978e42b2d8c6de3775718dbd13a4874",
+          "instructions": {
+            "fill": 15,
+            "wdma": 54,
+            "rdma": 117,
+            "convert": 21,
+            "gather_scatter": 1294,
+            "ncc_join": 9,
+            "ddr_publish": 34,
+            "gemm": 12,
+            "elementwise": 1066,
+            "ddr_acquire": 41
+          },
+          "descriptor_bytes": {
+            "wdma": 1106848,
+            "rdma": 10568736,
+            "gather_scatter": 13041328
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 28848,
+            "32": 10240,
+            "64": 512,
+            "128": 9499648,
+            "256": 30720,
+            "512": 16384,
+            "1024": 21504,
+            "2048": 4096,
+            "4096": 24576,
+            "16384": 524288,
+            "32640": 522240,
+            "32768": 524288,
+            "130816": 261632,
+            "131072": 524288,
+            "261888": 523776
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                2048,
+                256,
+                1
+              ],
+              "executions": 8
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                256,
+                4
+              ],
+              "executions": 2
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                256,
+                128,
+                4
+              ],
+              "executions": 2
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 4,
+          "instruction_sha256": "addea3711ce386281c3cb31a5b0f60deb20538f8eb12016da655db7627cd5f2b",
+          "instructions": {
+            "fill": 17,
+            "wdma": 54,
+            "rdma": 117,
+            "convert": 25,
+            "gather_scatter": 1316,
+            "ncc_join": 10,
+            "ddr_publish": 34,
+            "gemm": 12,
+            "elementwise": 1091,
+            "ddr_acquire": 41,
+            "bit2fp": 1,
+            "mask_move": 1
+          },
+          "descriptor_bytes": {
+            "wdma": 1116032,
+            "rdma": 10585152,
+            "gather_scatter": 12799232
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 35072,
+            "32": 10240,
+            "64": 512,
+            "128": 9505792,
+            "256": 31232,
+            "512": 16384,
+            "1024": 26624,
+            "2048": 4096,
+            "4096": 24576,
+            "16384": 524288,
+            "32768": 524288,
+            "130816": 523264,
+            "131072": 1048576
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                2048,
+                256,
+                1
+              ],
+              "executions": 8
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                256,
+                4
+              ],
+              "executions": 2
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                256,
+                128,
+                4
+              ],
+              "executions": 2
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 5,
+          "instruction_sha256": "63351ba1b8c557c5b2d84bfe3a8e9187c6593eeeb4d3256e20718abf544655e8",
+          "instructions": {
+            "fill": 15,
+            "wdma": 54,
+            "rdma": 117,
+            "convert": 21,
+            "gather_scatter": 1294,
+            "ncc_join": 9,
+            "ddr_publish": 34,
+            "gemm": 12,
+            "elementwise": 1066,
+            "ddr_acquire": 41
+          },
+          "descriptor_bytes": {
+            "wdma": 1106848,
+            "rdma": 10568736,
+            "gather_scatter": 13041328
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 28848,
+            "32": 10240,
+            "64": 512,
+            "128": 9499648,
+            "256": 30720,
+            "512": 16384,
+            "1024": 21504,
+            "2048": 4096,
+            "4096": 24576,
+            "16384": 524288,
+            "32640": 522240,
+            "32768": 524288,
+            "130816": 261632,
+            "131072": 524288,
+            "261888": 523776
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                2048,
+                256,
+                1
+              ],
+              "executions": 8
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                256,
+                4
+              ],
+              "executions": 2
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                256,
+                128,
+                4
+              ],
+              "executions": 2
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 6,
+          "instruction_sha256": "e002aaed3311d2a46115b0f37b9bba2bd683f9e1c1df5faa155e414abf4911f8",
+          "instructions": {
+            "fill": 17,
+            "wdma": 54,
+            "rdma": 117,
+            "convert": 25,
+            "gather_scatter": 1316,
+            "ncc_join": 10,
+            "ddr_publish": 34,
+            "gemm": 12,
+            "elementwise": 1091,
+            "ddr_acquire": 41,
+            "bit2fp": 1,
+            "mask_move": 1
+          },
+          "descriptor_bytes": {
+            "wdma": 1116032,
+            "rdma": 10585152,
+            "gather_scatter": 12799232
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 35072,
+            "32": 10240,
+            "64": 512,
+            "128": 9505792,
+            "256": 31232,
+            "512": 16384,
+            "1024": 26624,
+            "2048": 4096,
+            "4096": 24576,
+            "16384": 524288,
+            "32768": 524288,
+            "130816": 523264,
+            "131072": 1048576
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                2048,
+                256,
+                1
+              ],
+              "executions": 8
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                256,
+                4
+              ],
+              "executions": 2
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                256,
+                128,
+                4
+              ],
+              "executions": 2
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 7,
+          "instruction_sha256": "34191e21677d8cdae5d04cbb7c05e87146cbb9784a8595d8e393bc9e9f015919",
+          "instructions": {
+            "fill": 15,
+            "wdma": 54,
+            "rdma": 117,
+            "convert": 21,
+            "gather_scatter": 1294,
+            "ncc_join": 9,
+            "ddr_publish": 34,
+            "gemm": 12,
+            "elementwise": 1066,
+            "ddr_acquire": 41
+          },
+          "descriptor_bytes": {
+            "wdma": 1106848,
+            "rdma": 10568736,
+            "gather_scatter": 13041328
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 28848,
+            "32": 10240,
+            "64": 512,
+            "128": 9499648,
+            "256": 30720,
+            "512": 16384,
+            "1024": 21504,
+            "2048": 4096,
+            "4096": 24576,
+            "16384": 524288,
+            "32640": 522240,
+            "32768": 524288,
+            "130816": 261632,
+            "131072": 524288,
+            "261888": 523776
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                2048,
+                256,
+                1
+              ],
+              "executions": 8
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                256,
+                4
+              ],
+              "executions": 2
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                256,
+                128,
+                4
+              ],
+              "executions": 2
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 8,
+          "instruction_sha256": "a825383003108640fb17663f09fcc77a1e7f59195a6293dc6240479b17f7b91b",
+          "instructions": {
+            "fill": 17,
+            "wdma": 54,
+            "rdma": 117,
+            "convert": 25,
+            "gather_scatter": 1316,
+            "ncc_join": 10,
+            "ddr_publish": 34,
+            "gemm": 12,
+            "elementwise": 1091,
+            "ddr_acquire": 41,
+            "bit2fp": 1,
+            "mask_move": 1
+          },
+          "descriptor_bytes": {
+            "wdma": 1116032,
+            "rdma": 10585152,
+            "gather_scatter": 12799232
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 35072,
+            "32": 10240,
+            "64": 512,
+            "128": 9505792,
+            "256": 31232,
+            "512": 16384,
+            "1024": 26624,
+            "2048": 4096,
+            "4096": 24576,
+            "16384": 524288,
+            "32768": 524288,
+            "130816": 523264,
+            "131072": 1048576
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                2048,
+                256,
+                1
+              ],
+              "executions": 8
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                256,
+                4
+              ],
+              "executions": 2
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                256,
+                128,
+                4
+              ],
+              "executions": 2
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 9,
+          "instruction_sha256": "8b1b6a42837ff8baeb5f5c142f118379c74ab0990d734a0dd45351b391c44781",
+          "instructions": {
+            "fill": 15,
+            "wdma": 54,
+            "rdma": 117,
+            "convert": 21,
+            "gather_scatter": 1294,
+            "ncc_join": 9,
+            "ddr_publish": 34,
+            "gemm": 12,
+            "elementwise": 1066,
+            "ddr_acquire": 41
+          },
+          "descriptor_bytes": {
+            "wdma": 1106848,
+            "rdma": 10568736,
+            "gather_scatter": 13041328
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 28848,
+            "32": 10240,
+            "64": 512,
+            "128": 9499648,
+            "256": 30720,
+            "512": 16384,
+            "1024": 21504,
+            "2048": 4096,
+            "4096": 24576,
+            "16384": 524288,
+            "32640": 522240,
+            "32768": 524288,
+            "130816": 261632,
+            "131072": 524288,
+            "261888": 523776
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                2048,
+                256,
+                1
+              ],
+              "executions": 8
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                256,
+                4
+              ],
+              "executions": 2
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                256,
+                128,
+                4
+              ],
+              "executions": 2
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 10,
+          "instruction_sha256": "23645adc93de1d7fca008dfedd77081866074a8ff00a5af43fee98503addfb57",
+          "instructions": {
+            "fill": 17,
+            "wdma": 54,
+            "rdma": 117,
+            "convert": 25,
+            "gather_scatter": 1316,
+            "ncc_join": 10,
+            "ddr_publish": 34,
+            "gemm": 12,
+            "elementwise": 1091,
+            "ddr_acquire": 41,
+            "bit2fp": 1,
+            "mask_move": 1
+          },
+          "descriptor_bytes": {
+            "wdma": 1116032,
+            "rdma": 10585152,
+            "gather_scatter": 12799232
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 35072,
+            "32": 10240,
+            "64": 512,
+            "128": 9505792,
+            "256": 31232,
+            "512": 16384,
+            "1024": 26624,
+            "2048": 4096,
+            "4096": 24576,
+            "16384": 524288,
+            "32768": 524288,
+            "130816": 523264,
+            "131072": 1048576
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                2048,
+                256,
+                1
+              ],
+              "executions": 8
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                256,
+                4
+              ],
+              "executions": 2
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                256,
+                128,
+                4
+              ],
+              "executions": 2
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 11,
+          "instruction_sha256": "96aff08a0559e9972e1be6c40af6daeb88495f538dd5a16b803573625f66d7f6",
+          "instructions": {
+            "fill": 15,
+            "wdma": 54,
+            "rdma": 117,
+            "convert": 21,
+            "gather_scatter": 1294,
+            "ncc_join": 9,
+            "ddr_publish": 34,
+            "gemm": 12,
+            "elementwise": 1066,
+            "ddr_acquire": 41
+          },
+          "descriptor_bytes": {
+            "wdma": 1106848,
+            "rdma": 10568736,
+            "gather_scatter": 13041328
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 28848,
+            "32": 10240,
+            "64": 512,
+            "128": 9499648,
+            "256": 30720,
+            "512": 16384,
+            "1024": 21504,
+            "2048": 4096,
+            "4096": 24576,
+            "16384": 524288,
+            "32640": 522240,
+            "32768": 524288,
+            "130816": 261632,
+            "131072": 524288,
+            "261888": 523776
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                2048,
+                256,
+                1
+              ],
+              "executions": 8
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                256,
+                4
+              ],
+              "executions": 2
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                256,
+                128,
+                4
+              ],
+              "executions": 2
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 12,
+          "instruction_sha256": "57d5095103a85cc25a3fe3e25f1101546a0abd76b303ae98a01e6b82995c19e9",
+          "instructions": {
+            "fill": 17,
+            "wdma": 54,
+            "rdma": 117,
+            "convert": 25,
+            "gather_scatter": 1316,
+            "ncc_join": 10,
+            "ddr_publish": 34,
+            "gemm": 12,
+            "elementwise": 1091,
+            "ddr_acquire": 41,
+            "bit2fp": 1,
+            "mask_move": 1
+          },
+          "descriptor_bytes": {
+            "wdma": 1116032,
+            "rdma": 10585152,
+            "gather_scatter": 12799232
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 35072,
+            "32": 10240,
+            "64": 512,
+            "128": 9505792,
+            "256": 31232,
+            "512": 16384,
+            "1024": 26624,
+            "2048": 4096,
+            "4096": 24576,
+            "16384": 524288,
+            "32768": 524288,
+            "130816": 523264,
+            "131072": 1048576
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                2048,
+                256,
+                1
+              ],
+              "executions": 8
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                256,
+                4
+              ],
+              "executions": 2
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                256,
+                128,
+                4
+              ],
+              "executions": 2
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 13,
+          "instruction_sha256": "4d03c76dbfa68ee2054e30c0fafca23272d0768dcaa2b5da6554c9ca8e334dcf",
+          "instructions": {
+            "fill": 15,
+            "wdma": 54,
+            "rdma": 117,
+            "convert": 21,
+            "gather_scatter": 1294,
+            "ncc_join": 9,
+            "ddr_publish": 34,
+            "gemm": 12,
+            "elementwise": 1066,
+            "ddr_acquire": 41
+          },
+          "descriptor_bytes": {
+            "wdma": 1106848,
+            "rdma": 10568736,
+            "gather_scatter": 13041328
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 28848,
+            "32": 10240,
+            "64": 512,
+            "128": 9499648,
+            "256": 30720,
+            "512": 16384,
+            "1024": 21504,
+            "2048": 4096,
+            "4096": 24576,
+            "16384": 524288,
+            "32640": 522240,
+            "32768": 524288,
+            "130816": 261632,
+            "131072": 524288,
+            "261888": 523776
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                2048,
+                256,
+                1
+              ],
+              "executions": 8
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                256,
+                4
+              ],
+              "executions": 2
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                256,
+                128,
+                4
+              ],
+              "executions": 2
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 14,
+          "instruction_sha256": "781d78442f87e5fbe477f52b8079c5b251ea02bf90bcb9a7b35cc82d83af2bdf",
+          "instructions": {
+            "fill": 17,
+            "wdma": 54,
+            "rdma": 117,
+            "convert": 25,
+            "gather_scatter": 1316,
+            "ncc_join": 10,
+            "ddr_publish": 34,
+            "gemm": 12,
+            "elementwise": 1091,
+            "ddr_acquire": 41,
+            "bit2fp": 1,
+            "mask_move": 1
+          },
+          "descriptor_bytes": {
+            "wdma": 1116032,
+            "rdma": 10585152,
+            "gather_scatter": 12799232
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 35072,
+            "32": 10240,
+            "64": 512,
+            "128": 9505792,
+            "256": 31232,
+            "512": 16384,
+            "1024": 26624,
+            "2048": 4096,
+            "4096": 24576,
+            "16384": 524288,
+            "32768": 524288,
+            "130816": 523264,
+            "131072": 1048576
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                2048,
+                256,
+                1
+              ],
+              "executions": 8
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                256,
+                4
+              ],
+              "executions": 2
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                256,
+                128,
+                4
+              ],
+              "executions": 2
+            }
+          ],
+          "small_inner_witness": []
+        },
+        {
+          "tile": 15,
+          "instruction_sha256": "810576628765d8c60bd5d5d4d825e1c1f056a69f6bf438955718f8d8fb976a97",
+          "instructions": {
+            "fill": 15,
+            "wdma": 54,
+            "rdma": 117,
+            "convert": 21,
+            "gather_scatter": 1294,
+            "ncc_join": 7,
+            "ddr_publish": 34,
+            "ddr_acquire": 41,
+            "gemm": 12,
+            "elementwise": 1066
+          },
+          "descriptor_bytes": {
+            "wdma": 1106848,
+            "rdma": 10568736,
+            "gather_scatter": 13041328
+          },
+          "gs_bytes_by_inner_bytes": {
+            "2": 524288,
+            "4": 28848,
+            "32": 10240,
+            "64": 512,
+            "128": 9499648,
+            "256": 30720,
+            "512": 16384,
+            "1024": 21504,
+            "2048": 4096,
+            "4096": 24576,
+            "16384": 524288,
+            "32640": 522240,
+            "32768": 524288,
+            "130816": 261632,
+            "131072": 524288,
+            "261888": 523776
+          },
+          "gemm_shape_counts": [
+            {
+              "m_k_n_batch": [
+                1,
+                2048,
+                256,
+                1
+              ],
+              "executions": 8
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                128,
+                256,
+                4
+              ],
+              "executions": 2
+            },
+            {
+              "m_k_n_batch": [
+                1,
+                256,
+                128,
+                4
+              ],
+              "executions": 2
+            }
+          ],
+          "small_inner_witness": []
+        }
+      ],
+      "profile_record": "docs/data/board-performance/decode-spatial-regression-20260909.json"
+    }
+  ],
+  "prefill_profile": {
+    "program": {
+      "program_manifest_sha256": "sha256:50b4cb715d050d27bd9ba55e2ac69ffae569f61b9101bceefbb1ed91376cd439",
+      "target_identity": "wafer-tx81-single-card",
+      "launch": {
+        "kind": "kernel",
+        "form": "grid",
+        "entry_abi": "tile-major-pointer-table",
+        "phases": [
+          "main"
+        ]
+      },
+      "card_count": 1,
+      "tile_count": 16,
+      "site_correlation_basis": "target-call-ordinal-ssa-position",
+      "record_abi": "wafer-tx81-profiler-record"
+    },
+    "source": "build/test/search-board/coupled-prefill-profile-summary.json",
+    "engine_active_ns_range": {
+      "fu": [
+        277505680,
+        278041857
+      ],
+      "ct": [
+        26368074,
+        26369903
+      ],
+      "ne": [
+        2549760,
+        2549760
+      ],
+      "rdma": [
+        8418784,
+        9162124
+      ],
+      "wdma": [
+        60093,
+        71636
+      ],
+      "tdma": [
+        241079999,
+        241082190
+      ]
+    },
+    "primary_ns": 277009003,
+    "trace_limit_per_tile": 20000
+  },
+  "limitations": [
+    "三条最新整模型计时都早于 b14f03dd native psum 修复；不能代替当前 HEAD 性能。",
+    "LLaMA 80.119 ms 与 decode 14.788 ms 缺匹配 profile；旧 17.635/11.443 ms 仅提供结构/热点对照，不能据此分摊退化毫秒。",
+    "decode 5.296 ms 的 audit 仍在，但原 prepared 目录已变为 14.788 ms package；不把现目录 IR 当 5.296 ms 产物。",
+    "没有证明全部 GS、transpose、broadcast、join 都可删除；变换仍需 physical relation、alias/effect/lifetime 与硬件合同。"
+  ]
+}
