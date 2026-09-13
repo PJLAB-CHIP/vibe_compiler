@@ -212,8 +212,18 @@ mlir::FailureOr<int64_t> getStaticViewOffsetBytes(mlir::Operation *op,
   return offsetBytes;
 }
 
-mlir::FailureOr<DynamicSubviewAddressPlan>
-analyzeDynamicTensorSubviewAddressing(mlir::memref::SubViewOp subviewOp) {
+bool hasDynamicSubviewAddress(mlir::memref::SubViewOp subviewOp) {
+  if (!subviewOp.getOffsets().empty())
+    return true;
+  llvm::SmallVector<int64_t, 4> strides;
+  int64_t offset = 0;
+  return mlir::failed(mlir::getStridesAndOffset(subviewOp.getSourceType(),
+                                              strides, offset)) ||
+         mlir::ShapedType::isDynamic(offset);
+}
+
+mlir::FailureOr<TensorSubviewAddress>
+analyzeTensorSubviewAddressing(mlir::memref::SubViewOp subviewOp) {
   mlir::MemRefType sourceType = subviewOp.getSourceType();
   mlir::MemRefType resultType = subviewOp.getType();
   MemoryAttr sourceMemory = getWaferMemoryAttr(sourceType);
@@ -274,7 +284,9 @@ analyzeDynamicTensorSubviewAddressing(mlir::memref::SubViewOp subviewOp) {
            << "unsupported_target_address: dynamic tensor subview "
               "requires a byte-addressable element type";
 
-  DynamicSubviewAddressPlan plan;
+  // The converted source address already contains its own (possibly dynamic)
+  // layout offset. Only this subview's relative offsets belong in the delta.
+  TensorSubviewAddress plan;
   for (auto [offset, sourceStride] :
        llvm::zip_equal(staticOffsets, sourceStrides)) {
     int64_t byteStride = 0;
@@ -293,10 +305,6 @@ analyzeDynamicTensorSubviewAddressing(mlir::memref::SubViewOp subviewOp) {
              << "target_address_overflow: dynamic tensor subview static "
                 "byte offset overflows int64";
   }
-  if (plan.dynamicByteStrides.empty())
-    return subviewOp.emitError()
-           << "unsupported_target_address: dynamic tensor subview "
-              "addressing requires at least one dynamic offset";
   if (plan.dynamicByteStrides.size() != subviewOp.getOffsets().size())
     return subviewOp.emitError()
            << "unsupported_target_address: dynamic tensor subview offset "
@@ -364,8 +372,8 @@ getStaticIndexRange(mlir::memref::SubViewOp subviewOp,
 
 static mlir::LogicalResult
 verifyDynamicTensorSubviewBounds(mlir::memref::SubViewOp subviewOp) {
-  mlir::FailureOr<DynamicSubviewAddressPlan> plan =
-      analyzeDynamicTensorSubviewAddressing(subviewOp);
+  mlir::FailureOr<TensorSubviewAddress> plan =
+      analyzeTensorSubviewAddressing(subviewOp);
   if (mlir::failed(plan))
     return mlir::failure();
 
@@ -1156,7 +1164,7 @@ mlir::LogicalResult verifyTargetInstructionFormats(mlir::ModuleOp moduleOp) {
 mlir::LogicalResult verifyTargetSubviewAddresses(mlir::ModuleOp moduleOp) {
   mlir::WalkResult result =
       moduleOp.walk([&](mlir::memref::SubViewOp subviewOp) {
-        if (subviewOp.getOffsets().empty())
+        if (!hasDynamicSubviewAddress(subviewOp))
           return mlir::WalkResult::advance();
         if (mlir::failed(verifyDynamicTensorSubviewBounds(subviewOp)))
           return mlir::WalkResult::interrupt();

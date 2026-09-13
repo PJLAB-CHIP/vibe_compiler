@@ -28,6 +28,16 @@
 - 防复发：同一长段嵌套输入检查exact路径、局部state与actual Instr/completion/SPM，配对覆盖真实分支、动态trip/step、
   零次completion和跨worker冲突。分析变快不等于设备变快，产品需另作fresh资格。
 
+## 静态child subview可以继承动态parent offset
+
+- 根因：child自己的offset operand都是常量，不代表其result type拥有静态绝对offset。动态parent已使source/result type
+  offset未知，直接相减会拒绝合法嵌套view。
+- 修复模式：Tensor布局从转换后的source首元素地址出发，只加入该op的 `offset × sourceStride × elementBytes`；
+  parent动态位移已经在SSA地址中，不得重复加入。地址发射和bounds检查共用分类，静态child也须检查直接source范围。
+  非Tensor物理布局和未知动态stride不能套用这个线性规则。
+- 防复发：rank3、多batch、1024/1025行和block/tail，精确断言动态parent、非零静态child及rank reduction的LLVM地址；
+  必须配合真实source到16-Tile package/no-card。地址lowering通过不等于数值或性能通过。
+
 ## 低精度K分块不能沿用窄输出作为partial
 
 - 现象：完整K的GEMM通过原数值容差，分块后出现大量误差；SPM、地址、输入及循环覆盖均正确。

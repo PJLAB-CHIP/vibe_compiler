@@ -43,7 +43,7 @@ struct DirectDTEEndpointDomain {
   llvm::SmallVector<TileId, 16> availableTileIds;
 };
 
-struct DynamicSubviewAddressPlan {
+struct TensorSubviewAddress {
   int64_t staticByteOffset = 0;
   llvm::SmallVector<int64_t, 4> dynamicByteStrides;
 };
@@ -64,8 +64,9 @@ mlir::FailureOr<int64_t> getPhysicalTraversalElementCount(mlir::Operation *op,
 mlir::FailureOr<int64_t> getStaticViewOffsetBytes(mlir::Operation *op,
                                                   mlir::MemRefType viewType,
                                                   llvm::StringRef role);
-mlir::FailureOr<DynamicSubviewAddressPlan>
-analyzeDynamicTensorSubviewAddressing(mlir::memref::SubViewOp subviewOp);
+mlir::FailureOr<TensorSubviewAddress>
+analyzeTensorSubviewAddressing(mlir::memref::SubViewOp subviewOp);
+bool hasDynamicSubviewAddress(mlir::memref::SubViewOp subviewOp);
 mlir::FailureOr<int64_t> getStaticUInt32SPMAddress(mlir::Operation *op,
                                                    mlir::Value value,
                                                    llvm::StringRef role);

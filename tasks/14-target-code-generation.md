@@ -53,6 +53,23 @@ psum只读、destination独占写入，两者physical storage必须不重叠；�
 同址复用及bias/activation不隐式打开。本轮有限三段K实卡确认两种dtype的最终结果和两个partial回读/guard；oneDNN未取得psum资格，
 该形式由formal backend执行，不能忽略第三个输入沿用二输入资格。
 
+### Tensor subview的相对地址
+
+输入为verified Instr中的 `memref.subview` 与已经转换的source首元素地址；输出为i64字节地址，直接消费者是
+TargetCall。Tensor布局的通用规则是 `sourceAddress + Σ(offset[i] × sourceStride[i] × elementBytes)`，
+offset来自该op的mixed offsets，stride来自直接source type。Source自身的动态offset已包含在SSA地址中，不能再次相加，
+也不能因静态child继承了动态type offset而要求两个绝对offset相减。
+该规则适用于静态或有界动态offset、rank reduction及嵌套view；非Tensor物理布局仍使用其既有物理地址合同。
+不推测动态stride/shape、bitpacked或越界地址，不改变spatial/temporal选择、allocation和completion。
+MLIR的[subview定义](https://mlir.llvm.org/docs/Dialects/MemRef/#memrefsubview-memrefsubviewop)与pinned
+`SubViewOp::inferResultType`均以直接source的offset/strides组合；本层只发射相同关系的字节算术。
+
+| 覆盖 | exact结果 / typed failure | 直接下游 |
+| --- | --- | --- |
+| rank3、1024/1025行、多batch及64行block，动态parent后静态child与非零列offset | LLVM只加入一次parent动态地址和child相对位移；main/tail的RDMA参数精确 | LLVM translation及batch共享RHS真实source→16-Tile package/no-card |
+| 动态child、rank reduction、SPM/DDR | 继续使用同一stride字节化和有界offset证明；不重新分配或复制view | 现有dynamic subview及shape-view lowering矩阵 |
+| 未知offset/动态stride/size、越界、CX/NCx动态view | 原typed拒绝仍成立；继承动态地址的静态child也检查直接source范围；地址发射与bounds verification共用同一动态地址判定 | 新增静态child越界反例、现有负例与target verifier |
+
 ## 2. 稳定对象与身份
 
 CT reduce只接收11号verified rank4 NHWC/NCx输入和保留归约轴的rank4输出，CRT shape直接取实际输入memref的四个维度。

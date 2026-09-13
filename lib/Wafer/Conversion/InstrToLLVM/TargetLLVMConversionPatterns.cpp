@@ -319,7 +319,7 @@ struct TargetSubViewOpLowering
       return subviewOp.emitError()
              << "unsupported_target_address: subview must preserve a Wafer "
                 "i64 address";
-    if (subviewOp.getOffsets().empty()) {
+    if (!hasDynamicSubviewAddress(subviewOp)) {
       mlir::FailureOr<int64_t> delta =
           getStaticViewDeltaBytes(subviewOp, sourceType, resultType);
       if (mlir::failed(delta))
@@ -330,8 +330,8 @@ struct TargetSubViewOpLowering
       return mlir::success();
     }
 
-    mlir::FailureOr<DynamicSubviewAddressPlan> plan =
-        analyzeDynamicTensorSubviewAddressing(subviewOp);
+    mlir::FailureOr<TensorSubviewAddress> plan =
+        analyzeTensorSubviewAddressing(subviewOp);
     if (mlir::failed(plan))
       return mlir::failure();
     if (adaptor.getOffsets().size() != plan->dynamicByteStrides.size())
