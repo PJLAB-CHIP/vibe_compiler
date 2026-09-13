@@ -125,6 +125,7 @@ add_mlir_library(WaferStableHLOPipelines
   LINK_LIBS PUBLIC
   WaferLinalgTransforms
   WaferStableHLOToLinalg
+  WaferStableHLOTransforms
   WaferTransforms
   MLIRPass
   MLIRTransforms

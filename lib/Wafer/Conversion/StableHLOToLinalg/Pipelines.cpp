@@ -19,6 +19,8 @@ void buildNormalizeImportedStablehloPipeline(mlir::OpPassManager &pm) {
 }
 
 void buildLegalizeStablehloToStructuredTensorPipeline(mlir::OpPassManager &pm) {
+  pm.addNestedPass<mlir::func::FuncOp>(
+      createExpandStablehloBatchNormInferencePass());
   pm.addNestedPass<mlir::func::FuncOp>(createPromoteStablehloLogisticPass());
   pm.addPass(createLegalizeStablehloToLinalgPass());
 }

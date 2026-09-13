@@ -8,6 +8,11 @@ def VerifyFrontendProgramPass
   let summary = "Verify imported frontend IR markers and bounded boundaries";
 }
 
+def ExpandStablehloBatchNormInferencePass
+    : Pass<"wafer-expand-stablehlo-batch-norm-inference", "mlir::func::FuncOp"> {
+  let summary = "Expand static floating-point BatchNorm inference in its source dtype";
+}
+
 def FoldDefaultStablehloExecutionIdsPass
     : Pass<"wafer-fold-default-stablehlo-execution-ids", "mlir::ModuleOp"> {
   let summary =

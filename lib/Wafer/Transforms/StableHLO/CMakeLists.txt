@@ -1,4 +1,5 @@
 add_mlir_library(WaferStableHLOTransforms
+  ExpandStablehloBatchNormInference.cpp
   FrontendVerification.cpp
   FoldStablehloConstants.cpp
   SPMD/ApplyDefaultSpmdSharding.cpp
@@ -16,6 +17,7 @@ add_mlir_library(WaferStableHLOTransforms
   MLIRPass
   MLIRSupport
   MLIRTensorDialect
+  MLIRTransforms
 )
 
 if(WAFER_ENABLE_IMPORTER_DEPS)

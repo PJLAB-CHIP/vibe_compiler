@@ -113,6 +113,17 @@ object直连C++ compiler的第二入口。产品adapter只负责capture/export�
 effect、写入metadata与外部数据引用并调用共享verifier；workload corpus、seed、CPU oracle、模型名分支、target topology和
 optimization policy都留在adapter之外。
 
+PyTorch eval BatchNorm在导出前通过pinned `torch._decomp`的inference分解显式保留opmath：
+FP16/BF16输入和参数在F32计算，输出回到原dtype；F32/F64保持自身精度。只处理typed ATen inference调用，
+不按module名/shape分派，不展开training或改变running statistics。已显式的primitive算术保持原样。
+`native_batch_norm`、`_native_batch_norm_legit`及functional形式的training参数必须是literal false；
+`_native_batch_norm_legit_no_training`复用同一官方分解链。输入仍是原ExportedProgram，输出为同一产品exporter
+消费的分解图；pre-exported StableHLO由05号按自身dtype合法化，不从PyTorch合同反推来源。
+完成覆盖为FP16/BF16/F32、1024/1025/1031、affine有/无、非平凡mean/variance/scale/bias、原模块参数不变、
+分解图全量eager对比，以及portable source→official Linalg的直接下游检查；training和无BN图为不修改分支。
+依据是[PyTorch官方分解](https://github.com/pytorch/pytorch/blob/v2.5.0/torch/_decomp/decompositions.py)
+及仓内pinned版本的`native_batch_norm_helper`；不在adapter手写第二套BatchNorm数值实现。
+
 当前真实PyTorch/XLA路径由产品`wafer.frontend.export_pytorch_program`承载；program IR authority是
 `functions/forward.stablehlo.bc`中的StableHLO portable serialization，text MLIR只作可选诊断
 且不进入program directory；pre-exported input与framework adapter output进入

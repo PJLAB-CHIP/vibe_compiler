@@ -11,7 +11,7 @@ import subprocess
 
 import torch
 
-from wafer.frontend import export_pytorch_program
+from wafer.frontend import _decompose_batch_norm_inference, export_pytorch_program
 
 
 class StaticModel(torch.nn.Module):
@@ -91,6 +91,78 @@ def snapshot(directory: pathlib.Path) -> dict[str, bytes]:
     }
 
 
+def check_batch_norm_precision(output_root: pathlib.Path) -> None:
+    for dtype, extent in ((torch.float16, 1024), (torch.bfloat16, 1025),
+                          (torch.float32, 1031)):
+        for affine in (False, True):
+            model = torch.nn.BatchNorm2d(4, affine=affine).to(dtype).eval()
+            with torch.no_grad():
+                model.running_mean.copy_(torch.tensor([.5, -.8, .2, .9]))
+                model.running_var.copy_(torch.tensor([.05, .7, 1.3, 2.0]))
+                if affine:
+                    model.weight.copy_(torch.tensor([.7, -.4, 1.2, .2]))
+                    model.bias.copy_(torch.tensor([.3, -.2, .4, .1]))
+            value = torch.linspace(-2, 2, 24 * extent).reshape(2, 4, 3, extent).to(dtype)
+            before = {name: tensor.detach().clone()
+                      for name, tensor in model.state_dict().items()}
+            exported = torch.export.export(model, (value,))
+            decomposed = _decompose_batch_norm_inference(torch, exported)
+            with torch.no_grad():
+                torch.testing.assert_close(decomposed.module()(value), model(value))
+            if any("batch_norm" in str(node.target) for node in decomposed.graph.nodes
+                   if node.op == "call_function"):
+                raise RuntimeError("inference decomposition left a BatchNorm call")
+            directory = output_root / f"batch-norm-{dtype}-{affine}"
+            export_pytorch_program(model, (value,), directory)
+            text = subprocess.check_output([
+                os.environ["WAFER_STABLEHLO_TRANSLATE"], "--deserialize",
+                str(directory / "functions" / "forward.stablehlo.bc"),
+            ], text=True)
+            for operation in ("sqrt", "subtract", "multiply", "add"):
+                lines = [line for line in text.splitlines()
+                         if f"stablehlo.{operation} " in line]
+                if not lines or any(not line.rstrip().endswith("xf32>") for line in lines):
+                    raise RuntimeError(f"BatchNorm {operation} lost framework opmath")
+            if "stablehlo.batch_norm" in text:
+                raise RuntimeError("portable source lost inference decomposition")
+            lowered = subprocess.check_output([
+                "wafer-opt", "--wafer-lower-stablehlo-to-linalg",
+            ], input=text, text=True)
+            if "stablehlo." in lowered or "arith.divf" not in lowered:
+                raise RuntimeError("BatchNorm source did not reach structured arithmetic")
+            element = {torch.float16: "f16", torch.bfloat16: "bf16",
+                       torch.float32: "f32"}[dtype]
+            if f"tensor<2x4x3x{extent}x{element}>" not in lowered:
+                raise RuntimeError("BatchNorm output shape/dtype changed")
+            for name, tensor in model.state_dict().items():
+                torch.testing.assert_close(tensor, before[name], rtol=0, atol=0)
+
+    # Exercise the two conditional ATen schemas as well as the module's
+    # dedicated no-training schema, using the same nontrivial runtime values.
+    for operation in (torch.ops.aten.native_batch_norm.default,
+                      torch.ops.aten._native_batch_norm_legit.default):
+        class NativeBatchNorm(torch.nn.Module):
+            def forward(self, x, scale, bias, mean, variance):
+                return operation(x, scale, bias, mean, variance, False, .1, 1e-5)[0]
+
+        native = NativeBatchNorm()
+        inputs = (value, model.weight, model.bias, model.running_mean, model.running_var)
+        exported = torch.export.export(native, inputs)
+        decomposed = _decompose_batch_norm_inference(torch, exported)
+        if decomposed is exported:
+            raise RuntimeError("conditional inference schema was not decomposed")
+        with torch.no_grad():
+            torch.testing.assert_close(decomposed.module()(*inputs), native(*inputs))
+
+    # Training and ordinary primitive graphs do not enter this inference policy.
+    value = torch.ones((2, 4, 3, 1024))
+    for model in (torch.nn.BatchNorm2d(4).train(), StaticBranch()):
+        exported = torch.export.export(model, (value,))
+        if _decompose_batch_norm_inference(torch, exported) is not exported:
+            raise RuntimeError("inference policy changed an unrelated graph")
+    print("batch_norm_inference: numeric_cases=8 source_to_linalg=6 unrelated_unchanged=true")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", type=pathlib.Path, required=True)
@@ -114,6 +186,7 @@ def main() -> None:
     if tuple(parameters) != ("module", "example_inputs", "output_directory"):
         raise RuntimeError("product frontend API exposes non-frontend policy")
     check_convolution_precision(args.output_root)
+    check_batch_norm_precision(args.output_root)
     try:
         export_pytorch_program(DataDependentGraphBreak(), (value,), args.output_root / "bad")
     except Exception:

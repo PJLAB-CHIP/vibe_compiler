@@ -5,7 +5,9 @@
 # RUN: wafer-verify-program --program-dir %t/program | FileCheck %s --check-prefix=VERIFY
 # RUN: wafer-verify-program --program-dir %t/branched | FileCheck %s --check-prefix=BRANCHED
 # RUN: %importer_python -c "import pathlib, subprocess; [subprocess.run(['wafer-verify-program', '--program-dir', str(p)], check=True) for p in pathlib.Path('%t').glob('conv-*')]"
+# RUN: %importer_python -c "import pathlib, subprocess; [subprocess.run(['wafer-verify-program', '--program-dir', str(p)], check=True) for p in pathlib.Path('%t').glob('batch-norm-*')]"
 
+# EXPORT: batch_norm_inference: numeric_cases=8 source_to_linalg=6 unrelated_unchanged=true
 # EXPORT: wafer_frontend_product: portable=true repeat_equal=true graph_break=rejected
 # VERIFY: wafer-verify-program: verified portable StableHLO program parameters=1 constants=0
 # BRANCHED: wafer-verify-program: verified portable StableHLO program parameters=0 constants=0

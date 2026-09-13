@@ -1269,3 +1269,28 @@ Runtime隔离上下文并退出；没有retry、reset或provider finalizer调用
 [`expanded-matrix-initial-20260914.json`](data/board-performance/expanded-matrix-initial-20260914.json)。
 原始主机报告位于`build/test/model-performance/`的`expanded-gemm-no-card.log`、`batch-shared-rhs-fixed-no-card.log`、
 `vision-matrix-no-card.log`及`numeric-localization/`；诊断产物只作本轮审计，不能替代新输入或最终全矩阵验收。
+
+## 2026-09-14：BatchNorm主机合法化与ResNet编译热点
+
+本次没有执行设备程序。首轮ResNet在official StableHLO→Linalg后留下20个BN inference，当前pinned converter缺少该算子转换。
+已补function级通用分解：严格按StableHLO的feature axis、dtype及center/divide/scale/offset顺序生成现有算子，
+不采用会重新结合浮点运算的affine改写。PyTorch输入另外复用pinned官方inference分解，先把FP32 opmath写入source；
+低精度输出边界保持原样。两条入口共享正式Linalg下游，没有模型名分支或新增板测runner。
+
+| 验证边界 | 本轮结果 |
+| --- | --- |
+| 原PyTorch inference与分解图 | 8组全量主机数值对比通过；6组覆盖FP16/BF16/F32、affine有/无及1024/1025/1031，另外两组检查native调用的正式导出形式 |
+| Portable source→Linalg | 上述6组通过source verifier和official Linalg，F32 scalar算术及输出dtype保留；原module参数不变 |
+| StableHLO机制 | feature首/中/末轴、FP16/BF16/F32/F64、幂等、dynamic/quantized拒绝、training/primitive保留通过 |
+| 主机门禁 | 24项IR lit及更新后的产品frontend测试通过；Conversion/Transforms/Frontend/Pipeline四组unit通过；完整canonical增量构建及Ninja no-op通过 |
+| ResNet整网 | 原始BN图已能到无StableHLO残留的Linalg；新opmath图的完整normalization通过。224/1024/1025正式search/package/no-card尚未收口，不能签board-ready或数值通过 |
+
+新ResNet source包含120个convert、121个reshape及20组F32 norm算术。独立named pipeline回放总计154.5401秒，
+`NormalizeStructuredTensorGraphPass`占154.4001秒；official legalization约0.0082秒，进程峰值RSS40,216 KiB。
+输出包含345个`linalg.generic`及20个F32 sqrt/divide，已经没有StableHLO residual。
+两次独立debugger采样落在dynamic e-graph applier，分别经过向量复制和`RelationService::validate_compute`。
+当前证据定位到规则展开/重复检查热点，尚未证明最终根因；这不是设备耗时，不构成优化收益或三轮调优的完成证据。
+
+身份、work count与主机门禁索引见[`batchnorm-host-20260914.json`](data/board-performance/batchnorm-host-20260914.json)。
+最终compiler SHA256为`3fda35845d0cdbe171c1c2b650f5ad96fd255d363088944673abca3130fe5268`。
+本次没有重新编译或执行LLaMA，也没有新的实卡性能结论；原快版本对照与最终冻结版本全矩阵验收要求继续保留。

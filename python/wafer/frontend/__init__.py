@@ -65,8 +65,46 @@ def _promote_biased_convolution(torch: Any, exported_program: Any) -> Any:
     )
 
 
+def _decompose_batch_norm_inference(torch: Any, exported_program: Any) -> Any:
+    """Expose the framework's inference opmath before StableHLO capture."""
+    inference = torch.ops.aten._native_batch_norm_legit_no_training.default
+    conditional = (
+        torch.ops.aten.native_batch_norm.default,
+        torch.ops.aten._native_batch_norm_legit.default,
+        torch.ops.aten._native_batch_norm_legit_functional.default,
+    )
+    if not any(
+        node.op == "call_function"
+        and (node.target == inference or (
+            node.target in conditional
+            and (node.args[5] if len(node.args) > 5
+                 else node.kwargs.get("training")) is False
+        ))
+        for node in exported_program.graph.nodes
+    ):
+        return exported_program
+
+    from torch._decomp import get_decompositions
+
+    decompositions = get_decompositions((inference, *conditional))
+
+    def inference_only(decomposition):
+        def decompose(input, weight, bias, running_mean, running_var,
+                      training, momentum, eps):
+            if training is not False:
+                return NotImplemented
+            return decomposition(input, weight, bias, running_mean, running_var,
+                                 training, momentum, eps)
+        return decompose
+
+    for operation in conditional:
+        decompositions[operation] = inference_only(decompositions[operation])
+    return exported_program.run_decompositions(decompositions)
+
+
 def _export_stablehlo(torch: Any, stablehlo: Any, exported_program: Any) -> Any:
     exported_program = _promote_biased_convolution(torch, exported_program)
+    exported_program = _decompose_batch_norm_inference(torch, exported_program)
     options = stablehlo.StableHLOExportOptions()
     options.export_weights = True
     options.save_weights = True

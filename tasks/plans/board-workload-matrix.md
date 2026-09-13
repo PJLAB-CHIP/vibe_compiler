@@ -49,7 +49,8 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
    接入时按实际framework返回dtype保留结果，不能为沿用旧runner而插入额外cast。
 4. `CompilerTesting.cpp`中的 `SharedInput` 仅接受none policy，开启 `shareReadOnlyInputs`；baseline及search都调用
    同一个 `materializeReadOnlyInputSharing`。现有接口不保证可以对任意search winner直接生成固定其所有其它选择的A/B。
-5. ResNet正式StableHLO→Linalg后仍残留20个 `stablehlo.batch_norm_inference`；ViT的GELU导出为
+5. ResNet首轮的20个 `stablehlo.batch_norm_inference`残留已补通用合法化，PyTorch导出同时保留官方F32 opmath分解；
+   直接source→Linalg及定向主机数值已通过，整网package/no-card尚未闭合。ViT的GELU导出为
    `stablehlo.custom_call @mhlo.erf`，当前source verifier拒绝。YOLO上采样/拼接/Detect及LLaMA整数输入的完整产品链仍待验证。
    源码缺少专门op名字不能作为“不支持”的结论；应以实际导出图、正式lowering与typed结果确定缺口。
 
@@ -330,7 +331,7 @@ ResNet/ViT/完整LM/GQA的1025、GEMM4097³和batch GEMM混合tail作为泛化�
 | GEMM4096³ FP16/BF16、4097³ FP16 | 42次actual全部容量拒绝、0 accepted；已取得实际capacity/refinement计数 | 追实际allocation反馈与temporal提案覆盖，不提高全局预算掩盖问题 |
 | batch共享RHS整除 | 原有2个accepted却在静态child继承动态parent offset时target lowering失败；14号相对地址修复后no-card通过；实卡4.616 ms，1,077/4,194,304项超原容差 | 地址编译缺陷已有通用修复；独立追GEMM数值，不标board通过 |
 | batch共享RHS尾部 | 原预算42次未生成可执行包 | 与大GEMM一同审查实际容量反馈及多轴覆盖 |
-| ResNet-18三种尺寸 | 正式导出成功；同一named pipeline定位20个BN inference残留，尚未到search | 补通用BN legalization及1024/1025直接下游覆盖 |
+| ResNet-18三种尺寸 | 首轮BN残留已补通用合法化及PyTorch opmath分解；定向主机数值和official Linalg已通过，整网package/no-card尚未完成 | 继续三种尺寸完整编译，按实际阶段追后续失败；独立回放已量到e-graph耗时热点 |
 | ViT两种长度 | 正式导出成功；source verifier拒绝GELU的Erf custom call；LayerNorm同时以BN training表达 | 在正式source/转换owner闭合Erf及normalization语义，不替换原模块 |
 | Q/K/V独立诊断 | current default search包/no-card已完成，单次设备执行60秒未完成、runtime隔离上下文并退出；无回读结论 | 停止设备批次，不retry/reset；保留主机IR/ABI定位，设备恢复后才可重签板端 |
 
@@ -341,3 +342,17 @@ FP16 LLaMA在地址发射修改后完成no-card，17分21.50秒、峰值RSS 2,79
 ResNet/ViT全部五种尺寸的原始CPU eager输出均已验证shape、FP16和finite；正式compiler边界仍按表中失败登记。
 QKV超时之后没有再发起设备执行；三轮性能调优、其余新增模型及最终全矩阵验收均未完成。
 各次原始身份、数值及计时见统一[性能记录](../../docs/board-performance-results.md)的同日扩展矩阵小节。
+
+### BatchNorm主机修复检查点
+
+02/05号分别拥有PyTorch inference opmath与pre-exported StableHLO自身dtype的合同。实现只按typed ATen/StableHLO op、
+feature axis和source dtype工作；没有ResNet名称分支。8组原始PyTorch主机数值对比通过，其中6组覆盖FP16/BF16/F32、
+affine有/无与1024/1025/1031，并经portable source→official Linalg；另两组覆盖原始native与functionalized ATen入口。
+StableHLO机制覆盖feature首/中/末轴、FP16/BF16/F32/F64、幂等、dynamic/quantized拒绝及training/primitive保留。
+24项IR lit加产品frontend测试、四组受影响unit、canonical完整增量构建及Ninja no-op通过。
+
+ResNet原始BN图经同一named pipeline已无StableHLO残留；新导出图明确保留120个convert及其F32算术。
+新图完整normalization回放154.54秒，其中`NormalizeStructuredTensorGraphPass`154.4001秒、峰值RSS40,216 KiB。
+两次独立debugger采样都位于dynamic e-graph applier，其中一次经过`RelationService::validate_compute`；
+这定位了主机热点，但尚不足以断言最终根因或改变搜索预算。三个整网配置的正式search/no-card另行推进，
+不把这次source→Linalg或主机PyTorch通过当作package、板端数值或三轮性能调优完成。

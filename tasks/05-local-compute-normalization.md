@@ -109,6 +109,27 @@ cast与padding；padding重建为源dtype。算术乘加、顺序、result和bia
 该变换由`wafer-fold-convolution-input-casts`在official conversion后运行，结果直接交给physical planning；这是精确的
 scalar扩宽融合，不属于access-relation e-graph的算术等价探索。不能根据shape/name或历史输入猜测F32值可降为FP16。
 
+### 3.3 BatchNorm inference的显式分解
+
+输入为verified static-ranked浮点`stablehlo.batch_norm_inference`及其`feature_index`、epsilon和四个feature向量。
+`Transforms/StableHLO`的function pass在official StableHLO-to-Linalg之前，将其按
+[StableHLO规范](https://openxla.org/stablehlo/spec#batch_norm_inference)展开为
+`(operand - broadcast(mean)) / broadcast(sqrt(variance + epsilon)) * broadcast(scale) + broadcast(offset)`。
+feature向量只沿op声明的轴广播；epsilon从其F32 attribute舍入到当前element type，所有算术保持原dtype和上述顺序。
+输出仍为verified StableHLO，直接消费者是唯一official converter；production和named pipeline调用同一builder。
+不选择layout、tiling、fusion或transport，不处理training/grad或quantized/dynamic inference，不重排已有primitive图。
+
+Pinned XLA `batchnorm_expander.cc`把inference改写为预计算scale/shift的affine形式；该形式会重新结合浮点运算，
+本项选择规范中的center/divide/scale/offset顺序，复用pinned StableHLO op builder和official conversion。
+PyTorch的opmath由02号frontend在进入StableHLO之前显式表达；本pass不猜测StableHLO来源或扩大其dtype。
+
+| 输入等价类/分支 | exact输出或failure | 直接下游witness |
+| --- | --- | --- |
+| rank3/4，feature首/中/末轴，FP16/BF16/F32/F64，1024/1025/1031 | 广播map与feature_index相同；epsilon、subtract→sqrt/divide→multiply→add顺序及dtype准确；重复执行幂等 | official Linalg scalar body与完整返回shape，无BatchNorm inference残留 |
+| dynamic shape或quantized inference | 匹配前明确拒绝，不能产生部分分解或假定shape | partial conversion失败；不影响其它op |
+| training/grad或已经显式的primitive | 不作为inference重写；不修改其算术 | function pass局部保留；后续不支持仍由原边界报告 |
+| 原始PyTorch BatchNorm及ResNet整网 | 同一module导出、全部reference及参数保持；不按模型名分派 | source→正式TensorProgram及package/no-card分别登记，实卡资格另签 |
+
 ## 4. Attention Semantic Normalization
 
 ### 4.1 Match边界
