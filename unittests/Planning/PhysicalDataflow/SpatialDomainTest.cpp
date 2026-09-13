@@ -231,6 +231,60 @@ TEST_F(SpatialDomainTest,
   }
 }
 
+TEST_F(SpatialDomainTest, DirectionCursorCoversAllBalancedSupportsAndRatios) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (int64_t side : {2, 4}) {
+      auto module = parse(withTopology(mapSource(extent, "f16"), side, side));
+      std::string detail;
+      auto built = build(*module, detail);
+      ASSERT_TRUE(built) << detail;
+      auto anchor = built->domain.getProposals().front();
+      SpatialDirectionCursor cursor;
+      std::set<std::vector<int64_t>> actual;
+      std::set<std::vector<size_t>> firstSupports;
+      const size_t supportCount = side == 2 ? 6 : 7;
+      while (true) {
+        auto next = built->domain.getNextDirectionPlan(anchor, cursor);
+        if (next.kind == SpatialPlanSuccessorKind::End)
+          break;
+        ASSERT_EQ(next.kind, SpatialPlanSuccessorKind::Successor);
+        ASSERT_TRUE(next.plan);
+        ASSERT_TRUE(built->domain.contains(*next.plan));
+        const auto &node = next.plan->nodes.front();
+        std::vector<int64_t> factors;
+        std::vector<size_t> support;
+        for (const auto &axis : node.axes) {
+          EXPECT_EQ(axis.scheme, IteratorPartitionScheme::BalancedParts);
+          factors.push_back(axis.parameter);
+          if (axis.parameter > 1)
+            support.push_back(axis.iterator);
+        }
+        ASSERT_TRUE(actual.insert(factors).second);
+        ASSERT_LT(actual.size(), 1000u);
+        if (actual.size() <= supportCount) {
+          EXPECT_TRUE(firstSupports.insert(support).second);
+        }
+        auto assignment = built->domain.close(*next.plan, &detail);
+        ASSERT_TRUE(mlir::succeeded(assignment)) << detail;
+        expectExactShardCoverage(
+            assignment->nodes.front(),
+            built->domain.getProblem().getRoots().front().iteratorExtents);
+        auto evaluation = built->domain.evaluate(built->dag, *next.plan);
+        ASSERT_TRUE(evaluation.isSatisfied());
+      }
+      std::set<std::vector<int64_t>> expected;
+      const int64_t tiles = side * side;
+      for (int64_t batch = 1; batch <= 2; ++batch)
+        for (int64_t rows = 1; rows <= tiles; ++rows)
+          for (int64_t columns = 1; columns <= tiles; ++columns)
+            if (batch * rows * columns <= tiles && batch * rows * columns > 1)
+              expected.insert({batch, rows, columns});
+      EXPECT_EQ(actual, expected);
+      EXPECT_EQ(firstSupports.size(), supportCount);
+    }
+  }
+}
+
 TEST_F(SpatialDomainTest,
        TinyRawSuccessorsMatchIndependentSchemeAndEmbeddingOracle) {
   // Extent 4 and three Tiles are intentionally bounded: UniformExtent(3)

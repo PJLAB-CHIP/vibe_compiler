@@ -2,6 +2,7 @@
 
 #include "SearchCurrentIR.h"
 
+#include "CapacityFeedback.h"
 #include "PhysicalDataflowInstrumentation.h"
 #include "StructuredProgramAnalysis.h"
 #include "TemporalProposals.h"
@@ -167,6 +168,8 @@ static mlir::FailureOr<CurrentCandidate>
 cloneCandidate(mlir::ModuleOp source,
                const StructuredMaterializationRelations &relations,
                mlir::IRMapping &mapping, std::string &detail) {
+  support::ScopedCompileTimingSpan timing("search-phase", "current-ir",
+                                          "clone-candidate");
   mlir::Operation *cloned = source->clone(mapping);
   auto module = mlir::dyn_cast<mlir::ModuleOp>(cloned);
   if (!module) {
@@ -336,36 +339,59 @@ public:
         auto failure = initialize();
         if (failure)
           return finish(std::move(*failure));
+        return yield();
       }
-      TemporalWork work = nextTemporalWork();
-      temporalPhase = (static_cast<unsigned>(work) + 1) % 4;
-      if (work != TemporalWork::Resume) {
-        auto failure = startTemporal(work);
-        if (failure)
-          return finish(std::move(*failure));
-        if (pending.empty()) {
-          exhausted = true;
-          return {{}, 0, CandidateContinuation::Exhausted};
+      if (stage == Stage::SelectTemporal) {
+        const bool continuing = !pending.empty();
+        if (statistics && continuing)
+          ++statistics->temporalBackpressureTurns;
+        TemporalWork work = nextTemporalWork();
+        if (!continuing) {
+          temporalPhase = (static_cast<unsigned>(work) + 1) % 4;
+          currentContinuation =
+              work == TemporalWork::Repair ? CandidateContinuation::Repair
+              : work == TemporalWork::Improve || work == TemporalWork::Resume
+                  ? CandidateContinuation::Improve
+                  : CandidateContinuation::Explore;
         }
+        if (work == TemporalWork::Resume && pending.empty()) {
+          pending.push_back(std::move(*realization));
+          realization.reset();
+        }
+        if (work != TemporalWork::Resume) {
+          auto failure = startTemporal(work);
+          if (failure)
+            return finish(std::move(*failure));
+          if (pending.empty()) {
+            exhausted = true;
+            return {{}, 0, CandidateContinuation::Exhausted};
+          }
+        }
+        stage = Stage::PrepareRegion;
+        return yield();
       }
       TemporalAttempt &temporal = pending.front();
       RegionAttempt &attempt = temporal.regions.front();
-      if (!attempt.lowered) {
-        auto prepared = prepareRegion(temporal, attempt);
-        if (std::holds_alternative<RegionAlternativesExhausted>(prepared)) {
-          completeRegion(temporal);
-          continue;
+      if (stage == Stage::PrepareRegion) {
+        if (!attempt.lowered) {
+          auto prepared = prepareRegion(temporal, attempt);
+          if (std::holds_alternative<RegionPreparationYielded>(prepared))
+            return yield();
+          if (auto *failure =
+                  std::get_if<ExecutableCompilationResult>(&prepared)) {
+            completeRegion(temporal);
+            stage = Stage::SelectTemporal;
+            return finish(std::move(*failure));
+          }
         }
-        if (auto *failure =
-                std::get_if<ExecutableCompilationResult>(&prepared)) {
-          completeRegion(temporal);
-          return finish(std::move(*failure));
-        }
+        stage = Stage::EvaluateMovement;
+        return yield();
       }
       if (attempt.nextMovement == attempt.movements.size() &&
           !appendMixedMovement(attempt)) {
         completeRegion(temporal);
-        continue;
+        stage = Stage::SelectTemporal;
+        return yield();
       }
       const MovementChoice choice = attempt.movements[attempt.nextMovement++];
       std::string detail;
@@ -391,7 +417,7 @@ public:
           *candidate->module, candidate->relations, movementOptions);
       recordMovementInstrumentation(movement.statistics);
       ExecutableCompilationResult compiled;
-      std::set<size_t> affectedAxes;
+      InputCapacityFeedback capacityFeedback;
       std::mutex feedbackMutex;
       if (!movement.succeeded()) {
         compiled =
@@ -450,11 +476,30 @@ public:
         if (choice.pipeline)
           candidate->temporalBodies.clear();
         const auto temporalBodies = candidate->temporalBodies;
+        llvm::SmallVector<const TemporalDomain *> currentDomains;
+        for (const auto &axis : axes)
+          currentDomains.push_back(&axis.domain);
         auto observeCapacity =
-            [&](const SPMMemoryPlanningFailure &failure,
+            [&](CardId card, TileId tile,
+                const SPMMemoryPlanningFailure &failure,
                 const StructuredMaterializationRelations &relations) {
               if (options.downstream.capacityObserver)
-                options.downstream.capacityObserver(failure, relations);
+                options.downstream.capacityObserver(card, tile, failure,
+                                                    relations);
+              auto inputFeedback = deriveInputCapacityFeedback(
+                  card, tile, failure, currentDomains, temporal.choices);
+              support::addCompileCounter("capacity-feedback",
+                                         "input-coordinates",
+                                         inputFeedback.coordinates.size());
+              support::addCompileCounter("capacity-feedback",
+                                         "unavailable-input-demands",
+                                         inputFeedback.unavailableDemands);
+              support::addCompileCounter("capacity-feedback",
+                                         "ambiguous-inputs",
+                                         inputFeedback.ambiguousInputs);
+              support::addCompileCounter("capacity-feedback",
+                                         "shared-input-demands",
+                                         inputFeedback.sharedInputDemands);
               StorageRootMemo roots;
               std::set<size_t> localAxes;
               auto observe =
@@ -475,12 +520,40 @@ public:
                             localAxes.insert(axis);
                     }
                   };
+              // Input-map evidence in one domain must not hide independently
+              // proven owner/body evidence in other domains of this failure.
               for (const auto &demand : failure.individuallyOversizedDemands)
                 observe(demand);
               for (const auto &demand : failure.capacityConflictDemands)
                 observe(demand);
+              for (size_t axis : localAxes) {
+                if (llvm::any_of(inputFeedback.coordinates,
+                                 [&](TemporalCoordinate coordinate) {
+                                   return coordinate.domain == axis;
+                                 }))
+                  continue;
+                auto descriptors = axes[axis].domain.getScopeDescriptors(
+                    temporal.choices[axis].kind);
+                if (descriptors.size() != 1)
+                  continue;
+                for (auto [iterator, capability] :
+                     llvm::enumerate(descriptors.front().iteratorCapabilities))
+                  if (capability == IteratorTilingCapability::Tileable)
+                    inputFeedback.coordinates.insert({axis, 0, iterator});
+              }
               std::lock_guard<std::mutex> lock(feedbackMutex);
-              affectedAxes.insert(localAxes.begin(), localAxes.end());
+              capacityFeedback.coordinates.insert(
+                  inputFeedback.coordinates.begin(),
+                  inputFeedback.coordinates.end());
+              if (inputFeedback.status ==
+                      CapacityFeedbackStatus::BrokenContract &&
+                  (capacityFeedback.status !=
+                       CapacityFeedbackStatus::BrokenContract ||
+                   inputFeedback.detail < capacityFeedback.detail)) {
+                capacityFeedback.status =
+                    CapacityFeedbackStatus::BrokenContract;
+                capacityFeedback.detail = std::move(inputFeedback.detail);
+              }
             };
         CurrentIRDownstreamOptions downstreamOptions = options.downstream;
         downstreamOptions.distanceOneLoadPipeline = choice.pipeline;
@@ -492,6 +565,10 @@ public:
             planning.getProblem().getCardId(), analysis.availableTileIds,
             program, executionConfig, diagnostics, programData,
             downstreamOptions, &downstream, executableStatistics);
+        if (capacityFeedback.status == CapacityFeedbackStatus::BrokenContract)
+          return finish(fail(ExecutableCompilationStatus::CompilerFailure,
+                             "search-capacity-feedback",
+                             capacityFeedback.detail));
         if (choice.pipeline && compiled.isAccepted())
           support::addCompileCounter("search", "pipeline-accepted", 1);
         if (statistics && choice.shareInput && compiled.isAccepted())
@@ -514,8 +591,8 @@ public:
       if (choice.options.components.empty())
         temporal.observedTransports.insert(choice.options.transport);
       if (hasActualSPMCapacityRejection(compiled)) {
-        bool refined =
-            proposals->observeCapacity(temporal.choices, affectedAxes);
+        bool refined = proposals->observeCapacity(temporal.choices,
+                                                  capacityFeedback.coordinates);
         if (statistics) {
           statistics->actualCapacityRefinements += refined;
           statistics->unavailableCapacityRefinements += !refined;
@@ -529,73 +606,82 @@ public:
           temporal.bestDuration =
               temporal.bestDuration ? std::min(*temporal.bestDuration, duration)
                                     : duration;
+          attempt.bestDuration = attempt.bestDuration
+                                     ? std::min(*attempt.bestDuration, duration)
+                                     : duration;
         }
       }
-      // Give both base transports an actual attempt before numeric neighbors
-      // fan out. This is symmetric exploration ordering, never a transport
-      // preference; only accepted leaves supply the scalar feedback.
-      if (temporal.bestDuration &&
-          temporal.observedTransports.count(BoundaryMovementTransport::Peer) &&
-          temporal.observedTransports.count(
-              BoundaryMovementTransport::SharedDDR))
-        proposals->observeAccepted(temporal.choices, *temporal.bestDuration);
-      // Each Region/layout/movement family advances one leaf before yielding.
-      // Live queries and exact actual prefixes move with their continuation.
-      if (!pending.empty()) {
-        auto next = std::move(pending.front());
+      if (temporal.realizationOnly) {
+        if (temporal.bestDuration)
+          proposals->observeAccepted(temporal.choices, *temporal.bestDuration);
+        auto visited = std::move(temporal.regions.front());
+        temporal.regions.pop_front();
+        temporal.regions.push_back(std::move(visited));
+        realization.emplace(std::move(temporal));
         pending.pop_front();
-        if (!next.regions.empty()) {
-          auto region = std::move(next.regions.front());
-          next.regions.pop_front();
-          next.regions.push_back(std::move(region));
-        }
-        pending.push_back(std::move(next));
+      } else {
+        finishBasePoint(temporal);
       }
       return finish(std::move(compiled));
     }
   }
 
 private:
+  enum class Stage { SelectTemporal, PrepareRegion, EvaluateMovement };
   enum class TemporalWork { Proposal, Repair, Improve, Resume };
 
-  TemporalWork nextTemporalWork() const {
+  TemporalWork nextTemporalWork() {
+    // Finish a bounded base comparison before starting another Temporal IR.
+    if (!pending.empty())
+      return TemporalWork::Resume;
     for (unsigned offset = 0; offset < 4; ++offset) {
       auto work = static_cast<TemporalWork>((temporalPhase + offset) % 4);
       if ((work == TemporalWork::Proposal && proposals &&
-           !proposals->empty(TemporalProposalKind::Explore)) ||
+           proposals->prepareNext(TemporalProposalKind::Explore)) ||
           (work == TemporalWork::Repair && proposals &&
-           !proposals->empty(TemporalProposalKind::Repair)) ||
+           proposals->prepareNext(TemporalProposalKind::Repair)) ||
           (work == TemporalWork::Improve && proposals &&
-           !proposals->empty(TemporalProposalKind::Improve)) ||
-          (work == TemporalWork::Resume && !pending.empty()))
+           proposals->prepareNext(TemporalProposalKind::Improve)) ||
+          (work == TemporalWork::Resume && realization &&
+           (hasAcceptedCandidate || !proposals->hasCapacityRoundInProgress())))
         return work;
     }
     return TemporalWork::Proposal;
   }
 
   struct RegionPrepared {};
-  struct RegionAlternativesExhausted {};
+  struct RegionPreparationYielded {};
   using RegionPreparation =
-      std::variant<RegionPrepared, RegionAlternativesExhausted,
+      std::variant<RegionPrepared, RegionPreparationYielded,
                    ExecutableCompilationResult>;
+  struct LayoutInput {
+    CurrentCandidate candidate;
+    std::unique_ptr<LayoutAssignmentQuery> query;
+    ExactPBQPResult assignment;
+  };
   struct RegionAttempt {
     std::optional<CurrentCandidate> lowered;
-    std::optional<CurrentCandidate> layoutBase;
-    std::unique_ptr<LayoutAssignmentQuery> layoutQuery;
-    std::optional<ExactPBQPResult> firstLayout;
-    std::optional<ExactPBQPResult> localPlacement;
-    std::vector<LayoutConstraint> layoutConstraints;
-    std::set<std::vector<uint32_t>> visitedLayouts;
-    size_t nextLayout = 0;
+    // Both placements refer to one unchanged, owned input and one PBQP solve.
+    // Applying either choice mutates only its exact IRMapping clone.
+    std::shared_ptr<const LayoutInput> layoutInput;
+    LayoutMaterializationPlacement placement =
+        LayoutMaterializationPlacement::FirstUse;
     std::vector<MovementChoice> movements;
     size_t nextMovement = 0;
+    size_t baseMovements = 0;
+    std::optional<uint64_t> bestDuration;
     llvm::SmallVector<StructuredBoundaryRelation, 4> components;
     std::vector<MovementChoice> algorithms;
     std::vector<uint8_t> transportMask;
     size_t nextAlgorithm = 0;
+    size_t nextSingleton = 0;
+    bool combinationsStarted = false;
     bool hasMixedMask = false;
     bool mixedExhausted = false;
     bool merged = false;
+    bool baseComplete() const {
+      return lowered && nextMovement >= baseMovements;
+    }
   };
   struct TemporalAttempt {
     std::vector<TemporalChoice> choices;
@@ -603,23 +689,35 @@ private:
     std::deque<RegionAttempt> regions;
     std::set<BoundaryMovementTransport> observedTransports;
     std::optional<uint64_t> bestDuration;
+    bool realizationOnly = false;
   };
 
   static bool appendMixedMovement(RegionAttempt &attempt) {
     if (attempt.components.size() < 2 || attempt.mixedExhausted)
       return false;
     while (!attempt.hasMixedMask) {
-      size_t bit = 0;
-      while (bit < attempt.transportMask.size() && attempt.transportMask[bit])
-        attempt.transportMask[bit++] = 0;
-      if (bit == attempt.transportMask.size()) {
-        attempt.mixedExhausted = true;
-        return false;
+      if (attempt.nextSingleton < attempt.components.size()) {
+        std::fill(attempt.transportMask.begin(), attempt.transportMask.end(),
+                  0);
+        attempt.transportMask[attempt.nextSingleton++] = 1;
+      } else {
+        if (!attempt.combinationsStarted) {
+          std::fill(attempt.transportMask.begin(), attempt.transportMask.end(),
+                    0);
+          attempt.combinationsStarted = true;
+        }
+        size_t bit = 0;
+        while (bit < attempt.transportMask.size() && attempt.transportMask[bit])
+          attempt.transportMask[bit++] = 0;
+        if (bit == attempt.transportMask.size()) {
+          attempt.mixedExhausted = true;
+          return false;
+        }
+        attempt.transportMask[bit] = 1;
+        const size_t selected = llvm::count(attempt.transportMask, uint8_t(1));
+        if (selected == 1 || selected == attempt.transportMask.size())
+          continue; // Singles and uniform DDR already have actual candidates.
       }
-      attempt.transportMask[bit] = 1;
-      if (llvm::all_of(attempt.transportMask,
-                       [](uint8_t value) { return value; }))
-        continue; // Uniform DDR already has its own actual candidate.
       attempt.hasMixedMask = true;
       attempt.nextAlgorithm = 0;
     }
@@ -700,12 +798,14 @@ private:
   }
 
   std::optional<ExecutableCompilationResult> startTemporal(TemporalWork work) {
+    support::ScopedCompileTimingSpan timing("search-phase", "current-ir",
+                                            "start-temporal");
     std::vector<TemporalChoice> choices;
     std::string detail;
     auto kind = work == TemporalWork::Repair    ? TemporalProposalKind::Repair
                 : work == TemporalWork::Improve ? TemporalProposalKind::Improve
                                                 : TemporalProposalKind::Explore;
-    if (!proposals->empty(kind)) {
+    if (proposals->prepareNext(kind)) {
       choices = proposals->take(kind);
       support::addCompileCounter(
           "search",
@@ -794,8 +894,10 @@ private:
 
   RegionPreparation prepareRegion(TemporalAttempt &temporal,
                                   RegionAttempt &attempt) {
+    support::ScopedCompileTimingSpan timing("search-phase", "current-ir",
+                                            "prepare-region");
     std::string detail;
-    if (!attempt.layoutBase) {
+    if (!attempt.layoutInput) {
       mlir::IRMapping mapping;
       auto candidate = cloneCandidate(temporal.tiled, mapping, detail);
       if (mlir::failed(candidate))
@@ -839,52 +941,26 @@ private:
       if (!query.query)
         return fail(classifyLayoutFailure(query.outcome.status),
                     "search-layout-query", query.outcome.detail);
+      support::addCompileCounter("search", "layout-pbqp-solves", 1);
       auto first = query.query->solve(options.layoutWorkLimit);
       if (first.status != ExactPBQPStatus::Optimal &&
           first.status != ExactPBQPStatus::Feasible)
         return fail(classifyLayoutFailure(first.status), "search-layout-query",
                     "current layout PBQP has no complete assignment");
-      attempt.layoutConstraints = query.query->alternatives(first);
-      attempt.firstLayout = std::move(first);
-      attempt.layoutQuery = std::move(query.query);
-      attempt.layoutBase.emplace(std::move(*candidate));
+      attempt.layoutInput = std::make_shared<LayoutInput>(LayoutInput{
+          std::move(*candidate), std::move(query.query), std::move(first)});
+      return RegionPreparationYielded{};
     }
-    ExactPBQPResult assignment;
-    LayoutMaterializationPlacement placement =
-        LayoutMaterializationPlacement::FirstUse;
-    while (true) {
-      if (attempt.localPlacement) {
-        assignment = std::move(*attempt.localPlacement);
-        attempt.localPlacement.reset();
-        break;
-      } else if (attempt.firstLayout) {
-        assignment = std::move(*attempt.firstLayout);
-        attempt.firstLayout.reset();
-      } else {
-        if (attempt.nextLayout == attempt.layoutConstraints.size())
-          return RegionAlternativesExhausted{};
-        assignment = attempt.layoutQuery->solve(
-            options.layoutWorkLimit,
-            attempt.layoutConstraints[attempt.nextLayout++]);
-        if (assignment.status == ExactPBQPStatus::NoSolution)
-          continue;
-        if (assignment.status != ExactPBQPStatus::Optimal &&
-            assignment.status != ExactPBQPStatus::Feasible)
-          return fail(classifyLayoutFailure(assignment.status),
-                      "search-layout-constraint",
-                      "current layout constraint query did not complete");
-      }
-      // Full assignments from this same current-IR query have an exact
-      // identity. Equivalent constrained solves consume query work only.
-      if (attempt.visitedLayouts.insert(assignment.assignment).second) {
-        // Late structured lowering can introduce additional physical copies.
-        // Decide whether a FirstUse alternative is needed after both stages.
-        placement = LayoutMaterializationPlacement::LoopInvariant;
-        break;
-      }
-    }
+    const auto &input = *attempt.layoutInput;
+    const auto placement = attempt.placement;
+    support::addCompileCounter("search",
+                               placement ==
+                                       LayoutMaterializationPlacement::FirstUse
+                                   ? "first-use-placement-candidates"
+                                   : "invariant-placement-candidates",
+                               1);
     mlir::IRMapping mapping;
-    auto candidate = cloneCandidate(*attempt.layoutBase, mapping, detail);
+    auto candidate = cloneCandidate(input.candidate, mapping, detail);
     if (mlir::failed(candidate))
       return fail(ExecutableCompilationStatus::CompilerFailure,
                   "search-layout-clone", detail);
@@ -892,9 +968,8 @@ private:
     {
       support::ScopedCompileTimingSpan timing("stage", "current-ir-physical",
                                               "layout-and-bufferization");
-      layout =
-          attempt.layoutQuery->apply(*candidate->module, candidate->relations,
-                                     assignment, &mapping, placement);
+      layout = input.query->apply(*candidate->module, candidate->relations,
+                                  input.assignment, &mapping, placement);
     }
     recordLayoutInstrumentation(layout.statistics);
     if (statistics) {
@@ -923,9 +998,6 @@ private:
       return fail(ExecutableCompilationStatus::CompilerFailure,
                   "search-physical-movement-placement",
                   "physical movement placement produced invalid current IR");
-    if (placement == LayoutMaterializationPlacement::LoopInvariant &&
-        (*physicalPlacement || layout.statistics.loopInvariantMaterializations))
-      attempt.localPlacement = assignment;
     support::addCompileCounter("movement", "invariant-physical-copies",
                                *physicalPlacement);
     auto recursive = analyzeRecursiveDoublingAvailability(*candidate->module,
@@ -954,6 +1026,7 @@ private:
       ddr.options.transport = BoundaryMovementTransport::SharedDDR;
       attempt.movements.push_back(ddr);
     }
+    attempt.baseMovements = attempt.movements.size();
     // Typed algorithm choices only. Each clone is created when this cursor is
     // actually selected, then enters the same full downstream acceptance gate.
     for (unsigned mask = 1; mask < 8; ++mask) {
@@ -981,26 +1054,88 @@ private:
   }
 
   void completeRegion(TemporalAttempt &temporal) {
-    RegionAttempt &attempt = temporal.regions.front();
-    attempt.lowered.reset();
-    attempt.movements.clear();
-    attempt.nextMovement = 0;
-    attempt.components.clear();
-    attempt.algorithms.clear();
-    attempt.transportMask.clear();
-    attempt.nextAlgorithm = 0;
-    attempt.hasMixedMask = false;
-    attempt.mixedExhausted = false;
-    if (attempt.layoutQuery &&
-        (attempt.firstLayout || attempt.localPlacement ||
-         attempt.nextLayout < attempt.layoutConstraints.size()))
-      return;
+    support::ScopedCompileTimingSpan timing("search-phase", "current-ir",
+                                            "complete-region");
     temporal.regions.pop_front();
     if (temporal.regions.empty())
       pending.pop_front();
+    else if (!temporal.realizationOnly)
+      finishBasePoint(temporal);
+  }
+
+  void finishBasePoint(TemporalAttempt &temporal) {
+    if (!llvm::all_of(temporal.regions, [](const auto &region) {
+          return region.baseComplete();
+        })) {
+      while (temporal.regions.front().baseComplete()) {
+        auto region = std::move(temporal.regions.front());
+        temporal.regions.pop_front();
+        temporal.regions.push_back(std::move(region));
+      }
+      return;
+    }
+    if (temporal.bestDuration)
+      proposals->observeAccepted(temporal.choices, *temporal.bestDuration);
+    // Keep one actual local realization anchor, never every failed prefix.
+    // Its component cursors keep their owning current post-layout IR alive.
+    for (auto &region : temporal.regions) {
+      // Physical copies can become invariant during StructuredToTile even
+      // when the layout query itself has no invariant materialization.
+      // Keep this actual placement alternative for every retained anchor.
+      if (realization && realization->bestDuration &&
+          (!region.bestDuration ||
+           *realization->bestDuration <= *region.bestDuration))
+        continue;
+      TemporalAttempt anchor;
+      anchor.choices = temporal.choices;
+      anchor.bestDuration = region.bestDuration;
+      anchor.realizationOnly = true;
+      RegionAttempt invariant;
+      invariant.layoutInput = region.layoutInput;
+      invariant.placement = LayoutMaterializationPlacement::LoopInvariant;
+      invariant.merged = region.merged;
+      anchor.regions.push_back(std::move(invariant));
+      anchor.regions.push_back(std::move(region));
+      realization.emplace(std::move(anchor));
+    }
+    pending.pop_front();
+  }
+
+  void recordOwnership() {
+    if (statistics) {
+      uint64_t modules = bool(structural);
+      std::set<const LayoutInput *> inputs;
+      auto count = [&](const TemporalAttempt &temporal) {
+        modules += bool(temporal.tiled.module);
+        for (const auto &region : temporal.regions) {
+          modules += bool(region.lowered);
+          if (region.layoutInput)
+            inputs.insert(region.layoutInput.get());
+        }
+      };
+      for (const auto &temporal : pending)
+        count(temporal);
+      if (realization)
+        count(*realization);
+      modules += inputs.size();
+      statistics->peakSessionTemporalPrefixes = std::max<uint64_t>(
+          statistics->peakSessionTemporalPrefixes, pending.size());
+      statistics->peakSessionIRModules =
+          std::max(statistics->peakSessionIRModules, modules);
+    }
+  }
+
+  StructuralCandidateEvaluation yield() {
+    recordOwnership();
+    return {{},
+            0,
+            currentContinuation,
+            CandidateRetention::UnfinishedActualization};
   }
 
   StructuralCandidateEvaluation finish(ExecutableCompilationResult compiled) {
+    recordOwnership();
+    stage = Stage::SelectTemporal;
     const auto status = classifyActualStatus(compiled.status);
     hasAcceptedCandidate |= compiled.isAccepted();
     if (status == ActualCandidateStatus::CompilerBug ||
@@ -1032,9 +1167,10 @@ private:
                     (next == TemporalWork::Resume && hasAcceptedCandidate)
                 ? CandidateContinuation::Improve
                 : CandidateContinuation::Explore,
-            !proposals || proposals->empty(TemporalProposalKind::Repair)
-                ? CandidateRetention::Replaceable
-                : CandidateRetention::PendingCapacityRepair};
+            !pending.empty() ? CandidateRetention::UnfinishedActualization
+            : proposals && proposals->hasCapacityRoundInProgress()
+                ? CandidateRetention::PendingCapacityRepair
+                : CandidateRetention::Replaceable};
   }
 
   RegionState state;
@@ -1053,8 +1189,11 @@ private:
   std::vector<TemporalAxis> axes;
   std::optional<TemporalProposals> proposals;
   std::deque<TemporalAttempt> pending;
+  std::optional<TemporalAttempt> realization;
   const size_t explorationStratum;
   unsigned temporalPhase = 0;
+  Stage stage = Stage::SelectTemporal;
+  CandidateContinuation currentContinuation = CandidateContinuation::Explore;
   bool exhausted = false;
   bool hasAcceptedCandidate = false;
 };
@@ -1199,12 +1338,24 @@ ExecutableCompilationResult compileSearchCurrentIR(
   searchCounter("structural-states", searched.work.structuralStatesActualized);
   searchCounter("peak-retained-branches", searched.work.peakRetainedBranches);
   searchCounter("resumed-candidates", searched.work.resumedCandidates);
+  searchCounter("stage-yields", searched.work.stageYields);
   searchCounter("retired-branches", searched.work.retiredBranches);
+  searchCounter("local-region-refinements",
+                searched.work.localRegionRefinements);
+  searchCounter("non-incumbent-region-refinements",
+                searched.work.nonIncumbentRegionRefinements);
   searchCounter("candidate-actualizations",
                 searched.work.candidateActualizations);
   searchCounter("width", options.limits.width);
   searchCounter("trials", options.limits.trials);
   searchCounter("trials-used", searched.work.candidateActualizations);
+  if (statistics) {
+    searchCounter("peak-session-temporal-prefixes",
+                  statistics->peakSessionTemporalPrefixes);
+    searchCounter("peak-session-ir-modules", statistics->peakSessionIRModules);
+    searchCounter("temporal-backpressure-turns",
+                  statistics->temporalBackpressureTurns);
+  }
   searchCounter("trials-remaining",
                 options.limits.trials - searched.work.candidateActualizations);
   searchCounter("incomplete-inner-domains",

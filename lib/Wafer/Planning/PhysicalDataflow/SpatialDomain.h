@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace wafer::compiler::detail {
 
@@ -136,6 +137,26 @@ struct SpatialDomainEvaluation {
   }
 };
 
+/// Numeric visitation cursors on one unchanged source domain. No allocation,
+/// placement effect, capacity or downstream IR is represented here.
+class SpatialDirectionCursor {
+private:
+  struct RootCursor {
+    size_t root;
+    llvm::SmallVector<size_t, 8> eligible;
+    llvm::SmallVector<size_t, 4> support;
+    size_t supportSize = 1;
+    size_t ratio = 0;
+    size_t maximumRatios = 0;
+    bool started = false;
+    bool exhausted = false;
+  };
+  std::vector<RootCursor> roots;
+  size_t nextRoot = 0;
+  bool initialized = false;
+  friend class SpatialPlanDomain;
+};
+
 struct SpatialPlanDomainResult;
 
 /// Complete lazy Cartesian domain of compact SpatialPlan values. Partition
@@ -149,6 +170,11 @@ public:
   getNextPlan(const SpatialPlan &plan,
               SpatialSuccessorDomain successorDomain =
                   SpatialSuccessorDomain::AllPlacements) const;
+  /// One root direction at a time, with roots round-robin by source work.
+  /// Visits all axis supports before further ratios within the same support.
+  SpatialPlanSuccessor
+  getNextDirectionPlan(const SpatialPlan &anchor,
+                       SpatialDirectionCursor &cursor) const;
   bool contains(const SpatialPlan &plan) const;
 
   SpatialDomainEvaluation evaluate(const StructuredDAGAnalysis &dag,

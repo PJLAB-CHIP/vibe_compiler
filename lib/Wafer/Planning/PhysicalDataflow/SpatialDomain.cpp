@@ -3,6 +3,7 @@
 #include "Wafer/Planning/PhysicalDataflow/SpatialDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSpatialAssignment.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPartitionPropagation.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
@@ -1242,6 +1243,158 @@ SpatialPlanDomain::evaluate(const StructuredDAGAnalysis &dag,
   evaluation.demand = session->query(*evaluation.assignment);
   session->close();
   return evaluation;
+}
+
+SpatialPlanSuccessor
+SpatialPlanDomain::getNextDirectionPlan(const SpatialPlan &anchor,
+                                        SpatialDirectionCursor &cursor) const {
+  if (!contains(anchor))
+    return {SpatialPlanSuccessorKind::Failure,
+            {},
+            fail(SpatialDomainFailureKind::BrokenContract,
+                 "spatial direction anchor is outside the current domain")};
+  const auto &roots = problem.getRoots();
+  const auto available = problem.getStructuralProblem().getAvailableTiles();
+  if (!cursor.initialized) {
+    for (auto [index, root] : llvm::enumerate(roots)) {
+      SpatialDirectionCursor::RootCursor state;
+      state.root = index;
+      for (size_t axis = 0; axis < root.iteratorExtents.size(); ++axis)
+        if (canPartitionIterator(root, axis) && root.iteratorExtents[axis] > 1)
+          state.eligible.push_back(axis);
+      state.exhausted = state.eligible.empty() || available.size() < 2;
+      cursor.roots.push_back(std::move(state));
+    }
+    auto work = [](const SpatialRootDomainFacts &root) {
+      uint64_t product = 1;
+      for (int64_t extent : root.iteratorExtents)
+        product = llvm::SaturatingMultiply(product, uint64_t(extent));
+      return product;
+    };
+    llvm::sort(cursor.roots, [&](const auto &lhs, const auto &rhs) {
+      auto a = work(roots[lhs.root]), b = work(roots[rhs.root]);
+      return a != b ? a > b : roots[lhs.root].root < roots[rhs.root].root;
+    });
+    cursor.initialized = true;
+  }
+  for (size_t visited = 0; visited < cursor.roots.size(); ++visited) {
+    auto &state = cursor.roots[cursor.nextRoot];
+    cursor.nextRoot = (cursor.nextRoot + 1) % cursor.roots.size();
+    const auto &root = roots[state.root];
+    while (!state.exhausted) {
+      if (!state.started) {
+        state.support.clear();
+        for (size_t i = 0; i < state.supportSize; ++i)
+          state.support.push_back(i);
+        state.started = true;
+      } else {
+        size_t axis = state.support.size();
+        while (axis && state.support[axis - 1] == state.eligible.size() -
+                                                      state.support.size() +
+                                                      axis - 1)
+          --axis;
+        if (axis) {
+          ++state.support[axis - 1];
+          for (size_t next = axis; next < state.support.size(); ++next)
+            state.support[next] = state.support[next - 1] + 1;
+        } else {
+          ++state.supportSize;
+          size_t minimumCells = 1;
+          for (size_t i = 0;
+               i < state.supportSize && minimumCells <= available.size(); ++i)
+            minimumCells *= 2;
+          if (state.supportSize > state.eligible.size() ||
+              minimumCells > available.size()) {
+            state.supportSize = 1;
+            if (++state.ratio >= state.maximumRatios) {
+              state.exhausted = true;
+              break;
+            }
+          }
+          state.support.clear();
+          for (size_t i = 0; i < state.supportSize; ++i)
+            state.support.push_back(i);
+        }
+      }
+      support::addCompileCounter("search", "spatial-direction-groups", 1);
+      llvm::SmallVector<IteratorPartition, 4> axes;
+      for (size_t i = 0; i < root.iteratorExtents.size(); ++i)
+        axes.push_back(firstPartition(i));
+      std::vector<llvm::SmallVector<IteratorPartition, 4>> ratios;
+      auto enumerate = [&](auto &&self, size_t index, size_t cells) -> void {
+        if (index == state.support.size()) {
+          if (checkAttention(root, axes) ==
+              AttentionSpatialConstraintViolation::None)
+            ratios.push_back(axes);
+          return;
+        }
+        size_t axis = state.eligible[state.support[index]];
+        const size_t maximum = std::min<size_t>(root.iteratorExtents[axis],
+                                                available.size() / cells);
+        for (size_t factor = 2; factor <= maximum; ++factor) {
+          axes[axis].parameter = factor;
+          self(self, index + 1, cells * factor);
+        }
+        axes[axis].parameter = 1;
+      };
+      enumerate(enumerate, 0, 1);
+      const auto *binding = problem.getSemanticRoots().find(root.root);
+      auto operands = binding ? getReadOperandProjections(binding->operation)
+                              : std::nullopt;
+      if (operands && llvm::any_of(*operands, [&](const auto &operand) {
+            return operand.iterators.size() != root.iteratorExtents.size();
+          }))
+        operands.reset();
+      llvm::sort(ratios, [&](const auto &a, const auto &b) {
+        const auto cellsA =
+            *getCellCount(root.iteratorExtents, a, available.size());
+        const auto cellsB =
+            *getCellCount(root.iteratorExtents, b, available.size());
+        if (cellsA != cellsB)
+          return cellsA > cellsB;
+        if (operands) {
+          const auto bytesA = getRepeatedOperandBytes(*operands, a);
+          const auto bytesB = getRepeatedOperandBytes(*operands, b);
+          if (bytesA != bytesB)
+            return bytesA < bytesB;
+        }
+        return std::lexicographical_compare(b.begin(), b.end(), a.begin(),
+                                            a.end());
+      });
+      state.maximumRatios = std::max(state.maximumRatios, ratios.size());
+      if (state.ratio >= ratios.size())
+        continue;
+      NodeSpatialPlan node;
+      node.root = root.root;
+      node.axes = std::move(ratios[state.ratio]);
+      const auto cells =
+          *getCellCount(root.iteratorExtents, node.axes, available.size());
+      node.embedding = getCompactEmbedding(topology, cardId, available, cells);
+      auto groups = deriveSpatialReductionGroups(root, node.axes);
+      if (node.embedding.size() != cells || mlir::failed(groups))
+        continue;
+      bool complete = true;
+      for (const auto &group : *groups) {
+        auto contributor =
+            getFirstContributor(root, node.axes, node.embedding, group);
+        if (!contributor) {
+          complete = false;
+          break;
+        }
+        node.reductionMerges.push_back({group, *contributor});
+      }
+      if (!complete)
+        continue;
+      SpatialPlan next = anchor;
+      auto selected = llvm::find_if(next.nodes, [&](const auto &candidate) {
+        return candidate.root == root.root;
+      });
+      *selected = std::move(node);
+      if (contains(next))
+        return {SpatialPlanSuccessorKind::Successor, std::move(next), {}};
+    }
+  }
+  return {SpatialPlanSuccessorKind::End, {}, {}};
 }
 
 llvm::SmallVector<SpatialPlan, 4> SpatialPlanDomain::getProposals() const {

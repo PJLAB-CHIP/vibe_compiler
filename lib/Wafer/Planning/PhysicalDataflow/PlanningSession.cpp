@@ -3,6 +3,7 @@
 #include "Wafer/Planning/PhysicalDataflow/PlanningSession.h"
 
 #include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
+#include "Wafer/Planning/PhysicalDataflow/SpatialPartitionPropagation.h"
 #include "Wafer/Support/CompileTiming.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -234,11 +235,53 @@ SpatialExpansionResult PhysicalDataflowPlanningSession::resumeSpatial() {
                                         values.size());
       proposals = spatialProposalCache.try_emplace(0, std::move(values)).first;
     }
-    for (const SpatialPlan &proposal : proposals->second) {
+    if (takeDirection && !directionExhausted) {
+      if (directionVariants.empty()) {
+        auto next = problem.getSpatialDomain().getNextDirectionPlan(
+            proposals->second.front(), directionCursor);
+        if (next.kind == SpatialPlanSuccessorKind::Failure)
+          return {SpatialExpansionKind::CompilerBug, next.failure->detail};
+        if (next.kind == SpatialPlanSuccessorKind::End) {
+          directionExhausted = true;
+        } else {
+          directionVariants.push_back(*next.plan);
+          for (auto order : {SpatialPropagationOrder::ProducersFirst,
+                             SpatialPropagationOrder::ConsumersFirst}) {
+            auto propagated = propagateSpatialPartitions(
+                problem.getSpatialDomain(), problem.getProgram().dag,
+                *next.plan, problem.getRelationLimits(), order);
+            if (mlir::failed(propagated))
+              return {SpatialExpansionKind::CompilerBug,
+                      "spatial direction propagation failed"};
+            if (!llvm::is_contained(directionVariants, *propagated))
+              directionVariants.push_back(std::move(*propagated));
+          }
+        }
+      }
+      if (!directionVariants.empty()) {
+        auto choice = std::move(directionVariants.front());
+        directionVariants.pop_front();
+        takeDirection = false;
+        if (resolvedChoices.count(choice)) {
+          ++work.duplicateSpatialChoices;
+          continue;
+        }
+        ++work.spatialSuccessorSteps;
+        support::addCompileCounter("search", "spatial-direction-choices", 1);
+        return evaluateAndQueue(std::move(choice));
+      }
+    }
+    while (nextSpatialProposal < proposals->second.size()) {
+      const auto &proposal = proposals->second[nextSpatialProposal++];
       if (resolvedChoices.count(proposal))
         continue;
+      takeDirection = true;
       ++work.spatialSuccessorSteps;
       return evaluateAndQueue(proposal);
+    }
+    if (!directionExhausted) {
+      takeDirection = true;
+      continue;
     }
 
     if (isSpatialExhausted())

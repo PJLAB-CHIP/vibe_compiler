@@ -2,8 +2,8 @@
 
 本方案属于唯一的 `board-testing` work item，细化
 [`board-performance-optimization.md`](board-performance-optimization.md) 的容量反馈与搜索组织两步。
-状态以 [`progress.md`](../progress.md) 为准。本文是本轮讨论形成的拟议实施合同，尚未实现；
-06号中的现行算法描述及旧测试通过记录不能作为本文的完成证据。当前授权为整理方案，不执行编译器修改或设备测试。
+状态以 [`progress.md`](../progress.md) 为准。用户已授权按本方案推进完成；当前先实施多轴容量修正和候选调度，
+再推进结构覆盖与性能搜索。既有测试不作为新实现的完成证据；设备验证在本轮主机/package/no-card门禁之后。
 
 ## 目标、输入与输出
 
@@ -138,6 +138,8 @@ S 一旦改变，F 与 T 从新实际结构建立。旧物理 Tile 的 Temporal 
 | 后续尺度与交换 | N/K各自更小尺度，或 N 增大且 K 减小 | 不能只允许所有轴持续变小 |
 
 容量关联只决定 Repair 的坐标集合。没有 M 的关联不对 M 声称因果修正；M 的普通探索仍存在。
+实际DMA来源相同、且全部structural reader的operand map都已证明时，关联集合允许覆盖多个scope；
+不把多reader本身当作来源未知，也不从其中任选一个假装唯一owner。存在无法分析的reader时不补归因。
 若另一次实际失败给出新的关联，生成新的修正方向；Unknown 不通过 shape 或“最大 tensor”补归因。
 变更 traversal kind 或导致 scope 解释变化时，旧坐标证据失效，重新建立 choice 与关联。
 
@@ -239,7 +241,7 @@ LoopInvariant copy placement、输入共享、流水及其它通信算法主要�
 实际 completion 环、conv descriptor 不支持、BF16 数值问题及 package manifest 失败仍归各自 producer/consumer 修复。
 可从当前 executable 精确计算的资源约束才可移到共同 actual gate；其它 package 校验保留实际导出位置。
 不建立预测 manifest/resource inventory，也不把错误改成容量失败后无限缩 tile。
-板卡风险4K候选保持原范围：本轮方案整理不启动设备；后续先过主机与 no-card，风险设备问题按原计划最后处理。
+板卡风险4K候选保持原范围：先过主机与 no-card，风险设备问题按原计划最后处理。
 
 ## 覆盖矩阵与验收报告
 
@@ -248,6 +250,7 @@ LoopInvariant copy placement、输入共享、流水及其它通信算法主要�
 | rank≥3 的2/3个可切轴，1024/1025/1031；4/16 Tile | 单轴、多轴、比例、低于满 Tile 使用率，精确 uneven coverage、无重叠及 merge | Spatial materialization → actual Temporal/Instr/SPM |
 | 只有另一轴能成功；单轴均失败但组合成功 | 从原 anchor 换轴、不强制继承前次缩小；保留多轴组合 | 实际 allocation 失败证书 → 新 choice → 实际成功 offset |
 | 多 scope、多 Tile、不同长度及不同相关轴 | 批量修改仅涉及已证明坐标；独立与混合选择可达，不强制同序轴相等 | owner/input map → actual capacity callback → 全部目标 Tile 再验证 |
+| 共享输入、已选逐点融合、前序Region结果、未知producer | 完整reader集合及精确轴；跨Region结果不冒充原始输入访问；未知producer不隐藏未解释reader | 1024/1025/1031实际capacity证书；跨Region反例修复前0坐标、修复后精确4坐标；同一SPM gate不变 |
 | FullExtentOnly、exact reshape、Joint/Independent 和现有合法顺序 | 只生成原合法域内的完整 choice；证据失效；真实 block/wave/tail | temporal apply → layout/bufferization → target |
 | diamond、共享 producer、部分融合、归约 partial/merge | 中间融合入口与局部 incumbent refinement；quotient 无环、SSA/owner/输出完整 | S/F → actual Region → package |
 | 原 PBQP 单解、存在多 assignment、无布局解 | 一次完整合法解及 typed 失败；外层收窄的影响逐项说明，禁止静默丢资格 | assignment apply → FirstUse → Instr/SPM |

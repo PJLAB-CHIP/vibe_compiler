@@ -87,7 +87,7 @@ TileRegionOp regionOf(mlir::ModuleOp module) {
   return result;
 }
 
-TEST(TemporalProposalsTest, CapacityStartsAtOneAndOnlyChangesCertifiedDomains) {
+TEST(TemporalProposalsTest, CapacityHalvesAxesAndRetainsOriginalSiblings) {
   auto context = createContext();
   for (int64_t extent : {1024, 1025, 1031}) {
     auto left = makePointwise(*context, extent, 64);
@@ -101,27 +101,110 @@ TEST(TemporalProposalsTest, CapacityStartsAtOneAndOnlyChangesCertifiedDomains) {
         *a.domain->getFirstChoice().getChoice(),
         *b.domain->getFirstChoice().getChoice()};
     ASSERT_TRUE(proposals.visitRaw(initial));
-    auto point = initial;
-    int64_t expected = extent;
-    for (int64_t distance : {1, 2, 4, 8}) {
-      ASSERT_TRUE(proposals.observeCapacity(point, {0}));
-      ASSERT_FALSE(proposals.empty(TemporalProposalKind::Repair));
-      point = proposals.take(TemporalProposalKind::Repair);
-      expected -= distance;
-      EXPECT_EQ(point[0].scopes[0].iteratorTileSizes[1], expected);
-      EXPECT_EQ(point[0].scopes[0].iteratorTileSizes[2], 64);
+    ASSERT_TRUE(proposals.observeCapacity(initial, {{0, 0, 1}, {0, 0, 2}}));
+    std::set<std::pair<int64_t, int64_t>> observed;
+    while (proposals.prepareNext(TemporalProposalKind::Repair)) {
+      auto point = proposals.take(TemporalProposalKind::Repair);
+      const auto &sizes = point[0].scopes[0].iteratorTileSizes;
+      EXPECT_TRUE(observed.emplace(sizes[1], sizes[2]).second);
       EXPECT_EQ(point[1], initial[1]);
       EXPECT_TRUE(a.domain->contains(point[0]));
       EXPECT_FALSE(proposals.visitRaw(point));
     }
+    const std::set<std::pair<int64_t, int64_t>> expected{
+        {extent / 2, 32}, {extent / 2, 64}, {extent, 32}};
+    EXPECT_EQ(observed, expected);
     // Missing provenance is not permission to shrink another owner.
-    EXPECT_FALSE(proposals.observeCapacity(point, {}));
-    EXPECT_TRUE(proposals.empty(TemporalProposalKind::Repair));
-    // Another actual leaf can later identify a previously unknown owner.
-    EXPECT_TRUE(proposals.observeCapacity(point, {1}));
-    auto other = proposals.take(TemporalProposalKind::Repair);
-    EXPECT_EQ(other[0], point[0]);
-    EXPECT_EQ(other[1].scopes[0].iteratorTileSizes[1], extent - 1);
+    EXPECT_FALSE(proposals.observeCapacity(initial, {}));
+    EXPECT_FALSE(proposals.prepareNext(TemporalProposalKind::Repair));
+  }
+}
+
+TEST(TemporalProposalsTest,
+     PreparingTheLastCoarseSiblingDoesNotReleaseItsSlot) {
+  auto context = createContext();
+  auto module = makePointwise(*context, 1025, 1031);
+  auto built = buildTemporalDomain(regionOf(*module));
+  ASSERT_TRUE(built.succeeded());
+  TemporalProposals proposals({&*built.domain});
+  std::vector<TemporalChoice> initial{
+      *built.domain->getFirstChoice().getChoice()};
+  ASSERT_TRUE(proposals.visitRaw(initial));
+  ASSERT_TRUE(proposals.observeCapacity(initial, {{0, 0, 1}, {0, 0, 2}}));
+  for (size_t direction = 0; direction < 3; ++direction) {
+    ASSERT_TRUE(proposals.prepareNext(TemporalProposalKind::Repair));
+    EXPECT_TRUE(proposals.hasCapacityRoundInProgress());
+    (void)proposals.take(TemporalProposalKind::Repair);
+  }
+  EXPECT_FALSE(proposals.hasCapacityRoundInProgress());
+}
+
+TEST(TemporalProposalsTest, CapacityNewEvidenceCombinesWithoutLosingAxes) {
+  auto context = createContext();
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto module = makePointwise(*context, extent, 1031);
+    auto built = buildTemporalDomain(regionOf(*module));
+    ASSERT_TRUE(built.succeeded());
+    TemporalProposals proposals({&*built.domain});
+    std::vector<TemporalChoice> initial{
+        *built.domain->getFirstChoice().getChoice()};
+    ASSERT_TRUE(proposals.visitRaw(initial));
+    ASSERT_TRUE(proposals.observeCapacity(initial, {{0, 0, 1}}));
+    auto first = proposals.take(TemporalProposalKind::Repair);
+    EXPECT_EQ(first[0].scopes[0].iteratorTileSizes[1], extent / 2);
+    EXPECT_EQ(first[0].scopes[0].iteratorTileSizes[2], 1031);
+    ASSERT_TRUE(proposals.observeCapacity(initial, {{0, 0, 2}}));
+    std::set<std::pair<int64_t, int64_t>> observed;
+    while (proposals.prepareNext(TemporalProposalKind::Repair)) {
+      auto point = proposals.take(TemporalProposalKind::Repair);
+      const auto &sizes = point[0].scopes[0].iteratorTileSizes;
+      EXPECT_TRUE(observed.emplace(sizes[1], sizes[2]).second);
+      EXPECT_TRUE(built.domain->contains(point[0]));
+    }
+    const std::set<std::pair<int64_t, int64_t>> expected{{extent / 2, 515},
+                                                         {extent, 515}};
+    EXPECT_EQ(observed, expected);
+  }
+}
+
+TEST(TemporalProposalsTest, CapacityBatchesScopesAndRetainsMixedChoices) {
+  auto context = createContext();
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto left = makePointwise(*context, extent, 1031);
+    auto right = makePointwise(*context, 1025, extent);
+    auto unrelated = makePointwise(*context, 4096, 4096);
+    auto a = buildTemporalDomain(regionOf(*left));
+    auto b = buildTemporalDomain(regionOf(*right));
+    auto c = buildTemporalDomain(regionOf(*unrelated));
+    ASSERT_TRUE(a.succeeded() && b.succeeded() && c.succeeded());
+    TemporalProposals proposals({&*a.domain, &*b.domain, &*c.domain});
+    std::vector<TemporalChoice> initial{
+        *a.domain->getFirstChoice().getChoice(),
+        *b.domain->getFirstChoice().getChoice(),
+        *c.domain->getFirstChoice().getChoice()};
+    ASSERT_TRUE(proposals.visitRaw(initial));
+    ASSERT_TRUE(proposals.observeCapacity(
+        initial, {{0, 0, 1}, {0, 0, 2}, {1, 0, 1}, {1, 0, 2}}));
+    auto first = proposals.take(TemporalProposalKind::Repair);
+    EXPECT_EQ(first[0].scopes[0].iteratorTileSizes[1], extent / 2);
+    EXPECT_EQ(first[0].scopes[0].iteratorTileSizes[2], 515);
+    EXPECT_EQ(first[1].scopes[0].iteratorTileSizes[1], 512);
+    EXPECT_EQ(first[1].scopes[0].iteratorTileSizes[2], extent / 2);
+    EXPECT_EQ(first[2], initial[2]);
+    bool mixed = false, independent = false;
+    while (proposals.prepareNext(TemporalProposalKind::Repair)) {
+      auto point = proposals.take(TemporalProposalKind::Repair);
+      EXPECT_EQ(point[2], initial[2]);
+      EXPECT_TRUE(a.domain->contains(point[0]));
+      EXPECT_TRUE(b.domain->contains(point[1]));
+      const auto &x = point[0].scopes[0].iteratorTileSizes;
+      const auto &y = point[1].scopes[0].iteratorTileSizes;
+      mixed |= x[1] == extent / 2 && x[2] == 1031 && y[1] == 1025 &&
+               y[2] == extent / 2;
+      independent |=
+          x[1] == extent / 2 && x[2] == 1031 && point[1] == initial[1];
+    }
+    EXPECT_TRUE(mixed && independent);
   }
 }
 
@@ -141,24 +224,93 @@ TEST(TemporalProposalsTest, AcceptedNeighborsExpandAndRevisitAnUnprovedGap) {
     std::vector<TemporalChoice> initial{choice};
     ASSERT_TRUE(proposals.visitRaw(initial));
     proposals.observeAccepted(initial, 100);
-    auto lower = proposals.take(TemporalProposalKind::Improve);
-    auto upper = proposals.take(TemporalProposalKind::Improve);
-    EXPECT_EQ(lower[0].scopes[0].iteratorTileSizes[1], 511);
-    EXPECT_EQ(upper[0].scopes[0].iteratorTileSizes[1], 513);
-    EXPECT_EQ(lower[0].scopes[0].iteratorTileSizes[2], 64);
-    proposals.observeAccepted(lower, 99);
+    bool lowerObserved = false, upperObserved = false;
     bool expanded = false, gap = false;
-    while (!proposals.empty(TemporalProposalKind::Improve)) {
+    while (proposals.prepareNext(TemporalProposalKind::Improve)) {
       auto point = proposals.take(TemporalProposalKind::Improve);
       auto sizes = point[0].scopes[0].iteratorTileSizes;
+      if (sizes[1] == 511 && sizes[2] == 64 && !lowerObserved) {
+        lowerObserved = true;
+        proposals.observeAccepted(point, 99);
+      }
+      upperObserved |= sizes[1] == 513 && sizes[2] == 64;
       if (sizes[1] == 509 && sizes[2] == 64) {
         expanded = true;
         proposals.observeAccepted(point, 101);
       }
       gap |= sizes[1] == 510 && sizes[2] == 64;
     }
+    EXPECT_TRUE(lowerObserved && upperObserved);
     EXPECT_TRUE(expanded);
     EXPECT_TRUE(gap);
+  }
+}
+
+TEST(TemporalProposalsTest,
+     AcceptedPollBatchesScopesAndExchangesIndependentAxes) {
+  auto context = createContext();
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto left = makePointwise(*context, extent, 1031);
+    auto right = makePointwise(*context, 1025, extent);
+    auto a = buildTemporalDomain(regionOf(*left));
+    auto b = buildTemporalDomain(regionOf(*right));
+    ASSERT_TRUE(a.succeeded() && b.succeeded());
+    std::vector<TemporalChoice> initial{
+        *a.domain->getFirstChoice().getChoice(),
+        *b.domain->getFirstChoice().getChoice()};
+    for (auto &choice : initial)
+      for (auto &scope : choice.scopes) {
+        scope.iteratorTileSizes[1] = 256;
+        scope.iteratorTileSizes[2] = 512;
+        scope.loopOrder = {1, 2};
+      }
+    ASSERT_TRUE(a.domain->contains(initial[0]));
+    ASSERT_TRUE(b.domain->contains(initial[1]));
+    TemporalProposals proposals({&*a.domain, &*b.domain});
+    ASSERT_TRUE(proposals.visitRaw(initial));
+    proposals.observeAccepted(initial, 100);
+    auto lower = proposals.take(TemporalProposalKind::Improve);
+    auto upper = proposals.take(TemporalProposalKind::Improve);
+    for (size_t domain = 0; domain < 2; ++domain) {
+      EXPECT_EQ(lower[domain].scopes[0].iteratorTileSizes[1], 128);
+      EXPECT_EQ(lower[domain].scopes[0].iteratorTileSizes[2], 256);
+      EXPECT_EQ(upper[domain].scopes[0].iteratorTileSizes[1], 384);
+      EXPECT_EQ(upper[domain].scopes[0].iteratorTileSizes[2], 768);
+    }
+    bool exchange = false, order = false, independent = false;
+    size_t visited = 2;
+    while (proposals.prepareNext(TemporalProposalKind::Improve)) {
+      auto point = proposals.take(TemporalProposalKind::Improve);
+      ASSERT_LT(++visited, 1000u); // Finite neighborhood; no feedback is added.
+      EXPECT_TRUE(a.domain->contains(point[0]));
+      EXPECT_TRUE(b.domain->contains(point[1]));
+      const auto &sizes = point[0].scopes[0].iteratorTileSizes;
+      exchange |= sizes[1] == 128 && sizes[2] == 768 && point[1] == initial[1];
+      independent |=
+          sizes[1] == 128 && sizes[2] == 512 && point[1] == initial[1];
+      order |= sizes == initial[0].scopes[0].iteratorTileSizes &&
+               point[0].scopes[0].loopOrder != initial[0].scopes[0].loopOrder;
+    }
+    EXPECT_TRUE(exchange && order && independent);
+  }
+}
+
+TEST(TemporalProposalsTest, CapacityCannotShrinkAnUnrelatedLargerDimension) {
+  auto context = createContext();
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto module = makePointwise(*context, extent, 64);
+    ASSERT_TRUE(module);
+    auto domain = buildTemporalDomain(regionOf(*module));
+    ASSERT_TRUE(domain.succeeded());
+    TemporalProposals proposals({&*domain.domain});
+    std::vector<TemporalChoice> initial{
+        *domain.domain->getFirstChoice().getChoice()};
+    ASSERT_TRUE(proposals.visitRaw(initial));
+    ASSERT_TRUE(proposals.observeCapacity(initial, {{0, 0, 2}}));
+    auto repaired = proposals.take(TemporalProposalKind::Repair);
+    EXPECT_EQ(repaired[0].scopes[0].iteratorTileSizes[1], extent);
+    EXPECT_EQ(repaired[0].scopes[0].iteratorTileSizes[2], 32);
+    EXPECT_TRUE(domain.domain->contains(repaired[0]));
   }
 }
 
@@ -178,7 +330,7 @@ TEST(TemporalProposalsTest,
       proposals.seed({initial}, stratum);
       proposals.seed({independent}, stratum);
       std::vector<TemporalChoice> points;
-      while (!proposals.empty(TemporalProposalKind::Explore)) {
+      while (proposals.prepareNext(TemporalProposalKind::Explore)) {
         auto point = proposals.take(TemporalProposalKind::Explore)[0];
         EXPECT_TRUE(domain.domain->contains(point));
         EXPECT_FALSE(llvm::is_contained(points, point));
@@ -254,7 +406,7 @@ TEST(TemporalProposalsTest,
   EXPECT_EQ(sizes[5], 128);
   proposals.observeAccepted(point, 100);
   bool has127 = false, has129 = false;
-  while (!proposals.empty(TemporalProposalKind::Improve)) {
+  while (proposals.prepareNext(TemporalProposalKind::Improve)) {
     auto neighbor = proposals.take(TemporalProposalKind::Improve)[0];
     EXPECT_TRUE(built.domain->contains(neighbor));
     auto next = neighbor.scopes[0].iteratorTileSizes;
@@ -323,7 +475,7 @@ TEST(TemporalProposalsTest,
         TemporalProposals proposals({&*built.domain});
         proposals.seed({initial});
         bool coordinated = false;
-        while (!proposals.empty(TemporalProposalKind::Explore)) {
+        while (proposals.prepareNext(TemporalProposalKind::Explore)) {
           auto point = proposals.take(TemporalProposalKind::Explore)[0];
           EXPECT_TRUE(built.domain->contains(point));
           if (point.scopes.size() != 2)
@@ -363,7 +515,7 @@ TEST(TemporalProposalsTest, RawOracleRetainsOrdersTailsAndCombinationOptimum) {
                                                        : 200;
       best = std::min(best, cost);
       if (sizes[1] == 1 && sizes[2] % 2 == 0)
-        proposals.observeCapacity(point, {0});
+        proposals.observeCapacity(point, {{0, 0, 1}, {0, 0, 2}});
       else
         proposals.observeAccepted(point, cost);
     };
@@ -372,7 +524,7 @@ TEST(TemporalProposalsTest, RawOracleRetainsOrdersTailsAndCombinationOptimum) {
       for (auto kind :
            {TemporalProposalKind::Explore, TemporalProposalKind::Repair,
             TemporalProposalKind::Improve})
-        if (!proposals.empty(kind)) {
+        if (proposals.prepareNext(kind)) {
           evaluate(proposals.take(kind));
           any = true;
         }

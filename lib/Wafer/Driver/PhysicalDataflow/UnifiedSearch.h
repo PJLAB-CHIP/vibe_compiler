@@ -43,7 +43,10 @@ struct UnifiedSearchWork {
   uint64_t incompleteInnerDomains = 0;
   uint64_t peakRetainedBranches = 0;
   uint64_t resumedCandidates = 0;
+  uint64_t stageYields = 0;
   uint64_t retiredBranches = 0;
+  uint64_t localRegionRefinements = 0;
+  uint64_t nonIncumbentRegionRefinements = 0;
 };
 
 using UnifiedSearchPrefixKey = std::variant<SpatialState, RegionState>;
@@ -76,10 +79,12 @@ enum class CandidateContinuation : uint8_t {
 enum class CandidateRetention : uint8_t {
   Replaceable,
   PendingCapacityRepair,
+  UnfinishedActualization,
 };
 
 struct StructuralCandidateEvaluation {
-  /// Empty only when an already owned domain exhausts without another leaf.
+  /// Empty with Exhausted closes the domain. Empty with a live continuation
+  /// yields between verified stages and retains UnfinishedActualization.
   std::optional<ActualCandidateResult> result;
   uint64_t actualizations = 0;
   CandidateContinuation continuation = CandidateContinuation::Exhausted;

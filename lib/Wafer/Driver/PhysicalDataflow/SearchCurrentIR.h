@@ -35,6 +35,9 @@ struct SearchCurrentIRStatistics {
   uint64_t temporalDomainsBuilt = 0;
   uint64_t temporalCandidateActualizations = 0;
   uint64_t temporalApplications = 0;
+  uint64_t peakSessionTemporalPrefixes = 0;
+  uint64_t peakSessionIRModules = 0;
+  uint64_t temporalBackpressureTurns = 0;
   uint64_t communicationRegionClosures = 0;
   uint64_t regionPreservingCandidates = 0;
   uint64_t regionPreservingAccepted = 0;

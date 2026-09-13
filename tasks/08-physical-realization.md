@@ -77,8 +77,8 @@ Layout transformation先闭合function boundary，再为每个current compute us
 boundary；它不重新移动/融合reshape、transpose、broadcast、concat或compute graph，不创建route、message或DDR donor。若input仍含
 可由05号logical normalizer严格支配的graph form，属于上游stage未闭合，不能在PBQP里恢复另一套e-graph。
 Movement transformation只能读取这些current endpoint和exact relation，不能反向改compute layout。某条route与唯一PBQP assignment产生的
-endpoint layout不兼容时，当前candidate返回typed failure；outer controller通过同一PBQP的typed约束查询另一完整assignment，
-在其独立actual clone上应用并重新bufferize，不能在movement内部fallback。
+endpoint layout不兼容时，当前candidate返回typed failure；outer controller继续访问其它Spatial/Region/Temporal或已有realization选择，
+不能在movement内部fallback，也不因route失败另加layout约束重求解。
 
 三种TileRegion form的局部和stage verifier合同由07定义。两项transformation必须各自使用唯一registered实现；baseline先逐项接入同一实现，
 search integration只增加独立choice/controller owner，不增加第二套rewrite。
@@ -87,8 +87,9 @@ search integration只增加独立choice/controller owner，不增加第二套rew
 
 Layout domain builder只读current structural TileRegion，为每个SSA value、consumer use、exact alias和op layout tuple枚举合法
 `MemLayout` label。Baseline与search调用同一个query-local exact PBQP optimizer，PBQP结果不进入IR、candidate key或下一stage。
-Baseline应用一个完整assignment；search保留未变的current-IR query owner，通过SSA value/use的typed layout约束重求解，
-每个不同完整assignment在同次`IRMapping`的独立clone上应用并bufferize。Query不跨其owner的mutation保存；失败/loser的actual owner销毁。
+Baseline与search对每个实际layout-input只求解一次完整assignment；search保留未变的current-IR query owner，
+把同一assignment经各次`IRMapping`应用于FirstUse或LoopInvariant placement的独立clone，再bufferize。
+outer search不逐value/use重新约束PBQP；变化后的Spatial/Region/Temporal输入重新建立query。Query不跨其owner的mutation保存；失败/loser的actual owner销毁。
 Exact optimization完成时结果为`Optimal`；budget exhaustion时使用solver已验证的canonical incumbent并标记`Feasible`。二者共用同一
 assignment和apply实现；没有合法incumbent才是typed failure，不由movement或其它下游stage补layout。
 
@@ -127,6 +128,13 @@ token/wait和必要layout/reshape movement；同Tile跨Region使用一个actual 
 Tensor↔Cx/NCx与broadcast descriptor cover由Tile-to-Instr compute/movement共享的typed query生成；static/dynamic subview offset进入既有
 Instr offset operand，commands随encoding axis/decomposition增长，不随logical element数展开。Standalone fanout在physical boundary与
 execution structure闭合后先move Tile body，再逐Tile运行conversion、cleanup和fresh completion。
+
+Layout/structured rewrite可能消除某个远端分片的最后一次读取。当前关系维护在确认endpoint仍属于current IR后，
+撤销destination为无SSA用途的Tensor TileRegion block argument的boundary relation；这表示该逻辑输入已无数据需求。
+保留所有仍有用途的endpoint及memref/effect关系，不能按shape、旧需求或transport猜测删除。
+直接下游boundary materializer按原有unused-input规则去掉该输入，不生成无消费者的send/recv或共享DDR资源。
+覆盖1024/1025/1031、活动与无消费输入共存以及不同Spatial组装；检查剩余endpoint精确相等、必要peer保持配对，
+实际Instr/completion/SPM可消费。此规则是变换后的关系维护，不依赖额外canonicalizer运行。
 
 已选择shared-DDR route的cross-Tile输入与本地DDR输入共用actual subview加载：当payload仍使用完整carrier坐标、没有recursive aggregate slot，
 且全部ToMemref bridge只被Subview读取时，在各Subview的当前位置建立对应DDR view与所选layout的局部SPM allocation/load。
@@ -178,7 +186,12 @@ Tile-local `scf.for`的tensor state采用固定destination：完成layout assign
 先以只读One-Shot analysis检查yield与iter argument的buffer equivalence；仅非equivalent的state edge通过标准
 `bufferization.materialize_in_destination`绑定到对应iter argument。每轮只绑定当前非equivalent边中的最内层循环，
 销毁analysis后改IR并重新分析外层；不能把内层alias改变前收集的外层决定继续用于mutation。
-等价关系闭合后进入唯一一次bufferization。这只指定buffer化后的写入位置，不改变tensor值、算术顺序或dtype。
+等价关系闭合时，直接把最后一轮仍有效的One-Shot analysis交给标准`insertTensorCopies(op, state)`解决读写冲突，
+随后销毁该analysis并调用`bufferizeModuleOp`。最后一轮只读收集与copy insertion之间不改IR，不再次用options入口重复分析整module；
+绑定任何state edge之后仍须销毁旧analysis并重新分析。该复用只在当前layout调用内成立，不跨candidate或IR mutation缓存。
+这只指定buffer化后的写入位置，不改变tensor值、算术顺序或dtype。
+Bufferization后只调用共同`rebuildCurrentBufferOwnerRelations`重算actual owner关系；每个operation只访问一次，
+去重只检查当前owner内重复的operand/result。Layout不另存一套全module去重实现，也不把一个movement operand同时重复记为两种role。
 One-Shot从完整SSA读写冲突决定中间值的独立allocation；旧state读完后的必要copy保持actual effect。
 已证明in-place的state不额外绑定；bufferization留下的同SSA self-copy直接删除。
 绑定必须晚于layout materialization，否则fixed-compute layout conversion仍可能把destination换成循环内部的新allocation。
@@ -389,6 +402,18 @@ buffer relation，随后删除dead emission并验证current IR。Replacement typ
 不固定原memory attr的consumer；standard view、region/call boundary等要求operand/result type关系的consumer保留原transfer，禁止
 先改IR再靠最终verifier发现非法cast。
 
+完整copy清理在调用内按最近function收集实际GS工作队列，先检查operand type和descriptor的完整连续搬运条件，
+再建立该function的timeline并进行alias/effect/lifetime证明。一次消除只合并已证明的source/destination storage，
+不改control flow、其它storage的访问顺序或completion；因此只把这两组完整alias summary中的GS访问重新入队。
+未知alias escape不能消除，不能据此省略受影响访问。工作队列按初始current-IR遍历顺序确定优先级，
+该调用内位置只用于队列排序，不恢复owner或跨stage身份。实际GS删除时同步移出队列，且本变换不创建新GS。
+每次成功后timeline全部失效，在该function下一次需要证明时重建；其它function的IR和证明不受影响。
+工作量用调用内计数汇总，细粒度计时只覆盖通过局部条件的proof，不能为每个显然不适用的GS创建多层计时记录。
+
+覆盖多函数、大量partial/strided拒绝与full-copy链、共享/独立root、intervening write、DTE、alignment、loop和placement拒绝。
+1024/1025/1031真实规模正例检查精确consumer替换与必须保留的GS；依赖另一copy消除后才可处理的反例必须重新访问。
+计时开/关的最终IR一致，规模对照记录GS检查数、proof/timeline数和wall/RSS；直接下游仍是fresh completion与唯一SPM规划。
+
 ## 9. Failure 与 Verification
 
 失败至少区分invalid IR、unsupported representation、unsupported target、infeasible physical realization和
@@ -401,7 +426,8 @@ compile-time proof resource limit。planning query的typed结果可控制state�
   coupled state和cross-Region tensor boundary；
 - structural→layout-resolved→physical TileRegion的逐stage positive/negative transition，wrong-form输入在直接stage拒绝；
 - exact PBQP对flat layout oracle的cost/tie/status一致性，以及canonical feasible incumbent在零/不足budget下仍产生完整factor-valid
-  assignment；baseline/search各自恰一次solve+apply，`Optimal`与`Feasible`共用唯一apply且无layout枚举；
+  assignment；baseline每个actual attempt应用一次，search按06号对同一layout-input求解一次、各placement独立clone/apply；
+  `Optimal`与`Feasible`共用唯一apply，movement leaf可复用verified prefix；
 - encoding interface的Tensor/NTensor/Cx/NCx、dtype、full/tail/padding与checked arithmetic；
 - relation的identity/permutation/reshape/broadcast/slice/concat/composition及rewrite invalidation；
 - metadata view正负例、alias/range/lifetime与physical-map equality；reshape/cast对Tensor/NTensor/Cx/NCx的source/result pair逐项hard

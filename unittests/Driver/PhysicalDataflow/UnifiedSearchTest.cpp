@@ -301,6 +301,24 @@ TEST(UnifiedSearchTest,
   EXPECT_EQ(result.control.statistics.unsupported, 2u);
 }
 
+TEST(UnifiedSearchTest, EachAcceptedSpatialFamilyCanRefineItsOwnFusion) {
+  auto parsed = parseThreeStageDependentProgram();
+  std::string text, detail;
+  llvm::raw_string_ostream diagnostics(text);
+  auto fixture = prepare(*parsed.module, diagnostics, detail, nullptr, 2);
+  ASSERT_TRUE(fixture.session) << detail;
+  AcceptingEvaluator evaluator;
+  UnifiedSearchOptions options;
+  options.retainedBranches = 8;
+  options.candidateActualizationCredits = 42;
+  options.maximumRegionRefinementCandidates = 1;
+  auto result = runUnifiedSearch(*fixture.session, evaluator, options);
+  ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
+  EXPECT_GT(result.work.localRegionRefinements, 1u);
+  EXPECT_GT(result.work.nonIncumbentRegionRefinements, 0u);
+  EXPECT_EQ(result.work.candidateActualizations, 42u);
+}
+
 TEST(UnifiedSearchTest,
      IncompleteInnerDomainDoesNotDiscardTheRemainingStructuralFrontier) {
   ParsedProgram parsed = parseProgram();
@@ -362,6 +380,7 @@ struct AttemptLog {
   uint64_t live = 0;
   uint64_t peak = 0;
   uint64_t started = 0;
+  uint64_t yieldsPerLeaf = 0;
 };
 
 class ProgressiveSession final : public StructuralCandidateSession {
@@ -371,11 +390,18 @@ public:
   }
   ~ProgressiveSession() override { --log.live; }
   StructuralCandidateEvaluation advance() override {
+    if (yielded++ < log.yieldsPerLeaf)
+      return {{},
+              0,
+              CandidateContinuation::Explore,
+              CandidateRetention::UnfinishedActualization};
+    yielded = 0;
     log.visits.emplace_back(id, step);
     if (step++ < 2) {
       ActualCandidateResult result;
       result.status = ActualCandidateStatus::Indeterminate;
-      return {std::move(result), 1, CandidateContinuation::Repair};
+      return {std::move(result), 1, CandidateContinuation::Repair,
+              CandidateRetention::PendingCapacityRepair};
     }
     const uint64_t counts[] = {90, 50, 75, 40};
     return {acceptedResult(counts[step - 3] + id), 1,
@@ -387,6 +413,7 @@ private:
   AttemptLog &log;
   uint64_t id;
   uint64_t step = 0;
+  uint64_t yielded = 0;
 };
 
 class ProgressiveEvaluator final : public StructuralCandidateEvaluator {
@@ -518,7 +545,40 @@ TEST(UnifiedSearchTest,
   EXPECT_EQ(log.visits[1], std::make_pair(uint64_t(0), uint64_t(1)));
   EXPECT_EQ(log.visits[2], std::make_pair(uint64_t(1), uint64_t(0)));
   EXPECT_EQ(log.visits[3], std::make_pair(uint64_t(0), uint64_t(2)));
-  EXPECT_EQ(log.visits[4], std::make_pair(uint64_t(0), uint64_t(3)));
+  // The second structure's repair gets its turn before the first structure's
+  // next improvement. Neither repair chain restarts at its first point.
+  EXPECT_EQ(log.visits[4], std::make_pair(uint64_t(1), uint64_t(1)));
+}
+
+TEST(UnifiedSearchTest, StageYieldCountsDoNotChangeMultiOutcomeCandidateOrder) {
+  for (uint64_t width : {1, 3, 8}) {
+    std::vector<std::pair<uint64_t, uint64_t>> reference;
+    for (uint64_t yields : {0, 1, 7}) {
+      auto parsed = parseProgram();
+      ASSERT_TRUE(parsed.module);
+      std::string detail, output;
+      llvm::raw_string_ostream diagnostics(output);
+      auto fixture = prepare(*parsed.module, diagnostics, detail);
+      ASSERT_TRUE(fixture.session) << detail;
+      AttemptLog log;
+      log.yieldsPerLeaf = yields;
+      ProgressiveEvaluator evaluator(log);
+      UnifiedSearchOptions options;
+      options.retainedBranches = width;
+      options.candidateActualizationCredits = 42;
+      options.costCohort = *SearchCostCohort::create(SearchCostPolicy{});
+      auto result = runUnifiedSearch(*fixture.session, evaluator, options);
+      ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
+      EXPECT_EQ(result.work.candidateActualizations, 42u);
+      EXPECT_EQ(result.work.stageYields, 42u * yields);
+      EXPECT_EQ(log.live, 0u);
+      EXPECT_LE(log.peak, width);
+      if (yields == 0)
+        reference = log.visits;
+      else
+        EXPECT_EQ(log.visits, reference);
+    }
+  }
 }
 
 TEST(UnifiedSearchTest, QueuedRepairSurvivesInterleavedLocalExploration) {
@@ -563,6 +623,63 @@ TEST(UnifiedSearchTest, QueuedRepairSurvivesInterleavedLocalExploration) {
   EXPECT_EQ(result.work.structuralStatesActualized, 1u);
   EXPECT_EQ(result.work.resumedCandidates, 3u);
   EXPECT_EQ(result.work.retiredBranches, 0u);
+}
+
+TEST(UnifiedSearchTest, VerifiedStageYieldsPreserveOwnersAndActualBudget) {
+  class Evaluator final : public StructuralCandidateEvaluator {
+    class Session final : public StructuralCandidateSession {
+    public:
+      StructuralCandidateEvaluation advance() override {
+        if (++visits <= 3)
+          return {{},
+                  0,
+                  CandidateContinuation::Explore,
+                  CandidateRetention::UnfinishedActualization};
+        return {acceptedResult(), 1, CandidateContinuation::Exhausted};
+      }
+
+    private:
+      unsigned visits = 0;
+    };
+
+  public:
+    std::unique_ptr<StructuralCandidateSession>
+    start(const RegionState &) override {
+      ++starts;
+      return std::make_unique<Session>();
+    }
+    uint64_t starts = 0;
+  };
+  std::vector<std::vector<UnifiedSearchCandidateTrace>> traces;
+  for (uint64_t quantum : {1u, 128u}) {
+    auto parsed = parseProgram();
+    ASSERT_TRUE(parsed.module);
+    std::string detail, output;
+    llvm::raw_string_ostream diagnostics(output);
+    auto fixture = prepare(*parsed.module, diagnostics, detail);
+    ASSERT_TRUE(fixture.session) << detail;
+    Evaluator evaluator;
+    UnifiedSearchOptions options;
+    options.retainedBranches = 2;
+    options.candidateActualizationCredits = 4;
+    options.costCohort = *SearchCostCohort::create(SearchCostPolicy{});
+    UnifiedSearchTrace trace;
+    UnifiedSearchSession session(*fixture.session, evaluator, options, &trace);
+    uint64_t resumes = 0;
+    while (session.resume(quantum).status == UnifiedSearchResumeStatus::Paused)
+      ASSERT_LT(++resumes, 10000u);
+    auto result = session.finish();
+    ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
+    EXPECT_EQ(result.work.candidateActualizations, 4u);
+    EXPECT_EQ(result.control.statistics.accepted, 4u);
+    EXPECT_EQ(result.work.retiredBranches, 0u);
+    EXPECT_GE(result.work.stageYields, 12u);
+    EXPECT_LE(evaluator.starts, 5u); // At most one other live width-2 owner.
+    EXPECT_EQ(trace.candidates.size(), 4u);
+    EXPECT_EQ(trace.winnerHandoffs, 1u);
+    traces.push_back(std::move(trace.candidates));
+  }
+  EXPECT_EQ(traces[0], traces[1]);
 }
 
 } // namespace

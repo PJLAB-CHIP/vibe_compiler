@@ -168,7 +168,8 @@ ExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     ProgramDataHandoff &programData, ExecutableLoweringStatistics *statistics,
-    unsigned tilePipelineParallelism, SPMCapacityObserver capacityObserver) {
+    unsigned tilePipelineParallelism,
+    TileSPMCapacityObserver capacityObserver) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
       "stage", "actual-memory-target-gate", "canonical-instr-to-executable");
   if (statistics)
@@ -209,10 +210,18 @@ ExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
 
   auto planMemory = [&](size_t tileIndex) {
     TileLoweringResult &result = loweringResults[tileIndex];
+    auto observe = [&](const SPMMemoryPlanningFailure &failure,
+                       const StructuredMaterializationRelations &relations) {
+      if (capacityObserver)
+        capacityObserver(tiles[tileIndex].card, tiles[tileIndex].tile, failure,
+                         relations);
+    };
     mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> memoryPlanned =
         planTileMemory(std::move(result.module), &result.memoryPlanning,
                        &result.materializationRelations,
-                       /*emitSPMCapacityDiagnostics=*/false, capacityObserver);
+                       /*emitSPMCapacityDiagnostics=*/false,
+                       capacityObserver ? SPMCapacityObserver(observe)
+                                        : SPMCapacityObserver(nullptr));
     if (mlir::failed(memoryPlanned)) {
       result.memoryPlanningFailed = true;
       result.detail = "Tile memory planning failed";

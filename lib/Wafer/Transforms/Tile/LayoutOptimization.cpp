@@ -15,6 +15,7 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotModuleBufferize.h"
+#include "mlir/Dialect/Bufferization/Transforms/Transforms.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
@@ -1410,6 +1411,9 @@ static bool hasNoInterveningWrite(LayoutMaterializeOp prior,
 static mlir::LogicalResult convertLayoutCopies(
     mlir::ModuleOp module, StructuredMaterializationRelations &relations,
     LayoutOptimizationStatistics &statistics, std::string &detail) {
+  support::ScopedCompileTimingSpan timing("transformation-phase",
+                                          "layout-and-bufferization",
+                                          "convertLayoutCopies");
   llvm::SmallVector<mlir::memref::CopyOp, 16> copies;
   module.walk([&](mlir::memref::CopyOp copy) { copies.push_back(copy); });
   mlir::IRRewriter rewriter(module.getContext());
@@ -1552,37 +1556,6 @@ static mlir::LogicalResult convertLayoutCopies(
 static bool isAllowedTensorBoundaryOperation(mlir::Operation *operation) {
   return mlir::isa<TileRegionOp, TileYieldOp, mlir::bufferization::ToMemrefOp,
                    mlir::bufferization::ToTensorOp>(operation);
-}
-
-static void
-recordCurrentBuffers(mlir::ModuleOp module,
-                     StructuredMaterializationRelations &relations) {
-  relations.buffers.clear();
-  auto append = [&](mlir::Operation *owner, mlir::Value buffer,
-                    MaterializedBufferRole role) {
-    if (!buffer || !mlir::isa<mlir::BaseMemRefType>(buffer.getType()) ||
-        llvm::any_of(relations.buffers, [&](const auto &relation) {
-          return relation.owner == owner && relation.buffer == buffer &&
-                 relation.role == role;
-        }))
-      return;
-    relations.buffers.push_back({owner, buffer, role});
-  };
-  module.walk([&](mlir::Operation *operation) {
-    if (mlir::isa<mlir::ModuleOp, TileModuleOp, TileRegionOp,
-                  mlir::func::FuncOp>(operation))
-      return;
-    for (mlir::Value operand : operation->getOperands())
-      append(operation, operand, MaterializedBufferRole::Operand);
-    for (mlir::Value result : operation->getResults())
-      append(operation, result,
-             mlir::isa<mlir::memref::AllocOp>(operation)
-                 ? MaterializedBufferRole::Scratch
-                 : MaterializedBufferRole::Result);
-    if (mlir::isa<LayoutMaterializeOp, mlir::memref::CopyOp>(operation))
-      for (mlir::Value operand : operation->getOperands())
-        append(operation, operand, MaterializedBufferRole::Movement);
-  });
 }
 
 static mlir::LogicalResult localizeBufferizationGlobals(mlir::ModuleOp module,
@@ -2489,8 +2462,15 @@ LayoutOptimizationResult LayoutAssignmentQuery::apply(
   while (true) {
     llvm::SmallVector<LoopStateBinding, 8> loopBindings;
     {
+      support::ScopedCompileTimingSpan epochTiming(
+          "analysis-phase", "loop-state-binding", "state-epoch");
       mlir::bufferization::OneShotAnalysisState state(module, options);
-      if (mlir::failed(mlir::bufferization::analyzeModuleOp(module, state))) {
+      mlir::LogicalResult analyzed = [&] {
+        support::ScopedCompileTimingSpan timing(
+            "analysis-phase", "loop-state-binding", "analyzeModuleOp");
+        return mlir::bufferization::analyzeModuleOp(module, state);
+      }();
+      if (mlir::failed(analyzed)) {
         result.status = ExactPBQPStatus::BrokenContract;
         result.detail = "One-Shot loop state analysis failed";
         return result;
@@ -2519,9 +2499,23 @@ LayoutOptimizationResult LayoutAssignmentQuery::apply(
         result.detail = "loop state destination has no selected current layout";
         return result;
       }
+      if (loopBindings.empty()) {
+        // The final analysis still describes this exact IR. The standard
+        // state-taking overload resolves conflicts without analyzing again.
+        support::ScopedCompileTimingSpan timing("transformation-phase",
+                                                "layout-and-bufferization",
+                                                "insertTensorCopies");
+        if (mlir::failed(
+                mlir::bufferization::insertTensorCopies(module, state))) {
+          result.status = ExactPBQPStatus::BrokenContract;
+          result.detail = "One-Shot conflict resolution failed";
+          return result;
+        }
+        support::addCompileCounter("loop-state-binding",
+                                   "reused-final-analysis", 1);
+        break;
+      }
     }
-    if (loopBindings.empty())
-      break;
     // Bind only the innermost unresolved loops. Their alias relationships can
     // make an enclosing edge equivalent, so outer decisions must be recomputed
     // from the changed IR rather than replayed from the old analysis.
@@ -2557,9 +2551,13 @@ LayoutOptimizationResult LayoutAssignmentQuery::apply(
     }
   }
   ++result.statistics.bufferizationInvocations;
-  if (mlir::failed(
-          mlir::bufferization::runOneShotModuleBufferize(module, options)) ||
-      missingLayout) {
+  mlir::LogicalResult bufferized = [&] {
+    support::ScopedCompileTimingSpan timing("transformation-phase",
+                                            "layout-and-bufferization",
+                                            "bufferizeModuleOp");
+    return mlir::bufferization::bufferizeModuleOp(module, options);
+  }();
+  if (mlir::failed(bufferized) || missingLayout) {
     result.status = ExactPBQPStatus::BrokenContract;
     result.detail =
         missingLayout
@@ -2606,7 +2604,11 @@ LayoutOptimizationResult LayoutAssignmentQuery::apply(
   module.walk([&](LayoutMaterializeOp) {
     ++result.statistics.layoutMaterializationsAfter;
   });
-  recordCurrentBuffers(module, relations);
+  {
+    support::ScopedCompileTimingSpan timing(
+        "analysis-phase", "layout-and-bufferization", "buffer-owner-relations");
+    rebuildCurrentBufferOwnerRelations(module, relations);
+  }
   retainCurrentStructuredBufferRelations(module, relations);
   if (mlir::failed(verifyLayoutResolvedTileRegions(module)) ||
       mlir::failed(checkStructuredBufferRelationsCurrent(module, relations))) {

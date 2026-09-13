@@ -902,6 +902,123 @@ max RSS21985508 KiB，无package、无设备执行。已完成36次candidate adv
 因此本轮没有闭合LLaMA搜索和设备性能，下一步还要分别处理候选IR规模、重复清理和容量反馈的scope精度。
 已清理本轮撤回/失败的四个大型生成目录，日志及小型actual-IR审计证据保留；风险prefill没有重试。
 
+## 2026-09-13：搬运清理与One-Shot重复工作
+
+本轮按统一板测计划推进前7步；这里记录第1步已经验证的修改，后续步骤及设备验收仍未完成。
+分版本数据见[`host-transfer-work-20260913.json`](data/board-performance/host-transfer-work-20260913.json)。
+
+根因一是Instr清理每消除一个copy就重新扫描整个module，并对此前失败和partial GS重复创建详细计时、查询timeline。
+现改为函数内的确定性工作队列：先检查descriptor/type，只有可处理的full copy才建立timeline和完整alias/lifetime证明；
+成功后仅将两个封闭alias集合中受影响的GS重新排队，并立即丢弃失效timeline。没有新增、放宽copy消除条件。
+未知escape、DTE隔离、source overwrite、alignment及loop路径仍按原证明处理。
+
+同一rank3、1024/1025/1031规模测试含1536个必须保留的partial copy和96个可消除copy：
+旧实现测试1587 ms、进程wall1.59秒，新实现142 ms、wall0.15秒。最终回归另外断言计时开关下IR完全相同，
+以及64级copy链在反复合并alias后仍保留必要的source snapshot。这是主机机制对照，不能当作设备加速。
+
+根因二是循环state绑定已经完成One-Shot分析，后续wrapper却再次分析同一份未变IR。
+现在调用pinned MLIR的`insertTensorCopies(module, state)`消费最后一轮有效analysis，再用`bufferizeModuleOp`完成同一标准路径。
+需要绑定内层循环时仍先销毁旧analysis，修改后重新分析，不能跨mutation复用。
+依据为[MLIR Bufferization](https://mlir.llvm.org/docs/Bufferization/)及pinned
+`TensorCopyInsertion.cpp`/`OneShotModuleBufferize.cpp`的两个既有接口，没有新增bufferization实现。
+
+本轮compiler SHA256为`40a97cb696160cbe5a938c8fbd0f76cc1a877d28257dbd09f0922f9796bc286f`。
+conv-mixed-dag的width8/trials42正式输入到package及strict no-card均完成：
+
+| dtype | runner wall | peak RSS KiB | actual/accepted | capacity/unsupported |
+| --- | ---: | ---: | ---: | ---: |
+| BF16 | 78.31秒 | 537504 | 42/19 | 5/18 |
+| FP16 | 165.76秒 | 606584 | 42/19 | 6/17 |
+
+历史conv的1800秒超时来自较早compiler，仅作问题参照，不计算匹配加速比，也不由这两次不同搜索过程比较dtype性能。
+BF16本轮收集16003个GS，检查16033次，执行完整证明3588次，消除1698个copy；36次layout/bufferization均复用了最终analysis。
+仍捕获rank7 strided Tensor→NCx、dynamic shape和非projected并行表达式的候选拒绝；有winner不等于这些能力缺口已修复。
+同一compiler的LLaMA42仍触及1800秒host compiler期限：runner wall1814.79秒、RSS21951308 KiB、36次advance完成，没有package或设备执行。
+同为560次Instr cleanup，累计CPU183.270秒，前一版本为766.039秒；不能把累计CPU变化当成端到端wall加速。
+33次layout/bufferization累计590.062秒，单次455.201秒；最长advance731.785秒。
+细分`analyzeModuleOp`计时表明长layout区间大部分位于该调用之外，不能继续把包装阶段归因于One-Shot递归。
+
+随后代码复核确认，layout末尾还保留一套`recordCurrentBuffers`：每追加一个owner/buffer关系都扫描全部旧关系，
+尽管每个owner在本轮只遍历一次，造成二次工作量。现收敛到已有按owner局部去重的`rebuildCurrentBufferOwnerRelations`，
+消除第二套记录规则；该追加修改及容量反馈的下一版本结果见下段。
+同时细分candidate clone、temporal、Region准备/释放和layout copy转换计时，继续定位未覆盖的长调用。
+
+完整Transforms380、Driver103、相关lit30、数值后端/SystemC19项全部实际通过；canonical完整增量构建及随后Ninja no-op通过。
+这些主机检查不代签第2—7步、完整catalog或PyTorch实卡验收。
+
+### owner重建与输入容量反馈的后续验证
+
+compiler `1c1665d8ede6be8ce8ea69c52c41f6f2265e3633a2cef15c58fb23896b96748a`，
+LLaMA FP16 width8/trials14 fresh source编译完成，runner wall328.46秒、RSS6912384 KiB。
+实际14次得到13次capacity、1次completion环拒绝，accepted为0，因而没有package/no-card成功或设备结果。
+5个结构入口中生成11次有实际证据的容量修正，2次反馈不能形成新修正；输入关联返回192个参数坐标，
+1360个demand因同输入多scope保持歧义，不猜测唯一owner。这说明反馈通路已进入生产，但低预算可行性尚未改善。
+
+本次14次layout累计18.617秒、最大2.373秒；共同owner重建累计30.315毫秒、最大3.588毫秒。
+剩余显著工作为128327次descriptor规划（累计CPU84.758秒）、11次temporal物化（wall累计61.160秒）及Region提案查询。
+这些是本次的实际阶段计时，与上一版本42次搜索的455秒长layout不构成同候选匹配加速比；下一档预算仍需验证。
+主机Transforms380、容量/整数提案11、相关lit30项实际通过。完整Driver复验及merged/pipeline产品矩阵仍在推进。
+阶段yield、存活owner统计和背压是后续搜索修改，不能由上述编译器身份代签；原始记录与哈希统一见同一JSON。
+
+
+### 2026-09-13：有界多轴搜索组织（实施中）
+
+本轮按 `physical-search-organization.md` 修改生产搜索：实际容量关联的坐标独立 `/2`，保留父点换轴、
+跨scope批量及独立组合；每session只推进一个基础Temporal前缀，先完成可用Peer/DDR比较。
+PBQP对每个实际layout-input只求解一次，FirstUse与LoopInvariant使用同一未修改的实际输入和assignment。
+外层按实际leaf轮转，阶段yield不改变访问前缀；Spatial按轴集合代表与比例轮转，融合可用各Spatial局部实际结果。
+可行Temporal邻域包含批量增减、独立轴、交换、整数/对齐精化及合法loop order，完整参数向量按需构造。
+
+Conv mixed DAG FP16本轮fresh source/reference → package → no-card通过：默认8/42，8个结构、22个actual accepted，
+8个capacity拒绝、12个unsupported。主机全流程203.53 s，进程峰值548,372 KiB；每session基础Temporal前缀峰值1、
+IR模块峰值7。PBQP solve 27次，FirstUse apply 27次、LoopInvariant apply 6次；7个整数性能提案、3个输入共享候选实际进入搜索。
+这些是主机产品结果，没有执行设备数值或测量设备耗时；与历史设备时延不能直接比较。
+
+该Conv仍有动态维布局证明及展开parallel Linalg表达式不支持的候选；产品成功不意味着这些lowering边界已经修复。
+当前主线最后补了“末个粗修正仅生成时仍受保护”的回归。全canonical增量构建及无修改Ninja no-op通过；
+全产品与组件最终复验结果见下节。完整预算曲线、DDR/completion/conv-BF16遗留及匹配实卡验收尚未闭合。
+摘要数据见 [search-organization-20260913.json](data/board-performance/search-organization-20260913.json)。
+
+### 首个可行解：跨 Region 容量反馈修正
+
+根因在输入访问归因：歧义检查沿 SSA 回溯前序 `TileRegion` 的计算结果时，又把该 Region 的全部输入登记为当前
+consumer 的读取者。独立物化的结果与原始输入访问被混为一谈，导致有效参数关联被判为歧义而丢弃。
+修复在显式 scope/Region 计算边界停止这条回溯；同一实际输入的完整 reader 集合仍可关联到多个 scope，
+已有融合中的 unary pointwise 仅在输入、输出 permutation map 相同时继续索引查询，不推断数值相等或 buffer alias。
+Instr 侧的实际 RDMA/GS 来源、writer 检查和唯一 SPM gate 保持不变。
+
+独立的跨 Region 回归在修复前返回0个坐标，修复后精确返回4个；1024/1025/1031、共享/独立输入、未知 producer、
+写入干扰、merged/pipelined 输入及多轴提案共21项定向回归通过，完整增量构建和随后 Ninja no-op 通过。
+两个14次预算样本的14个 source 文件整体摘要相同：修复前 compiler `bf232b97…`，修复后 `d35bd702…`。
+LLaMA FP16 的输入关联坐标汇总从64增至1344，歧义 demand 计数1520降为0；这些是跨 Tile/leaf 的汇总，
+不代表1344个唯一 scope。原先漏修的一组 GEMM N/K 坐标得到反馈，无关 M 不再由粗粒度 body 关联顺带缩小。
+
+**14次仍全部为实际容量拒绝，没有 package/no-card 成功。**该前缀只进入6组 Temporal 参数，其中2组为 Repair；
+反馈修正不能代签首次可行成本或设备性能恢复。相同编译器、输入和 width=8 的默认42次已成功完成 package/no-card，
+前14次候选结果及结构访问次序与14次独立运行一致；首个可行解在第24次，全部42次中3个accepted、35个capacity、
+4个unsupported。compiler transaction 为638.808 s，PBQP solve 23次，每session基础Temporal前缀峰值1、IR模块峰值8。
+同轮其余41项注册 search 产品全部通过，没有skip/unsupported测试结果；包括LLaMA BF16、两步decode FP16/BF16、
+4K prefill及conv FP16/BF16，连同独立运行的LLaMA FP16共42/42。4K仍只做主机验证。
+
+组件批次133项中131项通过、2项Python主机catalog超时；这两项单独重签后均通过。该批次在跨Region最后修正之前，
+最终编译器另外通过上面的21项定向回归和42项完整产品，不能将此前全部组件声称为最后版本重新执行。
+Python导出实卡输入时首次缺少`PYTHONPATH`，在launch前停止；按现有CTest环境补齐后完成准备，没有设备重试。
+
+默认42次胜出包完成一次非风险LLaMA FP16实卡运行：输入/输出`[1,16,4096]`、MLP11008、seed20260803，
+**65,536个输出全部通过PyTorch，最大绝对误差0.0009765625，rtol=0.002、atol=0.004；设备91.415001 ms**。
+沿用统一runner，重新生成source、输入和reference并校验与本轮prepared source相同；16 Tile完成、回读和清理均成功。
+这是tx-stream-events单次计时，未启用Primary/Count/Trace；不是匹配A/B，也不能声称性能恢复到历史三十多毫秒。
+
+当前accepted仍只有三个，其中前两个实际估值相同：DDR read 3,301,864,448 bytes、write 17,744,000 bytes，
+2,799,392个DDR地址连续段、1,087,265条动态指令，Direct DTE计数为0；估时71.248 ms。
+第三个估时933.037 ms，未胜出。这解释了搜索结果的质量边界：有限预算已有可运行解，但改善搜索深度和通信生成仍未完成，
+不能把三次accepted视作三个有意义的性能方案。
+
+四个unsupported都被actual completion依赖环拒绝。新增诊断显示首个环的发布/获取切点是直接WDMA/RDMA，
+并非循环wrapper：例如Tile13→14的F32资源与Tile14→15的F16资源，再经Tile15→13形成闭环。
+它证明当前物化次序不能执行，尚未证明源数据依赖本身成环；需要继续追踪Region/通信切点的生成与排序。
+本轮只增加证据输出，没有删除依赖或改变join/wait。完整哈希、计数、实卡audit与限制保存在同一 JSON。
+
 ## 2026-09-13：共享 DDR 入口参数去冗余
 
 根因是编译器要求各 Tile 参数表相同：BoundaryMovement 对每个共享 payload 向全16 Tile添加参数，completion又把通知参数

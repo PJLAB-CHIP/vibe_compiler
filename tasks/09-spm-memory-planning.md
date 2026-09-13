@@ -555,6 +555,10 @@ range/alignment/conflict gate通过后提交`wafer.spm.offset`。每个candidate
 
 `capacity_overflow`只来自actual fixed-capacity problem的`ProvenInfeasible`。`packing_search_exhausted`只表示资源耗尽，不是capacity事实。
 candidate failure擦除未提交top-level TileModule subtrees；带完整owner relation的capacity rejection可反馈外层controller，其它failure按typed合同处理。
+
+06号的输入访问归因在该回调中同步读取actual allocation与完整current writer，canonical leaf另提供已经验证的Card/Tile identity。
+`ProgramArgumentAttr`只用于关联外层仍存活的参数域；SPM planner不读取此参数域，不返回retile建议，不借此改变冲突证书或合法集合。
+来源歧义与缺少可修正scope只影响外层提案，不能降格为allocator错误，也不能把普通unsupported改写成capacity overflow。
 allocator不返回tile、layout、route或retention/release repair recipe，
 也不保留partial offsets。
 

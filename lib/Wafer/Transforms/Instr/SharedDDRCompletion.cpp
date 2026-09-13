@@ -535,6 +535,27 @@ static Result verifyOrder(const Collection &collection,
     operations[from]->print(stream);
     stream << "\n    tile=" << operationTiles[to].getValue() << " ";
     operations[to]->print(stream);
+    if (reason->second == DependencyKind::Publication) {
+      auto publish = mlir::cast<SyncDDRPublishOp>(operations[from]);
+      const int64_t resourceId = getBinding(publish.getData()).getResourceId();
+      const auto &resource = collection.resources.at(resourceId);
+      auto printCut = [&](llvm::StringRef label, mlir::Operation *cut) {
+        stream << "\n    " << label << "=";
+        cut->print(stream, mlir::OpPrintingFlags().skipRegions());
+        if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(cut))
+          stream << " bounds="
+                 << *mlir::getConstantIntValue(loop.getLowerBound()) << ":"
+                 << *mlir::getConstantIntValue(loop.getUpperBound()) << ":"
+                 << *mlir::getConstantIntValue(loop.getStep());
+      };
+      stream << "\n    shared-resource=" << resourceId;
+      printCut("writer-last-access-cut", resource.writer->last);
+      auto acquire = mlir::cast<SyncDDRAcquireOp>(operations[to]);
+      auto readerRoot = getEntryRoot(acquire.getData());
+      for (const Access &reader : resource.readers)
+        if (reader.root == readerRoot)
+          printCut("reader-first-access-cut", reader.first);
+    }
   }
   return unsupported(stream.str());
 }

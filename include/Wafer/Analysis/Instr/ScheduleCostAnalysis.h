@@ -136,6 +136,9 @@ struct InstructionProgramCost {
   ScheduleComputeCost compute;
   ScheduleCostMetric ddrReadBytes;
   ScheduleCostMetric ddrWriteBytes;
+  /// Maximal contiguous runs in the actual DDR descriptor address sequence,
+  /// multiplied by dynamic execution count. These are not DRAM transactions.
+  ScheduleCostMetric ddrSegmentCount;
 
   /// Payload bytes explicitly issued to the local movement resource. DDR
   /// traffic may also appear here because the two dimensions account for
@@ -223,6 +226,8 @@ struct InstructionProgramAggregateCost {
   ScheduleComputeCost maximumTileCompute;
   ScheduleCostMetric aggregateDDRReadBytes;
   ScheduleCostMetric aggregateDDRWriteBytes;
+  ScheduleCostMetric aggregateDDRSegmentCount;
+  ScheduleCostMetric maximumTileDDRSegmentCount;
   ScheduleCostMetric aggregateSPMMovementBytes;
   ScheduleCostMetric aggregateGatherScatterBytes;
   ScheduleCostMetric aggregateGatherScatterInnerIterations;

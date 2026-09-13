@@ -21,6 +21,7 @@
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 
 namespace wafer::analysis::detail {
@@ -136,6 +137,41 @@ static void markDirectionalNoCUnavailable(InstructionProgramCost &cost) {
             ScheduleCostReason::UnresolvedNoCRoute);
 }
 
+static Quantity countDDRSegments(int64_t innerBytes,
+                                 llvm::ArrayRef<int64_t> strides,
+                                 llvm::ArrayRef<int64_t> iterations) {
+  if (innerBytes <= 0 || strides.size() != 3 || iterations.size() != 3 ||
+      llvm::any_of(strides, [](int64_t stride) { return stride < 0; }) ||
+      llvm::any_of(iterations, [](int64_t count) { return count <= 0; }))
+    return Quantity::unavailable(
+        ScheduleCostReason::UnavailablePhysicalGeometry);
+  Quantity total = product(iterations);
+  if (total.knowledge != ScheduleCostKnowledge::Known)
+    return total;
+  uint64_t outer = total.value;
+  uint64_t span = innerBytes;
+  uint64_t segments = 1;
+  constexpr uint64_t maximum = std::numeric_limits<uint64_t>::max();
+  // Descriptor index zero is innermost. A d-loop rollover follows the final
+  // address of all inner loops, not merely inner_bytes * their trip counts.
+  // Thus inner gaps and broadcast repeats remain distinct exact transitions.
+  for (size_t axis = 0; axis < iterations.size(); ++axis) {
+    const uint64_t count = iterations[axis];
+    const uint64_t stride = strides[axis];
+    outer /= count;
+    if (stride != span) {
+      const uint64_t transitions = (count - 1) * outer;
+      if (transitions > maximum - segments)
+        return Quantity::overflow();
+      segments += transitions;
+    }
+    if (count > 1 && stride > (maximum - span) / (count - 1))
+      return Quantity::overflow();
+    span += (count - 1) * stride;
+  }
+  return Quantity{segments};
+}
+
 static void collectResourceCost(mlir::Operation *op,
                                 InstructionProgramCost &cost,
                                 Quantity multiplicity) {
@@ -158,11 +194,21 @@ static void collectResourceCost(mlir::Operation *op,
 
   if (auto rdma = mlir::dyn_cast<InstrRDMAOp>(op)) {
     addBytes(cost.ddrReadBytes, rdma.getByteCount());
+    add(cost.ddrSegmentCount,
+        multiply(countDDRSegments(rdma.getInnerBytes(),
+                                  rdma.getSrcStridesAttr().asArrayRef(),
+                                  rdma.getSrcIterationsAttr().asArrayRef()),
+                 multiplicity));
     addBytes(cost.spmMovementBytes, rdma.getByteCount());
     return;
   }
   if (auto wdma = mlir::dyn_cast<InstrWDMAOp>(op)) {
     addBytes(cost.ddrWriteBytes, wdma.getByteCount());
+    add(cost.ddrSegmentCount,
+        multiply(countDDRSegments(wdma.getInnerBytes(),
+                                  wdma.getDstStridesAttr().asArrayRef(),
+                                  wdma.getDstIterationsAttr().asArrayRef()),
+                 multiplicity));
     addBytes(cost.spmMovementBytes, wdma.getByteCount());
     return;
   }
@@ -736,6 +782,7 @@ static void forEachExactExecutionMetric(InstructionProgramCost &cost,
   callback(cost.compute.vectorOtherLogicalOps);
   callback(cost.ddrReadBytes);
   callback(cost.ddrWriteBytes);
+  callback(cost.ddrSegmentCount);
   callback(cost.spmMovementBytes);
   callback(cost.gatherScatterBytes);
   callback(cost.gatherScatterInnerIterations);
@@ -767,6 +814,7 @@ static void zipExactExecutionMetrics(InstructionProgramCost &result,
            rhs.compute.vectorOtherLogicalOps);
   callback(result.ddrReadBytes, lhs.ddrReadBytes, rhs.ddrReadBytes);
   callback(result.ddrWriteBytes, lhs.ddrWriteBytes, rhs.ddrWriteBytes);
+  callback(result.ddrSegmentCount, lhs.ddrSegmentCount, rhs.ddrSegmentCount);
   callback(result.spmMovementBytes, lhs.spmMovementBytes, rhs.spmMovementBytes);
   callback(result.gatherScatterBytes, lhs.gatherScatterBytes,
            rhs.gatherScatterBytes);
@@ -1049,6 +1097,7 @@ void collectExecutionCost(
     mark(cost.spmMovementBytes);
     mark(cost.gatherScatterBytes);
     mark(cost.gatherScatterInnerIterations);
+    mark(cost.ddrSegmentCount);
     mark(cost.noc.staticIssueSiteCount);
     mark(cost.noc.aggregateTransmitBytes);
     mark(cost.noc.aggregateReceiveBytes);

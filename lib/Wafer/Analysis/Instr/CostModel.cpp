@@ -116,14 +116,29 @@ std::optional<uint64_t> movementServiceTime(
   return total;
 }
 
+std::optional<uint64_t> ddrServiceTime(uint64_t bytes,
+                                       const ScheduleCostMetric &segments,
+                                       const SearchCostPolicy &policy) {
+  if (!segments.isKnown())
+    return std::nullopt;
+  auto bandwidth = timeForWork(bytes, policy.ddrNominalBytesPerSecond);
+  uint64_t traversal;
+  if (!bandwidth ||
+      !checkedMultiply(segments.value, policy.ddrSegmentPicosecondsEstimate,
+                       traversal))
+    return std::numeric_limits<uint64_t>::max();
+  return std::max(*bandwidth, traversal);
+}
+
 } // namespace
 
 mlir::FailureOr<SearchCostCohort>
 SearchCostCohort::create(const SearchCostPolicy &policy,
                          std::string *failureReason) {
-  const std::array<uint64_t, 16> rates{
+  const std::array<uint64_t, 17> rates{
       policy.unmodeledInstructionPicosecondsEstimate,
       policy.ddrNominalBytesPerSecond,
+      policy.ddrSegmentPicosecondsEstimate,
       policy.directionalNoCBytesPerSecond,
       policy.dteEndpointBytesPerSecondEstimate,
       policy.dteFirstMessagePicosecondsEstimate,
@@ -315,6 +330,17 @@ deriveResourceObjective(const InstructionProgramAggregateCost &cost,
         return UnknownSearchObjective{
             SearchObjectiveUnknownReason::MetricUnavailable};
   }
+  // Per-Tile run traversal overlaps across Tiles. DDR bandwidth is shared by
+  // the card, so retain the aggregate byte floor without summing per-Tile run
+  // costs or charging the same data service twice.
+  const auto &segments = cost.tileCosts.empty()
+                             ? cost.aggregateDDRSegmentCount
+                             : cost.maximumTileDDRSegmentCount;
+  auto ddrService = ddrServiceTime(ddrBytes, segments, policy);
+  if (!ddrService)
+    return UnknownSearchObjective{
+        SearchObjectiveUnknownReason::MetricUnavailable};
+  durations.ddrPicoseconds = *ddrService;
   durations.spmHighWaterBytes = cost.maximumTileSPMHighWaterBytes.value;
   durations.ddrHighWaterBytes = cost.maximumTileDDRHighWaterBytes.value;
   durations.spmBufferCount = cost.aggregateCompilerOwnedSPMBufferCount.value;
@@ -694,7 +720,7 @@ private:
       if (!service ||
           !checkedAdd(work.ddrReadBytes.value, work.ddrWriteBytes.value, bytes))
         return false;
-      auto ddr = timeForWork(bytes, policy.ddrNominalBytesPerSecond);
+      auto ddr = ddrServiceTime(bytes, work.ddrSegmentCount, policy);
       if (!ddr || !checkedAdd(*service, *ddr, duration))
         return false;
       found = services.try_emplace(operation, duration).first;
@@ -891,7 +917,7 @@ private:
               count, policy.unmodeledInstructionPicosecondsEstimate, duration))
         duration = std::numeric_limits<uint64_t>::max();
     } else {
-      auto ddr = timeForWork(bytes, policy.ddrNominalBytesPerSecond);
+      auto ddr = ddrServiceTime(bytes, cost.ddrSegmentCount, policy);
       if (!ddr || !checkedAdd(*service, *ddr, duration))
         duration = std::numeric_limits<uint64_t>::max();
       if (!duration)

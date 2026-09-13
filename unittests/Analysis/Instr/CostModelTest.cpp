@@ -8,6 +8,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -33,6 +34,7 @@ SearchCostPolicy unitCostPolicy() {
   policy.noCHopPicosecondsEstimate = 1;
   policy.instructionFixedPicosecondsEstimate = 1;
   policy.gatherScatterInnerIterationPicosecondsEstimate = 1;
+  policy.ddrSegmentPicosecondsEstimate = 1;
   policy.dteWaitedEventPicosecondsEstimate = 1;
   policy.nccJoinPicosecondsEstimate = 1;
   policy.nccParticipantWaitPicosecondsEstimate = 1;
@@ -135,6 +137,112 @@ TEST(CostModelTest, ActualDependenciesAndJoinsChangeOverlapWithIdenticalWork) {
       }
     }
   }
+}
+
+TEST(CostModelTest, DDRAddressRunsRespectAllThreeLoopsAndSharedCardBandwidth) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  auto policy = unitCostPolicy();
+  policy.ddrSegmentPicosecondsEstimate = 1024;
+  auto cohort = SearchCostCohort::create(policy);
+  ASSERT_TRUE(mlir::succeeded(cohort));
+  for (int64_t extent : {1024, 1025, 1031})
+    for (uint64_t trips : {1u, 33u}) {
+      SCOPED_TRACE(::testing::Message() << extent << "/" << trips);
+      std::array<uint64_t, 5> times{};
+      for (size_t variant = 0; variant < times.size(); ++variant) {
+        const uint64_t bytes = 512 * extent;
+        const uint64_t inner = variant == 0   ? bytes
+                               : variant == 1 ? 2
+                               : variant == 2 ? 256
+                                              : 128;
+        const std::array<int64_t, 3> iterations =
+            variant == 0   ? std::array<int64_t, 3>{1, 1, 1}
+            : variant == 1 ? std::array<int64_t, 3>{128, extent, 2}
+            : variant == 2 ? std::array<int64_t, 3>{extent, 2, 1}
+                           : std::array<int64_t, 3>{2, extent, 2};
+        const std::array<int64_t, 3> strides =
+            variant == 0   ? std::array<int64_t, 3>{0, 0, 0}
+            : variant == 1 ? std::array<int64_t, 3>{2, 256, 256 * extent}
+            : variant == 2 ? std::array<int64_t, 3>{512, 512 * extent, 0}
+            : variant == 3 ? std::array<int64_t, 3>{256, 384, 384 * extent}
+                           : std::array<int64_t, 3>{0, 128, 128 * extent};
+        // A repeated-address inner loop is a fresh address run; after each
+        // repeat the outer rollover continues from its actual final address.
+        const uint64_t segments = variant < 2 ? 1 : 2 * extent + (variant >= 3);
+        const std::string ddr = "memref<4x" + std::to_string(extent) +
+                                "x128xf16, #wafer.memory<ddr, tensor>>";
+        const std::string spm = "memref<2x" + std::to_string(extent) +
+                                "x128xf16, #wafer.memory<spm, tensor>>";
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { func.func @main(%input: " << ddr << ") {\n"
+            << "%buffer = memref.alloc() {wafer.spm.offset = "
+               "#wafer.spm_offset<65536>} : "
+            << spm << "\n"
+            << "%zero = arith.constant 0 : index\n"
+               "%one = arith.constant 1 : index\n"
+            << "%end = arith.constant " << trips
+            << " : index\n"
+               "scf.for %iv = %zero to %end step %one {\n";
+        for (bool write : {false, true}) {
+          const char *side = write ? "dst" : "src";
+          out << "wafer.instr."
+              << (write ? "wdma %buffer to %input" : "rdma %input to %buffer")
+              << " {byte_count = " << bytes << " : i64, inner_bytes = " << inner
+              << " : i64, " << side << "_strides = array<i64: " << strides[0]
+              << ", " << strides[1] << ", " << strides[2] << ">, " << side
+              << "_iterations = array<i64: " << iterations[0] << ", "
+              << iterations[1] << ", " << iterations[2]
+              << ">} : " << (write ? spm : ddr) << " to " << (write ? ddr : spm)
+              << "\n";
+        }
+        out << "}\nwafer.instr.ncc_join [0]\nreturn\n}}";
+        auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+        ASSERT_TRUE(module) << text;
+        llvm::SmallVector<TileInstructionProgram> programs{
+            {wafer::TileId(0), *module}};
+        auto cost = analyzeInstructionProgramAggregateCost(
+            programs, wafer::getTargetMemoryPolicy());
+        ASSERT_TRUE(cost.aggregateDDRSegmentCount.isKnown());
+        EXPECT_EQ(cost.aggregateDDRReadBytes.value, bytes * trips);
+        EXPECT_EQ(cost.aggregateDDRWriteBytes.value, bytes * trips);
+        EXPECT_EQ(cost.aggregateDDRSegmentCount.value, 2 * segments * trips);
+        EXPECT_EQ(cost.maximumTileDDRSegmentCount.value, 2 * segments * trips);
+        auto objective = deriveSearchObjective(cost, *cohort, programs);
+        auto *known = std::get_if<KnownSearchObjective>(&objective);
+        ASSERT_NE(known, nullptr);
+        times[variant] = known->estimatedDurationPicoseconds;
+        EXPECT_EQ(known->durations.ddrPicoseconds,
+                  std::max(2 * bytes * trips,
+                           2 * segments * trips *
+                               policy.ddrSegmentPicosecondsEstimate));
+        // A second independently issued Tile doubles card bytes, while local
+        // descriptor traversal overlaps instead of being charged twice.
+        mlir::IRMapping mapping;
+        mlir::OwningOpRef<mlir::ModuleOp> other(
+            mlir::cast<mlir::ModuleOp>(module->getOperation()->clone(mapping)));
+        programs.push_back({wafer::TileId(1), *other});
+        auto parallel = analyzeInstructionProgramAggregateCost(
+            programs, wafer::getTargetMemoryPolicy());
+        auto parallelObjective = deriveSearchObjective(parallel, *cohort);
+        auto *parallelKnown =
+            std::get_if<KnownSearchObjective>(&parallelObjective);
+        ASSERT_NE(parallelKnown, nullptr);
+        EXPECT_EQ(parallelKnown->durations.ddrPicoseconds,
+                  std::max(4 * bytes * trips,
+                           2 * segments * trips *
+                               policy.ddrSegmentPicosecondsEstimate));
+      }
+      EXPECT_EQ(times[0], times[1]);
+      EXPECT_LT(times[0], times[2]);
+      EXPECT_LT(times[0], times[3]);
+      EXPECT_EQ(times[3], times[4]);
+    }
 }
 
 TEST(CostModelTest, DescriptorGeometryAndIssueRemainDistinctWithEqualBytes) {

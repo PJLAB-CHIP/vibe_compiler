@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/Instr/RedundantTransferElimination.h"
 
 #include "Wafer/InitWaferDialects.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -12,10 +13,12 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
+#include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -1426,6 +1429,155 @@ module {
   }
 }
 )mlir");
+}
+
+TEST_F(RedundantTransferEliminationTest,
+       EliminatesIndependentCopiesAmongPartialTransfers) {
+  // Full rank-three storage and all tail lengths exercise the same proof;
+  // partial transfers must remain even when other copies are eliminated.
+  std::string source;
+  llvm::raw_string_ostream ir(source);
+  ir << "module {\n";
+  constexpr unsigned partialCopies = 512;
+  constexpr unsigned fullCopies = 32;
+  for (int64_t length : {1024, 1025, 1031}) {
+    std::string type = "memref<1x" + std::to_string(length) +
+                       "x4xf16, #wafer.memory<spm, tensor>>";
+    ir << "func.func @copy_" << length << "() {\n"
+       << "%zero = arith.constant 0 : index\n"
+       << "%one = arith.constant 1.0 : f16\n"
+       << "%source = memref.alloc() : " << type << "\n"
+       << "%noise_source = memref.alloc() : " << type << "\n"
+       << "%noise_dest = memref.alloc() : " << type << "\n"
+       << "memref.store %one, %source[%zero, %zero, %zero] : " << type << "\n";
+    auto copy = [&](llvm::StringRef from, llvm::StringRef to, int64_t bytes) {
+      ir << "wafer.instr.gather_scatter " << from << " to " << to
+         << " {byte_count = " << bytes << " : i64, inner_bytes = " << bytes
+         << " : i64, src_strides = array<i64: 0, 0, 0>, "
+            "src_iterations = array<i64: 1, 1, 1>, "
+            "dst_strides = array<i64: 0, 0, 0>, "
+            "dst_iterations = array<i64: 1, 1, 1>} : "
+         << type << " to " << type << "\n";
+    };
+    for (unsigned index = 0; index < partialCopies; ++index)
+      copy("%noise_source", "%noise_dest", 8);
+    for (unsigned index = 0; index < fullCopies; ++index) {
+      std::string dest = "%dest" + std::to_string(index);
+      ir << dest << " = memref.alloc() : " << type << "\n";
+      copy("%source", dest, length * 8);
+      ir << "%read" << index << " = memref.load " << dest
+         << "[%zero, %zero, %zero] : " << type << "\n";
+    }
+    ir << "return\n}\n";
+  }
+  ir << "}\n";
+  auto module = parse(source);
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  auto withoutTiming = parse(source);
+  ASSERT_TRUE(withoutTiming);
+  EXPECT_EQ(wafer::tensor_program_scheduling::elideRedundantFullBufferTransfers(
+                *withoutTiming),
+            3 * fullCopies);
+  std::string diagnosticsText;
+  llvm::raw_string_ostream diagnostics(diagnosticsText);
+  auto timing =
+      std::make_shared<wafer::support::CompileTimingSession>(diagnostics);
+  {
+    wafer::support::ScopedCompileTimingActivation activation(timing);
+    EXPECT_EQ(
+        wafer::tensor_program_scheduling::elideRedundantFullBufferTransfers(
+            *module),
+        3 * fullCopies);
+  }
+  timing->finishAndPrintSummary();
+  for (const auto &counter :
+       {std::pair<const char *, unsigned>{"collected",
+                                          3 * (partialCopies + fullCopies)},
+        {"inspected", 3 * (partialCopies + fullCopies)},
+        {"proofs", 3 * fullCopies},
+        {"timelines", 3 * fullCopies},
+        {"alias-summaries", 6 * fullCopies},
+        {"eliminated", 3 * fullCopies}}) {
+    EXPECT_NE(diagnosticsText.find(
+                  "category=full-buffer-transfer-elision name=" +
+                  std::string(counter.first) + " value=" +
+                  std::to_string(counter.second) + " overflow=false\n"),
+              std::string::npos)
+        << diagnosticsText;
+  }
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  std::string timedIR, untimedIR;
+  llvm::raw_string_ostream timedStream(timedIR), untimedStream(untimedIR);
+  module->print(timedStream);
+  withoutTiming->print(untimedStream);
+  EXPECT_EQ(timedIR, untimedIR);
+  EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*module), 3 * partialCopies);
+  EXPECT_EQ(countOps<mlir::memref::AllocOp>(*module), 9u);
+  for (auto function : module->getOps<mlir::func::FuncOp>()) {
+    auto sourceAllocation = *function.getOps<mlir::memref::AllocOp>().begin();
+    unsigned reads = 0;
+    function.walk([&](mlir::memref::LoadOp load) {
+      EXPECT_EQ(load.getMemref(), sourceAllocation.getResult());
+      ++reads;
+    });
+    EXPECT_EQ(reads, fullCopies);
+    function.walk([&](wafer::InstrGatherScatterOp copy) {
+      EXPECT_EQ(copy.getByteCount(), 8);
+    });
+  }
+}
+
+TEST_F(RedundantTransferEliminationTest,
+       CoalescesLongCopyChainWithoutLosingSourceSnapshot) {
+  for (int64_t length : {1024, 1025, 1031}) {
+    SCOPED_TRACE(length);
+    std::string type = "memref<1x" + std::to_string(length) +
+                       "x4xf16, #wafer.memory<spm, tensor>>";
+    std::string text;
+    llvm::raw_string_ostream ir(text);
+    ir << "module { func.func @entry() {\n"
+       << "%zero = arith.constant 0 : index\n"
+       << "%one = arith.constant 1.0 : f16\n"
+       << "%two = arith.constant 2.0 : f16\n"
+       << "%source = memref.alloc() : " << type << "\n"
+       << "memref.store %one, %source[%zero, %zero, %zero] : " << type << "\n";
+    std::string previous = "%source";
+    constexpr unsigned copies = 64;
+    for (unsigned index = 0; index < copies; ++index) {
+      std::string dest = "%dest" + std::to_string(index);
+      ir << dest << " = memref.alloc() : " << type << "\n"
+         << "wafer.instr.gather_scatter " << previous << " to " << dest
+         << " {byte_count = " << length * 8
+         << " : i64, inner_bytes = " << length * 8
+         << " : i64, src_strides = array<i64: 0, 0, 0>, "
+            "src_iterations = array<i64: 1, 1, 1>, "
+            "dst_strides = array<i64: 0, 0, 0>, "
+            "dst_iterations = array<i64: 1, 1, 1>} : "
+         << type << " to " << type << "\n";
+      previous = dest;
+    }
+    // The first copy is a required snapshot. Coalescing the rest changes
+    // aliases repeatedly but cannot expose this later source write to it.
+    ir << "memref.store %two, %source[%zero, %zero, %zero] : " << type
+       << "\n%result = memref.load " << previous
+       << "[%zero, %zero, %zero] : " << type << "\nreturn\n}}\n";
+    auto module = parse(text);
+    ASSERT_TRUE(module);
+    EXPECT_EQ(
+        wafer::tensor_program_scheduling::elideRedundantFullBufferTransfers(
+            *module),
+        copies - 1);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    EXPECT_EQ(countOps<mlir::memref::AllocOp>(*module), 2u);
+    ASSERT_EQ(countOps<wafer::InstrGatherScatterOp>(*module), 1u);
+    wafer::InstrGatherScatterOp snapshot;
+    module->walk([&](wafer::InstrGatherScatterOp copy) { snapshot = copy; });
+    module->walk([&](mlir::memref::LoadOp load) {
+      EXPECT_EQ(load.getMemref(), snapshot.getDest());
+      EXPECT_NE(load.getMemref(), snapshot.getSource());
+    });
+  }
 }
 
 } // namespace

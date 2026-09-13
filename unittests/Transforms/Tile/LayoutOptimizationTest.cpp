@@ -1,13 +1,14 @@
 //===- LayoutOptimizationTest.cpp --------------------------------------===//
 
+#include "Wafer/Transforms/Tile/LayoutOptimization.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Driver/StandaloneTileModules/StandaloneTileModules.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
 #include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
-#include "Wafer/Transforms/Tile/LayoutOptimization.h"
 #include "Wafer/Transforms/Tile/LoopSubsetState.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 #include "Wafer/Transforms/Tile/StructuredToTile.h"
@@ -1027,7 +1028,20 @@ TEST_F(LayoutOptimizationTest,
     auto module = parse(text);
     ASSERT_TRUE(module);
     auto relations = outputRelation(*module);
-    auto result = resolveCurrentLayoutsAndBufferize(*module, relations, 0);
+    std::string diagnosticsText;
+    llvm::raw_string_ostream diagnostics(diagnosticsText);
+    auto timing =
+        std::make_shared<wafer::support::CompileTimingSession>(diagnostics);
+    auto result = [&] {
+      wafer::support::ScopedCompileTimingActivation activation(timing);
+      return resolveCurrentLayoutsAndBufferize(*module, relations, 0);
+    }();
+    timing->finishAndPrintSummary();
+    EXPECT_NE(diagnosticsText.find("category=loop-state-binding "
+                                   "name=reused-final-analysis value=1 "
+                                   "overflow=false"),
+              std::string::npos)
+        << diagnosticsText;
     ASSERT_TRUE(result.succeeded()) << result.detail;
     EXPECT_EQ(result.statistics.bufferizationInvocations, 1u);
     EXPECT_EQ(countOps<mlir::scf::ForOp>(*module), 2u);

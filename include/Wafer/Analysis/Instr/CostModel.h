@@ -27,10 +27,13 @@ struct SearchCostPolicy {
   /// Stable provenance is part of the comparison cohort. A candidate scored
   /// with one profile can never silently outrank a candidate scored with
   /// another profile.
-  uint64_t profileIdentity = 5;
+  uint64_t profileIdentity = 6;
   SearchCostProfileProvenance profileProvenance =
       SearchCostProfileProvenance::BuiltInEstimate;
   uint64_t ddrNominalBytesPerSecond = 150'000'000'000ULL;
+  // Uncalibrated address-run traversal prior. This is neither runtime issue
+  // latency nor a claim about DRAM burst size or transaction count.
+  uint64_t ddrSegmentPicosecondsEstimate = 1'000ULL;
   uint64_t directionalNoCBytesPerSecond = 128'000'000'000ULL;
   uint64_t dteEndpointBytesPerSecondEstimate = 128'000'000'000ULL;
   // Sender lifecycle estimates: first call includes cold control/setup work;
@@ -72,6 +75,8 @@ public:
     return left.profileIdentity == right.profileIdentity &&
            left.profileProvenance == right.profileProvenance &&
            left.ddrNominalBytesPerSecond == right.ddrNominalBytesPerSecond &&
+           left.ddrSegmentPicosecondsEstimate ==
+               right.ddrSegmentPicosecondsEstimate &&
            left.directionalNoCBytesPerSecond ==
                right.directionalNoCBytesPerSecond &&
            left.dteEndpointBytesPerSecondEstimate ==

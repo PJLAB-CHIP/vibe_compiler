@@ -17,7 +17,7 @@ struct CurrentIRDownstreamOptions {
   bool distanceOneLoadPipeline = false;
   unsigned tilePipelineParallelism = 0;
   bool captureTileDataflowIR = false;
-  SPMCapacityObserver capacityObserver = nullptr;
+  TileSPMCapacityObserver capacityObserver = nullptr;
 };
 
 struct CurrentIRDownstreamStatistics {

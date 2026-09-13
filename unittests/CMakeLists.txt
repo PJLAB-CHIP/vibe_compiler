@@ -111,6 +111,7 @@ wafer_add_component_unit_test(WaferDriverUnitTests
     Driver/PhysicalDataflow/ActualResultControllerTest.cpp
     Driver/PhysicalDataflow/UnifiedSearchTest.cpp
     Driver/PhysicalDataflow/TemporalProposalsTest.cpp
+    Driver/PhysicalDataflow/CapacityFeedbackTest.cpp
     Driver/ProgramResourceVerificationTest.cpp
     Driver/ProgramDataTest.cpp
     Driver/StandaloneTileModulesTest.cpp

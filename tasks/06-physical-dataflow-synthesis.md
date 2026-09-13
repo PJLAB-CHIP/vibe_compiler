@@ -635,8 +635,10 @@ API依据为[MemRef subview](https://mlir.llvm.org/docs/Dialects/MemRef/#memrefs
 
 Layout合法域直接从current structural TileRegion的SSA value/use、consumer interface、exact `IndexRelation`和可验证encoding构造。
 Baseline与search都调用同一个query-local PBQP layout optimizer；它不是search state，也不共享两条policy的candidate owner。
-Baseline每个actual attempt求解并应用一次确定性assignment；search允许对同一实际IR约束合法value/use layout后，
-使用同一PBQP求解器产生备选。每个备选在独立actual owner上apply并bufferize，再经完整下游比较；不枚举虚构buffer。PBQP在当前IR上按实际 materialization 的 physical bytes（含 padding）与一次 materialization unit
+Baseline与search对每个实际layout-input求解一次无外部附加约束的完整assignment；outer search不再逐value/use重新约束并枚举布局。
+PBQP保留完整合法域与canonical feasible合同。FirstUse和可选LoopInvariant从同一个未修改的实际输入及同一assignment分别clone、apply、bufferize，
+再经过完整下游；它们是copy placement选择。单个PBQP解不保证覆盖所有SPM可行布局或全局最快结果。
+PBQP在当前IR上按实际 materialization 的 physical bytes（含 padding）与一次 materialization unit
 进行 query-local 排序；最终search winner仍由物化后的其它choice和actual objective决定。该排序不能替代实际 MiniMalloc。
 
 C3不因某value邻接view就把整个buffer-equivalent group机械降为`compactOnly`。One-Shot必然alias的DPS init/result和reshape/cast
@@ -675,10 +677,11 @@ PBQP自身的unary/factor检查，再作为exact solver的incumbent。Factor gra
 oracle一致。Exact search完成时返回`Optimal`；预算耗尽但incumbent仍合法时返回携带完整assignment的`Feasible`。两种成功状态使用同一
 assignment类型和唯一apply实现，不建立第二条layout lowering。`NoSolution`与已验证incumbent并存是`BrokenContract`；没有合法canonical
 assignment的source在mutation前按typed unsupported停止，不能猜测layout或把问题推给下游。
-Assignment选中后立即在各自candidate owner上创建actual
-view/alias/allocation/layout materialization，随后销毁factor graph和assignment；下游不读取solver对象。
+Assignment选中后在各自candidate owner上创建actual view/alias/allocation/layout materialization。
+Search只在未修改的layout-input owner存活期间保留query与assignment以生成placement兄弟；该owner关闭时一并销毁，
+已物化的下游不读取solver对象。
 
-第17、18项的每个accepted product attempt必须恰调用一次PBQP并得到`Optimal`或`Feasible`，且两者都携带完整、factor-valid并已apply的
+第17、18项的每个实际layout-input必须恰调用一次PBQP并得到`Optimal`或`Feasible`，且两者都携带完整、factor-valid并已apply的
 assignment；记录status、variables、factors、solver work、wall以及apply后的actual materialization数。`Feasible`只表示本次没有完成
 最优性证明，不得称为materialization-minimal。`Indeterminate`只允许在没有合法incumbent时返回，并阻止规定产品case完成；不能通过提高
 timeout、放宽work budget或下游layout repair掩盖。性能工作继续优化exact factor formulation、connected-component reduction或有证明的
@@ -736,7 +739,7 @@ StructuredToTile之后，物理copy的位置继续消费同一`LayoutMaterializa
 地址clobber由value-associated memory effects决定，与Instr completion的既有区分一致。
 外提要求全部operand在循环外、源的全部可能alias无Write/Free、结果及其views只在循环内读取；未知effect、逃逸、
 loop-carried源、zero-trip及条件执行均保持原位置。每次mutation后重建只读alias查询，不保存跨IR的证明。
-Search为确实改变位置的assignment保留FirstUse备选，两者各自进入唯一actual SPM规划；none使用FirstUse。
+Search默认使用FirstUse，在确实改变位置时生成LoopInvariant备选；两者各自进入唯一actual SPM规划，none使用FirstUse。
 测试覆盖rank3/4、1024/1025/1031、多次循环、view clobber、只读复用、逃逸及zero-trip，检查动态copy次数、owner与直接Instr消费。
 该变换不改变算术、dtype、访问映射或descriptor语义，也不以估算footprint决定外提合法性。
 
@@ -994,14 +997,92 @@ Structural metric分别保留Region数、external/local binding数、known exact
 Structural metric只决定proposal访问顺序；不同结构、replica、传播与复用seed均保留入口，不能把局部metric支配当作
 最终候选的cost支配。Raw lazy successor集合不因proposal/refinement而缩小；不声称有限预算证明全局最优。
 
+Spatial的方向游标从已验证的完整起点改变一个root。按迭代域工作量和semantic key排序root并轮转，
+按参与切分的轴集合分组，先每组访问一个代表，再访问该组的其它BalancedParts比例；factor乘积不超过可用Tile数，
+包含未占满Tile的合法点。组内按Tile利用率、现有operand重复读取指标和完整轴元组排序，仅生成当前组的紧凑参数，
+不预生成全图组合。原canonical/reuse/双向传播起点与方向点交错；新方向再经同一IndexRelation双向传播，保留raw兄弟。
+原AxisSchemes与AllPlacements完整raw游标仍在上述优先提案之后继续，不因采样而删除合法空间。
+各Spatial的局部实际可行结果可作为其融合refinement中心，不要求成为全局winner；暂未可行时继续普通Region游标，
+后续局部可行结果仍可激活一次有界refinement。数值结果与源级choice不替代candidate的actual IR owner。
+
 Search由可恢复的候选会话拥有实际IR checkpoint与当前epoch的domain/cursor。一次轮转最多执行一个actual候选；
 失败尝试也计费。候选会话暂停时保留原owner和未访问后继，继续时不重复物化已完成的前缀。
 Controller接收每个实际leaf的typed结果；leaf更新与结构域关闭分开，未穷尽的容量失败不能成为结构no-good。
 
+#### 有界阶段推进与actual owner背压
+
+- Upstream IR / input：现有结构session、verified structural/temporal/layout checkpoint及各自当前epoch的查询游标。
+- Current stage responsibility：一次`advance`最多完成一个物化阶段或一个actual leaf；阶段之间交还外层调度权，
+  同一session保留实际IR，下一次调用继续其未完成步骤。调度yield不进入actual-result controller，也不消耗trials。
+- Output IR / files：typed continuation、仍由session持有的verified checkpoint、实际物化/存活owner工作统计。
+- Downstream consumer：`UnifiedSearch`轮转及原共同actual memory/target leaf。
+- User-level driver / named pipeline：原生产search入口，public limits继续只有width/trials。
+- Explicit non-goals：不抢占atomic pass、不按耗时中断后重放IR、不通过估算SPM或预测指令数决定admission，不删除未访问的raw choice。
+- Completion criteria：yield不伪造候选、不丢失未完成owner、不饿死其它分支；有限域集合及预算前缀确定；
+  slot满时继续已物化前缀，延后新clone，已接受winner始终独立保留。
+
+结构初始化、Temporal物化、layout查询准备、layout/compute物化和actual leaf是已有职责边界。
+只有阶段完成且其实际IR已验证后才yield；重复layout解和无后继的Region只推进查询游标，同样不能在一次调用内无界遍历。
+没有actual结果的yield与域穷尽分别用typed continuation表达；外层只给实际结果记候选数，
+未完成物化暂时禁止结构替换。capacity repair排队和正在物化的owner具有不同保留原因，不能互相覆盖。
+外层按启动顺序轮转活动S/F，每轮各推进一个实际leaf，再引入一个新S/F；阶段yield继续当前leaf，不改变候选顺序。
+每个session同时只推进一个基础Temporal前缀；各closure分支先比较Peer与实际可用的SharedDDR，结束后才选下一T。
+共享、流水、通信算法等可选域无需全部耗尽即可释放基础前缀。单个局部realization anchor保留最佳可行或尚未可行的实际输入，
+其中FirstUse与LoopInvariant共享唯一只读layout-input、query和assignment；各自需要时物化、轮转一个leaf。
+每session的实际模块数是固定层数，所有活动session按O(width)增长，不再每session嵌套保留width份Temporal IR。
+未开始的方向只保留数值anchor和惰性游标；关闭结构时销毁其owner/domain/cursor，不能重建旧owner继续。
+首轮已关联容量的批量粗搜索尚未完成时暂不可替换；完成后未访问修正保留为Incomplete，不永久锁住槽位。
+统计存活Temporal前缀、各阶段Module owner、PBQP solve、placement选择、yield及actual试次；这些统计不是IR语义或SPM事实。
+计数中的Module仅指session持有的checkpoint，不包括正在actual leaf内转换的临时逐Tile模块；不将这个计数冒充整个进程RSS上限。
+相同source/width下14、42、126共享确定前缀，报告预算未访问部分，不把调度限额当作空间穷尽。
+覆盖独立有界oracle、槽位耗尽、连续yield、repair与普通探索交错、预算中止和winner交接，
+以及1024/1025/1031多Tile产品；实际执行矩阵统一归入板测计划第3步。
+
 容量反馈在allocator返回精确证书、allocation与current owner仍存活时同步读取；只返回本次选择的参数坐标，
-不保留失败IR的裸句柄。Region body由同次`IRMapping`关联到未变的上层choice，body-preserving变换继续使用同一block；
+不保留失败IR的裸句柄。Canonical leaf同时传递其已经验证的Card/Tile identity；allocator本身不拥有搜索scope。
+Region body由同次`IRMapping`关联到未变的上层choice，body-preserving变换继续使用同一block；
 通信Region合并等销毁该边界的变换丢弃关联。实际冲突allocation通过current storage-root/owner relation关联到body，
-只有该body的Temporal domain存在唯一scope时才据此缩小其可tile维度。多scope或无关联保持unknown并访问普通后继，
+只有该body的Temporal domain存在唯一scope时才可用这一粗粒度关联。
+
+#### 实际输入访问到参数坐标的容量反馈
+
+- Upstream IR / input：唯一SPM gate的实际oversized/conflict allocation、当前Instr与owner关系、validated Card/Tile；
+  同一session仍存活且未修改的structural IR、Temporal domain和所选参数。
+- Current stage responsibility：只读追踪当前buffer的写入数据来源，利用既有`ProgramArgumentAttr`的ABI身份关联structural scope，
+  再由该scope的实际operand indexing map提取相关iterator。输出是提案关联证据，不是未来allocation大小或可行性证明。
+- Output IR / files：本次调用内的typed domain/scope/iterator坐标集合及无法归因的计数，无IR修改。
+- Downstream consumer：`TemporalProposals`生成下一组整数choice；随后仍走actual transformation、completion、SPM和target。
+- User-level driver / named pipeline：现有search driver及共同canonical memory leaf，不新增搜索入口。
+- Explicit non-goals：不新增来源编号/搜索annotation IR，不按shape/名字恢复owner，不通过数据来源猜测数值重排、同步或SPM合法性。
+- Completion criteria：多scope与merged/pipelined外部输入具有实际DMA→参数的正例；内部或不完整来源保持不可归因，普通探索仍可续跑；
+  独立输入、shared input、写入干扰和tail矩阵验证返回坐标及下一actual leaf。
+
+当前ABI已经规定每个Tile entry的`ProgramArgumentAttr`指向同一原始输入槽，因此跨clone、Region合并与pipeline后，
+这类关联不需要旧operation身份。对actual allocation的全部当前writer，沿typed RDMA/GS源及memref alias逐级查询；
+有非搬运writer、未知来源、循环依赖、不同输入或DTE接收时不凭空给出唯一输入来源。只有显式的单一输入来源才能关联scope。
+对structural tensor operand，穿过共同tensor support indexing query证明的单一Source关系及当前Region参数绑定。
+已有Temporal fusion明确纳入当前traversal的pure unary pointwise producer，若其唯一payload输入与输出的完整permutation map相同，
+可保持索引坐标继续查询该输入的访问需求。这是已选融合的输入需求映射，不是数值相等、alias或buffer来源证明；
+Instr侧仍独立要求实际buffer只经RDMA/GS写入。其它计算保持未知，不猜测跨归约、多输入或未融合producer的参数关联。
+Card/Tile和ABI槽都相同，且每个读入scope都有完整operand map证据时，返回这些map中实际出现、
+且domain允许tiling的iterator集合。多个已知reader是显式的多对多访问关联，不应仅因reader数量大于1就丢弃全部反馈；
+该集合只支持搜索提案，不能把某一个reader声称为失败allocation的唯一owner。任何reader的来源或map不完整时，
+整组仍保持不可归因，不能只挑能分析的reader。原Region body唯一scope证据可独立使用；已有输入坐标的domain不再扩大到其无关轴，
+其余domain的实际owner/body证据仍须合并，不能因另一domain已有反馈而跳过。
+歧义检查只沿当前traversal内尚未解释的SSA路径扩展；到另一个显式scope或另一个TileRegion的计算结果时停止。
+消费前序Region的计算结果，不等于读取该Region的全部原始输入，不能把跨Region的普通数据依赖登记成同一输入buffer的reader。
+覆盖成对的直接输入读取和前序Region结果读取，检查归因不跨越独立物化边界。
+
+相关坐标按(domain, scope)分组，容量修正保留同一参数起点的全关联轴、各scope轮转单轴、独立坐标和联合方向。
+每个选中坐标按自身合法下界生成`max(lower, floor(size/2))`，不按共同减量或仅固定最大轴推进。
+原起点的兄弟分支保留，允许恢复另一轴；后来收到的新坐标证据可以形成包含已知关联的联合方向。
+方向游标惰性构造完整choice，不预先复制全部邻居。坐标关联不承诺缩小必定降低容量，更不建立单调性剪枝。
+每个新choice仍须实际物化和重新规划；删除此查询只能改变提案顺序，不能改变SPM gate对同一actual IR的合法结论。
+未知内部buffer继续普通后继，不伪装成外部输入。覆盖rank3+、1024/1025/1031、4/16 Tile、多scope独立输入、融合归约、
+merged/pipelined读入、同输入多consumer的完整/不完整map、非搬运writer和无ABI来源，检查exact坐标、typed失败及实际SPM再验证。
+算法沿用[MLIR接口与SSA分析](https://mlir.llvm.org/docs/Interfaces/)的current-operation关系；
+具体source/alias和operand map使用本仓既有typed接口，不引入Transform handle重放或跨stage缓存。
+
 不能按allocation大小、诊断位置、遍历序号或所有Region统一缩小来补归因。观察回调不修改IR、不参与SPM合法判定。
 成功候选的同一actual executable交给全局incumbent，后续搜索不得按choice重建winner。
 
@@ -1044,8 +1125,8 @@ Layout placement把已选转换在首次use处物化，或在输入Tensor SSA不
 Tensor不可变及重新bufferize的依据见[MLIR Bufferization](https://mlir.llvm.org/docs/Bufferization/)。
 候选池优先保留不同结构，同类可执行分支按实际估时排序；全局最佳executable独立持有。池满且没有可替换的
 已评估分支时继续推进现有分支，保留结构生成cursor，不销毁未完成的容量修正链。
-下一项工作类别与待执行容量修正的保留状态分别报告。内部轮转到proposal或已有前缀时，尚有actual反馈修正排队的
-session仍不可被新结构替换；修正队列排空后才恢复通常的结构多样性与估时替换规则。
+下一项工作类别与owner保留原因分别报告。正在物化的leaf、尚未完成的基础transport比较及首轮容量批量方向受保护；
+后续修正队列未排空不永久禁止结构替换。淘汰只表示预算未访问，不表示该结构不可行。
 结构分类只决定顺序；去重要求typed choice相同或实际IR等价证明，流量计数相同不能作为等价证明。
 
 显式replica必须携带所选required producer execution的完整输入fragment；这些输入从同一canonical demand导出，
@@ -1066,10 +1147,12 @@ Temporal普通探索保留全extent、每scope仅改变最大可切轴、全可�
 向外层报告下一项实际工作类别。每个数值tuple先让基础Peer/DDR各获得一次实际尝试，再扩展accepted数值近邻；
 失败类型仍保留，标量反馈只来自其中已接受的结果，不偏向某种transport。`TemporalProposals`只保存未修改结构域的typed choice、数值提案及已观测标量，
 不保存buffer、SPM或completion事实；accepted executable仍交给原controller持有。
-可执行参数先生成单scope单维的±1，当前indexing map能明确对应Cx channel轴时补target block边界及两侧；
-布局几何只排序，不能选择该布局或排除非对齐点。估时改善后距离按1、2、4扩展，较远点变差时补未证明间隙。
+可执行参数先生成全部可切坐标及各scope轴批次的增减方向，每轴步长取当前尺寸的一半并限制在原合法域；
+随后轮转独立轴粗邻居、±1与对齐精化、两轴一增一减及已有合法顺序的相邻交换。各方向从同一原anchor开始，不继承兄弟点的缩小。
+当前indexing map明确对应Cx channel轴时补target block边界及两侧；布局几何只排序，不选择布局或排除非对齐点。
+细粒度探测改善后距离按1、2、4扩展，较远点变差时补未证明间隙。批次、独立轴及成对组合都按需生成完整参数向量。
 组合±1独立于单轴结果进入Explore；持平/变差不关闭原始domain。实际capacity反馈只允许证据关联scope内的修正，
-初次距离1，连续实际失败才扩大；不同leaf后来提供的新owner证据仍可生成修正。无法区分多scope的Region不补猜测归因。
+粗修正使用各坐标独立减半及换轴/组合方向；不同leaf后来提供的新owner证据仍可生成修正。无法区分多scope的Region不补猜测归因。
 已排队和已访问的完整typed tuple统一去重，包含traversal kind及loop order；raw游标保留其它整数与顺序。
 实际legality、trial计费和winner ownership仍只有原生产路径。
 不能因旧参数仍有capacity repair就阻止已可行参数继续比较，也不能先耗尽全部参数seed才恢复已有前缀。
@@ -1091,6 +1174,29 @@ DP、memo、priority、dominance和LNS可以改变choice访问顺序和搜索工
 代替actual result。一个choice只在物化为current IR并通过actual gate后才能成为accepted candidate。
 
 ### 7.4 Cost 与feedback
+
+#### DDR descriptor的连续段与服务估计
+
+输入是final Instr RDMA/WDMA的inner bytes、三层DDR strides/iterations及实际动态执行次数。
+ExecutionCost只读这些字段，输出DDR连续段数与现有bytes、issue count；CostModel消费它们与同一target cohort，
+输出候选有限估时。直接下游仍为现有actual-result controller，不改变layout、completion、SPM或目标合法性。
+
+Descriptor轴0为内层。对轴d，内层最后一次访问的结束位置为
+`span_d = inner_bytes + sum_{k<d} (iterations_k - 1) * stride_k`。
+当 `stride_d != span_d` 时，该轴rollover产生非连续地址转移，其动态次数为
+`(iterations_d - 1) * product_{k>d} iterations_k`；每条DMA从一个连续段开始。
+总段数等于1加这些转移，随后乘真实循环次数；broadcast重复地址亦是非连续转移。
+这是descriptor地址序列的精确计数，不是DDR burst、cache miss或DRAM transaction的测量。
+带三层连续stride的descriptor与同byte count单块descriptor应得到相同段数。
+
+同一DMA的DDR服务估计取 `max(bytes / B_ddr, segments * tau_segment)`，与已有指令提交、SPM及计算服务分开。
+`tau_segment`是统一的未校准先验，不按模型、算子或shape选择；默认1 ns不宣称为硬件实测延迟。
+整卡仍保留总bytes的共享带宽约束，段遍历按Tile最大值聚合，避免把各Tile可重叠的遍历全部相加。
+实际依赖路径使用每条指令的对应服务项；未知或overflow沿原有限粗估路径处理，不得给出不可比结论。
+
+覆盖rank3、1024/1025/1031、多个动态loop、连续/跨行/内层间隙、RDMA与WDMA、两Tile同bytes与不同段数；
+检查精确计数、等价descriptor估值相同、分项无重复计费、候选排序与参数敏感性。
+该项不增加指令格式或硬件能力；完整产品及匹配profile验收仍归统一板测计划。
 
 #### 搜索空间与失败审计
 
@@ -1207,7 +1313,7 @@ Temporal choice下的Region/layout/movement/execution alternatives逐个惰性�
 源码稳定职责为：
 
 - TensorProgram analysis：structured semantics、exact demand和Spatial/Region choice domain；
-- current-candidate planning：从live operation/interfaces建立query-local Temporal等search choice；layout备选由query-local exact PBQP产生并在各自actual clone中apply，query均在mutation后失效；
+- current-candidate planning：从live operation/interfaces建立query-local Temporal等search choice；每个actual layout-input的完整assignment由单次query-local PBQP产生，在placement的actual clone中apply；query只在其immutable owner上有效；
 - TensorProgram/TileModule/TileRegion transforms：structural materialization、selected temporal tile-and-fuse apply、online-attention decomposition、
   layout/view/bufferization和movement；
 - TileRegion-to-Instr conversion：deterministic target-abstract lowering；

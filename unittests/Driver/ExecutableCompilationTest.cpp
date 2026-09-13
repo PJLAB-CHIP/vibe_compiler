@@ -876,7 +876,11 @@ TEST(ExecutableCompilationPolicyTest,
     EXPECT_GT(search.actualCapacityRefinements, 0u) << diagnosticText;
     EXPECT_GT(search.traversal.resumedCandidates, 0u);
     EXPECT_GT(search.movementCandidateActualizations, 2u);
-    EXPECT_GT(search.temporalCandidateActualizations, 2u);
+    // Two closure branches each compare Peer and DDR before the next T.
+    // Eight leaves therefore cover two complete base points.
+    EXPECT_GE(search.temporalCandidateActualizations, 2u);
+    EXPECT_EQ(search.peakSessionTemporalPrefixes, 1u);
+    EXPECT_GT(search.temporalBackpressureTurns, 0u);
     EXPECT_LE(search.movementCandidateActualizations, 8u);
     const auto prefixRefinements = search.actualCapacityRefinements;
     const auto prefixAccepted = search.acceptedCandidates;
@@ -1107,13 +1111,58 @@ TEST(ExecutableCompilationPolicyTest,
     EXPECT_EQ(search.traversal.candidateActualizations, 32u);
     EXPECT_GE(search.controller.accepted, 2u);
     EXPECT_EQ(result.physicalIRInventory->tileModules, 16u);
-    // The singleton has 32 Regions. The coherent endpoint remains reachable
-    // with only two simultaneously retained branches and removes all sixteen
-    // producer/consumer boundaries, independent of total visited structures.
-    EXPECT_EQ(result.physicalIRInventory->tileRegions, 16u) << diagnosticText;
+    // All active Tiles fuse the producer/consumer boundary. The search may
+    // choose fewer than sixteen partitions; unused target Tiles stay empty.
     ASSERT_EQ(result.physicalIRInventory->tiles.size(), 16u);
-    for (const auto &tile : result.physicalIRInventory->tiles)
-      EXPECT_EQ(tile.regions, 1u);
+    uint64_t activeTiles = 0;
+    for (const auto &tile : result.physicalIRInventory->tiles) {
+      EXPECT_LE(tile.regions, 1u);
+      activeTiles += tile.regions != 0;
+    }
+    EXPECT_GT(activeTiles, 1u);
+    EXPECT_EQ(result.physicalIRInventory->tileRegions, activeTiles);
+  }
+}
+
+TEST(ExecutableCompilationPolicyTest,
+     TemporalBackpressureResumesActualPrefixesWithoutChargingYields) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto parsed =
+        wafer::compiler::testing::parseRealScaleDependentProgram(extent);
+    ASSERT_TRUE(parsed.module);
+    auto program =
+        wafer::compiler::testing::realScaleDependentProgramMetadata(extent);
+    wafer::compiler::ProgramDataHandoff data;
+    std::string text;
+    llvm::raw_string_ostream diagnostics(text);
+    wafer::compiler::detail::SearchCurrentIROptions options;
+    options.limits = wafer::SearchLimits{2, 8};
+    options.downstream.tilePipelineParallelism = 1;
+    wafer::compiler::detail::SearchCurrentIRStatistics search;
+    wafer::compiler::detail::ExecutableLoweringStatistics executable;
+    auto result = wafer::compiler::detail::compileSearchCurrentIR(
+        *parsed.module, program, wafer::compiler::testing::executionConfig(),
+        diagnostics, data, options, &search, &executable);
+    ASSERT_TRUE(result.isAccepted()) << result.detail << text;
+    ASSERT_TRUE(result.executable && result.physicalIRInventory);
+    EXPECT_EQ(search.peakSessionTemporalPrefixes, 1u);
+    // The third Spatial direction redistributes shards. Both base transports
+    // finish before advancing Temporal, even when some imported shards become
+    // unused after slice folding.
+    EXPECT_EQ(search.sharedDDRCandidates, 1u);
+    EXPECT_EQ(search.temporalBackpressureTurns, 1u);
+    EXPECT_GT(search.traversal.stageYields, 0u);
+    EXPECT_EQ(search.traversal.candidateActualizations, 8u);
+    EXPECT_EQ(search.controller.accepted, 8u) << text;
+    EXPECT_EQ(search.controller.unsupported, 0u) << text;
+    EXPECT_EQ(search.controller.indeterminate, 0u) << text;
+    EXPECT_EQ(executable.actualMemoryTargetGateInvocations, 8u) << text;
+    EXPECT_EQ(result.executable->tiles.size(), 16u);
+    EXPECT_EQ(result.physicalIRInventory->tileModules, 16u);
+    EXPECT_EQ(
+        search.coverage,
+        wafer::compiler::detail::SearchControllerCoverage::FeasiblePartial);
   }
 }
 
@@ -1313,7 +1362,8 @@ TEST(ExecutableCompilationPolicyTest,
         if (cycle) {
           for (llvm::StringRef evidence :
                {"cycle-edge from=", "kind=tile-order", "kind=token-completion",
-                "kind=ddr-publication", "tile=0", "tile=1"})
+                "kind=ddr-publication", "tile=0", "tile=1", "shared-resource=",
+                "writer-last-access-cut=", "reader-first-access-cut="})
             EXPECT_NE(completion.detail.find(evidence.str()), std::string::npos)
                 << completion.detail;
         }

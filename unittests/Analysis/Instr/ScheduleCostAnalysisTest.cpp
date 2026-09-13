@@ -1048,6 +1048,9 @@ module {
   EXPECT_EQ(cost.instructionCount.reason,
             ScheduleCostReason::ArithmeticOverflow);
   EXPECT_EQ(cost.ddrReadBytes.knowledge, ScheduleCostKnowledge::Overflow);
+  EXPECT_EQ(cost.ddrSegmentCount.knowledge, ScheduleCostKnowledge::Overflow);
+  EXPECT_EQ(cost.ddrSegmentCount.reason,
+            ScheduleCostReason::ArithmeticOverflow);
 }
 
 TEST_F(ScheduleCostAnalysisTest, ZeroTripLoopHasNoExecutionCost) {

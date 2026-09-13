@@ -84,6 +84,14 @@ void recordStructuralCandidateMetrics(
   if (cost.aggregateDDRWriteBytes.isKnown())
     recordRegionCandidateCounter(index, "ddr-write-bytes",
                                  cost.aggregateDDRWriteBytes.value);
+  recordRegionCandidateCounter(index, "ddr-segments-known",
+                               cost.aggregateDDRSegmentCount.isKnown());
+  if (cost.aggregateDDRSegmentCount.isKnown())
+    recordRegionCandidateCounter(index, "ddr-segments",
+                                 cost.aggregateDDRSegmentCount.value);
+  if (cost.maximumTileDDRSegmentCount.isKnown())
+    recordRegionCandidateCounter(index, "maximum-tile-ddr-segments",
+                                 cost.maximumTileDDRSegmentCount.value);
   if (cost.aggregateInstructionCount.isKnown())
     recordRegionCandidateCounter(index, "instruction-count",
                                  cost.aggregateInstructionCount.value);
@@ -142,6 +150,11 @@ void recordStructuralCandidateMetrics(
 } // namespace
 
 struct UnifiedSearchSession::Impl {
+  struct LocalBest {
+    SpatialPlan spatial;
+    RegionPlan region;
+    analysis::SearchObjective objective;
+  };
   struct Branch {
     RegionState state;
     std::unique_ptr<StructuralCandidateSession> session;
@@ -225,19 +238,26 @@ struct UnifiedSearchSession::Impl {
     auto &continuation = std::get<RegionContinuation>(frame);
     if (continuation.needsRefinementProposals(
             maximumRegionRefinementCandidates)) {
-      const auto *incumbent = controller.getIncumbentKey();
-      if (incumbent && maximumRegionRefinementCandidates &&
-          incumbent->getSpatialPlan() == continuation.getParent().getPlan()) {
+      auto local = llvm::find_if(localBest, [&](const LocalBest &best) {
+        return best.spatial == continuation.getParent().getPlan();
+      });
+      if (local != localBest.end() && maximumRegionRefinementCandidates) {
+        ++work.localRegionRefinements;
+        const auto *incumbent = controller.getIncumbentKey();
+        if (!incumbent || !(incumbent->getSpatialPlan() == local->spatial))
+          ++work.nonIncumbentRegionRefinements;
         std::string detail;
         if (mlir::failed(planningSession.addRegionRefinementProposals(
-                continuation, incumbent->getRegionPlan(),
-                maximumRegionRefinementCandidates, &detail))) {
+                continuation, local->region, maximumRegionRefinementCandidates,
+                &detail))) {
           fail(detail);
           return;
         }
-      } else {
+      } else if (!maximumRegionRefinementCandidates) {
         planningSession.skipRegionRefinementProposals(continuation);
       }
+      // Without a local actual result, ordinary Region traversal continues.
+      // A later accepted point can still provide this family's first center.
     }
     std::string detail;
     auto state = planningSession.resumeRegion(continuation, &detail);
@@ -290,11 +310,10 @@ struct UnifiedSearchSession::Impl {
     };
     for (size_t i = 0; i < branches.size(); ++i) {
       const Branch &candidate = branches[i];
-      // Never discard an unfinished capacity-correction chain just because
-      // another structure wants an evaluation slot.
+      // The session protects its actual base comparison and initial coarse
+      // repair round. Later pending neighbors do not lock a slot forever.
       if (!candidate.evaluated ||
-          candidate.next == CandidateContinuation::Repair ||
-          candidate.retention == CandidateRetention::PendingCapacityRepair)
+          candidate.retention != CandidateRetention::Replaceable)
         continue;
       if (!worst) {
         worst = i;
@@ -353,7 +372,6 @@ struct UnifiedSearchSession::Impl {
                         {},
                         identity});
     pending.reset();
-    exploreRetainedNext = true;
     work.peakRetainedBranches =
         std::max<uint64_t>(work.peakRetainedBranches, branches.size());
     evaluate(branches.size() - 1);
@@ -363,7 +381,6 @@ struct UnifiedSearchSession::Impl {
     Branch &branch = branches[index];
     work.resumedCandidates += branch.evaluated;
     branch.evaluated = true;
-    branch.lastVisit = ++visit;
     support::ScopedCompileTimingSpan timing(
         "search-candidate", "current-ir", "advance",
         llvm::formatv("structural={0}, attempt={1}", branch.identity,
@@ -372,23 +389,36 @@ struct UnifiedSearchSession::Impl {
     StructuralCandidateEvaluation evaluation = branch.session->advance();
     if (evaluation.actualizations > 1 ||
         evaluation.actualizations > remainingActualizationCredits ||
-        (!evaluation.actualizations &&
+        (evaluation.result && !evaluation.actualizations &&
          evaluation.continuation != CandidateContinuation::Exhausted)) {
       fail("candidate session must advance by at most one actual attempt");
       return;
     }
     if (!evaluation.result) {
-      if (evaluation.actualizations ||
-          evaluation.continuation != CandidateContinuation::Exhausted) {
-        fail("candidate session omitted a nonterminal actual result");
+      if (evaluation.actualizations) {
+        fail("candidate session charged a step without an actual result");
+        return;
+      }
+      if (evaluation.continuation != CandidateContinuation::Exhausted) {
+        if (evaluation.retention !=
+            CandidateRetention::UnfinishedActualization) {
+          fail("yielded candidate must retain its unfinished actual owner");
+          return;
+        }
+        ++work.stageYields;
+        branch.next = evaluation.continuation;
+        branch.retention = evaluation.retention;
+        runningBranch = branch.identity;
         return;
       }
       controller.close(StructuralCandidateKey::create(branch.state),
                        SearchFrontierStatus::Exhausted);
       branches.erase(branches.begin() + index);
-      phase = (phase + 1) % 3;
+      runningBranch.reset();
       return;
     }
+    runningBranch.reset();
+    branch.lastVisit = ++visit;
     remainingActualizationCredits -= evaluation.actualizations;
     work.candidateActualizations += evaluation.actualizations;
     if (evaluation.actualizations) {
@@ -407,7 +437,19 @@ struct UnifiedSearchSession::Impl {
       if (!branch.objective ||
           analysis::compareSearchObjectives(objective, *branch.objective) ==
               analysis::SearchObjectiveComparison::Better)
-        branch.objective = std::move(objective);
+        branch.objective = objective;
+      auto local = llvm::find_if(localBest, [&](const LocalBest &best) {
+        return best.spatial == branch.state.getSpatialPlan();
+      });
+      if (local == localBest.end())
+        localBest.push_back({branch.state.getSpatialPlan(),
+                             branch.state.getRegionPlan(),
+                             std::move(objective)});
+      else if (analysis::compareSearchObjectives(objective, local->objective) ==
+               analysis::SearchObjectiveComparison::Better) {
+        local->region = branch.state.getRegionPlan();
+        local->objective = std::move(objective);
+      }
     }
     if (profile)
       profile->recordCandidateActualization(
@@ -436,21 +478,6 @@ struct UnifiedSearchSession::Impl {
     if (recorded == CandidateRecordOutcome::Accepted &&
         termination == SearchTerminationPolicy::FirstAccepted)
       status = UnifiedSearchResumeStatus::AcceptedCheckpoint;
-    phase = (phase + 1) % 3;
-  }
-
-  std::optional<size_t> select(CandidateContinuation kind) const {
-    std::optional<size_t> selected;
-    for (size_t i = 0; i < branches.size(); ++i) {
-      if (branches[i].next != kind)
-        continue;
-      if (!selected ||
-          (kind == CandidateContinuation::Repair
-               ? branches[i].identity < branches[*selected].identity
-               : branches[i].lastVisit < branches[*selected].lastVisit))
-        selected = i;
-    }
-    return selected;
   }
 
   void step() {
@@ -462,42 +489,51 @@ struct UnifiedSearchSession::Impl {
       status = UnifiedSearchResumeStatus::FrontierExhausted;
       return;
     }
-    for (unsigned skipped = 0; skipped < 3; ++skipped) {
-      if (phase == 0) {
-        if (exploreRetainedNext)
-          if (auto index = select(CandidateContinuation::Explore)) {
-            exploreRetainedNext = false;
-            evaluate(*index);
-            return;
-          }
-        if (branches.size() < retainedBranches ||
-            std::any_of(branches.begin(), branches.end(), [](const Branch &b) {
-              return b.evaluated && b.next != CandidateContinuation::Repair &&
-                     b.retention != CandidateRetention::PendingCapacityRepair;
-            })) {
-          if (!pending && !frontier.empty()) {
-            generate();
-            return;
-          }
-          if (pending) {
-            startPending();
-            return;
-          }
-        }
-        if (auto index = select(CandidateContinuation::Explore)) {
-          exploreRetainedNext = false;
-          evaluate(*index);
+    if (runningBranch) {
+      for (size_t i = 0; i < branches.size(); ++i)
+        if (branches[i].identity == *runningBranch) {
+          evaluate(i);
           return;
         }
-      } else if (auto index =
-                     select(phase == 1 ? CandidateContinuation::Repair
-                                       : CandidateContinuation::Improve)) {
-        evaluate(*index);
-        return;
-      }
-      phase = (phase + 1) % 3;
+      fail("yielded actualization lost its owning branch");
+      return;
     }
-    fail("search has work but no schedulable owned branch");
+    while (!round.empty()) {
+      uint64_t identity = round.front();
+      round.pop_front();
+      for (size_t i = 0; i < branches.size(); ++i)
+        if (branches[i].identity == identity) {
+          evaluate(i);
+          return;
+        }
+    }
+    if (introduceNext) {
+      const bool room =
+          branches.size() < retainedBranches ||
+          llvm::any_of(
+              branches,
+              [](const Branch &branch) {
+                return branch.evaluated &&
+                       branch.retention == CandidateRetention::Replaceable;
+              });
+      if (room) {
+        if (!pending && !frontier.empty()) {
+          generate();
+          return;
+        }
+        if (pending) {
+          introduceNext = false;
+          startPending();
+          return;
+        }
+      }
+    }
+    // One leaf from each live structural family, followed by one new family.
+    // Verified-stage yields resume the selected leaf without changing this
+    // order or advancing any other family's logical visitation count.
+    introduceNext = true;
+    for (const auto &branch : branches)
+      round.push_back(branch.identity);
   }
 
   UnifiedSearchResumeResult resume(uint64_t credits) {
@@ -562,9 +598,11 @@ struct UnifiedSearchSession::Impl {
   std::deque<FrontierFrame> frontier;
   std::optional<RegionState> pending;
   std::vector<Branch> branches;
+  std::vector<LocalBest> localBest;
   uint64_t visit = 0;
-  unsigned phase = 0;
-  bool exploreRetainedNext = false;
+  std::deque<uint64_t> round;
+  std::optional<uint64_t> runningBranch;
+  bool introduceNext = true;
   UnifiedSearchWork work;
   UnifiedSearchResumeStatus status = UnifiedSearchResumeStatus::Paused;
   bool sawUnsupportedPrefix = false;

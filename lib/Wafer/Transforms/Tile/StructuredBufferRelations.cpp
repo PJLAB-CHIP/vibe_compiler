@@ -462,10 +462,18 @@ void retainCurrentStructuredBufferRelations(
            !liveValues.contains(relation.endpoint.getAsOpaquePointer());
   });
   llvm::erase_if(relations.boundaryRelations, [&](const auto &relation) {
-    return !relation.sourceEndpoint || !relation.destinationEndpoint ||
-           !liveValues.contains(relation.sourceEndpoint.getAsOpaquePointer()) ||
-           !liveValues.contains(
-               relation.destinationEndpoint.getAsOpaquePointer());
+    if (!relation.sourceEndpoint || !relation.destinationEndpoint ||
+        !liveValues.contains(relation.sourceEndpoint.getAsOpaquePointer()) ||
+        !liveValues.contains(relation.destinationEndpoint.getAsOpaquePointer()))
+      return true;
+    auto argument =
+        mlir::dyn_cast<mlir::BlockArgument>(relation.destinationEndpoint);
+    // Slice folding can remove the final read of one imported tensor shard.
+    // A live but unused logical input no longer demands a remote payload.
+    // Memrefs may carry effects through aliases; this rule is tensor-only.
+    return argument && mlir::isa<mlir::RankedTensorType>(argument.getType()) &&
+           mlir::isa<TileRegionOp>(argument.getOwner()->getParentOp()) &&
+           argument.use_empty();
   });
 }
 

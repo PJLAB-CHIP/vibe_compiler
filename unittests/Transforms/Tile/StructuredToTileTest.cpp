@@ -2003,7 +2003,7 @@ TEST_F(StructuredToTileTest, SameTileRegionsUseOneExplicitDDRStage) {
 }
 
 TEST_F(StructuredToTileTest, CrossTileRelationBecomesOneMatchedPeerTransfer) {
-  for (int64_t extent : {1024, 1025}) {
+  for (int64_t extent : {1024, 1025, 1031}) {
     SCOPED_TRACE(extent);
     auto module = parse(makeTwoRegionSource(extent, /*crossTile=*/true));
     ASSERT_TRUE(module);
@@ -2020,6 +2020,26 @@ TEST_F(StructuredToTileTest, CrossTileRelationBecomesOneMatchedPeerTransfer) {
     StructuredToTileResult lowered =
         lowerStructuredComputeToTile(*module, relations);
     ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+    // Model an imported shard whose final tensor read was eliminated. Keep
+    // the original live input as a witness that relation cleanup is exact.
+    ASSERT_EQ(relations.boundaryRelations.size(), 1u);
+    auto liveRelation = relations.boundaryRelations.front();
+    auto liveArgument =
+        mlir::cast<mlir::BlockArgument>(liveRelation.destinationEndpoint);
+    auto destination =
+        mlir::cast<TileRegionOp>(liveArgument.getOwner()->getParentOp());
+    destination.getInputsMutable().append(destination.getInputs().front());
+    auto unused = destination.getBody().front().addArgument(
+        destination.getInputs().front().getType(), destination.getLoc());
+    relations.boundaryRelations.push_back(
+        {liveRelation.sourceEndpoint, unused});
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    retainCurrentStructuredBufferRelations(*module, relations);
+    ASSERT_EQ(relations.boundaryRelations.size(), 1u);
+    EXPECT_EQ(relations.boundaryRelations.front().sourceEndpoint,
+              liveRelation.sourceEndpoint);
+    EXPECT_EQ(relations.boundaryRelations.front().destinationEndpoint,
+              liveRelation.destinationEndpoint);
     BoundaryMovementResult movement =
         materializeTileBoundaryMovement(*module, relations);
     ASSERT_TRUE(movement.succeeded()) << movement.detail;

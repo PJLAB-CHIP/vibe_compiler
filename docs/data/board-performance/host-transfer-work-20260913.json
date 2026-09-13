@@ -1,0 +1,180 @@
+{
+  "date": "2026-09-13",
+  "scope": "board-testing 前7步中的主机重复工作修复；模型实卡验收尚未执行",
+  "compilerSha256": "40a97cb696160cbe5a938c8fbd0f76cc1a877d28257dbd09f0922f9796bc286f",
+  "changes": [
+    "函数内受影响GS工作队列，局部eligibility先于timeline和alias证明",
+    "One-Shot最终有效analysis直接交给标准insertTensorCopies与bufferizeModuleOp"
+  ],
+  "mechanismComparison": {
+    "test": "RedundantTransferEliminationTest.EliminatesIndependentCopiesAmongPartialTransfers",
+    "rank": 3,
+    "extents": [
+      1024,
+      1025,
+      1031
+    ],
+    "partialCopies": 1536,
+    "eliminatedCopies": 96,
+    "before": {
+      "testMilliseconds": 1587,
+      "wallSeconds": 1.59,
+      "maxRssKiB": 24352,
+      "log": "build/test/model-performance/transfer-work-before.log"
+    },
+    "after": {
+      "testMilliseconds": 142,
+      "wallSeconds": 0.15,
+      "maxRssKiB": 24236,
+      "log": "build/test/model-performance/transfer-work-after.log"
+    },
+    "limitation": "同一规模机制测试，不是模型设备性能；最终测试另增加计时开关下IR相等断言"
+  },
+  "validation": {
+    "transforms": 380,
+    "driver": 103,
+    "focusedLit": 30,
+    "numericAndSystemC": 19,
+    "fullIncrementalBuild": true,
+    "followingBuildNoOp": true
+  },
+  "products": [
+    {
+      "case": "conv-mixed-dag",
+      "dtype": "bf16",
+      "searchWidth": 8,
+      "searchTrials": 42,
+      "status": "strict-no-card-passed",
+      "hostWallSeconds": 78.31,
+      "maxRssKiB": 537504,
+      "coverage": {
+        "coverage": "feasible-partial",
+        "structural": "11",
+        "actual": "42",
+        "accepted": "19",
+        "exact_rejected": "5",
+        "capacity_refinements": "5",
+        "unavailable_refinements": "0",
+        "unsupported": "18",
+        "indeterminate": "0"
+      },
+      "transferWork": {
+        "alias-summaries": 3578,
+        "collected": 16003,
+        "eliminated": 1698,
+        "inspected": 16033,
+        "proofs": 3588,
+        "timelines": 1832
+      },
+      "log": "build/test/model-performance/transfer-conv-bf16-42.log",
+      "logSha256": "5a7ec43cf4216dee91142d141098ed5aa08509d5020f082ad9ebe4fc79a88b64",
+      "manifestSha256": "405763d52744a8ce42ff81b0fb698fdf38519b848e7750a597f8ff624ede1c93",
+      "deviceExecuted": false
+    },
+    {
+      "case": "conv-mixed-dag",
+      "dtype": "fp16",
+      "searchWidth": 8,
+      "searchTrials": 42,
+      "status": "strict-no-card-passed",
+      "hostWallSeconds": 165.76,
+      "maxRssKiB": 606584,
+      "coverage": {
+        "coverage": "feasible-partial",
+        "structural": "11",
+        "actual": "42",
+        "accepted": "19",
+        "exact_rejected": "6",
+        "capacity_refinements": "5",
+        "unavailable_refinements": "1",
+        "unsupported": "17",
+        "indeterminate": "0"
+      },
+      "transferWork": {
+        "alias-summaries": 3150,
+        "collected": 96273,
+        "eliminated": 1462,
+        "inspected": 96303,
+        "proofs": 3128,
+        "timelines": 1636
+      },
+      "log": "build/test/model-performance/transfer-conv-fp16-42.log",
+      "logSha256": "e580697ad2d41ba615d328dd0f9a70ee85085ff954cd9ec47f4721dd7e1bdef7",
+      "manifestSha256": "54d5a67dd73f23ec0e0ba40fd7f5cf11dc00b29a43972e90c5062c514bc3fc6f",
+      "deviceExecuted": false
+    }
+  ],
+  "llama42": {
+    "status": "host-compiler-timeout",
+    "searchWidth": 8,
+    "searchTrials": 42,
+    "compilerDeadlineSeconds": 1800,
+    "hostWallSeconds": 1814.79,
+    "maxRssKiB": 21951308,
+    "completedAdvances": 36,
+    "log": "build/test/model-performance/transfer-llama-42.log",
+    "logSha256": "2e7175a41329d0b47a3fb3234e4d1ad1c8e5e03e4e7e12eef324de5c655f2b24",
+    "deviceExecuted": false,
+    "timing": {
+      "transferCleanupCalls": 560,
+      "transferCleanupCumulativeCpuMilliseconds": 183270.089,
+      "layoutCalls": 33,
+      "layoutCumulativeWallMilliseconds": 590062.235,
+      "layoutMaxWallMilliseconds": 455201.172,
+      "advanceMaxWallMilliseconds": 731784.993
+    },
+    "limitation": "嵌套/并行累计计时不可求和。长layout区间大部分位于细分analyzeModuleOp之外，不能继续归因于One-Shot递归。"
+  },
+  "limitations": [
+    "历史conv超时使用较早compiler，只作诊断参照，不作为匹配加速比",
+    "rank7 strided Tensor→NCx等候选lowering缺口仍存在",
+    "未闭合第2—7步，不代表完整catalog、PyTorch设备数值或设备性能通过"
+  ],
+  "ownerAndCapacityFollowup": {
+    "compilerSha256": "1c1665d8ede6be8ce8ea69c52c41f6f2265e3633a2cef15c58fb23896b96748a",
+    "changes": [
+      "删除layout中重复的二次方owner关系构建，使用共同current builder",
+      "actual输入ABI/SSA/operand map关联容量反馈坐标"
+    ],
+    "case": "llama-2-7b-block",
+    "dtype": "fp16",
+    "searchWidth": 8,
+    "searchTrials": 14,
+    "status": "no-executable-candidate",
+    "hostWallSeconds": 328.46,
+    "maxRssKiB": 6912384,
+    "coverage": {
+      "structural": 5,
+      "actual": 14,
+      "accepted": 0,
+      "capacityRejected": 13,
+      "unsupported": 1,
+      "capacityRefinements": 11,
+      "unavailableRefinements": 2
+    },
+    "capacityFeedback": {
+      "inputCoordinates": 192,
+      "ambiguousInputDemands": 1360,
+      "unavailableInputDemands": 0
+    },
+    "hostTiming": {
+      "layoutCalls": 14,
+      "layoutCumulativeWallMilliseconds": 18617.1,
+      "layoutMaxWallMilliseconds": 2373.358,
+      "ownerRelationCumulativeWallMilliseconds": 30.315,
+      "ownerRelationMaxWallMilliseconds": 3.588,
+      "descriptorCalls": 128327,
+      "descriptorCumulativeCpuMilliseconds": 84758.326,
+      "temporalMaterializationCumulativeWallMilliseconds": 61159.811
+    },
+    "validation": {
+      "transforms": 380,
+      "capacityAndProposalTests": 11,
+      "focusedLit": 30
+    },
+    "log": "build/test/model-performance/owner-capacity-llama-14.log",
+    "logSha256": "e6be231461ac4745c8585efda785f63f551c399aa51dbe4236927809545656e6",
+    "deviceExecuted": false,
+    "limitation": "14次主机编译完成但没有合法winner；与前版42次超时不是匹配性能对比。第2步完整merged/pipeline产品矩阵和第3—7步仍未闭合。"
+  }
+}

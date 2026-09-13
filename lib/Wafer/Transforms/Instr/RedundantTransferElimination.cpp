@@ -26,6 +26,8 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <set>
+#include <utility>
 
 namespace wafer::tensor_program_scheduling {
 namespace {
@@ -53,6 +55,13 @@ struct AliasSummary {
   llvm::SmallVector<mlir::memref::DeallocOp, 2> deallocations;
   llvm::SmallVector<ForwardingRecord, 8> forwardings;
   bool escaped = false;
+};
+
+struct TransferElisionWork {
+  uint64_t inspected = 0;
+  uint64_t proofs = 0;
+  uint64_t timelines = 0;
+  uint64_t aliasSummaries = 0;
 };
 
 static bool isUnitDescriptor(llvm::ArrayRef<int64_t> strides,
@@ -116,6 +125,14 @@ static bool isCompleteContiguousCopy(InstrGatherScatterOp gather,
          gather.getInnerBytesAttr().getInt() == *sourceBytes &&
          isUnitDescriptor(gather.getSrcStrides(), gather.getSrcIterations()) &&
          isUnitDescriptor(gather.getDstStrides(), gather.getDstIterations());
+}
+
+static bool isFullBufferTransfer(InstrGatherScatterOp gather) {
+  auto source = mlir::dyn_cast<mlir::MemRefType>(gather.getSource().getType());
+  auto dest = mlir::dyn_cast<mlir::MemRefType>(gather.getDest().getType());
+  return source && dest && isWaferSPMMemRefType(source) &&
+         isWaferSPMMemRefType(dest) &&
+         isCompleteContiguousCopy(gather, source, dest);
 }
 
 static mlir::Value resolveStorageRoot(mlir::Value value,
@@ -520,19 +537,15 @@ static void eraseCreatedReplacement(mlir::Value replacement,
 
 static bool
 tryElide(InstrGatherScatterOp gather, const mp::StructuredTimeline &timeline,
-         llvm::function_ref<void(mlir::Value, mlir::Value)> notifyReplacement) {
+         llvm::function_ref<void(mlir::Value, mlir::Value)> notifyReplacement,
+         llvm::function_ref<void(InstrGatherScatterOp)> notifyAffectedCopy,
+         TransferElisionWork &work) {
   wafer::support::ScopedCompileTimingSpan totalTiming("optimization-phase",
                                                       "tryElide", "total");
-  auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
-      "analysis-phase", "tryElide", "eligibility");
-  auto transferSourceType =
-      mlir::dyn_cast<mlir::MemRefType>(gather.getSource().getType());
-  auto destType = mlir::dyn_cast<mlir::MemRefType>(gather.getDest().getType());
-  if (!transferSourceType || !destType ||
-      !isWaferSPMMemRefType(transferSourceType) ||
-      !isWaferSPMMemRefType(destType) ||
-      !isCompleteContiguousCopy(gather, transferSourceType, destType))
-    return false;
+  std::optional<wafer::support::ScopedCompileTimingSpan> phaseTiming;
+  phaseTiming.emplace("analysis-phase", "tryElide", "eligibility");
+  // The caller checked descriptor/type eligibility before building analysis.
+  auto destType = mlir::cast<mlir::MemRefType>(gather.getDest().getType());
 
   mlir::Value transferSource = getStaticFullTransferSource(gather.getSource());
   auto sourceType = mlir::dyn_cast<mlir::MemRefType>(transferSource.getType());
@@ -583,8 +596,8 @@ tryElide(InstrGatherScatterOp gather, const mp::StructuredTimeline &timeline,
   }
 
   bool exactSelfCopy = transferSource == gather.getDest();
-  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
-      "analysis-phase", "tryElide", "collectAliases");
+  phaseTiming.emplace("analysis-phase", "tryElide", "collectAliases");
+  work.aliasSummaries += 2;
   AliasSummary sourceAliases = collectAliases(sourceRoot, timeline);
   AliasSummary destAliases = collectAliases(destRoot, timeline);
   if (sourceAliases.escaped || destAliases.escaped ||
@@ -630,8 +643,8 @@ tryElide(InstrGatherScatterOp gather, const mp::StructuredTimeline &timeline,
     }
   }
 
-  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
-      "analysis-phase", "tryElide", "proveStaticReshapeMetadataView");
+  phaseTiming.emplace("analysis-phase", "tryElide",
+                      "proveStaticReshapeMetadataView");
   if (mlir::failed(
           analysis::TransferRealizability::proveStaticReshapeMetadataView(
               sourceType, destType, destinationMayWrite)))
@@ -676,8 +689,8 @@ tryElide(InstrGatherScatterOp gather, const mp::StructuredTimeline &timeline,
       return false;
   }
 
-  phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
-      "transformation-phase", "tryElide", "createReplacementView");
+  phaseTiming.emplace("transformation-phase", "tryElide",
+                      "createReplacementView");
   mlir::FailureOr<mlir::Value> replacement =
       createReplacementView(gather, transferSource, sourceType, destType);
   if (mlir::failed(replacement))
@@ -711,6 +724,15 @@ tryElide(InstrGatherScatterOp gather, const mp::StructuredTimeline &timeline,
     eraseCreatedReplacement(*replacement, transferSource);
     return false;
   }
+  // The two closed alias summaries contain every access whose storage or
+  // effects can change. Other storage retains its control flow and relative
+  // access order. Notify while all operations are still alive; the caller
+  // invalidates its timeline after this successful rewrite.
+  for (const AliasSummary *aliases : {&sourceAliases, &destAliases})
+    for (const AccessRecord &access : aliases->accesses)
+      if (auto affected =
+              mlir::dyn_cast<InstrGatherScatterOp>(access.operation))
+        notifyAffectedCopy(affected);
   for (mlir::OpOperand *use : uses)
     use->set(*replacement);
   notifyReplacement(gather.getDest(), *replacement);
@@ -748,73 +770,87 @@ unsigned elideRedundantFullBufferTransfers(
   if (hasAssignedPlacement)
     return 0;
 
+  struct FunctionTransfers {
+    mlir::func::FuncOp function;
+    llvm::SmallVector<InstrGatherScatterOp, 8> copies;
+  };
+  llvm::SmallVector<FunctionTransfers, 4> functions;
+  llvm::DenseMap<mlir::Operation *, unsigned> functionIndices;
+  uint64_t collected = 0;
+  module.walk([&](InstrGatherScatterOp copy) {
+    auto function = copy->getParentOfType<mlir::func::FuncOp>();
+    if (!function)
+      return;
+    auto [it, inserted] =
+        functionIndices.try_emplace(function.getOperation(), functions.size());
+    if (inserted)
+      functions.push_back({function, {}});
+    functions[it->second].copies.push_back(copy);
+    ++collected;
+  });
+
+  TransferElisionWork work;
   unsigned eliminated = 0;
-  while (true) {
-    llvm::SmallVector<InstrGatherScatterOp, 8> candidates;
-    {
-      wafer::support::ScopedCompileTimingSpan collectTiming(
-          "analysis-phase", "elideRedundantFullBufferTransfers",
-          "collect-candidates");
-      module.walk(
-          [&](InstrGatherScatterOp gather) { candidates.push_back(gather); });
+  for (FunctionTransfers &group : functions) {
+    // Positions only order this invocation's live operation handles. No GS
+    // is created by this rewrite, and erased handles leave both containers.
+    llvm::DenseMap<mlir::Operation *, unsigned> positions;
+    std::set<unsigned> pending;
+    for (auto [index, copy] : llvm::enumerate(group.copies)) {
+      positions.try_emplace(copy.getOperation(), index);
+      pending.insert(index);
     }
-    // Candidate rejection does not mutate IR.  Reuse the exact structured
-    // timeline for every candidate in the same function until a rewrite is
-    // applied; the successful rewrite ends this iteration and therefore
-    // invalidates the cache before the next fixed-point step.
-    llvm::DenseMap<mlir::Operation *, std::unique_ptr<mp::StructuredTimeline>>
-        timelines;
-    llvm::DenseSet<mlir::Operation *> unavailableTimelines;
-    bool changed = false;
-    for (InstrGatherScatterOp gather : candidates) {
-      mlir::func::FuncOp function =
-          gather->getParentOfType<mlir::func::FuncOp>();
-      if (!gather->getBlock() || !function)
+    std::optional<mp::StructuredTimeline> timeline;
+    while (!pending.empty()) {
+      unsigned index = *pending.begin();
+      pending.erase(pending.begin());
+      InstrGatherScatterOp copy = group.copies[index];
+      ++work.inspected;
+      if (!isFullBufferTransfer(copy))
         continue;
-      mlir::Operation *functionOperation = function.getOperation();
-      if (unavailableTimelines.contains(functionOperation))
-        continue;
-      auto timelineIt = timelines.find(functionOperation);
-      if (timelineIt == timelines.end()) {
-        mlir::FailureOr<mp::StructuredTimeline> timeline;
+      if (!timeline) {
+        mlir::FailureOr<mp::StructuredTimeline> built;
         {
           wafer::support::ScopedCompileTimingSpan timelineTiming(
               "analysis-phase", "elideRedundantFullBufferTransfers",
               "StructuredTimeline::build");
-          timeline = mp::StructuredTimeline::build(functionOperation);
+          ++work.timelines;
+          built = mp::StructuredTimeline::build(group.function.getOperation());
         }
-        if (mlir::failed(timeline)) {
-          unavailableTimelines.insert(functionOperation);
-          continue;
-        }
-        timelineIt = timelines
-                         .try_emplace(functionOperation,
-                                      std::make_unique<mp::StructuredTimeline>(
-                                          std::move(*timeline)))
-                         .first;
+        if (mlir::failed(built))
+          break; // This function cannot change without a successful proof.
+        timeline.emplace(std::move(*built));
       }
-      bool elided = false;
-      {
-        wafer::support::ScopedCompileTimingSpan elideTiming(
-            "optimization-phase", "elideRedundantFullBufferTransfers",
-            "tryElide");
-        elided = tryElide(gather, *timelineIt->second, notifyReplacement);
-      }
-      if (!elided)
+      auto enqueueAffected = [&](InstrGatherScatterOp affected) {
+        auto found = positions.find(affected.getOperation());
+        if (found != positions.end())
+          pending.insert(found->second);
+      };
+      ++work.proofs;
+      positions.erase(copy.getOperation());
+      if (!tryElide(copy, *timeline, notifyReplacement, enqueueAffected,
+                    work)) {
+        positions.try_emplace(copy.getOperation(), index);
         continue;
-      ++eliminated;
-      changed = true;
-      break;
-    }
-    if (!changed) {
-      if (mlir::failed(mlir::verify(module))) {
-        module.emitError(
-            "full-buffer transfer elimination produced invalid IR");
-        return 0;
       }
-      return eliminated;
+      group.copies[index] = {};
+      timeline.reset();
+      ++eliminated;
     }
   }
+  for (auto [name, count] :
+       {std::pair<const char *, uint64_t>{"collected", collected},
+        {"inspected", work.inspected},
+        {"proofs", work.proofs},
+        {"timelines", work.timelines},
+        {"alias-summaries", work.aliasSummaries},
+        {"eliminated", eliminated}})
+    support::addCompileCounter("full-buffer-transfer-elision", name, count);
+  if (mlir::failed(mlir::verify(module))) {
+    module.emitError("full-buffer transfer elimination produced invalid IR");
+    return 0;
+  }
+  return eliminated;
 }
 
 unsigned elideRedundantFullBufferTransfers(mlir::ModuleOp module) {

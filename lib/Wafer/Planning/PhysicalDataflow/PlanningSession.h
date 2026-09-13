@@ -13,6 +13,7 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
+#include <deque>
 #include <optional>
 #include <set>
 #include <string>
@@ -73,8 +74,8 @@ public:
   bool isExhausted() const { return exhausted; }
   bool needsRefinementProposals(uint64_t reservedProposals) const {
     return proposalsInitialized && !refinementProposalsInitialized &&
-           nextProposal <= initialProposalCount &&
-           initialProposalCount - nextProposal <= reservedProposals;
+           (nextProposal >= initialProposalCount ||
+            initialProposalCount - nextProposal <= reservedProposals);
   }
 
 private:
@@ -153,6 +154,11 @@ private:
   CanonicalCursor axisCursor = CanonicalCursor::NotStarted;
   std::optional<SpatialPlan> lastAxisChoice;
   bool takeAxis = true;
+  SpatialDirectionCursor directionCursor;
+  std::deque<SpatialPlan> directionVariants;
+  bool directionExhausted = false;
+  bool takeDirection = false;
+  size_t nextSpatialProposal = 0;
   std::optional<SpatialPlan> pausedSpatialChoice;
   std::set<SpatialPlan> resolvedChoices;
   std::set<SpatialState> frontier;

@@ -39,6 +39,12 @@ struct CanonicalInstructionTile {
   StructuredMaterializationRelations relations;
 };
 
+/// The canonical leaf supplies its validated topology identity alongside the
+/// synchronous, read-only SPM observation. No failed IR escapes this call.
+using TileSPMCapacityObserver =
+    llvm::function_ref<void(CardId, TileId, const SPMMemoryPlanningFailure &,
+                            const StructuredMaterializationRelations &)>;
+
 enum class ExecutableCompilationStatus : uint8_t {
   Accepted,
   ProvenExactRejection,
@@ -148,7 +154,7 @@ ExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
     ProgramDataHandoff &programData,
     ExecutableLoweringStatistics *statistics = nullptr,
     unsigned tilePipelineParallelism = 0,
-    SPMCapacityObserver capacityObserver = nullptr);
+    TileSPMCapacityObserver capacityObserver = nullptr);
 
 } // namespace wafer::compiler::detail
 
