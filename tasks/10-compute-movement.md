@@ -56,7 +56,7 @@ lower current structured op(current_op, current_operands_and_results, rewriter)
 ```
 
 `linalg.fill`、named matmul和named batch matmul按concrete op class进入对应typed lowering。`linalg.generic`只有在
-iterator、三张indexing map和scalar region共同证明exact rank-2 GEMM，或标准Linalg convolution-dimension inference、
+iterator、三张indexing map和scalar region共同证明exact contraction（单K轴、非空M/N轴组及可选共享batch），或标准Linalg convolution-dimension inference、
 symbol-free affine window maps和scalar region共同证明ordinary static 2-D convolution时，才归一到对应typed compute；
 否则保持generic baseline并按其actual scalar body物化。显式`tensor.pad`只在static low/high与position-independent fill value
 可从current op精确读取时物化为fill加insert-slice；不得按source名字、shape或常见zero-padding恢复语义。这里没有public
@@ -147,6 +147,35 @@ accumulator/partial sum若跨op或wave存在，必须是SSA value或loop-carried
 
 operand名字或常见Transformer shape都不构成GEMM语义。本任务只处理current op、既有dtype支持和structural compute/movement合同。
 
+#### 多平行轴 contraction 的确定性归一化
+
+输入为layout/bufferization完成的static、symbol-free projected-permutation Linalg contraction，scalar region仍须证明
+exact multiply-accumulate。使用pinned `linalg::inferContractionDims`从current maps/iterator分类batch、M、N、K；
+所有operand维度必须恰好由这些轴覆盖，各共享轴extent一致，轴组乘积与完整元素数均检查int64溢出。
+M/N允许多个parallel轴，K保持单轴及原归约顺序；不借此引入算术重排或改变FP32 partial/native输出格式。
+
+每组按原loop维度顺序排列，lhs归一为`[batch..., M..., K]`、rhs为`[batch..., K, N...]`、
+result为`[batch..., M..., N...]`，显式transpose后合并成`[B,M,K]`、`[B,K,N]`及`[B,M,N]`。
+无共享batch时B=1，不复制输入；psum使用与result相同的双射，输出按逆reshape/transpose恢复原DPS destination。
+原rank-2 orientation路径保持不变。rank-2输入升为rank-3时，既有Cx/NCx合同差异以显式layout materialization表达；
+这只满足固定GEMM格式，不重新运行PBQP或搜索layout。每个reshape先走现有physical metadata-view证明；
+无法证明时物化现有movement，实际allocation/effect进入fresh Instr、completion与SPM规划。
+
+算法比较：[Linalg语义](https://mlir.llvm.org/docs/Dialects/Linalg/)以maps/iterator定义contraction；pinned
+`LinalgInterfaces.cpp`已提供多轴分类，`Specialize.cpp`的named matmul匹配仍要求矩阵轴形式。
+[Matthews的tensor contraction研究](https://arxiv.org/abs/1607.00291)比较显式转置后GEMM与融合packing的TBLIS。
+本层复用现有transpose/reshape/GEMM路径以闭合确定语义；packing融合需要实际movement证据，不能假设target已有该能力。
+不新增op、ABI、search轴、独立pass或模型特判。完成条件是以下矩阵及正式GQA source到package/no-card、固定LLaMA回归；
+主机通过不代签板端数值或性能。
+
+| 输入等价类 | 规模/结构 | exact输出与直接下游witness |
+| --- | --- | --- |
+| 多M、多N、同时多M/N | 1024/1025/1031；unit/non-unit；有/无共享batch；乱序maps | native M/N为准确乘积；每个坐标到GEMM再还原的双射；原destination不变 |
+| FP16/BF16输入及F32 psum | 不能证明为零的runtime初值、乱序结果、多轴 | psum与输出使用同一坐标关系；不新增dtype convert；Tile verifier及实际Instr消费 |
+| selected temporal及多Tile | 整除与tail，实际多block/wave | 原覆盖无重复/遗漏；actual Instr、completion、SPM结果；容量拒绝保持typed |
+| 不支持的map/归约 | 多K、未覆盖轴、乘积溢出 | preflight原子拒绝，IR与relations不变，不部分生成GEMM |
+| 整网生产调用者 | GQA 1024/1025；已有LLaMA | 默认search真实source→package→no-card；记录下一失败边界，不绕过 |
+
 ### Ordinary 2-D convolution
 
 `wafer.tile.conv`使用canonical logical input/result NHWC与weight HWOI（Cx physical storage；input/result为NCx）；stride/dilation按H/W表达，pad/unpad按
@@ -224,7 +253,7 @@ relation exact、其它uses/effects/alias闭合且final destination cover可证�
 冗余，不能移动fusion cut、改变route或创造spill/recompute。
 
 Current实现由`lowerStructuredComputeToTile`直接消费bufferized Linalg current IR。Named与generic contraction从iterator、maps和exact
-multiply-accumulate region得到M/K/N；多batch/head维按current maps显式transpose并压成target rank-3 GEMM，结果再恢复source logical
+multiply-accumulate region得到M/K/N轴组；多batch及parallel M/N维按current maps显式transpose并压成target rank-3 GEMM，结果再恢复source logical
 order。`reshape`只有通过`TransferRealizability::proveStaticReshapeMetadataView`才成为alias；否则立即物化`reshape_copy`。Reduction、scalar
 expression、dtype convert与ordinary convolution同样只读current region/type/maps。Parallel elementwise若使用可逆result permutation，
 conversion先用inverse把所有operand maps同步换到result coordinates，再生成identity-result Tile elementwise；不可逆或非permutation result

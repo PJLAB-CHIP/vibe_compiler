@@ -34,6 +34,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
@@ -1859,6 +1860,413 @@ TEST_F(StructuredToTileTest,
       EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
           module->getOperation(), relations)));
     }
+}
+
+struct ContractionExample {
+  llvm::SmallVector<int64_t> extents;
+  llvm::SmallVector<unsigned> lhs, rhs, output, batch, m, n;
+  unsigned k;
+};
+
+static ContractionExample multiAxisExample(int64_t extent, unsigned variant) {
+  switch (variant) {
+  case 0:
+    return {{2, 1, extent, 8, 8},
+            {1, 0, 2, 3},
+            {0, 3, 4},
+            {0, 1, 2, 4},
+            {0},
+            {1, 2},
+            {4},
+            3};
+  case 1:
+    return {{2, 3, extent, 8, 8},
+            {1, 0, 2, 3},
+            {0, 3, 4},
+            {4, 0, 2, 1},
+            {0},
+            {1, 2},
+            {4},
+            3};
+  case 2:
+    return {{2, 8, 8, 3, extent},
+            {1, 0, 2},
+            {4, 2, 0, 3},
+            {3, 0, 4, 1},
+            {0},
+            {1},
+            {3, 4},
+            2};
+  case 3:
+    return {{2, extent, 8, 2, 8},
+            {2, 1, 0},
+            {4, 2, 3},
+            {4, 0, 3, 1},
+            {},
+            {0, 1},
+            {3, 4},
+            2};
+  case 4:
+    return {
+        {3, extent, 8, 8}, {2, 0, 1}, {3, 2}, {3, 0, 1}, {}, {0, 1}, {3}, 2};
+  case 5:
+    return {
+        {8, 8, 2, extent}, {1, 0}, {2, 1, 3}, {3, 0, 2}, {}, {0}, {2, 3}, 1};
+  default:
+    return {{2, 2, 2, extent, 8, 2, 8},
+            {3, 0, 4, 2, 1},
+            {6, 1, 4, 0, 5},
+            {5, 3, 0, 6, 2, 1},
+            {0, 1},
+            {2, 3},
+            {5, 6},
+            4};
+  }
+}
+
+static std::string multiAxisSource(const ContractionExample &example,
+                                   llvm::StringRef element) {
+  auto type = [&](llvm::ArrayRef<unsigned> dimensions, llvm::StringRef dtype) {
+    std::string result = "tensor<";
+    for (unsigned dim : dimensions)
+      result += std::to_string(example.extents[dim]) + "x";
+    return result + dtype.str() + ">";
+  };
+  auto map = [&](llvm::ArrayRef<unsigned> dimensions) {
+    std::string result = "affine_map<(";
+    for (unsigned i = 0; i < example.extents.size(); ++i)
+      result += (i ? "," : "") + std::string("d") + std::to_string(i);
+    result += ")->(";
+    for (auto [i, dim] : llvm::enumerate(dimensions))
+      result += (i ? "," : "") + std::string("d") + std::to_string(dim);
+    return result + ")>";
+  };
+  std::string a = type(example.lhs, element), b = type(example.rhs, element);
+  std::string c = type(example.output, "f32");
+  std::string iterators;
+  for (unsigned i = 0; i < example.extents.size(); ++i)
+    iterators += (i ? "," : "") +
+                 std::string(i == example.k ? "\"reduction\"" : "\"parallel\"");
+  return "module { wafer.tile.module card_id = 0 tile_id = 0 { "
+         "func.func @entry(%a: " +
+         a + ", %b: " + b + ", %initial: " + c + ") -> " + c +
+         " { %result = wafer.tile.region(%a, %b, %initial : " + a + ", " + b +
+         ", " + c + ") -> (" + c + ") { ^bb0(%aa: " + a + ", %bb: " + b +
+         ", %cc: " + c +
+         "): "
+         "%r = linalg.generic {indexing_maps = [" +
+         map(example.lhs) + "," + map(example.rhs) + "," + map(example.output) +
+         "], iterator_types = [" + iterators + "]} ins(%aa, %bb : " + a + ", " +
+         b + ") outs(%cc : " + c + ") { ^bb0(%x: " + element.str() +
+         ", %y: " + element.str() +
+         ", %z: f32): "
+         "%xx = arith.extf %x : " +
+         element.str() +
+         " to f32 "
+         "%yy = arith.extf %y : " +
+         element.str() +
+         " to f32 "
+         "%p = arith.mulf %xx, %yy : f32 %s = arith.addf %p, %z : f32 "
+         "linalg.yield %s : f32 } -> " +
+         c + " wafer.tile.yield %r : " + c + " } return %result : " + c +
+         " } } }";
+}
+
+// Interpret only the actual movement chain, independently of the descriptor
+// construction. Linear indices are logical row-major, including ragged axes.
+static mlir::FailureOr<int64_t>
+traceContractionElement(mlir::Value value, mlir::Value anchor, int64_t index) {
+  if (value == anchor)
+    return index;
+  if (auto op = value.getDefiningOp<MoveTransposeOp>()) {
+    auto out = mlir::cast<mlir::MemRefType>(value.getType());
+    auto in = mlir::cast<mlir::MemRefType>(op.getSource().getType());
+    llvm::SmallVector<int64_t> coordinates(in.getRank(), 0);
+    for (int64_t dim = out.getRank() - 1; dim >= 0; --dim) {
+      coordinates[op.getPermutation()[dim]] = index % out.getDimSize(dim);
+      index /= out.getDimSize(dim);
+    }
+    int64_t sourceIndex = 0;
+    for (int64_t dim = 0; dim < in.getRank(); ++dim)
+      sourceIndex = sourceIndex * in.getDimSize(dim) + coordinates[dim];
+    return traceContractionElement(op.getSource(), anchor, sourceIndex);
+  }
+  if (auto op = value.getDefiningOp<ViewReshapeOp>())
+    return traceContractionElement(op.getSource(), anchor, index);
+  if (auto op = value.getDefiningOp<MoveReshapeOp>())
+    return traceContractionElement(op.getSource(), anchor, index);
+  if (auto op = value.getDefiningOp<LayoutMaterializeOp>())
+    return traceContractionElement(op.getSource(), anchor, index);
+  return mlir::failure();
+}
+
+TEST_F(StructuredToTileTest,
+       MultiAxisContractionsPreserveEveryLogicalCoordinate) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (unsigned variant = 0; variant < 7; ++variant)
+      for (llvm::StringRef element : {"f16", "bf16"}) {
+        SCOPED_TRACE(::testing::Message()
+                     << extent << "/" << variant << "/" << element.str());
+        auto example = multiAxisExample(extent, variant);
+        auto module = parse(multiAxisSource(example, element));
+        ASSERT_TRUE(module);
+        TileRegionOp region;
+        module->walk([&](TileRegionOp op) { region = op; });
+        StructuredMaterializationRelations relations;
+        relations.structuralOutputs.push_back({0, region.getResult(0)});
+        auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+        ASSERT_TRUE(layout.succeeded()) << layout.detail;
+        mlir::linalg::GenericOp source;
+        module->walk([&](mlir::linalg::GenericOp op) { source = op; });
+        ASSERT_TRUE(source);
+        mlir::Value lhs = source.getDpsInputs()[0];
+        mlir::Value rhs = source.getDpsInputs()[1];
+        mlir::Value destination = source.getDpsInits()[0];
+        auto lowered = lowerStructuredComputeToTile(*module, relations);
+        ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+        EXPECT_EQ(lowered.statistics.contractions, 1u);
+        EXPECT_EQ(lowered.statistics.converts, 0u);
+        EXPECT_EQ(countOps<ComputeConvertOp>(*module), 0u);
+        ComputeGemmOp gemm;
+        mlir::Value published;
+        module->walk([&](ComputeGemmOp op) { gemm = op; });
+        module->walk([&](MoveCopyIntoOp op) {
+          if (op.getDest() == destination)
+            published = op.getSource();
+        });
+        ASSERT_TRUE(gemm);
+        ASSERT_TRUE(published);
+        ASSERT_TRUE(gemm.getPsum());
+        EXPECT_TRUE(mlir::cast<mlir::MemRefType>(gemm.getResult().getType())
+                        .getElementType()
+                        .isF32());
+        EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
+        auto unpack = [&](int64_t index, llvm::ArrayRef<unsigned> dims,
+                          llvm::SmallVectorImpl<int64_t> &coordinates) {
+          for (unsigned dim : llvm::reverse(dims)) {
+            coordinates[dim] = index % example.extents[dim];
+            index /= example.extents[dim];
+          }
+        };
+        auto project = [&](llvm::ArrayRef<unsigned> dims,
+                           llvm::ArrayRef<int64_t> coordinates) {
+          int64_t index = 0;
+          for (unsigned dim : dims)
+            index = index * example.extents[dim] + coordinates[dim];
+          return index;
+        };
+        auto product = [&](llvm::ArrayRef<unsigned> dims) {
+          int64_t count = 1;
+          for (unsigned dim : dims)
+            count *= example.extents[dim];
+          return count;
+        };
+        int64_t batch = product(example.batch), m = product(example.m);
+        int64_t n = product(example.n), k = example.extents[example.k];
+        EXPECT_EQ(
+            mlir::cast<mlir::MemRefType>(gemm.getResult().getType()).getShape(),
+            (llvm::ArrayRef<int64_t>{batch, m, n}));
+        for (unsigned operand = 0; operand < 3; ++operand) {
+          mlir::Value value = operand == 0   ? gemm.getLhs()
+                              : operand == 1 ? gemm.getRhs()
+                                             : gemm.getPsum();
+          mlir::Value anchor = operand == 0   ? lhs
+                               : operand == 1 ? rhs
+                                              : destination;
+          auto dims = operand == 0   ? example.lhs
+                      : operand == 1 ? example.rhs
+                                     : example.output;
+          auto shape = mlir::cast<mlir::MemRefType>(value.getType());
+          int64_t rows = operand == 1 ? k : m;
+          int64_t cols = operand == 0 ? k : n;
+          ASSERT_EQ(shape.getShape(),
+                    (llvm::ArrayRef<int64_t>{batch, rows, cols}));
+          for (int64_t i = 0; i < batch * rows * cols; ++i) {
+            llvm::SmallVector<int64_t> coordinates(example.extents.size(), 0);
+            unpack(i / (rows * cols), example.batch, coordinates);
+            if (operand == 1)
+              coordinates[example.k] = (i / cols) % rows;
+            else
+              unpack((i / cols) % rows, example.m, coordinates);
+            if (operand == 0)
+              coordinates[example.k] = i % cols;
+            else
+              unpack(i % cols, example.n, coordinates);
+            int64_t expected = project(dims, coordinates);
+            auto actual = traceContractionElement(value, anchor, i);
+            ASSERT_TRUE(mlir::succeeded(actual));
+            ASSERT_EQ(*actual, expected);
+            if (operand == 2) {
+              auto restored = traceContractionElement(
+                  published, gemm.getResult(), expected);
+              ASSERT_TRUE(mlir::succeeded(restored));
+              ASSERT_EQ(*restored, i);
+            }
+          }
+        }
+        EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
+            module->getOperation(), relations)));
+        auto movement = materializeTileBoundaryMovement(*module, relations);
+        ASSERT_TRUE(movement.succeeded()) << movement.detail;
+        EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+      }
+}
+
+TEST_F(StructuredToTileTest, MultiAxisContractionsReachInstrWithTemporalTails) {
+  // Four independently owned Tile lanes; each lane has a realistic M traversal.
+  // The temporal choice is applied by the production transformation.
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto module = parse(multiAxisSource(multiAxisExample(extent, 1), "f16"));
+    ASSERT_TRUE(module);
+    auto original = *module->getOps<TileModuleOp>().begin();
+    for (int64_t id = 1; id < 4; ++id) {
+      mlir::IRMapping mapping;
+      auto clone = mlir::cast<TileModuleOp>(original->clone(mapping));
+      clone.setTileIdAttr(mlir::IntegerAttr::get(
+          mlir::IntegerType::get(context.get(), 64), id));
+      module->getBody()->push_back(clone);
+    }
+    StructuredMaterializationRelations relations;
+    llvm::SmallVector<TileRegionOp> regions;
+    module->walk([&](TileRegionOp region) {
+      regions.push_back(region);
+      relations.structuralOutputs.push_back({0, region.getResult(0)});
+    });
+    for (TileRegionOp region : regions) {
+      auto domain = buildTemporalDomain(region);
+      ASSERT_TRUE(domain.succeeded());
+      auto first = domain.domain->getFirstChoice();
+      auto choice = *first.getChoice();
+      ASSERT_EQ(choice.scopes.size(), 1u);
+      choice.scopes[0].iteratorTileSizes[2] = 128;
+      choice.scopes[0].loopOrder = {2};
+      ASSERT_TRUE(domain.domain->contains(choice));
+      ASSERT_TRUE(mlir::succeeded(
+          applyTemporalTiling(*domain.domain, choice, relations)));
+    }
+    auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    auto lowered = lowerStructuredComputeToTile(*module, relations);
+    ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+    unsigned mainOps = 0, tailOps = 0;
+    module->walk([&](ComputeGemmOp op) {
+      auto shape = mlir::cast<mlir::MemRefType>(op.getResult().getType());
+      EXPECT_EQ(shape.getDimSize(0), 2);
+      EXPECT_EQ(shape.getDimSize(2), 8);
+      if (shape.getDimSize(1) == 3 * 128) {
+        ++mainOps;
+        auto loop = op->getParentOfType<mlir::scf::ForOp>();
+        ASSERT_TRUE(loop);
+        auto lower = mlir::getConstantIntValue(loop.getLowerBound());
+        auto upper = mlir::getConstantIntValue(loop.getUpperBound());
+        auto step = mlir::getConstantIntValue(loop.getStep());
+        ASSERT_TRUE(lower && upper && step);
+        EXPECT_EQ(*lower, 0);
+        EXPECT_EQ(*upper, 1024);
+        EXPECT_EQ(*step, 128);
+      } else {
+        ++tailOps;
+        EXPECT_EQ(shape.getDimSize(1), 3 * (extent % 128));
+        EXPECT_FALSE(op->getParentOfType<mlir::scf::ForOp>());
+      }
+    });
+    EXPECT_EQ(mainOps, 4u);
+    EXPECT_EQ(tailOps, extent % 128 ? 4u : 0u);
+    auto movement = materializeTileBoundaryMovement(*module, relations);
+    ASSERT_TRUE(movement.succeeded()) << movement.detail;
+    ASSERT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+    std::string detail;
+    auto standalone =
+        createStandaloneTileModules(std::move(module), &detail, &relations);
+    ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+    ASSERT_EQ(standalone->size(), 4u);
+    for (auto &tile : *standalone) {
+      llvm::SmallVector<TileRegionOp> currentRegions;
+      tile.module->walk(
+          [&](TileRegionOp region) { currentRegions.push_back(region); });
+      TileRegionToInstrLoweringSession session(*context);
+      for (TileRegionOp region : currentRegions)
+        ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+      ASSERT_TRUE(mlir::succeeded(
+          convertBufferizationCopiesToInstr(*tile.module, session)));
+      EXPECT_EQ(countOps<ComputeGemmOp>(*tile.module), 0u);
+      ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+      TileMemoryPlanningFailure failure;
+      auto planned = planTileMemory(std::move(tile.module), &failure);
+      ASSERT_TRUE(mlir::succeeded(planned))
+          << static_cast<unsigned>(failure.kind);
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(**planned)));
+    }
+  }
+}
+
+TEST_F(StructuredToTileTest,
+       MultiAxisContractionsRejectIncompleteMapsAtomically) {
+  for (unsigned variant = 0; variant < 3; ++variant) {
+    SCOPED_TRACE(variant);
+    // These verifier negatives isolate unsupported classification and int64
+    // product overflow. No physical allocation or execution is requested.
+    std::string source = R"mlir(module {
+      wafer.tile.module card_id = 0 tile_id = 0 {
+        func.func @entry() {
+          wafer.tile.region() -> () {
+            %a = memref.alloc() : memref<2x1024x8x8xf16, #wafer.memory<spm, ncx>>
+            %b = memref.alloc() : memref<2x8x8x4xf16, #wafer.memory<spm, ncx>>
+            %c = memref.alloc() : memref<2x1024x4xf16, #wafer.memory<spm, ncx>>
+            linalg.generic {indexing_maps = [
+              affine_map<(b,m,k0,k1,n)->(b,m,k0,k1)>,
+              affine_map<(b,m,k0,k1,n)->(b,k0,k1,n)>,
+              affine_map<(b,m,k0,k1,n)->(b,m,n)>],
+              iterator_types = ["parallel","parallel","reduction","reduction","parallel"]}
+              ins(%a, %b : memref<2x1024x8x8xf16, #wafer.memory<spm, ncx>>,
+                            memref<2x8x8x4xf16, #wafer.memory<spm, ncx>>)
+              outs(%c : memref<2x1024x4xf16, #wafer.memory<spm, ncx>>) {
+              ^bb0(%x: f16, %y: f16, %z: f16):
+                %p = arith.mulf %x, %y : f16
+                %s = arith.addf %p, %z : f16
+                linalg.yield %s : f16
+            }
+            wafer.tile.yield
+          }
+          return
+        }
+      }
+    })mlir";
+    auto replaceAll = [&](llvm::StringRef from, llvm::StringRef to) {
+      for (size_t at = 0;
+           (at = source.find(from.str(), at)) != std::string::npos;
+           at += to.size())
+        source.replace(at, from.size(), to.str());
+    };
+    if (variant != 0) {
+      // k0 becomes a lhs-only parallel axis (variant 1) or a second M
+      // dimension with overflowing static element count (variant 2).
+      replaceAll("(b,k0,k1,n)", "(b,k1,n)");
+      replaceAll("2x8x8x4xf16", "2x8x4xf16");
+      replaceAll("\"reduction\",\"reduction\"", "\"parallel\",\"reduction\"");
+    }
+    if (variant == 2) {
+      replaceAll("->(b,m,n)", "->(b,m,k0,n)");
+      replaceAll("2x1024x4xf16", "2x1024x8x4xf16");
+      replaceAll("1024", "4611686018427387903");
+    }
+    auto module = parse(source);
+    ASSERT_TRUE(module);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    StructuredMaterializationRelations relations;
+    std::string before;
+    llvm::raw_string_ostream stream(before);
+    module->print(stream);
+    auto lowered = lowerStructuredComputeToTile(*module, relations);
+    EXPECT_EQ(lowered.failure, StructuredToTileFailureKind::Unsupported);
+    std::string after;
+    llvm::raw_string_ostream afterStream(after);
+    module->print(afterStream);
+    EXPECT_EQ(before, after);
+    EXPECT_EQ(countOps<ComputeGemmOp>(*module), 0u);
+    EXPECT_TRUE(relations.buffers.empty());
+  }
 }
 
 TEST_F(StructuredToTileTest,

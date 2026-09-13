@@ -1,0 +1,199 @@
+{
+  "date": "2026-09-14",
+  "work_item": "board-testing",
+  "scope": "general multi-parallel-axis contraction lowering",
+  "compiler_sha256": "75b55151602254b8dda27e0df5bee3fb463dc1d178f1dc26cf6ceebbc96f2d3f",
+  "source_sha256": {
+    "lib/Wafer/Transforms/Tile/StructuredToTile.cpp": "2234debaa3a3eb3b2fff2db2c1150b37c5cd831171362358b0b6de785abbbb4f",
+    "unittests/Transforms/Tile/StructuredToTileTest.cpp": "e89f440379ba379ce24289ba1b44f7c4da49e3e14f6f7488799598c08eb2806a"
+  },
+  "board_executed": false,
+  "budget": {
+    "width": 8,
+    "trials": 42,
+    "changed": false
+  },
+  "arithmetic_and_k_order_changed": false,
+  "validation": {
+    "focused": {
+      "tests_passed": 3,
+      "failed": 0,
+      "wall_ms": 2837,
+      "coordinate_configurations": 42,
+      "coordinate_elements": "all input, psum, and restored output logical coordinates",
+      "extents": [
+        1024,
+        1025,
+        1031
+      ],
+      "input_dtypes": [
+        "f16",
+        "bf16"
+      ],
+      "psum_output_dtype": "f32",
+      "temporal_tiles": 4,
+      "temporal_step": 128,
+      "full_blocks_per_tile": 8,
+      "tail_sizes": [
+        0,
+        1,
+        7
+      ],
+      "instr_completion_spm": "passed for all 12 Tile instances",
+      "negative_cases": [
+        "multiple K axes",
+        "unclassified lhs-only parallel axis",
+        "int64 product overflow"
+      ],
+      "negative_ir_unchanged": true
+    },
+    "transforms": {
+      "status": "passed",
+      "ctest_wall_s": 42.53,
+      "tests_passed": 389,
+      "failed": 0,
+      "skipped": 0
+    },
+    "driver": {
+      "status": "passed",
+      "tests_passed": 126,
+      "failed": 0,
+      "skipped": 0,
+      "ctest_wall_s": 570.05
+    },
+    "canonical_build": "passed",
+    "subsequent_build": "ninja: no work to do."
+  },
+  "whole_model": {
+    "gqa": {
+      "status": "failed_at_actual_spm_capacity",
+      "results": [
+        {
+          "sequence": 1024,
+          "ctest_wall_s": 152.98,
+          "structural": 5,
+          "actual": 42,
+          "accepted": 0,
+          "exact_rejected": 42,
+          "unsupported": 0,
+          "capacity_refinements": 31,
+          "unavailable_refinements": 11
+        },
+        {
+          "sequence": 1025,
+          "ctest_wall_s": 195.62,
+          "structural": 5,
+          "actual": 42,
+          "accepted": 0,
+          "exact_rejected": 42,
+          "unsupported": 0,
+          "capacity_refinements": 30,
+          "unavailable_refinements": 12
+        }
+      ],
+      "package_produced": false,
+      "previous_boundary": "all 42 candidates unsupported at structured-to-Tile",
+      "first_candidate_diagnostic": {
+        "trials": 1,
+        "gate": "spm-allocation",
+        "detail": "Tile memory planning failed",
+        "rejected": 1,
+        "arithmetic_or_device_executed": false,
+        "temporal_domains": 80,
+        "multi_scope_domains": 16,
+        "scoped_shapes": [
+          {
+            "domains": 32,
+            "scopes": [
+              [
+                1,
+                1,
+                2,
+                1024,
+                128
+              ]
+            ]
+          },
+          {
+            "domains": 16,
+            "scopes": [
+              [
+                2,
+                128,
+                1024
+              ]
+            ]
+          },
+          {
+            "domains": 16,
+            "scopes": [
+              [
+                2,
+                1,
+                1024,
+                128,
+                1024,
+                128
+              ],
+              [
+                2,
+                1,
+                1024,
+                128
+              ]
+            ]
+          },
+          {
+            "domains": 16,
+            "scopes": [
+              [
+                1,
+                2,
+                1024,
+                128
+              ]
+            ]
+          }
+        ],
+        "input_feedback_coordinates": 48,
+        "input_feedback_unavailable_demands": 640
+      }
+    },
+    "llama_fp16": {
+      "status": "passed",
+      "board_executed": false,
+      "wall_s": 1018.88,
+      "max_rss_kib": 2770280,
+      "all_package_members_byte_equal_frozen_baseline": true,
+      "package_sha256": {
+        "manifest.json": "968af3b772f708fc9dc4111d183c9f0d0eb15fca7928b884722d15047c9d858e",
+        "modules/module_00000.so": "df29e4aaed1c679e5b897e17bba401b42a8c9ec4e7dceed58897296fe204fa27",
+        "data/program-data.bin": "2c70f48e3e9be02d85e54cf0486fdf833a0ddd09a3e13659e7d8a874268cad59"
+      },
+      "arithmetic_execution": false,
+      "completion_execution": false,
+      "numeric_readback": false,
+      "compiler_transaction_wall_ms": 997488
+    }
+  },
+  "raw_evidence_sha256": {
+    "build/test/model-performance/multi-axis-gemm-focused.log": "506e1c3f371e4d9582b8d9599195927db83f3d82e592a4abc89a764fe5970e5c",
+    "build/test/model-performance/multi-axis-gqa-no-card.log": "813843481c78648b58a64c76f537570ef8da01f6f7b33c83c7458749c7ed8f9d",
+    "build/test/model-performance/multi-axis-gqa-first-capacity.log": "2e51f361459f44954a2bae5983660029a17e531ee9cdd61ff8edde9694a9cad5",
+    "build/test/model-performance/multi-axis-gemm-build.log": "739e1a4eb990a61d12b3055bb723ed310fda70c7111c4e7790fbf3ee7755c5d6",
+    "build/test/model-performance/multi-axis-gemm-build-no-op.log": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e",
+    "build/test/model-performance/multi-axis-gemm-unit-regression.log": "aa5b93ec4a396e969b5ee10d601488821a05978e1a0b0d9158bb1151d95577be",
+    "build/test/model-performance/multi-axis-gemm-unit-details.log": "473da16bd9c2c8f4ee14811198c74f74f7a031311ffab4a9e264663268a7625b",
+    "build/test/model-performance/multi-axis-gemm-llama-no-card.log": "fa84bc68b8b6f18623fcc5c24e4a52212c3ef305aa66db6dfd4885f5d65be3d0"
+  },
+  "limitations": [
+    "GQA has not produced a package; actual SPM/temporal capacity remains unresolved.",
+    "No new board numeric, profile, or matched performance evidence.",
+    "Multi-axis lowering repair does not complete any of the three performance rounds."
+  ],
+  "next_capacity_investigation": {
+    "confirmed_code_boundary": "SearchCurrentIR owner/body feedback supplements coordinates only when a domain has exactly one temporal scope. Input-origin feedback is separate.",
+    "case_evidence": "The first GQA candidate has 16 domains with two scopes.",
+    "unproven": "No captured actual conflict-demand to multi-scope-owner witness yet; this restriction is not established as the cause of all GQA failures. Unavailable input origins do not establish missing allocation owners."
+  }
+}

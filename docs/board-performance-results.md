@@ -1391,3 +1391,34 @@ d3归约，其余parallel。pinned contraction分类给出M={d1,d2}、N={d4}、K
 
 完整输入端口、source identity、搜索结果及日志hash见
 [`gqa-source-20260914.json`](data/board-performance/gqa-source-20260914.json)。
+
+## 2026-09-14：多平行轴 GEMM lowering 与扩展矩阵主机验证
+
+GQA 暴露的根因位于 structured contraction→Tile GEMM：原实现已经能合并多个batch维，
+但M/N只各接收一个轴。现使用同一pinned Linalg分类和current maps，把多个parallel M/N轴显式归一到
+既有GEMM，再按逆关系恢复原DPS destination；FP32 psum使用同一关系，K顺序和dtype不变。
+这不是GQA/attention特判，也没有增加search预算、强制DTE或放宽SPM合法性。
+
+新增直接机制检查覆盖42组shape/dtype/映射组合的全部输入、psum及输出坐标；4 Tile的1024/1025/1031
+还通过生产temporal变换、Instr、completion和SPM规划，主循环8次、tail分别0/1/7。多K、未分类轴及乘积溢出
+在preflight原子拒绝。完整Transforms本轮389项通过，42.53秒；Driver 126项通过，570.05秒。canonical完整增量构建通过，随后Ninja no-op。
+FP16 LLaMA fresh source→package→no-card通过，wall 1,018.88秒，峰值RSS 2,770,280 KiB；
+完整package三文件与初始正确快版本逐字节相同。该结论只证明编译产物一致，没有新增实卡耗时。
+
+| GQA配置 | 原source接入结果 | 本轮默认width8/trials42结果 | 本轮CTest wall |
+| --- | --- | --- | ---: |
+| S1024，Q32/KV8 | 42 unsupported，未进入SPM | 42 actual capacity，0 unsupported、0 accepted；31次capacity refinement | 152.98 s |
+| S1025，Q32/KV8 | 42 unsupported，未进入SPM | 42 actual capacity，0 unsupported、0 accepted；30次capacity refinement | 195.62 s |
+
+两项仍未生成package。单候选诊断确认当前首个失败为`spm-allocation`；下一步需要实际allocation与temporal owner反馈，
+不能由这份计数推断具体哪个buffer有冗余，也不能据此宣称GQA正确性完成。
+
+同时收取上一轮Region优化版ResNet：1,800秒主机compiler期限触发，无package、无设备执行。
+完整runner为1,810.50秒，RSS 5,827,644 KiB；最后已完成temporal阶段12次累计1,178.732秒，
+另有96.346秒active temporal调用。Region query三次累计274.287秒；嵌套累计计时不是可直接相加的wall。
+重复全module relation检查与窗口max归约的后续缺口保持开放。
+
+本节没有新增实卡耗时、数值或profile结果，不计入三轮性能调优。
+编译器、源码及原始日志身份见
+[`multi-axis-contraction-20260914.json`](data/board-performance/multi-axis-contraction-20260914.json)，
+ResNet终态补入原[Region证据](data/board-performance/region-proposal-work-20260914.json)。

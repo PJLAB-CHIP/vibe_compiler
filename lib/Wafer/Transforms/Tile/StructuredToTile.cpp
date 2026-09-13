@@ -452,16 +452,13 @@ struct GemmDescriptor {
   bool rankTwo = false;
   GemmOrientation lhsOrientation = GemmOrientation::Normal;
   GemmOrientation rhsOrientation = GemmOrientation::Normal;
-  int64_t batchCount = 0;
-  llvm::SmallVector<int64_t, 4> lhsBatchDims;
-  int64_t lhsMDim = 0;
-  int64_t lhsContractingDim = 0;
-  llvm::SmallVector<int64_t, 4> rhsBatchDims;
-  int64_t rhsContractingDim = 0;
-  int64_t rhsNDim = 0;
-  llvm::SmallVector<int64_t, 4> resultBatchDims;
-  int64_t resultMDim = 0;
-  int64_t resultNDim = 0;
+  int64_t batchCount = 1;
+  int64_t mSize = 1;
+  int64_t nSize = 1;
+  int64_t kSize = 1;
+  llvm::SmallVector<int64_t, 6> lhsOrder;
+  llvm::SmallVector<int64_t, 6> rhsOrder;
+  llvm::SmallVector<int64_t, 6> resultOrder;
 };
 
 struct ConvDescriptor {
@@ -668,75 +665,79 @@ buildGemmDescriptor(mlir::linalg::LinalgOp operation) {
     return mlir::failure();
   mlir::FailureOr<mlir::linalg::ContractionDimensions> dimensions =
       mlir::linalg::inferContractionDims(operation);
-  if (mlir::failed(dimensions) || dimensions->m.size() != 1 ||
-      dimensions->n.size() != 1 || dimensions->k.size() != 1)
+  if (mlir::failed(dimensions) || dimensions->m.empty() ||
+      dimensions->n.empty() || dimensions->k.size() != 1 ||
+      dimensions->batch.size() + dimensions->m.size() + dimensions->n.size() +
+              dimensions->k.size() !=
+          operation.getNumLoops())
     return mlir::failure();
   llvm::SmallVector<mlir::AffineMap, 3> maps = operation.getIndexingMapsArray();
   if (maps.size() != 3 || llvm::any_of(maps, [](mlir::AffineMap map) {
         return map.getNumSymbols() != 0 || !map.isProjectedPermutation();
       }))
     return mlir::failure();
-  mlir::MemRefType lhs = getMemRef(operation.getDpsInputs()[0]);
-  mlir::MemRefType rhs = getMemRef(operation.getDpsInputs()[1]);
-  mlir::MemRefType result = getMemRef(operation.getDpsInits()[0]);
-  if (!isStaticPositive(lhs) || !isStaticPositive(rhs) ||
-      !isStaticPositive(result))
-    return mlir::failure();
-
-  std::optional<unsigned> lhsM = findOperandDim(maps[0], dimensions->m[0]);
-  std::optional<unsigned> lhsK = findOperandDim(maps[0], dimensions->k[0]);
-  std::optional<unsigned> rhsK = findOperandDim(maps[1], dimensions->k[0]);
-  std::optional<unsigned> rhsN = findOperandDim(maps[1], dimensions->n[0]);
-  std::optional<unsigned> resultM = findOperandDim(maps[2], dimensions->m[0]);
-  std::optional<unsigned> resultN = findOperandDim(maps[2], dimensions->n[0]);
-  if (!lhsM || !lhsK || !rhsK || !rhsN || !resultM || !resultN)
-    return mlir::failure();
+  mlir::MemRefType types[] = {getMemRef(operation.getDpsInputs()[0]),
+                              getMemRef(operation.getDpsInputs()[1]),
+                              getMemRef(operation.getDpsInits()[0])};
+  for (mlir::MemRefType type : types) {
+    if (!isStaticPositive(type))
+      return mlir::failure();
+    int64_t elements = 1;
+    for (int64_t extent : type.getShape()) {
+      if (elements > std::numeric_limits<int64_t>::max() / extent)
+        return mlir::failure();
+      elements *= extent;
+    }
+  }
 
   GemmDescriptor descriptor;
-  descriptor.rankTwo =
-      lhs.getRank() == 2 && rhs.getRank() == 2 && result.getRank() == 2;
-  descriptor.lhsMDim = *lhsM;
-  descriptor.lhsContractingDim = *lhsK;
-  descriptor.rhsContractingDim = *rhsK;
-  descriptor.rhsNDim = *rhsN;
-  descriptor.resultMDim = *resultM;
-  descriptor.resultNDim = *resultN;
-  if (descriptor.rankTwo) {
-    if (!dimensions->batch.empty() || *resultM != 0 || *resultN != 1)
-      return mlir::failure();
-    if (*lhsM == 0 && *lhsK == 1)
-      descriptor.lhsOrientation = GemmOrientation::Normal;
-    else if (*lhsM == 1 && *lhsK == 0)
-      descriptor.lhsOrientation = GemmOrientation::Transpose;
-    else
-      return mlir::failure();
-    if (*rhsK == 0 && *rhsN == 1)
-      descriptor.rhsOrientation = GemmOrientation::Normal;
-    else if (*rhsK == 1 && *rhsN == 0)
-      descriptor.rhsOrientation = GemmOrientation::Transpose;
-    else
-      return mlir::failure();
-    return descriptor;
-  }
-
-  descriptor.batchCount = 1;
-  for (unsigned loop : dimensions->batch) {
-    std::optional<unsigned> lhsBatch = findOperandDim(maps[0], loop);
-    std::optional<unsigned> rhsBatch = findOperandDim(maps[1], loop);
-    std::optional<unsigned> resultBatch = findOperandDim(maps[2], loop);
-    if (!lhsBatch || !rhsBatch || !resultBatch)
-      return mlir::failure();
-    int64_t extent = result.getDimSize(*resultBatch);
-    if (extent <= 0 ||
-        descriptor.batchCount > std::numeric_limits<int64_t>::max() / extent)
-      return mlir::failure();
-    descriptor.batchCount *= extent;
-    descriptor.lhsBatchDims.push_back(*lhsBatch);
-    descriptor.rhsBatchDims.push_back(*rhsBatch);
-    descriptor.resultBatchDims.push_back(*resultBatch);
-  }
-  if (descriptor.lhsBatchDims.empty())
+  llvm::SmallVectorImpl<int64_t> *orders[] = {
+      &descriptor.lhsOrder, &descriptor.rhsOrder, &descriptor.resultOrder};
+  // Each group follows the original loop order. Appending batch, M, K, N
+  // yields [B..., M..., K], [B..., K, N...] and [B..., M..., N...].
+  auto appendGroup = [&](llvm::ArrayRef<unsigned> loops,
+                         llvm::ArrayRef<unsigned> operands,
+                         int64_t &size) -> mlir::LogicalResult {
+    for (unsigned loop : loops) {
+      int64_t extent = 0;
+      for (unsigned operand : operands) {
+        auto dimension = findOperandDim(maps[operand], loop);
+        if (!dimension)
+          return mlir::failure();
+        int64_t current = types[operand].getDimSize(*dimension);
+        if (extent != 0 && extent != current)
+          return mlir::failure();
+        extent = current;
+        orders[operand]->push_back(*dimension);
+      }
+      if (size > std::numeric_limits<int64_t>::max() / extent)
+        return mlir::failure();
+      size *= extent;
+    }
+    return mlir::success();
+  };
+  if (mlir::failed(
+          appendGroup(dimensions->batch, {0, 1, 2}, descriptor.batchCount)) ||
+      mlir::failed(appendGroup(dimensions->m, {0, 2}, descriptor.mSize)) ||
+      mlir::failed(appendGroup(dimensions->k, {0, 1}, descriptor.kSize)) ||
+      mlir::failed(appendGroup(dimensions->n, {1, 2}, descriptor.nSize)))
     return mlir::failure();
+  for (unsigned operand = 0; operand < 3; ++operand)
+    if (!isPermutation(*orders[operand], types[operand].getRank()))
+      return mlir::failure();
+
+  descriptor.rankTwo = llvm::all_of(
+      types, [](mlir::MemRefType type) { return type.getRank() == 2; });
+  if (descriptor.rankTwo) {
+    if (descriptor.resultOrder != llvm::ArrayRef<int64_t>({0, 1}))
+      return mlir::failure();
+    descriptor.lhsOrientation = descriptor.lhsOrder.front() == 0
+                                    ? GemmOrientation::Normal
+                                    : GemmOrientation::Transpose;
+    descriptor.rhsOrientation = descriptor.rhsOrder.front() == 0
+                                    ? GemmOrientation::Normal
+                                    : GemmOrientation::Transpose;
+  }
   return descriptor;
 }
 
@@ -1289,44 +1290,43 @@ lowerContraction(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
                                                 descriptor->rhsOrientation);
     }
   } else {
-    llvm::SmallVector<int64_t, 6> lhsOrder(descriptor->lhsBatchDims.begin(),
-                                           descriptor->lhsBatchDims.end());
-    lhsOrder.push_back(descriptor->lhsMDim);
-    lhsOrder.push_back(descriptor->lhsContractingDim);
-    llvm::SmallVector<int64_t, 6> rhsOrder(descriptor->rhsBatchDims.begin(),
-                                           descriptor->rhsBatchDims.end());
-    rhsOrder.push_back(descriptor->rhsContractingDim);
-    rhsOrder.push_back(descriptor->rhsNDim);
-    resultCanonicalOrder.assign(descriptor->resultBatchDims.begin(),
-                                descriptor->resultBatchDims.end());
-    resultCanonicalOrder.push_back(descriptor->resultMDim);
-    resultCanonicalOrder.push_back(descriptor->resultNDim);
-    mlir::FailureOr<mlir::Value> canonicalLhs =
-        permuteBuffer(lhs, lhsOrder, rewriter, operation.getLoc(), statistics);
-    mlir::FailureOr<mlir::Value> canonicalRhs =
-        permuteBuffer(rhs, rhsOrder, rewriter, operation.getLoc(), statistics);
+    resultCanonicalOrder = descriptor->resultOrder;
+    mlir::FailureOr<mlir::Value> canonicalLhs = permuteBuffer(
+        lhs, descriptor->lhsOrder, rewriter, operation.getLoc(), statistics);
+    mlir::FailureOr<mlir::Value> canonicalRhs = permuteBuffer(
+        rhs, descriptor->rhsOrder, rewriter, operation.getLoc(), statistics);
     if (mlir::failed(canonicalLhs) || mlir::failed(canonicalRhs))
       return mlir::failure();
     lhs = *canonicalLhs;
     rhs = *canonicalRhs;
-    mlir::MemRefType canonicalLhsType = getMemRef(lhs);
-    mlir::MemRefType canonicalRhsType = getMemRef(rhs);
     mlir::FailureOr<mlir::Value> flattenedLhs = reshapeBuffer(
-        lhs,
-        {descriptor->batchCount,
-         canonicalLhsType.getDimSize(canonicalLhsType.getRank() - 2),
-         canonicalLhsType.getDimSize(canonicalLhsType.getRank() - 1)},
+        lhs, {descriptor->batchCount, descriptor->mSize, descriptor->kSize},
         rewriter, operation.getLoc(), statistics);
     mlir::FailureOr<mlir::Value> flattenedRhs = reshapeBuffer(
-        rhs,
-        {descriptor->batchCount,
-         canonicalRhsType.getDimSize(canonicalRhsType.getRank() - 2),
-         canonicalRhsType.getDimSize(canonicalRhsType.getRank() - 1)},
+        rhs, {descriptor->batchCount, descriptor->kSize, descriptor->nSize},
         rewriter, operation.getLoc(), statistics);
     if (mlir::failed(flattenedLhs) || mlir::failed(flattenedRhs))
       return mlir::failure();
     lhs = *flattenedLhs;
     rhs = *flattenedRhs;
+    // A rank-2 operand can acquire a unit batch axis. Preserve its selected
+    // storage until this explicit materialization satisfies rank-3 GEMM's NCx
+    // contract; this is not a new layout choice.
+    for (mlir::Value *input : {&lhs, &rhs}) {
+      auto type = getMemRef(*input);
+      if (getWaferMemoryAttr(type).getLayout() == MemLayout::NCx)
+        continue;
+      auto target = mlir::MemRefType::get(
+          type.getShape(), type.getElementType(),
+          mlir::MemRefLayoutAttrInterface{},
+          MemoryAttr::get(rewriter.getContext(), MemorySpace::SPM,
+                          MemLayout::NCx));
+      auto materialized = materializeBufferAs(*input, target, rewriter,
+                                              operation.getLoc(), statistics);
+      if (mlir::failed(materialized))
+        return mlir::failure();
+      *input = *materialized;
+    }
     gemmResultType = getShapedType(resultType, {descriptor->batchCount,
                                                 getMemRef(lhs).getDimSize(1),
                                                 getMemRef(rhs).getDimSize(2)});
@@ -1366,10 +1366,8 @@ lowerContraction(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
   mlir::Value replacement = gemm.getResult();
   if (!descriptor->rankTwo) {
     llvm::SmallVector<int64_t, 6> expandedShape;
-    for (int64_t dimension : descriptor->resultBatchDims)
+    for (int64_t dimension : resultCanonicalOrder)
       expandedShape.push_back(resultType.getDimSize(dimension));
-    expandedShape.push_back(resultType.getDimSize(descriptor->resultMDim));
-    expandedShape.push_back(resultType.getDimSize(descriptor->resultNDim));
     mlir::FailureOr<mlir::Value> expanded = reshapeBuffer(
         replacement, expandedShape, rewriter, operation.getLoc(), statistics);
     if (mlir::failed(expanded))

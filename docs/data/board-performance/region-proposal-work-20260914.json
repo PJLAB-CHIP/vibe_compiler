@@ -130,8 +130,18 @@
   },
   "whole_model": {
     "current_resnet": {
-      "status": "running",
-      "board_executed": false
+      "status": "host_compile_deadline",
+      "board_executed": false,
+      "package_produced": false,
+      "compile_deadline_s": 1800,
+      "wall_s": 1810.5,
+      "max_rss_kib": 5827644,
+      "completed_temporal_calls": 12,
+      "completed_temporal_wall_ms": 1178732.23,
+      "region_query_calls": 3,
+      "region_query_wall_ms": 274287.08,
+      "active_temporal_elapsed_ms_at_last_sample": 96346,
+      "note": "Completed nested timing spans are not additive wall time; an active temporal span remained at host termination. This is not a device timeout."
     },
     "current_llama_fp16": {
       "status": "passed",
@@ -175,10 +185,11 @@
     "build/test/model-performance/region-proposal-units.log": "f37ae626d95223538d3ab3b37a7415ebb17088e02640dbdfc6bb561a9bf22988",
     "build/test/model-performance/region-proposal-resnet-control-final.log": "e76e29c88f5e89d82d5f06fb726afbc7d0cf5115b5e5fd4c30a4ea004ccf89c4",
     "build/test/model-performance/structured-rule-resnet-search-gdb.log": "ede03b95c4ff5c700c6eb79562387d565d0500e1aee5760d2bbba5e75aa61793",
-    "build/test/model-performance/region-proposal-llama-no-card.log": "a5fb3f642ee5ed468829845dd689494bb8b8bd472babe37d770f771145035586"
+    "build/test/model-performance/region-proposal-llama-no-card.log": "a5fb3f642ee5ed468829845dd689494bb8b8bd472babe37d770f771145035586",
+    "build/test/model-performance/region-proposal-resnet-no-card.log": "406d14a7c78a1340bd1c1e27f554330ae82a026e8541d00001fc2437b3365a08"
   },
   "limitations": [
-    "Current full ResNet package/no-card qualification remains pending; LLaMA passed with a byte-identical frozen-baseline package.",
+    "Current ResNet hit the unchanged 1800-second host compiler deadline without a package. LLaMA passed with a byte-identical frozen-baseline package.",
     "No new board correctness, profile, or matched device performance evidence.",
     "The i1 branch has no baseline timing and makes no device-support claim.",
     "The final suite adds inputs/tests; do not compare its total time as a matched before/after speedup.",
