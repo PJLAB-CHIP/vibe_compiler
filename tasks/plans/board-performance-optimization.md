@@ -2,14 +2,14 @@
 
 本计划属于同一个 `board-testing` work item。既有正确性及单次计时证据保留在
 `tasks/archive/board-correctness-qualification.md`。目标是以实际 profile
-定位 prefill、KV decode、LLaMA block 的瓶颈，修复共用生成逻辑，并完成匹配的数值和性能复验。
+定位已有模型、算子及扩展网络的瓶颈，修复共用生成逻辑，并完成匹配的数值和性能复验。
 
 逐次性能记录统一追加到[`docs/board-performance-results.md`](../../docs/board-performance-results.md)，
 其中保存配置、根因、实际修改、前后样本、PyTorch、artifact身份和归因限制；本计划只拥有当前实施检查点。
 
-用户新增的ResNet、YOLOv5、DLRM、ViT block、带embedding/LM head的单层LLaMA2、4096³ GEMM及选定补充case，
-统一按[多类网络与数据复用板测矩阵](board-workload-matrix.md)确定输入、完整输出、尾部/结构覆盖、DDR/DTE对照及完成条件。
-矩阵已形成，新增case尚未实现或验证；它们仍属于本work item，不另建网络或通信板测任务。
+用户新增的ResNet、YOLOv5、ViT block、带embedding/LM head的单层LLaMA2、4096³ GEMM及选定补充case，
+统一按[扩展板测矩阵与三轮性能调优](board-workload-matrix.md)确定输入、完整输出、尾部/结构覆盖、DDR/DTE对照及完成条件。
+新矩阵和三轮方案已形成，新增case尚未实现或验证；它们仍属于本work item，不另建网络或通信板测任务。
 
 ## 输入、输出与边界
 
@@ -20,10 +20,20 @@
 - Downstream consumer：普通 compiler/runtime 产品链；同一板测项验收。
 - User-level driver / named pipeline：`wafer-compile --profile`、现有 PyTorch case 与 `wafer-run`。
 - Explicit non-goals：不按模型名/固定 shape 特判；除已授权的Div→Recip+Mul及contraction FP32累加合法化外不改变算术顺序或 dtype，不扩展硬件校准矩阵，不猜测同步或 SPM 合法性。
-- Completion criteria：三条路径具备本轮实际 profile 归因；所选热点有 current-IR 根因与通用修复、host 覆盖、完整构建/no-op；
-  受影响产品通过 fresh no-card、完整 PyTorch 比较及匹配 A/B，性能无收益的改写不交付为优化。
+- Completion criteria：当前矩阵的模型及机制具备对应实际 profile 归因；所选热点有 current-IR 根因与通用修复、host 覆盖、完整构建/no-op；
+  全部规定产品通过 fresh no-card及完整 PyTorch 比较，三轮调优具备匹配 A/B及关键case无可确认退化的证据；
+  性能无收益的改写不交付为优化，原未闭合边界仍需逐项验收。
 
 ## 当前实施顺序
+
+2026-09-14用户要求先完成新旧case正确性压测，再进行三轮通用性能调优。本轮唯一执行顺序及门槛由
+[扩展矩阵](board-workload-matrix.md)拥有：修复BF16 LLaMA→新增八类与原42项正确性收口→冻结B0/profile→
+第一轮复用与DDR→第二轮流水与等待→第三轮搜索选择/剩余热点及整体收口。调查方向由实际profile决定，
+每轮保留固定关键case性能门槛，不能用某个模型收益抵消另一个模型退化。
+下方前轮步骤及预算研究保留证据与未解问题，不另行决定当前顺序；风险候选仍最后处理，主机报告失败与设备超时分开。
+本次只规划；BF16 LLaMA修复、新增case接入、正确性压测和三轮调优均尚未完成。
+
+## 已完成计时及前轮实施记录
 
 2026-09-14用户要求对已通过no-card的全部42个默认search配置测量实卡耗时。本轮复用同一current compiler
 准备的package，由统一PyTorch runner重新导出source、输入和reference，检查source一致性及fresh no-card后串行launch；
@@ -39,9 +49,9 @@ FP16两步6.545/6.937 ms、BF16两步6.675/6.677 ms；4K默认42次预算为278.
 无设备超时或重试，未重新编译；所有步骤重新导出source/input/reference并通过fresh no-card。
 具体42项表与身份在统一性能文档及`catalog-timing-20260914.json`；本轮没有额外profile，不将单次计时记为matched A/B。
 
-当前按用户授权实施[Spatial、融合与多轴 Temporal 搜索方案](physical-search-organization.md)，
-先完成换轴、原起点兄弟分支、跨 Tile 成组提案和候选调度，再推进结构覆盖与性能搜索。
-该方案细化下表第2、3步；下方既有修改与测试不表示新方案已通过验收，设备验证在本轮主机/no-card门禁之后。
+此前按用户授权实施[Spatial、融合与多轴 Temporal 搜索方案](physical-search-organization.md)，
+范围包括换轴、原起点兄弟分支、跨 Tile 成组提案和候选调度，再推进结构覆盖与性能搜索。
+该方案细化下表第2、3步；未闭合边界继续纳入扩展矩阵的根因对账，下方既有修改与测试不代签新一轮验收。
 
 本节依据2026-09-13的代码、实际容量诊断和已有profile复核安排遗留工作，全部属于原`board-testing`。
 当前总状态和直接前置仍以[`progress`](../progress.md)为准；用户已要求完成前7步。第1步共用修复已通过变换回归，
