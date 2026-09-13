@@ -658,7 +658,7 @@ layout_cost =
 每个最终会创建一个actual `bufferization.alloc_tensor` layout copy的选择计其 physical footprint 加1；same-layout、exact metadata view、alias和inactive
 activation计0。同一dominance/effect cohort中的shared conversion只计一次，不能按use重复计价；不同cohort或不同target layout分别计价。
 该目标不读取NE/Vector throughput、descriptor、instruction、DDR/NoC、SPM duration或其它硬件性能信息。
-等materialization数的assignment使用完整stable semantic tie-break。Hard infinity只表示已证明illegal；finite materialization count溢出
+等bytes/unit cost的assignment使用完整stable semantic tie-break。Hard infinity只表示已证明illegal；finite objective累加溢出
 返回`Indeterminate`，不能转成infinity或`NoSolution`。PBQP的`Optimal`只表示在当前合法layout域内bytes/unit cost最小，不表示
 最终硬件性能最优。
 

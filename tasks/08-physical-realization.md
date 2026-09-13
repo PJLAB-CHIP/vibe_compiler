@@ -98,7 +98,7 @@ materialization的估计physical bytes加一次activation成本：static type直
 同一dominance/effect cohort中的shared conversion计一次，per-use conversion、不同target layout及fixed-compute result
 publication分别计费，same-layout、metadata view和alias为0。相同目标值的assignment使用stable semantic tie-break。
 PBQP不读取NE/Vector/CT throughput、descriptor、instruction、DDR/NoC、SPM movement或capacity；这些信息只由物化后的current IR下游
-分析和最终candidate objective消费。Checked materialization count overflow返回`Indeterminate`，不能与hard infinity混合。
+分析和最终candidate objective消费。Checked finite objective累加overflow返回`Indeterminate`，不能与hard infinity混合。
 
 Baseline的单次局部优化可在query-local exact solve中删除materialization-objective严格支配的layout state：保留每个live fixed-compute publication和fixed-use实际
 要求的layout；从未被current compute/use要求的state不能减少任何activation/publication，因而可删除。无live target的group只保留原domain
@@ -152,7 +152,8 @@ Movement结束前，write-only SPM输出carrier可按实际写入流式存到一
 Value/use assignment采用current SSA buffer-equivalence group、consumer-use和op-tuple auxiliary factor；不使用structured-node ID或
 bufferization后的operation parity。Shared conversion通过每个dominance/effect cohort的三态activation factor只计一次，并由apply创建
 恰好一个actual SSA result。Descriptor analysis即使在直接下游抽为shared query，也只服务actual lowering、inventory和最终winner cost，
-不接回layout PBQP。PBQP的`Optimal`只表示unique actual materialization数量最少。
+不接回layout PBQP。PBQP的`Optimal`只表示本次合法layout域内unique materialization的估计physical bytes加activation总成本最小，
+不表示最终Instr或设备耗时最优。
 
 Observable output在本stage先从current TileRegion yield中的exact piece relation绑定到entry function的DDR destination subview，再运行
 一次One-Shot Bufferization。TileRegion tensor boundary是明确保留的partial boundary；内部compute use、view/alias、allocation和copy必须

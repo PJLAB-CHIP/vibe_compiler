@@ -261,11 +261,12 @@ position、Attention/decode/mask专用matcher或公共pass残留。
   `BrokenContract`；至少覆盖R0/R1/R2、degree>=3 residual、disconnected/asymmetric states、matrix orientation、hard infinity、finite
   arithmetic overflow和exact budget boundary。Overflow必须是`Indeterminate`，不能成为`NoSolution`。Tiny oracle之外，同一solver必须由
   1024/1025/1031 actual baseline与search layout stage直接调用；
-- baseline和search每个actual attempt都只调用一次共享PBQP并立即apply，不建立layout frontier或枚举其它layout；同一current IR必须构造
-  同一canonical feasible incumbent。PBQP返回`Optimal`时两条policy得到同一materialization-minimal assignment；budget不足时返回
-  `Feasible`并应用完整factor-valid incumbent，不能返回partial/best-found assignment，也不能由下游repair。所有accepted product attempt
-  必须记录status、variables、factors、solver work、wall和actual materialization，并证明恰一次solve+apply；没有合法incumbent而出现
-  `Indeterminate`时对应work item不能完成；
+- baseline每个actual attempt只求解并应用一个assignment；search允许在同一未变的current-IR query owner上加入typed value/use
+  layout约束，由同一个PBQP求解器产生完整备选。相同query输入、约束和预算必须得到同一canonical incumbent；`Optimal`只签发本次合法域内
+  physical bytes加activation目标最优。budget不足时`Feasible`应用完整factor-valid incumbent，不能应用partial assignment或由下游repair。
+  每个备选在同次`IRMapping`的独立clone上apply一次，后续movement leaf可复用该verified prefix，不重复求解或重建winner。
+  记录query状态、variables、factors、solver work、wall、完整assignment去重和actual materialization，检查owner mutation后的失效；
+  无合法incumbent的`Indeterminate`不能作为该产品通过的证据；
 - cheap structural legality、exact coverage、topology symmetry、canonical dedup和已证明performance bound只有在不删除合法最优解时才能在
   state expansion前剪枝；SPM capacity没有plan-side early rejection；
 - footprint、working-set、shape公式、buffer-count、synthetic demand、预测lifetime或nominal bandwidth projection不能签发SPM
