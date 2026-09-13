@@ -545,9 +545,10 @@ def make_alltoall_transpose(
 def _single_card_gemm(
     dtype: torch.dtype, seed: int, *,
     m: int = 1024, k: int = 256, n: int = 512,
+    batch: int = 1,
 ) -> PyTorchBoardCase:
     generator = torch.Generator(device="cpu").manual_seed(seed)
-    lhs = _random_tensor((1, m, k), dtype=dtype, generator=generator)
+    lhs = _random_tensor((batch, m, k), dtype=dtype, generator=generator)
     rhs = _random_tensor((1, k, n), dtype=dtype, generator=generator)
     module = Gemm().eval()
 
@@ -556,7 +557,11 @@ def _single_card_gemm(
             return (module(lhs, rhs),)
 
     return PyTorchBoardCase(
-        name=f"single-card-gemm-m{m}-k{k}-n{n}",
+        name=(
+            f"single-card-gemm-m{m}-k{k}-n{n}"
+            if batch == 1
+            else f"batch-shared-rhs-gemm-b{batch}-m{m}-k{k}-n{n}"
+        ),
         num_partitions=1,
         dtype=dtype,
         inputs=(lhs, rhs),
@@ -565,7 +570,57 @@ def _single_card_gemm(
             output, module, (lhs, rhs)
         ),
         comparison_policy=common.PYTORCH_DEFAULT,
-        gemm_dimensions=(m, k, n),
+        # The row-sharded none-policy witness describes a single batch only.
+        gemm_dimensions=(m, k, n) if batch == 1 else None,
+    )
+
+
+def _resnet18(
+    dtype: torch.dtype, seed: int, *, extent: int = 224
+) -> PyTorchBoardCase:
+    from torchvision.models import resnet18
+
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    inputs = (_random_tensor((1, 3, extent, extent), dtype=dtype, generator=generator),)
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(seed + 1)
+        module = resnet18(weights=None).to(dtype=dtype).eval()
+
+    def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
+        with torch.no_grad():
+            return (module(*inputs),)
+
+    return PyTorchBoardCase(
+        name=f"resnet18-{extent}", num_partitions=1, dtype=dtype,
+        inputs=inputs, expected_outputs_factory=expected_outputs_factory,
+        export_program=lambda output: _save_exported_program(output, module, inputs),
+        comparison_policy=common.PYTORCH_DEFAULT,
+    )
+
+
+def _vit_encoder_block(
+    dtype: torch.dtype, seed: int, *, extent: int = 1024
+) -> PyTorchBoardCase:
+    from torchvision.models.vision_transformer import EncoderBlock
+
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    inputs = (_random_tensor((1, extent, 768), dtype=dtype, generator=generator),)
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(seed + 1)
+        module = EncoderBlock(
+            num_heads=12, hidden_dim=768, mlp_dim=3072,
+            dropout=0.0, attention_dropout=0.0,
+        ).to(dtype=dtype).eval()
+
+    def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
+        with torch.no_grad():
+            return (module(*inputs),)
+
+    return PyTorchBoardCase(
+        name=f"vit-encoder-block-{extent}", num_partitions=1, dtype=dtype,
+        inputs=inputs, expected_outputs_factory=expected_outputs_factory,
+        export_program=lambda output: _save_exported_program(output, module, inputs),
+        comparison_policy=common.PYTORCH_DEFAULT,
     )
 
 
@@ -1116,6 +1171,25 @@ CASE_FACTORIES: dict[
         dtype, seed, extent=1031
     ),
     "single-card-gemm": _single_card_gemm,
+    "resnet18": _resnet18,
+    "resnet18-large-1024": lambda dtype, seed: _resnet18(dtype, seed, extent=1024),
+    "resnet18-tail-1025": lambda dtype, seed: _resnet18(dtype, seed, extent=1025),
+    "vit-encoder-block": _vit_encoder_block,
+    "vit-encoder-block-tail-1025": lambda dtype, seed: _vit_encoder_block(
+        dtype, seed, extent=1025
+    ),
+    "single-card-gemm-4096": lambda dtype, seed: _single_card_gemm(
+        dtype, seed, m=4096, k=4096, n=4096
+    ),
+    "single-card-gemm-tail-4097": lambda dtype, seed: _single_card_gemm(
+        dtype, seed, m=4097, k=4097, n=4097
+    ),
+    "batch-shared-rhs-gemm": lambda dtype, seed: _single_card_gemm(
+        dtype, seed, batch=4, m=1024, k=1024, n=1024
+    ),
+    "batch-shared-rhs-gemm-tail-1025": lambda dtype, seed: _single_card_gemm(
+        dtype, seed, batch=4, m=1025, k=1031, n=1025
+    ),
     "alltoall-transpose": make_alltoall_transpose,
     "reduce-scatter-sum": make_reduce_scatter_sum,
     "all-reduce-sum": make_all_reduce_sum,

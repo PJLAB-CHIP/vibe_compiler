@@ -1217,3 +1217,55 @@ decode和4K计时不能直接外推其它序列长度、完整block或连续toke
 
 详细数据与可复核的单次执行身份见[`catalog-timing-20260914.json`](data/board-performance/catalog-timing-20260914.json)。
 此批次完成42项耗时清单；BF16 LLaMA数值修复、matched profile、完整预算曲线及历史风险候选的根因仍不由本结果代签。
+
+## 2026-09-14：扩展矩阵首轮压测与嵌套view地址修复
+
+本次开始执行扩展矩阵，尚未进入三轮性能调优。新增ResNet-18、ViT EncoderBlock、4096³ GEMM与batch共享RHS，
+连同规定补充共注册10个配置；全部复用正式PyTorch runner和search width8/trials42。初始FP16 LLaMA正确快程序及
+source/package身份已冻结，原14.113 ms不是本次修改的性能结果。
+
+首轮主机边界及通用修复：
+
+| 输入 | 首次失败与证据 | 当前结果 |
+| --- | --- | --- |
+| GEMM `[1,4096,4096]` FP16/BF16，以及4097³ FP16 | 三项均42次actual、42次容量拒绝、0 accepted；29次capacity refinement。不是设备失败，也未因shape强制DTE | 待分析实际需求及提案覆盖；默认预算不变 |
+| batch GEMM A`[4,1024,1024]`、B`[1,1024,1024]` FP16 | 2个accepted后，Instr→LLVM错误地要求嵌套view的绝对offset为常量 | 地址修复后完整package/no-card通过；实卡正常结束，但数值仍失败 |
+| batch GEMM A`[4,1025,1031]`、B`[1,1031,1025]` FP16 | 本轮42次预算未产生可执行包 | 容量/覆盖问题待修复 |
+| ResNet-18，224/1024/1025 | 三项正式导出成功；同一StableHLO→Linalg pipeline后残留20个 `stablehlo.batch_norm_inference` | 尚未到search；不能用删除BN或只测卷积代替整网 |
+| ViT block，S1024/1025 | 导出GELU包含 `stablehlo.custom_call @mhlo.erf`，生产source verifier拒绝；LayerNorm表现为BN training | Erf及normalization的正式转换边界待补齐，不改为另一激活 |
+
+地址缺陷的根因是用 `resultType.offset - sourceType.offset` 计算静态child地址，而两者均可继承parent的动态offset。
+parent的实际i64地址已包含其位移，child只需按照本op的offset与直接source strides加入相对字节位移。
+修复复用同一Tensor subview地址计算，不增加copy、layout变化、切分选择或同步；静态物理布局和不支持的动态布局仍保留原合同。
+rank3、四batch、1024/1025行、64行block、非零列offset及rank reduction的独立IR在修改前准确复现错误，修改后完成LLVM翻译，
+精确检查parent与child各加入一次偏移。26项Instr→LLVM lit、Conversion/Target两组unit及完整canonical增量构建通过；后续构建为Ninja no-op。
+新batch源码从正式入口完成16-Tile package/no-card；这不代签其数值或整个优化验收。
+复审另将继承动态地址的静态child纳入同一bounds verifier，并增加最后列越界的反例；最终26项lit、Conversion/Target两组unit、
+两项Python合同测试及batch package/no-card全部通过，完整构建及Ninja no-op通过。
+地址发射修改后的FP16 LLaMA已完成no-card，编译准备总wall 17分21.50秒、峰值RSS 2,792,280 KiB；
+`program-data.bin`、`manifest.json`、`module_00000.so`的SHA256均与原14.113 ms正确快包一致。
+该完整编译发生在最后补加bounds验证之前，不能写成最终compiler已重签；未执行新的LLaMA实卡。
+五种视觉配置也已完成原始PyTorch CPU eager前向，完整输出shape/dtype/finite均正确；1024和1025 ResNet的CPU参考分别约159和119秒，
+这是主机reference成本，不是编译或设备耗时。
+
+本次普通设备执行与数值定位如下，按列出的顺序串行执行。Norm、attention、MLP均来自原BF16 block相同seed/config/参数的
+官方HF子模块；中间输入从同一次CPU eager计算得到，使用零容差只是为了定位首个差异，并未改变原block验收容差。
+这些独立子图的调度和可见输出不同，不能把时间相加当作完整block profile，也不能直接认定其误差就是原51项失败的根因。
+
+| 本次执行 | 普通设备时间 | 结果与范围 |
+| --- | ---: | --- |
+| BF16第一层RMSNorm，输入/输出`[1,16,4096]` | 1.323 ms | 65,536项逐bit一致，raw文件也完全相同 |
+| BF16原MLP，输入为官方post-attention norm输出 | 6.226 ms | 零容差诊断7,443/65,536项不同，最大绝对误差0.001953125；不能按零容差失败判定整网不合格 |
+| BF16原attention（Q/K/V/O及RoPE），输入为官方第一层norm输出 | 6.769 ms | 零容差诊断38,640/65,536项不同，最大绝对误差0.00390625 |
+| FP16 batch共享RHS GEMM | 4.616 ms | 正常完成和回读；原`rtol=0.001, atol=1e-5`下1,077/4,194,304项失败，失败项最大绝对误差0.0001220703125。全体最大误差0.0625对应较大数值，不能与失败项最大值混写 |
+| BF16 Q/K/V三投影独立诊断，三个完整`[1,16,4096]`输出 | 无有效计时 | strict no-card通过后，单次执行触发60秒设备完成超时；无数值回读结论 |
+
+QKV超时是 `TX grid:main completion exceeded the host deadline`，不是CPU reference或profile报告超时。
+Runtime隔离上下文并退出；没有retry、reset或provider finalizer调用，随后没有再次执行设备程序。
+该actual Instr使用K=2048的两次循环、BF16乘法输入和F32 psum/output；现有证据不足以认定hang来源，
+不能据此归因于DTE、K分块数值或本次静态child地址修复。主机准备继续，设备资格与LLaMA性能检查仍待闭合。
+
+紧凑执行账目、compiler/package/input/output身份及逐输出误差见
+[`expanded-matrix-initial-20260914.json`](data/board-performance/expanded-matrix-initial-20260914.json)。
+原始主机报告位于`build/test/model-performance/`的`expanded-gemm-no-card.log`、`batch-shared-rhs-fixed-no-card.log`、
+`vision-matrix-no-card.log`及`numeric-localization/`；诊断产物只作本轮审计，不能替代新输入或最终全矩阵验收。

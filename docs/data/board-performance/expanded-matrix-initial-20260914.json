@@ -1,0 +1,442 @@
+{
+  "boot_id": "f0bc038d-2b5e-42fa-9959-9d3aa265e993",
+  "runtime_sha256": "b4f19d673e1767314f6cd900f7f66345e7d1d8c0545de83a7139d62596a6e12c",
+  "board_batch_stopped": true,
+  "rows": [
+    {
+      "stage": "input-norm",
+      "diagnostic_only": true,
+      "compiler_sha256": "5de4a1fc362c2e1e07610ba82bcb4e81bac1ecd82ad1223662aa13b27b68cb7c",
+      "seed": 20260803,
+      "width": 8,
+      "trials": 42,
+      "log": "build/test/model-performance/numeric-localization/input-norm-board.log",
+      "package": "build/test/model-performance/numeric-localization/input-norm-prepared/package",
+      "rtol": 0.0,
+      "atol": 0.0,
+      "outputs": [
+        {
+          "name": "card_00_output_0.capture.bf16.raw",
+          "elements": 65536,
+          "failed": 0,
+          "max_abs_error": 0.0,
+          "max_failed_abs_error": 0.0,
+          "bitwise_equal": true,
+          "actual_sha256": "47a1afc45aa637c525ac70c0a2882ef0040be5193d87c6e2833498572e7fc4f8",
+          "expected_sha256": "47a1afc45aa637c525ac70c0a2882ef0040be5193d87c6e2833498572e7fc4f8"
+        }
+      ],
+      "manifest_sha256": "e3046989c9873a76184e8b9d6678d7572edb0462da1650469d9815a8167457f7",
+      "device_elapsed_ns": [
+        1323000
+      ],
+      "status": "numeric-pass",
+      "package_files_sha256": {
+        "data/program-data.bin": "8676bed4ca36c6e3328f5eaebc71b2f1a6c760c56f7139942239a033fe776c5e",
+        "manifest.json": "e3046989c9873a76184e8b9d6678d7572edb0462da1650469d9815a8167457f7",
+        "modules/module_00000.so": "96a442dea781a29b41545464be8bcae73a3f7f2d0cb42f71fa0bb99108943e19"
+      },
+      "source_files_sha256": {
+        "data/weight": "55dd0b10719d8b4cba89a53127cc0bcd67affb1e2a8c401927e4c244638fcd53",
+        "functions/forward.meta": "b4719f64dbb7a27a7a183b4239149a43de3466a1ed7840267c6a94f897b558f2",
+        "functions/forward.stablehlo.bc": "eb3b7372d88989fde4cb9d27b105c27361a7594facd3a8f2c5970ffc4c7d469a"
+      },
+      "input_shapes": [
+        [
+          1,
+          16,
+          4096
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          16,
+          4096
+        ]
+      ]
+    },
+    {
+      "stage": "attention",
+      "diagnostic_only": true,
+      "compiler_sha256": "5de4a1fc362c2e1e07610ba82bcb4e81bac1ecd82ad1223662aa13b27b68cb7c",
+      "seed": 20260803,
+      "width": 8,
+      "trials": 42,
+      "log": "build/test/model-performance/numeric-localization/attention-board.log",
+      "package": "build/test/model-performance/numeric-localization/attention-prepared/package",
+      "rtol": 0.0,
+      "atol": 0.0,
+      "outputs": [
+        {
+          "name": "card_00_output_0.capture.bf16.raw",
+          "elements": 65536,
+          "failed": 38640,
+          "max_abs_error": 0.00390625,
+          "max_failed_abs_error": 0.00390625,
+          "bitwise_equal": false,
+          "actual_sha256": "ff00ac3df49169cb41a8d1e41d59c9cc3811e56ca3aecb7410fa1792a5fc2470",
+          "expected_sha256": "141865a77b18dc0b1f2806b40b38f9ddf07802cc8c0a0f2546306fa4d2f1c790"
+        }
+      ],
+      "manifest_sha256": "211a0761b3ef9d30732be4fecc0d9cb938a4d67942f425a1b031936209179ea9",
+      "device_elapsed_ns": [
+        6769000
+      ],
+      "status": "numeric-fail",
+      "package_files_sha256": {
+        "data/program-data.bin": "882709f1de13791c55061fc0691087a66349cda9f337e999d2178a621a8bdba4",
+        "manifest.json": "211a0761b3ef9d30732be4fecc0d9cb938a4d67942f425a1b031936209179ea9",
+        "modules/module_00000.so": "006372004dec6a3a93e1d0a4744603841ff53d3909ae9e0ce60edc512f3adf1c"
+      },
+      "source_files_sha256": {
+        "data/attention.k_proj.weight": "d07574255d2e3f0473fa095027697dc786f3fabe55b632c43bd76134d783e51b",
+        "data/attention.o_proj.weight": "6d952b3e6c88935c9780694fdac30210e30c65cb92c9b4f82d3905b832ee7a03",
+        "data/attention.q_proj.weight": "e4af72b2f7db3b900b6ab65571bc890004ff8102bae0f8f669219d09d8c476e0",
+        "data/attention.v_proj.weight": "1ab43ca0b034366aa519bf0785ed8596d77e9173d023b7c31aee42cd4f6fc2bd",
+        "data/cos": "0b694d49581c7176db5bbd3bed96490e8d6d3802834941d527b262369f7499d9",
+        "data/mask": "bd81d80d7c61eca3951b2937e3e3219e0e3b378b875e88c8c22727a8f3004ad1",
+        "data/positions": "0da2d8fa1f1430c36e8d254081abb3b3dbc7d69069be93f1e0c61f7cd698083f",
+        "data/sin": "345d8f8dbdac52f54f2538ea5d52cbf8153af7d48879e876f450f1fa15deb399",
+        "functions/forward.meta": "bd7b0ff40c98fab6a39c2d012bb579a2b61852073d722af008ccbe882d795a18",
+        "functions/forward.stablehlo.bc": "73d484b60ea29917c803c2c18344358df102c84036adc73dd878426aff68a70f"
+      },
+      "input_shapes": [
+        [
+          1,
+          16,
+          4096
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          16,
+          4096
+        ]
+      ]
+    },
+    {
+      "stage": "mlp",
+      "diagnostic_only": true,
+      "compiler_sha256": "5de4a1fc362c2e1e07610ba82bcb4e81bac1ecd82ad1223662aa13b27b68cb7c",
+      "seed": 20260803,
+      "width": 8,
+      "trials": 42,
+      "log": "build/test/model-performance/numeric-localization/mlp-board.log",
+      "package": "build/test/model-performance/numeric-localization/mlp-prepared/package",
+      "rtol": 0.0,
+      "atol": 0.0,
+      "outputs": [
+        {
+          "name": "card_00_output_0.capture.bf16.raw",
+          "elements": 65536,
+          "failed": 7443,
+          "max_abs_error": 0.001953125,
+          "max_failed_abs_error": 0.001953125,
+          "bitwise_equal": false,
+          "actual_sha256": "548024c7365b1605e6d1582bd6e4eecf2a718714f1ca450ae6156f8f067bf766",
+          "expected_sha256": "6c0e4043118da738f91889fe02ca37290661a3c3af8bde9b46ef98d23a2636c9"
+        }
+      ],
+      "manifest_sha256": "374c9d4f573a7ca67e1639139c915177bddd50aae4b4c4a2c4bd58f83ada52e5",
+      "device_elapsed_ns": [
+        6226000
+      ],
+      "status": "numeric-fail",
+      "package_files_sha256": {
+        "data/program-data.bin": "56fafa205a44d6a1362e42fce7f3d43c69af2b3635df600108061debc21e1591",
+        "manifest.json": "374c9d4f573a7ca67e1639139c915177bddd50aae4b4c4a2c4bd58f83ada52e5",
+        "modules/module_00000.so": "4580c33baa7e5124a61b12c6e6fe8f78c06bc74218ea4a6f872386537becad77"
+      },
+      "source_files_sha256": {
+        "data/down_proj.weight": "6cfc2c99c78c0694fcda2e66865c2a7d6a3edf2bb3a793e664e85a87ccf25c01",
+        "data/gate_proj.weight": "f766bebe4ab992da97d6656af02bb256c96e3f08e4f4defac839bbf3a9c27b8e",
+        "data/up_proj.weight": "16162222f7bde09323c2605614ebdcee56a47007caaa35870a635a203a80d8bf",
+        "functions/forward.meta": "53c650c62b0a1c27391f02677633ac11b50c0b0a400adbd044e752ea86395e2d",
+        "functions/forward.stablehlo.bc": "8f4c2b1fa43f3c5d36273a453c5baee1b5090f9b8b2c0d964b7f85d34313831f"
+      },
+      "input_shapes": [
+        [
+          1,
+          16,
+          4096
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          16,
+          4096
+        ]
+      ]
+    },
+    {
+      "stage": "qkv",
+      "diagnostic_only": true,
+      "compiler_sha256": "cbcb143521ad099486af681596d5d183126603edd7e47948a4c3cea6d80119cc",
+      "seed": 20260803,
+      "width": 8,
+      "trials": 42,
+      "log": "build/test/model-performance/numeric-localization/qkv-board.log",
+      "package": "build/test/model-performance/numeric-localization/qkv-prepared/package",
+      "rtol": 0.0,
+      "atol": 0.0,
+      "outputs": [],
+      "manifest_sha256": "b3c6b69f361039f718c3edb44f9a8ad2cd0ead389d31a6fdb5d14fb26f5d7f62",
+      "device_elapsed_ns": [],
+      "status": "device-timeout",
+      "completion_timeout_ms": 60000,
+      "package_files_sha256": {
+        "data/program-data.bin": "fc6876cd699fe31a20f1874876b4a7d62ada919604b910baaf17f8e954c1c483",
+        "manifest.json": "b3c6b69f361039f718c3edb44f9a8ad2cd0ead389d31a6fdb5d14fb26f5d7f62",
+        "modules/module_00000.so": "aec0bf16d1ab83d4cce2c8f867666355c6048f7c576797fab32659ee96b9263e"
+      },
+      "source_files_sha256": {
+        "data/k.weight": "d07574255d2e3f0473fa095027697dc786f3fabe55b632c43bd76134d783e51b",
+        "data/q.weight": "e4af72b2f7db3b900b6ab65571bc890004ff8102bae0f8f669219d09d8c476e0",
+        "data/v.weight": "1ab43ca0b034366aa519bf0785ed8596d77e9173d023b7c31aee42cd4f6fc2bd",
+        "functions/forward.meta": "1c908241fff14d793d1d8d63b42ae0527609c0d0d9865137ff86608a46d25a49",
+        "functions/forward.stablehlo.bc": "ce6dd6ec5b138729947e3160147a4cff2550e8c03ef236c8935940fd88fb6570"
+      },
+      "input_shapes": [
+        [
+          1,
+          16,
+          4096
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          16,
+          4096
+        ],
+        [
+          1,
+          16,
+          4096
+        ],
+        [
+          1,
+          16,
+          4096
+        ]
+      ],
+      "first_failed_boundary": "device-completion"
+    },
+    {
+      "stage": "batch-shared-rhs-gemm",
+      "diagnostic_only": false,
+      "compiler_sha256": "cbcb143521ad099486af681596d5d183126603edd7e47948a4c3cea6d80119cc",
+      "seed": 20260803,
+      "width": 8,
+      "trials": 42,
+      "log": "build/test/model-performance/batch-shared-rhs-board.log",
+      "package": "build/test/pytorch-product/wafer-runtime-pytorch-batch-shared-rhs-gemm-fp16-optimization-search-no-card/package",
+      "rtol": 0.001,
+      "atol": 1e-05,
+      "outputs": [
+        {
+          "name": "card_00_output_0.capture.f16.raw",
+          "elements": 4194304,
+          "failed": 1077,
+          "max_abs_error": 0.0625,
+          "max_failed_abs_error": 0.0001220703125,
+          "bitwise_equal": false,
+          "actual_sha256": "b65d726a4f32c9cf505163bb9737ffe5fc92172568f81066d0691e6691d6b982",
+          "expected_sha256": "54a5239fcebd8e211c941eb30286a31250ab984e934f6032258d6d6342a4dc05"
+        }
+      ],
+      "manifest_sha256": "51bb3dd2239016fc6cb744ca54e80cad7317acb48dc2ae84df85110b31fa2a2c",
+      "device_elapsed_ns": [
+        4616000
+      ],
+      "status": "numeric-fail",
+      "package_files_sha256": {
+        "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "manifest.json": "51bb3dd2239016fc6cb744ca54e80cad7317acb48dc2ae84df85110b31fa2a2c",
+        "modules/module_00000.so": "f3c4cd11c34a0e20068e667a4ee44fe62d700159c6d3a0f68dae988ba1f2a1f9"
+      },
+      "source_files_sha256": {
+        "functions/forward.meta": "2d842d171452f019073bf46f27cdc83905248f8ec4fe306f9721b9d5e06d4d42",
+        "functions/forward.stablehlo.bc": "1c06c065d0be4b4c67a9c4aea47a0c651c59ac389567bab4684a7a2952c9b097"
+      },
+      "input_shapes": [
+        [
+          4,
+          1024,
+          1024
+        ],
+        [
+          1,
+          1024,
+          1024
+        ]
+      ],
+      "output_shapes": [
+        [
+          4,
+          1024,
+          1024
+        ]
+      ]
+    }
+  ],
+  "initial_host_reports": [
+    "build/test/model-performance/expanded-gemm-no-card.log",
+    "build/test/model-performance/vision-matrix-no-card.log"
+  ],
+  "address_fix_validation": {
+    "lit": {
+      "executed": 26,
+      "passed": 26
+    },
+    "units": [
+      "WaferConversionUnitTests",
+      "WaferTargetUnitTests"
+    ],
+    "canonical_build_passed": true,
+    "second_build_ninja_noop": true,
+    "batch_gemm_source_to_package_no_card": "passed",
+    "llama_no_card": {
+      "compiler_sha256": "cbcb143521ad099486af681596d5d183126603edd7e47948a4c3cea6d80119cc",
+      "final_bounds_check_included": false,
+      "package_files": [
+        {
+          "path": "package/data/program-data.bin",
+          "expected": "2c70f48e3e9be02d85e54cf0486fdf833a0ddd09a3e13659e7d8a874268cad59",
+          "actual": "2c70f48e3e9be02d85e54cf0486fdf833a0ddd09a3e13659e7d8a874268cad59",
+          "equal": true
+        },
+        {
+          "path": "package/manifest.json",
+          "expected": "968af3b772f708fc9dc4111d183c9f0d0eb15fca7928b884722d15047c9d858e",
+          "actual": "968af3b772f708fc9dc4111d183c9f0d0eb15fca7928b884722d15047c9d858e",
+          "equal": true
+        },
+        {
+          "path": "package/modules/module_00000.so",
+          "expected": "df29e4aaed1c679e5b897e17bba401b42a8c9ec4e7dceed58897296fe204fa27",
+          "actual": "df29e4aaed1c679e5b897e17bba401b42a8c9ec4e7dceed58897296fe204fa27",
+          "equal": true
+        }
+      ],
+      "all_equal": true,
+      "no_card_passed": true,
+      "board_executed": false,
+      "wall_seconds": 1041.5,
+      "peak_rss_kib": 2792280
+    },
+    "llama_board": "not-executed-after-timeout",
+    "compiler_sha256": "7a57a00ee95416cf0c44c764529b0a194cea2549bb945f5e04ac830b80590526",
+    "python_contracts": {
+      "executed": 2,
+      "passed": 2
+    },
+    "batch_final_package_equals_board_package": true,
+    "source_commit": "0ca85e6f"
+  },
+  "vision_eager": [
+    {
+      "case": "resnet18",
+      "input_shapes": [
+        [
+          1,
+          3,
+          224,
+          224
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          1000
+        ]
+      ],
+      "dtype": "torch.float16",
+      "finite": true,
+      "wall_seconds": 4.047183774004225
+    },
+    {
+      "case": "resnet18-large-1024",
+      "input_shapes": [
+        [
+          1,
+          3,
+          1024,
+          1024
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          1000
+        ]
+      ],
+      "dtype": "torch.float16",
+      "finite": true,
+      "wall_seconds": 158.96490612899652
+    },
+    {
+      "case": "resnet18-tail-1025",
+      "input_shapes": [
+        [
+          1,
+          3,
+          1025,
+          1025
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          1000
+        ]
+      ],
+      "dtype": "torch.float16",
+      "finite": true,
+      "wall_seconds": 119.41960514501261
+    },
+    {
+      "case": "vit-encoder-block",
+      "input_shapes": [
+        [
+          1,
+          1024,
+          768
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          1024,
+          768
+        ]
+      ],
+      "dtype": "torch.float16",
+      "finite": true,
+      "wall_seconds": 12.380564919003518
+    },
+    {
+      "case": "vit-encoder-block-tail-1025",
+      "input_shapes": [
+        [
+          1,
+          1025,
+          768
+        ]
+      ],
+      "output_shapes": [
+        [
+          1,
+          1025,
+          768
+        ]
+      ],
+      "dtype": "torch.float16",
+      "finite": true,
+      "wall_seconds": 12.61416288500186
+    }
+  ]
+}

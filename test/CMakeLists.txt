@@ -210,6 +210,24 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
   endforeach()
   unset(_wafer_gemm_case)
 
+  foreach(_wafer_gemm_case IN ITEMS
+      single-card-gemm-4096 single-card-gemm-tail-4097
+      batch-shared-rhs-gemm batch-shared-rhs-gemm-tail-1025)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_gemm_case} float16 fp16 search)
+  endforeach()
+  unset(_wafer_gemm_case)
+  wafer_add_pytorch_source_no_card_test(
+    single-card-gemm-4096 bfloat16 bf16 search)
+
+  foreach(_wafer_model_case IN ITEMS
+      resnet18 resnet18-large-1024 resnet18-tail-1025
+      vit-encoder-block vit-encoder-block-tail-1025)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_model_case} float16 fp16 search)
+  endforeach()
+  unset(_wafer_model_case)
+
   foreach(_wafer_alltoall_case IN ITEMS
       alltoall-transpose alltoall-transpose-tail-1025 alltoall-transpose-tail-1031)
     wafer_add_pytorch_source_no_card_test(

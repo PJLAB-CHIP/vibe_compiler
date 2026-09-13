@@ -40,7 +40,8 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 
 本次检查的current代码事实：
 
-1. `wafer_pytorch_board_cases.py`尚没有上述新整网入口；当前LLaMA输入是hidden states，仅输出block hidden states。
+1. `wafer_pytorch_board_cases.py`已接入ResNet-18、ViT EncoderBlock、大GEMM和batch共享RHS及其补充配置；
+   YOLO、单层完整LM、长cache和GQA尚未接入。当前LLaMA输入是hidden states，仅输出block hidden states。
    它不能覆盖token embedding、final RMSNorm、LM head，也不能给新网络签发ready资格。
 2. `wafer_pytorch_board_common.py`已支持i32/i64 raw传输，但case构造仍要求所有input与case浮点dtype一致。
    必须改成逐输入/输出typed合同，整数索引保持整数；raw支持不证明动态索引已能lower到设备。
@@ -48,7 +49,8 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
    接入时按实际framework返回dtype保留结果，不能为沿用旧runner而插入额外cast。
 4. `CompilerTesting.cpp`中的 `SharedInput` 仅接受none policy，开启 `shareReadOnlyInputs`；baseline及search都调用
    同一个 `materializeReadOnlyInputSharing`。现有接口不保证可以对任意search winner直接生成固定其所有其它选择的A/B。
-5. ResNet池化/BN、YOLO上采样/拼接/Detect、ViT导出分解及LLaMA整数输入的完整产品链均待实际验证。
+5. ResNet正式StableHLO→Linalg后仍残留20个 `stablehlo.batch_norm_inference`；ViT的GELU导出为
+   `stablehlo.custom_call @mhlo.erf`，当前source verifier拒绝。YOLO上采样/拼接/Detect及LLaMA整数输入的完整产品链仍待验证。
    源码缺少专门op名字不能作为“不支持”的结论；应以实际导出图、正式lowering与typed结果确定缺口。
 
 ## 主配置矩阵
@@ -316,4 +318,26 @@ ResNet/ViT/完整LM/GQA的1025、GEMM4097³和batch GEMM混合tail作为泛化�
 原实施计划中未闭合的主机开销、容量反馈、搜索覆盖、DDR估时、completion和lowering问题作为本轮根因候选继续对账，
 不能因为换了执行顺序就标完成；风险4K仍保持独立的最后执行边界。若三轮后仍有用户要求的case未通过、
 关键性能回归或风险问题未闭合，总 `board-testing` 保持doing，并明确剩余项。
-本次仅更新测试矩阵、三轮实施方案及progress入口，不安装依赖、不修改compiler/test实现、不重新编译或上板。
+
+## 正确性压测实施检查点（2026-09-14）
+
+已注册四类新增主配置及补充，共10个search no-card配置；所有输入仍来自原PyTorch module，预算8/42与原容差不变。
+初次执行10项均暴露失败；修复嵌套view后batch共享RHS整除项已通过完整package/no-card，其余9项尚未闭合。
+
+| 边界 | 当前证据 | 下一步 |
+| --- | --- | --- |
+| BF16原block | 原51项超差未修复；相同输入的独立HF第一层RMSNorm实卡65,536项逐bit一致。独立attention/MLP已回读，用零容差诊断得到差异，不能代签整网失败原因 | 沿实际projection及activation中间format继续定位，不放宽整网容差 |
+| GEMM4096³ FP16/BF16、4097³ FP16 | 42次actual全部容量拒绝、0 accepted；已取得实际capacity/refinement计数 | 追实际allocation反馈与temporal提案覆盖，不提高全局预算掩盖问题 |
+| batch共享RHS整除 | 原有2个accepted却在静态child继承动态parent offset时target lowering失败；14号相对地址修复后no-card通过；实卡4.616 ms，1,077/4,194,304项超原容差 | 地址编译缺陷已有通用修复；独立追GEMM数值，不标board通过 |
+| batch共享RHS尾部 | 原预算42次未生成可执行包 | 与大GEMM一同审查实际容量反馈及多轴覆盖 |
+| ResNet-18三种尺寸 | 正式导出成功；同一named pipeline定位20个BN inference残留，尚未到search | 补通用BN legalization及1024/1025直接下游覆盖 |
+| ViT两种长度 | 正式导出成功；source verifier拒绝GELU的Erf custom call；LayerNorm同时以BN training表达 | 在正式source/转换owner闭合Erf及normalization语义，不替换原模块 |
+| Q/K/V独立诊断 | current default search包/no-card已完成，单次设备执行60秒未完成、runtime隔离上下文并退出；无回读结论 | 停止设备批次，不retry/reset；保留主机IR/ABI定位，设备恢复后才可重签板端 |
+
+嵌套view修复已有独立失败复现，包含继承动态地址的静态child越界反例；26项Instr→LLVM lit、Conversion/Target两组unit、
+两项Python合同测试及最终batch package/no-card全部通过，canonical完整增量构建及第二次Ninja no-op通过。
+FP16 LLaMA在地址发射修改后完成no-card，17分21.50秒、峰值RSS 2,792,280 KiB，package三文件与初始正确快版本完全相同；
+它早于最后补加的静态child边界验证，不代签最终compiler资格，当前没有新增实卡性能结论。
+ResNet/ViT全部五种尺寸的原始CPU eager输出均已验证shape、FP16和finite；正式compiler边界仍按表中失败登记。
+QKV超时之后没有再发起设备执行；三轮性能调优、其余新增模型及最终全矩阵验收均未完成。
+各次原始身份、数值及计时见统一[性能记录](../../docs/board-performance-results.md)的同日扩展矩阵小节。

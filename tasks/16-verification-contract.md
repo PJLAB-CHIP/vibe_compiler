@@ -119,6 +119,8 @@ raw相等。准备目录与输出目录必须互不包含，复用输出目录�
 | 两步state chain | 第二步输入使用本次实际回读，原dtype、shape与全输出比较不变 | 共用continuation及数值校验 |
 | 缺生命周期、输出错误、设备timeout | 本case失败且不重试；设备timeout或异常停止批次 | 共用`verify_board`、runtime watchdog与`run` |
 | Ordinary/profile执行期限 | 两者均传设备watchdog；profile报告不受设备派生总期限约束 | runner到runtime调用边界测试与实际profile |
+| 大GEMM与batch广播 | 原始 `torch.matmul` 接收两份runtime输入，RHS保持单batch；4096³ FP16/BF16、4097³三轴尾部及batch4的1024/1025×1031配对保持完整输出和默认dtype容差 | 已注册source→search→package→strict no-card；另以实卡全量PyTorch签数值资格，自动winner不代签DDR/DTE受控比较 |
+| 原始视觉模型 | managed torchvision的ResNet-18保留整网及全部1000 logits，224/1024/1025输入；ViT EncoderBlock保留12 heads、768 hidden、3072 MLP及1024/1025全部tokens；eval、固定参数、FP16/default容差 | 同一原始module产生source及CPU eager reference，正式search/no-card与实卡分别登记；缺失算子不能删去或替换计算 |
 | DTE贡献组装、完整view/紧凑buffer、layout materialization、copy_into | 从actual SSA追踪16个来源及全局/局部窗口；缺来源、重复来源、错窗口均拒绝 | 正式通信资格入口、1024/1025/1031及注入负例 |
 
 ### 3.2 Canonical build gate
