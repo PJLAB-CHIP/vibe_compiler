@@ -544,8 +544,7 @@ TEST(TemporalProposalsTest,
   EXPECT_TRUE(has127 && has129);
 }
 
-TEST(TemporalProposalsTest,
-     CoupledSeedsReachSharedTraversalWithWholeBroadcastAxis) {
+TEST(TemporalProposalsTest, CoupledSeedsAndRepairsRetainOriginalDirections) {
   for (int64_t extent : {1024, 1025, 1031})
     for (bool permuted : {false, true})
       for (bool extraConsumer : {false, true}) {
@@ -598,6 +597,54 @@ TEST(TemporalProposalsTest,
 
         const auto initial =
             *built.domain->getFirstIndependentChoice().getChoice();
+        auto unrelatedModule = parse(*context, body.str(), input, output);
+        ASSERT_TRUE(unrelatedModule);
+        auto unrelatedDomain = buildTemporalDomain(regionOf(*unrelatedModule));
+        ASSERT_TRUE(unrelatedDomain.succeeded());
+        auto unrelated =
+            *unrelatedDomain.domain->getFirstIndependentChoice().getChoice();
+        unrelated.scopes[0].iteratorTileSizes[2] = extent / 2;
+        unrelated.scopes[0].loopOrder = {2};
+        ASSERT_TRUE(unrelatedDomain.domain->contains(unrelated));
+        const std::vector<TemporalChoice> starting{initial, unrelated};
+        TemporalProposals repairs({&*built.domain, &*unrelatedDomain.domain});
+        ASSERT_TRUE(repairs.visitRaw(starting));
+        const std::set<TemporalCoordinate> affected{{0, 0, 2}};
+        ASSERT_TRUE(repairs.observeCapacity(starting, affected));
+        ASSERT_TRUE(repairs.prepareNext(TemporalProposalKind::Repair));
+        auto first = repairs.take(TemporalProposalKind::Repair);
+        ASSERT_TRUE(built.domain->contains(first[0]));
+        EXPECT_EQ(first[1], unrelated);
+        EXPECT_EQ(first[0].scopes[0].iteratorTileSizes[2], extent / 2);
+        // Only current result/input maps may add the state consumer. An extra
+        // consumer blocks that proof; its parameters remain untouched.
+        if (extraConsumer) {
+          for (size_t index = 1; index < initial.scopes.size(); ++index)
+            EXPECT_EQ(first[0].scopes[index], initial.scopes[index]);
+        } else {
+          ASSERT_EQ(first[0].scopes.size(), 2u);
+          EXPECT_EQ(first[0].scopes[1].iteratorTileSizes[permuted ? 3 : 2],
+                    extent / 2);
+          EXPECT_EQ(first[0].scopes[1].iteratorTileSizes[permuted ? 2 : 3],
+                    128);
+          ASSERT_TRUE(repairs.prepareNext(TemporalProposalKind::Repair));
+          auto original = repairs.take(TemporalProposalKind::Repair);
+          EXPECT_EQ(original[0].scopes[0].iteratorTileSizes[2], extent / 2);
+          EXPECT_EQ(original[0].scopes[1], initial.scopes[1]);
+          EXPECT_TRUE(built.domain->contains(original[0]));
+        }
+        EXPECT_FALSE(repairs.observeCapacity(starting, affected));
+        EXPECT_FALSE(repairs.prepareNext(TemporalProposalKind::Repair));
+        EXPECT_FALSE(repairs.observeCapacity(first, {}));
+        if (!extraConsumer) {
+          ASSERT_TRUE(repairs.observeCapacity(first, affected));
+          ASSERT_TRUE(repairs.prepareNext(TemporalProposalKind::Repair));
+          auto deeper = repairs.take(TemporalProposalKind::Repair);
+          EXPECT_EQ(deeper[0].scopes[0].iteratorTileSizes[2], extent / 4);
+          EXPECT_EQ(deeper[0].scopes[1].iteratorTileSizes[permuted ? 3 : 2],
+                    extent / 4);
+        }
+
         TemporalProposals proposals({&*built.domain});
         proposals.seed({initial});
         bool coordinated = false;

@@ -443,14 +443,42 @@ runtime输入仍是8个KV heads，不在主机先扩成32个。默认KV=heads保
 单候选计时诊断确认首个实际失败为`spm-allocation`；不能以这次lowering修复代签GQA跑通，也不能把新容量失败称为数值失败。
 下一边界是actual demand/temporal反馈，需要从实际allocation与owner关系解释哪些参数能缩小冲突；不按shape估算SPM合法性。
 
-容量反馈的下一步已缩小到可验证边界：首个GQA候选有80个temporal domains，其中16个各有两个scope。
-`SearchCurrentIR`的owner/body补充路径只在该domain恰有一个scope时提取全部可tile轴；多scope会跳过这一补充，
-独立的input-origin路径仍可提供坐标。本轮计数48个input coordinates与640个unavailable input demands不能证明allocation缺owner，
-内部中间buffer本来就可能不对应program input。需通过现有actual capacity observer捕获冲突demand→current owner→scope关系，
-先验证该限制是否命中GQA，再决定是否扩展精确关联；目前仅确认代码边界，未将其当作全部capacity失败的已证根因。
+后续actual capacity observer已确认：input-origin路径已经给出attention producer的head/M/K2坐标。
+原修正把producer改为`[1,1,512,128,512,128]`，但唯一state consumer仍为`[2,1,1024,128]`，
+不满足共同输出遍历的尺寸一致条件。多scope owner/body限制并非这项不同步的已证原因；不据此给所有scope补猜测owner。
 
 本轮多轴修复的回归资格：canonical完整增量构建通过，随后Ninja no-op；Transforms 389/389、Driver 126/126通过，
 无skip。固定FP16 LLaMA从fresh source/reference/payload完成package及no-card，wall 1,018.88秒、RSS 2,770,280 KiB，
 完整package的manifest、module、data与初始正确快版本逐字节相同；没有新的实卡性能或数值结论。
 完整身份、计数和日志hash见[多轴contraction证据](../../docs/data/board-performance/multi-axis-contraction-20260914.json)。
 本轮只闭合lowering和相应主机回归；GQA实际容量、ResNet两个缺口、原BF16/新增模型正确性、三轮调优与最终全矩阵仍未完成。
+
+### 容量修正中的状态协调与剩余输入搬运
+
+06号沿用既有`getCoupledStateProposal`，把同一个current result/input map查询用于actual capacity修正：
+优先排入改变依赖对的协调点，仍保留原非协调方向；不可变parent限制其不改变无关traversal。原raw空间、SPM gate、
+PBQP、transport及算术不变。多consumer或映射不完整时不伪造协调关系。
+
+| 覆盖 | 本轮证据 |
+| --- | --- |
+| 1024/1025/1031，多结果、广播、consumer轴置换、多consumer、无关domain | 原方向仍可访问，公共轴同步、广播轴完整，重复反馈去重；深修正继续，缺证据不缩小 |
+| 实际共同循环，FP16/BF16，1024/1025/1031/4096/4097，两种consumer映射 | 20组经producer-only point→协调→实际物化；M×K exact覆盖、多wave和tail、局部state/finalizer、完整Instr/completion/SPM通过 |
+| Planning/Driver/Transforms | 123/126/389项实际通过，无skip；最后增强的共同循环测试单独重签，2.132秒；canonical完整增量及Ninja no-op通过 |
+| GQA 1024/1025，默认8/42 | 165.32/211.45秒，各5个结构、42 actual capacity、0 unsupported、0 accepted，仍无package |
+
+限定8次actual尝试的只读诊断确认协调已物化：scores由`[2,1,1024,1024]f32`变成`[1,1,512,512]f32`，
+循环携带state为`[1,1,512,128]f16`。但同一候选仍有两处完整`[1,8,4,1024,128]f16`的8 MiB RDMA→SPM，
+随后才做`memref.collapse_shape`与循环内subview。一个消费者实际读取`[1,1,512,64]`窗口，完整载入仍在循环外。
+`BoundaryMovement::hasOnlySubviewUses`只识别直接SubViewOp；metadata reshape使按需加载未进入，
+此时继续缩小下游temporal参数也不改变完整输入allocation。这是现存view链上的搬运边界缺口。
+临时observer只打印actual IR，已移除并重建；恢复后compiler hash与本项正式no-card构建相同。
+
+下一修改在08号movement边界处理已物化的metadata view→局部需求：从实际DDR source重算view的shape/stride/offset，
+先证明该view可在DDR上表达，再将读取放在真正消费的窗口；保持PBQP已选SPM布局及原输出语义。
+不能按GQA名或KV shape删broadcast，不能把有copy语义的reshape伪装alias；混合consumer、非连续reshape、
+布局及写入分支需要成对覆盖。该修改尚未实施；两项GQA尚未达到board-ready。
+
+本轮固定FP16 LLaMA的独立package/no-card通过，wall 1,038.29秒、RSS 2,783,848 KiB；
+14个source文件及完整package三文件均与初始正确快版本逐字节相同。没有新增实卡数值或计时。
+完整证据见[容量协调记录](../../docs/data/board-performance/coupled-capacity-repair-20260914.json)。
+这项主机修复不计为三轮性能调优，原BF16数值、其余模型和最终全矩阵资格保持开放。

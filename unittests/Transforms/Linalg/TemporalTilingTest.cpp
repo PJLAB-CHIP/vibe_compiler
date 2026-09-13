@@ -2399,16 +2399,26 @@ TEST(TemporalTilingTest, CoupledStateFinalizesInsideOutputTile) {
         ASSERT_TRUE(domain.succeeded()) << domain.failure->detail;
         TemporalChoice choice = *domain.domain->getFirstChoice().getChoice();
         auto descriptors = domain.domain->getScopeDescriptors();
-        for (auto [scope, descriptor] :
-             llvm::zip_equal(choice.scopes, descriptors)) {
-          for (int64_t &size : scope.iteratorTileSizes)
-            size = std::min<int64_t>(size, 128);
-          auto order = buildFirstTemporalLoopOrder(descriptor.iterationExtents,
-                                                   scope.iteratorTileSizes,
-                                                   descriptor.precedence);
-          ASSERT_TRUE(mlir::succeeded(order));
-          scope.loopOrder = std::move(*order);
-        }
+        const TemporalChoice anchor = choice;
+        ASSERT_EQ(choice.scopes.size(), 2u);
+        // A capacity direction changes the producer only. Coordinate its
+        // actual result maps with the unchanged consumer before materializing;
+        // the remaining checks cover the resulting loops through actual SPM.
+        auto &producer = choice.scopes.front();
+        const auto &descriptor = descriptors.front();
+        for (int64_t &size : producer.iteratorTileSizes)
+          size = std::min<int64_t>(size, 128);
+        auto order = buildFirstTemporalLoopOrder(descriptor.iterationExtents,
+                                                 producer.iteratorTileSizes,
+                                                 descriptor.precedence);
+        ASSERT_TRUE(mlir::succeeded(order));
+        producer.loopOrder = std::move(*order);
+        ASSERT_TRUE(domain.domain->contains(choice));
+        EXPECT_EQ(choice.scopes[1], anchor.scopes[1]);
+        auto coupled = domain.domain->getCoupledStateProposal(choice, &anchor);
+        ASSERT_TRUE(coupled);
+        EXPECT_EQ(coupled->scopes[1].iteratorTileSizes[permuted ? 1 : 2], 128);
+        choice = std::move(*coupled);
         StructuredMaterializationRelations relations;
         relations.structuralOutputs.push_back({0, region.getResult(0)});
         TemporalTilingFailure failure;

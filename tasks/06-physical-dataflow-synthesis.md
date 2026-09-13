@@ -1135,8 +1135,27 @@ Joint/Independent各自保留全extent和按域下界截断的逐层减半尺度
 多结果producer和唯一consumer另从actual result/input projected-permutation maps提出协调参数：共同迭代维度使用一致tile，
 仅部分结果携带的广播维度保留完整长度，使已有共同输出遍历可被选择。原参数仍保留；区间样本只作普通候选，
 不预测SPM合法性、不修改数值顺序。此query输出typed TemporalChoice，直接交给唯一Temporal物化和fresh下游检查。
-它们在任何actual容量结果之前生成，不读取SPM大小、footprint或预测lifetime，也不用于合法性剪枝。
+协调查询既服务初始种子，也服务已有actual capacity证据产生的整数修正。容量方向先按原规则对已关联坐标减半，
+补齐loop order并验证choice，再调用同一个`getCoupledStateProposal`查询：优先排入有exact result/input map依据的协调变体，
+随后仍排入原方向；重复点统一去重，原raw集合不变。容量查询带同域、同traversal kind的不可变parent point，
+只协调尺寸发生变化的producer/consumer依赖对，保持其它traversal原样。新增的consumer参数来自current结构中的数据依赖映射，
+不把consumer伪装成失败buffer的唯一owner，不给无法关联的Region补猜测坐标。
+该规则处理多结果state producer缩小而唯一parallel consumer仍保留完整状态的通用缺口；仅在初始种子协调不足以覆盖
+后续容量修正。协调本身不读取SPM大小、footprint或预测lifetime，也不用于合法性剪枝。
 每个参数都实际物化并经过唯一SPM门禁，原raw successor继续保留。
+
+本项覆盖矩阵：
+
+| 输入/分支 | exact合同 | 下游witness |
+| --- | --- | --- |
+| 多结果producer→唯一parallel consumer，rank3+，1024/1025/1031 | 实际相关producer坐标减半后，协调变体的公共轴一致；原非协调方向仍可访问；不按op名识别 | 同一Temporal materializer形成共同输出循环；actual Instr/completion/SPM |
+| 未携带某轴的state result、FullExtentOnly、未匹配或多consumer | 广播/固定轴保持原合同；无exact映射时仅保留原方向 | 原负例和domain membership；不扩展SPM合法集合 |
+| 多Tile容量修正与重复反馈 | 所有已关联Tile的协调方向优先，重复坐标/相同point不再排队；深修正、旧兄弟与Explore均能续跑 | 原调度回归及4/16 Tile的actual leaf |
+| GQA 1024/1025，固定FP16 LLaMA | 默认8/42，source到package/no-card；失败需给出本轮actual边界 | 全量输出reference准备；板端和最终性能资格仍单独验收 |
+
+本项沿用[Linalg TilingInterface](https://mlir.llvm.org/doxygen/TilingInterfaceImpl_8cpp_source.html)的结果/operand坐标传递与本仓现有协调查询，
+不引入跨rewrite历史handle；与[TVM postprocessor](https://tvm.apache.org/docs/reference/api/doxygen/classtvm_1_1s__tir_1_1meta__schedule_1_1Postproc.html)
+在已变换IR上验证资源限制的分工一致，候选排序和actual内存合法性仍分开。
 
 通信transport参数按同一boundary preflight的current component选择。每个component用其中一条现存SSA boundary edge
 作query-local anchor；clone只经同次`IRMapping`重映射，物化前重算component并拒绝缺失/重复anchor。

@@ -292,9 +292,12 @@ public:
   TemporalSuccessor completePrefix(const TemporalChoice &prefix) const;
   bool contains(const TemporalChoice &choice) const;
   /// A numeric proposal from current multi-result producer/consumer maps.
+  /// An optional parent point limits coordination to changed dependency pairs;
+  /// it must belong to this domain and have the same traversal kind.
   /// Absence means no distinct valid proposal, never an illegal input shape.
   std::optional<TemporalChoice>
-  getCoupledStateProposal(const TemporalChoice &choice) const;
+  getCoupledStateProposal(const TemporalChoice &choice,
+                          const TemporalChoice *anchor = nullptr) const;
 
   TileRegionOp getRegion() const { return region; }
   llvm::ArrayRef<TemporalScopeDescriptor> getScopeDescriptors(

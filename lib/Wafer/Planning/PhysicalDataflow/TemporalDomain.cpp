@@ -1302,8 +1302,10 @@ bool TemporalDomain::isJointChoiceCompatible(
 }
 
 std::optional<TemporalChoice>
-TemporalDomain::getCoupledStateProposal(const TemporalChoice &choice) const {
-  if (!contains(choice))
+TemporalDomain::getCoupledStateProposal(const TemporalChoice &choice,
+                                        const TemporalChoice *anchor) const {
+  if (!contains(choice) ||
+      (anchor && (anchor->kind != choice.kind || !contains(*anchor))))
     return std::nullopt;
   auto proposal = choice;
   auto descriptors = getScopeDescriptors(choice.kind);
@@ -1327,6 +1329,14 @@ TemporalDomain::getCoupledStateProposal(const TemporalChoice &choice) const {
       continue;
     size_t consumerIndex = positions.lookup(consumer);
     auto &consumerScope = proposal.scopes[consumerIndex];
+    // Capacity repair couples only a changed producer/consumer pair. The
+    // immutable parent point keeps unrelated traversals out of that direction.
+    if (anchor &&
+        producerScope.iteratorTileSizes ==
+            anchor->scopes[producerIndex].iteratorTileSizes &&
+        consumerScope.iteratorTileSizes ==
+            anchor->scopes[consumerIndex].iteratorTileSizes)
+      continue;
     const auto &p = descriptors[producerIndex];
     const auto &c = descriptors[consumerIndex];
     llvm::SmallVector<int64_t> producerToConsumer(p.iterationExtents.size(),

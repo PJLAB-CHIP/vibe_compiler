@@ -638,19 +638,43 @@ bool TemporalProposals::appendCapacityDirection() {
       size = std::max(bounds(next, coordinate).lower, size / 2);
     }
     // Appending new feedback never displaces the unvisited sibling directions.
+    const size_t anchor = poll.anchor;
     const uint64_t depth =
-        llvm::SaturatingAdd(entries[poll.anchor].repairDepth, uint64_t(1));
+        llvm::SaturatingAdd(entries[anchor].repairDepth, uint64_t(1));
     capacityPolls.push_back(std::move(poll));
-    auto previous = find(next);
-    const bool queued = append(std::move(next), TemporalProposalKind::Repair);
-    if (initialDirection) {
-      const auto index =
-          queued ? std::optional<size_t>(entries.size() - 1) : previous;
-      if (index && !entries[*index].taken)
-        firstCapacityPending.insert(*index);
+    auto enqueue = [&](std::vector<TemporalChoice> point) {
+      auto previous = find(point);
+      const bool queued =
+          append(std::move(point), TemporalProposalKind::Repair);
+      if (initialDirection) {
+        const auto index =
+            queued ? std::optional<size_t>(entries.size() - 1) : previous;
+        if (index && !entries[*index].taken)
+          firstCapacityPending.insert(*index);
+      }
+      if (queued)
+        entries.back().repairDepth = depth;
+      return queued;
+    };
+    bool coupledQueued = false;
+    if (complete(next)) {
+      // A producer-only repair can otherwise leave its state consumer at full
+      // extent, preventing the existing common traversal from materializing.
+      // Use the same current-map query as the seed generator. This is another
+      // explicit choice, not a new buffer owner or a capacity legality claim.
+      auto coupled = next;
+      bool changed = false;
+      for (auto [index, domain] : llvm::enumerate(domains))
+        if (auto coordinated = domain->getCoupledStateProposal(
+                coupled[index], &entries[anchor].choices[index])) {
+          coupled[index] = std::move(*coordinated);
+          changed = true;
+        }
+      if (changed)
+        coupledQueued = enqueue(std::move(coupled));
     }
-    if (queued) {
-      entries.back().repairDepth = depth;
+    const bool originalQueued = enqueue(std::move(next));
+    if (coupledQueued || originalQueued) {
       preferFreshCapacity = !preferFreshCapacity;
       return true;
     }

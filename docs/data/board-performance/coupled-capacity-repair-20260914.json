@@ -1,0 +1,226 @@
+{
+  "date": "2026-09-14",
+  "work_item": "board-testing",
+  "scope": "current-map state coordination for actual capacity repair proposals",
+  "compiler_sha256": "644257bdf92239677124bf79f10d0b0aad7ebe0f8984f3f9741c8f8b9f62ede8",
+  "source_sha256": {
+    "lib/Wafer/Driver/PhysicalDataflow/TemporalProposals.cpp": "95857708d74f19eb83ff93e390f6871b8c69ca5b6e6afefdb4b2fe8e31dba85f",
+    "lib/Wafer/Planning/PhysicalDataflow/TemporalDomain.cpp": "3e16a1a1e7302c57c107c3de039bc65c389625d29144f7b39b016b140ec545eb",
+    "lib/Wafer/Planning/PhysicalDataflow/TemporalDomain.h": "7dbaab249fdf0f455771e3ce0f5c836bb55809b96950448d73c83a812b818659",
+    "unittests/Driver/PhysicalDataflow/TemporalProposalsTest.cpp": "a5c07af59f9bec8dd1159bb3a603e08b193653958c8aa311ef4fa50ef197e35a",
+    "unittests/Transforms/Linalg/TemporalTilingTest.cpp": "571062a26b55ffa8a54c80d7f467dd9be592b40521e6b1df5793db167290ac5e"
+  },
+  "board_executed": false,
+  "budget_changed": false,
+  "spm_legality_changed": false,
+  "arithmetic_changed": false,
+  "diagnosis": {
+    "before": {
+      "evidence": "actual input feedback already associates attention producer head/M/K2; owner/body multi-scope restriction is not established as the cause of this mismatch",
+      "producer_repair_sizes": [
+        1,
+        1,
+        512,
+        128,
+        512,
+        128
+      ],
+      "consumer_repair_sizes": [
+        2,
+        1,
+        1024,
+        128
+      ]
+    },
+    "after": {
+      "producer_repair_sizes": [
+        1,
+        1,
+        512,
+        128,
+        512,
+        128
+      ],
+      "consumer_coordinated_sizes": [
+        1,
+        1,
+        512,
+        128
+      ],
+      "original_uncoordinated_direction_retained": true,
+      "unrelated_dependencies_unchanged": true
+    },
+    "actual_witness": {
+      "diagnostic_trials": 8,
+      "instrumented_compiler_sha256": "73ac152bae7a2383d9ff302e16268f36382e1a4b5ef32c667ae82ee3ba2e4296",
+      "temporary_diagnostic_removed": true,
+      "restored_compiler_byte_equal": true,
+      "tile": 0,
+      "coordinated_snapshot": 2,
+      "score_shape_before": [
+        2,
+        1,
+        1024,
+        1024
+      ],
+      "score_shape_after": [
+        1,
+        1,
+        512,
+        512
+      ],
+      "score_dtype": "f32",
+      "carried_state_shape_after": [
+        1,
+        1,
+        512,
+        128
+      ],
+      "state_dtype": "f16",
+      "remaining_oversized_loads": {
+        "count_in_snapshot": 2,
+        "shape": [
+          1,
+          8,
+          4,
+          1024,
+          128
+        ],
+        "dtype": "f16",
+        "bytes_per_rdma": 8388608,
+        "chain": "whole DDR input -> whole SPM allocation -> memref.collapse_shape -> loop-local subview",
+        "producer": "BoundaryMovement hasOnlySubviewUses only recognizes direct SubViewOp users",
+        "conclusion": "metadata reshape prevents demand-sized loading; shrinking downstream tiles does not change this full input load"
+      }
+    }
+  },
+  "validation": {
+    "planning": {
+      "passed": 123,
+      "skipped": 0,
+      "ctest_wall_s": 62.53
+    },
+    "driver": {
+      "passed": 126,
+      "skipped": 0,
+      "ctest_wall_s": 582.98
+    },
+    "transforms": {
+      "passed": 389,
+      "skipped": 0,
+      "ctest_wall_s": 42.06,
+      "qualification": "production change; before final test-only extension"
+    },
+    "final_actual_spm": {
+      "test": "TemporalTilingTest.CoupledStateFinalizesInsideOutputTile",
+      "passed": 1,
+      "configurations": 20,
+      "extents": [
+        1024,
+        1025,
+        1031,
+        4096,
+        4097
+      ],
+      "dtypes": [
+        "f16",
+        "bf16"
+      ],
+      "result_axis_permutations": 2,
+      "wall_ms": 2132,
+      "exact_checks": [
+        "producer-only point -> current-map coordinated consumer",
+        "all M*K work covered",
+        "multiple waves and specialized tails",
+        "state and finalizer inside output tile",
+        "no full output-state fill",
+        "verified Instr/completion/SPM"
+      ]
+    },
+    "canonical_build": "passed",
+    "subsequent_build": "ninja: no work to do."
+  },
+  "whole_model": {
+    "gqa": [
+      {
+        "sequence": 1024,
+        "status": "failed_at_actual_spm_capacity",
+        "wall_s": 165.32,
+        "max_rss_kib": 2322796,
+        "exit_code": 1,
+        "search": {
+          "width": 8,
+          "trials-used": 42,
+          "structural-states": 5,
+          "movement-candidate-actualizations": 42,
+          "accepted-candidates": 0,
+          "exact-rejected-candidates": 42,
+          "unsupported-candidates": 0,
+          "actual-capacity-refinements": 31,
+          "unavailable-capacity-refinements": 11
+        },
+        "package_produced": false
+      },
+      {
+        "sequence": 1025,
+        "status": "failed_at_actual_spm_capacity",
+        "wall_s": 211.45,
+        "max_rss_kib": 2413588,
+        "exit_code": 1,
+        "search": {
+          "width": 8,
+          "trials-used": 42,
+          "structural-states": 5,
+          "movement-candidate-actualizations": 42,
+          "accepted-candidates": 0,
+          "exact-rejected-candidates": 42,
+          "unsupported-candidates": 0,
+          "actual-capacity-refinements": 30,
+          "unavailable-capacity-refinements": 12
+        },
+        "package_produced": false
+      }
+    ],
+    "llama_fp16": {
+      "status": "passed",
+      "board_executed": false,
+      "wall_s": 1038.29,
+      "max_rss_kib": 2783848,
+      "compiler_transaction_wall_ms": 1015496.033,
+      "source_members": 14,
+      "all_source_members_byte_equal_frozen_baseline": true,
+      "all_package_members_byte_equal_frozen_baseline": true,
+      "package_sha256": {
+        "manifest.json": "968af3b772f708fc9dc4111d183c9f0d0eb15fca7928b884722d15047c9d858e",
+        "modules/module_00000.so": "df29e4aaed1c679e5b897e17bba401b42a8c9ec4e7dceed58897296fe204fa27",
+        "data/program-data.bin": "2c70f48e3e9be02d85e54cf0486fdf833a0ddd09a3e13659e7d8a874268cad59"
+      },
+      "arithmetic_execution": false,
+      "completion_execution": false,
+      "numeric_readback": false
+    }
+  },
+  "raw_evidence_sha256": {
+    "build/test/model-performance/coupled-capacity-build.log": "5fc61666cb66fb5391be6dd2ded911f7011b9ae16603fbf35cd5ded752db9743",
+    "build/test/model-performance/coupled-capacity-no-op.log": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e",
+    "build/test/model-performance/coupled-capacity-units.log": "ba3e3d9261909809265e48a2f686808b8169b70b0c5d071378f5cdb2e8dc7b36",
+    "build/test/model-performance/coupled-capacity-unit-details.log": "d4731e61add4b7042513f4be1e0e3e21403841eb7a0ccffce141e0fa79c0344f",
+    "build/test/model-performance/coupled-capacity-actual-spm.log": "26fbf1c752a6f71ae893bfd5235e7e32b70755f1b1ee7cc651406626ad52a20a",
+    "build/test/model-performance/coupled-capacity-final-build.log": "b80e37a5c09603df0e9f937ea9918f2b8ecba99f6b31cd0e6624971d255679d8",
+    "build/test/model-performance/coupled-capacity-final-no-op.log": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e",
+    "build/test/model-performance/coupled-capacity-gqa-no-card.log": "4a9ddf80048a66985fe904c92b8b871fd9f2e489f92adab380ab1edfa51e44fd",
+    "build/test/model-performance/coupled-capacity-gqa-tail-no-card.log": "5ed4e3b00583b5b53d43d88456e9554ef127d53208a53d3109896d8683c2a005",
+    "build/test/model-performance/gqa-capacity-three-observations.log": "2dfdae176aa0097043376350a4e4ef9b02ce8be0c3b7151e331608598eebccad",
+    "build/test/model-performance/gqa-capacity-observation.patch": "6242eea7ddffa02cd06c8d1e92689641a34c6ddde3e562ea84a90776260692c8",
+    "build/test/model-performance/coupled-capacity-actual-observations.log": "fbe6ab9b8b67dd2900250972f7f874cd93dcf34ae14844f3d71d9530c36dcb66",
+    "build/test/model-performance/coupled-capacity-observation.patch": "c2937b83f5769495462df15b4bedda01e350dd5a3786ac8ba0752337f47f8a50",
+    "build/test/model-performance/coupled-capacity-restored-build.log": "447a7d87d8525c75e4e52c759090ae62b8f7900a9a0a3869772795ff6c8932c9",
+    "build/test/model-performance/coupled-capacity-restored-no-op.log": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e",
+    "build/test/model-performance/coupled-capacity-llama-no-card.log": "648e095391d4677a3c7120a99cd4a4c992cdb8951a4d7d7392a029430fddcad3"
+  },
+  "limitations": [
+    "GQA has no package. Demand-sized loading through metadata views remains unresolved.",
+    "No new device numeric, timing, or profile evidence.",
+    "The correctness matrix and all three performance rounds remain incomplete."
+  ]
+}

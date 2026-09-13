@@ -1422,3 +1422,23 @@ FP16 LLaMA fresh source→package→no-card通过，wall 1,018.88秒，峰值RSS
 编译器、源码及原始日志身份见
 [`multi-axis-contraction-20260914.json`](data/board-performance/multi-axis-contraction-20260914.json)，
 ResNet终态补入原[Region证据](data/board-performance/region-proposal-work-20260914.json)。
+
+## 2026-09-14：容量修正的多结果状态协调及完整输入加载缺口
+
+Actual capacity反馈已定位producer坐标，原修正却未同步唯一consumer的尺寸，阻止已有共同输出循环。
+现将已有current-map协调查询同时用于容量修正，保留原方向和无关traversal；没有增加预算或修改SPM合法性。
+20组实际FP16/BF16、1024/1025/1031及4K尾部检查经过共同循环、Instr、completion和SPM，
+确认exact覆盖及局部state/finalizer。Planning 123、Driver 126、Transforms 389项通过；最后增强的实际循环测试另行通过。
+完整构建和Ninja no-op通过。
+
+GQA主配置与1025尾部仍未产生package：默认8/42各42次actual capacity，0 unsupported、0 accepted，
+完整runner为165.32/211.45秒，峰值RSS 2,322,796/2,413,588 KiB。这是主机编译结果，未执行设备。
+限定8次尝试的诊断确认协调点已生成局部state和分块scores，但两个消费者仍把完整8 MiB广播输入载入SPM，
+随后才collapse shape和取局部窗口。现有boundary加载只遍历subview，未穿过metadata reshape，
+因此下游tile缩小不能消除这两处完整读入；后续需要通用view需求加载修复。临时打印已移除，恢复构建hash一致。
+
+固定FP16 LLaMA的新package/no-card通过，wall 1,038.29秒、峰值RSS 2,783,848 KiB；
+完整package的manifest、module、data均与初始正确快版本逐字节相同，fresh source的14个文件也相同。
+本节没有新增实卡数值、设备性能或profile，不计入三轮调优。
+身份、实际IR摘录和原始证据hash见
+[`coupled-capacity-repair-20260914.json`](data/board-performance/coupled-capacity-repair-20260914.json)。
