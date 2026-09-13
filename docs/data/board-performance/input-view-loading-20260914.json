@@ -1,0 +1,358 @@
+{
+  "date": "2026-09-14",
+  "work_item": "board-testing",
+  "scope": "Metadata view demand loading, GQA qualification and long-cache source integration",
+  "compiler_sha256": "43a55d7596083611fead736588f95ae75227fac17888411dade6e71754bf9a1b",
+  "source_sha256": {
+    "lib/Wafer/Transforms/Tile/BoundaryMovement.cpp": "a42facb893a9596b582b086df5c229be03cabae15cc1d7ce2834d88429b27608",
+    "unittests/Transforms/Tile/StructuredToTileTest.cpp": "cd1cd7189f684908331371324874e8d70ffc483a69639a868ed38b2ebf4220e5",
+    "test/Board/PyTorch/wafer_pytorch_board_cases.py": "0a97bb639f073122b18191d0164831ed7e33e67d5f60c31c034dad109134da1a",
+    "test/Board/PyTorch/wafer_pytorch_board_cases_test.py": "3306de805b12bdf12fb8b681da2592ab6175756e4b1df0b2053710be9dbf36e5",
+    "test/CMakeLists.txt": "2dc1d99c90c7ea1002b427c56b89b4241ef3f9a5704966068f86948d89217d97"
+  },
+  "board_executed": false,
+  "budget_changed": false,
+  "arithmetic_changed": false,
+  "spm_legality_changed": false,
+  "host_tests": {
+    "transforms": {
+      "passed": 390,
+      "wall_s": 45.18
+    },
+    "driver": {
+      "passed": 126,
+      "wall_s": 576.62
+    },
+    "python_cases": {
+      "passed": 36,
+      "wall_s": 52.531
+    },
+    "focused_view_tests": {
+      "passed": 3,
+      "wall_s": 1.687
+    },
+    "long_and_original_decode_source_tests": {
+      "passed": 2,
+      "wall_s": 15.986
+    },
+    "canonical_build": "passed",
+    "subsequent_build": "ninja: no work to do.",
+    "unexpected_skip": false
+  },
+  "gqa": {
+    "input-view-gqa": {
+      "tiles": 16,
+      "loads_static": 192,
+      "max_logical_load_payload_bytes": 524288,
+      "load_shapes_static_counts": {
+        "1x128x192f16": 16,
+        "1x128x64f16": 16,
+        "1x1x1024x128f16": 32,
+        "1x2x128x128f16": 32,
+        "2x1024x128f16": 16,
+        "2x128x192f16": 16,
+        "2x128x64f16": 16,
+        "2x192x128f16": 16,
+        "2x1x1024x128f16": 16,
+        "2x64x128f16": 16
+      },
+      "counter": {
+        "width": 8,
+        "trials": 42,
+        "accepted-candidates": 9,
+        "exact-rejected-candidates": 33,
+        "unsupported-candidates": 0,
+        "input-sharing-accepted": 2,
+        "pipeline-accepted": 1
+      },
+      "package_sha256": {
+        "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "manifest.json": "75693d106c45ce93f047c4ee1fb1a0f17f3ecc8d6421a46466bb4068437295ca",
+        "modules/module_00000.so": "c67bbb9f6ade41512a735a96ba2ee5a5a14309cd142728c2b5080c730105191b"
+      },
+      "wall_s": 302.05,
+      "max_rss_kib": 3323436,
+      "exit_status": 0,
+      "status": "board-ready",
+      "board_executed": false,
+      "source_sha256": {
+        "functions/forward.meta": "f26489252722b5c4a1fa1e490d602731faf7d1179a0d45a62263d0d4b7129f08",
+        "functions/forward.stablehlo.bc": "ce6b83f0f1f7249223a1df8876871f784a7cde2bd7feddc660ff8307a2ea3431"
+      },
+      "current_dataflow_sha256": {
+        "tile_00000.mlir": "22dec7d893a7a5f752adbc23e4560b82afd6f5cb7cc8053182c81eb88816ab8f",
+        "tile_00001.mlir": "b233f2fb51ba070dc45f76155023586042b7b9686d40b256e795aebff54f5e87",
+        "tile_00002.mlir": "d17dae34f3ebcd63a8795ca60533db89083a9a23ad4cd0e87e2cdea7eb088a28",
+        "tile_00003.mlir": "5599689a192992aa44ac7d48cf3d6e1398e65cf01ff645fb800d55b3566c6dba",
+        "tile_00004.mlir": "a90b10c8bad0543eee0df7deb54ec4120abab6babfabf2ea0476509041eda7d5",
+        "tile_00005.mlir": "bd4ad188c17167c17498a6e06e73984b2e818bde4cd54c7e4aaf349ca3dcb18c",
+        "tile_00006.mlir": "b3e405d45ec3c878ec64dce3db19e3d9a821babd0a38bb3731af56985a93e754",
+        "tile_00007.mlir": "598fab361ef9c15772f87df88c400b87b99ee45894832a5a68f368dee734bb96",
+        "tile_00008.mlir": "0a2ec2f0035ee17f2b051358f5679cd7ddb21b026fd9b4b22a20b8950cf5b738",
+        "tile_00009.mlir": "0012dfdba17f9beefdb62a850342e4c64827a70ee2d3bcf63c55a3ae34c88b18",
+        "tile_00010.mlir": "a300aa409533f8f643e81a8c401f31174d4039148b000855628b94d236abb441",
+        "tile_00011.mlir": "df8743756d7b1f7bc31be08e5d1be2271129f7dd883060c288878d75d1c73c1a",
+        "tile_00012.mlir": "48dc8b5c2eff4319b1919555325796c61977453ecf24fefab870d0454cc31e22",
+        "tile_00013.mlir": "f52e1216ebbd05498c0ca424754f988d82cd8d05b57e526166b3299010b8d5ab",
+        "tile_00014.mlir": "8ce78e5cbfada898a324f55f01eb93fe35d06f5142b0ec990618db5e2eac991f",
+        "tile_00015.mlir": "4a5af37b738d3e2fb788a721495c6fb5cf0f1b8fc1d2226eacfd739b20aa07d7"
+      }
+    },
+    "input-view-gqa-tail": {
+      "tiles": 16,
+      "loads_static": 320,
+      "max_logical_load_payload_bytes": 524800,
+      "load_shapes_static_counts": {
+        "1x128x192f16": 16,
+        "1x128x65f16": 16,
+        "1x1x1025x128f16": 32,
+        "1x1x192f16": 16,
+        "1x1x65f16": 16,
+        "1x2x128x128f16": 32,
+        "1x2x1x128f16": 32,
+        "2x1025x128f16": 16,
+        "2x128x192f16": 32,
+        "2x128x65f16": 32,
+        "2x192x128f16": 32,
+        "2x1x1025x128f16": 16,
+        "2x65x128f16": 32
+      },
+      "counter": {
+        "width": 8,
+        "trials": 42,
+        "accepted-candidates": 9,
+        "exact-rejected-candidates": 32,
+        "unsupported-candidates": 1,
+        "input-sharing-accepted": 2,
+        "pipeline-accepted": 1
+      },
+      "package_sha256": {
+        "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "manifest.json": "77d3b3125e61ead296f5c23e3ac10bedd9695b13e8b9e45c99cafba833bd0ed4",
+        "modules/module_00000.so": "36f04ebd016cd2d8c62d46ec496dbe303b5a88480fee63ad728e49a777b04093"
+      },
+      "wall_s": 350.93,
+      "max_rss_kib": 3304124,
+      "exit_status": 0,
+      "status": "board-ready",
+      "board_executed": false,
+      "source_sha256": {
+        "functions/forward.meta": "35f86cdab247f14b67fe806e2798bd2eb48f9fc6b866efcf2e5f7cf34df078b9",
+        "functions/forward.stablehlo.bc": "79f4914a73d776bdcb3732984d4b8f82ff3bdfcb5583e9d16e8d28dca9801521"
+      },
+      "current_dataflow_sha256": {
+        "tile_00000.mlir": "55f5b8c831525261933f4697a33d52b630a991356ab7693530fd03d0e5cc6f07",
+        "tile_00001.mlir": "be6c39f827b0c268cd5806d81d20373e3742167c4f039eac5b66e4a890e50bd8",
+        "tile_00002.mlir": "7aacd6dbaa1d23ddf3534225dd43f254894563200f51ba489654bb537fb2a84b",
+        "tile_00003.mlir": "3453dbdff35c8ee009e06c6381915c34b041c91fc887b487151d73212f3c5c31",
+        "tile_00004.mlir": "c202d72b97e589e774105a52698c251e59ecf770c4f2bead3cef093728f8d6c3",
+        "tile_00005.mlir": "14b98f996922c8fb58fd95bb8ec8bf4d0233584f371c70eeb2b2293639661d35",
+        "tile_00006.mlir": "d9ca319ac9ca0b3edd9afb3bf4d89c6d2e61457b27e63790c45d9dc64f0487d4",
+        "tile_00007.mlir": "294441d50042a610e7013007323d03fba78eb9dc8e4fc614264faa9dc1dc38fb",
+        "tile_00008.mlir": "2d86fa6f00d9d669a64b412c5a9752881c4927e08b5ce3709b6ff12b2483927f",
+        "tile_00009.mlir": "ec867da7c77e7bda9d84cca645f88381777563f3556c0f14ecf2c40daa5bfcff",
+        "tile_00010.mlir": "81beddc931af6aaa47d14a2c6b29b44e804a6e16dd5c5ccfaeddeefd2d77f8f1",
+        "tile_00011.mlir": "bf03b4c26c91332adfef30c3c31d31a9ce9f35ab40346b00b44962e886de0d10",
+        "tile_00012.mlir": "db0559c74b4d6ffea914929de4d3fd80ff68ba7627a07a27af221a131ab86ffd",
+        "tile_00013.mlir": "5f0abfbbd3c656f790bfeb409805296f95b34dc90b2f45ad73aaa27c7f60835d",
+        "tile_00014.mlir": "174b1abe2faf4b7075397ed4ecfb81c10e0ec70d13790989b84fcd8a4fdf85f9",
+        "tile_00015.mlir": "9d3663e939ca8af2019a8cb8ee3178a9ec463414ea379982f5597196fab086c5"
+      }
+    }
+  },
+  "llama_fp16": {
+    "wall_s": 1066.73,
+    "max_rss_kib": 2830984,
+    "exit_status": 0,
+    "status": "no-card passed; board correctness/performance regression pending",
+    "board_executed": false,
+    "source": {
+      "byte_equal": true,
+      "file_count": 14,
+      "current_sha256": {
+        "functions/forward.stablehlo.bc": "16d96c936df23c4c6d87c81cd57b0241f3c30759115aefed98dc1f918c15484b",
+        "functions/forward.meta": "83366ad13c971c888242a2518f76193891b360977b892ad388eb0c883156d62b",
+        "data/decoder_layer.mlp.down_proj.weight": "96d484288765fca7de26af46c3c0c8b72472debf705c281363739f4ce85f05d0",
+        "data/decoder_layer.self_attn.q_proj.weight": "92abec4a65167155b7b198e90a428958ab516f076b53d6b8588e11982436f749",
+        "data/decoder_layer.self_attn.k_proj.weight": "a4a39d6ae3a10e987a066f494228bb21a3733c3d7f0ce521bdb523592782f580",
+        "data/rotary_sin": "e9d9c61b56004e882c1559ddb5d286f86c3e31973bdb387d275d84cbd4233e47",
+        "data/causal_mask": "b740811b018c5f9475a9eb0fb66b7d8a5575eebee9ea4bda09edc119b24d5660",
+        "data/decoder_layer.mlp.gate_proj.weight": "a91cd6c53e9d63632326e1f896af0715cd4703b05583f56534a7dc21c4f54eb6",
+        "data/decoder_layer.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/decoder_layer.mlp.up_proj.weight": "3d3c844e34e48f2ffa659d62f723f69cb4afc1035824913eb9bc09dffb2f26cc",
+        "data/decoder_layer.self_attn.o_proj.weight": "7b63445913aa4bb614985cbc9fe35c2fd9fd9959e28ecb6466f719cbaf2a8ede",
+        "data/decoder_layer.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/rotary_cos": "d0693beede6522765b791aa9d2e97ef57abf04e5822b5a2963f23309ba22c757",
+        "data/decoder_layer.self_attn.v_proj.weight": "5a6e7e3a10bb3ac590ffd3015c5575a704a553f63aa6483b3c5c2ce9729dc343"
+      },
+      "changed": []
+    },
+    "package": {
+      "byte_equal": false,
+      "file_count": 3,
+      "current_sha256": {
+        "manifest.json": "e9b5dfa066bfdeab153ac199b019ebc74b1c4feffd4df6c963bfec1d1acb1a6c",
+        "modules/module_00000.so": "0135e335aaa04435da27c98cf8c0f56034ade05a1df0299748d3699f299bba82",
+        "data/program-data.bin": "2c70f48e3e9be02d85e54cf0486fdf833a0ddd09a3e13659e7d8a874268cad59"
+      },
+      "changed": [
+        "manifest.json",
+        "modules/module_00000.so"
+      ]
+    },
+    "manifest_changed_leaves": [
+      [
+        "/modules/0/digest",
+        "sha256:df29e4aaed1c679e5b897e17bba401b42a8c9ec4e7dceed58897296fe204fa27",
+        "sha256:0135e335aaa04435da27c98cf8c0f56034ade05a1df0299748d3699f299bba82"
+      ]
+    ],
+    "temporal_choice_counters_equal": true,
+    "temporal_choice_counter_count": 43788,
+    "accepted_ordinals_before_and_after": [
+      22,
+      23,
+      24,
+      27,
+      29,
+      30,
+      32,
+      33,
+      35
+    ],
+    "minimum_estimated_candidates": {
+      "22": {
+        "changed": {
+          "maximum-tile-ddr-segments": [
+            9940,
+            9970
+          ],
+          "objective-spm-picoseconds": [
+            430256563,
+            429294688
+          ],
+          "ddr-segments": [
+            159040,
+            159520
+          ],
+          "ddr-read-bytes": [
+            451372608,
+            447432768
+          ],
+          "objective-estimated-picoseconds": [
+            3211279360,
+            3185013760
+          ],
+          "objective-ddr-picoseconds": [
+            3211279360,
+            3185013760
+          ]
+        },
+        "unchanged": {
+          "instruction-count": 38064,
+          "ddr-write-bytes": 30319296,
+          "objective-spm-high-water-bytes": 2342912,
+          "objective-ddr-high-water-bytes": 638208,
+          "objective-ne-picoseconds": 50626560,
+          "objective-ncc-wait-picoseconds": 62715000,
+          "objective-noc-picoseconds": 0,
+          "actual-tile-regions": 1296
+        }
+      },
+      "29": {
+        "changed": {
+          "maximum-tile-ddr-segments": [
+            9940,
+            9970
+          ],
+          "objective-spm-picoseconds": [
+            430256563,
+            429294688
+          ],
+          "ddr-segments": [
+            159040,
+            159520
+          ],
+          "ddr-read-bytes": [
+            451372608,
+            447432768
+          ],
+          "objective-estimated-picoseconds": [
+            3211279360,
+            3185013760
+          ],
+          "objective-ddr-picoseconds": [
+            3211279360,
+            3185013760
+          ]
+        },
+        "unchanged": {
+          "instruction-count": 38064,
+          "ddr-write-bytes": 30319296,
+          "objective-spm-high-water-bytes": 2342912,
+          "objective-ddr-high-water-bytes": 638208,
+          "objective-ne-picoseconds": 50626560,
+          "objective-ncc-wait-picoseconds": 62715000,
+          "objective-noc-picoseconds": 0,
+          "actual-tile-regions": 1296
+        }
+      }
+    },
+    "limits": "Actual candidate accounting is not device timing. This no-card run did not retain final IR dumps. Source and data equality do not prove device numeric correctness."
+  },
+  "long_cache": {
+    "wall_s": 246.2,
+    "max_rss_kib": 1226876,
+    "exit_status": 1,
+    "source_and_reference_steps_passed": 2,
+    "initial_cache_length": 4094,
+    "updated_lengths": [
+      4095,
+      4096
+    ],
+    "dtype": "f16",
+    "hidden_shape": [
+      1,
+      1,
+      4096
+    ],
+    "kv_heads": 32,
+    "head_dim": 128,
+    "structural_states": 5,
+    "trials": 42,
+    "width": 8,
+    "actual_capacity_rejections": 42,
+    "accepted": 0,
+    "unsupported": 0,
+    "actual_capacity_refinements": 14,
+    "unavailable_capacity_refinements": 28,
+    "input_coordinates": 2144,
+    "ambiguous_inputs": 3142,
+    "package_produced": false,
+    "second_step_compilation_executed": false,
+    "board_executed": false,
+    "root_cause": "Requires actual demand/allocation/owner/reader evidence; counters alone do not identify the blocker."
+  },
+  "log_sha256": {
+    "build/test/model-performance/input-view-final-build.log": "f4ee272a956ba6ae2d425c57f8262272b3b247d64d3c445bd0e39ac442524568",
+    "build/test/model-performance/input-view-no-op-build.log": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e",
+    "build/test/model-performance/input-view-final-focused.log": "d6bcfc89ce495846127f54474699f9811a75f2656a9279fff12122db99fcf20e",
+    "build/test/model-performance/input-view-component-tests.log": "1307d976952d5ee6f207b8fc9bdc99cd3fc2ba0fabeaa24420b2e31635d75d89",
+    "build/test/model-performance/input-view-gqa-no-card.log": "9f613043b6bade849e69772fc4c8b231560d4ae4aaff5c4f3b6c52966d79e1df",
+    "build/test/model-performance/input-view-gqa-tail-no-card.log": "32f50d82828e762e62bf5985be4ffa066eeb8cb9a6f7c0e5527b3356b29dce3b",
+    "build/test/model-performance/input-view-llama-no-card.log": "a3e041c8b5175709bc24b6361120559d29df0b239365db7c87813b5aa0614eef",
+    "build/test/model-performance/long-cache-source-tests.log": "bc14665c8db77f59583a0041700e70d4e133d495f61b0acc81ba6acc70d80543",
+    "build/test/model-performance/long-cache-case-suite-configured.log": "bc30391ea1b6816a7a894a18c3dff8d52506cfb88dda4e1870ab2b41d3a1e31f",
+    "build/test/model-performance/long-cache-configure.log": "fa62cb74c89512dc0c9313ceb2559bcbd8bac7e6aa40f5a81edc2febe8d93fea",
+    "build/test/model-performance/long-cache-build.log": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e",
+    "build/test/model-performance/long-cache-no-op-build.log": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e",
+    "build/test/model-performance/long-cache-no-card.log": "1bec82212a4b5412776ec969fb1a4e6fbec9d1f3470c549838b5aa71931a1525"
+  },
+  "limitations": [
+    "No new board execution or profile; device boot identity unchanged after the prior timeout.",
+    "GQA board-ready is not board correctness or performance acceptance.",
+    "LLaMA module changed; matched frozen-baseline board A/B is required.",
+    "Long cache step one remains rejected by actual SPM; no final package or step two compilation.",
+    "BF16 LLaMA and batch numerical failures, other workload integration/compile gaps, three tuning rounds and final full matrix remain open."
+  ]
+}

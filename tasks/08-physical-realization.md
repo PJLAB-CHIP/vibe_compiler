@@ -136,9 +136,9 @@ Layout/structured rewrite可能消除某个远端分片的最后一次读取。�
 覆盖1024/1025/1031、活动与无消费输入共存以及不同Spatial组装；检查剩余endpoint精确相等、必要peer保持配对，
 实际Instr/completion/SPM可消费。此规则是变换后的关系维护，不依赖额外canonicalizer运行。
 
-已选择shared-DDR route的cross-Tile输入与本地DDR输入共用actual subview加载：当payload仍使用完整carrier坐标、没有recursive aggregate slot，
-且全部ToMemref bridge只被Subview读取时，在各Subview的当前位置建立对应DDR view与所选layout的局部SPM allocation/load。
-若Subview仅继续派生Subview，则继续沿同一SSA树建立DDR views，只在首次实际数据使用处建立SPM allocation/load；
+已选择shared-DDR route的cross-Tile输入与本地DDR输入共用actual view加载：当payload仍使用完整carrier坐标、没有recursive aggregate slot，
+且全部ToMemref bridge仅经下述可物化的view读取时，在实际消费窗口的当前位置建立对应DDR view与所选layout的局部SPM allocation/load。
+若view仅继续派生view，则继续沿同一SSA树建立DDR views，只在首次实际数据使用处建立SPM allocation/load；
 中间view出现整体读取时在该处加载，不能越过真实需求。size和offset均来自同一current SSA，不要求把动态起点变成常数，不重新决定tile size或route。
 若末级view保留动态extent，局部`memref.alloc`的对应dynamic size取该实际DDR view的维度值，保持rank reduction后的维度次序；
 不能在创建DDR view后因extent非静态报compiler failure，也不能猜测上界或分配完整carrier。输出仍是verified Tile dataflow，
@@ -150,6 +150,27 @@ Layout/structured rewrite可能消除某个远端分片的最后一次读取。�
 whole-buffer use和已有静态payload重定位不能误走该路径。完整block使用fresh source作产品witness，不能从某个较小shape推算SPM合法。
 动态extent补充rank3、1024/1025/1031的普通及rank-reduced view，精确检查load源/目的shape、allocation size SSA和owner；
 现有静态main/tail矩阵继续完成Instr/SPM，动态形态的下游拒绝与compiler contract error区分。
+
+当上述current view链包含`memref.collapse_shape`或`memref.expand_shape`时，metadata操作本身不是全buffer读取。
+本stage从既有DDR source type及原reassociation重算DDR view，继续向同一SSA树的局部subview传递需求；
+不能先载入全buffer再reshape。依据[MLIR MemRef语义](https://mlir.llvm.org/docs/Dialects/MemRef/#memrefcollapse_shape-memrefcollapseshapeop)，
+collapse只合并同组内连续的维度；使用pinned `isGuaranteedCollapsible`/`computeCollapsedType`及`computeExpandedType`，
+保留当前offset、stride、rank reduction和expand的实际shape SSA，不新增layout解或memory-space cast替代搬运。
+该规则属于已选物理view与load的物化，不重写05号拥有的ordinary pure Tensor graph，也不改变reshape的alias/copy语义。
+
+查询先验证整条拟沿用的view路径和加载后的SPM view类型。只对已知只读的metadata view链下推读取；
+未知alias/escape、write/free以及无法按实际DDR stride证明的reshape继续保留原物化边界，不能把未知当作合法alias。
+首次实际全值使用即为加载位置；若该值同时有下级views，它们仍共享该处生成的同一SPM allocation，重算其相对stride/offset。
+其它已有subview输入合同保持不变。具体输出仍为当前DDR views、所选SPM layout的allocation和`StorageLoadOp`，
+直接交给原Tile→Instr、completion、SPM及target gate，不按预测footprint准入或修改temporal参数。
+
+| 本项输入分支 | exact要求 | 下游witness |
+| --- | --- | --- |
+| 本地/SharedDDR，rank3+，collapse/expand与subview交错，1024/1025/1031，4/16 Tile | 仅消费窗口进入SPM；原source坐标、动态offset、主循环与tail all-and-only覆盖 | 当前Tile source→同一boundary materializer→Instr/completion/SPM |
+| 整体读取与局部view共存、共享source多个reader | 全值使用保留共同allocation；局部reader不得产生不同快照或丢失offset | exact load extent、alias与用户绑定；直接下游验证 |
+| 写入、未知使用或不能证明连续的reshape | 不下推未知语义；保留原数据/alias边界 | verifier-valid负例与原完整load；不放宽SPM gate |
+| FP16/BF16、固定/动态extent及rank reduction | 原dtype和所选layout不变，dynamic size来自同一当前view | 原dynamic SSA测试与大shape静态Instr/SPM配对 |
+| 原始GQA 1024/1025及固定FP16 LLaMA | 默认8/42真实source到package/no-card；剩余失败必须定位actual边界 | 正式driver；设备数值/profile仍另行验收 |
 
 Movement结束前，write-only SPM输出carrier可按实际写入流式存到一个或多个既有DDR出口。所有terminal store必须读同一allocation的完整值，
 位于同一Region顶层且晚于全部写入；carrier只允许Subview与已证明identity forwarding的SCF alias，以及copy目的端和这些terminal读取。

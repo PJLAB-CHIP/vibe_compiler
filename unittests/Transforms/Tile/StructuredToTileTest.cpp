@@ -4722,7 +4722,7 @@ TEST_F(StructuredToTileTest, SparseSharedDDRFanoutOmitsUnrelatedTileArguments) {
 TEST_F(StructuredToTileTest, SharedDDRLoadsEachCurrentConsumerSubview) {
   for (int64_t tileCount : {4, 16})
     for (int64_t extent : {1024, 1025, 1031})
-      for (unsigned mode : {0u, 1u, 2u}) {
+      for (unsigned mode : {0u, 1u, 2u, 3u, 4u}) {
         bool tiled = mode != 0;
         SCOPED_TRACE(tileCount);
         SCOPED_TRACE(extent);
@@ -4760,7 +4760,7 @@ TEST_F(StructuredToTileTest, SharedDDRLoadsEachCurrentConsumerSubview) {
         ASSERT_TRUE(layout.succeeded()) << layout.detail;
         auto compute = lowerStructuredComputeToTile(*module, relations);
         ASSERT_TRUE(compute.succeeded()) << compute.detail;
-        if (mode == 2) {
+        if (mode >= 2) {
           // Model a spatial selection followed by temporal main/tail views.
           // Both intermediate views have no data use and must stay in DDR.
           llvm::SmallVector<TileRegionOp> consumers;
@@ -4781,6 +4781,37 @@ TEST_F(StructuredToTileTest, SharedDDRLoadsEachCurrentConsumerSubview) {
                 uses.push_back(&use);
               mlir::OpBuilder builder(bridge);
               builder.setInsertionPointAfter(bridge);
+              if (mode >= 3) {
+                auto sourceType =
+                    mlir::cast<mlir::MemRefType>(bridge.getMemref().getType());
+                mlir::Value view;
+                if (mode == 3) {
+                  llvm::SmallVector<mlir::ReassociationIndices> groups{{0, 1},
+                                                                       {2}};
+                  auto collapsed =
+                      builder.create<mlir::memref::CollapseShapeOp>(
+                          bridge.getLoc(), bridge.getMemref(), groups);
+                  view = builder.create<mlir::memref::ExpandShapeOp>(
+                      bridge.getLoc(), sourceType, collapsed.getResult(),
+                      groups);
+                } else {
+                  llvm::SmallVector<mlir::ReassociationIndices> groups{
+                      {0}, {1}, {2, 3}};
+                  auto expandedType =
+                      mlir::memref::ExpandShapeOp::computeExpandedType(
+                          sourceType, {1, extent, 4, 16}, groups);
+                  ASSERT_TRUE(mlir::succeeded(expandedType));
+                  auto expanded = builder.create<mlir::memref::ExpandShapeOp>(
+                      bridge.getLoc(), *expandedType, bridge.getMemref(),
+                      groups);
+                  view = builder.create<mlir::memref::CollapseShapeOp>(
+                      bridge.getLoc(), sourceType, expanded.getResult(),
+                      groups);
+                }
+                for (auto *use : uses)
+                  use->set(view);
+                continue;
+              }
               auto outer = builder.create<mlir::memref::SubViewOp>(
                   bridge.getLoc(), bridge.getMemref(),
                   llvm::ArrayRef<int64_t>{0, 0, 0},
@@ -4902,6 +4933,202 @@ TEST_F(StructuredToTileTest, SharedDDRLoadsEachCurrentConsumerSubview) {
           auto planned = planTileMemory(std::move(tile.module), &failure);
           ASSERT_TRUE(mlir::succeeded(planned));
         }
+      }
+}
+
+TEST_F(StructuredToTileTest, DDRReshapeWindowsKeepExactCoordinatesAndAliases) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (llvm::StringRef dtype : {"f16", "bf16"})
+      for (unsigned mode : {0u, 1u, 2u, 3u, 4u}) {
+        // A nonunit reassociation and a column offset ensure this is not an
+        // identity-view fixture. Written, noncontiguous and unhandled aliases
+        // retain the original load; a whole read shares its allocation with
+        // the window readers.
+        SCOPED_TRACE(::testing::Message()
+                     << extent << "/" << dtype.str() << "/" << mode);
+        std::string element = dtype.str();
+        std::string shape = "2x4x" + std::to_string(extent) + "x128x" + element;
+        std::string tensor = "tensor<" + shape + ">";
+        std::string ddr =
+            "memref<" + shape +
+            (mode == 2
+                 ? ", strided<[" + std::to_string(4 * extent * 128 + 128) +
+                       ", " + std::to_string(extent * 128) + ", 128, 1]>"
+                 : "") +
+            ", #wafer.memory<ddr, tensor>>";
+        std::string spm = "memref<" + shape + ", #wafer.memory<spm, tensor>>";
+        std::string collapsed = "memref<8x" + std::to_string(extent) + "x128x" +
+                                element + ", #wafer.memory<spm, tensor>>";
+        std::string text;
+        llvm::raw_string_ostream body(text);
+        body << "module { wafer.tile.module card_id = 0 tile_id = 0 { "
+                "func.func @entry(%arg: "
+             << ddr
+             << ") { "
+                "%tensor = bufferization.to_tensor %arg restrict : "
+             << ddr << " wafer.tile.region(%tensor : " << tensor
+             << ") -> () { ^bb0(%input: " << tensor
+             << "): "
+                "%spm = bufferization.to_memref %input : "
+             << spm
+             << " %flat = memref.collapse_shape %spm [[0, 1], [2], [3]] : "
+             << spm << " into " << collapsed
+             << " %c0 = arith.constant 0 : index "
+                "%step = arith.constant 128 : index "
+                "%end = arith.constant "
+             << extent / 128 * 128 << " : index ";
+        if (mode == 1)
+          body << "%zero = arith.constant 0.0 : " << element
+               << " memref.store %zero, %flat[%c0, %c0, %c0] : " << collapsed;
+        if (mode == 3)
+          body << " %snapshot = memref.alloc() : " << collapsed
+               << " wafer.tile.copy_into %flat into %snapshot : " << collapsed
+               << " into " << collapsed;
+        if (mode == 4)
+          body << " %alias = memref.reinterpret_cast %flat to offset: [0], "
+                  "sizes: [8, "
+               << extent << ", 128], strides: [" << extent * 128
+               << ", 128, 1] : " << collapsed << " to " << collapsed;
+        auto emitWindow = [&](llvm::StringRef name, llvm::StringRef offset,
+                              int64_t size, llvm::StringRef typeOffset) {
+          std::string window = "memref<8x" + std::to_string(size) + "x64x" +
+                               element + ", strided<[" +
+                               std::to_string(extent * 128) +
+                               ", 128, 1], offset: " + typeOffset.str() +
+                               ">, #wafer.memory<spm, tensor>>";
+          std::string owned = "memref<8x" + std::to_string(size) + "x64x" +
+                              element + ", #wafer.memory<spm, tensor>>";
+          body << " %" << name << " = memref.subview %"
+               << (mode == 4 ? "alias" : "flat") << "[0, " << offset
+               << ", 17] [8, " << size << ", 64] [1, 1, 1] : " << collapsed
+               << " to " << window << " %dst_" << name
+               << " = memref.alloc() : " << owned << " wafer.tile.copy_into %"
+               << name << " into %dst_" << name << " : " << window << " into "
+               << owned;
+        };
+        body << " scf.for %row = %c0 to %end step %step { ";
+        emitWindow("main", "%row", 128, "?");
+        body << " } ";
+        if (extent % 128)
+          emitWindow("tail", std::to_string(extent / 128 * 128), extent % 128,
+                     std::to_string((extent / 128 * 128) * 128 + 17));
+        body << " wafer.tile.yield } return } } }";
+        auto module = parse(body.str());
+        ASSERT_TRUE(module);
+        StructuredMaterializationRelations relations;
+        rebuildCurrentBufferOwnerRelations(*module, relations);
+        ASSERT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
+        auto movement = materializeTileBoundaryMovement(*module, relations);
+        ASSERT_TRUE(movement.succeeded()) << movement.detail;
+        std::vector<unsigned> coverage(extent, 0);
+        unsigned loads = 0;
+        mlir::Value wholeAllocation;
+        module->walk([&](StorageLoadOp load) {
+          ++loads;
+          auto type = mlir::cast<mlir::MemRefType>(load.getDest().getType());
+          if (mode != 0) {
+            wholeAllocation = load.getDest();
+            if (mode == 3) {
+              EXPECT_EQ(type.getShape(),
+                        (llvm::ArrayRef<int64_t>{8, extent, 128}));
+              EXPECT_TRUE(load.getSource()
+                              .getDefiningOp<mlir::memref::CollapseShapeOp>());
+            } else {
+              EXPECT_EQ(type.getShape(),
+                        (llvm::ArrayRef<int64_t>{2, 4, extent, 128}));
+            }
+            EXPECT_FALSE(load->getParentOfType<mlir::scf::ForOp>());
+            return;
+          }
+          EXPECT_EQ(type.getRank(), 3);
+          EXPECT_EQ(type.getDimSize(0), 8);
+          EXPECT_EQ(type.getDimSize(2), 64);
+          EXPECT_LE(type.getDimSize(1), 128);
+          auto view = load.getSource().getDefiningOp<mlir::memref::SubViewOp>();
+          ASSERT_TRUE(view);
+          auto reshape =
+              view.getSource().getDefiningOp<mlir::memref::CollapseShapeOp>();
+          ASSERT_TRUE(reshape);
+          EXPECT_EQ(reshape.getReassociationIndices(),
+                    (llvm::SmallVector<mlir::ReassociationIndices>{
+                        {0, 1}, {2}, {3}}));
+          EXPECT_EQ(mlir::getConstantIntValue(view.getMixedOffsets()[0]), 0);
+          EXPECT_EQ(mlir::getConstantIntValue(view.getMixedOffsets()[2]), 17);
+          EXPECT_EQ(view.getStaticStrides(),
+                    (llvm::ArrayRef<int64_t>{1, 1, 1}));
+          llvm::SmallVector<int64_t> starts;
+          if (auto loop = load->getParentOfType<mlir::scf::ForOp>()) {
+            EXPECT_EQ(mlir::cast<mlir::Value>(view.getMixedOffsets()[1]),
+                      loop.getInductionVar());
+            for (int64_t i = 0; i < extent / 128 * 128; i += 128)
+              starts.push_back(i);
+          } else {
+            auto offset = mlir::getConstantIntValue(view.getMixedOffsets()[1]);
+            ASSERT_TRUE(offset);
+            starts.push_back(*offset);
+          }
+          for (int64_t start : starts)
+            for (int64_t row = 0; row < type.getDimSize(1); ++row)
+              ++coverage[start + row];
+          auto sourceType =
+              mlir::cast<mlir::MemRefType>(reshape.getSrc().getType());
+          EXPECT_EQ(sourceType.getShape(),
+                    (llvm::ArrayRef<int64_t>{2, 4, extent, 128}));
+          EXPECT_TRUE(isWaferDDRMemRefType(sourceType));
+          EXPECT_TRUE(
+              llvm::any_of(relations.buffers, [&](const auto &relation) {
+                return relation.buffer == load.getDest() && relation.owner;
+              }));
+        });
+        EXPECT_EQ(loads, mode == 0 && extent % 128 ? 2u : 1u);
+        if (mode == 0) {
+          EXPECT_TRUE(
+              llvm::all_of(coverage, [](unsigned n) { return n == 1; }));
+        } else {
+          ASSERT_TRUE(wholeAllocation);
+          StorageRootMemo roots;
+          unsigned copies = 0;
+          module->walk([&](MoveCopyIntoOp copy) {
+            ++copies;
+            const auto &sourceRoots = roots.getStorageRoots(copy.getSource());
+            EXPECT_EQ(sourceRoots.size(), 1u);
+            EXPECT_TRUE(sourceRoots.contains(wholeAllocation));
+            EXPECT_FALSE(roots.getStorageRoots(copy.getDest())
+                             .contains(wholeAllocation));
+          });
+          EXPECT_EQ(copies, 1u + (extent % 128 != 0) + (mode == 3));
+          module->walk([&](mlir::memref::StoreOp store) {
+            const auto &storeRoots = roots.getStorageRoots(store.getMemref());
+            EXPECT_EQ(storeRoots.size(), 1u);
+            EXPECT_TRUE(storeRoots.contains(wholeAllocation));
+          });
+          EXPECT_EQ(countOps<mlir::memref::StoreOp>(*module),
+                    mode == 1 ? 1u : 0u);
+          EXPECT_EQ(countOps<mlir::memref::ReinterpretCastOp>(*module),
+                    mode == 4 ? 1u : 0u);
+        }
+        ASSERT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+        if (mode != 0)
+          continue; // The negative retains a full allocation, not a capacity
+                    // claim.
+        std::string detail;
+        auto standalone =
+            createStandaloneTileModules(std::move(module), &detail, &relations);
+        ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+        auto &tile = standalone->front();
+        TileRegionToInstrLoweringSession session(*context);
+        llvm::SmallVector<TileRegionOp> regions;
+        tile.module->walk(
+            [&](TileRegionOp region) { regions.push_back(region); });
+        for (auto region : regions)
+          ASSERT_TRUE(
+              mlir::succeeded(convertTileRegionToInstr(region, session)));
+        ASSERT_TRUE(mlir::succeeded(
+            convertBufferizationCopiesToInstr(*tile.module, session)));
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+        TileMemoryPlanningFailure failure;
+        auto planned = planTileMemory(std::move(tile.module), &failure);
+        ASSERT_TRUE(mlir::succeeded(planned));
       }
 }
 

@@ -310,6 +310,8 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
       ${_wafer_gqa_case} float16 fp16 search)
   endforeach()
   unset(_wafer_gqa_case)
+  wafer_add_pytorch_source_no_card_test(
+    attention-decode-kv-cache-long-4096 float16 fp16 search)
 
   foreach(_wafer_heterogeneous_policy IN ITEMS none search)
     wafer_add_pytorch_source_no_card_test(

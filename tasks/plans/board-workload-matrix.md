@@ -41,7 +41,8 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 本次检查的current代码事实：
 
 1. `wafer_pytorch_board_cases.py`已接入ResNet-18、ViT EncoderBlock、大GEMM和batch共享RHS及其补充配置；
-   GQA已接入并通过source/reference主机覆盖；YOLO、单层完整LM和长cache尚未接入。当前LLaMA输入是hidden states，仅输出block hidden states。
+   GQA已通过source/reference及默认search package/no-card；长cache已接入并通过两步source/reference，正式第一步仍被actual SPM容量拒绝。
+   YOLO与单层完整LM尚未接入。当前LLaMA输入是hidden states，仅输出block hidden states。
    它不能覆盖token embedding、final RMSNorm、LM head，也不能给新网络签发ready资格。
 2. `wafer_pytorch_board_common.py`已支持i32/i64 raw传输，但case构造仍要求所有input与case浮点dtype一致。
    必须改成逐输入/输出typed合同，整数索引保持整数；raw支持不证明动态索引已能lower到设备。
@@ -476,9 +477,53 @@ PBQP、transport及算术不变。多consumer或映射不完整时不伪造协�
 下一修改在08号movement边界处理已物化的metadata view→局部需求：从实际DDR source重算view的shape/stride/offset，
 先证明该view可在DDR上表达，再将读取放在真正消费的窗口；保持PBQP已选SPM布局及原输出语义。
 不能按GQA名或KV shape删broadcast，不能把有copy语义的reshape伪装alias；混合consumer、非连续reshape、
-布局及写入分支需要成对覆盖。该修改尚未实施；两项GQA尚未达到board-ready。
+布局及写入分支需要成对覆盖。该缺口由下面的metadata view加载修复继续闭合；前述失败记录保留为对照。
 
 本轮固定FP16 LLaMA的独立package/no-card通过，wall 1,038.29秒、RSS 2,783,848 KiB；
 14个source文件及完整package三文件均与初始正确快版本逐字节相同。没有新增实卡数值或计时。
 完整证据见[容量协调记录](../../docs/data/board-performance/coupled-capacity-repair-20260914.json)。
 这项主机修复不计为三轮性能调优，原BF16数值、其余模型和最终全矩阵资格保持开放。
+
+### Metadata view上的局部DDR加载
+
+08号boundary materializer现沿当前`SubViewOp`、`CollapseShapeOp`和`ExpandShapeOp`共同的SSA view链物化读取。
+先用pinned MemRef接口验证DDR的连续性及新view类型，再在首次数据需求处建立所选layout的SPM allocation/load；
+metadata reshape本身不要求完整输入驻留。只读证明消费value关联的标准effect；Tile op的SPM/worker汇总resource effect
+不能误作对该输入的写入。未知alias、写入及不能证明连续的reshape保留原数据边界，整体读取与下级views共享同一allocation。
+没有修改SPM gate、search预算、PBQP、transport或模型算术，也没有按GQA名称改变广播。
+
+| 覆盖 | 当前结果 |
+| --- | --- |
+| SharedDDR的原whole/subview路径及新增collapse/expand，1024/1025/1031，4/16 Tiles | 精确坐标、主循环/tail、每行一次及实际Instr/completion/SPM通过 |
+| 本地非unit reassociation、列offset17、FP16/BF16、同三种长度 | 局部窗口的extent/owner/坐标与实际下游通过；写入、不连续DDR、未知alias、whole+partial reader分支保持共同storage root |
+| 动态extent及rank reduction | 原size SSA保持；未知extent仍在原descriptor下游明确拒绝，不伪造SPM通过 |
+| 完整Transforms/Driver | 390/126项通过，45.18/576.62秒，无skip；canonical完整增量及随后Ninja no-op通过 |
+| GQA S1024，默认8/42 | 9 accepted、33 actual capacity、0 unsupported；完整package/no-card通过，302.05秒、RSS 3,323,436 KiB |
+| GQA S1025，默认8/42 | 9 accepted、32 actual capacity、1 Tile→Instr unsupported；完整package/no-card通过，350.93秒、RSS 3,304,124 KiB |
+
+两项最终16-Tile current dataflow均不再包含原8 MiB输入load；最大单次逻辑load payload分别524,288/524,800 bytes。
+这是当前load的extent检查，不是动态DDR总流量、设备耗时或容量上界推测。两项均有2次input-sharing accepted和1次pipeline accepted，
+这些是探索计数，不能冒充winner的transport或性能收益。原HF完整reference、运行时payload和strict no-card齐全，
+两项GQA达到board-ready；设备仍未恢复，本项没有新的实卡数值/profile，也不计入三轮调优。
+固定FP16 LLaMA的独立fresh no-card通过，wall 1,066.73秒、RSS 2,830,984 KiB；14个source文件和权重数据相同，
+但设备module不同，manifest仅对应module digest改变。43,788项temporal选择计数及9个accepted编号与原快版本一致；
+最低估时的22/29候选中，actual DDR读451,372,608→447,432,768 bytes，DDR segments 159,040→159,520，
+指令数38,064、DDR写30,319,296 bytes及计算/同步估时保持不变。此处记录actual候选统计，不当设备性能；
+本轮LLaMA没有保留final IR dump，不能以这些计数替代完整IR差异或数值证明。该修改的LLaMA实卡数值与性能回归仍待原快包matched A/B。
+完整身份与证据见[input-view记录](../../docs/data/board-performance/input-view-loading-20260914.json)。
+
+### 长KV decode接入
+
+复用现有官方HF `LlamaAttention`、RoPE、causal mask与functional cache适配层，只参数化初始长度和case标识；
+新配置`attention-decode-kv-cache-long-4096`固定FP16、hidden `[1,1,4096]`、32 heads×128，原context4096。
+初始K/V长度4094，两步返回完整hidden、K、V并达到4095/4096；第二步接收第一步actual输出，容差和逐bit prefix验证不变。
+按原config拒绝两步越过context的输入，不加入RoPE扩展。该case仍是完整attention decode，不包含MLP或LM head。
+
+主机覆盖已通过：完整两步HF eager、两个portable导出、精确cache shape、旧prefix单bit fault injection、
+用不同新增token证明continuation消费传入KV而非重算第一步reference；原1023→1024→1025配对继续通过。
+新配置已注册正式FP16 search/no-card；36项case合同全部通过，52.531秒，未修改原90秒期限。
+首次手工suite缺少CTest已有的Board/Support Python路径，只有catalog import失败；按configured环境重跑36项通过，未改产品绕过。
+正式默认8/42的第一步已结束：5个结构、42 actual capacity、0 unsupported、0 accepted，14次实际容量修正、28次无新修正；
+wall 246.20秒、RSS 1,226,876 KiB，无package，第二步未进入编译。反馈已有2,144个输入坐标，但也有3,142次ambiguous-input计数；
+这些汇总不能确定哪个实际allocation阻断缩小。下一步取实际失败demand及其producer/alias链，核对输入窗口、cache输出与反馈边界，
+不先假定与GQA同源或盲目增加预算。当前只签两步source/reference接入，不签board-ready或实卡结果。

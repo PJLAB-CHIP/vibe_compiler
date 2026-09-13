@@ -1442,3 +1442,38 @@ GQA主配置与1025尾部仍未产生package：默认8/42各42次actual capacity
 本节没有新增实卡数值、设备性能或profile，不计入三轮调优。
 身份、实际IR摘录和原始证据hash见
 [`coupled-capacity-repair-20260914.json`](data/board-performance/coupled-capacity-repair-20260914.json)。
+
+
+## 2026-09-14：Metadata view局部加载使GQA达到board-ready
+
+根因在layout之后的boundary movement：原输入加载只穿过Subview，遇到`memref.collapse_shape`就把完整输入载入SPM。
+metadata view没有数据读取语义，却在此处阻断了已经选择的局部需求。修复统一处理当前Subview/collapse/expand链，
+用pinned MemRef规则先证明DDR连续性和新view类型，在首次数据使用处建立局部SPM load。
+整体读取与子view共享allocation；写入、未知alias、非连续reshape保留原边界。PBQP、search预算、SPM gate、算术及dtype不变。
+
+| 配置 | 默认8/42实际结果 | 完整runner wall / 峰值RSS | 验证层级 |
+| --- | --- | --- | --- |
+| GQA FP16，Q `[1,32,1024,128]`，KV `[1,8,1024,128]` | 9 accepted、33 actual capacity、0 unsupported | 302.05秒 / 3,323,436 KiB | 原HF完整reference、payload、package及16-Tile strict no-card通过 |
+| 同配置S1025 | 9 accepted、32 actual capacity、1 Tile→Instr unsupported | 350.93秒 / 3,304,124 KiB | 同上，完整尾部配置通过 |
+
+两项此前都是0 accepted。最终16个Tile的最大单次逻辑输入load分别为524,288/524,800 bytes，
+已无原来的8 MiB完整输入load。它们是actual dataflow上的窗口大小，不是动态DDR总流量或SPM合法性预测；
+成功的actual allocator与target/package/no-card给出主机合法资格。两项均探索到2次input-sharing accepted和1次pipeline accepted，
+这些不是winner的transport结论。设备仍未恢复，没有新的实卡数值、时间或profile，不计入三轮调优。
+
+机制覆盖包括4/16 Tiles、1024/1025/1031、FP16/BF16、非unit reassociation、offset17、主循环及tail，
+whole+partial共用storage、写入、未知alias、不连续DDR和原dynamic size SSA。完整Transforms 390/390、Driver 126/126通过，
+canonical完整增量及Ninja no-op通过。固定FP16 LLaMA独立no-card已通过，wall 1,066.73秒、RSS 2,830,984 KiB。
+14个source文件、完整权重数据与初始快版本相同，manifest仅module digest改变，但ELF设备模块不同。
+temporal选择计数43,788项及accepted编号一致；最低估时的22/29候选的actual DDR读451,372,608→447,432,768 bytes，
+传输段159,040→159,520，指令数38,064、DDR写30,319,296 bytes及计算/同步估时不变。不能以估时减少或source相同签发实卡无退化。
+本轮未保存LLaMA final IR dump；后续以原快包matched A/B重签完整数值和性能，不能复用旧包计时冒充新结果。
+
+同轮新增长KV decode的source资格：复用官方HF attention/QKVO/RoPE，FP16、hidden `[1,1,4096]`，
+KV `[1,32,4094,128]` 连续两步到4095/4096。两步完整eager、portable导出、旧prefix单bit fault和actual state接续通过；
+原1023起点配对保留，36项Python case检查全部通过。正式第一步默认8/42得到42次actual capacity、0 unsupported、0 accepted，
+wall 246.20秒、RSS 1,226,876 KiB，无package；第二步未进入编译，不能签board-ready。
+当前计数不能确定具体冲突buffer，后续从actual allocation/owner/reader追根因，不借本次接入扩大预算或放宽数值。
+
+本节身份、窗口统计、LLaMA包差异、长cache拒绝及原始日志hash见
+[`input-view-loading-20260914.json`](data/board-performance/input-view-loading-20260914.json)。

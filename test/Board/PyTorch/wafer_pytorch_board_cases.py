@@ -963,6 +963,7 @@ def _attention_decode_kv_cache_step(
     past_value_input: torch.Tensor | None,
     step_ordinal: int,
     add_continuation: bool,
+    case_name: str = "attention-decode-kv-cache",
 ) -> PyTorchBoardCase:
     if dtype not in {torch.float16, torch.bfloat16}:
         raise RuntimeError(
@@ -1142,13 +1143,14 @@ def _attention_decode_kv_cache_step(
                 past_value_input=outputs[2],
                 step_ordinal=step_ordinal + 1,
                 add_continuation=False,
+                case_name=case_name,
             )
 
     return PyTorchBoardCase(
         name=(
-            "attention-decode-kv-cache"
+            case_name
             if step_ordinal == 1
-            else "attention-decode-kv-cache-continuation"
+            else f"{case_name}-continuation"
         ),
         num_partitions=1,
         dtype=dtype,
@@ -1164,16 +1166,21 @@ def _attention_decode_kv_cache_step(
 
 
 def _attention_decode_kv_cache(
-    dtype: torch.dtype, seed: int
+    dtype: torch.dtype, seed: int, *, past_length: int = 1023,
+    name: str = "attention-decode-kv-cache",
 ) -> PyTorchBoardCase:
+    config = capture.load_hf_transformer_config(HF_LLAMA2_7B_CONFIG)
+    if past_length < 0 or past_length + 2 > config["max_position_embeddings"]:
+        raise ValueError("two-step decode must stay within the original context")
     return _attention_decode_kv_cache_step(
         dtype,
         seed,
-        past_length=1023,
+        past_length=past_length,
         past_key_input=None,
         past_value_input=None,
         step_ordinal=1,
         add_continuation=True,
+        case_name=name,
     )
 
 
@@ -1272,6 +1279,9 @@ CASE_FACTORIES: dict[
         dtype, seed, extent=1031
     ),
     "attention-decode-kv-cache": _attention_decode_kv_cache,
+    "attention-decode-kv-cache-long-4096": lambda dtype, seed: _attention_decode_kv_cache(
+        dtype, seed, past_length=4094, name="attention-decode-kv-cache-long-4096"
+    ),
     "llama-2-7b-block": _llama_2_7b_block,
 }
 

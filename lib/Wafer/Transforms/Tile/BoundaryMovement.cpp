@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/Utils/MemRefUtils.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -1635,39 +1636,151 @@ static mlir::MemRefType getOwnedSPMType(mlir::MemRefType type) {
                                type.getMemorySpace());
 }
 
-static bool hasOnlySubviewUses(mlir::Value value) {
-  return !value.use_empty() &&
-         llvm::all_of(value.getUsers(), [](mlir::Operation *user) {
-           return mlir::isa<mlir::memref::SubViewOp>(user);
-         });
+static bool isInputView(mlir::Operation *op) {
+  return mlir::isa<mlir::memref::SubViewOp, mlir::memref::CollapseShapeOp,
+                   mlir::memref::ExpandShapeOp>(op);
 }
 
-static mlir::MemRefType
-getRetargetedSubviewType(mlir::memref::SubViewOp subview, mlir::Value source) {
-  return mlir::cast<mlir::MemRefType>(
-      mlir::memref::SubViewOp::inferRankReducedResultType(
-          subview.getType().getShape(),
-          mlir::cast<mlir::MemRefType>(source.getType()),
-          subview.getMixedOffsets(), subview.getMixedSizes(),
-          subview.getMixedStrides()));
+static bool hasOnlyInputViewUses(mlir::Value value) {
+  return !value.use_empty() && llvm::all_of(value.getUses(), [](auto &use) {
+    return isInputView(use.getOwner()) && use.getOperandNumber() == 0;
+  });
 }
 
-static void retargetSubviewUsers(mlir::Value oldValue, mlir::Value newValue,
-                                 mlir::IRRewriter &rewriter) {
-  for (mlir::OpOperand &use : llvm::make_early_inc_range(oldValue.getUses())) {
-    auto subview = mlir::dyn_cast<mlir::memref::SubViewOp>(use.getOwner());
-    if (!subview || use.getOperandNumber() != 0) {
+static mlir::MemRefType getRetargetedViewType(mlir::Operation *op,
+                                              mlir::MemRefType source) {
+  if (auto subview = mlir::dyn_cast<mlir::memref::SubViewOp>(op))
+    return mlir::dyn_cast_or_null<mlir::MemRefType>(
+        mlir::memref::SubViewOp::inferRankReducedResultType(
+            subview.getType().getShape(), source, subview.getMixedOffsets(),
+            subview.getMixedSizes(), subview.getMixedStrides()));
+  if (auto collapse = mlir::dyn_cast<mlir::memref::CollapseShapeOp>(op)) {
+    auto groups = collapse.getReassociationIndices();
+    if (!mlir::memref::CollapseShapeOp::isGuaranteedCollapsible(source, groups))
+      return {};
+    return mlir::memref::CollapseShapeOp::computeCollapsedType(source, groups);
+  }
+  if (auto expand = mlir::dyn_cast<mlir::memref::ExpandShapeOp>(op)) {
+    auto type = mlir::memref::ExpandShapeOp::computeExpandedType(
+        source, expand.getType().getShape(), expand.getReassociationIndices());
+    if (mlir::succeeded(type))
+      return *type;
+  }
+  return {};
+}
+
+// A loaded window has compact strides. Prove that all of its remaining views
+// can be rebuilt before replacing their common source allocation.
+static bool canRetargetViewUsers(mlir::Value value, mlir::MemRefType source) {
+  for (auto &use : value.getUses()) {
+    auto *op = use.getOwner();
+    if (!mlir::isa<mlir::ViewLikeOpInterface>(op))
+      continue;
+    if (!isInputView(op) || use.getOperandNumber() != 0)
+      return false;
+    auto type = getRetargetedViewType(op, source);
+    if (!type || !canRetargetViewUsers(op->getResult(0), type))
+      return false;
+  }
+  return true;
+}
+
+static bool hasOnlyReadDemand(mlir::Value value,
+                              llvm::DenseSet<mlir::Value> &visited) {
+  if (!visited.insert(value).second)
+    return true;
+  for (auto &use : value.getUses()) {
+    auto *op = use.getOwner();
+    if (isInputView(op) && use.getOperandNumber() == 0) {
+      if (!hasOnlyReadDemand(op->getResult(0), visited))
+        return false;
+      continue;
+    }
+    auto effects = mlir::getEffectsRecursively(op);
+    if (!effects || op->hasTrait<mlir::OpTrait::IsTerminator>() ||
+        op->getNumRegions() || mlir::isa<mlir::ViewLikeOpInterface>(op))
+      return false;
+    for (auto result : op->getResults())
+      if (mlir::isa<mlir::ShapedType>(result.getType()) &&
+          !llvm::any_of(*effects, [&](const auto &effect) {
+            return effect.getValue() == result &&
+                   mlir::isa<mlir::MemoryEffects::Allocate>(effect.getEffect());
+          }))
+        return false;
+    bool reads = false;
+    for (const auto &effect : *effects) {
+      // Tile ops also summarize worker/SPM resources. Buffer access is
+      // described separately by their value-associated standard effects.
+      if (!effect.getValue() &&
+          effect.getResource() == mlir::SideEffects::DefaultResource::get())
+        return false;
+      if (effect.getValue() != value)
+        continue;
+      if (!mlir::isa<mlir::MemoryEffects::Read>(effect.getEffect()))
+        return false;
+      reads = true;
+    }
+    if (!reads)
+      return false;
+  }
+  return true;
+}
+
+static bool checkInputViewUses(mlir::Value source, mlir::MemRefType ddrType,
+                               bool &reshaped) {
+  if (!hasOnlyInputViewUses(source))
+    return false;
+  for (auto *op : source.getUsers()) {
+    auto type = getRetargetedViewType(op, ddrType);
+    if (!type)
+      return false;
+    reshaped |= !mlir::isa<mlir::memref::SubViewOp>(op);
+    mlir::Value result = op->getResult(0);
+    if (hasOnlyInputViewUses(result)) {
+      if (!checkInputViewUses(result, type, reshaped))
+        return false;
+    } else if (!canRetargetViewUsers(
+                   result, getOwnedSPMType(mlir::cast<mlir::MemRefType>(
+                               result.getType())))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool canLoadInputViews(mlir::Value source, mlir::MemRefType ddrType) {
+  bool reshaped = false;
+  if (!checkInputViewUses(source, ddrType, reshaped))
+    return false;
+  llvm::DenseSet<mlir::Value> visited;
+  return !reshaped || hasOnlyReadDemand(source, visited);
+}
+
+static mlir::Value rebuildInputView(mlir::Operation *op, mlir::Value source,
+                                    mlir::IRRewriter &rewriter) {
+  auto type =
+      getRetargetedViewType(op, mlir::cast<mlir::MemRefType>(source.getType()));
+  assert(type && "input view type was preflighted");
+  mlir::IRMapping mapping;
+  mapping.map(mlir::cast<mlir::ViewLikeOpInterface>(op).getViewSource(),
+              source);
+  rewriter.setInsertionPoint(op);
+  auto *view = rewriter.clone(*op, mapping);
+  rewriter.modifyOpInPlace(view, [&] { view->getResult(0).setType(type); });
+  return view->getResult(0);
+}
+
+static void retargetInputViewUsers(mlir::Value oldValue, mlir::Value newValue,
+                                   mlir::IRRewriter &rewriter) {
+  for (auto &use : llvm::make_early_inc_range(oldValue.getUses())) {
+    auto *op = use.getOwner();
+    if (!isInputView(op) || use.getOperandNumber() != 0) {
       use.set(newValue);
       continue;
     }
-    rewriter.setInsertionPoint(subview);
-    auto replacement = rewriter.create<mlir::memref::SubViewOp>(
-        subview.getLoc(), getRetargetedSubviewType(subview, newValue), newValue,
-        subview.getMixedOffsets(), subview.getMixedSizes(),
-        subview.getMixedStrides());
-    retargetSubviewUsers(subview.getResult(), replacement.getResult(),
-                         rewriter);
-    rewriter.eraseOp(subview);
+    auto replacement = rebuildInputView(op, newValue, rewriter);
+    retargetInputViewUsers(op->getResult(0), replacement, rewriter);
+    rewriter.eraseOp(op);
   }
 }
 
@@ -1683,7 +1796,7 @@ static void normalizeSubviewResultTypes(mlir::ModuleOp module) {
     auto resultType = mlir::dyn_cast<mlir::MemRefType>(subview.getType());
     if (!sourceType || !resultType)
       continue;
-    auto expected = getRetargetedSubviewType(subview, subview.getSource());
+    auto expected = getRetargetedViewType(subview, sourceType);
     if (expected && expected.getRank() == resultType.getRank() &&
         expected.getShape() == resultType.getShape() && expected != resultType)
       rewriter.modifyOpInPlace(subview,
@@ -1692,61 +1805,55 @@ static void normalizeSubviewResultTypes(mlir::ModuleOp module) {
 }
 
 static mlir::LogicalResult
-materializeSubviewLoad(mlir::memref::SubViewOp subview, mlir::Value ddrSource,
-                       mlir::IRRewriter &rewriter,
-                       BoundaryMovementStatistics &statistics) {
-  rewriter.setInsertionPoint(subview);
-  auto ddrSubview = rewriter.create<mlir::memref::SubViewOp>(
-      subview.getLoc(), getRetargetedSubviewType(subview, ddrSource), ddrSource,
-      subview.getMixedOffsets(), subview.getMixedSizes(),
-      subview.getMixedStrides());
-  if (hasOnlySubviewUses(subview.getResult())) {
-    llvm::SmallVector<mlir::memref::SubViewOp, 4> children;
-    for (auto *user : subview.getResult().getUsers())
-      children.push_back(mlir::cast<mlir::memref::SubViewOp>(user));
-    for (auto child : children)
+materializeInputViewLoad(mlir::Operation *view, mlir::Value ddrSource,
+                         mlir::IRRewriter &rewriter,
+                         BoundaryMovementStatistics &statistics) {
+  mlir::Value oldValue = view->getResult(0);
+  auto ddrView = rebuildInputView(view, ddrSource, rewriter);
+  if (hasOnlyInputViewUses(oldValue)) {
+    llvm::SmallVector<mlir::Operation *, 4> children(oldValue.getUsers());
+    for (auto *child : children)
       if (mlir::failed(
-              materializeSubviewLoad(child, ddrSubview, rewriter, statistics)))
+              materializeInputViewLoad(child, ddrView, rewriter, statistics)))
         return mlir::failure();
   } else {
-    auto oldType = mlir::cast<mlir::MemRefType>(subview.getType());
+    auto oldType = mlir::cast<mlir::MemRefType>(oldValue.getType());
     llvm::SmallVector<mlir::Value> dynamicSizes;
+    rewriter.setInsertionPoint(view);
     for (int64_t dimension = 0; dimension < oldType.getRank(); ++dimension)
       if (oldType.isDynamicDim(dimension))
         dynamicSizes.push_back(rewriter.createOrFold<mlir::memref::DimOp>(
-            subview.getLoc(), ddrSubview.getResult(), dimension));
+            view->getLoc(), ddrView, dimension));
     // A view's current extent is an allocation operand, not a guessed bound.
     // The downstream descriptor/SPM gate owns support for dynamic extents.
     auto allocation = rewriter.create<mlir::memref::AllocOp>(
-        subview.getLoc(), getOwnedSPMType(oldType), dynamicSizes);
-    rewriter.create<StorageLoadOp>(subview.getLoc(), ddrSubview.getResult(),
+        view->getLoc(), getOwnedSPMType(oldType), dynamicSizes);
+    rewriter.create<StorageLoadOp>(view->getLoc(), ddrView,
                                    allocation.getResult());
-    retargetSubviewUsers(subview.getResult(), allocation.getResult(), rewriter);
+    retargetInputViewUsers(oldValue, allocation.getResult(), rewriter);
     ++statistics.ddrLoads;
   }
-  rewriter.eraseOp(subview);
+  rewriter.eraseOp(view);
   return mlir::success();
 }
 
 static mlir::LogicalResult
-materializeSubviewUses(mlir::Value source, mlir::Value ddrSource,
-                       mlir::IRRewriter &rewriter,
-                       BoundaryMovementStatistics &statistics) {
-  llvm::SmallVector<mlir::memref::SubViewOp, 8> subviews;
-  for (mlir::Operation *user : source.getUsers())
-    subviews.push_back(mlir::cast<mlir::memref::SubViewOp>(user));
-  for (auto subview : subviews)
+materializeInputViewUses(mlir::Value source, mlir::Value ddrSource,
+                         mlir::IRRewriter &rewriter,
+                         BoundaryMovementStatistics &statistics) {
+  llvm::SmallVector<mlir::Operation *, 8> views(source.getUsers());
+  for (auto *view : views)
     if (mlir::failed(
-            materializeSubviewLoad(subview, ddrSource, rewriter, statistics)))
+            materializeInputViewLoad(view, ddrSource, rewriter, statistics)))
       return mlir::failure();
   return mlir::success(source.use_empty());
 }
 
-static mlir::LogicalResult materializeSubviewLoads(
+static mlir::LogicalResult materializeInputViewLoads(
     mlir::bufferization::ToMemrefOp bridge, mlir::BlockArgument ddrArgument,
     mlir::IRRewriter &rewriter, BoundaryMovementStatistics &statistics) {
-  if (mlir::failed(materializeSubviewUses(bridge.getMemref(), ddrArgument,
-                                          rewriter, statistics)))
+  if (mlir::failed(materializeInputViewUses(bridge.getMemref(), ddrArgument,
+                                            rewriter, statistics)))
     return mlir::failure();
   rewriter.eraseOp(bridge);
   ++statistics.tensorBridgesRemoved;
@@ -2797,20 +2904,20 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
             for (auto subview : peer->destinationSubviews)
               payloads.push_back(subview.getResult());
           }
-          bool subviewLoads =
+          bool viewLoads =
               !peer->recursiveDoubling &&
               llvm::all_of(payloads, [&](mlir::Value payload) {
                 return logicalTypesMatch(
                            mlir::cast<mlir::MemRefType>(payload.getType()),
                            binding->second.type) &&
-                       hasOnlySubviewUses(payload);
+                       canLoadInputViews(payload, binding->second.type);
               });
-          if (subviewLoads) {
+          if (viewLoads) {
             for (auto payload : payloads)
-              if (mlir::failed(materializeSubviewUses(payload, argument,
-                                                      rewriter, statistics)))
+              if (mlir::failed(materializeInputViewUses(payload, argument,
+                                                        rewriter, statistics)))
                 return failApply(
-                    "shared DDR subview load materialization failed");
+                    "shared DDR input view load materialization failed");
             for (auto subview : peer->destinationSubviews)
               rewriter.eraseOp(subview);
             for (auto bridge : input.bridges) {
@@ -2891,10 +2998,12 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
         }
         argument.setType((*ddr).getType());
         for (mlir::bufferization::ToMemrefOp bridge : input.bridges) {
-          if (hasOnlySubviewUses(bridge.getMemref())) {
-            if (mlir::failed(materializeSubviewLoads(bridge, argument, rewriter,
-                                                     statistics)))
-              return failApply("temporal subview load materialization failed");
+          if (canLoadInputViews(
+                  bridge.getMemref(),
+                  mlir::cast<mlir::MemRefType>(argument.getType()))) {
+            if (mlir::failed(materializeInputViewLoads(bridge, argument,
+                                                       rewriter, statistics)))
+              return failApply("input view load materialization failed");
             continue;
           }
           rewriter.setInsertionPointToStart(&block);

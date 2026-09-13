@@ -1165,6 +1165,56 @@ class PyTorchBoardCasesTest(unittest.TestCase):
         self.assertIn("tensor<1x32x1023x128xf16>", step_one_stablehlo)
         self.assertIn("tensor<1x32x1024x128xf16>", step_two_stablehlo)
 
+    def test_hf_long_decode_reaches_context_limit_with_actual_continuation(self) -> None:
+        name = "attention-decode-kv-cache-long-4096"
+        case = cases.make_case(name, dtype=torch.float16, seed=20260803)
+        self.assertEqual(case.name, name)
+        self.assertEqual(case.inputs[0].shape, (1, 1, 4096))
+        for tensor in case.inputs[1:3]:
+            self.assertEqual(tensor.shape, (1, 32, 4094, 128))
+        first = case.materialize_expected_outputs()
+        self.assertEqual(first[0].shape, (1, 1, 4096))
+        for tensor in first[1:]:
+            self.assertEqual(tensor.shape, (1, 32, 4095, 128))
+        case.validate_actual_outputs(first)
+
+        # Stand in for readback with distinguishable newly appended tokens.
+        # The original prefix stays exact; the next step must use these values.
+        actual = tuple(tensor.clone() for tensor in first)
+        actual[1][0, 0, -1, 0] += 1
+        actual[2][0, 0, -1, 0] -= 1
+        case.validate_actual_outputs(actual)
+        continuation = case.continuation_factory(actual)
+        self.assertEqual(continuation.name, f"{name}-continuation")
+        self.assertIsNone(continuation.continuation_factory)
+        for index in (1, 2):
+            self.assertTrue(torch.equal(continuation.inputs[index], actual[index]))
+            self.assertFalse(torch.equal(continuation.inputs[index], first[index]))
+        second = continuation.materialize_expected_outputs()
+        self.assertEqual(second[0].shape, (1, 1, 4096))
+        continuation.validate_actual_outputs(second)
+        for index in (1, 2):
+            self.assertEqual(second[index].shape, (1, 32, 4096, 128))
+            self.assertTrue(torch.equal(second[index][..., :-1, :], actual[index]))
+            corrupt = list(second)
+            corrupt[index] = corrupt[index].clone()
+            corrupt[index].view(torch.int16)[0, 31, 4094, 127] ^= 1
+            with self.assertRaisesRegex(RuntimeError, "existing KV prefix"):
+                continuation.validate_actual_outputs(tuple(corrupt))
+        with tempfile.TemporaryDirectory() as directory:
+            for step, length in ((case, 4094), (continuation, 4095)):
+                program = pathlib.Path(directory) / str(length)
+                step.export_program(program)
+                stablehlo = read_portable_stablehlo(program)
+                self.assertIn(f"tensor<1x32x{length}x128xf16>", stablehlo)
+                self.assertIn(f"tensor<1x32x{length + 1}x128xf16>", stablehlo)
+                self.assertGreaterEqual(stablehlo.count("stablehlo.concatenate"), 2)
+        for invalid in (-1, 4095):
+            with self.assertRaisesRegex(ValueError, "original context"):
+                cases._attention_decode_kv_cache(
+                    torch.float16, seed=20260803, past_length=invalid
+                )
+
     def test_hf_functional_decode_uses_official_causal_mask_path(self) -> None:
         from transformers.masking_utils import create_causal_mask
 
