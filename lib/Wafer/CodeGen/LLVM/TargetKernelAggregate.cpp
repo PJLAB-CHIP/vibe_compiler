@@ -242,7 +242,8 @@ llvm::Function *consumeArgumentRow(llvm::Function &body) {
 llvm::Error createKernelAggregateExports(
     llvm::Module &module, llvm::ArrayRef<std::string> bodyNames,
     llvm::ArrayRef<int64_t> tileIdsByLaunchSlot, llvm::StringRef mainSymbol,
-    uint64_t slotsPerTile, KernelEntryABI entryABI, bool includePrepare) {
+    llvm::ArrayRef<uint64_t> slotsByLaunchSlot, KernelEntryABI entryABI,
+    bool includePrepare) {
   llvm::LLVMContext &context = module.getContext();
   llvm::Type *voidType = llvm::Type::getVoidTy(context);
   llvm::IntegerType *i32 = llvm::Type::getInt32Ty(context);
@@ -325,8 +326,10 @@ llvm::Error createKernelAggregateExports(
   llvm::SwitchInst *dispatch =
       builder.CreateSwitch(pid, defaultBlock, kKernelAggregateTileCount);
 
+  uint64_t rowBase = 0;
   for (int64_t launchSlot = 0; launchSlot < kKernelAggregateTileCount;
        ++launchSlot) {
+    const uint64_t slotsPerTile = slotsByLaunchSlot[launchSlot];
     llvm::Function *body = module.getFunction(bodyNames[launchSlot]);
     if (!body || body->isDeclaration() || body->isVarArg() ||
         !body->getReturnType()->isVoidTy() ||
@@ -336,7 +339,8 @@ llvm::Error createKernelAggregateExports(
         }))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "kernel launch slot %lld body '%s' does not match the common typed "
+          "kernel launch slot %lld body '%s' does not match the entry-local "
+          "typed "
           "slot schema (present=%d declaration=%d vararg=%d arguments=%llu)",
           static_cast<long long>(launchSlot), bodyNames[launchSlot].c_str(),
           body != nullptr, body ? body->isDeclaration() : 0,
@@ -353,7 +357,6 @@ llvm::Error createKernelAggregateExports(
     dispatch->addCase(llvm::ConstantInt::get(i32, tileId), slotBlock);
     builder.SetInsertPoint(slotBlock);
     llvm::Value *row = main->getArg(0);
-    uint64_t rowBase = static_cast<uint64_t>(launchSlot) * slotsPerTile;
     if (entryABI == KernelEntryABI::TileRowPointerTable) {
       llvm::Value *rowAddress = builder.CreateInBoundsGEP(
           i64, main->getArg(0), llvm::ConstantInt::get(i64, launchSlot),
@@ -374,6 +377,7 @@ llvm::Error createKernelAggregateExports(
           llvm::formatv("launch_slot.{0}.slots", launchSlot).str());
     }
     builder.CreateCall(body, {row})->setCallingConv(body->getCallingConv());
+    rowBase += slotsPerTile;
     builder.CreateBr(exitBlock);
   }
   builder.SetInsertPoint(defaultBlock);
@@ -411,16 +415,22 @@ buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules) {
   const uint64_t packetBytes = kernel.form == KernelLaunchForm::Cluster
                                    ? kTx81ClusterKernelArgumentBytesMax
                                    : kTx81KernelArgumentBytesMax;
-  if (first.getTileEntryArguments().empty() ||
-      (kernel.entryABI == KernelEntryABI::TileMajorPointerTable &&
-       first.getTileEntryArguments().size() >
-           packetBytes / sizeof(uint64_t) / kKernelAggregateTileCount) ||
-      (kernel.entryABI == KernelEntryABI::TileRowPointerTable &&
-       kKernelAggregateTileCount > packetBytes / sizeof(uint64_t)))
-    return llvm::createStringError(
-        llvm::errc::invalid_argument,
-        "kernel aggregate argument packet exceeds the qualified V5.6 packet "
-        "limit");
+  uint64_t remaining = packetBytes / sizeof(uint64_t);
+  for (const auto &source : targetLLVMModules.getModules()) {
+    const uint64_t packetSlots =
+        kernel.entryABI == KernelEntryABI::TileRowPointerTable
+            ? 1
+            : source.getTileEntryArguments().size();
+    if (source.getTileEntryArguments().empty() || packetSlots > remaining)
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "kernel aggregate argument packet exceeds the qualified V5.6 packet "
+          "limit");
+    remaining -= packetSlots;
+  }
+  if (llvm::Error error =
+          validateTileEntryArgumentDomain(targetLLVMModules.getModules()))
+    return std::move(error);
   const size_t transportStatusSlots = llvm::count_if(
       first.getTileEntryArguments(), [](const TileEntryArgument &slot) {
         return slot.kind == TileEntryArgumentKind::TransportStatus;
@@ -456,9 +466,7 @@ buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules) {
         source.getModule().getTargetTriple() !=
             first.getModule().getTargetTriple() ||
         source.getModule().getDataLayoutStr() !=
-            first.getModule().getDataLayoutStr() ||
-        findTileEntryArgumentOrderDifference(source.getTileEntryArguments(),
-                                             first.getTileEntryArguments()))
+            first.getModule().getDataLayoutStr())
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "kernel target Tile domain has inconsistent typed module "
@@ -478,10 +486,12 @@ buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules) {
   aggregate->setDataLayout(first.getModule().getDataLayoutStr());
   llvm::Linker linker(*aggregate);
   std::vector<std::string> bodyNames(kKernelAggregateTileCount);
+  std::vector<uint64_t> slotsByLaunchSlot(kKernelAggregateTileCount);
 
   for (int64_t launchSlot = 0; launchSlot < kKernelAggregateTileCount;
        ++launchSlot) {
     const TargetLLVMModule &source = *modulesByLaunchSlot[launchSlot];
+    slotsByLaunchSlot[launchSlot] = source.getTileEntryArguments().size();
     if (llvm::Error error = validateLinkConstructs(source.getModule()))
       return std::move(error);
     llvm::Expected<std::unique_ptr<llvm::Module>> imported = importIntoContext(
@@ -510,7 +520,7 @@ buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules) {
       RuntimeLaunchPhaseRole::Prepare);
   if (llvm::Error error = createKernelAggregateExports(
           *aggregate, bodyNames, tileIdsByLaunchSlot, first.getEntrySymbol(),
-          first.getTileEntryArguments().size(), kernel.entryABI, hasPrepare))
+          slotsByLaunchSlot, kernel.entryABI, hasPrepare))
     return std::move(error);
   return OwnedTargetLLVMModule{std::move(context), std::move(aggregate)};
 }

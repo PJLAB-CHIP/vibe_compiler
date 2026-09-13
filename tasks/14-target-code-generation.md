@@ -293,3 +293,30 @@ Host gates至少覆盖：
 Production host qualification还必须由current source重新生成generic DAG、HF prefill/decode与Llama package，fresh no-card后达到
 `board-ready`；真实设备上 Llama 和一个 prefill/decode代表做同源 matched A/B、exact output/guard并获得可重复改善后
 才能标 `done`。历史 target/module通过记录不能代签这一门禁。
+
+### 按实际参与者生成共享 DDR 参数
+
+本项归入 board-testing。输入为 current Tile peer SSA、已确定 source/destination entry 的共享 payload 与 final Instr 的实际
+writer/readers；生成器只向参与该资源的 entry 添加 DDRBinding，completion 只向同一实际 writer/readers 添加 ready 参数。
+每个共享 ResourceId 保持全卡唯一；参数 ordinal 只属于当前 entry，不能用跨 Tile 的同一 ordinal 恢复资源身份。
+输出为 verifier-valid Tile/Instr entry 和各自 dense TileEntryArgument；直接消费者为同一 target aggregate、package 与 runtime。
+入口为现有 none/search。非目标：不合并不同 buffer、不改变 DMA、publication cut、同步强度、SPM、数值或搜索候选排序规则。
+
+跨 Tile 校验按 ResourceId 检查共同资源的类型、大小、对齐、初始化要求；普通 program 参数继续保持既有共同语义合同。
+共享参数可在不同 Tile 缺省，后续 workspace/status/profile 的 ordinal 随当前 entry 的实际参数数量确定。
+TileMajorPointerTable 按 launch_slot 顺序串接不同长度的行，offset 是前面实际行长度的前缀和；TileRowPointerTable
+仍携带16个行地址，wrapper invalidate 字节数来自该 Tile 的实际行长度。硬件 packet 上限按实际总长度检查。
+
+方法比较：LLVM [deadargelim](https://www.llvm.org/docs/Passes.html#deadargelim-dead-argument-elimination)
+删除 internal function 的无用参数；本仓的 package ABI 在 LLVM 之前已有 typed owner，不能仅在 LLVM 后清理而留下
+manifest/ordinal 不一致。本项直接修正已知参与者的生成边界，避免先产生空槽。具体 function argument 批量插入规则按 pinned
+FunctionInterfaces.cpp 核对，不引入另一个清理 pass 或 shadow resource 表。
+
+完成条件与覆盖矩阵：
+
+| 输入 | 结构与负例 | exact 输出及下游见证 |
+| --- | --- | --- |
+| rank3、1024/1025/1031、4/16 Tile sparse fanout、多资源 | writer、多 reader、无关 Tile；缺失/重复/额外 ready binding | 仅参与 entry 有 data/ready；publication/acquire 数与位置不变；fresh verifier/SPM |
+| 各 Tile 不同长度的参数行 | TileMajor/TileRow、物理 Tile 与 launch_slot 置换、共同资源描述冲突 | actual LLVM row offset、invalidate 长度、函数体使用正确槽；普通参数不一致仍拒绝 |
+| 多于4096个共享资源、稀疏引用 | canonical roundtrip、record/byte 上限、不同资源引用顺序 | manifest 仅有实际参数；runtime 每 ResourceId 分配一次、逐 Tile 地址精确 |
+| 当前 LLaMA none/search、通信 tail | fresh source→package/no-card | 共享参数无 access=none；记录数、payload/通知资源数和编译耗时；板测资格单独记录 |

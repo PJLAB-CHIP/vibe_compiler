@@ -196,6 +196,10 @@ WDMA/RDMA、SSA alias和control flow验证这一前提，不能按resource名字
 同一资源与package路径。`wafer.instr.ddr_publish(data, ready)`在resource最后一次实际WDMA之后发布，`wafer.instr.ddr_acquire(data, ready)`
 在reader首次读取前获取；二者的data operand保留实际资源关系及memory effect，ready operand保留实际通知storage，不能用旁路pair表。
 完成op通过显式Region operand/block argument访问whole data/ready binding，保持IsolatedFromAbove；不通过name或ordinal恢复资源。
+Payload参数只生成在实际source/destination entry；ready参数及通知global只生成在实际writer/readers所属Tile。
+同一ResourceId跨参与者保持一致，参数ordinal在各entry内独立；无关Tile不添加access=none占位。
+完成verifier要求每个实际参与者恰有一个匹配ready binding，并拒绝无关Tile的额外binding；不会为通过全卡参数等长检查而伪造参与者。
+
 DMA位于静态非空循环时以整个循环作单次切点，通知不进入重复执行的loop。条件、未知次数或无法证明单次的边界保持typed unsupported。
 同一Region内连续exchange的DDR/Peer四种组合须经过actual Instr、两个完成域和SPM；真实issue/wait环仍被拒绝。
 联合顺序验证消费已经物化的publish/acquire、Direct-DTE issue/token wait和actual单次执行控制流；不先把整组

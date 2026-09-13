@@ -165,16 +165,10 @@ struct TargetModuleReadback {
   std::string moduleFormat;
 };
 
-/// First incompatible field in two Tile pointer-row descriptions. Workspace
-/// capacity is deliberately excluded because it is allocated per launch slot.
-struct TileEntryArgumentOrderDifference {
-  size_t slot = 0;
-  llvm::StringRef field;
-};
-
-std::optional<TileEntryArgumentOrderDifference>
-findTileEntryArgumentOrderDifference(llvm::ArrayRef<TileEntryArgument> lhs,
-                                     llvm::ArrayRef<TileEntryArgument> rhs);
+/// Validate entry-local ordinals and shared resource identity across Tiles.
+/// Shared workspace references may be absent on nonparticipants.
+llvm::Error
+validateTileEntryArgumentDomain(llvm::ArrayRef<TargetLLVMModule> modules);
 
 /// Invocation-local accounting for the retained per-Tile target output.
 /// Counts refer to calls that actually ran, including calls completed before

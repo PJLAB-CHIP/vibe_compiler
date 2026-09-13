@@ -417,7 +417,6 @@ public:
     }
 
     const uintptr_t sharedFunction = launches.front().function.value;
-    const size_t sharedSlotCount = launches.front().arguments.size();
     std::vector<std::vector<uint64_t>> argumentBlocks(1);
 
     std::array<bool, 16> seenTileIds{};
@@ -432,11 +431,10 @@ public:
             "TX kernel phase is not a canonical Tile/function "
             "domain");
       seenTileIds[tileId] = true;
-      if (launch.function.value != sharedFunction ||
-          launch.arguments.size() != sharedSlotCount)
+      if (launch.function.value != sharedFunction)
         return llvm::createStringError(
             llvm::errc::invalid_argument,
-            "TX shared kernel phase does not use one function and slot shape");
+            "TX shared kernel phase does not use one function");
       argumentBlocks.front().insert(argumentBlocks.front().end(),
                                     launch.arguments.begin(),
                                     launch.arguments.end());

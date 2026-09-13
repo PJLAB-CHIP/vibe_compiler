@@ -4173,6 +4173,124 @@ TEST_F(StructuredToTileTest, RegionClosureIsOptionalAndDDRHasItsOwnOrderProof) {
   }
 }
 
+TEST_F(StructuredToTileTest, SparseSharedDDRFanoutOmitsUnrelatedTileArguments) {
+  for (int64_t tileCount : {4, 16})
+    for (int64_t extent : {1024, 1025, 1031}) {
+      SCOPED_TRACE(tileCount);
+      SCOPED_TRACE(extent);
+      auto source = makeFanoutSource(extent, {1, 2}, 0, false);
+      source.erase(source.rfind('}'));
+      for (int64_t tile = 3; tile < tileCount; ++tile)
+        source +=
+            "wafer.tile.module card_id = 0 tile_id = " + std::to_string(tile) +
+            " { func.func @unused() { return } }\n";
+      source += "}";
+      auto module = parse(source);
+      ASSERT_TRUE(module);
+      llvm::SmallVector<TileRegionOp> regions;
+      module->walk([&](TileRegionOp region) { regions.push_back(region); });
+      ASSERT_EQ(regions.size(), 3u);
+      StructuredMaterializationRelations relations;
+      for (unsigned index = 1; index < regions.size(); ++index) {
+        relations.boundaryRelations.push_back(
+            {regions[0].getResult(0), regions[index].getBody().getArgument(0)});
+        relations.structuralOutputs.push_back({0, regions[index].getResult(0)});
+      }
+      ASSERT_TRUE(
+          resolveCurrentLayoutsAndBufferize(*module, relations).succeeded());
+      ASSERT_TRUE(lowerStructuredComputeToTile(*module, relations).succeeded());
+      BoundaryMovementOptions options;
+      options.transport = BoundaryMovementTransport::SharedDDR;
+      auto movement =
+          materializeTileBoundaryMovement(*module, relations, options);
+      ASSERT_TRUE(movement.succeeded()) << movement.detail;
+      EXPECT_EQ(movement.statistics.crossTileDDRStages, 2u);
+      EXPECT_EQ(countOps<mlir::memref::GlobalOp>(module->getOperation()), 1u);
+      unsigned dataBindings = 0;
+      module->walk([&](mlir::func::FuncOp entry) {
+        auto tile = entry->getParentOfType<TileModuleOp>();
+        unsigned bindings = 0;
+        for (unsigned index = 0; index < entry.getNumArguments(); ++index)
+          if (auto binding = entry.getArgAttrOfType<DDRBindingAttr>(
+                  index, kWaferDDRBindingAttrName)) {
+            ++bindings;
+            EXPECT_NE(binding.getAccess(), DDRAccess::None);
+            EXPECT_FALSE(entry.getArgument(index).use_empty());
+          }
+        EXPECT_EQ(bindings, tile.getTileIdAttr().getInt() < 3 ? 1u : 0u);
+        dataBindings += bindings;
+      });
+      EXPECT_EQ(dataBindings, 3u);
+      std::string detail;
+      auto standalone =
+          createStandaloneTileModules(std::move(module), &detail, &relations);
+      ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+      llvm::SmallVector<mlir::ModuleOp> modules;
+      llvm::SmallVector<TileId> tileIds;
+      for (auto &tile : *standalone) {
+        llvm::SmallVector<TileRegionOp> scopes;
+        tile.module->walk(
+            [&](TileRegionOp region) { scopes.push_back(region); });
+        TileRegionToInstrLoweringSession session(*context);
+        for (auto region : scopes)
+          ASSERT_TRUE(
+              mlir::succeeded(convertTileRegionToInstr(region, session)));
+        ASSERT_TRUE(mlir::succeeded(
+            convertBufferizationCopiesToInstr(*tile.module, session)));
+        modules.push_back(*tile.module);
+        tileIds.push_back(tile.tileId);
+      }
+      auto completion = materializeSharedDDRCompletion(modules, tileIds);
+      ASSERT_TRUE(completion.succeeded()) << completion.detail;
+      // A notification binding on a nonparticipant must not be silently
+      // tolerated after compact materialization.
+      auto unused = modules.back();
+      auto unusedEntry = *unused.getOps<mlir::func::FuncOp>().begin();
+      mlir::memref::GlobalOp readyDeclaration;
+      for (auto global : modules.front().getOps<mlir::memref::GlobalOp>())
+        if (auto resource = global->getAttrOfType<DDRResourceAttr>(kWaferDDRResourceAttrName))
+          if (resource.getResourceId() == 1)
+            readyDeclaration = global;
+      ASSERT_TRUE(readyDeclaration);
+      mlir::OpBuilder builder(unused.getBodyRegion());
+      builder.setInsertionPointToStart(unused.getBody());
+      mlir::IRMapping mapping;
+      auto *extraDeclaration = builder.clone(*readyDeclaration, mapping);
+      auto binding = DDRBindingAttr::get(context.get(),
+          mlir::FlatSymbolRefAttr::get(readyDeclaration.getSymNameAttr()),
+          1, DDRAccess::None);
+      unsigned extraArgument = unusedEntry.getNumArguments();
+      unusedEntry.insertArgument(extraArgument, readyDeclaration.getType(),
+          builder.getDictionaryAttr({builder.getNamedAttr(kWaferDDRBindingAttrName, binding)}),
+          unusedEntry.getLoc());
+      EXPECT_EQ(verifySharedDDRCompletion(modules, tileIds).failure,
+                SharedDDRCompletionFailure::Contract);
+      unusedEntry.eraseArgument(extraArgument);
+      extraDeclaration->erase();
+      EXPECT_TRUE(verifySharedDDRCompletion(modules, tileIds).succeeded());
+      unsigned publications = 0, acquisitions = 0, readyBindings = 0;
+      for (auto &tile : *standalone) {
+        publications += countOps<SyncDDRPublishOp>(tile.module->getOperation());
+        acquisitions += countOps<SyncDDRAcquireOp>(tile.module->getOperation());
+        tile.module->walk([&](mlir::func::FuncOp entry) {
+          for (unsigned index = 0; index < entry.getNumArguments(); ++index)
+            if (auto binding = entry.getArgAttrOfType<DDRBindingAttr>(
+                    index, kWaferDDRBindingAttrName)) {
+              EXPECT_NE(binding.getAccess(), DDRAccess::None);
+              readyBindings += binding.getResourceId() == 1;
+            }
+        });
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+        TileMemoryPlanningFailure failure;
+        auto planned = planTileMemory(std::move(tile.module), &failure);
+        ASSERT_TRUE(mlir::succeeded(planned));
+      }
+      EXPECT_EQ(publications, 1u);
+      EXPECT_EQ(acquisitions, 2u);
+      EXPECT_EQ(readyBindings, 3u);
+    }
+}
+
 TEST_F(StructuredToTileTest, SharedDDRLoadsEachCurrentConsumerSubview) {
   for (int64_t tileCount : {4, 16})
     for (int64_t extent : {1024, 1025, 1031})
@@ -4258,6 +4376,15 @@ TEST_F(StructuredToTileTest, SharedDDRLoadsEachCurrentConsumerSubview) {
         ASSERT_TRUE(movement.succeeded()) << movement.detail;
         EXPECT_EQ(movement.statistics.crossTileDDRStages, tileCount);
         EXPECT_EQ(movement.statistics.peerReceives, 0u);
+        module->walk([&](mlir::func::FuncOp entry) {
+          for (unsigned argument = 0; argument < entry.getNumArguments();
+               ++argument)
+            if (auto binding = entry.getArgAttrOfType<DDRBindingAttr>(
+                    argument, kWaferDDRBindingAttrName)) {
+              EXPECT_NE(binding.getAccess(), DDRAccess::None);
+              EXPECT_FALSE(entry.getArgument(argument).use_empty());
+            }
+        });
         unsigned consumers = 0;
         module->walk([&](TileRegionOp region) {
           if (!countOps<ComputeElementwiseOp>(region))

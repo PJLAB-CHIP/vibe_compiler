@@ -1,0 +1,175 @@
+{
+  "date": "2026-09-13",
+  "base_revision": "6c3f22bec1bf0382fec4948f664113dd784e882b",
+  "scope": "共享 DDR 参数按实际 Tile 参与者生成；包含当前工作区其余搜索修改，编译耗时不作为单项优化 A/B。",
+  "manifest_limits_unchanged": {
+    "max_records": 65536,
+    "max_json_bytes": 16777216
+  },
+  "models": {
+    "none": {
+      "before": {
+        "records": 25884,
+        "shared_arguments": 25600,
+        "unused_arguments": 20160,
+        "manifest_bytes": 3245086,
+        "resources": 1600
+      },
+      "before_evidence": "修改前已读取并统计的同 shape 默认 none/search manifest；旧文件已由本轮 fresh CTest 替换，未保留旧 hash，不作为数值或计时匹配 A/B。",
+      "after": {
+        "records": 5724,
+        "shared_arguments": 5440,
+        "unused_arguments": 0,
+        "manifest_bytes": 727636,
+        "resources": 1600,
+        "manifest_sha256": "6b11955a7a34905a88afb3c16e2deaaad319483148450c168f58dc48ee774a3e",
+        "per_tile_arguments": [
+          355,
+          355,
+          355,
+          355,
+          355,
+          355,
+          355,
+          355,
+          355,
+          355,
+          355,
+          355,
+          355,
+          355,
+          355,
+          355
+        ]
+      },
+      "fresh_no_card_passed": true,
+      "board_execution": false
+    },
+    "search": {
+      "before": {
+        "records": 43804,
+        "shared_arguments": 43520,
+        "unused_arguments": 33600,
+        "manifest_bytes": 5531886,
+        "resources": 2720
+      },
+      "before_evidence": "修改前已读取并统计的同 shape 默认 none/search manifest；旧文件已由本轮 fresh CTest 替换，未保留旧 hash，不作为数值或计时匹配 A/B。",
+      "after": {
+        "records": 10204,
+        "shared_arguments": 9920,
+        "unused_arguments": 0,
+        "manifest_bytes": 1313086,
+        "resources": 2720,
+        "manifest_sha256": "032a2a412f952e052111cd5ec1e55dfeefedc2222b1393a8a477f4b12b5f8534",
+        "per_tile_arguments": [
+          635,
+          635,
+          635,
+          635,
+          635,
+          635,
+          635,
+          635,
+          635,
+          635,
+          635,
+          635,
+          635,
+          635,
+          635,
+          635
+        ]
+      },
+      "fresh_no_card_passed": true,
+      "board_execution": false
+    }
+  },
+  "tests": {
+    "product": {
+      "log": "build/test/model-performance/sparse-ddr-product.log",
+      "sha256": "e8c55a909e84b50634246e89883b98caad5eb2b4071ce19180ad2101eff7ef10"
+    },
+    "more-products": {
+      "log": "build/test/model-performance/sparse-ddr-more-products.log",
+      "sha256": "55a5cef126a7751582b760a555f2c7da4387d5c6704786b4269bf608c75a4383"
+    },
+    "reduce-scatter-products": {
+      "log": "build/test/model-performance/sparse-ddr-reduce-scatter-products.log",
+      "sha256": "c9ab5efc4c39556506a0f618dff0de6c4d5921250b3936ff7af97c4847100b02"
+    },
+    "components": {
+      "log": "build/test/model-performance/sparse-ddr-components.log",
+      "sha256": "d1db7479b135ef040e288346f9207dd975134b2dfe25d257d3ab53896d4d6cd8"
+    },
+    "driver-unit": {
+      "log": "build/test/model-performance/sparse-ddr-driver-unit.log",
+      "sha256": "c6031d79c25c49620f9e8b59666f435c0ff9373ad41ee07b81755b9872665a07"
+    },
+    "sparse-fanout-unit": {
+      "log": "build/test/model-performance/sparse-ddr-sparse-fanout-unit.log",
+      "sha256": "081017f1bda954434aa7e08c552794ee17fd29c64cdfc734b8adaacf0870ecee"
+    },
+    "board-helper-build": {
+      "log": "build/test/model-performance/sparse-ddr-board-helper-build.log",
+      "sha256": "2f1a154e19a92131eefeec9e0aa2e678ba40423ea16e39ee22ab6cdfc157967e"
+    },
+    "canonical-final-build": {
+      "log": "build/test/model-performance/sparse-ddr-canonical-final-build.log",
+      "sha256": "9c243da23a51ee6edcfe42c4f020890ae11cd32e7fe83392d682ac24a2817afb"
+    },
+    "no-op": {
+      "log": "build/test/model-performance/sparse-ddr-no-op.log",
+      "sha256": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+    },
+    "final-driver-unit": {
+      "log": "build/test/model-performance/sparse-ddr-final-driver-unit.log",
+      "sha256": "ea229231d55b628a216640bc65fc270c3c98c4147d9c58f2c025da3c7ef36a73"
+    },
+    "systemc": {
+      "log": "build/test/model-performance/sparse-ddr-systemc.log",
+      "sha256": "888254d79842411abbc31328feb2f9b89581733ab256f0b47c1c76a24be6d785"
+    }
+  },
+  "board": {
+    "audit": {
+      "case": "alltoall-transpose-l1031",
+      "step": 1,
+      "policy": "none",
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "65a1773a557ec7f1afaaacb350073890fd8aa0812d9e270bb4491f0cfb18c2d1",
+      "comparison_passed": true,
+      "comparison": {
+        "rtol": null,
+        "atol": null,
+        "equal_nan": false
+      },
+      "inputs": {
+        "card_00_user_input_0.f16.raw": "0e8b8e2a2197941feaddf3e586db3244b1b584a23652e1d39c4eedf644281de9",
+        "card_00_user_input_1.f16.raw": "351dcf730adf5c1f57aca7d9da1bc42ea79eda030f4c0fe51a7f05748232143a"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1031,
+            16,
+            1
+          ],
+          "dtype": "torch.float16",
+          "elements": 16496,
+          "max_abs_error": 0.0
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=5123000"
+      ]
+    },
+    "audit_sha256": "b411418e3a54eb155e914068e6476e30f4a8414736aa2331c92e4094be214118",
+    "launches": 1,
+    "reset_or_retry_after_device_failure": false,
+    "runtime_sha256": "b4f19d673e1767314f6cd900f7f66345e7d1d8c0545de83a7139d62596a6e12c",
+    "boot_id": "f0bc038d-2b5e-42fa-9959-9d3aa265e993"
+  },
+  "compiler_sha256_at_evidence_capture": "4d0a6848cdfde2555a07bba294e083543c5141e5181cb1ddecc943bf61744fb7",
+  "compiler_identity_note": "测试期间compiler未重链接；随后完整增量构建包含格式化后的重链接，记录hash为证据采集时的二进制，不宣称是先前产品调用时保存的hash。"
+}

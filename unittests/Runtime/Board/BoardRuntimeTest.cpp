@@ -1201,6 +1201,82 @@ TEST_F(BoardRuntimeTest,
   EXPECT_EQ(driver.freedAddresses.size(), driver.allocatedAddresses.size());
 }
 
+TEST_F(BoardRuntimeTest, SparseSharedBindingsReachOnlyParticipantRows) {
+  using namespace wafer::runtime;
+  for (auto launchCase :
+       {TestLaunchContractCase::Grid, TestLaunchContractCase::GridTileRows}) {
+    writeProgramDataFile({});
+    auto manifest = makeTile16Manifest(launchCase);
+    for (auto &entry : manifest.entries) {
+      auto workspace = entry.arguments.back();
+      entry.arguments.pop_back();
+      for (unsigned resource = 0; resource < 2; ++resource) {
+        bool writes = entry.tileId == wafer::TileId(1);
+        bool reads = entry.tileId == wafer::TileId(3 + resource);
+        if (!writes && !reads)
+          continue;
+        entry.arguments.push_back({entry.arguments.size(),
+                                   SharedWorkspaceArgument{resource, 2048, 256},
+                                   writes ? PackageAccessMode::WriteOnly
+                                          : PackageAccessMode::ReadOnly});
+      }
+      workspace.ordinal = entry.arguments.size();
+      entry.arguments.push_back(std::move(workspace));
+    }
+    auto package = loadPackage(std::move(manifest));
+    ASSERT_TRUE(static_cast<bool>(package))
+        << llvm::toString(package.takeError());
+    FakeBoardDriver driver;
+    driver.decodeTileRowArguments =
+        launchCase == TestLaunchContractCase::GridTileRows;
+    std::vector<RuntimeInvocationBinding> bindings;
+    for (const auto &port : package->getManifest().inputs)
+      bindings.push_back({port.id, port.bytes, port.alignment});
+    auto plan = planRuntimeInvocation(package->getVerifiedManifest(), bindings,
+                                      driver.getProviderEnvironment());
+    ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
+    auto result = executeBoardInvocation(
+        *package, makeTile16Request(package->getManifest()), driver);
+    ASSERT_TRUE(static_cast<bool>(result))
+        << llvm::toString(result.takeError());
+    ASSERT_EQ(driver.submittedLaunches.size(), 16u);
+    ASSERT_EQ(driver.allocatedAddresses.size(), 1u);
+    ASSERT_EQ(plan->sharedWorkspaceRanges.size(), 2u);
+    const uint64_t base = driver.allocatedAddresses.front();
+    for (unsigned tile = 0; tile < 16; ++tile) {
+      const auto &launch = driver.submittedLaunches[tile];
+      std::vector<uint64_t> row;
+      if (driver.decodeTileRowArguments) {
+        ASSERT_EQ(launch.arguments.size(), 1u);
+        auto found =
+            std::find(driver.h2dDestinations.begin(),
+                      driver.h2dDestinations.end(), launch.arguments.front());
+        ASSERT_NE(found, driver.h2dDestinations.end());
+        const auto &payload =
+            driver.h2dPayloads[found - driver.h2dDestinations.begin()];
+        row.resize(payload.size() / sizeof(uint64_t));
+        std::memcpy(row.data(), payload.data(), payload.size());
+      } else {
+        row = launch.arguments;
+      }
+      const auto &addresses = plan->tiles[tile].argumentAddresses;
+      ASSERT_EQ(row.size(), addresses.size());
+      EXPECT_EQ(row.size(),
+                tile == 1 ? 5u : (tile == 3 || tile == 4 ? 4u : 3u));
+      for (unsigned index = 0; index < row.size(); ++index)
+        EXPECT_EQ(row[index], base + addresses[index].offset);
+      if (tile == 1 || tile == 3) {
+        EXPECT_EQ(row[2], base + plan->sharedWorkspaceRanges[0].offset);
+      }
+      if (tile == 1 || tile == 4) {
+        EXPECT_EQ(row[tile == 1 ? 3 : 2],
+                  base + plan->sharedWorkspaceRanges[1].offset);
+      }
+    }
+    EXPECT_EQ(driver.freedAddresses.size(), driver.allocatedAddresses.size());
+  }
+}
+
 TEST_F(BoardRuntimeTest,
        SharedProgramResourcesUseOneAllocationAcrossAllTileRows) {
   using namespace wafer::runtime;

@@ -319,10 +319,14 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
                                           ? kTx81ClusterKernelArgumentBytesMax
                                           : kTx81KernelArgumentBytesMax;
     if (kernel.entryABI == KernelEntryABI::TileMajorPointerTable) {
-      if (first.arguments.size() > argumentBytesMax / sizeof(uint64_t) / 16)
-        return invalid(
-            "shared Tile-major argument table exceeds the qualified V5.6 "
-            "packet limit");
+      uint64_t remaining = argumentBytesMax / sizeof(uint64_t);
+      for (const auto &entry : manifest.entries) {
+        if (entry.arguments.size() > remaining)
+          return invalid(
+              "shared Tile-major argument table exceeds the qualified V5.6 "
+              "packet limit");
+        remaining -= entry.arguments.size();
+      }
     } else if (kernel.entryABI == KernelEntryABI::TileRowPointerTable) {
       if (16 > argumentBytesMax / sizeof(uint64_t))
         return invalid(
@@ -345,13 +349,6 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
       return invalid("runtime launch entry has no typed main export");
     if (entry.transport.index() != firstTransportKind)
       return invalid("runtime launch Tiles have mixed transport contracts");
-    if (entry.arguments.size() != first.arguments.size())
-      return invalid("multi-tile launch entries have different argument "
-                     "counts");
-    for (size_t index = 0; index < entry.arguments.size(); ++index)
-      if (entry.arguments[index].reference.index() !=
-          first.arguments[index].reference.index())
-        return invalid("multi-Tile launch argument kinds are inconsistent");
     if (const auto *requirements =
             std::get_if<DirectDTETransportRequirements>(&entry.transport)) {
       const auto *firstRequirements =

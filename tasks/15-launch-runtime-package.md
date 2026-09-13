@@ -438,3 +438,11 @@ Host/no-card至少覆盖：
 - TileRT：采用prepare一次、地址稳定、重复执行；不假设GPU单kernel或闭源内部实现。
 - vLLM/SGLang：只用于压力测试未来固定容量state和step metadata；scheduler/cache policy不进入本合同。
 - Wafer的DeviceExecutable、TileEntryArgument、kernel pointer row、workspace offsets、RDMA/WDMA、Direct-DTE和provider能力始终是主事实源。
+
+### 各 Tile 独立参数行
+
+参数 ordinal 在 entry 内 dense、zero-based；不同 Tile 的共享资源数量、位置可以不同。共享身份只由 ResourceId 决定。
+Runtime 按每个 entry 的实际 arguments 规划 row，并按 launch_slot 串接 TileMajor 行或提交 TileRow 地址；不能要求所有行等长。
+Manifest 对共享资源的大小、对齐、初始化和全卡读写 closure 校验不变，记录数及字节上限不扩大。
+本项输入、生成边界、non-goals、完成条件与覆盖矩阵见14号“按实际参与者生成共享 DDR 参数”；fake provider 与真实 package/no-card
+共同覆盖地址绑定，实卡结果仍由 board-testing 独立签署。

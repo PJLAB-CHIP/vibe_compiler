@@ -648,14 +648,29 @@ Result verifySharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
         return contract("shared DDR reader has no matching acquisition before "
                         "its first DMA");
     }
-    for (const auto &bindings : entryBindings) {
+    for (auto [entry, bindings] :
+         llvm::zip_equal(collection.entries, entryBindings)) {
+      const bool writes =
+          resource.writer->root.getOwner() == &entry.getBody().front();
+      const bool reads =
+          llvm::any_of(resource.readers, [&](const Access &reader) {
+            return reader.root.getOwner() == &entry.getBody().front();
+          });
       auto found = bindings.find(readyBinding.getResourceId());
+      if (!writes && !reads) {
+        if (found != bindings.end())
+          return contract("shared DDR completion has a binding on an "
+                          "unrelated Tile");
+        continue;
+      }
       if (found == bindings.end() || found->second.size() != 1)
         return contract(
-            "shared DDR completion requires one binding on every Tile");
+            "shared DDR completion requires one binding on each participant");
       for (auto argument : found->second) {
         if (argument.getType() != ready.getType() ||
-            !isZeroInitialized(argument, symbols))
+            !isZeroInitialized(argument, symbols) ||
+            getBinding(argument).getAccess() !=
+                (writes ? DDRAccess::Write : DDRAccess::Read))
           return contract(
               "shared DDR completion initialization differs across Tiles");
         if (!hasOnlyCompletionUses(argument, checked))
@@ -720,14 +735,7 @@ Result materializeSharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
       int64_t resourceId = nextResource;
       mlir::ModuleOp module = moduleRef;
       for (auto &[id, resource] : collection.resources) {
-        std::string symbol =
-            "__wafer_ddr_completion_" + std::to_string(resourceId);
-        builder.setInsertionPointToStart(module.getBody());
-        auto global = builder.create<mlir::memref::GlobalOp>(
-            module.getLoc(), symbol, builder.getStringAttr("private"), type,
-            initial, false, builder.getI64IntegerAttr(64));
-        global->setAttr(kWaferDDRResourceAttrName,
-                        DDRResourceAttr::get(context, resourceId));
+        const int64_t currentResource = resourceId++;
         auto dataRoot = resource.writer->root;
         bool writes = dataRoot.getOwner() == &entry.getBody().front();
         const Access *firstRead = nullptr;
@@ -737,12 +745,20 @@ Result materializeSharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
             firstRead = &reader;
             dataRoot = reader.root;
           }
-        DDRAccess access = writes      ? DDRAccess::Write
-                           : firstRead ? DDRAccess::Read
-                                       : DDRAccess::None;
+        if (!writes && !firstRead)
+          continue;
+        std::string symbol =
+            "__wafer_ddr_completion_" + std::to_string(currentResource);
+        builder.setInsertionPointToStart(module.getBody());
+        auto global = builder.create<mlir::memref::GlobalOp>(
+            module.getLoc(), symbol, builder.getStringAttr("private"), type,
+            initial, false, builder.getI64IntegerAttr(64));
+        global->setAttr(kWaferDDRResourceAttrName,
+                        DDRResourceAttr::get(context, currentResource));
+        DDRAccess access = writes ? DDRAccess::Write : DDRAccess::Read;
         auto binding = DDRBindingAttr::get(
             context, mlir::FlatSymbolRefAttr::get(context, symbol),
-            resourceId++, access);
+            currentResource, access);
         attributes.push_back(builder.getDictionaryAttr(
             {builder.getNamedAttr(kWaferDDRBindingAttrName, binding)}));
         publications.push_back(

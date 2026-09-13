@@ -1229,3 +1229,11 @@ Scalar 初始化覆盖 main/tail、非零值及共享 init；多结果共同循�
 - 11个fresh PyTorch source/export/reference→compile/package→strict no-card通过：GEMM tail-1031 none，local reduce/local conv/prefill
   tail-1031 none/search，conv-mixed-dag FP16/BF16 none/search。没有复用历史package或运行真实设备。
 - 完整diff、`git diff --check`、旧入口/schema与consumer map白名单残留检查通过；Wafer-owned源码无Python缓存。生产代码净减少233行，新增主要为覆盖矩阵与测试。
+
+### 共享 DDR 参数去冗余（2026-09-13）
+
+用户要求从manifest膨胀根因修复。本项代码和host/package合同已完成，边界与覆盖矩阵见14号“按实际参与者生成共享 DDR 参数”、
+13号publication及15号独立参数行。生成器不再向非参与Tile添加payload/ready；typed ResourceId和completion位置不变。
+已通过20项fresh产品no-card、四个受影响完整组件及actual稀疏fanout；一次AllToAll尾部实卡16496输出PyTorch exact、5.123ms。
+LLaMA none/search共享参数分别减少20160/33600项，无access=none，manifest上限未调大。细节和证据归统一性能记录。
+这只关闭参数膨胀问题；原搜索/性能计划的其它门禁和LLaMA设备复验保持原状态。

@@ -1378,16 +1378,17 @@ TEST(ExecutableCompilationPolicyTest,
         ir << "memref.global \"private\" @data" << id << " : " << ddr
            << " {wafer.ddr_resource = #wafer.ddr_resource<" << id << ">}\n";
       ir << "func.func @entry(";
+      bool firstArgument = true;
       for (unsigned id = 0; id < resources; ++id) {
-        if (id)
-          ir << ", ";
         unsigned relative = (tile + 4 - id % 4) % 4;
+        if (relative == 3)
+          continue;
+        if (!firstArgument)
+          ir << ", ";
+        firstArgument = false;
         ir << "%data" << id << ": " << ddr << " {wafer.ddr_binding = "
            << "#wafer.ddr_binding<@data" << id << ", id = " << id << ", "
-           << (relative == 0   ? "write"
-               : relative == 3 ? "none"
-                               : "read")
-           << ">}";
+           << (relative == 0 ? "write" : "read") << ">}";
       }
       ir << ") {\n%condition = arith.constant true\n";
       for (unsigned id = 0; id < resources; ++id) {
@@ -1424,17 +1425,19 @@ TEST(ExecutableCompilationPolicyTest,
     wafer::SyncDDRPublishOp first;
     for (auto module : modules) {
       auto entry = *module.getOps<mlir::func::FuncOp>().begin();
-      ASSERT_EQ(entry.getNumArguments(), 2 * resources);
-      for (unsigned id = 0; id < resources; ++id) {
+      constexpr unsigned localResources = resources * 3 / 4;
+      ASSERT_EQ(entry.getNumArguments(), 2 * localResources);
+      for (unsigned index = 0; index < localResources; ++index) {
         auto data = entry.getArgAttrOfType<wafer::DDRBindingAttr>(
-            id, wafer::kWaferDDRBindingAttrName);
+            index, wafer::kWaferDDRBindingAttrName);
         auto ready = entry.getArgAttrOfType<wafer::DDRBindingAttr>(
-            resources + id, wafer::kWaferDDRBindingAttrName);
+            localResources + index, wafer::kWaferDDRBindingAttrName);
         ASSERT_TRUE(data && ready);
-        EXPECT_EQ(data.getResourceId(), id);
-        EXPECT_EQ(ready.getResourceId(), resources + id);
+        EXPECT_EQ(ready.getResourceId(), resources + data.getResourceId());
         EXPECT_EQ(ready.getAccess(), data.getAccess());
-        EXPECT_EQ(entry.getArgument(resources + id).getType(),
+        EXPECT_NE(ready.getAccess(), wafer::DDRAccess::None);
+        EXPECT_FALSE(entry.getArgument(localResources + index).use_empty());
+        EXPECT_EQ(entry.getArgument(localResources + index).getType(),
                   mlir::MemRefType::get(
                       {64}, mlir::IntegerType::get(parsed.context.get(), 8),
                       mlir::MemRefLayoutAttrInterface{},

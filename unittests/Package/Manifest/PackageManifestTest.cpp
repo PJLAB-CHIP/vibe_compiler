@@ -626,6 +626,67 @@ TEST_F(PackageManifestTest,
   }
 }
 
+TEST_F(PackageManifestTest, SparseSharedResourcesScaleWithActualParticipants) {
+  // Manifest scale oracle: 4097/8193 distinct resources would exceed the
+  // record limit if every resource were expanded to all 16 entries.
+  for (uint64_t resourceCount : {4097u, 8193u}) {
+    SCOPED_TRACE(resourceCount);
+    auto manifest = makeManifest(/*withTargetTensors=*/false);
+    manifest.launch = llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
+        wafer::KernelLaunchForm::Grid,
+        wafer::KernelEntryABI::TileRowPointerTable,
+        {wafer::RuntimeLaunchPhaseRole::Main}));
+    uint64_t references = 0;
+    for (auto &entry : manifest.entries) {
+      auto workspace = entry.arguments.back();
+      entry.arguments.pop_back();
+      for (uint64_t resource = 0; resource < resourceCount; ++resource) {
+        const bool writes = entry.tileId == wafer::TileId(resource % 16);
+        const bool reads = entry.tileId == wafer::TileId((resource + 1) % 16);
+        if (!writes && !reads)
+          continue;
+        ++references;
+        entry.arguments.push_back(
+            {entry.arguments.size(),
+             SharedWorkspaceArgument{resource, 2048u, 256u, resource % 2 == 0},
+             writes ? PackageAccessMode::WriteOnly
+                    : PackageAccessMode::ReadOnly});
+      }
+      workspace.ordinal = entry.arguments.size();
+      entry.arguments.push_back(std::move(workspace));
+    }
+    EXPECT_EQ(references, 2 * resourceCount);
+    EXPECT_NE(manifest.entries[0].arguments.size(),
+              manifest.entries[2].arguments.size());
+    auto verified = verifyPackageManifest(std::move(manifest), root);
+    ASSERT_TRUE(static_cast<bool>(verified))
+        << llvm::toString(verified.takeError());
+    auto canonical = serializeCanonicalPackageJson(*verified);
+    auto parsed = parseCanonicalPackageJson(canonical, root);
+    ASSERT_TRUE(static_cast<bool>(parsed))
+        << llvm::toString(parsed.takeError());
+    auto plan =
+        planRuntimeInvocation(*parsed, makeInputBindings(parsed->getManifest()),
+                              makeEnvironment(64 * 1024 * 1024));
+    ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
+    ASSERT_EQ(plan->sharedWorkspaceRanges.size(), resourceCount);
+    EXPECT_EQ(plan->zeroInitializedSharedWorkspaceRanges.size(),
+              (resourceCount + 1) / 2);
+    for (auto [index, entry] : llvm::enumerate(parsed->getManifest().entries)) {
+      const auto &tile = plan->tiles[index];
+      EXPECT_EQ(plan->pointerRows[index].bytes, entry.arguments.size() * 8);
+      ASSERT_EQ(tile.argumentAddresses.size(), entry.arguments.size());
+      for (auto &argument : entry.arguments)
+        if (auto *shared =
+                std::get_if<SharedWorkspaceArgument>(&argument.reference)) {
+          EXPECT_NE(argument.access, PackageAccessMode::None);
+          EXPECT_EQ(tile.argumentAddresses[argument.ordinal].offset,
+                    plan->sharedWorkspaceRanges[shared->resource].offset);
+        }
+    }
+  }
+}
+
 TEST_F(PackageManifestTest, RejectsMissingTargetFacts) {
   llvm::Expected<VerifiedPackageManifest> verified = verify();
   ASSERT_TRUE(static_cast<bool>(verified))

@@ -1952,3 +1952,12 @@
   还可能留下报告子进程；主机报告超时不能据此判定板卡异常。
 - 每次launch保留runtime completion watchdog；主机报告遵守自身处理合同，不套用设备派生期限。主机后处理失败与真实设备timeout分别记录，
   只有后者按板端规则停止批次。测试检查ordinary/profile都传设备期限，而profile不设设备派生的总进程期限。
+
+## 全卡共享资源身份不要求每个 Tile 都有入口参数
+
+- 根因：为保持各Tile参数行同形，把共享payload及通知storage绑定到所有entry，无关Tile仅标记access=none；
+  这些无用槽继续进入LLVM/manifest/runtime，放大编译工作及package记录数。
+- 修复模式：在payload/notification物化处按实际writer/readers创建binding；ResourceId表示共享身份，ordinal只表示本entry位置。
+  Target校验同一ResourceId的存储描述，wrapper和runtime按实际行长计算prefix或indirect row范围。
+- 防复发：真实规模稀疏fanout检查无关Tile零binding、参与者exact coverage；不同长度行检查offset与invalidate字节数；
+  shared descriptor冲突、额外或缺失ready binding拒绝。Package仅为资源分配一次，板测以完整PyTorch输出确认地址链。

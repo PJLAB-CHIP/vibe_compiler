@@ -60,13 +60,15 @@ llvm::Error validateRuntimeLaunchContractDomain(
                                      ? kTx81ClusterKernelArgumentBytesMax
                                      : kTx81KernelArgumentBytesMax;
     if (kernel.entryABI == KernelEntryABI::TileMajorPointerTable) {
-      if (first.getTileEntryArguments().size() >
-          packetBytes / sizeof(uint64_t) /
-              static_cast<uint64_t>(config.getTileCount()))
-        return llvm::createStringError(
-            llvm::errc::invalid_argument,
-            "multi-Tile Tile-major argument table exceeds the qualified V5.6 "
-            "packet limit");
+      uint64_t remaining = packetBytes / sizeof(uint64_t);
+      for (const auto &module : targetLLVMModules.getModules()) {
+        if (module.getTileEntryArguments().size() > remaining)
+          return llvm::createStringError(
+              llvm::errc::invalid_argument,
+              "multi-Tile Tile-major argument table exceeds the qualified V5.6 "
+              "packet limit");
+        remaining -= module.getTileEntryArguments().size();
+      }
     } else if (kernel.entryABI == KernelEntryABI::TileRowPointerTable) {
       if (static_cast<uint64_t>(config.getTileCount()) >
           packetBytes / sizeof(uint64_t))
@@ -93,21 +95,8 @@ llvm::Error validateRuntimeLaunchContractDomain(
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "multi-Tile runtime launch requires one shared entry symbol");
-    if (std::optional<TileEntryArgumentOrderDifference> difference =
-            findTileEntryArgumentOrderDifference(
-                module.getTileEntryArguments(),
-                first.getTileEntryArguments())) {
-      return llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "multi-Tile runtime launch requires compatible per-Tile slot "
-          "order; launch_slot=%lld differs from launch_slot=%lld at "
-          "slot=%zu field=%s",
-          static_cast<long long>(module.getLaunchSlotId().getValue()),
-          static_cast<long long>(first.getLaunchSlotId().getValue()),
-          difference->slot, difference->field.str().c_str());
-    }
   }
-  return llvm::Error::success();
+  return validateTileEntryArgumentDomain(targetLLVMModules.getModules());
 }
 
 bool targetModulePathEntryExists(llvm::StringRef path) {

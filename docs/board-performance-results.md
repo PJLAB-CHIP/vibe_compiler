@@ -901,3 +901,31 @@ max RSS21985508 KiB，无package、无设备执行。已完成36次candidate adv
 停止时只有外层`advance`活跃（structural12、attempt36），没有更细的活动span；最后的具体调用栈仍须另行定位。
 因此本轮没有闭合LLaMA搜索和设备性能，下一步还要分别处理候选IR规模、重复清理和容量反馈的scope精度。
 已清理本轮撤回/失败的四个大型生成目录，日志及小型actual-IR审计证据保留；风险prefill没有重试。
+
+## 2026-09-13：共享 DDR 入口参数去冗余
+
+根因是编译器要求各 Tile 参数表相同：BoundaryMovement 对每个共享 payload 向全16 Tile添加参数，completion又把通知参数
+复制到全部 Tile；无关项标记 access=none。Target ABI与manifest继续保留这些槽，记录量按资源数乘16增长。
+这属于参数生成和跨 Tile ABI 校验的限制，不是硬件要求；提高manifest上限不能消除冗余。
+
+现已按实际 source/destination 生成 payload 参数，按 actual Instr writer/readers 生成 ready 参数。跨 Tile 通过 ResourceId 检查
+共享存储描述；ordinal只在当前 entry 内有效。LLVM aggregate和runtime按实际行长拼接或寻址，indirect row按该Tile字节数invalidate；
+缺失、重复、无关参与者、初始化或共享描述冲突继续拒绝。DMA、发布/获取位置、SPM及数值语义不变。
+
+| LLaMA `[1,16,4096]`，FP16 | 修前共享参数 | 修后共享参数 | 修后无用参数 | manifest记录/bytes（修前→修后） |
+| --- | ---: | ---: | ---: | --- |
+| none | 25,600 | 5,440 | 0 | 25,884→5,724；3,245,086→727,636 |
+| search，默认8/42 | 43,520 | 9,920 | 0 | 43,804→10,204；5,531,886→1,313,086 |
+
+两条路径的实际共享资源数分别仍为1600/2720，包含800/1360个payload及同数通知，未用删除实际资源减少记录。
+修前数字来自修改前直接读取manifest；旧文件被fresh CTest替换，未保留其hash，不能据此声称匹配的设备性能提升。
+本轮none/search source→package/no-card分别162.82/621.42秒。LLaMA本轮未做设备数值/性能复验。
+
+验证：Transforms、CodeGen、Package、Runtime四个完整组件通过；actual 4/16 Tile、1024/1025/1031稀疏fanout通过Instr、completion与SPM，
+额外无关通知binding拒绝；LLVM验证不同长度行的精确offset/invalidate/slot读取及共享描述冲突。8193个资源的稀疏引用roundtrip与
+runtime一次分配验证通过，65536记录和16MiB上限不变。18项AllGather/AllToAll/ReduceScatter × 1024/1025/1031 × none/search
+及2项LLaMA共20项fresh产品no-card通过。
+
+一次实卡AllToAll 1031尾部FP16、none、TileRowPointerTable：**16,496个输出全部与PyTorch exact一致，设备5.123 ms**，16 Tile
+completion及正常清理完成。该时间记录运行恢复资格，不作为本项加速比。SDK provider使用canonical库重新编译，无全局环境修改。
+证据见[`shared-ddr-entry-arguments-20260913.json`](data/board-performance/shared-ddr-entry-arguments-20260913.json)。

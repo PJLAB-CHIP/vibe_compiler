@@ -2313,10 +2313,11 @@ materializeSharedDDRPeerBindings(mlir::ModuleOp module,
       }
       const bool writes = entry == sourceFunction;
       const bool reads = destinationFunctions.contains(entry.getOperation());
+      if (!writes && !reads)
+        continue;
       DDRAccess access = writes && reads ? DDRAccess::ReadWrite
                          : writes        ? DDRAccess::Write
-                         : reads         ? DDRAccess::Read
-                                         : DDRAccess::None;
+                                         : DDRAccess::Read;
       mlir::Value argument = appendArgument(entry, access);
       entryArguments.try_emplace(entry.getOperation(), argument);
       if (writes)
