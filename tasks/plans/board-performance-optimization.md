@@ -7,6 +7,10 @@
 逐次性能记录统一追加到[`docs/board-performance-results.md`](../../docs/board-performance-results.md)，
 其中保存配置、根因、实际修改、前后样本、PyTorch、artifact身份和归因限制；本计划只拥有当前实施检查点。
 
+用户新增的ResNet、YOLOv5、DLRM、ViT block、带embedding/LM head的单层LLaMA2、4096³ GEMM及选定补充case，
+统一按[多类网络与数据复用板测矩阵](board-workload-matrix.md)确定输入、完整输出、尾部/结构覆盖、DDR/DTE对照及完成条件。
+矩阵已形成，新增case尚未实现或验证；它们仍属于本work item，不另建网络或通信板测任务。
+
 ## 输入、输出与边界
 
 - Upstream IR / input：当前 PyTorch case、按各case既定dtype生成的输入/reference、search 生成的 verified final Instr 与生产 package。
