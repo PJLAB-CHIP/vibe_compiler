@@ -41,7 +41,7 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 本次检查的current代码事实：
 
 1. `wafer_pytorch_board_cases.py`已接入ResNet-18、ViT EncoderBlock、大GEMM和batch共享RHS及其补充配置；
-   YOLO、单层完整LM、长cache和GQA尚未接入。当前LLaMA输入是hidden states，仅输出block hidden states。
+   GQA已接入并通过source/reference主机覆盖；YOLO、单层完整LM和长cache尚未接入。当前LLaMA输入是hidden states，仅输出block hidden states。
    它不能覆盖token embedding、final RMSNorm、LM head，也不能给新网络签发ready资格。
 2. `wafer_pytorch_board_common.py`已支持i32/i64 raw传输，但case构造仍要求所有input与case浮点dtype一致。
    必须改成逐输入/输出typed合同，整数索引保持整数；raw支持不证明动态索引已能lower到设备。
@@ -332,6 +332,7 @@ ResNet/ViT/完整LM/GQA的1025、GEMM4097³和batch GEMM混合tail作为泛化�
 | batch共享RHS整除 | 原有2个accepted却在静态child继承动态parent offset时target lowering失败；14号相对地址修复后no-card通过；实卡4.616 ms，1,077/4,194,304项超原容差 | 地址编译缺陷已有通用修复；独立追GEMM数值，不标board通过 |
 | batch共享RHS尾部 | 原预算42次未生成可执行包 | 与大GEMM一同审查实际容量反馈及多轴覆盖 |
 | ResNet-18三种尺寸 | BN合法化及opmath主机门禁通过；旧版本三个整网编译均触发1,800秒主机期限，未到设备。Dynamic e-graph重复展开已有定向加速与等价证据，当前正式前端已完成 | 当前只重签主配置并采样Region提案热点，根因稳定后再补大图及尾部，不同时反复重启三个长编译 |
+| GQA两种长度 | 原HF eager与portable source通过；默认8/42两者均42次unsupported、0 accepted，未生成package | attention已识别，后续多M轴contraction未进入GEMM；从普通contraction映射归一化修复，不提高预算或在host重复KV |
 | ViT两种长度 | 正式导出成功；source verifier拒绝GELU的Erf custom call；LayerNorm同时以BN training表达 | 在正式source/转换owner闭合Erf及normalization语义，不替换原模块 |
 | Q/K/V独立诊断 | current default search包/no-card已完成，单次设备执行60秒未完成、runtime隔离上下文并退出；无回读结论 | 停止设备批次，不retry/reset；保留主机IR/ABI定位，设备恢复后才可重签板端 |
 
@@ -386,7 +387,7 @@ ResNet同一真实source的named pipeline由155.43秒降至10.52秒，跳过9,39
 | 最高gain合并形成quotient cycle、剩余低gain合法且同分 | 明确拒绝A+C，按原result-anchored semantic tie选B+C，随后完整domain校验 | `HigherGainCyclicMergeDoesNotHideLegalLowerGain`，shape `[1,1025,1031]` |
 | 独立有界partition oracle、fanout、partial merge、不可合并及FM越过局部最优 | 原raw集合、固定Region数best-prefix、输入重排确定性及actual merge依赖不变 | 原13项Region测试继续执行；小图只作有界oracle，规模资格由上述输入和原ragged/partial测试承担 |
 | 全部直接Planning/Driver调用者 | 组件测试实际执行，最终新增用例另用本轮binary重签；canonical完整增量构建与Ninja no-op | Planning 63.21秒、Driver 572.62秒通过；最终Region 15/15，无skip |
-| 原始ResNet主配置、FP16 LLaMA默认search | 正式source→package/no-card，LLaMA对初始正确快包逐文件比较 | 本项整网编译仍在运行；上一节e-graph版本的package相等性不能代签本项 |
+| 原始ResNet主配置、FP16 LLaMA默认search | 正式source→package/no-card，LLaMA对初始正确快包逐文件比较 | 本项LLaMA通过，wall 1,056.91秒、峰值RSS 2,798,336 KiB，包三文件与初始正确快版本相同；ResNet仍在编译，不能由LLaMA代签 |
 
 同输入query的工作量：4 Tile的merge合法性查询3,360→852，16 Tile为52,968→3,408；
 候选计分数量不变。两组FM累计时间14.385→6.969 ms、57.219→27.786 ms；完整proposal query
@@ -401,3 +402,32 @@ ResNet同一真实source的named pipeline由155.43秒降至10.52秒，跳过9,39
 当前普通reduce只接受一个输入及projected-permutation map。不能仅修编译时间就宣称ResNet跑通，需在10/11号边界补通用窗口归约能力，
 先核对硬件value/padding/NaN合同，不按ResNet名字匹配。以上后续缺口不通过删pool、延长期限或换none绕过。
 详细计数、身份与限制见[Region提案证据](../../docs/data/board-performance/region-proposal-work-20260914.json)。
+
+### GQA source接入边界
+
+本项只扩展16号已有case/reference/runner输入，不修改compiler选择或attention算术。原`_read_only_attention`增加独立KV head数量，
+交给pinned HF `LlamaConfig`和同一个`eager_attention_forward`；32/8的配置由官方`repeat_kv`在导出图内表达，
+runtime输入仍是8个KV heads，不在主机先扩成32个。默认KV=heads保持原MHA case合同。
+依据[HF LlamaConfig的GQA定义](https://huggingface.co/docs/transformers/v4.50.0/model_doc/llama)，具体调用以managed依赖源码为准。
+
+| 输入/分支 | exact检查 | 直接下游与验收 |
+| --- | --- | --- |
+| Q `[1,32,S,128]`、KV `[1,8,S,128]`，S=1024/1025，FP16 | 原四个runtime端口、完整输出shape/dtype/finite；首个causal query的每四个Q heads逐bit对应同一个V head，末尾输出损坏必须被原容差拒绝 | 官方HF eager→portable StableHLO保留32/8输入和图内广播→正式search package/no-card；整网编译与后续板测分别登记 |
+| 未指定KV heads的原MHA | 原单head及多head输入、mask、首query映射不变 | 原case合同测试，避免新增配置影响旧prefill |
+| 非正head或Q不能被KV整除 | 在case构建前明确拒绝，不生成错误模型/reference | 直接参数负例；不改变生产IR legality |
+
+本项不包含Q/K/V/O投影、RoPE或cache更新，这些由原block/decode及长cache行覆盖；不把GQA attention输入case称为完整LLaMA。
+
+本轮1024/1025的原HF eager完整输出、head映射、末尾fault injection、portable输入32/8及广播已通过；
+原MHA等全部35项case合同及7项tensor reference也通过。新增完整eager/export使case suite为45.57秒，
+只将这组Python测试的CTest期限从30秒调整为90秒；compiler的1,800秒和设备完成期限不变。
+两项正式search各42次unsupported、0 accepted，无容量拒绝，package/no-card失败，耗时24.42/34.83秒。
+这是新输入暴露的产品缺口，不是设备异常；不将注册时的`board-ready`测试label当作通过状态。
+
+首个拒绝的actual maps为LHS `(d1,d0,d2,d3)`、RHS `(d0,d3,d4)`、output `(d0,d1,d2,d4)`，
+只有d3是reduction。pinned `inferContractionDims`按operand map交集得到batch={d0}、M={d1,d2}、N={d4}、K={d3}；
+current `buildGemmDescriptor`要求M/N/K各只有一个axis，因而在GEMM识别时拒绝，随后落到ordinary reduce拒绝。
+本轮前端已实际生成一个typed attention，不能归因于attention pattern没有匹配。
+下一项通用修复应在10号的structured contraction→Tile GEMM边界支持多个parallel M/N轴的精确归一化，
+按current maps保留元素顺序与结果恢复，不把KV广播移出导出图；K归约顺序、dtype及FP32 partial合同保持不变。
+先补多M/多N、共享batch、unit及非unit、1024/1025、transpose和unsupported map的直接机制矩阵，再改代码；此处尚未实施。

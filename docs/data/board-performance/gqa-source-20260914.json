@@ -1,0 +1,295 @@
+{
+  "date": "2026-09-14",
+  "work_item": "board-testing",
+  "compiler_sha256": "2bc96dd263ab01f83e612573767e27e6a478cdf9c7201604636fe2f051740758",
+  "seed": 20260803,
+  "dtype": "float16",
+  "reference": "pinned HF Llama eager_attention_forward; 32 Q heads, 8 KV heads, causal",
+  "comparison": {
+    "rtol": 0.006,
+    "atol": 0.008,
+    "equal_nan": false
+  },
+  "board_executed": false,
+  "configurations": [
+    {
+      "case": "attention-gqa",
+      "query_shape": [
+        1,
+        32,
+        1024,
+        128
+      ],
+      "key_value_shapes": [
+        [
+          1,
+          8,
+          1024,
+          128
+        ],
+        [
+          1,
+          8,
+          1024,
+          128
+        ]
+      ],
+      "mask_shape": [
+        1,
+        1,
+        1024,
+        1024
+      ],
+      "output_shape": [
+        1,
+        32,
+        1024,
+        128
+      ],
+      "source_sha256": "ce6b83f0f1f7249223a1df8876871f784a7cde2bd7feddc660ff8307a2ea3431",
+      "exported_input_signature": [
+        {
+          "shape": [
+            1,
+            8,
+            1024,
+            128
+          ],
+          "dtype": "float16",
+          "dynamic_dims": []
+        },
+        {
+          "shape": [
+            1,
+            1,
+            1024,
+            1024
+          ],
+          "dtype": "float16",
+          "dynamic_dims": []
+        },
+        {
+          "shape": [
+            1,
+            8,
+            1024,
+            128
+          ],
+          "dtype": "float16",
+          "dynamic_dims": []
+        },
+        {
+          "shape": [
+            1,
+            32,
+            1024,
+            128
+          ],
+          "dtype": "float16",
+          "dynamic_dims": []
+        }
+      ],
+      "exported_input_locations": [
+        {
+          "type_": "input_arg",
+          "position": 2,
+          "name": ""
+        },
+        {
+          "type_": "input_arg",
+          "position": 3,
+          "name": ""
+        },
+        {
+          "type_": "input_arg",
+          "position": 1,
+          "name": ""
+        },
+        {
+          "type_": "input_arg",
+          "position": 0,
+          "name": ""
+        }
+      ],
+      "eager_and_portable_contract": "passed",
+      "ctest_wall_s": 24.42,
+      "search_width": 8,
+      "search_trials": 42,
+      "structural": 8,
+      "actual": 42,
+      "accepted": 0,
+      "unsupported": 42,
+      "capacity": 0,
+      "package_produced": false,
+      "no_card_passed": false
+    },
+    {
+      "case": "attention-gqa-tail-1025",
+      "query_shape": [
+        1,
+        32,
+        1025,
+        128
+      ],
+      "key_value_shapes": [
+        [
+          1,
+          8,
+          1025,
+          128
+        ],
+        [
+          1,
+          8,
+          1025,
+          128
+        ]
+      ],
+      "mask_shape": [
+        1,
+        1,
+        1025,
+        1025
+      ],
+      "output_shape": [
+        1,
+        32,
+        1025,
+        128
+      ],
+      "source_sha256": "79f4914a73d776bdcb3732984d4b8f82ff3bdfcb5583e9d16e8d28dca9801521",
+      "exported_input_signature": [
+        {
+          "shape": [
+            1,
+            8,
+            1025,
+            128
+          ],
+          "dtype": "float16",
+          "dynamic_dims": []
+        },
+        {
+          "shape": [
+            1,
+            1,
+            1025,
+            1025
+          ],
+          "dtype": "float16",
+          "dynamic_dims": []
+        },
+        {
+          "shape": [
+            1,
+            8,
+            1025,
+            128
+          ],
+          "dtype": "float16",
+          "dynamic_dims": []
+        },
+        {
+          "shape": [
+            1,
+            32,
+            1025,
+            128
+          ],
+          "dtype": "float16",
+          "dynamic_dims": []
+        }
+      ],
+      "exported_input_locations": [
+        {
+          "type_": "input_arg",
+          "position": 2,
+          "name": ""
+        },
+        {
+          "type_": "input_arg",
+          "position": 3,
+          "name": ""
+        },
+        {
+          "type_": "input_arg",
+          "position": 1,
+          "name": ""
+        },
+        {
+          "type_": "input_arg",
+          "position": 0,
+          "name": ""
+        }
+      ],
+      "eager_and_portable_contract": "passed",
+      "ctest_wall_s": 34.83,
+      "search_width": 8,
+      "search_trials": 42,
+      "structural": 8,
+      "actual": 42,
+      "accepted": 0,
+      "unsupported": 42,
+      "capacity": 0,
+      "package_produced": false,
+      "no_card_passed": false
+    }
+  ],
+  "host_validation": {
+    "focused_tests": 2,
+    "focused_wall_s": 30.662,
+    "case_contract_tests": 35,
+    "case_ctest_wall_s": 45.57,
+    "tensor_reference_tests": 7,
+    "tensor_reference_ctest_wall_s": 2.34,
+    "skipped": 0,
+    "canonical_build": "passed",
+    "subsequent_build": "ninja: no work to do."
+  },
+  "first_rejection": {
+    "diagnostic_trials": 1,
+    "typed_attention_count": 1,
+    "gate": "search-structured-to-tile",
+    "maps": [
+      "(d1,d0,d2,d3)",
+      "(d0,d3,d4)",
+      "(d0,d1,d2,d4)"
+    ],
+    "parallel_axes": [
+      0,
+      1,
+      2,
+      4
+    ],
+    "reduction_axes": [
+      3
+    ],
+    "inferred_contraction_axes": {
+      "batch": [
+        0
+      ],
+      "m": [
+        1,
+        2
+      ],
+      "n": [
+        4
+      ],
+      "k": [
+        3
+      ]
+    },
+    "root": "buildGemmDescriptor requires exactly one M/N/K axis; this valid multi-M contraction therefore reaches ordinary reduction rejection",
+    "compiler_fix_implemented": false
+  },
+  "raw_evidence_sha256": {
+    "build/test/model-performance/gqa-case-focused.log": "92bf2e9a640f6172d9d70800a94c6f4ac0e1dec5e4c535a434037b8b25452462",
+    "build/test/model-performance/gqa-python-regression.log": "577263a2d4611087d5b124ee374bd7aa8c9f6511da15a624242fadd787aa296c",
+    "build/test/model-performance/gqa-no-card.log": "06244c6bb4b6696b4452e32d7d2b3964a4209f0df5d38c45958c78edd624de79",
+    "build/test/model-performance/gqa-first-rejection.log": "76ec7bbcdb8555773876f9cc3db51e0e21b7f438715df7f830158e451fb3e064"
+  },
+  "limitations": [
+    "Source/reference integration is complete; executable package/no-card and board qualification failed or remain unexecuted.",
+    "No new board timing or optimization-round claim."
+  ]
+}

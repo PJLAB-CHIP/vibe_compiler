@@ -1044,6 +1044,58 @@ class PyTorchBoardCasesTest(unittest.TestCase):
         )
         self.assertIsInstance(module.decoder_layer, LlamaDecoderLayer)
 
+    def test_gqa_preserves_runtime_kv_heads_and_official_group_mapping(self) -> None:
+        for extent in (1024, 1025):
+            with self.subTest(extent=extent):
+                name = "attention-gqa" if extent == 1024 else "attention-gqa-tail-1025"
+                case = cases.make_case(name, dtype=torch.float16, seed=20260803)
+                query, key, value, mask = case.inputs
+                self.assertEqual(query.shape, (1, 32, extent, 128))
+                self.assertEqual(key.shape, (1, 8, extent, 128))
+                self.assertEqual(value.shape, key.shape)
+                self.assertEqual(mask.shape, (1, 1, extent, extent))
+                expected, = case.materialize_expected_outputs()
+                self.assertEqual(expected.shape, query.shape)
+                self.assertTrue(torch.isfinite(expected).all())
+                # Only token zero is visible to the first causal query. Each
+                # contiguous group of four Q heads must read its one KV head.
+                for head in range(32):
+                    torch.testing.assert_close(
+                        expected[:, head, 0], value[:, head // 4, 0],
+                        rtol=0, atol=0,
+                    )
+                corrupted = expected.clone()
+                corrupted[0, -1, -1, -1] += 1
+                with self.assertRaises(AssertionError):
+                    cases.common.assert_tensor_matches(
+                        corrupted, expected, policy=case.comparison_policy,
+                        context=f"GQA S={extent} final head/token",
+                    )
+                with tempfile.TemporaryDirectory() as directory:
+                    program = pathlib.Path(directory) / "gqa-program"
+                    case.export_program(program)
+                    stablehlo = read_portable_stablehlo(program)
+                signatures = [
+                    line for line in stablehlo.splitlines()
+                    if re.match(r"\s*func\.func\b", line) and " private " not in line
+                ]
+                self.assertEqual(len(signatures), 1)
+                signature = signatures[0]
+                self.assertEqual(signature.count(f"tensor<1x8x{extent}x128xf16>"), 2)
+                self.assertIn(f"tensor<1x32x{extent}x128xf16>", signature)
+                self.assertIn("stablehlo.broadcast_in_dim", stablehlo)
+                self.assertIn("stablehlo.dot_general", stablehlo)
+
+    def test_attention_rejects_invalid_q_kv_head_groups(self) -> None:
+        for heads, kv_heads in ((0, 8), (32, 0), (32, 7)):
+            with self.subTest(heads=heads, kv_heads=kv_heads):
+                with self.assertRaisesRegex(ValueError, "Q divisible by KV"):
+                    cases._read_only_attention(
+                        torch.float16, 20260803, name="invalid-heads",
+                        query_length=1024, key_value_length=1024, causal=True,
+                        num_heads=heads, num_key_value_heads=kv_heads,
+                    )
+
     def test_hf_functional_decode_threads_exact_updated_cache(self) -> None:
         case = cases._attention_decode_kv_cache(torch.float16, seed=41)
         self.assertEqual(case.name, "attention-decode-kv-cache")

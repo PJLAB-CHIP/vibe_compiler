@@ -134,8 +134,25 @@
       "board_executed": false
     },
     "current_llama_fp16": {
-      "status": "running",
-      "board_executed": false
+      "status": "passed",
+      "board_executed": false,
+      "wall_s": 1056.91,
+      "max_rss_kib": 2798336,
+      "compiler_transaction_wall_ms": 1032817,
+      "all_package_members_byte_equal_frozen_baseline": true,
+      "package_sha256": {
+        "manifest.json": "968af3b772f708fc9dc4111d183c9f0d0eb15fca7928b884722d15047c9d858e",
+        "modules/module_00000.so": "df29e4aaed1c679e5b897e17bba401b42a8c9ec4e7dceed58897296fe204fa27",
+        "data/program-data.bin": "2c70f48e3e9be02d85e54cf0486fdf833a0ddd09a3e13659e7d8a874268cad59"
+      },
+      "region_query_calls": 3,
+      "region_query_wall_ms": 9900.411,
+      "region_work": {
+        "merge-candidates": 1703472,
+        "merge-legality-checks": 261183,
+        "move-candidates": 142800,
+        "move-legality-checks": 63884
+      }
     },
     "old_resnet_debugger_control": {
       "compiler_sha256": "43144e4d0a89584fca5dabc48392c24d85522d345a975d6d9d8517a45ff456c0",
@@ -157,10 +174,11 @@
     "build/test/model-performance/region-proposal-current.xml": "332e3f371f2e0f90c8a2af2f9fcaed5933b79cb0ba3c08b1d30920d678224161",
     "build/test/model-performance/region-proposal-units.log": "f37ae626d95223538d3ab3b37a7415ebb17088e02640dbdfc6bb561a9bf22988",
     "build/test/model-performance/region-proposal-resnet-control-final.log": "e76e29c88f5e89d82d5f06fb726afbc7d0cf5115b5e5fd4c30a4ea004ccf89c4",
-    "build/test/model-performance/structured-rule-resnet-search-gdb.log": "ede03b95c4ff5c700c6eb79562387d565d0500e1aee5760d2bbba5e75aa61793"
+    "build/test/model-performance/structured-rule-resnet-search-gdb.log": "ede03b95c4ff5c700c6eb79562387d565d0500e1aee5760d2bbba5e75aa61793",
+    "build/test/model-performance/region-proposal-llama-no-card.log": "a5fb3f642ee5ed468829845dd689494bb8b8bd472babe37d770f771145035586"
   },
   "limitations": [
-    "Current full ResNet and LLaMA package/no-card qualification remains pending.",
+    "Current full ResNet package/no-card qualification remains pending; LLaMA passed with a byte-identical frozen-baseline package.",
     "No new board correctness, profile, or matched device performance evidence.",
     "The i1 branch has no baseline timing and makes no device-support claim.",
     "The final suite adds inputs/tests; do not compare its total time as a matched before/after speedup.",

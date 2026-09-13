@@ -1352,7 +1352,10 @@ FM仅重算移动root关联的unique fragment，多个local realization仍取原
 最高gain合并成环后选择较低gain合法方案。实际SpatialDemand→RootWork→RegionDomain的1024/1025/1031、4/16 Tile
 逐proposal验证mandatory coverage无重复、replica入口、unknown指标及反转输入后的完整ordered plan相同。
 Planning 123项、Driver 126项通过；最后补全unknown/replica断言后Region 15/15再次通过，无skip。
-canonical完整增量构建通过，第二次Ninja no-op。当前compiler的ResNet/LLaMA完整package/no-card仍在运行，尚未签发该版本整网资格。
+canonical完整增量构建通过，第二次Ninja no-op。当前compiler的FP16 LLaMA随后完整package/no-card通过，
+总wall 1,056.91秒、峰值RSS 2,798,336 KiB；manifest/data/module与初始正确快包逐文件相同，保留中间迭代的原程序资格。
+本次Region提案共3次、累计9,900.411 ms；完整编译仍约17分钟，不把query改善说成整网编译开销已解决。
+ResNet主配置仍在编译，尚未签发该版本ResNet package资格。没有重复执行设备，最终全量板测仍须执行。
 
 旧ResNet debugger诊断已停止并清理其临时编译目录；两次Region查询累计895.957秒，六次temporal调用累计781.785秒。
 debugger暂停影响wall，这组值仅用于根因定位。同一过程中采样到每个TileRegion反复构建全module live set，
@@ -1362,3 +1365,29 @@ debugger暂停影响wall，这组值仅用于根因定位。同一过程中采�
 
 逐项身份、计数、主机原始证据hash及未完成边界见
 [`region-proposal-work-20260914.json`](data/board-performance/region-proposal-work-20260914.json)。
+
+## 2026-09-14：GQA原始source接入及多M轴contraction缺口
+
+扩展矩阵的GQA使用同一HF `eager_attention_forward`，Q为`[1,32,S,128]`，K/V各为`[1,8,S,128]`，
+S=1024/1025、FP16、causal，完整输出为`[1,32,S,128]`。KV分组由官方路径在导出图内广播，runtime输入保持8 heads。
+seed和attention容差仍为20260803、`rtol=0.006, atol=0.008`，无额外投影、RoPE或cache，也未更改原MHA配置。
+
+两个长度的完整eager输出、finite/dtype、首query的四对一head映射、末尾错误注入及portable输入/广播均通过。
+受影响Python门禁实际执行35项case合同和7项tensor reference，均通过；完整构建及Ninja no-op通过。
+新增两组完整eager/export后case suite实测45.57秒，单独将其CTest主机期限由30调整为90秒；
+compiler及设备期限不变，没有新板端执行。
+
+| 配置 | 正式默认search结果 | CTest wall | Package/no-card |
+| --- | --- | ---: | --- |
+| GQA S1024 | 8个结构、42 actual、42 unsupported、0 accepted；无capacity | 24.42 s | 失败，未生成package |
+| GQA S1025 | 同上 | 34.83 s | 失败，未生成package |
+
+首个actual拒绝的Linalg maps为LHS `(d1,d0,d2,d3)`、RHS `(d0,d3,d4)`、output `(d0,d1,d2,d4)`，
+d3归约，其余parallel。pinned contraction分类给出M={d1,d2}、N={d4}、K={d3}、batch={d0}；
+`buildGemmDescriptor`要求M/N/K各一轴，未接住此多M轴结构，最终被普通reduce lowering拒绝。
+前端已实际生成一个typed attention，因此该失败不是attention未识别，也没有证据支持增加搜索预算解决它。
+通用修复边界是多个parallel M/N轴按current maps归一到原GEMM再恢复输出，保持K顺序和dtype；实现及下游数值仍未完成。
+本项只完成source/reference接入，未签发GQA板端资格，也不算三轮性能调优之一。
+
+完整输入端口、source identity、搜索结果及日志hash见
+[`gqa-source-20260914.json`](data/board-performance/gqa-source-20260914.json)。

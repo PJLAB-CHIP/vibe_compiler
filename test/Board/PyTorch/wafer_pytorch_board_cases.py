@@ -786,12 +786,18 @@ def _read_only_attention(
     key_value_length: int,
     causal: bool,
     num_heads: int = 1,
+    num_key_value_heads: int | None = None,
     head_dim: int = ATTENTION_HEAD_DIM,
 ) -> PyTorchBoardCase:
     if dtype not in {torch.float16, torch.bfloat16}:
         raise RuntimeError(
             "read-only attention board cases require float16 or bfloat16"
         )
+    if num_key_value_heads is None:
+        num_key_value_heads = num_heads
+    if (num_heads <= 0 or num_key_value_heads <= 0
+            or num_heads % num_key_value_heads):
+        raise ValueError("attention requires positive Q/KV heads with Q divisible by KV")
     try:
         from transformers import LlamaConfig
         from transformers.masking_utils import create_causal_mask
@@ -809,7 +815,7 @@ def _read_only_attention(
         hidden_size=num_heads * head_dim,
         intermediate_size=num_heads * head_dim * 4,
         num_attention_heads=num_heads,
-        num_key_value_heads=num_heads,
+        num_key_value_heads=num_key_value_heads,
         max_position_embeddings=key_value_length,
         attention_dropout=0.0,
     )
@@ -851,12 +857,12 @@ def _read_only_attention(
         generator=generator,
     ) * 0.125
     key = _random_tensor(
-        (1, num_heads, key_value_length, head_dim),
+        (1, num_key_value_heads, key_value_length, head_dim),
         dtype=dtype,
         generator=generator,
     ) * 0.125
     value = _random_tensor(
-        (1, num_heads, key_value_length, head_dim),
+        (1, num_key_value_heads, key_value_length, head_dim),
         dtype=dtype,
         generator=generator,
     )
@@ -934,6 +940,17 @@ def _llama_2_7b_attention_prefill(dtype: torch.dtype, seed: int) -> PyTorchBoard
         causal=True,
         num_heads=config["num_attention_heads"],
         head_dim=config["hidden_size"] // config["num_attention_heads"],
+    )
+
+
+def _attention_gqa(
+    dtype: torch.dtype, seed: int, *, extent: int = 1024
+) -> PyTorchBoardCase:
+    return _read_only_attention(
+        dtype, seed,
+        name="attention-gqa" if extent == 1024 else f"attention-gqa-tail-{extent}",
+        query_length=extent, key_value_length=extent, causal=True,
+        num_heads=32, num_key_value_heads=8, head_dim=128,
     )
 
 
@@ -1244,6 +1261,10 @@ CASE_FACTORIES: dict[
     ),
     "attention-prefill": _attention_prefill,
     "attention-prefill-llama-2-7b": _llama_2_7b_attention_prefill,
+    "attention-gqa": _attention_gqa,
+    "attention-gqa-tail-1025": lambda dtype, seed: _attention_gqa(
+        dtype, seed, extent=1025
+    ),
     "attention-prefill-tail-1025": lambda dtype, seed: _attention_prefill(
         dtype, seed, extent=1025
     ),

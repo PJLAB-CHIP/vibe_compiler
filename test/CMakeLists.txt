@@ -143,7 +143,8 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
   set_tests_properties(wafer-pytorch-board-cases-python PROPERTIES
     LABELS "runtime;no-card;pytorch;source;huggingface;card-local"
     ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python:${CMAKE_CURRENT_SOURCE_DIR}/Board/Support;WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>"
-    TIMEOUT 30
+    # Includes two full 32-Q/8-KV-head eager/export GQA references.
+    TIMEOUT 90
   )
 
   function(wafer_add_pytorch_source_no_card_test
@@ -304,6 +305,11 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
 
   wafer_add_pytorch_source_no_card_test(
     attention-prefill-llama-2-7b float16 fp16 search)
+  foreach(_wafer_gqa_case IN ITEMS attention-gqa attention-gqa-tail-1025)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_gqa_case} float16 fp16 search)
+  endforeach()
+  unset(_wafer_gqa_case)
 
   foreach(_wafer_heterogeneous_policy IN ITEMS none search)
     wafer_add_pytorch_source_no_card_test(
