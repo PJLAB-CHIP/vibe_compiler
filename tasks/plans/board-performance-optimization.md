@@ -21,6 +21,20 @@
 
 ## 当前实施顺序
 
+2026-09-14用户要求对已通过no-card的全部42个默认search配置测量实卡耗时。本轮复用同一current compiler
+准备的package，由统一PyTorch runner重新导出source、输入和reference，检查source一致性及fresh no-card后串行launch；
+不改变width8/trials42、dtype、seed或容差。42个配置包含FP16/BF16 decode各两步，共44次预期设备执行；
+第二步只使用本轮第一步actual KV。普通执行记录tx-stream-events单次时间，不启动额外profile或重复采样。
+覆盖通信/归约/GEMM/卷积/逐点的1024及1025/1031尾部、小型prefill、异构tiling、混合conv、两种dtype的decode/LLaMA
+及4K prefill；division按已有特殊值合同使用F32。4K默认预算最后执行，不运行历史126次预算的超时产物。
+每项记录完整输出比较、completion/readback/cleanup、输入及package身份；数值失败单独列出，设备异常则立即停止后续批次。
+本轮验收是完整42项计时及数值结果清单，不代签预算曲线、matched性能A/B或整个board-testing完成。
+本次计时清单已完成：42个配置共44次设备执行全部正常结束，41个配置完整PyTorch通过；BF16 LLaMA
+正常回读后51/65,536项超原容差，独立回读复核一致，数值修复尚未完成。LLaMA FP16为14.113 ms；decode
+FP16两步6.545/6.937 ms、BF16两步6.675/6.677 ms；4K默认42次预算为278.981 ms并完整数值通过。
+无设备超时或重试，未重新编译；所有步骤重新导出source/input/reference并通过fresh no-card。
+具体42项表与身份在统一性能文档及`catalog-timing-20260914.json`；本轮没有额外profile，不将单次计时记为matched A/B。
+
 当前按用户授权实施[Spatial、融合与多轴 Temporal 搜索方案](physical-search-organization.md)，
 先完成换轴、原起点兄弟分支、跨 Tile 成组提案和候选调度，再推进结构覆盖与性能搜索。
 该方案细化下表第2、3步；下方既有修改与测试不表示新方案已通过验收，设备验证在本轮主机/no-card门禁之后。
@@ -30,7 +44,7 @@
 第2步已补共享reader、已选逐点融合及跨Region输入归因；第3步有界调度已实施，上一提交的全部默认search产品完成package/no-card。
 LLaMA默认预算首个可行解在第24次，14次预算仍无可行解；一次实卡PyTorch通过、91.415 ms仅恢复运行资格，性能仍未恢复。
 用户要求优先恢复基本可用性，本次在受影响主机门禁后提前重签该非风险产品的数值资格；不代签第5—7步。
-整体尚未完成。第8步风险设备测试不在本轮执行范围。
+整体尚未完成。第8步历史126次预算风险候选不在本轮执行范围；新增42项计时只覆盖当前默认预算的4K产物。
 2026-09-14已达到用户要求的同配置LLaMA历史约17 ms目标：本轮默认8/42得到9次accepted，
 完整fresh package/no-card及一次FP16实卡通过，设备14.179 ms、65,536个输出全部满足原PyTorch容差。
 通用修复包括访问不变性排序、修复/改进服务与其它结构探索交错，以及唯一allocator汇总原遍历已发现的容量证据；

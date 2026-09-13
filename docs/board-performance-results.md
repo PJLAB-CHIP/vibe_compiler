@@ -1142,3 +1142,78 @@ FP16/BF16 conv mixed-DAG分别174.42/66.66秒，LLaMA BF16为1200.72秒；这些
 因此同一实际设备程序的性能/数值资格继续适用；本轮只有一次实际launch，没有把这次编译与no-card写成第二次板测。
 最终包manifest SHA为`968af3b772f708fc9dc4111d183c9f0d0eb15fca7928b884722d15047c9d858e`，
 各编译器、package、日志、fresh输入及唯一板端audit的对应关系见同一JSON。主机开销、其它模型性能与完整预算曲线仍未闭合。
+
+## 2026-09-14：全部42个默认search配置的实卡计时
+
+用户要求测量此前42项no-card配置的设备耗时。本轮没有重新编译：复用同一current build的package，
+统一PyTorch runner逐项使用`--prepared-work-dir`，44个步骤均记录`source_equal=true compile=false`。
+每步重新导出source、输入及PyTorch eager reference，并在launch前通过fresh no-card；package各文件hash在批次前后一致。
+
+编译器SHA256为`5de4a1fc362c2e1e07610ba82bcb4e81bac1ecd82ad1223662aa13b27b68cb7c`，对应提交`d78d2fa2`；TX81 5.6.0、runtime ABI1300、16 Tile，
+boot与前一LLaMA14.179 ms样本相同。所有配置保持search width8/trials42、seed20260803和原dtype/容差；
+division因既有特殊值合同使用F32，其余为FP16/BF16。设备串行，每步普通tx-stream-events计时一次，无额外profile或设备重试。
+
+**42/42个配置均取得设备耗时，共44次实际launch，全部正常completion、回读和清理，无设备超时。**
+其中41个配置完整PyTorch通过；BF16 LLaMA在正常执行后数值失败。两种dtype的decode各两步，
+第二步K/V输入与第一步实际capture逐文件SHA相同，不使用no-card的参考KV或历史raw。
+
+| 配置 | dtype | 设备耗时ms | 完整数值结果 |
+| --- | --- | ---: | --- |
+| `allgather-add` | FP16 | 0.981 | 通过 |
+| `allgather-add-tail-1025` | FP16 | 0.901 | 通过 |
+| `allgather-add-tail-1031` | FP16 | 0.822 | 通过 |
+| `single-card-gemm` | FP16 | 0.907 | 通过 |
+| `single-card-gemm-tail-1025` | FP16 | 0.975 | 通过 |
+| `single-card-gemm-tail-1031` | FP16 | 1.004 | 通过 |
+| `alltoall-transpose` | FP16 | 1.242 | 通过 |
+| `alltoall-transpose-tail-1025` | FP16 | 1.246 | 通过 |
+| `alltoall-transpose-tail-1031` | FP16 | 1.198 | 通过 |
+| `reduce-scatter-sum` | FP16 | 0.979 | 通过 |
+| `reduce-scatter-sum-tail-1025` | FP16 | 0.910 | 通过 |
+| `reduce-scatter-sum-tail-1031` | FP16 | 0.935 | 通过 |
+| `all-reduce-sum` | FP16 | 0.913 | 通过 |
+| `all-reduce-sum-tail-1025` | FP16 | 0.874 | 通过 |
+| `all-reduce-sum-tail-1031` | FP16 | 0.918 | 通过 |
+| `local-reduce` | FP16 | 0.957 | 通过 |
+| `local-reduce-tail-1025` | FP16 | 0.847 | 通过 |
+| `local-reduce-tail-1031` | FP16 | 0.964 | 通过 |
+| `local-conv` | FP16 | 1.016 | 通过 |
+| `local-conv-tail-1025` | FP16 | 0.968 | 通过 |
+| `local-conv-tail-1031` | FP16 | 1.011 | 通过 |
+| `biased-conv` | FP16 | 11.041 | 通过 |
+| `biased-conv-tail-1025` | FP16 | 11.370 | 通过 |
+| `biased-conv-tail-1031` | FP16 | 11.352 | 通过 |
+| `sigmoid` | FP16 | 0.903 | 通过 |
+| `sigmoid-tail-1025` | FP16 | 0.858 | 通过 |
+| `sigmoid-tail-1031` | FP16 | 0.916 | 通过 |
+| `division` | F32 | 0.821 | 通过 |
+| `division-tail-1025` | F32 | 0.793 | 通过 |
+| `division-tail-1031` | F32 | 0.813 | 通过 |
+| `attention-prefill-tail-1025` | FP16 | 1.400 | 通过 |
+| `attention-prefill-tail-1031` | FP16 | 1.450 | 通过 |
+| `heterogeneous-tiling-dataflow` | FP16 | 1.130 | 通过 |
+| `conv-mixed-dag` | FP16 | 12.281 | 通过 |
+| `conv-mixed-dag` | BF16 | 1.707 | 通过 |
+| `attention-prefill` | FP16 | 1.384 | 通过 |
+| `attention-prefill` | BF16 | 1.293 | 通过 |
+| `attention-decode-kv-cache` | FP16 | 6.545 / 6.937 | 通过 |
+| `attention-decode-kv-cache` | BF16 | 6.675 / 6.677 | 通过 |
+| `llama-2-7b-block` | FP16 | 14.113 | 通过 |
+| `llama-2-7b-block` | BF16 | 14.236 | **失败：51/65,536项超原容差** |
+| `attention-prefill-llama-2-7b` | FP16 | 278.981 | 通过 |
+
+模型规模：LLaMA block输入/输出`[1,16,4096]`、MLP11008；decode hidden`[1,1,4096]`，
+32 heads、head dim128，past从1023接续至1024，两步输出KV长度为1024/1025；4K prefill的Q/K/V均为
+`[1,32,4096,128]`，完整16,777,216项输出通过。小型prefill为Q/K/V`[1,1,S,64]`，S=1024/1025/1031。
+其余每个配置的确切输入/输出shape、dtype、manifest/module/input/reference hash和逐输出误差在下方JSON。
+
+BF16 LLaMA的14.236 ms只表示该失败程序的设备执行时间，不能签发正确程序的性能资格。
+本轮原始回读独立复核仍为51/65,536项超`rtol=0.002, atol=0.004`，最大绝对误差0.0078125，
+actual/expected均无NaN或Inf。本次仅测量并记录该数值缺陷，未改变容差或确定具体错误producer。
+
+LLaMA FP16本次14.113 ms与前次14.179 ms来自同一程序及配置，两次差异不视为新的优化收益；
+decode和4K计时不能直接外推其它序列长度、完整block或连续token平均吞吐。4K本轮PyTorch CPU reference耗时262.452秒，
+该主机准备耗时与278.981 ms设备计时分开，不属于编译或设备执行。本轮没有修改compiler/runtime，也未执行历史126次预算的超时4K产物。
+
+详细数据与可复核的单次执行身份见[`catalog-timing-20260914.json`](data/board-performance/catalog-timing-20260914.json)。
+此批次完成42项耗时清单；BF16 LLaMA数值修复、matched profile、完整预算曲线及历史风险候选的根因仍不由本结果代签。
