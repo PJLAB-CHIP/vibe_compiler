@@ -331,7 +331,7 @@ ResNet/ViT/完整LM/GQA的1025、GEMM4097³和batch GEMM混合tail作为泛化�
 | GEMM4096³ FP16/BF16、4097³ FP16 | 42次actual全部容量拒绝、0 accepted；已取得实际capacity/refinement计数 | 追实际allocation反馈与temporal提案覆盖，不提高全局预算掩盖问题 |
 | batch共享RHS整除 | 原有2个accepted却在静态child继承动态parent offset时target lowering失败；14号相对地址修复后no-card通过；实卡4.616 ms，1,077/4,194,304项超原容差 | 地址编译缺陷已有通用修复；独立追GEMM数值，不标board通过 |
 | batch共享RHS尾部 | 原预算42次未生成可执行包 | 与大GEMM一同审查实际容量反馈及多轴覆盖 |
-| ResNet-18三种尺寸 | 首轮BN残留已补通用合法化及PyTorch opmath分解；定向主机数值和official Linalg已通过，整网package/no-card尚未完成 | 继续三种尺寸完整编译，按实际阶段追后续失败；独立回放已量到e-graph耗时热点 |
+| ResNet-18三种尺寸 | BN合法化及opmath主机门禁通过；旧版本三个整网编译均触发1,800秒主机期限，未到设备。Dynamic e-graph重复展开已有定向加速与等价证据，当前正式前端已完成 | 当前只重签主配置并采样Region提案热点，根因稳定后再补大图及尾部，不同时反复重启三个长编译 |
 | ViT两种长度 | 正式导出成功；source verifier拒绝GELU的Erf custom call；LayerNorm同时以BN training表达 | 在正式source/转换owner闭合Erf及normalization语义，不替换原模块 |
 | Q/K/V独立诊断 | current default search包/no-card已完成，单次设备执行60秒未完成、runtime隔离上下文并退出；无回读结论 | 停止设备批次，不retry/reset；保留主机IR/ABI定位，设备恢复后才可重签板端 |
 
@@ -356,3 +356,18 @@ ResNet原始BN图经同一named pipeline已无StableHLO残留；新导出图明�
 两次独立debugger采样都位于dynamic e-graph applier，其中一次经过`RelationService::validate_compute`；
 这定位了主机热点，但尚不足以断言最终根因或改变搜索预算。三个整网配置的正式search/no-card另行推进，
 不把这次source→Linalg或主机PyTorch通过当作package、板端数值或三轮性能调优完成。
+
+### Dynamic e-graph重复展开检查点
+
+05号规则不变，复用同一component内applier的完整typed read set，省去读取状态未变的重复节点组合枚举。
+新节点、child等价式和union代表变化仍触发原规则；Searcher match、预算、rule顺序和提取器不变。
+ResNet同一真实source的named pipeline由155.43秒降至10.52秒，跳过9,392次重复展开，输出IR逐字节相同，
+全部原有计数相同。原LLaMA block相同回放也逐字节相同，完整current package/no-card另外重签，不能仅靠该局部结果接纳性能资格。
+17项C ABI测试（含新child/自身等价式失效与独立root跳过）、386项Transforms unit、5项Linalg lit及完整构建/no-op通过。
+真实规模mixed chain仍验证1024/1025/1031、共享DAG、多rule闭合、exact maps和第二次运行不变，并实际断言发生重复展开跳过。
+
+旧ResNet三个整网编译已确认为host deadline失败，不是设备故障。当前正式compiler的前端已在约13.8秒到达TensorProgram，
+采样随后位于`RegionDomain::buildRefinedProposals`的quotient图构建。该过程在每次选择一个合并后重新遍历全部component、
+重建候选并逐个重建quotient DAG；一个component变化时其它component的工作可能重复。先量清调用次数和结果依赖，
+再决定如何复用未变component的提案，保留原greedy顺序和完整raw successor；此处尚未实施修改，也没有签发整网package。
+紧凑证据见[read-set复用记录](../../docs/data/board-performance/structured-rule-reuse-20260914.json)。

@@ -2323,6 +2323,8 @@ private:
     target.eNodes += source.eNodes;
     target.eClasses += source.eClasses;
     target.rewriteMatches += source.rewriteMatches;
+    target.applicationChecks += source.applicationChecks;
+    target.unchangedApplications += source.unchangedApplications;
     target.eClassMerges += source.eClassMerges;
     target.rebuildWork += source.rebuildWork;
     target.iterations += source.iterations;
@@ -2751,6 +2753,8 @@ struct NormalizeStructuredTensorGraphPass final
     numENodes += statistics.eNodes;
     numEClasses += statistics.eClasses;
     numRewriteMatches += statistics.rewriteMatches;
+    numApplicationChecks += statistics.applicationChecks;
+    numUnchangedApplications += statistics.unchangedApplications;
     numEClassMerges += statistics.eClassMerges;
     numRebuildWork += statistics.rebuildWork;
     numIterations += statistics.iterations;
@@ -2790,6 +2794,8 @@ struct NormalizeStructuredTensorGraphPass final
     counter("e-nodes", statistics.eNodes);
     counter("e-classes", statistics.eClasses);
     counter("rewrite-matches", statistics.rewriteMatches);
+    counter("application-checks", statistics.applicationChecks);
+    counter("unchanged-applications", statistics.unchangedApplications);
     counter("e-class-merges", statistics.eClassMerges);
     counter("rebuild-work", statistics.rebuildWork);
     counter("iterations", statistics.iterations);

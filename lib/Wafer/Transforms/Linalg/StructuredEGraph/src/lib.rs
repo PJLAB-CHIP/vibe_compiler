@@ -193,6 +193,8 @@ pub struct WaferEGraphStatistics {
     input_bytes: u64,
     output_bytes: u64,
     search_limit_reached: u64,
+    application_checks: u64,
+    unchanged_applications: u64,
 }
 
 #[repr(C)]
@@ -389,6 +391,8 @@ struct RuntimeState {
     concat_applications: AtomicU64,
     result_reindex_applications: AtomicU64,
     reshape_through_compute_applications: AtomicU64,
+    application_checks: AtomicU64,
+    unchanged_applications: AtomicU64,
     relation_facts_cache: Mutex<BTreeMap<u32, Option<WaferEGraphRelationFacts>>>,
     composition_cache: Mutex<BTreeMap<(u32, u32), Option<u32>>>,
     compute_validation_cache: Mutex<BTreeMap<ComputeValidationKey, bool>>,
@@ -1235,6 +1239,71 @@ struct DynamicApplier {
     kind: RuleKind,
     service: RelationService,
     runtime: Arc<RuntimeState>,
+    previous_inputs: Mutex<BTreeMap<Id, ApplicationReadSet>>,
+}
+
+// An applier reads the matched nodes, their child nodes, and the type facts
+// at the resulting frontier. Capture actual records instead of using an
+// epoch/node-count heuristic: a union can expose new alternatives without
+// changing either of those quantities.
+#[derive(Eq, PartialEq)]
+struct ClassReadSet {
+    id: Id,
+    facts: ClassFacts,
+    nodes: Vec<GraphLanguage>,
+}
+
+impl ClassReadSet {
+    fn capture(egraph: &Graph, id: Id) -> Self {
+        let id = egraph.find(id);
+        let mut nodes = egraph[id].nodes.clone();
+        for node in &mut nodes {
+            for child in node.children.iter_mut() {
+                *child = egraph.find(*child);
+            }
+        }
+        Self {
+            id,
+            facts: egraph[id].data.clone(),
+            nodes,
+        }
+    }
+}
+
+#[derive(Eq, PartialEq)]
+struct ApplicationReadSet {
+    root: ClassReadSet,
+    children: Vec<ClassReadSet>,
+    frontier: Vec<(Id, ClassFacts)>,
+}
+
+impl ApplicationReadSet {
+    fn capture(egraph: &Graph, id: Id) -> Self {
+        let root = ClassReadSet::capture(egraph, id);
+        let child_ids: BTreeSet<Id> = root
+            .nodes
+            .iter()
+            .flat_map(|node| node.children.iter().copied())
+            .collect();
+        let children: Vec<_> = child_ids
+            .into_iter()
+            .map(|child| ClassReadSet::capture(egraph, child))
+            .collect();
+        let frontier_ids: BTreeSet<Id> = children
+            .iter()
+            .flat_map(|child| child.nodes.iter())
+            .flat_map(|node| node.children.iter().copied())
+            .collect();
+        let frontier = frontier_ids
+            .into_iter()
+            .map(|child| (child, egraph[child].data.clone()))
+            .collect();
+        Self {
+            root,
+            children,
+            frontier,
+        }
+    }
 }
 
 impl DynamicApplier {
@@ -1643,6 +1712,23 @@ impl Applier<GraphLanguage, GraphAnalysis> for DynamicApplier {
         if !self.runtime.is_running() {
             return Vec::new();
         }
+        RuntimeState::increment(&self.runtime.application_checks);
+        let read_set = ApplicationReadSet::capture(egraph, eclass);
+        match self.previous_inputs.lock() {
+            Ok(mut previous) => {
+                if previous.get(&read_set.root.id) == Some(&read_set) {
+                    RuntimeState::increment(&self.runtime.unchanged_applications);
+                    return Vec::new();
+                }
+                // Store the pre-application state. Newly created alternatives
+                // must be visible to this same rule on its next invocation.
+                previous.insert(read_set.root.id, read_set);
+            }
+            Err(_) => {
+                self.runtime.set_status(RUNTIME_INTERNAL_ERROR);
+                return Vec::new();
+            }
+        }
         match self.kind {
             RuleKind::Identity => self.apply_identity(egraph, eclass),
             RuleKind::Composition => self.apply_composition(egraph, eclass),
@@ -1999,6 +2085,7 @@ unsafe fn run(request: &WaferEGraphRequest) -> Result<WaferEGraphResult, u32> {
                     kind,
                     service,
                     runtime: runtime.clone(),
+                    previous_inputs: Mutex::default(),
                 },
             )
             .expect("fixed Wafer rewrite must be well formed")
@@ -2051,6 +2138,9 @@ unsafe fn run(request: &WaferEGraphRequest) -> Result<WaferEGraphResult, u32> {
     result.statistics.e_nodes = runner.egraph.total_number_of_nodes() as u64;
     result.statistics.e_classes = runner.egraph.number_of_classes() as u64;
     result.statistics.rewrite_matches = counters.matches.get();
+    result.statistics.application_checks = runtime.application_checks.load(AtomicOrdering::Relaxed);
+    result.statistics.unchanged_applications =
+        runtime.unchanged_applications.load(AtomicOrdering::Relaxed);
     result.statistics.e_class_merges = counters.merges.get();
     result.statistics.rebuild_work = runner
         .iterations

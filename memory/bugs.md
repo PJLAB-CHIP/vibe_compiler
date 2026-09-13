@@ -1989,3 +1989,12 @@
   不猜静态上界、不放大carrier。先交付verified Tile IR，再由原descriptor/SPM gate明确判断动态形态的支持范围。
 - 防复发：普通与rank-reduced view精确检查size SSA、load shape和owner，未知动态descriptor保留预期拒绝；
   静态main/tail继续通过Instr/completion/SPM，生产搜索同时覆盖“已有accepted，后续出现动态窗口”的完整导出。
+
+## Dynamic e-graph callback memo不等于规则展开复用
+
+- 根因：Searcher按e-class匹配，dynamic applier内部再遍历root/child的等价节点组合；relation callback即使已经memo，
+  相同读取状态的每轮调用仍会复制和枚举全部组合。
+- 修复边界：只在同一request/规则内比较完整typed read set，包括实际读取节点、canonical child及analysis facts。
+  缓存调用前状态；自身新建等价式、child变化、union/rebuild或facts变化都必须重新执行。不得仅用节点数或hash判断相同。
+- 防复发：同时检查真实skip、child先于parent的phase-order闭合、自身新等价式继续组合、独立root保留和并行request确定性。
+  对相同预算的真实输入比较最终IR及原match/node/merge计数；新rule读取更深事实时同步扩展失效合同。

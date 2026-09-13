@@ -37,6 +37,8 @@ struct StructuredGraphNormalizationStatistics {
   uint64_t eNodes = 0;
   uint64_t eClasses = 0;
   uint64_t rewriteMatches = 0;
+  uint64_t applicationChecks = 0;
+  uint64_t unchangedApplications = 0;
   uint64_t eClassMerges = 0;
   uint64_t rebuildWork = 0;
   uint64_t iterations = 0;

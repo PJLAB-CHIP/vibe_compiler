@@ -11,8 +11,10 @@
 统一按[扩展板测矩阵与三轮性能调优](board-workload-matrix.md)确定输入、完整输出、尾部/结构覆盖、DDR/DTE对照及完成条件。
 新矩阵和三轮方案已进入正确性压测：四类主配置及补充共10个配置已接入，首轮失败边界及修复检查点见扩展矩阵；
 它们仍属于本work item，不另建网络或通信板测任务。
-ResNet的BatchNorm已补齐通用source合法化和PyTorch opmath主机覆盖；整网package仍待验证。新图normalization回放
-量到e-graph约154.4秒的主机热点，继续按实际规则展开和查询工作量定位，不计作已完成的性能优化轮次。
+ResNet的BatchNorm已补齐通用source合法化和PyTorch opmath主机覆盖；旧版本三个整网编译均触发1,800秒主机期限。
+Dynamic e-graph重复展开已补request-local read-set复用，同一source的named normalization由155.43秒降至10.52秒，
+IR和原有计数完全相同；LLaMA同阶段等价、完整no-card正在重签。当前ResNet正式前端已到TensorProgram，
+后续Region提案生成仍有耗时热点，继续定位；这些主机结果不计作已完成的板端性能优化轮次。
 
 ## 输入、输出与边界
 

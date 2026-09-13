@@ -622,3 +622,5 @@ module {
 // STATS-DAG: (S) {{[1-9][0-9]*}} multi-root-components
 // STATS-DAG: (S) {{[1-9][0-9]*}} access-transforms-removed
 // STATS-DAG: (S) {{[1-9][0-9]*}} reshape-through-compute-applications
+// STATS-DAG: (S) {{[1-9][0-9]*}} application-checks
+// STATS-DAG: (S) {{[1-9][0-9]*}} unchanged-applications

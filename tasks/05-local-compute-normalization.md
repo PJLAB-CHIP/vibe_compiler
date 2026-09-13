@@ -724,6 +724,15 @@ Rust固定注册下面第7.4节的dynamic rules。Searcher只匹配e-node/e-clas
 phase-order闭合发生在`egg`内，而不是C++提前计算最终结果。跨ABI buffer由Rust统一分配和释放；panic在Rust入口转成typed
 `InternalError`，不得跨C ABI。`egg`、relation service、memo和extractor在component结束后全部销毁。
 
+Dynamic applier对重复调用保存request-local的实际read set：matched canonical e-class的完整节点及type/valid facts，
+以及这些节点的直接child e-classes的同类事实、再下一层的type/valid facts；每个节点的children使用当前union-find代表。
+当前固定rules只读取前两层节点，更深层仅查询canonical child/type。复用必须比较完整typed记录，不能仅比较节点数量或hash。
+保存的是调用前状态；任何root/child增添节点、union/rebuild导致representative变化或analysis改变，都重新执行原applier。
+相同read set只省去已经穷尽且不可能新增union的重复展开，不删除Searcher match、不修改预算计数、rule顺序、rebuild或extractor。
+Memo和两项实际检查/跳过计数随同一component销毁；新rule若读取更深的图事实，必须扩展同一read-set合同。
+该方法复用[egg的单调等价图及rebuilding边界](https://arxiv.org/abs/2004.03082)，保留
+[pinned Applier调用合同](https://egraphs-good.github.io/egg/egg/trait.Applier.html)；不引入第二套Datalog引擎或改变搜索语言。
+
 Rust runner把全部roots加入同一个e-graph。每个root使用同一e-class最优选择，随后按selected e-node和children做deterministic hash-cons，
 形成一次共享输出DAG；全component hard check按unique DAG node计算computeId、Access、Concat和node数，不按每root树重复计数。这里不采用
 `egglog`、外部solver或TENSAT ILP；不求任意multi-output全局ILP最优，只接受由同一e-class选择得到且对原component严格结构下降的共享DAG。
@@ -862,6 +871,7 @@ relation query and composition
 e-node insertion
 e-class merge
 rewrite match
+application read-set checks and unchanged applications skipped
 rebuild work
 iteration
 extraction work
@@ -935,6 +945,7 @@ actual Linalg；若它产生冗余IR，应修正该emitter或其本地canonicali
 | attention/collective/effect barriers | ordinary DAG邻接attention、collective、SCF/call和effect | rule不得同时匹配barrier两侧；malformed输入由原verifier失败 | attention op数量、类型、result type、attributes、algorithm和region逐项不变；只允许data operand被exact同type SSA正常rewire | physical planning看到相同attention semantic roots |
 | pinned `egg` multi-root relation-service C ABI与ownership | 1/2/15 roots；empty/single/dense records；连续/并行compiler context；malformed root/tag/length/relation/callback result及forced Rust panic | configure/build缺依赖直接失败；callback typed Unsupported/WorkLimit/InternalError不发布partial rewrite | importer只含原始e-nodes和ordered root indices；dynamic Applier实际创建RHS；output hash-cons共享DAG；无MLIR对象跨ABI；handle同步且不逃逸；allocator/deallocator all-and-only；旧single-root字段/caller为0 | named/driver同一pass和adapter |
 | deterministic budget与真实规模 | tiny independent e-class oracle；rank3 1024/1025/1031 transpose→compute及共享DAG；fresh PyTorch/HF/LLaMA dense ordinary component | iteration/e-node/match上限后仍可提取；relation/extraction证据不足保持原component，内部错误typed失败，不进入physical legality | 相同budget产生相同IR/diagnostic；一轮上限下Access减少且全部root、compute、dtype、maps保持；无已证明改进则原样；至少一个fresh真实component多rule有效改写 | StructuredDAG/tiling、physical-dataflow与产品package |
+| dynamic rule read-set复用 | unchanged root；root不变而child新增等价式；union/rebuild、跨request/并行；1024/1025/1031 mixed chain与原模型 | 同样数量的不同节点不能命中；callback WorkLimit/InternalError仍保留原typed语义 | 实际skip计数、后续新节点仍触发多rule闭合；同budget前后IR及原计数相同；不改变match额度 | named normalization、当前ResNet与LLaMA source及既有direct downstream |
 
 小shape只用于独立e-class congruence和extractor oracle；所有production rewrite family仍须由表中真实规模case覆盖。
 

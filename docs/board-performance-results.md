@@ -1294,3 +1294,36 @@ Runtime隔离上下文并退出；没有retry、reset或provider finalizer调用
 身份、work count与主机门禁索引见[`batchnorm-host-20260914.json`](data/board-performance/batchnorm-host-20260914.json)。
 最终compiler SHA256为`3fda35845d0cdbe171c1c2b650f5ad96fd255d363088944673abca3130fe5268`。
 本次没有重新编译或执行LLaMA，也没有新的实卡性能结论；原快版本对照与最终冻结版本全矩阵验收要求继续保留。
+
+## 2026-09-14：复用dynamic e-graph未变输入的规则展开
+
+本次只做主机验证。此前ResNet三个整网编译均在compiler的1,800秒主机期限结束，未生成package、未执行设备。
+独立normalized graph热点的根因已经缩到dynamic applier：即使同一规则读取的e-class节点、child等价式及type facts不变，
+下一轮仍重新展开全部节点组合。Relation callback memo只省去跨ABI查询，不能省去这些组合、向量复制及缓存查找。
+
+通用修复保存每个component/规则的完整typed read set，并比较canonical children和两层节点及frontier type facts。
+只有读取状态完全相同时才跳过重复展开；保存调用前状态，使本次新建的等价式在下一次仍能被访问。
+Searcher、match计数、全部预算、rule顺序和extractor保持不变，没有针对ResNet/LLaMA或shape的分支。
+方法和pinned调用依据见05号7.3；不引入第二个rewrite入口，也不减少候选搜索语言。
+
+同一真实portable source经过`wafer-lower-stablehlo-to-linalg`的前后回放如下。每侧单次，是主机热点归因数据：
+
+| 输入 | 旧/新进程wall | 旧/新e-graph pass | 旧/新峰值RSS | 输出与工作量 |
+| --- | --- | --- | --- | --- |
+| ResNet-18 FP16 `[1,3,224,224]` | 155.43 / 10.52 s | 155.2883 / 10.3721 s | 41,024 / 42,608 KiB | IR逐字节相同，全部原有统计相同；28,653次检查中跳过9,392次重复展开 |
+| 原LLaMA block FP16 `[1,16,4096]` | 0.16 / 0.14 s | 0.1171 / 0.1127 s | 32,024 / 33,624 KiB | IR逐字节相同，全部原有统计相同；3,877次检查中跳过2,072次。样本很短，不据此声称LLaMA加速 |
+
+ResNet仍有29,643次admitted match、23,837个e-node、8,582个e-class、55,441次merge及109次iteration，
+前后完全相同；约14.8倍的变化来自消除重复展开，并非调小搜索额度。RSS有小幅增加，完整模型资源门槛另行检查。
+17项C ABI测试通过，其中新增精确验证“parent不变而child新建Access后继续吸收”和“本rule生成的单operand等价式继续组合”；
+独立不可简化root仍保留，真实skip发生，并行request计数确定。386项Transforms unit、5项Linalg lit通过，
+后者保留1024/1025/1031、mixed-rule、shared-DAG、exact maps和幂等检查；完整canonical增量构建及Ninja no-op通过。
+
+当前正式ResNet编译的source→TensorProgram已在约13.8秒完成，随后进入Region提案生成；两次采样分别观察到前端的
+IndexRelation查询和后续`RegionDomain::buildRefinedProposals`中的quotient图重建。该次编译在debugger下定位，包含暂停开销，
+不把它的wall当作无干扰基准，也没有把前端成功写成整网成功。Region提案的跨component重复工作尚在分析。
+LLaMA完整current package/no-card正在重签；尚未取得最终package相等性或新实卡性能资格，不向后移动原正确快基线。
+本项属于正确性压测前的主机准备，三轮板端性能调优和最终全矩阵仍未完成。
+
+当前源文件/binary身份、完整原计数和验证索引见
+[`structured-rule-reuse-20260914.json`](data/board-performance/structured-rule-reuse-20260914.json)。

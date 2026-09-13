@@ -323,6 +323,80 @@ TEST(StructuredGraphEGraphTest, SingleInputConcatExtractsItsInput) {
   EXPECT_GE(outcome.statistics.concatApplications, 1u);
 }
 
+TEST(StructuredGraphEGraphTest, ChildAlternativeInvalidatesParentApplication) {
+  // Bounded relation oracle: factoring the child Concat runs after the
+  // parent's absorption rule. The parent has no new nodes of its own until
+  // the next iteration reads the child's new Access alternative. Real
+  // 1024/1025/1031 chains exercise the same rules with MLIR relations.
+  FakeRelationService service;
+  service.relations.emplace(1, FakeRelation{2, 1, kMaterializable});
+  service.relations.emplace(6, FakeRelation{3, 4, kMaterializable});
+  service.relations.emplace(9, FakeRelation{9, 3, kMaterializable});
+  service.relations.emplace(10, FakeRelation{9, 4, kMaterializable});
+  service.commonConcatInputRelation = 1;
+  service.commonConcatResultRelation = 6;
+  service.commonConcatSourceType = 4;
+  service.commonConcatSourceAxis = 0;
+  service.compositions.emplace(std::pair{9u, 6u}, 10);
+
+  llvm::SmallVector<EGraphNode, 7> nodes{
+      input(1, 1), input(2, 1), access(2, 0, 1), access(2, 1, 1),
+      concat(3, {2, 3}, /*axis=*/0), input(3, 3),
+      compute(EGraphNodeKind::Elementwise, /*semanticId=*/19,
+              /*typeId=*/3, {4, 5}, {9, 9}, /*dataInputCount=*/1)};
+  EGraphWorkBudget singleIteration = budget();
+  singleIteration.maximumIterations = 1;
+  EGraphOutcome first =
+      runEGraph(nodes, {6}, singleIteration, service.getABI());
+  ASSERT_EQ(first.kind, EGraphOutcomeKind::Changed);
+  EXPECT_EQ(first.statistics.computeAbsorptionApplications, 0u);
+  EXPECT_EQ(first.statistics.outputAccessOccurrences, 1u);
+
+  EGraphOutcome closed = runEGraph(nodes, {6}, budget(), service.getABI());
+  ASSERT_EQ(closed.kind, EGraphOutcomeKind::Changed);
+  EXPECT_EQ(closed.statistics.outputAccessOccurrences, 0u);
+  EXPECT_EQ(closed.statistics.outputComputeOccurrences, 1u);
+  ASSERT_EQ(closed.expression.back().kind, EGraphNodeKind::Elementwise);
+  EXPECT_EQ(closed.expression.back().semanticId, 19u);
+  EXPECT_EQ(closed.expression.back().relations,
+            (llvm::SmallVector<uint32_t, 4>{10, 9}));
+  EXPECT_GT(closed.statistics.computeAbsorptionApplications, 0u);
+  EXPECT_GT(closed.statistics.unchangedApplications, 0u);
+}
+
+TEST(StructuredGraphEGraphTest, OwnAlternativesRemainVisibleWhileOtherRootsSkip) {
+  // Each absorption invocation snapshots the compute's nodes. Removing both
+  // Access operands therefore requires revisiting its own new alternatives.
+  // A separate irreducible root stays unchanged throughout those iterations.
+  FakeRelationService service;
+  service.relations.emplace(1, FakeRelation{2, 1, kMaterializable});
+  service.relations.emplace(4, FakeRelation{9, 2, kMaterializable});
+  service.relations.emplace(5, FakeRelation{9, 1, kMaterializable});
+  service.compositions.emplace(std::pair{4u, 1u}, 5);
+  llvm::SmallVector<EGraphNode, 8> nodes{
+      input(1, 1), input(2, 1), access(2, 0, 1), access(2, 1, 1),
+      input(3, 2),
+      compute(EGraphNodeKind::Elementwise, /*semanticId=*/29,
+              /*typeId=*/2, {2, 3, 4}, {4, 4, 4}, /*dataInputCount=*/2),
+      input(4, 1), access(2, 6, 1)};
+
+  EGraphOutcome outcome = runEGraph(nodes, {5, 7}, budget(), service.getABI());
+  ASSERT_EQ(outcome.kind, EGraphOutcomeKind::Changed);
+  ASSERT_EQ(outcome.rootNodes.size(), 2u);
+  const EGraphNode &result = outcome.expression[outcome.rootNodes[0]];
+  ASSERT_EQ(result.kind, EGraphNodeKind::Elementwise);
+  EXPECT_EQ(result.semanticId, 29u);
+  EXPECT_EQ(result.relations, (llvm::SmallVector<uint32_t, 4>{5, 5, 4}));
+  EXPECT_EQ(outcome.expression[outcome.rootNodes[1]].kind,
+            EGraphNodeKind::Access);
+  EXPECT_EQ(outcome.statistics.outputAccessOccurrences, 1u);
+  EXPECT_EQ(outcome.statistics.outputComputeOccurrences, 1u);
+  EXPECT_GE(outcome.statistics.computeAbsorptionApplications, 3u);
+  EXPECT_GT(outcome.statistics.unchangedApplications, 0u);
+  EXPECT_GT(outcome.statistics.applicationChecks,
+            outcome.statistics.unchangedApplications);
+}
+
 TEST(StructuredGraphEGraphTest,
      ComputeAbsorptionPreservesComputeOccurrenceAndSemanticId) {
   FakeRelationService service;
@@ -546,6 +620,10 @@ TEST(StructuredGraphEGraphTest, RepeatedAndConcurrentRequestsAreDeterministic) {
     EXPECT_EQ(outcome.statistics.rewriteMatches,
               reference.statistics.rewriteMatches);
     EXPECT_EQ(outcome.statistics.eNodes, reference.statistics.eNodes);
+    EXPECT_EQ(outcome.statistics.applicationChecks,
+              reference.statistics.applicationChecks);
+    EXPECT_EQ(outcome.statistics.unchangedApplications,
+              reference.statistics.unchangedApplications);
   }
 }
 
