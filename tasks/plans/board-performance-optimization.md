@@ -20,7 +20,7 @@
 - Downstream consumer：普通 compiler/runtime 产品链；同一板测项验收。
 - User-level driver / named pipeline：`wafer-compile --profile`、现有 PyTorch case 与 `wafer-run`。
 - Explicit non-goals：不按模型名/固定 shape 特判；除已授权的Div→Recip+Mul及contraction FP32累加合法化外不改变算术顺序或 dtype，不扩展硬件校准矩阵，不猜测同步或 SPM 合法性。
-- Completion criteria：当前矩阵的模型及机制具备对应实际 profile 归因；所选热点有 current-IR 根因与通用修复、host 覆盖、完整构建/no-op；
+- Completion criteria：当前矩阵的目标热点及关键执行结构具备对应实际 profile 归因；所选热点有 current-IR 根因与通用修复、host 覆盖、完整构建/no-op；
   全部规定产品通过 fresh no-card及完整 PyTorch 比较，三轮调优具备匹配 A/B及关键case无可确认退化的证据；
   性能无收益的改写不交付为优化，原未闭合边界仍需逐项验收。
 
@@ -30,6 +30,8 @@
 [扩展矩阵](board-workload-matrix.md)拥有：修复BF16 LLaMA→新增八类与原42项正确性收口→冻结B0/profile→
 第一轮复用与DDR→第二轮流水与等待→第三轮搜索选择/剩余热点及整体收口。调查方向由实际profile决定，
 每轮保留固定关键case性能门槛，不能用某个模型收益抵消另一个模型退化。
+验证按影响范围与实测编译成本分层：逐次试修跑直接机制，候选稳定后验证目标整网，每轮补受影响关键项，
+最终集中补齐完整矩阵的失效/缺失资格；不把三轮调优执行成三轮全量重编或全量profile。重复计时复用有效prepared产物。
 下方前轮步骤及预算研究保留证据与未解问题，不另行决定当前顺序；风险候选仍最后处理，主机报告失败与设备超时分开。
 本次只规划；BF16 LLaMA修复、新增case接入、正确性压测和三轮调优均尚未完成。
 
