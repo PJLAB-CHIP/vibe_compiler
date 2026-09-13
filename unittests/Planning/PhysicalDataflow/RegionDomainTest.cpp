@@ -6,6 +6,7 @@
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -1293,6 +1294,189 @@ module {
       bestExactBytes = std::max(bestExactBytes, candidate.exactLogicalBytes);
   }
   EXPECT_EQ(selected.exactLogicalBytes, bestExactBytes);
+}
+
+TEST_F(RegionDomainTest, HigherGainCyclicMergeDoesNotHideLegalLowerGain) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(%input: tensor<1x1025x1031xf16>)
+      -> tensor<1x1025x1031xf16> {
+    %ea = tensor.empty() : tensor<1x1025x1031xf16>
+    %a = linalg.map ins(%input : tensor<1x1025x1031xf16>)
+        outs(%ea : tensor<1x1025x1031xf16>) (%x: f16) {
+      linalg.yield %x : f16 }
+    %eb = tensor.empty() : tensor<1x1025x1031xf16>
+    %b = linalg.map ins(%a : tensor<1x1025x1031xf16>)
+        outs(%eb : tensor<1x1025x1031xf16>) (%x: f16) {
+      linalg.yield %x : f16 }
+    %ec = tensor.empty() : tensor<1x1025x1031xf16>
+    %c = linalg.map ins(%a, %a, %b : tensor<1x1025x1031xf16>,
+        tensor<1x1025x1031xf16>, tensor<1x1025x1031xf16>)
+        outs(%ec : tensor<1x1025x1031xf16>) (%x: f16, %y: f16, %z: f16) {
+      %s = arith.addf %x, %y : f16
+      %t = arith.addf %s, %z : f16
+      linalg.yield %t : f16 }
+    return %c : tensor<1x1025x1031xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  std::string reason;
+  auto dag = StructuredDAGAnalysis::create(function(*module), &reason);
+  ASSERT_TRUE(mlir::succeeded(dag)) << reason;
+  auto works = buildWorks(*dag, &reason);
+  ASSERT_TRUE(mlir::succeeded(works)) << reason;
+  ASSERT_EQ(works->size(), 3u);
+  std::optional<analysis::RootRegionWorkId> a, b, c;
+  for (const auto &work : *works) {
+    auto map = mlir::dyn_cast<mlir::linalg::MapOp>(work.rootOperation);
+    ASSERT_TRUE(map);
+    if (map.getInputs().size() == 3)
+      c = work.id;
+    else if (mlir::isa<mlir::BlockArgument>(map.getInputs().front()))
+      a = work.id;
+    else
+      b = work.id;
+  }
+  ASSERT_TRUE(a && b && c);
+  auto domain = RegionDomain::create(*works, &reason);
+  ASSERT_TRUE(mlir::succeeded(domain)) << reason;
+  auto proposals = fusionProposals(*domain, 3);
+  ASSERT_EQ(proposals.size(), 3u);
+  // A+C localizes two uses but contracts A->B->C into a quotient cycle.
+  // A+B and B+C each localize one use. C has the shorter result-anchored
+  // semantic path, so the original complete tie-break selects B+C.
+  ASSERT_TRUE(*c < *a);
+  const RegionPlan &middle = proposals[1];
+  ASSERT_EQ(middle.groups.size(), 2u);
+  EXPECT_EQ(middle.groups.front().mandatoryRoots,
+            (llvm::SmallVector<analysis::RootRegionWorkId, 2>{*c, *b}));
+  EXPECT_EQ(middle.groups.back().mandatoryRoots,
+            (llvm::SmallVector<analysis::RootRegionWorkId, 2>{*a}));
+  EXPECT_EQ(domain->getProposalMetrics(middle).localBindings, 1u);
+  for (const RegionPlan &proposal : proposals)
+    EXPECT_TRUE(domain->contains(proposal));
+}
+
+TEST_F(RegionDomainTest, LongResidualChainsPreserveOrderedMultiTileProposals) {
+  constexpr unsigned roots = 24;
+  // i1 has no byte-width cost in this domain. It exercises unknown gain
+  // metadata without inventing a payload size or changing device support.
+  for (auto [extent, tileCount, predicate] :
+       {std::tuple{1024, 4, false}, std::tuple{1025, 16, false},
+        std::tuple{1031, 4, true}}) {
+    SCOPED_TRACE(extent);
+    std::string source;
+    llvm::raw_string_ostream ir(source);
+    const llvm::StringRef element = predicate ? "i1" : "f16";
+    const std::string type =
+        llvm::formatv("tensor<{0}x1x1031x{1}>", extent, element).str();
+    ir << "module { func.func @main(%input: " << type << ") -> " << type
+       << " {\n";
+    for (unsigned index = 0; index < roots; ++index) {
+      const std::string previous =
+          index ? "%v" + std::to_string(index - 1) : "%input";
+      const bool residual = index >= 3 && index % 4 == 3;
+      ir << " %e" << index << " = tensor.empty() : " << type << "\n"
+         << " %v" << index << " = linalg.map ins(" << previous;
+      if (residual)
+        ir << ", %v" << index - 3;
+      ir << " : " << type;
+      if (residual)
+        ir << ", " << type;
+      ir << ") outs(%e" << index << " : " << type << ") (%a: " << element;
+      if (residual)
+        ir << ", %b: " << element;
+      ir << ") {\n";
+      if (residual)
+        ir << " %sum = " << (predicate ? "arith.andi" : "arith.addf")
+           << " %a, %b : " << element << "\n"
+           << " linalg.yield %sum : " << element << "\n";
+      else
+        ir << " linalg.yield %a : " << element << "\n";
+      ir << " }\n";
+    }
+    ir << " return %v" << roots - 1 << " : " << type << "\n} }\n";
+    auto module = parse(source);
+    ASSERT_TRUE(module);
+    std::string reason;
+    auto dag = StructuredDAGAnalysis::create(function(*module), &reason);
+    ASSERT_TRUE(mlir::succeeded(dag)) << reason;
+    llvm::SmallVector<TileId, 16> tiles;
+    for (int tile = 0; tile < tileCount; ++tile)
+      tiles.push_back(TileId(tile));
+    auto works = buildWorksOnTiles(*dag, tiles, &reason);
+    ASSERT_TRUE(mlir::succeeded(works)) << reason;
+    ASSERT_EQ(works->size(), roots * tileCount);
+    auto domain = RegionDomain::create(*works, &reason);
+    ASSERT_TRUE(mlir::succeeded(domain)) << reason;
+    std::string report;
+    llvm::raw_string_ostream diagnostics(report);
+    auto timing =
+        std::make_shared<wafer::support::CompileTimingSession>(diagnostics);
+    std::vector<RegionPlan> proposals;
+    {
+      wafer::support::ScopedCompileTimingActivation activation(timing);
+      proposals = domain->getProposals(6);
+    }
+    timing->finishAndPrintSummary();
+    RecordProperty("query_work_" + std::to_string(extent), report);
+    auto counter = [&](llvm::StringRef name) -> uint64_t {
+      const std::string key =
+          "category=region-proposals name=" + name.str() + " value=";
+      size_t position = report.find(key);
+      EXPECT_NE(position, std::string::npos) << report;
+      if (position == std::string::npos)
+        return 0;
+      llvm::StringRef value =
+          llvm::StringRef(report).drop_front(position + key.size()).split(' ').first;
+      uint64_t parsed = 0;
+      EXPECT_FALSE(value.getAsInteger(10, parsed));
+      return parsed;
+    };
+    EXPECT_GT(counter("merge-legality-checks"), 0u);
+    EXPECT_LT(counter("merge-legality-checks"), counter("merge-candidates"));
+    EXPECT_GT(counter("move-legality-checks"), 0u);
+    EXPECT_LT(counter("move-legality-checks"), counter("move-candidates"));
+    ASSERT_GE(proposals.size(), 3u);
+    EXPECT_EQ(proposals.front().groups.size(), roots * tileCount);
+    bool hasReplica = false;
+    bool hasRequiredLocal = false;
+    for (const RegionPlan &proposal : proposals) {
+      ASSERT_TRUE(domain->contains(proposal));
+      const auto metrics = domain->getProposalMetrics(proposal);
+      bool hasReplicaBinding = false;
+      std::set<analysis::RootRegionWorkId> covered;
+      for (const RegionGroupPlan &group : proposal.groups) {
+        for (const auto &work : group.mandatoryRoots)
+          EXPECT_TRUE(covered.insert(work).second);
+        hasReplica |= !group.replicas.empty();
+        for (const LocalUseBinding &binding : group.localBindings) {
+          const bool required =
+              std::holds_alternative<ExecutionInstanceId>(binding.producer);
+          hasRequiredLocal |= required;
+          hasReplicaBinding |= !required;
+        }
+      }
+      if (metrics.localBindings) {
+        // Replica payload bytes are unknown even for byte-sized elements.
+        EXPECT_EQ(metrics.exactLogicalBytesKnown,
+                  !predicate && !hasReplicaBinding);
+        if (metrics.exactLogicalBytesKnown) {
+          EXPECT_GT(metrics.exactLogicalBytes, 0u);
+        } else {
+          EXPECT_EQ(metrics.exactLogicalBytes, 0u);
+        }
+      }
+      EXPECT_EQ(covered.size(), works->size());
+    }
+    EXPECT_TRUE(hasReplica);
+    EXPECT_TRUE(hasRequiredLocal);
+    std::reverse(works->begin(), works->end());
+    auto reordered = RegionDomain::create(*works, &reason);
+    ASSERT_TRUE(mlir::succeeded(reordered)) << reason;
+    EXPECT_EQ(reordered->getProposals(6), proposals);
+  }
 }
 
 } // namespace

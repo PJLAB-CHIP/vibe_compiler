@@ -13,8 +13,9 @@
 它们仍属于本work item，不另建网络或通信板测任务。
 ResNet的BatchNorm已补齐通用source合法化和PyTorch opmath主机覆盖；旧版本三个整网编译均触发1,800秒主机期限。
 Dynamic e-graph重复展开已补request-local read-set复用，同一source的named normalization由155.43秒降至10.52秒，
-IR和原有计数完全相同；LLaMA同阶段等价、完整no-card正在重签。当前ResNet正式前端已到TensorProgram，
-后续Region提案生成仍有耗时热点，继续定位；这些主机结果不计作已完成的板端性能优化轮次。
+IR和原有计数完全相同；该修改的LLaMA完整no-card通过，package三文件与原正确快版本完全相同。当前ResNet正式前端已到TensorProgram，
+后续Region提案已减少重复合法性查询和FM计分，定向及组件门禁通过，当前ResNet/LLaMA整网资格继续验证。
+ResNet另有temporal重复全module校验及窗口max归约lowering缺口；这些主机结果不计作已完成的板端性能优化轮次。
 
 ## 输入、输出与边界
 

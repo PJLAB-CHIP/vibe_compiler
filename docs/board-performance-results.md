@@ -1322,8 +1322,43 @@ ResNet仍有29,643次admitted match、23,837个e-node、8,582个e-class、55,441
 当前正式ResNet编译的source→TensorProgram已在约13.8秒完成，随后进入Region提案生成；两次采样分别观察到前端的
 IndexRelation查询和后续`RegionDomain::buildRefinedProposals`中的quotient图重建。该次编译在debugger下定位，包含暂停开销，
 不把它的wall当作无干扰基准，也没有把前端成功写成整网成功。Region提案的跨component重复工作尚在分析。
-LLaMA完整current package/no-card正在重签；尚未取得最终package相等性或新实卡性能资格，不向后移动原正确快基线。
+本项compiler的LLaMA完整package/no-card随后通过，CTest wall为1,034.84秒；manifest、program data及target module
+三个文件与原正确快版本逐字节一致。本次没有设备执行；按中间迭代的程序相等性合同保留原基线，最终全量实卡要求不变。
 本项属于正确性压测前的主机准备，三轮板端性能调优和最终全矩阵仍未完成。
 
 当前源文件/binary身份、完整原计数和验证索引见
 [`structured-rule-reuse-20260914.json`](data/board-performance/structured-rule-reuse-20260914.json)。
+
+## 2026-09-14：Region提案的精确计分与重复合法性检查
+
+这是主机编译开销修复，属于扩展矩阵的准备阶段。输入仍为current SpatialDemand/RootWork，输出仍为原RegionPlan，
+直接消费者是RegionState和structural materializer；未改变search预算、raw domain、数值算术、SPM或completion规则。
+
+原实现对每个可能move/merge先重建并检查partition/quotient DAG，再判断它是否能胜过已找到的合法best。
+FM每个move还重新扫描全部fragment计分。修改先比较完整原priority，只检查可能替换合法best的choice；
+FM仅重算移动root关联的unique fragment，多个local realization仍取原顺序的首个metadata，unknown保持unknown。
+非法的高gain choice不会覆盖best，后续较低gain合法choice和同分semantic tie保持原结果。
+
+| 机制输入 | merge候选计分数，前后相同 | merge合法性查询，前→后 | FM累计wall，前→后 | 整个proposal query，前→后 |
+| --- | ---: | ---: | ---: | ---: |
+| 24-root残差链，`[1024,1,1031]` FP16，4 Tiles | 3,360 | 3,360→852 | 14.385→6.969 ms | 35.170→20.678 ms |
+| 同结构，`[1025,1,1031]` FP16，16 Tiles | 52,968 | 52,968→3,408 | 57.219→27.786 ms | 299.663→124.320 ms |
+
+两组move计分数分别保持1,872/7,598，move合法性检查为1,747/7,098；主要收益来自merge查询减少及FM增量计分。
+这些是同输入单次主机query测量；测试上下文、构建及计数见下方JSON，不外推为设备加速比例。
+新增`[1031,1,1031]` i1、4 Tiles覆盖未知字节数，它没有旧版计时；最终suite增加输入和测试，不比较suite总wall作加速比。
+
+验证包括原独立有界partition oracle、FM best-prefix、fanout、partial-merge cycle及完整raw集合；新增case明确检查
+最高gain合并成环后选择较低gain合法方案。实际SpatialDemand→RootWork→RegionDomain的1024/1025/1031、4/16 Tile
+逐proposal验证mandatory coverage无重复、replica入口、unknown指标及反转输入后的完整ordered plan相同。
+Planning 123项、Driver 126项通过；最后补全unknown/replica断言后Region 15/15再次通过，无skip。
+canonical完整增量构建通过，第二次Ninja no-op。当前compiler的ResNet/LLaMA完整package/no-card仍在运行，尚未签发该版本整网资格。
+
+旧ResNet debugger诊断已停止并清理其临时编译目录；两次Region查询累计895.957秒，六次temporal调用累计781.785秒。
+debugger暂停影响wall，这组值仅用于根因定位。同一过程中采样到每个TileRegion反复构建全module live set，
+并实际遇到滑动窗口max reduction无法进入普通reduce lowering的拒绝：`stride*out+window`不是projected permutation，
+窗口shape operand也不同于单输入归约。前者尚需量化重复遍历，后者需补通用窗口归约的正式合同和实现；
+不能由本项query改善代签ResNet编译、数值或设备性能。没有新实卡执行，三轮性能调优与最终全矩阵均未完成。
+
+逐项身份、计数、主机原始证据hash及未完成边界见
+[`region-proposal-work-20260914.json`](data/board-performance/region-proposal-work-20260914.json)。

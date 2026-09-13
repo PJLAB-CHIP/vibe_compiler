@@ -1,11 +1,13 @@
 //===- RegionDomain.cpp - Region execution and use domain --------------===//
 
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
@@ -1047,6 +1049,20 @@ RegionDomain::getRefinementProposals(const RegionPlan &plan,
 
 std::vector<RegionPlan> RegionDomain::buildRefinedProposals(
     uint64_t maximumPlans, const RegionPlan *neighborhoodCenter) const {
+  uint64_t mergeCandidates = 0;
+  uint64_t mergeLegalityChecks = 0;
+  uint64_t moveCandidates = 0;
+  uint64_t moveLegalityChecks = 0;
+  auto reportWork = llvm::make_scope_exit([&] {
+    wafer::support::addCompileCounter("region-proposals", "merge-candidates",
+                                      mergeCandidates);
+    wafer::support::addCompileCounter("region-proposals", "merge-legality-checks",
+                                      mergeLegalityChecks);
+    wafer::support::addCompileCounter("region-proposals", "move-candidates",
+                                      moveCandidates);
+    wafer::support::addCompileCounter("region-proposals", "move-legality-checks",
+                                      moveLegalityChecks);
+  });
   std::vector<RegionPlan> proposals;
   if (maximumPlans == 0)
     return proposals;
@@ -1324,11 +1340,69 @@ std::vector<RegionPlan> RegionDomain::buildRefinedProposals(
   };
   auto refineComponent = [&](size_t componentIndex,
                              llvm::ArrayRef<uint32_t> seed) {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "query", "region-proposals", "refine-component");
     const Component &component = components[componentIndex];
     const ProgressiveComponentState &state = progressive[componentIndex];
+    // One demand can have multiple local realizations. Index them in original
+    // fragment order, so a move preserves the first localized realization's
+    // metadata just as getComponentScore does.
+    std::map<DemandFragmentId, size_t> fragmentIndices;
+    std::vector<llvm::SmallVector<size_t, 2>> realizations;
+    std::vector<llvm::SmallVector<size_t, 4>> incidentFragments(
+        component.works.size());
+    for (auto [edgeIndex, edge] : llvm::enumerate(state.fragmentEdges)) {
+      auto [entry, inserted] = fragmentIndices.try_emplace(
+          edge.fragment->fragment, realizations.size());
+      if (inserted)
+        realizations.emplace_back();
+      const size_t fragment = entry->second;
+      realizations[fragment].push_back(edgeIndex);
+      for (size_t vertex : {edge.producer, edge.consumer})
+        if (!llvm::is_contained(incidentFragments[vertex], fragment))
+          incidentFragments[vertex].push_back(fragment);
+    }
+    auto scoreMove = [&](llvm::ArrayRef<uint32_t> labels,
+                          const PartitionScore &currentScore, size_t vertex,
+                          uint32_t destinationLabel) {
+      PartitionScore score = currentScore;
+      for (size_t fragment : incidentFragments[vertex]) {
+        const LocalFragment *before = nullptr;
+        const LocalFragment *after = nullptr;
+        for (size_t edgeIndex : realizations[fragment]) {
+          const auto &edge = state.fragmentEdges[edgeIndex];
+          if (!before && labels[edge.producer] == labels[edge.consumer])
+            before = edge.fragment;
+          const uint32_t producerLabel =
+              edge.producer == vertex ? destinationLabel : labels[edge.producer];
+          const uint32_t consumerLabel =
+              edge.consumer == vertex ? destinationLabel : labels[edge.consumer];
+          if (!after && producerLabel == consumerLabel)
+            after = edge.fragment;
+          if (before && after)
+            break;
+        }
+        if (before) {
+          --score.localBindings;
+          if (before->exactLogicalBytes)
+            score.knownExactBytes -= *before->exactLogicalBytes;
+          else
+            --score.unknownBindings;
+        }
+        if (after) {
+          ++score.localBindings;
+          if (after->exactLogicalBytes)
+            score.knownExactBytes += *after->exactLogicalBytes;
+          else
+            ++score.unknownBindings;
+        }
+      }
+      return score;
+    };
     llvm::SmallVector<uint32_t, 8> current(seed.begin(), seed.end());
     llvm::SmallVector<uint32_t, 8> best = current;
     PartitionScore bestScore = getComponentScore(componentIndex, best);
+    PartitionScore currentScore = bestScore;
     llvm::SmallVector<uint8_t, 8> locked(component.works.size(), 0);
     for (size_t step = 0; step < component.works.size(); ++step) {
       struct MoveCandidate {
@@ -1352,19 +1426,14 @@ std::vector<RegionPlan> RegionDomain::buildRefinedProposals(
                component.potentialEdges[adjacent * count + vertex]))
             destinationLabels.insert(current[adjacent]);
         for (uint32_t destinationLabel : destinationLabels) {
+          ++moveCandidates;
           llvm::SmallVector<uint32_t, 8> trial = current;
           trial[vertex] = destinationLabel;
           normalizeLabels(trial);
-          if (!isLegalPartition(component, trial) ||
-              llvm::any_of(state.cannotLink,
-                           [&](const auto &edge) {
-                             return trial[edge.first] == trial[edge.second];
-                           }) ||
-              !isAcyclic(state, trial))
-            continue;
           auto representative = llvm::find(current, destinationLabel);
           assert(representative != current.end());
-          PartitionScore score = getComponentScore(componentIndex, trial);
+          PartitionScore score =
+              scoreMove(current, currentScore, vertex, destinationLabel);
           MoveCandidate candidate{
               vertex,
               component.works[std::distance(current.begin(), representative)],
@@ -1377,13 +1446,26 @@ std::vector<RegionPlan> RegionDomain::buildRefinedProposals(
                                candidate.destinationRepresentative) <
                       std::tie(component.works[selected->vertex],
                                selected->destinationRepresentative);
-          if (replace)
-            selected = std::move(candidate);
+          // The current best is already legal. A move that loses the full
+          // ordering cannot be selected even if its partition is legal.
+          if (!replace)
+            continue;
+          ++moveLegalityChecks;
+          if (!isLegalPartition(component, candidate.labels) ||
+              llvm::any_of(state.cannotLink,
+                           [&](const auto &edge) {
+                             return candidate.labels[edge.first] ==
+                                    candidate.labels[edge.second];
+                           }) ||
+              !isAcyclic(state, candidate.labels))
+            continue;
+          selected = std::move(candidate);
         }
       }
       if (!selected)
         break;
       current = std::move(selected->labels);
+      currentScore = selected->score;
       locked[selected->vertex] = 1;
       if (isBetterScore(selected->score, bestScore)) {
         best = current;
@@ -1579,16 +1661,8 @@ std::vector<RegionPlan> RegionDomain::buildRefinedProposals(
         }
 
         for (const auto &[groupPair, gain] : candidates) {
+          ++mergeCandidates;
           (void)groupPair;
-          llvm::SmallVector<uint32_t, 8> trial = coherent[componentIndex];
-          mergeLabels(trial, gain.lhs, gain.rhs);
-          if (llvm::any_of(state.cannotLink,
-                           [&](const auto &edge) {
-                             return trial[edge.first] == trial[edge.second];
-                           }) ||
-              !isAcyclic(state, trial))
-            continue;
-
           uint64_t bytes = 0;
           bool bytesKnown = true;
           for (const auto &[fragment, fragmentBytes] : gain.fragments) {
@@ -1616,8 +1690,18 @@ std::vector<RegionPlan> RegionDomain::buildRefinedProposals(
                static_cast<uint64_t>(gain.fragments.size())},
               components[componentIndex].works[lhs],
               components[componentIndex].works[rhs]};
-          if (!best || isBetterCandidate(candidate, *best))
-            best = std::move(candidate);
+          if (best && !isBetterCandidate(candidate, *best))
+            continue;
+          llvm::SmallVector<uint32_t, 8> trial = coherent[componentIndex];
+          mergeLabels(trial, gain.lhs, gain.rhs);
+          ++mergeLegalityChecks;
+          if (llvm::any_of(state.cannotLink,
+                           [&](const auto &edge) {
+                             return trial[edge.first] == trial[edge.second];
+                           }) ||
+              !isAcyclic(state, trial))
+            continue;
+          best = std::move(candidate);
         }
       }
       if (!best)

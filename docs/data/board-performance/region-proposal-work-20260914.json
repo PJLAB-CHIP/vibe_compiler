@@ -1,0 +1,169 @@
+{
+  "date": "2026-09-14",
+  "work_item": "board-testing",
+  "scope": "exact Region proposal priority filtering and incident-fragment score update",
+  "base_commit": "00ee9089624138db498699c27001e169c59d4642",
+  "compiler_sha256": "2bc96dd263ab01f83e612573767e27e6a478cdf9c7201604636fe2f051740758",
+  "source_sha256": {
+    "lib/Wafer/Planning/PhysicalDataflow/RegionDomain.cpp": "02f3bc2218a655af5c920afcd6f11e1e4864070e18dde2ca5f02125000704973"
+  },
+  "board_executed": false,
+  "budget_changed": false,
+  "raw_domain_changed": false,
+  "measurements": [
+    {
+      "input_shape": [
+        1024,
+        1,
+        1031
+      ],
+      "roots_per_tile": 24,
+      "tiles": 4,
+      "dtype": "float16",
+      "maximum_plans": 6,
+      "baseline_instrumented": {
+        "counters": {
+          "merge-candidates": 3360,
+          "merge-legality-checks": 3360,
+          "move-candidates": 1872,
+          "move-legality-checks": 1872
+        },
+        "refine_calls": 12,
+        "refine_wall_ms": 14.385,
+        "refine_cpu_ms": 14.384,
+        "proposal_query_wall_ms": 35.17
+      },
+      "current": {
+        "counters": {
+          "merge-candidates": 3360,
+          "merge-legality-checks": 852,
+          "move-candidates": 1872,
+          "move-legality-checks": 1747
+        },
+        "refine_calls": 12,
+        "refine_wall_ms": 6.969,
+        "refine_cpu_ms": 6.969,
+        "proposal_query_wall_ms": 20.678
+      }
+    },
+    {
+      "input_shape": [
+        1025,
+        1,
+        1031
+      ],
+      "roots_per_tile": 24,
+      "tiles": 16,
+      "dtype": "float16",
+      "maximum_plans": 6,
+      "baseline_instrumented": {
+        "counters": {
+          "merge-candidates": 52968,
+          "merge-legality-checks": 52968,
+          "move-candidates": 7598,
+          "move-legality-checks": 7598
+        },
+        "refine_calls": 48,
+        "refine_wall_ms": 57.219,
+        "refine_cpu_ms": 57.218,
+        "proposal_query_wall_ms": 299.663
+      },
+      "current": {
+        "counters": {
+          "merge-candidates": 52968,
+          "merge-legality-checks": 3408,
+          "move-candidates": 7598,
+          "move-legality-checks": 7098
+        },
+        "refine_calls": 48,
+        "refine_wall_ms": 27.786,
+        "refine_cpu_ms": 27.787,
+        "proposal_query_wall_ms": 124.32
+      }
+    },
+    {
+      "input_shape": [
+        1031,
+        1,
+        1031
+      ],
+      "roots_per_tile": 24,
+      "tiles": 4,
+      "dtype": "i1",
+      "maximum_plans": 6,
+      "baseline_instrumented": null,
+      "current": {
+        "counters": {
+          "merge-candidates": 3360,
+          "merge-legality-checks": 852,
+          "move-candidates": 1872,
+          "move-legality-checks": 1747
+        },
+        "refine_calls": 12,
+        "refine_wall_ms": 6.975,
+        "refine_cpu_ms": 6.975,
+        "proposal_query_wall_ms": 20.489
+      }
+    }
+  ],
+  "validation": {
+    "planning": {
+      "passed": 123,
+      "wall_s": 63.21,
+      "note": "same production source; before final i1 test extension"
+    },
+    "driver": {
+      "passed": 126,
+      "wall_s": 572.62
+    },
+    "final_region_tests": {
+      "passed": 15,
+      "failed": 0,
+      "disabled": 0,
+      "wall_s": 1.44,
+      "max_rss_kib": 65476,
+      "includes_i1_unknown_and_replica": true
+    },
+    "canonical_build": "passed",
+    "subsequent_build": "ninja: no work to do.",
+    "semantics": "Existing independent bounded partition oracle and exact ordered-plan tests passed; new tests preserve complete ordered plans under RootWork input reversal and explicitly reject cyclic higher-gain merges."
+  },
+  "whole_model": {
+    "current_resnet": {
+      "status": "running",
+      "board_executed": false
+    },
+    "current_llama_fp16": {
+      "status": "running",
+      "board_executed": false
+    },
+    "old_resnet_debugger_control": {
+      "compiler_sha256": "43144e4d0a89584fca5dabc48392c24d85522d345a975d6d9d8517a45ff456c0",
+      "status": "intentionally_stopped_after_root_sampling",
+      "package_produced": false,
+      "region_query_calls": 2,
+      "region_query_wall_ms": 895957.395,
+      "region_query_cpu_ms": 884475.587,
+      "temporal_calls": 6,
+      "temporal_wall_ms": 781784.838,
+      "temporal_cpu_ms": 780441.158,
+      "later_sample": "checkStructuredBufferRelationsCurrent -> full module live-operation/value set construction during applyTemporalTiling",
+      "later_typed_rejection": "window-max reduction has stride*out+window input map and unused window-shape operand; current ordinary reduce requires one input and a projected permutation",
+      "warning": "Debugger pauses affect wall; this is root-cause evidence, not a controlled timing benchmark."
+    }
+  },
+  "raw_evidence_sha256": {
+    "build/test/model-performance/region-proposal-baseline.xml": "0aff98c20e9c1c61d90465ccf654725bc0039ac3eec19fa13bda3844cc0116ca",
+    "build/test/model-performance/region-proposal-current.xml": "332e3f371f2e0f90c8a2af2f9fcaed5933b79cb0ba3c08b1d30920d678224161",
+    "build/test/model-performance/region-proposal-units.log": "f37ae626d95223538d3ab3b37a7415ebb17088e02640dbdfc6bb561a9bf22988",
+    "build/test/model-performance/region-proposal-resnet-control-final.log": "e76e29c88f5e89d82d5f06fb726afbc7d0cf5115b5e5fd4c30a4ea004ccf89c4",
+    "build/test/model-performance/structured-rule-resnet-search-gdb.log": "ede03b95c4ff5c700c6eb79562387d565d0500e1aee5760d2bbba5e75aa61793"
+  },
+  "limitations": [
+    "Current full ResNet and LLaMA package/no-card qualification remains pending.",
+    "No new board correctness, profile, or matched device performance evidence.",
+    "The i1 branch has no baseline timing and makes no device-support claim.",
+    "The final suite adds inputs/tests; do not compare its total time as a matched before/after speedup.",
+    "Three board performance rounds and the full final workload matrix remain incomplete."
+  ]
+}

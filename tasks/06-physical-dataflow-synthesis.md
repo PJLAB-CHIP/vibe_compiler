@@ -997,6 +997,26 @@ Structural metric分别保留Region数、external/local binding数、known exact
 Structural metric只决定proposal访问顺序；不同结构、replica、传播与复用seed均保留入口，不能把局部metric支配当作
 最终候选的cost支配。Raw lazy successor集合不因proposal/refinement而缩小；不声称有限预算证明全局最优。
 
+Region提案内部的best-move选择先比较完整priority，再验证可能替换当前合法best的choice。输入为同一调用的
+`RootRegionWork`、已存在的local fragment及explicit partition labels；输出仍为原顺序的`RegionPlan`，直接交给`RegionState`
+及原structural materializer。只有已有best通过原connectivity/cannot-link/quotient检查，且新choice按原score和完整semantic
+tie-break不能胜出时，才能省去该choice的重复合法性查询。更优但非法的choice不能更新best，后续较低收益的合法choice仍须访问；
+负gain、unknown bytes及best-prefix保留原语义。`buildPlan`仍独立执行完整partition/binding/acyclic检查。
+单root move的score从当前partition精确更新：只重新检查与该root关联的unique demand fragment，比较移动前后是否仍有local realization。
+一个fragment具有多个realization时保留原fragment遍历顺序和首个local realization的metadata，不能按edge数重复累计。
+其余fragment的local状态不变。Incidence和当前score仅为同一次refinement调用的只读输入索引及工作数据，每次实际move更新，
+不跨RegionPlan/IR epoch保存，不从推测的DDR load或buffer推导gain。
+这只优化一次选优调用的计算顺序，不改变候选数量、融合空间、完整raw successor、SPM合法性或预算，也不建立跨stage gain表。
+依据[FM的最大gain选择及邻域工作量分析](https://limsk.ece.gatech.edu/book/papers/fm.pdf)和
+[acyclic DAG partitioning的受约束move refinement](https://research.sabanciuniv.edu/id/eprint/35222/)，
+保留现有完整quotient检查；不采用会缩小move集合的固定拓扑顺序约束，不在本项引入动态传递闭包算法。
+
+本项覆盖：tiny独立partition oracle继续精确检查固定Region数的best-prefix、完整raw集合及输入重排确定性；
+rank3、1024/1025/1031的chain、fanout、多Tile与partial-merge cycle验证ordered proposals、replica入口和直接domain消费者。
+新增较长多Tile图记录scored/legality query数、wall/RSS，与修改前比较完整ordered plan及metric；最高收益非法、
+同分semantic tie、不可合并与unknown bytes不得改变结果。当前ResNet与原LLaMA经过正式source→package/no-card重签，
+没有package或数值证据时不得由query数下降签发整网完成。计数和phase timing只诊断，不控制选择或legality。
+
 Spatial的方向游标从已验证的完整起点改变一个root。按迭代域工作量和semantic key排序root并轮转，
 按参与切分的轴集合分组，先每组访问一个代表，再访问该组的其它BalancedParts比例；factor乘积不超过可用Tile数，
 包含未占满Tile的合法点。组内首先保留高Tile利用率代表，其次访问逻辑重复读取最少的代表，再继续其它比例，

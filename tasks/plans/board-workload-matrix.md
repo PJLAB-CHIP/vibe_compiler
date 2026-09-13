@@ -362,12 +362,42 @@ ResNet原始BN图经同一named pipeline已无StableHLO残留；新导出图明�
 05号规则不变，复用同一component内applier的完整typed read set，省去读取状态未变的重复节点组合枚举。
 新节点、child等价式和union代表变化仍触发原规则；Searcher match、预算、rule顺序和提取器不变。
 ResNet同一真实source的named pipeline由155.43秒降至10.52秒，跳过9,392次重复展开，输出IR逐字节相同，
-全部原有计数相同。原LLaMA block相同回放也逐字节相同，完整current package/no-card另外重签，不能仅靠该局部结果接纳性能资格。
+全部原有计数相同。原LLaMA block相同回放也逐字节相同，随后本项compiler的完整package/no-card通过，
+1,034.84秒，package三文件与初始正确快版本完全相同；未执行新的设备程序，最终全矩阵板测仍必须执行。
 17项C ABI测试（含新child/自身等价式失效与独立root跳过）、386项Transforms unit、5项Linalg lit及完整构建/no-op通过。
 真实规模mixed chain仍验证1024/1025/1031、共享DAG、多rule闭合、exact maps和第二次运行不变，并实际断言发生重复展开跳过。
 
 旧ResNet三个整网编译已确认为host deadline失败，不是设备故障。当前正式compiler的前端已在约13.8秒到达TensorProgram，
 采样随后位于`RegionDomain::buildRefinedProposals`的quotient图构建。该过程在每次选择一个合并后重新遍历全部component、
 重建候选并逐个重建quotient DAG；一个component变化时其它component的工作可能重复。先量清调用次数和结果依赖，
-再决定如何复用未变component的提案，保留原greedy顺序和完整raw successor；此处尚未实施修改，也没有签发整网package。
+随后按下节减少不能替换合法best的检查及FM move的重复计分；没有引入跨component缓存，完整raw successor保持不变。
 紧凑证据见[read-set复用记录](../../docs/data/board-performance/structured-rule-reuse-20260914.json)。
+
+### Region提案工作量检查点
+
+06号现有提案算法保持不变：只有新choice按完整原priority可能替换已经合法的best时，才运行原partition/quotient校验；
+更高收益但非法的choice不能挡住后续合法choice。FM move只重算与所移动root关联的unique demand fragment，
+保留原遍历中首个local realization的metadata、负gain与best-prefix。所有索引限于当前query调用，未增加候选预算或SPM推测。
+
+| 输入/分支 | 本轮exact验证与直接消费者 | 证据与限制 |
+| --- | --- | --- |
+| rank3残差链，24 roots，1024/1025，4/16 Tiles | mandatory root恰好覆盖一次、replica入口保留、每个proposal属于原domain；反转RootWork输入后整个ordered RegionPlan相同 | `LongResidualChainsPreserveOrderedMultiTileProposals`；整除/尾部均经过实际SpatialDemand→RootWork→RegionDomain |
+| rank3、1031的i1链及FP16 replica | required-local确实存在；i1及replica字节仍为unknown；只有完整已知的required-local绑定累计正的exact bytes | 同一测试的第三个输入；这是proposal metric资格，不外推i1设备支持 |
+| 最高gain合并形成quotient cycle、剩余低gain合法且同分 | 明确拒绝A+C，按原result-anchored semantic tie选B+C，随后完整domain校验 | `HigherGainCyclicMergeDoesNotHideLegalLowerGain`，shape `[1,1025,1031]` |
+| 独立有界partition oracle、fanout、partial merge、不可合并及FM越过局部最优 | 原raw集合、固定Region数best-prefix、输入重排确定性及actual merge依赖不变 | 原13项Region测试继续执行；小图只作有界oracle，规模资格由上述输入和原ragged/partial测试承担 |
+| 全部直接Planning/Driver调用者 | 组件测试实际执行，最终新增用例另用本轮binary重签；canonical完整增量构建与Ninja no-op | Planning 63.21秒、Driver 572.62秒通过；最终Region 15/15，无skip |
+| 原始ResNet主配置、FP16 LLaMA默认search | 正式source→package/no-card，LLaMA对初始正确快包逐文件比较 | 本项整网编译仍在运行；上一节e-graph版本的package相等性不能代签本项 |
+
+同输入query的工作量：4 Tile的merge合法性查询3,360→852，16 Tile为52,968→3,408；
+候选计分数量不变。两组FM累计时间14.385→6.969 ms、57.219→27.786 ms；完整proposal query
+35.170→20.678 ms、299.663→124.320 ms。第三组i1是新覆盖，没有修改前计时，不与旧两组suite总时间作加速比较。
+这些是主机query结果，未签发整网或设备性能结论，三轮调优仍未开始。
+
+旧ResNet主机诊断已结束：两次Region查询累计895.957秒，temporal阶段六次累计781.785秒；debugger暂停影响wall，
+不将其视作无干扰性能基准。独立采样命中`checkStructuredBufferRelationsCurrent`构建完整module的live set；
+源码确认每个TileRegion的temporal apply前后都重扫全module。下一步先量化调用/遍历次数，再收敛重复校验范围，
+保持stale endpoint拒绝和实际SSA/storage检查。该修改尚未实施。
+同次诊断还已到达window-max reduction的明确lowering拒绝：输入map含`stride*out+window`，并有unused窗口形状operand；
+当前普通reduce只接受一个输入及projected-permutation map。不能仅修编译时间就宣称ResNet跑通，需在10/11号边界补通用窗口归约能力，
+先核对硬件value/padding/NaN合同，不按ResNet名字匹配。以上后续缺口不通过删pool、延长期限或换none绕过。
+详细计数、身份与限制见[Region提案证据](../../docs/data/board-performance/region-proposal-work-20260914.json)。

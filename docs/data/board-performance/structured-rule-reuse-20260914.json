@@ -199,7 +199,18 @@
     "ninja_noop": true
   },
   "whole_model": {
-    "llama_current_no_card": "running; no result claimed",
+    "llama_current_no_card": {
+      "passed": true,
+      "compiler_sha256": "43144e4d0a89584fca5dabc48392c24d85522d345a975d6d9d8517a45ff456c0",
+      "ctest_wall_s": 1034.84,
+      "all_package_members_byte_equal_frozen_baseline": true,
+      "package_sha256": {
+        "manifest.json": "968af3b772f708fc9dc4111d183c9f0d0eb15fca7928b884722d15047c9d858e",
+        "data/program-data.bin": "2c70f48e3e9be02d85e54cf0486fdf833a0ddd09a3e13659e7d8a874268cad59",
+        "modules/module_00000.so": "df29e4aaed1c679e5b897e17bba401b42a8c9ec4e7dceed58897296fe204fa27"
+      },
+      "device_executed": false
+    },
     "resnet_old_no_card": {
       "shapes": [
         224,
@@ -223,7 +234,6 @@
   },
   "limits": [
     "Named-pipeline timings are host compilation measurements, not board timings.",
-    "LLaMA complete current package and frozen-baseline comparison remain required.",
     "Current ResNet search is sampled under a debugger: elapsed timings include interruptions and are diagnostic only.",
     "No optimization round or full matrix qualification is signed by these host results."
   ],
